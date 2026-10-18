@@ -9,7 +9,7 @@ CXX      ?= g++
 GMP_DIR  ?= /tmp/opencode/gmp-linux
 GMP_INC  ?= $(GMP_DIR)/include
 GMP_LIB  ?= $(GMP_DIR)/lib
-CXXFLAGS ?= -O2 -std=c++20 -Wall
+CXXFLAGS ?= -O2 -std=c++20 -Wall -mbranch-protection=none
 ASMJIT_INC := -I.
 
 A_STATIQUE := $(wildcard $(GMP_LIB)/libgmp.a)
@@ -24,6 +24,9 @@ rose: src/rose.cpp
 
 rose-jit: src/rose.cpp src/jit.cpp
 	$(CXX) $(CXXFLAGS) $(ASMJIT_INC) -I$(GMP_INC) src/rose.cpp src/jit.cpp -o rose-jit $(LIEN) -lm -ldl
+
+test_jit: src/test_jit.cpp src/jit.cpp src/rir.h
+	$(CXX) $(CXXFLAGS) -I. -I$(GMP_INC) src/test_jit.cpp src/jit.cpp -o test_jit $(LIEN) -lm -ldl
 
 clean:
 	rm -f rose rose-jit
