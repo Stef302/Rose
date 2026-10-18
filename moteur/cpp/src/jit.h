@@ -21,7 +21,7 @@ struct A64Buf;  // défini dans jit.cpp
 // Contexte d'exécution partagé par toutes les fonctions JIT d'un module.
 struct JitContext {
     // Adresses des fonctions helpers (indexées par le JIT) — en premier pour accès JIT direct
-    static const int MAX_HELPERS = 16;
+    static const int MAX_HELPERS = 32;
     void* helpers[MAX_HELPERS] = {};
 
     // Valeurs globales : nom -> Valeur* (alloué sur le tas, possédé par le contexte)
@@ -42,6 +42,7 @@ struct JitContext {
 typedef void* (*JitEntryFn)(void* context, Valeur** frame, void** args, int nargs);
 
 // Helpers d'opérations RIR (implémentés dans jit.cpp, appelables depuis le JIT)
+// INDEXES — l'ordre est contractuel (voir tables jit.cpp/rose.cpp/test_jit.cpp)
 Valeur* jit_val_z(int64_t v);
 Valeur* jit_val_b(bool v);
 Valeur* jit_add_z(Valeur* a, Valeur* b);
@@ -49,6 +50,30 @@ Valeur* jit_sub_z(Valeur* a, Valeur* b);
 Valeur* jit_mul_z(Valeur* a, Valeur* b);
 int     jit_cmp_lt_z(Valeur* a, Valeur* b);
 int     jit_test_b(Valeur* v);
+void    jit_afficher_z(Valeur* v);
+Valeur* jit_val_z_txt(const char* txt);
+Valeur* jit_div_z(Valeur* a, Valeur* b);
+Valeur* jit_rem_z(Valeur* a, Valeur* b);
+int     jit_cmp_eq_z(Valeur* a, Valeur* b);
+int     jit_cmp_ne_z(Valeur* a, Valeur* b);
+int     jit_cmp_le_z(Valeur* a, Valeur* b);
+int     jit_cmp_gt_z(Valeur* a, Valeur* b);
+int     jit_cmp_ge_z(Valeur* a, Valeur* b);
+void    jit_afficher_b(Valeur* v);
+void    jit_afficher_s(Valeur* v);
+Valeur* jit_and_b(Valeur* a, Valeur* b);
+Valeur* jit_or_b(Valeur* a, Valeur* b);
+Valeur* jit_not_b(Valeur* a);
+Valeur* jit_neg_z(Valeur* a);
+Valeur* jit_add_z_into(Valeur* dst, Valeur* a, Valeur* b);
+Valeur* jit_sub_z_into(Valeur* dst, Valeur* a, Valeur* b);
+Valeur* jit_mul_z_into(Valeur* dst, Valeur* a, Valeur* b);
+Valeur* jit_z_copy_into(Valeur* dst, Valeur* src);
+Valeur* jit_b_copy_into(Valeur* dst, Valeur* src);
+Valeur* jit_div_z_into(Valeur* dst, Valeur* a, Valeur* b);
+Valeur* jit_rem_z_into(Valeur* dst, Valeur* a, Valeur* b);
+Valeur* jit_neg_z_into(Valeur* dst, Valeur* a);
+Valeur* jit_bool_into(Valeur* dst, int cond);
 
 class JitCompiler {
 public:
