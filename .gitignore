@@ -1,0 +1,38 @@
+# =============================================================================
+# ROSE — .gitignore
+# =============================================================================
+
+# --- Artefacts lourds distribués (exclu du dépôt Git) -----------------------
+Rose language.zip
+*.zip
+
+# --- Binaires compilés (C++, Rust, Zig, v2) ---------------------------------
+bin/
+*.exe
+*.pdb
+
+# Binaires d'exécution sous moteur/ (conservés localement, non trackés)
+moteur/cpp/rose
+moteur/cpp/rose-win64.exe
+moteur/cpp/rose-win64.pdb
+moteur/rust/rose
+moteur/rust/rose-rs-win64.exe
+moteur/rust/rose-rs-win64.pdb
+moteur/zig/rose-zig
+moteur/zig/rose-zig-win64.exe
+moteur/zig/rose-zig-win64.pdb
+
+# --- Build artefacts --------------------------------------------------------
+*.o
+suite_bundle*
+t_exact_bin
+__pycache__/
+*.pyc
+*.pyo
+target/
+zig-out/
+zig-cache/
+
+# --- OS ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db
