@@ -8,15 +8,12 @@
 #include <unordered_map>
 #include <memory>
 
-// Forward declarations (structures RIR définies dans rose.cpp, copiées ici
-// pour que jit.cpp puisse les manipuler sans inclure rose.cpp).
+// Structures RIR (définies dans rir.h, inclus via jit.cpp)
 struct RirModule;
 struct RirFonction;
 struct RirBloc;
 struct RirInstr;
 struct RirOp;
-
-enum RirType { RirZ = 0, RirQ = 1, RirF = 2, RirB = 3, RirS = 4, RirU = 5 };
 
 struct Valeur;
 
@@ -31,7 +28,7 @@ struct JitContext {
     ~JitContext();
 };
 
-// Point d'entrée d'une fonction JIT compilée (quand le backend machine sera prêt).
+// Point d'entrée d'une fonction JIT compilée.
 //   context  : JitContext*  (globaux + pile d'appels partagés)
 //   frame    : Valeur**     (tableau des temporaires SSA du frame courant)
 //   args     : void**       (arguments de l'appel)
@@ -45,7 +42,7 @@ public:
     ~JitCompiler();
 
     // Compile une fonction RIR en code machine. Retourne nullptr si le backend
-    // machine n'est pas encore implémenté pour cette fonction.
+    // machine ne supporte pas encore cette fonction.
     JitEntryFn compile_function(RirFonction* fn);
 
     // Compile toutes les fonctions d'un module RIR.
