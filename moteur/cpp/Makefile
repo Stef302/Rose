@@ -6,10 +6,11 @@
 #   make GMP_DIR=/opt/gmp                  # GMP installé dans /opt
 #   make GMP_DIR=/tmp/opencode/toolchain/gmp-install   # environnement de dev
 CXX      ?= g++
-GMP_DIR  ?= /usr
+GMP_DIR  ?= /tmp/opencode/gmp-linux
 GMP_INC  ?= $(GMP_DIR)/include
 GMP_LIB  ?= $(GMP_DIR)/lib
-CXXFLAGS ?= -O2 -std=c++17 -Wall
+CXXFLAGS ?= -O2 -std=c++20 -Wall
+ASMJIT_INC := -I.
 
 A_STATIQUE := $(wildcard $(GMP_LIB)/libgmp.a)
 ifneq ($(A_STATIQUE),)
@@ -21,7 +22,10 @@ endif
 rose: src/rose.cpp
 	$(CXX) $(CXXFLAGS) -I$(GMP_INC) src/rose.cpp -o rose $(LIEN) -lm -ldl
 
+rose-jit: src/rose.cpp src/jit.cpp
+	$(CXX) $(CXXFLAGS) $(ASMJIT_INC) -I$(GMP_INC) src/rose.cpp src/jit.cpp -o rose-jit $(LIEN) -lm -ldl
+
 clean:
-	rm -f rose
+	rm -f rose rose-jit
 
 .PHONY: clean
