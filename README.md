@@ -63,5 +63,3 @@ compilateur écrit en Rose (auto-hébergement) — est tracé dans
 =======
 # Rose
 An expiremental programming language
->>>>>>> 853e34e56d015fb9ed6c534a1d0e20444705680a
-
