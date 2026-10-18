@@ -23,6 +23,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -2126,7 +2127,6 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
         if (nom == "compter_premiers") return Valeur::de_z(rose_compter_premiers(vers_z(a[0])));
         if (nom == "nb_chiffres") return Valeur::de_z(rose_nb_chiffres(vers_z(a[0])));
         if (nom == "nombre_pi") {
-            fprintf(stderr, "DEBUG nombre_pi n=%lld\n", (long long)vers_z(a[0]).get_si());
             return Valeur::de_s(rose_pi(vers_z(a[0])));
         }
         if (nom == "longueur") {
@@ -2782,7 +2782,7 @@ struct InterpRir {
             Valeur g = get_val(i.args[0]), d = get_val(i.args[1]);
             if (g.ty == T_ENTIER && d.ty == T_ENTIER) {
                 mpz_class dz = vers_z(d);
-                if (mpz_sgn(dz.get_mpz_t()) == 0) erreur_runtime("division euclidienne par zéro");
+                if (mpz_sgn(dz.get_mpz_t()) == 0) erreur_runtime("division par zéro");
                 mpz_class r; mpz_fdiv_q(r.get_mpz_t(), vers_z(g).get_mpz_t(), dz.get_mpz_t());
                 frame.vals[i.dest] = Valeur::de_z(r);
                 return 0;
@@ -2888,7 +2888,6 @@ struct InterpRir {
             }
             if (nom == "partie_entiere") {
                 Valeur v = i.args.size() > 1 ? get_val(i.args[1]) : Valeur::vide();
-                fprintf(stderr, "DEBUG partie_entiere ty=%d\n", v.ty);
                 if (v.ty == T_ENTIER || v.ty == T_BOOLEEN) frame.vals[i.dest] = v;
                 else if (v.ty == T_RATIONNEL) {
                     mpz_class r; mpz_fdiv_q(r.get_mpz_t(), vers_q(v).get_num().get_mpz_t(), vers_q(v).get_den().get_mpz_t());
@@ -3711,17 +3710,42 @@ void*   rose_jit_compile(void* mod, void** helpers, int nhelpers);
 Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame);
 }
 
-/* Helpers d'opérations RIR (linkage C++, même mangling que jit.cpp) */
-extern Valeur* jit_val_z(int64_t v);
-extern Valeur* jit_val_b(bool v);
-extern Valeur* jit_add_z(Valeur* a, Valeur* b);
-extern Valeur* jit_sub_z(Valeur* a, Valeur* b);
-extern Valeur* jit_mul_z(Valeur* a, Valeur* b);
-extern int     jit_cmp_lt_z(Valeur* a, Valeur* b);
-extern int     jit_test_b(Valeur* v);
+/* Helpers d'opérations RIR (linkage C++, même mangling que jit.cpp)
+   INDEXES — ordre contractuel identique à jit.h / jit.cpp */
+extern Valeur* jit_val_z(int64_t v);        /* 0 */
+extern Valeur* jit_val_b(bool v);           /* 1 */
+extern Valeur* jit_add_z(Valeur* a, Valeur* b);   /* 2 */
+extern Valeur* jit_sub_z(Valeur* a, Valeur* b);   /* 3 */
+extern Valeur* jit_mul_z(Valeur* a, Valeur* b);   /* 4 */
+extern int     jit_cmp_lt_z(Valeur* a, Valeur* b);/* 5 */
+extern int     jit_test_b(Valeur* v);       /* 6 */
+extern void    jit_afficher_z(Valeur* v);   /* 7 */
+extern Valeur* jit_val_z_txt(const char* txt);    /* 8 */
+extern Valeur* jit_div_z(Valeur* a, Valeur* b);   /* 9 */
+extern Valeur* jit_rem_z(Valeur* a, Valeur* b);   /* 10 */
+extern int     jit_cmp_eq_z(Valeur* a, Valeur* b);/* 11 */
+extern int     jit_cmp_ne_z(Valeur* a, Valeur* b);/* 12 */
+extern int     jit_cmp_le_z(Valeur* a, Valeur* b);/* 13 */
+extern int     jit_cmp_gt_z(Valeur* a, Valeur* b);/* 14 */
+extern int     jit_cmp_ge_z(Valeur* a, Valeur* b);/* 15 */
+extern void    jit_afficher_b(Valeur* v);   /* 16 */
+extern void    jit_afficher_s(Valeur* v);   /* 17 */
+extern Valeur* jit_and_b(Valeur* a, Valeur* b);   /* 18 */
+extern Valeur* jit_or_b(Valeur* a, Valeur* b);    /* 19 */
+extern Valeur* jit_not_b(Valeur* a);        /* 20 */
+extern Valeur* jit_neg_z(Valeur* a);        /* 21 */
+extern Valeur* jit_add_z_into(Valeur* dst, Valeur* a, Valeur* b); /* 22 */
+extern Valeur* jit_sub_z_into(Valeur* dst, Valeur* a, Valeur* b); /* 23 */
+extern Valeur* jit_mul_z_into(Valeur* dst, Valeur* a, Valeur* b); /* 24 */
+extern Valeur* jit_z_copy_into(Valeur* dst, Valeur* src);        /* 25 */
+extern Valeur* jit_b_copy_into(Valeur* dst, Valeur* src);        /* 26 */
+extern Valeur* jit_div_z_into(Valeur* dst, Valeur* a, Valeur* b);/* 27 */
+extern Valeur* jit_rem_z_into(Valeur* dst, Valeur* a, Valeur* b);/* 28 */
+extern Valeur* jit_neg_z_into(Valeur* dst, Valeur* a);           /* 29 */
+extern Valeur* jit_bool_into(Valeur* dst, int cond);             /* 30 */
 
 /* Nombre de helpers enregistrés pour le JIT */
-static const int NJIT_HELPERS = 7;
+static const int NJIT_HELPERS = 31;
 
 /* Le pipeline complet tourne sur un thread à très grande pile : la
    récursion Rose (éval → appel → exécution…) y est limitée par la
@@ -3739,17 +3763,44 @@ static void *fil_pipeline(void *p) {
         for (auto &kv : prog.signatures) if (kv.second->corps) em.emettre_fonction(*kv.second);
         em.emettre_principal(prog);
 
-        /* ── M2: essayer le JIT natif, sinon repli sur l'interpréteur ── */
+        /* ── M2: essayer le JIT natif, sinon repli sur l'interpréteur ──
+           ROSE_NO_JIT=1 force le repli (comparaisons de parité).        */
+        static const bool no_jit = getenv("ROSE_NO_JIT") != nullptr;
         void* jit_helpers[NJIT_HELPERS] = {
-            (void*)&jit_val_z,
-            (void*)&jit_val_b,
-            (void*)&jit_add_z,
-            (void*)&jit_sub_z,
-            (void*)&jit_mul_z,
-            (void*)&jit_cmp_lt_z,
-            (void*)&jit_test_b,
+            (void*)&jit_val_z,          /* 0  */
+            (void*)&jit_val_b,          /* 1  */
+            (void*)&jit_add_z,          /* 2  */
+            (void*)&jit_sub_z,          /* 3  */
+            (void*)&jit_mul_z,          /* 4  */
+            (void*)&jit_cmp_lt_z,       /* 5  */
+            (void*)&jit_test_b,         /* 6  */
+            (void*)&jit_afficher_z,     /* 7  */
+            (void*)&jit_val_z_txt,      /* 8  */
+            (void*)&jit_div_z,          /* 9  */
+            (void*)&jit_rem_z,          /* 10 */
+            (void*)&jit_cmp_eq_z,       /* 11 */
+            (void*)&jit_cmp_ne_z,       /* 12 */
+            (void*)&jit_cmp_le_z,       /* 13 */
+            (void*)&jit_cmp_gt_z,       /* 14 */
+            (void*)&jit_cmp_ge_z,       /* 15 */
+            (void*)&jit_afficher_b,     /* 16 */
+            (void*)&jit_afficher_s,     /* 17 */
+            (void*)&jit_and_b,          /* 18 */
+            (void*)&jit_or_b,           /* 19 */
+            (void*)&jit_not_b,          /* 20 */
+            (void*)&jit_neg_z,          /* 21 */
+            (void*)&jit_add_z_into,     /* 22 */
+            (void*)&jit_sub_z_into,     /* 23 */
+            (void*)&jit_mul_z_into,     /* 24 */
+            (void*)&jit_z_copy_into,    /* 25 */
+            (void*)&jit_b_copy_into,    /* 26 */
+            (void*)&jit_div_z_into,     /* 27 */
+            (void*)&jit_rem_z_into,     /* 28 */
+            (void*)&jit_neg_z_into,     /* 29 */
+            (void*)&jit_bool_into,      /* 30 */
         };
-        void* jit_entry = rose_jit_compile(&mod, jit_helpers, NJIT_HELPERS);
+        void* jit_entry = no_jit ? nullptr
+                                 : rose_jit_compile(&mod, jit_helpers, NJIT_HELPERS);
 
         if (jit_entry) {
             /* Exécution JIT */
@@ -3757,8 +3808,13 @@ static void *fil_pipeline(void *p) {
             Valeur** frame = new Valeur*[frame_size];
             for (int i = 0; i < frame_size; i++) frame[i] = nullptr;
             Valeur* result = rose_jit_run(jit_entry, jit_helpers, NJIT_HELPERS, frame);
+            /* Libération : le JIT peut partager un même Valeur* entre plusieurs
+               slots (constantes matérialisées, alias de variables) → dédupliquer. */
+            std::set<void*> deja_supprimes;
+            if (result) deja_supprimes.insert(result);
+            for (int i = 0; i < frame_size; i++)
+                if (frame[i] && deja_supprimes.insert(frame[i]).second) delete frame[i];
             if (result) delete result;
-            for (int i = 0; i < frame_size; i++) delete frame[i];
             delete[] frame;
             ctx->code = 0;
         } else {
