@@ -1,4 +1,5 @@
 rose
+rose-jit
 suite_bundle*
 t_exact_bin
 *.o
