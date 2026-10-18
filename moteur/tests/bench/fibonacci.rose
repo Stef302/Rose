@@ -1,0 +1,2 @@
+$a = fibonacci(5000000)
+>> nb_chiffres($a)

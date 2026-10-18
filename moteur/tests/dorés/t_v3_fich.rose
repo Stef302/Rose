@@ -1,0 +1,7 @@
+ecrire_texte("rose_v3_test.txt", "ligne1\nligne2\n")
+$s = lire_texte("rose_v3_test.txt")
+>> longueur($s)
+>> sous_chaine($s, 7, 13)
+ecrire_texte("rose_v3_test.txt", "remplacé")
+>> sous_chaine(lire_texte("rose_v3_test.txt"), 0, 8)
+>> 42

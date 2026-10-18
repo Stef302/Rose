@@ -1,0 +1,18 @@
+$t = table()
+inserer($t, "nom", "Alice")
+inserer($t, "age", 30)
+inserer($t, "nom", "Bob")
+>> $t
+>> longueur($t)
+>> cle_existe($t, "nom")
+>> cle_existe($t, "x")
+>> $t["nom"]
+>> $t["age"]
+>> supprimer($t, "age")
+>> $t
+>> cles($t)
+>> valeurs($t)
+>> $t == table()
+$u = table()
+inserer($u, "nom", "Bob")
+>> $t == $u

@@ -1,0 +1,19 @@
+# Performance — le cœur « langage de maths le plus rapide »
+# Ces programmes s'exécutent en natif via la cible C (GMP).
+
+# Grands nombres (précision arbitraire, produit-arbre GMP)
+>> nb_chiffres(factorielle(100000))        # 100 000! : 456 574 chiffres
+
+# Fibonacci rapide par doublement
+$F = fibonacci(100000)
+>> nb_chiffres($F)
+
+# π avec 100 décimales (Machin, point fixe entier exact)
+>> nombre_pi(50)
+
+# Crible d'Ératosthène en types machine
+>> compter_premiers(10000000)
+
+# Miller-Rabin (GMP) sur un nombre de Mersenne
+$grand = 2 ^ 61 - 1
+>> est_premier($grand)

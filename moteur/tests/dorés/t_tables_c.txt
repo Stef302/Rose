@@ -1,0 +1,12 @@
+[nom => Bob, age => 30]
+2
+vrai
+faux
+Bob
+30
+vrai
+[nom => Bob]
+[nom]
+[Bob]
+faux
+vrai

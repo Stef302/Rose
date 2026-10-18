@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Lanceur du compilateur Rose v2.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="$HERE/../src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m rose2.driver "$@"

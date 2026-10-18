@@ -1,0 +1,36 @@
+>> 3 + 5
+>> 20!
+>> 2 ^ 40
+>> fibonacci(90)
+>> pgcd(1071, 462)
+>> 17 div 5
+>> -17 div 5
+>> 17 % 5
+>> -17 % 5
+>> est_premier(233)
+>> est_premier(561)
+>> nb_chiffres(factorielle(20))
+$N = 1
+tant_que ($N < 100000) { $N = $N * 3 }
+>> $N
+fn collatz_long(n: entier) -> entier {
+    $c = 0
+    tant_que ($n != 1) {
+        si ($n % 2 == 0) { $n = $n div 2 } sinon { $n = 3 * $n + 1 }
+        $c = $c + 1
+    }
+    retour $c
+}
+>> collatz_long(27)
+>> 2.5 * 4.0
+>> 10.0 / 4.0
+>> 7.0 div 2.0
+>> 2 ^ 0.5 ≈ 1.41421356
+>> partie_entiere(3.9)
+$T = 0
+pour k de 1 vers 101 { $T = $T + k }
+>> $T
+si (2 ^ 10 == 1024) { >> 1 } sinon { >> 0 }
+>> non (3 > 5)
+>> vrai et faux
+>> vrai ou faux

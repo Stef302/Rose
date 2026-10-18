@@ -1,0 +1,52 @@
+# Performance de Rose
+
+Mesures **réelles** exécutées le 18/10/2026 sur la machine de
+développement (ARM Linux aarch64, GMP 6.3 embarqué). Chaque ligne est le
+**minimum de 2 exécutions** du même programme par chaque moteur, temps
+total processus → sortie (démarrage ~10 ms inclus). Reproduction :
+`moteur/tests/bench.sh` (moteurs compilés) puis
+`JULIA=<chemin> moteur/tests/bench.sh python julia` (moteurs vivants).
+
+| Programme (ce qu'il mesure) | C++ | Rust | Zig | Python | Julia |
+|---|---:|---:|---:|---:|---:|
+| boucle entière — 10 M itérations, addition d'entiers | **2,65 s** | 2,78 s | 2,99 s | 10,6 s | 15,6 s |
+| boucle flottante — 3 M additions `+ 0,5` | 0,61 s | **0,47 s** | 0,65 s | 2,6 s | 4,8 s |
+| `factorielle(1 000 000)` — 5 565 709 chiffres | 0,19 s | 0,20 s | 0,27 s | 7,4 s | 3,8 s |
+| `2 ^ 30 000 000` — puissance, 9 030 901 chiffres | 0,96 s | 0,97 s | 0,97 s | 12,5 s | 2,8 s |
+| `fibonacci(5 000 000)` — 1 044 939 chiffres | 0,03 s | 0,02 s | 0,02 s | 0,79 s | 1,8 s |
+| `compter_premiers(20 000 000)` — crible → 1 270 607 | 0,11 s | 0,09 s | 0,09 s | 0,67 s | 1,95 s |
+| `pgcd` × 2 M d'appels en boucle | 1,06 s | **0,91 s** | 1,02 s | 4,8 s | 7,1 s |
+| chaînes — 500 000 `joindre` + `concatener` (1 Mo) | 0,45 s | **0,18 s** | 0,17 s | 0,49 s | 2,5 s |
+
+Lecture honnête :
+
+* **Les trois moteurs natifs tiennent en 1,5× entre eux** sur tous les
+  exercices. C++ domine les boucles pures (cœur de l'interpréteur) ;
+  Rust/Zig dominent les chaînes ; le calcul sur grands entiers est à
+  parité partout — c'est **GMP lié statically** dans les trois cas, la
+  bibliothèque fait le travail.
+* Les moteurs Python et Julia sont les **oracles de parité**, pas des
+  produits : ils servent à vérifier les moteurs compilés, et le public
+  ne les installe pas. Leur lenteur (4 à 20×) est le prix d'un
+  interpréteur écrit dans un interpréteur.
+* Repères absolus sur cette machine : factoriel d'un million en **0,2
+  s**, 9 millions de chiffres de 2^30 000 000 en **~1 s**, crible de
+  20 millions de nombres premiers en **~0,1 s**.
+* Rose **v1 ne pouvait exécuter aucun de ces programmes** — pas de
+  boucles, pas de variables, une seule expression à la fois dans une
+  interface .NET de 74 Mo.
+
+## Notes de méthode
+
+* Programmes : `moteur/tests/bench/*.rose` — identiques pour tous les
+  moteurs, vérifiés rendus identiques (parité 113 comparaisons).
+* Les résultats transcendants (`pow` à exposant fractionnaire) peuvent
+  varier du dernier ulp selon la bibliothèque mathématique de la
+  plateforme (glibc / openlibm / msvcrt).
+* Sur la machine Windows x64 de l'utilisateur, les .exe livrés dans
+  `bin/` sont les mêmes moteurs compilés pour x86_64 ; les ordres de
+  grandeur sont transposables (mêmes algorithmes, même GMP).
+* Après le JIT du plan `ARCHITECTURE.md` (jalon M3), les boucles pures
+  sont le gain attendu (×3 à ×10 visé) : plus de revérification de
+  types à chaque noeud de l'arbre. Ces chiffres seront alors mesurés de
+  nouveau, pas promis.

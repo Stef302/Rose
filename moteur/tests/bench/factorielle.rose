@@ -1,0 +1,2 @@
+$a = factorielle(1000000)
+>> nb_chiffres($a)
