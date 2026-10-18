@@ -117,11 +117,13 @@ Valeur* __attribute__((noinline)) jit_neg_z_into(Valeur* dst, Valeur* a) {
 }
 // copie de valeur (affectations) : dst possède son propre objet, jamais partagé
 Valeur* __attribute__((noinline)) jit_z_copy_into(Valeur* dst, Valeur* src) {
+    if (!src) return dst;
     if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
     mpz_set(dst->z.get_mpz_t(), src->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
 Valeur* __attribute__((noinline)) jit_b_copy_into(Valeur* dst, Valeur* src) {
+    if (!src) return dst;
     if (!dst) dst = new Valeur(Valeur::de_b(src->b));
     dst->b = src->b; dst->ty = T_BOOLEEN; return dst;
 }
@@ -130,6 +132,8 @@ Valeur* __attribute__((noinline)) jit_bool_into(Valeur* dst, int cond) {
     else { dst->b = (cond != 0); dst->ty = T_BOOLEEN; }
     return dst;
 }
+int __attribute__((noinline)) jit_cmp_eq_b(Valeur* a, Valeur* b) { return a->b == b->b; }
+int __attribute__((noinline)) jit_cmp_ne_b(Valeur* a, Valeur* b) { return a->b != b->b; }
 
 void __attribute__((noinline)) jit_afficher_z(Valeur* v) {
     gmp_printf("%Zd\n", v->z.get_mpz_t());
@@ -271,12 +275,25 @@ public:
         emit(0xAA0003E0 | (xn << 16) | xd);  // orr xd, xzr, xn  (64-bit MOV)
     }
 
+    // ATTENTION: orr avec Rm=31 donne XZR, pas SP → utiliser add xd, sp, #0
+    void mov_from_sp(int xd) {
+        emit(0x910003E0 | xd);               // add xd, sp, #0
+    }
+
     void ldr(int xd, int xn, int imm_scaled8) {
         emit(0xF9400000 | (imm_scaled8 << 10) | (xn << 5) | xd);
     }
 
     void str(int xt, int xn, int imm_scaled8) {
         emit(0xF9000000 | (imm_scaled8 << 10) | (xn << 5) | xt);
+    }
+
+    void sub_sp(int n) {   // sub sp, sp, #n (n multiple de 8, < 4096)
+        emit(0xD10003FF | (n << 10));
+    }
+
+    void add_sp(int n) {   // add sp, sp, #n
+        emit(0x910003FF | (n << 10));
     }
 
     void blr_helper(int helper_index) {
@@ -341,6 +358,50 @@ public:
 };
 
 // =============================================================================
+// Appel de fonctions JIT (récursion via trampoline C++)
+// =============================================================================
+
+struct JitCallTarget {
+    JitEntryFn fn = nullptr;
+    int nslots = 0;
+    std::vector<int> param_slots;   // slot de chaque paramètre (-1 = non lié)
+    std::vector<int> param_tys;     // RirType en int
+    std::vector<int> const_slots;   // slots des constantes : durée de vie module
+};
+static std::vector<JitCallTarget> g_call_targets;
+static std::map<std::string,int> g_call_names;
+
+// x0=ctx, x1=index cible, x2=table d'arguments Valeur*, x3=nargs. Retour x0=résultat.
+// Le cadre du callee est créé/libéré ici ; le résultat (objet d'un slot callee)
+// devient la propriété de l'appelant (qui le copie puis le libère).
+Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur** args, int nargs) {
+    if (target < 0 || target >= (int)g_call_targets.size() || !g_call_targets[target].fn) {
+        fprintf(stderr, "Rose : erreur — fonction inconnue [Ligne 0]\n");
+        std::fflush(stdout); std::exit(1);
+    }
+    JitCallTarget &T = g_call_targets[target];
+    Valeur** frame = new Valeur*[T.nslots > 0 ? T.nslots : 1];
+    for (int i = 0; i < T.nslots; i++) frame[i] = nullptr;
+    for (size_t i = 0; i < T.param_slots.size() && i < (size_t)nargs; i++) {
+        int s = T.param_slots[i];
+        if (s < 0 || s >= T.nslots || !args[i]) continue;
+        frame[s] = (T.param_tys[i] == (int)RirB) ? jit_b_copy_into(nullptr, args[i])
+                                                 : jit_z_copy_into(nullptr, args[i]);
+    }
+    Valeur* res = reinterpret_cast<Valeur*>(T.fn(ctx, frame, nullptr, 0));
+    for (int i = 0; i < T.nslots; i++) {
+        if (!frame[i] || frame[i] == res) continue;
+        bool cst = false;
+        for (int cs : T.const_slots) if (cs == i) { cst = true; break; }
+        if (!cst) delete frame[i];
+    }
+    delete[] frame;
+    return res;
+}
+
+void __attribute__((noinline)) jit_free_valeur(Valeur* v) { delete v; }
+
+// =============================================================================
 // JitContext
 // =============================================================================
 JitContext::JitContext() {}
@@ -384,15 +445,6 @@ static int z_binop_helper(const std::string &op) {
     if (op == "mul.z")   return 24;
     if (op == "div.z")   return 27;
     if (op == "rem.z.z") return 28;
-    return -1;
-}
-static int z_cmp_helper(const std::string &op) {
-    if (op == "cmp.lt.z") return 5;
-    if (op == "cmp.eq.z") return 11;
-    if (op == "cmp.ne.z") return 12;
-    if (op == "cmp.le.z") return 13;
-    if (op == "cmp.gt.z") return 14;
-    if (op == "cmp.ge.z") return 15;
     return -1;
 }
 
@@ -441,13 +493,25 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             if (op != "cst.z" && op != "cst.b" &&
                 op != "add.z" && op != "sub.z" && op != "mul.z" &&
                 op != "div.z" && op != "rem.z.z" && op != "neg.z" &&
-                op != "cmp.lt.z" && op != "cmp.eq.z" && op != "cmp.ne.z" &&
-                op != "cmp.le.z" && op != "cmp.gt.z" && op != "cmp.ge.z" &&
+                op.rfind("cmp.", 0) != 0 &&          // cmp.<rel>.<ty> : vérifié à l'émission
                 op != "and.b" && op != "or.b" && op != "not.b" &&
-                op != "affect" && op != "afficher" &&
-                op != "ret.z" && op != "ret.u" && op != "br" && op != "br.cond") {
+                op != "affect" && op != "afficher" && op != "call" &&
+                op != "ret.z" && op != "ret" && op != "ret.u" && op != "br" && op != "br.cond") {
                 JITLOG("jit: instruction non supportée: %s\n", op.c_str());
                 unsupported = true; break;
+            }
+            if (op == "call") {
+                // appel de fonction utilisateur $nom déjà compilée dans le module
+                if (instr.args.empty() || instr.args[0].kind != RirOp::Temp ||
+                    instr.args[0].name.rfind("$", 0) != 0 ||
+                    !m_call_idx.count(instr.args[0].name)) {
+                    JITLOG("jit: appel non supporté\n");
+                    unsupported = true; break;
+                }
+                if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB)) {
+                    JITLOG("jit: call avec dest_ty=%d\n", (int)instr.dest_ty);
+                    unsupported = true; break;
+                }
             }
             auto consider = [&](const std::string &nm) {
                 if (nm.empty() || nm[0] != '%') return;
@@ -497,7 +561,6 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
         return nullptr;
     }
     std::map<int,RirType> slot_ty;   // type connu d'un slot (pour afficher)
-
     auto slot_of = [&](const std::string &nm, int &out) -> bool {
         if (is_temp_name(nm)) { out = atoi(nm.c_str()+2); return true; }
         auto it = slot_vars.find(nm);
@@ -519,13 +582,21 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
         }
         return false;
     };
+    // Les paramètres portent le type de la signature
+    for (auto &p : fn->params) {
+        int s;
+        if (slot_of("%" + p.first, s)) slot_ty[s] = p.second;
+    }
 
     A64Buf* buf = new A64Buf();
     A64Asm asm_(*buf);
 
     // ═══ Prologue ═══
-    asm_.emit(A64_STP_FP_LR_PRE);
-    asm_.emit(A64_MOV_X29_SP);
+    // x19=ctx, x20=frame. Ces registres sont callee-saved dans l'ABI AArch64 :
+    // ils doivent être préservés pour les fonctions C++ (jit_call) qui nous appellent.
+    asm_.sub_sp(32);
+    asm_.emit(0xA80053F3);       // stp x19, x20, [sp, #0]
+    asm_.emit(0xA8017BFD);       // stp x29, x30, [sp, #16]
     asm_.mov_reg(X19, X0);  // x19 = contexte
     asm_.mov_reg(X20, X1);  // x20 = frame (Valeur**)
 
@@ -589,11 +660,43 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 slot_ty[d] = RirZ;
                 continue;
             }
-            if ((h = z_cmp_helper(op)) >= 0) {
+            if (op.rfind("cmp.", 0) == 0) {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                std::string core = op.substr(4);
+                size_t dot = core.find('.');
+                std::string rel = (dot == std::string::npos) ? core : core.substr(0, dot);
+                auto operand_ty = [&](const RirOp &a, RirType &out) -> bool {
+                    if (a.kind == RirOp::Const) { out = a.ty; return true; }
+                    int s;
+                    if (!slot_of(a.name, s)) return false;
+                    auto it = slot_ty.find(s);
+                    if (it == slot_ty.end()) return false;
+                    out = it->second; return true;
+                };
+                RirType t0 = RirU, t1 = RirU;
+                if (!operand_ty(instr.args[0], t0) || !operand_ty(instr.args[1], t1)) {
+                    JITLOG("jit: cmp: type d'opérande inconnu (%s)\n", op.c_str());
+                    unsupported = true; break;
+                }
+                int hc = -1;
+                if (t0 == RirZ && t1 == RirZ) {
+                    if (rel == "lt") hc = 5;
+                    else if (rel == "eq") hc = 11;
+                    else if (rel == "ne") hc = 12;
+                    else if (rel == "le") hc = 13;
+                    else if (rel == "gt") hc = 14;
+                    else if (rel == "ge") hc = 15;
+                } else if (t0 == RirB && t1 == RirB) {
+                    if (rel == "eq") hc = 33;
+                    else if (rel == "ne") hc = 34;
+                }
+                if (hc < 0) {
+                    JITLOG("jit: cmp non supporté: %s (ty %d,%d)\n", op.c_str(), (int)t0, (int)t1);
+                    unsupported = true; break;
+                }
                 if (!load_operand(asm_, instr.args[0], X0) ||
                     !load_operand(asm_, instr.args[1], X1)) { unsupported = true; break; }
-                asm_.blr_helper(h);                        // → int dans x0
+                asm_.blr_helper(hc);                       // → int dans x0
                 asm_.mov_reg(X1, X0);                      // x1 = cond
                 asm_.ldr(X0, X20, d);
                 asm_.blr_helper(30);                       // jit_bool_into
@@ -647,15 +750,19 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                        unsupported = true; break; }
                 continue;
             }
-            if (op == "ret.z") {
+            if (op == "ret.z" || op == "ret") {
                 if (!load_operand(asm_, instr.args[0], X0)) { unsupported = true; break; }
-                asm_.emit(A64_LDP_FP_LR_POST);
+                asm_.emit(0xA8417BFD);              // ldp x29, x30, [sp, #16]
+                asm_.emit(0xA84053F3);              // ldp x19, x20, [sp, #0]
+                asm_.add_sp(32);
                 asm_.ret();
                 continue;
             }
             if (op == "ret.u") {
                 asm_.mov_imm(X0, 0);
-                asm_.emit(A64_LDP_FP_LR_POST);
+                asm_.emit(0xA8417BFD);              // ldp x29, x30, [sp, #16]
+                asm_.emit(0xA84053F3);              // ldp x19, x20, [sp, #0]
+                asm_.add_sp(32);
                 asm_.ret();
                 continue;
             }
@@ -668,6 +775,36 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.blr_helper(6);                   // jit_test_b
                 asm_.cbnz_label(X0, instr.label_cible);
                 asm_.b_label(instr.label_cible2);
+                continue;
+            }
+            if (op == "call") {
+                int d;
+                if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                int na = (int)instr.args.size() - 1;
+                int bytes = na * 8;
+                if (bytes < 16) bytes = 16; else bytes = (bytes + 15) & ~15;
+                if (bytes > 4080) { unsupported = true; break; }
+                asm_.sub_sp(bytes);
+                bool ok = true;
+                for (int i = 0; i < na; i++) {
+                    if (!load_operand(asm_, instr.args[i+1], X0)) { ok = false; break; }
+                    asm_.str(X0, SP, i);              // pile : args[i] à sp+i*8
+                }
+                if (!ok) { unsupported = true; break; }
+                asm_.mov_reg(X0, X19);                // ctx
+                asm_.mov_imm(X1, (uint64_t)m_call_idx[instr.args[0].name]);
+                asm_.mov_from_sp(X2);                 // table d'arguments
+                asm_.mov_imm(X3, (uint64_t)na);
+                asm_.blr_helper(31);                  // jit_call → x0 = résultat
+                asm_.str(X0, SP, 0);                  // sauvegarde (zone allouée)
+                asm_.mov_reg(X1, X0);                 // x1 = src (résultat callee)
+                asm_.ldr(X0, X20, d);                 // x0 = dst (slot propre)
+                asm_.blr_helper(instr.dest_ty == RirB ? 26 : 25);  // copie b/z
+                asm_.str(X0, X20, d);
+                asm_.ldr(X0, SP, 0);
+                asm_.blr_helper(32);                  // jit_free_valeur (copie callee)
+                asm_.add_sp(bytes);
+                slot_ty[d] = instr.dest_ty;
                 continue;
             }
             JITLOG("jit: instruction non supportée: %s\n", op.c_str());
@@ -687,6 +824,18 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     buf->align16();
     buf->make_exec();
 
+    // Métadonnées pour la table d'appels (paramètres, constantes)
+    m_nslots[fn->nom] = next;
+    auto &ps = m_pslots[fn->nom]; ps.clear();
+    auto &pt = m_ptys[fn->nom]; pt.clear();
+    for (auto &p : fn->params) {
+        int s;
+        ps.push_back(slot_of("%" + p.first, s) ? s : -1);
+        pt.push_back((int)p.second);
+    }
+    auto &cs = m_cslots[fn->nom]; cs.clear();
+    for (auto &c : constantes) cs.push_back(slot_const[c.first]);
+
     if (jit_verbose()) {   // dump du code machine pour objdump
         std::string safe;
         for (char ch : fn->nom) if (isalnum((unsigned char)ch)) safe += ch;
@@ -701,11 +850,20 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
 }
 
 bool JitCompiler::compile_module(RirModule* mod) {
+    // Les appels sont résolus par index de fonction dans le module.
+    m_call_idx.clear();
+    for (size_t i = 0; i < mod->fonctions.size(); i++)
+        m_call_idx[mod->fonctions[i].nom] = (int)i;
+
+    // Porte module : si UNE fonction est hors support JIT, tout le module
+    // repasse à l'interpréteur (sinon les `call` casséraient).
+    bool all_ok = true;
     for (auto &fn : mod->fonctions) {
         JitEntryFn e = compile_function(&fn);
         if (e) m_entries[fn.nom] = e;
+        else all_ok = false;
     }
-    return true;
+    return all_ok;
 }
 
 JitEntryFn JitCompiler::get_entry(const std::string& nom) const {
@@ -718,6 +876,22 @@ JitEntryFn JitCompiler::get_entry(const std::string& nom) const {
 void JitCompiler::run(RirModule* mod) {
     (void)mod;
     fprintf(stderr, "jit: run() non encore implémenté\n");
+}
+
+// Construit la table d'appels globaux après compilation d'un module entier.
+void jit_build_call_table(JitCompiler& compiler, RirModule* mod) {
+    g_call_targets.clear();
+    g_call_names.clear();
+    for (size_t i = 0; i < mod->fonctions.size(); i++) {
+        RirFonction &fn = mod->fonctions[i];
+        JitCallTarget T;
+        T.fn = compiler.get_entry(fn.nom);
+        if (compiler.m_nslots.count(fn.nom)) T.nslots = compiler.m_nslots[fn.nom];
+        if (compiler.m_pslots.count(fn.nom)) T.param_slots = compiler.m_pslots[fn.nom];
+        if (compiler.m_ptys.count(fn.nom))   T.param_tys = compiler.m_ptys[fn.nom];
+        if (compiler.m_cslots.count(fn.nom)) T.const_slots = compiler.m_cslots[fn.nom];
+        g_call_targets.push_back(T);
+    }
 }
 
 // =============================================================================
@@ -738,8 +912,11 @@ void* rose_jit_compile(void* mod, void** helpers, int nhelpers) {
     RirModule* rm = reinterpret_cast<RirModule*>(mod);
     if (!compiler.compile_module(rm))
         return nullptr;
-    // Retourner l'entry point de $principal s'il existe
-    return reinterpret_cast<void*>(compiler.get_entry("$principal"));
+    JitEntryFn entry = compiler.get_entry("$principal");
+    if (!entry)
+        return nullptr;
+    jit_build_call_table(compiler, rm);
+    return reinterpret_cast<void*>(entry);
 }
 
 // Exécute le code JIT de $principal.
@@ -752,6 +929,11 @@ Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame) 
     JitContext ctx;
     for (int i = 0; i < nhelpers && i < JitContext::MAX_HELPERS; i++)
         ctx.helpers[i] = helpers[i];
+    // Helpers internes au JIT (non exportés hors de jit.cpp)
+    ctx.helpers[31] = (void*)&jit_call;
+    ctx.helpers[32] = (void*)&jit_free_valeur;
+    ctx.helpers[33] = (void*)&jit_cmp_eq_b;
+    ctx.helpers[34] = (void*)&jit_cmp_ne_b;
     JitEntryFn fn = reinterpret_cast<JitEntryFn>(entry);
     return reinterpret_cast<Valeur*>(fn(&ctx, frame, nullptr, 0));
 }

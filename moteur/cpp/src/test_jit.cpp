@@ -9,11 +9,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <set>
+#include <map>
 
 static int failures = 0;
 
-static void run_test(const char *name, RirFonction *fn, long long expected) {
-    static JitCompiler compiler;  // persistant entre les tests
+// Enregistre tous les helpers dans l'ordre contractuel (index 0..30)
+static void add_all_helpers(JitCompiler &compiler) {
     compiler.add_helper((void*)&jit_val_z);         // 0
     compiler.add_helper((void*)&jit_val_b);          // 1
     compiler.add_helper((void*)&jit_add_z);          // 2
@@ -45,6 +47,11 @@ static void run_test(const char *name, RirFonction *fn, long long expected) {
     compiler.add_helper((void*)&jit_rem_z_into);     // 28
     compiler.add_helper((void*)&jit_neg_z_into);     // 29
     compiler.add_helper((void*)&jit_bool_into);      // 30
+}
+
+static void run_test(const char *name, RirFonction *fn, long long expected) {
+    static JitCompiler compiler;  // persistant entre les tests
+    add_all_helpers(compiler);
     JitEntryFn entry = compiler.compile_function(fn);
     if (!entry) {
         fprintf(stderr, "TEST %s ÉCHEC: compile_function nullptr\n", name);
@@ -58,6 +65,10 @@ static void run_test(const char *name, RirFonction *fn, long long expected) {
     const auto& helpers = compiler.get_helpers();
     for (size_t i = 0; i < helpers.size() && i < (size_t)JitContext::MAX_HELPERS; i++)
         ctx.helpers[i] = helpers[i];
+    ctx.helpers[31] = (void*)&jit_call;
+    ctx.helpers[32] = (void*)&jit_free_valeur;
+    ctx.helpers[33] = (void*)&jit_cmp_eq_b;
+    ctx.helpers[34] = (void*)&jit_cmp_ne_b;
     Valeur *result = reinterpret_cast<Valeur*>(entry(&ctx, frame, nullptr, 0));
     long long val = result ? (long long)mpz_get_si(result->z.get_mpz_t()) : -999999;
     if (val == expected) {
@@ -72,37 +83,7 @@ static void run_test(const char *name, RirFonction *fn, long long expected) {
 
 static void run_test_bool(const char *name, RirFonction *fn, bool expected) {
     static JitCompiler compiler;  // persistant entre les tests
-    compiler.add_helper((void*)&jit_val_z);         // 0
-    compiler.add_helper((void*)&jit_val_b);          // 1
-    compiler.add_helper((void*)&jit_add_z);          // 2
-    compiler.add_helper((void*)&jit_sub_z);          // 3
-    compiler.add_helper((void*)&jit_mul_z);          // 4
-    compiler.add_helper((void*)&jit_cmp_lt_z);       // 5
-    compiler.add_helper((void*)&jit_test_b);         // 6
-    compiler.add_helper((void*)&jit_afficher_z);     // 7
-    compiler.add_helper((void*)&jit_val_z_txt);      // 8
-    compiler.add_helper((void*)&jit_div_z);          // 9
-    compiler.add_helper((void*)&jit_rem_z);          // 10
-    compiler.add_helper((void*)&jit_cmp_eq_z);       // 11
-    compiler.add_helper((void*)&jit_cmp_ne_z);       // 12
-    compiler.add_helper((void*)&jit_cmp_le_z);       // 13
-    compiler.add_helper((void*)&jit_cmp_gt_z);       // 14
-    compiler.add_helper((void*)&jit_cmp_ge_z);       // 15
-    compiler.add_helper((void*)&jit_afficher_b);     // 16
-    compiler.add_helper((void*)&jit_afficher_s);     // 17
-    compiler.add_helper((void*)&jit_and_b);          // 18
-    compiler.add_helper((void*)&jit_or_b);           // 19
-    compiler.add_helper((void*)&jit_not_b);          // 20
-    compiler.add_helper((void*)&jit_neg_z);          // 21
-    compiler.add_helper((void*)&jit_add_z_into);     // 22
-    compiler.add_helper((void*)&jit_sub_z_into);     // 23
-    compiler.add_helper((void*)&jit_mul_z_into);     // 24
-    compiler.add_helper((void*)&jit_z_copy_into);    // 25
-    compiler.add_helper((void*)&jit_b_copy_into);    // 26
-    compiler.add_helper((void*)&jit_div_z_into);     // 27
-    compiler.add_helper((void*)&jit_rem_z_into);     // 28
-    compiler.add_helper((void*)&jit_neg_z_into);     // 29
-    compiler.add_helper((void*)&jit_bool_into);      // 30
+    add_all_helpers(compiler);
     JitEntryFn entry = compiler.compile_function(fn);
     if (!entry) {
         fprintf(stderr, "TEST %s ÉCHEC: compile_function nullptr\n", name);
@@ -116,6 +97,10 @@ static void run_test_bool(const char *name, RirFonction *fn, bool expected) {
     const auto& helpers = compiler.get_helpers();
     for (size_t i = 0; i < helpers.size() && i < (size_t)JitContext::MAX_HELPERS; i++)
         ctx.helpers[i] = helpers[i];
+    ctx.helpers[31] = (void*)&jit_call;
+    ctx.helpers[32] = (void*)&jit_free_valeur;
+    ctx.helpers[33] = (void*)&jit_cmp_eq_b;
+    ctx.helpers[34] = (void*)&jit_cmp_ne_b;
     Valeur *result = reinterpret_cast<Valeur*>(entry(&ctx, frame, nullptr, 0));
     bool val = result ? result->b : false;
     if (val == expected) {
@@ -131,37 +116,7 @@ static void run_test_bool(const char *name, RirFonction *fn, bool expected) {
 // Test avec résultat entier grande précision (comparaison texte)
 static void run_test_big(const char *name, RirFonction *fn, const char *expected) {
     static JitCompiler compiler;
-    compiler.add_helper((void*)&jit_val_z);         // 0
-    compiler.add_helper((void*)&jit_val_b);          // 1
-    compiler.add_helper((void*)&jit_add_z);          // 2
-    compiler.add_helper((void*)&jit_sub_z);          // 3
-    compiler.add_helper((void*)&jit_mul_z);          // 4
-    compiler.add_helper((void*)&jit_cmp_lt_z);       // 5
-    compiler.add_helper((void*)&jit_test_b);         // 6
-    compiler.add_helper((void*)&jit_afficher_z);     // 7
-    compiler.add_helper((void*)&jit_val_z_txt);      // 8
-    compiler.add_helper((void*)&jit_div_z);          // 9
-    compiler.add_helper((void*)&jit_rem_z);          // 10
-    compiler.add_helper((void*)&jit_cmp_eq_z);       // 11
-    compiler.add_helper((void*)&jit_cmp_ne_z);       // 12
-    compiler.add_helper((void*)&jit_cmp_le_z);       // 13
-    compiler.add_helper((void*)&jit_cmp_gt_z);       // 14
-    compiler.add_helper((void*)&jit_cmp_ge_z);       // 15
-    compiler.add_helper((void*)&jit_afficher_b);     // 16
-    compiler.add_helper((void*)&jit_afficher_s);     // 17
-    compiler.add_helper((void*)&jit_and_b);          // 18
-    compiler.add_helper((void*)&jit_or_b);           // 19
-    compiler.add_helper((void*)&jit_not_b);          // 20
-    compiler.add_helper((void*)&jit_neg_z);          // 21
-    compiler.add_helper((void*)&jit_add_z_into);     // 22
-    compiler.add_helper((void*)&jit_sub_z_into);     // 23
-    compiler.add_helper((void*)&jit_mul_z_into);     // 24
-    compiler.add_helper((void*)&jit_z_copy_into);    // 25
-    compiler.add_helper((void*)&jit_b_copy_into);    // 26
-    compiler.add_helper((void*)&jit_div_z_into);     // 27
-    compiler.add_helper((void*)&jit_rem_z_into);     // 28
-    compiler.add_helper((void*)&jit_neg_z_into);     // 29
-    compiler.add_helper((void*)&jit_bool_into);      // 30
+    add_all_helpers(compiler);
     JitEntryFn entry = compiler.compile_function(fn);
     if (!entry) {
         fprintf(stderr, "TEST %s ÉCHEC: compile_function nullptr\n", name);
@@ -175,6 +130,10 @@ static void run_test_big(const char *name, RirFonction *fn, const char *expected
     const auto& helpers = compiler.get_helpers();
     for (size_t i = 0; i < helpers.size() && i < (size_t)JitContext::MAX_HELPERS; i++)
         ctx.helpers[i] = helpers[i];
+    ctx.helpers[31] = (void*)&jit_call;
+    ctx.helpers[32] = (void*)&jit_free_valeur;
+    ctx.helpers[33] = (void*)&jit_cmp_eq_b;
+    ctx.helpers[34] = (void*)&jit_cmp_ne_b;
     Valeur *result = reinterpret_cast<Valeur*>(entry(&ctx, frame, nullptr, 0));
     char *txt = nullptr;
     gmp_asprintf(&txt, "%Zd", result ? result->z.get_mpz_t() : mpz_class(0).get_mpz_t());
@@ -323,6 +282,76 @@ static RirInstr cmp_z_c(const char *dest, const char *op, const char *a, int64_t
     i.args.push_back(ra);
     i.args.push_back(rb);
     return i;
+}
+
+// Module complet : exécution de $principal avec appels de fonctions
+static void run_test_module(const char *name, RirModule *mod, long long expected) {
+    static JitCompiler compiler;
+    add_all_helpers(compiler);
+    if (!compiler.compile_module(mod)) {
+        fprintf(stderr, "TEST %s ÉCHEC: compile_module refusé\n", name);
+        failures++;
+        return;
+    }
+    jit_build_call_table(compiler, mod);
+    JitEntryFn entry = compiler.get_entry("$principal");
+    if (!entry) {
+        fprintf(stderr, "TEST %s ÉCHEC: pas d'entry $principal\n", name);
+        failures++;
+        return;
+    }
+    JitContext ctx;
+    const int frame_size = 64;
+    Valeur **frame = new Valeur*[frame_size];
+    for (int i = 0; i < frame_size; i++) frame[i] = nullptr;
+    const auto& helpers = compiler.get_helpers();
+    for (size_t i = 0; i < helpers.size() && i < (size_t)JitContext::MAX_HELPERS; i++)
+        ctx.helpers[i] = helpers[i];
+    ctx.helpers[31] = (void*)&jit_call;
+    ctx.helpers[32] = (void*)&jit_free_valeur;
+    ctx.helpers[33] = (void*)&jit_cmp_eq_b;
+    ctx.helpers[34] = (void*)&jit_cmp_ne_b;
+    Valeur *result = reinterpret_cast<Valeur*>(entry(&ctx, frame, nullptr, 0));
+    long long val = result ? (long long)mpz_get_si(result->z.get_mpz_t()) : -999999;
+    if (val == expected) {
+        printf("TEST %s RÉUSSI: %lld\n", name, val);
+        fflush(stdout);
+    } else {
+        fprintf(stderr, "TEST %s ÉCHEC: attendu %lld, obtenu %lld\n", name, expected, val);
+        fflush(stderr);
+        failures++;
+    }
+    std::set<void*> seen;
+    if (result) seen.insert(result);
+    for (int i = 0; i < frame_size; i++)
+        if (frame[i] && seen.insert(frame[i]).second) delete frame[i];
+    if (result) delete result;
+    delete[] frame;
+}
+
+// instruction d'appel : %dest = call $nom arg1 arg2…
+static RirInstr call_instr(const char *dest, RirType ty, const char *fname,
+                           std::vector<const char*> args) {
+    RirInstr i;
+    i.dest = dest; i.dest_ty = ty; i.op = "call";
+    RirOp f; f.kind = RirOp::Temp; f.name = fname;
+    i.args.push_back(f);
+    for (auto a : args) {
+        RirOp o; o.kind = RirOp::Temp; o.name = a;
+        i.args.push_back(o);
+    }
+    return i;
+}
+
+static RirFonction *make_fn_params(const char *name,
+                                   std::vector<std::pair<std::string,RirType>> params,
+                                   std::vector<RirBloc> blocs) {
+    auto *fn = new RirFonction();
+    fn->nom = name;
+    fn->retour = RirZ;
+    fn->params = std::move(params);
+    fn->blocs = std::move(blocs);
+    return fn;
 }
 
 int main() {
@@ -477,6 +506,33 @@ int main() {
         });
         run_test("boucle.somme", fn, 55);
         delete fn;
+    }
+
+    // ── Test 13: appel récursif — factorielle(10) = 3628800 ──
+    {
+        RirModule mod;
+        auto *f = make_fn_params("$f", { {"n", RirZ} }, {
+            bloc(".entree", {
+                cmp_z_c("%t1", "cmp.le.z", "%n", 1),
+                br_cond("%t1", ".base", ".rec"),
+            }),
+            bloc(".base", { cst_z("%t2", 1), ret_z("%t2") }),
+            bloc(".rec", {
+                binop_z_c("%t3", "sub.z", "%n", 1),
+                call_instr("%t4", RirZ, "$f", { "%t3" }),
+                binop_z("%t5", "mul.z", "%n", "%t4"),
+                ret_z("%t5"),
+            }),
+        });
+        auto *pr = make_fn("$principal", {
+            cst_z("%t0", 10),
+            call_instr("%t1", RirZ, "$f", { "%t0" }),
+            ret_z("%t1"),
+        });
+        mod.fonctions.push_back(*f);
+        mod.fonctions.push_back(*pr);
+        run_test_module("fact.récursif", &mod, 3628800);
+        delete f; delete pr;
     }
 
     if (failures == 0) {

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <string>
 #include <vector>
+#include <map>
 #include <unordered_map>
 #include <memory>
 
@@ -21,7 +22,7 @@ struct A64Buf;  // défini dans jit.cpp
 // Contexte d'exécution partagé par toutes les fonctions JIT d'un module.
 struct JitContext {
     // Adresses des fonctions helpers (indexées par le JIT) — en premier pour accès JIT direct
-    static const int MAX_HELPERS = 32;
+    static const int MAX_HELPERS = 40;
     void* helpers[MAX_HELPERS] = {};
 
     // Valeurs globales : nom -> Valeur* (alloué sur le tas, possédé par le contexte)
@@ -74,6 +75,10 @@ Valeur* jit_div_z_into(Valeur* dst, Valeur* a, Valeur* b);
 Valeur* jit_rem_z_into(Valeur* dst, Valeur* a, Valeur* b);
 Valeur* jit_neg_z_into(Valeur* dst, Valeur* a);
 Valeur* jit_bool_into(Valeur* dst, int cond);
+Valeur* jit_call(struct JitContext* ctx, int target, Valeur** args, int nargs);
+void    jit_free_valeur(Valeur* v);
+int     jit_cmp_eq_b(Valeur* a, Valeur* b);
+int     jit_cmp_ne_b(Valeur* a, Valeur* b);
 
 class JitCompiler {
 public:
@@ -108,6 +113,18 @@ private:
     std::unordered_map<std::string, JitEntryFn> m_entries;  // nom fonction -> entry
     std::vector<void*> m_helpers;                           // adresses des helpers C++
     std::vector<A64Buf*> m_buffers;                         // buffers mmap alloués (pour cleanup)
+
+public:
+    // Métadonnées par fonction (construites par compile_function, lues par
+    // rose_jit_compile pour bâtir la table d'appels g_call_targets).
+    std::map<std::string,int> m_nslots;
+    std::map<std::string,std::vector<int>> m_pslots;   // slots des paramètres (ordre params)
+    std::map<std::string,std::vector<int>> m_ptys;     // RirType des paramètres (int)
+    std::map<std::string,std::vector<int>> m_cslots;   // slots de constantes (non libérables)
+    std::map<std::string,int> m_call_idx;              // "$nom" -> index dans le module
 };
+
+// Construit la table d'appels d'un module compilé (appel récursif/croisé).
+void jit_build_call_table(JitCompiler& compiler, struct RirModule* mod);
 
 #endif // ROSE_JIT_H
