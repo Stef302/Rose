@@ -1,0 +1,3 @@
+$l = ["ab"]
+pour k de 1 vers 500000 { joindre($l, "cd") }
+>> longueur(concatener($l))

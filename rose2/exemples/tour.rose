@@ -1,0 +1,101 @@
+# ── Tour complet de la syntaxe Rose ── exécution : rose tour.rose
+#
+# 1) Les six types de valeurs
+>> 42                      # entier  : précision illimitée
+>> 1/3                    # rationnel : jamais arrondi
+>> 0.1                    # flottant : IEEE double, quand tu le demandes
+>> "chaîne"               # texte UTF-8
+>> vrai                   # booléen (faux)
+>> [1, 2, 3]                 # liste : homogène (le vérificateur
+>> ["a", "b"]               # exige un seul type par liste)
+
+# 2) Variables — le type se fige à la première affectation
+$n = 7
+$s = "premier mot"
+$s = $s + " et second"        # même type → OK
+>> $n * $n                    # 49
+
+# 3) Opérateurs — écriture ASCII ou symbolique, même effet
+>> 2 + 3 * 4                  # 14
+>> 2 + 3 ⋅ 4                  # 14   (⋅ ou · ou ×)
+>> 7 / 2                      # 3.5  (toujours exact)
+>> 7 ÷ 2                      # 3    (division entière)
+>> 7 % 3                      # 1    (modulo, entiers seulement)
+>> 2 ^ 10                     # 1024
+>> 2³                         # 8    (² ³ postfixés)
+>> √9                         # 3    (exact sur les carrés)
+>> 5 !                        # 120  (factorielle postfixée)
+>> 1/3 + 1/6                  # 0.5  (addition exacte)
+>> 3 ≤ 5 et 5 ≥ 5 et 5 ≠ 4    # logique : et ou non (≤ ≥ ≠ ou <= >= !=)
+>> 0.1 + 0.2 ≈ 0.3            # ≈ comparaison approchée
+>> 100 !                      # 158 chiffres exacts
+
+# 4) Contrôle de flux
+si ($n ≥ 5) { >> "grand" } sinon { >> "petit" }
+$i = 3
+tant_que ($i > 0) { $i = $i - 1 }
+>> $i
+$total = 0
+pour k de 1 vers 11 { $total = $total + k }   # 1 vers 11 = 1..10
+>> $total
+
+# 5) Fonctions — signature typée, récursion naturelle
+fn fib(n: entier) → entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+>> fib(20)                    # 6765
+fn double(x: flottant) -> flottant { retour 2.0 * x }   # -> ou →
+>> double(3.5)
+
+# 6) Chaînes en caractères Unicode (pas en octets)
+$t = "été radieux"
+>> longueur($t)               # 11
+>> $t[0]                      # "é"
+>> ordre("é")                 # 233 (point de code)
+>> caractere(960)             # "π"
+>> sous_chaine($t, 2, 4)      # "é "
+$l = ["ra", "di", "eux"]
+joindre($l, "!")
+>> concatener($l)
+
+# 7) Tables (v3.1) — dictionnaires ordonnés
+$tab = table()
+inserer($tab, "nom", "Alice")
+inserer($tab, "age", 30)
+inserer($tab, "nom", "Bob")     # écrasement
+>> $tab                          # [nom => Bob, age => 30]
+>> longueur($tab)                # 2
+>> cle_existe($tab, "nom")       # vrai
+>> $tab["nom"]                   # "Bob"
+>> cles($tab)                    # [nom, age]
+>> valeurs($tab)                 # [Bob, 30]
+$u = table()
+inserer($u, "nom", "Bob")
+inserer($u, "age", 30)
+>> $tab == $u                    # vrai (ordre indifférent)
+>> supprimer($tab, "age")        # vrai
+>> $tab                          # [nom => Bob]
+
+# 8) Listes
+$piles = [1, 2, 3]
+>> $piles[1]                  # index à partir de 0
+joindre($piles, 4)
+>> $piles
+>> longueur($piles)
+>> [1, 2] == [1, 2]
+
+# 8) Fichiers et ligne de commande
+ecrire_texte("tour_sortie.txt", "écrit par Rose ⋅ 2026")
+>> lire_texte("tour_sortie.txt")
+si (nb_arguments() > 0) { >> "argument 0 : " + argument(0) }
+
+# 9) Sortie d'erreur et code de sortie (décommenter pour essayer)
+# afficher_erreur("souci")
+# quitter(2)
+
+# 10) Interagir avec le C (Windows : @dll("msvcrt"))
+@dll("m")
+@sym("pow")
+fn pow_c(x: flottant, y: flottant) -> flottant
+>> pow_c(2.0, 10.0)           # 1024

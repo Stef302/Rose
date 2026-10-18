@@ -1,0 +1,13 @@
+# artefacts de construction Rose (jamais les sources)
+__pycache__/
+exemples/signature
+exemples/performance
+exemples/ffi_libm
+exemples/*.py
+exemples/*.jl
+exemples/ffi_dyn/programme
+exemples/ffi_dyn/*.py
+exemples/ffi_dyn/*.jl
+exemples/ffi_dyn/libmaths_ext.so
+*.exe
+*.o
