@@ -62,6 +62,9 @@ public:
     // Compile toutes les fonctions d'un module RIR.
     bool compile_module(RirModule* mod);
 
+    // Retourne l'entry point d'une fonction compilée (nom, ex: "$principal").
+    JitEntryFn get_entry(const std::string& nom) const;
+
     // Enregistre l'adresse d'une fonction helper C++ (appelable depuis le JIT).
     // Retourne son index à utiliser dans le code généré.
     int add_helper(void* fn);

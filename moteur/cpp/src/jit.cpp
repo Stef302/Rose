@@ -282,6 +282,7 @@ static int temp_idx(const std::string &name) {
 JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     A64Buf* buf = new A64Buf();
     A64Asm asm_(*buf);
+    bool unsupported = false;
 
     // ── Prologue ──
     asm_.emit(A64_STP_FP_LR_PRE);
@@ -356,6 +357,14 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 continue;
             }
 
+            // ── ret.u (retour vide) ──
+            if (op == "ret.u") {
+                asm_.mov_imm(X0, 0);
+                asm_.emit(A64_LDP_FP_LR_POST);
+                asm_.ret();
+                continue;
+            }
+
             // ── br ──
             if (op == "br") {
                 asm_.b_label(instr.label_cible);
@@ -375,7 +384,14 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             }
 
             fprintf(stderr, "jit: instruction non supportée (V1): %s\n", op.c_str());
+            unsupported = true;
         }
+    }
+
+    if (unsupported) {
+        // Ne pas enregistrer cette fonction : repli sur l'interpréteur
+        delete buf;
+        return nullptr;
     }
 
     asm_.resolve();
@@ -394,7 +410,53 @@ bool JitCompiler::compile_module(RirModule* mod) {
     return true;
 }
 
+JitEntryFn JitCompiler::get_entry(const std::string& nom) const {
+    auto it = m_entries.find(nom);
+    if (it == m_entries.end())
+        return nullptr;
+    return it->second;
+}
+
 void JitCompiler::run(RirModule* mod) {
     (void)mod;
     fprintf(stderr, "jit: run() non encore implémenté\n");
 }
+
+// =============================================================================
+// Wrapper C pour l'intégration dans rose.cpp (évite les conflits de headers)
+// =============================================================================
+
+extern "C" {
+
+// Compile toutes les fonctions d'un module RIR avec le JIT.
+//   mod       : pointeur vers le module RIR (même layout que rir::RirModule)
+//   helpers   : tableau d'adresses de fonctions helper C++
+//   nhelpers  : nombre de helpers
+// Retour : pointeur vers le code machine de $principal, ou nullptr si échec.
+void* rose_jit_compile(void* mod, void** helpers, int nhelpers) {
+    JitCompiler compiler;
+    for (int i = 0; i < nhelpers; i++)
+        compiler.add_helper(helpers[i]);
+    RirModule* rm = reinterpret_cast<RirModule*>(mod);
+    if (!compiler.compile_module(rm))
+        return nullptr;
+    // Retourner l'entry point de $principal s'il existe
+    return reinterpret_cast<void*>(compiler.get_entry("$principal"));
+}
+
+// Exécute le code JIT de $principal.
+//   entry    : pointeur retourné par rose_jit_compile
+//   helpers  : tableau d'adresses de fonctions helper C++
+//   nhelpers : nombre de helpers
+//   frame    : tableau de Valeur* alloué par l'appelant
+// Retour : Valeur* résultat (propriété de l'appelant)
+Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame) {
+    JitContext ctx;
+    for (int i = 0; i < nhelpers && i < JitContext::MAX_HELPERS; i++)
+        ctx.helpers[i] = helpers[i];
+    JitEntryFn fn = reinterpret_cast<JitEntryFn>(entry);
+    return reinterpret_cast<Valeur*>(fn(&ctx, frame, nullptr, 0));
+}
+
+} // extern "C"
+
