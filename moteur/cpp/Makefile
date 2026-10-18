@@ -19,8 +19,8 @@ else
 LIEN := -lgmpxx -lgmp
 endif
 
-rose: src/rose.cpp
-	$(CXX) $(CXXFLAGS) -I$(GMP_INC) src/rose.cpp -o rose $(LIEN) -lm -ldl
+rose: src/rose.cpp src/jit.cpp
+	$(CXX) $(CXXFLAGS) -I$(GMP_INC) src/rose.cpp src/jit.cpp -o rose $(LIEN) -lm -ldl
 
 rose-jit: src/rose.cpp src/jit.cpp
 	$(CXX) $(CXXFLAGS) $(ASMJIT_INC) -I$(GMP_INC) src/rose.cpp src/jit.cpp -o rose-jit $(LIEN) -lm -ldl

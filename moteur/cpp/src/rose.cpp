@@ -3704,6 +3704,25 @@ struct ExecContexte {
     bool quitter;
 };
 
+/* ── Interface JIT natif (définie dans jit.cpp, compilation séparée) ──
+   linkage C explicite pour correspondre à jit.cpp.                        */
+extern "C" {
+void*   rose_jit_compile(void* mod, void** helpers, int nhelpers);
+Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame);
+}
+
+/* Helpers d'opérations RIR (linkage C++, même mangling que jit.cpp) */
+extern Valeur* jit_val_z(int64_t v);
+extern Valeur* jit_val_b(bool v);
+extern Valeur* jit_add_z(Valeur* a, Valeur* b);
+extern Valeur* jit_sub_z(Valeur* a, Valeur* b);
+extern Valeur* jit_mul_z(Valeur* a, Valeur* b);
+extern int     jit_cmp_lt_z(Valeur* a, Valeur* b);
+extern int     jit_test_b(Valeur* v);
+
+/* Nombre de helpers enregistrés pour le JIT */
+static const int NJIT_HELPERS = 7;
+
 /* Le pipeline complet tourne sur un thread à très grande pile : la
    récursion Rose (éval → appel → exécution…) y est limitée par la
    mémoire, pas par la pile système de 8 Mo. */
@@ -3714,14 +3733,40 @@ static void *fil_pipeline(void *p) {
         replier_constants(prog);
         Verificateur verif(prog);
         verif.verifier();
-        /* M1d: exécution via l'interpréteur RIR (cœur du moteur) */
+        /* Émission du module RIR */
         RirModule mod;
         EmetteurRir em(mod);
         for (auto &kv : prog.signatures) if (kv.second->corps) em.emettre_fonction(*kv.second);
         em.emettre_principal(prog);
-        InterpRir interp(mod);
-        interp.executer();
-        ctx->code = 0;
+
+        /* ── M2: essayer le JIT natif, sinon repli sur l'interpréteur ── */
+        void* jit_helpers[NJIT_HELPERS] = {
+            (void*)&jit_val_z,
+            (void*)&jit_val_b,
+            (void*)&jit_add_z,
+            (void*)&jit_sub_z,
+            (void*)&jit_mul_z,
+            (void*)&jit_cmp_lt_z,
+            (void*)&jit_test_b,
+        };
+        void* jit_entry = rose_jit_compile(&mod, jit_helpers, NJIT_HELPERS);
+
+        if (jit_entry) {
+            /* Exécution JIT */
+            const int frame_size = 256;
+            Valeur** frame = new Valeur*[frame_size];
+            for (int i = 0; i < frame_size; i++) frame[i] = nullptr;
+            Valeur* result = rose_jit_run(jit_entry, jit_helpers, NJIT_HELPERS, frame);
+            if (result) delete result;
+            for (int i = 0; i < frame_size; i++) delete frame[i];
+            delete[] frame;
+            ctx->code = 0;
+        } else {
+            /* Repli : interpréteur RIR (cœur du moteur M1) */
+            InterpRir interp(mod);
+            interp.executer();
+            ctx->code = 0;
+        }
     } catch (const Quitter &q) {
         ctx->code = q.code;
         ctx->quitter = true;                      /* pas de message d'erreur */
