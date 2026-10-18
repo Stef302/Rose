@@ -46,7 +46,33 @@ Lecture honnête :
 * Sur la machine Windows x64 de l'utilisateur, les .exe livrés dans
   `bin/` sont les mêmes moteurs compilés pour x86_64 ; les ordres de
   grandeur sont transposables (mêmes algorithmes, même GMP).
-* Après le JIT du plan `ARCHITECTURE.md` (jalon M3), les boucles pures
+* Après le JIT du plan `ARCHITECTURE.md` (jalon M2), les boucles pures
   sont le gain attendu (×3 à ×10 visé) : plus de revérification de
   types à chaque noeud de l'arbre. Ces chiffres seront alors mesurés de
   nouveau, pas promis.
+
+## Jalon M2 — JIT natif AArch64 (mesures v3.4.0, même machine)
+
+Le moteur choisit le JIT quand tout le module est dans son sous-ensemble
+(entiers, booléens, comparaisons, boucles, variables, fonctions
+récursives) ; sinon repli transparent sur l'interpréteur RIR. Comparaison
+`ROSE_NO_JIT=1` (interpréteur RIR) vs JIT, même binaire, minimum de 2
+exécutions :
+
+| Programme | Interpréteur RIR | **JIT** | Gain |
+|---|---:|---:|---:|
+| boucle entière — 10 M itérations (`pour`, somme) | 11,60 s | **0,21 s** | **×55** |
+| récursion ×200 k — 4 M d'appels `fact(20)` | 7,44 s | **2,16 s** | ×3,4 |
+| boucle flottante (hors sous-ensemble → repli) | 3,36 s | 3,35 s | — |
+| les 6 autres benchs (FFI/appels internes → repli) | identiques | identiques | — |
+
+* La boucle entière JIT (**0,21 s**) est 12× sous l'ancien interpréteur
+  d'arbre (2,65 s) : le RIR avait un creux (11,6 s) que le JIT racheète
+  très au-delà de l'objectif ×3–×10.
+* Parité stricte JIT/interpréteur vérifiée sur les 8 programmes de bench,
+  les suites du dépôt (26/11 — les 11 échecs sont les résidus M1
+  préexistants, liste dans `tester.sh`) et 14 tests unitaires du JIT
+  (`moteur/cpp/src/test_jit.cpp`, dont `factorielle(10)` récursive).
+* Le JIT n'émet que pour AArch64 (machine de dev). Sur les machines
+  x86-64 du public, le moteur v3.4.0 tourne donc à la vitesse de
+  l'interpréteur RIR — le backend x86-64 est la suite logique du jalon.

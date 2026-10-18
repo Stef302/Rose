@@ -40,6 +40,20 @@ dépendance) — le binaire autonome reste petit. Les appels GMP
 deviennent des appels C directs depuis le code émis ; le bundle
 `rose comp` gagne un mode natif compilé.
 
+> **État M2 (v3.4.0)** : JIT **AArch64 opérationnel**, sans asmjit —
+> assembleur intégré au moteur (`moteur/cpp/src/jit.cpp` émet les
+> opcodes 32 bits directement ; asmjit gardé en option pour x86-64,
+> son API v1.24 ayant divergé des notes initiales). Supporté :
+> entiers (arithmétique complète GMP, grande précision), booléens,
+> comparaisons, branches et boucles (`si/tant_que/pour`), variables,
+> constantes matérialisées une fois par frame, fonctions utilisateur
+> avec récursion. Les operations hors support (chaînes, rationnels,
+> flottants, tableaux, FFI, `lire`) basculent **le module entier** sur
+> l'interpréteur RIR — repli transparent, sorties identiques (parité
+> vérifiée sur les 8 programmes de bench + suites). Mesure : boucle
+> entière 10 M = **0,21 s en JIT** contre 11,6 s en interpréteur RIR
+> (détails dans `PERF.md`). Reste : backend x86-64 du JIT.
+
 ### M3 — AOT LLVM : `rose build`
 Backend **LLVM** (API C) pour la compilation native complète :
 `rose build prog.rose -o prog` produit un binaire sans interpréteur,
@@ -121,10 +135,14 @@ prog.rose`) — vérifié sur `fact(5)` → 120, slices, tables, boucles,
 récursion. Le moteur a désormais **deux chemins d'exécution** (arbre +
 RIR). Les dorés d'IR sont la prochaine étape (M1c).
 
-Reste pour **M1c** : dorés d'IR (`rirs/`). **M1d** : remplacement de
-l'interpréteur d'arbre par l'interpréteur RIR. **M2** : JIT (asmjit). Ces briques
-sont propres aux moteurs : les cibles d'export `rose2` les refusent avec
-un message explicite (la chaîne d'export reste l'outil secondaire).
+**Fait (M1c)** : dorés d'IR (`rirs/`, 23 cas, `rose rir` → texte
+canonique comparé). **Fait (M1d)** : le moteur n'exécute plus que le
+RIR (l'arbre n'intervient plus qu'avant l'émission). **Partiellement
+fait (M2)** : JIT AArch64 en production (voir l'encadré « État M2 »
+ci-dessus) ; le JIT x86-64 et le bundle `rose comp` natif restent à
+faire. Ces briques sont propres aux moteurs : les cibles d'export
+`rose2` les refusent avec un message explicite (la chaîne d'export
+reste l'outil secondaire).
 
 ## Ce que le plan ne casse pas
 
