@@ -66,6 +66,7 @@ struct RirOp {
     enum Kind { Const, Temp, Global, Label } kind;
     std::string name;
     int const_idx = -1;
+    int64_t imm = 0;          /* valeur immédiate quand kind == Const */
     RirType ty = RirU;
 };
 
