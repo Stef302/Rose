@@ -23,43 +23,43 @@
 // Helpers C++ (opérations GMP, allouent sur le tas)
 // =============================================================================
 
-static Valeur* jit_val_z(int64_t v) {
+Valeur* __attribute__((noinline)) jit_val_z(int64_t v) {
     mpz_class z(v);
     return new Valeur(Valeur::de_z(z));
 }
-static Valeur* jit_val_b(bool v) {
+Valeur* __attribute__((noinline)) jit_val_b(bool v) {
     return new Valeur(Valeur::de_b(v));
 }
 
-Valeur* jit_add_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_add_z(Valeur* a, Valeur* b) {
     mpz_class r; mpz_add(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* jit_sub_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_sub_z(Valeur* a, Valeur* b) {
     mpz_class r; mpz_sub(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* jit_mul_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_mul_z(Valeur* a, Valeur* b) {
     mpz_class r; mpz_mul(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* jit_div_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_div_z(Valeur* a, Valeur* b) {
     if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "erreur: division par zéro\n"); std::abort(); }
     mpz_class r; mpz_fdiv_q(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* jit_rem_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_rem_z(Valeur* a, Valeur* b) {
     if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "erreur: modulo par zéro\n"); std::abort(); }
     mpz_class r; mpz_fdiv_r(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* jit_neg_z(Valeur* a) {
+Valeur* __attribute__((noinline)) jit_neg_z(Valeur* a) {
     mpz_class r = a->z; mpz_neg(r.get_mpz_t(), r.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
 
-int jit_cmp_lt_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) < 0; }
-int jit_test_b(Valeur* v) { return v->b ? 1 : 0; }
+int __attribute__((noinline)) jit_cmp_lt_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) < 0; }
+int __attribute__((noinline)) jit_test_b(Valeur* v) { return v->b ? 1 : 0; }
 
 // =============================================================================
 // Mini assembleur AArch64 (encodage direct d'opcodes, buffer mmap exécutable)
@@ -165,12 +165,14 @@ public:
             uint16_t part = (imm >> (i * 16)) & 0xFFFF;
             if (part == 0 && !first) continue;
             first = false;
-            uint32_t insn = 0x92800000 | (part << 5) | xd;  // movz 64-bit
-            if (i > 0) {
-                insn = 0xB2800000 | (part << 5) | xd;  // movk 64-bit
-                insn |= (i << 21);    // shift = i * 16
+            if (i == 0) {
+                uint32_t insn = 0xD2800000 | (part << 5) | xd;  // movz Xd, 64-bit
+                emit(insn);
+            } else {
+                uint32_t insn = 0xF2800000 | (part << 5) | xd;  // movk Xd, 64-bit
+                insn |= (i << 21);    // shift = i * 16 (hw = i)
+                emit(insn);
             }
-            emit(insn);
         }
     }
 
@@ -179,16 +181,18 @@ public:
     }
 
     void ldr(int xd, int xn, int imm_scaled8) {
-        emit(0xF9400000 | (imm_scaled8 << 12) | (xn << 5) | xd);
+        emit(0xF9400000 | (imm_scaled8 << 10) | (xn << 5) | xd);
     }
 
     void str(int xt, int xn, int imm_scaled8) {
-        emit(0xF9000000 | (imm_scaled8 << 12) | (xn << 5) | xt);
+        emit(0xF9000000 | (imm_scaled8 << 10) | (xn << 5) | xt);
     }
 
-    void blr_addr(uint64_t addr) {
-        mov_imm(X17, addr);
-        emit(0xD63F0200 | (X17 << 5));  // blr x17
+    void blr_helper(int helper_index) {
+        // ldr x17, [x19, #helper_index * 8]  (charger l'adresse du helper depuis le contexte)
+        emit(0xF9400000 | (helper_index << 10) | (19 << 5) | 17);
+        // blr x17
+        emit(0xD63F0200 | (X17 << 5));
     }
 
     void b_label(const std::string &name) {
@@ -256,15 +260,19 @@ JitContext::~JitContext() {
 // JitCompiler
 // =============================================================================
 
-// Buffers conservés sur le tas (pour que le code généré survive)
-static std::vector<A64Buf*> g_buffers;
-
 JitCompiler::JitCompiler() {}
 JitCompiler::~JitCompiler() { reset(); }
 
 void JitCompiler::reset() {
-    m_entries.clear();
-    g_buffers.clear();
+    // m_entries.clear();  // non utilisé
+    // for (auto *buf : m_buffers) delete buf;  // désactivé pour debug
+    m_buffers.clear();
+    m_helpers.clear();
+}
+
+int JitCompiler::add_helper(void* fn) {
+    m_helpers.push_back(fn);
+    return (int)(m_helpers.size() - 1);
 }
 
 static int temp_idx(const std::string &name) {
@@ -293,7 +301,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 RirOp &c = instr.args[0];
                 int dest = temp_idx(instr.dest);
                 if (c.kind == RirOp::Const) {
-                    asm_.blr_addr((uint64_t)(uintptr_t)&jit_val_z);
+                    asm_.mov_imm(X0, (uint64_t)c.imm);
+                    asm_.blr_helper(0);   // jit_val_z
                     asm_.str(X0, X20, dest);
                 }
                 continue;
@@ -310,12 +319,12 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.ldr(X0, X20, ai);
                 asm_.ldr(X1, X20, bi);
 
-                Valeur* (*helper)(Valeur*, Valeur*) = nullptr;
-                if (op == "add.z") helper = &jit_add_z;
-                else if (op == "sub.z") helper = &jit_sub_z;
-                else helper = &jit_mul_z;
+                int helper_idx;
+                if (op == "add.z") helper_idx = 2;   // jit_add_z
+                else if (op == "sub.z") helper_idx = 3;  // jit_sub_z
+                else helper_idx = 4;                 // jit_mul_z
 
-                asm_.blr_addr((uint64_t)(uintptr_t)helper);
+                asm_.blr_helper(helper_idx);
                 asm_.str(X0, X20, dest);
                 continue;
             }
@@ -331,8 +340,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.ldr(X0, X20, ai);
                 asm_.ldr(X1, X20, bi);
 
-                asm_.blr_addr((uint64_t)(uintptr_t)&jit_cmp_lt_z);
-                asm_.blr_addr((uint64_t)(uintptr_t)&jit_val_b);
+                asm_.blr_helper(5);   // jit_cmp_lt_z
+                asm_.blr_helper(1);   // jit_val_b
                 asm_.str(X0, X20, dest);
                 continue;
             }
@@ -359,7 +368,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 int ci = temp_idx(cond.name);
 
                 asm_.ldr(X0, X20, ci);
-                asm_.blr_addr((uint64_t)(uintptr_t)&jit_test_b);
+                asm_.blr_helper(6);   // jit_test_b
                 asm_.cbnz_label(X0, instr.label_cible);
                 asm_.b_label(instr.label_cible2);
                 continue;
@@ -373,7 +382,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     buf->align16();
     buf->make_exec();
 
-    g_buffers.push_back(buf);
+    m_buffers.push_back(buf);
     return reinterpret_cast<JitEntryFn>(buf->data_ptr());
 }
 
