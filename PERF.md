@@ -134,3 +134,21 @@ division plancher négative, avec parité stricte JIT/interpréteur) :
   `test_jit` reste 14/14 — le matériel x86-64 réel fera mieux encore.
 * Suites après changement : moteur 37/37, parité 92/92, v2 53/53,
   `test_jit` 14/14 sur les deux architectures.
+
+## Jalon M2.6 — alias de constantes SSA et test booléen inline (v3.5.2)
+
+L'émission RIR copie chaque constante dans un temp avant de s'en servir.
+Or une temp SSA n'est écrite qu'une fois : le JIT rend maintenant le temp
+**alias du slot de la constante** (lecture directe, copie supprimée), et le
+`br.cond` lit le champ booléen de la `Valeur` sur place au lieu d'appeler
+`jit_test_b`. Les constantes partagées retournées par une fonction sont
+protégées contre le réservoir d'objets par `jit_free_valeur`.
+
+| Programme (AArch64, JIT) | M2.5 | **M2.6** |
+|---|---:|---:|
+| boucle entière — 10 M itérations | 0,15 s | **0,12 s** |
+| récursion ×200 k — 4 M d'appels | 0,16 s | **0,15 s** |
+
+Sous qemu-x86_64 : boucle 3 M 2,3 s → **1,55 s** ; `test_jit` 14/14 des
+deux côtés, suites revues à **38/38** (ARM) et 37/37 (x64 sous émulation,
+ffi_dyn sauté).

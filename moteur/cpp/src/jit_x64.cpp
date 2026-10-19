@@ -274,11 +274,13 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
     X64Buf* buf = new X64Buf();
     X64Asm ax(*buf);
 
+    std::map<int,int> const_alias;   // slot temp -> slot constante (SSA, see jit.cpp)
     auto load_operand = [&](const RirOp &a, int rd) -> bool {
         int s;
         if (a.kind == RirOp::Temp) {
             if (!slot_of(a.name, s)) return false;
-            ax.load_mem(rd, R12, s * 8);
+            auto al = const_alias.find(s);
+            ax.load_mem(rd, R12, (al != const_alias.end() ? al->second : s) * 8);
             return true;
         }
         if (a.kind == RirOp::Const) {
@@ -318,10 +320,16 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
 
             if (op == "cst.z" || op == "cst.b") {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
-                if (!load_operand(instr.args[0], P1)) { unsupported = true; break; }
-                ax.load_mem(P0, R12, d * 8);
-                ax.call_helper(op == "cst.z" ? 25 : 26);
-                ax.store_mem(R12, d * 8, RAX);
+                auto it = (instr.args[0].kind == RirOp::Const)
+                              ? slot_const.find(instr.args[0].name) : slot_const.end();
+                if (it != slot_const.end()) {
+                    const_alias[d] = it->second;   // alias SSA (voir jit.cpp)
+                } else {
+                    if (!load_operand(instr.args[0], P1)) { unsupported = true; break; }
+                    ax.load_mem(P0, R12, d * 8);
+                    ax.call_helper(op == "cst.z" ? 25 : 26);
+                    ax.store_mem(R12, d * 8, RAX);
+                }
                 slot_ty[d] = instr.dest_ty;
                 continue;
             }
@@ -419,8 +427,9 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             if (op == "afficher") {
                 int s;
                 if (!slot_of(instr.args[0].name, s)) { unsupported = true; break; }
+                auto al = const_alias.find(s);
                 RirType ty = slot_ty.count(s) ? slot_ty[s] : RirU;
-                ax.load_mem(P0, R12, s * 8);
+                ax.load_mem(P0, R12, (al != const_alias.end() ? al->second : s) * 8);
                 if (ty == RirZ)      ax.call_helper(7);
                 else if (ty == RirB) ax.call_helper(16);
                 else if (ty == RirS) ax.call_helper(17);
@@ -442,7 +451,10 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             if (op == "br") { ax.jmp_label(instr.label_cible); continue; }
             if (op == "br.cond") {
                 if (!load_operand(instr.args[0], P0)) { unsupported = true; break; }
-                ax.call_helper(6);                     // jit_test_b → rax
+                // movzx eax, byte [rdi + offsetof(Valeur,b)] == jit_test_b exactement
+                static_assert(offsetof(Valeur, b) < 128, "offset bool hors disp8");
+                ax.buf.b8(0x0F); ax.buf.b8(0xB6); ax.buf.b8(0x47);
+                ax.buf.b8((uint8_t)offsetof(Valeur, b));
                 ax.test_eax();
                 ax.jnz_label(instr.label_cible);
                 ax.jmp_label(instr.label_cible2);
