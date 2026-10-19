@@ -4080,7 +4080,7 @@ extern Valeur* jit_neg_z_into(Valeur* dst, Valeur* a);           /* 29 */
 extern Valeur* jit_bool_into(Valeur* dst, int cond);             /* 30 */
 
 /* Nombre de helpers enregistrés pour le JIT */
-static const int NJIT_HELPERS = 51;
+static const int NJIT_HELPERS = 58;
 
 /* Pont JIT → stdlib (M2.13) : les builtins numériques sont appelés depuis le
    code JIT natif par CE exact enregistrement — mêmes fonctions, mêmes
@@ -4090,6 +4090,36 @@ static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
     for (int i = 0; i < nargs; i++) va.push_back(*args[i]);
     Valeur res = stdlib(std::string(nom), va, 0);
     return new Valeur(std::move(res));
+}
+
+/* Pont JIT → op « index » (M2.14) : copie fidèle du handler de
+   l'interpréteur RIR (table, liste, chaîne). Helper 56. */
+/* Pont JIT → afficher générique (M2.14) : types non suivus statiquement
+   (liste, table, vide, range…). Miroir exact de l'op afficher RIR. */
+static void rose_afficher_jit(Valeur* v) { afficher(*v); }
+
+static Valeur* rose_index(Valeur* base, Valeur* cle) {
+    if (base->ty == T_TABLE) {
+        for (const auto &kv : *base->t)
+            if (rose_valeur_egale(kv.first, *cle)) return new Valeur(kv.second);
+        erreur_runtime("clé absente de la table");
+    }
+    if (base->ty == T_LISTE) {
+        mpz_class idx = vers_z(*cle);
+        size_t taille = base->l->size();
+        if (!mpz_fits_ulong_p(idx.get_mpz_t()) || mpz_cmp_ui(idx.get_mpz_t(), taille) >= 0)
+            erreur_runtime("index hors des limites de la liste");
+        return new Valeur((*base->l)[(size_t)mpz_get_ui(idx.get_mpz_t())]);
+    }
+    if (base->ty == T_CHAINE) {
+        mpz_class idx = vers_z(*cle);
+        size_t taille = utf8_len(base->s);
+        if (!mpz_fits_ulong_p(idx.get_mpz_t()) || mpz_cmp_ui(idx.get_mpz_t(), taille) >= 0)
+            erreur_runtime("index hors des limites de la chaîne");
+        return new Valeur(Valeur::de_s(utf8_char_str(base->s, (size_t)mpz_get_ui(idx.get_mpz_t()))));
+    }
+    erreur_runtime("index sur une valeur qui n'est pas une liste");
+    return nullptr;
 }
 
 /* Le pipeline complet tourne sur un thread à très grande pile : la
@@ -4162,6 +4192,8 @@ static void *fil_pipeline(void *p) {
             (void*)&jit_bool_into,      /* 30 */
         };
         jit_helpers[50] = (void*)&rose_appel_builtin;
+        jit_helpers[56] = (void*)&rose_index;
+        jit_helpers[57] = (void*)&rose_afficher_jit;
         void* jit_entry = no_jit ? nullptr
                                  : rose_jit_compile(&mod, jit_helpers, NJIT_HELPERS);
 

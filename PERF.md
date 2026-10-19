@@ -318,3 +318,46 @@ Suite logique (M2.14) : le même pont appliqué aux listes et chaînes —
 `joindre` (résultat vide → appel sans copie), `longueur`, `concatener`,
 constantes de chaîne, puis les ops `liste.*` — pour débloquer la famille
 `chaines` (1,19 s) et au-delà.
+
+## Jalon M2.14 — listes et chaînes natives dans le JIT (v3.11.0)
+
+Le pont builtins de M2.13 s'étend aux structures : `joindre`, `concatener`,
+`longueur`, `ordre`, `caractere`, `sous_chaine` passent par le même helper 50
+(la stdlib reçoit les **Valeur réelles** des slots — ses shared_ptr donnent
+l'aliasing d'origine par construction), et les ops RIR `liste.new`,
+`liste.push`, `liste.get`, `liste.len`, `index` deviennent natives via des
+helpers miroirs copiés de l'interpréteur RIR (`rose_index` est même défini
+dans rose.cpp et appelé en helper 56 : code identique, pas une copie).
+
+Détails d'émission notables :
+- `liste.push` en énoncé est émis **sans destination** par l'émetteur RIR :
+  l'appel seul suffit, aucun slot touché dans ce cas ;
+- `joindre` renvoie vide : appelé puis libéré, le slot de destination n'est
+  écrit que si le vérificateur prouve que le temp n'est jamais lu ;
+- `concatener` et compagnie écrivent le **vrai type** dans le slot
+  (`slot_ty = S`) quel que soit le `dest_ty` demandé par l'émetteur (U en
+  position d'argument) : ce sont les lecteurs qui consultent `slot_ty` ;
+- affectation depuis un slot de type inconnu (liste) = **partage du pointeur**
+  — la copie shallow de l'interpréteur partageait déjà les shared_ptr
+  internes, les deux moteurs ont donc exactement le même aliasing ;
+- `afficher` un type non suivi statiquement (liste, table, rationnel, vide)
+  appelle le helper 57 `rose_afficher_jit` = fonction `afficher()` de
+  l'interpréteur : plus de repli de module pour un simple affichage de liste.
+
+| Bench | v3.10.0 | **v3.11.0** |
+|---|---:|---:|
+| chaines (500 k `joindre` + concaténation 1 Mo) | 1,19 s | **0,34 s (×3,5)** |
+
+Piège rencontré (x64) : `call_helper` attend ses arguments en P0/P1 — après
+`call_helper(50)` le résultat est en RAX ; libérer sans recopier RAX→P0
+libérait un registre poubelle (SIGSEGV). AArch64 l'avait gratis (X0 =
+argument ET résultat). Pièges de constante : les constantes de chaîne
+arrivent **sans préfixe** (`name = texte brut`, contrairement aux numériques
+en « @c… »), et `-3 < 0` faisait classer `concatener` dans la branche
+« dynamique » par un `else if (ty_fixe < 0)` — les cas particuliers se testent
+AVANT les comparaisons d'ordre.
+
+Doré `t_liste` (12 valeurs : new/push/get/index/len/joindre/concatener/
+longueur/affectation aliasée), suites 44/44 ARM + 43/43 croisé qemu,
+parité 116/116 avec un programme listes/chaînes neuf (les quatre moteurs
+d'accord), test_jit 14/14, bancs sans régression.

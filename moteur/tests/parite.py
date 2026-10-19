@@ -151,6 +151,15 @@ PROGRAMMES = [
      '$a = 0\n'
      'pour k de 1 vers 100 { $a = $a + pgcd(k, 6) }\n'
      '>> $a\n', None),
+    # Listes et chaînes (helpers natifs du JIT C++, interpreteurs ailleurs).
+    ("listes et chaines",
+     '>> longueur(concatener(["ab", "cd", "ef"]))\n'
+     '$l = [1, 2, 3]\n'
+     'joindre($l, 4)\n'
+     '>> $l[0] + $l[3]\n'
+     '>> longueur($l)\n'
+     '$t = "alpha"\n'
+     '>> concatener(["x", $t])\n', None),
 ]
 
 ERREURS_RUNTIME = [

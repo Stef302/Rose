@@ -43,6 +43,12 @@ Valeur* jit_val_z(int64_t v);
 Valeur* jit_val_b(bool v);
 Valeur* jit_val_z_txt(const char* txt);
 Valeur* jit_val_f(double d);
+Valeur* jit_val_s(const char* txt);
+Valeur* jit_s_copy_into(Valeur* dst, Valeur* src);
+Valeur* jit_liste_new();
+Valeur* jit_liste_push(Valeur* l, Valeur* e);
+Valeur* jit_liste_get(Valeur* l, Valeur* i);
+Valeur* jit_liste_len(Valeur* l);
 
 // Builtins numériques natifs (M2.13) — table et pont définis dans jit.cpp.
 struct BuiltinJit { const char *nom; int ty_fixe; };
@@ -281,7 +287,9 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
     for (auto &b : fn->blocs) {
         for (auto &instr : b.instrs) {
             const std::string &op = instr.op;
-            if (op != "cst.z" && op != "cst.b" && op != "cst.f" &&
+            if (op != "cst.z" && op != "cst.b" && op != "cst.f" && op != "cst.s" &&
+                op != "liste.new" && op != "liste.push" &&
+                op != "liste.get" && op != "liste.len" && op != "index" &&
                 op != "add.z" && op != "sub.z" && op != "mul.z" &&
                 op != "div.z" && op != "rem.z.z" && op != "neg.z" &&
                 op != "add.f" && op != "sub.f" && op != "mul.f" &&
@@ -305,7 +313,16 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 } else {
                     const BuiltinJit *bj = builtin_jit(instr.args[0].name.substr(1));
                     if (!bj || instr.dest.empty()) { unsupported = true; break; }
-                    if (bj->ty_fixe < 0) {
+                    if (bj->ty_fixe == -2) {
+                        // résultat vide (joindre) : seulement si le temp n'est JAMAIS lu
+                        if (is_temp(instr.dest)) {
+                            int r = temp_reads.count(atoi(instr.dest.c_str() + 2))
+                                        ? temp_reads[atoi(instr.dest.c_str() + 2)] : 0;
+                            if (r != 0) { unsupported = true; break; }
+                        } else { unsupported = true; break; }
+                    } else if (bj->ty_fixe == -3) {
+                        // résultat chaîne : accepté pour tout dest_ty (slot_ty = S)
+                    } else if (bj->ty_fixe == -1) {
                         if (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
                             instr.dest_ty != RirF) { unsupported = true; break; }
                     } else if (instr.dest_ty != RirU && instr.dest_ty != bj->ty_fixe) {
@@ -339,8 +356,11 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                     if (is_temp(a.name)) temp_reads[atoi(a.name.c_str() + 2)]++;
                 }
                 else if (a.kind == RirOp::Const) {
-                    if (a.name.rfind("@c", 0) != 0 ||
-                        (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF)) { unsupported = true; break; }
+                    // numériques : texte préfixé « @c… » ; chaînes : texte brut (M2.14)
+                    bool nom_ok = (a.ty == RirS) ? true : a.name.rfind("@c", 0) == 0;
+                    if (!nom_ok ||
+                        (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF &&
+                         a.ty != RirS)) { unsupported = true; break; }
                     if (!constantes_vues.count(a.name)) {
                         constantes_vues.insert(a.name);
                         constantes.push_back({a.name, a.ty});
@@ -401,11 +421,12 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
 
     // Constantes partagées (créées ici, jamais libérées) : pose du pointeur.
     for (auto &c : constantes) {
-        std::string txt = c.first.substr(2);
+        std::string txt = c.first.size() >= 2 ? c.first.substr(2) : std::string();
         int sl = slot_const[c.first];
         int64_t v;
         Valeur *shared;
-        if (c.second == RirB || txt == "vrai" || txt == "faux") shared = jit_val_b(txt == "vrai");
+        if (c.second == RirS)               shared = jit_val_s(c.first.c_str());   // texte brut (M2.14)
+        else if (c.second == RirB || txt == "vrai" || txt == "faux") shared = jit_val_b(txt == "vrai");
         else if (c.second == RirF)          shared = jit_val_f(strtod(txt.c_str(), nullptr));
         else if (x64_parse_i64(txt, &v))                        shared = jit_val_z(v);
         else                                                    shared = jit_val_z_txt(x64_dup_text(c.first));
@@ -442,7 +463,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             const std::string &op = instr.op;
             int d = -1;
 
-            if (op == "cst.z" || op == "cst.b" || op == "cst.f") {
+            if (op == "cst.z" || op == "cst.b" || op == "cst.f" || op == "cst.s") {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
                 auto it = (instr.args[0].kind == RirOp::Const)
                               ? slot_const.find(instr.args[0].name) : slot_const.end();
@@ -451,10 +472,72 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 } else {
                     if (!load_operand(instr.args[0], P1)) { unsupported = true; break; }
                     ax.load_mem(P0, R12, d * 8);
-                    ax.call_helper(op == "cst.f" ? 35 : op == "cst.z" ? 25 : 26);
+                    ax.call_helper(op == "cst.f" ? 35 : op == "cst.s" ? 55 :
+                                   op == "cst.z" ? 25 : 26);
                     ax.store_mem(R12, d * 8, RAX);
                 }
                 slot_ty[d] = instr.dest_ty;
+                continue;
+            }
+            // ── Listes natives (M2.14) : helpers miroirs du Jinterpréteur RIR ──
+            if (op == "liste.new" || op == "liste.push") {
+                // le push en énoncé est émis SANS dest : l'appel seul suffit
+                bool a_dest = !instr.dest.empty();
+                if (a_dest && !slot_of(instr.dest, d)) { unsupported = true; break; }
+                if (op == "liste.push") {
+                    if (!load_operand(instr.args[0], P0) ||
+                        !load_operand(instr.args[1], P1)) { unsupported = true; break; }
+                    ax.call_helper(52);                   // jit_liste_push → la liste même
+                } else {
+                    ax.call_helper(51);                   // jit_liste_new → objet frais
+                }
+                if (a_dest) {
+                    ax.store_mem(R12, d * 8, RAX);        // mouvement brut (aliasing d'origine)
+                    slot_ty[d] = RirU;
+                }
+                continue;
+            }
+            if (op == "liste.get" || op == "liste.len" || op == "index") {
+                if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                int ty_res;
+                if (op == "liste.len") ty_res = RirZ;
+                else {
+                    // index sur chaîne (slot base de type S) : résultat chaîne
+                    // par construction, même si l'émetteur demande U
+                    int bslot;
+                    if (op == "index" && instr.args[0].kind == RirOp::Temp &&
+                        slot_of(instr.args[0].name, bslot) && slot_ty.count(bslot) &&
+                        slot_ty[bslot] == RirS)
+                        ty_res = RirS;
+                    else
+                        ty_res = instr.dest_ty == RirU ? -9 : (int)instr.dest_ty;
+                    if (ty_res != -9 && ty_res != RirZ && ty_res != RirB &&
+                        ty_res != RirF && ty_res != RirS) { unsupported = true; break; }
+                }
+                if (op == "liste.len") {
+                    if (!load_operand(instr.args[0], P0)) { unsupported = true; break; }
+                    ax.call_helper(54);                   // jit_liste_len
+                } else {
+                    if (!load_operand(instr.args[0], P0) ||
+                        !load_operand(instr.args[1], P1)) { unsupported = true; break; }
+                    ax.call_helper(op == "index" ? 56 : 53);  // rose_index / jit_liste_get
+                }
+                if (ty_res == -9) {                       // dest inconnu : appropriation brute
+                    ax.store_mem(R12, d * 8, RAX);
+                    slot_ty[d] = RirU;
+                    continue;
+                }
+                ax.sub_rsp(16);
+                ax.store_mem(RSP, 0, RAX);                // copie fraîche
+                ax.load_mem(P1, RSP, 0);                  // src
+                ax.load_mem(P0, R12, d * 8);              // dst du slot
+                ax.call_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 :
+                               ty_res == RirS ? 55 : 25);
+                ax.store_mem(R12, d * 8, RAX);
+                ax.load_mem(P0, RSP, 0);
+                ax.call_helper(32);                       // libère la copie fraîche
+                ax.add_rsp(16);
+                slot_ty[d] = (RirType)ty_res;
                 continue;
             }
             int h;
@@ -685,6 +768,11 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 if (sty == RirZ)      ax.call_helper(25);
                 else if (sty == RirB) ax.call_helper(26);
                 else if (sty == RirF) ax.call_helper(35);
+                else if (sty == RirS) ax.call_helper(55);
+                else if (sty == RirU) ax.mov_reg(RAX, P1);  // partage de l'objet (M2.14)
+                    // ↑ pas de helper : RAX = src, le store du bas copiera le
+                    //   pointeur. La copie shallow de l'interpréteur partage
+                    //   déjà les shared_ptr internes → partager est fidèle.
                 else { unsupported = true; break; }
                 ax.store_mem(R12, d * 8, RAX);
                 slot_ty[d] = sty;
@@ -700,7 +788,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 else if (ty == RirB) ax.call_helper(16);
                 else if (ty == RirS) ax.call_helper(17);
                 else if (ty == RirF) ax.call_helper(41);  // jit_afficher_f
-                else { unsupported = true; break; }
+                else ax.call_helper(57);   // rose_afficher_jit : types non suivis
                 continue;
             }
             if (op == "ret.z" || op == "ret") {
@@ -761,14 +849,23 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                     ax.lea_rsp(P1);                                   // table d'args
                     ax.movabs(P2, (uint64_t)na);
                     ax.call_helper(50);                             // rose_appel_builtin → rax
+                    if (bj->ty_fixe == -2) {           // résultat vide : libérer, rien à copier
+                        ax.mov_reg(P0, RAX);           // helper attend l'objet en P0
+                        ax.call_helper(32);
+                        ax.add_rsp(bytes);
+                        continue;                      // slot dest jamais lu (vérifié)
+                    }
                     ax.store_mem(RSP, 0, RAX);                      // sauvegarde
                     ax.mov_reg(P1, RAX);
                     ax.load_mem(P0, R12, d * 8);
-                    int ty_res = instr.dest_ty == RirU ? bj->ty_fixe : (int)instr.dest_ty;
-                    if (ty_res != RirZ && ty_res != RirB && ty_res != RirF) {
+                    int ty_res = bj->ty_fixe == -3 ? RirS :
+                                 (instr.dest_ty == RirU ? bj->ty_fixe : (int)instr.dest_ty);
+                    if (ty_res != RirZ && ty_res != RirB && ty_res != RirF &&
+                        ty_res != RirS) {
                         unsupported = true; break;
                     }
-                    ax.call_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 : 25);
+                    ax.call_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 :
+                                   ty_res == RirS ? 55 : 25);
                     ax.store_mem(R12, d * 8, RAX);
                     slot_ty[d] = (RirType)ty_res;
                     ax.load_mem(P0, RSP, 0);

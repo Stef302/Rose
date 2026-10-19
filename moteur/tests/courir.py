@@ -65,6 +65,9 @@ test_dore("t_tampon", os.path.join(DORES, "t_tampon.rose"), "t_tampon_c.txt")
 test_dore("t_flottant", os.path.join(DORES, "t_flottant.rose"), "t_flottant_c.txt")
 # Builtins numériques appelés nativement depuis le JIT (M2.13).
 test_dore("t_builtin", os.path.join(DORES, "t_builtin.rose"), "t_builtin_c.txt")
+# Listes et chaînes natives du JIT (M2.14) : new/push/get/index/len, joindre,
+# concatener, longueur, affectations aliasées.
+test_dore("t_liste", os.path.join(DORES, "t_liste.rose"), "t_liste_c.txt")
 # Les temporaires internes du moteur ont la forme t<chiffres> : le vérificateur
 # doit refuser ces noms côté utilisateur (sinon collision de slot RIR).
 test("nom_reserve", [os.path.join(DORES, "nom_reserve.rose")],
