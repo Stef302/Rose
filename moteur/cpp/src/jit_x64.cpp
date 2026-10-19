@@ -92,7 +92,7 @@ struct X64Buf {
 static std::vector<X64Buf*> x64_buffers;   // fuite assumée : le code survit au compilateur
 
 // ── registres ────────────────────────────────────────────────────────
-enum { RAX=0, RCX=1, RDX=2, RSP=4, RAX_RS=5, RSI=6, RDI=7, R8=8, R10=10, RBX=3, R12=12, R13=13 };
+enum { RAX=0, RCX=1, RDX=2, RSP=4, RAX_RS=5, RSI=6, RDI=7, R8=8, R9=9, R10=10, R11=11, RBX=3, R12=12, R13=13 };
 #define P0 RDI   // argument 1 des helpers
 #define P1 RSI
 #define P2 RDX
@@ -162,6 +162,60 @@ public:
     void test_eax() { buf.b8(0x85); buf.b8(0xC0); }
     void zero_eax() { buf.b8(0x31); buf.b8(0xC0); }
 
+    // ── encodages inline x86-64 (M2.7 ; vérifiés via llvm-mc -x86-asm-syntax=intel) ──
+    // jcc rel32 : 0F 80+cc (jo=0 jz=4 jnz=5 jbe=6 ja=7 js=8 jb=2 jae=3)
+    void jcc_label(int cc, const std::string &n) {
+        buf.b8(0x0F); buf.b8(0x80 | (cc & 15));
+        fixups.push_back({buf.len, n, false});
+        buf.b32(0);
+    }
+    // mov r32, [base + off8]
+    void load_m32(int rd, int base, int off) {
+        uint8_t rex = (rd >= 8 ? 4 : 0) | (base >= 8 ? 1 : 0);
+        if (rex) buf.b8(0x40 | rex);
+        buf.b8(0x8B); buf.b8(0x40 | ((rd & 7) << 3) | (base & 7)); buf.b8((uint8_t)off);
+    }
+    // mov [base + off8], r32
+    void store_m32(int base, int off, int rs) {
+        uint8_t rex = (rs >= 8 ? 4 : 0) | (base >= 8 ? 1 : 0);
+        if (rex) buf.b8(0x40 | rex);
+        buf.b8(0x89); buf.b8(0x40 | ((rs & 7) << 3) | (base & 7)); buf.b8((uint8_t)off);
+    }
+    // mov dword [base + off8], imm32
+    void store_m32_imm(int base, int off, uint32_t imm) {
+        if (base >= 8) buf.b8(0x41);
+        buf.b8(0xC7); buf.b8(0x40 | (base & 7)); buf.b8((uint8_t)off); buf.b32(imm);
+    }
+    // mov byte [base + off8], rt (rt = registre 32 bits, octet de poids faible)
+    void store_byte(int base, int off, int rt) {
+        if (base >= 8) buf.b8(0x41);
+        buf.b8(0x88); buf.b8(0x40 | ((rt & 7) << 3) | (base & 7)); buf.b8((uint8_t)off);
+    }
+    // test r64, r64 (64 bits : REX.W toujours)
+    void test_rr(int r) { buf.b8(0x48 | (r >= 8 ? 1 : 0)); buf.b8(0x85); buf.b8(0xC0 | ((r & 7) << 3) | (r & 7)); }
+    // cmp a, b → a - b
+    void cmp_rr(int a, int b)  { buf.b8(0x48 | (a >= 8 ? 1 : 0) | (b >= 8 ? 4 : 0)); buf.b8(0x39); buf.b8(0xC0 | ((b & 7) << 3) | (a & 7)); }
+    void add_rr(int d, int s)  { buf.b8(0x48 | (d >= 8 ? 1 : 0) | (s >= 8 ? 4 : 0)); buf.b8(0x01); buf.b8(0xC0 | ((s & 7) << 3) | (d & 7)); }
+    void sub_rr(int d, int s)  { buf.b8(0x48 | (d >= 8 ? 1 : 0) | (s >= 8 ? 4 : 0)); buf.b8(0x29); buf.b8(0xC0 | ((s & 7) << 3) | (d & 7)); }
+    void xor_rr(int d, int s)  { buf.b8(0x48 | (d >= 8 ? 1 : 0) | (s >= 8 ? 4 : 0)); buf.b8(0x31); buf.b8(0xC0 | ((s & 7) << 3) | (d & 7)); }
+    // imul d, s (rm=s) : OF posée si débordement signé
+    void imul_rr(int d, int s) { buf.b8(0x48 | (d >= 8 ? 4 : 0) | (s >= 8 ? 1 : 0)); buf.b8(0x0F); buf.b8(0xAF); buf.b8(0xC0 | ((d & 7) << 3) | (s & 7)); }
+    // cmp r32, [base + off8]... non : cmp r/m32, imm8 (7 /7)
+    void cmp_m32_imm8(int base, int off, uint32_t imm) {
+        if (base >= 8) buf.b8(0x41);
+        buf.b8(0x83); buf.b8(0x40 | (7 << 3) | (base & 7)); buf.b8((uint8_t)off); buf.b8((uint8_t)imm);
+    }
+    void sar64(int r)  { buf.b8(0x48 | (r >= 8 ? 1 : 0)); buf.b8(0xC1); buf.b8(0xF8 | (r & 7)); buf.b8(63); }
+    void or_imm8(int r, uint32_t imm) { buf.b8(0x48 | (r >= 8 ? 1 : 0)); buf.b8(0x83); buf.b8(0xC8 | (r & 7)); buf.b8((uint8_t)imm); }
+    // cmovcc reg_dst, rm_src (0F 40+cc)
+    void cmovcc_rr(int dreg, int sm, int cc) {
+        buf.b8(0x48 | (dreg >= 8 ? 4 : 0) | (sm >= 8 ? 1 : 0));
+        buf.b8(0x0F); buf.b8(0x40 | (cc & 15));
+        buf.b8(0xC0 | ((dreg & 7) << 3) | (sm & 7));
+    }
+    // setcc al (0F 90+cc)
+    void setcc_al(int cc) { buf.b8(0x0F); buf.b8(0x90 | (cc & 15)); buf.b8(0xC0); }
+
     void resolve() {
         for (auto &fx : fixups) {
             auto it = label_pos.find(fx.label);
@@ -198,6 +252,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
 
     auto is_temp = x64_is_temp_name;
     bool unsupported = false;
+    std::map<int,int> temp_reads;   // lectures statiques de chaque %tN (fusion M2.8)
     for (auto &b : fn->blocs) {
         for (auto &instr : b.instrs) {
             const std::string &op = instr.op;
@@ -235,7 +290,10 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 unsupported = true; break;
             }
             for (auto &a : instr.args) {
-                if (a.kind == RirOp::Temp) consider(a.name);
+                if (a.kind == RirOp::Temp) {
+                    consider(a.name);
+                    if (is_temp(a.name)) temp_reads[atoi(a.name.c_str() + 2)]++;
+                }
                 else if (a.kind == RirOp::Const) {
                     if (a.name.rfind("@c", 0) != 0 ||
                         (a.ty != RirZ && a.ty != RirB && a.ty != RirU)) { unsupported = true; break; }
@@ -314,7 +372,28 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
     // ═══ Corps ═══
     for (auto &bloc : fn->blocs) {
         ax.bind(bloc.nom);
-        for (auto &instr : bloc.instrs) {
+
+        // Fusion producteur→affect M2.8 (miroir AArch64, voir jit.cpp)
+        std::set<size_t> skip_affect;
+        auto fused_dst = [&](const RirInstr &instr, size_t ii, int &x_out) -> bool {
+            if (ii + 1 >= bloc.instrs.size()) return false;
+            const RirInstr &nx = bloc.instrs[ii + 1];
+            if (nx.op != "affect" || nx.args.empty()) return false;
+            if (nx.args[0].kind != RirOp::Temp || nx.args[0].name != instr.dest) return false;
+            if (!is_temp(instr.dest)) return false;
+            auto r = temp_reads.find(atoi(instr.dest.c_str() + 2));
+            if (r == temp_reads.end() || r->second != 1) return false;
+            int xs;
+            if (!slot_of("%" + nx.message, xs)) return false;
+            if (const_alias.count(xs)) return false;
+            skip_affect.insert(ii + 1);
+            x_out = xs;
+            return true;
+        };
+
+        for (size_t ii = 0; ii < bloc.instrs.size(); ii++) {
+            if (skip_affect.count(ii)) continue;
+            const RirInstr &instr = bloc.instrs[ii];
             const std::string &op = instr.op;
             int d = -1;
 
@@ -336,6 +415,50 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             int h;
             if ((h = x64_z_binop_helper(op)) >= 0) {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
+                // ── inline machine (M2.7) : add/sub/mul sur positifs d'un
+                // membre ; tout le reste retombe sur l'appel helper. ──
+                if (h == 22 || h == 23 || h == 24) {
+                    static int inl_ctr = 0;
+                    int ic = inl_ctr++;
+                    std::string slow = "__inl_s" + std::to_string(ic);
+                    std::string end  = "__inl_e" + std::to_string(ic);
+                    static_assert(offsetof(Valeur, b) < 128, "offset bool");
+                    ax.load_mem(R9, R12, d * 8);                       // r9 = dst
+                    if (!load_operand(instr.args[0], RSI) ||
+                        !load_operand(instr.args[1], RDX)) { unsupported = true; break; }
+                    ax.test_rr(R9);  ax.jcc_label(4, slow);            // jz : dst à créer
+                    ax.cmp_m32_imm8(RSI, 4, 1); ax.jnz_label(slow);    // taille != +1
+                    ax.load_mem(RAX, RSI, 8); ax.test_rr(RAX); ax.jcc_label(8, slow);   // js
+                    ax.cmp_m32_imm8(RDX, 4, 1); ax.jnz_label(slow);
+                    ax.load_mem(RCX, RDX, 8); ax.test_rr(RCX); ax.jcc_label(8, slow);
+                    ax.mov_reg(R8, RAX);                               // r8 = membre a
+                    if (h == 22)      ax.add_rr(R8, RCX);
+                    else if (h == 23) ax.sub_rr(R8, RCX);
+                    else              ax.imul_rr(R8, RCX);
+                    ax.jcc_label(0, slow);                             // jo : débordement
+                    ax.cmp_m32_imm8(R9, 0, 1); ax.jcc_label(12, slow); // jl : alloc < 1
+                    ax.mov_reg(RDX, R8);  ax.sar64(RDX);               // masque de signe
+                    ax.xor_rr(R8, RDX);   ax.sub_rr(R8, RDX);          // |r|
+                    ax.xor_rr(R11, R11);                               // zéro
+                    ax.or_imm8(RDX, 1);                                // taille = signe|1
+                    ax.test_rr(R8);                                    // |r| == 0 ?
+                    ax.cmovcc_rr(RDX, R11, 4);                         // → taille 0
+                    ax.load_mem(RAX, R9, 8);                           // membres
+                    ax.store_mem(RAX, 0, R8);                          // membre
+                    ax.store_m32(R9, 4, RDX);                          // taille
+                    ax.store_m32_imm(R9, 0, (uint32_t)T_ENTIER);       // ty
+                    ax.jmp_label(end);
+                    ax.bind(slow);
+                    ax.load_mem(P0, R12, d * 8);
+                    if (!load_operand(instr.args[0], P1) ||
+                        !load_operand(instr.args[1], P2)) { unsupported = true; break; }
+                    ax.call_helper(h);
+                    ax.store_mem(R12, d * 8, RAX);
+                    ax.bind(end);
+                    slot_ty[d] = RirZ;
+                    continue;
+                }
                 ax.load_mem(P0, R12, d * 8);
                 if (!load_operand(instr.args[0], P1) ||
                     !load_operand(instr.args[1], P2)) { unsupported = true; break; }
@@ -346,6 +469,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             }
             if (op == "neg.z") {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 ax.load_mem(P0, R12, d * 8);
                 if (!load_operand(instr.args[0], P1)) { unsupported = true; break; }
                 ax.call_helper(29);
@@ -355,6 +479,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             }
             if (op.rfind("cmp.", 0) == 0) {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 std::string core = op.substr(4);
                 size_t dot = core.find('.');
                 std::string rel = (dot == std::string::npos) ? core : core.substr(0, dot);
@@ -381,6 +506,44 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                     else if (rel == "ne") hc = 34;
                 }
                 if (hc < 0) { unsupported = true; break; }
+                // ── inline machine (M2.7) : comparaison de deux positifs
+                // d'un membre, booléen écrit sur place (miroir AArch64). ──
+                int cc = -1;   // codes x86 : b=2 be=6 a=7 ae=3 e=4 ne=5
+                if (t0 == RirZ && t1 == RirZ) {
+                    if (rel == "lt") cc = 2; else if (rel == "le") cc = 6;
+                    else if (rel == "gt") cc = 7; else if (rel == "ge") cc = 3;
+                    else if (rel == "eq") cc = 4; else if (rel == "ne") cc = 5;
+                }
+                if (cc >= 0) {
+                    static int cmp_ctr = 0;
+                    int ic = cmp_ctr++;
+                    std::string slow = "__cmp_s" + std::to_string(ic);
+                    std::string end  = "__cmp_e" + std::to_string(ic);
+                    ax.load_mem(P0, R12, d * 8);               // rdi = obj dst
+                    if (!load_operand(instr.args[0], RSI) ||
+                        !load_operand(instr.args[1], RDX)) { unsupported = true; break; }
+                    ax.test_rr(P0); ax.jcc_label(4, slow);
+                    ax.cmp_m32_imm8(RSI, 4, 1); ax.jnz_label(slow);
+                    ax.load_mem(RAX, RSI, 8); ax.test_rr(RAX); ax.jcc_label(8, slow);
+                    ax.cmp_m32_imm8(RDX, 4, 1); ax.jnz_label(slow);
+                    ax.load_mem(RCX, RDX, 8); ax.test_rr(RCX); ax.jcc_label(8, slow);
+                    ax.cmp_rr(RAX, RCX);
+                    ax.setcc_al(cc);
+                    ax.store_byte(P0, (int)offsetof(Valeur, b), RAX);
+                    ax.store_m32_imm(P0, 0, (uint32_t)T_BOOLEEN);
+                    ax.jmp_label(end);
+                    ax.bind(slow);
+                    if (!load_operand(instr.args[0], P0) ||
+                        !load_operand(instr.args[1], P1)) { unsupported = true; break; }
+                    ax.call_helper(hc);
+                    ax.mov_reg(P1, RAX);
+                    ax.load_mem(P0, R12, d * 8);
+                    ax.call_helper(30);
+                    ax.store_mem(R12, d * 8, RAX);
+                    ax.bind(end);
+                    slot_ty[d] = RirB;
+                    continue;
+                }
                 if (!load_operand(instr.args[0], P0) ||
                     !load_operand(instr.args[1], P1)) { unsupported = true; break; }
                 ax.call_helper(hc);                    // rax = 0/1
@@ -393,6 +556,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             }
             if (op == "and.b" || op == "or.b" || op == "not.b") {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 if (op == "not.b") {
                     if (!load_operand(instr.args[0], P0)) { unsupported = true; break; }
                     ax.call_helper(20);
@@ -462,6 +626,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
             }
             if (op == "call") {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 int na = (int)instr.args.size() - 1;
                 int bytes = na * 8;
                 if (bytes < 16) bytes = 16; else bytes = (bytes + 15) & ~15;
