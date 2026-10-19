@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cerrno>
 #include <cctype>
+#include <cmath>
 #include <stdexcept>
 #include <algorithm>
 #include <vector>
@@ -257,6 +258,108 @@ Valeur* __attribute__((noinline)) jit_bool_into(Valeur* dst, int cond) {
 int __attribute__((noinline)) jit_cmp_eq_b(Valeur* a, Valeur* b) { return a->b == b->b; }
 int __attribute__((noinline)) jit_cmp_ne_b(Valeur* a, Valeur* b) { return a->b != b->b; }
 
+// ── Flottants (M2.12) ────────────────────────────────────────────────────
+// Conversions et formatage miroirs exacts de vers_d / texte_flottant / ecri
+// de l'interpréteur : mêmes entrées, mêmes sorties, mêmes erreurs.
+
+static void jit_erreur(const char *msg) {
+    std::fflush(stdout);
+    fprintf(stderr, "Rose : erreur — %s\n", msg);
+    std::exit(1);
+}
+
+static double val_d(const Valeur *v) {              // miroir de vers_d
+    switch (v->ty) {
+        case T_FLOTTANT:  return v->f;
+        case T_ENTIER:    return mpz_get_d(v->z.get_mpz_t());
+        case T_RATIONNEL: return mpq_get_d(v->q.get_mpq_t());
+        case T_BOOLEEN:   return v->b ? 1.0 : 0.0;
+    }
+    jit_erreur("conversion vers flottant impossible");
+    return 0.0;
+}
+
+static void ecrit_f(double d) {                     // miroir de ecri T_FLOTTANT
+    char buf[64];
+    if (d != d) { fputs("non_nombre", stdout); return; }
+    if (d == 1.0 / 0.0) { fputs("infini", stdout); return; }
+    if (d == -1.0 / 0.0) { fputs("-infini", stdout); return; }
+    if (d == std::floor(d) && std::fabs(d) < 1e16) {
+        snprintf(buf, sizeof buf, "%lld", (long long)d);
+        fputs(buf, stdout); return;
+    }
+    for (int p = 1; p <= 17; p++) {                 // miroir de texte_flottant
+        snprintf(buf, sizeof buf, "%.*g", p, d);
+        if (strtod(buf, nullptr) == d) {
+            std::string s(buf);
+            if (s.find('.') == std::string::npos && s.find('e') == std::string::npos
+                    && s.find("inf") == std::string::npos && s.find("nan") == std::string::npos)
+                s += ".0";
+            fputs(s.c_str(), stdout); return;
+        }
+    }
+    snprintf(buf, sizeof buf, "%.17g", d);
+    fputs(buf, stdout);
+}
+
+static inline Valeur* f_new0() {                    // flottant 0 (réservoir si possible)
+    if (!g_valeur_pool.empty()) {
+        Valeur* v = g_valeur_pool.back(); g_valeur_pool.pop_back();
+        v->f = 0.0; v->ty = T_FLOTTANT; return v;
+    }
+    return new Valeur(Valeur::de_f(0.0));
+}
+static inline Valeur* fput_f(Valeur* dst, double x) {
+    if (!dst) dst = f_new0();
+    dst->f = x; dst->ty = T_FLOTTANT; return dst;
+}
+
+Valeur* __attribute__((noinline)) jit_f_copy_into(Valeur* dst, Valeur* src) {
+    double x = val_d(src);                          // tolérant comme l'interpréteur
+    if (!dst) dst = f_new0();
+    dst->f = x; dst->ty = T_FLOTTANT; return dst;
+}
+Valeur* __attribute__((noinline)) jit_add_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+    return fput_f(dst, val_d(a) + val_d(b));
+}
+Valeur* __attribute__((noinline)) jit_sub_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+    return fput_f(dst, val_d(a) - val_d(b));
+}
+Valeur* __attribute__((noinline)) jit_mul_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+    return fput_f(dst, val_d(a) * val_d(b));
+}
+Valeur* __attribute__((noinline)) jit_div_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+    double B = val_d(b);
+    if (B == 0.0) jit_erreur("division par zéro");
+    return fput_f(dst, val_d(a) / B);
+}
+Valeur* __attribute__((noinline)) jit_divf_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+    double B = val_d(b);
+    if (B == 0.0) jit_erreur("division euclidienne par zéro");
+    return fput_f(dst, std::floor(val_d(a) / B));
+}
+Valeur* __attribute__((noinline)) jit_pow_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+    return fput_f(dst, std::pow(val_d(a), val_d(b)));
+}
+Valeur* __attribute__((noinline)) jit_neg_f_into(Valeur* dst, Valeur* a) {
+    return fput_f(dst, -val_d(a));
+}
+void __attribute__((noinline)) jit_afficher_f(Valeur* v) {
+    ecrit_f(v->f); fputc('\n', stdout);
+}
+// Comparaisons : miroir de cmp_vals côté flottant (A<B / A>B → 0 sinon,
+// donc eq(NaN,NaN) = vrai comme l'interpréteur, jamais via A==B).
+static int cmp_f(Valeur* a, Valeur* b) {
+    double A = val_d(a), B = val_d(b);
+    return A < B ? -1 : (A > B ? 1 : 0);
+}
+int __attribute__((noinline)) jit_cmp_lt_f(Valeur* a, Valeur* b) { return cmp_f(a,b) < 0; }
+int __attribute__((noinline)) jit_cmp_le_f(Valeur* a, Valeur* b) { return cmp_f(a,b) <= 0; }
+int __attribute__((noinline)) jit_cmp_gt_f(Valeur* a, Valeur* b) { return cmp_f(a,b) > 0; }
+int __attribute__((noinline)) jit_cmp_ge_f(Valeur* a, Valeur* b) { return cmp_f(a,b) >= 0; }
+int __attribute__((noinline)) jit_cmp_eq_f(Valeur* a, Valeur* b) { return cmp_f(a,b) == 0; }
+int __attribute__((noinline)) jit_cmp_ne_f(Valeur* a, Valeur* b) { return cmp_f(a,b) != 0; }
+
 void __attribute__((noinline)) jit_afficher_z(Valeur* v) {
     gmp_printf("%Zd\n", v->z.get_mpz_t());
 }
@@ -266,6 +369,13 @@ void __attribute__((noinline)) jit_afficher_b(Valeur* v) {
 void __attribute__((noinline)) jit_afficher_s(Valeur* v) {
     fwrite(v->s.data(), 1, v->s.size(), stdout);
     fputc('\n', stdout);
+}
+
+// Constante flottante partagée (M2.12) : texte canonique relu par strtod.
+Valeur* jit_val_f(double d) {
+    Valeur* p = new Valeur(Valeur::de_f(d));
+    g_shared_const_lookup.insert(p);
+    return p;
 }
 
 // Constante entière arbitrairement grande : texte décimal (après préfixe @c)
@@ -481,6 +591,15 @@ public:
     void csel_x(int wd, int wn, int wm, int cc) { emit(0x9A800000 | (wm << 16) | ((cc & 15) << 12) | (wn << 5) | wd); }
     void eor_x(int wd, int wn, int wm)   { emit(0xCA000000 | (wm << 16) | (wn << 5) | wd); }
 
+    // ── encodages flottants (M2.12, vérifiés llvm-mc : fd401c20 / 1e612800…) ──
+    // LDR/STR D : champ d'immédiat identique au LDR X (octets/8), base D = bit 23.
+    void ldr_d(int dd, int xn, int off)  { emit(0xFD400000 | (off << 7) | (xn << 5) | dd); }
+    void str_d(int dd, int xn, int off)  { emit(0xFD000000 | (off << 7) | (xn << 5) | dd); }
+    void fadd_d(int dd, int dn, int dm)  { emit(0x1E602800 | (dm << 16) | (dn << 5) | dd); }
+    void fsub_d(int dd, int dn, int dm)  { emit(0x1E603800 | (dm << 16) | (dn << 5) | dd); }
+    void fmul_d(int dd, int dn, int dm)  { emit(0x1E600800 | (dm << 16) | (dn << 5) | dd); }
+    void fneg_d(int dd, int dn)          { emit(0x1E614000 | (dn << 5) | dd); }
+
     void resolve() {
         for (auto &fx : fixups) {
             auto it = label_pos.find(fx.label);
@@ -563,6 +682,7 @@ Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur**
         int s = T.param_slots[i];
         if (s < 0 || s >= T.nslots || !args[i]) continue;
         frame[s] = (T.param_tys[i] == (int)RirB) ? jit_b_copy_into(nullptr, args[i])
+                 : (T.param_tys[i] == (int)RirF) ? jit_f_copy_into(nullptr, args[i])
                                                  : jit_z_copy_into(nullptr, args[i]);
     }
     Valeur* res = reinterpret_cast<Valeur*>(T.fn(ctx, frame, nullptr, 0));
@@ -619,6 +739,10 @@ int JitCompiler::add_helper(void* fn) {
 // 24 jit_mul_z_into 25 jit_z_copy_into 26 jit_b_copy_into 27 jit_div_z_into
 // 28 jit_rem_z_into 29 jit_neg_z_into  30 jit_bool_into
 // (helpers 22-30 : réutilisation du slot destination, zéro allocation/itération)
+// 31 jit_call 32 jit_free_valeur 33 cmp.eq.b 34 cmp.ne.b
+// 35 jit_f_copy_into 36 jit_add_f_into 37 jit_sub_f_into 38 jit_mul_f_into
+// 39 jit_div_f_into 40 jit_neg_f_into 41 jit_afficher_f 42-47 cmp lt/le/gt/ge/eq/ne.f
+// 48 jit_pow_f_into 49 jit_divf_f_into   (flottants : M2.12)
 
 static int z_binop_helper(const std::string &op) {
     if (op == "add.z")   return 22;
@@ -682,9 +806,11 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     for (auto &b : fn->blocs) {
         for (auto &instr : b.instrs) {
             const std::string &op = instr.op;
-            if (op != "cst.z" && op != "cst.b" &&
+            if (op != "cst.z" && op != "cst.b" && op != "cst.f" &&
                 op != "add.z" && op != "sub.z" && op != "mul.z" &&
                 op != "div.z" && op != "rem.z.z" && op != "neg.z" &&
+                op != "add.f" && op != "sub.f" && op != "mul.f" &&
+                op != "div.f" && op != "divf.f" && op != "pow.f" && op != "neg.f" &&
                 op.rfind("cmp.", 0) != 0 &&          // cmp.<rel>.<ty> : vérifié à l'émission
                 op != "and.b" && op != "or.b" && op != "not.b" &&
                 op != "affect" && op != "afficher" && op != "call" &&
@@ -700,7 +826,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     JITLOG("jit: appel non supporté\n");
                     unsupported = true; break;
                 }
-                if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB)) {
+                if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
+                                           instr.dest_ty != RirF)) {
                     JITLOG("jit: call avec dest_ty=%d\n", (int)instr.dest_ty);
                     unsupported = true; break;
                 }
@@ -727,7 +854,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 if (a.kind == RirOp::Temp) consider(a.name);
                 else if (a.kind == RirOp::Const) {
                     if (a.name.rfind("@c", 0) != 0 ||
-                        (a.ty != RirZ && a.ty != RirB && a.ty != RirU)) {
+                        (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF)) {
                         JITLOG("jit: constante non supportée: %s\n", a.name.c_str());
                         unsupported = true; break;
                     }
@@ -812,6 +939,10 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
         Valeur *shared;
         if (c.second == RirB || txt == "vrai" || txt == "faux") {
             shared = jit_val_b(txt == "vrai");
+        } else if (c.second == RirF) {
+            // constante flottante : texte canonique de texte_flottant, relu
+            // exactement (round-trip %g) — jamais la voie entière parse_i64.
+            shared = jit_val_f(strtod(txt.c_str(), nullptr));
         } else if (parse_i64(txt, &v)) {
             shared = jit_val_z(v);
         } else {
@@ -856,7 +987,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             const std::string &op = instr.op;
             int d = -1;
 
-            if (op == "cst.z" || op == "cst.b") {
+            if (op == "cst.z" || op == "cst.b" || op == "cst.f") {
                 // Alias SSA : aucune instruction émise, le temp pointe la
                 // constante partagée (voir const_alias + jit_free_valeur).
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
@@ -938,6 +1069,56 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 slot_ty[d] = RirZ;
                 continue;
             }
+            // ── Flottants (M2.12) ────────────────────────────────────────
+            // add/sub/mul : chemin inline (registres D, zéro allocation après
+            // le premier passage) ; le helper C++ est le chemin lent exact
+            // (dst null → allocation ; opérande non flottant → vers_d).
+            if (op == "add.f" || op == "sub.f" || op == "mul.f") {
+                if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
+                static int fp_ctr = 0;
+                int ic = fp_ctr++;
+                std::string slow = "__fp_s" + std::to_string(ic);
+                std::string end  = "__fp_e" + std::to_string(ic);
+                asm_.ldr(X0, X20, d);
+                if (!load_operand(asm_, instr.args[0], X1) ||
+                    !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
+                asm_.cbz_label(X0, slow);                              // dst à créer
+                asm_.ldr_w(X8, X1, 0); asm_.cmp_w_imm(X8, T_FLOTTANT);
+                asm_.bcond_label(1, slow);                             // b.ne : a non flottant
+                asm_.ldr_w(X8, X2, 0); asm_.cmp_w_imm(X8, T_FLOTTANT);
+                asm_.bcond_label(1, slow);                             // b.ne : b non flottant
+                asm_.ldr_d(0, X1, (int)offsetof(Valeur, f));
+                asm_.ldr_d(1, X2, (int)offsetof(Valeur, f));
+                if (op == "add.f") asm_.fadd_d(0, 0, 1);
+                else if (op == "sub.f") asm_.fsub_d(0, 0, 1);
+                else asm_.fmul_d(0, 0, 1);
+                asm_.str_d(0, X0, (int)offsetof(Valeur, f));
+                asm_.mov_imm(X8, (uint64_t)T_FLOTTANT); asm_.str_w(X8, X0, 0);
+                asm_.b_label(end);
+                asm_.bind(slow);
+                asm_.blr_helper(op == "add.f" ? 36 : op == "sub.f" ? 37 : 38);
+                asm_.str(X0, X20, d);                                  // dst (ré)alloué
+                asm_.bind(end);
+                slot_ty[d] = RirF;
+                continue;
+            }
+            if (op == "div.f" || op == "divf.f" || op == "pow.f" || op == "neg.f") {
+                if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
+                asm_.ldr(X0, X20, d);
+                if (op == "neg.f") {
+                    if (!load_operand(asm_, instr.args[0], X1)) { unsupported = true; break; }
+                    asm_.blr_helper(40);                   // jit_neg_f_into
+                } else {
+                    if (!load_operand(asm_, instr.args[0], X1) ||
+                        !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
+                    asm_.blr_helper(op == "div.f" ? 39 : op == "divf.f" ? 49 : 48);
+                }
+                asm_.str(X0, X20, d);
+                slot_ty[d] = RirF;
+                continue;
+            }
             if (op.rfind("cmp.", 0) == 0) {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
                 { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
@@ -968,6 +1149,15 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 } else if (t0 == RirB && t1 == RirB) {
                     if (rel == "eq") hc = 33;
                     else if (rel == "ne") hc = 34;
+                } else if (t0 == RirF || t1 == RirF) {
+                    // au moins un flottant : conversion tolérante des deux
+                    // côtés (miroir de cmp_vals), même chemin lent que z.
+                    if (rel == "lt") hc = 42;
+                    else if (rel == "eq") hc = 46;
+                    else if (rel == "ne") hc = 47;
+                    else if (rel == "le") hc = 43;
+                    else if (rel == "gt") hc = 44;
+                    else if (rel == "ge") hc = 45;
                 }
                 if (hc < 0) {
                     JITLOG("jit: cmp non supporté: %s (ty %d,%d)\n", op.c_str(), (int)t0, (int)t1);
@@ -1050,6 +1240,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.ldr(X0, X20, d);
                 if (sty == RirZ)      asm_.blr_helper(25);  // jit_z_copy_into
                 else if (sty == RirB) asm_.blr_helper(26);  // jit_b_copy_into
+                else if (sty == RirF) asm_.blr_helper(35);  // jit_f_copy_into
                 else { JITLOG("jit: affect: type inconnu pour %s\n", instr.args[0].name.c_str());
                        unsupported = true; break; }
                 asm_.str(X0, X20, d);
@@ -1065,6 +1256,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 if (ty == RirZ)      asm_.blr_helper(7);   // jit_afficher_z
                 else if (ty == RirB) asm_.blr_helper(16);  // jit_afficher_b
                 else if (ty == RirS) asm_.blr_helper(17);  // jit_afficher_s
+                else if (ty == RirF) asm_.blr_helper(41);  // jit_afficher_f
                 else { JITLOG("jit: afficher: type inconnu pour %s\n", instr.args[0].name.c_str());
                        unsupported = true; break; }
                 continue;
@@ -1121,7 +1313,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.str(X0, SP, 0);                  // sauvegarde (zone allouée)
                 asm_.mov_reg(X1, X0);                 // x1 = src (résultat callee)
                 asm_.ldr(X0, X20, d);                 // x0 = dst (slot propre)
-                asm_.blr_helper(instr.dest_ty == RirB ? 26 : 25);  // copie b/z
+                asm_.blr_helper(instr.dest_ty == RirB ? 26 :
+                                instr.dest_ty == RirF ? 35 : 25);  // copie b/f/z
                 asm_.str(X0, X20, d);
                 asm_.ldr(X0, SP, 0);
                 asm_.blr_helper(32);                  // jit_free_valeur (copie callee)
@@ -1440,6 +1633,22 @@ Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame) 
     ctx.helpers[32] = (void*)&jit_free_valeur;
     ctx.helpers[33] = (void*)&jit_cmp_eq_b;
     ctx.helpers[34] = (void*)&jit_cmp_ne_b;
+    // Flottants (M2.12)
+    ctx.helpers[35] = (void*)&jit_f_copy_into;
+    ctx.helpers[36] = (void*)&jit_add_f_into;
+    ctx.helpers[37] = (void*)&jit_sub_f_into;
+    ctx.helpers[38] = (void*)&jit_mul_f_into;
+    ctx.helpers[39] = (void*)&jit_div_f_into;
+    ctx.helpers[40] = (void*)&jit_neg_f_into;
+    ctx.helpers[41] = (void*)&jit_afficher_f;
+    ctx.helpers[42] = (void*)&jit_cmp_lt_f;
+    ctx.helpers[43] = (void*)&jit_cmp_le_f;
+    ctx.helpers[44] = (void*)&jit_cmp_gt_f;
+    ctx.helpers[45] = (void*)&jit_cmp_ge_f;
+    ctx.helpers[46] = (void*)&jit_cmp_eq_f;
+    ctx.helpers[47] = (void*)&jit_cmp_ne_f;
+    ctx.helpers[48] = (void*)&jit_pow_f_into;
+    ctx.helpers[49] = (void*)&jit_divf_f_into;
     JitEntryFn fn = reinterpret_cast<JitEntryFn>(entry);
     return reinterpret_cast<Valeur*>(fn(&ctx, frame, nullptr, 0));
 }
