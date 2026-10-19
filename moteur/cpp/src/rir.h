@@ -13,7 +13,8 @@
 
 // ── Types du vérificateur ────────────────────────────────────────────────
 enum TyKind { T_VIDE = 0, T_ENTIER = 1, T_RATIONNEL = 2, T_FLOTTANT = 3,
-              T_BOOLEEN = 4, T_CHAINE = 5, T_LISTE = 6, T_TABLE = 7, T_VALEUR = 8 };
+              T_BOOLEEN = 4, T_CHAINE = 5, T_LISTE = 6, T_TABLE = 7, T_VALEUR = 8,
+              T_TAMPON = 9 };
 
 struct Ty {
     int n = T_VIDE;
@@ -28,7 +29,9 @@ struct Ty {
             case T_FLOTTANT: return "flottant"; case T_BOOLEEN: return "booleen";
             case T_CHAINE: return "chaine"; case T_VIDE: return "vide";
             case T_LISTE: return "liste<" + Ty(elt).nom() + ">";
-            case T_TABLE: return "table"; default: return "?";
+            case T_TABLE: return "table";
+            case T_TAMPON: return "tampon";
+            default: return "?";
         }
     }
 };
@@ -43,6 +46,7 @@ struct Valeur {
     std::string s;
     std::shared_ptr<std::vector<Valeur>> l;
     std::shared_ptr<std::vector<std::pair<Valeur,Valeur>>> t;
+    std::shared_ptr<std::string> o;   /* buffer d'octets contigu (T_TAMPON) */
 
     static Valeur de_z(mpz_class v)  { Valeur x; x.ty = T_ENTIER;   x.z = std::move(v); return x; }
     static Valeur de_q(mpq_class v)  { Valeur x; x.ty = T_RATIONNEL;x.q = std::move(v); x.q.canonicalize(); return x; }
@@ -55,8 +59,13 @@ struct Valeur {
     static Valeur de_t(std::shared_ptr<std::vector<std::pair<Valeur,Valeur>>> v) {
         Valeur x; x.ty = T_TABLE; x.t = std::move(v); return x;
     }
+    static Valeur de_o(std::shared_ptr<std::string> v) {
+        Valeur x; x.ty = T_TAMPON; x.o = std::move(v); return x;
+    }
     static Valeur vide() { return Valeur(); }
 };
+static_assert(sizeof(Valeur) == 152,
+              "layout Valeur modifié : synchroniser les DEUX définitions (rose.cpp et rir.h)");
 
 // ── Types RIR ────────────────────────────────────────────────────────────
 enum RirType { RirZ = 0, RirQ = 1, RirF = 2, RirB = 3, RirS = 4, RirU = 5, RirTab = 6 };

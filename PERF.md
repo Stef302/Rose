@@ -224,3 +224,32 @@ choisait sur un voisin. Corrigé par : compteur global dans les noms de blocs,
 curseur mobile pour `alors`/`sinon`, et dump RIR sous `ROSE_RIR_DUMP=1`.
 Doré de régression `t_si_imbr` (six valeurs vérifiées à la main) et trois
 programmes de parité ajoutés.
+
+## Jalon M2.11 — aléatoire natif et tampons d'octets (v3.7.0)
+
+Briques qui manquaient au langage pour les charges « vectorielles » :
+`graine(n)` / `hasard(n)` (splitmix64 reproductible, identique sur toutes les
+architectures), type **tampon** (buffer d'octets contigu, passé par référence),
+`octets`/`tampon_case`/`tampon_pose`/`chaine(tampon)`, et `remplir_hasard(t,
+alphabet)` qui exécute la boucle de tirage **dans le moteur** (masque exact
+pour les alphabets puissance de deux avec recyclage de 10 caractères par
+tirage, réduction de Lemire sinon — χ² = 56,1 sur 10 M de caractères, ddl 63).
+Le modèle est celui de numpy : le langage lance un appel, le C fait la boucle.
+
+Benchmark mot de passe (génération de N caractères dans a-zA-Z0-9-_, AArch64) :
+
+| N | numpy 2.5 (même machine) | Rose v3.6 (FFI + liste de caractères) | **Rose v3.7** |
+|---:|---:|---:|---:|
+| 1 M | 12 ms | 3,4 s | **< 10 ms** |
+| 10 M | 107 ms | ~34 s | **0,01 s** |
+| 100 M | 1,1 s | ~5,7 min | **0,07 s** |
+| 1 000 M | 17,0 s | ~40 min **et ~300 Go de RAM** (impossible) | **0,66 s, 1 Go de RAM** |
+
+À comparer du C++ équivalent (~0,65 s) : parité. Le JIT n'intervient pas
+(le module reste à l'interpréteur) : tout le coût est dans l'appel natif.
+
+Au passage, piège latent fermé : les variables nommées `t<chiffres>`
+collidaient avec les temporaires internes du RIR (mêmes emplacements →
+corruption mémoire, bus error). Le vérificateur refuse désormais ces noms, et
+un `static_assert(sizeof(Valeur))` garde les deux définitions synchronisées
+(rose.cpp et rir.h) qui avaient dérivé pendant ce chantier.
