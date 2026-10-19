@@ -370,6 +370,9 @@ struct JitCallTarget {
 };
 static std::vector<JitCallTarget> g_call_targets;
 static std::map<std::string,int> g_call_names;
+// Constantes JIT partagées : une Valeur par constante de module, créée à la
+// compilation, jamais libérée (même durée de vie que le code émis).
+static std::vector<Valeur*> g_shared_consts;
 
 // x0=ctx, x1=index cible, x2=table d'arguments Valeur*, x3=nargs. Retour x0=résultat.
 // Le cadre du callee est créé/libéré ici ; le résultat (objet d'un slot callee)
@@ -600,24 +603,23 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     asm_.mov_reg(X19, X0);  // x19 = contexte
     asm_.mov_reg(X20, X1);  // x20 = frame (Valeur**)
 
-    // Matérialisation des constantes (zéro allocation dans les boucles)
+    // Matérialisation des constantes : une seule Valeur par constante du
+    // module (créée à la compilation, jamais libérée — même durée de vie
+    // que le code émis). Le prologue ne fait que poser le pointeur partagé.
     for (auto &c : constantes) {
         std::string txt = c.first.substr(2);
         int sl = slot_const[c.first];
         int64_t v;
-        if (c.second == RirB) {
-            asm_.mov_imm(X0, txt == "vrai" ? 1 : 0);
-            asm_.blr_helper(1);                       // jit_val_b
+        Valeur *shared;
+        if (c.second == RirB || txt == "vrai" || txt == "faux") {
+            shared = jit_val_b(txt == "vrai");
         } else if (parse_i64(txt, &v)) {
-            asm_.mov_imm(X0, (uint64_t)v);
-            asm_.blr_helper(0);                       // jit_val_z
-        } else if (txt == "vrai" || txt == "faux") {
-            asm_.mov_imm(X0, txt == "vrai" ? 1 : 0);
-            asm_.blr_helper(1);                       // jit_val_b
+            shared = jit_val_z(v);
         } else {
-            asm_.mov_imm(X0, (uint64_t)(uintptr_t)dup_const_text(c.first));
-            asm_.blr_helper(8);                       // jit_val_z_txt
+            shared = jit_val_z_txt(dup_const_text(c.first));
         }
+        g_shared_consts.push_back(shared);
+        asm_.mov_imm(X0, (uint64_t)(uintptr_t)shared);
         asm_.str(X0, X20, sl);
     }
 
