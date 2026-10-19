@@ -341,6 +341,8 @@ struct A64Buf {
 
 // Registres AArch64
 static const int X0 = 0,  X1 = 1,  X2 = 2,  X3 = 3;
+static const int X4 = 4,  X5 = 5,  X6 = 6,  X7 = 7;
+static const int X8 = 8,  X9 = 9;
 static const int X17 = 17, X19 = 19, X20 = 20, X29 = 29, X30 = 30;
 static const int SP = 31;
 
@@ -355,6 +357,7 @@ struct Fixup {
     std::string label;
     bool is_cond;
     int rt;
+    int cc = -1;    // >=0 : B.cond <cc> ; -2 : CBZ ; -1 : B ou CBNZ (is_cond)
 };
 
 class A64Asm {
@@ -439,9 +442,44 @@ public:
         emit(0xB5000000 | (wd << 5));   // CBNZ 64-bit (0xB4… serait CBZ !)
     }
 
+    // CBZ / B.cond <cc> — mêmes fixups que CBNZ/B (offsets imm19 signés)
+    void cbz_label(int wd, const std::string &name) {
+        declare(name);
+        fixups.push_back({cur_pos(), name, false, wd, -2});
+        emit(0xB4000000 | (wd << 5));
+    }
+    void bcond_label(int cc, const std::string &name) {
+        declare(name);
+        fixups.push_back({cur_pos(), name, false, 0, cc});
+        emit(0x54000000 | (cc & 15));
+    }
+
     void ret() {
         emit(A64_RET);
     }
+
+    // ── encodages arithmétiques de l'inline JIT (tous vérifiés via llvm-mc) ──
+    // LDR/STR w : l'imm12 est l'échelle de 4 (champ = octets/4) ; STRB non mis à l'échelle.
+    void ldr_w(int wd, int xn, int off)  { emit(0xB9400000 | ((off >> 2) << 10) | (xn << 5) | wd); }
+    void str_w(int wd, int xn, int off)  { emit(0xB9000000 | ((off >> 2) << 10) | (xn << 5) | wd); }
+    void str_b(int wd, int xn, int off)  { emit(0x39000000 | (off << 10) | (xn << 5) | wd); }
+    void cmp_w_imm(int wn, uint32_t imm) { emit(0x71000000 | (imm << 10) | (wn << 5) | 31); }
+    void cmp_x_imm0(int xn)              { emit(0xF1000000 | (xn << 5) | 31); }
+    void cmp_x(int xn, int xm)           { emit(0xEB000000 | (xm << 16) | (xn << 5) | 31); }
+    // cmp Xn, Xm ASR #63   (SUBS XZR, Xn, Xm asr 63)
+    void cmp_x_asr63(int xn, int xm)     { emit(0xEB000000 | (1u << 23) | (63u << 10) | (xm << 16) | (xn << 5) | 31); }
+    void adds_x(int wd, int wn, int wm)  { emit(0xAB000000 | (wm << 16) | (wn << 5) | wd); }
+    void subs_x(int wd, int wn, int wm)  { emit(0xCB000000 | (wm << 16) | (wn << 5) | wd); }
+    void mul_x(int wd, int wn, int wm)   { emit(0x9B007C00 | (wm << 16) | (wn << 5) | wd); }
+    void smulh_x(int wd, int wn, int wm) { emit(0x9B407C00 | (wm << 16) | (wn << 5) | wd); }
+    void neg_x(int wd, int wm)           { emit(0xCB0003E0 | (wm << 16) | wd); }
+    // ASR Xd, Xn, #n  (== SBFM Xd, Xn, #n, #63)
+    void asr_x(int wd, int wn, int n)    { emit(0x93400000 | (1u << 21) | (n << 16) | (63u << 10) | (wn << 5) | wd); }
+    void orr_x_imm1(int wd, int wn)      { emit(0xB2400000 | (wn << 5) | wd); }   // orr Xd, Xn, #1
+    // CSET Xd, <cc>  (== SBCS Xd, XZR, XZR avec condition inversée)
+    void cset_x(int wd, int cc)          { emit(0x9A9F07E0 | (((cc ^ 1) & 15) << 12) | wd); }
+    void csel_x(int wd, int wn, int wm, int cc) { emit(0x9A800000 | (wm << 16) | ((cc & 15) << 12) | (wn << 5) | wd); }
+    void eor_x(int wd, int wn, int wm)   { emit(0xCA000000 | (wm << 16) | (wn << 5) | wd); }
 
     void resolve() {
         for (auto &fx : fixups) {
@@ -457,7 +495,15 @@ public:
             offset_words /= 4;
 
             uint32_t insn = 0;
-            if (fx.is_cond) {
+            if (fx.cc != -1) {              // CBZ (-2) ou B.cond (cc >= 0)
+                if (offset_words < -0x40000 || offset_words > 0x3FFFF) {
+                    fprintf(stderr, "jit: saut conditionnel trop loin: %s\n", fx.label.c_str());
+                    continue;
+                }
+                uint32_t imm19 = (uint32_t)(offset_words & 0x7FFFF);
+                if (fx.cc == -2) insn = 0xB4000000 | (imm19 << 5) | fx.rt;      // CBZ
+                else             insn = 0x54000000 | (imm19 << 5) | (uint32_t)(fx.cc & 15);
+            } else if (fx.is_cond) {
                 if (offset_words < -0x40000 || offset_words > 0x3FFFF) {
                     fprintf(stderr, "jit: saut CBNZ trop loin: %s\n", fx.label.c_str());
                     continue;
@@ -631,6 +677,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     for (auto &b : fn->blocs) labels.insert(b.nom);
 
     bool unsupported = false;
+    // Nombre de lectures statiques de chaque temp %tN (fusion M2.8 + sûreté)
+    std::map<int,int> temp_reads;
     for (auto &b : fn->blocs) {
         for (auto &instr : b.instrs) {
             const std::string &op = instr.op;
@@ -663,6 +711,9 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 else variables.insert(nm);
             };
             consider(instr.dest);
+            for (auto &a : instr.args)
+                if (a.kind == RirOp::Temp && is_temp_name(a.name))
+                    temp_reads[atoi(a.name.c_str() + 2)]++;
             if (op == "affect") {
                 if (instr.message.empty()) { unsupported = true; break; }
                 consider("%" + instr.message);
@@ -775,7 +826,33 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     for (auto &bloc : fn->blocs) {
         asm_.bind(bloc.nom);
 
-        for (auto &instr : bloc.instrs) {
+        // Fusion producteur→affect (M2.8) : quand une temp %t n'est lue QUE
+        // par l'« affect %x %t » qui écrit son producteur immédiatement, le
+        // producteur écrit directement dans le slot de %x et l'affect est
+        // supprimé (zéro copie). Sûr : %t mono-lecteur (temp_reads), aucune
+        // instruction entre les deux, et tous les helpers producteurs sont
+        // « _into » (lisent leurs opérandes avant d'écrire dst — aliasing
+        // dst==opérande toléré par GMP pour add/sub/mul/div/rem/neg).
+        std::set<size_t> skip_affect;
+        auto fused_dst = [&](const RirInstr &instr, size_t ii, int &x_out) -> bool {
+            if (ii + 1 >= bloc.instrs.size()) return false;
+            const RirInstr &nx = bloc.instrs[ii + 1];
+            if (nx.op != "affect" || nx.args.empty()) return false;
+            if (nx.args[0].kind != RirOp::Temp || nx.args[0].name != instr.dest) return false;
+            if (!is_temp_name(instr.dest)) return false;
+            auto r = temp_reads.find(atoi(instr.dest.c_str() + 2));
+            if (r == temp_reads.end() || r->second != 1) return false;
+            int xs;
+            if (!slot_of("%" + nx.message, xs)) return false;
+            if (const_alias.count(xs)) return false;
+            skip_affect.insert(ii + 1);
+            x_out = xs;
+            return true;
+        };
+
+        for (size_t ii = 0; ii < bloc.instrs.size(); ii++) {
+            if (skip_affect.count(ii)) continue;
+            const RirInstr &instr = bloc.instrs[ii];
             const std::string &op = instr.op;
             int d = -1;
 
@@ -799,6 +876,50 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             int h;
             if ((h = z_binop_helper(op)) >= 0) {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
+                // ── inline machine (M2.7) : add/sub/mul sur entiers positifs
+                // d'un seul membre ; toute autre situation retombe sur le
+                // même appel helper qu'avant (sémantique identique). ──
+                if (h == 22 || h == 23 || h == 24) {
+                    static int inl_ctr = 0;
+                    int ic = inl_ctr++;
+                    std::string slow = "__inl_s" + std::to_string(ic);
+                    std::string end  = "__inl_e" + std::to_string(ic);
+                    asm_.ldr(X0, X20, d);
+                    if (!load_operand(asm_, instr.args[0], X1) ||
+                        !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
+                    asm_.cbz_label(X0, slow);                              // dst à créer
+                    asm_.ldr_w(X8, X1, 4); asm_.cmp_w_imm(X8, 1);
+                    asm_.bcond_label(1, slow);                             // b.ne : taille != +1
+                    asm_.ldr(X3, X1, 1);                                   // membre de a
+                    asm_.cmp_x_imm0(X3); asm_.bcond_label(4, slow);        // b.mi : >= 2^63
+                    asm_.ldr_w(X8, X2, 4); asm_.cmp_w_imm(X8, 1);
+                    asm_.bcond_label(1, slow);
+                    asm_.ldr(X4, X2, 1);
+                    asm_.cmp_x_imm0(X4); asm_.bcond_label(4, slow);
+                    if (h == 22)      asm_.adds_x(X5, X3, X4);
+                    else if (h == 23) asm_.subs_x(X5, X3, X4);
+                    else              asm_.mul_x(X5, X3, X4);
+                    if (h != 24) asm_.bcond_label(6, slow);               // b.vs : débordement
+                    else { asm_.smulh_x(X6, X3, X4);
+                           asm_.cmp_x_asr63(X6, X5); asm_.bcond_label(1, slow); }
+                    asm_.ldr_w(X8, X0, 0); asm_.cmp_w_imm(X8, 1);
+                    asm_.bcond_label(11, slow);                            // b.lt : alloc < 1
+                    asm_.asr_x(X6, X5, 63);                               // masque de signe
+                    asm_.eor_x(X4, X5, X6); asm_.subs_x(X4, X4, X6);      // |r|
+                    asm_.orr_x_imm1(X8, X6);                              // taille = signe|1
+                    asm_.cmp_x_imm0(X4); asm_.csel_x(X8, 31, X8, 0);      // |r|==0 → 0
+                    asm_.ldr(X7, X0, 1); asm_.str(X4, X7, 0);             // membre
+                    asm_.str_w(X8, X0, 4);                                // taille
+                    asm_.mov_imm(X8, (uint64_t)T_ENTIER); asm_.str_w(X8, X0, 0);
+                    asm_.b_label(end);
+                    asm_.bind(slow);
+                    asm_.blr_helper(h);   // X0/X1/X2 intacts sur tous les chemins lents
+                    asm_.str(X0, X20, d);
+                    asm_.bind(end);
+                    slot_ty[d] = RirZ;
+                    continue;
+                }
                 asm_.ldr(X0, X20, d);                      // dst (réutilisé)
                 if (!load_operand(asm_, instr.args[0], X1) ||
                     !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
@@ -809,6 +930,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             }
             if (op == "neg.z") {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 asm_.ldr(X0, X20, d);
                 if (!load_operand(asm_, instr.args[0], X1)) { unsupported = true; break; }
                 asm_.blr_helper(29);                       // jit_neg_z_into
@@ -818,6 +940,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             }
             if (op.rfind("cmp.", 0) == 0) {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 std::string core = op.substr(4);
                 size_t dot = core.find('.');
                 std::string rel = (dot == std::string::npos) ? core : core.substr(0, dot);
@@ -850,6 +973,44 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     JITLOG("jit: cmp non supporté: %s (ty %d,%d)\n", op.c_str(), (int)t0, (int)t1);
                     unsupported = true; break;
                 }
+                // ── inline machine (M2.7) : comparaison de deux positifs
+                // d'un membre ; le booléen est écrit sur place dans le slot
+                // destination (mêmes effets que cmp-h + jit_bool_into). ──
+                int cc = -1;
+                if (t0 == RirZ && t1 == RirZ) {
+                    if (rel == "lt") cc = 3; else if (rel == "le") cc = 9;
+                    else if (rel == "gt") cc = 8; else if (rel == "ge") cc = 2;
+                    else if (rel == "eq") cc = 0; else if (rel == "ne") cc = 1;
+                }
+                if (cc >= 0) {
+                    static int cmp_ctr = 0;
+                    int ic = cmp_ctr++;
+                    std::string slow = "__cmp_s" + std::to_string(ic);
+                    std::string end  = "__cmp_e" + std::to_string(ic);
+                    asm_.ldr(X0, X20, d);
+                    if (!load_operand(asm_, instr.args[0], X1) ||
+                        !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
+                    asm_.cbz_label(X0, slow);
+                    asm_.ldr_w(X8, X1, 4); asm_.cmp_w_imm(X8, 1); asm_.bcond_label(1, slow);
+                    asm_.ldr(X3, X1, 1); asm_.cmp_x_imm0(X3); asm_.bcond_label(4, slow);
+                    asm_.ldr_w(X8, X2, 4); asm_.cmp_w_imm(X8, 1); asm_.bcond_label(1, slow);
+                    asm_.ldr(X4, X2, 1); asm_.cmp_x_imm0(X4); asm_.bcond_label(4, slow);
+                    asm_.cmp_x(X3, X4); asm_.cset_x(X5, cc);
+                    asm_.str_b(X5, X0, (int)offsetof(Valeur, b));
+                    asm_.mov_imm(X8, (uint64_t)T_BOOLEEN); asm_.str_w(X8, X0, 0);
+                    asm_.b_label(end);
+                    asm_.bind(slow);
+                    if (!load_operand(asm_, instr.args[0], X0) ||
+                        !load_operand(asm_, instr.args[1], X1)) { unsupported = true; break; }
+                    asm_.blr_helper(hc);
+                    asm_.mov_reg(X1, X0);
+                    asm_.ldr(X0, X20, d);
+                    asm_.blr_helper(30);
+                    asm_.str(X0, X20, d);
+                    asm_.bind(end);
+                    slot_ty[d] = RirB;
+                    continue;
+                }
                 if (!load_operand(asm_, instr.args[0], X0) ||
                     !load_operand(asm_, instr.args[1], X1)) { unsupported = true; break; }
                 asm_.blr_helper(hc);                       // → int dans x0
@@ -862,6 +1023,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             }
             if (op == "and.b" || op == "or.b" || op == "not.b") {
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 if (op == "not.b") {
                     if (!load_operand(asm_, instr.args[0], X0)) { unsupported = true; break; }
                     asm_.blr_helper(20);                   // jit_not_b
@@ -939,6 +1101,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             if (op == "call") {
                 int d;
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 int na = (int)instr.args.size() - 1;
                 int bytes = na * 8;
                 if (bytes < 16) bytes = 16; else bytes = (bytes + 15) & ~15;

@@ -152,3 +152,33 @@ protégées contre le réservoir d'objets par `jit_free_valeur`.
 Sous qemu-x86_64 : boucle 3 M 2,3 s → **1,55 s** ; `test_jit` 14/14 des
 deux côtés, suites revues à **38/38** (ARM) et 37/37 (x64 sous émulation,
 ffi_dyn sauté).
+
+## Jalon M2.7-M2.8 — arithmétique inline et fusion producteur→affect (v3.5.3)
+
+Trois suppressions d'appels par itération, à sémantique constante (tout cas
+hors patron retombe sur l'appel helper précédent) :
+
+1. **Arithmétique machine inline** : `add/sub/mul` sur entiers positifs d'un
+   seul membre (membres GMP lus/écrits sur place, débordement → repli appel) ;
+   `cmp` comparant deux positifs d'un membre écrit le booléen directement
+   dans l'objet destination (le `bool_into` disparaît).
+2. **Fusion producteur→affect** : quand une temp SSA n'est lue que par
+   l'`affect` qui suit son producteur, le producteur écrit directement dans
+   la variable (`$s = $s + 1` devient une écriture en place) et l'affect est
+   supprimé. Les helpers concernés sont tous en `_into` (lecture avant
+   écriture, aliasing dst==opérande toléré par GMP).
+3. La boucle entière type ne coûte plus **aucun appel** par itération dès
+   que les compteurs restent des positifs d'un seul membre.
+
+| Programme (AArch64, JIT) | M2.6 | **M2.8** |
+|---|---:|---:|
+| boucle entière — 10 M itérations | 0,12 s | **0,07 s** |
+| récursion ×200 k — 4 M d'appels | 0,15 s | **0,12 s** |
+
+Sous qemu-x86-64 : boucle 3 M 1,55 s → **1,16 s**. Depuis l'interpréteur
+RIR d'origine : boucle ×165.
+
+Validation : suites 38/38 (ARM) et 37/37 (x64 sous émulation), parité
+92/92, v2 53/53, `test_jit` 14/14 ×2, bornes machine identiques sur les
+deux architectures, et stress « constante partagée retournée par un appel »
+(aliasing + fusion combinés) correct × 200 k tours des deux côtés.
