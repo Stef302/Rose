@@ -51,6 +51,9 @@ def test_dore(nom, source, dore):
 # ── dorés : le moteur doit reproduire la cible C au caractère près ──
 test_dore("t_exact", os.path.join(DORES, "t_exact.rose"), "t_exact_c.txt")
 test_dore("t_machine", os.path.join(DORES, "t_machine.rose"), "out_c.txt")
+# Fast-path entier machine : bornes LONG_MIN/2^63, div/rem plancher négatifs,
+# débordements → repli GMP exact (le JIT est en première ligne ici).
+test_dore("machine", os.path.join(DORES, "machine.rose"), "machine_c.txt")
 test_dore("signature", f"{EXEMPLES}/signature.rose", "sig_c.txt")
 test_dore("alias", os.path.join(DORES, "alias.rose"), "alias_c.txt")
 test("ffi_libm", [f"{EXEMPLES}/ffi_libm.rose"],
