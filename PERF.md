@@ -253,3 +253,37 @@ collidaient avec les temporaires internes du RIR (mêmes emplacements →
 corruption mémoire, bus error). Le vérificateur refuse désormais ces noms, et
 un `static_assert(sizeof(Valeur))` garde les deux définitions synchronisées
 (rose.cpp et rir.h) qui avaient dérivé pendant ce chantier.
+
+## Jalon M2.12 — JIT des flottants (v3.9.0)
+
+Le JIT ne connaissait que l'entier et le booléen : `$s = $s + 0.5` faisait
+tomber **tout le module à l'interpréteur** (1,16 µs par itération). Le
+flottant est pourtant le type le plus simple de Rose — un `double` dans la
+Valeur, sans GMP ni sentinelle : c'est le candidat naturel du déboxage, et
+il devient la première opération nativement émise par le JIT.
+
+Côté AArch64 : `LDR D`/`STR D`/`FADD`/`FSUB`/`FMUL` sur `add.f`/`sub.f`/
+`mul.f` avec garde « dst null ou opérande non flottant → helper C++ » (le
+même chemin lent sert d'allocateur et de conversion tolérante, miroir exact
+de `vers_d`). `div.f`, `divf.f`, `pow.f`, `neg.f` et les six comparaisons
+`cmp.*.f` passent par des helpers dédiés (zéros de division = messages de
+l'interpréteur, NaN comparé comme `cmp_vals`, jamais via `==`). Côté x86-64,
+miroir strict en SSE2 : `movsd`/`addsd`/`subsd`/`mulsd` vérifiés par
+`llvm-mc --show-encoding`. Les constantes flottantes sont matérialisées une
+fois par module (round-trip `%g` exact via `strtod`) ; `affect`, `afficher`,
+les paramètres d'appel (`jit_call`) et la copie des résultats acceptent
+désormais le type flottant.
+
+Mesures (même machine, minimum de passes) :
+
+| Bench | v3.8.0 (interpréteur, module non compilable) | **v3.9.0 (JIT)** |
+|---|---:|---:|
+| boucle_flottante (3 M × +0,5) AArch64 | 3,48 s | **0,02 s (×170)** |
+| boucle_flottante, qemu-x86_64 | 144,75 s | **0,99 s (×146)** |
+
+Un seul garde-fou de sémantique interdit l'approximation : chaque opération
+inline porte sa garde et retombe sur le helper C++ qui reproduit exactement
+l'interpréteur (conversions tolérantes, erreurs, formatage). Vérifié doré
+`t_flottant` (24 valeurs écrites à la main, dont 1,1 cumulé, 1/2⁴⁰ et π⋅r²),
+suite 42/42 ARM, 41/41 croisée qemu, parité 110/110 (2 programmes flottants
+neufs × C++/Rust/Python), test_jit 14/14, et les bancs entiers inchangés.

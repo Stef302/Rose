@@ -120,6 +120,27 @@ PROGRAMMES = [
      '$bf = tampon(5)\n'
      'remplir_hasard($bf, $un)\n'
      '>> chaine($bf)\n', None, {"python", "julia"}),
+    # Flottants JIT (M2.12) : accumulation, comparaisons et appels mixtes.
+    ("flottants accumulation",
+     '$s = 1.0\n'
+     'pour i de 1 vers 8 { $s = $s * 1.1 }\n'
+     '>> $s\n'
+     '>> $s / 3\n'
+     '>> $s < 2.2\n'
+     'fn f(x: flottant) -> flottant { retour x * x - 2.0 }\n'
+     '>> f(1.5)\n'
+     '>> f($s)\n'
+     '>> 0.1 + 0.2 == 0.3\n', None),
+    ("flottants mixtes entier",
+     '$a = 3\n'
+     '$b = 0.5\n'
+     '>> $a * $b\n'
+     '>> $a + $b\n'
+     '>> $b - $a\n'
+     '>> $a < $b + 3\n'
+     'fn echelle(x: flottant, k: entier) -> flottant { retour x * k }\n'
+     '>> echelle(2.5, 3)\n'
+     '>> echelle($b, $a)\n', None),
 ]
 
 ERREURS_RUNTIME = [
