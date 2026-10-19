@@ -29,7 +29,88 @@ static bool jit_verbose() { static const bool v = getenv("ROSE_JIT_DEBUG") != nu
 
 // =============================================================================
 // Helpers C++ (opérations GMP, allouent sur le tas)
+// ── Fast-path entier machine (jalon M2.5) ───────────────────────────────────
+// Quand les deux opérandes tiennent dans un signed long, l'opération se fait
+// en arithmétique machine avec détection de débordement ; le débordement (ou
+// un opérande hors plage) retombe sur GMP. L'arithmétique de Rose restant
+// exactement la même (entiers arbitraires), ces chemins sont invisibles
+// sémantiquement — ils ne changent que la vitesse.
 // =============================================================================
+
+// Les deux opérandes sont-ils des entiers machine ? (extraits dans *x, *y)
+// Accès DIRECT aux membres de __mpz_struct (ABI GMP 6 stable) : un nombre à
+// un seul membre tient en machine sauf si le signe l'empêche. Zéro appel
+// libgmp sur le chemin rapide — c'est tout l'intérêt du fast-path.
+static inline bool zfast(mpz_ptr a, long *x) {
+    int sz = a->_mp_size;
+    if (sz == 0) { *x = 0; return true; }
+    if (sz == 1) {
+        mp_limb_t d = a->_mp_d[0];
+        if ((long)d >= 0) { *x = (long)d; return true; }   // membre < 2^63
+        return false;
+    }
+    if (sz == -1) {
+        mp_limb_t d = a->_mp_d[0];
+        unsigned long u = 0 - (unsigned long)d;            // |v| → négatif
+        long v = (long)u;                                  // wrap défini (gcc/clang)
+        if (v < 0) { *x = v; return true; }                // inclut LONG_MIN exact
+        return false;
+    }
+    return false;                                          // multi-membre : GMP
+}
+static inline bool zs2(Valeur* a, Valeur* b, long *x, long *y) {
+    return zfast(a->z.get_mpz_t(), x) && zfast(b->z.get_mpz_t(), y);
+}
+static inline bool zs1(Valeur* a, long *x) { return zfast(a->z.get_mpz_t(), x); }
+// Écrit un entier machine dans dst sans appel libgmp (capacité déjà réservée ;
+// sinon mpz_set_si se charge de l'allocation — premier passage seulement).
+static inline void zput(Valeur* dst, long v) {
+    __mpz_struct *m = dst->z.get_mpz_t();
+    if (m->_mp_alloc >= 1) {
+        if (v > 0)      { m->_mp_d[0] = (unsigned long)v;   m->_mp_size = 1;  }
+        else if (v < 0) { m->_mp_d[0] = 0 - (unsigned long)v; m->_mp_size = -1; }
+        else            { m->_mp_size = 0; }
+    } else mpz_set_si(m, v);
+}
+
+// Division euclidienne (plancher) en machine : corrige la troncature C en
+// arrondi plancher, comme mpz_fdiv_q/r.
+static inline void fdiv_rem(long x, long y, long *q, long *r) {
+    *q = x / y; *r = x % y;
+    if (*r != 0 && ((*r < 0) != (y < 0))) { *q -= 1; *r += y; }
+}
+
+// ── Réservoirs d'objets et de frames (jalon M2.5) ─────────────────────────
+// Les appels JIT (jit_call) créaient et détruisaient frame + objets à
+// chaque passage. Les objets retournés au réservoir sont rendus « neufs »
+// par leurs repreneurs (les helpers _into écrivent la valeur et le ty de
+// toute façon) ; la capacité GMP des mpz se réutilise, ce qui évite aussi
+// les malloc internes de GMP. Valeur a des champs indépendants (z/b/s/…) :
+// le recyclage d'un type à l'autre est sûr. Fuite volontaire bornée, comme
+// le code émis lui-même.
+static std::vector<Valeur*> g_valeur_pool;
+static std::map<int, std::vector<Valeur**>> g_frame_pool;
+static const size_t VALEUR_POOL_MAX = 1u << 16;
+static const size_t FRAME_POOL_MAX  = 1u << 12;
+
+static inline void valeur_pool_push(Valeur* v) {
+    if (g_valeur_pool.size() < VALEUR_POOL_MAX) g_valeur_pool.push_back(v);
+    else delete v;
+}
+static inline Valeur* z_new0() {           // Valeur entière 0 (réservoir si possible)
+    if (!g_valeur_pool.empty()) {
+        Valeur* v = g_valeur_pool.back(); g_valeur_pool.pop_back();
+        zput(v, 0); v->ty = T_ENTIER; return v;
+    }
+    return new Valeur(Valeur::de_z(mpz_class(0)));
+}
+static inline Valeur* b_new(bool x) {      // Valeur booléenne (réservoir si possible)
+    if (!g_valeur_pool.empty()) {
+        Valeur* v = g_valeur_pool.back(); g_valeur_pool.pop_back();
+        v->b = x; v->ty = T_BOOLEEN; return v;
+    }
+    return new Valeur(Valeur::de_b(x));
+}
 
 Valeur* __attribute__((noinline)) jit_val_z(int64_t v) {
     mpz_class z(v);
@@ -66,12 +147,19 @@ Valeur* __attribute__((noinline)) jit_neg_z(Valeur* a) {
     return new Valeur(Valeur::de_z(r));
 }
 
-int __attribute__((noinline)) jit_cmp_lt_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) < 0; }
-int __attribute__((noinline)) jit_cmp_eq_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) == 0; }
-int __attribute__((noinline)) jit_cmp_ne_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) != 0; }
-int __attribute__((noinline)) jit_cmp_le_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) <= 0; }
-int __attribute__((noinline)) jit_cmp_gt_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) > 0; }
-int __attribute__((noinline)) jit_cmp_ge_z(Valeur* a, Valeur* b) { return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t()) >= 0; }
+// Comparaisons : si les deux opérandes tiennent en machine, la comparaison de
+// longs coïncide avec mpz_cmp (ordre total des entiers) ; sinon GMP.
+static inline long cmp_z(Valeur* a, Valeur* b) {
+    long x, y;
+    if (zs2(a, b, &x, &y)) return (x < y) ? -1 : (x > y ? 1 : 0);
+    return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t());
+}
+int __attribute__((noinline)) jit_cmp_lt_z(Valeur* a, Valeur* b) { return cmp_z(a, b) < 0; }
+int __attribute__((noinline)) jit_cmp_eq_z(Valeur* a, Valeur* b) { return cmp_z(a, b) == 0; }
+int __attribute__((noinline)) jit_cmp_ne_z(Valeur* a, Valeur* b) { return cmp_z(a, b) != 0; }
+int __attribute__((noinline)) jit_cmp_le_z(Valeur* a, Valeur* b) { return cmp_z(a, b) <= 0; }
+int __attribute__((noinline)) jit_cmp_gt_z(Valeur* a, Valeur* b) { return cmp_z(a, b) > 0; }
+int __attribute__((noinline)) jit_cmp_ge_z(Valeur* a, Valeur* b) { return cmp_z(a, b) >= 0; }
 int __attribute__((noinline)) jit_test_b(Valeur* v) { return v->b ? 1 : 0; }
 
 Valeur* __attribute__((noinline)) jit_and_b(Valeur* a, Valeur* b) { return new Valeur(Valeur::de_b(a->b && b->b)); }
@@ -84,51 +172,74 @@ Valeur* __attribute__((noinline)) jit_not_b(Valeur* a)            { return new V
 //       de boucle après le premier passage (mpz_* accepte dst == opérande).
 
 Valeur* __attribute__((noinline)) jit_add_z_into(Valeur* dst, Valeur* a, Valeur* b) {
-    if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
-    mpz_add(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
+    if (!dst) dst = z_new0();
+    long x, y, r;
+    if (zs2(a, b, &x, &y) && !__builtin_add_overflow(x, y, &r)) zput(dst, r);
+    else mpz_add(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
 Valeur* __attribute__((noinline)) jit_sub_z_into(Valeur* dst, Valeur* a, Valeur* b) {
-    if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
-    mpz_sub(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
+    if (!dst) dst = z_new0();
+    long x, y, r;
+    if (zs2(a, b, &x, &y) && !__builtin_sub_overflow(x, y, &r)) zput(dst, r);
+    else mpz_sub(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
 Valeur* __attribute__((noinline)) jit_mul_z_into(Valeur* dst, Valeur* a, Valeur* b) {
-    if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
-    mpz_mul(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
+    if (!dst) dst = z_new0();
+    long x, y, r;
+    if (zs2(a, b, &x, &y) && !__builtin_mul_overflow(x, y, &r)) zput(dst, r);
+    else mpz_mul(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
 Valeur* __attribute__((noinline)) jit_div_z_into(Valeur* dst, Valeur* a, Valeur* b) {
-    if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "Rose : erreur — division par zéro\n"); std::fflush(stdout); std::exit(1); }
-    if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
-    mpz_fdiv_q(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
+    if (!dst) dst = z_new0();
+    long x, y, q, r;
+    if (zs2(a, b, &x, &y)) {
+        if (y == 0) { fprintf(stderr, "Rose : erreur — division par zéro\n"); std::fflush(stdout); std::exit(1); }
+        fdiv_rem(x, y, &q, &r); zput(dst, q);
+    } else {
+        if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "Rose : erreur — division par zéro\n"); std::fflush(stdout); std::exit(1); }
+        mpz_fdiv_q(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
+    }
     dst->ty = T_ENTIER; return dst;
 }
 Valeur* __attribute__((noinline)) jit_rem_z_into(Valeur* dst, Valeur* a, Valeur* b) {
-    if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "Rose : erreur — modulo par zéro\n"); std::fflush(stdout); std::exit(1); }
-    if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
-    mpz_fdiv_r(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
+    if (!dst) dst = z_new0();
+    long x, y, q, r;
+    if (zs2(a, b, &x, &y)) {
+        if (y == 0) { fprintf(stderr, "Rose : erreur — modulo par zéro\n"); std::fflush(stdout); std::exit(1); }
+        fdiv_rem(x, y, &q, &r); zput(dst, r);
+    } else {
+        if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "Rose : erreur — modulo par zéro\n"); std::fflush(stdout); std::exit(1); }
+        mpz_fdiv_r(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
+    }
     dst->ty = T_ENTIER; return dst;
 }
 Valeur* __attribute__((noinline)) jit_neg_z_into(Valeur* dst, Valeur* a) {
-    if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
-    mpz_neg(dst->z.get_mpz_t(), a->z.get_mpz_t());
+    if (!dst) dst = z_new0();
+    long x;
+    if (zs1(a, &x) && x != LONG_MIN) zput(dst, -x);
+    else mpz_neg(dst->z.get_mpz_t(), a->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
 // copie de valeur (affectations) : dst possède son propre objet, jamais partagé
 Valeur* __attribute__((noinline)) jit_z_copy_into(Valeur* dst, Valeur* src) {
     if (!src) return dst;
-    if (!dst) dst = new Valeur(Valeur::de_z(mpz_class(0)));
-    mpz_set(dst->z.get_mpz_t(), src->z.get_mpz_t());
+    if (!dst) dst = z_new0();
+    long x;
+    if (zs1(src, &x)) zput(dst, x);
+    else mpz_set(dst->z.get_mpz_t(), src->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
 Valeur* __attribute__((noinline)) jit_b_copy_into(Valeur* dst, Valeur* src) {
     if (!src) return dst;
-    if (!dst) dst = new Valeur(Valeur::de_b(src->b));
-    dst->b = src->b; dst->ty = T_BOOLEEN; return dst;
+    if (!dst) dst = b_new(src->b);
+    else { dst->b = src->b; dst->ty = T_BOOLEEN; }
+    return dst;
 }
 Valeur* __attribute__((noinline)) jit_bool_into(Valeur* dst, int cond) {
-    if (!dst) dst = new Valeur(Valeur::de_b(cond != 0));
+    if (!dst) dst = b_new(cond != 0);
     else { dst->b = (cond != 0); dst->ty = T_BOOLEEN; }
     return dst;
 }
@@ -383,8 +494,12 @@ Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur**
         std::fflush(stdout); std::exit(1);
     }
     JitCallTarget &T = g_call_targets[target];
-    Valeur** frame = new Valeur*[T.nslots > 0 ? T.nslots : 1];
-    for (int i = 0; i < T.nslots; i++) frame[i] = nullptr;
+    size_t fsz = T.nslots > 0 ? (size_t)T.nslots : 1;
+    auto &bucket = g_frame_pool[T.nslots];
+    Valeur** frame;
+    if (!bucket.empty()) { frame = bucket.back(); bucket.pop_back(); }
+    else frame = new Valeur*[fsz];
+    for (size_t i = 0; i < fsz; i++) frame[i] = nullptr;
     for (size_t i = 0; i < T.param_slots.size() && i < (size_t)nargs; i++) {
         int s = T.param_slots[i];
         if (s < 0 || s >= T.nslots || !args[i]) continue;
@@ -396,13 +511,14 @@ Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur**
         if (!frame[i] || frame[i] == res) continue;
         bool cst = false;
         for (int cs : T.const_slots) if (cs == i) { cst = true; break; }
-        if (!cst) delete frame[i];
+        if (!cst) valeur_pool_push(frame[i]);
     }
-    delete[] frame;
+    if (bucket.size() < FRAME_POOL_MAX) bucket.push_back(frame);
+    else delete[] frame;
     return res;
 }
 
-void __attribute__((noinline)) jit_free_valeur(Valeur* v) { delete v; }
+void __attribute__((noinline)) jit_free_valeur(Valeur* v) { valeur_pool_push(v); }
 
 // =============================================================================
 // JitContext

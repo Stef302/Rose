@@ -108,3 +108,29 @@ Deux ajouts au JIT, validés de bout en bout :
   sur les benchs.
 * Sur le matériel x86-64 du public, le moteur v3.5.0 tourne donc à la
   vitesse JIT (les binaires livrés ne passent plus par le repli).
+
+## Jalon M2.5 — arithmétique machine et réservoirs (mesures v3.5.x)
+
+Le JIT baseline appelait GMP pour chaque opération, même sur `1 + 1`. Trois
+changements invisibles sémantiquement (l'exactitude arbitraire est garantie
+par le repli GMP au débordement — vérifié sur les bornes `LONG_MIN`, `2^63`,
+division plancher négative, avec parité stricte JIT/interpréteur) :
+
+1. **Fast-path entier machine** dans les helpers partagés : quand les
+   opérandes tiennent dans un `long`, l'opération se fait en arithmétique
+   machine (membres de `__mpz_struct` lus directement, zéro appel libgmp,
+   débordement détecté par le compilateur) ; sinon GMP.
+2. **Réservoir d'objets `Valeur`** : les objets rendus par les frames et
+   les résultats d'appels sont recyclés au lieu d'être détruits (leur
+   capacité GMP interne se réutilise).
+3. **Réservoir de frames** par fonction dans le trampoline d'appel.
+
+| Programme (AArch64, JIT) | v3.5.0 | **M2.5** | cumul vs interpréteur |
+|---|---:|---:|---:|
+| récursion ×200 k — 4 M d'appels `fact(20)` | 1,55 s | **0,16 s** | **×46** |
+| boucle entière — 10 M itérations | 0,20 s | **0,15 s** | ×77 |
+
+* Sous qemu-x86_64 (émulation), la boucle 3 M passe de 3,6 s à 2,3 s et
+  `test_jit` reste 14/14 — le matériel x86-64 réel fera mieux encore.
+* Suites après changement : moteur 37/37, parité 92/92, v2 53/53,
+  `test_jit` 14/14 sur les deux architectures.
