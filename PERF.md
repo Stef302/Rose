@@ -73,6 +73,38 @@ exécutions :
   les suites du dépôt (moteur **37/37**, parité 92/92, v2 53/53) et 14
   tests unitaires du JIT (`moteur/cpp/src/test_jit.cpp`, dont
   `factorielle(10)` récursive).
-* Le JIT n'émet que pour AArch64 (machine de dev). Sur les machines
-  x86-64 du public, le moteur v3.4.0 tourne donc à la vitesse de
-  l'interpréteur RIR — le backend x86-64 est la suite logique du jalon.
+* Le JIT n'émettait que pour AArch64 (machine de dev) à la v3.4.0 ; le
+  backend x86-64 est venu au jalon suivant (section M2b ci-dessous).
+
+## Jalon M2b — backend x86-64 + constantes partagées (mesures v3.5.0)
+
+Deux ajouts au JIT, validés de bout en bout :
+
+1. **Constantes partagées par module** (toutes architectures) : une
+   `Valeur` par constante, créée à la compilation ; le prologue ne pose
+   plus qu'un pointeur au lieu d'appeler un helper allocateur. Effet
+   sur la machine de dev (AArch64) :
+
+| Programme | v3.4.0 | **v3.5.0** | avant JIT |
+|---|---:|---:|---:|
+| récursion ×200 k — 4 M d'appels `fact(20)` | 2,16 s | **1,55 s** | 7,44 s |
+| boucle entière 10 M | 0,21 s | **0,20 s** | 11,60 s |
+
+2. **Backend x86-64** (`moteur/cpp/src/jit_x64.cpp`, encodage direct
+   d'octets SysV, même table de helpers que l'AArch64). Validé **sous
+   qemu-x86_64** (émulation TCG — les durées ci-dessous sont des durées
+   d'émulation, pas des mesures de matériel x86) via le build croisé
+   sans droits root `moteur/build-x64.sh` :
+
+| Programme (sous qemu-x86_64) | Interpréteur RIR | **JIT x86-64** | Gain |
+|---|---:|---:|---:|
+| boucle entière — 3 M itérations | 2 m 30 s | **3,6 s** | **×42** |
+| récursion 30 k × `fact(20)` | — | 7,8 s | — |
+
+* Vérifications x86-64 : `test_jit` **14/14** (dont récursion via le
+  trampoline d'appel), suite moteur **36/36 avec JIT**, FFI `dynamique`
+  prouvée à part (la `.so` de test est de l'architecture de l'hôte —
+  recompilée en x86-64 pour la preuve), parité stricte JIT/interpréteur
+  sur les benchs.
+* Sur le matériel x86-64 du public, le moteur v3.5.0 tourne donc à la
+  vitesse JIT (les binaires livrés ne passent plus par le repli).

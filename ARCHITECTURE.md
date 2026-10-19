@@ -34,25 +34,34 @@ RIR | JIT | LLVM). L'interpréteur d'arbre actuel devient le repli de
 débug ; la parité et les 147 cas v2 restent le filet.
 
 ### M2 — JIT natif (vitesse interactive + bundles)
-Backend JIT émettant du code machine x86-64 et AArch64. Candidat
-C++ recommandé : **asmjit** (bibliothèque d'assemblage, ~300 Ko, sans
-dépendance) — le binaire autonome reste petit. Les appels GMP
+Backend JIT émettant du code machine x86-64 et AArch64. asmjit fut le
+candidat C++ pressenti (bibliothèque d'assemblage, ~300 Ko), mais son
+API v1.24 a divergé des notes initiales : le moteur émet donc les
+opcodes **directement** (deux petits assembleurs intégrés, zéro
+dépendance externe — le binaire autonome reste petit). Les appels GMP
 deviennent des appels C directs depuis le code émis ; le bundle
 `rose comp` gagne un mode natif compilé.
 
-> **État M2 (v3.4.0)** : JIT **AArch64 opérationnel**, sans asmjit —
-> assembleur intégré au moteur (`moteur/cpp/src/jit.cpp` émet les
-> opcodes 32 bits directement ; asmjit gardé en option pour x86-64,
-> son API v1.24 ayant divergé des notes initiales). Supporté :
+> **État M2 (v3.5.0)** : JIT opérationnel sur **deux architectures**, sans
+> asmjit — les assembleurs sont intégrés au moteur : `moteur/cpp/src/jit.cpp`
+> émet les opcodes AArch64, `moteur/cpp/src/jit_x64.cpp` les octets x86-64
+> (même table de helpers C++, mêmes slots de frame, mêmes règles de
+> porte ; asmjit abandonné, son API v1.24 ayant divergé). Supporté :
 > entiers (arithmétique complète GMP, grande précision), booléens,
 > comparaisons, branches et boucles (`si/tant_que/pour`), variables,
-> constantes matérialisées une fois par frame, fonctions utilisateur
-> avec récursion. Les operations hors support (chaînes, rationnels,
-> flottants, tableaux, FFI, `lire`) basculent **le module entier** sur
-> l'interpréteur RIR — repli transparent, sorties identiques (parité
-> vérifiée sur les 8 programmes de bench + suites). Mesure : boucle
-> entière 10 M = **0,21 s en JIT** contre 11,6 s en interpréteur RIR
-> (détails dans `PERF.md`). Reste : backend x86-64 du JIT.
+> constantes **partagées par module** (une `Valeur` créée à la
+> compilation, le prologue ne pose qu'un pointeur — zéro allocation par
+> appel), fonctions utilisateur avec récursion. Les opérations hors
+> support (chaînes, rationnels, flottants, tableaux, FFI, `lire`)
+> basculent **le module entier** sur l'interpréteur RIR — repli
+> transparent, sorties identiques (parité vérifiée sur les 8 programmes
+> de bench + suites). Mesures AArch64 : boucle entière 10 M = **0,21 s
+> en JIT** contre 12,2 s en interpréteur ; 4 M d'appels récursifs
+> 1,55 s. x86-64 validé **de bout en bout sous qemu-x86_64** (build
+> croisé sans root par `moteur/build-x64.sh`, suite 36/36 avec JIT,
+> ×42 vs interpréteur même sous émulation — détails dans `PERF.md`).
+> Reste : mode natif compilé pour le bundle `rose comp`, chaîne de
+> production Windows x86-64.
 
 ### M3 — AOT LLVM : `rose build`
 Backend **LLVM** (API C) pour la compilation native complète :
@@ -143,9 +152,10 @@ le repli RIR couvre le langage entier — FFI `@dll/@sym` et
 `<<`, comparaisons `≈ / ?= / =~` (`cmp.approx`), `et/ou`, division
 exacte `/` contre euclidienne `div` (conforme à IR.md), disposition des
 blocs par curseur (la suite d'un `si` dans une boucle est atteignable) —
-la suite moteur est **verte (37/37)**. **Partiellement
-fait (M2)** : JIT AArch64 en production (voir l'encadré « État M2 »
-ci-dessus) ; le JIT x86-64 et le bundle `rose comp` natif restent à
+la suite moteur est **verte (37/37)**. **Fait (M2)** : JIT en
+production sur AArch64 **et** x86-64 (encodeurs intégrés `jit.cpp` /
+`jit_x64.cpp`, table de helpers commune ; voir l'encadré « État M2 »
+ci-dessus) ; le bundle `rose comp` en mode natif compilé reste à
 faire. Ces briques sont propres aux moteurs : les cibles d'export
 `rose2` les refusent avec un message explicite (la chaîne d'export
 reste l'outil secondaire).

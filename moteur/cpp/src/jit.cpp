@@ -372,7 +372,7 @@ static std::vector<JitCallTarget> g_call_targets;
 static std::map<std::string,int> g_call_names;
 // Constantes JIT partagées : une Valeur par constante de module, créée à la
 // compilation, jamais libérée (même durée de vie que le code émis).
-static std::vector<Valeur*> g_shared_consts;
+std::vector<Valeur*> g_shared_consts;   // vu par jit_x64.cpp (déclaré dans jit.h)
 
 // x0=ctx, x1=index cible, x2=table d'arguments Valeur*, x3=nargs. Retour x0=résultat.
 // Le cadre du callee est créé/libéré ici ; le résultat (objet d'un slot callee)
@@ -481,6 +481,15 @@ static bool parse_i64(const std::string &txt, int64_t *out) {
 static const int FRAME_SLOTS_MAX = 256;   // doit cadrer avec rose.cpp (frame_size)
 
 JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
+#if defined(__x86_64__)
+    return compile_function_x64(fn);   // backend x86-64 (jit_x64.cpp)
+#elif !defined(__aarch64__)
+    // Pas d'émetteur pour cette architecture : le code émis serait illégal
+    // ailleurs → porte module = repli interpréteur complet.
+    (void)fn;
+    JITLOG("jit: architecture non prise en charge — repli interpréteur\n");
+    return nullptr;
+#endif
     // ═══ Pré-analyse : ops supportées, noms utilisés, labels, constantes ═══
     int max_t = -1;
     std::set<std::string> variables;                          // %x nommés
