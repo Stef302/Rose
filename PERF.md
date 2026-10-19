@@ -225,7 +225,7 @@ curseur mobile pour `alors`/`sinon`, et dump RIR sous `ROSE_RIR_DUMP=1`.
 Doré de régression `t_si_imbr` (six valeurs vérifiées à la main) et trois
 programmes de parité ajoutés.
 
-## Jalon M2.11 — aléatoire natif et tampons d'octets (v3.7.0)
+## Jalon M2.11 — aléatoire natif et tampons d'octets (v3.7.0, porté v3.8.0)
 
 Briques qui manquaient au langage pour les charges « vectorielles » :
 `graine(n)` / `hasard(n)` (splitmix64 reproductible, identique sur toutes les

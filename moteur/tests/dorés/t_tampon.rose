@@ -16,6 +16,9 @@ pour $j de 0 vers 64 { $c = tampon_case($buf, $j)
   si ($c < 45) { $bornes = faux }
   si ($c > 122) { $bornes = faux } }
 >> $bornes
+$somme = 0
+pour $p de 0 vers 64 { $somme = $somme + tampon_case($buf, $p) }
+>> $somme
 tampon_pose($buf, 0, 88)
 >> tampon_case($buf, 0)
 $g1 = octets("abcXYZ-_")

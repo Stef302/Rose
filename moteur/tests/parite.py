@@ -80,6 +80,46 @@ PROGRAMMES = [
      'inserer($u, "nom", "Bob")\n'
      '>> $t == $u\n'
      '>> $t != $u\n', None),
+    ("hasard reproductible",
+     'graine(42)\n'
+     '>> hasard(64)\n'
+     '>> hasard(64)\n'
+     '>> hasard(1000)\n'
+     '>> hasard(1000000000000000000000)\n'
+     'graine(42)\n'
+     '>> hasard(64)\n', None, {"python", "julia"}),
+    ("tampons d'octets",
+     '$al = octets("abcXYZ-_")\n'
+     '$buf = tampon(8)\n'
+     '>> longueur($buf)\n'
+     'remplir_hasard($buf, $al)\n'
+     '>> longueur($buf)\n'
+     'tampon_pose($buf, 0, 65)\n'
+     '>> tampon_case($buf, 0)\n'
+     '>> octets("abc") == octets("abc")\n'
+     '>> octets("abc") == octets("abd")\n'
+     '>> longueur(octets("été"))\n'
+     '>> chaine(octets("abc"))\n'
+     'graine(7)\n'
+     '$x1 = tampon(16)\n'
+     'remplir_hasard($x1, $al)\n'
+     'graine(7)\n'
+     '$x2 = tampon(16)\n'
+     'remplir_hasard($x2, $al)\n'
+     '>> $x1 == $x2\n'
+     '>> chaine($x1) != chaine(octets("zzzzzzzzzzzzzzzz"))\n', None, {"python", "julia"}),
+    ("remplissage Lemire et mono",
+     'graine(5)\n'
+     '$al7 = octets("abcdefg")\n'
+     '$b3 = tampon(200)\n'
+     'remplir_hasard($b3, $al7)\n'
+     '$s = 0\n'
+     'pour $j de 0 vers 200 { $s = $s + tampon_case($b3, $j) }\n'
+     '>> $s\n'
+     '$un = octets("x")\n'
+     '$bf = tampon(5)\n'
+     'remplir_hasard($bf, $un)\n'
+     '>> chaine($bf)\n', None, {"python", "julia"}),
 ]
 
 ERREURS_RUNTIME = [
@@ -93,6 +133,9 @@ ERREURS_RUNTIME = [
     ("ordre non caractère", '>> ordre("ab")\n'),
     ("sous_chaine bornes invalides", '>> sous_chaine("abc", 2, 1)\n'),
     ("lecture fichier absent", '>> lire_texte("absent_xyz_rose.txt")\n'),
+    ("tampon non affichable", ">> tampon(4)\n"),
+    ("index hors tampon", '$b = tampon(2)\n>> tampon_case($b, 5)\n'),
+    ("nom réservé par le moteur", "$t1 = 1\n>> $t1\n"),
     ("chaîne non numérique", '>> entier("zuz")\n'),
     ("exposant démesuré", ">> 2 ^ 100000000000000000000\n"),
     ("zéro puissance négative", ">> 0 ^ -1\n"),
