@@ -760,6 +760,32 @@ static bool is_temp_name(const std::string &nm) {
     return true;
 }
 
+// ── Builtins numériques appelables nativement (M2.13) ────────────────
+// Le JIT émet un appel au helper 50 (rose_appel_builtin, pont direct vers la
+// stdlib de l'interpréteur : mêmes fonctions, mêmes erreurs). ty_fixe :
+// type RIR du résultat quand il ne dépend pas des arguments ; -1 = suit le
+// contexte (abs/min/max), dest_ty alors obligatoire (jamais U).
+struct BuiltinJit { const char *nom; int ty_fixe; };   // même forme dans jit_x64.cpp
+static const BuiltinJit BUILTINS_JIT[] = {
+    {"factorielle", RirZ}, {"fibonacci", RirZ}, {"pgcd", RirZ},
+    {"ppcm", RirZ}, {"puissance", RirZ}, {"est_premier", RirB},
+    {"compter_premiers", RirZ}, {"nb_chiffres", RirZ}, {"hasard", RirZ},
+    {"abs", -1}, {"min", -1}, {"max", -1},
+};
+const BuiltinJit* builtin_jit(const std::string &nom) {
+    for (auto &b : BUILTINS_JIT)
+        if (nom == b.nom) return &b;
+    return nullptr;
+}
+// Nom interné, vivant pour la durée du programme (émis en X0 = char*).
+const char* builtin_name_ptr(const std::string &nom) {
+    static std::vector<char*> pool;
+    for (auto *p : pool) if (strcmp(p, nom.c_str()) == 0) return p;
+    char *s = strdup(nom.c_str());
+    pool.push_back(s);
+    return s;
+}
+
 // Texte d'une constante inline « @c<texte> », dupliqué et gardé vivant
 // pour la durée de vie du programme (le code JIT émis référence ce pointeur).
 static const char* dup_const_text(const std::string &name) {
@@ -814,6 +840,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 op.rfind("cmp.", 0) != 0 &&          // cmp.<rel>.<ty> : vérifié à l'émission
                 op != "and.b" && op != "or.b" && op != "not.b" &&
                 op != "affect" && op != "afficher" && op != "call" &&
+                op.rfind("call @builtin.", 0) != 0 &&   // factorielle : nom dans l'op
                 op != "ret.z" && op != "ret" && op != "ret.u" && op != "br" && op != "br.cond") {
                 JITLOG("jit: instruction non supportée: %s\n", op.c_str());
                 unsupported = true; break;
@@ -821,14 +848,33 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             if (op == "call") {
                 // appel de fonction utilisateur $nom déjà compilée dans le module
                 if (instr.args.empty() || instr.args[0].kind != RirOp::Temp ||
-                    instr.args[0].name.rfind("$", 0) != 0 ||
-                    !m_call_idx.count(instr.args[0].name)) {
+                    instr.args[0].name.rfind("$", 0) != 0) {
                     JITLOG("jit: appel non supporté\n");
                     unsupported = true; break;
                 }
-                if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
-                                           instr.dest_ty != RirF)) {
-                    JITLOG("jit: call avec dest_ty=%d\n", (int)instr.dest_ty);
+                if (m_call_idx.count(instr.args[0].name)) {
+                    if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
+                                               instr.dest_ty != RirF)) {
+                        JITLOG("jit: call avec dest_ty=%d\n", (int)instr.dest_ty);
+                        unsupported = true; break;
+                    }
+                } else {
+                    // builtin numérique : pont natif vers la stdlib (helper 50, M2.13)
+                    const BuiltinJit *bj = builtin_jit(instr.args[0].name.substr(1));
+                    if (!bj || instr.dest.empty()) {
+                        JITLOG("jit: appel non supporté\n");
+                        unsupported = true; break;
+                    }
+                    if (bj->ty_fixe < 0) {
+                        if (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
+                            instr.dest_ty != RirF) { unsupported = true; break; }
+                    } else if (instr.dest_ty != RirU && instr.dest_ty != bj->ty_fixe) {
+                        unsupported = true; break;
+                    }
+                }
+            }
+            if (op == "call @builtin.factorielle") {
+                if (instr.dest.empty() || instr.dest_ty != RirZ) {
                     unsupported = true; break;
                 }
             }
@@ -1289,6 +1335,56 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.cbnz_label(X0, instr.label_cible);
                 asm_.b_label(instr.label_cible2);
                 continue;
+            }
+            // ── Builtins numériques natifs (M2.13) : helper 50 = pont stdlib ──
+            {
+                const BuiltinJit *bj = nullptr;
+                std::string bnom;
+                size_t arg0 = 0;      // index du premier argument à marier
+                if (op == "call" && !instr.args.empty() &&
+                    instr.args[0].kind == RirOp::Temp &&
+                    instr.args[0].name.rfind("$", 0) == 0 &&
+                    !m_call_idx.count(instr.args[0].name)) {
+                    bnom = instr.args[0].name.substr(1);
+                    bj = builtin_jit(bnom);
+                    arg0 = 1;                          // args[0] = le nom
+                } else if (op == "call @builtin.factorielle") {
+                    bnom = "factorielle";
+                    bj = builtin_jit(bnom);            // args[0] = l'opérande
+                }
+                if (bj) {
+                    if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                    { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
+                    int na = (int)instr.args.size() - (int)arg0;
+                    int bytes = na * 8;
+                    if (bytes < 16) bytes = 16; else bytes = (bytes + 15) & ~15;
+                    if (bytes > 4080) { unsupported = true; break; }
+                    asm_.sub_sp(bytes);
+                    bool ok = true;
+                    for (int i = 0; i < na; i++) {
+                        if (!load_operand(asm_, instr.args[arg0 + i], X0)) { ok = false; break; }
+                        asm_.str(X0, SP, i);           // pile : args[i] à sp+i*8
+                    }
+                    if (!ok) { unsupported = true; break; }
+                    asm_.mov_imm(X0, (uint64_t)(uintptr_t)builtin_name_ptr(bnom));
+                    asm_.mov_from_sp(X1);              // table d'arguments
+                    asm_.mov_imm(X2, (uint64_t)na);
+                    asm_.blr_helper(50);               // rose_appel_builtin
+                    asm_.str(X0, SP, 0);               // sauvegarde
+                    asm_.mov_reg(X1, X0);              // x1 = src (résultat stdlib)
+                    asm_.ldr(X0, X20, d);              // x0 = dst (slot propre)
+                    int ty_res = instr.dest_ty == RirU ? bj->ty_fixe : (int)instr.dest_ty;
+                    if (ty_res != RirZ && ty_res != RirB && ty_res != RirF) {
+                        unsupported = true; break;
+                    }
+                    asm_.blr_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 : 25);
+                    asm_.str(X0, X20, d);
+                    slot_ty[d] = (RirType)ty_res;
+                    asm_.ldr(X0, SP, 0);
+                    asm_.blr_helper(32);               // jit_free_valeur
+                    asm_.add_sp(bytes);
+                    continue;
+                }
             }
             if (op == "call") {
                 int d;

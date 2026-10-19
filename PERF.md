@@ -287,3 +287,34 @@ l'interpréteur (conversions tolérantes, erreurs, formatage). Vérifié doré
 `t_flottant` (24 valeurs écrites à la main, dont 1,1 cumulé, 1/2⁴⁰ et π⋅r²),
 suite 42/42 ARM, 41/41 croisée qemu, parité 110/110 (2 programmes flottants
 neufs × C++/Rust/Python), test_jit 14/14, et les bancs entiers inchangés.
+
+## Jalon M2.13 — builtins numériques natifs dans le JIT (v3.10.0)
+
+Un seul `pgcd(k, ...)` dans une boucle suffisait à renvoyer tout le module à
+l'interpréteur : l'appel de builtin n'existait pas côté JIT. Le pont est
+minimal et donc nécessairement fidèle : le code émis range les arguments
+(pointeurs de Valeur) sur la pile et appelle le **helper 50**,
+`rose_appel_builtin`, qui appelle **la même fonction `stdlib()` que
+l'interpréteur** — mêmes valeurs, mêmes erreurs, aucun duplicata.
+
+Liste blanche (types d'arguments et de retour purement numériques, pour que
+le JIT sache copier le résultat dans son slot) : `factorielle`, `fibonacci`,
+`pgcd`, `ppcm`, `puissance`, `est_premier`, `compter_premiers`,
+`nb_chiffres`, `hasard`, plus `abs`/`min`/`max` dont le type suit le contexte.
+Les builtins qui renvoient vide ou manipulent listes et chaînes
+(`joindre`, `concatener`, `longueur`, `argument`…) restent hors liste : le
+module retombe à l'interpréteur, comportement inchangé d'avant.
+
+| Bench | v3.9.0 (module non compilable) | **v3.10.0** |
+|---|---:|---:|
+| pgcd (2 M appels dans une boucle) | 4,43 s | **0,59 s (×7,5)** |
+| factorielle | 0,21 s | 0,20 s (désormais JITé) |
+
+Doré `t_builtin` (14 valeurs, somme de boucle 68 490 rec recoupée en Python),
+suites 43/43 + 42/42 croisé qemu, parité 113/110 avec un programme builtins
+neuf (les quatre moteurs d'accord), test_jit 14/14.
+
+Suite logique (M2.14) : le même pont appliqué aux listes et chaînes —
+`joindre` (résultat vide → appel sans copie), `longueur`, `concatener`,
+constantes de chaîne, puis les ops `liste.*` — pour débloquer la famille
+`chaines` (1,19 s) et au-delà.
