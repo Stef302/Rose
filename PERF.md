@@ -67,12 +67,12 @@ exécutions :
 | les 6 autres benchs (FFI/appels internes → repli) | identiques | identiques | — |
 
 * La boucle entière JIT (**0,21 s**) est 12× sous l'ancien interpréteur
-  d'arbre (2,65 s) : le RIR avait un creux (11,6 s) que le JIT racheète
+  d'arbre (2,65 s) : le RIR avait un creux (11,6 s) que le JIT rattrape
   très au-delà de l'objectif ×3–×10.
 * Parité stricte JIT/interpréteur vérifiée sur les 8 programmes de bench,
-  les suites du dépôt (26/11 — les 11 échecs sont les résidus M1
-  préexistants, liste dans `tester.sh`) et 14 tests unitaires du JIT
-  (`moteur/cpp/src/test_jit.cpp`, dont `factorielle(10)` récursive).
+  les suites du dépôt (moteur **37/37**, parité 92/92, v2 53/53) et 14
+  tests unitaires du JIT (`moteur/cpp/src/test_jit.cpp`, dont
+  `factorielle(10)` récursive).
 * Le JIT n'émet que pour AArch64 (machine de dev). Sur les machines
   x86-64 du public, le moteur v3.4.0 tourne donc à la vitesse de
   l'interpréteur RIR — le backend x86-64 est la suite logique du jalon.
