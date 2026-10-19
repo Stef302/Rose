@@ -18,6 +18,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <unordered_map>
 #include <sys/mman.h>
 #include <gmp.h>
@@ -26,6 +27,12 @@
 // Trace de compilation JIT (activée par ROSE_JIT_DEBUG=1)
 static bool jit_verbose() { static const bool v = getenv("ROSE_JIT_DEBUG") != nullptr; return v; }
 #define JITLOG(...) do { if (jit_verbose()) fprintf(stderr, __VA_ARGS__); } while (0)
+
+// Ensemble des objets de constantes partagées par les modules JIT. Ces
+// objets vivent aussi longtemps que le code émis : un code généré qui
+// retourne une constante (temp aliasé) ne doit JAMAIS les envoyer au
+// réservoir d'objets — jit_free_valeur les y bloque.
+static std::unordered_set<Valeur*> g_shared_const_lookup;
 
 // =============================================================================
 // Helpers C++ (opérations GMP, allouent sur le tas)
@@ -114,10 +121,14 @@ static inline Valeur* b_new(bool x) {      // Valeur booléenne (réservoir si p
 
 Valeur* __attribute__((noinline)) jit_val_z(int64_t v) {
     mpz_class z(v);
-    return new Valeur(Valeur::de_z(z));
+    Valeur* p = new Valeur(Valeur::de_z(z));
+    g_shared_const_lookup.insert(p);   // ces objets sont partagés : jamais à la poubelle
+    return p;
 }
 Valeur* __attribute__((noinline)) jit_val_b(bool v) {
-    return new Valeur(Valeur::de_b(v));
+    Valeur* p = new Valeur(Valeur::de_b(v));
+    g_shared_const_lookup.insert(p);
+    return p;
 }
 
 Valeur* __attribute__((noinline)) jit_add_z(Valeur* a, Valeur* b) {
@@ -264,7 +275,9 @@ Valeur* __attribute__((noinline)) jit_val_z_txt(const char* txt) {
         fprintf(stderr, "jit: constante entière invalide: %s\n", txt);
         std::abort();
     }
-    return new Valeur(Valeur::de_z(z));
+    Valeur* p = new Valeur(Valeur::de_z(z));
+    g_shared_const_lookup.insert(p);
+    return p;
 }
 
 // =============================================================================
@@ -518,7 +531,10 @@ Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur**
     return res;
 }
 
-void __attribute__((noinline)) jit_free_valeur(Valeur* v) { valeur_pool_push(v); }
+void __attribute__((noinline)) jit_free_valeur(Valeur* v) {
+    if (g_shared_const_lookup.count(v)) return;   // constante partagée : jamais libérée
+    valeur_pool_push(v);
+}
 
 // =============================================================================
 // JitContext
@@ -695,11 +711,18 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
         if (it == slot_vars.end()) return false;
         out = it->second; return true;
     };
+    // Alias SSA : un temp écrit uniquement par « cst.z/cst.b %t @c » est
+    // chargé directement depuis le slot de la constante (simple assignation,
+    // opérandes lus en lecture seule — la copie vers un objet propre devient
+    // inutile). Les rares chemins qui libéreraient l'objet (ret d'appel) sont
+    // bloqués par g_shared_const_lookup dans jit_free_valeur.
+    std::map<int,int> const_alias;   // slot temp -> slot constante
     auto load_operand = [&](A64Asm &ax, const RirOp &a, int rd) -> bool {
         int s;
         if (a.kind == RirOp::Temp) {
             if (!slot_of(a.name, s)) return false;
-            ax.ldr(rd, X20, s);
+            auto al = const_alias.find(s);
+            ax.ldr(rd, X20, al != const_alias.end() ? al->second : s);
             return true;
         }
         if (a.kind == RirOp::Const) {
@@ -757,13 +780,19 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             int d = -1;
 
             if (op == "cst.z" || op == "cst.b") {
-                // copie de valeur constante → slot destination (le slot garde
-                // la propriété de son objet : allocation au premier passage)
+                // Alias SSA : aucune instruction émise, le temp pointe la
+                // constante partagée (voir const_alias + jit_free_valeur).
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
-                if (!load_operand(asm_, instr.args[0], X1)) { unsupported = true; break; }
-                asm_.ldr(X0, X20, d);
-                asm_.blr_helper(op == "cst.z" ? 25 : 26);   // z/b_copy_into
-                asm_.str(X0, X20, d);
+                auto it = (instr.args[0].kind == RirOp::Const)
+                              ? slot_const.find(instr.args[0].name) : slot_const.end();
+                if (it != slot_const.end()) {
+                    const_alias[d] = it->second;
+                } else {
+                    if (!load_operand(asm_, instr.args[0], X1)) { unsupported = true; break; }
+                    asm_.ldr(X0, X20, d);
+                    asm_.blr_helper(op == "cst.z" ? 25 : 26);   // z/b_copy_into
+                    asm_.str(X0, X20, d);
+                }
                 slot_ty[d] = instr.dest_ty;
                 continue;
             }
@@ -868,8 +897,9 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             if (op == "afficher") {
                 int s;
                 if (!slot_of(instr.args[0].name, s)) { unsupported = true; break; }
+                auto al = const_alias.find(s);
                 RirType ty = slot_ty.count(s) ? slot_ty[s] : RirU;
-                asm_.ldr(X0, X20, s);
+                asm_.ldr(X0, X20, al != const_alias.end() ? al->second : s);
                 if (ty == RirZ)      asm_.blr_helper(7);   // jit_afficher_z
                 else if (ty == RirB) asm_.blr_helper(16);  // jit_afficher_b
                 else if (ty == RirS) asm_.blr_helper(17);  // jit_afficher_s
@@ -899,7 +929,9 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             }
             if (op == "br.cond") {
                 if (!load_operand(asm_, instr.args[0], X0)) { unsupported = true; break; }
-                asm_.blr_helper(6);                   // jit_test_b
+                // jit_test_b lisait v->b sans condition : lecture directe du
+                // champ (ldrb = exactement la même valeur que l'appel helper).
+                asm_.emit(0x39400000 | (offsetof(Valeur, b) << 10));   // ldrb w0,[x0]
                 asm_.cbnz_label(X0, instr.label_cible);
                 asm_.b_label(instr.label_cible2);
                 continue;
