@@ -1,0 +1,17 @@
+# Banc « générateur de mot de passe » — l'équivalent Rose du script numpy.
+# Usage : rose mot_de_passe.rose [N]     (défaut : 1 000 000 000)
+#
+# graine() rend le tirage reproductible (identique octet pour octet sur
+# toute machine et tout moteur compilé) ; le tampon est un buffer contigu
+# d'octets et remplir_hasard exécute la boucle dans le moteur, comme
+# np.random.randint le fait en C côté numpy.
+$a = octets("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+$N = 1000000000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+$m0 = millisecondes()
+graine(2026)
+$buf = tampon($N)
+remplir_hasard($buf, $a)
+$m1 = millisecondes()
+>> longueur($buf)
+>> chaine($m1 - $m0) + " ms"
