@@ -137,7 +137,13 @@ RIR). Les dorés d'IR sont la prochaine étape (M1c).
 
 **Fait (M1c)** : dorés d'IR (`rirs/`, 23 cas, `rose rir` → texte
 canonique comparé). **Fait (M1d)** : le moteur n'exécute plus que le
-RIR (l'arbre n'intervient plus qu'avant l'émission). **Partiellement
+RIR (l'arbre n'intervient plus qu'avant l'émission). **Fait (M1e)** :
+le repli RIR couvre le langage entier — FFI `@dll/@sym` et
+`dynamique::` (partagée avec l'arbre par `ffi_appeler`), lecture typée
+`<<`, comparaisons `≈ / ?= / =~` (`cmp.approx`), `et/ou`, division
+exacte `/` contre euclidienne `div` (conforme à IR.md), disposition des
+blocs par curseur (la suite d'un `si` dans une boucle est atteignable) —
+la suite moteur est **verte (37/37)**. **Partiellement
 fait (M2)** : JIT AArch64 en production (voir l'encadré « État M2 »
 ci-dessus) ; le JIT x86-64 et le bundle `rose comp` natif restent à
 faire. Ces briques sont propres aux moteurs : les cibles d'export

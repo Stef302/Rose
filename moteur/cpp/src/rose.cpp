@@ -2352,7 +2352,8 @@ struct EmetteurRir {
                 if (op_nom == "+") op_nom = "add";
                 else if (op_nom == "-") op_nom = "sub";
                 else if (op_nom == "*") op_nom = "mul";
-                else if (op_nom == "/") op_nom = "div";
+                else if (op_nom == "/") op_nom = "div";     /* exacte → q */
+                else if (op_nom == "div") op_nom = "divf";  /* euclidienne (spec IR.md) */
                 else if (op_nom == "^") op_nom = "pow";
                 else if (op_nom == "%") op_nom = "rem.z";
                 else if (op_nom == "==") op_nom = "cmp.eq";
@@ -2363,7 +2364,14 @@ struct EmetteurRir {
                 else if (op_nom == ">=") op_nom = "cmp.ge";
                 else if (op_nom == "et") op_nom = "and";
                 else if (op_nom == "ou") op_nom = "or";
-                RirInstr i; i.dest = t; i.dest_ty = ty_attendu; i.op = op_nom + "." + nom_rir_type(ty_attendu);
+                RirInstr i; i.dest = t; i.dest_ty = ty_attendu;
+                /* comparaison tolérante : nom propre, indépendante du type */
+                if (op_nom == "≈" || op_nom == "?=" || op_nom == "=~") op_nom = "cmp.approx";
+                if (op_nom == "cmp.approx") {
+                    i.op = op_nom;
+                } else {
+                    i.op = op_nom + "." + nom_rir_type(ty_attendu);
+                }
                 RirOp o1; o1.kind = RirOp::Temp; o1.name = g; i.args.push_back(o1);
                 RirOp o2; o2.kind = RirOp::Temp; o2.name = d; i.args.push_back(o2);
                 bloc.instrs.push_back(i);
@@ -2433,6 +2441,7 @@ struct EmetteurRir {
             case IK::Lire: {
                 std::string t = nouveau_temp();
                 RirInstr i; i.dest = t; i.dest_ty = RirType::U; i.op = "lire";
+                i.message = std::to_string(instr->type_read);   /* type cible de la lecture */
                 RirOp o; o.kind = RirOp::Temp; o.name = "%" + instr->nom; i.args.push_back(o);
                 bloc.instrs.push_back(i);
                 RirInstr a; a.op = "affect"; a.message = instr->nom;
@@ -2487,10 +2496,12 @@ struct EmetteurRir {
                 bc.instrs.push_back(brc);
                 fn.blocs.push_back(bc);
                 RirBloc bcorps; bcorps.nom = corps_nom;
-                for (PI &i : instr->corps->instrs) emettre_instr(i, fn, bcorps);
-                RirInstr br2; br2.op = "br"; br2.label_cible = cond_nom;
-                bcorps.instrs.push_back(br2);
                 fn.blocs.push_back(bcorps);
+                /* le corps passe par le curseur fn.blocs.back() : un « si »
+                   interne coupe le bloc et sa suite y reprendra le fil */
+                for (PI &i : instr->corps->instrs) emettre_instr(i, fn, fn.blocs.back());
+                RirInstr br2; br2.op = "br"; br2.label_cible = cond_nom;
+                fn.blocs.back().instrs.push_back(br2);
                 RirBloc bfin; bfin.nom = fin_nom;
                 fn.blocs.push_back(bfin);
                 break;
@@ -2526,10 +2537,11 @@ struct EmetteurRir {
                 fn.blocs.push_back(bcond);
                 /* corps */
                 RirBloc bcorps; bcorps.nom = corps_nom;
-                for (PI &i : instr->corps->instrs) emettre_instr(i, fn, bcorps);
-                RirInstr brincr; brincr.op = "br"; brincr.label_cible = incr_nom;
-                bcorps.instrs.push_back(brincr);
                 fn.blocs.push_back(bcorps);
+                /* corps via curseur : un « si » interne coupe et rebranche */
+                for (PI &i : instr->corps->instrs) emettre_instr(i, fn, fn.blocs.back());
+                RirInstr brincr; brincr.op = "br"; brincr.label_cible = incr_nom;
+                fn.blocs.back().instrs.push_back(brincr);
                 /* incr */
                 RirBloc bincr; bincr.nom = incr_nom;
                 RirInstr add; add.op = "add.z";
@@ -2649,6 +2661,120 @@ struct EmetteurRir {
    Exécute un module RIR. Remplace progressivement l'interpréteur d'arbre.
    ═══════════════════════════════════════════════════════════════════ */
 
+/* FFI : poignées de bibliothèques + distribution d'appels par types.
+   Partagée entre l'interpréteur d'arbre (Interp) et le repli RIR (InterpRir) —
+   les poignées sont stockées dans la map passée en argument. */
+static void *ffi_poignee(Signature &sig, std::unordered_map<std::string, void*> &poignees) {
+        std::string nom = !sig.dll_son.empty() ? sig.dll_son
+                        : (!sig.dll.empty() ? sig.dll : std::string("c"));
+        auto it = poignees.find(nom);
+        if (it != poignees.end()) return it->second;
+        std::vector<std::string> candidats;
+        if (!sig.dll_son.empty() || nom.find('/') != std::string::npos) {
+            candidats.push_back(nom);
+        } else {
+#ifdef _WIN32
+            candidats.push_back(nom + ".dll");
+            candidats.push_back("lib" + nom + ".dll");
+            candidats.push_back(nom);
+#else
+            candidats.push_back("lib" + nom + ".so");
+            candidats.push_back(nom + ".so");
+            candidats.push_back(nom);
+            candidats.push_back("lib" + nom + ".so.6");
+            candidats.push_back("lib" + nom + ".so.7");
+            candidats.push_back("lib" + nom + ".so.8");
+#endif
+        }
+        void *h = nullptr;
+        for (auto &c : candidats) {
+            h = dlopen(c.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if (h) break;
+        }
+        if (!h) erreur_runtime("chargement de bibliothèque impossible (" + nom + ")");
+        poignees[nom] = h;
+        return h;
+    }
+
+static Valeur ffi_appeler(Signature &sig, std::vector<Valeur> &args,
+                          std::unordered_map<std::string, void*> &poignees) {
+    void *h = ffi_poignee(sig, poignees);
+    const std::string &sym = sig.symbole.empty() ? sig.nom : sig.symbole;
+    void *s = dlsym(h, sym.c_str());
+    if (!s) erreur_runtime("symbole introuvable dans la bibliothèque (" + sym + ")");
+    /* types C : entier→long long, flottant→double, booleen→int, chaine→char* */
+    auto zarg = [&](size_t i) { return z_vers_ll(vers_z(args[i]).get_mpz_t()); };
+    auto darg = [&](size_t i) { return vers_d(args[i]); };
+    auto sent = [&](size_t i) { return sig.params[i].second.n == T_CHAINE; };
+    switch (sig.retour.n) {
+        case T_ENTIER: {
+        switch (args.size()) {
+            case 0: { auto fp = (long long (*)())s; return Valeur::de_z(z_depuis_ll(fp())); }
+            case 1: {
+                auto fp = (long long (*)(long long))s;
+                return Valeur::de_z(z_depuis_ll(fp(zarg(0))));
+            }
+            case 2: {
+                auto fp = (long long (*)(long long, long long))s;
+                return Valeur::de_z(z_depuis_ll(fp(zarg(0), zarg(1))));
+            }
+            default: erreur_runtime("fonction externe : plus de 2 arguments entiers non supporté");
+        }
+        break;
+        }
+        case T_FLOTTANT: {
+        switch (args.size()) {
+            case 0: { auto fp = (double (*)())s; return Valeur::de_f(fp()); }
+            case 1: {
+                if (sent(0)) { auto fp = (double (*)(const char *))s; return Valeur::de_f(fp(args[0].s.c_str())); }
+                if (sig.params[0].second.n == T_FLOTTANT) { auto fp = (double (*)(double))s; return Valeur::de_f(fp(darg(0))); }
+                if (sig.params[0].second.n == T_BOOLEEN) { auto fp = (double (*)(int))s; return Valeur::de_f(fp(args[0].b ? 1 : 0)); }
+                auto fp = (double (*)(long long))s;
+                return Valeur::de_f(fp(zarg(0)));
+            }
+            case 2: {
+                int p0 = sig.params[0].second.n, p1 = sig.params[1].second.n;
+                if (p0 == T_FLOTTANT && p1 == T_FLOTTANT) { auto fp = (double (*)(double, double))s; return Valeur::de_f(fp(darg(0), darg(1))); }
+                if (p0 == T_FLOTTANT) { auto fp = (double (*)(double, long long))s; return Valeur::de_f(fp(darg(0), zarg(1))); }
+                if (p1 == T_FLOTTANT) { auto fp = (double (*)(long long, double))s; return Valeur::de_f(fp(zarg(0), darg(1))); }
+                auto fp = (double (*)(long long, long long))s;
+                return Valeur::de_f(fp(zarg(0), zarg(1)));
+            }
+            case 3: {
+                auto fp = (double (*)(double, double, double))s;
+                return Valeur::de_f(fp(darg(0), darg(1), darg(2)));
+            }
+            default: erreur_runtime("fonction externe flottante : arité non supportée");
+        }
+        break;
+        }
+        case T_BOOLEEN: {
+        switch (args.size()) {
+            case 0: { auto fp = (int (*)())s; return Valeur::de_b(fp() != 0); }
+            case 1: { auto fp = (int (*)(long long))s; return Valeur::de_b(fp(zarg(0)) != 0); }
+            default: erreur_runtime("fonction externe booléenne : arité non supportée");
+        }
+        break;
+        }
+        case T_CHAINE: {
+        switch (args.size()) {
+            case 0: { auto fp = (const char *(*)())s; const char *r = fp(); return Valeur::de_s(r ? r : ""); }
+            case 1: {
+                if (sent(0)) { auto fp = (const char *(*)(const char *))s; const char *r = fp(args[0].s.c_str()); return Valeur::de_s(r ? r : ""); }
+                auto fp = (const char *(*)(long long))s;
+                const char *r = fp(zarg(0));
+                return Valeur::de_s(r ? r : "");
+            }
+            default: erreur_runtime("fonction externe texte : arité non supportée");
+        }
+        break;
+        }
+        default:
+        erreur_runtime("type de retour externe non supporté");
+    }
+    return Valeur::vide();
+    }
+
 struct InterpRir {
     RirModule &mod;
     /* variables globales */
@@ -2664,8 +2790,53 @@ struct InterpRir {
     std::vector<Frame> pile;
     std::unordered_map<std::string, void*> poignees;
     std::vector<void*> poignees_dyn;
+    /* signatures du programme (pour retrouver les fonctions externes @dll/@sym) */
+    Programme *prog = nullptr;
 
     explicit InterpRir(RirModule &m) : mod(m) {}
+
+    /* ── fonctions dynamiques (dlopen à l'exécution) ──────────────── */
+    Valeur dynamique(const std::string &nom, std::vector<Valeur> &args) {
+        if (nom == "charger") {
+            void *h = dlopen(args[0].s.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if (!h) erreur_runtime("chargement de bibliothèque impossible (" + args[0].s + ")");
+            poignees_dyn.push_back(h);
+            return Valeur::de_z(mpz_class((unsigned long)(uintptr_t)h));
+        }
+        if (nom == "fermer") {
+            void *h = (void*)(uintptr_t)mpz_get_ui(args[0].z.get_mpz_t());
+            dlclose(h);
+            for (auto it = poignees_dyn.begin(); it != poignees_dyn.end(); ++it)
+                if (*it == h) { poignees_dyn.erase(it); break; }
+            return Valeur::vide();
+        }
+        if (nom == "appeler0" || nom == "appeler1" || nom == "appeler2") {
+            void *h = (void*)(uintptr_t)mpz_get_ui(args[0].z.get_mpz_t());
+            void *s = dlsym(h, args[1].s.c_str());
+            if (!s) erreur_runtime("symbole introuvable dans la bibliothèque (" + args[1].s + ")");
+            if (nom == "appeler0") {
+                double (*fp)(void) = (double (*)(void))s;
+                return Valeur::de_f(fp());
+            }
+            if (nom == "appeler1") {
+                double a = vers_d(args[2]);
+                if (args[2].ty == T_ENTIER) {
+                    double (*fp)(long long) = (double (*)(long long))s;
+                    return Valeur::de_f(fp(mpz_get_si(args[2].z.get_mpz_t())));
+                }
+                double (*fp)(double) = (double (*)(double))s;
+                return Valeur::de_f(fp(a));
+            }
+            /* appeler2 : signatures doubles, mixtes */
+            bool a_ent = args[2].ty == T_ENTIER, b_ent = args[3].ty == T_ENTIER;
+            if (!a_ent && !b_ent) { auto fp = (double (*)(double, double))s; return Valeur::de_f(fp(vers_d(args[2]), vers_d(args[3]))); }
+            if (a_ent && !b_ent)  { auto fp = (double (*)(long long, double))s; return Valeur::de_f(fp(mpz_get_si(vers_z(args[2]).get_mpz_t()), vers_d(args[3]))); }
+            if (!a_ent && b_ent)  { auto fp = (double (*)(double, long long))s; return Valeur::de_f(fp(vers_d(args[2]), mpz_get_si(vers_z(args[3]).get_mpz_t()))); }
+            { auto fp = (double (*)(long long, long long))s; return Valeur::de_f(fp(mpz_get_si(vers_z(args[2]).get_mpz_t()), mpz_get_si(vers_z(args[3]).get_mpz_t()))); }
+        }
+        erreur_runtime("fonction dynamique::" + nom + " inconnue");
+        return Valeur::vide();
+    }
 
     /* ── recherche de fonction ─────────────────────────────────────── */
     RirFonction *trouver_fonction(const std::string &nom) {
@@ -2707,7 +2878,8 @@ struct InterpRir {
                 }
                 /* constante inline (pas dans la table) */
                 if (op.name.rfind("@c", 0) != 0) {
-                    /* chaîne littérale */
+                    /* littéral non chiffré : booléen selon le type déclaré, sinon chaîne */
+                    if (op.ty == RirType::B) return Valeur::de_b(op.name == "vrai");
                     return Valeur::de_s(op.name);
                 }
                 if (op.name.rfind("@c", 0) == 0) {
@@ -2778,32 +2950,68 @@ struct InterpRir {
             }
             return 0;
         }
-        if (i.op.rfind("div", 0) == 0) {
+        if (i.op.rfind("divf", 0) == 0) {
+            /* division euclidienne : flottant → plancher, rationnel → entier, entier → tronqué */
             Valeur g = get_val(i.args[0]), d = get_val(i.args[1]);
-            if (g.ty == T_ENTIER && d.ty == T_ENTIER) {
+            if (g.ty == T_FLOTTANT || d.ty == T_FLOTTANT) {
+                double b = vers_d(d);
+                if (b == 0.0) erreur_runtime("division euclidienne par zéro");
+                frame.vals[i.dest] = Valeur::de_f(std::floor(vers_d(g) / b));
+            } else if (g.ty == T_RATIONNEL || d.ty == T_RATIONNEL) {
+                mpq_class dq = vers_q(d);
+                if (sgn_q(dq) == 0) erreur_runtime("division euclidienne par zéro");
+                mpq_class r = vers_q(g) / dq;
+                mpz_class f2;
+                mpz_fdiv_q(f2.get_mpz_t(), r.get_num().get_mpz_t(), r.get_den().get_mpz_t());
+                frame.vals[i.dest] = Valeur::de_z(f2);
+            } else {
                 mpz_class dz = vers_z(d);
-                if (mpz_sgn(dz.get_mpz_t()) == 0) erreur_runtime("division par zéro");
+                if (mpz_sgn(dz.get_mpz_t()) == 0) erreur_runtime("division euclidienne par zéro");
                 mpz_class r; mpz_fdiv_q(r.get_mpz_t(), vers_z(g).get_mpz_t(), dz.get_mpz_t());
                 frame.vals[i.dest] = Valeur::de_z(r);
-                return 0;
             }
-            if (d.ty == T_FLOTTANT) frame.vals[i.dest] = Valeur::de_f(vers_d(g) / vers_d(d));
-            else if (g.ty == T_RATIONNEL || d.ty == T_RATIONNEL) frame.vals[i.dest] = Valeur::de_q(vers_q(g) / vers_q(d));
-            else {
-                mpz_class num = vers_z(g), den = vers_z(d);
-                if (mpz_sgn(den.get_mpz_t()) == 0) erreur_runtime("division par zéro");
-                mpq_class r(num, den); r.canonicalize();
-                frame.vals[i.dest] = Valeur::de_q(r);
+            return 0;
+        }
+        if (i.op.rfind("div", 0) == 0) {
+            /* division exacte : flottant → flottant, sinon toujours rationnel */
+            Valeur g = get_val(i.args[0]), d = get_val(i.args[1]);
+            if (g.ty == T_FLOTTANT || d.ty == T_FLOTTANT) {
+                if (vers_d(d) == 0.0) erreur_runtime("division par zéro");
+                frame.vals[i.dest] = Valeur::de_f(vers_d(g) / vers_d(d));
+            } else {
+                mpq_class dq = vers_q(d);
+                if (sgn_q(dq) == 0) erreur_runtime("division par zéro");
+                frame.vals[i.dest] = Valeur::de_q(vers_q(g) / dq);
             }
             return 0;
         }
         if (i.op.rfind("pow", 0) == 0) {
+            /* miroir de l'évaluateur d'arbre : flottant → pow double ;
+               sinon exposant entier (tronqué si rationnel), q^e et z^négatif → q */
             Valeur g = get_val(i.args[0]), d = get_val(i.args[1]);
-            if (g.ty == T_ENTIER && d.ty == T_ENTIER) {
-                mpz_class r; mpz_pow_ui(r.get_mpz_t(), vers_z(g).get_mpz_t(), (unsigned long)mpz_get_ui(vers_z(d).get_mpz_t()));
-                frame.vals[i.dest] = Valeur::de_z(r);
-            } else {
-                frame.vals[i.dest] = Valeur::de_f(std::pow(vers_d(g), vers_d(d)));
+            if (d.ty == T_FLOTTANT) frame.vals[i.dest] = Valeur::de_f(std::pow(vers_d(g), d.f));
+            else if (g.ty == T_FLOTTANT) frame.vals[i.dest] = Valeur::de_f(std::pow(g.f, vers_d(d)));
+            else {
+                mpz_class expo = vers_z(d);
+                if (!mpz_fits_slong_p(expo.get_mpz_t()))
+                    erreur_runtime("exposant démesuré (la puissance exploserait au-delà de tout calcul)");
+                long e2 = mpz_get_si(expo.get_mpz_t());
+                if (g.ty == T_RATIONNEL) {
+                    mpq_class r; rose_pow_rationnel(r, vers_q(g), e2);
+                    frame.vals[i.dest] = Valeur::de_q(r);
+                } else {
+                    mpz_class base = vers_z(g);
+                    if (e2 >= 0) {
+                        mpz_class r;
+                        mpz_pow_ui(r.get_mpz_t(), base.get_mpz_t(), (unsigned long)e2);
+                        frame.vals[i.dest] = Valeur::de_z(r);
+                    } else {
+                        if (mpz_sgn(base.get_mpz_t()) == 0) erreur_runtime("0^exposant négatif");
+                        mpq_class r;
+                        rose_pow_rationnel(r, mpq_class(base), e2);
+                        frame.vals[i.dest] = Valeur::de_q(r);
+                    }
+                }
             }
             return 0;
         }
@@ -2817,22 +3025,37 @@ struct InterpRir {
         if (i.op.rfind("cmp.", 0) == 0) {
             Valeur g = get_val(i.args[0]), d = get_val(i.args[1]);
             bool r = false;
-            if (i.op.rfind("cmp.eq", 0) == 0) r = rose_valeur_egale(g, d);
+            if (i.op == "cmp.approx") {
+                /* ≈ / ?= / =~ : tolérance 1e-9 relative sur flottants (cible C) */
+                if (g.ty == T_FLOTTANT || d.ty == T_FLOTTANT) {
+                    double a = vers_d(g), b = vers_d(d);
+                    double scale = std::fabs(a) > std::fabs(b) ? std::fabs(a) : std::fabs(b);
+                    if (scale < 1.0) scale = 1.0;
+                    r = std::fabs(a - b) <= 1e-9 * scale;
+                } else {
+                    r = cmp_vals(g, d) == 0;
+                }
+            }
+            else if (i.op.rfind("cmp.eq", 0) == 0) r = rose_valeur_egale(g, d);
             else if (i.op.rfind("cmp.ne", 0) == 0) r = !rose_valeur_egale(g, d);
             else if (i.op.rfind("cmp.lt", 0) == 0) r = cmp_vals(g, d) < 0;
             else if (i.op.rfind("cmp.le", 0) == 0) r = cmp_vals(g, d) <= 0;
             else if (i.op.rfind("cmp.gt", 0) == 0) r = cmp_vals(g, d) > 0;
             else if (i.op.rfind("cmp.ge", 0) == 0) r = cmp_vals(g, d) >= 0;
-            else if (i.op == "?=.b") {
-                double scale = std::max({std::fabs(vers_d(g)), std::fabs(vers_d(d)), 1.0});
-                r = std::fabs(vers_d(g) - vers_d(d)) <= 1e-9 * scale;
-            }
             frame.vals[i.dest] = Valeur::de_b(r);
             return 0;
         }
-        if (i.op == "and.b" || i.op == "or.b") {
-            bool g = get_val(i.args[0]).b, d = get_val(i.args[1]).b;
-            frame.vals[i.dest] = Valeur::de_b(i.op == "and.b" ? (g && d) : (g || d));
+        if (i.op.rfind("and.", 0) == 0 || i.op.rfind("or.", 0) == 0) {
+            /* et / ou booléens (mêmes valeurs de vérité que l'arbre) */
+            auto bool_de = [](const Valeur &v) {
+                if (v.ty == T_BOOLEEN) return v.b;
+                if (v.ty == T_ENTIER) return mpz_sgn(v.z.get_mpz_t()) != 0;
+                if (v.ty == T_FLOTTANT) return v.f != 0.0;
+                if (v.ty == T_RATIONNEL) return sgn_q(v.q) != 0;
+                return false;
+            };
+            bool g = bool_de(get_val(i.args[0])), d = bool_de(get_val(i.args[1]));
+            frame.vals[i.dest] = Valeur::de_b(i.op.rfind("and", 0) == 0 ? (g && d) : (g || d));
             return 0;
         }
         if (i.op == "not.b") {
@@ -2917,6 +3140,23 @@ struct InterpRir {
             }
             /* fonction utilisateur */
             RirFonction *rf = trouver_fonction("$" + nom);
+            if (!rf && prog) {
+                /* fonction externe @dll/@sym : FFI via dlopen/dlsym */
+                auto sit = prog->signatures.find(nom);
+                if (sit != prog->signatures.end() && sit->second && !sit->second->corps &&
+                    (!sit->second->dll.empty() || !sit->second->dll_son.empty() ||
+                     !sit->second->symbole.empty())) {
+                    Valeur res = ffi_appeler(*sit->second, args, poignees);
+                    if (!i.dest.empty()) frame.vals[i.dest] = std::move(res);
+                    return 0;
+                }
+            }
+            if (!rf && (nom == "charger" || nom == "fermer" ||
+                        nom == "appeler0" || nom == "appeler1" || nom == "appeler2")) {
+                Valeur res = dynamique(nom, args);
+                if (!i.dest.empty()) frame.vals[i.dest] = std::move(res);
+                return 0;
+            }
             if (!rf) {
                 /* builtin stdlib */
                 std::vector<Valeur> args2;
@@ -2995,6 +3235,13 @@ struct InterpRir {
             frame.vals[i.dest] = Valeur::de_z(mpz_class(listv.l->size()));
             return 0;
         }
+        if (i.op == "lire") {
+            /* message = type cible (entier/flottant/rationnel), choisi par le
+               vérificateur selon la variable ; args[0] = la variable cible */
+            int ty = i.message.empty() ? T_ENTIER : std::atoi(i.message.c_str());
+            frame.vals[i.dest] = lire_selon(ty);
+            return 0;
+        }
         if (i.op == "affect") {
             Valeur v = get_val(i.args[0]);
             std::string nom_var = i.message;
@@ -3043,8 +3290,15 @@ struct InterpRir {
             RirBloc *bloc = trouver_bloc(fn, frame.bloc_courant);
             if (!bloc) { erreur_runtime("bloc introuvable : " + frame.bloc_courant); return 1; }
             if (frame.pc >= bloc->instrs.size()) {
-                /* fin du bloc sans retour explicite */
-                return 0;
+                /* fin de bloc sans saut : on tombe dans le bloc suivant
+                   (ordre linéaire du vecteur de blocs), sinon sortie */
+                size_t idx = fn.blocs.size();
+                for (size_t k = 0; k < fn.blocs.size(); k++)
+                    if (fn.blocs[k].nom == frame.bloc_courant) { idx = k; break; }
+                if (idx + 1 >= fn.blocs.size()) return 0;
+                frame.bloc_courant = fn.blocs[idx + 1].nom;
+                frame.pc = 0;
+                continue;
             }
             RirInstr &i = bloc->instrs[frame.pc];
             frame.pc++;
@@ -3133,114 +3387,9 @@ struct Interp {
         return res;
     }
 
-    void *poignee_bibliotheque(Signature &sig) {
-        std::string nom = !sig.dll_son.empty() ? sig.dll_son
-                        : (!sig.dll.empty() ? sig.dll : std::string("c"));
-        auto it = poignees.find(nom);
-        if (it != poignees.end()) return it->second;
-        std::vector<std::string> candidats;
-        if (!sig.dll_son.empty() || nom.find('/') != std::string::npos) {
-            candidats.push_back(nom);
-        } else {
-#ifdef _WIN32
-            candidats.push_back(nom + ".dll");
-            candidats.push_back("lib" + nom + ".dll");
-            candidats.push_back(nom);
-#else
-            candidats.push_back("lib" + nom + ".so");
-            candidats.push_back(nom + ".so");
-            candidats.push_back(nom);
-            candidats.push_back("lib" + nom + ".so.6");
-            candidats.push_back("lib" + nom + ".so.7");
-            candidats.push_back("lib" + nom + ".so.8");
-#endif
-        }
-        void *h = nullptr;
-        for (auto &c : candidats) {
-            h = dlopen(c.c_str(), RTLD_NOW | RTLD_LOCAL);
-            if (h) break;
-        }
-        if (!h) erreur_runtime("chargement de bibliothèque impossible (" + nom + ")");
-        poignees[nom] = h;
-        return h;
-    }
-
+    void *poignee_bibliotheque(Signature &sig) { return ffi_poignee(sig, poignees); }
     Valeur appeler_externe(Signature &sig, std::vector<Valeur> &args) {
-        void *h = poignee_bibliotheque(sig);
-        const std::string &sym = sig.symbole.empty() ? sig.nom : sig.symbole;
-        void *s = dlsym(h, sym.c_str());
-        if (!s) erreur_runtime("symbole introuvable dans la bibliothèque (" + sym + ")");
-        /* types C : entier→long long, flottant→double, booleen→int, chaine→char* */
-        auto zarg = [&](size_t i) { return z_vers_ll(vers_z(args[i]).get_mpz_t()); };
-        auto darg = [&](size_t i) { return vers_d(args[i]); };
-        auto sent = [&](size_t i) { return sig.params[i].second.n == T_CHAINE; };
-        switch (sig.retour.n) {
-            case T_ENTIER: {
-                switch (args.size()) {
-                    case 0: { auto fp = (long long (*)())s; return Valeur::de_z(z_depuis_ll(fp())); }
-                    case 1: {
-                        auto fp = (long long (*)(long long))s;
-                        return Valeur::de_z(z_depuis_ll(fp(zarg(0))));
-                    }
-                    case 2: {
-                        auto fp = (long long (*)(long long, long long))s;
-                        return Valeur::de_z(z_depuis_ll(fp(zarg(0), zarg(1))));
-                    }
-                    default: erreur_runtime("fonction externe : plus de 2 arguments entiers non supporté");
-                }
-                break;
-            }
-            case T_FLOTTANT: {
-                switch (args.size()) {
-                    case 0: { auto fp = (double (*)())s; return Valeur::de_f(fp()); }
-                    case 1: {
-                        if (sent(0)) { auto fp = (double (*)(const char *))s; return Valeur::de_f(fp(args[0].s.c_str())); }
-                        if (sig.params[0].second.n == T_FLOTTANT) { auto fp = (double (*)(double))s; return Valeur::de_f(fp(darg(0))); }
-                        if (sig.params[0].second.n == T_BOOLEEN) { auto fp = (double (*)(int))s; return Valeur::de_f(fp(args[0].b ? 1 : 0)); }
-                        auto fp = (double (*)(long long))s;
-                        return Valeur::de_f(fp(zarg(0)));
-                    }
-                    case 2: {
-                        int p0 = sig.params[0].second.n, p1 = sig.params[1].second.n;
-                        if (p0 == T_FLOTTANT && p1 == T_FLOTTANT) { auto fp = (double (*)(double, double))s; return Valeur::de_f(fp(darg(0), darg(1))); }
-                        if (p0 == T_FLOTTANT) { auto fp = (double (*)(double, long long))s; return Valeur::de_f(fp(darg(0), zarg(1))); }
-                        if (p1 == T_FLOTTANT) { auto fp = (double (*)(long long, double))s; return Valeur::de_f(fp(zarg(0), darg(1))); }
-                        auto fp = (double (*)(long long, long long))s;
-                        return Valeur::de_f(fp(zarg(0), zarg(1)));
-                    }
-                    case 3: {
-                        auto fp = (double (*)(double, double, double))s;
-                        return Valeur::de_f(fp(darg(0), darg(1), darg(2)));
-                    }
-                    default: erreur_runtime("fonction externe flottante : arité non supportée");
-                }
-                break;
-            }
-            case T_BOOLEEN: {
-                switch (args.size()) {
-                    case 0: { auto fp = (int (*)())s; return Valeur::de_b(fp() != 0); }
-                    case 1: { auto fp = (int (*)(long long))s; return Valeur::de_b(fp(zarg(0)) != 0); }
-                    default: erreur_runtime("fonction externe booléenne : arité non supportée");
-                }
-                break;
-            }
-            case T_CHAINE: {
-                switch (args.size()) {
-                    case 0: { auto fp = (const char *(*)())s; const char *r = fp(); return Valeur::de_s(r ? r : ""); }
-                    case 1: {
-                        if (sent(0)) { auto fp = (const char *(*)(const char *))s; const char *r = fp(args[0].s.c_str()); return Valeur::de_s(r ? r : ""); }
-                        auto fp = (const char *(*)(long long))s;
-                        const char *r = fp(zarg(0));
-                        return Valeur::de_s(r ? r : "");
-                    }
-                    default: erreur_runtime("fonction externe texte : arité non supportée");
-                }
-                break;
-            }
-            default:
-                erreur_runtime("type de retour externe non supporté");
-        }
-        return Valeur::vide();
+        return ffi_appeler(sig, args, poignees);
     }
 
     /* ── instructions ──────────────────────────────────────────────── */
@@ -3820,6 +3969,7 @@ static void *fil_pipeline(void *p) {
         } else {
             /* Repli : interpréteur RIR (cœur du moteur M1) */
             InterpRir interp(mod);
+        interp.prog = &prog;
             interp.executer();
             ctx->code = 0;
         }
@@ -3957,6 +4107,7 @@ int main(int argc, char **argv) {
         for (auto &kv : prog.signatures) if (kv.second->corps) em.emettre_fonction(*kv.second);
         em.emettre_principal(prog);
         InterpRir interp(mod);
+        interp.prog = &prog;
         interp.executer();
         return 0;
     }
