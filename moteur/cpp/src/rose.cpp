@@ -2296,6 +2296,11 @@ struct EmetteurRir {
     EmetteurRir(RirModule &m) : mod(m) {}
     int compteur_temp = 0;
     std::string nouveau_temp() { return "%t" + std::to_string(compteur_temp++); }
+    int compteur_bloc = 0;
+    /* Nom de bloc unique : le numéro de ligne seul collide quand deux
+       structures figurent sur la même ligne physique (`si` imbriqués écrits
+       sur une ligne), ce qui mélange les cibles de branchement. */
+    std::string suffixe_bloc() { return "_" + std::to_string(compteur_bloc++); }
 
     /* émet une expression, retourne le temporaire contenant le résultat */
     std::string emettre_expr(PE e, RirBloc &bloc, RirType ty_attendu) {
@@ -2458,34 +2463,40 @@ struct EmetteurRir {
             }
             case IK::Si: {
                 std::string cond = emettre_expr(instr->test, bloc, RirType::B);
-                std::string alors_nom = ".alors_" + std::to_string(instr->ligne);
-                std::string sinon_nom = ".sinon_" + std::to_string(instr->ligne);
-                std::string fin_nom = ".fin_" + std::to_string(instr->ligne);
+                std::string suf = suffixe_bloc();
+                std::string alors_nom = ".alors_" + std::to_string(instr->ligne) + suf;
+                std::string sinon_nom = ".sinon_" + std::to_string(instr->ligne) + suf;
+                std::string fin_nom = ".fin_" + std::to_string(instr->ligne) + suf;
                 RirInstr br; br.op = "br.cond"; 
                 RirOp co; co.kind = RirOp::Temp; co.name = cond; br.args.push_back(co);
                 br.label_cible = alors_nom; br.label_cible2 = sinon_nom;
                 bloc.instrs.push_back(br);
-                /* bloc alors */
+                /* bloc alors — émis via le curseur fn.blocs.back() : un « si »
+                   interne coupe le bloc et la suite du corps reprend dans son
+                   bloc « fin » ; avec une cible fixe, elle resterait collée
+                   après le br.cond (mort) et le « fin » interne choirait sur
+                   un bloc voisin. */
                 RirBloc ba; ba.nom = alors_nom;
-                for (PI &i : instr->alors->instrs) emettre_instr(i, fn, ba);
-                RirInstr br2; br2.op = "br"; br2.label_cible = fin_nom;
-                ba.instrs.push_back(br2);
                 fn.blocs.push_back(ba);
+                for (PI &i : instr->alors->instrs) emettre_instr(i, fn, fn.blocs.back());
+                RirInstr br2; br2.op = "br"; br2.label_cible = fin_nom;
+                fn.blocs.back().instrs.push_back(br2);
                 /* bloc sinon */
                 RirBloc bs; bs.nom = sinon_nom;
-                if (instr->sinon) for (PI &i : instr->sinon->instrs) emettre_instr(i, fn, bs);
-                RirInstr br3; br3.op = "br"; br3.label_cible = fin_nom;
-                bs.instrs.push_back(br3);
                 fn.blocs.push_back(bs);
+                if (instr->sinon) for (PI &i : instr->sinon->instrs) emettre_instr(i, fn, fn.blocs.back());
+                RirInstr br3; br3.op = "br"; br3.label_cible = fin_nom;
+                fn.blocs.back().instrs.push_back(br3);
                 /* bloc fin */
                 RirBloc bf; bf.nom = fin_nom;
                 fn.blocs.push_back(bf);
                 break;
             }
             case IK::TantQue: {
-                std::string cond_nom = ".cond_" + std::to_string(instr->ligne);
-                std::string corps_nom = ".corps_" + std::to_string(instr->ligne);
-                std::string fin_nom = ".fin_" + std::to_string(instr->ligne);
+                std::string suf = suffixe_bloc();
+                std::string cond_nom = ".cond_" + std::to_string(instr->ligne) + suf;
+                std::string corps_nom = ".corps_" + std::to_string(instr->ligne) + suf;
+                std::string fin_nom = ".fin_" + std::to_string(instr->ligne) + suf;
                 RirInstr br; br.op = "br"; br.label_cible = cond_nom;
                 bloc.instrs.push_back(br);
                 RirBloc bc; bc.nom = cond_nom;
@@ -2509,11 +2520,12 @@ struct EmetteurRir {
             case IK::Pour: {
                 /* pour $i de debut vers fin { corps } */
                 std::string var = instr->nom;
-                std::string init_nom = ".init_" + std::to_string(instr->ligne);
-                std::string cond_nom = ".cond_" + std::to_string(instr->ligne);
-                std::string corps_nom = ".corps_" + std::to_string(instr->ligne);
-                std::string incr_nom = ".incr_" + std::to_string(instr->ligne);
-                std::string fin_nom = ".fin_" + std::to_string(instr->ligne);
+                std::string suf = suffixe_bloc();
+                std::string init_nom = ".init_" + std::to_string(instr->ligne) + suf;
+                std::string cond_nom = ".cond_" + std::to_string(instr->ligne) + suf;
+                std::string corps_nom = ".corps_" + std::to_string(instr->ligne) + suf;
+                std::string incr_nom = ".incr_" + std::to_string(instr->ligne) + suf;
+                std::string fin_nom = ".fin_" + std::to_string(instr->ligne) + suf;
                 /* init */
                 RirInstr ia; ia.op = "affect"; ia.message = var;
                 std::string debut_t = emettre_expr(instr->debut, bloc, RirType::Z);
@@ -3911,6 +3923,23 @@ static void *fil_pipeline(void *p) {
         EmetteurRir em(mod);
         for (auto &kv : prog.signatures) if (kv.second->corps) em.emettre_fonction(*kv.second);
         em.emettre_principal(prog);
+
+        /* Trace RIR (activée par ROSE_RIR_DUMP=1) : blocs et instructions. */
+        if (getenv("ROSE_RIR_DUMP")) {
+            for (auto &f : mod.fonctions) {
+                printf("fonction %s (params %zu)\n", f.nom.c_str(), f.params.size());
+                for (auto &b : f.blocs) {
+                    printf("  bloc %s\n", b.nom.c_str());
+                    for (auto &in : b.instrs) {
+                        printf("    %s dest=%s msg=%s cible=%s cible2=%s args=[", in.op.c_str(),
+                               in.dest.c_str(), in.message.c_str(),
+                               in.label_cible.c_str(), in.label_cible2.c_str());
+                        for (auto &a : in.args) printf(" %s", a.name.c_str());
+                        printf("]\n");
+                    }
+                }
+            }
+        }
 
         /* ── M2: essayer le JIT natif, sinon repli sur l'interpréteur ──
            ROSE_NO_JIT=1 force le repli (comparaisons de parité).        */
