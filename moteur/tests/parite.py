@@ -141,6 +141,16 @@ PROGRAMMES = [
      'fn echelle(x: flottant, k: entier) -> flottant { retour x * k }\n'
      '>> echelle(2.5, 3)\n'
      '>> echelle($b, $a)\n', None),
+    # Builtins numériques (helpers natifs du JIT C++, interpreteurs ailleurs).
+    ("builtins numeriques",
+     '>> pgcd(48, 36)\n'
+     '>> ppcm(4, 6)\n'
+     '>> fibonacci(25)\n'
+     '>> est_premier(89)\n'
+     '>> nb_chiffres(2 ^ 128)\n'
+     '$a = 0\n'
+     'pour k de 1 vers 100 { $a = $a + pgcd(k, 6) }\n'
+     '>> $a\n', None),
 ]
 
 ERREURS_RUNTIME = [

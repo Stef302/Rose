@@ -4080,7 +4080,17 @@ extern Valeur* jit_neg_z_into(Valeur* dst, Valeur* a);           /* 29 */
 extern Valeur* jit_bool_into(Valeur* dst, int cond);             /* 30 */
 
 /* Nombre de helpers enregistrés pour le JIT */
-static const int NJIT_HELPERS = 31;
+static const int NJIT_HELPERS = 51;
+
+/* Pont JIT → stdlib (M2.13) : les builtins numériques sont appelés depuis le
+   code JIT natif par CE exact enregistrement — mêmes fonctions, mêmes
+   sémantiques, mêmes erreurs que l'interpréteur. Enregistré en helper 50. */
+static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
+    std::vector<Valeur> va;
+    for (int i = 0; i < nargs; i++) va.push_back(*args[i]);
+    Valeur res = stdlib(std::string(nom), va, 0);
+    return new Valeur(std::move(res));
+}
 
 /* Le pipeline complet tourne sur un thread à très grande pile : la
    récursion Rose (éval → appel → exécution…) y est limitée par la
@@ -4151,6 +4161,7 @@ static void *fil_pipeline(void *p) {
             (void*)&jit_neg_z_into,     /* 29 */
             (void*)&jit_bool_into,      /* 30 */
         };
+        jit_helpers[50] = (void*)&rose_appel_builtin;
         void* jit_entry = no_jit ? nullptr
                                  : rose_jit_compile(&mod, jit_helpers, NJIT_HELPERS);
 

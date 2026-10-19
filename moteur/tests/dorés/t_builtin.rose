@@ -1,0 +1,17 @@
+>> pgcd(12, 18)
+>> ppcm(4, 6)
+>> fibonacci(30)
+>> est_premier(97)
+>> est_premier(91)
+>> nb_chiffres(2 ^ 64)
+>> factorielle(20)
+>> compter_premiers(1000)
+$x = max(2.5, 1)
+$y = min(3, 5)
+$z = abs(0 - 7)
+>> $x
+>> $y
+>> $z
+$a = 0
+pour k de 1 vers 1000 { $a = $a + pgcd(k, 12) + fibonacci(k % 15) }
+>> $a
