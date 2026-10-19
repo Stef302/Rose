@@ -110,6 +110,9 @@ public:
     void reset();
 
 private:
+    // Backend x86-64 (jit_x64.cpp) — émetteur autonome, mêmes helpers C++.
+    JitEntryFn compile_function_x64(RirFonction* fn);
+
     std::unordered_map<std::string, JitEntryFn> m_entries;  // nom fonction -> entry
     std::vector<void*> m_helpers;                           // adresses des helpers C++
     std::vector<A64Buf*> m_buffers;                         // buffers mmap alloués (pour cleanup)
@@ -126,5 +129,8 @@ public:
 
 // Construit la table d'appels d'un module compilé (appel récursif/croisé).
 void jit_build_call_table(JitCompiler& compiler, struct RirModule* mod);
+
+// Pool de constantes partagées (jit.cpp), rempli par les deux backends.
+extern std::vector<Valeur*> g_shared_consts;
 
 #endif // ROSE_JIT_H

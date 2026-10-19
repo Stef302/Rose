@@ -10,6 +10,9 @@ Rose language.zip
 bin/
 *.exe
 *.pdb
+moteur/cpp/rose-x64
+moteur/cpp/test_jit-x64
+moteur/cpp/rose-x64-qemu
 
 # Binaires d'exécution sous moteur/ (conservés localement, non trackés)
 moteur/cpp/rose

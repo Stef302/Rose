@@ -19,14 +19,14 @@ else
 LIEN := -lgmpxx -lgmp
 endif
 
-rose: src/rose.cpp src/jit.cpp
-	$(CXX) $(CXXFLAGS) -I$(GMP_INC) src/rose.cpp src/jit.cpp -o rose $(LIEN) -lm -ldl
+rose: src/rose.cpp src/jit.cpp src/jit_x64.cpp
+	$(CXX) $(CXXFLAGS) -I$(GMP_INC) src/rose.cpp src/jit.cpp src/jit_x64.cpp -o rose $(LIEN) -lm -ldl
 
-rose-jit: src/rose.cpp src/jit.cpp
-	$(CXX) $(CXXFLAGS) $(ASMJIT_INC) -I$(GMP_INC) src/rose.cpp src/jit.cpp -o rose-jit $(LIEN) -lm -ldl
+rose-jit: src/rose.cpp src/jit.cpp src/jit_x64.cpp
+	$(CXX) $(CXXFLAGS) $(ASMJIT_INC) -I$(GMP_INC) src/rose.cpp src/jit.cpp src/jit_x64.cpp -o rose-jit $(LIEN) -lm -ldl
 
-test_jit: src/test_jit.cpp src/jit.cpp src/rir.h
-	$(CXX) $(CXXFLAGS) -I. -I$(GMP_INC) src/test_jit.cpp src/jit.cpp -o test_jit $(LIEN) -lm -ldl
+test_jit: src/test_jit.cpp src/jit.cpp src/jit_x64.cpp src/rir.h
+	$(CXX) $(CXXFLAGS) -I. -I$(GMP_INC) src/test_jit.cpp src/jit.cpp src/jit_x64.cpp -o test_jit $(LIEN) -lm -ldl
 
 clean:
 	rm -f rose rose-jit
