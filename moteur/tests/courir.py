@@ -56,6 +56,9 @@ test_dore("t_machine", os.path.join(DORES, "t_machine.rose"), "out_c.txt")
 test_dore("machine", os.path.join(DORES, "machine.rose"), "machine_c.txt")
 test_dore("signature", f"{EXEMPLES}/signature.rose", "sig_c.txt")
 test_dore("alias", os.path.join(DORES, "alias.rose"), "alias_c.txt")
+# Si imbriqués sur une même ligne physique + continuation après contrôle :
+# noms de blocs distincts (compteur global) et cursor de reprise corrects.
+test_dore("t_si_imbr", os.path.join(DORES, "t_si_imbr.rose"), "t_si_imbr_c.txt")
 test("ffi_libm", [f"{EXEMPLES}/ffi_libm.rose"],
      attendu_stdout="1024\n1.4142135623730951\n3.141592653589793\nvrai\n")
 

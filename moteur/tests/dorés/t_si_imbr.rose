@@ -1,0 +1,30 @@
+fn f(n: entier) -> entier { $m = n % 3
+  si ($m == 0) { si (n < 10) { retour 1 }
+    retour 2 }
+  retour n + 100 }
+$s = 0
+$p = 0
+tant_que ($p < 12) { $s = $s + f($p)
+  $p = $p + 1 }
+>> $s
+$z = 0
+si ($s > 100) { $z = $z + 1 } si ($s > 700) { $z = $z + 10 }
+>> $z
+$t = 0
+$q = 0
+tant_que ($q < 5) { $q = $q + 1
+  si ($q == 2) { $t = $t + 100 } sinon { $t = $t + $q } }
+>> $t
+$w = 5
+si ($w > 3) { $w = $w + 1 }
+$w = $w + 1000
+>> $w
+$u = 0
+$v = 7
+si ($v < 5) { $u = 1 } sinon { si ($v > 6) { $u = 2 }
+  $u = $u * 10 + 5 }
+>> $u
+$e = 0
+pour $i de 1 vers 4 { $e = $e + $i
+  si ($i == 2) { $e = $e + 100 } }
+>> $e
