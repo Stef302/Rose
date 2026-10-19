@@ -62,4 +62,4 @@ compilateur écrit en Rose (auto-hébergement) — est tracé dans
     $ bin/rose exemple.rose
 =======
 # Rose
-An expiremental programming language
+An experimental programming language
