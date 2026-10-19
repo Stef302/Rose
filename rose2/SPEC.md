@@ -284,6 +284,32 @@ fn fibrapide(n: entier) -> entier {
 pour i de 0 vers 5 { ? ($i % 2 == 0) [>> $i] }      # sucre conditionnel
 ```
 
+## v3.7 — Aléatoire et tampons d'octets (moteur C++)
+
+Briques de performances, disponibles dans le moteur C++ uniquement (comme la
+FFI ci-dessus : les cibles `rose2` les refusent explicitement).
+
+- `graine(n)` — fixe la graine du générateur (splitmix64) : le tirage devient
+  reproductible, octet pour octet, sur toutes les architectures.
+  Sans appel, la graine initiale varie à chaque exécution.
+- `hasard(n)` — entier uniforme dans [0, n). Puissances de deux : masque
+  exact ; sinon réduction de Lemire (sans biais).
+- `tampon(n)` — buffer contigu de `n` octets, passé par référence (comme les
+  listes), coût d'affectation indépendant de la taille.
+- `octets(chaine)` — tampon des octets UTF-8 bruts d'une chaîne.
+- `tampon_case(t, i)` / `tampon_pose(t, i, v)` — lecture/écriture d'un octet
+  (0–255, écriture modulo 256), `longueur(t)` et `chaine(t)` fonctionnent.
+- `remplir_hasard(t, alphabet)` — remplit le tampon `t` de caractères pris au
+  hasard dans `alphabet` (tampon), en boucle native : c'est l'équivalent des
+  appels vectorisés de numpy — la boucle vit dans le moteur.
+- Un tampon ne s'affiche pas directement (`>> $t` refuse) : convertir par
+  `chaine(t)`. Deux tampons se comparent avec `==`.
+
+Les noms de variables de la forme `t<chiffres>` (`t0`, `t1`, …) sont **réservés
+par le moteur** : ce sont les emplacements des temporaires internes, et une
+variable portant le même nom les écrasait (le vérificateur refuse désormais
+ces noms avec un message explicite).
+
 ## CLI
 
 ```

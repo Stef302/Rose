@@ -59,6 +59,12 @@ test_dore("alias", os.path.join(DORES, "alias.rose"), "alias_c.txt")
 # Si imbriqués sur une même ligne physique + continuation après contrôle :
 # noms de blocs distincts (compteur global) et cursor de reprise corrects.
 test_dore("t_si_imbr", os.path.join(DORES, "t_si_imbr.rose"), "t_si_imbr_c.txt")
+# Aléatoire reproductible et tampons d'octets (graine/hasard/remplir_hasard).
+test_dore("t_tampon", os.path.join(DORES, "t_tampon.rose"), "t_tampon_c.txt")
+# Les temporaires internes du moteur ont la forme t<chiffres> : le vérificateur
+# doit refuser ces noms côté utilisateur (sinon collision de slot RIR).
+test("nom_reserve", [os.path.join(DORES, "nom_reserve.rose")],
+     attendu_stderr="réservé par le moteur", attendu_code=1)
 test("ffi_libm", [f"{EXEMPLES}/ffi_libm.rose"],
      attendu_stdout="1024\n1.4142135623730951\n3.141592653589793\nvrai\n")
 

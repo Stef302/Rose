@@ -371,7 +371,8 @@ static std::vector<Token> tokeniser(const std::string &source) {
 /* ── types Rose ───────────────────────────────────────────────────── */
 enum : int {
     T_VIDE = 0, T_ENTIER = 1, T_RATIONNEL = 2, T_FLOTTANT = 3,
-    T_BOOLEEN = 4, T_CHAINE = 5, T_LISTE = 6, T_TABLE = 7, T_VALEUR = 8
+    T_BOOLEEN = 4, T_CHAINE = 5, T_LISTE = 6, T_TABLE = 7, T_VALEUR = 8,
+    T_TAMPON = 9
 };
 
 struct Ty {
@@ -389,6 +390,7 @@ struct Ty {
             case T_CHAINE: return "chaine"; case T_VIDE: return "vide";
             case T_LISTE: return "liste<" + Ty(elt).nom() + ">";
             case T_TABLE: return "table";
+            case T_TAMPON: return "tampon";
             case T_VALEUR: return "valeur";
         }
         return "?";
@@ -1012,6 +1014,14 @@ static const EntreeStd STDLIB[] = {
     {"max", {"num", "num"}, "NUM_MAX"},
     {"partie_entiere", {"num"}, "entier"},
     {"fraction", {"entier", "entier"}, "rationnel"},
+    /* aléatoire reproductible et tampons d'octets */
+    {"graine", {"entier"}, "vide"},
+    {"hasard", {"entier"}, "entier"},
+    {"tampon", {"entier"}, "tampon"},
+    {"octets", {"chaine"}, "tampon"},
+    {"tampon_case", {"tampon", "entier"}, "entier"},
+    {"tampon_pose", {"tampon", "entier", "entier"}, "vide"},
+    {"remplir_hasard", {"tampon", "tampon"}, "vide"},
 };
 static const EntreeStd DYNAMIQUE[] = {
     {"charger", {"chaine"}, "entier"},
@@ -1031,10 +1041,25 @@ static Ty ty_du_nom(const std::string &s) {
     if (s == "booleen") return Ty(T_BOOLEEN);
     if (s == "chaine") return Ty(T_CHAINE);
     if (s == "table") return Ty(T_TABLE);
+    if (s == "tampon") return Ty(T_TAMPON);
     return Ty(T_VIDE);
 }
 
 using Env = std::unordered_map<std::string, Ty>;
+
+/* Les temporaires internes du moteur portent la forme « t<chiffres> »
+   (%t0, %t1…) dans l'espace des variables RIR : un utilisateur ne peut pas
+   déclarer un tel nom, sinon variable et temporaire partageraient le même
+   emplacement (corruption mémoire). */
+static void verifier_nom_reserve(const std::string &nom, int ligne) {
+    if (nom.size() > 1 && nom[0] == 't') {
+        bool chiffres = true;
+        for (size_t k = 1; k < nom.size(); k++)
+            if (!std::isdigit((unsigned char)nom[k])) { chiffres = false; break; }
+        if (chiffres)
+            throw ErreurRose("Le nom '" + nom + "' est réservé par le moteur", ligne);
+    }
+}
 
 struct Verificateur {
     Programme &prog;
@@ -1067,7 +1092,7 @@ struct Verificateur {
         }
         fonction_en_cours = &sig;
         locals.clear();
-        for (auto &pt : sig.params) locals[pt.first] = pt.second;
+        for (auto &pt : sig.params) { verifier_nom_reserve(pt.first, 0); locals[pt.first] = pt.second; }
         assume_retour = sig.retour;
         a_assume = true;
         bloc(sig.corps);
@@ -1092,6 +1117,7 @@ struct Verificateur {
             case IK::Lire: {
                 auto it = env.find(instr->nom);
                 if (it == env.end()) {
+                    verifier_nom_reserve(instr->nom, instr->ligne);
                     env[instr->nom] = Ty(T_ENTIER);
                     instr->type_read = T_ENTIER;
                 } else {
@@ -1126,6 +1152,7 @@ struct Verificateur {
                                              + ", on ne peut pas y stocker du " + t.nom(), instr->ligne);
                     }
                 }
+                verifier_nom_reserve(instr->nom, instr->ligne);
                 env[instr->nom] = cible;
                 return;
             }
@@ -1145,6 +1172,7 @@ struct Verificateur {
                 Ty tf = expression(instr->fin, env);
                 if (td.n != T_ENTIER || tf.n != T_ENTIER)
                     throw ErreurRose("pour…de…vers exige des bornes entières", instr->ligne);
+                verifier_nom_reserve(instr->nom, instr->ligne);
                 env[instr->nom] = Ty(T_ENTIER);
                 bloc(instr->corps);
                 return;
@@ -1340,8 +1368,11 @@ struct Verificateur {
                 if (ta.n != T_LISTE)
                     throw ErreurRose(nom + ": une liste est attendue, reçu " + ta.nom(), e->ligne);
                 t_elt = Ty(ta.elt); a_elt = true;   // type de l'ÉLÉMENT, pas de la liste
+            } else if (t_att == "tampon") {
+                if (ta.n != T_TAMPON)
+                    throw ErreurRose(nom + ": un tampon est attendu, reçu " + ta.nom(), e->ligne);
             } else if (t_att == "liste_ou_chaine" || t_att == "liste_ou_chaine_ou_table") {
-                if (ta.n != T_LISTE && ta.n != T_CHAINE && ta.n != T_TABLE)
+                if (ta.n != T_LISTE && ta.n != T_CHAINE && ta.n != T_TABLE && ta.n != T_TAMPON)
                     throw ErreurRose(nom + ": une liste, une chaîne ou une table est attendue, reçu " + ta.nom(), e->ligne);
             } else if (t_att == "liste_elt") {
                 if (a_elt && t_elt.n != T_VIDE && ta != t_elt
@@ -1605,6 +1636,7 @@ struct Valeur {
     std::string s;
     std::shared_ptr<std::vector<Valeur>> l;
     std::shared_ptr<std::vector<std::pair<Valeur,Valeur>>> t;
+    std::shared_ptr<std::string> o;   /* buffer d'octets contigu (T_TAMPON) */
 
     static Valeur de_z(mpz_class v)  { Valeur x; x.ty = T_ENTIER;   x.z = std::move(v); return x; }
     static Valeur de_q(mpq_class v)  { Valeur x; x.ty = T_RATIONNEL;x.q = std::move(v); x.q.canonicalize(); return x; }
@@ -1617,8 +1649,13 @@ struct Valeur {
     static Valeur de_t(std::shared_ptr<std::vector<std::pair<Valeur,Valeur>>> v) {
         Valeur x; x.ty = T_TABLE; x.t = std::move(v); return x;
     }
+    static Valeur de_o(std::shared_ptr<std::string> v) {
+        Valeur x; x.ty = T_TAMPON; x.o = std::move(v); return x;
+    }
     static Valeur vide() { return Valeur(); }
 };
+static_assert(sizeof(Valeur) == 152,
+              "layout Valeur modifié : synchroniser les DEUX définitions (rose.cpp et rir.h)");
 
 static void erreur_runtime(const std::string &msg) {
     std::fflush(stdout);
@@ -1693,6 +1730,7 @@ static double chaine_vers_flottant(const std::string &ch) {
 
 static std::string chaine_de(const Valeur &v) {
     switch (v.ty) {
+        case T_TAMPON: return v.o ? *v.o : std::string();
         case T_ENTIER: return v.z.get_str();
         case T_RATIONNEL: {
             mpq_class q = v.q; q.canonicalize();
@@ -1746,6 +1784,7 @@ static void ecri(FILE *out, const Valeur &v) {
         case T_BOOLEEN: fputs(v.b ? "vrai" : "faux", out); return;
         case T_CHAINE: fputs(v.s.c_str(), out); return;
         case T_TABLE: { std::string r = chaine_de(v); fputs(r.c_str(), out); return; }
+        case T_TAMPON: erreur_runtime("Un tampon ne s'affiche pas directement — utiliser chaine(tampon)");
         case T_RATIONNEL: {
             mpq_class q = v.q; q.canonicalize();
             if (q.get_den() == 1) { fputs(q.get_num().get_str().c_str(), out); return; }
@@ -2007,6 +2046,8 @@ static int cmp_vals(const Valeur &g, const Valeur &d) {
 
 static bool valeur_egale(const Valeur &a, const Valeur &b);
 static bool rose_valeur_egale(const Valeur &a, const Valeur &b) {
+    if (a.ty == T_TAMPON || b.ty == T_TAMPON)
+        return a.ty == T_TAMPON && b.ty == T_TAMPON && a.o && b.o && *a.o == *b.o;
     if (a.ty == T_LISTE || b.ty == T_LISTE) {
         if (a.ty != T_LISTE || b.ty != T_LISTE || (a.l ? a.l->size() : 0) != (b.l ? b.l->size() : 0)) return false;
         if (a.l) for (size_t i = 0; i < a.l->size(); i++)
@@ -2030,6 +2071,17 @@ static bool rose_valeur_egale(const Valeur &a, const Valeur &b) {
         return false;
     }
     return cmp_vals(a, b) == 0;
+}
+
+/* ── aléatoire : splitmix64, reproductible via graine(n) ───────────────
+   (générateur non cryptographique, semé par pid + adresse ASLR par défaut) */
+static uint64_t g_rng_etat = (uint64_t)getpid() * 0x9E3779B97F4A7C15ULL
+                           ^ (uint64_t)(uintptr_t)&g_rng_etat;
+static uint64_t rng_tirer() {
+    uint64_t z = (g_rng_etat += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
 }
 
 static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) {
@@ -2103,6 +2155,84 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
         if (nom == "afficher") { afficher(a[0]); return Valeur::vide(); }
         if (nom == "saisir_entier") return lire_selon(T_ENTIER);
         if (nom == "saisir_flottant") return lire_selon(T_FLOTTANT);
+        if (nom == "graine") {
+            mpz_class s = vers_z(a[0]);
+            g_rng_etat = mpz_fits_ulong_p(s.get_mpz_t()) ? mpz_get_ui(s.get_mpz_t())
+                : (uint64_t)mpz_fdiv_ui(s.get_mpz_t(), 0xFFFFFFFFu) * 0x100000000ULL
+                + mpz_fdiv_ui(s.get_mpz_t(), 0x100000000u);
+            rng_tirer();   // casse la corrélation directe avec la graine
+            return Valeur::vide();
+        }
+        if (nom == "hasard") {
+            mpz_class n = vers_z(a[0]);
+            if (mpz_sgn(n.get_mpz_t()) <= 0) erreur_runtime("hasard : bornage positif attendu");
+            if (mpz_fits_ulong_p(n.get_mpz_t())) {
+                unsigned long nn = mpz_get_ui(n.get_mpz_t());
+                uint64_t r;
+                if ((nn & (nn - 1)) == 0) r = rng_tirer() & (uint64_t)(nn - 1);
+                else r = (uint64_t)((__uint128_t)rng_tirer() * nn >> 64);   // réduction de Lemire
+                return Valeur::de_z(mpz_class((unsigned long)r));
+            }
+            uint64_t r64 = rng_tirer();
+            mpz_class rr;
+            mpz_set_ui(rr.get_mpz_t(), (unsigned long)(r64 >> 32));
+            mpz_mul_2exp(rr.get_mpz_t(), rr.get_mpz_t(), 32);
+            mpz_add_ui(rr.get_mpz_t(), rr.get_mpz_t(), (unsigned long)(r64 & 0xFFFFFFFFu));
+            mpz_mod(rr.get_mpz_t(), rr.get_mpz_t(), n.get_mpz_t());
+            return Valeur::de_z(rr);
+        }
+        if (nom == "tampon") {
+            mpz_class n = vers_z(a[0]);
+            if (mpz_sgn(n.get_mpz_t()) < 0 || !mpz_fits_ulong_p(n.get_mpz_t()))
+                erreur_runtime("tampon : taille démesurée");
+            return Valeur::de_o(std::make_shared<std::string>(mpz_get_ui(n.get_mpz_t()), '\0'));
+        }
+        if (nom == "octets") return Valeur::de_o(std::make_shared<std::string>(a[0].s));
+        if (nom == "tampon_case") {
+            if (a[0].ty != T_TAMPON || !a[0].o) erreur_runtime("tampon_case : tampon attendu");
+            if (!mpz_fits_slong_p(vers_z(a[1]).get_mpz_t())
+                    || mpz_get_si(vers_z(a[1]).get_mpz_t()) < 0
+                    || (size_t)mpz_get_si(vers_z(a[1]).get_mpz_t()) >= a[0].o->size())
+                erreur_runtime("index hors tampon");
+            return Valeur::de_z(mpz_class(
+                (unsigned long)(unsigned char)(*a[0].o)[(size_t)mpz_get_si(vers_z(a[1]).get_mpz_t())]));
+        }
+        if (nom == "tampon_pose") {
+            if (a[0].ty != T_TAMPON || !a[0].o) erreur_runtime("tampon_pose : tampon attendu");
+            if (!mpz_fits_slong_p(vers_z(a[1]).get_mpz_t())
+                    || mpz_get_si(vers_z(a[1]).get_mpz_t()) < 0
+                    || (size_t)mpz_get_si(vers_z(a[1]).get_mpz_t()) >= a[0].o->size())
+                erreur_runtime("index hors tampon");
+            (*a[0].o)[(size_t)mpz_get_si(vers_z(a[1]).get_mpz_t())] =
+                (char)mpz_fdiv_ui(vers_z(a[2]).get_mpz_t(), 256);
+            return Valeur::vide();
+        }
+        if (nom == "remplir_hasard") {
+            if (a[0].ty != T_TAMPON || !a[0].o) erreur_runtime("remplir_hasard : tampon attendu");
+            if (a[1].ty != T_TAMPON || !a[1].o || a[1].o->empty())
+                erreur_runtime("remplir_hasard : alphabet non vide attendu");
+            std::string &buf = *a[0].o;
+            const char *ab = a[1].o->data();
+            const size_t s = a[1].o->size();
+            if (s == 1) {                       // alphabet mono-caractère
+                buf.assign(buf.size(), ab[0]);
+            } else if ((s & (s - 1)) == 0) {   // taille puissance de 2 → masque exact
+                const size_t mask = s - 1;
+                const int bits = __builtin_ctzll((unsigned long long)s);
+                const size_t per = (size_t)(64 / bits);   // caractères par tirage
+                size_t i = 0;
+                for (; i + per <= buf.size(); i += per) {
+                    uint64_t r = rng_tirer();
+                    for (size_t k = 0; k < per; k++)
+                        buf[i + k] = ab[(r >> (k * (size_t)bits)) & mask];
+                }
+                for (; i < buf.size(); i++) buf[i] = ab[rng_tirer() & mask];
+            } else {                            // sinon Lemire, uniforme sans biais
+                for (size_t i = 0; i < buf.size(); i++)
+                    buf[i] = ab[(size_t)((__uint128_t)rng_tirer() * s >> 64)];
+            }
+            return Valeur::vide();
+        }
         if (nom == "factorielle") return Valeur::de_z(rose_factorielle(vers_z(a[0])));
         if (nom == "fibonacci") return Valeur::de_z(rose_fibonacci(vers_z(a[0])));
         if (nom == "pgcd") { mpz_class r; mpz_gcd(r.get_mpz_t(), vers_z(a[0]).get_mpz_t(), vers_z(a[1]).get_mpz_t()); return Valeur::de_z(r); }
@@ -2130,6 +2260,8 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
             return Valeur::de_s(rose_pi(vers_z(a[0])));
         }
         if (nom == "longueur") {
+            if (a[0].ty == T_TAMPON)
+                return Valeur::de_z(mpz_class(a[0].o ? (unsigned long)a[0].o->size() : 0UL));
             if (a[0].ty == T_CHAINE)
                 return Valeur::de_z(mpz_class((unsigned long)utf8_len(a[0].s)));
             if (a[0].ty == T_TABLE)
@@ -2306,6 +2438,22 @@ struct EmetteurRir {
     std::string emettre_expr(PE e, RirBloc &bloc, RirType ty_attendu) {
         if (ty_attendu == RirType::U && e->type != T_VIDE)
             ty_attendu = ty_vers_rir(Ty(e->type));
+        /* comparaison entre tampons : égalité générique (les opérateurs
+           numériques forceraient une conversion vers entier) */
+        if (e->k == NK::Binaire && (e->texte == "==" || e->texte == "!=")) {
+            Ty tg(e->a ? e->a->type : T_VIDE), td(e->b ? e->b->type : T_VIDE);
+            if (tg.n == T_TAMPON || td.n == T_TAMPON) {
+                std::string g = emettre_expr(e->a, bloc, RirType::U);
+                std::string d = emettre_expr(e->b, bloc, RirType::U);
+                std::string t = nouveau_temp();
+                RirInstr i; i.dest = t; i.dest_ty = RirType::B;
+                i.op = e->texte == "==" ? "cmp.eq.b" : "cmp.ne.b";
+                RirOp o1; o1.kind = RirOp::Temp; o1.name = g; i.args.push_back(o1);
+                RirOp o2; o2.kind = RirOp::Temp; o2.name = d; i.args.push_back(o2);
+                bloc.instrs.push_back(i);
+                return t;
+            }
+        }
         switch (e->k) {
             case NK::Litteral: {
                 /* constante nommée */
