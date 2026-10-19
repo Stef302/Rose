@@ -1,0 +1,6 @@
+fn g(n: entier) -> entier { retour n + 7 }
+$s = 0
+$n = 0
+tant_que ($n < 2000000) { $s = $s + g($n)
+  $n = $n + 1 }
+>> $s

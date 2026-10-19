@@ -182,3 +182,45 @@ Validation : suites 38/38 (ARM) et 37/37 (x64 sous émulation), parité
 92/92, v2 53/53, `test_jit` 14/14 ×2, bornes machine identiques sur les
 deux architectures, et stress « constante partagée retournée par un appel »
 (aliasing + fusion combinés) correct × 200 k tours des deux côtés.
+
+## Jalon M2.10 — inlining RIR des appels feuille (v3.6.0)
+
+Les appels aux fonctions sans appel interne (feuilles) sont désormais
+**inlinés dans l'appelant par transformation RIR**, avant l'émission :
+copies d'arguments vers des slots frais, blocs du callee renommés et
+renumérotés, chaque `retour` remplacé par « affect vers le slot de l'appelant
+puis saut vers la reprise » (le bloc de l'appel est scindé à cet effet).
+Le wrapper `jit_call` (allocation de trame, memset, nettoyage, allers-retours
+réservoirs) disparaît entièrement de la boucle. La transformation étant
+purement RIR, les deux backends (AArch64 et x86-64) la partagent sans
+aucune modification d'encodage. Conditions de sécurité : callee sans `call`
+(exclut donc la récursion), sans `retour` de type vide, terminators complets,
+aucune branche interne vers le bloc d'entrée ; si l'inlinage dépasse la
+capacité de trame, la fonction est recompilée normalement.
+
+| Programme (AArch64, JIT) | v3.5.3 | **v3.6.0** |
+|---|---:|---:|
+| appels — 2 M d'appels feuille | 0,05 s | **0,03 s** |
+| boucle entière — 10 M itérations | 0,07 s | 0,07 s |
+| récursion ×200 k (non inlinable) | 0,12 s | 0,12 s |
+
+Sous qemu-x86-64 : 2 M d'appels feuille en 1,2 s. Validation : suites
+39/39 (ARM) et 38/38 (x64 sous émulation), parité 95/95, v2 53/53,
+`test_jit` 14/14 ×2, bornes machine identiques ×2. Nouveau banc
+`moteur/tests/bench/appels.rose`.
+
+### Correction au passage — émetteur RIR (antérieure au JIT)
+
+Le stress de l'inlining a révélé un vieux défaut de l'émetteur RIR : les noms
+de blocs `si`/`tant_que`/`pour` étaient dérivés du seul **numéro de ligne** —
+deux structures sur une même ligne physique (ex.
+`si (a) { si (b) { retour 1 } retour 2 }`) produisaient des blocs jumeaux et
+les cibles de branchement se mélangeaient : boucle infinie au JIT, **fausses
+valeurs déjà à l'interpréteur**. S'y ajoutait un défaut de continuation : le
+corps `si` était émis dans un bloc fixe au lieu du curseur `fn.blocs.back()`
+utilisé par `tant_que`/`pour`, si bien que la suite d'un bloc après un `si`
+imbriqué restait collée après le `br.cond` (morte) et le bloc « fin » interne
+choisait sur un voisin. Corrigé par : compteur global dans les noms de blocs,
+curseur mobile pour `alors`/`sinon`, et dump RIR sous `ROSE_RIR_DUMP=1`.
+Doré de régression `t_si_imbr` (six valeurs vérifiées à la main) et trois
+programmes de parité ajoutés.
