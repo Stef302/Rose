@@ -1171,17 +1171,201 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     return reinterpret_cast<JitEntryFn>(buf->data_ptr());
 }
 
+// ═══ M2.10 : inlining RIR des appels aux fonctions feuilles ═══
+// Un callee est inlinable si : aucun call interne (feuille), aucun ret.u,
+// chaque bloc se termine par br/br.cond/ret/ret.z, aucune branche interne ne
+// vise le bloc d'entrée, et tout ret porte un opérande temp. L'appel
+// « %d = call $g %a… » devient : copies des arguments vers des slots frais,
+// blocs de g renommés/renumérotés, chaque ret remplacé par « affect %d src ;
+// br reprise », la reprise étant le reste du bloc d'origine (scindé). La
+// transformation est purement RIR : les deux backend (AArch64, x86-64) la
+// partagent sans rien changer à leurs émetteurs.
+static void collect_slot_names(RirFonction &fn, std::set<std::string> &temps,
+                               std::set<std::string> &vars) {
+    for (auto &b : fn.blocs)
+        for (auto &in : b.instrs) {
+            auto consider = [&](const std::string &nm) {
+                if (nm.empty() || nm[0] != '%') return;
+                if (is_temp_name(nm)) temps.insert(nm); else vars.insert(nm);
+            };
+            consider(in.dest);
+            if (in.op == "affect" && !in.message.empty()) consider("%" + in.message);
+            for (auto &a : in.args) if (a.kind == RirOp::Temp) consider(a.name);
+        }
+}
+
+static bool callee_inlinable(RirFonction &g) {
+    if (g.blocs.empty()) return false;
+    for (size_t bi = 0; bi < g.blocs.size(); bi++) {
+        RirBloc &b = g.blocs[bi];
+        if (b.instrs.empty()) return false;
+        for (auto &in : b.instrs) {
+            if (in.op == "call" || in.op == "ret.u") return false;
+            if ((in.op == "br" || in.op == "br.cond")) {
+                if (in.label_cible == g.blocs[0].nom) return false;
+                if (in.op == "br.cond" && in.label_cible2 == g.blocs[0].nom) return false;
+            }
+            if ((in.op == "ret" || in.op == "ret.z") &&
+                (in.args.empty() || in.args[0].kind != RirOp::Temp)) return false;
+        }
+        const std::string &last = b.instrs.back().op;
+        if (last != "br" && last != "br.cond" && last != "ret" && last != "ret.z")
+            return false;
+    }
+    return true;
+}
+
+// Inline le PREMIER site d'appel à g trouvé dans F (F modifié en place).
+static bool inline_one_call_site(RirFonction &F, RirFonction &g, unsigned &ctr) {
+    for (size_t bi = 0; bi < F.blocs.size(); bi++) {
+        RirBloc &B = F.blocs[bi];
+        for (size_t ii = 0; ii < B.instrs.size(); ii++) {
+            RirInstr &call = B.instrs[ii];
+            if (call.op != "call" || call.args.empty()) continue;
+            if (call.args[0].kind != RirOp::Temp || call.args[0].name != g.nom) continue;
+            if (call.dest_ty != RirZ && call.dest_ty != RirB) continue;
+            if (g.params.size() != call.args.size() - 1) continue;
+            bool ops_ok = true;
+            for (size_t k = 1; k < call.args.size(); k++) {
+                const RirOp &a = call.args[k];
+                if (a.kind == RirOp::Temp) continue;
+                if (a.kind == RirOp::Const && (a.ty == RirZ || a.ty == RirB)) continue;
+                ops_ok = false;
+            }
+            if (!ops_ok) continue;
+
+            // ── slots frais : params, temps et variables de g ──
+            std::set<std::string> gtemps, gvars;
+            collect_slot_names(g, gtemps, gvars);
+            for (auto &p : g.params) gvars.erase("%" + p.first);
+            std::set<std::string> ftemps, fvars;
+            collect_slot_names(F, ftemps, fvars);
+            int mt = -1;
+            for (auto &nm : ftemps) { int n = atoi(nm.c_str() + 2); if (n > mt) mt = n; }
+            std::map<std::string,std::string> ren;
+            auto fresh = [&]() { return "%t" + std::to_string(++mt); };
+            std::vector<std::string> ptemp;
+            for (auto &p : g.params) {
+                std::string nt = fresh();
+                ren["%" + p.first] = nt;
+                ptemp.push_back(nt);
+            }
+            for (auto &nm : gtemps) ren[nm] = fresh();
+            for (auto &nm : gvars)  ren[nm] = fresh();
+            auto remap = [&](std::string &nm) {
+                auto it = ren.find(nm);
+                if (it != ren.end()) nm = it->second;
+            };
+
+            // ── copies de g (blocs renommés, slots remappés, ret → affect+br) ──
+            std::map<std::string,std::string> bl;
+            for (size_t k = 0; k < g.blocs.size(); k++)
+                bl[g.blocs[k].nom] = "__ic" + std::to_string(ctr) + "_b" + std::to_string(k);
+            std::string tail_nom = "__ic" + std::to_string(ctr) + "_tail";
+            const std::string &d = call.dest;
+            std::string dmsg = d.size() > 1 ? d.substr(1) : d;   // message sans %
+            std::vector<RirBloc> gb;
+            for (size_t k = 0; k < g.blocs.size(); k++) {
+                RirBloc nb; nb.nom = bl[g.blocs[k].nom];
+                for (auto &in : g.blocs[k].instrs) {
+                    if (in.op == "ret" || in.op == "ret.z") {
+                        std::string src = in.args[0].name;
+                        remap(src);
+                        RirInstr af; af.op = "affect"; af.message = dmsg;
+                        af.dest_ty = call.dest_ty;
+                        RirOp so; so.kind = RirOp::Temp; so.name = src; so.ty = call.dest_ty;
+                        af.args.push_back(so);
+                        nb.instrs.push_back(af);
+                        RirInstr br; br.op = "br"; br.label_cible = tail_nom;
+                        nb.instrs.push_back(br);
+                        continue;
+                    }
+                    RirInstr ni = in;
+                    remap(ni.dest);
+                    if (ni.op == "affect") {
+                        auto it = ren.find("%" + ni.message);
+                        if (it != ren.end()) ni.message = it->second.substr(1);
+                    }
+                    for (auto &a : ni.args)
+                        if (a.kind == RirOp::Temp) remap(a.name);
+                    auto rl = [&](std::string &lb) {
+                        auto it = bl.find(lb);
+                        if (it != bl.end()) lb = it->second;
+                    };
+                    rl(ni.label_cible); rl(ni.label_cible2);
+                    nb.instrs.push_back(ni);
+                }
+                gb.push_back(std::move(nb));
+            }
+
+            // ── assemblage : head remplace B, tail inséré juste après,
+            //    blocs 1..n de g en fin de liste (ordres de chute gardés) ──
+            RirBloc head; head.nom = B.nom;
+            for (size_t k = 0; k < ii; k++) head.instrs.push_back(B.instrs[k]);
+            for (size_t k = 0; k < g.params.size(); k++) {
+                const RirOp &a = call.args[k + 1];
+                RirInstr cp;
+                if (a.kind == RirOp::Const) {
+                    cp.op = (a.ty == RirB) ? "cst.b" : "cst.z";
+                    cp.dest = ptemp[k]; cp.dest_ty = a.ty;
+                    cp.args.push_back(a);
+                } else {
+                    cp.op = "affect"; cp.message = ptemp[k].substr(1);
+                    cp.dest_ty = call.dest_ty;
+                    cp.args.push_back(a);
+                }
+                head.instrs.push_back(cp);
+            }
+            for (auto &in : gb[0].instrs) head.instrs.push_back(in);
+            RirBloc tail; tail.nom = tail_nom;
+            for (size_t k = ii + 1; k < B.instrs.size(); k++)
+                tail.instrs.push_back(B.instrs[k]);
+            B = std::move(head);
+            F.blocs.insert(F.blocs.begin() + bi + 1, std::move(tail));
+            for (size_t k = 1; k < gb.size(); k++) F.blocs.push_back(std::move(gb[k]));
+            ctr++;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool inline_leaf_calls(RirFonction &F,
+                              const std::map<std::string,RirFonction*> &leaf,
+                              unsigned &ctr) {
+    bool any = false;
+    for (auto &kv : leaf) {
+        if (kv.second == &F) continue;
+        int guard = 100;   // les inlinés n'introduisent aucun call : borne large
+        while (guard-- > 0 && inline_one_call_site(F, *kv.second, ctr)) any = true;
+    }
+    return any;
+}
+
 bool JitCompiler::compile_module(RirModule* mod) {
     // Les appels sont résolus par index de fonction dans le module.
     m_call_idx.clear();
     for (size_t i = 0; i < mod->fonctions.size(); i++)
         m_call_idx[mod->fonctions[i].nom] = (int)i;
 
+    // M2.10 : feuilles inlinables (aucun appel interne)
+    std::map<std::string, RirFonction*> leaf;
+    for (auto &f : mod->fonctions)
+        if (callee_inlinable(f)) leaf[f.nom] = &f;
+    unsigned ictr = 0;
+
     // Porte module : si UNE fonction est hors support JIT, tout le module
     // repasse à l'interpréteur (sinon les `call` casséraient).
     bool all_ok = true;
     for (auto &fn : mod->fonctions) {
-        JitEntryFn e = compile_function(&fn);
+        RirFonction *target = &fn;
+        RirFonction inlined;
+        if (!leaf.empty()) {
+            inlined = fn;
+            if (inline_leaf_calls(inlined, leaf, ictr)) target = &inlined;
+        }
+        JitEntryFn e = compile_function(target);
+        if (!e && target != &fn) e = compile_function(&fn);  // inlinage trop gros : original
         if (e) m_entries[fn.nom] = e;
         else all_ok = false;
     }
