@@ -378,6 +378,47 @@ Valeur* jit_val_f(double d) {
     return p;
 }
 
+// Constante de chaîne partagée (M2.14).
+Valeur* jit_val_s(const char* txt) {
+    Valeur* p = new Valeur(Valeur::de_s(txt));
+    g_shared_const_lookup.insert(p);
+    return p;
+}
+
+// Copie de chaîne dans un slot (M2.14) — miroir de jit_z_copy_into.
+Valeur* __attribute__((noinline)) jit_s_copy_into(Valeur* dst, Valeur* src) {
+    if (!src) return dst;
+    if (!dst) dst = new Valeur(Valeur::de_s(std::string()));
+    dst->s = src->s;                       // copié depuis la VALEUR source
+    dst->ty = T_CHAINE; return dst;
+}
+
+// ── Listes natives (M2.14) : miroirs exacts des ops du Jinterpréteur RIR ──
+Valeur* __attribute__((noinline)) jit_liste_new() {
+    return new Valeur(Valeur::de_l(std::make_shared<std::vector<Valeur>>()));
+}
+Valeur* __attribute__((noinline)) jit_liste_push(Valeur* listv, Valeur* elem) {
+    if (listv->ty != T_LISTE || !listv->l)
+        jit_erreur("liste.push attend une liste");
+    listv->l->push_back(*elem);            // copie de l'élément, comme l'interpréteur
+    return listv;                          // le résultat EST la liste (aliasing d'origine)
+}
+Valeur* __attribute__((noinline)) jit_liste_get(Valeur* listv, Valeur* cle) {
+    if (listv->ty != T_LISTE || !listv->l)
+        jit_erreur("liste.get attend une liste");
+    size_t taille = listv->l->size();
+    // miroir EXACT de l'interpréteur RIR (mêmes appels GMP, mêmes messages)
+    if (!mpz_fits_ulong_p(cle->z.get_mpz_t()) ||
+        mpz_cmp_ui(cle->z.get_mpz_t(), (unsigned long)taille) >= 0)
+        jit_erreur("index hors des limites de la liste");
+    return new Valeur((*listv->l)[(size_t)mpz_get_ui(cle->z.get_mpz_t())]);
+}
+Valeur* __attribute__((noinline)) jit_liste_len(Valeur* listv) {
+    if (listv->ty != T_LISTE || !listv->l)
+        jit_erreur("liste.len attend une liste");
+    return new Valeur(Valeur::de_z(mpz_class((unsigned long)listv->l->size())));
+}
+
 // Constante entière arbitrairement grande : texte décimal (après préfixe @c)
 Valeur* __attribute__((noinline)) jit_val_z_txt(const char* txt) {
     mpz_class z;
@@ -766,11 +807,17 @@ static bool is_temp_name(const std::string &nm) {
 // type RIR du résultat quand il ne dépend pas des arguments ; -1 = suit le
 // contexte (abs/min/max), dest_ty alors obligatoire (jamais U).
 struct BuiltinJit { const char *nom; int ty_fixe; };   // même forme dans jit_x64.cpp
+// ty_fixe : type RIR du résultat ; -1 = suit le contexte (abs/min/max) ;
+// -2 = résultat vide (appel, rien à copier — exige temp dest non lu) ;
+// -3 = résultat chaîne.
 static const BuiltinJit BUILTINS_JIT[] = {
     {"factorielle", RirZ}, {"fibonacci", RirZ}, {"pgcd", RirZ},
     {"ppcm", RirZ}, {"puissance", RirZ}, {"est_premier", RirB},
     {"compter_premiers", RirZ}, {"nb_chiffres", RirZ}, {"hasard", RirZ},
     {"abs", -1}, {"min", -1}, {"max", -1},
+    // M2.14 : listes et chaînes (le pont 50 reçoit les Valeur réelles).
+    {"longueur", RirZ}, {"joindre", -2}, {"concatener", -3},
+    {"ordre", RirZ}, {"caractere", -3}, {"sous_chaine", -3},
 };
 const BuiltinJit* builtin_jit(const std::string &nom) {
     for (auto &b : BUILTINS_JIT)
@@ -832,8 +879,9 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     for (auto &b : fn->blocs) {
         for (auto &instr : b.instrs) {
             const std::string &op = instr.op;
-            if (op != "cst.z" && op != "cst.b" && op != "cst.f" &&
-                op != "add.z" && op != "sub.z" && op != "mul.z" &&
+            if (op != "cst.z" && op != "cst.b" && op != "cst.f" && op != "cst.s" &&
+                op != "liste.new" && op != "liste.push" &&
+                op != "liste.get" && op != "liste.len" && op != "index" &&                op != "add.z" && op != "sub.z" && op != "mul.z" &&
                 op != "div.z" && op != "rem.z.z" && op != "neg.z" &&
                 op != "add.f" && op != "sub.f" && op != "mul.f" &&
                 op != "div.f" && op != "divf.f" && op != "pow.f" && op != "neg.f" &&
@@ -859,16 +907,31 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                         unsupported = true; break;
                     }
                 } else {
-                    // builtin numérique : pont natif vers la stdlib (helper 50, M2.13)
-                    const BuiltinJit *bj = builtin_jit(instr.args[0].name.substr(1));
+                    // builtin : pont natif vers la stdlib (helper 50, M2.13/2.14)
+                    std::string bnom_dbg = instr.args[0].name.substr(1);
+                    const BuiltinJit *bj = builtin_jit(bnom_dbg);
                     if (!bj || instr.dest.empty()) {
                         JITLOG("jit: appel non supporté\n");
                         unsupported = true; break;
                     }
-                    if (bj->ty_fixe < 0) {
+                    if (bj->ty_fixe == -2) {
+                        // résultat vide (joindre) : seulement si le temp n'est JAMAIS lu
+                        if (is_temp_name(instr.dest)) {
+                            int r = temp_reads.count(atoi(instr.dest.c_str() + 2))
+                                        ? temp_reads[atoi(instr.dest.c_str() + 2)] : 0;
+                            if (r != 0) { JITLOG("jit: %s lu, repli\n", bnom_dbg.c_str());
+                                          unsupported = true; break; }
+                        } else { JITLOG("jit: %s dest non-temp\n", bnom_dbg.c_str());
+                                 unsupported = true; break; }
+                    } else if (bj->ty_fixe == -3) {
+                        // résultat chaîne : accepté pour tout dest_ty — la copie
+                        // écrit le vrai type dans le slot (slot_ty = S)
+                    } else if (bj->ty_fixe == -1) {
                         if (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
-                            instr.dest_ty != RirF) { unsupported = true; break; }
+                            instr.dest_ty != RirF) { JITLOG("jit: %s dest_ty=%d\n", bnom_dbg.c_str(), (int)instr.dest_ty);
+                                                     unsupported = true; break; }
                     } else if (instr.dest_ty != RirU && instr.dest_ty != bj->ty_fixe) {
+                        JITLOG("jit: %s dest_ty=%d vs %d\n", bnom_dbg.c_str(), (int)instr.dest_ty, bj->ty_fixe);
                         unsupported = true; break;
                     }
                 }
@@ -899,8 +962,11 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             for (auto &a : instr.args) {
                 if (a.kind == RirOp::Temp) consider(a.name);
                 else if (a.kind == RirOp::Const) {
-                    if (a.name.rfind("@c", 0) != 0 ||
-                        (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF)) {
+                    // constantes numériques : texte préfixé « @c… » ; chaînes : texte brut (M2.14)
+                    bool nom_ok = (a.ty == RirS) ? true : a.name.rfind("@c", 0) == 0;
+                    if (!nom_ok ||
+                        (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF &&
+                         a.ty != RirS)) {
                         JITLOG("jit: constante non supportée: %s\n", a.name.c_str());
                         unsupported = true; break;
                     }
@@ -979,7 +1045,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     // module (créée à la compilation, jamais libérée — même durée de vie
     // que le code émis). Le prologue ne fait que poser le pointeur partagé.
     for (auto &c : constantes) {
-        std::string txt = c.first.substr(2);
+        std::string txt = c.first.size() >= 2 ? c.first.substr(2) : std::string();
         int sl = slot_const[c.first];
         int64_t v;
         Valeur *shared;
@@ -989,6 +1055,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             // constante flottante : texte canonique de texte_flottant, relu
             // exactement (round-trip %g) — jamais la voie entière parse_i64.
             shared = jit_val_f(strtod(txt.c_str(), nullptr));
+        } else if (c.second == RirS) {
+            shared = jit_val_s(c.first.c_str());         // texte brut, sans préfixe (M2.14)
         } else if (parse_i64(txt, &v)) {
             shared = jit_val_z(v);
         } else {
@@ -1033,7 +1101,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             const std::string &op = instr.op;
             int d = -1;
 
-            if (op == "cst.z" || op == "cst.b" || op == "cst.f") {
+            if (op == "cst.z" || op == "cst.b" || op == "cst.f" || op == "cst.s") {
                 // Alias SSA : aucune instruction émise, le temp pointe la
                 // constante partagée (voir const_alias + jit_free_valeur).
                 if (!slot_of(instr.dest, d)) { unsupported = true; break; }
@@ -1044,7 +1112,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 } else {
                     if (!load_operand(asm_, instr.args[0], X1)) { unsupported = true; break; }
                     asm_.ldr(X0, X20, d);
-                    asm_.blr_helper(op == "cst.z" ? 25 : 26);   // z/b_copy_into
+                    asm_.blr_helper(op == "cst.z" ? 25 : op == "cst.f" ? 35 :
+                                    op == "cst.s" ? 55 : 26);   // z/f/s/b_copy_into
                     asm_.str(X0, X20, d);
                 }
                 slot_ty[d] = instr.dest_ty;
@@ -1163,6 +1232,68 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 }
                 asm_.str(X0, X20, d);
                 slot_ty[d] = RirF;
+                continue;
+            }
+            // ── Listes natives (M2.14) : helpers miroirs du Jinterpréteur RIR ──
+            if (op == "liste.new" || op == "liste.push") {
+                // le push en énoncé est émis SANS dest (vue du dump RIR) :
+                // l'appel seul suffit, on ne touche aucun slot dans ce cas
+                bool a_dest = !instr.dest.empty();
+                if (a_dest && !slot_of(instr.dest, d)) { unsupported = true; break; }
+                if (op == "liste.push") {
+                    if (!load_operand(asm_, instr.args[0], X0) ||
+                        !load_operand(asm_, instr.args[1], X1)) { unsupported = true; break; }
+                    asm_.blr_helper(52);                   // jit_liste_push → la liste elle-même
+                } else {
+                    asm_.blr_helper(51);                   // jit_liste_new → objet frais
+                }
+                if (a_dest) {                              // mouvement brut (aliasing d'origine)
+                    asm_.str(X0, X20, d);
+                    slot_ty[d] = RirU;
+                }
+                continue;
+            }
+            if (op == "liste.get" || op == "liste.len" || op == "index") {
+                if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                int ty_res;
+                if (op == "liste.len") ty_res = RirZ;
+                else {
+                    // index sur chaîne (slot base de type S) : résultat chaîne
+                    // par construction, même si l'émetteur demande U
+                    int bslot;
+                    if (op == "index" && instr.args[0].kind == RirOp::Temp &&
+                        slot_of(instr.args[0].name, bslot) && slot_ty.count(bslot) &&
+                        slot_ty[bslot] == RirS)
+                        ty_res = RirS;
+                    else
+                        ty_res = instr.dest_ty == RirU ? -9 : (int)instr.dest_ty;
+                    if (ty_res != -9 && ty_res != RirZ && ty_res != RirB &&
+                        ty_res != RirF && ty_res != RirS) { unsupported = true; break; }
+                }
+                if (op == "liste.len") {
+                    if (!load_operand(asm_, instr.args[0], X0)) { unsupported = true; break; }
+                    asm_.blr_helper(54);                   // jit_liste_len
+                } else {
+                    if (!load_operand(asm_, instr.args[0], X0) ||
+                        !load_operand(asm_, instr.args[1], X1)) { unsupported = true; break; }
+                    asm_.blr_helper(op == "index" ? 56 : 53); // rose_index / jit_liste_get
+                }
+                if (ty_res == -9) {                        // dest inconnu : appropriation brute
+                    asm_.str(X0, X20, d);
+                    slot_ty[d] = RirU;
+                    continue;
+                }
+                asm_.sub_sp(16);
+                asm_.str(X0, SP, 0);                       // copie fraîche
+                asm_.ldr(X0, X20, d);                      // dst du slot
+                asm_.ldr(X1, SP, 0);                       // src = copie fraîche
+                asm_.blr_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 :
+                                ty_res == RirS ? 55 : 25);
+                asm_.str(X0, X20, d);
+                asm_.ldr(X0, SP, 0);
+                asm_.blr_helper(32);                       // libère la copie fraîche
+                asm_.add_sp(16);
+                slot_ty[d] = (RirType)ty_res;
                 continue;
             }
             if (op.rfind("cmp.", 0) == 0) {
@@ -1287,6 +1418,10 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 if (sty == RirZ)      asm_.blr_helper(25);  // jit_z_copy_into
                 else if (sty == RirB) asm_.blr_helper(26);  // jit_b_copy_into
                 else if (sty == RirF) asm_.blr_helper(35);  // jit_f_copy_into
+                else if (sty == RirS) asm_.blr_helper(55);  // jit_s_copy_into
+                else if (sty == RirU) asm_.mov_reg(X0, X1); // partage de l'objet (M2.14) :
+                                                            // la copie shallow de l'interpréteur
+                                                            // partage déjà les shared_ptr internes
                 else { JITLOG("jit: affect: type inconnu pour %s\n", instr.args[0].name.c_str());
                        unsupported = true; break; }
                 asm_.str(X0, X20, d);
@@ -1303,8 +1438,9 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 else if (ty == RirB) asm_.blr_helper(16);  // jit_afficher_b
                 else if (ty == RirS) asm_.blr_helper(17);  // jit_afficher_s
                 else if (ty == RirF) asm_.blr_helper(41);  // jit_afficher_f
-                else { JITLOG("jit: afficher: type inconnu pour %s\n", instr.args[0].name.c_str());
-                       unsupported = true; break; }
+                else asm_.blr_helper(57);  // rose_afficher_jit : liste, table,
+                                           // range, vide… types non suivis
+                                           // (miroir de l'op afficher RIR)
                 continue;
             }
             if (op == "ret.z" || op == "ret") {
@@ -1370,14 +1506,22 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     asm_.mov_from_sp(X1);              // table d'arguments
                     asm_.mov_imm(X2, (uint64_t)na);
                     asm_.blr_helper(50);               // rose_appel_builtin
+                    if (bj->ty_fixe == -2) {           // résultat vide : libérer, rien à copier
+                        asm_.blr_helper(32);
+                        asm_.add_sp(bytes);
+                        continue;                      // slot dest jamais lu (vérifié)
+                    }
                     asm_.str(X0, SP, 0);               // sauvegarde
                     asm_.mov_reg(X1, X0);              // x1 = src (résultat stdlib)
                     asm_.ldr(X0, X20, d);              // x0 = dst (slot propre)
-                    int ty_res = instr.dest_ty == RirU ? bj->ty_fixe : (int)instr.dest_ty;
-                    if (ty_res != RirZ && ty_res != RirB && ty_res != RirF) {
+                    int ty_res = bj->ty_fixe == -3 ? RirS :
+                                 (instr.dest_ty == RirU ? bj->ty_fixe : (int)instr.dest_ty);
+                    if (ty_res != RirZ && ty_res != RirB && ty_res != RirF &&
+                        ty_res != RirS) {
                         unsupported = true; break;
                     }
-                    asm_.blr_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 : 25);
+                    asm_.blr_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 :
+                                    ty_res == RirS ? 55 : 25);
                     asm_.str(X0, X20, d);
                     slot_ty[d] = (RirType)ty_res;
                     asm_.ldr(X0, SP, 0);
@@ -1745,6 +1889,12 @@ Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame) 
     ctx.helpers[47] = (void*)&jit_cmp_ne_f;
     ctx.helpers[48] = (void*)&jit_pow_f_into;
     ctx.helpers[49] = (void*)&jit_divf_f_into;
+    // Listes et chaînes (M2.14)
+    ctx.helpers[51] = (void*)&jit_liste_new;
+    ctx.helpers[52] = (void*)&jit_liste_push;
+    ctx.helpers[53] = (void*)&jit_liste_get;
+    ctx.helpers[54] = (void*)&jit_liste_len;
+    ctx.helpers[55] = (void*)&jit_s_copy_into;
     JitEntryFn fn = reinterpret_cast<JitEntryFn>(entry);
     return reinterpret_cast<Valeur*>(fn(&ctx, frame, nullptr, 0));
 }
