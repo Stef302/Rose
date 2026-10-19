@@ -21,6 +21,7 @@ pub enum Value {
     Chaine(Rc<String>),
     Liste(Rc<RefCell<Vec<Value>>>),
     Table(Rc<RefCell<Vec<(Value, Value)>>>),
+    Tampon(Rc<RefCell<Vec<u8>>>),   /* buffer contigu d'octets, référence partagée */
     Vide,
 }
 
@@ -42,6 +43,30 @@ fn erreur_runtime(msg: &str) -> ! {
     eprintln!("Rose : erreur — {}", msg);
     std::process::exit(1);
 }
+
+/* ── aléatoire : splitmix64, reproductible via graine(n) — séquence
+   strictement identique à celle du moteur C++ (graine only : la graine
+   par défaut intentionnellement propre à chaque moteur). ─────────────── */
+fn rng_etat() -> &'static std::sync::atomic::AtomicU64 {
+    use std::sync::atomic::AtomicU64;
+    static ETAT: std::sync::OnceLock<AtomicU64> = std::sync::OnceLock::new();
+    ETAT.get_or_init(|| AtomicU64::new(
+        (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15)
+            ^ (&ETAT as *const _ as u64)))
+}
+
+fn rng_tirer() -> u64 {
+    use std::sync::atomic::Ordering;
+    let mut z = rng_etat().fetch_add(0x9E3779B97F4A7C15, Ordering::Relaxed)
+        .wrapping_add(0x9E3779B97F4A7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+#[repr(C)]
+struct CTimeSpec { tv_sec: i64, tv_nsec: i64 }
+extern "C" { fn clock_gettime(clock_id: i32, tp: *mut CTimeSpec) -> i32; }
 
 /* ═══════════════════════ conversions de valeurs ═════════════════════ */
 
@@ -147,6 +172,15 @@ fn cmp_vals(g: &Value, d: &Value) -> i32 {
 }
 
 fn valeur_egale(a: &Value, b: &Value) -> bool {
+    if matches!(a, Value::Tampon(_)) || matches!(b, Value::Tampon(_)) {
+        return match (a, b) {
+            (Value::Tampon(x), Value::Tampon(y)) => {
+                let (x, y) = (x.borrow(), y.borrow());
+                x.as_slice() == y.as_slice()
+            }
+            _ => false,
+        };
+    }
     if let (Value::Liste(x), Value::Liste(y)) = (a, b) {
         let (x, y) = (x.borrow(), y.borrow());
         if x.len() != y.len() { return false; }
@@ -241,6 +275,8 @@ fn ecri_str(v: &Value) -> String {
         }
         Value::Booleen(b) => if *b { "vrai".into() } else { "faux".into() },
         Value::Chaine(s) => s.to_string(),
+        Value::Tampon(_) => erreur_runtime(
+            "Un tampon ne s'affiche pas directement — utiliser chaine(tampon)"),
         Value::Liste(l) => {
             let l = l.borrow();
             let parts: Vec<String> = l.iter().map(ecri_str).collect();
@@ -257,6 +293,7 @@ fn ecri_str(v: &Value) -> String {
 
 fn chaine_de(v: &Value) -> String {
     match v {
+        Value::Tampon(t) => String::from_utf8_lossy(&t.borrow()).into_owned(),
         Value::Entier(z) => z.texte(),
         Value::Rationnel(q) => {
             let mut q = q.clone();
@@ -292,7 +329,8 @@ fn nom_type_v(v: &Value) -> &'static str {
     match v {
         Value::Entier(_) => "entier", Value::Rationnel(_) => "rationnel",
         Value::Flottant(_) => "flottant", Value::Booleen(_) => "booleen",
-        Value::Chaine(_) => "chaine", Value::Liste(_) => "liste", Value::Table(_) => "table", Value::Vide => "vide",
+        Value::Chaine(_) => "chaine", Value::Liste(_) => "liste", Value::Table(_) => "table",
+        Value::Tampon(_) => "tampon", Value::Vide => "vide",
     }
 }
 
@@ -748,7 +786,8 @@ impl<'p> Interp<'p> {
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
                 if op == "==" || op == "!=" {
                     if matches!(g, Value::Liste(_)) || matches!(d, Value::Liste(_))
-                        || matches!(g, Value::Table(_)) || matches!(d, Value::Table(_)) {
+                        || matches!(g, Value::Table(_)) || matches!(d, Value::Table(_))
+                        || matches!(g, Value::Tampon(_)) || matches!(d, Value::Tampon(_)) {
                         let eg = valeur_egale(&g, &d);
                         return Value::Booleen(if op == "==" { eg } else { !eg });
                     }
@@ -1073,6 +1112,122 @@ impl<'p> Interp<'p> {
             "afficher" => { self.afficher(&a[0]); Value::Vide }
             "saisir_entier" => self.lire_selon(&Ty::nouveau(TyN::Entier)),
             "saisir_flottant" => self.lire_selon(&Ty::nouveau(TyN::Flottant)),
+            "millisecondes" => {
+                let mut ts = CTimeSpec { tv_sec: 0, tv_nsec: 0 };
+                unsafe { clock_gettime(1 /* CLOCK_MONOTONIC */, &mut ts) };
+                Value::z(ts.tv_sec * 1000 + ts.tv_nsec / 1_000_000)
+            }
+            "graine" => {
+                let s = vers_z(&a[0]);
+                let base = if s.tient_u64() { s.en_u64() } else {
+                    // mêmes bits de poids faible que le moteur C++
+                    let hi = s.fdiv_r(&Z::u(0xFFFF_FFFF)).en_u64();
+                    let lo = s.fdiv_r(&Z::u(1 << 32)).en_u64();
+                    hi.wrapping_mul(1 << 32).wrapping_add(lo)
+                };
+                rng_etat().store(base, std::sync::atomic::Ordering::Relaxed);
+                rng_tirer();   // casse la corrélation directe avec la graine
+                Value::Vide
+            }
+            "hasard" => {
+                let n = vers_z(&a[0]);
+                if n.sgn() <= 0 { erreur_runtime("hasard : bornage positif attendu"); }
+                if n.tient_u64() {
+                    let nn = n.en_u64();
+                    let r = if nn & (nn - 1) == 0 { rng_tirer() & (nn - 1) }
+                            else { ((rng_tirer() as u128 * nn as u128) >> 64) as u64 };
+                    Value::Entier(Z::u(r))
+                } else {
+                    Value::Entier(Z::u(rng_tirer()).fdiv_r(&n))
+                }
+            }
+            "tampon" => {
+                let n = vers_z(&a[0]);
+                if n.sgn() < 0 || !n.tient_u64() { erreur_runtime("tampon : taille démesurée"); }
+                Value::Tampon(Rc::new(RefCell::new(vec![0u8; n.en_u64() as usize])))
+            }
+            "octets" => match &a[0] {
+                Value::Chaine(s) => Value::Tampon(Rc::new(RefCell::new(s.as_bytes().to_vec()))),
+                _ => erreur_runtime("octets : une chaine est attendue"),
+            },
+            "tampon_case" => {
+                let b = match &a[0] {
+                    Value::Tampon(t) => t.borrow(),
+                    _ => erreur_runtime("tampon_case : tampon attendu"),
+                };
+                let idx = vers_z(&a[1]);
+                if !idx.tient_i64() { erreur_runtime("index hors tampon"); }
+                let i = idx.en_i64();
+                if i < 0 || i as usize >= b.len() { erreur_runtime("index hors tampon"); }
+                Value::Entier(Z::u(b[i as usize] as u64))
+            }
+            "tampon_pose" => {
+                let brc = match &a[0] {
+                    Value::Tampon(t) => t.clone(),
+                    _ => erreur_runtime("tampon_pose : tampon attendu"),
+                };
+                let idx = vers_z(&a[1]);
+                if !idx.tient_i64() { erreur_runtime("index hors tampon"); }
+                let i = idx.en_i64();
+                {
+                    let b = brc.borrow();
+                    if i < 0 || i as usize >= b.len() { erreur_runtime("index hors tampon"); }
+                }
+                let v = vers_z(&a[2]);
+                brc.borrow_mut()[i as usize] = v.fdiv_r(&Z::u(256)).en_u64() as u8;
+                Value::Vide
+            }
+            "remplir_hasard" => {
+                let brc = match &a[0] {
+                    Value::Tampon(t) => t.clone(),
+                    _ => erreur_runtime("remplir_hasard : tampon attendu"),
+                };
+                let alpha = match &a[1] {
+                    Value::Tampon(t) => t.borrow().clone(),
+                    _ => erreur_runtime("remplir_hasard : alphabet non vide attendu"),
+                };
+                if alpha.is_empty() { erreur_runtime("remplir_hasard : alphabet non vide attendu"); }
+                let ab = &alpha[..];
+                let s = ab.len();
+                let mut buf = brc.borrow_mut();
+                let n = buf.len();
+                let p = buf.as_mut_slice();
+                if s == 1 {
+                    for x in p.iter_mut() { *x = ab[0]; }
+                } else if s & (s - 1) == 0 && s <= 256 {
+                    // puissance de deux ≤ 256 : octet par caractère, masque exact
+                    let m = (s - 1) as u64;
+                    let mut i = 0usize;
+                    while i + 32 <= n {
+                        let (r0, r1, r2, r3) = (rng_tirer(), rng_tirer(), rng_tirer(), rng_tirer());
+                        for k in 0..8usize {
+                            p[i + k] = ab[((r0 >> (8 * k)) & m) as usize];
+                            p[i + 8 + k] = ab[((r1 >> (8 * k)) & m) as usize];
+                            p[i + 16 + k] = ab[((r2 >> (8 * k)) & m) as usize];
+                            p[i + 24 + k] = ab[((r3 >> (8 * k)) & m) as usize];
+                        }
+                        i += 32;
+                    }
+                    while i < n { p[i] = ab[(rng_tirer() & m) as usize]; i += 1; }
+                } else if s & (s - 1) == 0 {
+                    // puissance de deux > 256 : extraction bit à bit (64/bits par tirage)
+                    let mask = (s - 1) as u64;
+                    let bits = 64u32 - (s as u64).leading_zeros();
+                    let per = (64 / bits) as usize;
+                    let mut i = 0usize;
+                    while i + per <= n {
+                        let r = rng_tirer();
+                        for k in 0..per { p[i + k] = ab[((r >> (bits * k as u32)) & mask) as usize]; }
+                        i += per;
+                    }
+                    while i < n { p[i] = ab[(rng_tirer() & mask) as usize]; i += 1; }
+                } else {
+                    // Lemire : uniforme sans biais
+                    let su = s as u128;
+                    for x in p.iter_mut() { *x = ab[(((rng_tirer() as u128) * su) >> 64) as usize]; }
+                }
+                Value::Vide
+            }
             "factorielle" => Value::Entier(rose_factorielle(&vers_z(&a[0]))),
             "fibonacci" => Value::Entier(rose_fibonacci(&vers_z(&a[0]))),
             "pgcd" => Value::Entier(vers_z(&a[0]).gcd(&vers_z(&a[1]))),
@@ -1208,6 +1363,7 @@ impl<'p> Interp<'p> {
             "longueur" => match &a[0] {
                 Value::Liste(l) => Value::z(l.borrow().len() as i64),
                 Value::Table(t) => Value::z(t.borrow().len() as i64),
+                Value::Tampon(t) => Value::z(t.borrow().len() as i64),
                 Value::Chaine(s) => Value::z(s.chars().count() as i64),
                 _ => Value::z(0),
             },

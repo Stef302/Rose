@@ -34,7 +34,7 @@ pub type R<T> = std::result::Result<T, Erreur>;
 /* ── types ─────────────────────────────────────────────────────────── */
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TyN { Vide = 0, Entier = 1, Rationnel = 2, Flottant = 3, Booleen = 4, Chaine = 5, Liste = 6, Table = 7, Valeur = 8 }
+pub enum TyN { Vide = 0, Entier = 1, Rationnel = 2, Flottant = 3, Booleen = 4, Chaine = 5, Liste = 6, Table = 7, Valeur = 8, Tampon = 9 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Ty { pub n: TyN, pub elt: TyN }
@@ -52,6 +52,7 @@ impl Ty {
             TyN::Vide => "vide".into(),
             TyN::Liste => format!("liste<{}>", Ty::nouveau(self.elt).nom()),
             TyN::Table => "table".into(),
+            TyN::Tampon => "tampon".into(),
             TyN::Valeur => "valeur".into(),
         }
     }
@@ -1046,6 +1047,15 @@ pub const STDLIB: &[EntreeStd] = &[
     EntreeStd { nom: "max", args: &["num", "num"], retour: "NUM_MAX" },
     EntreeStd { nom: "partie_entiere", args: &["num"], retour: "entier" },
     EntreeStd { nom: "fraction", args: &["entier", "entier"], retour: "rationnel" },
+    // aléatoire reproductible et tampons d'octets
+    EntreeStd { nom: "graine", args: &["entier"], retour: "vide" },
+    EntreeStd { nom: "hasard", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "tampon", args: &["entier"], retour: "tampon" },
+    EntreeStd { nom: "octets", args: &["chaine"], retour: "tampon" },
+    EntreeStd { nom: "tampon_case", args: &["tampon", "entier"], retour: "entier" },
+    EntreeStd { nom: "tampon_pose", args: &["tampon", "entier", "entier"], retour: "vide" },
+    EntreeStd { nom: "remplir_hasard", args: &["tampon", "tampon"], retour: "vide" },
+    EntreeStd { nom: "millisecondes", args: &[], retour: "entier" },
 ];
 
 pub const DYNAMIQUE: &[EntreeStd] = &[
@@ -1056,14 +1066,25 @@ pub const DYNAMIQUE: &[EntreeStd] = &[
     EntreeStd { nom: "appeler2", args: &["entier", "chaine", "num", "num"], retour: "flottant" },
 ];
 
-fn ty_nom(s: &str) -> Ty {
-    match s {
+/* Les temporaires internes du moteur portent la forme « t<chiffres> » :
+   un utilisateur ne peut pas déclarer un tel nom (collision d'emplacements). */
+fn verifier_nom_reserve(nom: &str, ligne: i64) -> R<()> {
+    let b = nom.as_bytes();
+    if b.len() > 1 && b[0] == b't' && b[1..].iter().all(|c| c.is_ascii_digit()) {
+        return Err(Erreur::ligne_seule(
+            format!("Le nom '{}' est réservé par le moteur", nom), ligne));
+    }
+    Ok(())
+}
+
+fn ty_nom(s: &str) -> Ty {    match s {
         "entier" => Ty::nouveau(TyN::Entier),
         "rationnel" => Ty::nouveau(TyN::Rationnel),
         "flottant" => Ty::nouveau(TyN::Flottant),
         "booleen" => Ty::nouveau(TyN::Booleen),
         "chaine" => Ty::nouveau(TyN::Chaine),
         "table" => Ty::nouveau(TyN::Table),
+        "tampon" => Ty::nouveau(TyN::Tampon),
         _ => Ty::nouveau(TyN::Vide),
     }
 }
@@ -1120,6 +1141,7 @@ impl Verificateur {
         }
         let mut locals: Env = Default::default();
         for (p, t) in &sig.params {
+            verifier_nom_reserve(p, sig.ligne)?;
             locals.insert(p.clone(), *t);
         }
         self.assume_retour = sig.retour;
@@ -1167,6 +1189,7 @@ impl Verificateur {
                     }
                     *typ_read = t;
                 } else {
+                    verifier_nom_reserve(nom, *ligne)?;
                     env.insert(nom.clone(), Ty::nouveau(TyN::Entier));
                     *typ_read = Ty::nouveau(TyN::Entier);
                 }
@@ -1190,6 +1213,7 @@ impl Verificateur {
                         }
                     }
                 }
+                verifier_nom_reserve(nom, *ligne)?;
                 env.insert(nom.clone(), cible);
             }
             I::Si { test, alors, sinon, ligne } => {
@@ -1213,6 +1237,7 @@ impl Verificateur {
                 if td.n != TyN::Entier || tf.n != TyN::Entier {
                     return Err(Erreur::ligne_seule("pour…de…vers exige des bornes entières", *ligne));
                 }
+                verifier_nom_reserve(var, *ligne)?;
                 env.insert(var.clone(), Ty::nouveau(TyN::Entier));
                 self.bloc(corps, env)?;
             }
@@ -1478,6 +1503,19 @@ impl Verificateur {
                     if ta.n != TyN::Liste && ta.n != TyN::Chaine && ta.n != TyN::Table {
                         return Err(Erreur::ligne_seule(
                             format!("{}: une liste est attendue, reçu {}", nom, ta.nom()), ligne));
+                    }
+                }
+                "liste_ou_chaine_ou_table" => {
+                    if ta.n != TyN::Liste && ta.n != TyN::Chaine && ta.n != TyN::Table
+                        && ta.n != TyN::Tampon {
+                        return Err(Erreur::ligne_seule(format!(
+                            "{}: une liste, une chaîne ou une table est attendue, reçu {}", nom, ta.nom()), ligne));
+                    }
+                }
+                "tampon" => {
+                    if ta.n != TyN::Tampon {
+                        return Err(Erreur::ligne_seule(
+                            format!("{}: un tampon est attendu, reçu {}", nom, ta.nom()), ligne));
                     }
                 }
                 "tout" => { /* tout type accepté (afficher_erreur) */ }

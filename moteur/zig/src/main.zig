@@ -1118,6 +1118,7 @@ fn repliBinaire(op: []const u8, gt: []const u8, gf: bool, dt: []const u8, df: bo
 
 // ── valeurs ───────────────────────────────────────────────────────────
 const TableEntry = struct { cle: Value, val: Value };
+const Tampon = struct { b: []u8 };
 const Value = union(enum) {
     entier: Z,
     rationnel: Q,
@@ -1126,6 +1127,7 @@ const Value = union(enum) {
     chaine: []const u8,
     liste: *std.ArrayList(Value),
     table: *std.ArrayList(TableEntry),
+    tampon: *Tampon,   // buffer contigu d'octets, référence partagée
     vide,
 
     fn deS(s: []const u8) Value { return .{ .chaine = s }; }
@@ -1267,6 +1269,7 @@ fn ecriStr(v: Value) []const u8 {
         },
         .booleen => |b| return if (b) "vrai" else "faux",
         .chaine => |s| return s,
+        .tampon => erreurRuntime("Un tampon ne s'affiche pas directement — utiliser chaine(tampon)"),
         .liste => |l| {
             var out = std.ArrayList(u8).init(arena());
             out.append('[') catch @panic("mémoire");
@@ -1306,6 +1309,7 @@ fn chaineVersFlottant(ch: []const u8) f64 {
 
 fn chaineDe(v: Value) []const u8 {
     switch (v) {
+        .tampon => |t| return t.b,
         .entier => |z| return Z.texte(z),
         .rationnel => |q| {
             const qc = Q.canon(q);
@@ -1349,6 +1353,10 @@ fn cmpVals(g: Value, d: Value) i32 {
 }
 
 fn valeurEgale(a: Value, b: Value) bool {
+    if (a == .tampon or b == .tampon) {
+        if (a != .tampon or b != .tampon) return false;
+        return std.mem.eql(u8, a.tampon.b, b.tampon.b);
+    }
     if (a == .table or b == .table) {
         if (a != .table or b != .table) return false;
         if (a.table.items.len != b.table.items.len) return false;
@@ -1379,6 +1387,29 @@ fn valeurEgale(a: Value, b: Value) bool {
 }
 
 // ── stdlib numérique ──────────────────────────────────────────────────
+
+// ── aléatoire : splitmix64, reproductible via graine(n) — séquence
+//    strictement identique aux moteurs C++ et Rust. ────────────────────
+var g_etat: u64 = 0;
+var g_init: bool = false;
+fn rngEtat() *u64 {
+    if (!g_init) {
+        g_etat = @as(u64, @intCast(std.time.nanoTimestamp()))
+               ^ @as(u64, @intFromPtr(&g_etat));
+        g_init = true;
+    }
+    return &g_etat;
+}
+fn rngTirer() u64 {
+    const e = rngEtat();
+    e.* +%= 0x9E3779B97F4A7C15;
+    var z = e.*;
+    z = (z ^ (z >> 30)) *% 0xBF58476D1CE4E5B9;
+    z = (z ^ (z >> 27)) *% 0x94D049BB133111EB;
+    return z ^ (z >> 31);
+}
+const Timespec = extern struct { tv_sec: i64, tv_nsec: i64 };
+extern fn clock_gettime(clock_id: c_int, tp: *Timespec) c_int;
 fn factArbreRun(bas: u64, haut: u64) Z {
     if (bas > haut) return Z.i(1);
     if (haut - bas < 16) {
@@ -1635,7 +1666,8 @@ const Interp = struct {
 
     fn binaireOp(op: []const u8, g: Value, d: Value) Value {
         if (std.mem.eql(u8, op, "==") or std.mem.eql(u8, op, "!=")) {
-            if (g == .table or d == .table or g == .liste or d == .liste) {
+            if (g == .table or d == .table or g == .liste or d == .liste
+                or g == .tampon or d == .tampon) {
                 const eq = valeurEgale(g, d);
                 return Value{ .booleen = if (std.mem.eql(u8, op, "==")) eq else !eq };
             }
@@ -1827,6 +1859,113 @@ const Interp = struct {
     fn stdlib(self: *Interp, nom: []const u8, aa: []Value) Value {
         const a = aa;
         if (std.mem.eql(u8, nom, "afficher")) { self.afficherV(a[0]); return Value{ .vide = {} }; }
+        if (std.mem.eql(u8, nom, "millisecondes")) {
+            var ts = Timespec{ .tv_sec = 0, .tv_nsec = 0 };
+            const CLOCK_MONOTONIC: c_int = 1;
+            _ = clock_gettime(CLOCK_MONOTONIC, &ts);
+            return Value.deI(ts.tv_sec * 1000 + @divTrunc(ts.tv_nsec, 1_000_000));
+        }
+        if (std.mem.eql(u8, nom, "graine")) {
+            const s = versZ(a[0]);
+            var base: u64 = undefined;
+            if (s.sgn() >= 0 and s.bits() <= 64) base = s.enU64() else {
+                // mêmes bits de poids faible que les moteurs C++ et Rust
+                const hi = Z.fdivR(s, Z.u(0xFFFF_FFFF)).enU64();
+                const lo = Z.fdivR(s, Z.u(@intCast(@as(u64, 1) << 32))).enU64();
+                base = hi *% (@as(u64, 1) << 32) +% lo;
+            }
+            rngEtat().* = base;
+            _ = rngTirer();   // casse la corrélation directe avec la graine
+            return Value{ .vide = {} };
+        }
+        if (std.mem.eql(u8, nom, "hasard")) {
+            const n = versZ(a[0]);
+            if (n.sgn() <= 0) erreurRuntime("hasard : bornage positif attendu");
+            if (n.bits() <= 64) {
+                const nn = n.enU64();
+                const r = if ((nn & (nn - 1)) == 0) rngTirer() & (nn - 1)
+                          else @as(u64, @truncate(@as(u128, rngTirer()) * @as(u128, nn) >> 64));
+                return Value.deZ(Z.u(r));
+            }
+            return Value.deZ(Z.fdivR(Z.u(rngTirer()), n));
+        }
+        if (std.mem.eql(u8, nom, "tampon")) {
+            const n = versZ(a[0]);
+            if (n.sgn() < 0 or n.bits() > 64) erreurRuntime("tampon : taille démesurée");
+            const t = arena().create(Tampon) catch @panic("mémoire");
+            t.b = arena().alloc(u8, @intCast(n.enU64())) catch @panic("mémoire");
+            @memset(t.b, 0);
+            return Value{ .tampon = t };
+        }
+        if (std.mem.eql(u8, nom, "octets")) {
+            if (a[0] != .chaine) erreurRuntime("octets : une chaine est attendue");
+            const t = arena().create(Tampon) catch @panic("mémoire");
+            t.b = arena().dupe(u8, a[0].chaine) catch @panic("mémoire");
+            return Value{ .tampon = t };
+        }
+        if (std.mem.eql(u8, nom, "tampon_case")) {
+            if (a[0] != .tampon) erreurRuntime("tampon_case : tampon attendu");
+            const idx = versZ(a[1]);
+            if (!idx.tientI64()) erreurRuntime("index hors tampon");
+            const i = idx.enI64();
+            if (i < 0 or @as(u64, @intCast(i)) >= a[0].tampon.b.len) erreurRuntime("index hors tampon");
+            return Value.deI(@intCast(a[0].tampon.b[@intCast(i)]));
+        }
+        if (std.mem.eql(u8, nom, "tampon_pose")) {
+            if (a[0] != .tampon) erreurRuntime("tampon_pose : tampon attendu");
+            const idx = versZ(a[1]);
+            if (!idx.tientI64()) erreurRuntime("index hors tampon");
+            const i = idx.enI64();
+            if (i < 0 or @as(u64, @intCast(i)) >= a[0].tampon.b.len) erreurRuntime("index hors tampon");
+            const v = versZ(a[2]);
+            a[0].tampon.b[@intCast(i)] = @intCast(Z.fdivR(v, Z.u(256)).enU64());
+            return Value{ .vide = {} };
+        }
+        if (std.mem.eql(u8, nom, "remplir_hasard")) {
+            if (a[0] != .tampon) erreurRuntime("remplir_hasard : tampon attendu");
+            if (a[1] != .tampon or a[1].tampon.b.len == 0)
+                erreurRuntime("remplir_hasard : alphabet non vide attendu");
+            const buf = a[0].tampon.b;
+            const ab = a[1].tampon.b;
+            const s = ab.len;
+            if (s == 1) {
+                @memset(buf, ab[0]);
+            } else if ((s & (s - 1)) == 0 and s <= 256) {
+                // puissance de deux ≤ 256 : octet par caractère, masque exact
+                const m: u64 = s - 1;
+                var i: usize = 0;
+                while (i + 32 <= buf.len) : (i += 32) {
+                    const r0 = rngTirer(); const r1 = rngTirer();
+                    const r2 = rngTirer(); const r3 = rngTirer();
+                    var k: usize = 0;
+                    while (k < 8) : (k += 1) {
+                        const sh: u6 = @intCast(8 * k);
+                        buf[i + k] = @intCast(ab[@intCast((r0 >> sh) & m)]);
+                        buf[i + 8 + k] = @intCast(ab[@intCast((r1 >> sh) & m)]);
+                        buf[i + 16 + k] = @intCast(ab[@intCast((r2 >> sh) & m)]);
+                        buf[i + 24 + k] = @intCast(ab[@intCast((r3 >> sh) & m)]);
+                    }
+                }
+                while (i < buf.len) : (i += 1) buf[i] = @intCast(ab[@intCast(rngTirer() & m)]);
+            } else if ((s & (s - 1)) == 0) {
+                const m: u64 = s - 1;
+                const bits_u: u64 = 64 - @as(u64, @clz(@as(u64, s)));
+                const per: usize = @intCast(@divTrunc(64, bits_u));
+                var i: usize = 0;
+                while (i + per <= buf.len) : (i += per) {
+                    const r = rngTirer();
+                    var k: usize = 0;
+                    while (k < per) : (k += 1) {
+                        const sh: u6 = @intCast(bits_u * @as(u64, @intCast(k)));
+                        buf[i + k] = @intCast(ab[@intCast((r >> sh) & m)]);
+                    }
+                }
+                while (i < buf.len) : (i += 1) buf[i] = @intCast(ab[@intCast(rngTirer() & m)]);
+            } else {
+                for (buf) |*x| x.* = @intCast(ab[@intCast((@as(u128, rngTirer()) * @as(u128, s)) >> 64)]);
+            }
+            return Value{ .vide = {} };
+        }
         if (std.mem.eql(u8, nom, "factorielle")) return Value.deZ(roseFactorielle(versZ(a[0])));
         if (std.mem.eql(u8, nom, "fibonacci")) return Value.deZ(roseFibonacci(versZ(a[0])));
         if (std.mem.eql(u8, nom, "pgcd")) return Value.deZ(Z.gcd(versZ(a[0]), versZ(a[1])));
@@ -1851,6 +1990,7 @@ const Interp = struct {
         if (std.mem.eql(u8, nom, "longueur")) return switch (a[0]) {
             .liste => |l| Value.deI(@intCast(l.items.len)),
             .table => |t| Value.deI(@intCast(t.items.len)),
+            .tampon => |t| Value.deI(@intCast(t.b.len)),
             .chaine => |ch| Value.deI(@intCast(utf8Len(ch))),
             else => Value.deI(0),
         };

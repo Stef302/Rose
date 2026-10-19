@@ -284,10 +284,13 @@ fn fibrapide(n: entier) -> entier {
 pour i de 0 vers 5 { ? ($i % 2 == 0) [>> $i] }      # sucre conditionnel
 ```
 
-## v3.7 — Aléatoire et tampons d'octets (moteur C++)
+## v3.7 — Aléatoire et tampons d'octets (moteurs compilés)
 
-Briques de performances, disponibles dans le moteur C++ uniquement (comme la
-FFI ci-dessus : les cibles `rose2` les refusent explicitement).
+Briques de performances, disponibles dans les moteurs C++, Rust et Zig
+(comme la FFI ci-dessus : les cibles `rose2` les refusent explicitement).
+La séquence aléatoire issue de `graine(n)` est **identique bit à bit d'un
+moteur et d'une architecture à l'autre** (splitmix64, même implémentation
+dans les trois).
 
 - `graine(n)` — fixe la graine du générateur (splitmix64) : le tirage devient
   reproductible, octet pour octet, sur toutes les architectures.
@@ -302,13 +305,18 @@ FFI ci-dessus : les cibles `rose2` les refusent explicitement).
 - `remplir_hasard(t, alphabet)` — remplit le tampon `t` de caractères pris au
   hasard dans `alphabet` (tampon), en boucle native : c'est l'équivalent des
   appels vectorisés de numpy — la boucle vit dans le moteur.
+- `millisecondes()` — millisecondes monotones (hors cadran mur) : permet à un
+  banc d'essai de se chronométrer lui-même (`$m0 = millisecondes()` …
+  `$m1 = millisecondes()`). Sa valeur brute n'a pas de sens inter-moteurs :
+  ne la comparez pas, chronométrez des différences.
 - Un tampon ne s'affiche pas directement (`>> $t` refuse) : convertir par
   `chaine(t)`. Deux tampons se comparent avec `==`.
 
 Les noms de variables de la forme `t<chiffres>` (`t0`, `t1`, …) sont **réservés
-par le moteur** : ce sont les emplacements des temporaires internes, et une
-variable portant le même nom les écrasait (le vérificateur refuse désormais
-ces noms avec un message explicite).
+par le moteur** dans les moteurs à vérificateur (C++, Rust) : ce sont les
+emplacements des temporaires internes du RIR, et une variable portant le même
+nom les écrasait (refus désormais avec un message explicite). Le moteur Zig,
+sans vérificateur ni RIR, les accepte sans risque.
 
 ## CLI
 

@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1022,6 +1023,7 @@ static const EntreeStd STDLIB[] = {
     {"tampon_case", {"tampon", "entier"}, "entier"},
     {"tampon_pose", {"tampon", "entier", "entier"}, "vide"},
     {"remplir_hasard", {"tampon", "tampon"}, "vide"},
+    {"millisecondes", {}, "entier"},
 };
 static const EntreeStd DYNAMIQUE[] = {
     {"charger", {"chaine"}, "entier"},
@@ -2155,6 +2157,11 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
         if (nom == "afficher") { afficher(a[0]); return Valeur::vide(); }
         if (nom == "saisir_entier") return lire_selon(T_ENTIER);
         if (nom == "saisir_flottant") return lire_selon(T_FLOTTANT);
+        if (nom == "millisecondes") {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            return Valeur::de_z(mpz_class((unsigned long)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000)));
+        }
         if (nom == "graine") {
             mpz_class s = vers_z(a[0]);
             g_rng_etat = mpz_fits_ulong_p(s.get_mpz_t()) ? mpz_get_ui(s.get_mpz_t())
@@ -2216,10 +2223,29 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
             const size_t s = a[1].o->size();
             if (s == 1) {                       // alphabet mono-caractère
                 buf.assign(buf.size(), ab[0]);
-            } else if ((s & (s - 1)) == 0) {   // taille puissance de 2 → masque exact
+            } else if ((s & (s - 1)) == 0 && s <= 256) {
+                // Puissance de deux ≤ 256 : un octet par caractère, masque
+                // exact, 8 caractères par tirage — et quatre tirages
+                // indépendants par lot pour cacher la latence de splitmix.
+                const size_t m = s - 1;
+                unsigned char *p = (unsigned char *)&buf[0];
+                const size_t n = buf.size();
+                size_t i = 0;
+                for (; i + 32 <= n; i += 32) {
+                    uint64_t r0 = rng_tirer(), r1 = rng_tirer();
+                    uint64_t r2 = rng_tirer(), r3 = rng_tirer();
+                    for (int k = 0; k < 8; k++) {
+                        p[i + k]      = (unsigned char)ab[(r0 >> (8 * k)) & m];
+                        p[i + 8 + k]  = (unsigned char)ab[(r1 >> (8 * k)) & m];
+                        p[i + 16 + k] = (unsigned char)ab[(r2 >> (8 * k)) & m];
+                        p[i + 24 + k] = (unsigned char)ab[(r3 >> (8 * k)) & m];
+                    }
+                }
+                for (; i < n; i++) p[i] = (unsigned char)ab[rng_tirer() & m];
+            } else if ((s & (s - 1)) == 0) {   // puissance de deux > 256
                 const size_t mask = s - 1;
-                const int bits = __builtin_ctzll((unsigned long long)s);
-                const size_t per = (size_t)(64 / bits);   // caractères par tirage
+                const int bits = 64 - __builtin_clzll((unsigned long long)s);
+                const size_t per = (size_t)(64 / bits);
                 size_t i = 0;
                 for (; i + per <= buf.size(); i += per) {
                     uint64_t r = rng_tirer();
