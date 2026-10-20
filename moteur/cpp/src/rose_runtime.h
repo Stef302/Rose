@@ -98,6 +98,9 @@ static_assert(sizeof(rose_ent) == 16,
 
 // conversion uniforme des trois domaines entiers vers mpz
 inline double rose_vers_double(double v) { return v; }
+// miroir exact de vers_d (rose.cpp) : Q→F = mpq_get_d, Z→GMP→F = mpz_get_d.
+inline double rose_vers_double(const mpq_class &q) { return mpq_get_d(q.get_mpq_t()); }
+inline double rose_vers_double(const mpz_class &z) { return mpz_get_d(z.get_mpz_t()); }
 inline double rose_vers_double(const rose_ent &e) {
     return e.gros() ? mpz_get_d(e.gd().get_mpz_t()) : (double)e.petit();
 }
@@ -106,6 +109,10 @@ inline mpz_class rose_vers_mpz(const rose_ent &e) {
     mpz_class r; mpz_set_si(r.get_mpz_t(), (long)e.petit()); return r;
 }
 inline mpz_class rose_vers_mpz(const mpz_class &z) { return z; }
+inline mpz_class rose_vers_mpz(const mpq_class &q) {   // miroir vers_z : PLANCHER
+    mpz_class r; mpz_fdiv_q(r.get_mpz_t(), q.get_num().get_mpz_t(), q.get_den().get_mpz_t());
+    return r;
+}
 inline mpz_class rose_vers_mpz(long long v) {
     mpz_class r; mpz_set_si(r.get_mpz_t(), (long)v); return r;
 }
@@ -252,8 +259,6 @@ void rose_afficher_float(rose_float v);
 void rose_afficher_str(const char *s);
 void rose_afficher_tampon_longueur(rose_tampon buf);
 
-#endif // ROSE_RUNTIME_H
-
 // Builtins numériques.
 rose_int rose_factorielle(rose_int n);
 rose_int rose_fibonacci(rose_int n);
@@ -320,6 +325,10 @@ void rose_liste_push_int(rose_liste &l, const rose_ent &v);
 rose_gd rose_factorielle_gd_impl(const rose_gd &n);
 rose_gd rose_fibonacci_gd_impl(const rose_gd &n);
 rose_gd rose_puissance_gd_impl(const rose_gd &base, const rose_gd &expo);
+// M4.2 : miroir fidele de l'interprete pour pow hors domaine flottant —
+// exposant troncque AU PLANCHER par rose_vers_mpz, e<0 → inverse exact,
+// 0^negatif et exposant demesure = erreurs runtime aux messages exacts.
+rose_qd rose_pow_exact(const rose_qd &base, const rose_gd &expo);
 rose_int rose_nb_chiffres_gd_impl(const rose_gd &n);
 rose_gd rose_div_florentin_gd_impl(const rose_gd &a, const rose_gd &b);
 rose_gd rose_rem_florentin_gd_impl(const rose_gd &a, const rose_gd &b);
@@ -408,3 +417,48 @@ inline rose_str rose_nombre_pi(const rose_ent &d) {
     if (d.gros()) rose_erreur("décimales de π hors limites");
     return rose_nombre_pi((rose_int)d.petit());
 }
+
+/* ── domaine dynamique des tables (M4.2) ──────────────────────────────
+   Le checker type « tout » (T_VALEUR) le résultat de t[cle] et ne
+   unifie pas les valeurs des tables : la cellule AOT porte donc son
+   propre tag et doit rendre EXACTEMENT comme l'interprete, avec ses
+   DEUX facettes documentees :
+     * texte()    = miroir chaine_de — rationnel en « a/b », flottant
+                    plie en entier sous 1e16 (rendu DANS la table) ;
+     * afficher() = miroir ecri — rationnel DECIMAL (longue division),
+                    flottant en regle d'affichage (rendu « >> t[k] »).
+   Les cles sont textuelles : le transpileur rejette les cles numeriques
+   (l'interprete compare par Valeur — « 5 » texte et 5 nombre collident
+   en texte ; mieux vaut un rejet poli qu'un silencieux). */
+struct rose_dyn {
+    int ty = 5;               // miroir T_* : 1 entier, 2 rationnel, 3 flottant, 4 booleen, 5 chaine
+    rose_ent e;               // ty 1 (int64 machine avec promotion GMP)
+    rose_qd  q;               // ty 2
+    rose_float f = 0;         // ty 3
+    bool b = false;           // ty 4
+    rose_str s;               // ty 5
+    std::string texte() const;   // miroir chaine_de
+    void afficher() const;       // miroir ecri
+};
+rose_dyn rose_dyn_de(const rose_ent &v);
+rose_dyn rose_dyn_de(const rose_gd &v);
+rose_dyn rose_dyn_de(const rose_qd &v);
+rose_dyn rose_dyn_de(rose_float v);
+rose_dyn rose_dyn_de(const rose_str &v);
+rose_dyn rose_dyn_de(bool v);
+bool rose_dyn_eq(const rose_dyn &a, const rose_dyn &b);        // miroir rose_valeur_egale (branche numerique)
+int  rose_dyn_cmp(const rose_dyn &a, const rose_dyn &b);       // miroir cmp_vals
+
+typedef std::vector<std::pair<rose_str, rose_dyn>> rose_table;
+rose_table rose_table_new();
+void rose_table_inserer(rose_table &t, const rose_str &cle, const rose_dyn &v);
+bool rose_table_cle_existe(const rose_table &t, const rose_str &cle);
+bool rose_table_supprimer(rose_table &t, const rose_str &cle);
+rose_int rose_table_longueur(const rose_table &t);
+rose_dyn rose_table_get(const rose_table &t, const rose_str &cle);   // « clé absente de la table »
+rose_liste rose_table_cles(const rose_table &t);                     // ordre d'insertion
+rose_liste rose_table_valeurs(const rose_table &t);                   // rendues par afficher (miroir ecri)
+void rose_afficher_table(const rose_table &t);                        // "[cle => val, ...]"
+bool rose_table_eq(const rose_table &a, const rose_table &b);         // ordre independant (miroir)
+
+#endif  /* ROSE_RUNTIME_H */

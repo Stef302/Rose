@@ -4510,8 +4510,15 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Rose : erreur — %s\n", e.what());
             return 1;
         }
-        // Transpiler
-        std::string cpp_code = transpiler_rir(mod);
+        // Transpiler — le rejet explicite du transpileur (M4.2 : jamais de
+        // trou silencieux) est attrapé ici au même format que le checker.
+        std::string cpp_code;
+        try {
+            cpp_code = transpiler_rir(mod);
+        } catch (const std::exception &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.what());
+            return 1;
+        }
         // Écrire le .cpp
         std::string cpp_file = sortie + ".cpp";
         std::ofstream out(cpp_file, std::ios::binary | std::ios::trunc);

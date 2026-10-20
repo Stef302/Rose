@@ -765,3 +765,55 @@ new/delete par promotion (case rare, les bancs GMP-dominés sont inchangés
 à ±2 %). Piège évité de justesse : supprimer `gros_` sans convention NULL
 aurait laissé `gd()` sur un pointeur mort — le `static_assert(sizeof)` +
 la doc du champ verrouillent la représentation.
+
+## M4.2 — comblement des trois lacunes AOT + contrat anti-silence
+
+Les trois derniers programmes « non compilables » d'aot.py (notation
+symbolique, mixtes rationnel⊛flottant, tables) sont désormais **fidèles
+caractère pour caractère**. aot.py : 16 → **19 fidèles**, 0 non compilable,
+0 régression.
+
+Découverte annexe — le rapport cachait la vérité deux fois :
+1. « notation symbolique » échouait pour un **espace dans le nom du
+   binaire** (aot.py passait `-o /tmp/…/notation symbolique` non quoté à
+   g++). aot.py assainit désormais les noms (slug).
+2. Un op ou un appel non reconnu du transpileur n'émettait **rien du tout**
+   (ou un commentaire `// unsupported`) : le C++ produit compilation
+   échouait par chance, ou compilait avec des slots non initialisés →
+   sortie silencieusement fausse (le `²` de t_symboles rendait 0). Le
+   transpileur **lève** maintenant (`throw std::runtime_error`) ; l'action
+   build attrape et rend « Rose : erreur — … » code 1. Contrat : jamais de
+   trou silencieux — un rejet poli vaut mieux qu'un zéro bien propre.
+
+Corrections de fidélité :
+* **pow par suffixe de domaine** (le checker suffixe l'op du type attendu :
+  `pow.f`, `pow.q`…) : miroir exact de l'interprète — exposant flottant
+  d'abord `std::pow(vers_d(base), d.f)`, puis base flottante, puis domaine
+  exact via `rose_pow_exact` (nouvelle aide runtime : é`troncature AU
+  PLANCHER` vers_z, e<0 par inversion, messages d'erreur identiques).
+  Destination entière + exposant non littéral = rejet explicite (l'interprète
+  peut y stocker un RATIONNEL qu'aucun slot statique ne porte).
+* **Mixtes Q⊛F** : `rose_vers_double` sur mpq (`mpq_get_d`) et mpz
+  (`mpz_get_d`) — miroir `vers_d` ; les sites add/sub/mul/div .q et .f
+  enveloppent tout opérande hors domaine ; le collecteur propage F comme il
+  propageait Gd.
+* **Tables AOT** : nouveau domaine `rose_dyn`/`rose_table` dans le runtime.
+  Le checker type `t[cle]` en « tout » sans unifier : la cellule porte donc
+  son tag et **deux rendus** distincts, documentés — `afficher()` miroir
+  ecri (rationnel DECIMAL) pour `>>`, `texte()` miroir chaine_de (rationnel
+  « a/b », flottant plié) dans les tables et listes. Table = vecteur ordonné,
+  remplacement en place, `==` ordre-indépendant (miroir), clés numériques =
+  rejet explicite (« 5 » texte et 5 nombre collident en texte).
+  Garde transversale : arithmétique/return/frontières de fonction refusent
+  table et cellule dynamique.
+
+Mesure du domaine neuf (`tab_micro.rose`, 200 000 inserer+cle_existe+index) :
+interprète **801 ms** → AOT **11 ms** (médiane 3, warmup exclu) ≈ ×70.
+
+Validation : dorés 44/44, parité 116/116, test_jit (rebuilt), croisée x64
+qemu (test_jit + dorés 43/43), bancs AOT 10/10 empreintes identiques et
+timings au pair avec M4.1 (médianes entrelacées même session : appels
+11↔11, boucle_entier 23↔24, flottante 4↔4, pgcd 105↔104, mot_de_passe
+492↔479, premiers 62↔54 ms — bruit thermique, aucune régression).
+Bonus garde-fou : le garde-fou d'en-tête `#ifndef` du runtime était fermé à
+mi-fichier (la moitié du header non protégée) — refermé en fin de fichier.

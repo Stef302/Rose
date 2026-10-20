@@ -316,6 +316,25 @@ rose_gd rose_puissance_gd_impl(const rose_gd &base, const rose_gd &expo) {
     return r;
 }
 
+// M4.2 — miroir exact de la branche non-flottante du pow interprete (rose.cpp) :
+// q^e et z^e exacts, e negatif par inversion, messages d'erreur identiques.
+rose_qd rose_pow_exact(const rose_qd &base, const rose_gd &expo) {
+    if (!mpz_fits_slong_p(expo.get_mpz_t()))
+        rose_erreur("exposant démesuré (la puissance exploserait au-delà de tout calcul)");
+    long e = mpz_get_si(expo.get_mpz_t());
+    mpz_class num = base.get_num(), den = base.get_den();
+    if (e < 0) {
+        if (mpz_sgn(num.get_mpz_t()) == 0) rose_erreur("0^exposant négatif");
+        std::swap(num, den);
+        e = -e;
+    }
+    mpz_pow_ui(num.get_mpz_t(), num.get_mpz_t(), (unsigned long)e);
+    mpz_pow_ui(den.get_mpz_t(), den.get_mpz_t(), (unsigned long)e);
+    rose_qd r(num, den);
+    r.canonicalize();
+    return r;
+}
+
 rose_int rose_nb_chiffres_gd_impl(const rose_gd &n) {
     if (mpz_sgn(n.get_mpz_t()) == 0) return 1;
     rose_gd t; mpz_abs(t.get_mpz_t(), n.get_mpz_t());
@@ -725,4 +744,130 @@ rose_str rose_caractere(rose_int cp) {
     if (cp < 0 || cp > 0x10FFFF) rose_erreur("caractere : code hors plage (0 à 1114111)");
     if (cp >= 0xD800 && cp <= 0xDFFF) rose_erreur("caractere : code réservé (55296 à 57343)");
     return rose_utf8_encode((unsigned long)cp);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   Domaine dynamique des tables — M4.2. Chaque rendu est un miroir :
+   texte() reproduit chaine_de (rose.cpp), afficher() reproduit ecri,
+   eq/cmp reproduisent rose_valeur_egale/cmp_vals (croisades numeriques
+   exactes : F par vers_d, Q par mpq, sinon mpz).
+   ════════════════════════════════════════════════════════════════════ */
+std::string rose_dyn::texte() const {          // miroir chaine_de
+    switch (ty) {
+        case 1: return e.texte();
+        case 2: { rose_qd c = q; c.canonicalize();
+                  if (mpz_get_si(c.get_den().get_mpz_t()) == 1 && mpz_fits_slong_p(c.get_den().get_mpz_t()))
+                      return c.get_num().get_str();
+                  return c.get_num().get_str() + "/" + c.get_den().get_str(); }
+        case 3: return rose_texte_flt(f);       // ecri==chaine_de pour les flottants
+        case 4: return b ? "vrai" : "faux";
+        default: return s;
+    }
+}
+void rose_dyn::afficher() const {              // miroir ecri (l'op afficher ajoute la ligne)
+    switch (ty) {
+        case 1: rose_afficher_int(e); return;
+        case 2: rose_afficher_q(q); return;    // DECIMAL, caps 200/500 inclus
+        case 3: { std::string r = rose_texte_flt(f); std::fputs(r.c_str(), stdout); break; }
+        case 4: std::fputs(b ? "vrai" : "faux", stdout); break;
+        default: std::fputs(s.c_str(), stdout); break;
+    }
+    std::fputs("\n", stdout);
+}
+
+rose_dyn rose_dyn_de(const rose_ent &v)  { rose_dyn d; d.ty = 1; d.e = v; return d; }
+rose_dyn rose_dyn_de(const rose_gd &v)   { rose_dyn d; d.ty = 1; d.e = rose_ent(v); return d; }
+rose_dyn rose_dyn_de(const rose_qd &v)   { rose_dyn d; d.ty = 2; d.q = v; return d; }
+rose_dyn rose_dyn_de(rose_float v)       { rose_dyn d; d.ty = 3; d.f = v; return d; }
+rose_dyn rose_dyn_de(const rose_str &v)  { rose_dyn d; d.ty = 5; d.s = v; return d; }
+rose_dyn rose_dyn_de(bool v)             { rose_dyn d; d.ty = 4; d.b = v; return d; }
+
+static double dyn_vers_d(const rose_dyn &v) {          // miroir vers_d
+    switch (v.ty) {
+        case 1: return rose_vers_double(v.e);
+        case 2: return mpq_get_d(v.q.get_mpq_t());
+        case 3: return v.f;
+        case 4: return v.b ? 1.0 : 0.0;
+        default: rose_erreur("conversion vers flottant impossible"); return 0;
+    }
+}
+static rose_qd dyn_vers_q(const rose_dyn &v) {         // miroir vers_q
+    switch (v.ty) {
+        case 1: return rose_q_de(v.e);
+        case 2: return v.q;
+        case 3: { rose_qd r; mpq_set_d(r.get_mpq_t(), v.f); r.canonicalize(); return r; }
+        case 4: return rose_qd(v.b ? 1 : 0);
+        default: rose_erreur("conversion vers rationnel impossible"); return rose_qd();
+    }
+}
+static rose_gd dyn_vers_z(const rose_dyn &v) {         // miroir vers_z (plancheur sur Q)
+    switch (v.ty) {
+        case 1: return rose_vers_mpz(v.e);
+        case 2: return rose_vers_mpz(v.q);
+        case 3: { rose_gd r; mpz_set_d(r.get_mpz_t(), v.f); return r; }
+        case 4: return rose_gd(v.b ? 1 : 0);
+        default: rose_erreur("conversion vers entier impossible"); return rose_gd();
+    }
+}
+
+int rose_dyn_cmp(const rose_dyn &a, const rose_dyn &b) {   // miroir cmp_vals
+    if (a.ty == 5 && b.ty == 5) return a.s == b.s ? 0 : (a.s < b.s ? -1 : 1);
+    if (a.ty == 3 || b.ty == 3) { double A = dyn_vers_d(a), B = dyn_vers_d(b);
+                                  return A < B ? -1 : (A > B ? 1 : 0); }
+    if (a.ty == 2 || b.ty == 2) { rose_qd A = dyn_vers_q(a), B = dyn_vers_q(b);
+                                  return mpq_cmp(A.get_mpq_t(), B.get_mpq_t()); }
+    rose_gd A = dyn_vers_z(a), B = dyn_vers_z(b);
+    return mpz_cmp(A.get_mpz_t(), B.get_mpz_t());
+}
+bool rose_dyn_eq(const rose_dyn &a, const rose_dyn &b) {   // miroir rose_valeur_egale
+    if (a.ty == 5 || b.ty == 5) return a.ty == 5 && b.ty == 5 && a.s == b.s;
+    if (a.ty == 4 || b.ty == 4) return a.ty == 4 && b.ty == 4 && a.b == b.b;
+    return rose_dyn_cmp(a, b) == 0;
+}
+
+rose_table rose_table_new() { return rose_table(); }
+
+void rose_table_inserer(rose_table &t, const rose_str &cle, const rose_dyn &v) {
+    for (auto &kv : t) if (kv.first == cle) { kv.second = v; return; }   // remplace EN PLACE
+    t.push_back({cle, v});
+}
+bool rose_table_cle_existe(const rose_table &t, const rose_str &cle) {
+    for (auto &kv : t) if (kv.first == cle) return true;
+    return false;
+}
+bool rose_table_supprimer(rose_table &t, const rose_str &cle) {
+    for (size_t i = 0; i < t.size(); i++)
+        if (t[i].first == cle) { t.erase(t.begin() + i); return true; }
+    return false;
+}
+rose_int rose_table_longueur(const rose_table &t) { return (rose_int)t.size(); }
+rose_dyn rose_table_get(const rose_table &t, const rose_str &cle) {
+    for (auto &kv : t) if (kv.first == cle) return kv.second;
+    rose_erreur("clé absente de la table");
+    return rose_dyn();
+}
+rose_liste rose_table_cles(const rose_table &t) {
+    rose_liste l; for (auto &kv : t) l.push_back(kv.first); return l;
+}
+rose_liste rose_table_valeurs(const rose_table &t) {
+    rose_liste l; for (auto &kv : t) l.push_back(kv.second.texte()); return l;   // rendu par chaine_de (miroir de la liste)
+}
+void rose_afficher_table(const rose_table &t) {          // miroir ecri(T_TABLE) → fputs(chaine_de)
+    std::string r = "[";
+    for (size_t i = 0; i < t.size(); i++) {
+        if (i) r += ", ";
+        r += t[i].first + " => " + t[i].second.texte();
+    }
+    r += "]\n";
+    std::fputs(r.c_str(), stdout);
+}
+bool rose_table_eq(const rose_table &a, const rose_table &b) {   // ordre independant (miroir)
+    if (a.size() != b.size()) return false;
+    for (auto &kv : a) {
+        bool found = false;
+        for (auto &kv2 : b)
+            if (kv.first == kv2.first && rose_dyn_eq(kv.second, kv2.second)) { found = true; break; }
+        if (!found) return false;
+    }
+    return true;
 }

@@ -53,7 +53,10 @@ def cas_fidele(nom, source, attendu_stdout=None, dore=None, limite=False,
     """Le binaire AOT doit reproduire l'interpréteur : sortie, code, stderr."""
     global reussis
     attendu = open(os.path.join(DORES, dore)).read() if dore else attendu_stdout
-    binaire = os.path.join(TMP, nom)
+    # Nom de binaire assaini (M4.2) : « notation symbolique » avec un espace
+    # faisait exploser la ligne de commande g++ du build → faux « non compilable ».
+    slug = "".join(c if c.isalnum() or c in "._-" else "_" for c in nom)
+    binaire = os.path.join(TMP, slug)
     b = _build(source, binaire)
     if b.returncode != 0 or not os.path.exists(binaire):
         log = (b.stderr or b.stdout).strip().splitlines()
@@ -77,11 +80,12 @@ def cas_rejet(nom, source=None, code=None, motif=""):
     d'exécution avec le même motif — les deux sont conformes. S'il s'en
     sort « comme si de rien n'était », c'est une divergence."""
     global rejets_ok
+    slug = "".join(c if c.isalnum() or c in "._-" else "_" for c in nom)
     if source is None:
-        source = os.path.join(TMP, f"rejet_{nom}.rose")
+        source = os.path.join(TMP, f"rejet_{slug}.rose")
         with open(source, "w", encoding="utf-8") as fh:
             fh.write(code)
-    binaire = os.path.join(TMP, f"rejet_{nom}")
+    binaire = os.path.join(TMP, f"rejet_{slug}")
     b = _build(source, binaire)
     if b.returncode != 0 or not os.path.exists(binaire):
         if motif in (b.stderr + b.stdout):

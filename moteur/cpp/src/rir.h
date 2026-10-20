@@ -68,7 +68,9 @@ static_assert(sizeof(Valeur) == 152,
               "layout Valeur modifié : synchroniser les DEUX définitions (rose.cpp et rir.h)");
 
 // ── Types RIR ────────────────────────────────────────────────────────────
-enum RirType { RirZ = 0, RirQ = 1, RirF = 2, RirB = 3, RirS = 4, RirU = 5, RirTab = 6, RirListe = 7, RirGd = 8 };
+enum RirType { RirZ = 0, RirQ = 1, RirF = 2, RirB = 3, RirS = 4, RirU = 5, RirTab = 6, RirListe = 7, RirGd = 8,
+               RirTbl = 9, RirDyn = 10 };   // M4.2 : table + cellule dynamique (internal au transpileur —
+                                            // le checker ne les emet jamais : T_TABLE → U, index → U)
 
 // ── Opérande RIR ─────────────────────────────────────────────────────────
 struct RirOp {
