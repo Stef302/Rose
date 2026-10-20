@@ -4,6 +4,8 @@
 #include <sstream>
 #include <set>
 #include <map>
+#include <cstdlib>
+#include <cerrno>
 
 // Map RirType to C++ type name.
 static std::string cpp_type(RirType t) {
@@ -14,11 +16,23 @@ static std::string cpp_type(RirType t) {
         case RirS: return "rose_str";
         case RirU: return "rose_val";  // generic Valeur
         case RirTab: return "rose_tampon";
+        case RirListe: return "rose_liste";
+        case RirGd: return "rose_gd";
         default: return "rose_int";
     }
 }
 
+// Vrai si le texte d'une constante entière ne tient pas dans un int64.
+static bool cst_hors_int64(const std::string &txt) {
+    if (txt.empty()) return false;
+    errno = 0;
+    char *fin = nullptr;
+    (void)std::strtoll(txt.c_str(), &fin, 10);
+    return errno == ERANGE || (fin && *fin != '\0');
+}
+
 // Map a RirOp to a C++ expression.
+static std::string sanitize(const std::string &name);
 static std::string cpp_operand(const RirOp &op, std::map<std::string,RirType> &temp_types) {
     if (op.kind == RirOp::Const) {
         // Numeric constant: @c123 → 123
@@ -26,6 +40,7 @@ static std::string cpp_operand(const RirOp &op, std::map<std::string,RirType> &t
             std::string txt = op.name.substr(2);
             // Check if it's a float
             if (op.ty == RirF) return txt + ".0"; // approximate
+            if (cst_hors_int64(txt)) return "rose_gd(\"" + txt + "\")";
             return txt;
         }
         // String constant: raw text → "text"
@@ -47,10 +62,10 @@ static std::string cpp_operand(const RirOp &op, std::map<std::string,RirType> &t
         return "0";
     }
     if (op.kind == RirOp::Temp) {
-        return op.name;  // %t0 → %t0 (will be sanitized)
+        return sanitize(op.name);  // %t0 → t0
     }
     if (op.kind == RirOp::Global) {
-        return op.name;  // $var → var
+        return sanitize(op.name);  // $var → var
     }
     return "0";
 }
@@ -75,6 +90,13 @@ std::string transpiler_rir(const RirModule &mod) {
     out << "#include <cstdint>\n";
     out << "#include <cstdio>\n";
     out << "#include <string>\n\n";
+
+    // Noms des fonctions utilisateur (pour dispatcher les appels)
+    std::set<std::string> user_fns;
+    for (auto &f : mod.fonctions) {
+        if (f.nom == "$principal" || f.nom == "principal") continue;
+        user_fns.insert(sanitize(f.nom));
+    }
 
     // Forward declare functions
     for (auto &f : mod.fonctions) {
@@ -115,13 +137,30 @@ std::string transpiler_rir(const RirModule &mod) {
 
         // Collect temp variables
         std::set<std::string> temps;
+        std::map<std::string, RirType> temp_types;
         std::map<std::string, RirType> global_types;
         for (auto &b : f.blocs) {
             for (auto &instr : b.instrs) {
                 if (!instr.dest.empty() && instr.dest[0] == '%') {
                     temps.insert(instr.dest);
+                    // Type inference for liste.new
+                    if (instr.op == "liste.new") temp_types[instr.dest] = RirListe;
+                    // Constante entière hors int64 → grand entier
+                    if (instr.op == "cst.z" && !instr.args.empty() &&
+                        instr.args[0].kind == RirOp::Const &&
+                        cst_hors_int64(instr.args[0].name.rfind("@c", 0) == 0 ?
+                                       instr.args[0].name.substr(2) : instr.args[0].name))
+                        temp_types[instr.dest] = RirGd;
                 }
                 // Collect global variables from affect
+                // Appels à grands résultats : typer avant l'inférence globale
+                if (instr.op == "call" && !instr.dest.empty() && instr.dest[0] == '%' &&
+                    !instr.args.empty()) {
+                    std::string cn = instr.args[0].name;
+                    if (!cn.empty() && cn[0] == '$') cn = cn.substr(1);
+                    if (cn == "fibonacci" || cn == "factorielle" || cn == "puissance")
+                        temp_types[instr.dest] = RirGd;
+                }
                 if (instr.op == "affect" && !instr.message.empty()) {
                     std::string g = sanitize(instr.message);
                     RirType ty = RirU;
@@ -145,6 +184,12 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     if (ty == RirU && instr.args.size() > 0) ty = instr.args[0].ty;
                     // If still U but assigned from a known tampon, mark as tampon
+                    // If source temp is a list, mark global as list
+                    if (instr.args.size() > 0 && instr.args[0].kind == RirOp::Temp) {
+                        std::string src_temp = instr.args[0].name;
+                        if (temp_types.count(src_temp) && temp_types[src_temp] == RirListe) ty = RirListe;
+                        if (temp_types.count(src_temp) && temp_types[src_temp] == RirGd) ty = RirGd;
+                    }
                     if (global_types.find(g) == global_types.end()) global_types[g] = ty;
                 }
             }
@@ -155,6 +200,7 @@ std::string transpiler_rir(const RirModule &mod) {
             std::string ct = cpp_type(kv.second);
             if (ct == "rose_val") ct = "rose_int";
             if (ct == "rose_tampon") out << "    " << ct << " " << kv.first << ";\n";
+            else if (ct == "rose_liste") out << "    " << ct << " " << kv.first << ";\n";
             else if (ct == "rose_str") out << "    " << ct << " " << kv.first << " = \"\";\n";
             else out << "    " << ct << " " << kv.first << " = 0;\n";
         }
@@ -162,7 +208,6 @@ std::string transpiler_rir(const RirModule &mod) {
 
         // Declare temp variables
         // Need to determine types from dest_ty
-        std::map<std::string, RirType> temp_types;
         for (auto &b : f.blocs) {
             for (auto &instr : b.instrs) {
                 if (!instr.dest.empty() && instr.dest[0] == '%') {
@@ -172,9 +217,10 @@ std::string transpiler_rir(const RirModule &mod) {
                         std::string name = instr.args[0].name;
                         if (name[0] == '$') name = name.substr(1);
                         if (name == "octets" || name == "tampon") ty = RirTab;
+                        else if (name == "fibonacci" || name == "factorielle" || name == "puissance") ty = RirGd;
                         else if (name == "millisecondes" || name == "nb_arguments" || name == "entier" || name == "tampon_case" ||
-                                 name == "nb_chiffres" || name == "compter_premiers" || name == "factorielle" ||
-                                 name == "fibonacci" || name == "pgcd" || name == "ppcm" || name == "hasard") ty = RirZ;
+                                 name == "nb_chiffres" || name == "compter_premiers" ||
+                                 name == "pgcd" || name == "ppcm" || name == "hasard") ty = RirZ;
                         else if (name == "argument" || name == "chaine") ty = RirS;
                         else if (name == "est_premier") ty = RirB;
                         else if (name == "abs" || name == "min" || name == "max") {
@@ -189,7 +235,19 @@ std::string transpiler_rir(const RirModule &mod) {
                             }
                         }
                     }
-                    temp_types[instr.dest] = ty;
+                    // Opérations arithmétiques : propagent le type grand entier
+                    if ((instr.op == "add.z" || instr.op == "sub.z" || instr.op == "mul.z" ||
+                         instr.op == "neg.z" || instr.op == "pow" || instr.op == "add" ) && ty == RirZ) {
+                        for (size_t ai = 0; ai < instr.args.size(); ai++) {
+                            if (instr.args[ai].kind != RirOp::Temp) continue;
+                            std::string an = instr.args[ai].name;
+                            if (temp_types.count(an) && temp_types[an] == RirGd) { ty = RirGd; break; }
+                            if (global_types.count(sanitize(an)) && global_types[sanitize(an)] == RirGd) { ty = RirGd; break; }
+                        }
+                    }
+                    if (temp_types.find(instr.dest) == temp_types.end() ||
+                        (temp_types[instr.dest] != RirListe && temp_types[instr.dest] != RirGd))
+                        temp_types[instr.dest] = ty;
                 }
             }
         }
@@ -199,6 +257,7 @@ std::string transpiler_rir(const RirModule &mod) {
             if (ct == "rose_val") ct = "rose_int";
             if (ct == "rose_str") out << "    " << ct << " " << sanitize(t) << " = \"\";\n";
             else if (ct == "rose_tampon") out << "    " << ct << " " << sanitize(t) << ";\n";
+            else if (ct == "rose_liste") out << "    " << ct << " " << sanitize(t) << ";\n";
             else out << "    " << ct << " " << sanitize(t) << " = 0;\n";
         }
 
@@ -219,7 +278,10 @@ std::string transpiler_rir(const RirModule &mod) {
                             else val = instr.args[0].name;
                         }
                     }
-                    out << "    " << sanitize(instr.dest) << " = " << val << ";\n";
+                    if (cst_hors_int64(val))
+                        out << "    " << sanitize(instr.dest) << " = rose_gd(\"" << val << "\");\n";
+                    else
+                        out << "    " << sanitize(instr.dest) << " = " << val << ";\n";
                 }
                 else if (op == "cst.s") {
                     std::string val = "\"\"";
@@ -251,6 +313,29 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     out << "    " << sanitize(instr.dest) << " = " << val << ";\n";
                 }
+                else if (op == "liste.new") {
+                    out << "    " << sanitize(instr.dest) << " = rose_liste_new();\n";
+                }
+                else if (op == "liste.push") {
+                    std::string list_var = sanitize(instr.args[0].name);
+                    std::string elem = sanitize(instr.args[1].name);
+                    // Determine if elem is a string temp
+                    out << "    rose_liste_push(" << list_var << ", " << elem << ".c_str());\n";
+                }
+                else if (op == "index") {
+                    std::string dest = sanitize(instr.dest);
+                    std::string base = sanitize(instr.args[0].name);
+                    std::string idx = sanitize(instr.args[1].name);
+                    RirType bty = temp_types.count(instr.args[0].name) ? temp_types[instr.args[0].name] : RirU;
+                    if (global_types.count(base)) bty = global_types[base];
+                    if (bty == RirListe) out << "    " << dest << " = rose_index_liste(" << base << ", " << idx << ");\n";
+                    else out << "    " << dest << " = rose_index_str(" << base << ", " << idx << ");\n";
+                }
+                else if (op == "liste.len") {
+                    std::string dest = sanitize(instr.dest);
+                    std::string base = sanitize(instr.args[0].name);
+                    out << "    " << dest << " = rose_liste_len(" << base << ");\n";
+                }
                 else if (op == "affect") {
                     std::string src_expr = cpp_operand(instr.args[0], temp_types);
                     // sanitize temp names
@@ -277,6 +362,7 @@ std::string transpiler_rir(const RirModule &mod) {
                     else if (global_types.count(sanitize(instr.args[0].name))) ty = global_types[sanitize(instr.args[0].name)];
                     else ty = instr.args[0].ty;
                     if (ty == RirZ) out << "    rose_afficher_int(" << arg << ");\n";
+                    else if (ty == RirGd) out << "    rose_afficher_gd(" << arg << ");\n";
                     else if (ty == RirF) out << "    rose_afficher_float(" << arg << ");\n";
                     else if (ty == RirB) out << "    rose_afficher_bool(" << arg << ");\n";
                     else if (ty == RirS) out << "    rose_afficher_str(" << arg << ".c_str());\n";
@@ -288,8 +374,22 @@ std::string transpiler_rir(const RirModule &mod) {
                     if (instr.args.empty()) continue;
                     std::string name = instr.args[0].name;
                     if (name[0] == '$') name = name.substr(1);
+                    std::string sname = sanitize(name);
+                    // Appel de fonction utilisateur
+                    if (user_fns.count(sname)) {
+                        std::string call = sname + "(";
+                        for (size_t ai = 1; ai < instr.args.size(); ai++) {
+                            if (ai > 1) call += ", ";
+                            call += cpp_operand(instr.args[ai], temp_types);
+                        }
+                        call += ")";
+                        if (!instr.dest.empty())
+                            out << "    " << sanitize(instr.dest) << " = " << call << ";\n";
+                        else
+                            out << "    " << call << ";\n";
+                    }
                     // Map to runtime function
-                    if (name == "octets") {
+                    else if (name == "octets") {
                         std::string arg = cpp_operand(instr.args[1], temp_types);
                         if (instr.args[1].kind == RirOp::Temp) arg = sanitize(instr.args[1].name) + ".c_str()";
                         if (instr.args[1].kind == RirOp::Const) {
@@ -343,11 +443,16 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     else if (name == "factorielle") {
                         std::string a0 = sanitize(instr.args[1].name);
-                        out << "    " << sanitize(instr.dest) << " = rose_factorielle(" << a0 << ");\n";
+                        out << "    " << sanitize(instr.dest) << " = rose_factorielle_gd(" << a0 << ");\n";
                     }
                     else if (name == "fibonacci") {
                         std::string a0 = sanitize(instr.args[1].name);
-                        out << "    " << sanitize(instr.dest) << " = rose_fibonacci(" << a0 << ");\n";
+                        out << "    " << sanitize(instr.dest) << " = rose_fibonacci_gd(" << a0 << ");\n";
+                    }
+                    else if (name == "puissance") {
+                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a1 = sanitize(instr.args[2].name);
+                        out << "    " << sanitize(instr.dest) << " = rose_puissance_gd(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "est_premier") {
                         std::string a0 = sanitize(instr.args[1].name);
@@ -359,7 +464,13 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     else if (name == "nb_chiffres") {
                         std::string a0 = sanitize(instr.args[1].name);
-                        out << "    " << sanitize(instr.dest) << " = rose_nb_chiffres(" << a0 << ");\n";
+                        RirType aty = RirU;
+                        if (temp_types.count(instr.args[1].name)) aty = temp_types[instr.args[1].name];
+                        else if (global_types.count(a0)) aty = global_types[a0];
+                        if (aty == RirGd)
+                            out << "    " << sanitize(instr.dest) << " = rose_nb_chiffres_gd(" << a0 << ");\n";
+                        else
+                            out << "    " << sanitize(instr.dest) << " = rose_nb_chiffres(" << a0 << ");\n";
                     }
                     else if (name == "hasard") {
                         std::string a0 = sanitize(instr.args[1].name);
@@ -385,9 +496,37 @@ std::string transpiler_rir(const RirModule &mod) {
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_max_f(" << a0 << ", " << a1 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_max(" << a0 << ", " << a1 << ");\n";
                     }
+                    else if (name == "joindre") {
+                        // joindre(list, elem): push elem to list
+                        std::string list_var = sanitize(instr.args[1].name);
+                        std::string elem = sanitize(instr.args[2].name);
+                        if (instr.args[2].kind == RirOp::Const) {
+                            std::string s = instr.args[2].name;
+                            std::string escaped;
+                            for (char c : s) {
+                                if (c == '"') escaped += "\\\"";
+                                else if (c == '\\') escaped += "\\\\";
+                                else escaped += c;
+                            }
+                            out << "    rose_liste_push(" << list_var << ", \"" << escaped << "\".c_str());\n";
+                        } else {
+                            // elem is a temp - convert to string if needed
+                            out << "    rose_liste_push(" << list_var << ", " << elem << ".c_str());\n";
+                        }
+                    }
+                    else if (name == "concatener") {
+                        std::string list_var = sanitize(instr.args[1].name);
+                        out << "    " << sanitize(instr.dest) << " = rose_liste_concat(" << list_var << ");\n";
+                    }
                     else if (name == "longueur") {
                         std::string arg = sanitize(instr.args[1].name);
-                        out << "    " << sanitize(instr.dest) << " = rose_tampon_longueur(" << arg << ");\n";
+                        RirType aty = RirU;
+                        if (temp_types.count(instr.args[1].name)) aty = temp_types[instr.args[1].name];
+                        else if (global_types.count(arg)) aty = global_types[arg];
+                        else aty = instr.args[1].ty;
+                        if (aty == RirListe) out << "    " << sanitize(instr.dest) << " = rose_liste_len(" << arg << ");\n";
+                        else if (aty == RirTab) out << "    " << sanitize(instr.dest) << " = rose_tampon_longueur(" << arg << ");\n";
+                        else out << "    " << sanitize(instr.dest) << " = " << arg << ".size();\n";
                     }
                     else if (name == "chaine") {
                         std::string arg = sanitize(instr.args[1].name);
@@ -488,6 +627,12 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     out << "    " << dest << " = " << a0 << " / " << a1 << ";\n";
                 }
+                else if (op == "pow") {
+                    std::string dest = sanitize(instr.dest);
+                    std::string a0 = sanitize(instr.args[0].name);
+                    std::string a1 = sanitize(instr.args[1].name);
+                    out << "    " << dest << " = rose_puissance_gd(" << a0 << ", " << a1 << ");\n";
+                }
                 else if (op == "rem.z.z") {
                     std::string dest = sanitize(instr.dest);
                     std::string a0 = sanitize(instr.args[0].name);
@@ -502,8 +647,14 @@ std::string transpiler_rir(const RirModule &mod) {
                     std::string a0 = sanitize(instr.args[0].name);
                     out << "    " << dest << " = -" << a0 << ";\n";
                 }
-                else if (op == "ret.u" || op == "ret" || op == "ret.z") {
-                    out << "    return 0;\n";
+                else if (op == "ret.u" || op == "ret" || op == "ret.z" || op == "ret.f" || op == "ret.b" || op == "ret.s") {
+                    if (!instr.args.empty()) {
+                        std::string v = instr.args[0].kind == RirOp::Temp ? sanitize(instr.args[0].name)
+                                                            : cpp_operand(instr.args[0], temp_types);
+                        out << "    return " << v << ";\n";
+                    } else {
+                        out << "    return 0;\n";
+                    }
                 }
                 else if (op == "index") {
                     std::string dest = sanitize(instr.dest);

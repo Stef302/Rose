@@ -68,7 +68,7 @@ static_assert(sizeof(Valeur) == 152,
               "layout Valeur modifié : synchroniser les DEUX définitions (rose.cpp et rir.h)");
 
 // ── Types RIR ────────────────────────────────────────────────────────────
-enum RirType { RirZ = 0, RirQ = 1, RirF = 2, RirB = 3, RirS = 4, RirU = 5, RirTab = 6 };
+enum RirType { RirZ = 0, RirQ = 1, RirF = 2, RirB = 3, RirS = 4, RirU = 5, RirTab = 6, RirListe = 7, RirGd = 8 };
 
 // ── Opérande RIR ─────────────────────────────────────────────────────────
 struct RirOp {

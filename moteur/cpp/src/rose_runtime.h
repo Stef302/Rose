@@ -6,6 +6,7 @@
 #include <string>
 #include <memory>
 #include <vector>
+#include <gmpxx.h>
 
 // Types runtime de Rose (transpilation AOT).
 typedef int64_t rose_int;
@@ -13,6 +14,14 @@ typedef double rose_float;
 typedef bool rose_bool;
 typedef std::string rose_str;
 typedef std::shared_ptr<std::string> rose_tampon;
+typedef mpz_class rose_gd;   // grand entier (précision arbitraire, GMP)
+
+// Grands entiers (fidèles à l'interprète : mêmes algorithmes GMP).
+rose_gd rose_fibonacci_gd(rose_int n);
+rose_gd rose_factorielle_gd(rose_int n);
+rose_gd rose_puissance_gd(const rose_gd &base, rose_int expo);
+rose_int rose_nb_chiffres_gd(const rose_gd &n);
+void rose_afficher_gd(const rose_gd &n);
 
 // Générateur pseudo-aléatoire (splitmix64, état global).
 void rose_graine(rose_int seed);
@@ -75,9 +84,9 @@ rose_float rose_min_f(rose_float a, rose_float b);
 rose_float rose_max_f(rose_float a, rose_float b);
 
 // Listes (entiers).
-typedef std::vector<rose_int> rose_liste;
+typedef std::vector<rose_str> rose_liste;
 rose_liste rose_liste_new();
-void rose_liste_push(rose_liste &l, rose_int v);
-rose_int rose_liste_get(rose_liste &l, rose_int idx);
+void rose_liste_push(rose_liste &l, const char *v);
+rose_str rose_liste_concat(rose_liste &l);
 rose_int rose_liste_len(rose_liste &l);
-rose_liste rose_liste_concat(rose_liste &l);
+rose_str rose_index_str(rose_str &s, rose_int idx);

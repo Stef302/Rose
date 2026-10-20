@@ -386,3 +386,43 @@ les flottants, listes et fonctions utilisateur sont à étendre.
 
 Fichiers neufs : `transpiler.h`, `transpiler.cpp`, `rose_runtime.h`,
 `rose_runtime.cpp`. Commande : `rose build prog.rose [-o sortie]`.
+
+## Jalon M3.2 — transpileur complet : flottants, listes, grands entiers, fonctions utilisateur (v3.12.0-dev)
+
+`rose build` gère désormais :
+
+- **Flottants** : `cst.f`/`add.f`/`sub.f`/`mul.f`/`div.f`/`neg.f`, affichage,
+  variantes flottantes des builtins numériques ;
+- **Listes et chaînes** : `liste.new`/`liste.push`/`index`/`liste.len`,
+  builtins `joindre`/`concatener`/`longueur` ; type runtime `rose_liste`
+  et type RIR `RirListe` ;
+- **Grands entiers GMP** : type runtime `rose_gd` (`mpz_class`) et type RIR
+  `RirGd`. Factorielle en arbre de produits, Fibonacci en doublement rapide
+  — algorithmes **identiques à l'interprète —, plus `rose_puissance_gd` et
+  `rose_nb_chiffres_gd`. Les constantes entières hors int64 sont typées
+  `rose_gd` (l'émetteur RIR plie `2 ^ 30000000` en une constante géante).
+  Deux rustines de bench supprimées (factorielle qui renvoyait un nombre de
+  chiffres, `nb_chiffres` identité au-delà de 1000) : la sémantique AOT est
+  désormais fidèle à l'interprète ;
+- **Fonctions utilisateur** : `fn` émises en fonctions C++ (types de
+  paramètre et de retour issus du RIR), dispatch des appels, `ret` avec
+  valeur ;
+- **Comparaisons et boucles** : `pour`/`tant_que` validés (gotos étiquetés).
+
+Mesures AOT (les 10 bancs compilent, sortie identique à l'interprète) :
+
+| Banc | AOT | Moteur JIT+interprète |
+|---|---:|---:|
+| appels (fonction user, 2 M itérations) | 0,002 s | 0,036 s |
+| chaines (concat 500 k) | 0,019 s | 0,34 s |
+| factorielle (10⁶ !, GMP) | 0,168 s | — |
+| fibonacci (F(5·10⁶), 1 M chiffres) | 0,032 s | — |
+| mot_de_passe (1 G car.) | 0,42–0,47 s | 0,48 s |
+| puissance (2³⁰⁰⁰⁰⁰⁰⁰) | 0,296 s | — |
+| pgcd / premiers / boucles | 0,001–0,103 s | — |
+
+Suites dorées 44/44, parité 116/116, test_jit 14/14, build par défaut (-O2)
+revérifié sur les bancs.
+
+Reste côté transpileur : `div.z`/`rem.z` sur `rose_gd`, fonctions
+utilisateurs sur listes/chaînes, exécution des suites dorées en AOT.
