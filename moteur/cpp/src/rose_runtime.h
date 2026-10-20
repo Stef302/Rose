@@ -11,6 +11,181 @@
 
 // Types runtime de Rose (transpilation AOT).
 typedef int64_t rose_int;
+
+// ── rose_ent : entier machine avec promotion GMP à l'overflow (M3.4) ──
+// Sémantique exacte de l'interprète : tout tient en int64 quand ça tient,
+// et les opérations débordantes retombent sur GMP sans jamais WrapPer.
+#include <sys/resource.h>
+#include <unistd.h>
+
+// Récursion profonde en code AOT : les cadres contiennent des rose_ent (plus
+// lourds que l'ancien long long). Un programme récursif lève sa propre pile
+// de 512 Mo et se relance une fois — invisible pour l'utilisateur (aucune
+// sortie n'a encore eu lieu) ; jamais payé par les programmes non récursifs.
+inline void rose_pile_geante(int argc, char **argv) {
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) != 0) return;
+    const rlim_t cible = 512ull << 20;
+    rlim_t viser = (rl.rlim_max == RLIM_INFINITY || rl.rlim_max > cible) ? cible : rl.rlim_max;
+    if (viser <= rl.rlim_cur) return;              // impossible ou déjà faite
+    rl.rlim_cur = viser;
+    if (setrlimit(RLIMIT_STACK, &rl) != 0) return; // droit insuffisant : tant pis
+    extern char **environ;
+    execv("/proc/self/exe", argv);
+    // execv ne revient qu'en cas de succès ; sinon on tourne avec la pile d'avant.
+    (void)argc; (void)environ;
+}
+
+class rose_ent;
+inline double rose_vers_double(const rose_ent &e);
+
+class rose_ent {
+    bool gros_;
+    int64_t m_;
+    mpz_class g_;
+    void depuis_g_() {                       // rétrograde si le mpz tient int64
+        if (mpz_fits_slong_p(g_.get_mpz_t())) { m_ = mpz_get_si(g_.get_mpz_t()); gros_ = false; }
+        else gros_ = true;
+    }
+public:
+    rose_ent(int64_t v = 0) : gros_(false), m_(v) {}
+    rose_ent(const mpz_class &z) : gros_(false), m_(0), g_(z) { depuis_g_(); }
+    rose_ent(const rose_ent &) = default;
+    rose_ent(rose_ent &&) = default;
+    rose_ent &operator=(const rose_ent &) = default;
+    rose_ent &operator=(rose_ent &&) = default;
+    rose_ent &operator=(const mpz_class &z) { g_ = z; depuis_g_(); return *this; }
+    rose_ent &operator=(long long v) { gros_ = false; m_ = (int64_t)v; return *this; }
+    // affectation des slots grands entiers : t_gd = rose_vers_mpz(t_ent).
+    // EXPLICITE : la moindre conversion implicite vers mpz ferait entrer le
+    // machinery de templates de gmpxx dans la resolution d'overload
+    // (ambiguite « rose_gd = rose_ent ») voire pire.
+    explicit operator mpz_class() const {
+        if (gros_) return g_;
+        mpz_class r; mpz_set_si(r.get_mpz_t(), (long)m_); return r;
+    }
+    // promotion implicite vers le domaine flottant (comme l'ancien long long :
+    // « t_flottant = $entier » et les appels *_f acceptent désormais les ent).
+    // Volontairement SANS constructeur rose_ent(double) : il rendrait
+    // « ent + 5 » ambigu. Les retours F → slot ent passent par
+    // operator=(long long) avec la troncature habituelle.
+    explicit operator double() const { return rose_vers_double(*this); }
+    bool gros() const { return gros_; }
+    int64_t petit() const { return m_; }     // valide si !gros()
+    const mpz_class &gd() const { return g_; } // valide si gros()
+    std::string texte() const;
+};
+
+
+// conversion uniforme des trois domaines entiers vers mpz
+inline double rose_vers_double(double v) { return v; }
+inline double rose_vers_double(const rose_ent &e) {
+    return e.gros() ? mpz_get_d(e.gd().get_mpz_t()) : (double)e.petit();
+}
+inline mpz_class rose_vers_mpz(const rose_ent &e) {
+    if (e.gros()) return e.gd();
+    mpz_class r; mpz_set_si(r.get_mpz_t(), (long)e.petit()); return r;
+}
+inline mpz_class rose_vers_mpz(const mpz_class &z) { return z; }
+inline mpz_class rose_vers_mpz(long long v) {
+    mpz_class r; mpz_set_si(r.get_mpz_t(), (long)v); return r;
+}
+inline mpq_class rose_q_de(const rose_ent &e) {
+    return e.gros() ? mpq_class(e.gd()) : mpq_class(rose_vers_mpz(e.petit()));
+}
+inline mpq_class rose_q_de(const mpz_class &z) { return mpq_class(z); }
+inline mpq_class rose_q_de(const mpq_class &q) { return q; }
+inline mpq_class rose_q_de(double v) { return mpq_class(v); }   // binaire exact, comme l'ancien rose_qd(double)
+inline mpq_class rose_q_de(long long v) { return mpq_class(rose_vers_mpz(v)); }
+
+// promotion d'un résultat : petit mot machine sinon GMP
+inline rose_ent rose_promu(const mpz_class &z) { return rose_ent(z); }
+
+// arithmétique : chemin machine vérifié, promotion sinon
+inline rose_ent operator+(const rose_ent &a, const rose_ent &b) {
+    if (!a.gros() && !b.gros()) {
+        __int128 r = (__int128)a.petit() + b.petit();
+        if (r >= INT64_MIN && r <= INT64_MAX) return rose_ent((int64_t)r);
+    }
+    return rose_promu(rose_vers_mpz(a) + rose_vers_mpz(b));
+}
+inline rose_ent operator-(const rose_ent &a, const rose_ent &b) {
+    if (!a.gros() && !b.gros()) {
+        __int128 r = (__int128)a.petit() - b.petit();
+        if (r >= INT64_MIN && r <= INT64_MAX) return rose_ent((int64_t)r);
+    }
+    return rose_promu(rose_vers_mpz(a) - rose_vers_mpz(b));
+}
+inline rose_ent operator*(const rose_ent &a, const rose_ent &b) {
+    if (!a.gros() && !b.gros()) {
+        __int128 r = (__int128)a.petit() * b.petit();
+        if (r >= INT64_MIN && r <= INT64_MAX) return rose_ent((int64_t)r);
+    }
+    return rose_promu(rose_vers_mpz(a) * rose_vers_mpz(b));
+}
+inline rose_ent operator-(const rose_ent &a) {
+    if (!a.gros() && a.petit() != INT64_MIN) return rose_ent(-a.petit());
+    return rose_promu(-rose_vers_mpz(a));
+}
+inline bool operator<(const rose_ent &a, const rose_ent &b) {
+    if (!a.gros() && !b.gros()) return a.petit() < b.petit();
+    return rose_vers_mpz(a) < rose_vers_mpz(b);
+}
+inline bool operator<=(const rose_ent &a, const rose_ent &b) { return !(b < a); }
+inline bool operator>(const rose_ent &a, const rose_ent &b) { return b < a; }
+inline bool operator>=(const rose_ent &a, const rose_ent &b) { return !(a < b); }
+inline bool operator==(const rose_ent &a, const rose_ent &b) {
+    if (a.gros() != b.gros()) return false;
+    return a.gros() ? a.gd() == b.gd() : a.petit() == b.petit();
+}
+inline bool operator!=(const rose_ent &a, const rose_ent &b) { return !(a == b); }
+
+// Flottant × entier : laissé aux opérateurs built-in — la conversion
+// d'opérateur opérateur double() de rose_ent fait la promotion exactement
+// comme l'ancien long long. Des surcharges (rose_ent, double) explicites
+// créeraient une ambiguïté « rose_ent + int » (int→long long et int→double
+// sont deux conversions de même rang).
+// Littéraux et entiers machine : surcharges exactes — sans elles, « ent + 5 »
+// hésiterait entre rose_ent(int64) et mpz(int) (deux conversions utilisateur).
+inline rose_ent operator+(const rose_ent &a, long long b) { return a + rose_ent(b); }
+inline rose_ent operator+(long long a, const rose_ent &b) { return rose_ent(a) + b; }
+inline rose_ent operator-(const rose_ent &a, long long b) { return a - rose_ent(b); }
+inline rose_ent operator-(long long a, const rose_ent &b) { return rose_ent(a) - b; }
+inline rose_ent operator*(const rose_ent &a, long long b) { return a * rose_ent(b); }
+inline rose_ent operator*(long long a, const rose_ent &b) { return rose_ent(a) * b; }
+inline bool operator<(const rose_ent &a, long long b) { return a < rose_ent(b); }
+inline bool operator<(long long a, const rose_ent &b) { return rose_ent(a) < b; }
+inline bool operator>(const rose_ent &a, long long b) { return rose_ent(b) < a; }
+inline bool operator>(long long a, const rose_ent &b) { return b < rose_ent(a); }
+inline bool operator<=(const rose_ent &a, long long b) { return !(rose_ent(b) < a); }
+inline bool operator<=(long long a, const rose_ent &b) { return !(b < rose_ent(a)); }
+inline bool operator>=(const rose_ent &a, long long b) { return !(a < rose_ent(b)); }
+inline bool operator>=(long long a, const rose_ent &b) { return !(rose_ent(a) < b); }
+inline bool operator==(const rose_ent &a, long long b) { return a == rose_ent(b); }
+inline bool operator==(long long a, const rose_ent &b) { return rose_ent(a) == b; }
+inline bool operator!=(const rose_ent &a, long long b) { return !(a == rose_ent(b)); }
+inline bool operator!=(long long a, const rose_ent &b) { return !(rose_ent(a) == b); }
+
+// interop avec les slots grand entier (mpz) : promotion par le chemin GMP
+inline mpz_class operator+(const rose_ent &a, const mpz_class &b) { return rose_vers_mpz(a) + b; }
+inline mpz_class operator+(const mpz_class &a, const rose_ent &b) { return a + rose_vers_mpz(b); }
+inline mpz_class operator-(const rose_ent &a, const mpz_class &b) { return rose_vers_mpz(a) - b; }
+inline mpz_class operator-(const mpz_class &a, const rose_ent &b) { return a - rose_vers_mpz(b); }
+inline mpz_class operator*(const rose_ent &a, const mpz_class &b) { return rose_vers_mpz(a) * b; }
+inline mpz_class operator*(const mpz_class &a, const rose_ent &b) { return a * rose_vers_mpz(b); }
+inline bool operator<(const rose_ent &a, const mpz_class &b) { return rose_vers_mpz(a) < b; }
+inline bool operator<(const mpz_class &a, const rose_ent &b) { return a < rose_vers_mpz(b); }
+inline bool operator>(const rose_ent &a, const mpz_class &b) { return b < a; }
+inline bool operator>(const mpz_class &a, const rose_ent &b) { return a > rose_vers_mpz(b); }
+inline bool operator<=(const rose_ent &a, const mpz_class &b) { return !(b < a); }
+inline bool operator<=(const mpz_class &a, const rose_ent &b) { return !(a > rose_vers_mpz(b)); }
+inline bool operator>=(const rose_ent &a, const mpz_class &b) { return !(a < b); }
+inline bool operator>=(const mpz_class &a, const rose_ent &b) { return !(a < rose_vers_mpz(b)); }
+inline bool operator==(const rose_ent &a, const mpz_class &b) { return rose_vers_mpz(a) == b; }
+inline bool operator==(const mpz_class &a, const rose_ent &b) { return a == rose_vers_mpz(b); }
+inline bool operator!=(const rose_ent &a, const mpz_class &b) { return !(a == b); }
+inline bool operator!=(const mpz_class &a, const rose_ent &b) { return !(a == b); }
+
 typedef double rose_float;
 typedef bool rose_bool;
 typedef std::string rose_str;
@@ -18,10 +193,6 @@ typedef std::shared_ptr<std::string> rose_tampon;
 typedef mpz_class rose_gd;   // grand entier (précision arbitraire, GMP)
 
 // Grands entiers (fidèles à l'interprète : mêmes algorithmes GMP).
-rose_gd rose_fibonacci_gd(rose_int n);
-rose_gd rose_factorielle_gd(rose_int n);
-rose_gd rose_puissance_gd(const rose_gd &base, rose_int expo);
-rose_int rose_nb_chiffres_gd(const rose_gd &n);
 void rose_afficher_gd(const rose_gd &n);
 
 // Rationnels exacts (fidèles à l'interprète : écriture avec périodes).
@@ -31,13 +202,8 @@ int rose_q_cmp(const rose_qd &a, const rose_qd &b);
 bool rose_approx_q(const rose_qd &a, const rose_qd &b, bool au_moins_un_flottant);
 bool rose_approx_f(rose_float a, rose_float b);
 void rose_afficher_q(const rose_qd &q);
-rose_int rose_entier_q(const rose_qd &q);
 
 // Divisions euclidiennes à la Rose (plancher, miroir de l'interprète).
-rose_int rose_div_florentin(rose_int a, rose_int b);
-rose_int rose_rem_florentin(rose_int a, rose_int b);
-rose_gd rose_div_florentin_gd(const rose_gd &a, const rose_gd &b);
-rose_gd rose_rem_florentin_gd(const rose_gd &a, const rose_gd &b);
 
 // Générateur pseudo-aléatoire (splitmix64, état global).
 void rose_graine(rose_int seed);
@@ -56,8 +222,6 @@ rose_int rose_nb_arguments();
 const char *rose_argument(rose_int i);
 
 // Conversions.
-rose_int rose_entier(const char *s);
-rose_str rose_chaine(rose_int n);
 
 // Temps.
 rose_int rose_millisecondes();
@@ -72,32 +236,10 @@ void rose_afficher_tampon_longueur(rose_tampon buf);
 #endif // ROSE_RUNTIME_H
 
 // Builtins numériques.
-rose_int rose_pgcd(rose_int a, rose_int b);
-rose_gd rose_pgcd_gd(const rose_gd &a, const rose_gd &b);
-rose_gd rose_ppcm_gd(const rose_gd &a, const rose_gd &b);
-rose_gd rose_abs_gd(const rose_gd &n);
-rose_gd rose_min_gd(const rose_gd &a, const rose_gd &b);
-rose_gd rose_max_gd(const rose_gd &a, const rose_gd &b);
-rose_int rose_ppcm(rose_int a, rose_int b);
 rose_int rose_factorielle(rose_int n);
 rose_int rose_fibonacci(rose_int n);
-rose_bool rose_est_premier(rose_int n);
-rose_int rose_compter_premiers(rose_int n);
-rose_int rose_nb_chiffres(rose_int n);
-rose_int rose_hasard(rose_int n);
-rose_int rose_abs(rose_int n);
-rose_int rose_min(rose_int a, rose_int b);
-rose_int rose_max(rose_int a, rose_int b);
 
 // Builtins entiers supplémentaires.
-rose_int rose_ppcm(rose_int a, rose_int b);
-rose_bool rose_est_premier(rose_int n);
-rose_int rose_compter_premiers(rose_int n);
-rose_int rose_nb_chiffres(rose_int n);
-rose_int rose_hasard(rose_int n);
-rose_int rose_abs(rose_int n);
-rose_int rose_min(rose_int a, rose_int b);
-rose_int rose_max(rose_int a, rose_int b);
 rose_int rose_factorielle(rose_int n);
 rose_int rose_fibonacci(rose_int n);
 rose_float rose_abs_f(rose_float n);
@@ -108,7 +250,6 @@ rose_float rose_max_f(rose_float a, rose_float b);
 typedef std::vector<rose_str> rose_liste;
 rose_liste rose_liste_new();
 void rose_liste_push(rose_liste &l, const char *v);
-void rose_liste_push_int(rose_liste &l, rose_int v);
 void rose_liste_push_gd(rose_liste &l, const rose_gd &v);
 void rose_liste_push_q(rose_liste &l, const rose_qd &v);
 void rose_liste_push_flt(rose_liste &l, rose_float v);
@@ -131,9 +272,120 @@ rose_str rose_sous_chaine(const rose_str &s, rose_int d, rose_int f);
 rose_str rose_caractere(rose_int cp);
 rose_str rose_texte_q(const rose_qd &q);
 rose_str rose_texte_flt(rose_float v);
-rose_int rose_a_entier(const rose_str &s);
-rose_int rose_entier_f(rose_float v);
-rose_str rose_nombre_pi(rose_int decimales);
-rose_int rose_partie_entiere_f(rose_float v);
-rose_int rose_partie_entiere_q(const rose_qd &q);
 void rose_afficher_liste(const rose_liste &l);
+
+// ══════════════════ M3.4 — interface rose_ent des helpers ══════════════════
+void rose_erreur(const std::string &msg);   // « Rose : erreur — … », exit 1
+
+// Valeurs entières d'utilisateur : rose_ent (machine + promotion GMP).
+rose_ent rose_entier(const char *s);
+rose_str rose_chaine(const rose_ent &n);
+rose_ent rose_pgcd(const rose_ent &a, const rose_ent &b);
+rose_ent rose_ppcm(const rose_ent &a, const rose_ent &b);
+rose_ent rose_div_florentin(const rose_ent &a, const rose_ent &b);
+rose_ent rose_rem_florentin(const rose_ent &a, const rose_ent &b);
+rose_ent rose_nb_chiffres(const rose_ent &n);
+rose_ent rose_hasard(const rose_ent &n);
+rose_ent rose_compter_premiers(const rose_ent &n);
+rose_bool rose_est_premier(const rose_ent &n);
+rose_ent rose_abs(const rose_ent &n);
+rose_ent rose_min(const rose_ent &a, const rose_ent &b);
+rose_ent rose_max(const rose_ent &a, const rose_ent &b);
+rose_ent rose_entier_q(const rose_qd &q);
+rose_ent rose_entier_f(rose_float v);
+rose_ent rose_a_entier(const rose_str &s);
+rose_ent rose_partie_entiere_f(rose_float v);
+rose_ent rose_partie_entiere_q(const rose_qd &q);
+void rose_liste_push_int(rose_liste &l, const rose_ent &v);
+
+rose_gd rose_factorielle_gd_impl(const rose_gd &n);
+rose_gd rose_fibonacci_gd_impl(const rose_gd &n);
+rose_gd rose_puissance_gd_impl(const rose_gd &base, const rose_gd &expo);
+rose_int rose_nb_chiffres_gd_impl(const rose_gd &n);
+rose_gd rose_div_florentin_gd_impl(const rose_gd &a, const rose_gd &b);
+rose_gd rose_rem_florentin_gd_impl(const rose_gd &a, const rose_gd &b);
+rose_gd rose_pgcd_gd_impl(const rose_gd &a, const rose_gd &b);
+rose_gd rose_ppcm_gd_impl(const rose_gd &a, const rose_gd &b);
+rose_gd rose_abs_gd_impl(const rose_gd &n);
+rose_gd rose_min_gd_impl(const rose_gd &a, const rose_gd &b);
+rose_gd rose_max_gd_impl(const rose_gd &a, const rose_gd &b);
+
+// Les variantes grands entiers acceptent entiers machine, rose_ent et mpz.
+template <class A> inline rose_gd rose_factorielle_gd(const A &n) { return rose_factorielle_gd_impl(rose_vers_mpz(n)); }
+template <class A> inline rose_gd rose_fibonacci_gd(const A &n) { return rose_fibonacci_gd_impl(rose_vers_mpz(n)); }
+template <class A, class B> inline rose_gd rose_puissance_gd(const A &a, const B &b) { return rose_puissance_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
+template <class A> inline rose_int rose_nb_chiffres_gd(const A &n) { return rose_nb_chiffres_gd_impl(rose_vers_mpz(n)); }
+template <class A, class B> inline rose_gd rose_div_florentin_gd(const A &a, const B &b) { return rose_div_florentin_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
+template <class A, class B> inline rose_gd rose_rem_florentin_gd(const A &a, const B &b) { return rose_rem_florentin_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
+template <class A, class B> inline rose_gd rose_pgcd_gd(const A &a, const B &b) { return rose_pgcd_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
+template <class A, class B> inline rose_gd rose_ppcm_gd(const A &a, const B &b) { return rose_ppcm_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
+template <class A> inline rose_gd rose_abs_gd(const A &a) { return rose_abs_gd_impl(rose_vers_mpz(a)); }
+template <class A, class B> inline rose_gd rose_min_gd(const A &a, const B &b) { return rose_min_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
+template <class A, class B> inline rose_gd rose_max_gd(const A &a, const B &b) { return rose_max_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
+
+// Builtins flottants appelés sur des entiers : conversions explicites exactes.
+inline rose_float rose_abs_f(const rose_ent &a) { double x = rose_vers_double(a); return x < 0 ? -x : x; }
+inline rose_float rose_min_f(const rose_ent &a, const rose_ent &b) { double x = rose_vers_double(a), y = rose_vers_double(b); return x < y ? x : y; }
+inline rose_float rose_min_f(const rose_ent &a, double b) { double x = rose_vers_double(a); return x < b ? x : b; }
+inline rose_float rose_min_f(double a, const rose_ent &b) { double y = rose_vers_double(b); return a < y ? a : y; }
+inline rose_float rose_max_f(const rose_ent &a, const rose_ent &b) { double x = rose_vers_double(a), y = rose_vers_double(b); return x > y ? x : y; }
+inline rose_float rose_max_f(const rose_ent &a, double b) { double x = rose_vers_double(a); return x > b ? x : b; }
+inline rose_float rose_max_f(double a, const rose_ent &b) { double y = rose_vers_double(b); return a > y ? a : y; }
+
+// Domaines primitifs (index, tailles, graines) : surcharge rose_ent.
+inline rose_tampon rose_tampon_new(const rose_ent &n) {
+    if (n.gros() || n.petit() < 0) rose_erreur("tampon : taille impossible");
+    return rose_tampon_new((size_t)(long long)n.petit());
+}
+inline rose_int rose_tampon_case(rose_tampon buf, const rose_ent &idx) {
+    if (idx.gros() || idx.petit() < 0 || (size_t)idx.petit() >= buf->size())
+        rose_erreur("index hors tampon");
+    return rose_tampon_case(buf, (rose_int)idx.petit());
+}
+inline void rose_tampon_pose(rose_tampon buf, const rose_ent &idx, const rose_ent &val) {
+    if (idx.gros() || idx.petit() < 0 || (size_t)idx.petit() >= buf->size())
+        rose_erreur("index hors tampon");
+    rose_tampon_pose(buf, (rose_int)idx.petit(), (rose_int)val.petit());
+}
+inline const char *rose_argument(const rose_ent &i) {
+    if (i.gros()) return "";
+    return rose_argument((rose_int)i.petit());
+}
+inline void rose_graine(const rose_ent &s) {
+    rose_graine((rose_int)(s.gros() ? (int64_t)(unsigned long)mpz_get_ui(s.gd().get_mpz_t()) : s.petit()));
+}
+inline void rose_afficher_int(const rose_ent &v) {
+    if (!v.gros()) { printf("%lld\n", (long long)v.petit()); return; }
+    gmp_printf("%Zd\n", v.gd().get_mpz_t());
+}
+inline rose_str rose_index_str(const rose_str &s, const rose_ent &i) {
+    if (i.gros()) return rose_index_str(s, (rose_int)-1);   // hors limites, comme l'interprète
+    return rose_index_str(s, (rose_int)i.petit());
+}
+inline rose_str rose_sous_chaine(const rose_str &s, const rose_ent &d, const rose_ent &f) {
+    return rose_sous_chaine(s, (rose_int)(d.gros() ? -1 : d.petit()),
+                            (rose_int)(f.gros() ? -1 : f.petit()));
+}
+inline void rose_liste_push_gd(rose_liste &l, const rose_ent &v) { l.push_back(v.texte()); }
+inline rose_ent rose_depuis_double(double v) {   // troncature, comme l'ancien cast (long long)
+    if (!(v == v)) return rose_ent(0);
+    if (v > -9223372036854777856.0 && v < 9223372036854775808.0) return rose_ent((int64_t)v);
+    mpz_class r; mpz_set_d(r.get_mpz_t(), v);
+    return rose_promu(r);
+}
+inline rose_str rose_chaine(const mpz_class &z) { return z.get_str(); }
+inline rose_str rose_caractere(const rose_ent &cp) {
+    return rose_caractere((rose_int)(cp.gros() ? -1 : cp.petit()));   // hors plage : erreur de l'interprète
+}
+inline void rose_quitter(const rose_ent &code) {
+    rose_quitter((rose_int)(code.gros() ? 0 : code.petit()));
+}
+inline rose_str rose_liste_get_str(rose_liste &l, const rose_ent &idx) {
+    if (idx.gros()) return rose_liste_get_str(l, (rose_int)-1);   // hors limites, comme l'interprète
+    return rose_liste_get_str(l, (rose_int)idx.petit());
+}
+rose_str rose_nombre_pi(rose_int decimales);
+inline rose_str rose_nombre_pi(const rose_ent &d) {
+    if (d.gros()) rose_erreur("décimales de π hors limites");
+    return rose_nombre_pi((rose_int)d.petit());
+}

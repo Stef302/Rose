@@ -619,3 +619,54 @@ non compilables (notation symbolique, mixtes rationnel⊛flottant, tables)
 et 1 limite assumée (`signature`, promotion overflow→GMP = M3.4).
 Croisée x86-64 finale sous qemu : test_jit complet + dorés 43/43.
 Bancs inchangés (empreintes 10/10) : la fidélité n'a rien coûté au JIT.
+
+### M3.4 — rose_ent : l'entier AOT ne déborde plus
+
+Jusqu'ici les slots entiers d'un binaire AOT étaient de simples `long long` :
+`acc ⋅ i` qui dépasse 2⁶³ rendait un résultat faux en silence — c'était la
+limite `signature`. Les slots deviennent **`rose_ent`**, la copie AOT de
+l'entier de l'interprète : mot machine tant que ça tient, promotion GMP dès
+l'overflow, rétrogradation quand un résultat revient dans int64. Les
+opérateurs `+ − × < ==` sont surchargés avec garde machine (additions en
+`__int128`, comparaisons directes) — l'émission brute du transpileur ne
+change pas d'un octet.
+
+Le coût réel est dans les angles, pas dans l'arithmétique :
+
+- **`rose_int` est l'alias de `int64_t`** (= `long` ici) : un wrapper
+  `f(rose_ent)` qui rappelle `f((rose_int)x)` se rappelle LUI-MÊME à l'infini.
+  Premier symptôme : `rose_nombre_pi` en récursion jusqu'au SEGV (PAC masque
+  le débordement de pile en faute de segment). Les surcharges de domaine
+  primitif passent désormais par des types distincts.
+- **`rose_ent + int` était ambigu** (constructeur `rose_ent(int64_t)` contre
+  constructeur `mpz(long)` : deux conversions utilisateur de même rang).
+  Surcharges exactes `(rose_ent, long long)` — et l'interdiction stricte
+  d'un constructeur `rose_ent(double)`, qui rendrait tout littéral ambigu.
+- **`double × rose_ent`** : avec surcharges `(long long, rose_ent)`, g++
+  tronque le double avant la multiplication (2 au lieu de 3 dans
+  `t_flottant`). La conversion vers `double` est **explicite**, et le
+  transpileur enrobe lui-même les opérandes entiers des opérations
+  flottantes, comparaisons, paramètres et retours (`rose_vers_double`).
+- **`gd = ent`** : la conversion mpz implicite réveillait le machinery de
+  templates de gmpxx (ambiguïtés, UB). Conversion explicite + enrobage
+  `rose_vers_mpz(...)` par le transpileur (affectations, arguments gd,
+  retours, destination d'appel).
+- **Récursion profonde** : les cadres portant des `rose_ent`, le golden
+  `machine` (`it(100000)`) déborde la pile de 8 Mo. Le transpileur détecte
+  les cycles d'appels et `main` lève alors sa propre pile (512 Mo,
+  `setrlimit` + `execv` de soi-même, avant toute sortie). Les programmes
+  non récursifs ne paient rien.
+
+Mesures. Bancs JIT : empreintes 10/10 inchangées (M3.4 ne touche pas la
+voiture rapide). Bancs **AOT** (build -O3 -march=native, médiane N=3,
+chauffe 1) : pgcd 0,112 (JIT 0,174, ×1,6), puissance 0,286 (JIT 0,916,
+×3,2), mot_de_passe 0,462 (JIT 0,483), factorielle 0,168, fibonacci 0,017,
+premiers 0,053 — empreintes toutes exactes. Coût payé : boucle_entier
+0,103 contre 0,035 en JIT (garde d'overflow dans la boucle la plus serrée)
+et appels 0,058 contre 0,024 ; c'est le prix de la correction, le JIT reste
+le chemin de vitesse.
+
+Mesure de couverture : `aot.py` passe à **16 fidèles + 16 rejets corrects
+sur 35 cas, 0 limite, 0 écart catalogué, 0 régression** — `signature` et
+`machine` sont devenus fidèles. Restent trois lacunes de fonctionnalité
+non compilables : notation symbolique, mixtes rationnel⊛flottant, tables.

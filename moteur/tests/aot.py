@@ -109,7 +109,7 @@ cas_fidele("t_machine", f"{DORES}/t_machine.rose", dore="out_c.txt")
 cas_fidele("machine", f"{DORES}/machine.rose", dore="machine_c.txt")
 # Gap connu et assumé : facto_iteratif(30) — accumulateur hors int64 depuis
 # de petites valeurs. Promotion runtime overflow→GMP = jalon M3.4.
-cas_fidele("signature", f"{EXEMPLES}/signature.rose", dore="sig_c.txt", limite=True)
+cas_fidele("signature", f"{EXEMPLES}/signature.rose", dore="sig_c.txt")
 cas_fidele("alias", f"{DORES}/alias.rose", dore="alias_c.txt")
 cas_fidele("t_si_imbr", f"{DORES}/t_si_imbr.rose", dore="t_si_imbr_c.txt")
 cas_fidele("t_tampon", f"{DORES}/t_tampon.rose", dore="t_tampon_c.txt")
