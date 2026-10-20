@@ -8,6 +8,60 @@
 #include <vector>
 #include <unistd.h>
 #include <cmath>
+#include <fstream>
+#include <sstream>
+#include <cstring>
+
+// ── Erreurs : format et comportement de l'interprète (erreur_runtime) ──
+static void rose_erreur(const std::string &msg) {
+    std::fflush(stdout);
+    std::fprintf(stderr, "Rose : erreur — %s\n", msg.c_str());
+    std::exit(1);
+}
+
+// utf8 : mêmes helpers que l'interprète (comptage par octet de tête)
+static size_t rose_utf8_seq(unsigned char c) {
+    return (c & 0xF8) == 0xF0 ? 4 : (c & 0xF0) == 0xE0 ? 3 :
+           (c & 0xE0) == 0xC0 ? 2 : 1;
+}
+static size_t rose_utf8_len(const std::string &s) {
+    size_t k = 0;
+    for (size_t i = 0; i < s.size(); i++) if ((s[i] & 0xC0) != 0x80) k++;
+    return k;
+}
+static size_t rose_utf8_off(const std::string &s, size_t k) {
+    size_t vu = 0;
+    for (size_t i = 0; i < s.size(); i++)
+        if ((s[i] & 0xC0) != 0x80) { if (vu == k) return i; vu++; }
+    return s.size();
+}
+static unsigned long rose_utf8_char_at(const std::string &s, size_t k) {
+    size_t o = rose_utf8_off(s, k);
+    unsigned char c = (unsigned char)s[o];
+    size_t q = rose_utf8_seq(c);
+    unsigned long v = (q == 1) ? c : (c & (0xFFu >> (q + 1)));
+    for (size_t i = 1; i < q && o + i < s.size(); i++)
+        v = (v << 6) | ((unsigned char)s[o + i] & 0x3F);
+    return v;
+}
+static std::string rose_utf8_char_str(const std::string &s, size_t k) {
+    size_t o = rose_utf8_off(s, k);
+    return s.substr(o, rose_utf8_seq((unsigned char)s[o]));
+}
+static std::string rose_utf8_encode(unsigned long cp) {
+    std::string r;
+    if (cp < 0x80) r += (char)cp;
+    else if (cp < 0x800) {
+        r += (char)(0xC0 | (cp >> 6));      r += (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        r += (char)(0xE0 | (cp >> 12));     r += (char)(0x80 | ((cp >> 6) & 0x3F));
+        r += (char)(0x80 | (cp & 0x3F));
+    } else {
+        r += (char)(0xF0 | (cp >> 18));     r += (char)(0x80 | ((cp >> 12) & 0x3F));
+        r += (char)(0x80 | ((cp >> 6) & 0x3F)); r += (char)(0x80 | (cp & 0x3F));
+    }
+    return r;
+}
 
 // ── RNG (splitmix64, même état global que Rose) ────────────────────────
 static uint64_t g_rng_etat = (uint64_t)getpid() * 0x9E3779B97F4A7C15ULL
@@ -105,7 +159,27 @@ const char *rose_argument(rose_int i) {
 
 // ── Conversions ─────────────────────────────────────────────────────────
 rose_int rose_entier(const char *s) {
-    return (rose_int)strtoll(s, nullptr, 10);
+    // miroir de chaine_vers_entier de l'interprète : entier strict, fraction
+    // (plancher), ou décimale tronquée à la partie avant le point.
+    std::string ch(s);
+    mpz_class r;
+    if (mpz_set_str(r.get_mpz_t(), ch.c_str(), 10) == 0) return (rose_int)mpz_get_si(r.get_mpz_t());
+    size_t p = ch.find('/');
+    if (p != std::string::npos) {
+        mpz_class n, d;
+        if (mpz_set_str(n.get_mpz_t(), ch.substr(0, p).c_str(), 10)
+                || mpz_set_str(d.get_mpz_t(), ch.substr(p + 1).c_str(), 10)
+                || mpz_sgn(d.get_mpz_t()) == 0)
+            rose_erreur("conversion chaine → entier impossible");
+        mpz_fdiv_q(r.get_mpz_t(), n.get_mpz_t(), d.get_mpz_t());
+        return (rose_int)mpz_get_si(r.get_mpz_t());
+    }
+    size_t pt = ch.find('.');
+    if (pt != std::string::npos)
+        if (mpz_set_str(r.get_mpz_t(), ch.substr(0, pt).c_str(), 10) == 0)
+            return (rose_int)mpz_get_si(r.get_mpz_t());
+    rose_erreur("conversion chaine → entier impossible");
+    return 0;
 }
 
 rose_str rose_chaine(rose_int n) {
@@ -196,7 +270,8 @@ static void rose_factorielle_arbre(mpz_class &dest, unsigned long lo, unsigned l
     dest = g * d;
 }
 rose_gd rose_factorielle_gd(rose_int n) {
-    if (n < 0) return 0;
+    if (n < 0) rose_erreur("factorielle d'un négatif : impossible");
+    if (n > (rose_int)0xFFFFFFFFUL) return 0;
     if (n > (rose_int)0xFFFFFFFFUL) return 0;
     mpz_class r;
     rose_factorielle_arbre(r, 1, (unsigned long)n);
@@ -284,7 +359,7 @@ rose_float rose_max_f(rose_float a, rose_float b) { return a > b ? a : b; }
 
 // ── Listes ──────────────────────────────────────────────────────────────
 rose_liste rose_liste_new() { return rose_liste(); }
-rose_str rose_liste_get_str(rose_liste &l, rose_int idx) { if (idx < 0 || idx >= (rose_int)l.size()) return ""; return l[(size_t)idx]; }
+rose_str rose_liste_get_str(rose_liste &l, rose_int idx) { if (idx < 0 || idx >= (rose_int)l.size()) rose_erreur("index hors des limites de la liste"); return l[(size_t)idx]; }
 rose_int rose_liste_len(rose_liste &l) { return (rose_int)l.size(); }
 
 // ── Listes et chaînes ───────────────────────────────────────────────────
@@ -294,14 +369,15 @@ rose_str rose_liste_concat(rose_liste &l) {
     for (auto &s : l) r += s;
     return r;
 }
-rose_str rose_index_str(rose_str &s, rose_int idx) {
-    if (idx < 0 || idx >= (rose_int)s.size()) return "";
-    return std::string(1, s[(size_t)idx]);
+rose_str rose_index_str(const rose_str &s, rose_int idx) {
+    if (idx < 0 || (size_t)idx >= rose_utf8_len(s))
+        rose_erreur("index hors des limites de la chaîne");
+    return rose_utf8_char_str(s, (size_t)idx);
 }
 
 // ── Rationnels exacts et divisions euclidiennes ──────────────────────
 rose_qd rose_q_div(const rose_qd &a, const rose_qd &b) {
-    if (mpq_sgn(b.get_mpq_t()) == 0) { fprintf(stderr, "rose : division par zéro\n"); exit(1); }
+    if (mpq_sgn(b.get_mpq_t()) == 0) { rose_erreur("division par zéro"); }
     return a / b;
 }
 
@@ -380,14 +456,14 @@ void rose_afficher_q(const rose_qd &q) {
 }
 
 rose_int rose_div_florentin(rose_int a, rose_int b) {
-    if (b == 0) { fprintf(stderr, "rose : division euclidienne par zéro\n"); exit(1); }
+    if (b == 0) { rose_erreur("division euclidienne par zéro"); }
     mpz_class x = a, y = b, r;
     mpz_fdiv_q(r.get_mpz_t(), x.get_mpz_t(), y.get_mpz_t());
     return (rose_int)mpz_get_si(r.get_mpz_t());
 }
 
 rose_int rose_rem_florentin(rose_int a, rose_int b) {
-    if (b == 0) { fprintf(stderr, "rose : reste d'une division par zéro\n"); exit(1); }
+    if (b == 0) { rose_erreur("modulo par zéro"); }
     mpz_class x = a, y = b, r;
     mpz_fdiv_r(r.get_mpz_t(), x.get_mpz_t(), y.get_mpz_t());
     return (rose_int)mpz_get_si(r.get_mpz_t());
@@ -432,7 +508,7 @@ void rose_afficher_liste(const rose_liste &l) {
 // ── Builtin nombre_pi : π avec N décimales (formule de Machin, miroir) ──
 rose_str rose_nombre_pi(rose_int decimales) {
     unsigned long chiffres = (unsigned long)decimales;
-    if (chiffres == 0 || chiffres > 2000000) { fprintf(stderr, "rose : décimales de π hors limites (1..2000000)\n"); exit(1); }
+    if (chiffres == 0 || chiffres > 2000000) { rose_erreur("décimales de π hors limites (1..2000000)"); }
     unsigned long S = chiffres + 40;
     mpz_class dixS; mpz_ui_pow_ui(dixS.get_mpz_t(), 10, S);
     unsigned long xs[2] = {5, 239};
@@ -486,7 +562,7 @@ rose_int rose_partie_entiere_q(const rose_qd &q) { return rose_entier_q(q); }
 
 // Division euclidienne (plancher) sur grands entiers.
 rose_gd rose_div_florentin_gd(const rose_gd &a, const rose_gd &b) {
-    if (mpz_sgn(b.get_mpz_t()) == 0) { fprintf(stderr, "rose : division euclidienne par zéro\n"); exit(1); }
+    if (mpz_sgn(b.get_mpz_t()) == 0) { rose_erreur("division euclidienne par zéro"); }
     mpz_class r;
     mpz_fdiv_q(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
     return r;
@@ -494,7 +570,7 @@ rose_gd rose_div_florentin_gd(const rose_gd &a, const rose_gd &b) {
 
 // Reste euclidien (plancher) sur grands entiers.
 rose_gd rose_rem_florentin_gd(const rose_gd &a, const rose_gd &b) {
-    if (mpz_sgn(b.get_mpz_t()) == 0) { fprintf(stderr, "rose : reste d'une division par zéro\n"); exit(1); }
+    if (mpz_sgn(b.get_mpz_t()) == 0) { rose_erreur("modulo par zéro"); }
     mpz_class r;
     mpz_fdiv_r(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
     return r;
@@ -512,3 +588,87 @@ rose_gd rose_abs_gd(const rose_gd &n) {
 }
 rose_gd rose_min_gd(const rose_gd &a, const rose_gd &b) { return a < b ? a : b; }
 rose_gd rose_max_gd(const rose_gd &a, const rose_gd &b) { return a > b ? a : b; }
+
+rose_int rose_longueur(const rose_str &s) {
+    return (rose_int)rose_utf8_len(s);
+}
+
+// ── Effets et contrôles de fidélité (M3.3bis) ──────────────────────────
+void rose_quitter(rose_int code) {
+    std::fflush(stdout);
+    std::exit((int)code);
+}
+rose_str rose_lire_texte(const rose_str &chemin) {
+    std::ifstream in(chemin, std::ios::binary);
+    if (!in) rose_erreur("lecture du fichier impossible (" + chemin + ")");
+    std::stringstream ss; ss << in.rdbuf();
+    if (ss.str().size() > ((size_t)1 << 28))
+        rose_erreur("fichier trop volumineux (" + chemin + ")");
+    return ss.str();
+}
+void rose_ecrire_texte(const rose_str &chemin, const rose_str &texte) {
+    std::ofstream out(chemin, std::ios::binary | std::ios::trunc);
+    if (!out) rose_erreur("écriture du fichier impossible (" + chemin + ")");
+    out << texte;
+    out.flush();
+    if (!out) rose_erreur("écriture du fichier impossible (" + chemin + ")");
+}
+static std::string rose_lire_ligne() {
+    char buf[4096];
+    if (!std::fgets(buf, sizeof buf, stdin)) rose_erreur("entrée attendue, fichier fermé");
+    size_t l = std::strlen(buf);
+    while (l && (buf[l - 1] == '\n' || buf[l - 1] == '\r' || buf[l - 1] == ' ')) buf[--l] = 0;
+    return std::string(buf, l);
+}
+rose_int rose_lire_int() {   // miroir de lire_selon (entier) de l'interprète
+    std::string t = rose_lire_ligne();
+    mpz_class r;
+    if (t.find('/') != std::string::npos) {
+        mpq_class q;
+        if (mpq_set_str(q.get_mpq_t(), t.c_str(), 10) == 0) {
+            q.canonicalize();
+            mpz_tdiv_q(r.get_mpz_t(), q.get_num().get_mpz_t(), q.get_den().get_mpz_t());
+            return (rose_int)mpz_get_si(r.get_mpz_t());
+        }
+    }
+    if (t.find('.') != std::string::npos) {
+        mpz_set_d(r.get_mpz_t(), std::strtod(t.c_str(), nullptr));
+        return (rose_int)mpz_get_si(r.get_mpz_t());
+    }
+    if (mpz_set_str(r.get_mpz_t(), t.c_str(), 10)) rose_erreur("nombre entier invalide");
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+rose_float rose_lire_flottant() {
+    std::string t = rose_lire_ligne();
+    char *fin = nullptr;
+    double d = std::strtod(t.c_str(), &fin);
+    if (fin == t.c_str()) rose_erreur("flottant invalide");
+    return d;
+}
+rose_str rose_lire_chaine() { return rose_lire_ligne(); }
+rose_qd rose_lire_rationnel() {
+    std::string t = rose_lire_ligne();
+    rose_qd q;
+    if (mpq_set_str(q.get_mpq_t(), t.c_str(), 10)) rose_erreur("rationnel invalide");
+    q.canonicalize();
+    return q;
+}
+rose_int rose_ordre(const rose_str &s) {
+    if (rose_utf8_len(s) != 1)
+        rose_erreur("ordre attend une chaîne d'un seul caractère");
+    return (rose_int)rose_utf8_char_at(s, 0);
+}
+rose_str rose_sous_chaine(const rose_str &s, rose_int d, rose_int f) {
+    if (d < 0 || f < 0) rose_erreur("sous_chaine : les bornes doivent être des entiers positifs");
+    size_t taille = rose_utf8_len(s);
+    if ((size_t)d > taille || (size_t)f < (size_t)d) rose_erreur("sous_chaine : bornes invalides");
+    size_t ff = ((size_t)f > taille) ? taille : (size_t)f;
+    size_t o1 = rose_utf8_off(s, (size_t)d);
+    size_t o2 = (ff == taille) ? s.size() : rose_utf8_off(s, ff);
+    return s.substr(o1, o2 - o1);
+}
+rose_str rose_caractere(rose_int cp) {
+    if (cp < 0 || cp > 0x10FFFF) rose_erreur("caractere : code hors plage (0 à 1114111)");
+    if (cp >= 0xD800 && cp <= 0xDFFF) rose_erreur("caractere : code réservé (55296 à 57343)");
+    return rose_utf8_encode((unsigned long)cp);
+}

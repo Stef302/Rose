@@ -40,29 +40,7 @@ echoues = []
 # Catalogue des écarts AOT mesurés (jalon M3.3bis — fidélité erreurs et
 # effets). Un cas du catalogue qui échoue reste compté comme écart CONNU
 # (rapporté mais non bloquant) ; un échec HORS catalogue est une régression.
-ECARTS_CONNUS = {
-    # le build ne catche pas ErreurRose du front-end → « terminate called »
-    "nom_reserve": "rejet impoli (exception non catchée au compilable)",
-    "err_var_inconnue": "rejet impoli (exception non catchée au compilable)",
-    "err_type": "rejet impoli (exception non catchée au compilable)",
-    "err_fonction": "rejet impoli (exception non catchée au compilable)",
-    "err_syntaxe": "rejet impoli (exception non catchée au compilable)",
-    "err_affect_flotteur": "rejet impoli (exception non catchée au compilable)",
-    "err_div_zero_const": "rejet impoli (exception non catchée au compilable)",
-    # contrôles runtime absents ou message divergent dans rose_runtime
-    "v3_ordre": "ordre() ne vérifie pas la longueur",
-    "v3_bornes": "sous_chaine() ne vérifie pas les bornes",
-    "err_chaine_entier": 'entier("abc") rend 0 au lieu de erreur',
-    "err_modulo_zero": "message runtime divergent de l\'interprète",
-    "err_factorielle_neg": "factorielle négatif non signalé",
-    "err_index": "index hors limites non vérifié en AOT",
-    "err_div_zero_run": "division par zéro runtime — motif/chemin à aligner",
-    "v3_index_chaine": "index de chaîne hors limites — transpilation g++",
-    "v3_fichier_absent": "lecture de fichier absent rend la chaîne vide",
-    # effets du monde non câblés en AOT
-    "lecture_stdin": "lire() ne lit pas stdin en AOT",
-    "v3_quitter": "quitter() ne termine pas le processus",
-}
+ECARTS_CONNUS = {}
 
 
 def _build(source, binaire):
