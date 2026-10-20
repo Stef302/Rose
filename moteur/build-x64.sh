@@ -39,7 +39,7 @@ LD_LIBRARY_PATH="$LIBLLVM" "$CLANG" -std=c++20 -O2 \
     -isystem "$S/usr/include/x86_64-linux-gnu/c++/13" \
     -isystem "$S/usr/include/x86_64-linux-gnu" \
     -isystem "$S/usr/include" \
-    src/rose.cpp src/jit.cpp src/jit_x64.cpp \
+    src/rose.cpp src/jit.cpp src/jit_x64.cpp src/transpiler.cpp src/rose_runtime.cpp \
     -o rose-x64 \
     "$S/usr/lib/x86_64-linux-gnu/libgmpxx.a" "$S/usr/lib/x86_64-linux-gnu/libgmp.a" \
     -L"$S/usr/lib/x86_64-linux-gnu" -lstdc++ -lm -ldl || exit 1
@@ -66,5 +66,5 @@ if [ "${1:-}" = "--test" ]; then
         -L"$S/usr/lib/x86_64-linux-gnu" -lstdc++ -lm -ldl || exit 1
     xrun ./test_jit-x64 | tail -2
     echo "── suite moteur sous qemu (lente — émulation TCG)"
-    ROSE_MOTEUR="$RACINE/moteur/cpp/rose-x64-qemu" python3 ../tests/courir.py | tail -3
+    ROSE_CROSS=1 ROSE_MOTEUR="$RACINE/moteur/cpp/rose-x64-qemu" python3 ../tests/courir.py | tail -3
 fi
