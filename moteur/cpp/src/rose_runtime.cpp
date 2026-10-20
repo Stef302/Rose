@@ -13,8 +13,8 @@
 #include <cstring>
 
 std::string rose_ent::texte() const {
-    if (!gros_) return std::to_string(m_);
-    return g_.get_str().c_str();
+    if (!g_) return std::to_string(m_);
+    return g_->get_str();
 }
 
 // ── Erreurs : format et comportement de l'interprète (erreur_runtime) ──

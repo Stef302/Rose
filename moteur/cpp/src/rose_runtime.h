@@ -40,28 +40,45 @@ class rose_ent;
 inline double rose_vers_double(const rose_ent &e);
 
 class rose_ent {
-    bool gros_;
+    /* Représentation 16 octets (2 registres de retour d'appel, pas de
+       round-trip mémoire sret) : m_ porte la valeur tant que le nombre tient
+       int64 ; g_ n'existe QUE pour les grands (convention NULL :
+       gros() ≡ g_ != nullptr). La version précédente portait le mpz_class en
+       dur (32 o par copie, dont 16 o de structure GMP morte pour les petits —
+       mesuré : boucle_entier 0,11 s contre 0,05 en JIT, la copie sret est le
+       differentiel). Décisions sémantiques inchangées : mêmes tests de
+       promotion, mêmes domaines, mêmes messages. */
     int64_t m_;
-    mpz_class g_;
-    void depuis_g_() {                       // rétrograde si le mpz tient int64
-        if (mpz_fits_slong_p(g_.get_mpz_t())) { m_ = mpz_get_si(g_.get_mpz_t()); gros_ = false; }
-        else gros_ = true;
-    }
+    mpz_class *g_;   // null sauf si gros() — allouée à la promotion
 public:
-    rose_ent(int64_t v = 0) : gros_(false), m_(v) {}
-    rose_ent(const mpz_class &z) : gros_(false), m_(0), g_(z) { depuis_g_(); }
-    rose_ent(const rose_ent &) = default;
-    rose_ent(rose_ent &&) = default;
-    rose_ent &operator=(const rose_ent &) = default;
-    rose_ent &operator=(rose_ent &&) = default;
-    rose_ent &operator=(const mpz_class &z) { g_ = z; depuis_g_(); return *this; }
-    rose_ent &operator=(long long v) { gros_ = false; m_ = (int64_t)v; return *this; }
+    rose_ent(int64_t v = 0) : m_(v), g_(nullptr) {}
+    rose_ent(const mpz_class &z) : m_(0), g_(nullptr) {
+        if (mpz_fits_slong_p(z.get_mpz_t())) m_ = mpz_get_si(z.get_mpz_t());
+        else g_ = new mpz_class(z);
+    }
+    rose_ent(const rose_ent &o) : m_(o.m_), g_(o.g_ ? new mpz_class(*o.g_) : nullptr) {}
+    rose_ent(rose_ent &&o) : m_(o.m_), g_(o.g_) { o.g_ = nullptr; }
+    ~rose_ent() { delete g_; }
+    rose_ent &operator=(const rose_ent &o) {
+        if (this != &o) { delete g_; m_ = o.m_; g_ = o.g_ ? new mpz_class(*o.g_) : nullptr; }
+        return *this;
+    }
+    rose_ent &operator=(rose_ent &&o) {
+        if (this != &o) { delete g_; m_ = o.m_; g_ = o.g_; o.g_ = nullptr; }
+        return *this;
+    }
     // affectation des slots grands entiers : t_gd = rose_vers_mpz(t_ent).
     // EXPLICITE : la moindre conversion implicite vers mpz ferait entrer le
     // machinery de templates de gmpxx dans la resolution d'overload
     // (ambiguite « rose_gd = rose_ent ») voire pire.
+    rose_ent &operator=(const mpz_class &z) {
+        if (mpz_fits_slong_p(z.get_mpz_t())) { delete g_; g_ = nullptr; m_ = mpz_get_si(z.get_mpz_t()); }
+        else { if (!g_) g_ = new mpz_class; *g_ = z; }
+        return *this;
+    }
+    rose_ent &operator=(long long v) { delete g_; g_ = nullptr; m_ = (int64_t)v; return *this; }
     explicit operator mpz_class() const {
-        if (gros_) return g_;
+        if (g_) return *g_;
         mpz_class r; mpz_set_si(r.get_mpz_t(), (long)m_); return r;
     }
     // promotion implicite vers le domaine flottant (comme l'ancien long long :
@@ -70,11 +87,13 @@ public:
     // « ent + 5 » ambigu. Les retours F → slot ent passent par
     // operator=(long long) avec la troncature habituelle.
     explicit operator double() const { return rose_vers_double(*this); }
-    bool gros() const { return gros_; }
-    int64_t petit() const { return m_; }     // valide si !gros()
-    const mpz_class &gd() const { return g_; } // valide si gros()
+    bool gros() const { return g_ != nullptr; }
+    int64_t petit() const { return m_; }       // valide si !gros()
+    const mpz_class &gd() const { return *g_; } // valide si gros()
     std::string texte() const;
 };
+static_assert(sizeof(rose_ent) == 16,
+              "rose_ent doit tenir dans 2 registres (levier perf M4.1)");
 
 
 // conversion uniforme des trois domaines entiers vers mpz

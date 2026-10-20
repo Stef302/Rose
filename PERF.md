@@ -705,3 +705,63 @@ wine ici) — l'arbitre est `tester.ps1` (3 moteurs × 44 dorés) sur machine
 réelle, partagé via tailnet. Côté natif, zéro régression : dorés 44/44,
 parité 116/116, aot.py 16+16/35 0 régression, test_jit vert, bancs
 boucle_entier 0,03 s / premiers 0,05 s et empreintes exactes.
+
+### Évaluation LLVM/PGO — la file « backend LLVM » mesurée avant d'investir
+
+Avant d'intégrer `llvm_backend.cpp` (brouillon 238 l : domaine machine i64
+seul, cmp placeholder, calls vides), trois mesures :
+
+1. **Codegen brut** : chaîne dépendante mul-add 100 M tours (non repliable),
+   `opt -O3 + llc -O3 -mcpu=native` (LLVM 18) contre `g++ -O3 -march=native`
+   → 0,08-0,09 s des deux côtés, empreintes identiques. Sur notre domaine
+   (i64/GMP latency-bound), changer de backend ne rapporte rien.
+2. **PGO** sur `mot_de_passe` (entraînement = le banc lui-même) : médiane
+   0,48 → 0,47, soit +2-3 % — pour un `rose build` qui deviendrait double
+   (compilation + exécution d'entraînement). Rejeté.
+3. **Plafond AOT** : `a_boucle_entier.cpp` avec `rose_ent → int64_t`
+   (structure émise identique, sans gardes) tombe sous le milliseconde,
+   alors que le binaire réel tient 0,11 s. L'écart n'est PAS la garde
+   d'overflow ni le backend : c'est la COPIE.
+
+Diagnostic : `rose_ent` portait son `mpz_class` en dur →
+bool + int64 + 16 o de structure GMP = 32 o par valeur. Un retour
+d'opérateur de 32 o dépasse la paire de registres de retour →
+round-trip mémoire (sret) par opération, et chaque copie traîne 16 o de
+GMP mort pour les petits entiers. C'est le sret, pas la garde.
+
+### M4.1 — rose_ent 16 octets : deux registres, plus de sret
+
+Nouvelle représentation : `int64_t m_ + mpz_class *g_` avec **convention
+NULL** (`gros() ≡ g_ != nullptr`) — le booléen tag disparaît, `sizeof == 16`
+(stat_assert posé), l'mpz n'est alloué qu'à la promotion et VOLE au move.
+Rule of five écrite à la main (copy = new mpz si gros ; move = vol du
+pointeur, émetteur vidé ; destructeur = delete). Aucune décision sémantique
+ne bouge : mêmes tests de promotion, mêmes accesseurs `gros()/petit()/gd()`
+utilisés par les opérateurs surchargés, le transpilé et les helpers `_gd`
+(zéro site touché dans transpiler.cpp — 7 accès directs à `g_` seulement,
+tous dans la classe).
+
+Vérifications, tout en vert : aot.py 16 fidèles + 16 rejets / 35, 0
+régression ; dorés 44/44 ; parité 116/116 ; les 10 bancs AOT reconstruits
+ont des sorties **octet pour octet identiques** aux anciens binaires
+(empreintes 10/10).
+
+Bancs AOT (médiane N=5, chauffe 1, alternés ancien/nouveau) :
+
+| banc            | ancien (32 o) | nouveau (16 o) |
+|-----------------|---------------|----------------|
+| boucle_entier   | 0,10          | **0,01**       |
+| appels          | 0,05          | **< 0,01**     |
+| boucle_flottante| 0,02          | < 0,01         |
+| pgcd            | 0,11          | 0,10           |
+| factorielle     | 0,17          | 0,18 (disp.)   |
+| mot_de_passe    | 0,46          | 0,47           |
+| puissance       | 0,28          | 0,28           |
+| premiers        | 0,05          | 0,05           |
+
+`boucle_entier` AOT passe **devant le JIT** (0,01 vs 0,05 — le runtime
+inliné sait ce que le JIT ne plie pas) ; le prix payé est un
+new/delete par promotion (case rare, les bancs GMP-dominés sont inchangés
+à ±2 %). Piège évité de justesse : supprimer `gros_` sans convention NULL
+aurait laissé `gd()` sur un pointeur mort — le `static_assert(sizeof)` +
+la doc du champ verrouillent la représentation.
