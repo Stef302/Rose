@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <string>
 #include <memory>
+#include <vector>
 
 // Types runtime de Rose (transpilation AOT).
 typedef int64_t rose_int;
@@ -72,3 +73,11 @@ rose_int rose_fibonacci(rose_int n);
 rose_float rose_abs_f(rose_float n);
 rose_float rose_min_f(rose_float a, rose_float b);
 rose_float rose_max_f(rose_float a, rose_float b);
+
+// Listes (entiers).
+typedef std::vector<rose_int> rose_liste;
+rose_liste rose_liste_new();
+void rose_liste_push(rose_liste &l, rose_int v);
+rose_int rose_liste_get(rose_liste &l, rose_int idx);
+rose_int rose_liste_len(rose_liste &l);
+rose_liste rose_liste_concat(rose_liste &l);
