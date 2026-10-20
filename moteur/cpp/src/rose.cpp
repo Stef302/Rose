@@ -1658,8 +1658,16 @@ struct Valeur {
     }
     static Valeur vide() { return Valeur(); }
 };
+/* Contrat de layout : ty@0 et z@+8 (arithmétique inline M2.15, hypothèses du
+   JIT). La taille TOTALE dépend de la stdlib C++ (libstdc++ std::string=32 sous
+   Linux ; libc++=24 sous windows-gnu via zig) : on ne l'épinglette que sur le
+   terrain natif, là où rir.h est réellement consommé. */
+static_assert(offsetof(Valeur, ty) == 0 && offsetof(Valeur, z) == 8,
+              "offsets Valeur modifiés : synchroniser arithmétique inline/JIT");
+#if defined(__LP64__) && !defined(_WIN32)
 static_assert(sizeof(Valeur) == 152,
               "layout Valeur modifié : synchroniser les DEUX définitions (rose.cpp et rir.h)");
+#endif
 
 static void erreur_runtime(const std::string &msg) {
     std::fflush(stdout);
@@ -3420,7 +3428,7 @@ struct InterpRir {
         if (i.op == "liste.len") {
             Valeur listv = get_val(i.args[0]);
             if (listv.ty != T_LISTE || !listv.l) erreur_runtime("liste.len attend une liste");
-            frame.vals[i.dest] = Valeur::de_z(mpz_class(listv.l->size()));
+            frame.vals[i.dest] = Valeur::de_z(mpz_class((unsigned long)listv.l->size()));
             return 0;
         }
         if (i.op == "lire") {
@@ -4513,13 +4521,9 @@ int main(int argc, char **argv) {
         // Compiler avec g++ — chemins portables : le runtime est cherché à côté
         // de l'exécutable (ROSE_HOME pour override) ; compilateur, drapeaux et
         // chemin GMP surchargables par ROSE_CXX / ROSE_CXXFLAGS / ROSE_GMP.
-        std::string exe_rep;
-        {
-            char buf[4096];
-            ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-            if (n > 0) { buf[n] = '\0'; exe_rep = buf; size_t s = exe_rep.find_last_of('/');
-                         if (s != std::string::npos) exe_rep.resize(s); }
-        }
+        std::string exe_rep = chemin_moteur();
+        { size_t s = exe_rep.find_last_of("/\\");
+          if (s != std::string::npos) exe_rep.resize(s); }
         const char *rh = getenv("ROSE_HOME");
         std::string runtime, entete_rep;
         {

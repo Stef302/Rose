@@ -670,3 +670,38 @@ Mesure de couverture : `aot.py` passe à **16 fidèles + 16 rejets corrects
 sur 35 cas, 0 limite, 0 écart catalogué, 0 régression** — `signature` et
 `machine` sont devenus fidèles. Restent trois lacunes de fonctionnalité
 non compilables : notation symbolique, mixtes rationnel⊛flottant, tables.
+
+### Portage Windows x64 du moteur C++ (cross zig, génération M3.4)
+
+`build-win64.sh` compilait un `rose.cpp` autonome ; depuis M2.x/M3.4 il
+référence JIT + transpileur et le TU était devenu « monolithique » (readlink
+dans l'action build). Trois blocages, tous locaux :
+
+1. `static_assert(sizeof(Valeur)==152)` faux sous LLP64 : libc++ (zig
+   windows-gnu) a un `std::string` de 24 octets contre 32 en libstdc++.
+   Le contrat réel est **ty@0, z@+8** (arithmétique inline, JIT) → assert
+   d'offsets partout + assert de taille réservé au terrain natif
+   `__LP64__ && !_WIN32` (seul endroit où rir.h est consommé).
+2. `mpz_class(size_type)` ambigu : le gmpxx de la GMP Windows n'a **pas de
+   constructeur long long** → cast explicite `(unsigned long)` (tailles de
+   liste > 2³2 physiquement impossibles). Les autres sites l'avaient déjà.
+3. `readlink("/proc/self/exe")` inline dans l'action build → remplacé par
+   `chemin_moteur()` (déjà porté GetModuleFileName depuis v3.8) et trim
+   `"/\\"` (séparateur Windows).
+
+Liaison Windows : `jit.cpp`/`jit_x64.cpp` exigent mmap/mprotect (POSIX),
+`transpiler.cpp` suppose un g+++GMP cible. Nouveau TU `jit_win_stub.cpp`
+(gardé `_WIN32`) : `rose_jit_compile` rend nullptr → repli interpréteur
+(chemin ROSE_NO_JIT déjà éprouvé) ; les 31 helpers `jit_*` ne servent que
+d'adresses dans la table de dispatch (jamais appelés sans code natif) et
+`transpiler_rir` rend le rejet poli « Rose : erreur — rose build non
+disponible sous Windows » + sortie 1 — contrat exact des rejets AOT.
+Signatures : `rose_jit_compile/run` en **linkage C**, helpers en mangling
+C++ (le stub doit reproduire cette distinction, sinon lld-link refuse).
+
+État : `rose-win64.exe` 1 443 840 o construit par l'étape 2 du script
+(-std=c++20 + stub, -static), **jamais exécuté sous Windows** (pas de
+wine ici) — l'arbitre est `tester.ps1` (3 moteurs × 44 dorés) sur machine
+réelle, partagé via tailnet. Côté natif, zéro régression : dorés 44/44,
+parité 116/116, aot.py 16+16/35 0 régression, test_jit vert, bancs
+boucle_entier 0,03 s / premiers 0,05 s et empreintes exactes.
