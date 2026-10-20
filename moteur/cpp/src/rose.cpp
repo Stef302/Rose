@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include "transpiler.h"
 #include <cstring>
+#include <climits>
 #ifdef _WIN32
 #include <windows.h>
 #include <process.h>
@@ -4087,6 +4088,61 @@ static const int NJIT_HELPERS = 58;
    code JIT natif par CE exact enregistrement — mêmes fonctions, mêmes
    sémantiques, mêmes erreurs que l'interpréteur. Enregistré en helper 50. */
 static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
+    // ── Chemin rapide machine (M2.16) : les fonctions dont le résultat exact
+    // se calcule en int64 sont évaluées en natif, sans recopie profonde des
+    // arguments ni distribution stdlib. Tout le reste — grands entiers, autres
+    // types, débordement — retombe sur le chemin générique en dessous : le
+    // résultat est le même, seul le chemin change.
+    {
+        long a0 = 0, a1 = 0; bool p0 = false, p1 = false;
+        if (nargs >= 1 && args[0]->ty == T_ENTIER && mpz_fits_slong_p(args[0]->z.get_mpz_t()))
+            { a0 = mpz_get_si(args[0]->z.get_mpz_t()); p0 = true; }
+        if (nargs >= 2 && args[1]->ty == T_ENTIER && mpz_fits_slong_p(args[1]->z.get_mpz_t()))
+            { a1 = mpz_get_si(args[1]->z.get_mpz_t()); p1 = true; }
+        long r = 0; bool ok = false;
+        auto ugcd = [](unsigned long u, unsigned long v) {
+            while (v) { unsigned long t = u % v; u = v; v = t; } return u; };
+        if (nargs == 1 && p0) {
+            if (!std::strcmp(nom, "abs")) {
+                if (a0 != LLONG_MIN) { r = a0 < 0 ? -a0 : a0; ok = true; }
+            } else if (!std::strcmp(nom, "factorielle") && a0 >= 0 && a0 <= 20) {
+                long f = 1; for (long i = 2; i <= a0; i++) f *= i;
+                r = f; ok = true;
+            } else if (!std::strcmp(nom, "fibonacci") && a0 >= 0 && a0 <= 92) {
+                long u = 0, v = 1; bool over = false;
+                for (long i = 0; i < a0; i++) {
+                    long t; if (__builtin_add_overflow(u, v, &t)) { over = true; break; }
+                    u = v; v = t;
+                }
+                if (!over) { r = u; ok = true; }
+            }
+        } else if (nargs == 2 && p0 && p1) {
+            if (!std::strcmp(nom, "min")) { r = a0 <= a1 ? a0 : a1; ok = true; }
+            else if (!std::strcmp(nom, "max")) { r = a0 >= a1 ? a0 : a1; ok = true; }
+            else if ((!std::strcmp(nom, "pgcd") || !std::strcmp(nom, "ppcm")) &&
+                     a0 != LLONG_MIN && a1 != LLONG_MIN) {
+                unsigned long u = a0 < 0 ? (unsigned long)-(unsigned long)a0 : (unsigned long)a0;
+                unsigned long v = a1 < 0 ? (unsigned long)-(unsigned long)a1 : (unsigned long)a1;
+                if (!std::strcmp(nom, "pgcd")) { r = (long)ugcd(u, v); ok = true; }
+                else {   // ppcm : encore une multiplication à vérifier
+                    unsigned long g = ugcd(u, v);
+                    unsigned long l;
+                    if (!g) { r = 0; ok = true; }
+                    else if (!__builtin_umull_overflow(u / g, v, &l) &&
+                             l <= (unsigned long)LLONG_MAX) { r = (long)l; ok = true; }
+                }
+            } else if (!std::strcmp(nom, "puissance") && a1 >= 0) {
+                long acc = 1, base = a0, e = a1; bool ovf = false;
+                while (e > 0 && !ovf) {
+                    if (e & 1) ovf = __builtin_mul_overflow(acc, base, &acc);
+                    e >>= 1;
+                    if (e > 0 && !ovf) ovf = __builtin_mul_overflow(base, base, &base);
+                }
+                if (!ovf) { r = acc; ok = true; }
+            }
+        }
+        if (ok) return new Valeur(Valeur::de_z(mpz_class(r)));
+    }
     std::vector<Valeur> va;
     for (int i = 0; i < nargs; i++) va.push_back(*args[i]);
     Valeur res = stdlib(std::string(nom), va, 0);
@@ -4444,12 +4500,42 @@ int main(int argc, char **argv) {
         if (!out) { fprintf(stderr, "rose: ne peut écrire %s\n", cpp_file.c_str()); return 1; }
         out << cpp_code;
         out.close();
-        // Compiler avec g++
-        std::string cmd = std::string("g++ -O3 -march=native -std=c++17") +
-                          " -I/home/clausake/Stefan/ROSE/moteur/cpp/src" +
-                          " -I/tmp/opencode/gmp-linux/include" +
-                          " " + cpp_file + " /home/clausake/Stefan/ROSE/moteur/cpp/src/rose_runtime.cpp" +
-                          " -o " + sortie + " -L/tmp/opencode/gmp-linux/lib -lgmp -lgmpxx -lm -lpthread 2>&1";
+        // Compiler avec g++ — chemins portables : le runtime est cherché à côté
+        // de l'exécutable (ROSE_HOME pour override) ; compilateur, drapeaux et
+        // chemin GMP surchargables par ROSE_CXX / ROSE_CXXFLAGS / ROSE_GMP.
+        std::string exe_rep;
+        {
+            char buf[4096];
+            ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+            if (n > 0) { buf[n] = '\0'; exe_rep = buf; size_t s = exe_rep.find_last_of('/');
+                         if (s != std::string::npos) exe_rep.resize(s); }
+        }
+        const char *rh = getenv("ROSE_HOME");
+        std::string runtime, entete_rep;
+        {
+            std::vector<std::string> cands;
+            if (rh && *rh) cands.push_back(rh);
+            if (!exe_rep.empty()) { cands.push_back(exe_rep + "/src"); cands.push_back(exe_rep);
+                                    cands.push_back(exe_rep + "/../src"); }
+            for (auto &b : cands) {
+                std::ifstream t(b + "/rose_runtime.cpp");
+                if (t.good()) { runtime = b + "/rose_runtime.cpp"; entete_rep = b; break; }
+            }
+        }
+        if (runtime.empty()) {
+            fprintf(stderr, "rose build : rose_runtime.cpp introuvable à côté de rose"
+                            " (définir ROSE_HOME)\n");
+            return 1;
+        }
+        const char *cxx = getenv("ROSE_CXX"); if (!cxx || !*cxx) cxx = "g++";
+        const char *cfl = getenv("ROSE_CXXFLAGS");
+        std::string flags = (cfl && *cfl) ? cfl : "-O3 -march=native";
+        const char *gmp = getenv("ROSE_GMP");
+        std::string cmd = std::string(cxx) + " " + flags + " -std=c++17" +
+                          " -I" + entete_rep +
+                          (gmp && *gmp ? " -I" + std::string(gmp) + "/include -L" + std::string(gmp) + "/lib" : "") +
+                          " " + cpp_file + " " + runtime +
+                          " -o " + sortie + " -lgmp -lgmpxx -lm -lpthread 2>&1";
         fprintf(stderr, "rose build: %s\n", cmd.c_str());
         int r = system(cmd.c_str());
         if (r == 0) fprintf(stderr, "rose: %s produit (compilé natif)\n", sortie.c_str());
