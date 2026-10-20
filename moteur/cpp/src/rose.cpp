@@ -4481,17 +4481,27 @@ int main(int argc, char **argv) {
             if (pt != std::string::npos) sortie.resize(pt);
             if (sortie.empty()) sortie = "programme";
         }
-        // Lire et analyser
+        // Lire et analyser — le front-end doit rejeter avec le même message
+        // que l'interprète (ErreurRose → « Rose : erreur — … », code 1).
         std::string source;
         if (lire_fichier(fichier, source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", fichier.c_str()); return 1; }
-        Programme prog = analyser(source);
-        replier_constants(prog);
-        Verificateur verif(prog);
-        verif.verifier();
+        Programme prog;
         RirModule mod;
-        EmetteurRir em(mod);
-        for (auto &kv : prog.signatures) if (kv.second->corps) em.emettre_fonction(*kv.second);
-        em.emettre_principal(prog);
+        try {
+            prog = analyser(source);
+            replier_constants(prog);
+            Verificateur verif(prog);
+            verif.verifier();
+            EmetteurRir em(mod);
+            for (auto &kv : prog.signatures) if (kv.second->corps) em.emettre_fonction(*kv.second);
+            em.emettre_principal(prog);
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        } catch (const std::exception &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.what());
+            return 1;
+        }
         // Transpiler
         std::string cpp_code = transpiler_rir(mod);
         // Écrire le .cpp

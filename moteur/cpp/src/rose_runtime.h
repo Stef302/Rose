@@ -115,7 +115,20 @@ void rose_liste_push_flt(rose_liste &l, rose_float v);
 rose_str rose_liste_concat(rose_liste &l);
 rose_int rose_liste_len(rose_liste &l);
 rose_str rose_liste_get_str(rose_liste &l, rose_int idx);
-rose_str rose_index_str(rose_str &s, rose_int idx);
+rose_str rose_index_str(const rose_str &s, rose_int idx);
+
+// ── Effets et contrôles de fidélité avec l'interprète ─────────────────
+rose_int rose_longueur(const rose_str &s);   // caractères UTF-8, pas octets
+void rose_quitter(rose_int code);
+rose_str rose_lire_texte(const rose_str &chemin);
+void rose_ecrire_texte(const rose_str &chemin, const rose_str &texte);
+rose_int rose_lire_int();
+rose_float rose_lire_flottant();
+rose_str rose_lire_chaine();
+rose_qd rose_lire_rationnel();
+rose_int rose_ordre(const rose_str &s);
+rose_str rose_sous_chaine(const rose_str &s, rose_int d, rose_int f);
+rose_str rose_caractere(rose_int cp);
 rose_str rose_texte_q(const rose_qd &q);
 rose_str rose_texte_flt(rose_float v);
 rose_int rose_a_entier(const rose_str &s);

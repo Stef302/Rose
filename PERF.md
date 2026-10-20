@@ -591,3 +591,31 @@ Outils d'audit ajoutés (sans effet sur les moteurs) :
 Croisée finale : test_jit-x64 14/14, dorés 43/43 sous qemu. AOT : 11
 fidèles + 1 rejet sur 35 cas, 1 limite, 5 non compilables, 17 écarts
 catalogués, 0 régression.
+
+### M3.3 bis — fidélité des erreurs et des effets AOT (audit)
+
+La couverture sémantique mesurée (35 cas) a catalogué 17 écarts : presque
+tous venaient de deux trous structurels. Côté compilable, `rose build`
+laissait fuir les `ErreurRose` du front-end en « terminate called » — le
+try/catch du mode `comp` est appliqué au mode `build` : rejet poli, même
+message que l'interprète, code 1 (8 cas). Côté runtime AOT, les builtins
+hors liste n'étaient pas émis du tout (commentaire dans le C++ généré,
+valeur par défaut silencieuse) — le pire kind d'écart, désormais comblé :
+
+- effets du monde : `lire` (stdin typé entier/flottant/rationnel/chaîne,
+  conversions miroir de l'interprète, « tolérant » = troncature vers zéro),
+  `quitter` (exit réel), `lire_texte`/`ecrire_texte` (erreurs avec chemin) ;
+- chaînes UTF-8 : `longueur` compte des caractères (plus d'octets — la
+  régression `v3_chaines` l'a justement démasquée), `sous_chaine` et
+  l'index découpent en caractères, `caractere` avec contrôles de plage ;
+- erreurs runtime aux messages exacts de l'interprète, format unifié
+  « Rose : erreur — … » : ordre mono-caractère, bornes de `sous_chaine`,
+  index hors liste/chaîne, `entier("abc")`, factorielle négative,
+  « modulo par zéro », « division euclidienne par zéro », « division par zéro ».
+
+Mesure après correction : **15 fidèles + 16 rejets corrects sur 35 cas,
+0 écart catalogué, 0 régression**. Restent 3 lacunes de fonctionnalités
+non compilables (notation symbolique, mixtes rationnel⊛flottant, tables)
+et 1 limite assumée (`signature`, promotion overflow→GMP = M3.4).
+Croisée x86-64 finale sous qemu : test_jit complet + dorés 43/43.
+Bancs inchangés (empreintes 10/10) : la fidélité n'a rien coûté au JIT.
