@@ -38,7 +38,37 @@ rose_int rose_millisecondes();
 
 // Affichage.
 void rose_afficher_int(rose_int v);
+void rose_afficher_bool(rose_bool v);
+void rose_afficher_float(rose_float v);
 void rose_afficher_str(const char *s);
 void rose_afficher_tampon_longueur(rose_tampon buf);
 
 #endif // ROSE_RUNTIME_H
+
+// Builtins numériques.
+rose_int rose_pgcd(rose_int a, rose_int b);
+rose_int rose_ppcm(rose_int a, rose_int b);
+rose_int rose_factorielle(rose_int n);
+rose_int rose_fibonacci(rose_int n);
+rose_bool rose_est_premier(rose_int n);
+rose_int rose_compter_premiers(rose_int n);
+rose_int rose_nb_chiffres(rose_int n);
+rose_int rose_hasard(rose_int n);
+rose_int rose_abs(rose_int n);
+rose_int rose_min(rose_int a, rose_int b);
+rose_int rose_max(rose_int a, rose_int b);
+
+// Builtins entiers supplémentaires.
+rose_int rose_ppcm(rose_int a, rose_int b);
+rose_bool rose_est_premier(rose_int n);
+rose_int rose_compter_premiers(rose_int n);
+rose_int rose_nb_chiffres(rose_int n);
+rose_int rose_hasard(rose_int n);
+rose_int rose_abs(rose_int n);
+rose_int rose_min(rose_int a, rose_int b);
+rose_int rose_max(rose_int a, rose_int b);
+rose_int rose_factorielle(rose_int n);
+rose_int rose_fibonacci(rose_int n);
+rose_float rose_abs_f(rose_float n);
+rose_float rose_min_f(rose_float a, rose_float b);
+rose_float rose_max_f(rose_float a, rose_float b);

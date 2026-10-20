@@ -123,6 +123,14 @@ void rose_afficher_int(rose_int v) {
     printf("%ld\n", (long)v);
 }
 
+void rose_afficher_bool(rose_bool v) {
+    printf("%s\n", v ? "vrai" : "faux");
+}
+
+void rose_afficher_float(rose_float v) {
+    printf("%.17g\n", v);
+}
+
 void rose_afficher_str(const char *s) {
     printf("%s\n", s);
 }
@@ -130,3 +138,87 @@ void rose_afficher_str(const char *s) {
 void rose_afficher_tampon_longueur(rose_tampon buf) {
     printf("%zu\n", buf->size());
 }
+
+// ── Builtins numériques ────────────────────────────────────────────────
+#include <gmp.h>
+#include <gmpxx.h>
+
+rose_int rose_pgcd(rose_int a, rose_int b) {
+    mpz_class r;
+    mpz_class za = a, zb = b;
+    mpz_gcd(r.get_mpz_t(), za.get_mpz_t(), zb.get_mpz_t());
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+
+rose_int rose_ppcm(rose_int a, rose_int b) {
+    mpz_class r;
+    mpz_class za = a, zb = b;
+    mpz_lcm(r.get_mpz_t(), za.get_mpz_t(), zb.get_mpz_t());
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+
+static mpz_class rose_factorielle_mpz(const mpz_class &n) {
+    if (mpz_sgn(n.get_mpz_t()) < 0) return mpz_class(0);
+    mpz_class r = 1;
+    for (unsigned long i = 2; i <= (unsigned long)mpz_get_ui(n.get_mpz_t()); i++) mpz_mul_ui(r.get_mpz_t(), r.get_mpz_t(), i);
+    return r;
+}
+
+rose_int rose_factorielle(rose_int n) {
+    mpz_class r = rose_factorielle_mpz(n);
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+
+rose_int rose_fibonacci(rose_int n) {
+    if (n < 0) return 0;
+    rose_int a = 0, b = 1;
+    for (rose_int i = 0; i < n; i++) { rose_int t = a + b; a = b; b = t; }
+    return a;
+}
+
+rose_bool rose_est_premier(rose_int n) {
+    if (n <= 1) return false;
+    for (rose_int i = 2; i * i <= n; i++) if (n % i == 0) return false;
+    return true;
+}
+
+rose_int rose_compter_premiers(rose_int n) {
+    if (n < 2) return 0;
+    std::vector<unsigned char> crible(n + 1, 0);
+    rose_int compte = 0;
+    for (rose_int i = 2; i <= n; i++) {
+        if (!crible[i]) {
+            compte++;
+            if (i <= n / i)
+                for (rose_int j = i * i; j <= n; j += i) crible[j] = 1;
+        }
+    }
+    return compte;
+}
+
+rose_int rose_nb_chiffres(rose_int n) {
+    if (n == 0) return 1;
+    rose_int t = n < 0 ? -n : n;
+    rose_int c = 0;
+    while (t > 0) { c++; t /= 10; }
+    return c;
+}
+
+rose_int rose_hasard(rose_int n) {
+    // splitmix64
+    static uint64_t etat = 2026ULL * 0x9E3779B97F4A7C15ULL;
+    uint64_t z = (etat += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    uint64_t r = z ^ (z >> 31);
+    if (n <= 0) return 0;
+    if ((n & (n - 1)) == 0) return (rose_int)(r & (n - 1));
+    return (rose_int)((__uint128_t)r * n >> 64);
+}
+
+rose_int rose_abs(rose_int n) { return n < 0 ? -n : n; }
+rose_int rose_min(rose_int a, rose_int b) { return a < b ? a : b; }
+rose_int rose_max(rose_int a, rose_int b) { return a > b ? a : b; }
+rose_float rose_abs_f(rose_float n) { return n < 0 ? -n : n; }
+rose_float rose_min_f(rose_float a, rose_float b) { return a < b ? a : b; }
+rose_float rose_max_f(rose_float a, rose_float b) { return a > b ? a : b; }

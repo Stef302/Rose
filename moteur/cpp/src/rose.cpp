@@ -4446,8 +4446,9 @@ int main(int argc, char **argv) {
         out.close();
         // Compiler avec g++
         std::string cmd = "g++ -O3 -march=native -std=c++17 -I" + std::string("moteur/cpp/src") +
+                          " -I/tmp/opencode/gmp-linux/include" +
                           " " + cpp_file + " moteur/cpp/src/rose_runtime.cpp" +
-                          " -o " + sortie + " -lm -lpthread 2>&1";
+                          " -o " + sortie + " -L/tmp/opencode/gmp-linux/lib -lgmp -lgmpxx -lm -lpthread 2>&1";
         fprintf(stderr, "rose build: %s\n", cmd.c_str());
         int r = system(cmd.c_str());
         if (r == 0) fprintf(stderr, "rose: %s produit (compilé natif)\n", sortie.c_str());
