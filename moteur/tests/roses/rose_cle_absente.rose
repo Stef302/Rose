@@ -1,0 +1,3 @@
+$absente = table()
+inserer($absente, "a", 1)
+>> $absente["z"]

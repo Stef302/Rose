@@ -1,0 +1,15 @@
+$greeting = "Bonjour, les roses 🌹"
+>> $greeting
+>> longueur($greeting)
+>> sous_chaine($greeting, 8, 13)
+>> sous_chaine($greeting, 0, 1)
+>> caractere(127801)
+>> $greeting + " et bleuet"
+$m = "Érable à feuilles de frêne"
+>> longueur($m)
+>> sous_chaine($m, 0, 6)
+>> concatener(["un", "deux", "trois"])
+$c = chaine(42)
+>> c + "/100"
+>> entier("1234") + 1
+>> fraction(3, 4) + 1/4

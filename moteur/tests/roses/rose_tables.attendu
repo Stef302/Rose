@@ -1,0 +1,16 @@
+[titre => Le petit Rose, pages => 240, prix => 12/5, disponible => vrai]
+4
+vrai
+faux
+Le petit Rose
+240
+2.4
+vrai
+[titre => Le petit Rose, pages => 256, prix => 12/5, disponible => vrai]
+vrai
+3
+[titre, pages, prix]
+[Le petit Rose, 256, 2.4]
+faux
+vrai
+faux

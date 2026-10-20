@@ -1,0 +1,18 @@
+$note = "dix-sept"
+>> 2 + 3 ⋅ 4
+>> 6 × 7
+>> 40 ÷ 8
+>> √16
+>> √2
+>> √(9/4)
+>> 3² + 2³
+>> π
+>> 2^10
+>> π ⋅ 1.0 ²
+>> longueur($note)
+>> sous_chaine($note, 0, 3)
+$note ← "vingt"
+>> $note
+fn aire_cercle(r: flottant) → flottant { retour π ⋅ r ² }
+>> aire_cercle(1.0)
+>> aire_cercle(2.5)

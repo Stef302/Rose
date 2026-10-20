@@ -1,0 +1,12 @@
+>> factorielle(25)
+>> factorielle(50)
+>> fibonacci(90)
+$acc = 1
+pour i de 1 vers 40 { $acc = $acc * i }
+>> $acc
+$g = 2^200
+>> $g
+>> $g + 1
+>> nb_chiffres($g)
+>> pgcd(factorielle(20), 1000000007)
+>> puissance(7, 40)
