@@ -48,6 +48,14 @@ def _build(source, binaire):
                           capture_output=True, text=True, env=ENV)
 
 
+def _rose_source(nom, code):
+    """Écrit une source inline dans le TMP et rend son chemin (cas fidèles)."""
+    p = os.path.join(TMP, nom + ".rose")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(code)
+    return p
+
+
 def cas_fidele(nom, source, attendu_stdout=None, dore=None, limite=False,
                stdin=None, args=(), cwd=None, attendu_code=0):
     """Le binaire AOT doit reproduire l'interpréteur : sortie, code, stderr."""
@@ -143,6 +151,56 @@ cas_fidele("v3_fichiers", f"{DORES}/t_v3_fich.rose",
 cas_fidele("v3_quitter", f"{DORES}/t_v3_quitter.rose",
            attendu_stdout="avant\n2\n", attendu_code=3)
 
+# ── fidélité v3.13.1 : domaine rationnel mélangé (testeur génératif) ─
+# Les correctifs du transpileur (opérateurs mixtes Z⊛Q, abs/min/max en Q,
+# division euclidienne Q⊛Gd et Gd⊛Q) sont épinglés ici : toute régression
+# de l'un d'eux ressort en ÉCHEC, plus en silence.
+cas_fidele("q_domaine_mixte", _rose_source("q_domaine_mixte", """
+$q = 23 / 6
+>> $q + 2
+>> 5 - $q
+>> $q * 3
+>> $q / 4
+>> abs(0 - $q)
+>> min($q, 1)
+>> max(0 - $q, 0 - 3)
+>> $q div 2
+>> 7 div (1 / 2)
+$g = 423243272715318256248 * 22272815071249072011497
+>> $g div $q
+>> abs(0 - 3 / 4) + max(1 / 8, $q)
+"""), attendu_stdout="""5.8[3]
+1.1[6]
+11.5
+0.958[3]
+3.8[3]
+1
+-3
+1
+14
+2459170211305701287898175296192056308195632
+4.58[3]
+""")
+
+# ── écart connu n°1 : variable affectée seulement sur un chemin mort ─
+# Découvert par le testeur génératif (graine 200051, 21/10/2026) et rendu
+# visible par le correctif v3.13.1 (le cœur RIR et le JIT rejettent enfin
+# la lecture sans valeur au lieu d'afficher le vide). L'AOT pré-initialise
+# ses variables statiques à zéro et calcule la suite. Le rendre fidèle
+# exige une règle statique « possiblement non initialisée » au vérificateur
+# — route v3.14. D'ici là : mesuré, nommé, jamais caché.
+ECARTS_CONNUS["var_chemin_mort"] = (
+    "lecture sans valeur côté interprète (rc=1), zéro initialisé côté AOT "
+    "(rc=0) — l'analyse de flux n'existe pas encore")
+cas_fidele("var_chemin_mort", _rose_source("var_chemin_mort", """
+>> 43
+si (faux) {
+  $theta = (-9 / 2 + 27 / 4)
+} sinon si (1.5 != (theta ^ -40.3744)) {
+  >> 36
+}
+"""), attendu_stdout="43\n", attendu_code=1)
+
 # ── 3. erreurs et rejets : le compilable doit dire non, ou l'exécution
 #       rendre le même message que l'interpréteur ────────────────────
 cas_rejet("nom_reserve", f"{DORES}/nom_reserve.rose", motif="réservé par le moteur")
@@ -166,6 +224,20 @@ for nom, code, motif in [
     ("err_modulo_zero", ">> 5 % 0\n", "modulo par zéro"),
     ("err_chaine_entier", '>> entier("abc")\n', "conversion chaine → entier impossible"),
     ("err_affect_flotteur", "$x = 0\n$x = 1.5\n", "on ne peut pas y stocker"),
+    # v3.13.1 : les gardes ajoutées par le testeur génératif — la division
+    # flottante par zéro doit refuser dans les deux voies (pas de ±inf),
+    # et une variable que le vérificateur ne peut typer sur un seul domaine
+    # doit être rejetée poliment, jamais compilée à l'aveugle.
+    ("err_div_zero_flottant", "$z = 5 - 5\n>> 1.5 / $z\n", "division par zéro"),
+    ("err_div_euclide_flottant", "$z = 5 - 5\n>> 7.5 div $z\n",
+     "division euclidienne par zéro"),
+    ("err_div_euclide_zero", "$z = 5 - 5\n>> 7 div $z\n",
+     "division euclidienne par zéro"),
+    ("var_domaine_changeant", "si (faux) {\n  $gamma = 40.8851\n}\n"
+     "$gamma = 1 / 2\n>> $gamma\n", "change de domaine"),
+    ("err_type_deux_branches", "si (1 > 2) {\n  $gamma = chaine(4)\n"
+     "} sinon si (2 > 3) {\n  si (faux) {\n    $delta = 1\n  } sinon {\n"
+     "    $gamma = 40.8851\n  }\n}\n>> 7\n", "on ne peut pas y stocker"),
 ]:
     cas_rejet(nom, code=code, motif=motif)
 

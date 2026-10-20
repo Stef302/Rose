@@ -1,9 +1,10 @@
 # Rose pour Windows x64 — setup de test
 
-Copie depuis gx10-2 (100.67.23.83, tailnet). Date : 2026-10-20 (soir).
-Génération du moteur : **v3.12.0 + chantiers M4.1/M4.2** (rose_ent 16
-octets, comblement des lacunes AOT, contrat anti-silence, divergence
-rust/zig sur les tables corrigée).
+Copie depuis gx10-2 (100.67.23.83, tailnet). Date : 2026-10-21.
+Génération du moteur : **v3.13.1** (chronomètre `temps()`/`duree()`, versions
+synchronisées, et correctifs du testeur génératif : lecture de variable sans
+valeur enfin erreur partout — plus jamais de vide ni de crash JIT —, garde
+des divisions flottantes par zéro, fidélité rationnel⊛entier en AOT).
 
 ## Copier chez toi
 

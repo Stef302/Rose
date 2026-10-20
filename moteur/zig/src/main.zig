@@ -2321,7 +2321,7 @@ pub fn main() !void {
     }
     const action = args[1];
     if (std.mem.eql(u8, action, "version")) {
-        std.io.getStdOut().writeAll("Rose 3.13.0 — moteur natif Zig/GMP\n") catch {};
+        std.io.getStdOut().writeAll("Rose 3.13.1 — moteur natif Zig/GMP\n") catch {};
         return;
     }
     if (std.mem.eql(u8, action, "info")) {

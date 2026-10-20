@@ -124,6 +124,7 @@ public:
     std::map<std::string,std::vector<int>> m_pslots;   // slots des paramètres (ordre params)
     std::map<std::string,std::vector<int>> m_ptys;     // RirType des paramètres (int)
     std::map<std::string,std::vector<int>> m_cslots;   // slots de constantes (non libérables)
+    std::map<std::string,std::vector<std::pair<int,std::string>>> m_vslots;  // v3.13.1 : (slot, %nom) des variables non-param — pré-initialisés à vide pour que la lecture non affectée lève l'erreur au lieu de lire du vide ou crasher
     std::map<std::string,int> m_call_idx;              // "$nom" -> index dans le module
 };
 

@@ -292,7 +292,17 @@ std::string transpiler_rir(const RirModule &mod) {
                     (instr.op == "add.z" || instr.op == "sub.z" || instr.op == "mul.z" || instr.op == "neg.z" ||
                      instr.op == "pow" || instr.op.rfind("divf", 0) == 0 || instr.op.rfind("rem.z", 0) == 0)) {
                     bool gd = false;
-                    for (size_t ai = 0; ai < instr.args.size(); ai++) {
+                    // v3.13.1 : un opérande RATIONNEL (div Q⊛grand) interdit la
+                    // promotion Gd — rose_div_florentin_q rend un rose_ent (200027).
+                    bool qv = false;
+                    for (size_t ai = 0; ai < instr.args.size() && !qv; ai++) {
+                        const std::string &an2 = instr.args[ai].name;
+                        auto tq2 = temp_types.find(an2);
+                        if (tq2 != temp_types.end() && tq2->second == RirQ) qv = true;
+                        auto gq2 = global_types.find(sanitize(an2));
+                        if (gq2 != global_types.end() && gq2->second == RirQ) qv = true;
+                    }
+                    for (size_t ai = 0; ai < instr.args.size() && !qv; ai++) {
                         std::string an = instr.args[ai].name;
                         if (instr.args[ai].kind == RirOp::Const) {
                             std::string t = an;
@@ -329,6 +339,15 @@ std::string transpiler_rir(const RirModule &mod) {
                         }
                     }
                     if (ty == RirU && instr.args.size() > 0) ty = instr.args[0].ty;
+                    // Source GLOBAL : le tampon du checker peut être U/Z alors que
+                    // le collecteur connaît le vrai domaine de la variable source
+                    // (v3.13.1, graine générative 100011 : $alpha = eta avec eta chaîne).
+                    if (instr.args.size() > 0 && instr.args[0].kind == RirOp::Temp &&
+                        !temp_types.count(instr.args[0].name)) {
+                        auto gs = global_types.find(sanitize(instr.args[0].name));
+                        if (gs != global_types.end() && gs->second != RirU &&
+                            (ty == RirU || ty == RirZ)) ty = gs->second;
+                    }
                     // If still U but assigned from a known tampon, mark as tampon
                     // If source temp is a list, mark global as list
                     if (instr.args.size() > 0 && instr.args[0].kind == RirOp::Temp) {
@@ -405,15 +424,30 @@ std::string transpiler_rir(const RirModule &mod) {
                         else if (name == "partie_entiere") ty = RirZ;
                         else if (name == "est_premier") ty = RirB;
                         else if (name == "abs" || name == "min" || name == "max") {
-                            // Check if any arg temp is float
+                            // Check if any arg temp is float (ou rationnel)
                             ty = RirZ;
+                            bool a_q = false;
                             for (size_t ai = 1; ai < instr.args.size(); ai++) {
                                 if (instr.args[ai].kind == RirOp::Temp) {
                                     for (auto &b2 : f.blocs) for (auto &i2 : b2.instrs) {
                                         if (i2.dest == instr.args[ai].name && i2.dest_ty == RirF) { ty = RirF; break; }
+                                        if (i2.dest == instr.args[ai].name && i2.dest_ty == RirQ) a_q = true;
                                     }
+                                    if (!a_q && ty != RirF &&
+                                        !temp_types.count(instr.args[ai].name)) {
+                                        auto gs = global_types.find(sanitize(instr.args[ai].name));
+                                        if (gs != global_types.end()) {
+                                            if (gs->second == RirF) ty = RirF;
+                                            if (gs->second == RirQ) a_q = true;
+                                        }
+                                    }
+                                } else if (instr.args[ai].kind == RirOp::Const) {
+                                    std::string cx = instr.args[ai].name;
+                                    if (cx.rfind("@c", 0) == 0) cx = cx.substr(2);
+                                    if (cx.find('/') != std::string::npos) a_q = true;
                                 }
                             }
+                            if (ty == RirZ && a_q) ty = RirQ;
                         }
                         // Arguments grands entiers : l'appel vit en grand entier
                         if (name == "pgcd" || name == "ppcm" || name == "abs" ||
@@ -432,7 +466,25 @@ std::string transpiler_rir(const RirModule &mod) {
                         }
                     }
                     // Opérations arithmétiques : propagent le type grand entier
-                    if ((instr.op == "add.z" || instr.op == "sub.z" || instr.op == "mul.z" ||
+                    // v3.13.1 : un opérande RATIONNEL interdit la promotion Gd —
+                    // « div » en domaine Q émet rose_div_florentin_q (retour rose_ent,
+                    // promotion interne), et add/sub/mul avec Q ne passent jamais ici
+                    // (ops .q dédiés). Graine générative 200027.
+                    bool a_q_arg = false;
+                    for (size_t ai = 0; ai < instr.args.size() && !a_q_arg; ai++) {
+                        const std::string &an = instr.args[ai].name;
+                        auto tq = temp_types.find(an);
+                        if (tq != temp_types.end() && tq->second == RirQ) a_q_arg = true;
+                        auto gq = global_types.find(sanitize(an));
+                        if (gq != global_types.end() && gq->second == RirQ) a_q_arg = true;
+                        if (instr.args[ai].kind == RirOp::Const) {
+                            std::string t = an;
+                            if (t.rfind("@c", 0) == 0) t = t.substr(2);
+                            if (t.find('/') != std::string::npos) a_q_arg = true;
+                        }
+                    }
+                    if (!a_q_arg &&
+                        (instr.op == "add.z" || instr.op == "sub.z" || instr.op == "mul.z" ||
                          instr.op == "neg.z" || instr.op == "pow" || instr.op == "add" ||
                          instr.op.rfind("divf", 0) == 0 || instr.op.rfind("rem.z", 0) == 0) &&
                         (ty == RirZ || ty == RirU)) {
@@ -653,10 +705,30 @@ std::string transpiler_rir(const RirModule &mod) {
                             sty = temp_types[instr.args[0].name];
                         else if (instr.args[0].kind == RirOp::Global)
                             sty = global_types.count(src_expr) ? global_types[src_expr] : RirU;
+                        // Globaux référencés en Temp « %nom » (checker) : résoudre au vrai domaine.
+                        if (sty == RirU && instr.args[0].kind == RirOp::Temp) {
+                            auto gs = global_types.find(src_expr);
+                            if (gs != global_types.end()) sty = gs->second;
+                        }
                         if (gt != global_types.end() && gt->second == RirF && sty == RirZ)
                             out << "    " << dglob << " = rose_vers_double(" << src_expr << ");\n";
                         else if (gt != global_types.end() && gt->second == RirGd && (sty == RirZ || sty == RirU))
                             out << "    " << dglob << " = rose_vers_mpz(" << src_expr << ");\n";
+                        else if (gt != global_types.end() && gt->second == RirQ && (sty == RirZ || sty == RirU))
+                            // entier → rationnel : élargissement légal, promotion mpq (v3.13.1)
+                            out << "    " << dglob << " = rose_q_de(" << src_expr << ");\n";
+                        else if (gt != global_types.end() && sty != RirU && sty != gt->second &&
+                                 ((gt->second == RirZ && (sty == RirS || sty == RirB || sty == RirQ || sty == RirF)) ||
+                                  (gt->second == RirGd && (sty == RirS || sty == RirB || sty == RirQ || sty == RirF)) ||
+                                  (gt->second == RirS) ||
+                                  (gt->second == RirB) ||
+                                  (gt->second == RirQ && (sty == RirF || sty == RirS || sty == RirB)) ||
+                                  (gt->second == RirF && (sty == RirQ || sty == RirS || sty == RirB))))
+                            // Le checker laisse passer certaines affectations hétérogènes
+                            // que l'interprète, dynamique, absorbe. L'AOT statique ne peut
+                            // pas : rejet poli, jamais un g++ cassé (contrat M4.2, v3.13.1).
+                            throw std::runtime_error("AOT : la variable « " + instr.message +
+                                    " » change de domaine — l'interprète la garde dynamique (limite explicite)");
                         else if (gt != global_types.end() && gt->second == RirDyn && sty != RirDyn)
                             // M4.2 : emplacement cellule ← valeur typée : élévation.
                             out << "    " << dglob << " = rose_dyn_de("
@@ -870,6 +942,7 @@ std::string transpiler_rir(const RirModule &mod) {
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_abs_f(" << a0 << ");\n";
                         else if (aty == RirGd) out << "    " << sanitize(instr.dest) << " = rose_abs_gd(" << a0 << ");\n";
+                        else if (aty == RirQ) out << "    " << sanitize(instr.dest) << " = rose_abs_q(" << a0 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_abs(" << a0 << ");\n";
                     }
                     else if (name == "min") {
@@ -877,6 +950,8 @@ std::string transpiler_rir(const RirModule &mod) {
                         std::string a1 = sanitize(instr.args[2].name);
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_min_f(" << a0 << ", " << a1 << ");\n";
+                        else if (aty == RirQ || ty_of(instr.args[2]) == RirQ)
+                            out << "    " << sanitize(instr.dest) << " = rose_min_q(" << a0 << ", " << a1 << ");\n";
                         else if (aty == RirGd || ty_of(instr.args[2]) == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_min_gd(" << a0 << ", " << a1 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_min(" << a0 << ", " << a1 << ");\n";
@@ -886,6 +961,8 @@ std::string transpiler_rir(const RirModule &mod) {
                         std::string a1 = sanitize(instr.args[2].name);
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_max_f(" << a0 << ", " << a1 << ");\n";
+                        else if (aty == RirQ || ty_of(instr.args[2]) == RirQ)
+                            out << "    " << sanitize(instr.dest) << " = rose_max_q(" << a0 << ", " << a1 << ");\n";
                         else if (aty == RirGd || ty_of(instr.args[2]) == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_max_gd(" << a0 << ", " << a1 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_max(" << a0 << ", " << a1 << ");\n";
@@ -1177,7 +1254,7 @@ std::string transpiler_rir(const RirModule &mod) {
                       RirType dty = RirU; auto td = temp_types.find(instr.dest); if (td != temp_types.end()) dty = td->second;
                       if (p0 != RirF) a0 = "rose_vers_double(" + a0 + ")";
                       if (p1 != RirF) a1 = "rose_vers_double(" + a1 + ")"; }
-                    out << "    " << dest << " = " << a0 << " / " << a1 << ";\n";
+                    out << "    " << dest << " = rose_div_f(" << a0 << ", " << a1 << ");\n";
                 }
                 else if (op == "neg.f") {
                     std::string dest = sanitize(instr.dest);
@@ -1228,8 +1305,10 @@ std::string transpiler_rir(const RirModule &mod) {
                         std::string x0 = a0, x1 = a1;
                         if (t0 != RirF && (t0 == RirZ || t0 == RirU)) x0 = "rose_vers_double(" + a0 + ")";
                         if (t1 != RirF && (t1 == RirZ || t1 == RirU)) x1 = "rose_vers_double(" + a1 + ")";
-                        out << "    " << dest << " = std::floor(" << x0 << " / " << x1 << ");\n";
+                        out << "    " << dest << " = rose_divflo_f(" << x0 << ", " << x1 << ");\n";
                     }
+                    else if (t0 == RirQ || t1 == RirQ)
+                        out << "    " << dest << " = rose_div_florentin_q(" << a0 << ", " << a1 << ");\n";
                     else if (t0 == RirGd || t1 == RirGd)
                         out << "    " << dest << " = rose_div_florentin_gd(" << a0 << ", " << a1 << ");\n";
                     else

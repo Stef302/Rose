@@ -705,8 +705,8 @@ rose_gd rose_ppcm_gd_impl(const rose_gd &a, const rose_gd &b) {
 rose_gd rose_abs_gd_impl(const rose_gd &n) {
     rose_gd r; mpz_abs(r.get_mpz_t(), n.get_mpz_t()); return r;
 }
-rose_gd rose_min_gd(const rose_gd &a, const rose_gd &b) { return a < b ? a : b; }
-rose_gd rose_max_gd(const rose_gd &a, const rose_gd &b) { return a > b ? a : b; }
+rose_gd rose_min_gd_impl(const rose_gd &a, const rose_gd &b) { return a < b ? a : b; }
+rose_gd rose_max_gd_impl(const rose_gd &a, const rose_gd &b) { return a > b ? a : b; }
 
 rose_int rose_longueur(const rose_str &s) {
     return (rose_int)rose_utf8_len(s);

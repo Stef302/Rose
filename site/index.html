@@ -711,7 +711,7 @@ jardin salut {
 <span class="k">&gt;</span> irm http://100.67.23.83:18080/rose-windows.zip -OutFile rose-windows.zip
 <span class="k">&gt;</span> Expand-Archive rose-windows.zip -DestinationPath rose -Force
 <span class="k">&gt;</span> cd rose ; .\tester.ps1
-<span class="c">🌹 ROSE v3.13.0 — 46 tests dorés, 12 roses, 3 moteurs, 0 divergence</span></pre>
+<span class="c">🌹 ROSE v3.13.1 — 46 tests dorés, 12 roses, 3 moteurs, 0 divergence</span></pre>
           </div>
           <p>Sur Linux (x64 / arm64), le moteur se construit depuis les sources : <code class="inline">make rose</code> dans <code class="inline">moteur/cpp</code>.</p>
           <h4>Systèmes supportés</h4>
@@ -994,6 +994,21 @@ fruits.filtrer(|f| f != <span class="s">"poire"</span>)
     <p class="gris" style="font-size:.78rem;line-height:2;margin-bottom:2rem">Deux ans de travail, six versions majeures, des milliers de commits.</p>
 
     <div class="timeline">
+      <div class="event">
+        <div class="event-head">
+          <span class="event-ver">V3.13.1</span>
+          <span class="event-date">21 OCTOBRE 2026</span>
+        </div>
+        <h4 class="event-title">🥀 Le testeur génératif tient ses promesses</h4>
+        <ul>
+          <li>380 programmes aléatoires engendrés, comparés à l'octet près sur trois voies — interprète, JIT, compilé AOT — chaque bogue trouvé est corrigé, chaque écart est nommé</li>
+          <li>Lire une variable jamais affectée n'affiche plus le vide ni ne fait tomber le moteur : toutes les voies rendent la même erreur, avec le nom de la variable</li>
+          <li>Le rationnel affronte l'entier en AOT : arithmétique mixte, valeur absolue, min/max, division euclidienne — justes au caractère près dans le binaire compilé</li>
+          <li>La division flottante par zéro est refusée en AOT comme à l'interprète — jamais d'infini fantôme</li>
+          <li>Couverture AOT : 43 cas de référence, 21 fidèles, 21 rejets polis, 1 écart mesuré, 0 silence</li>
+        </ul>
+      </div>
+
       <div class="event">
         <div class="event-head">
           <span class="event-ver">V3.13</span>

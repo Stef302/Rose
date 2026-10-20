@@ -19,10 +19,10 @@ else
 LIEN := -lgmpxx -lgmp
 endif
 
-rose: src/rose.cpp src/jit.cpp src/jit_x64.cpp
+rose: src/rose.cpp src/jit.cpp src/jit_x64.cpp src/transpiler.cpp src/rose_runtime.cpp src/rir.h src/transpiler.h src/jit.h src/rose_runtime.h
 	$(CXX) $(CXXFLAGS) -I$(GMP_INC) src/rose.cpp src/jit.cpp src/jit_x64.cpp src/transpiler.cpp src/rose_runtime.cpp -o rose $(LIEN) -lm -ldl
 
-rose-jit: src/rose.cpp src/jit.cpp src/jit_x64.cpp
+rose-jit: src/rose.cpp src/jit.cpp src/jit_x64.cpp src/transpiler.cpp src/rose_runtime.cpp src/rir.h src/transpiler.h src/jit.h src/rose_runtime.h
 	$(CXX) $(CXXFLAGS) $(ASMJIT_INC) -I$(GMP_INC) src/rose.cpp src/jit.cpp src/jit_x64.cpp src/transpiler.cpp src/rose_runtime.cpp -o rose-jit $(LIEN) -lm -ldl
 
 test_jit: src/test_jit.cpp src/jit.cpp src/jit_x64.cpp src/rir.h

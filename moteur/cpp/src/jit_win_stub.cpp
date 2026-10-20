@@ -36,6 +36,8 @@ struct RirModule;
 extern "C" {
 void   *rose_jit_compile(void *, void **, int) { return nullptr; }
 Valeur *rose_jit_run(void *, void **, int, Valeur **) { return nullptr; }
+/* v3.13.1 : le nom d'un slot « vide » — sans JIT, jamais consulté. */
+const char *rose_jit_slot_name(const Valeur *) { return "?"; }
 }
 
 /* ── helpers référencés par la table d'adresses (jamais appelés) ──── */

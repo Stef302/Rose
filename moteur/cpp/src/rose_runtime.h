@@ -124,6 +124,26 @@ inline mpq_class rose_q_de(const mpq_class &q) { return q; }
 inline mpq_class rose_q_de(double v) { return mpq_class(v); }   // binaire exact, comme l'ancien rose_qd(double)
 inline mpq_class rose_q_de(long long v) { return mpq_class(rose_vers_mpz(v)); }
 
+/* ── Q ⊛ I mélangés — v3.13.1 : quand le checker laisse passer une opération
+   rationnel⊛entier, l'émis C++ brut doit promouvoir l'entier en rationnel,
+   comme l'interprète. Trouvé par le testeur génératif (graine 19). ─────── */
+inline mpq_class operator+(const rose_ent &a, const mpq_class &b) { return rose_q_de(a) + b; }
+inline mpq_class operator+(const mpq_class &a, const rose_ent &b) { return a + rose_q_de(b); }
+inline mpq_class operator-(const rose_ent &a, const mpq_class &b) { return rose_q_de(a) - b; }
+inline mpq_class operator-(const mpq_class &a, const rose_ent &b) { return a - rose_q_de(b); }
+inline mpq_class operator*(const rose_ent &a, const mpq_class &b) { return rose_q_de(a) * b; }
+inline mpq_class operator*(const mpq_class &a, const rose_ent &b) { return a * rose_q_de(b); }
+inline mpq_class operator/(const rose_ent &a, const mpq_class &b) { return rose_q_de(a) / b; }
+inline mpq_class operator/(const mpq_class &a, const rose_ent &b) { return a / rose_q_de(b); }
+inline mpq_class operator+(const mpz_class &a, const mpq_class &b) { return rose_q_de(a) + b; }
+inline mpq_class operator+(const mpq_class &a, const mpz_class &b) { return a + rose_q_de(b); }
+inline mpq_class operator-(const mpz_class &a, const mpq_class &b) { return rose_q_de(a) - b; }
+inline mpq_class operator-(const mpq_class &a, const mpz_class &b) { return a - rose_q_de(b); }
+inline mpq_class operator*(const mpz_class &a, const mpq_class &b) { return rose_q_de(a) * b; }
+inline mpq_class operator*(const mpq_class &a, const mpz_class &b) { return a * rose_q_de(b); }
+inline mpq_class operator/(const mpz_class &a, const mpq_class &b) { return rose_q_de(a) / b; }
+inline mpq_class operator/(const mpq_class &a, const mpz_class &b) { return a / rose_q_de(b); }
+
 // promotion d'un résultat : petit mot machine sinon GMP
 inline rose_ent rose_promu(const mpz_class &z) { return rose_ent(z); }
 
@@ -353,6 +373,46 @@ template <class A, class B> inline rose_gd rose_rem_florentin_gd(const A &a, con
 template <class A, class B> inline rose_gd rose_pgcd_gd(const A &a, const B &b) { return rose_pgcd_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
 template <class A, class B> inline rose_gd rose_ppcm_gd(const A &a, const B &b) { return rose_ppcm_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
 template <class A> inline rose_gd rose_abs_gd(const A &a) { return rose_abs_gd_impl(rose_vers_mpz(a)); }
+
+/* abs/min/max RATIONNELS — v3.13.1 : le checker laisse passer abs(Q),
+   min(Q,Q), min(entier, rationnel)… l'émission doit vivre en mpq, avec
+   promotion des entiers (roses génératives 100011/13/14). */
+template <class A> inline mpq_class rose_abs_q(const A &a) {
+    mpq_class q = rose_q_de(a); return q < 0 ? -q : q;
+}
+template <class A, class B> inline mpq_class rose_min_q(const A &a, const B &b) {
+    mpq_class x = rose_q_de(a), y = rose_q_de(b); return x < y ? x : y;
+}
+template <class A, class B> inline mpq_class rose_max_q(const A &a, const B &b) {
+    mpq_class x = rose_q_de(a), y = rose_q_de(b); return x < y ? y : x;
+}
+
+/* div FLORENTIN avec rationnels — v3.13.1 : « entier div rationnel » et
+   « rationnel div entier » passent le checker (le quotient planché est un
+   entier) ; l'émission doit calculer floor(a/b) en mpq, zéro dénominateur
+   rejeté avec le message exact de l'interprète. */
+template <class A, class B> inline rose_ent rose_div_florentin_q(const A &a, const B &b) {
+    mpq_class y = rose_q_de(b);
+    if (mpz_sgn(y.get_num().get_mpz_t()) == 0)
+        rose_erreur("division euclidienne par zéro");
+    mpq_class q = rose_q_de(a) / y;
+    mpz_class f;
+    mpz_fdiv_q(f.get_mpz_t(), q.get_num().get_mpz_t(), q.get_den().get_mpz_t());
+    return rose_promu(f);
+}
+
+/* division FLOTTANTE gardée — v3.13.1 : l'interprète (et les moteurs Rust/Zig)
+   rejettent « x / 0.0 » par « division par zéro » ; le '/' brut de l'AOT
+   rendait ±inf et poursuivait — divergence silencieuse trouvée par le
+   testeur génératif (graine 100036). */
+inline rose_float rose_div_f(rose_float a, rose_float b) {
+    if (b == 0.0) rose_erreur("division par zéro");
+    return a / b;
+}
+inline rose_float rose_divflo_f(rose_float a, rose_float b) {
+    if (b == 0.0) rose_erreur("division euclidienne par zéro");
+    return std::floor(a / b);
+}
 template <class A, class B> inline rose_gd rose_min_gd(const A &a, const B &b) { return rose_min_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
 template <class A, class B> inline rose_gd rose_max_gd(const A &a, const B &b) { return rose_max_gd_impl(rose_vers_mpz(a), rose_vers_mpz(b)); }
 

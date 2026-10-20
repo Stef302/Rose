@@ -3167,12 +3167,20 @@ struct InterpRir {
                 /* chercher dans les globaux */
                 auto g = globaux.find(op.name);
                 if (g != globaux.end()) return g->second;
-                return Valeur::vide();
+                // v3.13.1 : lecture d'une variable jamais affectée (assignation
+                // uniquement atteinte sur un chemin non suivi) — l'ancienne
+                // réponse « vide » affichait du silence à la place de l'erreur
+                // que Rust et Zig produisent. Trouvé par le testeur génératif.
+                std::string nu = op.name;
+                if (!nu.empty() && nu[0] == '%') nu = nu.substr(1);
+                erreur_runtime("variable '" + nu + "' utilisée sans valeur");
             }
             if (op.kind == RirOp::Global) {
                 auto g = globaux.find(op.name);
                 if (g != globaux.end()) return g->second;
-                return Valeur::vide();
+                std::string nu = op.name;
+                if (!nu.empty() && nu[0] == '%') nu = nu.substr(1);
+                erreur_runtime("variable '" + nu + "' utilisée sans valeur");
             }
             return Valeur::vide();
         };
@@ -4153,10 +4161,28 @@ extern Valeur* jit_bool_into(Valeur* dst, int cond);             /* 30 */
 /* Nombre de helpers enregistrés pour le JIT */
 static const int NJIT_HELPERS = 58;
 
+/* v3.13.1 : les ponts JIT (builtins, index, afficher) lisent des Valeur*
+   venues de slots JIT. Un slot de variable jamais affectée pré-porte un
+   objet « vide » nommé (jit.cpp) — la lecture lève exactement l'erreur du
+   cœur RIR, en direct : aucune trame asm à désenfiler. */
+extern "C" const char* rose_jit_slot_name(const Valeur*);
+static void verifier_lecture_jit(const Valeur* v) {
+    if (!v || v->ty == T_VIDE) {
+        fprintf(stderr, "Rose : erreur — variable '%s' utilisée sans valeur\n",
+                rose_jit_slot_name(v));
+        std::fflush(stdout);
+        std::exit(1);
+    }
+}
+
 /* Pont JIT → stdlib (M2.13) : les builtins numériques sont appelés depuis le
    code JIT natif par CE exact enregistrement — mêmes fonctions, mêmes
    sémantiques, mêmes erreurs que l'interpréteur. Enregistré en helper 50. */
 static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
+    /* v3.13.1 : lecture d'une variable sans valeur depuis du code JIT — la
+       même erreur que le cœur RIR, en direct (pas de désenfilage possible à
+       travers les trames asm). */
+    for (int j = 0; j < nargs; j++) verifier_lecture_jit(args[j]);
     // ── Chemin rapide machine (M2.16) : les fonctions dont le résultat exact
     // se calcule en int64 sont évaluées en natif, sans recopie profonde des
     // arguments ni distribution stdlib. Tout le reste — grands entiers, autres
@@ -4222,9 +4248,11 @@ static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
    l'interpréteur RIR (table, liste, chaîne). Helper 56. */
 /* Pont JIT → afficher générique (M2.14) : types non suivus statiquement
    (liste, table, vide, range…). Miroir exact de l'op afficher RIR. */
-static void rose_afficher_jit(Valeur* v) { afficher(*v); }
+static void rose_afficher_jit(Valeur* v) { verifier_lecture_jit(v); afficher(*v); }
 
 static Valeur* rose_index(Valeur* base, Valeur* cle) {
+    verifier_lecture_jit(base);
+    verifier_lecture_jit(cle);
     if (base->ty == T_TABLE) {
         for (const auto &kv : *base->t)
             if (rose_valeur_egale(kv.first, *cle)) return new Valeur(kv.second);
@@ -4423,7 +4451,7 @@ int main(int argc, char **argv) {
 
     std::string action;
     if (argc >= 2) action = argv[1];
-    if (action == "version") { printf("Rose 3.13.0 — moteur natif C++/GMP\n"); return 0; }
+    if (action == "version") { printf("Rose 3.13.1 — moteur natif C++/GMP\n"); return 0; }
     if (action == "info") {
         printf("rose 3.13.0\n");
 #ifdef _WIN32
