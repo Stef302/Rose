@@ -25,6 +25,43 @@ pub enum Value {
     Vide,
 }
 
+/* ════════ temps() / duree() — SPEC v3.13 : miroir de l'interprète C++ ════════
+   duree(n) met en forme n nanosecondes (n >= 0) : unité = la plus grande de
+   ns, µs, ms, s, min, h dont l'échelle est <= n ; jusqu'à 3 décimales
+   TRONQUÉES, sans zéros superflus. Division sur la chaîne décimale : même
+   algorithme dans tous les moteurs, grands entiers compris.
+   ────────────────────────────────────────────────────────────────────── */
+fn div_decimale_u64(n_str: &str, div: u64) -> (String, u64) {
+    let mut q = String::with_capacity(n_str.len());
+    let mut r: u64 = 0;
+    for c in n_str.bytes() {
+        let cour = r * 10 + (c - b'0') as u64;
+        q.push((b'0' + (cour / div) as u8) as char);
+        r = cour % div;
+    }
+    let t = q.trim_start_matches('0');
+    (if t.is_empty() { "0".to_string() } else { t.to_string() }, r)
+}
+
+fn formater_duree(n_in: &str) -> String {
+    const UNITS: [&str; 6] = [" ns", " µs", " ms", " s", " min", " h"];
+    const SCALES: [u64; 6] = [1, 1_000, 1_000_000, 1_000_000_000, 60_000_000_000, 3_600_000_000_000];
+    let t = n_in.trim_start_matches('0');
+    let n_str = if t.is_empty() { "0".to_string() } else { t.to_string() };
+    let au_moins = |s: u64| -> bool {
+        let u = s.to_string();
+        if n_str.len() != u.len() { n_str.len() > u.len() } else { n_str.as_str() >= u.as_str() }
+    };
+    let mut u = 0usize;
+    for i in 1..6 { if au_moins(SCALES[i]) { u = i; } }
+    let (part, reste) = div_decimale_u64(&n_str, SCALES[u]);
+    if u == 0 || reste == 0 { return format!("{}{}", part, UNITS[u]); }
+    let frac3 = reste * 1000 / SCALES[u];
+    let mut fs = format!("{:03}", frac3);
+    while fs.ends_with('0') { fs.pop(); }
+    format!("{}.{}{}", part, fs, UNITS[u])
+}
+
 impl Value {
     fn s(t: &str) -> Value { Value::Chaine(Rc::new(t.to_string())) }
     fn z(i: i64) -> Value { Value::Entier(Z::i(i)) }
@@ -1254,6 +1291,17 @@ impl<'p> Interp<'p> {
             "compter_premiers" => Value::Entier(rose_compter_premiers(&vers_z(&a[0]))),
             "nb_chiffres" => Value::Entier(rose_nb_chiffres(&vers_z(&a[0]))),
             "nombre_pi" => Value::s(&rose_pi(&vers_z(&a[0]))),
+            "temps" => {
+                static DEPART: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+                let d = std::time::Instant::now()
+                    .duration_since(*DEPART.get_or_init(std::time::Instant::now));
+                Value::z(d.as_nanos().min(i64::MAX as u128) as i64)
+            }
+            "duree" => {
+                let v = vers_z(&a[0]);
+                if v.sgn() < 0 { erreur_runtime("duree : la durée doit être positive ou nulle"); }
+                Value::s(&formater_duree(&v.texte()))
+            }
             "ordre" => {
                 let t = match &a[0] {
                     Value::Chaine(s) => s.clone(),
@@ -1627,11 +1675,11 @@ pub fn main_cli(argv: Vec<String>) -> i32 {
     }
     let action = argv.get(1).cloned().unwrap_or_default();
     if action == "version" {
-        println!("Rose 2.0.0 — moteur natif Rust/GMP");
+        println!("Rose 3.13.0 — moteur natif Rust/GMP");
         return 0;
     }
     if action == "info" {
-        println!("rose 2.0.0");
+        println!("rose 3.13.0");
         println!("  moteur            : natif 64 bits Rust — binaire autonome, aucune dépendance hors libc");
         println!("  maths exactes     : GMP liée statiquement (entiers et rationnels sans limite)");
         println!("  interpréteur      : intégré (mode par défaut)");

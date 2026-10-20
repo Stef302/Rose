@@ -13,6 +13,7 @@ Usage :  python3 engine.py prog.rose      (ou: run prog.rose)
 from __future__ import annotations
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "rose2", "src"))
@@ -373,6 +374,27 @@ def _ordre(c):
         rose_erreur("ordre attend une chaîne d'un seul caractère")
     return ord(c)
 
+_DEPART = time.monotonic_ns()
+
+def _temps():
+    return time.monotonic_ns() - _DEPART
+
+def _duree(n):
+    n = int(n)
+    if n < 0:
+        rose_erreur("duree : la durée doit être positive ou nulle")
+    unite = [" ns", " µs", " ms", " s", " min", " h"]
+    echelle = [1, 1000, 1000000, 1000000000, 60000000000, 3600000000000]
+    u = 0
+    for i in range(1, 6):
+        if n >= echelle[i]: u = i
+    part, reste = divmod(n, echelle[u])
+    if u == 0 or reste == 0:
+        return str(part) + unite[u]
+    frac3 = reste * 1000 // echelle[u]
+    fs = f"{frac3:03d}".rstrip("0")
+    return f"{part}.{fs}{unite[u]}"
+
 def _caractere(n):
     n = int(n)
     if n < 0 or n > 0x10FFFF:
@@ -643,7 +665,7 @@ class Interp:
                  "partie_entiere": _partie_entiere, "entier": _vers_entier,
                  "flottant": _vers_flottant, "rationnel": _vers_q, "chaine": _chaine,
                  "afficher": _afficher,
-                 "ordre": _ordre, "caractere": _caractere, "sous_chaine": _sous_chaine,
+                 "ordre": _ordre, "caractere": _caractere, "temps": _temps, "duree": _duree, "sous_chaine": _sous_chaine,
                  "concatener": _concatener, "lire_texte": _lire_texte,
                  "ecrire_texte": _ecrire_texte, "nb_arguments": _nb_arguments,
                  "argument": _argument, "afficher_erreur": _afficher_erreur,
@@ -727,9 +749,9 @@ def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help", "aide"):
         print(__doc__.strip()); return 0
     if argv[1] == "version":
-        print("Rose 2.0.0 — moteur Python 3 (int/Fraction/float64)"); return 0
+        print("Rose 3.13.0 — moteur Python 3 (int/Fraction/float64)"); return 0
     if argv[1] == "info":
-        print("rose 2.0.0 — moteur Python")
+        print("rose 3.13.0 — moteur Python")
         print("  entiers    : précision arbitraire native")
         print("  rationnels : Fraction exacte")
         print("  flottants  : float64, aller-retour le plus court (repr)")

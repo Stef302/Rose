@@ -130,6 +130,7 @@ cas_fidele("mixtes rationnel⊛flottant", f"{DORES}/t_mixtes.rose",
            attendu_stdout="0.75\n0.05\n0.08333333333333331\n1.3333333333333333\n0.5\n0.75\n0.05\n0.08333333333333331\n1.3333333333333333\n0.7071067811865476\n0.25\n")
 cas_fidele("tables", f"{DORES}/t_tables.rose",
            attendu_stdout="[" + "nom => Bob, age => 30" + "]\n2\nvrai\nfaux\nBob\n30\nvrai\n[nom => Bob]\n[nom]\n[Bob]\nfaux\nvrai\n")
+cas_fidele("chronometre", f"{DORES}/t_chrono.rose", dore="t_chrono_c.txt")
 
 # ── 2. effets du monde : stdin, argv, fichiers, sortie anticipée ────
 _rep_v3 = tempfile.mkdtemp(prefix="rose_aot_v3_")

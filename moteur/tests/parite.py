@@ -36,6 +36,7 @@ PROGRAMMES = [
     ("flottants machine (%g)", ">> 0.1 + 0.2\n>> 1.5\n>> 2.5\n>> 12.5\n>> 10.25\n>> -2.5\n>> 2.0 ^ 40\n>> 1.0 / (2 ^ 40)\n>> 100.0\n>> 3.0\n>> 0.5\n>> -0.75\n", None),
     ("rationnels périodiques", ">> 1/3\n>> 1/6\n>> 1/7\n>> 22/7\n>> 5/2\n>> -1/3\n", None),
     ("conversions de chaînes", '>> entier("42")\n>> entier("7/2")\n>> entier("-7/2")\n>> entier("-2.9")\n>> flottant("2.5")\n>> flottant("1e3")\n>> chaine(3/2)\n>> chaine(2.5)\n>> chaine(vrai)\n', None),
+    ("duree adaptatif v3.13", ">> duree(0)\n>> duree(999)\n>> duree(1500)\n>> duree(999999)\n>> duree(1500000000)\n>> duree(60000000000)\n>> duree(90000000000)\n>> duree(3723000000000)\n>> duree(2 ^ 64)\n>> duree(2 ^ 200)\n", None),
     ("stdlib", ">> factorielle(5)\n>> fibonacci(90)\n>> pgcd(12, 18)\n>> ppcm(4, 6)\n>> est_premier(97)\n>> est_premier(91)\n>> nb_chiffres(2 ^ 1000)\n>> abs(-5)\n>> abs(-2.5)\n>> abs(1/3 - 1)\n>> min(1/2, 0.6)\n>> max(3, 2.5)\n>> puissance(2, 64)\n>> puissance(1/2, -3)\n>> fraction(3, 4)\n>> nombre_pi(12)\n>> compter_premiers(1000)\n", None),
     ("grosses fonctions", ">> 40!\n>> fibonacci(10000)\n>> compter_premiers(100000)\n>> nombre_pi(200)\n", None),
     ("contrôles", "$x = 0\npour $i de 1 vers 5 { $x = $x + $i }\n>> $x\n$n = 10\ntant_que ($n > 5) { $n = $n - 1 }\n>> $n\n$N = 1\ntant_que ($N < 100000) { $N = $N * 3 }\n>> $N\nsi ($x > 10) { >> \"grand\" } sinon { >> \"petit\" }\n>> vrai et faux\n>> vrai ou faux\n>> non faux\n", None),

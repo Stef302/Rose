@@ -2,7 +2,7 @@
 # ROSE v3.12 - test express sur Windows (reseau Tailonly / Tailscale)
 # Usage :  irm http://100.67.23.83:18080/installer.ps1 | iex
 # Telecharge les trois moteurs (C++, Rust, Zig), deplie dans
-# %USERPROFILE%\rose, lance les 44 tests dores + 12 roses de torture,
+# %USERPROFILE%\rose, lance les 46 tests dores + 12 roses de torture,
 # puis installe un lanceur rose.cmd pour vos fichiers .rose.
 # =====================================================================
 $ErrorActionPreference = 'Stop'
@@ -19,7 +19,7 @@ Write-Host ('[ROSE] Deploiement dans ' + $Racine)
 Expand-Archive -Path $Zip -DestinationPath $Racine -Force
 Get-ChildItem -Path (Join-Path $Racine 'bin') -Filter '*.exe' | Unblock-File
 
-Write-Host '[ROSE] Suite de comparaison : 44 dores + 12 roses, 3 moteurs ...'
+Write-Host '[ROSE] Suite de comparaison : 46 tests dores + 12 roses, 3 moteurs ...'
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Racine 'tester.ps1')
 $code = $LASTEXITCODE
 

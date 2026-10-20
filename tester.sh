@@ -2,7 +2,7 @@
 # ═══════════════ Rose — auto-test sur votre machine ═══════════════
 # Tente d'exécuter les binaires livrés ; les reconstruit si nécessaire
 # (architecture différente ou outil manquant), puis joue les trois suites :
-#   1. suite moteur   (37 cas : dorés au caractère, FFI, bundle, erreurs, CLI)
+#   1. suite moteur   (46 cas : dorés au caractère, FFI, bundle, erreurs, CLI)
 #   2. parité         (comparaison au caractère de chaque moteur au C++)
 #   3. suite v2       (147 cas de la chaîne d'export polyglotte)
 # Usage : ./tester.sh        (aucune installation requise en plus)

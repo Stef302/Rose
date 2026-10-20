@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <chrono>
 #include <string>
 #include <memory>
 #include <vector>
@@ -196,6 +197,51 @@ rose_int rose_millisecondes() {
     timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (rose_int)(t.tv_sec * 1000LL + t.tv_nsec / 1000000);
+}
+
+// ── Chronomètre v3.13 — miroir exact des temps()/duree() de l'interprète ──
+static std::pair<std::string, uint64_t> div_decimale_u64(const std::string &n_str, uint64_t div) {
+    std::string q;
+    uint64_t r = 0;
+    for (char c : n_str) {
+        uint64_t cour = r * 10 + (uint64_t)(c - '0');
+        q.push_back((char)('0' + cour / div));
+        r = cour % div;
+    }
+    size_t z = q.find_first_not_of('0');
+    return {z == std::string::npos ? std::string("0") : q.substr(z), r};
+}
+
+rose_ent rose_temps() {
+    static const std::chrono::steady_clock::time_point depart =
+            std::chrono::steady_clock::now();
+    long long ns = (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - depart).count();
+    return rose_ent(ns);
+}
+
+rose_str rose_duree(const rose_ent &n) {
+    if (n.gros() ? mpz_sgn(n.gd().get_mpz_t()) < 0 : n.petit() < 0)
+        rose_erreur("duree : la durée doit être positive ou nulle");
+    std::string n_str = n.gros() ? n.gd().get_str() : std::to_string((long long)n.petit());
+    static const char *unit[] = {" ns", " µs", " ms", " s", " min", " h"};
+    static const uint64_t scale[] = {1ULL, 1000ULL, 1000000ULL, 1000000000ULL,
+                                     60000000000ULL, 3600000000000ULL};
+    size_t z = n_str.find_first_not_of('0');
+    n_str = z == std::string::npos ? "0" : n_str.substr(z);
+    auto au_moins = [&](uint64_t s) {
+        std::string t = std::to_string(s);
+        return n_str.size() != t.size() ? n_str.size() > t.size() : n_str >= t;
+    };
+    int u = 0;
+    for (int i = 1; i <= 5; i++) if (au_moins(scale[i])) u = i;
+    auto [part, reste] = div_decimale_u64(n_str, scale[u]);
+    if (u == 0 || reste == 0) return part + unit[u];
+    uint64_t frac3 = (uint64_t)((reste * 1000ULL) / scale[u]);
+    std::string fs = std::to_string(frac3);
+    while (fs.size() < 3) fs = "0" + fs;
+    while (!fs.empty() && fs.back() == '0') fs.pop_back();
+    return part + "." + fs + unit[u];
 }
 
 // ── Affichage ───────────────────────────────────────────────────────────

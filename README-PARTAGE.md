@@ -28,7 +28,7 @@ Dézipper dans un dossier (clic droit → Extraire tout), puis :
 
 Les **3 moteurs autonomes** contre :
 
-1. les **44 dorés** du dépôt (`moteur\tests\dorés\`), sortie comparée en
+1. les **46 tests** (dorés + CLI) du dépôt (`moteur\tests\dorés\`), sortie comparée en
    octets bruts ;
 2. les **12 « roses à tester »** (`moteur\tests\roses\`) — programmes de
    torture multi-features : notation symbolique, mixtes rationnel⊛flottant,

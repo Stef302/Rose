@@ -1056,6 +1056,8 @@ pub const STDLIB: &[EntreeStd] = &[
     EntreeStd { nom: "tampon_pose", args: &["tampon", "entier", "entier"], retour: "vide" },
     EntreeStd { nom: "remplir_hasard", args: &["tampon", "tampon"], retour: "vide" },
     EntreeStd { nom: "millisecondes", args: &[], retour: "entier" },
+    EntreeStd { nom: "temps", args: &[], retour: "entier" },
+    EntreeStd { nom: "duree", args: &["entier"], retour: "chaine" },
 ];
 
 pub const DYNAMIQUE: &[EntreeStd] = &[

@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <ctime>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include "transpiler.h"
@@ -1010,6 +1011,8 @@ static const EntreeStd STDLIB[] = {
     {"ecrire_texte", {"chaine", "chaine"}, "vide"},
     {"nb_arguments", {}, "entier"},
     {"argument", {"entier"}, "chaine"},
+    {"temps", {}, "entier"},
+    {"duree", {"entier"}, "chaine"},
     {"afficher_erreur", {"tout"}, "vide"},
     {"quitter", {"entier"}, "vide"},
     {"abs", {"num"}, "MIXTE"},
@@ -2096,7 +2099,65 @@ static uint64_t rng_tirer() {
     return z ^ (z >> 31);
 }
 
+/* ══════════ temps() / duree() — chronomètre monotone et format adaptatif ══════════
+   SPEC (identique dans les cinq moteurs, v3.13) : temps() renvoie les
+   nanosecondes monotones écoulées depuis le démarrage du moteur. duree(n)
+   met en forme n nanosecondes (n >= 0) : l'unité retenue est la plus grande
+   de ns, µs, ms, s, min, h dont l'échelle (1, 10^3, 10^6, 10^9, 60.10^9,
+   3600.10^9 ns) est <= n ; la fraction est écrite en jusqu'à 3 décimales
+   TRONQUÉES (jamais arrondies), sans zéros superflus, séparateur « . ».
+   La division se fait sur la chaîne décimale de n : un seul algorithme pour
+   tous les moteurs, y compris sur les grands entiers GMP.
+   ─────────────────────────────────────────────────────────────────────── */
+static const std::chrono::steady_clock::time_point ROSE_DEPART =
+        std::chrono::steady_clock::now();
+
+// (chaîne décimale sans zéros de tête, reste) de n_str / div.
+static std::pair<std::string, uint64_t> div_decimale_u64(const std::string &n_str, uint64_t div) {
+    std::string q;
+    uint64_t r = 0;
+    for (char c : n_str) {
+        uint64_t cour = r * 10 + (uint64_t)(c - '0');   // reste < div <= 3,6e12 → x10 sans dépassement
+        q.push_back((char)('0' + cour / div));
+        r = cour % div;
+    }
+    size_t z = q.find_first_not_of('0');
+    return {z == std::string::npos ? std::string("0") : q.substr(z), r};
+}
+
+static std::string formater_duree(const std::string &n_str_in) {
+    static const char *unit[] = {" ns", " µs", " ms", " s", " min", " h"};
+    static const uint64_t scale[] = {1ULL, 1000ULL, 1000000ULL, 1000000000ULL,
+                                     60000000000ULL, 3600000000000ULL};
+    std::string n_str = n_str_in;
+    size_t z = n_str.find_first_not_of('0');
+    n_str = z == std::string::npos ? "0" : n_str.substr(z);
+    auto au_moins = [&](uint64_t s) {                   // n >= s par ampleur décimale
+        std::string t = std::to_string(s);
+        return n_str.size() != t.size() ? n_str.size() > t.size() : n_str >= t;
+    };
+    int u = 0;
+    for (int i = 1; i <= 5; i++) if (au_moins(scale[i])) u = i;
+    auto [part, reste] = div_decimale_u64(n_str, scale[u]);
+    if (u == 0 || reste == 0) return part + unit[u];
+    uint64_t frac3 = (uint64_t)((reste * 1000ULL) / scale[u]);   // troncature, reste*1000 < 3,6e15
+    std::string fs = std::to_string(frac3);
+    while (fs.size() < 3) fs = "0" + fs;
+    while (!fs.empty() && fs.back() == '0') fs.pop_back();
+    return part + "." + fs + unit[u];
+}
+
 static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) {
+        if (nom == "temps") {
+            long long ns = (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - ROSE_DEPART).count();
+            return Valeur::de_z(mpz_class(std::to_string(ns)));
+        }
+        if (nom == "duree") {
+            if (mpz_sgn(a[0].z.get_mpz_t()) < 0)
+                erreur_runtime("duree : la durée doit être positive ou nulle");
+            return Valeur::de_s(formater_duree(a[0].z.get_str()));
+        }
         if (nom == "ordre") {
             if (utf8_len(a[0].s) != 1)
                 erreur_runtime("ordre attend une chaîne d'un seul caractère");
@@ -4362,9 +4423,9 @@ int main(int argc, char **argv) {
 
     std::string action;
     if (argc >= 2) action = argv[1];
-    if (action == "version") { printf("Rose 2.0.0 — moteur natif C++/GMP\n"); return 0; }
+    if (action == "version") { printf("Rose 3.13.0 — moteur natif C++/GMP\n"); return 0; }
     if (action == "info") {
-        printf("rose 2.0.0\n");
+        printf("rose 3.13.0\n");
 #ifdef _WIN32
         printf("  moteur            : %s — binaire autonome, seule dépendance : UCRT (Windows)\n",
                sizeof(void*) == 8 ? "natif 64 bits" : "natif");

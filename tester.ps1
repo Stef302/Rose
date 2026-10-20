@@ -98,7 +98,7 @@ foreach ($m in $moteurs) {
 
     # 1) version
     $r = Exec-Rose $exe @("version")
-    if ($r.code -eq 0 -and (Texte $r.octets) -match "Rose 2\.0\.0") { Succes "$nom version" }
+    if ($r.code -eq 0 -and (Texte $r.octets) -match "Rose 3\.13\.0") { Succes "$nom version" }
     else { Echec "$nom version (code $($r.code))" }
 
     # 2) dorés au caractère
@@ -137,6 +137,15 @@ foreach ($m in $moteurs) {
     $r = Exec-Rose $exe @([IO.Path]::Combine($dore, "t_tables.rose"))
     if ($r.code -eq 0 -and (Identiq $attendu $r.octets)) { Succes "$nom doré v3.1 tables" }
     else { Echec "$nom doré v3.1 tables (code $($r.code))" }
+
+    # 2d') v3.13 : chronomètre — duree() adaptatif + monotonie de temps()
+    $attendu = [IO.File]::ReadAllBytes((Join-Path $dore "t_chrono_c.txt"))
+    $r = Exec-Rose $exe @([IO.Path]::Combine($dore, "t_chrono.rose"))
+    if ($r.code -eq 0 -and (Identiq $attendu $r.octets)) { Succes "$nom doré v3.13 chrono" }
+    else { Echec "$nom doré v3.13 chrono (code $($r.code))" }
+    $r = Exec-Rose $exe @([IO.Path]::Combine($dore, "t_chrono_neg.rose"))
+    if ($r.code -eq 1 -and $r.errtxt -like "*positive ou nulle*") { Succes "$nom duree négative rejetée" }
+    else { Echec "$nom duree négative (code $($r.code))" }
 
     # 2e) roses à tester (moteur\tests\roses) — torture multi-features M4.2.
     # Les .attendu comparent l'octet ; les .attendu.err comparent le code de

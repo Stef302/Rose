@@ -251,6 +251,8 @@ const char *rose_argument(rose_int i);
 
 // Temps.
 rose_int rose_millisecondes();
+rose_ent rose_temps();                     // ns monotones depuis le départ (v3.13)
+rose_str rose_duree(const rose_ent &n);    // format adaptatif d'une durée en ns
 
 // Affichage.
 void rose_afficher_int(rose_int v);

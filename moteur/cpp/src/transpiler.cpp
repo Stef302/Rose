@@ -399,9 +399,9 @@ std::string transpiler_rir(const RirModule &mod) {
                         else if (name == "fibonacci" || name == "factorielle" || name == "puissance") ty = RirGd;
                         else if (name == "millisecondes" || name == "nb_arguments" || name == "entier" || name == "tampon_case" ||
                                  name == "nb_chiffres" || name == "compter_premiers" ||
-                                 name == "pgcd" || name == "ppcm" || name == "hasard" || name == "ordre") ty = RirZ;
+                                 name == "pgcd" || name == "ppcm" || name == "hasard" || name == "ordre" || name == "temps") ty = RirZ;
                         else if (name == "argument" || name == "chaine" || name == "nombre_pi" ||
-                                  name == "lire_texte" || name == "sous_chaine" || name == "caractere") ty = RirS;
+                                  name == "lire_texte" || name == "sous_chaine" || name == "caractere" || name == "duree") ty = RirS;
                         else if (name == "partie_entiere") ty = RirZ;
                         else if (name == "est_premier") ty = RirB;
                         else if (name == "abs" || name == "min" || name == "max") {
@@ -778,6 +778,9 @@ std::string transpiler_rir(const RirModule &mod) {
                     else if (name == "millisecondes") {
                         out << "    " << sanitize(instr.dest) << " = rose_millisecondes();\n";
                     }
+                    else if (name == "temps") {
+                        out << "    " << sanitize(instr.dest) << " = rose_temps();\n";
+                    }
                     else if (name == "nb_arguments") {
                         out << "    " << sanitize(instr.dest) << " = rose_nb_arguments();\n";
                     }
@@ -964,6 +967,10 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     else if (name == "caractere") {
                         out << "    " << sanitize(instr.dest) << " = rose_caractere("
+                            << cpp_operand(instr.args[1], temp_types) << ");\n";
+                    }
+                    else if (name == "duree") {
+                        out << "    " << sanitize(instr.dest) << " = rose_duree("
                             << cpp_operand(instr.args[1], temp_types) << ");\n";
                     }
                     else if (name == "lire_texte") {

@@ -43,6 +43,8 @@ STDLIB = {
     "joindre":             (["liste", "liste_elt"], T_VIDE),
     "ordre":               (["chaine"], T_ENTIER),
     "caractere":           (["entier"], T_CHAINE),
+    "temps":               ([], T_ENTIER),
+    "duree":               (["entier"], T_CHAINE),
     "sous_chaine":         (["chaine", "entier", "entier"], T_CHAINE),
     "concatener":          (["liste"], T_CHAINE),
     "lire_texte":          (["chaine"], T_CHAINE),

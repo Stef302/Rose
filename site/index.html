@@ -477,7 +477,7 @@ footer p{font-size:.7rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 <section id="page-home" class="page active">
   <div class="hero">
     <div class="reveal">
-      <p class="overline">LANGAGE DE PROGRAMMATION · V3.12</p>
+      <p class="overline">LANGAGE DE PROGRAMMATION · V3.13</p>
       <h1>ROSE</h1>
       <p class="lead">Le langage qui <span class="rouge">pique</span> les bugs et fait <span class="vert">fleurir</span> vos idées. Une syntaxe nette comme une épine, la puissance d'un jardin entier.</p>
       <div class="hero-btns">
@@ -512,7 +512,7 @@ footer p{font-size:.7rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
       <div>
         <p class="overline">// TESTER MAINTENANT</p>
         <h3>ROSE sur votre machine, en <span class="vert">une ligne</span></h3>
-        <p class="gris" style="font-size:.78rem;line-height:2">Le script télécharge les trois moteurs (C++, Rust, Zig), les range dans <code class="inline">%USERPROFILE%\rose</code>, fait courir les 44 tests dorés et les 12 roses de torture, compare les sorties octet pour octet — puis vous laisse jouer avec vos fichiers <code class="inline">.rose</code>.</p>
+        <p class="gris" style="font-size:.78rem;line-height:2">Le script télécharge les trois moteurs (C++, Rust, Zig), les range dans <code class="inline">%USERPROFILE%\rose</code>, fait courir les tests dorés et les 12 roses de torture, compare les sorties octet pour octet — puis vous laisse jouer avec vos fichiers <code class="inline">.rose</code>.</p>
       </div>
       <div class="term">
         <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>powershell</span><button class="copy" onclick="copyTerm(this)">COPIER</button></div>
@@ -631,7 +631,7 @@ jardin salut {
           <span style="margin-left:8px;color:#ccc">CONSOLE</span>
           <button class="copy" onclick="clearConsole()" style="margin-left:auto">EFFACER</button>
         </div>
-        <div class="console-body" id="consoleOut"><span class="log-prompt">❯ </span>Compilateur ROSE v3.12 — prêt à fleurir.
+        <div class="console-body" id="consoleOut"><span class="log-prompt">❯ </span>Compilateur ROSE v3.13 — prêt à fleurir.
 <span class="log-info">ℹ</span> Tape ton code et appuie sur <span style="color:var(--vert)">FLEURIR</span>.
 </div>
       </div>
@@ -711,7 +711,7 @@ jardin salut {
 <span class="k">&gt;</span> irm http://100.67.23.83:18080/rose-windows.zip -OutFile rose-windows.zip
 <span class="k">&gt;</span> Expand-Archive rose-windows.zip -DestinationPath rose -Force
 <span class="k">&gt;</span> cd rose ; .\tester.ps1
-<span class="c">🌹 ROSE v3.12.0 — 44 dorés, 12 roses, 3 moteurs, 0 divergence</span></pre>
+<span class="c">🌹 ROSE v3.13.0 — 46 tests dorés, 12 roses, 3 moteurs, 0 divergence</span></pre>
           </div>
           <p>Sur Linux (x64 / arm64), le moteur se construit depuis les sources : <code class="inline">make rose</code> dans <code class="inline">moteur/cpp</code>.</p>
           <h4>Systèmes supportés</h4>
@@ -996,19 +996,31 @@ fruits.filtrer(|f| f != <span class="s">"poire"</span>)
     <div class="timeline">
       <div class="event">
         <div class="event-head">
+          <span class="event-ver">V3.13</span>
+          <span class="event-date">20 OCTOBRE 2026</span>
+        </div>
+        <h4 class="event-title">🌹 Chronomètre et validation Windows</h4>
+        <ul>
+          <li><code class="inline">temps()</code> et <code class="inline">duree()</code> : mesure du temps d'exécution au nanoseconde, format adaptatif (ns, µs, ms, s, min, h) sur les cinq moteurs</li>
+          <li>Validé sur machine Windows 11 réelle : suite complète verte, zéro divergence — le portage croisé n'est plus une promesse</li>
+          <li>Numéros de version synchronisés : les trois moteurs affichent v3.13.0</li>
+          <li>Parité stricte C++, Rust et Zig — 119 tests de parité, 46 tests dorés, 12 roses de torture</li>
+        </ul>
+      </div>
+
+      <div class="event">
+        <div class="event-head">
           <span class="event-ver">V3.12</span>
           <span class="event-date">15 OCTOBRE 2026</span>
         </div>
         <h4 class="event-title">🌹 Moteur réel</h4>
         <ul>
           <li>AOT : <code class="inline">rose build</code> émet un binaire natif (g++ -O3), boucles entières ~70× plus rapides qu'interprétées</li>
-          <li>Parité stricte des trois moteurs C++, Rust et Zig — 116 tests de parité, 44 dorés, 12 roses de torture</li>
-          <li>Portage Windows x64 : trois moteurs cross-compilés, validés sur machine réelle</li>
+          <li>Portage Windows x64 : trois moteurs cross-compilés</li>
           <li><code class="inline">rose_ent</code> 16 octets : petitint64 + bascule GMP à l'overflow</li>
           <li>Contrôle de types fidèle : chaque rejet est nommé, jamais un silence</li>
         </ul>
       </div>
-
       <div class="event">
         <div class="event-head">
           <span class="event-ver">V1.1</span>
@@ -1390,7 +1402,7 @@ const searchData = [
   {t:'Playground',p:'play'},
   {t:'Jardin communautaire',p:'jardin'},
   {t:'Équipe',p:'equipe'},
-  {t:'Changelog v3.12',p:'changelog'},
+  {t:'Changelog v3.13',p:'changelog'},
   {t:'Télécharger ROSE',p:'home'},
 ];
 function openSearch(){
