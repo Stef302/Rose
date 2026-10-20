@@ -27,6 +27,19 @@
 
 // Trace de compilation JIT (activée par ROSE_JIT_DEBUG=1)
 static bool jit_verbose() { static const bool v = getenv("ROSE_JIT_DEBUG") != nullptr; return v; }
+// Neutralise le chemin arithmétique inline (ROSE_NO_INLINE=1) pour mesurer A/B.
+static bool jit_no_inline() { static const bool v = getenv("ROSE_NO_INLINE") != nullptr; return v; }
+
+// ── M2.15 : vue « machine » d'un Valeur entier par les chemins inline ──
+// L'arithmétique inline lit et écrit l'entier directement dans le mpz
+// embarqué du Valeur : membre via _mp_d, validité via _mp_size, capacité
+// via _mp_alloc. (Jusqu'ici ces lectures visaient padding et _mp_alloc :
+// la vérification « taille == +1 » échouait toujours et le chemin inline
+// ne s'activait jamais — les dorés restaux verts, tous les calculs
+// passaient par les helpers.)
+static const int Z_ALLOC = (int)offsetof(Valeur, z) + (int)offsetof(__mpz_struct, _mp_alloc);
+static const int Z_SIZE  = (int)offsetof(Valeur, z) + (int)offsetof(__mpz_struct, _mp_size);
+static const int Z_DPTR  = (int)offsetof(Valeur, z) + (int)offsetof(__mpz_struct, _mp_d);
 #define JITLOG(...) do { if (jit_verbose()) fprintf(stderr, __VA_ARGS__); } while (0)
 
 // Ensemble des objets de constantes partagées par les modules JIT. Ces
@@ -1126,7 +1139,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 // ── inline machine (M2.7) : add/sub/mul sur entiers positifs
                 // d'un seul membre ; toute autre situation retombe sur le
                 // même appel helper qu'avant (sémantique identique). ──
-                if (h == 22 || h == 23 || h == 24) {
+                if ((h == 22 || h == 23 || h == 24) && !jit_no_inline()) {
                     static int inl_ctr = 0;
                     int ic = inl_ctr++;
                     std::string slow = "__inl_s" + std::to_string(ic);
@@ -1135,13 +1148,13 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     if (!load_operand(asm_, instr.args[0], X1) ||
                         !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
                     asm_.cbz_label(X0, slow);                              // dst à créer
-                    asm_.ldr_w(X8, X1, 4); asm_.cmp_w_imm(X8, 1);
-                    asm_.bcond_label(1, slow);                             // b.ne : taille != +1
-                    asm_.ldr(X3, X1, 1);                                   // membre de a
+                    asm_.ldr_w(X8, X1, Z_SIZE); asm_.cmp_w_imm(X8, 1);
+                    asm_.bcond_label(1, slow);                             // b.ne : _mp_size != +1
+                    asm_.ldr(X3, X1, Z_DPTR / 8); asm_.ldr(X3, X3, 0);    // membre de a via _mp_d
                     asm_.cmp_x_imm0(X3); asm_.bcond_label(4, slow);        // b.mi : >= 2^63
-                    asm_.ldr_w(X8, X2, 4); asm_.cmp_w_imm(X8, 1);
+                    asm_.ldr_w(X8, X2, Z_SIZE); asm_.cmp_w_imm(X8, 1);
                     asm_.bcond_label(1, slow);
-                    asm_.ldr(X4, X2, 1);
+                    asm_.ldr(X4, X2, Z_DPTR / 8); asm_.ldr(X4, X4, 0);    // membre de b via _mp_d
                     asm_.cmp_x_imm0(X4); asm_.bcond_label(4, slow);
                     if (h == 22)      asm_.adds_x(X5, X3, X4);
                     else if (h == 23) asm_.subs_x(X5, X3, X4);
@@ -1149,14 +1162,14 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     if (h != 24) asm_.bcond_label(6, slow);               // b.vs : débordement
                     else { asm_.smulh_x(X6, X3, X4);
                            asm_.cmp_x_asr63(X6, X5); asm_.bcond_label(1, slow); }
-                    asm_.ldr_w(X8, X0, 0); asm_.cmp_w_imm(X8, 1);
-                    asm_.bcond_label(11, slow);                            // b.lt : alloc < 1
+                    asm_.ldr_w(X8, X0, Z_ALLOC); asm_.cmp_w_imm(X8, 1);
+                    asm_.bcond_label(11, slow);                            // b.lt : _mp_alloc < 1
                     asm_.asr_x(X6, X5, 63);                               // masque de signe
                     asm_.eor_x(X4, X5, X6); asm_.subs_x(X4, X4, X6);      // |r|
                     asm_.orr_x_imm1(X8, X6);                              // taille = signe|1
                     asm_.cmp_x_imm0(X4); asm_.csel_x(X8, 31, X8, 0);      // |r|==0 → 0
-                    asm_.ldr(X7, X0, 1); asm_.str(X4, X7, 0);             // membre
-                    asm_.str_w(X8, X0, 4);                                // taille
+                    asm_.ldr(X7, X0, Z_DPTR / 8); asm_.str(X4, X7, 0);    // membre via _mp_d
+                    asm_.str_w(X8, X0, Z_SIZE);                           // _mp_size
                     asm_.mov_imm(X8, (uint64_t)T_ENTIER); asm_.str_w(X8, X0, 0);
                     asm_.b_label(end);
                     asm_.bind(slow);
@@ -1349,7 +1362,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     else if (rel == "gt") cc = 8; else if (rel == "ge") cc = 2;
                     else if (rel == "eq") cc = 0; else if (rel == "ne") cc = 1;
                 }
-                if (cc >= 0) {
+                if (cc >= 0 && !jit_no_inline()) {
                     static int cmp_ctr = 0;
                     int ic = cmp_ctr++;
                     std::string slow = "__cmp_s" + std::to_string(ic);
@@ -1358,10 +1371,12 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     if (!load_operand(asm_, instr.args[0], X1) ||
                         !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
                     asm_.cbz_label(X0, slow);
-                    asm_.ldr_w(X8, X1, 4); asm_.cmp_w_imm(X8, 1); asm_.bcond_label(1, slow);
-                    asm_.ldr(X3, X1, 1); asm_.cmp_x_imm0(X3); asm_.bcond_label(4, slow);
-                    asm_.ldr_w(X8, X2, 4); asm_.cmp_w_imm(X8, 1); asm_.bcond_label(1, slow);
-                    asm_.ldr(X4, X2, 1); asm_.cmp_x_imm0(X4); asm_.bcond_label(4, slow);
+                    asm_.ldr_w(X8, X1, Z_SIZE); asm_.cmp_w_imm(X8, 1); asm_.bcond_label(1, slow);
+                    asm_.ldr(X3, X1, Z_DPTR / 8); asm_.ldr(X3, X3, 0);
+                    asm_.cmp_x_imm0(X3); asm_.bcond_label(4, slow);
+                    asm_.ldr_w(X8, X2, Z_SIZE); asm_.cmp_w_imm(X8, 1); asm_.bcond_label(1, slow);
+                    asm_.ldr(X4, X2, Z_DPTR / 8); asm_.ldr(X4, X4, 0);
+                    asm_.cmp_x_imm0(X4); asm_.bcond_label(4, slow);
                     asm_.cmp_x(X3, X4); asm_.cset_x(X5, cc);
                     asm_.str_b(X5, X0, (int)offsetof(Valeur, b));
                     asm_.mov_imm(X8, (uint64_t)T_BOOLEEN); asm_.str_w(X8, X0, 0);

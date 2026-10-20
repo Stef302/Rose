@@ -38,6 +38,13 @@
 
 #if defined(__x86_64__)
 
+// ── M2.15 : vue « machine » d'un Valeur entier (offsets vérifiés, miroir du
+// chemin AArch64) + neutralisable par ROSE_NO_INLINE pour mesures A/B. ──
+static bool jit_no_inline() { static const bool v = getenv("ROSE_NO_INLINE") != nullptr; return v; }
+static const int Z_ALLOC = (int)offsetof(Valeur, z) + (int)offsetof(__mpz_struct, _mp_alloc);
+static const int Z_SIZE  = (int)offsetof(Valeur, z) + (int)offsetof(__mpz_struct, _mp_size);
+static const int Z_DPTR  = (int)offsetof(Valeur, z) + (int)offsetof(__mpz_struct, _mp_d);
+
 // Helpers C++ définis dans jit.cpp (mêmes liens que la table de rose.cpp)
 Valeur* jit_val_z(int64_t v);
 Valeur* jit_val_b(bool v);
@@ -153,7 +160,7 @@ public:
     void sub_rsp(int n) { buf.b8(0x48); buf.b8(0x81); buf.b8(0xEC); buf.b32(n); }
     void add_rsp(int n) { buf.b8(0x48); buf.b8(0x81); buf.b8(0xC4); buf.b32(n); }
     void lea_rsp(int rd) {  // lea rd, [rsp]
-        buf.b8(0x48 | (rd >= 8 ? 1 : 0)); buf.b8(0x8D);
+        buf.b8(0x48 | (rd >= 8 ? 4 : 0)); buf.b8(0x8D);
         buf.b8(0x04 | ((rd & 7) << 3)); buf.b8(0x24);
     }
     // call ctx->helpers[idx] via r10
@@ -204,7 +211,12 @@ public:
         buf.b8(0x88); buf.b8(0x40 | ((rt & 7) << 3) | (base & 7)); buf.b8((uint8_t)off);
     }
     // test r64, r64 (64 bits : REX.W toujours)
-    void test_rr(int r) { buf.b8(0x48 | (r >= 8 ? 1 : 0)); buf.b8(0x85); buf.b8(0xC0 | ((r & 7) << 3) | (r & 7)); }
+    // test r,r — auto-test : le champ reg encode AUSSI r, donc REX doit
+    // porter R|B pour r8..r15. Un 0x49 (B seul) donne « test r8, rax » :
+    // ZF ne teste plus la valeur → boucle JIT infinie, tuée sous qemu par
+    // test_jit-x64 (test boucle.somme). Le même piège guette le reg field
+    // de lea_rsp (corrigé avec lui).
+    void test_rr(int r) { buf.b8(0x48 | (r >= 8 ? 5 : 0)); buf.b8(0x85); buf.b8(0xC0 | ((r & 7) << 3) | (r & 7)); }
     // ── SSE2 flottants (M2.12, vérifiés llvm-mc --show-encoding :
     //    f2 0f 10 46 38 / f2 0f 11 40 38 / f2 0f 58 c1) ──
     // movsd xmm<d>, [base + off8]   (off < 128, multiple de 8)
@@ -546,7 +558,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
                 // ── inline machine (M2.7) : add/sub/mul sur positifs d'un
                 // membre ; tout le reste retombe sur l'appel helper. ──
-                if (h == 22 || h == 23 || h == 24) {
+                if ((h == 22 || h == 23 || h == 24) && !jit_no_inline()) {
                     static int inl_ctr = 0;
                     int ic = inl_ctr++;
                     std::string slow = "__inl_s" + std::to_string(ic);
@@ -556,25 +568,27 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                     if (!load_operand(instr.args[0], RSI) ||
                         !load_operand(instr.args[1], RDX)) { unsupported = true; break; }
                     ax.test_rr(R9);  ax.jcc_label(4, slow);            // jz : dst à créer
-                    ax.cmp_m32_imm8(RSI, 4, 1); ax.jnz_label(slow);    // taille != +1
-                    ax.load_mem(RAX, RSI, 8); ax.test_rr(RAX); ax.jcc_label(8, slow);   // js
-                    ax.cmp_m32_imm8(RDX, 4, 1); ax.jnz_label(slow);
-                    ax.load_mem(RCX, RDX, 8); ax.test_rr(RCX); ax.jcc_label(8, slow);
+                    ax.cmp_m32_imm8(RSI, Z_SIZE, 1); ax.jnz_label(slow);   // _mp_size != +1
+                    ax.load_mem(RAX, RSI, Z_DPTR); ax.load_mem(RAX, RAX, 0);
+                    ax.test_rr(RAX); ax.jcc_label(8, slow);            // js : membre >= 2^63
+                    ax.cmp_m32_imm8(RDX, Z_SIZE, 1); ax.jnz_label(slow);
+                    ax.load_mem(RCX, RDX, Z_DPTR); ax.load_mem(RCX, RCX, 0);
+                    ax.test_rr(RCX); ax.jcc_label(8, slow);
                     ax.mov_reg(R8, RAX);                               // r8 = membre a
                     if (h == 22)      ax.add_rr(R8, RCX);
                     else if (h == 23) ax.sub_rr(R8, RCX);
                     else              ax.imul_rr(R8, RCX);
                     ax.jcc_label(0, slow);                             // jo : débordement
-                    ax.cmp_m32_imm8(R9, 0, 1); ax.jcc_label(12, slow); // jl : alloc < 1
+                    ax.cmp_m32_imm8(R9, Z_ALLOC, 1); ax.jcc_label(12, slow); // jl : _mp_alloc < 1
                     ax.mov_reg(RDX, R8);  ax.sar64(RDX);               // masque de signe
                     ax.xor_rr(R8, RDX);   ax.sub_rr(R8, RDX);          // |r|
                     ax.xor_rr(R11, R11);                               // zéro
                     ax.or_imm8(RDX, 1);                                // taille = signe|1
                     ax.test_rr(R8);                                    // |r| == 0 ?
                     ax.cmovcc_rr(RDX, R11, 4);                         // → taille 0
-                    ax.load_mem(RAX, R9, 8);                           // membres
+                    ax.load_mem(RAX, R9, Z_DPTR);                      // membres via _mp_d
                     ax.store_mem(RAX, 0, R8);                          // membre
-                    ax.store_m32(R9, 4, RDX);                          // taille
+                    ax.store_m32(R9, Z_SIZE, RDX);                     // _mp_size
                     ax.store_m32_imm(R9, 0, (uint32_t)T_ENTIER);       // ty
                     ax.jmp_label(end);
                     ax.bind(slow);
@@ -698,7 +712,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                     else if (rel == "gt") cc = 7; else if (rel == "ge") cc = 3;
                     else if (rel == "eq") cc = 4; else if (rel == "ne") cc = 5;
                 }
-                if (cc >= 0) {
+                if (cc >= 0 && !jit_no_inline()) {
                     static int cmp_ctr = 0;
                     int ic = cmp_ctr++;
                     std::string slow = "__cmp_s" + std::to_string(ic);
@@ -707,10 +721,12 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                     if (!load_operand(instr.args[0], RSI) ||
                         !load_operand(instr.args[1], RDX)) { unsupported = true; break; }
                     ax.test_rr(P0); ax.jcc_label(4, slow);
-                    ax.cmp_m32_imm8(RSI, 4, 1); ax.jnz_label(slow);
-                    ax.load_mem(RAX, RSI, 8); ax.test_rr(RAX); ax.jcc_label(8, slow);
-                    ax.cmp_m32_imm8(RDX, 4, 1); ax.jnz_label(slow);
-                    ax.load_mem(RCX, RDX, 8); ax.test_rr(RCX); ax.jcc_label(8, slow);
+                    ax.cmp_m32_imm8(RSI, Z_SIZE, 1); ax.jnz_label(slow);
+                    ax.load_mem(RAX, RSI, Z_DPTR); ax.load_mem(RAX, RAX, 0);
+                    ax.test_rr(RAX); ax.jcc_label(8, slow);
+                    ax.cmp_m32_imm8(RDX, Z_SIZE, 1); ax.jnz_label(slow);
+                    ax.load_mem(RCX, RDX, Z_DPTR); ax.load_mem(RCX, RCX, 0);
+                    ax.test_rr(RCX); ax.jcc_label(8, slow);
                     ax.cmp_rr(RAX, RCX);
                     ax.setcc_al(cc);
                     ax.store_byte(P0, (int)offsetof(Valeur, b), RAX);
