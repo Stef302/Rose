@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cmath>
 #include <string>
 #include <memory>
 #include <vector>
@@ -22,6 +23,21 @@ rose_gd rose_factorielle_gd(rose_int n);
 rose_gd rose_puissance_gd(const rose_gd &base, rose_int expo);
 rose_int rose_nb_chiffres_gd(const rose_gd &n);
 void rose_afficher_gd(const rose_gd &n);
+
+// Rationnels exacts (fidèles à l'interprète : écriture avec périodes).
+typedef mpq_class rose_qd;
+rose_qd rose_q_div(const rose_qd &a, const rose_qd &b);
+int rose_q_cmp(const rose_qd &a, const rose_qd &b);
+bool rose_approx_q(const rose_qd &a, const rose_qd &b, bool au_moins_un_flottant);
+bool rose_approx_f(rose_float a, rose_float b);
+void rose_afficher_q(const rose_qd &q);
+rose_int rose_entier_q(const rose_qd &q);
+
+// Divisions euclidiennes à la Rose (plancher, miroir de l'interprète).
+rose_int rose_div_florentin(rose_int a, rose_int b);
+rose_int rose_rem_florentin(rose_int a, rose_int b);
+rose_gd rose_div_florentin_gd(const rose_gd &a, const rose_gd &b);
+rose_gd rose_rem_florentin_gd(const rose_gd &a, const rose_gd &b);
 
 // Générateur pseudo-aléatoire (splitmix64, état global).
 void rose_graine(rose_int seed);
@@ -87,6 +103,19 @@ rose_float rose_max_f(rose_float a, rose_float b);
 typedef std::vector<rose_str> rose_liste;
 rose_liste rose_liste_new();
 void rose_liste_push(rose_liste &l, const char *v);
+void rose_liste_push_int(rose_liste &l, rose_int v);
+void rose_liste_push_gd(rose_liste &l, const rose_gd &v);
+void rose_liste_push_q(rose_liste &l, const rose_qd &v);
+void rose_liste_push_flt(rose_liste &l, rose_float v);
 rose_str rose_liste_concat(rose_liste &l);
 rose_int rose_liste_len(rose_liste &l);
+rose_str rose_liste_get_str(rose_liste &l, rose_int idx);
 rose_str rose_index_str(rose_str &s, rose_int idx);
+rose_str rose_texte_q(const rose_qd &q);
+rose_str rose_texte_flt(rose_float v);
+rose_int rose_a_entier(const rose_str &s);
+rose_int rose_entier_f(rose_float v);
+rose_str rose_nombre_pi(rose_int decimales);
+rose_int rose_partie_entiere_f(rose_float v);
+rose_int rose_partie_entiere_q(const rose_qd &q);
+void rose_afficher_liste(const rose_liste &l);

@@ -128,8 +128,31 @@ void rose_afficher_bool(rose_bool v) {
     printf("%s\n", v ? "vrai" : "faux");
 }
 
+// Représentation la plus courte qui relit exactement (miroir de
+// texte_flottant de l'interprète), puis rendu comme ecri().
+static std::string rose_texte_flottant(double d) {
+    char buf[64];
+    for (int p = 1; p <= 17; p++) {
+        snprintf(buf, sizeof buf, "%.*g", p, d);
+        if (strtod(buf, nullptr) == d) {
+            std::string s(buf);
+            if (s.find('.') == std::string::npos && s.find('e') == std::string::npos
+                    && s.find("inf") == std::string::npos && s.find("nan") == std::string::npos)
+                s += ".0";
+            return s;
+        }
+    }
+    snprintf(buf, sizeof buf, "%.17g", d);
+    return std::string(buf);
+}
+
 void rose_afficher_float(rose_float v) {
-    printf("%.17g\n", v);
+    double d = v;
+    if (d != d) { printf("non_nombre\n"); return; }
+    if (d == 1.0 / 0.0) { printf("infini\n"); return; }
+    if (d == -1.0 / 0.0) { printf("-infini\n"); return; }
+    if (d == std::floor(d) && std::fabs(d) < 1e16) { printf("%lld\n", (long long)d); return; }
+    printf("%s\n", rose_texte_flottant(d).c_str());
 }
 
 void rose_afficher_str(const char *s) {
@@ -247,15 +270,9 @@ rose_int rose_nb_chiffres(rose_int n) {
 }
 
 rose_int rose_hasard(rose_int n) {
-    // splitmix64
-    static uint64_t etat = 2026ULL * 0x9E3779B97F4A7C15ULL;
-    uint64_t z = (etat += 0x9E3779B97F4A7C15ULL);
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    uint64_t r = z ^ (z >> 31);
     if (n <= 0) return 0;
-    if ((n & (n - 1)) == 0) return (rose_int)(r & (n - 1));
-    return (rose_int)((__uint128_t)r * n >> 64);
+    if ((n & (n - 1)) == 0) return (rose_int)(rng_tirer() & (uint64_t)(n - 1));
+    return (rose_int)((__uint128_t)rng_tirer() * (__uint128_t)(uint64_t)n >> 64);
 }
 
 rose_int rose_abs(rose_int n) { return n < 0 ? -n : n; }
@@ -267,8 +284,6 @@ rose_float rose_max_f(rose_float a, rose_float b) { return a > b ? a : b; }
 
 // ── Listes ──────────────────────────────────────────────────────────────
 rose_liste rose_liste_new() { return rose_liste(); }
-void rose_liste_push_int(rose_liste &l, rose_int v) { l.push_back(std::to_string(v)); }
-void rose_liste_push_str(rose_liste &l, const char *v) { l.push_back(v); }
 rose_str rose_liste_get_str(rose_liste &l, rose_int idx) { if (idx < 0 || idx >= (rose_int)l.size()) return ""; return l[(size_t)idx]; }
 rose_int rose_liste_len(rose_liste &l) { return (rose_int)l.size(); }
 
@@ -282,4 +297,205 @@ rose_str rose_liste_concat(rose_liste &l) {
 rose_str rose_index_str(rose_str &s, rose_int idx) {
     if (idx < 0 || idx >= (rose_int)s.size()) return "";
     return std::string(1, s[(size_t)idx]);
+}
+
+// ── Rationnels exacts et divisions euclidiennes ──────────────────────
+rose_qd rose_q_div(const rose_qd &a, const rose_qd &b) {
+    if (mpq_sgn(b.get_mpq_t()) == 0) { fprintf(stderr, "rose : division par zéro\n"); exit(1); }
+    return a / b;
+}
+
+int rose_q_cmp(const rose_qd &a, const rose_qd &b) {
+    return mpq_cmp(a.get_mpq_t(), b.get_mpq_t());
+}
+
+bool rose_approx_q(const rose_qd &a, const rose_qd &b, bool au_moins_un_flottant) {
+    if (!au_moins_un_flottant) return mpq_cmp(a.get_mpq_t(), b.get_mpq_t()) == 0;
+    double x = mpq_get_d(a.get_mpq_t()), y = mpq_get_d(b.get_mpq_t());
+    double ecart = x > y ? x - y : y - x;
+    double echelle = (x > 0 ? x : -x) > (y > 0 ? y : -y) ? (x > 0 ? x : -x) : (y > 0 ? y : -y);
+    if (echelle < 1.0) echelle = 1.0;
+    return ecart <= 1e-9 * echelle;
+}
+
+bool rose_approx_f(rose_float a, rose_float b) {
+    double ecart = a > b ? a - b : b - a;
+    double echelle = (a > 0 ? a : -a) > (b > 0 ? b : -b) ? (a > 0 ? a : -a) : (b > 0 ? b : -b);
+    if (echelle < 1.0) echelle = 1.0;
+    return ecart <= 1e-9 * echelle;
+}
+
+rose_int rose_entier_q(const rose_qd &q) {
+    mpz_class r;
+    mpz_fdiv_q(r.get_mpz_t(), q.get_num().get_mpz_t(), q.get_den().get_mpz_t());
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+
+// Écriture exacte avec périodes entre crochets (miroir de ecri de l'interprète).
+std::string rose_texte_q(const rose_qd &q_in) {
+    std::string out_str;
+    {
+    mpq_class q = q_in;
+    q.canonicalize();
+    if (q.get_den() == 1) { return q.get_num().get_str().c_str(); }
+    if (mpz_sizeinbase(q.get_num().get_mpz_t(), 10)
+            + mpz_sizeinbase(q.get_den().get_mpz_t(), 10) > 500) {
+        return std::string(q.get_num().get_str().c_str()) + "/" + q.get_den().get_str().c_str();
+    }
+    mpz_class entier;
+    mpz_fdiv_q(entier.get_mpz_t(), q.get_num().get_mpz_t(), q.get_den().get_mpz_t());
+    mpz_class reste; mpz_abs(reste.get_mpz_t(), q.get_num().get_mpz_t());
+    mpz_mod(reste.get_mpz_t(), reste.get_mpz_t(), q.get_den().get_mpz_t());
+    char digits[201];
+    int ndig = 0, peri = -1, nrestes = 0;
+    mpz_class restes[200]; int pos[200];
+    while (mpz_sgn(reste.get_mpz_t()) != 0 && ndig < 200) {
+        for (int j = 0; j < nrestes; j++)
+            if (restes[j] == reste) { peri = pos[j]; break; }
+        if (peri >= 0) break;
+        restes[nrestes] = reste; pos[nrestes++] = ndig;
+        mpz_mul_ui(reste.get_mpz_t(), reste.get_mpz_t(), 10);
+        mpz_class chiffre;
+        mpz_fdiv_q(chiffre.get_mpz_t(), reste.get_mpz_t(), q.get_den().get_mpz_t());
+        mpz_mod(reste.get_mpz_t(), reste.get_mpz_t(), q.get_den().get_mpz_t());
+        digits[ndig++] = (char)('0' + mpz_get_ui(chiffre.get_mpz_t()));
+    }
+    out_str = entier.get_str().c_str();
+    if (ndig) {
+        out_str += ".";
+        out_str.append(digits, (size_t)(peri >= 0 ? peri : ndig));
+        if (peri >= 0) {
+            out_str += "[";
+            out_str.append(digits + peri, (size_t)(ndig - peri));
+            out_str += "]";
+        } else if (ndig >= 200) {
+            out_str += "…";
+        }
+    }
+    }
+    return out_str;
+}
+void rose_afficher_q(const rose_qd &q) {
+    printf("%s\n", rose_texte_q(q).c_str());
+}
+
+rose_int rose_div_florentin(rose_int a, rose_int b) {
+    if (b == 0) { fprintf(stderr, "rose : division euclidienne par zéro\n"); exit(1); }
+    mpz_class x = a, y = b, r;
+    mpz_fdiv_q(r.get_mpz_t(), x.get_mpz_t(), y.get_mpz_t());
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+
+rose_int rose_rem_florentin(rose_int a, rose_int b) {
+    if (b == 0) { fprintf(stderr, "rose : reste d'une division par zéro\n"); exit(1); }
+    mpz_class x = a, y = b, r;
+    mpz_fdiv_r(r.get_mpz_t(), x.get_mpz_t(), y.get_mpz_t());
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+
+// Rendu texte d'un flottant (miroir de ecri de l'interprète).
+std::string rose_texte_flt(rose_float v) {
+    double d = v;
+    if (d != d) return "non_nombre";
+    if (d == 1.0 / 0.0) return "infini";
+    if (d == -1.0 / 0.0) return "-infini";
+    if (d == std::floor(d) && std::fabs(d) < 1e16) {
+        char buf[32]; snprintf(buf, sizeof buf, "%lld", (long long)d);
+        return std::string(buf);
+    }
+    return rose_texte_flottant(d);
+}
+
+void rose_liste_push_int(rose_liste &l, rose_int v) { l.push_back(std::to_string(v)); }
+void rose_liste_push_gd(rose_liste &l, const rose_gd &v) { l.push_back(v.get_str().c_str()); }
+void rose_liste_push_q(rose_liste &l, const rose_qd &v) { l.push_back(rose_texte_q(v)); }
+void rose_liste_push_flt(rose_liste &l, rose_float v) { l.push_back(rose_texte_flt(v)); }
+
+// Chaîne → entier (lecture des éléments d'une liste d'entiers).
+rose_int rose_a_entier(const rose_str &s) {
+    mpz_class r;
+    if (mpz_set_str(r.get_mpz_t(), s.c_str(), 10)) return 0;
+    return (rose_int)mpz_get_si(r.get_mpz_t());
+}
+
+rose_int rose_entier_f(rose_float v) { return (rose_int)v; }   // troncature (mpz_set_d)
+
+void rose_afficher_liste(const rose_liste &l) {
+    putchar('[');
+    for (size_t i = 0; i < l.size(); i++) {
+        if (i) fputs(", ", stdout);
+        fputs(l[i].c_str(), stdout);
+    }
+    fputs("]\n", stdout);
+}
+
+// ── Builtin nombre_pi : π avec N décimales (formule de Machin, miroir) ──
+rose_str rose_nombre_pi(rose_int decimales) {
+    unsigned long chiffres = (unsigned long)decimales;
+    if (chiffres == 0 || chiffres > 2000000) { fprintf(stderr, "rose : décimales de π hors limites (1..2000000)\n"); exit(1); }
+    unsigned long S = chiffres + 40;
+    mpz_class dixS; mpz_ui_pow_ui(dixS.get_mpz_t(), 10, S);
+    unsigned long xs[2] = {5, 239};
+    mpz_class cibles[2];
+    for (int w = 0; w < 2; w++) {
+        mpz_class &dest = cibles[w];
+        mpz_class x2, p, terme;
+        mpz_set_ui(x2.get_mpz_t(), xs[w]); mpz_mul(x2.get_mpz_t(), x2.get_mpz_t(), x2.get_mpz_t());
+        mpz_set_ui(p.get_mpz_t(), xs[w]);
+        unsigned long k = 1;
+        mpz_fdiv_q(terme.get_mpz_t(), dixS.get_mpz_t(), p.get_mpz_t());
+        dest = terme;
+        int signe = -1;
+        for (;;) {
+            mpz_mul(p.get_mpz_t(), p.get_mpz_t(), x2.get_mpz_t());
+            k += 2;
+            mpz_mul_ui(terme.get_mpz_t(), p.get_mpz_t(), k);
+            mpz_fdiv_q(terme.get_mpz_t(), dixS.get_mpz_t(), terme.get_mpz_t());
+            if (mpz_sgn(terme.get_mpz_t()) == 0) break;
+            if (signe < 0) mpz_sub(dest.get_mpz_t(), dest.get_mpz_t(), terme.get_mpz_t());
+            else mpz_add(dest.get_mpz_t(), dest.get_mpz_t(), terme.get_mpz_t());
+            signe = -signe;
+        }
+    }
+    mpz_class at5 = cibles[0], at239 = cibles[1], pi;
+    mpz_mul_ui(at5.get_mpz_t(), at5.get_mpz_t(), 16);
+    mpz_mul_ui(at239.get_mpz_t(), at239.get_mpz_t(), 4);
+    mpz_sub(pi.get_mpz_t(), at5.get_mpz_t(), at239.get_mpz_t());
+    char *brut = mpz_get_str(nullptr, 10, pi.get_mpz_t());
+    size_t lbrut = strlen(brut);
+    std::string sortie(chiffres + 2, ' ');
+    sortie[0] = brut[0]; sortie[1] = '.';
+    for (unsigned long i = 0; i < chiffres; i++)
+        sortie[2 + i] = (i + 1 < lbrut) ? brut[i + 1] : '0';
+    if (1 + chiffres < lbrut && brut[1 + chiffres] >= '5') {
+        long i = (long)chiffres + 1;
+        while (i >= 0) {
+            if (sortie[(size_t)i] == '.') { i--; continue; }
+            sortie[(size_t)i]++;
+            if (sortie[(size_t)i] <= '9') break;
+            sortie[(size_t)i] = '0'; i--;
+        }
+    }
+    free(brut);
+    return sortie;
+}
+
+// partie_entiere : plancher (miroir de l'interprète).
+rose_int rose_partie_entiere_f(rose_float v) { return (rose_int)std::floor(v); }
+rose_int rose_partie_entiere_q(const rose_qd &q) { return rose_entier_q(q); }
+
+// Division euclidienne (plancher) sur grands entiers.
+rose_gd rose_div_florentin_gd(const rose_gd &a, const rose_gd &b) {
+    if (mpz_sgn(b.get_mpz_t()) == 0) { fprintf(stderr, "rose : division euclidienne par zéro\n"); exit(1); }
+    mpz_class r;
+    mpz_fdiv_q(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+    return r;
+}
+
+// Reste euclidien (plancher) sur grands entiers.
+rose_gd rose_rem_florentin_gd(const rose_gd &a, const rose_gd &b) {
+    if (mpz_sgn(b.get_mpz_t()) == 0) { fprintf(stderr, "rose : reste d'une division par zéro\n"); exit(1); }
+    mpz_class r;
+    mpz_fdiv_r(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
+    return r;
 }

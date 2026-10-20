@@ -426,3 +426,41 @@ revérifié sur les bancs.
 
 Reste côté transpileur : `div.z`/`rem.z` sur `rose_gd`, fonctions
 utilisateurs sur listes/chaînes, exécution des suites dorées en AOT.
+
+## Jalon M3.3 — fidélité sémantique AOT : les dorés parlent (v3.12.0-dev)
+
+Nouvelle suite `moteur/tests/aot.py` : chaque doré est compilé par
+`rose build`, exécuté, et comparé au doré C **caractère par caractère**.
+Résultat : **9 réussis, 0 échoué, 1 limite, 0 non compilable**.
+
+Corrections de fidélité au transpileur et au runtime :
+
+- **Rationnels exacts** : type `rose_qd` (mpq_class), ops `cst.q`/`div.q`,
+  écriture avec périodes `0.8[3]` (miroir de `ecri`), builtin `fraction`,
+  comparaison exacte mixte, `cmp.approx` (≈ tolérance 1e-9 relative) ;
+- **Divisions euclidiennes à la Rose** : `divf`/`rem.z` en plancher
+  (`mpz_fdiv`), variantes entiers et grands entiers — le C de `%` n'y
+  suffisait plus (-7 % 3 = 2) ;
+- **Flottants fidèles** : `entier()` = troncature (mpz_set_d),
+  `partie_entiere` = plancher, `non`/`et`/`ou` (ops `not.b`/`and.b`/`or.b`),
+  affichage en représentation la plus courte qui relit juste ;
+- **RNG commun** : `hasard` partage enfin l'état global de `graine`
+  (le runtime avait un état privé — séquences divergentes) ;
+- **Listes hétéroclites** : poussée typée (entier/grand entier/rationnel/
+  flottant→texte fidèle), lecture d'élément selon le type de destination,
+  affichage `[a, b, c]`, index dans les chaînes typé en chaîne ;
+- **`nombre_pi`** porté (formule de Machin, 2 M de décimales max) ;
+- **Grandes marges machine** : constantes |v| ≥ 2⁶² promues `rose_gd` —
+  le doré `machine` (LONG_MIN ± 1, a·a) passe en exact ;
+- **Inférence** : promotion des globals par contamination, `ret` avec
+  valeur, appels de fonctions utilisateur, paramètres éclipsant les globals,
+  comparaison des tampons par contenu.
+
+Limite assumée et tracée : `signature` échoue sur `facto_iteratif(30)` —
+accumulateur débordant int64 depuis de petites valeurs, indétectable à la
+compilation statique. La promotion runtime (entier taggué ou redémarrage
+spéculatif de fonction) est un jalon ultérieur ; tout le reste de la sortie
+est identique.
+
+Suites : dorés 44/44, parité 116/116, test_jit vert, les 10 bancs compilent
+et sortent comme l'interprète (mot_de_passe AOT 0,46-0,47 s, stable).
