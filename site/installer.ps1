@@ -1,4 +1,4 @@
-﻿# =====================================================================
+# =====================================================================
 # ROSE v3.12 - test express sur Windows (reseau Tailonly / Tailscale)
 # Usage :  irm http://100.67.23.83:18080/installer.ps1 | iex
 # Telecharge les trois moteurs (C++, Rust, Zig), deplie dans
