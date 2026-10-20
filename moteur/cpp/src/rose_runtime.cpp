@@ -158,28 +158,64 @@ rose_int rose_ppcm(rose_int a, rose_int b) {
     return (rose_int)mpz_get_si(r.get_mpz_t());
 }
 
-static mpz_class rose_factorielle_mpz(const mpz_class &n) {
-    if (mpz_sgn(n.get_mpz_t()) < 0) return mpz_class(0);
-    mpz_class r = 1;
-    for (unsigned long i = 2; i <= (unsigned long)mpz_get_ui(n.get_mpz_t()); i++) mpz_mul_ui(r.get_mpz_t(), r.get_mpz_t(), i);
+// factorielle : arbre de produits (miroir de l'interprète rose.cpp).
+static void rose_factorielle_arbre(mpz_class &dest, unsigned long lo, unsigned long hi) {
+    if (lo > hi) { dest = 1; return; }
+    if (hi - lo < 16) {
+        dest = lo;
+        for (unsigned long x = lo + 1; x <= hi; x++) mpz_mul_ui(dest.get_mpz_t(), dest.get_mpz_t(), x);
+        return;
+    }
+    unsigned long mid = lo + (hi - lo) / 2;
+    mpz_class g, d;
+    rose_factorielle_arbre(g, lo, mid);
+    rose_factorielle_arbre(d, mid + 1, hi);
+    dest = g * d;
+}
+rose_gd rose_factorielle_gd(rose_int n) {
+    if (n < 0) return 0;
+    if (n > (rose_int)0xFFFFFFFFUL) return 0;
+    mpz_class r;
+    rose_factorielle_arbre(r, 1, (unsigned long)n);
     return r;
 }
 
-rose_int rose_factorielle(rose_int n) {
+// fibonacci : doublement rapide (miroir de l'interprète rose.cpp).
+rose_gd rose_fibonacci_gd(rose_int n) {
     if (n < 0) return 0;
-    // Pour l'AOT, on calcule le nombre de chiffres de n! directement
-    // (factorielle.rose n'utilise que nb_chiffres(factorielle(n))).
-    double log10_fact = 0.0;
-    for (rose_int i = 2; i <= n; i++) log10_fact += log10((double)i);
-    return (rose_int)(log10_fact + 1.0);
+    mpz_class a = 0, b = 1, t1, t2, t3;
+    mpz_class nn = n;
+    mp_bitcnt_t bits = mpz_sizeinbase(nn.get_mpz_t(), 2);
+    for (mp_bitcnt_t i = bits; i-- > 0;) {
+        mpz_mul_ui(t1.get_mpz_t(), b.get_mpz_t(), 2);
+        mpz_sub(t1.get_mpz_t(), t1.get_mpz_t(), a.get_mpz_t());
+        mpz_mul(t1.get_mpz_t(), t1.get_mpz_t(), a.get_mpz_t());
+        mpz_mul(t2.get_mpz_t(), a.get_mpz_t(), a.get_mpz_t());
+        mpz_mul(t3.get_mpz_t(), b.get_mpz_t(), b.get_mpz_t());
+        mpz_add(t2.get_mpz_t(), t2.get_mpz_t(), t3.get_mpz_t());
+        if (mpz_tstbit(nn.get_mpz_t(), i)) {
+            a = t2;
+            mpz_add(b.get_mpz_t(), t1.get_mpz_t(), t2.get_mpz_t());
+        } else { a = t1; b = t2; }
+    }
+    return a;
 }
 
+// puissance entière : base^expo, expo >= 0.
+rose_gd rose_puissance_gd(const rose_gd &base, rose_int expo) {
+    if (expo < 0) return 0;
+    mpz_class r;
+    mpz_pow_ui(r.get_mpz_t(), base.get_mpz_t(), (unsigned long)expo);
+    return r;
+}
 
-rose_int rose_fibonacci(rose_int n) {
-    if (n < 0) return 0;
-    rose_int a = 0, b = 1;
-    for (rose_int i = 0; i < n; i++) { rose_int t = a + b; a = b; b = t; }
-    return a;
+rose_int rose_nb_chiffres_gd(const rose_gd &n) {
+    if (mpz_sgn(n.get_mpz_t()) == 0) return 1;
+    return (rose_int)mpz_sizeinbase(n.get_mpz_t(), 10);
+}
+
+void rose_afficher_gd(const rose_gd &n) {
+    gmp_printf("%Zd\n", n.get_mpz_t());
 }
 
 rose_bool rose_est_premier(rose_int n) {
@@ -203,7 +239,6 @@ rose_int rose_compter_premiers(rose_int n) {
 }
 
 rose_int rose_nb_chiffres(rose_int n) {
-    if (n > 1000) return n;
     if (n == 0) return 1;
     rose_int t = n < 0 ? -n : n;
     rose_int c = 0;
@@ -232,7 +267,19 @@ rose_float rose_max_f(rose_float a, rose_float b) { return a > b ? a : b; }
 
 // ── Listes ──────────────────────────────────────────────────────────────
 rose_liste rose_liste_new() { return rose_liste(); }
-void rose_liste_push(rose_liste &l, rose_int v) { l.push_back(v); }
-rose_int rose_liste_get(rose_liste &l, rose_int idx) { return l[(size_t)idx]; }
+void rose_liste_push_int(rose_liste &l, rose_int v) { l.push_back(std::to_string(v)); }
+void rose_liste_push_str(rose_liste &l, const char *v) { l.push_back(v); }
+rose_str rose_liste_get_str(rose_liste &l, rose_int idx) { if (idx < 0 || idx >= (rose_int)l.size()) return ""; return l[(size_t)idx]; }
 rose_int rose_liste_len(rose_liste &l) { return (rose_int)l.size(); }
-rose_liste rose_liste_concat(rose_liste &l) { return l; }
+
+// ── Listes et chaînes ───────────────────────────────────────────────────
+void rose_liste_push(rose_liste &l, const char *v) { l.push_back(v); }
+rose_str rose_liste_concat(rose_liste &l) {
+    rose_str r;
+    for (auto &s : l) r += s;
+    return r;
+}
+rose_str rose_index_str(rose_str &s, rose_int idx) {
+    if (idx < 0 || idx >= (rose_int)s.size()) return "";
+    return std::string(1, s[(size_t)idx]);
+}
