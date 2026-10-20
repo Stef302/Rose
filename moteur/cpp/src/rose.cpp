@@ -12,6 +12,7 @@
 #include <ctime>
 #include <cstdio>
 #include <cstdlib>
+#include "transpiler.h"
 #include <cstring>
 #ifdef _WIN32
 #include <windows.h>
@@ -4369,7 +4370,7 @@ int main(int argc, char **argv) {
         fputs(rir.c_str(), stdout);
         return 0;
     }
-    if (action == "comp" || action == "build") {
+    if (action == "comp") {
         std::string sortie;
         for (int i = 2; i < argc; i++) {
             if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--sortie")) {
@@ -4408,6 +4409,49 @@ int main(int argc, char **argv) {
         }
         if (r == 0) fprintf(stderr, "rose: %s produit (exécutable autonome)\n", sortie.c_str());
         return r;
+    }
+    if (action == "build") {
+        std::string sortie;
+        for (int i = 2; i < argc; i++) {
+            if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--sortie")) {
+                if (i + 1 < argc) sortie = argv[++i];
+            } else if (argv[i][0] != '-') fichier = argv[i];
+        }
+        if (fichier.empty()) { fprintf(stderr, "rose: quel programme compiler ?\n"); return 1; }
+        if (sortie.empty()) {
+            size_t slash = fichier.find_last_of("/\\");
+            sortie = fichier.substr(slash + 1);
+            size_t pt = sortie.rfind(".rose");
+            if (pt != std::string::npos) sortie.resize(pt);
+            if (sortie.empty()) sortie = "programme";
+        }
+        // Lire et analyser
+        std::string source;
+        if (lire_fichier(fichier, source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", fichier.c_str()); return 1; }
+        Programme prog = analyser(source);
+        replier_constants(prog);
+        Verificateur verif(prog);
+        verif.verifier();
+        RirModule mod;
+        EmetteurRir em(mod);
+        for (auto &kv : prog.signatures) if (kv.second->corps) em.emettre_fonction(*kv.second);
+        em.emettre_principal(prog);
+        // Transpiler
+        std::string cpp_code = transpiler_rir(mod);
+        // Écrire le .cpp
+        std::string cpp_file = sortie + ".cpp";
+        std::ofstream out(cpp_file, std::ios::binary | std::ios::trunc);
+        if (!out) { fprintf(stderr, "rose: ne peut écrire %s\n", cpp_file.c_str()); return 1; }
+        out << cpp_code;
+        out.close();
+        // Compiler avec g++
+        std::string cmd = "g++ -O3 -march=native -std=c++17 -I" + std::string("moteur/cpp/src") +
+                          " " + cpp_file + " moteur/cpp/src/rose_runtime.cpp" +
+                          " -o " + sortie + " -lm -lpthread 2>&1";
+        fprintf(stderr, "rose build: %s\n", cmd.c_str());
+        int r = system(cmd.c_str());
+        if (r == 0) fprintf(stderr, "rose: %s produit (compilé natif)\n", sortie.c_str());
+        return r == 0 ? 0 : 1;
     }
     /* premier argument = fichier .rose sans sous-commande */
     if (action.size() > 5 && action.compare(action.size() - 5, 5, ".rose") == 0) {

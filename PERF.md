@@ -361,3 +361,28 @@ Doré `t_liste` (12 valeurs : new/push/get/index/len/joindre/concatener/
 longueur/affectation aliasée), suites 44/44 ARM + 43/43 croisé qemu,
 parité 116/116 avec un programme listes/chaînes neuf (les quatre moteurs
 d'accord), test_jit 14/14, bancs sans régression.
+
+## Jalon M3.0 — premier compilateur AOT (`rose build`) (v3.12.0-dev)
+
+`rose comp` n'est qu'un packager (moteur + source). `rose build` est le
+premier vrai compilateur AOT de Rose : il parse le source, émet le RIR,
+transpile le RIR en C++, et compile avec `g++ -O3 -march=native`. Le
+résultat est un exécutable natif autonome qui link le runtime Rose
+(`rose_runtime.cpp` : RNG, tampons, affichage, temps).
+
+Premier résultat mesuré sur `mot_de_passe.rose` (1 G car.) :
+
+| Moteur | Temps |
+|---|---:|
+| Rust (`-O`) | ~0,38 s |
+| C++ twin (`-O3 -march=native`) | ~0,32 s |
+| **Rose AOT (`rose build`)** | **~0,39 s** |
+| Rose JIT+interpréteur | ~0,48 s |
+
+Rose AOT est désormais **compétitif avec Rust** (écart dans la variance
+thermique). Le transpileur gère pour l'instant les types entier/chaîne/
+tampon et les ops arithmétiques, appels builtins, branches, pour-boucles ;
+les flottants, listes et fonctions utilisateur sont à étendre.
+
+Fichiers neufs : `transpiler.h`, `transpiler.cpp`, `rose_runtime.h`,
+`rose_runtime.cpp`. Commande : `rose build prog.rose [-o sortie]`.
