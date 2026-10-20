@@ -13,6 +13,17 @@ $Racine = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Racine
 
 $dore = Join-Path $Racine "moteur\tests\dorés"
+if (-not (Test-Path $dore)) {
+    # Le nom « dorés » peut avoir été dégradé par l'outil d'extraction
+    # (zip UTF-8 sans marque UTF-8 lu en CP437 -> « dor├⌐s », etc.).
+    # On relocalise le dossier par gabarit plutôt que d'échouer 31 fois.
+    $cand = Get-ChildItem (Join-Path $Racine "moteur\tests") -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "dor*" } | Select-Object -First 1
+    if ($cand) {
+        $dore = $cand.FullName
+        Write-Host ("  NOTE  dossier dorés mal nommé (« " + $cand.Name + " ») : relocalisé.") -ForegroundColor Yellow
+    }
+}
 $ok = 0; $ko = 0
 function Succes([string]$msg) { $script:ok++; Write-Host "  OK    $msg" -ForegroundColor Green }
 function Echec([string]$msg)  { $script:ko++; Write-Host "  ECHEC $msg" -ForegroundColor Red }
@@ -23,9 +34,17 @@ function Exec-Rose([string]$exe, [string[]]$params) {
     $tmp  = [IO.Path]::GetTempFileName()
     $err  = "$tmp.err"
     try {
-        $p = Start-Process -FilePath $exe -ArgumentList $params `
-             -NoNewWindow -Wait -PassThru `
-             -RedirectStandardOutput $tmp -RedirectStandardError $err
+        $argl = @($params | Where-Object { $_ -ne $null -and $_ -ne "" })
+        if ($argl.Count -eq 0) {
+            # « usage sans argument » : -ArgumentList refuse la liste vide.
+            $p = Start-Process -FilePath $exe `
+                 -NoNewWindow -Wait -PassThru `
+                 -RedirectStandardOutput $tmp -RedirectStandardError $err
+        } else {
+            $p = Start-Process -FilePath $exe -ArgumentList $argl `
+                 -NoNewWindow -Wait -PassThru `
+                 -RedirectStandardOutput $tmp -RedirectStandardError $err
+        }
         $code = $p.ExitCode
         $octets = [IO.File]::ReadAllBytes($tmp)
         $errtxt = [IO.File]::ReadAllText($err, [Text.Encoding]::UTF8)
