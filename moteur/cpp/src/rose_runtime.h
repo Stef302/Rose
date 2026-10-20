@@ -73,6 +73,11 @@ void rose_afficher_tampon_longueur(rose_tampon buf);
 
 // Builtins numériques.
 rose_int rose_pgcd(rose_int a, rose_int b);
+rose_gd rose_pgcd_gd(const rose_gd &a, const rose_gd &b);
+rose_gd rose_ppcm_gd(const rose_gd &a, const rose_gd &b);
+rose_gd rose_abs_gd(const rose_gd &n);
+rose_gd rose_min_gd(const rose_gd &a, const rose_gd &b);
+rose_gd rose_max_gd(const rose_gd &a, const rose_gd &b);
 rose_int rose_ppcm(rose_int a, rose_int b);
 rose_int rose_factorielle(rose_int n);
 rose_int rose_fibonacci(rose_int n);

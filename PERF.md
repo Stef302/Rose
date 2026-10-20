@@ -464,3 +464,130 @@ est identique.
 
 Suites : dorés 44/44, parité 116/116, test_jit vert, les 10 bancs compilent
 et sortent comme l'interprète (mot_de_passe AOT 0,46-0,47 s, stable).
+
+## Jalon M2.15 — déboxage des entiers machine dans le JIT (v3.12.0-dev)
+
+La vérité est sortie du dump désassemblé : depuis M2.7, les chemins « inline »
+ne s'activaient **jamais**. Les vérifications lisaient les GMP à des offsets
+de Valeur hypothétiques (`padding` et `_mp_alloc` au lieu de `_mp_size` et
+`_mp_d`) : le test « taille == +1 » échouait toujours et **toutes** les
+itérations retombaient sur les appels helper — les dorés restaient verts, le
+gain mesuré à l'époque (M2.8) venait en réalité de la seule fusion. Pire : si
+le padding d'un objet recyclé avait valu 1, le chemin calculait des pointeurs
+au lieu des valeurs (bombe à retardement désamorcée au passage).
+
+M2.15 répare et active le déboxage : les offsets sont **calculés** par
+`offsetof` sur `__mpz_struct` (`_mp_alloc`+8, `_mp_size`+12, `_mp_d`+16 dans
+le `Valeur`), et l'arithmétique `add/sub/mul` comme les comparaisons
+`cmp.*.z` travaillent l'entier machine **en place** dans le mpz embarqué :
+chargement du membre via `_mp_d` avec vérification (positif d'un membre,
+< 2^63), addition/soustraction/multiplication natives, détection de
+débordement (`b.vs`/`jo`, `smulh`), écriture en place du membre et de la
+taille, capacité `_mp_alloc` vérifiée avant écriture. Tout le reste —
+négatifs, multi-membres, débordements, allocation — retombe sur les **mêmes
+helpers** qu'avant : sémantique identique, dorés inchangés, y compris
+`machine` (LONG_MIN ± 1, a·a exacts par repli GMP). Miroir x86-64 à l'identique.
+
+| Programme (AArch64, JIT) | helpers | **inline** |
+|---|---:|---:|
+| boucle entière | 0,073 s | **0,035 s** (×2,1) |
+| boucle flottante (compteur entier) | 0,027 s | **0,010 s** (×2,7) |
+| appels ×2 M | 0,035 s | **0,026 s** (×1,35) |
+| factorielle | 0,186 s | **0,172 s** |
+| premiers | 0,057 s | **0,052 s** |
+| pgcd / mot_de_passe / chaînes | neutre | (dominé helpers) |
+
+Même binaire, A/B par `ROSE_NO_INLINE=1` (garde de mesure conservée).
+Trempage de vérification : débordements répétés (2⁷⁰), LONG_MAX+1,
+LONG_MAX², LONG_MIN−1, accumulateur traversant 2⁶³ — sortie identique au
+calcul exact Python et au mode sans inline. Suites : dorés 44/44, parité
+116/116, test_jit vert, suite croisée x86-64 sous qemu. Le build croisé
+s'est vu ajouter les TU transpileur/runtime (rose.cpp référence
+`transpiler_rir` depuis M3 — `build-x64.sh` était resté à trois TU).
+
+Accessoire de livraison : `rose build` ne connaît plus aucun chemin
+absolu — le runtime est cherché à côté de l'exécutable (`ROSE_HOME` en
+override), le compilateur, les drapeaux et GMP se pilotent par
+`ROSE_CXX`, `ROSE_CXXFLAGS`, `ROSE_GMP`. Vérifié avec le binaire déplacé
+dans un répertoire témoin.
+
+## Jalon M2.16 — chemin machine des builtins numériques (v3.12.0-dev)
+
+Le pont JIT → `rose_appel_builtin` coûtait **~140 ns par argument recopié**
+(vector de `Valeur` profonds, mpz à chaque passage) plus ~200 ns de base
+(construction de nom, distribution, allocation du résultat) : une boucle
+`min($k, 3)` sur 2 M d'itérations valait 0,97 s contre 0,014 s sans appel.
+
+`rose_appel_builtin` tente d'abord le **chemin machine int64** pour
+`abs`, `min`, `max`, `pgcd`, `ppcm`, `puissance`, `factorielle`,
+`fibonacci`, `nb_chiffres` quand les arguments sont des entiers tenant en
+int64 : Euclide machine, exponentiation par carrés avec
+`__builtin_mul_overflow`, boucles factorielle/fibonacci à additions
+vérifiées, chiffres par divisions décimales (128 bits pour |LONG_MIN|).
+Tout cas de sortie du domaine — grand entier, `LONG_MIN` sur abs/pgcd/ppcm,
+débordement d'un seul produit, `21!`, `fib(93)`, exposant négatif, types
+mixtes — **retombe sur le chemin générique exact** (mêmes codes stdlib) :
+le résultat ne dépend jamais du chemin.
+
+| Banc / micro (2 M d'appels, AArch64) | avant | **après** |
+|---|---:|---:|
+| min (micro) | 0,973 s | **0,083 s** (×11,7) |
+| abs (micro) | 0,355 s | **0,079 s** |
+| pgcd | 0,577 s | **0,180 s** (×3,2) |
+| factorielle / fibonacci / puissance | inchangés (hors domaine, repli exact) | |
+
+Trempage de fidélité : 34 valeurs limites (abs(LONG_MIN), pgcd(LONG_MIN,·),
+ppcm(2⁶²,4), 2¹⁰⁰⁰-ish via 10^40, min/max mixtes gd, 0!, fib(0..93),
+puissance(0,0), puissances négatives → rationnel…) — sortie **identique au
+calcul exact Python**. Dorés 44/44 (dont t_builtin qui brasse les deux
+chemins), parité 116/116, test_jit, AOT 9/10+1 limite.
+
+### M2.16 bis — dispatch AOT grands entiers et fidélité `nb_chiffres`
+
+Le programme-témoin `fastb.rose` (34 valeurs limites) refusait de compiler
+en AOT (`rose_min(rose_int)` recevant un grand entier) : le transpileur
+reçoit des variantes `rose_pgcd_gd`/`rose_ppcm_gd`/`rose_abs_gd`/
+`rose_min_gd`/`rose_max_gd` (mpz exacts, arguments int64 convertis),
+`séty_of` reconnaît enfin les constantes entières promues (corrige du même
+coup les dispatch `cmp`/`divf`/`rem` sur ces constantes), et les deux
+inféreurs propagent `gd` à travers les appels.
+
+Le tiers-voie a aussi démasqué un écart de fidélité : l'interprète
+compte les chiffres avec `mpz_sizeinbase` (GMP rend ±1 près de la
+vérité : `nb_chiffres(10¹⁸−1) = 19`, `nb_chiffres(−2⁶³) = 20`). La boucle
+à vrais chiffres du runtime AOT et le chemin rapide M2.16 divergeaient
+tous les deux — or la sémantique de référence **est** l'interprète.
+`nb_chiffres` AOT (entier et grand entier) imite maintenant littéralement
+l'interprète (abs puis sizeinbase) et `nb_chiffres` sort du chemin rapide
+JIT (retour au stdlib exact). `fastb.rose` : interprète = JIT = AOT sur
+les 34 lignes ; dorés 44/44, parité 116/116, AOT 9/10+1 limite.
+
+### M2.16 ter — croisée x86-64 verte, REX.R et outils d'audit
+
+Le test croisé `test_jit-x64` (sous qemu/TCG) a démasqué un défaut
+d'émission x64 introduced avec M2.15 : le `test r,r` du chemin inline
+(débordement de l'addition) encodait REX avec le seul bit B pour
+r8..r15, produisant `test r8, rax` au lieu de `test r8, r8` — ZF ne
+regardait plus la somme, l'instruction `cmove` qui en dépend écrasait le
+résultat, et `boucle.somme` tournait en boucle infinie. Le `lea r, [rsp]`
+souffrait du même champ reg sans REX.R. Corrigés (REX |= R pour le champ
+reg) ; le backend AArch64 n'a pas d'équivalent (test et lea n'y ont pas de
+champ reg décalé). Leçon : un backend non natif ne devient « validé » que
+sous émulation — le doré de boucle l'a attrapé là où l'empreinte de
+boucle_entier sur ARM était restée verte.
+
+Outils d'audit ajoutés (sans effet sur les moteurs) :
+- `bench/bench_stat.py` — chauffe + N mesurées, min/médiane/p10/p90/étal.
+  et vérification d'empreinte : le dispersion ARM sur les bancs courts est
+  de 5 à 18 %, le seul min est trompeur.
+- `tests/aot.py` réécrit en **couverture sémantique** (35 cas : dorés,
+  stdin, argv, fichiers, quitter, erreurs, rejets) avec catalogue
+  d'écarts connus (fidélité des erreurs/effects AOT = jalon M3.3bis) ;
+  un échec hors catalogue est une régression bloquante.
+- `ARCHITECTURE.md` : section hypothèses structurales (offsets GMP via
+  offsetof, règles de propriété des Valeur, ABI/plateformes prouvées ou
+  non).
+
+Croisée finale : test_jit-x64 14/14, dorés 43/43 sous qemu. AOT : 11
+fidèles + 1 rejet sur 35 cas, 1 limite, 5 non compilables, 17 écarts
+catalogués, 0 régression.

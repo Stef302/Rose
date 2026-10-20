@@ -196,6 +196,21 @@ std::string transpiler_rir(const RirModule &mod) {
                     if (cn == "fraction") temp_types[instr.dest] = RirQ;
                     if (cn == "fibonacci" || cn == "factorielle" || cn == "puissance")
                         temp_types[instr.dest] = RirGd;
+                    if (cn == "pgcd" || cn == "ppcm" || cn == "abs" || cn == "min" || cn == "max") {
+                        bool gd = false;
+                        for (size_t ai = 1; ai < instr.args.size(); ai++) {
+                            std::string an = instr.args[ai].name;
+                            if (instr.args[ai].kind == RirOp::Const) {
+                                std::string cx = an;
+                                if (cx.rfind("@c", 0) == 0) cx = cx.substr(2);
+                                if (cst_promu_gd(cx)) gd = true;
+                                continue;
+                            }
+                            if (temp_types.count(an) && temp_types[an] == RirGd) gd = true;
+                            if (global_types.count(sanitize(an)) && global_types[sanitize(an)] == RirGd) gd = true;
+                        }
+                        if (gd) temp_types[instr.dest] = RirGd;
+                    }
                 }
                 // Propagation grand entier pendant la collecte
                 if (!instr.dest.empty() && instr.dest[0] == '%' && temp_types.find(instr.dest) == temp_types.end() &&
@@ -301,6 +316,21 @@ std::string transpiler_rir(const RirModule &mod) {
                                 }
                             }
                         }
+                        // Arguments grands entiers : l'appel vit en grand entier
+                        if (name == "pgcd" || name == "ppcm" || name == "abs" ||
+                            name == "min" || name == "max") {
+                            for (size_t ai = 1; ai < instr.args.size(); ai++) {
+                                std::string an = instr.args[ai].name;
+                                if (instr.args[ai].kind == RirOp::Const) {
+                                    std::string cx = an;
+                                    if (cx.rfind("@c", 0) == 0) cx = cx.substr(2);
+                                    if (cst_promu_gd(cx)) { ty = RirGd; break; }
+                                    continue;
+                                }
+                                if (temp_types.count(an) && temp_types[an] == RirGd) { ty = RirGd; break; }
+                                if (global_types.count(sanitize(an)) && global_types[sanitize(an)] == RirGd) { ty = RirGd; break; }
+                            }
+                        }
                     }
                     // Opérations arithmétiques : propagent le type grand entier
                     if ((instr.op == "add.z" || instr.op == "sub.z" || instr.op == "mul.z" ||
@@ -332,6 +362,11 @@ std::string transpiler_rir(const RirModule &mod) {
         for (auto &b : f.blocs) for (auto &i : b.instrs)
             if (!i.dest.empty()) prod_ty[i.dest] = i.dest_ty;
         auto ty_of = [&](const RirOp &o) -> RirType {
+            if (o.kind == RirOp::Const) {   // constante entière promue : vit en gd
+                std::string cx = o.name;
+                if (cx.rfind("@c", 0) == 0) cx = cx.substr(2);
+                if (cst_promu_gd(cx)) return RirGd;
+            }
             auto it = temp_types.find(o.name);
             if (it != temp_types.end() && it->second != RirU) return it->second;
             std::string s = sanitize(o.name);
@@ -561,12 +596,18 @@ std::string transpiler_rir(const RirModule &mod) {
                     else if (name == "pgcd") {
                         std::string a0 = sanitize(instr.args[1].name);
                         std::string a1 = sanitize(instr.args[2].name);
-                        out << "    " << sanitize(instr.dest) << " = rose_pgcd(" << a0 << ", " << a1 << ");\n";
+                        if (ty_of(instr.args[1]) == RirGd || ty_of(instr.args[2]) == RirGd)
+                            out << "    " << sanitize(instr.dest) << " = rose_pgcd_gd(" << a0 << ", " << a1 << ");\n";
+                        else
+                            out << "    " << sanitize(instr.dest) << " = rose_pgcd(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "ppcm") {
                         std::string a0 = sanitize(instr.args[1].name);
                         std::string a1 = sanitize(instr.args[2].name);
-                        out << "    " << sanitize(instr.dest) << " = rose_ppcm(" << a0 << ", " << a1 << ");\n";
+                        if (ty_of(instr.args[1]) == RirGd || ty_of(instr.args[2]) == RirGd)
+                            out << "    " << sanitize(instr.dest) << " = rose_ppcm_gd(" << a0 << ", " << a1 << ");\n";
+                        else
+                            out << "    " << sanitize(instr.dest) << " = rose_ppcm(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "factorielle") {
                         std::string a0 = sanitize(instr.args[1].name);
@@ -605,9 +646,7 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     else if (name == "nb_chiffres") {
                         std::string a0 = sanitize(instr.args[1].name);
-                        RirType aty = RirU;
-                        if (temp_types.count(instr.args[1].name)) aty = temp_types[instr.args[1].name];
-                        else if (global_types.count(a0)) aty = global_types[a0];
+                        RirType aty = ty_of(instr.args[1]);
                         if (aty == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_nb_chiffres_gd(" << a0 << ");\n";
                         else
@@ -619,22 +658,27 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     else if (name == "abs") {
                         std::string a0 = sanitize(instr.args[1].name);
-                        RirType aty = temp_types.count(instr.args[1].name) ? temp_types[instr.args[1].name] : instr.args[1].ty;
+                        RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_abs_f(" << a0 << ");\n";
+                        else if (aty == RirGd) out << "    " << sanitize(instr.dest) << " = rose_abs_gd(" << a0 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_abs(" << a0 << ");\n";
                     }
                     else if (name == "min") {
                         std::string a0 = sanitize(instr.args[1].name);
                         std::string a1 = sanitize(instr.args[2].name);
-                        RirType aty = temp_types.count(instr.args[1].name) ? temp_types[instr.args[1].name] : instr.args[1].ty;
+                        RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_min_f(" << a0 << ", " << a1 << ");\n";
+                        else if (aty == RirGd || ty_of(instr.args[2]) == RirGd)
+                            out << "    " << sanitize(instr.dest) << " = rose_min_gd(" << a0 << ", " << a1 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_min(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "max") {
                         std::string a0 = sanitize(instr.args[1].name);
                         std::string a1 = sanitize(instr.args[2].name);
-                        RirType aty = temp_types.count(instr.args[1].name) ? temp_types[instr.args[1].name] : instr.args[1].ty;
+                        RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_max_f(" << a0 << ", " << a1 << ");\n";
+                        else if (aty == RirGd || ty_of(instr.args[2]) == RirGd)
+                            out << "    " << sanitize(instr.dest) << " = rose_max_gd(" << a0 << ", " << a1 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_max(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "fraction") {

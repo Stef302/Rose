@@ -105,6 +105,69 @@ L'IR commune (M1) rend les deux non exclusifs — c'est l'ordre qui
 change : JIT d'abord (M2) car il garde le binaire autonome et sert le
 bootstrap ; LLVM ensuite (M3) pour la puissance de publication.
 
+## Hypothèses structurales : GMP, ABI, propriété des valeurs
+
+### GMP : ce que le JIT touche en interne, et pourquoi c'est borné
+
+Le chemin inline M2.15 lit les membres de `__mpz_struct` à l'intérieur de
+`Valeur` **sans jamais coder d'offset à la main** : les constantes
+`Z_ALLOC/Z_SIZE/Z_DPTR` sont calculées en C++ par
+`offsetof(Valeur, z) + offsetof(__mpz_struct, …)` — un changement de layout
+GMP ou de `Valeur` recalcule les offsets tout seul (et le
+`static_assert(sizeof(Valeur) == 152)` de rose.cpp force la relecture des
+deux définitions). Ce qui reste comme **hypothèses sémantiques** GMP,
+documentées et stables depuis la 4.x :
+
+- `_mp_size` est la taille signée (négatif ⇒ valeur négative) ;
+- `|_mp_size| == 1` ⇒ un seul limbe, à `_mp_d[0]` ;
+- `_mp_alloc ≥ 1` garantit la capacité d'écriture d'un limbe.
+
+Le chemin inline ne s'applique qu'aux entiers **positifs d'un seul limbe
+< 2⁶³** ; tout le reste (négatifs, multi-limbes, débordements) retombe sur
+les helpers GMP par API publique, qui sont la référence exacte. Une
+violation d'hypothèse ne peut donc pas produire de faux résultat dans le
+domaine testé — les dorés `t_machine`/`machine` et le bain de 34 valeurs
+limites (`fastb`) comparent les trois moteurs à chaque jalon. L'AOT
+(`rose build`) n'utilise **que l'API publique** (mpz/gmpxx) : aucune
+dépendance aux internes.
+
+### Règles de propriété des `Valeur` dans le JIT
+
+1. **Constantes de module** — créées avec le code émis, vie = programme.
+   Enregistrées dans `g_shared_const_lookup` ; `jit_free_valeur` les
+   reconnaît et ne les envoie **jamais** au réservoir (un `return` de
+   constante est un alias du slot).
+2. **Slots de frame** — possédés par la frame ; libérés au déluge de
+   frame, rendus au réservoir.
+3. **Temporaires d'expression** — possédés par l'instruction qui les
+   crée ; `jit_free_valeur` (helper 32) n'est appelé qu'au **dernier
+   lecteur** calculé à la compilation (`temp_reads`).
+4. **Valeurs retournées** — copiées côté appelant (la copie callee est
+   libérée juste après) ; les listes et chaînes partagent leurs
+   `shared_ptr` **comme l'interpréteur** (aliasie visible identique).
+5. **Réservoir** — recyclage inter-types sûr (champs indépendants, les
+   repreneurs réinitialisent `ty` et la valeur) ; fuites bornées par
+   `VALEUR_POOL_MAX`/`FRAME_POOL_MAX`, tombant sur `delete` au-delà.
+
+L'ABI x86-64 SysV met un piège propre à ce backend : `rdi` est à la fois
+le premier argument **et** le registre de retour — libérer un résultat
+sans l'avoir déplacé libre un registre poubelle (SIGSEGV, M2.14). Sur
+AArch64, `x0` joue le même rôle sans accident possible.
+
+### ABI et plateformes : ce qui est prouvé, ce qui ne l'est pas
+
+| cible | état | preuve |
+|-------|------|--------|
+| linux/AArch64 | JIT + dorés + bancs | machine réelle |
+| linux/x86-64 | JIT **fonctionnellement** validé | `build-x64.sh --test` : test_jit + 44 dorés sous qemu/TCG |
+| linux/x86-64 (vitesse) | non mesurée | TCG ne dit rien de la vitesse réelle |
+| windows/x64 | moteur v3.3, **pas de JIT** | l'ABI Windows x64 diffère de SysV (registres, shadow space, pile) — le backend SysV ne s'y applique pas |
+
+Le piège d'émission x64 trouvé par cette validation croisée (REX d'un
+`test r,r` sans `REX.R` → `test r8, rax` → boucle infinie) est documenté
+en dur dans `jit_x64.cpp` : tout encodage qui met un registre r8..r15
+dans le champ **reg** du ModRM doit lever REX.R, pas seulement REX.B.
+
 ## Audit de langage : ce qu'il manque à Rose pour écrire son compilateur
 
 **Fait (v3)** — le noyau de contrôle était déjà là (fonctions récursives,
