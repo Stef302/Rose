@@ -974,7 +974,10 @@ std::string transpiler_rir(const RirModule &mod) {
                         std::string arg = sanitize(instr.args[1].name);
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirQ)
-                            out << "    " << sanitize(instr.dest) << " = rose_texte_q(" << arg << ");\n";
+                            // chaine(rationnel) = miroir chaine_de : « a/b »
+                            // (rose_texte_q, lui, est le rendu DECIMAL de
+                            // ecri — employé par afficher et les listes).
+                            out << "    " << sanitize(instr.dest) << " = rose_texte_q_ab(" << arg << ");\n";
                         else if (aty == RirF)
                             out << "    " << sanitize(instr.dest) << " = rose_texte_flt(" << arg << ");\n";
                         else if (aty == RirGd)
@@ -1271,10 +1274,33 @@ std::string transpiler_rir(const RirModule &mod) {
                         // Destination entiere : fidele seulement si l'exposant
                         // litteral est >= 0 (sinon l'interprete produit un
                         // RATIONNEL que le slot ne peut porter) → rejet poli.
-                        bool expo_ok = instr.args[1].kind == RirOp::Const &&
-                                       instr.args[1].name.rfind("@c", 0) == 0 &&
-                                       instr.args[1].name.find_first_of("-./") == std::string::npos;
-                        if (!expo_ok)
+                        // Le checker materialise les constantes en temps
+                        // cst.z — on remonte donc au producteur du temp.
+                        auto cst_z_nonneg = [&](const RirOp &o) -> bool {
+                            auto digits = [](const std::string &t) {
+                                // entier littéral « 123 » ou fraction positive
+                                // « 123/456 » (floor ≥ 0 sans signe moins).
+                                if (t.empty() || t.find_first_of("-.eE") != std::string::npos) return false;
+                                auto slash = t.find('/');
+                                const std::string num = slash == std::string::npos ? t : t.substr(0, slash);
+                                const std::string den = slash == std::string::npos ? "1" : t.substr(slash + 1);
+                                if (num.empty() || den.empty()) return false;
+                                for (char c : num) if (c < '0' || c > '9') return false;
+                                for (char c : den) if (c < '0' || c > '9') return false;
+                                return true;
+                            };
+                            if (o.kind == RirOp::Const)
+                                return o.name.rfind("@c", 0) == 0 && digits(o.name.substr(2));
+                            if (o.kind == RirOp::Temp)
+                                for (auto &b2 : f.blocs) for (auto &i2 : b2.instrs)
+                                    if (i2.dest == o.name)
+                                        return i2.op.rfind("cst.", 0) == 0 && !i2.args.empty()
+                                            && i2.args[0].kind == RirOp::Const
+                                            && i2.args[0].name.rfind("@c", 0) == 0
+                                            && digits(i2.args[0].name.substr(2));
+                            return false;
+                        };
+                        if (!cst_z_nonneg(instr.args[1]))
                             throw std::runtime_error("AOT : puissance a exposant non litteral positif dans un emplacement entier — l'interprete peut produire un rationnel");
                         out << "    " << dest << " = rose_puissance_gd(" << a0 << ", " << a1 << ");\n";
                     }

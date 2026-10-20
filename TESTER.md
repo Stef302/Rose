@@ -54,7 +54,10 @@ depuis ce dépôt, chacun dans son langage fondateur :
 
 **Aucune installation** : leurs seules dépendances sont `KERNEL32.dll`
 et l'UCRT (`api-ms-win-crt-*.dll`), fournies par Windows 10/11 eux-
-mêmes. `tester.ps1` rejoue les dorés **octet par octet**, le CRLF des
+mêmes. `tester.ps1` rejoue les dorés **octet par octet**, les onze
+« roses à tester » de `moteur\tests\roses\` (symboles, mixtes, tables,
+puissances, boucles, chaînes UTF-8, grands entiers, flottants, récursion,
+erreurs runtime — voir `MANIFEST.md`), le CRLF des
 fichiers édités sous Windows, la récursion profonde, le bundle
 `comp → .exe` et la FFI vers `msvcrt.dll` — et annonce la couleur.
 

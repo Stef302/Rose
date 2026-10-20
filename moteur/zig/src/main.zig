@@ -1281,18 +1281,7 @@ fn ecriStr(v: Value) []const u8 {
             return out.items;
         },
         .vide => return "",
-        .table => |t| {
-            var out = std.ArrayList(u8).init(arena());
-            out.append('[') catch @panic("mémoire");
-            for (t.items, 0..) |kv, k| {
-                if (k > 0) out.appendSlice(", ") catch @panic("mémoire");
-                out.appendSlice(ecriStr(kv.cle)) catch @panic("mémoire");
-                out.appendSlice(" => ") catch @panic("mémoire");
-                out.appendSlice(ecriStr(kv.val)) catch @panic("mémoire");
-            }
-            out.append(']') catch @panic("mémoire");
-            return out.items;
-        },
+        .table => return chaineDe(v),   // miroir : ecri(T_TABLE) passe par chaine_de
     }
 }
 
@@ -1317,6 +1306,31 @@ fn chaineDe(v: Value) []const u8 {
             if (std.mem.eql(u8, Z.texte(den), "1")) return Z.texte(num);
             return std.fmt.allocPrint(arena(), "{s}/{s}", .{ Z.texte(num), Z.texte(den) }) catch @panic("mémoire");
         },
+        .booleen => return if (v.booleen) "vrai" else "faux",
+        .chaine => return v.chaine,
+        .liste => |l| {
+            var out = std.ArrayList(u8).init(arena());
+            out.append('[') catch @panic("mémoire");
+            for (l.items, 0..) |el, k| {
+                if (k > 0) out.appendSlice(", ") catch @panic("mémoire");
+                out.appendSlice(chaineDe(el)) catch @panic("mémoire");
+            }
+            out.append(']') catch @panic("mémoire");
+            return out.items;
+        },
+        .table => |t| {
+            var out = std.ArrayList(u8).init(arena());
+            out.append('[') catch @panic("mémoire");
+            for (t.items, 0..) |kv, k| {
+                if (k > 0) out.appendSlice(", ") catch @panic("mémoire");
+                out.appendSlice(chaineDe(kv.cle)) catch @panic("mémoire");
+                out.appendSlice(" => ") catch @panic("mémoire");
+                out.appendSlice(chaineDe(kv.val)) catch @panic("mémoire");
+            }
+            out.append(']') catch @panic("mémoire");
+            return out.items;
+        },
+        .vide => return "",
         else => return ecriStr(v),
     }
 }

@@ -295,6 +295,9 @@ rose_int rose_ordre(const rose_str &s);
 rose_str rose_sous_chaine(const rose_str &s, rose_int d, rose_int f);
 rose_str rose_caractere(rose_int cp);
 rose_str rose_texte_q(const rose_qd &q);
+// chaine(rationnel) = miroir chaine_de : fraction « a/b » canonique, sans
+// plafond (le rendu DECIMAL périodique de ecri est rose_texte_q).
+rose_str rose_texte_q_ab(const rose_qd &q);
 rose_str rose_texte_flt(rose_float v);
 void rose_afficher_liste(const rose_liste &l);
 
@@ -438,6 +441,7 @@ struct rose_dyn {
     bool b = false;           // ty 4
     rose_str s;               // ty 5
     std::string texte() const;   // miroir chaine_de
+    std::string rendu() const;   // miroir ecri en texte (décimal) — listes/valeurs
     void afficher() const;       // miroir ecri
 };
 rose_dyn rose_dyn_de(const rose_ent &v);

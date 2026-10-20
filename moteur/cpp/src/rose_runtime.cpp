@@ -764,6 +764,15 @@ std::string rose_dyn::texte() const {          // miroir chaine_de
         default: return s;
     }
 }
+std::string rose_dyn::rendu() const {          // miroir ecri en texte — rendu des listes/valeurs
+    switch (ty) {
+        case 1: return e.texte();
+        case 2: return rose_texte_q(q);        // DECIMAL (les listes rendent par ecri)
+        case 3: return rose_texte_flt(f);
+        case 4: return b ? "vrai" : "faux";
+        default: return s;
+    }
+}
 void rose_dyn::afficher() const {              // miroir ecri (l'op afficher ajoute la ligne)
     switch (ty) {
         case 1: rose_afficher_int(e); return;
@@ -775,8 +784,7 @@ void rose_dyn::afficher() const {              // miroir ecri (l'op afficher ajo
     std::fputs("\n", stdout);
 }
 
-rose_dyn rose_dyn_de(const rose_ent &v)  { rose_dyn d; d.ty = 1; d.e = v; return d; }
-rose_dyn rose_dyn_de(const rose_gd &v)   { rose_dyn d; d.ty = 1; d.e = rose_ent(v); return d; }
+rose_dyn rose_dyn_de(const rose_ent &v)  { rose_dyn d; d.ty = 1; d.e = v; return d; }rose_dyn rose_dyn_de(const rose_gd &v)   { rose_dyn d; d.ty = 1; d.e = rose_ent(v); return d; }
 rose_dyn rose_dyn_de(const rose_qd &v)   { rose_dyn d; d.ty = 2; d.q = v; return d; }
 rose_dyn rose_dyn_de(rose_float v)       { rose_dyn d; d.ty = 3; d.f = v; return d; }
 rose_dyn rose_dyn_de(const rose_str &v)  { rose_dyn d; d.ty = 5; d.s = v; return d; }
@@ -850,7 +858,7 @@ rose_liste rose_table_cles(const rose_table &t) {
     rose_liste l; for (auto &kv : t) l.push_back(kv.first); return l;
 }
 rose_liste rose_table_valeurs(const rose_table &t) {
-    rose_liste l; for (auto &kv : t) l.push_back(kv.second.texte()); return l;   // rendu par chaine_de (miroir de la liste)
+    rose_liste l; for (auto &kv : t) l.push_back(kv.second.rendu()); return l;   // les listes rendent par ecri (miroir)
 }
 void rose_afficher_table(const rose_table &t) {          // miroir ecri(T_TABLE) → fputs(chaine_de)
     std::string r = "[";
@@ -870,4 +878,12 @@ bool rose_table_eq(const rose_table &a, const rose_table &b) {   // ordre indepe
         if (!found) return false;
     }
     return true;
+}
+
+rose_str rose_texte_q_ab(const rose_qd &q_in) {   // miroir chaine_de(T_RATIONNEL)
+    mpq_class q = q_in;
+    q.canonicalize();
+    if (mpz_get_si(q.get_den().get_mpz_t()) == 1 && mpz_fits_slong_p(q.get_den().get_mpz_t()))
+        return q.get_num().get_str();
+    return q.get_num().get_str() + "/" + q.get_den().get_str();
 }

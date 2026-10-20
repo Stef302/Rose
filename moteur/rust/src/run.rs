@@ -283,9 +283,9 @@ fn ecri_str(v: &Value) -> String {
             format!("[{}]", parts.join(", "))
         }
         Value::Table(t) => {
-            let t = t.borrow();
-            let parts: Vec<String> = t.iter().map(|kv| format!("{} => {}", ecri_str(&kv.0), ecri_str(&kv.1))).collect();
-            format!("[{}]", parts.join(", "))
+            // Miroir de l'interprete : ecri(T_TABLE) passe par chaine_de(v)
+            // (cellules en rendu chaine_de — rationnel « a/b », pas decimal).
+            return chaine_de(v);
         }
         Value::Vide => String::new(),
     }

@@ -28,11 +28,12 @@ function Exec-Rose([string]$exe, [string[]]$params) {
              -RedirectStandardOutput $tmp -RedirectStandardError $err
         $code = $p.ExitCode
         $octets = [IO.File]::ReadAllBytes($tmp)
+        $errtxt = [IO.File]::ReadAllText($err, [Text.Encoding]::UTF8)
     } catch {
-        $code = -1; $octets = @()
+        $code = -1; $octets = @(); $errtxt = ""
     }
     Remove-Item $tmp, $err -Force -ErrorAction SilentlyContinue
-    return @{ code = $code; octets = $octets }
+    return @{ code = $code; octets = $octets; errtxt = $errtxt }
 }
 
 # Normalise \r\n → \n (uniquement cette paire ; un \r seul est conservé).
@@ -117,6 +118,31 @@ foreach ($m in $moteurs) {
     $r = Exec-Rose $exe @([IO.Path]::Combine($dore, "t_tables.rose"))
     if ($r.code -eq 0 -and (Identiq $attendu $r.octets)) { Succes "$nom doré v3.1 tables" }
     else { Echec "$nom doré v3.1 tables (code $($r.code))" }
+
+    # 2e) roses à tester (moteur\tests\roses) — torture multi-features M4.2.
+    # Les .attendu comparent l'octet ; les .attendu.err comparent le code de
+    # sortie et le message d'erreur (stdout+stderr confondus).
+    $roses = Join-Path $Racine "moteur\tests\roses"
+    if (Test-Path $roses) {
+        foreach ($rose in (Get-ChildItem $roses -Filter *.rose | Sort-Object Name)) {
+            $base = [IO.Path]::GetFullPath([IO.Path]::Combine($roses, $rose.BaseName))
+            $r = Exec-Rose $exe @([IO.Path]::GetFullPath($rose.FullName))
+            if (Test-Path "$base.attendu") {
+                $attendu = [IO.File]::ReadAllBytes("$base.attendu")
+                if ($r.code -eq 0 -and (Identiq $attendu $r.octets)) { Succes "$nom rose $($rose.BaseName)" }
+                else { Echec "$nom rose $($rose.BaseName) (code $($r.code))" }
+            } elseif (Test-Path "$base.attendu.err") {
+                $lignes = (Texte ([IO.File]::ReadAllBytes("$base.attendu.err"))) -split "`n"
+                $codeVoulu = 0
+                $premier = ($lignes[0] -replace "`r", "")
+                if ($premier -match "^CODE=(\d+)$") { $codeVoulu = [int]$Matches[1] }
+                $motif = (($lignes | Select-Object -Skip 1) -join "`n").Trim()
+                $obtenu = (((Texte $r.octets) + "`n" + $r.errtxt) -replace "`r", "").Trim()
+                if ($r.code -eq $codeVoulu -and $obtenu -like "*$motif*") { Succes "$nom rose $($rose.BaseName) (erreur attendue, code $codeVoulu)" }
+                else { Echec "$nom rose $($rose.BaseName) (code $($r.code), attendu $codeVoulu)" }
+            }
+        }
+    }
 
     # 3) CLI : usage et fichier absent → code 1
     $r = Exec-Rose $exe @()
