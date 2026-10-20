@@ -36,6 +36,7 @@ tout.
 | chemin | rôle |
 |--------|------|
 | `ARCHITECTURE.md` | **cap du projet** : un moteur officiel + des oracles, feuille de route IR → JIT → LLVM → auto-hébergement |
+| `DEPENDANCES.md` | **inventaire des dépendances externes** : surface GMP mesurée (44+15 fonctions), route vers le bignum natif `rose_mpz`/`rose_mpq` et l'affranchissement des autres liens |
 | `TESTER.md` | **guide du test final** sur votre machine (Linux **et Windows**) |
 | `bin/` | moteur officiel `rose` / `rose-win64.exe` (C++) ; les exécutables Rust/Zig livrés sont les **oracles** du contrat de parité |
 | `moteur/` | le moteur officiel (C++) et les quatre oracles (Rust, Zig, Python, Julia), suites de validation, spec de l'IR (`IR.md`) — détails dans `moteur/README.md` |
