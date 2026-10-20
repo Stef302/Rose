@@ -817,3 +817,31 @@ timings au pair avec M4.1 (médianes entrelacées même session : appels
 492↔479, premiers 62↔54 ms — bruit thermique, aucune régression).
 Bonus garde-fou : le garde-fou d'en-tête `#ifndef` du runtime était fermé à
 mi-fichier (la moitié du header non protégée) — refermé en fin de fichier.
+
+### Addendum M4.2 — les roses de torture débusquent trois croissances
+
+Douze « roses à tester » (moteur/tests/roses) générées contre
+l'interprète et passées au peigne interp=JIT=rust=zig=AOT. Trois
+divergences réelles, toutes trouvées par elles, toutes corrigées :
+
+1. **rust & zig** : l'affichage d'une table rendait ses cellules par
+   ecri (2.4) au lieu du miroir `ecri(T_TABLE) → chaine_de(v)` (12/5).
+   Un rationnel dans une table valait donc deux textes selon le moteur —
+   invisible dans les dorés (aucun Q en cellule), immédiat dans
+   rose_tables. Zig portait de surcroît une `chaineDe` sans cas
+   table/liste (récursion croisée évitée de justesse).
+2. **AOT `chaine(rationnel)`** : le transpileur émettait `rose_texte_q`
+   — le rendu **décimal** de ecri — là où l'interprète rend chaine_de =
+   « a/b ». Silencieux préexistant : aucun doré n'appelait chaine sur un
+   rationnel. Nouveau helper `rose_texte_q_ab` ; les deux rendus sont
+   désormais nommés dans le runtime (`texte`=chaine_de, `rendu`=ecri).
+3. **AOT `^` trop strict** : le checker matérialise l'exposant en temps
+   `cst.*` — le littéral n'arrivait jamais au test de rejet, qui
+   condamnait `7 ^ 2`. Acceptation élargie aux entiers et fractions
+   positives littéraux (floor ≥ 0 — `rose_vers_mpz` plancher est pile
+   l'arithmétique de `vers_z`) : `(-8)^(1/3)` → 1 comme l'interprète.
+
+Mesures des roses (au passage) : les rejet AOT restant = z^e à exposant
+non littéral (`rose_puissance_dyn`, documenté, jamais silencieux).
+validation complète rejouée après correctifs : dorés 44, parité 116,
+aot.py 19+16/35, croisée x64 qemu 43/43, bancs 10/10 empreintes.
