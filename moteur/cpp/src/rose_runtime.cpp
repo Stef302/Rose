@@ -234,7 +234,8 @@ rose_gd rose_puissance_gd(const rose_gd &base, rose_int expo) {
 
 rose_int rose_nb_chiffres_gd(const rose_gd &n) {
     if (mpz_sgn(n.get_mpz_t()) == 0) return 1;
-    return (rose_int)mpz_sizeinbase(n.get_mpz_t(), 10);
+    rose_gd t; mpz_abs(t.get_mpz_t(), n.get_mpz_t());
+    return (rose_int)mpz_sizeinbase(t.get_mpz_t(), 10);   // quirks GMP = sémantique Rose
 }
 
 void rose_afficher_gd(const rose_gd &n) {
@@ -262,11 +263,10 @@ rose_int rose_compter_premiers(rose_int n) {
 }
 
 rose_int rose_nb_chiffres(rose_int n) {
-    if (n == 0) return 1;
-    rose_int t = n < 0 ? -n : n;
-    rose_int c = 0;
-    while (t > 0) { c++; t /= 10; }
-    return c;
+    mpz_class z(n);
+    if (mpz_sgn(z.get_mpz_t()) == 0) return 1;
+    mpz_abs(z.get_mpz_t(), z.get_mpz_t());
+    return (rose_int)mpz_sizeinbase(z.get_mpz_t(), 10);   // quirks GMP = sémantique Rose
 }
 
 rose_int rose_hasard(rose_int n) {
@@ -499,3 +499,16 @@ rose_gd rose_rem_florentin_gd(const rose_gd &a, const rose_gd &b) {
     mpz_fdiv_r(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t());
     return r;
 }
+
+// Variantes grands entiers exactes (GMP) — les arguments int64 se convertissent.
+rose_gd rose_pgcd_gd(const rose_gd &a, const rose_gd &b) {
+    rose_gd r; mpz_gcd(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t()); return r;
+}
+rose_gd rose_ppcm_gd(const rose_gd &a, const rose_gd &b) {
+    rose_gd r; mpz_lcm(r.get_mpz_t(), a.get_mpz_t(), b.get_mpz_t()); return r;
+}
+rose_gd rose_abs_gd(const rose_gd &n) {
+    rose_gd r; mpz_abs(r.get_mpz_t(), n.get_mpz_t()); return r;
+}
+rose_gd rose_min_gd(const rose_gd &a, const rose_gd &b) { return a < b ? a : b; }
+rose_gd rose_max_gd(const rose_gd &a, const rose_gd &b) { return a > b ? a : b; }
