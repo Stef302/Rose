@@ -218,6 +218,35 @@ si ($g) { >> 1 }
 $w = 42
 >> $w
 ''',
+    'recursif': '''fn fact($n: entier) -> entier {
+  si ($n <= 1) { retour 1 }
+  retour $n * fact($n - 1)
+}
+
+>> fact(5)
+''',
+    'remutuel': '''fn pair($n: entier) -> booleen {
+  si ($n == 0) { retour vrai }
+  retour impair($n - 1)
+}
+
+fn impair($n: entier) -> booleen {
+  si ($n == 0) { retour faux }
+  retour pair($n - 1)
+}
+
+>> pair(10)
+''',
+    'listeref': '''fn remplir($v: liste<chaine>) {
+  joindre($v, "a")
+  joindre($v, "b")
+}
+
+$v = ["x"]
+remplir($v)
+>> longueur($v)
+>> $v[3]
+''',
     'table': '''$t = table()
 inserer($t, "un", 1)
 inserer($t, "deux", 2)

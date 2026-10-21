@@ -133,6 +133,29 @@ fn genre($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret: l
           si (longueur($toks) >= 3) { $bt = genre($toks[2], $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
           si ($bt == "h") { retour "y" }
           si ($bt != "l") { retour "s" }
+          // quand la base est une globale, les éléments peuvent avoir été
+          // poussés sur le temporaire affecteur, avant l'affect.
+          $srcg = ""
+          $eglob = vrai
+          $pt0 = 1
+          tant_que ($pt0 < longueur($body)) {
+            $blq = $body[$pt0]
+            si (commence_par($blq, $toks[2] + " = ")) { $eglob = faux }
+            si (commence_par($blq, "affect ")) {
+              $tkq = [""]
+              decoupe($blq, $tkq)
+              si (longueur($tkq) >= 4) {
+                $gnq = $tkq[3]
+                si (longueur($gnq) > 0) {
+                  si ($gnq[0] == '"') { $gnq = sous_chaine($gnq, 1, longueur($gnq) - 1) }
+                }
+                $baseb = $toks[2]
+                si (commence_par($baseb, "%")) { $baseb = sous_chaine($baseb, 1, longueur($baseb)) }
+                si ($gnq == $baseb) { $srcg = $tkq[2] }
+              }
+            }
+            $pt0 = $pt0 + 1
+          }
           $pt = 1
           $elt = "z"
           tant_que ($pt < longueur($body)) {
@@ -142,6 +165,20 @@ fn genre($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret: l
               $tokp = [""]
               decoupe($restp2, $tokp)
               si (longueur($tokp) >= 2) { $elt = genre($tokp[1], $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
+            }
+            si (commence_par($blp, "call $joindre " + $toks[2] + " ")) {
+              $restj = trim(sous_chaine($blp, 15 + longueur($toks[2]), longueur($blp)))
+              $tokj = [""]
+              decoupe($restj, $tokj)
+              si (longueur($tokj) >= 2) { $elt = genre($tokj[1], $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
+            }
+            si ($srcg != "") {
+              si (commence_par($blp, "liste.push " + $srcg + " ")) {
+                $rests = trim(sous_chaine($blp, 11 + longueur($srcg) + 1, longueur($blp)))
+                $tokv = [""]
+                decoupe($rests, $tokv)
+                si (longueur($tokv) >= 2) { $elt = genre($tokv[1], $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
+              }
             }
             $pt = $pt + 1
           }
@@ -405,7 +442,6 @@ fn type_retour($l: chaine) -> chaine {
   tant_que ($brace < longueur($tyraw) et $tyraw[$brace] != '{' et $tyraw[$brace] != ' ') { $brace = $brace + 1 }
   $tyraw = trim(sous_chaine($tyraw, 0, $brace))
   si ($tyraw == "z") { retour "rose_ent" }
-  si ($tyraw == "u") { retour "int" }
   si ($tyraw == "f") { retour "rose_float" }
   si ($tyraw == "s") { retour "rose_str" }
   si ($tyraw == "q") { retour "rose_qd" }
@@ -491,6 +527,35 @@ fn cpp_type_name($t: chaine) -> chaine {
 }
 
 // ---------- principal ----------
+// Parcours en profondeur du graphe d'appels ($edges = entrées plates
+// « source cible »). Retourne vrai si un cycle existe — le transpileur C++
+// pose alors rose_pile_geante dans main (récursives : pile de 512 Mo).
+fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $pile: chaine) -> booleen {
+  $p2 = $pile + $nom + " "
+  $e = 1
+  tant_que ($e < longueur($edges)) {
+    $ent = $edges[$e]
+    si (commence_par($ent, $nom + " ")) {
+      $m = sous_chaine($ent, longueur($nom) + 1, longueur($ent))
+      si ($m != "") {
+        si (contient($p2, " " + $m + " ")) { retour vrai }
+        $deja = faux
+        $qv2 = 1
+        tant_que ($qv2 < longueur($visites)) {
+          si ($visites[$qv2] == $m) { $deja = vrai }
+          $qv2 = $qv2 + 1
+        }
+        si ($deja == faux) {
+          joindre($visites, $m)
+          si (graphe_cycle($m, $edges, $visites, $p2)) { retour vrai }
+        }
+      }
+    }
+    $e = $e + 1
+  }
+  retour faux
+}
+
 fn principal() {
   $src = lire_texte(argument(0))
   $ls = lignes($src)
@@ -508,6 +573,26 @@ fn principal() {
   $fn_noms = [""]
   $fn_rets = [""]
   $fn_pars = [""]
+  // arêtes du graphe d'appels, entrées plates « source cible »
+  $edges = [""]
+  $cour_idx = 0
+
+  // table COMPLÈTE des fonctions usagères, avant toute arête : un appel vers
+  // une fonction définie plus bas dans le RIR compte aussi (réciprocité).
+  $fn_tous = [""]
+  $j0 = 1
+  tant_que ($j0 < $n) {
+    $l0 = trim($ls[$j0])
+    si (commence_par($l0, "fonction ")) {
+      $nom0 = nom_fonction($l0)
+      si ($nom0 != "$principal" et $nom0 != "principal") {
+        $nomc0 = $nom0
+        si (commence_par($nomc0, "$")) { $nomc0 = sous_chaine($nomc0, 1, longueur($nomc0)) }
+        joindre($fn_tous, $nomc0)
+      }
+    }
+    $j0 = $j0 + 1
+  }
 
   // première passe : déclarations avancées
   $i = 1
@@ -515,6 +600,7 @@ fn principal() {
     $l = trim($ls[$i])
     si (commence_par($l, "fonction ")) {
       $nom = nom_fonction($l)
+      $cour_idx = 0
       si ($nom != "$principal" et $nom != "principal") {
         $cname = c_name($nom)
         // collecte table (nom sans le $)
@@ -548,6 +634,7 @@ fn principal() {
           }
         }
         joindre($fn_pars, $lettres)
+        $cour_idx = longueur($fn_pars) - 1
         // params
         $rest = trim(sous_chaine($l, 9, longueur($l)))
         $k0 = 0
@@ -582,7 +669,10 @@ fn principal() {
             si (longueur($varname) > 0 et $varname[0] == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
             si ($first == faux) { $fwd = $fwd + ", " }
             $first = faux
-            $fwd = $fwd + nom_type(lettre_param($part)) + " r_" + $varname
+            // v3.14.1 — les listes voyagent par RÉFÉRENCE (miroir du transpiler)
+            $ptf = nom_type(lettre_param($part))
+            si ($ptf == "rose_liste") { $ptf = "rose_liste&" }
+            $fwd = $fwd + $ptf + " r_" + $varname
             $pk = $pk + 1
 
           }
@@ -590,10 +680,62 @@ fn principal() {
         $fwd = $fwd + ");"
         >> $fwd
       }
+    } sinon si ($cour_idx > 0) {
+      // arête d'appel vers une fonction usagère (pour la détection de cycle)
+      si (contient($l, "call $")) {
+        $tke = [""]
+        decoupe($l, $tke)
+        $ce = 1
+        tant_que ($ce + 1 < longueur($tke)) {
+          si ($tke[$ce] == "call") {
+            $cib = $tke[$ce + 1]
+            si (commence_par($cib, "$")) {
+              $cibn = sous_chaine($cib, 1, longueur($cib))
+              $in = faux
+              $q2 = 1
+              tant_que ($q2 < longueur($fn_tous)) {
+                si ($fn_tous[$q2] == $cibn) { $in = vrai }
+                $q2 = $q2 + 1
+              }
+              si ($in) {
+                $srcn = $fn_noms[$cour_idx]
+                $dup = faux
+                $q3 = 1
+                tant_que ($q3 < longueur($edges)) {
+                  si ($edges[$q3] == $srcn + " " + $cibn) { $dup = vrai }
+                  $q3 = $q3 + 1
+                }
+                si ($dup == faux) { joindre($edges, $srcn + " " + $cibn) }
+              }
+            }
+          }
+          $ce = $ce + 1
+        }
+      }
     }
     $i = $i + 1
   }
   >> ""
+
+  // récursivité (miroir du transpileur) : un cycle dans le graphe d'appels
+  // des fonctions usagères impose rose_pile_geante en tête de main.
+  $recursif = faux
+  $visites = [""]
+  $rr = 1
+  tant_que ($rr < longueur($fn_noms) et $recursif == faux) {
+    $rn = $fn_noms[$rr]
+    $vu = faux
+    $qv = 1
+    tant_que ($qv < longueur($visites)) {
+      si ($visites[$qv] == $rn) { $vu = vrai }
+      $qv = $qv + 1
+    }
+    si ($vu == faux) {
+      joindre($visites, $rn)
+      si (graphe_cycle($rn, $edges, $visites, " ")) { $recursif = vrai }
+    }
+    $rr = $rr + 1
+  }
 
   // ---------- deuxième passe : émission des corps ----------
   $i = 1
@@ -644,7 +786,9 @@ fn principal() {
             si (longueur($varname) > 0 et $varname[0] == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
             si ($first == faux) { $sig = $sig + ", " }
             $first = faux
-            $sig = $sig + nom_type(lettre_param($part)) + " r_" + $varname
+            $pts = nom_type(lettre_param($part))
+            si ($pts == "rose_liste") { $pts = "rose_liste&" }
+            $sig = $sig + $pts + " r_" + $varname
             joindre($pnoms, $varname)
             $pletres = $pletres + lettre_param($part)
             $pk = $pk + 1
@@ -654,6 +798,7 @@ fn principal() {
       $sig = $sig + ")"
       >> $sig + " {"
       si ($cname == "main") {
+        si ($recursif) { >> "    rose_pile_geante(argc, argv);" }
         >> "    rose_runtime_set_args(argc, argv);"
       }
 
