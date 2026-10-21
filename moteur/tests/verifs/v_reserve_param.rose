@@ -1,0 +1,2 @@
+fn f(t1: entier) -> entier { retour $t1 }
+>> 1

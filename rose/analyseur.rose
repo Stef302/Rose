@@ -215,7 +215,7 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
   }
   si (T1($g, $p) == "::") {
     $mod = VX0($x, $p)
-    $nom = VX1($x, $p)
+    $nom = VX1($x, $p + 1)
     retour chaine($p + 3) + "|(app " + $mod + "::" + $nom + ")"
   }
   retour chaine($p + 1) + "|(v " + VX0($x, $p) + ")"

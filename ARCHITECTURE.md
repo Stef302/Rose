@@ -69,7 +69,7 @@ g++‑O3 compile en binaire autonome (runtime Rose + GMP seulement).
 L'option LLVM (API C) a été tentée puis **écartée** : même résultat,
 chaîne de production beaucoup plus lourde. Le contrat est « émettre ou
 rejeter poliment » : jamais de binaire faux ni de g++ cassé — chaque
-limite est un message nommé. À la v3.14 : 55 cas de référence, 31
+limite est un message nommé. À la v3.14 : 56 cas de référence, 32
 fidèles, 24 rejets polis, 0 écart, et les campagnes génératives
 (540+ programmes, trois voies) sans divergence.
 
@@ -87,7 +87,7 @@ cinq étapes, chacune prouvable :
    stage0 avant, plus personne ne le développe d'abord) ;
 5. le JIT/LLVM passent dans le compilateur auto-hébergé à son tour.
 
-**État d'avancement (depuis la v3.14.1) — M4.0 et M4.1 faits** :
+**État d'avancement (depuis la v3.14.1) — M4.0, M4.1 et M4.2 faits** :
 l'oracle `rose tokens prog.rose` (jetons `ligne:colonne type texte`,
 miroir exact de `tokeniser()`) sert de point fixe au premier maillon :
 `rose/lexeur.rose` lexelle en Rose, et `moteur/tests/lexeur.py` exige
@@ -114,8 +114,30 @@ maillon a payé sa dette en découvrant une cinquième classe de défaut
 AOT : indexer une VARIABLE LOCALE portant une liste émettait
 `rose_index_str` (index de chaîne) et cassait g++ — l'affectation
 propage désormais le type `liste` sous la clé `%nom`.
-Prochain maillon : le vérificateur (`rose/verifieur.rose`) puis
-l'émetteur RIR, point d'appui : la sortie de `rose rir`, déjà texte.
+
+M4.2 : l'oracle `rose verif prog.rose` rejoue la chaîne complète du
+moteur — analyse, **repli de constantes**, **vérification** — et rend
+soit `vérifié`, soit le message exact du vérificateur. `rose/verifieur.rose`
+rejoue cette chaîne en Rose : l'AST tient dans des pools de nœuds plats
+construits en post-ordre (jointure seule, index jamais réécrit), le repli
+arithmétique est EXACT (l'entier Rose est à précision arbitraire — les
+rationnels se plient et se réduisent comme `mpq`, les flottants portent
+une marque opaque car leur sort ne dépend que du verdict), puis la
+vérification miroir promène les deux environnements du moteur (globales
+et `locals`, y compris leur dualité : les corps de `si`/`tant_que`/`pour`
+descendent dans `locals`, jamais dans l'ambiance) et reproduit à l'octet
+près les 45 entrées STDLIB, les 4 dynamiques, les conversions polymorphes
+et tous les quirks de messages. `moteur/tests/verifieur.py` exige l'égalité
+triple sur **103 fichiers** : 53 fixtures de `moteur/tests/verifs/` (51
+rejets au message exact, 2 acceptations) et 50 fichiers du corpus —
+dorés (dont le doré d'erreur `nom_reserve`), roses, bancs, lexeur,
+analyseur et **vérificateur se vérifient eux-mêmes**. Ce maillon a aussi
+débusqué un défaut du maillon précédent : le nom après `module::` était
+lu à la mauvaise position — le corpus n'écrivait jamais d'appel qualifié ;
+la fixture `v_ok_module.rose` le garde désormais sous verrou, des deux
+côtés (arbre et vérification).
+Prochain maillon : l'émetteur RIR (`rose/émetteur.rose`), point d'appui :
+la sortie de `rose rir`, déjà texte.
 
 ### M5 — Standard library en Rose
 `prelude.rose` (listes, tri, chaînes, tables, tests unitaires écrits

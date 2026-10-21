@@ -36,6 +36,8 @@ def corpus():
     fs += sorted(glob.glob(os.path.join(RACINE, "moteur", "tests", "bench", "*.rose")))
     fs += sorted(glob.glob("/tmp/opencode/aot_divergence_*.rose"))
     fs += sorted(glob.glob("/tmp/opencode/*divergence*.rose"))
+    fs.append(os.path.join(RACINE, "moteur", "tests", "verifs", "v_ok_module.rose"))
+    # ↑ appel module:: — le seul chemin qui exerce la lecture du nom après "::"
     fs.append(LEXEUR)      # l'analyseur lit le lexeur
     fs.append(ANALYSEUR)   # l'analyseur se lit lui-même : point fixe du jalon
     return fs

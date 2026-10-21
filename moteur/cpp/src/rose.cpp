@@ -4670,31 +4670,62 @@ int main(int argc, char **argv) {
         interp.executer();
         return 0;
     }
+    if (action == "verif") {
+        if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
+        std::string source;
+        if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
+        try {
+            Programme prog = analyser(source);
+            replier_constants(prog);
+            Verificateur verif(prog);
+            verif.verifier();
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
+        fputs("vérifié\n", stdout);
+        return 0;
+    }
     if (action == "ast") {
         if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
         std::string source;
         if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
-        fputs(ast_programme(analyser(source)).c_str(), stdout);
+        try {
+            fputs(ast_programme(analyser(source)).c_str(), stdout);
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
         return 0;
     }
     if (action == "tokens") {
         if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
         std::string source;
         if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
-        for (const Token &t : tokeniser(source))
-            printf("%d:%d %s %s\n", t.ligne, t.colonne, tk_nom(t.type), texte_echappe(t.texte).c_str());
+        try {
+            for (const Token &t : tokeniser(source))
+                printf("%d:%d %s %s\n", t.ligne, t.colonne, tk_nom(t.type), texte_echappe(t.texte).c_str());
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
         return 0;
     }
     if (action == "rir") {
         if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
         std::string source;
         if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
-        Programme prog = analyser(source);
-        replier_constants(prog);
-        Verificateur verif(prog);
-        verif.verifier();
-        std::string rir = emettre_rir(prog);
-        fputs(rir.c_str(), stdout);
+        try {
+            Programme prog = analyser(source);
+            replier_constants(prog);
+            Verificateur verif(prog);
+            verif.verifier();
+            std::string rir = emettre_rir(prog);
+            fputs(rir.c_str(), stdout);
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
         return 0;
     }
     if (action == "comp") {
