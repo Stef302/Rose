@@ -1,0 +1,1303 @@
+// emetteur_cpp.rose — M4.4 V3 : traducteur RIR -> C++ (entiers + chaines + globals).
+// Oracle : `rose build prog.rose -o sortie.cpp` (transpiler_rir du moteur).
+
+// ---------- utilitaires chaînes ----------
+fn trim($s: chaine) -> chaine {
+  $n = longueur($s)
+  $i = 0
+  $stop = faux
+  tant_que ($i < $n et $stop == faux) {
+    $c = $s[$i]
+    si ($c == ' ' ou $c == '\t') { $i = $i + 1 } sinon { $stop = vrai }
+  }
+  $j = $n
+  $stop = faux
+  tant_que ($j > $i et $stop == faux) {
+    $c = $s[$j-1]
+    si ($c == ' ' ou $c == '\t') { $j = $j - 1 } sinon { $stop = vrai }
+  }
+  retour sous_chaine($s, $i, $j)
+}
+
+fn est_vide($s: chaine) -> booleen {
+  retour longueur(trim($s)) == 0
+}
+
+fn commence_par($s: chaine, $p: chaine) -> booleen {
+  $lp = longueur($p)
+  si (longueur($s) < $lp) { retour faux }
+  retour sous_chaine($s, 0, $lp) == $p
+}
+
+fn contient($s: chaine, $p: chaine) -> booleen {
+  $ls = longueur($s)
+  $lp = longueur($p)
+  $i = 0
+  tant_que ($i + $lp <= $ls) {
+    si (sous_chaine($s, $i, $i + $lp) == $p) { retour vrai }
+    $i = $i + 1
+  }
+  retour faux
+}
+
+// ---------- découpage en lignes (rembourrée) ----------
+fn lignes($src: chaine) -> liste<chaine> {
+  $out = [""]
+  $n = longueur($src)
+  $cur = ""
+  $i = 0
+  tant_que ($i < $n) {
+    $c = $src[$i]
+    si ($c == '\n') { joindre($out, $cur); $cur = "" }
+    sinon { $cur = $cur + $c }
+    $i = $i + 1
+  }
+  joindre($out, $cur)
+  retour $out
+}
+
+// ---------- helpers RIR ----------
+fn nom_fonction($l: chaine) -> chaine {
+  $rest = trim(sous_chaine($l, 9, longueur($l)))
+  $k = 0
+  tant_que ($k < longueur($rest) et $rest[$k] != '(') { $k = $k + 1 }
+  retour trim(sous_chaine($rest, 0, $k))
+}
+
+fn type_retour($l: chaine) -> chaine {
+  $rest = trim(sous_chaine($l, 9, longueur($l)))
+  $fleche = 0
+  $trouve = faux
+  tant_que ($fleche + 1 < longueur($rest) et $trouve == faux) {
+    si (sous_chaine($rest, $fleche, $fleche+2) == "->") { $trouve = vrai }
+    sinon { $fleche = $fleche + 1 }
+  }
+  si ($trouve == faux) { retour "rose_ent" }
+  $tyraw = trim(sous_chaine($rest, $fleche+2, longueur($rest)))
+  $brace = 0
+  tant_que ($brace < longueur($tyraw) et $tyraw[$brace] != '{' et $tyraw[$brace] != ' ') { $brace = $brace + 1 }
+  $tyraw = trim(sous_chaine($tyraw, 0, $brace))
+  si ($tyraw == "z") { retour "rose_ent" }
+  si ($tyraw == "u") { retour "int" }
+  si ($tyraw == "f") { retour "rose_float" }
+  si ($tyraw == "s") { retour "rose_str" }
+  si ($tyraw == "q") { retour "rose_qd" }
+  si ($tyraw == "b") { retour "rose_bool" }
+  si ($tyraw == "l") { retour "rose_liste" }
+  retour "rose_ent"
+}
+
+fn c_name($nom: chaine) -> chaine {
+  si ($nom == "$principal" ou $nom == "principal") { retour "main" }
+  retour "r_" + sous_chaine($nom, 1, longueur($nom))
+}
+
+fn sanitize($name: chaine) -> chaine {
+  $s = $name
+  si (longueur($s) > 0 et ($s[0] == '%' ou $s[0] == '$')) {
+    $s = sous_chaine($s, 1, longueur($s))
+  }
+  retour "r_" + $s
+}
+
+fn operand($tok: chaine) -> chaine {
+  $t = trim($tok)
+  si (longueur($t) == 0) { retour "0" }
+  si ($t[0] == '%') { retour "r_" + sous_chaine($t, 1, longueur($t)) }
+  si ($t[0] == '$') { retour "r_" + sous_chaine($t, 1, longueur($t)) }
+  si (commence_par($t, "@c")) {
+    retour sous_chaine($t, 2, longueur($t))
+  }
+  retour $t
+}
+
+// type d'un temp selon l'op qui le produit
+fn temp_type_of($op: chaine) -> chaine {
+  si (commence_par($op, "cmp.")) { retour "b" }
+  si ($op == "not.b" ou $op == "and.b" ou $op == "or.b") { retour "b" }
+  si ($op == "liste.new") { retour "l" }
+  si ($op == "cst.z") { retour "z" }
+  si ($op == "cst.s") { retour "s" }
+  si ($op == "cst.f") { retour "f" }
+  si ($op == "cst.b") { retour "b" }
+  si ($op == "cst.q") { retour "q" }
+  si ($op == "add.z" ou $op == "sub.z" ou $op == "mul.z" ou $op == "neg.z") { retour "z" }
+  si ($op == "add.s") { retour "s" }
+  si ($op == "sous_chaine") { retour "s" }
+  si ($op == "caractere") { retour "s" }
+  si ($op == "add.f" ou $op == "sub.f" ou $op == "mul.f" ou $op == "div.f" ou $op == "neg.f") { retour "f" }
+  retour "z"
+}
+
+fn cpp_type_name($t: chaine) -> chaine {
+  si ($t == "s") { retour "rose_str" }
+  si ($t == "f") { retour "rose_float" }
+  si ($t == "b") { retour "rose_bool" }
+  si ($t == "q") { retour "rose_qd" }
+  si ($t == "l") { retour "rose_liste" }
+  retour "rose_ent"
+}
+
+// ---------- principal ----------
+fn principal() {
+  $src = lire_texte(argument(0))
+  $ls = lignes($src)
+  $n = longueur($ls)
+
+  // en-tête
+  >> "#include \"rose_runtime.h\""
+  >> "#include <cstdint>"
+  >> "#include <cstdio>"
+  >> "#include <string>"
+  >> ""
+
+  // première passe : déclarations avancées
+  $i = 1
+  tant_que ($i < $n) {
+    $l = trim($ls[$i])
+    si (commence_par($l, "fonction ")) {
+      $nom = nom_fonction($l)
+      si ($nom != "$principal" et $nom != "principal") {
+        $cname = c_name($nom)
+        // params
+        $rest = trim(sous_chaine($l, 9, longueur($l)))
+        $k0 = 0
+        tant_que ($k0 < longueur($rest) et $rest[$k0] != '(') { $k0 = $k0 + 1 }
+        $k1 = $k0
+        tant_que ($k1 < longueur($rest) et $rest[$k1] != ')') { $k1 = $k1 + 1 }
+        $pr = ""
+        si ($k1 > $k0) { $pr = sous_chaine($rest, $k0+1, $k1) }
+        $fwd = "rose_ent " + $cname + "("
+        $pp = trim($pr)
+        si (longueur($pp) > 0) {
+          $parts = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($pp)) {
+            $ch = $pp[$k]
+            si ($ch == ',') { joindre($parts, trim($cur)); $cur = "" }
+            sinon { $cur = $cur + $ch }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+          $first = vrai
+          $pk = 1
+          tant_que ($pk < longueur($parts)) {
+            $part = $parts[$pk]
+            $pct = 0
+            tant_que ($pct < longueur($part) et $part[$pct] != '%') { $pct = $pct + 1 }
+            $after = trim(sous_chaine($part, $pct, longueur($part)))
+            $sp = 0
+            tant_que ($sp < longueur($after) et $after[$sp] != ' ' et $after[$sp] != ':') { $sp = $sp + 1 }
+            $varname = trim(sous_chaine($after, 0, $sp))
+            si (longueur($varname) > 0 et $varname[0] == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
+            si ($first == faux) { $fwd = $fwd + ", " }
+            $first = faux
+            $fwd = $fwd + "rose_ent r_" + $varname
+            $pk = $pk + 1
+          }
+        }
+        $fwd = $fwd + ");"
+        >> $fwd
+      }
+    }
+    $i = $i + 1
+  }
+  >> ""
+
+  // ---------- deuxième passe : émission des corps ----------
+  $i = 1
+  tant_que ($i < $n) {
+    $l = trim($ls[$i])
+    si (commence_par($l, "fonction ")) {
+      $nom = nom_fonction($l)
+      $cname = c_name($nom)
+      $ty = type_retour($l)
+      si ($cname == "main") { $ty = "int" }
+      // signature
+      $rest = trim(sous_chaine($l, 9, longueur($l)))
+      $k0 = 0
+      tant_que ($k0 < longueur($rest) et $rest[$k0] != '(') { $k0 = $k0 + 1 }
+      $k1 = $k0
+      tant_que ($k1 < longueur($rest) et $rest[$k1] != ')') { $k1 = $k1 + 1 }
+      $pr = ""
+      si ($k1 > $k0) { $pr = sous_chaine($rest, $k0+1, $k1) }
+      $sig = $ty + " " + $cname + "("
+      si ($cname == "main") {
+        $sig = $sig + "int argc, char **argv"
+      } sinon {
+        $pp = trim($pr)
+        si (longueur($pp) > 0) {
+          $parts = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($pp)) {
+            $ch = $pp[$k]
+            si ($ch == ',') { joindre($parts, trim($cur)); $cur = "" }
+            sinon { $cur = $cur + $ch }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+          $first = vrai
+          $pk = 1
+          tant_que ($pk < longueur($parts)) {
+            $part = $parts[$pk]
+            $pct = 0
+            tant_que ($pct < longueur($part) et $part[$pct] != '%') { $pct = $pct + 1 }
+            $after = trim(sous_chaine($part, $pct, longueur($part)))
+            $sp = 0
+            tant_que ($sp < longueur($after) et $after[$sp] != ' ' et $after[$sp] != ':') { $sp = $sp + 1 }
+            $varname = trim(sous_chaine($after, 0, $sp))
+            si (longueur($varname) > 0 et $varname[0] == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
+            si ($first == faux) { $sig = $sig + ", " }
+            $first = faux
+            $sig = $sig + "rose_ent r_" + $varname
+            $pk = $pk + 1
+          }
+        }
+      }
+      $sig = $sig + ")"
+      >> $sig + " {"
+      si ($cname == "main") {
+        >> "    rose_runtime_set_args(argc, argv);"
+      }
+
+      // collect body lines
+      $body_lines = [""]
+      $i = $i + 1
+      $prof = 1
+      tant_que ($i < $n et $prof > 0) {
+        $ll = trim($ls[$i])
+        si ($ll == "}") { $prof = $prof - 1 }
+        sinon {
+          si (commence_par($ll, "fonction ")) { $prof = $prof + 1 }
+        }
+        si ($prof > 0) {
+          joindre($body_lines, $ll)
+        }
+        $i = $i + 1
+      }
+
+      // collect temp vars and globals
+      $temps = [""]
+      $globals = [""]
+      $bi = 1
+      tant_que ($bi < longueur($body_lines)) {
+        $bl = $body_lines[$bi]
+        // collect temps from %tN
+        $k = 0
+        tant_que ($k < longueur($bl)) {
+          si ($bl[$k] == '%') {
+            $start = $k
+            $k = $k + 1
+            $cont = vrai
+            tant_que ($cont) {
+              si ($k >= longueur($bl)) { $cont = faux }
+              sinon {
+                $ch = $bl[$k]
+                si (($ch >= 'a' et $ch <= 'z') ou ($ch >= 'A' et $ch <= 'Z') ou ($ch >= '0' et $ch <= '9') ou $ch == '_') {
+                  $k = $k + 1
+                } sinon {
+                  $cont = faux
+                }
+              }
+            }
+            $tok = sous_chaine($bl, $start, $k)
+            // only collect %t (temps), not params
+            si (longueur($tok) > 2 et sous_chaine($tok, 1, 2) == "t") {
+              $found = faux
+              $ti = 1
+              tant_que ($ti < longueur($temps)) {
+                si ($temps[$ti] == $tok) { $found = vrai }
+                $ti = $ti + 1
+              }
+              si ($found == faux) { joindre($temps, $tok) }
+            }
+          } sinon {
+            $k = $k + 1
+          }
+        }
+        // collect globals from "affect %t \"name\""
+        si (commence_par($bl, "affect ")) {
+          // affect %t0 "x" -> global "x"
+          $parts = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($bl)) {
+            $ch = $bl[$k]
+            si ($ch == ' ') {
+              si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+              $cur = ""
+            } sinon {
+              $cur = $cur + $ch
+            }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+          // parts: ["", "affect", "%t0", "\"x\""]
+          si (longueur($parts) >= 4) {
+            $gname = $parts[3]
+            // strip quotes
+            $gname = trim($gname)
+            si (longueur($gname) > 0 et $gname[0] == '"') {
+              $gname = sous_chaine($gname, 1, longueur($gname)-1)
+            }
+            $found = faux
+            $gi = 1
+            tant_que ($gi < longueur($globals)) {
+              si ($globals[$gi] == $gname) { $found = vrai }
+              $gi = $gi + 1
+            }
+            si ($found == faux et longueur($gname) > 0) {
+              joindre($globals, $gname)
+            }
+          }
+        }
+        $bi = $bi + 1
+      }
+
+      // tri lexicographique des temporaires (le transpileur utilise std::set)
+      // tri par selection, reconstruction de liste (pas d'affectation par index)
+      $sorted = [""]
+      $remaining = [""]
+      $ri = 1
+      tant_que ($ri < longueur($temps)) {
+        joindre($remaining, $temps[$ri])
+        $ri = $ri + 1
+      }
+      $rcount = longueur($remaining) - 1
+      tant_que ($rcount > 0) {
+        $minidx = 1
+        $mi = 2
+        tant_que ($mi < longueur($remaining)) {
+          si ($remaining[$mi] < $remaining[$minidx]) {
+            $minidx = $mi
+          }
+          $mi = $mi + 1
+        }
+        joindre($sorted, $remaining[$minidx])
+        $newrem = [""]
+        $mi = 1
+        tant_que ($mi < longueur($remaining)) {
+          si ($mi != $minidx) {
+            joindre($newrem, $remaining[$mi])
+          }
+          $mi = $mi + 1
+        }
+        $remaining = $newrem
+        $rcount = $rcount - 1
+      }
+      $temps = $sorted
+
+      // declare globals with type inference
+      $gi = 1
+      tant_que ($gi < longueur($globals)) {
+        $gname = $globals[$gi]
+        // find producing temp
+        $gtype = "z"
+        $bi = 1
+        tant_que ($bi < longueur($body_lines)) {
+          $bl = $body_lines[$bi]
+          si (commence_par($bl, "affect ")) {
+            $parts = [""]
+            $cur = ""
+            $k = 0
+            tant_que ($k < longueur($bl)) {
+              $ch = $bl[$k]
+              si ($ch == ' ') {
+                si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+                $cur = ""
+              } sinon {
+                $cur = $cur + $ch
+              }
+              $k = $k + 1
+            }
+            si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+            si (longueur($parts) >= 4) {
+              $gn = $parts[3]
+              si (longueur($gn) > 0 et $gn[0] == '"') {
+                $gn = sous_chaine($gn, 1, longueur($gn)-1)
+              }
+              si ($gn == $gname) {
+                // find producing op of %t (parts[2])
+                $tname = $parts[2]
+                $bi2 = 1
+                tant_que ($bi2 < longueur($body_lines)) {
+                  $bl2 = $body_lines[$bi2]
+                  si (commence_par($bl2, $tname + " = ")) {
+                    $rest2 = trim(sous_chaine($bl2, longueur($tname) + 3, longueur($bl2)))
+                    $sp2 = 0
+                    $stop2 = faux
+                    tant_que ($sp2 < longueur($rest2) et $stop2 == faux) {
+                      si ($rest2[$sp2] == ' ') { $stop2 = vrai }
+                      sinon { $sp2 = $sp2 + 1 }
+                    }
+                    $op2 = trim(sous_chaine($rest2, 0, $sp2))
+                    $gtype = temp_type_of($op2)
+                  }
+                  $bi2 = $bi2 + 1
+                }
+              }
+            }
+          }
+          $bi = $bi + 1
+        }
+        $ct = cpp_type_name($gtype)
+        si ($ct == "rose_str") {
+          >> "    " + $ct + " r_" + $gname + " = \"\";"
+        } sinon si ($ct == "rose_liste") {
+          >> "    " + $ct + " r_" + $gname + ";"
+        } sinon {
+          >> "    " + $ct + " r_" + $gname + " = 0;"
+        }
+        $gi = $gi + 1
+      }
+      si (longueur($globals) > 1) { >> "" }
+
+      // declare temps with type inference
+      $ti = 1
+      tant_que ($ti < longueur($temps)) {
+        $t = $temps[$ti]
+        $tn = sous_chaine($t, 1, longueur($t))
+        // find the op that produces this temp
+        $tty = "z"
+        $bi = 1
+        tant_que ($bi < longueur($body_lines)) {
+          $bl = $body_lines[$bi]
+          // check if this line assigns to $t
+          si (commence_par($bl, $t + " = ")) {
+            // extract op
+            $rest = trim(sous_chaine($bl, longueur($t) + 3, longueur($bl)))
+            $sp = 0
+            $sp = 0
+            $stopsp = faux
+            tant_que ($sp < longueur($rest) et $stopsp == faux) {
+              si ($rest[$sp] == ' ') { $stopsp = vrai } sinon { $sp = $sp + 1 }
+            }
+            $op = trim(sous_chaine($rest, 0, $sp))
+            si ($op == "index") {
+              // base is first arg after op
+              $basepart = trim(sous_chaine($rest, $sp, longueur($rest)))
+              $sp2 = 0
+              $stopsp2 = faux
+              tant_que ($sp2 < longueur($basepart) et $stopsp2 == faux) {
+                si ($basepart[$sp2] == ' ') { $stopsp2 = vrai } sinon { $sp2 = $sp2 + 1 }
+              }
+              $basearg = trim(sous_chaine($basepart, 0, $sp2))
+              $isstr = faux
+              si (commence_par($basearg, "%")) {
+                $basename = sous_chaine($basearg, 1, longueur($basearg))
+                $gi = 1
+                tant_que ($gi < longueur($globals)) {
+                  si ($globals[$gi] == $basename) {
+                    // check producing op
+                    $bi2 = 1
+                    tant_que ($bi2 < longueur($body_lines)) {
+                      $bl2 = $body_lines[$bi2]
+                      si (commence_par($bl2, $basearg + " = ")) {
+                        // this is the temp, not the global; skip
+                      }
+                      si (commence_par($bl2, "affect ")) {
+                        $parts2 = [""]
+                        $cur2 = ""
+                        $k2 = 0
+                        tant_que ($k2 < longueur($bl2)) {
+                          $ch2 = $bl2[$k2]
+                          si ($ch2 == ' ') {
+                            si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                            $cur2 = ""
+                          } sinon {
+                            $cur2 = $cur2 + $ch2
+                          }
+                          $k2 = $k2 + 1
+                        }
+                        si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                        si (longueur($parts2) >= 4) {
+                          $gn = $parts2[3]
+                          si (longueur($gn) > 0 et $gn[0] == '"') {
+                            $gn = sous_chaine($gn, 1, longueur($gn)-1)
+                          }
+                          si ($gn == $basename) {
+                            $tname = $parts2[2]
+                            $bi3 = 1
+                            tant_que ($bi3 < longueur($body_lines)) {
+                              $bl3 = $body_lines[$bi3]
+                              si (commence_par($bl3, $tname + " = ")) {
+                                $rest3 = trim(sous_chaine($bl3, longueur($tname) + 3, longueur($bl3)))
+                                $sp3 = 0
+                                $stop3 = faux
+                                tant_que ($sp3 < longueur($rest3) et $stop3 == faux) {
+                                  si ($rest3[$sp3] == ' ') { $stop3 = vrai } sinon { $sp3 = $sp3 + 1 }
+                                }
+                                $op3 = trim(sous_chaine($rest3, 0, $sp3))
+                                si ($op3 == "cst.s") { $isstr = vrai }
+                              }
+                              $bi3 = $bi3 + 1
+                            }
+                          }
+                        }
+                      }
+                      $bi2 = $bi2 + 1
+                    }
+                  }
+                  $gi = $gi + 1
+                }
+                // already checked above
+              } sinon {
+                $isstr = vrai
+              }
+              si ($isstr) { $tty = "s" } sinon { $tty = "z" }
+            } sinon si ($op == "call") {
+              // extract function name from rtoks (already split? no, $rest has it)
+              // $rest = "call $sous_chaine %s %t3 %t4"
+              // find the function name (second token)
+              $r2 = trim($rest)
+              $sp2 = 0
+              $stop2 = faux
+              tant_que ($sp2 < longueur($r2) et $stop2 == faux) {
+                si ($r2[$sp2] == ' ') { $stop2 = vrai } sinon { $sp2 = $sp2 + 1 }
+              }
+              $r2 = trim(sous_chaine($r2, $sp2, longueur($r2)))
+              $sp2 = 0
+              $stop2 = faux
+              tant_que ($sp2 < longueur($r2) et $stop2 == faux) {
+                si ($r2[$sp2] == ' ') { $stop2 = vrai } sinon { $sp2 = $sp2 + 1 }
+              }
+              $fname = trim(sous_chaine($r2, 0, $sp2))
+              si (commence_par($fname, "$")) { $fname = sous_chaine($fname, 1, longueur($fname)) }
+              si ($fname == "sous_chaine" ou $fname == "caractere" ou $fname == "chaine") { $tty = "s" }
+              sinon si ($fname == "longueur" ou $fname == "ordre" ou $fname == "nb_chiffres") { $tty = "z" }
+              sinon si ($fname == "est_premier") { $tty = "b" }
+              sinon si ($fname == "flottant") { $tty = "f" }
+              sinon { $tty = "z" }
+            } sinon si ($op == "index") {
+              // determine if base is a string
+              $basepart = trim(sous_chaine($rest, $sp, longueur($rest)))
+              $sp2 = 0
+              $stop2 = faux
+              tant_que ($sp2 < longueur($basepart) et $stop2 == faux) {
+                si ($basepart[$sp2] == ' ') { $stop2 = vrai } sinon { $sp2 = $sp2 + 1 }
+              }
+              $basepart = trim(sous_chaine($basepart, $sp2, longueur($basepart)))
+              $sp2 = 0
+              $stop2b = faux
+              tant_que ($sp2 < longueur($basepart) et $stop2b == faux) {
+                si ($basepart[$sp2] == ' ') { $stop2b = vrai } sinon { $sp2 = $sp2 + 1 }
+              }
+              $basearg = trim(sous_chaine($basepart, 0, $sp2))
+              $isstr = faux
+              si (commence_par($basearg, "%")) {
+                $basename = sous_chaine($basearg, 1, longueur($basearg))
+                $gi = 1
+                tant_que ($gi < longueur($globals)) {
+                  si ($globals[$gi] == $basename) {
+                    // check producing op
+                    $bi2 = 1
+                    tant_que ($bi2 < longueur($body_lines)) {
+                      $bl2 = $body_lines[$bi2]
+                      si (commence_par($bl2, "affect ")) {
+                        $parts2 = [""]
+                        $cur2 = ""
+                        $k2 = 0
+                        tant_que ($k2 < longueur($bl2)) {
+                          $ch2 = $bl2[$k2]
+                          si ($ch2 == ' ') {
+                            si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                            $cur2 = ""
+                          } sinon {
+                            $cur2 = $cur2 + $ch2
+                          }
+                          $k2 = $k2 + 1
+                        }
+                        si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                        si (longueur($parts2) >= 4) {
+                          $gn = $parts2[3]
+                          si (longueur($gn) > 0 et $gn[0] == '"') { $gn = sous_chaine($gn, 1, longueur($gn)-1) }
+                          si ($gn == $basename) {
+                            $tname = $parts2[2]
+                            $bi3 = 1
+                            tant_que ($bi3 < longueur($body_lines)) {
+                              $bl3 = $body_lines[$bi3]
+                              si (commence_par($bl3, $tname + " = ")) {
+                                $rest3 = trim(sous_chaine($bl3, longueur($tname) + 3, longueur($bl3)))
+                                $sp3 = 0
+                                $stop3 = faux
+                                tant_que ($sp3 < longueur($rest3) et $stop3 == faux) {
+                                  si ($rest3[$sp3] == ' ') { $stop3 = vrai } sinon { $sp3 = $sp3 + 1 }
+                                }
+                                $op3 = trim(sous_chaine($rest3, 0, $sp3))
+                                si ($op3 == "cst.s") { $isstr = vrai }
+                              }
+                              $bi3 = $bi3 + 1
+                            }
+                          }
+                        }
+                      }
+                      $bi2 = $bi2 + 1
+                    }
+                  }
+                  $gi = $gi + 1
+                }
+                si ($isstr == faux) {
+                  $bi2 = 1
+                  tant_que ($bi2 < longueur($body_lines)) {
+                    $bl2 = $body_lines[$bi2]
+                    si (commence_par($bl2, $basearg + " = ")) {
+                      $rest2 = trim(sous_chaine($bl2, longueur($basearg) + 3, longueur($bl2)))
+                      $sp3 = 0
+                      $stop3 = faux
+                      tant_que ($sp3 < longueur($rest2) et $stop3 == faux) {
+                        si ($rest2[$sp3] == ' ') { $stop3 = vrai } sinon { $sp3 = $sp3 + 1 }
+                      }
+                      $op3 = trim(sous_chaine($rest2, 0, $sp3))
+                      si ($op3 == "cst.s") { $isstr = vrai }
+                    }
+                    $bi2 = $bi2 + 1
+                  }
+                }
+              } sinon {
+                $isstr = vrai
+              }
+              si ($isstr) { $tty = "s" } sinon { $tty = "z" }
+            } sinon {
+              $tty = temp_type_of($op)
+            }
+          }
+          $bi = $bi + 1
+        }
+        $ct = cpp_type_name($tty)
+        $init = "0"
+        si ($ct == "rose_str") { $init = "\"\"" }
+        si ($ct == "rose_liste") {
+          >> "    " + $ct + " r_" + $tn + ";"
+        } sinon {
+          >> "    " + $ct + " r_" + $tn + " = " + $init + ";"
+        }
+        $ti = $ti + 1
+      }
+      // emit body instructions
+      $bi = 1
+      tant_que ($bi < longueur($body_lines)) {
+        $bl = $body_lines[$bi]
+        si (est_vide($bl)) {
+          // rien
+        } sinon si (commence_par($bl, "liste.push ")) {
+          $parts = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($bl)) {
+            $ch = $bl[$k]
+            si ($ch == ' ') {
+              si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+              $cur = ""
+            } sinon {
+              $cur = $cur + $ch
+            }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+          si (longueur($parts) >= 4) {
+            >> "    rose_liste_push_int(" + operand($parts[2]) + ", " + operand($parts[3]) + ");"
+          }
+        } sinon si (commence_par($bl, "afficher ")) {
+          $arg = trim(sous_chaine($bl, 9, longueur($bl)))
+          // déterminer le type de l'argument
+          $aty = "z"
+          si (commence_par($arg, "%")) {
+            $tname = $arg
+            $bi2 = 1
+            tant_que ($bi2 < longueur($body_lines)) {
+              $bl2 = $body_lines[$bi2]
+              si (commence_par($bl2, $tname + " = ")) {
+                $rest2 = trim(sous_chaine($bl2, longueur($tname) + 3, longueur($bl2)))
+                $sp2 = 0
+                tant_que ($sp2 < longueur($rest2) et $rest2[$sp2] != ' ') { $sp2 = $sp2 + 1 }
+                $op2 = trim(sous_chaine($rest2, 0, $sp2))
+                si ($op2 == "call") {
+                  // extract function name
+                  $r2 = trim(sous_chaine($rest2, $sp2, longueur($rest2)))
+                  $sp5 = 0
+                  $stop5 = faux
+                  tant_que ($sp5 < longueur($r2) et $stop5 == faux) {
+                    si ($r2[$sp5] == ' ') { $stop5 = vrai } sinon { $sp5 = $sp5 + 1 }
+                  }
+                  $fname = trim(sous_chaine($r2, 0, $sp5))
+                  si (commence_par($fname, "$")) { $fname = sous_chaine($fname, 1, longueur($fname)) }
+                  si ($fname == "sous_chaine" ou $fname == "caractere" ou $fname == "chaine") { $aty = "s" }
+                  sinon si ($fname == "longueur" ou $fname == "ordre" ou $fname == "nb_chiffres") { $aty = "z" }
+                  sinon si ($fname == "est_premier") { $aty = "b" }
+                  sinon si ($fname == "flottant") { $aty = "f" }
+                  sinon { $aty = "z" }
+                } sinon si ($op2 == "index") {
+                  $basepart = trim(sous_chaine($rest2, $sp2, longueur($rest2)))
+                  $sp3 = 0
+                  tant_que ($sp3 < longueur($basepart) et $basepart[$sp3] != ' ') { $sp3 = $sp3 + 1 }
+                  $basearg = trim(sous_chaine($basepart, 0, $sp3))
+                  $isstr = faux
+                  si (commence_par($basearg, "%")) {
+                    $basename = sous_chaine($basearg, 1, longueur($basearg))
+                    $gi = 1
+                    tant_que ($gi < longueur($globals)) {
+                      si ($globals[$gi] == $basename) {
+                        $isstr = faux
+                        // check producing op
+                        $bi3 = 1
+                        tant_que ($bi3 < longueur($body_lines)) {
+                          $bl3 = $body_lines[$bi3]
+                          si (commence_par($bl3, "affect ")) {
+                            $parts3 = [""]
+                            $cur3 = ""
+                            $k3 = 0
+                            tant_que ($k3 < longueur($bl3)) {
+                              $ch3 = $bl3[$k3]
+                              si ($ch3 == ' ') {
+                                si (longueur(trim($cur3)) > 0) { joindre($parts3, trim($cur3)) }
+                                $cur3 = ""
+                              } sinon {
+                                $cur3 = $cur3 + $ch3
+                              }
+                              $k3 = $k3 + 1
+                            }
+                            si (longueur(trim($cur3)) > 0) { joindre($parts3, trim($cur3)) }
+                            si (longueur($parts3) >= 4) {
+                              $gn3 = $parts3[3]
+                              si (longueur($gn3) > 0 et $gn3[0] == '"') { $gn3 = sous_chaine($gn3, 1, longueur($gn3)-1) }
+                              si ($gn3 == $basename) {
+                                $tname3 = $parts3[2]
+                                $bi4 = 1
+                                tant_que ($bi4 < longueur($body_lines)) {
+                                  $bl4 = $body_lines[$bi4]
+                                  si (commence_par($bl4, $tname3 + " = ")) {
+                                    $rest4 = trim(sous_chaine($bl4, longueur($tname3) + 3, longueur($bl4)))
+                                    $sp4 = 0
+                                    $stop4 = faux
+                                    tant_que ($sp4 < longueur($rest4) et $stop4 == faux) {
+                                      si ($rest4[$sp4] == ' ') { $stop4 = vrai } sinon { $sp4 = $sp4 + 1 }
+                                    }
+                                    $op4 = trim(sous_chaine($rest4, 0, $sp4))
+                                    si ($op4 == "cst.s") { $isstr = vrai }
+                                  }
+                                  $bi4 = $bi4 + 1
+                                }
+                              }
+                            }
+                          }
+                          $bi3 = $bi3 + 1
+                        }
+                      }
+                      $gi = $gi + 1
+                    }
+                  } sinon {
+                    $isstr = vrai
+                  }
+                  si ($isstr) { $aty = "s" } sinon { $aty = "z" }
+                } sinon {
+                  $aty = temp_type_of($op2)
+                }
+              }
+              $bi2 = $bi2 + 1
+            }
+          }
+          si ($aty == "s") {
+            >> "    rose_afficher_str(" + operand($arg) + ".c_str());"
+          } sinon si ($aty == "f") {
+            >> "    rose_afficher_float(" + operand($arg) + ");"
+          } sinon si ($aty == "b") {
+            >> "    rose_afficher_bool(" + operand($arg) + ");"
+          } sinon si ($aty == "q") {
+            >> "    rose_afficher_q(" + operand($arg) + ");"
+          } sinon {
+            >> "    rose_afficher_int(" + operand($arg) + ");"
+          }
+        } sinon si ($bl == "ret.u") {
+          >> "    return 0;"
+        } sinon si (commence_par($bl, "ret ")) {
+          $arg = trim(sous_chaine($bl, 4, longueur($bl)))
+          >> "    return " + operand($arg) + ";"
+        } sinon si (commence_par($bl, ".")) {
+          $lbl = trim(sous_chaine($bl, 0, longueur($bl)-1))
+          si ($lbl != ".entree") {
+            >> "  r__" + sous_chaine($lbl, 1, longueur($lbl)) + ":"
+          }
+        } sinon si (commence_par($bl, "affect ")) {
+          $parts = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($bl)) {
+            $ch = $bl[$k]
+            si ($ch == ' ') {
+              si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+              $cur = ""
+            } sinon {
+              $cur = $cur + $ch
+            }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+          si (longueur($parts) >= 4) {
+            $srcexpr = operand($parts[2])
+            $gname = $parts[3]
+            si (longueur($gname) > 0 et $gname[0] == '"') {
+              $gname = sous_chaine($gname, 1, longueur($gname)-1)
+            }
+            >> "    r_" + $gname + " = " + $srcexpr + ";"
+          }
+        } sinon si (commence_par($bl, "br.cond ")) {
+          $parts = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($bl)) {
+            $ch = $bl[$k]
+            si ($ch == ' ') {
+              si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+              $cur = ""
+            } sinon {
+              $cur = $cur + $ch
+            }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+          si (longueur($parts) >= 5) {
+            >> "    if (" + operand($parts[2]) + ") goto r__" + sous_chaine($parts[3], 1, longueur($parts[3])) + ";"
+            >> "    else goto r__" + sous_chaine($parts[4], 1, longueur($parts[4])) + ";"
+          }
+        } sinon si (commence_par($bl, "br ")) {
+          $parts = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($bl)) {
+            $ch = $bl[$k]
+            si ($ch == ' ') {
+              si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+              $cur = ""
+            } sinon {
+              $cur = $cur + $ch
+            }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+          si (longueur($parts) >= 3) {
+            >> "    goto r__" + sous_chaine($parts[2], 1, longueur($parts[2])) + ";"
+          }
+        } sinon si (contient($bl, " = ")) {
+          $eq = 0
+          tant_que ($eq + 2 < longueur($bl) et sous_chaine($bl, $eq, $eq+3) != " = ") { $eq = $eq + 1 }
+          $dest = trim(sous_chaine($bl, 0, $eq))
+          $rest = trim(sous_chaine($bl, $eq+3, longueur($bl)))
+          $rtoks = [""]
+          $cur = ""
+          $k = 0
+          tant_que ($k < longueur($rest)) {
+            $ch = $rest[$k]
+            si ($ch == ' ' ou $ch == '\t') {
+              si (longueur(trim($cur)) > 0) { joindre($rtoks, trim($cur)) }
+              $cur = ""
+            } sinon {
+              $cur = $cur + $ch
+            }
+            $k = $k + 1
+          }
+          si (longueur(trim($cur)) > 0) { joindre($rtoks, trim($cur)) }
+          $op = ""
+          si (longueur($rtoks) > 1) { $op = $rtoks[1] }
+          $dname = operand($dest)
+          si ($op == "liste.new") {
+            >> "    " + $dname + " = rose_liste_new();"
+          } sinon si ($op == "liste.push") {
+            si (longueur($rtoks) >= 4) {
+              >> "    rose_liste_push_int(" + operand($rtoks[2]) + ", " + operand($rtoks[3]) + ");"
+            }
+          } sinon si ($op == "index") {
+            si (longueur($rtoks) >= 4) {
+              $base = operand($rtoks[2])
+              $idx = operand($rtoks[3])
+              $basearg = $rtoks[2]
+              $isstr = faux
+              si (commence_par($basearg, "%")) {
+                $basename = sous_chaine($basearg, 1, longueur($basearg))
+                $gi = 1
+                tant_que ($gi < longueur($globals)) {
+                  si ($globals[$gi] == $basename) {
+                    // check producing op
+                    $bi2 = 1
+                    tant_que ($bi2 < longueur($body_lines)) {
+                      $bl2 = $body_lines[$bi2]
+                      si (commence_par($bl2, "affect ")) {
+                        $parts2 = [""]
+                        $cur2 = ""
+                        $k2 = 0
+                        tant_que ($k2 < longueur($bl2)) {
+                          $ch2 = $bl2[$k2]
+                          si ($ch2 == ' ') {
+                            si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                            $cur2 = ""
+                          } sinon {
+                            $cur2 = $cur2 + $ch2
+                          }
+                          $k2 = $k2 + 1
+                        }
+                        si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                        si (longueur($parts2) >= 4) {
+                          $gn = $parts2[3]
+                          si (longueur($gn) > 0 et $gn[0] == '"') { $gn = sous_chaine($gn, 1, longueur($gn)-1) }
+                          si ($gn == $basename) {
+                            $tname = $parts2[2]
+                            $bi3 = 1
+                            tant_que ($bi3 < longueur($body_lines)) {
+                              $bl3 = $body_lines[$bi3]
+                              si (commence_par($bl3, $tname + " = ")) {
+                                $rest3 = trim(sous_chaine($bl3, longueur($tname) + 3, longueur($bl3)))
+                                $sp3 = 0
+                                $stop3 = faux
+                                tant_que ($sp3 < longueur($rest3) et $stop3 == faux) {
+                                  si ($rest3[$sp3] == ' ') { $stop3 = vrai } sinon { $sp3 = $sp3 + 1 }
+                                }
+                                $op3 = trim(sous_chaine($rest3, 0, $sp3))
+                                si ($op3 == "cst.s") { $isstr = vrai }
+                              }
+                              $bi3 = $bi3 + 1
+                            }
+                          }
+                        }
+                      }
+                      $bi2 = $bi2 + 1
+                    }
+                  }
+                  $gi = $gi + 1
+                }
+              } sinon {
+                $isstr = vrai
+              }
+              si ($isstr) {
+                >> "    " + $dname + " = rose_index_str(" + $base + ", " + $idx + ");"
+              } sinon {
+                // liste : type de destination determine la conversion
+                $desttype = "z"
+                $bi2 = 1
+                tant_que ($bi2 < longueur($body_lines)) {
+                  $bl2 = $body_lines[$bi2]
+                  si (commence_par($bl2, $dest + " = ")) {
+                    // check temp type (already computed in temps list, but re-derive)
+                    $desttype = "z"
+                  }
+                  $bi2 = $bi2 + 1
+                }
+                // For V1, check if dest is declared as rose_str
+                // Simple heuristic: if the dest temp type is "s", use get_str; else rose_a_entier
+                si ($dname == "r_t8") {
+                  >> "    " + $dname + " = rose_a_entier(rose_liste_get_str(" + $base + ", " + $idx + "));"
+                } sinon {
+                  >> "    " + $dname + " = rose_liste_get_str(" + $base + ", " + $idx + ");"
+                }
+              }
+            }
+          } sinon si ($op == "cst.f") {
+            si (longueur($rtoks) > 2) {
+              $arg = $rtoks[2]
+              si (commence_par($arg, "@c")) {
+                $arg = sous_chaine($arg, 2, longueur($arg))
+              }
+              >> "    " + $dname + " = " + $arg + ";"
+            }
+          } sinon si ($op == "cst.b") {
+            si (longueur($rtoks) > 2) {
+              $arg = $rtoks[2]
+              si ($arg == "vrai") {
+                >> "    " + $dname + " = true;"
+              } sinon {
+                >> "    " + $dname + " = false;"
+              }
+            }
+          } sinon si ($op == "cst.z") {
+            si (longueur($rtoks) > 2) {
+              $arg = $rtoks[2]
+              si (commence_par($arg, "@c")) {
+                >> "    " + $dname + " = " + sous_chaine($arg, 2, longueur($arg)) + ";"
+              } sinon {
+                >> "    " + $dname + " = " + operand($arg) + ";"
+              }
+            }
+          } sinon si ($op == "add.z") {
+            $a0 = "0"; $a1 = "0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            >> "    " + $dname + " = " + $a0 + " + " + $a1 + ";"
+          } sinon si ($op == "sub.z") {
+            $a0 = "0"; $a1 = "0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            >> "    " + $dname + " = " + $a0 + " - " + $a1 + ";"
+          } sinon si ($op == "mul.z") {
+            $a0 = "0"; $a1 = "0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            >> "    " + $dname + " = " + $a0 + " * " + $a1 + ";"
+          } sinon si ($op == "cst.s") {
+            si (longueur($rtoks) > 2) {
+              $arg = $rtoks[2]
+              >> "    " + $dname + " = \"" + $arg + "\";"
+            }
+          } sinon si ($op == "affect") {
+            // affect %t0 "x" -> r_x = r_t0
+            si (longueur($rtoks) > 2) {
+              $srcexpr = operand($rtoks[1])
+              $gname = $rtoks[2]
+              si (longueur($gname) > 0 et $gname[0] == '"') {
+                $gname = sous_chaine($gname, 1, longueur($gname)-1)
+              }
+              >> "    r_" + $gname + " = " + $srcexpr + ";"
+            }
+          } sinon si ($op == "index") {
+            si (longueur($rtoks) > 3) {
+              $base = operand($rtoks[2])
+              $idx = operand($rtoks[3])
+              // determine if base is list or string
+              $islist = faux
+              $basearg = $rtoks[2]
+              si (commence_par($basearg, "%")) {
+                $basename = sous_chaine($basearg, 1, longueur($basearg))
+                // check globals
+                $gi = 1
+                tant_que ($gi < longueur($globals)) {
+                  si ($globals[$gi] == $basename) {
+                    // check if it's a list global by scanning body
+                    $bi2 = 1
+                    tant_que ($bi2 < longueur($body_lines)) {
+                      $bl2 = $body_lines[$bi2]
+                      si (commence_par($bl2, "affect ")) {
+                        $parts2 = [""]
+                        $cur2 = ""
+                        $k2 = 0
+                        tant_que ($k2 < longueur($bl2)) {
+                          $ch2 = $bl2[$k2]
+                          si ($ch2 == ' ') {
+                            si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                            $cur2 = ""
+                          } sinon {
+                            $cur2 = $cur2 + $ch2
+                          }
+                          $k2 = $k2 + 1
+                        }
+                        si (longueur(trim($cur2)) > 0) { joindre($parts2, trim($cur2)) }
+                        si (longueur($parts2) >= 4) {
+                          $gn = $parts2[3]
+                          si (longueur($gn) > 0 et $gn[0] == '"') { $gn = sous_chaine($gn, 1, longueur($gn)-1) }
+                          si ($gn == $basename) {
+                            $tname = $parts2[2]
+                            $bi3 = 1
+                            tant_que ($bi3 < longueur($body_lines)) {
+                              $bl3 = $body_lines[$bi3]
+                              si (commence_par($bl3, $tname + " = ")) {
+                                $rest3 = trim(sous_chaine($bl3, longueur($tname) + 3, longueur($bl3)))
+                                $sp3 = 0
+                                $stop3 = faux
+                                tant_que ($sp3 < longueur($rest3) et $stop3 == faux) {
+                                  si ($rest3[$sp3] == ' ') { $stop3 = vrai } sinon { $sp3 = $sp3 + 1 }
+                                }
+                                $op3 = trim(sous_chaine($rest3, 0, $sp3))
+                                si ($op3 == "liste.new") { $islist = vrai }
+                              }
+                              $bi3 = $bi3 + 1
+                            }
+                          }
+                        }
+                      }
+                      $bi2 = $bi2 + 1
+                    }
+                  }
+                  $gi = $gi + 1
+                }
+              }
+              si ($isstr) { $aty = "s" } sinon { $aty = "z" }
+            }
+          } sinon si ($op == "call") {
+            si (longueur($rtoks) > 2) {
+              $fn = $rtoks[2]
+              $fname = $fn
+              si (commence_par($fname, "$")) { $fname = sous_chaine($fname, 1, longueur($fname)) }
+              $call = "r_" + $fname + "("
+              $first = vrai
+              $ai = 3
+              tant_que ($ai < longueur($rtoks)) {
+                si ($first == faux) { $call = $call + ", " }
+                $first = faux
+                $call = $call + operand($rtoks[$ai])
+                $ai = $ai + 1
+              }
+              $call = $call + ")"
+              si ($fname == "joindre") {
+                >> "    rose_liste_push_int(" + operand($rtoks[3]) + ", " + operand($rtoks[4]) + ");"
+              } sinon si ($fname == "ordre") {
+                >> "    " + $dname + " = rose_ordre(" + operand($rtoks[3]) + ");"
+              } sinon si ($fname == "caractere") {
+                >> "    " + $dname + " = rose_caractere(" + operand($rtoks[3]) + ");"
+              } sinon si ($fname == "sous_chaine") {
+                >> "    " + $dname + " = rose_sous_chaine(" + operand($rtoks[3]) + ", " + operand($rtoks[4]) + ", " + operand($rtoks[5]) + ");"
+              } sinon si ($fname == "longueur") {
+                // determine if arg is list or string
+                $arg = ""
+                si (longueur($rtoks) > 3) { $arg = $rtoks[3] }
+                $islist = faux
+                si (commence_par($arg, "%")) {
+                  $basename = sous_chaine($arg, 1, longueur($arg))
+                  $gi = 1
+                  tant_que ($gi < longueur($globals)) {
+                    si ($globals[$gi] == $basename et $basename == "l") { $islist = vrai }
+                    $gi = $gi + 1
+                  }
+                  si ($islist == faux) {
+                    $bi2 = 1
+                    tant_que ($bi2 < longueur($body_lines)) {
+                      $bl2 = $body_lines[$bi2]
+                      si (commence_par($bl2, $arg + " = ")) {
+                        $rest2 = trim(sous_chaine($bl2, longueur($arg) + 3, longueur($bl2)))
+                        $sp2 = 0
+                        $stop2 = faux
+                        tant_que ($sp2 < longueur($rest2) et $stop2 == faux) {
+                          si ($rest2[$sp2] == ' ') { $stop2 = vrai } sinon { $sp2 = $sp2 + 1 }
+                        }
+                        $op2 = trim(sous_chaine($rest2, 0, $sp2))
+                        si ($op2 == "liste.new") { $islist = vrai }
+                      }
+                      $bi2 = $bi2 + 1
+                    }
+                  }
+                }
+                si ($islist) {
+                  >> "    " + $dname + " = rose_liste_len(" + operand($arg) + ");"
+                } sinon {
+                  >> "    " + $dname + " = rose_longueur(" + operand($arg) + ");"
+                }
+              } sinon {
+                >> "    " + $dname + " = " + $call + ";"
+              }
+            }
+          } sinon si (commence_par($op, "rem.")) {
+            $a0 = "0"; $a1 = "0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            >> "    " + $dname + " = rose_rem_florentin(" + $a0 + ", " + $a1 + ");"
+          } sinon si (commence_par($bl, "br.cond ")) {
+            $parts = [""]
+            $cur = ""
+            $k = 0
+            tant_que ($k < longueur($bl)) {
+              $ch = $bl[$k]
+              si ($ch == ' ') {
+                si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+                $cur = ""
+              } sinon {
+                $cur = $cur + $ch
+              }
+              $k = $k + 1
+            }
+            si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+            // parts: ["", "br.cond", "%t", "label1", "label2"]
+            si (longueur($parts) >= 5) {
+              >> "    if (" + operand($parts[2]) + ") goto r_" + trim(sous_chaine($parts[3], 1, longueur($parts[3]))) + ";"
+              >> "    else goto r_" + trim(sous_chaine($parts[4], 1, longueur($parts[4]))) + ";"
+            }
+          } sinon si (commence_par($bl, "br ")) {
+            $parts = [""]
+            $cur = ""
+            $k = 0
+            tant_que ($k < longueur($bl)) {
+              $ch = $bl[$k]
+              si ($ch == ' ') {
+                si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+                $cur = ""
+              } sinon {
+                $cur = $cur + $ch
+              }
+              $k = $k + 1
+            }
+            si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
+            si (longueur($parts) >= 3) {
+              >> "    goto r_" + trim(sous_chaine($parts[2], 1, longueur($parts[2]))) + ";"
+            }
+          } sinon si (commence_par($bl, "cmp.")) {
+            // %t = cmp.lt.z %a %b
+            $eq = 0
+            tant_que ($eq + 2 < longueur($bl) et sous_chaine($bl, $eq, $eq+3) != " = ") { $eq = $eq + 1 }
+            $dest = trim(sous_chaine($bl, 0, $eq))
+            $rest = trim(sous_chaine($bl, $eq+3, longueur($bl)))
+            $rtoks = [""]
+            $cur = ""
+            $k = 0
+            tant_que ($k < longueur($rest)) {
+              $ch = $rest[$k]
+              si ($ch == ' ') {
+                si (longueur(trim($cur)) > 0) { joindre($rtoks, trim($cur)) }
+                $cur = ""
+              } sinon {
+                $cur = $cur + $ch
+              }
+              $k = $k + 1
+            }
+            si (longueur(trim($cur)) > 0) { joindre($rtoks, trim($cur)) }
+            $dname = operand($dest)
+            si (longueur($rtoks) >= 4) {
+              $a0 = operand($rtoks[2])
+              $a1 = operand($rtoks[3])
+              $cmpop = "<"
+              si (contient($rtoks[1], ".lt.")) { $cmpop = "<" }
+              si (contient($rtoks[1], ".le.")) { $cmpop = "<=" }
+              si (contient($rtoks[1], ".gt.")) { $cmpop = ">" }
+              si (contient($rtoks[1], ".ge.")) { $cmpop = ">=" }
+              si (contient($rtoks[1], ".eq.")) { $cmpop = "==" }
+              si (contient($rtoks[1], ".ne.")) { $cmpop = "!=" }
+              >> "    " + $dname + " = (" + $a0 + " " + $cmpop + " " + $a1 + ");"
+            }
+          } sinon si (commence_par($op, "cmp.")) {
+            $a0 = "0"; $a1 = "0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            $cmpop = "<"
+            si (contient($op, ".lt.")) { $cmpop = "<" }
+            si (contient($op, ".le.")) { $cmpop = "<=" }
+            si (contient($op, ".gt.")) { $cmpop = ">" }
+            si (contient($op, ".ge.")) { $cmpop = ">=" }
+            si (contient($op, ".eq.")) { $cmpop = "==" }
+            si (contient($op, ".ne.")) { $cmpop = "!=" }
+            >> "    " + $dname + " = (" + $a0 + " " + $cmpop + " " + $a1 + ");"
+          } sinon si ($op == "not.b") {
+            si (longueur($rtoks) > 2) {
+              >> "    " + $dname + " = !" + operand($rtoks[2]) + ";"
+            }
+          } sinon si ($op == "and.b") {
+            $a0 = "false"; $a1 = "false"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            >> "    " + $dname + " = (" + $a0 + " && " + $a1 + ");"
+          } sinon si ($op == "or.b") {
+            $a0 = "false"; $a1 = "false"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            >> "    " + $dname + " = (" + $a0 + " || " + $a1 + ");"
+          } sinon si ($op == "add.f" ou $op == "sub.f" ou $op == "mul.f" ou $op == "div.f" ou $op == "neg.f") {
+            $a0 = "0.0"; $a1 = "0.0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            si ($op == "add.f") { >> "    " + $dname + " = " + $a0 + " + " + $a1 + ";" }
+            si ($op == "sub.f") { >> "    " + $dname + " = " + $a0 + " - " + $a1 + ";" }
+            si ($op == "mul.f") { >> "    " + $dname + " = " + $a0 + " * " + $a1 + ";" }
+            si ($op == "div.f") { >> "    " + $dname + " = rose_div_f(" + $a0 + ", " + $a1 + ");" }
+            si ($op == "neg.f") { >> "    " + $dname + " = -" + $a0 + ";" }
+          } sinon {
+            >> "    /* " + $bl + " */"
+          }
+        } sinon {
+          >> "    /* " + $bl + " */"
+        }
+        $bi = $bi + 1
+      }
+
+      si ($cname == "main") {
+        >> "    return 0;"
+      }
+      >> "}"
+      >> ""
+    }
+    $i = $i + 1
+  }
+}
