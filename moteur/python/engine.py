@@ -749,7 +749,7 @@ def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help", "aide"):
         print(__doc__.strip()); return 0
     if argv[1] == "version":
-        print("Rose 3.13.1 — moteur Python 3 (int/Fraction/float64)"); return 0
+        print("Rose 3.14.0 — moteur Python 3 (int/Fraction/float64)"); return 0
     if argv[1] == "info":
         print("rose 3.13.0 — moteur Python")
         print("  entiers    : précision arbitraire native")

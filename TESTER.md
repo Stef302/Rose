@@ -18,11 +18,11 @@ Résultat attendu (tous les outils présents) :
 
 ```
 ── Moteurs autonomes ──────────────────────────────────
-  ✓ C++   : Rose 3.13.1 — moteur natif C++/GMP
-  ✓ Rust  : Rose 3.13.1 — moteur natif Rust/GMP
-  ✓ Zig   : Rose 3.13.1 — moteur natif Zig/GMP
+  ✓ C++   : Rose 3.14.0 — moteur natif C++/GMP
+  ✓ Rust  : Rose 3.14.0 — moteur natif Rust/GMP
+  ✓ Zig   : Rose 3.14.0 — moteur natif Zig/GMP
 ── Moteurs vivants ────────────────────────────────────
-  ✓ Python : Rose 3.13.1 — moteur Python 3 (int/Fraction/float64)
+  ✓ Python : Rose 3.14.0 — moteur Python 3 (int/Fraction/float64)
   ✓ Julia  : Rose 2.0.0 — moteur Julia (BigInt / Rational exacts)
 ── Suites de validation ───────────────────────────────
   ✓ suite moteur (moteur C++) : Tests moteur : 25 réussis, 0 échoués

@@ -477,7 +477,7 @@ footer p{font-size:.7rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 <section id="page-home" class="page active">
   <div class="hero">
     <div class="reveal">
-      <p class="overline">LANGAGE DE PROGRAMMATION · V3.13</p>
+      <p class="overline">LANGAGE DE PROGRAMMATION · V3.14</p>
       <h1>ROSE</h1>
       <p class="lead">Le langage qui <span class="rouge">pique</span> les bugs et fait <span class="vert">fleurir</span> vos idées. Une syntaxe nette comme une épine, la puissance d'un jardin entier.</p>
       <div class="hero-btns">
@@ -631,7 +631,7 @@ jardin salut {
           <span style="margin-left:8px;color:#ccc">CONSOLE</span>
           <button class="copy" onclick="clearConsole()" style="margin-left:auto">EFFACER</button>
         </div>
-        <div class="console-body" id="consoleOut"><span class="log-prompt">❯ </span>Compilateur ROSE v3.13 — prêt à fleurir.
+        <div class="console-body" id="consoleOut"><span class="log-prompt">❯ </span>Compilateur ROSE v3.14 — prêt à fleurir.
 <span class="log-info">ℹ</span> Tape ton code et appuie sur <span style="color:var(--vert)">FLEURIR</span>.
 </div>
       </div>
@@ -711,7 +711,7 @@ jardin salut {
 <span class="k">&gt;</span> irm http://100.67.23.83:18080/rose-windows.zip -OutFile rose-windows.zip
 <span class="k">&gt;</span> Expand-Archive rose-windows.zip -DestinationPath rose -Force
 <span class="k">&gt;</span> cd rose ; .\tester.ps1
-<span class="c">🌹 ROSE v3.13.1 — 46 tests dorés, 12 roses, 3 moteurs, 0 divergence</span></pre>
+<span class="c">🌹 ROSE v3.14.0 — 46 tests dorés, 12 roses, 3 moteurs, 0 divergence</span></pre>
           </div>
           <p>Sur Linux (x64 / arm64), le moteur se construit depuis les sources : <code class="inline">make rose</code> dans <code class="inline">moteur/cpp</code>.</p>
           <h4>Systèmes supportés</h4>
@@ -994,6 +994,21 @@ fruits.filtrer(|f| f != <span class="s">"poire"</span>)
     <p class="gris" style="font-size:.78rem;line-height:2;margin-bottom:2rem">Deux ans de travail, six versions majeures, des milliers de commits.</p>
 
     <div class="timeline">
+      <div class="event">
+        <div class="event-head">
+          <span class="event-ver">V3.14.0</span>
+          <span class="event-date">21 OCTOBRE 2026</span>
+        </div>
+        <h4 class="event-title">🌱 Le dernier écart AOT tombe</h4>
+        <ul>
+          <li>Le compilé ne pré-initialise plus en secret : une variable écrite seulement dans une branche rend, au binaire compilé, l'erreur exacte de l'interprète — « variable 'x' utilisée sans valeur » — au même endroit, avec le même nom. Les deux programmes divergents gelés depuis la v3.13.1 sont devenus fidèles à l'octet près</li>
+          <li>Le flottant est dominant : comparaisons, ≈ et min/max se calculent en arithmétique flottante dès qu'un opérande est flottant — comme la spécification du cœur. Fin du plantage silencieux sur ±infini et non_nombre (trouvé par la campagne générative)</li>
+          <li><code class="inline">chaine()</code> répond sur tous les domaines : identité pour le texte, « vrai »/« faux » pour les booléens</li>
+          <li><code class="inline">$int</code>, <code class="inline">fn double</code> : les noms roses qui heurtent le C++ ne cassent plus le compilateur — le contrat « émettre ou rejeter poliment » ne connaît plus de binaire cassé</li>
+          <li>Couverture AOT : 49 cas de référence, 28 fidèles, 21 rejets polis, 0 écart connu, 0 silence — et cinq campagnes génératives (540 programmes) sans une seule divergence</li>
+        </ul>
+      </div>
+
       <div class="event">
         <div class="event-head">
           <span class="event-ver">V3.13.1</span>
@@ -1417,7 +1432,7 @@ const searchData = [
   {t:'Playground',p:'play'},
   {t:'Jardin communautaire',p:'jardin'},
   {t:'Équipe',p:'equipe'},
-  {t:'Changelog v3.13',p:'changelog'},
+  {t:'Changelog v3.14',p:'changelog'},
   {t:'Télécharger ROSE',p:'home'},
 ];
 function openSearch(){

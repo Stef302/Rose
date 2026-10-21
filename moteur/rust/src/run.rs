@@ -1675,7 +1675,7 @@ pub fn main_cli(argv: Vec<String>) -> i32 {
     }
     let action = argv.get(1).cloned().unwrap_or_default();
     if action == "version" {
-        println!("Rose 3.13.1 — moteur natif Rust/GMP");
+        println!("Rose 3.14.0 — moteur natif Rust/GMP");
         return 0;
     }
     if action == "info" {

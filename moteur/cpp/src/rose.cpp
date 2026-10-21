@@ -4451,7 +4451,7 @@ int main(int argc, char **argv) {
 
     std::string action;
     if (argc >= 2) action = argv[1];
-    if (action == "version") { printf("Rose 3.13.1 — moteur natif C++/GMP\n"); return 0; }
+    if (action == "version") { printf("Rose 3.14.0 — moteur natif C++/GMP\n"); return 0; }
     if (action == "info") {
         printf("rose 3.13.0\n");
 #ifdef _WIN32

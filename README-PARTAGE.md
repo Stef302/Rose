@@ -1,10 +1,10 @@
 # Rose pour Windows x64 — setup de test
 
 Copie depuis gx10-2 (100.67.23.83, tailnet). Date : 2026-10-21.
-Génération du moteur : **v3.13.1** (chronomètre `temps()`/`duree()`, versions
-synchronisées, et correctifs du testeur génératif : lecture de variable sans
-valeur enfin erreur partout — plus jamais de vide ni de crash JIT —, garde
-des divisions flottantes par zéro, fidélité rationnel⊛entier en AOT).
+Génération du moteur : **v3.14.0** (le compilé AOT ne connaît plus aucun
+écart connu : variables possiblement non initialisées rendues fidèles,
+comparaisons flottantes dominantes — plus de plantage sur ±infini ni
+non_nombre —, `chaine()` complet, noms roses protégés des mots-clés C++).
 
 ## Copier chez toi
 
