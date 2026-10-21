@@ -372,6 +372,47 @@ static std::vector<Token> tokeniser(const std::string &source) {
     return tokens;
 }
 
+/* ══════════ M4.0 — oracle de lexage : « rose tokens » ══════════
+   Le lexeur auto-hébergé (rose/lexeur.rose) doit reproduire CETTE
+   sortie à l'octet près : c'est le point d'appui du bootstrap M4.
+   Format : « ligne:colonne type texte_échappé », un token par ligne. */
+static const char *tk_nom(Tk t) {
+    switch (t) {
+        case Tk::Eof: return "eof"; case Tk::Ident: return "ident";
+        case Tk::Nombre: return "nombre"; case Tk::Flottant: return "flottant";
+        case Tk::Chaine: return "chaine"; case Tk::Plus: return "+";
+        case Tk::Moins: return "-"; case Tk::Etoile: return "*";
+        case Tk::Slash: return "/"; case Tk::DeuxPts: return ":";
+        case Tk::Percent: return "%"; case Tk::Chapeau: return "^";
+        case Tk::Bang: return "!"; case Tk::Point: return ".";
+        case Tk::Virgule: return ","; case Tk::DivEntier: return "div";
+        case Tk::Affect: return "="; case Tk::LParen: return "(";
+        case Tk::RParen: return ")"; case Tk::LBrace: return "{";
+        case Tk::RBrace: return "}"; case Tk::LBracket: return "[";
+        case Tk::RBracket: return "]"; case Tk::Semi: return ";";
+        case Tk::DeuxPoints: return "::"; case Tk::FlecheD: return ">>";
+        case Tk::FlecheG: return "<<"; case Tk::Tilde: return "~";
+        case Tk::Arobase: return "@"; case Tk::PointDInterro: return "->";
+        case Tk::Question: return "?"; case Tk::Racine: return "racine";
+        case Tk::Inf: return "<"; case Tk::Sup: return ">";
+        case Tk::InfEg: return "<="; case Tk::SupEg: return ">=";
+        case Tk::DoubleEg: return "=="; case Tk::Diff: return "!=";
+        case Tk::Environ: return "≈"; case Tk::QMarkEg: return "?=";
+        case Tk::TildeEg: return "=~"; case Tk::Mot: return "mot";
+    }
+    return "?";
+}
+static std::string texte_echappe(const std::string &s) {
+    std::string o;
+    for (char c : s) {
+        if (c == '\\') o += "\\\\";
+        else if (c == '\n') o += "\\n";
+        else if (c == '\t') o += "\\t";
+        else o += c;
+    }
+    return o;
+}
+
 /* ── types Rose ───────────────────────────────────────────────────── */
 enum : int {
     T_VIDE = 0, T_ENTIER = 1, T_RATIONNEL = 2, T_FLOTTANT = 3,
@@ -2447,7 +2488,12 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
    ═══════════════════════════════════════════════════════════════════ */
 
 /* ── types RIR ─────────────────────────────────────────────────────── */
-enum class RirType { Z, Q, F, B, S, U, Tab, /* liste<T> encodé comme L */ };
+enum class RirType { Z, Q, F, B, S, U, Tab, L = 7, TBL = 9 };
+/* v3.14.1 — L et TBL s'alignent sur les valeurs 7/9 du RirListe/RirTbl du
+   transpileur (continuité numérique des deux enums) : les paramètres de
+   fonction portent désormais leur type agrégé, là où ty_vers_rir aplatis-
+   sait tout en U — ce qui faisait émettre au AOT un « rose_val » inexistant
+   en signature. Le transpileur garde Gd(8)/Dyn(10) internes. */
 
 /* ── opérande RIR ─────────────────────────────────────────────────── */
 struct RirOp {
@@ -2499,8 +2545,8 @@ static RirType ty_vers_rir(Ty t) {
         case T_FLOTTANT: return RirType::F;
         case T_BOOLEEN: return RirType::B;
         case T_CHAINE: return RirType::S;
-        case T_LISTE: return RirType::U;  /* liste<T> → encodé plus tard */
-        case T_TABLE: return RirType::U;
+        case T_LISTE: return RirType::L;   /* v3.14.1 : le paramètre porte son type (avant : U → rose_val AOT) */
+        case T_TABLE: return RirType::TBL; /* idem ; l'appel passe-table reste un rejet AOT poli (M4.2) */
         case T_VALEUR: return RirType::U;
         default: return RirType::U;
     }
@@ -2515,6 +2561,8 @@ static std::string nom_rir_type(RirType t) {
         case RirType::S: return "s";
         case RirType::U: return "u";
         case RirType::Tab: return "tab";
+        case RirType::L: return "l";        /* v3.14.1 */
+        case RirType::TBL: return "tbl";    /* v3.14.1 */
     }
     return "?";
 }
@@ -2587,7 +2635,15 @@ struct EmetteurRir {
                 std::string base = emettre_expr(e->a, bloc, RirType::U);
                 std::string idx = emettre_expr(e->b, bloc, RirType::Z);
                 std::string t = nouveau_temp();
-                RirInstr i; i.dest = t; i.dest_ty = RirType::U; i.op = "index";
+                RirInstr i; i.dest = t;
+                /* v3.14.1 — le type du résultat d'index est celui que le
+                   checker a calculé (élément de liste<chaine> → S, de
+                   liste<entier> → Z, cellule de table → table, caractère de
+                   chaîne → S). L'écraser à U faisait dériver le AOT vers des
+                   declarations fausses (rose_val fantôme ou rose_ent pour une
+                   chaine). */
+                i.dest_ty = e->type != T_VIDE ? ty_vers_rir(Ty(e->type)) : RirType::U;
+                i.op = "index";
                 RirOp o1; o1.kind = RirOp::Temp; o1.name = base; i.args.push_back(o1);
                 RirOp o2; o2.kind = RirOp::Temp; o2.name = idx; i.args.push_back(o2);
                 bloc.instrs.push_back(i);
@@ -4453,7 +4509,7 @@ int main(int argc, char **argv) {
     if (argc >= 2) action = argv[1];
     if (action == "version") { printf("Rose 3.14.0 — moteur natif C++/GMP\n"); return 0; }
     if (action == "info") {
-        printf("rose 3.13.0\n");
+        printf("rose 3.14.0\n");
 #ifdef _WIN32
         printf("  moteur            : %s — binaire autonome, seule dépendance : UCRT (Windows)\n",
                sizeof(void*) == 8 ? "natif 64 bits" : "natif");
@@ -4509,6 +4565,14 @@ int main(int argc, char **argv) {
         InterpRir interp(mod);
         interp.prog = &prog;
         interp.executer();
+        return 0;
+    }
+    if (action == "tokens") {
+        if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
+        std::string source;
+        if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
+        for (const Token &t : tokeniser(source))
+            printf("%d:%d %s %s\n", t.ligne, t.colonne, tk_nom(t.type), texte_echappe(t.texte).c_str());
         return 0;
     }
     if (action == "rir") {

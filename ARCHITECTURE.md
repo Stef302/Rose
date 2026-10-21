@@ -60,17 +60,18 @@ deviennent des appels C directs depuis le code émis ; le bundle
 > 1,55 s. x86-64 validé **de bout en bout sous qemu-x86_64** (build
 > croisé sans root par `moteur/build-x64.sh`, suite 36/36 avec JIT,
 > ×42 vs interpréteur même sous émulation — détails dans `PERF.md`).
-> Reste : mode natif compilé pour le bundle `rose comp`, chaîne de
-> production Windows x86-64.
+> Reste : le JIT natif Windows x86-64 (la chaîne de production croisée
+> existe, le compilé AOT `rose build` le remplace avantageusement).
 
-### M3 — AOT LLVM : `rose build`
-Backend **LLVM** (API C) pour la compilation native complète :
-`rose build prog.rose -o prog` produit un binaire sans interpréteur,
-optimisé (inlining, arithmétique vectorisée). LLVM n'est utilisé
-qu'**au moment de compiler** : le binaire produit n'embarque que la
-petite runtime Rose + GMP → toujours autonome. Le moteur lui-même
-grossit (LLVM statique) — c'est un outil de développement, pas le
-programme compilé.
+### M3 — AOT : `rose build` (réalisé — option C++, LLVM écarté)
+`rose build prog.rose -o prog` transpile le RIR en **C++ lisible** que
+g++‑O3 compile en binaire autonome (runtime Rose + GMP seulement).
+L'option LLVM (API C) a été tentée puis **écartée** : même résultat,
+chaîne de production beaucoup plus lourde. Le contrat est « émettre ou
+rejeter poliment » : jamais de binaire faux ni de g++ cassé — chaque
+limite est un message nommé. À la v3.14 : 55 cas de référence, 31
+fidèles, 24 rejets polis, 0 écart, et les campagnes génératives
+(540+ programmes, trois voies) sans divergence.
 
 ### M4 — Auto-hébergement
 Écrire le compilateur **en Rose** (`rose/compilateur.rose` : lexeur,
@@ -85,6 +86,22 @@ cinq étapes, chacune prouvable :
 4. le moteur C++ régresse au rôle d'**amorce de bootstrap** (comme
    stage0 avant, plus personne ne le développe d'abord) ;
 5. le JIT/LLVM passent dans le compilateur auto-hébergé à son tour.
+
+**État d'avancement (depuis la v3.14.1) — M4.0 fait** : l'oracle
+`rose tokens prog.rose` (jetons `ligne:colonne type texte`, miroir exact
+de `tokeniser()`) sert de point fixe au premier maillon :
+`rose/lexeur.rose` lexelle en Rose, et `moteur/tests/lexeur.py` exige
+la sortie **identique à l'octet près sur 54 fichiers du corpus, par les
+trois voies** — oracle C++, lexeur interprété, lexeur compilé AOT. Le
+lexeur se lexelle lui‑même (2 400 jetons). Ce premier maillon a déjà
+rendu service : en se lexant, il a débusqué et fait corriger quatre
+classes de défauts d'expression AOT que le corpus n'atteignait jamais
+(longueur des paramètres en octets au lieu de caractères, type static
+des index écrasé, listes passées par valeur alors que l'interprète les
+partage, `return 0` construisant une chaîne depuis NULL sur les chemins
+sans `retour` — désormais rejetés poliment).
+Prochain maillon : l'analyseur (`rose/analyseur.rose`), point d'appui :
+la sortie de `rose rir`, déjà texte et diffable.
 
 ### M5 — Standard library en Rose
 `prelude.rose` (listes, tri, chaînes, tables, tests unitaires écrits

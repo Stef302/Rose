@@ -188,7 +188,12 @@ std::string transpiler_rir(const RirModule &mod) {
         out << ret << " " << sanitize(f.nom) << "(";
         for (size_t i = 0; i < f.params.size(); i++) {
             if (i > 0) out << ", ";
-            out << cpp_type(f.params[i].second) << " " << sanitize(f.params[i].first);
+            // v3.14.1 — les listes voyagent par RÉFÉRENCE : l'interprète les
+            // partage (shared_ptr), un joindre() dans l'appelée doit être
+            // visible de l'appelant.
+            if (f.params[i].second == RirListe) out << "rose_liste& ";
+            else out << cpp_type(f.params[i].second) << " ";
+            out << sanitize(f.params[i].first);
         }
         out << ");\n";
     }
@@ -207,7 +212,10 @@ std::string transpiler_rir(const RirModule &mod) {
         } else {
             for (size_t i = 0; i < f.params.size(); i++) {
                 if (i > 0) out << ", ";
-                out << cpp_type(f.params[i].second) << " " << sanitize(f.params[i].first);
+                // v3.14.1 — listes par référence (voir déclaration avancée).
+                if (f.params[i].second == RirListe) out << "rose_liste& ";
+                else out << cpp_type(f.params[i].second) << " ";
+                out << sanitize(f.params[i].first);
             }
         }
         out << ") {\n";
@@ -220,6 +228,15 @@ std::string transpiler_rir(const RirModule &mod) {
         // Collect temp variables
         std::set<std::string> temps;
         std::map<std::string, RirType> temp_types;
+        // v3.14.1 — les paramètres SONT des variables du corps de fonction :
+        // on amorce la carte avant toute lecture pour que toutes les
+        // résolutions par nom (longueur, index, casts, promotions gd/flottant,
+        // clés de table…) les voient, comme l'interprète. Sans cet amorce,
+        // longueur(paramètre chaine) émettait .size() — des OCTETS — là où
+        // le global correct émettait rose_longueur — des CARACTÈRES —, et
+        // tout index ultérieur sortait des limites (trouvé par le lexeur
+        // auto-hébergé de M4 se lexant lui-même, mot de « ≈ » près).
+        for (auto &p : f.params) temp_types["%" + p.first] = p.second;
         std::map<std::string, RirType> global_types;
         for (auto &b : f.blocs) {
             for (auto &instr : b.instrs) {
@@ -567,6 +584,18 @@ std::string transpiler_rir(const RirModule &mod) {
             if (!i.dest.empty()) prod_ty[i.dest] = i.dest_ty;
         std::map<std::string, RirType> param_ty;
         for (auto &p : f.params) param_ty[sanitize(p.first)] = p.second;
+        // v3.14.1 — une fonction qui RENDE une liste et reçoive un paramètre-liste
+        // est ambiguë par partage : l'interprète, via shared_ptr, peut aliaser
+        // la liste de l'appelante dans la valeur rendue (les mutations du
+        // appelant se reverraient dans l'originale). La copie AOT les
+        // perdrait. Rejet explicite tant que le retour n'est pas référencé.
+        if (f.retour == RirListe)
+            for (auto &p : f.params)
+                if (p.second == RirListe)
+                    throw std::runtime_error(
+                        "AOT : fonction retournant une liste ET prenant un paramètre-liste — "
+                        "l'interprète aliasse les deux (partage shared_ptr) ; la copie AOT "
+                        "perdrait les mutations (limite M4.2 explicite)");
         auto ty_of = [&](const RirOp &o) -> RirType {
             auto pp = param_ty.find(sanitize(o.name));
             if (pp != param_ty.end() && !o.name.empty() && o.name[0] != '%') return pp->second;
@@ -601,6 +630,16 @@ std::string transpiler_rir(const RirModule &mod) {
             }
             for (auto &instr : b.instrs) {
                 const std::string &op = instr.op;
+                // v3.14.1 — le marqueur exact du chemin sans valeur : l'émetteur
+                // termine les fonctions par « ret.u » (retour sans opérande) ;
+                // si la fonction a un retour DÉCLARÉ, ce chemin rend chez
+                // l'interprète la valeur vidée — invisible en C++ (le
+                // « return 0 » construisait une string depuis NULL et
+                // abortait). Rejet explicite à l'instruction.
+                if (op == "ret.u" && f.retour != RirU)
+                    throw std::runtime_error(
+                        "AOT : chemin sans « retour » dans une fonction à retour déclaré — "
+                        "l'interprète y rend la valeur vidée, invisible en C++ (limite M4.2 explicite)");
                 // ── garde M4.2 : les domaines table/cellule ne franchissent
                 // ni l'arithmétique, ni le return, ni les frontières de
                 // fonction. Rejet explicite — jamais de code faux silencieux.
@@ -609,6 +648,11 @@ std::string transpiler_rir(const RirModule &mod) {
                         if (o.kind == RirOp::Const) return false;
                         auto t = temp_types.find(o.name);
                         if (t != temp_types.end()) return t->second == RirTbl || t->second == RirDyn;
+                        // v3.14.1 — un paramètre-table est dynamique aussi :
+                        // l'interprète le partage (shared_ptr), une passe par
+                        // valeur en C++ casserait l'aliasing → rejet poli.
+                        auto pp = param_ty.find(sanitize(o.name));
+                        if (pp != param_ty.end() && o.name[0] != '%') return pp->second == RirTbl;
                         auto g = global_types.find(sanitize(o.name));
                         if (g != global_types.end()) return g->second == RirTbl || g->second == RirDyn;
                         return false;

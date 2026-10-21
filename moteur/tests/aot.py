@@ -269,6 +269,52 @@ $classe = "rose"
 >> longueur($classe)
 """), attendu_stdout="15\n4\n", attendu_code=0)
 
+# v3.14.1 — les paramètres sont des variables du corps : longueur() compte
+# des CARACTÈRES (pas des octets), les listes voyagent par référence (le
+# joindre() de l'appelée est visible de l'appelante, comme le shared_ptr de
+# l'interprète), et les éléments d'une liste<chaine> se lisent en textuel.
+# Trouvé par le lexeur auto-hébergé de M4 se lexant lui-même (« ≈ » près).
+cas_fidele("param_chaine_utf8", _rose_source("param_chaine_utf8", """
+fn n_car(t: chaine) -> entier { retour longueur(t) }
+fn ecartèle(t: chaine) -> chaine {
+  $o = ""
+  $j = 0
+  $n = longueur(t)
+  tant_que ($j < $n) {
+    $o = $o + t[$j] + "-"
+    $j = $j + 1
+  }
+  retour $o
+}
+$s = "abé"
+>> longueur($s)
+>> n_car($s)
+>> ecartèle($s)
+"""), attendu_stdout="3\n3\na-b-é-\n", attendu_code=0)
+
+cas_fidele("param_liste_partage", _rose_source("param_liste_partage", """
+fn pousse(l: liste<entier>) { joindre($l, 99) }
+fn n(l: liste<entier>) -> entier { retour longueur(l) }
+fn passe(l: liste<entier>) { pousse($l) }
+$l = [1, 2]
+pousse($l)
+>> $l
+passe($l)
+>> $l
+>> n($l)
+"""), attendu_stdout="[1, 2, 99]\n[1, 2, 99, 99]\n4\n", attendu_code=0)
+
+cas_fidele("param_liste_chaine", _rose_source("param_liste_chaine", """
+fn n_liste(l: liste<entier>) -> entier { retour longueur(l) }
+fn premier(l: liste<entier>) -> entier { retour l[0] }
+fn mots(l: liste<chaine>) -> chaine { retour l[1] }
+$l = [7, 8, 9]
+$w = ["alpha", "bêta"]
+>> n_liste($l)
+>> premier($l)
+>> mots($w)
+"""), attendu_stdout="3\n7\nbêta\n", attendu_code=0)
+
 # ── 3. erreurs et rejets : le compilable doit dire non, ou l'exécution
 #       rendre le même message que l'interpréteur ────────────────────
 cas_rejet("nom_reserve", f"{DORES}/nom_reserve.rose", motif="réservé par le moteur")
@@ -306,6 +352,17 @@ for nom, code, motif in [
     ("err_type_deux_branches", "si (1 > 2) {\n  $gamma = chaine(4)\n"
      "} sinon si (2 > 3) {\n  si (faux) {\n    $delta = 1\n  } sinon {\n"
      "    $gamma = 40.8851\n  }\n}\n>> 7\n", "on ne peut pas y stocker"),
+    # v3.14.1 — deux classes d'inreprésentable en C++ désormais nommées
+    # au lieu d'aborder ou de casser g++ : le chemin sans « retour » d'une
+    # fonction à retour déclaré (l'interprète rend la valeur vidée, qui se
+    # voit : « rien() == "" » rend faux), et la table qui franchit une
+    # frontière de fonction (l'interprète la partage, la copie la trahirait).
+    ("err_chemin_sans_retour", "fn rien() -> chaine { $x = 1 }\n$l = [1]\n>> rien()\n",
+     "chemin sans « retour »"),
+    ("err_param_table_appel", "fn relais(t: table) -> chaine { retour \"?\" }\n"
+     "$t = table()\n>> relais($t)\n", "table ou cellule dynamique"),
+    ("err_retour_liste_aliassee", "fn passe(l: liste<entier>) -> liste<entier> { retour $l }\n"
+     "$v = [3]\n>> passe($v)\n", "paramètre-liste"),
 ]:
     cas_rejet(nom, code=code, motif=motif)
 
