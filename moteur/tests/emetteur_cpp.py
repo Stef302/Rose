@@ -206,6 +206,18 @@ $y = fibonacci(90)
 >> $y
 >> 2 ^ 100
 ''',
+    'tampon': '''$b = tampon(8)
+tampon_pose($b, 0, 65)
+>> tampon_case($b, 0)
+>> longueur($b)
+$a = octets("abc")
+>> longueur($a)
+''',
+    'flagpees': '''$g = vrai
+si ($g) { >> 1 }
+$w = 42
+>> $w
+''',
 }
 
 def main():
