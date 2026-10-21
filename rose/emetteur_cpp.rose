@@ -19,6 +19,120 @@ fn trim($s: chaine) -> chaine {
   retour sous_chaine($s, $i, $j)
 }
 
+fn cst_promu_gd($txt: chaine) -> booleen {
+  $t = $txt
+  si (longueur($t) > 0) {
+    si ($t[0] == '-' ou $t[0] == '+') {
+      $t = sous_chaine($t, 1, longueur($t))
+    }
+  }
+  $i = 0
+  tant_que ($i < longueur($t)) {
+    si ($t[$i] < '0' ou $t[$i] > '9') { retour faux }
+    $i = $i + 1
+  }
+  si (longueur($t) == 0) { retour faux }
+  si (longueur($t) > 19) { retour vrai }
+  si (longueur($t) == 19) {
+    si ($t >= "4611686018427387904") { retour vrai }
+  }
+  retour faux
+}
+
+fn prefix_cst() -> chaine {
+  // le lexer du moteur avale "@c" dans un littéral de chaîne (=> "") ; on le construit.
+  retour "@" + "c"
+}
+
+fn premier_espace($s: chaine) -> entier {
+  $i = 0
+  $stop = faux
+  tant_que ($i < longueur($s) et $stop == faux) {
+    si ($s[$i] == ' ') { $stop = vrai } sinon { $i = $i + 1 }
+  }
+  retour $i
+}
+
+fn decoupe($s: chaine, $out: liste<chaine>) {
+  $r = trim($s)
+  $stop = faux
+  tant_que ($stop == faux) {
+    si (longueur($r) == 0) { $stop = vrai } sinon {
+      $p = premier_espace($r)
+      joindre($out, sous_chaine($r, 0, $p))
+      $r = trim(sous_chaine($r, $p, longueur($r)))
+    }
+  }
+}
+
+// la valeur produite par l'instruction du temp $tname (%t…) est-elle un grand entier ?
+fn inst_est_gd($tname: chaine, $body: liste<chaine>) -> booleen {
+  $i = 1
+  tant_que ($i < longueur($body)) {
+    $bl = $body[$i]
+    si (commence_par($bl, $tname + " = ")) {
+      $rest = trim(sous_chaine($bl, longueur($tname) + 3, longueur($bl)))
+      $toks = [""]
+      decoupe($rest, $toks)
+      si (longueur($toks) >= 2) {
+        $op = $toks[1]
+        si ($op == "cst.z") {
+          si (longueur($toks) >= 3) {
+            si (commence_par($toks[2], prefix_cst())) {
+              $val = sous_chaine($toks[2], 2, longueur($toks[2]))
+              retour cst_promu_gd($val)
+            }
+          }
+        }
+        si ($op == "add.z" ou $op == "sub.z" ou $op == "mul.z") {
+          $j = 2
+          tant_que ($j < longueur($toks)) {
+            si (operande_est_gd($toks[$j], $body)) { retour vrai }
+            $j = $j + 1
+          }
+        }
+      }
+    }
+    $i = $i + 1
+  }
+  retour faux
+}
+
+// l'opérande (@c constante énorme, temp gd, ou global gd) est-elle un grand entier ?
+fn operande_est_gd($operand: chaine, $body: liste<chaine>) -> booleen {
+  si (commence_par($operand, prefix_cst())) {
+    retour cst_promu_gd(sous_chaine($operand, 2, longueur($operand)))
+  }
+  si (commence_par($operand, "%")) {
+    $i = 1
+    $est_temp = faux
+    tant_que ($i < longueur($body)) {
+      si (commence_par($body[$i], $operand + " = ")) { $est_temp = vrai }
+      $i = $i + 1
+    }
+    si ($est_temp) { retour inst_est_gd($operand, $body) }
+    // sinon un global affect %t "nom"
+    $name = sous_chaine($operand, 1, longueur($operand))
+    $i = 1
+    tant_que ($i < longueur($body)) {
+      $bl = $body[$i]
+      si (commence_par($bl, "affect ")) {
+        $toks = [""]
+        decoupe(sous_chaine($bl, 7, longueur($bl)), $toks)
+        si (longueur($toks) >= 2) {
+          $gn = $toks[2]
+          si (longueur($gn) > 1) {
+            si ($gn[0] == '"') { $gn = sous_chaine($gn, 1, longueur($gn) - 1) }
+          }
+          si ($gn == $name) { retour inst_est_gd($toks[1], $body) }
+        }
+      }
+      $i = $i + 1
+    }
+  }
+  retour faux
+}
+
 fn est_vide($s: chaine) -> booleen {
   retour longueur(trim($s)) == 0
 }
@@ -105,7 +219,7 @@ fn operand($tok: chaine) -> chaine {
   si (longueur($t) == 0) { retour "0" }
   si ($t[0] == '%') { retour "r_" + sous_chaine($t, 1, longueur($t)) }
   si ($t[0] == '$') { retour "r_" + sous_chaine($t, 1, longueur($t)) }
-  si (commence_par($t, "@c")) {
+  si (commence_par($t, prefix_cst())) {
     retour sous_chaine($t, 2, longueur($t))
   }
   retour $t
@@ -131,6 +245,7 @@ fn temp_type_of($op: chaine) -> chaine {
 }
 
 fn cpp_type_name($t: chaine) -> chaine {
+  si ($t == "g") { retour "rose_gd" }
   si ($t == "s") { retour "rose_str" }
   si ($t == "f") { retour "rose_float" }
   si ($t == "b") { retour "rose_bool" }
@@ -434,7 +549,7 @@ fn principal() {
                       sinon { $sp2 = $sp2 + 1 }
                     }
                     $op2 = trim(sous_chaine($rest2, 0, $sp2))
-                    $gtype = temp_type_of($op2)
+                    si (inst_est_gd($tname, $body_lines)) { $gtype = "g" } sinon { $gtype = temp_type_of($op2) }
                   }
                   $bi2 = $bi2 + 1
                 }
@@ -667,6 +782,9 @@ fn principal() {
           $bi = $bi + 1
         }
         $ct = cpp_type_name($tty)
+        si ($tty == "z") {
+          si (inst_est_gd($t, $body_lines)) { $ct = "rose_gd" }
+        }
         $init = "0"
         si ($ct == "rose_str") { $init = "\"\"" }
         si ($ct == "rose_liste") {
@@ -807,6 +925,12 @@ fn principal() {
             >> "    rose_afficher_bool(" + operand($arg) + ");"
           } sinon si ($aty == "q") {
             >> "    rose_afficher_q(" + operand($arg) + ");"
+          } sinon si (commence_par($arg, "%")) {
+            si (operande_est_gd($arg, $body_lines)) {
+              >> "    rose_afficher_gd(" + operand($arg) + ");"
+            } sinon {
+              >> "    rose_afficher_int(" + operand($arg) + ");"
+            }
           } sinon {
             >> "    rose_afficher_int(" + operand($arg) + ");"
           }
@@ -995,7 +1119,7 @@ fn principal() {
           } sinon si ($op == "cst.f") {
             si (longueur($rtoks) > 2) {
               $arg = $rtoks[2]
-              si (commence_par($arg, "@c")) {
+              si (commence_par($arg, prefix_cst())) {
                 $arg = sous_chaine($arg, 2, longueur($arg))
               }
               >> "    " + $dname + " = " + $arg + ";"
@@ -1012,7 +1136,7 @@ fn principal() {
           } sinon si ($op == "cst.q") {
             si (longueur($rtoks) > 2) {
               $arg = $rtoks[2]
-              si (commence_par($arg, "@c")) {
+              si (commence_par($arg, prefix_cst())) {
                 $arg = sous_chaine($arg, 2, longueur($arg))
               }
               >> "    " + $dname + " = rose_qd(\"" + $arg + "\");"
@@ -1020,8 +1144,13 @@ fn principal() {
           } sinon si ($op == "cst.z") {
             si (longueur($rtoks) > 2) {
               $arg = $rtoks[2]
-              si (commence_par($arg, "@c")) {
-                >> "    " + $dname + " = " + sous_chaine($arg, 2, longueur($arg)) + ";"
+              si (commence_par($arg, prefix_cst())) {
+                $val = sous_chaine($arg, 2, longueur($arg))
+                si (cst_promu_gd($val)) {
+                  >> "    " + $dname + " = rose_gd(\"" + $val + "\");"
+                } sinon {
+                  >> "    " + $dname + " = " + $val + ";"
+                }
               } sinon {
                 >> "    " + $dname + " = " + operand($arg) + ";"
               }
