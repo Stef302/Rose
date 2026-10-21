@@ -162,6 +162,44 @@ octet pour octet comme la base v3.14.0.
 Prochain maillon : le traducteur RIR → C++ en Rose (fin du compilateur
 auto-hébergé).
 
+M4.4 : le traducteur RIR → C++, `rose/emetteur_cpp.rose` — celui-là est
+**écrit à la main et s'édite à la main** : il lit le TEXTE de
+`rose rir prog.rose` et doit rendre le `.cpp` de `rose build` à l'octet
+près. `moteur/tests/emetteur_cpp.py` est la porte : sur chaque programme
+du corpus, l'oracle (build) et l'émetteur doivent rendre des octets
+identiques. Cinq montées depuis le socle :
+
+* V1 — programmes simples (entiers, chaînes, booléens, fonctions, si,
+  boucles, labels assainis, temporaires triés) ;
+* V2 — rationnels (`rose_qd`, `rose_q_div`, `rose_afficher_q`) ;
+* V3 — grands entiers : `cst_promu_gd` reproduit en Rose (plus de 19
+  chiffres ou ≥ 2^62 en comparaison de chaînes), propagation `g` par
+  temporaires, globales et opérandes, `rose_gd("…")`, `rose_afficher_gd` ;
+* V4 — `genre()`, le miroir Rose de `ty_of` + `dest_ty` du transpileur
+  (les tables d'appels voyagent en paramètres : les fonctions Rose n'ont
+  pas d'état global) ; paramètres typés, conversions d'appels
+  (`rose_vers_mpz`, `rose_vers_double`, `rose_depuis_double`), dispatch
+  complète des intrinsèques scalaires et des listes, `afficher`
+  type-gouverné, globales triées comme le `std::map` de l'oracle ;
+* V5 — tampons (`rose_tampon` sans initialiseur, `octets`,
+  `rose_tampon_new`, `tampon_pose`, `tampon_case`) et gardes `_def_` :
+  le préfixe linéaire du corps distingue les globales CERTAINES des
+  précaires, lesquelles portent `bool _def_r_x`, s'écrivent avec pose du
+  drapeau et se lisent sous `rose_lit` — exactement le transpileur C++.
+
+Deux bizarreries du moteur découvertes en chemin, consignées : le lexeur
+avale le préfixe `@c` DANS les littéraux de chaîne (`"@c"` devient `""`,
+d'où `prefix_cst()` construit à la volée) et `et`/`ou` ne court-circuitent
+jamais (toute boucle d'indexation de chaîne porte un drapeau d'arrêt).
+
+**Porte actuelle : 28/28 programmes identiques** et 9 des 10 bancs
+octet-identiques (puissance plie 2^30000000 en une constante de neuf
+millions de chiffres que le découpage texte de l'émetteur ne traverse
+pas — la byte-identity des bancs, elle, compare les `.cpp` de l'oracle).
+Restent à miroiter : les tables (`table`, `cles`, `valeurs`, `inserer`),
+la garde `_def_` côté `rose_exige`, puis l'auto-émission — l'émetteur
+traduisant son propre RIR — qui closera le compilateur auto-hébergé.
+
 ### M5 — Standard library en Rose
 `prelude.rose` (listes, tri, chaînes, tables, tests unitaires écrits
 en Rose) compilé par le moteur auto-hébergé : le langage se décrit
