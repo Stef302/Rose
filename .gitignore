@@ -39,3 +39,8 @@ zig-cache/
 # --- OS ---------------------------------------------------------------------
 .DS_Store
 Thumbs.db
+installateur/dist/
+installateur/staging/
+
+# l'installeur Windows est un livrable du site — il est versionné
+!site/*.exe
