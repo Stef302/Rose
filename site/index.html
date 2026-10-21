@@ -4,14 +4,35 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Rose — le langage compilé en français qui se compile lui-même</title>
-<link rel="icon" href="favicon.ico"><text y='.9em' font-size='90'>🌹</text></svg>">
+<link rel="icon" href="favicon.ico">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="favicon-180.png">
+<meta property="og:title" content="Rose — le langage compilé en français qui se compile lui-même">
+<meta property="og:description" content="Interprète, JIT et compilation native AOT. Trois voies pour un seul langage, un moteur de référence et son traducteur C++ écrit en Rose.">
+<meta property="og:image" content="assets/img/og-rose.png">
+<meta property="og:type" content="website">
 <style>
-/* Police d'affichage Kare — version d'essai auto-hébergée : ses accolades { } portent un
-   watermark, signature assumée du projet. Licence d'essai dans assets/fonts/. */
+/* Police d'affichage Kare — domaine public, 4 fontes auto-hébergées : normale,
+   Light 300, Shadow (contours), Gradient (relief). Dans assets/fonts/kare/. */
 @font-face{
-  font-family:'Kare';
-  src:url('assets/fonts/kare-trial.otf') format('opentype');
-  font-display:swap;
+  font-family:'Kare'; font-weight:300; font-style:normal; font-display:swap;
+  src:url('assets/fonts/kare/Kare-Light.woff2') format('woff2'),
+      url('assets/fonts/kare/Kare-Light.woff') format('woff');
+}
+@font-face{
+  font-family:'Kare'; font-weight:400; font-style:normal; font-display:swap;
+  src:url('assets/fonts/kare/Kare.woff2') format('woff2'),
+      url('assets/fonts/kare/Kare.woff') format('woff');
+}
+@font-face{
+  font-family:'Kare Shadow'; font-style:normal; font-display:swap;
+  src:url('assets/fonts/kare/Kare-Shadow.woff2') format('woff2'),
+      url('assets/fonts/kare/Kare-Shadow.woff') format('woff');
+}
+@font-face{
+  font-family:'Kare Gradient'; font-style:normal; font-display:swap;
+  src:url('assets/fonts/kare/Kare-Gradient.woff2') format('woff2'),
+      url('assets/fonts/kare/Kare-Gradient.woff') format('woff');
 }
 :root{
   --noir:#060606; --noir2:#0b0b0b; --noir3:#0d0d0d; --noir4:#111;
@@ -55,14 +76,14 @@ a{text-decoration:none;color:inherit;cursor:pointer}
   backdrop-filter:blur(12px);
   border-bottom:1px solid var(--ligne);
 }
-.brand{display:flex;align-items:center;gap:10px;font-size:1.05rem;letter-spacing:1px;color:var(--txt)}
+.brand{display:flex;align-items:center;gap:10px;font-size:1.15rem;letter-spacing:1px;color:var(--txt)}
 .brand span::before{content:"{ ";color:var(--vert)}
 .brand span::after{content:" }";color:var(--vert)}
 .brand-rose{width:26px;height:32px}
 .nav nav{margin-left:auto;display:flex;gap:.2rem}
 .nav nav button{
   background:none; border:none; color:var(--sub);
-  font-family:'Kare'; font-size:.7rem; letter-spacing:2px;
+  font-family:'Kare'; font-size:.8rem; letter-spacing:2px;
   padding:10px 14px; cursor:pointer; transition:.2s; position:relative;
 }
 .nav nav button:hover{color:var(--txt)}
@@ -83,7 +104,7 @@ a{text-decoration:none;color:inherit;cursor:pointer}
 /* ---------- BOUTONS ---------- */
 .btn{
   display:inline-flex; align-items:center; gap:8px; justify-content:center;
-  font-family:'Kare'; font-size:.72rem; letter-spacing:2px;
+  font-family:'Kare'; font-size:.82rem; letter-spacing:2px;
   padding:13px 22px; transition:.2s; cursor:pointer; border:none;
   clip-path:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%);
 }
@@ -105,16 +126,17 @@ a{text-decoration:none;color:inherit;cursor:pointer}
   display:grid; grid-template-columns:1.1fr .9fr; align-items:center; gap:2rem;
   padding:130px 6vw 60px;
 }
-.overline{color:var(--vert);font-size:.66rem;letter-spacing:3px;display:flex;align-items:center;gap:10px}
+.overline{color:var(--vert);font-size:.76rem;letter-spacing:3px;display:flex;align-items:center;gap:10px}
 .overline::before{content:"";width:28px;height:2px;background:var(--vert)}
 h1{
-  font-size:clamp(3.5rem,10vw,8rem); line-height:.95; color:var(--txt); margin:.4rem 0 1rem;
+  font-family:'Kare Gradient','Kare',sans-serif;
+  font-size:clamp(3.8rem,10vw,8.4rem); line-height:.95; color:var(--txt); margin:.4rem 0 1rem;
   text-shadow:0 0 45px rgba(230,32,42,.35);
 }
-.lead{color:var(--sub);font-size:.88rem;line-height:2;max-width:52ch}
+.lead{color:var(--sub);font-size:1rem;line-height:2;max-width:52ch}
 .hero-btns{display:flex;gap:1rem;margin-top:2rem;flex-wrap:wrap}
 .badges{display:flex;gap:.6rem;margin-top:1.8rem;flex-wrap:wrap;list-style:none}
-.badge{border:1px solid var(--ligne);padding:6px 10px;font-size:.58rem;color:var(--gris);letter-spacing:2px}
+.badge{border:1px solid var(--ligne);padding:6px 10px;font-size:.68rem;color:var(--gris);letter-spacing:2px}
 .hero-logo{display:flex;align-items:center;justify-content:center}
 .brace{
   font-size:clamp(6rem,14vw,13rem); color:var(--vert); line-height:1;
@@ -132,22 +154,22 @@ h1{
 /* ---------- STATS ---------- */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-top:4rem;max-width:1400px;margin-inline:auto;padding:0 6vw}
 .stat{background:var(--card);border:1px solid var(--ligne);padding:22px;text-align:center}
-.stat-num{font-size:2rem;color:var(--vert);line-height:1}
-.stat-lbl{font-size:.62rem;letter-spacing:2px;color:var(--sub);margin-top:8px}
+.stat-num{font-family:'Kare Shadow','Kare',sans-serif;font-size:2.6rem;color:var(--vert);line-height:1}
+.stat-lbl{font-size:.72rem;letter-spacing:2px;color:var(--sub);margin-top:8px}
 
 /* ---------- TICKER ---------- */
 .ticker{border-block:1px solid var(--ligne);background:var(--noir2);overflow:hidden;padding:12px 0;margin-top:4rem}
 body.light .ticker{background:#EFEAD9}
-.ticker-track{display:flex;gap:2.2rem;width:max-content;animation:slide 26s linear infinite;font-size:.78rem;letter-spacing:2px}
+.ticker-track{display:flex;gap:2.2rem;width:max-content;animation:slide 26s linear infinite;font-size:.88rem;letter-spacing:2px}
 .tk{color:var(--sub)}
 .tk-f.rv{color:var(--rouge)} .tk-f.rv2{color:var(--vert)}
 @keyframes slide{to{transform:translateX(-50%)}}
 
 /* ---------- WRAP ---------- */
 .wrap{max-width:1200px;margin:auto;padding:80px 6vw}
-h2{font-size:clamp(1.5rem,3.6vw,2.5rem);color:var(--txt);margin:.5rem 0 1.6rem;line-height:1.35}
+h2{font-family:'Kare Gradient','Kare',sans-serif;font-size:clamp(1.7rem,4vw,2.8rem);color:var(--txt);margin:.5rem 0 1.6rem;line-height:1.35}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:2rem}
-.cols p{font-size:.82rem;line-height:2.1;color:var(--sub)}
+.cols p{font-size:.92rem;line-height:2.1;color:var(--sub)}
 
 /* ---------- TERMINAL ---------- */
 .term{
@@ -155,11 +177,11 @@ h2{font-size:clamp(1.5rem,3.6vw,2.5rem);color:var(--txt);margin:.5rem 0 1.6rem;l
   clip-path:polygon(0 0,calc(100% - 22px) 0,100% 22px,100% 100%,22px 100%,0 calc(100% - 22px));
 }
 body.light .term{background:#1a1a1a}
-.term-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.62rem;color:#999;letter-spacing:2px}
+.term-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.72rem;color:#999;letter-spacing:2px}
 .dot{width:11px;height:11px;border-radius:50%}
 .dot.rouge{background:var(--rouge)} .dot.vert{background:var(--vert)} .dot.blanc{background:#ddd}
 .term-bar > span{margin-left:8px;color:#999}
-.copy{margin-left:auto;background:none;border:1px solid #262626;color:#999;font-family:'Kare';font-size:.58rem;padding:6px 10px;cursor:pointer;letter-spacing:2px;transition:.2s}
+.copy{margin-left:auto;background:none;border:1px solid #262626;color:#999;font-family:'Kare';font-size:.68rem;padding:6px 10px;cursor:pointer;letter-spacing:2px;transition:.2s}
 .copy:hover{color:var(--vert);border-color:var(--vert)}
 /* Encadré installation */
 .install-card{
@@ -167,11 +189,11 @@ body.light .term{background:#1a1a1a}
   display:flex;flex-direction:column;gap:1rem;position:relative;
   box-shadow:0 0 0 1px rgba(230,32,42,.15),0 24px 60px -32px rgba(230,32,42,.35);
 }
-.install-card h3{font-size:clamp(1.1rem,2.4vw,1.5rem);margin:.4rem 0 .6rem}
+.install-card h3{font-size:clamp(1.25rem,2.6vw,1.7rem);margin:.4rem 0 .6rem}
 .install-card .term{margin:0}
-.install-tag{position:absolute;top:-.75rem;left:1.2rem;background:var(--rouge);color:#fff;font-size:.6rem;letter-spacing:2px;padding:4px 12px}
+.install-tag{position:absolute;top:-.75rem;left:1.2rem;background:var(--rouge);color:#fff;font-size:.7rem;letter-spacing:2px;padding:4px 12px}
 .copy:hover{color:var(--vert);border-color:var(--vert)}
-pre{padding:22px;overflow:auto;font:400 .82rem/1.9 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#d9d9d9}
+pre{padding:22px;overflow:auto;font:400 .95rem/1.9 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#d9d9d9}
 body.light pre{color:#e4e4e4}
 .k{color:var(--vert)} .s{color:var(--rouge-vif)} .c{color:#666;font-style:italic} .f{color:#fff} .t{color:#ff8a90} .n{color:#ffb86b}
 
@@ -182,8 +204,8 @@ body.light pre{color:#e4e4e4}
   clip-path:polygon(0 0,calc(100% - 18px) 0,100% 18px,100% 100%,18px 100%,0 calc(100% - 18px));
 }
 .carte:hover{transform:translateY(-6px);border-color:var(--vert)}
-.carte h3{font-size:.88rem;color:var(--txt);margin:14px 0 10px;letter-spacing:1px}
-.carte p{font-size:.68rem;line-height:1.9;color:var(--sub)}
+.carte h3{font-size:1rem;color:var(--txt);margin:14px 0 10px;letter-spacing:1px}
+.carte p{font-size:.8rem;line-height:1.9;color:var(--sub)}
 .ico{height:44px;display:flex;align-items:center}
 .ico svg{height:44px;width:auto}
 .ico-txt{font-size:2.1rem;color:var(--vert);line-height:1}
@@ -196,7 +218,7 @@ body.light pre{color:#e4e4e4}
 .tuile-visu svg{height:150px;width:auto}
 .big-brace{font-size:6.5rem;color:var(--vert);line-height:1;text-shadow:0 0 25px rgba(140,224,38,.4)}
 .tuile h3{margin:18px 0 10px;color:var(--txt);font-size:.95rem;letter-spacing:1px}
-.tuile p{font-size:.68rem;color:var(--sub);line-height:1.9}
+.tuile p{font-size:.8rem;color:var(--sub);line-height:1.9}
 
 /* ---------- CTA ---------- */
 .cta{text-align:center}
@@ -210,15 +232,15 @@ body.light pre{color:#e4e4e4}
   clip-path:polygon(0 0,calc(100% - 20px) 0,100% 20px,100% 100%,20px 100%,0 calc(100% - 20px));
 }
 body.light .editor{background:#1c1c1c}
-.editor-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.62rem;color:#999;letter-spacing:2px}
+.editor-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.72rem;color:#999;letter-spacing:2px}
 .editor-tabs{display:flex;gap:2px;margin-left:auto}
 .tab{
   padding:8px 14px; background:#141414; color:#888; font-family:'Kare';
-  font-size:.6rem; letter-spacing:2px; cursor:pointer; border:none; transition:.2s;
+  font-size:.7rem; letter-spacing:2px; cursor:pointer; border:none; transition:.2s;
 }
 .tab.active{background:#242424;color:var(--vert)}
 .tab:hover{color:#fff}
-.editor-code{flex:1;padding:22px;overflow:auto;font:400 .82rem/1.9 ui-monospace,monospace;color:#d9d9d9}
+.editor-code{flex:1;padding:22px;overflow:auto;font:400 .95rem/1.9 ui-monospace,monospace;color:#d9d9d9}
 .editor-code textarea{
   width:100%; min-height:420px; background:transparent; color:#d9d9d9;
   border:none; outline:none; resize:vertical;
@@ -230,7 +252,7 @@ body.light .editor{background:#1c1c1c}
   display:flex; flex-direction:column;
   clip-path:polygon(0 0,calc(100% - 20px) 0,100% 20px,100% 100%,20px 100%,0 calc(100% - 20px));
 }
-.console-head{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.62rem;color:#999;letter-spacing:2px}
+.console-head{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.72rem;color:#999;letter-spacing:2px}
 .console-body{flex:1;padding:18px;overflow:auto;font:400 .78rem/1.8 ui-monospace,monospace;color:#b8ffb8;min-height:360px}
 .log-line{margin:2px 0;white-space:pre-wrap}
 .log-ok{color:#AFFF4A}
@@ -247,21 +269,21 @@ body.light .editor{background:#1c1c1c}
   background:var(--card); border:1px solid var(--ligne); padding:20px;
   position:sticky; top:90px; max-height:calc(100vh - 110px); overflow-y:auto;
 }
-.doc-sidebar h4{font-size:.72rem;letter-spacing:2px;color:var(--vert);margin:14px 0 8px}
+.doc-sidebar h4{font-size:.82rem;letter-spacing:2px;color:var(--vert);margin:14px 0 8px}
 .doc-sidebar h4:first-child{margin-top:0}
 .doc-sidebar ul{list-style:none}
 .doc-sidebar li{margin:4px 0}
 .doc-sidebar button{
   width:100%; text-align:left; background:none; border:none;
-  font-family:'Kare'; font-size:.68rem; color:var(--sub);
+  font-family:'Kare'; font-size:.8rem; color:var(--sub);
   padding:8px 10px; cursor:pointer; transition:.2s; border-left:2px solid transparent;
 }
 .doc-sidebar button:hover{color:var(--txt);background:var(--noir4)}
 .doc-sidebar button.active{color:var(--vert);border-left-color:var(--vert);background:var(--noir4)}
 .doc-content{background:var(--card);border:1px solid var(--ligne);padding:32px;min-height:600px}
-.doc-content h3{font-size:1.3rem;margin-bottom:1rem;color:var(--txt)}
+.doc-content h3{font-size:1.45rem;margin-bottom:1rem;color:var(--txt)}
 .doc-content h4{font-size:.95rem;margin:1.6rem 0 .8rem;color:var(--vert)}
-.doc-content p{font-size:.78rem;line-height:2;color:var(--sub);margin-bottom:1rem}
+.doc-content p{font-size:.88rem;line-height:2;color:var(--sub);margin-bottom:1rem}
 .doc-content code.inline{
   background:var(--noir2); padding:3px 8px; color:var(--vert);
   font:400 .78rem ui-monospace,monospace; border:1px solid var(--ligne);
@@ -269,9 +291,9 @@ body.light .editor{background:#1c1c1c}
 body.light .doc-content code.inline{background:#EFEAD9}
 .doc-section{display:none;animation:fadeUp .35s ease}
 .doc-section.active{display:block}
-.table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.74rem}
+.table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.84rem}
 .table th,.table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--ligne)}
-.table th{color:var(--vert);font-size:.68rem;letter-spacing:1px}
+.table th{color:var(--vert);font-size:.8rem;letter-spacing:1px}
 .table td{color:var(--sub)}
 .table td code{background:var(--noir2);padding:2px 6px;color:var(--rouge-vif);font-family:ui-monospace}
 
@@ -290,9 +312,9 @@ body.light .doc-content code.inline{background:#EFEAD9}
   display:flex;align-items:center;justify-content:center;
   font-size:3rem; color:var(--vert);
 }
-.membre h3{font-size:.88rem;color:var(--txt);margin-bottom:4px}
-.membre .role{font-size:.6rem;color:var(--vert);letter-spacing:2px;margin-bottom:12px}
-.membre p{font-size:.68rem;color:var(--sub);line-height:1.9}
+.membre h3{font-size:1rem;color:var(--txt);margin-bottom:4px}
+.membre .role{font-size:.7rem;color:var(--vert);letter-spacing:2px;margin-bottom:12px}
+.membre p{font-size:.8rem;color:var(--sub);line-height:1.9}
 .socials{display:flex;gap:8px;justify-content:center;margin-top:16px}
 .socials a{width:32px;height:32px;border:1px solid var(--ligne);display:flex;align-items:center;justify-content:center;color:var(--sub);transition:.2s}
 .socials a:hover{color:var(--vert);border-color:var(--vert)}
@@ -308,12 +330,12 @@ body.light .doc-content code.inline{background:#EFEAD9}
 }
 .event.old::before{background:var(--rouge)}
 .event-head{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
-.event-ver{background:var(--vert);color:var(--noir);padding:4px 10px;font-size:.64rem;letter-spacing:2px}
+.event-ver{background:var(--vert);color:var(--noir);padding:4px 10px;font-size:.74rem;letter-spacing:2px}
 .event.old .event-ver{background:var(--rouge);color:#fff}
-.event-date{font-size:.64rem;color:var(--sub);letter-spacing:1px}
-.event-title{font-size:.92rem;color:var(--txt);margin-bottom:8px}
+.event-date{font-size:.74rem;color:var(--sub);letter-spacing:1px}
+.event-title{font-size:1.02rem;color:var(--txt);margin-bottom:8px}
 .event ul{list-style:none}
-.event li{font-size:.7rem;color:var(--sub);padding:4px 0;padding-left:18px;position:relative;line-height:1.7}
+.event li{font-size:.8rem;color:var(--sub);padding:4px 0;padding-left:18px;position:relative;line-height:1.7}
 .event li::before{content:"▸";position:absolute;left:0;color:var(--vert)}
 .event.old li::before{color:var(--rouge)}
 
@@ -329,30 +351,30 @@ body.light .doc-content code.inline{background:#EFEAD9}
 }
 .search-input{
   width:100%; padding:22px; background:transparent; border:none; outline:none;
-  color:var(--txt); font-family:'Kare'; font-size:1rem;
+  color:var(--txt); font-family:'Kare'; font-size:1.08rem;
 }
 .search-results{border-top:1px solid var(--ligne);max-height:50vh;overflow-y:auto}
 .search-result{padding:14px 22px;cursor:pointer;border-bottom:1px solid var(--ligne);transition:.15s}
 .search-result:hover,.search-result.selected{background:var(--noir4)}
-.search-result-title{font-size:.82rem;color:var(--txt)}
-.search-result-page{font-size:.58rem;color:var(--vert);letter-spacing:2px;margin-top:4px}
-.search-empty{padding:30px;text-align:center;color:var(--sub);font-size:.74rem}
+.search-result-title{font-size:.92rem;color:var(--txt)}
+.search-result-page{font-size:.68rem;color:var(--vert);letter-spacing:2px;margin-top:4px}
+.search-empty{padding:30px;text-align:center;color:var(--sub);font-size:.84rem}
 
 /* ========== FOOTER ========== */
 footer{border-top:1px solid var(--ligne);padding:50px 6vw;text-align:center;margin-top:4rem}
 .foot-grid{max-width:1200px;margin:0 auto 30px;display:grid;grid-template-columns:repeat(4,1fr);gap:2rem;text-align:left}
-.foot-col h5{font-size:.7rem;letter-spacing:2px;color:var(--vert);margin-bottom:14px}
+.foot-col h5{font-size:.8rem;letter-spacing:2px;color:var(--vert);margin-bottom:14px}
 .foot-col ul{list-style:none}
 .foot-col li{margin:6px 0}
 .foot-col button{
-  background:none;border:none;font-family:'Kare';font-size:.68rem;
+  background:none;border:none;font-family:'Kare';font-size:.8rem;
   color:var(--sub);cursor:pointer;padding:0;transition:.2s;
 }
 .foot-col button:hover{color:var(--vert)}
 .foot-brace{font-size:2rem;color:var(--vert);display:flex;align-items:center;justify-content:center;gap:12px}
 .foot-brace svg{width:34px;height:42px}
-footer p{font-size:.7rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-height:2}
-.small{font-size:.6rem}
+footer p{font-size:.8rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-height:2}
+.small{font-size:.7rem}
 
 
 /* ---------- REVEAL ---------- */
@@ -367,38 +389,43 @@ footer p{font-size:.7rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
   .lead{margin:auto}
   .cols,.grid-3{grid-template-columns:1fr}
 }
-@media(max-width:760px){.nav nav{gap:0} .nav nav button{padding:10px 8px;font-size:.6rem;letter-spacing:1px}}
+@media(max-width:760px){.nav nav{gap:0} .nav nav button{padding:10px 8px;font-size:.7rem;letter-spacing:1px}}
 @media(max-width:640px){.grid,.equipe{grid-template-columns:1fr} .stats{grid-template-columns:1fr} .foot-grid{grid-template-columns:1fr}}
 
 /* ========== TOAST ========== */
 .toast{
   position:fixed; bottom:30px; right:30px; z-index:200;
   background:var(--vert); color:var(--noir); padding:14px 22px;
-  font-size:.72rem; letter-spacing:2px; transform:translateY(100px); opacity:0;
+  font-size:.82rem; letter-spacing:2px; transform:translateY(100px); opacity:0;
   transition:.3s;
 }
 .toast.show{transform:none;opacity:1}
 
 /* ========== COMPLÉMENTS v3.14 (nouveau site) ========== */
 .doc-sel{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:1.4rem}
-.rose-select{background:var(--noir2);color:var(--vert);border:1px solid var(--ligne);font-family:'Kare';font-size:.7rem;letter-spacing:2px;padding:10px 14px;outline:none;cursor:pointer}
-.badge-note{display:inline-block;background:var(--noir4);border:1px solid var(--vert);color:var(--vert);font-size:.58rem;letter-spacing:2px;padding:6px 12px;margin-top:.8rem}
+.rose-select{background:var(--noir2);color:var(--vert);border:1px solid var(--ligne);font-family:'Kare';font-size:.8rem;letter-spacing:2px;padding:10px 14px;outline:none;cursor:pointer}
+.badge-note{display:inline-block;background:var(--noir4);border:1px solid var(--vert);color:var(--vert);font-size:.68rem;letter-spacing:2px;padding:6px 12px;margin-top:.8rem}
 .etat{display:grid;grid-template-columns:1fr 1fr;gap:1.6rem;margin-top:1.4rem}
 .etat-col{background:var(--card);border:1px solid var(--ligne);padding:26px}
-.etat-col h3{font-size:.85rem;margin-bottom:16px;letter-spacing:2px}
+.etat-col h3{font-size:.95rem;margin-bottom:16px;letter-spacing:2px}
 .etat-col ul{list-style:none}
-.etat-col li{font-size:.72rem;color:var(--sub);line-height:1.9;padding:8px 0 8px 26px;position:relative;border-bottom:1px dashed var(--ligne)}
+.etat-col li{font-size:.82rem;color:var(--sub);line-height:1.9;padding:8px 0 8px 26px;position:relative;border-bottom:1px dashed var(--ligne)}
 .etat-col li b{color:var(--txt)}
 .etat-col li::before{position:absolute;left:2px;top:9px;font-weight:700}
 .etat-col.fait li::before{content:"✓";color:var(--vert)}
 .etat-col.reste li::before{content:"…";color:var(--rouge)}
 @media(max-width:900px){.etat{grid-template-columns:1fr}}
-.honest{border:1px solid var(--vert);background:var(--card);padding:16px 20px;font-size:.7rem;color:var(--sub);letter-spacing:.5px;line-height:2;margin-bottom:1.6rem}
+.honest{border:1px solid var(--vert);background:var(--card);padding:16px 20px;font-size:.8rem;color:var(--sub);letter-spacing:.5px;line-height:2;margin-bottom:1.6rem}
 .honest b{color:var(--vert)}
 .doc-section p{margin:.8rem 0}
 .doc-section table{margin:1rem 0}
-.doc-section pre{padding:16px;overflow-x:auto;font-size:.72rem;line-height:1.8;color:var(--txt)}
+.doc-section pre{padding:16px;overflow-x:auto;font-size:.82rem;line-height:1.8;color:var(--txt)}
 .term pre{padding:18px}
+/* ---------- KARE LIGHT : étiquettes espacées ---------- */
+.overline,.badge,.stat-lbl,.ticker-track,.term-bar,.editor-head,.editor-tabs .tab,.console-head,
+.install-tag,.doc-sidebar h4,.doc-sidebar a,.table th,.membre .role,.event-ver,.event-date,.event li,
+.search-result-page,.search-empty,.foot-col h5,.foot-col button,.small,footer p,.rose-select,
+.badge-note,.etat-col h3,.etat-col li,.copy,.toast,.honest{font-weight:300}
 </style>
 </head>
 <body>
@@ -408,7 +435,7 @@ footer p{font-size:.7rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 
 <!-- ====== NAV ====== -->
 <header class="nav">
-  <a class="brand" onclick="go('home')"><img src="assets/img/logo-rose-mini.png" alt="Logo Rose" style="width:30px;height:30px;object-fit:contain"><span>ROSE</span></a>
+  <a class="brand" onclick="go('home')"><img src="assets/img/logo-simple-64.png" alt="Logo Rose" style="width:30px;height:30px;object-fit:contain"><span>ROSE</span></a>
   <nav>
     <button data-page="home" class="active" onclick="go('home')">ACCUEIL</button>
     <button data-page="play" onclick="go('play')">PLAYGROUND</button>
@@ -516,7 +543,7 @@ footer p{font-size:.7rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
       </div>
       <div class="reveal">
         <div class="term">
-          <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>bonjour.rose</span></div>
+          <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><img src="assets/img/petale-64.png" alt="" style="width:15px;height:15px;flex:none;filter:drop-shadow(0 0 6px rgba(230,32,42,.5))"><span>bonjour.rose</span></div>
 <pre><span class="c">// bonjour.rose</span>
 <span class="k">fn</span> <span class="f">saluer</span>(<span class="t">$nom</span>: <span class="t">chaine</span>) -> <span class="t">chaine</span> {
   <span class="t">$msg</span> = <span class="s">"Salut, "</span> + <span class="t">$nom</span> + <span class="s">" !"</span>
@@ -569,7 +596,7 @@ Salut, Alan !</pre>
     <div class="install-card reveal">
       <span class="install-tag">WINDOWS</span>
       <h3>Installer Rose</h3>
-      <p style="font-size:.8rem;line-height:2;color:var(--sub)">
+      <p style="font-size:.9rem;line-height:2;color:var(--sub)">
         L'installeur fonctionne en mode utilisateur — <b>aucun droit administrateur</b>. Il déclare la commande
         <code class="inline">rose</code> dans le PATH, associe les fichiers <code class="inline">.rose</code> à leur
         icône (double-clic = exécution), propose « Modifier » avec le bloc-notes, et s'inscrit dans
@@ -623,7 +650,7 @@ Salut, Alan !</pre>
 
   <div class="wrap cta reveal">
     <h2>Le compilateur qui compile le compilateur</h2>
-    <p style="font-size:.82rem;color:var(--sub);max-width:56ch;margin:0 auto 2rem;line-height:2">Chaque jalon est scellé par une porte : la sortie de Rose-écrit-en-Rose doit être identique à l'oracle, par l'interprète et par le binaire compilé.</p>
+    <p style="font-size:.92rem;color:var(--sub);max-width:56ch;margin:0 auto 2rem;line-height:2">Chaque jalon est scellé par une porte : la sortie de Rose-écrit-en-Rose doit être identique à l'oracle, par l'interprète et par le binaire compilé.</p>
     <div style="display:flex;gap:1rem;justify-content:center;flex-wrap:wrap">
       <button class="btn btn-vert" onclick="go('projet')">VOIR LE CHANTIER</button>
       <button class="btn btn-fantome" onclick="window.open('https://github.com/Stef302/Rose','_blank')">GITHUB ↗</button>
@@ -649,7 +676,7 @@ Salut, Alan !</pre>
       <div class="editor">
         <div class="editor-head">
           <i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i>
-          <span id="fileName">bonjour.rose</span>
+          <img src="assets/img/petale-64.png" alt="" style="width:15px;height:15px;flex:none;filter:drop-shadow(0 0 6px rgba(230,32,42,.5))"><span id="fileName">bonjour.rose</span>
           <div class="editor-tabs">
             <button class="tab active" data-file="bonjour" onclick="switchTab('bonjour')">BONJOUR</button>
             <button class="tab" data-file="rationnels" onclick="switchTab('rationnels')">RATIONNELS</button>
@@ -668,7 +695,7 @@ Salut, Alan !</pre>
         <div class="console-body" id="consoleOut"><span class="log-info">Enattente d'exécution — clique sur EXÉCUTER ▶</span></div>
       </div>
     </div>
-    <p class="gris" style="font-size:.7rem;margin-top:1.4rem;letter-spacing:1px">
+    <p class="gris" style="font-size:.8rem;margin-top:1.4rem;letter-spacing:1px">
       Besoin de la bibliothèque complète ? <a class="vert" onclick="go('doc')">La doc recense les fonctions du moteur</a>.
     </p>
   </div>
@@ -680,13 +707,13 @@ Salut, Alan !</pre>
     <div class="overline reveal">MANUEL</div>
     <h2 class="reveal">Documentation</h2>
     <div class="doc-sel reveal">
-      <span class="gris" style="font-size:.68rem;letter-spacing:2px">VERSION</span>
+      <span class="gris" style="font-size:.8rem;letter-spacing:2px">VERSION</span>
       <select class="rose-select" id="docVer" onchange="setDocVer(this.value)">
         <option value="314" selected>v3.14 — actuelle</option>
         <option value="313">v3.13</option>
         <option value="312">v3.12</option>
       </select>
-      <span class="gris" style="font-size:.68rem;line-height:1.8;max-width:44ch" id="docVerNote">Blocs marqués « depuis v3.13 » ou « depuis v3.14 » masqués selon la version choisie.</span>
+      <span class="gris" style="font-size:.8rem;line-height:1.8;max-width:44ch" id="docVerNote">Blocs marqués « depuis v3.13 » ou « depuis v3.14 » masqués selon la version choisie.</span>
     </div>
     <div class="doc-layout reveal">
       <aside class="doc-sidebar">
@@ -751,7 +778,7 @@ Salut, Alan !</pre>
         <div class="doc-section" id="doc-hello">
           <h3>Premier programme</h3>
           <div class="term">
-            <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>hello.rose</span></div>
+            <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><img src="assets/img/petale-64.png" alt="" style="width:15px;height:15px;flex:none;filter:drop-shadow(0 0 6px rgba(230,32,42,.5))"><span>hello.rose</span></div>
 <pre><span class="c">// hello.rose</span>
 <span class="t">$nom</span> = <span class="s">"monde"</span>
 &gt;&gt; <span class="s">"Bonjour, "</span> + <span class="t">$nom</span> + <span class="s">" !"</span></pre>
@@ -925,7 +952,7 @@ Bonjour, monde !</pre>
           <tr><td>Émetteur RIR</td><td><code>rose rir</code></td><td class="vert">✓ 104 fichiers</td></tr>
           <tr><td>Traducteur RIR → C++</td><td><code>rose build</code> en Rose</td><td class="rouge">… ouvert</td></tr>
         </table>
-        <p style="font-size:.7rem;line-height:2;color:var(--sub)">Le fichier émetteur — 3&nbsp;000 lignes de Rose —
+        <p style="font-size:.8rem;line-height:2;color:var(--sub)">Le fichier émetteur — 3&nbsp;000 lignes de Rose —
         figure dans son propre corpus de 104 fichiers : il s'émet lui-même, par l'interprète et par la compilation.</p>
       </div>
     </div>
@@ -971,7 +998,7 @@ Bonjour, monde !</pre>
     <h2 class="reveal">Créateurs</h2>
     <div class="equipe" style="grid-template-columns:1fr">
       <div class="membre reveal">
-        <div class="avatar"><img src="assets/img/logo-rose-mini.png" alt="Logo Rose" style="width:72px;height:72px;object-fit:contain"></div>
+        <div class="avatar"><img src="assets/img/logo-simple.png" alt="Logo Rose" style="width:72px;height:72px;object-fit:contain"></div>
         <h3>Stef302</h3>
         <div class="role">CONCEPTEUR · DÉVELOPPEUR</div>
         <p>Rose est conçu et implémenté par une seule personne : la langue, le moteur C++, l'auto-hébergement,
@@ -1079,7 +1106,7 @@ Bonjour, monde !</pre>
       </div>
 
     </div>
-    <p class="gris reveal" style="font-size:.72rem;line-height:2;margin-top:2rem;letter-spacing:1px">
+    <p class="gris reveal" style="font-size:.82rem;line-height:2;margin-top:2rem;letter-spacing:1px">
       Versions plus anciennes : le langage a grandi par pas successifs, sur le même principe — la sortie rend
       exactement ce qui est écrit.
     </p>
@@ -1129,7 +1156,7 @@ Bonjour, monde !</pre>
       </ul>
     </div>
   </div>
-  <div class="foot-brace">{ <img src="assets/img/logo-rose-mini.png" alt="Logo Rose" style="width:34px;height:34px;object-fit:contain"> }</div>
+  <div class="foot-brace">{ <img src="assets/img/logo-simple-64.png" alt="Logo Rose" style="width:34px;height:34px;object-fit:contain"> }</div>
   <p>ROSE — conçu et implémenté par <span class="vert">Stef302</span></p>
   <p class="small gris">© <span id="y"></span> · LICENCE MIT · AUTO-HÉBERGEMENT EN COURS</p>
 </footer>
