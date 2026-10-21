@@ -326,6 +326,21 @@ void rose_afficher_liste(const rose_liste &l);
 // ══════════════════ M3.4 — interface rose_ent des helpers ══════════════════
 void rose_erreur(const std::string &msg);   // « Rose : erreur — … », exit 1
 
+// v3.14 — lecture d'une variable dont la première écriture n'est pas
+// garantie à la compilation (affectation seulement dans une branche : le
+// dernier écart AOT connu, classe « chemin mort », fermeture de la graine
+// générative 200051). Le transpileur suit un drapeau « défini » par
+// variable marquée et lit à travers ceci — exactement le message et le
+// placement du cœur interprété (v3.13.1). T& (et non const T&) : les sites
+// mutateurs (liste.push, table.inserer) partagent le même chemin de garde.
+inline void rose_exige(const bool &defini, const char *nom) {
+    if (!defini) rose_erreur(std::string("variable '") + nom + "' utilisée sans valeur");
+}
+template <class T> T& rose_lit(T &v, const bool &defini, const char *nom) {
+    rose_exige(defini, nom);
+    return v;
+}
+
 // Valeurs entières d'utilisateur : rose_ent (machine + promotion GMP).
 rose_ent rose_entier(const char *s);
 rose_str rose_chaine(const rose_ent &n);

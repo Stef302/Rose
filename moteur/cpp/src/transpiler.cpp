@@ -54,7 +54,9 @@ static bool cst_promu_gd(const std::string &txt) {
 
 // Map a RirOp to a C++ expression.
 static std::string sanitize(const std::string &name);
-static std::string cpp_operand(const RirOp &op, std::map<std::string,RirType> &temp_types) {
+static std::string nom_visible(const std::string &name);
+static std::string cpp_operand(const RirOp &op, std::map<std::string,RirType> &temp_types,
+                               const std::set<std::string> *flagpees = nullptr) {
     if (op.kind == RirOp::Const) {
         // Numeric constant: @c123 → 123
         if (op.name.rfind("@c", 0) == 0) {
@@ -86,15 +88,21 @@ static std::string cpp_operand(const RirOp &op, std::map<std::string,RirType> &t
         return "0";
     }
     if (op.kind == RirOp::Temp) {
-        return sanitize(op.name);  // %t0 → t0
+        std::string s = sanitize(op.name);  // %t0 → r_t0
+        if (flagpees && flagpees->count(s))
+            return "rose_lit(" + s + ", _def_" + s + ", \"" + nom_visible(op.name) + "\")";
+        return s;
     }
     if (op.kind == RirOp::Global) {
-        return sanitize(op.name);  // $var → var
+        std::string s = sanitize(op.name);  // $var → r_var
+        if (flagpees && flagpees->count(s))
+            return "rose_lit(" + s + ", _def_" + s + ", \"" + nom_visible(op.name) + "\")";
+        return s;
     }
     return "0";
 }
 
-// Sanitize a temp name for C++ (%t0 → t0)
+// Sanitize a temp name for C++ (%t0 → r_t0)
 static std::string sanitize(const std::string &name) {
     std::string s = name;
     // Remove % prefix
@@ -105,6 +113,18 @@ static std::string sanitize(const std::string &name) {
     for (char &c : s) {
         if (!isalnum((unsigned char)c) && c != '_') c = '_';
     }
+    // v3.14 — préfixe uniforme : un nom Rose est UN ESPACE LIBRE, il peut
+    // porter un mot-clé C++ ($int, fn double) ou collisionner l'API du
+    // runtime (rose_add…). Le binaire généré ne doit jamais casser g++
+    // (contrat : émettre ou rejeter poliment). r_ isole tout, partout.
+    return s.empty() ? "r_vide" : "r_" + s;
+}
+
+// Nom visible par l'utilisateur (sans préfixe %/$) — pour les messages
+// d'erreur que l'AOT doit rendre OCTET pour OCTET identiques au cœur.
+static std::string nom_visible(const std::string &name) {
+    std::string s = name;
+    if (!s.empty() && (s[0] == '%' || s[0] == '$')) s = s.substr(1);
     return s;
 }
 
@@ -389,6 +409,39 @@ std::string transpiler_rir(const RirModule &mod) {
         }
         if (!global_types.empty()) out << "\n";
 
+        // v3.14 — dernier écart AOT connu (classe « chemin mort », graines
+        // génératives 200051/300071) : une variable n'est CERTAINEMENT
+        // initialisée que si elle est affectée dans le préfixe linéaire du
+        // bloc d'entrée (avant la première branche). Les autres portent un
+        // drapeau « défini » : écriture = pose, lecture = rose_lit (garde).
+        // C'est le comportement exact du cœur interprété v3.13.1, sans coût
+        // pour les variables certaines (les bancs paient 0 : tout est
+        // initialisé en préfixe). Les paramètres sont initialisés par l'appel.
+        std::set<std::string> certaines, flagpees;
+        {
+            bool ligne = true;
+            for (auto &b : f.blocs)
+                for (auto &instr : b.instrs) {
+                    if (instr.op == "affect" && !instr.message.empty() && ligne)
+                        certaines.insert(sanitize(instr.message));
+                    if (instr.op == "br" || instr.op == "br.cond") ligne = false;
+                }
+            for (auto &kv : global_types) {
+                bool est_param = false;
+                for (auto &p : f.params) if (sanitize(p.first) == kv.first) est_param = true;
+                if (!est_param && !certaines.count(kv.first)) flagpees.insert(kv.first);
+            }
+        }
+        // Lecture d'un opérande : garde rose_lit si variable marquée, sinon nom brut.
+        auto L = [&](const RirOp &a) -> std::string {
+            std::string s = sanitize(a.name);
+            if ((a.kind == RirOp::Temp || a.kind == RirOp::Global) && flagpees.count(s))
+                return "rose_lit(" + s + ", _def_" + s + ", \"" + nom_visible(a.name) + "\")";
+            return s;
+        };
+        for (auto &g : flagpees) out << "    bool _def_" << g << " = false;\n";
+        if (!flagpees.empty()) out << "\n";
+
         // Declare temp variables
         // Need to determine types from dest_ty
         for (auto &b : f.blocs) {
@@ -632,8 +685,8 @@ std::string transpiler_rir(const RirModule &mod) {
                     out << "    " << sanitize(instr.dest) << " = rose_liste_new();\n";
                 }
                 else if (op == "liste.push") {
-                    std::string list_var = sanitize(instr.args[0].name);
-                    std::string elem = sanitize(instr.args[1].name);
+                    std::string list_var = L(instr.args[0]);
+                    std::string elem = L(instr.args[1]);
                     RirType ety = ty_of(instr.args[1]);
                     if (instr.args[1].kind == RirOp::Const && instr.args[1].ty != RirS &&
                         instr.args[1].name.rfind("@c", 0) == 0) ety = RirZ;
@@ -651,9 +704,9 @@ std::string transpiler_rir(const RirModule &mod) {
                 else if (op == "index") {
                     std::string dest = sanitize(instr.dest);
                     std::string base = instr.args[0].kind == RirOp::Const
-                        ? cpp_operand(instr.args[0], temp_types) : sanitize(instr.args[0].name);
+                        ? cpp_operand(instr.args[0], temp_types, &flagpees) : L(instr.args[0]);
                     std::string idx = instr.args[1].kind == RirOp::Const
-                        ? cpp_operand(instr.args[1], temp_types) : sanitize(instr.args[1].name);
+                        ? cpp_operand(instr.args[1], temp_types, &flagpees) : L(instr.args[1]);
                     RirType bty = temp_types.count(instr.args[0].name) ? temp_types[instr.args[0].name] : RirU;
                     if (global_types.count(base)) bty = global_types[base];
                     if (bty == RirTbl) {   // M4.2 : table → cellule dynamique
@@ -674,7 +727,7 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "liste.len") {
                     std::string dest = sanitize(instr.dest);
-                    std::string base = sanitize(instr.args[0].name);
+                    std::string base = L(instr.args[0]);
                     out << "    " << dest << " = rose_liste_len(" << base << ");\n";
                 }
                 else if (op == "affect") {
@@ -710,6 +763,14 @@ std::string transpiler_rir(const RirModule &mod) {
                             auto gs = global_types.find(src_expr);
                             if (gs != global_types.end()) sty = gs->second;
                         }
+                        // v3.14 — lire une variable possiblement non initialisée
+                        // lève l'erreur exactement là où le cœur interprété lève
+                        // « variable 'x' utilisée sans valeur » (avant l'écriture).
+                        if (instr.args[0].kind == RirOp::Temp || instr.args[0].kind == RirOp::Global) {
+                            std::string sn = L(instr.args[0]);
+                            if (flagpees.count(sn))
+                                out << "    rose_exige(_def_" << sn << ", \"" << nom_visible(instr.args[0].name) << "\");\n";
+                        }
                         if (gt != global_types.end() && gt->second == RirF && sty == RirZ)
                             out << "    " << dglob << " = rose_vers_double(" << src_expr << ");\n";
                         else if (gt != global_types.end() && gt->second == RirGd && (sty == RirZ || sty == RirU))
@@ -738,10 +799,14 @@ std::string transpiler_rir(const RirModule &mod) {
                             throw std::runtime_error("AOT : valeur de table recopiée dans une variable typée — l'interprète la garde dynamique (limite M4.2 explicite)");
                         else
                             out << "    " << dglob << " = " << src_expr << ";\n";
+                        // v3.14 — écrire définit la variable (drapeau pour les
+                        // lectures gardées ; aucune dépense pour les autres).
+                        if (flagpees.count(dglob))
+                            out << "    _def_" << dglob << " = true;\n";
                     }
                 }
                 else if (op == "afficher") {
-                    std::string arg = sanitize(instr.args[0].name);
+                    std::string arg = L(instr.args[0]);
                     RirType ty = RirU;
                     if (temp_types.count(instr.args[0].name)) ty = temp_types[instr.args[0].name];
                     else if (global_types.count(sanitize(instr.args[0].name))) ty = global_types[sanitize(instr.args[0].name)];
@@ -779,6 +844,15 @@ std::string transpiler_rir(const RirModule &mod) {
                         for (size_t ai = 1; ai < instr.args.size(); ai++) {
                             if (ai > 1) call += ", ";
                             std::string argx = cpp_operand(instr.args[ai], temp_types);
+                            // v3.14 — lecture gardée des variables marquées ; la
+                            // conversion de paramètre (Gd/F/Z) s'applique par-dessus,
+                            // donc la garde l'opérande avant toute arithmétique.
+                            { std::string gv = (instr.args[ai].kind == RirOp::Temp ||
+                                                instr.args[ai].kind == RirOp::Global)
+                                               ? sanitize(instr.args[ai].name) : "";
+                              if (flagpees.count(gv))
+                                  argx = "rose_lit(" + gv + ", _def_" + gv + ", \"" +
+                                         nom_visible(instr.args[ai].name) + "\")"; }
                             size_t pi = ai - 1;
                             if (pi < pt.size()) {
                                 RirType aty = RirU;
@@ -820,8 +894,8 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                     // Map to runtime function
                     else if (name == "octets") {
-                        std::string arg = cpp_operand(instr.args[1], temp_types);
-                        if (instr.args[1].kind == RirOp::Temp) arg = sanitize(instr.args[1].name) + ".c_str()";
+                        std::string arg = cpp_operand(instr.args[1], temp_types, &flagpees);
+                        if (instr.args[1].kind == RirOp::Temp) arg = L(instr.args[1]) + ".c_str()";
                         if (instr.args[1].kind == RirOp::Const) {
                             std::string s = instr.args[1].name;
                             std::string escaped;
@@ -835,16 +909,16 @@ std::string transpiler_rir(const RirModule &mod) {
                         out << "    " << sanitize(instr.dest) << " = rose_octets(" << arg << ");\n";
                     }
                     else if (name == "tampon") {
-                        std::string arg = sanitize(instr.args[1].name);
+                        std::string arg = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_tampon_new(" << arg << ");\n";
                     }
                     else if (name == "graine") {
-                        std::string arg = sanitize(instr.args[1].name);
+                        std::string arg = L(instr.args[1]);
                         out << "    rose_graine(" << arg << ");\n";
                     }
                     else if (name == "remplir_hasard") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
                         out << "    rose_remplir_hasard(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "millisecondes") {
@@ -857,11 +931,11 @@ std::string transpiler_rir(const RirModule &mod) {
                         out << "    " << sanitize(instr.dest) << " = rose_nb_arguments();\n";
                     }
                     else if (name == "argument") {
-                        std::string arg = sanitize(instr.args[1].name);
+                        std::string arg = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_argument(" << arg << ");\n";
                     }
                     else if (name == "entier") {
-                        std::string arg = sanitize(instr.args[1].name);
+                        std::string arg = L(instr.args[1]);
                         RirType aty = ty_of(instr.args[1]);
                         if (instr.args[1].kind == RirOp::Const && instr.args[1].name.rfind("@c", 0) == 0)
                             out << "    " << sanitize(instr.dest) << " = " << instr.args[1].name.substr(2) << ";\n";
@@ -875,48 +949,48 @@ std::string transpiler_rir(const RirModule &mod) {
                             out << "    " << sanitize(instr.dest) << " = " << arg << ";\n";
                     }
                     else if (name == "pgcd") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
                         if (ty_of(instr.args[1]) == RirGd || ty_of(instr.args[2]) == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_pgcd_gd(" << a0 << ", " << a1 << ");\n";
                         else
                             out << "    " << sanitize(instr.dest) << " = rose_pgcd(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "ppcm") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
                         if (ty_of(instr.args[1]) == RirGd || ty_of(instr.args[2]) == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_ppcm_gd(" << a0 << ", " << a1 << ");\n";
                         else
                             out << "    " << sanitize(instr.dest) << " = rose_ppcm(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "factorielle") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_factorielle_gd(" << a0 << ");\n";
                     }
                     else if (name == "fibonacci") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_fibonacci_gd(" << a0 << ");\n";
                     }
                     else if (name == "puissance") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
                         out << "    " << sanitize(instr.dest) << " = rose_puissance_gd(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "est_premier") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_est_premier(" << a0 << ");\n";
                     }
                     else if (name == "compter_premiers") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_compter_premiers(" << a0 << ");\n";
                     }
                     else if (name == "nombre_pi") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_nombre_pi(" << a0 << ");\n";
                     }
                     else if (name == "partie_entiere") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF)
                             out << "    " << sanitize(instr.dest) << " = rose_partie_entiere_f(" << a0 << ");\n";
@@ -926,7 +1000,7 @@ std::string transpiler_rir(const RirModule &mod) {
                             out << "    " << sanitize(instr.dest) << " = " << a0 << ";\n";
                     }
                     else if (name == "nb_chiffres") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_nb_chiffres_gd(" << a0 << ");\n";
@@ -934,11 +1008,11 @@ std::string transpiler_rir(const RirModule &mod) {
                             out << "    " << sanitize(instr.dest) << " = rose_nb_chiffres(" << a0 << ");\n";
                     }
                     else if (name == "hasard") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_hasard(" << a0 << ");\n";
                     }
                     else if (name == "abs") {
-                        std::string a0 = sanitize(instr.args[1].name);
+                        std::string a0 = L(instr.args[1]);
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_abs_f(" << a0 << ");\n";
                         else if (aty == RirGd) out << "    " << sanitize(instr.dest) << " = rose_abs_gd(" << a0 << ");\n";
@@ -946,47 +1020,62 @@ std::string transpiler_rir(const RirModule &mod) {
                         else out << "    " << sanitize(instr.dest) << " = rose_abs(" << a0 << ");\n";
                     }
                     else if (name == "min") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
-                        RirType aty = ty_of(instr.args[1]);
-                        if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_min_f(" << a0 << ", " << a1 << ");\n";
-                        else if (aty == RirQ || ty_of(instr.args[2]) == RirQ)
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
+                        RirType t0 = ty_of(instr.args[1]), t1 = ty_of(instr.args[2]);
+                        if (t0 == RirF || t1 == RirF) {
+                            // Spécification cœur : promotion au domaine dominant
+                            // puis c <= 0 ? x : y — l'égalité ET NaN renvoient le
+                            // PREMIER opérande (rose_min_f « a < b ? a : b »
+                            // renvoyait le second sur NaN — miroir strict v3.14,
+                            // Q/Gd/Z descendent en double, jamais l'inverse).
+                            std::string x0 = t0 == RirF ? a0 : "rose_vers_double(" + a0 + ")";
+                            std::string x1 = t1 == RirF ? a1 : "rose_vers_double(" + a1 + ")";
+                            out << "    " << sanitize(instr.dest) << " = (" << x0 << " > " << x1 << " ? " << x1 << " : " << x0 << ");\n";
+                        }
+                        else if (t0 == RirQ || t1 == RirQ)
                             out << "    " << sanitize(instr.dest) << " = rose_min_q(" << a0 << ", " << a1 << ");\n";
-                        else if (aty == RirGd || ty_of(instr.args[2]) == RirGd)
+                        else if (t0 == RirGd || t1 == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_min_gd(" << a0 << ", " << a1 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_min(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "max") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
-                        RirType aty = ty_of(instr.args[1]);
-                        if (aty == RirF) out << "    " << sanitize(instr.dest) << " = rose_max_f(" << a0 << ", " << a1 << ");\n";
-                        else if (aty == RirQ || ty_of(instr.args[2]) == RirQ)
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
+                        RirType t0 = ty_of(instr.args[1]), t1 = ty_of(instr.args[2]);
+                        if (t0 == RirF || t1 == RirF) {
+                            // Miroir strict de l'interprète (c >= 0 ? x : y) :
+                            // égalité et NaN renvoient le premier opérande.
+                            std::string x0 = t0 == RirF ? a0 : "rose_vers_double(" + a0 + ")";
+                            std::string x1 = t1 == RirF ? a1 : "rose_vers_double(" + a1 + ")";
+                            out << "    " << sanitize(instr.dest) << " = (" << x0 << " < " << x1 << " ? " << x1 << " : " << x0 << ");\n";
+                        }
+                        else if (t0 == RirQ || t1 == RirQ)
                             out << "    " << sanitize(instr.dest) << " = rose_max_q(" << a0 << ", " << a1 << ");\n";
-                        else if (aty == RirGd || ty_of(instr.args[2]) == RirGd)
+                        else if (t0 == RirGd || t1 == RirGd)
                             out << "    " << sanitize(instr.dest) << " = rose_max_gd(" << a0 << ", " << a1 << ");\n";
                         else out << "    " << sanitize(instr.dest) << " = rose_max(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "fraction") {
-                        std::string a0 = cpp_operand(instr.args[1], temp_types);
-                        std::string a1 = cpp_operand(instr.args[2], temp_types);
+                        std::string a0 = cpp_operand(instr.args[1], temp_types, &flagpees);
+                        std::string a1 = cpp_operand(instr.args[2], temp_types, &flagpees);
                         out << "    " << sanitize(instr.dest) << " = rose_qd(rose_q_de(" << a0 << ") / rose_q_de(" << a1 << "));\n";
                     }
                     else if (name == "tampon_case") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
                         out << "    " << sanitize(instr.dest) << " = rose_tampon_case(" << a0 << ", " << a1 << ");\n";
                     }
                     else if (name == "tampon_pose") {
-                        std::string a0 = sanitize(instr.args[1].name);
-                        std::string a1 = sanitize(instr.args[2].name);
-                        std::string a2 = sanitize(instr.args[3].name);
+                        std::string a0 = L(instr.args[1]);
+                        std::string a1 = L(instr.args[2]);
+                        std::string a2 = L(instr.args[3]);
                         out << "    rose_tampon_pose(" << a0 << ", " << a1 << ", " << a2 << ");\n";
                     }
                     else if (name == "joindre") {
                         // joindre(list, elem): push elem to list
-                        std::string list_var = sanitize(instr.args[1].name);
-                        std::string elem = sanitize(instr.args[2].name);
+                        std::string list_var = L(instr.args[1]);
+                        std::string elem = L(instr.args[2]);
                         if (instr.args[2].kind == RirOp::Const) {
                             std::string s = instr.args[2].name;
                             if (s.rfind("@c", 0) == 0) {
@@ -1016,46 +1105,48 @@ std::string transpiler_rir(const RirModule &mod) {
                         }
                     }
                     else if (name == "concatener") {
-                        std::string list_var = sanitize(instr.args[1].name);
+                        std::string list_var = L(instr.args[1]);
                         out << "    " << sanitize(instr.dest) << " = rose_liste_concat(" << list_var << ");\n";
                     }
                     else if (name == "longueur") {
-                        std::string arg = sanitize(instr.args[1].name);
+                        std::string arg = sanitize(instr.args[1].name);   // clé de résolution de domaine
                         RirType aty = RirU;
                         if (temp_types.count(instr.args[1].name)) aty = temp_types[instr.args[1].name];
                         else if (global_types.count(arg)) aty = global_types[arg];
                         else aty = instr.args[1].ty;
-                        if (aty == RirListe) out << "    " << sanitize(instr.dest) << " = rose_liste_len(" << arg << ");\n";
-                        else if (aty == RirTbl) out << "    " << sanitize(instr.dest) << " = rose_table_longueur(" << arg << ");\n";   // M4.2
-                        else if (aty == RirTab) out << "    " << sanitize(instr.dest) << " = rose_tampon_longueur(" << arg << ");\n";
+                        // v3.14 — l'expression émise passe par la garde (arg, lui, sert de clé).
+                        std::string argE = L(instr.args[1]);
+                        if (aty == RirListe) out << "    " << sanitize(instr.dest) << " = rose_liste_len(" << argE << ");\n";
+                        else if (aty == RirTbl) out << "    " << sanitize(instr.dest) << " = rose_table_longueur(" << argE << ");\n";   // M4.2
+                        else if (aty == RirTab) out << "    " << sanitize(instr.dest) << " = rose_tampon_longueur(" << argE << ");\n";
                         else if (aty == RirS)
-                            out << "    " << sanitize(instr.dest) << " = rose_longueur(" << arg << ");\n";
-                        else out << "    " << sanitize(instr.dest) << " = " << arg << ".size();\n";
+                            out << "    " << sanitize(instr.dest) << " = rose_longueur(" << argE << ");\n";
+                        else out << "    " << sanitize(instr.dest) << " = " << argE << ".size();\n";
                     }
                     else if (name == "ordre") {
                         out << "    " << sanitize(instr.dest) << " = rose_ordre("
-                            << cpp_operand(instr.args[1], temp_types) << ");\n";
+                            << cpp_operand(instr.args[1], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "sous_chaine") {
                         out << "    " << sanitize(instr.dest) << " = rose_sous_chaine("
-                            << cpp_operand(instr.args[1], temp_types) << ", "
-                            << cpp_operand(instr.args[2], temp_types) << ", "
-                            << cpp_operand(instr.args[3], temp_types) << ");\n";
+                            << cpp_operand(instr.args[1], temp_types, &flagpees) << ", "
+                            << cpp_operand(instr.args[2], temp_types, &flagpees) << ", "
+                            << cpp_operand(instr.args[3], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "caractere") {
                         out << "    " << sanitize(instr.dest) << " = rose_caractere("
-                            << cpp_operand(instr.args[1], temp_types) << ");\n";
+                            << cpp_operand(instr.args[1], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "duree") {
                         out << "    " << sanitize(instr.dest) << " = rose_duree("
-                            << cpp_operand(instr.args[1], temp_types) << ");\n";
+                            << cpp_operand(instr.args[1], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "lire_texte") {
                         out << "    " << sanitize(instr.dest) << " = rose_lire_texte("
-                            << cpp_operand(instr.args[1], temp_types) << ");\n";
+                            << cpp_operand(instr.args[1], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "chaine") {
-                        std::string arg = sanitize(instr.args[1].name);
+                        std::string arg = L(instr.args[1]);
                         RirType aty = ty_of(instr.args[1]);
                         if (aty == RirQ)
                             // chaine(rationnel) = miroir chaine_de : « a/b »
@@ -1068,15 +1159,23 @@ std::string transpiler_rir(const RirModule &mod) {
                             out << "    " << sanitize(instr.dest) << " = std::string(" << arg << ".get_str().c_str());\n";
                         else if (aty == RirZ)
                             out << "    " << sanitize(instr.dest) << " = rose_chaine(" << arg << ");\n";
+                        else if (aty == RirS)
+                            // chaine(chaine) = identité (miroir de l'interprète, v3.14).
+                            out << "    " << sanitize(instr.dest) << " = " << arg << ";\n";
+                        else if (aty == RirB)
+                            // chaine(booleen) = « vrai »/« faux » (rose_chaine sur
+                            // bool lèverait une ambiguïté d'surcharges — v3.14).
+                            out << "    " << sanitize(instr.dest) << " = (" << arg
+                                << " ? \"vrai\" : \"faux\");\n";
                         else
                             out << "    " << sanitize(instr.dest) << " = rose_chaine(" << arg << ");\n";
                     }
                     else if (name == "quitter" && instr.args.size() > 1) {
-                        out << "    rose_quitter(" << cpp_operand(instr.args[1], temp_types) << ");\n";
+                        out << "    rose_quitter(" << cpp_operand(instr.args[1], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "ecrire_texte" && instr.args.size() > 2) {
-                        out << "    rose_ecrire_texte(" << cpp_operand(instr.args[1], temp_types)
-                            << ", " << cpp_operand(instr.args[2], temp_types) << ");\n";
+                        out << "    rose_ecrire_texte(" << cpp_operand(instr.args[1], temp_types, &flagpees)
+                            << ", " << cpp_operand(instr.args[2], temp_types, &flagpees) << ");\n";
                     }
                     // ── tables (M4.2) — miroirs exacts du runtime ────────
                     else if (name == "table") {
@@ -1086,30 +1185,30 @@ std::string transpiler_rir(const RirModule &mod) {
                         RirType kty = ty_of(instr.args[2]);
                         if (kty != RirS)
                             throw std::runtime_error("AOT : clé de table non textuelle — l'interprète compare par valeur, le texte collisionnerait (« 5 » vs 5)");
-                        std::string t = sanitize(instr.args[1].name);
-                        std::string k = cpp_operand(instr.args[2], temp_types);
-                        std::string v = cpp_operand(instr.args[3], temp_types);
+                        std::string t = L(instr.args[1]);
+                        std::string k = cpp_operand(instr.args[2], temp_types, &flagpees);
+                        std::string v = cpp_operand(instr.args[3], temp_types, &flagpees);
                         out << "    rose_table_inserer(" << t << ", " << k << ", rose_dyn_de(" << v << "));\n";
                     }
                     else if (name == "cle_existe" && instr.args.size() > 2) {
                         RirType kty = ty_of(instr.args[2]);
                         if (kty != RirS)
                             throw std::runtime_error("AOT : clé de table non textuelle — l'interprète compare par valeur, le texte collisionnerait (« 5 » vs 5)");
-                        out << "    " << sanitize(instr.dest) << " = rose_table_cle_existe(" << sanitize(instr.args[1].name)
-                            << ", " << cpp_operand(instr.args[2], temp_types) << ");\n";
+                        out << "    " << sanitize(instr.dest) << " = rose_table_cle_existe(" << L(instr.args[1])
+                            << ", " << cpp_operand(instr.args[2], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "supprimer" && instr.args.size() > 2) {
                         RirType kty = ty_of(instr.args[2]);
                         if (kty != RirS)
                             throw std::runtime_error("AOT : clé de table non textuelle — l'interprète compare par valeur, le texte collisionnerait (« 5 » vs 5)");
-                        out << "    " << sanitize(instr.dest) << " = rose_table_supprimer(" << sanitize(instr.args[1].name)
-                            << ", " << cpp_operand(instr.args[2], temp_types) << ");\n";
+                        out << "    " << sanitize(instr.dest) << " = rose_table_supprimer(" << L(instr.args[1])
+                            << ", " << cpp_operand(instr.args[2], temp_types, &flagpees) << ");\n";
                     }
                     else if (name == "cles" && instr.args.size() > 1) {
-                        out << "    " << sanitize(instr.dest) << " = rose_table_cles(" << sanitize(instr.args[1].name) << ");\n";
+                        out << "    " << sanitize(instr.dest) << " = rose_table_cles(" << L(instr.args[1]) << ");\n";
                     }
                     else if (name == "valeurs" && instr.args.size() > 1) {
-                        out << "    " << sanitize(instr.dest) << " = rose_table_valeurs(" << sanitize(instr.args[1].name) << ");\n";
+                        out << "    " << sanitize(instr.dest) << " = rose_table_valeurs(" << L(instr.args[1]) << ");\n";
                     }
                     else {
                         // M4.2 contrat : JAMAIS de trou silencieux — un appel
@@ -1125,35 +1224,46 @@ std::string transpiler_rir(const RirModule &mod) {
                     }
                 }
                 else if (op == "br.cond") {
-                    std::string cond = sanitize(instr.args[0].name);
+                    std::string cond = L(instr.args[0]);
                     out << "    if (" << cond << ") goto " << sanitize(instr.label_cible) << ";\n";
                     out << "    else goto " << sanitize(instr.label_cible2) << ";\n";
                 }
                 else if (op == "not.b") {
-                    out << "    " << sanitize(instr.dest) << " = !" << sanitize(instr.args[0].name) << ";\n";
+                    out << "    " << sanitize(instr.dest) << " = !" << L(instr.args[0]) << ";\n";
                 }
                 else if (op == "and.b") {
-                    out << "    " << sanitize(instr.dest) << " = (" << sanitize(instr.args[0].name)
-                        << " && " << sanitize(instr.args[1].name) << ");\n";
+                    out << "    " << sanitize(instr.dest) << " = (" << L(instr.args[0])
+                        << " && " << L(instr.args[1]) << ");\n";
                 }
                 else if (op == "or.b") {
-                    out << "    " << sanitize(instr.dest) << " = (" << sanitize(instr.args[0].name)
-                        << " || " << sanitize(instr.args[1].name) << ");\n";
+                    out << "    " << sanitize(instr.dest) << " = (" << L(instr.args[0])
+                        << " || " << L(instr.args[1]) << ");\n";
                 }
                 else if (op.rfind("cmp.", 0) == 0) {
                     // cmp.lt.z %t4 %k %t3 → t4 = (k < t3)
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     RirType t0 = ty_of(instr.args[0]), t1 = ty_of(instr.args[1]);
                     bool q0 = (t0 == RirQ), q1 = (t1 == RirQ);
                     // Approximation ≈ / ?= / =~ : tolérance 1e-9 relative (miroir).
                     if (op == "cmp.approx") {
                         bool fla = (t0 == RirF || t1 == RirF);
-                        if (q0 || q1)
-                            out << "    " << dest << " = rose_approx_q(rose_q_de(" << a0 << "), rose_q_de(" << a1 << "), " << (fla ? 1 : 0) << ");\n";
-                        else if (fla)
-                            out << "    " << dest << " = rose_approx_f(" << a0 << ", " << a1 << ");\n";
+                        if (fla) {
+                            // Spécification cœur (InterpRir cmp.approx) : un
+                            // opérande FLOTTANT rend la comparaison DOUBLE pure
+                            // (tolérance 1e-9 relative — rose_approx_f porte la
+                            // même formule). Convertir le FLOTTEUR en mpq lèverait
+                            // SIGFPE sur ±inf/NaN (mpq_set_d) : le Q/Gd d'en face
+                            // descend en double, jamais l'inverse. v3.14, même
+                            // miroir que cmp_* « flottant dominant ».
+                            std::string x0 = a0, x1 = a1;
+                            if (t0 != RirF) x0 = "rose_vers_double(" + a0 + ")";
+                            if (t1 != RirF) x1 = "rose_vers_double(" + a1 + ")";
+                            out << "    " << dest << " = rose_approx_f(" << x0 << ", " << x1 << ");\n";
+                        }
+                        else if (q0 || q1)
+                            out << "    " << dest << " = rose_approx_q(rose_q_de(" << a0 << "), rose_q_de(" << a1 << "), 0);\n";
                         else
                             out << "    " << dest << " = (" << a0 << " == " << a1 << ");\n";
                         continue;
@@ -1186,6 +1296,19 @@ std::string transpiler_rir(const RirModule &mod) {
                         else
                             out << "    " << dest << " = (rose_dyn_cmp(" << a0 << ", " << a1 << ") " << cmpop << " 0);\n";
                     }
+                    else if ((q0 || q1) && (t0 == RirF || t1 == RirF)) {
+                        // Spécification cmp_vals (cœur interprété) : dès qu'un
+                        // opérande est FLOTTANT, la comparaison se fait en double
+                        // pur (vers_d des deux côtés). Convertir le FLOTTEUR en
+                        // mpq exploserait en SIGFPE (mpq_set_d) sur NaN/Inf —
+                        // graine générative 20000000087 : delta = (−73.7)^434281
+                        // = ±inf, inf·0 = NaN. Ici, c'est l'entier/rationnel qui
+                        // passe en double, jamais l'inverse.
+                        std::string x0 = a0, x1 = a1;
+                        if (t0 != RirF) x0 = "rose_vers_double(" + a0 + ")";
+                        if (t1 != RirF) x1 = "rose_vers_double(" + a1 + ")";
+                        out << "    " << dest << " = (" << x0 << " " << cmpop << " " << x1 << ");\n";
+                    }
                     else if (q0 || q1) {
                         // Comparaison exacte rationnel vs entier/flottant.
                         std::string call = "rose_q_cmp(rose_q_de(" + a0 + "), rose_q_de(" + a1 + ")) " +
@@ -1208,8 +1331,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "add.z") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     // Handle const
                     if (instr.args[1].kind == RirOp::Const) {
                         if (instr.args[1].name.rfind("@c", 0) == 0) a1 = instr.args[1].name.substr(2);
@@ -1218,8 +1341,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "add.f") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     { RirType p0 = ty_of(instr.args[0]), p1 = ty_of(instr.args[1]);
                       RirType dty = RirU; auto td = temp_types.find(instr.dest); if (td != temp_types.end()) dty = td->second;
                       if (p0 != RirF) a0 = "rose_vers_double(" + a0 + ")";
@@ -1228,8 +1351,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "sub.f") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     { RirType p0 = ty_of(instr.args[0]), p1 = ty_of(instr.args[1]);
                       RirType dty = RirU; auto td = temp_types.find(instr.dest); if (td != temp_types.end()) dty = td->second;
                       if (p0 != RirF) a0 = "rose_vers_double(" + a0 + ")";
@@ -1238,8 +1361,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "mul.f") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     { RirType p0 = ty_of(instr.args[0]), p1 = ty_of(instr.args[1]);
                       RirType dty = RirU; auto td = temp_types.find(instr.dest); if (td != temp_types.end()) dty = td->second;
                       if (p0 != RirF) a0 = "rose_vers_double(" + a0 + ")";
@@ -1248,8 +1371,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "div.f") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     { RirType p0 = ty_of(instr.args[0]), p1 = ty_of(instr.args[1]);
                       RirType dty = RirU; auto td = temp_types.find(instr.dest); if (td != temp_types.end()) dty = td->second;
                       if (p0 != RirF) a0 = "rose_vers_double(" + a0 + ")";
@@ -1258,15 +1381,15 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "neg.f") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
+                    std::string a0 = L(instr.args[0]);
                     { RirType p0 = ty_of(instr.args[0]); RirType dty = RirU; auto td = temp_types.find(instr.dest); if (td != temp_types.end()) dty = td->second;
                       if ((p0 == RirZ || p0 == RirU) && dty == RirF) a0 = "rose_vers_double(" + a0 + ")"; }
                     out << "    " << dest << " = -" << a0 << ";\n";
                 }
                 else if (op == "sub.z") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     if (instr.args[1].kind == RirOp::Const) {
                         if (instr.args[1].name.rfind("@c", 0) == 0) a1 = instr.args[1].name.substr(2);
                     }
@@ -1274,8 +1397,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "mul.z") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     if (instr.args[1].kind == RirOp::Const) {
                         if (instr.args[1].name.rfind("@c", 0) == 0) a1 = instr.args[1].name.substr(2);
                     }
@@ -1284,8 +1407,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 else if (op == "div.z" || op == "div.q" || op == "div.z.z" || op == "div.q.q") {
                     // Division exacte de Rose : flottant sinon RATIONNEL.
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     // M4.2 mixte : un operande flottant bascule en double (miroir).
                     { RirType p0 = ty_of(instr.args[0]), p1 = ty_of(instr.args[1]);
                       if (p0 == RirF || p1 == RirF) {
@@ -1298,8 +1421,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 else if (op.rfind("divf", 0) == 0) {
                     // Division euclidienne (plancher).
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     RirType t0 = ty_of(instr.args[0]), t1 = ty_of(instr.args[1]);
                     if (t0 == RirF || t1 == RirF) {
                         std::string x0 = a0, x1 = a1;
@@ -1316,8 +1439,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op.rfind("add.q", 0) == 0 || op.rfind("sub.q", 0) == 0 || op.rfind("mul.q", 0) == 0) {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     char o = op[0] == 'a' ? '+' : op[0] == 's' ? '-' : '*';
                     // M4.2 mixtes Q⊛F : miroir de l'interprete — des qu'un
                     // operande est flottant (ou la destination typed F), le
@@ -1336,8 +1459,8 @@ std::string transpiler_rir(const RirModule &mod) {
                     // domaine exact (rose_pow_exact → rationnel, comme vers_q).
                     // Suffixe RIR = type attendu du checker (pow.f/pow.q/…).
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     RirType p0 = ty_of(instr.args[0]), p1 = ty_of(instr.args[1]);
                     if (instr.args[0].kind == RirOp::Const && instr.args[0].name.rfind("@c", 0) == 0) a0 = instr.args[0].name.substr(2);
                     if (instr.args[1].kind == RirOp::Const && instr.args[1].name.rfind("@c", 0) == 0) a1 = instr.args[1].name.substr(2);
@@ -1394,8 +1517,8 @@ std::string transpiler_rir(const RirModule &mod) {
                 else if (op.rfind("rem.z", 0) == 0) {
                     // Modulo à la Rose : plancher (miroir mpz_fdiv_r).
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     if (ty_of(instr.args[0]) == RirGd || ty_of(instr.args[1]) == RirGd)
                         out << "    " << dest << " = rose_rem_florentin_gd(" << a0 << ", " << a1 << ");\n";
                     else
@@ -1403,13 +1526,13 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "neg.z") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
+                    std::string a0 = L(instr.args[0]);
                     out << "    " << dest << " = -" << a0 << ";\n";
                 }
                 else if (op == "ret.u" || op == "ret" || op == "ret.z" || op == "ret.f" || op == "ret.b" || op == "ret.s") {
                     if (!instr.args.empty()) {
-                        std::string v = instr.args[0].kind == RirOp::Temp ? sanitize(instr.args[0].name)
-                                                            : cpp_operand(instr.args[0], temp_types);
+                        std::string v = instr.args[0].kind == RirOp::Temp ? L(instr.args[0])
+                                                            : cpp_operand(instr.args[0], temp_types, &flagpees);
                         RirType aty = RirU;
                         if (instr.args[0].kind == RirOp::Temp && temp_types.count(instr.args[0].name))
                             aty = temp_types[instr.args[0].name];
@@ -1423,14 +1546,14 @@ std::string transpiler_rir(const RirModule &mod) {
                 }
                 else if (op == "index") {
                     std::string dest = sanitize(instr.dest);
-                    std::string base = sanitize(instr.args[0].name);
-                    std::string idx = sanitize(instr.args[1].name);
+                    std::string base = L(instr.args[0]);
+                    std::string idx = L(instr.args[1]);
                     out << "    " << dest << " = rose_index(" << base << ", " << idx << ");\n";
                 }
                 else if (op == "add.s") {
                     std::string dest = sanitize(instr.dest);
-                    std::string a0 = sanitize(instr.args[0].name);
-                    std::string a1 = sanitize(instr.args[1].name);
+                    std::string a0 = L(instr.args[0]);
+                    std::string a1 = L(instr.args[1]);
                     if (instr.args[1].kind == RirOp::Const) {
                         std::string s = instr.args[1].name;
                         std::string escaped;

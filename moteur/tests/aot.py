@@ -185,13 +185,11 @@ $g = 423243272715318256248 * 22272815071249072011497
 # ── écart connu n°1 : variable affectée seulement sur un chemin mort ─
 # Découvert par le testeur génératif (graine 200051, 21/10/2026) et rendu
 # visible par le correctif v3.13.1 (le cœur RIR et le JIT rejettent enfin
-# la lecture sans valeur au lieu d'afficher le vide). L'AOT pré-initialise
-# ses variables statiques à zéro et calcule la suite. Le rendre fidèle
-# exige une règle statique « possiblement non initialisée » au vérificateur
-# — route v3.14. D'ici là : mesuré, nommé, jamais caché.
-ECARTS_CONNUS["var_chemin_mort"] = (
-    "lecture sans valeur côté interprète (rc=1), zéro initialisé côté AOT "
-    "(rc=0) — l'analyse de flux n'existe pas encore")
+# la lecture sans valeur au lieu d'afficher le vide). FERMÉ EN v3.14 :
+# le transpileur marque les variables dont la première écriture n'est pas
+# dans le préfixe linéaire (drapeau _def_ + lecture rose_lit) et rend
+# désormais la même erreur que le cœur interprété, au même endroit.
+# Écart historiquement mesuré du 21/10 au 21/10/2026 — jamais caché.
 cas_fidele("var_chemin_mort", _rose_source("var_chemin_mort", """
 >> 43
 si (faux) {
@@ -200,6 +198,76 @@ si (faux) {
   >> 36
 }
 """), attendu_stdout="43\n", attendu_code=1)
+
+# v3.14 — la garde ne doit jamais gêner l'initialisée : variable écrite
+# dans un branche, lue dans l'autre rendue atteignable — le drapeau est
+# posé par la première branche et la lecture traverse la garde sans erreur
+# (miroir exact des trois autres voies ; le lecteur hors branche, lui, est
+# refusé par le vérificateur — cartes doubles connues, non concerné ici).
+cas_fidele("var_branche_definie", _rose_source("var_branche_definie", """
+$c = 5 > 3
+si ($c) { $x = 7 } sinon { $x = 9 }
+si ($c) { >> $x } sinon { >> $x }
+"""), attendu_stdout="7\n", attendu_code=0)
+
+# v3.14 — chaine() sur chaque domaine : identité pour chaine, « vrai »
+# pour booleen (l'surcharges rose_chaine lèveraient une ambiguïté GMP).
+cas_fidele("chaine_domaines", _rose_source("chaine_domaines", """
+$s = "abc"
+>> chaine($s)
+>> chaine(5)
+>> chaine(2.5)
+>> chaine(1/3)
+>> chaine(vrai)
+>> longueur(chaine(faux))
+"""), attendu_stdout="abc\n5\n2.5\n1/3\nvrai\n4\n", attendu_code=0)
+
+# v3.14 — comparaison F⊛rationnel/grand : la spécification cmp_vals du cœur
+# veut le flottant DOMINANT (double pur des deux côtés). L'ancien chemin
+# convertissait le FLOTTEUR en mpq : SIGFPE de mpq_set_d dès que delta
+# valait ±inf (0.0^…) — graine générative 20000000087. Miroir rétabli.
+cas_fidele("cmp_flottant_dominant", _rose_source("cmp_flottant_dominant", """
+$q = 1 / 2
+si ($q >= ((0.0 - 1.0) ^ 100000)) { >> 1 } sinon { >> 0 }
+si ($q + 0.5 <= 2.0 ^ 1) { >> "deux" } sinon { >> "un" }
+"""), attendu_stdout="0\ndeux\n", attendu_code=0)
+
+# v3.14 — ≈/?=/=~ : la spec cœur veut déjà le FLOTTANT dominant (double pur,
+# tolérance 1e-9 relative). L'ancien chemin montait le FLOTTEUR en mpq :
+# SIGFPE sur ±inf et résultats faux sur Q⊛F pathologiques. Q⊛Q reste exact.
+cas_fidele("approx_flottant_dominant", _rose_source("approx_flottant_dominant", """
+$q = 1 / 2
+>> 355 / 113 ?= 3.14159265358979
+>> ($q ≈ ((0.0 - 1.0) ^ 100000))
+>> (1 / 3 ?= 2 / 6)
+>> 0.1 ≈ 0.1
+>> (7 ≈ (3 / 2))
+"""), attendu_stdout="faux\nfaux\nvrai\nvrai\nfaux\n", attendu_code=0)
+
+# v3.14 — min/max : la spec cœur promeut au domaine dominant (F>Q>Gd>Z) puis
+# « c <= 0 ? x : y » — l'égalité comme NaN renvoient le PREMIER opérande, et
+# un flottant en second opérande dominait autant qu'en premier (l'ancien
+# chemin ne testait que args[1] : min(2, 1.5) cassait g++, min(NaN, 2)
+# renvoyait 2). Miroir inline strict désormais.
+cas_fidele("min_max_flottant_dominant", _rose_source("min_max_flottant_dominant", """
+>> min(1/3, 0.4)
+>> min(2, 1.5)
+>> max(1/2, 0.2)
+>> max(2, 1.9)
+>> min(1.5, 0.4)
+>> max(1/3, 1/4)
+"""), attendu_stdout="0.3333333333333333\n1.5\n0.5\n2\n0.4\n0.[3]\n", attendu_code=0)
+
+# v3.14 — le transpileur préfixe tous les identifiants générés par r_ : un
+# nom Rose peut être un mot-clé C++ ou collisionner l'API du runtime sans
+# jamais casser g++ (contrat « émettre ou rejeter poliment »).
+cas_fidele("nom_mot_cle_cpp", _rose_source("nom_mot_cle_cpp", """
+fn double(n: entier) → entier { retour n * 3 }
+$int = 5
+>> double($int)
+$classe = "rose"
+>> longueur($classe)
+"""), attendu_stdout="15\n4\n", attendu_code=0)
 
 # ── 3. erreurs et rejets : le compilable doit dire non, ou l'exécution
 #       rendre le même message que l'interpréteur ────────────────────
