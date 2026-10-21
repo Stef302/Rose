@@ -218,6 +218,18 @@ si ($g) { >> 1 }
 $w = 42
 >> $w
 ''',
+    'table': '''$t = table()
+inserer($t, "un", 1)
+inserer($t, "deux", 2)
+>> $t["deux"]
+>> cle_existe($t, "zz")
+>> longueur($t)
+>> $t
+$k = cles($t)
+>> longueur($k)
+>> supprimer($t, "un")
+>> longueur($t)
+''',
 }
 
 def main():
