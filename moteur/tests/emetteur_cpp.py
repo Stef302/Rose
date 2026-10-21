@@ -247,6 +247,21 @@ remplir($v)
 >> longueur($v)
 >> $v[3]
 ''',
+    'local': '''fn long1($txt: chaine) -> entier {
+  $t = $txt
+  retour longueur($t)
+}
+
+>> long1("abc")
+''',
+    'concat': '''fn ccat($a: chaine, $b: chaine) -> chaine {
+  $r = $a + $b
+  retour $r
+}
+
+>> ccat("ol", "d")
+>> "pi" + ":" + "x"
+''',
     'table': '''$t = table()
 inserer($t, "un", 1)
 inserer($t, "deux", 2)

@@ -115,6 +115,7 @@ fn genre($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret: l
         si ($op == "cst.q") { retour "q" }
         si ($op == "liste.new") { retour "l" }
         si ($op == "add.f" ou $op == "sub.f" ou $op == "mul.f" ou $op == "div.f" ou $op == "neg.f") { retour "f" }
+        si ($op == "add.s") { retour "s" }
         si ($op == "add.q" ou $op == "sub.q" ou $op == "mul.q" ou $op == "div.q") { retour "q" }
         si ($op == "add.z" ou $op == "sub.z" ou $op == "mul.z" ou $op == "neg.z" ou $op == "rem.z" ou $op == "div.z" ou $op == "divf") {
           $j2 = 2
@@ -249,15 +250,11 @@ fn genre($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret: l
           si ($gn[0] == '"') { $gn = sous_chaine($gn, 1, longueur($gn) - 1) }
         }
         si ($gn == $nomg) {
-          $tg = $toks2[1]
-          $tv = "z"
-          $i2 = 1
-          tant_que ($i2 < longueur($body)) {
-            $bl2 = $body[$i2]
-            si (commence_par($bl2, $tg + " = ")) { $tv = genre($tg, $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
-            $i2 = $i2 + 1
-          }
-          retour $tv
+          // le genre de la SOURCE du premier affect (le vérificateur interdit
+          // les changements de domaine : la première écriture tape le slot,
+          // comme temp_types["%nom"] chez l'oracle). La source peut etre un
+          // PARAMETRE — genre sait le resoudre.
+          retour genre($toks2[1], $body, $fn_noms, $fn_ret, $pnoms, $pletres)
         }
       }
     }
@@ -486,6 +483,23 @@ fn operand($tok: chaine, $flag: liste<chaine>) -> chaine {
 }
 
 // type d'un temp selon l'op qui le produit
+// constante texte d'un opérande de concaténation : guillemets + echappement
+// des guillemets et antislashs (miroir exact de la branche add.s).
+fn texte_const($tok: chaine) -> chaine {
+  $t = $tok
+  si (commence_par($t, prefix_cst())) { $t = sous_chaine($t, 2, longueur($t)) }
+  $out = ""
+  $k = 0
+  tant_que ($k < longueur($t)) {
+    $c = $t[$k]
+    si ($c == '"') { $out = $out + "\\\"" }
+    sinon si ($c == "\\") { $out = $out + "\\\\" }
+    sinon { $out = $out + $c }
+    $k = $k + 1
+  }
+  retour "\"" + $out + "\""
+}
+
 // instruction de poussée selon le genre de l'élément (miroir liste.push)
 fn pousse_texte($lst: chaine, $el: chaine, $ety: chaine) -> chaine {
   si ($ety == "s") { retour "    rose_liste_push(" + $lst + ", " + $el + ".c_str());" }
@@ -819,42 +833,37 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
       }
 
       // collect temp vars and globals
+      // (miroir du transpileur : les temporaires sont les DEST des
+      // instructions — jamais les paramètres ni les opérandes sources ;
+      // les SLOTS locaux écrits par affect vivent dans la section des
+      // variables du corps, comme global_types chez l'oracle)
       $temps = [""]
       $globals = [""]
       $bi = 1
       tant_que ($bi < longueur($body_lines)) {
         $bl = $body_lines[$bi]
-        // collect temps from %tN
-        $k = 0
-        tant_que ($k < longueur($bl)) {
-          si ($bl[$k] == '%') {
-            $start = $k
-            $k = $k + 1
-            $cont = vrai
-            tant_que ($cont) {
-              si ($k >= longueur($bl)) { $cont = faux }
-              sinon {
-                $ch = $bl[$k]
-                si (($ch >= 'a' et $ch <= 'z') ou ($ch >= 'A' et $ch <= 'Z') ou ($ch >= '0' et $ch <= '9') ou $ch == '_') {
-                  $k = $k + 1
-                } sinon {
-                  $cont = faux
-                }
-              }
+        // dest : la ligne commence par « %nom » suivi de « = »
+        si (longueur($bl) > 1 et $bl[0] == '%') {
+          $k = 1
+          $cont = vrai
+          tant_que ($k < longueur($bl) et $cont) {
+            $ch = $bl[$k]
+            si (($ch >= 'a' et $ch <= 'z') ou ($ch >= 'A' et $ch <= 'Z') ou ($ch >= '0' et $ch <= '9') ou $ch == '_') {
+              $k = $k + 1
+            } sinon {
+              $cont = faux
             }
-            $tok = sous_chaine($bl, $start, $k)
-            // only collect %t (temps), not params
-            si (longueur($tok) > 2 et sous_chaine($tok, 1, 2) == "t") {
-              $found = faux
-              $ti = 1
-              tant_que ($ti < longueur($temps)) {
-                si ($temps[$ti] == $tok) { $found = vrai }
-                $ti = $ti + 1
-              }
-              si ($found == faux) { joindre($temps, $tok) }
+          }
+          $tok = sous_chaine($bl, 0, $k)
+          $restc = trim(sous_chaine($bl, $k, longueur($bl)))
+          si (commence_par($restc, "=")) {
+            $found = faux
+            $ti = 1
+            tant_que ($ti < longueur($temps)) {
+              si ($temps[$ti] == $tok) { $found = vrai }
+              $ti = $ti + 1
             }
-          } sinon {
-            $k = $k + 1
+            si ($found == faux) { joindre($temps, $tok) }
           }
         }
         // collect globals from "affect %t \"name\""
@@ -1049,10 +1058,13 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
       $gi = 1
       tant_que ($gi < longueur($globals)) {
         $gname = $globals[$gi]
-        // find producing temp
+        // Type de la PREMIÈRE écriture de cette variable : genre résout la
+        // source quel qu'en soit le nature — paramètre, constante, temp ou
+        // autre globale — comme temp_types["%nom"] chez l'oracle.
         $gtype = "z"
+        $gtrouve = faux
         $bi = 1
-        tant_que ($bi < longueur($body_lines)) {
+        tant_que ($bi < longueur($body_lines) et $gtrouve == faux) {
           $bl = $body_lines[$bi]
           si (commence_par($bl, "affect ")) {
             $parts = [""]
@@ -1075,23 +1087,8 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 $gn = sous_chaine($gn, 1, longueur($gn)-1)
               }
               si ($gn == $gname) {
-                // find producing op of %t (parts[2])
-                $tname = $parts[2]
-                $bi2 = 1
-                tant_que ($bi2 < longueur($body_lines)) {
-                  $bl2 = $body_lines[$bi2]
-                  si (commence_par($bl2, $tname + " = ")) {
-                    $rest2 = trim(sous_chaine($bl2, longueur($tname) + 3, longueur($bl2)))
-                    $sp2 = 0
-                    $stop2 = faux
-                    tant_que ($sp2 < longueur($rest2) et $stop2 == faux) {
-                      si ($rest2[$sp2] == ' ') { $stop2 = vrai }
-                      sinon { $sp2 = $sp2 + 1 }
-                    }
-                    $gtype = genre($tname, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres)
-                  }
-                  $bi2 = $bi2 + 1
-                }
+                $gtype = genre($parts[2], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres)
+                $gtrouve = vrai
               }
             }
           }
@@ -1819,6 +1816,16 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             si ($op == "mul.f") { >> "    " + $dname + " = " + $a0 + " * " + $a1 + ";" }
             si ($op == "div.f") { >> "    " + $dname + " = rose_div_f(" + $a0 + ", " + $a1 + ");" }
             si ($op == "neg.f") { >> "    " + $dname + " = -" + $a0 + ";" }
+          } sinon si ($op == "add.s") {
+            $a0 = "\"\""
+            $a1 = "\"\""
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2], $flagpees) }
+            si (longueur($rtoks) > 3) {
+              $tok3 = $rtoks[3]
+              si (commence_par($tok3, "%")) { $a1 = operand($tok3, $flagpees) }
+              sinon { $a1 = texte_const($tok3) }
+            }
+            >> "    " + $dname + " = " + $a0 + " + " + $a1 + ";"
           } sinon {
             >> "    /* " + $bl + " */"
           }
