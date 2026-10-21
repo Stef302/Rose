@@ -180,6 +180,32 @@ $z = $y * 3 - 1
 $g = 4611686018427387904
 >> double($g)
 ''',
+    'fparam': '''fn plus2($x: flottant) -> flottant {
+  retour $x + 1.5
+}
+
+>> plus2(2)
+>> plus2(2.25)
+''',
+    'conv': '''$i = entier("123")
+>> $i
+$f = flottant("2.5")
+>> $f
+>> entier(3.75)
+>> flottant(7)
+>> chaine(42)
+''',
+    'minmax': '''>> min(3, 7)
+>> max(2, 1)
+>> min(2.5, 1)
+>> abs(0 - 5)
+''',
+    'gd_builtin': '''$x = factorielle(30)
+>> $x
+$y = fibonacci(90)
+>> $y
+>> 2 ^ 100
+''',
 }
 
 def main():
