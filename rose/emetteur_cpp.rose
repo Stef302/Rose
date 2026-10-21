@@ -121,6 +121,7 @@ fn temp_type_of($op: chaine) -> chaine {
   si ($op == "cst.f") { retour "f" }
   si ($op == "cst.b") { retour "b" }
   si ($op == "cst.q") { retour "q" }
+  si ($op == "add.q" ou $op == "sub.q" ou $op == "mul.q" ou $op == "div.q") { retour "q" }
   si ($op == "add.z" ou $op == "sub.z" ou $op == "mul.z" ou $op == "neg.z") { retour "z" }
   si ($op == "add.s") { retour "s" }
   si ($op == "sous_chaine") { retour "s" }
@@ -1008,6 +1009,14 @@ fn principal() {
                 >> "    " + $dname + " = false;"
               }
             }
+          } sinon si ($op == "cst.q") {
+            si (longueur($rtoks) > 2) {
+              $arg = $rtoks[2]
+              si (commence_par($arg, "@c")) {
+                $arg = sous_chaine($arg, 2, longueur($arg))
+              }
+              >> "    " + $dname + " = rose_qd(\"" + $arg + "\");"
+            }
           } sinon si ($op == "cst.z") {
             si (longueur($rtoks) > 2) {
               $arg = $rtoks[2]
@@ -1017,6 +1026,19 @@ fn principal() {
                 >> "    " + $dname + " = " + operand($arg) + ";"
               }
             }
+          } sinon si ($op == "add.q" ou $op == "sub.q" ou $op == "mul.q") {
+            $a0 = "0"; $a1 = "0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            $o = "+"
+            si ($op == "sub.q") { $o = "-" }
+            si ($op == "mul.q") { $o = "*" }
+            >> "    " + $dname + " = " + $a0 + " " + $o + " " + $a1 + ";"
+          } sinon si ($op == "div.q" ou $op == "div.z") {
+            $a0 = "0"; $a1 = "0"
+            si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }
+            si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3]) }
+            >> "    " + $dname + " = rose_q_div(rose_q_de(" + $a0 + "), rose_q_de(" + $a1 + "));"
           } sinon si ($op == "add.z") {
             $a0 = "0"; $a1 = "0"
             si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2]) }

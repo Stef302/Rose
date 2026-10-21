@@ -153,6 +153,18 @@ tant_que ($x < 3) {
   $x = $x + 1
 }
 ''',
+    'rationnel': '''>> 1 / 3
+>> 1 / 3 + 1 / 3
+>> 1 / 3 + 1 / 3 + 1 / 3
+>> 7 / 2
+''',
+    'rat_arith': '''$a = 1 / 2
+$b = 1 / 3
+>> $a + $b
+>> $a - $b
+>> $a * $b
+>> $a / $b
+''',
 }
 
 def main():
@@ -171,3 +183,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# patch PROGRAMS to add rational arithmetic test
