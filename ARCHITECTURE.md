@@ -185,20 +185,25 @@ identiques. Cinq montées depuis le socle :
   `rose_tampon_new`, `tampon_pose`, `tampon_case`) et gardes `_def_` :
   le préfixe linéaire du corps distingue les globales CERTAINES des
   précaires, lesquelles portent `bool _def_r_x`, s'écrivent avec pose du
-  drapeau et se lisent sous `rose_lit` — exactement le transpileur C++.
+  drapeau et se lisent sous `rose_lit` — exactement le transpileur C++ ;
+* V6 — tables (`rose_table_new`, `rose_table_inserer` sous `rose_dyn_de`,
+  `rose_table_get` rendant une cellule `rose_dyn` qui s'affiche
+  elle-même) et unification : la déclaration des temporaires et l'index
+  sont entièrement gouvernés par `genre()` — le balayage d'héritage et le
+  « r_t8 » codé en dur de V1 sont tombés.
 
 Deux bizarreries du moteur découvertes en chemin, consignées : le lexeur
 avale le préfixe `@c` DANS les littéraux de chaîne (`"@c"` devient `""`,
 d'où `prefix_cst()` construit à la volée) et `et`/`ou` ne court-circuitent
 jamais (toute boucle d'indexation de chaîne porte un drapeau d'arrêt).
 
-**Porte actuelle : 28/28 programmes identiques** et 9 des 10 bancs
+**Porte actuelle : 29/29 programmes identiques** et 9 des 10 bancs
 octet-identiques (puissance plie 2^30000000 en une constante de neuf
 millions de chiffres que le découpage texte de l'émetteur ne traverse
 pas — la byte-identity des bancs, elle, compare les `.cpp` de l'oracle).
-Restent à miroiter : les tables (`table`, `cles`, `valeurs`, `inserer`),
-la garde `_def_` côté `rose_exige`, puis l'auto-émission — l'émetteur
-traduisant son propre RIR — qui closera le compilateur auto-hébergé.
+Reste : l'auto-émission — l'émetteur traduisant son propre RIR, dix mille
+lignes — qui closerait le traducteur et donc le compilateur
+auto-hébergé ; le harnais de garde de ce maillon est le fichier lui-même.
 
 ### M5 — Standard library en Rose
 `prelude.rose` (listes, tri, chaînes, tables, tests unitaires écrits
