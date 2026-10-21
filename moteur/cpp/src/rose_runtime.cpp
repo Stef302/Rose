@@ -764,6 +764,17 @@ rose_float rose_lire_flottant() {
     if (fin == t.c_str()) rose_erreur("flottant invalide");
     return d;
 }
+double rose_flottant_chaine(const std::string &s) {
+    // miroir exact de chaine_vers_flottant (rose.cpp) : strtod, « infini »
+    // explicite, erreur sinon.
+    char *fin = nullptr;
+    double d = std::strtod(s.c_str(), &fin);
+    if (fin == s.c_str()) {
+        if (s == "infini") return 1.0 / 0.0;
+        rose_erreur("conversion chaine → flottant impossible");
+    }
+    return d;
+}
 rose_str rose_lire_chaine() { return rose_lire_ligne(); }
 rose_qd rose_lire_rationnel() {
     std::string t = rose_lire_ligne();

@@ -87,7 +87,7 @@ cinq étapes, chacune prouvable :
    stage0 avant, plus personne ne le développe d'abord) ;
 5. le JIT/LLVM passent dans le compilateur auto-hébergé à son tour.
 
-**État d'avancement (depuis la v3.14.1) — M4.0, M4.1 et M4.2 faits** :
+**État d'avancement (depuis la v3.14.1) — M4.0 à M4.3 faits** :
 l'oracle `rose tokens prog.rose` (jetons `ligne:colonne type texte`,
 miroir exact de `tokeniser()`) sert de point fixe au premier maillon :
 `rose/lexeur.rose` lexelle en Rose, et `moteur/tests/lexeur.py` exige
@@ -136,8 +136,31 @@ débusqué un défaut du maillon précédent : le nom après `module::` était
 lu à la mauvaise position — le corpus n'écrivait jamais d'appel qualifié ;
 la fixture `v_ok_module.rose` le garde désormais sous verrou, des deux
 côtés (arbre et vérification).
-Prochain maillon : l'émetteur RIR (`rose/émetteur.rose`), point d'appui :
-la sortie de `rose rir`, déjà texte.
+Prochain maillon (fait, v3.14.1) : l'émetteur RIR.
+
+M4.3 : l'oracle `rose rir prog.rose` rend la représentation intermédiaire
+complète — textes d'instructions, tampons, types — déjà produite par le
+moteur. `rose/emetteur.rose` (3 039 lignes) n'est pas écrit à la main :
+c'est un **fork mécaniquement patché de `verifieur.rose`** (greffons
+P1–P19 + module + main, générateur archivé dans
+`moteur/tests/emetteur_gen/` — ne jamais éditer l'émetteur à la main).
+La chaîne devient : analyse → repli exact → vérification → **émission
+RIR**, le tout en Rose. `moteur/tests/emetteur.py` exige l'égalité
+triple oracle ≡ interprété ≡ AOT sur **104 fichiers** (les 103 de M4.2
+plus l'émetteur lui-même : **il s'émet lui-même, par l'interprète et
+par le binaire compilé**). Trois apports de moteur au passage : le
+cast `flottant()` est émis en AOT (miroir du cast `entier`), le formatage
+des flottants côté émetteur reproduit `%.Ng` le plus court y compris la
+notation scientifique, et le repli factorielle (0 ≤ n ≤ 20 000) rejoint
+celui du moteur. Un défaut AOT de plus y est passé par les armes : une
+variable lue **avant** sa première affectation dans le préfixe linéaire
+(`$beta = beta`) compilait en lecture silencieuse alors que l'interprète
+lève « variable 'beta' utilisée sans valeur » — l'émetteur contrôle
+désormais les lectures antérieures aux écritures, en excluant les
+paramètres (initialisés par l'appel). Les dix bancs transpilent toujours
+octet pour octet comme la base v3.14.0.
+Prochain maillon : le traducteur RIR → C++ en Rose (fin du compilateur
+auto-hébergé).
 
 ### M5 — Standard library en Rose
 `prelude.rose` (listes, tri, chaînes, tables, tests unitaires écrits

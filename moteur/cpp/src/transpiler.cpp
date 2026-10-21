@@ -437,8 +437,31 @@ std::string transpiler_rir(const RirModule &mod) {
         std::set<std::string> certaines, flagpees;
         {
             bool ligne = true;
+            auto est_param = [&](const std::string &s) {
+                for (auto &p : f.params) if (sanitize(p.first) == s) return true;
+                return false;
+            };
+            auto est_var = [&](const RirOp &a) -> std::string {
+                if (a.kind == RirOp::Temp || a.kind == RirOp::Global) {
+                    std::string s = sanitize(a.name);
+                    // Les paramètres sont initialisés par l'appel : leur
+                    // première lecture, même avant toute affectation, est sûre.
+                    if (global_types.count(s) && !est_param(s)) return s;
+                }
+                return "";
+            };
             for (auto &b : f.blocs)
                 for (auto &instr : b.instrs) {
+                    // v3.14.1 — une lecture ANTÉRIEURE à la première écriture
+                    // dans le préfixe rend la variable précaire, même si elle
+                    // est écrite plus bas dans ce même préfixe : « $x = x »
+                    // ou « $a = $b; $b = 1 » lèvent côté interprète. La
+                    // lecture d'une instruction précède toujours son écriture.
+                    if (ligne)
+                        for (auto &a : instr.args) {
+                            std::string v = est_var(a);
+                            if (!v.empty() && !certaines.count(v)) flagpees.insert(v);
+                        }
                     if (instr.op == "affect" && !instr.message.empty() && ligne)
                         certaines.insert(sanitize(instr.message));
                     if (instr.op == "br" || instr.op == "br.cond") ligne = false;
@@ -485,6 +508,7 @@ std::string transpiler_rir(const RirModule &mod) {
                         else if (name == "table") ty = RirTbl;
                         else if (name == "cles" || name == "valeurs") ty = RirListe;
                         else if (name == "fraction") ty = RirQ;
+                        else if (name == "flottant") ty = RirF;
                         else if (name == "fibonacci" || name == "factorielle" || name == "puissance") ty = RirGd;
                         else if (name == "millisecondes" || name == "nb_arguments" || name == "entier" || name == "tampon_case" ||
                                  name == "nb_chiffres" || name == "compter_premiers" ||
@@ -775,9 +799,11 @@ std::string transpiler_rir(const RirModule &mod) {
                     out << "    " << dest << " = rose_liste_len(" << base << ");\n";
                 }
                 else if (op == "affect") {
-                    std::string src_expr = cpp_operand(instr.args[0], temp_types);
-                    // sanitize temp names
-                    if (instr.args[0].kind == RirOp::Temp) src_expr = sanitize(instr.args[0].name);
+                    // v3.14.1 — la source passe par cpp_operand AVEC flagpees :
+                    // une lecture de variable précaire est gardée par rose_lit
+                    // (l'ancienne surcharge brute par sanitize() court-circuitait
+                    // la garde « variable utilisée sans valeur »).
+                    std::string src_expr = cpp_operand(instr.args[0], temp_types, &flagpees);
                     if (instr.args[0].kind == RirOp::Const) {
                         if (instr.args[0].name.rfind("@c", 0) == 0) src_expr = instr.args[0].name.substr(2);
                         else if (instr.args[0].ty == RirS) {
@@ -998,6 +1024,23 @@ std::string transpiler_rir(const RirModule &mod) {
                             out << "    " << sanitize(instr.dest) << " = rose_entier(" << arg << ".c_str());\n";
                         else
                             out << "    " << sanitize(instr.dest) << " = " << arg << ";\n";
+                    }
+                    else if (name == "flottant") {
+                        // miroir de l'interprète (rose.cpp 3558) : chaine →
+                        // chaine_vers_flottant, sinon vers_d (B→1.0/0.0,
+                        // Z→mpz_get_d, Q→mpq_get_d, F→identité).
+                        std::string arg = L(instr.args[1]);
+                        RirType aty = ty_of(instr.args[1]);
+                        if (instr.args[1].kind == RirOp::Const && instr.args[1].name.rfind("@c", 0) == 0)
+                            out << "    " << sanitize(instr.dest) << " = " << instr.args[1].name.substr(2) << ";\n";
+                        else if (aty == RirS || aty == RirU)
+                            out << "    " << sanitize(instr.dest) << " = rose_flottant_chaine(" << arg << ");\n";
+                        else if (aty == RirB)
+                            out << "    " << sanitize(instr.dest) << " = (" << arg << " ? 1.0 : 0.0);\n";
+                        else if (aty == RirF)
+                            out << "    " << sanitize(instr.dest) << " = " << arg << ";\n";
+                        else
+                            out << "    " << sanitize(instr.dest) << " = rose_vers_double(" << arg << ");\n";
                     }
                     else if (name == "pgcd") {
                         std::string a0 = L(instr.args[1]);

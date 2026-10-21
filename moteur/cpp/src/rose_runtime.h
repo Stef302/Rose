@@ -311,6 +311,7 @@ rose_str rose_lire_texte(const rose_str &chemin);
 void rose_ecrire_texte(const rose_str &chemin, const rose_str &texte);
 rose_int rose_lire_int();
 rose_float rose_lire_flottant();
+double rose_flottant_chaine(const std::string &s);   // miroir chaine_vers_flottant
 rose_str rose_lire_chaine();
 rose_qd rose_lire_rationnel();
 rose_int rose_ordre(const rose_str &s);

@@ -2249,9 +2249,9 @@ tant_que (T0($gen, $p) != "eof") {
   $t = T0($gen, $p)
   si ($t == ";") { $p = $p + 1 }
   sinon si ($t == "@" et (EMOT($gen, $x, $p + 1, "dll") ou EMOT($gen, $x, $p + 1, "sym"))) {
-    $q = $p + 1
-    $genre = VX0($x, $q)
-    $q = $q + 1
+    $genre = VX0($x, $p + 1)
+    $q = $p + 2
+    si (T0($gen, $q) == "(") { $q = $q + 1 }
     si (T0($gen, $q) == "chaine") {
       si ($genre == "dll") { $dll = VX0($x, $q) }
       sinon { $sym = VX0($x, $q) }
