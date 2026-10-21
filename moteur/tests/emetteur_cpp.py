@@ -262,6 +262,33 @@ remplir($v)
 >> ccat("ol", "d")
 >> "pi" + ":" + "x"
 ''',
+    'espaces': '''$a = "un deux trois"
+>> $a
+$b = " x "
+>> $b
+>> longueur($b)
+si ($b == " x ") { >> "vrai" }
+''',
+    'guillemets': '''$g = "dit \\"oi\\""
+>> $g
+>> longueur($g)
+''',
+    'saut': '''$n = "\\n"
+>> longueur($n)
+si ($n == "\\n") { >> "saut" }
+''',
+    'tabule': '''$t = "a\\tb"
+>> longueur($t)
+si ($t == "a\\tb") { >> "tab" }
+''',
+    'texte_call': '''fn genre($x: chaine) -> chaine {
+  retour $x
+}
+
+$m = "call $genre ici"
+>> $m
+>> genre("ok")
+''',
     'table': '''$t = table()
 inserer($t, "un", 1)
 inserer($t, "deux", 2)

@@ -159,6 +159,7 @@ fn genre($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret: l
           }
           $pt = 1
           $elt = "z"
+          $elt_trou = faux
           tant_que ($pt < longueur($body)) {
             $blp = $body[$pt]
             si (commence_par($blp, "liste.push " + $toks[2] + " ")) {
@@ -166,12 +167,14 @@ fn genre($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret: l
               $tokp = [""]
               decoupe($restp2, $tokp)
               si (longueur($tokp) >= 2) { $elt = genre($tokp[1], $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
+              $elt_trou = vrai
             }
             si (commence_par($blp, "call $joindre " + $toks[2] + " ")) {
               $restj = trim(sous_chaine($blp, 15 + longueur($toks[2]), longueur($blp)))
               $tokj = [""]
               decoupe($restj, $tokj)
               si (longueur($tokj) >= 2) { $elt = genre($tokj[1], $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
+              $elt_trou = vrai
             }
             si ($srcg != "") {
               si (commence_par($blp, "liste.push " + $srcg + " ")) {
@@ -179,10 +182,15 @@ fn genre($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret: l
                 $tokv = [""]
                 decoupe($rests, $tokv)
                 si (longueur($tokv) >= 2) { $elt = genre($tokv[1], $body, $fn_noms, $fn_ret, $pnoms, $pletres) }
+                $elt_trou = vrai
               }
             }
             $pt = $pt + 1
           }
+          // aucun élément visible dans le corps (liste PARAMÈTRE, retour de
+          // fonction…) : le générateur RIR rend l'élément en CHAINE — les
+          // listes Rose se lisent par rose_liste_get_str.
+          si ($elt_trou == faux) { retour "s" }
           retour $elt
         }
         si ($op == "call") {
@@ -452,9 +460,17 @@ fn c_name($nom: chaine) -> chaine {
   retour "r_" + sous_chaine($nom, 1, longueur($nom))
 }
 
+// Le moteur n'ecourt-circuite pas « et » / « ou » : $x[0] serait evalue
+// meme sur une chaine vide (erreur runtime). premier_car renvoie ' ' pour
+// le vide — ne coincide jamais avec un separateur recherche.
+fn premier_car($x: chaine) -> chaine {
+  si (longueur($x) > 0) { retour $x[0] }
+  retour " "
+}
+
 fn sanitize($name: chaine) -> chaine {
   $s = $name
-  si (longueur($s) > 0 et ($s[0] == '%' ou $s[0] == '$')) {
+  si (premier_car($s) == '%' ou premier_car($s) == '$') {
     $s = sous_chaine($s, 1, longueur($s))
   }
   retour "r_" + $s
@@ -494,6 +510,26 @@ fn texte_const($tok: chaine) -> chaine {
     $c = $t[$k]
     si ($c == '"') { $out = $out + "\\\"" }
     sinon si ($c == "\\") { $out = $out + "\\\\" }
+    sinon si ($c == "\n") { $out = $out + "\\n" }
+    sinon si ($c == "\t") { $out = $out + "\\t" }
+    sinon { $out = $out + $c }
+    $k = $k + 1
+  }
+  retour "\"" + $out + "\""
+}
+
+// littérale C++ d'une constante texte du RIR : guillemets + echappement des
+// antislashs et guillemets (miroir cst.s du transpileur, qui tient les
+// constantes en mémoire et les rend telles quelles).
+fn chaine_cpp($v: chaine) -> chaine {
+  $out = ""
+  $k = 0
+  tant_que ($k < longueur($v)) {
+    $c = $v[$k]
+    si ($c == '"') { $out = $out + "\\\"" }
+    sinon si ($c == "\\") { $out = $out + "\\\\" }
+    sinon si ($c == "\n") { $out = $out + "\\n" }
+    sinon si ($c == "\t") { $out = $out + "\\t" }
     sinon { $out = $out + $c }
     $k = $k + 1
   }
@@ -680,7 +716,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             $sp = 0
             tant_que ($sp < longueur($after) et $after[$sp] != ' ' et $after[$sp] != ':') { $sp = $sp + 1 }
             $varname = trim(sous_chaine($after, 0, $sp))
-            si (longueur($varname) > 0 et $varname[0] == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
+            si (premier_car($varname) == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
             si ($first == faux) { $fwd = $fwd + ", " }
             $first = faux
             // v3.14.1 — les listes voyagent par RÉFÉRENCE (miroir du transpiler)
@@ -695,15 +731,20 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
         >> $fwd
       }
     } sinon si ($cour_idx > 0) {
-      // arête d'appel vers une fonction usagère (pour la détection de cycle)
-      si (contient($l, "call $")) {
+      // arête d'appel vers une fonction usagère (pour la détection de cycle).
+      // Position d'opérateur STRICTE : le mot « call » doit être l'opcode de
+      // l'instruction, jamais un mot d'une constante texte.
+      si (contient($l, " call ") ou commence_par($l, "call ")) {
         $tke = [""]
         decoupe($l, $tke)
-        $ce = 1
-        tant_que ($ce + 1 < longueur($tke)) {
-          si ($tke[$ce] == "call") {
-            $cib = $tke[$ce + 1]
-            si (commence_par($cib, "$")) {
+        $cib = ""
+        si (longueur($tke) >= 5) {
+          si ($tke[2] == "=" et $tke[3] == "call") { $cib = $tke[4] }
+        }
+        si (longueur($tke) >= 3) {
+          si ($tke[1] == "call") { $cib = $tke[2] }
+        }
+        si (commence_par($cib, "$")) {
               $cibn = sous_chaine($cib, 1, longueur($cib))
               $in = faux
               $q2 = 1
@@ -721,9 +762,6 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 }
                 si ($dup == faux) { joindre($edges, $srcn + " " + $cibn) }
               }
-            }
-          }
-          $ce = $ce + 1
         }
       }
     }
@@ -797,7 +835,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             $sp = 0
             tant_que ($sp < longueur($after) et $after[$sp] != ' ' et $after[$sp] != ':') { $sp = $sp + 1 }
             $varname = trim(sous_chaine($after, 0, $sp))
-            si (longueur($varname) > 0 et $varname[0] == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
+            si (premier_car($varname) == '%') { $varname = sous_chaine($varname, 1, longueur($varname)) }
             si ($first == faux) { $sig = $sig + ", " }
             $first = faux
             $pts = nom_type(lettre_param($part))
@@ -817,11 +855,22 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
       }
 
       // collect body lines
+      // GOMMAGE À GAUCHE SEULEMENT : les constantes cst.s peuvent finir par
+      // des espaces — la queue de la ligne est du contenu, pas du bruit.
       $body_lines = [""]
       $i = $i + 1
       $prof = 1
       tant_que ($i < $n et $prof > 0) {
-        $ll = trim($ls[$i])
+        $ll = $ls[$i]
+        $d0 = 0
+        $dgo = vrai
+        tant_que ($dgo) {
+          si ($d0 < longueur($ll)) {
+            si ($ll[$d0] == ' ') { $d0 = $d0 + 1 }
+            sinon { $dgo = faux }
+          } sinon { $dgo = faux }
+        }
+        $ll = sous_chaine($ll, $d0, longueur($ll))
         si ($ll == "}") { $prof = $prof - 1 }
         sinon {
           si (commence_par($ll, "fonction ")) { $prof = $prof + 1 }
@@ -843,7 +892,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
       tant_que ($bi < longueur($body_lines)) {
         $bl = $body_lines[$bi]
         // dest : la ligne commence par « %nom » suivi de « = »
-        si (longueur($bl) > 1 et $bl[0] == '%') {
+        si (longueur($bl) > 1 et premier_car($bl) == '%') {
           $k = 1
           $cont = vrai
           tant_que ($k < longueur($bl) et $cont) {
@@ -888,7 +937,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             $gname = $parts[3]
             // strip quotes
             $gname = trim($gname)
-            si (longueur($gname) > 0 et $gname[0] == '"') {
+            si (premier_car($gname) == '"') {
               $gname = sous_chaine($gname, 1, longueur($gname)-1)
             }
             $found = faux
@@ -1031,7 +1080,9 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
           }
           si ($cd == faux) { joindre($cert, $wn0) }
         }
-        si ($tk0[1] == "br" ou $tk0[1] == "br.cond") { $ligne = faux }
+        si (longueur($tk0) >= 2) {
+          si ($tk0[1] == "br" ou $tk0[1] == "br.cond") { $ligne = faux }
+        }
         $fi0 = $fi0 + 1
       }
       $gt1 = 1
@@ -1083,7 +1134,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
             si (longueur($parts) >= 4) {
               $gn = $parts[3]
-              si (longueur($gn) > 0 et $gn[0] == '"') {
+              si (premier_car($gn) == '"') {
                 $gn = sous_chaine($gn, 1, longueur($gn)-1)
               }
               si ($gn == $gname) {
@@ -1216,7 +1267,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
           si (longueur($parts) >= 4) {
             $srcexpr = operand($parts[2], $flagpees)
             $gname = $parts[3]
-            si (longueur($gname) > 0 et $gname[0] == '"') {
+            si (premier_car($gname) == '"') {
               $gname = sous_chaine($gname, 1, longueur($gname)-1)
             }
             >> "    r_" + $gname + " = " + $srcexpr + ";"
@@ -1383,16 +1434,32 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3], $flagpees) }
             >> "    " + $dname + " = " + $a0 + " * " + $a1 + ";"
           } sinon si ($op == "cst.s") {
-            si (longueur($rtoks) > 2) {
-              $arg = $rtoks[2]
-              >> "    " + $dname + " = \"" + $arg + "\";"
+            // La constante peut contenir des espaces, des espaces de queue,
+            // des guillemets — et même des RETOURS À LA LIGNE (le texte RIR
+            // casse alors la ligne : la ligne vide suivante est sa queue).
+            $restn = sous_chaine($bl, $eq + 3, longueur($bl))
+            $val0 = ""
+            si (longueur($restn) > 6) { $val0 = sous_chaine($restn, 6, longueur($restn)) }
+            si (longueur($val0) == 0 et $restn == "cst.s ") {
+              $nl = faux
+              $suiv = $bi + 1
+              si ($suiv < longueur($body_lines)) {
+                si (est_vide($body_lines[$suiv])) { $nl = vrai }
+              }
+              si ($nl) {
+                >> "    " + $dname + " = \"\\n\";"
+              } sinon {
+                >> "    " + $dname + " = \"\";"
+              }
+            } sinon {
+              >> "    " + $dname + " = " + chaine_cpp($val0) + ";"
             }
           } sinon si ($op == "affect") {
             // affect %t0 "x" -> r_x = r_t0
             si (longueur($rtoks) > 2) {
               $srcexpr = operand($rtoks[1], $flagpees)
               $gname = $rtoks[2]
-              si (longueur($gname) > 0 et $gname[0] == '"') {
+              si (premier_car($gname) == '"') {
                 $gname = sous_chaine($gname, 1, longueur($gname)-1)
               }
               >> "    r_" + $gname + " = " + $srcexpr + ";"
