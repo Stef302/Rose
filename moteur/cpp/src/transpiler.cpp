@@ -847,6 +847,13 @@ std::string transpiler_rir(const RirModule &mod) {
                         // lectures gardées ; aucune dépense pour les autres).
                         if (flagpees.count(dglob))
                             out << "    _def_" << dglob << " = true;\n";
+                        // v3.14.1 — une variable qui reçoit une liste en hérite
+                        // le type statique sous la clé « %nom » : les lectures
+                        // (index, longueur, test dynamique) consultent cette clé,
+                        // sans quoi un index sur liste locale émettrait
+                        // rose_index_str (chaîne) et casserait g++.
+                        if (sty == RirListe)
+                            temp_types["%" + instr.message] = RirListe;
                     }
                 }
                 else if (op == "afficher") {
@@ -1587,12 +1594,6 @@ std::string transpiler_rir(const RirModule &mod) {
                     } else {
                         out << "    return 0;\n";
                     }
-                }
-                else if (op == "index") {
-                    std::string dest = sanitize(instr.dest);
-                    std::string base = L(instr.args[0]);
-                    std::string idx = L(instr.args[1]);
-                    out << "    " << dest << " = rose_index(" << base << ", " << idx << ");\n";
                 }
                 else if (op == "add.s") {
                     std::string dest = sanitize(instr.dest);

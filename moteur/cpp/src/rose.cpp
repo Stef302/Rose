@@ -407,7 +407,8 @@ static std::string texte_echappe(const std::string &s) {
     for (char c : s) {
         if (c == '\\') o += "\\\\";
         else if (c == '\n') o += "\\n";
-        else if (c == '\t') o += "\\t";
+        else if ( c == '\t') o += "\\t";
+        else if (c == '\x1f') o += "\\u241f";  // séparateur interne du jalon M4.1
         else o += c;
     }
     return o;
@@ -999,6 +1000,108 @@ struct Parser {
 
 static Programme analyser(const std::string &source) {
     return Parser(source).programmer();
+}
+
+/* ══════════ M4.1 — oracle d'arbre syntaxique : « rose ast » ══════════
+   Le premier jet du compilateur auto-hébergé (rose/analyseur.rose) doit
+   reproduire CETTE sortie à l'octet près — avant vérification, avant
+   émission : uniquement l'osserature du parseur.
+   Format (déterministe, sans lignes ni colonnes) :
+     programme
+     fonction <nom>                     ← signatures triées (ordre std::map)
+     externe "<dll>" "<son>" "<sym>"    ← fonctions étrangères seulement
+     param <nom> <type> ...
+     retour <type>                      ← « vide » si aucune flèche
+     <instructions du corps, indentées de 2>
+     ... puis les instructions de premier niveau, indentées de 0
+   Instructions :
+     afficher <e> | lire <nom> | affect <nom> <e> | expr <e>
+     si <e> / alors / corps / sinon / corps
+     tant_que <e> / corps
+     pour <nom> <e> <e> / corps
+     retour <e> | retour
+     bloc / corps
+   Expressions en S-expressions :
+     (n 2) (f 2.5) (s "t") (b vraie|faux) (v nom) (app [mod::]nom e…)
+     (idx a b) (bin <op> a b) (uni <-|non> a) (fact a) (lst e…)
+   Sucre MIRROIR (comme le parseur C++) : √x → (bin ^ x (f 0.5)) ;
+   s[a:b] → (app sous_chaine s a b) ; s[:b] → (app sous_chaine s (n 0) b) ;
+   s[a:] → (app sous_chaine s a (app longueur s)). */
+static void ast_expr(const PE &e, std::string &out) {
+    if (!e) { out += "(vide)"; return; }
+    switch (e->k) {
+        case NK::Litteral: out += e->flag ? "(f " + e->texte + ")" : "(n " + e->texte + ")"; break;
+        case NK::ChaineLit: out += "(s " + texte_echappe(e->texte) + ")"; break;
+        case NK::BooleenLit: out += e->flag ? "(b vraie)" : "(b faux)"; break;
+        case NK::ListeLit: {
+            out += "(lst";
+            for (auto &a : e->args) { out += " "; ast_expr(a, out); }
+            out += ")"; break;
+        }
+        case NK::Var: out += "(v " + e->texte + ")"; break;
+        case NK::Appel: {
+            out += "(app ";
+            if (!e->module.empty()) out += e->module + "::";
+            out += e->texte;
+            for (auto &a : e->args) { out += " "; ast_expr(a, out); }
+            out += ")"; break;
+        }
+        case NK::Index: out += "(idx "; ast_expr(e->a, out); out += " "; ast_expr(e->b, out); out += ")"; break;
+        case NK::Binaire: out += "(bin " + e->texte + " "; ast_expr(e->a, out); out += " "; ast_expr(e->b, out); out += ")"; break;
+        case NK::Unaire: out += "(uni " + e->texte + " "; ast_expr(e->a, out); out += ")"; break;
+        case NK::Factorielle: out += "(fact "; ast_expr(e->a, out); out += ")"; break;
+    }
+}
+static std::string ast_ind(int n) { return std::string(2 * n, ' '); }
+static void ast_instrs(const std::vector<PI> &v, int ind, std::string &out);
+static void ast_instr(const PI &i, int ind, std::string &out) {
+    std::string p = ast_ind(ind);
+    switch (i->k) {
+        case IK::Afficher: out += p + "afficher "; ast_expr(i->expr, out); out += "\n"; break;
+        case IK::Lire: out += p + "lire " + i->nom + "\n"; break;
+        case IK::Affectation: out += p + "affect " + i->nom + " "; ast_expr(i->expr, out); out += "\n"; break;
+        case IK::Si:
+            out += p + "si "; ast_expr(i->test, out); out += "\n";
+            out += p + "alors\n";
+            if (i->alors) ast_instrs(i->alors->instrs, ind + 1, out);
+            if (i->sinon) { out += p + "sinon\n"; ast_instrs(i->sinon->instrs, ind + 1, out); }
+            break;
+        case IK::TantQue:
+            out += p + "tant_que "; ast_expr(i->test, out); out += "\n";
+            if (i->corps) ast_instrs(i->corps->instrs, ind + 1, out);
+            break;
+        case IK::Pour:
+            out += p + "pour " + i->nom + " "; ast_expr(i->debut, out); out += " "; ast_expr(i->fin, out); out += "\n";
+            if (i->corps) ast_instrs(i->corps->instrs, ind + 1, out);
+            break;
+        case IK::Retour:
+            out += p + "retour";
+            if (i->expr) { out += " "; ast_expr(i->expr, out); }
+            out += "\n"; break;
+        case IK::Expr: out += p + "expr "; ast_expr(i->expr, out); out += "\n"; break;
+        case IK::Bloc:
+            out += p + "bloc\n";
+            ast_instrs(i->instrs, ind + 1, out);
+            break;
+    }
+}
+static void ast_instrs(const std::vector<PI> &v, int ind, std::string &out) {
+    for (auto &i : v) ast_instr(i, ind, out);
+}
+static std::string ast_programme(const Programme &prog) {
+    std::string out = "programme\n";
+    for (auto &kv : prog.signatures) {
+        const Signature &s = *kv.second;
+        out += "fonction " + s.nom + "\n";
+        if (!s.corps)
+            out += "externe \"" + texte_echappe(s.dll) + "\" \"" + texte_echappe(s.dll_son) +
+                   "\" \"" + texte_echappe(s.symbole) + "\"\n";
+        for (auto &pr : s.params) out += "param " + pr.first + " " + pr.second.nom() + "\n";
+        out += "retour " + s.retour.nom() + "\n";
+        if (s.corps) ast_instrs(s.corps->instrs, 1, out);
+    }
+    ast_instrs(prog.instructions, 0, out);
+    return out;
 }
 
 /* ── vérificateur de types (port fidèle du vérificateur v2) ───────── */
@@ -4565,6 +4668,13 @@ int main(int argc, char **argv) {
         InterpRir interp(mod);
         interp.prog = &prog;
         interp.executer();
+        return 0;
+    }
+    if (action == "ast") {
+        if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
+        std::string source;
+        if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
+        fputs(ast_programme(analyser(source)).c_str(), stdout);
         return 0;
     }
     if (action == "tokens") {

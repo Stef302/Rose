@@ -315,6 +315,25 @@ $w = ["alpha", "bêta"]
 >> mots($w)
 """), attendu_stdout="3\n7\nbêta\n", attendu_code=0)
 
+cas_fidele("index_liste_locale", _rose_source("index_liste_locale", """
+# v3.14.1 — variable locale portant une liste dans une fonction : les
+# lectures (index, longueur) consultent la clé « %nom » que l'affectation
+# remplit désormais. Avant la correction, l'index émettait rose_index_str
+# (index de CHAINE) sur la liste et cassait g++ — le parseur auto-hébergé
+# (rose/analyseur.rose) a révélé cette classe en cherchant à se compiler.
+fn jointure() -> chaine {
+  $t = ""
+  $i = 1
+  $o = ["", "x", "y", "z"]
+  tant_que ($i < longueur($o)) { $t = $t + $o[$i]; $i = $i + 1 }
+  retour $t
+}
+$base = ["p", "q"]
+>> jointure()
+>> $base[0]
+>> longueur($base)
+"""), attendu_stdout="xyz\np\n2\n", attendu_code=0)
+
 # ── 3. erreurs et rejets : le compilable doit dire non, ou l'exécution
 #       rendre le même message que l'interpréteur ────────────────────
 cas_rejet("nom_reserve", f"{DORES}/nom_reserve.rose", motif="réservé par le moteur")

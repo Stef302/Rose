@@ -111,6 +111,7 @@ fn echapper(t: chaine) -> chaine {
     si ($c == 92) { $o = $o + "\\" + "\\" }
     sinon si ($c == 10) { $o = $o + "\\" + "n" }
     sinon si ($c == 9) { $o = $o + "\\" + "t" }
+    sinon si ($c == 31) { $o = $o + "\\" + "u241f" }
     sinon { $o = $o + t[$j] }
     $j = $j + 1
   }

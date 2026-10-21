@@ -87,9 +87,9 @@ cinq étapes, chacune prouvable :
    stage0 avant, plus personne ne le développe d'abord) ;
 5. le JIT/LLVM passent dans le compilateur auto-hébergé à son tour.
 
-**État d'avancement (depuis la v3.14.1) — M4.0 fait** : l'oracle
-`rose tokens prog.rose` (jetons `ligne:colonne type texte`, miroir exact
-de `tokeniser()`) sert de point fixe au premier maillon :
+**État d'avancement (depuis la v3.14.1) — M4.0 et M4.1 faits** :
+l'oracle `rose tokens prog.rose` (jetons `ligne:colonne type texte`,
+miroir exact de `tokeniser()`) sert de point fixe au premier maillon :
 `rose/lexeur.rose` lexelle en Rose, et `moteur/tests/lexeur.py` exige
 la sortie **identique à l'octet près sur 54 fichiers du corpus, par les
 trois voies** — oracle C++, lexeur interprété, lexeur compilé AOT. Le
@@ -100,8 +100,22 @@ classes de défauts d'expression AOT que le corpus n'atteignait jamais
 des index écrasé, listes passées par valeur alors que l'interprète les
 partage, `return 0` construisant une chaîne depuis NULL sur les chemins
 sans `retour` — désormais rejetés poliment).
-Prochain maillon : l'analyseur (`rose/analyseur.rose`), point d'appui :
-la sortie de `rose rir`, déjà texte et diffable.
+
+M4.1 : l'oracle `rose ast prog.rose` (ossature du parseur : fonctions
+triées par nom, instructions indentées, expressions en S-expressions —
+sans vérification ni repli de constantes) sert de point fixe au second
+maillon : `rose/analyseur.rose` — lexage interne, descente récursive
+miroir de `Parser`, précérences et sucres (`√`, tranches, `² ³`,
+`module::nom`) reproduits à l'octet près, l'état du parseur voyageant
+par les valeurs de retour « pos|nœud » sans aucune variable globale.
+`moteur/tests/ast.py` exige l'égalité triple oracle ≡ interprété ≡ AOT
+sur tout le corpus — **l'analyseur se lit lui‑même**. Là encore, le
+maillon a payé sa dette en découvrant une cinquième classe de défaut
+AOT : indexer une VARIABLE LOCALE portant une liste émettait
+`rose_index_str` (index de chaîne) et cassait g++ — l'affectation
+propage désormais le type `liste` sous la clé `%nom`.
+Prochain maillon : le vérificateur (`rose/verifieur.rose`) puis
+l'émetteur RIR, point d'appui : la sortie de `rose rir`, déjà texte.
 
 ### M5 — Standard library en Rose
 `prelude.rose` (listes, tri, chaînes, tables, tests unitaires écrits
