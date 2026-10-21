@@ -167,7 +167,7 @@ M4.4 : le traducteur RIR → C++, `rose/emetteur_cpp.rose` — celui-là est
 `rose rir prog.rose` et doit rendre le `.cpp` de `rose build` à l'octet
 près. `moteur/tests/emetteur_cpp.py` est la porte : sur chaque programme
 du corpus, l'oracle (build) et l'émetteur doivent rendre des octets
-identiques. Cinq montées depuis le socle :
+identiques. Neuf montées depuis le socle :
 
 * V1 — programmes simples (entiers, chaînes, booléens, fonctions, si,
   boucles, labels assainis, temporaires triés) ;
@@ -190,20 +190,44 @@ identiques. Cinq montées depuis le socle :
   `rose_table_get` rendant une cellule `rose_dyn` qui s'affiche
   elle-même) et unification : la déclaration des temporaires et l'index
   sont entièrement gouvernés par `genre()` — le balayage d'héritage et le
-  « r_t8 » codé en dur de V1 sont tombés.
+  « r_t8 » codé en dur de V1 sont tombés ;
+* V7 — listes par référence (`rose_liste&`, les `joindre` de l'appelée
+  sont visibles de l'appelant) et récursivité : graphe d'appels construit
+  dans la première passe contre la table COMPLÈTE des noms (un appel vers
+  une fonction définie plus bas compte aussi — sans quoi la réciprocité
+  passait inaperçue), parcours en profondeur, et `rose_pile_geante` en
+  tête de `main` quand un cycle existe, comme l'oracle ;
+* V8 — variables locales de fonction : `affect %src "nom"` dans une
+  fonction écrit un SLOT du corps, déclaré avec le genre de la première
+  écriture (miroir `temp_types["%nom"]`, la source fût-elle un
+  paramètre) ; les temporaires sont les DEST des instructions, jamais les
+  paramètres ; `add.s` émis (concaténation, constante droite échappée).
+  Le traducteur passe aussi son corps à la RACINE : le moteur ajoute un
+  `$principal` de synthèse à chaque fichier, et déclarer `fn principal`
+  produisait deux `int main` dans le `.cpp` ;
+* V9 — constantes texte Fidèles : les lignes du corps ne sont gommées
+  qu'à gauche (la queue d'une ligne `cst.s` est du contenu), la valeur
+  est la tranche brute après le préfixe, échappée par la table exacte de
+  l'oracle (`" \ \n \t`), et le retour à la ligne — qui casse la ligne
+  dans le texte RIR — est récupéré par anticipation sur la ligne vide
+  d'après. Un helper `premier_car()` désamorce le piège « et/ou ne
+  court-circuitent jamais » sur toute la chaîne.
 
 Deux bizarreries du moteur découvertes en chemin, consignées : le lexeur
 avale le préfixe `@c` DANS les littéraux de chaîne (`"@c"` devient `""`,
 d'où `prefix_cst()` construit à la volée) et `et`/`ou` ne court-circuitent
-jamais (toute boucle d'indexation de chaîne porte un drapeau d'arrêt).
+jamais (toute boucle d'indexation de chaîne porte un drapeau d'arrêt ;
+V9 a converti les gardes inline restants en `premier_car`).
 
-**Porte actuelle : 29/29 programmes identiques** et 9 des 10 bancs
+**Porte actuelle : 39/39 programmes identiques**, 9 des 10 bancs
 octet-identiques (puissance plie 2^30000000 en une constante de neuf
 millions de chiffres que le découpage texte de l'émetteur ne traverse
-pas — la byte-identity des bancs, elle, compare les `.cpp` de l'oracle).
-Reste : l'auto-émission — l'émetteur traduisant son propre RIR, dix mille
-lignes — qui closerait le traducteur et donc le compilateur
-auto-hébergé ; le harnais de garde de ce maillon est le fichier lui-même.
+pas — la byte-identity des bancs, elle, compare les `.cpp` de l'oracle),
+et surtout : **l'auto-émission passe**. `rose build` du traducteur
+produit un binaire native (`selfb`) qui relit son propre RIR — plus de
+9 500 lignes — et rend le `.cpp` de l'oracle OCTET PAR OCTET. Le
+traducteur RIR → C++ se fabrique lui-même : le compilateur
+auto-hébergé de la ligne M4 est bouclé.
 
 ### M5 — Standard library en Rose
 `prelude.rose` (listes, tri, chaînes, tables, tests unitaires écrits
