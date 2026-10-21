@@ -556,7 +556,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
   retour faux
 }
 
-fn principal() {
+// ---------- racine : le corps du traducteur (le bloc racine EST le principal) ----------
   $src = lire_texte(argument(0))
   $ls = lignes($src)
   $n = longueur($ls)
@@ -1836,4 +1836,3 @@ fn principal() {
     }
     $i = $i + 1
   }
-}
