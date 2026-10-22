@@ -129,7 +129,6 @@ a{text-decoration:none;color:inherit;cursor:pointer}
 .overline{color:var(--vert);font-size:.76rem;letter-spacing:3px;display:flex;align-items:center;gap:10px}
 .overline::before{content:"";width:28px;height:2px;background:var(--vert)}
 h1{
-  font-family:'Kare Gradient','Kare',sans-serif;
   font-size:clamp(3.8rem,10vw,8.4rem); line-height:.95; color:var(--txt); margin:.4rem 0 1rem;
   text-shadow:0 0 45px rgba(230,32,42,.35);
 }
@@ -167,7 +166,7 @@ body.light .ticker{background:#EFEAD9}
 
 /* ---------- WRAP ---------- */
 .wrap{max-width:1200px;margin:auto;padding:80px 6vw}
-h2{font-family:'Kare Gradient','Kare',sans-serif;font-size:clamp(1.7rem,4vw,2.8rem);color:var(--txt);margin:.5rem 0 1.6rem;line-height:1.35}
+h2{font-size:clamp(1.7rem,4vw,2.8rem);color:var(--txt);margin:.5rem 0 1.6rem;line-height:1.35}
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:2rem}
 .cols p{font-size:.92rem;line-height:2.1;color:var(--sub)}
 
@@ -421,11 +420,6 @@ footer p{font-size:.8rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 .doc-section table{margin:1rem 0}
 .doc-section pre{padding:16px;overflow-x:auto;font-size:.82rem;line-height:1.8;color:var(--txt)}
 .term pre{padding:18px}
-/* ---------- KARE LIGHT : étiquettes espacées ---------- */
-.overline,.badge,.stat-lbl,.ticker-track,.term-bar,.editor-head,.editor-tabs .tab,.console-head,
-.install-tag,.doc-sidebar h4,.doc-sidebar a,.table th,.membre .role,.event-ver,.event-date,.event li,
-.search-result-page,.search-empty,.foot-col h5,.foot-col button,.small,footer p,.rose-select,
-.badge-note,.etat-col h3,.etat-col li,.copy,.toast,.honest{font-weight:300}
 </style>
 </head>
 <body>
@@ -1156,7 +1150,7 @@ Bonjour, monde !</pre>
       </ul>
     </div>
   </div>
-  <div class="foot-brace">{ <img src="assets/img/logo-simple-64.png" alt="Logo Rose" style="width:34px;height:34px;object-fit:contain"> }</div>
+  <div class="foot-brace">{ <img src="assets/img/logo-simple-64.png" alt="Logo Rose" style="width:34px;height:34px;object-fit:contain;filter:drop-shadow(0 0 8px rgba(230,32,42,.55))"> }</div>
   <p>ROSE — conçu et implémenté par <span class="vert">Stef302</span></p>
   <p class="small gris">© <span id="y"></span> · LICENCE MIT · AUTO-HÉBERGEMENT EN COURS</p>
 </footer>
