@@ -1,0 +1,2 @@
+$i = 1
+pour i de 0 vers 3 { >> $i }

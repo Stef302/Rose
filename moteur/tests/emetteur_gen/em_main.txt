@@ -1,0 +1,31 @@
+# —— passe 3 : émission RIR (oracle « rose rir ») ——
+# Fonctions triées (ordre std::map, externes sans corps), puis le niveau
+# supérieur sous $principal ; compteurs %t et suffixes de bloc sans reprise.
+$tc = [-1]
+$bc = [-1]
+$outl = [""]
+joindre($outl, "rir 1")
+si (longueur($err) == 1) {
+  $w = 1
+  tant_que ($w < longueur($ordre)) {
+    $ix = $ordre[$w]
+    si ($fext[$ix] == "") {
+      em_fonction("$" + $fnoms[$ix], $fparams[$ix], $fret[$ix], $fcorps[$ix],
+                  $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                  $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
+                  $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $outl)
+    }
+    $w = $w + 1
+  }
+  em_fonction("$principal", "", "vide|vide", $topb,
+              $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+              $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
+              $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $outl)
+}
+si (longueur($err) > 1) { >> $err[1] } sinon {
+  $u = 1
+  tant_que ($u < longueur($outl)) {
+    >> $outl[$u]
+    $u = $u + 1
+  }
+}

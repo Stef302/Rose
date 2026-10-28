@@ -109,15 +109,48 @@ static inline void fdiv_rem(long x, long y, long *q, long *r) {
 // les malloc internes de GMP. Valeur a des champs indépendants (z/b/s/…) :
 // le recyclage d'un type à l'autre est sûr. Fuite volontaire bornée, comme
 // le code émis lui-même.
+static std::map<const Valeur*, std::string> g_jit_slot_noms;   // v3.13.1 : slots « vide » nommés du JIT
 static std::vector<Valeur*> g_valeur_pool;
 static std::map<int, std::vector<Valeur**>> g_frame_pool;
 static const size_t VALEUR_POOL_MAX = 1u << 16;
 static const size_t FRAME_POOL_MAX  = 1u << 12;
 
 static inline void valeur_pool_push(Valeur* v) {
+    g_jit_slot_noms.erase(v);   // v3.13.1 : l'objet renaît anonyme au recyclage
     if (g_valeur_pool.size() < VALEUR_POOL_MAX) g_valeur_pool.push_back(v);
     else delete v;
 }
+
+// ── Lecture sans valeur — v3.13.1 ──────────────────────────────────────────
+// Un slot de variable jamais écrit était lu brut : objet null (segfault,
+// graine générative 200051) ou déchet. Le cadre pré-crée désormais un objet
+// « vide » nommé pour chaque variable ; les helpers lisent à travers
+// JIT_LIT et produisent exactement l'erreur du cœur interprété — jamais le
+// silence, jamais le crash. Le message sort en direct (convention
+// « fonction inconnue ») : pas de désenfilage à travers les trames asm.
+void __attribute__((noinline)) jit_lecture_sans_valeur(const Valeur* v) {
+    std::string nom = "?";
+    auto it = g_jit_slot_noms.find(v);
+    if (it != g_jit_slot_noms.end()) nom = it->second;
+    if (!nom.empty() && nom[0] == '%') nom = nom.substr(1);
+    if (getenv("ROSE_JIT_DEBUG")) {
+        fprintf(stderr, "[debug] valeur=%p registre=", (const void*)v);
+        for (auto &kv : g_jit_slot_noms)
+            fprintf(stderr, " [%p->%s]", (const void*)kv.first, kv.second.c_str());
+        fprintf(stderr, "\n");
+    }
+    fprintf(stderr, "Rose : erreur — variable '%s' utilisée sans valeur\n", nom.c_str());
+    std::fflush(stdout);
+    std::exit(1);
+}
+extern "C" const char* rose_jit_slot_name(const Valeur* v) {   // pour les helpers de rose.cpp
+    static std::string tampon;
+    auto it = g_jit_slot_noms.find(v);
+    tampon = (it != g_jit_slot_noms.end()) ? it->second : std::string("?");
+    if (!tampon.empty() && tampon[0] == '%') tampon.erase(0, 1);
+    return tampon.c_str();
+}
+#define JIT_LIT(x) do { if (!(x) || (x)->ty == T_VIDE) jit_lecture_sans_valeur(x); } while (0)
 static inline Valeur* z_new0() {           // Valeur entière 0 (réservoir si possible)
     if (!g_valeur_pool.empty()) {
         Valeur* v = g_valeur_pool.back(); g_valeur_pool.pop_back();
@@ -145,29 +178,29 @@ Valeur* __attribute__((noinline)) jit_val_b(bool v) {
     return p;
 }
 
-Valeur* __attribute__((noinline)) jit_add_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_add_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     mpz_class r; mpz_add(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* __attribute__((noinline)) jit_sub_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_sub_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     mpz_class r; mpz_sub(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* __attribute__((noinline)) jit_mul_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_mul_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     mpz_class r; mpz_mul(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* __attribute__((noinline)) jit_div_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_div_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "Rose : erreur — division par zéro\n"); std::fflush(stdout); std::exit(1); }
     mpz_class r; mpz_fdiv_q(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* __attribute__((noinline)) jit_rem_z(Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_rem_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     if (mpz_sgn(b->z.get_mpz_t()) == 0) { fprintf(stderr, "Rose : erreur — modulo par zéro\n"); std::fflush(stdout); std::exit(1); }
     mpz_class r; mpz_fdiv_r(r.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
-Valeur* __attribute__((noinline)) jit_neg_z(Valeur* a) {
+Valeur* __attribute__((noinline)) jit_neg_z(Valeur* a) { JIT_LIT(a); 
     mpz_class r = a->z; mpz_neg(r.get_mpz_t(), r.get_mpz_t());
     return new Valeur(Valeur::de_z(r));
 }
@@ -179,15 +212,15 @@ static inline long cmp_z(Valeur* a, Valeur* b) {
     if (zs2(a, b, &x, &y)) return (x < y) ? -1 : (x > y ? 1 : 0);
     return mpz_cmp(a->z.get_mpz_t(), b->z.get_mpz_t());
 }
-int __attribute__((noinline)) jit_cmp_lt_z(Valeur* a, Valeur* b) { return cmp_z(a, b) < 0; }
-int __attribute__((noinline)) jit_cmp_eq_z(Valeur* a, Valeur* b) { return cmp_z(a, b) == 0; }
-int __attribute__((noinline)) jit_cmp_ne_z(Valeur* a, Valeur* b) { return cmp_z(a, b) != 0; }
-int __attribute__((noinline)) jit_cmp_le_z(Valeur* a, Valeur* b) { return cmp_z(a, b) <= 0; }
-int __attribute__((noinline)) jit_cmp_gt_z(Valeur* a, Valeur* b) { return cmp_z(a, b) > 0; }
-int __attribute__((noinline)) jit_cmp_ge_z(Valeur* a, Valeur* b) { return cmp_z(a, b) >= 0; }
-int __attribute__((noinline)) jit_test_b(Valeur* v) { return v->b ? 1 : 0; }
+int __attribute__((noinline)) jit_cmp_lt_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_z(a, b) < 0; }
+int __attribute__((noinline)) jit_cmp_eq_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_z(a, b) == 0; }
+int __attribute__((noinline)) jit_cmp_ne_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_z(a, b) != 0; }
+int __attribute__((noinline)) jit_cmp_le_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_z(a, b) <= 0; }
+int __attribute__((noinline)) jit_cmp_gt_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_z(a, b) > 0; }
+int __attribute__((noinline)) jit_cmp_ge_z(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_z(a, b) >= 0; }
+int __attribute__((noinline)) jit_test_b(Valeur* v) { JIT_LIT(v);  return v->b ? 1 : 0; }
 
-Valeur* __attribute__((noinline)) jit_and_b(Valeur* a, Valeur* b) { return new Valeur(Valeur::de_b(a->b && b->b)); }
+Valeur* __attribute__((noinline)) jit_and_b(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return new Valeur(Valeur::de_b(a->b && b->b)); }
 Valeur* __attribute__((noinline)) jit_or_b(Valeur* a, Valeur* b)  { return new Valeur(Valeur::de_b(a->b || b->b)); }
 Valeur* __attribute__((noinline)) jit_not_b(Valeur* a)            { return new Valeur(Valeur::de_b(!a->b)); }
 
@@ -196,28 +229,28 @@ Valeur* __attribute__((noinline)) jit_not_b(Valeur* a)            { return new V
 //       x1/x2 = opérandes. Retourne dst. Zéro allocation par itération
 //       de boucle après le premier passage (mpz_* accepte dst == opérande).
 
-Valeur* __attribute__((noinline)) jit_add_z_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_add_z_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     if (!dst) dst = z_new0();
     long x, y, r;
     if (zs2(a, b, &x, &y) && !__builtin_add_overflow(x, y, &r)) zput(dst, r);
     else mpz_add(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
-Valeur* __attribute__((noinline)) jit_sub_z_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_sub_z_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     if (!dst) dst = z_new0();
     long x, y, r;
     if (zs2(a, b, &x, &y) && !__builtin_sub_overflow(x, y, &r)) zput(dst, r);
     else mpz_sub(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
-Valeur* __attribute__((noinline)) jit_mul_z_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_mul_z_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     if (!dst) dst = z_new0();
     long x, y, r;
     if (zs2(a, b, &x, &y) && !__builtin_mul_overflow(x, y, &r)) zput(dst, r);
     else mpz_mul(dst->z.get_mpz_t(), a->z.get_mpz_t(), b->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
-Valeur* __attribute__((noinline)) jit_div_z_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_div_z_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     if (!dst) dst = z_new0();
     long x, y, q, r;
     if (zs2(a, b, &x, &y)) {
@@ -229,7 +262,7 @@ Valeur* __attribute__((noinline)) jit_div_z_into(Valeur* dst, Valeur* a, Valeur*
     }
     dst->ty = T_ENTIER; return dst;
 }
-Valeur* __attribute__((noinline)) jit_rem_z_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_rem_z_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     if (!dst) dst = z_new0();
     long x, y, q, r;
     if (zs2(a, b, &x, &y)) {
@@ -241,7 +274,7 @@ Valeur* __attribute__((noinline)) jit_rem_z_into(Valeur* dst, Valeur* a, Valeur*
     }
     dst->ty = T_ENTIER; return dst;
 }
-Valeur* __attribute__((noinline)) jit_neg_z_into(Valeur* dst, Valeur* a) {
+Valeur* __attribute__((noinline)) jit_neg_z_into(Valeur* dst, Valeur* a) { JIT_LIT(a); 
     if (!dst) dst = z_new0();
     long x;
     if (zs1(a, &x) && x != LONG_MIN) zput(dst, -x);
@@ -249,7 +282,7 @@ Valeur* __attribute__((noinline)) jit_neg_z_into(Valeur* dst, Valeur* a) {
     dst->ty = T_ENTIER; return dst;
 }
 // copie de valeur (affectations) : dst possède son propre objet, jamais partagé
-Valeur* __attribute__((noinline)) jit_z_copy_into(Valeur* dst, Valeur* src) {
+Valeur* __attribute__((noinline)) jit_z_copy_into(Valeur* dst, Valeur* src) { JIT_LIT(src); 
     if (!src) return dst;
     if (!dst) dst = z_new0();
     long x;
@@ -257,7 +290,7 @@ Valeur* __attribute__((noinline)) jit_z_copy_into(Valeur* dst, Valeur* src) {
     else mpz_set(dst->z.get_mpz_t(), src->z.get_mpz_t());
     dst->ty = T_ENTIER; return dst;
 }
-Valeur* __attribute__((noinline)) jit_b_copy_into(Valeur* dst, Valeur* src) {
+Valeur* __attribute__((noinline)) jit_b_copy_into(Valeur* dst, Valeur* src) { JIT_LIT(src); 
     if (!src) return dst;
     if (!dst) dst = b_new(src->b);
     else { dst->b = src->b; dst->ty = T_BOOLEEN; }
@@ -268,8 +301,8 @@ Valeur* __attribute__((noinline)) jit_bool_into(Valeur* dst, int cond) {
     else { dst->b = (cond != 0); dst->ty = T_BOOLEEN; }
     return dst;
 }
-int __attribute__((noinline)) jit_cmp_eq_b(Valeur* a, Valeur* b) { return a->b == b->b; }
-int __attribute__((noinline)) jit_cmp_ne_b(Valeur* a, Valeur* b) { return a->b != b->b; }
+int __attribute__((noinline)) jit_cmp_eq_b(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return a->b == b->b; }
+int __attribute__((noinline)) jit_cmp_ne_b(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return a->b != b->b; }
 
 // ── Flottants (M2.12) ────────────────────────────────────────────────────
 // Conversions et formatage miroirs exacts de vers_d / texte_flottant / ecri
@@ -327,37 +360,37 @@ static inline Valeur* fput_f(Valeur* dst, double x) {
     dst->f = x; dst->ty = T_FLOTTANT; return dst;
 }
 
-Valeur* __attribute__((noinline)) jit_f_copy_into(Valeur* dst, Valeur* src) {
+Valeur* __attribute__((noinline)) jit_f_copy_into(Valeur* dst, Valeur* src) { JIT_LIT(src); 
     double x = val_d(src);                          // tolérant comme l'interpréteur
     if (!dst) dst = f_new0();
     dst->f = x; dst->ty = T_FLOTTANT; return dst;
 }
-Valeur* __attribute__((noinline)) jit_add_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_add_f_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     return fput_f(dst, val_d(a) + val_d(b));
 }
-Valeur* __attribute__((noinline)) jit_sub_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_sub_f_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     return fput_f(dst, val_d(a) - val_d(b));
 }
-Valeur* __attribute__((noinline)) jit_mul_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_mul_f_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     return fput_f(dst, val_d(a) * val_d(b));
 }
-Valeur* __attribute__((noinline)) jit_div_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_div_f_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     double B = val_d(b);
     if (B == 0.0) jit_erreur("division par zéro");
     return fput_f(dst, val_d(a) / B);
 }
-Valeur* __attribute__((noinline)) jit_divf_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_divf_f_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     double B = val_d(b);
     if (B == 0.0) jit_erreur("division euclidienne par zéro");
     return fput_f(dst, std::floor(val_d(a) / B));
 }
-Valeur* __attribute__((noinline)) jit_pow_f_into(Valeur* dst, Valeur* a, Valeur* b) {
+Valeur* __attribute__((noinline)) jit_pow_f_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b); 
     return fput_f(dst, std::pow(val_d(a), val_d(b)));
 }
-Valeur* __attribute__((noinline)) jit_neg_f_into(Valeur* dst, Valeur* a) {
+Valeur* __attribute__((noinline)) jit_neg_f_into(Valeur* dst, Valeur* a) { JIT_LIT(a); 
     return fput_f(dst, -val_d(a));
 }
-void __attribute__((noinline)) jit_afficher_f(Valeur* v) {
+void __attribute__((noinline)) jit_afficher_f(Valeur* v) { JIT_LIT(v); 
     ecrit_f(v->f); fputc('\n', stdout);
 }
 // Comparaisons : miroir de cmp_vals côté flottant (A<B / A>B → 0 sinon,
@@ -366,20 +399,20 @@ static int cmp_f(Valeur* a, Valeur* b) {
     double A = val_d(a), B = val_d(b);
     return A < B ? -1 : (A > B ? 1 : 0);
 }
-int __attribute__((noinline)) jit_cmp_lt_f(Valeur* a, Valeur* b) { return cmp_f(a,b) < 0; }
-int __attribute__((noinline)) jit_cmp_le_f(Valeur* a, Valeur* b) { return cmp_f(a,b) <= 0; }
-int __attribute__((noinline)) jit_cmp_gt_f(Valeur* a, Valeur* b) { return cmp_f(a,b) > 0; }
-int __attribute__((noinline)) jit_cmp_ge_f(Valeur* a, Valeur* b) { return cmp_f(a,b) >= 0; }
-int __attribute__((noinline)) jit_cmp_eq_f(Valeur* a, Valeur* b) { return cmp_f(a,b) == 0; }
-int __attribute__((noinline)) jit_cmp_ne_f(Valeur* a, Valeur* b) { return cmp_f(a,b) != 0; }
+int __attribute__((noinline)) jit_cmp_lt_f(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_f(a,b) < 0; }
+int __attribute__((noinline)) jit_cmp_le_f(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_f(a,b) <= 0; }
+int __attribute__((noinline)) jit_cmp_gt_f(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_f(a,b) > 0; }
+int __attribute__((noinline)) jit_cmp_ge_f(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_f(a,b) >= 0; }
+int __attribute__((noinline)) jit_cmp_eq_f(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_f(a,b) == 0; }
+int __attribute__((noinline)) jit_cmp_ne_f(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);  return cmp_f(a,b) != 0; }
 
-void __attribute__((noinline)) jit_afficher_z(Valeur* v) {
+void __attribute__((noinline)) jit_afficher_z(Valeur* v) { JIT_LIT(v); 
     gmp_printf("%Zd\n", v->z.get_mpz_t());
 }
-void __attribute__((noinline)) jit_afficher_b(Valeur* v) {
+void __attribute__((noinline)) jit_afficher_b(Valeur* v) { JIT_LIT(v); 
     fputs(v->b ? "vrai\n" : "faux\n", stdout);
 }
-void __attribute__((noinline)) jit_afficher_s(Valeur* v) {
+void __attribute__((noinline)) jit_afficher_s(Valeur* v) { JIT_LIT(v); 
     fwrite(v->s.data(), 1, v->s.size(), stdout);
     fputc('\n', stdout);
 }
@@ -399,7 +432,7 @@ Valeur* jit_val_s(const char* txt) {
 }
 
 // Copie de chaîne dans un slot (M2.14) — miroir de jit_z_copy_into.
-Valeur* __attribute__((noinline)) jit_s_copy_into(Valeur* dst, Valeur* src) {
+Valeur* __attribute__((noinline)) jit_s_copy_into(Valeur* dst, Valeur* src) { JIT_LIT(src); 
     if (!src) return dst;
     if (!dst) dst = new Valeur(Valeur::de_s(std::string()));
     dst->s = src->s;                       // copié depuis la VALEUR source
@@ -410,13 +443,13 @@ Valeur* __attribute__((noinline)) jit_s_copy_into(Valeur* dst, Valeur* src) {
 Valeur* __attribute__((noinline)) jit_liste_new() {
     return new Valeur(Valeur::de_l(std::make_shared<std::vector<Valeur>>()));
 }
-Valeur* __attribute__((noinline)) jit_liste_push(Valeur* listv, Valeur* elem) {
+Valeur* __attribute__((noinline)) jit_liste_push(Valeur* listv, Valeur* elem) { JIT_LIT(listv); JIT_LIT(elem); 
     if (listv->ty != T_LISTE || !listv->l)
         jit_erreur("liste.push attend une liste");
     listv->l->push_back(*elem);            // copie de l'élément, comme l'interpréteur
     return listv;                          // le résultat EST la liste (aliasing d'origine)
 }
-Valeur* __attribute__((noinline)) jit_liste_get(Valeur* listv, Valeur* cle) {
+Valeur* __attribute__((noinline)) jit_liste_get(Valeur* listv, Valeur* cle) { JIT_LIT(listv); JIT_LIT(cle); 
     if (listv->ty != T_LISTE || !listv->l)
         jit_erreur("liste.get attend une liste");
     size_t taille = listv->l->size();
@@ -426,7 +459,7 @@ Valeur* __attribute__((noinline)) jit_liste_get(Valeur* listv, Valeur* cle) {
         jit_erreur("index hors des limites de la liste");
     return new Valeur((*listv->l)[(size_t)mpz_get_ui(cle->z.get_mpz_t())]);
 }
-Valeur* __attribute__((noinline)) jit_liste_len(Valeur* listv) {
+Valeur* __attribute__((noinline)) jit_liste_len(Valeur* listv) { JIT_LIT(listv); 
     if (listv->ty != T_LISTE || !listv->l)
         jit_erreur("liste.len attend une liste");
     return new Valeur(Valeur::de_z(mpz_class((unsigned long)listv->l->size())));
@@ -710,6 +743,7 @@ struct JitCallTarget {
     std::vector<int> param_slots;   // slot de chaque paramètre (-1 = non lié)
     std::vector<int> param_tys;     // RirType en int
     std::vector<int> const_slots;   // slots des constantes : durée de vie module
+    std::vector<std::pair<int,std::string>> vslots;     // v3.13.1 : variables non-param (slot, %nom)
 };
 static std::vector<JitCallTarget> g_call_targets;
 static std::map<std::string,int> g_call_names;
@@ -732,6 +766,15 @@ Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur**
     if (!bucket.empty()) { frame = bucket.back(); bucket.pop_back(); }
     else frame = new Valeur*[fsz];
     for (size_t i = 0; i < fsz; i++) frame[i] = nullptr;
+    // v3.13.1 : chaque variable non-param reçoit un objet « vide » nommé —
+    // une lecture non affectée lève l'erreur exacte de l'interprète au lieu
+    // de lire null (segfault) ou du déchet. Les paramètres sont écrits à
+    // l'entrée : pas d'init (elle fuirait sous le copy_into).
+    for (auto &vs : T.vslots) {
+        if (vs.first < 0 || vs.first >= T.nslots) continue;
+        frame[vs.first] = new Valeur();
+        g_jit_slot_noms[frame[vs.first]] = vs.second;
+    }
     for (size_t i = 0; i < T.param_slots.size() && i < (size_t)nargs; i++) {
         int s = T.param_slots[i];
         if (s < 0 || s >= T.nslots || !args[i]) continue;
@@ -1605,6 +1648,13 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
     }
     auto &cs = m_cslots[fn->nom]; cs.clear();
     for (auto &c : constantes) cs.push_back(slot_const[c.first]);
+    // v3.13.1 : slots des variables non-param, pour la pré-init « vide » des cadres.
+    auto &vx = m_vslots[fn->nom]; vx.clear();
+    for (auto &kv : slot_vars) {
+        bool est_param = false;
+        for (int s : m_pslots[fn->nom]) if (s == kv.second) { est_param = true; break; }
+        if (!est_param) vx.push_back({kv.second, kv.first});
+    }
 
     if (jit_verbose()) {   // dump du code machine pour objdump
         std::string safe;
@@ -1844,6 +1894,7 @@ void jit_build_call_table(JitCompiler& compiler, RirModule* mod) {
         if (compiler.m_pslots.count(fn.nom)) T.param_slots = compiler.m_pslots[fn.nom];
         if (compiler.m_ptys.count(fn.nom))   T.param_tys = compiler.m_ptys[fn.nom];
         if (compiler.m_cslots.count(fn.nom)) T.const_slots = compiler.m_cslots[fn.nom];
+        if (compiler.m_vslots.count(fn.nom)) T.vslots = compiler.m_vslots[fn.nom];
         g_call_targets.push_back(T);
     }
 }
@@ -1881,6 +1932,17 @@ void* rose_jit_compile(void* mod, void** helpers, int nhelpers) {
 // Retour : Valeur* résultat (propriété de l'appelant)
 Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame) {
     JitContext ctx;
+    // v3.13.1 : pré-init « vide » nommée des variables de $principal
+    // (les cadres d'appels la font dans jit_call). g_call_names n'est jamais
+    // rempli — retrouver la cible par le pointeur d'entrée.
+    {
+        for (auto &T : g_call_targets)
+            if (reinterpret_cast<void*>(T.fn) == entry)
+                for (auto &vs : T.vslots) {
+                    frame[vs.first] = new Valeur();
+                    g_jit_slot_noms[frame[vs.first]] = vs.second;
+                }
+    }
     for (int i = 0; i < nhelpers && i < JitContext::MAX_HELPERS; i++)
         ctx.helpers[i] = helpers[i];
     // Helpers internes au JIT (non exportés hors de jit.cpp)

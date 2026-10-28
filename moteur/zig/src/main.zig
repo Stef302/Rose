@@ -1281,18 +1281,7 @@ fn ecriStr(v: Value) []const u8 {
             return out.items;
         },
         .vide => return "",
-        .table => |t| {
-            var out = std.ArrayList(u8).init(arena());
-            out.append('[') catch @panic("mémoire");
-            for (t.items, 0..) |kv, k| {
-                if (k > 0) out.appendSlice(", ") catch @panic("mémoire");
-                out.appendSlice(ecriStr(kv.cle)) catch @panic("mémoire");
-                out.appendSlice(" => ") catch @panic("mémoire");
-                out.appendSlice(ecriStr(kv.val)) catch @panic("mémoire");
-            }
-            out.append(']') catch @panic("mémoire");
-            return out.items;
-        },
+        .table => return chaineDe(v),   // miroir : ecri(T_TABLE) passe par chaine_de
     }
 }
 
@@ -1317,6 +1306,31 @@ fn chaineDe(v: Value) []const u8 {
             if (std.mem.eql(u8, Z.texte(den), "1")) return Z.texte(num);
             return std.fmt.allocPrint(arena(), "{s}/{s}", .{ Z.texte(num), Z.texte(den) }) catch @panic("mémoire");
         },
+        .booleen => return if (v.booleen) "vrai" else "faux",
+        .chaine => return v.chaine,
+        .liste => |l| {
+            var out = std.ArrayList(u8).init(arena());
+            out.append('[') catch @panic("mémoire");
+            for (l.items, 0..) |el, k| {
+                if (k > 0) out.appendSlice(", ") catch @panic("mémoire");
+                out.appendSlice(chaineDe(el)) catch @panic("mémoire");
+            }
+            out.append(']') catch @panic("mémoire");
+            return out.items;
+        },
+        .table => |t| {
+            var out = std.ArrayList(u8).init(arena());
+            out.append('[') catch @panic("mémoire");
+            for (t.items, 0..) |kv, k| {
+                if (k > 0) out.appendSlice(", ") catch @panic("mémoire");
+                out.appendSlice(chaineDe(kv.cle)) catch @panic("mémoire");
+                out.appendSlice(" => ") catch @panic("mémoire");
+                out.appendSlice(chaineDe(kv.val)) catch @panic("mémoire");
+            }
+            out.append(']') catch @panic("mémoire");
+            return out.items;
+        },
+        .vide => return "",
         else => return ecriStr(v),
     }
 }
@@ -1410,6 +1424,52 @@ fn rngTirer() u64 {
 }
 const Timespec = extern struct { tv_sec: i64, tv_nsec: i64 };
 extern fn clock_gettime(clock_id: c_int, tp: *Timespec) c_int;
+
+// ── temps() / duree() — SPEC v3.13 : miroir exact de l'interprète C++ ──
+// duree(n) met en forme n nanosecondes (n >= 0) : unite = la plus grande de
+// ns, µs, ms, s, min, h dont l'echelle est <= n ; jusqu'a 3 decimales
+// TRONQUEES, sans zeros superflus. Division sur la chaine decimale.
+var rose_depart_ns: i128 = 0;
+
+fn divDecimaleU64(n_str: []const u8, div: u64) struct { q: []const u8, r: u64 } {
+    const buf = arena().alloc(u8, n_str.len) catch @panic("mémoire");
+    var i: usize = 0;
+    var r: u64 = 0;
+    for (n_str) |c| {
+        const cour = r * 10 + (c - '0');
+        buf[i] = '0' + @as(u8, @intCast(cour / div));
+        i += 1;
+        r = cour % div;
+    }
+    var t: usize = 0;
+    while (t + 1 < buf.len and buf[t] == '0') t += 1;
+    return .{ .q = buf[t..], .r = r };
+}
+
+fn auMoinsDecimal(ns: []const u8, scale: u64) bool {
+    const t = std.fmt.allocPrint(arena(), "{d}", .{scale}) catch @panic("mémoire");
+    if (ns.len != t.len) return ns.len > t.len;
+    return std.mem.order(u8, ns, t) != .lt;
+}
+
+fn formaterDuree(n_in: []const u8) []const u8 {
+    const UNITS = [_][]const u8{ " ns", " µs", " ms", " s", " min", " h" };
+    const SCALES = [_]u64{ 1, 1000, 1_000_000, 1_000_000_000, 60_000_000_000, 3_600_000_000_000 };
+    var s: []const u8 = n_in;
+    while (s.len > 1 and s[0] == '0') s = s[1..];
+    var u: usize = 0;
+    {
+        var i: usize = 1;
+        while (i < 6) : (i += 1) { if (auMoinsDecimal(s, SCALES[i])) u = i; }
+    }
+    const d = divDecimaleU64(s, SCALES[u]);
+    if (u == 0 or d.r == 0)
+        return std.fmt.allocPrint(arena(), "{s}{s}", .{ d.q, UNITS[u] }) catch @panic("mémoire");
+    const frac3 = d.r * 1000 / SCALES[u];
+    var fs = std.fmt.allocPrint(arena(), "{d:0>3}", .{frac3}) catch @panic("mémoire");
+    while (fs.len > 0 and fs[fs.len - 1] == '0') fs = fs[0 .. fs.len - 1];
+    return std.fmt.allocPrint(arena(), "{s}.{s}{s}", .{ d.q, fs, UNITS[u] }) catch @panic("mémoire");
+}
 fn factArbreRun(bas: u64, haut: u64) Z {
     if (bas > haut) return Z.i(1);
     if (haut - bas < 16) {
@@ -1865,6 +1925,19 @@ const Interp = struct {
             _ = clock_gettime(CLOCK_MONOTONIC, &ts);
             return Value.deI(ts.tv_sec * 1000 + @divTrunc(ts.tv_nsec, 1_000_000));
         }
+        if (std.mem.eql(u8, nom, "temps")) {
+            var ts2 = Timespec{ .tv_sec = 0, .tv_nsec = 0 };
+            const CLOCK_MONOTONIC2: c_int = 1;
+            _ = clock_gettime(CLOCK_MONOTONIC2, &ts2);
+            const ns = @as(i128, ts2.tv_sec) * 1_000_000_000 + @as(i128, ts2.tv_nsec);
+            if (rose_depart_ns == 0) rose_depart_ns = ns;
+            return Value.deI(@intCast(ns - rose_depart_ns));
+        }
+        if (std.mem.eql(u8, nom, "duree")) {
+            const zz = versZ(a[0]);
+            if (zz.sgn() < 0) erreurRuntime("duree : la durée doit être positive ou nulle");
+            return Value.deS(formaterDuree(zz.texte()));
+        }
         if (std.mem.eql(u8, nom, "graine")) {
             const s = versZ(a[0]);
             var base: u64 = undefined;
@@ -2248,12 +2321,12 @@ pub fn main() !void {
     }
     const action = args[1];
     if (std.mem.eql(u8, action, "version")) {
-        std.io.getStdOut().writeAll("Rose 2.0.0 — moteur natif Zig/GMP\n") catch {};
+        std.io.getStdOut().writeAll("Rose 3.14.0 — moteur natif Zig/GMP\n") catch {};
         return;
     }
     if (std.mem.eql(u8, action, "info")) {
         std.io.getStdOut().writeAll(
-            \\rose 2.0.0
+            \\rose 3.13.0
             \\  moteur            : natif 64 bits Zig — binaire autonome, GMP liée statiquement
             \\  maths exactes     : GMP (entiers et rationnels sans limite)
             \\  interpréteur      : intégré (mode par défaut)

@@ -1,0 +1,15 @@
+# Benchmark : somme des carrés — sum_i a[i]^2 (map+reduce fusionné)
+# Mesure : fusion map+reduce, vectorisation, une seule passe mémoire
+# Syntaxe Rose valide
+
+$N = 10000000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+
+$m0 = millisecondes()
+$s = 0
+pour $i de 0 vers $N {
+    $v = $i * 3 + 1
+    $s = $s + $v * $v
+}
+$m1 = millisecondes()
+>> $m1 - $m0

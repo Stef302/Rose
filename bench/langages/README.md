@@ -53,3 +53,29 @@ Ce que la table montre vraiment : **la brique de Rose est du niveau du natif
 de boucle dans les trois langages), et que les formulations « spontanées »
 (mt19937 `%`, `rand()`, `np.random.choice`) coûtent de 2,6× à 130× plus cher
 que la formulation vectorisée par lot — en Rose comme ailleurs.
+
+## Dernière mesure — après M3.3 (SSA-friendly `rose_remplir_hasard`)
+
+Banc relancé sur cette machine après la passe SSA (état RNG local dans
+`rose_remplir_hasard`, cf. `moteur/cpp/src/rose_runtime.h`). N = 1 000 000 000,
+trois passes, minimum retenu :
+
+| | temps |
+|---|---:|
+| C++ (splitmix64) | 385–505 ms |
+| Rust (splitmix64) | 458–576 ms |
+| **Rose** (`mot_de_passe.rose`) | 520–560 ms |
+| C++ (mt19937 naïf) | 1 295–1 504 ms |
+| C (`rand()` glibc) | 12 338–12 629 ms |
+| numpy (`choice`, ×10) | 8 490–14 430 ms |
+
+**Conclusion langage entier** : Rose reste dans la même classe que Rust/C++
+(écart < 30 %), et bat Rust sur certaines sessions thermiques. Le coût fixe
+d'interprétation est absorbé à 1 Md ; le goulot est la boucle splitmix64,
+identique dans les trois langages. Pour battre C++ il faut l'entrelacement
+SSA (déjà fait) ou un passage MLIR/AOT avec passes de haut niveau — voir
+`rose_labs/`.
+
+Note thermique : les temps varient de ~25 % selon l'état de la machine
+(sessions chaudes/froides), d'où les fourchettes. Comparer toujours sur la
+même session.

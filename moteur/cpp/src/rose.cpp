@@ -10,9 +10,14 @@
 #include <cmath>
 #include <cstdint>
 #include <ctime>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include "transpiler.h"
+// FFI interne vers le runtime (compilé dans le même binaire) : Philox parallèle.
+void rose_remplir_hasard_philox(std::shared_ptr<std::string> buf,
+                                std::shared_ptr<std::string> alpha,
+                                int64_t graine);
 #include <cstring>
 #include <climits>
 #ifdef _WIN32
@@ -32,6 +37,8 @@
 #include <unordered_map>
 #ifndef _WIN32
 #include <unistd.h>
+#include <sys/random.h>
+
 #endif
 #include <utility>
 #include <vector>
@@ -369,6 +376,48 @@ static std::vector<Token> tokeniser(const std::string &source) {
     }
     tokens.push_back({Tk::Eof, "", ligne, col});
     return tokens;
+}
+
+/* ══════════ M4.0 — oracle de lexage : « rose tokens » ══════════
+   Le lexeur auto-hébergé (rose/lexeur.rose) doit reproduire CETTE
+   sortie à l'octet près : c'est le point d'appui du bootstrap M4.
+   Format : « ligne:colonne type texte_échappé », un token par ligne. */
+static const char *tk_nom(Tk t) {
+    switch (t) {
+        case Tk::Eof: return "eof"; case Tk::Ident: return "ident";
+        case Tk::Nombre: return "nombre"; case Tk::Flottant: return "flottant";
+        case Tk::Chaine: return "chaine"; case Tk::Plus: return "+";
+        case Tk::Moins: return "-"; case Tk::Etoile: return "*";
+        case Tk::Slash: return "/"; case Tk::DeuxPts: return ":";
+        case Tk::Percent: return "%"; case Tk::Chapeau: return "^";
+        case Tk::Bang: return "!"; case Tk::Point: return ".";
+        case Tk::Virgule: return ","; case Tk::DivEntier: return "div";
+        case Tk::Affect: return "="; case Tk::LParen: return "(";
+        case Tk::RParen: return ")"; case Tk::LBrace: return "{";
+        case Tk::RBrace: return "}"; case Tk::LBracket: return "[";
+        case Tk::RBracket: return "]"; case Tk::Semi: return ";";
+        case Tk::DeuxPoints: return "::"; case Tk::FlecheD: return ">>";
+        case Tk::FlecheG: return "<<"; case Tk::Tilde: return "~";
+        case Tk::Arobase: return "@"; case Tk::PointDInterro: return "->";
+        case Tk::Question: return "?"; case Tk::Racine: return "racine";
+        case Tk::Inf: return "<"; case Tk::Sup: return ">";
+        case Tk::InfEg: return "<="; case Tk::SupEg: return ">=";
+        case Tk::DoubleEg: return "=="; case Tk::Diff: return "!=";
+        case Tk::Environ: return "≈"; case Tk::QMarkEg: return "?=";
+        case Tk::TildeEg: return "=~"; case Tk::Mot: return "mot";
+    }
+    return "?";
+}
+static std::string texte_echappe(const std::string &s) {
+    std::string o;
+    for (char c : s) {
+        if (c == '\\') o += "\\\\";
+        else if (c == '\n') o += "\\n";
+        else if ( c == '\t') o += "\\t";
+        else if (c == '\x1f') o += "\\u241f";  // séparateur interne du jalon M4.1
+        else o += c;
+    }
+    return o;
 }
 
 /* ── types Rose ───────────────────────────────────────────────────── */
@@ -959,6 +1008,108 @@ static Programme analyser(const std::string &source) {
     return Parser(source).programmer();
 }
 
+/* ══════════ M4.1 — oracle d'arbre syntaxique : « rose ast » ══════════
+   Le premier jet du compilateur auto-hébergé (rose/analyseur.rose) doit
+   reproduire CETTE sortie à l'octet près — avant vérification, avant
+   émission : uniquement l'osserature du parseur.
+   Format (déterministe, sans lignes ni colonnes) :
+     programme
+     fonction <nom>                     ← signatures triées (ordre std::map)
+     externe "<dll>" "<son>" "<sym>"    ← fonctions étrangères seulement
+     param <nom> <type> ...
+     retour <type>                      ← « vide » si aucune flèche
+     <instructions du corps, indentées de 2>
+     ... puis les instructions de premier niveau, indentées de 0
+   Instructions :
+     afficher <e> | lire <nom> | affect <nom> <e> | expr <e>
+     si <e> / alors / corps / sinon / corps
+     tant_que <e> / corps
+     pour <nom> <e> <e> / corps
+     retour <e> | retour
+     bloc / corps
+   Expressions en S-expressions :
+     (n 2) (f 2.5) (s "t") (b vraie|faux) (v nom) (app [mod::]nom e…)
+     (idx a b) (bin <op> a b) (uni <-|non> a) (fact a) (lst e…)
+   Sucre MIRROIR (comme le parseur C++) : √x → (bin ^ x (f 0.5)) ;
+   s[a:b] → (app sous_chaine s a b) ; s[:b] → (app sous_chaine s (n 0) b) ;
+   s[a:] → (app sous_chaine s a (app longueur s)). */
+static void ast_expr(const PE &e, std::string &out) {
+    if (!e) { out += "(vide)"; return; }
+    switch (e->k) {
+        case NK::Litteral: out += e->flag ? "(f " + e->texte + ")" : "(n " + e->texte + ")"; break;
+        case NK::ChaineLit: out += "(s " + texte_echappe(e->texte) + ")"; break;
+        case NK::BooleenLit: out += e->flag ? "(b vraie)" : "(b faux)"; break;
+        case NK::ListeLit: {
+            out += "(lst";
+            for (auto &a : e->args) { out += " "; ast_expr(a, out); }
+            out += ")"; break;
+        }
+        case NK::Var: out += "(v " + e->texte + ")"; break;
+        case NK::Appel: {
+            out += "(app ";
+            if (!e->module.empty()) out += e->module + "::";
+            out += e->texte;
+            for (auto &a : e->args) { out += " "; ast_expr(a, out); }
+            out += ")"; break;
+        }
+        case NK::Index: out += "(idx "; ast_expr(e->a, out); out += " "; ast_expr(e->b, out); out += ")"; break;
+        case NK::Binaire: out += "(bin " + e->texte + " "; ast_expr(e->a, out); out += " "; ast_expr(e->b, out); out += ")"; break;
+        case NK::Unaire: out += "(uni " + e->texte + " "; ast_expr(e->a, out); out += ")"; break;
+        case NK::Factorielle: out += "(fact "; ast_expr(e->a, out); out += ")"; break;
+    }
+}
+static std::string ast_ind(int n) { return std::string(2 * n, ' '); }
+static void ast_instrs(const std::vector<PI> &v, int ind, std::string &out);
+static void ast_instr(const PI &i, int ind, std::string &out) {
+    std::string p = ast_ind(ind);
+    switch (i->k) {
+        case IK::Afficher: out += p + "afficher "; ast_expr(i->expr, out); out += "\n"; break;
+        case IK::Lire: out += p + "lire " + i->nom + "\n"; break;
+        case IK::Affectation: out += p + "affect " + i->nom + " "; ast_expr(i->expr, out); out += "\n"; break;
+        case IK::Si:
+            out += p + "si "; ast_expr(i->test, out); out += "\n";
+            out += p + "alors\n";
+            if (i->alors) ast_instrs(i->alors->instrs, ind + 1, out);
+            if (i->sinon) { out += p + "sinon\n"; ast_instrs(i->sinon->instrs, ind + 1, out); }
+            break;
+        case IK::TantQue:
+            out += p + "tant_que "; ast_expr(i->test, out); out += "\n";
+            if (i->corps) ast_instrs(i->corps->instrs, ind + 1, out);
+            break;
+        case IK::Pour:
+            out += p + "pour " + i->nom + " "; ast_expr(i->debut, out); out += " "; ast_expr(i->fin, out); out += "\n";
+            if (i->corps) ast_instrs(i->corps->instrs, ind + 1, out);
+            break;
+        case IK::Retour:
+            out += p + "retour";
+            if (i->expr) { out += " "; ast_expr(i->expr, out); }
+            out += "\n"; break;
+        case IK::Expr: out += p + "expr "; ast_expr(i->expr, out); out += "\n"; break;
+        case IK::Bloc:
+            out += p + "bloc\n";
+            ast_instrs(i->instrs, ind + 1, out);
+            break;
+    }
+}
+static void ast_instrs(const std::vector<PI> &v, int ind, std::string &out) {
+    for (auto &i : v) ast_instr(i, ind, out);
+}
+static std::string ast_programme(const Programme &prog) {
+    std::string out = "programme\n";
+    for (auto &kv : prog.signatures) {
+        const Signature &s = *kv.second;
+        out += "fonction " + s.nom + "\n";
+        if (!s.corps)
+            out += "externe \"" + texte_echappe(s.dll) + "\" \"" + texte_echappe(s.dll_son) +
+                   "\" \"" + texte_echappe(s.symbole) + "\"\n";
+        for (auto &pr : s.params) out += "param " + pr.first + " " + pr.second.nom() + "\n";
+        out += "retour " + s.retour.nom() + "\n";
+        if (s.corps) ast_instrs(s.corps->instrs, 1, out);
+    }
+    ast_instrs(prog.instructions, 0, out);
+    return out;
+}
+
 /* ── vérificateur de types (port fidèle du vérificateur v2) ───────── */
 static const int RANG_VIDE = -1;
 static int rang(Ty t) {
@@ -1010,6 +1161,8 @@ static const EntreeStd STDLIB[] = {
     {"ecrire_texte", {"chaine", "chaine"}, "vide"},
     {"nb_arguments", {}, "entier"},
     {"argument", {"entier"}, "chaine"},
+    {"temps", {}, "entier"},
+    {"duree", {"entier"}, "chaine"},
     {"afficher_erreur", {"tout"}, "vide"},
     {"quitter", {"entier"}, "vide"},
     {"abs", {"num"}, "MIXTE"},
@@ -1019,12 +1172,19 @@ static const EntreeStd STDLIB[] = {
     {"fraction", {"entier", "entier"}, "rationnel"},
     /* aléatoire reproductible et tampons d'octets */
     {"graine", {"entier"}, "vide"},
+    {"graine_systeme", {}, "vide"},
+    {"graine_vrai", {}, "vide"},
     {"hasard", {"entier"}, "entier"},
+    {"hasard_systeme", {"entier"}, "entier"},
+    {"hasard_vrai", {"entier"}, "entier"},
+    {"rng_materiel", {}, "entier"},
+    {"rng_mat", {}, "entier"},
     {"tampon", {"entier"}, "tampon"},
     {"octets", {"chaine"}, "tampon"},
     {"tampon_case", {"tampon", "entier"}, "entier"},
     {"tampon_pose", {"tampon", "entier", "entier"}, "vide"},
     {"remplir_hasard", {"tampon", "tampon"}, "vide"},
+    {"remplir_hasard_philox", {"tampon", "tampon", "entier"}, "vide"},
     {"millisecondes", {}, "entier"},
 };
 static const EntreeStd DYNAMIQUE[] = {
@@ -1658,8 +1818,16 @@ struct Valeur {
     }
     static Valeur vide() { return Valeur(); }
 };
+/* Contrat de layout : ty@0 et z@+8 (arithmétique inline M2.15, hypothèses du
+   JIT). La taille TOTALE dépend de la stdlib C++ (libstdc++ std::string=32 sous
+   Linux ; libc++=24 sous windows-gnu via zig) : on ne l'épinglette que sur le
+   terrain natif, là où rir.h est réellement consommé. */
+static_assert(offsetof(Valeur, ty) == 0 && offsetof(Valeur, z) == 8,
+              "offsets Valeur modifiés : synchroniser arithmétique inline/JIT");
+#if defined(__LP64__) && !defined(_WIN32)
 static_assert(sizeof(Valeur) == 152,
               "layout Valeur modifié : synchroniser les DEUX définitions (rose.cpp et rir.h)");
+#endif
 
 static void erreur_runtime(const std::string &msg) {
     std::fflush(stdout);
@@ -2088,7 +2256,96 @@ static uint64_t rng_tirer() {
     return z ^ (z >> 31);
 }
 
+static int rose_rng_materiel_interne(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    cached = 0;
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.rfind("Features", 0) == 0 || line.rfind("flags", 0) == 0) {
+            std::istringstream ss(line);
+            std::string tok; ss >> tok;
+            while (ss >> tok) {
+                if (tok == "rng" || tok == "rdrand" || tok == "rdseed") { cached = 1; break; }
+            }
+        }
+        if (cached) break;
+    }
+    return cached;
+}
+
+static uint64_t rose_lire_octets_systeme_interne(void) {
+    uint64_t v = 0;
+    ssize_t got = getrandom(&v, sizeof v, 0);
+    if (got != (ssize_t)sizeof v) {
+        v = (uint64_t)getpid() * 0x9E3779B97F4A7C15ULL
+          ^ (uint64_t)(uintptr_t)&v
+          ^ (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
+    }
+    return v;
+}
+
+
+/* ══════════ temps() / duree() — chronomètre monotone et format adaptatif ══════════
+   SPEC (identique dans les cinq moteurs, v3.13) : temps() renvoie les
+   nanosecondes monotones écoulées depuis le démarrage du moteur. duree(n)
+   met en forme n nanosecondes (n >= 0) : l'unité retenue est la plus grande
+   de ns, µs, ms, s, min, h dont l'échelle (1, 10^3, 10^6, 10^9, 60.10^9,
+   3600.10^9 ns) est <= n ; la fraction est écrite en jusqu'à 3 décimales
+   TRONQUÉES (jamais arrondies), sans zéros superflus, séparateur « . ».
+   La division se fait sur la chaîne décimale de n : un seul algorithme pour
+   tous les moteurs, y compris sur les grands entiers GMP.
+   ─────────────────────────────────────────────────────────────────────── */
+static const std::chrono::steady_clock::time_point ROSE_DEPART =
+        std::chrono::steady_clock::now();
+
+// (chaîne décimale sans zéros de tête, reste) de n_str / div.
+static std::pair<std::string, uint64_t> div_decimale_u64(const std::string &n_str, uint64_t div) {
+    std::string q;
+    uint64_t r = 0;
+    for (char c : n_str) {
+        uint64_t cour = r * 10 + (uint64_t)(c - '0');   // reste < div <= 3,6e12 → x10 sans dépassement
+        q.push_back((char)('0' + cour / div));
+        r = cour % div;
+    }
+    size_t z = q.find_first_not_of('0');
+    return {z == std::string::npos ? std::string("0") : q.substr(z), r};
+}
+
+static std::string formater_duree(const std::string &n_str_in) {
+    static const char *unit[] = {" ns", " µs", " ms", " s", " min", " h"};
+    static const uint64_t scale[] = {1ULL, 1000ULL, 1000000ULL, 1000000000ULL,
+                                     60000000000ULL, 3600000000000ULL};
+    std::string n_str = n_str_in;
+    size_t z = n_str.find_first_not_of('0');
+    n_str = z == std::string::npos ? "0" : n_str.substr(z);
+    auto au_moins = [&](uint64_t s) {                   // n >= s par ampleur décimale
+        std::string t = std::to_string(s);
+        return n_str.size() != t.size() ? n_str.size() > t.size() : n_str >= t;
+    };
+    int u = 0;
+    for (int i = 1; i <= 5; i++) if (au_moins(scale[i])) u = i;
+    auto [part, reste] = div_decimale_u64(n_str, scale[u]);
+    if (u == 0 || reste == 0) return part + unit[u];
+    uint64_t frac3 = (uint64_t)((reste * 1000ULL) / scale[u]);   // troncature, reste*1000 < 3,6e15
+    std::string fs = std::to_string(frac3);
+    while (fs.size() < 3) fs = "0" + fs;
+    while (!fs.empty() && fs.back() == '0') fs.pop_back();
+    return part + "." + fs + unit[u];
+}
+
 static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) {
+        if (nom == "temps") {
+            long long ns = (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - ROSE_DEPART).count();
+            return Valeur::de_z(mpz_class(std::to_string(ns)));
+        }
+        if (nom == "duree") {
+            if (mpz_sgn(a[0].z.get_mpz_t()) < 0)
+                erreur_runtime("duree : la durée doit être positive ou nulle");
+            return Valeur::de_s(formater_duree(a[0].z.get_str()));
+        }
         if (nom == "ordre") {
             if (utf8_len(a[0].s) != 1)
                 erreur_runtime("ordre attend une chaîne d'un seul caractère");
@@ -2172,6 +2429,15 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
             rng_tirer();   // casse la corrélation directe avec la graine
             return Valeur::vide();
         }
+        if (nom == "graine_systeme" || nom == "graine_vrai") {
+            g_rng_etat = rose_lire_octets_systeme_interne();
+            rng_tirer();
+            return Valeur::vide();
+        }
+        if (nom == "rng_materiel" || nom == "rng_mat") {
+            return Valeur::de_z(mpz_class(rose_rng_materiel_interne()));
+        }
+
         if (nom == "hasard") {
             mpz_class n = vers_z(a[0]);
             if (mpz_sgn(n.get_mpz_t()) <= 0) erreur_runtime("hasard : bornage positif attendu");
@@ -2190,6 +2456,25 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
             mpz_mod(rr.get_mpz_t(), rr.get_mpz_t(), n.get_mpz_t());
             return Valeur::de_z(rr);
         }
+        if (nom == "hasard_systeme" || nom == "hasard_vrai") {
+            mpz_class n = vers_z(a[0]);
+            if (mpz_sgn(n.get_mpz_t()) <= 0) erreur_runtime("hasard : bornage positif attendu");
+            // tirage vrai via getrandom
+            uint64_t x = rose_lire_octets_systeme_interne();
+            if (mpz_fits_ulong_p(n.get_mpz_t())) {
+                unsigned long nn = mpz_get_ui(n.get_mpz_t());
+                // réduction de Lemire
+                unsigned long r = (unsigned long)((__uint128_t)x * nn >> 64);
+                return Valeur::de_z(mpz_class(r));
+            }
+            mpz_class rr;
+            mpz_set_ui(rr.get_mpz_t(), (unsigned long)(x >> 32));
+            mpz_mul_2exp(rr.get_mpz_t(), rr.get_mpz_t(), 32);
+            mpz_add_ui(rr.get_mpz_t(), rr.get_mpz_t(), (unsigned long)(x & 0xFFFFFFFFu));
+            mpz_mod(rr.get_mpz_t(), rr.get_mpz_t(), n.get_mpz_t());
+            return Valeur::de_z(rr);
+        }
+
         if (nom == "tampon") {
             mpz_class n = vers_z(a[0]);
             if (mpz_sgn(n.get_mpz_t()) < 0 || !mpz_fits_ulong_p(n.get_mpz_t()))
@@ -2259,6 +2544,15 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
                 for (size_t i = 0; i < buf.size(); i++)
                     buf[i] = ab[(size_t)((__uint128_t)rng_tirer() * s >> 64)];
             }
+            return Valeur::vide();
+        }
+        if (nom == "remplir_hasard_philox") {
+            if (a[0].ty != T_TAMPON || !a[0].o) erreur_runtime("remplir_hasard_philox : tampon attendu");
+            if (a[1].ty != T_TAMPON || !a[1].o || a[1].o->empty())
+                erreur_runtime("remplir_hasard_philox : alphabet non vide attendu");
+            mpz_class g = vers_z(a[2]);
+            int64_t gr = mpz_fits_slong_p(g.get_mpz_t()) ? (int64_t)mpz_get_si(g.get_mpz_t()) : 0;
+            rose_remplir_hasard_philox(a[0].o, a[1].o, gr);
             return Valeur::vide();
         }
         if (nom == "factorielle") return Valeur::de_z(rose_factorielle(vers_z(a[0])));
@@ -2378,7 +2672,12 @@ static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) 
    ═══════════════════════════════════════════════════════════════════ */
 
 /* ── types RIR ─────────────────────────────────────────────────────── */
-enum class RirType { Z, Q, F, B, S, U, Tab, /* liste<T> encodé comme L */ };
+enum class RirType { Z, Q, F, B, S, U, Tab, L = 7, TBL = 9 };
+/* v3.14.1 — L et TBL s'alignent sur les valeurs 7/9 du RirListe/RirTbl du
+   transpileur (continuité numérique des deux enums) : les paramètres de
+   fonction portent désormais leur type agrégé, là où ty_vers_rir aplatis-
+   sait tout en U — ce qui faisait émettre au AOT un « rose_val » inexistant
+   en signature. Le transpileur garde Gd(8)/Dyn(10) internes. */
 
 /* ── opérande RIR ─────────────────────────────────────────────────── */
 struct RirOp {
@@ -2430,8 +2729,8 @@ static RirType ty_vers_rir(Ty t) {
         case T_FLOTTANT: return RirType::F;
         case T_BOOLEEN: return RirType::B;
         case T_CHAINE: return RirType::S;
-        case T_LISTE: return RirType::U;  /* liste<T> → encodé plus tard */
-        case T_TABLE: return RirType::U;
+        case T_LISTE: return RirType::L;   /* v3.14.1 : le paramètre porte son type (avant : U → rose_val AOT) */
+        case T_TABLE: return RirType::TBL; /* idem ; l'appel passe-table reste un rejet AOT poli (M4.2) */
         case T_VALEUR: return RirType::U;
         default: return RirType::U;
     }
@@ -2446,6 +2745,8 @@ static std::string nom_rir_type(RirType t) {
         case RirType::S: return "s";
         case RirType::U: return "u";
         case RirType::Tab: return "tab";
+        case RirType::L: return "l";        /* v3.14.1 */
+        case RirType::TBL: return "tbl";    /* v3.14.1 */
     }
     return "?";
 }
@@ -2518,7 +2819,15 @@ struct EmetteurRir {
                 std::string base = emettre_expr(e->a, bloc, RirType::U);
                 std::string idx = emettre_expr(e->b, bloc, RirType::Z);
                 std::string t = nouveau_temp();
-                RirInstr i; i.dest = t; i.dest_ty = RirType::U; i.op = "index";
+                RirInstr i; i.dest = t;
+                /* v3.14.1 — le type du résultat d'index est celui que le
+                   checker a calculé (élément de liste<chaine> → S, de
+                   liste<entier> → Z, cellule de table → table, caractère de
+                   chaîne → S). L'écraser à U faisait dériver le AOT vers des
+                   declarations fausses (rose_val fantôme ou rose_ent pour une
+                   chaine). */
+                i.dest_ty = e->type != T_VIDE ? ty_vers_rir(Ty(e->type)) : RirType::U;
+                i.op = "index";
                 RirOp o1; o1.kind = RirOp::Temp; o1.name = base; i.args.push_back(o1);
                 RirOp o2; o2.kind = RirOp::Temp; o2.name = idx; i.args.push_back(o2);
                 bloc.instrs.push_back(i);
@@ -3098,12 +3407,20 @@ struct InterpRir {
                 /* chercher dans les globaux */
                 auto g = globaux.find(op.name);
                 if (g != globaux.end()) return g->second;
-                return Valeur::vide();
+                // v3.13.1 : lecture d'une variable jamais affectée (assignation
+                // uniquement atteinte sur un chemin non suivi) — l'ancienne
+                // réponse « vide » affichait du silence à la place de l'erreur
+                // que Rust et Zig produisent. Trouvé par le testeur génératif.
+                std::string nu = op.name;
+                if (!nu.empty() && nu[0] == '%') nu = nu.substr(1);
+                erreur_runtime("variable '" + nu + "' utilisée sans valeur");
             }
             if (op.kind == RirOp::Global) {
                 auto g = globaux.find(op.name);
                 if (g != globaux.end()) return g->second;
-                return Valeur::vide();
+                std::string nu = op.name;
+                if (!nu.empty() && nu[0] == '%') nu = nu.substr(1);
+                erreur_runtime("variable '" + nu + "' utilisée sans valeur");
             }
             return Valeur::vide();
         };
@@ -3420,7 +3737,7 @@ struct InterpRir {
         if (i.op == "liste.len") {
             Valeur listv = get_val(i.args[0]);
             if (listv.ty != T_LISTE || !listv.l) erreur_runtime("liste.len attend une liste");
-            frame.vals[i.dest] = Valeur::de_z(mpz_class(listv.l->size()));
+            frame.vals[i.dest] = Valeur::de_z(mpz_class((unsigned long)listv.l->size()));
             return 0;
         }
         if (i.op == "lire") {
@@ -4084,10 +4401,28 @@ extern Valeur* jit_bool_into(Valeur* dst, int cond);             /* 30 */
 /* Nombre de helpers enregistrés pour le JIT */
 static const int NJIT_HELPERS = 58;
 
+/* v3.13.1 : les ponts JIT (builtins, index, afficher) lisent des Valeur*
+   venues de slots JIT. Un slot de variable jamais affectée pré-porte un
+   objet « vide » nommé (jit.cpp) — la lecture lève exactement l'erreur du
+   cœur RIR, en direct : aucune trame asm à désenfiler. */
+extern "C" const char* rose_jit_slot_name(const Valeur*);
+static void verifier_lecture_jit(const Valeur* v) {
+    if (!v || v->ty == T_VIDE) {
+        fprintf(stderr, "Rose : erreur — variable '%s' utilisée sans valeur\n",
+                rose_jit_slot_name(v));
+        std::fflush(stdout);
+        std::exit(1);
+    }
+}
+
 /* Pont JIT → stdlib (M2.13) : les builtins numériques sont appelés depuis le
    code JIT natif par CE exact enregistrement — mêmes fonctions, mêmes
    sémantiques, mêmes erreurs que l'interpréteur. Enregistré en helper 50. */
 static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
+    /* v3.13.1 : lecture d'une variable sans valeur depuis du code JIT — la
+       même erreur que le cœur RIR, en direct (pas de désenfilage possible à
+       travers les trames asm). */
+    for (int j = 0; j < nargs; j++) verifier_lecture_jit(args[j]);
     // ── Chemin rapide machine (M2.16) : les fonctions dont le résultat exact
     // se calcule en int64 sont évaluées en natif, sans recopie profonde des
     // arguments ni distribution stdlib. Tout le reste — grands entiers, autres
@@ -4153,9 +4488,11 @@ static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
    l'interpréteur RIR (table, liste, chaîne). Helper 56. */
 /* Pont JIT → afficher générique (M2.14) : types non suivus statiquement
    (liste, table, vide, range…). Miroir exact de l'op afficher RIR. */
-static void rose_afficher_jit(Valeur* v) { afficher(*v); }
+static void rose_afficher_jit(Valeur* v) { verifier_lecture_jit(v); afficher(*v); }
 
 static Valeur* rose_index(Valeur* base, Valeur* cle) {
+    verifier_lecture_jit(base);
+    verifier_lecture_jit(cle);
     if (base->ty == T_TABLE) {
         for (const auto &kv : *base->t)
             if (rose_valeur_egale(kv.first, *cle)) return new Valeur(kv.second);
@@ -4331,10 +4668,11 @@ static int executer_source(const std::string &source) {
 }
 
 static const char *USAGE =
-    "Rose 2.0 — moteur natif (binaire autonome, maths exactes embarquées)\n"
+    "Rose 3.14.0 — moteur natif (binaire autonome, maths exactes embarquées)\n"
     "Usage :\n"
     "  rose prog.rose            interpréter un programme Rose\n"
     "  rose run prog.rose        interpréter (identique)\n"
+    "  rose build prog.rose [-o sortie] [--llvm]  compiler natif (C++ ou LLVM IR)\n"
     "  rose comp prog.rose [-o sortie]   produire un exécutable autonome\n"
     "  rose rir prog.rose             dumper la représentation intermédiaire (RIR)\n"
     "  rose info                 état du moteur et des dépendances\n"
@@ -4354,9 +4692,9 @@ int main(int argc, char **argv) {
 
     std::string action;
     if (argc >= 2) action = argv[1];
-    if (action == "version") { printf("Rose 2.0.0 — moteur natif C++/GMP\n"); return 0; }
+    if (action == "version") { printf("Rose 3.14.0 — moteur natif C++/GMP\n"); return 0; }
     if (action == "info") {
-        printf("rose 2.0.0\n");
+        printf("rose 3.14.0\n");
 #ifdef _WIN32
         printf("  moteur            : %s — binaire autonome, seule dépendance : UCRT (Windows)\n",
                sizeof(void*) == 8 ? "natif 64 bits" : "natif");
@@ -4414,16 +4752,62 @@ int main(int argc, char **argv) {
         interp.executer();
         return 0;
     }
+    if (action == "verif") {
+        if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
+        std::string source;
+        if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
+        try {
+            Programme prog = analyser(source);
+            replier_constants(prog);
+            Verificateur verif(prog);
+            verif.verifier();
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
+        fputs("vérifié\n", stdout);
+        return 0;
+    }
+    if (action == "ast") {
+        if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
+        std::string source;
+        if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
+        try {
+            fputs(ast_programme(analyser(source)).c_str(), stdout);
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
+        return 0;
+    }
+    if (action == "tokens") {
+        if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
+        std::string source;
+        if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
+        try {
+            for (const Token &t : tokeniser(source))
+                printf("%d:%d %s %s\n", t.ligne, t.colonne, tk_nom(t.type), texte_echappe(t.texte).c_str());
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
+        return 0;
+    }
     if (action == "rir") {
         if (argc < 3) { fprintf(stderr, "rose: quel programme ?\n"); return 1; }
         std::string source;
         if (lire_fichier(argv[2], source)) { fprintf(stderr, "rose: fichier introuvable : %s\n", argv[2]); return 1; }
-        Programme prog = analyser(source);
-        replier_constants(prog);
-        Verificateur verif(prog);
-        verif.verifier();
-        std::string rir = emettre_rir(prog);
-        fputs(rir.c_str(), stdout);
+        try {
+            Programme prog = analyser(source);
+            replier_constants(prog);
+            Verificateur verif(prog);
+            verif.verifier();
+            std::string rir = emettre_rir(prog);
+            fputs(rir.c_str(), stdout);
+        } catch (const ErreurRose &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.texte().c_str());
+            return 1;
+        }
         return 0;
     }
     if (action == "comp") {
@@ -4468,9 +4852,12 @@ int main(int argc, char **argv) {
     }
     if (action == "build") {
         std::string sortie;
+        bool use_llvm = false;
         for (int i = 2; i < argc; i++) {
             if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "--sortie")) {
                 if (i + 1 < argc) sortie = argv[++i];
+            } else if (!strcmp(argv[i], "--llvm") || !strcmp(argv[i], "-llvm")) {
+                use_llvm = true;
             } else if (argv[i][0] != '-') fichier = argv[i];
         }
         if (fichier.empty()) { fprintf(stderr, "rose: quel programme compiler ?\n"); return 1; }
@@ -4502,8 +4889,15 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Rose : erreur — %s\n", e.what());
             return 1;
         }
-        // Transpiler
-        std::string cpp_code = transpiler_rir(mod);
+        // Transpiler — le rejet explicite du transpileur (M4.2 : jamais de
+        // trou silencieux) est attrapé ici au même format que le checker.
+        std::string cpp_code;
+        try {
+            cpp_code = transpiler_rir(mod);
+        } catch (const std::exception &e) {
+            fprintf(stderr, "Rose : erreur — %s\n", e.what());
+            return 1;
+        }
         // Écrire le .cpp
         std::string cpp_file = sortie + ".cpp";
         std::ofstream out(cpp_file, std::ios::binary | std::ios::trunc);
@@ -4513,13 +4907,9 @@ int main(int argc, char **argv) {
         // Compiler avec g++ — chemins portables : le runtime est cherché à côté
         // de l'exécutable (ROSE_HOME pour override) ; compilateur, drapeaux et
         // chemin GMP surchargables par ROSE_CXX / ROSE_CXXFLAGS / ROSE_GMP.
-        std::string exe_rep;
-        {
-            char buf[4096];
-            ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-            if (n > 0) { buf[n] = '\0'; exe_rep = buf; size_t s = exe_rep.find_last_of('/');
-                         if (s != std::string::npos) exe_rep.resize(s); }
-        }
+        std::string exe_rep = chemin_moteur();
+        { size_t s = exe_rep.find_last_of("/\\");
+          if (s != std::string::npos) exe_rep.resize(s); }
         const char *rh = getenv("ROSE_HOME");
         std::string runtime, entete_rep;
         {
@@ -4541,14 +4931,57 @@ int main(int argc, char **argv) {
         const char *cfl = getenv("ROSE_CXXFLAGS");
         std::string flags = (cfl && *cfl) ? cfl : "-O3 -march=native";
         const char *gmp = getenv("ROSE_GMP");
-        std::string cmd = std::string(cxx) + " " + flags + " -std=c++17" +
-                          " -I" + entete_rep +
-                          (gmp && *gmp ? " -I" + std::string(gmp) + "/include -L" + std::string(gmp) + "/lib" : "") +
-                          " " + cpp_file + " " + runtime +
-                          " -o " + sortie + " -lgmp -lgmpxx -lm -lpthread 2>&1";
-        fprintf(stderr, "rose build: %s\n", cmd.c_str());
-        int r = system(cmd.c_str());
-        if (r == 0) fprintf(stderr, "rose: %s produit (compilé natif)\n", sortie.c_str());
+        std::string gmp_flags;
+        if (gmp && *gmp) {
+            std::string base = gmp;
+            // Entêtes : gmp.h peut être dans include/ ou include/<arch>/ ;
+            // gmpxx.h est généralement dans include/. On ajoute tous les répertoires
+            // d'entête existants pour couvrir les deux cas.
+            std::vector<std::string> inc_dirs;
+            for (auto &c : {base + "/include", base + "/include/aarch64-linux-gnu",
+                            base + "/include/x86_64-linux-gnu", base}) {
+                std::ifstream t(std::string(c) + "/gmp.h");
+                std::ifstream t2(std::string(c) + "/gmpxx.h");
+                if (t.good() || t2.good()) inc_dirs.push_back(c);
+            }
+            if (inc_dirs.empty()) inc_dirs.push_back(base + "/include");
+            std::vector<std::string> lib_dirs;
+            for (auto &c : {base + "/lib", base + "/lib/aarch64-linux-gnu",
+                            base + "/lib/x86_64-linux-gnu", base}) {
+                std::ifstream t1(std::string(c) + "/libgmp.a");
+                std::ifstream t2(std::string(c) + "/libgmp.so");
+                if (t1.good() || t2.good()) lib_dirs.push_back(c);
+            }
+            if (lib_dirs.empty()) lib_dirs.push_back(base + "/lib");
+            for (auto &c : inc_dirs) gmp_flags += " -I" + c;
+            for (auto &c : lib_dirs) gmp_flags += " -L" + c;
+        }
+        std::string ll_file = sortie + ".ll";
+        int r = 1;
+        if (use_llvm) {
+            const char *clangbin = getenv("ROSE_CLANG"); if (!clangbin || !*clangbin) clangbin = "clang++";
+            std::string cmd_ll = std::string(clangbin) + " -S -emit-llvm " + flags + " -std=c++17" +
+                                 " -I" + entete_rep + gmp_flags +
+                                 " " + cpp_file + " -o " + ll_file + " 2>&1";
+            fprintf(stderr, "rose llvm: %s\n", cmd_ll.c_str());
+            r = system(cmd_ll.c_str());
+            if (r != 0) { fprintf(stderr, "rose: emission LLVM IR échouée\n"); return 1; }
+            std::string cmd = std::string(clangbin) + " " + flags + " -std=c++17" +
+                              " " + ll_file + " " + runtime +
+                              " -I" + entete_rep + gmp_flags +
+                              " -o " + sortie + " -lgmp -lgmpxx -lm -lpthread 2>&1";
+            fprintf(stderr, "rose llvm: %s\n", cmd.c_str());
+            r = system(cmd.c_str());
+            if (r == 0) fprintf(stderr, "rose: %s produit (LLVM IR : %s)\\n", sortie.c_str(), ll_file.c_str());
+        } else {
+            std::string cmd = std::string(cxx) + " " + flags + " -std=c++17" +
+                              " -I" + entete_rep + gmp_flags +
+                              " " + cpp_file + " " + runtime +
+                              " -o " + sortie + " -lgmp -lgmpxx -lm -lpthread 2>&1";
+            fprintf(stderr, "rose build: %s\n", cmd.c_str());
+            r = system(cmd.c_str());
+            if (r == 0) fprintf(stderr, "rose: %s produit (compilé natif)\\n", sortie.c_str());
+        }
         return r == 0 ? 0 : 1;
     }
     /* premier argument = fichier .rose sans sous-commande */

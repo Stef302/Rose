@@ -1,0 +1,27 @@
+$livre = table()
+inserer($livre, "titre", "Le petit Rose")
+inserer($livre, "pages", 240)
+inserer($livre, "prix", 12/5)
+inserer($livre, "disponible", vrai)
+>> $livre
+>> longueur($livre)
+>> cle_existe($livre, "titre")
+>> cle_existe($livre, "auteur")
+>> $livre["titre"]
+>> $livre["pages"]
+>> $livre["prix"]
+>> $livre["disponible"]
+inserer($livre, "pages", 256)
+>> $livre
+>> supprimer($livre, "disponible")
+>> longueur($livre)
+>> cles($livre)
+>> valeurs($livre)
+$autre = table()
+>> $livre == $autre
+$copie = table()
+inserer($copie, "titre", "Le petit Rose")
+inserer($copie, "pages", 256)
+inserer($copie, "prix", 12/5)
+>> $livre == $copie
+>> supprimer($livre, "inconnue")

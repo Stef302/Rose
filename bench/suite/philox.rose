@@ -1,0 +1,7 @@
+$N = 100000000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+$m0 = millisecondes()
+$buf = tampon($N)
+remplir_hasard_philox($buf, octets("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"), 2026)
+$m1 = millisecondes()
+>> $m1 - $m0

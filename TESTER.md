@@ -18,11 +18,11 @@ Résultat attendu (tous les outils présents) :
 
 ```
 ── Moteurs autonomes ──────────────────────────────────
-  ✓ C++   : Rose 2.0.0 — moteur natif C++/GMP
-  ✓ Rust  : Rose 2.0.0 — moteur natif Rust/GMP
-  ✓ Zig   : Rose 2.0.0 — moteur natif Zig/GMP
+  ✓ C++   : Rose 3.14.0 — moteur natif C++/GMP
+  ✓ Rust  : Rose 3.14.0 — moteur natif Rust/GMP
+  ✓ Zig   : Rose 3.14.0 — moteur natif Zig/GMP
 ── Moteurs vivants ────────────────────────────────────
-  ✓ Python : Rose 2.0.0 — moteur Python 3 (int/Fraction/float64)
+  ✓ Python : Rose 3.14.0 — moteur Python 3 (int/Fraction/float64)
   ✓ Julia  : Rose 2.0.0 — moteur Julia (BigInt / Rational exacts)
 ── Suites de validation ───────────────────────────────
   ✓ suite moteur (moteur C++) : Tests moteur : 25 réussis, 0 échoués
@@ -54,7 +54,10 @@ depuis ce dépôt, chacun dans son langage fondateur :
 
 **Aucune installation** : leurs seules dépendances sont `KERNEL32.dll`
 et l'UCRT (`api-ms-win-crt-*.dll`), fournies par Windows 10/11 eux-
-mêmes. `tester.ps1` rejoue les dorés **octet par octet**, le CRLF des
+mêmes. `tester.ps1` rejoue les dorés **octet par octet**, les onze
+« roses à tester » de `moteur\tests\roses\` (symboles, mixtes, tables,
+puissances, boucles, chaînes UTF-8, grands entiers, flottants, récursion,
+erreurs runtime — voir `MANIFEST.md`), le CRLF des
 fichiers édités sous Windows, la récursion profonde, le bundle
 `comp → .exe` et la FFI vers `msvcrt.dll` — et annonce la couleur.
 

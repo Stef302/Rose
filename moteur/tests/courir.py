@@ -6,6 +6,7 @@ aux dorés produits par la cible C de Rose v2, et vérifie le mode bundle,
 la FFI, les lectures clavier et les messages d'erreur.
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -50,6 +51,10 @@ def test_dore(nom, source, dore):
 
 # ── dorés : le moteur doit reproduire la cible C au caractère près ──
 test_dore("t_exact", os.path.join(DORES, "t_exact.rose"), "t_exact_c.txt")
+test_dore("t_chrono", os.path.join(DORES, "t_chrono.rose"), "t_chrono_c.txt")
+test("duree négative rejette", [os.path.join(DORES, "t_chrono_neg.rose")],
+     attendu_stdout="", attendu_code=1,
+     attendu_stderr="duree : la durée doit être positive ou nulle")
 test_dore("t_machine", os.path.join(DORES, "t_machine.rose"), "out_c.txt")
 # Fast-path entier machine : bornes LONG_MIN/2^63, div/rem plancher négatifs,
 # débordements → repli GMP exact (le JIT est en première ligne ici).
@@ -197,7 +202,7 @@ test("tables (v3.1)", [os.path.join(DORES, "t_tables.rose")],
 
 # ── CLI ──────────────────────────────────────────────────────────────
 p = run([MOTEUR, "version"])
-if "Rose 2.0" in p.stdout and p.returncode == 0:
+if re.match(r"Rose \d+\.\d+\.\d+ — moteur natif C\+\+/GMP", p.stdout) and p.returncode == 0:
     reussis += 1
 else:
     echoues.append(("cli_version", p.returncode, 0, p.stdout[:80], ""))

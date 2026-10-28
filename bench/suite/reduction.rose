@@ -1,0 +1,10 @@
+$N = 10000000
+si (nb_arguments() > 0) {$N = entier(argument(0))}
+$seed = 2026
+$s = 0
+pour $i de 0 vers $N {
+    $seed = ($seed * 63689 + 1) % (2^64)
+    $val = $seed % (2^32)
+    $s = $s + $val
+}
+>> $s

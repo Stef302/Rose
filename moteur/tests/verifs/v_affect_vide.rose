@@ -1,0 +1,3 @@
+fn rase() { }
+$x = rase()
+>> $x

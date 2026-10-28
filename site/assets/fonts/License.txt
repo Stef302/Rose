@@ -1,0 +1,10 @@
+Police d'affichage : Kare
+Source : archive « kare » fournie par l'auteur du projet (Stef302), octobre 2026.
+Licence déclarée par l'archive (stylesheet.css du fabricant Transfonter) :
+    License: none (public domain)
+Quatre fontes auto-hébergées dans kare/ : Kare (400), Kare-Light (300),
+Kare-Shadow (contours), Kare-Gradient (relief), en woff2 + woff.
+
+Note historique : la version précédente (kare-trial.otf, « Free for Personal
+Use », exfont.com) a été retirée du site quand l'archive domaine public l'a
+remplacée.

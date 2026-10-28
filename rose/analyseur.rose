@@ -1,0 +1,1045 @@
+# analyseur.rose — jalon M4.1 : le parseur auto-hébergé ROSE.
+#
+# Lit le fichier passé en argument et écrit son arbre syntaxique dans le
+# format EXACT de l'oracle `rose ast` (moteur C++, Parser/ast_programme).
+# Spécification de référence : la descente récursive de rose.cpp
+# (programmer/def_fonction/instruction/expression/atome) et le dumper
+# ast_programme. Validation : moteur/tests/ast.py compare oracle,
+# interprétation et binaire AOT sur tout le corpus, à l'octet près.
+#
+# DISCIPLINE (rappel M4.0) : RIR n'a pas de courts-circuits — tout index
+# dangereux est abrité dans un embranchement ou borné par une borne claquée.
+# L'état du parseur voyage par la valeur de retour : toute fonction renvoie
+# « nouveau_pos|nœud » (le séparateur est le PREMIER « | », jamais présent
+# dans un entier) ; les jetons voyagent dans deux listes partagées (les
+# listes roses sont partagées, comme les shared_ptr de l'interprète) ; les
+# lignes de sortie s'accumulent dans une liste de rendu passée en référence.
+
+# ══════════════════ phase 1 — lexage (miroir de lexeur.rose) ══════════════════
+
+fn est_chiffre(c: entier) -> booleen {
+  retour c >= 48 et c <= 57
+}
+
+fn est_lettre(c: entier) -> booleen {
+  si (c < 128) {
+    retour (c >= 65 et c <= 90) ou (c >= 97 et c <= 122) ou c == 95
+  }
+  retour (c >= 192 et c <= 214) ou (c >= 216 et c <= 246) ou (c >= 248 et c <= 767) ou (c >= 880 et c <= 1279) ou (c >= 7680 et c <= 8191)
+}
+
+fn est_suite(c: entier) -> booleen {
+  si (c < 128) {
+    retour est_lettre(c) ou est_chiffre(c)
+  }
+  retour est_lettre(c)
+}
+
+fn paire(a: entier, b: entier) -> chaine {
+  si (a == 60 et b == 61) { retour "<=" }
+  si (a == 62 et b == 61) { retour ">=" }
+  si (a == 61 et b == 61) { retour "==" }
+  si (a == 33 et b == 61) { retour "!=" }
+  si (a == 47 et b == 61) { retour "!=" }
+  si (a == 63 et b == 61) { retour "?=" }
+  si (a == 61 et b == 126) { retour "=~" }
+  si (a == 126 et b == 61) { retour "=~" }
+  retour ""
+}
+
+fn uni(c: entier) -> chaine {
+  si (c == 8776) { retour "≈" }
+  si (c == 8804) { retour "<=" }
+  si (c == 8805) { retour ">=" }
+  si (c == 8800) { retour "!=" }
+  si (c == 215) { retour "*" }
+  si (c == 8901) { retour "*" }
+  si (c == 183) { retour "*" }
+  si (c == 247) { retour "div" }
+  si (c == 8592) { retour "=" }
+  si (c == 8594) { retour "->" }
+  si (c == 8730) { retour "racine" }
+  retour ""
+}
+
+fn car(c: entier) -> chaine {
+  si (c == 43) { retour "+" }
+  si (c == 45) { retour "-" }
+  si (c == 42) { retour "*" }
+  si (c == 47) { retour "/" }
+  si (c == 58) { retour ":" }
+  si (c == 37) { retour "%" }
+  si (c == 94) { retour "^" }
+  si (c == 33) { retour "!" }
+  si (c == 46) { retour "." }
+  si (c == 44) { retour "," }
+  si (c == 63) { retour "?" }
+  si (c == 40) { retour "(" }
+  si (c == 41) { retour ")" }
+  si (c == 123) { retour "{" }
+  si (c == 125) { retour "}" }
+  si (c == 91) { retour "[" }
+  si (c == 93) { retour "]" }
+  si (c == 59) { retour ";" }
+  si (c == 60) { retour "<" }
+  si (c == 62) { retour ">" }
+  si (c == 126) { retour "~" }
+  si (c == 64) { retour "@" }
+  retour ""
+}
+
+fn echapper(t: chaine) -> chaine {
+  $o = ""
+  $j = 0
+  $n = longueur(t)
+  tant_que ($j < $n) {
+    $c = ordre(t[$j])
+    si ($c == 92) { $o = $o + "\\" + "\\" }
+    sinon si ($c == 10) { $o = $o + "\\" + "n" }
+    sinon si ($c == 9) { $o = $o + "\\" + "t" }
+    sinon si ($c == 31) { $o = $o + "\\" + "u241f" }
+    sinon { $o = $o + t[$j] }
+    $j = $j + 1
+  }
+  retour $o
+}
+
+# ══════════════════ lectureurs de la table de jetons ══════════════════
+# T0/VX lisent la position courante en la claquant sur le dernier jeton
+# (l'oracle ne consomme jamais l'eof) ; T1/VX regardent un jeton plus loin.
+
+fn T0($g: liste<chaine>, $p: entier) -> chaine {
+  $n = longueur($g)
+  $q = $p
+  si ($q >= $n) { $q = $n - 1 }
+  retour $g[$q]
+}
+
+fn VX0($x: liste<chaine>, $p: entier) -> chaine {
+  $n = longueur($x)
+  $q = $p
+  si ($q >= $n) { $q = $n - 1 }
+  retour $x[$q]
+}
+
+fn T1($g: liste<chaine>, $p: entier) -> chaine {
+  $n = longueur($g)
+  $q = $p + 1
+  si ($q >= $n) { $q = $n - 1 }
+  retour $g[$q]
+}
+
+fn VX1($x: liste<chaine>, $p: entier) -> chaine {
+  $n = longueur($x)
+  $q = $p + 1
+  si ($q >= $n) { $q = $n - 1 }
+  retour $x[$q]
+}
+
+# est un mot (ident ou mot libre) de texte donné — miroir est_mot()
+fn EMOT($g: liste<chaine>, $x: liste<chaine>, $p: entier, $m: chaine) -> booleen {
+  $t = T0($g, $p)
+  retour ($t == "ident" ou $t == "mot") et VX0($x, $p) == $m
+}
+
+# ——— décodage du couple « position|nœud » ———
+
+fn SEPR($r: chaine) -> entier {
+  $n = longueur($r)
+  $q = 0
+  $ok = 1
+  tant_que ($ok == 1) {
+    si ($q >= $n) { $ok = 0 }
+    sinon si (ordre($r[$q]) == 124) { $ok = 0 }
+    sinon { $q = $q + 1 }
+  }
+  retour entier(sous_chaine($r, 0, $q))
+}
+
+fn NOD($r: chaine) -> chaine {
+  $n = longueur($r)
+  $q = 0
+  $ok = 1
+  tant_que ($ok == 1) {
+    si ($q >= $n) { $ok = 0 }
+    sinon si (ordre($r[$q]) == 124) { $ok = 0 }
+    sinon { $q = $q + 1 }
+  }
+  retour sous_chaine($r, $q + 1, $n)
+}
+
+# ══════════════════ expressions — précédences miroir ══════════════════
+# ou < et < non < comparaison < somme < produit < puissance (assoc. à
+# droite) < factorielle < unaire < postfixe < atome.
+
+fn atom($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $t = T0($g, $p)
+  si ($t == "nombre") {
+    retour chaine($p + 1) + "|(n " + VX0($x, $p) + ")"
+  }
+  si ($t == "flottant") {
+    retour chaine($p + 1) + "|(f " + VX0($x, $p) + ")"
+  }
+  si ($t == "chaine") {
+    retour chaine($p + 1) + "|(s " + echapper(VX0($x, $p)) + ")"
+  }
+  si ($t == "[") {
+    $q = $p + 1
+    $e = "(lst"
+    $vide = 1
+    si (T1($g, $p) != "]") {
+      $ok = 1
+      tant_que ($ok == 1) {
+        $r = expr1($g, $x, $q)
+        $e = $e + " " + NOD($r)
+        $q = SEPR($r)
+        $vide = 0
+        si (T0($g, $q) == ",") { $q = $q + 1 } sinon { $ok = 0 }
+      }
+    }
+    si (T0($g, $q) == "]") { $q = $q + 1 }
+    retour chaine($q) + "|" + $e + ")"
+  }
+  si ($t == "(") {
+    $r = expr1($g, $x, $p + 1)
+    $q = SEPR($r)
+    si (T0($g, $q) == ")") { $q = $q + 1 }
+    retour chaine($q) + "|" + NOD($r)
+  }
+  # ident ou mot : vrai/faux, module::nom, ou variable simple
+  si (VX0($x, $p) == "vrai") {
+    retour chaine($p + 1) + "|(b vraie)"
+  }
+  si (VX0($x, $p) == "faux") {
+    retour chaine($p + 1) + "|(b faux)"
+  }
+  si (T1($g, $p) == "::") {
+    $mod = VX0($x, $p)
+    $nom = VX1($x, $p + 1)
+    retour chaine($p + 3) + "|(app " + $mod + "::" + $nom + ")"
+  }
+  retour chaine($p + 1) + "|(v " + VX0($x, $p) + ")"
+}
+
+# (app …) ou (v …) sans arguments → true et rend le contenu ; sinon false
+fn est_nom_nud($e: chaine) -> booleen {
+  $n = longueur($e)
+  si ($n < 5) { retour faux }
+  si (sous_chaine($e, $n - 1, $n) != ")") { retour faux }
+  $de = sous_chaine($e, 0, 3)
+  si ($de == "(v ") { retour vrai }
+  $de2 = sous_chaine($e, 0, 5)
+  si ($de2 != "(app ") { retour faux }
+  # (app nom) — sans espaces intérieurs = sans arguments
+  $i = 5
+  $fin = $n - 1
+  $trou = 1
+  tant_que ($i < $fin) {
+    si (ordre($e[$i]) == 32) { $trou = 0 }
+    $i = $i + 1
+  }
+  retour $trou == 1
+}
+
+fn nud_contenu($e: chaine) -> chaine {
+  $n = longueur($e)
+  si (sous_chaine($e, 0, 3) == "(v ") {
+    retour sous_chaine($e, 3, $n - 1)
+  }
+  retour sous_chaine($e, 5, $n - 1)
+}
+
+fn post($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = atom($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  $ok = 1
+  tant_que ($ok == 1) {
+    $t = T0($g, $q)
+    si ($t == "(" et est_nom_nud($e)) {
+      $contenu = nud_contenu($e)
+      $r2 = $q + 1
+      $a = "(app " + $contenu
+      si (T0($g, $r2) != ")") {
+        $vrai2 = 1
+        tant_que ($vrai2 == 1) {
+          $rr = expr1($g, $x, $r2)
+          $a = $a + " " + NOD($rr)
+          $r2 = SEPR($rr)
+          si (T0($g, $r2) == ",") { $r2 = $r2 + 1 } sinon { $vrai2 = 0 }
+        }
+      }
+      si (T0($g, $r2) == ")") { $r2 = $r2 + 1 }
+      $e = $a + ")"
+      $q = $r2
+    }
+    sinon si ($t == "[") {
+      # index ou tranche — miroir du sucre s[a:b] → sous_chaine(s, a, b)
+      $q = $q + 1
+      si (T0($g, $q) == ":") {
+        # s[:b] ou s[:]
+        $q = $q + 1
+        $fin = ""
+        si (T0($g, $q) == "]") { $fin = "(app longueur " + $e + ")" }
+        sinon {
+          $rr = expr1($g, $x, $q)
+          $fin = NOD($rr)
+          $q = SEPR($rr)
+        }
+        $e = "(app sous_chaine " + $e + " (n 0) " + $fin + ")"
+        si (T0($g, $q) == "]") { $q = $q + 1 }
+      }
+      sinon {
+        $rr = expr1($g, $x, $q)
+        $idx = NOD($rr)
+        $q = SEPR($rr)
+        si (T0($g, $q) == ":") {
+          # s[a:b] ou s[a:]
+          $q = $q + 1
+          $fin = ""
+          si (T0($g, $q) == "]") { $fin = "(app longueur " + $e + ")" }
+          sinon {
+            $r3 = expr1($g, $x, $q)
+            $fin = NOD($r3)
+            $q = SEPR($r3)
+          }
+          $e = "(app sous_chaine " + $e + " " + $idx + " " + $fin + ")"
+          si (T0($g, $q) == "]") { $q = $q + 1 }
+        }
+        sinon {
+          $e = "(idx " + $e + " " + $idx + ")"
+          si (T0($g, $q) == "]") { $q = $q + 1 }
+        }
+      }
+    }
+    sinon { $ok = 0 }
+  }
+  retour chaine($q) + "|" + $e
+}
+
+fn unai($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $t = T0($g, $p)
+  si ($t == "racine") {
+    $r = unai($g, $x, $p + 1)
+    retour chaine(SEPR($r)) + "|(bin ^ " + NOD($r) + " (f 0.5))"
+  }
+  si ($t == "-") {
+    $r = unai($g, $x, $p + 1)
+    retour chaine(SEPR($r)) + "|(uni - " + NOD($r) + ")"
+  }
+  si ($t == "+") {
+    retour unai($g, $x, $p + 1)
+  }
+  $r = post($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  tant_que (T0($g, $q) == "!") {
+    $e = "(fact " + $e + ")"
+    $q = $q + 1
+  }
+  retour chaine($q) + "|" + $e
+}
+
+fn puis($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = unai($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  si (T0($g, $q) == "^") {
+    $d = puis($g, $x, $q + 1)
+    retour chaine(SEPR($d)) + "|(bin ^ " + $e + " " + NOD($d) + ")"
+  }
+  retour chaine($q) + "|" + $e
+}
+
+fn prod($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = puis($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  $ok = 1
+  tant_que ($ok == 1) {
+    $t = T0($g, $q)
+    $op = ""
+    si ($t == "*" ou $t == "/" ou $t == "%" ou $t == "div") { $op = $t }
+    si ($t == "ident" et VX0($x, $q) == "div") { $op = "div" }
+    si ($op == "") { $ok = 0 }
+    sinon {
+      $d = puis($g, $x, $q + 1)
+      $e = "(bin " + $op + " " + $e + " " + NOD($d) + ")"
+      $q = SEPR($d)
+    }
+  }
+  retour chaine($q) + "|" + $e
+}
+
+fn somme($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = prod($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  $ok = 1
+  tant_que ($ok == 1) {
+    $t = T0($g, $q)
+    $op = ""
+    si ($t == "+") { $op = "+" }
+    si ($t == "-") { $op = "-" }
+    si ($op == "") { $ok = 0 }
+    sinon {
+      $d = prod($g, $x, $q + 1)
+      $e = "(bin " + $op + " " + $e + " " + NOD($d) + ")"
+      $q = SEPR($d)
+    }
+  }
+  retour chaine($q) + "|" + $e
+}
+
+fn compa($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = somme($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  $ok = 1
+  tant_que ($ok == 1) {
+    $t = T0($g, $q)
+    $op = ""
+    si ($t == "<" ou $t == "<=" ou $t == ">" ou $t == ">=" ou $t == "==" ou $t == "!=" ou $t == "≈" ou $t == "?=" ou $t == "=~") { $op = $t }
+    si ($op == "") { $ok = 0 }
+    sinon {
+      $d = somme($g, $x, $q + 1)
+      $e = "(bin " + $op + " " + $e + " " + NOD($d) + ")"
+      $q = SEPR($d)
+    }
+  }
+  retour chaine($q) + "|" + $e
+}
+
+fn nonx($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  si (EMOT($g, $x, $p, "non")) {
+    $r = nonx($g, $x, $p + 1)
+    retour chaine(SEPR($r)) + "|(uni non " + NOD($r) + ")"
+  }
+  retour compa($g, $x, $p)
+}
+
+fn etx($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = nonx($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  tant_que (EMOT($g, $x, $q, "et")) {
+    $d = nonx($g, $x, $q + 1)
+    $e = "(bin et " + $e + " " + NOD($d) + ")"
+    $q = SEPR($d)
+  }
+  retour chaine($q) + "|" + $e
+}
+
+fn expr1($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = etx($g, $x, $p)
+  $q = SEPR($r)
+  $e = NOD($r)
+  tant_que (EMOT($g, $x, $q, "ou")) {
+    $d = etx($g, $x, $q + 1)
+    $e = "(bin ou " + $e + " " + NOD($d) + ")"
+    $q = SEPR($d)
+  }
+  retour chaine($q) + "|" + $e
+}
+
+# ══════════════════ types et noms ══════════════════
+
+fn nomid($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  retour chaine($p + 1) + "|" + VX0($x, $p)
+}
+
+# Un type voyage comme « base|élément » : le Ty du moteur ne garde QUE le
+# rang de l'élément (Ty::liste(elt.n)), donc liste<liste<entier>> plie en
+# « liste|liste » et s'affiche « liste<liste<vide>> » — fidélité mesurée.
+fn nomty($v: chaine) -> chaine {
+  $n = longueur($v)
+  $k = 0
+  $ok = 1
+  tant_que ($ok == 1) {
+    si ($k >= $n) { $ok = 0 }
+    sinon si (ordre($v[$k]) == 124) { $ok = 0 }
+    sinon { $k = $k + 1 }
+  }
+  $base = sous_chaine($v, 0, $k)
+  $elt = sous_chaine($v, $k + 1, $n)
+  si ($base != "liste") { retour $base }
+  si ($elt == "liste") { retour "liste<liste<vide>>" }
+  retour "liste<" + $elt + ">"
+}
+
+fn typex($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
+  $r = nomid($g, $x, $p)
+  $q = SEPR($r)
+  $t = NOD($r)
+  si ($t == "liste") {
+    si (T0($g, $q) == "<") { $q = $q + 1 }
+    $d = typex($g, $x, $q)
+    $q = SEPR($d)
+    $iv = NOD($d)
+    si (T0($g, $q) == ">") { $q = $q + 1 }
+    # Ty::liste(elt.n) : on ne garde que la base de l'élément intérieur
+    $m = longueur($iv)
+    $k = 0
+    $trouve = 0
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($k >= $m) { $ok = 0 }
+      sinon si (ordre($iv[$k]) == 124) { $ok = 0; $trouve = 1 }
+      sinon { $k = $k + 1 }
+    }
+    $base_int = $iv
+    si ($trouve == 1) { $base_int = sous_chaine($iv, 0, $k) }
+    retour chaine($q) + "|liste|" + $base_int
+  }
+  retour chaine($q) + "|" + $t + "|"
+}
+
+# ══════════════════ instructions ══════════════════
+# Les instructions écrivent leurs lignes dans $o (une entrée = une ligne,
+# sans \n final) et renvoient « pos| » — la partie nœud est vide.
+
+fn ligne($o: liste<chaine>, $ind: entier, $s: chaine) {
+  $pre = ""
+  $i = 0
+  $n = $ind * 2
+  tant_que ($i < $n) {
+    $pre = $pre + " "
+    $i = $i + 1
+  }
+  joindre($o, $pre + $s)
+}
+
+fn instruction($g: liste<chaine>, $x: liste<chaine>, $p: entier, $ind: entier, $o: liste<chaine>) -> chaine {
+  $t = T0($g, $p)
+  # — bloc entre accolades, comme instruction : le dumper imprime l'en-tête « bloc »
+  si ($t == "{") {
+    $r = bloc_entete($g, $x, $p, $ind, $o)
+    retour $r
+  }
+  si ($t == ">>") {
+    $r = expr1($g, $x, $p + 1)
+    ligne($o, $ind, "afficher " + NOD($r))
+    retour chaine(SEPR($r)) + "|"
+  }
+  si ($t == "<<") {
+    $r = nomid($g, $x, $p + 1)
+    ligne($o, $ind, "lire " + NOD($r))
+    retour chaine(SEPR($r)) + "|"
+  }
+  si ($t == "?") {
+    $q = $p + 1
+    si (T0($g, $q) == "(") { $q = $q + 1 }
+    $r = expr1($g, $x, $q)
+    $q = SEPR($r)
+    si (T0($g, $q) == ")") { $q = $q + 1 }
+    ligne($o, $ind, "si " + NOD($r))
+    ligne($o, $ind, "alors")
+    $c = corps_chevron($g, $x, $q, $ind + 1, $o)
+    retour chaine(SEPR($c)) + "|"
+  }
+  si ($t == "@") {
+    $q = $p + 1
+    si (T0($g, $q) == "(") { $q = $q + 1 }
+    $r = expr1($g, $x, $q)
+    $q = SEPR($r)
+    si (T0($g, $q) == ")") { $q = $q + 1 }
+    ligne($o, $ind, "tant_que " + NOD($r))
+    $c = corps_chevron($g, $x, $q, $ind + 1, $o)
+    retour chaine(SEPR($c)) + "|"
+  }
+  si ($t == "ident" et VX0($x, $p) == "si") {
+    $q = $p + 1
+    si (T0($g, $q) == "(") { $q = $q + 1 }
+    $r = expr1($g, $x, $q)
+    $q = SEPR($r)
+    si (T0($g, $q) == ")") { $q = $q + 1 }
+    ligne($o, $ind, "si " + NOD($r))
+    ligne($o, $ind, "alors")
+    $c = bloc($g, $x, $q, $ind + 1, $o)
+    $q = SEPR($c)
+    si (EMOT($g, $x, $q, "sinon")) {
+      ligne($o, $ind, "sinon")
+      si (T0($g, $q + 1) == "{") {
+        $d = bloc($g, $x, $q + 1, $ind + 1, $o)
+        $q = SEPR($d)
+      }
+      sinon {
+        $d = instruction($g, $x, $q + 1, $ind + 1, $o)
+        $q = SEPR($d)
+      }
+    }
+    retour chaine($q) + "|"
+  }
+  si ($t == "ident" et VX0($x, $p) == "tant_que") {
+    $q = $p + 1
+    si (T0($g, $q) == "(") { $q = $q + 1 }
+    $r = expr1($g, $x, $q)
+    $q = SEPR($r)
+    si (T0($g, $q) == ")") { $q = $q + 1 }
+    ligne($o, $ind, "tant_que " + NOD($r))
+    $c = bloc($g, $x, $q, $ind + 1, $o)
+    retour chaine(SEPR($c)) + "|"
+  }
+  si ($t == "ident" et VX0($x, $p) == "pour") {
+    $q = $p + 1
+    $rn = nomid($g, $x, $q)
+    $q = SEPR($rn)
+    $nom = NOD($rn)
+    si (EMOT($g, $x, $q, "de")) { $q = $q + 1 }
+    $rd = expr1($g, $x, $q)
+    $q = SEPR($rd)
+    si (EMOT($g, $x, $q, "vers")) { $q = $q + 1 }
+    $rf = expr1($g, $x, $q)
+    $q = SEPR($rf)
+    ligne($o, $ind, "pour " + $nom + " " + NOD($rd) + " " + NOD($rf))
+    $c = bloc($g, $x, $q, $ind + 1, $o)
+    retour chaine(SEPR($c)) + "|"
+  }
+  si ($t == "ident" et VX0($x, $p) == "retour") {
+    $suiv = T1($g, $p)
+    si ($suiv == ";" ou $suiv == "}" ou $suiv == "eof") {
+      ligne($o, $ind, "retour")
+      retour chaine($p + 1) + "|"
+    }
+    $r = expr1($g, $x, $p + 1)
+    ligne($o, $ind, "retour " + NOD($r))
+    retour chaine(SEPR($r)) + "|"
+  }
+  # affectation : (ident|mot) suivi de « = »
+  si (($t == "ident" ou $t == "mot") et T1($g, $p) == "=") {
+    $rn = nomid($g, $x, $p)
+    $q = SEPR($rn)
+    si (T0($g, $q) == "=") { $q = $q + 1 }
+    $r = expr1($g, $x, $q)
+    ligne($o, $ind, "affect " + NOD($rn) + " " + NOD($r))
+    retour chaine(SEPR($r)) + "|"
+  }
+  # sinon : instruction-expression
+  $r = expr1($g, $x, $p)
+  ligne($o, $ind, "expr " + NOD($r))
+  retour chaine(SEPR($r)) + "|"
+}
+
+fn bloc($g: liste<chaine>, $x: liste<chaine>, $p: entier, $ind: entier, $o: liste<chaine>) -> chaine {
+  # Corps entre accolades SANS en-tête (si/tant_que/pour/fn) — le dumper
+  # oracle imbrique ces corps sans marque. L'instruction-bloc, elle, passe
+  # par bloc_entete qui imprime « bloc » avant le corps.
+  $q = $p
+  si (T0($g, $q) == "{") { $q = $q + 1 }
+  $ok = 1
+  tant_que ($ok == 1) {
+    $t = T0($g, $q)
+    si ($t == "}" ou $t == "eof") { $ok = 0 }
+    sinon {
+      si ($t == ";") { $q = $q + 1 }
+      sinon {
+        $r = instruction($g, $x, $q, $ind, $o)
+        $q = SEPR($r)
+        si (T0($g, $q) == ";") { $q = $q + 1 }
+      }
+    }
+  }
+  si (T0($g, $q) == "}") { $q = $q + 1 }
+  retour chaine($q) + "|"
+}
+
+fn bloc_entete($g: liste<chaine>, $x: liste<chaine>, $p: entier, $ind: entier, $o: liste<chaine>) -> chaine {
+  ligne($o, $ind, "bloc")
+  retour bloc($g, $x, $p, $ind + 1, $o)
+}
+
+fn corps_chevron($g: liste<chaine>, $x: liste<chaine>, $p: entier, $ind: entier, $o: liste<chaine>) -> chaine {
+  $q = $p
+  si (T0($g, $q) == "[") { $q = $q + 1 }
+  $ok = 1
+  tant_que ($ok == 1) {
+    $t = T0($g, $q)
+    si ($t == "]" ou $t == "eof") { $ok = 0 }
+    sinon {
+      $r = instruction($g, $x, $q, $ind, $o)
+      $q = SEPR($r)
+      si (T0($g, $q) == ";") { $q = $q + 1 } sinon { $ok = 0 }
+    }
+  }
+  si (T0($g, $q) == "]") { $q = $q + 1 }
+  retour chaine($q) + "|"
+}
+
+# ══════════════════ définition de fonction ══════════════════
+# Écrit dans $buf dans l'ordre du dumper oracle : « fonction <nom> », puis
+# « externe "<dll>" "<son>" "<sym>" » si corps absent, puis les « param … »,
+# puis « retour <type> » (« vide » sans flèche), puis le corps indenté de 2.
+# Renvoie « pos|nom ».
+
+fn def_fn($g: liste<chaine>, $x: liste<chaine>, $p: entier, $dll: chaine, $son: chaine, $sym: chaine, $buf: liste<chaine>) -> chaine {
+  $q = $p + 1
+  $rn = nomid($g, $x, $q)
+  $q = SEPR($rn)
+  $nom = NOD($rn)
+  ligne($buf, 0, "fonction " + $nom)
+  si (T0($g, $q) == "(") { $q = $q + 1 }
+  $params = [""]   # liste rembourrée : index 0 sacrifié, le premier vrai parametre est a 1
+  $un = 1
+  tant_que ($un == 1) {
+    si (T0($g, $q) == ")" ou T0($g, $q) == "eof") { $un = 0 }
+    sinon {
+      $rp = nomid($g, $x, $q)
+      $q = SEPR($rp)
+      $pn = NOD($rp)
+      si (T0($g, $q) == ":") { $q = $q + 1 }
+      $rt = typex($g, $x, $q)
+      $q = SEPR($rt)
+      ligne($params, 0, "param " + $pn + " " + nomty(NOD($rt)))
+      si (T0($g, $q) == ",") { $q = $q + 1 } sinon { $un = 0 }
+    }
+  }
+  si (T0($g, $q) == ")") { $q = $q + 1 }
+  $ret = "vide"
+  si (T0($g, $q) == "->") {
+    $rt = typex($g, $x, $q + 1)
+    $ret = nomty(NOD($rt))
+    $q = SEPR($rt)
+  }
+  si (T0($g, $q) != "{") {
+    # fonction étrangère (@dll/@sym) — l'externe s'imprime AVANT les parametres
+    ligne($buf, 0, "externe \"" + echapper($dll) + "\" \"" + echapper($son) + "\" \"" + echapper($sym) + "\"")
+  }
+  $u = 1
+  $np = longueur($params)
+  tant_que ($u < $np) {
+    joindre($buf, $params[$u])
+    $u = $u + 1
+  }
+  ligne($buf, 0, "retour " + $ret)
+  si (T0($g, $q) == "{") {
+    $c = bloc($g, $x, $q, 1, $buf)
+    retour chaine(SEPR($c)) + "|" + $nom
+  }
+  retour chaine($q) + "|" + $nom
+}
+
+# ══════════════════ utilitaires de sortie ══════════════════
+
+# comparution lexicale par codepoints = ordre octet UTF-8 = ordre std::map
+fn cmp_str($a: chaine, $b: chaine) -> entier {
+  $la = longueur($a)
+  $lb = longueur($b)
+  $n = $la
+  si ($lb < $n) { $n = $lb }
+  $i = 0
+  tant_que ($i < $n) {
+    $ca = ordre($a[$i])
+    $cb = ordre($b[$i])
+    si ($ca < $cb) { retour -1 }
+    si ($ca > $cb) { retour 1 }
+    $i = $i + 1
+  }
+  si ($la < $lb) { retour -1 }
+  si ($la > $lb) { retour 1 }
+  retour 0
+}
+
+# écrit un bloc de texte multi-lignes (chaque ligne se termine par \n)
+fn vider($s: chaine) {
+  $n = longueur($s)
+  $d = 0
+  $ok = 1
+  tant_que ($ok == 1) {
+    si ($d >= $n) { $ok = 0 }
+    sinon {
+      $i = $d
+      $trouve = -1
+      $m = longueur($s)
+      tant_que ($i < $m) {
+        si ($trouve < 0 et ordre($s[$i]) == 10) { $trouve = $i }
+        $i = $i + 1
+      }
+      si ($trouve < 0) {
+        si ($d < $n) { >> sous_chaine($s, $d, $n) }
+        $ok = 0
+      }
+      sinon {
+        >> sous_chaine($s, $d, $trouve)
+        $d = $trouve + 1
+      }
+    }
+  }
+}
+
+# ══════════════════ programme principal ══════════════════
+
+$src = ""
+si (nb_arguments() > 0) { $src = lire_texte(argument(0)) }
+$N = longueur($src)
+
+# —— phase 1 : lexage vers $gen (types) et $x (textes) ——
+# DISCIPLINE DES LISTES : le vérificateur refuse « [] » (type d'élément
+# introuvable) — toute liste de travail est REMBOURRÉE : l'index 0 est un
+# leurre, le premier élément réel est à 1, et toutes les boucles commencent
+# à 1. L'analyseur commence donc à la position 1 de la table de jetons.
+$gen = [""]
+$x = [""]
+$i = 0
+$suiv = -1
+$c = 0
+$cc = 0
+$ok = 1
+$t = ""
+$nx = 0
+$q = 0
+$buf = ""
+$txt = ""
+$nu = ""
+$dollar = 0
+$flott = 0
+$point_ok = 0
+
+# table des mots-clés : un mot-clé nu porte le type « ident » dans l'oracle
+$cles = table()
+inserer($cles, "fn", 1)
+inserer($cles, "retour", 1)
+inserer($cles, "si", 1)
+inserer($cles, "sinon", 1)
+inserer($cles, "tant_que", 1)
+inserer($cles, "pour", 1)
+inserer($cles, "de", 1)
+inserer($cles, "vers", 1)
+inserer($cles, "vrai", 1)
+inserer($cles, "faux", 1)
+inserer($cles, "et", 1)
+inserer($cles, "ou", 1)
+inserer($cles, "non", 1)
+inserer($cles, "div", 1)
+inserer($cles, "entier", 1)
+inserer($cles, "rationnel", 1)
+inserer($cles, "flottant", 1)
+inserer($cles, "booleen", 1)
+inserer($cles, "chaine", 1)
+inserer($cles, "liste", 1)
+inserer($cles, "table", 1)
+
+tant_que ($i < $N) {
+  $c = ordre($src[$i])
+  $suiv = -1
+  si ($i + 1 < $N) { $suiv = ordre($src[$i + 1]) }
+
+  si ($c == 32 ou $c == 9 ou $c == 13 ou $c == 10) {
+    $i = $i + 1
+  }
+  sinon si ($c == 35 ou ($c == 47 et $suiv == 47)) {
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (ordre($src[$i]) == 10) { $ok = 0 }
+      sinon { $i = $i + 1 }
+    }
+  }
+  sinon si ($c == 34 ou $c == 39) {
+    $q = $c
+    $i = $i + 1
+    $buf = ""
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon {
+        $cc = ordre($src[$i])
+        si ($cc == 92) {
+          si ($i + 1 >= $N) { $ok = 0 }
+          sinon {
+            $nx = ordre($src[$i + 1])
+            si ($nx == 110) { $buf = $buf + "\n" }
+            sinon si ($nx == 116) { $buf = $buf + "\t" }
+            sinon si ($nx == 92 ou $nx == 34 ou $nx == 39) { $buf = $buf + sous_chaine($src, $i + 1, $i + 2) }
+            sinon { $buf = $buf + "\\" + sous_chaine($src, $i + 1, $i + 2) }
+            $i = $i + 2
+          }
+        }
+        sinon si ($cc == $q) {
+          $i = $i + 1
+          $ok = 0
+        }
+        sinon {
+          $buf = $buf + $src[$i]
+          $i = $i + 1
+        }
+      }
+    }
+    joindre($gen, "chaine")
+    joindre($x, $buf)
+  }
+  sinon si (est_chiffre($c)) {
+    $txt = ""
+    $flott = 0
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (est_chiffre(ordre($src[$i]))) {
+        $txt = $txt + $src[$i]
+        $i = $i + 1
+      }
+      sinon { $ok = 0 }
+    }
+    $point_ok = 0
+    si ($i < $N) {
+      si ($i + 1 < $N) {
+        si (ordre($src[$i]) == 46 et est_chiffre(ordre($src[$i + 1]))) { $point_ok = 1 }
+      }
+    }
+    si ($point_ok == 1) {
+      $flott = 1
+      $txt = $txt + "."
+      $i = $i + 1
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (est_chiffre(ordre($src[$i]))) {
+          $txt = $txt + $src[$i]
+          $i = $i + 1
+        }
+        sinon { $ok = 0 }
+      }
+    }
+    si ($flott == 1) { joindre($gen, "flottant") } sinon { joindre($gen, "nombre") }
+    joindre($x, $txt)
+  }
+  sinon si ($c == 960) {
+    joindre($gen, "flottant")
+    joindre($x, "3.141592653589793")
+    $i = $i + 1
+  }
+  sinon si ($c == 36 ou est_lettre($c)) {
+    $dollar = 0
+    si ($c == 36) { $dollar = 1; $i = $i + 1 }
+    $nu = ""
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (est_suite(ordre($src[$i]))) {
+        $nu = $nu + $src[$i]
+        $i = $i + 1
+      }
+      sinon { $ok = 0 }
+    }
+    si ($dollar == 1 ou cle_existe($cles, $nu)) { joindre($gen, "ident") }
+    sinon { joindre($gen, "mot") }
+    joindre($x, $nu)
+  }
+  sinon si (paire($c, $suiv) != "") {
+    joindre($gen, paire($c, $suiv))
+    joindre($x, sous_chaine($src, $i, $i + 2))
+    $i = $i + 2
+  }
+  sinon si ($c == 62 et $suiv == 62) { joindre($gen, ">>"); joindre($x, ">>"); $i = $i + 2 }
+  sinon si ($c == 60 et $suiv == 60) { joindre($gen, "<<"); joindre($x, "<<"); $i = $i + 2 }
+  sinon si ($c == 45 et $suiv == 62) { joindre($gen, "->"); joindre($x, "->"); $i = $i + 2 }
+  sinon si ($c == 61) { joindre($gen, "="); joindre($x, "="); $i = $i + 1 }
+  sinon si ($c == 58 et $suiv == 58) { joindre($gen, "::"); joindre($x, "::"); $i = $i + 2 }
+  sinon si ($c == 178) { joindre($gen, "^"); joindre($x, "^"); joindre($gen, "nombre"); joindre($x, "2"); $i = $i + 1 }
+  sinon si ($c == 179) { joindre($gen, "^"); joindre($x, "^"); joindre($gen, "nombre"); joindre($x, "3"); $i = $i + 1 }
+  sinon si (uni($c) != "") { joindre($gen, uni($c)); joindre($x, $src[$i]); $i = $i + 1 }
+  sinon si (car($c) != "") { joindre($gen, car($c)); joindre($x, $src[$i]); $i = $i + 1 }
+  sinon { $i = $i + 1 }
+}
+joindre($gen, "eof")
+joindre($x, "")
+
+# —— phase 2 : descente —
+# $sortie : lignes du premier niveau ; $noms/$dumps : fonctions triées après.
+# Toutes les listes sont rembourrées (index 0 sacrifié), la table de jetons
+# aussi : la descente démarre à la position 1.
+$sortie = [""]
+$noms = [""]
+$dumps = [""]
+$p = 1
+$dll = ""
+$son = ""
+$sym = ""
+
+tant_que (T0($gen, $p) != "eof") {
+  $t = T0($gen, $p)
+  si ($t == ";") { $p = $p + 1 }
+  sinon si ($t == "@" et (EMOT($gen, $x, $p + 1, "dll") ou EMOT($gen, $x, $p + 1, "sym"))) {
+    $q = $p + 1
+    $genre = VX0($x, $q)
+    $q = $q + 1
+    si (T0($gen, $q) == "(") { $q = $q + 1 }
+    si ($genre == "dll") {
+      $dll = VX0($x, $q)
+      $q = $q + 1
+      si (T0($gen, $q) == ",") {
+        $q = $q + 1
+        $son = VX0($x, $q)
+        $q = $q + 1
+      }
+    }
+    sinon {
+      $sym = VX0($x, $q)
+      $q = $q + 1
+    }
+    si (T0($gen, $q) == ")") { $q = $q + 1 }
+    $p = $q
+  }
+  sinon si (EMOT($gen, $x, $p, "fn")) {
+    $tamp = [""]
+    $r = def_fn($gen, $x, $p, $dll, $son, $sym, $tamp)
+    $p = SEPR($r)
+    joindre($noms, NOD($r))
+    $dump = ""
+    $u = 1
+    $nb = longueur($tamp)
+    tant_que ($u < $nb) {
+      $dump = $dump + $tamp[$u] + "\n"
+      $u = $u + 1
+    }
+    joindre($dumps, $dump)
+    $dll = ""
+    $son = ""
+    $sym = ""
+  }
+  sinon {
+    $r = instruction($gen, $x, $p, 0, $sortie)
+    $p = SEPR($r)
+  }
+}
+
+# —— tri des fonctions (nom → ordre lexicale de codepoints = ordre std::map) ——
+# Tri par sélection sur permutation : on ne peut QUE joindre aux listes, donc
+# on bâtit $ordre (indices, rembourré) en prenant à chaque passe le plus petit
+# nom non encore pris.
+$ordre = [0]
+$nn = longueur($noms)
+$k = 1
+tant_que ($k < $nn) {
+  $best = -1
+  $j = 1
+  tant_que ($j < $nn) {
+    $pris = 0
+    $u = 1
+    $nu2 = longueur($ordre)
+    tant_que ($u < $nu2) {
+      si ($ordre[$u] == $j) { $pris = 1 }
+      $u = $u + 1
+    }
+    si ($pris == 0) {
+      si ($best < 0) { $best = $j }
+      sinon si (cmp_str($noms[$j], $noms[$best]) < 0) { $best = $j }
+    }
+    $j = $j + 1
+  }
+  joindre($ordre, $best)
+  $k = $k + 1
+}
+
+>> "programme"
+$w = 1
+tant_que ($w < longueur($ordre)) {
+  $ix = $ordre[$w]
+  vider($dumps[$ix])
+  $w = $w + 1
+}
+$w = 1
+$ns = longueur($sortie)
+tant_que ($w < $ns) {
+  >> $sortie[$w]
+  $w = $w + 1
+}

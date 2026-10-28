@@ -39,3 +39,34 @@ zig-cache/
 # --- OS ---------------------------------------------------------------------
 .DS_Store
 Thumbs.db
+installateur/dist/
+installateur/staging/
+
+# l'installeur Windows est un livrable du site — il est versionné
+!site/*.exe
+
+# --- Artefacts de banc et de couverture (ajoutés 28/10/2026) ----------------
+# Aucun de ces fichiers n'est un livrable ; ils portent des chemins de build.
+nohup.out
+global_out.txt
+gmon.out
+programme.cpp
+*.gcda
+*.gcno
+bench/englobant/.b_*
+bench/global/bench_global_cpp
+bench/global/bench_global_rs
+bench/langages/mdp_mt19937
+bench/langages/mdp_rand_c
+bench/langages/mdp_rs
+bench/langages/mdp_splitmix
+bench/langages/mdp_philox
+
+# --- Journaux de debug et de couverture (dé-suivis le 28/10/2026) -----------
+# Les .pdb portaient 813/620/554 occurrences du chemin de build personnel ;
+# les .gcda/.o/.obj sont des artefacts de compilation, jamais des livrables.
+*.o
+*.obj
+*.gcda
+*.gcno
+*.pdb

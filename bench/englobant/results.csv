@@ -1,0 +1,7 @@
+kernel,moteur,secondes,rc
+englobant,rose,5.230000,0
+englobant,aot,0.031406,0
+englobant,llvm,0.030781,0
+englobant,cpp,0.008125,0
+englobant,rs,0.002656,0
+englobant,py,1.260000,0

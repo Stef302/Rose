@@ -1,0 +1,3 @@
+@dll("maison") @sym("chose")
+fn exf(l: liste<entier>) -> entier
+>> 1

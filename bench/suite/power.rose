@@ -1,0 +1,11 @@
+# Benchmark : 2^N — puissance entière avec GMP (grande précision)
+# 2^30 000 000 possède 9 030 901 chiffres (référence PERF.md)
+# Syntaxe Rose valide : puissance(a, b)
+
+$N = 10000000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+
+$m0 = millisecondes()
+$resultat = puissance(2, $N)
+$m1 = millisecondes()
+>> $m1 - $m0

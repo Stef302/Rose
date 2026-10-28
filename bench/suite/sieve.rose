@@ -1,0 +1,39 @@
+# Benchmark : crible d'Eratosthène — compter_premiers(N)
+# Mesure : O(N log log N) + branch prediction
+# Résultat : nombre de premiers < N (1 270 607 pour N=20 000 000)
+# Syntaxe Rose valide : tampon d'octets
+
+$N = 1000000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+
+$m0 = millisecondes()
+$is_prime = tampon($N)
+# init
+$i = 0
+pour $a de 0 vers $N {
+    tampon_pose($is_prime, $a, 1)
+}
+tampon_pose($is_prime, 0, 0)
+tampon_pose($is_prime, 1, 0)
+
+# crible
+$i = 2
+pour $b de 2 vers $N {
+    si (tampon_case($is_prime, $b) == 1) {
+        $j = $b * $b
+        tant_que ($j < $N) {
+            tampon_pose($is_prime, $j, 0)
+            $j = $j + $b
+        }
+    }
+}
+
+# comptage
+$count = 0
+pour $c de 2 vers $N {
+    si (tampon_case($is_prime, $c) == 1) {
+        $count = $count + 1
+    }
+}
+$m1 = millisecondes()
+>> $m1 - $m0

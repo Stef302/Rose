@@ -1,0 +1,21 @@
+$s = 0
+pour i de 1 vers 100 { $s = $s + i }
+>> $s
+$compte = 5
+tant_que ($compte > 0) {
+  >> $compte
+  $compte = $compte - 1
+}
+$l = [8, 3, 12, 7]
+$max = $l[0]
+pour j de 1 vers longueur($l) - 1 {
+  si ($l[j] > $max) { $max = $l[j] }
+}
+>> $max
+$trouve = 0
+pour a de 1 vers 30 {
+  pour b de a vers 30 {
+    si (a * b == 210) { $trouve = $trouve + 1 }
+  }
+}
+>> $trouve

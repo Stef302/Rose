@@ -1,0 +1,65 @@
+# -- Banc global de la syntaxe Rose --
+$m0 = millisecondes()
+
+# -- 1) Arithmetique entiere --
+$total = 0
+pour a de 1 vers 10000001 {
+    $total = $total + a * a
+}
+>> $total
+
+# -- 2) Flottants et rationnels --
+$x = 0.0
+pour b de 1 vers 1000001 {
+    $x = $x + 1.0 / b
+}
+>> $x
+$r = 1 / 3
+pour c de 1 vers 1001 {
+    $r = $r + 1 / c
+}
+>> $r
+
+# -- 3) Chaines Unicode --
+$t = "ete radieux"
+$s = ""
+pour d de 1 vers 1001 {
+    $s = sous_chaine($t, 0, 3) + $s
+}
+>> longueur($s)
+
+# -- 4) Listes --
+$piles = [0]
+pour e de 1 vers 10001 {
+    joindre($piles, e)
+}
+>> longueur($piles)
+>> $piles[5000]
+
+# -- 5) Tables --
+$tab = table()
+pour f de 1 vers 5001 {
+    inserer($tab, "k" + chaine(f), f * f)
+}
+>> longueur($tab)
+>> $tab["k2500"]
+
+# -- 6) Recursion --
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+>> fib(28)
+
+# -- 7) RNG + tampon --
+graine(2026)
+$buf = tampon(1000000)
+remplir_hasard($buf, octets("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"))
+>> longueur($buf)
+
+# -- 8) Fichiers --
+ecrire_texte("global_out.txt", "bench global Rose")
+>> lire_texte("global_out.txt")
+
+$m1 = millisecondes()
+>> $m1 - $m0

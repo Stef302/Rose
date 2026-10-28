@@ -13,6 +13,17 @@ $Racine = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Racine
 
 $dore = Join-Path $Racine "moteur\tests\dorés"
+if (-not (Test-Path $dore)) {
+    # Le nom « dorés » peut avoir été dégradé par l'outil d'extraction
+    # (zip UTF-8 sans marque UTF-8 lu en CP437 -> « dor├⌐s », etc.).
+    # On relocalise le dossier par gabarit plutôt que d'échouer 31 fois.
+    $cand = Get-ChildItem (Join-Path $Racine "moteur\tests") -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "dor*" } | Select-Object -First 1
+    if ($cand) {
+        $dore = $cand.FullName
+        Write-Host ("  NOTE  dossier dorés mal nommé (« " + $cand.Name + " ») : relocalisé.") -ForegroundColor Yellow
+    }
+}
 $ok = 0; $ko = 0
 function Succes([string]$msg) { $script:ok++; Write-Host "  OK    $msg" -ForegroundColor Green }
 function Echec([string]$msg)  { $script:ko++; Write-Host "  ECHEC $msg" -ForegroundColor Red }
@@ -23,16 +34,25 @@ function Exec-Rose([string]$exe, [string[]]$params) {
     $tmp  = [IO.Path]::GetTempFileName()
     $err  = "$tmp.err"
     try {
-        $p = Start-Process -FilePath $exe -ArgumentList $params `
-             -NoNewWindow -Wait -PassThru `
-             -RedirectStandardOutput $tmp -RedirectStandardError $err
+        $argl = @($params | Where-Object { $_ -ne $null -and $_ -ne "" })
+        if ($argl.Count -eq 0) {
+            # « usage sans argument » : -ArgumentList refuse la liste vide.
+            $p = Start-Process -FilePath $exe `
+                 -NoNewWindow -Wait -PassThru `
+                 -RedirectStandardOutput $tmp -RedirectStandardError $err
+        } else {
+            $p = Start-Process -FilePath $exe -ArgumentList $argl `
+                 -NoNewWindow -Wait -PassThru `
+                 -RedirectStandardOutput $tmp -RedirectStandardError $err
+        }
         $code = $p.ExitCode
         $octets = [IO.File]::ReadAllBytes($tmp)
+        $errtxt = [IO.File]::ReadAllText($err, [Text.Encoding]::UTF8)
     } catch {
-        $code = -1; $octets = @()
+        $code = -1; $octets = @(); $errtxt = ""
     }
     Remove-Item $tmp, $err -Force -ErrorAction SilentlyContinue
-    return @{ code = $code; octets = $octets }
+    return @{ code = $code; octets = $octets; errtxt = $errtxt }
 }
 
 # Normalise \r\n → \n (uniquement cette paire ; un \r seul est conservé).
@@ -78,7 +98,7 @@ foreach ($m in $moteurs) {
 
     # 1) version
     $r = Exec-Rose $exe @("version")
-    if ($r.code -eq 0 -and (Texte $r.octets) -match "Rose 2\.0\.0") { Succes "$nom version" }
+    if ($r.code -eq 0 -and (Texte $r.octets) -match "Rose 3\.13\.0") { Succes "$nom version" }
     else { Echec "$nom version (code $($r.code))" }
 
     # 2) dorés au caractère
@@ -117,6 +137,40 @@ foreach ($m in $moteurs) {
     $r = Exec-Rose $exe @([IO.Path]::Combine($dore, "t_tables.rose"))
     if ($r.code -eq 0 -and (Identiq $attendu $r.octets)) { Succes "$nom doré v3.1 tables" }
     else { Echec "$nom doré v3.1 tables (code $($r.code))" }
+
+    # 2d') v3.13 : chronomètre — duree() adaptatif + monotonie de temps()
+    $attendu = [IO.File]::ReadAllBytes((Join-Path $dore "t_chrono_c.txt"))
+    $r = Exec-Rose $exe @([IO.Path]::Combine($dore, "t_chrono.rose"))
+    if ($r.code -eq 0 -and (Identiq $attendu $r.octets)) { Succes "$nom doré v3.13 chrono" }
+    else { Echec "$nom doré v3.13 chrono (code $($r.code))" }
+    $r = Exec-Rose $exe @([IO.Path]::Combine($dore, "t_chrono_neg.rose"))
+    if ($r.code -eq 1 -and $r.errtxt -like "*positive ou nulle*") { Succes "$nom duree négative rejetée" }
+    else { Echec "$nom duree négative (code $($r.code))" }
+
+    # 2e) roses à tester (moteur\tests\roses) — torture multi-features M4.2.
+    # Les .attendu comparent l'octet ; les .attendu.err comparent le code de
+    # sortie et le message d'erreur (stdout+stderr confondus).
+    $roses = Join-Path $Racine "moteur\tests\roses"
+    if (Test-Path $roses) {
+        foreach ($rose in (Get-ChildItem $roses -Filter *.rose | Sort-Object Name)) {
+            $base = [IO.Path]::GetFullPath([IO.Path]::Combine($roses, $rose.BaseName))
+            $r = Exec-Rose $exe @([IO.Path]::GetFullPath($rose.FullName))
+            if (Test-Path "$base.attendu") {
+                $attendu = [IO.File]::ReadAllBytes("$base.attendu")
+                if ($r.code -eq 0 -and (Identiq $attendu $r.octets)) { Succes "$nom rose $($rose.BaseName)" }
+                else { Echec "$nom rose $($rose.BaseName) (code $($r.code))" }
+            } elseif (Test-Path "$base.attendu.err") {
+                $lignes = (Texte ([IO.File]::ReadAllBytes("$base.attendu.err"))) -split "`n"
+                $codeVoulu = 0
+                $premier = ($lignes[0] -replace "`r", "")
+                if ($premier -match "^CODE=(\d+)$") { $codeVoulu = [int]$Matches[1] }
+                $motif = (($lignes | Select-Object -Skip 1) -join "`n").Trim()
+                $obtenu = (((Texte $r.octets) + "`n" + $r.errtxt) -replace "`r", "").Trim()
+                if ($r.code -eq $codeVoulu -and $obtenu -like "*$motif*") { Succes "$nom rose $($rose.BaseName) (erreur attendue, code $codeVoulu)" }
+                else { Echec "$nom rose $($rose.BaseName) (code $($r.code), attendu $codeVoulu)" }
+            }
+        }
+    }
 
     # 3) CLI : usage et fichier absent → code 1
     $r = Exec-Rose $exe @()

@@ -1,0 +1,33 @@
+# Benchmark : transpose matrice carrée (stockage plat) — $t[j*N+i] = $m[i*N+j]
+# Mesure : pattern d'accès mémoire, efficacité cache, allocation
+# Syntaxe Rose valide : listes plates + joindre (pas de liste vide, pas de liste de listes)
+
+$N = 100
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+
+$m0 = millisecondes()
+# Construction de la matrice plate N*N
+$m = [0]
+pour $i de 1 vers $N * $N {
+    joindre($m, $i)
+}
+
+# Transpose (construction plate)
+$t = [$m[0]]
+# on remplit t en ordre transposé : pour chaque (i,j): t[j*N+i] = m[i*N+j]
+# construction par lignes de t : ligne j de t = colonne j de m
+pour $r de 1 vers $N {
+    # première colonne -> premier élément de la ligne
+    $val = $m[0 * $N + $r]
+    $row = [$val]
+    pour $i de 1 vers $N {
+        joindre($row, $m[$i * $N + $r])
+    }
+    pour $k de 0 vers $N {
+        joindre($t, $row[$k])
+    }
+}
+
+$elem = $t[0]
+$m1 = millisecondes()
+>> $m1 - $m0

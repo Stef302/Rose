@@ -1,0 +1,382 @@
+# lexeur.rose — jalon M4.0, étape 1 de l'auto-hébergement ROSE.
+#
+# Lexe le fichier .rose passé en argument et écrit ses jetons dans le
+# format EXACT de l'oracle `rose tokens` (moteur C++, tokeniser/tk_nom) :
+#
+#     ligne:colonne type texte_échappé
+#
+# un jeton par ligne, y compris le « eof » final. Spécification de
+# référence : tokeniser() dans moteur/cpp/src/rose.cpp — les blancs et
+# commentaires ne sont pas émis, le texte d'une chaîne est le contenu
+# DÉCODÉ, un mot-clé nu est de type « ident » (comme l'oracle), un mot
+# libre est « mot », $nom devient « ident » sans le $, π devient
+# flottant, ² et ³ deviennent ^ suivi du chiffre.
+#
+# DISCIPLINE D'ÉCRITURE (RIR n'a pas d'évaluation courts-circuits : les
+# deux opérandes de « et »/« ou » et les arguments d'appel sont évalués
+# AVANT la décision) : tout index de chaîne dangereux est abrité dans un
+# embranchement (si/sinon si — flux de contrôle, lui, bien séquentiel)
+# ou pré-compaté en $suiv. C'est la grammaire de prudence que le compilateur
+# auto-hébergé devra lui aussi respecter.
+#
+# Validation : moteur/tests/lexeur.py compare cette sortie à l'oracle sur
+# les 46 dorés, les 12 roses, les 10 bancs et les fixtures génératives, à
+# l'octet près. C'est le point d'appui du bootstrap M4.
+
+# ——— prédicats de caractères (miroir cp_lettre / cp_ident_suite / cp_chiffre) ———
+
+fn est_chiffre(c: entier) -> booleen {
+  retour c >= 48 et c <= 57
+}
+
+fn est_lettre(c: entier) -> booleen {
+  si (c < 128) {
+    retour (c >= 65 et c <= 90) ou (c >= 97 et c <= 122) ou c == 95
+  }
+  retour (c >= 192 et c <= 214) ou (c >= 216 et c <= 246) ou (c >= 248 et c <= 767) ou (c >= 880 et c <= 1279) ou (c >= 7680 et c <= 8191)
+}
+
+fn est_suite(c: entier) -> booleen {
+  si (c < 128) {
+    retour est_lettre(c) ou est_chiffre(c)
+  }
+  retour est_lettre(c)
+}
+
+# ——— tables d'opérateurs (miroir paire_jetons / uni_jeton / car_jeton) ———
+# Une chaîne vide signifie « ce n'est pas ce jeton ». Le type affiché est
+# celui de tk_nom ; le texte affichée est le texte BRUT de la source.
+
+fn paire(a: entier, b: entier) -> chaine {
+  si (a == 60 et b == 61) { retour "<=" }
+  si (a == 62 et b == 61) { retour ">=" }
+  si (a == 61 et b == 61) { retour "==" }
+  si (a == 33 et b == 61) { retour "!=" }
+  si (a == 47 et b == 61) { retour "!=" }
+  si (a == 63 et b == 61) { retour "?=" }
+  si (a == 61 et b == 126) { retour "=~" }
+  si (a == 126 et b == 61) { retour "=~" }
+  retour ""
+}
+
+fn uni(c: entier) -> chaine {
+  si (c == 8776) { retour "≈" }
+  si (c == 8804) { retour "<=" }
+  si (c == 8805) { retour ">=" }
+  si (c == 8800) { retour "!=" }
+  si (c == 215) { retour "*" }
+  si (c == 8901) { retour "*" }
+  si (c == 183) { retour "*" }
+  si (c == 247) { retour "div" }
+  si (c == 8592) { retour "=" }
+  si (c == 8594) { retour "->" }
+  si (c == 8730) { retour "racine" }
+  retour ""
+}
+
+fn car(c: entier) -> chaine {
+  si (c == 43) { retour "+" }
+  si (c == 45) { retour "-" }
+  si (c == 42) { retour "*" }
+  si (c == 47) { retour "/" }
+  si (c == 58) { retour ":" }
+  si (c == 37) { retour "%" }
+  si (c == 94) { retour "^" }
+  si (c == 33) { retour "!" }
+  si (c == 46) { retour "." }
+  si (c == 44) { retour "," }
+  si (c == 63) { retour "?" }
+  si (c == 40) { retour "(" }
+  si (c == 41) { retour ")" }
+  si (c == 123) { retour "{" }
+  si (c == 125) { retour "}" }
+  si (c == 91) { retour "[" }
+  si (c == 93) { retour "]" }
+  si (c == 59) { retour ";" }
+  si (c == 60) { retour "<" }
+  si (c == 62) { retour ">" }
+  si (c == 126) { retour "~" }
+  si (c == 64) { retour "@" }
+  retour ""
+}
+
+# ——— échappement du texte pour l'affichage (miroir texte_echappe) ———
+
+fn echapper(t: chaine) -> chaine {
+  $o = ""
+  $j = 0
+  $n = longueur(t)
+  tant_que ($j < $n) {
+    $c = ordre(t[$j])
+    si ($c == 92) { $o = $o + "\\" + "\\" }
+    sinon si ($c == 10) { $o = $o + "\\" + "n" }
+    sinon si ($c == 9) { $o = $o + "\\" + "t" }
+    sinon si ($c == 31) { $o = $o + "\\" + "u241f" }
+    sinon { $o = $o + t[$j] }
+    $j = $j + 1
+  }
+  retour $o
+}
+
+# ——— le lexage lui-même ———
+
+$src = ""
+si (nb_arguments() > 0) { $src = lire_texte(argument(0)) }
+$N = longueur($src)
+$i = 0
+$ligne = 1
+$col = 1
+$suiv = -1
+$ok = 1
+$c = 0
+$cc = 0
+$dl = 0
+$dc = 0
+$nx = 0
+$t = ""
+$buf = ""
+$txt = ""
+$q = 0
+$dollar = 0
+$flott = 0
+$point_ok = 0
+$fin = 0
+
+# Les mots-clés de tokeniser() : est_mot_cle — un mot-clé nu est de type
+# « ident » dans l'oracle, un mot libre est « mot ».
+$mots = table()
+inserer($mots, "fn", 1)
+inserer($mots, "retour", 1)
+inserer($mots, "si", 1)
+inserer($mots, "sinon", 1)
+inserer($mots, "tant_que", 1)
+inserer($mots, "pour", 1)
+inserer($mots, "de", 1)
+inserer($mots, "vers", 1)
+inserer($mots, "vrai", 1)
+inserer($mots, "faux", 1)
+inserer($mots, "et", 1)
+inserer($mots, "ou", 1)
+inserer($mots, "non", 1)
+inserer($mots, "div", 1)
+inserer($mots, "entier", 1)
+inserer($mots, "rationnel", 1)
+inserer($mots, "flottant", 1)
+inserer($mots, "booleen", 1)
+inserer($mots, "chaine", 1)
+inserer($mots, "liste", 1)
+inserer($mots, "table", 1)
+
+tant_que ($i < $N) {
+  $c = ordre($src[$i])
+  # lorgnon : le codepoint suivant, ou -1 hors fichier — jamais d'index sauvage
+  $suiv = -1
+  si ($i + 1 < $N) { $suiv = ordre($src[$i + 1]) }
+
+  # —— blancs : avancer sans émettre (miroir « avancer(1) ») ——
+  si ($c == 32 ou $c == 9 ou $c == 13 ou $c == 10) {
+    si ($c == 10) { $ligne = $ligne + 1; $col = 1 } sinon { $col = $col + 1 }
+    $i = $i + 1
+  }
+  # —— commentaires # et // jusqu'en fin de ligne (le \n n'est pas consommé) ——
+  sinon si ($c == 35 ou ($c == 47 et $suiv == 47)) {
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (ordre($src[$i]) == 10) { $ok = 0 }
+      sinon { $i = $i + 1; $col = $col + 1 }
+    }
+  }
+  # —— chaînes "..." ou '...' avec échappements, texte décodé ——
+  sinon si ($c == 34 ou $c == 39) {
+    $dl = $ligne
+    $dc = $col
+    $q = $c
+    $i = $i + 1
+    $col = $col + 1
+    $buf = ""
+    $fin = 0
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon {
+        $cc = ordre($src[$i])
+        si ($cc == 92) {
+          si ($i + 1 >= $N) { $ok = 0 }
+          sinon {
+            $nx = ordre($src[$i + 1])
+            si ($nx == 110) { $buf = $buf + "\n" }
+            sinon si ($nx == 116) { $buf = $buf + "\t" }
+            sinon si ($nx == 92 ou $nx == 34 ou $nx == 39) { $buf = $buf + sous_chaine($src, $i + 1, $i + 2) }
+            sinon { $buf = $buf + "\\" + sous_chaine($src, $i + 1, $i + 2) }
+            $i = $i + 1
+            $col = $col + 1
+            $i = $i + 1
+            $col = $col + 1
+          }
+        }
+        sinon si ($cc == $q) {
+          $i = $i + 1
+          $col = $col + 1
+          $fin = 1
+          $ok = 0
+        }
+        sinon {
+          $buf = $buf + $src[$i]
+          $i = $i + 1
+          $col = $col + 1
+        }
+      }
+    }
+    >> chaine($dl) + ":" + chaine($dc) + " chaine " + echapper($buf)
+  }
+  # —— nombres : chiffres [ . chiffres ] ——
+  sinon si (est_chiffre($c)) {
+    $dl = $ligne
+    $dc = $col
+    $txt = ""
+    $flott = 0
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (est_chiffre(ordre($src[$i]))) {
+        $txt = $txt + $src[$i]
+        $i = $i + 1
+        $col = $col + 1
+      }
+      sinon { $ok = 0 }
+    }
+    $point_ok = 0
+    si ($i < $N) {
+      si ($i + 1 < $N) {
+        si (ordre($src[$i]) == 46 et est_chiffre(ordre($src[$i + 1]))) { $point_ok = 1 }
+      }
+    }
+    si ($point_ok == 1) {
+      $flott = 1
+      $txt = $txt + "."
+      $i = $i + 1
+      $col = $col + 1
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (est_chiffre(ordre($src[$i]))) {
+          $txt = $txt + $src[$i]
+          $i = $i + 1
+          $col = $col + 1
+        }
+        sinon { $ok = 0 }
+      }
+    }
+    si ($flott == 1) {
+      >> chaine($dl) + ":" + chaine($dc) + " flottant " + $txt
+    } sinon {
+      >> chaine($dl) + ":" + chaine($dc) + " nombre " + $txt
+    }
+  }
+  # —— π : constante flottante (texte remplacé, comme l'oracle) ——
+  sinon si ($c == 960) {
+    >> chaine($ligne) + ":" + chaine($col) + " flottant 3.141592653589793"
+    $i = $i + 1
+    $col = $col + 1
+  }
+  # —— identifiants, $variables et mots-clés ——
+  sinon si ($c == 36 ou est_lettre($c)) {
+    $dl = $ligne
+    $dc = $col
+    $dollar = 0
+    si ($c == 36) { $dollar = 1; $i = $i + 1; $col = $col + 1 }
+    $nu = ""
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (est_suite(ordre($src[$i]))) {
+        $nu = $nu + $src[$i]
+        $i = $i + 1
+        $col = $col + 1
+      }
+      sinon { $ok = 0 }
+    }
+    si ($dollar == 1 ou cle_existe($mots, $nu)) {
+      >> chaine($dl) + ":" + chaine($dc) + " ident " + $nu
+    } sinon {
+      >> chaine($dl) + ":" + chaine($dc) + " mot " + $nu
+    }
+  }
+  # —— paires de deux caractères (paire_jetons, avant les flèches) ——
+  sinon si (paire($c, $suiv) != "") {
+    $t = paire($c, $suiv)
+    >> chaine($ligne) + ":" + chaine($col) + " " + $t + " " + sous_chaine($src, $i, $i + 2)
+    $i = $i + 1
+    $col = $col + 1
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si ($c == 62 et $suiv == 62) {
+    >> chaine($ligne) + ":" + chaine($col) + " >> >>"
+    $i = $i + 1
+    $col = $col + 1
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si ($c == 60 et $suiv == 60) {
+    >> chaine($ligne) + ":" + chaine($col) + " << <<"
+    $i = $i + 1
+    $col = $col + 1
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si ($c == 45 et $suiv == 62) {
+    >> chaine($ligne) + ":" + chaine($col) + " -> ->"
+    $i = $i + 1
+    $col = $col + 1
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si ($c == 61) {
+    >> chaine($ligne) + ":" + chaine($col) + " = ="
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si ($c == 58 et $suiv == 58) {
+    >> chaine($ligne) + ":" + chaine($col) + " :: ::"
+    $i = $i + 1
+    $col = $col + 1
+    $i = $i + 1
+    $col = $col + 1
+  }
+  # —— ² et ³ : ^ suivi du chiffre (deux jetons à la même position) ——
+  sinon si ($c == 178) {
+    >> chaine($ligne) + ":" + chaine($col) + " ^ ^"
+    >> chaine($ligne) + ":" + chaine($col) + " nombre 2"
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si ($c == 179) {
+    >> chaine($ligne) + ":" + chaine($col) + " ^ ^"
+    >> chaine($ligne) + ":" + chaine($col) + " nombre 3"
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si (uni($c) != "") {
+    >> chaine($ligne) + ":" + chaine($col) + " " + uni($c) + " " + $src[$i]
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon si (car($c) != "") {
+    >> chaine($ligne) + ":" + chaine($col) + " " + car($c) + " " + $src[$i]
+    $i = $i + 1
+    $col = $col + 1
+  }
+  sinon {
+    # L'oracle lève « Caractère inattendu » ici. Un programme Rose ne peut
+    # pas écrire sur stderr ni sortir avec un code — ce chemin est hors du
+    # corpus valide ; moteur/tests/lexeur.py ne soumet que des sources bien
+    # formées. La fidélité des erreurs viendra avec l'analyseur, quand le
+    # compilateur auto-hébergé les lèvera lui-même depuis le moteur.
+    $i = $i + 1
+    $col = $col + 1
+  }
+}
+
+>> chaine($ligne) + ":" + chaine($col) + " eof "

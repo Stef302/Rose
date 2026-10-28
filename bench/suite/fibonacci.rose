@@ -1,0 +1,18 @@
+# Benchmark : fibonacci(N) — calcul de F(N) entiers exacts (GMP si besoin)
+# Mesure : temps d'itération + croissance de la taille entiers
+# F(5 000 000) fait 1 044 939 chiffres (référence PERF.md)
+# Syntaxe Rose valide
+
+$N = 100000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+
+$m0 = millisecondes()
+$a = 0
+$b = 1
+pour $k de 1 vers $N {
+    $temp = $a + $b
+    $a = $b
+    $b = $temp
+}
+$m1 = millisecondes()
+>> $m1 - $m0

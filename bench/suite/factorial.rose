@@ -1,0 +1,15 @@
+# Benchmark : factorielle(N) — N! avec précision GMP exacte
+# Mesure : temps multiplication massive + croissance de taille
+# factorielle(1 000 000) fait 5 565 709 chiffres (référence PERF.md)
+# Syntaxe Rose valide : pour $k de 2 vers $N+1
+
+$N = 100000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+
+$m0 = millisecondes()
+$resultat = 1
+pour $k de 2 vers $N + 1 {
+    $resultat = $resultat * $k
+}
+$m1 = millisecondes()
+>> $m1 - $m0

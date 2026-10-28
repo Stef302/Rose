@@ -1,0 +1,16 @@
+fn fibo(n: entier) → entier {
+  si (n <= 1) { retour n }
+  retour fibo(n - 1) + fibo(n - 2)
+}
+>> fibo(25)
+fn pgcd_euclide(a: entier, b: entier) → entier {
+  tant_que (b != 0) {
+    $t = b
+    b = a % b
+    a = $t
+  }
+  retour a
+}
+>> pgcd_euclide(1071, 462)
+>> pgcd_euclide(17, 5)
+>> fibo(10) + fibo(11)

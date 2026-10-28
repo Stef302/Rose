@@ -619,3 +619,229 @@ non compilables (notation symbolique, mixtes rationnel⊛flottant, tables)
 et 1 limite assumée (`signature`, promotion overflow→GMP = M3.4).
 Croisée x86-64 finale sous qemu : test_jit complet + dorés 43/43.
 Bancs inchangés (empreintes 10/10) : la fidélité n'a rien coûté au JIT.
+
+### M3.4 — rose_ent : l'entier AOT ne déborde plus
+
+Jusqu'ici les slots entiers d'un binaire AOT étaient de simples `long long` :
+`acc ⋅ i` qui dépasse 2⁶³ rendait un résultat faux en silence — c'était la
+limite `signature`. Les slots deviennent **`rose_ent`**, la copie AOT de
+l'entier de l'interprète : mot machine tant que ça tient, promotion GMP dès
+l'overflow, rétrogradation quand un résultat revient dans int64. Les
+opérateurs `+ − × < ==` sont surchargés avec garde machine (additions en
+`__int128`, comparaisons directes) — l'émission brute du transpileur ne
+change pas d'un octet.
+
+Le coût réel est dans les angles, pas dans l'arithmétique :
+
+- **`rose_int` est l'alias de `int64_t`** (= `long` ici) : un wrapper
+  `f(rose_ent)` qui rappelle `f((rose_int)x)` se rappelle LUI-MÊME à l'infini.
+  Premier symptôme : `rose_nombre_pi` en récursion jusqu'au SEGV (PAC masque
+  le débordement de pile en faute de segment). Les surcharges de domaine
+  primitif passent désormais par des types distincts.
+- **`rose_ent + int` était ambigu** (constructeur `rose_ent(int64_t)` contre
+  constructeur `mpz(long)` : deux conversions utilisateur de même rang).
+  Surcharges exactes `(rose_ent, long long)` — et l'interdiction stricte
+  d'un constructeur `rose_ent(double)`, qui rendrait tout littéral ambigu.
+- **`double × rose_ent`** : avec surcharges `(long long, rose_ent)`, g++
+  tronque le double avant la multiplication (2 au lieu de 3 dans
+  `t_flottant`). La conversion vers `double` est **explicite**, et le
+  transpileur enrobe lui-même les opérandes entiers des opérations
+  flottantes, comparaisons, paramètres et retours (`rose_vers_double`).
+- **`gd = ent`** : la conversion mpz implicite réveillait le machinery de
+  templates de gmpxx (ambiguïtés, UB). Conversion explicite + enrobage
+  `rose_vers_mpz(...)` par le transpileur (affectations, arguments gd,
+  retours, destination d'appel).
+- **Récursion profonde** : les cadres portant des `rose_ent`, le golden
+  `machine` (`it(100000)`) déborde la pile de 8 Mo. Le transpileur détecte
+  les cycles d'appels et `main` lève alors sa propre pile (512 Mo,
+  `setrlimit` + `execv` de soi-même, avant toute sortie). Les programmes
+  non récursifs ne paient rien.
+
+Mesures. Bancs JIT : empreintes 10/10 inchangées (M3.4 ne touche pas la
+voiture rapide). Bancs **AOT** (build -O3 -march=native, médiane N=3,
+chauffe 1) : pgcd 0,112 (JIT 0,174, ×1,6), puissance 0,286 (JIT 0,916,
+×3,2), mot_de_passe 0,462 (JIT 0,483), factorielle 0,168, fibonacci 0,017,
+premiers 0,053 — empreintes toutes exactes. Coût payé : boucle_entier
+0,103 contre 0,035 en JIT (garde d'overflow dans la boucle la plus serrée)
+et appels 0,058 contre 0,024 ; c'est le prix de la correction, le JIT reste
+le chemin de vitesse.
+
+Mesure de couverture : `aot.py` passe à **16 fidèles + 16 rejets corrects
+sur 35 cas, 0 limite, 0 écart catalogué, 0 régression** — `signature` et
+`machine` sont devenus fidèles. Restent trois lacunes de fonctionnalité
+non compilables : notation symbolique, mixtes rationnel⊛flottant, tables.
+
+### Portage Windows x64 du moteur C++ (cross zig, génération M3.4)
+
+`build-win64.sh` compilait un `rose.cpp` autonome ; depuis M2.x/M3.4 il
+référence JIT + transpileur et le TU était devenu « monolithique » (readlink
+dans l'action build). Trois blocages, tous locaux :
+
+1. `static_assert(sizeof(Valeur)==152)` faux sous LLP64 : libc++ (zig
+   windows-gnu) a un `std::string` de 24 octets contre 32 en libstdc++.
+   Le contrat réel est **ty@0, z@+8** (arithmétique inline, JIT) → assert
+   d'offsets partout + assert de taille réservé au terrain natif
+   `__LP64__ && !_WIN32` (seul endroit où rir.h est consommé).
+2. `mpz_class(size_type)` ambigu : le gmpxx de la GMP Windows n'a **pas de
+   constructeur long long** → cast explicite `(unsigned long)` (tailles de
+   liste > 2³2 physiquement impossibles). Les autres sites l'avaient déjà.
+3. `readlink("/proc/self/exe")` inline dans l'action build → remplacé par
+   `chemin_moteur()` (déjà porté GetModuleFileName depuis v3.8) et trim
+   `"/\\"` (séparateur Windows).
+
+Liaison Windows : `jit.cpp`/`jit_x64.cpp` exigent mmap/mprotect (POSIX),
+`transpiler.cpp` suppose un g+++GMP cible. Nouveau TU `jit_win_stub.cpp`
+(gardé `_WIN32`) : `rose_jit_compile` rend nullptr → repli interpréteur
+(chemin ROSE_NO_JIT déjà éprouvé) ; les 31 helpers `jit_*` ne servent que
+d'adresses dans la table de dispatch (jamais appelés sans code natif) et
+`transpiler_rir` rend le rejet poli « Rose : erreur — rose build non
+disponible sous Windows » + sortie 1 — contrat exact des rejets AOT.
+Signatures : `rose_jit_compile/run` en **linkage C**, helpers en mangling
+C++ (le stub doit reproduire cette distinction, sinon lld-link refuse).
+
+État : `rose-win64.exe` 1 443 840 o construit par l'étape 2 du script
+(-std=c++20 + stub, -static), **jamais exécuté sous Windows** (pas de
+wine ici) — l'arbitre est `tester.ps1` (3 moteurs × 44 dorés) sur machine
+réelle, testée par des volontaires hors ligne. Côté natif, zéro régression : dorés 44/44,
+parité 116/116, aot.py 16+16/35 0 régression, test_jit vert, bancs
+boucle_entier 0,03 s / premiers 0,05 s et empreintes exactes.
+
+### Évaluation LLVM/PGO — la file « backend LLVM » mesurée avant d'investir
+
+Avant d'intégrer `llvm_backend.cpp` (brouillon 238 l : domaine machine i64
+seul, cmp placeholder, calls vides), trois mesures :
+
+1. **Codegen brut** : chaîne dépendante mul-add 100 M tours (non repliable),
+   `opt -O3 + llc -O3 -mcpu=native` (LLVM 18) contre `g++ -O3 -march=native`
+   → 0,08-0,09 s des deux côtés, empreintes identiques. Sur notre domaine
+   (i64/GMP latency-bound), changer de backend ne rapporte rien.
+2. **PGO** sur `mot_de_passe` (entraînement = le banc lui-même) : médiane
+   0,48 → 0,47, soit +2-3 % — pour un `rose build` qui deviendrait double
+   (compilation + exécution d'entraînement). Rejeté.
+3. **Plafond AOT** : `a_boucle_entier.cpp` avec `rose_ent → int64_t`
+   (structure émise identique, sans gardes) tombe sous le milliseconde,
+   alors que le binaire réel tient 0,11 s. L'écart n'est PAS la garde
+   d'overflow ni le backend : c'est la COPIE.
+
+Diagnostic : `rose_ent` portait son `mpz_class` en dur →
+bool + int64 + 16 o de structure GMP = 32 o par valeur. Un retour
+d'opérateur de 32 o dépasse la paire de registres de retour →
+round-trip mémoire (sret) par opération, et chaque copie traîne 16 o de
+GMP mort pour les petits entiers. C'est le sret, pas la garde.
+
+### M4.1 — rose_ent 16 octets : deux registres, plus de sret
+
+Nouvelle représentation : `int64_t m_ + mpz_class *g_` avec **convention
+NULL** (`gros() ≡ g_ != nullptr`) — le booléen tag disparaît, `sizeof == 16`
+(stat_assert posé), l'mpz n'est alloué qu'à la promotion et VOLE au move.
+Rule of five écrite à la main (copy = new mpz si gros ; move = vol du
+pointeur, émetteur vidé ; destructeur = delete). Aucune décision sémantique
+ne bouge : mêmes tests de promotion, mêmes accesseurs `gros()/petit()/gd()`
+utilisés par les opérateurs surchargés, le transpilé et les helpers `_gd`
+(zéro site touché dans transpiler.cpp — 7 accès directs à `g_` seulement,
+tous dans la classe).
+
+Vérifications, tout en vert : aot.py 16 fidèles + 16 rejets / 35, 0
+régression ; dorés 44/44 ; parité 116/116 ; les 10 bancs AOT reconstruits
+ont des sorties **octet pour octet identiques** aux anciens binaires
+(empreintes 10/10).
+
+Bancs AOT (médiane N=5, chauffe 1, alternés ancien/nouveau) :
+
+| banc            | ancien (32 o) | nouveau (16 o) |
+|-----------------|---------------|----------------|
+| boucle_entier   | 0,10          | **0,01**       |
+| appels          | 0,05          | **< 0,01**     |
+| boucle_flottante| 0,02          | < 0,01         |
+| pgcd            | 0,11          | 0,10           |
+| factorielle     | 0,17          | 0,18 (disp.)   |
+| mot_de_passe    | 0,46          | 0,47           |
+| puissance       | 0,28          | 0,28           |
+| premiers        | 0,05          | 0,05           |
+
+`boucle_entier` AOT passe **devant le JIT** (0,01 vs 0,05 — le runtime
+inliné sait ce que le JIT ne plie pas) ; le prix payé est un
+new/delete par promotion (case rare, les bancs GMP-dominés sont inchangés
+à ±2 %). Piège évité de justesse : supprimer `gros_` sans convention NULL
+aurait laissé `gd()` sur un pointeur mort — le `static_assert(sizeof)` +
+la doc du champ verrouillent la représentation.
+
+## M4.2 — comblement des trois lacunes AOT + contrat anti-silence
+
+Les trois derniers programmes « non compilables » d'aot.py (notation
+symbolique, mixtes rationnel⊛flottant, tables) sont désormais **fidèles
+caractère pour caractère**. aot.py : 16 → **19 fidèles**, 0 non compilable,
+0 régression.
+
+Découverte annexe — le rapport cachait la vérité deux fois :
+1. « notation symbolique » échouait pour un **espace dans le nom du
+   binaire** (aot.py passait `-o /tmp/…/notation symbolique` non quoté à
+   g++). aot.py assainit désormais les noms (slug).
+2. Un op ou un appel non reconnu du transpileur n'émettait **rien du tout**
+   (ou un commentaire `// unsupported`) : le C++ produit compilation
+   échouait par chance, ou compilait avec des slots non initialisés →
+   sortie silencieusement fausse (le `²` de t_symboles rendait 0). Le
+   transpileur **lève** maintenant (`throw std::runtime_error`) ; l'action
+   build attrape et rend « Rose : erreur — … » code 1. Contrat : jamais de
+   trou silencieux — un rejet poli vaut mieux qu'un zéro bien propre.
+
+Corrections de fidélité :
+* **pow par suffixe de domaine** (le checker suffixe l'op du type attendu :
+  `pow.f`, `pow.q`…) : miroir exact de l'interprète — exposant flottant
+  d'abord `std::pow(vers_d(base), d.f)`, puis base flottante, puis domaine
+  exact via `rose_pow_exact` (nouvelle aide runtime : é`troncature AU
+  PLANCHER` vers_z, e<0 par inversion, messages d'erreur identiques).
+  Destination entière + exposant non littéral = rejet explicite (l'interprète
+  peut y stocker un RATIONNEL qu'aucun slot statique ne porte).
+* **Mixtes Q⊛F** : `rose_vers_double` sur mpq (`mpq_get_d`) et mpz
+  (`mpz_get_d`) — miroir `vers_d` ; les sites add/sub/mul/div .q et .f
+  enveloppent tout opérande hors domaine ; le collecteur propage F comme il
+  propageait Gd.
+* **Tables AOT** : nouveau domaine `rose_dyn`/`rose_table` dans le runtime.
+  Le checker type `t[cle]` en « tout » sans unifier : la cellule porte donc
+  son tag et **deux rendus** distincts, documentés — `afficher()` miroir
+  ecri (rationnel DECIMAL) pour `>>`, `texte()` miroir chaine_de (rationnel
+  « a/b », flottant plié) dans les tables et listes. Table = vecteur ordonné,
+  remplacement en place, `==` ordre-indépendant (miroir), clés numériques =
+  rejet explicite (« 5 » texte et 5 nombre collident en texte).
+  Garde transversale : arithmétique/return/frontières de fonction refusent
+  table et cellule dynamique.
+
+Mesure du domaine neuf (`tab_micro.rose`, 200 000 inserer+cle_existe+index) :
+interprète **801 ms** → AOT **11 ms** (médiane 3, warmup exclu) ≈ ×70.
+
+Validation : dorés 44/44, parité 116/116, test_jit (rebuilt), croisée x64
+qemu (test_jit + dorés 43/43), bancs AOT 10/10 empreintes identiques et
+timings au pair avec M4.1 (médianes entrelacées même session : appels
+11↔11, boucle_entier 23↔24, flottante 4↔4, pgcd 105↔104, mot_de_passe
+492↔479, premiers 62↔54 ms — bruit thermique, aucune régression).
+Bonus garde-fou : le garde-fou d'en-tête `#ifndef` du runtime était fermé à
+mi-fichier (la moitié du header non protégée) — refermé en fin de fichier.
+
+### Addendum M4.2 — les roses de torture débusquent trois croissances
+
+Douze « roses à tester » (moteur/tests/roses) générées contre
+l'interprète et passées au peigne interp=JIT=rust=zig=AOT. Trois
+divergences réelles, toutes trouvées par elles, toutes corrigées :
+
+1. **rust & zig** : l'affichage d'une table rendait ses cellules par
+   ecri (2.4) au lieu du miroir `ecri(T_TABLE) → chaine_de(v)` (12/5).
+   Un rationnel dans une table valait donc deux textes selon le moteur —
+   invisible dans les dorés (aucun Q en cellule), immédiat dans
+   rose_tables. Zig portait de surcroît une `chaineDe` sans cas
+   table/liste (récursion croisée évitée de justesse).
+2. **AOT `chaine(rationnel)`** : le transpileur émettait `rose_texte_q`
+   — le rendu **décimal** de ecri — là où l'interprète rend chaine_de =
+   « a/b ». Silencieux préexistant : aucun doré n'appelait chaine sur un
+   rationnel. Nouveau helper `rose_texte_q_ab` ; les deux rendus sont
+   désormais nommés dans le runtime (`texte`=chaine_de, `rendu`=ecri).
+3. **AOT `^` trop strict** : le checker matérialise l'exposant en temps
+   `cst.*` — le littéral n'arrivait jamais au test de rejet, qui
+   condamnait `7 ^ 2`. Acceptation élargie aux entiers et fractions
+   positives littéraux (floor ≥ 0 — `rose_vers_mpz` plancher est pile
+   l'arithmétique de `vers_z`) : `(-8)^(1/3)` → 1 comme l'interprète.
+
+Mesures des roses (au passage) : les rejet AOT restant = z^e à exposant
+non littéral (`rose_puissance_dyn`, documenté, jamais silencieux).
+validation complète rejouée après correctifs : dorés 44, parité 116,
+aot.py 19+16/35, croisée x64 qemu 43/43, bancs 10/10 empreintes.

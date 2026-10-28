@@ -1,0 +1,106 @@
+$N = 4096
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+$F = 5
+si (nb_arguments() > 1) { $F = entier(argument(1)) }
+
+# S4 : arithmetique IEEE stricte, NON FMA-repliee. Deux accumulateurs :
+#   u5 = (x + y)*(x + y) ; u6 = x*y
+#   d45 += x*x + y*y + x*y + u6 + u5 + u6   (par element)
+#   d55 += u5 + u6                          (par element)
+# et la ligne comparee est  d45 + d55 , PAS une chaine unique a huit termes :
+# les deux rendent des VALEURS DIFFERENTES (mesure : 29 789 793,24567032
+#  contre 29 789 793,245670356). Les produits purs passent par des temporaires :
+#  replies en FMA, ils perdraient le second arrondi. Les jumeaux C++, Rust et
+#  Python recopient ces chaines a l'operation pres ; la parite comparant des
+#  VALEURS exactes, pas des  a peu pres .
+
+$d45 = 0.0
+$d55 = 0.0
+$x4 = 0.0
+$y4 = 0.0
+$u5 = 0.0
+$u6 = 0.0
+pour $p4 de 0 vers $F {
+    $d45 = 0.0
+    $d55 = 0.0
+    pour $i4 de 0 vers $N {
+        $x4 = $i4 / 100.0
+        $y4 = $i4 / 71.0
+        $u5 = ($x4 + $y4) * ($x4 + $y4)
+        $u6 = $x4 * $y4
+        $d45 = $d45 + $x4 * $x4 + $y4 * $y4 + $x4 * $y4 + $u6 + $u5 + $u6
+        $d55 = $d55 + $u5 + $u6
+    }
+}
+
+# S5 : comptage de premiers par la METHODE EXACTE du builtin compter_premiers
+#  (table de N+1 octets, 0 = premier potentiel, borne INCLUSIVE [2..N] : 564 a
+#  N=4096, 78498 a N=10^6). Les jumeaux recopient CETTE methode, pas un crible
+#  approche : un octet de table de trop ou de trop peu, ou un carre parfait
+#  marque de travers, decale le compte.
+
+$nb5 = 0
+pour $p5 de 0 vers $F {
+    $nb5 = $nb5 + compter_premiers($N)
+}
+
+# S6 : Monte-Carlo pi + RNG (hasard() en CHAINE : l'etat avance a CHAQUE APPEL ;
+# DEUX appels hasards par element = DEUX TIRAGES ; graine(2026) = etat := 2026
+# PUIS un tirage d'avance ; Lemire = (r*10^6)>>64 ; 10^6 n'est PAS une
+#  puissance de 2, donc Lemire, jamais le masque & (n-1)). ANTI-SIMD : la chaine
+#  depend de l'ETAT SPLITMIX.
+
+$interieur6 = 0
+$i6 = 0
+$x6 = 0.0
+$y6 = 0.0
+pour $p6 de 0 vers $F {
+    graine(2026)
+    $interieur6 = 0
+    pour $i6 de 0 vers 200000 {
+        $x6 = hasard(1000000) / 1000000.0
+        $y6 = hasard(1000000) / 1000000.0
+        si ($x6 * $x6 + $y6 * $y6 <= 1.0) { $interieur6 = $interieur6 + 1 }
+    }
+}
+
+# S7 : la Philox du moteur (voie MASQUEE de remplir_hasard_philox : generateur
+#  A COMPTEUR, un mot CONSOMME par OCTET GLANE, masque & 63 puisque l'alphabet
+#  fait 64 caracteres = puissance de 2 ; la moitie HAUTE du mot ne sert JAMAIS,
+#  et l'etat splitmix avance a CHAQUE APPEL). 4096 x 8 = 32 768 octets LUS par
+#  passe dans un tampon de 65 536, donc chaque element glane DES OCTETS DE DEUX
+#  BLOCS DIFFERENTS : un moteur qui vectoriserait la glanee en mots de 8 octets,
+#  qui la decouperait en threads, ou qui melangerait l'etat AUTREMENT rendrait
+#  une AUTRE valeur, et le banc le signale - une SOMME n'est pas un invariant de
+#  permutation, et l'ordre de lecture est UNIQUE (nthreads = 1 sous 100000 blocs).
+#   >>  en DEBUT de ligne = AFFICHAGE, jamais un decalage dans une expression ;
+#   $b[i] = v  est refuse par le parseur, d'ou les MULTIPLICATIONS par 256,
+#  65536 et 16777216 (exactes, identiques partout). Les produits restent sous
+#  2^64 : jamais de promotion GMP, donc la parite compare des VALEURS exactes.
+
+$philox7 = tampon(65536)
+$alpha7 = octets("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+$tot7 = 0
+$i7 = 0
+$mot7 = 0
+pour $p7 de 0 vers $F {
+    $philox7 = tampon(65536)
+    remplir_hasard_philox($philox7, $alpha7, 2026)
+    $tot7 = 0
+    pour $i7 de 0 vers 4096 {
+        $mot7 = tampon_case($philox7, $i7 * 8) * 16777216
+        $mot7 = $mot7 + tampon_case($philox7, $i7 * 8 + 1) * 65536
+        $mot7 = $mot7 + tampon_case($philox7, $i7 * 8 + 2) * 256
+        $mot7 = $mot7 + tampon_case($philox7, $i7 * 8 + 3)
+        $mot7 = $mot7 + tampon_case($philox7, $i7 * 8 + 4) * 16777216
+        $mot7 = $mot7 + tampon_case($philox7, $i7 * 8 + 5) * 65536
+        $mot7 = $mot7 + tampon_case($philox7, $i7 * 8 + 6) * 256
+        $mot7 = $mot7 + tampon_case($philox7, $i7 * 8 + 7)
+        $tot7 = $tot7 + $mot7
+    }
+}
+
+>> $d45 + $d55
+>> $nb5
+>> $interieur6
+>> $tot7

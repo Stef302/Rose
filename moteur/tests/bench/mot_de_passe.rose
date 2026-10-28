@@ -8,10 +8,9 @@
 $a = octets("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 $N = 1000000000
 si (nb_arguments() > 0) { $N = entier(argument(0)) }
-$m0 = millisecondes()
+$debut = temps()
 graine(2026)
 $buf = tampon($N)
 remplir_hasard($buf, $a)
-$m1 = millisecondes()
 >> longueur($buf)
->> chaine($m1 - $m0) + " ms"
+>> duree(temps() - $debut)
