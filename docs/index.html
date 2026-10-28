@@ -3,14 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <title>Rose — le langage compilé en français qui se compile lui-même</title>
 <link rel="icon" type="image/svg+xml" href="assets/img/logorose.svg">
-<link rel="icon" type="image/png" sizes="32x32" href="assets/img/favicon-32.png">
-<link rel="shortcut icon" href="assets/img/favicon-32.png">
-<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+<link rel="apple-touch-icon" href="favicon-180.png">
 <meta property="og:title" content="Rose — le langage compilé en français qui se compile lui-même">
 <meta property="og:description" content="Interprète, JIT et compilation native AOT. Trois voies pour un seul langage, un moteur de référence et son traducteur C++ écrit en Rose.">
 <meta property="og:image" content="assets/img/og-rose.png">
@@ -53,7 +48,7 @@ body.light{
 html{scroll-behavior:smooth}
 body{
   background:var(--bg); color:var(--txt);
-  font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
   overflow-x:hidden; transition:background .5s,color .5s;
 }
 #bg-canvas{position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:.55}
@@ -87,7 +82,7 @@ a{text-decoration:none;color:inherit;cursor:pointer}
 .nav nav{margin-left:auto;display:flex;gap:.2rem}
 .nav nav button{
   background:none; border:none; color:var(--sub);
-  font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.8rem; letter-spacing:2px;
+  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.8rem; letter-spacing:2px;
   padding:10px 14px; cursor:pointer; transition:.2s; position:relative;
 }
 .nav nav button:hover{color:var(--txt)}
@@ -108,7 +103,7 @@ a{text-decoration:none;color:inherit;cursor:pointer}
 /* ---------- BOUTONS ---------- */
 .btn{
   display:inline-flex; align-items:center; gap:8px; justify-content:center;
-  font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.82rem; letter-spacing:2px;
+  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.82rem; letter-spacing:2px;
   padding:13px 22px; transition:.2s; cursor:pointer; border:none;
   clip-path:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%);
 }
@@ -157,7 +152,7 @@ h1{
 /* ---------- STATS ---------- */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-top:4rem;max-width:1400px;margin-inline:auto;padding:0 6vw}
 .stat{background:var(--card);border:1px solid var(--ligne);padding:22px;text-align:center}
-.stat-num{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:2.6rem;color:var(--vert);line-height:1}
+.stat-num{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:2.6rem;color:var(--vert);line-height:1}
 .stat-lbl{font-size:.72rem;letter-spacing:2px;color:var(--sub);margin-top:8px}
 
 /* ---------- TICKER ---------- */
@@ -184,7 +179,7 @@ body.light .term{background:#1a1a1a}
 .dot{width:11px;height:11px;border-radius:50%}
 .dot.rouge{background:var(--rouge)} .dot.vert{background:var(--vert)} .dot.blanc{background:#ddd}
 .term-bar > span{margin-left:8px;color:#999}
-.copy{margin-left:auto;background:none;border:1px solid #262626;color:#999;font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.68rem;padding:6px 10px;cursor:pointer;letter-spacing:2px;transition:.2s}
+.copy{margin-left:auto;background:none;border:1px solid #262626;color:#999;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.68rem;padding:6px 10px;cursor:pointer;letter-spacing:2px;transition:.2s}
 .copy:hover{color:var(--vert);border-color:var(--vert)}
 /* Encadré installation */
 .install-card{
@@ -238,7 +233,7 @@ body.light .editor{background:#1c1c1c}
 .editor-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.72rem;color:#999;letter-spacing:2px}
 .editor-tabs{display:flex;gap:2px;margin-left:auto}
 .tab{
-  padding:8px 14px; background:#141414; color:#888; font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  padding:8px 14px; background:#141414; color:#888; font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
   font-size:.7rem; letter-spacing:2px; cursor:pointer; border:none; transition:.2s;
 }
 .tab.active{background:#242424;color:var(--vert)}
@@ -278,7 +273,7 @@ body.light .editor{background:#1c1c1c}
 .doc-sidebar li{margin:4px 0}
 .doc-sidebar button{
   width:100%; text-align:left; background:none; border:none;
-  font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.8rem; color:var(--sub);
+  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.8rem; color:var(--sub);
   padding:8px 10px; cursor:pointer; transition:.2s; border-left:2px solid transparent;
 }
 .doc-sidebar button:hover{color:var(--txt);background:var(--noir4)}
@@ -354,7 +349,7 @@ body.light .doc-content code.inline{background:#EFEAD9}
 }
 .search-input{
   width:100%; padding:22px; background:transparent; border:none; outline:none;
-  color:var(--txt); font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:1.08rem;
+  color:var(--txt); font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:1.08rem;
 }
 .search-results{border-top:1px solid var(--ligne);max-height:50vh;overflow-y:auto}
 .search-result{padding:14px 22px;cursor:pointer;border-bottom:1px solid var(--ligne);transition:.15s}
@@ -370,7 +365,7 @@ footer{border-top:1px solid var(--ligne);padding:50px 6vw;text-align:center;marg
 .foot-col ul{list-style:none}
 .foot-col li{margin:6px 0}
 .foot-col button{
-  background:none;border:none;font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.8rem;
+  background:none;border:none;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.8rem;
   color:var(--sub);cursor:pointer;padding:0;transition:.2s;
 }
 .foot-col button:hover{color:var(--vert)}
@@ -406,7 +401,7 @@ footer p{font-size:.8rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 
 /* ========== COMPLÉMENTS v3.14 (nouveau site) ========== */
 .doc-sel{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:1.4rem}
-.rose-select{background:var(--noir2);color:var(--vert);border:1px solid var(--ligne);font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.8rem;letter-spacing:2px;padding:10px 14px;outline:none;cursor:pointer}
+.rose-select{background:var(--noir2);color:var(--vert);border:1px solid var(--ligne);font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.8rem;letter-spacing:2px;padding:10px 14px;outline:none;cursor:pointer}
 .badge-note{display:inline-block;background:var(--noir4);border:1px solid var(--vert);color:var(--vert);font-size:.68rem;letter-spacing:2px;padding:6px 12px;margin-top:.8rem}
 .etat{display:grid;grid-template-columns:1fr 1fr;gap:1.6rem;margin-top:1.4rem}
 .etat-col{background:var(--card);border:1px solid var(--ligne);padding:26px}
@@ -427,13 +422,6 @@ footer p{font-size:.8rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 /* ---- Typographie : Kare pour l'affichage, texte courant lisible ---- */
 h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',system-ui,sans-serif}
 .stat-num{font-family:'Kare Shadow','Kare',sans-serif}
-/* ---- Typographie : Kare pour titres, mots-clés et libellés courts ; Inter pour les paragraphes ---- */
-body{font-weight:500;line-height:1.7}
-p,li,td,dd{font-weight:500}
-h1,h2,h3,h4,b,strong,.brand span,.nav nav button,.btn,.overline,.badge,.stat-lbl,.event-title,.event-ver,.event-date,.tab,th,.brace,.big-brace{font-family:'Kare',system-ui,sans-serif}
-h1,h2,h3,h4,b,strong,.event-title{font-weight:400}
-.stat-num{font-family:'Kare Shadow','Kare',sans-serif}
-.k,.vert.k{font-family:'Kare',system-ui,sans-serif;font-weight:400}
 </style>
 </head>
 <body>
