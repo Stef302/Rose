@@ -201,8 +201,12 @@ test("tables (v3.1)", [os.path.join(DORES, "t_tables.rose")],
      attendu_stdout="[" + "nom => Bob, age => 30" + "]\n2\nvrai\nfaux\nBob\n30\nvrai\n[nom => Bob]\n[nom]\n[Bob]\nfaux\nvrai\n")
 
 # ── CLI ──────────────────────────────────────────────────────────────
+# Le test joue TOUS les moteurs (C++, Rust, Zig) : la signature attendue est
+# celle de CHAQUE moteur, pas seulement celle du C++ — sinon le moteur Rust
+# echoue sur son propre nom (« moteur natif Rust/GMP ») et le banc Rust tombe
+# en silence pour une raison d'afficheur, pas de calcul.
 p = run([MOTEUR, "version"])
-if re.match(r"Rose \d+\.\d+\.\d+ — moteur natif C\+\+/GMP", p.stdout) and p.returncode == 0:
+if re.match(r"Rose \d+\.\d+\.\d+ — moteur natif (C\+\+|Rust|Zig)/GMP", p.stdout) and p.returncode == 0:
     reussis += 1
 else:
     echoues.append(("cli_version", p.returncode, 0, p.stdout[:80], ""))
