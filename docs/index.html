@@ -33,6 +33,26 @@
   src:url('assets/fonts/kare/Kare-Gradient.woff2') format('woff2'),
       url('assets/fonts/kare/Kare-Gradient.woff') format('woff');
 }
+/* JetBrains Mono — monospace OFL 1.1, 4 graisses auto-hébergées (subset latin) :
+   normale, Light 300, Medium 500, Bold 700. Dans assets/fonts/jetbrains/.
+   Elle cohabite avec Kare : le texte court (nav, badges, rôles, stats,
+   changelog) est en JetBrains Mono ; les titres d'affichage restent en Kare. */
+@font-face{
+  font-family:'JetBrains Mono'; font-weight:300; font-style:normal; font-display:swap;
+  src:url('assets/fonts/jetbrains/JetBrainsMono-Light.woff2') format('woff2');
+}
+@font-face{
+  font-family:'JetBrains Mono'; font-weight:400; font-style:normal; font-display:swap;
+  src:url('assets/fonts/jetbrains/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face{
+  font-family:'JetBrains Mono'; font-weight:500; font-style:normal; font-display:swap;
+  src:url('assets/fonts/jetbrains/JetBrainsMono-Medium.woff2') format('woff2');
+}
+@font-face{
+  font-family:'JetBrains Mono'; font-weight:700; font-style:normal; font-display:swap;
+  src:url('assets/fonts/jetbrains/JetBrainsMono-Bold.woff2') format('woff2');
+}
 :root{
   --noir:#060606; --noir2:#0b0b0b; --noir3:#0d0d0d; --noir4:#111;
   --rouge:#E6202A; --rouge-vif:#FF4D57; --rouge-fonce:#8A0F16;
@@ -48,7 +68,7 @@ body.light{
 html{scroll-behavior:smooth}
 body{
   background:var(--bg); color:var(--txt);
-  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   overflow-x:hidden; transition:background .5s,color .5s;
 }
 #bg-canvas{position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:.55}
@@ -82,7 +102,7 @@ a{text-decoration:none;color:inherit;cursor:pointer}
 .nav nav{margin-left:auto;display:flex;gap:.2rem}
 .nav nav button{
   background:none; border:none; color:var(--sub);
-  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.8rem; letter-spacing:2px;
+  font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.88rem; letter-spacing:2px;
   padding:10px 14px; cursor:pointer; transition:.2s; position:relative;
 }
 .nav nav button:hover{color:var(--txt)}
@@ -103,7 +123,7 @@ a{text-decoration:none;color:inherit;cursor:pointer}
 /* ---------- BOUTONS ---------- */
 .btn{
   display:inline-flex; align-items:center; gap:8px; justify-content:center;
-  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.82rem; letter-spacing:2px;
+  font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.92rem; letter-spacing:2px;
   padding:13px 22px; transition:.2s; cursor:pointer; border:none;
   clip-path:polygon(0 0,100% 0,100% calc(100% - 10px),calc(100% - 10px) 100%,0 100%);
 }
@@ -125,7 +145,7 @@ a{text-decoration:none;color:inherit;cursor:pointer}
   display:grid; grid-template-columns:1.1fr .9fr; align-items:center; gap:2rem;
   padding:130px 6vw 60px;
 }
-.overline{color:var(--vert);font-size:.76rem;letter-spacing:3px;display:flex;align-items:center;gap:10px}
+.overline{color:var(--vert);font-size:.88rem;letter-spacing:3px;display:flex;align-items:center;gap:10px}
 .overline::before{content:"";width:28px;height:2px;background:var(--vert)}
 h1{
   font-size:clamp(3.8rem,10vw,8.4rem); line-height:.95; color:var(--txt); margin:.4rem 0 1rem;
@@ -134,7 +154,7 @@ h1{
 .lead{color:var(--sub);font-size:1rem;line-height:2;max-width:52ch}
 .hero-btns{display:flex;gap:1rem;margin-top:2rem;flex-wrap:wrap}
 .badges{display:flex;gap:.6rem;margin-top:1.8rem;flex-wrap:wrap;list-style:none}
-.badge{border:1px solid var(--ligne);padding:6px 10px;font-size:.68rem;color:var(--gris);letter-spacing:2px}
+.badge{border:1px solid var(--ligne);padding:6px 10px;font-size:.82rem;color:var(--gris);letter-spacing:2px}
 .hero-logo{display:flex;align-items:center;justify-content:center}
 .brace{
   font-size:clamp(6rem,14vw,13rem); color:var(--vert); line-height:1;
@@ -152,13 +172,13 @@ h1{
 /* ---------- STATS ---------- */
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-top:4rem;max-width:1400px;margin-inline:auto;padding:0 6vw}
 .stat{background:var(--card);border:1px solid var(--ligne);padding:22px;text-align:center}
-.stat-num{font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:2.6rem;color:var(--vert);line-height:1}
-.stat-lbl{font-size:.72rem;letter-spacing:2px;color:var(--sub);margin-top:8px}
+.stat-num{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:2.6rem;color:var(--vert);line-height:1}
+.stat-lbl{font-size:.85rem;letter-spacing:2px;color:var(--sub);margin-top:8px}
 
 /* ---------- TICKER ---------- */
 .ticker{border-block:1px solid var(--ligne);background:var(--noir2);overflow:hidden;padding:12px 0;margin-top:4rem}
 body.light .ticker{background:#EFEAD9}
-.ticker-track{display:flex;gap:2.2rem;width:max-content;animation:slide 26s linear infinite;font-size:.88rem;letter-spacing:2px}
+.ticker-track{display:flex;gap:2.2rem;width:max-content;animation:slide 26s linear infinite;font-size:1rem;letter-spacing:2px}
 .tk{color:var(--sub)}
 .tk-f.rv{color:var(--rouge)} .tk-f.rv2{color:var(--vert)}
 @keyframes slide{to{transform:translateX(-50%)}}
@@ -175,11 +195,11 @@ h2{font-size:clamp(1.7rem,4vw,2.8rem);color:var(--txt);margin:.5rem 0 1.6rem;lin
   clip-path:polygon(0 0,calc(100% - 22px) 0,100% 22px,100% 100%,22px 100%,0 calc(100% - 22px));
 }
 body.light .term{background:#1a1a1a}
-.term-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.72rem;color:#999;letter-spacing:2px}
+.term-bar{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.85rem;color:#999;letter-spacing:2px}
 .dot{width:11px;height:11px;border-radius:50%}
 .dot.rouge{background:var(--rouge)} .dot.vert{background:var(--vert)} .dot.blanc{background:#ddd}
 .term-bar > span{margin-left:8px;color:#999}
-.copy{margin-left:auto;background:none;border:1px solid #262626;color:#999;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.68rem;padding:6px 10px;cursor:pointer;letter-spacing:2px;transition:.2s}
+.copy{margin-left:auto;background:none;border:1px solid #262626;color:#999;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem;padding:6px 10px;cursor:pointer;letter-spacing:2px;transition:.2s}
 .copy:hover{color:var(--vert);border-color:var(--vert)}
 /* Encadré installation */
 .install-card{
@@ -189,9 +209,9 @@ body.light .term{background:#1a1a1a}
 }
 .install-card h3{font-size:clamp(1.25rem,2.6vw,1.7rem);margin:.4rem 0 .6rem}
 .install-card .term{margin:0}
-.install-tag{position:absolute;top:-.75rem;left:1.2rem;background:var(--rouge);color:#fff;font-size:.7rem;letter-spacing:2px;padding:4px 12px}
+.install-tag{position:absolute;top:-.75rem;left:1.2rem;background:var(--rouge);color:#fff;font-size:.85rem;letter-spacing:2px;padding:4px 12px}
 .copy:hover{color:var(--vert);border-color:var(--vert)}
-pre{padding:22px;overflow:auto;font:400 .95rem/1.9 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#d9d9d9}
+pre{padding:22px;overflow:auto;font:400 1rem/1.9 'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#d9d9d9}
 body.light pre{color:#e4e4e4}
 .k{color:var(--vert)} .s{color:var(--rouge-vif)} .c{color:#666;font-style:italic} .f{color:#fff} .t{color:#ff8a90} .n{color:#ffb86b}
 
@@ -202,8 +222,8 @@ body.light pre{color:#e4e4e4}
   clip-path:polygon(0 0,calc(100% - 18px) 0,100% 18px,100% 100%,18px 100%,0 calc(100% - 18px));
 }
 .carte:hover{transform:translateY(-6px);border-color:var(--vert)}
-.carte h3{font-size:1rem;color:var(--txt);margin:14px 0 10px;letter-spacing:1px}
-.carte p{font-size:.8rem;line-height:1.9;color:var(--sub)}
+.carte h3{font-size:1.25rem;color:var(--txt);margin:14px 0 10px;letter-spacing:1px}
+.carte p{font-size:1rem;line-height:1.9;color:var(--sub)}
 .ico{height:44px;display:flex;align-items:center}
 .ico svg{height:44px;width:auto}
 .ico-txt{font-size:2.1rem;color:var(--vert);line-height:1}
@@ -233,7 +253,7 @@ body.light .editor{background:#1c1c1c}
 .editor-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.72rem;color:#999;letter-spacing:2px}
 .editor-tabs{display:flex;gap:2px;margin-left:auto}
 .tab{
-  padding:8px 14px; background:#141414; color:#888; font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  padding:8px 14px; background:#141414; color:#888; font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   font-size:.7rem; letter-spacing:2px; cursor:pointer; border:none; transition:.2s;
 }
 .tab.active{background:#242424;color:var(--vert)}
@@ -251,7 +271,7 @@ body.light .editor{background:#1c1c1c}
   clip-path:polygon(0 0,calc(100% - 20px) 0,100% 20px,100% 100%,20px 100%,0 calc(100% - 20px));
 }
 .console-head{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid var(--ligne);font-size:.72rem;color:#999;letter-spacing:2px}
-.console-body{flex:1;padding:18px;overflow:auto;font:400 .78rem/1.8 ui-monospace,monospace;color:#b8ffb8;min-height:360px}
+.console-body{flex:1;padding:18px;overflow:auto;font:400 .92rem/1.8 'JetBrains Mono',ui-monospace,monospace;color:#b8ffb8;min-height:360px}
 .log-line{margin:2px 0;white-space:pre-wrap}
 .log-ok{color:#AFFF4A}
 .log-err{color:var(--rouge-vif)}
@@ -267,13 +287,13 @@ body.light .editor{background:#1c1c1c}
   background:var(--card); border:1px solid var(--ligne); padding:20px;
   position:sticky; top:90px; max-height:calc(100vh - 110px); overflow-y:auto;
 }
-.doc-sidebar h4{font-size:.82rem;letter-spacing:2px;color:var(--vert);margin:14px 0 8px}
+.doc-sidebar h4{font-size:.95rem;letter-spacing:2px;color:var(--vert);margin:14px 0 8px}
 .doc-sidebar h4:first-child{margin-top:0}
 .doc-sidebar ul{list-style:none}
 .doc-sidebar li{margin:4px 0}
 .doc-sidebar button{
   width:100%; text-align:left; background:none; border:none;
-  font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:.8rem; color:var(--sub);
+  font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.8rem; color:var(--sub);
   padding:8px 10px; cursor:pointer; transition:.2s; border-left:2px solid transparent;
 }
 .doc-sidebar button:hover{color:var(--txt);background:var(--noir4)}
@@ -284,16 +304,16 @@ body.light .editor{background:#1c1c1c}
 .doc-content p{font-size:.88rem;line-height:2;color:var(--sub);margin-bottom:1rem}
 .doc-content code.inline{
   background:var(--noir2); padding:3px 8px; color:var(--vert);
-  font:400 .78rem ui-monospace,monospace; border:1px solid var(--ligne);
+  font:400 .9rem 'JetBrains Mono',ui-monospace,monospace; border:1px solid var(--ligne);
 }
 body.light .doc-content code.inline{background:#EFEAD9}
 .doc-section{display:none;animation:fadeUp .35s ease}
 .doc-section.active{display:block}
 .table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.84rem}
 .table th,.table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--ligne)}
-.table th{color:var(--vert);font-size:.8rem;letter-spacing:1px}
+.table th{color:var(--vert);font-size:.92rem;letter-spacing:1px}
 .table td{color:var(--sub)}
-.table td code{background:var(--noir2);padding:2px 6px;color:var(--rouge-vif);font-family:ui-monospace}
+.table td code{background:var(--noir2);padding:2px 6px;color:var(--rouge-vif);font-family:'JetBrains Mono',ui-monospace,monospace;font-size:.9rem}
 
 /* ========== JARDIN ========== */
 
@@ -310,13 +330,13 @@ body.light .doc-content code.inline{background:#EFEAD9}
   display:flex;align-items:center;justify-content:center;
   font-size:3rem; color:var(--vert);
 }
-.membre h3{font-size:1rem;color:var(--txt);margin-bottom:4px}
-.membre .role{font-size:.7rem;color:var(--vert);letter-spacing:2px;margin-bottom:12px}
-.membre p{font-size:.8rem;color:var(--sub);line-height:1.9}
+.membre h3{font-size:1.5rem;color:var(--txt);margin-bottom:4px}
+.membre .role{font-size:.85rem;color:var(--vert);letter-spacing:2px;margin-bottom:12px}
+.membre p{font-size:1rem;color:var(--sub);line-height:1.9}
 .socials{display:flex;gap:8px;justify-content:center;margin-top:16px}
-.socials a{width:32px;height:32px;border:1px solid var(--ligne);display:flex;align-items:center;justify-content:center;color:var(--sub);transition:.2s}
+.socials a{width:40px;height:40px;border:1px solid var(--ligne);display:flex;align-items:center;justify-content:center;color:var(--sub);transition:.2s}
 .socials a:hover{color:var(--vert);border-color:var(--vert)}
-.socials svg{width:14px;height:14px}
+.socials svg{width:20px;height:20px}
 
 /* ========== CHANGELOG ========== */
 .timeline{position:relative;padding-left:30px}
@@ -328,12 +348,12 @@ body.light .doc-content code.inline{background:#EFEAD9}
 }
 .event.old::before{background:var(--rouge)}
 .event-head{display:flex;align-items:center;gap:12px;margin-bottom:10px;flex-wrap:wrap}
-.event-ver{background:var(--vert);color:var(--noir);padding:4px 10px;font-size:.74rem;letter-spacing:2px}
+.event-ver{background:var(--vert);color:var(--noir);padding:4px 10px;font-size:.88rem;letter-spacing:2px}
 .event.old .event-ver{background:var(--rouge);color:#fff}
-.event-date{font-size:.74rem;color:var(--sub);letter-spacing:1px}
-.event-title{font-size:1.02rem;color:var(--txt);margin-bottom:8px}
+.event-date{font-size:.88rem;color:var(--sub);letter-spacing:1px}
+.event-title{font-size:1.25rem;color:var(--txt);margin-bottom:8px}
 .event ul{list-style:none}
-.event li{font-size:.8rem;color:var(--sub);padding:4px 0;padding-left:18px;position:relative;line-height:1.7}
+.event li{font-size:.95rem;color:var(--sub);padding:4px 0;padding-left:18px;position:relative;line-height:1.7}
 .event li::before{content:"▸";position:absolute;left:0;color:var(--vert)}
 .event.old li::before{color:var(--rouge)}
 
@@ -349,7 +369,7 @@ body.light .doc-content code.inline{background:#EFEAD9}
 }
 .search-input{
   width:100%; padding:22px; background:transparent; border:none; outline:none;
-  color:var(--txt); font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; font-size:1.08rem;
+  color:var(--txt); font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:1.08rem;
 }
 .search-results{border-top:1px solid var(--ligne);max-height:50vh;overflow-y:auto}
 .search-result{padding:14px 22px;cursor:pointer;border-bottom:1px solid var(--ligne);transition:.15s}
@@ -361,17 +381,17 @@ body.light .doc-content code.inline{background:#EFEAD9}
 /* ========== FOOTER ========== */
 footer{border-top:1px solid var(--ligne);padding:50px 6vw;text-align:center;margin-top:4rem}
 .foot-grid{max-width:1200px;margin:0 auto 30px;display:grid;grid-template-columns:repeat(4,1fr);gap:2rem;text-align:left}
-.foot-col h5{font-size:.8rem;letter-spacing:2px;color:var(--vert);margin-bottom:14px}
+.foot-col h5{font-size:.95rem;letter-spacing:2px;color:var(--vert);margin-bottom:14px}
 .foot-col ul{list-style:none}
 .foot-col li{margin:6px 0}
 .foot-col button{
-  background:none;border:none;font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.8rem;
+  background:none;border:none;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.8rem;
   color:var(--sub);cursor:pointer;padding:0;transition:.2s;
 }
 .foot-col button:hover{color:var(--vert)}
 .foot-brace{font-size:2rem;color:var(--vert);display:flex;align-items:center;justify-content:center;gap:12px}
 .foot-brace svg{width:34px;height:42px}
-footer p{font-size:.8rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-height:2}
+footer p{font-size:.95rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-height:2}
 .small{font-size:.7rem}
 
 
@@ -401,7 +421,7 @@ footer p{font-size:.8rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 
 /* ========== COMPLÉMENTS v3.14 (nouveau site) ========== */
 .doc-sel{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:1.4rem}
-.rose-select{background:var(--noir2);color:var(--vert);border:1px solid var(--ligne);font-family:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:.8rem;letter-spacing:2px;padding:10px 14px;outline:none;cursor:pointer}
+.rose-select{background:var(--noir2);color:var(--vert);border:1px solid var(--ligne);font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.92rem;letter-spacing:2px;padding:10px 14px;outline:none;cursor:pointer}
 .badge-note{display:inline-block;background:var(--noir4);border:1px solid var(--vert);color:var(--vert);font-size:.68rem;letter-spacing:2px;padding:6px 12px;margin-top:.8rem}
 .etat{display:grid;grid-template-columns:1fr 1fr;gap:1.6rem;margin-top:1.4rem}
 .etat-col{background:var(--card);border:1px solid var(--ligne);padding:26px}
@@ -417,7 +437,7 @@ footer p{font-size:.8rem;color:var(--sub);margin:10px 0;letter-spacing:1px;line-
 .honest b{color:var(--vert)}
 .doc-section p{margin:.8rem 0}
 .doc-section table{margin:1rem 0}
-.doc-section pre{padding:16px;overflow-x:auto;font-size:.82rem;line-height:1.8;color:var(--txt)}
+.doc-section pre{padding:16px;overflow-x:auto;font-size:.95rem;line-height:1.8;color:var(--txt)}
 .term pre{padding:18px}
 /* ---- Typographie : Kare pour l'affichage, texte courant lisible ---- */
 h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',system-ui,sans-serif}
@@ -609,7 +629,7 @@ Salut, Alan !</pre>
         <a class="btn btn-rouge" href="Rose-Setup-3.14.0.exe" download>TÉLÉCHARGER ROSE-SETUP-3.14.0.EXE</a>
         <a class="btn btn-fantome" href="rose-windows.zip" download>ARCHIVE ZIP (SANS INSTALL)</a>
       </div>
-      <p class="small gris" style="line-height:2">SHA-256 (setup) : <span style="font-family:ui-monospace,monospace">363792c13a3e6d6a7c48169e21a1e5b19ad10852aefcf6c5f26848d1c571dc8a</span> · SHA-256 (zip) : <span style="font-family:ui-monospace,monospace">6c20bebe18fb4f84650dc26b021c62594700beae49f7404030745614c1f17074</span> — vérifiables via <a class="vert" href="SHA256SUMS.txt">SHA256SUMS.txt</a></p>
+      <p class="small gris" style="line-height:2">SHA-256 (setup) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">363792c13a3e6d6a7c48169e21a1e5b19ad10852aefcf6c5f26848d1c571dc8a</span> · SHA-256 (zip) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">6c20bebe18fb4f84650dc26b021c62594700beae49f7404030745614c1f17074</span> — vérifiables via <a class="vert" href="SHA256SUMS.txt">SHA256SUMS.txt</a></p>
       <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : compilez <code class="inline">moteur/cpp</code> avec <code class="inline">make</code> (GMP requis), puis copiez le binaire dans <code class="inline">/usr/local/bin</code>. Les sources et l'architecture sont sur GitHub.</p>
     </div>
   </div>
@@ -691,7 +711,7 @@ Salut, Alan !</pre>
         <div class="console-body" id="consoleOut"><span class="log-info">Enattente d'exécution — clique sur EXÉCUTER ▶</span></div>
       </div>
     </div>
-    <p class="gris" style="font-size:.8rem;margin-top:1.4rem;letter-spacing:1px">
+    <p class="gris" style="font-size:.95rem;margin-top:1.4rem;letter-spacing:1px">
       Besoin de la bibliothèque complète ? <a class="vert" onclick="go('doc')">La doc recense les fonctions du moteur</a>.
     </p>
   </div>
@@ -1017,8 +1037,9 @@ Bonjour, monde !</pre>
       <div class="carte reveal">
         <h3>Licence</h3>
         <p>Le moteur de référence et ses tests sont publiés sous licence MIT. Les binaires produits par la
-        compilation AOT t'appartiennent. La police d'affichage Kare est une version d'essai sous sa propre
-        licence, jointe dans les fichiers du site.</p>
+        compilation AOT t'appartiennent. Polices : Kare (version d'essai, sous sa propre licence) pour les titres
+        d'affichage, JetBrains Mono (SIL Open Font License 1.1) pour les textes courts — les deux
+        auto-hébergées, licences jointes dans les fichiers du site.</p>
       </div>
     </div>
   </div>
