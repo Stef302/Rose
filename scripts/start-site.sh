@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Sert le site ROSE en local pour la relecture (port 18080).
-# Racine servie : <dépôt>/site (index.html, Rose-Setup-*.exe, rose-windows.zip).
+# Racine servie : <dépôt>/docs (index.html, Rose-Setup-*.exe, rose-windows.zip).
 # Le canal PUBLIC est GitHub Pages (https://stef302.github.io/Rose/) ; ce
 # script ne sert que la prévisualisation sur la machine, jamais une IP privée.
 set -u
 BIND="${BIND:-127.0.0.1}"
 PORT=18080
-DIR="$(cd "$(dirname "$0")/../site" && pwd)"
+DIR="$(cd "$(dirname "$0")/../docs" && pwd)"
 
 # motif entre crochets : pkill ne se tue pas lui-même
 pkill -f "[h]ttp.server $PORT" 2>/dev/null || true

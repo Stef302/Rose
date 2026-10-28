@@ -6,10 +6,10 @@
 #     All de l'Explorateur et .NET lisent « dorés » en CP437 -> « dor├⌐s »
 #     et les 31 tests dorés s'écrasent en PathNotFound) ;
 #   - SHA256SUMS.txt intérieur = contenu seul (pas d'auto-référence) ;
-#   - déploie dans site/ (servi par 18080) et /tmp/opencode/share (legacy).
+#   - déploie dans docs/ (le site GitHub Pages ; previsualisation 18080)
 set -eu
 cd "$(dirname "$0")/.."
-OUT="site/rose-windows.zip"
+OUT="docs/rose-windows.zip"
 SHARE="/tmp/opencode/share"
 
 STAGE=$(mktemp -d)
@@ -42,10 +42,10 @@ print(f"{len(noms)} fichiers empaquetés, plateaux inclus")
 PY
 
 # empreinte du zip à la racine du site (hors zip, pas d'auto-référence)
-( cd site && sha256sum rose-windows.zip > SHA256SUMS.txt )
+( cd docs && sha256sum rose-windows.zip > SHA256SUMS.txt )
 
 if [ -d "$SHARE" ]; then
-  cp "$OUT" site/SHA256SUMS.txt "$SHARE/"
+  cp "$OUT" docs/SHA256SUMS.txt "$SHARE/"
   echo "partage legacy $SHARE mis à jour"
 fi
 

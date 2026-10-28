@@ -43,7 +43,7 @@ installateur/dist/
 installateur/staging/
 
 # l'installeur Windows est un livrable du site — il est versionné
-!site/*.exe
+!docs/*.exe
 
 # --- Artefacts de banc et de couverture (ajoutés 28/10/2026) ----------------
 # Aucun de ces fichiers n'est un livrable ; ils portent des chemins de build.

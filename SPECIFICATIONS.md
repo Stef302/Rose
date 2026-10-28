@@ -202,7 +202,7 @@ parlent (`[Ligne L, Colonne C] …`) ; RNG reproductible à l'état près.
 ## 6. Site public et politique de canaux
 
 Le site vit **uniquement sur GitHub Pages** — `https://stef302.github.io/Rose/`,
-servi par le dossier `site/` du dépôt. Règles vérifiées par audit le 28/10/2026 :
+servi par le dossier `docs/` du dépôt. Règles vérifiées par audit le 28/10/2026 :
 
 * aucune IP interne (VPN, LAN, docker), aucun nom de machine, aucun chemin
   personnel (`/home/…`) dans le site, les scripts, les docs ni les artefacts ;
@@ -215,7 +215,7 @@ servi par le dossier `site/` du dépôt. Règles vérifiées par audit le 28/10/
 * `scripts/start-site.sh` ne sert qu'une prévisualisation locale
   (`127.0.0.1:18080`, surcharge `BIND=`) — jamais une interface réseau privée ;
 * publication GitHub Pages : `Settings → Pages → Source: Deploy from a branch`,
-  `Branch: main`, `Folder: /site`. Le dépôt doit être public ; aucun dépôt
+  `Branch: main`, `Folder: /docs`. Le dépôt doit être public ; aucun dépôt
   privé de sauvegarde n'est un canal de distribution.
 
 ## 7. Processus de release
