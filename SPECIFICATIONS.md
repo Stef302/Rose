@@ -225,7 +225,7 @@ servi par le dossier `docs/` du dépôt. Règles vérifiées par audit le 28/10/
    TOUT le §4 ;
 2. avant un tag : reconstruire le moteur (`make rose`), relancer les neuf
    suites du §4 dans la MÊME session, consigner les chiffres ;
-3. artefacts : `bin/` (Linux), `site/` (Windows setup + zip, empreintes
+3. artefacts : `bin/` (Linux), `docs/` (Windows setup + zip, empreintes
    SHA-256 réelles mesurées sur les fichiers livrés), site public sur
    GitHub Pages — le dépôt et le site ne contiennent ni IP interne, ni nom
    de machine, ni chemin personnel (politique vérifiée par audit) ;
