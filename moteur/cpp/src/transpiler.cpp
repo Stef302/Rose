@@ -471,6 +471,64 @@ std::string transpiler_rir(const RirModule &mod) {
                 for (auto &p : f.params) if (sanitize(p.first) == kv.first) est_param = true;
                 if (!est_param && !certaines.count(kv.first)) flagpees.insert(kv.first);
             }
+            // J1 (stratégie de dépassement, chantier A) — déflagage par
+            // redondance de la garde, à la SÉANCE (le drapeau _def_ ne
+            // s'éteint jamais) : la règle du préfixe a déjà admis qu'une
+            // affectation plus bas dans le même bloc de base satisfait la
+            // lecture — la séance du bloc d'entrée est donc un contrat
+            // d'initialisation. Si la variable est écrite dans CE bloc (celui
+            // qui porte la première lecture hors préfixe), chaque chemin qui
+            // atteint la lecture traverse la séance : la garde rose_lit y est
+            // redondante et le drapeau peut être retiré, ce qui supprime aussi
+            // l'écriture du drapeau à chaque affectation dans les boucles.
+            // Le contrat d'erreur du cœur interprété est conservé dès qu'une
+            // lecture est lue hors de tout bloc qui écrit (l'appelant d'une
+            // fonction qui n'écrit pas « en tout chemin » garde sa variable
+            // flagpée). Preuve exigée : la suite « chemin sans valeur » de la
+            // graine 200051 passe, et le banc rend les mêmes chaînes.
+            {
+                // sens sûr : toute variable LUE dans un bloc qui ne l'écrit
+                // pas paie la garde (chemin possible où le drapeau reste faux).
+                std::set<std::string> lues_hors_ecriture;
+                for (auto &b : f.blocs) {
+                    std::set<std::string> lit_ici, ecrit_ici;
+                    for (auto &instr : b.instrs) {
+                        for (auto &a : instr.args) {
+                            std::string v = est_var(a);
+                            if (!v.empty()) lit_ici.insert(v);
+                        }
+                        if (instr.op == "affect" && !instr.message.empty())
+                            ecrit_ici.insert(sanitize(instr.message));
+                    }
+                    for (auto &v : lit_ici)
+                        if (!ecrit_ici.count(v)) lues_hors_ecriture.insert(v);
+                }
+                // sens sûr : toute variable ÉCRITE ailleurs que dans le bloc
+                // d'entrée peut être atteinte hors séance par un saut depuis
+                // un autre bloc (l'entrée du tant_que vient d'ailleurs) : la
+                // lecture qui la suit dans ce bloc n'est pas dominée par la
+                // séance. Seules les variables confinées au bloc d'entrée et
+                // écrites là sont déflaguées.
+                std::set<std::string> ecrit_ailleurs;
+                if (!f.blocs.empty())
+                    for (auto &b : f.blocs) {
+                        if (b.nom == f.blocs.front().nom) continue;
+                        for (auto &instr : b.instrs)
+                            if (instr.op == "affect" && !instr.message.empty())
+                                ecrit_ailleurs.insert(sanitize(instr.message));
+                    }
+                std::set<std::string> a_deflaguer;
+                for (auto &b : f.blocs) {
+                    for (auto &instr : b.instrs) {
+                        if (instr.op != "affect" || instr.message.empty()) continue;
+                        std::string v = sanitize(instr.message);
+                        if (certaines.count(v) || lues_hors_ecriture.count(v) ||
+                            ecrit_ailleurs.count(v)) continue;
+                        a_deflaguer.insert(v);
+                    }
+                }
+                for (auto &v : a_deflaguer) flagpees.erase(v);
+            }
         }
         // Lecture d'un opérande : garde rose_lit si variable marquée, sinon nom brut.
         auto L = [&](const RirOp &a) -> std::string {
@@ -1465,10 +1523,17 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                         // graine générative 20000000087 : delta = (−73.7)^434281
                         // = ±inf, inf·0 = NaN. Ici, c'est l'entier/rationnel qui
                         // passe en double, jamais l'inverse.
+                        // Parité NaN : rose_cmp_f (helper noinline) — les
+                        // opérateurs natifs sont repliés par g++/clang -O3 avec
+                        // la sémantique IEEE (NaN → tout faux), l'interprète est
+                        // « NaN ni < ni > » (cmp_vals). Graine génératif 99.
                         std::string x0 = a0, x1 = a1;
                         if (t0 != RirF) x0 = "rose_vers_double(" + a0 + ")";
                         if (t1 != RirF) x1 = "rose_vers_double(" + a1 + ")";
-                        out << "    " << dest << " = (" << x0 << " " << cmpop << " " << x1 << ");\n";
+                        out << "    " << dest << " = (rose_cmp_f(" << x0 << ", " << x1
+                            << ") " << (cmpop == "<" ? "< 0" : cmpop == "<=" ? "<= 0" :
+                               cmpop == ">" ? "> 0" : cmpop == ">=" ? ">= 0" :
+                               cmpop == "==" ? "== 0" : "!= 0") << ");\n";
                     }
                     else if (q0 || q1) {
                         // Comparaison exacte rationnel vs entier/flottant.
@@ -1487,7 +1552,20 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                             if (!f0 && (t0 == RirZ || t0 == RirU)) x0 = "rose_vers_double(" + a0 + ")";
                             if (!f1 && (t1 == RirZ || t1 == RirU)) x1 = "rose_vers_double(" + a1 + ")";
                         }
-                        out << "    " << dest << " = (" << x0 << " " << cmpop << " " << x1 << ");\n";
+                        // Parité NaN (graine génératif 99) : dès qu'un opérande
+                        // est flottant, passer par rose_cmp_f (helper noinline,
+                        // miroir cmp_vals : « NaN ni < ni > »). Les opérateurs
+                        // natifs sont repliés par g++/clang -O3 en fcmpe/cset
+                        // avec la sémantique IEEE (NaN → tout faux), ce qui
+                        // faisait diverger l'AOT de l'interprété/JIT.
+                        if (f0 || f1) {
+                            out << "    " << dest << " = (rose_cmp_f(" << x0 << ", " << x1
+                                << ") " << (cmpop == "<" ? "< 0" : cmpop == "<=" ? "<= 0" :
+                                   cmpop == ">" ? "> 0" : cmpop == ">=" ? ">= 0" :
+                                   cmpop == "==" ? "== 0" : "!= 0") << ");\n";
+                        } else {
+                            out << "    " << dest << " = (" << x0 << " " << cmpop << " " << x1 << ");\n";
+                        }
                     }
                 }
                 else if (op == "add.z") {

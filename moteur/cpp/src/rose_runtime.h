@@ -337,6 +337,10 @@ rose_qd rose_q_div(const rose_qd &a, const rose_qd &b);
 int rose_q_cmp(const rose_qd &a, const rose_qd &b);
 bool rose_approx_q(const rose_qd &a, const rose_qd &b, bool au_moins_un_flottant);
 bool rose_approx_f(rose_float a, rose_float b);
+// Comparaison flottante miroir de cmp_vals (cœur interprété) : NaN « ni plus
+// petit, ni plus grand » → code 0. Ne pas inlineur : l'outilleur replierait
+// les tests sur NaN (fcmpe/cset) et divergerait de l'interprété/JIT.
+int rose_cmp_f(rose_float a, rose_float b);
 void rose_afficher_q(const rose_qd &q);
 
 // Divisions euclidiennes à la Rose (plancher, miroir de l'interprète).

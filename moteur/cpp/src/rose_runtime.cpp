@@ -452,6 +452,20 @@ bool rose_approx_f(rose_float a, rose_float b) {
     return ecart <= 1e-9 * echelle;
 }
 
+/* Miroir EXACT de cmp_vals (rose.cpp) sur flottants :
+     a < b ? -1 : (a > b ? 1 : 0)
+   Avec IEEE-754, NaN rend les deux tests faux → code 0 : « égal à tout ».
+   C'est LA sémantique de référence de Rose (interprété + JIT). Noinline +
+   optimisation-attribut « optimize(none) » : sinon g++/clang -O3 replient
+   fcmpe/cset et appliquent la logique native (NaN → tous faux), ce qui
+   faisait diverger l'AOT (graine génératif 99, cas (-2.0 ^ 0.5) >= 0.0). */
+__attribute__((noinline))
+int rose_cmp_f(rose_float a, rose_float b) {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+}
+
 rose_ent rose_entier_q(const rose_qd &q) {
     mpz_class r;
     mpz_fdiv_q(r.get_mpz_t(), q.get_num().get_mpz_t(), q.get_den().get_mpz_t());
