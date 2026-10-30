@@ -15,7 +15,9 @@ uint64_t g_rng_etat = (uint64_t)getpid() * 0x9E3779B97F4A7C15ULL
 #include <fstream>
 #include <sys/random.h>
 #include <sys/auxv.h>
+#if defined(__aarch64__) || defined(__arm__) || defined(__ARM_ARCH)
 #include <asm/hwcap.h>
+#endif
 
 #include <sstream>
 #include <cstring>

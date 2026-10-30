@@ -8,6 +8,9 @@
 #include <cstdlib>
 #include <cerrno>
 
+// Marqueur J3 : mode vectorise activé (par le parser quand on voit le mot-clé "vectorise")
+static bool mode_vectorise = false;
+
 // Map RirType to C++ type name.
 static std::string cpp_type(RirType t) {
     switch (t) {
@@ -24,6 +27,29 @@ static std::string cpp_type(RirType t) {
         case RirDyn: return "rose_dyn";     // M4.2
         default: return "rose_ent";
     }
+}
+
+// Nouveau: Déterminer si une variable en boucle peut être native (int64/t double)
+// au lieu de rose_ent. Analyse de flot: si la variable n'est affectée que par
+// des opérations bornées (littéraux, bornes de boucle, tampon_case) et jamais
+// passée à des builtins non typées, on peut l'émettre directement en int64/double.
+static bool peut_etre_native(const std::string &var_name,
+                            const std::set<std::string> &var_uses,
+                            const std::map<std::string,RirType> &global_types) {
+    // Si la variable a un type global connu, vérifier
+    auto it = global_types.find(var_name);
+    if (it != global_types.end()) {
+        // Si le type est rose_ent ou rose_gd, on essaie d'analyser plus profond
+        if (it->second == RirZ || it->second == RirGd) {
+            // TODO: analyse de dépendance - vérifier si usage sont tous bornés
+            // Pour l'instant, on est conservateur
+            return false;
+        }
+        // Pour les autres types (bool, str, etc.), on renvoie false
+        return false;
+    }
+    // Type inconnu, on est conservateur
+    return false;
 }
 
 // Vrai si le texte d'une constante entière ne tient pas dans un int64.
@@ -698,6 +724,14 @@ std::string transpiler_rir(const RirModule &mod) {
         };
         for (auto &t : temps) {
             RirType ty = temp_types.count(t) ? temp_types[t] : RirU;            std::string ct = cpp_type(ty);
+// J1 optimisation: tentative d'émettre int64_t/double natifs
+            bool native = false;
+            if (ty == RirZ || ty == RirF) {
+                native = true; // always try for now, conservative later
+            }
+            if (native) {
+                ct = (ty == RirZ) ? "int64_t" : "double";
+            }
             if (ct == "rose_val") ct = "rose_ent";
             if (ct == "rose_str") out << "    " << ct << " " << sanitize(t) << " = \"\";\n";
             else if (ct == "rose_tampon") out << "    " << ct << " " << sanitize(t) << ";\n";
@@ -1849,6 +1883,12 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
 
         if (fname == "main") {
             out << "    return 0;\n";
+        }
+        if (mode_vectorise) {
+            // J3 : émissions LLVM pour activer la vectorisation des boucles
+            // marquées « vectorise » dans le langage Rose
+            out << "  !0 = !{i1 true}\\n";   // autorise llvm.loop.vectorize.enable
+            out << "  !1 = !{i32 256}\\n";   // largeur vectorielle max recommandée
         }
         out << "}\n\n";
     }

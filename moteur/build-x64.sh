@@ -1,4 +1,4 @@
-#!/bin/sh
+zzzzzzz#!/bin/sh
 # ═══════════ Rose — build croisé x86-64 Linux (sans droits root) ═══════════
 # Compiles le moteur C++ pour x86-64-linux-gnu depuis n'importe quelle hôte
 # (testé depuis aarch64), puis le teste sous qemu-x86_64 statique.
@@ -42,7 +42,7 @@ LD_LIBRARY_PATH="$LIBLLVM" "$CLANG" -std=c++20 -O2 \
     src/rose.cpp src/jit.cpp src/jit_x64.cpp src/transpiler.cpp src/rose_runtime.cpp \
     -o rose-x64 \
     "$S/usr/lib/x86_64-linux-gnu/libgmpxx.a" "$S/usr/lib/x86_64-linux-gnu/libgmp.a" \
-    -L"$S/usr/lib/x86_64-linux-gnu" -lstdc++ -lm -ldl || exit 1
+    -static -L"$S/usr/lib/x86_64-linux-gnu" -lstdc++ -lm -ldl || exit 1
 file rose-x64 | sed 's/,.*LSB/ LSB/'
 
 xrun() { LD_LIBRARY_PATH="$LIBLLVM" "$QEMU" -L "$S" "$@"; }
