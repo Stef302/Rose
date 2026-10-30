@@ -724,9 +724,38 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                         std::string a0s = sanitize(instr.args[0].name);
                         std::string a1s = sanitize(instr.args[1].name);
                         char cop = op[0] == 'a' ? '+' : op[0] == 's' ? '-' : '*';
+                        // Garde de domaine : rose_ent (alias rose_gd) n'a d'+= que
+                        // pour (rose_ent, rose_ent) et (rose_ent, long long). Le type
+                        // de STOCKAGE fait foi — c'est lui qui déclare les variables
+                        // (global_types/temp_types), pas le typage de l'instruction
+                        // add.z (qui note « Z » même une variable promue en gd). Si la
+                        // destination est un grand entier (rose_gd) ou si l'opérande
+                        // n'est pas un rose_ent, l'+= hétérotype ne compile pas : on
+                        // laisse tomber la fusion et le chemin « affect » (rose_vers_mpz
+                        // / rose_q_de) fait la conversion — graine génératif 78.
+                        auto ty_stock = [&](const std::string &nom, const RirOp &o) -> RirType {
+                            if (o.kind == RirOp::Const) {
+                                std::string cx = o.name;
+                                if (cx.rfind("@c", 0) == 0) cx = cx.substr(2);
+                                return (cx.empty() || cst_promu_gd(cx)) ? RirGd : RirZ;
+                            }
+                            auto tt = temp_types.find(o.name);
+                            if (tt != temp_types.end() && tt->second != RirU) return tt->second;
+                            auto gt = global_types.find(nom);
+                            if (gt != global_types.end() && gt->second != RirU) return gt->second;
+                            auto pp = param_ty.find(nom);
+                            if (pp != param_ty.end() && !nom.empty() && nom[0] != '%') return pp->second;
+                            return RirZ;
+                        };
+                        RirType ty_dest = ty_stock(g, instr.args[0]);
+                        RirType ty_rhs_gauche = ty_stock(a0s, instr.args[0]);
+                        RirType ty_rhs_droite = ty_stock(a1s, instr.args[1]);
+                        bool dest_est_ent = (ty_dest == RirZ);
+                        bool rhs_g_est_ent = (ty_rhs_gauche == RirZ);
+                        bool rhs_d_est_ent = (ty_rhs_droite == RirZ);
                         // Destination globale non précaire (lecture garde requise sinon).
                         if (!flagpees.count(g)) {
-                            if (g == a0s) {
+                            if (g == a0s && dest_est_ent && rhs_d_est_ent) {
                                 // t = x op y ; x = t  ->  x op= y
                                 std::string rhs = L(instr.args[1]);
                                 if (instr.args[1].kind == RirOp::Const &&
@@ -736,7 +765,8 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                                 _i += 2;
                                 continue;
                             }
-                            if ((op == "add.z" || op == "mul.z") && g == a1s) {
+                            if ((op == "add.z" || op == "mul.z") && g == a1s && dest_est_ent &&
+                                rhs_g_est_ent) {
                                 // t = y op x ; x = t  ->  x op= y (commutatif)
                                 std::string rhs = L(instr.args[0]);
                                 if (instr.args[0].kind == RirOp::Const &&
@@ -1530,10 +1560,14 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                         std::string x0 = a0, x1 = a1;
                         if (t0 != RirF) x0 = "rose_vers_double(" + a0 + ")";
                         if (t1 != RirF) x1 = "rose_vers_double(" + a1 + ")";
-                        out << "    " << dest << " = (rose_cmp_f(" << x0 << ", " << x1
-                            << ") " << (cmpop == "<" ? "< 0" : cmpop == "<=" ? "<= 0" :
-                               cmpop == ">" ? "> 0" : cmpop == ">=" ? ">= 0" :
-                               cmpop == "==" ? "== 0" : "!= 0") << ");\n";
+                        if (t0 == RirF || t1 == RirF) {
+                            out << "    " << dest << " = (rose_cmp_f(" << x0 << ", " << x1
+                                << ") " << (cmpop == "<" ? "< 0" : cmpop == "<=" ? "<= 0" :
+                                   cmpop == ">" ? "> 0" : cmpop == ">=" ? ">= 0" :
+                                   cmpop == "==" ? "== 0" : "!= 0") << ");\n";
+                        } else {
+                            out << "    " << dest << " = (" << x0 << " " << cmpop << " " << x1 << ");\n";
+                        }
                     }
                     else if (q0 || q1) {
                         // Comparaison exacte rationnel vs entier/flottant.
@@ -1549,8 +1583,8 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                         std::string x0 = a0, x1 = a1;
                         bool f0 = (t0 == RirF), f1 = (t1 == RirF);
                         if (f0 != f1) {   // mélange entier × flottant : promotion explicite
-                            if (!f0 && (t0 == RirZ || t0 == RirU)) x0 = "rose_vers_double(" + a0 + ")";
-                            if (!f1 && (t1 == RirZ || t1 == RirU)) x1 = "rose_vers_double(" + a1 + ")";
+                            if (!f0 && (t0 == RirZ || t0 == RirU || t0 == RirGd)) x0 = "rose_vers_double(" + a0 + ")";
+                            if (!f1 && (t1 == RirZ || t1 == RirU || t1 == RirGd)) x1 = "rose_vers_double(" + a1 + ")";
                         }
                         // Parité NaN (graine génératif 99) : dès qu'un opérande
                         // est flottant, passer par rose_cmp_f (helper noinline,

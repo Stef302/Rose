@@ -69,6 +69,7 @@ html{scroll-behavior:smooth}
 body{
   background:var(--bg); color:var(--txt);
   font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:1.2rem; /* Augmenté pour une meilleure lisibilité */
   overflow-x:hidden; transition:background .5s,color .5s;
 }
 #bg-canvas{position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:.55}
@@ -699,7 +700,7 @@ Salut, Alan !</pre>
             <button class="tab" data-file="fonctions" onclick="switchTab('fonctions')">FONCTIONS</button>
           </div>
         </div>
-        <div class="editor-code"><textarea id="codeEditor" spellcheck="false"></textarea></div>
+        <div class="editor-code"><textarea id="codeEditor" spellcheck="false" style="font-size:1.2rem; line-height:1.5;"></textarea></div>
         <div class="editor-actions">
           <button class="btn btn-vert" onclick="runRose()">EXÉCUTER ▶</button>
           <button class="btn btn-fantome" onclick="clearConsole()">EFFACER</button>
@@ -711,7 +712,7 @@ Salut, Alan !</pre>
         <div class="console-body" id="consoleOut"><span class="log-info">Enattente d'exécution — clique sur EXÉCUTER ▶</span></div>
       </div>
     </div>
-    <p class="gris" style="font-size:.95rem;margin-top:1.4rem;letter-spacing:1px">
+    <p class="gris" style="font-size:1.2rem;margin-top:1.4rem;letter-spacing:1px">
       Besoin de la bibliothèque complète ? <a class="vert" onclick="go('doc')">La doc recense les fonctions du moteur</a>.
     </p>
   </div>
