@@ -66,6 +66,7 @@ static bool cst_hors_int64(const std::string &txt) {
 // tout en GMP exact ; les valeurs proches des bornes débordent dès qu'on
 // les combine (a-1, a*a, 2*a). En dessous du seuil, l'int64 rapide suffit
 // aux programmes usuels ; au-dessus, on choisit l'exactitude GMP.
+static bool cst_promu_gd(const std::string &txt);
 static bool cst_promu_gd(const std::string &txt) {
     if (cst_hors_int64(txt)) return true;
     size_t i = (txt[0] == '-' || txt[0] == '+') ? 1 : 0;
@@ -154,7 +155,21 @@ static std::string nom_visible(const std::string &name) {
     return s;
 }
 
+static std::string transpiler_rir_impl(const RirModule &mod);
+
 std::string transpiler_rir(const RirModule &mod) {
+    std::string c = transpiler_rir_impl(mod);
+    if (getenv("ROSE_EMIT_DUMP")) {
+        static int _n = 0;
+        std::string p = std::string("/tmp/opencode/emit_") + std::to_string(_n++) + ".cpp";
+        FILE *df = fopen(p.c_str(), "w");
+        if (df) { fputs(c.c_str(), df); fclose(df); }
+        fprintf(stderr, "[emit] %s\n", p.c_str());
+    }
+    return c;
+}
+
+static std::string transpiler_rir_impl(const RirModule &mod) {
     std::ostringstream out;
     out << "#include \"rose_runtime.h\"\n";
     out << "#include <cstdint>\n";
@@ -722,13 +737,139 @@ std::string transpiler_rir(const RirModule &mod) {
             if (pt != prod_ty.end() && pt->second != RirU) return pt->second;
             return o.ty;
         };
+        std::set<std::string> native_temps;
+// J1 optimisation: analyse de flot pour identifier les temps natifs (int64_t/double)
+        // Passe 1: tous les RirZ/RirF sont candidats natifs
+        for (auto &t : temps) {
+            RirType ty = temp_types.count(t) ? temp_types[t] : RirU;
+            // J1 : seuls les VRAIS temporaires (%…) sont candidats natifs. Une
+            // destination sans « % » est une écriture de variable (global) : elle
+            // vit dans le stockage rose_ent du programme, jamais en registre.
+            if (!(t.size() > 1 && t[0] == '%')) continue;
+            if (ty == RirZ || ty == RirF) native_temps.insert(t);
+        }
+                    // J1 : la nativeité est prouvée sur les TEMPORAIRES — le
+                    // compteur d'une boucle « pour » est exclu : la condition
+                    // s'émet cmp.lt.z, que le JIT ne reconnaît que sur des
+                    // Valeur rose_ent entières ; un compteur en int64_t ferait
+                    // basculer tout le module hors du sous-ensemble JIT et
+                    // retomber sur l'interpréteur RIR (régression mesurée ×13
+                    // sur le banc). Les compteurs restent donc rose_ent ; les
+                    // accumulateurs de boucle, eux, restent candidats.
+                    std::set<std::string> compteurs;
+                    for (auto &b : f.blocs) {
+                        bool est_cond = b.nom.rfind(".cond_", 0) == 0;
+                        if (!est_cond) continue;
+                        for (auto &instr : b.instrs) {
+                            if (instr.op != "cmp.lt.z" || instr.args.empty()) continue;
+                            const RirOp &a0 = instr.args[0];
+                            if (a0.kind != RirOp::Temp || a0.name.empty() || a0.name[0] != '%') continue;
+                            std::string nu = a0.name.substr(1);
+                            if (nu.empty() || !(nu[0] >= 'a' && nu[0] <= 'z')) continue;
+                            for (char c : nu)
+                                if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) { nu.clear(); break; }
+                            if (!nu.empty()) compteurs.insert(a0.name);
+                        }
+                    }
+                    for (auto &c : compteurs) native_temps.erase(c);
+                    // même exclusion par le NOM du compteur : l'émetteur RIR
+                    // lit/écrit « pour i de … » via affect(message="i") et des
+                    // Temp globaux %i — la clé native de l'accumulateur de
+                    // boucle est le nom nu, pas "%i".
+                    for (auto &c : compteurs) {
+                        std::string nu = c;
+                        if (!nu.empty() && nu[0] == '%') nu = nu.substr(1);
+                        native_temps.erase(nu);
+                    }
+                    // Le peephole M4.4 fusionne « t = i + 1 ; i = t » en « i += 1 »
+                    // sur le GLOBAL i. Si i est un compteur, la fusion n'est sûre
+                    // qu'entre rose_ent : elle ne doit pas réimporter i en natif.
+                    for (auto &b : f.blocs) {
+                        for (auto &instr : b.instrs) {
+                            if (instr.op != "affect" || instr.message.empty()) continue;
+                            if (compteurs.count("%" + instr.message) == 0) continue;
+                            native_temps.erase(instr.message);
+                        }
+                    }
+        // Passe 2: itérativement retirer ceux utilisés dans des opérations non-sûres
+        // (division, reste, puissance, appel builtin GMP) et ceux qui REÇOIVENT une
+        // valeur produite hors du domaine natif (un rose_ent, un rose_gd ou une
+        // opérande non native peut déborder int64 à l'exécution : la parité
+        // l'interdit — la graine 2^62 est là pour ça. La source n'a jamais de
+        // « call » ici : rose_appel_builtin est émis en texte brut, jamais comme
+        // argument typé).
+        auto est_temps_native = [&](const RirOp &o) {
+            return o.kind == RirOp::Temp && !o.name.empty() &&
+                   native_temps.count(o.name) > 0;
+        };
+        // Un « add/sub/mul.z » ne reste en arithmétique machine SANS RISQUE de
+        // déborder que si ses DEUX opérandes sont natives (le chemin long
+        // rose_ent reprend le relais sinon).
+        auto add_z_sur = [&](const RirInstr &instr) {
+            return !instr.dest.empty() && native_temps.count(instr.dest) > 0 &&
+                   est_temps_native(instr.args[0]) &&
+                   (instr.args[1].kind == RirOp::Const ||
+                    est_temps_native(instr.args[1]));
+        };
+        auto non_native_source = [&](const RirOp &o) {
+            if (o.kind == RirOp::Temp) return native_temps.count(o.name) == 0;
+            if (o.kind == RirOp::Const) {
+                std::string cx = o.name;
+                if (cx.rfind("@c", 0) == 0) cx = cx.substr(2);
+                return cst_promu_gd(cx);
+            }
+            if (o.kind == RirOp::Global) {
+                std::string s = sanitize(o.name);
+                auto gt = global_types.find(s);
+                return gt != global_types.end() &&
+                       (gt->second == RirGd || gt->second == RirQ);
+            }
+            return true;   // toute autre opérande : conservateur, on reste rose_ent
+        };
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (auto &b : f.blocs) {
+                for (auto &instr : b.instrs) {
+                    bool non_sûr = false;
+                    if (instr.op.rfind("div.z", 0) == 0 || instr.op.rfind("divq", 0) == 0 ||
+                        instr.op.rfind("rem.z", 0) == 0 || instr.op.rfind("pow.z", 0) == 0 ||
+                        instr.op.rfind("divf", 0) == 0) {
+                        non_sûr = true;
+                    }
+                    // add/sub/mul.z dont une opérande ne peut PAS rester en
+                    // machine (destination non native, global non entier, ou
+                    // opérande hors domaine natif) : la forme longue émet du
+                    // rose_ent et peut déborder → la destination et ses
+                    // opérandes_temps retournent en rose_ent (point fixe).
+                    if (!non_sûr &&
+                        (instr.op.rfind("add.z", 0) == 0 || instr.op.rfind("sub.z", 0) == 0 ||
+                         instr.op.rfind("mul.z", 0) == 0) && !add_z_sur(instr)) {
+                        non_sûr = true;
+                    }
+                    // une opérande non native contamine destination ET arguments
+                    if (!non_sûr)
+                        for (auto &arg : instr.args)
+                            if (arg.kind == RirOp::Temp && non_native_source(arg)) { non_sûr = true; break; }
+                    if (non_sûr) {
+                        if (!instr.dest.empty() && native_temps.count(instr.dest)) {
+                            native_temps.erase(instr.dest);
+                            changed = true;
+                        }
+                        for (auto &arg : instr.args) {
+                            if (arg.kind == RirOp::Temp && native_temps.count(arg.name)) {
+                                native_temps.erase(arg.name);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for (auto &t : temps) {
             RirType ty = temp_types.count(t) ? temp_types[t] : RirU;            std::string ct = cpp_type(ty);
-// J1 optimisation: tentative d'émettre int64_t/double natifs
-            bool native = false;
-            if (ty == RirZ || ty == RirF) {
-                native = true; // always try for now, conservative later
-            }
+// J1 optimisation: émission native int64_t/double
+            bool native = native_temps.count(t) > 0;
             if (native) {
                 ct = (ty == RirZ) ? "int64_t" : "double";
             }
@@ -787,6 +928,14 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                         bool dest_est_ent = (ty_dest == RirZ);
                         bool rhs_g_est_ent = (ty_rhs_gauche == RirZ);
                         bool rhs_d_est_ent = (ty_rhs_droite == RirZ);
+                        // J1 : la fusion « x op= y » ne vaut qu'entre rose_ent.
+                        // Si la destination est native (int64_t), le compound
+                        // assignment retomberait sur l'arithmétique machine
+                        // sans promotion GMP : on laisse tomber la fusion et
+                        // le chemin « add.z/sub.z/mul.z » (forme longue
+                        // rose_ent) prend le relais.
+                        bool dest_native = !instr.dest.empty() && native_temps.count(instr.dest) > 0;
+                        if (dest_native) { dest_est_ent = false; rhs_g_est_ent = false; rhs_d_est_ent = false; }
                         // Destination globale non précaire (lecture garde requise sinon).
                         if (!flagpees.count(g)) {
                             if (g == a0s && dest_est_ent && rhs_d_est_ent) {
@@ -1644,8 +1793,31 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                     if (instr.args[1].kind == RirOp::Const) {
                         if (instr.args[1].name.rfind("@c", 0) == 0) a1 = instr.args[1].name.substr(2);
                     }
-                    if (dest == a0) out << "    " << dest << " += " << a1 << ";\n";
-                    else if (dest == a1) out << "    " << dest << " += " << a0 << ";\n";
+                    // J1 : la destination native suit la MEME règle que ses
+                    // opérandes. Si la destination est native, c'est que l'analyse
+                    // de flot a PRÉUVÉ que toutes les valeurs qui l'atteignent
+                    // viennent du domaine natif ; émettre « rose_ent(dest) + … »
+                    // ferait repasser chaque addition d'accumulateur par GMP — la
+                    // boucle chaude retomberait ~×100 (mesuré : 13 s au lieu de
+                    // 68 ms sur le banc global). Les natifs ne sont jamais
+                    // contaminés par une source non native (passe 2), donc
+                    // « natif + natif » en arithmétique machine reste exact.
+                    bool nat_dest = native_temps.count(instr.dest) > 0 &&
+                        est_temps_native(instr.args[0]) &&
+                        (instr.args[1].kind == RirOp::Const || est_temps_native(instr.args[1]));
+                    bool egal_a0 = (dest == a0), egal_a1 = (dest == a1);
+                    // « dest += a » n'est SÛR que si la destination est native ET
+                    // que l'autre opérande reste dans le même domaine : sinon
+                    // (p. ex. natif += compteur rose_ent), le compound retomberait
+                    // sur l'opérateur machine sans promotion GMP → forme longue.
+                    bool a1_sûr = instr.args[1].kind == RirOp::Const ||
+                        est_temps_native(instr.args[1]) ||
+                        !native_temps.count(instr.dest);
+                    bool a0_sûr = est_temps_native(instr.args[0]) ||
+                        !native_temps.count(instr.dest);
+                    bool chemin_compose = (egal_a0 || egal_a1) && !nat_dest;
+                    if (chemin_compose && egal_a0 && a1_sûr) out << "    " << dest << " += " << a1 << ";\n";
+                    else if (chemin_compose && egal_a1 && a0_sûr) out << "    " << dest << " += " << a0 << ";\n";
                     else out << "    " << dest << " = " << a0 << " + " << a1 << ";\n";
                 }
                 else if (op == "add.f") {
@@ -1702,7 +1874,15 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                     if (instr.args[1].kind == RirOp::Const) {
                         if (instr.args[1].name.rfind("@c", 0) == 0) a1 = instr.args[1].name.substr(2);
                     }
-                    if (dest == a0) out << "    " << dest << " -= " << a1 << ";\n";
+                    // J1 : idem add.z — destination native prouvée (opérandes
+                    // natives aussi) = arithmétique machine exacte ; sinon
+                    // chemin rose_ent, jamais d'élévation parasite en boucle chaude.
+                    bool nat_dest = native_temps.count(instr.dest) > 0 &&
+                        est_temps_native(instr.args[0]) &&
+                        (instr.args[1].kind == RirOp::Const || est_temps_native(instr.args[1]));
+                    bool egal_a0 = (dest == a0);
+                    bool chemin_compose = egal_a0 && !nat_dest;
+                    if (chemin_compose) out << "    " << dest << " -= " << a1 << ";\n";
                     else out << "    " << dest << " = " << a0 << " - " << a1 << ";\n";
                 }
                 else if (op == "mul.z") {
@@ -1712,8 +1892,16 @@ for (size_t _i = 0; _i < b.instrs.size(); ) {
                     if (instr.args[1].kind == RirOp::Const) {
                         if (instr.args[1].name.rfind("@c", 0) == 0) a1 = instr.args[1].name.substr(2);
                     }
-                    if (dest == a0) out << "    " << dest << " *= " << a1 << ";\n";
-                    else if (dest == a1) out << "    " << dest << " *= " << a0 << ";\n";
+                    // J1 : idem add.z — destination native prouvée (opérandes
+                    // natives aussi) = arithmétique machine exacte ; sinon
+                    // chemin rose_ent, jamais d'élévation parasite en boucle chaude.
+                    bool nat_dest = native_temps.count(instr.dest) > 0 &&
+                        est_temps_native(instr.args[0]) &&
+                        (instr.args[1].kind == RirOp::Const || est_temps_native(instr.args[1]));
+                    bool egal_a0 = (dest == a0), egal_a1 = (dest == a1);
+                    bool chemin_compose = (egal_a0 || egal_a1) && !nat_dest;
+                    if (chemin_compose && egal_a0) out << "    " << dest << " *= " << a1 << ";\n";
+                    else if (chemin_compose && egal_a1) out << "    " << dest << " *= " << a0 << ";\n";
                     else out << "    " << dest << " = " << a0 << " * " << a1 << ";\n";
                 }
                 else if (op == "div.z" || op == "div.q" || op == "div.z.z" || op == "div.q.q") {

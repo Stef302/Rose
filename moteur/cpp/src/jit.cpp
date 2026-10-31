@@ -205,6 +205,83 @@ Valeur* __attribute__((noinline)) jit_neg_z(Valeur* a) { JIT_LIT(a);
     return new Valeur(Valeur::de_z(r));
 }
 
+// ── Rationnels (banc global : « $r = 1 / 3 » + boucle 1/c) ────────────────
+// Sans ces helpers, une seule constante « cst.q » dans le module éjectait
+// TOUTE la fonction du sous-ensemble JIT → repli interpréteur RIR mesuré
+// 17,5 s sur le banc global. Mêmes sémantiques que le cœur RIR : division
+// exacte = rationnel, zéro = la même erreur fatale.
+static mpq_class jit_vers_q(const Valeur *v) {   // miroir exact de vers_q
+    switch (v->ty) {
+        case T_ENTIER: return mpq_class(v->z);
+        case T_BOOLEEN: return mpq_class(v->b ? 1 : 0);
+        case T_RATIONNEL: return v->q;
+        case T_FLOTTANT: {
+            if (std::isnan(v->f) || std::isinf(v->f)) {
+                std::fflush(stdout);
+                fprintf(stderr, "Rose : erreur — flottant infini/non-nombre sans rationnel correspondant\n");
+                std::exit(1);
+            }
+            mpq_class r; mpq_set_d(r.get_mpq_t(), v->f); return r;
+        }
+    }
+    std::fflush(stdout);
+    fprintf(stderr, "Rose : erreur — conversion vers rationnel impossible\n");
+    std::exit(1);
+    return mpq_class();
+}
+// ABI des helpers émis par le JIT (cf. jit_add_z_into / jit_div_z) :
+//   add/sub/mul_q : (dst x0, a x1, b x2) → rend dst (réutilisation du slot,
+//                   zéro allocation par itération de boucle, comme les z_into) ;
+//   div_q         : (a x0, b x1) → rend un objet frais, comme jit_div_z (27).
+Valeur* __attribute__((noinline)) jit_add_q(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);
+    mpq_class r = jit_vers_q(a) + jit_vers_q(b); r.canonicalize();
+    if (!dst) dst = new Valeur();
+    dst->q = std::move(r); dst->ty = T_RATIONNEL; return dst;
+}
+Valeur* __attribute__((noinline)) jit_sub_q(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);
+    mpq_class r = jit_vers_q(a) - jit_vers_q(b); r.canonicalize();
+    if (!dst) dst = new Valeur();
+    dst->q = std::move(r); dst->ty = T_RATIONNEL; return dst;
+}
+Valeur* __attribute__((noinline)) jit_mul_q(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);
+    mpq_class r = jit_vers_q(a) * jit_vers_q(b); r.canonicalize();
+    if (!dst) dst = new Valeur();
+    dst->q = std::move(r); dst->ty = T_RATIONNEL; return dst;
+}
+Valeur* __attribute__((noinline)) jit_div_q(Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);
+    mpq_class d = jit_vers_q(b);
+    if (mpz_sgn(d.get_den().get_mpz_t()) == 0 || mpz_sgn(d.get_num().get_mpz_t()) == 0) {
+        std::fflush(stdout);
+        fprintf(stderr, "Rose : erreur — division par zéro\n");
+        std::exit(1);
+    }
+    mpq_class r = jit_vers_q(a) / d; r.canonicalize();
+    return new Valeur(Valeur::de_q(r));
+}
+Valeur* __attribute__((noinline)) jit_q_copy_into(Valeur* dst, Valeur* src) { JIT_LIT(src);
+    if (!src) return dst;
+    if (!dst) dst = new Valeur();
+    dst->q = src->q; dst->ty = T_RATIONNEL; return dst;
+}
+Valeur* __attribute__((noinline)) jit_val_q(const char *txt) {
+    // texte « n » ou « n/d » (préfixe @c retiré par l'appelant)
+    std::string s(txt);
+    size_t slash = s.find('/');
+    mpq_class v;
+    try {
+        if (slash == std::string::npos) v = mpq_class(s);
+        else v = mpq_class(s.substr(0, slash) + "/" + s.substr(slash + 1));
+    } catch (const std::exception &) {
+        std::fflush(stdout);
+        fprintf(stderr, "Rose : erreur — constante rationnelle invalide : %s\n", s.c_str());
+        std::exit(1);
+    }
+    v.canonicalize();
+    Valeur *p = new Valeur(Valeur::de_q(v));
+    g_shared_const_lookup.insert(p);   // constante partagée : jamais à la poubelle
+    return p;
+}
+
 // Comparaisons : si les deux opérandes tiennent en machine, la comparaison de
 // longs coïncide avec mpz_cmp (ordre total des entiers) ; sinon GMP.
 static inline long cmp_z(Valeur* a, Valeur* b) {
@@ -436,6 +513,13 @@ Valeur* __attribute__((noinline)) jit_s_copy_into(Valeur* dst, Valeur* src) { JI
     if (!src) return dst;
     if (!dst) dst = new Valeur(Valeur::de_s(std::string()));
     dst->s = src->s;                       // copié depuis la VALEUR source
+    dst->ty = T_CHAINE; return dst;
+}
+// add.s (banc global : « $s = sous_chaine(...) + $s ») : miroir exact du cœur
+// RIR — concatenation, gauche + droite.
+Valeur* __attribute__((noinline)) jit_add_s_into(Valeur* dst, Valeur* a, Valeur* b) { JIT_LIT(a); JIT_LIT(b);
+    if (!dst) dst = new Valeur(Valeur::de_s(std::string()));
+    dst->s = a->s + b->s;
     dst->ty = T_CHAINE; return dst;
 }
 
@@ -796,7 +880,43 @@ Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur**
 
 void __attribute__((noinline)) jit_free_valeur(Valeur* v) {
     if (g_shared_const_lookup.count(v)) return;   // constante partagée : jamais libérée
+    // Les types à sémantique partagée (listes, tables, tampons, rationnels)
+    // ne peuvent PAS retourner au réservoir après un appel builtin : l'objet
+    // a pu être partagé dans un slot (M2.14). On les détruit proprement — la
+    // libération (mpz_clear/mpq_clear) est la différence avec le réservoir.
+    if (v->ty == T_LISTE || v->ty == T_TABLE || v->ty == T_TAMPON ||
+        v->ty == T_RATIONNEL || v->ty == T_VALEUR) { delete v; return; }
     valeur_pool_push(v);
+}
+
+// Copie dynamique (affect/builtin dont le type réel n'est pas suivi) :
+// recopie de tout ce qui compte pour le type de la source — miroir de la
+// copie Valeur = Valeur de l'interpréteur. Les conteneurs MUTABLES (liste,
+// table) sont copiés en PROFONDEUR : après un appel builtin, l'objet stdlib
+// retourne au réservoir et sera recyclé — un shared_ptr partagé serait écrit
+// sous les pieds du slot. Les tampons sont affectés par référence dans
+// l'interpréteur : shared_ptr partagé, jamais recyclé (T_TAMPON sort du
+// réservoir).
+// Destruction franche d'un objet rendu par un builtin : jamais le réservoir.
+// L'objet stdlib a pu être partagé dans un slot (M2.14, affect U) — le
+// recyclage par valeur_pool_push l'écrirait sous les pieds du slot.
+void __attribute__((noinline)) jit_delete_valeur(Valeur* v) {
+    if (g_shared_const_lookup.count(v)) return;   // constante partagée : jamais libérée
+    delete v;
+}
+
+Valeur* __attribute__((noinline)) jit_v_copy_into(Valeur* dst, Valeur* src) { JIT_LIT(src);
+    if (!src) return dst;
+    if (!dst) dst = new Valeur();
+    dst->ty = src->ty;
+    dst->z = src->z; dst->q = src->q; dst->f = src->f; dst->b = src->b;
+    dst->s = src->s;
+    if (src->l) dst->l = std::make_shared<std::vector<Valeur>>(*src->l);
+    else dst->l = nullptr;
+    if (src->t) dst->t = std::make_shared<std::vector<std::pair<Valeur,Valeur>>>(*src->t);
+    else dst->t = nullptr;
+    dst->o = src->o;
+    return dst;
 }
 
 // =============================================================================
@@ -874,6 +994,32 @@ static const BuiltinJit BUILTINS_JIT[] = {
     // M2.14 : listes et chaînes (le pont 50 reçoit les Valeur réelles).
     {"longueur", RirZ}, {"joindre", -2}, {"concatener", -3},
     {"ordre", RirZ}, {"caractere", -3}, {"sous_chaine", -3},
+    // J1 : « millisecondes » (0 argument, clock monotone) — la fin du banc
+    // global et des kernels de suite l'appellent à chaud. Sans entrée dans
+    // cette table, un seul appel en fin de programme éjecte TOUT le module du
+    // sous-ensemble JIT : mesuré 14 s (repli RIR) contre 0,09 s JIT sur la
+    // boucle entière de 10 M. ty_fixe = RirZ comme la stdlib.
+    {"millisecondes", RirZ},
+    // Rationnels du banc global : « 1 / c » à chaud rend un rationnel — sans
+    // entrée ici, le module entier retombait dans l'interpréteur RIR.
+    {"rationnel", RirQ}, {"fraction", RirQ},
+    // Dynamiques (banc global sections 4-5) : le pont 50 rend la Valeur
+    // exacte de la stdlib ; le slot suit le type RÉEL via jit_v_copy_into (64).
+    {"table", -4}, {"inserer", -4}, {"chaine", -4},
+    /* « inserer », « supprimer » et « cle_existe » rendent une valeur (vide /
+       booléen) que l'émetteur matérialise TOUJOURS dans un temp : la clause
+       ty_fixe == -2 de la pré-analyse (« le temp n'est jamais LU ») ne porte
+       que sur le compteur global temp_reads, qui ignore les lectures d'opérandes
+       — le -2 laissait donc passer un appel dont la destination n'était jamais
+       écrite, et la lecture suivante tombait sur le slot « vide » pré-créé
+       (mesuré : inserer rendait « variable '?' sans valeur »). Les trois sont
+       publiés en -4 : le pont 50 rend la Valeur exacte de la stdlib, la copie
+       générique jit_v_copy_into écrit le vrai type dans le slot. » */
+    {"supprimer", -4}, {"cle_existe", -4},
+    {"tampon", -4}, {"octets", -4}, {"lire_texte", -4},
+    // Effets de bord sans valeur rendue (section 7) : acceptés seulement si
+    // le temp de destination n'est JAMAIS LU (même contrat que « joindre »).
+    {"graine", -2}, {"remplir_hasard", -2}, {"ecrire_texte", -2},
 };
 const BuiltinJit* builtin_jit(const std::string &nom) {
     for (auto &b : BUILTINS_JIT)
@@ -911,6 +1057,19 @@ static bool parse_i64(const std::string &txt, int64_t *out) {
 
 static const int FRAME_SLOTS_MAX = 256;   // doit cadrer avec rose.cpp (frame_size)
 
+/* Valeur d'un appel de builtin selon le checker : 0 = rien (vide), 1 = valeur
+   (nombre, texte, table, liste…). La table BUILTINS_JIT publie ces builtins en
+   -4 sans distinguer le cas « rien rendu » ; la pré-analyse -2 (« le temp
+   n'est jamais LU ») ne voit que temp_reads et ignorait les appels dont la
+   destination n'est JAMAIS écrite. */
+static bool builtin_rend_rien(const std::string &nom) {
+    static const char *RIEN[] = {"graine", "remplir_hasard", "ecrire_texte",
+                                 "inserer", "joindre", "afficher", "quitter",
+                                 "graine_systeme", "graine_vrai", nullptr};
+    for (int i = 0; RIEN[i]; i++) if (nom == RIEN[i]) return true;
+    return false;
+}
+
 JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
 #if defined(__x86_64__)
     return compile_function_x64(fn);   // backend x86-64 (jit_x64.cpp)
@@ -936,6 +1095,9 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
         for (auto &instr : b.instrs) {
             const std::string &op = instr.op;
             if (op != "cst.z" && op != "cst.b" && op != "cst.f" && op != "cst.s" &&
+                op != "cst.q" && op != "add.s" &&
+                op != "add.q" && op != "sub.q" && op != "mul.q" &&
+                op != "div.q" && op != "div.q.q" && op != "div.z.q" && op != "div.q.z" &&
                 op != "liste.new" && op != "liste.push" &&
                 op != "liste.get" && op != "liste.len" && op != "index" &&                op != "add.z" && op != "sub.z" && op != "mul.z" &&
                 op != "div.z" && op != "rem.z.z" && op != "neg.z" &&
@@ -958,7 +1120,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 }
                 if (m_call_idx.count(instr.args[0].name)) {
                     if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
-                                               instr.dest_ty != RirF)) {
+                                               instr.dest_ty != RirF && instr.dest_ty != RirQ)) {
                         JITLOG("jit: call avec dest_ty=%d\n", (int)instr.dest_ty);
                         unsupported = true; break;
                     }
@@ -967,7 +1129,11 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     std::string bnom_dbg = instr.args[0].name.substr(1);
                     const BuiltinJit *bj = builtin_jit(bnom_dbg);
                     if (!bj || instr.dest.empty()) {
-                        JITLOG("jit: appel non supporté\n");
+                        if (!bj && !instr.dest.empty())
+                            JITLOG("jit: appel non supporté: %s (dest_ty=%d)\n",
+                                   bnom_dbg.c_str(), (int)instr.dest_ty);
+                        else
+                            JITLOG("jit: appel non supporté\n");
                         unsupported = true; break;
                     }
                     if (bj->ty_fixe == -2) {
@@ -982,6 +1148,22 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     } else if (bj->ty_fixe == -3) {
                         // résultat chaîne : accepté pour tout dest_ty — la copie
                         // écrit le vrai type dans le slot (slot_ty = S)
+                    } else if (bj->ty_fixe == -4) {
+                        // résultat dynamique : la copie générique écrit le vrai type.
+                        // « rien rendu » (graine, inserer, ecrire_texte…) : le temp
+                        // de destination ne doit JAMAIS être écrit — s'il est lu,
+                        // la lecture tombe sur le slot « vide » pré-créé et meurt
+                        // en « variable '?' sans valeur » (mesuré sur le banc
+                        // global §5 : inserer dans une boucle). Même contrat que -2.
+                        if (builtin_rend_rien(bnom_dbg)) {
+                            if (is_temp_name(instr.dest)) {
+                                int r = temp_reads.count(atoi(instr.dest.c_str() + 2))
+                                            ? temp_reads[atoi(instr.dest.c_str() + 2)] : 0;
+                                if (r != 0) { JITLOG("jit: %s lu, repli\n", bnom_dbg.c_str());
+                                              unsupported = true; break; }
+                            } else { JITLOG("jit: %s dest non-temp\n", bnom_dbg.c_str());
+                                     unsupported = true; break; }
+                        }
                     } else if (bj->ty_fixe == -1) {
                         if (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
                             instr.dest_ty != RirF) { JITLOG("jit: %s dest_ty=%d\n", bnom_dbg.c_str(), (int)instr.dest_ty);
@@ -1022,7 +1204,7 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                     bool nom_ok = (a.ty == RirS) ? true : a.name.rfind("@c", 0) == 0;
                     if (!nom_ok ||
                         (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF &&
-                         a.ty != RirS)) {
+                         a.ty != RirS && a.ty != RirQ)) {
                         JITLOG("jit: constante non supportée: %s\n", a.name.c_str());
                         unsupported = true; break;
                     }
@@ -1113,6 +1295,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             shared = jit_val_f(strtod(txt.c_str(), nullptr));
         } else if (c.second == RirS) {
             shared = jit_val_s(c.first.c_str());         // texte brut, sans préfixe (M2.14)
+        } else if (c.second == RirQ) {
+            shared = jit_val_q(txt.c_str());             // « n » ou « n/d » (banc global)
         } else if (parse_i64(txt, &v)) {
             shared = jit_val_z(v);
         } else {
@@ -1157,6 +1341,59 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             const std::string &op = instr.op;
             int d = -1;
 
+            if (op == "cst.q") {
+                // constante rationnelle : alias direct vers le slot de la
+                // constante partagée (même voie que cst.z, jamais d'écriture).
+                if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                auto it = (instr.args[0].kind == RirOp::Const)
+                              ? slot_const.find(instr.args[0].name) : slot_const.end();
+                if (it == slot_const.end()) { unsupported = true; break; }
+                const_alias[d] = it->second;
+                slot_ty[d] = RirQ;
+                continue;
+            }
+            // ── Rationnels (banc global) : add.q/sub.q/mul.q + la famille « div »
+            // (division EXACTE de Rose : le cœur RIR rend toujours un rationnel
+            // hors flottants). Voie helper — 1 k itérations sur le banc :
+            // l'allocation par itération est négligeable devant GMP lui-même.
+            {
+                int qh = -1, qacc = -1;
+                // add/sub/mul.q = ABI « dst, a, b » (dst en x0, zéro allocation
+                // en boucle) ; div.q = ABI « a, b » qui rend un objet frais,
+                // comme jit_div_z (27). Ce n'est PAS un détail : se tromper
+                // d'ABI écrase x0 et le helper lit un pointeur invalide.
+                if (op == "add.q") { qh = 58; qacc = 0; }
+                else if (op == "sub.q") { qh = 59; qacc = 0; }
+                else if (op == "mul.q") { qh = 60; qacc = 0; }
+                else if (op == "div.q" || op == "div.q.q" || op == "div.z.q" ||
+                         op == "div.q.z") { qh = 61; qacc = -1; }
+                if (qh >= 0) {
+                    if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                    if (qacc == 0) {
+                        asm_.ldr(X0, X20, d);                          // dst
+                        if (!load_operand(asm_, instr.args[0], X1) ||
+                            !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
+                    } else {
+                        if (!load_operand(asm_, instr.args[0], X0) ||
+                            !load_operand(asm_, instr.args[1], X1)) { unsupported = true; break; }
+                    }
+                    asm_.blr_helper(qh);
+                    asm_.str(X0, X20, d);
+                    slot_ty[d] = RirQ;
+                    continue;
+                }
+                if (op == "add.s") {
+                    if (!slot_of(instr.dest, d)) { unsupported = true; break; }
+                    { int fd; if (fused_dst(instr, ii, fd)) d = fd; }   // fusion M2.8
+                    if (!load_operand(asm_, instr.args[0], X1) ||
+                        !load_operand(asm_, instr.args[1], X2)) { unsupported = true; break; }
+                    asm_.ldr(X0, X20, d);
+                    asm_.blr_helper(63);                    // jit_add_s_into
+                    asm_.str(X0, X20, d);
+                    slot_ty[d] = RirS;
+                    continue;
+                }
+            }
             if (op == "cst.z" || op == "cst.b" || op == "cst.f" || op == "cst.s") {
                 // Alias SSA : aucune instruction émise, le temp pointe la
                 // constante partagée (voir const_alias + jit_free_valeur).
@@ -1477,9 +1714,10 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 else if (sty == RirB) asm_.blr_helper(26);  // jit_b_copy_into
                 else if (sty == RirF) asm_.blr_helper(35);  // jit_f_copy_into
                 else if (sty == RirS) asm_.blr_helper(55);  // jit_s_copy_into
-                else if (sty == RirU) asm_.mov_reg(X0, X1); // partage de l'objet (M2.14) :
-                                                            // la copie shallow de l'interpréteur
-                                                            // partage déjà les shared_ptr internes
+                else if (sty == RirQ) asm_.blr_helper(62);  // jit_q_copy_into
+                else if (sty == RirU) asm_.blr_helper(64);  // jit_v_copy_into : le type
+                                                            // RÉEL suit la source (builtins
+                                                            // dynamiques du banc global)
                 else { JITLOG("jit: affect: type inconnu pour %s\n", instr.args[0].name.c_str());
                        unsupported = true; break; }
                 asm_.str(X0, X20, d);
@@ -1570,20 +1808,71 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                         continue;                      // slot dest jamais lu (vérifié)
                     }
                     asm_.str(X0, SP, 0);               // sauvegarde
+                    if (bj->ty_fixe == -4 && builtin_rend_rien(bnom)) {
+                        // appel d'un builtin qui ne rend rien (inserer, graine,
+                        // ecrire_texte…) : la Valeur du pont est un vide, on la
+                        // détruit et on écrit un VIDE NOMMÉ dans le slot — jamais
+                        // helper 32 (jit_free_valeur) : le pont peut rendre une
+                        // constante partagée ou un objet du réservoir, et le
+                        // libérer ici corrompait le tas (SEGFAULT mesuré dans
+                        // jit_free_valeur sur « inserer »). L'appelant ne lit pas
+                        // ce temp (pré-analyse). Les variables passent par la
+                        // copie dynamique (helper 64) — comme pour les autres -4.
+                        bool dest_lu = false;
+                        if (is_temp_name(instr.dest)) {
+                            int r = temp_reads.count(atoi(instr.dest.c_str() + 2))
+                                        ? temp_reads[atoi(instr.dest.c_str() + 2)] : 0;
+                            dest_lu = (r != 0);
+                        }
+                        if (!dest_lu) {
+                            asm_.add_sp(bytes);
+                            continue;
+                        }
+                        asm_.mov_reg(X1, X0);              // x1 = src (résultat stdlib)
+                        asm_.ldr(X0, X20, d);              // x0 = dst (slot propre)
+                        asm_.blr_helper(64);               // jit_v_copy_into (type réel)
+                        asm_.str(X0, X20, d);
+                        slot_ty[d] = RirU;
+                        asm_.add_sp(bytes);
+                        continue;
+                    }
                     asm_.mov_reg(X1, X0);              // x1 = src (résultat stdlib)
                     asm_.ldr(X0, X20, d);              // x0 = dst (slot propre)
                     int ty_res = bj->ty_fixe == -3 ? RirS :
                                  (instr.dest_ty == RirU ? bj->ty_fixe : (int)instr.dest_ty);
-                    if (ty_res != RirZ && ty_res != RirB && ty_res != RirF &&
-                        ty_res != RirS) {
-                        unsupported = true; break;
+                    if (bj->ty_fixe == -4) {
+                        if (builtin_rend_rien(bnom)) {
+                            // « rien rendu » (inserer, graine, ecrire_texte…) : la
+                            // Valeur du pont est un vide — le libérer, ne rien écrire
+                            // dans le slot (le temp n'est jamais lu : vérifié en
+                            // pré-analyse). Écrire un T_VIDE dans un slot de variable
+                            // le ferait passer pour « non affectée » : les affectations
+                            // RIR convertissent vers le type du slot déjà présent, et
+                            // un premier affect qui trouve un vide ne fait que le
+                            // remplacer (rose.cpp, op « affect ») → la lecture suivante
+                            // mourait en « variable '?' sans valeur » (banc global §5,
+                            // mesuré sur $tab = table()).
+                            asm_.blr_helper(32);
+                            asm_.add_sp(bytes);
+                            continue;
+                        }
+                        asm_.blr_helper(64);               // jit_v_copy_into (type réel)
+                        slot_ty[d] = RirU;
+                    } else {
+                        if (ty_res != RirZ && ty_res != RirB && ty_res != RirF &&
+                            ty_res != RirS && ty_res != RirQ) {
+                            unsupported = true; break;
+                        }
+                        asm_.blr_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 :
+                                        ty_res == RirS ? 55 : ty_res == RirQ ? 62 : 25);
                     }
-                    asm_.blr_helper(ty_res == RirB ? 26 : ty_res == RirF ? 35 :
-                                    ty_res == RirS ? 55 : 25);
                     asm_.str(X0, X20, d);
                     slot_ty[d] = (RirType)ty_res;
                     asm_.ldr(X0, SP, 0);
-                    asm_.blr_helper(32);               // jit_free_valeur
+                    asm_.blr_helper(65);               // jit_delete_valeur : l'objet
+                                                       // stdlib d'un builtin ne retourne
+                                                       // JAMAIS au réservoir (il a pu
+                                                       // être partagé par la copie)
                     asm_.add_sp(bytes);
                     continue;
                 }
@@ -1612,7 +1901,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.mov_reg(X1, X0);                 // x1 = src (résultat callee)
                 asm_.ldr(X0, X20, d);                 // x0 = dst (slot propre)
                 asm_.blr_helper(instr.dest_ty == RirB ? 26 :
-                                instr.dest_ty == RirF ? 35 : 25);  // copie b/f/z
+                                instr.dest_ty == RirF ? 35 :
+                                instr.dest_ty == RirQ ? 62 : 25);  // copie b/f/q/z
                 asm_.str(X0, X20, d);
                 asm_.ldr(X0, SP, 0);
                 asm_.blr_helper(32);                  // jit_free_valeur (copie callee)
@@ -1972,6 +2262,15 @@ Valeur* rose_jit_run(void* entry, void** helpers, int nhelpers, Valeur** frame) 
     ctx.helpers[53] = (void*)&jit_liste_get;
     ctx.helpers[54] = (void*)&jit_liste_len;
     ctx.helpers[55] = (void*)&jit_s_copy_into;
+    // Rationnels et dynamiques (banc global)
+    ctx.helpers[58] = (void*)&jit_add_q;
+    ctx.helpers[59] = (void*)&jit_sub_q;
+    ctx.helpers[60] = (void*)&jit_mul_q;
+    ctx.helpers[61] = (void*)&jit_div_q;
+    ctx.helpers[62] = (void*)&jit_q_copy_into;
+    ctx.helpers[63] = (void*)&jit_add_s_into;
+    ctx.helpers[64] = (void*)&jit_v_copy_into;
+    ctx.helpers[65] = (void*)&jit_delete_valeur;
     JitEntryFn fn = reinterpret_cast<JitEntryFn>(entry);
     return reinterpret_cast<Valeur*>(fn(&ctx, frame, nullptr, 0));
 }

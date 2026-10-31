@@ -2336,6 +2336,24 @@ static std::string formater_duree(const std::string &n_str_in) {
 }
 
 static Valeur stdlib(const std::string &nom, std::vector<Valeur> &a, int ligne) {
+        /* conversions explicites à un argument : le pont JIT (rose_appel_builtin)
+           et l'interpréteur RIR (repli) passent TOUT par ici — sans ces cas,
+           « chaine(x) » en chemin JIT échouait en « fonction inconnue » alors
+           que l'interpréteur d'arbre les traitait (parité des trois voies). */
+        if (a.size() == 1 &&
+            (nom == "entier" || nom == "rationnel" || nom == "flottant" || nom == "chaine")) {
+            Valeur v = a[0];
+            if (nom == "entier") {
+                if (v.ty == T_CHAINE) { mpz_class r; chaine_vers_entier(r, v.s); return Valeur::de_z(r); }
+                return convertir(std::move(v), T_ENTIER);
+            }
+            if (nom == "rationnel") return convertir(std::move(v), T_RATIONNEL);
+            if (nom == "flottant") {
+                if (v.ty == T_CHAINE) return Valeur::de_f(chaine_vers_flottant(v.s));
+                return convertir(std::move(v), T_FLOTTANT);
+            }
+            return Valeur::de_s(chaine_de(v));
+        }
         if (nom == "temps") {
             long long ns = (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - ROSE_DEPART).count();
@@ -2879,6 +2897,45 @@ struct EmetteurRir {
                 return t;
             }
             case NK::Appel: {
+                /* appels SANS argument (millisecondes, table, nb_arguments,
+                   graine_systeme…) : le checker les a typés ; l'émetteur doit
+                   les connaître, sinon ils tombent dans le « default → %? »
+                   qui empoisonne le module (JIT écarté + « variable '?' sans
+                   valeur » au repli). Trouvé par le banc global (§5 tables). */
+                if (e->args.empty()) {
+                    std::string t = nouveau_temp();
+                    RirInstr i; i.dest = t; i.op = "call";
+                    i.dest_ty = e->type != T_VIDE ? ty_vers_rir(Ty(e->type)) : RirType::U;
+                    RirOp o; o.kind = RirOp::Temp; o.name = "$" + e->texte; o.ty = i.dest_ty;
+                    i.args.push_back(o);
+                    bloc.instrs.push_back(i);
+                    return t;
+                }
+                /* conversions explicites entier/rationnel/flottant/chaine :
+                   le checker les accepte hors signature (un seul argument) ;
+                   l'émetteur doit les connaître ici, sinon elles tombent dans
+                   le « default → %? » (banc global : « chaine » inconnue) et
+                   l'opérateur %? empoisonne tout le module — JIT écarté, puis
+                   variable '?' sans valeur à l'exécution. Émis comme le fait
+                   déjà l'interpréteur d'arbre (appel() case conversions). */
+                if (e->args.size() == 1 &&
+                    (e->texte == "entier" || e->texte == "rationnel" ||
+                     e->texte == "flottant" || e->texte == "chaine")) {
+                    std::string a = emettre_expr(e->args[0], bloc, RirType::U);
+                    std::string t = nouveau_temp();
+                    RirInstr i; i.dest = t;
+                    /* le type RÉEL du résultat vient du checker : chaine(42) est
+                       une chaîne alors que ty_attendu peut être Z (concaténation,
+                       table…). Forcer ty_attendu faisait lire un slot « vide »
+                       sous un type entier → « variable '?' sans valeur » au JIT. */
+                    i.dest_ty = e->type != T_VIDE ? ty_vers_rir(Ty(e->type)) : RirType::U;
+                    i.op = "call";
+                    RirOp o; o.kind = RirOp::Temp; o.name = "$" + e->texte; o.ty = i.dest_ty;
+                    i.args.push_back(o);
+                    RirOp oa; oa.kind = RirOp::Temp; oa.name = a; i.args.push_back(oa);
+                    bloc.instrs.push_back(i);
+                    return t;
+                }
                 std::vector<std::string> arg_temps;
                 for (PE &a : e->args) {
                     arg_temps.push_back(emettre_expr(a, bloc, RirType::U));
@@ -3292,6 +3349,14 @@ struct InterpRir {
 
     explicit InterpRir(RirModule &m) : mod(m) {}
 
+    /* appels SANS argument (millisecondes, table, graine_systeme…) : l'émetteur
+       les rend en « call $nom » sans opérande. get_val('%') échouerait en
+       « variable '?' sans valeur » — trouvé par le banc global §5 (tables). */
+    Valeur stdlib_sans_args(const std::string &nom) {
+        std::vector<Valeur> vide;
+        return stdlib(nom, vide, 0);
+    }
+
     /* ── fonctions dynamiques (dlopen à l'exécution) ──────────────── */
     Valeur dynamique(const std::string &nom, std::vector<Valeur> &args) {
         if (nom == "charger") {
@@ -3580,6 +3645,11 @@ struct InterpRir {
             std::string nom = i.args[0].name;
             /* extraire le nom de la fonction */
             if (nom.rfind("$", 0) == 0) nom = nom.substr(1);
+            if (i.args.size() == 1) {
+                /* appel sans argument : millisecondes, table, graine_systeme… */
+                frame.vals[i.dest] = stdlib_sans_args(nom);
+                return 0;
+            }
             std::vector<Valeur> args;
             for (size_t j = 1; j < i.args.size(); j++) args.push_back(get_val(i.args[j]));
             if (nom == "factorielle") {
@@ -4397,9 +4467,18 @@ extern Valeur* jit_div_z_into(Valeur* dst, Valeur* a, Valeur* b);/* 27 */
 extern Valeur* jit_rem_z_into(Valeur* dst, Valeur* a, Valeur* b);/* 28 */
 extern Valeur* jit_neg_z_into(Valeur* dst, Valeur* a);           /* 29 */
 extern Valeur* jit_bool_into(Valeur* dst, int cond);             /* 30 */
+/* Helpers rationnels et dynamiques (banc global, indices 58-65) */
+extern Valeur* jit_add_q(Valeur* dst, Valeur* a, Valeur* b);     /* 58 */
+extern Valeur* jit_sub_q(Valeur* dst, Valeur* a, Valeur* b);     /* 59 */
+extern Valeur* jit_mul_q(Valeur* dst, Valeur* a, Valeur* b);     /* 60 */
+extern Valeur* jit_div_q(Valeur* a, Valeur* b);                  /* 61 */
+extern Valeur* jit_q_copy_into(Valeur* dst, Valeur* src);        /* 62 */
+extern Valeur* jit_add_s_into(Valeur* dst, Valeur* a, Valeur* b); /* 63 */
+extern Valeur* jit_v_copy_into(Valeur* dst, Valeur* src);        /* 64 */
+extern Valeur* jit_delete_valeur(Valeur* v);                     /* 65 */
 
 /* Nombre de helpers enregistrés pour le JIT */
-static const int NJIT_HELPERS = 58;
+static const int NJIT_HELPERS = 66;  // 58 de base + 8 helpers rationnels/dynamiques (indices 58-65)
 
 /* v3.13.1 : les ponts JIT (builtins, index, afficher) lisent des Valeur*
    venues de slots JIT. Un slot de variable jamais affectée pré-porte un
@@ -4437,6 +4516,22 @@ static Valeur* rose_appel_builtin(const char* nom, Valeur** args, int nargs) {
         long r = 0; bool ok = false;
         auto ugcd = [](unsigned long u, unsigned long v) {
             while (v) { unsigned long t = u % v; u = v; v = t; } return u; };
+        // millisecondes() SANS argument : le chemin générique en dessous recopie
+        // PROFONDÉMENT chaque argument dans un std::vector<Valeur> AVANT même
+        // de regarder le builtin — mais la table d'arguments du pont JIT porte
+        // des Valeur* issus des slots du frame : un slot de variable jamais
+        // affectée est un objet « vide » que la copie d'appel (Valeur = Valeur,
+        // opérateur implicite recopié sur 152 octets) détruit — l'assignation
+        // libère des mpz/char* que le frame croit encore posséder. Un appel
+        // « >> millisecondes() » derrière une boucle chaude free() donc des
+        // mégaoctets à chaque itération : mesuré 14 s là où le JIT rend 0,01 s.
+        // Zéro argument = zéro recopie : on rend la valeur directement.
+        if (nargs == 0 && !std::strcmp(nom, "millisecondes")) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            return new Valeur(Valeur::de_z(
+                (unsigned long)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000)));
+        }
         if (nargs == 1 && p0) {
             if (!std::strcmp(nom, "abs")) {
                 if (a0 != LLONG_MIN) { r = a0 < 0 ? -a0 : a0; ok = true; }

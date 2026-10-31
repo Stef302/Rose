@@ -335,7 +335,7 @@ class Parser:
             test = self.parentheser()
             corps = self.bloc()
             return TantQue(ligne=t.ligne, test=test, corps=corps)
-        if t.type == Tk.Ident and t.texte == "pour":
+        if t.type == Tk.Ident and t.texte in ("pour", "vectorise"):
             self.suivant()
             var = self.nom_ident()
             if not self.accepter_mot("de"):

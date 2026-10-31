@@ -22,7 +22,7 @@ struct A64Buf;  // défini dans jit.cpp
 // Contexte d'exécution partagé par toutes les fonctions JIT d'un module.
 struct JitContext {
     // Adresses des fonctions helpers (indexées par le JIT) — en premier pour accès JIT direct
-    static const int MAX_HELPERS = 64;
+    static const int MAX_HELPERS = 96;   // 64 : la table historique ; 96 depuis les helpers rationnels/dynamiques du banc global
     void* helpers[MAX_HELPERS] = {};
 
     // Valeurs globales : nom -> Valeur* (alloué sur le tas, possédé par le contexte)

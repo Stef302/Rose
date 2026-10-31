@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <type_traits>
 #include <cmath>
 #include <string>
 #include <memory>
@@ -289,6 +290,59 @@ inline rose_ent operator-(const rose_ent &a, long long b) { return a - rose_ent(
 inline rose_ent operator-(long long a, const rose_ent &b) { return rose_ent(a) - b; }
 inline rose_ent operator*(const rose_ent &a, long long b) { return a * rose_ent(b); }
 inline rose_ent operator*(long long a, const rose_ent &b) { return rose_ent(a) * b; }
+
+// J1 (scalaires en registre) : quand le transpileur prouve qu'un scalaire
+// tient int64, il l'émet en int64_t. Les sites mixtes (rose_ent ±× int64_t,
+// comparaisons, +=) doivent compiler avec la MEME sémantique exacte que
+// rose_ent/rose_ent : on importe les opérateurs du domaine exact en élevant
+// l'entier machine — aucune arithmétique machine directe, aucune promotion
+// silencieuse. « int » (littéraux émis sans suffixe) est distinct de
+// « long long » pour garder les paires (long long, int64_t) non ambiguës
+// sur LP64 où int64_t = long. Les variantes int sont des gabarits non
+// convertibles (T ≡ int seulement) : elles ne créent AUCUNE nouvelle
+// conversion implicite vers rose_ent et restent hors de la résolution pour
+// tout autre type d'opérande.
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent operator+(const rose_ent &a, T b) { return a + rose_ent((int64_t)b); }
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent operator+(T a, const rose_ent &b) { return rose_ent((int64_t)a) + b; }
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent operator-(const rose_ent &a, T b) { return a - rose_ent((int64_t)b); }
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent operator-(T a, const rose_ent &b) { return rose_ent((int64_t)a) - b; }
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent operator*(const rose_ent &a, T b) { return a * rose_ent((int64_t)b); }
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent operator*(T a, const rose_ent &b) { return rose_ent((int64_t)a) * b; }
+inline rose_ent operator+(const rose_ent &a, int64_t b) { return a + rose_ent(b); }
+inline rose_ent operator+(int64_t a, const rose_ent &b) { return rose_ent(a) + b; }
+inline rose_ent operator-(const rose_ent &a, int64_t b) { return a - rose_ent(b); }
+inline rose_ent operator-(int64_t a, const rose_ent &b) { return rose_ent(a) - b; }
+inline rose_ent operator*(const rose_ent &a, int64_t b) { return a * rose_ent(b); }
+inline rose_ent operator*(int64_t a, const rose_ent &b) { return rose_ent(a) * b; }
+inline bool operator<(const rose_ent &a, int64_t b) { return a < rose_ent(b); }
+inline bool operator<(int64_t a, const rose_ent &b) { return rose_ent(a) < b; }
+inline bool operator>(const rose_ent &a, int64_t b) { return a > rose_ent(b); }
+inline bool operator>(int64_t a, const rose_ent &b) { return rose_ent(a) > b; }
+inline bool operator<=(const rose_ent &a, int64_t b) { return a <= rose_ent(b); }
+inline bool operator<=(int64_t a, const rose_ent &b) { return rose_ent(a) <= b; }
+inline bool operator>=(const rose_ent &a, int64_t b) { return a >= rose_ent(b); }
+inline bool operator>=(int64_t a, const rose_ent &b) { return rose_ent(a) >= b; }
+inline bool operator==(const rose_ent &a, int64_t b) { return a == rose_ent(b); }
+inline bool operator==(int64_t a, const rose_ent &b) { return rose_ent(a) == b; }
+inline bool operator!=(const rose_ent &a, int64_t b) { return a != rose_ent(b); }
+inline bool operator!=(int64_t a, const rose_ent &b) { return rose_ent(a) != b; }
+inline rose_ent &operator+=(rose_ent &a, int64_t b) { return a += rose_ent(b); }
+inline rose_ent &operator-=(rose_ent &a, int64_t b) { return a -= rose_ent(b); }
+inline rose_ent &operator*=(rose_ent &a, int64_t b) { return a *= rose_ent(b); }
+// variantes int (littéraux émis sans suffixe) : gabarits non convertibles,
+// jamais ambigus avec « long long » (LP64 : int64_t = long ≠ long long).
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent &operator+=(rose_ent &a, T b) { return a += rose_ent((int64_t)b); }
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent &operator-=(rose_ent &a, T b) { return a -= rose_ent((int64_t)b); }
+template <class T, class = typename std::enable_if<std::is_same<T, int>::value>::type>
+inline rose_ent &operator*=(rose_ent &a, T b) { return a *= rose_ent((int64_t)b); }
 inline bool operator<(const rose_ent &a, long long b) { return a < rose_ent(b); }
 inline bool operator<(long long a, const rose_ent &b) { return rose_ent(a) < b; }
 inline bool operator>(const rose_ent &a, long long b) { return rose_ent(b) < a; }
