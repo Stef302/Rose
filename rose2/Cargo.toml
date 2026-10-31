@@ -1,0 +1,9 @@
+[package]
+name = "rose-20"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
