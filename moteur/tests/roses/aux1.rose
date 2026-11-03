@@ -1,0 +1,5 @@
+$l = table()
+$l2 = table()
+>> $l == $l2
+$t = table()
+>> $t

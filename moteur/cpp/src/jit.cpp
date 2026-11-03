@@ -864,6 +864,8 @@ Valeur* __attribute__((noinline)) jit_call(JitContext* ctx, int target, Valeur**
         if (s < 0 || s >= T.nslots || !args[i]) continue;
         frame[s] = (T.param_tys[i] == (int)RirB) ? jit_b_copy_into(nullptr, args[i])
                  : (T.param_tys[i] == (int)RirF) ? jit_f_copy_into(nullptr, args[i])
+                 : (T.param_tys[i] == (int)RirS) ? jit_s_copy_into(nullptr, args[i])
+                 : (T.param_tys[i] == (int)RirQ) ? jit_q_copy_into(nullptr, args[i])
                                                  : jit_z_copy_into(nullptr, args[i]);
     }
     Valeur* res = reinterpret_cast<Valeur*>(T.fn(ctx, frame, nullptr, 0));
@@ -1000,6 +1002,15 @@ static const BuiltinJit BUILTINS_JIT[] = {
     // sous-ensemble JIT : mesuré 14 s (repli RIR) contre 0,09 s JIT sur la
     // boucle entière de 10 M. ty_fixe = RirZ comme la stdlib.
     {"millisecondes", RirZ},
+    // « temps » (SPEC v3.13, 0 argument, steady_clock depuis départ) : même
+    // contrat. Sans entrée, t_chrono éjecte le module entier à JIT — mesuré :
+    // avance() (2 appel temps + tant_que) rendait « fonction 'avance'
+    // inconnue » après repli RIR. ty_fixe = RirZ comme millisecondes.
+    {"temps", RirZ},
+    // « duree » (SPEC v3.13, 1 argument entier ≥ 0, rend chaîne adaptatif) :
+    // ty_fixe = RirS. L'émetteur pose dest_ty = U (temp nu) ; le clause RirS
+    // (1179) accepte U, la copie générique 55 écrit le vrai type S.
+    {"duree", RirS},
     // Rationnels du banc global : « 1 / c » à chaud rend un rationnel — sans
     // entrée ici, le module entier retombait dans l'interpréteur RIR.
     {"rationnel", RirQ}, {"fraction", RirQ},
@@ -1120,7 +1131,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 }
                 if (m_call_idx.count(instr.args[0].name)) {
                     if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
-                                               instr.dest_ty != RirF && instr.dest_ty != RirQ)) {
+                                               instr.dest_ty != RirF && instr.dest_ty != RirQ &&
+                                               instr.dest_ty != RirS)) {
                         JITLOG("jit: call avec dest_ty=%d\n", (int)instr.dest_ty);
                         unsupported = true; break;
                     }
@@ -1168,6 +1180,10 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                         if (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
                             instr.dest_ty != RirF) { JITLOG("jit: %s dest_ty=%d\n", bnom_dbg.c_str(), (int)instr.dest_ty);
                                                      unsupported = true; break; }
+                    } else if (bj->ty_fixe == RirS) {
+                        // résultat chaîne (duree, caractere, sous_chaine…) : l'émetteur
+                        // pose dest_ty = U (temp nu), mais la copie générique écrit
+                        // le vrai type S dans le slot — accepté comme -3.
                     } else if (instr.dest_ty != RirU && instr.dest_ty != bj->ty_fixe) {
                         JITLOG("jit: %s dest_ty=%d vs %d\n", bnom_dbg.c_str(), (int)instr.dest_ty, bj->ty_fixe);
                         unsupported = true; break;
@@ -1200,8 +1216,11 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
             for (auto &a : instr.args) {
                 if (a.kind == RirOp::Temp) consider(a.name);
                 else if (a.kind == RirOp::Const) {
-                    // constantes numériques : texte préfixé « @c… » ; chaînes : texte brut (M2.14)
-                    bool nom_ok = (a.ty == RirS) ? true : a.name.rfind("@c", 0) == 0;
+                    // constantes numériques : texte préfixé « @c… » ; chaînes : texte brut (M2.14) ;
+                    // booléens : littéraux « vrai »/« faux » (émis sans préfixe par
+                    // l'émetteur pour ret %c des fonctions à variable locale).
+                    bool nom_ok = (a.ty == RirS) ? true : a.name.rfind("@c", 0) == 0 ||
+                                  (a.ty == RirB && (a.name == "vrai" || a.name == "faux"));
                     if (!nom_ok ||
                         (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF &&
                          a.ty != RirS && a.ty != RirQ)) {
@@ -1287,8 +1306,10 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
         int sl = slot_const[c.first];
         int64_t v;
         Valeur *shared;
-        if (c.second == RirB || txt == "vrai" || txt == "faux") {
-            shared = jit_val_b(txt == "vrai");
+        if (c.second == RirB) {
+            // booléen : le texte est soit le préfixe « @cvrai », soit le littéral
+            // nu « vrai »/« faux » émis par l'émetteur (ret %c des locales).
+            shared = jit_val_b(txt == "vrai" || c.first == "vrai");
         } else if (c.second == RirF) {
             // constante flottante : texte canonique de texte_flottant, relu
             // exactement (round-trip %g) — jamais la voie entière parse_i64.
@@ -1902,7 +1923,8 @@ JitEntryFn JitCompiler::compile_function(RirFonction* fn) {
                 asm_.ldr(X0, X20, d);                 // x0 = dst (slot propre)
                 asm_.blr_helper(instr.dest_ty == RirB ? 26 :
                                 instr.dest_ty == RirF ? 35 :
-                                instr.dest_ty == RirQ ? 62 : 25);  // copie b/f/q/z
+                                instr.dest_ty == RirQ ? 62 :
+                                instr.dest_ty == RirS ? 55 : 25);  // copie b/f/q/s/z
                 asm_.str(X0, X20, d);
                 asm_.ldr(X0, SP, 0);
                 asm_.blr_helper(32);                  // jit_free_valeur (copie callee)

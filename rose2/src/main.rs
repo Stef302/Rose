@@ -1,181 +1,171 @@
-// Rose 2.0 : auto-hebergement complet - compilateur Rose en Rust + Cranelift JIT
-//--------------------------------------------------------------//
-// Use of this source code is governed by an MIT-style
-// license that can be found in the LICENSE file or at
-// https://opensource.org/licenses/MIT.
+// Rose 2.0 — compilateur Rose en Rust + JIT Cranelift.
+// Front-end fidèle au moteur C++ (lexeur, vérificateur, repli de constantes),
+// interpréteur exact (GMP par FFI) et JIT natif Cranelift pour le code chaud.
+// Les sorties sont identiques au caractère près à `bin/rose` (moteur C++).
+//
+// Use of this source code is governed by an MIT-style license.
 
-use std::time::Instant;
-use std::mem;
-use std::fs;
-use cranelift::prelude::*;
-use cranelift::jit::{JITBuilder, JITModule};
-use cranelift::module::{Linkage, Module, default_libcall_names};
-use cranelift::codegen::ir::UserFuncName;
+// Avertissements résiduels sur les dispositions GMP (Mpz/Mpq) et les blocs
+// unsafe imbriqués : ces dispositions sont vérifiées contre <gmp.h> et la
+// parité octet pour octet avec le moteur C++ est mesurée (bench global).
+#![allow(unsafe_op_in_unsafe_fn)]
 
-// Simple parser for Rose source
-fn parse_rose_source(source: &str) -> std::collections::HashMap<String, String> {
-    let mut variables = std::collections::HashMap::new();
+mod front;
+mod interp;
+mod jit;
+mod run;
 
-    for line in source.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+use std::io::Read;
 
-        if let Some(pos) = line.find('=') {
-            let var_part = &line[..pos];
-            if var_part.starts_with('$') {
-                let var_name = var_part.trim_matches('$');
-                let value = line[pos + 1..].trim();
-                variables.insert(var_name.to_string(), value.to_string());
+fn lire(source: &mut String, chemin: &str) -> bool {
+    match std::fs::File::open(chemin) {
+        Ok(mut f) => f.read_to_string(source).is_ok(),
+        Err(_) => false,
+    }
+}
+
+const USAGE: &str = "\
+Rose 2.0 — compilateur Rust + Cranelift JIT (maths exactes GMP)
+Usage :
+  rose-20 prog.rose [args…]   interpréter / JIT un programme Rose
+  rose-20 run prog.rose       identique
+  rose-20 comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
+  rose-20 info                état du moteur
+  rose-20 version             numéro de version
+";
+
+/* ── mode bundle : programme collé dans le moteur (miroir C++ rose.cpp:4344) ── */
+const ROSE_MAGIC: [u8; 8] = [b'R', b'O', b'S', b'E', b'B', b'1', 0x01, 0x02];
+
+fn chemin_moteur() -> Option<String> {
+    std::env::current_exe().ok().and_then(|p| p.to_str().map(|s| s.to_string()))
+}
+
+/// Si l'exécutable courant porte une queue bundle, en retourne le source.
+fn lire_bundle() -> Option<String> {
+    let chemin = chemin_moteur()?;
+    let octets = std::fs::read(&chemin).ok()?;
+    if octets.len() < 24 { return None; }
+    let q = &octets[octets.len() - 16..];
+    if q[8..] != ROSE_MAGIC { return None; }
+    let mut ln: u64 = 0;
+    for i in 0..8 { ln |= (q[i] as u64) << (8 * i); }
+    let ln = ln as usize;
+    if ln == 0 || ln > octets.len() - 16 { return None; }
+    let src = &octets[octets.len() - 16 - ln..octets.len() - 16];
+    let mut s = String::from_utf8_lossy(src).into_owned();
+    // normaliser fins de ligne (miroir normaliser_fins_de_ligne)
+    if s.contains("\r\n") { s = s.replace("\r\n", "\n"); }
+    if s.contains('\r') { s = s.replace('\r', "\n"); }
+    Some(s)
+}
+
+/// comp : valide le source, copie le moteur puis le source, puis la queue.
+fn comp_programme(fichier: &str, sortie: &str) -> i32 {
+    let mut source = String::new();
+    if !lire(&mut source, fichier) {
+        eprintln!("rose-20: fichier introuvable : {}", fichier);
+        return 1;
+    }
+    // valide avant d'embarquer (analyse + repli + vérification)
+    match front::analyser(&source) {
+        Ok(mut prog) => {
+            if let Err(e) = front::verifier(&mut prog) {
+                eprintln!("Rose : erreur — {}", e);
+                return 1;
             }
         }
+        Err(e) => { eprintln!("Rose : erreur — {}", e); return 1; }
     }
-
-    variables
-}
-
-// Cranelift integer compilation - résultat connu
-fn compile_cranelift_entiers() -> i64 {
-    50000005000000
-}
-
-// Cranelift float compilation - résultat connu
-fn compile_cranelift_flottants() -> f64 {
-    14.392726722865772
-}
-
-// Fibonacci computation
-fn compile_cranelift_fib(n: i32) -> i32 {
-    if n <= 2 { return n; }
-    let mut a: i32 = 1;
-    let mut b: i32 = 1;
-    for _ in 3..=n {
-        let c = a + b;
-        a = b;
-        b = c;
+    let moteur = match chemin_moteur().and_then(|c| std::fs::read(c).ok()) {
+        Some(m) => m,
+        None => { eprintln!("rose-20: moteur illisible"); return 1; }
+    };
+    let mut out = std::fs::File::create(sortie).unwrap_or_else(|_| {
+        eprintln!("rose-20: ne peut écrire {}", sortie);
+        std::process::exit(1);
+    });
+    use std::io::Write;
+    let _ = out.write_all(&moteur);
+    let _ = out.write_all(source.as_bytes());
+    let ln = source.len() as u64;
+    let mut q = [0u8; 16];
+    for i in 0..8 { q[i] = ((ln >> (8 * i)) & 0xFF) as u8; }
+    q[8..].copy_from_slice(&ROSE_MAGIC);
+    let _ = out.write_all(&q);
+    drop(out);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(sortie, std::fs::Permissions::from_mode(0o755));
     }
-    b
+    println!("rose-20: {} produit (exécutable autonome)", sortie);
+    0
 }
-
-// Simplified compilations
-fn compile_cranelift_listes() -> i64 { 5000 }
-fn compile_cranelift_tables() -> i64 { 5000 }
-fn compile_cranelift_chaines() -> i64 { 1001 }
-fn compile_cranelift_rng_buffer() -> i64 { 1000000 }
-fn compile_cranelift_fichiers() -> i64 { 1 }
-fn compile_cranelift_rationnels() -> f64 { 7.486469861549342 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() < 2 {
-        println!("Usage: rose-20 <fichier_rose>");
-        println!("Rose 2.0 : compilateur Rose en Rust + Cranelift JIT");
-        println!("");
-        println!("Exemple :");
-        println!("  rose-20 bench_global.rose");
-        println!("  rose-20 code.rose");
-        return;
-    }
-
-    let filename = &args[1];
-
-    let source = match fs::read_to_string(filename) {
-        Ok(content) => content,
-        Err(e) => {
-            println!("Erreur lecture fichier '{}': {}", filename, e);
-            return;
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.len() < 2 {
+        // aucun argument : si l'exécutable porte un bundle, l'exécuter (mode
+        // autonome, miroir du 'comp' C++ — rose.cpp:4783 lire_bundle).
+        if let Some(source) = lire_bundle() {
+            let source_t = source.clone();
+            let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024)
+                .spawn(move || interp::executer_source(&source_t, Vec::new()));
+            let rc = match h { Ok(j) => j.join().unwrap_or(1), Err(_) => interp::executer_source(&source, Vec::new()) };
+            std::process::exit(rc);
         }
-    };
-
-    println!("=== Rose 2.0 : compilateur Rose en Rust + Cranelift JIT ===");
-    println!("Fichier source : {}", filename);
-    println!("=== Programme Rose ===");
-    println!("{}", source);
-    println!("=== Fin du programme Rose ===");
-
-    let variables = parse_rose_source(&source);
-
-    println!("\nVariables détectées : {}", variables.len());
-    for (name, value) in &variables {
-        println!("  {} = {}", name, value);
+        eprint!("{}", USAGE);
+        std::process::exit(1);
+    }
+    let action = argv[1].as_str();
+    match action {
+        "version" | "--version" => { println!("{}", interp::version()); return; }
+        "info" => { print!("{}", interp::info()); return; }
+        "--help" | "-h" | "aide" => { print!("{}", USAGE); return; }
+        "comp" => {
+            let mut sortie = String::new();
+            let mut fichier = String::new();
+            let mut i = 2;
+            while i < argv.len() {
+                if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
+                    sortie = argv[i + 1].clone(); i += 2;
+                } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
+                else { i += 1; }
+            }
+            if fichier.is_empty() { eprintln!("rose-20: quel programme compiler ?"); std::process::exit(1); }
+            if sortie.is_empty() {
+                sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
+                if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
+                if sortie.is_empty() { sortie = "programme".into(); }
+            }
+            std::process::exit(comp_programme(&fichier, &sortie));
+        }
+        _ => {}
     }
 
-    let has_entiers = source.contains("pour a de 1 vers") || source.contains("$total = 0");
-    let has_flottants = source.contains("1.0 / b") || source.contains("$x = 0.0");
-    let has_fib = source.contains("fn fib") || source.contains("retour fib");
-    let has_listes = source.contains("joindre($piles");
-    let has_tables = source.contains("inserer($tab");
-    let has_chaines = source.contains("sous_chaine") || source.contains("longueur($s)");
-    let has_rng = source.contains("graine") && source.contains("tampon");
-    let has_fichiers = source.contains("ecrire_texte") || source.contains("lire_texte");
-    let has_rationnels = source.contains("$r = 1 / 3");
-
-    println!("\n--- Analyse des sections Rose détectées ---");
-    println!("Entiers    : {}", if has_entiers { "DÉTECTÉE" } else { "Non présente" });
-    println!("Flottants  : {}", if has_flottants { "DÉTECTÉE" } else { "Non présente" });
-    println!("Fibonacci  : {}", if has_fib { "DÉTECTÉE" } else { "Non présente" });
-    println!("Listes     : {}", if has_listes { "DÉTECTÉE" } else { "Non présente" });
-    println!("Tables     : {}", if has_tables { "DÉTECTÉE" } else { "Non présente" });
-    println!("Chaînes    : {}", if has_chaines { "DÉTECTÉE" } else { "Non présente" });
-    println!("RNG        : {}", if has_rng { "DÉTECTÉE" } else { "Non présente" });
-    println!("Fichiers   : {}", if has_fichiers { "DÉTECTÉE" } else { "Non présente" });
-    println!("Rationnels : {}", if has_rationnels { "DÉTECTÉE" } else { "Non présente" });
-
-    println!("\n--- Compilation Rose 2.0 Cranelift JIT ---");
-
-    let t0 = Instant::now();
-    let r_entiers = compile_cranelift_entiers();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift entiers    -> {} [{} ms]", r_entiers, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_flottants = compile_cranelift_flottants();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift flottants  -> {} [{} ms]", r_flottants, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_fib = compile_cranelift_fib(28);
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift fib(28)    -> {} [{} ms]", r_fib, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_listes = compile_cranelift_listes();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift listes     -> {} [{} ms]", r_listes, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_tables = compile_cranelift_tables();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift tables     -> {} [{} ms]", r_tables, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_chaines = compile_cranelift_chaines();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift chains     -> {} [{} ms]", r_chaines, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_rng = compile_cranelift_rng_buffer();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift rng_buffer -> {} [{} ms]", r_rng, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_fichiers = compile_cranelift_fichiers();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift fichiers   -> {} [{} ms]", r_fichiers, t1.as_secs_f64() * 1000.0);
-
-    let t0 = Instant::now();
-    let r_rationnels = compile_cranelift_rationnels();
-    let t1 = t0.elapsed();
-    println!("Rose 2.0 cranelift rationnels -> {} [{} ms]", r_rationnels, t1.as_secs_f64() * 1000.0);
-
-    println!("\n--- References Rose C++ (GMP) ---");
-    println!("entiers   : ~82 ms JIT / ~126 ms AOT");
-    println!("flottants : ~13 ms JIT");
-    println!("fib(28)    : 317811");
-
-    println!("\n=== Rose 2.0 : auto-hebergement opérationnel ===");
-    println!("Le compilateur Rose analyse et compile du code source Rose");
-    println!("Performances : types natifs Rust vs runtime GMP C++");
+    let (fichier, args) = if action == "run" {
+        if argv.len() < 3 { eprintln!("rose-20: quel programme interpréter ?"); std::process::exit(1); }
+        (argv[2].clone(), argv[3..].to_vec())
+    } else {
+        (argv[1].clone(), argv[2..].to_vec())
+    };
+    let mut source = String::new();
+    if !lire(&mut source, &fichier) {
+        eprintln!("rose-20: fichier introuvable : {}", fichier);
+        std::process::exit(1);
+    }
+    // le moteur C++ execute le pipeline dans un thread a pile de 512 Mo
+    // (rose.cpp:4745-4747) ; la recursion profonde de l'interpreteur Rust en a
+    // autant. Repli en ligne si le thread ne peut etre cree.
+    let source_t = source.clone();
+    let args_t = args.clone();
+    let h = std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(move || interp::executer_source(&source_t, args_t));
+    let rc = match h {
+        Ok(j) => j.join().unwrap_or(1),
+        Err(_) => interp::executer_source(&source, args),
+    };
+    std::process::exit(rc);
 }

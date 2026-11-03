@@ -191,7 +191,7 @@ def moteur_cmd(nom):
     if nom == "cpp":
         return [os.path.join(MOTEUR, "cpp", "rose")]
     if nom == "rust":
-        return [os.path.join(MOTEUR, "rust", "rose")]
+        return [os.environ.get("ROSE_RUST", os.path.join(MOTEUR, "rust", "rose"))]
     if nom == "zig":
         return [os.path.join(MOTEUR, "zig", "rose")]
     if nom == "python":

@@ -52,6 +52,7 @@ Valeur* jit_val_z_txt(const char* txt);
 Valeur* jit_val_f(double d);
 Valeur* jit_val_s(const char* txt);
 Valeur* jit_s_copy_into(Valeur* dst, Valeur* src);
+Valeur* jit_q_copy_into(Valeur* dst, Valeur* src);
 Valeur* jit_liste_new();
 Valeur* jit_liste_push(Valeur* l, Valeur* e);
 Valeur* jit_liste_get(Valeur* l, Valeur* i);
@@ -319,7 +320,8 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                     instr.args[0].name.rfind("$", 0) != 0) { unsupported = true; break; }
                 if (m_call_idx.count(instr.args[0].name)) {
                     if (instr.dest.empty() || (instr.dest_ty != RirZ && instr.dest_ty != RirB &&
-                                               instr.dest_ty != RirF)) {
+                                               instr.dest_ty != RirF && instr.dest_ty != RirQ &&
+                                               instr.dest_ty != RirS)) {
                         unsupported = true; break;
                     }
                 } else {
@@ -369,7 +371,8 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 }
                 else if (a.kind == RirOp::Const) {
                     // numériques : texte préfixé « @c… » ; chaînes : texte brut (M2.14)
-                    bool nom_ok = (a.ty == RirS) ? true : a.name.rfind("@c", 0) == 0;
+                    bool nom_ok = (a.ty == RirS) ? true : a.name.rfind("@c", 0) == 0 ||
+                                  (a.ty == RirB && (a.name == "vrai" || a.name == "faux"));
                     if (!nom_ok ||
                         (a.ty != RirZ && a.ty != RirB && a.ty != RirU && a.ty != RirF &&
                          a.ty != RirS)) { unsupported = true; break; }
@@ -438,7 +441,7 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
         int64_t v;
         Valeur *shared;
         if (c.second == RirS)               shared = jit_val_s(c.first.c_str());   // texte brut (M2.14)
-        else if (c.second == RirB || txt == "vrai" || txt == "faux") shared = jit_val_b(txt == "vrai");
+        else if (c.second == RirB) shared = jit_val_b(txt == "vrai" || c.first == "vrai");
         else if (c.second == RirF)          shared = jit_val_f(strtod(txt.c_str(), nullptr));
         else if (x64_parse_i64(txt, &v))                        shared = jit_val_z(v);
         else                                                    shared = jit_val_z_txt(x64_dup_text(c.first));
@@ -913,7 +916,9 @@ JitEntryFn JitCompiler::compile_function_x64(RirFonction* fn) {
                 ax.mov_reg(P1, RAX);
                 ax.load_mem(P0, R12, d * 8);
                 ax.call_helper(instr.dest_ty == RirB ? 26 :
-                               instr.dest_ty == RirF ? 35 : 25);      // copie b/f/z
+                               instr.dest_ty == RirF ? 35 :
+                               instr.dest_ty == RirQ ? 62 :
+                               instr.dest_ty == RirS ? 55 : 25);      // copie b/f/q/s/z
                 ax.store_mem(R12, d * 8, RAX);
                 ax.load_mem(P0, RSP, 0);
                 ax.call_helper(32);                                   // jit_free_valeur
