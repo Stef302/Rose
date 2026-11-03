@@ -830,3 +830,105 @@ pub extern "C" fn rose_erreur_div_zero() {
 }
 
 
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_affiche_packed(v: i128) {
+    let val = v as i64;
+    let tag = (v >> 64) as i64;
+    if tag == 0 {
+        crate::run::ecrire_out(&format!("{}\n", val));
+    } else {
+        let b = unsafe { Box::from_raw(tag as *mut crate::run::Valeur) };
+        crate::run::afficher(&b);
+    }
+}
+
+// ── Voie taggée : helpers pour le JIT (val+tag packés en i128) ──
+#[unsafe(no_mangle)]
+
+#[unsafe(no_mangle)]
+
+#[unsafe(no_mangle)]
+
+#[unsafe(no_mangle)]
+
+
+
+
+// ── Voie taggée : helpers pour le JIT (ABI i64, sortie via pointeurs) ──
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_add_ent(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64) {
+    tagged_binop_abi(a, at, b, bt, out, outt, TaggedOp2::Add)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_sub_ent(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64) {
+    tagged_binop_abi(a, at, b, bt, out, outt, TaggedOp2::Sub)
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_mul_ent(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64) {
+    tagged_binop_abi(a, at, b, bt, out, outt, TaggedOp2::Mul);
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_neg_ent(a: i64, at: i64, out: *mut i64, outt: *mut i64) {
+    let ga = to_gz2(a, at);
+    let r = Gz::neuf(); r.neg(&ga);
+    write_result(r, out, outt);
+}
+
+#[derive(Clone, Copy)]
+enum TaggedOp2 { Add, Sub, Mul }
+
+fn to_gz2(av: i64, at: i64) -> Gz {
+    if at == 0 { Gz::de_i128(av as i128) }
+    else { unsafe { let mpz = &*(av as *const Mpz); let r = Gz::neuf(); r.copier_de_ptr(mpz); r } }
+}
+fn write_result(r: Gz, out: *mut i64, outt: *mut i64) {
+    if r.fits_i64() {
+        unsafe { *out = r.get_i64(); *outt = 0; }
+        std::mem::forget(r);
+    } else {
+        unsafe { *out = r.0 as i64; *outt = 1; }
+        std::mem::forget(r);
+    }
+}
+fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64, op: TaggedOp2) {
+    if at == 0 && bt == 0 {
+        let small = match op {
+            TaggedOp2::Add => a.checked_add(b),
+            TaggedOp2::Sub => a.checked_sub(b),
+            TaggedOp2::Mul => a.checked_mul(b),
+        };
+        if let Some(x) = small {
+            unsafe { *out = x; *outt = 0; }
+            return;
+        }
+    }
+    let ga = to_gz2(a, at);
+    let gb = to_gz2(b, bt);
+    let r = Gz::neuf();
+    match op {
+        TaggedOp2::Add => r.add(&ga, &gb),
+        TaggedOp2::Sub => r.sub(&ga, &gb),
+        TaggedOp2::Mul => r.mul(&ga, &gb),
+    }
+    eprintln!("tagged_binop_abi: r.fits_i64={}", r.fits_i64());
+    write_result(r, out, outt);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_libere(tag: i64) {
+    if tag != 0 {
+        unsafe { let _ = Box::from_raw(tag as *mut crate::run::Valeur); }
+    }
+}
+
+static mut ROSE_RET_TAG: i64 = 0;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_set_ret_tag(tag: i64) {
+    unsafe { ROSE_RET_TAG = tag; }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_get_ret_tag() -> i64 {
+    unsafe { ROSE_RET_TAG }
+}

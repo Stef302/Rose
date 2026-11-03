@@ -175,6 +175,7 @@ fn contient_retour(instrs: &[Instr]) -> bool {
 
 pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                    prog: &HashMap<String, Signature>, attendu: Option<TyKind>) -> bool {
+
     // Sous-ensemble i64 STRICT : la multiplication et la puissance entières
     // sont exclues, car le moteur C++ promeut en GMP dès que le produit
     // dépasse int64 (rose_ent) alors que Cranelift wrappe. Une fonction qui
@@ -204,29 +205,24 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                     }
                 };
                 if matches!(op.as_str(), "*" | "^") {
-                    if f(a) || f(b) { return sur_i64(a, env) && sur_i64(b, env); }
-                    // entier × entier / puissance entiers promeuvent en GMP au
-                    // depassement (rose.cpp: jit_mul_z) : la trame i64 du JIT ne
-                    // sait pas representer un Gz. Hors sous-ensemble -> repli
-                    // interprete (valeur exacte).
-                    return false;
+                    if matches!(op.as_str(), "^") {
+                        if f(a) || f(b) { return sur_i64(a, env) && sur_i64(b, env); }
+                        return false; // ^ entier reste interprete (degre inconnu)
+                    }
+                    // * entier : voie taggee (promotion BigInt au depassement)
+                    return sur_i64(a, env) && sur_i64(b, env);
                 }
                 if matches!(op.as_str(), "+" | "-") && !f(a) && !f(b) {
-                    // '+'/'-' entiers : le depassement i64 promeut en GMP au C++
-                    // (jit_add_z sur slots GMP). La trame i64 du JIT n'a pas de
-                    // slot Gz : sans preuve statique d'absence de debord (dataflow
-                    // de bornes = chantier propre), toute somme difference entiere
-                    // reste interpretee (valeur exacte). Le '+1' des boucles est le
-                    // seul motif perdant — accepte pour la justesse, pas la ruse.
-                    return false;
+                    // + / - entiers : voie taggee (promotion BigInt au depassement)
+                    return true;
                 }
                 return sur_i64(a, env) && sur_i64(b, env);
             }
             Expr::Unaire { op, a, .. } => {
-                // '- expr' entier : -i64::MIN = 2^63 ne tient pas en i64 et le
-                // C++ promote en GMP (jit_neg_z). Sans slot Gz dans la trame,
-                // hors sous-ensemble -> repli interprete (valeur exacte).
-                if op == "-" { return false; }
+                if op == "-" {
+                    // negation entiere : voie taggee
+                    return sur_i64(a, env);
+                }
                 sur_i64(a, env)
             }
             Expr::Litteral { flott, texte, .. } => {
@@ -240,6 +236,7 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
     }
     let _ = multiplicatif;
     for i in instrs {
+
         match i {
             Instr::Afficher(e, _) | Instr::ExprStmt(e) => {
                 if ty_statique(e, env).is_none() || !sur_i64(e, env) { return false; }
@@ -295,6 +292,7 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
             _ => return false,
         }
     }
+
     true
 }
 
@@ -329,6 +327,8 @@ struct Emetteur<'a> {
     returned: bool,
     prochain_slot: u32,
     refs: HashMap<String, FuncRef>,
+    tags: HashMap<String, Variable>,
+    tag_tmp: Variable,
 }
 
 
@@ -400,18 +400,19 @@ impl Jit {
         let mut fcx = Context::new();
         fcx.func.signature = make_signature(&sig);
         let mut fctx = cranelift::frontend::FunctionBuilderContext::new();
-        let b = FunctionBuilder::new(&mut fcx.func, &mut fctx);
+        let mut b = FunctionBuilder::new(&mut fcx.func, &mut fctx);
+        let tag_tmp_var = b.declare_var(types::I64);
         let mut e = Emetteur {
             module: &mut self.module, signatures: &self.signatures,
             foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
-            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(),
+            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), tag_tmp: tag_tmp_var,
         };
         e.emettre_fonction(&sig);
         let mut b = e.builder;
         b.seal_all_blocks();
         b.finalize(cible);
-        self.module.define_function(fid, &mut fcx).ok()?;
-        self.module.finalize_definitions().ok()?;
+        if let Err(e) = self.module.define_function(fid, &mut fcx) { return None; }
+        if let Err(e) = self.module.finalize_definitions() { eprintln!("DEBUG finalize_definitions err: {}", e); return None; }
         let code = self.module.get_finalized_function(fid);
         let fptr: usize = code as usize;
         // appel direct du code natif (pas de trampoline d'arguments : zéro param)
@@ -431,11 +432,13 @@ impl Jit {
                 ("rose_affiche_bool", vec![types::I64], None),
                 ("rose_affiche_f64", vec![types::F64], None),
                 ("rose_powf", vec![types::F64, types::F64], Some(types::F64)),
-                ("rose_add_ent", vec![types::I128, types::I128], Some(types::I128)),
-                ("rose_sub_ent", vec![types::I128, types::I128], Some(types::I128)),
-                ("rose_mul_ent", vec![types::I128, types::I128], Some(types::I128)),
-                ("rose_neg_ent", vec![types::I128], Some(types::I128)),
+                ("rose_add_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_sub_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_mul_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_neg_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_affiche_ent", vec![types::I64, types::I64], None),
+                ("rose_libere", vec![types::I64], None),
+                ("rose_set_ret_tag", vec![types::I64], None),
                 ("rose_erreur_mod_zero", vec![], None),
                 ("rose_erreur_div_zero", vec![], None),
             ] {
@@ -477,11 +480,12 @@ impl Jit {
             fcx.clear();
             fcx.func.signature = make_signature(&sig);
             let mut fctx = cranelift::frontend::FunctionBuilderContext::new();
-            let b = FunctionBuilder::new(&mut fcx.func, &mut fctx);
+            let mut b = FunctionBuilder::new(&mut fcx.func, &mut fctx);
+            let tag_tmp_var = b.declare_var(types::I64);
             let mut e = Emetteur {
                 module: &mut self.module, signatures: &self.signatures,
                 foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
-                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(),
+                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), tag_tmp: tag_tmp_var,
             };
             e.emettre_fonction(&sig);
             let mut b = e.builder;
@@ -577,11 +581,16 @@ unsafe fn appeler_trampoline(fptr: usize, sig: &Signature, args: Vec<Valeur>) ->
             return appeler_quatre(fptr, sig, &types, retour, &ints, &flts);
         }
     }
+    let tag = unsafe { crate::run::rose_get_ret_tag() };
     match retour {
         Vide => Valeur::Vide,
         Flottant => Valeur::f(rf),
         Booleen => Valeur::b(r != 0),
-        _ => Valeur::z(r as i64),
+        _ => if tag != 0 {
+            let g = crate::run::Gz::neuf();
+            unsafe { g.copier_de_ptr(r as *const crate::run::Mpz); }
+            Valeur::Entier(0, Some(std::rc::Rc::new(g)))
+        } else { Valeur::z(r as i64) },
     }
 }
 
@@ -615,11 +624,16 @@ unsafe fn appeler_quatre(fptr: usize, _sig: &Signature, types: &[TyKind], retour
         ("fffi", _) => { let f: extern "C" fn(f64,f64,f64,i64) -> i64 = std::mem::transmute(fptr); r = f(y!(0),y!(1),y!(2),x!(0)); rf = 0.0; }
         _ => { r = 0; rf = 0.0; }
     }
+    let tag = unsafe { crate::run::rose_get_ret_tag() };
     match retour {
         Vide => Valeur::Vide,
         Flottant => Valeur::f(rf),
         Booleen => Valeur::b(r != 0),
-        _ => Valeur::z(r as i64),
+        _ => if tag != 0 {
+            let g = crate::run::Gz::neuf();
+            unsafe { g.copier_de_ptr(r as *const crate::run::Mpz); }
+            Valeur::Entier(0, Some(std::rc::Rc::new(g)))
+        } else { Valeur::z(r as i64) },
     }
 }
 
@@ -645,6 +659,8 @@ impl Emetteur<'_> {
 
         let mut env: HashMap<String, Variable> = HashMap::new();
         let mut types: HashMap<String, TyKind> = HashMap::new();
+        let zt = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(self.tag_tmp, zt);
         for (idx, (pn, pt)) in sig.params.iter().enumerate() {
             let ty = match pt.n { TyKind::Flottant => types::F64, _ => types::I64 };
             let slot = self.builder.declare_var(ty);
@@ -664,9 +680,18 @@ impl Emetteur<'_> {
                 TyKind::Flottant => {
                     let c = self.builder.ins().iconst(types::I64, 0);
                     let z = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    let f = self.import_runtime("rose_set_ret_tag");
+                    let _ = self.builder.ins().call(f, &[zt]);
                     self.builder.ins().return_(&[z]);
                 }
-                _ => { let c = self.builder.ins().iconst(types::I64, 0); self.builder.ins().return_(&[c]); }
+                _ => {
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    let f = self.import_runtime("rose_set_ret_tag");
+                    let _ = self.builder.ins().call(f, &[zt]);
+                    let c = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.ins().return_(&[c]);
+                }
             }
         }
     }
@@ -678,6 +703,13 @@ impl Emetteur<'_> {
         let cr = match ty { TyKind::Flottant => types::F64, _ => types::I64 };
         let slot = self.builder.declare_var(cr);
         self.prochain_slot += 1;
+        if ty != TyKind::Flottant {
+            let tslot = self.builder.declare_var(types::I64);
+            self.prochain_slot += 1;
+            let zt = self.builder.ins().iconst(types::I64, 0);
+            self.builder.def_var(tslot, zt);
+            self.tags.insert(nom.to_string(), tslot);
+        }
         let zero = match ty {
             TyKind::Flottant => {
                 let c = self.builder.ins().iconst(types::I64, 0);
@@ -715,21 +747,42 @@ impl Emetteur<'_> {
                     self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
                 } else {
                     let v: i64 = texte.parse().unwrap_or(0);
-                    self.builder.ins().iconst(types::I64, v)
-                }
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(self.tag_tmp, zt);
+                    self.builder.ins().iconst(types::I64, v)                }
             }
-            Expr::BooleenLit(b, _) => self.builder.ins().iconst(types::I64, if *b { 1 } else { 0 }),
+            Expr::BooleenLit(b, _) => { let zt = self.builder.ins().iconst(types::I64, 0); self.builder.def_var(self.tag_tmp, zt); self.builder.ins().iconst(types::I64, if *b { 1 } else { 0 }) }
             Expr::Unaire { op, a, .. } => {
                 let v = self.expr(a, env, types);
                 if op == "non" {
                     let un = self.builder.ins().iconst(types::I64, 1);
                     self.builder.ins().bxor(v, un)
                 } else {
-                    self.builder.ins().ineg(v)
+                    let tag_v = self.builder.use_var(self.tag_tmp);
+                    let trame = self.trame_deux_mots();
+                    let f = self.import_runtime("rose_neg_ent");
+                    let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                    let _ = self.builder.ins().call(f, &[v, tag_v, trame, trame8]);
+                    let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                    let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                    self.builder.def_var(self.tag_tmp, tag);
+                    val
                 }
             }
             Expr::Var(n, _) => {
                 let slot = self.var(env, types, n);
+                if types.get(n).copied() != Some(TyKind::Flottant) {
+                    if let Some(ts) = self.tags.get(n).copied() {
+                        let t = self.builder.use_var(ts);
+                        self.builder.def_var(self.tag_tmp, t);
+                    } else {
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                    }
+                } else {
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                }
                 self.builder.use_var(slot)
             }
             Expr::Binaire { op, a, b, .. } => self.binaire(op, a, b, env, types),
@@ -758,6 +811,7 @@ impl Emetteur<'_> {
         let inst = self.builder.ins().call(fref, &vals);
         match sig.retour.n {
             TyKind::Vide => self.builder.ins().iconst(types::I64, 0),
+            TyKind::Entier => self.builder.inst_results(inst)[0],
             _ => self.builder.inst_results(inst)[0],
         }
     }
@@ -783,7 +837,9 @@ impl Emetteur<'_> {
             }
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
                 let g = self.expr(a, env, types);
+                let tag_g = self.builder.use_var(self.tag_tmp);
                 let d = self.expr(b, env, types);
+                let tag_d = self.builder.use_var(self.tag_tmp);
                 let (g, d) = si_flottant(&mut self.builder, flot, g, d, ta, tb);
                 let v = if flot {
                     let cc = match op {
@@ -806,7 +862,7 @@ impl Emetteur<'_> {
                     };
                     self.builder.ins().icmp(cc, g, d)
                 };
-                // b1 → i64
+                // b1 → i128
                 self.builder.ins().uextend(types::I64, v)
             }
             "+" | "-" | "*" | "/" | "%" | "^" | "div" => {
@@ -814,12 +870,41 @@ impl Emetteur<'_> {
                 // compilation en amont — le chemin imul/i64_pow n'est jamais emis
                 // pour un operande entier.)
                 let g = self.expr(a, env, types);
+                let tag_g = self.builder.use_var(self.tag_tmp);
                 let d = self.expr(b, env, types);
+                let tag_d = self.builder.use_var(self.tag_tmp);
                 let (g, d) = si_flottant(&mut self.builder, flot, g, d, ta, tb);
                 match op {
-                    "+" => if flot { self.builder.ins().fadd(g, d) } else { self.builder.ins().iadd(g, d) },
-                    "-" => if flot { self.builder.ins().fsub(g, d) } else { self.builder.ins().isub(g, d) },
-                    "*" => if flot { self.builder.ins().fmul(g, d) } else { self.builder.ins().imul(g, d) },
+                    "+" => if flot { self.builder.ins().fadd(g, d) } else {
+                        let trame = self.trame_deux_mots();
+                        let f = self.import_runtime("rose_add_ent");
+                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                        let _ = self.builder.ins().call(f, &[g, tag_g, d, tag_d, trame, trame8]);
+                        let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                        let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                        self.builder.def_var(self.tag_tmp, tag);
+                        val
+                    },
+                    "-" => if flot { self.builder.ins().fsub(g, d) } else {
+                        let trame = self.trame_deux_mots();
+                        let f = self.import_runtime("rose_sub_ent");
+                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                        let _ = self.builder.ins().call(f, &[g, tag_g, d, tag_d, trame, trame8]);
+                        let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                        let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                        self.builder.def_var(self.tag_tmp, tag);
+                        val
+                    },
+                    "*" => if flot { self.builder.ins().fmul(g, d) } else {
+                        let trame = self.trame_deux_mots();
+                        let f = self.import_runtime("rose_mul_ent");
+                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                        let _ = self.builder.ins().call(f, &[g, tag_g, d, tag_d, trame, trame8]);
+                        let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                        let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                        self.builder.def_var(self.tag_tmp, tag);
+                        val
+                    },
                     "/" => {
                         let bloc = self.builder.current_block();
                         let _ = bloc;
@@ -1014,9 +1099,6 @@ impl Emetteur<'_> {
     }
 
     fn import_runtime(&mut self, nom: &str) -> FuncRef {
-        // Le runtime est une fonction Export de ce module (#[unsafe(no_mangle)] plus
-        // bas) : la relocation User namespace 0 vers son FuncId boucle sur
-        // compiled_functions[fid] = l'adresse reellement finalisee.
         let fid = self.runtime[nom];
         let sig = self.module.declarations().get_function_decl(fid).signature.clone();
         let sigref = self.builder.import_signature(sig);
@@ -1029,27 +1111,6 @@ impl Emetteur<'_> {
             patchable: false,
         })
     }
-    fn i64_pow(&mut self, base: Value, expo: Value) -> Value {
-        // Puissance par répétition SQUARE-AND-MULTIPLY en ligne droite : une
-        // itération par bit significatif de l'exposant (64 au plus). À chaque
-        // étape, le bit de poids faible de e décide (select, sans branchement)
-        // d'accréditer b à l'accumulateur ; ensuite b *= b et e >>= 1. Aucun
-        // bloc, aucun phi : rien à sceller, rien à mal relier.
-        let un = self.builder.ins().iconst(types::I64, 1);
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        let mut b = base;
-        let mut e = expo;
-        let mut acc = un;
-        for _ in 0..64 {
-            let bit = self.builder.ins().band(e, un);
-            let pair = self.builder.ins().icmp(IntCC::Equal, bit, zero);
-            let produit = self.builder.ins().imul(acc, b);
-            acc = self.builder.ins().select(pair, acc, produit);
-            b = self.builder.ins().imul(b, b);
-            e = self.builder.ins().ushr(e, un);
-        }
-        acc
-    }
 
     fn correction_rem(&mut self, r: Value, d: Value) -> Value {
         let zero = self.builder.ins().iconst(types::I64, 0);
@@ -1060,13 +1121,11 @@ impl Emetteur<'_> {
         let a = self.builder.ins().band(rneg, dpos);
         let b = self.builder.ins().band(rpos, dneg);
         let cond = self.builder.ins().bor(a, b);
-        // correction sur place : si signes(r) ≠ signes(d), r := r + d.
         let corr = self.builder.ins().iadd(r, d);
         self.builder.ins().select(cond, corr, r)
     }
 
     fn floor_div(&mut self, q: Value, g: Value, d: Value) -> Value {
-        // floor(g/d) = q - 1 si reste ≠ 0 et signes (reste, diviseur) opposés
         let r = self.builder.ins().srem(g, d);
         let zero = self.builder.ins().iconst(types::I64, 0);
         let rnull = self.builder.ins().icmp(IntCC::Equal, r, zero);
@@ -1078,10 +1137,16 @@ impl Emetteur<'_> {
         let b = self.builder.ins().band(rpos, dneg);
         let signes = self.builder.ins().bor(a, b);
         let doit = self.builder.ins().band_not(signes, rnull);
-        // correction sur place : si signes opposés et reste ≠ 0, décrémenter.
         let un = self.builder.ins().iconst(types::I64, 1);
         let q2 = self.builder.ins().isub(q, un);
         self.builder.ins().select(doit, q2, q)
+    }
+
+    fn i64_pow(&mut self, g: Value, d: Value) -> Value {
+        // ^ entier : refuse en amont (sur_i64 retourne false), ce code n'est
+        // jamais atteint. Stub pour satisfaire le compilateur.
+        let _ = (g, d);
+        self.builder.ins().iconst(types::I64, 0)
     }
 
     fn emettre_bloc(&mut self, instrs: &[Instr], env: &mut HashMap<String, Variable>,
@@ -1100,21 +1165,28 @@ impl Emetteur<'_> {
                             self.prochain_slot += 1;
                             env.insert(nom.clone(), s);
                             types.insert(nom.clone(), t);
+                            if t != TyKind::Flottant {
+                                let ts = self.builder.declare_var(types::I64);
+                                self.prochain_slot += 1;
+                                let zt = self.builder.ins().iconst(types::I64, 0); self.builder.def_var(ts, zt);
+                                self.tags.insert(nom.clone(), ts);
+                            }
                             s
                         }
                     };
+                    if t != TyKind::Flottant {
+                        if let Some(ts) = self.tags.get(nom).copied() {
+                            let tag = self.builder.use_var(self.tag_tmp);
+                            self.builder.def_var(ts, tag);
+                        }
+                    }
                     self.builder.def_var(slot, v);
                 }
                 Instr::Afficher(e, _) => {
-                    // le sous-ensemble compilable n'a aucun * / ^ entier (sur_i64
-                    // les refuse) : aucune valeur Gz taggee ne peut apparaitre,
-                    // la voie i64 simple est exacte.
                     let t = self.type_of(e, env, types);
                     if t == TyKind::Entier {
-                        // chemin entier : passe par l'emetteur exact (tag) comme
-                        // le C++ (jit_afficher_z lit le slot Gz). Sans tag, la
-                        // voie i64 est exacte ; avec tag, la Box est rendue.
-                        let (v, tag) = self.emettre_ent(e, env, types);
+                        let v = self.expr(e, env, types);
+                        let tag = self.builder.use_var(self.tag_tmp);
                         let f = self.runtime("rose_affiche_ent");
                         let _ = self.builder.ins().call(f, &[v, tag]);
                         continue;
@@ -1126,8 +1198,12 @@ impl Emetteur<'_> {
                         _ => "rose_affiche_i64",
                     };
                     {
+                        // pour un booleen (i128 0/1), extraire en i64
+                        let vv = if t == TyKind::Booleen || t == TyKind::Entier {
+                            self.builder.ins().ireduce(types::I64, v)
+                        } else { v };
                         let f = self.runtime(nom_key);
-                        let _ = self.builder.ins().call(f, &[v]);
+                        let _ = self.builder.ins().call(f, &[vv]);
                     }
                 }
                 Instr::ExprStmt(e) => { self.expr(e, env, types); }
@@ -1201,6 +1277,11 @@ impl Emetteur<'_> {
                             None => {
                                 let s = self.builder.declare_var(types::I64);
                                 self.prochain_slot += 1;
+                                let ts = self.builder.declare_var(types::I64);
+                                self.prochain_slot += 1;
+                                let zt = self.builder.ins().iconst(types::I64, 0);
+                                self.builder.def_var(ts, zt);
+                                self.tags.insert(nom.clone(), ts);
                                 env.insert(nom.clone(), s);
                                 types.insert(nom.clone(), TyKind::Entier);
                                 s
@@ -1245,22 +1326,9 @@ impl Emetteur<'_> {
                         None => { self.builder.ins().return_(&[]); }
                         Some(e) => {
                             let v = self.expr(e, env, types);
-                            // conversion vers le type déclaré (miroir de
-                            // l'interpréteur : « retour 7 » dans une flottant
-                            // passe par convertir → 7.0).
-                            let v = match sig.retour.n {
-                                TyKind::Flottant => {
-                                    let ob = self.builder.func.dfg.value_type(v);
-                                    if ob == types::F64 { v }
-                                    else { self.builder.ins().fcvt_from_sint(types::F64, v) }
-                                }
-                                TyKind::Entier | TyKind::Booleen => {
-                                    let ob = self.builder.func.dfg.value_type(v);
-                                    if ob == types::I64 { v }
-                                    else { self.builder.ins().fcvt_to_sint(types::I64, v) }
-                                }
-                                _ => v,
-                            };
+                            let tag = self.builder.use_var(self.tag_tmp);
+                            let f = self.import_runtime("rose_set_ret_tag");
+                            let _ = self.builder.ins().call(f, &[tag]);
                             self.builder.ins().return_(&[v]);
                         }
                     }
@@ -1293,12 +1361,13 @@ pub extern "C" fn rose_affiche_i64(v: i64) { crate::run::ecrire_out(&format!("{}
 /// rose_pow_ent / rose_neg_ent. tag ≠ 0 recycle la Box<Valeur>.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_affiche_ent(valeur: i64, tag: i64) {
-    use crate::run::Valeur;
     if tag == 0 {
         crate::run::ecrire_out(&format!("{}\n", valeur));
     } else {
-        let b = unsafe { Box::from_raw(tag as *mut Valeur) };
-        crate::run::afficher(&b);
+        let g = crate::run::Gz::neuf();
+        unsafe { g.copier_de_ptr(valeur as *const crate::run::Mpz); }
+        crate::run::ecrire_out(&format!("{}\n", g.chaine()));
+        std::mem::forget(g);
     }
 }
 
