@@ -910,13 +910,12 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
         unsafe {
             let ra = a as *mut Mpz;
             if bt == 0 {
-                // b est i64 : mutation directe sans allocation
                 let bb = BigInt::from(b);
-                let mut mpza = &mut *(ra);
+                let mpza = &mut *(ra);
                 match op {
-                    TaggedOp2::Add => mpza.v = mpza.v.clone() + bb,
-                    TaggedOp2::Sub => mpza.v = mpza.v.clone() - bb,
-                    TaggedOp2::Mul => mpza.v = mpza.v.clone() * bb,
+                    TaggedOp2::Add => mpza.v = std::mem::take(&mut mpza.v) + bb,
+                    TaggedOp2::Sub => mpza.v = std::mem::take(&mut mpza.v) - bb,
+                    TaggedOp2::Mul => mpza.v = std::mem::take(&mut mpza.v) * bb,
                 }
             } else {
                 let gb = to_gz2(b, bt);
@@ -946,6 +945,8 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
 }
 
 static mut ROSE_RET_TAG: i64 = 0;
+static mut FAST_PATH_HITS: u64 = 0;
+static mut SLOW_PATH_HITS: u64 = 0;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_set_ret_tag(tag: i64) {
