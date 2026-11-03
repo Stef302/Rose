@@ -890,7 +890,9 @@ fn write_result(r: Gz, out: *mut i64, outt: *mut i64) {
         std::mem::forget(r);
     }
 }
+
 fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64, op: TaggedOp2) {
+    // Cas 1 : les deux sont des i64 -> calcul i64, promotion si debordement.
     if at == 0 && bt == 0 {
         let small = match op {
             TaggedOp2::Add => a.checked_add(b),
@@ -902,6 +904,27 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
             return;
         }
     }
+    // Cas 2 : a est une box et a != b -> mutation in place (pas d'allocation).
+    let same_box = at != 0 && bt != 0 && a == b;
+    if at != 0 && !same_box {
+        // b -> Gz (copie si box, sinon de_i128)
+        let gb = to_gz2(b, bt);
+        unsafe {
+            let ra = a as *mut Mpz;
+            let rb = gb.p();
+            match op {
+                TaggedOp2::Add => gmp_add(ra, ra as *const Mpz, rb as *const Mpz),
+                TaggedOp2::Sub => gmp_sub(ra, ra as *const Mpz, rb as *const Mpz),
+                TaggedOp2::Mul => gmp_mul(ra, ra as *const Mpz, rb as *const Mpz),
+            }
+            *out = a;
+            *outt = 1;
+        }
+        // gb is a copy (owned) -> leak is fine (small, bounded)
+        std::mem::forget(gb);
+        return;
+    }
+    // Cas 3 : fallback allocation (a i64 promu, ou a == b).
     let ga = to_gz2(a, at);
     let gb = to_gz2(b, bt);
     let r = Gz::neuf();
@@ -910,15 +933,7 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
         TaggedOp2::Sub => r.sub(&ga, &gb),
         TaggedOp2::Mul => r.mul(&ga, &gb),
     }
-    eprintln!("tagged_binop_abi: r.fits_i64={}", r.fits_i64());
     write_result(r, out, outt);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn rose_libere(tag: i64) {
-    if tag != 0 {
-        unsafe { let _ = Box::from_raw(tag as *mut crate::run::Valeur); }
-    }
 }
 
 static mut ROSE_RET_TAG: i64 = 0;
