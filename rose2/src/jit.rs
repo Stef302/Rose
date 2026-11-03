@@ -435,6 +435,8 @@ impl Jit {
                 ("rose_pow_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_affiche_ent", vec![types::I64, types::I64], None),
                 ("rose_neg_ent", vec![types::I64, types::I64, types::I64], None),
+                ("rose_erreur_mod_zero", vec![], None),
+                ("rose_erreur_div_zero", vec![], None),
             ] {
                 let mut s = ClSignature::new(CallConv::SystemV);
                 for p in params { s.params.push(AbiParam::new(p)); }
@@ -823,6 +825,23 @@ impl Emetteur<'_> {
                         self.builder.ins().fdiv(g, d)
                     }
                     "%" => {
+                        // garde de justesse : un diviseur nul ne doit jamais
+                        // atteindre srem (qui trapperait). On delegue a
+                        // l'interpreteur via le helper runtime qui sort proprement.
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        let is_zero = self.builder.ins().icmp(cranelift::codegen::ir::condcodes::IntCC::Equal, d, zero);
+                        let trap_b = self.builder.create_block();
+                        let cont_b = self.builder.create_block();
+                        self.builder.ins().brif(is_zero, trap_b, &[], cont_b, &[]);
+                        self.builder.switch_to_block(trap_b);
+                        self.builder.seal_block(trap_b);
+                        {
+                            let f = self.runtime("rose_erreur_mod_zero");
+                            let _ = self.builder.ins().call(f, &[]);
+                        }
+                        self.builder.ins().trap(cranelift::codegen::ir::TrapCode::INTEGER_DIVISION_BY_ZERO);
+                        self.builder.switch_to_block(cont_b);
+                        self.builder.seal_block(cont_b);
                         let r = self.builder.ins().srem(g, d);
                         // fdiv_r : le signe suit le diviseur. Correction quand
                         // signe(r) ≠ signe(d) et r ≠ 0.

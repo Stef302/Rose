@@ -522,7 +522,7 @@ impl Interp {
                     return Ok(Valeur::zg(r));
                 }
                 let y = vers_z(&d);
-                if y.sgn() == 0 { erreur_runtime("division euclidienne par zéro"); }
+                if y.chaine() == "0" { erreur_runtime("division euclidienne par zéro"); }
                 let x = vers_z(&g);
                 let r = Gz::neuf();
                 unsafe { gmp_fdiv_q(r.p(), x.p(), y.p()) };
@@ -536,7 +536,7 @@ impl Interp {
                     erreur_runtime_ligne("Le modulo exige deux entiers");
                 }
                 let y = vers_z(&d);
-                if y.sgn() == 0 { erreur_runtime("modulo par zéro"); }
+                if y.chaine() == "0" { erreur_runtime("modulo par zéro"); }
                 let x = vers_z(&g);
                 let r = Gz::neuf();
                 unsafe { gmp_fdiv_r(r.p(), x.p(), y.p()) };
@@ -1167,7 +1167,7 @@ pub fn info() -> String {
     let arch = if cfg!(target_arch = "aarch64") { "ARM 64 bits" } else { "x86-64" };
     format!("rose 2.0\n  \
              moteur            : Rust natif {} — JIT Cranelift + interpréteur exact\n  \
-             maths exactes     : GMP liée (entiers et rationnels sans limite)\n  \
+             maths exactes     : BigInt natif (num-bigint, illimité, zéro GMP)\n  \
              interpréteur      : intégré (repli du JIT, mêmes sorties)\n  \
              compilation       : JIT à chaud des fonctions entiers/flottants/booléens\n", arch)
 }

@@ -24,7 +24,7 @@ fn lire(source: &mut String, chemin: &str) -> bool {
 }
 
 const USAGE: &str = "\
-Rose 2.0 — compilateur Rust + Cranelift JIT (maths exactes natives 128 bits, zéro dépendance)
+Rose 2.0 — compilateur Rust + Cranelift JIT (maths exactes BigInt natif, zéro GMP)
 Usage :
   rose-20 prog.rose [args…]   interpréter / JIT un programme Rose
   rose-20 run prog.rose       identique

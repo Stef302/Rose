@@ -12,6 +12,9 @@ use std::io::Write;
 use std::rc::Rc;
 
 use crate::front::{texte_flottant, TyKind};
+use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::{One, ToPrimitive, Zero};
 pub use crate::i128x::{
     gmp_add, gmp_add_ui, gmp_cmp_ge, gmp_fdiv_q, gmp_fdiv_r, gmp_fdiv_ui, gmp_get_d, gmp_mul,
     gmp_mul_2exp, gmp_mul_si, gmp_mul_ui, gmp_neg, gmp_pow_ui, gmp_sgn, gmp_set, gmp_set_d,
@@ -129,7 +132,7 @@ pub fn vers_z(v: &Valeur) -> Gz {
         Valeur::Entier(i, None) => z.poser_i64(*i),
         Valeur::Entier(_, Some(o)) => z.copier_de(o),
         Valeur::Booleen(b) => z.poser_i64(if *b { 1 } else { 0 }),
-        Valeur::Rationnel(q) => { let n = Gz(q.num()); let d = Gz(q.den()); z.fdiv_q(&n, &d); }
+        Valeur::Rationnel(q) => { let n = q.num_bigint(); let d = q.den_bigint(); if d.is_zero() { erreur_runtime("division par zéro"); } z.set_v(n.div_floor(&d)); }
         Valeur::Flottant(d) => z.poser_d(*d),
         _ => erreur_runtime(&format!("conversion vers entier impossible (type {:?})", v.ty())),
     }
@@ -267,9 +270,15 @@ pub fn q_chaine(q: &Gq) -> String {
 /// ecri T_RATIONNEL : a/b, forme décimale périodique (1/3 → 0.[3]),
 /// seuil 500 chiffres → a/b brut.
 pub fn texte_rationnel(q: &Gq) -> String {
-    let n0 = q.num_i128();
-    let d0 = q.den_i128();
-    if d0 == 1 { return n0.to_string(); }
+    let nb = q.num_bigint();
+    let db = q.den_bigint();
+    if db == BigInt::one() { return nb.to_string(); }
+    // repli pour les grands rationnels : forme a/b brute
+    if nb.to_i128().is_none() || db.to_i128().is_none() {
+        return format!("{}/{}", nb, db);
+    }
+    let n0 = nb.to_i128().unwrap();
+    let d0 = db.to_i128().unwrap();
     let gros = (Gz::de_i128(n0).sizeinbase10() + Gz::de_i128(d0).sizeinbase10()) > 500;
     if gros { return format!("{}/{}", n0, d0); }
 
@@ -534,36 +543,30 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
         erreur_runtime("décimales de π hors limites (1..2000000)");
     }
     let chiffres = chiffres.get_i64() as u64;
-    // portée native : l'entier d'échelle 10^(chiffres+40) doit tenir dans
-    // i128 (< 2^127, soit ~38 chiffres) — la référence arbitrary-precision
-    // au-delà reste le moteur C++.
-    if chiffres + 40 >= 38 {
-        erreur_runtime("décimales de π hors portée de l'arithmétique native 128 bits du moteur Rust (max 30)");
-    }
-    let s = chiffres + 10;
-    let mut dix_s: i128 = 1;
-    for _ in 0..s {
-        match dix_s.checked_mul(10) { Some(x) => dix_s = x, None => crate::i128x::hors_plage() }
-    }
-    let arctan = |x: u64| -> i128 {
-        let x = x as i128;
-        let x2 = x * x;
-        let mut terme = dix_s / x;
-        let mut somme = terme;
+    let s = chiffres + 40;
+    let mut dix_s: BigInt = BigInt::from(1);
+    for _ in 0..s { dix_s = dix_s * BigInt::from(10); }
+    let arctan = |x: u64| -> BigInt {
+        let x = BigInt::from(x);
+        let x2 = &x * &x;
+        let mut p = x.clone(); // x^(2k+1), starts x^1
+        let mut terme = &dix_s / &p; // first term (k=1): dix_s / x
+        let mut somme = terme.clone();
         let mut k: u64 = 1;
+        let mut signe: i32 = -1;
         loop {
-            match terme.checked_div(x2) { Some(t0) => terme = t0, None => break };
+            p = &p * &x2;
             k += 2;
-            let denom = match terme.checked_mul(k as i128) { Some(x) => x, None => 0 };
-            if denom == 0 { break; }
-            let t = dix_s / denom;
-            if t == 0 { break; }
-            if k % 2 == 0 { somme -= t; } else { somme += t; }
+            let denom = &p * BigInt::from(k as i64);
+            let t = &dix_s / &denom;
+            if t.is_zero() { break; }
+            if signe < 0 { somme = somme - t; } else { somme = somme + t; }
+            signe = -signe;
             if k > 100_000 { break; }
         }
         somme
     };
-    let pi = 16 * arctan(5) - 4 * arctan(239);
+    let pi = &arctan(5) * BigInt::from(16) - &arctan(239) * BigInt::from(4);
     let brut = pi.to_string();
     let brut: Vec<u8> = brut.into_bytes();
     let lbrut = brut.len();
@@ -789,7 +792,17 @@ pub fn chaine_vers_flottant(ch: &str) -> f64 {
 
 // signe d'un rationnel par pointeur (surface conservée pour interp.rs)
 pub fn gmpq_sgn(q: *const Mpq) -> i32 {
-    unsafe { (*q).num.v.cmp(&0) as i32 }
+    unsafe { (*q).num.v.cmp(&BigInt::from(0)) as i32 }
 }
 
 fn un_z() -> Gz { Gz::de_i128(1) }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_erreur_mod_zero() {
+    erreur_runtime("modulo par zéro");
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_erreur_div_zero() {
+    erreur_runtime("division euclidienne par zéro");
+}

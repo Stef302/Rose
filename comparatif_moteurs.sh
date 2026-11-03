@@ -5,11 +5,7 @@
 #
 #   Moteur                Binaire                              Arithmétique grande taille
 #   C++ (référence)       moteur/cpp/rose                      GMP (libgmp)
-#   Rust 2.0 (rose2)      rose2/target/release/rose-20         NATIVE i128 (zéro GMP, zéro dep)
-#   Rust ancien (obsolète) moteur/rust/rose                    GMP via FFI
-#   Zig                   moteur/zig/rose-zig                  GMP
-#   Python                moteur/python/engine.py              int/Fraction natifs Python
-#   Julia (si présent)    moteur/julia                         BigInt
+#   Rust (rose2)          rose2/target/release/rose-20         BigInt natif (num-bigint, zéro GMP)
 set -u
 R="$(cd "$(dirname "$0")" && pwd)"
 N=${N:-200000}
@@ -59,10 +55,7 @@ mesurer() {  # mesurer <label> <cmd...> — le programme est passé en dernier
 
 moteurs() {  # la liste des moteurs, identifiés
     echo "C++ référence|moteur/cpp/rose"
-    echo "Rust 2.0 rose2|rose2/target/release/rose-20"
-    echo "Rust ancien (GMP)|moteur/rust/rose"
-    echo "Zig|moteur/zig/rose-zig"
-    echo "Python|moteur/python/engine.py"
+    echo "Rust rose2|rose2/target/release/rose-20"
 }
 
 for prog in boucle fib big crible; do
