@@ -907,21 +907,30 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
     // Cas 2 : a est une box et a != b -> mutation in place (pas d'allocation).
     let same_box = at != 0 && bt != 0 && a == b;
     if at != 0 && !same_box {
-        // b -> Gz (copie si box, sinon de_i128)
-        let gb = to_gz2(b, bt);
         unsafe {
             let ra = a as *mut Mpz;
-            let rb = gb.p();
-            match op {
-                TaggedOp2::Add => gmp_add(ra, ra as *const Mpz, rb as *const Mpz),
-                TaggedOp2::Sub => gmp_sub(ra, ra as *const Mpz, rb as *const Mpz),
-                TaggedOp2::Mul => gmp_mul(ra, ra as *const Mpz, rb as *const Mpz),
+            if bt == 0 {
+                // b est i64 : mutation directe sans allocation
+                let bb = BigInt::from(b);
+                let mut mpza = &mut *(ra);
+                match op {
+                    TaggedOp2::Add => mpza.v = mpza.v.clone() + bb,
+                    TaggedOp2::Sub => mpza.v = mpza.v.clone() - bb,
+                    TaggedOp2::Mul => mpza.v = mpza.v.clone() * bb,
+                }
+            } else {
+                let gb = to_gz2(b, bt);
+                let rb = gb.p();
+                match op {
+                    TaggedOp2::Add => gmp_add(ra, ra as *const Mpz, rb as *const Mpz),
+                    TaggedOp2::Sub => gmp_sub(ra, ra as *const Mpz, rb as *const Mpz),
+                    TaggedOp2::Mul => gmp_mul(ra, ra as *const Mpz, rb as *const Mpz),
+                }
+                std::mem::forget(gb);
             }
             *out = a;
             *outt = 1;
         }
-        // gb is a copy (owned) -> leak is fine (small, bounded)
-        std::mem::forget(gb);
         return;
     }
     // Cas 3 : fallback allocation (a i64 promu, ou a == b).
