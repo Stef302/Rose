@@ -1,16 +1,15 @@
 // Rose 2.0 — compilateur Rose en Rust + JIT Cranelift.
 // Front-end fidèle au moteur C++ (lexeur, vérificateur, repli de constantes),
-// interpréteur exact (GMP par FFI) et JIT natif Cranelift pour le code chaud.
+// interpréteur exact (arithmétique native i128, zéro dépendance) et JIT
+// natif Cranelift pour le code chaud.
 // Les sorties sont identiques au caractère près à `bin/rose` (moteur C++).
 //
 // Use of this source code is governed by an MIT-style license.
 
-// Avertissements résiduels sur les dispositions GMP (Mpz/Mpq) et les blocs
-// unsafe imbriqués : ces dispositions sont vérifiées contre <gmp.h> et la
-// parité octet pour octet avec le moteur C++ est mesurée (bench global).
 #![allow(unsafe_op_in_unsafe_fn)]
 
 mod front;
+mod i128x;
 mod interp;
 mod jit;
 mod run;
@@ -25,7 +24,7 @@ fn lire(source: &mut String, chemin: &str) -> bool {
 }
 
 const USAGE: &str = "\
-Rose 2.0 — compilateur Rust + Cranelift JIT (maths exactes GMP)
+Rose 2.0 — compilateur Rust + Cranelift JIT (maths exactes natives 128 bits, zéro dépendance)
 Usage :
   rose-20 prog.rose [args…]   interpréter / JIT un programme Rose
   rose-20 run prog.rose       identique

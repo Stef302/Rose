@@ -1,142 +1,24 @@
 // Rose 2.0 — moteur d'exécution : valeurs exactes et bibliothèque standard.
 // Sémantique miroir du moteur C++ (moteur/cpp/src/rose.cpp) : conversions,
 // comparaisons, rendus, RNG splitmix64+Lemire, messages d'erreur.
-// Les entiers dépassant i64 et les rationnels passent par GMP via FFI.
+// ZÉRO DÉPENDANCE : les entiers dépassant i64 et les rationnels vivent sur
+// l'arithmétique exacte native i128 (src/i128x.rs) — plus aucun GMP, plus
+// aucune liaison externe. Un dépassement 128 bits est une erreur runtime
+// nette (« entier hors plage »), jamais un wrap silencieux.
 // Licence MIT.
 
 use std::cell::RefCell;
-use std::ffi::CString;
 use std::io::Write;
 use std::rc::Rc;
 
 use crate::front::{texte_flottant, TyKind};
-
-// ── GMP par FFI ───────────────────────────────────────────────────────────
-
-// dispositions GMP exactes (mpz_t = {alloc, size, d} sur aarch64/x86-64 LP64).
-// #[repr(C)] garantit la disposition ; la « non FFI-safe » signalée par rustc
-// est un faux positif : ces structs sont la disposition que GMP attend.
-#[allow(private_interfaces)]
-#[repr(C)]
-pub struct Mpz { alloc: i32, size: i32, d: *mut u64 }
-#[repr(C)]
-pub struct Mpq { pub num: Mpz, pub den: Mpz }
-
-#[allow(non_snake_case)]
-unsafe extern "C" {
-    fn __gmpz_init(x: *mut Mpz);
-    fn __gmpz_clear(x: *mut Mpz);
-    fn __gmpz_set_ui(x: *mut Mpz, u: u64);
-    fn __gmpz_set_si(x: *mut Mpz, i: i64);
-    fn __gmpz_set(x: *mut Mpz, y: *const Mpz);
-    fn __gmpz_set_str(x: *mut Mpz, s: *const i8, base: i32) -> i32;
-    fn __gmpz_get_str(buf: *mut i8, base: i32, x: *const Mpz) -> *mut i8;
-    fn __gmpz_sizeinbase(x: *const Mpz, base: i32) -> u64;
-    
-    fn __gmpz_cmp(x: *const Mpz, y: *const Mpz) -> i32;
-    fn __gmpz_cmp_ui(x: *const Mpz, u: u64) -> i32;
-    fn __gmpz_fits_slong_p(x: *const Mpz) -> i32;
-    fn __gmpz_get_si(x: *const Mpz) -> i64;
-    fn __gmpz_get_ui(x: *const Mpz) -> u64;
-    fn __gmpz_get_d(x: *const Mpz) -> f64;
-    fn __gmpz_set_d(x: *mut Mpz, d: f64);
-    fn __gmpz_add(r: *mut Mpz, a: *const Mpz, b: *const Mpz);
-    fn __gmpz_sub(r: *mut Mpz, a: *const Mpz, b: *const Mpz);
-    fn __gmpz_mul(r: *mut Mpz, a: *const Mpz, b: *const Mpz);
-    fn __gmpz_mul_ui(r: *mut Mpz, a: *const Mpz, u: u64);
-    fn __gmpz_mul_si(r: *mut Mpz, a: *const Mpz, b: i64);
-    fn __gmpz_add_ui(r: *mut Mpz, a: *const Mpz, u: u64);
-    fn __gmpz_fdiv_q(r: *mut Mpz, a: *const Mpz, b: *const Mpz);
-    fn __gmpz_fdiv_r(r: *mut Mpz, a: *const Mpz, b: *const Mpz);
-    fn __gmpz_mul_2exp(r: *mut Mpz, a: *const Mpz, e: u64);
-    fn __gmpz_tstbit(x: *const Mpz, bit: u64) -> i32;
-    fn __gmpz_pow_ui(r: *mut Mpz, a: *const Mpz, e: u64);
-    fn __gmpz_ui_pow_ui(r: *mut Mpz, base: u64, e: u64);
-    fn __gmpz_gcd(r: *mut Mpz, a: *const Mpz, b: *const Mpz);
-    fn __gmpz_lcm(r: *mut Mpz, a: *const Mpz, b: *const Mpz);
-    fn __gmpz_probab_prime_p(x: *const Mpz, reps: i32) -> i32;
-    fn __gmpz_fdiv_ui(x: *const Mpz, u: u64) -> u64;
-    fn __gmpq_init(x: *mut Mpq);
-    fn __gmpq_clear(x: *mut Mpq);
-    fn __gmpq_set(q: *mut Mpq, y: *const Mpq);
-    fn __gmpq_set_z(q: *mut Mpq, z: *const Mpz);
-    fn __gmpq_set_ui(q: *mut Mpq, n: u64, d: u64);
-    fn __gmpq_set_d(q: *mut Mpq, d: f64);
-    fn __gmpq_canonicalize(q: *mut Mpq);
-    fn __gmpq_cmp(a: *const Mpq, b: *const Mpq) -> i32;
-    fn __gmpq_get_d(q: *const Mpq) -> f64;
-    fn __gmpq_add(r: *mut Mpq, a: *const Mpq, b: *const Mpq);
-    fn __gmpq_sub(r: *mut Mpq, a: *const Mpq, b: *const Mpq);
-    fn __gmpq_mul(r: *mut Mpq, a: *const Mpq, b: *const Mpq);
-    fn __gmpq_div(r: *mut Mpq, a: *const Mpq, b: *const Mpq);
-    fn free(p: *mut std::ffi::c_void);
-}
-
-pub struct Gz(*mut Mpz);
-
-thread_local! { static ZERO: Gz = Gz::neuf(); }
-fn zero_ptr() -> *const Mpz { ZERO.with(|z| z.0 as *const Mpz) }
-pub struct Gq(*mut Mpq);
-
-impl Gz {
-    pub fn neuf() -> Gz {
-        let p = Box::into_raw(Box::new(Mpz { alloc: 0, size: 0, d: std::ptr::null_mut() }));
-        unsafe { __gmpz_init(p) };
-        Gz(p)
-    }
-    pub fn p(&self) -> *mut Mpz { self.0 }
-    pub fn poser_i64(&self, v: i64) { unsafe { __gmpz_set_si(self.p(), v) } }
-    pub fn poser_u64(&self, v: u64) { unsafe { __gmpz_set_ui(self.p(), v) } }
-    pub fn copier_de(&self, o: &Gz) { unsafe { __gmpz_set(self.p(), o.p()) } }
-    pub fn chaine(&self) -> String {
-        unsafe {
-            let raw = __gmpz_get_str(std::ptr::null_mut(), 10, self.p());
-            let s = std::ffi::CStr::from_ptr(raw as *const std::ffi::c_char).to_string_lossy().into_owned();
-            free(raw as *mut std::ffi::c_void);
-            s
-        }
-    }
-    pub fn depuis_chaine(&self, s: &str) -> bool {
-        match CString::new(s) {
-            Ok(c) => unsafe { __gmpz_set_str(self.p(), c.as_ptr() as *const i8, 10) == 0 },
-            Err(_) => false,
-        }
-    }
-    pub fn sgn(&self) -> i32 {
-        // __gmpz_sgn n'est pas exporté par toutes les libgmp ; cmp_ui(0) suffit
-        // pour les tests de signe non négatifs ; pour le signe exact on passe par
-        // cmp avec zéro.
-        let z = Gz::neuf();
-        unsafe { __gmpz_cmp(self.p(), z.p()) }
-    }
-    pub fn fits_i64(&self) -> bool { unsafe { __gmpz_fits_slong_p(self.p()) != 0 } }
-    pub fn get_i64(&self) -> i64 { unsafe { __gmpz_get_si(self.p()) } }
-}
-impl Drop for Gz {
-    fn drop(&mut self) {
-        unsafe { __gmpz_clear(self.0); let _ = Box::from_raw(self.0); }
-    }
-}
-
-impl Gq {
-    pub fn neuf() -> Gq {
-        let p = Box::into_raw(Box::new(Mpq {
-            num: Mpz { alloc: 0, size: 0, d: std::ptr::null_mut() },
-            den: Mpz { alloc: 0, size: 0, d: std::ptr::null_mut() },
-        }));
-        unsafe { __gmpq_init(p) };
-        Gq(p)
-    }
-    pub fn p(&self) -> *mut Mpq { self.0 }
-    pub fn num(&self) -> *mut Mpz { unsafe { &mut (*self.p()).num as *mut Mpz } }
-    pub fn den(&self) -> *mut Mpz { unsafe { &mut (*self.p()).den as *mut Mpz } }
-    pub fn copier_de(&self, o: &Gq) { unsafe { __gmpq_set(self.p(), o.p()) } }
-}
-impl Drop for Gq {
-    fn drop(&mut self) {
-        unsafe { __gmpq_clear(self.0); let _ = Box::from_raw(self.0); }
-    }
-}
+pub use crate::i128x::{
+    gmp_add, gmp_add_ui, gmp_cmp_ge, gmp_fdiv_q, gmp_fdiv_r, gmp_fdiv_ui, gmp_get_d, gmp_mul,
+    gmp_mul_2exp, gmp_mul_si, gmp_mul_ui, gmp_neg, gmp_pow_ui, gmp_sgn, gmp_set, gmp_set_d,
+    gmp_sub, gmp_ui_pow_ui, gmpq_add, gmpq_canonicalize, gmpq_cmp, gmpq_div, gmpq_mul, gmpq_neg,
+    gmpq_set, gmpq_set_d, gmpq_set_ui, gmpq_set_z, gmpq_set_z_field, gmpq_sub,
+};
+pub use crate::i128x::{Gq, Gz, Mpq, Mpz};
 
 // ── Valeur ────────────────────────────────────────────────────────────────
 
@@ -150,7 +32,7 @@ pub struct Tampon(pub Rc<RefCell<Vec<u8>>>);
 #[derive(Clone)]
 pub enum Valeur {
     Vide,
-    Entier(i64, Option<Rc<Gz>>),          // i64 quand ça tient, GMP au-delà
+    Entier(i64, Option<Rc<Gz>>),          // i64 quand ça tient, i128 au-delà
     Rationnel(Rc<Gq>),
     Flottant(f64),
     Booleen(bool),
@@ -247,8 +129,8 @@ pub fn vers_z(v: &Valeur) -> Gz {
         Valeur::Entier(i, None) => z.poser_i64(*i),
         Valeur::Entier(_, Some(o)) => z.copier_de(o),
         Valeur::Booleen(b) => z.poser_i64(if *b { 1 } else { 0 }),
-        Valeur::Rationnel(q) => unsafe { __gmpz_fdiv_q(z.p(), q.num(), q.den()) },
-        Valeur::Flottant(d) => unsafe { __gmpz_set_d(z.p(), *d) },
+        Valeur::Rationnel(q) => { let n = Gz(q.num()); let d = Gz(q.den()); z.fdiv_q(&n, &d); }
+        Valeur::Flottant(d) => z.poser_d(*d),
         _ => erreur_runtime(&format!("conversion vers entier impossible (type {:?})", v.ty())),
     }
     z
@@ -257,15 +139,15 @@ pub fn vers_z(v: &Valeur) -> Gz {
 pub fn vers_q(v: &Valeur) -> Gq {
     let q = Gq::neuf();
     match v {
-        Valeur::Entier(i, None) => { let z = Gz::neuf(); z.poser_i64(*i); unsafe { __gmpq_set_z(q.p(), z.p()) } }
-        Valeur::Entier(_, Some(o)) => unsafe { __gmpq_set_z(q.p(), o.p()) },
-        Valeur::Booleen(b) => unsafe { __gmpq_set_ui(q.p(), if *b { 1 } else { 0 }, 1) },
+        Valeur::Entier(i, None) => unsafe { gmpq_set_z_field(q.num(), Gz::de_i128(*i as i128).p()) },
+        Valeur::Entier(_, Some(o)) => unsafe { gmpq_set_z_field(q.num(), o.p()); gmpq_set_z_field(q.den(), un_z().p()) },
+        Valeur::Booleen(b) => q.set_ui(if *b { 1 } else { 0 }, 1),
         Valeur::Rationnel(o) => q.copier_de(o),
         Valeur::Flottant(d) => {
             if d.is_nan() || d.is_infinite() {
                 erreur_runtime("flottant infini/non-nombre sans rationnel correspondant");
             }
-            unsafe { __gmpq_set_d(q.p(), *d) }
+            q.depuis_d(*d);
         }
         _ => erreur_runtime("conversion vers rationnel impossible"),
     }
@@ -276,8 +158,8 @@ pub fn vers_d(v: &Valeur) -> f64 {
     match v {
         Valeur::Flottant(d) => *d,
         Valeur::Entier(i, None) => *i as f64,
-        Valeur::Entier(_, Some(z)) => unsafe { __gmpz_get_d(z.p()) },
-        Valeur::Rationnel(q) => unsafe { __gmpq_get_d(q.p()) },
+        Valeur::Entier(_, Some(z)) => z.get_d(),
+        Valeur::Rationnel(q) => q.get_d(),
         Valeur::Booleen(b) => if *b { 1.0 } else { 0.0 },
         // le C++ convertit une chaine en flottant via chaine_vers_flottant dans
         // les conversions ; miroir : 'flottant' depuis chaine est possible ici.
@@ -320,7 +202,7 @@ pub fn chaine_vers_entier(ch: &str) -> Gz {
         if !n.depuis_chaine(&ch[..p]) || !d.depuis_chaine(&ch[p + 1..]) || d.sgn() == 0 {
             erreur_runtime("conversion chaine → entier impossible");
         }
-        unsafe { __gmpz_fdiv_q(z.p(), n.p(), d.p()) };
+        z.fdiv_q(&n, &d);
         return z;
     }
     if let Some(pt) = ch.find('.') {
@@ -345,11 +227,11 @@ pub fn cmp_vals(g: &Valeur, d: &Valeur) -> i32 {
     if rat {
         let qa = vers_q(g);
         let qb = vers_q(d);
-        return unsafe { __gmpq_cmp(qa.p(), qb.p()) };
+        return qa.cmp_gq(&qb) as i32;
     }
     let za = vers_z(g);
     let zb = vers_z(d);
-    unsafe { __gmpz_cmp(za.p(), zb.p()) }
+    za.cmp_gz(&zb) as i32
 }
 
 pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
@@ -378,63 +260,43 @@ pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
 // ── Rendus (miroir ecri / chaine_de / texte_flottant) ─────────────────────
 
 pub fn q_chaine(q: &Gq) -> String {
-    let numer = Gz::neuf();
-    let denom = Gz::neuf();
-    numer.copier_de_ptr(q.num());
-    denom.copier_de_ptr(q.den());
-    if unsafe { __gmpz_cmp_ui(denom.p(), 1) } == 0 { numer.chaine() }
-    else { format!("{}/{}", numer.chaine(), denom.chaine()) }
-}
-
-impl Gz {
-    fn copier_de_ptr(&self, o: *const Mpz) { unsafe { __gmpz_set(self.p(), o) } }
+    if q.den_i128() == 1 { q.num_i128().to_string() }
+    else { format!("{}/{}", q.num_i128(), q.den_i128()) }
 }
 
 /// ecri T_RATIONNEL : a/b, forme décimale périodique (1/3 → 0.[3]),
 /// seuil 500 chiffres → a/b brut.
 pub fn texte_rationnel(q: &Gq) -> String {
-    let numer = Gz::neuf();
-    let denom = Gz::neuf();
-    numer.copier_de_ptr(q.num());
-    denom.copier_de_ptr(q.den());
-    if unsafe { __gmpz_cmp_ui(denom.p(), 1) } == 0 { return numer.chaine(); }
-    let gros = unsafe {
-        __gmpz_sizeinbase(numer.p(), 10) + __gmpz_sizeinbase(denom.p(), 10) > 500
-    };
-    if gros { return format!("{}/{}", numer.chaine(), denom.chaine()); }
+    let n0 = q.num_i128();
+    let d0 = q.den_i128();
+    if d0 == 1 { return n0.to_string(); }
+    let gros = (Gz::de_i128(n0).sizeinbase10() + Gz::de_i128(d0).sizeinbase10()) > 500;
+    if gros { return format!("{}/{}", n0, d0); }
 
-    let entier = Gz::neuf();
-    let reste = Gz::neuf();
-    unsafe {
-        __gmpz_fdiv_q(entier.p(), numer.p(), denom.p());
-        if __gmpz_cmp(numer.p(), zero_ptr()) < 0 {
-            __gmpz_mul_si(reste.p(), numer.p(), -1);
-        } else {
-            __gmpz_set(reste.p(), numer.p());
-        }
-        __gmpz_fdiv_r(reste.p(), reste.p(), denom.p());
-    }
+    let dd = d0.unsigned_abs() as i128;
+    let entier = {
+        let (mut q_, mut r_) = (n0 / dd, n0 % dd);
+        if r_ != 0 && ((r_ < 0) != (dd < 0)) { q_ -= 1; }
+        q_
+    };
+    let mut reste = n0.unsigned_abs() as i128 % dd;
     let mut digits: Vec<u8> = Vec::new();
-    let mut restes: Vec<String> = Vec::new();
+    let mut restes: Vec<i128> = Vec::new();
     let mut positions: Vec<usize> = Vec::new();
     let mut peri: i32 = -1;
-    while unsafe { __gmpz_cmp(reste.p(), zero_ptr()) } != 0 && digits.len() < 200 {
-        let rs = reste.chaine();
-        if let Some(p) = restes.iter().position(|r| *r == rs) {
+    while reste != 0 && digits.len() < 200 {
+        if let Some(p) = restes.iter().position(|r| *r == reste) {
             peri = positions[p] as i32;
             break;
         }
-        restes.push(rs);
+        restes.push(reste);
         positions.push(digits.len());
-        unsafe { __gmpz_mul_ui(reste.p(), reste.p(), 10) };
-        let chiffre = Gz::neuf();
-        unsafe {
-            __gmpz_fdiv_q(chiffre.p(), reste.p(), denom.p());
-            __gmpz_fdiv_r(reste.p(), reste.p(), denom.p());
-        }
-        digits.push(b'0' + unsafe { __gmpz_get_ui(chiffre.p()) } as u8);
+        match reste.checked_mul(10) { Some(x) => reste = x, None => crate::i128x::hors_plage() }
+        let chiffre = reste / dd;
+        reste = reste % dd;
+        digits.push(b'0' + chiffre as u8);
     }
-    let mut out = entier.chaine();
+    let mut out = entier.to_string();
     if !digits.is_empty() {
         out.push('.');
         let fin = if peri >= 0 { peri as usize } else { digits.len() };
@@ -530,10 +392,7 @@ pub fn graine_de(etat: &mut u64, n: &Gz) {
     *etat = if n.fits_i64() {
         n.get_i64() as u64
     } else {
-        unsafe {
-            (__gmpz_fdiv_ui(n.p(), 0xFFFFFFFF) as u64) << 32
-                | __gmpz_fdiv_ui(n.p(), 0x100000000) as u64
-        }
+        (n.fdiv_u64(0xFFFF_FFFF) << 32) | n.fdiv_u64(0x1_0000_0000)
     };
     rng_tirer(etat);
 }
@@ -571,11 +430,9 @@ pub fn hasard(etat: &mut u64, n: &Gz) -> Gz {
     } else {
         let x = rng_tirer(etat);
         r.poser_u64(x >> 32);
-        unsafe {
-            __gmpz_mul_2exp(r.p(), r.p(), 32);
-            __gmpz_add_ui(r.p(), r.p(), (x & 0xFFFF_FFFF) as u64);
-            __gmpz_fdiv_r(r.p(), r.p(), n.p());
-        }
+        r.mul_2exp(&r, 32);
+        r.add_u64(&r, x & 0xFFFF_FFFF);
+        r.fdiv_r(&r, n);
     }
     r
 }
@@ -608,7 +465,7 @@ pub fn factorielle(n: &Gz) -> Gz {
         let a = arbre(i, m);
         let b = arbre(m + 1, j);
         let r = Gz::neuf();
-        unsafe { __gmpz_mul(r.p(), a.p(), b.p()) };
+        r.mul(&a, &b);
         r
     }
     arbre(1, n)
@@ -620,48 +477,42 @@ pub fn fibonacci(nn: &Gz) -> Gz {
     let b = Gz::neuf();
     a.poser_i64(0);
     b.poser_i64(1);
-    let bits = unsafe { __gmpz_sizeinbase(nn.p(), 2) };
+    let bits = nn.taille_bits();
     let t1 = Gz::neuf();
     let t2 = Gz::neuf();
     let t3 = Gz::neuf();
     for i in (0..bits).rev() {
-        unsafe {
-            __gmpz_mul_ui(t1.p(), b.p(), 2);
-            __gmpz_sub(t1.p(), t1.p(), a.p());
-            __gmpz_mul(t1.p(), t1.p(), a.p());
-            __gmpz_mul(t2.p(), a.p(), a.p());
-            __gmpz_mul(t3.p(), b.p(), b.p());
-            __gmpz_add(t2.p(), t2.p(), t3.p());
-            if __gmpz_tstbit(nn.p(), i) != 0 {
-                __gmpz_set(a.p(), t2.p());
-                __gmpz_add(b.p(), t1.p(), t2.p());
-            } else {
-                __gmpz_set(a.p(), t1.p());
-                __gmpz_set(b.p(), t2.p());
-            }
+        t1.mul_u64(&b, 2);
+        t1.sub(&t1, &a);
+        t1.mul(&t1, &a);
+        t2.mul(&a, &a);
+        t3.mul(&b, &b);
+        t2.add(&t2, &t3);
+        if nn.tstbit(i) {
+            a.copier_de(&t2);
+            b.add(&t1, &t2);
+        } else {
+            a.copier_de(&t1);
+            b.copier_de(&t2);
         }
     }
     a
 }
 
 pub fn est_premier(n: &Gz) -> bool {
-    unsafe { __gmpz_probab_prime_p(n.p(), 25) != 0 && __gmpz_cmp_ui(n.p(), 1) > 0 }
+    n.i128() > 1 && n.est_premier()
 }
 
 pub fn nb_chiffres(n: &Gz) -> u64 {
     if n.sgn() == 0 { return 1; }
-    let t = Gz::neuf();
-    unsafe {
-        if __gmpz_cmp(n.p(), zero_ptr()) < 0 { __gmpz_mul_si(t.p(), n.p(), -1) } else { __gmpz_set(t.p(), n.p()) }
-    }
-    unsafe { __gmpz_sizeinbase(t.p(), 10) }
+    n.sizeinbase10()
 }
 
 pub fn compter_premiers(nn: &Gz) -> u64 {
-    if nn.sgn() < 0 || !nn.fits_i64() || nn.get_i64() as u64 > 0xFFFF_FFFF {
+    if nn.sgn() < 0 || !nn.fits_u64() || nn.get_u64() > 0xFFFF_FFFF {
         erreur_runtime("crible trop grand");
     }
-    let n = nn.get_i64() as u64;
+    let n = nn.get_u64();
     let mut crible = vec![0u8; (n + 1) as usize];
     let mut compte = 0u64;
     let mut i = 2u64;
@@ -683,53 +534,41 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
         erreur_runtime("décimales de π hors limites (1..2000000)");
     }
     let chiffres = chiffres.get_i64() as u64;
-    let s = chiffres + 40;
-    let dix_s = Gz::neuf();
-    unsafe { __gmpz_ui_pow_ui(dix_s.p(), 10, s) };
-    let mut cibles = Vec::new();
-    for &x in &[5u64, 239u64] {
-        let dest = Gz::neuf();
-        let x2 = Gz::neuf();
-        let p = Gz::neuf();
-        let terme = Gz::neuf();
-        unsafe {
-            __gmpz_set_ui(x2.p(), x);
-            __gmpz_mul(x2.p(), x2.p(), x2.p());
-            __gmpz_set_ui(p.p(), x);
-            __gmpz_fdiv_q(terme.p(), dix_s.p(), p.p());
-            __gmpz_set(dest.p(), terme.p());
-        }
+    // portée native : l'entier d'échelle 10^(chiffres+40) doit tenir dans
+    // i128 (< 2^127, soit ~38 chiffres) — la référence arbitrary-precision
+    // au-delà reste le moteur C++.
+    if chiffres + 40 >= 38 {
+        erreur_runtime("décimales de π hors portée de l'arithmétique native 128 bits du moteur Rust (max 30)");
+    }
+    let s = chiffres + 10;
+    let mut dix_s: i128 = 1;
+    for _ in 0..s {
+        match dix_s.checked_mul(10) { Some(x) => dix_s = x, None => crate::i128x::hors_plage() }
+    }
+    let arctan = |x: u64| -> i128 {
+        let x = x as i128;
+        let x2 = x * x;
+        let mut terme = dix_s / x;
+        let mut somme = terme;
         let mut k: u64 = 1;
-        let mut signe = -1i32;
         loop {
-            unsafe {
-                __gmpz_mul(p.p(), p.p(), x2.p());
-                k += 2;
-                __gmpz_mul_ui(terme.p(), p.p(), k);
-                __gmpz_fdiv_q(terme.p(), dix_s.p(), terme.p());
-                if __gmpz_cmp(terme.p(), zero_ptr()) == 0 { break; }
-                if signe < 0 { __gmpz_sub(dest.p(), dest.p(), terme.p()); }
-                else { __gmpz_add(dest.p(), dest.p(), terme.p()); }
-            }
-            signe = -signe;
+            match terme.checked_div(x2) { Some(t0) => terme = t0, None => break };
+            k += 2;
+            let denom = match terme.checked_mul(k as i128) { Some(x) => x, None => 0 };
+            if denom == 0 { break; }
+            let t = dix_s / denom;
+            if t == 0 { break; }
+            if k % 2 == 0 { somme -= t; } else { somme += t; }
+            if k > 100_000 { break; }
         }
-        cibles.push(dest);
-    }
-    let at5 = Gz::neuf();
-    let at239 = Gz::neuf();
-    let pi = Gz::neuf();
-    unsafe {
-        __gmpz_set(at5.p(), cibles[0].p());
-        __gmpz_set(at239.p(), cibles[1].p());
-        __gmpz_mul_ui(at5.p(), at5.p(), 16);
-        __gmpz_mul_ui(at239.p(), at239.p(), 4);
-        __gmpz_sub(pi.p(), at5.p(), at239.p());
-    }
-    let brut = pi.chaine();
+        somme
+    };
+    let pi = 16 * arctan(5) - 4 * arctan(239);
+    let brut = pi.to_string();
     let brut: Vec<u8> = brut.into_bytes();
     let lbrut = brut.len();
     let mut sortie: Vec<u8> = vec![b' '; (chiffres + 2) as usize];
-    sortie[0] = if brut[0] == b'-' { brut[0] } else { brut[0] };
+    sortie[0] = brut[0];
     sortie[1] = b'.';
     for i in 0..chiffres {
         sortie[(2 + i) as usize] = if (i + 1) < lbrut as u64 { brut[(i + 1) as usize] } else { b'0' };
@@ -747,44 +586,35 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
     String::from_utf8_lossy(&sortie).into_owned()
 }
 
-// Remarque : les champs num/den d'une Mpq sont des __mpz_struct contigus ;
-// on y accède par les macros ci-dessous, jamais par « .alloc ».
-macro_rules! q_num {
-    ($q:expr) => { &mut (*($q as *mut Mpq)).num as *mut Mpz };
-}
-macro_rules! q_den {
-    ($q:expr) => { &mut (*($q as *mut Mpq)).den as *mut Mpz };
-}
-
 pub fn pow_rationnel_sur(base: &Gq, e: i64) -> Gq {
-    let r = Gq::neuf();
-    let zi = Gz::neuf();
-    let den = Gz::neuf();
-    unsafe {
-        __gmpz_set(zi.p(), q_num!(base.p()));
-        __gmpz_pow_ui(zi.p(), zi.p(), e.unsigned_abs());
-        __gmpz_set(den.p(), q_den!(base.p()));
-        __gmpz_pow_ui(den.p(), den.p(), e.unsigned_abs());
-        if e >= 0 {
-            __gmpz_set(q_num!(r.p()), zi.p());
-            __gmpz_set(q_den!(r.p()), den.p());
-        } else {
-            __gmpz_set(q_num!(r.p()), den.p());
-            __gmpz_set(q_den!(r.p()), zi.p());
+    fn pow_i128(base: i128, e: u64) -> i128 {
+        let mut acc: i128 = 1;
+        let mut b = base;
+        let mut e = e;
+        while e > 0 {
+            if e & 1 == 1 {
+                match acc.checked_mul(b) { Some(x) => acc = x, None => crate::i128x::hors_plage() }
+            }
+            e >>= 1;
+            if e > 0 {
+                match b.checked_mul(b) { Some(x) => b = x, None => crate::i128x::hors_plage() }
+            }
         }
-        __gmpq_canonicalize(r.p());
+        acc
     }
-    r
+    let n = pow_i128(base.num_i128(), e.unsigned_abs());
+    let d = pow_i128(base.den_i128(), e.unsigned_abs());
+    if e >= 0 { Gq::de(n, d) } else { Gq::de(d, n) }
 }
 
 pub fn pgcd(a: &Gz, b: &Gz) -> Gz {
     let r = Gz::neuf();
-    unsafe { __gmpz_gcd(r.p(), a.p(), b.p()) };
+    r.gcd(a, b);
     r
 }
 pub fn ppcm(a: &Gz, b: &Gz) -> Gz {
     let r = Gz::neuf();
-    unsafe { __gmpz_lcm(r.p(), a.p(), b.p()) };
+    r.lcm(a, b);
     r
 }
 
@@ -801,12 +631,11 @@ pub fn puissance(base: &Valeur, expo: &Gz) -> Valeur {
             let z = vers_z(base);
             if e >= 0 {
                 let r = Gz::neuf();
-                unsafe { __gmpz_pow_ui(r.p(), z.p(), e as u64) };
+                r.pow_u64(&z, e as u64);
                 Valeur::zg(r)
             } else {
                 if z.sgn() == 0 { erreur_runtime("0^exposant négatif"); }
-                let q = Gq::neuf();
-                unsafe { __gmpq_set_z(q.p(), z.p()) };
+                let q = Gq::de(z.i128(), 1);
                 Valeur::qq(pow_rationnel_sur(&q, e))
             }
         }
@@ -936,21 +765,6 @@ unsafe extern "C" {
     pub fn dlclose(h: *mut std::ffi::c_void) -> i32;
 }
 
-impl Gz {
-    pub fn fits_u64(&self, max: u64) -> bool {
-        unsafe { __gmpz_fits_ulong_p(self.p()) != 0 && __gmpz_get_ui(self.p()) < max }
-    }
-    pub fn fits_usize(&self, max: usize) -> bool { self.fits_u64(max as u64) }
-    pub fn get_u64(&self) -> u64 { unsafe { __gmpz_get_ui(self.p()) } }
-}
-
-thread_local! { static ZERO_Q: Gq = Gq::neuf(); }
-pub fn gmpq_sgn(q: *const Mpq) -> i32 {
-    ZERO_Q.with(|z| unsafe { __gmpq_cmp(q, z.p() as *const Mpq) })
-}
-
-
-
 pub fn chaine_vers_flottant(ch: &str) -> f64 {
     match ch.parse::<f64>() {
         Ok(v) => v,
@@ -973,46 +787,9 @@ pub fn chaine_vers_flottant(ch: &str) -> f64 {
     }
 }
 
-// ── Alias GMP lisibles (miroir des noms du moteur C++) ────────────────────
-#[allow(non_snake_case)]
-unsafe extern "C" {
-    fn __gmpz_neg(r: *mut Mpz, a: *const Mpz);
-    fn __gmpq_neg(r: *mut Mpq, a: *const Mpq);
-    fn __gmpz_fits_ulong_p(x: *const Mpz) -> i32;
+// signe d'un rationnel par pointeur (surface conservée pour interp.rs)
+pub fn gmpq_sgn(q: *const Mpq) -> i32 {
+    unsafe { (*q).num.v.cmp(&0) as i32 }
 }
 
-pub unsafe fn gmp_add(r: *mut Mpz, a: *const Mpz, b: *const Mpz) { __gmpz_add(r, a, b) }
-pub unsafe fn gmp_sub(r: *mut Mpz, a: *const Mpz, b: *const Mpz) { __gmpz_sub(r, a, b) }
-pub unsafe fn gmp_mul(r: *mut Mpz, a: *const Mpz, b: *const Mpz) { __gmpz_mul(r, a, b) }
-pub unsafe fn gmp_neg(r: *mut Mpz, a: *const Mpz) { __gmpz_neg(r, a) }
-pub unsafe fn gmp_set(r: *mut Mpz, a: *const Mpz) { __gmpz_set(r, a) }
-pub unsafe fn gmp_set_d(r: *mut Mpz, a: f64) { __gmpz_set_d(r, a) }
-pub unsafe fn gmp_sgn(a: *const Mpz) -> i32 {
-    let z = Gz::neuf();
-    __gmpz_cmp(a, z.p())
-}
-pub unsafe fn gmp_add_ui(r: *mut Mpz, a: *const Mpz, u: u64) { __gmpz_add_ui(r, a, u) }
-pub unsafe fn gmp_fdiv_q(r: *mut Mpz, a: *const Mpz, b: *const Mpz) { __gmpz_fdiv_q(r, a, b) }
-pub unsafe fn gmp_fdiv_r(r: *mut Mpz, a: *const Mpz, b: *const Mpz) { __gmpz_fdiv_r(r, a, b) }
-pub unsafe fn gmp_fdiv_ui(a: *const Mpz, u: u64) -> u64 { __gmpz_fdiv_ui(a, u) }
-pub unsafe fn gmp_mul_2exp(r: *mut Mpz, a: *const Mpz, e: u64) { __gmpz_mul_2exp(r, a, e) }
-pub unsafe fn gmp_pow_ui(r: *mut Mpz, a: *const Mpz, e: u64) { __gmpz_pow_ui(r, a, e) }
-pub unsafe fn gmpq_add(r: *mut Mpq, a: *const Mpq, b: *const Mpq) { __gmpq_add(r, a, b) }
-pub unsafe fn gmpq_sub(r: *mut Mpq, a: *const Mpq, b: *const Mpq) { __gmpq_sub(r, a, b) }
-pub unsafe fn gmpq_mul(r: *mut Mpq, a: *const Mpq, b: *const Mpq) { __gmpq_mul(r, a, b) }
-pub unsafe fn gmpq_div(r: *mut Mpq, a: *const Mpq, b: *const Mpq) { __gmpq_div(r, a, b) }
-pub unsafe fn gmpq_neg(r: *mut Mpq, a: *const Mpq) { __gmpq_neg(r, a) }
-pub unsafe fn gmpq_set(r: *mut Mpq, a: *const Mpq) { __gmpq_set(r, a) }
-pub unsafe fn gmpq_set_z_field(dst: *mut Mpz, src: *const Mpz) { __gmpz_set(dst, src) }
-pub unsafe fn gmpq_canonicalize(q: *mut Mpq) { __gmpq_canonicalize(q) }
-
-pub fn gmp_cmp_ge(a: &Gz, b: &Gz) -> bool { unsafe { __gmpz_cmp(a.p(), b.p()) >= 0 } }
-
-impl Gq {
-    #[allow(dead_code)]
-    pub fn num_mut(&self) -> *mut Mpz { self.num() }
-    #[allow(dead_code)]
-    pub fn den_mut(&self) -> *mut Mpz { self.den() }
-    pub fn num_raw(&self) -> *const Mpz { self.num() }
-    pub fn den_raw(&self) -> *const Mpz { self.den() }
-}
+fn un_z() -> Gz { Gz::de_i128(1) }

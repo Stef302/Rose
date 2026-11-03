@@ -1285,10 +1285,7 @@ pub extern "C" fn rose_mul_ent(a: i64, b: i64, sortie: *mut u64, tag: *mut u64) 
     let w = Gz::neuf();
     w.poser_i64(b);
     let r = Gz::neuf();
-    unsafe {
-        unsafe extern "C" { fn __gmpz_mul(rr: *mut crate::run::Mpz, a: *const crate::run::Mpz, b: *const crate::run::Mpz); }
-        __gmpz_mul(r.p(), z.p(), w.p());
-    }
+    r.mul(&z, &w);
     if r.fits_i64() {
         unsafe { *sortie = r.get_i64() as u64; *tag = 0; }
     } else {
@@ -1316,11 +1313,12 @@ pub extern "C" fn rose_pow_ent(a: i64, n: i64, sortie: *mut u64, tag: *mut u64) 
     let mut acc = Gz::neuf(); acc.poser_i64(1);
     let mut b = Gz::neuf(); b.poser_i64(a);
     let mut e: u64 = n as u64;
-    unsafe {
-        unsafe extern "C" { fn __gmpz_mul(rr: *mut crate::run::Mpz, x: *const crate::run::Mpz, y: *const crate::run::Mpz); }
+    {
+        // exponentiation carrée-and-multiply sur i128 exact
+        let mut bb = Gz::neuf(); bb.poser_i64(a);
         while e > 0 {
-            if e & 1 == 1 { __gmpz_mul(acc.p(), acc.p(), b.p()); }
-            __gmpz_mul(b.p(), b.p(), b.p());
+            if e & 1 == 1 { let t = Gz::neuf(); t.mul(&acc, &bb); acc.copier_de(&t); }
+            let t = Gz::neuf(); t.mul(&bb, &bb); bb.copier_de(&t);
             e >>= 1;
         }
     }
@@ -1357,10 +1355,7 @@ pub extern "C" fn rose_neg_ent(a: i64, sortie: *mut u64, tag: *mut u64) {
     let z = Gz::neuf();
     z.poser_i64(a);
     let r = Gz::neuf();
-    unsafe {
-        unsafe extern "C" { fn __gmpz_neg(rr: *mut crate::run::Mpz, x: *const crate::run::Mpz); }
-        __gmpz_neg(r.p(), z.p());
-    }
+    r.neg(&z);
     let v = Box::new(Valeur::Entier(0, Some(std::rc::Rc::new(r))));
     unsafe { *sortie = 0; *tag = Box::into_raw(v) as u64; }
 }

@@ -362,7 +362,7 @@ impl Interp {
                     Valeur::Liste(l) => {
                         let idx = vers_z(&self.eval(b)?);
                         let taille = l.0.borrow().len();
-                        if !idx.fits_u64(taille as u64) {
+                        if !idx.fits_u64_lt(taille as u64) {
                             erreur_runtime("index hors des limites de la liste");
                         }
                         let i = idx.get_u64();
@@ -372,7 +372,7 @@ impl Interp {
                     Valeur::Chaine(s) => {
                         let idx = vers_z(&self.eval(b)?);
                         let cps: Vec<char> = s.chars().collect();
-                        if !idx.fits_u64(cps.len() as u64) {
+                        if !idx.fits_u64_lt(cps.len() as u64) {
                             erreur_runtime("index hors des limites de la chaîne");
                         }
                         let i = idx.get_u64();
@@ -830,7 +830,7 @@ impl Interp {
             }
             "tampon" => {
                 let n = vers_z(&a[0]);
-                if n.sgn() < 0 || !n.fits_u64(usize::MAX as u64) { erreur_runtime("tampon : taille démesurée"); }
+                if n.sgn() < 0 || !n.fits_u64_lt(usize::MAX as u64) { erreur_runtime("tampon : taille démesurée"); }
                 Valeur::tampon(n.get_u64() as usize)
             }
             "octets" => {
@@ -952,7 +952,7 @@ impl Interp {
             }
             "caractere" => {
                 let n = vers_z(&a[0]);
-                if !n.fits_u64(0x10FFFF) { erreur_runtime("caractere : code hors plage (0 à 1114111)"); }
+                if !n.fits_u64_lt(0x10FFFF) { erreur_runtime("caractere : code hors plage (0 à 1114111)"); }
                 let cp = n.get_u64() as u32;
                 if (0xD800..=0xDFFF).contains(&cp) { erreur_runtime("caractere : code réservé (55296 à 57343)"); }
                 Valeur::s(char::from_u32(cp).unwrap_or('\u{FFFD}').to_string())
@@ -1004,7 +1004,7 @@ impl Interp {
             }
             "argument" => {
                 let i = vers_z(&a[0]);
-                if !i.fits_u64(self.arguments.len() as u64) {
+                if !i.fits_u64_lt(self.arguments.len() as u64) {
                     erreur_runtime("index hors des limites des arguments");
                 }
                 Valeur::s(self.arguments[i.get_u64() as usize].clone())
