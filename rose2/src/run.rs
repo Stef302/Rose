@@ -196,6 +196,28 @@ pub fn convertir(v: Valeur, ty: TyKind) -> Valeur {
     }
 }
 
+pub fn chaine_vers_rationnel(ch: &str) -> Gq {
+    let ch = ch.trim();
+    if ch.contains('/') {
+        let parts: Vec<&str> = ch.split('/').collect();
+        if parts.len() == 2 {
+            let n = parts[0].trim().parse::<i128>().unwrap_or(0);
+            let d = parts[1].trim().parse::<i128>().unwrap_or(1);
+            return Gq::de(n, if d == 0 { 1 } else { d });
+        }
+    }
+    // entier ou flottant
+    if let Ok(n) = ch.parse::<i128>() {
+        return Gq::de(n, 1);
+    }
+    if let Ok(f) = ch.parse::<f64>() {
+        let q = Gq::neuf();
+        q.depuis_d(f);
+        return q;
+    }
+    Gq::de(0, 1)
+}
+
 pub fn chaine_vers_entier(ch: &str) -> Gz {
     let z = Gz::neuf();
     if z.depuis_chaine(ch) { return z; }

@@ -122,7 +122,10 @@ impl Interp {
         match i {
             Instr::Afficher(e, _) => { let v = self.eval(e)?; afficher(&v); }
             Instr::Lire { nom, ty, .. } => {
-                let v = self.lire_selon(*ty);
+                let ty_resolu = if *ty == TyKind::Dyn {
+                    self.chercher_var(nom).map(|v| v.ty()).unwrap_or(TyKind::Entier)
+                } else { *ty };
+                let v = self.lire_selon(ty_resolu);
                 self.affecter(nom, v);
             }
             Instr::Affect { nom, e, .. } => { let v = self.eval(e)?; self.affecter(nom, v); }
@@ -295,6 +298,13 @@ impl Interp {
         Ok(Valeur::Vide)
     }
 
+    fn chercher_var(&self, nom: &str) -> Option<Valeur> {
+        for trame in self.trames.iter().rev() {
+            if let Some(v) = trame.get(nom) { return Some(v.clone()); }
+        }
+        self.globaux.get(nom).cloned()
+    }
+
     fn lire_selon(&self, ty: TyKind) -> Valeur {
         let mut ligne = String::new();
         use std::io::BufRead;
@@ -305,6 +315,7 @@ impl Interp {
         let ligne = ligne.trim_end_matches(['\n', '\r', ' ']);
         match ty {
             TyKind::Flottant => Valeur::f(chaine_vers_flottant(ligne)),
+            TyKind::Rationnel => Valeur::qq(chaine_vers_rationnel(ligne)),
             _ => Valeur::zg(chaine_vers_entier(ligne)),
         }
     }
@@ -630,7 +641,7 @@ impl Interp {
         unsafe {
             for c in candidats {
                 let cs = std::ffi::CString::new(c).unwrap();
-                let h = dlopen(cs.as_ptr() as *const i8, 2 | 4);
+                let h = dlopen(cs.as_ptr() as *const i8, 2);
                 if !h.is_null() { self.poignees.push(h); return h; }
             }
         }
@@ -730,7 +741,7 @@ impl Interp {
                 let s = chaine_de(&args[0]);
                 let c = std::ffi::CString::new(s.clone()).unwrap();
                 unsafe {
-                    let h = dlopen(c.as_ptr() as *const i8, 2 /*RTLD_NOW*/ | 4 /*RTLD_LOCAL*/);
+                    let h = dlopen(c.as_ptr() as *const i8, 2);
                     if h.is_null() {
                         erreur_runtime(&format!("chargement de bibliothèque impossible ({})", s));
                     }

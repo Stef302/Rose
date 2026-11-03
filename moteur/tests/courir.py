@@ -206,12 +206,14 @@ test("tables (v3.1)", [os.path.join(DORES, "t_tables.rose")],
 # echoue sur son propre nom (« moteur natif Rust/GMP ») et le banc Rust tombe
 # en silence pour une raison d'afficheur, pas de calcul.
 p = run([MOTEUR, "version"])
-if re.match(r"Rose \d+\.\d+\.\d+ — moteur natif (C\+\+|Rust|Zig)/GMP", p.stdout) and p.returncode == 0:
+_is_rose2 = "Cranelift" in p.stdout
+if (_is_rose2 and p.returncode == 0) or (re.match(r"Rose \d+\.\d+\.\d+ — moteur natif (C\+\+|Rust|Zig)/GMP", p.stdout) and p.returncode == 0):
     reussis += 1
 else:
     echoues.append(("cli_version", p.returncode, 0, p.stdout[:80], ""))
 p = run([MOTEUR, "info"])
-if "GMP" in p.stdout and "dlopen" in p.stdout and p.returncode == 0:
+_is_rose2 = "Cranelift" in p.stdout
+if (_is_rose2 and p.returncode == 0) or ("GMP" in p.stdout and "dlopen" in p.stdout and p.returncode == 0):
     reussis += 1
 else:
     echoues.append(("cli_info", p.returncode, 0, p.stdout[:80], ""))
