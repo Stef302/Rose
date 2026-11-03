@@ -945,8 +945,6 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
 }
 
 static mut ROSE_RET_TAG: i64 = 0;
-static mut FAST_PATH_HITS: u64 = 0;
-static mut SLOW_PATH_HITS: u64 = 0;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_set_ret_tag(tag: i64) {
