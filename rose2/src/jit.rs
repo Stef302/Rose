@@ -431,10 +431,11 @@ impl Jit {
                 ("rose_affiche_bool", vec![types::I64], None),
                 ("rose_affiche_f64", vec![types::F64], None),
                 ("rose_powf", vec![types::F64, types::F64], Some(types::F64)),
-                ("rose_mul_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
-                ("rose_pow_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_add_ent", vec![types::I128, types::I128], Some(types::I128)),
+                ("rose_sub_ent", vec![types::I128, types::I128], Some(types::I128)),
+                ("rose_mul_ent", vec![types::I128, types::I128], Some(types::I128)),
+                ("rose_neg_ent", vec![types::I128], Some(types::I128)),
                 ("rose_affiche_ent", vec![types::I64, types::I64], None),
-                ("rose_neg_ent", vec![types::I64, types::I64, types::I64], None),
                 ("rose_erreur_mod_zero", vec![], None),
                 ("rose_erreur_div_zero", vec![], None),
             ] {
@@ -1288,67 +1289,6 @@ fn si_flottant(b: &mut FunctionBuilder, flot: bool, g: Value, d: Value,
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_affiche_i64(v: i64) { crate::run::ecrire_out(&format!("{}\n", v)); }
 
-/// Helper JIT : produit exact de deux i64, avec promotion GMP au dépassement
-/// (miroir de rose_ent/jit_mul_z du C++). Rend un u64 taggé : bit 63 = 1 si la
-/// valeur ne tient pas en i64, et la place de la Valeur::Entier(0, Some(Gz))
-/// boxée sinon. Les deux mots lus par le JIT (valeur, tag) sont écrits ici.
-#[unsafe(no_mangle)]
-pub extern "C" fn rose_mul_ent(a: i64, b: i64, sortie: *mut u64, tag: *mut u64) {
-    use crate::run::{Gz, Valeur};
-    if let Some(p) = a.checked_mul(b) {
-        unsafe { *sortie = p as u64; *tag = 0; }
-        return;
-    }
-    let z = Gz::neuf();
-    z.poser_i64(a);
-    let w = Gz::neuf();
-    w.poser_i64(b);
-    let r = Gz::neuf();
-    r.mul(&z, &w);
-    if r.fits_i64() {
-        unsafe { *sortie = r.get_i64() as u64; *tag = 0; }
-    } else {
-        let v = Box::new(Valeur::Entier(0, Some(std::rc::Rc::new(r))));
-        unsafe { *sortie = 0; *tag = Box::into_raw(v) as u64; }
-    }
-}
-
-/// Puissance entière exacte (miroir rose_pow du C++) : b^n calculé en GMP au
-/// dépassement ; exponentiation carrée-and-multiply côté helper (rare hors
-/// garde : la voie rapide i64 est gardée par checked_mul).
-#[unsafe(no_mangle)]
-pub extern "C" fn rose_pow_ent(a: i64, n: i64, sortie: *mut u64, tag: *mut u64) {
-    use crate::run::{Gz, Valeur};
-    if n < 0 {
-        // C++ : base^exposant négatif entier -> rationnel ; hors du sous-ensemble
-        // i64, la fonction n'est PAS compilable — mais si on arrive ici, le
-        // vérificateur a laissé passer (entier^entier). Repli : GMP rationnel
-        // indisponible ici ; on marque tag=1 avec Valeur::Rationnel via mul.
-        // Simplification : le C++ rend un rationnel ; pour ne pas diverger, la
-        // compilabilite est refusee en amont pour ^ à exposant littéral négatif.
-        unsafe { *sortie = 0; *tag = u64::MAX; }
-        return;
-    }
-    let mut acc = Gz::neuf(); acc.poser_i64(1);
-    let mut b = Gz::neuf(); b.poser_i64(a);
-    let mut e: u64 = n as u64;
-    {
-        // exponentiation carrée-and-multiply sur i128 exact
-        let mut bb = Gz::neuf(); bb.poser_i64(a);
-        while e > 0 {
-            if e & 1 == 1 { let t = Gz::neuf(); t.mul(&acc, &bb); acc.copier_de(&t); }
-            let t = Gz::neuf(); t.mul(&bb, &bb); bb.copier_de(&t);
-            e >>= 1;
-        }
-    }
-    if acc.fits_i64() {
-        unsafe { *sortie = acc.get_i64() as u64; *tag = 0; }
-    } else {
-        let v = Box::new(Valeur::Entier(0, Some(std::rc::Rc::new(acc))));
-        unsafe { *sortie = 0; *tag = Box::into_raw(v) as u64; }
-    }
-}
-
 /// Helper JIT : affichage d'un i64 taggé (valeur, tag) rendu par rose_mul_ent /
 /// rose_pow_ent / rose_neg_ent. tag ≠ 0 recycle la Box<Valeur>.
 #[unsafe(no_mangle)]
@@ -1362,22 +1302,6 @@ pub extern "C" fn rose_affiche_ent(valeur: i64, tag: i64) {
     }
 }
 
-/// Helper JIT : negation exacte (miroir jit_neg_z du C++) : -i64::MIN = 2^63
-/// ne tient pas en i64 -> promotion GMP boxée, tag non nul.
-#[unsafe(no_mangle)]
-pub extern "C" fn rose_neg_ent(a: i64, sortie: *mut u64, tag: *mut u64) {
-    use crate::run::{Gz, Valeur};
-    if let Some(n) = a.checked_neg() {
-        unsafe { *sortie = n as u64; *tag = 0; }
-        return;
-    }
-    let z = Gz::neuf();
-    z.poser_i64(a);
-    let r = Gz::neuf();
-    r.neg(&z);
-    let v = Box::new(Valeur::Entier(0, Some(std::rc::Rc::new(r))));
-    unsafe { *sortie = 0; *tag = Box::into_raw(v) as u64; }
-}
 #[allow(dead_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_affiche_bool(v: i64) { crate::run::ecrire_out(if v != 0 { "vrai\n" } else { "faux\n" }); }

@@ -828,3 +828,5 @@ pub extern "C" fn rose_erreur_mod_zero() {
 pub extern "C" fn rose_erreur_div_zero() {
     erreur_runtime("division euclidienne par zéro");
 }
+
+
