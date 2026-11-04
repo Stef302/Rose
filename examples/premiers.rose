@@ -1,0 +1,5 @@
+>> compter_premiers(1000)
+>> est_premier(97)
+>> est_premier(91)
+>> pgcd(48, 18)
+>> ppcm(4, 6)

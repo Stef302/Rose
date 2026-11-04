@@ -1,0 +1,27 @@
+# FFI — appels directs aux bibliothèques partagées (libm, libc)
+
+@dll("m")
+@sym("pow")
+fn pow_libm(x: flottant, y: flottant) -> flottant
+
+@dll("m")
+@sym("sqrt")
+fn racine(x: flottant) -> flottant
+
+>> pow_libm(2.0, 10.0)          # 1024
+>> racine(2.0)                  # 1.4142…
+
+# π ≈ via atan(1)*4, appelé dans libm
+@dll("m")
+@sym("atan")
+fn arctan(x: flottant) -> flottant
+>> 4.0 * arctan(1.0)
+
+# Combinaison : racine carrée de 2 calculée par Newton en pur Rose,
+# vérifiée contre la version libm
+fn racine_newton(x: flottant) -> flottant {
+    $g = x / 2.0
+    pour i de 0 vers 40 { $g = ($g + x / $g) / 2.0 }
+    retour $g
+}
+>> racine_newton(2.0) ≈ racine(2.0)      # vrai (tolérance 1e-9)

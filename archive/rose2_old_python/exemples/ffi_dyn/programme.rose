@@ -1,0 +1,11 @@
+# FFI dynamique — charger une .so à l'exécution et appeler ses fonctions.
+# Compagnon : ext/maths_ext.c compilé en libmaths_ext.so
+
+h = dynamique::charger("./libmaths_ext.so")
+
+>> dynamique::appeler1(h, "carre_double", 6.0)          # 36.0
+>> dynamique::appeler2(h, "hypotenuse", 3.0, 4.0)       # 5.0
+>> dynamique::appeler0(h, "reponse_univers")            # 42.0
+
+dynamique::fermer(h)
+>> "bibliothèque fermée proprement"

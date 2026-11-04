@@ -1,0 +1,7 @@
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+>> fib(10)
+>> fib(20)
+>> fib(28)
