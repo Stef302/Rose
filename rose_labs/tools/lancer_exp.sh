@@ -78,7 +78,7 @@ echo "   Copie      : $COPIE"
 echo "   Bench      : $BENCH"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-export PATH="/home/clausake/mingw/root/usr/bin:$PATH"
+export PATH="${MINGW_PATH:-/usr/local/mingw/usr/bin}:$PATH"
 export PATH="$HOME/.cargo/bin:$PATH"
 
 cd "$COPIE"
