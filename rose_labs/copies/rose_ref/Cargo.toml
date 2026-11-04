@@ -1,0 +1,21 @@
+[package]
+name = "rose-20"
+version = "2.0.0"
+edition = "2024"
+
+[dependencies]
+cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
+
+[build-dependencies]
+cc = "1.0"
+
+[profile.release]
+opt-level = 1
+
+[profile.release-dbg]
+inherits = "release"
+debug = 2
+strip = false

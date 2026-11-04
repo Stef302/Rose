@@ -1,0 +1,30 @@
+# Banc de test mathématique pour Rose Labs
+# Utilisé pour comparer les niveaux d'optimisation
+
+# 1. Arithmétique entière 10 M itérations
+$total = 0
+pour i de 1 vers 10000001 {
+    $total = $total + i * i
+}
+>> $total
+
+# 2. Fibonacci récursif
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+>> fib(28)
+
+# 3. Flottants
+$x = 0.0
+pour b de 1 vers 1000001 {
+    $x = $x + 1.0 / b
+}
+>> $x
+
+# 4. Factorielle et puissance (arithmétique exacte)
+>> 40!
+>> puissance(2, 10)
+
+# 5. Nombre de premiers
+>> compter_premiers(10000)
