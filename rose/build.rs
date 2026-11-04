@@ -18,6 +18,10 @@ fn main() {
                 .flag("-static")
                 .compile("windows_compat");
         }
+        // Sous Windows (MinGW), un .exe n'exporte pas ses symboles par défaut.
+        // --export-all-symbols rend rose_add_ent / rose_sub_ent / etc. visibles
+        // depuis le JIT Cranelift (dlsym sur le binaire principal).
+        println!("cargo:rustc-link-arg=-Wl,--export-all-symbols");
         println!("cargo:rustc-link-lib=dylib=advapi32");
         return;
     }

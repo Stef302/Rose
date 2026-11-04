@@ -27,13 +27,13 @@ fn lire(source: &mut String, chemin: &str) -> bool {
 const USAGE: &str = "\
 Rose 2.0 — compilateur Rust + Cranelift JIT + LLVM ORC AOT (maths exactes BigInt natif, zéro GMP)
 Usage :
-  rose-20 prog.rose [args…]   interpréter / JIT un programme Rose
-  rose-20 run prog.rose       identique
-  rose-20 comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
-  rose-20 llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
-  rose-20 orc prog.rose [-o sortie] [-O1|-O2|-O3]   AOT LLVM ORC (in-process, inkwell)
-  rose-20 info                état du moteur
-  rose-20 version             numéro de version
+  rose prog.rose [args…]   interpréter / JIT un programme Rose
+  rose run prog.rose       identique
+  rose comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
+  rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
+  rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use]   AOT LLVM ORC (in-process, inkwell)
+  rose info                état du moteur
+  rose version             numéro de version
 ";
 
 /* ── mode bundle : programme collé dans le moteur (miroir C++ rose.cpp:4344) ── */
@@ -66,7 +66,7 @@ fn lire_bundle() -> Option<String> {
 fn comp_programme(fichier: &str, sortie: &str) -> i32 {
     let mut source = String::new();
     if !lire(&mut source, fichier) {
-        eprintln!("rose-20: fichier introuvable : {}", fichier);
+        eprintln!("rose: fichier introuvable : {}", fichier);
         return 1;
     }
     // valide avant d'embarquer (analyse + repli + vérification)
@@ -81,10 +81,10 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
     }
     let moteur = match chemin_moteur().and_then(|c| std::fs::read(c).ok()) {
         Some(m) => m,
-        None => { eprintln!("rose-20: moteur illisible"); return 1; }
+        None => { eprintln!("rose: moteur illisible"); return 1; }
     };
     let mut out = std::fs::File::create(sortie).unwrap_or_else(|_| {
-        eprintln!("rose-20: ne peut écrire {}", sortie);
+        eprintln!("rose: ne peut écrire {}", sortie);
         std::process::exit(1);
     });
     use std::io::Write;
@@ -101,7 +101,7 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(sortie, std::fs::Permissions::from_mode(0o755));
     }
-    println!("rose-20: {} produit (exécutable autonome)", sortie);
+    println!("rose: {} produit (exécutable autonome)", sortie);
     0
 }
 
@@ -135,7 +135,7 @@ fn main() {
                 } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
                 else { i += 1; }
             }
-            if fichier.is_empty() { eprintln!("rose-20: quel programme compiler ?"); std::process::exit(1); }
+            if fichier.is_empty() { eprintln!("rose: quel programme compiler ?"); std::process::exit(1); }
             if sortie.is_empty() {
                 sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
                 if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
@@ -153,7 +153,7 @@ fn main() {
                 } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
                 else { i += 1; }
             }
-            if fichier.is_empty() { eprintln!("rose-20: quel programme compiler ?"); std::process::exit(1); }
+            if fichier.is_empty() { eprintln!("rose: quel programme compiler ?"); std::process::exit(1); }
             if sortie.is_empty() {
                 sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
                 if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
@@ -165,38 +165,41 @@ fn main() {
                 .env("PYTHONPATH", srcdir)
                 .status();
             if !st.map(|s| s.success()).unwrap_or(false) {
-                eprintln!("rose-20: échec de l'AOT LLVM (python3/codegen_c)"); std::process::exit(1);
+                eprintln!("rose: échec de l'AOT LLVM (python3/codegen_c)"); std::process::exit(1);
             }
-            println!("rose-20: {} produit (AOT LLVM)", sortie);
+            println!("rose: {} produit (AOT LLVM)", sortie);
             std::process::exit(0);
         }
         "orc" => {
             let mut sortie = String::new();
             let mut fichier = String::new();
             let mut opt_level = aot_llvm_orc::OrcOptLevel::O2;
+            let mut pgo_mode = aot_llvm_orc::PgoMode::None;
             let mut i = 2;
             while i < argv.len() {
                 if argv[i] == "-O1" { opt_level = aot_llvm_orc::OrcOptLevel::O1; i += 1; }
                 else if argv[i] == "-O2" { opt_level = aot_llvm_orc::OrcOptLevel::O2; i += 1; }
                 else if argv[i] == "-O3" { opt_level = aot_llvm_orc::OrcOptLevel::O3; i += 1; }
+                else if argv[i] == "--pgo-generate" { pgo_mode = aot_llvm_orc::PgoMode::Generate; i += 1; }
+                else if argv[i] == "--pgo-use" { pgo_mode = aot_llvm_orc::PgoMode::Use; i += 1; }
                 else if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
                     sortie = argv[i + 1].clone(); i += 2;
                 } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
                 else { i += 1; }
             }
-            if fichier.is_empty() { eprintln!("rose-20: quel programme compiler ?"); std::process::exit(1); }
+            if fichier.is_empty() { eprintln!("rose: quel programme compiler ?"); std::process::exit(1); }
             if sortie.is_empty() {
                 sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
                 if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
-            match aot_llvm_orc::run_orc(&fichier, &sortie, opt_level) {
+            match aot_llvm_orc::run_orc(&fichier, &sortie, opt_level, pgo_mode) {
                 Ok(()) => {
-                    println!("rose-20: {} produit (AOT LLVM ORC, niveau {:?})", sortie, opt_level);
+                    println!("rose: {} produit (AOT LLVM ORC, niveau {:?}, PGO {:?})", sortie, opt_level, pgo_mode);
                     std::process::exit(0);
                 }
                 Err(e) => {
-                    eprintln!("rose-20: échec AOT LLVM ORC : {}", e);
+                    eprintln!("rose: échec AOT LLVM ORC : {}", e);
                     std::process::exit(1);
                 }
             }
@@ -205,14 +208,14 @@ fn main() {
     }
 
     let (fichier, args) = if action == "run" {
-        if argv.len() < 3 { eprintln!("rose-20: quel programme interpréter ?"); std::process::exit(1); }
+        if argv.len() < 3 { eprintln!("rose: quel programme interpréter ?"); std::process::exit(1); }
         (argv[2].clone(), argv[3..].to_vec())
     } else {
         (argv[1].clone(), argv[2..].to_vec())
     };
     let mut source = String::new();
     if !lire(&mut source, &fichier) {
-        eprintln!("rose-20: fichier introuvable : {}", fichier);
+        eprintln!("rose: fichier introuvable : {}", fichier);
         std::process::exit(1);
     }
     // le moteur C++ execute le pipeline dans un thread a pile de 512 Mo

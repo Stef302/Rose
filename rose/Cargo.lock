@@ -473,7 +473,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rose-20"
+name = "rose"
 version = "2.0.0"
 dependencies = [
  "cc",

@@ -5,8 +5,9 @@
 //   • Génération d'IR LLVM depuis des expressions Rose entières
 //   • Émission de fichier objet natif ou IR texte
 //   • Support des niveaux -O1 / -O2 / -O3
+//   • Phi nodes pour les boucles pour / tant_que
 //
-// Usage : rose-20 orc prog.rose [-o sortie] [-O1|-O2|-O3]
+// Usage : rose orc prog.rose [-o sortie] [-O1|-O2|-O3]
 //
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -55,8 +56,27 @@ impl OrcOptLevel {
     }
 }
 
+/// Mode PGO (Profile-Guided Optimization)
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum PgoMode {
+    #[default]
+    None,
+    Generate,  // -fprofile-generate : instrumentation pour collecte
+    Use,       // -fprofile-use : optimisation guidée par les profils collectés
+}
+
+impl PgoMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "generate" | "gen" => Some(PgoMode::Generate),
+            "use" | "use" => Some(PgoMode::Use),
+            _ => None,
+        }
+    }
+}
+
 /// Point d'entrée CLI pour la commande `orc`
-pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<(), String> {
+pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: PgoMode) -> Result<(), String> {
     // Lire et analyser le source Rose
     let mut source = String::new();
     File::open(fichier)
@@ -72,7 +92,17 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
         .map_err(|e| format!("erreur de vérification : {}", e))?;
 
     // ── Initialisation LLVM ──────────────────────────────────────────────
-    Target::initialize_all(&InitializationConfig::default());
+    // Il faut initialiser TOUS les composants (targets, MC, asm parsers,
+    // asm printers) pour que TargetMachine puisse émettre des fichiers
+    // objets natifs (.o) et de l'IR LLVM.
+    Target::initialize_all(&InitializationConfig {
+        base: true,
+        info: true,
+        machine_code: true,
+        asm_parser: true,
+        asm_printer: true,
+        disassembler: true,
+    });
 
     let context = Context::create();
     let module = context.create_module("rose_orc");
@@ -94,14 +124,6 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
     // Table des valeurs nommées (variables)
     let mut named_values: HashMap<String, BasicValueEnum> = HashMap::new();
 
-    // ── Utiliser des références 'static via unsafe (toute la vie du scope) ──
-    // inkwell lie toutes ses références à la durée de vie du Context. Comme
-    // context, module et builder vivent tous pour la durée de run_orc, on peut
-    // les traiter comme 'static en toute sécurité dans ce scope.
-    let context: &'static Context = unsafe { std::mem::transmute(&context) };
-    let module: &'static Module<'static> = unsafe { std::mem::transmute(&module) };
-    let builder: &'static Builder<'static> = unsafe { std::mem::transmute(&builder) };
-
     // ── Compilation de la fonction main ──────────────────────────────────
     let i64_type = context.i64_type();
     let fn_type = i64_type.fn_type(&[], false);
@@ -114,7 +136,7 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
     fn compile_expr<'ctx>(
         builder: &Builder<'ctx>,
         context: &'ctx Context,
-        module: &'ctx Module<'ctx>,
+        module: &Module<'ctx>,
         named_values: &mut HashMap<String, BasicValueEnum<'ctx>>,
         expr: &Expr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
@@ -250,7 +272,7 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
     fn compile_instr<'ctx>(
         builder: &Builder<'ctx>,
         context: &'ctx Context,
-        module: &'ctx Module<'ctx>,
+        module: &Module<'ctx>,
         named_values: &mut HashMap<String, BasicValueEnum<'ctx>>,
         instr: &Instr,
     ) -> Result<(), String> {
@@ -363,17 +385,36 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
             }
             Instr::Pour { nom, debut, fin, corps, .. } => {
                 let start = compile_expr(builder, context, module, named_values, debut)?;
-                named_values.insert(nom.clone(), start);
 
                 let main_func = module.get_function("main").ok_or("fonction main manquante")?;
                 let loop_block = context.append_basic_block(main_func, "for_loop");
                 let body_block = context.append_basic_block(main_func, "for_body");
                 let after_block = context.append_basic_block(main_func, "for_after");
 
-                builder.build_unconditional_branch(loop_block);
+                // ── PHI NODE pour la variable de boucle ──
+                // Structure :
+                //   entry -> (saut inconditionnel) -> loop_block
+                //   loop_block: phi = phi(start, next) ; cond = current < end ; cond ? body : after
+                //   body_block: corps ; next = current + 1 ; saut loop_block
+                //   after_block: suite
+                //
+                // On crée d'abord les blocs, puis on positionne sur loop_block pour
+                // créer le phi node (première instruction), puis on ajoute les entrées.
 
+                let pred_block = builder.get_insert_block().unwrap();
+                builder.build_unconditional_branch(loop_block);
                 builder.position_at_end(loop_block);
-                let current = named_values.get(nom).cloned().ok_or("variable de boucle non initialisée")?;
+
+                // Le phi node est la toute première instruction de loop_block
+                let phi = builder.build_phi(context.i64_type(), &format!("phi_{}", nom))
+                    .map_err(|e| format!("erreur build_phi : {:?}", e))?;
+                // Entrée depuis le bloc précédent (initialisation)
+                phi.add_incoming(&[(&start, pred_block)]);
+
+                let current = phi.as_basic_value();
+                named_values.insert(nom.clone(), current);
+
+                // Comparaison avec fin
                 let end = compile_expr(builder, context, module, named_values, fin)?;
                 let cond = builder.build_int_compare(
                     IntPredicate::SLT,
@@ -383,6 +424,7 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
                 ).map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
                 builder.build_conditional_branch(cond, body_block, after_block);
 
+                // Corps
                 builder.position_at_end(body_block);
                 for instr in corps {
                     compile_instr(builder, context, module, named_values, instr)?;
@@ -393,6 +435,9 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
                     "for_next",
                 ).map_err(|e| format!("erreur build_int_add : {:?}", e))?;
                 named_values.insert(nom.clone(), next.into());
+
+                // Entrée depuis le corps (incrémentation)
+                phi.add_incoming(&[(&next, builder.get_insert_block().unwrap())]);
                 builder.build_unconditional_branch(loop_block);
 
                 builder.position_at_end(after_block);
@@ -422,7 +467,7 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
 
     // Compiler les instructions du programme principal
     for instr in &prog.instructions {
-        compile_instr(builder, context, module, &mut named_values, instr)?;
+        compile_instr(&builder, &context, &module, &mut named_values, instr)?;
     }
 
     builder.build_return(Some(&context.i64_type().const_int(0, false)));
@@ -445,15 +490,23 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel) -> Result<()
             }
         }
         "o" | "obj" => {
-            target_machine.write_to_file(&module, FileType::Object, path)
-                .map_err(|e| format!("échec émission objet : {:?}", e))?;
+            // Tentative d'émission de fichier objet
+            let result = target_machine.write_to_file(&module, FileType::Object, path);
+            if result.is_err() {
+                // Fallback : essayer l'assembly
+                let asm_path = format!("{}.s", sortie.trim_end_matches(".o").trim_end_matches(".obj"));
+                let asm_path = Path::new(&asm_path);
+                target_machine.write_to_file(&module, FileType::Assembly, asm_path)
+                    .map_err(|e| format!("échec émission objet et assembly : {:?}", e))?;
+                println!("rose: {} produit (assemblage, fallback objet)", asm_path.display());
+            }
         }
         _ => {
             let ir_path = format!("{}.ll", sortie);
             let ir_path = Path::new(&ir_path);
             module.print_to_file(ir_path)
                 .map_err(|e| format!("échec écriture IR : {:?}", e))?;
-            println!("rose-20: {} produit (IR LLVM texte)", ir_path.display());
+            println!("rose: {} produit (IR LLVM texte)", ir_path.display());
         }
     }
 

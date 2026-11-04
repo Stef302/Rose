@@ -1,4 +1,4 @@
-# 🚀 Expérience 3 — Tier 1 copy-and-patch maison
+# 🚀 Rose Labs — Tier 1 copy-and-patch (squelette)
 
 ## Objectif
 Implémenter un compilateur de **tier 1** ultra-rapide basé sur le principe
@@ -33,16 +33,18 @@ les trous.
 - **Noyau numérique serré** : utiliser -O3 avec LLVM ORC (exp 2)
 - **Code chaud appelé des millions de fois** : utiliser JIT Cranelift (exp 1)
 
-## État : À implémenter
+## État : Squelette uniquement
 
-### Étapes prévues
-1. Créer une bibliothèque de templates machine (x86_64 et aarch64)
-2. Créer le copieur de patchs avec relocations
-3. Intégrer comme tier 1 devant Cranelift (compilation tier 1 → optimisation tier 2 en arrière-plan)
-4. Mesurer : < 1 ms / 1000 instructions
+Ce dossier contient la spécification et le squelette. L'implémentation
+complète du copy-and-patch reste à faire.
 
-## Comment lancer l'expérience
+## Fichiers
+- `spec.md` : spécification détaillée du copy-and-patch
+- `template.rs` : exemple de template machine (x86_64)
+- `copy_patch.rs` : squelette du copieur de patchs
+
+## Comment tester
 ```bash
-./rose_labs/tools/lancer_exp.sh tier1_copy_patch O1
+# Aucun test automatique pour l'instant
+# Le squelette est uniquement documentaire
 ```
-*(Actuellement : compilation standard avec -O1, pas encore copy-and-patch natif)*

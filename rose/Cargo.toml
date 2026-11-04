@@ -1,7 +1,11 @@
 [package]
-name = "rose-20"
+name = "rose"
 version = "2.0.0"
 edition = "2024"
+
+[[bin]]
+name = "rose"
+path = "src/main.rs"
 
 [dependencies]
 cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
