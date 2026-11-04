@@ -13,7 +13,7 @@
 # Usage : ./bench.sh [N]     (défaut 1 000 000 000)
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
-ROSE=${ROSE:-$HERE/../../moteur/cpp/rose}
+ROSE=${ROSE:-$HERE/../../rose-cpp/rose}
 N=${1:-1000000000}
 CC=${CC:-g++}
 rustc_bin=$(command -v rustc || echo "$HOME/.cargo/bin/rustc")

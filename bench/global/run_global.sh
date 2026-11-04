@@ -5,7 +5,7 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.."; pwd)"
-ROSE="${ROSE:-$ROOT/moteur/cpp/rose}"
+ROSE="${ROSE:-$ROOT/rose-cpp/rose}"
 CC="${CC:-g++}"
 RUSTC="${RUSTC:-}"
 if [ -z "$RUSTC" ]; then
@@ -16,7 +16,7 @@ fi
 # repertoire du runtime, sinon le build echoue et le banc tombe en silence.
 ROSE_DIR="$(cd "$(dirname "$(readlink -f "$ROSE")")" && pwd)"
 SRC_DIR=""
-for c in "$ROSE_DIR/src" "$ROSE_DIR" "$ROOT/moteur/cpp/src"; do
+for c in "$ROSE_DIR/src" "$ROSE_DIR" "$ROOT/rose-cpp/src"; do
     [ -f "$c/rose_runtime.h" ] && { SRC_DIR="$c"; break; }
 done
 [ -n "$SRC_DIR" ] || { echo "rose_runtime.h introuvable pres de $ROSE (ROSE_HOME ?)" >&2; exit 2; }

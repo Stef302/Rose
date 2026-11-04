@@ -15,13 +15,13 @@ SHARE="/tmp/opencode/share"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-mkdir -p "$STAGE/bin" "$STAGE/moteur/tests"
-cp moteur/cpp/rose-win64.exe      "$STAGE/bin/rose-win64.exe"
+mkdir -p "$STAGE/bin" "$STAGE/rose-cpp/tests"
+cp rose-cpp/rose-win64.exe      "$STAGE/bin/rose-win64.exe"
 cp moteur/rust/rose-rs-win64.exe  "$STAGE/bin/rose-rs-win64.exe"
 cp moteur/zig/rose-zig-win64.exe  "$STAGE/bin/rose-zig-win64.exe"
-cp -r moteur/tests/dorés          "$STAGE/moteur/tests/dorés"
-cp -r moteur/tests/roses          "$STAGE/moteur/tests/roses"
-cp -r moteur/tests/bench          "$STAGE/bench"
+cp -r rose-cpp/tests/dorés          "$STAGE/rose-cpp/tests/dorés"
+cp -r rose-cpp/tests/roses          "$STAGE/rose-cpp/tests/roses"
+cp -r rose-cpp/tests/bench          "$STAGE/bench"
 cp tester.ps1 TESTER.md README-PARTAGE.md "$STAGE/"
 
 # empreintes du contenu (avant d'ajouter le fichier d'empreintes lui-même)

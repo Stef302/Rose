@@ -631,7 +631,7 @@ Salut, Alan !</pre>
         <a class="btn btn-fantome" href="rose-windows.zip" download>ARCHIVE ZIP (SANS INSTALL)</a>
       </div>
       <p class="small gris" style="line-height:2">SHA-256 (setup) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">363792c13a3e6d6a7c48169e21a1e5b19ad10852aefcf6c5f26848d1c571dc8a</span> · SHA-256 (zip) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">6c20bebe18fb4f84650dc26b021c62594700beae49f7404030745614c1f17074</span> — vérifiables via <a class="vert" href="SHA256SUMS.txt">SHA256SUMS.txt</a></p>
-      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : moteur Rust — <code class="inline">cd rose2 && cargo build --release</code>, puis copiez <code class="inline">rose2/target/release/rose-20</code> dans <code class="inline">/usr/local/bin</code>. Le moteur C++ de référence reste disponible dans <code class="inline">moteur/cpp</code>. Les sources et l'architecture sont sur GitHub.</p>
+      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : moteur Rust — <code class="inline">cd rose && cargo build --release</code>, puis copiez <code class="inline">rose/target/release/rose-20</code> dans <code class="inline">/usr/local/bin</code>. Le moteur C++ de référence reste disponible dans <code class="inline">rose-cpp</code>. Les sources et l'architecture sont sur GitHub.</p>
     </div>
   </div>
 
@@ -642,7 +642,7 @@ Salut, Alan !</pre>
       <div class="etat-col fait reveal">
         <h3 class="vert">✓ Fait</h3>
         <ul>
-          <li><b>Moteur Rust (rose2) terminé et porté</b> : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>), auto-hébergement.</li>
+          <li><b>Moteur Rust (rose) terminé et porté</b> : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>), auto-hébergement.</li>
           <li>Parité parfaite avec le moteur C++ de référence : 54/54 comparaisons, 46/46 tests dorés, 0 divergence.</li>
           <li>Arithmétique exacte illimitée en Rust natif (num-bigint), sans dépendance GMP : entiers arbitraires, rationnels, IEEE-754 dominant.</li>
           <li>JIT taggé : entiers i64 avec promotion BigInt au débordement pour <code class="inline">*</code>, <code class="inline">+</code>, <code class="inline">-</code> ; bench global 0,109 s (vs 0,19 s C++).</li>
@@ -777,7 +777,7 @@ Salut, Alan !</pre>
           Le dossier <code class="inline">bin</code> rejoint ton PATH utilisateur et les fichiers
           <code class="inline">.rose</code> deviennent double-cliquables.</p>
           <h4>Linux</h4>
-          <p>Compile <code class="inline">moteur/cpp</code> avec <code class="inline">make</code> (GMP requis), puis installe le binaire.</p>
+          <p>Compile <code class="inline">rose-cpp</code> avec <code class="inline">make</code> (GMP requis), puis installe le binaire.</p>
           <h4>Commandes du moteur</h4>
           <table class="table">
             <tr><th>Commande</th><th>Effet</th></tr>
@@ -1061,7 +1061,7 @@ Bonjour, monde !</pre>
         </div>
         <h4 class="event-title">Le portage Rust est terminé</h4>
         <ul>
-          <li>Moteur Rust (<code class="inline">rose2</code>) complet : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>), auto-hébergement.</li>
+          <li>Moteur Rust (<code class="inline">rose</code>) complet : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>), auto-hébergement.</li>
           <li>Parité parfaite avec le moteur C++ de référence : 54/54 comparaisons, 46/46 tests dorés, 0 divergence.</li>
           <li>Arithmétique exacte illimitée en Rust natif (num-bigint), sans dépendance GMP.</li>
           <li>JIT taggé : entiers i64 avec promotion BigInt au débordement pour <code class="inline">*</code>, <code class="inline">+</code>, <code class="inline">-</code> ; bench global 0,109 s (vs 0,19 s C++).</li>

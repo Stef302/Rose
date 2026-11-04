@@ -4,8 +4,8 @@
 # jamais un « rust » ambigu. Les numéros viennent de ce script, pas de mémoire.
 #
 #   Moteur                Binaire                              Arithmétique grande taille
-#   C++ (référence)       moteur/cpp/rose                      GMP (libgmp)
-#   Rust (rose2)          rose2/target/release/rose-20         BigInt natif (num-bigint, zéro GMP)
+#   C++ (référence)       rose-cpp/rose                      GMP (libgmp)
+#   Rust (rose)          rose/target/release/rose-20         BigInt natif (num-bigint, zéro GMP)
 set -u
 R="$(cd "$(dirname "$0")" && pwd)"
 N=${N:-200000}
@@ -54,8 +54,8 @@ mesurer() {  # mesurer <label> <cmd...> — le programme est passé en dernier
 }
 
 moteurs() {  # la liste des moteurs, identifiés
-    echo "C++ référence|moteur/cpp/rose"
-    echo "Rust rose2|rose2/target/release/rose-20"
+    echo "C++ référence|rose-cpp/rose"
+    echo "Rust rose|rose/target/release/rose-20"
 }
 
 for prog in boucle fib big crible; do
@@ -70,7 +70,7 @@ done
 
 # vérification que le Rust 2.0 est bien SANS GMP (preuve, pas promesse)
 echo "── preuve zéro GMP (rose2) ────────────────────────────"
-B="$R/rose2/target/release/rose-20"
+B="$R/rose/target/release/rose-20"
 if [ -x "$B" ]; then
     if ldd "$B" | grep -qi gmp; then echo "  ✗ ROSE-20 LIE ENCORE libgmp !"; else echo "  ✓ ldd : aucune libgmp"; fi
     n=$(nm "$B" 2>/dev/null | grep -c '__gmpz' || true)

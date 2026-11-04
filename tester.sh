@@ -47,18 +47,18 @@ tester_moteur() {
 
 # GMP pour le moteur C++ : le Makefile prend libgmp.a (statique) ou le système
 if command -v g++ >/dev/null 2>&1; then
-    RECON_CPP="make -C moteur/cpp ${GMP_DIR:+GMP_DIR=$GMP_DIR} >/dev/null"
+    RECON_CPP="make -C rose-cpp ${GMP_DIR:+GMP_DIR=$GMP_DIR} >/dev/null"
 else
     RECON_CPP=""
 fi
 if command -v cargo >/dev/null 2>&1; then
-    RECON_RS="cd rose2 && cargo build --release >/dev/null"
+    RECON_RS="cd rose && cargo build --release >/dev/null"
 else
     RECON_RS=""
 fi
 
-tester_moteur bin/rose            "C++  " "$RECON_CPP" && cp -f moteur/cpp/rose bin/rose 2>/dev/null
-tester_moteur rose2/target/release/rose-20  "Rust " "$RECON_RS" && cp -f rose2/target/release/rose-20 bin/rose-rs 2>/dev/null
+tester_moteur bin/rose            "C++  " "$RECON_CPP" && cp -f rose-cpp/rose bin/rose 2>/dev/null
+tester_moteur rose/target/release/rose-20  "Rust " "$RECON_RS" && cp -f rose/target/release/rose-20 bin/rose-rs 2>/dev/null
 
 echo
 echo "${gras}── Moteurs autonomes ──────────────────────────────────────${reset}"
@@ -75,20 +75,20 @@ else
             *cpp*|bin/rose) label="moteur C++" ;;
             *) label=$(basename "$b") ;;
         esac
-        sortie=$(ROSE_MOTEUR="$(pwd)/$b" python3 moteur/tests/courir.py 2>&1 | tail -1)
+        sortie=$(ROSE_MOTEUR="$(pwd)/$b" python3 rose-cpp/tests/courir.py 2>&1 | tail -1)
         case "$sortie" in
             *"0 échoués"*) echo "  ${vert}✓${reset} suite moteur ($label) : $sortie" ;;
             *)             echo "  ${rouge}✗${reset} suite moteur ($label) : $sortie"; note "ÉCHEC suite moteur $label" ;;
         esac
     done
-    sortie=$(python3 moteur/tests/parite.py 2>&1 | tail -1)
+    sortie=$(python3 rose-cpp/tests/parite.py 2>&1 | tail -1)
     case "$sortie" in
         *"0 divergences"*) echo "  ${vert}✓${reset} parité des moteurs    : $sortie" ;;
         *)                 echo "  ${rouge}✗${reset} parité des moteurs    : $sortie"; note "ÉCHEC parité" ;;
     esac
 fi
 
-find moteur rose2 -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
+find moteur rose -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null
 echo
 if [ -z "$BILAN" ]; then
     echo "${vert}${gras}Tout est vert — Rose est opérationnel sur cette machine.${reset}"

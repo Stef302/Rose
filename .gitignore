@@ -10,20 +10,15 @@ Rose language.zip
 bin/
 *.exe
 *.pdb
-moteur/cpp/rose-x64
-moteur/cpp/test_jit-x64
-moteur/cpp/rose-x64-qemu
+rose-cpp/rose-x64
+rose-cpp/test_jit-x64
+rose-cpp/rose-x64-qemu
 
 # Binaires d'exécution sous moteur/ (conservés localement, non trackés)
-moteur/cpp/rose
-moteur/cpp/rose-win64.exe
-moteur/cpp/rose-win64.pdb
-moteur/rust/rose
-moteur/rust/rose-rs-win64.exe
-moteur/rust/rose-rs-win64.pdb
-moteur/zig/rose-zig
-moteur/zig/rose-zig-win64.exe
-moteur/zig/rose-zig-win64.pdb
+rose-cpp/rose
+rose-cpp/rose-win64.exe
+rose-cpp/rose-win64.pdb
+rose/rose-20
 
 # --- Build artefacts --------------------------------------------------------
 *.o

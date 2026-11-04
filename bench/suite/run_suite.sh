@@ -5,7 +5,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-ROSE="${ROSE:-$ROOT/moteur/cpp/rose}"
+ROSE="${ROSE:-$ROOT/rose-cpp/rose}"
 N="${1:-}"
 OUT="${OUT:-$HERE/results.csv}"
 TMPD="$(mktemp -d)"

@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════════
 #  Construit l'installeur Windows « Rose-Setup-<version>.exe » (NSIS 3).
 <<<<<<< HEAD
-#  Source des fichiers : le binaire Rust « rose2/target/release/rose-20 »
+#  Source des fichiers : le binaire Rust « rose/target/release/rose-20 »
 #  (version Windows à compiler séparément pour Windows) + les icônes du dépôt.
 #  Sortie : installateur/dist/.
 =======
@@ -16,7 +16,7 @@ set -euo pipefail
 RACINE="$(cd "$(dirname "$0")/.." && pwd)"
 I="$RACINE/installateur"
 # Le binaire Windows Rust (à compiler séparément pour Windows, ex. via cargo cross)
-EXE_SRC="$RACINE/rose2/target/release/rose-20"
+EXE_SRC="$RACINE/rose/target/release/rose-20"
 STAGE="$(mktemp -d /tmp/opencode/rose-stage.XXXXXX)"
 trap 'rm -rf "$STAGE"' EXIT
 

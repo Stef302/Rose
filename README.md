@@ -26,7 +26,7 @@ FFI dlopen, bundle AOT (`comp`). Parité parfaite avec le moteur C++ de référe
 
 ```bash
 # Linux (x64 / arm64)
-cd rose2 && cargo build --release
+cd rose && cargo build --release
 cp target/release/rose-20 /usr/local/bin/rose
 rose mon_programme.rose
 ```
@@ -45,14 +45,14 @@ listes, tables, récursion, RNG, fichiers) :
 
 | Moteur | Temps | Notes |
 |---|---|---|
-| **Rust rose2 (v5.0)** | **0,09 s** | JIT Cranelift + boucles accumulateur natives |
+| **Rust rose (v5.0)** | **0,09 s** | JIT Cranelift + boucles accumulateur natives |
 | C++ (référence) | 0,19 s | JIT x64 + GMP |
 | Rust ancien (GMP) | 5,10 s | obsolète |
 | Python (archivé) | n/a | non exécutable sur ce bench |
 
 Comparatif détaillé (`comparatif_moteurs.sh`) :
 
-| Domaine | C++ | Rust rose2 |
+| Domaine | C++ | Rust rose |
 |---|---|---|
 | boucle 10 M | 0,037 s | **0,023 s** |
 | fib(28) | 0,043 s | **0,016 s** |
@@ -84,21 +84,21 @@ Trois voies d'exécution, une seule sortie :
 ## 📁 Structure
 
 ```
-rose2/          moteur Rust (source)
-moteur/cpp/     moteur C++ de référence (GMP)
-moteur/rust/    ancien moteur Rust (GMP, gelé)
+rose/           moteur Rust (source)
+rose-cpp/       moteur C++ de référence (GMP)
+compilateur/    front-end écrit en Rose
 docs/           site GitHub Pages
 installateur/   installeur Windows (NSIS)
-bench/global/   banc de référence
-moteur/tests/   suites (courir.py, parite.py)
+bench/          bancs de référence
+rose-cpp/tests/ suites (courir.py, parite.py)
 ```
 
 ## 🔧 Compiler depuis les sources
 
 ```bash
-cd rose2
+cd rose
 cargo build --release
-# binaire : rose2/target/release/rose-20
+# binaire : rose/target/release/rose-20
 ```
 
 ## 📜 Licence

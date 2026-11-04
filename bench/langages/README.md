@@ -13,7 +13,7 @@ lui-même (horloge monotone), trois passes, minimum retenu.
 | `mdp.rs` | splitmix64 | jumeau Rust |
 | `mdp.zig` | splitmix64 | jumeau Zig |
 | `mdp_numpy.py` | `default_rng().choice` | la traduction directe du script Python d'origine |
-| `mot_de_passe.rose` | splitmix64 (`graine`) | le banc Rose (`moteur/tests/bench`) |
+| `mot_de_passe.rose` | splitmix64 (`graine`) | le banc Rose (`rose-cpp/tests/bench`) |
 
 ## Lancer
 
@@ -24,7 +24,7 @@ $ ./bench.sh 100000000    # plus rapide pour un contrôle rapide
 
 Outils détectés s'ils existent : `g++`, `rustc` (ou `~/.cargo/bin/rustc`),
 `zig` (`ZIG=` ou `/tmp/opencode/zig-aarch64-*/zig`), `python3` + numpy, et le
-moteur Rose (`ROSE=` pour le changer, défaut `../../moteur/cpp/rose`).
+moteur Rose (`ROSE=` pour le changer, défaut `../../rose-cpp/rose`).
 
 ## Résultats — AArch64, 1 Md de caractères, session chaude (oct. 2026)
 
@@ -57,7 +57,7 @@ que la formulation vectorisée par lot — en Rose comme ailleurs.
 ## Dernière mesure — après M3.3 (SSA-friendly `rose_remplir_hasard`)
 
 Banc relancé sur cette machine après la passe SSA (état RNG local dans
-`rose_remplir_hasard`, cf. `moteur/cpp/src/rose_runtime.h`). N = 1 000 000 000,
+`rose_remplir_hasard`, cf. `rose-cpp/src/rose_runtime.h`). N = 1 000 000 000,
 trois passes, minimum retenu :
 
 | | temps |
