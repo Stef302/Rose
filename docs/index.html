@@ -593,7 +593,7 @@ Salut, Alan !</pre>
         <p>Entiers de taille arbitraire, rationnels exacts rendus en décimale périodique, flottants IEEE-754. 1/3 + 1/3 + 1/3 rend exactement 1.</p></div>
       <div class="carte reveal"><div class="ico"><span class="ico-txt">O3</span></div>
         <h3>Vitesse native</h3>
-        <p>Interprète, JIT x64, et compilation AOT : le programme est transpilé en C++ puis compilé par g++ -O3. Aucun runtime à installer.</p></div>
+        <p>Moteur Rust : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>). Bench global 0,09 s (vs 0,19 s C++). Aucun runtime à installer.</p></div>
       <div class="carte reveal"><div class="ico"><span class="ico-txt">RIR</span></div>
         <h3>Auto-hébergement</h3>
         <p>Le front-end Rose — lexer, analyseur, vérificateur, émetteur RIR — est écrit en Rose. Il rend la sortie de l'oracle à l'octet près sur 104 fichiers, par l'interprète et par la compilation.</p></div>
@@ -767,7 +767,7 @@ Salut, Alan !</pre>
           c'est vérifié par 119 tests de parité et des campagnes génératives.</p>
           <p>Deux promesses résument le projet : <b>le calcul est exact</b> (entiers arbitraires, rationnels sans
           arrondi), et <b>le moteur ne se tait jamais</b> (toute erreur nomme la variable et l'endroit).</p>
-          <div class="badge-note" data-min="314">Depuis v3.14.1 (chantier) : le front-end du compilateur est écrit en Rose.</div>
+          <div class="badge-note" data-min="314">Depuis v5.0.0 : moteur Rust complet (Cranelift JIT + LLVM AOT), parité C++ 54/54.</div>
         </div>
 
         <div class="doc-section" id="doc-demarrer">
@@ -951,10 +951,11 @@ Bonjour, monde !</pre>
     <h2 class="reveal">Le compilateur qui compile le compilateur</h2>
     <div class="cols">
       <div class="reveal">
-        <p>Le moteur de référence déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
+        <p>Le moteur de référence (Rust, v5.0) déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
         la vérification typographie les erreurs, l'émetteur produit la <b>représentation intermédiaire
-        (RIR)</b>. Depuis la RIR, trois départs : l'interprète, le JIT x64, ou la transpilation C++ compilée
-        par g++ — les trois doivent rendre la même sortie, caractère par caractère.</p>
+        (RIR)</b>. Depuis la RIR, plusieurs départs : l'interprète exact, le JIT Cranelift (compilation à chaud),
+        l'AOT LLVM (<code class="inline">rose llvm</code>), ou la transpilation C++ compilée par g++ — tous rendent
+        la même sortie, caractère par caractère. Le moteur C++ (GMP) reste la référence historique.</p>
         <p>L'auto-hébergement consiste à réécrire chaque maillon <b>dans Rose</b>, puis à le sceller par une
         <b>porte triple</b> : la sortie de la version Rose doit être identique à l'oracle sur tout un corpus —
         par l'interprète <i>et</i> par le binaire compilé. Un maillon non identique n'est pas publié.</p>
@@ -984,11 +985,12 @@ Bonjour, monde !</pre>
         dans la documentation, et nulle part avant.</p>
       </div>
       <div class="carte reveal">
-        <div class="ico"><span class="ico-txt">❄</span></div>
-        <h3>Moteurs secondaires gelés</h3>
-        <p>Les ports Rust et Zig ont servi à prouver la parité du moteur C++. Ils sont gelés depuis v3.14.1 :
-        la direction n'est plus de réécrire le moteur dans d'autres langages, mais que Rose <b>émette</b>
-        d'autres cibles — C++, Rust, Python — depuis un seul programme.</p>
+        <div class="ico"><span class="ico-txt">⚙</span></div>
+        <h3>Moteur Rust (v5.0)</h3>
+        <p>Le portage Rust est terminé : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM
+        (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>).
+        Parité parfaite avec le moteur C++ (54/54), 46/46 dorés, bench global 0,09 s (vs 0,19 s C++).
+        Arithmétique exacte native num-bigint, sans dépendance GMP.</p>
       </div>
       <div class="carte reveal">
         <div class="ico"><span class="ico-txt">≡</span></div>
