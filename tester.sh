@@ -51,14 +51,14 @@ if command -v g++ >/dev/null 2>&1; then
 else
     RECON_CPP=""
 fi
-if command -v rustc >/dev/null 2>&1; then
-    RECON_RS="moteur/rust/build.sh >/dev/null"
+if command -v cargo >/dev/null 2>&1; then
+    RECON_RS="cd rose2 && cargo build --release >/dev/null"
 else
     RECON_RS=""
 fi
 
 tester_moteur bin/rose            "C++  " "$RECON_CPP" && cp -f moteur/cpp/rose bin/rose 2>/dev/null
-tester_moteur moteur/rust/rose    "Rust " "$RECON_RS" && cp -f moteur/rust/rose bin/rose-rs 2>/dev/null
+tester_moteur rose2/target/release/rose-20  "Rust " "$RECON_RS" && cp -f rose2/target/release/rose-20 bin/rose-rs 2>/dev/null
 
 echo
 echo "${gras}── Moteurs autonomes ──────────────────────────────────────${reset}"

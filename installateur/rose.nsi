@@ -106,8 +106,8 @@ Section "Moteur Rose" SecMoteur
   CreateDirectory "$INSTDIR"
   CreateDirectory "$INSTDIR\bin"
   SetOutPath "$INSTDIR\bin"
-  File "staging\rose-win64.exe"                  ; → rose.exe
-  Rename "rose-win64.exe" "${EXE_NAME}"
+  File "staging\rose-20.exe"                  ; → rose.exe
+  Rename "rose-20.exe" "${EXE_NAME}"
   File "assets\rose.ico"                          ; icône des fichiers .rose
   File "assets\\setup.ico"                          ; icône de l'exécutable Rose
   Rename "setup.ico" "rose_app.ico"
