@@ -1,14 +1,2 @@
-# Configuration pour la compilation croisée x86_64 depuis aarch64
-# Prérequis sur la machine de build : gcc-x86-64-linux-gnu + libc6-dev-amd64
-# (ou un sysroot x86_64 complet avec fichiers de développement)
-
-[target.x86_64-unknown-linux-gnu]
-linker = "x86_64-linux-gnu-gcc"
-# rustflags = [
-#   "-Clink-arg=--sysroot=/chemin/vers/sysroot-amd64",
-#   "-Clink-arg=-dynamic-linker=/lib64/ld-linux-x86-64.so.2",
-# ]
-
-[build]
-# Targets supportées par le projet Rose
-# rustup target add x86_64-unknown-linux-gnu
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
