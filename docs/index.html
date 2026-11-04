@@ -642,24 +642,23 @@ Salut, Alan !</pre>
       <div class="etat-col fait reveal">
         <h3 class="vert">✓ Fait</h3>
         <ul>
-          <li>Le langage et son moteur de référence C++ : interprète, JIT x64, compilation AOT (RIR → C++ → g++).</li>
-          <li>Windows x64 validé sur machine réelle ; Linux x64 et arm64 ; ports croisés Zig.</li>
-          <li>Arithmétique exacte : entiers arbitraires, rationnels, exposants négatifs, IEEE-754 dominant.</li>
-          <li>Conformité : 46 tests dorés, 119 parités, campagnes génératives sans divergence.</li>
-          <li>v3.14.1 (en chantier) : lexer, analyseur, vérificateur <b>et émetteur RIR écrits en Rose</b> — 104 fichiers, trois voies (oracle, interprété, compilé) identiques.</li>
+          <li><b>Moteur Rust (rose2) terminé et porté</b> : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>), auto-hébergement.</li>
+          <li>Parité parfaite avec le moteur C++ de référence : 54/54 comparaisons, 46/46 tests dorés, 0 divergence.</li>
+          <li>Arithmétique exacte illimitée en Rust natif (num-bigint), sans dépendance GMP : entiers arbitraires, rationnels, IEEE-754 dominant.</li>
+          <li>JIT taggé : entiers i64 avec promotion BigInt au débordement pour <code class="inline">*</code>, <code class="inline">+</code>, <code class="inline">-</code> ; bench global 0,109 s (vs 0,19 s C++).</li>
+          <li>Windows x64 / Linux x64 / Linux arm64 ; installeur et tests C++ + Rust uniquement.</li>
+          <li>v3.14.x : front-end écrit en Rose (lexer, analyseur, vérificateur, émetteur RIR) — 104 fichiers, trois voies identiques.</li>
         </ul>
       </div>
       <div class="etat-col reste reveal">
         <h3 class="rouge">… Restant</h3>
         <ul>
-          <li>La fin du compilateur en Rose : l'émetteur C++ auto-hébergé (jalon M4 suivant).</li>
-          <li>Le <b>Jardin</b> : les modules (bibliothèques nommées, imports, versions). Le nom est retenu, le chantier est ouvert.</li>
+          <li>Le <b>Jardin</b> : modules (bibliothèques nommées, imports, versions) — chantier ouvert.</li>
           <li>Nombres complexes natifs.</li>
           <li>Nouvel opérateur d'affectation, pour lever toute ambiguïté avec l'égalité.</li>
           <li>Préfixe de mesure : afficher le temps d'exécution d'une fonction, d'une affectation, du programme entier.</li>
           <li>Export polyglotte : émettre C++, Rust ou Python depuis le même programme.</li>
           <li>Moteur wasm : faire tourner Rose dans le navigateur, sans serveur.</li>
-          <li>Alléger les dépendances : terme de la dette autour de GMP.</li>
         </ul>
       </div>
     </div>
@@ -1055,6 +1054,21 @@ Bonjour, monde !</pre>
 
       <div class="event">
         <div class="event-head">
+          <span class="event-ver">V5.0.0</span>
+          <span class="event-date">NOVEMBRE 2026</span>
+        </div>
+        <h4 class="event-title">Le portage Rust est terminé</h4>
+        <ul>
+          <li>Moteur Rust (<code class="inline">rose2</code>) complet : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>), auto-hébergement.</li>
+          <li>Parité parfaite avec le moteur C++ de référence : 54/54 comparaisons, 46/46 tests dorés, 0 divergence.</li>
+          <li>Arithmétique exacte illimitée en Rust natif (num-bigint), sans dépendance GMP.</li>
+          <li>JIT taggé : entiers i64 avec promotion BigInt au débordement pour <code class="inline">*</code>, <code class="inline">+</code>, <code class="inline">-</code> ; bench global 0,109 s (vs 0,19 s C++).</li>
+          <li>Installeur et tests limités à C++ et Rust ; suppression des moteurs Zig/Python/Julia.</li>
+        </ul>
+      </div>
+
+      <div class="event">
+        <div class="event-head">
           <span class="event-ver">V3.14.1</span>
           <span class="event-date">EN CHANTIER</span>
         </div>
@@ -1168,8 +1182,8 @@ Bonjour, monde !</pre>
     <div class="foot-col">
       <h5>STATUT</h5>
       <ul>
-        <li class="small gris">Moteur 3.14.0 · C++ · MIT</li>
-        <li class="small gris">Front-end en Rose : en chantier</li>
+        <li class="small gris">Moteur 5.0 · Rust + Cranelift JIT + LLVM AOT · MIT</li>
+        <li class="small gris">Parité C++ : 54/54 · 46/46 dorés · bench 0,109 s</li>
         <li class="small gris">Windows · Linux x64 · Linux arm64</li>
       </ul>
     </div>
