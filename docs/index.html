@@ -494,7 +494,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
         <button class="btn btn-fantome" onclick="go('doc')">LIRE LA DOC</button>
       </div>
       <ul class="badges">
-        <li class="badge">v3.14.0</li>
+        <li class="badge">v5.0.0</li>
         <li class="badge">LICENCE MIT</li>
         <li class="badge">WINDOWS · LINUX</li>
         <li class="badge">INTERPRÈTE · JIT · AOT</li>
@@ -631,7 +631,7 @@ Salut, Alan !</pre>
         <a class="btn btn-fantome" href="rose-windows.zip" download>ARCHIVE ZIP (SANS INSTALL)</a>
       </div>
       <p class="small gris" style="line-height:2">SHA-256 (setup) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">363792c13a3e6d6a7c48169e21a1e5b19ad10852aefcf6c5f26848d1c571dc8a</span> · SHA-256 (zip) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">6c20bebe18fb4f84650dc26b021c62594700beae49f7404030745614c1f17074</span> — vérifiables via <a class="vert" href="SHA256SUMS.txt">SHA256SUMS.txt</a></p>
-      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : compilez <code class="inline">moteur/cpp</code> avec <code class="inline">make</code> (GMP requis), puis copiez le binaire dans <code class="inline">/usr/local/bin</code>. Les sources et l'architecture sont sur GitHub.</p>
+      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : moteur Rust — <code class="inline">cd rose2 && cargo build --release</code>, puis copiez <code class="inline">rose2/target/release/rose-20</code> dans <code class="inline">/usr/local/bin</code>. Le moteur C++ de référence reste disponible dans <code class="inline">moteur/cpp</code>. Les sources et l'architecture sont sur GitHub.</p>
     </div>
   </div>
 
@@ -762,7 +762,7 @@ Salut, Alan !</pre>
           <code class="inline">sinon</code>, <code class="inline">tant_que</code>, <code class="inline">pour</code>,
           <code class="inline">retour</code>, <code class="inline">vrai</code>, <code class="inline">faux</code> ;
           les variables portent un <code class="inline">$</code>. Les noms acceptent les lettres accentuées.</p>
-          <p>Le moteur de référence (C++, v3.14.0, licence MIT) propose trois modes d'exécution —
+          <p>Le moteur de référence (Rust, v5.0, licence MIT) propose trois modes d'exécution —
           interprète, JIT, compilation native AOT — qui rendent la <b>même sortie, caractère par caractère</b> ;
           c'est vérifié par 119 tests de parité et des campagnes génératives.</p>
           <p>Deux promesses résument le projet : <b>le calcul est exact</b> (entiers arbitraires, rationnels sans
