@@ -60,7 +60,7 @@ fn somme_sure(a: &Expr, b: &Expr) -> bool {
 
 /// Le type statique d'une expression, dans le sous-ensemble compilable.
 /// Retourne None si l'expression sort du support.
-fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
+pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
     match e {
         Expr::Litteral { flott, texte, .. } => {
             if *flott { Some(TyKind::Flottant) }
@@ -120,9 +120,10 @@ fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                 "/" => {
                     let ta = ty_statique(a, env)?;
                     let tb = ty_statique(b, env)?;
-                    match (ta, tb) {
-                        (TyKind::Flottant, TyKind::Flottant) => Some(TyKind::Flottant),
-                        _ => None, // entier/entier → rationnel : hors support
+                    if ta == TyKind::Flottant || tb == TyKind::Flottant {
+                        Some(TyKind::Flottant)
+                    } else {
+                        None // entier/entier → rationnel : hors support
                     }
                 }
                 _ => None,
@@ -436,6 +437,7 @@ impl Jit {
                 ("rose_sub_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_mul_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_neg_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_clone_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_affiche_ent", vec![types::I64, types::I64], None),
                 ("rose_libere", vec![types::I64], None),
                 ("rose_set_ret_tag", vec![types::I64], None),
@@ -882,16 +884,15 @@ impl Emetteur<'_> {
                         let tag_g_zero64 = self.builder.ins().uextend(types::I64, tag_g_zero);
                         let tag_d_zero64 = self.builder.ins().uextend(types::I64, tag_d_zero);
                         let both_i64 = self.builder.ins().band(tag_g_zero64, tag_d_zero64);
-                        let fast_sum = self.builder.ins().iadd(g, d);
-                        let g_xor_d = self.builder.ins().bxor(g, d);
-                        let g_xor_sum = self.builder.ins().bxor(g, fast_sum);
-                        let ov = self.builder.ins().band(g_xor_d, g_xor_sum);
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        let ov_flag = self.builder.ins().icmp(IntCC::SignedLessThan, ov, zero);
-                        let zero8 = self.builder.ins().iconst(types::I8, 0);
-                        let ov_zero8 = self.builder.ins().icmp(IntCC::Equal, ov_flag, zero8);
-                        let ov_zero = self.builder.ins().uextend(types::I64, ov_zero8);
-                        let fast_ok = self.builder.ins().band(both_i64, ov_zero);
+                        // overflow check via i128
+                        let g128 = self.builder.ins().sextend(types::I128, g);
+                        let d128 = self.builder.ins().sextend(types::I128, d);
+                        let sum128 = self.builder.ins().iadd(g128, d128);
+                        let sum64 = self.builder.ins().ireduce(types::I64, sum128);
+                        let back128 = self.builder.ins().sextend(types::I128, sum64);
+                        let no_ov_flag = self.builder.ins().icmp(IntCC::Equal, sum128, back128);
+                        let no_ov = self.builder.ins().uextend(types::I64, no_ov_flag);
+                        let fast_ok = self.builder.ins().band(both_i64, no_ov);
                         let fast_b = self.builder.create_block();
                         let slow_b = self.builder.create_block();
                         let merge_b = self.builder.create_block();
@@ -904,7 +905,7 @@ impl Emetteur<'_> {
                         self.builder.seal_block(fast_b);
                         let zt = self.builder.ins().iconst(types::I64, 0);
                         self.builder.def_var(self.tag_tmp, zt);
-                        self.saut(merge_b, &[fast_sum, zt]);
+                        self.saut(merge_b, &[sum64, zt]);
                         self.builder.switch_to_block(slow_b);
                         self.builder.seal_block(slow_b);
                         let trame = self.trame_deux_mots();
@@ -940,19 +941,14 @@ impl Emetteur<'_> {
                         let tag_d_zero64 = self.builder.ins().uextend(types::I64, tag_d_zero);
                         let both_i64 = self.builder.ins().band(tag_g_zero64, tag_d_zero64);
                         let prod = self.builder.ins().imul(g, d);
-                        // overflow check for signed multiplication
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        let g_zero = self.builder.ins().icmp(IntCC::Equal, g, zero);
-                        let d_zero = self.builder.ins().icmp(IntCC::Equal, d, zero);
-                        let either_zero = self.builder.ins().bor(g_zero, d_zero);
-                        // if either is zero, no overflow
-                        let prod_div_d = self.builder.ins().sdiv(prod, d);  // only valid if d != 0
-                        let div_ok = self.builder.ins().icmp(IntCC::Equal, prod_div_d, g);
-                        let div_ok_i64 = self.builder.ins().uextend(types::I64, div_ok);
-                        let one_val = self.builder.ins().iconst(types::I64, 1);
-                        let no_ov = self.builder.ins().select(either_zero, one_val, div_ok_i64);
+                        // overflow check via i128 (pas de division)
+                        let g128 = self.builder.ins().sextend(types::I128, g);
+                        let d128 = self.builder.ins().sextend(types::I128, d);
+                        let prod128 = self.builder.ins().imul(g128, d128);
+                        let prod64_back = self.builder.ins().sextend(types::I128, prod);
+                        let no_ov_flag = self.builder.ins().icmp(IntCC::Equal, prod128, prod64_back);
+                        let no_ov_i64 = self.builder.ins().uextend(types::I64, no_ov_flag);
                         let zero64 = self.builder.ins().iconst(types::I64, 0);
-                        let no_ov_i64 = no_ov;  // already 0 or 1 (I64)
                         let fast_ok = self.builder.ins().band(both_i64, no_ov_i64);
                         let fast_b = self.builder.create_block();
                         let slow_b = self.builder.create_block();
@@ -1234,7 +1230,19 @@ impl Emetteur<'_> {
             match i {
                 Instr::Affect { nom, e, .. } => {
                     let t = self.type_of(e, env, types);
-                    let v = self.expr(e, env, types);
+                    let v = if t == TyKind::Entier && matches!(e, Expr::Var(_, _)) {
+                        let v0 = self.expr(e, env, types);
+                        let tag0 = self.builder.use_var(self.tag_tmp);
+                        let trame = self.trame_deux_mots();
+                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                        let f = self.import_runtime("rose_clone_ent");
+                        let _ = self.builder.ins().call(f, &[v0, tag0, trame, trame8]);
+                        let ht = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                        self.builder.def_var(self.tag_tmp, ht);
+                        self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0)
+                    } else {
+                        self.expr(e, env, types)
+                    };
                     let slot = env.get(nom).copied();
                     let slot = match slot {
                         Some(s) => s,

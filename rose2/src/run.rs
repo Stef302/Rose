@@ -12,6 +12,8 @@ use std::io::Write;
 use std::rc::Rc;
 
 use crate::front::{texte_flottant, TyKind};
+use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 
 pub use crate::i128x::{
     gmp_add, gmp_add_ui, gmp_cmp, gmp_cmp_ge, gmp_fdiv_q, gmp_fdiv_r, gmp_fdiv_ui, gmp_get_d, gmp_get_si, gmp_mul,
@@ -884,31 +886,39 @@ pub extern "C" fn rose_mul_ent(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, 
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_neg_ent(a: i64, at: i64, out: *mut i64, outt: *mut i64) {
-    let ga = to_gz2(a, at);
-    let r = Gz::neuf(); r.neg(&ga);
-    write_result(r, out, outt);
+    if at == 0 {
+        if a == i64::MIN {
+            let mut r = Box::new(Mpz { v: BigInt::from(0) });
+            r.v = -BigInt::from(a);
+            unsafe { *out = Box::into_raw(r) as i64; *outt = 1; }
+            return;
+        }
+        unsafe { *out = a.wrapping_neg(); *outt = 0; }
+        return;
+    }
+    unsafe {
+        let src = &*(a as *const Mpz);
+        let mut r = Box::new(Mpz { v: -src.v.clone() });
+        if r.v >= BigInt::from(i64::MIN) && r.v <= BigInt::from(i64::MAX) {
+            *out = r.v.to_i64().unwrap_or(0);
+            *outt = 0;
+            let _ = Box::from_raw(Box::into_raw(r));
+        } else {
+            *out = Box::into_raw(r) as i64;
+            *outt = 1;
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 enum TaggedOp2 { Add, Sub, Mul }
 
-fn to_gz2(av: i64, at: i64) -> Gz {
-    if at == 0 { Gz::de_i128(av as i128) }
-    else { unsafe { let mpz = &*(av as *const Mpz); let r = Gz::neuf(); r.copier_de_ptr(mpz); r } }
+fn to_bigint(av: i64, at: i64) -> BigInt {
+    if at == 0 { BigInt::from(av) }
+    else { unsafe { (*(av as *const Mpz)).v.clone() } }
 }
-fn write_result(r: Gz, out: *mut i64, outt: *mut i64) {
-    if r.fits_i64() {
-        unsafe { *out = r.get_i64(); *outt = 0; }
-        std::mem::forget(r);
-    } else {
-        unsafe { *out = r.0 as i64; *outt = 1; }
-        std::mem::forget(r);
-    }
-}
-
 
 fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64, op: TaggedOp2) {
-    // Cas 1 : les deux sont des i64 -> calcul i64, promotion si debordement.
     if at == 0 && bt == 0 {
         let small = match op {
             TaggedOp2::Add => a.checked_add(b),
@@ -919,19 +929,75 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
             unsafe { *out = x; *outt = 0; }
             return;
         }
+        let ba = BigInt::from(a);
+        let bb = BigInt::from(b);
+        let br = match op {
+            TaggedOp2::Add => ba + bb,
+            TaggedOp2::Sub => ba - bb,
+            TaggedOp2::Mul => ba * bb,
+        };
+        let r = Box::new(Mpz { v: br });
+        unsafe { *out = Box::into_raw(r) as i64; *outt = 1; }
+        return;
     }
-    // Cas 2 : allocation (safe, no mutation in place)
-    let ga = to_gz2(a, at);
-    let gb = to_gz2(b, bt);
-    let r = Gz::neuf();
-    match op {
-        TaggedOp2::Add => r.add(&ga, &gb),
-        TaggedOp2::Sub => r.sub(&ga, &gb),
-        TaggedOp2::Mul => r.mul(&ga, &gb),
+    // In-place mutation quand un operande est deja un BigInt (tag 1) :
+    // on reutilise sa boite, pas d'allocation de resultat.
+    if at == 1 {
+        let bb = to_bigint(b, bt);
+        unsafe {
+            let ptr = a as *mut Mpz;
+            match op {
+                TaggedOp2::Add => (*ptr).v += bb,
+                TaggedOp2::Sub => (*ptr).v -= bb,
+                TaggedOp2::Mul => (*ptr).v *= bb,
+            }
+            *out = a;
+            *outt = 1;
+        }
+        return;
     }
-    write_result(r, out, outt);
-    std::mem::forget(ga);
-    std::mem::forget(gb);
+    if bt == 1 {
+        let aa = to_bigint(a, at);
+        unsafe {
+            let ptr = b as *mut Mpz;
+            match op {
+                TaggedOp2::Add => (*ptr).v += aa,
+                TaggedOp2::Sub => (*ptr).v = aa - (*ptr).v.clone(),
+                TaggedOp2::Mul => (*ptr).v *= aa,
+            }
+            *out = b;
+            *outt = 1;
+        }
+        return;
+    }
+    // les deux i64 avec debordement : promotion BigInt (allocation unique)
+    let ba = BigInt::from(a);
+    let bb = BigInt::from(b);
+    let br = match op {
+        TaggedOp2::Add => ba + bb,
+        TaggedOp2::Sub => ba - bb,
+        TaggedOp2::Mul => ba * bb,
+    };
+    if br >= BigInt::from(i64::MIN) && br <= BigInt::from(i64::MAX) {
+        unsafe { *out = br.to_i64().unwrap_or(0); *outt = 0; }
+        return;
+    }
+    let r = Box::new(Mpz { v: br });
+    unsafe { *out = Box::into_raw(r) as i64; *outt = 1; }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_clone_ent(v: i64, t: i64, out: *mut i64, outt: *mut i64) {
+    if t == 0 {
+        unsafe { *out = v; *outt = 0; }
+    } else {
+        unsafe {
+            let src = &*(v as *const Mpz);
+            let r = Box::new(Mpz { v: src.v.clone() });
+            *out = Box::into_raw(r) as i64;
+            *outt = 1;
+        }
+    }
 }
 
 static mut ROSE_RET_TAG: i64 = 0;

@@ -1155,10 +1155,67 @@ impl From<Option<i32>> for Signal {
 // ── Point d'entrée CLI ────────────────────────────────────────────────────
 
 pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
-    let prog = match crate::front::analyser(source) {
+    let mut prog = match crate::front::analyser(source) {
         Ok(p) => p,
         Err(e) => { eprintln!("{}", e); return 1; }
     };
+    // Optimisation : boucles accumulateur compilables -> fonction synthetique,
+    // pour que la boucle tourne en natif meme si le programme principal ne
+    // passe pas tout entier dans le sous-ensemble JIT.
+    {
+        use crate::front::{Instr, Expr, Ty, TyKind};
+        use crate::jit::bloc_compilable;
+        use std::collections::HashMap;
+        let mut counter = 0usize;
+        let mut new_instrs = Vec::new();
+        for instr in std::mem::take(&mut prog.instructions) {
+            if let Instr::Pour { nom: loopvar, debut, fin, corps, ligne } = instr {
+                let mut transformed = false;
+                if corps.len() == 1 {
+                    if let Instr::Affect { nom: acc, e: eacc, .. } = &corps[0] {
+                        let acc = acc.clone();
+                        let eacc = eacc.clone();
+                        let mut env = HashMap::new();
+                        env.insert(acc.clone(), TyKind::Entier);
+                        env.insert(loopvar.clone(), TyKind::Entier);
+                        let acc_ty = crate::jit::ty_statique(&eacc, &env);
+                        let ok_ty = matches!(acc_ty, Some(TyKind::Entier) | Some(TyKind::Flottant));
+                        if ok_ty && bloc_compilable(&corps, &mut env, &prog.signatures, Some(TyKind::Vide)) {
+                            let func_name = format!("__rose_loop_{}", counter);
+                            counter += 1;
+                            let ty = acc_ty.unwrap();
+                            let sig = crate::front::Signature {
+                                nom: func_name.clone(),
+                                params: vec![(acc.clone(), Ty::simple(ty))],
+                                retour: Ty::simple(ty),
+                                a_retour: true,
+                                corps: Some(vec![
+                                    Instr::Pour { nom: loopvar.clone(), debut: debut.clone(), fin: fin.clone(), corps: corps.clone(), ligne },
+                                    Instr::Retour(Some(Expr::Var(acc.clone(), ligne)), ligne),
+                                ]),
+                                dll: String::new(), dll_son: String::new(), symbole: String::new(),
+                                ligne,
+                            };
+                            prog.signatures.insert(func_name.clone(), sig);
+                            prog.ordre.push(func_name.clone());
+                            new_instrs.push(Instr::Affect {
+                                nom: acc.clone(),
+                                e: Expr::Appel { nom: func_name, module: String::new(), args: vec![Expr::Var(acc.clone(), ligne)], ligne },
+                                ligne,
+                            });
+                            transformed = true;
+                        }
+                    }
+                }
+                if !transformed {
+                    new_instrs.push(Instr::Pour { nom: loopvar, debut, fin, corps, ligne });
+                }
+                continue;
+            }
+            new_instrs.push(instr);
+        }
+        prog.instructions = new_instrs;
+    }
     let prog_pour_jit = prog.clone();
     let mut interp = Interp::nouveau(prog).avec_arguments(args);
     // active le JIT sur les fonctions éligibles
