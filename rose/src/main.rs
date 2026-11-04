@@ -142,36 +142,8 @@ fn main() {
             std::process::exit(comp_programme(&fichier, &sortie));
         }
         "llvm" => {
-            // AOT LLVM classique : transpile via le codegen C (Python) puis
-            // compile avec le CC disponible (gcc/clang -O3 -march=native).
-            let mut sortie = String::new();
-            let mut fichier = String::new();
-            let mut i = 2;
-            while i < argv.len() {
-                if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
-                    sortie = argv[i + 1].clone(); i += 2;
-                } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
-                else { i += 1; }
-            }
-            if fichier.is_empty() { eprintln!("rose-20: quel programme compiler ?"); std::process::exit(1); }
-            if sortie.is_empty() {
-                sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
-                if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
-                if sortie.is_empty() { sortie = "programme".into(); }
-            }
-            // chemin du codegen
-            // AOT LLVM classique : délégué au conducteur Python (rose2/src/rose2/driver.py)
-            // qui gère la transpilation C (GMP) + la compilation.
-            let srcdir = "/home/clausake/Stefan/ROSE/rose2/src";
-            let st = std::process::Command::new("python3")
-                .args(["-m", "rose2.driver", "build", &fichier, "--cible", "c", "-o", &sortie])
-                .env("PYTHONPATH", srcdir)
-                .status();
-            if !st.map(|s| s.success()).unwrap_or(false) {
-                eprintln!("rose-20: échec de l'AOT LLVM (python3/codegen_c)"); std::process::exit(1);
-            }
-            println!("rose-20: {} produit (AOT LLVM)", sortie);
-            std::process::exit(0);
+            eprintln!("rose-20: AOT LLVM non disponible dans cette version (ancien codegen Python supprimé).");
+            std::process::exit(1);
         }
         _ => {}
     }

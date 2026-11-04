@@ -9,9 +9,10 @@ voie qu'elle arpente) :
 """
 import subprocess, glob, os, re, json, sys
 
-BIN_CPP = "/home/clausake/Stefan/ROSE/moteur/cpp/rose"
-BIN_R20 = "/home/clausake/Stefan/ROSE/rose2/target/release/rose-20"
-cases = sorted(glob.glob("/home/clausake/Stefan/ROSE/moteur/tests/verifs/*.rose"))
+RACINE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BIN_CPP = os.path.join(RACINE, "rose-cpp", "rose")
+BIN_R20 = os.path.join(RACINE, "rose", "rose-20")
+cases = sorted(glob.glob(os.path.join(RACINE, "rose-cpp", "tests", "verifs", "*.rose")))
 
 def run(b, args, env=None):
     try:
