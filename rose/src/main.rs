@@ -13,6 +13,7 @@ mod i128x;
 mod interp;
 mod jit;
 mod run;
+mod aot_llvm_orc;
 
 use std::io::Read;
 
@@ -24,12 +25,13 @@ fn lire(source: &mut String, chemin: &str) -> bool {
 }
 
 const USAGE: &str = "\
-Rose 2.0 — compilateur Rust + Cranelift JIT (maths exactes BigInt natif, zéro GMP)
+Rose 2.0 — compilateur Rust + Cranelift JIT + LLVM ORC AOT (maths exactes BigInt natif, zéro GMP)
 Usage :
   rose-20 prog.rose [args…]   interpréter / JIT un programme Rose
   rose-20 run prog.rose       identique
   rose-20 comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
   rose-20 llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
+  rose-20 orc prog.rose [-o sortie] [-O1|-O2|-O3]   AOT LLVM ORC (in-process, inkwell)
   rose-20 info                état du moteur
   rose-20 version             numéro de version
 ";
@@ -167,6 +169,37 @@ fn main() {
             }
             println!("rose-20: {} produit (AOT LLVM)", sortie);
             std::process::exit(0);
+        }
+        "orc" => {
+            let mut sortie = String::new();
+            let mut fichier = String::new();
+            let mut opt_level = aot_llvm_orc::OrcOptLevel::O2;
+            let mut i = 2;
+            while i < argv.len() {
+                if argv[i] == "-O1" { opt_level = aot_llvm_orc::OrcOptLevel::O1; i += 1; }
+                else if argv[i] == "-O2" { opt_level = aot_llvm_orc::OrcOptLevel::O2; i += 1; }
+                else if argv[i] == "-O3" { opt_level = aot_llvm_orc::OrcOptLevel::O3; i += 1; }
+                else if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
+                    sortie = argv[i + 1].clone(); i += 2;
+                } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
+                else { i += 1; }
+            }
+            if fichier.is_empty() { eprintln!("rose-20: quel programme compiler ?"); std::process::exit(1); }
+            if sortie.is_empty() {
+                sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
+                if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
+                if sortie.is_empty() { sortie = "programme".into(); }
+            }
+            match aot_llvm_orc::run_orc(&fichier, &sortie, opt_level) {
+                Ok(()) => {
+                    println!("rose-20: {} produit (AOT LLVM ORC, niveau {:?})", sortie, opt_level);
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("rose-20: échec AOT LLVM ORC : {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
         _ => {}
     }
