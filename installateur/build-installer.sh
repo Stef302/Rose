@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════════
 #  Construit l'installeur Windows « Rose-Setup-<version>.exe » (NSIS 3).
-#  Source des fichiers : le zip de partage docs/rose-windows.zip (moteur
-#  C++ uniquement) + les icônes du dépôt. Sortie : installateur/dist/.
+#  Source des fichiers : le zip de partage docs/rose-windows.zip (moteurs
+#  C++ et Rust) + les icônes du dépôt. Sortie : installateur/dist/.
 #  makensis est cherché dans $PATH, puis $MAKENSIS, puis l'extraction
 #  locale /tmp/opencode/apt/nsisroot (paquet nsis dépaqueté sans root).
 # ═══════════════════════════════════════════════════════════════════════
