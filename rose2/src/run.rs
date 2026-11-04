@@ -12,12 +12,10 @@ use std::io::Write;
 use std::rc::Rc;
 
 use crate::front::{texte_flottant, TyKind};
-use num_bigint::BigInt;
-use num_integer::Integer;
-use num_traits::{One, ToPrimitive, Zero};
+
 pub use crate::i128x::{
-    gmp_add, gmp_add_ui, gmp_cmp_ge, gmp_fdiv_q, gmp_fdiv_r, gmp_fdiv_ui, gmp_get_d, gmp_mul,
-    gmp_mul_2exp, gmp_mul_si, gmp_mul_ui, gmp_neg, gmp_pow_ui, gmp_sgn, gmp_set, gmp_set_d,
+    gmp_add, gmp_add_ui, gmp_cmp, gmp_cmp_ge, gmp_fdiv_q, gmp_fdiv_r, gmp_fdiv_ui, gmp_get_d, gmp_get_si, gmp_mul,
+    gmp_mul_2exp, gmp_mul_si, gmp_mul_ui, gmp_neg, gmp_pow_ui, gmp_sgn, gmp_set, gmp_set_d, gmp_set_ui,
     gmp_sub, gmp_ui_pow_ui, gmpq_add, gmpq_canonicalize, gmpq_cmp, gmpq_div, gmpq_mul, gmpq_neg,
     gmpq_set, gmpq_set_d, gmpq_set_ui, gmpq_set_z, gmpq_set_z_field, gmpq_sub,
 };
@@ -132,7 +130,7 @@ pub fn vers_z(v: &Valeur) -> Gz {
         Valeur::Entier(i, None) => z.poser_i64(*i),
         Valeur::Entier(_, Some(o)) => z.copier_de(o),
         Valeur::Booleen(b) => z.poser_i64(if *b { 1 } else { 0 }),
-        Valeur::Rationnel(q) => { let n = q.num_bigint(); let d = q.den_bigint(); if d.is_zero() { erreur_runtime("division par zéro"); } z.set_v(n.div_floor(&d)); }
+        Valeur::Rationnel(q) => { let n = q.num_i128(); let d = q.den_i128(); if d == 0 { erreur_runtime("division par zéro"); } z.poser_i64((n / d) as i64); }
         Valeur::Flottant(d) => z.poser_d(*d),
         _ => erreur_runtime(&format!("conversion vers entier impossible (type {:?})", v.ty())),
     }
@@ -292,18 +290,15 @@ pub fn q_chaine(q: &Gq) -> String {
 /// ecri T_RATIONNEL : a/b, forme décimale périodique (1/3 → 0.[3]),
 /// seuil 500 chiffres → a/b brut.
 pub fn texte_rationnel(q: &Gq) -> String {
-    let nb = q.num_bigint();
-    let db = q.den_bigint();
-    if db == BigInt::one() { return nb.to_string(); }
-    // repli pour les grands rationnels : forme a/b brute
-    if nb.to_i128().is_none() || db.to_i128().is_none() {
-        return format!("{}/{}", nb, db);
-    }
-    let n0 = nb.to_i128().unwrap();
-    let d0 = db.to_i128().unwrap();
+    let nb = q.num_i128();
+    let db = q.den_i128();
+    if db == 1 { return nb.to_string(); }
+    let n0 = nb;
+    let d0 = db;
     let gros = (Gz::de_i128(n0).sizeinbase10() + Gz::de_i128(d0).sizeinbase10()) > 500;
     if gros { return format!("{}/{}", n0, d0); }
 
+    if d0 == 0 { return "0".to_string(); }
     let dd = d0.unsigned_abs() as i128;
     let entier = {
         let (mut q_, mut r_) = (n0 / dd, n0 % dd);
@@ -566,34 +561,53 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
     }
     let chiffres = chiffres.get_i64() as u64;
     let s = chiffres + 40;
-    let mut dix_s: BigInt = BigInt::from(1);
-    for _ in 0..s { dix_s = dix_s * BigInt::from(10); }
-    let arctan = |x: u64| -> BigInt {
-        let x = BigInt::from(x);
-        let x2 = &x * &x;
-        let mut p = x.clone(); // x^(2k+1), starts x^1
-        let mut terme = &dix_s / &p; // first term (k=1): dix_s / x
-        let mut somme = terme.clone();
+    let dix_s = Gz::neuf();
+    unsafe { gmp_pow_ui(dix_s.p(), Gz::de_u64(10).p(), s); }
+    let mut cibles = Vec::new();
+    for &x in &[5u64, 239u64] {
+        let dest = Gz::neuf();
+        let x2 = Gz::neuf();
+        let p = Gz::neuf();
+        let terme = Gz::neuf();
+        unsafe {
+            gmp_set_ui(x2.p(), x);
+            gmp_mul(x2.p(), x2.p(), x2.p());
+            gmp_set_ui(p.p(), x);
+            gmp_fdiv_q(terme.p(), dix_s.p(), p.p());
+            gmp_set(dest.p(), terme.p());
+        }
         let mut k: u64 = 1;
-        let mut signe: i32 = -1;
+        let mut signe = -1i32;
         loop {
-            p = &p * &x2;
-            k += 2;
-            let denom = &p * BigInt::from(k as i64);
-            let t = &dix_s / &denom;
-            if t.is_zero() { break; }
-            if signe < 0 { somme = somme - t; } else { somme = somme + t; }
+            unsafe {
+                gmp_mul(p.p(), p.p(), x2.p());
+                k += 2;
+                gmp_mul_ui(terme.p(), p.p(), k);
+                gmp_fdiv_q(terme.p(), dix_s.p(), terme.p());
+                if gmp_cmp(terme.p(), Gz::de_i64(0).p()) == 0 { break; }
+                if signe < 0 { gmp_sub(dest.p(), dest.p(), terme.p()); }
+                else { gmp_add(dest.p(), dest.p(), terme.p()); }
+            }
             signe = -signe;
             if k > 100_000 { break; }
         }
-        somme
-    };
-    let pi = &arctan(5) * BigInt::from(16) - &arctan(239) * BigInt::from(4);
-    let brut = pi.to_string();
+        cibles.push(dest);
+    }
+    let at5 = Gz::neuf();
+    let at239 = Gz::neuf();
+    let pi = Gz::neuf();
+    unsafe {
+        gmp_set(at5.p(), cibles[0].p());
+        gmp_set(at239.p(), cibles[1].p());
+        gmp_mul_ui(at5.p(), at5.p(), 16);
+        gmp_mul_ui(at239.p(), at239.p(), 4);
+        gmp_sub(pi.p(), at5.p(), at239.p());
+    }
+    let brut = pi.chaine();
     let brut: Vec<u8> = brut.into_bytes();
     let lbrut = brut.len();
     let mut sortie: Vec<u8> = vec![b' '; (chiffres + 2) as usize];
-    sortie[0] = brut[0];
+    sortie[0] = if brut[0] == b'-' { brut[0] } else { brut[0] };
     sortie[1] = b'.';
     for i in 0..chiffres {
         sortie[(2 + i) as usize] = if (i + 1) < lbrut as u64 { brut[(i + 1) as usize] } else { b'0' };
@@ -814,7 +828,8 @@ pub fn chaine_vers_flottant(ch: &str) -> f64 {
 
 // signe d'un rationnel par pointeur (surface conservée pour interp.rs)
 pub fn gmpq_sgn(q: *const Mpq) -> i32 {
-    unsafe { (*q).num.v.cmp(&BigInt::from(0)) as i32 }
+    let n = unsafe { gmp_get_si(&(*q).num) };
+    if n < 0 { -1 } else if n > 0 { 1 } else { 0 }
 }
 
 fn un_z() -> Gz { Gz::de_i128(1) }
@@ -891,6 +906,7 @@ fn write_result(r: Gz, out: *mut i64, outt: *mut i64) {
     }
 }
 
+
 fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64, op: TaggedOp2) {
     // Cas 1 : les deux sont des i64 -> calcul i64, promotion si debordement.
     if at == 0 && bt == 0 {
@@ -904,35 +920,7 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
             return;
         }
     }
-    // Cas 2 : a est une box et a != b -> mutation in place (pas d'allocation).
-    let same_box = at != 0 && bt != 0 && a == b;
-    if at != 0 && !same_box {
-        unsafe {
-            let ra = a as *mut Mpz;
-            if bt == 0 {
-                let bb = BigInt::from(b);
-                let mpza = &mut *(ra);
-                match op {
-                    TaggedOp2::Add => mpza.v = std::mem::take(&mut mpza.v) + bb,
-                    TaggedOp2::Sub => mpza.v = std::mem::take(&mut mpza.v) - bb,
-                    TaggedOp2::Mul => mpza.v = std::mem::take(&mut mpza.v) * bb,
-                }
-            } else {
-                let gb = to_gz2(b, bt);
-                let rb = gb.p();
-                match op {
-                    TaggedOp2::Add => gmp_add(ra, ra as *const Mpz, rb as *const Mpz),
-                    TaggedOp2::Sub => gmp_sub(ra, ra as *const Mpz, rb as *const Mpz),
-                    TaggedOp2::Mul => gmp_mul(ra, ra as *const Mpz, rb as *const Mpz),
-                }
-                std::mem::forget(gb);
-            }
-            *out = a;
-            *outt = 1;
-        }
-        return;
-    }
-    // Cas 3 : fallback allocation (a i64 promu, ou a == b).
+    // Cas 2 : allocation (safe, no mutation in place)
     let ga = to_gz2(a, at);
     let gb = to_gz2(b, bt);
     let r = Gz::neuf();
@@ -942,6 +930,8 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
         TaggedOp2::Mul => r.mul(&ga, &gb),
     }
     write_result(r, out, outt);
+    std::mem::forget(ga);
+    std::mem::forget(gb);
 }
 
 static mut ROSE_RET_TAG: i64 = 0;
