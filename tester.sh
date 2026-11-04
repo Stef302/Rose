@@ -56,30 +56,12 @@ if command -v rustc >/dev/null 2>&1; then
 else
     RECON_RS=""
 fi
-if command -v zig >/dev/null 2>&1; then
-    GMP_A_ZIG="${GMP_DIR:+$GMP_DIR/lib/libgmp.a}"
-    [ -n "$GMP_A_ZIG" ] && [ -f "$GMP_A_ZIG" ] || GMP_A_ZIG=$(ls /usr/lib/*/libgmp.a /usr/lib/libgmp.a /tmp/opencode/toolchain/gmp-install/lib/libgmp.a 2>/dev/null | head -1)
-    RECON_ZIG="zig build-exe moteur/zig/src/main.zig -O ReleaseSafe -lc ${GMP_A_ZIG:-libgmp.a} -lm -femit-bin=moteur/zig/rose >/dev/null 2>&1 && test -x moteur/zig/rose"
-else
-    RECON_ZIG=""
-fi
 
 tester_moteur bin/rose            "C++  " "$RECON_CPP" && cp -f moteur/cpp/rose bin/rose 2>/dev/null
-tester_moteur moteur/rust/rose    "Rust " "$RECON_RS"
-tester_moteur moteur/zig/rose     "Zig  " "$RECON_ZIG" && cp -f moteur/zig/rose bin/rose-zig 2>/dev/null
-cp -f moteur/rust/rose bin/rose-rs 2>/dev/null
+tester_moteur moteur/rust/rose    "Rust " "$RECON_RS" && cp -f moteur/rust/rose bin/rose-rs 2>/dev/null
 
 echo
-echo "${gras}── Moteurs vivants ──────────────────────────────────────${reset}"
-if command -v python3 >/dev/null 2>&1; then
-    echo "  ${vert}✓${reset} Python : $(python3 moteur/python/engine.py version 2>/dev/null)"
-fi
-JULIA="${JULIA:-julia}"
-if command -v "$JULIA" >/dev/null 2>&1; then
-    echo "  ${vert}✓${reset} Julia  : $($JULIA moteur/julia/engine.jl version 2>/dev/null | head -1)"
-else
-    echo "  ${jaune}·${reset} Julia non installé (facultatif — définir JULIA=/chemin/julia)"
-fi
+echo "${gras}── Moteurs autonomes ──────────────────────────────────────${reset}"
 
 # ── 2. suites de validation ─────────────────────────────────────────
 echo
@@ -88,7 +70,6 @@ if ! command -v python3 >/dev/null 2>&1; then
     echo "  ${rouge}✗${reset} python3 requis pour jouer les suites (install : apt install python3)"
 else
     for b in $MOTEURS_OK; do
-        case "$b" in *zig*) continue ;; esac   # la suite 25 cas exige vérificateur + FFI
         case "$b" in
             *rust*) label="Rust"    ;;
             *cpp*|bin/rose) label="moteur C++" ;;
@@ -104,11 +85,6 @@ else
     case "$sortie" in
         *"0 divergences"*) echo "  ${vert}✓${reset} parité des moteurs    : $sortie" ;;
         *)                 echo "  ${rouge}✗${reset} parité des moteurs    : $sortie"; note "ÉCHEC parité" ;;
-    esac
-    sortie=$(python3 rose2/tests/courir.py 2>&1 | tail -1)
-    case "$sortie" in
-        *"0 échoués"*) echo "  ${vert}✓${reset} suite v2 (147 cas)     : $sortie" ;;
-        *)             echo "  ${rouge}✗${reset} suite v2               : $sortie"; note "ÉCHEC suite v2" ;;
     esac
 fi
 

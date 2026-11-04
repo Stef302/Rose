@@ -180,16 +180,6 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
     // sont exclues, car le moteur C++ promeut en GMP dès que le produit
     // dépasse int64 (rose_ent) alors que Cranelift wrappe. Une fonction qui
     // multiplie des entiers reste donc interprétée (parité exacte).
-    fn multiplicatif(e: &Expr) -> bool {
-        match e {
-            Expr::Binaire { op, a, b, .. } => {
-                let m = match op.as_str() { "*" | "^" => true, _ => false };
-                m || multiplicatif(a) || multiplicatif(b)
-            }
-            Expr::Unaire { a, .. } => multiplicatif(a),
-            _ => false,
-        }
-    }
     fn sur_i64(e: &Expr, env: &HashMap<String, TyKind>) -> bool {
         match e {
             Expr::Binaire { op, a, b, .. } => {
@@ -234,7 +224,6 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
             _ => true,
         }
     }
-    let _ = multiplicatif;
     for i in instrs {
 
         match i {
@@ -401,6 +390,7 @@ impl Jit {
         fcx.func.signature = make_signature(&sig);
         let mut fctx = cranelift::frontend::FunctionBuilderContext::new();
         let mut b = FunctionBuilder::new(&mut fcx.func, &mut fctx);
+        let zero64 = self.builder.ins().iconst(types::I64, 64);
         let tag_tmp_var = b.declare_var(types::I64);
         let mut e = Emetteur {
             module: &mut self.module, signatures: &self.signatures,
@@ -732,6 +722,7 @@ impl Emetteur<'_> {
 
     fn expr(&mut self, e: &Expr, env: &mut HashMap<String, Variable>,
             types: &HashMap<String, TyKind>) -> Value {
+        let zero64 = self.builder.ins().iconst(types::I64, 64);
         match e {
             Expr::Litteral { texte, flott, .. } => {
                 if *flott {
@@ -747,43 +738,49 @@ impl Emetteur<'_> {
                     self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
                 } else {
                     let v: i64 = texte.parse().unwrap_or(0);
+                    let v_val = self.builder.ins().iconst(types::I64, v);
                     let zt = self.builder.ins().iconst(types::I64, 0);
-        self.builder.def_var(self.tag_tmp, zt);
-                    self.builder.ins().iconst(types::I64, v)                }
+                    self.builder.ins().iconcat(v_val, zt)
+                }
             }
             Expr::BooleenLit(b, _) => { let zt = self.builder.ins().iconst(types::I64, 0); self.builder.def_var(self.tag_tmp, zt); self.builder.ins().iconst(types::I64, if *b { 1 } else { 0 }) }
             Expr::Unaire { op, a, .. } => {
                 let v = self.expr(a, env, types);
                 if op == "non" {
                     let un = self.builder.ins().iconst(types::I64, 1);
-                    self.builder.ins().bxor(v, un)
+                    let val = self.builder.ins().ireduce(types::I64, v);
+                    self.builder.ins().bxor(val, un)
                 } else {
-                    let tag_v = self.builder.use_var(self.tag_tmp);
+                    let val = self.builder.ins().ireduce(types::I64, v);
+                    let zero64 = self.builder.ins().iconst(types::I64, 64);
+                        let v_shifted = self.builder.ins().ushr(v, zero64);
+                    let tag = self.builder.ins().ireduce(types::I64, v_shifted);
                     let trame = self.trame_deux_mots();
                     let f = self.import_runtime("rose_neg_ent");
                     let trame8 = self.builder.ins().iadd_imm(trame, 8);
-                    let _ = self.builder.ins().call(f, &[v, tag_v, trame, trame8]);
-                    let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
-                    let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
-                    self.builder.def_var(self.tag_tmp, tag);
-                    val
+                    let _ = self.builder.ins().call(f, &[val, tag, trame, trame8]);
+                    let hval = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                    let htag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                    self.builder.ins().iconcat(hval, htag)
                 }
             }
             Expr::Var(n, _) => {
                 let slot = self.var(env, types, n);
                 if types.get(n).copied() != Some(TyKind::Flottant) {
                     if let Some(ts) = self.tags.get(n).copied() {
+                        let v = self.builder.use_var(slot);
                         let t = self.builder.use_var(ts);
-                        self.builder.def_var(self.tag_tmp, t);
+                        self.builder.ins().iconcat(v, t)
                     } else {
+                        let v = self.builder.use_var(slot);
                         let zt = self.builder.ins().iconst(types::I64, 0);
-                        self.builder.def_var(self.tag_tmp, zt);
+                        self.builder.ins().iconcat(v, zt)
                     }
                 } else {
+                    let v = self.builder.use_var(slot);
                     let zt = self.builder.ins().iconst(types::I64, 0);
-                    self.builder.def_var(self.tag_tmp, zt);
+                    self.builder.ins().iconcat(v, zt)
                 }
-                self.builder.use_var(slot)
             }
             Expr::Binaire { op, a, b, .. } => self.binaire(op, a, b, env, types),
             Expr::Appel { nom, args, .. } => self.appel(nom, args, env, types),
@@ -818,6 +815,7 @@ impl Emetteur<'_> {
 
     fn binaire(&mut self, op: &str, a: &Expr, b: &Expr, env: &mut HashMap<String, Variable>,
                types: &HashMap<String, TyKind>) -> Value {
+        let zero64 = self.builder.ins().iconst(types::I64, 64);
         let ta = self.type_of(a, env, types);
         let tb = self.type_of(b, env, types);
         let flot = ta == TyKind::Flottant || tb == TyKind::Flottant;
@@ -876,115 +874,44 @@ impl Emetteur<'_> {
                 let (g, d) = si_flottant(&mut self.builder, flot, g, d, ta, tb);
                 match op {
                     "+" => if flot { self.builder.ins().fadd(g, d) } else {
-                        let zero_tag = self.builder.ins().iconst(types::I64, 0);
-                        let tag_g_zero = self.builder.ins().icmp(IntCC::Equal, tag_g, zero_tag);
-                        let tag_d_zero = self.builder.ins().icmp(IntCC::Equal, tag_d, zero_tag);
-                        let tag_g_zero64 = self.builder.ins().uextend(types::I64, tag_g_zero);
-                        let tag_d_zero64 = self.builder.ins().uextend(types::I64, tag_d_zero);
-                        let both_i64 = self.builder.ins().band(tag_g_zero64, tag_d_zero64);
-                        let fast_sum = self.builder.ins().iadd(g, d);
-                        let g_xor_d = self.builder.ins().bxor(g, d);
-                        let g_xor_sum = self.builder.ins().bxor(g, fast_sum);
-                        let ov = self.builder.ins().band(g_xor_d, g_xor_sum);
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        let ov_flag = self.builder.ins().icmp(IntCC::SignedLessThan, ov, zero);
-                        let zero8 = self.builder.ins().iconst(types::I8, 0);
-                        let ov_zero8 = self.builder.ins().icmp(IntCC::Equal, ov_flag, zero8);
-                        let ov_zero = self.builder.ins().uextend(types::I64, ov_zero8);
-                        let fast_ok = self.builder.ins().band(both_i64, ov_zero);
-                        let fast_b = self.builder.create_block();
-                        let slow_b = self.builder.create_block();
-                        let merge_b = self.builder.create_block();
-                        self.builder.append_block_param(merge_b, types::I64);
-                        self.builder.append_block_param(merge_b, types::I64);
-                        let zero64 = self.builder.ins().iconst(types::I64, 0);
-                        let fast_ok_i8 = self.builder.ins().icmp(IntCC::NotEqual, fast_ok, zero64);
-                        self.builder.ins().brif(fast_ok_i8, fast_b, &[], slow_b, &[]);
-                        self.builder.switch_to_block(fast_b);
-                        self.builder.seal_block(fast_b);
-                        let zt = self.builder.ins().iconst(types::I64, 0);
-                        self.builder.def_var(self.tag_tmp, zt);
-                        self.saut(merge_b, &[fast_sum, zt]);
-                        self.builder.switch_to_block(slow_b);
-                        self.builder.seal_block(slow_b);
+                        let g_val = self.builder.ins().ireduce(types::I64, g);
+                        let g_tag = self.builder.ins().ireduce(types::I64, self.builder.ins().ushr(g, self.builder.ins().iconst(types::I64, 64)));
+                        let d_val = self.builder.ins().ireduce(types::I64, d);
+                        let d_tag = self.builder.ins().ireduce(types::I64, self.builder.ins().ushr(d, self.builder.ins().iconst(types::I64, 64)));
                         let trame = self.trame_deux_mots();
-                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
                         let f = self.import_runtime("rose_add_ent");
-                        let _ = self.builder.ins().call(f, &[g, tag_g, d, tag_d, trame, trame8]);
+                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                        let _ = self.builder.ins().call(f, &[g_val, g_tag, d_val, d_tag, trame, trame8]);
                         let hval = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
                         let htag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
-                        self.builder.def_var(self.tag_tmp, htag);
-                        self.saut(merge_b, &[hval, htag]);
-                        self.builder.switch_to_block(merge_b);
-                        self.builder.seal_block(merge_b);
-                        let mv = self.builder.block_params(merge_b)[0];
-                        let mt = self.builder.block_params(merge_b)[1];
-                        self.builder.def_var(self.tag_tmp, mt);
-                        mv
+                        self.builder.ins().iconcat(hval, htag)
                     },
                     "-" => if flot { self.builder.ins().fsub(g, d) } else {
+                        let g_val = self.builder.ins().ireduce(types::I64, g);
+                        let g_tag = self.builder.ins().ireduce(types::I64, self.builder.ins().ushr(g, self.builder.ins().iconst(types::I64, 64)));
+                        let d_val = self.builder.ins().ireduce(types::I64, d);
+                        let d_tag = self.builder.ins().ireduce(types::I64, self.builder.ins().ushr(d, self.builder.ins().iconst(types::I64, 64)));
                         let trame = self.trame_deux_mots();
                         let f = self.import_runtime("rose_sub_ent");
                         let trame8 = self.builder.ins().iadd_imm(trame, 8);
-                        let _ = self.builder.ins().call(f, &[g, tag_g, d, tag_d, trame, trame8]);
-                        let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
-                        let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
-                        self.builder.def_var(self.tag_tmp, tag);
-                        val
-                    },
-                    "*" => if flot { self.builder.ins().fmul(g, d) } else {
-                        let zero_tag = self.builder.ins().iconst(types::I64, 0);
-                        let tag_g_zero = self.builder.ins().icmp(IntCC::Equal, tag_g, zero_tag);
-                        let tag_d_zero = self.builder.ins().icmp(IntCC::Equal, tag_d, zero_tag);
-                        let tag_g_zero64 = self.builder.ins().uextend(types::I64, tag_g_zero);
-                        let tag_d_zero64 = self.builder.ins().uextend(types::I64, tag_d_zero);
-                        let both_i64 = self.builder.ins().band(tag_g_zero64, tag_d_zero64);
-                        let prod = self.builder.ins().imul(g, d);
-                        // overflow check for signed multiplication
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        let g_zero = self.builder.ins().icmp(IntCC::Equal, g, zero);
-                        let d_zero = self.builder.ins().icmp(IntCC::Equal, d, zero);
-                        let either_zero = self.builder.ins().bor(g_zero, d_zero);
-                        // if either is zero, no overflow
-                        let prod_div_d = self.builder.ins().sdiv(prod, d);  // only valid if d != 0
-                        let div_ok = self.builder.ins().icmp(IntCC::Equal, prod_div_d, g);
-                        let div_ok_i64 = self.builder.ins().uextend(types::I64, div_ok);
-                        let one_val = self.builder.ins().iconst(types::I64, 1);
-                        let no_ov = self.builder.ins().select(either_zero, one_val, div_ok_i64);
-                        let zero64 = self.builder.ins().iconst(types::I64, 0);
-                        let no_ov_i64 = no_ov;  // already 0 or 1 (I64)
-                        let fast_ok = self.builder.ins().band(both_i64, no_ov_i64);
-                        let fast_b = self.builder.create_block();
-                        let slow_b = self.builder.create_block();
-                        let merge_b = self.builder.create_block();
-                        self.builder.append_block_param(merge_b, types::I64);
-                        self.builder.append_block_param(merge_b, types::I64);
-                        let zero64 = self.builder.ins().iconst(types::I64, 0);
-                        let fast_ok_i8 = self.builder.ins().icmp(IntCC::NotEqual, fast_ok, zero64);
-                        self.builder.ins().brif(fast_ok_i8, fast_b, &[], slow_b, &[]);
-                        self.builder.switch_to_block(fast_b);
-                        self.builder.seal_block(fast_b);
-                        let zero_tag2 = self.builder.ins().iconst(types::I64, 0);
-                        self.builder.def_var(self.tag_tmp, zero_tag2);
-                        self.saut(merge_b, &[prod, zero_tag2]);
-                        self.builder.switch_to_block(slow_b);
-                        self.builder.seal_block(slow_b);
-                        let trame = self.trame_deux_mots();
-                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
-                        let f = self.import_runtime("rose_mul_ent");
-                        let _ = self.builder.ins().call(f, &[g, tag_g, d, tag_d, trame, trame8]);
+                        let _ = self.builder.ins().call(f, &[g_val, g_tag, d_val, d_tag, trame, trame8]);
                         let hval = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
                         let htag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
-                        self.builder.def_var(self.tag_tmp, htag);
-                        self.saut(merge_b, &[hval, htag]);
-                        self.builder.switch_to_block(merge_b);
-                        self.builder.seal_block(merge_b);
-                        let mv = self.builder.block_params(merge_b)[0];
-                        let mt = self.builder.block_params(merge_b)[1];
-                        self.builder.def_var(self.tag_tmp, mt);
-                        mv
+                        self.builder.ins().iconcat(hval, htag)
                     },
-                    "/" => {
+                    "*" => if flot { self.builder.ins().fmul(g, d) } else {
+                        let g_val = self.builder.ins().ireduce(types::I64, g);
+                        let g_tag = self.builder.ins().ireduce(types::I64, self.builder.ins().ushr(g, self.builder.ins().iconst(types::I64, 64)));
+                        let d_val = self.builder.ins().ireduce(types::I64, d);
+                        let d_tag = self.builder.ins().ireduce(types::I64, self.builder.ins().ushr(d, self.builder.ins().iconst(types::I64, 64)));
+                        let trame = self.trame_deux_mots();
+                        let f = self.import_runtime("rose_mul_ent");
+                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                        let _ = self.builder.ins().call(f, &[g_val, g_tag, d_val, d_tag, trame, trame8]);
+                        let hval = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                        let htag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                        self.builder.ins().iconcat(hval, htag)
+                    },                    "/" => {
                         let bloc = self.builder.current_block();
                         let _ = bloc;
                         self.builder.ins().fdiv(g, d)
