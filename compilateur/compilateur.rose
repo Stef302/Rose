@@ -350,7 +350,7 @@ fn rnorm($p: entier, $q: entier) -> chaine {
 }
 
 # ══════════════════ erreurs et environnements ══════════════════
-# $err : liste partagée, la première erreur gagne ; toute fn gardée
+# $err : liste partagée, la première erreur gagne ; toute fonction gardée
 # rend la main à vide dès qu'elle est pleine (miroir de l'exception C++).
 
 fn lever($lg: entier, $msg: chaine, $err: liste<chaine>) {
@@ -486,7 +486,7 @@ fn typex($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
 }
 
 # ══════════════════ expressions — descente vers les pools ══════════════════
-# Toute fn rend « pos|indice » ; l'indice est décimal (jamais de « | »).
+# Toute fonction rend « pos|indice » ; l'indice est décimal (jamais de « | »).
 
 fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
         $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
@@ -1007,7 +1007,7 @@ fn corps_chevron($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: e
   retour chaine($q) + "|" + $ch
 }
 
-# ══════════════════ définition de fn ══════════════════
+# ══════════════════ définition de fonction ══════════════════
 # Pools parallèles : noms, externe (« 1 » ou vide), paramètres encodés
 # « nom|base|elt;… », retour « base|elt », corps (chaîne d'indices), ligne du
 # jeton « fn » (les erreurs de frontière la réclament).
@@ -1994,7 +1994,7 @@ fn check_instr($i: entier,
     $e = $ie[$i]
     si ($e < 0) {
       si ($ra != "vide|vide") {
-        lever($lg0, "La fn doit retourner un " + nomty($ra), $err)
+        lever($lg0, "La fonction doit retourner un " + nomty($ra), $err)
       }
     }
     sinon {
@@ -2005,7 +2005,7 @@ fn check_instr($i: entier,
         si (non(estnum($t) et estnum($ra) et promote($t, $ra) == $ra)) { $bad = 1 }
       }
       si ($bad == 1) {
-        lever($lg0, "La fn retourne " + nomty($t) + ", attendu " + nomty($ra), $err)
+        lever($lg0, "La fonction retourne " + nomty($t) + ", attendu " + nomty($ra), $err)
       }
     }
     retour
@@ -2614,7 +2614,7 @@ fn em_fonction($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
   # — assemblage : en-tête (paramètres sous la forme étonnante du dump,
   # nom %nom : type), puis chaque bloc avec sa fenêtre de lignes —
   joindre($outl, "")
-  $tt = "fn " + $nom + "("
+  $tt = "fonction " + $nom + "("
   $np = nb_pieces($ps, 59)
   $u = 1
   tant_que ($u <= $np) {
@@ -2960,14 +2960,14 @@ tant_que ($w < longueur($ordre)) {
         $pt = sous_chaine($ent, $pp + 1, longueur($ent))
         $bb = BASE($pt)
         si ($bb != "entier" et $bb != "flottant" et $bb != "booleen" et $bb != "chaine") {
-          lever($fligne[$ix], "Type " + nomty($pt) + " non supporté aux frontières d'une fn externe (utilisez entier/flottant/booleen/chaine)", $err)
+          lever($fligne[$ix], "Type " + nomty($pt) + " non supporté aux frontières d'une fonction externe (utilisez entier/flottant/booleen/chaine)", $err)
         }
         $u = $u + 1
       }
       $bb = BASE($fret[$ix])
       si (longueur($err) == 1) {
         si ($bb != "entier" et $bb != "flottant" et $bb != "booleen" et $bb != "chaine") {
-          lever($fligne[$ix], "Type " + nomty($fret[$ix]) + " non supporté aux frontières d'une fn externe (utilisez entier/flottant/booleen/chaine)", $err)
+          lever($fligne[$ix], "Type " + nomty($fret[$ix]) + " non supporté aux frontières d'une fonction externe (utilisez entier/flottant/booleen/chaine)", $err)
         }
       }
     }
@@ -3103,7 +3103,7 @@ fn decoupe($s: chaine, $out: liste<chaine>) {
 // source. On le reconstruit : chaque couple (fonction, nom) porte la lettre
 // devinée de son élément, nourrie par les « liste.push » / « call $joindre »,
 // les « affect », les « ret » et les liaisons d'appels ; on itère jusqu'à ce
-// que plus rien ne bouge. La lettre du retour d'une fn se note sous le
+// que plus rien ne bouge. La lettre du retour d'une fonction se note sous le
 // nom « %ret ».
 fn dt_trouve($f: chaine, $m: chaine, $df: liste<chaine>, $dm: liste<chaine>) -> entier {
   // la dernière écriture gagne : la table ne fait qu'ajouter des lignes
@@ -3334,7 +3334,7 @@ fn genre_t($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret:
           }
           // aucun élément visible dans le corps : le vérificateur propage le
           // TYPE ATTENDU (miroir dest_ty). Un index consommé uniquement par
-          // « ret » prend le type de retour de la fn — sentinelle « r »
+          // « ret » prend le type de retour de la fonction — sentinelle « r »
           // que la déclaration du temp remplace par la lettre courante (le
           // transpiler déclare rose_ent et entoure l'appel de
           // rose_a_entier(get_str(…))). Sinon l'élément inconnu se lit en
@@ -3379,7 +3379,7 @@ fn genre_t($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret:
           si (longueur($fname) > 0) {
             si ($fname[0] == '$') { $fname = sous_chaine($fname, 1, longueur($fname)) }
           }
-          // fn utilisateur : lettre de retour déclarée
+          // fonction utilisateur : lettre de retour déclarée
           $j3 = 1
           tant_que ($j3 < longueur($fn_noms)) {
             si ($fn_noms[$j3] == $fname) { retour $fn_ret[$j3] }
@@ -3814,12 +3814,12 @@ si (longueur($err) > 1) {
   $cour_idx = 0
 
   // table COMPLÈTE des fonctions usagères, avant toute arête : un appel vers
-  // une fn définie plus bas dans le RIR compte aussi (réciprocité).
+  // une fonction définie plus bas dans le RIR compte aussi (réciprocité).
   $fn_tous = [""]
   $j0 = 1
   tant_que ($j0 < $n) {
     $l0 = trim($ls[$j0])
-    si (commence_par($l0, "fn ")) {
+    si (commence_par($l0, "fonction ")) {
       $nom0 = nom_fonction($l0)
       si ($nom0 != "$principal" et $nom0 != "principal") {
         $nomc0 = $nom0
@@ -3834,7 +3834,7 @@ si (longueur($err) > 1) {
   $i_t = 1
   tant_que ($i_t < $n) {
     $l = trim($ls[$i_t])
-    si (commence_par($l, "fn ")) {
+    si (commence_par($l, "fonction ")) {
       $nom = nom_fonction($l)
       $cour_idx = 0
       si ($nom != "$principal" et $nom != "principal") {
@@ -3917,7 +3917,7 @@ si (longueur($err) > 1) {
         >> $fwd
       }
     } sinon si ($cour_idx > 0) {
-      // arête d'appel vers une fn usagère (pour la détection de cycle).
+      // arête d'appel vers une fonction usagère (pour la détection de cycle).
       // Position d'opérateur STRICTE : le mot « call » doit être l'opcode de
       // l'instruction, jamais un mot d'une constante texte.
       si (contient_t($l, " call ") ou commence_par($l, "call ")) {
@@ -3988,7 +3988,7 @@ si (longueur($err) > 1) {
   $dn_cour = ""
   tant_que ($dp < $n) {
     $dl0 = trim($ls[$dp])
-    si (commence_par($dl0, "fn ")) {
+    si (commence_par($dl0, "fonction ")) {
       $dn_cour = nom_fonction($dl0)
       si ($dn_cour != "") {
         joindre($rg_fn, $dn_cour)
@@ -4090,7 +4090,7 @@ si (longueur($err) > 1) {
             }
             }
           }
-          // (c) ret %valeur → lettre de retour de la fn (clé « %ret »)
+          // (c) ret %valeur → lettre de retour de la fonction (clé « %ret »)
           si ($tz[1] == "ret") {
             $lvr = lettre_valeur($tz[2], $zf, $za, $zb, $ls, $dt_fn, $dt_nm, $dt_lt)
             si (dt_graver($zf, "%ret", $lvr, $dt_fn, $dt_nm, $dt_lt)) { $dt_change = vrai }
@@ -4182,7 +4182,7 @@ si (longueur($err) > 1) {
   $i_t = 1
   tant_que ($i_t < $n) {
     $l = trim($ls[$i_t])
-    si (commence_par($l, "fn ")) {
+    si (commence_par($l, "fonction ")) {
       $nom = nom_fonction($l)
       $cname = c_name($nom)
       $ty = type_retour($l)
@@ -4263,7 +4263,7 @@ si (longueur($err) > 1) {
         $ll = sous_chaine($ll, $d0, longueur($ll))
         si ($ll == "}") { $prof = $prof - 1 }
         sinon {
-          si (commence_par($ll, "fn ")) { $prof = $prof + 1 }
+          si (commence_par($ll, "fonction ")) { $prof = $prof + 1 }
         }
         si ($prof > 0) {
           joindre($body_lines, $ll)
@@ -4870,7 +4870,7 @@ si (longueur($err) > 1) {
               $fn = $rtoks[2]
               $fname = $fn
               si (commence_par($fname, "$")) { $fname = sous_chaine($fname, 1, longueur($fname)) }
-              // fn utilisateur ?
+              // fonction utilisateur ?
               $fidx = 0
               $fk = 1
               tant_que ($fk < longueur($fn_noms)) {
