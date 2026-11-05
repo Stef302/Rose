@@ -3914,7 +3914,7 @@ si (longueur($err) > 1) {
           }
         }
         $fwd = $fwd + ");"
-        >> $fwd
+        >> ""
       }
     } sinon si ($cour_idx > 0) {
       // arête d'appel vers une fonction usagère (pour la détection de cycle).
@@ -4241,8 +4241,8 @@ si (longueur($err) > 1) {
         si ($ty != "") { $sig = $sig + " -> " + $ty + " {" } sinon { $sig = $sig + " {" }
       >> $sig
       si ($cname == "main") {
-        si ($recursif) { >> "    " }
-        >> "    "
+        >> "    r_main();"
+        >> "    return;"
       }
 
       // collect body lines
@@ -4648,7 +4648,6 @@ si (longueur($err) > 1) {
         } sinon si (commence_par($bl, ".")) {
           $lbl = trim(sous_chaine($bl, 0, longueur($bl)-1))
           si ($lbl != ".entree") {
-            >> "  r__" + sous_chaine($lbl, 1, longueur($lbl)) + ":"
           }
         } sinon si (commence_par($bl, "affect ")) {
           $parts = [""]
@@ -4696,8 +4695,6 @@ si (longueur($err) > 1) {
           }
           si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
           si (longueur($parts) >= 5) {
-            >> "    if (" + operand($parts[2], $flagpees) + ") /* goto */ break;_" + sous_chaine($parts[3], 1, longueur($parts[3])) + ";"
-            >> "    else /* goto */ break;_" + sous_chaine($parts[4], 1, longueur($parts[4])) + ";"
           }
         } sinon si (commence_par($bl, "br ")) {
           $parts = [""]
@@ -4715,7 +4712,6 @@ si (longueur($err) > 1) {
           }
           si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
           si (longueur($parts) >= 3) {
-            >> "    /* goto */ break;_" + sous_chaine($parts[2], 1, longueur($parts[2])) + ";"
           }
         } sinon si (contient_t($bl, " = ")) {
           $eq = 0
