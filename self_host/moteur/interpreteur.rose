@@ -22,18 +22,13 @@ fn main() -> entier {
   $val_courante = 0
 
   # ── Lire le premier jeton ──
-  # Ignorer les espaces initiaux
   $continuer_lecture = 1
-  tant_que ($continuer_lecture != 0) {
-    si ($pos >= $n) {
-      $continuer_lecture = 0
+  tant_que ($continuer_lecture != 0 et $pos < $n) {
+    $c = ordre($src[$pos])
+    si ($c == 32 ou $c == 9 ou $c == 10) {
+      $pos = $pos + 1
     } sinon {
-      $c = ordre($src[$pos])
-      si ($c == 32 ou $c == 9 ou $c == 10) {
-        $pos = $pos + 1
-      } sinon {
-        $continuer_lecture = 0
-      }
+      $continuer_lecture = 0
     }
   }
 
@@ -74,21 +69,17 @@ fn main() -> entier {
   }
   $resultat = $val_courante
 
-  # ── Boucle principale : lire opérande + opérateur + opérande + ... ──
+  # ── Boucle principale : lire opérateur + opérande ──
   $boucle_principale = 1
   tant_que ($boucle_principale != 0) {
     # Ignorer les espaces avant l'opérateur
     $continuer_lecture = 1
-    tant_que ($continuer_lecture != 0) {
-      si ($pos >= $n) {
-        $continuer_lecture = 0
+    tant_que ($continuer_lecture != 0 et $pos < $n) {
+      $c = ordre($src[$pos])
+      si ($c == 32 ou $c == 9 ou $c == 10) {
+        $pos = $pos + 1
       } sinon {
-        $c = ordre($src[$pos])
-        si ($c == 32 ou $c == 9 ou $c == 10) {
-          $pos = $pos + 1
-        } sinon {
-          $continuer_lecture = 0
-        }
+        $continuer_lecture = 0
       }
     }
 
@@ -111,16 +102,12 @@ fn main() -> entier {
       si ($t == $TT_PLUS) {
         # Lire l'opérande suivant
         $continuer_lecture = 1
-        tant_que ($continuer_lecture != 0) {
-          si ($pos >= $n) {
-            $continuer_lecture = 0
+        tant_que ($continuer_lecture != 0 et $pos < $n) {
+          $c = ordre($src[$pos])
+          si ($c == 32 ou $c == 9 ou $c == 10) {
+            $pos = $pos + 1
           } sinon {
-            $c = ordre($src[$pos])
-            si ($c == 32 ou $c == 9 ou $c == 10) {
-              $pos = $pos + 1
-            } sinon {
-              $continuer_lecture = 0
-            }
+            $continuer_lecture = 0
           }
         }
 
@@ -150,16 +137,12 @@ fn main() -> entier {
       } sinon si ($t == $TT_MOINS) {
         # Lire l'opérande suivant
         $continuer_lecture = 1
-        tant_que ($continuer_lecture != 0) {
-          si ($pos >= $n) {
-            $continuer_lecture = 0
+        tant_que ($continuer_lecture != 0 et $pos < $n) {
+          $c = ordre($src[$pos])
+          si ($c == 32 ou $c == 9 ou $c == 10) {
+            $pos = $pos + 1
           } sinon {
-            $c = ordre($src[$pos])
-            si ($c == 32 ou $c == 9 ou $c == 10) {
-              $pos = $pos + 1
-            } sinon {
-              $continuer_lecture = 0
-            }
+            $continuer_lecture = 0
           }
         }
 
