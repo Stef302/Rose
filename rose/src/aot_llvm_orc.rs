@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::process::Command;
 
 use inkwell::context::Context;
 use inkwell::module::{Module, Linkage};
@@ -555,15 +556,32 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
             }
         }
         "o" | "obj" => {
-            // Tentative d'émission de fichier objet
-            let result = target_machine.write_to_file(&module, FileType::Object, path);
-            if result.is_err() {
-                // Fallback : essayer l'assembly
-                let asm_path = format!("{}.s", sortie.trim_end_matches(".o").trim_end_matches(".obj"));
-                let asm_path = Path::new(&asm_path);
-                target_machine.write_to_file(&module, FileType::Assembly, asm_path)
-                    .map_err(|e| format!("échec émission objet et assembly : {:?}", e))?;
-                println!("rose: {} produit (assemblage, fallback objet)", asm_path.display());
+            // ── Émission de fichier objet natif ──
+            // Stratégie : générer l'IR LLVM (.ll), puis appeler clang -c pour
+            // produire le fichier objet natif. Cela évite les problèmes de
+            // TargetMachine::write_to_file avec FileType::Object sur certaines
+            // cibles (manque d'AsmPrinter ou MCObjectEmitter enregistré).
+            let ll_path = format!("{}.ll", sortie.trim_end_matches(".o").trim_end_matches(".obj"));
+            let ll_path = Path::new(&ll_path);
+            module.print_to_file(ll_path)
+                .map_err(|e| format!("échec écriture IR LLVM : {:?}", e))?;
+
+            // Appeler clang -c pour compiler le .ll en .o
+            let clang_status = Command::new("clang")
+                .args(["-c", ll_path.to_str().unwrap(), "-o", sortie])
+                .status();
+
+            match clang_status {
+                Ok(s) if s.success() => {
+                    println!("rose: {} produit (objet natif via clang)", sortie);
+                }
+                _ => {
+                    return Err(format!(
+                        "échec émission objet : clang -c {} -o {} a échoué",
+                        ll_path.display(),
+                        sortie
+                    ));
+                }
             }
         }
         _ => {

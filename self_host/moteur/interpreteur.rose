@@ -1,24 +1,21 @@
 # interpreteur.rose — Jalon M5.0, auto-hébergement du moteur Rose.
 #
-# Interpréteur Rose écrit EN Rose. Version minimale (M5.0) qui démontre
-# que le compilateur Rose peut compiler du code Rose écrit en Rose.
+# Interpréteur Rose écrit EN Rose. Version M5.1 : démonstration que le
+# compilateur Rose peut compiler du code Rose en binaire natif.
 #
 # Ce fichier est un programme Rose valide : compilé par le compilateur Rose
-# (compilateur/compilateur.rose), il produit un binaire natif qui s'exécute.
+# (compilateur/compilateur.rose via rose build), il produit un binaire
+# natif qui s'exécute.
 #
 # Utilisation (une fois compilé) :
 #   ./interpreteur
 #
-# Ce n'est PAS encore un interpréteur complet : il affiche juste un message
-# et quitte. Les étapes suivantes consistent à ajouter :
-#   - un lexer qui lit un fichier .rose
-#   - un parseur qui produit un AST
-#   - un évaluateur qui exécute l'AST
-#   puis de valider la parité avec le moteur C++.
+# Auto-hebergement M5 : en cours de construction...
+# Les prochaines étapes ajouteront un lexer, un parseur et un evaluateur.
 
-# Point d'entrée
-fn main() {
-  >> "Interpreteur Rose auto-heberge - version 0.1"
+fn main() -> entier {
+  >> "Interpreteur Rose auto-heberge - version 0.2 (M5.1)"
   >> "Ce programme est ecrit en Rose et compile par le compilateur Rose."
   >> "Auto-hebergement M5 : en cours..."
+  retour 0
 }
