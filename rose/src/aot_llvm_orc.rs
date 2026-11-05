@@ -555,14 +555,22 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
     // suivre et prepare le terrain pour une integration future.
     match pgo_mode {
         PgoMode::Generate => {
-            println!("rose: --pgo-generate demande. Pour un PGO complet :");
-            println!("  1. Recompiler avec instrumentation (passes LLVM instr-profiling)");
-            println!("  2. Executer le binaire pour generer un .profraw");
-            println!("  3. llvm-profdata merge -o prof.profdata raw.profraw");
-            println!("  4. Recompiler avec --pgo-use prof.profdata");
+            println!("rose: --pgo-generate demande.");
+            println!("  Workflow PGO complet :");
+            println!("  1. rose orc prog.rose -o prog.ll -O2 --pgo-generate");
+            println!("     (genere l'IR LLVM avec instrumentation)");
+            println!("  2. clang -fprofile-instr-generate prog.ll -o prog_instr");
+            println!("  3. ./prog_instr  (genere default.profraw)");
+            println!("  4. llvm-profdata merge -o prog.profdata default.profraw");
+            println!("  5. rose orc prog.rose -o prog_opt.ll -O2 --pgo-use prog.profdata");
+            println!("  Note: l'instrumentation PGO in-process necessite LLVM C API");
+            println!("  (LLVMAddInstrProfilingPass) non expose par inkwell 0.7.");
         }
         PgoMode::Use => {
-            println!("rose: --pgo-use demande. Fournir un .profdata pour l'optimisation guidee.");
+            println!("rose: --pgo-use demande.");
+            println!("  Fournir un .profdata (genere par llvm-profdata merge)");
+            println!("  pour l'optimisation guidee du code.");
+            println!("  Exemple : rose orc prog.rose -o prog.ll -O2 --pgo-use prog.profdata");
         }
         PgoMode::None => {}
     }

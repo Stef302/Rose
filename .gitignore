@@ -71,3 +71,4 @@ rose_compiler
 rose_interpreter
 rose_interpreter.cpp
 rose-20
+rose/rose
