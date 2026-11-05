@@ -1,0 +1,97 @@
+// emetteur_rust.rose — V4 : traducteur RIR -> Rust (entiers + chaines + globals).
+// Oracle : `rose build prog.rose -o sortie.rs` (transpiler_rir du moteur).
+
+// ---------- utilitaires chaînes ----------
+fn trim($s: chaine) -> chaine {
+  $n = longueur($s)
+  $i_t = 0
+  $stop = faux
+  tant_que ($i_t < $n et $stop == faux) {
+    $c = $s[$i_t]
+    si ($c == ' ' ou $c == '\t') { $i_t = $i_t + 1 } sinon { $stop = vrai }
+  }
+  $j = $n
+  $stop = faux
+  tant_que ($j > $i_t et $stop == faux) {
+    $c = $s[$j-1]
+    si ($c == ' ' ou $c == '\t') { $j = $j - 1 } sinon { $stop = vrai }
+  }
+  retour sous_chaine($s, $i_t, $j)
+}
+
+fn rust_type_name($t: chaine) -> chaine {
+  si ($t == "h") { retour "i64" }
+  si ($t == "s") { retour "String" }
+  si ($t == "b") { retour "bool" }
+  si ($t == "f") { retour "f64" }
+  si ($t == "q") { retour "i64" }
+  si ($t == "g") { retour "i64" }
+  si ($t == "l") { retour "Vec<i64>" }
+  si ($t == "t") { retour "Vec<u8>" }
+  si ($t == "y") { retour "i64" }
+  retour "i64"
+}
+
+// ---------- principal : en-tête Rust ----------
+fn emetteur_rust_entete() -> chaine {
+  $out = ""
+  $out = $out + "use std::io::Write;\\n"
+  $out = $out + "\\n"
+  $out = $out + "fn main() {\\n"
+  retour $out
+}
+
+fn emetteur_rust_pied() -> chaine {
+  $out = ""
+  $out = $out + "}\\n"
+  retour $out
+}
+
+// ---------- émission d'une fonction ----------
+fn emetteur_rust_fonction($nom: chaine, $params: chaine, $retour: chaine, $corps: chaine) -> chaine {
+  $out = ""
+  $out = $out + "fn " + $nom + "(" + $params + ") -> " + $retour + " {\\n"
+  $out = $out + $corps
+  $out = $out + "}\\n"
+  retour $out
+}
+
+// ---------- émission d'une expression entière ----------
+fn emetteur_rust_expr_entier($expr: chaine) -> chaine {
+  retour $expr
+}
+
+// ---------- émission print ----------
+fn emetteur_rust_print($expr: chaine) -> chaine {
+  retour "println!(\\"{}\\", " + $expr + ");\\n"
+}
+
+// ---------- émission affectation ----------
+fn emetteur_rust_affect($nom: chaine, $expr: chaine) -> chaine {
+  retour "let " + $nom + " = " + $expr + ";\\n"
+}
+
+// ---------- émission retour ----------
+fn emetteur_rust_retour($expr: chaine) -> chaine {
+  si ($expr == "") { retour "return;\\n" }
+  retour "return " + $expr + ";\\n"
+}
+
+// ---------- émission si ----------
+fn emetteur_rust_si($cond: chaine, $alors: chaine, $sinon: chaine) -> chaine {
+  $out = "if " + $cond + " {\\n" + $alors + "}"
+  si ($sinon != "") { $out = $out + " else {\\n" + $sinon + "}" }
+  $out = $out + "\\n"
+  retour $out
+}
+
+// ---------- émission tant_que ----------
+fn emetteur_rust_tant_que($cond: chaine, $corps: chaine) -> chaine {
+  retour "while " + $cond + " {\\n" + $corps + "}\\n"
+}
+
+// ---------- émission pour ----------
+fn emetteur_rust_pour($var: chaine, $debut: chaine, $fin: chaine, $corps: chaine) -> chaine {
+  $out = "for " + $var + " in " + $debut + "..=" + $fin + " {\\n" + $corps + "}\\n"
+  retour $out
+}
