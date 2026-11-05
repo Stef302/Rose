@@ -1,4 +1,4 @@
-// emetteur_rust.rose — V4 : traducteur RIR -> Rust (entiers + chaines + globals).
+// emetteur_rust.rose — V4 : traducteur RIR -> Rust (entiers + chaines + globals + fonctions).
 
 // ---------- utilitaires chaînes ----------
 fn trim($s: chaine) -> chaine {
@@ -37,7 +37,7 @@ fn chaine_rust($v: chaine) -> chaine {
   $n = longueur($v)
   tant_que ($i < $n) {
     $c = $v[$i]
-    si ($c == '"') { $out = $out + "\\"\"" }
+    si ($c == '"') { $out = $out + "\\\"" }
     sinon si ($c == '\\') { $out = $out + "\\\\" }
     sinon si ($c == 10) { $out = $out + "\\n" }
     sinon si ($c == 9) { $out = $out + "\\t" }
@@ -77,23 +77,37 @@ fn contient($s: chaine, $p: chaine) -> booleen {
   retour faux
 }
 
-// ---------- principal ----------
+fn premier_espace($s: chaine) -> entier {
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    si ($s[$i] == ' ') { retour $i }
+    $i = $i + 1
+  }
+  retour $n
+}
+
+fn nom_fonction($l: chaine) -> chaine {
+  $s = trim($l)
+  $s = sous_chaine($s, 9, longueur($s))
+  $i = premier_espace($s)
+  si ($i < longueur($s)) { $s = sous_chaine($s, 0, $i) }
+  retour $s
+}
+
+fn nom_type($t: chaine) -> chaine {
+  $t = trim($t)
+  si (longueur($t) == 0) { retour "entier" }
+  retour $t
+}
+
 fn rust_entete() -> chaine {
   $out = ""
-  $out = $out + "use std::io::Write;\\n"
-  $out = $out + "\\n"
+  $out = $out + "fn main() {\\n"
   retour $out
 }
 
 fn rust_pied() -> chaine {
-  retour ""
-}
-
-fn rust_main_debut() -> chaine {
-  retour "fn main() {\\n"
-}
-
-fn rust_main_fin() -> chaine {
   retour "}\\n"
 }
 
@@ -133,9 +147,9 @@ fn rust_fonction($nom: chaine, $params: chaine, $retour: chaine, $corps: chaine)
 }
 
 fn rust_affect($nom: chaine, $expr: chaine) -> chaine {
-  retour "let " + $nom + " = " + $expr + ";\\n"
+  retour "let mut " + $nom + " = " + $expr + ";\\n"
 }
 
-fn rust_affect_mut($nom: chaine, $expr: chaine) -> chaine {
+fn rust_affect_global($nom: chaine, $expr: chaine) -> chaine {
   retour "let mut " + $nom + " = " + $expr + ";\\n"
 }
