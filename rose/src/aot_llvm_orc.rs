@@ -116,8 +116,8 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
     // l'émission d'objet natif avec TargetMachine::write_to_file
 
     let triple = TargetMachine::get_default_triple();
-    let target = Target::get_first()
-        .ok_or("aucune cible LLVM disponible")?;
+    let target = Target::from_triple(&triple)
+        .map_err(|e| format!("échec résolution cible : {:?}", e))?;
     let target_machine = target.create_target_machine(
         &triple,
         "",
@@ -586,28 +586,33 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
         }
         "o" | "obj" => {
             // ── Émission de fichier objet natif ──
-            // Stratégie : générer l'IR LLVM (.ll), puis appeler clang -c pour
-            // produire le fichier objet natif.
-            let ll_path = format!("{}.ll", sortie.trim_end_matches(".o").trim_end_matches(".obj"));
-            let ll_path = Path::new(&ll_path);
-            module.print_to_file(ll_path)
-                .map_err(|e| format!("échec écriture IR LLVM : {:?}", e))?;
-
-            // Appeler clang -c pour compiler le .ll en .o
-            let clang_status = Command::new("clang")
-                .args(["-c", ll_path.to_str().unwrap(), "-o", sortie])
-                .status();
-
-            match clang_status {
-                Ok(s) if s.success() => {
-                    println!("rose: {} produit (objet natif via clang)", sortie);
+            // Tentative directe via TargetMachine::write_to_file
+            match target_machine.write_to_file(&module, FileType::Object, path) {
+                Ok(()) => {
+                    println!("rose: {} produit (objet natif via LLVM ORC)", sortie);
                 }
-                _ => {
-                    return Err(format!(
-                        "échec émission objet : clang -c {} -o {} a échoué",
-                        ll_path.display(),
-                        sortie
-                    ));
+                Err(e) => {
+                    // Fallback : générer l'IR LLVM (.ll), puis appeler clang -c
+                    let ll_path = format!("{}.ll", sortie.trim_end_matches(".o").trim_end_matches(".obj"));
+                    let ll_path = Path::new(&ll_path);
+                    module.print_to_file(ll_path)
+                        .map_err(|e| format!("échec écriture IR LLVM : {:?}", e))?;
+
+                    let clang_status = Command::new("clang")
+                        .args(["-c", ll_path.to_str().unwrap(), "-o", sortie])
+                        .status();
+
+                    match clang_status {
+                        Ok(s) if s.success() => {
+                            println!("rose: {} produit (objet natif via clang)", sortie);
+                        }
+                        _ => {
+                            return Err(format!(
+                                "échec émission objet : TargetMachine et clang ont échoué : {:?}",
+                                e
+                            ));
+                        }
+                    }
                 }
             }
         }
