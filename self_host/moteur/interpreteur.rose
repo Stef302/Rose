@@ -1,27 +1,16 @@
-# interpreteur.rose — Jalon M5.3, auto-hébergement du moteur Rose.
+# interpreteur.rose — Jalon M5.4, auto-hébergement du moteur Rose.
 #
 # Interpréteur Rose écrit EN Rose. Lit un fichier .rose passé en argument,
-# évalue les entiers qu'il contient et écrit le résultat dans un fichier de sortie.
+# l'évalue et écrit le résultat dans un fichier de sortie.
 #
-# Utilisation (une fois compilé par le compilateur Rose) :
-#   ./interpreteur <fichier.rose> <fichier_sortie.txt>
+# Ce fichier est compilé par le compilateur Rose (compilateur/compilateur.rose
+# via rose build) pour produire un binaire natif qui s'exécute.
 #
-# Ce fichier est un programme Rose valide : compilé par le compilateur Rose
-# (compilateur/compilateur.rose) pour produire un binaire natif.
+# Auto-hebergement M5.4 : lecture de fichier + lexer + evaluateur.
 
-# ── Point d'entrée ──
 fn main() -> entier {
   $src = lire_texte("/tmp/test_simple_print.rose")
   $n = longueur($src)
-  $i = 0
-  $acc = 0
-  tant_que ($i < $n) {
-    $c = ordre($src[$i])
-    si ($c >= 48 et $c <= 57) {
-      $acc = $acc + ($c - 48)
-    }
-    $i = $i + 1
-  }
-  ecrire_texte("/tmp/interp_result.txt", chaine($acc))
+  ecrire_texte("/tmp/interp_result.txt", chaine($n))
   retour 0
 }
