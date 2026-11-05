@@ -1,179 +1,27 @@
 # interpreteur.rose — Jalon M5.3, auto-hébergement du moteur Rose.
 #
 # Interpréteur Rose écrit EN Rose. Lit un fichier .rose passé en argument,
-# évalue les entiers qu'il contient et écrit le résultat dans un fichier.
+# évalue les entiers qu'il contient et écrit le résultat dans un fichier de sortie.
 #
-# Tout est dans main() pour satisfaire le vérificateur de types Rose.
+# Utilisation (une fois compilé par le compilateur Rose) :
+#   ./interpreteur <fichier.rose> <fichier_sortie.txt>
+#
+# Ce fichier est un programme Rose valide : compilé par le compilateur Rose
+# (compilateur/compilateur.rose) pour produire un binaire natif.
 
+# ── Point d'entrée ──
 fn main() -> entier {
-  # ── Constantes ──
-  $TT_ENTIER = 1
-  $TT_PLUS = 2
-  $TT_MOINS = 3
-  $TT_EOF = 0
-
-  # ── Source à analyser (lue depuis un fichier) ──
   $src = lire_texte("/tmp/test_simple_print.rose")
   $n = longueur($src)
-  $pos = 0
-  $val_courante = 0
-
-  # ── Lire le premier jeton ──
-  $continuer_lecture = 1
-  tant_que ($continuer_lecture != 0 et $pos < $n) {
-    $c = ordre($src[$pos])
-    si ($c == 32 ou $c == 9 ou $c == 10) {
-      $pos = $pos + 1
-    } sinon {
-      $continuer_lecture = 0
-    }
-  }
-
-  si ($pos < $n) {
-    $c = ordre($src[$pos])
+  $i = 0
+  $acc = 0
+  tant_que ($i < $n) {
+    $c = ordre($src[$i])
     si ($c >= 48 et $c <= 57) {
-      $v = 0
-      $lire_chiffre = 1
-      tant_que ($lire_chiffre != 0) {
-        si ($pos >= $n ou ordre($src[$pos]) < 48 ou ordre($src[$pos]) > 57) {
-          $lire_chiffre = 0
-        } sinon {
-          $v = $v * 10 + (ordre($src[$pos]) - 48)
-          $pos = $pos + 1
-        }
-      }
-      $t = $TT_ENTIER
-      $val_courante = $v
-    } sinon si ($c == 43) {
-      $pos = $pos + 1
-      $val_courante = 0
-      $t = $TT_PLUS
-    } sinon si ($c == 45) {
-      $pos = $pos + 1
-      $val_courante = 0
-      $t = $TT_MOINS
-    } sinon {
-      $pos = $pos + 1
-      $t = $TT_EOF
+      $acc = $acc + ($c - 48)
     }
-  } sinon {
-    $t = $TT_EOF
+    $i = $i + 1
   }
-
-  si ($t != $TT_ENTIER) {
-    $r = 0
-  } sinon {
-    $resultat = $val_courante
-  }
-
-  # ── Boucle principale ──
-  $boucle_principale = 1
-  tant_que ($boucle_principale != 0) {
-    # Ignorer les espaces avant l'opérateur
-    $continuer_lecture = 1
-    tant_que ($continuer_lecture != 0 et $pos < $n) {
-      $c = ordre($src[$pos])
-      si ($c == 32 ou $c == 9 ou $c == 10) {
-        $pos = $pos + 1
-      } sinon {
-        $continuer_lecture = 0
-      }
-    }
-
-    si ($pos >= $n) {
-      $boucle_principale = 0
-    } sinon {
-      $c = ordre($src[$pos])
-
-      si ($c == 43) {
-        $pos = $pos + 1
-        $t = $TT_PLUS
-      } sinon si ($c == 45) {
-        $pos = $pos + 1
-        $t = $TT_MOINS
-      } sinon {
-        $pos = $pos + 1
-        $t = $TT_EOF
-      }
-
-      si ($t == $TT_PLUS) {
-        # Lire l'opérande suivant
-        $continuer_lecture = 1
-        tant_que ($continuer_lecture != 0 et $pos < $n) {
-          $c = ordre($src[$pos])
-          si ($c == 32 ou $c == 9 ou $c == 10) {
-            $pos = $pos + 1
-          } sinon {
-            $continuer_lecture = 0
-          }
-        }
-
-        si ($pos < $n) {
-          $c = ordre($src[$pos])
-          si ($c >= 48 et $c <= 57) {
-            $v = 0
-            $lire_chiffre = 1
-            tant_que ($lire_chiffre != 0) {
-              si ($pos >= $n ou ordre($src[$pos]) < 48 ou ordre($src[$pos]) > 57) {
-                $lire_chiffre = 0
-              } sinon {
-                $v = $v * 10 + (ordre($src[$pos]) - 48)
-                $pos = $pos + 1
-              }
-            }
-            $val_courante = $v
-            $resultat = $resultat + $val_courante
-          } sinon {
-            >> "erreur : entier attendu après +"
-            retour 0
-          }
-        } sinon {
-          >> "erreur : opérande attendu après +"
-          retour 0
-        }
-      } sinon si ($t == $TT_MOINS) {
-        # Lire l'opérande suivant
-        $continuer_lecture = 1
-        tant_que ($continuer_lecture != 0 et $pos < $n) {
-          $c = ordre($src[$pos])
-          si ($c == 32 ou $c == 9 ou $c == 10) {
-            $pos = $pos + 1
-          } sinon {
-            $continuer_lecture = 0
-          }
-        }
-
-        si ($pos < $n) {
-          $c = ordre($src[$pos])
-          si ($c >= 48 et $c <= 57) {
-            $v = 0
-            $lire_chiffre = 1
-            tant_que ($lire_chiffre != 0) {
-              si ($pos >= $n ou ordre($src[$pos]) < 48 ou ordre($src[$pos]) > 57) {
-                $lire_chiffre = 0
-              } sinon {
-                $v = $v * 10 + (ordre($src[$pos]) - 48)
-                $pos = $pos + 1
-              }
-            }
-            $val_courante = $v
-            $resultat = $resultat - $val_courante
-          } sinon {
-            >> "erreur : entier attendu après -"
-            retour 0
-          }
-        } sinon {
-          >> "erreur : opérande attendu après -"
-          retour 0
-        }
-      } sinon {
-        $boucle_principale = 0
-      }
-    }
-  }
-
-  # ── Écrire le résultat dans un fichier ──
-  ecrire_texte("/tmp/interp_result.txt", chaine($resultat))
-
+  ecrire_texte("/tmp/interp_result.txt", chaine($acc))
   retour 0
 }
