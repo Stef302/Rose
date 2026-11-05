@@ -175,6 +175,7 @@ fn main() {
             let mut fichier = String::new();
             let mut opt_level = aot_llvm_orc::OrcOptLevel::O2;
             let mut pgo_mode = aot_llvm_orc::PgoMode::None;
+            let mut target_triple: Option<String> = None;
             let mut i = 2;
             while i < argv.len() {
                 if argv[i] == "-O1" { opt_level = aot_llvm_orc::OrcOptLevel::O1; i += 1; }
@@ -182,6 +183,7 @@ fn main() {
                 else if argv[i] == "-O3" { opt_level = aot_llvm_orc::OrcOptLevel::O3; i += 1; }
                 else if argv[i] == "--pgo-generate" { pgo_mode = aot_llvm_orc::PgoMode::Generate; i += 1; }
                 else if argv[i] == "--pgo-use" { pgo_mode = aot_llvm_orc::PgoMode::Use; i += 1; }
+                else if argv[i] == "--target" && i + 1 < argv.len() { target_triple = Some(argv[i + 1].clone()); i += 2; }
                 else if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
                     sortie = argv[i + 1].clone(); i += 2;
                 } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
@@ -193,7 +195,7 @@ fn main() {
                 if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
-            match aot_llvm_orc::run_orc(&fichier, &sortie, opt_level, pgo_mode) {
+            match aot_llvm_orc::run_orc(&fichier, &sortie, opt_level, pgo_mode, target_triple.as_deref()) {
                 Ok(()) => {
                     println!("rose: {} produit (AOT LLVM ORC, niveau {:?}, PGO {:?})", sortie, opt_level, pgo_mode);
                     std::process::exit(0);

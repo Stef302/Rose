@@ -25,7 +25,7 @@ use inkwell::values::{BasicValueEnum, BasicMetadataValueEnum};
 use inkwell::IntPredicate;
 use inkwell::OptimizationLevel;
 use inkwell::targets::{
-    InitializationConfig, Target, TargetMachine, CodeModel, RelocMode, FileType,
+    InitializationConfig, Target, TargetMachine, TargetTriple, CodeModel, RelocMode, FileType,
 };
 
 use crate::front::{Expr, Instr, Programme};
@@ -77,7 +77,7 @@ impl PgoMode {
 }
 
 /// Point d'entrée CLI pour la commande `orc`
-pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: PgoMode) -> Result<(), String> {
+pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: PgoMode, target_triple: Option<&str>) -> Result<(), String> {
     // Lire et analyser le source Rose
     let mut source = String::new();
     File::open(fichier)
@@ -115,7 +115,11 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
     // Note : l'initialisation des passes LLVM n'est pas nécessaire pour
     // l'émission d'objet natif avec TargetMachine::write_to_file
 
-    let triple = TargetMachine::get_default_triple();
+    let triple = if let Some(t) = target_triple {
+        TargetTriple::create(t)
+    } else {
+        TargetMachine::get_default_triple()
+    };
     let target = Target::from_triple(&triple)
         .map_err(|e| format!("échec résolution cible : {:?}", e))?;
     let target_machine = target.create_target_machine(
