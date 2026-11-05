@@ -65,3 +65,8 @@ bench/langages/mdp_philox
 *.gcda
 *.gcno
 *.pdb
+rose_compiler.cpp
+rose_interpreter.cpp
+rose_compiler
+rose_interpreter
+rose_interpreter.cpp
