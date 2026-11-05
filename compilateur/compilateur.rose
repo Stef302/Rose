@@ -3031,6 +3031,7 @@ si (longueur($err) == 1) {
 }
 
 // emetteur_rust.rose — V4 : traducteur RIR -> Rust.
+// emetteur_rust.rose — V4 : traducteur RIR -> Rust.
 // emetteur_cpp.rose — M4.4 V3 : traducteur RIR -> C++ (entiers + chaines + globals).
 // Oracle : `rose build prog.rose -o sortie.cpp` (transpiler_rir du moteur).
 
@@ -4602,27 +4603,37 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
           // temp/global gouverne (genre = ty_of + dest_ty).
           $aty = genre($arg, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
           si ($aty == "z") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "q") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "g") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "f") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "b") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "s") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "t") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "l") {
-            >> "    println!(\"{:?}\", " + operand($arg, $flagpees) + ");"
+            $fmt_debug = "{:?}"
+            >> "    println!(" + $fmt_debug + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "h") {
-            >> "    println!(\"{:?}\", " + operand($arg, $flagpees) + ");"
+            $fmt_debug = "{:?}"
+            >> "    println!(" + $fmt_debug + ", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "y") {
             >> "    " + operand($arg, $flagpees) + ".afficher();"
           } sinon {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
+            $fmt_int = "{}"
+            >> "    println!(" + $fmt_int + ", " + operand($arg, $flagpees) + ");"
           }
         } sinon si ($bl == "ret.u") {
           >> "    return 0;"
