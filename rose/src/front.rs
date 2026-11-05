@@ -925,11 +925,37 @@ fn nom_fonction_connue(prog: &Programme, module: &str, nom: &str) -> bool {
         || (nom == "entier" || nom == "rationnel" || nom == "flottant" || nom == "chaine")
 }
 
+use std::cell::RefCell;
+thread_local! {
+    static GLOBALS: RefCell<HashMap<String, Ty>> = RefCell::new(HashMap::new());
+}
+
 pub fn verifier(prog: &mut Programme) -> Result<(), Err> {
-    for nom in &prog.ordre.clone() {
+    // pré-passe : collecte les types des variables globales déclarées au
+    // niveau supérieur, pour qu'elles soient disponibles dans les corps de
+    // fonction.
+    let mut globals: HashMap<String, Ty> = HashMap::new();
+    for i in &prog.instructions {
+        match i {
+            Instr::Affect { nom, e, ligne } => {
+                if let Ok(t) = expr_type(prog, e, &mut globals) {
+                    if t.n != TyKind::Vide {
+                        let cible = globals.get(nom).cloned().unwrap_or(t);
+                        globals.insert(nom.clone(), cible);
+                    }
+                }
+            }
+            Instr::Lire { nom, ty, ligne } => {
+                let t_final = globals.get(nom).cloned().unwrap_or_else(|| Ty::simple(TyKind::Entier));
+                globals.insert(nom.clone(), t_final);
+            }
+            _ => {}
+        }
+    }
+
+    GLOBALS.with(|g| *g.borrow_mut() = globals.clone());
+    for (nom, sig) in &prog.signatures {
         let sig = prog.signatures.get(nom).unwrap().clone();
-        // miroir C++ verifier_signature : corps absent = externe, frontières
-        // limitées à entier/flottant/booleen/chaine.
         if sig.corps.is_none() {
             let frontieres: Vec<&Ty> = sig.params.iter().map(|(_, t)| t)
                 .chain(std::iter::once(&sig.retour)).collect();
@@ -941,20 +967,16 @@ pub fn verifier(prog: &mut Programme) -> Result<(), Err> {
                 }
             }
         }
-        // miroir C++ : les noms de paramètres sont vérifiés réservés ici
         for (pn, _) in &sig.params { verifier_nom_reserve(pn, 0)?; }
         let mut env: HashMap<String, Ty> = HashMap::new();
         for (pn, pt) in &sig.params { env.insert(pn.clone(), pt.clone()); }
-        // vérifie le corps dans un environnement vierge de globales locales
         if let Some(corps) = &sig.corps {
-            // miroir C++ rose.cpp:1261 : a_assume = true pour TOUT corps de
-            // fonction (le « -> type » declare ne pilote pas ce drapeau ; il
-            // sert ailleurs, au controle du retour manquant).
             verifier_bloc(prog, corps, &mut env, &sig.retour, true)?;
         }
     }
     let mut env: HashMap<String, Ty> = HashMap::new();
     verifier_bloc(prog, &prog.instructions.clone(), &mut env, &Ty::vide(), false)?;
+    GLOBALS.with(|g| g.borrow_mut().clear());
     Ok(())
 }
 
@@ -1005,7 +1027,10 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 }
                 // affectation dans une variable existante : contrôle de domaine
                 let mut cible = t.clone();
-                let existante = env.get(nom).cloned();
+                // si la variable est un global, on la traite comme un shadow
+                // (pas de contrôle de type, comme le moteur C++)
+                let is_global = GLOBALS.with(|g| g.borrow().contains_key(nom));
+                let existante = if is_global { None } else { env.get(nom).cloned() };
                 if let Some(ex) = &existante {
                     cible = ex.clone();
                     if !(ex.n == TyKind::Dyn || t.n == TyKind::Dyn
@@ -1215,8 +1240,15 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
         }
         Expr::ChaineLit(..) => Ok(Ty::simple(TyKind::Chaine)),
         Expr::BooleenLit(..) => Ok(Ty::simple(TyKind::Booleen)),
-        Expr::Var(n, l) => env.get(n).cloned()
-            .ok_or_else(|| fmt_err(&format!("Variable '{}' utilisée sans valeur", n), *l, 0)),
+        Expr::Var(n, l) => {
+            if let Some(t) = env.get(n).cloned() { Ok(t) }
+            else {
+                GLOBALS.with(|g| {
+                    g.borrow().get(n).cloned()
+                        .ok_or_else(|| fmt_err(&format!("Variable '{}' utilisée sans valeur", n), *l, 0))
+                })
+            }
+        }
         Expr::ListeLit(el, ligne) => {
             // miroir C++ NK::ListeLit (rose.cpp:1393-1407)
             let ligne = *ligne;

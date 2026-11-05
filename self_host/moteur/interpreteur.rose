@@ -1,16 +1,144 @@
 # interpreteur.rose — Jalon M5.4, auto-hébergement du moteur Rose.
 #
-# Interpréteur Rose écrit EN Rose. Lit un fichier .rose passé en argument,
-# l'évalue et écrit le résultat dans un fichier de sortie.
+# Interpréteur Rose écrit EN Rose. Lit un fichier .rose, l'évalue et
+# écrit le résultat dans un fichier de sortie.
 #
 # Ce fichier est compilé par le compilateur Rose (compilateur/compilateur.rose
 # via rose build) pour produire un binaire natif qui s'exécute.
 #
 # Auto-hebergement M5.4 : lecture de fichier + lexer + evaluateur.
 
-fn main() -> entier {
-  $src = lire_texte("/tmp/test_simple_print.rose")
+# ── Constantes de jetons ──
+$TT_ENTIER = 1
+$TT_PLUS = 2
+$TT_MOINS = 3
+$TT_EOF = 0
+
+# ── Variables globales du lexer ──
+$src = ""
+$pos = 0
+$n = 0
+$val_courante = 0
+
+# ── Lexer : lire le prochain jeton ──
+fn lexer_suivant() -> entier {
+  $TT_ENTIER = 1
+  $TT_PLUS = 2
+  $TT_MOINS = 3
+  $TT_EOF = 0
+  $val_courante = 0
+
+  $continuer_lecture = 1
+  tant_que ($continuer_lecture != 0 et $pos < $n) {
+    $c = ordre($src[$pos])
+    si ($c == 32 ou $c == 9 ou $c == 10) {
+      $pos = $pos + 1
+    } sinon {
+      $continuer_lecture = 0
+    }
+  }
+
+  si ($pos >= $n) {
+    retour $TT_EOF
+  }
+
+  $c = ordre($src[$pos])
+
+  si ($c >= 48 et $c <= 57) {
+    $v = 0
+    $lire_chiffre = 1
+    tant_que ($lire_chiffre != 0) {
+      si ($pos >= $n ou ordre($src[$pos]) < 48 ou ordre($src[$pos]) > 57) {
+        $lire_chiffre = 0
+      } sinon {
+        $v = $v * 10 + (ordre($src[$pos]) - 48)
+        $pos = $pos + 1
+      }
+    }
+    $val_courante = $v
+    retour $TT_ENTIER
+  } sinon si ($c == 43) {
+    $pos = $pos + 1
+    $val_courante = 0
+    retour $TT_PLUS
+  } sinon si ($c == 45) {
+    $pos = $pos + 1
+    $val_courante = 0
+    retour $TT_MOINS
+  } sinon {
+    $pos = $pos + 1
+    retour $TT_EOF
+  }
+  retour $TT_EOF
+}
+
+# ── Évaluer une expression chaîne ──
+fn evaluer($source: chaine) -> entier {
+  $TT_ENTIER = 1
+  $TT_PLUS = 2
+  $TT_MOINS = 3
+  $TT_EOF = 0
+  $src = ""
+  $pos = 0
+  $n = 0
+  $val_courante = 0
+  $t = 0
+  $resultat = 0
+  $continuer = 0
+
+  $src = $source
   $n = longueur($src)
-  ecrire_texte("/tmp/interp_result.txt", chaine($n))
+  $pos = 0
+  $val_courante = 0
+
+  $t = lexer_suivant()
+  si ($t != $TT_ENTIER) {
+    retour 0
+  }
+  $resultat = $val_courante
+
+  $continuer = 1
+  tant_que ($continuer != 0) {
+    $t = lexer_suivant()
+    si ($t == $TT_EOF) {
+      $continuer = 0
+    } sinon si ($t == $TT_PLUS) {
+      $t = lexer_suivant()
+      si ($t != $TT_ENTIER) {
+        retour 0
+      }
+      $resultat = $resultat + $val_courante
+    } sinon si ($t == $TT_MOINS) {
+      $t = lexer_suivant()
+      si ($t != $TT_ENTIER) {
+        retour 0
+      }
+      $resultat = $resultat - $val_courante
+    } sinon {
+      $continuer = 0
+    }
+  }
+
+  retour $resultat
+}
+
+# ── Point d'entrée ──
+fn main() -> entier {
+  $TT_ENTIER = 1
+  $TT_PLUS = 2
+  $TT_MOINS = 3
+  $TT_EOF = 0
+  $src = ""
+  $pos = 0
+  $n = 0
+  $val_courante = 0
+  $t = 0
+  $resultat = 0
+  $continuer = 0
+
+  $src = lire_texte("/tmp/test_simple_print.rose")
+  $r = evaluer($src)
+  ecrire_texte("/tmp/interp_result.txt", chaine($r))
+
   retour 0
 }
