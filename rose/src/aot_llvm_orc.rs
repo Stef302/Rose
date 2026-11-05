@@ -125,6 +125,29 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
     // Table des valeurs nommées (variables)
     let mut named_values: HashMap<String, BasicValueEnum> = HashMap::new();
 
+    // ── PGO (Profile-Guided Optimization) ─────────────────────────────────
+    // Le PGO complet avec LLVM ORC in-process nécessite des passes
+    // d'instrumentation LLVM qui ne sont pas exposées par l'API inkwell 0.7.
+    // Pour utiliser le PGO :
+    //   1. --pgo-generate : compiler avec l'instrumentation (à implémenter
+    //      quand l'API le permettra)
+    //   2. Exécuter le binaire généré pour produire un .profraw
+    //   3. llvm-profdata merge -o prof.profdata raw.profraw
+    //   4. --pgo-use : recompiler avec le .profdata pour l'optimisation guidée
+    match pgo_mode {
+        PgoMode::Generate => {
+            println!("rose: --pgo-generate demandé. Pour le PGO complet :");
+            println!("  1. Compiler avec instrumentation (à implémenter)");
+            println!("  2. Exécuter le binaire pour générer un .profraw");
+            println!("  3. llvm-profdata merge -o prof.profdata raw.profraw");
+            println!("  4. Recompiler avec --pgo-use prof.profdata");
+        }
+        PgoMode::Use => {
+            println!("rose: --pgo-use demandé. Fournir un .profdata pour l'optimisation guidée.");
+        }
+        PgoMode::None => {}
+    }
+
     // ── Compilation de la fonction main ──────────────────────────────────
     let i64_type = context.i64_type();
     let fn_type = i64_type.fn_type(&[], false);
