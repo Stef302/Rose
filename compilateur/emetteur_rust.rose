@@ -18,7 +18,7 @@ fn trim($s: chaine) -> chaine {
   retour sous_chaine($s, $i_t, $j)
 }
 
-fn rust_type_name($t: chaine) -> chaine {
+fn cpp_type_name($t: chaine) -> chaine {
   si ($t == "h") { retour "i64" }
   si ($t == "s") { retour "String" }
   si ($t == "b") { retour "bool" }
@@ -31,16 +31,14 @@ fn rust_type_name($t: chaine) -> chaine {
   retour "i64"
 }
 
-fn chaine_rust($v: chaine) -> chaine {
+fn chaine_cpp($v: chaine) -> chaine {
   $out = "\""
   $i = 0
   $n = longueur($v)
   tant_que ($i < $n) {
     $c = $v[$i]
-    si ($c == '"') { $out = $out + "\\\"" }
-    sinon si ($c == '\\') { $out = $out + "\\\\" }
-    sinon si ($c == 10) { $out = $out + "\\n" }
-    sinon si ($c == 9) { $out = $out + "\\t" }
+    si (ordre($c) == 10) { $out = $out + "\\n" }
+    sinon si (ordre($c) == 9) { $out = $out + "\\t" }
     sinon { $out = $out + $c }
     $i = $i + 1
   }
@@ -101,55 +99,55 @@ fn nom_type($t: chaine) -> chaine {
   retour $t
 }
 
-fn rust_entete() -> chaine {
+fn cpp_entete() -> chaine {
   $out = ""
   $out = $out + "fn main() {\\n"
   retour $out
 }
 
-fn rust_pied() -> chaine {
+fn cpp_pied() -> chaine {
   retour "}\\n"
 }
 
-fn rust_affiche_entier($expr: chaine) -> chaine {
-  retour "println!(\\"{}\\", " + $expr + ");\\n"
+fn cpp_affiche_entier($expr: chaine) -> chaine {
+  retour "println!(\\\"{}\\\", " + $expr + ");\\n"
 }
 
-fn rust_affiche_chaine($expr: chaine) -> chaine {
-  retour "println!(\\"{}\\", " + $expr + ");\\n"
+fn cpp_affiche_chaine($expr: chaine) -> chaine {
+  retour "println!(\\\"{}\\\", " + $expr + ");\\n"
 }
 
-fn rust_retour($expr: chaine) -> chaine {
+fn cpp_retour($expr: chaine) -> chaine {
   si ($expr == "") { retour "return;\\n" }
   retour "return " + $expr + ";\\n"
 }
 
-fn rust_si($cond: chaine, $alors: chaine, $sinon: chaine) -> chaine {
+fn cpp_si($cond: chaine, $alors: chaine, $sinon: chaine) -> chaine {
   $out = "if " + $cond + " {\\n" + $alors + "}"
   si ($sinon != "") { $out = $out + " else {\\n" + $sinon + "}" }
   $out = $out + "\\n"
   retour $out
 }
 
-fn rust_tant_que($cond: chaine, $corps: chaine) -> chaine {
+fn cpp_tant_que($cond: chaine, $corps: chaine) -> chaine {
   retour "while " + $cond + " {\\n" + $corps + "}\\n"
 }
 
-fn rust_pour($var: chaine, $debut: chaine, $fin: chaine, $corps: chaine) -> chaine {
+fn cpp_pour($var: chaine, $debut: chaine, $fin: chaine, $corps: chaine) -> chaine {
   retour "for " + $var + " in " + $debut + "..=" + $fin + " {\\n" + $corps + "}\\n"
 }
 
-fn rust_fonction($nom: chaine, $params: chaine, $retour: chaine, $corps: chaine) -> chaine {
+fn cpp_fonction($nom: chaine, $params: chaine, $retour: chaine, $corps: chaine) -> chaine {
   $out = "fn " + $nom + "(" + $params + ") -> " + $retour + " {\\n"
   $out = $out + $corps
   $out = $out + "}\\n"
   retour $out
 }
 
-fn rust_affect($nom: chaine, $expr: chaine) -> chaine {
+fn cpp_affect($nom: chaine, $expr: chaine) -> chaine {
   retour "let mut " + $nom + " = " + $expr + ";\\n"
 }
 
-fn rust_affect_global($nom: chaine, $expr: chaine) -> chaine {
+fn cpp_affect_global($nom: chaine, $expr: chaine) -> chaine {
   retour "let mut " + $nom + " = " + $expr + ";\\n"
 }
