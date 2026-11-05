@@ -687,7 +687,7 @@ fn chaine_rust($v: chaine) -> chaine {
 
 // instruction de poussée selon le genre de l'élément (miroir liste.push)
 fn pousse_texte($lst: chaine, $el: chaine, $ety: chaine) -> chaine {
-  si ($ety == "s") { retour "    Vec<i64>_push(" + $lst + ", " + $el + ".c_str());" }
+  si ($ety == "s") { retour "    Vec<i64>_push(" + $lst + ", " + $el + ");" }
   si ($ety == "g") { retour "    Vec<i64>_push_gd(" + $lst + ", " + $el + ");" }
   si ($ety == "q") { retour "    Vec<i64>_push_q(" + $lst + ", " + $el + ");" }
   si ($ety == "f") { retour "    Vec<i64>_push_flt(" + $lst + ", " + $el + ");" }
@@ -1590,7 +1590,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
           } sinon si ($aty == "b") {
             >> "    println!("{}", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "s") {
-            >> "    println!("{}", " + operand($arg, $flagpees) + ".c_str());"
+            >> "    println!("{}", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "t") {
             >> "    println!("{}", " + operand($arg, $flagpees) + ");"
           } sinon si ($aty == "l") {
@@ -1781,7 +1781,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             $a0 = "0"; $a1 = "0"
             si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2], $flagpees) }
             si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3], $flagpees) }
-            >> "    " + $dname + " = rose_q_div(rose_q_de(" + $a0 + "), rose_q_de(" + $a1 + "));"
+            >> "    " + $dname + " = /* q_div *//* q_de */" + $a0 + "), /* q_de */" + $a1 + "));"
           } sinon si ($op == "add.z") {
             $a0 = "0"; $a1 = "0"
             si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2], $flagpees) }
@@ -1855,15 +1855,15 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                   si ($pi2 < longueur($pars)) { $pty = $pars[$pi2] }
                   si ($pty == "g") {
                     si ($aty == "z" ou $aty == "u") {
-                      si (commence_par($argtok, prefix_cst()) == faux) { $atxt = "rose_vers_mpz(" + $atxt + ")" }
+                      si (commence_par($argtok, prefix_cst()) == faux) { $atxt = "/* vers_mpz */" + $atxt + ")" }
                     }
                   }
                   si ($pty == "z") {
-                    si ($aty == "f") { $atxt = "rose_depuis_double(" + $atxt + ")" }
+                    si ($aty == "f") { $atxt = "/* depuis_double */" + $atxt + ")" }
                   }
                   si ($pty == "f") {
                     si ($aty == "z" ou $aty == "u") {
-                      si (commence_par($argtok, prefix_cst()) == faux) { $atxt = "rose_vers_double(" + $atxt + ")" }
+                      si (commence_par($argtok, prefix_cst()) == faux) { $atxt = "/* vers_double */" + $atxt + ")" }
                     }
                   }
                   si ($first == faux) { $call = $call + ", " }
@@ -1876,19 +1876,19 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 $dty = genre($dest, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($dty == "g") {
                   si ($rty == "z" ou $rty == "u") {
-                    >> "    " + $dname + " = rose_vers_mpz(" + $call + ");"
+                    >> "    " + $dname + " = /* vers_mpz */" + $call + ");"
                   } sinon {
                     >> "    " + $dname + " = " + $call + ";"
                   }
                 } sinon si ($dty == "z") {
                   si ($rty == "f") {
-                    >> "    " + $dname + " = rose_depuis_double(" + $call + ");"
+                    >> "    " + $dname + " = /* depuis_double */" + $call + ");"
                   } sinon {
                     >> "    " + $dname + " = " + $call + ";"
                   }
                 } sinon si ($dty == "f") {
                   si ($rty == "z" ou $rty == "u") {
-                    >> "    " + $dname + " = rose_vers_double(" + $call + ");"
+                    >> "    " + $dname + " = /* vers_double */" + $call + ");"
                   } sinon {
                     >> "    " + $dname + " = " + $call + ";"
                   }
@@ -1909,7 +1909,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                       >> "    Vec<i64>_push_int(" + $lst + ", " + $vj + ");"
                     }
                   } sinon {
-                    >> "    Vec<i64>_push(" + $lst + ", " + operand($el, $flagpees) + ".c_str());"
+                    >> "    Vec<i64>_push(" + $lst + ", " + operand($el, $flagpees) + ");"
                   }
                 } sinon {
                   $ety = genre($el, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
@@ -1922,17 +1922,17 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                   } sinon si ($ety == "z") {
                     >> "    Vec<i64>_push_int(" + $lst + ", " + operand($el, $flagpees) + ");"
                   } sinon {
-                    >> "    Vec<i64>_push(" + $lst + ", " + operand($el, $flagpees) + ".c_str());"
+                    >> "    Vec<i64>_push(" + $lst + ", " + operand($el, $flagpees) + ");"
                   }
                 }
               } sinon si ($fname == "ordre") {
-                >> "    " + $dname + " = rose_ordre(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* ordre */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "caractere") {
-                >> "    " + $dname + " = rose_caractere(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* caractere */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "sous_chaine") {
-                >> "    " + $dname + " = rose_sous_chaine(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ", " + operand($rtoks[5], $flagpees) + ");"
+                >> "    " + $dname + " = /* sous_chaine */" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ", " + operand($rtoks[5], $flagpees) + ");"
               } sinon si ($fname == "duree") {
-                >> "    " + $dname + " = rose_duree(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* duree */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "concatener") {
                 >> "    " + $dname + " = Vec<i64>_concat(" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "longueur") {
@@ -1946,7 +1946,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 } sinon si ($lty == "h") {
                   >> "    " + $dname + " = i64_longueur(" + operand($argl, $flagpees) + ");"
                 } sinon si ($lty == "s") {
-                  >> "    " + $dname + " = rose_longueur(" + operand($argl, $flagpees) + ");"
+                  >> "    " + $dname + " = /* longueur */" + operand($argl, $flagpees) + ");"
                 } sinon {
                   >> "    " + $dname + " = " + operand($argl, $flagpees) + ".size();"
                 }
@@ -1960,7 +1960,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 } sinon si ($eti == "q") {
                   >> "    " + $dname + " = i64ier_q(" + operand($arge, $flagpees) + ");"
                 } sinon si ($eti == "s" ou $eti == "u") {
-                  >> "    " + $dname + " = i64ier(" + operand($arge, $flagpees) + ".c_str());"
+                  >> "    " + $dname + " = i64ier(" + operand($arge, $flagpees) + ");"
                 } sinon {
                   >> "    " + $dname + " = " + operand($arge, $flagpees) + ";"
                 }
@@ -1970,29 +1970,29 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 si (commence_par($argf, prefix_cst())) {
                   >> "    " + $dname + " = " + operand($argf, $flagpees) + ";"
                 } sinon si ($ffi == "s" ou $ffi == "u") {
-                  >> "    " + $dname + " = rose_flottant_chaine(" + operand($argf, $flagpees) + ");"
+                  >> "    " + $dname + " = /* flottant_chaine */" + operand($argf, $flagpees) + ");"
                 } sinon si ($ffi == "b") {
                   >> "    " + $dname + " = (" + operand($argf, $flagpees) + " ? 1.0 : 0.0);"
                 } sinon si ($ffi == "f") {
                   >> "    " + $dname + " = " + operand($argf, $flagpees) + ";"
                 } sinon {
-                  >> "    " + $dname + " = rose_vers_double(" + operand($argf, $flagpees) + ");"
+                  >> "    " + $dname + " = /* vers_double */" + operand($argf, $flagpees) + ");"
                 }
               } sinon si ($fname == "chaine") {
                 $argc = $rtoks[3]
                 $cti = genre($argc, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($cti == "q") {
-                  >> "    " + $dname + " = rose_texte_q_ab(" + operand($argc, $flagpees) + ");"
+                  >> "    " + $dname + " = /* texte_q_ab */" + operand($argc, $flagpees) + ");"
                 } sinon si ($cti == "f") {
-                  >> "    " + $dname + " = rose_texte_flt(" + operand($argc, $flagpees) + ");"
+                  >> "    " + $dname + " = /* texte_flt */" + operand($argc, $flagpees) + ");"
                 } sinon si ($cti == "g") {
-                  >> "    " + $dname + " = std::string(" + operand($argc, $flagpees) + ".get_str().c_str());"
+                  >> "    " + $dname + " = std::string(" + operand($argc, $flagpees) + ".get_str());"
                 } sinon si ($cti == "s") {
                   >> "    " + $dname + " = " + operand($argc, $flagpees) + ";"
                 } sinon si ($cti == "b") {
                   >> "    " + $dname + " = (" + operand($argc, $flagpees) + " ? \"vrai\" : \"faux\");"
                 } sinon {
-                  >> "    " + $dname + " = rose_chaine(" + operand($argc, $flagpees) + ");"
+                  >> "    " + $dname + " = /* chaine */" + operand($argc, $flagpees) + ");"
                 }
               } sinon si ($fname == "pgcd" ou $fname == "ppcm") {
                 $a0 = operand($rtoks[3], $flagpees)
@@ -2007,24 +2007,24 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                   >> "    " + $dname + " = " + $fnn + "(" + $a0 + ", " + $a1 + ");"
                 }
               } sinon si ($fname == "factorielle") {
-                >> "    " + $dname + " = rose_factorielle_gd(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* factorielle_gd */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "fibonacci") {
-                >> "    " + $dname + " = rose_fibonacci_gd(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* fibonacci_gd */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "puissance") {
-                >> "    " + $dname + " = rose_puissance_gd(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
+                >> "    " + $dname + " = /* puissance_gd */" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
               } sinon si ($fname == "est_premier") {
-                >> "    " + $dname + " = rose_est_premier(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* est_premier */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "compter_premiers") {
-                >> "    " + $dname + " = rose_compter_premiers(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* compter_premiers */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "nombre_pi") {
-                >> "    " + $dname + " = rose_nombre_pi(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* nombre_pi */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "partie_entiere") {
                 $argp = $rtoks[3]
                 $pty2 = genre($argp, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($pty2 == "f") {
-                  >> "    " + $dname + " = rose_partie_entiere_f(" + operand($argp, $flagpees) + ");"
+                  >> "    " + $dname + " = /* partie_entiere_f */" + operand($argp, $flagpees) + ");"
                 } sinon si ($pty2 == "q") {
-                  >> "    " + $dname + " = rose_partie_entiere_q(" + operand($argp, $flagpees) + ");"
+                  >> "    " + $dname + " = /* partie_entiere_q */" + operand($argp, $flagpees) + ");"
                 } sinon {
                   >> "    " + $dname + " = " + operand($argp, $flagpees) + ";"
                 }
@@ -2032,23 +2032,23 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 $argn = $rtoks[3]
                 $nty = genre($argn, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($nty == "g") {
-                  >> "    " + $dname + " = rose_nb_chiffres_gd(" + operand($argn, $flagpees) + ");"
+                  >> "    " + $dname + " = /* nb_chiffres_gd */" + operand($argn, $flagpees) + ");"
                 } sinon {
-                  >> "    " + $dname + " = rose_nb_chiffres(" + operand($argn, $flagpees) + ");"
+                  >> "    " + $dname + " = /* nb_chiffres */" + operand($argn, $flagpees) + ");"
                 }
               } sinon si ($fname == "hasard") {
-                >> "    " + $dname + " = rose_hasard(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* hasard */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "abs") {
                 $arga = $rtoks[3]
                 $agy = genre($arga, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($agy == "f") {
-                  >> "    " + $dname + " = rose_abs_f(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = /* abs_f */" + operand($arga, $flagpees) + ");"
                 } sinon si ($agy == "g") {
-                  >> "    " + $dname + " = rose_abs_gd(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = /* abs_gd */" + operand($arga, $flagpees) + ");"
                 } sinon si ($agy == "q") {
-                  >> "    " + $dname + " = rose_abs_q(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = /* abs_q */" + operand($arga, $flagpees) + ");"
                 } sinon {
-                  >> "    " + $dname + " = rose_abs(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = /* abs */" + operand($arga, $flagpees) + ");"
                 }
               } sinon si ($fname == "min" ou $fname == "max") {
                 $arg0 = operand($rtoks[3], $flagpees)
@@ -2060,8 +2060,8 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                 si ($tg0 == "f" ou $tg1 == "f") {
                   $x0 = $arg0
                   $x1 = $arg1
-                  si ($tg0 != "f") { $x0 = "rose_vers_double(" + $arg0 + ")" }
-                  si ($tg1 != "f") { $x1 = "rose_vers_double(" + $arg1 + ")" }
+                  si ($tg0 != "f") { $x0 = "/* vers_double */" + $arg0 + ")" }
+                  si ($tg1 != "f") { $x1 = "/* vers_double */" + $arg1 + ")" }
                   si ($estmin == 1) {
                     >> "    " + $dname + " = (" + $x0 + " > " + $x1 + " ? " + $x1 + " : " + $x0 + ");"
                   } sinon {
@@ -2081,25 +2081,25 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
                   >> "    " + $dname + " = " + $fp + "(" + $arg0 + ", " + $arg1 + ");"
                 }
               } sinon si ($fname == "fraction") {
-                >> "    " + $dname + " = i64(rose_q_de(" + operand($rtoks[3], $flagpees) + ") / rose_q_de(" + operand($rtoks[4], $flagpees) + "));"
+                >> "    " + $dname + " = i64(/* q_de */" + operand($rtoks[3], $flagpees) + ") / /* q_de */" + operand($rtoks[4], $flagpees) + "));"
               } sinon si ($fname == "millisecondes") {
-                >> "    " + $dname + " = rose_millisecondes();"
+                >> "    " + $dname + " = /* millisecondes */);"
               } sinon si ($fname == "temps") {
-                >> "    " + $dname + " = rose_temps();"
+                >> "    " + $dname + " = /* temps */);"
               } sinon si ($fname == "nb_arguments") {
-                >> "    " + $dname + " = rose_nb_arguments();"
+                >> "    " + $dname + " = /* nb_arguments */);"
               } sinon si ($fname == "argument") {
-                >> "    " + $dname + " = rose_argument(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* argument */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "octets") {
                 $argo = $rtoks[3]
                 $txt = operand($argo, $flagpees)
-                si (commence_par($argo, "%")) { $txt = operand($argo, $flagpees) + ".c_str()" }
+                si (commence_par($argo, "%")) { $txt = operand($argo, $flagpees) + "" }
                 si (commence_par($argo, prefix_cst())) { $txt = "\"" + operand($argo, $flagpees) + "\"" }
-                >> "    " + $dname + " = rose_octets(" + $txt + ");"
+                >> "    " + $dname + " = /* octets */" + $txt + ");"
               } sinon si ($fname == "tampon") {
                 >> "    " + $dname + " = Vec<u8>_new(" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "remplir_hasard") {
-                >> "    rose_remplir_hasard(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
+                >> "    /* remplir_hasard */" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
               } sinon si ($fname == "tampon_case") {
                 >> "    " + $dname + " = Vec<u8>_case(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
               } sinon si ($fname == "tampon_pose") {
@@ -2117,11 +2117,11 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
               } sinon si ($fname == "valeurs") {
                 >> "    " + $dname + " = i64_valeurs(" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "graine") {
-                >> "    rose_graine(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    /* graine */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "lire_texte") {
-                >> "    " + $dname + " = rose_lire_texte(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = /* lire_texte */" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "quitter") {
-                >> "    rose_quitter(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    /* quitter */" + operand($rtoks[3], $flagpees) + ");"
               } sinon {
                 $call = "r_" + $fname + "("
                 $first = vrai
@@ -2144,15 +2144,15 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             $ty1 = genre($rtoks[3], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             si ($ty0 == "f" ou $ty1 == "f") {
               $x0 = $a0; $x1 = $a1
-              si ($ty0 != "f" et ($ty0 == "z" ou $ty0 == "u")) { $x0 = "rose_vers_double(" + $a0 + ")" }
-              si ($ty1 != "f" et ($ty1 == "z" ou $ty1 == "u")) { $x1 = "rose_vers_double(" + $a1 + ")" }
-              >> "    " + $dname + " = rose_divflo_f(" + $x0 + ", " + $x1 + ");"
+              si ($ty0 != "f" et ($ty0 == "z" ou $ty0 == "u")) { $x0 = "/* vers_double */" + $a0 + ")" }
+              si ($ty1 != "f" et ($ty1 == "z" ou $ty1 == "u")) { $x1 = "/* vers_double */" + $a1 + ")" }
+              >> "    " + $dname + " = /* divflo_f */" + $x0 + ", " + $x1 + ");"
             } sinon si ($ty0 == "q" ou $ty1 == "q") {
-              >> "    " + $dname + " = rose_div_florentin_q(" + $a0 + ", " + $a1 + ");"
+              >> "    " + $dname + " = /* div_florentin_q */" + $a0 + ", " + $a1 + ");"
             } sinon si ($ty0 == "g" ou $ty1 == "g") {
-              >> "    " + $dname + " = rose_div_florentin_gd(" + $a0 + ", " + $a1 + ");"
+              >> "    " + $dname + " = /* div_florentin_gd */" + $a0 + ", " + $a1 + ");"
             } sinon {
-              >> "    " + $dname + " = rose_div_florentin(" + $a0 + ", " + $a1 + ");"
+              >> "    " + $dname + " = /* div_florentin */" + $a0 + ", " + $a1 + ");"
             }
           } sinon si (commence_par($op, "pow.")) {
             $a0 = "0"; $a1 = "0"
@@ -2161,19 +2161,19 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             $ty0 = genre($rtoks[2], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             $ty1 = genre($rtoks[3], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             si ($ty1 == "f") {
-              si ($ty0 != "f") { $a0 = "rose_vers_double(" + $a0 + ")" }
+              si ($ty0 != "f") { $a0 = "/* vers_double */" + $a0 + ")" }
               >> "    " + $dname + " = std::pow(" + $a0 + ", " + $a1 + ");"
             } sinon si ($ty0 == "f") {
-              si ($ty1 != "f") { $a1 = "rose_vers_double(" + $a1 + ")" }
+              si ($ty1 != "f") { $a1 = "/* vers_double */" + $a1 + ")" }
               >> "    " + $dname + " = std::pow(" + $a0 + ", " + $a1 + ");"
             } sinon {
-              >> "    " + $dname + " = rose_puissance_gd(" + $a0 + ", " + $a1 + ");"
+              >> "    " + $dname + " = /* puissance_gd */" + $a0 + ", " + $a1 + ");"
             }
           } sinon si (commence_par($op, "rem.")) {
             $a0 = "0"; $a1 = "0"
             si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2], $flagpees) }
             si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3], $flagpees) }
-            >> "    " + $dname + " = rose_rem_florentin(" + $a0 + ", " + $a1 + ");"
+            >> "    " + $dname + " = /* rem_florentin */" + $a0 + ", " + $a1 + ");"
           } sinon si (commence_par($bl, "br.cond ")) {
             $parts = [""]
             $cur = ""
@@ -2242,8 +2242,8 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
               // et reproduit la tolérance 1e-9 de rose_approx_f.
               $ty0 = genre($rtoks[2], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
               $ty1 = genre($rtoks[3], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
-              si ($ty0 == "f" et $ty1 != "f") { $a1 = "rose_vers_double(" + $a1 + ")" }
-              si ($ty1 == "f" et $ty0 != "f") { $a0 = "rose_vers_double(" + $a0 + ")" }
+              si ($ty0 == "f" et $ty1 != "f") { $a1 = "/* vers_double */" + $a1 + ")" }
+              si ($ty1 == "f" et $ty0 != "f") { $a0 = "/* vers_double */" + $a0 + ")" }
               $cmpop = "<"
               si (contient($rtoks[1], ".lt.")) { $cmpop = "<" }
               si (contient($rtoks[1], ".le.")) { $cmpop = "<=" }
@@ -2260,8 +2260,8 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             // flottant dominant ici aussi
             $ty0 = genre($rtoks[2], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             $ty1 = genre($rtoks[3], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
-            si ($ty0 == "f" et $ty1 != "f") { $a1 = "rose_vers_double(" + $a1 + ")" }
-            si ($ty1 == "f" et $ty0 != "f") { $a0 = "rose_vers_double(" + $a0 + ")" }
+            si ($ty0 == "f" et $ty1 != "f") { $a1 = "/* vers_double */" + $a1 + ")" }
+            si ($ty1 == "f" et $ty0 != "f") { $a0 = "/* vers_double */" + $a0 + ")" }
             $cmpop = "<"
             si (contient($op, ".lt.")) { $cmpop = "<" }
             si (contient($op, ".le.")) { $cmpop = "<=" }
@@ -2291,7 +2291,7 @@ fn graphe_cycle($nom: chaine, $edges: liste<chaine>, $visites: liste<chaine>, $p
             si ($op == "add.f") { >> "    " + $dname + " = " + $a0 + " + " + $a1 + ";" }
             si ($op == "sub.f") { >> "    " + $dname + " = " + $a0 + " - " + $a1 + ";" }
             si ($op == "mul.f") { >> "    " + $dname + " = " + $a0 + " * " + $a1 + ";" }
-            si ($op == "div.f") { >> "    " + $dname + " = rose_div_f(" + $a0 + ", " + $a1 + ");" }
+            si ($op == "div.f") { >> "    " + $dname + " = /* div_f */" + $a0 + ", " + $a1 + ");" }
             si ($op == "neg.f") { >> "    " + $dname + " = -" + $a0 + ";" }
           } sinon si ($op == "add.s") {
             $a0 = "\"\""
