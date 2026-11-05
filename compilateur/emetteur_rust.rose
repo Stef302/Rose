@@ -1,5 +1,4 @@
 // emetteur_rust.rose — V4 : traducteur RIR -> Rust (entiers + chaines + globals).
-// Oracle : `rose build prog.rose -o sortie.rs` (transpiler_rir du moteur).
 
 // ---------- utilitaires chaînes ----------
 fn trim($s: chaine) -> chaine {
@@ -32,66 +31,111 @@ fn rust_type_name($t: chaine) -> chaine {
   retour "i64"
 }
 
-// ---------- principal : en-tête Rust ----------
-fn emetteur_rust_entete() -> chaine {
+fn chaine_rust($v: chaine) -> chaine {
+  $out = "\""
+  $i = 0
+  $n = longueur($v)
+  tant_que ($i < $n) {
+    $c = $v[$i]
+    si ($c == '"') { $out = $out + "\\"\"" }
+    sinon si ($c == '\\') { $out = $out + "\\\\" }
+    sinon si ($c == 10) { $out = $out + "\\n" }
+    sinon si ($c == 9) { $out = $out + "\\t" }
+    sinon { $out = $out + $c }
+    $i = $i + 1
+  }
+  $out = $out + "\".to_string()"
+  retour $out
+}
+
+fn c_name($nom: chaine) -> chaine {
+  $out = $nom
+  si (commence_par($out, "$")) { $out = sous_chaine($out, 1, longueur($out)) }
+  retour $out
+}
+
+fn premier_car($x: chaine) -> chaine {
+  si (longueur($x) == 0) { retour "" }
+  retour sous_chaine($x, 0, 1)
+}
+
+fn est_vide($s: chaine) -> booleen {
+  retour longueur($s) == 0
+}
+
+fn commence_par($s: chaine, $p: chaine) -> booleen {
+  si (longueur($p) > longueur($s)) { retour faux }
+  retour sous_chaine($s, 0, longueur($p)) == $p
+}
+
+fn contient($s: chaine, $p: chaine) -> booleen {
+  $i = 0
+  tant_que ($i + longueur($p) <= longueur($s)) {
+    si (sous_chaine($s, $i, $i + longueur($p)) == $p) { retour vrai }
+    $i = $i + 1
+  }
+  retour faux
+}
+
+// ---------- principal ----------
+fn rust_entete() -> chaine {
   $out = ""
   $out = $out + "use std::io::Write;\\n"
   $out = $out + "\\n"
-  $out = $out + "fn main() {\\n"
   retour $out
 }
 
-fn emetteur_rust_pied() -> chaine {
-  $out = ""
-  $out = $out + "}\\n"
-  retour $out
+fn rust_pied() -> chaine {
+  retour ""
 }
 
-// ---------- émission d'une fonction ----------
-fn emetteur_rust_fonction($nom: chaine, $params: chaine, $retour: chaine, $corps: chaine) -> chaine {
-  $out = ""
-  $out = $out + "fn " + $nom + "(" + $params + ") -> " + $retour + " {\\n"
-  $out = $out + $corps
-  $out = $out + "}\\n"
-  retour $out
+fn rust_main_debut() -> chaine {
+  retour "fn main() {\\n"
 }
 
-// ---------- émission d'une expression entière ----------
-fn emetteur_rust_expr_entier($expr: chaine) -> chaine {
-  retour $expr
+fn rust_main_fin() -> chaine {
+  retour "}\\n"
 }
 
-// ---------- émission print ----------
-fn emetteur_rust_print($expr: chaine) -> chaine {
+fn rust_affiche_entier($expr: chaine) -> chaine {
   retour "println!(\\"{}\\", " + $expr + ");\\n"
 }
 
-// ---------- émission affectation ----------
-fn emetteur_rust_affect($nom: chaine, $expr: chaine) -> chaine {
-  retour "let " + $nom + " = " + $expr + ";\\n"
+fn rust_affiche_chaine($expr: chaine) -> chaine {
+  retour "println!(\\"{}\\", " + $expr + ");\\n"
 }
 
-// ---------- émission retour ----------
-fn emetteur_rust_retour($expr: chaine) -> chaine {
+fn rust_retour($expr: chaine) -> chaine {
   si ($expr == "") { retour "return;\\n" }
   retour "return " + $expr + ";\\n"
 }
 
-// ---------- émission si ----------
-fn emetteur_rust_si($cond: chaine, $alors: chaine, $sinon: chaine) -> chaine {
+fn rust_si($cond: chaine, $alors: chaine, $sinon: chaine) -> chaine {
   $out = "if " + $cond + " {\\n" + $alors + "}"
   si ($sinon != "") { $out = $out + " else {\\n" + $sinon + "}" }
   $out = $out + "\\n"
   retour $out
 }
 
-// ---------- émission tant_que ----------
-fn emetteur_rust_tant_que($cond: chaine, $corps: chaine) -> chaine {
+fn rust_tant_que($cond: chaine, $corps: chaine) -> chaine {
   retour "while " + $cond + " {\\n" + $corps + "}\\n"
 }
 
-// ---------- émission pour ----------
-fn emetteur_rust_pour($var: chaine, $debut: chaine, $fin: chaine, $corps: chaine) -> chaine {
-  $out = "for " + $var + " in " + $debut + "..=" + $fin + " {\\n" + $corps + "}\\n"
+fn rust_pour($var: chaine, $debut: chaine, $fin: chaine, $corps: chaine) -> chaine {
+  retour "for " + $var + " in " + $debut + "..=" + $fin + " {\\n" + $corps + "}\\n"
+}
+
+fn rust_fonction($nom: chaine, $params: chaine, $retour: chaine, $corps: chaine) -> chaine {
+  $out = "fn " + $nom + "(" + $params + ") -> " + $retour + " {\\n"
+  $out = $out + $corps
+  $out = $out + "}\\n"
   retour $out
+}
+
+fn rust_affect($nom: chaine, $expr: chaine) -> chaine {
+  retour "let " + $nom + " = " + $expr + ";\\n"
+}
+
+fn rust_affect_mut($nom: chaine, $expr: chaine) -> chaine {
+  retour "let mut " + $nom + " = " + $expr + ";\\n"
 }
