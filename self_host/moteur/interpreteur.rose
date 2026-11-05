@@ -1,12 +1,9 @@
-# interpreteur.rose — Jalon M5.2, auto-hébergement du moteur Rose.
+# interpreteur.rose — Jalon M5.3, auto-hébergement du moteur Rose.
 #
-# Interpréteur Rose écrit EN Rose. Version M5.2 : lexer + évaluateur
-# d'expressions entières avec + et -.
+# Interpréteur Rose écrit EN Rose. Lit un fichier .rose passé en argument,
+# évalue les entiers qu'il contient et écrit le résultat dans un fichier.
 #
-# Tout est dans main() pour éviter les problèmes du vérificateur de types
-# Rose avec les variables globales partagées entre fonctions.
-#
-# Auto-hebergement M5.2 : lexer + évaluateur d'expressions entières.
+# Tout est dans main() pour satisfaire le vérificateur de types Rose.
 
 fn main() -> entier {
   # ── Constantes ──
@@ -15,8 +12,8 @@ fn main() -> entier {
   $TT_MOINS = 3
   $TT_EOF = 0
 
-  # ── Source à analyser ──
-  $src = "3 + 5 - 2"
+  # ── Source à analyser (lue depuis un fichier) ──
+  $src = lire_texte("/tmp/test_simple_print.rose")
   $n = longueur($src)
   $pos = 0
   $val_courante = 0
@@ -64,12 +61,12 @@ fn main() -> entier {
   }
 
   si ($t != $TT_ENTIER) {
-    >> "erreur : entier attendu en debut"
-    retour 0
+    $r = 0
+  } sinon {
+    $resultat = $val_courante
   }
-  $resultat = $val_courante
 
-  # ── Boucle principale : lire opérateur + opérande ──
+  # ── Boucle principale ──
   $boucle_principale = 1
   tant_que ($boucle_principale != 0) {
     # Ignorer les espaces avant l'opérateur
@@ -175,7 +172,8 @@ fn main() -> entier {
     }
   }
 
-  >> $resultat
-  >> "Auto-hebergement M5 : OK"
+  # ── Écrire le résultat dans un fichier ──
+  ecrire_texte("/tmp/interp_result.txt", chaine($resultat))
+
   retour 0
 }
