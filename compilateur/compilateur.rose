@@ -4230,7 +4230,7 @@ si (longueur($err) > 1) {
             $first = faux
             $pts = nom_type(lettre_param($part))
             si ($pts == "rose_liste") { $pts = "rose_liste&" }
-            $sig = $sig + $pts + " r_" + $varname
+            $sig = $sig + "r_" + $varname + ": " + $pts
             joindre($pnoms, $varname)
             $pletres = $pletres + lettre_param($part)
             $pk = $pk + 1
