@@ -76,7 +76,7 @@ pub struct Token { pub tk: Tk, pub texte: String, pub ligne: usize, pub col: usi
 
 fn est_mot_cle(s: &str) -> bool {
     matches!(s,
-        "fn" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
+        "fn" | "fonction" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
         | "vrai" | "faux" | "et" | "ou" | "non" | "div"
         | "entier" | "rationnel" | "flottant" | "booleen" | "chaine" | "liste" | "table")
 }
@@ -486,7 +486,7 @@ impl Parser {
                     continue;
                 }
             }
-            if self.est_mot("fn") {
+            if self.est_mot("fn") || self.est_mot("fonction") {
                 let sig = self.def_fonction(&mut ann_dll, &mut ann_dll_son, &mut ann_sym, &mut ann_actif)?;
                 if prog.signatures.contains_key(&sig.nom) {
                     return Err(fmt_err(&format!("Fonction '{}' définie deux fois", sig.nom), sig.ligne, 0));
