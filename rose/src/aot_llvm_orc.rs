@@ -76,7 +76,7 @@ impl PgoMode {
 }
 
 /// Point d'entrée CLI pour la commande `orc`
-pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: PgoMode) -> Result<(), String> {
+pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, _pgo_mode: PgoMode) -> Result<(), String> {
     // Lire et analyser le source Rose
     let mut source = String::new();
     File::open(fichier)
@@ -362,9 +362,31 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 let body_block = context.append_basic_block(main_func, "while_body");
                 let after_block = context.append_basic_block(main_func, "while_after");
 
-                builder.build_unconditional_branch(loop_block);
+                // ── PHI NODES pour toutes les variables nommées ──
+                // Structure :
+                //   entry -> (saut inconditionnel) -> loop_block
+                //   loop_block: phi = phi(val_init, val_corps) ; cond = phi != 0 ; cond ? body : after
+                //   body_block: corps ; saut loop_block
+                //   after_block: suite
 
+                let pred_block = builder.get_insert_block().unwrap();
+                builder.build_unconditional_branch(loop_block);
                 builder.position_at_end(loop_block);
+
+                // Créer un phi node pour chaque variable nommée (lues dans le test et modifiées dans le corps)
+                let var_list: Vec<(String, BasicValueEnum)> = named_values.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let mut phi_nodes: HashMap<String, inkwell::values::PhiValue> = HashMap::new();
+                for (var_name, var_val) in var_list {
+                    let phi = builder.build_phi(context.i64_type(), &format!("phi_{}", var_name))
+                        .map_err(|e| format!("erreur build_phi : {:?}", e))?;
+                    phi.add_incoming(&[(&var_val, pred_block)]);
+                    phi_nodes.insert(var_name.clone(), phi);
+                    named_values.insert(var_name, phi.as_basic_value());
+                }
+
+                // Test de boucle avec les valeurs phi
                 let cond = compile_expr(builder, context, module, named_values, test)?;
                 let cond_bool = builder.build_int_compare(
                     IntPredicate::NE,
@@ -374,9 +396,20 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 ).map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
                 builder.build_conditional_branch(cond_bool, body_block, after_block);
 
+                // Corps de la boucle
                 builder.position_at_end(body_block);
                 for instr in corps {
                     compile_instr(builder, context, module, named_values, instr)?;
+                }
+                // Ajouter les entrées phi depuis le corps
+                let phi_entries: Vec<(String, BasicValueEnum)> = phi_nodes.iter()
+                    .map(|(k, _)| (k.clone(), named_values.get(k).cloned().unwrap_or_else(|| {
+                        context.i64_type().const_int(0, false).into()
+                    })))
+                    .collect();
+                for (var_name, val) in phi_entries {
+                    let phi = phi_nodes.get(&var_name).unwrap();
+                    phi.add_incoming(&[(&val, builder.get_insert_block().unwrap())]);
                 }
                 builder.build_unconditional_branch(loop_block);
 

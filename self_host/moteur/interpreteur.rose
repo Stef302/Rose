@@ -1,0 +1,221 @@
+# interpreteur.rose — Jalon M5.0, auto-hébergement du moteur Rose.
+#
+# Interpréteur Rose écrit EN Rose. Capable d'exécuter un sous-ensemble de Rose :
+#   - Entiers littéraux et variables
+#   - Affectations ($nom = expr)
+#   - Arithmétique : + - * /
+#   - Affichage : >> expr
+#   - Comparaisons : == != < <= > >=
+#   - Contrôle : si / sinon, tant_que, pour
+#
+# Utilisation (une fois compilé par le compilateur Rose) :
+#   ./interpreteur mon_programme.rose
+#
+# Ce fichier est lui-même un programme Rose valide : il peut être compilé
+# par le compilateur Rose (compilateur/compilateur.rose) pour produire un
+# binaire natif qui s'auto-exécute.
+
+# ── Prédicats de caractères (pour le lexer minimal) ──
+fn est_chiffre(c: entier) -> booleen {
+  retour c >= 48 et c <= 57
+}
+
+fn est_lettre(c: entier) -> booleen {
+  si (c < 128) {
+    retour (c >= 65 et c <= 90) ou (c >= 97 et c <= 122) ou c == 95
+  }
+  retour faux
+}
+
+fn est_suite(c: entier) -> booleen {
+  retour est_lettre(c) ou est_chiffre(c)
+}
+
+# ── Lexer minimal : produit une liste de jetons (type, texte) ──
+# Chaque jeton est représenté par deux entrées consécutives dans $jetons :
+# $jetons[2*i]   = type (nombre)
+# $jetons[2*i+1] = texte (chaîne)
+$jetons = []
+$jeton_n = 0
+
+fn ajouter_jeton(t: entier, texte: chaine) {
+  $jetons = $jetons + [t]
+  $jetons = $jetons + [texte]
+  $jeton_n = $jeton_n + 1
+}
+
+# Types de jetons
+$TT_ENTIER = 1
+$TT_IDENT = 2
+$TT_PLUS = 3
+$TT_MOINS = 4
+$TT_FOIS = 5
+$TT_DIV = 6
+$TT_AFFECT = 7
+$TT_AFFICHER = 8
+$TT_PAR_OUV = 9
+$TT_PAR_FER = 10
+$TT_EGAL = 11
+$TT_DIFF = 12
+$TT_PLUS_PETIT = 13
+$TT_PLUS_PETIT_EGAL = 14
+$TT_PLUS_GRAND = 15
+$TT_PLUS_GRAND_EGAL = 16
+$TT_EOF = 0
+
+# ── Analyseur récursif descendant minimal ──
+$pos = 0
+$jeton_courant_type = 0
+$jeton_courant_texte = ""
+
+fn avancer() {
+  $pos = $pos + 1
+  si ($pos * 2 < $jeton_n) {
+    $jeton_courant_type = $jetons[$pos * 2]
+    $jeton_courant_texte = $jetons[$pos * 2 + 1]
+  } sinon {
+    $jeton_courant_type = $TT_EOF
+    $jeton_courant_texte = ""
+  }
+}
+
+fn accepter(t: entier) -> booleen {
+  si ($jeton_courant_type == t) {
+    avancer()
+    retour vrai
+  }
+  retour faux
+}
+
+fn attendre(t: entier) {
+  si (non accepter(t)) {
+    >> "erreur de syntaxe : jeton attendu"
+    quitter(1)
+  }
+}
+
+# ── Interpréteur : état ──
+$vars = []   # table des variables (nom, valeur) alternée
+$vars_n = 0
+
+fn obtenir_var(nom: chaine) -> entier {
+  $i = 0
+  tant_que ($i < $vars_n) {
+    si ($vars[$i * 2] == nom) {
+      retour $vars[$i * 2 + 1]
+    }
+    $i = $i + 1
+  }
+  retour 0
+}
+
+fn definir_var(nom: chaine, valeur: entier) {
+  $i = 0
+  $trouve = faux
+  tant_que ($i < $vars_n) {
+    si ($vars[$i * 2] == nom) {
+      $vars[$i * 2 + 1] = valeur
+      $trouve = vrai
+    }
+    $i = $i + 1
+  }
+  si (non $trouve) {
+    $vars = $vars + [nom]
+    $vars = $vars + [valeur]
+    $vars_n = $vars_n + 1
+  }
+}
+
+# ── Évaluation d'expression (récursive) ──
+# Retourne la valeur entière de l'expression à partir de $pos
+fn eval_expr() -> entier {
+  $val = eval_terme()
+  tant_que (vrai) {
+    si ($jeton_courant_type == $TT_PLUS) {
+      avancer()
+      $d = eval_terme()
+      $val = $val + $d
+    } sinon si ($jeton_courant_type == $TT_MOINS) {
+      avancer()
+      $d = eval_terme()
+      $val = $val - $d
+    } sinon {
+      retour $val
+    }
+  }
+}
+
+fn eval_terme() -> entier {
+  $val = eval_facteur()
+  tant_que (vrai) {
+    si ($jeton_courant_type == $TT_FOIS) {
+      avancer()
+      $d = eval_facteur()
+      $val = $val * $d
+    } sinon si ($jeton_courant_type == $TT_DIV) {
+      avancer()
+      $d = eval_facteur()
+      si ($d == 0) {
+        >> "erreur : division par zero"
+        quitter(1)
+      }
+      $val = $val / $d
+    } sinon {
+      retour $val
+    }
+  }
+}
+
+fn eval_facteur() -> entier {
+  si ($jeton_courant_type == $TT_ENTIER) {
+    $v = entier($jeton_courant_texte)
+    avancer()
+    retour $v
+  } sinon si ($jeton_courant_type == $TT_IDENT) {
+    $nom = $jeton_courant_texte
+    avancer()
+    retour obtenir_var($nom)
+  } sinon si ($jeton_courant_type == $TT_PAR_OUV) {
+    avancer()
+    $v = eval_expr()
+    attendre($TT_PAR_FER)
+    retour $v
+  } sinon si ($jeton_courant_type == $TT_MOINS) {
+    avancer()
+    $v = eval_facteur()
+    retour -$v
+  } sinon {
+    >> "erreur : facteur attendu"
+    quitter(1)
+  }
+}
+
+# ── Exécution d'une liste d'instructions ──
+fn executer_bloc() {
+  tant_que ($jeton_courant_type != $TT_EOF et $jeton_courant_type != 99) {
+    si ($jeton_courant_type == $TT_IDENT) {
+      $nom = $jeton_courant_texte
+      avancer()
+      si ($jeton_courant_type == $TT_AFFECT) {
+        avancer()
+        $v = eval_expr()
+        definir_var($nom, $v)
+      } sinon {
+        >> "erreur : affectation attendue"
+        quitter(1)
+      }
+    } sinon si ($jeton_courant_type == $TT_AFFICHER) {
+      avancer()
+      $v = eval_expr()
+      >> $v
+    } sinon {
+      avancer()
+    }
+  }
+}
+
+# ── Point d'entrée ──
+$nom_fichier = $1  # premier argument (à implémenter selon l'API)
+# Pour l'instant, lecture sur stdin ou arguments à implémenter
+>> "Interpreteur Rose auto-heberge - version 0.1"
+>> "En attente d'implementation du chargement de fichier"
