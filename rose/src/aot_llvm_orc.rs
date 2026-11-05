@@ -105,9 +105,15 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
         disassembler: true,
     });
 
+    // Initialisation des passes LLVM nécessaires à l'émission d'objet natif
+    // (déclarée après la création du module, plus bas dans la fonction)
+
     let context = Context::create();
     let module = context.create_module("rose_orc");
     let builder = context.create_builder();
+
+    // Note : l'initialisation des passes LLVM n'est pas nécessaire pour
+    // l'émission d'objet natif avec TargetMachine::write_to_file
 
     let triple = TargetMachine::get_default_triple();
     let target = Target::get_first()
@@ -581,9 +587,7 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
         "o" | "obj" => {
             // ── Émission de fichier objet natif ──
             // Stratégie : générer l'IR LLVM (.ll), puis appeler clang -c pour
-            // produire le fichier objet natif. Cela évite les problèmes de
-            // TargetMachine::write_to_file avec FileType::Object sur certaines
-            // cibles (manque d'AsmPrinter ou MCObjectEmitter enregistré).
+            // produire le fichier objet natif.
             let ll_path = format!("{}.ll", sortie.trim_end_matches(".o").trim_end_matches(".obj"));
             let ll_path = Path::new(&ll_path);
             module.print_to_file(ll_path)
