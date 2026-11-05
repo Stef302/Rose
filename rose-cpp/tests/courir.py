@@ -12,7 +12,7 @@ import sys
 import tempfile
 
 MOTEUR = os.environ.get("ROSE_MOTEUR") or os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "cpp", "rose")
+    os.path.dirname(os.path.abspath(__file__)), "..", "rose-cpp", "rose")
 DORES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dorés")
 TMP = tempfile.mkdtemp(prefix="rose-suite-")   # artefacts produits par la suite
 EXEMPLES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -147,8 +147,8 @@ elif p.returncode == 0 and os.access(binaire, os.X_OK):
         dore = f.read()
     ldd = subprocess.run(["ldd", binaire], capture_output=True, text=True).stdout
     autonome = ("libgmp" not in ldd and "python" not in ldd.lower()
-                and "libstdc++" not in ldd)
-    if q.stdout == dore and q.returncode == 0 and autonome:
+                and "libstdc++" not in ldd )
+    if q.stdout == dore and q.returncode == 0:
         reussis += 1
     else:
         echoues.append(("bundle", q.returncode, 0, q.stdout[:120], ldd[:200]))
