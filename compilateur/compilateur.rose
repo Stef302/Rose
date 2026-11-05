@@ -3798,7 +3798,7 @@ si (longueur($err) > 1) {
   $n = longueur($ls)
 
   // en-tête
-  >> "fn main() {"
+  >> ""
 
 
 
