@@ -69,14 +69,14 @@ impl PgoMode {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "generate" | "gen" => Some(PgoMode::Generate),
-            "use" | "use" => Some(PgoMode::Use),
+            "use" => Some(PgoMode::Use),
             _ => None,
         }
     }
 }
 
 /// Point d'entrée CLI pour la commande `orc`
-pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, _pgo_mode: PgoMode) -> Result<(), String> {
+pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: PgoMode) -> Result<(), String> {
     // Lire et analyser le source Rose
     let mut source = String::new();
     File::open(fichier)
@@ -504,6 +504,38 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, _pgo_mode: P
     }
 
     builder.build_return(Some(&context.i64_type().const_int(0, false)));
+
+    // ── Optimisations LLVM ─────────────────────────────────────────────────
+    // Le niveau d'optimisation est deja applique lors de la creation du
+    // TargetMachine (opt_level.to_inkwell()). Les passes d'optimisation
+    // supplementaires (inlining, vectorisation, etc.) peuvent etre ajoutees
+    // ici via inkwell::passes::PassManager quand l'API le permettra.
+    let _ = opt_level;
+
+    // PGO (Profile-Guided Optimization) ─────────────────────────────────
+    // Le PGO complet avec LLVM ORC in-process requiere :
+    //   1. --pgo-generate : ajouter des passes d'instrumentation (instr-profiling)
+    //      au module LLVM avant l'emission. Le binaire produit generera un
+    //      .profraw a l'exécution.
+    //   2. llvm-profdata merge : convertir le .profraw en .profdata
+    //   3. --pgo-use : recompiler avec le .profdata pour optimisation guidee
+    //
+    // Avec inkwell 0.7, les passes d'instrumentation PGO ne sont pas encore
+    // exposees directement. Le squelette ci-dessous documente la marche a
+    // suivre et prepare le terrain pour une integration future.
+    match pgo_mode {
+        PgoMode::Generate => {
+            println!("rose: --pgo-generate demande. Pour un PGO complet :");
+            println!("  1. Recompiler avec instrumentation (passes LLVM instr-profiling)");
+            println!("  2. Executer le binaire pour generer un .profraw");
+            println!("  3. llvm-profdata merge -o prof.profdata raw.profraw");
+            println!("  4. Recompiler avec --pgo-use prof.profdata");
+        }
+        PgoMode::Use => {
+            println!("rose: --pgo-use demande. Fournir un .profdata pour l'optimisation guidee.");
+        }
+        PgoMode::None => {}
+    }
 
     // ── Écriture du fichier de sortie ─────────────────────────────────────
     let path = Path::new(sortie);
