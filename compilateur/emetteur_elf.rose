@@ -119,8 +119,8 @@ fn emettre_elf_minimal($sortie: chaine) {
   $out = $out + u64le($TEXT_OFFSET)                        # p_offset = 4096
   $out = $out + u64le($TEXT_ADDR)                          # p_vaddr
   $out = $out + u64le($TEXT_ADDR)                          # p_paddr
-  $out = $out + u64le(12)                                  # p_filesz = 12 octets (2 instructions)
-  $out = $out + u64le(12)                                  # p_memsz = 12 octets
+  $out = $out + u64le(38)                                  # p_filesz = 38 octets (8 instr + 6 data)
+  $out = $out + u64le(38)                                  # p_memsz = 38 octets
   $out = $out + u64le(2097152)                            # p_align
 
   # ── Padding jusqu'a 4096 (0x1000) ──
@@ -131,14 +131,22 @@ fn emettre_elf_minimal($sortie: chaine) {
     $i = $i + 1
   }
 
-  # ── Code machine aarch64 : retour 0 ──
-  # mov w0, #0      = 2852127712
-  # mov x8, #93     = 2852127720 (syscall number exit)
-  # svc #0          = 3596550144
-  $out = $out + u32le(1384120320)   # mov w0, #0
-  $out = $out + u32le(3531606952)   # mov x8, #93
+  # ── Code machine aarch64 : affiche "Hello" et exit 0 ──
+  $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
+  $out = $out + u32le(268435681)    # adr x1, data (offset 28)
+  $out = $out + u32le(3531604162)   # mov x2, #6 (len)
+  $out = $out + u32le(3531606024)   # mov x8, #64 (write)
   $out = $out + u32le(3556769793)   # svc #0
-
+  $out = $out + u32le(3531603968)   # mov x0, #0 (exit code)
+  $out = $out + u32le(3531606952)   # mov x8, #93 (exit)
+  $out = $out + u32le(3556769793)   # svc #0
+  # data: Hello\n
+  $out = $out + caractere(72)   # H
+  $out = $out + caractere(101)  # e
+  $out = $out + caractere(108)  # l
+  $out = $out + caractere(108)  # l
+  $out = $out + caractere(111)  # o
+  $out = $out + caractere(10)   # newline
   # ── Écrire le fichier ──
   ecrire_bytes($sortie, $out)
   >> "rose: " + $sortie + " produit (binaire ELF autonome, " + chaine(longueur($out)) + " octets)"
