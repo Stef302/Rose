@@ -160,7 +160,7 @@ si (longueur($src) == 0) {
   afficher_erreur("emetteur_elf : fichier vide ou introuvable : " + $chemin)
   quitter(1)
 }
-# Extraire toutes les valeurs apres >>
+# Extraire et evaluer toutes les expressions apres >>
 $affichage = ""
 $i = 0
 tant_que ($i < longueur($src)) {
@@ -171,40 +171,27 @@ tant_que ($i < longueur($src)) {
     tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
       $j = $j + 1
     }
-    $ch = sous_chaine($src, $j, $j + 1)
-    si ($ch == "\"") {
-      $j = $j + 1
-      tant_que ($j < longueur($src)) {
-        $ch = sous_chaine($src, $j, $j + 1)
-        si ($ch == "\"") {
-          $j = longueur($src) + 1
-        } sinon {
-          $affichage = $affichage + $ch
-          $j = $j + 1
-        }
+    # Extraire l'expression jusqu'a la fin de ligne
+    $expr = ""
+    $k = $j
+    tant_que ($k < longueur($src)) {
+      $ch = sous_chaine($src, $k, $k + 1)
+      si ($ch == "\n") {
+        $k = longueur($src) + 1
+      } sinon {
+        $expr = $expr + $ch
+        $k = $k + 1
       }
-      $affichage = $affichage + "\n"
-    } sinon {
-      $val_str = ""
-      tant_que ($j < longueur($src)) {
-        $ch = sous_chaine($src, $j, $j + 1)
-        si ($ch == "0" ou $ch == "1" ou $ch == "2" ou $ch == "3" ou $ch == "4" ou $ch == "5" ou $ch == "6" ou $ch == "7" ou $ch == "8" ou $ch == "9") {
-          $val_str = $val_str + $ch
-          $j = $j + 1
-        } sinon {
-          $j = longueur($src) + 1
-        }
-      }
-      si (longueur($val_str) > 0) {
-        $val = entier($val_str)
-        $affichage = $affichage + chaine($val) + "\n"
-      }
+    }
+    si (longueur($expr) > 0) {
+      $resultat = eval_expr($expr)
+      $affichage = $affichage + $resultat + "\n"
     }
   }
   $i = $i + 1
 }
 si (longueur($affichage) == 0) {
-  afficher_erreur("emetteur_elf : pas de >> <valeur> trouve")
+  afficher_erreur("emetteur_elf : pas de >> <expression> trouve")
   quitter(1)
 }
 emettre_elf_print($sortie, $affichage)

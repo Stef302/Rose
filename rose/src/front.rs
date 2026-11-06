@@ -360,6 +360,7 @@ pub static STDLIB: &[EntreeStd] = &[
     EntreeStd { nom: "sous_chaine", args: &["chaine", "entier", "entier"], retour: "chaine" },
     EntreeStd { nom: "concatener", args: &["liste"], retour: "chaine" },
     EntreeStd { nom: "lire_texte", args: &["chaine"], retour: "chaine" },
+    EntreeStd { nom: "eval_expr", args: &["chaine"], retour: "chaine" },
     EntreeStd { nom: "ecrire_texte", args: &["chaine", "chaine"], retour: "vide" },
     EntreeStd { nom: "ecrire_binaire", args: &["chaine", "liste"], retour: "vide" },
     EntreeStd { nom: "ecrire_bytes", args: &["chaine", "chaine"], retour: "vide" },

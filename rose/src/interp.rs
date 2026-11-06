@@ -1000,6 +1000,37 @@ impl Interp {
                     Err(_) => erreur_runtime(&format!("lecture du fichier impossible ({})", p)),
                 }
             }
+            "eval_expr" => {
+                let expr_str = chaine_de(&a[0]);
+                // Wrap in a program that assigns to a variable and prints it
+                let src = format!("x = {}", expr_str);
+                match crate::front::analyser(&src) {
+                    Ok(prog) => {
+                        let mut interp = Interp::nouveau(prog);
+                        // Evaluate the assignment
+                        // We need to find the value of x after evaluation
+                        // For simplicity, evaluate the expression directly
+                        // by creating an Expr from the parsed program
+                        let instr_clone = interp.prog.instructions.first().cloned();
+                        if let Some(instr) = instr_clone {
+                            match instr {
+                                crate::front::Instr::Affect { e, .. } => {
+                                    match interp.eval(&e) {
+                                        Ok(v) => {
+                                            Valeur::s(chaine_de(&v))
+                                        }
+                                        Err(_) => Valeur::s(String::new()),
+                                    }
+                                }
+                                _ => Valeur::s(String::new()),
+                            }
+                        } else {
+                            Valeur::s(String::new())
+                        }
+                    }
+                    Err(_) => Valeur::s(String::new()),
+                }
+            }
             "ecrire_texte" => {
                 let p = chaine_de(&a[0]);
                 let t = chaine_de(&a[1]);
