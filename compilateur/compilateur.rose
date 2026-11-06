@@ -3719,11 +3719,11 @@ fn chaine_cpp($v: chaine) -> chaine {
 
 // instruction de poussée selon le genre de l'élément (miroir liste.push)
 fn pousse_texte($lst: chaine, $el: chaine, $ety: chaine) -> chaine {
-  si ($ety == "s") { retour "    /* liste_push */(" + $lst + ", " + $el + ");" }
-  si ($ety == "g") { retour "    /* liste_push_gd */(" + $lst + ", " + $el + ");" }
-  si ($ety == "q") { retour "    /* liste_push_q */(" + $lst + ", " + $el + ");" }
-  si ($ety == "f") { retour "    /* liste_push_flt */(" + $lst + ", " + $el + ");" }
-  retour "    /* liste_push_int */(" + $lst + ", " + $el + ");"
+  si ($ety == "s") { retour "    " + $lst + ".push((" + $el + ").chars().next().unwrap_or(' ') as i64);" }
+  si ($ety == "g") { retour "    " + $lst + ".push(" + $el + ");" }
+  si ($ety == "q") { retour "    " + $lst + ".push(" + $el + ");" }
+  si ($ety == "f") { retour "    " + $lst + ".push(" + $el + " as i64);" }
+  retour "    " + $lst + ".push(" + $el + ");"
 }
 
 fn temp_type_of($op: chaine) -> chaine {
@@ -4548,7 +4548,7 @@ si (longueur($err) > 1) {
         si ($ct == "String") {
           >> "    let mut r_" + $gname + ": String = String::new();"
         } sinon si ($ct == "Vec<i64>" ou $ct == "Vec<u8>") {
-          >> "    let mut r_" + $gname + ": " + $ct + " = " + $ct + "_new();"
+          >> "    let mut r_" + $gname + ": " + $ct + " = Vec::new();"
         } sinon si ($ct == "bool") {
           >> "    let mut r_" + $gname + ": bool = false;"
         } sinon si ($ct == "f64") {
@@ -4586,7 +4586,7 @@ si (longueur($err) > 1) {
         si ($ct == "bool") { $init = "false" }
         si ($ct == "f64") { $init = "0.0" }
         si ($ct == "Vec<i64>" ou $ct == "Vec<u8>") {
-          >> "    let mut r_" + $tn + ": " + $ct + " = " + $ct + "_new();"
+          >> "    let mut r_" + $tn + ": " + $ct + " = Vec::new();"
         } sinon {
           >> "    let mut r_" + $tn + ": " + $ct + " = " + $init + ";"
         }
@@ -4693,7 +4693,9 @@ si (longueur($err) > 1) {
             si (premier_car($gname) == '"') {
               $gname = sous_chaine($gname, 1, longueur($gname)-1)
             }
-            >> "    r_" + $gname + " = " + $srcexpr + ";"
+            $clone_suffix = ""
+            si (commence_par($srcexpr, "r_")) { $clone_suffix = ".clone()" }
+            >> "    r_" + $gname + " = " + $srcexpr + $clone_suffix + ";"
             $fe = 1
             $marque = faux
             tant_que ($fe < longueur($flagpees)) {
@@ -4811,13 +4813,7 @@ si (longueur($err) > 1) {
               si ($bty == "h") {
                 >> "    " + $dname + " = /* table_get */(" + $base + ", " + $idx + ");"
               } sinon si ($bty == "l") {
-                $dty = genre_t($dest, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
-                si ($dty == "r") { $dty = $cret }
-                si ($dty == "s") {
-                  >> "    " + $dname + " = rose_liste_get_str(" + $base + ", " + $idx + ");"
-                } sinon {
-                  >> "    " + $dname + " = rose_a_entier(rose_liste_get_str(" + $base + ", " + $idx + "));"
-                }
+                >> "    " + $dname + " = " + $base + "[" + $idx + " as usize];"
               } sinon {
                 >> "    " + $dname + " = rose_index_str(" + $base + ", " + $idx + ");"
               }
@@ -4918,7 +4914,9 @@ si (longueur($err) > 1) {
               si (premier_car($gname) == '"') {
                 $gname = sous_chaine($gname, 1, longueur($gname)-1)
               }
-              >> "    r_" + $gname + " = " + $srcexpr + ";"
+              $clone_suffix2 = ""
+              si (commence_par($srcexpr, "r_")) { $clone_suffix2 = ".clone()" }
+              >> "    r_" + $gname + " = " + $srcexpr + $clone_suffix2 + ";"
             }
           } sinon si ($op == "call") {
             si (longueur($rtoks) > 2) {
@@ -4996,25 +4994,25 @@ si (longueur($err) > 1) {
                   $vj = sous_chaine($el, 2, longueur($el))
                   si (contient_t($vj, "/") == faux et contient_t($vj, ".") == faux) {
                     si (cst_promu_gd($vj)) {
-                      >> "    /* liste_push_gd */(" + $lst + ", /* gd */(\"" + $vj + "\"));"
+                      >> "    " + $lst + ".push(i64(\"" + $vj + "\"));"
                     } sinon {
-                      >> "    /* liste_push_int */(" + $lst + ", " + $vj + ");"
+                      >> "    " + $lst + ".push(" + $vj + ");"
                     }
                   } sinon {
-                    >> "    /* liste_push */(" + $lst + ", " + operand($el, $flagpees) + ");"
+                    >> "    " + $lst + ".push(" + operand($el, $flagpees) + ");"
                   }
                 } sinon {
                   $ety = genre_t($el, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                   si ($ety == "g") {
-                    >> "    /* liste_push_gd */(" + $lst + ", " + operand($el, $flagpees) + ");"
+                    >> "    " + $lst + ".push(" + operand($el, $flagpees) + ");"
                   } sinon si ($ety == "q") {
-                    >> "    /* liste_push_q */(" + $lst + ", " + operand($el, $flagpees) + ");"
+                    >> "    " + $lst + ".push(" + operand($el, $flagpees) + ");"
                   } sinon si ($ety == "f") {
-                    >> "    /* liste_push_flt */(" + $lst + ", " + operand($el, $flagpees) + ");"
+                    >> "    " + $lst + ".push(" + operand($el, $flagpees) + " as i64);"
                   } sinon si ($ety == "z") {
-                    >> "    /* liste_push_int */(" + $lst + ", " + operand($el, $flagpees) + ");"
+                    >> "    " + $lst + ".push(" + operand($el, $flagpees) + ");"
                   } sinon {
-                    >> "    /* liste_push */(" + $lst + ", " + operand($el, $flagpees) + ");"
+                    >> "    " + $lst + ".push(" + operand($el, $flagpees) + ");"
                   }
                 }
               } sinon si ($fname == "ordre") {
@@ -5032,15 +5030,15 @@ si (longueur($err) > 1) {
                 si (longueur($rtoks) > 3) { $argl = $rtoks[3] }
                 $lty = genre_t($argl, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($lty == "l") {
-                  >> "    " + $dname + " = /* liste_len */(" + operand($argl, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argl, $flagpees) + ".len() as i64;"
                 } sinon si ($lty == "t") {
-                  >> "    " + $dname + " = /* tampon_longueur */(" + operand($argl, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argl, $flagpees) + ".len() as i64;"
                 } sinon si ($lty == "h") {
-                  >> "    " + $dname + " = /* table_longueur */(" + operand($argl, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argl, $flagpees) + ".len() as i64;"
                 } sinon si ($lty == "s") {
-                  >> "    " + $dname + " = /* longueur */(" + operand($argl, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argl, $flagpees) + ".len() as i64;"
                 } sinon {
-                  >> "    " + $dname + " = " + operand($argl, $flagpees) + ".len();"
+                  >> "    " + $dname + " = " + operand($argl, $flagpees) + ".len() as i64;"
                 }
               } sinon si ($fname == "entier") {
                 $arge = $rtoks[3]
@@ -5393,7 +5391,7 @@ si (longueur($err) > 1) {
               si (commence_par($tok3, "%")) { $a1 = operand($tok3, $flagpees) }
               sinon { $a1 = texte_const($tok3) }
             }
-            >> "    " + $dname + " = " + $a0 + " + " + $a1 + ";"
+            >> "    " + $dname + " = " + $a0 + ".clone() + &" + $a1 + ";"
           } sinon {
             >> "    /* " + $bl + " */"
           }
