@@ -14,6 +14,7 @@ mod interp;
 mod jit;
 mod run;
 mod aot_llvm_orc;
+mod elf_linker;
 
 use std::io::Read;
 
@@ -211,7 +212,10 @@ fn main() {
                         } else {
                             format!("{}.exe", sortie)
                         };
-                        eprintln!("rose: lien ELF non disponible (elf_linker supprimé)"); std::process::exit(1);
+                        match elf_linker::link_elf(&objet, &exe) {
+                            Ok(()) => println!("rose: {} produit (binaire exécutable lié)", exe),
+                            Err(e) => { eprintln!("rose: échec du lien ELF : {}", e); std::process::exit(1); }
+                        }
                     } else {
                         println!("rose: {} produit (AOT LLVM ORC, niveau {:?}, PGO {:?})", sortie, opt_level, pgo_mode);
                     }
@@ -240,7 +244,10 @@ fn main() {
                 if let Some(p) = sortie.rfind(".o") { sortie.truncate(p); }
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
-            eprintln!("rose: lien ELF non disponible (elf_linker supprimé)"); std::process::exit(1);
+            match elf_linker::link_elf(&objet, &sortie) {
+                Ok(()) => {}
+                Err(e) => { eprintln!("rose: échec du lien ELF : {}", e); std::process::exit(1); }
+            }
             std::process::exit(0);
         }
         _ => {}
