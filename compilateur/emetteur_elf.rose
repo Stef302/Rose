@@ -134,7 +134,9 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine) {
   # ── Code machine aarch64 : affiche "Hello" et exit 0 ──
   $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
   $out = $out + u32le(268435681)    # adr x1, data (offset 28)
-  $out = $out + u32le(3531604162)   # mov x2, #6 (len)
+  $len_texte = longueur($texte)
+  $opcode_x2 = 3531603968 + $len_texte * 32 + 2
+  $out = $out + u32le($opcode_x2)   # mov x2, #len (len)
   $out = $out + u32le(3531606024)   # mov x8, #64 (write)
   $out = $out + u32le(3556769793)   # svc #0
   $out = $out + u32le(3531603968)   # mov x0, #0 (exit code)
@@ -158,8 +160,8 @@ si (longueur($src) == 0) {
   afficher_erreur("emetteur_elf : fichier vide ou introuvable : " + $chemin)
   quitter(1)
 }
-# Extraire le nombre apres >>
-$val_str = ""
+# Extraire la valeur apres >>
+$affichage = ""
 $i = 0
 $trouve = 0
 tant_que ($i < longueur($src) et $trouve == 0) {
@@ -171,22 +173,44 @@ tant_que ($i < longueur($src) et $trouve == 0) {
     tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
       $j = $j + 1
     }
-    tant_que ($j < longueur($src)) {
-      $ch = sous_chaine($src, $j, $j + 1)
-      si ($ch == "0" ou $ch == "1" ou $ch == "2" ou $ch == "3" ou $ch == "4" ou $ch == "5" ou $ch == "6" ou $ch == "7" ou $ch == "8" ou $ch == "9") {
-        $val_str = $val_str + $ch
-        $j = $j + 1
-      } sinon {
-        $j = longueur($src) + 1
+    # Verifier si c'est une chaine
+    $ch = sous_chaine($src, $j, $j + 1)
+    si ($ch == "\"") {
+      $j = $j + 1
+      tant_que ($j < longueur($src)) {
+        $ch = sous_chaine($src, $j, $j + 1)
+        si ($ch == "\"") {
+          $j = longueur($src) + 1
+        } sinon {
+          $affichage = $affichage + $ch
+          $j = $j + 1
+        }
       }
+      $affichage = $affichage + "\n"
+    } sinon {
+      # Lire les chiffres
+      $val_str = ""
+      tant_que ($j < longueur($src)) {
+        $ch = sous_chaine($src, $j, $j + 1)
+        si ($ch == "0" ou $ch == "1" ou $ch == "2" ou $ch == "3" ou $ch == "4" ou $ch == "5" ou $ch == "6" ou $ch == "7" ou $ch == "8" ou $ch == "9") {
+          $val_str = $val_str + $ch
+          $j = $j + 1
+        } sinon {
+          $j = longueur($src) + 1
+        }
+      }
+      si (longueur($val_str) == 0) {
+        afficher_erreur("emetteur_elf : pas de >> <valeur> trouve")
+        quitter(1)
+      }
+      $val = entier($val_str)
+      $affichage = chaine($val) + "\n"
     }
   }
   $i = $i + 1
 }
-si (longueur($val_str) == 0) {
-  afficher_erreur("emetteur_elf : pas de >> <nombre> trouve")
+si (longueur($affichage) == 0) {
+  afficher_erreur("emetteur_elf : pas de >> <valeur> trouve")
   quitter(1)
 }
-$val = entier($val_str)
-$affichage = chaine($val) + "\n"
 emettre_elf_print($sortie, $affichage)
