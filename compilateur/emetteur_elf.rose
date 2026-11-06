@@ -118,14 +118,16 @@ fn emettre_elf_minimal($sortie: chaine) {
   $out = $out + u32le(0xd65f0000)   # svc #0
 
   # ── Écrire le fichier ──
-  $fd = ouvrir_ecriture($sortie)
-  si ($fd < 0) {
-    afficher_erreur("emetteur_elf : impossible d'ecrire " + $sortie)
-    quitter(1)
+  $octets = ["__init__"]
+  $i = 1
+  tant_que ($i <= longueur($out)) {
+    $c = sous_chaine($out, $i, $i + 1)
+    $code = ordre($c)
+    joindre($octets, chaine($code))
+    $i = $i + 1
   }
-  ecrire($fd, $out)
-  fermer($fd)
-  >> "rose: " + $sortie + " produit (binaire ELF autonome, " + longueur($out) + " octets)"
+  ecrire_bytes($sortie, $octets)
+  >> "rose: " + $sortie + " produit (binaire ELF autonome, " + longueur($octets) + " octets)"
 }
 
 # ── Point d'entrée ──

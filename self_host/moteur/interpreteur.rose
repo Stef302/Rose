@@ -242,6 +242,8 @@ fn appel_direct($nom: chaine, $a0: entier, $a1: entier, $a2: entier, $env: liste
   si ($nom == "temps")      { retour temps() }
   si ($nom == "millisecondes") { retour millisecondes() }
   si ($nom == "hasard")     { retour hasard($a0) }
+  si ($nom == "caractere")  { retour caractere($a0) }
+  si ($nom == "ecrire_bytes") { retour ecrire_bytes($a0, $a1) }
   afficher_erreur("interp : fonction inconnue " + $nom); quitter(1)
 }
 

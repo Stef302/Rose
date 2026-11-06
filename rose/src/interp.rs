@@ -1029,7 +1029,7 @@ impl Interp {
                 if std::fs::write(&p, &bytes).is_err() {
                     erreur_runtime(&format!("écriture binaire impossible ({})", p));
                 }
-                Valeur::Vide
+                Valeur::entier(0)
             }
             "caractere" => {
                 let n = chaine_de(&a[0]).parse::<u8>().unwrap_or(0);
