@@ -1008,6 +1008,41 @@ impl Interp {
                 }
                 Valeur::Vide
             }
+            "ecrire_binaire" => {
+                let p = chaine_de(&a[0]);
+                let mut bytes: Vec<u8> = Vec::new();
+                if let Valeur::Liste(lst) = &a[1] {
+                    for v in lst.0.borrow().iter() {
+                        match v {
+                            Valeur::Chaine(s) => {
+                                match s.parse::<u8>() {
+                                    Ok(n) => bytes.push(n),
+                                    Err(_) => erreur_runtime(&format!("octet invalide: {}", s)),
+                                }
+                            }
+                            _ => erreur_runtime("ecrire_binaire: liste doit contenir des nombres entiers"),
+                        }
+                    }
+                } else {
+                    erreur_runtime("ecrire_binaire: second argument doit être une liste");
+                }
+                if std::fs::write(&p, &bytes).is_err() {
+                    erreur_runtime(&format!("écriture binaire impossible ({})", p));
+                }
+                Valeur::Vide
+            }
+            "caractere" => {
+                let n = chaine_de(&a[0]).parse::<u8>().unwrap_or(0);
+                Valeur::s(char::from_u32(n as u32).unwrap_or('\0').to_string())
+            }
+            "ecrire_bytes" => {
+                let p = chaine_de(&a[0]);
+                let s = chaine_de(&a[1]);
+                if std::fs::write(&p, s.as_bytes()).is_err() {
+                    erreur_runtime(&format!("écriture d'octets impossible ({})", p));
+                }
+                Valeur::Vide
+            }
             "nb_arguments" => {
                 let z = Gz::neuf();
                 z.poser_u64(self.arguments.len() as u64);
