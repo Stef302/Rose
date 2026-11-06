@@ -255,7 +255,7 @@ fn caractere($n: entier) -> chaine {
   retour $c
 }
 fn ecrire_bytes($c: chaine, $d: liste<chaine>) {
-  retour [0, 0, 0]
+  retour 0
 }
 
 fn postfixe($cur: entier, $val: entier, $toks_tag: liste<chaine>, $toks_val: liste<chaine>, $env: liste<chaine>) -> liste<entier> {
