@@ -4551,6 +4551,8 @@ si (longueur($err) > 1) {
           >> "    let mut r_" + $gname + ": " + $ct + ";"
         } sinon si ($ct == "bool") {
           >> "    let mut r_" + $gname + ": bool = false;"
+        } sinon si ($ct == "f64") {
+          >> "    let mut r_" + $gname + ": f64 = 0.0;"
         } sinon {
           >> "    let mut r_" + $gname + ": " + $ct + " = 0;"
         }
@@ -4582,6 +4584,7 @@ si (longueur($err) > 1) {
         $init = "0"
         si ($ct == "rose_str") { $init = "\"\"" }
         si ($ct == "bool") { $init = "false" }
+        si ($ct == "f64") { $init = "0.0" }
         si ($ct == "rose_liste" ou $ct == "rose_tampon" ou $ct == "rose_table" ou $ct == "rose_dyn") {
           >> "    let mut r_" + $tn + ": " + $ct + ";"
         } sinon {
