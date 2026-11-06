@@ -216,7 +216,6 @@ tant_que ($i < longueur($src)) {
       joindre($var_noms, $nom_var)
       joindre($var_vals, $resultat)
       $nb_vars = $nb_vars + 1
-      >> "stored var: " + $nom_var + " = " + $resultat
     }
   } sinon si ($c1 == ">" et $c2 == ">") {
     $j = $i + 2
