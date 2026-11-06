@@ -31,7 +31,8 @@ Usage :
   rose run prog.rose       identique
   rose comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
-  rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use]   AOT LLVM ORC (in-process, inkwell)
+  rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
+  rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
   rose info                état du moteur
   rose version             numéro de version
 ";
@@ -176,6 +177,7 @@ fn main() {
             let mut opt_level = aot_llvm_orc::OrcOptLevel::O2;
             let mut pgo_mode = aot_llvm_orc::PgoMode::None;
             let mut target_triple: Option<String> = None;
+            let mut auto_link = false;
             let mut i = 2;
             while i < argv.len() {
                 if argv[i] == "-O1" { opt_level = aot_llvm_orc::OrcOptLevel::O1; i += 1; }
@@ -183,6 +185,7 @@ fn main() {
                 else if argv[i] == "-O3" { opt_level = aot_llvm_orc::OrcOptLevel::O3; i += 1; }
                 else if argv[i] == "--pgo-generate" { pgo_mode = aot_llvm_orc::PgoMode::Generate; i += 1; }
                 else if argv[i] == "--pgo-use" { pgo_mode = aot_llvm_orc::PgoMode::Use; i += 1; }
+                else if argv[i] == "--link" { auto_link = true; i += 1; }
                 else if argv[i] == "--target" && i + 1 < argv.len() { target_triple = Some(argv[i + 1].clone()); i += 2; }
                 else if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
                     sortie = argv[i + 1].clone(); i += 2;
@@ -195,9 +198,23 @@ fn main() {
                 if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
+            // Quand --link est demandé, forcer l'extension .o pour l'objet intermédiaire
+            if auto_link && !sortie.ends_with(".o") {
+                sortie = format!("{}.o", sortie);
+            }
             match aot_llvm_orc::run_orc(&fichier, &sortie, opt_level, pgo_mode, target_triple.as_deref()) {
                 Ok(()) => {
-                    println!("rose: {} produit (AOT LLVM ORC, niveau {:?}, PGO {:?})", sortie, opt_level, pgo_mode);
+                    if auto_link {
+                        let objet = sortie.clone();
+                        let exe = if let Some(p) = sortie.rfind(".o") {
+                            sortie[..p].to_string()
+                        } else {
+                            format!("{}.exe", sortie)
+                        };
+                        eprintln!("rose: lien ELF non disponible (elf_linker supprimé)"); std::process::exit(1);
+                    } else {
+                        println!("rose: {} produit (AOT LLVM ORC, niveau {:?}, PGO {:?})", sortie, opt_level, pgo_mode);
+                    }
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -205,6 +222,26 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        }
+        "link" => {
+            let mut objet = String::new();
+            let mut sortie = String::new();
+            let mut i = 2;
+            while i < argv.len() {
+                if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
+                    sortie = argv[i + 1].clone(); i += 2;
+                } else if !argv[i].starts_with('-') {
+                    objet = argv[i].clone(); i += 1;
+                } else { i += 1; }
+            }
+            if objet.is_empty() { eprintln!("rose: quel objet linker ?"); std::process::exit(1); }
+            if sortie.is_empty() {
+                sortie = objet.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(objet.clone());
+                if let Some(p) = sortie.rfind(".o") { sortie.truncate(p); }
+                if sortie.is_empty() { sortie = "programme".into(); }
+            }
+            eprintln!("rose: lien ELF non disponible (elf_linker supprimé)"); std::process::exit(1);
+            std::process::exit(0);
         }
         _ => {}
     }
