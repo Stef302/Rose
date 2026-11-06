@@ -1038,7 +1038,11 @@ impl Interp {
             "ecrire_bytes" => {
                 let p = chaine_de(&a[0]);
                 let s = chaine_de(&a[1]);
-                if std::fs::write(&p, s.as_bytes()).is_err() {
+                let mut bytes: Vec<u8> = Vec::new();
+                for c in s.chars() {
+                    bytes.push(c as u8);
+                }
+                if std::fs::write(&p, &bytes).is_err() {
                     erreur_runtime(&format!("écriture d'octets impossible ({})", p));
                 }
                 Valeur::z(0)

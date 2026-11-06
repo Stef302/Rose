@@ -361,6 +361,8 @@ pub static STDLIB: &[EntreeStd] = &[
     EntreeStd { nom: "concatener", args: &["liste"], retour: "chaine" },
     EntreeStd { nom: "lire_texte", args: &["chaine"], retour: "chaine" },
     EntreeStd { nom: "ecrire_texte", args: &["chaine", "chaine"], retour: "vide" },
+    EntreeStd { nom: "ecrire_binaire", args: &["chaine", "liste"], retour: "vide" },
+    EntreeStd { nom: "ecrire_bytes", args: &["chaine", "chaine"], retour: "vide" },
     EntreeStd { nom: "nb_arguments", args: &[], retour: "entier" },
     EntreeStd { nom: "argument", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "temps", args: &[], retour: "entier" },

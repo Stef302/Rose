@@ -243,6 +243,10 @@ fn appel_direct($nom: chaine, $a0: entier, $a1: entier, $a2: entier, $env: liste
   si ($nom == "millisecondes") { retour millisecondes() }
   si ($nom == "hasard")     { retour hasard($a0) }
   si ($nom == "caractere")  { retour caractere($a0) }
+  si ($nom == "ecrire_binaire") {
+    ecrire_binaire($a0, $a1)
+    retour 0
+  }
   si ($nom == "ecrire_bytes") {
     ecrire_bytes($a0, $a1)
     retour 0
@@ -255,7 +259,7 @@ fn caractere($n: entier) -> chaine {
   retour $c
 }
 fn ecrire_bytes($c: chaine, $d: liste<chaine>) {
-  retour 0
+  ecrire_binaire($c, $d)
 }
 
 fn postfixe($cur: entier, $val: entier, $toks_tag: liste<chaine>, $toks_val: liste<chaine>, $env: liste<chaine>) -> liste<entier> {

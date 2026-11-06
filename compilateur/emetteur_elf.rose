@@ -6,43 +6,43 @@
 # ── Utilitaires d'écriture little-endian ──
 
 fn u8le($v: entier) -> chaine {
-  retour sous_chaine(chaine($v % 256), 0, 1)
+  retour caractere($v % 256)
 }
 
 fn u16le($v: entier) -> chaine {
   $b0 = $v % 256
-  $b1 = ($v / 256) % 256
-  retour sous_chaine(chaine($b0), 0, 1) + sous_chaine(chaine($b1), 0, 1)
+  $b1 = partie_entiere($v / 256) % 256
+  retour caractere($b0) + caractere($b1)
 }
 
 fn u32le($v: entier) -> chaine {
   $b0 = $v % 256
-  $v1 = $v / 256
+  $v1 = partie_entiere($v / 256)
   $b1 = $v1 % 256
-  $v2 = $v1 / 256
+  $v2 = partie_entiere($v1 / 256)
   $b2 = $v2 % 256
-  $v3 = $v2 / 256
+  $v3 = partie_entiere($v2 / 256)
   $b3 = $v3 % 256
-  retour sous_chaine(chaine($b0), 0, 1) + sous_chaine(chaine($b1), 0, 1) + sous_chaine(chaine($b2), 0, 1) + sous_chaine(chaine($b3), 0, 1)
+  retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3)
 }
 
 fn u64le($v: entier) -> chaine {
   $b0 = $v % 256
-  $v1 = $v / 256
+  $v1 = partie_entiere($v / 256)
   $b1 = $v1 % 256
-  $v2 = $v1 / 256
+  $v2 = partie_entiere($v1 / 256)
   $b2 = $v2 % 256
-  $v3 = $v2 / 256
+  $v3 = partie_entiere($v2 / 256)
   $b3 = $v3 % 256
-  $v4 = $v3 / 256
+  $v4 = partie_entiere($v3 / 256)
   $b4 = $v4 % 256
-  $v5 = $v4 / 256
+  $v5 = partie_entiere($v4 / 256)
   $b5 = $v5 % 256
-  $v6 = $v5 / 256
+  $v6 = partie_entiere($v5 / 256)
   $b6 = $v6 % 256
-  $v7 = $v6 / 256
+  $v7 = partie_entiere($v6 / 256)
   $b7 = $v7 % 256
-  retour sous_chaine(chaine($b0), 0, 1) + sous_chaine(chaine($b1), 0, 1) + sous_chaine(chaine($b2), 0, 1) + sous_chaine(chaine($b3), 0, 1) + sous_chaine(chaine($b4), 0, 1) + sous_chaine(chaine($b5), 0, 1) + sous_chaine(chaine($b6), 0, 1) + sous_chaine(chaine($b7), 0, 1)
+  retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3) + caractere($b4) + caractere($b5) + caractere($b6) + caractere($b7)
 }
 
 # ── Constantes ELF64 ──
@@ -63,28 +63,42 @@ $SHT_STRTAB = 3
 $SHN_UNDEF = 0
 
 # Adresse de chargement aarch64
-$BASE_ADDR = 0x400000
-$TEXT_OFFSET = 0x1000
+$BASE_ADDR = 4194304
+$TEXT_OFFSET = 4096
 $TEXT_ADDR = $BASE_ADDR + $TEXT_OFFSET
 
 # ── Émetteur ELF minimal : produit un binaire qui retourne 0 ──
 fn emettre_elf_minimal($sortie: chaine) {
   $out = ""
+  $ELFMAG = "ELF"
+  $ELFCLASS64 = 2
+  $ELFDATA2LSB = 1
+  $EV_CURRENT = 1
+  $ELFOSABI_SYSV = 0
+  $ET_EXEC = 2
+  $EM_AARCH64 = 183
+  $PT_LOAD = 1
+  $PF_R = 4
+  $PF_W = 2
+  $PF_X = 1
+  $BASE_ADDR = 4194304
+  $TEXT_OFFSET = 4096
+  $TEXT_ADDR = 4198400
 
   # ── ELF header (64 octets) ──
   $out = $out + $ELFMAG                                    # e_ident[0..3]
-  $out = $out + sous_chaine(chaine($ELFCLASS64), 0, 1)     # e_ident[4] = ELFCLASS64
-  $out = $out + sous_chaine(chaine($ELFDATA2LSB), 0, 1)    # e_ident[5] = ELFDATA2LSB
-  $out = $out + sous_chaine(chaine($EV_CURRENT), 0, 1)     # e_ident[6] = EV_CURRENT
-  $out = $out + sous_chaine(chaine($ELFOSABI_SYSV), 0, 1)  # e_ident[7] = ELFOSABI_SYSV
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[8] = 0
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[9] = 0
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[10] = 0
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[11] = 0
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[12] = 0
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[13] = 0
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[14] = 0
-  $out = $out + sous_chaine(chaine(0), 0, 1)               # e_ident[15] = 0
+  $out = $out + caractere($ELFCLASS64)     # e_ident[4] = ELFCLASS64
+  $out = $out + caractere($ELFDATA2LSB)    # e_ident[5] = ELFDATA2LSB
+  $out = $out + caractere($EV_CURRENT)     # e_ident[6] = EV_CURRENT
+  $out = $out + caractere($ELFOSABI_SYSV)  # e_ident[7] = ELFOSABI_SYSV
+  $out = $out + caractere(0)               # e_ident[8] = 0
+  $out = $out + caractere(0)               # e_ident[9] = 0
+  $out = $out + caractere(0)               # e_ident[10] = 0
+  $out = $out + caractere(0)               # e_ident[11] = 0
+  $out = $out + caractere(0)               # e_ident[12] = 0
+  $out = $out + caractere(0)               # e_ident[13] = 0
+  $out = $out + caractere(0)               # e_ident[14] = 0
+  $out = $out + caractere(0)               # e_ident[15] = 0
   $out = $out + u16le($ET_EXEC)                            # e_type = ET_EXEC
   $out = $out + u16le($EM_AARCH64)                         # e_machine = EM_AARCH64
   $out = $out + u32le(1)                                   # e_version = 1
@@ -101,33 +115,33 @@ fn emettre_elf_minimal($sortie: chaine) {
 
   # ── Program header (1 segment PT_LOAD, 56 octets) ──
   $out = $out + u32le($PT_LOAD)                            # p_type = PT_LOAD
-  $out = $out + u32le($PF_R | $PF_X)                       # p_flags = R|X
-  $out = $out + u64le($TEXT_OFFSET)                        # p_offset = 0x1000
+  $out = $out + u32le(5)                       # p_flags = R|X
+  $out = $out + u64le($TEXT_OFFSET)                        # p_offset = 4096
   $out = $out + u64le($TEXT_ADDR)                          # p_vaddr
   $out = $out + u64le($TEXT_ADDR)                          # p_paddr
   $out = $out + u64le(12)                                  # p_filesz = 12 octets (2 instructions)
   $out = $out + u64le(12)                                  # p_memsz = 12 octets
-  $out = $out + u64le(0x200000)                            # p_align
+  $out = $out + u64le(2097152)                            # p_align
 
-  # ── Code machine aarch64 : retour 0 ──
-  # mov w0, #0      = 0xaa0003e0
-  # mov x8, #93     = 0xaa0003e8 (syscall number exit)
-  # svc #0          = 0xd65f0000
-  $out = $out + u32le(0xaa0003e0)   # mov w0, #0
-  $out = $out + u32le(0xaa0003e8)   # mov x8, #93
-  $out = $out + u32le(0xd65f0000)   # svc #0
-
-  # ── Écrire le fichier ──
-  $octets = ["__init__"]
-  $i = 1
-  tant_que ($i <= longueur($out)) {
-    $c = sous_chaine($out, $i, $i + 1)
-    $code = ordre($c)
-    joindre($octets, chaine($code))
+  # ── Padding jusqu'a 4096 (0x1000) ──
+  $pad = 4096 - longueur($out)
+  $i = 0
+  tant_que ($i < $pad) {
+    $out = $out + caractere(0)
     $i = $i + 1
   }
-  ecrire_bytes($sortie, $octets)
-  >> "rose: " + $sortie + " produit (binaire ELF autonome, " + longueur($octets) + " octets)"
+
+  # ── Code machine aarch64 : retour 0 ──
+  # mov w0, #0      = 2852127712
+  # mov x8, #93     = 2852127720 (syscall number exit)
+  # svc #0          = 3596550144
+  $out = $out + u32le(1384120320)   # mov w0, #0
+  $out = $out + u32le(3531606952)   # mov x8, #93
+  $out = $out + u32le(3556769793)   # svc #0
+
+  # ── Écrire le fichier ──
+  ecrire_bytes($sortie, $out)
+  >> "rose: " + $sortie + " produit (binaire ELF autonome, " + chaine(longueur($out)) + " octets)"
 }
 
 # ── Point d'entrée ──
