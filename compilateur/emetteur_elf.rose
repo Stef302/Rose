@@ -165,8 +165,7 @@ $var_noms = [""]
 $var_vals = [""]
 $nb_vars = 0
 
-# Extraire et evaluer toutes les expressions apres >>
-$affichage = ""
+# Pretraitement 0 : collecter les variables
 $i = 0
 tant_que ($i < longueur($src)) {
   $c1 = ""
@@ -175,7 +174,6 @@ tant_que ($i < longueur($src)) {
   si ($i < longueur($src)) { $c1 = sous_chaine($src, $i, $i + 1) }
   si ($i + 1 < longueur($src)) { $c2 = sous_chaine($src, $i + 1, $i + 2) }
   si ($i + 2 < longueur($src)) { $c3 = sous_chaine($src, $i + 2, $i + 3) }
-  # Detecter "var "
   si ($c1 == "v" et $c2 == "a" et $c3 == "r") {
     $j = $i + 3
     tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
@@ -191,7 +189,6 @@ tant_que ($i < longueur($src)) {
         $j = $j + 1
       }
     }
-    # Trouver le =
     $j = $i + 3
     tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) != "=") {
       $j = $j + 1
@@ -212,11 +209,127 @@ tant_que ($i < longueur($src)) {
       }
     }
     si (longueur($expr) > 0 et longueur($nom_var) > 0) {
-      $resultat = eval_expr($expr)
+      # Construire le contexte de variables
+      $ctx = ""
+      $vi = 1
+      tant_que ($vi <= $nb_vars) {
+        $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
+        $vi = $vi + 1
+      }
+      si (longueur($ctx) > 0) {
+        $expr_full = $expr + " // vars: " + $ctx
+      } sinon {
+        $expr_full = $expr
+      }
+      $resultat = eval_expr($expr_full)
       joindre($var_noms, $nom_var)
       joindre($var_vals, $resultat)
       $nb_vars = $nb_vars + 1
     }
+  }
+  $i = $i + 1
+}
+
+# Pretraitement : supprimer les blocs si avec condition false
+# (seulement si sans sinon, condition constante)
+$src_proc = $src
+$src_proc = $src
+$modifie = 1
+tant_que ($modifie == 1) {
+  $modifie = 0
+  $i = 0
+  tant_que ($i < longueur($src_proc)) {
+    $c1 = ""
+    $c2 = ""
+    $c3 = ""
+    si ($i < longueur($src_proc)) { $c1 = sous_chaine($src_proc, $i, $i + 1) }
+    si ($i + 1 < longueur($src_proc)) { $c2 = sous_chaine($src_proc, $i + 1, $i + 2) }
+    si ($i + 2 < longueur($src_proc)) { $c3 = sous_chaine($src_proc, $i + 2, $i + 3) }
+    si ($c1 == "s" et $c2 == "i" et $c3 == " ") {
+      $j = $i + 3
+      tant_que ($j < longueur($src_proc) et sous_chaine($src_proc, $j, $j + 1) == " ") {
+        $j = $j + 1
+      }
+      si ($j < longueur($src_proc) et sous_chaine($src_proc, $j, $j + 1) == "(") {
+        $j = $j + 1
+        $cond = ""
+        $prof = 1
+        tant_que ($j < longueur($src_proc) et $prof > 0) {
+          $ch = sous_chaine($src_proc, $j, $j + 1)
+          si ($ch == "(") { $prof = $prof + 1 }
+          si ($ch == ")") { $prof = $prof - 1 }
+          si ($prof > 0) { $cond = $cond + $ch }
+          $j = $j + 1
+        }
+        # Construire le contexte de variables
+        $ctx_si = ""
+        $vi_si = 1
+        tant_que ($vi_si <= $nb_vars) {
+          $ctx_si = $ctx_si + $var_noms[$vi_si] + "=" + $var_vals[$vi_si] + " "
+          $vi_si = $vi_si + 1
+        }
+        si (longueur($ctx_si) > 0) {
+          $cond_full = $cond + " // vars: " + $ctx_si
+        } sinon {
+          $cond_full = $cond
+        }
+        $cond_val = eval_expr($cond_full)
+        $est_faux = 0
+        si ($cond_val == "0" ou $cond_val == "faux" ou $cond_val == "" ou longueur($cond_val) == 0) {
+          $est_faux = 1
+        }
+        # Trouver le bloc { ... }
+        $prof = 0
+        $trouve = 0
+        $debut = $j
+        tant_que ($j < longueur($src_proc) et $trouve == 0) {
+          $ch = sous_chaine($src_proc, $j, $j + 1)
+          si ($ch == "{") { $prof = $prof + 1 }
+          si ($ch == "}") { $prof = $prof - 1 }
+          si ($prof == 0 et $ch == "}") { $trouve = 1 }
+          $j = $j + 1
+        }
+        si ($trouve == 1) {
+          $fin_bloc = $j
+          si ($est_faux == 1) {
+            # Supprimer tout le si (...) { ... }
+            $avant = sous_chaine($src_proc, 0, $i)
+            $apres = sous_chaine($src_proc, $fin_bloc, longueur($src_proc))
+            $src_proc = $avant + $apres
+            $modifie = 1
+            $i = 0
+          } sinon {
+            # Garder le corps, supprimer si (...) { et }
+            $corps = sous_chaine($src_proc, $debut + 1, $fin_bloc - 1)
+            $avant = sous_chaine($src_proc, 0, $i)
+            $apres = sous_chaine($src_proc, $fin_bloc, longueur($src_proc))
+            $src_proc = $avant + $corps + $apres
+            $modifie = 1
+            $i = 0
+          }
+        }
+      }
+    }
+    $i = $i + 1
+  }
+}
+
+$src = $src_proc
+
+# Extraire et evaluer toutes les expressions apres >>
+$src = $src_proc
+$affichage = ""
+$i = 0
+tant_que ($i < longueur($src)) {
+  $c1 = ""
+  $c2 = ""
+  $c3 = ""
+  si ($i < longueur($src)) { $c1 = sous_chaine($src, $i, $i + 1) }
+  si ($i + 1 < longueur($src)) { $c2 = sous_chaine($src, $i + 1, $i + 2) }
+  si ($i + 2 < longueur($src)) { $c3 = sous_chaine($src, $i + 2, $i + 3) }
+  # Detecter "var " (deja traite en preprocessing, skip)
+  si ($c1 == "v" et $c2 == "a" et $c3 == "r") {
+    $i = $i + 1
   } sinon si ($c1 == ">" et $c2 == ">") {
     $j = $i + 2
     tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
