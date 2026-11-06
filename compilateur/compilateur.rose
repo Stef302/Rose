@@ -1436,7 +1436,7 @@ fn ce_raw($i: entier,
                      $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     $bb = BASE($tb)
     $bi = BASE($ti)
-    si ($bb != "liste" et $bb != "chaine" et $bb != "table" et $bb != "valeur") {
+    si ($bb != "liste" et $bb != "chaine" et $bb != "table" et $bb != "valeur" et $bb != "tampon") {
       lever($lg0, "Index sur un " + nomty($tb) + ", une liste est attendue", $err)
       retour "vide|vide"
     }
@@ -1460,6 +1460,7 @@ fn ce_raw($i: entier,
       retour "vide|vide"
     }
     si ($bb == "chaine") { retour "chaine|vide" }
+    si ($bb == "tampon") { retour "entier|vide" }
     retour ELTT($tb) + "|vide"
   }
   si ($kd == "uni") {
@@ -3273,11 +3274,12 @@ fn genre_t($tok: chaine, $body: liste<chaine>, $fn_noms: liste<chaine>, $fn_ret:
         si (commence_par($op, "cmp.")) { retour "b" }
         si ($op == "not.b" ou $op == "and.b" ou $op == "or.b") { retour "b" }
         si ($op == "index") {
-          // base table -> cellule dynamique ; base non-liste -> rose_index_str
-          // (chaine) ; base liste -> type du dernier élément poussé.
+          // base table -> cellule dynamique ; base tampon -> entier ;
+          // base non-liste -> chaine ; base liste -> type du dernier élément.
           $bt = "z"
           si (longueur($toks) >= 3) { $bt = genre_t($toks[2], $body, $fn_noms, $fn_ret, $pnoms, $pletres, $curfn, $df, $dm, $dl) }
           si ($bt == "h") { retour "y" }
+          si ($bt == "t") { retour "z" }
           si ($bt != "l") { retour "s" }
           // quand la base est une globale, les éléments peuvent avoir été
           // poussés sur le temporaire affecteur, avant l'affect.
@@ -3745,7 +3747,7 @@ fn temp_type_of($op: chaine) -> chaine {
 }
 
 fn rust_type_name($t_t: chaine) -> chaine {
-  si ($t_t == "h") { retour "i64" }
+  si ($t_t == "h") { retour "std::collections::HashMap<String, i64>" }
   si ($t_t == "y") { retour "i64" }
   si ($t_t == "t") { retour "Vec<u8>" }
   si ($t_t == "g") { retour "i64" }
@@ -4549,6 +4551,8 @@ si (longueur($err) > 1) {
           >> "    let mut r_" + $gname + ": String = String::new();"
         } sinon si ($ct == "Vec<i64>" ou $ct == "Vec<u8>") {
           >> "    let mut r_" + $gname + ": " + $ct + " = Vec::new();"
+        } sinon si ($ct == "std::collections::HashMap<String, i64>") {
+          >> "    let mut r_" + $gname + ": " + $ct + " = std::collections::HashMap::new();"
         } sinon si ($ct == "bool") {
           >> "    let mut r_" + $gname + ": bool = false;"
         } sinon si ($ct == "f64") {
@@ -4587,6 +4591,8 @@ si (longueur($err) > 1) {
         si ($ct == "f64") { $init = "0.0" }
         si ($ct == "Vec<i64>" ou $ct == "Vec<u8>") {
           >> "    let mut r_" + $tn + ": " + $ct + " = Vec::new();"
+        } sinon si ($ct == "std::collections::HashMap<String, i64>") {
+          >> "    let mut r_" + $tn + ": " + $ct + " = std::collections::HashMap::new();"
         } sinon {
           >> "    let mut r_" + $tn + ": " + $ct + " = " + $init + ";"
         }
@@ -4811,11 +4817,15 @@ si (longueur($err) > 1) {
               // de chaine.
               $bty = genre_t($rtoks[2], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
               si ($bty == "h") {
-                >> "    " + $dname + " = /* table_get */(" + $base + ", " + $idx + ");"
+                >> "    " + $dname + " = *" + $base + ".get(" + $idx + ").unwrap_or(&0);"
               } sinon si ($bty == "l") {
                 >> "    " + $dname + " = " + $base + "[" + $idx + " as usize];"
               } sinon {
-                >> "    " + $dname + " = rose_index_str(" + $base + ", " + $idx + ");"
+                si ($bty == "t") {
+                  >> "    " + $dname + " = " + $base + "[" + $idx + " as usize] as i64;"
+                } sinon {
+                  >> "    " + $dname + " = " + $base + ".chars().nth(" + $idx + " as usize).map(|c| c.to_string()).unwrap_or_default();"
+                }
               }
             }
           } sinon si ($op == "cst.f") {
@@ -5185,27 +5195,27 @@ si (longueur($err) > 1) {
                 $txt_t = operand($argo, $flagpees)
                 si (commence_par($argo, "%")) { $txt_t = operand($argo, $flagpees) + "" }
                 si (commence_par($argo, prefix_cst())) { $txt_t = "\"" + operand($argo, $flagpees) + "\"" }
-                >> "    " + $dname + " = /* octets */(" + $txt_t + ");"
+                >> "    " + $dname + " = " + $txt_t + ".as_bytes().to_vec();"
               } sinon si ($fname == "tampon") {
-                >> "    " + $dname + " = /* tampon_new */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = vec![0u8; " + operand($rtoks[3], $flagpees) + " as usize];"
               } sinon si ($fname == "remplir_hasard") {
                 >> "    /* remplir_hasard */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
               } sinon si ($fname == "tampon_case") {
-                >> "    " + $dname + " = /* tampon_case */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
+                >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + "[" + operand($rtoks[4], $flagpees) + " as usize] as i64;"
               } sinon si ($fname == "tampon_pose") {
-                >> "    /* tampon_pose */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ", " + operand($rtoks[5], $flagpees) + ");"
+                >> "    " + operand($rtoks[3], $flagpees) + "[" + operand($rtoks[4], $flagpees) + " as usize] = " + operand($rtoks[5], $flagpees) + " as u8;"
               } sinon si ($fname == "table") {
-                >> "    " + $dname + " = /* table_new */();"
+                >> "    " + $dname + " = std::collections::HashMap::new();"
               } sinon si ($fname == "inserer") {
-                >> "    /* table_inserer */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ", rose_dyn_de(" + operand($rtoks[5], $flagpees) + "));"
+                >> "    " + operand($rtoks[3], $flagpees) + ".insert(" + operand($rtoks[4], $flagpees) + ".to_string(), " + operand($rtoks[5], $flagpees) + ");"
               } sinon si ($fname == "cle_existe") {
-                >> "    " + $dname + " = /* table_cle_existe */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
+                >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + ".contains_key(&" + operand($rtoks[4], $flagpees) + ".to_string());"
               } sinon si ($fname == "supprimer") {
-                >> "    " + $dname + " = /* table_supprimer */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
+                >> "    " + $dname + " = if " + operand($rtoks[3], $flagpees) + ".remove(&" + operand($rtoks[4], $flagpees) + ".to_string()).is_some() { 1 } else { 0 };"
               } sinon si ($fname == "cles") {
-                >> "    " + $dname + " = /* table_cles */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = Vec::new(); /* cles: non implemente */"
               } sinon si ($fname == "valeurs") {
-                >> "    " + $dname + " = /* table_valeurs */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = Vec::new(); /* valeurs: non implemente */"
               } sinon si ($fname == "graine") {
                 >> "    /* graine */(" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "lire_texte") {
