@@ -1029,7 +1029,7 @@ impl Interp {
                 if std::fs::write(&p, &bytes).is_err() {
                     erreur_runtime(&format!("écriture binaire impossible ({})", p));
                 }
-                Valeur::entier(0)
+                Valeur::z(0)
             }
             "caractere" => {
                 let n = chaine_de(&a[0]).parse::<u8>().unwrap_or(0);
@@ -1041,7 +1041,7 @@ impl Interp {
                 if std::fs::write(&p, s.as_bytes()).is_err() {
                     erreur_runtime(&format!("écriture d'octets impossible ({})", p));
                 }
-                Valeur::Vide
+                Valeur::z(0)
             }
             "nb_arguments" => {
                 let z = Gz::neuf();
