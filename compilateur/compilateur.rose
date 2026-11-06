@@ -5056,11 +5056,11 @@ si (longueur($err) > 1) {
                 si (commence_par($arge, prefix_cst())) {
                   >> "    " + $dname + " = " + operand($arge, $flagpees) + ";"
                 } sinon si ($eti == "f") {
-                  >> "    " + $dname + " = /* entier_f */(" + operand($arge, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($arge, $flagpees) + " as i64;"
                 } sinon si ($eti == "q") {
-                  >> "    " + $dname + " = /* entier_q */(" + operand($arge, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($arge, $flagpees) + " as i64;"
                 } sinon si ($eti == "s" ou $eti == "u") {
-                  >> "    " + $dname + " = /* entier */(" + operand($arge, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($arge, $flagpees) + ";"
                 } sinon {
                   >> "    " + $dname + " = " + operand($arge, $flagpees) + ";"
                 }
@@ -5070,7 +5070,7 @@ si (longueur($err) > 1) {
                 si (commence_par($argf, prefix_cst())) {
                   >> "    " + $dname + " = " + operand($argf, $flagpees) + ";"
                 } sinon si ($ffi == "s" ou $ffi == "u") {
-                  >> "    " + $dname + " = /* flottant_chaine */(" + operand($argf, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argf, $flagpees) + " as f64;"
                 } sinon si ($ffi == "b") {
                   >> "    " + $dname + " = (" + operand($argf, $flagpees) + " ? 1.0 : 0.0);"
                 } sinon si ($ffi == "f") {
@@ -5092,7 +5092,7 @@ si (longueur($err) > 1) {
                 } sinon si ($cti == "b") {
                   >> "    " + $dname + " = (" + operand($argc, $flagpees) + " ? \"vrai\" : \"faux\");"
                 } sinon {
-                  >> "    " + $dname + " = /* chaine */(" + operand($argc, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argc, $flagpees) + ".to_string();"
                 }
               } sinon si ($fname == "pgcd" ou $fname == "ppcm") {
                 $a0 = operand($rtoks[3], $flagpees)
@@ -5142,13 +5142,13 @@ si (longueur($err) > 1) {
                 $arga = $rtoks[3]
                 $agy = genre_t($arga, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($agy == "f") {
-                  >> "    " + $dname + " = /* abs_f */(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($arga, $flagpees) + ".abs();"
                 } sinon si ($agy == "g") {
-                  >> "    " + $dname + " = /* abs_gd */(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($arga, $flagpees) + ".abs();"
                 } sinon si ($agy == "q") {
-                  >> "    " + $dname + " = /* abs_q */(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($arga, $flagpees) + ".abs();"
                 } sinon {
-                  >> "    " + $dname + " = /* abs */(" + operand($arga, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($arga, $flagpees) + ".abs();"
                 }
               } sinon si ($fname == "min" ou $fname == "max") {
                 $arg0 = operand($rtoks[3], $flagpees)
