@@ -4241,8 +4241,7 @@ si (longueur($err) > 1) {
         si ($ty != "") { $sig = $sig + " -> " + $ty + " {" } sinon { $sig = $sig + " {" }
       >> $sig
       si ($cname == "main") {
-        >> "    r_main();"
-        >> "    return;"
+        // corps directement dans main() (pas d'appel r_main)
       }
 
       // collect body lines
@@ -4550,6 +4549,8 @@ si (longueur($err) > 1) {
           >> "    " + $ct + " r_" + $gname + " = \"\";"
         } sinon si ($ct == "rose_liste" ou $ct == "rose_tampon" ou $ct == "rose_table" ou $ct == "rose_dyn") {
           >> "    let mut r_" + $gname + ": " + $ct + ";"
+        } sinon si ($ct == "bool") {
+          >> "    let mut r_" + $gname + ": bool = false;"
         } sinon {
           >> "    let mut r_" + $gname + ": " + $ct + " = 0;"
         }
@@ -4580,6 +4581,7 @@ si (longueur($err) > 1) {
         }
         $init = "0"
         si ($ct == "rose_str") { $init = "\"\"" }
+        si ($ct == "bool") { $init = "false" }
         si ($ct == "rose_liste" ou $ct == "rose_tampon" ou $ct == "rose_table" ou $ct == "rose_dyn") {
           >> "    let mut r_" + $tn + ": " + $ct + ";"
         } sinon {
@@ -5225,8 +5227,7 @@ si (longueur($err) > 1) {
             si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
             // parts: ["", "br.cond", "%t", "label1", "label2"]
             si (longueur($parts) >= 5) {
-              >> "    if (" + operand($parts[2], $flagpees) + ") /* goto */ break;" + trim(sous_chaine($parts[3], 1, longueur($parts[3]))) + ";"
-              >> "    else /* goto */ break;" + trim(sous_chaine($parts[4], 1, longueur($parts[4]))) + ";"
+              >> "    /* if (" + operand($parts[2], $flagpees) + ") goto " + trim(sous_chaine($parts[3], 1, longueur($parts[3]))) + " else goto " + trim(sous_chaine($parts[4], 1, longueur($parts[4]))) + " */"
             }
           } sinon si (commence_par($bl, "br ")) {
             $parts = [""]
@@ -5244,7 +5245,7 @@ si (longueur($err) > 1) {
             }
             si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
             si (longueur($parts) >= 3) {
-              >> "    /* goto */ break;" + trim(sous_chaine($parts[2], 1, longueur($parts[2]))) + ";"
+              >> "    /* goto " + trim(sous_chaine($parts[2], 1, longueur($parts[2]))) + " */"
             }
           } sinon si (commence_par($bl, "cmp.")) {
             // %t = cmp.lt.z %a %b
