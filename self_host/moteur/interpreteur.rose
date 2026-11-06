@@ -1,4 +1,4 @@
-# interpreteur.rose — Moteur Rose écrit EN Rose (v3 : minimal, fonctionnel).
+# interpreteur.rose — Moteur Rose écrit EN Rose (v5.3 : intérpréteur simple sans fonctions utilisateur).
 # Usage : rose/rose self_host/moteur/interpreteur.rose prog.rose
 # Supporte : entiers, + - * / div ^, (), >>, si, tant_que, var = expr, fn std.
 
@@ -32,9 +32,7 @@ fn lexe_suivant($pos: entier, $src: chaine, $n: entier, $ligne: entier,
       }
     }
   }
-  si ($pos >= $n) {
-    retour [$pos, $ligne]
-  }
+  si ($pos >= $n) { retour [$pos, $ligne] }
   $c = ordre(sous_chaine($src, $pos, $pos + 1))
   $k = cp_classe($c)
   si ($k == 1) {
@@ -135,11 +133,6 @@ fn lexe_fichier($src: chaine, $n: entier,
   joindre($toks_tag, "fin"); joindre($toks_val, ""); joindre($toks_ligne, $ligne)
 }
 
-# ── Environnement : liste aplatie [nom1, val1, …] avec factice en tête ──
-# FIX env propagation : ecrire_var ajoute en place (joindre) au lieu de
-# reconstruire une nouvelle liste ; lire_var cherche depuis la FIN pour
-# trouver la valeur la plus récente. Comme les listes sont passées par
-# référence, la modification se propage à l'appelant.
 fn lire_var($env: liste<chaine>, $nom: chaine) -> chaine {
   $i = longueur($env) - 2
   tant_que ($i >= 2) {
@@ -154,7 +147,6 @@ fn ecrire_var($env: liste<chaine>, $nom: chaine, $val: chaine) -> liste<chaine> 
   retour $env
 }
 
-# ── Parseur (retourne [$cur, $valeur]) ──
 fn prec_de($op: chaine) -> entier {
   si ($op == "ou") { retour 1 }
   si ($op == "et") { retour 2 }
@@ -322,7 +314,6 @@ fn expr_p($cur: entier, $p: entier, $toks_tag: liste<chaine>, $toks_val: liste<c
   retour [$cur, $g]
 }
 
-# ── Instructions ──
 fn extraire_bloc($cur: entier, $toks_tag: liste<chaine>, $toks_val: liste<chaine>) -> liste<entier> {
   si (non ($toks_tag[$cur] == "op" et $toks_val[$cur] == "{")) {
     afficher_erreur("interp : { attendu"); quitter(1)
@@ -415,8 +406,10 @@ fn executer_stmt($cur: entier, $toks_tag: liste<chaine>,
     $tk4 = $toks_tag[$cur]
     si (non ($tk4 == "ident" ou $tk4 == "var")) { afficher_erreur("pour : variable attendue"); quitter(1) }
     $nom = $toks_val[$cur]; $cur = $cur + 1; $cur = $cur + 1
-    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env); $cur = $r[0]; $a = $r[1]
-    $cur = $cur + 1; $r = expr_p($cur, 0, $toks_tag, $toks_val, $env); $cur = $r[0]; $b = $r[1]
+    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env)
+    $cur = $r[0]; $a = $r[1]
+    $cur = $cur + 1; $r = expr_p($cur, 0, $toks_tag, $toks_val, $env)
+    $cur = $r[0]; $b = $r[1]
     $r2 = extraire_bloc($cur, $toks_tag, $toks_val)
     $cur = $r2[0]; $debut = $r2[1]; $fin = $r2[2]
     $env = ecrire_var($env, $nom, chaine($a))
@@ -439,7 +432,8 @@ fn executer_stmt($cur: entier, $toks_tag: liste<chaine>,
       }
     }
     si ($cur < longueur($toks_tag) et $toks_tag[$cur] == "op" et $toks_val[$cur] == "->") { $cur = $cur + 2 }
-    $r = extraire_bloc($cur, $toks_tag, $toks_val); $cur = $r[0]
+    $r = extraire_bloc($cur, $toks_tag, $toks_val)
+    $cur = $r[0]
     retour [0, $cur, 0]
   }
 
@@ -448,7 +442,8 @@ fn executer_stmt($cur: entier, $toks_tag: liste<chaine>,
     si ($cur < longueur($toks_tag) et $toks_tag[$cur] == "op" et ($toks_val[$cur] == "}" ou $toks_val[$cur] == "fin")) {
       retour [1, $cur, 0]
     }
-    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env); $cur = $r[0]; $val = $r[1]
+    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env)
+    $cur = $r[0]; $val = $r[1]
     retour [1, $cur, $val]
   }
 
@@ -459,20 +454,22 @@ fn executer_stmt($cur: entier, $toks_tag: liste<chaine>,
       afficher_erreur($nom + " : = attendu"); quitter(1)
     }
     $cur = $cur + 1
-    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env); $cur = $r[0]; $val = $r[1]
+    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env)
+    $cur = $r[0]; $val = $r[1]
     $env = ecrire_var($env, $nom, chaine($val))
     retour [0, $cur, 0]
   }
 
-  # Affectation à variable existante : $x = expr
   si ($t == "var" et $cur + 1 < longueur($toks_tag) et $toks_tag[$cur + 1] == "op" et $toks_val[$cur + 1] == "=") {
     $nom = $v; $cur = $cur + 1; $cur = $cur + 1
-    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env); $cur = $r[0]; $val = $r[1]
+    $r = expr_p($cur, 0, $toks_tag, $toks_val, $env)
+    $cur = $r[0]; $val = $r[1]
     $env = ecrire_var($env, $nom, chaine($val))
     retour [0, $cur, 0]
   }
 
-  $r = expr_p($cur, 0, $toks_tag, $toks_val, $env); $cur = $r[0]; _ = $r[1]
+  $r = expr_p($cur, 0, $toks_tag, $toks_val, $env)
+  $cur = $r[0]; _ = $r[1]
   retour [0, $cur, 0]
 }
 
@@ -485,6 +482,7 @@ $cur = 1; $nn = longueur($toks_tag); $rv = [0, 0, 0]; $iter = 0; $max_iter = 100
 tant_que ($cur < $nn et $iter < $max_iter) {
   $rv = executer_stmt($cur, $toks_tag, $toks_val, $env)
   $cur = $rv[1]
+  $env = $rv[2]
   $iter = $iter + 1
   si ($rv[0] == 1) { afficher_erreur("retour hors fonction"); quitter(1) }
 }
