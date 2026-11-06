@@ -4545,10 +4545,10 @@ si (longueur($err) > 1) {
           $bi = $bi + 1
         }
         $ct = rust_type_name($gtype)
-        si ($ct == "rose_str") {
-          >> "    " + $ct + " r_" + $gname + " = \"\";"
-        } sinon si ($ct == "rose_liste" ou $ct == "rose_tampon" ou $ct == "rose_table" ou $ct == "rose_dyn") {
-          >> "    let mut r_" + $gname + ": " + $ct + ";"
+        si ($ct == "String") {
+          >> "    let mut r_" + $gname + ": String = String::new();"
+        } sinon si ($ct == "Vec<i64>" ou $ct == "Vec<u8>") {
+          >> "    let mut r_" + $gname + ": " + $ct + " = " + $ct + "_new();"
         } sinon si ($ct == "bool") {
           >> "    let mut r_" + $gname + ": bool = false;"
         } sinon si ($ct == "f64") {
@@ -4579,14 +4579,14 @@ si (longueur($err) > 1) {
         }
         $ct = rust_type_name($tty)
         si ($tty == "z") {
-          si (inst_est_gd($t_t, $body_lines)) { $ct = "rose_gd" }
+          si (inst_est_gd($t_t, $body_lines)) { $ct = "i64" }
         }
         $init = "0"
-        si ($ct == "rose_str") { $init = "\"\"" }
+        si ($ct == "String") { $init = "String::new()" }
         si ($ct == "bool") { $init = "false" }
         si ($ct == "f64") { $init = "0.0" }
-        si ($ct == "rose_liste" ou $ct == "rose_tampon" ou $ct == "rose_table" ou $ct == "rose_dyn") {
-          >> "    let mut r_" + $tn + ": " + $ct + ";"
+        si ($ct == "Vec<i64>" ou $ct == "Vec<u8>") {
+          >> "    let mut r_" + $tn + ": " + $ct + " = " + $ct + "_new();"
         } sinon {
           >> "    let mut r_" + $tn + ": " + $ct + " = " + $init + ";"
         }
@@ -4850,12 +4850,12 @@ si (longueur($err) > 1) {
                 si (est_vide($body_lines[$suiv_t])) { $nl = vrai }
               }
               si ($nl) {
-                >> "    " + $dname + " = \"\\n\";"
+                >> "    " + $dname + " = \"\\n\".to_string();"
               } sinon {
-                >> "    " + $dname + " = \"\";"
+                >> "    " + $dname + " = String::new();"
               }
             } sinon {
-              >> "    " + $dname + " = " + chaine_cpp($val0) + ";"
+              >> "    " + $dname + " = (" + chaine_cpp($val0) + ").to_string();"
             }
           } sinon si ($op == "affect") {
             // affect %t0 "x" -> r_x = r_t0
