@@ -5026,11 +5026,11 @@ si (longueur($err) > 1) {
                   }
                 }
               } sinon si ($fname == "ordre") {
-                >> "    " + $dname + " = /* ordre */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + ".chars().next().unwrap_or(' ') as u32 as i64;"
               } sinon si ($fname == "caractere") {
-                >> "    " + $dname + " = /* caractere */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = char::from_u32(" + operand($rtoks[3], $flagpees) + " as u32).unwrap_or('\\0').to_string();"
               } sinon si ($fname == "sous_chaine") {
-                >> "    " + $dname + " = /* sous_chaine */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ", " + operand($rtoks[5], $flagpees) + ");"
+                >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + "[" + operand($rtoks[4], $flagpees) + " as usize.." + operand($rtoks[5], $flagpees) + " as usize].to_string();"
               } sinon si ($fname == "duree") {
                 >> "    " + $dname + " = /* duree */(" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "concatener") {
@@ -5137,7 +5137,7 @@ si (longueur($err) > 1) {
                   >> "    " + $dname + " = /* nb_chiffres */(" + operand($argn, $flagpees) + ");"
                 }
               } sinon si ($fname == "hasard") {
-                >> "    " + $dname + " = /* hasard */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64 % " + operand($rtoks[3], $flagpees) + ") + 1;"
               } sinon si ($fname == "abs") {
                 $arga = $rtoks[3]
                 $agy = genre_t($arga, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
@@ -5183,13 +5183,13 @@ si (longueur($err) > 1) {
               } sinon si ($fname == "fraction") {
                 >> "    " + $dname + " = /* qd */(/* q_de */(" + operand($rtoks[3], $flagpees) + ") / /* q_de */(" + operand($rtoks[4], $flagpees) + "));"
               } sinon si ($fname == "millisecondes") {
-                >> "    " + $dname + " = /* millisecondes */();"
+                >> "    " + $dname + " = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;"
               } sinon si ($fname == "temps") {
-                >> "    " + $dname + " = /* temps */();"
+                >> "    " + $dname + " = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;"
               } sinon si ($fname == "nb_arguments") {
-                >> "    " + $dname + " = /* nb_arguments */();"
+                >> "    " + $dname + " = std::env::args().count() as i64 - 1;"
               } sinon si ($fname == "argument") {
-                >> "    " + $dname + " = /* argument */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = std::env::args().nth(" + operand($rtoks[3], $flagpees) + " as usize + 1).unwrap_or_default();"
               } sinon si ($fname == "octets") {
                 $argo = $rtoks[3]
                 $txt_t = operand($argo, $flagpees)
@@ -5219,9 +5219,9 @@ si (longueur($err) > 1) {
               } sinon si ($fname == "graine") {
                 >> "    /* graine */(" + operand($rtoks[3], $flagpees) + ");"
               } sinon si ($fname == "lire_texte") {
-                >> "    " + $dname + " = /* lire_texte */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = std::fs::read_to_string(" + operand($rtoks[3], $flagpees) + ".as_str()).unwrap_or_default();"
               } sinon si ($fname == "quitter") {
-                >> "    /* quitter */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    std::process::exit(" + operand($rtoks[3], $flagpees) + " as i32);"
               } sinon {
                 $call = "r_" + $fname + "("
                 $first = vrai
