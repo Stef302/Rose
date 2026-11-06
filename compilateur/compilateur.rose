@@ -3665,7 +3665,7 @@ fn operand($tok: chaine, $flag: liste<chaine>) -> chaine {
     $fi = 1
     tant_que ($fi < longueur($flag)) {
       si ($flag[$fi] == $nm) {
-        retour "rose_lit(r_" + $nm + ", _def_r_" + $nm + ", \"" + $nm + "\")"
+        retour "r_" + $nm
       }
       $fi = $fi + 1
     }
@@ -4561,7 +4561,7 @@ si (longueur($err) > 1) {
       si (longueur($globals) > 1) { >> "" }
       $fi2 = 1
       tant_que ($fi2 < longueur($flagpees)) {
-        >> "    bool _def_r_" + $flagpees[$fi2] + " = false;"
+        >> "    let mut _def_r_" + $flagpees[$fi2] + ": bool = false;"
         $fi2 = $fi2 + 1
       }
       si (longueur($flagpees) > 1) { >> "" }
@@ -4592,10 +4592,28 @@ si (longueur($err) > 1) {
         }
         $ti = $ti + 1
       }
-      // emit body instructions
+      // emit body instructions (PC-based state machine for native control flow)
+      // Pre-scan: collect labels
+      $labels_pc = [""]
+      $label_names = [""]
+      $bscan = 1
+      tant_que ($bscan < longueur($body_lines)) {
+        $bls = $body_lines[$bscan]
+        si (commence_par($bls, ".")) {
+          $lbl = trim($bls)
+          joindre($label_names, $lbl)
+          joindre($labels_pc, chaine($bscan))
+        }
+        $bscan = $bscan + 1
+      }
+      >> "    let mut __pc: i32 = 1;"
+      >> "    loop {"
+      >> "        match __pc {"
       $bi = 1
       tant_que ($bi < longueur($body_lines)) {
         $bl = $body_lines[$bi]
+        // Emit match arm
+        >> "            " + chaine($bi) + " => {"
         si (est_vide($bl)) {
           // rien
         } sinon si (commence_par($bl, "liste.push ")) {
@@ -4700,6 +4718,26 @@ si (longueur($err) > 1) {
           }
           si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
           si (longueur($parts) >= 5) {
+            $cond_bc = operand($parts[2], $flagpees)
+            $lbl1 = trim($parts[3])
+            $lbl2 = trim($parts[4])
+            // debug removed
+            $pc1 = 0
+            $pc2 = 0
+            $bsc = 1
+            tant_que ($bsc < longueur($body_lines)) {
+              $blt = trim($body_lines[$bsc])
+              si (longueur($blt) > 0 et sous_chaine($blt, longueur($blt) - 1, longueur($blt)) == ":") {
+                $blt = trim(sous_chaine($blt, 0, longueur($blt) - 1))
+              }
+              si ($blt == $lbl1) { $pc1 = $bsc }
+              si ($blt == $lbl2) { $pc2 = $bsc }
+              $bsc = $bsc + 1
+            }
+            si ($lbl1 == ".entree") { $pc1 = 1 }
+            si ($lbl2 == ".entree") { $pc2 = 1 }
+            >> "    if (" + $cond_bc + ") { __pc = " + chaine($pc1) + "; } else { __pc = " + chaine($pc2) + "; }"
+            >> "    continue;"
           }
         } sinon si (commence_par($bl, "br ")) {
           $parts = [""]
@@ -4717,6 +4755,21 @@ si (longueur($err) > 1) {
           }
           si (longueur(trim($cur)) > 0) { joindre($parts, trim($cur)) }
           si (longueur($parts) >= 3) {
+            $lbl_br = trim($parts[2])
+            si ($lbl_br != ".entree") {
+              $pc_br = 0
+              $bsc2 = 1
+              tant_que ($bsc2 < longueur($body_lines)) {
+                $blt2 = trim($body_lines[$bsc2])
+                si (longueur($blt2) > 0 et sous_chaine($blt2, longueur($blt2) - 1, longueur($blt2)) == ":") {
+                  $blt2 = trim(sous_chaine($blt2, 0, longueur($blt2) - 1))
+                }
+                si ($blt2 == $lbl_br) { $pc_br = $bsc2 }
+                $bsc2 = $bsc2 + 1
+              }
+              >> "    __pc = " + chaine($pc_br) + ";"
+              >> "    continue;"
+            }
           }
         } sinon si (contient_t($bl, " = ")) {
           $eq = 0
@@ -5347,8 +5400,13 @@ si (longueur($err) > 1) {
         } sinon {
           >> "    /* " + $bl + " */"
         }
+        >> "            __pc = __pc + 1;"
+        >> "            }"
         $bi = $bi + 1
       }
+      >> "            _ => break,"
+      >> "        }"
+      >> "    }"
 
       si ($cname == "main") {
         >> "    return;"
