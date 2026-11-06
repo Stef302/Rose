@@ -5340,7 +5340,7 @@ si (longueur($err) > 1) {
               si (contient_t($rtoks[1], ".ge.")) { $cmpop = ">=" }
               si (contient_t($rtoks[1], ".eq.")) { $cmpop = "==" }
               si (contient_t($rtoks[1], ".ne.")) { $cmpop = "!=" }
-              >> "    " + $dname + " = (" + $a0 + " " + $cmpop + " " + $a1 + ");"
+              >> "    " + $dname + " = " + $a0 + " " + $cmpop + " " + $a1 + ";"
             }
           } sinon si (commence_par($op, "cmp.")) {
             $a0 = "0"; $a1 = "0"
@@ -5367,12 +5367,12 @@ si (longueur($err) > 1) {
             $a0 = "false"; $a1 = "false"
             si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2], $flagpees) }
             si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3], $flagpees) }
-            >> "    " + $dname + " = (" + $a0 + " && " + $a1 + ");"
+            >> "    " + $dname + " = " + $a0 + " && " + $a1 + ";"
           } sinon si ($op == "or.b") {
             $a0 = "false"; $a1 = "false"
             si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2], $flagpees) }
             si (longueur($rtoks) > 3) { $a1 = operand($rtoks[3], $flagpees) }
-            >> "    " + $dname + " = (" + $a0 + " || " + $a1 + ");"
+            >> "    " + $dname + " = " + $a0 + " || " + $a1 + ";"
           } sinon si ($op == "add.f" ou $op == "sub.f" ou $op == "mul.f" ou $op == "div.f" ou $op == "neg.f") {
             $a0 = "0.0"; $a1 = "0.0"
             si (longueur($rtoks) > 2) { $a0 = operand($rtoks[2], $flagpees) }
