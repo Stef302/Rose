@@ -1002,8 +1002,21 @@ impl Interp {
             }
             "eval_expr" => {
                 let expr_str = chaine_de(&a[0]);
+                let mut substituted = expr_str.clone();
+                // Support inline variable definitions: "expr // vars: name1=val1 name2=val2"
+                if let Some(idx) = substituted.find("// vars:") {
+                    let vars_part = substituted[idx + 8..].trim().to_string();
+                    substituted = substituted[..idx].trim().to_string();
+                    for pair in vars_part.split_whitespace() {
+                        if let Some(eq) = pair.find('=') {
+                            let name = &pair[..eq];
+                            let val = &pair[eq+1..];
+                            substituted = substituted.replace(name, val);
+                        }
+                    }
+                }
                 // Wrap in a program that assigns to a variable and prints it
-                let src = format!("x = {}", expr_str);
+                let src = format!("x = {}", substituted);
                 match crate::front::analyser(&src) {
                     Ok(prog) => {
                         let mut interp = Interp::nouveau(prog);

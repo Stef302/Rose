@@ -160,13 +160,65 @@ si (longueur($src) == 0) {
   afficher_erreur("emetteur_elf : fichier vide ou introuvable : " + $chemin)
   quitter(1)
 }
+# Variables
+$var_noms = [""]
+$var_vals = [""]
+$nb_vars = 0
+
 # Extraire et evaluer toutes les expressions apres >>
 $affichage = ""
 $i = 0
 tant_que ($i < longueur($src)) {
-  $c1 = sous_chaine($src, $i, $i + 1)
-  $c2 = sous_chaine($src, $i + 1, $i + 2)
-  si ($c1 == ">" et $c2 == ">") {
+  $c1 = ""
+  $c2 = ""
+  $c3 = ""
+  si ($i < longueur($src)) { $c1 = sous_chaine($src, $i, $i + 1) }
+  si ($i + 1 < longueur($src)) { $c2 = sous_chaine($src, $i + 1, $i + 2) }
+  si ($i + 2 < longueur($src)) { $c3 = sous_chaine($src, $i + 2, $i + 3) }
+  # Detecter "var "
+  si ($c1 == "v" et $c2 == "a" et $c3 == "r") {
+    $j = $i + 3
+    tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
+      $j = $j + 1
+    }
+    $nom_var = ""
+    tant_que ($j < longueur($src)) {
+      $ch = sous_chaine($src, $j, $j + 1)
+      si ($ch == " " ou $ch == "=") {
+        $j = longueur($src) + 1
+      } sinon {
+        $nom_var = $nom_var + $ch
+        $j = $j + 1
+      }
+    }
+    # Trouver le =
+    $j = $i + 3
+    tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) != "=") {
+      $j = $j + 1
+    }
+    $j = $j + 1
+    tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
+      $j = $j + 1
+    }
+    $expr = ""
+    $k = $j
+    tant_que ($k < longueur($src)) {
+      $ch = sous_chaine($src, $k, $k + 1)
+      si ($ch == "\n") {
+        $k = longueur($src) + 1
+      } sinon {
+        $expr = $expr + $ch
+        $k = $k + 1
+      }
+    }
+    si (longueur($expr) > 0 et longueur($nom_var) > 0) {
+      $resultat = eval_expr($expr)
+      joindre($var_noms, $nom_var)
+      joindre($var_vals, $resultat)
+      $nb_vars = $nb_vars + 1
+      >> "stored var: " + $nom_var + " = " + $resultat
+    }
+  } sinon si ($c1 == ">" et $c2 == ">") {
     $j = $i + 2
     tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
       $j = $j + 1
@@ -184,7 +236,33 @@ tant_que ($i < longueur($src)) {
       }
     }
     si (longueur($expr) > 0) {
-      $resultat = eval_expr($expr)
+      # Verifier si c'est un nom de variable connu
+      $est_var = 0
+      $vi = 1
+      tant_que ($vi <= $nb_vars) {
+        si ($var_noms[$vi] == $expr) {
+          $est_var = 1
+          $resultat = $var_vals[$vi]
+          $vi = $nb_vars + 1
+        } sinon {
+          $vi = $vi + 1
+        }
+      }
+      si ($est_var == 0) {
+        # Construire le contexte de variables
+        $ctx = ""
+        $vi = 1
+        tant_que ($vi <= $nb_vars) {
+          $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
+          $vi = $vi + 1
+        }
+        si (longueur($ctx) > 0) {
+          $expr_full = $expr + " // vars: " + $ctx
+        } sinon {
+          $expr_full = $expr
+        }
+        $resultat = eval_expr($expr_full)
+      }
       $affichage = $affichage + $resultat + "\n"
     }
   }
