@@ -4963,7 +4963,7 @@ si (longueur($err) > 1) {
                   }
                   si ($pty == "f") {
                     si ($aty == "z" ou $aty == "u") {
-                      si (commence_par($argtok, prefix_cst()) == faux) { $atxt = "/* vers_double */(" + $atxt + ")" }
+                      si (commence_par($argtok, prefix_cst()) == faux) { $atxt = "(" + $atxt + " as f64)" }
                     }
                   }
                   si ($first == faux) { $call = $call + ", " }
@@ -4982,13 +4982,13 @@ si (longueur($err) > 1) {
                   }
                 } sinon si ($dty == "z") {
                   si ($rty == "f") {
-                    >> "    " + $dname + " = /* depuis_double */(" + $call + ");"
+                    >> "    " + $dname + " = " + $call + " as i64;"
                   } sinon {
                     >> "    " + $dname + " = " + $call + ";"
                   }
                 } sinon si ($dty == "f") {
                   si ($rty == "z" ou $rty == "u") {
-                    >> "    " + $dname + " = /* vers_double */(" + $call + ");"
+                    >> "    " + $dname + " = " + $call + " as f64;"
                   } sinon {
                     >> "    " + $dname + " = " + $call + ";"
                   }
@@ -5032,9 +5032,9 @@ si (longueur($err) > 1) {
               } sinon si ($fname == "sous_chaine") {
                 >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + "[" + operand($rtoks[4], $flagpees) + " as usize.." + operand($rtoks[5], $flagpees) + " as usize].to_string();"
               } sinon si ($fname == "duree") {
-                >> "    " + $dname + " = /* duree */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + " as i64;"
               } sinon si ($fname == "concatener") {
-                >> "    " + $dname + " = /* liste_concat */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + ".clone();"
               } sinon si ($fname == "longueur") {
                 $argl = ""
                 si (longueur($rtoks) > 3) { $argl = $rtoks[3] }
@@ -5076,15 +5076,15 @@ si (longueur($err) > 1) {
                 } sinon si ($ffi == "f") {
                   >> "    " + $dname + " = " + operand($argf, $flagpees) + ";"
                 } sinon {
-                  >> "    " + $dname + " = /* vers_double */(" + operand($argf, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argf, $flagpees) + " as f64;"
                 }
               } sinon si ($fname == "chaine") {
                 $argc = $rtoks[3]
                 $cti = genre_t($argc, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($cti == "q") {
-                  >> "    " + $dname + " = /* texte_q_ab */(" + operand($argc, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argc, $flagpees) + ".to_string();"
                 } sinon si ($cti == "f") {
-                  >> "    " + $dname + " = /* texte_flt */(" + operand($argc, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argc, $flagpees) + ".to_string();"
                 } sinon si ($cti == "g") {
                   >> "    " + $dname + " = String(" + operand($argc, $flagpees) + ".get_str());"
                 } sinon si ($cti == "s") {
@@ -5122,9 +5122,9 @@ si (longueur($err) > 1) {
                 $argp = $rtoks[3]
                 $pty2 = genre_t($argp, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($pty2 == "f") {
-                  >> "    " + $dname + " = /* partie_entiere_f */(" + operand($argp, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argp, $flagpees) + " as i64;"
                 } sinon si ($pty2 == "q") {
-                  >> "    " + $dname + " = /* partie_entiere_q */(" + operand($argp, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argp, $flagpees) + " as i64;"
                 } sinon {
                   >> "    " + $dname + " = " + operand($argp, $flagpees) + ";"
                 }
@@ -5132,9 +5132,9 @@ si (longueur($err) > 1) {
                 $argn = $rtoks[3]
                 $nty = genre_t($argn, $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
                 si ($nty == "g") {
-                  >> "    " + $dname + " = /* nb_chiffres_gd */(" + operand($argn, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argn, $flagpees) + ".to_string().len() as i64;"
                 } sinon {
-                  >> "    " + $dname + " = /* nb_chiffres */(" + operand($argn, $flagpees) + ");"
+                  >> "    " + $dname + " = " + operand($argn, $flagpees) + ".to_string().len() as i64;"
                 }
               } sinon si ($fname == "hasard") {
                 >> "    " + $dname + " = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64 % " + operand($rtoks[3], $flagpees) + ") + 1;"
@@ -5160,8 +5160,8 @@ si (longueur($err) > 1) {
                 si ($tg0 == "f" ou $tg1 == "f") {
                   $x0 = $arg0
                   $x1 = $arg1
-                  si ($tg0 != "f") { $x0 = "/* vers_double */(" + $arg0 + ")" }
-                  si ($tg1 != "f") { $x1 = "/* vers_double */(" + $arg1 + ")" }
+                  si ($tg0 != "f") { $x0 = "(" + $arg0 + " as f64)" }
+                  si ($tg1 != "f") { $x1 = "(" + $arg1 + " as f64)" }
                   si ($estmin == 1) {
                     >> "    " + $dname + " = (" + $x0 + " > " + $x1 + " ? " + $x1 + " : " + $x0 + ");"
                   } sinon {
@@ -5199,7 +5199,7 @@ si (longueur($err) > 1) {
               } sinon si ($fname == "tampon") {
                 >> "    " + $dname + " = vec![0u8; " + operand($rtoks[3], $flagpees) + " as usize];"
               } sinon si ($fname == "remplir_hasard") {
-                >> "    /* remplir_hasard */(" + operand($rtoks[3], $flagpees) + ", " + operand($rtoks[4], $flagpees) + ");"
+                >> "    /* remplir_hasard: non implemente */"
               } sinon si ($fname == "tampon_case") {
                 >> "    " + $dname + " = " + operand($rtoks[3], $flagpees) + "[" + operand($rtoks[4], $flagpees) + " as usize] as i64;"
               } sinon si ($fname == "tampon_pose") {
@@ -5217,7 +5217,7 @@ si (longueur($err) > 1) {
               } sinon si ($fname == "valeurs") {
                 >> "    " + $dname + " = Vec::new(); /* valeurs: non implemente */"
               } sinon si ($fname == "graine") {
-                >> "    /* graine */(" + operand($rtoks[3], $flagpees) + ");"
+                >> "    /* graine: non implemente */"
               } sinon si ($fname == "lire_texte") {
                 >> "    " + $dname + " = std::fs::read_to_string(" + operand($rtoks[3], $flagpees) + ".as_str()).unwrap_or_default();"
               } sinon si ($fname == "quitter") {
@@ -5244,9 +5244,9 @@ si (longueur($err) > 1) {
             $ty1 = genre_t($rtoks[3], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             si ($ty0 == "f" ou $ty1 == "f") {
               $x0 = $a0; $x1 = $a1
-              si ($ty0 != "f" et ($ty0 == "z" ou $ty0 == "u")) { $x0 = "/* vers_double */(" + $a0 + ")" }
-              si ($ty1 != "f" et ($ty1 == "z" ou $ty1 == "u")) { $x1 = "/* vers_double */(" + $a1 + ")" }
-              >> "    " + $dname + " = /* divflo_f */(" + $x0 + ", " + $x1 + ");"
+              si ($ty0 != "f" et ($ty0 == "z" ou $ty0 == "u")) { $x0 = "(" + $a0 + " as f64)" }
+              si ($ty1 != "f" et ($ty1 == "z" ou $ty1 == "u")) { $x1 = "(" + $a1 + " as f64)" }
+              >> "    " + $dname + " = (" + $x0 + " / " + $x1 + ").floor();"
             } sinon si ($ty0 == "q" ou $ty1 == "q") {
               >> "    " + $dname + " = /* div_florentin_q */(" + $a0 + ", " + $a1 + ");"
             } sinon si ($ty0 == "g" ou $ty1 == "g") {
@@ -5261,10 +5261,10 @@ si (longueur($err) > 1) {
             $ty0 = genre_t($rtoks[2], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             $ty1 = genre_t($rtoks[3], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             si ($ty1 == "f") {
-              si ($ty0 != "f") { $a0 = "/* vers_double */(" + $a0 + ")" }
+              si ($ty0 != "f") { $a0 = "(" + $a0 + " as f64)" }
               >> "    " + $dname + " = powf(" + $a0 + ", " + $a1 + ");"
             } sinon si ($ty0 == "f") {
-              si ($ty1 != "f") { $a1 = "/* vers_double */(" + $a1 + ")" }
+              si ($ty1 != "f") { $a1 = "(" + $a1 + " as f64)" }
               >> "    " + $dname + " = powf(" + $a0 + ", " + $a1 + ");"
             } sinon {
               >> "    " + $dname + " = /* puissance_gd */(" + $a0 + ", " + $a1 + ");"
@@ -5359,8 +5359,8 @@ si (longueur($err) > 1) {
             // flottant dominant ici aussi
             $ty0 = genre_t($rtoks[2], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
             $ty1 = genre_t($rtoks[3], $body_lines, $fn_noms, $fn_rets, $pnoms, $pletres, $nom, $dt_fn, $dt_nm, $dt_lt)
-            si ($ty0 == "f" et $ty1 != "f") { $a1 = "/* vers_double */(" + $a1 + ")" }
-            si ($ty1 == "f" et $ty0 != "f") { $a0 = "/* vers_double */(" + $a0 + ")" }
+            si ($ty0 == "f" et $ty1 != "f") { $a1 = "(" + $a1 + " as f64)" }
+            si ($ty1 == "f" et $ty0 != "f") { $a0 = "(" + $a0 + " as f64)" }
             $cmpop = "<"
             si (contient_t($op, ".lt.")) { $cmpop = "<" }
             si (contient_t($op, ".le.")) { $cmpop = "<=" }
@@ -5390,7 +5390,7 @@ si (longueur($err) > 1) {
             si ($op == "add.f") { >> "    " + $dname + " = " + $a0 + " + " + $a1 + ";" }
             si ($op == "sub.f") { >> "    " + $dname + " = " + $a0 + " - " + $a1 + ";" }
             si ($op == "mul.f") { >> "    " + $dname + " = " + $a0 + " * " + $a1 + ";" }
-            si ($op == "div.f") { >> "    " + $dname + " = /* div_f */(" + $a0 + ", " + $a1 + ");" }
+            si ($op == "div.f") { >> "    " + $dname + " = " + $a0 + " / " + $a1 + ";" }
             si ($op == "neg.f") { >> "    " + $dname + " = -" + $a0 + ";" }
           } sinon si ($op == "add.s") {
             $a0 = "\"\""
