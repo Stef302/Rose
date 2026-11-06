@@ -68,7 +68,7 @@ $TEXT_OFFSET = 4096
 $TEXT_ADDR = $BASE_ADDR + $TEXT_OFFSET
 
 # ── Émetteur ELF minimal : produit un binaire qui retourne 0 ──
-fn emettre_elf_minimal($sortie: chaine) {
+fn emettre_elf_print($sortie: chaine, $texte: chaine) {
   $out = ""
   $ELFMAG = "ELF"
   $ELFCLASS64 = 2
@@ -140,13 +140,8 @@ fn emettre_elf_minimal($sortie: chaine) {
   $out = $out + u32le(3531603968)   # mov x0, #0 (exit code)
   $out = $out + u32le(3531606952)   # mov x8, #93 (exit)
   $out = $out + u32le(3556769793)   # svc #0
-  # data: Hello\n
-  $out = $out + caractere(72)   # H
-  $out = $out + caractere(101)  # e
-  $out = $out + caractere(108)  # l
-  $out = $out + caractere(108)  # l
-  $out = $out + caractere(111)  # o
-  $out = $out + caractere(10)   # newline
+  # data: texte
+  $out = $out + $texte
   # ── Écrire le fichier ──
   ecrire_bytes($sortie, $out)
   >> "rose: " + $sortie + " produit (binaire ELF autonome, " + chaine(longueur($out)) + " octets)"
@@ -154,21 +149,44 @@ fn emettre_elf_minimal($sortie: chaine) {
 
 # ── Point d'entrée ──
 $chemin = argument(0)
-$sortie = ""
-$i = 1
-tant_que ($i < longueur($chemin)) {
-  # placeholder, on utilise les arguments positions
-  $i = $i + 1
+$sortie = argument(1)
+si (longueur($sortie) == 0) {
+  $sortie = "prog"
 }
-# utilisation simple : premier argument = source, second = sortie (optionnel)
-# On lit le fichier source mais on ignore son contenu pour l'instant
 $src = lire_texte($chemin)
 si (longueur($src) == 0) {
   afficher_erreur("emetteur_elf : fichier vide ou introuvable : " + $chemin)
   quitter(1)
 }
-$sortie = argument(1)
-si (longueur($sortie) == 0) {
-  $sortie = "prog"
+# Extraire le nombre apres >>
+$val_str = ""
+$i = 0
+$trouve = 0
+tant_que ($i < longueur($src) et $trouve == 0) {
+  $c1 = sous_chaine($src, $i, $i + 1)
+  $c2 = sous_chaine($src, $i + 1, $i + 2)
+  si ($c1 == ">" et $c2 == ">") {
+    $trouve = 1
+    $j = $i + 2
+    tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") {
+      $j = $j + 1
+    }
+    tant_que ($j < longueur($src)) {
+      $ch = sous_chaine($src, $j, $j + 1)
+      si ($ch == "0" ou $ch == "1" ou $ch == "2" ou $ch == "3" ou $ch == "4" ou $ch == "5" ou $ch == "6" ou $ch == "7" ou $ch == "8" ou $ch == "9") {
+        $val_str = $val_str + $ch
+        $j = $j + 1
+      } sinon {
+        $j = longueur($src) + 1
+      }
+    }
+  }
+  $i = $i + 1
 }
-emettre_elf_minimal($sortie)
+si (longueur($val_str) == 0) {
+  afficher_erreur("emetteur_elf : pas de >> <nombre> trouve")
+  quitter(1)
+}
+$val = entier($val_str)
+$affichage = chaine($val) + "\n"
+emettre_elf_print($sortie, $affichage)
