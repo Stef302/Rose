@@ -200,6 +200,268 @@ si (longueur($src) == 0) {
   afficher_erreur("emetteur_elf : fichier vide ou introuvable : " + $chemin)
   quitter(1)
 }
+# Fonctions : extraire les blocs "fn nom(params) -> type { ... }" et les
+# retirer du source. On conserve leur nom, leurs params et l'expr de retour.
+$fn_noms = [""]
+$fn_params = [""]
+$fn_retours = [""]
+$nb_fn = 0
+# Extraction iterative
+$modif_fn = 1
+tant_que ($modif_fn == 1) {
+  $modif_fn = 0
+  # chercher "fn "
+  $pos_fn = -1
+  $i = 0
+  tant_que ($i + 3 <= longueur($src)) {
+    si (sous_chaine($src, $i, $i + 3) == "fn ") {
+      $pos_fn = $i
+      $i = longueur($src)
+    } sinon {
+      $i = $i + 1
+    }
+  }
+  si ($pos_fn >= 0) {
+    # lire le nom
+    $j = $pos_fn + 3
+    tant_que ($j < longueur($src) et sous_chaine($src, $j, $j + 1) == " ") { $j = $j + 1 }
+    $nom_fn = ""
+    tant_que ($j < longueur($src)) {
+      $ch = sous_chaine($src, $j, $j + 1)
+      si (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_") {
+        $nom_fn = $nom_fn + $ch
+        $j = $j + 1
+      } sinon {
+        $j = longueur($src)
+      }
+    }
+    # trouver "("
+    $jp = $pos_fn + 3
+    tant_que ($jp < longueur($src) et sous_chaine($src, $jp, $jp + 1) != "(") { $jp = $jp + 1 }
+    # params jusqu'a ")"
+    $params_fn = ""
+    $prof = 1
+    $jp = $jp + 1
+    $debut_p = $jp
+    tant_que ($jp < longueur($src) et $prof > 0) {
+      $ch = sous_chaine($src, $jp, $jp + 1)
+      si ($ch == "(") { $prof = $prof + 1 }
+      si ($ch == ")") { $prof = $prof - 1 }
+      si ($prof > 0) { $params_fn = $params_fn + $ch }
+      $jp = $jp + 1
+    }
+    # trouver "{" apres ")"
+    $ja = $jp
+    tant_que ($ja < longueur($src) et sous_chaine($src, $ja, $ja + 1) != "{") { $ja = $ja + 1 }
+    # trouver "}" correspondant
+    $prof = 1
+    $ja = $ja + 1
+    $debut_b = $ja
+    tant_que ($ja < longueur($src) et $prof > 0) {
+      $ch = sous_chaine($src, $ja, $ja + 1)
+      si ($ch == "{") { $prof = $prof + 1 }
+      si ($ch == "}") { $prof = $prof - 1 }
+      si ($prof > 0) { $ja = $ja + 1 } sinon { }
+    }
+    $corps_fn = sous_chaine($src, $debut_b, $ja - 1)
+    # extraire l'expr apres "retour"
+    $ret = ""
+    $kr = 0
+    $tr = 0
+    tant_que ($kr < longueur($corps_fn) et $tr == 0) {
+      si ($kr + 6 <= longueur($corps_fn)) {
+        si (sous_chaine($corps_fn, $kr, $kr + 6) == "retour") {
+          $tr = 1
+          $kr = $kr + 6
+        } sinon {
+          $kr = $kr + 1
+        }
+      } sinon {
+        $kr = $kr + 1
+      }
+    }
+    tant_que ($kr < longueur($corps_fn) et sous_chaine($corps_fn, $kr, $kr + 1) == " ") { $kr = $kr + 1 }
+    $ret = sous_chaine($corps_fn, $kr, longueur($corps_fn))
+    # trim trailing spaces/newlines
+    $nbret = longueur($ret)
+    tant_que ($nbret > 0 et (sous_chaine($ret, $nbret - 1, $nbret) == " " ou sous_chaine($ret, $nbret - 1, $nbret) == "\n" ou sous_chaine($ret, $nbret - 1, $nbret) == "\t")) {
+      $ret = sous_chaine($ret, 0, $nbret - 1)
+      $nbret = longueur($ret)
+    }
+    # stocker
+    joindre($fn_noms, $nom_fn)
+    joindre($fn_params, $params_fn)
+    joindre($fn_retours, $ret)
+    $nb_fn = $nb_fn + 1
+    # retirer le bloc fn du src (de pos_fn jusqu'a la "}" fermante +1)
+    $avant_fn = sous_chaine($src, 0, $pos_fn)
+    $apres_fn = sous_chaine($src, $ja, longueur($src))
+    $src = $avant_fn + $apres_fn
+    $modif_fn = 1
+  }
+}
+
+# Inlining des appels de fonction dans les lignes ">> name(...)"
+$modif_inl = 1
+tant_que ($modif_inl == 1) {
+  $modif_inl = 0
+  $i = 0
+  tant_que ($i < longueur($src)) {
+    # trouver ">> "
+    $pos = -1
+    $k = $i
+    tant_que ($k + 3 <= longueur($src)) {
+      si (sous_chaine($src, $k, $k + 3) == ">> ") {
+        $pos = $k
+        $k = longueur($src)
+      } sinon {
+        $k = $k + 1
+      }
+    }
+    si ($pos < 0) {
+      $i = longueur($src)
+    } sinon {
+      # avancer les espaces
+      $ja = $pos + 3
+      tant_que ($ja < longueur($src) et sous_chaine($src, $ja, $ja + 1) == " ") { $ja = $ja + 1 }
+      # lire le nom de fonction
+      $nom_appel = ""
+      $ja0 = $ja
+      $done_ja = 0
+      tant_que ($ja < longueur($src) et $done_ja == 0) {
+        $ch = sous_chaine($src, $ja, $ja + 1)
+        si (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_") {
+          $nom_appel = $nom_appel + $ch
+          $ja = $ja + 1
+        } sinon {
+          $done_ja = 1
+        }
+      }
+      # verifier que c'est une fonction connue et suivi de "("
+      $est_fn = 0
+      $idx_fn = 0
+      $fi = 1
+      tant_que ($fi <= $nb_fn) {
+        si ($fn_noms[$fi] == $nom_appel) {
+          $est_fn = 1
+          $idx_fn = $fi
+        }
+        $fi = $fi + 1
+      }
+      si ($est_fn == 1 et $ja < longueur($src) et sous_chaine($src, $ja, $ja + 1) == "(") {
+        # extraire les args jusqu'a ")"
+        $ja = $ja + 1
+        $args_str = ""
+        $prof = 1
+        tant_que ($ja < longueur($src) et $prof > 0) {
+          $ch = sous_chaine($src, $ja, $ja + 1)
+          si ($ch == "(") { $prof = $prof + 1 }
+          si ($ch == ")") { $prof = $prof - 1 }
+          si ($prof > 0) { $args_str = $args_str + $ch }
+          $ja = $ja + 1
+        }
+        # fin de ligne
+        $fin_ligne = $ja
+        tant_que ($fin_ligne < longueur($src) et sous_chaine($src, $fin_ligne, $fin_ligne + 1) != "\n") {
+          $fin_ligne = $fin_ligne + 1
+        }
+        # substituer les params dans le retour
+        $ret = $fn_retours[$idx_fn]
+        $params = $fn_params[$idx_fn]
+        # decouper params par virgule (niveau 0)
+        $pi = 0
+        # on utilise une liste manuelle : on stocke dans des vars temporaires via joindre
+        $param_noms = [""]
+        $param_vals = [""]
+        $nb_p = 0
+        # parse params
+        $pp = 0
+        $ppn = ""
+        $curp = ""
+        $depth = 0
+        $tok = ""
+        # params format: "$a: entier, $b: entier"
+        # extraire les noms ($xxx) avant ':'
+        $iip = 0
+        $lp = longueur($params)
+        $cur_nom = ""
+        $in_nom = 0
+        tant_que ($iip < $lp) {
+          $ch = sous_chaine($params, $iip, $iip + 1)
+          si ($ch == "$") {
+            $cur_nom = "$"
+            $iip = $iip + 1
+          } sinon si ($cur_nom != "" et (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_")) {
+            $cur_nom = $cur_nom + $ch
+            $iip = $iip + 1
+          } sinon {
+            si (longueur($cur_nom) > 1) {
+              joindre($param_noms, $cur_nom)
+              $nb_p = $nb_p + 1
+            }
+            $cur_nom = ""
+            $iip = $iip + 1
+          }
+        }
+        si (longueur($cur_nom) > 1) {
+          joindre($param_noms, $cur_nom)
+          $nb_p = $nb_p + 1
+        }
+        # decouper args par virgule top-level
+        $arg_list = [""]
+        $nb_a = 0
+        $cur_arg = ""
+        $depth = 0
+        $ka = 0
+        $la = longueur($args_str)
+        tant_que ($ka < $la) {
+          $ch = sous_chaine($args_str, $ka, $ka + 1)
+          si ($ch == "(" ou $ch == "[" ou $ch == "{") { $depth = $depth + 1 }
+          si ($ch == ")" ou $ch == "]" ou $ch == "}") { $depth = $depth - 1 }
+          si ($ch == "," et $depth == 0) {
+            # trim
+            $ca = $cur_arg
+            $nbca = longueur($ca)
+            tant_que ($nbca > 0 et sous_chaine($ca, 0, 1) == " ") { $ca = sous_chaine($ca, 1, longueur($ca)); $nbca = longueur($ca) }
+            $nbca = longueur($ca)
+            tant_que ($nbca > 0 et sous_chaine($ca, $nbca - 1, $nbca) == " ") { $ca = sous_chaine($ca, 0, $nbca - 1); $nbca = longueur($ca) }
+            joindre($arg_list, $ca)
+            $nb_a = $nb_a + 1
+            $cur_arg = ""
+          } sinon {
+            $cur_arg = $cur_arg + $ch
+          }
+          $ka = $ka + 1
+        }
+        $ca = $cur_arg
+        $nbca = longueur($ca)
+        tant_que ($nbca > 0 et sous_chaine($ca, 0, 1) == " ") { $ca = sous_chaine($ca, 1, longueur($ca)); $nbca = longueur($ca) }
+        $nbca = longueur($ca)
+        tant_que ($nbca > 0 et sous_chaine($ca, $nbca - 1, $nbca) == " ") { $ca = sous_chaine($ca, 0, $nbca - 1); $nbca = longueur($ca) }
+        si (longueur($ca) > 0) {
+          joindre($arg_list, $ca)
+          $nb_a = $nb_a + 1
+        }
+        # substituer params -> args dans ret
+        $ret_inl = $ret
+        $pi = 1
+        tant_que ($pi <= $nb_p et $pi <= $nb_a) {
+          $ret_inl = substituer_nom($ret_inl, $param_noms[$pi], $arg_list[$pi])
+          $pi = $pi + 1
+        }
+        # remplacer la ligne ">> name(args...)" par ">> ret_inl"
+        $avant_l = sous_chaine($src, 0, $pos)
+        $apres_l = sous_chaine($src, $fin_ligne, longueur($src))
+        $src = $avant_l + ">> " + $ret_inl + $apres_l
+        $modif_inl = 1
+        $i = $pos
+      } sinon {
+        $i = $pos + 1
+      }
+    }
+  }
+}
+
 # Variables
 $var_noms = [""]
 $var_vals = [""]
