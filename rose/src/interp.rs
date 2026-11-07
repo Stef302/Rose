@@ -81,6 +81,12 @@ impl Interp {
             TyKind::Entier | TyKind::Rationnel | TyKind::Flottant => convertir(v, ty),
             _ => v,
         };
+        // Variables de niveau principal (une seule trame) -> globaux,
+        // pour que les fonctions puissent y acceder.
+        if self.trames.len() == 1 {
+            self.globaux.insert(nom.to_string(), v);
+            return;
+        }
         if existe {
             let f = self.trames.last_mut().unwrap();
             if f.contains_key(nom) { f.insert(nom.to_string(), v); return; }
