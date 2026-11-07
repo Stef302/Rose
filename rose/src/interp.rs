@@ -1001,48 +1001,292 @@ impl Interp {
                 }
             }
             "eval_expr" => {
+                // Evaluation d'une expression avec substitutions.
+                // Le contexte est une liste de paires "nom=valeur" separees par
+                // des espaces ou des virgules : "expr // vars: a=1 b=2".
+                // Les valeurs peuvent etre nues ou entre guillemets doubles.
+                // Le remplacement est fait par mots entiers (decoupes aux
+                // separateurs "( )" aussi) : un mot n'est remplace que s'il
+                // egale exactement un nom ; la derniere definition d'un nom
+                // fait foi (shadowing).
+                //
+                // Ordre des voies (la premiere qui rend une valeur non vide gagne) :
+                //  1) litteral guillemete  2) atome nu (booleen/nombre)
+                //  3) substituer le contexte puis evaluer  4) evaluer sans contexte.
                 let expr_str = chaine_de(&a[0]);
-                let mut substituted = expr_str.clone();
-                // Support inline variable definitions: "expr // vars: name1=val1 name2=val2"
-                if let Some(idx) = substituted.find("// vars:") {
-                    let vars_part = substituted[idx + 8..].trim().to_string();
-                    substituted = substituted[..idx].trim().to_string();
-                    for pair in vars_part.split_whitespace() {
-                        if let Some(eq) = pair.find('=') {
-                            let name = &pair[..eq];
-                            let val = &pair[eq+1..];
-                            substituted = substituted.replace(name, val);
-                        }
-                    }
+                let base = expr_str.trim().to_string();
+                let mut substituted = base.clone();
+                //separer l'expression nue du contexte eventuel
+                let pos_vars = if let Some(i) = base.find("// vars:") {
+                    Some((i, 8usize))
+                } else if let Some(i) = base.find("; vars:") {
+                    Some((i, 7usize))
+                } else {
+                    None
+                };
+                let (nu, vars_brut) = match pos_vars {
+                    Some((i, saut)) => (
+                        base[..i].trim().to_string(),
+                        base[i + saut..].trim().to_string(),
+                    ),
+                    None => (base.clone(), String::new()),
+                };
+                // 1) litteral : une seule paire de guillemets englobante
+                if nu.len() >= 2
+                    && nu.starts_with('"')
+                    && nu.ends_with('"')
+                    && nu[1..nu.len() - 1].find('"').is_none()
+                {
+                    return Valeur::s(nu[1..nu.len() - 1].to_string());
                 }
-                // Wrap in a program that assigns to a variable and prints it
-                let src = format!("x = {}", substituted);
-                match crate::front::analyser(&src) {
-                    Ok(prog) => {
-                        let mut interp = Interp::nouveau(prog);
-                        // Evaluate the assignment
-                        // We need to find the value of x after evaluation
-                        // For simplicity, evaluate the expression directly
-                        // by creating an Expr from the parsed program
-                        let instr_clone = interp.prog.instructions.first().cloned();
-                        if let Some(instr) = instr_clone {
-                            match instr {
-                                crate::front::Instr::Affect { e, .. } => {
-                                    match interp.eval(&e) {
-                                        Ok(v) => {
-                                            Valeur::s(chaine_de(&v))
-                                        }
-                                        Err(_) => Valeur::s(String::new()),
-                                    }
+                // 2) atome nu : booleen ou nombre
+                if nu == "vrai" || nu == "faux" || nu.parse::<i64>().is_ok() {
+                    return Valeur::s(nu.clone());
+                }
+                // 3) avec contexte : decoupage des paires, puis substitution mot a mot
+                if !vars_brut.is_empty() {
+                    let mut paires: Vec<(String, String)> = Vec::new();
+                    let mut cur = String::new();
+                    let mut dans_guilm = false;
+                    let mut prof = 0usize;
+                    for c in vars_brut.chars() {
+                        if c == '"' {
+                            dans_guilm = !dans_guilm;
+                            cur.push(c);
+                        } else if !dans_guilm && prof == 0 && (c == ' ' || c == '\t' || c == '\n' || c == ',') {
+                            if !cur.is_empty() {
+                                if let Some(eq) = cur.find('=') {
+                                    paires.push((cur[..eq].to_string(), cur[eq + 1..].to_string()));
                                 }
-                                _ => Valeur::s(String::new()),
+                                cur.clear();
                             }
                         } else {
-                            Valeur::s(String::new())
+                            if !dans_guilm {
+                                if c == '(' { prof += 1; }
+                                if c == ')' { prof = prof.saturating_sub(1); }
+                            }
+                            cur.push(c);
                         }
                     }
-                    Err(_) => Valeur::s(String::new()),
+                    if !cur.is_empty() {
+                        if let Some(eq) = cur.find('=') {
+                            paires.push((cur[..eq].to_string(), cur[eq + 1..].to_string()));
+                        }
+                    }
+                    //decoupage de l'expression en mots, guillemets preserves
+                    //le separateur est aussi la virgule (la forme "a=1, b=2")
+                    let mut mots: Vec<String> = Vec::new();
+                    let mut cur = String::new();
+                    let mut dans_guilm = false;
+                    for c in substituted.chars() {
+                        if c == '"' {
+                            dans_guilm = !dans_guilm;
+                            cur.push(c);
+                        } else if !dans_guilm && (c == ' ' || c == '\t' || c == ',') {
+                            if !cur.is_empty() {
+                                mots.push(cur.clone());
+                                cur.clear();
+                            }
+                        } else {
+                            cur.push(c);
+                        }
+                    }
+                    if !cur.is_empty() {
+                        mots.push(cur.clone());
+                    }
+                    //chaque mot est decompose aux separateurs "( ) [ ]" ; un
+                    //sous-mot est remplace seulement s'il egale exactement un
+                    //nom (la derniere definition fait foi) ; les espaces sont
+                    //rejetes seulement autour des parentheses
+                    let mut sous: Vec<String> = Vec::new();
+                    for m in mots.iter() {
+                        let mut c2 = String::new();
+                        for c in m.chars() {
+                            if c == '(' || c == ')' || c == '[' || c == ']' {
+                                if !c2.is_empty() {
+                                    sous.push(c2.clone());
+                                    c2.clear();
+                                }
+                                sous.push(c.to_string());
+                            } else {
+                                c2.push(c);
+                            }
+                        }
+                        if !c2.is_empty() {
+                            sous.push(c2.clone());
+                        }
+                    }
+                    //un sous-mot n'est remplace que s'il egale exactement un
+                    //nom (la derniere definition fait foi) ; les separateurs
+                    //"( ) [ ]" ne sont pas des noms : ils restent tels quels ;
+                    //la lettre, le chiffre et le mot-cle deja substitues sont
+                    //rendus bruts (le parseur les normalisera)
+                    let mut nouveau = String::new();
+                    for m in sous.iter() {
+                        if m.is_empty() {
+                            continue;
+                        }
+                        if m == "(" || m == ")" || m == "[" || m == "]" {
+                            nouveau.push_str(m);
+                            continue;
+                        }
+                        let sep_avant = nouveau.ends_with('(') || nouveau.ends_with(')')
+                            || nouveau.ends_with('[') || nouveau.ends_with(']');
+                        let sep_apres = m.starts_with('(') || m.starts_with(')')
+                            || m.starts_with('[') || m.starts_with(']');
+                        if !nouveau.is_empty() && !sep_avant && !sep_apres {
+                            nouveau.push(' ');
+                        }
+                        let mut trouve = false;
+                        for (nom, val) in paires.iter().rev() {
+                            if m == nom {
+                                nouveau.push_str(val);
+                                trouve = true;
+                                break;
+                            }
+                        }
+                        if !trouve {
+                            nouveau.push_str(m);
+                        }
+                    }
+                    substituted = nouveau;
                 }
+                // Evaluer l'expression. On commence par essayer la forme
+                // "x = <expr>" (affectation, premier instruction = Affect),
+                // puis, si cela echoue, la forme directe "<expr>" dont le
+                // premier jeton est deja une expression complete.
+                let candidats = [
+                    format!("x = {}", substituted),
+                    format!("x = {}\n>> x", substituted),
+                    substituted.clone(),
+                ];
+                let mut rendu = Valeur::s(String::new());
+                let mut obtenu = false;
+                // 0) si la substitution a deja produit un atome complet
+                //    (litteral guillemete, booleen), on le rend tel quel ;
+                //    un nombre est rendu par le parseur, qui normalise le rendu
+                if substituted.starts_with('"') && substituted.ends_with('"')
+                    && substituted.len() >= 2
+                {
+                    rendu = Valeur::s(substituted[1..substituted.len() - 1].to_string());
+                    obtenu = true;
+                } else if substituted == "vrai" || substituted == "faux" {
+                    rendu = Valeur::s(substituted.clone());
+                    obtenu = true;
+                }
+                if !obtenu {
+                for src in candidats.iter() {
+                    match crate::front::analyser(src) {
+                        Ok(prog) => {
+                            let mut interp = Interp::nouveau(prog);
+                            // 1) la premiere instruction est-elle une forme connue ?
+                            let instr_clone = interp.prog.instructions.first().cloned();
+                            if let Some(instr) = instr_clone {
+                                match instr {
+                                    crate::front::Instr::Affect { e, .. } => {
+                                        if let Ok(v) = interp.eval(&e) {
+                                            rendu = Valeur::s(chaine_de(&v));
+                                            obtenu = true;
+                                            break;
+                                        }
+                                    }
+                                    crate::front::Instr::ExprStmt(e) => {
+                                        if let Ok(v) = interp.eval(&e) {
+                                            rendu = Valeur::s(chaine_de(&v));
+                                            obtenu = true;
+                                            break;
+                                        }
+                                    }
+                                    //le programme est execute jusqu'au bout :
+                                    //la valeur de x (issue de l'affectation)
+                                    //est lue dans l'environnement global
+                                    crate::front::Instr::Afficher(_, _) => {
+                                        interp.executer_principal();
+                                        if let Some(v) = interp.globaux.get("x") {
+                                            rendu = Valeur::s(chaine_de(v));
+                                            obtenu = true;
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                }
+                // 2) voie « fonction » : le premier jeton est une application
+                //    complète (ex. "eval_expr(\"...\")") : on évalue le premier
+                //    ExprStmt directement.
+                if !obtenu {
+                    match crate::front::analyser(&substituted) {
+                        Ok(prog) => {
+                            let mut interp = Interp::nouveau(prog);
+                            if let Some(crate::front::Instr::ExprStmt(e)) =
+                                interp.prog.instructions.first().cloned()
+                            {
+                                if let Ok(v) = interp.eval(&e) {
+                                    rendu = Valeur::s(chaine_de(&v));
+                                    obtenu = true;
+                                }
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                // 3) voie « programme complet » : on execute tout le programme et
+                //    on rend la valeur de sa derniere instruction utile.
+                if !obtenu {
+                    let prog_complet = crate::front::analyser(&substituted);
+                    if let Ok(prog) = prog_complet {
+                        let mut interp = Interp::nouveau(prog);
+                        let n = interp.prog.instructions.len();
+                        if n > 0 {
+                            let derniere = interp.prog.instructions[n - 1].clone();
+                            match derniere {
+                                crate::front::Instr::Afficher(e, _) => {
+                                    interp.executer_principal();
+                                    if let Ok(v) = interp.eval(&e) {
+                                        rendu = Valeur::s(chaine_de(&v));
+                                        obtenu = true;
+                                    }
+                                }
+                                crate::front::Instr::Affect { e, .. } => {
+                                    if let Ok(v) = interp.eval(&e) {
+                                        rendu = Valeur::s(chaine_de(&v));
+                                        obtenu = true;
+                                    }
+                                }
+                                crate::front::Instr::ExprStmt(e) => {
+                                    if let Ok(v) = interp.eval(&e) {
+                                        rendu = Valeur::s(chaine_de(&v));
+                                        obtenu = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                // derniere chance : un littéral nu (non stocké comme instruction
+                // d'expression) est reconnu directement par le parseur
+                if !obtenu {
+                    if substituted.starts_with('"') && substituted.ends_with('"')
+                        && substituted.len() >= 2
+                    {
+                        rendu = Valeur::s(substituted[1..substituted.len() - 1].to_string());
+                    } else if let Ok(n) = substituted.parse::<i64>() {
+                        rendu = Valeur::s(n.to_string());
+                    } else if substituted == "vrai" || substituted == "faux" {
+                        rendu = Valeur::s(substituted.clone());
+                    } else if !substituted.is_empty() {
+                        // atome non numérique : rendu brut (miroir d'un mot-cle
+                        // ou d'un nom deja substitue)
+                        rendu = Valeur::s(substituted.clone());
+                    }
+                }
+                rendu
             }
             "ecrire_texte" => {
                 let p = chaine_de(&a[0]);

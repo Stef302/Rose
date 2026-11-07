@@ -288,10 +288,10 @@ tant_que ($i < longueur($src)) {
       # Construire le contexte de variables (en ARRIERE : la derniere
       # valeur appendee est inseree en premier et gagne les remplacements)
       $ctx = ""
-      $vi = $nb_vars
-      tant_que ($vi >= 1) {
+      $vi = 1
+      tant_que ($vi <= $nb_vars) {
         $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
-        $vi = $vi - 1
+        $vi = $vi + 1
       }
       si (longueur($ctx) > 0) {
         $expr_full = $expr + " // vars: " + $ctx
@@ -302,6 +302,120 @@ tant_que ($i < longueur($src)) {
       joindre($var_noms, $nom_var)
       joindre($var_vals, $resultat)
       $nb_vars = $nb_vars + 1
+    }
+  }
+  $i = $i + 1
+}
+
+# Pretraitement 0b : collecter les affectations NUES "nom = expr" hors corps de
+# tant_que (les "var" sont deja collectes par la passe 0).
+$i = 0
+$tq_prof = 0
+$tq_attente = 0
+tant_que ($i < longueur($src)) {
+  $c1 = ""
+  si ($i < longueur($src)) { $c1 = sous_chaine($src, $i, $i + 1) }
+  si ($i + 1 < longueur($src)) { $c2 = sous_chaine($src, $i + 1, $i + 2) }
+  si ($i + 2 < longueur($src)) { $c3 = sous_chaine($src, $i + 2, $i + 3) }
+  si ($i + 3 < longueur($src)) { $c4 = sous_chaine($src, $i + 3, $i + 4) }
+  si ($i + 4 < longueur($src)) { $c5 = sous_chaine($src, $i + 4, $i + 5) }
+  si ($i + 5 < longueur($src)) { $c6 = sous_chaine($src, $i + 5, $i + 6) }
+  si ($i + 6 < longueur($src)) { $c7 = sous_chaine($src, $i + 6, $i + 7) }
+  si ($i + 7 < longueur($src)) { $c8 = sous_chaine($src, $i + 7, $i + 8) }
+  si ($c1 == "t" et $c2 == "a" et $c3 == "n" et $c4 == "t" et $c5 == "_" et $c6 == "q" et $c7 == "u" et $c8 == "e") {
+    $tq_attente = 1
+  }
+  si ($c1 == "{") {
+    si ($tq_attente == 1) {
+      $tq_attente = 0
+      $tq_prof = $tq_prof + 1
+    } sinon {
+      si ($tq_prof > 0) {
+        $tq_prof = $tq_prof + 1
+      }
+    }
+  }
+  si ($c1 == "}" et $tq_prof > 0) {
+    $tq_prof = $tq_prof - 1
+  }
+  $est_nom = 0
+  si ($tq_prof == 0) {
+    si (($c1 >= "a" et $c1 <= "z") ou ($c1 >= "A" et $c1 <= "Z") ou $c1 == "_") {
+      $est_nom = 1
+    }
+  }
+  si ($est_nom == 1) {
+    $nom_nu = ""
+    $jn = $i
+    $fin_n = 0
+    tant_que ($jn < longueur($src) et $fin_n == 0) {
+      $ch = sous_chaine($src, $jn, $jn + 1)
+      si (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_") {
+        $nom_nu = $nom_nu + $ch
+        $jn = $jn + 1
+      } sinon {
+        $fin_n = 1
+      }
+    }
+    $jn2 = $jn
+    tant_que ($jn2 < longueur($src) et sous_chaine($src, $jn2, $jn2 + 1) == " ") {
+      $jn2 = $jn2 + 1
+    }
+    $a_eq = 0
+    si ($jn2 < longueur($src)) {
+      si (sous_chaine($src, $jn2, $jn2 + 1) == "=") { $a_eq = 1 }
+    }
+    si ($nom_nu == "si" ou $nom_nu == "pour" ou $nom_nu == "tant_que" ou $nom_nu == "var" ou $nom_nu == "fn" ou $nom_nu == "retour") {
+      $a_eq = 0
+    }
+    si ($a_eq == 1 et longueur($nom_nu) > 0) {
+      $jx = $jn2 + 1
+      tant_que ($jx < longueur($src) et sous_chaine($src, $jx, $jx + 1) == " ") {
+        $jx = $jx + 1
+      }
+      $expr_nu = ""
+      $kx = $jx
+      $nl_pos = longueur($src)
+      tant_que ($kx < longueur($src)) {
+        $ch = sous_chaine($src, $kx, $kx + 1)
+        si ($ch == "\n") {
+          $nl_pos = $kx
+          $kx = longueur($src) + 1
+        } sinon {
+          si ($ch != "\r") {
+            $expr_nu = $expr_nu + $ch
+          }
+          $kx = $kx + 1
+        }
+      }
+      $nbx = longueur($expr_nu)
+      tant_que ($nbx > 0 et sous_chaine($expr_nu, 0, 1) == " ") {
+        $expr_nu = sous_chaine($expr_nu, 1, longueur($expr_nu))
+        $nbx = longueur($expr_nu)
+      }
+      $nbx = longueur($expr_nu)
+      tant_que ($nbx > 0 et sous_chaine($expr_nu, $nbx - 1, $nbx) == " ") {
+        $expr_nu = sous_chaine($expr_nu, 0, $nbx - 1)
+        $nbx = longueur($expr_nu)
+      }
+      si (longueur($expr_nu) > 0) {
+        $ctx = ""
+        $vi = 1
+        tant_que ($vi <= $nb_vars) {
+          $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
+          $vi = $vi + 1
+        }
+        si (longueur($ctx) > 0) {
+          $expr_full = $expr_nu + " // vars: " + $ctx
+        } sinon {
+          $expr_full = $expr_nu
+        }
+        $resultat = eval_expr($expr_full)
+        joindre($var_noms, $nom_nu)
+        joindre($var_vals, $resultat)
+        $nb_vars = $nb_vars + 1
+      }
+      $i = $nl_pos
     }
   }
   $i = $i + 1
@@ -372,10 +486,10 @@ tant_que ($modifie_tq == 1) {
           # Construire le contexte de variables (en ARRIERE : la derniere
           # valeur appendee est inseree en premier et gagne les remplacements)
           $ctx = ""
-          $vi = $nb_vars
-          tant_que ($vi >= 1) {
+          $vi = 1
+          tant_que ($vi <= $nb_vars) {
             $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
-            $vi = $vi - 1
+            $vi = $vi + 1
           }
           si (longueur($ctx) > 0) {
             $cond_full = $cond + " // vars: " + $ctx
@@ -441,8 +555,58 @@ tant_que ($modifie_tq == 1) {
                   $lc = $lc + 1
                 }
                 $consumé = 0
-                si ($lc + 3 < longueur($ligne)) {
-                  si (sous_chaine($ligne, $lc, $lc + 1) == "v" et sous_chaine($ligne, $lc + 1, $lc + 2) == "a" et sous_chaine($ligne, $lc + 2, $lc + 3) == "r" et sous_chaine($ligne, $lc + 3, $lc + 4) == " ") {
+                # Detecter une affectation nue "nom = expr" (sans "var")
+                $est_bare = 0
+                $nom_bare = ""
+                $la_b = $lc
+                $fin_b = 0
+                tant_que ($la_b < longueur($ligne) et $fin_b == 0) {
+                  $ch = sous_chaine($ligne, $la_b, $la_b + 1)
+                  si (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_") {
+                    $nom_bare = $nom_bare + $ch
+                    $la_b = $la_b + 1
+                  } sinon {
+                    $fin_b = 1
+                  }
+                }
+                $la_b2 = $la_b
+                tant_que ($la_b2 < longueur($ligne) et sous_chaine($ligne, $la_b2, $la_b2 + 1) == " ") {
+                  $la_b2 = $la_b2 + 1
+                }
+                si ($la_b2 < longueur($ligne) et sous_chaine($ligne, $la_b2, $la_b2 + 1) == "=" et longueur($nom_bare) > 0) {
+                  $est_kw = 0
+                  si ($nom_bare == "si") { $est_kw = 1 }
+                  si ($nom_bare == "pour") { $est_kw = 1 }
+                  si ($nom_bare == "tant_que") { $est_kw = 1 }
+                  si ($nom_bare == "var") { $est_kw = 1 }
+                  si ($nom_bare == "fn") { $est_kw = 1 }
+                  si ($nom_bare == "retour") { $est_kw = 1 }
+                  si ($est_kw == 0) {
+                    $est_bare = 1
+                  }
+                }
+                si ($est_bare == 1) {
+                  $la_b = $la_b2 + 1
+                  tant_que ($la_b < longueur($ligne) et sous_chaine($ligne, $la_b, $la_b + 1) == " ") {
+                    $la_b = $la_b + 1
+                  }
+                  $expr_b = sous_chaine($ligne, $la_b, longueur($ligne))
+                  si (longueur($expr_b) > 0) {
+                    si (longueur($ctx) > 0) {
+                      $expr_b_full = $expr_b + " // vars: " + $ctx
+                    } sinon {
+                      $expr_b_full = $expr_b
+                    }
+                    $val_b = eval_expr($expr_b_full)
+                    joindre($var_noms, $nom_bare)
+                    joindre($var_vals, $val_b)
+                    $nb_vars = $nb_vars + 1
+                  }
+                  $consumé = 1
+                }
+                si ($consumé == 0) {
+                  si ($lc + 3 < longueur($ligne)) {
+                    si (sous_chaine($ligne, $lc, $lc + 1) == "v" et sous_chaine($ligne, $lc + 1, $lc + 2) == "a" et sous_chaine($ligne, $lc + 2, $lc + 3) == "r" et sous_chaine($ligne, $lc + 3, $lc + 4) == " ") {
                     # Affectation : var nom = expr
                     $la = $lc + 4
                     $nom_l = ""
@@ -501,6 +665,7 @@ tant_que ($modifie_tq == 1) {
                     }
                   }
                 }
+                }
                 si ($consumé == 0) {
                   # Autre ligne : substitution textuelle de toutes les variables
                   # (en ARRIERE : la valeur la plus recente fait foi)
@@ -518,10 +683,10 @@ tant_que ($modifie_tq == 1) {
               # Re-evaluer la condition avec le stockage mis a jour
               # (contexte en ARRIERE : la derniere valeur appendee gagne)
               $ctx = ""
-              $vi = $nb_vars
-              tant_que ($vi >= 1) {
+              $vi = 1
+              tant_que ($vi <= $nb_vars) {
                 $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
-                $vi = $vi - 1
+                $vi = $vi + 1
               }
               si (longueur($ctx) > 0) {
                 $cond_full = $cond + " // vars: " + $ctx
@@ -583,10 +748,10 @@ tant_que ($modifie == 1) {
           }
           # Contexte de variables (en ARRIERE : la derniere valeur gagne)
           $ctx = ""
-          $vi = $nb_vars
-          tant_que ($vi >= 1) {
+          $vi = 1
+          tant_que ($vi <= $nb_vars) {
             $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
-            $vi = $vi - 1
+            $vi = $vi + 1
           }
           si (longueur($ctx) > 0) {
             $cond_full = $cond + " // vars: " + $ctx
@@ -879,17 +1044,26 @@ tant_que ($modifie_pr == 1) {
               # Evaluer les bornes avec le contexte de variables
               # (en ARRIERE : la derniere valeur appendee gagne)
               $ctx = ""
+              $vi = 1
+              tant_que ($vi <= $nb_vars) {
+                $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
+                $vi = $vi + 1
+              }
+              # Pre-substituer les variables connues dans les bornes
+              $e1_sub = $expr1
+              $e2_sub = $expr2
               $vi = $nb_vars
               tant_que ($vi >= 1) {
-                $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
+                $e1_sub = substituer_nom($e1_sub, $var_noms[$vi], $var_vals[$vi])
+                $e2_sub = substituer_nom($e2_sub, $var_noms[$vi], $var_vals[$vi])
                 $vi = $vi - 1
               }
               si (longueur($ctx) > 0) {
-                $e1_full = $expr1 + " // vars: " + $ctx
-                $e2_full = $expr2 + " // vars: " + $ctx
+                $e1_full = $e1_sub + " // vars: " + $ctx
+                $e2_full = $e2_sub + " // vars: " + $ctx
               } sinon {
-                $e1_full = $expr1
-                $e2_full = $expr2
+                $e1_full = $e1_sub
+                $e2_full = $e2_sub
               }
               $d1 = eval_expr($e1_full)
               $f2 = eval_expr($e2_full)
@@ -930,7 +1104,173 @@ tant_que ($modifie_pr == 1) {
                   }
                   $cmp_val = eval_expr($cmp_full)
                   si ($cmp_val == "vrai" ou $cmp_val == "1") {
-                    $unrolled = $unrolled + substituer_nom($corps_pr, $nom_pr, $valeur)
+                    # Collecter les noms assignes dans ce corps
+                    $assigns_pr = ""
+                    $ap2 = 0
+                    $nb_corps2 = longueur($corps_pr)
+                    tant_que ($ap2 < $nb_corps2) {
+                      $flp = $ap2
+                      $af = 0
+                      tant_que ($flp < $nb_corps2 et $af == 0) {
+                        si (sous_chaine($corps_pr, $flp, $flp + 1) == "\n") { $af = 1 } sinon { $flp = $flp + 1 }
+                      }
+                      $lnp = sous_chaine($corps_pr, $ap2, $flp)
+                      $lcp = 0
+                      tant_que ($lcp < longueur($lnp) et (sous_chaine($lnp, $lcp, $lcp + 1) == " " ou sous_chaine($lnp, $lcp, $lcp + 1) == "\t")) { $lcp = $lcp + 1 }
+                      $nom_p2 = ""
+                      $lap = $lcp
+                      $finp = 0
+                      tant_que ($lap < longueur($lnp) et $finp == 0) {
+                        $ch = sous_chaine($lnp, $lap, $lap + 1)
+                        si (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_") {
+                          $nom_p2 = $nom_p2 + $ch
+                          $lap = $lap + 1
+                        } sinon {
+                          $finp = 1
+                        }
+                      }
+                      $lap2 = $lap
+                      tant_que ($lap2 < longueur($lnp) et sous_chaine($lnp, $lap2, $lap2 + 1) == " ") { $lap2 = $lap2 + 1 }
+                      si ($lap2 < longueur($lnp) et sous_chaine($lnp, $lap2, $lap2 + 1) == "=" et longueur($nom_p2) > 0) {
+                        $assigns_pr = $assigns_pr + $nom_p2 + " "
+                      }
+                      $ap2 = $flp + 1
+                    }
+                    # contexte de cette iteration
+                    $ctx_it = $ctx
+                    si (longueur($nom_pr) > 0) {
+                      $ctx_it = $nom_pr + "=" + $valeur + " " + $ctx
+                    }
+                    # Deplier le corps ligne par ligne
+                    $sub_it = ""
+                    $lp2 = 0
+                    $nb_corps = longueur($corps_pr)
+                    tant_que ($lp2 < $nb_corps) {
+                      $fl2 = $lp2
+                      $a_fl2 = 0
+                      tant_que ($fl2 < $nb_corps et $a_fl2 == 0) {
+                        si (sous_chaine($corps_pr, $fl2, $fl2 + 1) == "\n") {
+                          $a_fl2 = 1
+                        } sinon {
+                          $fl2 = $fl2 + 1
+                        }
+                      }
+                      $ligne2 = sous_chaine($corps_pr, $lp2, $fl2)
+                      $lc2 = 0
+                      tant_que ($lc2 < longueur($ligne2) et (sous_chaine($ligne2, $lc2, $lc2 + 1) == " " ou sous_chaine($ligne2, $lc2, $lc2 + 1) == "\t")) {
+                        $lc2 = $lc2 + 1
+                      }
+                      $conso2 = 0
+                      si ($lc2 + 1 < longueur($ligne2)) {
+                        si (sous_chaine($ligne2, $lc2, $lc2 + 1) == ">" et sous_chaine($ligne2, $lc2 + 1, $lc2 + 2) == ">") {
+                          $ja2 = $lc2 + 2
+                          tant_que ($ja2 < longueur($ligne2) et sous_chaine($ligne2, $ja2, $ja2 + 1) == " ") {
+                            $ja2 = $ja2 + 1
+                          }
+                          $expr_a2 = sous_chaine($ligne2, $ja2, longueur($ligne2))
+                          si (longueur($expr_a2) > 0) {
+                            # literaliser seulement si depend d'une var assignee
+                            $lit = 0
+                            $probe = $expr_a2
+                            $cur = ""
+                            $ki = 0
+                            $nass = longueur($assigns_pr)
+                            tant_que ($ki < $nass) {
+                              $ch = sous_chaine($assigns_pr, $ki, $ki + 1)
+                              si ($ch == " ") {
+                                si (longueur($cur) > 0) {
+                                  $probe2 = substituer_nom($probe, $cur, "@A@")
+                                  si ($probe2 != $probe) { $lit = 1 }
+                                  $probe = $probe2
+                                }
+                                $cur = ""
+                              } sinon {
+                                $cur = $cur + $ch
+                              }
+                              $ki = $ki + 1
+                            }
+                            si (longueur($cur) > 0) {
+                              $probe2 = substituer_nom($probe, $cur, "@A@")
+                              si ($probe2 != $probe) { $lit = 1 }
+                            }
+                            si ($lit == 1) {
+                              si (longueur($ctx_it) > 0) {
+                                $ea_full = $expr_a2 + " // vars: " + $ctx_it
+                              } sinon {
+                                $ea_full = $expr_a2
+                              }
+                              $val_a2 = eval_expr($ea_full)
+                              $sub_it = $sub_it + '>> "' + $val_a2 + '"' + "\n"
+                            } sinon {
+                              $expr_sub2 = $expr_a2
+                              $expr_sub2 = substituer_nom($expr_sub2, $nom_pr, $valeur)
+                              $li4 = $nb_vars
+                              tant_que ($li4 >= 1) {
+                                $expr_sub2 = substituer_nom($expr_sub2, $var_noms[$li4], $var_vals[$li4])
+                                $li4 = $li4 - 1
+                              }
+                              $sub_it = $sub_it + ">> " + $expr_sub2 + "\n"
+                            }
+                          }
+                          $conso2 = 1
+                        }
+                      }
+                      si ($conso2 == 0) {
+                        # detecter affectation nue
+                        $trim2 = $ligne2
+                        $lt2 = 0
+                        tant_que ($lt2 < longueur($trim2) et (sous_chaine($trim2, $lt2, $lt2 + 1) == " " ou sous_chaine($trim2, $lt2, $lt2 + 1) == "\t")) {
+                          $lt2 = $lt2 + 1
+                        }
+                        $nom_a2 = ""
+                        $la2 = $lt2
+                        $fin_na2 = 0
+                        tant_que ($la2 < longueur($trim2) et $fin_na2 == 0) {
+                          $ch = sous_chaine($trim2, $la2, $la2 + 1)
+                          si (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_") {
+                            $nom_a2 = $nom_a2 + $ch
+                            $la2 = $la2 + 1
+                          } sinon {
+                            $fin_na2 = 1
+                          }
+                        }
+                        $la3 = $la2
+                        tant_que ($la3 < longueur($trim2) et sous_chaine($trim2, $la3, $la3 + 1) == " ") {
+                          $la3 = $la3 + 1
+                        }
+                        $est_aff2 = 0
+                        si ($la3 < longueur($trim2)) {
+                          si (sous_chaine($trim2, $la3, $la3 + 1) == "=") {
+                            $est_aff2 = 1
+                          }
+                        }
+                        si ($est_aff2 == 1 et longueur($nom_a2) > 0) {
+                          $kx2 = $la3 + 1
+                          tant_que ($kx2 < longueur($trim2) et sous_chaine($trim2, $kx2, $kx2 + 1) == " ") {
+                            $kx2 = $kx2 + 1
+                          }
+                          $expr_a2b = sous_chaine($trim2, $kx2, longueur($trim2))
+                          si (longueur($ctx_it) > 0) {
+                            $ea2_full = $expr_a2b + " // vars: " + $ctx_it
+                          } sinon {
+                            $ea2_full = $expr_a2b
+                          }
+                          $val_a2b = eval_expr($ea2_full)
+                          $ctx_it = $ctx_it + " " + $nom_a2 + "=" + $val_a2b
+                        } sinon {
+                          $ligne_s2 = $ligne2
+                          $ligne_s2 = substituer_nom($ligne_s2, $nom_pr, $valeur)
+                          $li4 = $nb_vars
+                          tant_que ($li4 >= 1) {
+                            $ligne_s2 = substituer_nom($ligne_s2, $var_noms[$li4], $var_vals[$li4])
+                            $li4 = $li4 - 1
+                          }
+                          $sub_it = $sub_it + $ligne_s2 + "\n"
+                        }
+                      }
+                      $lp2 = $fl2 + 1
+                    }
+                    $unrolled = $unrolled + $sub_it
                     $valeur = eval_expr($valeur + " + 1")
                     $n_iter = $n_iter + 1
                   } sinon {
@@ -1003,10 +1343,10 @@ tant_que ($i < longueur($src)) {
         # Construire le contexte de variables (en ARRIERE : la derniere
         # valeur appendee est inseree en premier et gagne les remplacements)
         $ctx = ""
-        $vi = $nb_vars
-        tant_que ($vi >= 1) {
+        $vi = 1
+        tant_que ($vi <= $nb_vars) {
           $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
-          $vi = $vi - 1
+          $vi = $vi + 1
         }
         si (longueur($ctx) > 0) {
           $expr_full = $expr + " // vars: " + $ctx
