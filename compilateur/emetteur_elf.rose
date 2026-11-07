@@ -45,6 +45,46 @@ fn u64le($v: entier) -> chaine {
   retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3) + caractere($b4) + caractere($b5) + caractere($b6) + caractere($b7)
 }
 
+# ── Substitution d'un nom de variable nu (bornes alphanumeriques) ──
+fn substituer_nom($txt: chaine, $nom: chaine, $val: chaine) -> chaine {
+  $res = ""
+  $k = 0
+  $ln = longueur($txt)
+  $lnn = longueur($nom)
+  tant_que ($k < $ln) {
+    $ok = 0
+    si ($k + $lnn <= $ln) {
+      si (sous_chaine($txt, $k, $k + $lnn) == $nom) {
+        $ok_avant = 1
+        si ($k > 0) {
+          $prec = sous_chaine($txt, $k - 1, $k)
+          si (($prec >= "a" et $prec <= "z") ou ($prec >= "A" et $prec <= "Z") ou ($prec >= "0" et $prec <= "9") ou $prec == "_") {
+            $ok_avant = 0
+          }
+        }
+        $ok_apres = 1
+        si ($k + $lnn < $ln) {
+          $suiv = sous_chaine($txt, $k + $lnn, $k + $lnn + 1)
+          si (($suiv >= "a" et $suiv <= "z") ou ($suiv >= "A" et $suiv <= "Z") ou ($suiv >= "0" et $suiv <= "9") ou $suiv == "_") {
+            $ok_apres = 0
+          }
+        }
+        si ($ok_avant == 1 et $ok_apres == 1) {
+          $ok = 1
+        }
+      }
+    }
+    si ($ok == 1) {
+      $res = $res + $val
+      $k = $k + $lnn
+    } sinon {
+      $res = $res + sous_chaine($txt, $k, $k + 1)
+      $k = $k + 1
+    }
+  }
+  retour $res
+}
+
 # ── Constantes ELF64 ──
 $ELFMAG = "\177ELF"
 $ELFCLASS64 = 2
@@ -563,6 +603,177 @@ tant_que ($modifie_tq == 1) {
 }
 
 $src = $src_proc3
+
+# Pretraitement pour : deplier les boucles "pour N de D vers F" a la compilation
+# Semantique moteur : borne superieure EXCLUSIVE (de 1 vers 5 -> 1,2,3,4)
+$src_proc4 = $src_proc3
+$modifie_pr = 1
+$iter_max_pr = 10000
+tant_que ($modifie_pr == 1) {
+  $modifie_pr = 0
+  $i = 0
+  tant_que ($i < longueur($src_proc4)) {
+    # Detecter "pour "
+    $c1 = ""
+    $c2 = ""
+    $c3 = ""
+    $c4 = ""
+    $c5 = ""
+    si ($i < longueur($src_proc4)) { $c1 = sous_chaine($src_proc4, $i, $i + 1) }
+    si ($i + 1 < longueur($src_proc4)) { $c2 = sous_chaine($src_proc4, $i + 1, $i + 2) }
+    si ($i + 2 < longueur($src_proc4)) { $c3 = sous_chaine($src_proc4, $i + 2, $i + 3) }
+    si ($i + 3 < longueur($src_proc4)) { $c4 = sous_chaine($src_proc4, $i + 3, $i + 4) }
+    si ($i + 4 < longueur($src_proc4)) { $c5 = sous_chaine($src_proc4, $i + 4, $i + 5) }
+    si ($c1 == "p" et $c2 == "o" et $c3 == "u" et $c4 == "r" et $c5 == " ") {
+      $j = $i + 5
+      # Lire le nom de la variable de boucle (nom nu : alphanumerique + _)
+      $nom_pr = ""
+      $fin_nom = 0
+      tant_que ($j < longueur($src_proc4) et $fin_nom == 0) {
+        $ch = sous_chaine($src_proc4, $j, $j + 1)
+        si (($ch >= "a" et $ch <= "z") ou ($ch >= "A" et $ch <= "Z") ou ($ch >= "0" et $ch <= "9") ou $ch == "_") {
+          $nom_pr = $nom_pr + $ch
+          $j = $j + 1
+        } sinon {
+          $fin_nom = 1
+        }
+      }
+      # Passer les espaces puis chercher "de "
+      $j2 = $j
+      tant_que ($j2 < longueur($src_proc4) et sous_chaine($src_proc4, $j2, $j2 + 1) == " ") {
+        $j2 = $j2 + 1
+      }
+      $a_de = 0
+      si ($j2 + 2 < longueur($src_proc4) et sous_chaine($src_proc4, $j2, $j2 + 1) == "d" et sous_chaine($src_proc4, $j2 + 1, $j2 + 2) == "e" et sous_chaine($src_proc4, $j2 + 2, $j2 + 3) == " ") {
+        $a_de = 1
+      }
+      si ($a_de == 1 et longueur($nom_pr) > 0) {
+        $j2 = $j2 + 3
+        tant_que ($j2 < longueur($src_proc4) et sous_chaine($src_proc4, $j2, $j2 + 1) == " ") {
+          $j2 = $j2 + 1
+        }
+        # Extraire expr1 jusqu'a " vers " (sequence v e r s delimitee par des espaces)
+        $expr1 = ""
+        $trouve_vers = 0
+        $k2 = $j2
+        tant_que ($k2 < longueur($src_proc4) et $trouve_vers == 0) {
+          si ($k2 + 4 < longueur($src_proc4) et sous_chaine($src_proc4, $k2, $k2 + 1) == " " et sous_chaine($src_proc4, $k2 + 1, $k2 + 2) == "v" et sous_chaine($src_proc4, $k2 + 2, $k2 + 3) == "e" et sous_chaine($src_proc4, $k2 + 3, $k2 + 4) == "r" et sous_chaine($src_proc4, $k2 + 4, $k2 + 5) == "s" et sous_chaine($src_proc4, $k2 + 5, $k2 + 6) == " ") {
+            $trouve_vers = 1
+            $k2 = $k2 + 6
+          } sinon {
+            $expr1 = $expr1 + sous_chaine($src_proc4, $k2, $k2 + 1)
+            $k2 = $k2 + 1
+          }
+        }
+        si ($trouve_vers == 1) {
+          # Extraire expr2 jusqu'a "{"
+          $expr2 = ""
+          $k3 = $k2
+          $trouve_acc = 0
+          tant_que ($k3 < longueur($src_proc4) et $trouve_acc == 0) {
+            $ch = sous_chaine($src_proc4, $k3, $k3 + 1)
+            si ($ch == "{") {
+              $trouve_acc = 1
+            } sinon {
+              si ($ch != " " et $ch != "\n" et $ch != "\t") {
+                $expr2 = $expr2 + $ch
+              }
+              $k3 = $k3 + 1
+            }
+          }
+          si ($trouve_acc == 1) {
+            # Trouver le corps { ... }
+            $prof = 0
+            $trouve_fb = 0
+            $debut_pr = $k3
+            $k4 = $k3
+            tant_que ($k4 < longueur($src_proc4) et $trouve_fb == 0) {
+              $ch = sous_chaine($src_proc4, $k4, $k4 + 1)
+              si ($ch == "{") { $prof = $prof + 1 }
+              si ($ch == "}") { $prof = $prof - 1 }
+              si ($prof == 0 et $ch == "}") { $trouve_fb = 1 }
+              $k4 = $k4 + 1
+            }
+            si ($trouve_fb == 1) {
+              $fin_pr = $k4
+              $corps_pr = sous_chaine($src_proc4, $debut_pr + 1, $fin_pr - 1)
+              # Evaluer les bornes avec le contexte de variables
+              $ctx = ""
+              $vi = 1
+              tant_que ($vi <= $nb_vars) {
+                $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
+                $vi = $vi + 1
+              }
+              si (longueur($ctx) > 0) {
+                $e1_full = $expr1 + " // vars: " + $ctx
+                $e2_full = $expr2 + " // vars: " + $ctx
+              } sinon {
+                $e1_full = $expr1
+                $e2_full = $expr2
+              }
+              $d1 = eval_expr($e1_full)
+              $f2 = eval_expr($e2_full)
+              # Verifier que les bornes sont numeriques
+              $bornes_ok = 1
+              $kc = 0
+              tant_que ($kc < longueur($d1)) {
+                $chc = sous_chaine($d1, $kc, $kc + 1)
+                si (($chc < "0" ou $chc > "9") et $kc > 0) {
+                  $bornes_ok = 0
+                }
+                si ($kc == 0 et $chc != "-" et ($chc < "0" ou $chc > "9")) {
+                  $bornes_ok = 0
+                }
+                $kc = $kc + 1
+              }
+              $kc = 0
+              tant_que ($kc < longueur($f2)) {
+                $chc = sous_chaine($f2, $kc, $kc + 1)
+                si (($chc < "0" ou $chc > "9") et $kc > 0) {
+                  $bornes_ok = 0
+                }
+                si ($kc == 0 et $chc != "-" et ($chc < "0" ou $chc > "9")) {
+                  $bornes_ok = 0
+                }
+                $kc = $kc + 1
+              }
+              si ($bornes_ok == 1) {
+                # Deplier : remplacer le nom de boucle par sa valeur dans le corps
+                $unrolled = ""
+                $valeur = $d1
+                $n_iter = 0
+                $fini = 0
+                tant_que ($fini == 0 et $n_iter < $iter_max_pr) {
+                  $cmp_full = $valeur + " < " + $f2
+                  si (longueur($ctx) > 0) {
+                    $cmp_full = $cmp_full + " // vars: " + $ctx
+                  }
+                  $cmp_val = eval_expr($cmp_full)
+                  si ($cmp_val == "vrai" ou $cmp_val == "1") {
+                    $unrolled = $unrolled + substituer_nom($corps_pr, $nom_pr, $valeur)
+                    $valeur = eval_expr($valeur + " + 1")
+                    $n_iter = $n_iter + 1
+                  } sinon {
+                    $fini = 1
+                  }
+                }
+                # Remplacer le bloc pour par les iterations depliees
+                $avant = sous_chaine($src_proc4, 0, $i)
+                $apres = sous_chaine($src_proc4, $fin_pr, longueur($src_proc4))
+                $src_proc4 = $avant + $unrolled + $apres
+                $modifie_pr = 1
+                $i = 0
+              }
+            }
+          }
+        }
+      }
+    }
+    $i = $i + 1
+  }
+}
+
+$src = $src_proc4
 
 # Extraire et evaluer toutes les expressions apres >>
 $affichage = ""
