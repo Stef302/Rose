@@ -2271,7 +2271,14 @@ tant_que ($modif_num == 1) {
         $est_chaine_lit = 1
       }
     }
-    si (longueur($res2) > 0 et $res2 != $e2 et $est_chaine_lit == 0) {
+    # Ne pas remplacer un booléen (vrai/faux) : ils sont affichés tels quels
+    # par l'extraction finale, ce qui produirait du bruit pour les conditions
+    # de boucle (tant_que/pour) déjà traitées au prétraitement.
+    $est_bool = 0
+    si ($res2 == "vrai" ou $res2 == "faux") {
+      $est_bool = 1
+    }
+    si (longueur($res2) > 0 et $res2 != $e2 et $est_chaine_lit == 0 et $est_bool == 0) {
       $avant2 = sous_chaine($src, 0, $pos_g)
       $apres2 = sous_chaine($src, $fin_l2, longueur($src))
       $src = $avant2 + ">> " + $res2 + $apres2
