@@ -513,7 +513,7 @@ fn plier_expression($expr: chaine) -> chaine {
   retour $cour
 }
 
-fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine) {
+fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $expr_texte: chaine) {
   $out = ""
   $ELFMAG = "ELF"
   $ELFCLASS64 = 2
@@ -596,6 +596,75 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine) {
   } sinon si ($code > 255) {
     $code = 0
   }
+
+  # Détecter une opération « n1 + n2 » ou « n1 - n2 » dans l'expression texte
+  # pour générer du code machine qui calcule à l'exécution.
+  $est_op = 0
+  $op_n1 = 0
+  $op_n2 = 0
+  $op_sym = ""
+  $oe = longueur($expr_texte)
+  $op_idx = 0
+  # sauter les espaces
+  tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
+    $op_idx = $op_idx + 1
+  }
+  $op_a1 = ""
+  $op_fin1 = 0
+  tant_que ($op_idx < $oe et $op_fin1 == 0) {
+    $oc = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+    si (($oc >= "0" et $oc <= "9")) {
+      $op_a1 = $op_a1 + $oc
+      $op_idx = $op_idx + 1
+    } sinon {
+      $op_fin1 = 1
+    }
+  }
+  si (longueur($op_a1) > 0) {
+    $op_n1 = entier($op_a1)
+    # sauter les espaces
+    tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
+      $op_idx = $op_idx + 1
+    }
+    $op_sym = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+    si ($op_sym == "+" ou $op_sym == "-") {
+      $op_idx = $op_idx + 1
+      # sauter les espaces
+      tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
+        $op_idx = $op_idx + 1
+      }
+      $op_a2 = ""
+      $op_fin2 = 0
+      tant_que ($op_idx < $oe et $op_fin2 == 0) {
+        $oc = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+        si (($oc >= "0" et $oc <= "9")) {
+          $op_a2 = $op_a2 + $oc
+          $op_idx = $op_idx + 1
+        } sinon {
+          $op_fin2 = 1
+        }
+      }
+      si (longueur($op_a2) > 0) {
+        $op_n2 = entier($op_a2)
+        # vérifier qu'il n'y a que des espaces jusqu'à la fin
+        $op_fin_ok = 1
+        $op_idx2 = $op_idx
+        tant_que ($op_idx2 < $oe) {
+          $oc2 = sous_chaine($expr_texte, $op_idx2, $op_idx2 + 1)
+          si ($oc2 != " ") {
+            $op_fin_ok = 0
+            $op_idx2 = $oe
+          } sinon {
+            $op_idx2 = $op_idx2 + 1
+          }
+        }
+        si ($op_fin_ok == 1) {
+          $est_op = 1
+        }
+      }
+    }
+  }
+
   $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
   $out = $out + u32le(268435681)    # adr x1, data (offset 28)
   $len_texte = longueur($texte)
@@ -603,7 +672,16 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine) {
   $out = $out + u32le($opcode_x2)   # mov x2, #len (len)
   $out = $out + u32le(3531606024)   # mov x8, #64 (write)
   $out = $out + u32le(3556769793)   # svc #0
-  $out = $out + u32le(3531603968 + $code * 32)   # mov x0, #$code (exit code)
+  si ($est_op == 1 et $op_n2 <= 4095) {
+    $out = $out + u32le(3531603968 + $op_n1 * 32)   # mov x0, #n1
+    si ($op_sym == "+") {
+      $out = $out + u32le(2432696320 + $op_n2 * 1024)   # add x0, x0, #n2
+    } sinon {
+      $out = $out + u32le(3510145024 + $op_n2 * 1024)   # sub x0, x0, #n2
+    }
+  } sinon {
+    $out = $out + u32le(3531603968 + $code * 32)   # mov x0, #$code (exit code)
+  }
   $out = $out + u32le(3531606952)   # mov x8, #93 (exit)
   $out = $out + u32le(3556769793)   # svc #0
   # data: texte
@@ -2316,6 +2394,7 @@ tant_que ($modif_num == 1) {
 # Extraire et evaluer toutes les expressions apres >>
 $affichage = ""
 $dernier_resultat = ""
+$dernier_expr_texte = ""
 $i = 0
 tant_que ($i < longueur($src)) {
   $c1 = ""
@@ -2429,6 +2508,7 @@ tant_que ($i < longueur($src)) {
           $resultat = eval_expr($expr_full)
         }
       }
+            $dernier_expr_texte = $expr
             $dernier_resultat = $resultat
             $affichage = $affichage + $resultat + "\n"
     }
@@ -2439,4 +2519,4 @@ si (longueur($affichage) == 0) {
   afficher_erreur("emetteur_elf : pas de >> <expression> trouve")
   quitter(1)
 }
-emettre_elf_print($sortie, $affichage, $dernier_resultat)
+emettre_elf_print($sortie, $affichage, $dernier_resultat, $dernier_expr_texte)
