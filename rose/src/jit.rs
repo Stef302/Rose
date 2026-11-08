@@ -75,9 +75,12 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
             // porte du JIT C++ qui n'accepte que entier/flottant/booleen).
             if !module.is_empty() { return None; }
             for a in args { if ty_statique(a, env).is_none() { return None; } }
-            PROG_AVEC.with(|p| p.borrow().get(nom).cloned()).and_then(|s| {
+            let r = PROG_AVEC.with(|p| p.borrow().get(nom).cloned()).and_then(|s| {
                 if compilable(s.retour.n) || s.retour.n == TyKind::Vide { Some(s.retour.n) } else { None }
-            })
+            });
+            if r.is_none() {
+            }
+            r
         }
         Expr::Unaire { op, a, .. } => {
             if op == "non" {
@@ -788,7 +791,10 @@ impl Emetteur<'_> {
                 self.builder.use_var(slot)
             }
             Expr::Binaire { op, a, b, .. } => self.binaire(op, a, b, env, types),
-            Expr::Appel { nom, args, .. } => self.appel(nom, args, env, types),
+            Expr::Appel { nom, args, ligne, .. } => {
+                crate::run::noter_ligne(*ligne);
+                self.appel(nom, args, env, types)
+            }
             _ => unreachable!("expression hors support JIT"),
         }
     }
@@ -811,9 +817,27 @@ impl Emetteur<'_> {
                       else { self.builder.ins().fcvt_to_sint(types::I64, v) });
         }
         let inst = self.builder.ins().call(fref, &vals);
+        // Fixe n°1 : le JIT ne propage pas le tag BigInt (slot 8 de la trame
+        // posée par le helper `rose_*_ent`). On relit la trame de deux mots
+        // juste apres l'appel : si elle porte un tag != 0, on doit rendre une
+        // `Valeur::Entier(_, Some(Gz))` plus tard ; ici on le memorise dans
+        // `self.tag_tmp` pour la suite de l'emission.
+        if sig.retour.n == TyKind::Entier {
+            let res = self.builder.inst_results(inst)[0];
+            // Le helper de la fonction appelee laisse son tag dans sa PROPRE
+            // trame : il faut le lire depuis `self.tags[nom]` si la fonction
+            // est un helper runtime (rose_add_ent, etc.).
+            if let Some(ts) = self.tags.get(nom).copied() {
+                let t = self.builder.use_var(ts);
+                self.builder.def_var(self.tag_tmp, t);
+            } else {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+            }
+            return res;
+        }
         match sig.retour.n {
             TyKind::Vide => self.builder.ins().iconst(types::I64, 0),
-            TyKind::Entier => self.builder.inst_results(inst)[0],
             _ => self.builder.inst_results(inst)[0],
         }
     }
@@ -1228,7 +1252,8 @@ impl Emetteur<'_> {
                     types: &mut HashMap<String, TyKind>, sig: &Signature) {
         for i in instrs {
             match i {
-                Instr::Affect { nom, e, .. } => {
+                Instr::Affect { nom, e, ligne } => {
+                    crate::run::noter_ligne(*ligne);
                     let t = self.type_of(e, env, types);
                     let v = if t == TyKind::Entier && matches!(e, Expr::Var(_, _)) {
                         let v0 = self.expr(e, env, types);
@@ -1294,7 +1319,8 @@ impl Emetteur<'_> {
                     }
                 }
                 Instr::ExprStmt(e) => { self.expr(e, env, types); }
-                Instr::Si { test, alors, sinon, .. } => {
+                Instr::Si { test, alors, sinon, ligne } => {
+                    crate::run::noter_ligne(*ligne);
                     let avant_retour = self.returned;
                     let corps = self.builder.create_block();
                     let apres_b = self.builder.create_block();
@@ -1332,7 +1358,8 @@ impl Emetteur<'_> {
                         }
                     }
                 }
-                Instr::TantQue { test, corps, .. } => {
+                Instr::TantQue { test, corps, ligne } => {
+                    crate::run::noter_ligne(*ligne);
                     let entree = self.builder.create_block();
                     let tour = self.builder.create_block();
                     let sortie = self.builder.create_block();
@@ -1355,7 +1382,8 @@ impl Emetteur<'_> {
                         }
                     }
                 }
-                Instr::Pour { nom, debut, fin, corps, .. } => {
+                Instr::Pour { nom, debut, fin, corps, ligne } => {
+                    crate::run::noter_ligne(*ligne);
                     let d = self.expr(debut, env, types);
                     let f = self.expr(fin, env, types);
                     let slot = {

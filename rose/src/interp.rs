@@ -27,6 +27,431 @@ pub struct Interp {
 
 
 
+/// Découpe une chaîne au niveau 0 par des virgules.
+fn split_top(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut prof = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '(' | '[' | '{' => { prof += 1; cur.push(ch); }
+            ')' | ']' | '}' => { prof -= 1; cur.push(ch); }
+            ',' if prof == 0 => { out.push(cur.trim().to_string()); cur.clear(); }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() { out.push(cur.trim().to_string()); }
+    out
+}
+
+/// Nettoie un rendu : enlève un suffixe de contexte résiduel.
+/// Rendu simple d'un flottant : supprime les zeros superflus.
+fn texte_simple(f: f64) -> String {
+    if f == f.floor() && f.abs() < 1e16 { return (f as i64).to_string(); }
+    let s = format!("{}", f);
+    s
+}
+
+fn nettoyer_rendu(r: &str) -> String {
+    let mut out = r.trim().to_string();
+    loop {
+        let n = if let Some(k) = out.find(" // vars:") { Some((k, 9usize)) }
+            else if let Some(k) = out.find("// vars:") { Some((k, 8usize)) }
+            else if let Some(k) = out.find("//vars:") { Some((k, 7usize)) }
+            else { None };
+        match n {
+            Some((k, _)) => { out = out[..k].trim_end().to_string(); }
+            None => break,
+        }
+    }
+    out
+}
+
+/// Vrai si une chaîne contient encore un appel `nom(...)`.
+fn contient_appel(s: &str) -> bool {
+    let cs: Vec<char> = s.chars().collect();
+    let mut i = 0usize;
+    let mut dans_guilm = false;
+    while i < cs.len() {
+        let c = cs[i];
+        if c == '"' { dans_guilm = !dans_guilm; i += 1; continue; }
+        if !dans_guilm && c == '(' {
+            let mut j = i;
+            while j > 0 && (cs[j - 1].is_ascii_alphanumeric() || cs[j - 1] == '_' || cs[j - 1] == ')') {
+                j -= 1;
+            }
+            if j < i { return true; }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Substitue chaque mot de `nu` égal à un nom de paire par sa valeur.
+/// Les separateurs `( ) [ ]` decoupent aussi les mots (comme la voie inline).
+fn substituer_mots_paires(nu: &str, paires: &[(String, String)]) -> String {
+    let mut s2 = String::new();
+    let chars: Vec<char> = nu.chars().collect();
+    let mut k = 0usize;
+    while k < chars.len() {
+        let c = chars[k];
+        if c == ' ' || c == '\t' || c == '\n' || c == ',' { k += 1; continue; }
+        if c == '"' {
+            let d = k; k += 1;
+            while k < chars.len() && chars[k] != '"' { k += 1; }
+            if k < chars.len() { k += 1; }
+            let seg: String = chars[d..k].iter().collect();
+            s2.push_str(&seg);
+            continue;
+        }
+        if c == '(' || c == ')' || c == '[' || c == ']' {
+            s2.push(c); k += 1; continue;
+        }
+        let d = k;
+        while k < chars.len()
+            && chars[k] != ' ' && chars[k] != '\t' && chars[k] != '\n' && chars[k] != ','
+            && chars[k] != '(' && chars[k] != ')' && chars[k] != '['
+            && chars[k] != ']' && chars[k] != '"'
+        { k += 1; }
+        let seg: String = chars[d..k].iter().collect();
+        // le jeton « vars: » (et les suivants) fait partie du contexte deja
+        // encode dans `paires` : on ne le rend pas.
+        if seg == "vars:" || seg == "vars" {
+            k = chars.len();
+            continue;
+        }
+        let mut trouve = false;
+        for (nom, val) in paires.iter().rev() {
+            if *nom == seg { s2.push_str(val); trouve = true; break; }
+        }
+        if !trouve { s2.push_str(&seg); }
+    }
+    s2
+}
+
+/// Paires "nom=valeur" à partir du texte brut du prélude.
+fn paires_prelude(vb: &str) -> Vec<(String, String)> {
+    let mut paires: Vec<(String, String)> = Vec::new();
+    let mut cur = String::new();
+    let mut dans_guilm = false;
+    let mut prof = 0usize;
+    for c in vb.chars() {
+        if c == '"' { dans_guilm = !dans_guilm; cur.push(c); }
+        else if !dans_guilm && prof == 0 && (c == ' ' || c == '\t' || c == '\n' || c == ',') {
+            if !cur.is_empty() {
+                if let Some(eq) = cur.find('=') {
+                    paires.push((cur[..eq].to_string(), cur[eq + 1..].to_string()));
+                }
+                cur.clear();
+            }
+        } else {
+            if !dans_guilm {
+                if c == '(' || c == '[' || c == '{' { prof += 1; }
+                if c == ')' || c == ']' || c == '}' { prof = prof.saturating_sub(1); }
+            }
+            cur.push(c);
+        }
+    }
+    if !cur.is_empty() {
+        if let Some(eq) = cur.find('=') {
+            paires.push((cur[..eq].to_string(), cur[eq + 1..].to_string()));
+        }
+    }
+    paires
+}
+
+/// Rend une valeur atomique depuis la chaîne d'une valeur de paire.
+fn si_val_atomique(val: &str) -> Valeur {
+    if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+        return Valeur::s(val[1..val.len() - 1].to_string());
+    }
+    if val == "vrai" { return Valeur::Booleen(true); }
+    if val == "faux" { return Valeur::Booleen(false); }
+    if let Ok(n) = val.parse::<i64>() { return Valeur::z(n); }
+    if let Ok(f) = val.parse::<f64>() { return Valeur::f(f); }
+    Valeur::s(val.to_string())
+}
+
+/// Liste de Valeur depuis une chaîne "a, b, c" en résolvant chaque argument.
+fn args_depuis_chaine(interieur: &str, paires: &[(String, String)]) -> Vec<Valeur> {
+    let mut out: Vec<Valeur> = Vec::new();
+    for a_s in split_top(interieur) {
+        if a_s.is_empty() { continue; }
+        let mut trouve = false;
+        for (nom, val) in paires.iter().rev() {
+            if *nom == a_s { out.push(si_val_atomique(val)); trouve = true; break; }
+        }
+        if trouve { continue; }
+        let est_atomique = !a_s.contains('(') && !a_s.contains(')')
+            && !a_s.contains('[') && !a_s.contains(']')
+            && !a_s.contains('+') && !a_s.contains('-')
+            && !a_s.contains('*') && !a_s.contains('/')
+            && !a_s.contains(',') && !a_s.contains('=');
+        if est_atomique { out.push(Valeur::s(a_s.clone())); continue; }
+        if let Some(r) = replier_expression(&a_s, paires) {
+            if let Ok(i) = r.parse::<i64>() { out.push(Valeur::z(i)); continue; }
+            if let Ok(f) = r.parse::<f64>() { out.push(Valeur::f(f)); continue; }
+            if r == "vrai" { out.push(Valeur::Booleen(true)); continue; }
+            if r == "faux" { out.push(Valeur::Booleen(false)); continue; }
+            out.push(Valeur::s(r));
+            continue;
+        }
+        out.push(Valeur::s(a_s.clone()));
+    }
+    out
+}
+
+/// Nom de fonction std connu (liste blanche).
+fn nom_std_connu(nom: &str) -> bool {
+    matches!(nom,
+        "afficher" | "saisir_entier" | "saisir_flottant" | "millisecondes" | "graine"
+        | "graine_systeme" | "graine_vrai" | "rng_materiel" | "rng_mat" | "hasard"
+        | "hasard_systeme" | "hasard_vrai" | "entier" | "rationnel" | "flottant"
+        | "chaine" | "longueur" | "table" | "tampon" | "premier" | "dernier"
+        | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
+        | "abs" | "factorielle" | "fibonacci" | "pgcd" | "ppcm" | "puissance"
+        | "est_premier" | "compter_premiers" | "nb_chiffres" | "nombre_pi"
+        | "sous_chaine" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter"
+        | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
+        | "fraction")
+}
+
+fn fonction_atomique(nom: &str, args: &[Valeur]) -> Option<Valeur> {
+    if !nom_std_connu(nom) { return None; }
+    let mut it = Interp::nouveau(crate::front::Programme::default());
+    Some(it.stdlib_valeur(nom, args))
+}
+
+/// Pli au moyen du parseur : on pré-injecte les paires comme affectations.
+fn repli_parseur(nu: &str, paires: &[(String, String)]) -> Option<String> {
+    if nu.is_empty() { return None; }
+    let mut prefixes = String::new();
+    for (nom, val) in paires.iter() {
+        // forme la plus simple : `nom = <val>` telle quelle (le parseur sait
+        // déjà lire les nombres, booléens, listes `[..]`, tables `{..}`, et
+        // les chaînes entre guillemets).
+        prefixes.push_str(&format!("{} = {}\n", nom, val));
+    }
+    let formes = [
+        nu.to_string(),
+        format!("{}{}", prefixes, nu),
+        format!("x = {}", nu),
+        format!("{}x = {}", prefixes, nu),
+        format!("x = {}\n>> x", nu),
+        format!("{}x = {}\n>> x", prefixes, nu),
+    ];
+    for f in formes.iter() {
+        if let Ok(prog) = crate::front::analyser(f) {
+            if prog.instructions.is_empty() { continue; }
+            let mut it = Interp::nouveau(prog);
+            it.executer_principal();
+            // rendu de la dernière instruction utile
+            let n = it.prog.instructions.len();
+            for idx in (0..n).rev() {
+                let ins = it.prog.instructions[idx].clone();
+                match ins {
+                    crate::front::Instr::Afficher(e, _) => {
+                        if let Ok(v) = it.eval(&e) {
+                            let r = chaine_de(&v);
+                            if !r.is_empty() { return Some(r); }
+                        }
+                    }
+                    crate::front::Instr::Affect { nom, e, .. } => {
+                        if let Some(v) = it.globaux.get(&nom) {
+                            let r = chaine_de(v);
+                            if !r.is_empty() { return Some(r); }
+                        }
+                        if let Ok(v) = it.eval(&e) {
+                            let r = chaine_de(&v);
+                            if !r.is_empty() { return Some(r); }
+                        }
+                    }
+                    crate::front::Instr::ExprStmt(e) => {
+                        if let Ok(v) = it.eval(&e) {
+                            let r = chaine_de(&v);
+                            if !r.is_empty() { return Some(r); }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Pliage récursif d'une expression : atomes directs, parseur, substitution,
+/// puis réduction séquentielle des appels (du plus imbriqué au plus externe).
+fn replier_expression(nu: &str, paires: &[(String, String)]) -> Option<String> {
+    // A) atome direct
+    if nu.starts_with('"') && nu.ends_with('"') && nu.len() >= 2 {
+        return Some(nu[1..nu.len() - 1].to_string());
+    }
+    if nu == "vrai" || nu == "faux" { return Some(nu.to_string()); }
+    if let Ok(n) = nu.parse::<i64>() { return Some(n.to_string()); }
+
+    // B) parseur avec préfixe des paires.
+    let mut prefixes = String::new();
+    for (nom, val) in paires.iter() {
+        let val_src = if val.starts_with('"') && val.ends_with('"') {
+            val.clone()
+        } else if val.parse::<i64>().is_ok()
+            || val.parse::<f64>().is_ok()
+            || val == "vrai" || val == "faux"
+            || (val.starts_with('[') && val.ends_with(']'))
+            || (val.starts_with('{') && val.ends_with('}'))
+        { val.clone() } else { format!("\"{}\"", val) };
+        prefixes.push_str(&format!("{} = {}\n", nom, val_src));
+    }
+    let formes_b = [
+        format!("{}>> {}", prefixes, nu),
+        format!("{}x = {}\n>> x", prefixes, nu),
+        format!("{}{}", prefixes, nu),
+        format!("{}x = {}", prefixes, nu),
+    ];
+    for f in formes_b.iter() {
+        if let Some(r) = rendu_par_parseur(f) { return Some(r); }
+    }
+
+    // C) réduction séquentielle : on réduit `nu` itérativement.
+    //    Pré-pli : si `nu` ne contient pas `(`, on le passe directement au
+    //    parseur pour obtenir un entier/booléen/chaîne.
+    {
+        let t0 = nu.trim();
+        if !t0.is_empty() && !contient_appel(t0) {
+            for f in [t0.to_string(), format!("x = {}", t0), format!("x = {}\n>> x", t0)].iter() {
+                if let Some(r) = rendu_par_parseur(f) { return Some(r); }
+            }
+        }
+    }
+    let mut courant = nu.to_string();
+    let mut tour = 0usize;
+    while tour < 128 {
+        tour += 1;
+        let etat_avant = courant.clone();
+
+        // (i) plus court-circuit : si `courant` est un entier/booléen/chaîne,
+        //     on rend directement.
+        let t = courant.trim();
+        if t.starts_with('"') && t.ends_with('"') && t.len() >= 2 {
+            return Some(t[1..t.len() - 1].to_string());
+        }
+        if t == "vrai" || t == "faux" { return Some(t.to_string()); }
+        if let Ok(n) = t.parse::<i64>() { return Some(n.to_string()); }
+
+        // (ii) parseur sur `courant` nu
+        if !contient_appel(t) {
+            for f in [t.to_string(), format!("x = {}", t), format!("x = {}\n>> x", t)].iter() {
+                if let Some(r) = rendu_par_parseur(f) { return Some(r); }
+            }
+        }
+
+        // (iii) réduction : le prochain `nom(...)` en partant de la gauche.
+        if !contient_appel(&courant) { break; }
+        let pos_open = match courant.find('(') { Some(p) => p, None => break };
+        let mut dbut_nom = pos_open;
+        while dbut_nom > 0 {
+            let c = courant.as_bytes()[dbut_nom - 1] as char;
+            if c.is_ascii_alphanumeric() || c == '_' { dbut_nom -= 1; } else { break; }
+        }
+        let nom_f: String = courant[dbut_nom..pos_open].chars().collect();
+        if nom_f.is_empty() { break; }
+        let mut prof_p = 0i32;
+        let mut fin = pos_open;
+        while fin < courant.len() {
+            let c = courant.as_bytes()[fin] as char;
+            if c == '(' { prof_p += 1; }
+            else if c == ')' {
+                prof_p -= 1;
+                if prof_p == 0 { break; }
+            }
+            fin += 1;
+        }
+        if fin >= courant.len() { break; }
+        let interieur: String = courant[pos_open + 1..fin].to_string();
+        if nom_std_connu(&nom_f) {
+            let args_s: Vec<String> = split_top(&interieur)
+                .iter()
+                .map(|a| replier_expression(a, paires).unwrap_or_else(|| a.clone()))
+                .collect();
+            let rejoints = args_s.join(", ");
+            let args_val = args_depuis_chaine(&rejoints, paires);
+            if let Some(v) = fonction_atomique(&nom_f, &args_val) {
+                let rendu = chaine_de(&v);
+                let nouveau = format!("{}{}{}", &courant[..dbut_nom], rendu, &courant[fin + 1..]);
+                if nouveau != etat_avant { courant = nouveau; continue; }
+            }
+        }
+        let mut remplace: Option<String> = None;
+        for (n, v) in paires.iter().rev() {
+            if *n == nom_f { remplace = Some(v.clone()); break; }
+        }
+        let mut a_remplace: Option<String> = None;
+        if let Some(val) = &remplace { a_remplace = Some(val.clone()); }
+        if let Some(val) = a_remplace {
+            let nouveau = format!("{}{}{}", &courant[..dbut_nom], val, &courant[fin + 1..]);
+            if nouveau != etat_avant { courant = nouveau; continue; }
+        }
+    }
+    // Rendu final si non numérique.
+    let t = courant.trim();
+    if t.starts_with('"') && t.ends_with('"') && t.len() >= 2 {
+        return Some(t[1..t.len() - 1].to_string());
+    }
+    if t == "vrai" || t == "faux" { return Some(t.to_string()); }
+    if let Ok(n) = t.parse::<i64>() { return Some(n.to_string()); }
+    if !contient_appel(t) {
+        for f in [t.to_string(), format!("x = {}", t), format!("x = {}\n>> x", t)].iter() {
+            if let Some(r) = rendu_par_parseur(f) { return Some(r); }
+        }
+    }
+    if !courant.is_empty() && courant != nu { return Some(courant.clone()); }
+    None
+}
+
+
+/// Analyse `src` et rend le rendu de la dernière instruction utile, si elle
+/// produit une valeur non vide et sans appel résiduel.
+fn rendu_par_parseur(src: &str) -> Option<String> {
+    let prog = crate::front::analyser(src).ok()?;
+    if prog.instructions.is_empty() { return None; }
+    let mut it = Interp::nouveau(prog);
+    it.executer_principal();
+
+    let n = it.prog.instructions.len();
+    for idx in (0..n).rev() {
+        let ins = it.prog.instructions[idx].clone();
+        match ins {
+            crate::front::Instr::Afficher(e, _) => {
+                if let Ok(v) = it.eval(&e) {
+                    let r = nettoyer_rendu(&chaine_de(&v));
+
+                    if !r.is_empty() && !contient_appel(&r) { return Some(r); }
+                }
+            }
+            crate::front::Instr::Affect { nom, e, .. } => {
+                if let Some(v) = it.globaux.get(&nom) {
+                    let r = nettoyer_rendu(&chaine_de(v));
+                    if !r.is_empty() && !contient_appel(&r) { return Some(r); }
+                }
+                if let Ok(v) = it.eval(&e) {
+                    let r = nettoyer_rendu(&chaine_de(&v));
+                    if !r.is_empty() && !contient_appel(&r) { return Some(r); }
+                }
+            }
+            crate::front::Instr::ExprStmt(e) => {
+                if let Ok(v) = it.eval(&e) {
+                    let r = nettoyer_rendu(&chaine_de(&v));
+                    if !r.is_empty() && !contient_appel(&r) { return Some(r); }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+
 impl Interp {
     pub fn nouveau(prog: Programme) -> Self {
         Interp {
@@ -147,7 +572,7 @@ impl Interp {
                     self.exec_bloc_retour_capture(corps)?;
                 }
             }
-            Instr::Pour { nom, debut, fin, corps, .. } => {
+            Instr::Pour { nom, debut, fin, corps, ligne } => {
                 let d = vers_z(&self.eval(debut)?);
                 let f = vers_z(&self.eval(fin)?);
                 self.trames.last_mut().unwrap().insert(nom.clone(), Valeur::zg(d));
@@ -799,6 +1224,8 @@ impl Interp {
         Ok(self.stdlib_valeur(nom, a))
     }
 
+
+
     fn stdlib_valeur(&mut self, nom: &str, a: &[Valeur]) -> Valeur {
         match nom {
             "afficher" => { afficher(&a[0]); Valeur::Vide }
@@ -976,6 +1403,7 @@ impl Interp {
             }
             "sous_chaine" => {
                 let s = chaine_de(&a[0]);
+                if a.len() < 3 { erreur_runtime("sous_chaine : 3 arguments attendus"); }
                 let d = vers_z(&a[1]);
                 let f = vers_z(&a[2]);
                 if d.sgn() < 0 || f.sgn() < 0 || !d.fits_i64() || !f.fits_i64() {
@@ -1022,20 +1450,57 @@ impl Interp {
                 let expr_str = chaine_de(&a[0]);
                 let base = expr_str.trim().to_string();
                 let mut substituted = base.clone();
-                //separer l'expression nue du contexte eventuel
-                let pos_vars = if let Some(i) = base.find("// vars:") {
-                    Some((i, 8usize))
-                } else if let Some(i) = base.find("; vars:") {
-                    Some((i, 7usize))
-                } else {
-                    None
+                // Separer l'expression nue du contexte eventuel ("// vars: ...").
+                // La recherche est sensible aux littéraux chaînes : un separateur
+                // apparu a l'interieur de guillemets n'est pas un separateur.
+                let pos_vars = {
+                    let cs: Vec<char> = base.chars().collect();
+                    let mut dans_guilm = false;
+                    let mut found: Option<(usize, usize)> = None;
+                    let mut i = 0usize;
+                    while i < cs.len() && found.is_none() {
+                        if cs[i] == '"' {
+                            dans_guilm = !dans_guilm;
+                        } else if !dans_guilm {
+                            if i + 8 <= cs.len() && base[i..].starts_with("// vars:") {
+                                found = Some((i, 8usize));
+                            } else if i + 7 <= cs.len() && base[i..].starts_with("//vars:") {
+                                found = Some((i, 7usize));
+                            } else if i + 7 <= cs.len() && base[i..].starts_with("; vars:") {
+                                found = Some((i, 7usize));
+                            } else if i + 6 <= cs.len() && base[i..].starts_with(";vars:") {
+                                found = Some((i, 6usize));
+                            } else if i + 5 <= cs.len() && base[i..].starts_with("vars:") {
+                                found = Some((i, 5usize));
+                            }
+                        }
+                        i += 1;
+                    }
+                    found
                 };
                 let (nu, vars_brut) = match pos_vars {
                     Some((i, saut)) => (
                         base[..i].trim().to_string(),
                         base[i + saut..].trim().to_string(),
                     ),
-                    None => (base.clone(), String::new()),
+                    None => {
+                        // pas de separateur : on nettoie neanmoins un suffixe
+                        // « // vars: » eventuel.
+                        let n = nettoyer_rendu(&base);
+                        (n, String::new())
+                    }
+                };
+                // le substituted initial = nu (sans le suffixe), pas base.
+                substituted = nu.clone();
+                // le prelude est souvent suivi des lignes `nom = valeur` du
+                // programme source : on le tronque a la premiere ligne sans
+                // signe `=`.
+                let vars_brut = {
+                    let mut lignes: Vec<&str> = Vec::new();
+                    for ln in vars_brut.lines() {
+                        if ln.contains('=') { lignes.push(ln); } else { break; }
+                    }
+                    lignes.join(" ")
                 };
                 // 1) litteral : une seule paire de guillemets englobante
                 if nu.len() >= 2
@@ -1045,9 +1510,50 @@ impl Interp {
                 {
                     return Valeur::s(nu[1..nu.len() - 1].to_string());
                 }
+                // nu peut encore porter un suffixe « // vars: » (si le
+                // separateur n'a pas ete detecte) : on le nettoie.
+                let nu = nettoyer_rendu(&nu);
+                if nu.is_empty() { return Valeur::s(String::new()); }
+                if nu.len() >= 2
+                    && nu.starts_with('"')
+                    && nu.ends_with('"')
+                    && nu[1..nu.len() - 1].find('"').is_none()
+                {
+                    return Valeur::s(nu[1..nu.len() - 1].to_string());
+                }
                 // 2) atome nu : booleen ou nombre
-                if nu == "vrai" || nu == "faux" || nu.parse::<i64>().is_ok() {
-                    return Valeur::s(nu.clone());
+                if nu == "vrai" || nu == "faux" { return Valeur::s(nu.clone()); }
+                if let Ok(n) = nu.parse::<i64>() { return Valeur::s(n.to_string()); }
+                // 2ter) entier exact BigInt pour les littéraux entiers trop
+                //     grands pour i64 (ex: 999999999999999999999). On ne le
+                //     tente que pour un entier pur (chiffres, signe optionnel)
+                //     afin de ne pas confondre avec un flottant (1.5, 1e21…).
+                let est_entier_pur = !nu.is_empty()
+                    && (nu.chars().all(|c| c.is_ascii_digit())
+                        || (nu.len() > 1
+                            && (nu.as_bytes()[0] == b'+' || nu.as_bytes()[0] == b'-')
+                            && nu[1..].chars().all(|c| c.is_ascii_digit())));
+                if est_entier_pur {
+                    let z = chaine_vers_entier(&nu);
+                    return Valeur::s(z.chaine());
+                }
+                if let Ok(f) = nu.parse::<f64>() { return Valeur::s(texte_simple(f)); }
+                // 2bis) voie de pliage structuree (replier_expression) : gere les
+                //    appels std imbriques et les fonctions utilisateur declarees
+                //    dans le prelude. Gagne sur la substitution mot-a-mot simple.
+                let mut rendu_secours: Option<String> = None;
+                if !vars_brut.is_empty() {
+                    let paires_pre = paires_prelude(&vars_brut);
+                    if let Some(r) = replier_expression(&nu, &paires_pre) {
+                        let nettoye = nettoyer_rendu(&r);
+                        if !nettoye.is_empty() && !nettoye.contains("vars:") {
+                            return Valeur::s(nettoye);
+                        }
+                    }
+                    // 2ter) si `nu` est déja un mot-clé ou un atome, on le rend
+                    //     sans le suffixe « // vars: ».
+                    if nu == "vrai" || nu == "faux" { return Valeur::s(nu.clone()); }
+                    if let Ok(n) = nu.parse::<i64>() { return Valeur::s(n.to_string()); }
                 }
                 // 3) avec contexte : decoupage des paires, puis substitution mot a mot
                 if !vars_brut.is_empty() {
@@ -1166,6 +1672,7 @@ impl Interp {
                     format!("x = {}\n>> x", substituted),
                     substituted.clone(),
                 ];
+
                 let mut rendu = Valeur::s(String::new());
                 let mut obtenu = false;
                 // 0) si la substitution a deja produit un atome complet
@@ -1278,6 +1785,7 @@ impl Interp {
                 // derniere chance : un littéral nu (non stocké comme instruction
                 // d'expression) est reconnu directement par le parseur
                 if !obtenu {
+
                     if substituted.starts_with('"') && substituted.ends_with('"')
                         && substituted.len() >= 2
                     {
@@ -1291,6 +1799,10 @@ impl Interp {
                         // ou d'un nom deja substitue)
                         rendu = Valeur::s(substituted.clone());
                     }
+                }
+                // dernier secours : le rendu pré-calculé par replier_expression.
+                if let Some(sec) = rendu_secours {
+                    if !sec.is_empty() { rendu = Valeur::s(sec); }
                 }
                 rendu
             }

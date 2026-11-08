@@ -128,13 +128,21 @@ pub fn noter_ligne(l: usize) {
 
 pub fn vers_z(v: &Valeur) -> Gz {
     let z = Gz::neuf();
+    let ligne = LIGNE_COURANTE.with(|c| c.get());
     match v {
         Valeur::Entier(i, None) => z.poser_i64(*i),
         Valeur::Entier(_, Some(o)) => z.copier_de(o),
         Valeur::Booleen(b) => z.poser_i64(if *b { 1 } else { 0 }),
         Valeur::Rationnel(q) => { let n = q.num_i128(); let d = q.den_i128(); if d == 0 { erreur_runtime("division par zéro"); } z.poser_i64((n / d) as i64); }
         Valeur::Flottant(d) => z.poser_d(*d),
-        _ => erreur_runtime(&format!("conversion vers entier impossible (type {:?})", v.ty())),
+        Valeur::Chaine(s) => {
+            if s.is_empty() { z.poser_i64(0); }
+            else if !z.depuis_chaine(s) { erreur_runtime(&format!("conversion vers entier impossible (chaine: {:?})", s)); }
+        }
+        _ => erreur_runtime(&format!(
+            "conversion vers entier impossible (type {:?}, val={:?}, ligne={})",
+            v.ty(), chaine_de(v), LIGNE_COURANTE.with(|c| c.get()),
+        )),
     }
     z
 }

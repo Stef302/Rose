@@ -1489,7 +1489,11 @@ pub fn replier(e: &Expr) -> Expr {
             let b = replier(b);
             if let (Expr::Litteral { texte: ta, flott: fa, .. },
                     Expr::Litteral { texte: tb, flott: fb, .. }) = (&a, &b) {
-                if *fa || *fb {
+                // si les deux littéraux sont des entiers exacts (pas de '.'
+                // ni d'exposant), on garde la voie rationnelle (exacte).
+                let les_deux_ents = !ta.contains('.') && !ta.contains('e') && !ta.contains('E')
+                    && !tb.contains('.') && !tb.contains('e') && !tb.contains('E');
+                if (fa.clone() || fb.clone()) && !les_deux_ents {
                     let va = lit_d(ta, *fa);
                     let vb = lit_d(tb, *fb);
                     let r = match op.as_str() {
@@ -1512,68 +1516,63 @@ pub fn replier(e: &Expr) -> Expr {
                 // rationnel / entier exact
                 if !matches!(op.as_str(), "==" | "!=" | "%" | "<" | "<=" | ">" | ">=") {
                     if let (Some(qa), Some(qb)) = (lit_q(ta), lit_q(tb)) {
-                        let r: Option<(i128, i128)> = match op.as_str() {
+                        use num_bigint::BigInt;
+                        let zero = BigInt::from(0);
+                        let un = BigInt::from(1);
+                        let r: Option<(BigInt, BigInt)> = match op.as_str() {
                             "+" => {
-                                match (qa.0.checked_mul(qb.1), qb.0.checked_mul(qa.1), qa.1.checked_mul(qb.1)) {
-                                    (Some(x), Some(y), Some(d)) => x.checked_add(y).map(|n| (n, d)),
-                                    _ => None,
-                                }
+                                Some(((&qa.0 * &qb.1) + (&qb.0 * &qa.1), &qa.1 * &qb.1))
                             }
                             "-" => {
-                                match (qa.0.checked_mul(qb.1), qb.0.checked_mul(qa.1), qa.1.checked_mul(qb.1)) {
-                                    (Some(x), Some(y), Some(d)) => x.checked_sub(y).map(|n| (n, d)),
-                                    _ => None,
-                                }
+                                Some(((&qa.0 * &qb.1) - (&qb.0 * &qa.1), &qa.1 * &qb.1))
                             }
-                            "*" => match (qa.0.checked_mul(qb.0), qa.1.checked_mul(qb.1)) {
-                                (Some(n), Some(d)) => Some((n, d)),
-                                _ => None,
-                            },
+                            "*" => Some(((&qa.0 * &qb.0), (&qa.1 * &qb.1))),
                             "/" => {
-                                if qb.0 == 0 { crate::run::erreur_front("Division par zéro dans une constante", ligne, 0); }
-                                else {
-                                    match (qa.0.checked_mul(qb.1), qa.1.checked_mul(qb.0)) {
-                                        (Some(n), Some(d)) => Some((n, d)),
-                                        _ => None,
-                                    }
-                                }
+                                if qb.0 == zero { crate::run::erreur_front("Division par zéro dans une constante", ligne, 0); }
+                                else { Some(((&qa.0 * &qb.1), (&qa.1 * &qb.0))) }
                             }
                             "div" => {
-                                // division exacte (miroir du C++ : fold_bin op == "div")
-                                if qb.0 == 0 { crate::run::erreur_front("division par zéro dans une constante", ligne, 0); }
+                                if qb.0 == zero { crate::run::erreur_front("division par zéro dans une constante", ligne, 0); }
                                 else {
-                                    let n = qa.0.checked_mul(qb.1).unwrap_or(i128::MAX);
-                                    let d = qa.1.checked_mul(qb.0).unwrap_or(1);
-                                    let mut q = n / d;
-                                    if n % d != 0 && ((n < 0) != (d < 0)) { q -= 1; }
-                                    if q > i128::MAX || q < i128::MIN { None } else { Some((q, 1)) }
+                                    let n = &qa.0 * &qb.1;
+                                    let d = &qa.1 * &qb.0;
+                                    let mut q = &n / &d;
+                                    if (&n % &d) != zero && ((n.sign() != d.sign())) { q = q - BigInt::from(1); }
+                                    Some((q, un.clone()))
                                 }
                             }
                             "^" => {
-                                let e = qb.0; let d = qb.1;
-                                if d != 1 { None }
-                                else if e < 0 && qa.0 == 0 {
-                                    crate::run::erreur_front("0^négatif dans une constante", ligne, 0);
-                                }
-                                else if e < 0 || e > 64 { None }
+                                // exposant petit
+                                if qb.1 != un { None }
                                 else {
-                                    let mut acc: i128 = 1;
-                                    let mut ok = true;
-                                    for _ in 0..e {
-                                        match acc.checked_mul(qa.0) { Some(x) => acc = x, None => { ok = false; break } }
+                                    let e_i = qb.0.to_string().parse::<i64>().ok();
+                                    match e_i {
+                                        Some(e) if e >= 0 && e <= 64 => {
+                                            let mut acc = BigInt::from(1);
+                                            for _ in 0..e { acc = acc * &qa.0; }
+                                            Some((acc, un.clone()))
+                                        }
+                                        Some(e) if e < 0 && qa.0 == zero => {
+                                            crate::run::erreur_front("0^négatif dans une constante", ligne, 0);
+                                        }
+                                        _ => None,
                                     }
-                                    if ok { Some((acc, 1)) } else { None }
                                 }
                             }
                             _ => None,
                         };
                         if let Some((mut n, mut d)) = r {
-                            if d < 0 { n = -n; d = -d; }
-                            let g = pgcd128(n.abs(), d).max(1);
-                            n /= g; d /= g;
-                            let texte = if d == 1 { n.to_string() } else { format!("{}/{}", n, d) };
-                            return Expr::Litteral { texte, flott: false, rationnel: d != 1, neg: false,
-                                ty: if d == 1 { TyKind::Entier } else { TyKind::Rationnel }, ligne };
+                            if d < zero { n = -n; d = -d; }
+                            let g = {
+                                let an = if n < zero { -n.clone() } else { n.clone() };
+                                let ad = if d < zero { -d.clone() } else { d.clone() };
+                                pgcd128(an, ad)
+                            };
+                            let g = if g == zero { un.clone() } else { g };
+                            n = &n / &g; d = &d / &g;
+                            let texte = if d == un { n.to_string() } else { format!("{}/{}", n, d) };
+                            return Expr::Litteral { texte, flott: false, rationnel: d != un, neg: false,
+                                ty: if d == un { TyKind::Entier } else { TyKind::Rationnel }, ligne };
                         }
                     }
                 }
@@ -1615,21 +1614,23 @@ fn lit_d(t: &str, _flott: bool) -> f64 {
     d
 }
 
-fn lit_q(t: &str) -> Option<(i128, i128)> {
+fn lit_q(t: &str) -> Option<(num_bigint::BigInt, num_bigint::BigInt)> {
+    use num_bigint::BigInt;
     if let Some(p) = t.find('/') {
-        let n: i128 = t[..p].parse().ok()?;
-        let d: i128 = t[p + 1..].parse().ok()?;
-        if d == 0 { return None; }
+        let n: BigInt = t[..p].trim().parse().ok()?;
+        let d: BigInt = t[p + 1..].trim().parse().ok()?;
+        if d == BigInt::from(0) { return None; }
         Some((n, d))
     } else {
-        let n: i128 = t.parse().ok()?;
-        Some((n, 1))
+        let n: BigInt = t.trim().parse().ok()?;
+        Some((n, BigInt::from(1)))
     }
 }
 
-fn pgcd128(a: i128, b: i128) -> i128 {
-    let (mut a, mut b) = (a, b);
-    while b != 0 { let t = b; b = a % b; a = t; }
+fn pgcd128(a: num_bigint::BigInt, b: num_bigint::BigInt) -> num_bigint::BigInt {
+    use num_bigint::BigInt;
+    let mut a = a; let mut b = b;
+    while b != BigInt::from(0) { let t = b.clone(); b = &a % &b; a = t; }
     a
 }
 
