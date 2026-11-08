@@ -598,7 +598,9 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
   }
 
   # Détecter une opération « n1 + n2 » ou « n1 - n2 » dans l'expression texte
-  # pour générer du code machine qui calcule à l'exécution.
+  # (n1 et n2 peuvent être des nombres littéraux ou des noms de variables
+  # connues dans $var_noms/$var_vals) pour générer du code machine qui calcule
+  # à l'exécution.
   $est_op = 0
   $op_n1 = 0
   $op_n2 = 0
@@ -613,7 +615,7 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
   $op_fin1 = 0
   tant_que ($op_idx < $oe et $op_fin1 == 0) {
     $oc = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
-    si (($oc >= "0" et $oc <= "9")) {
+    si (($oc >= "0" et $oc <= "9") ou ($oc >= "a" et $oc <= "z") ou ($oc >= "A" et $oc <= "Z") ou $oc == "_") {
       $op_a1 = $op_a1 + $oc
       $op_idx = $op_idx + 1
     } sinon {
@@ -621,45 +623,90 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
     }
   }
   si (longueur($op_a1) > 0) {
-    $op_n1 = entier($op_a1)
-    # sauter les espaces
-    tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
-      $op_idx = $op_idx + 1
+    # op_a1 est un nombre littéral ou un nom de variable
+    $op_n1 = 0
+    $op_n1_est_var = 0
+    $op_n1_val_trouve = 0
+    si (sous_chaine($op_a1, 0, 1) >= "0" et sous_chaine($op_a1, 0, 1) <= "9") {
+      $op_n1 = entier($op_a1)
+      $op_n1_est_var = 0
+      $op_n1_val_trouve = 1
+    } sinon {
+      # chercher dans les variables connues
+      $vn = 1
+      tant_que ($vn <= $nb_vars) {
+        si ($var_noms[$vn] == $op_a1) {
+          $op_n1 = entier($var_vals[$vn])
+          $op_n1_est_var = 1
+          $op_n1_val_trouve = 1
+          $vn = $nb_vars + 1
+        } sinon {
+          $vn = $vn + 1
+        }
+      }
     }
-    $op_sym = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
-    si ($op_sym == "+" ou $op_sym == "-") {
-      $op_idx = $op_idx + 1
+    si ($op_n1_val_trouve == 1) {
       # sauter les espaces
       tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
         $op_idx = $op_idx + 1
       }
-      $op_a2 = ""
-      $op_fin2 = 0
-      tant_que ($op_idx < $oe et $op_fin2 == 0) {
-        $oc = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
-        si (($oc >= "0" et $oc <= "9")) {
-          $op_a2 = $op_a2 + $oc
+      $op_sym = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+      si ($op_sym == "+" ou $op_sym == "-") {
+        $op_idx = $op_idx + 1
+        # sauter les espaces
+        tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
           $op_idx = $op_idx + 1
-        } sinon {
-          $op_fin2 = 1
         }
-      }
-      si (longueur($op_a2) > 0) {
-        $op_n2 = entier($op_a2)
-        # vérifier qu'il n'y a que des espaces jusqu'à la fin
-        $op_fin_ok = 1
-        $op_idx2 = $op_idx
-        tant_que ($op_idx2 < $oe) {
-          $oc2 = sous_chaine($expr_texte, $op_idx2, $op_idx2 + 1)
-          si ($oc2 != " ") {
-            $op_fin_ok = 0
-            $op_idx2 = $oe
+        $op_a2 = ""
+        $op_fin2 = 0
+        tant_que ($op_idx < $oe et $op_fin2 == 0) {
+          $oc = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+          si (($oc >= "0" et $oc <= "9") ou ($oc >= "a" et $oc <= "z") ou ($oc >= "A" et $oc <= "Z") ou $oc == "_") {
+            $op_a2 = $op_a2 + $oc
+            $op_idx = $op_idx + 1
           } sinon {
-            $op_idx2 = $op_idx2 + 1
+            $op_fin2 = 1
           }
         }
-        si ($op_fin_ok == 1) {
-          $est_op = 1
+        si (longueur($op_a2) > 0) {
+          $op_n2 = 0
+          $op_n2_est_var = 0
+          $op_n2_val_trouve = 0
+          si (sous_chaine($op_a2, 0, 1) >= "0" et sous_chaine($op_a2, 0, 1) <= "9") {
+            $op_n2 = entier($op_a2)
+            $op_n2_est_var = 0
+            $op_n2_val_trouve = 1
+          } sinon {
+            # chercher dans les variables connues
+            $vn = 1
+            tant_que ($vn <= $nb_vars) {
+              si ($var_noms[$vn] == $op_a2) {
+                $op_n2 = entier($var_vals[$vn])
+                $op_n2_est_var = 1
+                $op_n2_val_trouve = 1
+                $vn = $nb_vars + 1
+              } sinon {
+                $vn = $vn + 1
+              }
+            }
+          }
+          si ($op_n2_val_trouve == 1) {
+            # vérifier qu'il n'y a que des espaces jusqu'à la fin
+            $op_fin_ok = 1
+            $op_idx2 = $op_idx
+            tant_que ($op_idx2 < $oe) {
+              $oc2 = sous_chaine($expr_texte, $op_idx2, $op_idx2 + 1)
+              si ($oc2 != " ") {
+                $op_fin_ok = 0
+                $op_idx2 = $oe
+              } sinon {
+                $op_idx2 = $op_idx2 + 1
+              }
+            }
+            si ($op_fin_ok == 1) {
+              $est_op = 1
+            }
+          }
         }
       }
     }
