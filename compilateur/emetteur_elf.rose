@@ -159,9 +159,8 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine) {
   $out = $out + u64le($TEXT_OFFSET)                        # p_offset = 4096
   $out = $out + u64le($TEXT_ADDR)                          # p_vaddr
   $out = $out + u64le($TEXT_ADDR)                          # p_paddr
-  $fsz = 32 + longueur($texte) + 8 * $nb_vars              # p_filesz
-  $out = $out + u64le($fsz)                                # p_filesz
-  $out = $out + u64le($fsz)                                # p_memsz
+  $out = $out + u64le(38)                                  # p_filesz = 38 octets (8 instr + 6 data)
+  $out = $out + u64le(38)                                  # p_memsz = 38 octets
   $out = $out + u64le(2097152)                            # p_align
 
   # ── Padding jusqu'a 4096 (0x1000) ──
@@ -172,24 +171,51 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine) {
     $i = $i + 1
   }
 
-  # ── Code machine aarch64 : affiche "Hello" et exit 0 ──
+  # Code machine aarch64 : affiche le texte et sort avec la valeur
+  $code_taille = 24   # sans variable : 20 (prefixe) + 4 (mov) + 8 (suffixe)
+  $code_avec_var = 0
+  si ($est_op == 1 et $op_n1_est_var == 1) {
+    $code_taille = 36   # avec variable : 20 + 8 (ldr+add/sub) + 8
+    $code_avec_var = 1
+  }
+
+  $offset_adr = $code_taille - 8   # offset pour adr x1
+
+  # Preifxe : write syscall
   $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
-  $out = $out + u32le(268435681)    # adr x1, data (offset 28)
+  $adr_opcode = 2147483648 + $offset_adr * 256 + 1
+  $out = $out + u32le($adr_opcode)   # adr x1, #offset_adr
   $len_texte = longueur($texte)
   $opcode_x2 = 3531603968 + $len_texte * 32 + 2
-  $out = $out + u32le($opcode_x2)   # mov x2, #len (len)
+  $out = $out + u32le($opcode_x2)   # mov x2, #len
   $out = $out + u32le(3531606024)   # mov x8, #64 (write)
   $out = $out + u32le(3556769793)   # svc #0
-  $out = $out + u32le(3531603968)   # mov x0, #0 (exit code)
+
+  # Corps : operation
+  si ($code_avec_var == 1) {
+    # ldr x2, [pc, #offset_ldr]  (offset = $code_taille - 24)
+    $offset_ldr = $code_taille - 24
+    $imm19 = $offset_ldr / 4
+    $ldr_opcode = 1476395008 + $imm19 * 32
+    $out = $out + u32le($ldr_opcode)   # ldr x2, [pc, #offset_ldr]
+
+    si ($op_sym == "+") {
+      $out = $out + u32le(2415919104 + $op_n2 * 1024 + 64)   # add x0, x2, #n2
+    } sinon {
+      $out = $out + u32le(2558439424 + $op_n2 * 1024 + 64)   # sub x0, x2, #n2
+    }
+  } sinon {
+    $out = $out + u32le(3531603968 + $code * 32)   # mov x0, #$code
+  }
+
+  # Suffixe : exit
   $out = $out + u32le(3531606952)   # mov x8, #93 (exit)
   $out = $out + u32le(3556769793)   # svc #0
-  # data: texte + variables
-  $out = $out + $texte
-  $vi = 1
-  tant_que ($vi <= $nb_vars) {
-    $out = $out + u64le(entier($var_vals[$vi]))
-    $vi = $vi + 1
+  # data: variables + texte
+  si ($code_avec_var == 1) {
+    $out = $out + u64le($op_n1)
   }
+  $out = $out + $texte
   # ── Écrire le fichier ──
   ecrire_bytes($sortie, $out)
   >> "rose: " + $sortie + " produit (binaire ELF autonome, " + chaine(longueur($out)) + " octets)"
