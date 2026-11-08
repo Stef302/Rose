@@ -471,6 +471,39 @@ fn rendu_par_parseur(src: &str) -> Option<String> {
 }
 
 
+#[cfg(unix)]
+unsafe fn ffi_dlopen(name: *const i8) -> *mut std::ffi::c_void {
+    // RTLD_NOW = 2
+    unsafe extern "C" { fn dlopen(filename: *const i8, flags: i32) -> *mut std::ffi::c_void; }
+    dlopen(name, 2)
+}
+#[cfg(windows)]
+unsafe fn ffi_dlopen(name: *const i8) -> *mut std::ffi::c_void {
+    unsafe extern "system" { fn LoadLibraryA(lpLibFileName: *const i8) -> *mut std::ffi::c_void; }
+    LoadLibraryA(name)
+}
+#[cfg(unix)]
+unsafe fn ffi_dlsym(handle: *mut std::ffi::c_void, name: *const i8) -> *mut std::ffi::c_void {
+    unsafe extern "C" { fn dlsym(handle: *mut std::ffi::c_void, symbol: *const i8) -> *mut std::ffi::c_void; }
+    dlsym(handle, name)
+}
+#[cfg(windows)]
+unsafe fn ffi_dlsym(handle: *mut std::ffi::c_void, name: *const i8) -> *mut std::ffi::c_void {
+    unsafe extern "system" { fn GetProcAddress(hModule: *mut std::ffi::c_void, lpProcName: *const i8) -> *mut std::ffi::c_void; }
+    GetProcAddress(handle, name)
+}
+#[cfg(unix)]
+unsafe fn ffi_dlclose(handle: *mut std::ffi::c_void) {
+    unsafe extern "C" { fn dlclose(handle: *mut std::ffi::c_void) -> i32; }
+    dlclose(handle);
+}
+#[cfg(windows)]
+unsafe fn ffi_dlclose(handle: *mut std::ffi::c_void) {
+    unsafe extern "system" { fn FreeLibrary(hLibModule: *mut std::ffi::c_void) -> i32; }
+    FreeLibrary(handle);
+}
+
+
 impl Interp {
     pub fn nouveau(prog: Programme) -> Self {
         Interp {
@@ -1125,7 +1158,7 @@ impl Interp {
         unsafe {
             for c in candidats {
                 let cs = std::ffi::CString::new(c).unwrap();
-                let h = dlopen(cs.as_ptr() as *const i8, 2);
+                let h = ffi_dlopen(cs.as_ptr() as *const i8);
                 if !h.is_null() { self.poignees.push(h); return h; }
             }
         }
@@ -1140,7 +1173,7 @@ impl Interp {
         let h = self.ffi_poignee(sig);
         let sym = if sig.symbole.is_empty() { sig.nom.clone() } else { sig.symbole.clone() };
         let cs = std::ffi::CString::new(sym.clone()).unwrap();
-        let s = unsafe { dlsym(h, cs.as_ptr() as *const i8) };
+        let s = unsafe { ffi_dlsym(h, cs.as_ptr() as *const i8) };
         if s.is_null() { erreur_runtime(&format!("symbole introuvable dans la bibliothèque ({sym})")); }
         let zarg = |i: usize| -> i64 {
             let z = vers_z(&args[i]);
@@ -1225,7 +1258,7 @@ impl Interp {
                 let s = chaine_de(&args[0]);
                 let c = std::ffi::CString::new(s.clone()).unwrap();
                 unsafe {
-                    let h = dlopen(c.as_ptr() as *const i8, 2);
+                    let h = ffi_dlopen(c.as_ptr() as *const i8);
                     if h.is_null() {
                         erreur_runtime(&format!("chargement de bibliothèque impossible ({})", s));
                     }
@@ -1235,7 +1268,7 @@ impl Interp {
             }
             "fermer" => {
                 let h = extraire_i64(&args[0]) as *mut std::ffi::c_void;
-                unsafe { dlclose(h) };
+                unsafe { ffi_dlclose(h) };
                 Ok(Valeur::Vide)
             }
             "appeler0" | "appeler1" | "appeler2" => {
@@ -1243,7 +1276,7 @@ impl Interp {
                 let sym = chaine_de(&args[1]);
                 let c = std::ffi::CString::new(sym.clone()).unwrap();
                 unsafe {
-                    let p = dlsym(h, c.as_ptr() as *const i8);
+                    let p = ffi_dlsym(h, c.as_ptr() as *const i8);
                     if p.is_null() {
                         erreur_runtime(&format!("symbole '{}' introuvable", sym));
                     }

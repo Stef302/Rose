@@ -1,13 +1,3 @@
-// Aucune dépendance externe : pas de GMP, pas de .a.
-// Lie la libc/la libm et rend le binaire exportable pour le JIT Cranelift
-// (ses imports rose_powf / rose_affiche_* sont résolus par dlsym DANS ce
-// binaire : les symboles #[unsafe(no_mangle)] doivent être dans la table des
-// symboles dynamiques).
-//
-// Sous Windows (MinGW), on compile en plus src/windows_compat.c qui fournit
-// les stubs dlopen/dlsym/dlclose (mappés sur LoadLibraryA/GetProcAddress/
-// FreeLibrary) et getrandom (mappé sur SystemFunction036/RtlGenRandom de
-// advapi32). Aucune option -lm/-lc/-rdynamic n'est nécessaire sous Windows.
 fn main() {
     if std::env::var_os("CARGO_CFG_TARGET_OS").map_or(false, |v| v == "windows") {
         // Compiler le fichier de compatibilité Windows
@@ -15,7 +5,7 @@ fn main() {
         if src.exists() {
             cc::Build::new()
                 .file(src)
-                .flag("-static")
+                .flag_if_supported("-static")
                 .compile("windows_compat");
         }
         // Sous Windows (MinGW), un .exe n'exporte pas ses symboles par défaut.
@@ -23,6 +13,12 @@ fn main() {
         // depuis le JIT Cranelift (dlsym sur le binaire principal).
         println!("cargo:rustc-link-arg=-Wl,--export-all-symbols");
         println!("cargo:rustc-link-lib=dylib=advapi32");
+        // Sous MSVC (cargo xwin), --export-all-symbols n'existe pas : on utilise
+        // un fichier .def pour exporter les symboles rose_*.
+        let def = std::path::Path::new("exports.def");
+        if def.exists() {
+            println!("cargo:rustc-link-arg=/DEF:exports.def");
+        }
         return;
     }
 

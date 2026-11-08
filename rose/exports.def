@@ -1,0 +1,16 @@
+EXPORTS
+  rose_add_ent
+  rose_affiche_bool
+  rose_affiche_ent
+  rose_affiche_f64
+  rose_affiche_i64
+  rose_affiche_packed
+  rose_clone_ent
+  rose_erreur_div_zero
+  rose_erreur_mod_zero
+  rose_get_ret_tag
+  rose_mul_ent
+  rose_neg_ent
+  rose_powf
+  rose_set_ret_tag
+  rose_sub_ent
