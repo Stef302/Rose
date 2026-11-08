@@ -86,7 +86,7 @@ fn substituer_nom($txt: chaine, $nom: chaine, $val: chaine) -> chaine {
 }
 
 # ── Constantes ELF64 ──
-$ELFMAG = "\177ELF"
+$ELFMAG = caractere(127) + "ELF"
 $ELFCLASS64 = 2
 $ELFDATA2LSB = 1
 $EV_CURRENT = 1
@@ -108,7 +108,412 @@ $TEXT_OFFSET = 4096
 $TEXT_ADDR = $BASE_ADDR + $TEXT_OFFSET
 
 # ── Émetteur ELF minimal : produit un binaire qui retourne 0 ──
-fn emettre_elf_print($sortie: chaine, $texte: chaine) {
+fn fold_last_return($sub2: chaine) -> chaine {
+  # La chaîne $sub2 est une suite d'expressions séparées par des espaces au
+  # niveau 0 (une par « retour » dans le corps d'une fonction). On rend la
+  # dernière expression, ou $sub2 si aucune découpe n'est nécessaire.
+  $pos_dernier_espace = -1
+  $prof_q = 0
+  $qe = 0
+  tant_que ($qe < longueur($sub2)) {
+    $cq = sous_chaine($sub2, $qe, $qe + 1)
+    si ($cq == "(" ou $cq == "[" ou $cq == "{") { $prof_q = $prof_q + 1 }
+    si ($cq == ")" ou $cq == "]" ou $cq == "}") { $prof_q = $prof_q - 1 }
+    si ($cq == " " et $prof_q == 0) { $pos_dernier_espace = $qe }
+    $qe = $qe + 1
+  }
+  si ($pos_dernier_espace >= 0) {
+    retour sous_chaine($sub2, $pos_dernier_espace + 1, longueur($sub2))
+  }
+  retour $sub2
+}
+
+# Rend la position de la prochaine parenthese ouvrante precedee immediatement
+# par un identifiant alphanumerique (0 si aucune).
+fn find_appel($s: chaine, $debut: entier) -> entier {
+  $k = $debut
+  $ln = longueur($s)
+  tant_que ($k < $ln) {
+    $c = sous_chaine($s, $k, $k + 1)
+    si ($c == "(") {
+      # reculer sur un identifiant
+      $j = $k
+      si ($j > 0) {
+        $prev = sous_chaine($s, $j - 1, $j)
+        si (($prev >= "a" et $prev <= "z") ou ($prev >= "A" et $prev <= "Z") ou ($prev >= "0" et $prev <= "9") ou $prev == "_") {
+          retour $k
+        }
+      }
+    }
+    $k = $k + 1
+  }
+  retour -1
+}
+
+# Extrait la liste des arguments d'un appel starting a $pos_open (la
+# position de "("), en remplissant la liste $out via joindre. Rend la
+# position de la parenthese fermante.
+fn lire_args_appel($s: chaine, $pos_open: entier) -> entier {
+  $prof = 1
+  $cur = ""
+  $lst = [""]
+  $nb = 0
+  $p = $pos_open + 1
+  $ln = longueur($s)
+  $fin_p = $p
+  $fini = 0
+  tant_que ($p < $ln et $fini == 0) {
+    $c = sous_chaine($s, $p, $p + 1)
+    si ($c == "(" ou $c == "[" ou $c == "{") {
+      $prof = $prof + 1
+      $cur = $cur + $c
+    } sinon si ($c == ")" ou $c == "]" ou $c == "}") {
+      $prof = $prof - 1
+      si ($prof == 0) {
+        $fini = 1
+        $fin_p = $p
+      } sinon {
+        $cur = $cur + $c
+      }
+    } sinon si ($c == "," et $prof == 1) {
+      # trim
+      $ca = $cur
+      $na = longueur($ca)
+      tant_que ($na > 0 et sous_chaine($ca, 0, 1) == " ") { $ca = sous_chaine($ca, 1, $na); $na = longueur($ca) }
+      $na = longueur($ca)
+      tant_que ($na > 0 et sous_chaine($ca, $na - 1, $na) == " ") { $ca = sous_chaine($ca, 0, $na - 1); $na = longueur($ca) }
+      joindre($lst, $ca)
+      $nb = $nb + 1
+      $cur = ""
+    } sinon {
+      $cur = $cur + $c
+    }
+    $p = $p + 1
+  }
+  $ca = $cur
+  $na = longueur($ca)
+  tant_que ($na > 0 et sous_chaine($ca, 0, 1) == " ") { $ca = sous_chaine($ca, 1, $na); $na = longueur($ca) }
+  $na = longueur($ca)
+  tant_que ($na > 0 et sous_chaine($ca, $na - 1, $na) == " ") { $ca = sous_chaine($ca, 0, $na - 1); $na = longueur($ca) }
+  si (longueur($ca) > 0) {
+    joindre($lst, $ca)
+    $nb = $nb + 1
+  }
+  # table de retour : on la construit par paires (pos, n, args) via des vars
+  # locales : $pos_ferm, $nb_args_out, $lst_args_out
+  $pos_ferm = $fin_p
+  $nb_args_out = $nb
+  $lst_args_out = $lst
+  # On les expose via une table renvoyée ; pour rester simple on rend 3 valeurs
+  # séparees par des espaces via une chaine, que le caller décompose.
+  retour $fin_p
+}
+
+# Variante : lit les args d'un appel et rend une liste $out (première cellule
+# = position fermante, deuxième = nombre d'args, les suivantes = args).
+fn lire_args_appel2($s: chaine, $pos_open: entier) -> entier {
+  $prof = 1
+  $cur = ""
+  $lst = ["#"]
+  $nb = 0
+  $p = $pos_open + 1
+  $ln = longueur($s)
+  $fin_p = $p
+  $fini = 0
+  tant_que ($p < $ln et $fini == 0) {
+    $c = sous_chaine($s, $p, $p + 1)
+    si ($c == "(" ou $c == "[" ou $c == "{") {
+      $prof = $prof + 1
+      $cur = $cur + $c
+    } sinon si ($c == ")" ou $c == "]" ou $c == "}") {
+      $prof = $prof - 1
+      si ($prof == 0) {
+        $fini = 1
+        $fin_p = $p
+      } sinon {
+        $cur = $cur + $c
+      }
+    } sinon si ($c == "," et $prof == 1) {
+      $ca = $cur
+      $na = longueur($ca)
+      tant_que ($na > 0 et sous_chaine($ca, 0, 1) == " ") { $ca = sous_chaine($ca, 1, $na); $na = longueur($ca) }
+      $na = longueur($ca)
+      tant_que ($na > 0 et sous_chaine($ca, $na - 1, $na) == " ") { $ca = sous_chaine($ca, 0, $na - 1); $na = longueur($ca) }
+      joindre($lst, $ca)
+      $nb = $nb + 1
+      $cur = ""
+    } sinon {
+      $cur = $cur + $c
+    }
+    $p = $p + 1
+  }
+  $ca = $cur
+  $na = longueur($ca)
+  tant_que ($na > 0 et sous_chaine($ca, 0, 1) == " ") { $ca = sous_chaine($ca, 1, $na); $na = longueur($ca) }
+  $na = longueur($ca)
+  tant_que ($na > 0 et sous_chaine($ca, $na - 1, $na) == " ") { $ca = sous_chaine($ca, 0, $na - 1); $na = longueur($ca) }
+  si (longueur($ca) > 0) {
+    joindre($lst, $ca)
+    $nb = $nb + 1
+  }
+  $lia_out = $lst
+  $lia_n = $nb
+  retour $fin_p
+}
+
+$lia_n = 0
+$lia_out = ["#"]
+
+# Extraire l'expression situee apres le premier "retour" au niveau 0 d'un
+# bloc (ignorant les accolades imbriquees). Rend le bloc tel quel si aucun
+# "retour" de niveau 0 n'est trouve.
+fn extraire_retour($_b: chaine) -> chaine {
+  $_i = 0
+  $_ln = longueur($_b)
+  $_prof = 0
+  $_ret = ""
+  tant_que ($_i < $_ln) {
+    $_ch = sous_chaine($_b, $_i, $_i + 1)
+    si ($_ch == "{") { $_prof = $_prof + 1 }
+    sinon si ($_ch == "}") { $_prof = $_prof - 1 }
+    sinon si ($_prof == 0) {
+      si ($_i + 6 <= $_ln et sous_chaine($_b, $_i, $_i + 6) == "retour") {
+        $_j = $_i + 6
+        tant_que ($_j < $_ln et sous_chaine($_b, $_j, $_j + 1) == " ") { $_j = $_j + 1 }
+        $_ret = sous_chaine($_b, $_j, $_ln)
+        $_nbret = longueur($_ret)
+        tant_que ($_nbret > 0 et (sous_chaine($_ret, $_nbret - 1, $_nbret) == " " ou sous_chaine($_ret, $_nbret - 1, $_nbret) == "
+" ou sous_chaine($_ret, $_nbret - 1, $_nbret) == "	")) {
+          $_ret = sous_chaine($_ret, 0, $_nbret - 1)
+          $_nbret = longueur($_ret)
+        }
+        retour $_ret
+      }
+    }
+    $_i = $_i + 1
+  }
+  retour $_b
+}
+
+# Resoudre un corps de fonction (eventuellement contenant des `si`) en
+# l'expression de retour nue. Les arguments ont deja ete substitues dans
+# $corps. Evalue les conditions `si` a la compilation via eval_expr.
+fn resoudre_corps($_c: chaine) -> chaine {
+  $_pos = 0
+  $_ln = longueur($_c)
+  $_ret = ""
+  $_fini = 0
+  tant_que ($_pos < $_ln et $_fini == 0) {
+    tant_que ($_pos < $_ln et (sous_chaine($_c, $_pos, $_pos + 1) == " " ou sous_chaine($_c, $_pos, $_pos + 1) == "
+" ou sous_chaine($_c, $_pos, $_pos + 1) == "	")) { $_pos = $_pos + 1 }
+    si ($_pos >= $_ln) { $_fini = 1 }
+    sinon si (sous_chaine($_c, $_pos, $_pos + 2) == "si") {
+      $_cc = ""
+      si ($_pos + 2 < $_ln) { $_cc = sous_chaine($_c, $_pos + 2, $_pos + 3) }
+      si ($_cc != " " et $_cc != "(") { $_fini = 1 }
+      sinon {
+        $_p = $_pos + 3
+        tant_que ($_p < $_ln et sous_chaine($_c, $_p, $_p + 1) == " ") { $_p = $_p + 1 }
+        si ($_p >= $_ln ou sous_chaine($_c, $_p, $_p + 1) != "(") { $_fini = 1 }
+        sinon {
+          $_cond = ""
+          $_prof = 1
+          $_p = $_p + 1
+          tant_que ($_p < $_ln et $_prof > 0) {
+            $_ch = sous_chaine($_c, $_p, $_p + 1)
+            si ($_ch == "(") { $_prof = $_prof + 1 }
+            sinon si ($_ch == ")") { $_prof = $_prof - 1 }
+            si ($_prof > 0) { $_cond = $_cond + $_ch }
+            $_p = $_p + 1
+          }
+          $_cond_val = eval_expr($_cond)
+          $_est_vrai = 1
+          si ($_cond_val == "0" ou $_cond_val == "faux" ou $_cond_val == "" ou longueur($_cond_val) == 0) { $_est_vrai = 0 }
+          tant_que ($_p < $_ln et sous_chaine($_c, $_p, $_p + 1) == " ") { $_p = $_p + 1 }
+          si ($_p >= $_ln ou sous_chaine($_c, $_p, $_p + 1) != "{") { $_fini = 1 }
+          sinon {
+            $_prof = 1
+            $_p = $_p + 1
+            $_debut_a = $_p
+            tant_que ($_p < $_ln et $_prof > 0) {
+              $_ch = sous_chaine($_c, $_p, $_p + 1)
+              si ($_ch == "{") { $_prof = $_prof + 1 }
+              sinon si ($_ch == "}") { $_prof = $_prof - 1 }
+              $_p = $_p + 1
+            }
+            $_fin_a = $_p - 1
+            $_alors = sous_chaine($_c, $_debut_a, $_fin_a)
+            si ($_est_vrai == 1) {
+              $_ret = extraire_retour($_alors)
+              $_fini = 1
+            } sinon {
+              tant_que ($_p < $_ln et (sous_chaine($_c, $_p, $_p + 1) == " " ou sous_chaine($_c, $_p, $_p + 1) == "
+" ou sous_chaine($_c, $_p, $_p + 1) == "	")) { $_p = $_p + 1 }
+              $_trouve_sinon = 0
+              si ($_p + 5 <= $_ln) {
+                si (sous_chaine($_c, $_p, $_p + 1) == "s" et sous_chaine($_c, $_p + 1, $_p + 2) == "i" et sous_chaine($_c, $_p + 2, $_p + 3) == "n" et sous_chaine($_c, $_p + 3, $_p + 4) == "o" et sous_chaine($_c, $_p + 4, $_p + 5) == "n") {
+                  $_trouve_sinon = 1
+                }
+              }
+              si ($_trouve_sinon == 1) {
+                $_p2 = $_p + 5
+                tant_que ($_p2 < $_ln et sous_chaine($_c, $_p2, $_p2 + 1) == " ") { $_p2 = $_p2 + 1 }
+                $_cc2 = ""
+                si ($_p2 + 2 <= $_ln) { $_cc2 = sous_chaine($_c, $_p2, $_p2 + 2) }
+                si ($_cc2 == "si") {
+                  $_pos = $_p2
+                } sinon {
+                  tant_que ($_p2 < $_ln et sous_chaine($_c, $_p2, $_p2 + 1) == " ") { $_p2 = $_p2 + 1 }
+                  si ($_p2 < $_ln et sous_chaine($_c, $_p2, $_p2 + 1) == "{") {
+                    $_prof = 1
+                    $_p2 = $_p2 + 1
+                    $_debut_s = $_p2
+                    tant_que ($_p2 < $_ln et $_prof > 0) {
+                      $_ch = sous_chaine($_c, $_p2, $_p2 + 1)
+                      si ($_ch == "{") { $_prof = $_prof + 1 }
+                      sinon si ($_ch == "}") { $_prof = $_prof - 1 }
+                      $_p2 = $_p2 + 1
+                    }
+                    $_fin_s = $_p2 - 1
+                    $_sinon_bloc = sous_chaine($_c, $_debut_s, $_fin_s)
+                    $_ret = extraire_retour($_sinon_bloc)
+                    $_fini = 1
+                  } sinon {
+                    $_fini = 1
+                  }
+                  $_pos = $_ln
+                }
+              } sinon {
+                $_pos = $_p
+              }
+            }
+          }
+        }
+      }
+    } sinon {
+      $_reste = sous_chaine($_c, $_pos, $_ln)
+      $_ret = extraire_retour($_reste)
+      $_fini = 1
+    }
+  }
+  si (longueur($_ret) == 0) { retour $_c } sinon { retour $_ret }
+}
+
+# Plier iterativement une expression `$expr` qui peut contenir des appels a
+# des fonctions deja enregistrees dans $fn_noms/$fn_params/$fn_retours.
+fn plier_expression($expr: chaine) -> chaine {
+  $cour = $expr
+  $tour = 0
+  tant_que ($tour < 256) {
+    $tour = $tour + 1
+    # si entierement numerique, evaluer.
+    $tn = 1
+    $qn = 0
+    $lnc = longueur($cour)
+    tant_que ($qn < $lnc) {
+      $cn = sous_chaine($cour, $qn, $qn + 1)
+      si (($cn >= "a" et $cn <= "z") ou ($cn >= "A" et $cn <= "Z")) {
+        $tn = 0
+        $qn = $lnc
+      }
+      $qn = $qn + 1
+    }
+    si ($tn == 1 et $lnc > 0) {
+      $ev = eval_expr($cour)
+      si (longueur($ev) > 0) { $cour = $ev }
+      $tour = 256
+    } sinon {
+      # trouver le prochain "nom(" le plus a gauche
+      $p = find_appel($cour, 0)
+      si ($p < 0) { $tour = 256 }
+      sinon {
+        # lire l'identifiant
+        $fin_id = $p
+        $debut_id = $p
+        tant_que ($debut_id > 0) {
+          $cp = sous_chaine($cour, $debut_id - 1, $debut_id)
+          si (($cp >= "a" et $cp <= "z") ou ($cp >= "A" et $cp <= "Z") ou ($cp >= "0" et $cp <= "9") ou $cp == "_") {
+            $debut_id = $debut_id - 1
+          } sinon {
+            $debut_id = 0
+          }
+        }
+        $nom_f = sous_chaine($cour, $debut_id, $fin_id)
+        # est-ce une fn connue ?
+        $fi = 1
+        $trouve = 0
+        tant_que ($fi <= $nb_fn) {
+          si ($fn_noms[$fi] == $nom_f) { $trouve = $fi }
+          $fi = $fi + 1
+        }
+        si ($trouve == 0) { $tour = 256 }
+        sinon {
+          $pos_f = lire_args_appel2($cour, $p)
+          $nb_a2 = $lia_n
+          $lst_a2 = $lia_out
+          # lire les params de la fn : extraire chaque "$nom".
+          $pr = $fn_params[$trouve]
+          $pn = ["#"]
+          $pn_n = 0
+          $ip = 0
+          $lpr = longueur($pr)
+          tant_que ($ip < $lpr) {
+            $ch = sous_chaine($pr, $ip, $ip + 1)
+            si ($ch == "$") {
+              $nom_w = "$"
+              $ip = $ip + 1
+              $fin_w = 0
+              tant_que ($ip < $lpr et $fin_w == 0) {
+                $ch2 = sous_chaine($pr, $ip, $ip + 1)
+                si (($ch2 >= "a" et $ch2 <= "z") ou ($ch2 >= "A" et $ch2 <= "Z") ou ($ch2 >= "0" et $ch2 <= "9") ou $ch2 == "_") {
+                  $nom_w = $nom_w + $ch2
+                  $ip = $ip + 1
+                } sinon {
+                  $fin_w = 1
+                }
+              }
+              joindre($pn, $nom_w)
+              $pn_n = $pn_n + 1
+            } sinon {
+              $ip = $ip + 1
+            }
+          }
+          $nb_p = $pn_n
+          $sub = $fn_retours[$trouve]
+          $pj = 1
+          tant_que ($pj <= $nb_p et $pj <= $nb_a2) {
+            $pn_j = $pn[$pj]
+            $la_j = $lst_a2[$pj]
+            # plier l'argument recursivement (si possible), pour que la
+            # substitution soit litterale.
+            $la_pliee = $la_j
+            si (longueur($la_j) > 0) {
+              $pl = plier_expression($la_j)
+              si (longueur($pl) > 0) { $la_pliee = $pl } sinon {
+                $ev_a = eval_expr($la_j)
+                si (longueur($ev_a) > 0) { $la_pliee = $ev_a }
+              }
+            }
+            $sub = substituer_nom($sub, $pn_j, $la_pliee)
+            $pj = $pj + 1
+          }
+          # Resoudre les si du corps de fonction pour obtenir l'expression de
+          # retour nue (gere le cas recursif avec cas de base dans un si).
+          $sub = resoudre_corps($sub)
+          $av = sous_chaine($cour, 0, $debut_id)
+          $lgc = longueur($cour)
+          $di = $pos_f + 1
+          $ap = ""
+          si ($di <= $lgc) { $ap = sous_chaine($cour, $di, $lgc) }
+          $cour = $av + $sub + $ap
+        }
+      }
+    }
+  }
+  retour $cour
+}
+
+fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $expr_texte: chaine) {
   $out = ""
   $ELFMAG = "ELF"
   $ELFCLASS64 = 2
@@ -155,13 +560,14 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine) {
 
   # ── Program header (1 segment PT_LOAD, 56 octets) ──
   $out = $out + u32le($PT_LOAD)                            # p_type = PT_LOAD
-  $out = $out + u32le(5)                       # p_flags = R|X
+  $out = $out + u32le(5)                                   # p_flags = R|X
   $out = $out + u64le($TEXT_OFFSET)                        # p_offset = 4096
   $out = $out + u64le($TEXT_ADDR)                          # p_vaddr
   $out = $out + u64le($TEXT_ADDR)                          # p_paddr
-  $out = $out + u64le(38)                                  # p_filesz = 38 octets (8 instr + 6 data)
-  $out = $out + u64le(38)                                  # p_memsz = 38 octets
-  $out = $out + u64le(2097152)                            # p_align
+  $fsz = 8 * 4 + longueur($texte)                          # 8 instr * 4 + data
+  $out = $out + u64le($fsz)                                # p_filesz
+  $out = $out + u64le($fsz)                                # p_memsz
+  $out = $out + u64le(2097152)                             # p_align
 
   # ── Padding jusqu'a 4096 (0x1000) ──
   $pad = 4096 - longueur($out)
@@ -171,50 +577,161 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine) {
     $i = $i + 1
   }
 
-  # Code machine aarch64 : affiche le texte et sort avec la valeur
-  $code_taille = 24   # sans variable : 20 (prefixe) + 4 (mov) + 8 (suffixe)
-  $code_avec_var = 0
-  si ($est_op == 1 et $op_n1_est_var == 1) {
-    $code_taille = 36   # avec variable : 20 + 8 (ldr+add/sub) + 8
-    $code_avec_var = 1
+  # ── Code machine aarch64 : affiche le texte et sort avec $code_sortie ──
+  $code = 0
+  $est_code = 1
+  $kc = 0
+  tant_que ($kc < longueur($code_sortie)) {
+    $cc = sous_chaine($code_sortie, $kc, $kc + 1)
+    si (($cc >= "0" et $cc <= "9")) {
+      $code = $code * 10 + entier($cc)
+      $kc = $kc + 1
+    } sinon {
+      $est_code = 0
+      $kc = longueur($code_sortie)
+    }
+  }
+  si ($est_code == 0 ou longueur($code_sortie) == 0) {
+    $code = 0
+  } sinon si ($code > 255) {
+    $code = 0
   }
 
-  $offset_adr = $code_taille - 8   # offset pour adr x1
+  # Détecter une opération « n1 + n2 » ou « n1 - n2 » dans l'expression texte
+  # (n1 et n2 peuvent être des nombres littéraux ou des noms de variables
+  # connues dans $var_noms/$var_vals) pour générer du code machine qui calcule
+  # à l'exécution.
+  $est_op = 0
+  $op_n1 = 0
+  $op_n2 = 0
+  $op_sym = ""
+  $oe = longueur($expr_texte)
+  $op_idx = 0
+  # sauter les espaces
+  tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
+    $op_idx = $op_idx + 1
+  }
+  $op_a1 = ""
+  $op_fin1 = 0
+  tant_que ($op_idx < $oe et $op_fin1 == 0) {
+    $oc = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+    si (($oc >= "0" et $oc <= "9") ou ($oc >= "a" et $oc <= "z") ou ($oc >= "A" et $oc <= "Z") ou $oc == "_") {
+      $op_a1 = $op_a1 + $oc
+      $op_idx = $op_idx + 1
+    } sinon {
+      $op_fin1 = 1
+    }
+  }
+  si (longueur($op_a1) > 0) {
+    # op_a1 est un nombre littéral ou un nom de variable
+    $op_n1 = 0
+    $op_n1_est_var = 0
+    $op_n1_val_trouve = 0
+    si (sous_chaine($op_a1, 0, 1) >= "0" et sous_chaine($op_a1, 0, 1) <= "9") {
+      $op_n1 = entier($op_a1)
+      $op_n1_est_var = 0
+      $op_n1_val_trouve = 1
+    } sinon {
+      # chercher dans les variables connues
+      $vn = 1
+      tant_que ($vn <= $nb_vars) {
+        si ($var_noms[$vn] == $op_a1) {
+          $op_n1 = entier($var_vals[$vn])
+          $op_n1_est_var = 1
+          $op_n1_val_trouve = 1
+          $vn = $nb_vars + 1
+        } sinon {
+          $vn = $vn + 1
+        }
+      }
+    }
+    si ($op_n1_val_trouve == 1) {
+      # sauter les espaces
+      tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
+        $op_idx = $op_idx + 1
+      }
+      $op_sym = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+      si ($op_sym == "+" ou $op_sym == "-") {
+        $op_idx = $op_idx + 1
+        # sauter les espaces
+        tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
+          $op_idx = $op_idx + 1
+        }
+        $op_a2 = ""
+        $op_fin2 = 0
+        tant_que ($op_idx < $oe et $op_fin2 == 0) {
+          $oc = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
+          si (($oc >= "0" et $oc <= "9") ou ($oc >= "a" et $oc <= "z") ou ($oc >= "A" et $oc <= "Z") ou $oc == "_") {
+            $op_a2 = $op_a2 + $oc
+            $op_idx = $op_idx + 1
+          } sinon {
+            $op_fin2 = 1
+          }
+        }
+        si (longueur($op_a2) > 0) {
+          $op_n2 = 0
+          $op_n2_est_var = 0
+          $op_n2_val_trouve = 0
+          si (sous_chaine($op_a2, 0, 1) >= "0" et sous_chaine($op_a2, 0, 1) <= "9") {
+            $op_n2 = entier($op_a2)
+            $op_n2_est_var = 0
+            $op_n2_val_trouve = 1
+          } sinon {
+            # chercher dans les variables connues
+            $vn = 1
+            tant_que ($vn <= $nb_vars) {
+              si ($var_noms[$vn] == $op_a2) {
+                $op_n2 = entier($var_vals[$vn])
+                $op_n2_est_var = 1
+                $op_n2_val_trouve = 1
+                $vn = $nb_vars + 1
+              } sinon {
+                $vn = $vn + 1
+              }
+            }
+          }
+          si ($op_n2_val_trouve == 1) {
+            # vérifier qu'il n'y a que des espaces jusqu'à la fin
+            $op_fin_ok = 1
+            $op_idx2 = $op_idx
+            tant_que ($op_idx2 < $oe) {
+              $oc2 = sous_chaine($expr_texte, $op_idx2, $op_idx2 + 1)
+              si ($oc2 != " ") {
+                $op_fin_ok = 0
+                $op_idx2 = $oe
+              } sinon {
+                $op_idx2 = $op_idx2 + 1
+              }
+            }
+            si ($op_fin_ok == 1) {
+              $est_op = 1
+            }
+          }
+        }
+      }
+    }
+  }
 
-  # Preifxe : write syscall
   $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
-  $adr_opcode = 2147483648 + $offset_adr * 256 + 1
-  $out = $out + u32le($adr_opcode)   # adr x1, #offset_adr
+  $out = $out + u32le(268435681)    # adr x1, data (offset 28)
   $len_texte = longueur($texte)
   $opcode_x2 = 3531603968 + $len_texte * 32 + 2
-  $out = $out + u32le($opcode_x2)   # mov x2, #len
+  $out = $out + u32le($opcode_x2)   # mov x2, #len (len)
   $out = $out + u32le(3531606024)   # mov x8, #64 (write)
   $out = $out + u32le(3556769793)   # svc #0
-
-  # Corps : operation
-  si ($code_avec_var == 1) {
-    # ldr x2, [pc, #offset_ldr]  (offset = $code_taille - 24)
-    $offset_ldr = $code_taille - 24
-    $imm19 = $offset_ldr / 4
-    $ldr_opcode = 1476395008 + $imm19 * 32
-    $out = $out + u32le($ldr_opcode)   # ldr x2, [pc, #offset_ldr]
-
+  si ($est_op == 1 et $op_n2 <= 4095) {
+    $out = $out + u32le(3531603968 + $op_n1 * 32)   # mov x0, #n1
     si ($op_sym == "+") {
-      $out = $out + u32le(2415919104 + $op_n2 * 1024 + 64)   # add x0, x2, #n2
+      $out = $out + u32le(2432696320 + $op_n2 * 1024)   # add x0, x0, #n2
     } sinon {
-      $out = $out + u32le(2558439424 + $op_n2 * 1024 + 64)   # sub x0, x2, #n2
+      $out = $out + u32le(3510145024 + $op_n2 * 1024)   # sub x0, x0, #n2
     }
   } sinon {
-    $out = $out + u32le(3531603968 + $code * 32)   # mov x0, #$code
+    $out = $out + u32le(3531603968 + $code * 32)   # mov x0, #$code (exit code)
   }
-
-  # Suffixe : exit
   $out = $out + u32le(3531606952)   # mov x8, #93 (exit)
   $out = $out + u32le(3556769793)   # svc #0
-  # data: variables + texte
-  si ($code_avec_var == 1) {
-    $out = $out + u64le($op_n1)
-  }
+  # data: texte
   $out = $out + $texte
   # ── Écrire le fichier ──
   ecrire_bytes($sortie, $out)
@@ -285,45 +802,127 @@ tant_que ($modif_fn == 1) {
     # trouver "{" apres ")"
     $ja = $jp
     tant_que ($ja < longueur($src) et sous_chaine($src, $ja, $ja + 1) != "{") { $ja = $ja + 1 }
-    # trouver "}" correspondant
+    # trouver "}" correspondant (profondeur, en ignorant les crochets [ ] )
     $prof = 1
     $ja = $ja + 1
     $debut_b = $ja
-    tant_que ($ja < longueur($src) et $prof > 0) {
+    $fin_b = $ja
+    $fini_b = 0
+    tant_que ($ja < longueur($src) et $fini_b == 0) {
       $ch = sous_chaine($src, $ja, $ja + 1)
       si ($ch == "{") { $prof = $prof + 1 }
-      si ($ch == "}") { $prof = $prof - 1 }
-      si ($prof > 0) { $ja = $ja + 1 } sinon { }
-    }
-    $corps_fn = sous_chaine($src, $debut_b, $ja - 1)
-    # extraire l'expr apres "retour"
-    $ret = ""
-    $kr = 0
-    $tr = 0
-    tant_que ($kr < longueur($corps_fn) et $tr == 0) {
-      si ($kr + 6 <= longueur($corps_fn)) {
-        si (sous_chaine($corps_fn, $kr, $kr + 6) == "retour") {
-          $tr = 1
-          $kr = $kr + 6
-        } sinon {
-          $kr = $kr + 1
+      si ($ch == "}") {
+        $prof = $prof - 1
+        si ($prof == 0) {
+          $fin_b = $ja
+          $fini_b = 1
         }
-      } sinon {
-        $kr = $kr + 1
       }
+      $ja = $ja + 1
     }
-    tant_que ($kr < longueur($corps_fn) et sous_chaine($corps_fn, $kr, $kr + 1) == " ") { $kr = $kr + 1 }
-    $ret = sous_chaine($corps_fn, $kr, longueur($corps_fn))
+    $corps_fn = sous_chaine($src, $debut_b, $fin_b)
+    # extraire TOUTES les exprs apres chaque "retour" au NIVEAU 0 du corps.
+    # On decoupe $corps_fn en « instructions » separees par "\n" au niveau 0,
+    # puis, pour chaque instruction dont le premier mot est « retour », on
+    # retient l'expression (le reste de la ligne,trimmee). Les « retour » a
+    # l'interieur de blocs { ... } ne sont PAS consideres (ils appartiennent
+    # au sous-bloc). On retient la DERNIERE expression « retour » de niveau 0.
+    $ret = ""
+    $nb_e = 0
+    $ligne_buf = ""
+    $prof_l = 0
+    $kr = 0
+    tant_que ($kr <= longueur($corps_fn)) {
+      $en_ligne = 0
+      si ($kr < longueur($corps_fn)) { $en_ligne = 1 }
+      $fin_ligne = 0
+      si ($en_ligne == 1) {
+        $ch = sous_chaine($corps_fn, $kr, $kr + 1)
+        si ($ch == "\n") { $fin_ligne = 1 }
+      } sinon {
+        $fin_ligne = 1
+      }
+      si ($fin_ligne == 1) {
+        # traiter $ligne_buf comme une instruction
+        # trim leading
+        $ln = longueur($ligne_buf)
+        tant_que ($ln > 0 et sous_chaine($ligne_buf, 0, 1) == " ") { $ligne_buf = sous_chaine($ligne_buf, 1, $ln); $ln = longueur($ligne_buf) }
+        tant_que ($ln > 0 et sous_chaine($ligne_buf, $ln - 1, $ln) == " ") { $ligne_buf = sous_chaine($ligne_buf, 0, $ln - 1); $ln = longueur($ligne_buf) }
+        tant_que ($ln > 0 et sous_chaine($ligne_buf, $ln - 1, $ln) == "\r") { $ligne_buf = sous_chaine($ligne_buf, 0, $ln - 1); $ln = longueur($ligne_buf) }
+        si ($prof_l == 0 et $ln >= 6) {
+          si (sous_chaine($ligne_buf, 0, 6) == "retour") {
+            # le 7e caractere doit etre espace ou fin ; et on accepte « retour ... »
+            $suiv_est_ok = 0
+            si ($ln == 6) { $suiv_est_ok = 1 }
+            sinon {
+              $c7 = sous_chaine($ligne_buf, 6, 7)
+              si ($c7 == " " ou $c7 == "\t") { $suiv_est_ok = 1 }
+            }
+            si ($suiv_est_ok == 1) {
+              # extraire l'expression apres "retour "
+              $expr_e = sous_chaine($ligne_buf, 6, $ln)
+              # trim
+              $le = longueur($expr_e)
+              tant_que ($le > 0 et sous_chaine($expr_e, 0, 1) == " ") { $expr_e = sous_chaine($expr_e, 1, $le); $le = longueur($expr_e) }
+              tant_que ($le > 0 et sous_chaine($expr_e, $le - 1, $le) == " ") { $expr_e = sous_chaine($expr_e, 0, $le - 1); $le = longueur($expr_e) }
+              si ($le > 0) { $ret = $expr_e }
+            }
+          }
+        }
+        # mettre a jour la profondeur avec les {} de cette ligne
+        $kp = 0
+        tant_que ($kp < $ln) {
+          $cphp = sous_chaine($ligne_buf, $kp, $kp + 1)
+          si ($cphp == "{") { $prof_l = $prof_l + 1 }
+          si ($cphp == "}") { $prof_l = $prof_l - 1 }
+          $kp = $kp + 1
+        }
+        $ligne_buf = ""
+      } sinon {
+        $ligne_buf = $ligne_buf + $ch
+      }
+      $kr = $kr + 1
+    }
+    # trim leading spaces
+    $nbret = longueur($ret)
+    tant_que ($nbret > 0 et sous_chaine($ret, 0, 1) == " ") {
+      $ret = sous_chaine($ret, 1, $nbret)
+      $nbret = longueur($ret)
+    }
     # trim trailing spaces/newlines
     $nbret = longueur($ret)
     tant_que ($nbret > 0 et (sous_chaine($ret, $nbret - 1, $nbret) == " " ou sous_chaine($ret, $nbret - 1, $nbret) == "\n" ou sous_chaine($ret, $nbret - 1, $nbret) == "\t")) {
       $ret = sous_chaine($ret, 0, $nbret - 1)
       $nbret = longueur($ret)
     }
-    # stocker
+    # stocker : si $ret est entierement numerique, on le plie une premiere fois
+    si (longueur($ret) > 0) {
+      $tnum = 1
+      $qn0 = 0
+      tant_que ($qn0 < longueur($ret)) {
+        $cn0 = sous_chaine($ret, $qn0, $qn0 + 1)
+        si (($cn0 >= "a" et $cn0 <= "z") ou ($cn0 >= "A" et $cn0 <= "Z")) {
+          $tnum = 0
+          $qn0 = longueur($ret)
+        }
+        $qn0 = $qn0 + 1
+      }
+      si ($tnum == 1) {
+        $plie = eval_expr($ret)
+        si (longueur($plie) > 0) { $ret = $plie }
+      }
+    }
+    # stocker le CORPS COMPLET (y compris les si) pour le repli des appels.
+    # On trim les espaces/newlines autour du corps.
+    $corps_b = $corps_fn
+    $lnb = longueur($corps_b)
+    tant_que ($lnb > 0 et sous_chaine($corps_b, 0, 1) == " ") { $corps_b = sous_chaine($corps_b, 1, $lnb); $lnb = longueur($corps_b) }
+    tant_que ($lnb > 0 et sous_chaine($corps_b, $lnb - 1, $lnb) == " ") { $corps_b = sous_chaine($corps_b, 0, $lnb - 1); $lnb = longueur($corps_b) }
+    tant_que ($lnb > 0 et sous_chaine($corps_b, 0, 1) == "\n") { $corps_b = sous_chaine($corps_b, 1, $lnb); $lnb = longueur($corps_b) }
+    tant_que ($lnb > 0 et sous_chaine($corps_b, $lnb - 1, $lnb) == "\n") { $corps_b = sous_chaine($corps_b, 0, $lnb - 1); $lnb = longueur($corps_b) }
     joindre($fn_noms, $nom_fn)
     joindre($fn_params, $params_fn)
-    joindre($fn_retours, $ret)
+    joindre($fn_retours, $corps_b)
     $nb_fn = $nb_fn + 1
     # retirer le bloc fn du src (de pos_fn jusqu'a la "}" fermante +1)
     $avant_fn = sous_chaine($src, 0, $pos_fn)
@@ -474,14 +1073,175 @@ tant_que ($modif_inl == 1) {
           joindre($arg_list, $ca)
           $nb_a = $nb_a + 1
         }
-        # substituer params -> args dans ret
+        # substituer params -> args dans ret, puis replier les appels
+        # recursifs/nommes internes jusqu'a stabilisation
+        # Substituer les params par les args dans le "retour".
         $ret_inl = $ret
         $pi = 1
         tant_que ($pi <= $nb_p et $pi <= $nb_a) {
           $ret_inl = substituer_nom($ret_inl, $param_noms[$pi], $arg_list[$pi])
           $pi = $pi + 1
         }
-        # remplacer la ligne ">> name(args...)" par ">> ret_inl"
+        # Resoudre les si du corps pour obtenir l'expression de retour nue.
+        $ret_inl = resoudre_corps($ret_inl)
+        # Si l'expression resultant n'a plus de lettre (entierement numerique),
+        # on la plie via eval_expr.
+        $tout_num_inl = 1
+        $qn_inl = 0
+        tant_que ($qn_inl < longueur($ret_inl)) {
+          $cn_inl = sous_chaine($ret_inl, $qn_inl, $qn_inl + 1)
+          si (($cn_inl >= "a" et $cn_inl <= "z") ou ($cn_inl >= "A" et $cn_inl <= "Z")) {
+            $tout_num_inl = 0
+          }
+          $qn_inl = $qn_inl + 1
+        }
+        si ($tout_num_inl == 1 et longueur($ret_inl) > 0) {
+          $r_inl = eval_expr($ret_inl)
+          si (longueur($r_inl) > 0) { $ret_inl = $r_inl }
+        }
+        $tour_inl = 0
+        $encore = 1
+        tant_que ($encore == 1 et $tour_inl < 64) {
+          $encore = 0
+          $fi2 = 1
+          tant_que ($fi2 <= $nb_fn) {
+            $nm = $fn_noms[$fi2]
+            $lm = longueur($nm)
+            $kk = 0
+            $trouve_i = 0
+            $dp0 = 0
+            $nb_esp0 = 0
+            tant_que ($kk + $lm <= longueur($ret_inl) et $trouve_i == 0) {
+              si (sous_chaine($ret_inl, $kk, $kk + $lm) == $nm) {
+                $ap = $kk + $lm
+                $nb_esp0 = 0
+                tant_que ($ap < longueur($ret_inl) et sous_chaine($ret_inl, $ap, $ap + 1) == " ") { $ap = $ap + 1; $nb_esp0 = $nb_esp0 + 1 }
+                si ($ap < longueur($ret_inl) et sous_chaine($ret_inl, $ap, $ap + 1) == "(") {
+                  $trouve_i = 1
+                  $dp0 = $ap + 1
+                }
+              }
+              si ($trouve_i == 0) { $kk = $kk + 1 }
+            }
+            si ($trouve_i == 1) {
+              # extraire les args de cet appel
+              $dp = $dp0
+              $prof_d = 1
+              $cur_d = ""
+              $nb_d = 0
+              $lst_d = [""]
+              $fini_d = 0
+              $dp_fin = $dp
+              tant_que ($dp < longueur($ret_inl) et $fini_d == 0) {
+                $chd = sous_chaine($ret_inl, $dp, $dp + 1)
+                si ($chd == "(" ou $chd == "[" ou $chd == "{") {
+                  $prof_d = $prof_d + 1
+                  $cur_d = $cur_d + $chd
+                } sinon si ($chd == ")" ou $chd == "]" ou $chd == "}") {
+                  $prof_d = $prof_d - 1
+                  si ($prof_d == 0) {
+                    $fini_d = 1
+                    $dp_fin = $dp
+                  } sinon {
+                    $cur_d = $cur_d + $chd
+                  }
+                } sinon si ($chd == "," et $prof_d == 1) {
+                  $cd = $cur_d
+                  $nbcd = longueur($cd)
+                  tant_que ($nbcd > 0 et sous_chaine($cd, 0, 1) == " ") { $cd = sous_chaine($cd, 1, longueur($cd)); $nbcd = longueur($cd) }
+                  $nbcd = longueur($cd)
+                  tant_que ($nbcd > 0 et sous_chaine($cd, $nbcd - 1, $nbcd) == " ") { $cd = sous_chaine($cd, 0, $nbcd - 1); $nbcd = longueur($cd) }
+                  joindre($lst_d, $cd)
+                  $nb_d = $nb_d + 1
+                  $cur_d = ""
+                } sinon {
+                  $cur_d = $cur_d + $chd
+                }
+                $dp = $dp + 1
+              }
+              $cd = $cur_d
+              $nbcd = longueur($cd)
+              tant_que ($nbcd > 0 et sous_chaine($cd, 0, 1) == " ") { $cd = sous_chaine($cd, 1, longueur($cd)); $nbcd = longueur($cd) }
+              $nbcd = longueur($cd)
+              tant_que ($nbcd > 0 et sous_chaine($cd, $nbcd - 1, $nbcd) == " ") { $cd = sous_chaine($cd, 0, $nbcd - 1); $nbcd = longueur($cd) }
+              si (longueur($cd) > 0) {
+                joindre($lst_d, $cd)
+                $nb_d = $nb_d + 1
+              }
+              # lire les params du fn fi2
+              $pr2 = $fn_params[$fi2]
+              $pn2 = ["#"]
+              $iip2 = 0
+              $cur_n2 = ""
+              $lp2 = longueur($pr2)
+              tant_que ($iip2 < $lp2) {
+                $ch2 = sous_chaine($pr2, $iip2, $iip2 + 1)
+                si ($ch2 == "$") {
+                  $cur_n2 = "$"
+                  $iip2 = $iip2 + 1
+                } sinon si ($cur_n2 != "" et (($ch2 >= "a" et $ch2 <= "z") ou ($ch2 >= "A" et $ch2 <= "Z") ou ($ch2 >= "0" et $ch2 <= "9") ou $ch2 == "_")) {
+                  $cur_n2 = $cur_n2 + $ch2
+                  $iip2 = $iip2 + 1
+                } sinon {
+                  si (longueur($cur_n2) > 1) {
+                    joindre($pn2, $cur_n2)
+                  }
+                  $cur_n2 = ""
+                  $iip2 = $iip2 + 1
+                }
+              }
+              si (longueur($cur_n2) > 1) {
+                joindre($pn2, $cur_n2)
+              }
+              $nb_p2 = longueur($pn2) - 1
+              # substituer params dans le corps complet de la fonction
+              $sub2 = $fn_retours[$fi2]
+              $pj2 = 1
+              tant_que ($pj2 <= $nb_p2 et $pj2 <= $nb_d) {
+                $_la2 = $lst_d[$pj2]
+                # plier l'argument recursivement avant substitution (comme
+                # plier_expression) pour eviter les problemes de priorite.
+                si (longueur($_la2) > 0) {
+                  $_pl2 = plier_expression($_la2)
+                  si (longueur($_pl2) > 0) { $_la2 = $_pl2 } sinon {
+                    $_ev2a = eval_expr($_la2)
+                    si (longueur($_ev2a) > 0) { $_la2 = $_ev2a }
+                  }
+                }
+                $sub2 = substituer_nom($sub2, $pn2[$pj2], $_la2)
+                $pj2 = $pj2 + 1
+              }
+              # Resoudre les si pour obtenir l'expression de retour nue.
+              $sub2 = resoudre_corps($sub2)
+              # Plier recursivement via plier_expression.
+              $sub2 = plier_expression($sub2)
+              # si $sub2 est entierement numerique, le plier
+              $tnum2 = 1
+              $qn2 = 0
+              tant_que ($qn2 < longueur($sub2)) {
+                $cn2 = sous_chaine($sub2, $qn2, $qn2 + 1)
+                si (($cn2 >= "a" et $cn2 <= "z") ou ($cn2 >= "A" et $cn2 <= "Z")) {
+                  $tnum2 = 0
+                  $qn2 = longueur($sub2)
+                }
+                $qn2 = $qn2 + 1
+              }
+              si ($tnum2 == 1 et longueur($sub2) > 0) {
+                $ev2 = eval_expr($sub2)
+                si (longueur($ev2) > 0) { $sub2 = $ev2 }
+              }
+              # remplacer l'appel par sub2 dans ret_inl
+              $avant2 = sous_chaine($ret_inl, 0, $kk)
+              $apres2 = sous_chaine($ret_inl, $dp_fin + 1, longueur($ret_inl))
+              $ret_inl = $avant2 + $sub2 + $apres2
+              $encore = 1
+            }
+            $fi2 = $fi2 + 1
+          }
+          $tour_inl = $tour_inl + 1
+        }
+
+# remplacer la ligne ">> name(args...)" par ">> ret_inl"
         $avant_l = sous_chaine($src, 0, $pos)
         $apres_l = sous_chaine($src, $fin_ligne, longueur($src))
         $src = $avant_l + ">> " + $ret_inl + $apres_l
@@ -1016,7 +1776,7 @@ $modifie = 1
 tant_que ($modifie == 1) {
   $modifie = 0
   $i = 0
-  tant_que ($i < longueur($src_proc)) {
+    tant_que ($i < longueur($src_proc)) {
     $c1 = ""
     $c2 = ""
     si ($i < longueur($src_proc)) { $c1 = sous_chaine($src_proc, $i, $i + 1) }
@@ -1589,8 +2349,99 @@ tant_que ($modifie_pr == 1) {
 
 $src = $src_proc4
 
+# Post-traitement : evaluer numeriquement chaque ligne ">> <expr>" deja
+# substituee (les noms ont ete remplaces plus tot), pour que les appels
+# recursifs plies reviennent a des nombres.
+$k = 0
+$modif_num = 1
+tant_que ($modif_num == 1) {
+  $modif_num = 0
+  $j = $k
+  # trouver la prochaine ">> "
+  $pos_g = -1
+  $kk = $j
+  tant_que ($kk + 3 <= longueur($src)) {
+    si (sous_chaine($src, $kk, $kk + 3) == ">> ") {
+      $pos_g = $kk
+      $kk = longueur($src)
+    } sinon {
+      $kk = $kk + 1
+    }
+  }
+  si ($pos_g < 0) {
+    $k = longueur($src)
+  } sinon {
+    # avancer les espaces
+    $p2 = $pos_g + 3
+    tant_que ($p2 < longueur($src) et sous_chaine($src, $p2, $p2 + 1) == " ") { $p2 = $p2 + 1 }
+    # lire l'expression jusqu'a \n
+    $e2 = ""
+    $p3 = $p2
+    $fin_l2 = $p2
+    $fini_l2 = 0
+    tant_que ($p3 < longueur($src) et $fini_l2 == 0) {
+      $cch = sous_chaine($src, $p3, $p3 + 1)
+      si ($cch == "\n") {
+        $fin_l2 = $p3
+        $fini_l2 = 1
+      } sinon {
+        $e2 = $e2 + $cch
+        $p3 = $p3 + 1
+      }
+    }
+    $fin_l2 = $p3
+    # evaluer via eval_expr, avec le contexte des variables connues
+    $ctx2 = ""
+    $vw = 1
+    tant_que ($vw <= $nb_vars) {
+      $ctx2 = $ctx2 + $var_noms[$vw] + "=" + $var_vals[$vw] + " "
+      $vw = $vw + 1
+    }
+    si (longueur($ctx2) > 0) {
+      $res2 = eval_expr($e2 + " // vars: " + $ctx2)
+    } sinon {
+      $res2 = eval_expr($e2)
+    }
+        # Ne pas remplacer un littéral chaîne : les guillemets doivent être
+    # préservés pour que l'extraction ">>" puisse distinguer une chaîne
+    # d'une variable du même nom.
+    $nb_e2 = longueur($e2)
+    $est_chaine_lit = 0
+    si ($nb_e2 >= 2) {
+      $f1b = sous_chaine($e2, 0, 1)
+      $f2b = sous_chaine($e2, $nb_e2 - 1, $nb_e2)
+      si ($f1b == "\"" et $f2b == "\"") {
+        $est_chaine_lit = 1
+      }
+    }
+    # Ne pas remplacer un booléen (vrai/faux) : ils sont affichés tels quels
+    # par l'extraction finale, ce qui produirait du bruit pour les conditions
+    # de boucle (tant_que/pour) déjà traitées au prétraitement.
+    $est_bool = 0
+    si ($res2 == "vrai" ou $res2 == "faux") {
+      $est_bool = 1
+    }
+    si (longueur($res2) > 0 et $res2 != $e2 et $est_chaine_lit == 0 et $est_bool == 0) {
+      $avant2 = sous_chaine($src, 0, $pos_g)
+      $apres2 = sous_chaine($src, $fin_l2, longueur($src))
+      $src = $avant2 + ">> " + $res2 + $apres2
+      $p4 = $pos_g + 3 + longueur($res2)
+      $fini_p4 = 0
+      tant_que ($p4 < longueur($src) et $fini_p4 == 0) {
+        si (sous_chaine($src, $p4, $p4 + 1) == "\n") { $fini_p4 = 1 } sinon { $p4 = $p4 + 1 }
+      }
+      $k = $p4
+      $modif_num = 1
+    } sinon {
+      $k = $fin_l2
+    }
+  }
+}
+
 # Extraire et evaluer toutes les expressions apres >>
 $affichage = ""
+$dernier_resultat = ""
+$dernier_expr_texte = ""
 $i = 0
 tant_que ($i < longueur($src)) {
   $c1 = ""
@@ -1608,6 +2459,8 @@ tant_que ($i < longueur($src)) {
       $j = $j + 1
     }
     # Extraire l'expression jusqu'a la fin de ligne
+    $pc = ""
+    si ($j < longueur($src)) { $pc = sous_chaine($src, $j, $j + 1) }
     $expr = ""
     $k = $j
     tant_que ($k < longueur($src)) {
@@ -1619,7 +2472,7 @@ tant_que ($i < longueur($src)) {
         $k = $k + 1
       }
     }
-    si (longueur($expr) > 0) {
+        si (longueur($expr) > 0) {
       # Verifier si c'est un nom de variable connu (en ARRIERE :
       # la valeur la plus recente fait foi apres le shadowing)
       $est_var = 0
@@ -1634,22 +2487,77 @@ tant_que ($i < longueur($src)) {
         $vi = $vi - 1
       }
       si ($est_var == 0) {
-        # Construire le contexte de variables (en ARRIERE : la derniere
-        # valeur appendee est inseree en premier et gagne les remplacements)
-        $ctx = ""
-        $vi = 1
-        tant_que ($vi <= $nb_vars) {
-          $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
-          $vi = $vi + 1
+        # Si l'expression est deja un appel eval_expr(...) , evaluer directement.
+        $est_ee = 0
+        si (longueur($expr) >= 11) {
+          si (sous_chaine($expr, 0, 10) == "eval_expr(") {
+            $est_ee = 1
+          }
         }
-        si (longueur($ctx) > 0) {
-          $expr_full = $expr + " // vars: " + $ctx
-        } sinon {
-          $expr_full = $expr
+        si ($est_ee == 1) {
+          # Extraire l'argument de eval_expr(...) : sous_chaine entre ( et ) final
+          $j0 = 10
+          $n0 = longueur($expr)
+          # $expr = "eval_expr(<arg>)"
+          $nb_arg = 0
+          $k0 = $j0
+          $cur = ""
+          $prof0 = 0
+          $fini0 = 0
+          $arg_ee = ""
+          tant_que ($k0 < $n0 et $fini0 == 0) {
+            $cc = sous_chaine($expr, $k0, $k0 + 1)
+            si ($cc == "(" ou $cc == "[" ou $cc == "{") {
+              $prof0 = $prof0 + 1
+              $cur = $cur + $cc
+            } sinon si ($cc == ")" ou $cc == "]" ou $cc == "}") {
+              si ($prof0 == 0) {
+                $fini0 = 1
+              } sinon {
+                $prof0 = $prof0 - 1
+                $cur = $cur + $cc
+              }
+            } sinon {
+              $cur = $cur + $cc
+            }
+            $k0 = $k0 + 1
+          }
+          # trim
+          $nbcur = longueur($cur)
+          tant_que ($nbcur > 0 et sous_chaine($cur, 0, 1) == " ") { $cur = sous_chaine($cur, 1, longueur($cur)); $nbcur = longueur($cur) }
+          $nbcur = longueur($cur)
+          tant_que ($nbcur > 0 et sous_chaine($cur, $nbcur - 1, $nbcur) == " ") { $cur = sous_chaine($cur, 0, $nbcur - 1); $nbcur = longueur($cur) }
+          $arg_ee = $cur
+          # si l'arg commence par " et finit par ", decaper
+          $nb_arg = longueur($arg_ee)
+          si ($nb_arg >= 2) {
+            $f1 = sous_chaine($arg_ee, 0, 1)
+            $f2 = sous_chaine($arg_ee, $nb_arg - 1, $nb_arg)
+            si ($f1 == "\"" et $f2 == "\"") {
+              $arg_ee = sous_chaine($arg_ee, 1, $nb_arg - 1)
+            }
+          }
+          $resultat = eval_expr($arg_ee)
+                  } sinon {
+          # Construire le contexte de variables (en AVANT : la derniere
+          # valeur appendee fait foi via la substitution par paires_prelude).
+          $ctx = ""
+          $vi = 1
+          tant_que ($vi <= $nb_vars) {
+            $ctx = $ctx + $var_noms[$vi] + "=" + $var_vals[$vi] + " "
+            $vi = $vi + 1
+          }
+          si (longueur($ctx) > 0) {
+            $expr_full = $expr + " // vars: " + $ctx
+          } sinon {
+            $expr_full = $expr
+          }
+          $resultat = eval_expr($expr_full)
         }
-        $resultat = eval_expr($expr_full)
       }
-      $affichage = $affichage + $resultat + "\n"
+            $dernier_expr_texte = $expr
+            $dernier_resultat = $resultat
+            $affichage = $affichage + $resultat + "\n"
     }
   }
   $i = $i + 1
@@ -1658,4 +2566,4 @@ si (longueur($affichage) == 0) {
   afficher_erreur("emetteur_elf : pas de >> <expression> trouve")
   quitter(1)
 }
-emettre_elf_print($sortie, $affichage)
+emettre_elf_print($sortie, $affichage, $dernier_resultat, $dernier_expr_texte)
