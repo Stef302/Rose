@@ -513,7 +513,7 @@ fn plier_expression($expr: chaine) -> chaine {
   retour $cour
 }
 
-fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $expr_texte: chaine) {
+fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $expr_texte: chaine, $cible: chaine) {
   $out = ""
   $ELFMAG = "ELF"
   $ELFCLASS64 = 2
@@ -654,6 +654,167 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
   $adr_immlo = $adr_bytes % 4
   $adr_immhi = partie_entiere($adr_bytes / 4)
   $adr_op = 268435456 + ($adr_immlo * 536870912) + ($adr_immhi * 32) + 1
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Cible x86_64 (ELF64, little-endian) — voie native sans rustc.
+  # ═══════════════════════════════════════════════════════════════════
+  si ($cible == "x86_64") {
+    # --- code_sortie -> entier $code (miroir de la voie aarch64) ---
+    $code = 0
+    $est_code = 1
+    $kc = 0
+    $lg_cs = longueur($code_sortie)
+    tant_que ($kc < $lg_cs) {
+      $cc = sous_chaine($code_sortie, $kc, $kc + 1)
+      si (($cc >= "0" et $cc <= "9")) {
+        $code = $code * 10 + entier($cc)
+        $kc = $kc + 1
+      } sinon {
+        $est_code = 0
+        $kc = $lg_cs
+      }
+    }
+    si ($est_code == 0 ou $lg_cs == 0) { $code = 0 }
+    si ($code > 255) { $code = 0 }
+
+    # --- padding texte a 8 pour aligner les variables u64 ---
+    $nb_pad8 = longueur($texte) % 8
+    si ($nb_pad8 == 1) { $nb_pad8 = 7 }
+    si ($nb_pad8 == 2) { $nb_pad8 = 6 }
+    si ($nb_pad8 == 3) { $nb_pad8 = 5 }
+    si ($nb_pad8 == 4) { $nb_pad8 = 4 }
+    si ($nb_pad8 == 5) { $nb_pad8 = 3 }
+    si ($nb_pad8 == 6) { $nb_pad8 = 2 }
+    si ($nb_pad8 == 7) { $nb_pad8 = 1 }
+    si ($nb_pad8 == 0) { $nb_pad8 = 0 }
+    si ($nb_vars == 0) { $nb_pad8 = 0 }
+
+    # --- nombre d'octets de code ---
+    $nb_code = 49
+    si ($est_op == 1 et $op_n2 <= 4095) {
+      $nb_code = 58
+    }
+    $data_addr = 4198400 + $nb_code
+    $lg_txt = longueur($texte)
+    $fsz = $nb_code + $lg_txt + $nb_pad8 + 8 * $nb_vars
+
+    # --- ELF header (x86_64) ---
+    $out = $out + $ELFMAG
+    $out = $out + caractere(2)
+    $out = $out + caractere(1)
+    $out = $out + caractere(1)
+    $out = $out + caractere(0)
+    $i = 0
+    tant_que ($i < 8) { $out = $out + caractere(0); $i = $i + 1 }
+    $out = $out + u16le(2)
+    $out = $out + u16le(62)
+    $out = $out + u32le(1)
+    $out = $out + u64le(4198400)
+    $out = $out + u64le(64)
+    $out = $out + u64le(0)
+    $out = $out + u32le(0)
+    $out = $out + u16le(64)
+    $out = $out + u16le(56)
+    $out = $out + u16le(1)
+    $out = $out + u16le(64)
+    $out = $out + u16le(0)
+    $out = $out + u16le(0)
+
+    # --- program header ---
+    $out = $out + u32le(1)
+    $out = $out + u32le(5)
+    $out = $out + u64le(4096)
+    $out = $out + u64le(4198400)
+    $out = $out + u64le(4198400)
+    $out = $out + u64le($fsz)
+    $out = $out + u64le($fsz)
+    $out = $out + u64le(4096)
+
+    # --- padding to 4096 ---
+    $pad = 4096 - longueur($out)
+    $i = 0
+    tant_que ($i < $pad) { $out = $out + caractere(0); $i = $i + 1 }
+
+    # --- code : write(text) ---
+    # mov rax, 1
+    $out = $out + caractere(72) + caractere(199) + caractere(192) + caractere(1) + caractere(0) + caractere(0) + caractere(0)
+    # mov rdi, 1
+    $out = $out + caractere(72) + caractere(199) + caractere(199) + caractere(1) + caractere(0) + caractere(0) + caractere(0)
+    # mov rsi, data_addr
+    $out = $out + caractere(72) + caractere(190)
+    $out = $out + u64le($data_addr)
+    # mov rdx, len_texte
+    $out = $out + caractere(72) + caractere(199) + caractere(194)
+    $out = $out + u32le($lg_txt)
+    # syscall
+    $out = $out + caractere(15) + caractere(5)
+
+    # --- code : compute exit code ---
+    si ($est_op == 1 et $op_n2 <= 4095) {
+      # mov rax, n1
+      $out = $out + caractere(72) + caractere(199) + caractere(192)
+      $out = $out + u32le($op_n1)
+      # add/sub rax, n2
+      si ($op_sym == "+") {
+        $out = $out + caractere(72) + caractere(5)
+        $out = $out + u32le($op_n2)
+      } sinon {
+        $out = $out + caractere(72) + caractere(45)
+        $out = $out + u32le($op_n2)
+      }
+      # mov rdi, rax
+      $out = $out + caractere(72) + caractere(135) + caractere(199)
+    } sinon {
+      # mov rdi, code
+      $out = $out + caractere(72) + caractere(199) + caractere(199)
+      $out = $out + u32le($code)
+    }
+    # mov rax, 60
+    $out = $out + caractere(72) + caractere(199) + caractere(192)
+    $out = $out + u32le(60)
+    # syscall
+    $out = $out + caractere(15) + caractere(5)
+
+    # --- data : texte + padding + vars u64 ---
+    $out = $out + $texte
+    $ip = 0
+    tant_que ($ip < $nb_pad8) {
+      $out = $out + caractere(0)
+      $ip = $ip + 1
+    }
+    $vi = 1
+    tant_que ($vi <= $nb_vars) {
+      $vv = $var_vals[$vi]
+      $vvnum = 1
+      $ivv = 0
+      $lvv = longueur($vv)
+      si ($lvv == 0) { $vvnum = 0 }
+      si ($lvv > 0 et sous_chaine($vv, 0, 1) == "-") { $ivv = 1 }
+      $kv = $ivv
+      tant_que ($kv < $lvv et $vvnum == 1) {
+        $cv = sous_chaine($vv, $kv, $kv + 1)
+        si ($cv < "0" ou $cv > "9") {
+          $vvnum = 0
+          $kv = $lvv
+        } sinon {
+          $kv = $kv + 1
+        }
+      }
+      si ($vvnum == 0) { $vv = "0" }
+      $out = $out + u64le(entier($vv))
+      $vi = $vi + 1
+    }
+
+    # --- ecrire ---
+    $iq = longueur($out)
+    tant_que ($iq < 4096 + $fsz) {
+      $out = $out + caractere(0)
+      $iq = $iq + 1
+    }
+    ecrire_bytes($sortie, $out)
+    >> "rose: " + $sortie + " produit (binaire ELF x86_64, " + chaine(longueur($out)) + " octets)"
+    retour
+  }
 
   # ── ELF header (64 octets) ──
   $out = $out + $ELFMAG                                    # e_ident[0..3]
@@ -2617,4 +2778,9 @@ si (longueur($affichage) == 0) {
   afficher_erreur("emetteur_elf : pas de >> <expression> trouve")
   quitter(1)
 }
-emettre_elf_print($sortie, $affichage, $dernier_resultat, $dernier_expr_texte)
+$cible = "aarch64"
+si (nb_arguments() >= 3) {
+  $cible = argument(2)
+  si (longueur($cible) == 0) { $cible = "aarch64" }
+}
+emettre_elf_print($sortie, $affichage, $dernier_resultat, $dernier_expr_texte, $cible)
