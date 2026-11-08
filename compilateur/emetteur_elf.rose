@@ -77,7 +77,6 @@ fn substituer_nom($txt: chaine, $nom: chaine, $val: chaine) -> chaine {
     si ($ok == 1) {
       $res = $res + $val
       $k = $k + $lnn
-    } sinon {
       $res = $res + sous_chaine($txt, $k, $k + 1)
       $k = $k + 1
     }
@@ -579,37 +578,13 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
     $i = $i + 1
   }
 
-  # ── Code machine aarch64 : affiche le texte et sort avec $code_sortie ──
-  $code = 0
-  $est_code = 1
-  $kc = 0
-  tant_que ($kc < longueur($code_sortie)) {
-    $cc = sous_chaine($code_sortie, $kc, $kc + 1)
-    si (($cc >= "0" et $cc <= "9")) {
-      $code = $code * 10 + entier($cc)
-      $kc = $kc + 1
-    } sinon {
-      $est_code = 0
-      $kc = longueur($code_sortie)
-    }
-  }
-  si ($est_code == 0 ou longueur($code_sortie) == 0) {
-    $code = 0
-  } sinon si ($code > 255) {
-    $code = 0
-  }
-
-  # Détecter une opération « n1 + n2 » ou « n1 - n2 » dans l'expression texte
-  # (n1 et n2 peuvent être des nombres littéraux ou des noms de variables
-  # connues dans $var_noms/$var_vals) pour générer du code machine qui calcule
-  # à l'exécution.
+  # Détection d'opération « n1 + n2 » ou « n1 - n2 » pour code machine
   $est_op = 0
   $op_n1 = 0
   $op_n2 = 0
   $op_sym = ""
   $oe = longueur($expr_texte)
   $op_idx = 0
-  # sauter les espaces
   tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
     $op_idx = $op_idx + 1
   }
@@ -625,7 +600,6 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
     }
   }
   si (longueur($op_a1) > 0) {
-    # op_a1 est un nombre littéral ou un nom de variable
     $op_n1 = 0
     $op_n1_est_var = 0
     $op_n1_val_trouve = 0
@@ -634,7 +608,6 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
       $op_n1_est_var = 0
       $op_n1_val_trouve = 1
     } sinon {
-      # chercher dans les variables connues
       $vn = 1
       tant_que ($vn <= $nb_vars) {
         si ($var_noms[$vn] == $op_a1) {
@@ -648,14 +621,12 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
       }
     }
     si ($op_n1_val_trouve == 1) {
-      # sauter les espaces
       tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
         $op_idx = $op_idx + 1
       }
       $op_sym = sous_chaine($expr_texte, $op_idx, $op_idx + 1)
       si ($op_sym == "+" ou $op_sym == "-") {
         $op_idx = $op_idx + 1
-        # sauter les espaces
         tant_que ($op_idx < $oe et sous_chaine($expr_texte, $op_idx, $op_idx + 1) == " ") {
           $op_idx = $op_idx + 1
         }
@@ -679,7 +650,6 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
             $op_n2_est_var = 0
             $op_n2_val_trouve = 1
           } sinon {
-            # chercher dans les variables connues
             $vn = 1
             tant_que ($vn <= $nb_vars) {
               si ($var_noms[$vn] == $op_a2) {
@@ -693,7 +663,6 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
             }
           }
           si ($op_n2_val_trouve == 1) {
-            # vérifier qu'il n'y a que des espaces jusqu'à la fin
             $op_fin_ok = 1
             $op_idx2 = $op_idx
             tant_que ($op_idx2 < $oe) {
@@ -714,37 +683,61 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
     }
   }
 
-  $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
-  $out = $out + u32le(268435681)    # adr x1, data (offset 28)
-  $len_texte = longueur($texte)
-  $opcode_x2 = 3531603968 + $len_texte * 32 + 2
-  $out = $out + u32le($opcode_x2)   # mov x2, #len (len)
-  $out = $out + u32le(3531606024)   # mov x8, #64 (write)
-  $out = $out + u32le(3556769793)   # svc #0
-  si ($est_op == 1 et $op_n2 <= 4095) {
-    $out = $out + u32le(3531603968 + $op_n1 * 32)   # mov x0, #n1
-    si ($op_sym == "+") {
-      $out = $out + u32le(2432696320 + $op_n2 * 1024)   # add x0, x0, #n2
+  # Conversion de $code_sortie en entier pour le code de sortie
+  $code = 0
+  $est_code = 1
+  $kc = 0
+  tant_que ($kc < longueur($code_sortie)) {
+    $cc = sous_chaine($code_sortie, $kc, $kc + 1)
+    si (($cc >= "0" et $cc <= "9")) {
+      $code = $code * 10 + entier($cc)
+      $kc = $kc + 1
     } sinon {
-      $out = $out + u32le(3510145024 + $op_n2 * 1024)   # sub x0, x0, #n2
+      $est_code = 0
+      $kc = longueur($code_sortie)
+    }
+  }
+  si ($est_code == 0 ou longueur($code_sortie) == 0) {
+    $code = 0
+  } sinon si ($code > 255) {
+    $code = 0
+  }
+
+  # Code machine aarch64 : affiche le texte et sort avec la valeur
+  $code_taille = 24   # sans variable : 20 (prefixe) + 4 (mov) + 8 (suffixe)
+  $code_avec_var = 0
+  si ($est_op == 1 et $op_n1_est_var == 1) {
+    $code_taille = 36   # avec variable : 20 + 8 (ldr+add/sub) + 8
+    $code_avec_var = 1
+  }
+
+  $offset_adr = $code_taille - 4   # offset pour adr x1
+
+  # Prefixe : write syscall
+  $out = $out + u32le(1385138752)   # movz x0, #1 (stdout)
+  $out = $out + u32le(83886081)     # adr x1, #20 (hardcoded offset)
+  $len_texte = longueur($texte)
+  $opcode_x2 = 268435456 + $len_texte * 1024 + 64   # mov x2, #len
+  $out = $out + u32le($opcode_x2)
+  $out = $out + u32le(536870912 + 93 * 1024 + 1000)   # mov x8, #64 (write)
+  $out = $out + u32le(3565158401)   # svc #0
+
+  # Corps : operation
+  si ($code_avec_var == 1) {
+    # ldr x2, [pc, #offset_ldr]  (offset = $code_taille - 24 = 12)
+    $out = $out + u32le(1476395008 + 2 * 32)   # ldr x2, [pc, #8]
+    si ($op_sym == "+") {
+      $out = $out + u32le(268435456 + partie_entiere($op_n2) * 1024 + 64)   # add x0, x2, #n2
+    } sinon {
+      $out = $out + u32le(402653184 + partie_entiere($op_n2) * 1024 + 64)   # sub x0, x2, #n2
     }
   } sinon {
-    $out = $out + u32le(3531603968 + $code * 32)   # mov x0, #$code (exit code)
+    $out = $out + u32le(1385138752 + partie_entiere($code) * 32)   # movz x0, #$code
   }
-  $out = $out + u32le(3531606952)   # mov x8, #93 (exit)
-  $out = $out + u32le(3556769793)   # svc #0
-  # Data : variables + texte
-  $out = $out + $texte
-  si ($nb_vars > 0) {
-    $vi = 1
-    tant_que ($vi <= $nb_vars) {
-      $out = $out + u64le(entier($var_vals[$vi]))
-      $vi = $vi + 1
-    }
-  }
-  # ── Écrire le fichier ──
-  # ── Écrire le fichier ──
-  ecrire_bytes($sortie, $out)
+
+  # Suffixe : exit
+  $out = $out + u32le(536870912 + 93 * 1024 + 1000)   # mov x8, #93 (exit)
+  $out = $out + u32le(3565158401)   # svc #0  ecrire_bytes($sortie, $out)
   >> "rose: " + $sortie + " produit (binaire ELF autonome, " + chaine(longueur($out)) + " octets)"
 }
 
