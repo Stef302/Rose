@@ -560,6 +560,31 @@ impl Interp {
                 self.affecter(nom, v);
             }
             Instr::Affect { nom, e, .. } => { let v = self.eval(e)?; self.affecter(nom, v); }
+            Instr::AffectIndex { nom, index, valeur, .. } => {
+                let idx = self.eval(index)?;
+                let val = self.eval(valeur)?;
+                // chercher la table dans les trames (locale d'abord, puis globaux)
+                let table_opt = self.trames.iter().rev()
+                    .find_map(|t| t.get(nom))
+                    .or_else(|| self.globaux.get(nom));
+                if let Some(Valeur::Table(t)) = table_opt {
+                    let mut items = t.0.borrow_mut();
+                    // chercher si la clé existe déjà
+                    let mut trouve = false;
+                    for (k, v) in items.iter_mut() {
+                        if valeur_egale(k, &idx) {
+                            *v = val.clone();
+                            trouve = true;
+                            break;
+                        }
+                    }
+                    if !trouve {
+                        items.push((idx, val));
+                    }
+                } else {
+                    erreur_runtime(&format!("Affectation par index sur une non-table: {}", nom));
+                }
+            }
             Instr::Si { test, alors, sinon, .. } => {
                 let c = self.eval(test)?;
                 if est_vrai(&c) { self.exec_bloc_retour_capture(alors)?; }

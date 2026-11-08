@@ -294,6 +294,7 @@ pub enum Instr {
     Afficher(Expr, usize),
     Lire { nom: String, ty: TyKind, ligne: usize },
     Affect { nom: String, e: Expr, ligne: usize },
+    AffectIndex { nom: String, index: Expr, valeur: Expr, ligne: usize },
     Si { test: Expr, alors: Vec<Instr>, sinon: Option<Vec<Instr>>, ligne: usize },
     TantQue { test: Expr, corps: Vec<Instr>, ligne: usize },
     Pour { nom: String, debut: Expr, fin: Expr, corps: Vec<Instr>, ligne: usize },
@@ -614,6 +615,16 @@ impl Parser {
             _ => {}
         }
         if t.tk == Tk::Ident || t.tk == Tk::Mot {
+            // affectation par index sur table : « t["cle"] = 42 »
+            if self.voir(1).tk == Tk::LBracket {
+                let nom = self.nom_ident()?;
+                self.suivant(); // '['
+                let index = self.expression()?;
+                self.exiger(Tk::RBracket, "']'");
+                self.exiger(Tk::Affect, "'='");
+                let valeur = self.expression()?;
+                return Ok(Instr::AffectIndex { nom, index, valeur, ligne: t.ligne });
+            }
             // affectation d'un mot non dollar : « b = a % b » (comme le C++,
             // qui tokenise « b » en Mot puis le traite comme une variable).
             if self.voir(1).tk == Tk::Affect {
@@ -975,6 +986,16 @@ pub fn verifier(prog: &mut Programme) -> Result<(), Err> {
                     }
                 }
             }
+            Instr::AffectIndex { nom, index, valeur, ligne } => {
+                // affectation par index : « t["cle"] = 42 »
+                if let Ok(t) = expr_type(prog, valeur, &mut globals) {
+                    if t.n != TyKind::Vide {
+                        let _ = expr_type(prog, index, &mut globals);
+                        let cible = globals.get(nom).cloned().unwrap_or(Ty::simple(TyKind::Table));
+                        globals.insert(nom.clone(), cible);
+                    }
+                }
+            }
             Instr::Lire { nom, ty, ligne } => {
                 let t_final = globals.get(nom).cloned().unwrap_or_else(|| Ty::simple(TyKind::Entier));
                 globals.insert(nom.clone(), t_final);
@@ -1077,6 +1098,26 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 }
                 verifier_nom_reserve(nom, *ligne)?;
                 env.insert(nom.clone(), cible);
+            }
+            Instr::AffectIndex { nom, index, valeur, ligne } => {
+                // « t["cle"] = 42 » : la valeur doit avoir un type, l'index
+                // doit être utilisable (entier ou chaîne pour une table).
+                let t = expr_type(prog, valeur, env)?;
+                if t.n == TyKind::Vide {
+                    return Err(fmt_err("Impossible d'affecter une valeur sans type", *ligne, 0));
+                }
+                let _ = expr_type(prog, index, env)?;
+                // la table doit exister (ou être créée)
+                let existante = env.get(nom).cloned();
+                if let Some(ex) = &existante {
+                    if ex.n != TyKind::Table && ex.n != TyKind::Dyn {
+                        return Err(fmt_err(&format!(
+                            "'{}' est {}, on ne peut pas y affecter par index",
+                            nom, ex.nom()), *ligne, 0));
+                    }
+                }
+                verifier_nom_reserve(nom, *ligne)?;
+                env.insert(nom.clone(), Ty::simple(TyKind::Table));
             }
             Instr::Si { test, alors, sinon, ligne } => {
                 let t = expr_type(prog, test, env)?;
@@ -1762,6 +1803,9 @@ pub fn replier_instr(i: &Instr) -> Instr {
         Instr::Afficher(e, l) => Instr::Afficher(replier(e), *l),
         Instr::Lire { nom, ty, ligne } => Instr::Lire { nom: nom.clone(), ty: *ty, ligne: *ligne },
         Instr::Affect { nom, e, ligne } => Instr::Affect { nom: nom.clone(), e: replier(e), ligne: *ligne },
+        Instr::AffectIndex { nom, index, valeur, ligne } => {
+            Instr::AffectIndex { nom: nom.clone(), index: replier(index), valeur: replier(valeur), ligne: *ligne }
+        },
         Instr::Si { test, alors, sinon, ligne } => Instr::Si {
             test: replier(test),
             alors: alors.iter().map(replier_instr).collect(),

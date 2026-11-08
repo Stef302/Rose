@@ -293,6 +293,7 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 }
             }
             Instr::Bloc(b) => { if !bloc_compilable(b, env, prog, attendu) { return false; } }
+            Instr::AffectIndex { .. } => return false,
             _ => return false,
         }
     }

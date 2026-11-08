@@ -316,6 +316,7 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 named_values.insert(nom.clone(), value);
                 Ok(())
             }
+            Instr::AffectIndex { .. } => Err("Affectation par index non supportée par l'AOT LLVM".to_string()),
             Instr::Afficher(e, _) => {
                 let value = compile_expr(builder, context, module, named_values, e)?;
 
