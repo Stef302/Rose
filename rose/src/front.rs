@@ -661,6 +661,16 @@ impl Parser {
                             else { Some(self.expression()?) };
                     return Ok(Instr::Retour(e, lg_retour));
                 }
+                "var" => {
+                    // « var x = expr » : déclaration d variable, équivalente
+                    // à une affectation nue (miroir de l'émetteur ELF qui
+                    // traite « var » comme une affectation).
+                    self.suivant(); // consume 'var'
+                    let nom = self.nom_ident()?;
+                    self.exiger(Tk::Affect, "'='");
+                    let e = self.expression()?;
+                    return Ok(Instr::Affect { nom, e, ligne: t.ligne });
+                }
                 _ => {}
             }
             if self.voir(1).tk == Tk::Affect {
