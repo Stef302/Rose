@@ -24,6 +24,7 @@ default = ["llvm-aot"]
 
 [profile.release]
 opt-level = 2
+strip = true
 
 [profile.release-dbg]
 inherits = "release"

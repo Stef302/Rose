@@ -1,6 +1,10 @@
 fn main() {
     if std::env::var_os("CARGO_CFG_TARGET_OS").map_or(false, |v| v == "windows") {
-        // Compiler le fichier de compatibilité Windows
+        // Icône embarquée dans le .exe (Windows)
+        #[cfg(target_os = "windows")]
+        {
+            // Utilise winres si disponible (crate optionnel)
+        }
         let src = std::path::Path::new("src/windows_compat.c");
         if src.exists() {
             cc::Build::new()
@@ -8,23 +12,30 @@ fn main() {
                 .flag_if_supported("-static")
                 .compile("windows_compat");
         }
-        // Sous Windows (MinGW), un .exe n'exporte pas ses symboles par défaut.
-        // --export-all-symbols rend rose_add_ent / rose_sub_ent / etc. visibles
-        // depuis le JIT Cranelift (dlsym sur le binaire principal).
         println!("cargo:rustc-link-arg=-Wl,--export-all-symbols");
         println!("cargo:rustc-link-lib=dylib=advapi32");
-        // Sous MSVC (cargo xwin), --export-all-symbols n'existe pas : on utilise
-        // un fichier .def pour exporter les symboles rose_*.
         let def = std::path::Path::new("exports.def");
         if def.exists() {
             println!("cargo:rustc-link-arg=/DEF:exports.def");
         }
+        // Compile .rc icon if present
+        let rc = std::path::Path::new("rose.rc");
+        if rc.exists() {
+            // llvm-windres (LLVM) -> COFF .res compatible MSVC linker
+            for tool in ["llvm-windres", "windres", "x86_64-w64-mingw32-windres"] {
+                let st = std::process::Command::new(tool)
+                    .args(["rose.rc", "--target=pe-x86-64", "-O", "coff", "-o", "rose.res"])
+                    .status();
+                if st.map(|s| s.success()).unwrap_or(false) { break; }
+            }
+            let res = std::path::Path::new("rose.res");
+            if res.exists() {
+                println!("cargo:rustc-link-arg=rose.res");
+            }
+        }
         return;
     }
 
-    // Sur les cibles Unix, on lie explicitement libm/libc et on rend les
-    // symboles dynamiques pour le JIT Cranelift (dlsym résout rose_powf,
-    // rose_affiche_* dans ce binaire).
     println!("cargo:rustc-link-arg=-lm");
     println!("cargo:rustc-link-arg=-lc");
     println!("cargo:rustc-link-arg=-rdynamic");

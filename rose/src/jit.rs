@@ -15,6 +15,11 @@ use std::collections::HashMap;
 
 use cranelift::codegen::ir::{AbiParam, BlockArg, FuncRef, Inst, InstBuilder, MemFlagsData, Signature as ClSignature, Value};
 use cranelift::codegen::isa::CallConv;
+// Convention d'appel par défaut de la cible courante.
+#[cfg(target_os = "windows")]
+const DEFAULT_CC: CallConv = CallConv::WindowsFastcall;
+#[cfg(not(target_os = "windows"))]
+const DEFAULT_CC: CallConv = CallConv::SystemV;
 use cranelift::module::FuncId;
 use cranelift::jit::{JITBuilder, JITModule};
 use cranelift::module::{default_libcall_names, Linkage, Module};
@@ -338,7 +343,7 @@ struct Emetteur<'a> {
 
 
 fn make_signature(sig: &Signature) -> ClSignature {
-    let mut s = ClSignature::new(CallConv::SystemV);
+    let mut s = ClSignature::new(DEFAULT_CC);
     for (_, t) in &sig.params {
         s.params.push(AbiParam::new(match t.n {
             TyKind::Flottant => types::F64,
@@ -448,7 +453,7 @@ impl Jit {
                 ("rose_erreur_mod_zero", vec![], None),
                 ("rose_erreur_div_zero", vec![], None),
             ] {
-                let mut s = ClSignature::new(CallConv::SystemV);
+                let mut s = ClSignature::new(DEFAULT_CC);
                 for p in params { s.params.push(AbiParam::new(p)); }
                 if let Some(r) = ret { s.returns.push(AbiParam::new(r)); }
                 // Import : la relocation User namespace 0 vers ce FuncId
