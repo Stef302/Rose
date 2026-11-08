@@ -169,6 +169,13 @@ fn si_val_atomique(val: &str) -> Valeur {
     if val == "faux" { return Valeur::Booleen(false); }
     if let Ok(n) = val.parse::<i64>() { return Valeur::z(n); }
     if let Ok(f) = val.parse::<f64>() { return Valeur::f(f); }
+    // entier exact trop grand pour i64 (et sans point/exposant) : BigInt
+    let est_entier_pur = !val.is_empty()
+        && (val.chars().all(|c| c.is_ascii_digit())
+            || (val.len() > 1
+                && (val.as_bytes()[0] == b'+' || val.as_bytes()[0] == b'-')
+                && val[1..].chars().all(|c| c.is_ascii_digit())));
+    if est_entier_pur { return Valeur::zg(chaine_vers_entier(val)); }
     Valeur::s(val.to_string())
 }
 
@@ -187,7 +194,19 @@ fn args_depuis_chaine(interieur: &str, paires: &[(String, String)]) -> Vec<Valeu
             && !a_s.contains('+') && !a_s.contains('-')
             && !a_s.contains('*') && !a_s.contains('/')
             && !a_s.contains(',') && !a_s.contains('=');
-        if est_atomique { out.push(Valeur::s(a_s.clone())); continue; }
+        if est_atomique {
+            // un mot entre guillemets est un litteral chaine
+            if a_s.len() >= 2
+                && a_s.starts_with('"')
+                && a_s.ends_with('"')
+                && a_s[1..a_s.len() - 1].find('"').is_none()
+            {
+                out.push(Valeur::s(a_s[1..a_s.len() - 1].to_string()));
+            } else {
+                out.push(Valeur::s(a_s.clone()));
+            }
+            continue;
+        }
         if let Some(r) = replier_expression(&a_s, paires) {
             if let Ok(i) = r.parse::<i64>() { out.push(Valeur::z(i)); continue; }
             if let Ok(f) = r.parse::<f64>() { out.push(Valeur::f(f)); continue; }
@@ -1372,7 +1391,11 @@ impl Interp {
                     Valeur::Liste(l) => l.0.borrow().len() as u64,
                     Valeur::Table(t) => t.0.borrow().len() as u64,
                     Valeur::Tampon(t) => t.0.borrow().len() as u64,
-                    _ => erreur_runtime("longueur attend une liste, chaîne, table ou tampon"),
+                    // un mot non atomique peut rester une chaine : on rend sa longueur
+                    _ => {
+                        let c = chaine_de(&a[0]);
+                        c.chars().count() as u64
+                    }
                 };
                 let z = Gz::neuf();
                 z.poser_u64(n);

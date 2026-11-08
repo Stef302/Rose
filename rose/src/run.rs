@@ -228,6 +228,7 @@ pub fn chaine_vers_rationnel(ch: &str) -> Gq {
 
 pub fn chaine_vers_entier(ch: &str) -> Gz {
     let z = Gz::neuf();
+    if ch.trim().is_empty() { return z; }
     if z.depuis_chaine(ch) { return z; }
     if let Some(p) = ch.find('/') {
         let n = Gz::neuf();

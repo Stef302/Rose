@@ -530,75 +530,6 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
   $TEXT_OFFSET = 4096
   $TEXT_ADDR = 4198400
 
-  # ── ELF header (64 octets) ──
-  $out = $out + $ELFMAG                                    # e_ident[0..3]
-  $out = $out + caractere($ELFCLASS64)     # e_ident[4] = ELFCLASS64
-  $out = $out + caractere($ELFDATA2LSB)    # e_ident[5] = ELFDATA2LSB
-  $out = $out + caractere($EV_CURRENT)     # e_ident[6] = EV_CURRENT
-  $out = $out + caractere($ELFOSABI_SYSV)  # e_ident[7] = ELFOSABI_SYSV
-  $out = $out + caractere(0)               # e_ident[8] = 0
-  $out = $out + caractere(0)               # e_ident[9] = 0
-  $out = $out + caractere(0)               # e_ident[10] = 0
-  $out = $out + caractere(0)               # e_ident[11] = 0
-  $out = $out + caractere(0)               # e_ident[12] = 0
-  $out = $out + caractere(0)               # e_ident[13] = 0
-  $out = $out + caractere(0)               # e_ident[14] = 0
-  $out = $out + caractere(0)               # e_ident[15] = 0
-  $out = $out + u16le($ET_EXEC)                            # e_type = ET_EXEC
-  $out = $out + u16le($EM_AARCH64)                         # e_machine = EM_AARCH64
-  $out = $out + u32le(1)                                   # e_version = 1
-  $out = $out + u64le($TEXT_ADDR)                          # e_entry = adresse de _start
-  $out = $out + u64le(64)                                  # e_phoff = 64 (juste après l'en-tête)
-  $out = $out + u64le(0)                                   # e_shoff = 0 (pas de section header pour l'instant)
-  $out = $out + u32le(0)                                   # e_flags = 0
-  $out = $out + u16le(64)                                  # e_ehsize = 64
-  $out = $out + u16le(56)                                  # e_phentsize = 56
-  $out = $out + u16le(1)                                   # e_phnum = 1 (un segment)
-  $out = $out + u16le(64)                                  # e_shentsize = 64
-  $out = $out + u16le(0)                                   # e_shnum = 0
-  $out = $out + u16le(0)                                   # e_shstrndx = 0
-
-  # ── Program header (1 segment PT_LOAD, 56 octets) ──
-  $out = $out + u32le($PT_LOAD)                            # p_type = PT_LOAD
-  $out = $out + u32le(5)                                   # p_flags = R|X
-  $out = $out + u64le($TEXT_OFFSET)                        # p_offset = 4096
-  $out = $out + u64le($TEXT_ADDR)                          # p_vaddr
-  $out = $out + u64le($TEXT_ADDR)                          # p_paddr
-  $fsz = 32 + longueur($texte) + 8 * $nb_vars              # p_filesz
-  $out = $out + u64le($fsz)                                # p_filesz
-  $out = $out + u64le($fsz)                                # p_memsz
-  $out = $out + u64le($fsz)                                # p_filesz
-  $out = $out + u64le($fsz)                                # p_memsz
-  $out = $out + u64le(2097152)                             # p_align
-
-  # ── Padding jusqu'a 4096 (0x1000) ──
-  $pad = 4096 - longueur($out)
-  $i = 0
-  tant_que ($i < $pad) {
-    $out = $out + caractere(0)
-    $i = $i + 1
-  }
-
-  # ── Code machine aarch64 : affiche le texte et sort avec $code_sortie ──
-  $code = 0
-  $est_code = 1
-  $kc = 0
-  tant_que ($kc < longueur($code_sortie)) {
-    $cc = sous_chaine($code_sortie, $kc, $kc + 1)
-    si (($cc >= "0" et $cc <= "9")) {
-      $code = $code * 10 + entier($cc)
-      $kc = $kc + 1
-    } sinon {
-      $est_code = 0
-      $kc = longueur($code_sortie)
-    }
-  }
-  si ($est_code == 0 ou longueur($code_sortie) == 0) {
-    $code = 0
-  } sinon si ($code > 255) {
-    $code = 0
-  }
-
   # Détecter une opération « n1 + n2 » ou « n1 - n2 » dans l'expression texte
   # (n1 et n2 peuvent être des nombres littéraux ou des noms de variables
   # connues dans $var_noms/$var_vals) pour générer du code machine qui calcule
@@ -714,8 +645,96 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
     }
   }
 
+  # ── Nombre de mots du bloc texte (pour l'offset adr) ──
+  $nb_mots = 8
+  si ($est_op == 1 et $op_n2 <= 4095) {
+    $nb_mots = 9
+  }
+  $adr_bytes = ($nb_mots - 1) * 4
+  $adr_immlo = $adr_bytes % 4
+  $adr_immhi = partie_entiere($adr_bytes / 4)
+  $adr_op = 268435456 + ($adr_immlo * 536870912) + ($adr_immhi * 32) + 1
+
+  # ── ELF header (64 octets) ──
+  $out = $out + $ELFMAG                                    # e_ident[0..3]
+  $out = $out + caractere($ELFCLASS64)     # e_ident[4] = ELFCLASS64
+  $out = $out + caractere($ELFDATA2LSB)    # e_ident[5] = ELFDATA2LSB
+  $out = $out + caractere($EV_CURRENT)     # e_ident[6] = EV_CURRENT
+  $out = $out + caractere($ELFOSABI_SYSV)  # e_ident[7] = ELFOSABI_SYSV
+  $out = $out + caractere(0)               # e_ident[8] = 0
+  $out = $out + caractere(0)               # e_ident[9] = 0
+  $out = $out + caractere(0)               # e_ident[10] = 0
+  $out = $out + caractere(0)               # e_ident[11] = 0
+  $out = $out + caractere(0)               # e_ident[12] = 0
+  $out = $out + caractere(0)               # e_ident[13] = 0
+  $out = $out + caractere(0)               # e_ident[14] = 0
+  $out = $out + caractere(0)               # e_ident[15] = 0
+  $out = $out + u16le($ET_EXEC)                            # e_type = ET_EXEC
+  $out = $out + u16le($EM_AARCH64)                         # e_machine = EM_AARCH64
+  $out = $out + u32le(1)                                   # e_version = 1
+  $out = $out + u64le($TEXT_ADDR)                          # e_entry = adresse de _start
+  $out = $out + u64le(64)                                  # e_phoff = 64 (juste après l'en-tête)
+  $out = $out + u64le(0)                                   # e_shoff = 0 (pas de section header pour l'instant)
+  $out = $out + u32le(0)                                   # e_flags = 0
+  $out = $out + u16le(64)                                  # e_ehsize = 64
+  $out = $out + u16le(56)                                  # e_phentsize = 56
+  $out = $out + u16le(1)                                   # e_phnum = 1 (un segment)
+  $out = $out + u16le(64)                                  # e_shentsize = 64
+  $out = $out + u16le(0)                                   # e_shnum = 0
+  $out = $out + u16le(0)                                   # e_shstrndx = 0
+
+  # ── Program header (1 segment PT_LOAD, 56 octets) ──
+  $out = $out + u32le($PT_LOAD)                            # p_type = PT_LOAD
+  $out = $out + u32le(5)                                   # p_flags = R|X
+  $out = $out + u64le($TEXT_OFFSET)                        # p_offset = 4096
+  $out = $out + u64le($TEXT_ADDR)                          # p_vaddr
+  $out = $out + u64le($TEXT_ADDR)                          # p_paddr
+  $nb_pad8 = longueur($texte) % 8
+  si ($nb_pad8 == 1) { $nb_pad8 = 7 }
+  si ($nb_pad8 == 2) { $nb_pad8 = 6 }
+  si ($nb_pad8 == 3) { $nb_pad8 = 5 }
+  si ($nb_pad8 == 4) { $nb_pad8 = 4 }
+  si ($nb_pad8 == 5) { $nb_pad8 = 3 }
+  si ($nb_pad8 == 6) { $nb_pad8 = 2 }
+  si ($nb_pad8 == 7) { $nb_pad8 = 1 }
+  si ($nb_pad8 == 0) { $nb_pad8 = 0 }
+  $fsz = 4 * $nb_mots + longueur($texte) + $nb_pad8 + 8 * $nb_vars   # p_filesz
+  $out = $out + u64le($fsz)                                # p_filesz
+  $out = $out + u64le($fsz)                                # p_memsz
+  $out = $out + u64le($fsz)                                # p_filesz
+  $out = $out + u64le($fsz)                                # p_memsz
+  $out = $out + u64le(2097152)                             # p_align
+
+  # ── Padding jusqu'a 4096 (0x1000) ──
+  $pad = 4096 - longueur($out)
+  $i = 0
+  tant_que ($i < $pad) {
+    $out = $out + caractere(0)
+    $i = $i + 1
+  }
+
+  # ── Code machine aarch64 : affiche le texte et sort avec $code_sortie ──
+  $code = 0
+  $est_code = 1
+  $kc = 0
+  tant_que ($kc < longueur($code_sortie)) {
+    $cc = sous_chaine($code_sortie, $kc, $kc + 1)
+    si (($cc >= "0" et $cc <= "9")) {
+      $code = $code * 10 + entier($cc)
+      $kc = $kc + 1
+    } sinon {
+      $est_code = 0
+      $kc = longueur($code_sortie)
+    }
+  }
+  si ($est_code == 0 ou longueur($code_sortie) == 0) {
+    $code = 0
+  } sinon si ($code > 255) {
+    $code = 0
+  }
+
   $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
-  $out = $out + u32le(268435681)    # adr x1, data (offset 28)
+  $out = $out + u32le($adr_op)      # adr x1, data
   $len_texte = longueur($texte)
   $opcode_x2 = 3531603968 + $len_texte * 32 + 2
   $out = $out + u32le($opcode_x2)   # mov x2, #len (len)
@@ -738,12 +757,34 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
   si ($nb_vars > 0) {
     $vi = 1
     tant_que ($vi <= $nb_vars) {
-      $out = $out + u64le(entier($var_vals[$vi]))
+      $vv = $var_vals[$vi]
+      $vvnum = 1
+      $ivv = 0
+      $lvv = longueur($vv)
+      si ($lvv == 0) { $vvnum = 0 }
+      si ($lvv > 0 et sous_chaine($vv, 0, 1) == "-") { $ivv = 1 }
+      $kv = $ivv
+      tant_que ($kv < $lvv et $vvnum == 1) {
+        $cv = sous_chaine($vv, $kv, $kv + 1)
+        si ($cv < "0" ou $cv > "9") {
+          $vvnum = 0
+          $kv = $lvv
+        } sinon {
+          $kv = $kv + 1
+        }
+      }
+      si ($vvnum == 0) { $vv = "0" }
+      $out = $out + u64le(entier($vv))
       $vi = $vi + 1
     }
   }
   # ── Écrire le fichier ──
-  # ── Écrire le fichier ──
+  # completer a 4096 + fsz octets
+  $iq = longueur($out)
+  tant_que ($iq < 4096 + $fsz) {
+    $out = $out + caractere(0)
+    $iq = $iq + 1
+  }
   ecrire_bytes($sortie, $out)
   >> "rose: " + $sortie + " produit (binaire ELF autonome, " + chaine(longueur($out)) + " octets)"
 }
