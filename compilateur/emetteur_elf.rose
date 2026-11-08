@@ -714,11 +714,6 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
     }
   }
 
-  # Variable + variable : deux variables connues
-  si ($est_op == 1 et $op_n1_est_var == 1 et $op_n2_est_var == 1) {
-    $op_var_var = 1
-  }
-
   $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
   $out = $out + u32le(268435681)    # adr x1, data (offset 28)
   $len_texte = longueur($texte)
