@@ -1633,7 +1633,7 @@ $modifie = 1
 tant_que ($modifie == 1) {
   $modifie = 0
   $i = 0
-  tant_que ($i < longueur($src_proc)) {
+    tant_que ($i < longueur($src_proc)) {
     $c1 = ""
     $c2 = ""
     si ($i < longueur($src_proc)) { $c1 = sous_chaine($src_proc, $i, $i + 1) }
@@ -2259,7 +2259,19 @@ tant_que ($modif_num == 1) {
     } sinon {
       $res2 = eval_expr($e2)
     }
-        si (longueur($res2) > 0 et $res2 != $e2) {
+        # Ne pas remplacer un littéral chaîne : les guillemets doivent être
+    # préservés pour que l'extraction ">>" puisse distinguer une chaîne
+    # d'une variable du même nom.
+    $nb_e2 = longueur($e2)
+    $est_chaine_lit = 0
+    si ($nb_e2 >= 2) {
+      $f1b = sous_chaine($e2, 0, 1)
+      $f2b = sous_chaine($e2, $nb_e2 - 1, $nb_e2)
+      si ($f1b == "\"" et $f2b == "\"") {
+        $est_chaine_lit = 1
+      }
+    }
+    si (longueur($res2) > 0 et $res2 != $e2 et $est_chaine_lit == 0) {
       $avant2 = sous_chaine($src, 0, $pos_g)
       $apres2 = sous_chaine($src, $fin_l2, longueur($src))
       $src = $avant2 + ">> " + $res2 + $apres2
@@ -2295,6 +2307,8 @@ tant_que ($i < longueur($src)) {
       $j = $j + 1
     }
     # Extraire l'expression jusqu'a la fin de ligne
+    $pc = ""
+    si ($j < longueur($src)) { $pc = sous_chaine($src, $j, $j + 1) }
     $expr = ""
     $k = $j
     tant_que ($k < longueur($src)) {
@@ -2306,7 +2320,7 @@ tant_que ($i < longueur($src)) {
         $k = $k + 1
       }
     }
-    si (longueur($expr) > 0) {
+        si (longueur($expr) > 0) {
       # Verifier si c'est un nom de variable connu (en ARRIERE :
       # la valeur la plus recente fait foi apres le shadowing)
       $est_var = 0
@@ -2389,7 +2403,7 @@ tant_que ($i < longueur($src)) {
           $resultat = eval_expr($expr_full)
         }
       }
-      $affichage = $affichage + $resultat + "\n"
+            $affichage = $affichage + $resultat + "\n"
     }
   }
   $i = $i + 1
