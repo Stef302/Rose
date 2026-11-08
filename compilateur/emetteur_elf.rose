@@ -681,6 +681,15 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
         }
       }
     }
+
+    # Littéral + variable : échanger pour avoir variable en premier
+    si ($est_op == 1 et $op_n1_est_var == 0 et $op_n2_est_var == 1) {
+      $tmp = $op_n1
+      $op_n1 = $op_n2
+      $op_n2 = $tmp
+      $op_n1_est_var = 1
+      $op_n2_est_var = 0
+    }
   }
 
   # Conversion de $code_sortie en entier pour le code de sortie
