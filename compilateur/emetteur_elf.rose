@@ -513,7 +513,7 @@ fn plier_expression($expr: chaine) -> chaine {
   retour $cour
 }
 
-fn emettre_elf_print($sortie: chaine, $texte: chaine) {
+fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine) {
   $out = ""
   $ELFMAG = "ELF"
   $ELFCLASS64 = 2
@@ -577,7 +577,25 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine) {
     $i = $i + 1
   }
 
-  # ── Code machine aarch64 : affiche "Hello" et exit 0 ──
+  # ── Code machine aarch64 : affiche le texte et sort avec $code_sortie ──
+  $code = 0
+  $est_code = 1
+  $kc = 0
+  tant_que ($kc < longueur($code_sortie)) {
+    $cc = sous_chaine($code_sortie, $kc, $kc + 1)
+    si (($cc >= "0" et $cc <= "9")) {
+      $code = $code * 10 + entier($cc)
+      $kc = $kc + 1
+    } sinon {
+      $est_code = 0
+      $kc = longueur($code_sortie)
+    }
+  }
+  si ($est_code == 0 ou longueur($code_sortie) == 0) {
+    $code = 0
+  } sinon si ($code > 255) {
+    $code = 0
+  }
   $out = $out + u32le(3531604000)   # mov x0, #1 (stdout)
   $out = $out + u32le(268435681)    # adr x1, data (offset 28)
   $len_texte = longueur($texte)
@@ -585,7 +603,7 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine) {
   $out = $out + u32le($opcode_x2)   # mov x2, #len (len)
   $out = $out + u32le(3531606024)   # mov x8, #64 (write)
   $out = $out + u32le(3556769793)   # svc #0
-  $out = $out + u32le(3531603968)   # mov x0, #0 (exit code)
+  $out = $out + u32le(3531603968 + $code * 32)   # mov x0, #$code (exit code)
   $out = $out + u32le(3531606952)   # mov x8, #93 (exit)
   $out = $out + u32le(3556769793)   # svc #0
   # data: texte
@@ -2297,6 +2315,7 @@ tant_que ($modif_num == 1) {
 
 # Extraire et evaluer toutes les expressions apres >>
 $affichage = ""
+$dernier_resultat = ""
 $i = 0
 tant_que ($i < longueur($src)) {
   $c1 = ""
@@ -2410,6 +2429,7 @@ tant_que ($i < longueur($src)) {
           $resultat = eval_expr($expr_full)
         }
       }
+            $dernier_resultat = $resultat
             $affichage = $affichage + $resultat + "\n"
     }
   }
@@ -2419,4 +2439,4 @@ si (longueur($affichage) == 0) {
   afficher_erreur("emetteur_elf : pas de >> <expression> trouve")
   quitter(1)
 }
-emettre_elf_print($sortie, $affichage)
+emettre_elf_print($sortie, $affichage, $dernier_resultat)
