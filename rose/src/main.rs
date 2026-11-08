@@ -13,7 +13,6 @@ mod i128x;
 mod interp;
 mod jit;
 mod run;
-#[cfg(feature = "llvm-aot")]
 mod aot_llvm_orc;
 mod elf_linker;
 
@@ -173,7 +172,6 @@ fn main() {
             println!("rose: {} produit (AOT LLVM)", sortie);
             std::process::exit(0);
         }
-        #[cfg(feature = "llvm-aot")]
         "orc" => {
             let mut sortie = String::new();
             let mut fichier = String::new();
@@ -251,11 +249,6 @@ fn main() {
                 Err(e) => { eprintln!("rose: échec du lien ELF : {}", e); std::process::exit(1); }
             }
             std::process::exit(0);
-        }
-        #[cfg(not(feature = "llvm-aot"))]
-        "orc" => {
-            eprintln!("rose: orc (AOT LLVM) indisponible dans cette build (pas de LLVM)");
-            std::process::exit(1);
         }
         _ => {}
     }
