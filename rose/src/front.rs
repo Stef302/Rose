@@ -273,6 +273,7 @@ pub enum Expr {
     Factorielle(Box<Expr>, usize),
     Index { a: Box<Expr>, b: Box<Expr>, ligne: usize },
     ListeLit(Vec<Expr>, usize),
+    TableLit(Vec<(String, Expr)>, usize),
 }
 
 /// Ligne d'un noeud d'expression (miroir de e->ligne du C++) : sert aux
@@ -284,6 +285,7 @@ pub fn ligne_expr(e: &Expr) -> usize {
         Expr::Appel { ligne, .. } | Expr::Binaire { ligne, .. } => *ligne,
         Expr::Unaire { ligne, .. } | Expr::Index { ligne, .. } => *ligne,
         Expr::Factorielle(_, l) | Expr::ListeLit(_, l) => *l,
+        Expr::TableLit(_, l) => *l,
     }
 }
 
@@ -906,6 +908,21 @@ impl Parser {
                 self.exiger(Tk::RBracket, "']' de liste")?;
                 Ok(Expr::ListeLit(elems, t.ligne))
             }
+            Tk::LBrace => {
+                self.suivant();
+                let mut elems = Vec::new();
+                if !self.est(&[Tk::RBrace]) {
+                    loop {
+                        let cle = self.nom_ident()?;
+                        self.exiger(Tk::DeuxPoints, "':' dans table")?;
+                        let val = self.expression()?;
+                        elems.push((cle, val));
+                        if !self.accepter(&[Tk::Virgule]) { break; }
+                    }
+                }
+                self.exiger(Tk::RBrace, "'}' de table")?;
+                Ok(Expr::TableLit(elems, t.ligne))
+            }
             Tk::LParen => {
                 self.suivant();
                 let e = self.expression()?;
@@ -1284,6 +1301,11 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             }
             Ok(Ty::liste(t_elt.n))
         }
+        Expr::TableLit(el, ligne) => {
+            // miroir C++ NK::TableLit (rose.cpp:1408-1420)
+            let ligne = *ligne;
+            Ok(Ty::simple(TyKind::Table))
+        }
         Expr::Unaire { op, a, ligne } => {
             // miroir C++ NK::Unaire
             let t = expr_type(prog, a, env)?;
@@ -1604,6 +1626,10 @@ pub fn replier(e: &Expr) -> Expr {
         Expr::Appel { nom, module, args, ligne } => Expr::Appel {
             nom: nom.clone(), module: module.clone(), args: args.iter().map(replier).collect(), ligne: *ligne },
         Expr::ListeLit(l, ligne) => Expr::ListeLit(l.iter().map(replier).collect(), *ligne),
+        Expr::TableLit(el, ligne) => {
+            let el: Vec<(String, Expr)> = el.iter().map(|(k, v)| (k.clone(), replier(v))).collect();
+            Expr::TableLit(el, *ligne)
+        }
         _ => e.clone(),
     }
 }

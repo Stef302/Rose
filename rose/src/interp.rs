@@ -791,6 +791,15 @@ impl Interp {
                 for x in el { v.push(self.eval(x)?); }
                 Ok(Valeur::liste_de(v))
             }
+            Expr::TableLit(el, _) => {
+                let mut items: Vec<(Valeur, Valeur)> = Vec::new();
+                for (k, v) in el {
+                    let k = self.eval(&Expr::ChaineLit(k.clone(), 0))?;
+                    let v = self.eval(v)?;
+                    items.push((k, v));
+                }
+                Ok(Valeur::Table(Table(Rc::new(RefCell::new(items)))))
+            }
             Expr::Index { a, b, .. } => {
                 let base = self.eval(a)?;
                 match &base {
