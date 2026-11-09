@@ -225,11 +225,11 @@ fn nom_std_connu(nom: &str) -> bool {
     matches!(nom,
         "afficher" | "saisir_entier" | "saisir_flottant" | "millisecondes" | "graine"
         | "graine_systeme" | "graine_vrai" | "rng_materiel" | "rng_mat" | "hasard"
-        | "hasard_systeme" | "hasard_vrai" | "entier" | "rationnel" | "flottant"
+        | "hasard_systeme" | "hasard_vrai" | "trng" | "entier" | "rationnel" | "flottant"
         | "chaine" | "longueur" | "table" | "tampon" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
-        | "abs" | "factorielle" | "fibonacci" | "pgcd" | "ppcm" | "puissance"
-        | "est_premier" | "compter_premiers" | "nb_chiffres" | "nombre_pi"
+        | "abs" | "factorielle" | "fibonacci" | "fib" | "pgcd" | "ppcm" | "puissance"
+        | "est_premier" | "compter_premiers" | "nb_chiffres" | "nombre_pi" | "pi"
         | "sous_chaine" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction")
@@ -1392,12 +1392,12 @@ impl Interp {
                 z.poser_u64(tirage_systeme());
                 Valeur::zg(z)
             }
-            "hasard" => {
+            "hasard" | "prng" => {
                 let n = vers_z(&a[0]);
                 let r = hasard(&mut self.rng, &n);
                 Valeur::zg(r)
             }
-            "hasard_systeme" | "hasard_vrai" => {
+            "hasard_systeme" | "hasard_vrai" | "trng" => {
                 let n = vers_z(&a[0]);
                 if n.sgn() <= 0 { erreur_runtime("hasard : bornage positif attendu"); }
                 let x = tirage_systeme();
@@ -1464,7 +1464,7 @@ impl Interp {
                 Valeur::Vide
             }
             "factorielle" => { let z = vers_z(&a[0]); Valeur::zg(factorielle(&z)) }
-            "fibonacci" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
+            "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
             "pgcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
             "ppcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(ppcm(&x, &y)) }
             "puissance" => {
@@ -1474,7 +1474,7 @@ impl Interp {
             "est_premier" => { let z = vers_z(&a[0]); Valeur::b(est_premier(&z)) }
             "compter_premiers" => { let z = vers_z(&a[0]); Valeur::z(compter_premiers(&z) as i64) }
             "nb_chiffres" => { let z = vers_z(&a[0]); Valeur::z(nb_chiffres(&z) as i64) }
-            "nombre_pi" => { let z = vers_z(&a[0]); Valeur::s(nombre_pi(&z)) }
+            "nombre_pi" | "pi" => { let z = vers_z(&a[0]); Valeur::s(nombre_pi(&z)) }
             "longueur" => {
                 let n: u64 = match &a[0] {
                     Valeur::Chaine(s) => s.chars().count() as u64,
