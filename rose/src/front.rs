@@ -17,7 +17,7 @@ pub fn fmt_err(msg: &str, l: usize, c: usize) -> Err {
 // ── Types ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TyKind { Vide, Entier, Rationnel, Flottant, Booleen, Chaine, Liste, Table, Tampon, Tableau, Dyn }
+pub enum TyKind { Vide, Entier, Rationnel, Flottant, Booleen, Chaine, Liste, Table, Tampon, Tableau, Complexe, Dyn }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Ty { pub n: TyKind, pub elt: TyKind }
@@ -39,6 +39,7 @@ impl Ty {
             TyKind::Table => "table".into(),
             TyKind::Tampon => "tampon".into(),
             TyKind::Tableau => "tableau".into(),
+            TyKind::Complexe => "complexe".into(),
             TyKind::Dyn => "?".into(),
         }
     }
@@ -80,7 +81,7 @@ fn est_mot_cle(s: &str) -> bool {
         "fn" | "fonction" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
         | "vrai" | "faux" | "et" | "ou" | "non" | "div"
         | "entier" | "rationnel" | "flottant" | "booleen" | "chaine" | "liste" | "table"
-        | "π" | "φ")
+        | "π" | "φ" | "I")
 }
 
 fn cp_lettre(c: char) -> bool {
@@ -370,6 +371,12 @@ EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "nombre_pi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "pi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "phi", args: &["entier"], retour: "chaine" },
+    EntreeStd { nom: "__i", args: &[], retour: "complexe" },
+    EntreeStd { nom: "re", args: &["complexe"], retour: "flottant" },
+    EntreeStd { nom: "im", args: &["complexe"], retour: "flottant" },
+    EntreeStd { nom: "conj", args: &["complexe"], retour: "complexe" },
+    EntreeStd { nom: "arg", args: &["complexe"], retour: "flottant" },
+    EntreeStd { nom: "modulus", args: &["complexe"], retour: "flottant" },
     EntreeStd { nom: "longueur", args: &["liste_ou_chaine_ou_table"], retour: "entier" },
 EntreeStd { nom: "len", args: &["liste_ou_chaine_ou_table"], retour: "entier" },
     EntreeStd { nom: "table", args: &[], retour: "table" },
@@ -450,6 +457,7 @@ fn ty_du_nom(s: &str) -> Ty {
         "table" => Ty::simple(TyKind::Table),
         "tampon" => Ty::simple(TyKind::Tampon),
         "tableau" => Ty::simple(TyKind::Tableau),
+        "complexe" => Ty::simple(TyKind::Complexe),
         _ => Ty::vide(),
     }
 }
@@ -1020,6 +1028,7 @@ impl Parser {
             Tk::Ident | Tk::Mot => {
                 if t.texte == "vrai" { self.suivant(); return Ok(Expr::BooleenLit(true, t.ligne)); }
                 if t.texte == "faux" { self.suivant(); return Ok(Expr::BooleenLit(false, t.ligne)); }
+                if t.texte == "I" { self.suivant(); return Ok(Expr::Appel { nom: "__i".into(), module: String::new(), args: Vec::new(), ligne: t.ligne }); }
                 if t.texte == "π" {
                     self.suivant();
                     return Ok(Expr::Appel { nom: "pi".into(), module: String::new(), args: vec![Expr::Litteral { ligne: t.ligne, texte: "50".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }], ligne: t.ligne });
@@ -1399,6 +1408,7 @@ fn ty_du_texte(s: &str) -> Ty {
         "table" => Ty::simple(TyKind::Table),
         "tampon" => Ty::simple(TyKind::Tampon),
         "tableau" => Ty::simple(TyKind::Tableau),
+        "complexe" => Ty::simple(TyKind::Complexe),
         _ => Ty::vide(),
     }
 }
@@ -1521,16 +1531,19 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 }
                 "+" => {
                     if ta.n == TyKind::Chaine && tb.n == TyKind::Chaine { return Ok(Ty::simple(TyKind::Chaine)); }
+                    if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
                     if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
                     return Err(fmt_err(&format!("Addition {} + {} impossible", na, nb), ligne, 0));
                 }
                 "-" | "*" => {
+                    if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
                     if op == "*" && ta.n == TyKind::Chaine && tb.n == TyKind::Entier { return Ok(Ty::simple(TyKind::Chaine)); }
                     if op == "*" && ta.n == TyKind::Entier && tb.n == TyKind::Chaine { return Ok(Ty::simple(TyKind::Chaine)); }
                     if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
                     return Err(fmt_err(&format!("Opération {} {} {} impossible", na, op, nb), ligne, 0));
                 }
                 "/" => {
+                    if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
                     if est_numerique(&ta) && est_numerique(&tb) {
                         let r = promotion(&ta, &tb);
                         // division exacte : entier/entier -> rationnel

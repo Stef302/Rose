@@ -46,6 +46,7 @@ pub enum Valeur {
     Table(Table),
     Tampon(Tampon),
     Tableau(Tableau),
+    Complexe { re: f64, im: f64 },
 }
 
 impl Valeur {
@@ -76,6 +77,7 @@ impl Valeur {
             Valeur::Table(..) => TyKind::Table,
             Valeur::Tampon(..) => TyKind::Tampon,
             Valeur::Tableau(..) => TyKind::Tableau,
+            Valeur::Complexe { .. } => TyKind::Complexe,
         }
     }
 }
@@ -322,6 +324,8 @@ pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
         (_, Valeur::Tampon(..)) | (Valeur::Tampon(..), _) => false,
         (Valeur::Tableau(x), Valeur::Tableau(y)) => *x.0.borrow() == *y.0.borrow(),
         (_, Valeur::Tableau(..)) | (Valeur::Tableau(..), _) => false,
+        (Valeur::Complexe { re: r1, im: i1 }, Valeur::Complexe { re: r2, im: i2 }) => *r1 == *r2 && *i1 == *i2,
+        (_, Valeur::Complexe { .. }) | (Valeur::Complexe { .. }, _) => false,
         (Valeur::Liste(x), Valeur::Liste(y)) => {
             let (x, y) = (x.0.borrow(), y.0.borrow());
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| valeur_egale(p, q))
@@ -446,6 +450,18 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
             r
         }
         Valeur::Tampon(t) => String::from_utf8_lossy(&t.0.borrow()).into_owned(),
+        Valeur::Complexe { re, im } => {
+            if *im == 0.0 { return re.to_string(); }
+            if *re == 0.0 {
+                if *im == 1.0 { return "i".to_string(); }
+                if *im == -1.0 { return "-i".to_string(); }
+                return format!("{}i", im);
+            }
+            let sign = if *im >= 0.0 { "+" } else { "" };
+            if *im == 1.0 { format!("{}+i", re) }
+            else if *im == -1.0 { format!("{}-i", re) }
+            else { format!("{}{}{}i", re, sign, im) }
+        }
         Valeur::Tableau(t) => {
             let b = t.0.borrow();
             if b.len() <= 8 {
@@ -467,6 +483,7 @@ pub fn afficher(v: &Valeur) {
         Valeur::Liste(..) => ecrire_out(&chaine_de_p(v, true)),
         Valeur::Tampon(..) => erreur_runtime("Un tampon ne s'affiche pas directement — utiliser chaine(tampon)"),
         Valeur::Tableau(..) => ecrire_out(&chaine_de(v)),
+        Valeur::Complexe { .. } => ecrire_out(&chaine_de(v)),
         _ => ecrire_out(&chaine_de(v)),
     }
     ecrire_out("\n");
