@@ -228,7 +228,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "hasard_systeme" | "hasard_vrai" | "trng" | "entier" | "rationnel" | "flottant"
         | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "tableau" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
-        | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow"
+        | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow" | "racine"
         | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi" | "__i"
         | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "breakpoint_if" | "watch" | "unwatch" | "join"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
@@ -1112,6 +1112,27 @@ impl Interp {
                 _ => erreur_runtime("opération non supportée sur les complexes"),
             });
         }
+        // Irrationnel : √n
+        if matches!(g, Valeur::Irrationnel(..)) || matches!(d, Valeur::Irrationnel(..)) {
+            let (gr, gi) = match &g {
+                Valeur::Irrationnel(z) => (z.chaine().parse::<f64>().unwrap_or(0.0), 0.0),
+                _ => (vers_d(&g), 0.0),
+            };
+            let (dr, di) = match &d {
+                Valeur::Irrationnel(z) => (z.chaine().parse::<f64>().unwrap_or(0.0), 0.0),
+                _ => (vers_d(&d), 0.0),
+            };
+            return Ok(match op {
+                "+" => Valeur::f(gr + dr),
+                "-" => Valeur::f(gr - dr),
+                "*" => Valeur::f(gr * dr),
+                "/" => {
+                    if dr == 0.0 { erreur_runtime("division par zéro (irrationnel)"); }
+                    Valeur::f(gr / dr)
+                }
+                _ => erreur_runtime("opération non supportée sur les irrationnels"),
+            });
+        }
         // Répétition de chaîne : "abc" * 3  ou  3 * "abc"
         if op == "*" {
             if let (Valeur::Chaine(x), Valeur::Entier(n, None)) = (&g, &d) {
@@ -1567,6 +1588,18 @@ impl Interp {
             "puissance" | "pow" => {
                 let e = vers_z(&a[1]);
                 puissance(&a[0], &e)
+            }
+            "racine" => {
+                let n = vers_z(&a[0]);
+                if n.sgn() < 0 { erreur_runtime("racine : entier négatif"); }
+                if n.fits_i64() {
+                    let x = n.get_i64();
+                    let r = (x as f64).sqrt() as i64;
+                    if r * r == x {
+                        return Valeur::z(r);
+                    }
+                }
+                Valeur::Irrationnel(Rc::new(n))
             }
             "est_premier" | "is_prime" => { let z = vers_z(&a[0]); Valeur::b(est_premier(&z)) }
             "compter_premiers" => { let z = vers_z(&a[0]); Valeur::z(compter_premiers(&z) as i64) }
@@ -2171,6 +2204,18 @@ impl Interp {
             "im" => { let z = match &a[0] { Valeur::Complexe{im,..} => *im, _ => 0.0 }; Valeur::f(z) }
             "conj" => { match &a[0] { Valeur::Complexe{re,im} => Valeur::Complexe { re: *re, im: -*im }, _ => a[0].clone() } }
             "modulus" | "abs" => { match &a[0] { Valeur::Complexe{re,im} => Valeur::f((re*re+im*im).sqrt()), _ => { let v = &a[0]; match v { Valeur::Entier(i,None) => Valeur::z(i.abs()), _ => Valeur::f(vers_d(v).abs()) } } } }
+            "racine" => {
+                let n = vers_z(&a[0]);
+                if n.sgn() < 0 { erreur_runtime("racine : entier négatif"); }
+                if n.fits_i64() {
+                    let x = n.get_i64();
+                    let r = (x as f64).sqrt() as i64;
+                    if r * r == x {
+                        return Valeur::z(r);
+                    }
+                }
+                Valeur::Irrationnel(Rc::new(n))
+            }
             "quitter" => unreachable!("quitter traité dans stdlib"),
             "abs" => {
                 match &a[0] {
@@ -2370,6 +2415,7 @@ pub fn info() -> String {
     format!("rose 2.0.3\n  \
              moteur            : Rust natif {} — JIT Cranelift + interpréteur exact\n  \
              maths exactes     : BigInt natif (num-bigint, illimité, zéro GMP)\n  \
+             nombres           : entiers, rationnels, flottants, irrationnels (√n), complexes (a+bi)\\n  \
              interpréteur      : intégré (repli du JIT, mêmes sorties)\n  \
              compilation       : JIT à chaud des fonctions entiers/flottants/booléens\n", arch)
 }

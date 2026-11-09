@@ -47,6 +47,7 @@ pub enum Valeur {
     Tampon(Tampon),
     Tableau(Tableau),
     Complexe { re: f64, im: f64 },
+    Irrationnel(Rc<Gz>),
 }
 
 impl Valeur {
@@ -64,6 +65,7 @@ impl Valeur {
     pub fn table() -> Valeur { Valeur::Table(Table(Rc::new(RefCell::new(Vec::new())))) }
     pub fn tampon(n: usize) -> Valeur { Valeur::Tampon(Tampon(Rc::new(RefCell::new(vec![0u8; n])))) }
     pub fn tableau(n: usize) -> Valeur { Valeur::Tableau(Tableau(Rc::new(RefCell::new(vec![0i64; n])))) }
+    pub fn irrationnel(n: Gz) -> Valeur { Valeur::Irrationnel(Rc::new(n)) }
 
     pub fn ty(&self) -> TyKind {
         match self {
@@ -77,6 +79,7 @@ impl Valeur {
             Valeur::Table(..) => TyKind::Table,
             Valeur::Tampon(..) => TyKind::Tampon,
             Valeur::Tableau(..) => TyKind::Tableau,
+            Valeur::Irrationnel(..) => TyKind::Irrationnel,
             Valeur::Complexe { .. } => TyKind::Complexe,
         }
     }
@@ -468,6 +471,13 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
                 format!("[{}]", b.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))
             } else {
                 format!("[{} ... {} elems]", b.iter().take(4).map(|x| x.to_string()).collect::<Vec<_>>().join(", "), b.len())
+            }
+        }
+        Valeur::Irrationnel(z) => {
+            if z.fits_i64() {
+                format!("√{}", z.get_i64())
+            } else {
+                format!("√{}", z.chaine())
             }
         }
     }

@@ -17,7 +17,7 @@ pub fn fmt_err(msg: &str, l: usize, c: usize) -> Err {
 // ── Types ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TyKind { Vide, Entier, Rationnel, Flottant, Booleen, Chaine, Liste, Table, Tampon, Tableau, Complexe, Dyn }
+pub enum TyKind { Vide, Entier, Rationnel, Flottant, Booleen, Chaine, Liste, Table, Tampon, Tableau, Complexe, Irrationnel, Dyn }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Ty { pub n: TyKind, pub elt: TyKind }
@@ -40,6 +40,7 @@ impl Ty {
             TyKind::Tampon => "tampon".into(),
             TyKind::Tableau => "tableau".into(),
             TyKind::Complexe => "complexe".into(),
+            TyKind::Irrationnel => "irrationnel".into(),
             TyKind::Dyn => "?".into(),
         }
     }
@@ -363,6 +364,7 @@ EntreeStd { nom: "gcd", args: &["entier", "entier"], retour: "entier" },
 EntreeStd { nom: "lcm", args: &["entier", "entier"], retour: "entier" },
     EntreeStd { nom: "puissance", args: &["num", "entier"], retour: "entier" },
 EntreeStd { nom: "pow", args: &["num", "entier"], retour: "entier" },
+    EntreeStd { nom: "racine", args: &["entier"], retour: "irrationnel" },
     EntreeStd { nom: "est_premier", args: &["entier"], retour: "booleen" },
 EntreeStd { nom: "is_prime", args: &["entier"], retour: "booleen" },
     EntreeStd { nom: "compter_premiers", args: &["entier"], retour: "entier" },
@@ -458,6 +460,7 @@ fn ty_du_nom(s: &str) -> Ty {
         "tampon" => Ty::simple(TyKind::Tampon),
         "tableau" => Ty::simple(TyKind::Tableau),
         "complexe" => Ty::simple(TyKind::Complexe),
+        "irrationnel" => Ty::simple(TyKind::Irrationnel),
         _ => Ty::vide(),
     }
 }
@@ -1409,6 +1412,7 @@ fn ty_du_texte(s: &str) -> Ty {
         "tampon" => Ty::simple(TyKind::Tampon),
         "tableau" => Ty::simple(TyKind::Tableau),
         "complexe" => Ty::simple(TyKind::Complexe),
+        "irrationnel" => Ty::simple(TyKind::Irrationnel),
         _ => Ty::vide(),
     }
 }
@@ -1532,11 +1536,13 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 "+" => {
                     if ta.n == TyKind::Chaine && tb.n == TyKind::Chaine { return Ok(Ty::simple(TyKind::Chaine)); }
                     if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
+                    if ta.n == TyKind::Irrationnel || tb.n == TyKind::Irrationnel { return Ok(Ty::simple(TyKind::Irrationnel)); }
                     if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
                     return Err(fmt_err(&format!("Addition {} + {} impossible", na, nb), ligne, 0));
                 }
                 "-" | "*" => {
                     if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
+                    if ta.n == TyKind::Irrationnel || tb.n == TyKind::Irrationnel { return Ok(Ty::simple(TyKind::Irrationnel)); }
                     if op == "*" && ta.n == TyKind::Chaine && tb.n == TyKind::Entier { return Ok(Ty::simple(TyKind::Chaine)); }
                     if op == "*" && ta.n == TyKind::Entier && tb.n == TyKind::Chaine { return Ok(Ty::simple(TyKind::Chaine)); }
                     if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
@@ -1544,6 +1550,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 }
                 "/" => {
                     if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
+                    if ta.n == TyKind::Irrationnel || tb.n == TyKind::Irrationnel { return Ok(Ty::simple(TyKind::Irrationnel)); }
                     if est_numerique(&ta) && est_numerique(&tb) {
                         let r = promotion(&ta, &tb);
                         // division exacte : entier/entier -> rationnel
