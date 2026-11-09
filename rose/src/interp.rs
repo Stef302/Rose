@@ -229,7 +229,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
         | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow"
-        | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi"
+        | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi"
         | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction")
@@ -1475,6 +1475,7 @@ impl Interp {
             "compter_premiers" => { let z = vers_z(&a[0]); Valeur::z(compter_premiers(&z) as i64) }
             "nb_chiffres" | "digits" => { let z = vers_z(&a[0]); Valeur::z(nb_chiffres(&z) as i64) }
             "nombre_pi" | "pi" => { let z = vers_z(&a[0]); Valeur::s(nombre_pi(&z)) }
+            "phi" => { let z = vers_z(&a[0]); Valeur::s(nombre_phi(&z)) }
             "longueur" | "len" => {
                 let n: u64 = match &a[0] {
                     Valeur::Chaine(s) => s.chars().count() as u64,

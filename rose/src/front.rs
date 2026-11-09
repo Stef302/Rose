@@ -78,7 +78,8 @@ fn est_mot_cle(s: &str) -> bool {
     matches!(s,
         "fn" | "fonction" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
         | "vrai" | "faux" | "et" | "ou" | "non" | "div"
-        | "entier" | "rationnel" | "flottant" | "booleen" | "chaine" | "liste" | "table")
+        | "entier" | "rationnel" | "flottant" | "booleen" | "chaine" | "liste" | "table"
+        | "π" | "φ")
 }
 
 fn cp_lettre(c: char) -> bool {
@@ -117,6 +118,8 @@ fn uni(c: char) -> Option<Tk> {
         '←' => Tk::Affect,
         '→' => Tk::PointDInterro,
         '√' => Tk::Racine,
+        'π' => Tk::Mot,
+        'φ' => Tk::Mot,
         _ => return None,
     })
 }
@@ -189,7 +192,11 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             continue;
         }
         if c == 'π' {
-            tk.push(Token { tk: Tk::Flottant, texte: "3.141592653589793".into(), ligne, col });
+            tk.push(Token { tk: Tk::Mot, texte: "π".into(), ligne, col });
+            i += 1; col += 1; continue;
+        }
+        if c == 'φ' {
+            tk.push(Token { tk: Tk::Mot, texte: "φ".into(), ligne, col });
             i += 1; col += 1; continue;
         }
         if c == '$' || cp_lettre(c) {
@@ -360,6 +367,7 @@ EntreeStd { nom: "is_prime", args: &["entier"], retour: "booleen" },
 EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "nombre_pi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "pi", args: &["entier"], retour: "chaine" },
+    EntreeStd { nom: "phi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "longueur", args: &["liste_ou_chaine_ou_table"], retour: "entier" },
 EntreeStd { nom: "len", args: &["liste_ou_chaine_ou_table"], retour: "entier" },
     EntreeStd { nom: "table", args: &[], retour: "table" },
@@ -946,6 +954,12 @@ impl Parser {
                 g = Expr::Index { a: Box::new(g), b: Box::new(idx), ligne };
                 continue;
             }
+            if self.est(&[Tk::Bang]) {
+                let lg = self.voir(0).ligne;
+                self.suivant();
+                g = Expr::Appel { nom: "factorielle".into(), module: String::new(), args: vec![g], ligne: lg };
+                continue;
+            }
             return Ok(g);
         }
     }
@@ -991,6 +1005,14 @@ impl Parser {
             Tk::Ident | Tk::Mot => {
                 if t.texte == "vrai" { self.suivant(); return Ok(Expr::BooleenLit(true, t.ligne)); }
                 if t.texte == "faux" { self.suivant(); return Ok(Expr::BooleenLit(false, t.ligne)); }
+                if t.texte == "π" {
+                    self.suivant();
+                    return Ok(Expr::Appel { nom: "pi".into(), module: String::new(), args: vec![Expr::Litteral { ligne: t.ligne, texte: "50".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }], ligne: t.ligne });
+                }
+                if t.texte == "φ" {
+                    self.suivant();
+                    return Ok(Expr::Appel { nom: "phi".into(), module: String::new(), args: vec![Expr::Litteral { ligne: t.ligne, texte: "50".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }], ligne: t.ligne });
+                }
                 let mut module = String::new();
                 if self.voir(1).tk == Tk::DeuxPoints {
                     module = t.texte.clone();

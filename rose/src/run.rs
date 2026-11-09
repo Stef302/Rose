@@ -567,8 +567,8 @@ pub fn compter_premiers(nn: &Gz) -> u64 {
 }
 
 pub fn nombre_pi(chiffres: &Gz) -> String {
-    if chiffres.sgn() <= 0 || !chiffres.fits_i64() || chiffres.get_i64() as u64 > 2_000_000 {
-        erreur_runtime("décimales de π hors limites (1..2000000)");
+    if chiffres.sgn() <= 0 || !chiffres.fits_i64() {
+        erreur_runtime("décimales de π : entier positif attendu");
     }
     let chiffres = chiffres.get_i64() as u64;
     let s = chiffres + 40;
@@ -600,7 +600,6 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
                 else { gmp_add(dest.p(), dest.p(), terme.p()); }
             }
             signe = -signe;
-            if k > 100_000 { break; }
         }
         cibles.push(dest);
     }
@@ -625,6 +624,73 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
     }
     if (1 + chiffres) < lbrut as u64 && brut[(1 + chiffres) as usize] >= b'5' {
         let mut i = chiffres as i64 + 1;
+        while i >= 0 {
+            if sortie[i as usize] == b'.' { i -= 1; continue; }
+            sortie[i as usize] += 1;
+            if sortie[i as usize] <= b'9' { break; }
+            sortie[i as usize] = b'0';
+            i -= 1;
+        }
+    }
+    String::from_utf8_lossy(&sortie).into_owned()
+}
+
+pub fn nombre_phi(chiffres: &Gz) -> String {
+    if chiffres.sgn() <= 0 || !chiffres.fits_i64() || chiffres.get_i64() as u64 > 2_000_000 {
+        erreur_runtime("décimales de φ hors limites (1..2000000)");
+    }
+    let n = chiffres.get_i64() as u64;
+    // sqrt(5) a n+10 decimales via Newton
+    let prec = n + 10;
+    let scale = {
+        let z = Gz::neuf();
+        unsafe { gmp_pow_ui(z.p(), Gz::de_u64(10).p(), prec); }
+        z
+    };
+    // x = 2 * scale (approximation initiale)
+    let mut x = Gz::neuf();
+    unsafe { gmp_mul_ui(x.p(), scale.p(), 2); }
+    let five_scale = Gz::neuf();
+    unsafe {
+        gmp_set_ui(five_scale.p(), 5);
+        gmp_mul(five_scale.p(), five_scale.p(), scale.p());
+        gmp_mul(five_scale.p(), five_scale.p(), scale.p());
+    }
+    // Newton: x = (x + 5*scale*scale / x) / 2, 50 iterations
+    for _ in 0..50 {
+        let q = Gz::neuf();
+        unsafe {
+            gmp_fdiv_q(q.p(), five_scale.p(), x.p());
+            gmp_add(x.p(), x.p(), q.p());
+            let two = Gz::de_u64(2);
+            gmp_fdiv_q(x.p(), x.p(), two.p());
+        }
+    }
+    // phi = (1*scale + sqrt5) / 2  (avec scale pour les decimales)
+    // sqrt5 = x / scale ; phi = (1 + sqrt5)/2 = (scale + x) / (2*scale)
+    let num = Gz::neuf();
+    let den = Gz::neuf();
+    unsafe {
+        gmp_add(num.p(), scale.p(), x.p());
+        gmp_mul_ui(den.p(), scale.p(), 2);
+    }
+    // division entiere : num/den avec n decimales
+    let pi_scale = Gz::neuf();
+    unsafe {
+        gmp_mul(pi_scale.p(), num.p(), scale.p());
+        gmp_fdiv_q(pi_scale.p(), pi_scale.p(), den.p());
+    }
+    let brut = pi_scale.chaine();
+    let brut: Vec<u8> = brut.into_bytes();
+    let lbrut = brut.len();
+    let mut sortie: Vec<u8> = vec![b' '; (n + 2) as usize];
+    sortie[0] = b'1';
+    sortie[1] = b'.';
+    for i in 0..n {
+        sortie[(2 + i) as usize] = if (i + 1) < lbrut as u64 { brut[(i + 1) as usize] } else { b'0' };
+    }
+    if (1 + n) < lbrut as u64 && brut[(1 + n) as usize] >= b'5' {
+        let mut i = n as i64 + 1;
         while i >= 0 {
             if sortie[i as usize] == b'.' { i -= 1; continue; }
             sortie[i as usize] += 1;
