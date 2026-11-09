@@ -223,14 +223,14 @@ fn args_depuis_chaine(interieur: &str, paires: &[(String, String)]) -> Vec<Valeu
 /// Nom de fonction std connu (liste blanche).
 fn nom_std_connu(nom: &str) -> bool {
     matches!(nom,
-        "afficher" | "saisir_entier" | "saisir_flottant" | "millisecondes" | "graine"
-        | "graine_systeme" | "graine_vrai" | "rng_materiel" | "rng_mat" | "hasard"
+        "afficher" | "saisir_entier" | "saisir_flottant" | "millisecondes" | "ms" | "graine" | "seed"
+        | "graine_systeme" | "seed_sys" | "graine_vrai" | "rng_materiel" | "rng_mat" | "hasard"
         | "hasard_systeme" | "hasard_vrai" | "trng" | "entier" | "rationnel" | "flottant"
-        | "chaine" | "longueur" | "table" | "tampon" | "premier" | "dernier"
+        | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
-        | "abs" | "factorielle" | "fibonacci" | "fib" | "pgcd" | "ppcm" | "puissance"
-        | "est_premier" | "compter_premiers" | "nb_chiffres" | "nombre_pi" | "pi"
-        | "sous_chaine" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter"
+        | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow"
+        | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi"
+        | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction")
 }
@@ -1374,15 +1374,15 @@ impl Interp {
             "afficher" => { afficher(&a[0]); Valeur::Vide }
             "saisir_entier" => self.lire_selon(TyKind::Entier),
             "saisir_flottant" => self.lire_selon(TyKind::Flottant),
-            "millisecondes" => {
+            "millisecondes" | "ms" => {
                 let t = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
                 let z = Gz::neuf();
                 z.poser_u64(t);
                 Valeur::zg(z)
             }
-            "graine" => { let z = vers_z(&a[0]); graine_de(&mut self.rng, &z); Valeur::Vide }
-            "graine_systeme" | "graine_vrai" => {
+            "graine" | "seed" => { let z = vers_z(&a[0]); graine_de(&mut self.rng, &z); Valeur::Vide }
+            "graine_systeme" | "seed_sys" | "graine_vrai" => {
                 self.rng = tirage_systeme();
                 rng_tirer(&mut self.rng);
                 Valeur::Vide
@@ -1415,12 +1415,12 @@ impl Interp {
                 }
                 Valeur::zg(r)
             }
-            "tampon" => {
+            "tampon" | "buf" => {
                 let n = vers_z(&a[0]);
                 if n.sgn() < 0 || !n.fits_u64_lt(usize::MAX as u64) { erreur_runtime("tampon : taille démesurée"); }
                 Valeur::tampon(n.get_u64() as usize)
             }
-            "octets" => {
+            "octets" | "bytes" => {
                 let s = chaine_de(&a[0]);
                 Valeur::Tampon(Tampon(Rc::new(RefCell::new(s.into_bytes()))))
             }
@@ -1463,19 +1463,19 @@ impl Interp {
                 remplir_philox(&mut buf, &ab, gr);
                 Valeur::Vide
             }
-            "factorielle" => { let z = vers_z(&a[0]); Valeur::zg(factorielle(&z)) }
+            "factorielle" | "fact" => { let z = vers_z(&a[0]); Valeur::zg(factorielle(&z)) }
             "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
-            "pgcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
-            "ppcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(ppcm(&x, &y)) }
-            "puissance" => {
+            "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
+            "ppcm" | "lcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(ppcm(&x, &y)) }
+            "puissance" | "pow" => {
                 let e = vers_z(&a[1]);
                 puissance(&a[0], &e)
             }
-            "est_premier" => { let z = vers_z(&a[0]); Valeur::b(est_premier(&z)) }
+            "est_premier" | "is_prime" => { let z = vers_z(&a[0]); Valeur::b(est_premier(&z)) }
             "compter_premiers" => { let z = vers_z(&a[0]); Valeur::z(compter_premiers(&z) as i64) }
-            "nb_chiffres" => { let z = vers_z(&a[0]); Valeur::z(nb_chiffres(&z) as i64) }
+            "nb_chiffres" | "digits" => { let z = vers_z(&a[0]); Valeur::z(nb_chiffres(&z) as i64) }
             "nombre_pi" | "pi" => { let z = vers_z(&a[0]); Valeur::s(nombre_pi(&z)) }
-            "longueur" => {
+            "longueur" | "len" => {
                 let n: u64 = match &a[0] {
                     Valeur::Chaine(s) => s.chars().count() as u64,
                     Valeur::Liste(l) => l.0.borrow().len() as u64,
@@ -1491,7 +1491,7 @@ impl Interp {
                 z.poser_u64(n);
                 Valeur::zg(z)
             }
-            "table" => Valeur::table(),
+            "table" | "map" => Valeur::table(),
             "inserer" => {
                 let Valeur::Table(t) = &a[0] else { erreur_runtime("inserer attend une table") };
                 let (k, v) = (a[1].clone(), a[2].clone());
@@ -1548,7 +1548,7 @@ impl Interp {
                 if (0xD800..=0xDFFF).contains(&cp) { erreur_runtime("caractere : code réservé (55296 à 57343)"); }
                 Valeur::s(char::from_u32(cp).unwrap_or('\u{FFFD}').to_string())
             }
-            "sous_chaine" => {
+            "sous_chaine" | "sub" => {
                 let s = chaine_de(&a[0]);
                 if a.len() < 3 { erreur_runtime("sous_chaine : 3 arguments attendus"); }
                 let d = vers_z(&a[1]);
