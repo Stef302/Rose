@@ -281,6 +281,9 @@ fn main() {
     if argv.iter().any(|a| a == "--debug") || std::env::var("ROSE_DEBUG").is_ok() {
         crate::run::set_debug_mode(true);
     }
+    if argv.iter().any(|a| a == "--step") || std::env::var("ROSE_STEP").is_ok() {
+        crate::run::set_step_mode(true);
+    }
     let source_t = source.clone();
     let args_t = args.clone();
     let h = std::thread::Builder::new()

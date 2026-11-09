@@ -230,7 +230,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
         | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow"
         | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi"
-        | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "join"
+        | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "breakpoint_if" | "watch" | "unwatch" | "join"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction")
 }
@@ -607,6 +607,16 @@ impl Interp {
     fn exec(&mut self, i: &Instr) -> Result<(), Option<i32>> {
         if crate::run::debug_mode() {
             eprintln!("[DEBUG] {:?}", i);
+            for w in crate::run::get_watches() {
+                if let Some(v) = self.globaux.get(&w).or_else(|| self.trames.last().and_then(|t| t.get(&w))) {
+                    eprintln!("  [WATCH] {} = {}", w, chaine_de(v));
+                }
+            }
+        }
+        if crate::run::step_mode() {
+            eprintln!("[STEP] Appuyer sur Entrée...");
+            let mut buf = String::new();
+            let _ = std::io::stdin().read_line(&mut buf);
         }
         match i {
             Instr::Afficher(exprs, _) => { for e in exprs { let v = self.eval(e)?; afficher(&v); } }
@@ -1382,6 +1392,33 @@ impl Interp {
             let id = vers_z(&a[0]);
             if !id.fits_i64() { erreur_runtime("join : id invalide"); }
             crate::run::join_thread(id.get_i64() as usize);
+            return Ok(Valeur::Vide);
+        }
+        if nom == "breakpoint_if" {
+            let cond = est_vrai(&a[0]);
+            if cond {
+                crate::run::flush_out();
+                eprintln!("[BREAKPOINT_IF] condition vraie");
+                for w in crate::run::get_watches() {
+                    // try to find the var
+                }
+                for (k, v) in &self.globaux {
+                    eprintln!("  {} = {}", k, chaine_de(v));
+                }
+                eprintln!("Appuyer sur Entrée pour continuer...");
+                let mut buf = String::new();
+                let _ = std::io::stdin().read_line(&mut buf);
+            }
+            return Ok(Valeur::Vide);
+        }
+        if nom == "watch" {
+            let name = chaine_de(&a[0]);
+            crate::run::add_watch(name);
+            return Ok(Valeur::Vide);
+        }
+        if nom == "unwatch" {
+            let name = chaine_de(&a[0]);
+            crate::run::remove_watch(&name);
             return Ok(Valeur::Vide);
         }
         Ok(self.stdlib_valeur(nom, a))

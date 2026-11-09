@@ -111,6 +111,15 @@ pub fn join_thread(id: usize) {
 pub fn debug_mode() -> bool { DEBUG_MODE.load(Ordering::Relaxed) }
 pub fn set_debug_mode(v: bool) { DEBUG_MODE.store(v, Ordering::Relaxed); }
 
+pub static STEP_MODE: AtomicBool = AtomicBool::new(false);
+pub static WATCH_LIST: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn step_mode() -> bool { STEP_MODE.load(Ordering::Relaxed) }
+pub fn set_step_mode(v: bool) { STEP_MODE.store(v, Ordering::Relaxed); }
+pub fn add_watch(v: String) { WATCH_LIST.lock().unwrap().push(v); }
+pub fn remove_watch(v: &str) { WATCH_LIST.lock().unwrap().retain(|x| x != v); }
+pub fn get_watches() -> Vec<String> { WATCH_LIST.lock().unwrap().clone() }
+
 pub fn flush_out() { let _ = std::io::stdout().flush(); }
 
 pub fn ecrire_out(s: &str) { let _ = std::io::stdout().write_all(s.as_bytes()); }
