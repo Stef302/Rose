@@ -34,8 +34,20 @@ else
   touch "$STAGE/bin/rose-20.exe"
 fi
 
+# LLVM-C.dll (AOT/LLVM runtime) si disponible
+LLVM_DLL="${LLVM_DLL:-/home/clausake/.local/llvm-win/bin/LLVM-C.dll}"
+if [ -f "$LLVM_DLL" ]; then
+  cp "$LLVM_DLL" "$STAGE/bin/LLVM-C.dll"
+  echo "✓ LLVM-C.dll trouvé : $LLVM_DLL"
+else
+  echo "⚠ LLVM-C.dll introuvable — AOT/LLVM indisponible dans l'installeur"
+fi
+
 mkdir -p "$I/staging"
 cp "$STAGE/bin/rose-20.exe" "$I/staging/rose-20.exe"
+if [ -f "$STAGE/bin/LLVM-C.dll" ]; then
+  cp "$STAGE/bin/LLVM-C.dll" "$I/staging/LLVM-C.dll"
+fi
 
 # fichiers docs optionnels
 for f in README-PARTAGE.md TESTER.md; do

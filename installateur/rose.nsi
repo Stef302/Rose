@@ -111,6 +111,7 @@ Section "Moteur Rose" SecMoteur
   File "assets\rose.ico"                          ; icône des fichiers .rose
   File "assets\\setup.ico"                          ; icône de l'exécutable Rose
   Rename "setup.ico" "rose_app.ico"
+  File /nonfatal "staging\LLVM-C.dll"             ; LLVM runtime (AOT/LLVM)
 
 
   SetOutPath "$INSTDIR"
@@ -166,6 +167,7 @@ Section "Uninstall"
   DeleteRegKey HKCU "${UNINST_KEY}"
   DeleteRegKey HKCU "Software\${APP_NAME}"
 
+  Delete "$INSTDIR\bin\LLVM-C.dll"
   RMDir /r "$INSTDIR\bin"
   Delete "$INSTDIR\README-PARTAGE.md"
   Delete "$INSTDIR\TESTER.md"
