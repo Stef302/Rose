@@ -269,10 +269,12 @@ fn repli_parseur(nu: &str, paires: &[(String, String)]) -> Option<String> {
             for idx in (0..n).rev() {
                 let ins = it.prog.instructions[idx].clone();
                 match ins {
-                    crate::front::Instr::Afficher(e, _) => {
-                        if let Ok(v) = it.eval(&e) {
-                            let r = chaine_de(&v);
-                            if !r.is_empty() { return Some(r); }
+                    crate::front::Instr::Afficher(exprs, _) => {
+                        for e in exprs {
+                            if let Ok(v) = it.eval(&e) {
+                                let r = chaine_de(&v);
+                                if !r.is_empty() { return Some(r); }
+                            }
                         }
                     }
                     crate::front::Instr::Affect { nom, e, .. } => {
@@ -441,11 +443,12 @@ fn rendu_par_parseur(src: &str) -> Option<String> {
     for idx in (0..n).rev() {
         let ins = it.prog.instructions[idx].clone();
         match ins {
-            crate::front::Instr::Afficher(e, _) => {
-                if let Ok(v) = it.eval(&e) {
-                    let r = nettoyer_rendu(&chaine_de(&v));
-
-                    if !r.is_empty() && !contient_appel(&r) { return Some(r); }
+            crate::front::Instr::Afficher(exprs, _) => {
+                for e in exprs {
+                    if let Ok(v) = it.eval(&e) {
+                        let r = nettoyer_rendu(&chaine_de(&v));
+                        if !r.is_empty() && !contient_appel(&r) { return Some(r); }
+                    }
                 }
             }
             crate::front::Instr::Affect { nom, e, .. } => {
@@ -603,7 +606,7 @@ impl Interp {
 
     fn exec(&mut self, i: &Instr) -> Result<(), Option<i32>> {
         match i {
-            Instr::Afficher(e, _) => { let v = self.eval(e)?; afficher(&v); }
+            Instr::Afficher(exprs, _) => { for e in exprs { let v = self.eval(e)?; afficher(&v); } }
             Instr::Lire { nom, ty, .. } => {
                 let ty_resolu = if *ty == TyKind::Dyn {
                     self.chercher_var(nom).map(|v| v.ty()).unwrap_or(TyKind::Entier)
@@ -1048,6 +1051,19 @@ impl Interp {
         if op == "+" {
             if let (Valeur::Chaine(x), Valeur::Chaine(y)) = (&g, &d) {
                 return Ok(Valeur::s(format!("{}{}", x, y)));
+            }
+        }
+        // Répétition de chaîne : "abc" * 3  ou  3 * "abc"
+        if op == "*" {
+            if let (Valeur::Chaine(x), Valeur::Entier(n, None)) = (&g, &d) {
+                let n = *n;
+                if n < 0 { erreur_runtime("répétition de chaîne avec compte négatif"); }
+                return Ok(Valeur::s(x.repeat(n as usize)));
+            }
+            if let (Valeur::Entier(n, None), Valeur::Chaine(x)) = (&g, &d) {
+                let n = *n;
+                if n < 0 { erreur_runtime("répétition de chaîne avec compte négatif"); }
+                return Ok(Valeur::s(x.repeat(n as usize)));
             }
         }
         let m = rnk(&g).max(rnk(&d));
@@ -1889,11 +1905,13 @@ impl Interp {
                         if n > 0 {
                             let derniere = interp.prog.instructions[n - 1].clone();
                             match derniere {
-                                crate::front::Instr::Afficher(e, _) => {
+                                crate::front::Instr::Afficher(exprs, _) => {
                                     interp.executer_principal();
-                                    if let Ok(v) = interp.eval(&e) {
-                                        rendu = Valeur::s(chaine_de(&v));
-                                        obtenu = true;
+                                    if let Some(e) = exprs.first() {
+                                        if let Ok(v) = interp.eval(e) {
+                                            rendu = Valeur::s(chaine_de(&v));
+                                            obtenu = true;
+                                        }
                                     }
                                 }
                                 crate::front::Instr::Affect { e, .. } => {

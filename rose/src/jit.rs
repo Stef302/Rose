@@ -247,7 +247,12 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
     for i in instrs {
 
         match i {
-            Instr::Afficher(e, _) | Instr::ExprStmt(e) => {
+            Instr::Afficher(exprs, _) => {
+                if exprs.len() != 1 { return false; }
+                let e = &exprs[0];
+                if ty_statique(e, env).is_none() || !sur_i64(e, env) { return false; }
+            }
+            Instr::ExprStmt(e) => {
                 if ty_statique(e, env).is_none() || !sur_i64(e, env) { return false; }
             }
             Instr::Affect { nom, e, .. } => {
@@ -1300,7 +1305,9 @@ impl Emetteur<'_> {
                     }
                     self.builder.def_var(slot, v);
                 }
-                Instr::Afficher(e, _) => {
+                Instr::Afficher(exprs, _) => {
+                    if exprs.len() != 1 { return; }
+                    let e = &exprs[0];
                     let t = self.type_of(e, env, types);
                     if t == TyKind::Entier {
                         let v = self.expr(e, env, types);

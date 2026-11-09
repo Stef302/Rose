@@ -291,7 +291,7 @@ pub fn ligne_expr(e: &Expr) -> usize {
 
 #[derive(Clone, Debug)]
 pub enum Instr {
-    Afficher(Expr, usize),
+    Afficher(Vec<Expr>, usize),
     Lire { nom: String, ty: TyKind, ligne: usize },
     Affect { nom: String, e: Expr, ligne: usize },
     AffectIndex { nom: String, index: Expr, valeur: Expr, ligne: usize },
@@ -596,7 +596,14 @@ impl Parser {
         let t = self.voir(0).clone();
         match t.tk {
             Tk::LBrace => return Ok(Instr::Bloc(self.bloc()?)),
-            Tk::FlecheD => { let lg = self.voir(0).ligne; self.suivant(); return Ok(Instr::Afficher(self.expression()?, lg)) }
+            Tk::FlecheD => {
+                let lg = self.voir(0).ligne; self.suivant();
+                let mut exprs = vec![self.expression()?];
+                while self.accepter(&[Tk::Virgule]) {
+                    exprs.push(self.expression()?);
+                }
+                return Ok(Instr::Afficher(exprs, lg))
+            }
             Tk::FlecheG => {
                 self.suivant();
                 let nom = self.nom_ident()?;
@@ -1069,11 +1076,12 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                  retour: &Ty, en_fonction: bool) -> Result<(), Err> {
     for i in instrs {
         match i {
-            Instr::Afficher(e, lg) => {
-                // miroir C++ instruction() IK::Afficher : « Rien à afficher ici »
-                let t = expr_type(prog, e, env)?;
-                if t.n == TyKind::Vide {
-                    return Err(fmt_err("Rien à afficher ici", *lg, 0));
+            Instr::Afficher(exprs, lg) => {
+                for e in exprs {
+                    let t = expr_type(prog, e, env)?;
+                    if t.n == TyKind::Vide {
+                        return Err(fmt_err("Rien à afficher ici", *lg, 0));
+                    }
                 }
             }
             Instr::Lire { nom, ty, ligne } => {
@@ -1455,6 +1463,8 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                     return Err(fmt_err(&format!("Addition {} + {} impossible", na, nb), ligne, 0));
                 }
                 "-" | "*" => {
+                    if op == "*" && ta.n == TyKind::Chaine && tb.n == TyKind::Entier { return Ok(Ty::simple(TyKind::Chaine)); }
+                    if op == "*" && ta.n == TyKind::Entier && tb.n == TyKind::Chaine { return Ok(Ty::simple(TyKind::Chaine)); }
                     if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
                     return Err(fmt_err(&format!("Opération {} {} {} impossible", na, op, nb), ligne, 0));
                 }
@@ -1834,7 +1844,7 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
 
 pub fn replier_instr(i: &Instr) -> Instr {
     match i {
-        Instr::Afficher(e, l) => Instr::Afficher(replier(e), *l),
+        Instr::Afficher(exprs, l) => Instr::Afficher(exprs.iter().map(replier).collect(), *l),
         Instr::Lire { nom, ty, ligne } => Instr::Lire { nom: nom.clone(), ty: *ty, ligne: *ligne },
         Instr::Affect { nom, e, ligne } => Instr::Affect { nom: nom.clone(), e: replier(e), ligne: *ligne },
         Instr::AffectIndex { nom, index, valeur, ligne } => {
