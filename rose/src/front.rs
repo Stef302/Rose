@@ -17,7 +17,7 @@ pub fn fmt_err(msg: &str, l: usize, c: usize) -> Err {
 // ── Types ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TyKind { Vide, Entier, Rationnel, Flottant, Booleen, Chaine, Liste, Table, Tampon, Dyn }
+pub enum TyKind { Vide, Entier, Rationnel, Flottant, Booleen, Chaine, Liste, Table, Tampon, Tableau, Dyn }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Ty { pub n: TyKind, pub elt: TyKind }
@@ -38,6 +38,7 @@ impl Ty {
             TyKind::Liste => format!("liste<{}>", Ty::simple(self.elt).nom()),
             TyKind::Table => "table".into(),
             TyKind::Tampon => "tampon".into(),
+            TyKind::Tableau => "tableau".into(),
             TyKind::Dyn => "?".into(),
         }
     }
@@ -417,6 +418,8 @@ EntreeStd { nom: "seed", args: &["entier"], retour: "vide" },
     EntreeStd { nom: "rng_materiel", args: &[], retour: "entier" },
     EntreeStd { nom: "rng_mat", args: &[], retour: "entier" },
     EntreeStd { nom: "tampon", args: &["entier"], retour: "tampon" },
+    EntreeStd { nom: "tableau", args: &["entier"], retour: "tableau" },
+    EntreeStd { nom: "gpu_somme", args: &["tableau"], retour: "entier" },
 EntreeStd { nom: "buf", args: &["entier"], retour: "buf" },
     EntreeStd { nom: "octets", args: &["chaine"], retour: "tampon" },
 EntreeStd { nom: "bytes", args: &["chaine"], retour: "tampon" },
@@ -446,6 +449,7 @@ fn ty_du_nom(s: &str) -> Ty {
         "chaine" => Ty::simple(TyKind::Chaine),
         "table" => Ty::simple(TyKind::Table),
         "tampon" => Ty::simple(TyKind::Tampon),
+        "tableau" => Ty::simple(TyKind::Tableau),
         _ => Ty::vide(),
     }
 }
@@ -1192,14 +1196,17 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 // la table doit exister (ou être créée)
                 let existante = env.get(nom).cloned();
                 if let Some(ex) = &existante {
-                    if ex.n != TyKind::Table && ex.n != TyKind::Dyn {
+                    if ex.n != TyKind::Table && ex.n != TyKind::Tableau && ex.n != TyKind::Dyn {
                         return Err(fmt_err(&format!(
                             "'{}' est {}, on ne peut pas y affecter par index",
                             nom, ex.nom()), *ligne, 0));
                     }
                 }
                 verifier_nom_reserve(nom, *ligne)?;
-                env.insert(nom.clone(), Ty::simple(TyKind::Table));
+                if existante.is_none() {
+                    // type inconnu : on ne peut pas deviner, laisser Dyn
+                    // (le type sera résolu à l'exécution)
+                }
             }
             Instr::Si { test, alors, sinon, ligne } => {
                 let t = expr_type(prog, test, env)?;
@@ -1344,7 +1351,7 @@ fn verifier_type_std(nom: &str, attendus: &[&str], args: &[Expr],
                 }
             }
             "liste_ou_chaine" | "liste_ou_chaine_ou_table" => {
-                if !matches!(ta.n, TyKind::Liste | TyKind::Chaine | TyKind::Table | TyKind::Tampon) {
+                if !matches!(ta.n, TyKind::Liste | TyKind::Chaine | TyKind::Table | TyKind::Tampon | TyKind::Tableau) {
                     return Err(fmt_err(&format!(
                         "{}: une liste, une chaîne ou une table est attendue, reçu {}",
                         nom, nom_pour_msg(&ta)), ligne, 0));
@@ -1391,6 +1398,7 @@ fn ty_du_texte(s: &str) -> Ty {
         "chaine" => Ty::simple(TyKind::Chaine),
         "table" => Ty::simple(TyKind::Table),
         "tampon" => Ty::simple(TyKind::Tampon),
+        "tableau" => Ty::simple(TyKind::Tableau),
         _ => Ty::vide(),
     }
 }
@@ -1464,7 +1472,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             let ligne = *ligne;
             let tb = expr_type(prog, a, env)?;
             let ti = expr_type(prog, b, env)?;
-            if !(matches!(tb.n, TyKind::Liste | TyKind::Chaine | TyKind::Table | TyKind::Dyn)) {
+            if !(matches!(tb.n, TyKind::Liste | TyKind::Chaine | TyKind::Table | TyKind::Tableau | TyKind::Dyn)) {
                 return Err(fmt_err(&format!("Index sur un {}, une liste est attendue", nom_pour_msg(&tb)), ligne, 0));
             }
             if tb.n == TyKind::Table || tb.n == TyKind::Dyn {
@@ -1478,9 +1486,12 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             }
             if ti.n != TyKind::Entier {
                 return Err(fmt_err(if tb.n == TyKind::Chaine { "Index d'une chaîne doit être entier" }
+                                   else if tb.n == TyKind::Tableau { "Index d'un tableau doit être entier" }
                                    else { "Index d'une liste doit être entier" }, ligne, 0));
             }
-            Ok(if tb.n == TyKind::Chaine { Ty::simple(TyKind::Chaine) } else { Ty::simple(tb.elt) })
+            Ok(if tb.n == TyKind::Chaine { Ty::simple(TyKind::Chaine) }
+               else if tb.n == TyKind::Tableau { Ty::simple(TyKind::Entier) }
+               else { Ty::simple(tb.elt) })
         }
         Expr::Binaire { op, a, b, ligne } => {
             // miroir exact Verificateur::binaire (rose.cpp:1450-1510)

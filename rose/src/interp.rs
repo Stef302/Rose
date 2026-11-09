@@ -226,7 +226,7 @@ fn nom_std_connu(nom: &str) -> bool {
         "afficher" | "saisir_entier" | "saisir_flottant" | "millisecondes" | "ms" | "graine" | "seed"
         | "graine_systeme" | "seed_sys" | "graine_vrai" | "rng_materiel" | "rng_mat" | "hasard"
         | "hasard_systeme" | "hasard_vrai" | "trng" | "entier" | "rationnel" | "flottant"
-        | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "premier" | "dernier"
+        | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "tableau" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
         | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow"
         | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi"
@@ -635,7 +635,17 @@ impl Interp {
                 let table_opt = self.trames.iter().rev()
                     .find_map(|t| t.get(nom))
                     .or_else(|| self.globaux.get(nom));
-                if let Some(Valeur::Table(t)) = table_opt {
+                if let Some(Valeur::Tableau(t)) = table_opt {
+                    let idx = vers_z(&idx);
+                    let len = t.0.borrow().len();
+                    if !idx.fits_u64_lt(len as u64) {
+                        erreur_runtime("index hors des limites du tableau");
+                    }
+                    let i = idx.get_u64() as usize;
+                    let v = vers_z(&val);
+                    if !v.fits_i64() { erreur_runtime("tableau : valeur hors i64"); }
+                    t.0.borrow_mut()[i] = v.get_i64();
+                } else if let Some(Valeur::Table(t)) = table_opt {
                     let mut items = t.0.borrow_mut();
                     // chercher si la clé existe déjà
                     let mut trouve = false;
@@ -973,6 +983,15 @@ impl Interp {
                         }
                         let i = idx.get_u64();
                         Ok(Valeur::s(cps[i as usize].to_string()))
+                    }
+                    Valeur::Tableau(t) => {
+                        let idx = vers_z(&self.eval(b)?);
+                        let len = t.0.borrow().len();
+                        if !idx.fits_u64_lt(len as u64) {
+                            erreur_runtime("index hors des limites du tableau");
+                        }
+                        let i = idx.get_u64() as usize;
+                        Ok(Valeur::z(t.0.borrow()[i]))
                     }
                     _ => erreur_runtime("index sur une valeur qui n'est pas une liste"),
                 }
@@ -1477,6 +1496,11 @@ impl Interp {
                 if n.sgn() < 0 || !n.fits_u64_lt(usize::MAX as u64) { erreur_runtime("tampon : taille démesurée"); }
                 Valeur::tampon(n.get_u64() as usize)
             }
+            "tableau" => {
+                let n = vers_z(&a[0]);
+                if n.sgn() < 0 || !n.fits_u64_lt(usize::MAX as u64) { erreur_runtime("tableau : taille démesurée"); }
+                Valeur::tableau(n.get_u64() as usize)
+            }
             "octets" | "bytes" => {
                 let s = chaine_de(&a[0]);
                 Valeur::Tampon(Tampon(Rc::new(RefCell::new(s.into_bytes()))))
@@ -1539,6 +1563,7 @@ impl Interp {
                     Valeur::Liste(l) => l.0.borrow().len() as u64,
                     Valeur::Table(t) => t.0.borrow().len() as u64,
                     Valeur::Tampon(t) => t.0.borrow().len() as u64,
+                    Valeur::Tableau(t) => t.0.borrow().len() as u64,
                     // un mot non atomique peut rester une chaine : on rend sa longueur
                     _ => {
                         let c = chaine_de(&a[0]);
@@ -2100,6 +2125,29 @@ impl Interp {
                 let mut buf = String::new();
                 let _ = std::io::stdin().read_line(&mut buf);
                 Valeur::Vide
+            }
+            "gpu_somme" => {
+                // Placeholder: somme CPU pour l'instant
+                let t = match &a[0] { Valeur::Tableau(t) => t, _ => { erreur_runtime("gpu_somme : tableau attendu"); } };
+                let b = t.0.borrow();
+                let mut s: i64 = 0;
+                for &x in b.iter() { s = s.wrapping_add(x); }
+                Valeur::z(s)
+            }
+            "gpu_somme" => {
+                let t = match &a[0] { Valeur::Tableau(t) => t, _ => { erreur_runtime("gpu_somme : tableau attendu"); } };
+                let b = t.0.borrow();
+                let buf: Vec<i64> = b.clone();
+                drop(b);
+                match crate::run::gpu_somme_i64(&buf) {
+                    Some(s) => Valeur::z(s),
+                    None => {
+                        // fallback CPU
+                        let mut s: i64 = 0;
+                        for &x in buf.iter() { s = s.wrapping_add(x); }
+                        Valeur::z(s)
+                    }
+                }
             }
             "quitter" => unreachable!("quitter traité dans stdlib"),
             "abs" => {

@@ -31,6 +31,8 @@ pub struct Liste(pub Rc<RefCell<Vec<Valeur>>>);
 pub struct Table(pub Rc<RefCell<Vec<(Valeur, Valeur)>>>);
 #[derive(Clone)]
 pub struct Tampon(pub Rc<RefCell<Vec<u8>>>);
+#[derive(Clone)]
+pub struct Tableau(pub Rc<RefCell<Vec<i64>>>);
 
 #[derive(Clone)]
 pub enum Valeur {
@@ -43,6 +45,7 @@ pub enum Valeur {
     Liste(Liste),
     Table(Table),
     Tampon(Tampon),
+    Tableau(Tableau),
 }
 
 impl Valeur {
@@ -59,6 +62,7 @@ impl Valeur {
     pub fn liste_de(v: Vec<Valeur>) -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(v)))) }
     pub fn table() -> Valeur { Valeur::Table(Table(Rc::new(RefCell::new(Vec::new())))) }
     pub fn tampon(n: usize) -> Valeur { Valeur::Tampon(Tampon(Rc::new(RefCell::new(vec![0u8; n])))) }
+    pub fn tableau(n: usize) -> Valeur { Valeur::Tableau(Tableau(Rc::new(RefCell::new(vec![0i64; n])))) }
 
     pub fn ty(&self) -> TyKind {
         match self {
@@ -71,6 +75,7 @@ impl Valeur {
             Valeur::Liste(..) => TyKind::Liste,
             Valeur::Table(..) => TyKind::Table,
             Valeur::Tampon(..) => TyKind::Tampon,
+            Valeur::Tableau(..) => TyKind::Tableau,
         }
     }
 }
@@ -315,6 +320,8 @@ pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
     match (a, b) {
         (Valeur::Tampon(x), Valeur::Tampon(y)) => *x.0.borrow() == *y.0.borrow(),
         (_, Valeur::Tampon(..)) | (Valeur::Tampon(..), _) => false,
+        (Valeur::Tableau(x), Valeur::Tableau(y)) => *x.0.borrow() == *y.0.borrow(),
+        (_, Valeur::Tableau(..)) | (Valeur::Tableau(..), _) => false,
         (Valeur::Liste(x), Valeur::Liste(y)) => {
             let (x, y) = (x.0.borrow(), y.0.borrow());
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| valeur_egale(p, q))
@@ -439,6 +446,14 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
             r
         }
         Valeur::Tampon(t) => String::from_utf8_lossy(&t.0.borrow()).into_owned(),
+        Valeur::Tableau(t) => {
+            let b = t.0.borrow();
+            if b.len() <= 8 {
+                format!("[{}]", b.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "))
+            } else {
+                format!("[{} ... {} elems]", b.iter().take(4).map(|x| x.to_string()).collect::<Vec<_>>().join(", "), b.len())
+            }
+        }
     }
 }
 
@@ -451,6 +466,7 @@ pub fn afficher(v: &Valeur) {
         Valeur::Rationnel(q) => ecrire_out(&texte_rationnel(q)),
         Valeur::Liste(..) => ecrire_out(&chaine_de_p(v, true)),
         Valeur::Tampon(..) => erreur_runtime("Un tampon ne s'affiche pas directement — utiliser chaine(tampon)"),
+        Valeur::Tableau(..) => ecrire_out(&chaine_de(v)),
         _ => ecrire_out(&chaine_de(v)),
     }
     ecrire_out("\n");
@@ -743,6 +759,110 @@ pub fn nombre_phi(chiffres: &Gz) -> String {
         }
     }
     String::from_utf8_lossy(&sortie).into_owned()
+}
+
+
+/// Somme d'un tableau d'i64 sur GPU via CUDA driver API + PTX précompilé.
+/// Retourne la somme, ou None si le GPU n'est pas disponible (fallback CPU).
+pub fn gpu_somme_i64(buf: &[i64]) -> Option<i64> {
+    if buf.is_empty() { return Some(0); }
+    #[cfg(target_os = "linux")]
+    {
+        // CUDA path (embedded PTX)
+        unsafe {
+            type CuResult = i32;
+            type CuDevice = i32;
+            type CuContext = *mut std::ffi::c_void;
+            type CuModule = *mut std::ffi::c_void;
+            type CuFunction = *mut std::ffi::c_void;
+            type CuDevicePtr = u64;
+            type CuStream = *mut std::ffi::c_void;
+
+            unsafe extern "C" {
+                fn cuInit(flags: u32) -> CuResult;
+                fn cuDeviceGet(device: *mut CuDevice, ordinal: i32) -> CuResult;
+                fn cuCtxCreate_v2(ctx: *mut CuContext, flags: u32, dev: CuDevice) -> CuResult;
+                fn cuModuleLoadData(module: *mut CuModule, image: *const i8) -> CuResult;
+                fn cuModuleGetFunction(hfunc: *mut CuFunction, hmod: CuModule, name: *const i8) -> CuResult;
+                fn cuMemAlloc(dptr: *mut CuDevicePtr, bytesize: usize) -> CuResult;
+                fn cuMemcpyHtoD(dst: CuDevicePtr, src: *const i8, bytecount: usize) -> CuResult;
+                fn cuMemsetD8(dst: CuDevicePtr, uc: u8, n: usize) -> CuResult;
+                fn cuLaunchKernel(f: CuFunction, gridDimX: u32, gridDimY: u32, gridDimZ: u32,
+                                  blockDimX: u32, blockDimY: u32, blockDimZ: u32,
+                                  sharedMemBytes: usize, hStream: CuStream,
+                                  kernelParams: *mut *mut std::ffi::c_void, extra: *mut *mut std::ffi::c_void) -> CuResult;
+                fn cuMemcpyDtoH(dst: *mut i8, src: CuDevicePtr, bytecount: usize) -> CuResult;
+                fn cuMemFree(dptr: CuDevicePtr) -> CuResult;
+                fn cuModuleUnload(hmod: CuModule) -> CuResult;
+                fn cuCtxDestroy_v2(ctx: CuContext) -> CuResult;
+            }
+
+            if cuInit(0) != 0 { return None; }
+            let mut dev: CuDevice = 0;
+            if cuDeviceGet(&mut dev, 0) != 0 { return None; }
+            let mut ctx: CuContext = std::ptr::null_mut();
+            if cuCtxCreate_v2(&mut ctx, 0, dev) != 0 { return None; }
+
+            let ptx = include_str!("sum.ptx");
+            let ptx_cstr = std::ffi::CString::new(ptx).ok()?;
+            let mut module: CuModule = std::ptr::null_mut();
+            if cuModuleLoadData(&mut module, ptx_cstr.as_ptr() as *const i8) != 0 {
+                cuCtxDestroy_v2(ctx); return None;
+            }
+            let name = std::ffi::CString::new("sum_i64").unwrap();
+            let mut func: CuFunction = std::ptr::null_mut();
+            if cuModuleGetFunction(&mut func, module, name.as_ptr() as *const i8) != 0 {
+                cuModuleUnload(module); cuCtxDestroy_v2(ctx); return None;
+            }
+
+            let n = buf.len();
+            let mut d_input: CuDevicePtr = 0;
+            let mut d_output: CuDevicePtr = 0;
+            if cuMemAlloc(&mut d_input, n * 8) != 0 { cuCtxDestroy_v2(ctx); return None; }
+            if cuMemcpyHtoD(d_input, buf.as_ptr() as *const i8, n * 8) != 0 { cuMemFree(d_input); cuCtxDestroy_v2(ctx); return None; }
+            if cuMemAlloc(&mut d_output, 8) != 0 { cuMemFree(d_input); cuCtxDestroy_v2(ctx); return None; }
+            cuMemsetD8(d_output, 0, 8);
+
+            let mut d_input_ptr = d_input;
+            let mut d_output_ptr = d_output;
+            let mut n_i32 = n as i32;
+            let mut args: [*mut std::ffi::c_void; 3] = [
+                &mut d_input_ptr as *mut _ as *mut std::ffi::c_void,
+                &mut d_output_ptr as *mut _ as *mut std::ffi::c_void,
+                &mut n_i32 as *mut _ as *mut std::ffi::c_void,
+            ];
+
+            let block_size = 256u32;
+            let grid_size = ((n as u32) + block_size - 1) / block_size;
+            let shared_mem = (block_size as usize) * 8;
+            let stream: CuStream = std::ptr::null_mut();
+
+            if cuLaunchKernel(func, grid_size, 1, 1, block_size, 1, 1, shared_mem, stream, args.as_mut_ptr(), std::ptr::null_mut()) != 0 {
+                cuMemFree(d_input); cuMemFree(d_output); cuModuleUnload(module); cuCtxDestroy_v2(ctx); return None;
+            }
+
+            let mut result: i64 = 0;
+            if cuMemcpyDtoH(&mut result as *mut i64 as *mut i8, d_output, 8) != 0 {
+                cuMemFree(d_input); cuMemFree(d_output); cuModuleUnload(module); cuCtxDestroy_v2(ctx); return None;
+            }
+
+            cuMemFree(d_input);
+            cuMemFree(d_output);
+            cuModuleUnload(module);
+            cuCtxDestroy_v2(ctx);
+
+            return Some(result);
+        }
+    }
+    // Fallback CPU
+    let mut s: i64 = 0;
+    for &x in buf.iter() { s = s.wrapping_add(x); }
+    Some(s)
+}
+
+unsafe fn cleanup(ctx: *mut std::ffi::c_void, module: *mut std::ffi::c_void) {
+    // best effort
+    let _ = ctx; let _ = module;
 }
 
 pub fn pow_rationnel_sur(base: &Gq, e: i64) -> Gq {
