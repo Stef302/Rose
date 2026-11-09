@@ -77,6 +77,40 @@ impl Valeur {
 
 // ── Sorties et erreur runtime (miroir erreur_runtime du C++) ──────────────
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+
+pub static DEBUG_MODE: AtomicBool = AtomicBool::new(false);
+
+// Registre global des threads lancés par spawn.
+pub static THREADS: Mutex<Vec<Option<JoinHandle<()>>>> = Mutex::new(Vec::new());
+
+pub fn spawn_thread<F>(f: F) -> usize
+where F: FnOnce() + Send + 'static {
+    let mut reg = THREADS.lock().unwrap();
+    let id = reg.len();
+    let handle = thread::spawn(f);
+    reg.push(Some(handle));
+    id
+}
+
+pub fn join_thread(id: usize) {
+    let handle = {
+        let mut reg = THREADS.lock().unwrap();
+        if id < reg.len() {
+            reg[id].take()
+        } else {
+            None
+        }
+    };
+    if let Some(h) = handle {
+        let _ = h.join();
+    }
+}
+pub fn debug_mode() -> bool { DEBUG_MODE.load(Ordering::Relaxed) }
+pub fn set_debug_mode(v: bool) { DEBUG_MODE.store(v, Ordering::Relaxed); }
+
 pub fn flush_out() { let _ = std::io::stdout().flush(); }
 
 pub fn ecrire_out(s: &str) { let _ = std::io::stdout().write_all(s.as_bytes()); }

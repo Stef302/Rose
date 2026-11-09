@@ -278,6 +278,9 @@ fn main() {
     // le moteur C++ execute le pipeline dans un thread a pile de 512 Mo
     // (rose.cpp:4745-4747) ; la recursion profonde de l'interpreteur Rust en a
     // autant. Repli en ligne si le thread ne peut etre cree.
+    if argv.iter().any(|a| a == "--debug") || std::env::var("ROSE_DEBUG").is_ok() {
+        crate::run::set_debug_mode(true);
+    }
     let source_t = source.clone();
     let args_t = args.clone();
     let h = std::thread::Builder::new()

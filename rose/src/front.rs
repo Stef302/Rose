@@ -308,6 +308,7 @@ pub enum Instr {
     Retour(Option<Expr>, usize),
     ExprStmt(Expr),
     Bloc(Vec<Instr>),
+    Spawn(Vec<Instr>, usize),
     Essayer { corps: Vec<Instr>, attraper: Option<(String, Vec<Instr>)>, finalment: Option<Vec<Instr>>, ligne: usize },
     Lever(Expr, usize),
 }
@@ -394,6 +395,8 @@ EntreeStd { nom: "sub", args: &["chaine", "entier", "entier"], retour: "chaine" 
     EntreeStd { nom: "duree", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "afficher_erreur", args: &["tout"], retour: "vide" },
     EntreeStd { nom: "quitter", args: &["entier"], retour: "vide" },
+    EntreeStd { nom: "breakpoint", args: &[], retour: "vide" },
+    EntreeStd { nom: "join", args: &["entier"], retour: "vide" },
     EntreeStd { nom: "abs", args: &["num"], retour: "MIXTE" },
     EntreeStd { nom: "min", args: &["num", "num"], retour: "NUM_MAX" },
     EntreeStd { nom: "max", args: &["num", "num"], retour: "NUM_MAX" },
@@ -700,6 +703,11 @@ impl Parser {
                     let fin = self.expression()?;
                     let corps = self.bloc()?;
                     return Ok(Instr::Pour { nom, debut, fin, corps, ligne: t.ligne });
+                }
+                "spawn" => {
+                    self.suivant();
+                    let corps = self.bloc()?;
+                    return Ok(Instr::Spawn(corps, t.ligne));
                 }
                 "retour" => {
                     let lg_retour = t.ligne;
@@ -1247,6 +1255,7 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
             }
             Instr::ExprStmt(e) => { expr_type(prog, e, env)?; }
             Instr::Bloc(b) => verifier_bloc(prog, b, env, retour, en_fonction)?,
+            Instr::Spawn(b, _) => { verifier_bloc(prog, b, env, retour, en_fonction)?; env.insert("_thread".to_string(), Ty::simple(TyKind::Entier)); }
             Instr::Essayer { corps, attraper, finalment, .. } => {
                 verifier_bloc(prog, corps, env, retour, en_fonction)?;
                 if let Some((var, c)) = attraper {
@@ -1917,6 +1926,7 @@ pub fn replier_instr(i: &Instr) -> Instr {
         Instr::Retour(e, l) => Instr::Retour(e.as_ref().map(replier), *l),
         Instr::ExprStmt(e) => Instr::ExprStmt(replier(e)),
         Instr::Bloc(b) => Instr::Bloc(b.iter().map(replier_instr).collect()),
+        Instr::Spawn(b, l) => Instr::Spawn(b.iter().map(replier_instr).collect(), *l),
     }
 }
 

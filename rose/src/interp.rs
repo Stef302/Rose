@@ -230,7 +230,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
         | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow"
         | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi"
-        | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter"
+        | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "join"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction")
 }
@@ -605,6 +605,9 @@ impl Interp {
     }
 
     fn exec(&mut self, i: &Instr) -> Result<(), Option<i32>> {
+        if crate::run::debug_mode() {
+            eprintln!("[DEBUG] {:?}", i);
+        }
         match i {
             Instr::Afficher(exprs, _) => { for e in exprs { let v = self.eval(e)?; afficher(&v); } }
             Instr::Lire { nom, ty, .. } => {
@@ -682,6 +685,17 @@ impl Interp {
             Instr::Lever(e, _) => {
                 let v = self.eval(e)?;
                 erreur_runtime(&chaine_de(&v));
+            }
+            Instr::Spawn(corps, _) => {
+                let sigs = self.prog.signatures.clone();
+                let ordre = self.prog.ordre.clone();
+                let corps = corps.clone();
+                let id = crate::run::spawn_thread(move || {
+                    let prog = crate::front::Programme { instructions: corps, signatures: sigs, ordre };
+                    let mut interp = Interp::nouveau(prog);
+                    let _ = interp.exec_bloc(&interp.prog.instructions.clone());
+                });
+                self.affecter("_thread", Valeur::z(id as i64));
             }
             Instr::Essayer { corps, attraper, finalment, .. } => {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1364,6 +1378,12 @@ impl Interp {
             flush_out();
             return Err(Some(z.get_i64() as i32));
         }
+        if nom == "join" {
+            let id = vers_z(&a[0]);
+            if !id.fits_i64() { erreur_runtime("join : id invalide"); }
+            crate::run::join_thread(id.get_i64() as usize);
+            return Ok(Valeur::Vide);
+        }
         Ok(self.stdlib_valeur(nom, a))
     }
 
@@ -2033,6 +2053,17 @@ impl Interp {
                 Valeur::Vide
             }
             "lever" => { erreur_runtime(&chaine_de(&a[0])); }
+            "breakpoint" => {
+                crate::run::flush_out();
+                eprintln!("[BREAKPOINT]");
+                for (k, v) in &self.globaux {
+                    eprintln!("  {} = {}", k, chaine_de(v));
+                }
+                eprintln!("Appuyer sur Entrée pour continuer...");
+                let mut buf = String::new();
+                let _ = std::io::stdin().read_line(&mut buf);
+                Valeur::Vide
+            }
             "quitter" => unreachable!("quitter traité dans stdlib"),
             "abs" => {
                 match &a[0] {
