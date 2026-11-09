@@ -108,6 +108,17 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
 }
 
 fn main() {
+    // Hook de panic silencieux pour les erreurs Rose récupérables (ROSE_ERR:),
+    // afin d'éviter le bruit « thread panicked » sur stderr. Les vrais bugs
+    // (panics non ROSE_ERR) sont toujours affichés.
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.payload().downcast_ref::<String>()
+            .map(|s| s.as_str())
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if msg.starts_with("ROSE_ERR:") { return; }
+        eprintln!("{}", info);
+    }));
     let argv: Vec<String> = std::env::args().collect();
     if argv.len() < 2 {
         // aucun argument : si l'exécutable porte un bundle, l'exécuter (mode
@@ -273,7 +284,20 @@ fn main() {
         .stack_size(512 * 1024 * 1024)
         .spawn(move || interp::executer_source(&source_t, args_t));
     let rc = match h {
-        Ok(j) => j.join().unwrap_or(1),
+        Ok(j) => match j.join() {
+            Ok(r) => r,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<String>() { s.clone() }
+                          else if let Some(s) = payload.downcast_ref::<&str>() { s.to_string() }
+                          else { "erreur inconnue".to_string() };
+                if let Some(m) = msg.strip_prefix("ROSE_ERR:") {
+                    eprintln!("Rose : erreur — {}", m);
+                } else {
+                    eprintln!("Rose : panic — {}", msg);
+                }
+                1
+            }
+        },
         Err(_) => interp::executer_source(&source, args),
     };
     std::process::exit(rc);

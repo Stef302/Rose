@@ -317,6 +317,8 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 Ok(())
             }
             Instr::AffectIndex { .. } => Err("Affectation par index non supportée par l'AOT LLVM".to_string()),
+            Instr::Essayer { .. } => Err("essayer/attraper non supporté par l'AOT LLVM".to_string()),
+            Instr::Lever(e, _) => Err("lever non supporté par l'AOT LLVM".to_string()),
             Instr::Afficher(e, _) => {
                 let value = compile_expr(builder, context, module, named_values, e)?;
 

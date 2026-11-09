@@ -301,6 +301,8 @@ pub enum Instr {
     Retour(Option<Expr>, usize),
     ExprStmt(Expr),
     Bloc(Vec<Instr>),
+    Essayer { corps: Vec<Instr>, attraper: Option<(String, Vec<Instr>)>, finalment: Option<Vec<Instr>>, ligne: usize },
+    Lever(Expr, usize),
 }
 
 #[derive(Clone, Debug)]
@@ -673,6 +675,28 @@ impl Parser {
                     let e = if self.est(&[Tk::Semi, Tk::RBrace, Tk::Eof]) { None }
                             else { Some(self.expression()?) };
                     return Ok(Instr::Retour(e, lg_retour));
+                }
+                "lever" => {
+                    self.suivant();
+                    let e = self.expression()?;
+                    return Ok(Instr::Lever(e, t.ligne));
+                }
+                "essayer" => {
+                    self.suivant();
+                    let corps = self.bloc()?;
+                    let mut finalment = None;
+                    let mut attraper = None;
+                    if self.accepter_mot("attraper") {
+                        self.exiger(Tk::LParen, "'('")?;
+                        let var = self.nom_ident()?;
+                        self.exiger(Tk::RParen, "')'")?;
+                        let c = self.bloc()?;
+                        attraper = Some((var, c));
+                    }
+                    if self.accepter_mot("finalement") {
+                        finalment = Some(self.bloc()?);
+                    }
+                    return Ok(Instr::Essayer { corps, attraper, finalment, ligne: t.ligne });
                 }
                 "var" => {
                     // « var x = expr » : déclaration d variable, équivalente
@@ -1176,6 +1200,16 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
             }
             Instr::ExprStmt(e) => { expr_type(prog, e, env)?; }
             Instr::Bloc(b) => verifier_bloc(prog, b, env, retour, en_fonction)?,
+            Instr::Essayer { corps, attraper, finalment, .. } => {
+                verifier_bloc(prog, corps, env, retour, en_fonction)?;
+                if let Some((var, c)) = attraper {
+                    let mut env2 = env.clone();
+                    env2.insert(var.clone(), Ty::simple(TyKind::Chaine));
+                    verifier_bloc(prog, c, &mut env2, retour, en_fonction)?;
+                }
+                if let Some(f) = finalment { verifier_bloc(prog, f, env, retour, en_fonction)?; }
+            }
+            Instr::Lever(e, _) => { expr_type(prog, e, env)?; }
         }
     }
     Ok(())
@@ -1824,6 +1858,13 @@ pub fn replier_instr(i: &Instr) -> Instr {
             corps: corps.iter().map(replier_instr).collect(),
             ligne: *ligne,
         },
+        Instr::Essayer { corps, attraper, finalment, ligne } => Instr::Essayer {
+            corps: corps.iter().map(replier_instr).collect(),
+            attraper: attraper.as_ref().map(|(v, c)| (v.clone(), c.iter().map(replier_instr).collect())),
+            finalment: finalment.as_ref().map(|f| f.iter().map(replier_instr).collect()),
+            ligne: *ligne,
+        },
+        Instr::Lever(e, l) => Instr::Lever(replier(e), *l),
         Instr::Retour(e, l) => Instr::Retour(e.as_ref().map(replier), *l),
         Instr::ExprStmt(e) => Instr::ExprStmt(replier(e)),
         Instr::Bloc(b) => Instr::Bloc(b.iter().map(replier_instr).collect()),

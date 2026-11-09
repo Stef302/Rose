@@ -231,7 +231,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "abs" | "factorielle" | "fibonacci" | "pgcd" | "ppcm" | "puissance"
         | "est_premier" | "compter_premiers" | "nb_chiffres" | "nombre_pi"
         | "sous_chaine" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter"
-        | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
+        | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction")
 }
 
@@ -676,6 +676,47 @@ impl Interp {
             }
             Instr::ExprStmt(e) => { self.eval(e)?; }
             Instr::Bloc(b) => { self.exec_bloc(b)?; }
+            Instr::Lever(e, _) => {
+                let v = self.eval(e)?;
+                erreur_runtime(&chaine_de(&v));
+            }
+            Instr::Essayer { corps, attraper, finalment, .. } => {
+                let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.exec_bloc(corps)
+                }));
+                let mut erreur_msg: Option<String> = None;
+                match res {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => return Err(e),
+                    Err(payload) => {
+                        let msg = if let Some(s) = payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else if let Some(s) = payload.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else {
+                            "erreur inconnue".to_string()
+                        };
+                        if let Some(m) = msg.strip_prefix("ROSE_ERR:") {
+                            erreur_msg = Some(m.to_string());
+                        } else {
+                            std::panic::resume_unwind(payload);
+                        }
+                    }
+                }
+                if let Some(m) = erreur_msg {
+                    if let Some((var, catch_body)) = attraper {
+                        self.affecter(var, Valeur::s(m));
+                        let _ = self.exec_bloc(catch_body);
+                    } else {
+                        // pas de attraper : propager après finally
+                        if let Some(f) = finalment { let _ = self.exec_bloc(f); }
+                        erreur_runtime(&m);
+                    }
+                }
+                if let Some(f) = finalment {
+                    let _ = self.exec_bloc(f);
+                }
+            }
         }
         Ok(())
     }
@@ -1972,6 +2013,7 @@ impl Interp {
                 eprintln!("{}", chaine_de(&a[0]));
                 Valeur::Vide
             }
+            "lever" => { erreur_runtime(&chaine_de(&a[0])); }
             "quitter" => unreachable!("quitter traité dans stdlib"),
             "abs" => {
                 match &a[0] {

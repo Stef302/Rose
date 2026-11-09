@@ -83,8 +83,9 @@ pub fn ecrire_out(s: &str) { let _ = std::io::stdout().write_all(s.as_bytes()); 
 
 pub fn erreur_runtime(msg: &str) -> ! {
     flush_out();
-    eprintln!("Rose : erreur — {}", msg);
-    std::process::exit(1);
+    // Panic avec un préfixe identifiable pour permettre la récupération
+    // par try/catch (essayer/attraper) via catch_unwind.
+    panic!("ROSE_ERR:{}", msg);
 }
 
 /// Erreur levée pendant le repli de constantes : le C++ la signale comme une
@@ -93,8 +94,7 @@ pub fn erreur_runtime(msg: &str) -> ! {
 /// qui replie à la racine avec ligne=1 par défaut).
 pub fn erreur_runtime_ligne(msg: &str) -> ! {
     flush_out();
-    eprintln!("Rose : erreur — [Ligne {}, Colonne 0] {}", ligne_programme(), msg);
-    std::process::exit(1);
+    panic!("ROSE_ERR:[Ligne {}, Colonne 0] {}", ligne_programme(), msg);
 }
 
 /// Erreur levée pendant le vérificateur / le repli de constantes : le C++
