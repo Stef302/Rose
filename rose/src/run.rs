@@ -718,7 +718,7 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
             i -= 1;
         }
     }
-    String::from_utf8_lossy(&sortie).into_owned()
+    format!("π = {}", String::from_utf8_lossy(&sortie))
 }
 
 pub fn nombre_phi(chiffres: &Gz) -> String {
@@ -785,7 +785,7 @@ pub fn nombre_phi(chiffres: &Gz) -> String {
             i -= 1;
         }
     }
-    String::from_utf8_lossy(&sortie).into_owned()
+    format!("φ = {}", String::from_utf8_lossy(&sortie))
 }
 
 

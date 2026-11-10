@@ -1489,10 +1489,8 @@ impl Interp {
             "saisir_flottant" => self.lire_selon(TyKind::Flottant),
             "millisecondes" | "ms" => {
                 let t = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-                let z = Gz::neuf();
-                z.poser_u64(t);
-                Valeur::zg(z)
+                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+                Valeur::s(format!("{} ms", t))
             }
             "graine" | "seed" => { let z = vers_z(&a[0]); graine_de(&mut self.rng, &z); Valeur::Vide }
             "graine_systeme" | "seed_sys" | "graine_vrai" => {
@@ -2415,7 +2413,7 @@ pub fn info() -> String {
     format!("rose 2.0.3\n  \
              moteur            : Rust natif {} — JIT Cranelift + interpréteur exact\n  \
              maths exactes     : BigInt natif (num-bigint, illimité, zéro GMP)\n  \
-             nombres           : entiers, rationnels, flottants, irrationnels (√n), complexes (a+bi)\\n  \
+             nombres           : entiers, rationnels, flottants, irrationnels (√n), complexes (a+bi)\n  \
              interpréteur      : intégré (repli du JIT, mêmes sorties)\n  \
              compilation       : JIT à chaud des fonctions entiers/flottants/booléens\n", arch)
 }
