@@ -661,7 +661,10 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
     let s = pi.to_string();
     let bytes = s.as_bytes();
     if bytes.is_empty() { return "π ≈ 0".to_string(); }
-    let mut sortie = String::with_capacity(s.len() + 8);
+    let mut sortie = String::with_capacity(s.len() + 60);
+    // Formule exacte (LaTeX)
+    sortie.push_str("π = 4\\cdot\\arctan(1/5) - \\arctan(1/239)");
+    sortie.push_str("   ");
     sortie.push_str("π ≈ ");
     sortie.push(bytes[0] as char);
     sortie.push('.');
@@ -683,7 +686,10 @@ pub fn nombre_e(chiffres: &Gz) -> String {
     let s = e.to_string();
     let bytes = s.as_bytes();
     if bytes.is_empty() { return "e ≈ 0".to_string(); }
-    let mut sortie = String::with_capacity(s.len() + 8);
+    let mut sortie = String::with_capacity(s.len() + 60);
+    // Formule exacte (LaTeX)
+    sortie.push_str("e = \\sum_{k=0}^{\\infty} \\frac{1}{k!}");
+    sortie.push_str("   ");
     sortie.push_str("e ≈ ");
     sortie.push(bytes[0] as char);
     sortie.push('.');
@@ -705,7 +711,10 @@ pub fn nombre_phi(chiffres: &Gz) -> String {
     let s = phi.to_string();
     let bytes = s.as_bytes();
     if bytes.is_empty() { return "φ ≈ 0".to_string(); }
-    let mut sortie = String::with_capacity(s.len() + 8);
+    let mut sortie = String::with_capacity(s.len() + 60);
+    // Formule exacte (LaTeX)
+    sortie.push_str("φ = \\frac{1 + \\sqrt{5}}{2}");
+    sortie.push_str("   ");
     sortie.push_str("φ ≈ ");
     sortie.push(bytes[0] as char);
     sortie.push('.');

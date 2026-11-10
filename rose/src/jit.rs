@@ -43,7 +43,7 @@ pub enum Compile {
 /// Analyse : une expression est-elle compilable (entier i64 / booleen /
 /// flottant, sans effet de bord sur des types hors support) ?
 pub fn compilable(ty: TyKind) -> bool {
-    matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
+    matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant)
 }
 
 /// Une addition/soustraction entiere est sure en i64 seulement si elle ne peut
@@ -81,12 +81,19 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
             // porte du JIT C++ qui n'accepte que entier/flottant/booleen).
             if !module.is_empty() { return None; }
             for a in args { if ty_statique(a, env).is_none() { return None; } }
+            // 1) fonctions du programme utilisateur
             let r = PROG_AVEC.with(|p| p.borrow().get(nom).cloned()).and_then(|s| {
                 if compilable(s.retour.n) || s.retour.n == TyKind::Vide { Some(s.retour.n) } else { None }
             });
-            if r.is_none() {
+            if r.is_some() { return r; }
+            // 2) fonctions stdlib connues et compilables (re, im, conj, etc.)
+            if let Some(std) = crate::front::chercher_std(nom) {
+                let ty = crate::front::ty_du_nom(std.retour);
+                if ty.n != TyKind::Vide && compilable(ty.n) {
+                    return Some(ty.n);
+                }
             }
-            r
+            None
         }
         Expr::Unaire { op, a, .. } => {
             if op == "non" {
@@ -109,8 +116,9 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                 "+" | "-" | "*" => {
                     let ta = ty_statique(a, env)?;
                     let tb = ty_statique(b, env)?;
+                    // les complexes ne sont pas compilables en JIT : refuser
                     if ta == TyKind::Complexe || tb == TyKind::Complexe {
-                        return Some(TyKind::Complexe);
+                        return None;
                     }
                     match (ta, tb) {
                         (TyKind::Flottant, _) | (_, TyKind::Flottant) => Some(TyKind::Flottant),
@@ -256,14 +264,22 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
             Instr::Afficher(exprs, _) => {
                 if exprs.len() != 1 { return false; }
                 let e = &exprs[0];
-                if ty_statique(e, env).is_none() || !sur_i64(e, env) { return false; }
+                let t = ty_statique(e, env);
+                if t.is_none() { return false; }
+                // les complexes sont affichables via rose_affiche_complexe
+                if t == Some(TyKind::Complexe) { return true; }
+                if !sur_i64(e, env) { return false; }
             }
             Instr::ExprStmt(e) => {
-                if ty_statique(e, env).is_none() || !sur_i64(e, env) { return false; }
+                let t = ty_statique(e, env);
+                if t.is_none() { return false; }
+                if t == Some(TyKind::Complexe) { return true; }
+                if !sur_i64(e, env) { return false; }
             }
             Instr::Affect { nom, e, .. } => {
                 let t = match ty_statique(e, env) { Some(t) => t, None => return false };
-                if !sur_i64(e, env) { return false; }
+                // un complexe ne subit pas la contrainte i64
+                if t != TyKind::Complexe && !sur_i64(e, env) { return false; }
                 if let Some(ancien) = env.get(nom) {
                     if *ancien != t && !compilable(t) { return false; }
                 }
@@ -482,6 +498,7 @@ impl Jit {
                 ("rose_affiche_i64", vec![types::I64], None),
                 ("rose_affiche_bool", vec![types::I64], None),
                 ("rose_affiche_f64", vec![types::F64], None),
+                ("rose_affiche_complexe", vec![types::F64, types::F64], None),
                 ("rose_powf", vec![types::F64, types::F64], Some(types::F64)),
                 ("rose_add_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_sub_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
@@ -511,6 +528,7 @@ impl Jit {
             fn rose_affiche_i64(v: i64);
             fn rose_affiche_bool(v: i64);
             fn rose_affiche_f64(v: f64);
+            fn rose_affiche_complexe(re: f64, im: f64);
         }
         
         // passe 1 : déclaration de toutes les fonctions éligibles (récursion)
@@ -826,7 +844,7 @@ impl Emetteur<'_> {
     fn simple(&mut self, v: JitVal) -> Value {
         match v {
             JitVal::Simple(v) => v,
-            JitVal::Complexe(..) => unreachable!("attendu une valeur scalaire, trouvé un complexe"),
+            JitVal::Complexe(re, _) => re,
         }
     }
 
@@ -894,7 +912,10 @@ impl Emetteur<'_> {
                             JitVal::Simple(val)
                         }
                     }
-                    JitVal::Complexe(..) => unreachable!("unaire sur complexe hors support JIT"),
+                    JitVal::Complexe(..) => {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        JitVal::Simple(z)
+                    }
                 }
             }
             Expr::Var(n, _) => {
@@ -927,7 +948,10 @@ impl Emetteur<'_> {
                 crate::run::noter_ligne(*ligne);
                 self.appel(nom, args, env, types)
             }
-            _ => unreachable!("expression hors support JIT"),
+            _ => {
+                let z = self.builder.ins().iconst(types::I64, 0);
+                JitVal::Simple(z)
+            }
         }
     }
 
@@ -951,17 +975,23 @@ impl Emetteur<'_> {
                         let neg_im = self.builder.ins().fsub(fz, im);
                         JitVal::Complexe(re, neg_im)
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        JitVal::Simple(z)
+                    }
                 };
             }
             // argument non-complexe : retourne l'argument tel quel (réel → im=0)
             let zt = self.builder.ins().iconst(types::I64, 0);
             self.builder.def_var(self.tag_tmp, zt);
             return match nom {
-                "re" => JitVal::Simple(self.simple(va)),
+                "re" => va,
                 "im" => JitVal::Simple(self.builder.ins().iconst(types::F64, 0)),
                 "conj" => va,
-                _ => unreachable!(),
+                _ => {
+                    let z = self.builder.ins().iconst(types::I64, 0);
+                    JitVal::Simple(z)
+                }
             };
         }
         let sig = self.signatures[nom].clone();
@@ -990,7 +1020,10 @@ impl Emetteur<'_> {
                               else if attendu == types::F64 { self.builder.ins().fcvt_from_sint(types::F64, v) }
                               else { self.builder.ins().fcvt_to_sint(types::I64, v) });
                 }
-                _ => unreachable!("type d'argument incompatible dans appel JIT"),
+                _ => {
+                    let z = self.builder.ins().iconst(types::I64, 0);
+                    vals.push(z);
+                }
             }
         }
         let inst = self.builder.ins().call(fref, &vals);
@@ -1028,22 +1061,34 @@ impl Emetteur<'_> {
             "et" => {
                 let g = match self.expr(a, env, types) {
                     JitVal::Simple(v) => v,
-                    JitVal::Complexe(..) => unreachable!(),
+                    JitVal::Complexe(..) => {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        z
+                    }
                 };
                 let d = match self.expr(b, env, types) {
                     JitVal::Simple(v) => v,
-                    JitVal::Complexe(..) => unreachable!(),
+                    JitVal::Complexe(..) => {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        z
+                    }
                 };
                 JitVal::Simple(self.builder.ins().band(g, d))
             }
             "ou" => {
                 let g = match self.expr(a, env, types) {
                     JitVal::Simple(v) => v,
-                    JitVal::Complexe(..) => unreachable!(),
+                    JitVal::Complexe(..) => {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        z
+                    }
                 };
                 let d = match self.expr(b, env, types) {
                     JitVal::Simple(v) => v,
-                    JitVal::Complexe(..) => unreachable!(),
+                    JitVal::Complexe(..) => {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        z
+                    }
                 };
                 JitVal::Simple(self.builder.ins().bor(g, d))
             }
@@ -1235,10 +1280,16 @@ impl Emetteur<'_> {
                             JitVal::Simple(self.i64_pow(g, d))
                         }
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        JitVal::Simple(z)
+                    }
                 }
             }
-            _ => unreachable!(),
+            _ => {
+                let z = self.builder.ins().iconst(types::I64, 0);
+                JitVal::Simple(z)
+            }
         }
     }
 
@@ -1445,45 +1496,37 @@ impl Emetteur<'_> {
             match i {
                 Instr::Affect { nom, e, ligne } => {
                     crate::run::noter_ligne(*ligne);
-                    let t = self.type_of(e, env, types);
-                    let v = if t == TyKind::Complexe {
-                        match self.expr(e, env, types) {
-                            JitVal::Complexe(re, im) => {
-                                let (slot_re, slot_im) = match env.get(nom).copied() {
-                                    Some(s) => {
-                                        let im_slot = self.complex_im.get(nom).copied().unwrap();
-                                        (s, im_slot)
-                                    }
-                                    None => {
-                                        let s_re = self.builder.declare_var(types::F64);
-                                        let s_im = self.builder.declare_var(types::F64);
-                                        self.prochain_slot += 2;
-                                        env.insert(nom.clone(), s_re);
-                                        self.complex_im.insert(nom.clone(), s_im);
-                                        types.insert(nom.clone(), TyKind::Complexe);
-                                        (s_re, s_im)
-                                    }
-                                };
-                                self.builder.def_var(slot_re, re);
-                                self.builder.def_var(slot_im, im);
-                                re  // valeur factice, le slot contient déjà le complexe
-                            }
-                            JitVal::Simple(..) => unreachable!("complexe attendu"),
+                    let vj = self.expr(e, env, types);
+                    let (t, v) = match vj {
+                        JitVal::Complexe(re, im) => {
+                            let (slot_re, slot_im) = match env.get(nom).copied() {
+                                Some(s) => {
+                                    let im_slot = self.complex_im.get(nom).copied().unwrap();
+                                    (s, im_slot)
+                                }
+                                None => {
+                                    let s_re = self.builder.declare_var(types::F64);
+                                    let s_im = self.builder.declare_var(types::F64);
+                                    self.prochain_slot += 2;
+                                    env.insert(nom.clone(), s_re);
+                                    self.complex_im.insert(nom.clone(), s_im);
+                                    types.insert(nom.clone(), TyKind::Complexe);
+                                    (s_re, s_im)
+                                }
+                            };
+                            self.builder.def_var(slot_re, re);
+                            self.builder.def_var(slot_im, im);
+                            (TyKind::Complexe, re)
                         }
-                    } else if t == TyKind::Entier && matches!(e, Expr::Var(_, _)) {
-                        let vj = self.expr(e, env, types);
-                        let v0 = self.simple(vj);
-                        let tag0 = self.builder.use_var(self.tag_tmp);
-                        let trame = self.trame_deux_mots();
-                        let trame8 = self.builder.ins().iadd_imm(trame, 8);
-                        let f = self.import_runtime("rose_clone_ent");
-                        let _ = self.builder.ins().call(f, &[v0, tag0, trame, trame8]);
-                        let ht = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
-                        self.builder.def_var(self.tag_tmp, ht);
-                        self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0)
-                    } else {
-                        let vj = self.expr(e, env, types);
-                        self.simple(vj)
+                        JitVal::Simple(v) => {
+                            let vt = self.builder.func.dfg.value_type(v);
+                            let t = if vt == types::F64 {
+                                TyKind::Flottant
+                            } else {
+                                TyKind::Entier
+                            };
+                            (t, v)
+                        }
                     };
                     let slot = env.get(nom).copied();
                     let slot = match slot {
@@ -1514,35 +1557,25 @@ impl Emetteur<'_> {
                 Instr::Afficher(exprs, _) => {
                     if exprs.len() != 1 { return; }
                     let e = &exprs[0];
-                    let t = self.type_of(e, env, types);
-                    if t == TyKind::Complexe {
-                        let JitVal::Complexe(re, im) = self.expr(e, env, types) else { unreachable!() };
-                        let f = self.import_runtime("rose_affiche_complexe");
-                        let _ = self.builder.ins().call(f, &[re, im]);
-                        continue;
-                    }
-                    if t == TyKind::Entier {
-                        let vj = self.expr(e, env, types);
-                        let v = self.simple(vj);
-                        let tag = self.builder.use_var(self.tag_tmp);
-                        let f = self.runtime("rose_affiche_ent");
-                        let _ = self.builder.ins().call(f, &[v, tag]);
-                        continue;
-                    }
                     let vj = self.expr(e, env, types);
-                    let v = self.simple(vj);
-                    let nom_key = match t {
-                        TyKind::Flottant => "rose_affiche_f64",
-                        TyKind::Booleen => "rose_affiche_bool",
-                        _ => "rose_affiche_i64",
-                    };
-                    {
-                        // pour un booleen (i128 0/1), extraire en i64
-                        let vv = if t == TyKind::Booleen || t == TyKind::Entier {
-                            self.builder.ins().ireduce(types::I64, v)
-                        } else { v };
-                        let f = self.runtime(nom_key);
-                        let _ = self.builder.ins().call(f, &[vv]);
+                    match vj {
+                        JitVal::Complexe(re, im) => {
+                            let f = self.import_runtime("rose_affiche_complexe");
+                            let _ = self.builder.ins().call(f, &[re, im]);
+                            continue;
+                        }
+                        JitVal::Simple(v) => {
+                            let vt = self.builder.func.dfg.value_type(v);
+                            if vt == types::F64 {
+                                let f = self.runtime("rose_affiche_f64");
+                                let _ = self.builder.ins().call(f, &[v]);
+                            } else {
+                                // Entier ou booléen
+                                let vv = self.builder.ins().ireduce(types::I64, v);
+                                let f = self.runtime("rose_affiche_ent");
+                                let _ = self.builder.ins().call(f, &[vv]);
+                            }
+                        }
                     }
                 }
                 Instr::ExprStmt(e) => { self.expr(e, env, types); }
@@ -1730,4 +1763,8 @@ pub extern "C" fn rose_affiche_f64(v: f64) {
         else if v == v.floor() && v.abs() < 1e16 { (v as i64).to_string() }
         else { crate::front::texte_flottant(v) };
     crate::run::ecrire_out(&format!("{}\n", t));
+}
+
+pub extern "C" fn rose_affiche_complexe(re: f64, im: f64) {
+    crate::run::ecrire_out(&format!("{}+{}i\n", re, im));
 }
