@@ -10,6 +10,7 @@
 
 mod front;
 mod i128x;
+mod irrationnel;
 mod interp;
 mod jit;
 mod run;

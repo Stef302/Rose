@@ -656,136 +656,66 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
     if chiffres.sgn() <= 0 || !chiffres.fits_i64() {
         erreur_runtime("décimales de π : entier positif attendu");
     }
-    let chiffres = chiffres.get_i64() as u64;
-    let s = chiffres + 40;
-    let dix_s = Gz::neuf();
-    unsafe { gmp_pow_ui(dix_s.p(), Gz::de_u64(10).p(), s); }
-    let mut cibles = Vec::new();
-    for &x in &[5u64, 239u64] {
-        let dest = Gz::neuf();
-        let x2 = Gz::neuf();
-        let p = Gz::neuf();
-        let terme = Gz::neuf();
-        unsafe {
-            gmp_set_ui(x2.p(), x);
-            gmp_mul(x2.p(), x2.p(), x2.p());
-            gmp_set_ui(p.p(), x);
-            gmp_fdiv_q(terme.p(), dix_s.p(), p.p());
-            gmp_set(dest.p(), terme.p());
-        }
-        let mut k: u64 = 1;
-        let mut signe = -1i32;
-        loop {
-            unsafe {
-                gmp_mul(p.p(), p.p(), x2.p());
-                k += 2;
-                gmp_mul_ui(terme.p(), p.p(), k);
-                gmp_fdiv_q(terme.p(), dix_s.p(), terme.p());
-                if gmp_cmp(terme.p(), Gz::de_i64(0).p()) == 0 { break; }
-                if signe < 0 { gmp_sub(dest.p(), dest.p(), terme.p()); }
-                else { gmp_add(dest.p(), dest.p(), terme.p()); }
-            }
-            signe = -signe;
-        }
-        cibles.push(dest);
+    let chiffres = chiffres.get_i64() as usize;
+    let pi = crate::irrationnel::calcul_pi(chiffres);
+    let s = pi.to_string();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() { return "π ≈ 0".to_string(); }
+    let mut sortie = String::with_capacity(s.len() + 8);
+    sortie.push_str("π ≈ ");
+    sortie.push(bytes[0] as char);
+    sortie.push('.');
+    for i in 1..bytes.len().min(chiffres + 1) {
+        sortie.push(bytes[i] as char);
     }
-    let at5 = Gz::neuf();
-    let at239 = Gz::neuf();
-    let pi = Gz::neuf();
-    unsafe {
-        gmp_set(at5.p(), cibles[0].p());
-        gmp_set(at239.p(), cibles[1].p());
-        gmp_mul_ui(at5.p(), at5.p(), 16);
-        gmp_mul_ui(at239.p(), at239.p(), 4);
-        gmp_sub(pi.p(), at5.p(), at239.p());
+    while sortie.chars().count() < 4 + chiffres {
+        sortie.push('0');
     }
-    let brut = pi.chaine();
-    let brut: Vec<u8> = brut.into_bytes();
-    let lbrut = brut.len();
-    let mut sortie: Vec<u8> = vec![b' '; (chiffres + 2) as usize];
-    sortie[0] = if brut[0] == b'-' { brut[0] } else { brut[0] };
-    sortie[1] = b'.';
-    for i in 0..chiffres {
-        sortie[(2 + i) as usize] = if (i + 1) < lbrut as u64 { brut[(i + 1) as usize] } else { b'0' };
+    sortie
+}
+
+pub fn nombre_e(chiffres: &Gz) -> String {
+    if chiffres.sgn() <= 0 || !chiffres.fits_i64() {
+        erreur_runtime("décimales de e : entier positif attendu");
     }
-    if (1 + chiffres) < lbrut as u64 && brut[(1 + chiffres) as usize] >= b'5' {
-        let mut i = chiffres as i64 + 1;
-        while i >= 0 {
-            if sortie[i as usize] == b'.' { i -= 1; continue; }
-            sortie[i as usize] += 1;
-            if sortie[i as usize] <= b'9' { break; }
-            sortie[i as usize] = b'0';
-            i -= 1;
-        }
+    let chiffres = chiffres.get_i64() as usize;
+    let e = crate::irrationnel::calcul_e(chiffres);
+    let s = e.to_string();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() { return "e ≈ 0".to_string(); }
+    let mut sortie = String::with_capacity(s.len() + 8);
+    sortie.push_str("e ≈ ");
+    sortie.push(bytes[0] as char);
+    sortie.push('.');
+    for i in 1..bytes.len().min(chiffres + 1) {
+        sortie.push(bytes[i] as char);
     }
-    format!("π = {}", String::from_utf8_lossy(&sortie))
+    while sortie.chars().count() < 4 + chiffres {
+        sortie.push('0');
+    }
+    sortie
 }
 
 pub fn nombre_phi(chiffres: &Gz) -> String {
     if chiffres.sgn() <= 0 || !chiffres.fits_i64() || chiffres.get_i64() as u64 > 2_000_000 {
         erreur_runtime("décimales de φ hors limites (1..2000000)");
     }
-    let n = chiffres.get_i64() as u64;
-    // sqrt(5) a n+10 decimales via Newton
-    let prec = n + 10;
-    let scale = {
-        let z = Gz::neuf();
-        unsafe { gmp_pow_ui(z.p(), Gz::de_u64(10).p(), prec); }
-        z
-    };
-    // x = 2 * scale (approximation initiale)
-    let mut x = Gz::neuf();
-    unsafe { gmp_mul_ui(x.p(), scale.p(), 2); }
-    let five_scale = Gz::neuf();
-    unsafe {
-        gmp_set_ui(five_scale.p(), 5);
-        gmp_mul(five_scale.p(), five_scale.p(), scale.p());
-        gmp_mul(five_scale.p(), five_scale.p(), scale.p());
+    let chiffres = chiffres.get_i64() as usize;
+    let phi = crate::irrationnel::calcul_phi(chiffres);
+    let s = phi.to_string();
+    let bytes = s.as_bytes();
+    if bytes.is_empty() { return "φ ≈ 0".to_string(); }
+    let mut sortie = String::with_capacity(s.len() + 8);
+    sortie.push_str("φ ≈ ");
+    sortie.push(bytes[0] as char);
+    sortie.push('.');
+    for i in 1..bytes.len().min(chiffres + 1) {
+        sortie.push(bytes[i] as char);
     }
-    // Newton: x = (x + 5*scale*scale / x) / 2, 50 iterations
-    for _ in 0..50 {
-        let q = Gz::neuf();
-        unsafe {
-            gmp_fdiv_q(q.p(), five_scale.p(), x.p());
-            gmp_add(x.p(), x.p(), q.p());
-            let two = Gz::de_u64(2);
-            gmp_fdiv_q(x.p(), x.p(), two.p());
-        }
+    while sortie.chars().count() < 4 + chiffres {
+        sortie.push('0');
     }
-    // phi = (1*scale + sqrt5) / 2  (avec scale pour les decimales)
-    // sqrt5 = x / scale ; phi = (1 + sqrt5)/2 = (scale + x) / (2*scale)
-    let num = Gz::neuf();
-    let den = Gz::neuf();
-    unsafe {
-        gmp_add(num.p(), scale.p(), x.p());
-        gmp_mul_ui(den.p(), scale.p(), 2);
-    }
-    // division entiere : num/den avec n decimales
-    let pi_scale = Gz::neuf();
-    unsafe {
-        gmp_mul(pi_scale.p(), num.p(), scale.p());
-        gmp_fdiv_q(pi_scale.p(), pi_scale.p(), den.p());
-    }
-    let brut = pi_scale.chaine();
-    let brut: Vec<u8> = brut.into_bytes();
-    let lbrut = brut.len();
-    let mut sortie: Vec<u8> = vec![b' '; (n + 2) as usize];
-    sortie[0] = b'1';
-    sortie[1] = b'.';
-    for i in 0..n {
-        sortie[(2 + i) as usize] = if (i + 1) < lbrut as u64 { brut[(i + 1) as usize] } else { b'0' };
-    }
-    if (1 + n) < lbrut as u64 && brut[(1 + n) as usize] >= b'5' {
-        let mut i = n as i64 + 1;
-        while i >= 0 {
-            if sortie[i as usize] == b'.' { i -= 1; continue; }
-            sortie[i as usize] += 1;
-            if sortie[i as usize] <= b'9' { break; }
-            sortie[i as usize] = b'0';
-            i -= 1;
-        }
-    }
-    format!("φ = {}", String::from_utf8_lossy(&sortie))
+    sortie
 }
 
 

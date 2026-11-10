@@ -938,10 +938,25 @@ impl Interp {
             }
             Expr::ChaineLit(s, _) => Ok(Valeur::s(s.clone())),
             Expr::BooleenLit(b, _) => Ok(Valeur::b(*b)),
-            Expr::Var(n, _) => match self.cible(n) {
-                Some(v) => Ok(v),
-                None => { erreur_runtime_ligne(&format!("Variable '{}' utilisée sans valeur", n)); }
-            },
+            Expr::Var(n, _) => {
+                // constantes irrationnelles sans argument : 50 décimales par défaut
+                if n == "pi" {
+                    let z = Gz::de_i64(50);
+                    return Ok(Valeur::s(nombre_pi(&z)));
+                }
+                if n == "phi" {
+                    let z = Gz::de_i64(50);
+                    return Ok(Valeur::s(nombre_phi(&z)));
+                }
+                if n == "e" {
+                    let z = Gz::de_i64(50);
+                    return Ok(Valeur::s(nombre_e(&z)));
+                }
+                match self.cible(n) {
+                    Some(v) => Ok(v),
+                    None => { erreur_runtime_ligne(&format!("Variable '{}' utilisée sans valeur", n)); }
+                }
+            }
             Expr::ListeLit(el, _) => {
                 let mut v = Vec::new();
                 for x in el { v.push(self.eval(x)?); }
@@ -1616,6 +1631,7 @@ impl Interp {
             "compter_premiers" => { let z = vers_z(&a[0]); Valeur::z(compter_premiers(&z) as i64) }
             "nb_chiffres" | "digits" => { let z = vers_z(&a[0]); Valeur::z(nb_chiffres(&z) as i64) }
             "nombre_pi" | "pi" => { let z = vers_z(&a[0]); Valeur::s(nombre_pi(&z)) }
+            "nombre_e" | "e" => { let z = vers_z(&a[0]); Valeur::s(nombre_e(&z)) }
             "phi" => { let z = vers_z(&a[0]); Valeur::s(nombre_phi(&z)) }
             "i" => Valeur::Complexe { re: 0.0, im: 1.0 },
             "longueur" | "len" => {

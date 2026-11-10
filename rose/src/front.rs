@@ -377,6 +377,8 @@ EntreeStd { nom: "is_prime", args: &["entier"], retour: "booleen" },
 EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "nombre_pi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "pi", args: &["entier"], retour: "chaine" },
+    EntreeStd { nom: "nombre_e", args: &["entier"], retour: "chaine" },
+    EntreeStd { nom: "e", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "phi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "__i", args: &[], retour: "complexe" },
     EntreeStd { nom: "i", args: &[], retour: "complexe" },
@@ -1444,6 +1446,10 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
         Expr::ChaineLit(..) => Ok(Ty::simple(TyKind::Chaine)),
         Expr::BooleenLit(..) => Ok(Ty::simple(TyKind::Booleen)),
         Expr::Var(n, l) => {
+            // constantes irrationnelles sans argument : pi, phi, e → chaine
+            if matches!(n.as_str(), "pi" | "phi" | "e") {
+                return Ok(Ty::simple(TyKind::Chaine));
+            }
             if let Some(t) = env.get(n).cloned() { Ok(t) }
             else {
                 GLOBALS.with(|g| {
