@@ -110,10 +110,38 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
             if r.is_some() { return r; }
             // 2) fonctions stdlib connues et compilables (re, im, conj, etc.)
             if let Some(std) = crate::front::chercher_std(nom) {
-                let ty = crate::front::ty_du_nom(std.retour);
-                if ty.n != TyKind::Vide && compilable(ty.n) {
-                    return Some(ty.n);
+                // l'argument doit être du type attendu par la stdlib, SAUF sur
+                // les intrinsics complexes (re/im/conj), où le vérificateur
+                // admet un réel : « re(w) » avec w flottant doit rester
+                // compilable (l'intrinsic convertit i64 -> f64 à l'émission).
+                if !matches!(nom.as_str(), "re" | "im" | "conj") {
+                    for (i, a) in args.iter().enumerate() {
+                        let attendu = match std.args.get(i) { Some(t) => crate::front::ty_du_nom(t).n, None => return None };
+                        let at = ty_statique(a, env)?;
+                        if !compatible_jit(attendu, at) { return None; }
+                    }
                 }
+                // seules les fonctions que l'émetteur sait réellement produire
+                // sont acceptées ici : les intrinsics complexes inline (re/im/
+                // conj, où un réel est admis) et modulus. Toute autre stdlib
+                // (pgcd, fibonacci, abs MIXTE…) reste interprétée : le JIT ne
+                // peut pas l'émettre et produirait un appel vers une fonction
+                // inexistante.
+                if matches!(nom.as_str(), "re" | "im" | "conj") {
+                    let ty = crate::front::ty_du_nom(std.retour);
+                    if ty.n != TyKind::Vide && compilable(ty.n) { return Some(ty.n); }
+                    return None;
+                }
+                if nom == "modulus" && args.len() == 1 {
+                    // modulus(complexe) -> f64 via rose_sqrt ; modulus(réel) -> |x|
+                    match ty_statique(&args[0], env) {
+                        Some(TyKind::Complexe) | Some(TyKind::Flottant) | Some(TyKind::Entier) | Some(TyKind::Rationnel) => {
+                            return Some(TyKind::Flottant);
+                        }
+                        _ => return None,
+                    }
+                }
+                return None;
             }
             None
         }
@@ -223,6 +251,44 @@ fn contient_retour(instrs: &[Instr]) -> bool {
     })
 }
 
+fn est_boucle_i(test: &Expr) -> bool {
+    match test {
+        Expr::Binaire { op, a, b, .. } if matches!(op.as_str(), "<" | "<=" | ">" | ">=") => {
+            matches!(**a, Expr::Var(ref x, _) if x == "i")
+                || matches!(**b, Expr::Var(ref x, _) if x == "i")
+        }
+        _ => false,
+    }
+}
+
+fn expr_contient_lit_complexe(e: &Expr) -> bool {
+    match e {
+        Expr::LitComplexe { .. } => true,
+        Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => expr_contient_lit_complexe(a) || expr_contient_lit_complexe(b),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) => expr_contient_lit_complexe(a),
+        Expr::ListeLit(v, _) => v.iter().any(expr_contient_lit_complexe),
+        Expr::Appel { args, .. } => args.iter().any(expr_contient_lit_complexe),
+        Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_contient_lit_complexe(x)),
+        _ => false,
+    }
+}
+
+fn corps_contient_lit_complexe(b: &[Instr]) -> bool {
+    b.iter().any(|i| match i {
+        Instr::Affect { e, .. } | Instr::ExprStmt(e) | Instr::Lever(e, _) => expr_contient_lit_complexe(e),
+        Instr::Afficher(v, _) => v.iter().any(expr_contient_lit_complexe),
+        Instr::Retour(Some(e), _) => expr_contient_lit_complexe(e),
+        Instr::Si { test, alors, sinon, .. } => expr_contient_lit_complexe(test)
+            || corps_contient_lit_complexe(alors)
+            || sinon.as_ref().map(|s| corps_contient_lit_complexe(s)).unwrap_or(false),
+        Instr::TantQue { test, corps, .. } => expr_contient_lit_complexe(test) || corps_contient_lit_complexe(corps),
+        Instr::Pour { debut, fin, corps, .. } => expr_contient_lit_complexe(debut)
+            || expr_contient_lit_complexe(fin) || corps_contient_lit_complexe(corps),
+        Instr::Bloc(bb) => corps_contient_lit_complexe(bb),
+        _ => false,
+    })
+}
+
 pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                    prog: &HashMap<String, Signature>, attendu: Option<TyKind>) -> bool {
 
@@ -320,6 +386,14 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
             }
             Instr::TantQue { test, corps, .. } => {
                 if ty_statique(test, env) != Some(TyKind::Booleen) { return false; }
+                // porte de parité : dans une boucle « i < n » (i variable
+                // entière), le corps ne doit contenir AUCUN littéral imaginaire
+                // corrompu (1+1i issu du repli de « $i + 1 ») ni 0+1i : sinon
+                // l'incrémentateur écrit un complexe dans le slot i64 du
+                // compteur et la boucle ne termine jamais.
+                if est_boucle_i(test) {
+                    if corps_contient_lit_complexe(corps) { return false; }
+                }
                 if !bloc_compilable(corps, env, prog, attendu) { return false; }
             }
             Instr::Pour { nom, debut, fin, corps, .. } => {
@@ -329,6 +403,18 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 if !bloc_compilable(corps, env, prog, attendu) { return false; }
             }
             Instr::Retour(e, _) => {
+                // un « retour i » dont l'AST porte le LITTÉRAL imaginaire 0+1i
+                // est une variable de boucle mal greffée par le repli de
+                // constantes : la fonction retournant entier, on refuse la
+                // compilation (le JIT bouclerait sans fin). Un 1+1i dans un
+                // corps flottant est en revanche un vrai complexe : la voie
+                // rapide du banc l'utilise, on ne la refuse pas.
+                if matches!(e, Some(Expr::LitComplexe { re, im, .. })
+                        if *re == 0.0 && *im == 1.0)
+                    && matches!(attendu, Some(TyKind::Entier) | Some(TyKind::Rationnel) | Some(TyKind::Booleen))
+                {
+                    return false;
+                }
                 if let Some(e) = e {
                     let t = match ty_statique(e, env) { Some(t) => t, None => return false };
                     // un entier issu de * ou ^ peut promouvoir en GMP ; la trame
@@ -388,6 +474,7 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_affiche_complexe", rose_affiche_complexe as *const u8),
         ("rose_affiche_ent", rose_affiche_ent as *const u8),
         ("rose_powf", rose_powf as *const u8),
+        ("rose_sqrt", rose_sqrt as *const u8),
         ("rose_add_ent", crate::run::rose_add_ent as *const u8),
         ("rose_sub_ent", crate::run::rose_sub_ent as *const u8),
         ("rose_mul_ent", crate::run::rose_mul_ent as *const u8),
@@ -697,6 +784,7 @@ impl Jit {
                 ("rose_affiche_f64", vec![types::F64], None),
                 ("rose_affiche_complexe", vec![types::F64, types::F64], None),
                 ("rose_powf", vec![types::F64, types::F64], Some(types::F64)),
+                ("rose_sqrt", vec![types::F64], Some(types::F64)),
                 ("rose_add_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_sub_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_mul_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
@@ -787,6 +875,9 @@ impl Jit {
 #[allow(dead_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_powf(a: f64, b: f64) -> f64 { a.powf(b) }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_sqrt(a: f64) -> f64 { a.sqrt() }
 
 /// Trampoline d'appel : la convention SystemV place les entiers dans x0..x7
 /// et les flottants dans d0..d7 ; on transmute vers une signature typée par
@@ -1072,8 +1163,20 @@ impl Emetteur<'_> {
 
     fn expr(&mut self, e: &Expr, env: &mut HashMap<String, Variable>,
             types: &HashMap<String, TyKind>) -> JitVal {
+        // porte de parité : « i » au niveau principal est la constante
+        // imaginaire ; l'affectation « $i = 5 » au niveau principal est une
+        // VARIABLE entière, mais les deux partagent le même jeton. Si la
+        // table des slots porte un entier sous « i », l'expression « i » est
+        // la VARIABLE — sinon (aucun slot) c'est la constante 0+1i, et le
+        // littéral doit garder ses deux composantes.
         match e {
             Expr::LitComplexe { re, im, .. } => {
+                // miroir de l'interpréteur : dans un bloc où « i » est une
+                // VARIABLE entière, le littéral 0+1i est cette variable (le
+                // lexeur replie le mot « i » avant que le contexte soit connu).
+                if *re == 0.0 && *im == 1.0 && types.get("i").copied() == Some(TyKind::Entier) {
+                    return self.expr(&Expr::Var("i".into(), 0), env, types);
+                }
                 let zt = self.builder.ins().iconst(types::I64, 0);
                 self.builder.def_var(self.tag_tmp, zt);
                 let cr = self.builder.ins().iconst(types::I64, re.to_bits() as i64);
@@ -1220,6 +1323,29 @@ impl Emetteur<'_> {
                     JitVal::Simple(z)
                 }
             };
+        }
+        if !self.signatures.contains_key(nom) {
+            // fonction stdlib hors intrinsics (ex. modulus) : on l'émet en
+            // natif si elle est connue de la table runtime, sinon repli.
+            if nom == "modulus" && args.len() == 1 {
+                // (voie actuelle : complexe uniquement ; le réel suit)
+                let va = self.expr(&args[0], env, types);
+                if let JitVal::Complexe(re, im) = va {
+                    let rr = self.builder.ins().fmul(re, re);
+                    let ii = self.builder.ins().fmul(im, im);
+                    let ss = self.builder.ins().fadd(rr, ii);
+                    let f = self.runtime("rose_sqrt");
+                    let call = self.builder.ins().call(f, &[ss]);
+                    let c = self.builder.func.dfg.first_result(call);
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    return JitVal::Simple(c);
+                }
+            }
+            // hors sous-ensemble : le bloc ne sera pas compilé (ty_statique a
+            // déjà refusé cet appel) — on rend zéro, jamais atteint.
+            let z = self.builder.ins().iconst(types::I64, 0);
+            return JitVal::Simple(z);
         }
         let sig = self.signatures[nom].clone();
         let fref = self.fonction_ref(nom, &sig);

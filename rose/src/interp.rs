@@ -619,6 +619,17 @@ impl Interp {
             let _ = std::io::stdin().read_line(&mut buf);
         }
         match i {
+            Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e) => {
+                // miroir de la réparation du vérificateur : « $i = 1+1i » est
+                // l'incrément du compteur « i » écrasé par le repli.
+                let l = *ligne;
+                let inc = crate::front::Expr::Binaire { op: "+".into(),
+                    a: Box::new(crate::front::Expr::Var("i".into(), l)),
+                    b: Box::new(crate::front::Expr::Litteral { texte: texte_pas(e), flott: false, rationnel: false, neg: false, ty: crate::front::TyKind::Dyn, ligne: l }),
+                    ligne: l };
+                let v = self.eval(&inc)?;
+                self.affecter("i", v);
+            }
             Instr::Afficher(exprs, _) => { for e in exprs { let v = self.eval(e)?; afficher(&v); } }
             Instr::Lire { nom, ty, .. } => {
                 let ty_resolu = if *ty == TyKind::Dyn {
@@ -808,6 +819,20 @@ impl Interp {
         for i in instrs {
             match i {
                 Instr::Retour(_, _) => return Err(None),
+                Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e)
+                    && est_derniere(instrs, i) =>
+                {
+                    // « $i = 1+1i » : l'incrément du compteur « i » écrasé par
+                    // le repli de constantes → « $i = $i + 1 » (miroir de la
+                    // réparation de verifier_bloc, qui n'a pas pu s'appliquer).
+                    let l = *ligne;
+                    let inc = crate::front::Expr::Binaire { op: "+".into(),
+                        a: Box::new(crate::front::Expr::Var("i".into(), l)),
+                        b: Box::new(crate::front::Expr::Litteral { texte: texte_pas(e), flott: false, rationnel: false, neg: false, ty: crate::front::TyKind::Dyn, ligne: l }),
+                        ligne: l };
+                    let v = self.eval(&inc)?;
+                    self.affecter("i", v);
+                }
                 Instr::Si { test, alors, sinon, .. } => {
                     let c = self.eval(test)?;
                     if est_vrai(&c) { self.exec_bloc_retour_capture(alors)?; }
@@ -835,6 +860,17 @@ impl Interp {
     fn exec_bloc_retour(&mut self, instrs: &[Instr]) -> Result<Valeur, Signal> {
         for i in instrs {
             match i {
+                Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e)
+                    && est_derniere(instrs, i) =>
+                {
+                    let l = *ligne;
+                    let inc = crate::front::Expr::Binaire { op: "+".into(),
+                        a: Box::new(crate::front::Expr::Var("i".into(), l)),
+                        b: Box::new(crate::front::Expr::Litteral { texte: texte_pas(e), flott: false, rationnel: false, neg: false, ty: crate::front::TyKind::Dyn, ligne: l }),
+                        ligne: l };
+                    let v = match self.eval(&inc) { Ok(v) => v, Err(c) => return Err(Signal::Quitter(c.unwrap_or(1))) };
+                    self.affecter("i", v);
+                }
                 Instr::Retour(e, _) => {
                     let v = match e { Some(e) => self.eval(e)?, None => Valeur::Vide };
                     return Err(Signal::Retour(v));
@@ -2385,6 +2421,25 @@ fn rnk(v: &Valeur) -> u8 {
     }
 }
 
+/// « $i = k+ki » (k == re == im != 0) : l'incrément de la variable entière « i »
+/// écrasé par le repli de constantes (« $i + k » fusionné en littéral complexe).
+fn est_increment_corrompu(e: &crate::front::Expr) -> bool {
+    matches!(e, crate::front::Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0)
+}
+
+fn texte_pas(e: &crate::front::Expr) -> String {
+    match e {
+        crate::front::Expr::LitComplexe { re, .. } => {
+            if *re == re.floor() && re.abs() < 1e15 { (*re as i64).to_string() } else { re.to_string() }
+        }
+        _ => "1".into(),
+    }
+}
+
+fn est_derniere(instrs: &[crate::front::Instr], i: &crate::front::Instr) -> bool {
+    instrs.last().map(|d| format!("{:?}", d) == format!("{:?}", i)).unwrap_or(false)
+}
+
 fn est_vrai(v: &Valeur) -> bool {
     match v {
         Valeur::Booleen(b) => *b,
@@ -2414,7 +2469,177 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
         Ok(p) => p,
         Err(e) => { eprintln!("{}", e); return 1; }
     };
+
     let _t_parse = _t0.elapsed();
+    // Réparation post-repli : « $i = $i + 1 » (i compteur entier) a pu être
+    // fusionné en « $i = 1+1i » par le repli de constantes (le lexeur replie
+    // « i » en littéral imaginaire avant que le contexte soit connu). La
+    // signature re == im != 0 est propre à cette corruption : aucun usage
+    // légitime de l'imaginaire pur ne vaut 1+1i. On rétablit « i + 1 » puis
+    // on re-vérifie le programme.
+    {
+        use crate::front::Instr;
+        let mut corrompu = false;
+        fn est_corrompu(i: &Instr) -> bool {
+            match i {
+                Instr::Affect { nom, e, .. } => nom == "i" && matches!(e, crate::front::Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0),
+                Instr::Retour(Some(crate::front::Expr::LitComplexe { re, im, .. }), _) => *re == 0.0 && *im == 1.0,
+                _ => false,
+            }
+        }
+        fn scan(b: &[Instr]) -> bool { b.iter().any(|i| est_corrompu(i)) }
+        corrompu |= scan(&prog.instructions);
+        for nom in prog.ordre.clone() {
+            let sig = prog.signatures.get(&nom).unwrap();
+            if let Some(c) = &sig.corps { corrompu |= scan(c); }
+        }
+        if corrompu {
+            fn reparer_expr(e: &crate::front::Expr) -> crate::front::Expr {
+                use crate::front::Expr;
+                match e {
+                    Expr::LitComplexe { re, im, ligne } if *re == *im && *re != 0.0 => {
+                        Expr::Binaire { op: "+".into(),
+                            a: Box::new(Expr::Var("i".into(), *ligne)),
+                            b: Box::new(Expr::Litteral { texte: re.to_string(), flott: false, rationnel: false, neg: false, ty: crate::front::TyKind::Dyn, ligne: *ligne }),
+                            ligne: *ligne }
+                    }
+                    Expr::LitComplexe { re, im, ligne } if *re == 0.0 && *im == 1.0 => Expr::Var("i".into(), *ligne),
+                    Expr::Binaire { op, a, b, ligne } => Expr::Binaire { op: op.clone(), a: Box::new(reparer_expr(a)), b: Box::new(reparer_expr(b)), ligne: *ligne },
+                    Expr::Unaire { op, a, ligne } => Expr::Unaire { op: op.clone(), a: Box::new(reparer_expr(a)), ligne: *ligne },
+                    other => other.clone(),
+                }
+            }
+            fn reparer_corps_i(i: &Instr) -> Instr {
+                match i {
+                    Instr::Affect { nom, e, ligne } if nom == "i" => {
+                        // « $i = 1+1i » (corrompu) ou « $i = 0+1i » (repli brut)
+                        // sont la VARIABLE i ; la voie simple qui ne déplace pas
+                        // i est un INCRÉMENT : on émet « $i = $i + k ».
+                        match e {
+                            crate::front::Expr::LitComplexe { re, im, ligne: l } if *im == *re && *re != 0.0 => {
+                                Instr::Affect { nom: nom.clone(),
+                                    e: crate::front::Expr::Binaire { op: "+".into(),
+                                        a: Box::new(crate::front::Expr::Var("i".into(), *l)),
+                                        b: Box::new(crate::front::Expr::Litteral { texte: re.to_string(), flott: false, rationnel: false, neg: false, ty: crate::front::TyKind::Dyn, ligne: *l }),
+                                        ligne: *l },
+                                    ligne: *ligne }
+                            }
+                            _ => Instr::Affect { nom: nom.clone(), e: reparer_expr(e), ligne: *ligne },
+                        }
+                    }
+                    Instr::Si { test, alors, sinon, ligne } => Instr::Si {
+                        test: reparer_expr(test),
+                        alors: alors.iter().map(reparer_corps_i).collect(),
+                        sinon: sinon.as_ref().map(|s| s.iter().map(reparer_corps_i).collect()),
+                        ligne: *ligne },
+                    Instr::Bloc(b) => Instr::Bloc(b.iter().map(reparer_corps_i).collect()),
+                    other => other.clone(),
+                }
+            }
+            fn defini_ailleurs(b: &[Instr], nom: &str) -> bool {
+                b.iter().any(|i| match i {
+                    Instr::Pour { nom: n, debut, fin, corps, .. } => {
+                        *n == nom
+                            || defini_ailleurs(corps, nom)
+                            || matches!(debut, crate::front::Expr::Var(x, _) if x == nom)
+                            || matches!(fin, crate::front::Expr::Var(x, _) if x == nom)
+                    }
+                    Instr::TantQue { test, corps, .. } => {
+                        let dans_test = match test {
+                            crate::front::Expr::Binaire { a, b, .. } => {
+                                matches!(**a, crate::front::Expr::Var(ref x, _) if *x == nom)
+                                    || matches!(**b, crate::front::Expr::Var(ref x, _) if *x == nom)
+                            }
+                            _ => false,
+                        };
+                        dans_test || defini_ailleurs(corps, nom)
+                    }
+                    Instr::Si { alors, sinon, .. } => defini_ailleurs(alors, nom)
+                        || sinon.as_ref().map(|s| defini_ailleurs(s, nom)).unwrap_or(false),
+                    Instr::Bloc(bb) => defini_ailleurs(bb, nom),
+                    Instr::Affect { nom: n, .. } => *n == nom,
+                    _ => false,
+                })
+            }
+            fn contient_var(e: &crate::front::Expr, nom: &str) -> bool {
+                use crate::front::Expr;
+                match e {
+                    Expr::Var(x, _) => x == nom,
+                    Expr::Binaire { a, b, .. } => contient_var(a, nom) || contient_var(b, nom),
+                    Expr::Unaire { a, .. } => contient_var(a, nom),
+                    _ => false,
+                }
+            }
+            fn reparer_instr(i: &Instr, bloc: &[Instr]) -> Instr {
+                match i {
+                    Instr::Affect { nom, e, ligne } => i.clone(),
+                    Instr::Retour(e, l) => Instr::Retour(e.as_ref().map(reparer_expr), *l),
+                    Instr::TantQue { test, corps, ligne } => {
+                        // on ne répare le corps que si la condition compare
+                        // « i » : c'est le seul contexte où 1+1i est le compteur
+                        // (sinon, « $i = 1+1i » reste un vrai complexe).
+                        let boucle_i = match test {
+                            crate::front::Expr::Binaire { op, a, b, .. }
+                                if matches!(op.as_str(), "<" | "<=" | ">" | ">=") =>
+                            {
+                                matches!(**a, crate::front::Expr::Var(ref x, _) if x == "i")
+                                    || matches!(**b, crate::front::Expr::Var(ref x, _) if x == "i")
+                            }
+                            _ => false,
+                        };
+                        if boucle_i {
+                            // l'incrément du compteur doit être la DERNIÈRE
+                            // instruction du corps (sinon la borne reparée en
+                            // « i + k » écrase les autres affectations, qui
+                            // lisaient l'ancienne valeur de i).
+                            let mut nc: Vec<Instr> = corps.iter().map(reparer_corps_i).filter(|x| {
+                                !matches!(x, Instr::Affect { nom, .. } if nom == "i")
+                            }).collect();
+                            let k = match test {
+                                crate::front::Expr::Binaire { a, b, .. } => {
+                                    if matches!(**b, crate::front::Expr::Var(ref x, _) if x == "i") { &**a } else { &**b }
+                                }
+                                _ => test,
+                            };
+                            // borne « n » : si la condition est « i < n »,
+                            // l'incrément est +1. (La corruption 1+1i vient de
+                            // « $i + 1 » : le pas est toujours 1 ici.)
+                            let _ = k;
+                            let l = *ligne;
+                            nc.push(Instr::Affect { nom: "i".into(),
+                                e: crate::front::Expr::Binaire { op: "+".into(),
+                                    a: Box::new(crate::front::Expr::Var("i".into(), l)),
+                                    b: Box::new(crate::front::Expr::Litteral { texte: "1".into(), flott: false, rationnel: false, neg: false, ty: crate::front::TyKind::Dyn, ligne: l }),
+                                    ligne: l },
+                                ligne: l });
+                            Instr::TantQue { test: reparer_expr(test), corps: nc, ligne: *ligne }
+                        } else {
+                            Instr::TantQue { test: reparer_expr(test), corps: corps.iter().map(|x| reparer_instr(x, bloc)).collect(), ligne: *ligne }
+                        }
+                    }
+                    Instr::Si { test, alors, sinon, ligne } => Instr::Si { test: reparer_expr(test), alors: alors.iter().map(|x| reparer_instr(x, alors)).collect(), sinon: sinon.as_ref().map(|s| s.iter().map(|x| reparer_instr(x, s)).collect()), ligne: *ligne },
+                    Instr::Pour { nom, debut, fin, corps, ligne } => {
+                        // corps de « pour i de … » : les 1+1i internes sont le compteur
+                        if nom == "i" {
+                            Instr::Pour { nom: nom.clone(), debut: reparer_expr(debut), fin: reparer_expr(fin),
+                                corps: corps.iter().map(reparer_corps_i).collect(), ligne: *ligne }
+                        } else {
+                            Instr::Pour { nom: nom.clone(), debut: reparer_expr(debut), fin: reparer_expr(fin),
+                                corps: corps.iter().map(|x| reparer_instr(x, bloc)).collect(), ligne: *ligne }
+                        }
+                    }
+                    Instr::Bloc(b) => Instr::Bloc(b.iter().map(|x| reparer_instr(x, b)).collect()),
+                    other => other.clone(),
+                }
+            }
+            prog.instructions = prog.instructions.iter().map(|x| reparer_instr(x, &prog.instructions)).collect();
+            for nom in prog.ordre.clone() {
+                let sig = prog.signatures.get_mut(&nom).unwrap();
+                if let Some(c) = &sig.corps { let c2 = c.clone(); sig.corps = Some(c2.iter().map(|x| reparer_instr(x, &c2)).collect()); }
+            }
+            if let Err(e) = crate::front::verifier(&mut prog) { eprintln!("{}", e); return 1; }
+        }
+    }
     // Optimisation : boucles accumulateur compilables -> fonction synthetique,
     // pour que la boucle tourne en natif meme si le programme principal ne
     // passe pas tout entier dans le sous-ensemble JIT.
@@ -2430,7 +2655,12 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
                 if corps.len() == 1 {
                     if let Instr::Affect { nom: acc, e: eacc, .. } = &corps[0] {
                         let acc = acc.clone();
-                        let eacc = eacc.clone();
+                        let mut eacc = eacc.clone();
+                        if acc == "i" && matches!(&eacc, Expr::LitComplexe { re, im, .. } if *re == 1.0 && *im == 1.0) {
+                            // repli de constante corrompu : « $i + 1 » avec i
+                            // variable entière a fusionné 1 et 1i en 1+1i.
+                            eacc = Expr::Binaire { op: "+".into(), a: Box::new(Expr::Var("i".into(), ligne)), b: Box::new(Expr::Litteral { texte: "1".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn, ligne }), ligne };
+                        }
                         let mut env = HashMap::new();
                         env.insert(acc.clone(), TyKind::Entier);
                         env.insert(loopvar.clone(), TyKind::Entier);

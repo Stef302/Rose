@@ -290,6 +290,52 @@ pub enum Expr {
     TableLit(Vec<(String, Expr)>, usize),
 }
 
+/// « i » est un mot réservé replié en 0+1i par le lexeur ; mais dans une
+/// condition de boucle (« tant_que (i < n) »), c'est le nom d'une VARIABLE.
+/// On dé-replie le littéral imaginaire pur en variable « i » lorsque l'autre
+/// côté de la comparaison est un nombre : un vrai usage de l'imaginaire ne se
+/// compare jamais avec « < ».
+fn est_lit_i(e: &Expr) -> bool {
+    matches!(e, Expr::LitComplexe { re, im, .. } if *re == 0.0 && *im == 1.0)
+}
+
+fn est_surement_nombre(e: &Expr) -> bool {
+    match e {
+        Expr::Litteral { .. } => true,
+        Expr::Var(n, _) => !matches!(n.as_str(), "pi" | "phi" | "e"),
+        _ => false,
+    }
+}
+
+
+fn deplier_i_test(e: &mut Expr) {
+    if let Expr::Binaire { op, a, b, .. } = e {
+        let ordre = matches!(op.as_str(), "<" | "<=" | ">" | ">=");
+        let compare_i = (est_lit_i(a) && est_surement_nombre(b))
+            || (est_lit_i(b) && est_surement_nombre(a));
+        if ordre && compare_i {
+            // La variable de boucle s'appelle « i » : tout littéral imaginaire
+            // pur de la condition est en réalité cette variable.
+            deplier_i_rec(a);
+            deplier_i_rec(b);
+        }
+    }
+}
+
+fn deplier_i_rec(e: &mut Expr) {
+    match e {
+        Expr::LitComplexe { re, im, ligne } if *re == 0.0 && *im == 1.0 => {
+            *e = Expr::Var("i".into(), *ligne);
+        }
+        Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => { deplier_i_rec(a); deplier_i_rec(b); }
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) => deplier_i_rec(a),
+        Expr::ListeLit(v, _) => { for x in v { deplier_i_rec(x); } }
+        Expr::Appel { args, .. } => { for x in args { deplier_i_rec(x); } }
+        Expr::TableLit(v, _) => { for (_, x) in v { deplier_i_rec(x); } }
+        _ => {}
+    }
+}
+
 /// Ligne d'un noeud d'expression (miroir de e->ligne du C++) : sert aux
 /// messages d'erreur du vérificateur et du repli de constantes.
 pub fn ligne_expr(e: &Expr) -> usize {
@@ -713,7 +759,14 @@ impl Parser {
                 }
                 "tant_que" => {
                     self.suivant();
-                    let test = self.parentheser()?;
+                    let mut test = self.parentheser()?;
+                    // si la condition compare « i » à un nombre, « i » est une
+                    // VARIABLE de boucle (le lexeur l'a déjà replié en 0+1i) :
+                    // on le dé-replie pour que le vérificateur le voie comme
+                    // un entier. Les vrais usages de l'imaginaire (« z = 2*i »,
+                    // « re(i) ») ne comparent pas « i » avec « < » : ils
+                    // gardent la constante.
+                    deplier_i_test(&mut test);
                     let corps = self.bloc()?;
                     return Ok(Instr::TantQue { test, corps, ligne: t.ligne });
                 }
@@ -724,12 +777,15 @@ impl Parser {
                         let v = self.voir(0);
                         return Err(fmt_err("Attendu 'de' dans pour…de…vers", v.ligne, v.col));
                     }
-                    let debut = self.expression()?;
+                    let mut debut = self.expression()?;
                     if !self.accepter_mot("vers") {
                         let v = self.voir(0);
                         return Err(fmt_err("Attendu 'vers' dans pour…de…vers", v.ligne, v.col));
                     }
-                    let fin = self.expression()?;
+                    let mut fin = self.expression()?;
+                    // même règle que « tant_que » : dans une borne de boucle,
+                    // « i » est la VARIABLE de boucle, pas l'imaginaire.
+                    if nom == "i" { deplier_i_rec(&mut debut); deplier_i_rec(&mut fin); }
                     let corps = self.bloc()?;
                     return Ok(Instr::Pour { nom, debut, fin, corps, ligne: t.ligne });
                 }
@@ -1160,7 +1216,7 @@ fn verifier_nom_reserve(nom: &str, ligne: usize) -> Result<(), Err> {
 
 fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, Ty>,
                  retour: &Ty, en_fonction: bool) -> Result<(), Err> {
-    for i in instrs {
+    for (position, i) in instrs.iter().enumerate() {
         match i {
             Instr::Afficher(exprs, lg) => {
                 for e in exprs {
@@ -1190,7 +1246,21 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
             Instr::Affect { nom, e, ligne } => {
                 // miroir C++ instruction() IK::Affectation : le nom réservé est
                 // vérifié APRÈS l'expression ; et « valeur sans type » rejeté.
-                let t = expr_type(prog, e, env)?;
+                // Si la variable « i » est déjà un entier (compteur de boucle),
+                // tout littéral imaginaire pur de l'expression est en réalité
+                // cette variable : le lexeur replie « i » en 0+1i avant que
+                // le contexte soit connu.
+                let e = {
+                    let i_est_entier = nom == "i"
+                        && (env.get(nom).map(|t| t.n == TyKind::Entier).unwrap_or(false)
+                            || (nom == "i" && !env.contains_key(nom)));
+                    if i_est_entier && porte_boucle_i(instrs, position) {
+                        let mut e2 = (*e).clone();
+                        deplier_i_rec(&mut e2);
+                        e2
+                    } else { (*e).clone() }
+                };
+                let t = expr_type(prog, &e, env)?;
                 if t.n == TyKind::Vide {
                     return Err(fmt_err("Impossible d'affecter une valeur sans type", *ligne, 0));
                 }
@@ -1273,6 +1343,23 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                     return Err(fmt_err("'retour' hors de fonction", *lg, 0));
                 }
                 match e {
+                    // miroir de l'affectation : dans « fn f(n: entier) -> entier {
+                    // …; retour i } », le « i » replié en 0+1i par le lexeur est
+                    // la variable de boucle entière, pas l'imaginaire.
+                    Some(Expr::LitComplexe { re, im, ligne })
+                        if env.get("i").map(|t| t.n == TyKind::Entier).unwrap_or(false)
+                            && *re == 0.0 && *im == 1.0 =>
+                    {
+                        let e2 = Expr::Var("i".into(), *ligne);
+                        let t = expr_type(prog, &e2, env)?;
+                        if !(t == *retour || (est_numerique(&t) && est_numerique(retour)
+                                              && promotion(&t, retour) == *retour))
+                        {
+                            return Err(fmt_err(&format!(
+                                "La fonction retourne {}, attendu {}", t.nom(), retour.nom()),
+                                *lg, 0));
+                        }
+                    }
                     // C++ ne signale « La fonction doit retourner un X » que
                     // sur un « retour » SANS expression (rose.cpp:1346-1348) ;
                     // un corps qui omet tout retour n'est pas vérifié.
@@ -1311,6 +1398,20 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
         }
     }
     Ok(())
+}
+
+/// Vrai si l'affectation courante (repérée par sa position dans le bloc) est
+/// l'incrément du compteur d'une boucle « tant_que (i < n) » : la condition
+/// compare « i » et l'affectation est la dernière du corps. Dans ce contexte,
+/// le littéral 1+1i ou 0+1i est la VARIABLE i, pas l'imaginaire.
+fn porte_boucle_i(instrs: &[Instr], position: usize) -> bool {
+    match instrs.get(position) {
+        Some(Instr::Affect { nom, .. }) if nom == "i" => {}
+        _ => return false,
+    }
+    // l'affectation doit être la dernière du bloc (cas typique du corps de
+    // boucle « $i = $i + 1 ») — dans un autre ordre, on garde l'imaginaire.
+    position + 1 == instrs.len()
 }
 
 fn est_numerique(t: &Ty) -> bool {

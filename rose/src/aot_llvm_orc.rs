@@ -111,6 +111,11 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
     let context = Context::create();
     let module = context.create_module("rose_orc");
     let builder = context.create_builder();
+    let i64_type = context.i64_type();
+    let fn_type = i64_type.fn_type(&[], false);
+    let function = module.add_function("main", fn_type, Some(Linkage::External));
+    let entry_main = context.append_basic_block(function, "entry");
+    builder.position_at_end(entry_main);
 
     // Note : l'initialisation des passes LLVM n'est pas nécessaire pour
     // l'émission d'objet natif avec TargetMachine::write_to_file
@@ -158,13 +163,76 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
         PgoMode::None => {}
     }
 
-    // ── Compilation de la fonction main ──────────────────────────────────
-    let i64_type = context.i64_type();
-    let fn_type = i64_type.fn_type(&[], false);
-    let function = module.add_function("main", fn_type, Some(Linkage::External));
-
-    let entry = context.append_basic_block(function, "entry");
-    builder.position_at_end(entry);
+    // ── Fonctions utilisateur ────────────────────────────────────────────
+    // Deux passes : (1) toutes les en-têtes — les appels croisés et la
+    // récursion trouvent déjà la fonction déclarée dans le module ;
+    // (2) les corps. Un builder séparé protège le positionnement du builder
+    // principal (resté sur l'entrée de main). Les noms sont figés avant
+    // d'itérer. Une fonction déclarée sans corps reste extérieure : c'est ce
+    // qui permet aux appels de DLL « extern » de linker contre la libc.
+    for nom in &prog.ordre {
+        let sig = match prog.signatures.get(nom) { Some(s) => s, None => continue };
+        if sig.corps.is_none() { continue; }
+        let flott = matches!(sig.retour.n, crate::front::TyKind::Flottant | crate::front::TyKind::Rationnel);
+        let mut params: Vec<BasicMetadataTypeEnum> = Vec::new();
+        for (_, t) in &sig.params {
+            params.push(if matches!(t.n, crate::front::TyKind::Flottant | crate::front::TyKind::Rationnel) {
+                context.f64_type().into()
+            } else {
+                i64_type.into()
+            });
+        }
+        let fn_type = if flott {
+            context.f64_type().fn_type(&params, false)
+        } else {
+            i64_type.fn_type(&params, false)
+        };
+        module.add_function(nom, fn_type, Some(Linkage::External));
+    }
+    {
+        let fb = context.create_builder();
+        let noms: Vec<String> = prog.ordre.iter()
+            .filter(|n| prog.signatures.get(*n).map(|s| s.corps.is_some()).unwrap_or(false))
+            .cloned()
+            .collect();
+        for nom in noms {
+            let sig = prog.signatures.get(&nom).unwrap();
+            let f = module.get_function(&nom).unwrap();
+            let corps = sig.corps.clone().unwrap();
+            let a_retour = sig.a_retour;
+            let flott = matches!(sig.retour.n, crate::front::TyKind::Flottant | crate::front::TyKind::Rationnel);
+            let entry = context.append_basic_block(f, "entry");
+            fb.position_at_end(entry);
+            let mut local: HashMap<String, BasicValueEnum> = HashMap::new();
+            for (i, (pn, _)) in sig.params.iter().enumerate() {
+                local.insert(pn.clone(), f.get_nth_param(i as u32).unwrap());
+            }
+            let mut erreur: Option<String> = None;
+            for instr in &corps {
+                if let Err(m) = compile_instr(&fb, &context, &module, &mut local, instr) {
+                    erreur = Some(m);
+                    break;
+                }
+            }
+            if let Some(m) = erreur {
+                // Corps hors du domaine supporté : on supprime la définition,
+                // l'appel redevient une fonction extérieure (libc / DLL).
+                unsafe { f.delete() };
+                return Err(format!("dans la fonction '{}' : {}", nom, m));
+            }
+            let termine = fb.get_insert_block().map(|b| b.get_terminator().is_some()).unwrap_or(true);
+            if !termine {
+                if a_retour {
+                    let def: BasicValueEnum = if flott { context.f64_type().const_zero().into() } else { i64_type.const_int(0, false).into() };
+                    fb.build_return(Some(&def));
+                } else if flott {
+                    fb.build_return(Some(&context.f64_type().const_zero()));
+                } else {
+                    fb.build_return(None);
+                }
+            }
+        }
+    }
 
     // Fonction récursive interne pour compiler une expression
     fn compile_expr<'ctx>(
@@ -285,13 +353,24 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                     let v = compile_expr(builder, context, module, named_values, arg)?;
                     arg_values.push(v.into());
                 }
-                if let Some(func) = module.get_function(nom) {
-                    let call_site = builder.build_call(func, &arg_values, "call")
-                        .map_err(|e| format!("erreur build_call : {:?}", e))?;
-                    let _ = call_site;
-                    Ok(context.i64_type().const_int(0, false).into())
-                } else {
-                    Err(format!("fonction inconnue en ORC : {}", nom))
+                // Les fonctions utilisateur sont déjà déclarées dans le module
+                // (pré-déclaration) ; un appel inconnu devient une fonction
+                // extérieure (libc / DLL « extern ») que le linker résoudra.
+                let fonction = match module.get_function(nom) {
+                    Some(f) => f,
+                    None => {
+                        let fn_type = context.i64_type().fn_type(
+                            &vec![BasicMetadataTypeEnum::IntType(context.i64_type()); args.len()],
+                            false,
+                        );
+                        module.add_function(nom, fn_type, Some(Linkage::External))
+                    }
+                };
+                let site = builder.build_call(fonction, &arg_values, "call")
+                    .map_err(|e| format!("erreur build_call : {:?}", e))?;
+                match site.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(v) => Ok(v),
+                    _ => Ok(context.i64_type().const_int(0, false).into()),
                 }
             }
             Expr::Factorielle(a, ..) => {
@@ -313,6 +392,31 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
         match instr {
             Instr::Affect { nom, e, .. } => {
                 let value = compile_expr(builder, context, module, named_values, e)?;
+                // Si la variable est un phi de boucle, l'affectation ajoute
+                // l'entrée du phi depuis le bloc courant (sinon les usages
+                // suivants liraient la valeur morte). Si on émet dans le bloc
+                // même du phi, un bloc de continuation est créé.
+                use inkwell::values::{BasicValue as _, AsValueRef};
+                if let Some(iv) = named_values.get(nom).map(|v| v.as_instruction_value()).flatten() {
+                    if iv.get_opcode() == inkwell::values::InstructionOpcode::Phi {
+                        let bloc_phi = iv.get_parent().unwrap();
+                        let f = bloc_phi.get_parent().unwrap();
+                        let courant = builder.get_insert_block().unwrap();
+                        let bloc = if courant == bloc_phi {
+                            let suite = context.append_basic_block(f, "cont");
+                            let _ = builder.build_unconditional_branch(suite);
+                            builder.position_at_end(suite);
+                            suite
+                        } else {
+                            courant
+                        };
+                        let phi = unsafe { inkwell::values::PhiValue::new(iv.as_value_ref()) };
+                        phi.add_incoming(&[(&value, bloc)]);
+                        // la table garde le phi : les lectures dans le bloc
+                        // suivant (loop_block) doivent voir la valeur phi.
+                        return Ok(());
+                    }
+                }
                 named_values.insert(nom.clone(), value);
                 Ok(())
             }
@@ -325,23 +429,36 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 let e = &exprs[0];
                 let value = compile_expr(builder, context, module, named_values, e)?;
 
-                // Déclaration de printf
+                // Déclaration de printf (un seul symbole réutilisé : LLVM
+                // suffixe automatiquement « printf » en « printf.1 » s'il est
+                // redéclaré, ce qui casserait le link avec la libc).
                 let i64_type = context.i64_type();
                 let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
-                let printf_type = i64_type.fn_type(
-                    &[BasicMetadataTypeEnum::PointerType(ptr_type.into())],
-                    true
-                );
-                let printf_func = module.add_function("printf", printf_type, Some(Linkage::External));
+                let printf_func = match module.get_function("printf") {
+                    Some(f) => f,
+                    None => {
+                        let printf_type = i64_type.fn_type(
+                            &[BasicMetadataTypeEnum::PointerType(ptr_type.into())],
+                            true
+                        );
+                        module.add_function("printf", printf_type, Some(Linkage::External))
+                    }
+                };
 
-                // Chaîne de format "%lld\n\0"
+                // Chaîne de format "%lld\n\0" (global unique lui aussi)
                 let fmt_bytes = b"%lld\n\0";
-                let fmt_str = context.const_string(fmt_bytes, false);
-                let fmt_global = module.add_global(fmt_str.get_type(), None, "fmt_orc");
-                fmt_global.set_linkage(Linkage::Internal);
-                fmt_global.set_initializer(&fmt_str);
-                fmt_global.set_constant(true);
-                fmt_global.set_unnamed_addr(true);
+                let fmt_global = match module.get_global("fmt_orc") {
+                    Some(g) => g,
+                    None => {
+                        let fmt_str = context.const_string(fmt_bytes, false);
+                        let g = module.add_global(fmt_str.get_type(), None, "fmt_orc");
+                        g.set_linkage(Linkage::Internal);
+                        g.set_initializer(&fmt_str);
+                        g.set_constant(true);
+                        g.set_unnamed_addr(true);
+                        g
+                    }
+                };
 
                 let fmt_ptr = builder.build_pointer_cast(
                     fmt_global.as_pointer_value(),
@@ -372,10 +489,10 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                     "if_cond",
                 ).map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
 
-                let main_func = module.get_function("main").ok_or("fonction main manquante")?;
-                let then_block = context.append_basic_block(main_func, "then");
-                let else_block = context.append_basic_block(main_func, "else");
-                let merge_block = context.append_basic_block(main_func, "merge");
+                let func_courante = builder.get_insert_block().unwrap().get_parent().unwrap();
+                let then_block = context.append_basic_block(func_courante, "then");
+                let else_block = context.append_basic_block(func_courante, "else");
+                let merge_block = context.append_basic_block(func_courante, "merge");
 
                 builder.build_conditional_branch(cond_bool, then_block, else_block);
 
@@ -383,7 +500,11 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 for instr in alors {
                     compile_instr(builder, context, module, named_values, instr)?;
                 }
-                builder.build_unconditional_branch(merge_block);
+                // « retour » dans la branche : le bloc est terminé, ne pas
+                // émettre de second terminator (sinon code mort + IR invalide).
+                if builder.get_insert_block().map(|b| b.get_terminator().is_none()).unwrap_or(false) {
+                    builder.build_unconditional_branch(merge_block);
+                }
 
                 builder.position_at_end(else_block);
                 if let Some(s) = sinon {
@@ -391,16 +512,18 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                         compile_instr(builder, context, module, named_values, instr)?;
                     }
                 }
-                builder.build_unconditional_branch(merge_block);
+                if builder.get_insert_block().map(|b| b.get_terminator().is_none()).unwrap_or(false) {
+                    builder.build_unconditional_branch(merge_block);
+                }
 
                 builder.position_at_end(merge_block);
                 Ok(())
             }
             Instr::TantQue { test, corps, .. } => {
-                let main_func = module.get_function("main").ok_or("fonction main manquante")?;
-                let loop_block = context.append_basic_block(main_func, "while_loop");
-                let body_block = context.append_basic_block(main_func, "while_body");
-                let after_block = context.append_basic_block(main_func, "while_after");
+                let func_courante = builder.get_insert_block().unwrap().get_parent().unwrap();
+                let loop_block = context.append_basic_block(func_courante, "while_loop");
+                let body_block = context.append_basic_block(func_courante, "while_body");
+                let after_block = context.append_basic_block(func_courante, "while_after");
 
                 // ── PHI NODES pour toutes les variables nommées ──
                 // Structure :
@@ -459,10 +582,10 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
             Instr::Pour { nom, debut, fin, corps, .. } => {
                 let start = compile_expr(builder, context, module, named_values, debut)?;
 
-                let main_func = module.get_function("main").ok_or("fonction main manquante")?;
-                let loop_block = context.append_basic_block(main_func, "for_loop");
-                let body_block = context.append_basic_block(main_func, "for_body");
-                let after_block = context.append_basic_block(main_func, "for_after");
+                let func_courante = builder.get_insert_block().unwrap().get_parent().unwrap();
+                let loop_block = context.append_basic_block(func_courante, "for_loop");
+                let body_block = context.append_basic_block(func_courante, "for_body");
+                let after_block = context.append_basic_block(func_courante, "for_after");
 
                 // ── PHI NODE pour la variable de boucle ──
                 // Structure :
