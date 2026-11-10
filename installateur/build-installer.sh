@@ -34,8 +34,9 @@ else
   touch "$STAGE/bin/rose-20.exe"
 fi
 
-# LLVM-C.dll (AOT/LLVM runtime) si disponible
-LLVM_DLL="${LLVM_DLL:-/home/clausake/.local/llvm-win/bin/LLVM-C.dll}"
+# LLVM-C.dll (AOT/LLVM runtime) si disponible — chemin par défaut à adapter,
+# ou variable d'environnement LLVM_DLL.
+LLVM_DLL="${LLVM_DLL:-/opt/llvm-win/bin/LLVM-C.dll}"
 if [ -f "$LLVM_DLL" ]; then
   cp "$LLVM_DLL" "$STAGE/bin/LLVM-C.dll"
   echo "✓ LLVM-C.dll trouvé : $LLVM_DLL"
