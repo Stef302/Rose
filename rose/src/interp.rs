@@ -229,7 +229,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "tableau" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
         | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow" | "racine"
-        | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi" | "__i"
+        | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi" | "i"
         | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "breakpoint_if" | "watch" | "unwatch" | "join"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction")
@@ -910,6 +910,7 @@ impl Interp {
 
     pub fn eval(&mut self, e: &Expr) -> Result<Valeur, Option<i32>> {
         match e {
+            Expr::LitComplexe { re, im, .. } => Ok(Valeur::Complexe { re: *re, im: *im }),
             Expr::Litteral { texte, flott, .. } => {
                 if *flott {
                     Ok(Valeur::f(texte.parse::<f64>().unwrap_or(f64::NAN)))
@@ -1616,7 +1617,7 @@ impl Interp {
             "nb_chiffres" | "digits" => { let z = vers_z(&a[0]); Valeur::z(nb_chiffres(&z) as i64) }
             "nombre_pi" | "pi" => { let z = vers_z(&a[0]); Valeur::s(nombre_pi(&z)) }
             "phi" => { let z = vers_z(&a[0]); Valeur::s(nombre_phi(&z)) }
-            "__i" => Valeur::Complexe { re: 0.0, im: 1.0 },
+            "i" => Valeur::Complexe { re: 0.0, im: 1.0 },
             "longueur" | "len" => {
                 let n: u64 = match &a[0] {
                     Valeur::Chaine(s) => s.chars().count() as u64,
@@ -2209,11 +2210,12 @@ impl Interp {
                     }
                 }
             }
-            "__i" => Valeur::Complexe { re: 0.0, im: 1.0 },
+            "i" => Valeur::Complexe { re: 0.0, im: 1.0 },
             "re" => { let z = match &a[0] { Valeur::Complexe{re,..} => *re, _ => vers_d(&a[0]) }; Valeur::f(z) }
             "im" => { let z = match &a[0] { Valeur::Complexe{im,..} => *im, _ => 0.0 }; Valeur::f(z) }
             "conj" => { match &a[0] { Valeur::Complexe{re,im} => Valeur::Complexe { re: *re, im: -*im }, _ => a[0].clone() } }
             "modulus" | "abs" => { match &a[0] { Valeur::Complexe{re,im} => Valeur::f((re*re+im*im).sqrt()), _ => { let v = &a[0]; match v { Valeur::Entier(i,None) => Valeur::z(i.abs()), _ => Valeur::f(vers_d(v).abs()) } } } }
+            "arg" => { let z = match &a[0] { Valeur::Complexe{re,im} => im.atan2(*re), _ => 0.0f64.atan2(vers_d(&a[0])) }; Valeur::f(z) }
             "racine" => {
                 let n = vers_z(&a[0]);
                 if n.sgn() < 0 { erreur_runtime("racine : entier négatif"); }
@@ -2226,6 +2228,7 @@ impl Interp {
                 }
                 Valeur::Irrationnel(Rc::new(n))
             }
+            "i" => Valeur::Complexe { re: 0.0, im: 1.0 },
             "quitter" => unreachable!("quitter traité dans stdlib"),
             "abs" => {
                 match &a[0] {

@@ -50,11 +50,14 @@ fn rang(t: &Ty) -> u8 {
     match t.n {
         TyKind::Vide | TyKind::Entier | TyKind::Booleen => 1,
         TyKind::Rationnel => 2,
-        _ => 3,
+        TyKind::Flottant => 3,
+        TyKind::Complexe => 4,
+        _ => 5,
     }
 }
 
 pub fn promotion(a: &Ty, b: &Ty) -> Ty {
+    if a.n == TyKind::Complexe || b.n == TyKind::Complexe { return Ty::simple(TyKind::Complexe); }
     match rang(a).max(rang(b)) {
         0 | 1 => Ty::simple(TyKind::Entier),
         2 => Ty::simple(TyKind::Rationnel),
@@ -82,7 +85,7 @@ fn est_mot_cle(s: &str) -> bool {
         "fn" | "fonction" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
         | "vrai" | "faux" | "et" | "ou" | "non" | "div"
         | "entier" | "rationnel" | "flottant" | "booleen" | "chaine" | "liste" | "table"
-        | "π" | "φ" | "I" | "time")
+                | "π" | "φ" | "i" | "time")
 }
 
 fn cp_lettre(c: char) -> bool {
@@ -274,6 +277,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
 #[derive(Clone, Debug)]
 pub enum Expr {
     Litteral { texte: String, flott: bool, rationnel: bool, neg: bool, ty: TyKind, ligne: usize },
+    LitComplexe { re: f64, im: f64, ligne: usize },
     ChaineLit(String, usize),
     BooleenLit(bool, usize),
     Var(String, usize),
@@ -291,6 +295,7 @@ pub enum Expr {
 pub fn ligne_expr(e: &Expr) -> usize {
     match e {
         Expr::Litteral { ligne, .. } => *ligne,
+        Expr::LitComplexe { ligne, .. } => *ligne,
         Expr::ChaineLit(_, l) | Expr::BooleenLit(_, l) | Expr::Var(_, l) => *l,
         Expr::Appel { ligne, .. } | Expr::Binaire { ligne, .. } => *ligne,
         Expr::Unaire { ligne, .. } | Expr::Index { ligne, .. } => *ligne,
@@ -374,6 +379,7 @@ EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "pi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "phi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "__i", args: &[], retour: "complexe" },
+    EntreeStd { nom: "i", args: &[], retour: "complexe" },
     EntreeStd { nom: "re", args: &["complexe"], retour: "flottant" },
     EntreeStd { nom: "im", args: &["complexe"], retour: "flottant" },
     EntreeStd { nom: "conj", args: &["complexe"], retour: "complexe" },
@@ -993,7 +999,16 @@ impl Parser {
     fn atome(&mut self) -> Result<Expr, Err> {
         let t = self.voir(0).clone();
         match t.tk {
-            Tk::Nombre => { self.suivant(); Ok(Expr::Litteral { ligne: t.ligne, texte: t.texte, flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }) }
+            Tk::Nombre => {
+                self.suivant();
+                // suffixe imaginaire : « 4i » ou « 4.5i » (pas d'opérateur entre)
+                if self.voir(0).tk == Tk::Mot && self.voir(0).texte == "i" {
+                    self.suivant();
+                    let im: f64 = t.texte.parse().unwrap_or(0.0);
+                    return Ok(Expr::LitComplexe { re: 0.0, im, ligne: t.ligne });
+                }
+                Ok(Expr::Litteral { ligne: t.ligne, texte: t.texte, flott: false, rationnel: false, neg: false, ty: TyKind::Dyn })
+            }
             Tk::Flottant => { self.suivant(); Ok(Expr::Litteral { ligne: t.ligne, texte: t.texte, flott: true, rationnel: false, neg: false, ty: TyKind::Dyn }) }
             Tk::Chaine => { self.suivant(); Ok(Expr::ChaineLit(t.texte, t.ligne)) }
             Tk::LBracket => {
@@ -1032,7 +1047,7 @@ impl Parser {
             Tk::Ident | Tk::Mot => {
                 if t.texte == "vrai" { self.suivant(); return Ok(Expr::BooleenLit(true, t.ligne)); }
                 if t.texte == "faux" { self.suivant(); return Ok(Expr::BooleenLit(false, t.ligne)); }
-                if t.texte == "I" { self.suivant(); return Ok(Expr::Appel { nom: "__i".into(), module: String::new(), args: Vec::new(), ligne: t.ligne }); }
+                if t.texte == "i" { self.suivant(); return Ok(Expr::LitComplexe { re: 0.0, im: 1.0, ligne: t.ligne }); }
                 if t.texte == "π" {
                     self.suivant();
                     return Ok(Expr::Appel { nom: "pi".into(), module: String::new(), args: vec![Expr::Litteral { ligne: t.ligne, texte: "50".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }], ligne: t.ligne });
@@ -1425,6 +1440,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             if texte.contains('/') { return Ok(Ty::simple(TyKind::Rationnel)); }
             Ok(Ty::simple(TyKind::Entier))
         }
+        Expr::LitComplexe { .. } => Ok(Ty::simple(TyKind::Complexe)),
         Expr::ChaineLit(..) => Ok(Ty::simple(TyKind::Chaine)),
         Expr::BooleenLit(..) => Ok(Ty::simple(TyKind::Booleen)),
         Expr::Var(n, l) => {
@@ -1681,6 +1697,48 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
 // double, sinon rationnels exacts sur des i128 bornés ; si le nombre dépasse
 // i128, on laisse l'expression telle quelle (évaluée à l'exécution, même
 // résultat exact).
+/// Replie une opération binaire sur des littéraux numériques quand au moins
+/// un opérande est un littéral complexe (i, 4i, 3+4i...). Retourne None si
+/// l'opération n'est pas repliable (opérateur non supporté, opérandes non
+/// littéraux, division par zéro).
+fn replier_binaire_complexe(op: &str, a: &Expr, b: &Expr, ligne: usize) -> Option<Expr> {
+    fn cplx(e: &Expr) -> Option<(f64, f64)> {
+        match e {
+            Expr::LitComplexe { re, im, .. } => Some((*re, *im)),
+            Expr::Litteral { texte, flott, .. } => {
+                let v: f64 = if *flott {
+                    texte.parse().ok()?
+                } else {
+                    texte.parse::<i64>().ok()? as f64
+                };
+                Some((v, 0.0))
+            }
+            _ => None,
+        }
+    }
+    let (ar, ai) = cplx(a)?;
+    let (br, bi) = cplx(b)?;
+    let (re, im) = match op {
+        "+" => (ar + br, ai + bi),
+        "-" => (ar - br, ai - bi),
+        "*" => (ar * br - ai * bi, ar * bi + ai * br),
+        "/" => {
+            let denom = br * br + bi * bi;
+            if denom == 0.0 { return None; }
+            ((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom)
+        }
+        _ => return None,
+    };
+    // résultat purement réel → littéral réel (entier quand possible)
+    if im == 0.0 {
+        if re == re.floor() && re.abs() < 1e15 && (re as i64 as f64) == re {
+            return Some(Expr::Litteral { texte: (re as i64).to_string(), flott: false, rationnel: false, neg: false, ty: TyKind::Entier, ligne });
+        }
+        return Some(Expr::Litteral { texte: texte_flottant(re), flott: true, rationnel: false, neg: false, ty: TyKind::Flottant, ligne });
+    }
+    Some(Expr::LitComplexe { re, im, ligne })
+}
+
 pub fn replier(e: &Expr) -> Expr {
     match e {
         Expr::Binaire { op, a, b, ligne } => {
@@ -1777,10 +1835,13 @@ pub fn replier(e: &Expr) -> Expr {
                     }
                 }
             }
+            // repli des binaires sur complexes (littéraux imaginaires : i, 4i, ...)
+            if let Some(r) = replier_binaire_complexe(op, &a, &b, ligne) {
+                return r;
+            }
             Expr::Binaire { op: op.clone(), a: Box::new(a), b: Box::new(b), ligne }
         }
-        Expr::Unaire { op, a, ligne } => {
-            let ligne = *ligne;
+        Expr::Unaire { op, a, ligne } => {            let ligne = *ligne;
             let a = replier(a);
             if op == "-" {
                 if let Expr::Litteral { texte, flott, rationnel, neg, ty, .. } = &a {
@@ -1791,6 +1852,11 @@ pub fn replier(e: &Expr) -> Expr {
             Expr::Unaire { op: op.clone(), a: Box::new(a), ligne }
         }
         Expr::Index { a, b, ligne } => Expr::Index { a: Box::new(replier(a)), b: Box::new(replier(b)), ligne: *ligne },
+        Expr::Appel { nom, module, args, ligne }
+            if module.is_empty() && (nom == "i" || nom == "__i") && args.is_empty() =>
+        {
+            Expr::LitComplexe { re: 0.0, im: 1.0, ligne: *ligne }
+        }
         Expr::Appel { nom, module, args, ligne } => Expr::Appel {
             nom: nom.clone(), module: module.clone(), args: args.iter().map(replier).collect(), ligne: *ligne },
         Expr::ListeLit(l, ligne) => Expr::ListeLit(l.iter().map(replier).collect(), *ligne),

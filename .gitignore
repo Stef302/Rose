@@ -56,6 +56,8 @@ bench/langages/mdp_rand_c
 bench/langages/mdp_rs
 bench/langages/mdp_splitmix
 bench/langages/mdp_philox
+bench/suite/complexe_cpp
+bench/suite/complexe_rs
 
 # --- Journaux de debug et de couverture (dé-suivis le 28/10/2026) -----------
 # Les .pdb portaient 813/620/554 occurrences du chemin de build personnel ;
