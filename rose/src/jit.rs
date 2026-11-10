@@ -396,6 +396,7 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_set_ret_tag", crate::run::rose_set_ret_tag as *const u8),
         ("rose_erreur_mod_zero", crate::run::rose_erreur_mod_zero as *const u8),
         ("rose_erreur_div_zero", crate::run::rose_erreur_div_zero as *const u8),
+        ("rose_erreur_div_flottant_zero", crate::run::rose_erreur_div_flottant_zero as *const u8),
     ]
 }
 
@@ -705,6 +706,7 @@ impl Jit {
                 ("rose_set_ret_tag", vec![types::I64], None),
                 ("rose_erreur_mod_zero", vec![], None),
                 ("rose_erreur_div_zero", vec![], None),
+                ("rose_erreur_div_flottant_zero", vec![], None),
             ] {
                 let mut s = ClSignature::new(DEFAULT_CC);
                 for p in params { s.params.push(AbiParam::new(p)); }
@@ -1471,9 +1473,8 @@ impl Emetteur<'_> {
                         JitVal::Simple(mv)
                     },
                     "/" => {
-                        let bloc = self.builder.current_block();
-                        let _ = bloc;
-                        JitVal::Simple(self.builder.ins().fdiv(g, d))
+                        // division flottante protégée (diviseur nul -> erreur)
+                        JitVal::Simple(self.div_f64_guarded(g, d))
                     }
                     "%" => {
                         // garde de justesse : un diviseur nul ne doit jamais
@@ -1525,27 +1526,89 @@ impl Emetteur<'_> {
     }
 
     /// Arithmetique complexe : (re, im) sont deux valeurs f64 Cranelift.
-    /// Miroir exact de l'interpreteur (src/interp.rs) :
+    /// Miroir EXACT de l'interpreteur (src/interp.rs) :
     ///   (gr+gi i) + (dr+di i) = (gr+dr) + (gi+di) i
     ///   (gr+gi i) * (dr+di i) = (gr*dr - gi*di) + (gr*di + gi*dr) i
     ///   (gr+gi i) / (dr+di i) = ((gr*dr + gi*di)/d) + ((gi*dr - gr*di)/d) i
-    /// Un operande reel est vu comme (x, 0).
+    ///
+    /// VOIE RAPIDE : quand un seul operande est complexe, on n'émet pas les
+    /// multiplications par 0.0 / 1.0 de la formule generale (c'est ce qui rend
+    /// la construction « x + y*i » rapide : 3 operations au lieu de 8).
+    /// L'interpreteur applique exactement la meme voie (bit a bit).
     fn binaire_cplx(&mut self, op: &str, a: &Expr, b: &Expr, env: &mut HashMap<String, Variable>,
                      types: &HashMap<String, TyKind>) -> JitVal {
-        let (ar, ai) = self.parts_cplx(a, env, types);
-        let (br, bi) = self.parts_cplx(b, env, types);
+        let ta = self.type_of(a, env, types);
+        let tb = self.type_of(b, env, types);
+        let a_cplx = ta == TyKind::Complexe;
+        let b_cplx = tb == TyKind::Complexe;
         // un complexe n'est pas un entier tagge : tag = 0
         let zt = self.builder.ins().iconst(types::I64, 0);
         self.builder.def_var(self.tag_tmp, zt);
+        if a_cplx != b_cplx {
+            // un seul operande est complexe
+            if a_cplx {
+                let (cr, ci) = self.parts_cplx(a, env, types);
+                let (x, _) = self.parts_cplx(b, env, types);
+                let (re, im) = match op {
+                    "+" => (self.builder.ins().fadd(cr, x), ci),
+                    "-" => (self.builder.ins().fsub(cr, x), ci),
+                    "*" => {
+                        let r = self.builder.ins().fmul(cr, x);
+                        let i = self.builder.ins().fmul(ci, x);
+                        (r, i)
+                    }
+                    "/" => {
+                        let r = self.div_f64_guarded(cr, x);
+                        let i = self.div_f64_guarded(ci, x);
+                        (r, i)
+                    }
+                    _ => (cr, ci),
+                };
+                return JitVal::Complexe(re, im);
+            } else {
+                let (x, _) = self.parts_cplx(a, env, types);
+                let (cr, ci) = self.parts_cplx(b, env, types);
+                let (re, im) = match op {
+                    "+" => (self.builder.ins().fadd(x, cr), ci),
+                    "-" => {
+                        let r = self.builder.ins().fsub(x, cr);
+                        let i = self.builder.ins().fneg(ci);
+                        (r, i)
+                    }
+                    "*" => {
+                        let r = self.builder.ins().fmul(x, cr);
+                        let i = self.builder.ins().fmul(x, ci);
+                        (r, i)
+                    }
+                    "/" => {
+                        let c1 = self.builder.ins().fmul(cr, cr);
+                        let c2 = self.builder.ins().fmul(ci, ci);
+                        let den = self.builder.ins().fadd(c1, c2);
+                        let n1 = self.builder.ins().fmul(x, cr);
+                        let n2 = self.builder.ins().fmul(x, ci);
+                        let r = self.div_f64_guarded(n1, den);
+                        let ni = self.builder.ins().fneg(n2);
+                        let i = self.div_f64_guarded(ni, den);
+                        (r, i)
+                    }
+                    _ => (cr, ci),
+                };
+                return JitVal::Complexe(re, im);
+            }
+        }
+        // complexe ⊕ complexe : formule generale
+        let (ar, ai) = self.parts_cplx(a, env, types);
+        let (br, bi) = self.parts_cplx(b, env, types);
         let (re, im) = match op {
             "+" => (self.builder.ins().fadd(ar, br), self.builder.ins().fadd(ai, bi)),
             "-" => (self.builder.ins().fsub(ar, br), self.builder.ins().fsub(ai, bi)),
             "*" => {
                 let rr = self.builder.ins().fmul(ar, br);
                 let ii = self.builder.ins().fmul(ai, bi);
-                let ri = self.builder.ins().fmul(ar, bi);
-                let ir = self.builder.ins().fmul(ai, br);
-                (self.builder.ins().fsub(rr, ii), self.builder.ins().fadd(ri, ir))
+                let p = self.builder.ins().fmul(ar, bi);
+                let r = self.builder.ins().fsub(rr, ii);
+                let i = self.builder.ins().fadd(p, p);
+                (r, i)
             }
             "/" => {
                 let bb = self.builder.ins().fmul(br, br);
@@ -1557,7 +1620,7 @@ impl Emetteur<'_> {
                 let y1 = self.builder.ins().fmul(ai, br);
                 let y2 = self.builder.ins().fmul(ar, bi);
                 let ni = self.builder.ins().fsub(y1, y2);
-                (self.builder.ins().fdiv(nr, den), self.builder.ins().fdiv(ni, den))
+                (self.div_f64_guarded(nr, den), self.div_f64_guarded(ni, den))
             }
             _ => (ar, ai),
         };
@@ -1580,7 +1643,28 @@ impl Emetteur<'_> {
         }
     }
 
-    fn powf(&mut self) -> FuncRef {
+    /// Division flottante protégée : un diviseur nul doit signaler l'erreur
+/// (comme l'interpréteur) au lieu de produire inf / non_nombre. Le NaN n'est
+/// PAS.trigger une erreur (x == 0.0 est faux pour NaN, comme en Rust).
+fn div_f64_guarded(&mut self, num: Value, den: Value) -> Value {
+    let zero = self.f64_zero();
+    let is_zero = self.builder.ins().fcmp(FloatCC::Equal, den, zero);
+    let trap_b = self.builder.create_block();
+    let cont_b = self.builder.create_block();
+    self.builder.ins().brif(is_zero, trap_b, &[], cont_b, &[]);
+    self.builder.switch_to_block(trap_b);
+    self.builder.seal_block(trap_b);
+    {
+        let f = self.runtime("rose_erreur_div_flottant_zero");
+        let _ = self.builder.ins().call(f, &[]);
+    }
+    self.builder.ins().trap(cranelift::codegen::ir::TrapCode::INTEGER_DIVISION_BY_ZERO);
+    self.builder.switch_to_block(cont_b);
+    self.builder.seal_block(cont_b);
+    self.builder.ins().fdiv(num, den)
+}
+
+fn powf(&mut self) -> FuncRef {
         self.import_runtime("rose_powf")
     }
 

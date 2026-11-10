@@ -1050,6 +1050,20 @@ pub extern "C" fn rose_erreur_div_zero() {
     erreur_runtime("division euclidienne par zéro");
 }
 
+/// Division flottante par zéro : le JIT doit signaler l'erreur comme
+/// l'interpréteur (et non produire inf / non_nombre).
+///
+/// Miroir de `jit_erreur` du moteur C++ (rose-cpp/src/jit.cpp:388) : une
+/// erreur levée dans du code JIT ne peut pas être rattrapée (une trame
+/// Cranelift n'a pas d'information de défilement) — on affiche l'erreur et on
+/// quitte, exactement comme le fait le JIT C++.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_erreur_div_flottant_zero() {
+    flush_out();
+    eprintln!("Rose : erreur — division par zéro");
+    std::process::exit(1);
+}
+
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_affiche_packed(v: i128) {

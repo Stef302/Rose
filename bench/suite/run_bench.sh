@@ -3,13 +3,13 @@
 #
 #   ./bench/suite/run_bench.sh [N]
 #
-# Mesure le TEMPLE DE BOUCLE de chaque implementation (le processus est lance
-# une fois par mesure, on retient le meilleur de 5 ; le demarrage du
-# processus est donc inclus — c'est la realite d'un lancement `rose run`).
+# Mesure le temps de PROCESSUS COMPLET (lancement compris), comme le ferait
+# un utilisateur : c'est la réalité d'un `rose run`.
+# Affichage : min / médiane sur REPS répétitions.
 set -u
 cd "$(dirname "$0")/../.."
 N="${1:-1000000}"
-REPS="${REPS:-5}"
+REPS="${REPS:-15}"
 ROSE_BIN="${ROSE_BIN:-./rose/rose}"
 TMP="${TMPDIR:-/tmp}/rose_bench_$$"
 mkdir -p "$TMP"
@@ -31,18 +31,27 @@ fn calc(n: entier) -> flottant {
 >> calc($N)
 EOF
 
+# meme calcul que complexe.rose : produit complexe GENERAL (a+bi)(c+di)
 cat > "$TMP/bench.cpp" <<EOF
 #include <cstdio>
+struct C{double re,im;};
+static inline C mul(C a,C b){double p=a.re*b.im;C r;r.re=a.re*b.re-a.im*b.im;r.im=p+p;return r;}
 int main(){const long N=$N;double tr=0,ti=0;
 for(long k=1;k<=N;++k){double zr=(double)k*0.000001,zi=1.0-zr;
-double wr=zr*zr-zi*zi,wi=2.0*zr*zi;tr+=wr;ti+=wi;}
+C zir;zir.re=zi*0.0;zir.im=zi*1.0;
+C z;z.re=zr+zir.re;z.im=0.0+zir.im;
+C w=mul(z,z);tr+=w.re;ti+=w.im;}
 printf("%f\n%f\n",tr,ti);return 0;}
 EOF
 
 cat > "$TMP/bench.rs" <<EOF
+#[derive(Clone,Copy)]struct C{re:f64,im:f64}
+#[inline]fn mul(a:C,b:C)->C{let p=a.re*b.im;C{re:a.re*b.re-a.im*b.im,im:p+p}}
 fn main(){const N:usize=$N;let(mut tr,mut ti)=(0.0f64,0.0f64);
 for k in 1..=N{let zr=k as f64*0.000001;let zi=1.0-zr;
-let wr=zr*zr-zi*zi;let wi=2.0*zr*zi;tr+=wr;ti+=wi;}
+let zi2=C{re:zi*0.0,im:zi*1.0};
+let z=C{re:zr+zi2.re,im:0.0+zi2.im};
+let w=mul(z,z);tr+=w.re;ti+=w.im;}
 println!("{}",tr);println!("{}",ti);}
 EOF
 
@@ -51,30 +60,35 @@ N=$N
 tr=0.0;ti=0.0
 for k in range(1,N+1):
     zr=k*0.000001;zi=1.0-zr
-    tr+=zr*zr-zi*zi;ti+=2.0*zr*zi
+    zir=zi*0.0;zii=zi*1.0
+    zr2=zr+zir;zi2=0.0+zii
+    tr+=zr2*zr2-zi2*zi2
+    p=zr2*zi2;ti+=p+p
 print(tr);print(ti)
 EOF
 
 g++ -O3 -o "$TMP/bench_cpp" "$TMP/bench.cpp" 2>/dev/null
 rustc -O -o "$TMP/bench_rs" "$TMP/bench.rs" 2>/dev/null
 
-best() { # $1 = libellé, reste = commande
+mesure() { # $1 = libellé, reste = commande
   local label="$1"; shift
-  local b=99999999
+  local vals=()
   for _ in $(seq 1 "$REPS"); do
-    local s e
+    local s e ms
     s=$(date +%s%N); "$@" >/dev/null 2>&1; e=$(date +%s%N)
-    local ms=$(( (e-s)/1000000 ))
-    [ "$ms" -lt "$b" ] && b=$ms
+    ms=$(( (e-s)/1000 ))   # microsecondes
+    vals+=("$ms")
   done
-  printf "  %-28s %6d ms\n" "$label" "$b"
+  printf '%s\n' "${vals[@]}" | sort -n | awk -v l="$label" '
+    {a[NR]=$1}
+    END{printf "  %-26s min %7.2f ms   médiane %7.2f ms\n", l, a[1]/1000, a[int((NR+1)/2)]/1000}'
 }
 
-echo "Banc complexe — N = $N  (meilleur de $REPS, processus inclus)"
-best "C++   (-O3)"            "$TMP/bench_cpp"
-best "Rust  (-O)"             "$TMP/bench_rs"
-best "Rose  (JIT Cranelift)"  "$ROSE_BIN" run "$TMP/bench.rose"
-ROSE_SANS_JIT=1 best "Rose  (interpréteur)" env ROSE_SANS_JIT=1 "$ROSE_BIN" run "$TMP/bench.rose"
-best "Python (CPython)"       python3 "$TMP/bench.py"
+echo "Banc complexe — N = $N   (processus complet, $REPS répétitions)"
+mesure "C++   (-O3)"           "$TMP/bench_cpp"
+mesure "Rust  (-O)"            "$TMP/bench_rs"
+mesure "Rose  (JIT Cranelift)" "$ROSE_BIN" run "$TMP/bench.rose"
+mesure "Rose  (interpréteur)"  env ROSE_SANS_JIT=1 "$ROSE_BIN" run "$TMP/bench.rose"
+mesure "Python (CPython)"      python3 "$TMP/bench.py"
 
 rm -rf "$TMP"

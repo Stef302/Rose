@@ -1117,12 +1117,55 @@ impl Interp {
         }
         // Complexe : opérations sur a+bi
         if matches!(g, Valeur::Complexe{..}) || matches!(d, Valeur::Complexe{..}) {
+            let gc = matches!(g, Valeur::Complexe{..});
+            let dc = matches!(d, Valeur::Complexe{..});
+            // ── VOIE RAPIDE : un seul opérande est complexe ──────────────
+            // Un réel est traité comme (x, 0) mais on n'émet PAS les
+            // multiplications par 0.0 / 1.0 de la formule générale : le JIT
+            // fait de même (bit à bit), sinon les deux moteurs divergeraient.
+            // C'est ce chemin qui rend la construction « x + y*i » rapide.
+            if gc != dc {
+                return Ok(if gc {
+                    // complexe ⊕ réel
+                    let (cr, ci) = match &g { Valeur::Complexe{re,im} => (*re,*im), _ => (0.0, 0.0) };
+                    let x = vers_d(&d);
+                    match op {
+                        "+" => Valeur::Complexe { re: cr + x, im: ci },
+                        "-" => Valeur::Complexe { re: cr - x, im: ci },
+                        "*" => Valeur::Complexe { re: cr * x, im: ci * x },
+                        "/" => {
+                            if x == 0.0 { erreur_runtime("division par zéro (complexe)"); }
+                            Valeur::Complexe { re: cr / x, im: ci / x }
+                        }
+                        _ => erreur_runtime("opération non supportée sur les complexes"),
+                    }
+                } else {
+                    // réel ⊕ complexe
+                    let (cr, ci) = match &d { Valeur::Complexe{re,im} => (*re,*im), _ => (0.0, 0.0) };
+                    let x = vers_d(&g);
+                    match op {
+                        "+" => Valeur::Complexe { re: x + cr, im: ci },
+                        "-" => Valeur::Complexe { re: x - cr, im: -ci },
+                        "*" => Valeur::Complexe { re: x * cr, im: x * ci },
+                        "/" => {
+                            let denom = cr*cr + ci*ci;
+                            if denom == 0.0 { erreur_runtime("division par zéro (complexe)"); }
+                            Valeur::Complexe { re: (x*cr)/denom, im: -(x*ci)/denom }
+                        }
+                        _ => erreur_runtime("opération non supportée sur les complexes"),
+                    }
+                });
+            }
+            // ── complexe ⊕ complexe : formule générale ───────────────────
             let (gr, gi) = match &g { Valeur::Complexe{re,im} => (*re,*im), _ => (vers_d(&g), 0.0) };
             let (dr, di) = match &d { Valeur::Complexe{re,im} => (*re,*im), _ => (vers_d(&d), 0.0) };
             return Ok(match op {
                 "+" => Valeur::Complexe { re: gr + dr, im: gi + di },
                 "-" => Valeur::Complexe { re: gr - dr, im: gi - di },
-                "*" => Valeur::Complexe { re: gr*dr - gi*di, im: gr*di + gi*dr },
+                // le produit croisé gr*di + gi*dr vaut 2*(gr*di) : on ne calcule
+                // le produit qu'une fois (même arrondi IEEE, une division de
+                // moins — le JIT fait de même).
+                "*" => { let p = gr * di; Valeur::Complexe { re: gr*dr - gi*di, im: p + p } }
                 "/" => {
                     let denom = dr*dr + di*di;
                     if denom == 0.0 { erreur_runtime("division par zéro (complexe)"); }
