@@ -22,12 +22,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Version du helper AOT à installer (doit correspondre à la release).
-pub const VERSION_HELPER: &str = "5.6.0";
+/// Version du helper AOT à installer (doit correspondre au TAG de release).
+pub const VERSION_HELPER: &str = "v5.8.0-orc-fonctions";
 
 /// Empreinte SHA-256 attendue du helper téléchargé (vide = pas de
 /// vérification ; dans ce cas un avertissement est affiché).
-pub const SHA256_HELPER: &str = "";
+pub const SHA256_HELPER: &str = "764acffd3007889a378edd042c2cd2f129cd9021bc19c53ee1433986d7035de4";
 
 /// Nom du binaire helper.
 pub const NOM_HELPER: &str = "rose-aot";
@@ -47,7 +47,7 @@ pub fn cible() -> String {
 /// URL par défaut du helper AOT (release GitHub du projet).
 pub fn url_par_defaut() -> String {
     format!(
-        "https://github.com/Stef302/Rose/releases/download/v{}/{}-{}",
+        "https://github.com/Stef302/Rose/releases/download/{}/{}-{}",
         VERSION_HELPER,
         NOM_HELPER,
         cible()
