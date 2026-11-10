@@ -43,7 +43,7 @@ pub enum Compile {
 /// Analyse : une expression est-elle compilable (entier i64 / booleen /
 /// flottant, sans effet de bord sur des types hors support) ?
 pub fn compilable(ty: TyKind) -> bool {
-    matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant)
+    matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
 }
 
 /// Une addition/soustraction entiere est sure en i64 seulement si elle ne peut
@@ -72,6 +72,7 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
             else if texte.contains('/') { None }
             else { Some(TyKind::Entier) }
         }
+        Expr::LitComplexe { .. } => Some(TyKind::Complexe),
         Expr::BooleenLit(..) => Some(TyKind::Booleen),
         Expr::Var(n, _) => env.get(n).copied().filter(|t| compilable(*t)),
         Expr::Appel { nom, module, args, .. } => {
@@ -108,6 +109,9 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                 "+" | "-" | "*" => {
                     let ta = ty_statique(a, env)?;
                     let tb = ty_statique(b, env)?;
+                    if ta == TyKind::Complexe || tb == TyKind::Complexe {
+                        return Some(TyKind::Complexe);
+                    }
                     match (ta, tb) {
                         (TyKind::Flottant, _) | (_, TyKind::Flottant) => Some(TyKind::Flottant),
                         (TyKind::Entier, TyKind::Entier) => Some(TyKind::Entier),
@@ -200,6 +204,8 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
         }
     }
     fn sur_i64(e: &Expr, env: &HashMap<String, TyKind>) -> bool {
+        // Un complexe ne subit pas la contrainte i64 : deux f64, pas de tag BigInt.
+        if ty_statique(e, env) == Some(TyKind::Complexe) { return true; }
         match e {
             Expr::Binaire { op, a, b, .. } => {
                 if matches!(op.as_str(), "≈") { return false; }
@@ -318,6 +324,7 @@ fn retour_coherent(t: TyKind, attendu: Option<TyKind>) -> bool {
             (TyKind::Booleen, TyKind::Booleen) => true,
             (TyKind::Entier, TyKind::Entier) => true,
             (TyKind::Flottant, TyKind::Flottant) => true,
+            (TyKind::Complexe, TyKind::Complexe) => true,
             (TyKind::Entier, TyKind::Booleen) | (TyKind::Booleen, TyKind::Entier) => false,
             _ => false,
         },
@@ -331,6 +338,22 @@ fn retour_coherent(t: TyKind, attendu: Option<TyKind>) -> bool {
 /// résoudrait leur use_var sur la valeur d'entrée du bloc (effet : accumulateur
 /// figé à sa valeur initiale).
 
+/// Valeur émise par le JIT : soit une valeur scalaire simple (i64/f64/bool),
+/// soit un complexe représenté par deux valeurs f64 (re, im).
+#[derive(Clone, Copy, Debug)]
+enum JitVal {
+    Simple(Value),
+    Complexe(Value, Value),
+}
+
+/// Slot d'une variable dans la trame Cranelift. Pour un complexe, deux slots
+/// consécutifs (re, im).
+#[derive(Clone, Copy, Debug)]
+enum JitSlot {
+    Simple(Variable),
+    Complexe(Variable, Variable),
+}
+
 struct Emetteur<'a> {
     module: &'a mut JITModule,
     signatures: &'a HashMap<String, Signature>,
@@ -343,6 +366,9 @@ struct Emetteur<'a> {
     prochain_slot: u32,
     refs: HashMap<String, FuncRef>,
     tags: HashMap<String, Variable>,
+    /// Pour une variable de type Complexe, le slot de sa partie imaginaire
+    /// (le slot de la partie réelle est celui retourné par `var`).
+    complex_im: HashMap<String, Variable>,
     tag_tmp: Variable,
 }
 
@@ -350,14 +376,24 @@ struct Emetteur<'a> {
 fn make_signature(sig: &Signature) -> ClSignature {
     let mut s = ClSignature::new(DEFAULT_CC);
     for (_, t) in &sig.params {
-        s.params.push(AbiParam::new(match t.n {
-            TyKind::Flottant => types::F64,
-            _ => types::I64,
-        }));
+        match t.n {
+            TyKind::Flottant => s.params.push(AbiParam::new(types::F64)),
+            // un paramètre complexe occupe deux registres f64 consécutifs (re, im)
+            TyKind::Complexe => {
+                s.params.push(AbiParam::new(types::F64));
+                s.params.push(AbiParam::new(types::F64));
+            }
+            _ => s.params.push(AbiParam::new(types::I64)),
+        }
     }
     match sig.retour.n {
         TyKind::Vide => {}
         TyKind::Flottant => s.returns.push(AbiParam::new(types::F64)),
+        // un retour complexe utilise deux registres f64 (d0 = re, d1 = im)
+        TyKind::Complexe => {
+            s.returns.push(AbiParam::new(types::F64));
+            s.returns.push(AbiParam::new(types::F64));
+        }
         _ => s.returns.push(AbiParam::new(types::I64)),
     }
     s
@@ -420,7 +456,7 @@ impl Jit {
         let mut e = Emetteur {
             module: &mut self.module, signatures: &self.signatures,
             foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
-            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), tag_tmp: tag_tmp_var,
+            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var,
         };
         e.emettre_fonction(&sig);
         let mut b = e.builder;
@@ -501,7 +537,7 @@ impl Jit {
             let mut e = Emetteur {
                 module: &mut self.module, signatures: &self.signatures,
                 foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
-                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), tag_tmp: tag_tmp_var,
+                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var,
             };
             e.emettre_fonction(&sig);
             let mut b = e.builder;
@@ -677,14 +713,32 @@ impl Emetteur<'_> {
         let mut types: HashMap<String, TyKind> = HashMap::new();
         let zt = self.builder.ins().iconst(types::I64, 0);
         self.builder.def_var(self.tag_tmp, zt);
-        for (idx, (pn, pt)) in sig.params.iter().enumerate() {
-            let ty = match pt.n { TyKind::Flottant => types::F64, _ => types::I64 };
-            let slot = self.builder.declare_var(ty);
-            let _ = idx;
-            let param = self.builder.block_params(block)[idx];
-            self.builder.def_var(slot, param);
-            env.insert(pn.clone(), slot);
-            types.insert(pn.clone(), pt.n);
+        // un paramètre complexe occupe deux block_params f64 consécutifs (re, im)
+        let mut pidx = 0;
+        for (pn, pt) in sig.params.iter() {
+            match pt.n {
+                TyKind::Complexe => {
+                    let slot_re = self.builder.declare_var(types::F64);
+                    let slot_im = self.builder.declare_var(types::F64);
+                    let param_re = self.builder.block_params(block)[pidx];
+                    let param_im = self.builder.block_params(block)[pidx + 1];
+                    pidx += 2;
+                    self.builder.def_var(slot_re, param_re);
+                    self.builder.def_var(slot_im, param_im);
+                    env.insert(pn.clone(), slot_re);
+                    self.complex_im.insert(pn.clone(), slot_im);
+                    types.insert(pn.clone(), TyKind::Complexe);
+                }
+                _ => {
+                    let ty = match pt.n { TyKind::Flottant => types::F64, _ => types::I64 };
+                    let slot = self.builder.declare_var(ty);
+                    let param = self.builder.block_params(block)[pidx];
+                    pidx += 1;
+                    self.builder.def_var(slot, param);
+                    env.insert(pn.clone(), slot);
+                    types.insert(pn.clone(), pt.n);
+                }
+            }
         }
         // variables locales : slots à partir de 100
         self.prochain_slot = 100;
@@ -701,6 +755,14 @@ impl Emetteur<'_> {
                     let _ = self.builder.ins().call(f, &[zt]);
                     self.builder.ins().return_(&[z]);
                 }
+                TyKind::Complexe => {
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    let f = self.import_runtime("rose_set_ret_tag");
+                    let _ = self.builder.ins().call(f, &[zt]);
+                    let c = self.builder.ins().iconst(types::I64, 0);
+                    let fz = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                    self.builder.ins().return_(&[fz, fz]);
+                }
                 _ => {
                     let zt = self.builder.ins().iconst(types::I64, 0);
                     let f = self.import_runtime("rose_set_ret_tag");
@@ -713,29 +775,59 @@ impl Emetteur<'_> {
     }
 
     fn var(&mut self, env: &mut HashMap<String, Variable>, types: &HashMap<String, TyKind>,
-           nom: &str) -> Variable {
-        if let Some(v) = env.get(nom) { return *v; }
-        let ty = types.get(nom).copied().unwrap_or(TyKind::Entier);
-        let cr = match ty { TyKind::Flottant => types::F64, _ => types::I64 };
-        let slot = self.builder.declare_var(cr);
-        self.prochain_slot += 1;
-        if ty != TyKind::Flottant {
-            let tslot = self.builder.declare_var(types::I64);
-            self.prochain_slot += 1;
-            let zt = self.builder.ins().iconst(types::I64, 0);
-            self.builder.def_var(tslot, zt);
-            self.tags.insert(nom.to_string(), tslot);
+           nom: &str) -> JitSlot {
+        // déjà connu comme complexe ?
+        if let Some(im) = self.complex_im.get(nom).copied() {
+            let re = env.get(nom).copied().unwrap();
+            return JitSlot::Complexe(re, im);
         }
-        let zero = match ty {
-            TyKind::Flottant => {
+        if let Some(v) = env.get(nom) { return JitSlot::Simple(*v); }
+        let ty = types.get(nom).copied().unwrap_or(TyKind::Entier);
+        match ty {
+            TyKind::Complexe => {
+                let re_slot = self.builder.declare_var(types::F64);
+                let im_slot = self.builder.declare_var(types::F64);
+                self.prochain_slot += 2;
                 let c = self.builder.ins().iconst(types::I64, 0);
-                self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
+                let fz = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                self.builder.def_var(re_slot, fz);
+                self.builder.def_var(im_slot, fz);
+                env.insert(nom.to_string(), re_slot);
+                self.complex_im.insert(nom.to_string(), im_slot);
+                JitSlot::Complexe(re_slot, im_slot)
             }
-            _ => self.builder.ins().iconst(types::I64, 0),
-        };
-        self.builder.def_var(slot, zero);
-        env.insert(nom.to_string(), slot);
-        slot
+            TyKind::Flottant => {
+                let slot = self.builder.declare_var(types::F64);
+                self.prochain_slot += 1;
+                let c = self.builder.ins().iconst(types::I64, 0);
+                let fz = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                self.builder.def_var(slot, fz);
+                env.insert(nom.to_string(), slot);
+                JitSlot::Simple(slot)
+            }
+            _ => {
+                let slot = self.builder.declare_var(types::I64);
+                self.prochain_slot += 1;
+                let tslot = self.builder.declare_var(types::I64);
+                self.prochain_slot += 1;
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(tslot, zt);
+                self.tags.insert(nom.to_string(), tslot);
+                let zt2 = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(slot, zt2);
+                env.insert(nom.to_string(), slot);
+                JitSlot::Simple(slot)
+            }
+        }
+    }
+
+    /// Extrait une `Value` simple depuis un `JitVal` ; panique si c'est un complexe
+    /// (le complexe doit être géré par l'appelant via `JitVal::Complexe`).
+    fn simple(&mut self, v: JitVal) -> Value {
+        match v {
+            JitVal::Simple(v) => v,
+            JitVal::Complexe(..) => unreachable!("attendu une valeur scalaire, trouvé un complexe"),
+        }
     }
 
     fn type_of(&self, e: &Expr, env: &HashMap<String, Variable>, types: &HashMap<String, TyKind>) -> TyKind {
@@ -747,59 +839,88 @@ impl Emetteur<'_> {
     }
 
     fn expr(&mut self, e: &Expr, env: &mut HashMap<String, Variable>,
-            types: &HashMap<String, TyKind>) -> Value {
+            types: &HashMap<String, TyKind>) -> JitVal {
         match e {
+            Expr::LitComplexe { re, im, .. } => {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                let cr = self.builder.ins().iconst(types::I64, re.to_bits() as i64);
+                let ci = self.builder.ins().iconst(types::I64, im.to_bits() as i64);
+                JitVal::Complexe(
+                    self.builder.ins().bitcast(types::F64, MemFlagsData::new(), cr),
+                    self.builder.ins().bitcast(types::F64, MemFlagsData::new(), ci),
+                )
+            }
             Expr::Litteral { texte, flott, .. } => {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
                 if *flott {
                     let d: f64 = texte.parse().unwrap_or(0.0);
                     let c = self.builder.ins().iconst(types::I64, d.to_bits() as i64);
-                    self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
+                    JitVal::Simple(self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c))
                 } else if texte.contains('/') {
                     let n = texte.find('/').unwrap();
                     let a: i64 = texte[..n].parse().unwrap_or(0);
                     let b: i64 = texte[n + 1..].parse().unwrap_or(1);
                     let d = a as f64 / b as f64;
                     let c = self.builder.ins().iconst(types::I64, d.to_bits() as i64);
-                    self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
+                    JitVal::Simple(self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c))
                 } else {
                     let v: i64 = texte.parse().unwrap_or(0);
-                    let zt = self.builder.ins().iconst(types::I64, 0);
-        self.builder.def_var(self.tag_tmp, zt);
-                    self.builder.ins().iconst(types::I64, v)                }
+                    JitVal::Simple(self.builder.ins().iconst(types::I64, v))
+                }
             }
-            Expr::BooleenLit(b, _) => { let zt = self.builder.ins().iconst(types::I64, 0); self.builder.def_var(self.tag_tmp, zt); self.builder.ins().iconst(types::I64, if *b { 1 } else { 0 }) }
+            Expr::BooleenLit(b, _) => {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                JitVal::Simple(self.builder.ins().iconst(types::I64, if *b { 1 } else { 0 }))
+            }
             Expr::Unaire { op, a, .. } => {
                 let v = self.expr(a, env, types);
-                if op == "non" {
-                    let un = self.builder.ins().iconst(types::I64, 1);
-                    self.builder.ins().bxor(v, un)
-                } else {
-                    let tag_v = self.builder.use_var(self.tag_tmp);
-                    let trame = self.trame_deux_mots();
-                    let f = self.import_runtime("rose_neg_ent");
-                    let trame8 = self.builder.ins().iadd_imm(trame, 8);
-                    let _ = self.builder.ins().call(f, &[v, tag_v, trame, trame8]);
-                    let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
-                    let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
-                    self.builder.def_var(self.tag_tmp, tag);
-                    val
+                match v {
+                    JitVal::Simple(v) => {
+                        if op == "non" {
+                            let un = self.builder.ins().iconst(types::I64, 1);
+                            JitVal::Simple(self.builder.ins().bxor(v, un))
+                        } else {
+                            let tag_v = self.builder.use_var(self.tag_tmp);
+                            let trame = self.trame_deux_mots();
+                            let f = self.import_runtime("rose_neg_ent");
+                            let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                            let _ = self.builder.ins().call(f, &[v, tag_v, trame, trame8]);
+                            let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                            let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                            self.builder.def_var(self.tag_tmp, tag);
+                            JitVal::Simple(val)
+                        }
+                    }
+                    JitVal::Complexe(..) => unreachable!("unaire sur complexe hors support JIT"),
                 }
             }
             Expr::Var(n, _) => {
-                let slot = self.var(env, types, n);
-                if types.get(n).copied() != Some(TyKind::Flottant) {
-                    if let Some(ts) = self.tags.get(n).copied() {
-                        let t = self.builder.use_var(ts);
-                        self.builder.def_var(self.tag_tmp, t);
-                    } else {
+                match self.var(env, types, n) {
+                    JitSlot::Simple(slot) => {
+                        let t = types.get(n).copied().unwrap_or(TyKind::Entier);
+                        if t != TyKind::Flottant {
+                            if let Some(ts) = self.tags.get(n).copied() {
+                                let tag = self.builder.use_var(ts);
+                                self.builder.def_var(self.tag_tmp, tag);
+                            } else {
+                                let zt = self.builder.ins().iconst(types::I64, 0);
+                                self.builder.def_var(self.tag_tmp, zt);
+                            }
+                        } else {
+                            let zt = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.def_var(self.tag_tmp, zt);
+                        }
+                        JitVal::Simple(self.builder.use_var(slot))
+                    }
+                    JitSlot::Complexe(re_slot, im_slot) => {
                         let zt = self.builder.ins().iconst(types::I64, 0);
                         self.builder.def_var(self.tag_tmp, zt);
+                        JitVal::Complexe(self.builder.use_var(re_slot), self.builder.use_var(im_slot))
                     }
-                } else {
-                    let zt = self.builder.ins().iconst(types::I64, 0);
-                    self.builder.def_var(self.tag_tmp, zt);
                 }
-                self.builder.use_var(slot)
             }
             Expr::Binaire { op, a, b, .. } => self.binaire(op, a, b, env, types),
             Expr::Appel { nom, args, ligne, .. } => {
@@ -814,30 +935,75 @@ impl Emetteur<'_> {
     /// récursives comprises : la déclaration précède l'émission). Les types
     /// non compilables sont filtrés par la porte bloc_compilable.
     fn appel(&mut self, nom: &str, args: &[Expr], env: &mut HashMap<String, Variable>,
-             types: &HashMap<String, TyKind>) -> Value {
+             types: &HashMap<String, TyKind>) -> JitVal {
+        // Intrinsics complexes gérés directement en Cranelift (pas de signature Rose)
+        if matches!(nom, "re" | "im" | "conj") && args.len() == 1 {
+            let va = self.expr(&args[0], env, types);
+            if let JitVal::Complexe(re, im) = va {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                return match nom {
+                    "re" => JitVal::Simple(re),
+                    "im" => JitVal::Simple(im),
+                    "conj" => {
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        let fz = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), zero);
+                        let neg_im = self.builder.ins().fsub(fz, im);
+                        JitVal::Complexe(re, neg_im)
+                    }
+                    _ => unreachable!(),
+                };
+            }
+            // argument non-complexe : retourne l'argument tel quel (réel → im=0)
+            let zt = self.builder.ins().iconst(types::I64, 0);
+            self.builder.def_var(self.tag_tmp, zt);
+            return match nom {
+                "re" => JitVal::Simple(self.simple(va)),
+                "im" => JitVal::Simple(self.builder.ins().iconst(types::F64, 0)),
+                "conj" => va,
+                _ => unreachable!(),
+            };
+        }
         let sig = self.signatures[nom].clone();
         let fref = self.fonction_ref(nom, &sig);
-        let mut vals = Vec::with_capacity(args.len());
+        let mut vals: Vec<Value> = Vec::new();
         for (i, a) in args.iter().enumerate() {
             let pt = sig.params[i].1.n;
             let v = self.expr(a, env, types);
-            let attendu = if pt == TyKind::Flottant { types::F64 } else { types::I64 };
-            let obtenu = self.builder.func.dfg.value_type(v);
-            vals.push(if attendu == obtenu { v }
-                      else if attendu == types::F64 { self.builder.ins().fcvt_from_sint(types::F64, v) }
-                      else { self.builder.ins().fcvt_to_sint(types::I64, v) });
+            match (pt, v) {
+                // paramètre complexe : deux f64 (re, im)
+                (TyKind::Complexe, JitVal::Complexe(re, im)) => {
+                    vals.push(re); vals.push(im);
+                }
+                // paramètre flottant : une f64
+                (TyKind::Flottant, JitVal::Simple(v)) => {
+                    let attendu = types::F64;
+                    let obtenu = self.builder.func.dfg.value_type(v);
+                    vals.push(if attendu == obtenu { v }
+                              else { self.builder.ins().fcvt_from_sint(types::F64, v) });
+                }
+                // paramètre entier/booléen : une i64
+                (_, JitVal::Simple(v)) => {
+                    let attendu = types::I64;
+                    let obtenu = self.builder.func.dfg.value_type(v);
+                    vals.push(if attendu == obtenu { v }
+                              else if attendu == types::F64 { self.builder.ins().fcvt_from_sint(types::F64, v) }
+                              else { self.builder.ins().fcvt_to_sint(types::I64, v) });
+                }
+                _ => unreachable!("type d'argument incompatible dans appel JIT"),
+            }
         }
         let inst = self.builder.ins().call(fref, &vals);
-        // Fixe n°1 : le JIT ne propage pas le tag BigInt (slot 8 de la trame
-        // posée par le helper `rose_*_ent`). On relit la trame de deux mots
-        // juste apres l'appel : si elle porte un tag != 0, on doit rendre une
-        // `Valeur::Entier(_, Some(Gz))` plus tard ; ici on le memorise dans
-        // `self.tag_tmp` pour la suite de l'emission.
+        // Retour complexe : deux registres f64 (d0=re, d1=im)
+        if sig.retour.n == TyKind::Complexe {
+            let rs: Vec<Value> = self.builder.inst_results(inst).to_vec();
+            let zt = self.builder.ins().iconst(types::I64, 0);
+            self.builder.def_var(self.tag_tmp, zt);
+            return JitVal::Complexe(rs[0], rs[1]);
+        }
+        // Fixe n°1 : tag BigInt pour retour entier
         if sig.retour.n == TyKind::Entier {
             let res = self.builder.inst_results(inst)[0];
-            // Le helper de la fonction appelee laisse son tag dans sa PROPRE
-            // trame : il faut le lire depuis `self.tags[nom]` si la fonction
-            // est un helper runtime (rose_add_ent, etc.).
             if let Some(ts) = self.tags.get(nom).copied() {
                 let t = self.builder.use_var(ts);
                 self.builder.def_var(self.tag_tmp, t);
@@ -845,37 +1011,48 @@ impl Emetteur<'_> {
                 let zt = self.builder.ins().iconst(types::I64, 0);
                 self.builder.def_var(self.tag_tmp, zt);
             }
-            return res;
+            return JitVal::Simple(res);
         }
         match sig.retour.n {
-            TyKind::Vide => self.builder.ins().iconst(types::I64, 0),
-            _ => self.builder.inst_results(inst)[0],
+            TyKind::Vide => JitVal::Simple(self.builder.ins().iconst(types::I64, 0)),
+            _ => JitVal::Simple(self.builder.inst_results(inst)[0]),
         }
     }
 
     fn binaire(&mut self, op: &str, a: &Expr, b: &Expr, env: &mut HashMap<String, Variable>,
-               types: &HashMap<String, TyKind>) -> Value {
+               types: &HashMap<String, TyKind>) -> JitVal {
         let ta = self.type_of(a, env, types);
         let tb = self.type_of(b, env, types);
         let flot = ta == TyKind::Flottant || tb == TyKind::Flottant;
         match op {
             "et" => {
-                // Le sous-ensemble JIT est sans effet de bord sur variables
-                // compilables (pas d'appels) : évaluer les deux côtés puis
-                // band/bor rend la même valeur que le court-circuit.
-                let g = self.expr(a, env, types);
-                let d = self.expr(b, env, types);
-                self.builder.ins().band(g, d)
+                let g = match self.expr(a, env, types) {
+                    JitVal::Simple(v) => v,
+                    JitVal::Complexe(..) => unreachable!(),
+                };
+                let d = match self.expr(b, env, types) {
+                    JitVal::Simple(v) => v,
+                    JitVal::Complexe(..) => unreachable!(),
+                };
+                JitVal::Simple(self.builder.ins().band(g, d))
             }
             "ou" => {
-                let g = self.expr(a, env, types);
-                let d = self.expr(b, env, types);
-                self.builder.ins().bor(g, d)
+                let g = match self.expr(a, env, types) {
+                    JitVal::Simple(v) => v,
+                    JitVal::Complexe(..) => unreachable!(),
+                };
+                let d = match self.expr(b, env, types) {
+                    JitVal::Simple(v) => v,
+                    JitVal::Complexe(..) => unreachable!(),
+                };
+                JitVal::Simple(self.builder.ins().bor(g, d))
             }
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
-                let g = self.expr(a, env, types);
+                let gj = self.expr(a, env, types);
+                let g = self.simple(gj);
                 let tag_g = self.builder.use_var(self.tag_tmp);
-                let d = self.expr(b, env, types);
+                let dj = self.expr(b, env, types);
+                let d = self.simple(dj);
                 let tag_d = self.builder.use_var(self.tag_tmp);
                 let (g, d) = si_flottant(&mut self.builder, flot, g, d, ta, tb);
                 let v = if flot {
@@ -900,19 +1077,21 @@ impl Emetteur<'_> {
                     self.builder.ins().icmp(cc, g, d)
                 };
                 // b1 → i128
-                self.builder.ins().uextend(types::I64, v)
+                JitVal::Simple(self.builder.ins().uextend(types::I64, v))
             }
             "+" | "-" | "*" | "/" | "%" | "^" | "div" => {
                 // ('*'/'^'/'-' entiers : hors sous-ensemble, sur_i64 a refuse la
                 // compilation en amont — le chemin imul/i64_pow n'est jamais emis
                 // pour un operande entier.)
-                let g = self.expr(a, env, types);
+                let gj = self.expr(a, env, types);
+                let g = self.simple(gj);
                 let tag_g = self.builder.use_var(self.tag_tmp);
-                let d = self.expr(b, env, types);
+                let dj = self.expr(b, env, types);
+                let d = self.simple(dj);
                 let tag_d = self.builder.use_var(self.tag_tmp);
                 let (g, d) = si_flottant(&mut self.builder, flot, g, d, ta, tb);
                 match op {
-                    "+" => if flot { self.builder.ins().fadd(g, d) } else {
+                    "+" => if flot { JitVal::Simple(self.builder.ins().fadd(g, d)) } else {
                         let zero_tag = self.builder.ins().iconst(types::I64, 0);
                         let tag_g_zero = self.builder.ins().icmp(IntCC::Equal, tag_g, zero_tag);
                         let tag_d_zero = self.builder.ins().icmp(IntCC::Equal, tag_d, zero_tag);
@@ -956,9 +1135,9 @@ impl Emetteur<'_> {
                         let mv = self.builder.block_params(merge_b)[0];
                         let mt = self.builder.block_params(merge_b)[1];
                         self.builder.def_var(self.tag_tmp, mt);
-                        mv
+                        JitVal::Simple(mv)
                     },
-                    "-" => if flot { self.builder.ins().fsub(g, d) } else {
+                    "-" => if flot { JitVal::Simple(self.builder.ins().fsub(g, d)) } else {
                         let trame = self.trame_deux_mots();
                         let f = self.import_runtime("rose_sub_ent");
                         let trame8 = self.builder.ins().iadd_imm(trame, 8);
@@ -966,9 +1145,9 @@ impl Emetteur<'_> {
                         let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
                         let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
                         self.builder.def_var(self.tag_tmp, tag);
-                        val
+                        JitVal::Simple(val)
                     },
-                    "*" => if flot { self.builder.ins().fmul(g, d) } else {
+                    "*" => if flot { JitVal::Simple(self.builder.ins().fmul(g, d)) } else {
                         let zero_tag = self.builder.ins().iconst(types::I64, 0);
                         let tag_g_zero = self.builder.ins().icmp(IntCC::Equal, tag_g, zero_tag);
                         let tag_d_zero = self.builder.ins().icmp(IntCC::Equal, tag_d, zero_tag);
@@ -1013,12 +1192,12 @@ impl Emetteur<'_> {
                         let mv = self.builder.block_params(merge_b)[0];
                         let mt = self.builder.block_params(merge_b)[1];
                         self.builder.def_var(self.tag_tmp, mt);
-                        mv
+                        JitVal::Simple(mv)
                     },
                     "/" => {
                         let bloc = self.builder.current_block();
                         let _ = bloc;
-                        self.builder.ins().fdiv(g, d)
+                        JitVal::Simple(self.builder.ins().fdiv(g, d))
                     }
                     "%" => {
                         // garde de justesse : un diviseur nul ne doit jamais
@@ -1039,14 +1218,11 @@ impl Emetteur<'_> {
                         self.builder.switch_to_block(cont_b);
                         self.builder.seal_block(cont_b);
                         let r = self.builder.ins().srem(g, d);
-                        // fdiv_r : le signe suit le diviseur. Correction quand
-                        // signe(r) ≠ signe(d) et r ≠ 0.
-                        self.correction_rem(r, d)
+                        JitVal::Simple(self.correction_rem(r, d))
                     }
                     "div" => {
                         let q = self.builder.ins().sdiv(g, d);
-                        // division euclidienne = floor
-                        self.floor_div(q, g, d)
+                        JitVal::Simple(self.floor_div(q, g, d))
                     }
                     "^" => {
                         if flot {
@@ -1054,9 +1230,9 @@ impl Emetteur<'_> {
                             // std::pow du moteur C++, même arrondi libm).
                             let f = self.powf();
                             let inst = self.builder.ins().call(f, &[g, d]);
-                            self.builder.inst_results(inst)[0]
+                            JitVal::Simple(self.builder.inst_results(inst)[0])
                         } else {
-                            self.i64_pow(g, d)
+                            JitVal::Simple(self.i64_pow(g, d))
                         }
                     }
                     _ => unreachable!(),
@@ -1090,12 +1266,14 @@ impl Emetteur<'_> {
             // negation entiere : voie exacte (rose_neg_ent) — -i64::MIN = 2^63
             // ne tient pas en i64, le C++ promote en GMP (jit_neg_z).
             if let Expr::Unaire { a, .. } = e {
-                let v = self.expr(a, env, types);
+                let vj = self.expr(a, env, types);
+                let v = self.simple(vj);
                 return self.neg_exact(v);
             }
         }
         if !multiplicatif(e) {
-            let v = self.expr(e, env, types);
+            let vj = self.expr(e, env, types);
+            let v = self.simple(vj);
             let zero = self.builder.ins().iconst(types::I64, 0);
             return (v, zero);
         }
@@ -1108,12 +1286,14 @@ impl Emetteur<'_> {
             Expr::Unaire { op, a, .. } if op == "-" => {
                 // negation exacte miroir interp : -(i64::MIN) = 2^63 ne tient pas
                 // en i64 -> Gz boxé (tag), rendu par rose_affiche_ent.
-                let v = self.expr(a, env, types);
+                let vj = self.expr(a, env, types);
+                let v = self.simple(vj);
                 self.neg_exact(v)
             }
             Expr::Unaire { a, .. } => self.emettre_ent(a, env, types),
             _ => {
-                let v = self.expr(e, env, types);
+                let vj = self.expr(e, env, types);
+                let v = self.simple(vj);
                 let zero = self.builder.ins().iconst(types::I64, 0);
                 (v, zero)
             }
@@ -1266,8 +1446,33 @@ impl Emetteur<'_> {
                 Instr::Affect { nom, e, ligne } => {
                     crate::run::noter_ligne(*ligne);
                     let t = self.type_of(e, env, types);
-                    let v = if t == TyKind::Entier && matches!(e, Expr::Var(_, _)) {
-                        let v0 = self.expr(e, env, types);
+                    let v = if t == TyKind::Complexe {
+                        match self.expr(e, env, types) {
+                            JitVal::Complexe(re, im) => {
+                                let (slot_re, slot_im) = match env.get(nom).copied() {
+                                    Some(s) => {
+                                        let im_slot = self.complex_im.get(nom).copied().unwrap();
+                                        (s, im_slot)
+                                    }
+                                    None => {
+                                        let s_re = self.builder.declare_var(types::F64);
+                                        let s_im = self.builder.declare_var(types::F64);
+                                        self.prochain_slot += 2;
+                                        env.insert(nom.clone(), s_re);
+                                        self.complex_im.insert(nom.clone(), s_im);
+                                        types.insert(nom.clone(), TyKind::Complexe);
+                                        (s_re, s_im)
+                                    }
+                                };
+                                self.builder.def_var(slot_re, re);
+                                self.builder.def_var(slot_im, im);
+                                re  // valeur factice, le slot contient déjà le complexe
+                            }
+                            JitVal::Simple(..) => unreachable!("complexe attendu"),
+                        }
+                    } else if t == TyKind::Entier && matches!(e, Expr::Var(_, _)) {
+                        let vj = self.expr(e, env, types);
+                        let v0 = self.simple(vj);
                         let tag0 = self.builder.use_var(self.tag_tmp);
                         let trame = self.trame_deux_mots();
                         let trame8 = self.builder.ins().iadd_imm(trame, 8);
@@ -1277,18 +1482,19 @@ impl Emetteur<'_> {
                         self.builder.def_var(self.tag_tmp, ht);
                         self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0)
                     } else {
-                        self.expr(e, env, types)
+                        let vj = self.expr(e, env, types);
+                        self.simple(vj)
                     };
                     let slot = env.get(nom).copied();
                     let slot = match slot {
                         Some(s) => s,
                         None => {
-                            let cr = match t { TyKind::Flottant => types::F64, _ => types::I64 };
+                            let cr = match t { TyKind::Flottant | TyKind::Complexe => types::F64, _ => types::I64 };
                             let s = self.builder.declare_var(cr);
                             self.prochain_slot += 1;
                             env.insert(nom.clone(), s);
                             types.insert(nom.clone(), t);
-                            if t != TyKind::Flottant {
+                            if t != TyKind::Flottant && t != TyKind::Complexe {
                                 let ts = self.builder.declare_var(types::I64);
                                 self.prochain_slot += 1;
                                 let zt = self.builder.ins().iconst(types::I64, 0); self.builder.def_var(ts, zt);
@@ -1297,7 +1503,7 @@ impl Emetteur<'_> {
                             s
                         }
                     };
-                    if t != TyKind::Flottant {
+                    if t != TyKind::Flottant && t != TyKind::Complexe {
                         if let Some(ts) = self.tags.get(nom).copied() {
                             let tag = self.builder.use_var(self.tag_tmp);
                             self.builder.def_var(ts, tag);
@@ -1309,14 +1515,22 @@ impl Emetteur<'_> {
                     if exprs.len() != 1 { return; }
                     let e = &exprs[0];
                     let t = self.type_of(e, env, types);
+                    if t == TyKind::Complexe {
+                        let JitVal::Complexe(re, im) = self.expr(e, env, types) else { unreachable!() };
+                        let f = self.import_runtime("rose_affiche_complexe");
+                        let _ = self.builder.ins().call(f, &[re, im]);
+                        continue;
+                    }
                     if t == TyKind::Entier {
-                        let v = self.expr(e, env, types);
+                        let vj = self.expr(e, env, types);
+                        let v = self.simple(vj);
                         let tag = self.builder.use_var(self.tag_tmp);
                         let f = self.runtime("rose_affiche_ent");
                         let _ = self.builder.ins().call(f, &[v, tag]);
                         continue;
                     }
-                    let v = self.expr(e, env, types);
+                    let vj = self.expr(e, env, types);
+                    let v = self.simple(vj);
                     let nom_key = match t {
                         TyKind::Flottant => "rose_affiche_f64",
                         TyKind::Booleen => "rose_affiche_bool",
@@ -1337,7 +1551,8 @@ impl Emetteur<'_> {
                     let avant_retour = self.returned;
                     let corps = self.builder.create_block();
                     let apres_b = self.builder.create_block();
-                    let cond = self.expr(test, env, types);
+                    let tj = self.expr(test, env, types);
+                    let cond = self.simple(tj);
                     let zero = self.builder.ins().iconst(types::I64, 0);
                     let est_vrai = self.builder.ins().icmp(IntCC::NotEqual, cond, zero);
                     match sinon {
@@ -1378,7 +1593,8 @@ impl Emetteur<'_> {
                     let sortie = self.builder.create_block();
                     self.saut(entree, &[]);
                     self.builder.switch_to_block(entree);
-                    let cond = self.expr(test, env, types);
+                    let tj = self.expr(test, env, types);
+                    let cond = self.simple(tj);
                     let zero = self.builder.ins().iconst(types::I64, 0);
                     let ok = self.builder.ins().icmp(IntCC::NotEqual, cond, zero);
                     self.br_args(ok, tour, &[], sortie, &[]);
@@ -1397,8 +1613,10 @@ impl Emetteur<'_> {
                 }
                 Instr::Pour { nom, debut, fin, corps, ligne } => {
                     crate::run::noter_ligne(*ligne);
-                    let d = self.expr(debut, env, types);
-                    let f = self.expr(fin, env, types);
+                    let dj = self.expr(debut, env, types);
+                    let d = self.simple(dj);
+                    let fj = self.expr(fin, env, types);
+                    let f = self.simple(fj);
                     let slot = {
                         match env.get(nom).copied() {
                             Some(s) => s,
@@ -1453,11 +1671,13 @@ impl Emetteur<'_> {
                     match e {
                         None => { self.builder.ins().return_(&[]); }
                         Some(e) => {
-                            let v = self.expr(e, env, types);
                             let tag = self.builder.use_var(self.tag_tmp);
                             let f = self.import_runtime("rose_set_ret_tag");
                             let _ = self.builder.ins().call(f, &[tag]);
-                            self.builder.ins().return_(&[v]);
+                            match self.expr(e, env, types) {
+                                JitVal::Simple(v) => { self.builder.ins().return_(&[v]); }
+                                JitVal::Complexe(re, im) => { self.builder.ins().return_(&[re, im]); }
+                            }
                         }
                     }
                     self.returned = true;

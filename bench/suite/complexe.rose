@@ -1,21 +1,23 @@
 # -- Banc Rose : nombres complexes (unite imaginaire `i`) --
 # Utilise VRAIMENT `i` et le type complexe (Valeur::Complexe) a chaque iteration.
-$n = 1000000
-$total_re = 0.0
-$total_im = 0.0
-pour k de 1 vers $n + 1 {
+# Le calcul est dans une fonction utilisee avec `retour` pour etre JIT-compilable.
+fn calc(n: entier) -> flottant {
+  $total_re = 0.0
+  $total_im = 0.0
+  pour k de 1 vers n + 1 {
     $z_re = k * 0.000001
     $z_im = 1.0 - $z_re
     $z = $z_re + $z_im * i
     $w = $z * $z
     $total_re = $total_re + re($w)
     $total_im = $total_im + im($w)
+  }
+  retour $total_re
 }
->> $total_re
->> $total_im
+>> calc(1000000)
 # verification : somme de k^2 pour k=1..n (reel pur)
 $s = 0
-pour j de 1 vers $n + 1 {
+pour j de 1 vers 1000001 {
     $s = $s + j * j
 }
 >> $s
