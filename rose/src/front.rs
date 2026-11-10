@@ -458,7 +458,7 @@ pub fn est_std(nom: &str) -> bool {
         || matches!(nom, "charger" | "fermer" | "appeler0" | "appeler1" | "appeler2")
 }
 
-fn ty_du_nom(s: &str) -> Ty {
+pub fn ty_du_nom(s: &str) -> Ty {
     match s {
         "entier" => Ty::simple(TyKind::Entier),
         "rationnel" => Ty::simple(TyKind::Rationnel),
