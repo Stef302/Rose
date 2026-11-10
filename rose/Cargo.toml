@@ -13,13 +13,17 @@ num-bigint = "0.4"
 num-integer = "0.1"
 num-rational = "0.4"
 num-traits = "0.2"
-inkwell = { version = "0.7", features = ["llvm18-1-prefer-dynamic", "target-aarch64", "target-x86", "no-libffi-linking"] }
+inkwell = { version = "0.7", optional = true, features = ["llvm18-1-prefer-dynamic", "target-aarch64", "target-x86", "no-libffi-linking"] }
 
 [build-dependencies]
 cc = "1.0"
 
+[features]
+default = ["llvm"]
+llvm = ["dep:inkwell"]
+
 [profile.release]
-opt-level = 2
+opt-level = 3
 strip = true
 
 [profile.release-dbg]

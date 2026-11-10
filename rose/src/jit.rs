@@ -43,7 +43,7 @@ pub enum Compile {
 /// Analyse : une expression est-elle compilable (entier i64 / booleen /
 /// flottant, sans effet de bord sur des types hors support) ?
 pub fn compilable(ty: TyKind) -> bool {
-    matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant)
+    matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
 }
 
 /// Une addition/soustraction entiere est sure en i64 seulement si elle ne peut
@@ -1640,6 +1640,16 @@ impl Emetteur<'_> {
                         // charge du scellement).
                         match sig.retour.n {
                             TyKind::Vide => { self.builder.ins().return_(&[]); }
+                            TyKind::Flottant => {
+                                let c = self.builder.ins().iconst(types::I64, 0);
+                                let z = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                                self.builder.ins().return_(&[z]);
+                            }
+                            TyKind::Complexe => {
+                                let c = self.builder.ins().iconst(types::I64, 0);
+                                let fz = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                                self.builder.ins().return_(&[fz, fz]);
+                            }
                             _ => { let c = self.builder.ins().iconst(types::I64, 0); self.builder.ins().return_(&[c]); }
                         }
                     }
@@ -1696,6 +1706,16 @@ impl Emetteur<'_> {
                         // retour de secours (code mort, jamais exécuté).
                         match sig.retour.n {
                             TyKind::Vide => { self.builder.ins().return_(&[]); }
+                            TyKind::Flottant => {
+                                let c = self.builder.ins().iconst(types::I64, 0);
+                                let z = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                                self.builder.ins().return_(&[z]);
+                            }
+                            TyKind::Complexe => {
+                                let c = self.builder.ins().iconst(types::I64, 0);
+                                let fz = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                                self.builder.ins().return_(&[fz, fz]);
+                            }
                             _ => { let c = self.builder.ins().iconst(types::I64, 0); self.builder.ins().return_(&[c]); }
                         }
                     }

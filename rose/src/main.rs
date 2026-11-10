@@ -14,7 +14,9 @@ mod irrationnel;
 mod interp;
 mod jit;
 mod run;
+#[cfg(feature = "llvm")]
 mod aot_llvm_orc;
+#[cfg(feature = "llvm")]
 mod elf_linker;
 
 use std::io::Read;
@@ -135,6 +137,10 @@ fn main() {
         std::process::exit(1);
     }
     let action = argv[1].as_str();
+    #[cfg(feature = "llvm")]
+    if matches!(action, "llvm" | "orc" | "link") {
+        handle_llvm_commands(argv.as_slice());
+    }
     match action {
         "version" | "--version" => { println!("{}", interp::version()); return; }
         "info" => { print!("{}", interp::info()); return; }
@@ -157,6 +163,85 @@ fn main() {
             }
             std::process::exit(comp_programme(&fichier, &sortie));
         }
+        "llvm" => {
+            #[cfg(feature = "llvm")]
+            unreachable!("géré par handle_llvm_commands");
+            #[cfg(not(feature = "llvm"))]
+            {
+                eprintln!("rose: commande 'llvm' indisponible (compilé sans LLVM)");
+                std::process::exit(1);
+            }
+        }
+        "orc" => {
+            #[cfg(feature = "llvm")]
+            unreachable!("géré par handle_llvm_commands");
+            #[cfg(not(feature = "llvm"))]
+            {
+                eprintln!("rose: commande 'orc' indisponible (compilé sans LLVM)");
+                std::process::exit(1);
+            }
+        }
+        "link" => {
+            #[cfg(feature = "llvm")]
+            unreachable!("géré par handle_llvm_commands");
+            #[cfg(not(feature = "llvm"))]
+            {
+                eprintln!("rose: commande 'link' indisponible (compilé sans LLVM)");
+                std::process::exit(1);
+            }
+        }
+        _ => {}
+    }
+
+    let (fichier, args) = if action == "run" {
+        if argv.len() < 3 { eprintln!("rose: quel programme interpréter ?"); std::process::exit(1); }
+        (argv[2].clone(), argv[3..].to_vec())
+    } else {
+        (argv[1].clone(), argv[2..].to_vec())
+    };
+    let mut source = String::new();
+    if !lire(&mut source, &fichier) {
+        eprintln!("rose: fichier introuvable : {}", fichier);
+        std::process::exit(1);
+    }
+    // le moteur C++ execute le pipeline dans un thread a pile de 512 Mo
+    // (rose.cpp:4745-4747) ; la recursion profonde de l'interpreteur Rust en a
+    // autant. Repli en ligne si le thread ne peut etre cree.
+    if argv.iter().any(|a| a == "--debug") || std::env::var("ROSE_DEBUG").is_ok() {
+        crate::run::set_debug_mode(true);
+    }
+    if argv.iter().any(|a| a == "--step") || std::env::var("ROSE_STEP").is_ok() {
+        crate::run::set_step_mode(true);
+    }
+    let source_t = source.clone();
+    let args_t = args.clone();
+    let h = std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(move || interp::executer_source(&source_t, args_t));
+    let rc = match h {
+        Ok(j) => match j.join() {
+            Ok(r) => r,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<String>() { s.clone() }
+                          else if let Some(s) = payload.downcast_ref::<&str>() { s.to_string() }
+                          else { "erreur inconnue".to_string() };
+                if let Some(m) = msg.strip_prefix("ROSE_ERR:") {
+                    eprintln!("Rose : erreur — {}", m);
+                } else {
+                    eprintln!("Rose : panic — {}", msg);
+                }
+                1
+            }
+        },
+        Err(_) => interp::executer_source(&source, args),
+    };
+    std::process::exit(rc);
+}
+
+#[cfg(feature = "llvm")]
+fn handle_llvm_commands(argv: &[String]) -> ! {
+    let action = argv[1].as_str();
+    match action {
         "llvm" => {
             let mut sortie = String::new();
             let mut fichier = String::new();
@@ -211,7 +296,6 @@ fn main() {
                 if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
-            // Quand --link est demandé, forcer l'extension .o pour l'objet intermédiaire
             if auto_link && !sortie.ends_with(".o") {
                 sortie = format!("{}.o", sortie);
             }
@@ -262,50 +346,7 @@ fn main() {
             }
             std::process::exit(0);
         }
-        _ => {}
+        _ => unreachable!(),
     }
-
-    let (fichier, args) = if action == "run" {
-        if argv.len() < 3 { eprintln!("rose: quel programme interpréter ?"); std::process::exit(1); }
-        (argv[2].clone(), argv[3..].to_vec())
-    } else {
-        (argv[1].clone(), argv[2..].to_vec())
-    };
-    let mut source = String::new();
-    if !lire(&mut source, &fichier) {
-        eprintln!("rose: fichier introuvable : {}", fichier);
-        std::process::exit(1);
-    }
-    // le moteur C++ execute le pipeline dans un thread a pile de 512 Mo
-    // (rose.cpp:4745-4747) ; la recursion profonde de l'interpreteur Rust en a
-    // autant. Repli en ligne si le thread ne peut etre cree.
-    if argv.iter().any(|a| a == "--debug") || std::env::var("ROSE_DEBUG").is_ok() {
-        crate::run::set_debug_mode(true);
-    }
-    if argv.iter().any(|a| a == "--step") || std::env::var("ROSE_STEP").is_ok() {
-        crate::run::set_step_mode(true);
-    }
-    let source_t = source.clone();
-    let args_t = args.clone();
-    let h = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(move || interp::executer_source(&source_t, args_t));
-    let rc = match h {
-        Ok(j) => match j.join() {
-            Ok(r) => r,
-            Err(payload) => {
-                let msg = if let Some(s) = payload.downcast_ref::<String>() { s.clone() }
-                          else if let Some(s) = payload.downcast_ref::<&str>() { s.to_string() }
-                          else { "erreur inconnue".to_string() };
-                if let Some(m) = msg.strip_prefix("ROSE_ERR:") {
-                    eprintln!("Rose : erreur — {}", m);
-                } else {
-                    eprintln!("Rose : panic — {}", msg);
-                }
-                1
-            }
-        },
-        Err(_) => interp::executer_source(&source, args),
-    };
-    std::process::exit(rc);
+    unreachable!()
 }
