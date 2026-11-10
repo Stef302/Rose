@@ -14,6 +14,9 @@ mod irrationnel;
 mod interp;
 mod jit;
 mod run;
+mod auto_llvm;
+mod cmd_llvm;
+mod sha256;
 #[cfg(feature = "llvm")]
 mod aot_llvm_orc;
 #[cfg(feature = "llvm")]
@@ -137,9 +140,18 @@ fn main() {
         std::process::exit(1);
     }
     let action = argv[1].as_str();
-    #[cfg(feature = "llvm")]
-    if matches!(action, "llvm" | "orc" | "link") {
-        handle_llvm_commands(argv.as_slice());
+    // La commande « llvm » (transpilation vers C) n'a pas besoin de LLVM :
+    // elle est disponible meme dans le binaire leger.
+    if action == "llvm" {
+        cmd_llvm::execute("llvm", argv.as_slice());
+    }
+    // « orc » et « link » exigent LLVM : soit il est embarque, soit le
+    // binaire le cherche tout seul (telechargement du helper AOT).
+    if matches!(action, "orc" | "link") {
+        #[cfg(feature = "llvm")]
+        cmd_llvm::execute(action, argv.as_slice());
+        #[cfg(not(feature = "llvm"))]
+        auto_llvm::lance(action, argv.as_slice());
     }
     match action {
         "version" | "--version" => { println!("{}", interp::version()); return; }
@@ -162,36 +174,6 @@ fn main() {
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
             std::process::exit(comp_programme(&fichier, &sortie));
-        }
-        "llvm" => {
-            #[cfg(feature = "llvm")]
-            unreachable!("géré par handle_llvm_commands");
-            #[cfg(not(feature = "llvm"))]
-            {
-                eprintln!("rose: commande 'llvm' indisponible — binaire compilé sans LLVM.");
-                eprintln!("      reconstruire avec : cargo build --release --features llvm");
-                std::process::exit(1);
-            }
-        }
-        "orc" => {
-            #[cfg(feature = "llvm")]
-            unreachable!("géré par handle_llvm_commands");
-            #[cfg(not(feature = "llvm"))]
-            {
-                eprintln!("rose: commande 'orc' indisponible — binaire compilé sans LLVM.");
-                eprintln!("      reconstruire avec : cargo build --release --features llvm");
-                std::process::exit(1);
-            }
-        }
-        "link" => {
-            #[cfg(feature = "llvm")]
-            unreachable!("géré par handle_llvm_commands");
-            #[cfg(not(feature = "llvm"))]
-            {
-                eprintln!("rose: commande 'link' indisponible — binaire compilé sans LLVM.");
-                eprintln!("      reconstruire avec : cargo build --release --features llvm");
-                std::process::exit(1);
-            }
         }
         _ => {}
     }
@@ -241,115 +223,3 @@ fn main() {
     std::process::exit(rc);
 }
 
-#[cfg(feature = "llvm")]
-fn handle_llvm_commands(argv: &[String]) -> ! {
-    let action = argv[1].as_str();
-    match action {
-        "llvm" => {
-            let mut sortie = String::new();
-            let mut fichier = String::new();
-            let mut i = 2;
-            while i < argv.len() {
-                if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
-                    sortie = argv[i + 1].clone(); i += 2;
-                } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
-                else { i += 1; }
-            }
-            if fichier.is_empty() { eprintln!("rose: quel programme compiler ?"); std::process::exit(1); }
-            if sortie.is_empty() {
-                sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
-                if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
-                if sortie.is_empty() { sortie = "programme".into(); }
-            }
-            let srcdir = "archive/rose2_old_python/src";
-            let st = std::process::Command::new("python3")
-                .args(["-m", "rose2.driver", "build", &fichier, "--cible", "c", "-o", &sortie])
-                .env("PYTHONPATH", srcdir)
-                .status();
-            if !st.map(|s| s.success()).unwrap_or(false) {
-                eprintln!("rose: échec de l'AOT LLVM (python3/codegen_c)"); std::process::exit(1);
-            }
-            println!("rose: {} produit (AOT LLVM)", sortie);
-            std::process::exit(0);
-        }
-        "orc" => {
-            let mut sortie = String::new();
-            let mut fichier = String::new();
-            let mut opt_level = aot_llvm_orc::OrcOptLevel::O2;
-            let mut pgo_mode = aot_llvm_orc::PgoMode::None;
-            let mut target_triple: Option<String> = None;
-            let mut auto_link = false;
-            let mut i = 2;
-            while i < argv.len() {
-                if argv[i] == "-O1" { opt_level = aot_llvm_orc::OrcOptLevel::O1; i += 1; }
-                else if argv[i] == "-O2" { opt_level = aot_llvm_orc::OrcOptLevel::O2; i += 1; }
-                else if argv[i] == "-O3" { opt_level = aot_llvm_orc::OrcOptLevel::O3; i += 1; }
-                else if argv[i] == "--pgo-generate" { pgo_mode = aot_llvm_orc::PgoMode::Generate; i += 1; }
-                else if argv[i] == "--pgo-use" { pgo_mode = aot_llvm_orc::PgoMode::Use; i += 1; }
-                else if argv[i] == "--link" { auto_link = true; i += 1; }
-                else if argv[i] == "--target" && i + 1 < argv.len() { target_triple = Some(argv[i + 1].clone()); i += 2; }
-                else if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
-                    sortie = argv[i + 1].clone(); i += 2;
-                } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
-                else { i += 1; }
-            }
-            if fichier.is_empty() { eprintln!("rose: quel programme compiler ?"); std::process::exit(1); }
-            if sortie.is_empty() {
-                sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
-                if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
-                if sortie.is_empty() { sortie = "programme".into(); }
-            }
-            if auto_link && !sortie.ends_with(".o") {
-                sortie = format!("{}.o", sortie);
-            }
-            match aot_llvm_orc::run_orc(&fichier, &sortie, opt_level, pgo_mode, target_triple.as_deref()) {
-                Ok(()) => {
-                    if auto_link {
-                        let objet = sortie.clone();
-                        let exe = if let Some(p) = sortie.rfind(".o") {
-                            sortie[..p].to_string()
-                        } else {
-                            format!("{}.exe", sortie)
-                        };
-                        match elf_linker::link_elf(&objet, &exe) {
-                            Ok(()) => println!("rose: {} produit (binaire exécutable lié)", exe),
-                            Err(e) => { eprintln!("rose: échec du lien ELF : {}", e); std::process::exit(1); }
-                        }
-                    } else {
-                        println!("rose: {} produit (AOT LLVM ORC, niveau {:?}, PGO {:?})", sortie, opt_level, pgo_mode);
-                    }
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("rose: échec AOT LLVM ORC : {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        "link" => {
-            let mut objet = String::new();
-            let mut sortie = String::new();
-            let mut i = 2;
-            while i < argv.len() {
-                if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
-                    sortie = argv[i + 1].clone(); i += 2;
-                } else if !argv[i].starts_with('-') {
-                    objet = argv[i].clone(); i += 1;
-                } else { i += 1; }
-            }
-            if objet.is_empty() { eprintln!("rose: quel objet linker ?"); std::process::exit(1); }
-            if sortie.is_empty() {
-                sortie = objet.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(objet.clone());
-                if let Some(p) = sortie.rfind(".o") { sortie.truncate(p); }
-                if sortie.is_empty() { sortie = "programme".into(); }
-            }
-            match elf_linker::link_elf(&objet, &sortie) {
-                Ok(()) => {}
-                Err(e) => { eprintln!("rose: échec du lien ELF : {}", e); std::process::exit(1); }
-            }
-            std::process::exit(0);
-        }
-        _ => unreachable!(),
-    }
-    unreachable!()
-}

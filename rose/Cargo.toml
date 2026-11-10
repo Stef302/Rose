@@ -7,6 +7,12 @@ edition = "2024"
 name = "rose"
 path = "src/main.rs"
 
+# Helper AOT : la chaîne LLVM vit dans un binaire séparé, que le binaire
+# principal télécharge à la demande (voir src/auto_llvm.rs).
+[[bin]]
+name = "rose-aot"
+path = "src/bin/rose-aot.rs"
+
 [dependencies]
 cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
 libc = "0.2"
