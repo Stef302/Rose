@@ -223,7 +223,7 @@ fn args_depuis_chaine(interieur: &str, paires: &[(String, String)]) -> Vec<Valeu
 /// Nom de fonction std connu (liste blanche).
 fn nom_std_connu(nom: &str) -> bool {
     matches!(nom,
-        "afficher" | "saisir_entier" | "saisir_flottant" | "millisecondes" | "ms" | "graine" | "seed"
+        "afficher" | "saisir_entier" | "saisir_flottant" | "time" | "graine" | "seed"
         | "graine_systeme" | "seed_sys" | "graine_vrai" | "rng_materiel" | "rng_mat" | "hasard"
         | "hasard_systeme" | "hasard_vrai" | "trng" | "entier" | "rationnel" | "flottant"
         | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "tableau" | "premier" | "dernier"
@@ -1487,10 +1487,22 @@ impl Interp {
             "afficher" => { afficher(&a[0]); Valeur::Vide }
             "saisir_entier" => self.lire_selon(TyKind::Entier),
             "saisir_flottant" => self.lire_selon(TyKind::Flottant),
-            "millisecondes" | "ms" => {
-                let t = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-                Valeur::s(format!("{} ms", t))
+            "time" => {
+                let d = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH).unwrap();
+                let nanos = d.as_nanos();
+                let micros = d.as_micros();
+                let millis = d.as_millis();
+                let secs = d.as_secs();
+                if secs > 0 {
+                    Valeur::s(format!("{} s", secs))
+                } else if millis > 0 {
+                    Valeur::s(format!("{} ms", millis))
+                } else if micros > 0 {
+                    Valeur::s(format!("{} µs", micros))
+                } else {
+                    Valeur::s(format!("{} ns", nanos))
+                }
             }
             "graine" | "seed" => { let z = vers_z(&a[0]); graine_de(&mut self.rng, &z); Valeur::Vide }
             "graine_systeme" | "seed_sys" | "graine_vrai" => {

@@ -82,7 +82,7 @@ fn est_mot_cle(s: &str) -> bool {
         "fn" | "fonction" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
         | "vrai" | "faux" | "et" | "ou" | "non" | "div"
         | "entier" | "rationnel" | "flottant" | "booleen" | "chaine" | "liste" | "table"
-        | "π" | "φ" | "I")
+        | "π" | "φ" | "I" | "time")
 }
 
 fn cp_lettre(c: char) -> bool {
@@ -437,6 +437,7 @@ EntreeStd { nom: "bytes", args: &["chaine"], retour: "tampon" },
     EntreeStd { nom: "remplir_hasard", args: &["tampon", "tampon"], retour: "vide" },
     EntreeStd { nom: "remplir_hasard_philox", args: &["tampon", "tampon", "entier"], retour: "vide" },
     EntreeStd { nom: "millisecondes", args: &[], retour: "entier" },
+    EntreeStd { nom: "time", args: &[], retour: "chaine" },
 EntreeStd { nom: "ms", args: &[], retour: "entier" },
 ];
 
