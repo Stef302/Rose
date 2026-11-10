@@ -21,7 +21,7 @@ const DEFAULT_CC: CallConv = CallConv::WindowsFastcall;
 #[cfg(not(target_os = "windows"))]
 const DEFAULT_CC: CallConv = CallConv::SystemV;
 use cranelift::module::FuncId;
-use cranelift::jit::{JITBuilder, JITModule};
+use cranelift::jit::{JITBuilder, JITMemoryKind, JITMemoryProvider, JITModule, BranchProtection};
 use cranelift::module::{default_libcall_names, Linkage, Module};
 use cranelift::prelude::{Block, FloatCC, FunctionBuilder, IntCC, types, Variable};
 
@@ -44,6 +44,20 @@ pub enum Compile {
 /// flottant, sans effet de bord sur des types hors support) ?
 pub fn compilable(ty: TyKind) -> bool {
     matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
+}
+
+/// Un argument de type `at` peut-il alimenter un paramètre de type `pt` dans
+/// le sous-ensemble JIT ? (le tramoline passe la valeur « telle quelle » :
+/// un entier vers un paramètre flottant est converti par l'appelant, mais un
+/// complexe ne l'est pas.)
+fn compatible_jit(pt: TyKind, at: TyKind) -> bool {
+    match (pt, at) {
+        (TyKind::Complexe, _) => false,
+        (TyKind::Flottant, TyKind::Flottant | TyKind::Entier | TyKind::Booleen) => true,
+        (TyKind::Entier, TyKind::Entier | TyKind::Booleen) => true,
+        (TyKind::Booleen, TyKind::Booleen | TyKind::Entier) => true,
+        (a, b) => a == b,
+    }
 }
 
 /// Une addition/soustraction entiere est sure en i64 seulement si elle ne peut
@@ -83,6 +97,14 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
             for a in args { if ty_statique(a, env).is_none() { return None; } }
             // 1) fonctions du programme utilisateur
             let r = PROG_AVEC.with(|p| p.borrow().get(nom).cloned()).and_then(|s| {
+                // l'argument doit être compatible avec le paramètre déclaré :
+                // sinon l'appel ne peut pas être compilé (le trampoline
+                // passerait la valeur avec le mauvais registre).
+                for (i, a) in args.iter().enumerate() {
+                    let pt = match s.params.get(i) { Some(x) => x.1.n, None => return None };
+                    let at = ty_statique(a, env)?;
+                    if !compatible_jit(pt, at) { return None; }
+                }
                 if compilable(s.retour.n) || s.retour.n == TyKind::Vide { Some(s.retour.n) } else { None }
             });
             if r.is_some() { return r; }
@@ -110,15 +132,18 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                 "==" | "!=" | "<" | "<=" | ">" | ">=" => {
                     let ta = ty_statique(a, env)?;
                     let tb = ty_statique(b, env)?;
+                    // la comparaison de complexes n'est pas implementee dans le
+                    // JIT : on laisse l'interpreteur (semantique exacte).
+                    if ta == TyKind::Complexe || tb == TyKind::Complexe { return None; }
                     if ta == tb || (compilable(ta) && compilable(tb)) { Some(TyKind::Booleen) } else { None }
                 }
                 "div" => { ty_statique(a, env)?; ty_statique(b, env)?; Some(TyKind::Entier) }
                 "+" | "-" | "*" => {
                     let ta = ty_statique(a, env)?;
                     let tb = ty_statique(b, env)?;
-                    // les complexes ne sont pas compilables en JIT : refuser
+                    // arithmetique complexe : le JIT sait la faire (deux f64)
                     if ta == TyKind::Complexe || tb == TyKind::Complexe {
-                        return None;
+                        return Some(TyKind::Complexe);
                     }
                     match (ta, tb) {
                         (TyKind::Flottant, _) | (_, TyKind::Flottant) => Some(TyKind::Flottant),
@@ -161,6 +186,10 @@ thread_local! {
 /// Vérifie qu'une fonction entière tient dans le sous-ensemble JIT.
 pub fn fonction_compilable(sig: &Signature, prog: &HashMap<String, Signature>) -> bool {
     if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
+    // un complexe en paramètre ou en retour ne passe pas par le trampoline
+    // (l'interpréteur ne sait pas fournir/consommer un couple de f64) :
+    // ces fonctions restent interprétées.
+    if sig.retour.n == TyKind::Complexe { return false; }
     // un corps sans « retour » dans une fonction non-vide remonterait Vide :
     // la valeur de retour n'a pas de sens JIT, on garde l'interpréteur.
     if sig.retour.n != TyKind::Vide {
@@ -169,7 +198,7 @@ pub fn fonction_compilable(sig: &Signature, prog: &HashMap<String, Signature>) -
     }
     let mut env: HashMap<String, TyKind> = HashMap::new();
     for (pn, pt) in &sig.params {
-        if !compilable(pt.n) { return false; }
+        if !compilable(pt.n) || pt.n == TyKind::Complexe { return false; }
         env.insert(pn.clone(), pt.n);
     }
     let attendu = match sig.retour.n {
@@ -266,7 +295,6 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 let e = &exprs[0];
                 let t = ty_statique(e, env);
                 if t.is_none() { return false; }
-                // les complexes sont affichables via rose_affiche_complexe
                 if t == Some(TyKind::Complexe) { return true; }
                 if !sur_i64(e, env) { return false; }
             }
@@ -344,6 +372,162 @@ fn retour_coherent(t: TyKind, attendu: Option<TyKind>) -> bool {
             (TyKind::Entier, TyKind::Booleen) | (TyKind::Booleen, TyKind::Entier) => false,
             _ => false,
         },
+    }
+}
+
+// ── Mémoire JIT ──────────────────────────────────────────────────────────
+
+/// Table (nom, adresse) des helpers runtime appelables depuis le code JIT.
+/// Enregistrée dans la table de symboles du module : la résolution des
+/// relocations se fait par adresse, sans `dlsym` (1,2 ms économisés).
+fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
+    vec![
+        ("rose_affiche_i64", rose_affiche_i64 as *const u8),
+        ("rose_affiche_bool", rose_affiche_bool as *const u8),
+        ("rose_affiche_f64", rose_affiche_f64 as *const u8),
+        ("rose_affiche_complexe", rose_affiche_complexe as *const u8),
+        ("rose_affiche_ent", rose_affiche_ent as *const u8),
+        ("rose_powf", rose_powf as *const u8),
+        ("rose_add_ent", crate::run::rose_add_ent as *const u8),
+        ("rose_sub_ent", crate::run::rose_sub_ent as *const u8),
+        ("rose_mul_ent", crate::run::rose_mul_ent as *const u8),
+        ("rose_neg_ent", crate::run::rose_neg_ent as *const u8),
+        ("rose_clone_ent", crate::run::rose_clone_ent as *const u8),
+        ("rose_set_ret_tag", crate::run::rose_set_ret_tag as *const u8),
+        ("rose_erreur_mod_zero", crate::run::rose_erreur_mod_zero as *const u8),
+        ("rose_erreur_div_zero", crate::run::rose_erreur_div_zero as *const u8),
+    ]
+}
+
+/// Une région de mémoire JIT.
+struct RegionJit {
+    ptr: *mut u8,
+    len: usize,
+    /// exécutable (R+X) au moment du finalize
+    exec: bool,
+    /// déjà protégée (RX) : un second finalize ne la touche plus
+    protege: bool,
+}
+
+/// Fournisseur de mémoire pour le module JIT.
+///
+/// Rôle identique à `SystemMemoryProvider` de Cranelift, SAUF qu'il n'appelle
+/// pas `pipeline_flush_mt()`. Cette fonction fait un `membarrier` diffusé à
+/// **tous les CPU** de la machine : mesuré à 8 ms sur cette machine (20 CPU),
+/// pour un gain NUL dans notre cas :
+///
+///  * les pages JIT sont fraichement `mmap`ées : aucun cœur n'a jamais
+///    exécuté quoi que ce soit à ces adresses, il n'y a donc aucune entrée
+///    d'icache périmée à invalider ;
+///  * le `mprotect(PROT_EXEC)` du noyau invalide déjà l'icache pour la
+///    page (flush_cache_range dans arch/arm64/mm/mmap.c) ;
+///  * `clear_cache` (séquence dc cvau / ic ivau / dsb ish / isb, la même que
+///    le `__clear_cache` de compiler-rt) est conservé : il garantit la
+///    cohérence locale instruction/data, y compris pour un code exécuté par
+///    un thread créé plus tard (`spawn`).
+///
+/// Le flush inter-CPU complet n'est fait que si le programme crée des
+/// threads : voir `pipeline_flush_si_threads`.
+struct MemoireJit {
+    regions: Vec<RegionJit>,
+}
+
+// le pointeur brut n'est pas Send : le module JIT ne partage pas ses regions
+// entre threads (une seule thread d execution), on le declare Send explicitement.
+unsafe impl Send for MemoireJit {}
+
+impl MemoireJit {
+    fn new() -> Self { MemoireJit { regions: Vec::new() } }
+}
+
+impl JITMemoryProvider for MemoireJit {
+    fn allocate(&mut self, size: usize, align: u64, kind: JITMemoryKind) -> std::io::Result<*mut u8> {
+        let align = if align == 0 { 1 } else { align as usize };
+        // le mmap renvoie des pages alignees : il suffit d'arrondir la taille
+        let page = 4096usize;
+        let taille = (size + align - 1) / align * align;
+        let taille = (taille + page - 1) / page * page;
+        let ptr = unsafe {
+            libc::mmap(std::ptr::null_mut(), taille,
+                       libc::PROT_READ | libc::PROT_WRITE,
+                       libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        self.regions.push(RegionJit {
+            ptr: ptr as *mut u8, len: taille,
+            exec: matches!(kind, JITMemoryKind::Executable),
+            protege: false,
+        });
+        Ok(ptr as *mut u8)
+    }
+
+    unsafe fn free_memory(&mut self) {
+        for r in self.regions.drain(..) {
+            libc::munmap(r.ptr as *mut libc::c_void, r.len);
+        }
+    }
+
+    fn finalize(&mut self, _bp: BranchProtection) -> cranelift::module::ModuleResult<()> {
+        let _tf = std::time::Instant::now();
+        for r in self.regions.iter_mut() {
+            if r.protege || !r.exec { continue; }
+            // flush d'icache local AVANT le passage en R+X (certains CPU ont
+            // des errata sur un cache invalidé en mémoire lecture seule)
+            unsafe { vider_cache(r.ptr, r.len); }
+            let rc = unsafe {
+                libc::mprotect(r.ptr as *mut libc::c_void, r.len,
+                               libc::PROT_READ | libc::PROT_EXEC)
+            };
+            if rc != 0 {
+                return Err(cranelift::module::ModuleError::Allocation {
+                    err: std::io::Error::last_os_error(),
+                });
+            }
+            r.protege = true;
+        }
+        if std::env::var("ROSE_TIMING").is_ok() {
+            eprintln!("TIMING-JIT memoire finalize={:?} regions={}", _tf.elapsed(), self.regions.len());
+        }
+        Ok(())
+    }
+}
+
+/// Invalide l'icache locale sur la plage [ptr, ptr+len) — même séquence que
+/// le `__clear_cache` de compiler-rt (dc cvau / dsb ish / ic ivau / dsb ish /
+/// isb). Nécessaire sur aarch64 (caches I et D non cohérents entre eux).
+#[inline]
+unsafe fn vider_cache(ptr: *mut u8, len: usize) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        unsafe extern "C" { fn __clear_cache(start: *mut u8, end: *mut u8); }
+        let end = ptr.add(len);
+        __clear_cache(ptr, end);
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = (ptr, len);
+    }
+}
+
+/// Flush du pipeline sur TOUS les processeurs (membarrier diffusé). Inutile
+/// en mono-thread : see MemoireJit. Appelé uniquement si le programme crée
+/// des threads qui pourraient executer du code JIT.
+pub fn pipeline_flush_si_threads() {
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    unsafe {
+        // MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE = 32
+        const CMD: libc::c_long = 32;
+        let rc = libc::syscall(libc::SYS_membarrier, CMD, 0);
+        if rc != 0 {
+            // EPERM : il faut enregistrer le processus (coûteux : IPI à tous
+            // les CPU) — on ne le fait qu'ici, donc seulement pour les
+            // programmes réellement multi-threadés.
+            const REGISTER: libc::c_long = 64;
+            libc::syscall(libc::SYS_membarrier, REGISTER, 0);
+            libc::syscall(libc::SYS_membarrier, CMD, 0);
+        }
     }
 }
 
@@ -428,7 +612,19 @@ pub struct Jit {
 
 impl Jit {
     pub fn nouveau(signatures: &HashMap<String, Signature>) -> Jit {
-        let builder = JITBuilder::new(default_libcall_names()).unwrap();
+        // opt_level=speed : sans ça Cranelift compile en « opt_level=none »,
+        // c'est-à-dire SANS aucune optimisation (DCE, CSE, iconst+bitcast ->
+        // f64const...). Le gain est spectaculaire sur les boucles.
+        let mut builder = JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names()).unwrap();
+        // Les helpers runtime sont résolus par ADRESSE : sans cela, Cranelift
+        // passe par dlsym() au moment des relocations — 1,2 ms mesurés pour
+        // une seule résolution ! On enregistre donc le nom de chaque helper
+        // dans la table de symboles du module JIT.
+        for (nom, ptr) in table_symboles_runtime() {
+            builder.symbol(nom, ptr);
+        }
+        // memoire JIT maison : pas de pipeline_flush_mt (voir MemoireJit)
+        builder.memory_provider(Box::new(MemoireJit::new()));
         let module = JITModule::new(builder);
         Jit { module, decls: HashMap::new(), runtime_decls: HashMap::new(),
               foncs: HashMap::new(), signatures: signatures.clone() }
@@ -479,7 +675,7 @@ impl Jit {
         b.seal_all_blocks();
         b.finalize(cible);
         if let Err(e) = self.module.define_function(fid, &mut fcx) { return None; }
-        if let Err(e) = self.module.finalize_definitions() { eprintln!("DEBUG finalize_definitions err: {}", e); return None; }
+        if let Err(e) = self.module.finalize_definitions() { if std::env::var("ROSE_TIMING").is_ok() { eprintln!("finalize_definitions err: {}", e); } return None; }
         let code = self.module.get_finalized_function(fid);
         let fptr: usize = code as usize;
         // appel direct du code natif (pas de trampoline d'arguments : zéro param)
@@ -506,7 +702,6 @@ impl Jit {
                 ("rose_neg_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_clone_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_affiche_ent", vec![types::I64, types::I64], None),
-                ("rose_libere", vec![types::I64], None),
                 ("rose_set_ret_tag", vec![types::I64], None),
                 ("rose_erreur_mod_zero", vec![], None),
                 ("rose_erreur_div_zero", vec![], None),
@@ -532,14 +727,19 @@ impl Jit {
         }
         
         // passe 1 : déclaration de toutes les fonctions éligibles (récursion)
+        let _tt = std::time::Instant::now();
         let eligibles: Vec<String> = self.signatures.iter()
             .filter(|(_, s)| s.corps.is_some() && fonction_compilable(s, &self.signatures))
             .map(|(n, _)| n.clone()).collect();
+        if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT eligibles={:?} t={:?}", eligibles, _tt.elapsed()); }
+        let _tt2 = std::time::Instant::now();
         for nom in &eligibles {
             let sig = &self.signatures[nom];
             let fid = self.module.declare_function(nom, Linkage::Preemptible, &make_signature(sig)).unwrap();
             self.decls.insert(nom.clone(), fid);
         }
+        if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT declare={:?}", _tt2.elapsed()); }
+        let _tt3 = std::time::Instant::now();
         // passe 2 : émission
         use cranelift::codegen::Context;
         let mut fcx = Context::new();
@@ -561,11 +761,14 @@ impl Jit {
             let mut b = e.builder;
             b.seal_all_blocks();
             b.finalize(cible);
-            if std::env::var("ROSE_DUMP_IR").is_ok() { eprintln!("{}", fcx.func); }
+            let _td = std::time::Instant::now();
             self.module.define_function(fid, &mut fcx).unwrap();
+            if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT define={:?}", _td.elapsed()); }
+            if std::env::var("ROSE_DUMP_IR").is_ok() { eprintln!("{}", fcx.func); }
             self.foncs.insert(nom.clone(), fid);
         }
         self.module.finalize_definitions().unwrap();
+        if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT finalize={:?}", _tt3.elapsed()); }
         for nom in &eligibles {
             let fid = self.foncs[nom];
             let code = self.module.get_finalized_function(fid);
@@ -768,20 +971,15 @@ impl Emetteur<'_> {
                 TyKind::Flottant => {
                     let c = self.builder.ins().iconst(types::I64, 0);
                     let z = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
-                    let zt = self.builder.ins().iconst(types::I64, 0);
-                    let f = self.import_runtime("rose_set_ret_tag");
-                    let _ = self.builder.ins().call(f, &[zt]);
                     self.builder.ins().return_(&[z]);
                 }
                 TyKind::Complexe => {
-                    let zt = self.builder.ins().iconst(types::I64, 0);
-                    let f = self.import_runtime("rose_set_ret_tag");
-                    let _ = self.builder.ins().call(f, &[zt]);
                     let c = self.builder.ins().iconst(types::I64, 0);
                     let fz = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
                     self.builder.ins().return_(&[fz, fz]);
                 }
                 _ => {
+                    // retour ENTIER : le tag BigInt doit être publié
                     let zt = self.builder.ins().iconst(types::I64, 0);
                     let f = self.import_runtime("rose_set_ret_tag");
                     let _ = self.builder.ins().call(f, &[zt]);
@@ -846,6 +1044,20 @@ impl Emetteur<'_> {
             JitVal::Simple(v) => v,
             JitVal::Complexe(re, _) => re,
         }
+    }
+
+    /// La constante flottante 0.0 : `iconst` est un opcode ENTIER (le
+    /// vérificateur Cranelift fait `unreachable!()` sur un iconst F64), on
+    /// passe donc par un i64 puis un bitcast.
+    fn f64_zero(&mut self) -> Value {
+        let c = self.builder.ins().iconst(types::I64, 0);
+        self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
+    }
+
+    /// La constante flottante `d` (même technique que `f64_zero`).
+    fn f64_of(&mut self, d: f64) -> Value {
+        let c = self.builder.ins().iconst(types::I64, d.to_bits() as i64);
+        self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
     }
 
     fn type_of(&self, e: &Expr, env: &HashMap<String, Variable>, types: &HashMap<String, TyKind>) -> TyKind {
@@ -981,12 +1193,25 @@ impl Emetteur<'_> {
                     }
                 };
             }
-            // argument non-complexe : retourne l'argument tel quel (réel → im=0)
+            // argument non-complexe : l'interpréteur renvoie
+            //   re(x) = vers_d(x)   (le réel sous-jacent)
+            //   im(x) = 0.0
+            //   conj(x) = x
+            // ATTENTION : la valeur doit être un f64 (le résultat est affiché
+            // et typé flottant) — un i64 brut serait réinterprété comme un
+            // motif de bits IEEE (bug : 4e-323 au lieu de -1).
             let zt = self.builder.ins().iconst(types::I64, 0);
             self.builder.def_var(self.tag_tmp, zt);
             return match nom {
-                "re" => va,
-                "im" => JitVal::Simple(self.builder.ins().iconst(types::F64, 0)),
+                "re" => match va {
+                    JitVal::Simple(v) => {
+                        let vt = self.builder.func.dfg.value_type(v);
+                        if vt == types::F64 { JitVal::Simple(v) }
+                        else { JitVal::Simple(self.builder.ins().fcvt_from_sint(types::F64, v)) }
+                    }
+                    JitVal::Complexe(re, _) => JitVal::Simple(re),
+                },
+                "im" => JitVal::Simple(self.f64_zero()),
                 "conj" => va,
                 _ => {
                     let z = self.builder.ins().iconst(types::I64, 0);
@@ -1056,6 +1281,12 @@ impl Emetteur<'_> {
                types: &HashMap<String, TyKind>) -> JitVal {
         let ta = self.type_of(a, env, types);
         let tb = self.type_of(b, env, types);
+        // arithmetique complexe : chemin dedie (deux f64, pas de tag BigInt)
+        if ta == TyKind::Complexe || tb == TyKind::Complexe {
+            if matches!(op, "+" | "-" | "*" | "/") {
+                return self.binaire_cplx(op, a, b, env, types);
+            }
+        }
         let flot = ta == TyKind::Flottant || tb == TyKind::Flottant;
         match op {
             "et" => {
@@ -1099,7 +1330,7 @@ impl Emetteur<'_> {
                 let dj = self.expr(b, env, types);
                 let d = self.simple(dj);
                 let tag_d = self.builder.use_var(self.tag_tmp);
-                let (g, d) = si_flottant(&mut self.builder, flot, g, d, ta, tb);
+                let (g, d) = si_flottant(&mut self.builder, flot, g, d);
                 let v = if flot {
                     let cc = match op {
                         "==" => FloatCC::Equal,
@@ -1134,7 +1365,7 @@ impl Emetteur<'_> {
                 let dj = self.expr(b, env, types);
                 let d = self.simple(dj);
                 let tag_d = self.builder.use_var(self.tag_tmp);
-                let (g, d) = si_flottant(&mut self.builder, flot, g, d, ta, tb);
+                let (g, d) = si_flottant(&mut self.builder, flot, g, d);
                 match op {
                     "+" => if flot { JitVal::Simple(self.builder.ins().fadd(g, d)) } else {
                         let zero_tag = self.builder.ins().iconst(types::I64, 0);
@@ -1289,6 +1520,62 @@ impl Emetteur<'_> {
             _ => {
                 let z = self.builder.ins().iconst(types::I64, 0);
                 JitVal::Simple(z)
+            }
+        }
+    }
+
+    /// Arithmetique complexe : (re, im) sont deux valeurs f64 Cranelift.
+    /// Miroir exact de l'interpreteur (src/interp.rs) :
+    ///   (gr+gi i) + (dr+di i) = (gr+dr) + (gi+di) i
+    ///   (gr+gi i) * (dr+di i) = (gr*dr - gi*di) + (gr*di + gi*dr) i
+    ///   (gr+gi i) / (dr+di i) = ((gr*dr + gi*di)/d) + ((gi*dr - gr*di)/d) i
+    /// Un operande reel est vu comme (x, 0).
+    fn binaire_cplx(&mut self, op: &str, a: &Expr, b: &Expr, env: &mut HashMap<String, Variable>,
+                     types: &HashMap<String, TyKind>) -> JitVal {
+        let (ar, ai) = self.parts_cplx(a, env, types);
+        let (br, bi) = self.parts_cplx(b, env, types);
+        // un complexe n'est pas un entier tagge : tag = 0
+        let zt = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(self.tag_tmp, zt);
+        let (re, im) = match op {
+            "+" => (self.builder.ins().fadd(ar, br), self.builder.ins().fadd(ai, bi)),
+            "-" => (self.builder.ins().fsub(ar, br), self.builder.ins().fsub(ai, bi)),
+            "*" => {
+                let rr = self.builder.ins().fmul(ar, br);
+                let ii = self.builder.ins().fmul(ai, bi);
+                let ri = self.builder.ins().fmul(ar, bi);
+                let ir = self.builder.ins().fmul(ai, br);
+                (self.builder.ins().fsub(rr, ii), self.builder.ins().fadd(ri, ir))
+            }
+            "/" => {
+                let bb = self.builder.ins().fmul(br, br);
+                let cc = self.builder.ins().fmul(bi, bi);
+                let den = self.builder.ins().fadd(bb, cc);
+                let x1 = self.builder.ins().fmul(ar, br);
+                let x2 = self.builder.ins().fmul(ai, bi);
+                let nr = self.builder.ins().fadd(x1, x2);
+                let y1 = self.builder.ins().fmul(ai, br);
+                let y2 = self.builder.ins().fmul(ar, bi);
+                let ni = self.builder.ins().fsub(y1, y2);
+                (self.builder.ins().fdiv(nr, den), self.builder.ins().fdiv(ni, den))
+            }
+            _ => (ar, ai),
+        };
+        JitVal::Complexe(re, im)
+    }
+
+    /// Decompose une expression en couple (re, im) f64 : un complexe donne ses
+    /// deux parties, un reel est vu comme (x, 0).
+    fn parts_cplx(&mut self, e: &Expr, env: &mut HashMap<String, Variable>,
+                  types: &HashMap<String, TyKind>) -> (Value, Value) {
+        match self.expr(e, env, types) {
+            JitVal::Complexe(re, im) => (re, im),
+            JitVal::Simple(v) => {
+                let vt = self.builder.func.dfg.value_type(v);
+                let re = if vt == types::F64 { v }
+                         else { self.builder.ins().fcvt_from_sint(types::F64, v) };
+                let im = self.f64_zero();
+                (re, im)
             }
         }
     }
@@ -1497,62 +1784,73 @@ impl Emetteur<'_> {
                 Instr::Affect { nom, e, ligne } => {
                     crate::run::noter_ligne(*ligne);
                     let vj = self.expr(e, env, types);
-                    let (t, v) = match vj {
+                    match vj {
                         JitVal::Complexe(re, im) => {
-                            let (slot_re, slot_im) = match env.get(nom).copied() {
-                                Some(s) => {
-                                    let im_slot = self.complex_im.get(nom).copied().unwrap();
-                                    (s, im_slot)
-                                }
-                                None => {
+                            // deux slots f64 (re, im) : le nom peut déjà
+                            // exister (réaffectation) ou pas (première écriture)
+                            let (slot_re, slot_im) = match (env.get(nom).copied(),
+                                                            self.complex_im.get(nom).copied()) {
+                                (Some(s), Some(i)) => (s, i),
+                                (None, _) | (_, None) => {
                                     let s_re = self.builder.declare_var(types::F64);
                                     let s_im = self.builder.declare_var(types::F64);
                                     self.prochain_slot += 2;
                                     env.insert(nom.clone(), s_re);
                                     self.complex_im.insert(nom.clone(), s_im);
-                                    types.insert(nom.clone(), TyKind::Complexe);
                                     (s_re, s_im)
                                 }
                             };
                             self.builder.def_var(slot_re, re);
                             self.builder.def_var(slot_im, im);
-                            (TyKind::Complexe, re)
+                            types.insert(nom.clone(), TyKind::Complexe);
+                            // le tag : un complexe n'est pas un entier taggé
+                            let zt = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.def_var(self.tag_tmp, zt);
                         }
                         JitVal::Simple(v) => {
                             let vt = self.builder.func.dfg.value_type(v);
-                            let t = if vt == types::F64 {
-                                TyKind::Flottant
-                            } else {
-                                TyKind::Entier
+                            let t = if vt == types::F64 { TyKind::Flottant } else { TyKind::Entier };
+                            let slot = match env.get(nom).copied() {
+                                Some(s) => {
+                                    // le slot existant doit avoir le même type
+                                    // Cranelift que la valeur écrite
+                                    let st = match types.get(nom).copied() {
+                                        Some(TyKind::Flottant) | Some(TyKind::Complexe) => types::F64,
+                                        _ => types::I64,
+                                    };
+                                    if st != vt {
+                                        let ns = self.builder.declare_var(vt);
+                                        self.prochain_slot += 1;
+                                        env.insert(nom.clone(), ns);
+                                        ns
+                                    } else { s }
+                                }
+                                None => {
+                                    let s = self.builder.declare_var(vt);
+                                    self.prochain_slot += 1;
+                                    env.insert(nom.clone(), s);
+                                    s
+                                }
                             };
-                            (t, v)
-                        }
-                    };
-                    let slot = env.get(nom).copied();
-                    let slot = match slot {
-                        Some(s) => s,
-                        None => {
-                            let cr = match t { TyKind::Flottant | TyKind::Complexe => types::F64, _ => types::I64 };
-                            let s = self.builder.declare_var(cr);
-                            self.prochain_slot += 1;
-                            env.insert(nom.clone(), s);
                             types.insert(nom.clone(), t);
-                            if t != TyKind::Flottant && t != TyKind::Complexe {
-                                let ts = self.builder.declare_var(types::I64);
-                                self.prochain_slot += 1;
-                                let zt = self.builder.ins().iconst(types::I64, 0); self.builder.def_var(ts, zt);
-                                self.tags.insert(nom.clone(), ts);
+                            if t != TyKind::Flottant {
+                                let ts = match self.tags.get(nom).copied() {
+                                    Some(ts) => ts,
+                                    None => {
+                                        let ts = self.builder.declare_var(types::I64);
+                                        self.prochain_slot += 1;
+                                        let zt = self.builder.ins().iconst(types::I64, 0);
+                                        self.builder.def_var(ts, zt);
+                                        self.tags.insert(nom.clone(), ts);
+                                        ts
+                                    }
+                                };
+                                let tag = self.builder.use_var(self.tag_tmp);
+                                self.builder.def_var(ts, tag);
                             }
-                            s
-                        }
-                    };
-                    if t != TyKind::Flottant && t != TyKind::Complexe {
-                        if let Some(ts) = self.tags.get(nom).copied() {
-                            let tag = self.builder.use_var(self.tag_tmp);
-                            self.builder.def_var(ts, tag);
+                            self.builder.def_var(slot, v);
                         }
                     }
-                    self.builder.def_var(slot, v);
                 }
                 Instr::Afficher(exprs, _) => {
                     if exprs.len() != 1 { return; }
@@ -1724,9 +2022,14 @@ impl Emetteur<'_> {
                     match e {
                         None => { self.builder.ins().return_(&[]); }
                         Some(e) => {
-                            let tag = self.builder.use_var(self.tag_tmp);
-                            let f = self.import_runtime("rose_set_ret_tag");
-                            let _ = self.builder.ins().call(f, &[tag]);
+                            // le tag BigInt ne compte que pour un retour ENTIER :
+                            // inutile d'appeler l'aide runtime sinon (relocation
+                            // + veneer + appel de fonction en moins).
+                            if sig.retour.n == TyKind::Entier {
+                                let tag = self.builder.use_var(self.tag_tmp);
+                                let f = self.import_runtime("rose_set_ret_tag");
+                                let _ = self.builder.ins().call(f, &[tag]);
+                            }
                             match self.expr(e, env, types) {
                                 JitVal::Simple(v) => { self.builder.ins().return_(&[v]); }
                                 JitVal::Complexe(re, im) => { self.builder.ins().return_(&[re, im]); }
@@ -1742,11 +2045,14 @@ impl Emetteur<'_> {
     }
 }
 
-fn si_flottant(b: &mut FunctionBuilder, flot: bool, g: Value, d: Value,
-               ta: TyKind, tb: TyKind) -> (Value, Value) {
+fn si_flottant(b: &mut FunctionBuilder, flot: bool, g: Value, d: Value) -> (Value, Value) {
     if !flot { return (g, d); }
-    let g = if ta == TyKind::Flottant { g } else { b.ins().fcvt_from_sint(types::F64, g) };
-    let d = if tb == TyKind::Flottant { d } else { b.ins().fcvt_from_sint(types::F64, d) };
+    // le type REEL de la valeur Cranelift decide : un fcvt_from_sint sur une
+    // valeur deja f64 est refuse par le verificateur.
+    let gt = b.func.dfg.value_type(g);
+    let dt = b.func.dfg.value_type(d);
+    let g = if gt == types::F64 { g } else { b.ins().fcvt_from_sint(types::F64, g) };
+    let d = if dt == types::F64 { d } else { b.ins().fcvt_from_sint(types::F64, d) };
     (g, d)
 }
 

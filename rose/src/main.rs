@@ -128,7 +128,7 @@ fn main() {
         // autonome, miroir du 'comp' C++ — rose.cpp:4783 lire_bundle).
         if let Some(source) = lire_bundle() {
             let source_t = source.clone();
-            let h = std::thread::Builder::new().stack_size(512 * 1024 * 1024)
+            let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
                 .spawn(move || interp::executer_source(&source_t, Vec::new()));
             let rc = match h { Ok(j) => j.join().unwrap_or(1), Err(_) => interp::executer_source(&source, Vec::new()) };
             std::process::exit(rc);
@@ -168,7 +168,8 @@ fn main() {
             unreachable!("géré par handle_llvm_commands");
             #[cfg(not(feature = "llvm"))]
             {
-                eprintln!("rose: commande 'llvm' indisponible (compilé sans LLVM)");
+                eprintln!("rose: commande 'llvm' indisponible — binaire compilé sans LLVM.");
+                eprintln!("      reconstruire avec : cargo build --release --features llvm");
                 std::process::exit(1);
             }
         }
@@ -177,7 +178,8 @@ fn main() {
             unreachable!("géré par handle_llvm_commands");
             #[cfg(not(feature = "llvm"))]
             {
-                eprintln!("rose: commande 'orc' indisponible (compilé sans LLVM)");
+                eprintln!("rose: commande 'orc' indisponible — binaire compilé sans LLVM.");
+                eprintln!("      reconstruire avec : cargo build --release --features llvm");
                 std::process::exit(1);
             }
         }
@@ -186,7 +188,8 @@ fn main() {
             unreachable!("géré par handle_llvm_commands");
             #[cfg(not(feature = "llvm"))]
             {
-                eprintln!("rose: commande 'link' indisponible (compilé sans LLVM)");
+                eprintln!("rose: commande 'link' indisponible — binaire compilé sans LLVM.");
+                eprintln!("      reconstruire avec : cargo build --release --features llvm");
                 std::process::exit(1);
             }
         }
@@ -216,7 +219,7 @@ fn main() {
     let source_t = source.clone();
     let args_t = args.clone();
     let h = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
+        .stack_size(8 * 1024 * 1024)
         .spawn(move || interp::executer_source(&source_t, args_t));
     let rc = match h {
         Ok(j) => match j.join() {

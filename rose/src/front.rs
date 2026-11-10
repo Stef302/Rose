@@ -643,6 +643,8 @@ impl Parser {
             "booleen" => Ok(Ty::simple(TyKind::Booleen)),
             "chaine" => Ok(Ty::simple(TyKind::Chaine)),
             "table" => Ok(Ty::simple(TyKind::Table)),
+            "complexe" => Ok(Ty::simple(TyKind::Complexe)),
+            "irrationnel" => Ok(Ty::simple(TyKind::Irrationnel)),
             other => Err(fmt_err(&format!("Type inconnu '{}'", other), t.ligne, t.col)),
         }
     }
@@ -1446,17 +1448,16 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
         Expr::ChaineLit(..) => Ok(Ty::simple(TyKind::Chaine)),
         Expr::BooleenLit(..) => Ok(Ty::simple(TyKind::Booleen)),
         Expr::Var(n, l) => {
+            // une variable locale PORTE LE NOM : elle masque la constante
+            // (le lexeur retire le « $ », donc $e et e ont le même jeton ;
+            // sans ce test, `$e = 5` serait écrasé par la constante d'Euler).
+            if let Some(t) = env.get(n).cloned() { return Ok(t); }
+            if let Some(t) = GLOBALS.with(|g| g.borrow().get(n).cloned()) { return Ok(t); }
             // constantes irrationnelles sans argument : pi, phi, e → chaine
             if matches!(n.as_str(), "pi" | "phi" | "e") {
                 return Ok(Ty::simple(TyKind::Chaine));
             }
-            if let Some(t) = env.get(n).cloned() { Ok(t) }
-            else {
-                GLOBALS.with(|g| {
-                    g.borrow().get(n).cloned()
-                        .ok_or_else(|| fmt_err(&format!("Variable '{}' utilisée sans valeur", n), *l, 0))
-                })
-            }
+            Err(fmt_err(&format!("Variable '{}' utilisée sans valeur", n), *l, 0))
         }
         Expr::ListeLit(el, ligne) => {
             // miroir C++ NK::ListeLit (rose.cpp:1393-1407)

@@ -939,6 +939,12 @@ impl Interp {
             Expr::ChaineLit(s, _) => Ok(Valeur::s(s.clone())),
             Expr::BooleenLit(b, _) => Ok(Valeur::b(*b)),
             Expr::Var(n, _) => {
+                // une variable PORTE LE NOM : elle masque la constante
+                // (le lexeur retire le « $ » : $e et e ont le même jeton).
+                match self.cible(n) {
+                    Some(v) => return Ok(v),
+                    None => {}
+                }
                 // constantes irrationnelles sans argument : 50 décimales par défaut
                 if n == "pi" {
                     let z = Gz::de_i64(50);
@@ -952,10 +958,7 @@ impl Interp {
                     let z = Gz::de_i64(50);
                     return Ok(Valeur::s(nombre_e(&z)));
                 }
-                match self.cible(n) {
-                    Some(v) => Ok(v),
-                    None => { erreur_runtime_ligne(&format!("Variable '{}' utilisée sans valeur", n)); }
-                }
+                { erreur_runtime_ligne(&format!("Variable '{}' utilisée sans valeur", n)); }
             }
             Expr::ListeLit(el, _) => {
                 let mut v = Vec::new();
@@ -2363,10 +2366,12 @@ impl From<Option<i32>> for Signal {
 // ── Point d'entrée CLI ────────────────────────────────────────────────────
 
 pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
+    let _t0 = std::time::Instant::now();
     let mut prog = match crate::front::analyser(source) {
         Ok(p) => p,
         Err(e) => { eprintln!("{}", e); return 1; }
     };
+    let _t_parse = _t0.elapsed();
     // Optimisation : boucles accumulateur compilables -> fonction synthetique,
     // pour que la boucle tourne en natif meme si le programme principal ne
     // passe pas tout entier dans le sous-ensemble JIT.
@@ -2425,13 +2430,24 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
         prog.instructions = new_instrs;
     }
     let prog_pour_jit = prog.clone();
+    let _t_transform = _t0.elapsed();
     let mut interp = Interp::nouveau(prog).avec_arguments(args);
     // active le JIT sur les fonctions éligibles
     let mut jit = Jit::nouveau(&interp.prog.signatures);
+    let _t_jitnew = _t0.elapsed();
     interp.jit = jit.compiler_tout();
+    let _t_compiletout = _t0.elapsed();
     interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
+    let _t_compileprincipal = _t0.elapsed();
     interp.executer_principal();
+    let _t_exec = _t0.elapsed();
     flush_out();
+    if std::env::var("ROSE_TIMING").is_ok() {
+        eprintln!("TIMING parse={:?} transform={:?} jitnew={:?} compiletout={:?} compileprincipal={:?} exec={:?} total={:?}",
+            _t_parse, _t_transform - _t_parse, _t_jitnew - _t_transform,
+            _t_compiletout - _t_jitnew, _t_compileprincipal - _t_compiletout,
+            _t_exec - _t_compileprincipal, _t_exec);
+    }
     0
 }
 

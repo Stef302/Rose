@@ -1,0 +1,60 @@
+# Test de parité du moteur : complexes, irrationnels, LaTeX
+# (les complexes sont un littéral i, pas un appel de bibliothèque)
+
+fn aff(z: complexe) -> flottant { retour re(z) }
+
+# 1. littéral i et ses puissances
+$z1 = i
+$z2 = i * i
+$z3 = i * i * i
+$z4 = i * i * i * i
+>> aff($z1)
+>> aff($z2)
+>> aff($z3)
+>> aff($z4)
+>> re($z3)
+>> im($z3)
+
+# 2. arithmétique
+$a = 3.0 + 4.0 * i
+$b = 1.0 - 2.0 * i
+$c = $a + $b
+$d = $a - $b
+$e = $a * $b
+$f = $a / $b
+>> re($c)
+>> im($c)
+>> re($d)
+>> im($d)
+>> re($e)
+>> im($e)
+>> re($f)
+>> im($f)
+
+# 3. complexe dans une boucle (chemin JIT)
+fn somme(n: entier) -> flottant {
+  $tr = 0.0
+  $ti = 0.0
+  pour k de 1 vers n + 1 {
+    $zr = k * 0.5
+    $zi = 1.0 - $zr
+    $z = $zr + $zi * i
+    $w = $z * $z
+    $tr = $tr + re($w)
+    $ti = $ti + im($w)
+  }
+  retour $tr
+}
+>> somme(1000)
+
+# 4. conjugué, module, argument
+>> re(conj($a))
+>> im(conj($a))
+>> modulus($a)
+>> arg($a)
+
+# 5. irrationnels : π, e, φ (affichage LaTeX + ≈)
+>> pi(20)
+>> e(20)
+>> phi(20)
+>> racine(2)

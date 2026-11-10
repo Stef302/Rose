@@ -490,6 +490,7 @@ dependencies = [
  "cc",
  "cranelift",
  "inkwell",
+ "libc",
  "num-bigint",
  "num-integer",
  "num-rational",
