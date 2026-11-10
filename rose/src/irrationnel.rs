@@ -49,10 +49,24 @@ impl ConstIrrationnel {
     }
 }
 
+/// Calcule π à `decimales` décimales.
+/// Utilise Machin pour les petits nombres, Chudnovsky pour les grands.
+/// Retourne les digits de π × 10^decimales (entier, sans virgule).
+pub fn calcul_pi(decimales: usize) -> BigInt {
+    if decimales == 0 {
+        return BigInt::from(3);
+    }
+    if decimales <= 1000 {
+        calcul_pi_machin(decimales)
+    } else {
+        calcul_pi_chudnovsky(decimales)
+    }
+}
+
 /// Calcule π à `decimales` décimales par la formule de Machin :
 /// π/4 = 4·arctan(1/5) − arctan(1/239)
 /// Retourne les digits de π × 10^decimales (entier, sans virgule).
-pub fn calcul_pi(decimales: usize) -> BigInt {
+fn calcul_pi_machin(decimales: usize) -> BigInt {
     if decimales == 0 {
         return BigInt::from(3);
     }
@@ -201,19 +215,18 @@ pub fn calcul_pi_chudnovsky(decimales: usize) -> BigInt {
     let a_coef = BigInt::from(545140134i64);
     let b_coef = BigInt::from(13591409i64);
 
-    // C * sqrt(C3) = 426880 * sqrt(10005 * C3)
-    let x = &BigInt::from(10005i64) * &c3;
-    let sqrt_x = isqrt(&x);
-    let c_times_sqrt_c3 = BigInt::from(426880i64) * &sqrt_x;
+    // sqrt(C3) avec décimales de garde pour la précision
+    let garde_sqrt = 20usize;
+    let sqrt_c3 = calcul_racine(&c3, garde_sqrt);
 
     // Nombre de termes : ~decimales / 14.18 + marge
     let n_terms = ((decimales as f64) / 14.1816).ceil() as usize + 5;
 
     // Somme itérative : Σ (-1)^k * t_k
-    // t_0 = B / 1
-    // t_{k+1} = t_k * -(6k+1)...(6k+6) * (A*(k+1)+B) / ((3k+1)(3k+2)(3k+3)*(k+1)^3 * C3 * (A*k+B))
+    // où t_k = (-1)^k * (6k)! * (A*k + B) / ((3k)! * (k!)^3 * C3^k)
+    // (sans le C3^(3/2) qui est facteur constant)
     let mut sum = BigRational::from_integer(BigInt::zero());
-    let mut term = BigRational::from_integer(b_coef.clone()); // t_0 = B
+    let mut term = BigRational::from_integer(b_coef.clone()); // t_0 = B (car (6*0)!/(0)!^3 = 1, C3^0 = 1)
 
     for k in 0..n_terms {
         if k % 2 == 0 {
@@ -249,12 +262,15 @@ pub fn calcul_pi_chudnovsky(decimales: usize) -> BigInt {
         term = term * BigRational::new(ratio_num, ratio_den);
     }
 
-    // π = C * sqrt(C3) * sum / 12
-    let c_big = BigRational::from_integer(c_times_sqrt_c3);
+    // π = sqrt(C3) / (12 * sum)
+    // pi_rational = sqrt_c3 / (12 * sum)  où sqrt_c3 = sqrt(C3) * 10^garde_sqrt
+    // pi = sqrt_c3 / (12 * sum * 10^garde_sqrt)
+    let c_big = BigRational::from_integer(sqrt_c3);
     let twelve = BigRational::from_integer(BigInt::from(12i64));
-    let pi_rational = &c_big * &sum / &twelve;
+    let ten_garde = BigInt::from(10u64).pow(garde_sqrt as u32);
+    let pi_rational = &c_big / (&twelve * &sum * BigRational::from_integer(ten_garde));
 
-    // pi * scale = floor(pi_rational * scale)
+    // pi_scaled = floor(pi_rational * scale)
     let pi_scaled = (pi_rational * BigRational::from_integer(scale)).to_integer();
 
     // Retirer la garde
@@ -269,6 +285,16 @@ mod tests {
     fn test_pi_premier_chiffres() {
         let pi = calcul_pi(10);
         let s = pi.to_string();
+        // π = 3.1415926535...
+        assert_eq!(&s[0..1], "3");
+        assert!(s.len() >= 10);
+    }
+
+    #[test]
+    fn test_pi_chudnovsky() {
+        let pi = calcul_pi_chudnovsky(10);
+        let s = pi.to_string();
+        eprintln!("Chudnovsky 10 digits: {}", s);
         // π = 3.1415926535...
         assert_eq!(&s[0..1], "3");
         assert!(s.len() >= 10);
