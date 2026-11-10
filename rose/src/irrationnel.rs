@@ -17,6 +17,7 @@
 
 use num_bigint::BigInt;
 use num_integer::Integer;
+use num_rational::BigRational;
 use num_traits::{One, Zero, ToPrimitive};
 
 /// Constante irrationnelle symbolique : jamais une valeur finie figée.
@@ -184,6 +185,80 @@ pub fn calcul_phi(decimales: usize) -> BigInt {
     let num = &scale + &sqrt5;
     // φ = (1 + √5) / 2 → num / 2 (scale est déjà dans les deux termes)
     num / 2
+}
+
+/// Calcule π à `decimales` décimales par Chudnovsky itératif avec BigRational.
+/// ~14 décimales par terme. Retourne π × 10^decimales (entier).
+pub fn calcul_pi_chudnovsky(decimales: usize) -> BigInt {
+    if decimales == 0 {
+        return BigInt::from(3);
+    }
+    let garde = 30usize;
+    let total = decimales + garde;
+    let scale = BigInt::from(10u64).pow(total as u32);
+
+    let c3 = BigInt::from(640320u64).pow(3);
+    let a_coef = BigInt::from(545140134i64);
+    let b_coef = BigInt::from(13591409i64);
+
+    // C * sqrt(C3) = 426880 * sqrt(10005 * C3)
+    let x = &BigInt::from(10005i64) * &c3;
+    let sqrt_x = isqrt(&x);
+    let c_times_sqrt_c3 = BigInt::from(426880i64) * &sqrt_x;
+
+    // Nombre de termes : ~decimales / 14.18 + marge
+    let n_terms = ((decimales as f64) / 14.1816).ceil() as usize + 5;
+
+    // Somme itérative : Σ (-1)^k * t_k
+    // t_0 = B / 1
+    // t_{k+1} = t_k * -(6k+1)...(6k+6) * (A*(k+1)+B) / ((3k+1)(3k+2)(3k+3)*(k+1)^3 * C3 * (A*k+B))
+    let mut sum = BigRational::from_integer(BigInt::zero());
+    let mut term = BigRational::from_integer(b_coef.clone()); // t_0 = B
+
+    for k in 0..n_terms {
+        if k % 2 == 0 {
+            sum = sum + &term;
+        } else {
+            sum = sum - &term;
+        }
+
+        // préparer le terme suivant (si pas le dernier)
+        if k + 1 >= n_terms {
+            break;
+        }
+        let k_next = k + 1;
+
+        // numérateur du ratio : -(6k+1)...(6k+6) * (A*(k+1)+B)
+        let mut ratio_num = BigInt::one();
+        for j in 0..6 {
+            ratio_num = ratio_num * BigInt::from(6 * k_next + j);
+        }
+        ratio_num = -ratio_num;
+        ratio_num = ratio_num * (&a_coef * k_next as i64 + &b_coef);
+
+        // dénominateur du ratio : (3k+1)(3k+2)(3k+3) * (k+1)^3 * C3 * (A*k+B)
+        let mut ratio_den = BigInt::one();
+        ratio_den = ratio_den
+            * BigInt::from(3 * k_next + 1)
+            * BigInt::from(3 * k_next + 2)
+            * BigInt::from(3 * k_next + 3);
+        ratio_den = ratio_den * BigInt::from(k_next).pow(3);
+        ratio_den = ratio_den * &c3;
+        ratio_den = ratio_den * (&a_coef * k as i64 + &b_coef);
+
+        term = term * BigRational::new(ratio_num, ratio_den);
+    }
+
+    // π = C * sqrt(C3) * sum / 12
+    let c_big = BigRational::from_integer(c_times_sqrt_c3);
+    let twelve = BigRational::from_integer(BigInt::from(12i64));
+    let pi_rational = &c_big * &sum / &twelve;
+
+    // pi * scale = floor(pi_rational * scale)
+    let pi_scaled = (pi_rational * BigRational::from_integer(scale)).to_integer();
+
+    // Retirer la garde
+    pi_scaled / BigInt::from(10u64).pow(garde as u32)
 }
 
 #[cfg(test)]
