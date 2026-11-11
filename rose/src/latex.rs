@@ -80,6 +80,23 @@ fn expr_avec_priorite(e: &Expr, min: u8) -> String {
 // ── Expressions ───────────────────────────────────────────────────────────
 
 /// Rend une expression en LaTeX mathématique.
+/// Une expression est « composée » si elle n'est pas un atome pur
+/// (littéral, variable, booléen, chaîne, complexe). C'est le critère
+/// utilisé par l'interpréteur et le JIT pour décider si la formule LaTeX
+/// apporte une information que la seule valeur ne donne pas :
+///   * `>> 42`          → atome → on affiche « 42 » ;
+///   * `>> 1 + 2`       → composé → « 1 + 2   3 » ;
+///   * `>> min(1, 2.5)` → composé → « \operatorname{min}(1, 2.5)   1 ».
+/// Les deux voies (JIT et interpréteur) utilisent le MÊME prédicat
+/// purement syntaxique → parité garantie sans coordination runtime.
+pub fn formule_composee(e: &Expr) -> bool {
+    match e {
+        Expr::Litteral { .. } | Expr::LitComplexe { .. }
+        | Expr::Var(..) | Expr::BooleenLit(..) | Expr::ChaineLit(..) => false,
+        _ => true,
+    }
+}
+
 pub fn expr_latex(e: &Expr) -> String {
     expr_latex_ctx(e, false)
 }

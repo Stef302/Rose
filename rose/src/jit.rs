@@ -756,13 +756,7 @@ impl Jit {
         // opt_level=speed : sans ça Cranelift compile en « opt_level=none »,
         // c'est-à-dire SANS aucune optimisation (DCE, CSE, iconst+bitcast ->
         // f64const...). Le gain est spectaculaire sur les boucles.
-        // « speed_and_size » : même niveau d'optimisation que « speed » pour
-        // le code chaud, mais la COMPILATION est plus rapide (mesuré :
-        // 148 µs contre 176 µs pour la fonction du banc complexe, exécution
-        // identique au nanoseconde). Le surcoût de compilation Cranelift
-        // étant un coût FIXE payé à chaque lancement, c'est le meilleur
-        // compromis. ROSE_JIT_OPT permet de tester les autres niveaux.
-        let lvl = std::env::var("ROSE_JIT_OPT").unwrap_or_else(|_| "speed_and_size".to_string());
+        let lvl = std::env::var("ROSE_JIT_OPT").unwrap_or_else(|_| "speed".to_string());
         // « enable_verifier=false » : le VÉRIFICATEUR de Cranelift est
         // activé par DÉFAUT et repasse tout le programme optimisé à chaque
         // fonction compilée. C'est un contrôle de cohérence interne, dont le
@@ -1250,11 +1244,15 @@ impl Emetteur<'_> {
     /// vérificateur Cranelift fait `unreachable!()` sur un iconst F64), on
     /// passe donc par un i64 puis un bitcast.
     fn f64_zero(&mut self) -> Value {
+        // f64const : une VRAIE constante flottante dans l'IR. Le couple
+        // iconst+bitcast que le moteur utilisait previously produisait une
+        // valeur opaque que l'optimiseur devait retrouver, et laissait dans
+        // la boucle des paires iconst/bitcast à chaque tour (visible dans le
+        // dump IR : « iconst.i64 0 / bitcast.f64 » répété dans le corps).
         self.builder.ins().f64const(cranelift::codegen::ir::immediates::Ieee64::with_bits(0))
     }
-    /// La constante flottante `d` (f64const natif : une VRAIE constante dans
-    /// l'IR, au lieu d'un couple iconst+bitcast que l'optimiseur devait
-    /// retrouver).
+
+    /// La constante flottante `d` (f64const : voir `f64_zero`).
     fn f64_of(&mut self, d: f64) -> Value {
         self.builder.ins().f64const(cranelift::codegen::ir::immediates::Ieee64::with_bits(d.to_bits()))
     }
@@ -2176,11 +2174,19 @@ fn powf(&mut self) -> FuncRef {
                     // l'interpréteur (interp.rs, branche Instr::Afficher) :
                     // les deux voies rendent la même sortie.
                     let formule = crate::latex::expr_latex_ctx(e, crate::front::i_est_entier_verifie());
-                    let (ptr, len) = interner_formule(&formule);
-                    let pf = self.import_runtime("rose_affiche_prefixe");
-                    let pv = self.builder.ins().iconst(types::I64, ptr);
-                    let pl = self.builder.ins().iconst(types::I64, len);
-                    let _ = self.builder.ins().call(pf, &[pv, pl]);
+                    // On n'émet le préfixe LaTeX que pour les expressions
+                    // COMPOSÉES (appel, binaire, boucle…) : un atome pur
+                    // (littéral, variable, booléen, chaîne, complexe) est
+                    // rendu sans préfixe. C'est le MÊME prédicat que
+                    // l'interpréteur (latex::formule_composee) → parité
+                    // garantie sans coordination runtime.
+                    if crate::latex::formule_composee(e) {
+                        let (ptr, len) = interner_formule(&formule);
+                        let pf = self.import_runtime("rose_affiche_prefixe");
+                        let pv = self.builder.ins().iconst(types::I64, ptr);
+                        let pl = self.builder.ins().iconst(types::I64, len);
+                        let _ = self.builder.ins().call(pf, &[pv, pl]);
+                    }
                     let vj = self.expr(e, env, types);
                     match vj {
                         JitVal::Complexe(re, im) => {
@@ -2194,14 +2200,8 @@ fn powf(&mut self) -> FuncRef {
                                 let f = self.runtime("rose_affiche_f64");
                                 let _ = self.builder.ins().call(f, &[v]);
                             } else {
-                                // Entier ou booléen. Le helper attend DEUX
-                                // arguments (valeur, tag) : le tag signale
-                                // une valeur entière EXACTE hors i64 (Box<Gz>
-                                // dans la trame). Ne passer qu'un argument
-                                // faisait paniquer Cranelift à l'ABI
-                                // (« left: 1, right: 2 ») et, pour un entier
-                                // exact, aurait affiché le pointeur au lieu
-                                // de la valeur.
+                                // Entier ou booléen : valeur + tag (tag ≠ 0 =>
+                                // BigInt boxé via rose_mul_ent / rose_neg_ent).
                                 let vv = self.builder.ins().ireduce(types::I64, v);
                                 let tag = self.builder.use_var(self.tag_tmp);
                                 let f = self.runtime("rose_affiche_ent");

@@ -661,11 +661,16 @@ impl Interp {
                 // purement arithmétiques sont rendues telles quelles.
                 for e in exprs {
                     let v = self.eval(e)?;
-                    // « i » est partagé par la constante imaginaire et la
-                    // variable entière : le même drapeau que l'évaluation
-                    // (front::i_est_entier_verifie) tranche la formule, pour
-                    // que la formule et la valeur parle de la MÊME chose.
-                    let formule = crate::latex::expr_latex_ctx(e, crate::front::i_est_entier_verifie());
+                    // On n'affiche la formule LaTeX que si elle apporte une
+                    // information (expression composée : appel, binaire,
+                    // boucle…). Pour un atome pur (littéral, variable,
+                    // booléen, chaîne, complexe), la valeur suffit :
+                    // « 42 » plutôt que « 42   42 ».
+                    let formule = if crate::latex::formule_composee(e) {
+                        crate::latex::expr_latex_ctx(e, crate::front::i_est_entier_verifie())
+                    } else {
+                        String::new()
+                    };
                     afficher_formule(&v, &formule);
                 }
             }
