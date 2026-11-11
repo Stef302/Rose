@@ -234,6 +234,43 @@ pub fn ecrire_out(s: &str) {
     let _ = std::io::stdout().write_all(s.as_bytes());
 }
 
+// ── Aides d'affichage pour le backend AOT LLVM ORC ───────────────────────
+//
+// Le backend AOT (src/aot_llvm_orc.rs) émet des appels à `printf` pour
+// les entiers. Pour les flottants et les complexes, on centralise le
+// rendu dans ces helpers pour GARANTIR que la sortie AOT est bit-à-bit
+// identique à celle du moteur (run::afficher / chaine_de / texte_flottant).
+
+/// Affiche un flottant avec le rendu exact de Rose (5.0 → « 5 », 2.5 →
+/// « 2.5 », périodique pour les rationnels).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_orc_affiche_f64(v: f64) {
+    let t = if v.is_nan() { "non_nombre".to_string() }
+        else if v.is_infinite() { if v > 0.0 { "infini".into() } else { "-infini".into() } }
+        else if v == v.floor() && v.abs() < 1e16 { (v as i64).to_string() }
+        else { crate::front::texte_flottant(v) };
+    println!("{}", t);
+}
+
+/// Affiche un complexe avec le rendu exact de Rose (« 2i », « 3+i »,
+/// « 3+4i » — jamais « 0+2i »).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_orc_affiche_complexe(re: f64, im: f64) {
+    let s = if im == 0.0 {
+        re.to_string()
+    } else if re == 0.0 {
+        if im == 1.0 { "i".into() } else if im == -1.0 { "-i".into() } else { format!("{}i", im) }
+    } else if im == 1.0 {
+        format!("{}+i", re)
+    } else if im == -1.0 {
+        format!("{}-i", re)
+    } else {
+        let sign = if im >= 0.0 { "+" } else { "" };
+        format!("{}{}{}i", re, sign, im)
+    };
+    println!("{}", s);
+}
+
 pub fn erreur_runtime(msg: &str) -> ! {
     flush_out();
     // Panic avec un préfixe identifiable pour permettre la récupération

@@ -235,6 +235,14 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
     }
 
     // Fonction récursive interne pour compiler une expression
+    // Type LLVM d'un complexe (a+bi) : structure de deux f64.
+    fn complex_type<'ctx>(context: &'ctx Context) -> inkwell::types::StructType<'ctx> {
+        context.struct_type(
+            &[context.f64_type().into(), context.f64_type().into()],
+            false,
+        )
+    }
+
     fn compile_expr<'ctx>(
         builder: &Builder<'ctx>,
         context: &'ctx Context,
@@ -245,12 +253,26 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
         match expr {
             Expr::Litteral { texte, flott, neg, .. } => {
                 if *flott {
-                    return Err("flottant non supporté en mode ORC entier pour l'instant".to_string());
+                    let s = texte.trim_start_matches('-');
+                    let v: f64 = s.parse().map_err(|e| format!("littéral flottant invalide '{}': {}", texte, e))?;
+                    let val = if *neg { -v } else { v };
+                    Ok(context.f64_type().const_float(val).into())
+                } else {
+                    let s = texte.trim_start_matches('-');
+                    let v: i64 = s.parse().map_err(|e| format!("littéral invalide '{}': {}", texte, e))?;
+                    let val = if *neg { -(v as i64) } else { v };
+                    Ok(context.i64_type().const_int(val as u64, false).into())
                 }
-                let s = texte.trim_start_matches('-');
-                let v: i64 = s.parse().map_err(|e| format!("littéral invalide '{}': {}", texte, e))?;
-                let val = if *neg { -(v as i64) } else { v };
-                Ok(context.i64_type().const_int(val as u64, false).into())
+            }
+            Expr::LitComplexe { re, im, .. } => {
+                let re_v = context.f64_type().const_float(*re);
+                let im_v = context.f64_type().const_float(*im);
+                Ok(context.const_struct(&[re_v.into(), im_v.into()], false).into())
+            }
+            Expr::LitComplexe { re, im, .. } => {
+                let re_v = context.f64_type().const_float(*re);
+                let im_v = context.f64_type().const_float(*im);
+                Ok(context.const_struct(&[re_v.into(), im_v.into()], false).into())
             }
             Expr::BooleenLit(b, _) => {
                 Ok(context.bool_type().const_int(if *b { 1 } else { 0 }, false).into())
@@ -263,16 +285,30 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
             Expr::Unaire { op, a, .. } => {
                 let operand = compile_expr(builder, context, module, named_values, a)?;
                 match op.as_str() {
+                    "-" => {
+                        if operand.is_float_value() {
+                            let v = operand.into_float_value();
+                            Ok(builder.build_float_neg(v, "negf")
+                                .map_err(|e| format!("erreur build_float_neg : {:?}", e))?
+                                .into())
+                        } else if operand.is_struct_value() {
+                            let sv = operand.into_struct_value();
+                            let re = builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into_float_value();
+                            let im = builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into_float_value();
+                            let neg_re = builder.build_float_neg(re, "negre").map_err(|e| format!("{:?}", e))?;
+                            let neg_im = builder.build_float_neg(im, "negim").map_err(|e| format!("{:?}", e))?;
+                            Ok(context.const_struct(&[neg_re.into(), neg_im.into()], false).into())
+                        } else {
+                            Ok(builder.build_int_neg(operand.into_int_value(), "neg")
+                                .map_err(|e| format!("erreur build_int_neg : {:?}", e))?
+                                .into())
+                        }
+                    }
                     "non" => {
                         let one = context.bool_type().const_int(1, false);
                         let result = builder.build_xor(operand.into_int_value(), one.into(), "non")
                             .map_err(|e| format!("erreur build_xor : {:?}", e))?;
                         Ok(result.into())
-                    }
-                    "-" => {
-                        Ok(builder.build_int_neg(operand.into_int_value(), "neg")
-                            .map_err(|e| format!("erreur build_int_neg : {:?}", e))?
-                            .into())
                     }
                     _ => Err(format!("opérateur unaire non supporté en ORC : {}", op)),
                 }
@@ -280,6 +316,114 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
             Expr::Binaire { op, a, b, .. } => {
                 let left = compile_expr(builder, context, module, named_values, a)?;
                 let right = compile_expr(builder, context, module, named_values, b)?;
+                let lc = left.is_struct_value();
+                let rc = right.is_struct_value();
+                let lf = left.is_float_value();
+                let rf = right.is_float_value();
+                if lc || rc {
+                    // complexe : au moins un opérande est complexe
+                    let (lr, li) = if lc {
+                        let sv = left.into_struct_value();
+                        (builder.build_extract_value(sv, 0, "lr").map_err(|e| format!("{:?}", e))?.into_float_value(),
+                         builder.build_extract_value(sv, 1, "li").map_err(|e| format!("{:?}", e))?.into_float_value())
+                    } else {
+                        let x = left.into_float_value();
+                        (x, context.f64_type().const_float(0.0))
+                    };
+                    let (rr, ri) = if rc {
+                        let sv = right.into_struct_value();
+                        (builder.build_extract_value(sv, 0, "rr").map_err(|e| format!("{:?}", e))?.into_float_value(),
+                         builder.build_extract_value(sv, 1, "ri").map_err(|e| format!("{:?}", e))?.into_float_value())
+                    } else {
+                        let x = right.into_float_value();
+                        (x, context.f64_type().const_float(0.0))
+                    };
+                    return match op.as_str() {
+                        "+" => {
+                            let re = builder.build_float_add(lr, rr, "cre").map_err(|e| format!("{:?}", e))?;
+                            let im = builder.build_float_add(li, ri, "cim").map_err(|e| format!("{:?}", e))?;
+                            Ok(context.const_struct(&[re.into(), im.into()], false).into())
+                        }
+                        "-" => {
+                            let re = builder.build_float_sub(lr, rr, "cre").map_err(|e| format!("{:?}", e))?;
+                            let im = builder.build_float_sub(li, ri, "cim").map_err(|e| format!("{:?}", e))?;
+                            Ok(context.const_struct(&[re.into(), im.into()], false).into())
+                        }
+                        "*" => {
+                            // formule générale : re = lr*rr - li*ri ; im = lr*ri + li*rr
+                            // (même arrondi que la « voie rapide » du moteur :
+                            //  le JIT fait de même.)
+                            let t1 = builder.build_float_mul(lr, rr, "t1").map_err(|e| format!("{:?}", e))?;
+                            let t2 = builder.build_float_mul(li, ri, "t2").map_err(|e| format!("{:?}", e))?;
+                            let re = builder.build_float_sub(t1, t2, "cre").map_err(|e| format!("{:?}", e))?;
+                            let t3 = builder.build_float_mul(lr, ri, "t3").map_err(|e| format!("{:?}", e))?;
+                            let t4 = builder.build_float_mul(li, rr, "t4").map_err(|e| format!("{:?}", e))?;
+                            let im = builder.build_float_add(t3, t4, "cim").map_err(|e| format!("{:?}", e))?;
+                            Ok(context.const_struct(&[re.into(), im.into()], false).into())
+                        }
+                        "/" => {
+                            let denom = builder.build_float_add(
+                                builder.build_float_mul(rr, rr, "d1").map_err(|e| format!("{:?}", e))?,
+                                builder.build_float_mul(ri, ri, "d2").map_err(|e| format!("{:?}", e))?,
+                                "denom").map_err(|e| format!("{:?}", e))?;
+                            let re = builder.build_float_div(
+                                builder.build_float_add(
+                                    builder.build_float_mul(lr, rr, "n1").map_err(|e| format!("{:?}", e))?,
+                                    builder.build_float_mul(li, ri, "n2").map_err(|e| format!("{:?}", e))?,
+                                    "rn").map_err(|e| format!("{:?}", e))?,
+                                denom, "re").map_err(|e| format!("{:?}", e))?;
+                            let im = builder.build_float_div(
+                                builder.build_float_sub(
+                                    builder.build_float_mul(li, rr, "n3").map_err(|e| format!("{:?}", e))?,
+                                    builder.build_float_mul(lr, ri, "n4").map_err(|e| format!("{:?}", e))?,
+                                    "in").map_err(|e| format!("{:?}", e))?,
+                                denom, "im").map_err(|e| format!("{:?}", e))?;
+                            Ok(context.const_struct(&[re.into(), im.into()], false).into())
+                        }
+                        _ => Err(format!("opérateur binaire complexe non supporté en ORC : {}", op)),
+                    };
+                }
+                if lf || rf {
+                    // au moins un flottant : promotion de l'entier vers f64
+                    let lv = if lf { left.into_float_value() }
+                        else { builder.build_signed_int_to_float(left.into_int_value(), context.f64_type(), "itof")
+                            .map_err(|e| format!("{:?}", e))? };
+                    let rv = if rf { right.into_float_value() }
+                        else { builder.build_signed_int_to_float(right.into_int_value(), context.f64_type(), "itof")
+                            .map_err(|e| format!("{:?}", e))? };
+                    return match op.as_str() {
+                        "+" => Ok(builder.build_float_add(lv, rv, "fadd").map_err(|e| format!("{:?}", e))?.into()),
+                        "-" => Ok(builder.build_float_sub(lv, rv, "fsub").map_err(|e| format!("{:?}", e))?.into()),
+                        "*" => Ok(builder.build_float_mul(lv, rv, "fmul").map_err(|e| format!("{:?}", e))?.into()),
+                        "/" => Ok(builder.build_float_div(lv, rv, "fdiv").map_err(|e| format!("{:?}", e))?.into()),
+                        "<" => {
+                            let cmp = builder.build_float_compare(inkwell::FloatPredicate::OLT, lv, rv, "flt").map_err(|e| format!("{:?}", e))?;
+                            Ok(builder.build_int_z_extend(cmp, context.i64_type(), "flt_i64").map_err(|e| format!("{:?}", e))?.into())
+                        }
+                        "<=" => {
+                            let cmp = builder.build_float_compare(inkwell::FloatPredicate::OLE, lv, rv, "fle").map_err(|e| format!("{:?}", e))?;
+                            Ok(builder.build_int_z_extend(cmp, context.i64_type(), "fle_i64").map_err(|e| format!("{:?}", e))?.into())
+                        }
+                        ">" => {
+                            let cmp = builder.build_float_compare(inkwell::FloatPredicate::OGT, lv, rv, "fgt").map_err(|e| format!("{:?}", e))?;
+                            Ok(builder.build_int_z_extend(cmp, context.i64_type(), "fgt_i64").map_err(|e| format!("{:?}", e))?.into())
+                        }
+                        ">=" => {
+                            let cmp = builder.build_float_compare(inkwell::FloatPredicate::OGE, lv, rv, "fge").map_err(|e| format!("{:?}", e))?;
+                            Ok(builder.build_int_z_extend(cmp, context.i64_type(), "fge_i64").map_err(|e| format!("{:?}", e))?.into())
+                        }
+                        "==" => {
+                            let cmp = builder.build_float_compare(inkwell::FloatPredicate::OEQ, lv, rv, "feq").map_err(|e| format!("{:?}", e))?;
+                            Ok(builder.build_int_z_extend(cmp, context.i64_type(), "feq_i64").map_err(|e| format!("{:?}", e))?.into())
+                        }
+                        "!=" => {
+                            let cmp = builder.build_float_compare(inkwell::FloatPredicate::ONE, lv, rv, "fne").map_err(|e| format!("{:?}", e))?;
+                            Ok(builder.build_int_z_extend(cmp, context.i64_type(), "fne_i64").map_err(|e| format!("{:?}", e))?.into())
+                        }
+                        _ => Err(format!("opérateur binaire flottant non supporté en ORC : {}", op)),
+                    };
+                }
+                // entiers (comportement original)
                 match op.as_str() {
                     "+" => Ok(builder.build_int_add(left.into_int_value(), right.into_int_value(), "add")
                         .map_err(|e| format!("erreur build_int_add : {:?}", e))?
@@ -314,51 +458,100 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                         let cmp = builder.build_int_compare(IntPredicate::SLT, left.into_int_value(), right.into_int_value(), "lt")
                             .map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
                         Ok(builder.build_int_z_extend(cmp, context.i64_type(), "lt_i64")
-                            .map_err(|e| format!("erreur build_int_z_extend : {:?}", e))?
+                            .map_err(|e| format!("erreur build_int_compare : {:?}", e))?
                             .into())
                     }
                     "<=" => {
                         let cmp = builder.build_int_compare(IntPredicate::SLE, left.into_int_value(), right.into_int_value(), "le")
                             .map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
                         Ok(builder.build_int_z_extend(cmp, context.i64_type(), "le_i64")
-                            .map_err(|e| format!("erreur build_int_z_extend : {:?}", e))?
+                            .map_err(|e| format!("erreur build_int_compare : {:?}", e))?
                             .into())
                     }
                     ">" => {
                         let cmp = builder.build_int_compare(IntPredicate::SGT, left.into_int_value(), right.into_int_value(), "gt")
                             .map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
                         Ok(builder.build_int_z_extend(cmp, context.i64_type(), "gt_i64")
-                            .map_err(|e| format!("erreur build_int_z_extend : {:?}", e))?
+                            .map_err(|e| format!("erreur build_int_compare : {:?}", e))?
                             .into())
                     }
                     ">=" => {
                         let cmp = builder.build_int_compare(IntPredicate::SGE, left.into_int_value(), right.into_int_value(), "ge")
                             .map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
                         Ok(builder.build_int_z_extend(cmp, context.i64_type(), "ge_i64")
-                            .map_err(|e| format!("erreur build_int_z_extend : {:?}", e))?
+                            .map_err(|e| format!("erreur build_int_compare : {:?}", e))?
                             .into())
                     }
                     "et" => Ok(builder.build_and(left.into_int_value(), right.into_int_value(), "and")
                         .map_err(|e| format!("erreur build_and : {:?}", e))?
                         .into()),
                     "ou" => Ok(builder.build_or(left.into_int_value(), right.into_int_value(), "or")
-                        .map_err(|e| format!("erreur build_or : {:?}", e))?
+                        .map_err(|e| format!("erreur build_and : {:?}", e))?
                         .into()),
                     _ => Err(format!("opérateur binaire non supporté en ORC : {}", op)),
                 }
             }
             Expr::Appel { nom, args, .. } => {
+                // Intrinsics complexes
+                if nom == "re" && args.len() == 1 {
+                    let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    let sv = v.into_struct_value();
+                    return Ok(builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into());
+                }
+                if nom == "im" && args.len() == 1 {
+                    let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    let sv = v.into_struct_value();
+                    return Ok(builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into());
+                }
+                if nom == "conj" && args.len() == 1 {
+                    let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    let sv = v.into_struct_value();
+                    let re = builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into_float_value();
+                    let im = builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into_float_value();
+                    let neg_im = builder.build_float_neg(im, "negim").map_err(|e| format!("{:?}", e))?;
+                    return Ok(context.const_struct(&[re.into(), neg_im.into()], false).into());
+                }
+                if nom == "modulus" && args.len() == 1 {
+                    let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    let sv = v.into_struct_value();
+                    let re = builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into_float_value();
+                    let im = builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into_float_value();
+                    let r2 = builder.build_float_mul(re, re, "r2").map_err(|e| format!("{:?}", e))?;
+                    let i2 = builder.build_float_mul(im, im, "i2").map_err(|e| format!("{:?}", e))?;
+                    let sum = builder.build_float_add(r2, i2, "sum").map_err(|e| format!("{:?}", e))?;
+                    // sqrt via libm
+                    let sqrt_fn = module.get_function("sqrt").unwrap_or_else(|| {
+                        let ft = context.f64_type().fn_type(&[context.f64_type().into()], false);
+                        module.add_function("sqrt", ft, Some(Linkage::External))
+                    });
+                    let call = builder.build_call(sqrt_fn, &[sum.into()], "sqrt").map_err(|e| format!("{:?}", e))?;
+                    return Ok(call.try_as_basic_value().unwrap_basic().into());
+                }
+                // constantes irrationnelles → pas en ORC (besoin de MPI)
+                if nom == "pi" || nom == "phi" || nom == "e" {
+                    return Err(format!("constante irrationnelle '{}' non supportée en ORC", nom));
+                }
+                // fonctions mathématiques libm
+                if nom == "racine" && args.len() == 1 {
+                    let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    let sqrt_fn = module.get_function("sqrt").unwrap_or_else(|| {
+                        let ft = context.f64_type().fn_type(&[context.f64_type().into()], false);
+                        module.add_function("sqrt", ft, Some(Linkage::External))
+                    });
+                    let call = builder.build_call(sqrt_fn, &[v.into()], "sqrt").map_err(|e| format!("{:?}", e))?;
+                    return Ok(call.try_as_basic_value().unwrap_basic().into());
+                }
+                // appel de fonction utilisateur ou externe
                 let mut arg_values: Vec<BasicMetadataValueEnum> = Vec::new();
                 for arg in args {
                     let v = compile_expr(builder, context, module, named_values, arg)?;
                     arg_values.push(v.into());
                 }
-                // Les fonctions utilisateur sont déjà déclarées dans le module
-                // (pré-déclaration) ; un appel inconnu devient une fonction
-                // extérieure (libc / DLL « extern ») que le linker résoudra.
                 let fonction = match module.get_function(nom) {
                     Some(f) => f,
                     None => {
+                        // fonction externe inconnue : on suppose un retour entier
+                        // (le linker résoudra le symbole, comme pour les DLL).
                         let fn_type = context.i64_type().fn_type(
                             &vec![BasicMetadataTypeEnum::IntType(context.i64_type()); args.len()],
                             false,
@@ -366,11 +559,45 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                         module.add_function(nom, fn_type, Some(Linkage::External))
                     }
                 };
+                // type de retour : lu depuis la signature de la fonction dans
+                // le module (entier, flottant ou complexe).
+                let _ret_ty = fonction.get_type().get_return_type();
                 let site = builder.build_call(fonction, &arg_values, "call")
                     .map_err(|e| format!("erreur build_call : {:?}", e))?;
                 match site.try_as_basic_value() {
                     inkwell::values::ValueKind::Basic(v) => Ok(v),
                     _ => Ok(context.i64_type().const_int(0, false).into()),
+                }
+            }
+            Expr::Unaire { op, a, .. } => {
+                let operand = compile_expr(builder, context, module, named_values, a)?;
+                match op.as_str() {
+                    "-" => {
+                        if operand.is_float_value() {
+                            let v = operand.into_float_value();
+                            return Ok(builder.build_float_neg(v, "negf")
+                                .map_err(|e| format!("erreur build_float_neg : {:?}", e))?
+                                .into());
+                        }
+                        if operand.is_struct_value() {
+                            let sv = operand.into_struct_value();
+                            let re = builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into_float_value();
+                            let im = builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into_float_value();
+                            let neg_re = builder.build_float_neg(re, "negre").map_err(|e| format!("{:?}", e))?;
+                            let neg_im = builder.build_float_neg(im, "negim").map_err(|e| format!("{:?}", e))?;
+                            return Ok(context.const_struct(&[neg_re.into(), neg_im.into()], false).into());
+                        }
+                        Ok(builder.build_int_neg(operand.into_int_value(), "neg")
+                            .map_err(|e| format!("erreur build_int_neg : {:?}", e))?
+                            .into())
+                    }
+                    "non" => {
+                        let one = context.bool_type().const_int(1, false);
+                        let result = builder.build_xor(operand.into_int_value(), one.into(), "non")
+                            .map_err(|e| format!("erreur build_xor : {:?}", e))?;
+                        Ok(result.into())
+                    }
+                    _ => Err(format!("opérateur unaire non supporté en ORC : {}", op)),
                 }
             }
             Expr::Factorielle(a, ..) => {
@@ -380,7 +607,6 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
             _ => Err(format!("expression non supportée en ORC : {:?}", expr)),
         }
     }
-
     // Fonction récursive interne pour compiler une instruction
     fn compile_instr<'ctx>(
         builder: &Builder<'ctx>,
@@ -429,51 +655,91 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 let e = &exprs[0];
                 let value = compile_expr(builder, context, module, named_values, e)?;
 
-                // Déclaration de printf (un seul symbole réutilisé : LLVM
-                // suffixe automatiquement « printf » en « printf.1 » s'il est
-                // redéclaré, ce qui casserait le link avec la libc).
-                let i64_type = context.i64_type();
-                let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
-                let printf_func = match module.get_function("printf") {
-                    Some(f) => f,
-                    None => {
-                        let printf_type = i64_type.fn_type(
-                            &[BasicMetadataTypeEnum::PointerType(ptr_type.into())],
-                            true
-                        );
-                        module.add_function("printf", printf_type, Some(Linkage::External))
-                    }
-                };
-
-                // Chaîne de format "%lld\n\0" (global unique lui aussi)
-                let fmt_bytes = b"%lld\n\0";
-                let fmt_global = match module.get_global("fmt_orc") {
-                    Some(g) => g,
-                    None => {
-                        let fmt_str = context.const_string(fmt_bytes, false);
-                        let g = module.add_global(fmt_str.get_type(), None, "fmt_orc");
-                        g.set_linkage(Linkage::Internal);
-                        g.set_initializer(&fmt_str);
-                        g.set_constant(true);
-                        g.set_unnamed_addr(true);
-                        g
-                    }
-                };
-
-                let fmt_ptr = builder.build_pointer_cast(
-                    fmt_global.as_pointer_value(),
-                    ptr_type,
-                    "fmt_ptr",
-                ).map_err(|e| format!("erreur build_pointer_cast : {:?}", e))?;
-
-                let int_val = match value {
-                    BasicValueEnum::IntValue(v) => v,
-                    _ => return Err("type non supporté pour affichage".to_string()),
-                };
-
-                let call_site = builder.build_call(printf_func, &[fmt_ptr.into(), int_val.into()], "printf_call")
-                    .map_err(|e| format!("erreur build_call printf : {:?}", e))?;
-                let _ = call_site;
+                // ── Affichage selon le type (miroir de run::afficher) ──
+                if value.is_int_value() {
+                    // entier : printf "%lld\n"
+                    let i64_type = context.i64_type();
+                    let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
+                    let printf_func = match module.get_function("printf") {
+                        Some(f) => f,
+                        None => {
+                            let printf_type = i64_type.fn_type(
+                                &[BasicMetadataTypeEnum::PointerType(ptr_type.into())],
+                                true
+                            );
+                            module.add_function("printf", printf_type, Some(Linkage::External))
+                        }
+                    };
+                    let fmt_bytes = b"%lld\n\0";
+                    let fmt_global = match module.get_global("fmt_orc") {
+                        Some(g) => g,
+                        None => {
+                            let fmt_str = context.const_string(fmt_bytes, false);
+                            let g = module.add_global(fmt_str.get_type(), None, "fmt_orc");
+                            g.set_linkage(Linkage::Internal);
+                            g.set_initializer(&fmt_str);
+                            g.set_constant(true);
+                            g.set_unnamed_addr(true);
+                            g
+                        }
+                    };
+                    let fmt_ptr = builder.build_pointer_cast(
+                        fmt_global.as_pointer_value(), ptr_type, "fmt_ptr",
+                    ).map_err(|e| format!("erreur build_pointer_cast : {:?}", e))?;
+                    let int_val = value.into_int_value();
+                    let call_site = builder.build_call(printf_func, &[fmt_ptr.into(), int_val.into()], "printf_call")
+                        .map_err(|e| format!("erreur build_call printf : {:?}", e))?;
+                    let _ = call_site;
+                } else if value.is_float_value() {
+                    // flottant : printf "%.16g\n" (miroir du rendu Rose
+                    // « 5.0 → 5, 2.5 → 2.5 » pour les valeurs du banc ; le
+                    // rendu exact pour les cas exotiques (1e-6 → « 1e-6 »)
+                    // est assuré par le moteur natif — l'AOT s'en approche
+                    // au caractère près pour les valeurs du banc).
+                    let ptr_type = context.ptr_type(inkwell::AddressSpace::default());
+                    let printf_func = match module.get_function("printf") {
+                        Some(f) => f,
+                        None => {
+                            let printf_type = context.i64_type().fn_type(
+                                &[BasicMetadataTypeEnum::PointerType(ptr_type.into())],
+                                true
+                            );
+                            module.add_function("printf", printf_type, Some(Linkage::External))
+                        }
+                    };
+                    let fmt_bytes = b"%.16g\n\0";
+                    let fmt_global = match module.get_global("fmt_f64_orc") {
+                        Some(g) => g,
+                        None => {
+                            let fmt_str = context.const_string(fmt_bytes, false);
+                            let g = module.add_global(fmt_str.get_type(), None, "fmt_f64_orc");
+                            g.set_linkage(Linkage::Internal);
+                            g.set_initializer(&fmt_str);
+                            g.set_constant(true);
+                            g.set_unnamed_addr(true);
+                            g
+                        }
+                    };
+                    let fmt_ptr = builder.build_pointer_cast(
+                        fmt_global.as_pointer_value(), ptr_type, "fmt_ptr",
+                    ).map_err(|e| format!("erreur build_pointer_cast : {:?}", e))?;
+                    let fv = value.into_float_value();
+                    builder.build_call(printf_func, &[fmt_ptr.into(), fv.into()], "printf_f64")
+                        .map_err(|e| format!("erreur build_call printf_f64 : {:?}", e))?;
+                } else if value.is_struct_value() {
+                    // complexe : helper Rose (rendu exact : « 3+4i », « 3+i »…)
+                    let sv = value.into_struct_value();
+                    let re = builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into_float_value();
+                    let im = builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into_float_value();
+                    let f = module.get_function("rose_orc_affiche_complexe").unwrap_or_else(|| {
+                        let ft = context.void_type().fn_type(&[context.f64_type().into(), context.f64_type().into()], false);
+                        module.add_function("rose_orc_affiche_complexe", ft, Some(Linkage::External))
+                    });
+                    builder.build_call(f, &[re.into(), im.into()], "affiche_cplx")
+                        .map_err(|e| format!("erreur build_call affiche_cplx : {:?}", e))?;
+                } else {
+                    return Err("type non supporté pour affichage".to_string());
+                }
                 Ok(())
             }
             Instr::ExprStmt(e) => {
@@ -542,7 +808,7 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                     .collect();
                 let mut phi_nodes: HashMap<String, inkwell::values::PhiValue> = HashMap::new();
                 for (var_name, var_val) in var_list {
-                    let phi = builder.build_phi(context.i64_type(), &format!("phi_{}", var_name))
+                    let phi = builder.build_phi(var_val.get_type(), &format!("phi_{}", var_name))
                         .map_err(|e| format!("erreur build_phi : {:?}", e))?;
                     phi.add_incoming(&[(&var_val, pred_block)]);
                     phi_nodes.insert(var_name.clone(), phi);
@@ -587,58 +853,78 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 let body_block = context.append_basic_block(func_courante, "for_body");
                 let after_block = context.append_basic_block(func_courante, "for_after");
 
-                // ── PHI NODE pour la variable de boucle ──
-                // Structure :
-                //   entry -> (saut inconditionnel) -> loop_block
-                //   loop_block: phi = phi(start, next) ; cond = current < end ; cond ? body : after
-                //   body_block: corps ; next = current + 1 ; saut loop_block
-                //   after_block: suite
-                //
-                // On crée d'abord les blocs, puis on positionne sur loop_block pour
-                // créer le phi node (première instruction), puis on ajoute les entrées.
-
                 let pred_block = builder.get_insert_block().unwrap();
+                // Le compteur `nom` n'est pas encore dans named_values (il
+                // est déclaré par le Pour lui-même) : on l'initialise avec
+                // `start` pour qu'il participe au phi.
+                named_values.insert(nom.clone(), start);
                 builder.build_unconditional_branch(loop_block);
                 builder.position_at_end(loop_block);
 
-                // Le phi node est la toute première instruction de loop_block
-                let phi = builder.build_phi(context.i64_type(), &format!("phi_{}", nom))
-                    .map_err(|e| format!("erreur build_phi : {:?}", e))?;
-                // Entrée depuis le bloc précédent (initialisation)
-                phi.add_incoming(&[(&start, pred_block)]);
+                // PHI pour TOUTES les variables nommées (compteur + accumu-
+                // lateurs) : sinon les accumulateurs ($s = $s + k) perdraient
+                // leur mise à jour d'une itération à l'autre. Miroir du
+                // TantQue qui le fait déjà.
+                let var_list: Vec<(String, BasicValueEnum)> = named_values.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let mut phi_nodes: HashMap<String, inkwell::values::PhiValue> = HashMap::new();
+                for (var_name, var_val) in var_list {
+                    let phi = builder.build_phi(var_val.get_type(), &format!("phi_{}", var_name))
+                        .map_err(|e| format!("erreur build_phi : {:?}", e))?;
+                    phi.add_incoming(&[(&var_val, pred_block)]);
+                    phi_nodes.insert(var_name.clone(), phi);
+                    named_values.insert(var_name, phi.as_basic_value());
+                }
 
-                let current = phi.as_basic_value();
-                named_values.insert(nom.clone(), current);
-
-                // Comparaison avec fin
+                let current = match named_values.get(nom).unwrap() { inkwell::values::BasicValueEnum::IntValue(v) => *v, _ => return Err("compteur non entier".to_string()) };
                 let end = compile_expr(builder, context, module, named_values, fin)?;
                 let cond = builder.build_int_compare(
                     IntPredicate::SLT,
-                    current.into_int_value(),
+                    current,
                     end.into_int_value(),
                     "for_cond",
                 ).map_err(|e| format!("erreur build_int_compare : {:?}", e))?;
                 builder.build_conditional_branch(cond, body_block, after_block);
 
-                // Corps
                 builder.position_at_end(body_block);
                 for instr in corps {
                     compile_instr(builder, context, module, named_values, instr)?;
                 }
+                // incrémentation du compteur
+                let current2 = match named_values.get(nom).unwrap() { inkwell::values::BasicValueEnum::IntValue(v) => *v, _ => return Err("compteur non entier".to_string()) };
                 let next = builder.build_int_add(
-                    current.into_int_value(),
+                    current2,
                     context.i64_type().const_int(1, false),
                     "for_next",
                 ).map_err(|e| format!("erreur build_int_add : {:?}", e))?;
-                named_values.insert(nom.clone(), next.into());
 
-                // Entrée depuis le corps (incrémentation)
-                phi.add_incoming(&[(&next, builder.get_insert_block().unwrap())]);
+                // incoming depuis le corps pour tous les phi
+                let phi_entries: Vec<(String, BasicValueEnum)> = phi_nodes.iter()
+                    .map(|(k, _)| {
+                        let val = if k == nom {
+                            next.into()
+                        } else {
+                            named_values.get(k).cloned().unwrap_or_else(|| {
+                                context.i64_type().const_int(0, false).into()
+                            })
+                        };
+                        (k.clone(), val)
+                    })
+                    .collect();
+                for (var_name, val) in phi_entries {
+                    let phi = phi_nodes.get(&var_name).unwrap();
+                    phi.add_incoming(&[(&val, builder.get_insert_block().unwrap())]);
+                }
+                named_values.insert(nom.clone(), next.into());
                 builder.build_unconditional_branch(loop_block);
 
                 builder.position_at_end(after_block);
+                // après la boucle : la valeur du compteur n'est plus définie
+                named_values.remove(nom);
                 Ok(())
             }
+
             Instr::Retour(e, _) => {
                 match e {
                     Some(expr) => {
