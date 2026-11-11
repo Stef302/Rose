@@ -2416,6 +2416,21 @@ impl Interp {
                 }
             }
             "i" => Valeur::Complexe { re: 0.0, im: 1.0 },
+            "type_de" | "type" => Valeur::s(match a[0].ty() {
+                crate::front::TyKind::Entier => "entier",
+                crate::front::TyKind::Rationnel => "rationnel",
+                crate::front::TyKind::Flottant => "flottant",
+                crate::front::TyKind::Booleen => "booleen",
+                crate::front::TyKind::Chaine => "chaine",
+                crate::front::TyKind::Complexe => "complexe",
+                crate::front::TyKind::Irrationnel => "irrationnel",
+                crate::front::TyKind::Liste => "liste",
+                crate::front::TyKind::Table => "table",
+                crate::front::TyKind::Tableau => "tableau",
+                crate::front::TyKind::Tampon => "tampon",
+                crate::front::TyKind::Vide => "vide",
+                crate::front::TyKind::Dyn => "dynamique",
+            }),
             "re" => { let z = match &a[0] { Valeur::Complexe{re,..} => *re, _ => vers_d(&a[0]) }; Valeur::f(z) }
             "im" => { let z = match &a[0] { Valeur::Complexe{im,..} => *im, _ => 0.0 }; Valeur::f(z) }
             "conj" => { match &a[0] { Valeur::Complexe{re,im} => Valeur::Complexe { re: *re, im: -*im }, _ => a[0].clone() } }

@@ -44,6 +44,7 @@ postfixés `n!` `2³` `√9`. `/` exact (7/2 → 3.5), `÷` entier (7÷2 → 3).
   `est_premier(n)`/`is_prime` `compter_premiers(n)`
 - Exact : `pi(n digits)` `e(n)` `phi(n)` `racine(n)`→irrationnel
   `fraction(a,b)`→rationnel
+- Types : `type_de(x)` / `type(x)` → chaîne
 - Complexes : `re` `im` `conj` `arg` `modulus`
 - Chaînes : `longueur(s)`/`len` `ordre(s)`→codepoint `caractere(n)`→chaîne
   `sous_chaine(s,d,f)`/`sub` `concatener(liste)`→chaîne
@@ -74,6 +75,16 @@ postfixés `n!` `2³` `√9`. `/` exact (7/2 → 3.5), `÷` entier (7÷2 → 3).
 - boucle : `\sum_{j = 0}^{9} \langle s = s + j\rangle`
 - fonction typée : `\operatorname{fib}(n \in \mathbb{Z}) \to \mathbb{Z}`
 - fonction allégée : `\operatorname{carre}(x)` (types omis = rien affiché)
+
+## Console interactive (REPL)
+
+```bash
+rose console                  # console vide
+rose console prog.rose        # charge prog.rose, puis console
+rose prog.rose --console      # exécute prog.rose, puis console
+```
+
+Commandes : `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`, `:quit`.
 
 ## Exemple complet vérifié (`./rose t.rose`)
 

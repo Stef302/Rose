@@ -43,7 +43,8 @@ Usage :
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
   rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
   rose info                état du moteur
-  rose version             numéro de version
+  rose console [fichier.rose]   console interactive (REPL) — tapez des commandes Rose
+  rose repl [fichier.rose]      identique
 ";
 
 /* ── mode bundle : programme collé dans le moteur (miroir C++ rose.cpp:4344) ── */
@@ -128,7 +129,9 @@ fn main() {
         if msg.starts_with("ROSE_ERR:") { return; }
         eprintln!("{}", info);
     }));
-    let argv: Vec<String> = std::env::args().collect();
+    let mut argv: Vec<String> = std::env::args().collect();
+    let console_apres = argv.iter().any(|a| a == "--console");
+    argv.retain(|a| a != "--console");
     if argv.len() < 2 {
         // aucun argument : si l'exécutable porte un bundle, l'exécuter (mode
         // autonome, miroir du 'comp' C++ — rose.cpp:4783 lire_bundle).
@@ -215,8 +218,15 @@ fn main() {
             }
             std::process::exit(comp_programme(&fichier, &sortie));
         }
+        "console" | "repl" => {
+            let fichier = if argv.len() >= 3 { Some(argv[2].as_str()) } else { None };
+            console_mode(fichier, true);
+            return;
+        }
         _ => {}
     }
+
+
 
     let (fichier, args) = if action == "run" {
         if argv.len() < 3 { eprintln!("rose: quel programme interpréter ?"); std::process::exit(1); }
@@ -262,9 +272,167 @@ fn main() {
         },
         Err(_) => interp::executer_source(&source, args),
     };
+    if console_apres {
+        console_mode(Some(&fichier), false);
+    }
     if std::env::var("ROSE_TIMING").is_ok() {
         eprintln!("TIMING-MAIN pret={:?} post_spawn={:?}", _t_pret, _t_post);
     }
     std::process::exit(rc);
 }
 
+
+/* ── console interactive (REPL) ──────────────────────────────────────── */
+
+fn console_mode(fichier: Option<&str>, exec_initial: bool) {
+    use std::io::{self, BufRead, Write};
+    let mut buffer: Vec<String> = Vec::new();
+    if let Some(f) = fichier {
+        let mut source = String::new();
+        if lire(&mut source, f) {
+            // séparer définitions et affichages
+            let mut defs: Vec<String> = Vec::new();
+            let mut affs: Vec<String> = Vec::new();
+            for line in source.lines() {
+                let t = line.trim();
+                if t.is_empty() { defs.push(line.to_string()); continue; }
+                if t.starts_with(">>") { affs.push(line.to_string()); }
+                else { defs.push(line.to_string()); }
+            }
+            buffer = defs;
+            if exec_initial {
+                let src = if affs.is_empty() {
+                    buffer.join("\n")
+                } else {
+                    format!("{}\n{}", buffer.join("\n"), affs.join("\n"))
+                };
+                let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
+                    .spawn(move || crate::interp::executer_source(&src, Vec::new()));
+                if let Ok(j) = h { let _ = j.join(); }
+            }
+        } else {
+            eprintln!("rose: fichier introuvable : {}", f);
+        }
+    }
+    println!("Console Rose. Tapez du code Rose, ou :help pour l'aide, :quit pour sortir.");
+    let stdin = io::stdin();
+    let mut lines = stdin.lock().lines();
+    loop {
+        print!("rose> ");
+        let _ = io::stdout().flush();
+        let mut entry = String::new();
+        let mut first = true;
+        loop {
+            match lines.next() {
+                None => {
+                    if entry.trim().is_empty() { return; }
+                    break;
+                }
+                Some(Ok(l)) => {
+                    if first { entry.push_str(&l); first = false; }
+                    else { entry.push('\n'); entry.push_str(&l); }
+                    if braces_balanced(&entry) { break; }
+                    print!("...> ");
+                    let _ = io::stdout().flush();
+                }
+                Some(Err(_)) => return,
+            }
+        }
+        let trimmed = entry.trim().to_string();
+        if trimmed.is_empty() { continue; }
+        if trimmed.starts_with(':') {
+            let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
+            match parts[0] {
+                ":quit" | ":q" | ":exit" => return,
+                ":reset" => { buffer.clear(); println!("(buffer vidé)"); }
+                ":show" | ":code" => {
+                    if buffer.is_empty() { println!("(buffer vide)"); }
+                    else { for l in &buffer { println!("{}", l); } }
+                }
+                ":type" => {
+                    if parts.len() < 2 { eprintln!("rose: :type <expr>"); continue; }
+                    let expr = parts[1].trim();
+                    let src = if buffer.is_empty() {
+                        format!(">> type_de({})", expr)
+                    } else {
+                        format!("{}
+>> type_de({})", buffer.join("\n"), expr)
+                    };
+                    let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
+                        .spawn(move || crate::interp::executer_source(&src, Vec::new()));
+                    if let Ok(j) = h { let _ = j.join(); }
+                    let _ = io::stdout().flush();
+                }
+                ":help" => {
+                    println!("Commandes :");
+                    println!("  :help            cette aide");
+                    println!("  :show            affiche le code accumulé");
+                    println!("  :reset           vide le buffer");
+                    println!("  :load <fichier>  charge un fichier (et l'exécute)");
+                    println!("  :quit            quitter");
+                    println!("Toute autre ligne est du code Rose exécuté dans le contexte du buffer.");
+                    println!("Les définitions sont mémorisées ; les '>> expr' s'affichent.");
+                }
+                ":load" => {
+                    if parts.len() < 2 { eprintln!("rose: :load <fichier>"); continue; }
+                    let f = parts[1].trim();
+                    let mut source = String::new();
+                    if lire(&mut source, f) {
+                        let source_clone = source.clone();
+                        let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
+                            .spawn(move || crate::interp::executer_source(&source_clone, Vec::new()));
+                        if let Ok(j) = h { let _ = j.join(); }
+                        for line in source.lines() {
+                            let t = line.trim();
+                            if !t.is_empty() && !t.starts_with(">>") {
+                                buffer.push(line.to_string());
+                            }
+                        }
+                        println!("(chargé {})", f);
+                    } else {
+                        eprintln!("rose: fichier introuvable : {}", f);
+                    }
+                }
+                _ => eprintln!("rose: commande inconnue : {}", parts[0]),
+            }
+            continue;
+        }
+        let src = if buffer.is_empty() {
+            trimmed.clone()
+        } else {
+            format!("{}\n{}", buffer.join("\n"), trimmed)
+        };
+        let src_clone = src.clone();
+        let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
+            .spawn(move || crate::interp::executer_source(&src_clone, Vec::new()));
+        let rc = match h {
+            Ok(j) => j.join().unwrap_or(1),
+            Err(_) => crate::interp::executer_source(&src, Vec::new()),
+        };
+        let _ = io::stdout().flush();
+        if rc == 0 && !trimmed.starts_with(">>") {
+            buffer.push(trimmed.clone());
+        }
+    }
+}
+
+fn braces_balanced(s: &str) -> bool {
+    let mut depth: i32 = 0;
+    let mut in_str = false;
+    let mut esc = false;
+    for c in s.chars() {
+        if in_str {
+            if esc { esc = false; }
+            else if c == '\\' { esc = true; }
+            else if c == '"' { in_str = false; }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => { depth -= 1; if depth < 0 { return true; } }
+            _ => {}
+        }
+    }
+    depth <= 0
+}

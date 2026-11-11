@@ -393,6 +393,7 @@ formule exacte en LaTeX et une approximation `≈` :
 |---|---|
 | Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
 | Exact | `pi(n)` `e(n)` `phi(n)` `racine(n)` `fraction(a,b)` |
+| Types | `type_de(x)` / `type(x)` → chaîne ("entier", "flottant", …) |
 | Complexes | `re(z)` `im(z)` `conj(z)` `arg(z)` `modulus(z)` |
 | Chaînes | `longueur`(`len`) `ordre` `caractere` `sous_chaine`(`sub`) `concatener(liste)` |
 | Tables | `table` `map` `inserer` `cle_existe` `supprimer` `cles` `valeurs` |
@@ -436,6 +437,18 @@ s   45
 
 `rose latex prog.rose` rend le **programme entier** en LaTeX, fonctions
 comprises, signatures `n ∈ ℤ` incluses.
+
+### Console interactive (REPL)
+
+```bash
+rose console                  # console vide
+rose console prog.rose        # charge prog.rose, puis console
+rose prog.rose --console      # exécute prog.rose, puis console (variables disponibles)
+```
+
+Dans la console : code Rose exécuté dans le contexte du buffer accumulé ;
+commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
+`:quit`. Les blocs multi-lignes (accolades) sont acceptés.
 
 ### Pièges connus (à lire avant d'écrire du Rose)
 
