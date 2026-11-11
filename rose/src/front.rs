@@ -631,16 +631,25 @@ impl Parser {
         if !self.est(&[Tk::RParen]) {
             loop {
                 let pname = self.nom_ident()?;
-                // le nom réservé est vérifié par le vérificateur (miroir
-                // C++ verifier_signature, ligne « verifier_nom_reserve(pt.first, 0) »),
-                // pas par le parseur : sinon « t1 » passe en paramètre.
-                self.exiger(Tk::DeuxPts, "':' (nom: type)")?;
-                let pt = self.type_rose()?;
+                // Type OPTIONNEL : « fn f(n) » (sans « : type ») est accepté,
+                // le type est alors dynamique (Dyn) — le moteur le résout à
+                // l'exécution. C'est la forme allégée demandée pour les
+                // fonctions simples.
+                let pt = if self.accepter(&[Tk::DeuxPts]) {
+                    self.type_rose()?
+                } else {
+                    Ty::simple(TyKind::Dyn)
+                };
                 params.push((pname, pt));
                 if !self.accepter(&[Tk::Virgule]) { break; }
             }
         }
         self.exiger(Tk::RParen, "')'")?;
+        // Type de retour OPTIONNEL : « fn f(x) { ... } » (sans « -> type »)
+        // est accepté — le type de retour est alors dynamique (Dyn) et la
+        // valeur rendue est convertie au type du site d'appel, comme pour les
+        // paramètres sans type déclaré. C'est la forme allégée demandée
+        // pour les fonctions simples.
         let mut retour = Ty::simple(TyKind::Vide);
         let mut a_retour = false;
         // '->' (émis comme Moins + Sup, '→' ou '←'…)
@@ -664,6 +673,10 @@ impl Parser {
         // que « -> type » est absent — le vérificateur s'en sert pour refuser
         // « retour » hors de fonction et exiger le type de retour déclaré.
         if corps.is_none() && !a_retour { retour = Ty::simple(TyKind::Vide); a_retour = true; }
+        // Fonction avec corps mais sans type de retour déclaré : on passe
+        // le retour en Dyn (type dynamique) pour que « retour expr » soit
+        // accepté sans contrôle strict (le type est résolu à l'exécution).
+        if corps.is_some() && !a_retour { retour = Ty::simple(TyKind::Dyn); }
         let sig = Signature {
             nom, params, retour, a_retour, corps,
             dll: std::mem::take(ann_dll), dll_son: std::mem::take(ann_dll_son),
@@ -1361,7 +1374,8 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                         let e2 = Expr::Var("i".into(), *ligne);
                         let t = expr_type(prog, &e2, env)?;
                         if !(t == *retour || (est_numerique(&t) && est_numerique(retour)
-                                              && promotion(&t, retour) == *retour))
+                                              && promotion(&t, retour) == *retour)
+                            || retour.n == TyKind::Dyn)
                         {
                             return Err(fmt_err(&format!(
                                 "La fonction retourne {}, attendu {}", t.nom(), retour.nom()),
@@ -1381,7 +1395,8 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                     Some(e) => {
                         let t = expr_type(prog, e, env)?;
                         if !(t == *retour || (est_numerique(&t) && est_numerique(retour)
-                                              && promotion(&t, retour) == *retour))
+                                              && promotion(&t, retour) == *retour)
+                            || retour.n == TyKind::Dyn)
                         {
                             return Err(fmt_err(&format!(
                                 "La fonction retourne {}, attendu {}", t.nom(), retour.nom()),
@@ -1602,6 +1617,10 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 exiger_booleen(&t, *ligne, "non")?;
                 return Ok(Ty::simple(TyKind::Booleen));
             }
+            if t.n == TyKind::Dyn {
+                // type dynamique : on laisse passer, résolu à l'exécution.
+                return Ok(Ty::simple(TyKind::Dyn));
+            }
             if !est_numerique(&t) {
                 return Err(fmt_err(&format!("Unaire {} sur un {}", op, nom_pour_msg(&t)), *ligne, 0));
             }
@@ -1670,6 +1689,10 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                     if ta.n == TyKind::Chaine && tb.n == TyKind::Chaine { return Ok(Ty::simple(TyKind::Chaine)); }
                     if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
                     if ta.n == TyKind::Irrationnel || tb.n == TyKind::Irrationnel { return Ok(Ty::simple(TyKind::Irrationnel)); }
+                    if ta.n == TyKind::Dyn || tb.n == TyKind::Dyn {
+                        if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
+                        return Ok(Ty::simple(TyKind::Dyn));
+                    }
                     if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
                     return Err(fmt_err(&format!("Addition {} + {} impossible", na, nb), ligne, 0));
                 }
@@ -1678,12 +1701,28 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                     if ta.n == TyKind::Irrationnel || tb.n == TyKind::Irrationnel { return Ok(Ty::simple(TyKind::Irrationnel)); }
                     if op == "*" && ta.n == TyKind::Chaine && tb.n == TyKind::Entier { return Ok(Ty::simple(TyKind::Chaine)); }
                     if op == "*" && ta.n == TyKind::Entier && tb.n == TyKind::Chaine { return Ok(Ty::simple(TyKind::Chaine)); }
+                    // type dynamique (paramètre sans type déclaré) : on laisse
+                    // passer, le type est résolu à l'exécution (Dyn).
+                    if ta.n == TyKind::Dyn || tb.n == TyKind::Dyn {
+                        if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
+                        // Dyn × Dyn ou Dyn × X : on renvoie Dyn pour laisser
+                        // l'interpréteur / le JIT résoudre à l'exécution.
+                        return Ok(Ty::simple(TyKind::Dyn));
+                    }
                     if est_numerique(&ta) && est_numerique(&tb) { return Ok(promotion(&ta, &tb)); }
                     return Err(fmt_err(&format!("Opération {} {} {} impossible", na, op, nb), ligne, 0));
                 }
                 "/" => {
                     if ta.n == TyKind::Complexe || tb.n == TyKind::Complexe { return Ok(Ty::simple(TyKind::Complexe)); }
                     if ta.n == TyKind::Irrationnel || tb.n == TyKind::Irrationnel { return Ok(Ty::simple(TyKind::Irrationnel)); }
+                    if ta.n == TyKind::Dyn || tb.n == TyKind::Dyn {
+                        if est_numerique(&ta) && est_numerique(&tb) {
+                            let r = promotion(&ta, &tb);
+                            if r.n == TyKind::Entier { return Ok(Ty::simple(TyKind::Rationnel)); }
+                            return Ok(r);
+                        }
+                        return Ok(Ty::simple(TyKind::Dyn));
+                    }
                     if est_numerique(&ta) && est_numerique(&tb) {
                         let r = promotion(&ta, &tb);
                         // division exacte : entier/entier -> rationnel
@@ -1762,7 +1801,10 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                     let ta = expr_type(prog, a, env)?;
                     let t_att = &sig.params[i].1;
                     if &ta != t_att && !(est_numerique(&ta) && est_numerique(t_att)
-                                         && promotion(&ta, t_att) == *t_att) {
+                                         && promotion(&ta, t_att) == *t_att)
+                        && t_att.n != TyKind::Dyn {
+                        // paramètre sans type déclaré (Dyn) : accepte n'importe
+                        // quel argument — le type est résolu à l'exécution.
                         return Err(fmt_err(&format!("Argument de {}: {} reçu, {} attendu",
                             nom, nom_pour_msg(&ta), t_att.nom()), ligne, 0));
                     }
