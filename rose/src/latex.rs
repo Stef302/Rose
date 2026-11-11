@@ -466,15 +466,30 @@ pub fn programme_latex(p: &Programme) -> String {
 
 /// Rend une fonction du programme : signature typée puis corps.
 fn fonction_latex(nom: &str, sig: &crate::front::Signature) -> String {
+    // Le type est FACULTATIF : un paramètre sans type déclaré (Dyn) et un
+    // retour non déclaré (Vide ou Dyn) sont omis du rendu — on lit
+    // « carre(x) » plutôt que « carre(x ∈ ?) → ? ».
     let params: Vec<String> = sig.params.iter()
-        .map(|(n, t)| format!("{} \\in {}", n, type_math_latex(t)))
+        .map(|(n, t)| {
+            if t.n == crate::front::TyKind::Dyn {
+                n.clone()
+            } else {
+                format!("{} \\in {}", n, type_math_latex(t))
+            }
+        })
         .collect();
-    let mut s = format!(
-        "\\operatorname{{{}}}({}) \\to {}",
-        nom,
-        params.join(", "),
-        type_math_latex(&sig.retour)
-    );
+    let rendu = !(sig.retour.n == crate::front::TyKind::Vide
+        || sig.retour.n == crate::front::TyKind::Dyn);
+    let mut s = if rendu {
+        format!(
+            "\\operatorname{{{}}}({}) \\to {}",
+            nom,
+            params.join(", "),
+            type_math_latex(&sig.retour)
+        )
+    } else {
+        format!("\\operatorname{{{}}}({})", nom, params.join(", "))
+    };
     match &sig.corps {
         Some(corps) => {
             s.push_str(" \\ \\langle ");

@@ -1672,7 +1672,9 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                     return Ok(Ty::simple(TyKind::Booleen));
                 }
                 "==" | "!=" | "≈" | "?=" | "=~" => {
-                    if ta == tb || (est_numerique(&ta) && est_numerique(&tb)) {
+                    if ta == tb || (est_numerique(&ta) && est_numerique(&tb))
+                        || ta.n == TyKind::Dyn || tb.n == TyKind::Dyn
+                    {
                         return Ok(Ty::simple(TyKind::Booleen));
                     }
                     return Err(fmt_err(&format!("Comparaison {} {} {} impossible", na, op, nb), ligne, 0));
@@ -1681,6 +1683,11 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                     if (est_numerique(&ta) && est_numerique(&tb))
                         || (ta.n == TyKind::Chaine && tb.n == TyKind::Chaine)
                     {
+                        return Ok(Ty::simple(TyKind::Booleen));
+                    }
+                    // comparaison impliquant un paramètre sans type déclaré
+                    // (Dyn) : acceptée, le type est résolu à l'exécution.
+                    if ta.n == TyKind::Dyn || tb.n == TyKind::Dyn {
                         return Ok(Ty::simple(TyKind::Booleen));
                     }
                     return Err(fmt_err(&format!("Ordre {} {} {} impossible", na, op, nb), ligne, 0));

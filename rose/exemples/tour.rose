@@ -32,9 +32,9 @@ $s = $s + " et second"        # même type → OK
 
 # 4) Contrôle de flux
 si ($n ≥ 5) { >> "grand" } sinon { >> "petit" }
-$i = 3
-tant_que ($i > 0) { $i = $i - 1 }
->> $i
+$compteur = 3
+tant_que ($compteur > 0) { $compteur = $compteur - 1 }
+>> $compteur
 $total = 0
 pour k de 1 vers 11 { $total = $total + k }   # 1 vers 11 = 1..10
 >> $total
