@@ -1,0 +1,6 @@
+# Exemple : constantes irrationnelles exactes (pi, e, phi)
+>> pi
+>> e
+>> phi
+>> racine(2)
+>> 2 ^ 100

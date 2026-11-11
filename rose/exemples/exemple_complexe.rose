@@ -1,0 +1,8 @@
+# Exemple : nombres complexes (Rose 2.0)
+$z = 3 + 4i
+>> $z
+>> re($z)
+>> im($z)
+>> modulus($z)
+>> conj($z)
+>> $z * $z

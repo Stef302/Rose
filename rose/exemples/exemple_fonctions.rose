@@ -1,0 +1,16 @@
+# Exemple : fonctions, boucles, affectations
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+
+$s = 0
+pour j de 1 vers 10 { $s = $s + j }
+>> $s
+
+>> fib(10)
+
+$a = 5
+$b = 3
+>> $a + $b
+>> $a * $b
