@@ -899,23 +899,16 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                     "for_next",
                 ).map_err(|e| format!("erreur build_int_add : {:?}", e))?;
 
-                // incoming depuis le corps pour tous les phi
-                let phi_entries: Vec<(String, BasicValueEnum)> = phi_nodes.iter()
-                    .map(|(k, _)| {
-                        let val = if k == nom {
-                            next.into()
-                        } else {
-                            named_values.get(k).cloned().unwrap_or_else(|| {
-                                context.i64_type().const_int(0, false).into()
-                            })
-                        };
-                        (k.clone(), val)
-                    })
-                    .collect();
-                for (var_name, val) in phi_entries {
-                    let phi = phi_nodes.get(&var_name).unwrap();
-                    phi.add_incoming(&[(&val, builder.get_insert_block().unwrap())]);
-                }
+                // incrémentation du compteur : on ajoute l'entrée du phi
+                // depuis le corps pour le compteur UNIQUEMENT. Les autres
+                // variables ont déjà reçu leur entrée via le mécanisme phi
+                // de `Affect` (compile_instr, branche Affect) qui ajoute
+                // [valeur, body_block] au phi correspondant. Re-ajouter ici
+                // créerait un doublon [phi, body_block] qui corromprait la
+                // résolution du phi.
+                let counter_phi = phi_nodes.get(nom).unwrap();
+                let next_bv: inkwell::values::BasicValueEnum = next.into();
+                counter_phi.add_incoming(&[(&next_bv, builder.get_insert_block().unwrap())]);
                 named_values.insert(nom.clone(), next.into());
                 builder.build_unconditional_branch(loop_block);
 
