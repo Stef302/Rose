@@ -150,11 +150,22 @@ fn main() {
     }
     // « orc » et « link » exigent LLVM : soit il est embarque, soit le
     // binaire le cherche tout seul (telechargement du helper AOT).
+    // IMPORTANT : lancer le helper AVANT le message d'absence — l'ancien
+    // code imprimait « non embarquee » puis sortait, ce qui rendait le
+    // telechargement a la demande inatteignable dans le binaire leger.
     if matches!(action, "orc" | "link") {
         #[cfg(feature = "llvm")]
         cmd_llvm::execute(action, argv.as_slice());
         #[cfg(not(feature = "llvm"))]
-        auto_llvm::lance(action, argv.as_slice());
+        {
+            if let Some(helper) = auto_llvm::trouver_helper() {
+                auto_llvm::lance_depuis(&helper, action, argv.as_slice());
+            }
+            eprintln!("rose: la chaîne AOT LLVM n'est pas embarquée dans ce binaire.");
+            eprintln!("      le binaire peut télécharger le helper tout seul (commande 'rose orc')");
+            eprintln!("      ou : cargo build --release --features llvm");
+            std::process::exit(1);
+        }
     }
     match action {
         "version" | "--version" => { println!("{}", interp::version()); return; }

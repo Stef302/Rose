@@ -1,0 +1,225 @@
+{
+  "name": "rose-language",
+  "displayName": "Rose Language Support",
+  "description": "Prise en charge complète du langage Rose (v5.10) : coloration syntaxique, snippets, icônes, ligatures, diagnostics, auto-complétion, navigation, formatage, et exécution.",
+  "version": "5.10.1",
+  "publisher": "stef302",
+  "author": "Stef_302",
+  "license": "MIT",
+  "icon": "assets/petale.png",
+  "homepage": "https://stef302.github.io/Rose/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Stef_302/rose-language"
+  },
+  "bugs": {
+    "url": "https://github.com/Stef_302/rose-language/issues"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Icon Themes",
+    "Linters",
+    "Formatters",
+    "Other"
+  ],
+  "keywords": [
+    "rose",
+    "français",
+    "programming language",
+    "exact arithmetic",
+    "latex",
+    "diagnostics"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:rose",
+    "onCommand:rose.runFile",
+    "onCommand:rose.latexFile",
+    "onCommand:rose.openTerminal",
+    "onCommand:rose.openWebsite",
+    "onCommand:rose.validate",
+    "workspaceContains:**/*.rose"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rose",
+        "aliases": [
+          "Rose",
+          "rose"
+        ],
+        "extensions": [
+          ".rose"
+        ],
+        "configuration": "./langage-configuration.json",
+        "icon": {
+          "light": "./assets/petale.png",
+          "dark": "./assets/petale.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rose",
+        "scopeName": "source.rose",
+        "path": "./syntaxes/rose.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rose",
+        "path": "./snippets/snippets.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "rose-icons",
+        "label": "Rose Icon Theme",
+        "path": "./rose-icons.json",
+        "extends": "vs-seti"
+      }
+    ],
+    "commands": [
+      {
+        "command": "rose.runFile",
+        "title": "Rose : exécuter le fichier",
+        "category": "Rose",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rose.latexFile",
+        "title": "Rose : générer le LaTeX du fichier",
+        "category": "Rose",
+        "icon": "$(symbol-misc)"
+      },
+      {
+        "command": "rose.openTerminal",
+        "title": "Rose : ouvrir un terminal Rose",
+        "category": "Rose",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "rose.openWebsite",
+        "title": "Rose : ouvrir le site officiel",
+        "category": "Rose",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "rose.validate",
+        "title": "Rose : valider le fichier",
+        "category": "Rose",
+        "icon": "$(check)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "rose.runFile",
+          "when": "resourceLangId == rose",
+          "group": "navigation"
+        },
+        {
+          "command": "rose.latexFile",
+          "when": "resourceLangId == rose",
+          "group": "navigation"
+        },
+        {
+          "command": "rose.validate",
+          "when": "resourceLangId == rose",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "rose.runFile",
+          "when": "resourceLangId == rose",
+          "group": "navigation"
+        },
+        {
+          "command": "rose.openWebsite",
+          "when": "resourceLangId == rose",
+          "group": "9_web"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "rose.openWebsite",
+          "when": "true"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "rose.runFile",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus && resourceLangId == rose"
+      },
+      {
+        "command": "rose.latexFile",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
+        "when": "editorTextFocus && resourceLangId == rose"
+      },
+      {
+        "command": "rose.validate",
+        "key": "ctrl+alt+v",
+        "mac": "cmd+alt+v",
+        "when": "editorTextFocus && resourceLangId == rose"
+      }
+    ],
+    "configuration": {
+      "title": "Rose",
+      "properties": {
+        "rose.binaryPath": {
+          "type": "string",
+          "default": "rose",
+          "description": "Chemin vers le binaire Rose (rose ou rose-20)."
+        },
+        "rose.ligatures": {
+          "type": "boolean",
+          "default": true,
+          "description": "Active la transformation automatique des ligatures (<=, >=, !=, =~, _^)."
+        },
+        "rose.runInTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Exécuter les programmes Rose dans un terminal intégré."
+        },
+        "rose.showLatex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Afficher la formule LaTeX dans la sortie d'exécution (déjà géré par le moteur)."
+        },
+        "rose.diagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Active les diagnostics (erreurs/avertissements) en temps réel."
+        },
+        "rose.diagnosticsDelay": {
+          "type": "number",
+          "default": 600,
+          "description": "Délai (ms) avant validation après une modification."
+        },
+        "rose.format.indentSize": {
+          "type": "number",
+          "default": 4,
+          "description": "Taille de l'indentation pour le formatage."
+        },
+        "rose.website": {
+          "type": "string",
+          "default": "https://stef302.github.io/Rose/",
+          "description": "URL du site officiel Rose."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package",
+    "publish": "vsce publish"
+  }
+}

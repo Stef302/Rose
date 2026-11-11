@@ -492,19 +492,41 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 }
             }
             Expr::Appel { nom, args, .. } => {
-                // Intrinsics complexes
+                // Intrinsics complexes. Parité avec l'interpréteur
+                // (interp.rs « re » : `match Complexe{re,..} => re, _ =>
+                // vers_d(x)`) et le JIT (jit.rs) : un réel passe — re(x) =
+                // x, im(x) = 0.0, conj(x) = x. Seuls ces trois-là admettent
+                // un réel ; modulus d'un non-complexe reste hors
+                // sous-ensemble ORC (repli interprète).
                 if nom == "re" && args.len() == 1 {
                     let v = compile_expr(builder, context, module, named_values, &args[0])?;
-                    let sv = v.into_struct_value();
-                    return Ok(builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into());
+                    if v.is_struct_value() {
+                        let sv = v.into_struct_value();
+                        return Ok(builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into());
+                    }
+                    if v.is_float_value() { return Ok(v); }
+                    if v.is_int_value() {
+                        return Ok(builder.build_signed_int_to_float(v.into_int_value(), context.f64_type(), "re_f")
+                            .map_err(|e| format!("{:?}", e))?.into());
+                    }
+                    return Err(format!("re() : type non supporté en ORC"));
                 }
                 if nom == "im" && args.len() == 1 {
                     let v = compile_expr(builder, context, module, named_values, &args[0])?;
-                    let sv = v.into_struct_value();
-                    return Ok(builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into());
+                    if v.is_struct_value() {
+                        let sv = v.into_struct_value();
+                        return Ok(builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into());
+                    }
+                    // im(réel) = 0.0 (miroir interp/jit)
+                    return Ok(context.f64_type().const_zero().into());
                 }
                 if nom == "conj" && args.len() == 1 {
                     let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    if !v.is_struct_value() {
+                        // conj(réel) = le réel lui-même (miroir interp/jit)
+                        if v.is_float_value() || v.is_int_value() { return Ok(v); }
+                        return Err(format!("conj() : type non supporté en ORC"));
+                    }
                     let sv = v.into_struct_value();
                     let re = builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into_float_value();
                     let im = builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into_float_value();
@@ -513,6 +535,32 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 }
                 if nom == "modulus" && args.len() == 1 {
                     let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    // Parité interpréteur : modulus(réel) = |x| (fabs),
+                    // modulus(complexe) = √(re²+im²).
+                    if v.is_float_value() {
+                        let f = v.into_float_value();
+                        let fabs = module.get_function("fabs").unwrap_or_else(|| {
+                            let ft = context.f64_type().fn_type(&[context.f64_type().into()], false);
+                            module.add_function("fabs", ft, Some(Linkage::External))
+                        });
+                        let call = builder.build_call(fabs, &[f.into()], "fabs").map_err(|e| format!("{:?}", e))?;
+                        return Ok(call.try_as_basic_value().unwrap_basic().into());
+                    }
+                    if v.is_int_value() {
+                        let vi = v.into_int_value();
+                        let zero = context.i64_type().const_zero();
+                        let neg = builder.build_int_compare(IntPredicate::SLT, vi, zero, "neg_c")
+                            .map_err(|e| format!("{:?}", e))?;
+                        let nvi = builder.build_int_neg(vi, "negi").map_err(|e| format!("{:?}", e))?;
+                        let abs_i = builder.build_select(neg, nvi, vi, "absi")
+                            .map_err(|e| format!("{:?}", e))?
+                            .into_int_value();
+                        return Ok(builder.build_signed_int_to_float(abs_i, context.f64_type(), "abs_f")
+                            .map_err(|e| format!("{:?}", e))?.into());
+                    }
+                    if !v.is_struct_value() {
+                        return Err(format!("modulus() : type non supporté en ORC"));
+                    }
                     let sv = v.into_struct_value();
                     let re = builder.build_extract_value(sv, 0, "re").map_err(|e| format!("{:?}", e))?.into_float_value();
                     let im = builder.build_extract_value(sv, 1, "im").map_err(|e| format!("{:?}", e))?.into_float_value();
@@ -534,6 +582,12 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 // fonctions mathématiques libm
                 if nom == "racine" && args.len() == 1 {
                     let v = compile_expr(builder, context, module, named_values, &args[0])?;
+                    // sqrt ne connaît que les flottants : un complexe ou un
+                    // entier hors sous-ensemble → repli (pas un appel
+                    // mal typé vers libm).
+                    if !v.is_float_value() {
+                        return Err(format!("racine() attend un flottant en ORC"));
+                    }
                     let sqrt_fn = module.get_function("sqrt").unwrap_or_else(|| {
                         let ft = context.f64_type().fn_type(&[context.f64_type().into()], false);
                         module.add_function("sqrt", ft, Some(Linkage::External))
@@ -638,8 +692,19 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                         };
                         let phi = unsafe { inkwell::values::PhiValue::new(iv.as_value_ref()) };
                         phi.add_incoming(&[(&value, bloc)]);
-                        // la table garde le phi : les lectures dans le bloc
-                        // suivant (loop_block) doivent voir la valeur phi.
+                        // La table garde la VALEUR DU PHI tant que les deux
+                        // entrées ont le même type (le phi est le point de
+                        // convergence, seul valable après la boucle). Si
+                        // l'affectation change le type de la variable
+                        // (compteur i64 devenu complexe, accumulateur float
+                        // devenu complexe…), le phi ne peut plus représenter
+                        // la variable : on garde la dernière valeur, qui
+                        // porte le type courant — les lectures dans le corps
+                        // ont déjà vu le phi ou cette valeur.
+                        if phi.as_basic_value().get_type() == value.get_type() {
+                            return Ok(());
+                        }
+                        named_values.insert(nom.clone(), value);
                         return Ok(());
                     }
                 }
@@ -870,6 +935,15 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                     .collect();
                 let mut phi_nodes: HashMap<String, inkwell::values::PhiValue> = HashMap::new();
                 for (var_name, var_val) in var_list {
+                    // Le compteur de la boucle est un i64 pur. Si la table
+                    // des valeurs le tient pour autre chose (déjà float/
+                    // structure), ce n'est plus un compteur → hors
+                    // sous-ensemble ORC, repli JIT/interprète.
+                    // En revanche un phi de boucle est TOUJOURS i64 ici :
+                    // la décision se prend à la création du phi, pas après.
+                    if &var_name == nom && !var_val.is_int_value() {
+                        return Err("compteur de boucle non entier".to_string());
+                    }
                     let phi = builder.build_phi(var_val.get_type(), &format!("phi_{}", var_name))
                         .map_err(|e| format!("erreur build_phi : {:?}", e))?;
                     phi.add_incoming(&[(&var_val, pred_block)]);

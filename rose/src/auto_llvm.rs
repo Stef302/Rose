@@ -36,12 +36,12 @@ pub fn sha256_attendu(cible: &str) -> &'static str {
 }
 
 const SHA256_HELPER_AARCH64_LINUX: &str =
-    "25ca2fc45b569c9a65f54b820d0dd6848146a43553ee4a8106569cef8bb882a1";
+    "4cc7db58eb91de3db05bd61c2c3a819bfaa4e9c3b972c813572853dc2573da48";
 
 /// Empreinte de référence de la release (miroir versionné :
 /// docs/telechargements/, SHA256SUMS).
 pub const SHA256_HELPER: &str =
-    "25ca2fc45b569c9a65f54b820d0dd6848146a43553ee4a8106569cef8bb882a1";
+    "4cc7db58eb91de3db05bd61c2c3a819bfaa4e9c3b972c813572853dc2573da48";
 
 /// Nom du binaire helper.
 pub const NOM_HELPER: &str = "rose-aot";
@@ -244,7 +244,12 @@ pub fn lance(action: &str, argv: &[String]) -> ! {
             }
         },
     };
-    let mut cmd = Command::new(&helper);
+    lance_depuis(&helper, action, argv)
+}
+
+/// Exécute le helper AOT donné (sans recherche ni téléchargement).
+pub fn lance_depuis(helper: &Path, action: &str, argv: &[String]) -> ! {
+    let mut cmd = Command::new(helper);
     cmd.arg(action);
     for a in argv.iter().skip(2) {
         cmd.arg(a);

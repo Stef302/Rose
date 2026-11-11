@@ -1,0 +1,14 @@
+﻿{
+    "hidesExplorerArrows": false,
+    "iconDefinitions": {
+        "rose_petale": {
+            "iconPath": "./assets/petale.png"
+        }
+    },
+    "fileExtensions": {
+        "rose": "rose_petale"
+    },
+    "languageIds": {
+        "rose": "rose_petale"
+    }
+}
