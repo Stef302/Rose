@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Version du helper AOT à installer (doit correspondre au TAG de release).
-pub const VERSION_HELPER: &str = "v5.8.0-orc-fonctions";
+pub const VERSION_HELPER: &str = "v5.10.0";
 
 /// Empreintes SHA-256 attendues par plateforme (vides = pas de vérification ;
 /// dans ce cas un avertissement est affiché). L'empreinte peut aussi être
@@ -36,11 +36,12 @@ pub fn sha256_attendu(cible: &str) -> &'static str {
 }
 
 const SHA256_HELPER_AARCH64_LINUX: &str =
-    "764acffd3007889a378edd042c2cd2f129cd9021bc19c53ee1433986d7035de4";
+    "25ca2fc45b569c9a65f54b820d0dd6848146a43553ee4a8106569cef8bb882a1";
 
-/// Empreinte de référence de la release (laisser vide tant que l'artefact
-/// n'est pas publié sur la release GitHub ; voir docs/telechargements/).
-pub const SHA256_HELPER: &str = "";
+/// Empreinte de référence de la release (miroir versionné :
+/// docs/telechargements/, SHA256SUMS).
+pub const SHA256_HELPER: &str =
+    "25ca2fc45b569c9a65f54b820d0dd6848146a43553ee4a8106569cef8bb882a1";
 
 /// Nom du binaire helper.
 pub const NOM_HELPER: &str = "rose-aot";
