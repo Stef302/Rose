@@ -1,0 +1,73 @@
+# ── Tous les types du langage Rose ── exécution : rose tous_les_types.rose
+
+# entier (ℤ, illimité)
+$e = 42
+$grand = 100 !
+>> $e
+>> type_de($e)
+>> $grand
+
+# rationnel (ℚ, exact)
+$r = 1/3
+>> $r
+>> type_de($r)
+
+# flottant (ℝ, IEEE double)
+$f = 3.14159
+>> $f
+>> type_de($f)
+
+# booleen
+$b = vrai
+>> $b
+>> type_de($b)
+
+# chaine (UTF-8 en caractères)
+$s = "été radieux"
+>> $s
+>> longueur($s)
+>> type_de($s)
+
+# complexe (ℂ)
+$z = 3 + 4i
+>> $z
+>> modulus($z)
+>> type_de($z)
+
+# irrationnel (racine carrée exacte)
+$irr = racine(2)
+>> $irr
+>> type_de($irr)
+
+# liste (homogène)
+$l = [1, 2, 3]
+>> $l
+>> longueur($l)
+>> type_de($l)
+
+# table (associative)
+$t = table()
+$t["cle"] = 7
+>> $t["cle"]
+>> type_de($t)
+
+# tableau (fixe)
+$a = tableau(5)
+$a[0] = 99
+>> $a[0]
+>> type_de($a)
+
+# tampon (octets)
+$buf = tampon(8)
+>> longueur($buf)
+>> type_de($buf)
+
+# type_de sur une fonction
+fn carre(n: entier) -> entier { retour n * n }
+>> type_de(carre(5))
+
+# constantes irrationnelles exactes
+>> pi
+>> e
+>> phi
+>> racine(9)
