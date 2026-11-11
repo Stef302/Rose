@@ -756,7 +756,13 @@ impl Jit {
         // opt_level=speed : sans ça Cranelift compile en « opt_level=none »,
         // c'est-à-dire SANS aucune optimisation (DCE, CSE, iconst+bitcast ->
         // f64const...). Le gain est spectaculaire sur les boucles.
-        let lvl = std::env::var("ROSE_JIT_OPT").unwrap_or_else(|_| "speed".to_string());
+        // « speed_and_size » : même niveau d'optimisation que « speed » pour
+        // le code chaud, mais la COMPILATION est plus rapide (mesuré :
+        // 148 µs contre 176 µs pour la fonction du banc complexe, exécution
+        // identique au nanoseconde). Le surcoût de compilation Cranelift
+        // étant un coût FIXE payé à chaque lancement, c'est le meilleur
+        // compromis. ROSE_JIT_OPT permet de tester les autres niveaux.
+        let lvl = std::env::var("ROSE_JIT_OPT").unwrap_or_else(|_| "speed_and_size".to_string());
         // « enable_verifier=false » : le VÉRIFICATEUR de Cranelift est
         // activé par DÉFAUT et repasse tout le programme optimisé à chaque
         // fonction compilée. C'est un contrôle de cohérence interne, dont le
