@@ -234,6 +234,160 @@ cargo build --release
 # binaire : rose/target/release/rose-20
 ```
 
+## 📖 Syntaxe Rose — référence complète
+
+Rose est un langage de programmation français. Voici toute la syntaxe,
+pour un développeur ou une IA qui écrit du Rose.
+
+### Types
+
+| Type Rose | Ensemble mathématique | Description |
+|---|---|---|
+| `entier` | `ℤ` | entier exact (BigInt natif, illimité) |
+| `rationnel` | `ℚ` | fraction exacte `a/b` |
+| `flottant` | `ℝ` | flottant IEEE 754 double |
+| `booleen` | `{vrai, faux}` | booléen |
+| `chaine` | — | chaîne de caractères |
+| `complexe` | `ℂ` | nombre complexe `a+bi` |
+| `irrationnel` | `√n` | racine carrée exacte |
+| `liste` | — | liste dynamique |
+| `table` | — | table associative |
+| `tampon` | — | tampon d'octets |
+| `vide` | — | absence de valeur |
+| `?` (Dyn) | — | type dynamique (inféré) |
+
+### Variables et constantes
+
+```rose
+$x = 42                # entier
+$pi = 3.14159          # flottant
+$z = 3 + 4i            # complexe
+$ch = "bonjour"        # chaîne
+$t = table()           # table
+$l = liste(1, 2, 3)    # liste
+
+# Constantes irrationnelles exactes (avec formule LaTeX)
+>> pi                  # π = 4·arctan(1/5) - arctan(1/239)   π ≈ 3.14…
+>> e                   # e = Σ 1/k!   e ≈ 2.718…
+>> phi                 # φ = (1+√5)/2   φ ≈ 1.618…
+>> racine(2)           # √2
+```
+
+Les types sont **optionnels** pour les variables (`$x = 42` infère entier). Le
+symbole `i` (minuscule) désigne l'imaginaire : `3 + 4i`, `2*i`, `modulus(z)`.
+
+### Opérateurs
+
+```rose
+$a + $b   $a - $b   $a * $b   $a / $b   $a % $b   $a ^ $b
+$a == $b  $a != $b  $a < $b  $a <= $b  $a > $b  $a >= $b
+$a et $b  $a ou $b  non $a
+```
+
+### Affichage et saisie
+
+```rose
+>> expr1, expr2, …     # affiche (formule LaTeX + résultat)
+<< nom                  # saisie (lire)
+```
+
+### Structures de contrôle
+
+```rose
+si (cond) { … }                    # si
+si (cond) { … } sinon { … }        # si/sinon
+? (cond) [ … ]                     # raccourci si
+@ (cond) [ … ]                     # boucle tant_que
+tant_que (cond) { … }              # boucle tant_que
+pour i de 0 vers 10 { … }          # boucle pour (borne exclusive)
+pour i de 0 vers n+1 { … }        # borne calculée
+```
+
+### Fonctions
+
+```rose
+# Types optionnels (paramètres et retour)
+fn carre(x) { retour x * x }
+fn double(x: entier) -> entier { retour x * 2 }
+fn demi(x) { retour x / 2.0 }      # retour flottant inféré
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+```
+
+### Commentaires
+
+```rose
+# commentaire jusqu'à la fin de la ligne
+```
+
+### FFI (appel de bibliothèques C)
+
+```rose
+@dll("m") @sym("pow")
+fn pow_libm(x: flottant, y: flottant) -> flottant
+
+@dll("m") @sym("sqrt")
+fn racine(x: flottant) -> flottant
+
+>> pow_libm(2.0, 10.0)          # 1024
+```
+
+### Affichage LaTeX automatique
+
+Chaque `>> expr` affiche la **formule exacte en LaTeX formée du programme**
+suivie du résultat :
+
+```
+>>> $s = 0
+>>> pour j de 0 vers 10 { $s = $s + j }
+>>> $s
+\sum_{j = 0}^{9} \langle s = s + jangle
+s   45
+>>> 2 * pi
+2 * pi   6.283185307179586
+>>> 3 + 4i
+3 + 4\mathrm{i}   5
+>>> carre(7)
+\operatorname{carre}(7)   49
+```
+
+La commande `rose latex prog.rose` rend le **programme entier** en LaTeX
+(fonctions comprises, avec les signatures `n \in \mathbb{Z}`).
+
+### Compilation native
+
+```bash
+# JIT (par défaut, Cranelift)
+rose prog.rose
+
+# AOT LLVM ORC (vectorisation NEON, parité avec Rust)
+rose orc prog.rose -o prog.o && gcc -O3 -o prog prog.o -lm
+
+# WebAssembly (pour le web)
+cargo build --profile wasm-release --target wasm32-unknown-unknown --no-default-features
+```
+
+### Règles importantes pour l'IA / développeur
+
+1. Le symbole `i` (minuscule) est l'imaginaire ; la variable de boucle
+   `i` partage le même jeton — dans `pour i de …` et `tant_que (i < n)`,
+   `i` est la VARIABLE entière.
+2. `pour j de A vers B` est **exclusif** : `pour j de 0 vers 3` itère
+   j = 0, 1, 2 (borne finale B-1).
+3. Les types sont optionnels pour les paramètres et le retour.
+4. `>>` affiche la formule LaTeX + le résultat.
+5. `pi`, `phi`, `e` sont des constantes irrationnelles exactes.
+6. `racine(n)` = √n exact.
+7. `modulus(z)` = |z|.
+8. `re(z)`, `im(z)`, `conj(z)` = parties réelle/imaginaire, conjugué.
+9. Les entiers sont illimités (BigInt natif, zéro GMP).
+10. Le moteur tourne dans un thread à pile de 8 Mo (récursion profonde).
+
+---
+
+## 📜 Licence
 ## 📜 Licence
 
 MIT — voir [LICENSE](LICENSE).
