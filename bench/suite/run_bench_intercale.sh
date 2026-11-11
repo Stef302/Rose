@@ -51,20 +51,26 @@ printf("%f\n%f\n",tr,ti);return 0;}
 EOF
 rustc -O -o "$TMP/b_rs" "$TMP/b.rs" 2>/dev/null
 g++ -O3 -o "$TMP/b_cpp" "$TMP/b.cpp" 2>/dev/null
+# AOT (LLVM ORC) : compilation native avec vectorisation NEON.
+# On compile UNE FOIS hors de la boucle de mesure : le temps de compilation
+# (≈ 0,5 s) ne doit pas polluer la mesure de l'exécution.
+"$ROSE_BIN" orc "$TMP/b.rose" -o "$TMP/b_aot.o" -O3 >/dev/null 2>&1 && gcc -O3 -o "$TMP/b_aot" "$TMP/b_aot.o" -lm 2>/dev/null
 
 declare -A best
 best[rose]=999999999; best[rust]=999999999; best[cpp]=999999999
-best[rose_void]=999999999; best[rust_void]=999999999
+best[rose_void]=999999999; best[rust_void]=999999999; best[rose_aot]=999999999
 for r in $(seq 1 "$ROUNDS"); do
-  for who in rose rust cpp rose_void rust_void; do
+  for who in rose rust cpp rose_aot rose_void rust_void; do
     case $who in
       rose)      cmd=("$ROSE_BIN" run "$TMP/b.rose");;
       rust)      cmd=("$TMP/b_rs");;
       cpp)       cmd=("$TMP/b_cpp");;
+      rose_aot)  cmd=("$TMP/b_aot");;
       rose_void) cmd=("$ROSE_BIN" run /tmp/opencode/trivial.rose);;
       rust_void) cmd=("$TMP/b_rs_empty");;
     esac
     [ "$who" = rust_void ] && continue
+    [ "$who" = rose_aot ] && [ ! -x "$TMP/b_aot" ] && continue
     s=$(date +%s%N); "${cmd[@]}" >/dev/null 2>&1; e=$(date +%s%N)
     us=$(( (e-s)/1000 ))
     [ "$us" -lt "${best[$who]}" ] && best[$who]=$us
@@ -73,6 +79,7 @@ done
 
 printf "Banc complexe — N = %s  (%s tours entrelacés, minimum)\n" "$N" "$ROUNDS"
 printf "  %-28s %8.3f ms\n" "Rose (JIT Cranelift)"  "$(echo "scale=3; ${best[rose]}/1000" | bc)"
+printf "  %-28s %8.3f ms\n" "Rose (AOT LLVM ORC)"   "$(echo "scale=3; ${best[rose_aot]}/1000" | bc)"
 printf "  %-28s %8.3f ms\n" "C++   (-O3)"           "$(echo "scale=3; ${best[cpp]}/1000" | bc)"
 printf "  %-28s %8.3f ms\n" "Rust  (-O)"            "$(echo "scale=3; ${best[rust]}/1000" | bc)"
 printf "  %-28s %8.3f ms\n" "Rose (démarrage seul)" "$(echo "scale=3; ${best[rose_void]}/1000" | bc)"
