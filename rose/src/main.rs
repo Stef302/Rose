@@ -158,13 +158,20 @@ fn main() {
         cmd_llvm::execute(action, argv.as_slice());
         #[cfg(not(feature = "llvm"))]
         {
+            // 1. helper déjà présent (cache ou à côté de l'exécutable) ?
             if let Some(helper) = auto_llvm::trouver_helper() {
                 auto_llvm::lance_depuis(&helper, action, argv.as_slice());
             }
-            eprintln!("rose: la chaîne AOT LLVM n'est pas embarquée dans ce binaire.");
-            eprintln!("      le binaire peut télécharger le helper tout seul (commande 'rose orc')");
-            eprintln!("      ou : cargo build --release --features llvm");
-            std::process::exit(1);
+            // 2. sinon : téléchargement depuis la release GitHub (ou miroir)
+            match auto_llvm::installer_helper() {
+                Ok(helper) => auto_llvm::lance_depuis(&helper, action, argv.as_slice()),
+                Err(e) => {
+                    eprintln!("rose: la chaîne AOT LLVM n'est pas disponible.");
+                    eprintln!("      {}", e);
+                    eprintln!("      autre solution : cargo build --release --features llvm");
+                    std::process::exit(1);
+                }
+            }
         }
     }
     match action {
