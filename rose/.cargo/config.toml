@@ -1,0 +1,23 @@
+# Configuration de compilation du moteur Rose.
+#
+# Lien statique sur les cibles Linux GNU (aarch64 / x86_64) :
+#
+#   * le binaire Rose est lié dynamiquement par défaut, ce qui coûte ~0,3 ms
+#     à CHAQUE lancement (7 392 relocations à traiter par le chargeur
+#     dynamique, contre 459 pour un binaire Rust minimal) ;
+#   * le lien statique supprime ce surcoût : le banc complexe gagne
+#     ~0,25 ms par exécution, et le démarrage seul ~0,11 ms (mesuré en
+#     salve alternée Rose/Rust, 40 tours entrelacés) ;
+#   * le FFI Rose (`@dll`/`@sym` → dlopen) reste fonctionnel : glibc
+#     implémente dlopen sur les binaires statiques (vérifié avec
+#     `exemples/ffi_libm.rose`).
+#
+# Les cibles Windows (gnullvm/msvc) et WebAssembly ne sont PAS concernées :
+# `target.<triple>.rustflags` ne s'applique qu'à la triple indiquée, et le
+# WASM est déjà statique par construction.
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
