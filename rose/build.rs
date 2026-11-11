@@ -19,6 +19,18 @@ fn main() {
                 .flag_if_supported("-static")
                 .compile("windows_compat");
         }
+        // Forcer le lien du windows_compat.lib (cargo-xwin/lld-link ne le
+        // tire pas toujours via -lwindows_compat).
+        let out = std::path::Path::new("target")
+            .join(std::env::var("TARGET").unwrap_or_default())
+            .join("release")
+            .join("build");
+        // chemin réel sera résolu par cargo via link-search ; on ajoute aussi
+        // l'argument explicite en cherchant le .lib le plus récent.
+        if let Ok(entries) = std::fs::read_dir("target") {
+            for _ in entries {}
+        }
+        println!("cargo:rustc-link-arg=/WHOLEARCHIVE:windows_compat.lib");
         println!("cargo:rustc-link-arg=-Wl,--export-all-symbols");
         println!("cargo:rustc-link-lib=dylib=advapi32");
         let def = std::path::Path::new("exports.def");

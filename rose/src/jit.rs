@@ -527,6 +527,7 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
 }
 
 /// Une région de mémoire JIT.
+#[cfg(unix)]
 struct RegionJit {
     ptr: *mut u8,
     len: usize,
@@ -555,18 +556,22 @@ struct RegionJit {
 ///
 /// Le flush inter-CPU complet n'est fait que si le programme crée des
 /// threads : voir `pipeline_flush_si_threads`.
+#[cfg(unix)]
 struct MemoireJit {
     regions: Vec<RegionJit>,
 }
 
 // le pointeur brut n'est pas Send : le module JIT ne partage pas ses regions
 // entre threads (une seule thread d execution), on le declare Send explicitement.
+#[cfg(unix)]
 unsafe impl Send for MemoireJit {}
 
+#[cfg(unix)]
 impl MemoireJit {
     fn new() -> Self { MemoireJit { regions: Vec::new() } }
 }
 
+#[cfg(unix)]
 impl JITMemoryProvider for MemoireJit {
     fn allocate(&mut self, size: usize, align: u64, kind: JITMemoryKind) -> std::io::Result<*mut u8> {
         let align = if align == 0 { 1 } else { align as usize };
@@ -776,6 +781,9 @@ impl Jit {
             builder.symbol(nom, ptr);
         }
         // memoire JIT maison : pas de pipeline_flush_mt (voir MemoireJit)
+        // (sous Unix seulement ; sous Windows on garde le SystemMemoryProvider
+        // par défaut de Cranelift, qui utilise VirtualAlloc/VirtualProtect)
+        #[cfg(unix)]
         builder.memory_provider(Box::new(MemoireJit::new()));
         let module = JITModule::new(builder);
         Jit { module, decls: HashMap::new(), runtime_decls: HashMap::new(),

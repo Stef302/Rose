@@ -1,0 +1,144 @@
+{
+  "Programme minimal": {
+    "prefix": "rose",
+    "body": [
+      ">> \"Bonjour, Rose !\""
+    ],
+    "description": "Programme Rose minimal"
+  },
+  "Affectation": {
+    "prefix": "$",
+    "body": [
+      "\\$${1:nom} = ${2:valeur}"
+    ],
+    "description": "Affectation d'une variable"
+  },
+  "Affichage": {
+    "prefix": ">>",
+    "body": [
+      ">> ${1:expr}"
+    ],
+    "description": "Affiche une expression (formule LaTeX + résultat)"
+  },
+  "Saisie": {
+    "prefix": "<<",
+    "body": [
+      "<< ${1:variable}"
+    ],
+    "description": "Saisie au clavier"
+  },
+  "Si": {
+    "prefix": "si",
+    "body": [
+      "si (${1:cond}) {",
+      "    ${2:}",
+      "} sinon {",
+      "    ${3:}",
+      "}"
+    ],
+    "description": "Structure si / sinon"
+  },
+  "Si raccourci": {
+    "prefix": "?",
+    "body": [
+      "? (${1:cond}) [ ${2:instr} ; ${3:instr} ]"
+    ],
+    "description": "Si raccourci (séparateur ;)"
+  },
+  "Tant que": {
+    "prefix": "tant_que",
+    "body": [
+      "tant_que (${1:cond}) {",
+      "    ${2:}",
+      "}"
+    ],
+    "description": "Boucle tant_que"
+  },
+  "Tant que raccourci": {
+    "prefix": "@",
+    "body": [
+      "@ (${1:cond}) [ ${2:instr} ; ${3:instr} ]"
+    ],
+    "description": "Tant_que raccourci"
+  },
+  "Pour": {
+    "prefix": "pour",
+    "body": [
+      "pour ${1:i} de ${2:0} vers ${3:10} {",
+      "    ${4:}",
+      "}"
+    ],
+    "description": "Boucle pour (borne finale exclusive)"
+  },
+  "Fonction": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:nom}(${2:param})${3: -> entier} {",
+      "    ${4:}",
+      "    retour ${5:valeur}",
+      "}"
+    ],
+    "description": "Définition de fonction (types facultatifs)"
+  },
+  "Fonction typée": {
+    "prefix": "fnt",
+    "body": [
+      "fn ${1:nom}(${2:x}: entier) -> entier {",
+      "    si (${2:x} < 2) { retour ${2:x} }",
+      "    retour ${1:nom}(${2:x} - 1) + ${1:nom}(${2:x} - 2)",
+      "}"
+    ],
+    "description": "Fonction typée (JIT/AOT)"
+  },
+  "Table": {
+    "prefix": "table",
+    "body": [
+      "\\$${1:t} = table()",
+      "\\$${1:t}[\"${2:cle}\"] = ${3:valeur}"
+    ],
+    "description": "Table associative"
+  },
+  "Liste": {
+    "prefix": "liste",
+    "body": [
+      "\\$${1:l} = [${2:1, 2, 3}]"
+    ],
+    "description": "Liste homogène"
+  },
+  "FFI": {
+    "prefix": "@dll",
+    "body": [
+      "@dll(\"${1:m}\") @sym(\"${2:pow}\")",
+      "fn ${3:pow_c}(x: flottant, y: flottant) -> flottant"
+    ],
+    "description": "Déclaration FFI (bibliothèque C)"
+  },
+  "Constantes": {
+    "prefix": "const",
+    "body": [
+      ">> pi",
+      ">> e",
+      ">> phi",
+      ">> racine(2)"
+    ],
+    "description": "Constantes irrationnelles exactes"
+  },
+  "Factorielle": {
+    "prefix": "fact",
+    "body": [
+      "fn factorielle(n: entier) -> entier {",
+      "    si (n < 2) { retour 1 }",
+      "    retour n * factorielle(n - 1)",
+      "}"
+    ],
+    "description": "Factorielle récursive"
+  },
+  "Complexe": {
+    "prefix": "complexe",
+    "body": [
+      "\\$z = ${1:3} + ${2:4}i",
+      ">> modulus(\\$z)"
+    ],
+    "description": "Nombre complexe"
+  }
+}
