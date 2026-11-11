@@ -45,6 +45,8 @@ pub mod sha256;
 /// JIT Cranelift — disponible uniquement sur les cibles natives.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod jit;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod auto_llvm;
 
 /// JIT Cranelift — ABSENT en WebAssembly (le JIT émet du code machine natif).
 /// Shim d'API STRICTEMENT identique à `src/jit.rs` : `interp.rs` compile à

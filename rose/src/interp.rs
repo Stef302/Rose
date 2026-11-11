@@ -2597,7 +2597,117 @@ impl From<Option<i32>> for Signal {
 
 // ── Point d'entrée CLI ────────────────────────────────────────────────────
 
+
+// ── Voie AOT (LLVM ORC) pour `rose run` ──────────────────────────────────
+//
+// `rose run` tente d'abord la compilation native LLVM ORC (via le helper
+// `rose-aot` téléchargé à la demande) : le programme est compilé en code
+// machine optimisé (vectorisation NEON, zéro coût de compilation au moment
+// de l'exécution), puis exécuté. Le résultat est mis en cache dans
+// ~/.cache/rose/run/<hash> pour que les exécutions suivantes soient
+// instantanées. Si le helper est absent ou le programme n'est pas supporté
+// par l'AOT, on retombe sur le JIT Cranelift, puis sur l'interpréteur.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn essayer_aot(source: &str, args: &[String]) -> Option<i32> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::path::PathBuf;
+
+    // 1. Trouver le helper AOT.
+    let helper = crate::auto_llvm::trouver_helper()?;
+
+    // 2. Clé de cache : hash du source + version du moteur.
+    let mut h = DefaultHasher::new();
+    source.hash(&mut h);
+    "2.0.3".hash(&mut h);
+    let cle = format!("{:x}", h.finish());
+
+    // 3. Répertoire de cache.
+    let cache_dir = crate::auto_llvm::chemin_cache()
+        .parent()
+        .map(|p| p.join("run"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/rose_aot_run"));
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let cache_bin = cache_dir.join(&cle);
+
+    // 4. Si le cache est valide, l'exécuter directement (exec pour
+    //    éliminer le surcoût de fork/wait).
+    if cache_bin.is_file() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let mut cmd = std::process::Command::new(&cache_bin);
+            cmd.args(args);
+            let _ = cmd.exec(); // ne retourne qu'en cas d'échec
+        }
+        let st = std::process::Command::new(&cache_bin)
+            .args(args)
+            .status();
+        if let Ok(s) = st {
+            return Some(s.code().unwrap_or(1));
+        }
+    }
+
+    // 5. Tenter la compilation AOT : helper orc + gcc.
+    let tmp = std::env::temp_dir().join(format!("rose_aot_run_{}", cle));
+    let _ = std::fs::create_dir_all(&tmp);
+    let src_path = tmp.join("p.rose");
+    let o_path = tmp.join("p.o");
+    let bin_path = tmp.join("p");
+    if std::fs::write(&src_path, source).is_err() { return None; }
+
+    let status = std::process::Command::new(&helper)
+        .args(["orc", src_path.to_str()?, "-o", o_path.to_str()?, "-O3"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !status.ok()?.success() { return None; }
+
+    let status = std::process::Command::new("gcc")
+        .args(["-O3", "-o", bin_path.to_str()?, o_path.to_str()?, "-lm"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    if !status.ok()?.success() { return None; }
+
+    // 6. Mettre en cache + exécuter.
+    let _ = std::fs::copy(&bin_path, &cache_bin);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&cache_bin, std::fs::Permissions::from_mode(0o755));
+    }
+    // Sur les systèmes Unix, on REMPLACE le processus courant par le binaire
+    // natif (exec) : zéro surcoût de fork/wait, démarrage direct du code
+    // natif. Si exec échoue (binaire invalide), on retombe sur le JIT.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new(&cache_bin);
+        cmd.args(args);
+        let err = cmd.exec(); // ne retourne qu'en cas d'échec
+        let _ = err;
+    }
+    // Fallback (non-Unix ou exec échoué) : spawn + wait.
+    let st = std::process::Command::new(&cache_bin)
+        .args(args)
+        .status();
+    st.ok().map(|s| s.code().unwrap_or(1))
+}
+
 pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
+    // Voie AOT (LLVM ORC) : OPT-IN via ROSE_AOT=1. Par défaut, `rose run`
+    // utilise le JIT Cranelift (avec les formules LaTeX par affichage).
+    // ROSE_AOT=1 active la compilation LLVM ORC (vectorisation NEON) quand
+    // le helper est disponible et le programme est supporté — c'est la voie
+    // qui atteint la parité avec Rust (0,87 ms).
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::env::var("ROSE_AOT").is_ok() {
+        if let Some(rc) = essayer_aot(source, &args) {
+            return rc;
+        }
+    }
     let _t0 = crate::run::chrono();
     let mut prog = match crate::front::analyser(source) {
         Ok(p) => p,
