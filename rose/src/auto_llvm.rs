@@ -25,9 +25,22 @@ use std::process::Command;
 /// Version du helper AOT à installer (doit correspondre au TAG de release).
 pub const VERSION_HELPER: &str = "v5.8.0-orc-fonctions";
 
-/// Empreinte SHA-256 attendue du helper téléchargé (vide = pas de
-/// vérification ; dans ce cas un avertissement est affiché).
-pub const SHA256_HELPER: &str = "764acffd3007889a378edd042c2cd2f129cd9021bc19c53ee1433986d7035de4";
+/// Empreintes SHA-256 attendues par plateforme (vides = pas de vérification ;
+/// dans ce cas un avertissement est affiché). L'empreinte peut aussi être
+/// surchargée par ROSE_AOT_SHA256 (miroir interne, tests, déploiement privé).
+pub fn sha256_attendu(cible: &str) -> &'static str {
+    match cible {
+        "aarch64-linux" => SHA256_HELPER_AARCH64_LINUX,
+        _ => "",
+    }
+}
+
+const SHA256_HELPER_AARCH64_LINUX: &str =
+    "764acffd3007889a378edd042c2cd2f129cd9021bc19c53ee1433986d7035de4";
+
+/// Empreinte de référence de la release (laisser vide tant que l'artefact
+/// n'est pas publié sur la release GitHub ; voir docs/telechargements/).
+pub const SHA256_HELPER: &str = "";
 
 /// Nom du binaire helper.
 pub const NOM_HELPER: &str = "rose-aot";
@@ -117,7 +130,8 @@ fn est_executable(p: &Path) -> bool {
 /// Télécharge le helper, vérifie son empreinte et l'installe dans le cache.
 pub fn installer_helper() -> Result<PathBuf, String> {
     let url = std::env::var("ROSE_AOT_URL").unwrap_or_else(|_| url_par_defaut());
-    let attendu = std::env::var("ROSE_AOT_SHA256").unwrap_or_else(|_| SHA256_HELPER.to_string());
+    let attendu = std::env::var("ROSE_AOT_SHA256")
+        .unwrap_or_else(|_| sha256_attendu(&cible()).to_string());
 
     eprintln!("rose: chaîne AOT LLVM absente — téléchargement du helper…");
     eprintln!("      {}", url);
