@@ -295,11 +295,11 @@ pub enum Expr {
 /// On dé-replie le littéral imaginaire pur en variable « i » lorsque l'autre
 /// côté de la comparaison est un nombre : un vrai usage de l'imaginaire ne se
 /// compare jamais avec « < ».
-fn est_lit_i(e: &Expr) -> bool {
+pub fn est_lit_i(e: &Expr) -> bool {
     matches!(e, Expr::LitComplexe { re, im, .. } if *re == 0.0 && *im == 1.0)
 }
 
-fn est_surement_nombre(e: &Expr) -> bool {
+pub fn est_surement_nombre(e: &Expr) -> bool {
     match e {
         Expr::Litteral { .. } => true,
         Expr::Var(n, _) => !matches!(n.as_str(), "pi" | "phi" | "e"),
@@ -308,7 +308,7 @@ fn est_surement_nombre(e: &Expr) -> bool {
 }
 
 
-fn deplier_i_test(e: &mut Expr) {
+pub fn deplier_i_test(e: &mut Expr) {
     if let Expr::Binaire { op, a, b, .. } = e {
         let ordre = matches!(op.as_str(), "<" | "<=" | ">" | ">=");
         let compare_i = (est_lit_i(a) && est_surement_nombre(b))
@@ -322,8 +322,10 @@ fn deplier_i_test(e: &mut Expr) {
     }
 }
 
-fn deplier_i_rec(e: &mut Expr) {
+pub fn deplier_i_rec(e: &mut Expr) {
     match e {
+        // dans le contexte d'une boucle dont « i » est le compteur entier,
+        // le littéral 0+1i (jeton « i » replié par le lexeur) est la VARIABLE.
         Expr::LitComplexe { re, im, ligne } if *re == 0.0 && *im == 1.0 => {
             *e = Expr::Var("i".into(), *ligne);
         }
@@ -714,7 +716,10 @@ impl Parser {
             }
             Tk::Question => {
                 self.suivant();
-                let test = self.parentheser()?;
+                let mut test = self.parentheser()?;
+                // « ? (i < 2) » ne dé-replie PAS le test : hors compteur
+                // déclaré, 0+1i reste le VRAI imaginaire (le raccourci n'a
+                // pas de variable de boucle en vue).
                 let alors = self.corps_chevron()?;
                 return Ok(Instr::Si { test, alors, sinon: None, ligne: t.ligne });
             }
@@ -1155,6 +1160,9 @@ pub fn verifier(prog: &mut Programme) -> Result<(), Err> {
                 if let Ok(t) = expr_type(prog, e, &mut globals) {
                     if t.n != TyKind::Vide {
                         let cible = globals.get(nom).cloned().unwrap_or(t);
+                        if nom == "i" && cible.n == TyKind::Entier {
+                            I_ENTIER.with(|c| c.set(true));
+                        }
                         globals.insert(nom.clone(), cible);
                     }
                 }
@@ -2087,7 +2095,13 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
     let tk = tokeniser(source)?;
     let mut p = Parser::nouveau(tk);
     let mut prog = p.programmer()?;
-    verifier(&mut prog)?;
+    // Repli de constantes AVANT la verification : le lexeme « i » est plie en
+    // litteral imaginaire 0+1i par le lexeur, et le repli peut le fusionner
+    // (« $i = 0 + i » -> 0+1i, « $i + 1 » -> 1+1i) alors que « i » est le
+    // COMPTEUR ENTIER. On replie donc d'abord, on repare la signature du
+    // compteur, puis on verifie : c'est le seul ordre qui donne la meme
+    // decision aux voies « comp », JIT et interpreteur (parite avec le C++,
+    // qui suit « i » par un etat de l'interpreteur).
     // repli de constantes sur les instructions
     prog.instructions = prog.instructions.iter().map(|i| replier_instr(i)).collect();
     for nom in prog.ordre.clone() {
@@ -2096,7 +2110,237 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
             sig.corps = Some(c.iter().map(|i| replier_instr(i)).collect());
         }
     }
+    // Le repli de constantes a pu FUSIONNER des litteraux en 0+1i / k+ki alors
+    // que « i » est le COMPTEUR ENTIER du programme (« $i = 0 + i », le test
+    // « @ (i < n) », l'increment « $i = $i + 1 »). Le parser ne peut pas le
+    // voir sans borne de boucle en vue ; le C++ suit « i » par un etat de
+    // l'interpreteur, on le reproduit par une pre-passe qui decide une fois
+    // pour toutes si « i » est un entier. Sans cette passe, « comp » rejette
+    // un programme que l'execution accepte (divergence des voies).
+    let (i_compteur, i_boucle) = {
+        // deux drapeaux : « i est entier » (compteur) et « i est bouclé »
+        // (seule situation où le repli peut avoir écrasé un incrément).
+        fn dans(b: &[Instr]) -> (bool, bool) {
+            let mut a = (false, false);
+            for i in b {
+                let x = match i {
+                    Instr::Pour { nom, corps, .. } => {
+                        let c = dans(corps);
+                        (nom == "i" || c.0, nom == "i" || c.1)
+                    }
+                    Instr::TantQue { test, corps, .. } => {
+                        let c = dans(corps);
+                        (est_cote_i(test) || c.0, est_cote_i(test) || c.1)
+                    }
+                    Instr::Si { test, alors, sinon, .. } => {
+                        let c = dans(alors);
+                        let d = sinon.as_ref().map(|s| dans(s)).unwrap_or((false, false));
+                        (est_cote_i(test) || c.0 || d.0, est_cote_i(test) || c.1 || d.1)
+                    }
+                    Instr::Bloc(bb) => dans(bb),
+                    Instr::Affect { nom, e, .. } => {
+                        if nom != "i" { (false, false) }
+                        else if matches!(e, Expr::Binaire { op, a, .. } if {
+                                (op == "+" || op == "-") && matches!(&**a, Expr::Var(x, _) if x == "i")
+                            }) {
+                            // « $i = $i + 1 » : compteur ET bouclé
+                            (true, true)
+                        } else {
+                            (matches!(e, Expr::Litteral { flott: false, rationnel: false, .. }), false)
+                        }
+                    }
+                    _ => (false, false),
+                };
+                a.0 |= x.0; a.1 |= x.1;
+            }
+            a
+        }
+        fn dans0(b: &[Instr]) -> bool { let (a, _) = dans(b); a }
+        let _ = dans0;
+        let mut r = dans(&prog.instructions);
+        for n in &prog.ordre {
+            if let Some(c) = prog.signatures.get(n).and_then(|s| s.corps.as_deref()) {
+                let x = dans(c); r.0 |= x.0; r.1 |= x.1;
+            }
+        }
+        r
+    };
+    // le drapeau est partage par tout le processus (miroir de l'etat de
+    // l'interpreteur C++) : les portes d'execution de interp.rs le lisent.
+    I_COMPTEUR.with(|c| c.set(i_compteur || c.get()));
+    I_BBOUCLE.with(|c| c.set(i_boucle || c.get()));
+    {
+        fn rep(i: &Instr, i_entier: bool) -> Instr {
+            match i {
+                // l'increment ecrase par le repli (« $i = k+ki ») : la signature
+                // re == im != 0 n'a jamais d'usage legitime de l'imaginaire.
+                Instr::Affect { nom, e, ligne } if nom == "i" && matches!(e, Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0) => {
+                    Instr::Affect { nom: nom.clone(),
+                        e: Expr::Binaire { op: "+".into(),
+                            a: Box::new(Expr::Var("i".into(), *ligne)),
+                            b: Box::new(Expr::Litteral { texte: { let Expr::LitComplexe { re, .. } = &*e else { unreachable!() }; re.to_string() }, flott: false, rationnel: false, neg: false, ty: TyKind::Dyn, ligne: *ligne }),
+                            ligne: *ligne },
+                        ligne: *ligne }
+                }
+                Instr::Affect { nom, e, ligne } if nom == "i" && i_entier => match e {
+                    Expr::LitComplexe { re, im, ligne: l } if *im == *re && *re != 0.0 => {
+                        Instr::Affect { nom: nom.clone(),
+                            e: Expr::Binaire { op: "+".into(),
+                                a: Box::new(Expr::Var("i".into(), *l)),
+                                b: Box::new(Expr::Litteral { texte: re.to_string(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn, ligne: *l }),
+                                ligne: *l },
+                            ligne: *ligne }
+                    }
+                    Expr::LitComplexe { re, im, ligne: l } if *re == 0.0 && *im == 1.0 => {
+                        Instr::Affect { nom: nom.clone(), e: Expr::Var("i".into(), *l), ligne: *ligne }
+                    }
+                    _ => Instr::Affect { nom: nom.clone(), e: e.clone(), ligne: *ligne },
+                },
+                Instr::Si { test, alors, sinon, ligne } => Instr::Si {
+                    test: reparer_test_i(test, i_entier),
+                    alors: alors.iter().map(|x| rep(x, i_entier)).collect(),
+                    sinon: sinon.as_ref().map(|s| s.iter().map(|x| rep(x, i_entier)).collect()),
+                    ligne: *ligne },
+                Instr::TantQue { test, corps, ligne } => {
+                    // corps de « tant_que (i < n) » : les 0+1i du corps sont le
+                    // COMPTEUR (miroir du dé-repli que le parser fait pour
+                    // « tant_que », que le raccourci « @ » ne traverse pas).
+                    if est_boucle_i_repar_test(test) {
+                        let t2 = { let mut x = test.clone(); deplier_i_rec(&mut x); x };
+                        let c2: Vec<Instr> = corps.iter().map(|x| rep(x, true)).collect();
+                        let c2 = c2.into_iter().map(|x| deplier_corps_i(&x)).collect();
+                        Instr::TantQue { test: t2, corps: c2, ligne: *ligne }
+                    } else {
+                        Instr::TantQue {
+                            test: reparer_test_i(test, i_entier),
+                            corps: corps.iter().map(|x| rep(x, i_entier)).collect(), ligne: *ligne }
+                    }
+                }
+                Instr::Pour { nom, debut, fin, corps, ligne } => {
+                    // « pour i de … » : le mot « i » des bornes ET du corps est la
+                    // VARIABLE de boucle, jamais l'imaginaire 0+1i. Sans ce
+                    // dé-repli, « >> i » affichait le littéral au lieu du compteur.
+                    if nom == "i" {
+                        let mut d2 = debut.clone();
+                        let mut f2 = fin.clone();
+                        deplier_i_rec(&mut d2);
+                        deplier_i_rec(&mut f2);
+                        let c2: Vec<Instr> = corps.iter().map(|x| rep(x, true)).collect();
+                        let c2 = c2.into_iter().map(|x| deplier_corps_i(&x)).collect();
+                        Instr::Pour { nom: nom.clone(), debut: d2, fin: f2, corps: c2, ligne: *ligne }
+                    } else {
+                        Instr::Pour { nom: nom.clone(), debut: debut.clone(), fin: fin.clone(),
+                            corps: corps.iter().map(|x| rep(x, i_entier)).collect(), ligne: *ligne }
+                    }
+                }
+                Instr::Bloc(b) => Instr::Bloc(b.iter().map(|x| rep(x, i_entier)).collect()),
+                other => other.clone(),
+            }
+        }
+        fn est_boucle_i_repar_test(test: &Expr) -> bool {
+            if let Expr::Binaire { op, a, b, .. } = test {
+                if matches!(op.as_str(), "<" | "<=" | ">" | ">=") {
+                    return est_cote_i(a) || est_cote_i(b);
+                }
+            }
+            false
+        }
+        fn reparer_test_i(test: &Expr, i_entier: bool) -> Expr {
+            if let Expr::Binaire { op, a, b, .. } = test {
+                if matches!(op.as_str(), "<" | "<=" | ">" | ">=") {
+                    let l = est_cote_i(a);
+                    let r = est_cote_i(b);
+                    let est_i = (l && !r && est_surement_nombre(b))
+                        || (r && !l && est_surement_nombre(a))
+                        || (l && r && i_entier);
+                    if est_i {
+                        let mut t2 = test.clone();
+                        deplier_i_rec(&mut t2);
+                        return t2;
+                    }
+                }
+            }
+            test.clone()
+        }
+        prog.instructions = prog.instructions.iter().map(|x| rep(x, i_compteur)).collect();
+        for nom in prog.ordre.clone() {
+            let sig = prog.signatures.get_mut(&nom).unwrap();
+            if let Some(c) = &sig.corps {
+                let cc = c.clone();
+                sig.corps = Some(cc.iter().map(|x| rep(x, i_compteur)).collect());
+            }
+        }
+        verifier(&mut prog)?;
+    }
     Ok(prog)
+}
+
+thread_local! {
+    /// « i » est le COMPTEUR ENTIER du programme courant (decide par analyser,
+    /// see i_compteur). Les portes d'execution de interp.rs s'y conforment pour
+    /// que « $i = 3+3i » reste un VRAI complexe quand « i » n'est pas un
+    /// compteur, et redevienne l'increment ecrase quand il l'est.
+    static I_COMPTEUR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// « i » est BOUCLÉ (pour i de …, tant_que (i < n), ou $i = $i + k) :
+    /// seule situation où le repli de constantes a pu écraser un incrément.
+    static I_BBOUCLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// « i » est le compteur d'une boucle du programme courant.
+pub fn i_est_boucle() -> bool { I_BBOUCLE.with(|c| c.get()) }
+
+pub fn i_est_compteur() -> bool { I_COMPTEUR.with(|c| c.get()) }
+
+/// Marque « i » comme compteur entier pour tout le processus. appele par
+/// analyser() et par la reparation d'executer_source : les deux voies doivent
+/// donner la meme decision au JIT comme a l'interpreteur.
+pub fn marquer_i_compteur() { I_COMPTEUR.with(|c| c.set(true)); }
+
+/// « i » est verrouille comme entier par le verificateur du programme courant
+/// (la pre-passe de verifier() a trouve « $i = <entier> »). Les portes
+/// d'execution de interp.rs l'admettent comme second signe du compteur :
+/// analyser() peut ne pas l'avoir vu quand le verificateur est rappele sur un
+/// AST deja repare.
+pub fn i_est_entier_verifie() -> bool { I_ENTIER.with(|c| c.get()) }
+
+thread_local! {
+    static I_ENTIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// idem, version visible de l'interpréteur : la réparation de
+/// executer_source l'applique aux corps de « tant_que (i < n) ».
+pub fn deplier_corps_instr(i: &Instr) -> Instr { deplier_corps_i(i) }
+
+/// dans le corps de « pour i de … », les 0+1i portés par un affichage ou une
+/// instruction d'expression sont la VARIABLE de boucle.
+fn deplier_corps_i(i: &Instr) -> Instr {
+    match i {
+        Instr::Afficher(es, l) => {
+            let v: Vec<Expr> = es.iter().map(|e| { let mut x = e.clone(); deplier_i_rec(&mut x); x }).collect();
+            Instr::Afficher(v, *l)
+        }
+        Instr::ExprStmt(e) => { let mut x = e.clone(); deplier_i_rec(&mut x); Instr::ExprStmt(x) }
+        Instr::Si { test, alors, sinon, ligne } => Instr::Si {
+            test: { let mut x = test.clone(); deplier_i_rec(&mut x); x },
+            alors: alors.iter().map(deplier_corps_i).collect(),
+            sinon: sinon.as_ref().map(|ss| ss.iter().map(deplier_corps_i).collect()),
+            ligne: *ligne },
+        Instr::TantQue { test, corps, ligne } => Instr::TantQue {
+            test: { let mut x = test.clone(); deplier_i_rec(&mut x); x },
+            corps: corps.iter().map(deplier_corps_i).collect(), ligne: *ligne },
+        Instr::Bloc(b) => Instr::Bloc(b.iter().map(deplier_corps_i).collect()),
+        other => other.clone(),
+    }
+}
+
+/// cote d'un comparateur qui porte le compteur « i » : soit Var("i") deja
+/// de-replie par le parser (« tant_que »), soit le 0+1i du lexeme « i ».
+pub fn est_cote_i(e: &Expr) -> bool {
+    match e {
+        Expr::Var(x, _) => x == "i",
+        Expr::LitComplexe { re, im, .. } => *re == 0.0 && *im == 1.0,
+        _ => false,
+    }
 }
 
 pub fn replier_instr(i: &Instr) -> Instr {

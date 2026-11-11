@@ -80,6 +80,16 @@ fn somme_sure(a: &Expr, b: &Expr) -> bool {
 /// Le type statique d'une expression, dans le sous-ensemble compilable.
 /// Retourne None si l'expression sort du support.
 pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
+    ty_statique_f(e, &|n: &str| env.get(n).copied())
+}
+
+/// Type statique d'une expression, avec un ACCESSEUR de types au lieu d'une
+/// table complète. L'émetteur n'a pas une table « variable → type » mais
+/// deux tables parallèles (slots Cranelift + types) : il les filtrait
+/// il les filtrait en construisant une NOUVELLE HashMap à chaque appel — un coût
+/// O(n) par opération binaire, donc O(n²) par expression. Ici, le filtre
+/// est appliqué à la volée, sans allocation.
+fn ty_statique_f(e: &Expr, get: &dyn Fn(&str) -> Option<TyKind>) -> Option<TyKind> {
     match e {
         Expr::Litteral { flott, texte, .. } => {
             if *flott { Some(TyKind::Flottant) }
@@ -88,13 +98,13 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
         }
         Expr::LitComplexe { .. } => Some(TyKind::Complexe),
         Expr::BooleenLit(..) => Some(TyKind::Booleen),
-        Expr::Var(n, _) => env.get(n).copied().filter(|t| compilable(*t)),
+        Expr::Var(n, _) => get(n).filter(|t| compilable(*t)),
         Expr::Appel { nom, module, args, .. } => {
             // appel compilable si : pas de module, args compilables, et la
             // signature connue est dans le sous-ensemble JIT (miroir de la
             // porte du JIT C++ qui n'accepte que entier/flottant/booleen).
             if !module.is_empty() { return None; }
-            for a in args { if ty_statique(a, env).is_none() { return None; } }
+            for a in args { if ty_statique_f(a, get).is_none() { return None; } }
             // 1) fonctions du programme utilisateur
             let r = PROG_AVEC.with(|p| p.borrow().get(nom).cloned()).and_then(|s| {
                 // l'argument doit être compatible avec le paramètre déclaré :
@@ -102,7 +112,7 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                 // passerait la valeur avec le mauvais registre).
                 for (i, a) in args.iter().enumerate() {
                     let pt = match s.params.get(i) { Some(x) => x.1.n, None => return None };
-                    let at = ty_statique(a, env)?;
+                    let at = ty_statique_f(a, get)?;
                     if !compatible_jit(pt, at) { return None; }
                 }
                 if compilable(s.retour.n) || s.retour.n == TyKind::Vide { Some(s.retour.n) } else { None }
@@ -117,7 +127,7 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                 if !matches!(nom.as_str(), "re" | "im" | "conj") {
                     for (i, a) in args.iter().enumerate() {
                         let attendu = match std.args.get(i) { Some(t) => crate::front::ty_du_nom(t).n, None => return None };
-                        let at = ty_statique(a, env)?;
+                        let at = ty_statique_f(a, get)?;
                         if !compatible_jit(attendu, at) { return None; }
                     }
                 }
@@ -134,7 +144,7 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                 }
                 if nom == "modulus" && args.len() == 1 {
                     // modulus(complexe) -> f64 via rose_sqrt ; modulus(réel) -> |x|
-                    match ty_statique(&args[0], env) {
+                    match ty_statique_f(&args[0], get) {
                         Some(TyKind::Complexe) | Some(TyKind::Flottant) | Some(TyKind::Entier) | Some(TyKind::Rationnel) => {
                             return Some(TyKind::Flottant);
                         }
@@ -147,28 +157,28 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
         }
         Expr::Unaire { op, a, .. } => {
             if op == "non" {
-                if ty_statique(a, env)? == TyKind::Booleen { Some(TyKind::Booleen) } else { None }
-            } else { ty_statique(a, env) }
+                if ty_statique_f(a, get)? == TyKind::Booleen { Some(TyKind::Booleen) } else { None }
+            } else { ty_statique_f(a, get) }
         }
         Expr::Binaire { op, a, b, .. } => {
             match op.as_str() {
                 "et" | "ou" => {
-                    if ty_statique(a, env)? == TyKind::Booleen && ty_statique(b, env)? == TyKind::Booleen {
+                    if ty_statique_f(a, get)? == TyKind::Booleen && ty_statique_f(b, get)? == TyKind::Booleen {
                         Some(TyKind::Booleen)
                     } else { None }
                 }
                 "==" | "!=" | "<" | "<=" | ">" | ">=" => {
-                    let ta = ty_statique(a, env)?;
-                    let tb = ty_statique(b, env)?;
+                    let ta = ty_statique_f(a, get)?;
+                    let tb = ty_statique_f(b, get)?;
                     // la comparaison de complexes n'est pas implementee dans le
                     // JIT : on laisse l'interpreteur (semantique exacte).
                     if ta == TyKind::Complexe || tb == TyKind::Complexe { return None; }
                     if ta == tb || (compilable(ta) && compilable(tb)) { Some(TyKind::Booleen) } else { None }
                 }
-                "div" => { ty_statique(a, env)?; ty_statique(b, env)?; Some(TyKind::Entier) }
+                "div" => { ty_statique_f(a, get)?; ty_statique_f(b, get)?; Some(TyKind::Entier) }
                 "+" | "-" | "*" => {
-                    let ta = ty_statique(a, env)?;
-                    let tb = ty_statique(b, env)?;
+                    let ta = ty_statique_f(a, get)?;
+                    let tb = ty_statique_f(b, get)?;
                     // arithmetique complexe : le JIT sait la faire (deux f64)
                     if ta == TyKind::Complexe || tb == TyKind::Complexe {
                         return Some(TyKind::Complexe);
@@ -180,10 +190,10 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                         _ => None,
                     }
                 }
-                "%" => { ty_statique(a, env)?; ty_statique(b, env)?; Some(TyKind::Entier) }
+                "%" => { ty_statique_f(a, get)?; ty_statique_f(b, get)?; Some(TyKind::Entier) }
                 "^" => {
-                    let ta = ty_statique(a, env)?;
-                    let tb = ty_statique(b, env)?;
+                    let ta = ty_statique_f(a, get)?;
+                    let tb = ty_statique_f(b, get)?;
                     match (ta, tb) {
                         (TyKind::Flottant, _) | (_, TyKind::Flottant) => Some(TyKind::Flottant),
                         (TyKind::Entier, TyKind::Entier) => Some(TyKind::Entier),
@@ -191,8 +201,8 @@ pub fn ty_statique(e: &Expr, env: &HashMap<String, TyKind>) -> Option<TyKind> {
                     }
                 }
                 "/" => {
-                    let ta = ty_statique(a, env)?;
-                    let tb = ty_statique(b, env)?;
+                    let ta = ty_statique_f(a, get)?;
+                    let tb = ty_statique_f(b, get)?;
                     if ta == TyKind::Flottant || tb == TyKind::Flottant {
                         Some(TyKind::Flottant)
                     } else {
@@ -252,13 +262,38 @@ fn contient_retour(instrs: &[Instr]) -> bool {
 }
 
 fn est_boucle_i(test: &Expr) -> bool {
-    match test {
-        Expr::Binaire { op, a, b, .. } if matches!(op.as_str(), "<" | "<=" | ">" | ">=") => {
-            matches!(**a, Expr::Var(ref x, _) if x == "i")
-                || matches!(**b, Expr::Var(ref x, _) if x == "i")
+    // le test d'une boucle « i » peut porter le 0+1i replié par le lexeur
+    // (le mot « i » dans « tant_que (i < n) » est la variable de boucle) :
+    // on le reconnaît comme variable « i » quand la table des types en fait
+    // un entier.
+    fn est_var_i(e: &Expr, types: Option<&HashMap<String, TyKind>>) -> bool {
+        match e {
+            Expr::Var(x, _) => x == "i",
+            Expr::LitComplexe { re, im, .. } => {
+                *re == 0.0 && *im == 1.0
+                    && types.map(|t| t.get("i").copied() == Some(TyKind::Entier)).unwrap_or(false)
+            }
+            _ => false,
         }
-        _ => false,
     }
+    fn test_i(test: &Expr, types: Option<&HashMap<String, TyKind>>) -> bool {
+        match test {
+            Expr::Binaire { op, a, b, .. } if matches!(op.as_str(), "<" | "<=" | ">" | ">=") => {
+                est_var_i(a, types) || est_var_i(b, types)
+            }
+            _ => false,
+        }
+    }
+    test_i(test, None) || {
+        let t = TY_CONTEXTE.with(|t| t.borrow().clone());
+        test_i(test, Some(&t))
+    }
+}
+
+thread_local! {
+    /// types des variables vus par « bloc_compilable » (sert à reconnaître le
+    /// 0+1i qui est en réalité la variable entière « i »).
+    static TY_CONTEXTE: std::cell::RefCell<HashMap<String, TyKind>> = std::cell::RefCell::new(HashMap::new());
 }
 
 fn expr_contient_lit_complexe(e: &Expr) -> bool {
@@ -291,6 +326,8 @@ fn corps_contient_lit_complexe(b: &[Instr]) -> bool {
 
 pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                    prog: &HashMap<String, Signature>, attendu: Option<TyKind>) -> bool {
+    // publication des types pour est_boucle_i (reconnaître 0+1i = variable i).
+    TY_CONTEXTE.with(|t| *t.borrow_mut() = env.clone());
 
     // Sous-ensemble i64 STRICT : la multiplication et la puissance entières
     // sont exclues, car le moteur C++ promeut en GMP dès que le produit
@@ -410,7 +447,7 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 // corps flottant est en revanche un vrai complexe : la voie
                 // rapide du banc l'utilise, on ne la refuse pas.
                 if matches!(e, Some(Expr::LitComplexe { re, im, .. })
-                        if *re == 0.0 && *im == 1.0)
+                        if *re == 0.0 && *im == 1.0 && !crate::front::i_est_compteur())
                     && matches!(attendu, Some(TyKind::Entier) | Some(TyKind::Rationnel) | Some(TyKind::Booleen))
                 {
                     return false;
@@ -472,6 +509,8 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_affiche_bool", rose_affiche_bool as *const u8),
         ("rose_affiche_f64", rose_affiche_f64 as *const u8),
         ("rose_affiche_complexe", rose_affiche_complexe as *const u8),
+        ("rose_affiche_formule", rose_affiche_formule as *const u8),
+        ("rose_affiche_prefixe", rose_affiche_prefixe as *const u8),
         ("rose_affiche_ent", rose_affiche_ent as *const u8),
         ("rose_powf", rose_powf as *const u8),
         ("rose_sqrt", rose_sqrt as *const u8),
@@ -658,6 +697,9 @@ struct Emetteur<'a> {
     /// (le slot de la partie réelle est celui retourné par `var`).
     complex_im: HashMap<String, Variable>,
     tag_tmp: Variable,
+    /// une émission a rencontré une borne de « pour » non entière : le bloc
+    /// n'est pas compilable, l'appelant doit retomber sur l'interpréteur.
+    refus_i: bool,
 }
 
 
@@ -703,7 +745,8 @@ impl Jit {
         // opt_level=speed : sans ça Cranelift compile en « opt_level=none »,
         // c'est-à-dire SANS aucune optimisation (DCE, CSE, iconst+bitcast ->
         // f64const...). Le gain est spectaculaire sur les boucles.
-        let mut builder = JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names()).unwrap();
+        let lvl = std::env::var("ROSE_JIT_OPT").unwrap_or_else(|_| "speed".to_string());
+        let mut builder = JITBuilder::with_flags(&[("opt_level", lvl.as_str())], default_libcall_names()).unwrap();
         // Les helpers runtime sont résolus par ADRESSE : sans cela, Cranelift
         // passe par dlsym() au moment des relocations — 1,2 ms mesurés pour
         // une seule résolution ! On enregistre donc le nom de chaque helper
@@ -740,6 +783,13 @@ impl Jit {
         };
         // mêmes portes de parité qu'une fonction ordinaire
         let mut env = HashMap::new();
+        if crate::front::i_est_compteur() {
+            // « i » est le COMPTEUR ENTIER du programme : le 0+1i que le lexeur
+            // a laissé dans un test « @ (i < n) » est cette variable. Sans
+            // cette entrée, ty_statique la croirait Complexe et $principal
+            // resterait interprété (divergence de voie avec l'interpréteur).
+            env.insert("i".into(), crate::front::TyKind::Entier);
+        }
         if !bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env,
                             &self.signatures, Some(crate::front::TyKind::Vide)) {
             return None;
@@ -756,9 +806,13 @@ impl Jit {
         let mut e = Emetteur {
             module: &mut self.module, signatures: &self.signatures,
             foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
-            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var,
+            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
         };
         e.emettre_fonction(&sig);
+        // une borne de « pour » non entière (0+1i du lexème « i » que la table
+        // des types ne connaissait pas) : la boucle native ne terminerait pas,
+        // on laisse le programme à l'interpréteur.
+        if e.refus_i { return None; }
         let mut b = e.builder;
         b.seal_all_blocks();
         b.finalize(cible);
@@ -783,6 +837,8 @@ impl Jit {
                 ("rose_affiche_bool", vec![types::I64], None),
                 ("rose_affiche_f64", vec![types::F64], None),
                 ("rose_affiche_complexe", vec![types::F64, types::F64], None),
+                ("rose_affiche_formule", vec![types::I64, types::I64], None),
+                ("rose_affiche_prefixe", vec![types::I64, types::I64], None),
                 ("rose_powf", vec![types::F64, types::F64], Some(types::F64)),
                 ("rose_sqrt", vec![types::F64], Some(types::F64)),
                 ("rose_add_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
@@ -845,16 +901,27 @@ impl Jit {
             let mut e = Emetteur {
                 module: &mut self.module, signatures: &self.signatures,
                 foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
-                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var,
+                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
             };
+            let _te = std::time::Instant::now();
             e.emettre_fonction(&sig);
+            let _t_emit = _te.elapsed();
+            if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT emit={:?}", _t_emit); }
             let mut b = e.builder;
             b.seal_all_blocks();
             b.finalize(cible);
+            let _t_fin = _te.elapsed();
             let _td = std::time::Instant::now();
             self.module.define_function(fid, &mut fcx).unwrap();
-            if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT define={:?}", _td.elapsed()); }
+            if std::env::var("ROSE_TIMING").is_ok() {
+                eprintln!("TIMING-JIT define={:?} (emit={:?} fin={:?})", _td.elapsed(), _t_emit, _t_fin - _t_emit);
+            }
+            let _ = _t_fin;
             if std::env::var("ROSE_DUMP_IR").is_ok() { eprintln!("{}", fcx.func); }
+            if std::env::var("ROSE_DUMP_ASM").is_ok() {
+                // dump du code machine Cranelift (want_disasm)
+                fcx.set_disasm(true);
+            }
             self.foncs.insert(nom.clone(), fid);
         }
         self.module.finalize_definitions().unwrap();
@@ -1056,6 +1123,19 @@ impl Emetteur<'_> {
         }
         // variables locales : slots à partir de 100
         self.prochain_slot = 100;
+        // « i » compteur entier du programme principal : son slot i64 doit
+        // exister DES LA ENTRÉE, sinon le 0+1i laissé par le lexeur dans un
+        // test « @ (i < n) » deviendrait un complexe et la boucle ne
+        // s'incrémenterait pas.
+        if sig.nom == "$principal" && crate::front::i_est_compteur()
+            && !types.contains_key("i") {
+            let slot = self.builder.declare_var(types::I64);
+            let zero = self.builder.ins().iconst(types::I64, 0);
+            self.builder.def_var(slot, zero);
+            env.insert("i".into(), slot);
+            types.insert("i".into(), TyKind::Entier);
+            self.prochain_slot += 1;
+        }
         let corps = sig.corps.clone().unwrap_or_default();
         self.emettre_bloc(&corps, &mut env, &mut types, sig);
         if !self.returned {
@@ -1143,22 +1223,25 @@ impl Emetteur<'_> {
     /// vérificateur Cranelift fait `unreachable!()` sur un iconst F64), on
     /// passe donc par un i64 puis un bitcast.
     fn f64_zero(&mut self) -> Value {
-        let c = self.builder.ins().iconst(types::I64, 0);
-        self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
+        // f64const : une VRAIE constante flottante dans l'IR. Le couple
+        // iconst+bitcast que le moteur utilisait previously produisait une
+        // valeur opaque que l'optimiseur devait retrouver, et laissait dans
+        // la boucle des paires iconst/bitcast à chaque tour (visible dans le
+        // dump IR : « iconst.i64 0 / bitcast.f64 » répété dans le corps).
+        self.builder.ins().f64const(cranelift::codegen::ir::immediates::Ieee64::with_bits(0))
     }
 
-    /// La constante flottante `d` (même technique que `f64_zero`).
+    /// La constante flottante `d` (f64const : voir `f64_zero`).
     fn f64_of(&mut self, d: f64) -> Value {
-        let c = self.builder.ins().iconst(types::I64, d.to_bits() as i64);
-        self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c)
+        self.builder.ins().f64const(cranelift::codegen::ir::immediates::Ieee64::with_bits(d.to_bits()))
     }
 
     fn type_of(&self, e: &Expr, env: &HashMap<String, Variable>, types: &HashMap<String, TyKind>) -> TyKind {
-        let mut envty: HashMap<String, TyKind> = HashMap::new();
-        for k in env.keys() {
-            if let Some(t) = types.get(k) { envty.insert(k.clone(), *t); }
-        }
-        ty_statique(e, &envty).unwrap_or(TyKind::Entier)
+        // MÊME table que « ty_statique(e, env) » — les variables qui ont un
+        // slot ET un type — mais SANS la recopier à chaque appel.
+        ty_statique_f(e, &|n: &str| {
+            if env.contains_key(n) { types.get(n).copied() } else { None }
+        }).unwrap_or(TyKind::Entier)
     }
 
     fn expr(&mut self, e: &Expr, env: &mut HashMap<String, Variable>,
@@ -2065,6 +2148,16 @@ fn powf(&mut self) -> FuncRef {
                 Instr::Afficher(exprs, _) => {
                     if exprs.len() != 1 { return; }
                     let e = &exprs[0];
+                    // FORMULE EXACTE (LaTeX) de l'expression affichée,
+                    // écrite AVANT la valeur — miroir EXACT de
+                    // l'interpréteur (interp.rs, branche Instr::Afficher) :
+                    // les deux voies rendent la même sortie.
+                    let formule = crate::latex::expr_latex_ctx(e, crate::front::i_est_entier_verifie());
+                    let (ptr, len) = interner_formule(&formule);
+                    let pf = self.import_runtime("rose_affiche_prefixe");
+                    let pv = self.builder.ins().iconst(types::I64, ptr);
+                    let pl = self.builder.ins().iconst(types::I64, len);
+                    let _ = self.builder.ins().call(pf, &[pv, pl]);
                     let vj = self.expr(e, env, types);
                     match vj {
                         JitVal::Complexe(re, im) => {
@@ -2164,10 +2257,35 @@ fn powf(&mut self) -> FuncRef {
                 }
                 Instr::Pour { nom, debut, fin, corps, ligne } => {
                     crate::run::noter_ligne(*ligne);
+                    // FORMULE EXACTE de la boucle (LaTeX), affichée avant le
+                    // résultat — miroir EXACT de ce que fait l'interpréteur
+                    // (interp.rs, branche Instr::Pour) : les deux voies
+                    // doivent rendre la même sortie, caractère pour
+                    // caractère (parité JIT ↔ interpréteur).
+                    let formule = crate::latex::instr_latex(&Instr::Pour {
+                        nom: nom.clone(), debut: debut.clone(), fin: fin.clone(),
+                        corps: corps.clone(), ligne: *ligne,
+                    });
+                    let (ptr, len) = interner_formule(&formule);
+                    let pf = self.import_runtime("rose_affiche_formule");
+                    let pv = self.builder.ins().iconst(types::I64, ptr);
+                    let pl = self.builder.ins().iconst(types::I64, len);
+                    let _ = self.builder.ins().call(pf, &[pv, pl]);
                     let dj = self.expr(debut, env, types);
                     let d = self.simple(dj);
                     let fj = self.expr(fin, env, types);
                     let f = self.simple(fj);
+                    // garde de parité : les bornes d'un « pour » doivent être des
+                    // ENTIERS natifs. Une borne qui se replie sur un complexe
+                    // (0+1i du lexème « i » non dé-replié dans un contexte où la
+                    // table des types ne le connaît pas encore) bouclerait
+                    // éternellement en natif : on refuse l'émission et le bloc
+                    // retombe sur l'interpréteur, qui connaît la réparation.
+                    if self.builder.func.dfg.value_type(d) != types::I64
+                        || self.builder.func.dfg.value_type(f) != types::I64 {
+                        self.refus_i = true;
+                        return;
+                    }
                     let slot = {
                         match env.get(nom).copied() {
                             Some(s) => s,
@@ -2301,6 +2419,69 @@ pub extern "C" fn rose_affiche_f64(v: f64) {
     crate::run::ecrire_out(&format!("{}\n", t));
 }
 
+/// Helper JIT : affiche la FORMULE EXACTE en LaTeX d'une boucle « pour ».
+/// Le pointeur est celui d'une chaîne interne statique (internée par
+/// `interner_formule`), donc valide pendant toute la vie du processus.
+/// Helper JIT : écrit le PRÉFIXE « formule   » d'un affichage — la formule
+/// LaTeX suivie des trois espaces de séparation (convention de π, φ, e) —
+/// SANS saut de ligne : la valeur est écrite ensuite par le helper
+/// d'affichage correspondant (afficher_f64, afficher_i64…). L'interpréteur
+/// fait exactement de même (run::afficher_formule) : les deux voies rendent
+/// la même sortie, caractère pour caractère.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_affiche_prefixe(ptr: i64, len: i64) {
+    if ptr == 0 || len <= 0 { return; }
+    let octets = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let s = String::from_utf8_lossy(octets);
+    crate::run::ecrire_out(&s);
+    crate::run::ecrire_out("   ");
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_affiche_formule(ptr: i64, len: i64) {
+    if ptr == 0 || len <= 0 { return; }
+    let octets = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let s = String::from_utf8_lossy(octets);
+    crate::run::ecrire_out(&s);
+    crate::run::ecrire_out("\n");
+}
+
+/// Internation d'une formule LaTeX : la chaîne est conservée dans un
+/// `Box<str>` STATIQUE (jamais libérée) pour que son adresse reste
+/// valide pendant que le code JIT tourne. Le dédoublonnage évite
+/// d'allouer la même formule plusieurs fois.
+pub fn interner_formule(s: &str) -> (i64, i64) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static REGISTRE: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let reg = REGISTRE.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut g = match reg.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+    if let Some(existant) = g.get(s) {
+        return (existant.as_ptr() as i64, existant.len() as i64);
+    }
+    let STATIQUE: &'static str = Box::leak(s.to_string().into_boxed_str());
+    g.insert(STATIQUE);
+    (STATIQUE.as_ptr() as i64, STATIQUE.len() as i64)
+}
+
 pub extern "C" fn rose_affiche_complexe(re: f64, im: f64) {
-    crate::run::ecrire_out(&format!("{}+{}i\n", re, im));
+    // miroir EXACT de chaine_de_p() pour un complexe : « 2i » et non « 0+2i »,
+    // « 3+i » et non « 3+1i ». L'émetteur JIT appelle ce helper pour tout
+    // affichage de complexe ; s'il imprimait le format brut, la voie JIT
+    // divergerait de l'interpréteur sur tous les bancs complexes.
+    let s = if im == 0.0 {
+        re.to_string()
+    } else if re == 0.0 {
+        if im == 1.0 { "i".into() } else if im == -1.0 { "-i".into() } else { format!("{}i", im) }
+    } else if im == 1.0 {
+        format!("{}+i", re)
+    } else if im == -1.0 {
+        format!("{}-i", re)
+    } else {
+        let sign = if im >= 0.0 { "+" } else { "" };
+        format!("{}{}{}i", re, sign, im)
+    };
+    crate::run::ecrire_out(&s);
+    crate::run::ecrire_out("\n");
 }

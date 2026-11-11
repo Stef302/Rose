@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rose 2.0 — moteur de programmation dans le navigateur</title>
+<style>
+  :root {
+    --fond: #10131a;
+    --fond2: #171b25;
+    --panneau: #1e2330;
+    --bord: #2b3242;
+    --texte: #e6e9f0;
+    --texte2: #9aa4b8;
+    --accent: #ff6b6b;
+    --accent2: #4ecdc4;
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--fond);
+    color: var(--texte);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+  }
+  header {
+    padding: 22px 28px 18px;
+    border-bottom: 1px solid var(--bord);
+    background: linear-gradient(180deg, #171b25 0%, #10131a 100%);
+  }
+  header h1 { margin: 0; font-size: 21px; letter-spacing: .2px; }
+  header h1 span { color: var(--accent); }
+  header p { margin: 6px 0 0; color: var(--texte2); font-size: 14px; max-width: 78ch; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+    gap: 18px;
+    padding: 18px 28px 40px;
+    max-width: 1500px;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { min-width: 0; }
+  .titre {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 13px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--texte2); margin: 0 0 8px;
+  }
+  .titre .info { text-transform: none; letter-spacing: 0; font-size: 12px; }
+  textarea, pre {
+    width: 100%;
+    background: var(--fond2);
+    border: 1px solid var(--bord);
+    border-radius: 10px;
+    color: var(--texte);
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.5;
+    padding: 12px 14px;
+    margin: 0;
+  }
+  textarea {
+    min-height: 380px;
+    resize: vertical;
+    outline: none;
+    tab-size: 2;
+  }
+  textarea:focus, .sortie:focus { border-color: var(--accent2); }
+  pre {
+    min-height: 130px;
+    max-height: 340px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .barre { display: flex; flex-wrap: wrap; gap: 9px; margin: 12px 0 0; align-items: center; }
+  button {
+    font: inherit;
+    font-size: 14px;
+    border-radius: 8px;
+    border: 1px solid var(--bord);
+    background: var(--panneau);
+    color: var(--texte);
+    padding: 7px 14px;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, transform .05s;
+  }
+  button:hover:not(:disabled) { background: #262c3c; border-color: #3a4257; }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:disabled { opacity: .5; cursor: progress; }
+  button.principal { background: var(--accent); border-color: var(--accent); color: #1b1013; font-weight: 600; }
+  button.principal:hover:not(:disabled) { background: #ff8080; }
+  button.secondaire { border-color: #34445c; color: var(--accent2); }
+  .etat { margin-left: auto; font-size: 12.5px; color: var(--texte2); }
+  .etat.ok { color: var(--accent2); }
+  .etat.erreur { color: var(--accent); }
+  .exemples { font-size: 12.5px; color: var(--texte2); margin-top: 14px; }
+  .exemples button { font-size: 12.5px; padding: 4px 10px; margin-right: 6px; }
+  .note {
+    margin-top: 14px; font-size: 12.5px; color: var(--texte2);
+    border-left: 3px solid var(--bord); padding: 6px 0 6px 12px;
+  }
+  code { font-family: var(--mono); color: var(--accent2); }
+  footer {
+    border-top: 1px solid var(--bord);
+    padding: 16px 28px 30px;
+    color: var(--texte2);
+    font-size: 12.5px;
+  }
+  footer a { color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Rose <span>2.0</span> — le moteur Rose dans le navigateur</h1>
+  <p>
+    Ce moteur est compilé en <strong>WebAssembly</strong> (WebAssembly natif, sans wasm-bindgen) :
+    le même front-end, le même interpréteur et les mêmes mathématiques exactes
+    (entiers illimités, rationnels, irrationnels, complexes) que le binaire natif.
+    Exécutez un programme Rose, affichez sa sortie, puis fåites-en une formule LaTeX.
+  </p>
+</header>
+
+<main>
+  <section>
+    <div class="titre">
+      <span>Programme Rose</span>
+      <span class="info" id="taille">—</span>
+    </div>
+    <textarea id="source" spellcheck="false" aria-label="Code Rose"></textarea>
+
+    <div class="barre">
+      <button class="principal" id="btn-executer">Exécuter</button>
+      <button class="secondaire" id="btn-latex">Formule LaTeX</button>
+      <button class="secondaire" id="btn-analyser">Analyser</button>
+      <span class="etat" id="etat">Chargement du module WebAssembly…</span>
+    </div>
+
+    <div class="exemples">
+      Exemples :
+      <button data-ex="boucle">boucle &amp; accumulateur</button>
+      <button data-ex="fonction">fonctions &amp; calculs</button>
+      <button data-ex="erreur">erreur runtime</button>
+    </div>
+
+    <p class="note">
+      Touches : <code>Ctrl/Cmd + Entrée</code> exécute le programme.
+      Le module WASM n'a ni JIT ni accès au système de fichiers : tout se joue
+      dans la mémoire du navigateur.
+    </p>
+  </section>
+
+  <section>
+    <div class="titre"><span>Sortie</span><span class="info" id="duree"></span></div>
+    <pre id="sortie" tabindex="0" aria-live="polite">(la sortie du programme apparaîtra ici)</pre>
+
+    <div class="titre" style="margin-top:18px"><span>Formule LaTeX</span></div>
+    <pre id="latex">(la formule LaTeX apparaîtra ici)</pre>
+
+    <div class="titre" style="margin-top:18px"><span>Analyse</span></div>
+    <pre id="analyse">(l'analyse apparaîtra ici)</pre>
+  </section>
+</main>
+
+<footer>
+  Rose 2.0 — moteur Rust compilé en WebAssembly.
+  Construction : <code>cargo build --release --target wasm32-unknown-unknown --no-default-features --lib</code>,
+  puis copie de <code>rose.wasm</code> dans ce dossier.
+  Voir <code>docs/WASM.md</code> pour le détail et les limitations.
+</footer>
+
+<script type="module">
+import Rose from './rose-wasm.js';
+
+const source = document.getElementById('source');
+const sortie = document.getElementById('sortie');
+const latex = document.getElementById('latex');
+const analyse = document.getElementById('analyse');
+const etat = document.getElementById('etat');
+const duree = document.getElementById('duree');
+const taille = document.getElementById('taille');
+
+const EXEMPLES = {
+  boucle: `# Une boucle "pour" et un accumulateur
+$total = 0
+pour j de 1 vers 10 {
+    $total = $total + j
+}
+>> $total
+
+# Les puissances sont exactes (entiers illimités)
+>> 2 ^ 100
+>> factorielle(30)`,
+
+  fonction: `# Une fonction, puis des calculs exacts
+fn carre(x: entier) -> entier {
+    retour x * x
+}
+
+>> carre(7)
+
+# Les rationnels sont exacts, jamais arrondis
+>> 1 / 2 + 1 / 3
+
+# Et les irrationnels aussi
+>> racine(2)`,
+
+  erreur: `# Une erreur runtime est rendue dans la sortie
+$zero = 0
+>> 5 / $zero`
+};
+
+function majEtat(texte, classe) {
+  etat.textContent = texte;
+  etat.className = 'etat' + (classe ? ' ' + classe : '');
+}
+
+function majTaille() {
+  const n = source.value.length;
+  taille.textContent = n + ' caractère' + (n > 1 ? 's' : '');
+}
+source.addEventListener('input', majTaille);
+
+async function executer() {
+  const debut = Date.now();
+  majEtat('Exécution…');
+  try {
+    const texte = await Rose.execute(source.value);
+    sortie.textContent = texte.length ? texte : '(aucune sortie)';
+    const ms = Date.now() - debut;
+    duree.textContent = ms + ' ms';
+    const erreur = texte.includes('Rose : erreur');
+    majEtat(erreur ? 'Erreur du programme' : 'Exécution réussie', erreur ? 'erreur' : 'ok');
+  } catch (e) {
+    sortie.textContent = 'Erreur interne : ' + e;
+    majEtat('Erreur interne', 'erreur');
+  }
+}
+
+async function formuleLatex() {
+  majEtat('Rendu LaTeX…');
+  try {
+    const texte = await Rose.latex(source.value);
+    latex.textContent = texte.length ? texte : '(rien à afficher)';
+    majEtat('Formule prête', 'ok');
+  } catch (e) {
+    latex.textContent = 'Erreur interne : ' + e;
+    majEtat('Erreur interne', 'erreur');
+  }
+}
+
+async function analyser() {
+  majEtat('Analyse…');
+  try {
+    analyse.textContent = await Rose.analyse(source.value);
+    majEtat('Analyse terminée', 'ok');
+  } catch (e) {
+    analyse.textContent = 'Erreur interne : ' + e;
+    majEtat('Erreur interne', 'erreur');
+  }
+}
+
+document.getElementById('btn-executer').addEventListener('click', executer);
+document.getElementById('btn-latex').addEventListener('click', formuleLatex);
+document.getElementById('btn-analyser').addEventListener('click', analyser);
+
+source.addEventListener('keydown', (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') { ev.preventDefault(); executer(); }
+});
+
+document.querySelectorAll('[data-ex]').forEach((b) => {
+  b.addEventListener('click', () => {
+    source.value = EXEMPLES[b.dataset.ex];
+    majTaille();
+    executer();
+  });
+});
+
+source.value = EXEMPLES.boucle;
+majTaille();
+
+try {
+  await Rose.ready();
+  majEtat('Module prêt (' + Rose.version().split('—')[0].trim() + ')', 'ok');
+  executer();
+} catch (e) {
+  majEtat('Module indisponible : ' + e, 'erreur');
+  sortie.textContent =
+    'Le fichier rose.wasm est introuvable.\n\n' +
+    'Le construire :\n' +
+    '  cargo build --release --target wasm32-unknown-unknown --no-default-features --lib\n' +
+    '  cp target/wasm32-unknown-unknown/release/rose.wasm web/\n\n' +
+    'Puis servir le dossier web/ par HTTP (les modules WASM ne se chargent pas depuis file://).';
+}
+</script>
+
+</body>
+</html>

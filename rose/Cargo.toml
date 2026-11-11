@@ -3,24 +3,40 @@ name = "rose"
 version = "2.0.3"
 edition = "2024"
 
+# Bibliothèque : le moteur est utilisable depuis Rust… et compilé en
+# WebAssembly (voir docs/WASM.md). Le crate-type « cdylib » produit le
+# module .wasm ; « rlib » garde l'usage depuis Rust.
+[lib]
+name = "rose"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
 [[bin]]
 name = "rose"
 path = "src/main.rs"
+required-features = ["native"]
 
 # Helper AOT : la chaîne LLVM vit dans un binaire séparé, que le binaire
 # principal télécharge à la demande (voir src/auto_llvm.rs).
 [[bin]]
 name = "rose-aot"
 path = "src/bin/rose-aot.rs"
+required-features = ["native"]
 
 [dependencies]
-cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
 libc = "0.2"
 num-bigint = "0.4"
 num-integer = "0.1"
 num-rational = "0.4"
 num-traits = "0.2"
 inkwell = { version = "0.7", optional = true, features = ["llvm18-1-prefer-dynamic", "target-aarch64", "target-x86", "no-libffi-linking"] }
+
+# Cranelift (JIT natif) n'est PAS disponible en WebAssembly : le JIT émet du
+# code machine natif, qu'un module WASM ne peut pas contenir. La dépendance
+# est donc conditionnée à la cible ; en WASM, `src/lib.rs` installe un shim
+# `jit` d'API identique (exécution purement interprétée).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
 
 [build-dependencies]
 cc = "1.0"
@@ -30,7 +46,14 @@ cc = "1.0"
 # démarrage (5 ms de moins à chaque lancement) et 4,8 Mo au lieu de 5,2 Mo.
 # La chaîne AOT (commandes `rose llvm` / `orc` / `link`) exige :
 #     cargo build --release --features llvm
-default = []
+default = ["native"]
+# « native » : le binaire natif (moteur + JIT Cranelift). Le build WASM se
+# fait avec --no-default-features : les binaires natifs sont alors ignorés
+# (required-features) et le module `jit` est remplacé par son shim.
+native = []
+# « wasm » : marqueur documentaire — la compilation WebAssembly n'exige
+# aucune feature supplémentaire (le shim JIT est choisi par la cible).
+wasm = []
 llvm = ["dep:inkwell"]
 
 [profile.release]
@@ -42,3 +65,22 @@ inherits = "release"
 debug = 2
 strip = false
 
+# Profil dédié au WebAssembly : LTO + un seul codegen-unit = un .wasm
+# nettement plus petit (579 Ko au lieu de 653 Ko) et aussi rapide.
+#
+# `panic` n'est PAS réglé ici, et c'est VOLONTAIRE :
+#   * `panic = "abort"` est INTERDIT : il casserait `catch_unwind`, donc les
+#     erreurs runtime Rose ET le `essayer`/`attraper` du langage ;
+#   * `panic = "unwind"` est sans effet sur les cibles wasm : leur
+#     spécification de cible IMPOSE `abort` (rustc refuse `-C panic=unwind`
+#     sur wasm32-unknown-unknown et wasm32-wasip1) ;
+#   * en laissant la stratégie par défaut, le natif reste en « unwind »
+#     (défaut de la crate) et le WASM en « abort » (imposé par la cible).
+# Le message d'erreur n'est pas perdu pour autant : le hook de panique
+# (src/wasm.rs) le range avant l'arrêt et le glue JS le relit.
+[profile.wasm-release]
+inherits = "release"
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

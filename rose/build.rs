@@ -1,4 +1,11 @@
 fn main() {
+    // WebAssembly : pas de libc système, donc pas de -lm/-lc/-rdynamic
+    // (le lieur wasm-ld refuse ces drapeaux). Le module WASM n'a besoin
+    // d'aucun symbole natif : les helpers du JIT sont absents en WASM.
+    if std::env::var_os("CARGO_CFG_TARGET_ARCH").map_or(false, |v| v == "wasm32") {
+        return;
+    }
+
     if std::env::var_os("CARGO_CFG_TARGET_OS").map_or(false, |v| v == "windows") {
         // Icône embarquée dans le .exe (Windows)
         #[cfg(target_os = "windows")]

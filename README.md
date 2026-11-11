@@ -83,19 +83,81 @@ e = \sum_{k=0}^{\infty} \frac{1}{k!}   e ≈ 2.71828182845904523536
 ## ⚡ Vitesse du JIT
 
 Banc complexe (`bench/suite/run_bench.sh`) : 1 000 000 d'itérations, processus
-complet inclus, meilleur de 15.
+complet inclus, meilleur de 40 entrelacés.
 
 | Moteur | Temps |
 |---|---|
-| Rust (`-O`) | 0,90 ms |
-| C++ (`-O3`) | 1,90 ms |
-| **Rose (JIT Cranelift)** | **2,90 ms** |
+| Rust (`-O`) | ~0,9 ms |
+| C++ (`-O3`) | ~1,7 ms |
+| **Rose (JIT Cranelift)** | **~1,5–2,6 ms** |
 | Python (CPython) | 256 ms |
-| Rose (interprète) | 700 ms |
+| Rose (interprète) | ~700 ms |
+
+Le goulot de Rose est le **démarrage** (chargement + JIT, ≈ 0,5 ms), qui a déjà
+été réduit : le lien statique (`target-feature=+crt-static`) a supprimé
+≈ 0,3 ms, et le démarrage seul de Rose (0,32 ms) est maintenant au niveau de
+Rust (0,35 ms). Le reste de l'écart (vectorisation NEON de LLVM que Cranelift
+ne produit pas encore) est le prochain chantier.
 
 Les trois versions C++ / Rust / Python expriment le **produit complexe
 général**, comme le programme Rose — sinon la comparaison ne serait pas
 équivalente.
+
+## 🌐 WebAssembly — Rose sur le web
+
+Rose se compile en **module WebAssembly** pour s'exécuter dans le navigateur
+ou dans tout runtime sans système de fichiers :
+
+```bash
+# Prérequis (une seule fois)
+rustup target add wasm32-unknown-unknown
+
+# Construit le module .wasm (profil LTO, 579 Ko)
+cargo build --profile wasm-release --target wasm32-unknown-unknown --no-default-features
+
+# Le .wasm est prêt : target/wasm32-unknown-unknown/wasm-release/rose.wasm
+```
+
+Le moteur est une **bibliothèque** (`src/lib.rs`) : en WASM le JIT Cranelift
+(émetteur de code machine natif) est remplacé par un shim d'API identique, et
+le programme s'exécute en mode **interprété** (mêmes résultats, mêmes messages
+d'erreur, ≈ 40× plus lent que le JIT natif). Toutes les fonctions de Rose sont
+disponibles sauf l'accès fichiers, le réseau, l'horloge et l'entrée clavier.
+
+Le module expose une interface C ABI (`web/rose-wasm.js`) et le LaTeX :
+
+```js
+await Rose.ready()
+const out = await Rose.execute('pour j de 0 vers 3 { >> j }')
+console.log(out)   // formule Σ + 0 1 2
+const tex = await Rose.latex('>> 1 + 1')   // \mathrm{afficher}\left(2\right)
+```
+
+Voir `docs/WASM.md` (prérequis, build, ABI, limitations) et `web/` (démo
+navigateur, glue JS, tests Node).
+
+## ⚛️ Formule exacte en LaTeX
+
+Chaque affichage `>>` est précédé de la **formule exacte** du programme en
+LaTeX, suivie du résultat (convention déjà en place pour π, φ et e) :
+
+```
+>>> $s = 0
+>>> pour j de 0 vers 10 { $s = $s + j }
+>>> $s
+\sum_{j = 0}^{9} \langle s = s + j\rangle
+s   45
+>>> 2 * pi
+2 * pi   6.283185307179586
+>>> 3 + 4i
+3 + 4\mathrm{i}   5
+```
+
+La formule est générée à partir de l'AST (module `src/latex.rs`) par :
+`programme_latex`, `expr_latex` et `instr_latex`. Elle est produite de façon
+**identique par le JIT et l'interpréteur** (parité prouvée par campagne de
+tests). Pour `pour j de`, la borne finale est exclusive : `pour j de 0 vers 3`
+rendra `Σ_{j=0}^{2}`.
 
 ## 📦 Chaîne AOT LLVM « à la demande »
 

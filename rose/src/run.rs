@@ -130,9 +130,109 @@ pub fn add_watch(v: String) { WATCH_LIST.lock().unwrap().push(v); }
 pub fn remove_watch(v: &str) { WATCH_LIST.lock().unwrap().retain(|x| x != v); }
 pub fn get_watches() -> Vec<String> { WATCH_LIST.lock().unwrap().clone() }
 
+// ── Horloge portable ─────────────────────────────────────────────────────
+//
+// `std::time::Instant::now()`, `std::time::SystemTime::now()` et
+// `std::process::id()` PANIQUENT sur wasm32-unknown-unknown (« time
+// not implemented on this platform »). Le moteur s'en sert pour mesurer
+// des durées et dater les tirages aléatoires : on passe donc par des
+// aides qui, en WASM, renvoient des valeurs neutres au lieu de paniquer.
+
+/// Horloge relative du moteur (mesures de durée).
+#[cfg(not(target_arch = "wasm32"))]
+pub type Chrono = std::time::Instant;
+/// Horloge relative du moteur : en WASM, un compteur factice (les durées
+/// mesurées valent toujours zéro — le moteur ne peut pas lire l'horloge).
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+pub struct Chrono(std::time::Duration);
+
+#[cfg(target_arch = "wasm32")]
+impl Chrono {
+    pub fn now() -> Chrono { Chrono(std::time::Duration::ZERO) }
+    pub fn elapsed(&self) -> std::time::Duration { self.0 }
+}
+
+/// Horloge du moteur (compatible `Instant`).
+pub fn chrono() -> Chrono {
+    #[cfg(not(target_arch = "wasm32"))]
+    { std::time::Instant::now() }
+    #[cfg(target_arch = "wasm32")]
+    { Chrono::now() }
+}
+
+/// Nanosecondes depuis l'époque Unix (0 en WASM : pas d'horloge).
+pub fn temps_unix_nanos() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    { 0 }
+}
+
+/// Identifiant du processus : `std::process::id()` PANIQUE en WASM
+/// (« no pids on this platform »). On rend un compteur monotone, ce qui
+/// conserve la propriété « deux exécutions successives ne donnent pas
+/// la même suite aléatoire ».
+pub fn pid() -> u32 {
+    #[cfg(not(target_arch = "wasm32"))]
+    { std::process::id() }
+    #[cfg(target_arch = "wasm32")]
+    {
+        static COMPTEUR: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(0);
+        COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 pub fn flush_out() { let _ = std::io::stdout().flush(); }
 
-pub fn ecrire_out(s: &str) { let _ = std::io::stdout().write_all(s.as_bytes()); }
+// ── Capture de la sortie (bibliothèque / WebAssembly) ─────────────────────
+//
+// En WebAssembly il n'y a pas de « stdout » : la sortie du programme est
+// capturée dans un tampon mémoire que l'appelant récupère avec
+// `take_sink()`. Le tampon est GLOBAL : les threads créés par le programme
+// Rose y écrivent eux aussi (une seule exécution à la fois).
+
+static SINK: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+/// Active la capture de la sortie : stdout est alors ignoré.
+pub fn set_sink(active: bool) {
+    let mut g = match SINK.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+    if active {
+        // On repart d'un tampon VIDE à chaque activation : après un
+        // arrêt du module (WASM), le tampon précédent doit être jeté.
+        *g = Some(Vec::new());
+    } else {
+        *g = None;
+    }
+}
+
+/// Récupère la sortie capturée et désactive la capture.
+pub fn take_sink() -> Option<String> {
+    let mut g = match SINK.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+    match g.take() {
+        Some(v) => Some(String::from_utf8_lossy(&v).into_owned()),
+        None => None,
+    }
+}
+
+/// Écrit sur la sortie du programme : dans le tampon de capture s'il est
+/// actif, sur stdout sinon.
+pub fn ecrire_out(s: &str) {
+    {
+        let mut g = match SINK.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        if let Some(buf) = g.as_mut() {
+            buf.extend_from_slice(s.as_bytes());
+            return;
+        }
+    }
+    let _ = std::io::stdout().write_all(s.as_bytes());
+}
 
 pub fn erreur_runtime(msg: &str) -> ! {
     flush_out();
@@ -483,6 +583,29 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
     }
 }
 
+/// Affiche une valeur accompagnée de sa FORMULE EXACTE en LaTeX.
+/// Miroir de la convention déjà en place pour π, φ et e :
+///     π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 3.14159…
+/// On rend donc « formule   valeur », la formule étant produite par le
+/// module `latex` à partir de l'AST du programme.
+pub fn afficher_formule(v: &Valeur, formule: &str) {
+    if formule.is_empty() {
+        afficher(v);
+        return;
+    }
+    // la formule précède la valeur, séparée par trois espaces (comme π).
+    ecrire_out(formule);
+    ecrire_out("   ");
+    // le rationnel passe par la forme périodique (miroir ecri()).
+    match v {
+        Valeur::Rationnel(q) => ecrire_out(&texte_rationnel(q)),
+        Valeur::Liste(..) => ecrire_out(&chaine_de_p(v, true)),
+        Valeur::Tampon(..) => erreur_runtime("Un tampon ne s'affiche pas directement — utiliser chaine(tampon)"),
+        _ => ecrire_out(&chaine_de(v)),
+    }
+    ecrire_out("\n");
+}
+
 /// affichage : le rationnel passe par la forme périodique (miroir ecri()).
 pub fn afficher(v: &Valeur) {
     // miroir ecri() du C++ : T_RATIONNEL et T_LISTE passent par la forme
@@ -521,20 +644,36 @@ pub fn graine_de(etat: &mut u64, n: &Gz) {
 }
 
 pub fn tirage_systeme() -> u64 {
-    let mut v = 0u64;
-    // getrandom(2)
-    unsafe extern "C" {
-        fn getrandom(buf: *mut u64, len: usize, flags: u32) -> isize;
+    // getrandom(2) : appel système NATIF — impossible en WebAssembly
+    // (un module WASM n'importe aucun symbole du système hôte).
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut v = 0u64;
+        unsafe extern "C" {
+            fn getrandom(buf: *mut u64, len: usize, flags: u32) -> isize;
+        }
+        let got = unsafe { getrandom(&mut v, 8, 0) };
+        if got != 8 {
+            v = (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0x5DEECE66D));
+        }
+        v
     }
-    let got = unsafe { getrandom(&mut v, 8, 0) };
-    if got != 8 {
-        v = (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0x5DEECE66D));
+    // En WASM : ni getrandom(2) ni std::process::id() (qui panic). On
+    // mélange un compteur monotone et l'horloge de l'hôte (0 par
+    // défaut) : la graine varie d'une exécution à l'autre. Un programme
+    // qui veut des tirages reproductibles fixe la graine avec
+    // « graine(n) ».
+    #[cfg(target_arch = "wasm32")]
+    {
+        static COMPTEUR: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let n = COMPTEUR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        n.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ temps_unix_nanos() ^ 0x5DEECE66D
     }
-    v
 }
 
 /// hasard(n) : Lemire, miroir exact du C++ (-borné hors i64 inclus).
@@ -976,7 +1115,7 @@ pub fn remplir_philox(buf: &mut [u8], ab: &[u8], graine: i64) {
     let n = buf.len();
     let nblk = (n + 3) / 4;
     for b in 0..nblk {
-        let ctr = [b as u32, (b >> 32) as u32, 0, 0];
+        let ctr = [b as u32, ((b as u64) >> 32) as u32, 0, 0];
         let r = philox4x32_10_pour(k0, k1, ctr);
         let i = b * 4;
         for j in 0..4 {

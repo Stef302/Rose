@@ -14,6 +14,7 @@ mod irrationnel;
 mod interp;
 mod jit;
 mod run;
+mod latex;
 mod auto_llvm;
 mod cmd_llvm;
 mod sha256;
@@ -114,6 +115,7 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
 }
 
 fn main() {
+    let _t_start = std::time::Instant::now();
     // Hook de panic silencieux pour les erreurs Rose récupérables (ROSE_ERR:),
     // afin d'éviter le bruit « thread panicked » sur stderr. Les vrais bugs
     // (panics non ROSE_ERR) sont toujours affichés.
@@ -200,9 +202,11 @@ fn main() {
     }
     let source_t = source.clone();
     let args_t = args.clone();
+    let _t_pret = _t_start.elapsed();
     let h = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || interp::executer_source(&source_t, args_t));
+    let _t_post = _t_start.elapsed();
     let rc = match h {
         Ok(j) => match j.join() {
             Ok(r) => r,
@@ -220,6 +224,9 @@ fn main() {
         },
         Err(_) => interp::executer_source(&source, args),
     };
+    if std::env::var("ROSE_TIMING").is_ok() {
+        eprintln!("TIMING-MAIN pret={:?} post_spawn={:?}", _t_pret, _t_post);
+    }
     std::process::exit(rc);
 }
 

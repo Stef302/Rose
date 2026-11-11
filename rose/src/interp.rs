@@ -474,6 +474,15 @@ fn rendu_par_parseur(src: &str) -> Option<String> {
 }
 
 
+#[cfg(not(any(unix, windows)))]
+// WebAssembly : pas de chargeur de bibliothèques partagées (pas de dlopen).
+// Les appels FFI (@dll/@sym) échouent proprement (« bibliothèque introuvable »).
+unsafe fn ffi_dlopen(_name: *const i8) -> *mut std::ffi::c_void { std::ptr::null_mut() }
+#[cfg(not(any(unix, windows)))]
+unsafe fn ffi_dlsym(_handle: *mut std::ffi::c_void, _name: *const i8) -> *mut std::ffi::c_void { std::ptr::null_mut() }
+#[cfg(not(any(unix, windows)))]
+unsafe fn ffi_dlclose(_handle: *mut std::ffi::c_void) {}
+
 #[cfg(unix)]
 unsafe fn ffi_dlopen(name: *const i8) -> *mut std::ffi::c_void {
     // RTLD_NOW = 2
@@ -509,6 +518,8 @@ unsafe fn ffi_dlclose(handle: *mut std::ffi::c_void) {
 
 impl Interp {
     pub fn nouveau(prog: Programme) -> Self {
+        // le programme vient d'être ANALYSE : la voie JIT doit voir le même
+        // « i » que l'interpréteur (drapeau pose par front::analyser).
         Interp {
             prog, globaux: HashMap::new(), trames: vec![HashMap::new()],
             jit: HashMap::new(),
@@ -522,9 +533,11 @@ impl Interp {
                 static ANCRE: u64 = 0;
                 let adr = &ANCRE as *const u64 as u64;
                 let mut h = DefaultHasher::new();
-                (std::process::id() as u64).hash(&mut h);
+                // `std::process::id()` panique en WASM : `run::pid()` rend
+                // un compteur équivalent.
+                (crate::run::pid() as u64).hash(&mut h);
                 adr.hash(&mut h);
-                (std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ h.finish() ^ adr
+                (crate::run::pid() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ h.finish() ^ adr
             },
             arguments: Vec::new(), arguments_disponibles: false, poignees: Vec::new(),
         }
@@ -591,7 +604,15 @@ impl Interp {
         let ins = self.prog.instructions.clone();
         let r = self.exec_bloc(&ins);
         match r {
-            Err(Some(code)) => { flush_out(); std::process::exit(code); }
+            Err(Some(code)) => {
+                flush_out();
+                // En WASM, `std::process::exit` est un piège (« unreachable »)
+                // qui tue l'instance : l'arrêt devient une erreur rattrapable.
+                #[cfg(target_arch = "wasm32")]
+                { panic!("ROSE_ERR:le programme a demandé l'arrêt (code {})", code); }
+                #[cfg(not(target_arch = "wasm32"))]
+                { std::process::exit(code); }
+            }
             Err(None) => {}
             Ok(()) => {}
         }
@@ -630,7 +651,24 @@ impl Interp {
                 let v = self.eval(&inc)?;
                 self.affecter("i", v);
             }
-            Instr::Afficher(exprs, _) => { for e in exprs { let v = self.eval(e)?; afficher(&v); } }
+            Instr::Afficher(exprs, _) => {
+                // Chaque expression affichée est précédée de sa FORMULE
+                // EXACTE en LaTeX, formée à partir de l'AST du programme
+                // (miroir de la convention déjà en place pour π, φ et e :
+                //     π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 3.14…)
+                // L'appel à une fonction utilisateur ou à une constante
+                // irrationnelle porte ainsi sa formule ; les expressions
+                // purement arithmétiques sont rendues telles quelles.
+                for e in exprs {
+                    let v = self.eval(e)?;
+                    // « i » est partagé par la constante imaginaire et la
+                    // variable entière : le même drapeau que l'évaluation
+                    // (front::i_est_entier_verifie) tranche la formule, pour
+                    // que la formule et la valeur parle de la MÊME chose.
+                    let formule = crate::latex::expr_latex_ctx(e, crate::front::i_est_entier_verifie());
+                    afficher_formule(&v, &formule);
+                }
+            }
             Instr::Lire { nom, ty, .. } => {
                 let ty_resolu = if *ty == TyKind::Dyn {
                     self.chercher_var(nom).map(|v| v.ty()).unwrap_or(TyKind::Entier)
@@ -687,6 +725,20 @@ impl Interp {
                 }
             }
             Instr::Pour { nom, debut, fin, corps, ligne } => {
+                // La FORMULE EXACTE de la boucle, en LaTeX, formée à partir
+                // du programme : la somme Σ_{j=a}^{b-1} <corps>. Elle est
+                // affichée AVANT le résultat de la boucle (miroir de la
+                // convention déjà en place pour π, φ et e : la formule
+                // d'abord, la valeur ensuite).
+                //
+                // La borne finale est EXCLUSIVE en Rose (« pour j de 0 vers
+                // 10 » va de 0 à 9) : la formule porte donc « b - 1 ».
+                let formule = crate::latex::instr_latex(&Instr::Pour {
+                    nom: nom.clone(), debut: debut.clone(), fin: fin.clone(),
+                    corps: corps.clone(), ligne: *ligne,
+                });
+                crate::run::ecrire_out(&formule);
+                crate::run::ecrire_out("\n");
                 let d = vers_z(&self.eval(debut)?);
                 let f = vers_z(&self.eval(fin)?);
                 self.trames.last_mut().unwrap().insert(nom.clone(), Valeur::zg(d));
@@ -819,12 +871,13 @@ impl Interp {
         for i in instrs {
             match i {
                 Instr::Retour(_, _) => return Err(None),
-                Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e)
-                    && est_derniere(instrs, i) =>
+                Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e) =>
                 {
                     // « $i = 1+1i » : l'incrément du compteur « i » écrasé par
                     // le repli de constantes → « $i = $i + 1 » (miroir de la
-                    // réparation de verifier_bloc, qui n'a pas pu s'appliquer).
+                    // réparation de verifier_bloc). La signature k+ki étant
+                    // réservée à cette corruption, la position dans le bloc
+                    // n'a pas à être contrôlée. 
                     let l = *ligne;
                     let inc = crate::front::Expr::Binaire { op: "+".into(),
                         a: Box::new(crate::front::Expr::Var("i".into(), l)),
@@ -860,9 +913,10 @@ impl Interp {
     fn exec_bloc_retour(&mut self, instrs: &[Instr]) -> Result<Valeur, Signal> {
         for i in instrs {
             match i {
-                Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e)
-                    && est_derniere(instrs, i) =>
-                {
+                Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e) => {
+                    // idem : la réparation de l'incrément s'applique à TOUT
+                    // « $i = k+ki » d'un bloc de fonction, pas seulement au
+                    // dernier (le corps d'une boucle se termine par l'i).
                     let l = *ligne;
                     let inc = crate::front::Expr::Binaire { op: "+".into(),
                         a: Box::new(crate::front::Expr::Var("i".into(), l)),
@@ -946,7 +1000,19 @@ impl Interp {
 
     pub fn eval(&mut self, e: &Expr) -> Result<Valeur, Option<i32>> {
         match e {
-            Expr::LitComplexe { re, im, .. } => Ok(Valeur::Complexe { re: *re, im: *im }),
+            Expr::LitComplexe { re, im, .. } => {
+                // le lexeme « i » est replie en 0+1i par le lexeur AVANT que le
+                // contexte soit connu. Le 0+1i n'est la VARIABLE « i » que si
+                // le programme en fait reellement une variable : c'est ce que
+                // decide verifier(), qui verrouille « i » comme entier quand il
+                // voit « $i = <entier> ». Hors de ce verrou, « >> 2*i » et
+                // « >> i » sont le VRAI imaginaire (parite avec le moteur C++,
+                // qui rend « Variable 'i' utilisee sans valeur »).
+                if *re == 0.0 && *im == 1.0 && crate::front::i_est_entier_verifie() {
+                    if let Some(v) = self.cible("i") { return Ok(v); }
+                }
+                Ok(Valeur::Complexe { re: *re, im: *im })
+            }
             Expr::Litteral { texte, flott, .. } => {
                 if *flott {
                     Ok(Valeur::f(texte.parse::<f64>().unwrap_or(f64::NAN)))
@@ -1586,12 +1652,13 @@ impl Interp {
             "saisir_entier" => self.lire_selon(TyKind::Entier),
             "saisir_flottant" => self.lire_selon(TyKind::Flottant),
             "time" => {
-                let d = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap();
-                let nanos = d.as_nanos();
-                let micros = d.as_micros();
-                let millis = d.as_millis();
-                let secs = d.as_secs();
+                // Horloge portable : en WASM, `std::time::SystemTime` n'est
+                // pas implémenté (la std panique) — `temps_unix_nanos()`
+                // renvoie 0.
+                let nanos = crate::run::temps_unix_nanos();
+                let micros = nanos / 1_000;
+                let millis = nanos / 1_000_000;
+                let secs = nanos / 1_000_000_000;
                 if secs > 0 {
                     Valeur::s(format!("{} s", secs))
                 } else if millis > 0 {
@@ -2103,6 +2170,26 @@ impl Interp {
                                     //la valeur de x (issue de l'affectation)
                                     //est lue dans l'environnement global
                                     crate::front::Instr::Afficher(_, _) => {
+                                        // la voie « x = <expr> » n'est un rendu
+                                        // d'EXPRESSION que si le programme est une
+                                        // suite d'affectations terminée par un
+                                        // affichage de x. Dès qu'une boucle ou un
+                                        // « si » apparaît, l'affectation de x est
+                                        // un artefact de la forme testée, et la
+                                        // valeur de x n'a plus de sens : on
+                                        // refuse cette voie et on laisse la voie
+                                        // « programme complet » rendre la dernière
+                                        // instruction utile.
+                                        if interp.prog.instructions.iter().any(|i| matches!(i,
+                                            crate::front::Instr::Pour { .. } | crate::front::Instr::TantQue { .. }
+                                            | crate::front::Instr::Si { .. } | crate::front::Instr::Essayer { .. }))
+                                        {
+                                            // on passe ce candidat, sans sortir de
+                                            // la boucle : les formes « <expr> » puis
+                                            // « programme complet » restent à
+                                            // essayer.
+                                            continue;
+                                        }
                                         interp.executer_principal();
                                         if let Some(v) = interp.globaux.get("x") {
                                             rendu = Valeur::s(chaine_de(v));
@@ -2148,10 +2235,26 @@ impl Interp {
                             let derniere = interp.prog.instructions[n - 1].clone();
                             match derniere {
                                 crate::front::Instr::Afficher(exprs, _) => {
+                                    // le dernier affichage n'est le « rendu » du
+                                    // programme que s'il ne réévalue PAS une
+                                    // expression déjà produite par l'exécution
+                                    // (un « >> $x » après une boucle affiche ce
+                                    // que l'exécution a déjà rendu). On exécute
+                                    // le programme — ses sorties sont le rendu —
+                                    // puis on ne rend que la valeur de l'affichage
+                                    // s'il est constant (littéral) : sinon la
+                                    // valeur aurait été imprimée deux fois.
                                     interp.executer_principal();
                                     if let Some(e) = exprs.first() {
-                                        if let Ok(v) = interp.eval(e) {
-                                            rendu = Valeur::s(chaine_de(&v));
+                                        if matches!(e, crate::front::Expr::ChaineLit(..)
+                                            | crate::front::Expr::Litteral { .. }
+                                            | crate::front::Expr::BooleenLit(..))
+                                        {
+                                            if let Ok(v) = interp.eval(e) {
+                                                rendu = Valeur::s(chaine_de(&v));
+                                                obtenu = true;
+                                            }
+                                        } else {
                                             obtenu = true;
                                         }
                                     }
@@ -2257,8 +2360,7 @@ impl Interp {
                 Valeur::s(self.arguments[i.get_u64() as usize].clone())
             }
             "temps" => {
-                let t = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+                let t = crate::run::temps_unix_nanos();
                 let z = Gz::neuf();
                 z.poser_u64(t);
                 Valeur::zg(z)
@@ -2397,9 +2499,17 @@ impl Interp {
                 // une expression dans une position non-Eval) — message et
                 // code 1 identiques au moteur C++.
                 if self.prog.signatures.contains_key(nom) {
-                    eprintln!("Rose : erreur — fonction '{}' inconnue", nom);
-                    flush_out();
-                    std::process::exit(1);
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        eprintln!("Rose : erreur — fonction '{}' inconnue", nom);
+                        flush_out();
+                        std::process::exit(1);
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        // En WASM : erreur rattrapable, pas de process::exit.
+                        erreur_runtime(&format!("Fonction '{}' inconnue", nom));
+                    }
                 }
                 erreur_runtime(&format!("Fonction '{}' inconnue", nom));
             }
@@ -2423,8 +2533,27 @@ fn rnk(v: &Valeur) -> u8 {
 
 /// « $i = k+ki » (k == re == im != 0) : l'incrément de la variable entière « i »
 /// écrasé par le repli de constantes (« $i + k » fusionné en littéral complexe).
+/// « $i = k+ki » est l'incrément du compteur « i » : soit le programme a été
+/// analysé avec « i » compteur (drapeau posé par front::analyser), soit le
+/// contexte local du vérificateur l'a déjà tranché — le verrou de type
+/// « i : entier » est la marque locale que verifier() pose sur la variable.
 fn est_increment_corrompu(e: &crate::front::Expr) -> bool {
-    matches!(e, crate::front::Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0)
+    // la reparation ne vaut que pour le COMPTEUR D'UNE BOUCLE : le drapeau
+    // n'est pose que par « pour i de … », « tant_que (i < n) » ou
+    // « $i = $i + k ». Une simple affectation « $i = 5 » ne suffit pas : elle
+    // laisserait « $i = 1+1i » (VRAI complexe) se faire transformer en
+    // incrément, ce qui divergerait du moteur C++.
+    crate::front::i_est_boucle()
+        && matches!(e, crate::front::Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0)
+}
+
+#[allow(dead_code)]
+fn est_increment_corrompu_brut(e: &crate::front::Expr) -> bool {
+    // « $i = k+ki » n'est l'incrément écrasé du COMPTEUR entier « i » que si le
+    // programme fait de « i » un compteur (front.rs le décide et le marque).
+    // Sans ce marquage, « $i = 3+3i » est un VRAI complexe et garde sa valeur.
+    crate::front::i_est_compteur()
+        && matches!(e, crate::front::Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0)
 }
 
 fn texte_pas(e: &crate::front::Expr) -> String {
@@ -2464,7 +2593,7 @@ impl From<Option<i32>> for Signal {
 // ── Point d'entrée CLI ────────────────────────────────────────────────────
 
 pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
-    let _t0 = std::time::Instant::now();
+    let _t0 = crate::run::chrono();
     let mut prog = match crate::front::analyser(source) {
         Ok(p) => p,
         Err(e) => { eprintln!("{}", e); return 1; }
@@ -2482,18 +2611,115 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
         let mut corrompu = false;
         fn est_corrompu(i: &Instr) -> bool {
             match i {
-                Instr::Affect { nom, e, .. } => nom == "i" && matches!(e, crate::front::Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0),
+                // la corruption « $i = k+ki » n'existe QUE si « i » est le
+                // compteur entier du programme : sinon c'est un vrai complexe.
+                Instr::Affect { nom, e, .. } => nom == "i" && est_increment_corrompu(e),
                 Instr::Retour(Some(crate::front::Expr::LitComplexe { re, im, .. }), _) => *re == 0.0 && *im == 1.0,
+                Instr::Si { test, alors, sinon, .. } => est_boucle_i_repar(test)
+                    || alors.iter().any(est_corrompu)
+                    || sinon.as_ref().map(|s| s.iter().any(est_corrompu)).unwrap_or(false),
+                Instr::TantQue { test, corps, .. } => est_corrompu_expr(test)
+                    || corps.iter().any(est_corrompu),
+                Instr::Pour { debut, fin, corps, .. } => est_corrompu_expr(debut)
+                    || est_corrompu_expr(fin) || corps.iter().any(est_corrompu),
+                Instr::Bloc(b) => b.iter().any(est_corrompu),
                 _ => false,
             }
         }
-        fn scan(b: &[Instr]) -> bool { b.iter().any(|i| est_corrompu(i)) }
+        // le test d'un « si » raccourci peut porter le 0+1i replie par le
+        // lexeur alors que « i » est la variable entiere : ce n'est pas une
+        // corruption (le verificateur l'accepte deja quand le parser a
+        // de-replie), c'est un signe que « i » est le compteur.
+        fn est_corrompu_expr(e: &crate::front::Expr) -> bool {
+            match e {
+                crate::front::Expr::LitComplexe { re, im, .. } => *re == *im && *re != 0.0,
+                crate::front::Expr::Binaire { a, b, .. } => est_corrompu_expr(a) || est_corrompu_expr(b),
+                crate::front::Expr::Unaire { a, .. } => est_corrompu_expr(a),
+                _ => false,
+            }
+        }
+        // test de comparateur qui porte le compteur « i » : soit Var("i")
+        // déjà dé-replié par le parser (« tant_que »), soit le 0+1i du
+        // raccourci « @ (i < n) » que seul ce contexte rend entier.
+        fn est_boucle_i_repar(e: &crate::front::Expr) -> bool {
+            fn cote(e: &crate::front::Expr) -> bool {
+                match e {
+                    crate::front::Expr::Var(x, _) => x == "i",
+                    crate::front::Expr::LitComplexe { re, im, .. } => *re == 0.0 && *im == 1.0,
+                    _ => false,
+                }
+            }
+            match e {
+                crate::front::Expr::Binaire { op, a, b, .. }
+                    if matches!(op.as_str(), "<" | "<=" | ">" | ">=") => cote(a) || cote(b),
+                _ => false,
+            }
+        }
+        // le raccourci « @ (i < 2) [ … ] » (miroir du C++) et toute comparaison
+        // d'ordre avec le 0+1i : le parser n'a pas vu de borne de boucle, donc
+        // « i » reste replié en imaginaire pur et le vérificateur refuserait
+        // « Ordre complexe < entier impossible ». Le 0+1i comparé à un nombre
+        // est la VARIABLE entière « i » (miroir de deplier_i_test).
+        fn est_corrompu_boucle_i(i: &Instr) -> bool {
+            match i {
+                Instr::Si { test, alors, sinon, .. } => {
+                    // le raccourci « @ (i < 2) [ $i = $i + 1 ] » : le corps est
+                    // un bloc « { … } » (Instr::Bloc), pas une liste nue — il
+                    // faut le traverser, sinon la réparation ne se déclenche
+                    // jamais et « i » garde le littéral imaginaire du lexeur.
+                    est_compar_i(test)
+                        || alors.iter().any(est_corrompu_boucle_i)
+                        || sinon.as_ref().map(|s| s.iter().any(est_corrompu_boucle_i)).unwrap_or(false)
+                }
+                Instr::Bloc(b) => b.iter().any(est_corrompu_boucle_i),
+                _ => false,
+            }
+        }
+        fn est_compar_i(e: &crate::front::Expr) -> bool {
+            crate::front::est_cote_i(e)
+        }
+        fn scan(b: &[Instr]) -> bool { b.iter().any(|i| est_corrompu(i) || est_corrompu_boucle_i(i)) }
         corrompu |= scan(&prog.instructions);
         for nom in prog.ordre.clone() {
             let sig = prog.signatures.get(&nom).unwrap();
             if let Some(c) = &sig.corps { corrompu |= scan(c); }
         }
-        if corrompu {
+        // la reparation d'increment « $i = k+ki » n'est valide que si « i » est
+        // reellement le compteur entier : sans contexte de boucle, « $i = 3+3i »
+        // est un VRAI complexe et doit garder sa valeur.
+        let i_compteur = {
+            fn dans(b: &[Instr]) -> bool {
+                b.iter().any(|i| match i {
+                    Instr::Pour { nom, .. } => nom == "i",
+                    Instr::TantQue { test, corps, .. } => crate::front::est_cote_i(test) || dans(corps),
+                    Instr::Si { test, alors, sinon, .. } => crate::front::est_cote_i(test)
+                        || dans(alors)
+                        || sinon.as_ref().map(|s| dans(s)).unwrap_or(false),
+                    Instr::Bloc(bb) => dans(bb),
+                    Instr::Affect { nom, e, .. } => {
+                        nom == "i"
+                            && (matches!(e, crate::front::Expr::Litteral { flott: false, rationnel: false, .. })
+                                || matches!(e, crate::front::Expr::Binaire { op, a, b, .. } if {
+                                    let nombre = |x: &crate::front::Expr| matches!(x, crate::front::Expr::Litteral { flott: false, rationnel: false, .. });
+                                    match op.as_str() {
+                                        // « $i = $i + 1 » (l'empreinte exacte de la
+                                        // corruption 1+1i) ou « $i = <nombre> ».
+                                        "+" | "-" => nombre(a) || nombre(b)
+                                            || matches!(&**a, crate::front::Expr::Var(x, _) if x == "i"),
+                                        _ => false,
+                                    }
+                                }))
+                    }
+                    _ => false,
+                })
+            }
+            dans(&prog.instructions)
+                || prog.ordre.iter().any(|n| {
+                    prog.signatures.get(n).and_then(|s| s.corps.as_deref()).map(dans).unwrap_or(false)
+                })
+        };
+        if corrompu || i_compteur {
+            crate::front::marquer_i_compteur();
             fn reparer_expr(e: &crate::front::Expr) -> crate::front::Expr {
                 use crate::front::Expr;
                 match e {
@@ -2511,6 +2737,21 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
             }
             fn reparer_corps_i(i: &Instr) -> Instr {
                 match i {
+                    // « >> i » (et tout affichage / instruction d'expression) du
+                    // corps de « pour i de … » : le 0+1i nu est le COMPTEUR.
+                    Instr::Afficher(es, l) => {
+                        let v: Vec<crate::front::Expr> = es.iter().map(|e| {
+                            let mut x = reparer_expr(e);
+                            crate::front::deplier_i_rec(&mut x);
+                            x
+                        }).collect();
+                        Instr::Afficher(v, *l)
+                    }
+                    Instr::ExprStmt(e) => {
+                        let mut x = reparer_expr(e);
+                        crate::front::deplier_i_rec(&mut x);
+                        Instr::ExprStmt(x)
+                    }
                     Instr::Affect { nom, e, ligne } if nom == "i" => {
                         // « $i = 1+1i » (corrompu) ou « $i = 0+1i » (repli brut)
                         // sont la VARIABLE i ; la voie simple qui ne déplace pas
@@ -2576,25 +2817,34 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
                     Instr::Retour(e, l) => Instr::Retour(e.as_ref().map(reparer_expr), *l),
                     Instr::TantQue { test, corps, ligne } => {
                         // on ne répare le corps que si la condition compare
-                        // « i » : c'est le seul contexte où 1+1i est le compteur
-                        // (sinon, « $i = 1+1i » reste un vrai complexe).
-                        let boucle_i = match test {
-                            crate::front::Expr::Binaire { op, a, b, .. }
-                                if matches!(op.as_str(), "<" | "<=" | ">" | ">=") =>
-                            {
-                                matches!(**a, crate::front::Expr::Var(ref x, _) if x == "i")
-                                    || matches!(**b, crate::front::Expr::Var(ref x, _) if x == "i")
-                            }
-                            _ => false,
-                        };
-                        if boucle_i {
-                            // l'incrément du compteur doit être la DERNIÈRE
-                            // instruction du corps (sinon la borne reparée en
-                            // « i + k » écrase les autres affectations, qui
-                            // lisaient l'ancienne valeur de i).
-                            let mut nc: Vec<Instr> = corps.iter().map(reparer_corps_i).filter(|x| {
-                                !matches!(x, Instr::Affect { nom, .. } if nom == "i")
+                        // « i » (0+1i ou Var("i")) ET que le corps porte la
+                        // corruption « $i = k+ki ». Un corps propre
+                        // (« $i = $i + 1 ») traverse la réparation sans
+                        // transformation : la réécrire effacerait l'incrément,
+                        // et « $i = 1+1i » hors boucle est un VRAI complexe.
+                        let corps_repare: Vec<Instr> = corps.iter()
+                            .map(reparer_corps_i)
+                            .filter(|x| !matches!(x,
+                                Instr::Affect { nom, e, .. }
+                                    if nom == "i" && est_increment_corrompu(e)))
+                            .collect();
+                        let boucle_i = est_boucle_i_repar(test)
+                            && corps_repare.len() != corps.len();
+                        // dans une boucle du compteur (« i < n »), TOUT le corps
+                        // est un contexte de variable : le 0+1i que le repli a
+                        // laissé dans un affichage ou une expression (« $t = $t + i »,
+                        // « >> i ») est le COMPTEUR, pas l'imaginaire. On le
+                        // dé-replie même quand il n'y a pas d'incrément corrompu.
+                        if est_boucle_i_repar(test) && !boucle_i {
+                            let c: Vec<Instr> = corps.iter().map(|x| {
+                                let mut y = reparer_instr(x, corps);
+                                y = crate::front::deplier_corps_instr(&y);
+                                y
                             }).collect();
+                            return Instr::TantQue { test: reparer_expr(test), corps: c, ligne: *ligne };
+                        }
+                        if boucle_i {
+                            let mut nc: Vec<Instr> = corps_repare;
                             let k = match test {
                                 crate::front::Expr::Binaire { a, b, .. } => {
                                     if matches!(**b, crate::front::Expr::Var(ref x, _) if x == "i") { &**a } else { &**b }
@@ -2617,11 +2867,26 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
                             Instr::TantQue { test: reparer_expr(test), corps: corps.iter().map(|x| reparer_instr(x, bloc)).collect(), ligne: *ligne }
                         }
                     }
-                    Instr::Si { test, alors, sinon, ligne } => Instr::Si { test: reparer_expr(test), alors: alors.iter().map(|x| reparer_instr(x, alors)).collect(), sinon: sinon.as_ref().map(|s| s.iter().map(|x| reparer_instr(x, s)).collect()), ligne: *ligne },
+                    Instr::Si { test, alors, sinon, ligne } => {
+                        // le raccourci « @ (i < 2) » (boucle du compteur, miroir
+                        // du C++) est le seul « si » dont le test compare la
+                        // VARIABLE entière « i » repliée en 0+1i.
+                        let mut t2 = reparer_expr(test);
+                        if est_boucle_i_repar(test) { crate::front::deplier_i_rec(&mut t2); }
+                        Instr::Si { test: t2, alors: alors.iter().map(|x| reparer_instr(x, alors)).collect(), sinon: sinon.as_ref().map(|s| s.iter().map(|x| reparer_instr(x, s)).collect()), ligne: *ligne }
+                    }
                     Instr::Pour { nom, debut, fin, corps, ligne } => {
-                        // corps de « pour i de … » : les 1+1i internes sont le compteur
+                        // corps de « pour i de … » : les 1+1i internes sont le compteur.
+                        // « >> i » y est le COMPTEUR, pas l'imaginaire : on ne
+                        // laisse jamais un 0+1i nu survivre dans un corps (ou une
+                        // borne) de la boucle « i », sinon il s'afficherait « i »
+                        // au lieu de la valeur de l'entier.
                         if nom == "i" {
-                            Instr::Pour { nom: nom.clone(), debut: reparer_expr(debut), fin: reparer_expr(fin),
+                            let mut d2 = reparer_expr(debut);
+                            let mut f2 = reparer_expr(fin);
+                            crate::front::deplier_i_rec(&mut d2);
+                            crate::front::deplier_i_rec(&mut f2);
+                            Instr::Pour { nom: nom.clone(), debut: d2, fin: f2,
                                 corps: corps.iter().map(reparer_corps_i).collect(), ligne: *ligne }
                         } else {
                             Instr::Pour { nom: nom.clone(), debut: reparer_expr(debut), fin: reparer_expr(fin),
@@ -2651,8 +2916,24 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
         let mut new_instrs = Vec::new();
         for instr in std::mem::take(&mut prog.instructions) {
             if let Instr::Pour { nom: loopvar, debut, fin, corps, ligne } = instr {
+                // la fonction synthétique fabriquée ici fabrique un AST hors
+                // analyser() : si elle capture le compteur « i » (boucle sur i
+                // ou accumulateur i), la réparation du compteur ne s'applique
+                // pas et le 1+1i redevient un complexe. On laisse la boucle à
+                // l'interpréteur, qui connaît déjà la réparation.
+                let touche_i = loopvar == "i"
+                    || corps.iter().any(|x| matches!(x, Instr::Affect { nom, .. } if nom == "i"))
+                    // une borne de boucle qui porte encore le 0+1i du lexeme « i »
+                    // (« pour i de 0 vers i ») est un compteur : la fonction
+                    // synthétique n'a pas passé analyser(), elle n'aurait pas la
+                    // réparation et bouclerait sur un complexe.
+                    || matches!(&debut, Expr::LitComplexe { re, im, .. } if *re == 0.0 && *im == 1.0)
+                    || matches!(&fin, Expr::LitComplexe { re, im, .. } if *re == 0.0 && *im == 1.0);
+                // « touche_i » INTERDIT la transformation en fonction
+                // synthétique (l'AST fabriqué ici n'a pas la réparation du
+                // compteur) — mais la boucle doit être CONSERVÉE telle quelle.
                 let mut transformed = false;
-                if corps.len() == 1 {
+                if !touche_i && corps.len() == 1 {
                     if let Instr::Affect { nom: acc, e: eacc, .. } = &corps[0] {
                         let acc = acc.clone();
                         let mut eacc = eacc.clone();
