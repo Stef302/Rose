@@ -243,3 +243,25 @@ MIT — voir [LICENSE](LICENSE).
 <p align="center">
   <b>ROSE</b> — conçu et implémenté par <a href="https://github.com/Stef302">Stef302</a>
 </p>
+
+## 🎮 Modes d'exécution (récapitulatif)
+
+| Commande | Rôle | Quand l'utiliser |
+|---|---|---|
+| `rose prog.rose` | Interprète / JIT le programme | défaut, avec formules LaTeX |
+| `rose run prog.rose` | Identique | alias explicite |
+| `rose run prog.rose` + `ROSE_AOT=1` | AOT LLVM ORC si disponible | vitesse maximale (≈ Rust) |
+| `rose latex prog.rose` | Formule LaTeX du programme entier | jouer avec le code, puis obtenir le LaTeX |
+| `rose comp prog.rose [-o sortie]` | Exécutable autonome (moteur + source) | distribution |
+| `rose orc prog.rose -o prog.o` | Compilation native LLVM ORC | AOT, vectorisation NEON |
+| `rose link prog.o [-o sortie]` | Lier un objet ELF en binaire | avec `rose orc` |
+| `rose info` / `rose version` | État du moteur | diagnostic |
+| `rose --help` | Aide | — |
+
+Variables d'environnement utiles :
+- `ROSE_SANS_JIT=1` : force l'interpréteur pur (sans JIT Cranelift).
+- `ROSE_AOT=1` : active la voie AOT LLVM ORC (vectorisation NEON).
+- `ROSE_TIMING=1` : affiche les temps de compilation/exécution.
+- `ROSE_DUMP_IR=1` : affiche l'IR Cranelift.
+- `ROSE_NO_AOT=1` : désactive la voie AOT (force le JIT).
+- `ROSE_DEBUG=1` / `ROSE_STEP=1` : débogage pas-à-pas.
