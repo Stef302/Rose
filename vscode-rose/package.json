@@ -2,7 +2,7 @@
   "name": "rose-language",
   "displayName": "Rose — langage de programmation en français",
   "description": "Prise en charge complète du langage Rose (v5.10) : coloration syntaxique, snippets, icônes, ligatures, diagnostics, auto-complétion, navigation, formatage, et exécution.",
-  "version": "5.10.1",
+  "version": "5.10.2",
   "publisher": "stef302",
   "author": "Stef_302",
   "license": "MIT",
@@ -112,6 +112,12 @@
         "title": "Rose : valider le fichier",
         "category": "Rose",
         "icon": "$(check)"
+      },
+      {
+        "command": "rose.consoleFile",
+        "title": "Rose : exécuter puis ouvrir une console",
+        "category": "Rose",
+        "icon": "$(terminal)"
       }
     ],
     "menus": {
@@ -128,6 +134,11 @@
         },
         {
           "command": "rose.validate",
+          "when": "resourceLangId == rose",
+          "group": "navigation"
+        },
+        {
+          "command": "rose.consoleFile",
           "when": "resourceLangId == rose",
           "group": "navigation"
         }
@@ -168,6 +179,12 @@
         "command": "rose.validate",
         "key": "ctrl+alt+v",
         "mac": "cmd+alt+v",
+        "when": "editorTextFocus && resourceLangId == rose"
+      },
+      {
+        "command": "rose.consoleFile",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
         "when": "editorTextFocus && resourceLangId == rose"
       }
     ],

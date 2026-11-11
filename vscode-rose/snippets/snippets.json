@@ -140,5 +140,19 @@
       ">> modulus(\\$z)"
     ],
     "description": "Nombre complexe"
+  },
+  "Type de": {
+    "prefix": "type_de",
+    "body": [
+      "type_de(${1:expr})"
+    ],
+    "description": "Type d'une valeur (chaîne)"
+  },
+  "Console": {
+    "prefix": "console",
+    "body": [
+      "rose console"
+    ],
+    "description": "Console interactive Rose"
   }
 }

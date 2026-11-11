@@ -493,6 +493,18 @@ function activate(context) {
   });
   context.subscriptions.push(latexFile);
 
+  const consoleFile = vscode.commands.registerCommand('rose.consoleFile', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'rose') { vscode.window.showWarningMessage('Aucun fichier Rose actif.'); return; }
+    await editor.document.save();
+    const bin = getBinaryPath();
+    const filePath = editor.document.uri.fsPath;
+    const terminal = vscode.window.createTerminal('Rose Console');
+    terminal.show();
+    terminal.sendText(`${bin} "${filePath}" --console`);
+  });
+  context.subscriptions.push(consoleFile);
+
   const openTerminal = vscode.commands.registerCommand('rose.openTerminal', () => {
     const terminal = vscode.window.createTerminal('Rose');
     terminal.show();
