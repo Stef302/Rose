@@ -467,13 +467,13 @@ pub fn programme_latex(p: &Programme) -> String {
 /// Rend une fonction du programme : signature typée puis corps.
 fn fonction_latex(nom: &str, sig: &crate::front::Signature) -> String {
     let params: Vec<String> = sig.params.iter()
-        .map(|(n, t)| format!("{} : {}", n, type_latex(t)))
+        .map(|(n, t)| format!("{} \\in {}", n, type_math_latex(t)))
         .collect();
     let mut s = format!(
         "\\operatorname{{{}}}({}) \\to {}",
         nom,
         params.join(", "),
-        type_latex(&sig.retour)
+        type_math_latex(&sig.retour)
     );
     match &sig.corps {
         Some(corps) => {
@@ -487,6 +487,30 @@ fn fonction_latex(nom: &str, sig: &crate::front::Signature) -> String {
         }
     }
     s
+}
+
+/// Rend un type comme un ENSEMBLE mathematique : « \\mathbb{Z} »,
+/// « \\mathbb{R} », « \\mathbb{Q} », « \\mathbb{C} », etc.
+/// C'est la forme demandee pour les signatures de fonctions : on lit
+/// « fib(n \\in \\mathbb{Z}) \\to \\mathbb{Z} » plutot que
+/// « fib(n : entier) \\to entier ».
+fn type_math_latex(t: &crate::front::Ty) -> String {
+    use crate::front::TyKind;
+    match t.n {
+        TyKind::Entier => "\\mathbb{Z}".to_string(),
+        TyKind::Rationnel => "\\mathbb{Q}".to_string(),
+        TyKind::Flottant => "\\mathbb{R}".to_string(),
+        TyKind::Booleen => "\\mathbb{B}".to_string(),
+        TyKind::Chaine => "\\mathrm{chaine}".to_string(),
+        TyKind::Complexe => "\\mathbb{C}".to_string(),
+        TyKind::Irrationnel => "\\mathbb{I}".to_string(),
+        TyKind::Liste => "\\mathrm{liste}".to_string(),
+        TyKind::Table => "\\mathrm{table}".to_string(),
+        TyKind::Tableau => "\\mathrm{tableau}".to_string(),
+        TyKind::Tampon => "\\mathrm{tampon}".to_string(),
+        TyKind::Vide => "\\mathrm{vide}".to_string(),
+        TyKind::Dyn => "?".to_string(),
+    }
 }
 
 /// Nom LaTeX d'un type Rose.
