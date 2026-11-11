@@ -119,6 +119,17 @@ L'URL et l'empreinte de référence se surchargent par `ROSE_AOT_URL` et
 cargo build --release --features llvm        # binaire + helper AOT
 ```
 
+### `rose orc` : fonctions utilisateur prises en charge
+
+Depuis v5.8.0, `rose orc` compile les **fonctions définies par le programme**
+(appel croisé, récursion, boucles `pour` / `tant_que` avec phi nodes) : les
+en-têtes sont déclarés avant les corps, et l'objet émis se lie directement
+avec `gcc`/`clang`. Un appel de DLL « extern » reste résolu par le linker.
+
+```bash
+rose orc fib.rose -o fib.o && gcc fib.o -o fib && ./fib
+```
+
 ## 🧪 Conformité
 
 - **54/54** comparaisons parité C++ ↔ Rust, **0 divergence**.
