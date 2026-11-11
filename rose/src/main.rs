@@ -397,10 +397,23 @@ fn console_mode(fichier: Option<&str>, exec_initial: bool) {
             }
             continue;
         }
-        let src = if buffer.is_empty() {
+        let est_def = trimmed.starts_with("fn ")
+            || trimmed.starts_with("si ")
+            || trimmed.starts_with("si(")
+            || trimmed.starts_with("pour ")
+            || trimmed.starts_with("tant_que")
+            || trimmed.starts_with("?")
+            || trimmed.starts_with("@")
+            || trimmed.contains(" = ");
+        let ligne_exec = if trimmed.starts_with(">>") || est_def {
             trimmed.clone()
         } else {
-            format!("{}\n{}", buffer.join("\n"), trimmed)
+            format!(">> {}", trimmed)
+        };
+        let src = if buffer.is_empty() {
+            ligne_exec.clone()
+        } else {
+            format!("{}\n{}", buffer.join("\n"), ligne_exec)
         };
         let src_clone = src.clone();
         let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
@@ -410,7 +423,7 @@ fn console_mode(fichier: Option<&str>, exec_initial: bool) {
             Err(_) => crate::interp::executer_source(&src, Vec::new()),
         };
         let _ = io::stdout().flush();
-        if rc == 0 && !trimmed.starts_with(">>") {
+        if rc == 0 && est_def && !trimmed.starts_with(">>") {
             buffer.push(trimmed.clone());
         }
     }
