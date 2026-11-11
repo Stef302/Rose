@@ -57,11 +57,21 @@ pub fn cible() -> String {
     }
 }
 
-/// URL par défaut du helper AOT (release GitHub du projet).
+/// URL par défaut du helper AOT : la release GitHub du projet ; si le
+/// fichier n'y est pas (404), repli sur le miroir versionné du dépôt
+/// (docs/telechargements, servi par raw.githubusercontent.com).
 pub fn url_par_defaut() -> String {
     format!(
         "https://github.com/Stef302/Rose/releases/download/{}/{}-{}",
         VERSION_HELPER,
+        NOM_HELPER,
+        cible()
+    )
+}
+
+pub fn url_miroir() -> String {
+    format!(
+        "https://raw.githubusercontent.com/Stef302/Rose/main/docs/telechargements/{}-{}",
         NOM_HELPER,
         cible()
     )
@@ -140,8 +150,15 @@ pub fn installer_helper() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&cache).map_err(|e| format!("création du cache : {}", e))?;
     let tmp = cache.join(format!(".{}.tmp", NOM_HELPER));
 
-    // téléchargement : curl ou wget (pas de dépendance TLS à embarquer)
-    let telecharge = downloadable(&url, &tmp)?;
+    // téléchargement : curl ou wget (pas de dépendance TLS à embarquer).
+    // La release d'abord ; si elle ne sert pas l'artefact, le miroir
+    // versionné du dépôt (docs/telechargements) prend le relais.
+    let mut telecharge = downloadable(&url, &tmp)?;
+    if !telecharge {
+        let miroir = url_miroir();
+        eprintln!("      (release absente — essai du miroir {})", miroir);
+        telecharge = downloadable(&miroir, &tmp)?;
+    }
     if !telecharge {
         let _ = std::fs::remove_file(&tmp);
         return Err("téléchargement impossible (outil absent ou URL inaccessible)".to_string());
