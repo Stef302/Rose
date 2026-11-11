@@ -10,10 +10,10 @@
   "homepage": "https://stef302.github.io/Rose/",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Stef_302/rose-language"
+    "url": "https://github.com/Stef302/Rose"
   },
   "bugs": {
-    "url": "https://github.com/Stef_302/rose-language/issues"
+    "url": "https://github.com/Stef302/Rose/issues"
   },
   "engines": {
     "vscode": "^1.80.0"
