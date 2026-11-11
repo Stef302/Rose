@@ -27,4 +27,6 @@ jobs:
 
       - name: Publish extension
         working-directory: vscode-rose
-        run: vsce publish
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: vsce publish --pat "$VSCE_PAT"
