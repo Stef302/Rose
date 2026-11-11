@@ -617,6 +617,17 @@ impl JITMemoryProvider for MemoireJit {
         if std::env::var("ROSE_TIMING").is_ok() {
             eprintln!("TIMING-JIT memoire finalize={:?} regions={}", _tf.elapsed(), self.regions.len());
         }
+        // Dump du code machine compilé (ROSE_DUMP_CODE=fichier) : permet de
+        // désassembler la boucle native et de la comparer au code de référence.
+        if let Ok(chemin) = std::env::var("ROSE_DUMP_CODE") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::File::create(&chemin) {
+                for r in self.regions.iter() {
+                    let octets = unsafe { std::slice::from_raw_parts(r.ptr, r.len) };
+                    let _ = f.write_all(octets);
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -746,7 +757,17 @@ impl Jit {
         // c'est-à-dire SANS aucune optimisation (DCE, CSE, iconst+bitcast ->
         // f64const...). Le gain est spectaculaire sur les boucles.
         let lvl = std::env::var("ROSE_JIT_OPT").unwrap_or_else(|_| "speed".to_string());
-        let mut builder = JITBuilder::with_flags(&[("opt_level", lvl.as_str())], default_libcall_names()).unwrap();
+        // « enable_verifier=false » : le VÉRIFICATEUR de Cranelift est
+        // activé par DÉFAUT et repasse tout le programme optimisé à chaque
+        // fonction compilée. C'est un contrôle de cohérence interne, dont le
+        // coût (≈ 25 % du temps de compilation) est payé pour rien en
+        // production : les invariants sont garantis par les portes de
+        // parité du moteur (bloc_compilable, ty_statique), pas par le
+        // vérificateur.
+        let verif = std::env::var("ROSE_JIT_VERIFIER").unwrap_or_else(|_| "false".into());
+        let mut builder = JITBuilder::with_flags(
+            &[("opt_level", lvl.as_str()), ("enable_verifier", verif.as_str())],
+            default_libcall_names()).unwrap();
         // Les helpers runtime sont résolus par ADRESSE : sans cela, Cranelift
         // passe par dlsym() au moment des relocations — 1,2 ms mesurés pour
         // une seule résolution ! On enregistre donc le nom de chaque helper
@@ -1223,15 +1244,11 @@ impl Emetteur<'_> {
     /// vérificateur Cranelift fait `unreachable!()` sur un iconst F64), on
     /// passe donc par un i64 puis un bitcast.
     fn f64_zero(&mut self) -> Value {
-        // f64const : une VRAIE constante flottante dans l'IR. Le couple
-        // iconst+bitcast que le moteur utilisait previously produisait une
-        // valeur opaque que l'optimiseur devait retrouver, et laissait dans
-        // la boucle des paires iconst/bitcast à chaque tour (visible dans le
-        // dump IR : « iconst.i64 0 / bitcast.f64 » répété dans le corps).
         self.builder.ins().f64const(cranelift::codegen::ir::immediates::Ieee64::with_bits(0))
     }
-
-    /// La constante flottante `d` (f64const : voir `f64_zero`).
+    /// La constante flottante `d` (f64const natif : une VRAIE constante dans
+    /// l'IR, au lieu d'un couple iconst+bitcast que l'optimiseur devait
+    /// retrouver).
     fn f64_of(&mut self, d: f64) -> Value {
         self.builder.ins().f64const(cranelift::codegen::ir::immediates::Ieee64::with_bits(d.to_bits()))
     }
@@ -2171,10 +2188,18 @@ fn powf(&mut self) -> FuncRef {
                                 let f = self.runtime("rose_affiche_f64");
                                 let _ = self.builder.ins().call(f, &[v]);
                             } else {
-                                // Entier ou booléen
+                                // Entier ou booléen. Le helper attend DEUX
+                                // arguments (valeur, tag) : le tag signale
+                                // une valeur entière EXACTE hors i64 (Box<Gz>
+                                // dans la trame). Ne passer qu'un argument
+                                // faisait paniquer Cranelift à l'ABI
+                                // (« left: 1, right: 2 ») et, pour un entier
+                                // exact, aurait affiché le pointeur au lieu
+                                // de la valeur.
                                 let vv = self.builder.ins().ireduce(types::I64, v);
+                                let tag = self.builder.use_var(self.tag_tmp);
                                 let f = self.runtime("rose_affiche_ent");
-                                let _ = self.builder.ins().call(f, &[vv]);
+                                let _ = self.builder.ins().call(f, &[vv, tag]);
                             }
                         }
                     }

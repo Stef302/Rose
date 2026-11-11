@@ -429,6 +429,15 @@ fn borne_fin_latex(fin: &Expr) -> String {
 /// un saut de ligne LaTeX (`\\`).
 pub fn programme_latex(p: &Programme) -> String {
     let mut s = String::new();
+    // 1) les fonctions définies par le programme, dans l'ordre de
+    //    définition : c'est la partie du programme qui porte les CALCULS.
+    for nom in &p.ordre {
+        if let Some(sig) = p.signatures.get(nom) {
+            s.push_str(&fonction_latex(nom, sig));
+            s.push('\n');
+        }
+    }
+    // 2) le corps principal, instruction par instruction.
     let n = p.instructions.len();
     for (i, instr) in p.instructions.iter().enumerate() {
         if i > 0 { s.push('\n'); }
@@ -436,6 +445,55 @@ pub fn programme_latex(p: &Programme) -> String {
         if i + 1 < n { s.push_str(" \\\\"); }
     }
     s
+}
+
+/// Rend une fonction du programme : signature typée puis corps.
+fn fonction_latex(nom: &str, sig: &crate::front::Signature) -> String {
+    let params: Vec<String> = sig.params.iter()
+        .map(|(n, t)| format!("{} : {}", n, type_latex(t)))
+        .collect();
+    let mut s = format!(
+        "\\operatorname{{{}}}({}) \\to {}",
+        nom,
+        params.join(", "),
+        type_latex(&sig.retour)
+    );
+    match &sig.corps {
+        Some(corps) => {
+            s.push_str(" \\ \\langle ");
+            s.push_str(&bloc_latex(corps));
+            s.push_str(" \\rangle");
+        }
+        None => {
+            // déclaration externe (FFI) : pas de corps à rendre.
+            s.push_str(" \\ \\text{(fonction externe)}");
+        }
+    }
+    s
+}
+
+/// Nom LaTeX d'un type Rose.
+fn type_latex(t: &crate::front::Ty) -> String {
+    use crate::front::TyKind;
+    let base = match t.n {
+        TyKind::Entier => "\\mathrm{entier}".to_string(),
+        TyKind::Rationnel => "\\mathrm{rationnel}".to_string(),
+        TyKind::Flottant => "\\mathrm{flottant}".to_string(),
+        TyKind::Booleen => "\\mathrm{booleen}".to_string(),
+        TyKind::Chaine => "\\mathrm{chaine}".to_string(),
+        TyKind::Complexe => "\\mathrm{complexe}".to_string(),
+        TyKind::Irrationnel => "\\mathrm{irrationnel}".to_string(),
+        TyKind::Liste => "\\mathrm{liste}".to_string(),
+        TyKind::Table => "\\mathrm{table}".to_string(),
+        TyKind::Tableau => "\\mathrm{tableau}".to_string(),
+        TyKind::Tampon => "\\mathrm{tampon}".to_string(),
+        TyKind::Vide => "\\mathrm{vide}".to_string(),
+        TyKind::Dyn => "?".to_string(),
+    };
+    match t.elt {
+        TyKind::Vide | TyKind::Dyn => base,
+        _ => format!("\\mathrm{{{}}}(\\mathrm{{{}}})", "liste", base),
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

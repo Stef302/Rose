@@ -192,7 +192,14 @@ pub fn rose_analyser(source: &str) -> Result<String, String> {
 /// formule.
 pub fn rose_latex(source: &str) -> String {
     match front::analyser(source) {
-        Ok(prog) => latex::programme_latex(&prog),
+        // Le saut de ligne final est PARTIE de la sortie : la commande
+        // `rose latex` et l'API WebAssembly rendent ainsi le MÊME texte,
+        // au caractère près.
+        Ok(prog) => {
+            let mut s = latex::programme_latex(&prog);
+            s.push('\n');
+            s
+        }
         Err(e) => e,
     }
 }

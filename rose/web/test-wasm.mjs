@@ -107,6 +107,22 @@ verifier(
   "Rose : erreur — [Ligne 5, Colonne 1] Attente d'une expression, trouvé ''\n",
   await Rose.execute('fn f(x: entier) -> entier {\n    retour x\n}\n>> f(\n'));
 verifier('latex', '\\mathrm{afficher}\\left(2\\right)', (await Rose.latex('>> 1 + 1\n')).trim());
+// LaTeX du programme ENTIER (fonctions comprises) : doit être identique à
+// celui du moteur natif (`rose latex programme.rose`).
+const programmeLatex = [
+  '$s = 0\n',
+  'pour j de 0 vers 10 { $s = $s + j }\n',
+  'fn carre(x: entier) -> entier { retour x * x }\n',
+  '>> $s\n',
+  '>> carre(7)\n',
+].join('');
+if (natif) {
+  const f = path.join('/tmp', `rose_latex_${process.pid}.rose`);
+  fs.writeFileSync(f, programmeLatex);
+  const r = spawnSync(natif, ['latex', f], { encoding: 'utf8' });
+  try { fs.unlinkSync(f); } catch { /* déjà supprimé */ }
+  verifier('parité native : latex du programme', r.stdout, await Rose.latex(programmeLatex));
+}
 verifier('analyse', true, (await Rose.analyse('fn f(x: entier) -> entier { retour x }\n>> f(1)\n')).startsWith('programme valide'));
 
 console.log('');

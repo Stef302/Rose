@@ -38,6 +38,7 @@ Usage :
   rose prog.rose [args…]   interpréter / JIT un programme Rose
   rose run prog.rose       identique
   rose comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
+  rose latex prog.rose              formule LaTeX du programme entier
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
   rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
@@ -159,6 +160,25 @@ fn main() {
         "version" | "--version" => { println!("{}", interp::version()); return; }
         "info" => { print!("{}", interp::info()); return; }
         "--help" | "-h" | "aide" => { print!("{}", USAGE); return; }
+        "latex" => {
+            // RENDU LaTeX DU PROGRAMME ENTIER : c'est la synthèse de ce
+            // qu'on a programmé. La commande `run` montre, instruction par
+            // instruction, la formule de chaque affichage ; celle-ci donne la
+            // formule GLOBALE du programme.
+            if argv.len() < 3 { eprintln!("rose: quel programme rendre ?"); std::process::exit(1); }
+            let mut source = String::new();
+            if !lire(&mut source, &argv[2]) {
+                eprintln!("rose: fichier introuvable : {}", argv[2]);
+                std::process::exit(1);
+            }
+            let prog = match front::analyser(&source) {
+                Ok(p) => p,
+                Err(e) => { eprintln!("Rose : erreur — {}", e); std::process::exit(1); }
+            };
+            print!("{}", latex::programme_latex(&prog));
+            println!();
+            return;
+        }
         "comp" => {
             let mut sortie = String::new();
             let mut fichier = String::new();
