@@ -497,8 +497,14 @@ pétale logo, boutons au GDI, aucun template.
 ### Windows / Linux — depuis le moteur
 
 ```bash
-rose update     # détecte, propose réinstaller / réparer / désinstaller
+rose update              # menu : mettre à jour / réinstaller / réparer / désinstaller
+rose update --force      # retélécharge même si la version est déjà à jour
 ```
+
+**« Mettre à jour »** interroge l'API GitHub (`releases/latest`), compare
+la version publiée à celle installée, **télécharge l'artefact** de la
+plateforme, **vérifie son SHA-256** contre `SHA256SUMS`, puis remplace le
+binaire installé.
 
 Même logique en console ; sur Linux : `~/.local/bin/rose` (ou `/usr/local`),
 PATH dans `~/.bashrc` / `~/.profile`, type MIME `.rose` enregistré.

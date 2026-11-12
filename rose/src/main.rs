@@ -461,6 +461,8 @@ fn braces_balanced(s: &str) -> bool {
 
 fn install_rose() {
     use std::io::{self, Write, BufRead};
+    // « rose update --force » : retélécharge même si la version est à jour
+    let force = std::env::args().any(|a| a == "--force" || a == "-f");
 
     println!("{}", couleur("╔══════════════════════════════════════╗", "36"));
     println!("{}", couleur("║   Rose — installation / mise à jour      ║", "36"));
@@ -472,22 +474,30 @@ fn install_rose() {
         Some(ref p) => {
             println!("{} {}", couleur("Installation existante :", "33"), p);
             println!();
-            println!("  1) Réinstaller (écraser tous les fichiers)");
-            println!("  2) Réparer (réinstaller les fichiers manquants)");
-            println!("  3) Désinstaller");
-            println!("  4) Annuler");
-            print!("Choix [1-4] : ");
+            println!("  1) Mettre à jour depuis GitHub (dernière release)");
+            println!("  2) Réinstaller (écraser tous les fichiers)");
+            println!("  3) Réparer (réinstaller les fichiers manquants)");
+            println!("  4) Désinstaller");
+            println!("  5) Annuler");
+            print!("Choix [1-5] : ");
             let _ = io::stdout().flush();
             let mut buf = String::new();
             let _ = io::stdin().lock().read_line(&mut buf);
             match buf.trim() {
-                "3" => {
+                "1" => {
+                    println!("Recherche de la dernière release…");
+                    for l in setup_core::mettre_a_jour(p, force) {
+                        println!("{}", l);
+                    }
+                    return;
+                }
+                "4" => {
                     for l in setup_core::desinstaller(p) {
                         println!("{}", l);
                     }
                     return;
                 }
-                "4" => { println!("Annulé."); return; }
+                "5" => { println!("Annulé."); return; }
                 _ => p.clone(),
             }
         }

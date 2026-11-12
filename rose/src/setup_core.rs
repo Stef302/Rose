@@ -258,3 +258,271 @@ pub fn desinstaller(prefixe: &str) -> Journal {
     j.push("✓ Rose désinstallé".to_string());
     j
 }
+
+/* ── mise à jour depuis GitHub ─────────────────────────────────────── */
+
+/// Une release publiée sur GitHub.
+pub struct Release {
+    pub tag: String,
+    pub version: String,
+    /// (nom de l'asset, URL de téléchargement)
+    pub assets: Vec<(String, String)>,
+}
+
+fn version_en_nombres(v: &str) -> Vec<u64> {
+    v.trim_start_matches('v')
+        .split(['.', '-', '+'])
+        .map(|p| p.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+/// Compare deux versions (a > b → 1, a == b → 0, a < b → -1).
+pub fn comparer_versions(a: &str, b: &str) -> i32 {
+    let va = version_en_nombres(a);
+    let vb = version_en_nombres(b);
+    for i in 0..va.len().max(vb.len()) {
+        let x = va.get(i).copied().unwrap_or(0);
+        let y = vb.get(i).copied().unwrap_or(0);
+        if x != y { return if x > y { 1 } else { -1 }; }
+    }
+    0
+}
+
+/// Nom de l'asset à télécharger pour la plateforme courante.
+pub fn nom_asset() -> &'static str {
+    #[cfg(target_os = "windows")]
+    { "Rose-Setup" }              // complété par le tag
+    #[cfg(target_os = "linux")]
+    {
+        if cfg!(target_arch = "aarch64") { "rose-aarch64-linux" } else { "rose-x86_64-linux" }
+    }
+    #[cfg(target_os = "macos")]
+    { "rose-aarch64-macos" }
+}
+
+/// Exécute `curl` (ou `wget`) pour récupérer une URL.
+fn http_get(url: &str) -> Option<String> {
+    let out = std::process::Command::new("curl")
+        .args(["-sSL", "--max-time", "30", url])
+        .output();
+    if let Ok(o) = out {
+        if o.status.success() {
+            return Some(String::from_utf8_lossy(&o.stdout).into_owned());
+        }
+    }
+    // repli : wget
+    let out = std::process::Command::new("wget")
+        .args(["-q", "-O", "-", "--timeout=30", url])
+        .output();
+    if let Ok(o) = out {
+        if o.status.success() {
+            return Some(String::from_utf8_lossy(&o.stdout).into_owned());
+        }
+    }
+    None
+}
+
+/// Télécharge une URL dans un fichier. Retourne true si le fichier existe
+/// et n'est pas vide.
+fn http_telecharger(url: &str, dest: &std::path::Path) -> bool {
+    let _ = std::fs::remove_file(dest);
+    let st = std::process::Command::new("curl")
+        .args(["-sSL", "--max-time", "180", "-o", dest.to_string_lossy().as_ref(), url])
+        .status();
+    if let Ok(s) = st {
+        if s.success() {
+            if let Ok(m) = std::fs::metadata(dest) {
+                if m.len() > 0 { return true; }
+            }
+        }
+    }
+    let st = std::process::Command::new("wget")
+        .args(["-q", "-O", dest.to_string_lossy().as_ref(), url])
+        .status();
+    if let Ok(s) = st {
+        if s.success() {
+            if let Ok(m) = std::fs::metadata(dest) {
+                return m.len() > 0;
+            }
+        }
+    }
+    false
+}
+
+/// Cherche la dernière release publiée sur GitHub (API publique, sans jeton).
+pub fn chercher_release() -> Option<Release> {
+    let json = http_get("https://api.github.com/repos/Stef302/Rose/releases/latest")?;
+    // tag_name
+    let tag = extraire_valeur_json(&json, "\"tag_name\"");
+    let tag = tag.trim_start_matches('"').trim_end_matches('"').to_string();
+    if tag.is_empty() { return None; }
+    // browser_download_url
+    let mut assets = Vec::new();
+    let mut reste = json.as_str();
+    let cle = "browser_download_url";
+    while let Some(i) = reste.find(cle) {
+        // après la clé : on saute jusqu'au « : » puis on lit la valeur entre
+        // guillemets (« browser_download_url » finit lui-même par un guillemet,
+        // il ne faut donc pas le prendre pour le début de la valeur).
+        let apres_cle = &reste[i + cle.len()..];
+        let j = match apres_cle.find(':') { Some(j) => j, None => break };
+        let apres = &apres_cle[j + 1..];
+        let d = match apres.find('"') { Some(d) => d, None => break };
+        let debut = &apres[d + 1..];
+        let k = match debut.find('"') { Some(k) => k, None => break };
+        let url = debut[..k].to_string();
+        // le nom de l'asset est le dernier segment de l'URL
+        let nom = url.rsplit('/').next().unwrap_or("").to_string();
+        if !nom.is_empty() && !assets.iter().any(|(n, _)| *n == nom) {
+            assets.push((nom, url));
+        }
+        reste = &apres[d + 1 + k..];
+    }
+    let version = tag.trim_start_matches('v').to_string();
+    Some(Release { tag, version, assets })
+}
+
+/// Extrait la valeur scalaire qui suit une clé dans du JSON (sans parseur).
+fn extraire_valeur_json(json: &str, cle: &str) -> String {
+    match json.find(cle) {
+        Some(i) => {
+            let apres = &json[i + cle.len()..];
+            match apres.find('"') {
+                Some(j) => {
+                    let debut = &apres[j + 1..];
+                    match debut.find('"') {
+                        Some(k) => debut[..k].to_string(),
+                        None => String::new(),
+                    }
+                }
+                None => String::new(),
+            }
+        }
+        None => String::new(),
+    }
+}
+
+/// Version du binaire installé (exécuté) — None si absent.
+pub fn version_installee(prefixe: &str) -> Option<String> {
+    let exe = PathBuf::from(prefixe).join("bin").join(if cfg!(windows) { "rose.exe" } else { "rose" });
+    let out = std::process::Command::new(&exe).arg("--version").output().ok()?;
+    let txt = String::from_utf8_lossy(&out.stdout);
+    // « Rose 5.11.0 — … »
+    let apres = txt.strip_prefix("Rose ")?;
+    let v: String = apres.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// SHA-256 d'un fichier local (hexadécimal).
+pub fn sha256_fichier(chemin: &std::path::Path) -> Option<String> {
+    let data = std::fs::read(chemin).ok()?;
+    Some(crate::sha256::sha256_hex(&data))
+}
+
+/// Met à jour l'installation depuis GitHub. Retourne le journal.
+pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
+    let mut j = Journal::new();
+    let installée = version_installee(prefixe).unwrap_or_else(|| "0".to_string());
+    j.push(format!("Version installée : {}", installée));
+
+    let release = match chercher_release() {
+        Some(r) => r,
+        None => {
+            j.push("✗ impossible de joindre GitHub (réseau ?)".to_string());
+            return j;
+        }
+    };
+    j.push(format!("Dernière release : {}", release.tag));
+
+    if !force && comparer_versions(&release.version, &installée) <= 0 {
+        j.push(format!("✓ Rose {} est déjà à jour", installée));
+        return j;
+    }
+
+    // choisir l'asset
+    let mut asset: Option<(String, String)> = None;
+    if cfg!(windows) {
+        asset = release.assets.iter()
+            .find(|(n, _)| n.starts_with("Rose-Setup") && n.ends_with(".exe"))
+            .cloned();
+    } else {
+        let cible = nom_asset();
+        asset = release.assets.iter().find(|(n, _)| n == cible).cloned();
+    }
+    let (nom, url) = match asset {
+        Some(a) => a,
+        None => {
+            j.push(format!("✗ aucun artefact « {} » dans la release", nom_asset()));
+            return j;
+        }
+    };
+
+    // téléchargement dans un dossier temporaire
+    let tmp = std::env::temp_dir().join(format!("rose-update-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let fichier = tmp.join(&nom);
+    j.push(format!("Téléchargement : {}", nom));
+    if !http_telecharger(&url, &fichier) {
+        j.push("✗ téléchargement impossible".to_string());
+        let _ = std::fs::remove_dir_all(&tmp);
+        return j;
+    }
+
+    // vérification SHA-256 via SHA256SUMS
+    if let Some((_, url_sums)) = release.assets.iter().find(|(n, _)| n == "SHA256SUMS") {
+        let sums = tmp.join("SHA256SUMS");
+        if http_telecharger(url_sums, &sums) {
+            if let Ok(contenu) = std::fs::read_to_string(&sums) {
+                for ligne in contenu.lines() {
+                    let parts: Vec<&str> = ligne.split_whitespace().collect();
+                    if parts.len() == 2 && parts[1] == nom {
+                        if let Some(attendu) = sha256_fichier(&fichier) {
+                            if attendu == parts[0] {
+                                j.push("✓ SHA-256 vérifié".to_string());
+                            } else {
+                                j.push(format!("✗ SHA-256 incorrect (attendu {})", parts[0]));
+                                let _ = std::fs::remove_dir_all(&tmp);
+                                return j;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // application
+    #[cfg(windows)]
+    {
+        // on installe le nouveau moteur en remplaçant le binaire
+        let dest = PathBuf::from(prefixe).join("bin").join("rose.exe");
+        let _ = std::fs::remove_file(&dest);
+        if std::fs::copy(&fichier, &dest).is_ok() {
+            j.push(format!("✓ {} mis à jour", dest.display()));
+        } else {
+            j.push("✗ remplacement impossible (fermez les terminaux Rose)".to_string());
+        }
+        // on propose aussi le nouvel installeur
+        if let Some((n, _)) = release.assets.iter().find(|(n, _)| n.starts_with("Rose-Setup") && n.ends_with(".exe")) {
+            let _ = std::fs::copy(&fichier, tmp.join(n));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let dest = PathBuf::from(prefixe).join("bin").join("rose");
+        let _ = std::fs::remove_file(&dest);
+        if std::fs::copy(&fichier, &dest).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+            }
+            j.push(format!("✓ {} mis à jour", dest.display()));
+        } else {
+            j.push("✗ remplacement impossible".to_string());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    j.push(format!("✓ Rose {} installé", release.version));
+    j
+}

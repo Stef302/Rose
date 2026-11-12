@@ -116,8 +116,8 @@ static mut ETAT: *mut Etat = std::ptr::null_mut();
 
 /// Les 4 boutons : libellé, action, position x relative.
 const BOUTONS: [(&str, i32); 4] = [
-    ("Réinstaller", 0),
-    ("Réparer", 1),
+    ("Mettre à jour", 0),
+    ("Réinstaller", 1),
     ("Désinstaller", 2),
     ("Fermer", 3),
 ];
@@ -289,7 +289,13 @@ fn executer_action(h: HWND, action: i32) {
     let mut etat = unsafe { &mut *ETAT };
     etat.survol = -1;
     match action {
-        0 | 1 => {
+        0 => {
+            etat.message = "Recherche de la dernière release sur GitHub…\n\nMerci de patienter…".to_string();
+            etat.journal = crate::setup_core::mettre_a_jour(&prefixe, false);
+            etat.termine = true;
+            etat.message = format!("Mise à jour terminée.\n\nDossier : {}\n\nOuvrez un nouveau terminal,\npuis tapez : rose --version", prefixe);
+        }
+        1 => {
             etat.message = format!("Installation de Rose dans\n{}\n\nMerci de patienter…", prefixe);
             etat.journal = crate::setup_core::installer(&prefixe, None);
             etat.termine = true;
@@ -309,6 +315,7 @@ fn executer_action(h: HWND, action: i32) {
         _ => { unsafe { PostQuitMessage(0); } return; }
     }
     unsafe { InvalidateRect(h, std::ptr::null(), 0); }
+    unsafe { UpdateWindow(h); }
 }
 
 /// Point d'entrée de la fenêtre d'installation.
