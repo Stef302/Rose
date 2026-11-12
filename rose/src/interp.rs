@@ -3136,12 +3136,12 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
 }
 
 pub fn version() -> String {
-    "Rose 5.10.1 — compilateur Rust + JIT Cranelift (sémantique du moteur C++)".to_string()
+    "Rose 5.11.0 — compilateur Rust + JIT Cranelift (sémantique du moteur C++)".to_string()
 }
 
 pub fn info() -> String {
     let arch = if cfg!(target_arch = "aarch64") { "ARM 64 bits" } else { "x86-64" };
-    format!("rose 5.10.1\n  \
+    format!("rose 5.11.0\n  \
              moteur            : Rust natif {} — JIT Cranelift + interpréteur exact\n  \
              maths exactes     : BigInt natif (num-bigint, illimité, zéro GMP)\n  \
              nombres           : entiers, rationnels, flottants, irrationnels (√n), complexes (a+bi)\n  \

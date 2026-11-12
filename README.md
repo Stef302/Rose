@@ -474,6 +474,37 @@ commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
 
 ---
 
+## 📦 Installation
+
+### Windows — installeur graphique maison (64 bits natif)
+
+`Rose-Setup-<version>.exe` n'est **plus du NSIS** : c'est un binaire Rust
+(`rose-setup`) avec une **interface Win32 dessinée à la main** — bandeau rose,
+pétale logo, boutons au GDI, aucun template.
+
+- **64 bits natif** (PE32+ x86-64), apparaît comme tel dans le gestionnaire
+  des tâches.
+- Détecte une installation existante et propose : Réinstaller, Réparer,
+  Désinstaller, Fermer.
+- **Aucun droit administrateur** : tout est écrit dans `HKCU` et
+  `%LOCALAPPDATA%\Programs\Rose` (compatible avec les stratégies
+  d'entreprise qui verrouillent `HKLM`).
+- Désinstallation **rapide** : seuls les fichiers posés par l'installeur
+  sont supprimés (pas de cache d'icônes à purger).
+- Le moteur `rose.exe` est **embarqué** dans l'installeur : un seul fichier
+  à lancer, rien à télécharger.
+
+### Windows / Linux — depuis le moteur
+
+```bash
+rose update     # détecte, propose réinstaller / réparer / désinstaller
+```
+
+Même logique en console ; sur Linux : `~/.local/bin/rose` (ou `/usr/local`),
+PATH dans `~/.bashrc` / `~/.profile`, type MIME `.rose` enregistré.
+
+---
+
 ## 📜 Licence
 
 MIT — voir [LICENSE](LICENSE).
@@ -495,6 +526,8 @@ MIT — voir [LICENSE](LICENSE).
 | `rose comp prog.rose [-o sortie]` | Exécutable autonome (moteur + source) | distribution |
 | `rose orc prog.rose -o prog.o` | Compilation native LLVM ORC | AOT, vectorisation NEON |
 | `rose link prog.o [-o sortie]` | Lier un objet ELF en binaire | avec `rose orc` |
+| `rose console [prog.rose]` | Console interactive (REPL) | explorer un programme, taper des expressions |
+| `rose update` | Installe / met à jour Rose (64 bits) | installation, réparation, désinstallation |
 | `rose info` / `rose version` | État du moteur | diagnostic |
 | `rose --help` | Aide | — |
 

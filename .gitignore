@@ -75,3 +75,8 @@ rose_interpreter.cpp
 rose-20
 rose/rose
 rose.res
+
+# --- Fichiers embarqués de l'installeur graphique (générés par le build) ---
+rose/src/bin/rose-embedded.exe
+rose/src/bin/rose-ico.ico
+rose/src/bin/setup-ico.ico

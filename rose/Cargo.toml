@@ -1,6 +1,6 @@
 [package]
 name = "rose"
-version = "5.10.1"
+version = "5.11.0"
 edition = "2024"
 
 # Bibliothèque : le moteur est utilisable depuis Rust… et compilé en
@@ -22,6 +22,14 @@ required-features = ["native"]
 name = "rose-aot"
 path = "src/bin/rose-aot.rs"
 required-features = ["native"]
+
+# Installeur graphique Windows x64 (interface Win32 maison). La feature
+# « setup » exige les fichiers embarqués produits par
+# installateur/build-setup-windows.sh (src/bin/rose-embedded.exe, etc.).
+[[bin]]
+name = "rose-setup"
+path = "src/bin/rose-setup.rs"
+required-features = ["setup"]
 
 [dependencies]
 libc = "0.2"
@@ -54,6 +62,10 @@ native = []
 # « wasm » : marqueur documentaire — la compilation WebAssembly n'exige
 # aucune feature supplémentaire (le shim JIT est choisi par la cible).
 wasm = []
+# « setup » : installeur graphique rose-setup (Windows x64). Active
+# l'inclusion des fichiers embarqués (moteur + icônes).
+setup = []
+
 llvm = ["dep:inkwell"]
 
 [profile.release]

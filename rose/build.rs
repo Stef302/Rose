@@ -33,9 +33,15 @@ fn main() {
         println!("cargo:rustc-link-arg=/WHOLEARCHIVE:windows_compat.lib");
         println!("cargo:rustc-link-arg=-Wl,--export-all-symbols");
         println!("cargo:rustc-link-lib=dylib=advapi32");
+        // Le fichier .def exporte les helpers du JIT (rose_affiche_*,
+        // rose_powf) : ils n'existent QUE dans le binaire « rose » (qui
+        // inclut le module jit), PAS dans « rose-aot » (qui embarque ses
+        // propres helpers rose_orc_*). Le lier inconditionnellement
+        // faisait échouer le lien de rose-aot sur un symbole absent.
+        // « rustc-link-arg-bin » applique l'argument à UN seul binaire.
         let def = std::path::Path::new("exports.def");
         if def.exists() {
-            println!("cargo:rustc-link-arg=/DEF:exports.def");
+            println!("cargo:rustc-link-arg-bin=rose=/DEF:exports.def");
         }
         // Compile .rc icon if present
         let rc = std::path::Path::new("rose.rc");

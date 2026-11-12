@@ -118,6 +118,16 @@ l'utilisateur web)
   / C++ / Rust, 40 tours alternés).
 - `docs/WASM.md` — ABI et limitations WASM.
 
+## Installation
+
+- `rose update` : installe / met à jour Rose (64 bits natif). Détecte une
+  installation existante, propose réinstaller / réparer / désinstaller.
+- Windows : `Rose-Setup-<version>.exe` = binaire Rust `rose-setup` avec
+  interface Win32 maison (bandeau rose, pétale, boutons GDI) — 64 bits natif,
+  aucun droit admin, HKCU seulement.
+- Le script de build de l'installeur est `installateur/build-setup-windows.sh`
+  (plus de NSIS). Le moteur `rose.exe` est EMBARQUÉ dans l'installeur.
+
 ## Style
 
 - Messages et commentaires du moteur en français ; noms de fonctions Rust

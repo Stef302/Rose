@@ -48,6 +48,14 @@ pub mod jit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod auto_llvm;
 
+/// Installation Rose : cœur partagé (console + interface graphique).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod setup_core;
+
+/// Interface graphique Win32 de l'installeur (Windows uniquement).
+#[cfg(all(windows, not(target_arch = "wasm32")))]
+pub mod setup_gui;
+
 /// JIT Cranelift — ABSENT en WebAssembly (le JIT émet du code machine natif).
 /// Shim d'API STRICTEMENT identique à `src/jit.rs` : `interp.rs` compile à
 /// l'identique, sans une seule adaptation, et le programme tourne en mode
