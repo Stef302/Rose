@@ -672,8 +672,13 @@ fn install_rose() {
                 _ => {}
             }
         } else {
-            if is_root() || std::path::Path::new("/usr/local/bin").exists() {
+            // choisir un préfixe RÉELLEMENT inscriptible (l'existence de
+            // /usr/local/bin ne suffit pas : sans droits admin, la copie
+            // échouerait en silence).
+            if is_root() && inscriptible("/usr/local/bin") {
                 prefix = "/usr/local".to_string();
+            } else if inscriptible(&format!("{}/.local/bin", home)) {
+                prefix = format!("{}/.local", home);
             } else {
                 prefix = format!("{}/.local", home);
             }
@@ -681,17 +686,31 @@ fn install_rose() {
         }
 
         let bindir = format!("{}/bin", prefix);
-        let _ = std::fs::create_dir_all(&bindir);
-        // nettoyer les anciens
+        if std::fs::create_dir_all(&bindir).is_err() {
+            eprintln!("{}", couleur(&format!("✗ impossible de créer {}", bindir), "31"));
+            eprintln!("  (permissions ? essayez un autre préfixe ou sudo)");
+            return;
+        }
+        // nettoyer les anciens binaires
         let _ = std::fs::remove_file(format!("{}/rose", bindir));
         let _ = std::fs::remove_file(format!("{}/rose-20", bindir));
         let _ = std::fs::remove_file(format!("{}/rose-aot", bindir));
 
-        if let Ok(exe) = std::env::current_exe() {
-            if std::fs::copy(&exe, format!("{}/rose", bindir)).is_ok() {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(format!("{}/rose", bindir), std::fs::Permissions::from_mode(0o755));
-                println!("{} rose", couleur("✓", "32"));
+        match std::env::current_exe() {
+            Ok(exe) => match std::fs::copy(&exe, format!("{}/rose", bindir)) {
+                Ok(_) => {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(format!("{}/rose", bindir), std::fs::Permissions::from_mode(0o755));
+                    println!("{} rose", couleur("✓", "32"));
+                }
+                Err(e) => {
+                    eprintln!("{}", couleur(&format!("✗ copie impossible : {}", e), "31"));
+                    return;
+                }
+            },
+            Err(e) => {
+                eprintln!("{}", couleur(&format!("✗ binaire courant introuvable : {}", e), "31"));
+                return;
             }
         }
         // rose-aot à côté si présent
@@ -730,8 +749,10 @@ fn install_rose() {
     <glob pattern="*.rose"/>
   </mime-type>
 </mime-info>"#;
-        let _ = std::fs::write(format!("{}/rose.xml", mime_dir), mime_xml);
-        let _ = std::process::Command::new("xdg-mime").arg("install").arg(format!("{}/rose.xml", mime_dir)).status();
+        // nom de fichier avec préfixe vendor (xdg-mime l'exige) :
+        // « x-rose.xml » pour le type text/x-rose
+        let _ = std::fs::write(format!("{}/x-rose.xml", mime_dir), mime_xml);
+        let _ = std::process::Command::new("xdg-mime").arg("install").arg(format!("{}/x-rose.xml", mime_dir)).status();
         let _ = std::process::Command::new("update-mime-database").arg(format!("{}/.local/share/mime", home)).status();
 
         println!();
@@ -740,6 +761,17 @@ fn install_rose() {
         println!("  Binaire : {}/bin/rose", prefix);
         println!();
         println!("Ouvrez un nouveau terminal et tapez : rose --version");
+    }
+}
+
+/// Le dossier est-il réellement inscriptible ?
+fn inscriptible(dossier: &str) -> bool {
+    let test = format!("{}/.rose_test_write", dossier);
+    if std::fs::write(&test, b"x").is_ok() {
+        let _ = std::fs::remove_file(&test);
+        true
+    } else {
+        false
     }
 }
 
