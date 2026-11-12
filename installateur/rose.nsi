@@ -7,6 +7,7 @@ Unicode true
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
+!include "nsDialogs.nsh"
 
 !define APP_NAME    "Rose"
 !ifndef APP_VERSION
@@ -44,6 +45,11 @@ Page custom DetecterInstallation PreDetecter
 
 ; ── aide : retire toutes les occurrences de $R1 dans $R0 (résultat $R0) ──
 Var BinDir
+Var Dialog
+Var Radio1
+Var Radio2
+Var Radio3
+Var ChoixAction
 
 !macro CORPS_ENLEVER TAG
   StrLen $R2 "$R0"
@@ -102,40 +108,65 @@ FunctionEnd
 
 ; ── détection d'une installation existante et choix intelligent ──────
 Var InstallExistante
-Var ChoixAction       ; 0 = réinstaller, 1 = désinstaller, 2 = annuler
 
 Function DetecterInstallation
-  ; lire le chemin d'installation précédente
   ReadRegStr $R0 HKCU "Software\${APP_NAME}" "InstallDir"
   IfErrors pas_trouve
   StrCmp $R0 "" pas_trouve
-  ; vérifier que le dossier existe encore
   IfFileExists "$R0\bin\${EXE_NAME}" trouve
   pas_trouve:
-    StrCpy $InstallExistante "0"
-    Abort   ; pas d'installation -> page normale
-  trouve:
-    StrCpy $InstallExistante "1"
-    StrCpy $INSTDIR "$R0"
-    ; proposer le choix
-    MessageBox MB_YESNOCANCEL "Une installation de ${APP_NAME} ${APP_VERSION} a été détectée dans :\n\n$R0\n\nVoulez-vous la RÉINSTALLER (écraser les fichiers) ?\n\n  Oui    = réinstaller (écraser)\n  Non    = désinstaller Rose\n  Annuler = quitter" IDYES reinstall IDNO desinst
-    ; Annuler
-    StrCpy $ChoixAction "2"
     Abort
-  desinst:
-    StrCpy $ChoixAction "1"
-    ; lancer le désinstalleur existant puis quitter
-    IfFileExists "$R0\uninstall.exe" 0 pas_uninst
-    ExecWait '"$R0\uninstall.exe" /S'
-    pas_uninst:
-    ; supprimer le dossier résiduel
-    RMDir /r "$R0"
-    DeleteRegKey HKCU "Software\${APP_NAME}"
-    MessageBox MB_OK "Rose a été désinstallé.\n\nRelancez l'installeur pour réinstaller."
-    Quit
-  reinstall:
+  trouve:
+    StrCpy $INSTDIR "$R0"
+    nsDialogs::Create 1018
+    Pop $Dialog
+    ${If} $Dialog == error
+      Abort
+    ${EndIf}
+
+    ${NSD_CreateLabel} 0 0u 100% 12u "Une installation de ${APP_NAME} ${APP_VERSION} a été détectée."
+    Pop $R1
+    ${NSD_CreateLabel} 0 14u 100% 12u "Dossier : $R0"
+    Pop $R1
+    ${NSD_CreateLabel} 0 30u 100% 12u "Que souhaitez-vous faire ?"
+    Pop $R1
+
+    ${NSD_CreateRadioButton} 10u 46u 100% 12u "Réinstaller — écraser tous les fichiers (recommandé)"
+    Pop $Radio1
+    ${NSD_CreateRadioButton} 10u 60u 100% 12u "Réparer — réinstaller uniquement les fichiers manquants"
+    Pop $Radio2
+    ${NSD_CreateRadioButton} 10u 74u 100% 12u "Désinstaller — supprimer Rose complètement"
+    Pop $Radio3
+
+    ${NSD_SetState} $Radio1 ${BST_CHECKED}
     StrCpy $ChoixAction "0"
-    ; on laisse la page directory avec $INSTDIR pré-rempli
+
+    nsDialogs::Show
+
+    ${NSD_GetState} $Radio1 $R1
+    ${If} $R1 == ${BST_CHECKED}
+      StrCpy $ChoixAction "0"
+    ${EndIf}
+    ${NSD_GetState} $Radio2 $R1
+    ${If} $R1 == ${BST_CHECKED}
+      StrCpy $ChoixAction "2"
+    ${EndIf}
+    ${NSD_GetState} $Radio3 $R1
+    ${If} $R1 == ${BST_CHECKED}
+      StrCpy $ChoixAction "1"
+    ${EndIf}
+
+    ${If} $ChoixAction == "1"
+      IfFileExists "$R0\uninstall.exe" 0 pas_uninst
+      ExecWait '"$R0\uninstall.exe" /S'
+      pas_uninst:
+      RMDir /r "$R0"
+      DeleteRegKey HKCU "Software\${APP_NAME}"
+      MessageBox MB_OK "Rose a été désinstallé. Relancez l'installeur pour réinstaller."
+      Quit
+    ${EndIf}
+    ; 0 = réinstaller, 2 = réparer : dans les deux cas on copie les fichiers
+    ; (NSIS écrase toujours ; la distinction est informative)
 FunctionEnd
 
 Function PreDetecter
