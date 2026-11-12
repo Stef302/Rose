@@ -3141,7 +3141,7 @@ pub fn version() -> String {
 
 pub fn info() -> String {
     let arch = if cfg!(target_arch = "aarch64") { "ARM 64 bits" } else { "x86-64" };
-    format!("rose 2.0.3\n  \
+    format!("rose 5.10.1\n  \
              moteur            : Rust natif {} — JIT Cranelift + interpréteur exact\n  \
              maths exactes     : BigInt natif (num-bigint, illimité, zéro GMP)\n  \
              nombres           : entiers, rationnels, flottants, irrationnels (√n), complexes (a+bi)\n  \
