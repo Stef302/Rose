@@ -19,11 +19,16 @@ fn symbole(n: entier) -> chaine {
 }
 
 fn afficher_plateau() {
-    >> " " + symbole($c0) + " | " + symbole($c1) + " | " + symbole($c2)
-    >> "---+---+---"
-    >> " " + symbole($c3) + " | " + symbole($c4) + " | " + symbole($c5)
-    >> "---+---+---"
-    >> " " + symbole($c6) + " | " + symbole($c7) + " | " + symbole($c8)
+    $l0 = " " + symbole($c0) + " | " + symbole($c1) + " | " + symbole($c2)
+    $l1 = "---+---+---"
+    $l2 = " " + symbole($c3) + " | " + symbole($c4) + " | " + symbole($c5)
+    $l3 = "---+---+---"
+    $l4 = " " + symbole($c6) + " | " + symbole($c7) + " | " + symbole($c8)
+    >> $l0
+    >> $l1
+    >> $l2
+    >> $l3
+    >> $l4
 }
 
 # retourne 1 si le joueur donné (1 ou 2) a gagné

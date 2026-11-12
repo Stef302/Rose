@@ -268,12 +268,16 @@ Section "Moteur Rose" SecMoteur
   StrCpy $BinDir "$INSTDIR\bin"
 
   CreateDirectory "$INSTDIR"
-  ; Nettoyer le dossier bin pour éviter les résidus (rose-20.exe, setup.ico, etc.)
-  RMDir /r "$INSTDIR\bin"
   CreateDirectory "$INSTDIR\bin"
+  ; Nettoyer uniquement les fichiers connus (pas RMDir /r qui est lent)
+  Delete "$INSTDIR\bin\rose.exe"
+  Delete "$INSTDIR\bin\rose-20.exe"
+  Delete "$INSTDIR\bin\rose.ico"
+  Delete "$INSTDIR\bin\setup.ico"
+  Delete "$INSTDIR\bin\rose_app.ico"
+  Delete "$INSTDIR\bin\LLVM-C.dll"
   SetOutPath "$INSTDIR\bin"
-  File "staging\rose-20.exe"
-  Rename "rose-20.exe" "${EXE_NAME}"
+  File "staging\rose.exe"
   File "assets\rose.ico"
   File "assets\setup.ico"
   Rename "setup.ico" "rose_app.ico"

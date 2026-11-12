@@ -17,7 +17,7 @@ I="$RACINE/installateur"
 # ── configuration ──────────────────────────────────────────────────────
 VERSION="${VERSION:-5.0.0}"
 APP_NAME="Rose"
-EXE_SRC="$RACINE/rose/target/release/rose-20.exe"   # binaire Windows (croisé)
+EXE_SRC="$RACINE/rose/target/release/rose.exe"   # binaire Windows (croisé)
 MAKENSIS="${MAKENSIS:-makensis}"
 DIST="$I/dist"
 
@@ -27,11 +27,11 @@ trap 'rm -rf "$STAGE"' EXIT
 
 mkdir -p "$STAGE/bin"
 if [ -f "$EXE_SRC" ]; then
-  cp "$EXE_SRC" "$STAGE/bin/rose-20.exe"
+  cp "$EXE_SRC" "$STAGE/bin/rose.exe"
   echo "✓ binaire Windows trouvé : $EXE_SRC"
 else
   echo "⚠ ATTENTION: $EXE_SRC introuvable — placeholder (l'installeur ne fonctionnera pas sous Windows)"
-  touch "$STAGE/bin/rose-20.exe"
+  touch "$STAGE/bin/rose.exe"
 fi
 
 # LLVM-C.dll (AOT/LLVM runtime) si disponible — chemin par défaut à adapter,
@@ -45,7 +45,7 @@ else
 fi
 
 mkdir -p "$I/staging"
-cp "$STAGE/bin/rose-20.exe" "$I/staging/rose-20.exe"
+cp "$STAGE/bin/rose.exe" "$I/staging/rose.exe"
 if [ -f "$STAGE/bin/LLVM-C.dll" ]; then
   cp "$STAGE/bin/LLVM-C.dll" "$I/staging/LLVM-C.dll"
 fi
