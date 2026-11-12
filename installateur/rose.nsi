@@ -32,6 +32,7 @@ SetCompressor /SOLID lzma
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Lire README-PARTAGE.md"
 
 !insertmacro MUI_PAGE_WELCOME
+Page custom DetecterInstallation PreDetecter
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -97,6 +98,48 @@ Function un.RetraitPath
   Call un.Enlever
   WriteRegExpandStr HKCU "Environment" "Path" "$R0"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "UTF:Environment" /TIMEOUT=2000
+FunctionEnd
+
+; ── détection d'une installation existante et choix intelligent ──────
+Var InstallExistante
+Var ChoixAction       ; 0 = réinstaller, 1 = désinstaller, 2 = annuler
+
+Function DetecterInstallation
+  ; lire le chemin d'installation précédente
+  ReadRegStr $R0 HKCU "Software\${APP_NAME}" "InstallDir"
+  IfErrors pas_trouve
+  StrCmp $R0 "" pas_trouve
+  ; vérifier que le dossier existe encore
+  IfFileExists "$R0\bin\${EXE_NAME}" trouve
+  pas_trouve:
+    StrCpy $InstallExistante "0"
+    Abort   ; pas d'installation -> page normale
+  trouve:
+    StrCpy $InstallExistante "1"
+    StrCpy $INSTDIR "$R0"
+    ; proposer le choix
+    MessageBox MB_YESNOCANCEL "Une installation de ${APP_NAME} ${APP_VERSION} a été détectée dans :\n\n$R0\n\nVoulez-vous la RÉINSTALLER (écraser les fichiers) ?\n\n  Oui    = réinstaller (écraser)\n  Non    = désinstaller Rose\n  Annuler = quitter" IDYES reinstall IDNO desinst
+    ; Annuler
+    StrCpy $ChoixAction "2"
+    Abort
+  desinst:
+    StrCpy $ChoixAction "1"
+    ; lancer le désinstalleur existant puis quitter
+    IfFileExists "$R0\uninstall.exe" 0 pas_uninst
+    ExecWait '"$R0\uninstall.exe" /S'
+    pas_uninst:
+    ; supprimer le dossier résiduel
+    RMDir /r "$R0"
+    DeleteRegKey HKCU "Software\${APP_NAME}"
+    MessageBox MB_OK "Rose a été désinstallé.\n\nRelancez l'installeur pour réinstaller."
+    Quit
+  reinstall:
+    StrCpy $ChoixAction "0"
+    ; on laisse la page directory avec $INSTDIR pré-rempli
+FunctionEnd
+
+Function PreDetecter
+  ; rien de spécial
 FunctionEnd
 
 Section "Moteur Rose" SecMoteur
