@@ -46,6 +46,12 @@ inkwell = { version = "0.7", optional = true, features = ["llvm18-1-prefer-dynam
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
 
+# WebView native pour l'installeur graphique (Windows x64) : tao (fenêtre)
+# + wry (WebView2). Uniquement pour le binaire rose-setup (feature « setup »).
+[target.'cfg(windows)'.dependencies]
+wry = { version = "0.57", optional = true }
+tao = { version = "0.37", optional = true }
+
 [build-dependencies]
 cc = "1.0"
 
@@ -63,8 +69,9 @@ native = []
 # aucune feature supplémentaire (le shim JIT est choisi par la cible).
 wasm = []
 # « setup » : installeur graphique rose-setup (Windows x64). Active
-# l'inclusion des fichiers embarqués (moteur + icônes).
-setup = []
+# l'inclusion des fichiers embarqués (moteur + icônes) et la dépendance
+# WebView native (wry + tao).
+setup = ["dep:wry", "dep:tao"]
 
 llvm = ["dep:inkwell"]
 

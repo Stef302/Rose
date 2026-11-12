@@ -1,0 +1,1370 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Rose — Programme d'installation · v3.14.0</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3 24 7 27 15 23 23 16 26 9 23 5 15 8 7Z' fill='%23e01616'/%3E%3Crect x='14.5' y='24' width='3' height='6' fill='%2392ea2f'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============ ROSE — SYSTÈME VISUEL ============ */
+@font-face{font-family:'Kare';src:local('Kare'),local('Kare Regular'),local('Kare-Regular');font-display:swap}
+:root{
+  --bg:#0a0607; --bg2:#0f0a0c; --surface:#161013; --surface2:#1d1418; --overlay:#251821;
+  --line:rgba(255,84,73,.16); --line-g:rgba(146,234,47,.22);
+  --red:#ff2a2a; --red2:#e01616; --red-soft:#ff5449; --red-deep:#7a0808;
+  --green:#92ea2f; --green2:#b6ff5e; --green-deep:#3f7d0a;
+  --amber:#ffb020; --blue:#4cc3ff; --danger:#ff453a;
+  --text:#f5efe8; --muted:#b3a89e; --dim:#7d736c;
+  --scrim:rgba(6,3,4,.74);
+  --disp:'Kare','Shrikhand',serif; --ui:'Space Grotesk',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+  --tb-h:48px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:var(--ui);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+::selection{background:rgba(224,22,22,.55);color:#fff}
+button{font-family:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input,select,textarea{font-family:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--green);outline-offset:2px;border-radius:6px}
+
+/* scrollbar maison */
+*{scrollbar-width:thin;scrollbar-color:#4a1b1f #120b0d}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:#120b0d;border-radius:8px}
+*::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#5a2024,#3a1518);border-radius:8px;border:2px solid #120b0d}
+*::-webkit-scrollbar-thumb:hover{background:linear-gradient(180deg,var(--red2),var(--green-deep))}
+
+/* ============ FOND DU BUREAU ============ */
+.bg{position:fixed;inset:0;z-index:0;overflow:hidden;background:
+  radial-gradient(1200px 800px at 80% 0%,#1c0708 0%,transparent 55%),
+  radial-gradient(1000px 900px at 0% 100%,#0c1406 0%,transparent 55%),
+  linear-gradient(160deg,#0d0708,#080506 60%,#070806)}
+.aurora{position:absolute;inset:-12%;will-change:transform;pointer-events:none}
+.a1{background:radial-gradient(640px 480px at 78% 14%,rgba(224,22,22,.30),transparent 70%);animation:breathe 9s ease-in-out infinite}
+.a2{background:radial-gradient(720px 560px at 12% 88%,rgba(146,234,47,.15),transparent 70%);animation:breathe 11s ease-in-out infinite reverse}
+.a3{background:radial-gradient(520px 420px at 52% 55%,rgba(255,176,32,.06),transparent 70%);animation:breathe 13s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.75}50%{opacity:1}}
+.dots{position:absolute;inset:0;background-image:radial-gradient(rgba(255,255,255,.045) 1px,transparent 1.4px);background-size:30px 30px;mask-image:radial-gradient(80% 80% at 50% 45%,#000 30%,transparent 100%)}
+.grain{position:fixed;inset:0;z-index:3;pointer-events:none;opacity:.055;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E")}
+#petals{position:fixed;inset:0;z-index:1;pointer-events:none}
+
+/* ============ CONTRÔLE SON (haut, permanent) ============ */
+#soundToggle{position:fixed;top:14px;right:16px;z-index:900;display:flex;align-items:center;gap:8px;
+  padding:8px 14px;border-radius:99px;background:rgba(22,14,17,.85);backdrop-filter:blur(8px);
+  border:1px solid var(--line);font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;color:var(--muted);
+  transition:border-color .2s,color .2s,transform .15s}
+#soundToggle:hover{border-color:var(--line-g);color:var(--text);transform:translateY(-1px)}
+#soundToggle .dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+#soundToggle.muted .dot{background:var(--dim);box-shadow:none}
+#soundToggle.muted #sndWaves{display:none}
+#soundToggle svg{width:16px;height:16px;stroke:var(--green)}
+#soundToggle.muted svg{stroke:var(--dim)}
+
+/* ============ ICÔNES DU BUREAU ============ */
+#desktopIcons{position:fixed;top:18px;left:18px;z-index:2;display:flex;flex-direction:column;gap:8px}
+.dicon{width:96px;padding:10px 6px 8px;border-radius:12px;display:flex;flex-direction:column;align-items:center;gap:7px;
+  border:1px solid transparent;transition:background .15s,border-color .15s;user-select:none;text-align:center}
+.dicon:hover{background:rgba(255,84,73,.07)}
+.dicon.selected{background:rgba(146,234,47,.09);border-color:var(--line-g)}
+.dicon .tile{width:56px;height:56px;border-radius:14px;display:grid;place-items:center;position:relative;
+  background:linear-gradient(150deg,#241014,#14090c);border:1px solid var(--line);box-shadow:0 8px 22px rgba(0,0,0,.5),0 0 18px rgba(224,22,22,.14)}
+.dicon .tile svg{width:42px;height:42px}
+.dicon .badge{position:absolute;right:-5px;bottom:-5px;font-family:var(--mono);font-size:8.5px;font-weight:700;
+  padding:2px 5px;border-radius:6px;background:var(--green);color:#0c1206;letter-spacing:.05em}
+.dicon .lbl{font-size:11.5px;line-height:1.3;color:var(--text);text-shadow:0 2px 6px #000;word-break:break-word}
+.dicon.hidden{display:none}
+.dicon.pop{animation:iconPop .5s cubic-bezier(.2,1.6,.4,1)}
+@keyframes iconPop{0%{transform:scale(.4);opacity:0}100%{transform:scale(1);opacity:1}}
+
+/* ============ FENÊTRES ============ */
+.window{position:absolute;z-index:100;display:flex;flex-direction:column;border-radius:18px;overflow:hidden;
+  background:linear-gradient(165deg,#1a0d10 0%,#120c0e 45%,#0e100a 100%);
+  border:1px solid var(--line);
+  box-shadow:0 34px 90px rgba(0,0,0,.65),0 0 0 1px rgba(0,0,0,.4),0 0 70px rgba(224,22,22,.10),inset 0 1px 0 rgba(255,255,255,.05);
+  transition:transform .28s cubic-bezier(.3,1,.4,1),opacity .28s}
+.window.enter{animation:winIn .55s cubic-bezier(.2,1.1,.3,1)}
+@keyframes winIn{0%{transform:translateY(22px) scale(.94);opacity:0}100%{transform:none;opacity:1}}
+.window.min{transform:translateY(70vh) scale(.08);opacity:0;pointer-events:none}
+.window.closed{display:none}
+.window.max{left:10px!important;top:10px!important;width:calc(100vw - 20px)!important;height:calc(100vh - var(--tb-h) - 20px)!important}
+.titlebar{height:46px;flex:none;display:flex;align-items:center;gap:10px;padding:0 10px 0 14px;cursor:grab;user-select:none;
+  background:linear-gradient(90deg,rgba(255,42,42,.13),transparent 42%,rgba(146,234,47,.08));border-bottom:1px solid var(--line)}
+.titlebar:active{cursor:grabbing}
+.titlebar .ticon{width:22px;height:22px;flex:none}
+.titlebar .ttitle{font-size:13px;font-weight:600;letter-spacing:.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.titlebar .tchip{font-family:var(--mono);font-size:10px;padding:3px 8px;border-radius:99px;border:1px solid var(--line-g);color:var(--green);letter-spacing:.06em;white-space:nowrap}
+.tb-spacer{flex:1}
+.tb-btn{width:34px;height:30px;border-radius:8px;display:grid;place-items:center;color:var(--muted);transition:background .15s,color .15s;flex:none}
+.tb-btn:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.tb-btn.close:hover{background:var(--danger);color:#fff}
+.tb-btn svg{width:13px;height:13px;stroke:currentColor;stroke-width:1.8;fill:none;stroke-linecap:round}
+.statusbar{flex:none;height:32px;display:flex;align-items:center;gap:8px;padding:0 16px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:10.5px;color:var(--dim);letter-spacing:.04em;background:rgba(0,0,0,.25)}
+.statusbar .sdot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 7px var(--green);flex:none}
+.statusbar .sdot.busy{background:var(--amber);box-shadow:0 0 7px var(--amber);animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.3}}
+.statusbar .right{margin-left:auto}
+
+/* ============ INSTALLATEUR ============ */
+#winInstaller{width:min(1000px,94vw);height:min(660px,calc(100vh - var(--tb-h) - 34px))}
+.inst-body{flex:1;min-height:0;display:grid;grid-template-columns:252px 1fr}
+.sidebar{border-right:1px solid var(--line);padding:24px 20px 16px;display:flex;flex-direction:column;gap:14px;
+  background:linear-gradient(180deg,rgba(224,22,22,.06),transparent 40%,rgba(146,234,47,.05))}
+.side-logo{display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center}
+.side-logo .rosewrap{width:104px;height:128px;filter:drop-shadow(0 0 calc(10px + var(--bloom,0)*26px) rgba(255,42,42,calc(.25 + var(--bloom,0)*.45))) drop-shadow(0 0 14px rgba(146,234,47,.18));transition:filter .4s}
+.side-logo.bloomed .rosewrap{animation:rosePulse 3s ease-in-out infinite}
+@keyframes rosePulse{0%,100%{transform:scale(1)}50%{transform:scale(1.045)}}
+.side-logo h1{font-family:var(--disp);font-weight:400;font-size:31px;letter-spacing:.04em;line-height:1;color:#fff;text-shadow:0 0 24px rgba(255,42,42,.4)}
+.side-logo .tag{font-size:10.5px;color:var(--muted);line-height:1.45;max-width:190px}
+.steps{list-style:none;display:flex;flex-direction:column;gap:4px;margin-top:6px}
+.steps li{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:10px;font-size:13px;color:var(--dim);border:1px solid transparent;transition:all .25s;cursor:default}
+.steps li .n{width:24px;height:24px;flex:none;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;border:1px solid var(--line);color:var(--dim);transition:all .25s}
+.steps li.active{color:var(--text);background:rgba(255,42,42,.08);border-color:var(--line)}
+.steps li.active .n{border-color:var(--red);color:#fff;background:linear-gradient(140deg,var(--red),var(--red2));box-shadow:0 0 12px rgba(255,42,42,.5)}
+.steps li.done{color:var(--muted);cursor:pointer}
+.steps li.done:hover{background:rgba(146,234,47,.06)}
+.steps li.done .n{border-color:var(--line-g);color:#0c1206;background:var(--green);box-shadow:0 0 10px rgba(146,234,47,.35)}
+.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px}
+.side-chip{font-family:var(--mono);font-size:10px;letter-spacing:.08em;padding:6px 10px;border-radius:8px;border:1px solid var(--line);color:var(--muted);display:flex;align-items:center;gap:7px}
+.side-chip.g{border-color:var(--line-g);color:var(--green)}
+.side-compact{display:none}
+
+.main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.panels{flex:1;min-height:0;display:flex}
+.step-panel{display:none;flex:1;min-width:0;overflow-y:auto;padding:26px 32px 20px;flex-direction:column;gap:16px}
+.step-panel.active{display:flex;animation:panelIn .38s cubic-bezier(.2,.9,.3,1)}
+@keyframes panelIn{0%{opacity:0;transform:translateX(16px)}100%{opacity:1;transform:none}}
+.eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.22em;color:var(--green);text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.eyebrow::before{content:"";width:22px;height:1px;background:var(--green)}
+.step-panel h2{font-family:var(--disp);font-weight:400;font-size:clamp(26px,3.4vw,36px);line-height:1.08;color:#fff}
+.step-panel h2 .rd{color:var(--red-soft)} .step-panel h2 .gn{color:var(--green)}
+.lead{color:var(--muted);font-size:14px;max-width:56ch}
+.lead b{color:var(--text);font-weight:600}
+
+.feat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.feat{display:flex;gap:11px;padding:12px 13px;border-radius:12px;background:rgba(255,255,255,.025);border:1px solid var(--line);transition:border-color .2s,transform .2s}
+.feat:hover{border-color:var(--line-g);transform:translateY(-2px)}
+.feat .fi{width:32px;height:32px;flex:none;border-radius:9px;display:grid;place-items:center;background:linear-gradient(140deg,rgba(255,42,42,.18),rgba(146,234,47,.12));border:1px solid var(--line)}
+.feat .fi svg{width:16px;height:16px;stroke:var(--green);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.feat h4{font-size:12.5px;font-weight:600}
+.feat p{font-size:11px;color:var(--dim);line-height:1.4}
+
+.integrity{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:12px;border:1px solid var(--line-g);background:rgba(146,234,47,.05);font-family:var(--mono);font-size:11px;flex-wrap:wrap}
+.integrity .ok{color:var(--green);display:flex;align-items:center;gap:6px;font-weight:700;letter-spacing:.05em}
+.integrity .hash{color:var(--dim);letter-spacing:.02em}
+.mini-btn{font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:7px;border:1px solid var(--line);color:var(--muted);letter-spacing:.06em;transition:all .15s}
+.mini-btn:hover{border-color:var(--green);color:var(--green)}
+.welcome-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.langsel{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+select{background:var(--surface2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--text)}
+.note-installed{display:none;align-items:center;gap:8px;font-size:12px;color:var(--amber);border:1px solid rgba(255,176,32,.3);background:rgba(255,176,32,.07);padding:8px 12px;border-radius:10px}
+.note-installed.show{display:flex}
+
+/* licence */
+.lic-box{flex:1;min-height:150px;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:#0d0809;padding:18px 20px;font-family:var(--mono);font-size:11.5px;line-height:1.75;color:var(--muted);white-space:pre-wrap}
+.lic-box .h{color:var(--green);font-weight:700}
+.checkline{display:flex;align-items:flex-start;gap:10px;font-size:13.5px;cursor:pointer;user-select:none}
+.checkline input{width:17px;height:17px;margin-top:2px;accent-color:var(--green);cursor:pointer;flex:none}
+.checkline b{color:var(--green)}
+
+/* options */
+.pathrow{display:flex;gap:8px}
+.pathrow input{flex:1;min-width:0;background:#0d0809;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-family:var(--mono);font-size:12px;color:var(--text);transition:border-color .2s}
+.pathrow input:focus{border-color:var(--green);outline:none}
+.path-err{display:none;font-size:11px;color:var(--danger);font-family:var(--mono)}
+.path-err.show{display:block}
+.cmp-list{display:flex;flex-direction:column;gap:6px}
+.cmp{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:11px;border:1px solid transparent;transition:all .15s;cursor:pointer}
+.cmp:hover{background:rgba(255,255,255,.03);border-color:var(--line)}
+.cmp input{width:16px;height:16px;accent-color:var(--green);cursor:pointer;flex:none}
+.cmp .ct{flex:1;min-width:0}
+.cmp .ct h5{font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px}
+.cmp .ct p{font-size:11px;color:var(--dim)}
+.cmp .sz{font-family:var(--mono);font-size:10.5px;color:var(--dim);flex:none}
+.cmp .rec{font-family:var(--mono);font-size:8.5px;padding:2px 6px;border-radius:5px;background:rgba(146,234,47,.14);color:var(--green);letter-spacing:.06em}
+.cmp .lock{font-size:10px;color:var(--dim)}
+.cmp.locked{opacity:.75;cursor:default}
+.spacebox{display:flex;align-items:center;gap:12px;padding:11px 14px;border-radius:11px;border:1px solid var(--line);background:rgba(255,176,32,.04);font-family:var(--mono);font-size:11px;color:var(--muted);flex-wrap:wrap}
+.spacebox b{color:var(--amber)}
+.spacebar{flex:1;min-width:90px;height:6px;border-radius:99px;background:#241418;overflow:hidden}
+.spacebar i{display:block;height:100%;width:2%;background:linear-gradient(90deg,var(--red),var(--amber),var(--green));border-radius:99px;transition:width .3s}
+
+/* installation */
+#panel3{overflow:hidden}
+.inst-top{display:flex;align-items:flex-end;gap:16px}
+.inst-top .grow{flex:1;min-width:0}
+#installPct{font-family:var(--mono);font-size:44px;font-weight:700;line-height:1;color:var(--green);text-shadow:0 0 22px rgba(146,234,47,.4)}
+#installPct small{font-size:20px;color:var(--dim)}
+#installAction{font-size:13px;color:var(--muted);margin-top:6px;min-height:20px}
+.pbar{height:13px;border-radius:99px;background:#241418;border:1px solid var(--line);overflow:hidden;position:relative}
+.pbar i{display:block;height:100%;width:0%;border-radius:99px;background:linear-gradient(90deg,var(--red2),var(--red) 30%,var(--amber) 62%,var(--green));box-shadow:0 0 16px rgba(146,234,47,.35);transition:width .18s linear;position:relative;overflow:hidden}
+.pbar i::after{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 30%,rgba(255,255,255,.35) 50%,transparent 70%);animation:sheen 1.4s linear infinite}
+@keyframes sheen{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.inst-stats{display:flex;gap:18px;font-family:var(--mono);font-size:11px;color:var(--dim);flex-wrap:wrap}
+.inst-stats b{color:var(--text);font-weight:500}
+.log{flex:1;min-height:110px;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:#0b0708;padding:12px 14px;font-family:var(--mono);font-size:11.5px;line-height:1.8}
+.log .ln{display:flex;gap:10px;animation:lnIn .25s ease}
+@keyframes lnIn{0%{opacity:0;transform:translateY(4px)}100%{opacity:1;transform:none}}
+.log .t{color:#5c534d;flex:none}
+.log .m{color:var(--muted);word-break:break-word}
+.log .ok .m{color:var(--green)} .log .sys .m{color:var(--blue)} .log .warn .m{color:var(--amber)} .log .err .m{color:var(--danger)}
+
+/* terminé */
+#panel4{align-items:center;text-align:center;justify-content:flex-start}
+.done-mark{width:86px;height:86px;border-radius:50%;display:grid;place-items:center;flex:none;
+  background:radial-gradient(circle at 35% 30%,rgba(146,234,47,.25),rgba(146,234,47,.06));border:1px solid var(--line-g);
+  box-shadow:0 0 40px rgba(146,234,47,.3);animation:doneIn .7s cubic-bezier(.2,1.5,.4,1)}
+@keyframes doneIn{0%{transform:scale(.3);opacity:0}100%{transform:scale(1);opacity:1}}
+.done-mark svg{width:40px;height:40px;stroke:var(--green);stroke-width:2.4;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.done-mark svg path{stroke-dasharray:40;stroke-dashoffset:40;animation:draw .6s .3s forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+#doneChips{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;max-width:520px}
+.dchip{font-family:var(--mono);font-size:10.5px;padding:5px 11px;border-radius:99px;border:1px solid var(--line-g);color:var(--green);background:rgba(146,234,47,.06);letter-spacing:.03em}
+.done-term{width:100%;max-width:520px;text-align:left;border:1px solid var(--line);border-radius:12px;background:#0b0708;padding:12px 15px;font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--muted);min-height:64px}
+.done-term .p{color:var(--green)} .done-term .out{color:var(--text)}
+.cursor{display:inline-block;width:8px;height:14px;background:var(--green);vertical-align:-2px;animation:blink 1s infinite}
+.done-opts{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:13px}
+
+/* pied de l'assistant */
+.inst-foot{flex:none;height:66px;display:flex;align-items:center;gap:10px;padding:0 24px;border-top:1px solid var(--line);background:rgba(0,0,0,.22)}
+#footStatus{font-family:var(--mono);font-size:11px;color:var(--amber);display:none;align-items:center;gap:8px}
+#footStatus.show{display:flex}
+.foot-spacer{flex:1}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:10px 22px;border-radius:11px;font-size:13.5px;font-weight:600;letter-spacing:.02em;transition:transform .15s,box-shadow .2s,filter .2s;border:1px solid transparent}
+.btn:active{transform:translateY(1px) scale(.98)}
+.btn.primary{background:linear-gradient(135deg,var(--red),var(--red2));color:#fff;box-shadow:0 6px 22px rgba(224,22,22,.35),inset 0 1px 0 rgba(255,255,255,.25)}
+.btn.primary:hover{filter:brightness(1.12);transform:translateY(-1px);box-shadow:0 10px 28px rgba(224,22,22,.45)}
+.btn.green{background:linear-gradient(135deg,var(--green2),var(--green) 55%,#6fc91c);color:#0c1206;box-shadow:0 6px 22px rgba(146,234,47,.3),inset 0 1px 0 rgba(255,255,255,.4)}
+.btn.green:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.btn.ghost{border-color:var(--line);color:var(--muted)}
+.btn.ghost:hover{color:var(--text);border-color:var(--line-g);background:rgba(146,234,47,.05)}
+.btn.danger{border-color:rgba(255,69,58,.4);color:var(--danger)}
+.btn.danger:hover{background:rgba(255,69,58,.1)}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none!important;filter:none!important}
+.btn.hidden{display:none}
+
+/* ============ BARRE DES TÂCHES ============ */
+#taskbar{position:fixed;left:0;right:0;bottom:0;height:var(--tb-h);z-index:50;display:flex;align-items:center;gap:8px;padding:0 12px;
+  background:rgba(14,9,11,.88);backdrop-filter:blur(14px);border-top:1px solid var(--line)}
+#startBtn{display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:10px;transition:background .15s}
+#startBtn:hover{background:rgba(255,42,42,.12)}
+#startBtn svg{width:22px;height:22px}
+#startBtn span{font-family:var(--disp);font-size:15px;color:#fff;letter-spacing:.05em}
+.tb-sep{width:1px;height:24px;background:var(--line)}
+#taskList{display:flex;gap:6px;flex:1;min-width:0;overflow-x:auto}
+.task{display:flex;align-items:center;gap:8px;padding:6px 13px;border-radius:9px;font-size:12px;color:var(--muted);border:1px solid transparent;white-space:nowrap;transition:all .15s;position:relative}
+.task:hover{background:rgba(255,255,255,.05);color:var(--text)}
+.task.active{background:rgba(255,42,42,.1);border-color:var(--line);color:var(--text)}
+.task::after{content:"";position:absolute;left:12px;right:12px;bottom:2px;height:2px;border-radius:2px;background:var(--red);opacity:.7}
+.task.active::after{background:var(--green)}
+.task svg{width:14px;height:14px;flex:none}
+.tb-right{display:flex;align-items:center;gap:12px;font-family:var(--mono)}
+.tb-lang{font-size:10px;padding:4px 8px;border-radius:7px;border:1px solid var(--line);color:var(--dim);letter-spacing:.1em}
+.tb-clock{text-align:right;line-height:1.25}
+#clockTime{font-size:12.5px;color:var(--text)}
+#clockDate{font-size:9.5px;color:var(--dim);text-transform:capitalize}
+
+/* menu démarrer */
+#startMenu{position:fixed;left:10px;bottom:calc(var(--tb-h) + 8px);z-index:550;width:264px;border-radius:14px;overflow:hidden;
+  background:linear-gradient(170deg,#1e1114,#120c0e);border:1px solid var(--line);box-shadow:0 24px 60px rgba(0,0,0,.6);
+  display:none;animation:panelIn .25s ease}
+#startMenu.show{display:block}
+#startMenu .sm-head{padding:13px 16px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--green)}
+.sm-item{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:11px 16px;font-size:13px;color:var(--text);transition:background .12s}
+.sm-item:hover{background:rgba(255,42,42,.1)}
+.sm-item:disabled{opacity:.38;cursor:not-allowed}
+.sm-item svg{width:16px;height:16px;stroke:var(--green);fill:none;stroke-width:1.7;stroke-linecap:round;flex:none}
+.sm-item small{margin-left:auto;font-family:var(--mono);font-size:9px;color:var(--dim)}
+.sm-sep{height:1px;background:var(--line);margin:4px 0}
+
+/* ============ MENU CONTEXTUEL ============ */
+#ctxMenu{position:fixed;z-index:560;min-width:210px;border-radius:12px;overflow:hidden;display:none;
+  background:linear-gradient(170deg,#201216,#130c0f);border:1px solid var(--line);box-shadow:0 18px 50px rgba(0,0,0,.65);animation:panelIn .18s ease}
+#ctxMenu.show{display:block}
+.ctx-item{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 15px;font-size:12.5px;color:var(--text)}
+.ctx-item:hover{background:rgba(146,234,47,.1)}
+.ctx-item.bold{font-weight:700}
+.ctx-item svg{width:14px;height:14px;stroke:var(--green);fill:none;stroke-width:1.7;stroke-linecap:round;flex:none}
+.ctx-sep{height:1px;background:var(--line);margin:3px 0}
+
+/* ============ MODALES ============ */
+#modalRoot{position:fixed;inset:0;z-index:600;display:none;place-items:center;background:var(--scrim);backdrop-filter:blur(5px)}
+#modalRoot.show{display:grid}
+.modal{width:min(480px,92vw);max-height:84vh;display:flex;flex-direction:column;border-radius:16px;overflow:hidden;
+  background:linear-gradient(165deg,#1e1114,#110b0d);border:1px solid var(--line);box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 50px rgba(224,22,22,.12);
+  animation:winIn .3s cubic-bezier(.2,1.2,.4,1)}
+.modal.wide{width:min(560px,94vw)}
+.modal-head{display:flex;align-items:center;gap:11px;padding:16px 20px;border-bottom:1px solid var(--line)}
+.modal-head .mi{width:30px;height:30px;flex:none;border-radius:9px;display:grid;place-items:center;background:linear-gradient(140deg,rgba(255,42,42,.2),rgba(146,234,47,.12));border:1px solid var(--line)}
+.modal-head .mi svg{width:15px;height:15px;stroke:var(--green);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.modal-head h3{font-size:15px;font-weight:700;flex:1}
+.modal-body{padding:18px 20px;overflow-y:auto;font-size:13.5px;color:var(--muted);line-height:1.6}
+.modal-body b{color:var(--text)}
+.modal-foot{display:flex;justify-content:flex-end;gap:9px;padding:14px 20px;border-top:1px solid var(--line)}
+.prop-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.prop-table td{padding:7px 4px;border-bottom:1px solid rgba(255,255,255,.05);vertical-align:top}
+.prop-table td:first-child{color:var(--dim);width:110px;font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;padding-top:9px}
+.prop-table .mono{font-family:var(--mono);font-size:10.5px;word-break:break-all;color:var(--green)}
+/* arbre de dossiers */
+.tree{font-size:12.5px;font-family:var(--mono);user-select:none}
+.tree ul{list-style:none;padding-left:18px;border-left:1px dashed rgba(255,255,255,.08);margin-left:8px;display:none}
+.tree li.open>ul{display:block}
+.tnode{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:8px;cursor:pointer;color:var(--muted);transition:background .12s}
+.tnode:hover{background:rgba(255,255,255,.05)}
+.tnode.sel{background:rgba(146,234,47,.12);color:var(--green)}
+.tnode.dis{opacity:.45;cursor:not-allowed}
+.tw{width:14px;height:14px;flex:none;display:grid;place-items:center;color:var(--dim);font-size:9px;transition:transform .15s}
+li.open>.tnode .tw{transform:rotate(90deg)}
+.tw.leaf{visibility:hidden}
+.tnode svg{width:14px;height:14px;flex:none;stroke:var(--amber);fill:none;stroke-width:1.6}
+.browse-path{margin-top:12px;padding:9px 12px;border-radius:9px;background:#0d0809;border:1px solid var(--line-g);font-family:var(--mono);font-size:11px;color:var(--green);word-break:break-all}
+
+/* ============ FENÊTRES SECONDAIRES ============ */
+.term-body{flex:1;min-height:0;overflow-y:auto;background:#0a0607;padding:16px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.85;color:var(--muted)}
+.term-body .p{color:var(--green)} .term-body .cmd{color:#fff} .term-body .out{color:var(--text)}
+.term-body .dim{color:var(--dim)} .term-body .ok{color:var(--green)}
+.np-menu{flex:none;display:flex;gap:2px;padding:4px 8px;border-bottom:1px solid var(--line);background:rgba(0,0,0,.2)}
+.np-menu span{font-size:11.5px;color:var(--muted);padding:4px 10px;border-radius:6px;cursor:default}
+.np-menu span:hover{background:rgba(255,255,255,.06);color:var(--text)}
+.np-area{flex:1;min-height:0;width:100%;resize:none;border:none;background:#0d0809;color:var(--text);padding:14px 16px;font-family:var(--mono);font-size:12.5px;line-height:1.75}
+.np-area:focus{outline:none}
+.np-status{flex:none;height:28px;display:flex;align-items:center;gap:16px;padding:0 14px;border-top:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--dim);background:rgba(0,0,0,.25)}
+.np-status .right{margin-left:auto}
+
+/* ============ TOASTS ============ */
+#toasts{position:fixed;right:16px;bottom:calc(var(--tb-h) + 14px);z-index:700;display:flex;flex-direction:column;gap:9px;max-width:min(360px,88vw)}
+.toast{display:flex;align-items:flex-start;gap:11px;padding:13px 16px;border-radius:13px;font-size:12.5px;line-height:1.45;
+  background:linear-gradient(160deg,#201216,#130c0f);border:1px solid var(--line-g);box-shadow:0 16px 44px rgba(0,0,0,.6);
+  animation:toastIn .4s cubic-bezier(.2,1.3,.4,1)}
+.toast.out{animation:toastOut .3s forwards}
+@keyframes toastIn{0%{opacity:0;transform:translateX(40px)}100%{opacity:1;transform:none}}
+@keyframes toastOut{to{opacity:0;transform:translateX(40px)}}
+.toast svg{width:17px;height:17px;flex:none;margin-top:1px;stroke:var(--green);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.toast.warn{border-color:rgba(255,176,32,.4)} .toast.warn svg{stroke:var(--amber)}
+.toast b{color:var(--text)}
+
+/* ============ RESPONSIVE ============ */
+@media (max-width:840px){
+  #winInstaller{left:8px!important;top:8px!important;width:calc(100vw - 16px)!important;height:calc(100vh - var(--tb-h) - 16px)!important}
+  .inst-body{display:flex;flex-direction:column}
+  .sidebar{flex-direction:row;align-items:center;border-right:none;border-bottom:1px solid var(--line);padding:10px 14px;gap:12px}
+  .side-logo{flex-direction:row;gap:9px}
+  .side-logo .rosewrap{width:34px;height:42px}
+  .side-logo h1{font-size:19px}
+  .side-logo .tag,.steps,.side-foot{display:none}
+  .side-compact{display:flex;flex-direction:column;gap:5px;margin-left:auto;align-items:flex-end}
+  #compactLabel{font-family:var(--mono);font-size:9px;letter-spacing:.14em;color:var(--green)}
+  .cdots{display:flex;gap:5px}
+  .cdots i{width:16px;height:4px;border-radius:3px;background:#3a2226;transition:background .3s}
+  .cdots i.on{background:var(--red)} .cdots i.dn{background:var(--green)}
+  .step-panel{padding:18px 18px 14px}
+  .feat-grid{grid-template-columns:1fr}
+  .inst-foot{padding:0 14px;height:60px}
+  .btn{padding:9px 15px;font-size:12.5px}
+  #installPct{font-size:32px}
+  .tb-btn.max{display:none}
+  #desktopIcons{top:12px;left:10px}
+  .dicon{width:82px}
+  #startBtn span{display:none}
+  .tb-lang{display:none}
+  #soundToggle{top:10px;right:10px;padding:7px 11px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001s!important;transition-duration:.001s!important}
+}
+</style>
+</head>
+<body>
+
+<!-- fond -->
+<div class="bg" aria-hidden="true">
+  <div class="aurora a1" id="au1"></div>
+  <div class="aurora a2" id="au2"></div>
+  <div class="aurora a3"></div>
+  <div class="dots"></div>
+</div>
+<canvas id="petals" aria-hidden="true"></canvas>
+<div class="grain" aria-hidden="true"></div>
+
+<!-- son -->
+<button id="soundToggle" aria-pressed="true" title="Activer / couper le son">
+  <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" stroke="none" style="fill:var(--green)"/>
+    <g id="sndWaves"><path d="M16 9a4 4 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></g>
+  </svg>
+  <span id="soundLabel">SON ACTIVÉ</span><span class="dot"></span>
+</button>
+
+<!-- icônes bureau -->
+<div id="desktopIcons">
+  <div class="dicon" id="iconExe" tabindex="0" role="button" aria-label="Rose-Setup-3.14.0.exe — double-clic pour ouvrir">
+    <div class="tile"><svg viewBox="0 0 120 150"><use href="#roseFull"/></svg><span class="badge">EXE</span></div>
+    <span class="lbl">Rose-Setup-3.14.0.exe</span>
+  </div>
+  <div class="dicon hidden" id="iconBonjour" tabindex="0" role="button" aria-label="bonjour.rose — double-clic pour exécuter">
+    <div class="tile">
+      <svg viewBox="0 0 48 48"><path d="M10 4h20l8 8v32H10z" fill="#1c1013" stroke="#ff5449" stroke-width="1.6"/><path d="M30 4v8h8" fill="none" stroke="#ff5449" stroke-width="1.6"/><path d="M24 15l6 3 2 6-3 6-5 2-5-2-3-6 2-6z" fill="#e01616"/><rect x="22.6" y="31" width="2.8" height="7" fill="#92ea2f"/><text x="24" y="26" text-anchor="middle" font-family="JetBrains Mono,monospace" font-size="8" font-weight="700" fill="#92ea2f">{}</text></svg>
+      <span class="badge">.rose</span>
+    </div>
+    <span class="lbl">bonjour.rose</span>
+  </div>
+</div>
+
+<!-- SVG rose réutilisable -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="roseFull">
+      <g stroke="#14060a" stroke-width="2" stroke-linejoin="round">
+        <polygon points="60,6 78,12 70,26 52,22" fill="#ff3b30"/>
+        <polygon points="78,12 90,26 78,34 70,26" fill="#d31414"/>
+        <polygon points="90,26 92,44 80,44 78,34" fill="#ff2a2a"/>
+        <polygon points="92,44 84,60 72,52 80,44" fill="#c40f0f"/>
+        <polygon points="84,60 68,70 64,56 72,52" fill="#ff4d40"/>
+        <polygon points="68,70 52,70 56,58 64,56" fill="#d31414"/>
+        <polygon points="52,70 36,60 44,50 56,58" fill="#ff2a2a"/>
+        <polygon points="36,60 28,44 40,42 44,50" fill="#b80c0c"/>
+        <polygon points="28,44 30,26 42,32 40,42" fill="#ff3b30"/>
+        <polygon points="30,26 42,12 52,22 42,32" fill="#e01616"/>
+        <polygon points="42,12 60,6 52,22" fill="#ff5449"/>
+        <polygon points="52,22 70,26 78,34 80,44 72,52 64,56 56,58 44,50 40,42 42,32" fill="#e81f1f"/>
+        <polygon points="52,30 66,32 72,40 66,48 56,50 48,44 48,36" fill="#ff6a5e"/>
+        <polygon points="56,36 64,38 66,44 60,48 54,44" fill="#7a0808"/>
+      </g>
+      <g font-family="JetBrains Mono,monospace" font-weight="700" fill="#9dff20">
+        <text x="44" y="20" font-size="10">+</text>
+        <text x="74" y="24" font-size="10">*</text>
+        <text x="32" y="42" font-size="10">~</text>
+        <text x="57" y="64" font-size="9">=</text>
+        <text x="80" y="52" font-size="8">+</text>
+      </g>
+      <g stroke="#14060a" stroke-width="2" stroke-linejoin="round">
+        <polygon points="57,96 18,78 26,98 57,104" fill="#92ea2f"/>
+        <polygon points="63,92 102,72 94,96 63,100" fill="#9dff20"/>
+        <rect x="57.5" y="70" width="5" height="58" fill="#92ea2f"/>
+        <rect x="46" y="126" width="28" height="5" fill="#92ea2f"/>
+      </g>
+      <polygon points="57,96 32,85 57,100" fill="#5da514" opacity=".65"/>
+      <polygon points="63,92 88,80 63,97" fill="#5da514" opacity=".65"/>
+    </g>
+  </defs>
+</svg>
+
+<!-- ============ FENÊTRE INSTALLATEUR ============ -->
+<section class="window enter" id="winInstaller" role="dialog" aria-label="Programme d'installation de Rose">
+  <div class="titlebar" id="tbInstaller">
+    <svg class="ticon" viewBox="0 0 120 150"><use href="#roseFull"/></svg>
+    <span class="ttitle">Rose — Programme d'installation</span>
+    <span class="tchip">v3.14.0 · x64</span>
+    <span class="tb-spacer"></span>
+    <button class="tb-btn" id="instMin" aria-label="Réduire"><svg viewBox="0 0 14 14"><path d="M2 11h10"/></svg></button>
+    <button class="tb-btn max" id="instMax" aria-label="Agrandir"><svg viewBox="0 0 14 14"><rect x="2.5" y="2.5" width="9" height="9" rx="1.5"/></svg></button>
+    <button class="tb-btn close" id="instClose" aria-label="Fermer"><svg viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
+  </div>
+
+  <div class="inst-body">
+    <aside class="sidebar">
+      <div class="side-logo" id="sideLogo">
+        <div class="rosewrap"><svg viewBox="0 0 120 150" width="100%" height="100%"><use href="#roseFull"/></svg></div>
+        <h1>ROSE</h1>
+        <p class="tag">Le langage compilé en français qui se compile lui-même.</p>
+      </div>
+      <ol class="steps" id="stepsList">
+        <li data-idx="0"><span class="n">1</span>Bienvenue</li>
+        <li data-idx="1"><span class="n">2</span>Licence MIT</li>
+        <li data-idx="2"><span class="n">3</span>Options</li>
+        <li data-idx="3"><span class="n">4</span>Installation</li>
+        <li data-idx="4"><span class="n">5</span>Terminé</li>
+      </ol>
+      <div class="side-foot">
+        <span class="side-chip g">{ ROSE } · MIT</span>
+        <span class="side-chip">🛡 MODE UTILISATEUR</span>
+      </div>
+      <div class="side-compact">
+        <span id="compactLabel">ÉTAPE 1/5 — BIENVENUE</span>
+        <div class="cdots" id="compactDots"><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="panels">
+
+        <!-- 0 · bienvenue -->
+        <div class="step-panel" data-step="0" id="panel0">
+          <span class="eyebrow">Moteur natif — v3.14.0 · 21 octobre 2026</span>
+          <h2>Bienvenue<span class="rd">.</span></h2>
+          <p class="lead">Cet assistant va installer <b>Rose</b> sur votre machine : interprète, JIT x64 et compilation AOT, avec une arithmétique exacte — entiers arbitraires et rationnels sans arrondi. L'installation se fait en <b>mode utilisateur</b> : aucun droit administrateur n'est requis.</p>
+          <div class="note-installed" id="noteInstalled">⚠ Rose 3.14.0 est déjà installé — cet assistant effectuera une réinstallation propre.</div>
+          <div class="feat-grid">
+            <div class="feat"><span class="fi"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg></span><div><h4>Commande rose dans le PATH</h4><p>Disponible dans tout nouveau terminal, sans configuration.</p></div></div>
+            <div class="feat"><span class="fi"><svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6z"/><path d="M15 2v5h5"/></svg></span><div><h4>Fichiers .rose associés</h4><p>Icône dédiée — double-clic = exécution du programme.</p></div></div>
+            <div class="feat"><span class="fi"><svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></span><div><h4>« Modifier » au clic droit</h4><p>Ouvre le source dans le Bloc-notes, directement.</p></div></div>
+            <div class="feat"><span class="fi"><svg viewBox="0 0 24 24"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/><path d="M9 12l2 2 4-4"/></svg></span><div><h4>Désinstallation propre</h4><p>Inscrit dans Applications et fonctionnalités de Windows.</p></div></div>
+          </div>
+          <div class="integrity">
+            <span class="ok"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 12l5 5L20 6"/></svg>VÉRIFIÉ</span>
+            <span class="hash">SHA-256 · <span id="hashText">363792c1…d1c571dc8a</span></span>
+            <button class="mini-btn" id="btnCopyHash">COPIER</button>
+          </div>
+          <div class="welcome-row">
+            <label class="langsel">Langue :
+              <select id="langSelect" aria-label="Langue de l'assistant">
+                <option selected>Français (France)</option>
+                <option disabled>English (à venir)</option>
+              </select>
+            </label>
+            <span class="lead" style="font-size:11.5px">Windows x64 · 24,5 Mo · éditeur : Stef302</span>
+          </div>
+        </div>
+
+        <!-- 1 · licence -->
+        <div class="step-panel" data-step="1" id="panel1">
+          <span class="eyebrow">Étape 2 — Licence</span>
+          <h2>Licence <span class="gn">MIT</span></h2>
+          <p class="lead">Le moteur de référence et ses tests sont publiés sous licence MIT. <b>Les binaires produits par la compilation AOT vous appartiennent.</b></p>
+          <div class="lic-box" id="licText" tabindex="0"><span class="h">MIT License</span>
+
+Copyright (c) 2026 Stef302
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+<span class="h">— La suite est la spécification —</span>
+46 tests dorés · 119 parités interprète ↔ compilé · 104 fichiers auto-hébergés. Chaque bug observé est gelé en test avant d'être corrigé.</div>
+          <label class="checkline"><input type="checkbox" id="licAccept"><span>J'accepte les termes de la <b>licence MIT</b> et je poursuis l'installation.</span></label>
+        </div>
+
+        <!-- 2 · options -->
+        <div class="step-panel" data-step="2" id="panel2">
+          <span class="eyebrow">Étape 3 — Options</span>
+          <h2>Options d'installation</h2>
+          <div>
+            <p class="lead" style="margin-bottom:8px">Dossier d'installation <span style="color:var(--dim)">(mode utilisateur — pas d'élévation)</span> :</p>
+            <div class="pathrow">
+              <input type="text" id="optPath" spellcheck="false" value="C:\Users\Vous\AppData\Local\Programs\Rose" aria-label="Dossier d'installation">
+              <button class="btn ghost" id="btnBrowse" type="button">Parcourir…</button>
+            </div>
+            <p class="path-err" id="pathError">Chemin invalide — exemple : C:\Users\Vous\Rose</p>
+          </div>
+          <div class="cmp-list">
+            <label class="cmp locked"><input type="checkbox" checked disabled><span class="ct"><h5>Moteur natif rose.exe <span class="lock">🔒 requis</span></h5><p>Interprète · JIT x64 · AOT (RIR → C++ → g++ -O3) · GMP</p></span><span class="sz">18,4 Mo</span></label>
+            <label class="cmp"><input type="checkbox" id="cmpPath" checked><span class="ct"><h5>Ajouter rose au PATH utilisateur <span class="rec">RECOMMANDÉ</span></h5><p>La commande rose fonctionne dans tout nouveau terminal.</p></span><span class="sz">0 Mo</span></label>
+            <label class="cmp"><input type="checkbox" id="cmpAssoc" checked><span class="ct"><h5>Associer les fichiers .rose</h5><p>Icône dédiée · double-clic = exécution.</p></span><span class="sz">0,4 Mo</span></label>
+            <label class="cmp"><input type="checkbox" id="cmpContext" checked><span class="ct"><h4 style="display:none"></h4><h5>« Modifier » dans le menu contextuel</h5><p>Clic droit sur un .rose → ouvrir dans le Bloc-notes.</p></span><span class="sz">0 Mo</span></label>
+            <label class="cmp"><input type="checkbox" id="cmpShortcut"><span class="ct"><h5>Raccourci sur le Bureau</h5><p>Lanceur « Rose » à portée de double-clic.</p></span><span class="sz">0,1 Mo</span></label>
+            <label class="cmp"><input type="checkbox" id="cmpDoc" checked><span class="ct"><h5>Documentation hors ligne</h5><p>Manuel v3.14 — langage, bibliothèque, erreurs.</p></span><span class="sz">2,1 Mo</span></label>
+            <label class="cmp"><input type="checkbox" id="cmpTests"><span class="ct"><h5>Suite de conformité</h5><p>46 tests dorés · 119 parités · corpus auto-hébergement.</p></span><span class="sz">3,2 Mo</span></label>
+            <label class="cmp locked"><input type="checkbox" checked disabled><span class="ct"><h5>Applications et fonctionnalités <span class="lock">🔒 requis</span></h5><p>Désinstalleur enregistré — retrait propre du système.</p></span><span class="sz">0 Mo</span></label>
+          </div>
+          <div class="spacebox">
+            <span>Espace requis : <b id="spaceReq">21,0 Mo</b></span>
+            <div class="spacebar"><i id="spaceBar"></i></div>
+            <span>C: · 128,4 Go libres</span>
+          </div>
+        </div>
+
+        <!-- 3 · installation -->
+        <div class="step-panel" data-step="3" id="panel3">
+          <div class="inst-top">
+            <div class="grow">
+              <span class="eyebrow">Étape 4 — Installation</span>
+              <h2 style="font-size:26px;margin-top:6px">Ça pousse<span class="rd">…</span></h2>
+              <p id="installAction" aria-live="polite">Préparation…</p>
+            </div>
+            <div id="installPct" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">0<small>%</small></div>
+          </div>
+          <div class="pbar"><i id="installBar"></i></div>
+          <div class="inst-stats">
+            <span>Fichiers <b id="installFiles">0 / 0</b></span>
+            <span>Débit <b id="installSpeed">—</b></span>
+            <span>Écoulé <b id="installTime">0:00</b></span>
+            <span>Cible <b id="installTarget" style="font-size:10px">—</b></span>
+          </div>
+          <div class="log" id="installLog" aria-label="Journal d'installation"></div>
+        </div>
+
+        <!-- 4 · terminé -->
+        <div class="step-panel" data-step="4" id="panel4">
+          <div class="done-mark"><svg viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></svg></div>
+          <h2>Rose est <span class="gn">installé.</span></h2>
+          <p class="lead" style="text-align:center">Le moteur natif <b>3.14.0</b> est prêt. Ouvrez un nouveau terminal, puis tapez <b style="font-family:var(--mono)">rose info</b>.</p>
+          <div id="doneChips"></div>
+          <div class="done-term" id="doneTerm"></div>
+          <div class="done-opts">
+            <label class="checkline"><input type="checkbox" id="doneLaunch" checked><span>Lancer <b style="font-family:var(--mono)">rose info</b> à la fermeture</span></label>
+            <label class="checkline"><input type="checkbox" id="doneBonjour" checked><span>Créer <b style="font-family:var(--mono)">bonjour.rose</b> sur le Bureau</span></label>
+          </div>
+          <button class="btn ghost" id="btnRoseInfo" type="button">▶ Vérifier maintenant — rose info</button>
+        </div>
+      </div>
+
+      <div class="inst-foot">
+        <button class="btn ghost" id="footCancel">Annuler</button>
+        <span id="footStatus"><span class="sdot busy" style="width:7px;height:7px;border-radius:50%;background:var(--amber);display:inline-block"></span>Installation en cours — ne fermez pas la fenêtre.</span>
+        <span class="foot-spacer"></span>
+        <button class="btn ghost hidden" id="footBack">◀ Précédent</button>
+        <button class="btn primary" id="footPrimary">Installer ▶</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span class="sdot" id="statusDot"></span><span id="statusLeft">SHA-256 vérifié · prêt</span>
+    <span class="right">Rose-Setup-3.14.0.exe · Windows x64 · © 2026 Stef302</span>
+  </div>
+</section>
+
+<!-- barre des tâches -->
+<div id="taskbar">
+  <button id="startBtn" aria-label="Menu Rose" aria-haspopup="true">
+    <svg viewBox="0 0 120 150"><use href="#roseFull"/></svg><span>ROSE</span>
+  </button>
+  <div class="tb-sep"></div>
+  <div id="taskList"></div>
+  <div class="tb-right">
+    <span class="tb-lang">FRA</span>
+    <div class="tb-clock"><div id="clockTime">--:--:--</div><div id="clockDate">—</div></div>
+  </div>
+</div>
+
+<div id="startMenu" role="menu">
+  <div class="sm-head">{ ROSE } — SYSTÈME</div>
+  <button class="sm-item" data-act="installer"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>Programme d'installation<small>EXE</small></button>
+  <button class="sm-item" data-act="info" id="smInfo" disabled><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>Terminal — rose info<small>.rose</small></button>
+  <button class="sm-item" data-act="bonjour" id="smBonjour" disabled><svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6z"/></svg>Exécuter bonjour.rose<small>BUREAU</small></button>
+  <div class="sm-sep"></div>
+  <button class="sm-item" data-act="about"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg>À propos de Rose<small>v3.14</small></button>
+</div>
+
+<div id="ctxMenu" role="menu"></div>
+<div id="modalRoot" role="dialog" aria-modal="true"></div>
+<div id="toasts" aria-live="polite"></div>
+
+<noscript><div style="position:fixed;inset:0;display:grid;place-items:center;background:#0a0607;color:#f5efe8;font-family:sans-serif;z-index:9999">Ce simulateur d'installation nécessite JavaScript.</div></noscript>
+
+<script>
+"use strict";
+/* ================================================================
+   ROSE — SIMULATEUR D'INSTALLATEUR · v3.14.0
+   ================================================================ */
+const $ = id => document.getElementById(id);
+const SHA = "363792c13a3e6d6a7c48169e21a1e5b19ad10852aefcf6c5f26848d1c571dc8a";
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const isMobile = () => matchMedia("(max-width: 840px)").matches;
+const fr = n => n.toLocaleString("fr-FR",{minimumFractionDigits:1,maximumFractionDigits:1});
+
+const state = {
+  step:0, installed:false, installing:false, sound:true,
+  license:false,
+  opt:{ path:"C:\\Users\\Vous\\AppData\\Local\\Programs\\Rose",
+        path:true, assoc:true, context:true, shortcut:false, doc:true, tests:false }
+};
+
+/* ---------------- SON (WebAudio, lié aux actions visibles) ---------------- */
+let actx=null, master=null;
+function audio(){ if(actx) return true;
+  try{ actx=new (window.AudioContext||window.webkitAudioContext)();
+    master=actx.createGain(); master.gain.value=state.sound?0.9:0; master.connect(actx.destination);
+  }catch(e){ return false } return true;
+}
+function tone(f,d,type,g,when=0,slide){
+  if(!state.sound||!audio()) return;
+  if(actx.state==="suspended") actx.resume();
+  const t=actx.currentTime+when, o=actx.createOscillator(), v=actx.createGain();
+  o.type=type; o.frequency.setValueAtTime(f,t);
+  if(slide) o.frequency.exponentialRampToValueAtTime(slide,t+d);
+  v.gain.setValueAtTime(0.0001,t); v.gain.exponentialRampToValueAtTime(g,t+0.008);
+  v.gain.exponentialRampToValueAtTime(0.0001,t+d);
+  o.connect(v); v.connect(master); o.start(t); o.stop(t+d+0.05);
+}
+const snd = {
+  click(){ tone(700,.06,"triangle",.045,0,520) },
+  nav(){ tone(523,.09,"sine",.05); tone(784,.12,"sine",.05,.07) },
+  check(){ tone(988,.07,"triangle",.05) },
+  warn(){ tone(196,.18,"square",.028); tone(147,.22,"square",.025,.09) },
+  success(){ [523,659,784,1047].forEach((f,i)=>{ tone(f,.34,"sine",.06,i*.09); tone(f/2,.3,"triangle",.03,i*.09) }) }
+};
+document.addEventListener("pointerdown",()=>{ if(audio()&&actx.state==="suspended") actx.resume() },{passive:true});
+const soundBtn=$("soundToggle");
+soundBtn.addEventListener("click",()=>{
+  state.sound=!state.sound; audio();
+  if(master) master.gain.value=state.sound?0.9:0;
+  soundBtn.classList.toggle("muted",!state.sound);
+  soundBtn.setAttribute("aria-pressed",String(state.sound));
+  $("soundLabel").textContent=state.sound?"SON ACTIVÉ":"SON COUPÉ";
+  if(state.sound) snd.check();
+});
+
+/* ---------------- TOASTS ---------------- */
+function toast(msg,warn=false,ms=4200){
+  const t=document.createElement("div"); t.className="toast"+(warn?" warn":"");
+  t.innerHTML=(warn
+    ?'<svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4m0 3h.01"/></svg>'
+    :'<svg viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></svg>')+"<div>"+msg+"</div>";
+  $("toasts").appendChild(t);
+  setTimeout(()=>{ t.classList.add("out"); setTimeout(()=>t.remove(),320) },ms);
+}
+
+/* ---------------- PÉTALES + PARALLAXE (une boucle rAF) ---------------- */
+const cv=$("petals"), cx=cv.getContext("2d");
+let PW=0,PH=0,DPR=1, petals=[], rafId=null, lastT=0, spawnAcc=0;
+let mx=0,my=0,ax=0,ay=0;
+const PCOLS=[[255,64,54],[224,22,22],[146,234,47],[255,176,32]];
+function sizeCanvas(){ DPR=Math.min(devicePixelRatio||1,1.5); PW=innerWidth; PH=innerHeight;
+  cv.width=PW*DPR; cv.height=PH*DPR; cv.style.width=PW+"px"; cv.style.height=PH+"px"; cx.setTransform(DPR,0,0,DPR,0,0); }
+sizeCanvas(); addEventListener("resize",sizeCanvas);
+function mkPetal(x,y,burst){
+  const c=PCOLS[Math.floor(Math.random()*PCOLS.length)];
+  return { x,y, s:burst?4+Math.random()*6:3+Math.random()*5,
+    vx:burst?(Math.random()-.5)*7:(Math.random()-.5)*.4,
+    vy:burst?-(2+Math.random()*5):.35+Math.random()*.5,
+    r:Math.random()*Math.PI*2, vr:(Math.random()-.5)*.06,
+    sway:Math.random()*Math.PI*2, c, a:burst?.9:.28, life:burst?1:Infinity, g:burst?.12:0 };
+}
+function burst(x,y,n=54){ if(reduced) return; for(let i=0;i<n;i++) petals.push(mkPetal(x,y,true)); }
+function drawPetal(p){
+  cx.save(); cx.translate(p.x,p.y); cx.rotate(p.r);
+  cx.fillStyle=`rgba(${p.c[0]},${p.c[1]},${p.c[2]},${p.a*Math.min(1,p.life)})`;
+  const s=p.s; cx.beginPath(); cx.moveTo(0,-s);
+  cx.bezierCurveTo(s*.95,-s*.55,s*.8,s*.6,0,s);
+  cx.bezierCurveTo(-s*.8,s*.6,-s*.95,-s*.55,0,-s); cx.fill(); cx.restore();
+}
+function loop(t){
+  rafId=requestAnimationFrame(loop);
+  const dt=Math.min(50,t-lastT)/16.7; lastT=t;
+  cx.clearRect(0,0,PW,PH);
+  if(!reduced){
+    spawnAcc+=dt;
+    const maxAmb=isMobile()?6:12;
+    if(spawnAcc>90 && petals.filter(p=>p.life===Infinity).length<maxAmb){
+      spawnAcc=0; petals.push(mkPetal(Math.random()*PW,-14,false));
+    }
+    ax+=(mx-ax)*.04*dt; ay+=(my-ay)*.04*dt;
+    $("au1").style.transform=`translate(${ax*14}px,${ay*10}px)`;
+    $("au2").style.transform=`translate(${ax*-18}px,${ay*-12}px)`;
+  }
+  for(let i=petals.length-1;i>=0;i--){
+    const p=petals[i];
+    p.sway+=.02*dt; p.x+=(p.vx+Math.sin(p.sway)*.3)*dt; p.y+=p.vy*dt; p.r+=p.vr*dt;
+    if(p.g){ p.vy+=p.g*dt; p.life-=.008*dt; }
+    if(p.y>PH+20||p.life<=0||p.x<-30||p.x>PW+30){ petals.splice(i,1); continue }
+    drawPetal(p);
+  }
+  if(petals.length>240) petals.splice(0,petals.length-240);
+}
+rafId=requestAnimationFrame(loop);
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden){ cancelAnimationFrame(rafId); rafId=null }
+  else if(!rafId){ lastT=performance.now(); rafId=requestAnimationFrame(loop) }
+});
+addEventListener("pointermove",e=>{ mx=(e.clientX/innerWidth-.5)*2; my=(e.clientY/innerHeight-.5)*2 },{passive:true});
+
+/* ---------------- GESTION DES FENÊTRES ---------------- */
+let zTop=100, topWin="installer";
+const wins={ installer:{el:$("winInstaller"),min:false,max:false,timers:[]} };
+const tasks=new Map();
+const ROSE_MINI='<svg viewBox="0 0 120 150"><use href="#roseFull"/></svg>';
+function addTask(id,label){
+  if(tasks.has(id)) return;
+  const b=document.createElement("button"); b.className="task"; b.innerHTML=ROSE_MINI+"<span>"+label+"</span>";
+  b.addEventListener("click",()=>{ const w=wins[id]; if(!w) return;
+    if(w.min) restoreWin(id);
+    else if(topWin===id) minimizeWin(id);
+    else focusWin(id);
+  });
+  $("taskList").appendChild(b); tasks.set(id,b); syncTasks();
+}
+function removeTask(id){ const b=tasks.get(id); if(b){ b.remove(); tasks.delete(id) } syncTasks() }
+function syncTasks(){ tasks.forEach((b,id)=>b.classList.toggle("active",id===topWin&&!wins[id]?.min)) }
+function focusWin(id){ const w=wins[id]; if(!w) return; w.el.style.zIndex=++zTop; topWin=id; syncTasks() }
+function minimizeWin(id){ const w=wins[id]; if(!w) return; w.min=true; w.el.classList.add("min"); snd.click();
+  if(topWin===id) topWin=null; syncTasks(); }
+function restoreWin(id){ const w=wins[id]; if(!w) return; w.min=false; w.el.classList.remove("min"); focusWin(id); snd.click() }
+function hideWin(id){ const w=wins[id]; if(!w) return; w.el.classList.add("closed"); w.min=false; w.el.classList.remove("min");
+  removeTask(id); if(topWin===id) topWin=null; syncTasks(); }
+function showWin(id){ const w=wins[id]; if(!w) return; w.el.classList.remove("closed"); focusWin(id) }
+
+function makeDraggable(win,tb,id){
+  let sx,sy,ox,oy,drag=false;
+  tb.addEventListener("pointerdown",e=>{
+    if(e.target.closest(".tb-btn")||wins[id].max||isMobile()) return;
+    drag=true; sx=e.clientX; sy=e.clientY;
+    const r=win.getBoundingClientRect(); ox=r.left; oy=r.top;
+    tb.setPointerCapture(e.pointerId); focusWin(id);
+  });
+  tb.addEventListener("pointermove",e=>{
+    if(!drag) return;
+    const w=win.offsetWidth;
+    let nx=ox+e.clientX-sx, ny=oy+e.clientY-sy;
+    nx=Math.max(-w+180,Math.min(innerWidth-160,nx));
+    ny=Math.max(4,Math.min(innerHeight-110,ny));
+    win.style.left=nx+"px"; win.style.top=ny+"px";
+  });
+  const end=()=>drag=false;
+  tb.addEventListener("pointerup",end); tb.addEventListener("pointercancel",end);
+  tb.addEventListener("dblclick",e=>{ if(!e.target.closest(".tb-btn")&&!isMobile()) toggleMax(id) });
+  win.addEventListener("pointerdown",()=>focusWin(id));
+}
+function toggleMax(id){
+  const w=wins[id]; if(!w||isMobile()) return;
+  w.max=!w.max; w.el.classList.toggle("max",w.max); snd.click();
+}
+function centerWin(el){
+  const w=el.offsetWidth,h=el.offsetHeight;
+  el.style.left=Math.max(8,(innerWidth-w)/2)+"px";
+  el.style.top=Math.max(8,(innerHeight-48-h)/2)+"px";
+}
+centerWin($("winInstaller"));
+addEventListener("resize",()=>{ if(!wins.installer.max&&!isMobile()){
+  const el=$("winInstaller"),r=el.getBoundingClientRect();
+  if(r.right>innerWidth||r.bottom>innerHeight-48) centerWin(el);
+}});
+makeDraggable($("winInstaller"),$("tbInstaller"),"installer");
+addTask("installer","Rose — Installation");
+$("instMin").addEventListener("click",()=>minimizeWin("installer"));
+$("instMax").addEventListener("click",()=>toggleMax("installer"));
+$("instClose").addEventListener("click",()=>requestCloseInstaller());
+
+/* ---------------- MODALES ---------------- */
+let modalOpen=false,lastFocus=null;
+function openModal({title,icon,body,actions,wide}){
+  lastFocus=document.activeElement; modalOpen=true;
+  const root=$("modalRoot");
+  root.innerHTML=`<div class="modal${wide?" wide":""}">
+    <div class="modal-head"><span class="mi">${icon||'<svg viewBox="0 0 24 24"><path d="M12 3l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>'}</span><h3>${title}</h3>
+    <button class="tb-btn close" data-close aria-label="Fermer"><svg viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8"/></svg></button></div>
+    <div class="modal-body">${body}</div>
+    <div class="modal-foot">${actions.map((a,i)=>`<button class="btn ${a.kind||"ghost"}" data-act="${i}">${a.label}</button>`).join("")}</div>
+  </div>`;
+  root.classList.add("show");
+  root.querySelector("[data-close]").addEventListener("click",closeModal);
+  root.querySelectorAll("[data-act]").forEach(b=>b.addEventListener("click",()=>{
+    const a=actions[+b.dataset.act]; snd.click();
+    if(a.keep){ a.onClick&&a.onClick(root) } else { closeModal(); a.onClick&&a.onClick(root) }
+  }));
+  root.onpointerdown=e=>{ if(e.target===root) closeModal() };
+  const first=root.querySelector(".modal-foot .btn"); first&&first.focus();
+  return root;
+}
+function closeModal(){ modalOpen=false; $("modalRoot").classList.remove("show"); $("modalRoot").innerHTML="";
+  lastFocus&&lastFocus.focus&&lastFocus.focus(); }
+
+/* ---------------- ASSISTANT : ÉTAPES ---------------- */
+const STEP_NAMES=["BIENVENUE","LICENCE MIT","OPTIONS","INSTALLATION","TERMINÉ"];
+const panels=[...document.querySelectorAll(".step-panel")];
+const stepLis=[...document.querySelectorAll("#stepsList li")];
+const footCancel=$("footCancel"),footBack=$("footBack"),footPrimary=$("footPrimary"),footStatus=$("footStatus");
+
+function goTo(n){
+  state.step=n;
+  panels.forEach(p=>p.classList.toggle("active",+p.dataset.step===n));
+  stepLis.forEach(li=>{ const i=+li.dataset.idx;
+    li.classList.toggle("active",i===n);
+    li.classList.toggle("done",i<n||(state.installed&&i<=4&&n===4));
+    li.querySelector(".n").textContent=(i<n||(n===4))?"✓":(i+1);
+  });
+  $("compactLabel").textContent=`ÉTAPE ${n+1}/5 — ${STEP_NAMES[n]}`;
+  [...$("compactDots").children].forEach((d,i)=>{ d.className=i<n?"dn":(i===n?"on":"") });
+  footCancel.classList.toggle("hidden",n===4);
+  footCancel.className="btn "+(n===3?"danger":"ghost")+(n===4?" hidden":"");
+  footCancel.textContent=n===3?"Annuler l'installation":"Annuler";
+  footBack.classList.toggle("hidden",!(n===1||n===2));
+  footStatus.classList.toggle("show",n===3);
+  footPrimary.classList.toggle("hidden",n===3);
+  footPrimary.className="btn "+(n===4?"green":"primary")+(n===3?" hidden":"");
+  footPrimary.textContent=n===0?(state.installed?"Réinstaller ▶":"Installer ▶"):n===1?"Suivant ▶":n===2?"Installer ▶":"Terminer ✔";
+  footPrimary.disabled=(n===1&&!state.license)||(n===2&&!validPath());
+  const active=panels[n]; active.scrollTop=0;
+  if(n!==3){ $("statusDot").classList.remove("busy");
+    $("statusLeft").textContent=state.installed?"Installé — Rose 3.14.0":"SHA-256 vérifié · prêt"; }
+}
+stepLis.forEach(li=>li.addEventListener("click",()=>{
+  const i=+li.dataset.idx;
+  if(i<state.step&&state.step<3&&!state.installing){ snd.nav(); goTo(i) }
+}));
+footBack.addEventListener("click",()=>{ snd.nav(); goTo(state.step-1) });
+footPrimary.addEventListener("click",()=>{
+  snd.nav();
+  if(state.step===0) goTo(1);
+  else if(state.step===1) goTo(2);
+  else if(state.step===2) startInstall();
+  else if(state.step===4) finishAndClose();
+});
+footCancel.addEventListener("click",()=>requestCloseInstaller());
+
+/* licence */
+$("licAccept").addEventListener("change",e=>{
+  state.license=e.target.checked;
+  if(e.target.checked) snd.check();
+  if(state.step===1) footPrimary.disabled=!state.license;
+});
+
+/* options */
+const pathInput=$("optPath");
+function validPath(){ return /^[A-Za-z]:\\[^<>:"|?*]*$/.test(pathInput.value.trim()) }
+function refreshPath(){
+  const ok=validPath();
+  $("pathError").classList.toggle("show",!ok);
+  state.opt.path=pathInput.value.trim();
+  if(state.step===2) footPrimary.disabled=!ok;
+}
+pathInput.addEventListener("input",refreshPath);
+const cmpMap={cmpPath:"path",cmpAssoc:"assoc",cmpContext:"context",cmpShortcut:"shortcut",cmpDoc:"doc",cmpTests:"tests"};
+Object.keys(cmpMap).forEach(id=>$(id).addEventListener("change",e=>{
+  state.opt[cmpMap[id]]=e.target.checked; snd.check(); updateSpace();
+}));
+function requiredMB(){
+  let m=18.4;
+  if(state.opt.assoc)m+=0.4; if(state.opt.shortcut)m+=0.1;
+  if(state.opt.doc)m+=2.1; if(state.opt.tests)m+=3.2;
+  return Math.round(m*10)/10;
+}
+function updateSpace(){
+  const m=requiredMB();
+  $("spaceReq").textContent=fr(m)+" Mo";
+  $("spaceBar").style.width=Math.max(2,m/40*100)+"%";
+}
+updateSpace();
+
+/* parcours de dossiers */
+$("btnBrowse").addEventListener("click",()=>{
+  snd.click();
+  const F='<svg viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+  const node=(label,path,children,opts={})=>{
+    const leaf=!children;
+    return `<li class="${opts.open?"open":""}"><div class="tnode${opts.dis?" dis":""}" data-path="${path||""}" data-append="${opts.append?1:0}" ${opts.dis?'data-dis="1"':""}>
+      <span class="tw${leaf?" leaf":""}">▶</span>${F}<span>${label}</span>${opts.dis?'<span style="margin-left:auto;font-size:9px">🔒 admin</span>':""}</div>${children?`<ul>${children}</ul>`:""}</li>`;
+  };
+  const tree=`<ul style="display:block;padding-left:0;border:none;margin:0">
+    ${node("Ce PC","",node("Disque local (C:)","C:\\",
+      node("Program Files","C:\\Program Files",null,{dis:true})+
+      node("Utilisateurs","C:\\Users",node("Vous","C:\\Users\\Vous",
+        node("AppData","C:\\Users\\Vous\\AppData",node("Local","C:\\Users\\Vous\\AppData\\Local",
+          node("Programs","C:\\Users\\Vous\\AppData\\Local\\Programs",
+            node("Rose","C:\\Users\\Vous\\AppData\\Local\\Programs\\Rose",null,{open:true}),{open:true}),{open:true}),{open:true})+
+        node("Bureau","C:\\Users\\Vous\\Bureau",null,{append:true})+
+        node("Documents","C:\\Users\\Vous\\Documents",null,{append:true}),{open:true}),{open:true}),{open:true}),{open:true}))}
+  </ul>`;
+  const root=openModal({
+    title:"Choisir le dossier d'installation", wide:true,
+    icon:'<svg viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+    body:`<p style="margin-bottom:10px">Rose s'installe en <b>mode utilisateur</b>. Les emplacements protégés (🔒) demanderaient une élévation — ils sont refusés.</p>
+      <div class="tree" id="folderTree">${tree}</div><div class="browse-path" id="browsePath">${state.opt.path}</div>`,
+    actions:[{label:"Annuler"},{label:"Sélectionner",kind:"green",onClick:()=>{
+      const sel=root.querySelector(".tnode.sel");
+      if(sel){ let p=sel.dataset.path; if(sel.dataset.append==="1") p+="\\Rose";
+        pathInput.value=p; refreshPath(); toast("Dossier choisi : <b>"+p+"</b>") }
+    }}]
+  });
+  let current=root.querySelector(`.tnode[data-path="${state.opt.path.replace(/\\/g,"\\")}"]`);
+  root.querySelectorAll(".tnode").forEach(n=>{
+    if(n.dataset.path===state.opt.path) n.classList.add("sel");
+    n.addEventListener("click",e=>{
+      if(e.target.closest(".tw")&&!e.target.closest(".tw").classList.contains("leaf")){
+        n.parentElement.classList.toggle("open"); return;
+      }
+      if(n.dataset.dis){ snd.warn(); toast("<b>Program Files</b> nécessite des droits administrateur. Rose reste en mode utilisateur.",true); return }
+      if(!n.dataset.path) return;
+      root.querySelectorAll(".tnode.sel").forEach(x=>x.classList.remove("sel"));
+      n.classList.add("sel"); snd.click();
+      let p=n.dataset.path; if(n.dataset.append==="1") p+="\\Rose";
+      root.querySelector("#browsePath").textContent=p;
+    });
+  });
+});
+
+/* hash */
+$("btnCopyHash").addEventListener("click",async()=>{
+  snd.check();
+  try{ await navigator.clipboard.writeText(SHA); toast("Empreinte <b>SHA-256</b> copiée dans le presse-papiers.") }
+  catch(e){
+    const ta=document.createElement("textarea"); ta.value=SHA; document.body.appendChild(ta);
+    ta.select(); try{ document.execCommand("copy"); toast("Empreinte <b>SHA-256</b> copiée.") }catch(_){ toast("Copie impossible — empreinte affichée dans les propriétés.",true) }
+    ta.remove();
+  }
+});
+
+/* ---------------- INSTALLATION (timeline réelle) ---------------- */
+let instTimer=null, instT0=0, instTasks=[], instTotal=0, instFiles=0, instMB=0;
+function buildTasks(){
+  const o=state.opt, P=o.path, T=[];
+  T.push({label:"Vérification de l'intégrité du paquet…",dur:900,files:0,logs:[
+    [0,"Lecture de Rose-Setup-3.14.0.exe (24,5 Mo)",""],
+    [380,"SHA-256 : 363792c1…d1c571dc8a","sys"],
+    [700,"✔ Empreinte conforme — paquet signé par Stef302","ok"]]});
+  T.push({label:"Préparation du dossier d'installation…",dur:700,files:1,logs:[
+    [0,"Création de "+P,""],
+    [420,"Mode utilisateur : aucun droit administrateur requis","sys"]]});
+  T.push({label:"Extraction du moteur natif (x64)…",dur:1900,files:4,logs:[
+    [0,"bin\\rose.exe — moteur C++ (18,4 Mo)",""],
+    [650,"bin\\gmp.dll — arithmétique exacte (GMP)",""],
+    [1200,"bin\\rose.ico · bin\\rose-file.ico",""],
+    [1650,"✔ Interprète · JIT x64 · AOT prêts","ok"]]});
+  const sysLogs=[]; let t=0;
+  if(o.path){ sysLogs.push([t,"PATH utilisateur ← "+P+"\\bin","sys"]); t+=260 }
+  if(o.assoc){ sysLogs.push([t,"Association .rose → Rose.Program (double-clic = exécution)","sys"]); t+=260 }
+  if(o.context){ sysLogs.push([t,"Menu contextuel : « Modifier » → notepad.exe \"%1\"","sys"]); t+=260 }
+  sysLogs.push([t,"Registre : Applications et fonctionnalités (désinstallation propre)","sys"]); t+=260;
+  if(o.shortcut){ sysLogs.push([t,"Raccourci Bureau\\Rose.lnk créé",""]); t+=200 }
+  sysLogs.push([t,"✔ Intégration système terminée","ok"]);
+  T.push({label:"Intégration au système…",dur:Math.max(1100,t+250),files:1,logs:sysLogs});
+  const docLogs=[]; t=0;
+  if(o.doc){ docLogs.push([0,"doc\\manuel-v3.14 — langage · bibliothèque · erreurs (2,1 Mo)",""]); t+=520 }
+  if(o.tests){ docLogs.push([t,"tests\\dorés : 46 fichiers",""]); t+=330;
+    docLogs.push([t,"tests\\parités : 119 fichiers",""]); t+=330;
+    docLogs.push([t,"tests\\auto-hébergement : 104 fichiers",""]); t+=330 }
+  docLogs.push([t,"✔ Documentation & conformité en place","ok"]);
+  T.push({label:"Documentation et suite de conformité…",dur:Math.max(800,t+250),files:(o.doc?3:0)+(o.tests?3:0),logs:docLogs});
+  T.push({label:"Finalisation et auto-vérification…",dur:1300,files:2,logs:[
+    [0,"Création de unins000.exe — désinstallation propre",""],
+    [480,"Exécution : rose version","sys"],
+    [820,"→ 3.14.0","ok"],
+    [1080,"✔ Installation terminée — 0 erreur · 0 avertissement","ok"]]});
+  return T;
+}
+function logLine(text,type,elapsed){
+  const log=$("installLog"), ln=document.createElement("div");
+  ln.className="ln "+(type||"");
+  const s=elapsed/1000, mm=Math.floor(s/60), ss=(s%60).toFixed(1).padStart(4,"0");
+  const t=document.createElement("span"); t.className="t"; t.textContent=`[${mm}:${ss}]`;
+  const m=document.createElement("span"); m.className="m"; m.textContent=text;
+  ln.append(t,m); log.appendChild(ln); log.scrollTop=log.scrollHeight;
+}
+function startInstall(){
+  if(state.installing) return;
+  state.installing=true;
+  instTasks=buildTasks(); instTotal=instTasks.reduce((a,t)=>a+t.dur,0);
+  instFiles=instTasks.reduce((a,t)=>a+t.files,0); instMB=requiredMB();
+  instTasks.forEach(t=>t.logs.forEach(l=>l.push(false)));
+  let acc=0; instTasks.forEach(t=>{ t.start=acc; acc+=t.dur });
+  $("installLog").innerHTML=""; $("installTarget").textContent=state.opt.path;
+  $("statusDot").classList.add("busy"); $("statusLeft").textContent="Installation en cours…";
+  goTo(3); snd.nav();
+  instT0=performance.now();
+  instTimer=setInterval(tickInstall,60);
+  tickInstall();
+}
+function tickInstall(){
+  const el=performance.now()-instT0;
+  const p=Math.min(1,el/instTotal);
+  const pct=Math.floor(p*100);
+  $("installBar").style.width=(p*100)+"%";
+  $("installPct").innerHTML=pct+"<small>%</small>";
+  $("installPct").setAttribute("aria-valuenow",pct);
+  $("sideLogo").style.setProperty("--bloom",p.toFixed(2));
+  let cur=instTasks[instTasks.length-1], filesBefore=0;
+  for(const t of instTasks){
+    if(el>=t.start){ cur=t;
+      t.logs.forEach(l=>{ if(!l[3]&&el>=t.start+l[0]){ l[3]=true; logLine(l[1],l[2],t.start+l[0]) } });
+    }
+    if(el>=t.start+t.dur) filesBefore+=t.files;
+    else if(el>=t.start) filesBefore+=Math.floor(t.files*Math.min(1,(el-t.start)/t.dur));
+  }
+  $("installAction").textContent=cur.label;
+  $("installFiles").textContent=Math.min(instFiles,filesBefore)+" / "+instFiles;
+  const sec=Math.max(.4,el/1000);
+  const spd=Math.min(42,Math.max(6,(instMB*p)/sec));
+  $("installSpeed").textContent=fr(spd)+" Mo/s";
+  const s=Math.floor(el/1000);
+  $("installTime").textContent=Math.floor(s/60)+":"+String(s%60).padStart(2,"0");
+  if(p>=1){ clearInterval(instTimer); instTimer=null;
+    setTimeout(completeInstall,420); }
+}
+function abortInstall(){
+  if(instTimer){ clearInterval(instTimer); instTimer=null }
+  state.installing=false;
+  logLine("✕ Installation annulée — aucun fichier conservé, système inchangé.","err",performance.now()-instT0);
+  $("sideLogo").style.setProperty("--bloom",0);
+  snd.warn(); goTo(2);
+  toast("<b>Installation annulée.</b> Le système reste inchangé.",true);
+}
+function completeInstall(){
+  state.installing=false; state.installed=true;
+  $("sideLogo").classList.add("bloomed"); $("sideLogo").style.setProperty("--bloom",1);
+  buildDoneChips(); goTo(4); snd.success();
+  const r=$("winInstaller").getBoundingClientRect();
+  burst(r.left+r.width/2,r.top+r.height/2,64);
+  $("smInfo").disabled=false;
+  typeInto($("doneTerm"),[["p","> "],["cmd","rose version"],["out","\n3.14.0"],["dim","\n\nProcessus terminé — code de sortie 0"]],26);
+}
+function buildDoneChips(){
+  const o=state.opt, chips=["Moteur natif 3.14.0 ✓"];
+  if(o.path)chips.push("PATH utilisateur ✓");
+  if(o.assoc)chips.push("Fichiers .rose ✓");
+  if(o.context)chips.push("« Modifier » ✓");
+  chips.push("Apps & fonctionnalités ✓");
+  if(o.shortcut)chips.push("Raccourci Bureau ✓");
+  if(o.doc)chips.push("Manuel v3.14 ✓");
+  if(o.tests)chips.push("46 dorés · 119 parités ✓");
+  $("doneChips").innerHTML=chips.map(c=>`<span class="dchip">${c}</span>`).join("");
+}
+function finishAndClose(){
+  const launch=$("doneLaunch").checked, bj=$("doneBonjour").checked;
+  hideWin("installer"); snd.success();
+  if(bj) revealBonjour();
+  toast("<b>Rose 3.14.0 est prêt.</b> Ouvrez un nouveau terminal, puis tapez rose info.");
+  if(launch) setTimeout(()=>openConsole("info"),450);
+}
+$("btnRoseInfo").addEventListener("click",()=>{ snd.click(); openConsole("info") });
+
+/* frappe machine à écrire */
+function typeInto(el,parts,speed){
+  el.innerHTML=""; let pi=0,ci=0;
+  const cur=document.createElement("span"); cur.className="cursor";
+  let span=null;
+  const timers=[]; wins.installer.timers.push(...timers);
+  function step(){
+    if(!el.isConnected) return;
+    if(pi>=parts.length){ el.appendChild(cur); return }
+    const [cls,text]=parts[pi];
+    if(ci===0){ span=document.createElement("span"); span.className=cls; el.insertBefore(span,cur.parentNode===el?cur:null); el.appendChild(span) }
+    span.textContent+=text[ci++];
+    if(ci>=text.length){ pi++; ci=0 }
+    timers.push(setTimeout(step,text[ci-1]==="\n"?speed*4:speed));
+  }
+  el.appendChild(cur); step();
+  return timers;
+}
+
+/* ---------------- FERMETURE / QUITTER ---------------- */
+function requestCloseInstaller(){
+  if(state.step===4){ finishAndClose(); return }
+  if(state.installing){
+    snd.warn();
+    openModal({ title:"Annuler l'installation ?",
+      icon:'<svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v4m0 3h.01"/></svg>',
+      body:"L'installation est <b>en cours</b>. Si vous annulez maintenant, aucun fichier ne sera conservé et le système restera inchangé.",
+      actions:[{label:"Reprendre l'installation"},{label:"Annuler l'installation",kind:"danger",onClick:abortInstall}] });
+    return;
+  }
+  snd.click();
+  openModal({ title:"Quitter le programme d'installation ?",
+    body:"Vous pourrez relancer <b>Rose-Setup-3.14.0.exe</b> à tout moment depuis le Bureau.",
+    actions:[{label:"Rester"},{label:"Quitter",kind:"danger",onClick:()=>{
+      hideWin("installer"); toast("Programme d'installation fermé.") }}] });
+}
+function launchInstaller(){
+  showWin("installer"); addTask("installer","Rose — Installation");
+  $("winInstaller").classList.remove("enter"); void $("winInstaller").offsetWidth;
+  $("winInstaller").classList.add("enter");
+  $("noteInstalled").classList.toggle("show",state.installed);
+  if(!state.installing) goTo(state.installed?0:state.step===3?0:state.step===4?0:state.step);
+  snd.nav();
+}
+
+/* ---------------- ICÔNES BUREAU + MENU CONTEXTUEL ---------------- */
+const BONJOUR_CODE=`// bonjour.rose
+fn saluer($nom: chaine) -> chaine {
+  $msg = "Salut, " + $nom + " !"
+  retour $msg
+}
+$noms = ["Ada", "Grace", "Alan"]
+$i = 0
+tant_que ($i < longueur($noms)) {
+  >> saluer($noms[$i])
+  $i = $i + 1
+}`;
+let bjRevealed=false;
+function revealBonjour(){
+  if(bjRevealed) return; bjRevealed=true;
+  const ic=$("iconBonjour"); ic.classList.remove("hidden"); ic.classList.add("pop");
+  $("smBonjour").disabled=false;
+  const r=ic.getBoundingClientRect(); burst(r.left+r.width/2,r.top+r.height/2,22);
+}
+function bindIcon(el,open,ctxItems){
+  let lastTap=0;
+  el.addEventListener("click",e=>{
+    document.querySelectorAll(".dicon.selected").forEach(x=>x.classList.remove("selected"));
+    el.classList.add("selected"); snd.click();
+    if(e.pointerType==="touch"||matchMedia("(hover:none)").matches){
+      const now=Date.now(); if(now-lastTap<450) open(); lastTap=now;
+    }
+  });
+  el.addEventListener("dblclick",open);
+  el.addEventListener("keydown",e=>{ if(e.key==="Enter") open() });
+  el.addEventListener("contextmenu",e=>{ e.preventDefault(); showCtx(e.clientX,e.clientY,ctxItems()) });
+}
+bindIcon($("iconExe"),launchInstaller,()=>[
+  {label:"Ouvrir",bold:true,icon:"▶",fn:launchInstaller},
+  {sep:true},
+  {label:"Propriétés",icon:"ℹ",fn:propsExe}
+]);
+bindIcon($("iconBonjour"),()=>openConsole("bonjour"),()=>[
+  {label:"Ouvrir — exécuter",bold:true,icon:"▶",fn:()=>openConsole("bonjour")},
+  {label:"Modifier",icon:"✎",fn:openNotepad},
+  {sep:true},
+  {label:"Propriétés",icon:"ℹ",fn:propsBonjour}
+]);
+document.addEventListener("pointerdown",e=>{
+  if(!e.target.closest(".dicon")) document.querySelectorAll(".dicon.selected").forEach(x=>x.classList.remove("selected"));
+  if(!e.target.closest("#ctxMenu")) hideCtx();
+  if(!e.target.closest("#startMenu")&&!e.target.closest("#startBtn")) $("startMenu").classList.remove("show");
+});
+function showCtx(x,y,items){
+  const m=$("ctxMenu");
+  m.innerHTML=items.map((it,i)=>it.sep?'<div class="ctx-sep"></div>':
+    `<button class="ctx-item${it.bold?" bold":""}" data-i="${i}"><span style="width:14px;text-align:center;color:var(--green);font-family:var(--mono)">${it.icon||""}</span>${it.label}</button>`).join("");
+  m.classList.add("show");
+  const mw=m.offsetWidth,mh=m.offsetHeight;
+  m.style.left=Math.min(x,innerWidth-mw-8)+"px";
+  m.style.top=Math.min(y,innerHeight-mh-56)+"px";
+  m.querySelectorAll(".ctx-item").forEach(b=>b.addEventListener("click",()=>{ hideCtx(); snd.click(); items[+b.dataset.i].fn() }));
+}
+function hideCtx(){ $("ctxMenu").classList.remove("show") }
+function propsExe(){
+  openModal({ title:"Propriétés de Rose-Setup-3.14.0.exe", wide:true,
+    icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg>',
+    body:`<table class="prop-table">
+      <tr><td>TYPE</td><td>Application · installeur NSIS-like (mode utilisateur)</td></tr>
+      <tr><td>VERSION</td><td><b>3.14.0</b> — 21 octobre 2026</td></tr>
+      <tr><td>ÉDITEUR</td><td>Stef302 · licence MIT</td></tr>
+      <tr><td>TAILLE</td><td>24,5 Mo · Windows x64</td></tr>
+      <tr><td>SHA-256</td><td class="mono">${SHA}</td></tr>
+      <tr><td>SIGNATURE</td><td style="color:var(--green)">✔ vérifiée — empreinte conforme</td></tr>
+    </table>`,
+    actions:[{label:"Fermer",kind:"green"}] });
+}
+function propsBonjour(){
+  openModal({ title:"Propriétés de bonjour.rose",
+    icon:'<svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6z"/></svg>',
+    body:`<table class="prop-table">
+      <tr><td>TYPE</td><td>Fichier Rose (.rose) — texte UTF-8</td></tr>
+      <tr><td>ASSOCIATION</td><td><b>Rose.Program</b> · double-clic = exécution</td></tr>
+      <tr><td>TAILLE</td><td>312 octets</td></tr>
+      <tr><td>EMPLACEMENT</td><td class="mono">C:\\Users\\Vous\\Bureau</td></tr>
+      <tr><td>CONTEXTE</td><td>« Modifier » → Bloc-notes ✔</td></tr>
+    </table>`,
+    actions:[{label:"Fermer",kind:"green"}] });
+}
+
+/* ---------------- FENÊTRES SECONDAIRES : TERMINAL & BLOC-NOTES ---------------- */
+let secCount=0;
+function makeWindow(id,title,bodyHTML,w,h,extraClass){
+  if(wins[id]){ const ex=wins[id];
+    ex.timers.forEach(clearTimeout); ex.timers=[];
+    ex.el.querySelector(".win-content").innerHTML=bodyHTML;
+    showWin(id); restoreWin(id); return ex;
+  }
+  const el=document.createElement("section");
+  el.className="window enter "+(extraClass||""); el.setAttribute("role","dialog"); el.setAttribute("aria-label",title);
+  el.style.width=Math.min(w,innerWidth-24)+"px"; el.style.height=Math.min(h,innerHeight-80)+"px";
+  el.innerHTML=`<div class="titlebar">
+      <svg class="ticon" viewBox="0 0 120 150"><use href="#roseFull"/></svg>
+      <span class="ttitle">${title}</span><span class="tb-spacer"></span>
+      <button class="tb-btn" data-min aria-label="Réduire"><svg viewBox="0 0 14 14"><path d="M2 11h10"/></svg></button>
+      <button class="tb-btn close" data-x aria-label="Fermer"><svg viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8"/></svg></button>
+    </div><div class="win-content" style="flex:1;min-height:0;display:flex;flex-direction:column">${bodyHTML}</div>`;
+  document.body.appendChild(el);
+  const off=(secCount++%4)*26;
+  el.style.left=Math.max(8,(innerWidth-el.offsetWidth)/2+off)+"px";
+  el.style.top=Math.max(8,(innerHeight-48-el.offsetHeight)/2-20+off)+"px";
+  const reg={el,min:false,max:false,timers:[]}; wins[id]=reg;
+  makeDraggable(el,el.querySelector(".titlebar"),id);
+  el.querySelector("[data-min]").addEventListener("click",()=>minimizeWin(id));
+  el.querySelector("[data-x]").addEventListener("click",()=>{ reg.timers.forEach(clearTimeout); hideWin(id); snd.click();
+    if(id==="notepad"){ const np=wins[id]; np.el.querySelector(".win-content").innerHTML="" } });
+  addTask(id,title); focusWin(id);
+  return reg;
+}
+const INFO_LINES=[
+  ["p","> "],["cmd","rose info"],["out","\nRose 3.14.0 — moteur natif (C++, MIT)"],
+  ["out","\nVoies : interprète · JIT x64 · AOT (g++ -O3)"],
+  ["out","\nArithmétique : entiers arbitraires · rationnels exacts · IEEE-754"],
+  ["ok","\nConformité : 46 tests dorés · 119 parités · 104 fichiers auto-hébergés"],
+  ["dim","\nFront-end en Rose : en chantier (v3.14.1)"],
+  ["dim","\n\nProcessus terminé — code de sortie 0 (0,03 s)"]
+];
+const BJ_LINES=[
+  ["p","> "],["cmd","rose bonjour.rose"],["out","\nSalut, Ada !"],["out","\nSalut, Grace !"],["out","\nSalut, Alan !"],
+  ["dim","\n\nProcessus terminé — code de sortie 0 (0,04 s)"]
+];
+function openConsole(mode){
+  const reg=makeWindow("console","rose — terminal",'<div class="term-body" id="termBody"></div>',620,400);
+  reg.timers.forEach(clearTimeout); reg.timers=[];
+  const body=reg.el.querySelector("#termBody"); body.innerHTML="";
+  const lines=mode==="bonjour"?BJ_LINES:INFO_LINES;
+  let pi=0,ci=0,span=null;
+  const cur=document.createElement("span"); cur.className="cursor"; body.appendChild(cur);
+  snd.nav();
+  (function step(){
+    if(!body.isConnected) return;
+    if(pi>=lines.length){ body.appendChild(cur); return }
+    const [cls,text]=lines[pi];
+    if(ci===0){ span=document.createElement("span"); span.className=cls; body.insertBefore(span,cur) }
+    const ch=text[ci++]; span.textContent+=ch;
+    if(ci>=text.length){ pi++; ci=0 }
+    body.scrollTop=body.scrollHeight;
+    reg.timers.push(setTimeout(step,ch==="\n"?170:(cls==="cmd"?55:14)));
+  })();
+}
+function openNotepad(){
+  const reg=makeWindow("notepad","bonjour.rose — Bloc-notes",
+    `<div class="np-menu"><span>Fichier</span><span>Édition</span><span>Format</span><span>Affichage</span></div>
+     <textarea class="np-area" id="npArea" spellcheck="false" aria-label="Source de bonjour.rose"></textarea>
+     <div class="np-status"><span id="npPos">Ln 1, Col 1</span><span>UTF-8</span><span>.rose → Rose.Program</span><span class="right">Rose v3.14</span></div>`,
+    600,440);
+  const ta=reg.el.querySelector("#npArea");
+  if(!ta.value) ta.value=BONJOUR_CODE;
+  const pos=reg.el.querySelector("#npPos");
+  const upd=()=>{ const upto=ta.value.slice(0,ta.selectionStart).split("\n");
+    pos.textContent=`Ln ${upto.length}, Col ${upto[upto.length-1].length+1}` };
+  ta.addEventListener("keyup",upd); ta.addEventListener("click",upd); ta.addEventListener("input",upd);
+  snd.nav();
+}
+
+/* ---------------- MENU DÉMARRER + À PROPOS ---------------- */
+$("startBtn").addEventListener("click",e=>{ e.stopPropagation(); snd.click(); $("startMenu").classList.toggle("show") });
+document.querySelectorAll(".sm-item").forEach(b=>b.addEventListener("click",()=>{
+  $("startMenu").classList.remove("show"); snd.click();
+  const act=b.dataset.act;
+  if(act==="installer") launchInstaller();
+  else if(act==="info") openConsole("info");
+  else if(act==="bonjour"){ revealBonjour(); openConsole("bonjour") }
+  else if(act==="about") openModal({ title:"À propos de Rose", wide:true,
+    body:`<div style="display:flex;gap:16px;align-items:center;margin-bottom:12px">
+      <svg viewBox="0 0 120 150" style="width:64px;height:80px;flex:none"><use href="#roseFull"/></svg>
+      <div><div style="font-family:var(--disp);font-size:26px;color:#fff">ROSE <span style="color:var(--green);font-size:14px">3.14.0</span></div>
+      <div style="font-size:12px">Le langage compilé en français qui se compile lui-même.</div></div></div>
+      <p>Conçu et implémenté par <b>Stef302</b> — moteur C++ sous licence <b>MIT</b>. Le calcul est exact, et le moteur ne se tait jamais : toute erreur nomme la variable et l'endroit.</p>
+      <p style="margin-top:8px">Auto-hébergement : lexer, analyseur, vérificateur et émetteur RIR <b>écrits en Rose</b> — 104 fichiers identiques par les trois voies. Prochain maillon : le traducteur RIR → C++.</p>
+      <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:12px">
+        <span class="dchip">46 TESTS DORÉS</span><span class="dchip">119 PARITÉS</span><span class="dchip">104 AUTO-HÉBERGÉS</span><span class="dchip">{ ROSE }</span>
+      </div>`,
+    actions:[{label:"Fermer",kind:"green"}] });
+}));
+
+/* ---------------- HORLOGE ---------------- */
+function clock(){
+  const d=new Date();
+  $("clockTime").textContent=d.toLocaleTimeString("fr-FR");
+  $("clockDate").textContent=d.toLocaleDateString("fr-FR",{weekday:"short",day:"numeric",month:"short"});
+}
+clock(); setInterval(clock,1000);
+
+/* ---------------- CLAVIER ---------------- */
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){
+    if(modalOpen) closeModal();
+    else if($("ctxMenu").classList.contains("show")) hideCtx();
+    else $("startMenu").classList.remove("show");
+    return;
+  }
+  if(e.key==="Enter"&&!modalOpen&&!wins.installer.min&&!$("winInstaller").classList.contains("closed")){
+    const tag=document.activeElement&&document.activeElement.tagName;
+    if(tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT"||tag==="BUTTON") return;
+    if(!footPrimary.disabled&&!footPrimary.classList.contains("hidden")) footPrimary.click();
+  }
+});
+
+/* ---------------- DÉMARRAGE ---------------- */
+goTo(0);
+setTimeout(()=>toast("<b>Mode utilisateur</b> — aucune élévation requise. Bienvenue dans l'installation de Rose."),900);
+</script>
+</body>
+</html>
