@@ -81,27 +81,117 @@ FunctionEnd
 
 ; ── PATH utilisateur : préfixe $INSTDIR\bin à l'installation, le retirer
 # à la désinstallation, puis prévenir l'explorateur (WM_SETTINGCHANGE). ──
+; ── cherche "Rose" dans $R0, renvoie "1" dans $R9 si trouvé ──
+Function StrContainsRose
+  StrCpy $R9 "0"
+  StrLen $R2 "$R0"
+  StrCpy $R4 0
+  sc_loop:
+    IntCmp $R4 $R2 sc_done 0 sc_done
+    StrCpy $R5 "$R0" 4 $R4
+    StrCmp $R5 "Rose" sc_found
+    IntOp $R4 $R4 + 1
+    Goto sc_loop
+  sc_found:
+    StrCpy $R9 "1"
+  sc_done:
+FunctionEnd
+
+Function un.StrContainsRose
+  StrCpy $R9 "0"
+  StrLen $R2 "$R0"
+  StrCpy $R4 0
+  un_sc_loop:
+    IntCmp $R4 $R2 un_sc_done 0 un_sc_done
+    StrCpy $R5 "$R0" 4 $R4
+    StrCmp $R5 "Rose" un_sc_found
+    IntOp $R4 $R4 + 1
+    Goto un_sc_loop
+  un_sc_found:
+    StrCpy $R9 "1"
+  un_sc_done:
+FunctionEnd
+
 Function AjoutPath
   ReadRegStr $R0 HKCU "Environment" "Path"
-  StrCpy $R1 "$BinDir;"
-  Call Enlever
-  StrCpy $R1 "$BinDir"
-  Call Enlever
-  StrCmp $R0 "" 0 avec_sep
+  ; Filtrer le PATH : retirer $BinDir et TOUT chemin contenant "Rose"
+  ; (anciennes installations / chemins résiduels) pour éviter les doublons
+  ; et les binaires obsolètes dans le PATH.
+  StrCpy $R5 ""
+  StrCpy $R6 ""
+  StrCmp $R0 "" done_filter
+  StrCpy $R0 "$R0;"
+  StrLen $R2 "$R0"
+  StrCpy $R4 0
+  filter_loop:
+    StrCmp $R4 $R2 filter_done
+    StrCpy $R7 "$R0" 1 $R4
+    StrCmp $R7 ";" handle_seg
+    StrCpy $R6 "$R6$R7"
+    IntOp $R4 $R4 + 1
+    Goto filter_loop
+  handle_seg:
+    ; $R6 = segment courant. Le garder s'il ne contient pas "Rose".
+    StrCpy $R0 "$R6"
+    Call StrContainsRose
+    StrCmp $R9 "1" skip_seg
+  keep_seg:
+    StrCmp $R6 "" skip_seg
+    StrCmp $R5 "" set_first2
+    StrCpy $R5 "$R5;$R6"
+    Goto skip_seg
+  set_first2:
+    StrCpy $R5 "$R6"
+  skip_seg:
+    StrCpy $R6 ""
+    IntOp $R4 $R4 + 1
+    Goto filter_loop
+  filter_done:
+    StrCpy $R0 "$R5"
+  done_filter:
+  StrCmp $R0 "" 0 avec_sep2
     WriteRegExpandStr HKCU "Environment" "Path" "$BinDir"
-    Goto diffuser
-  avec_sep:
+    Goto diffuser2
+  avec_sep2:
     WriteRegExpandStr HKCU "Environment" "Path" "$BinDir;$R0"
-  diffuser:
+  diffuser2:
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "UTF:Environment" /TIMEOUT=2000
 FunctionEnd
 
 Function un.RetraitPath
   ReadRegStr $R0 HKCU "Environment" "Path"
-  StrCpy $R1 "$BinDir;"
-  Call un.Enlever
-  StrCpy $R1 "$BinDir"
-  Call un.Enlever
+  ; retirer $BinDir et tous les chemins contenant "Rose"
+  StrCpy $R5 ""
+  StrCpy $R6 ""
+  StrCmp $R0 "" done_filter2
+  StrCpy $R0 "$R0;"
+  StrLen $R2 "$R0"
+  StrCpy $R4 0
+  filter_loop2:
+    StrCmp $R4 $R2 filter_done2
+    StrCpy $R7 "$R0" 1 $R4
+    StrCmp $R7 ";" handle_seg2
+    StrCpy $R6 "$R6$R7"
+    IntOp $R4 $R4 + 1
+    Goto filter_loop2
+  handle_seg2:
+    StrCpy $R0 "$R6"
+    Call un.StrContainsRose
+    StrCmp $R9 "1" skip_seg2
+  keep_seg2:
+    StrCmp $R6 "" skip_seg2
+    StrCmp $R5 "" set_first3
+    StrCpy $R5 "$R5;$R6"
+    Goto skip_seg2
+  set_first3:
+    StrCpy $R5 "$R6"
+  skip_seg2:
+    StrCpy $R6 ""
+    IntOp $R4 $R4 + 1
+    Goto filter_loop2
+  filter_done2:
+    StrCpy $R0 "$R5"
+  done_filter2:
   WriteRegExpandStr HKCU "Environment" "Path" "$R0"
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "UTF:Environment" /TIMEOUT=2000
 FunctionEnd
@@ -178,14 +268,16 @@ Section "Moteur Rose" SecMoteur
   StrCpy $BinDir "$INSTDIR\bin"
 
   CreateDirectory "$INSTDIR"
+  ; Nettoyer le dossier bin pour éviter les résidus (rose-20.exe, setup.ico, etc.)
+  RMDir /r "$INSTDIR\bin"
   CreateDirectory "$INSTDIR\bin"
   SetOutPath "$INSTDIR\bin"
-  File "staging\rose-20.exe"                  ; → rose.exe
+  File "staging\rose-20.exe"
   Rename "rose-20.exe" "${EXE_NAME}"
-  File "assets\rose.ico"                          ; icône des fichiers .rose
-  File "assets\\setup.ico"                          ; icône de l'exécutable Rose
+  File "assets\rose.ico"
+  File "assets\setup.ico"
   Rename "setup.ico" "rose_app.ico"
-  File /nonfatal "staging\LLVM-C.dll"             ; LLVM runtime (AOT/LLVM)
+  File /nonfatal "staging\LLVM-C.dll"
 
 
   SetOutPath "$INSTDIR"
