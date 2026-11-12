@@ -1,0 +1,133 @@
+# ── Morpion (Tic-Tac-Toe) en Rose ── exécution : rose morpion.rose
+# Joueur = X, IA = O. Entrez un numéro de case (1..9).
+
+# état du plateau : 0 vide, 1 = X, 2 = O
+$c0 = 0
+$c1 = 0
+$c2 = 0
+$c3 = 0
+$c4 = 0
+$c5 = 0
+$c6 = 0
+$c7 = 0
+$c8 = 0
+
+fn symbole(n: entier) -> chaine {
+    si (n == 1) { retour "X" }
+    si (n == 2) { retour "O" }
+    retour " "
+}
+
+fn afficher_plateau() {
+    >> " " + symbole($c0) + " | " + symbole($c1) + " | " + symbole($c2)
+    >> "---+---+---"
+    >> " " + symbole($c3) + " | " + symbole($c4) + " | " + symbole($c5)
+    >> "---+---+---"
+    >> " " + symbole($c6) + " | " + symbole($c7) + " | " + symbole($c8)
+}
+
+# retourne 1 si le joueur donné (1 ou 2) a gagné
+fn gagne(j: entier) -> booleen {
+    si ($c0 == j et $c1 == j et $c2 == j) { retour vrai }
+    si ($c3 == j et $c4 == j et $c5 == j) { retour vrai }
+    si ($c6 == j et $c7 == j et $c8 == j) { retour vrai }
+    si ($c0 == j et $c3 == j et $c6 == j) { retour vrai }
+    si ($c1 == j et $c4 == j et $c7 == j) { retour vrai }
+    si ($c2 == j et $c5 == j et $c8 == j) { retour vrai }
+    si ($c0 == j et $c4 == j et $c8 == j) { retour vrai }
+    si ($c2 == j et $c4 == j et $c6 == j) { retour vrai }
+    retour faux
+}
+
+fn plein() -> booleen {
+    si ($c0 != 0 et $c1 != 0 et $c2 != 0 et $c3 != 0 et $c4 != 0 et $c5 != 0 et $c6 != 0 et $c7 != 0 et $c8 != 0) { retour vrai }
+    retour faux
+}
+
+# l'IA choisit une case (renvoie 0..8) : centre, puis coins, puis bords
+fn ia_choix() -> entier {
+    si ($c4 == 0) { retour 4 }
+    si ($c0 == 0) { retour 0 }
+    si ($c2 == 0) { retour 2 }
+    si ($c6 == 0) { retour 6 }
+    si ($c8 == 0) { retour 8 }
+    si ($c1 == 0) { retour 1 }
+    si ($c3 == 0) { retour 3 }
+    si ($c5 == 0) { retour 5 }
+    si ($c7 == 0) { retour 7 }
+    retour -1
+}
+
+# placer un pion pour le joueur j à la case idx (0..8)
+fn placer(idx: entier, j: entier) {
+    si (idx == 0) { $c0 = j }
+    si (idx == 1) { $c1 = j }
+    si (idx == 2) { $c2 = j }
+    si (idx == 3) { $c3 = j }
+    si (idx == 4) { $c4 = j }
+    si (idx == 5) { $c5 = j }
+    si (idx == 6) { $c6 = j }
+    si (idx == 7) { $c7 = j }
+    si (idx == 8) { $c8 = j }
+}
+
+fn case_libre(idx: entier) -> booleen {
+    si (idx == 0) { si ($c0 == 0) { retour vrai } }
+    si (idx == 1) { si ($c1 == 0) { retour vrai } }
+    si (idx == 2) { si ($c2 == 0) { retour vrai } }
+    si (idx == 3) { si ($c3 == 0) { retour vrai } }
+    si (idx == 4) { si ($c4 == 0) { retour vrai } }
+    si (idx == 5) { si ($c5 == 0) { retour vrai } }
+    si (idx == 6) { si ($c6 == 0) { retour vrai } }
+    si (idx == 7) { si ($c7 == 0) { retour vrai } }
+    si (idx == 8) { si ($c8 == 0) { retour vrai } }
+    retour faux
+}
+
+# ── boucle de jeu ──
+>> "Morpion Rose — vous êtes X, l'IA est O."
+>> "Entrez un numéro de case (1..9)."
+
+$fini = faux
+tant_que (non $fini) {
+    afficher_plateau()
+    >> "Votre coup (1..9) :"
+    $choix = 0
+    << $choix
+    $idx = $choix - 1
+    si ($idx < 0 ou $idx > 8) {
+        >> "Case invalide."
+    } sinon {
+        si (non case_libre($idx)) {
+            >> "Case déjà prise."
+        } sinon {
+            placer($idx, 1)
+            si (gagne(1)) {
+                afficher_plateau()
+                >> "Vous avez gagné !"
+                $fini = vrai
+            } sinon {
+                si (plein()) {
+                    afficher_plateau()
+                    >> "Match nul."
+                    $fini = vrai
+                } sinon {
+                    $coup_ia = ia_choix()
+                    placer($coup_ia, 2)
+                    si (gagne(2)) {
+                        afficher_plateau()
+                        >> "L'IA a gagné."
+                        $fini = vrai
+                    } sinon {
+                        si (plein()) {
+                            afficher_plateau()
+                            >> "Match nul."
+                            $fini = vrai
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+>> "Fin de la partie."
