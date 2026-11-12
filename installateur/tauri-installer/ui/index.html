@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Installation</title>
+    <link rel="stylesheet" href="theme.css">
+    <script defer src="installer.js"></script>
+  </head>
+  <body>
+    <main class="installer">
+      <header class="brand">
+        <div class="brand-mark" aria-hidden="true">✿</div>
+        <div>
+          <p class="eyebrow">ASSISTANT D'INSTALLATION</p>
+          <h1 id="product-name">Chargement…</h1>
+          <p id="product-version" class="muted"></p>
+        </div>
+      </header>
+
+      <section class="card" aria-labelledby="install-title">
+        <p class="eyebrow">ÉTAPE 1 SUR 1</p>
+        <h2 id="install-title">Choisir l'emplacement</h2>
+        <p class="muted">L'installation est effectuée dans votre profil utilisateur, sans droits administrateur.</p>
+
+        <label for="destination">Dossier d'installation</label>
+        <input id="destination" name="destination" type="text" spellcheck="false" autocomplete="off">
+        <p class="hint">Les fichiers existants portant le même nom seront remplacés.</p>
+
+        <div class="actions">
+          <button id="install" type="button" class="primary" disabled>Installer</button>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite">Préparation de l'installation…</p>
+      </section>
+
+      <footer>Installateur Windows x64 · aucun changement système sans votre choix</footer>
+    </main>
+  </body>
+</html>
