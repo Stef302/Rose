@@ -45,6 +45,7 @@ Usage :
   rose info                état du moteur
   rose console [fichier.rose]   console interactive (REPL) — tapez des commandes Rose
   rose repl [fichier.rose]      identique
+  rose install             installe Rose (64 bits, interface console)
 ";
 
 /* ── mode bundle : programme collé dans le moteur (miroir C++ rose.cpp:4344) ── */
@@ -221,6 +222,10 @@ fn main() {
         "console" | "repl" => {
             let fichier = if argv.len() >= 3 { Some(argv[2].as_str()) } else { None };
             console_mode(fichier, true);
+            return;
+        }
+        "install" => {
+            install_rose();
             return;
         }
         _ => {}
@@ -448,4 +453,299 @@ fn braces_balanced(s: &str) -> bool {
         }
     }
     depth <= 0
+}
+
+/* ── installeur intégré (rose install) ──────────────────────────────── */
+/* 64 bits natif, interface console colorée, pas de NSIS. */
+
+fn couleur(s: &str, code: &str) -> String {
+    format!("\x1b[{}m{}\x1b[0m", code, s)
+}
+
+fn install_rose() {
+    use std::io::{self, Write, BufRead};
+
+    #[cfg(windows)]
+    {
+        // ── Windows ──
+        println!("{}", couleur("╔══════════════════════════════════════╗", "36"));
+        println!("{}", couleur("║   Installeur Rose — Windows x64      ║", "36"));
+        println!("{}", couleur("╚══════════════════════════════════════╝", "36"));
+        println!();
+
+        // détecter l'installation existante
+        let reg_out = std::process::Command::new("reg")
+            .args(["query", "HKCU\\Software\\Rose", "/v", "InstallDir"])
+            .output();
+        let mut existant: Option<String> = None;
+        if let Ok(o) = reg_out {
+            let txt = String::from_utf8_lossy(&o.stdout);
+            for line in txt.lines() {
+                if line.contains("InstallDir") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        existant = Some(parts[2..].join(" "));
+                    }
+                }
+            }
+        }
+        // vérifier que le dossier existe
+        if let Some(ref p) = existant {
+            if !std::path::Path::new(p).join("bin\\rose.exe").exists() {
+                existant = None;
+            }
+        }
+
+        let instdir = if let Some(ref p) = existant {
+            println!("{} {}", couleur("Installation existante détectée :", "33"), p);
+            println!();
+            println!("  1) Réinstaller (écraser tous les fichiers)");
+            println!("  2) Réparer (réinstaller les fichiers manquants)");
+            println!("  3) Désinstaller");
+            println!("  4) Annuler");
+            print!("Choix [1-4] : ");
+            let _ = io::stdout().flush();
+            let mut buf = String::new();
+            let _ = io::stdin().lock().read_line(&mut buf);
+            let choix = buf.trim();
+            match choix {
+                "3" => {
+                    // désinstaller
+                    let _ = std::process::Command::new("reg")
+                        .args(["delete", "HKCU\\Software\\Rose", "/f"]).status();
+                    let _ = std::process::Command::new("reg")
+                        .args(["delete", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Rose", "/f"]).status();
+                    // retirer du PATH
+                    if let Ok(o) = std::process::Command::new("reg")
+                        .args(["query", "HKCU\\Environment", "/v", "Path"]).output() {
+                        let txt = String::from_utf8_lossy(&o.stdout);
+                        for line in txt.lines() {
+                            if line.contains("Path") && line.contains("REG_") {
+                                let parts: Vec<&str> = line.split_whitespace().collect();
+                                if parts.len() >= 3 {
+                                    let pathval = parts[2..].join(" ");
+                                    // filtrer les chemins contenant Rose
+                                    let newpath: Vec<&str> = pathval.split(';')
+                                        .filter(|s| !s.to_lowercase().contains("rose"))
+                                        .collect();
+                                    let _ = std::process::Command::new("reg")
+                                        .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
+                                               "/d", &newpath.join(";"), "/f"]).status();
+                                }
+                            }
+                        }
+                    }
+                    if let Some(p) = existant {
+                        let _ = std::fs::remove_dir_all(&p);
+                    }
+                    println!("{}", couleur("Rose désinstallé.", "32"));
+                    return;
+                }
+                "4" => { println!("Annulé."); return; }
+                _ => p.clone(), // réinstaller ou réparer : même chose
+            }
+        } else {
+            let defaut = format!("{}\\AppData\\Local\\Programs\\Rose", std::env::var("USERPROFILE").unwrap_or_default());
+            println!("Installation dans : {}", defaut);
+            defaut
+        };
+
+        let bindir = format!("{}\\bin", instdir);
+        let _ = std::fs::create_dir_all(&bindir);
+
+        // copier le binaire courant
+        if let Ok(exe) = std::env::current_exe() {
+            let dest = format!("{}\\rose.exe", bindir);
+            if std::fs::copy(&exe, &dest).is_ok() {
+                println!("{} rose.exe", couleur("✓", "32"));
+            } else {
+                eprintln!("{}", couleur("✗ impossible de copier rose.exe", "31"));
+            }
+        }
+
+        // icônes (à côté du binaire si disponibles)
+        let base = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        for (src_name, dst_name) in [("rose.ico", "rose.ico"), ("setup.ico", "rose_app.ico")] {
+            if let Some(ref b) = base {
+                let src = b.join(src_name);
+                if src.exists() {
+                    let dst = format!("{}\\{}", bindir, dst_name);
+                    let _ = std::fs::copy(&src, &dst);
+                    println!("{} {}", couleur("✓", "32"), dst_name);
+                }
+            }
+        }
+
+        // registre
+        let _ = std::process::Command::new("reg")
+            .args(["add", "HKCU\\Software\\Rose", "/v", "InstallDir", "/t", "REG_SZ", "/d", &instdir, "/f"]).status();
+        let _ = std::process::Command::new("reg")
+            .args(["add", "HKCU\\Software\\Rose", "/v", "Version", "/t", "REG_SZ", "/d", "5.10.1", "/f"]).status();
+
+        // PATH
+        if let Ok(o) = std::process::Command::new("reg")
+            .args(["query", "HKCU\\Environment", "/v", "Path"]).output() {
+            let txt = String::from_utf8_lossy(&o.stdout);
+            let mut pathval = String::new();
+            for line in txt.lines() {
+                if line.contains("Path") && line.contains("REG_") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 3 { pathval = parts[2..].join(" "); }
+                }
+            }
+            // filtrer les chemins Rose
+            let newpath: Vec<&str> = pathval.split(';')
+                .filter(|s| !s.to_lowercase().contains("rose"))
+                .collect();
+            let finalpath = if newpath.is_empty() {
+                bindir.clone()
+            } else {
+                format!("{};{}", bindir, newpath.join(";"))
+            };
+            let _ = std::process::Command::new("reg")
+                .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", &finalpath, "/f"]).status();
+            println!("{}", couleur("✓ PATH mis à jour", "32"));
+        }
+
+        // association .rose
+        let _ = std::process::Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ", "/d", "Rose.File", "/f"]).status();
+        let _ = std::process::Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\Rose.File", "/ve", "/t", "REG_SZ", "/d", "Programme Rose", "/f"]).status();
+        let _ = std::process::Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\Rose.File\\DefaultIcon", "/ve", "/t", "REG_SZ",
+                   "/d", &format!("{}\\rose.ico,0", bindir), "/f"]).status();
+        let _ = std::process::Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve", "/t", "REG_SZ",
+                   "/d", &format!("\"{}\\rose.exe\" \"%1\"", bindir), "/f"]).status();
+
+        println!();
+        println!("{}", couleur("Rose 5.10.1 installé avec succès !", "32"));
+        println!("  Dossier : {}", instdir);
+        println!("  Binaire : {}\\rose.exe", bindir);
+        println!();
+        println!("Ouvrez un nouveau terminal et tapez : rose --version");
+    }
+
+    #[cfg(unix)]
+    {
+        // ── Linux / macOS ──
+        println!("{}", couleur("╔══════════════════════════════════════╗", "36"));
+        println!("{}", couleur("║   Installeur Rose — Linux            ║", "36"));
+        println!("{}", couleur("╚══════════════════════════════════════╝", "36"));
+        println!();
+
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut prefix = String::new();
+        for p in ["/usr/local", &format!("{}/.local", home), "/opt/rose"] {
+            if std::path::Path::new(&format!("{}/bin/rose", p)).exists() {
+                prefix = p.to_string();
+                break;
+            }
+        }
+        if !prefix.is_empty() {
+            println!("{} {}", couleur("Installation existante :", "33"), prefix);
+            println!();
+            println!("  1) Réinstaller (écraser)");
+            println!("  2) Réparer (fichiers manquants)");
+            println!("  3) Désinstaller");
+            println!("  4) Annuler");
+            print!("Choix [1-4] : ");
+            let _ = io::stdout().flush();
+            let mut buf = String::new();
+            let _ = io::stdin().lock().read_line(&mut buf);
+            match buf.trim() {
+                "3" => {
+                    let _ = std::fs::remove_file(format!("{}/bin/rose", prefix));
+                    let _ = std::fs::remove_file(format!("{}/bin/rose-aot", prefix));
+                    for f in [&format!("{}/.bashrc", home), &format!("{}/.profile", home), &format!("{}/.zshrc", home)] {
+                        if std::path::Path::new(f).exists() {
+                            let content = std::fs::read_to_string(f).unwrap_or_default();
+                            let filtered: Vec<&str> = content.lines().filter(|l| !l.contains(&format!("{}/bin", prefix))).collect();
+                            let _ = std::fs::write(f, filtered.join("\n"));
+                        }
+                    }
+                    println!("{}", couleur("Rose désinstallé.", "32"));
+                    return;
+                }
+                "4" => { println!("Annulé."); return; }
+                _ => {}
+            }
+        } else {
+            if is_root() || std::path::Path::new("/usr/local/bin").exists() {
+                prefix = "/usr/local".to_string();
+            } else {
+                prefix = format!("{}/.local", home);
+            }
+            println!("Installation dans : {}", prefix);
+        }
+
+        let bindir = format!("{}/bin", prefix);
+        let _ = std::fs::create_dir_all(&bindir);
+        // nettoyer les anciens
+        let _ = std::fs::remove_file(format!("{}/rose", bindir));
+        let _ = std::fs::remove_file(format!("{}/rose-20", bindir));
+        let _ = std::fs::remove_file(format!("{}/rose-aot", bindir));
+
+        if let Ok(exe) = std::env::current_exe() {
+            if std::fs::copy(&exe, format!("{}/rose", bindir)).is_ok() {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(format!("{}/rose", bindir), std::fs::Permissions::from_mode(0o755));
+                println!("{} rose", couleur("✓", "32"));
+            }
+        }
+        // rose-aot à côté si présent
+        if let Some(parent) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+            let aot = parent.join("rose-aot");
+            if aot.exists() {
+                let _ = std::fs::copy(&aot, format!("{}/rose-aot", bindir));
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(format!("{}/rose-aot", bindir), std::fs::Permissions::from_mode(0o755));
+                }
+                println!("{} rose-aot", couleur("✓", "32"));
+            }
+        }
+
+        // PATH
+        let path_entry = format!("export PATH=\"{}/bin:$PATH\"", prefix);
+        for f in [&format!("{}/.bashrc", home), &format!("{}/.profile", home)] {
+            if std::path::Path::new(f).exists() {
+                let content = std::fs::read_to_string(f).unwrap_or_default();
+                if !content.contains(&format!("{}/bin", prefix)) {
+                    let _ = std::fs::write(f, format!("{}\n{}", content, path_entry));
+                }
+            }
+        }
+        println!("{}", couleur("✓ PATH mis à jour", "32"));
+
+        // type MIME
+        let mime_dir = format!("{}/.local/share/mime/packages", home);
+        let _ = std::fs::create_dir_all(&mime_dir);
+        let mime_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="text/x-rose">
+    <comment>Rose source file</comment>
+    <glob pattern="*.rose"/>
+  </mime-type>
+</mime-info>"#;
+        let _ = std::fs::write(format!("{}/rose.xml", mime_dir), mime_xml);
+        let _ = std::process::Command::new("xdg-mime").arg("install").arg(format!("{}/rose.xml", mime_dir)).status();
+        let _ = std::process::Command::new("update-mime-database").arg(format!("{}/.local/share/mime", home)).status();
+
+        println!();
+        println!("{}", couleur("Rose 5.10.1 installé avec succès !", "32"));
+        println!("  Dossier : {}", prefix);
+        println!("  Binaire : {}/bin/rose", prefix);
+        println!();
+        println!("Ouvrez un nouveau terminal et tapez : rose --version");
+    }
+}
+
+fn is_root() -> bool {
+    #[cfg(unix)]
+    { unsafe { libc::getuid() == 0 } }
+    #[cfg(not(unix))]
+    { false }
 }
