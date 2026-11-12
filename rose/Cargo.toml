@@ -23,49 +23,6 @@ name = "rose-aot"
 path = "src/bin/rose-aot.rs"
 required-features = ["native"]
 
-# Installeur graphique Windows x64 (interface Win32 maison). La feature
-# « setup » exige les fichiers embarqués produits par
-# installateur/build-setup-windows.sh (src/bin/rose-embedded.exe, etc.).
-[[bin]]
-name = "rose-setup"
-path = "src/bin/rose-setup.rs"
-required-features = ["setup"]
-
-[dependencies]
-libc = "0.2"
-num-bigint = "0.4"
-num-integer = "0.1"
-num-rational = "0.4"
-num-traits = "0.2"
-inkwell = { version = "0.7", optional = true, features = ["llvm18-1-prefer-dynamic", "target-aarch64", "target-x86", "no-libffi-linking"] }
-
-# Cranelift (JIT natif) n'est PAS disponible en WebAssembly : le JIT émet du
-# code machine natif, qu'un module WASM ne peut pas contenir. La dépendance
-# est donc conditionnée à la cible ; en WASM, `src/lib.rs` installe un shim
-# `jit` d'API identique (exécution purement interprétée).
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
-
-[build-dependencies]
-cc = "1.0"
-
-[features]
-# Le binaire par défaut est LÉGER : pas de LLVM, pas de libLLVM.so au
-# démarrage (5 ms de moins à chaque lancement) et 4,8 Mo au lieu de 5,2 Mo.
-# La chaîne AOT (commandes `rose llvm` / `orc` / `link`) exige :
-#     cargo build --release --features llvm
-default = ["native"]
-# « native » : le binaire natif (moteur + JIT Cranelift). Le build WASM se
-# fait avec --no-default-features : les binaires natifs sont alors ignorés
-# (required-features) et le module `jit` est remplacé par son shim.
-native = []
-# « wasm » : marqueur documentaire — la compilation WebAssembly n'exige
-# aucune feature supplémentaire (le shim JIT est choisi par la cible).
-wasm = []
-# « setup » : installeur graphique rose-setup (Windows x64). Active
-# l'inclusion des fichiers embarqués (moteur + icônes) et la dépendance
-# WebView native (wry + tao).
-setup = []
 
 llvm = ["dep:inkwell"]
 
