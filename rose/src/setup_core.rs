@@ -349,36 +349,43 @@ fn http_telecharger(url: &str, dest: &std::path::Path) -> bool {
     false
 }
 
-/// Cherche la dernière release publiée sur GitHub (API publique, sans jeton).
-pub fn chercher_release() -> Option<Release> {
-    let json = http_get("https://api.github.com/repos/Stef302/Rose/releases/latest")?;
-    // tag_name
-    let tag = extraire_valeur_json(&json, "\"tag_name\"");
-    let tag = tag.trim_start_matches('"').trim_end_matches('"').to_string();
-    if tag.is_empty() { return None; }
-    // browser_download_url
-    let mut assets = Vec::new();
-    let mut reste = json.as_str();
-    let cle = "browser_download_url";
-    while let Some(i) = reste.find(cle) {
-        // après la clé : on saute jusqu'au « : » puis on lit la valeur entre
-        // guillemets (« browser_download_url » finit lui-même par un guillemet,
-        // il ne faut donc pas le prendre pour le début de la valeur).
-        let apres_cle = &reste[i + cle.len()..];
-        let j = match apres_cle.find(':') { Some(j) => j, None => break };
-        let apres = &apres_cle[j + 1..];
-        let d = match apres.find('"') { Some(d) => d, None => break };
-        let debut = &apres[d + 1..];
-        let k = match debut.find('"') { Some(k) => k, None => break };
-        let url = debut[..k].to_string();
-        // le nom de l'asset est le dernier segment de l'URL
-        let nom = url.rsplit('/').next().unwrap_or("").to_string();
-        if !nom.is_empty() && !assets.iter().any(|(n, _)| *n == nom) {
-            assets.push((nom, url));
-        }
-        reste = &apres[d + 1 + k..];
-    }
+/// URL de base du miroir des artefacts (site de Rose).
+/// On évite l'API GitHub (limites de rate, besoin de jeton) : les fichiers
+/// sont servis par GitHub Pages / raw.githubusercontent.com.
+pub fn url_base_site() -> &'static str {
+    "https://raw.githubusercontent.com/Stef302/Rose/main/docs/telechargements"
+}
+
+/// URL de base secondaire (site GitHub Pages) — repli.
+pub fn url_base_pages() -> &'static str {
+    "https://stef302.github.io/Rose/telechargements"
+}
+
+/// Cherche la dernière version publiée sur le SITE de Rose (pas GitHub).
+/// Lit le fichier VERSION (un tag « v5.12.0 ») et construit l'URL de chaque
+/// artefact à partir de l'URL de base du site.
+pub fn chercher_version_site() -> Option<Release> {
+    let url = format!("{}/VERSION", url_base_site());
+    let tag = http_get(&url)?;
+    let tag = tag.trim().to_string();
+    if tag.is_empty() || !tag.starts_with('v') { return None; }
     let version = tag.trim_start_matches('v').to_string();
+
+    // construire la liste des assets connus pour cette version
+    let mut assets = Vec::new();
+    let base = url_base_site();
+    let mut noms = Vec::new();
+    #[cfg(target_os = "windows")]
+    { noms.push(format!("Rose-Setup-{}.exe", version)); }
+    #[cfg(target_os = "linux")]
+    {
+        if cfg!(target_arch = "aarch64") { noms.push("rose-aarch64-linux".to_string()); }
+        else { noms.push("rose-x86_64-linux".to_string()); }
+    }
+    noms.push("SHA256SUMS".to_string());
+    for nom in noms {
+        assets.push((nom.clone(), format!("{}/{}", base, nom)));
+    }
     Some(Release { tag, version, assets })
 }
 
@@ -425,11 +432,36 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
     let installée = version_installee(prefixe).unwrap_or_else(|| "0".to_string());
     j.push(format!("Version installée : {}", installée));
 
-    let release = match chercher_release() {
+    let release = match chercher_version_site() {
         Some(r) => r,
         None => {
-            j.push("✗ impossible de joindre GitHub (réseau ?)".to_string());
-            return j;
+            // repli : site GitHub Pages
+            let url = format!("{}/VERSION", url_base_pages());
+            match http_get(&url) {
+                Some(t) => {
+                    let tag = t.trim().to_string();
+                    if tag.is_empty() || !tag.starts_with('v') {
+                        j.push("✗ impossible de joindre le site de Rose (réseau ?)".to_string());
+                        return j;
+                    }
+                    let version = tag.trim_start_matches('v').to_string();
+                    let mut assets = Vec::new();
+                    let base = url_base_pages();
+                    #[cfg(target_os = "windows")]
+                    { assets.push((format!("Rose-Setup-{}.exe", version), format!("{}/Rose-Setup-{}.exe", base, version))); }
+                    #[cfg(target_os = "linux")]
+                    {
+                        let nom = if cfg!(target_arch = "aarch64") { "rose-aarch64-linux" } else { "rose-x86_64-linux" };
+                        assets.push((nom.to_string(), format!("{}/{}", base, nom)));
+                    }
+                    assets.push(("SHA256SUMS".to_string(), format!("{}/SHA256SUMS", base)));
+                    Release { tag, version, assets }
+                }
+                None => {
+                    j.push("✗ impossible de joindre le site de Rose (réseau ?)".to_string());
+                    return j;
+                }
+            }
         }
     };
     j.push(format!("Dernière release : {}", release.tag));
@@ -494,17 +526,21 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
     // application
     #[cfg(windows)]
     {
-        // on installe le nouveau moteur en remplaçant le binaire
-        let dest = PathBuf::from(prefixe).join("bin").join("rose.exe");
-        let _ = std::fs::remove_file(&dest);
-        if std::fs::copy(&fichier, &dest).is_ok() {
-            j.push(format!("✓ {} mis à jour", dest.display()));
+        // Sur Windows, on ne peut pas remplacer un .exe en cours
+        // d'exécution : on télécharge le nouvel installeur graphique et on
+        // le lance (il détectera l'installation existante et proposera de
+        // réinstaller). L'installeur embarque déjà le moteur + les icônes.
+        if let Some((n, url)) = release.assets.iter().find(|(n, _)| n.starts_with("Rose-Setup") && n.ends_with(".exe")).cloned() {
+            let dest = tmp.join(&n);
+            j.push(format!("Téléchargement de l'installeur : {}", n));
+            if http_telecharger(&url, &dest) {
+                j.push("✓ Installeur téléchargé — lancement…".to_string());
+                let _ = std::process::Command::new(&dest).spawn();
+            } else {
+                j.push("✗ téléchargement de l'installeur impossible".to_string());
+            }
         } else {
-            j.push("✗ remplacement impossible (fermez les terminaux Rose)".to_string());
-        }
-        // on propose aussi le nouvel installeur
-        if let Some((n, _)) = release.assets.iter().find(|(n, _)| n.starts_with("Rose-Setup") && n.ends_with(".exe")) {
-            let _ = std::fs::copy(&fichier, tmp.join(n));
+            j.push("✗ aucun installeur dans la release".to_string());
         }
     }
     #[cfg(not(windows))]

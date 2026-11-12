@@ -1,1 +1,1 @@
-9bfb2b71fea851a448cc649a83f7f93f6b75381277df85162ae036bd8244ff5f  Rose-Setup-5.12.0.exe
+db9d4f331bbabc5c69bedfae2f7aaabb904c5362aaf5c2aeb69bd69378bda36c  Rose-Setup-5.12.0.exe
