@@ -359,10 +359,10 @@ fn console_mode(fichier: Option<&str>, exec_initial: bool) {
                     if parts.len() < 2 { eprintln!("rose: :type <expr>"); continue; }
                     let expr = parts[1].trim();
                     let src = if buffer.is_empty() {
-                        format!(">> type_de({})", expr)
+                        format!(">> type({})", expr)
                     } else {
                         format!("{}
->> type_de({})", buffer.join("\n"), expr)
+>> type({})", buffer.join("\n"), expr)
                     };
                     let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
                         .spawn(move || crate::interp::executer_source(&src, Vec::new()));

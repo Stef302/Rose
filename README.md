@@ -393,7 +393,7 @@ formule exacte en LaTeX et une approximation `≈` :
 |---|---|
 | Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
 | Exact | `pi(n)` `e(n)` `phi(n)` `racine(n)` `fraction(a,b)` |
-| Types | `type_de(x)` / `type(x)` → chaîne ("entier", "flottant", …) |
+| Types | `type(x)` → chaîne ("entier", "flottant", …) |
 | Complexes | `re(z)` `im(z)` `conj(z)` `arg(z)` `modulus(z)` |
 | Chaînes | `longueur`(`len`) `ordre` `caractere` `sous_chaine`(`sub`) `concatener(liste)` |
 | Tables | `table` `map` `inserer` `cle_existe` `supprimer` `cles` `valeurs` |

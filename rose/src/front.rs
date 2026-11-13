@@ -70,7 +70,7 @@ pub fn promotion(a: &Ty, b: &Ty) -> Ty {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tk {
     Eof, Ident, Mot, Nombre, Flottant, Chaine,
-    Plus, Moins, Etoile, Slash, Pourcent, Chapeau, Bang, BangBang,
+    Plus, Moins, Etoile, Slash, Pourcent, Chapeau, Bang, BangBang, BangQuestion,
     DivEntier, Affect, LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Semi, Virgule, DeuxPts, DeuxPoints, FlecheD, FlecheG,
     PointDInterro,
@@ -203,6 +203,12 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             i += 2; col += 2;
             continue;
         }
+        // '!?' : opérateur factorielle approximative (Stirling)
+        if c == '!' && i + 1 < n && cps[i + 1] == '?' {
+            tk.push(Token { tk: Tk::BangQuestion, texte: "!?".into(), ligne, col });
+            i += 2; col += 2;
+            continue;
+        }
         if c == 'π' {
             tk.push(Token { tk: Tk::Mot, texte: "π".into(), ligne, col });
             i += 1; col += 1; continue;
@@ -292,6 +298,7 @@ pub enum Expr {
     Unaire { op: String, a: Box<Expr>, ligne: usize },
     Factorielle(Box<Expr>, usize),
     FactorielleRapide(Box<Expr>, usize),
+    FactorielleApprox(Box<Expr>, usize),
     Index { a: Box<Expr>, b: Box<Expr>, ligne: usize },
     ListeLit(Vec<Expr>, usize),
     TableLit(Vec<(String, Expr)>, usize),
@@ -337,7 +344,7 @@ pub fn deplier_i_rec(e: &mut Expr) {
             *e = Expr::Var("i".into(), *ligne);
         }
         Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => { deplier_i_rec(a); deplier_i_rec(b); }
-        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::FactorielleRapide(a, _) => deplier_i_rec(a),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::FactorielleRapide(a, _) | Expr::FactorielleApprox(a, _) => deplier_i_rec(a),
         Expr::ListeLit(v, _) => { for x in v { deplier_i_rec(x); } }
         Expr::Appel { args, .. } => { for x in args { deplier_i_rec(x); } }
         Expr::TableLit(v, _) => { for (_, x) in v { deplier_i_rec(x); } }
@@ -354,7 +361,7 @@ pub fn ligne_expr(e: &Expr) -> usize {
         Expr::ChaineLit(_, l) | Expr::BooleenLit(_, l) | Expr::Var(_, l) => *l,
         Expr::Appel { ligne, .. } | Expr::Binaire { ligne, .. } => *ligne,
         Expr::Unaire { ligne, .. } | Expr::Index { ligne, .. } => *ligne,
-        Expr::Factorielle(_, l) | Expr::FactorielleRapide(_, l) | Expr::ListeLit(_, l) => *l,
+        Expr::Factorielle(_, l) | Expr::FactorielleRapide(_, l) | Expr::FactorielleApprox(_, l) | Expr::ListeLit(_, l) => *l,
         Expr::TableLit(_, l) => *l,
     }
 }
@@ -437,6 +444,8 @@ EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "phi", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "factorielle_rapide", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "factorial_rapide", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "rapide", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "approx", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "factorial_approx", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "view", args: &["entier"], retour: "vide" },
     EntreeStd { nom: "__i", args: &[], retour: "complexe" },
@@ -995,13 +1004,22 @@ impl Parser {
     }
     fn factorielle_post(&mut self) -> Result<Expr, Err> {
         let mut g = self.unaire()?;
-        while self.est(&[Tk::Bang]) || self.est(&[Tk::BangBang]) {
-            let ligne = self.voir(0).ligne;
-            self.suivant();
-            if self.est(&[Tk::BangBang]) {
-                g = Expr::FactorielleRapide(Box::new(g), ligne);
-            } else {
+        loop {
+            let tok = self.voir(0).tk;
+            if tok == Tk::Bang {
+                let ligne = self.voir(0).ligne;
+                self.suivant();
                 g = Expr::Factorielle(Box::new(g), ligne);
+            } else if tok == Tk::BangBang {
+                let ligne = self.voir(0).ligne;
+                self.suivant();
+                g = Expr::FactorielleRapide(Box::new(g), ligne);
+            } else if tok == Tk::BangQuestion {
+                let ligne = self.voir(0).ligne;
+                self.suivant();
+                g = Expr::FactorielleApprox(Box::new(g), ligne);
+            } else {
+                break;
             }
         }
         Ok(g)
@@ -1656,6 +1674,13 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 return Err(fmt_err(&format!("factorielle_rapide attend un entier, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
             }
             Ok(Ty::simple(TyKind::Entier))
+        }
+        Expr::FactorielleApprox(a, ligne) => {
+            let t = expr_type(prog, a, env)?;
+            if t.n != TyKind::Entier {
+                return Err(fmt_err(&format!("factorial_approx attend un entier, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
+            }
+            Ok(Ty::simple(TyKind::Chaine))
         }
         Expr::Index { a, b, ligne } => {
             // miroir C++ NK::Index (rose.cpp:1409-1424)

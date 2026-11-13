@@ -300,7 +300,7 @@ fn expr_contient_lit_complexe(e: &Expr) -> bool {
     match e {
         Expr::LitComplexe { .. } => true,
         Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => expr_contient_lit_complexe(a) || expr_contient_lit_complexe(b),
-        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::FactorielleRapide(a, _) => expr_contient_lit_complexe(a),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::FactorielleRapide(a, _) | Expr::FactorielleApprox(a, _) => expr_contient_lit_complexe(a),
         Expr::ListeLit(v, _) => v.iter().any(expr_contient_lit_complexe),
         Expr::Appel { args, .. } => args.iter().any(expr_contient_lit_complexe),
         Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_contient_lit_complexe(x)),

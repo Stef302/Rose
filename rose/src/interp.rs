@@ -1165,6 +1165,11 @@ impl Interp {
                 let z = vers_z(&v);
                 Ok(Valeur::zg(factorielle_rapide(&z)))
             }
+            Expr::FactorielleApprox(a, _) => {
+                let v = self.eval(a)?;
+                let z = vers_z(&v);
+                Ok(Valeur::s(factorial_approx(&z)))
+            }
             Expr::Binaire { op, a, b, ligne } => {
                 crate::run::noter_ligne(*ligne);
                 self.binaire(op, a, b)
@@ -1770,7 +1775,9 @@ impl Interp {
             "factorielle" | "fact" => { let z = vers_z(&a[0]); Valeur::zg(factorielle(&z)) }
             "factorielle_rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
             "factorial_rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
+            "rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
             "factorial_approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
+            "approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
             "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
             "ppcm" | "lcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(ppcm(&x, &y)) }
