@@ -3153,7 +3153,7 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
 }
 
 pub fn version() -> String {
-    "Rose 0.1.0 — compilateur Rust + JIT Cranelift (sémantique du moteur C++)".to_string()
+    format!("Rose {} — compilateur Rust + JIT Cranelift (sémantique du moteur C++)", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn info() -> String {

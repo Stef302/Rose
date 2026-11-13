@@ -464,6 +464,29 @@ fn install_rose() {
     // « rose update --force » : retélécharge même si la version est à jour
     let force = std::env::args().any(|a| a == "--force" || a == "-f");
 
+    // Windows : mise à jour via Velopack (delta + rollback) — activation
+    // explicite : « rose update --velopack » ou ROSE_VELOPACK=1. Les builds
+    // installés par Velopack portent la variable VELOCABI (posée par le
+    // launcher) et basculent automatiquement.
+    #[cfg(windows)]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if velopack::is_update_launcher(&args) {
+            std::process::exit(velopack::run_update_launcher(&args));
+        }
+        let veut_velopack = std::env::var("ROSE_VELOPACK").is_ok()
+            || std::env::var("VELOCABI").is_ok()
+            || args.iter().any(|a| a == "--velopack");
+        if veut_velopack {
+            println!("Mise à jour Velopack…");
+            match velopack::check_and_update(true) {
+                Ok(Some(v)) => println!("Rose mis à jour en {v} — relancez « rose »."),
+                Ok(None) => println!("Rose est déjà à jour."),
+                Err(e) => eprintln!("Velopack : {e} — repli sur l'installeur classique."),
+            }
+        }
+    }
+
     println!("{}", couleur("╔══════════════════════════════════════╗", "36"));
     println!("{}", couleur("║   Rose — installation / mise à jour      ║", "36"));
     println!("{}", couleur("╚══════════════════════════════════════╝", "36"));
