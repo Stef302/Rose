@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::front::{Expr, Instr, Programme, Signature, TyKind};
+use num_bigint::BigInt;
 use crate::run::*;
 use crate::jit::{Compile, Jit};
 
@@ -1159,6 +1160,11 @@ impl Interp {
                 let z = vers_z(&v);
                 Ok(Valeur::zg(factorielle(&z)))
             }
+            Expr::FactorielleRapide(a, _) => {
+                let v = self.eval(a)?;
+                let z = vers_z(&v);
+                Ok(Valeur::zg(factorielle_rapide(&z)))
+            }
             Expr::Binaire { op, a, b, ligne } => {
                 crate::run::noter_ligne(*ligne);
                 self.binaire(op, a, b)
@@ -1762,6 +1768,8 @@ impl Interp {
                 Valeur::Vide
             }
             "factorielle" | "fact" => { let z = vers_z(&a[0]); Valeur::zg(factorielle(&z)) }
+            "factorielle_rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
+            "factorial_approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
             "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
             "ppcm" | "lcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(ppcm(&x, &y)) }
@@ -3136,7 +3144,7 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
 }
 
 pub fn version() -> String {
-    "Rose 5.12.0 — compilateur Rust + JIT Cranelift (sémantique du moteur C++)".to_string()
+    "Rose 0.1.0 — compilateur Rust + JIT Cranelift (sémantique du moteur C++)".to_string()
 }
 
 pub fn info() -> String {
@@ -3148,3 +3156,109 @@ pub fn info() -> String {
              interpréteur      : intégré (repli du JIT, mêmes sorties)\n  \
              compilation       : JIT à chaud des fonctions entiers/flottants/booléens\n", arch)
 }
+
+// ── Factorielle rapide (Chudnovsky-like / facteurs premiers) ────────────────
+// n! = ∏ p^e_p où e_p = Σ ⌊n/p^k⌋ (Légendre). Utilise un arbre de
+// multiplication équilibré pour les grands nombres.
+pub fn factorielle_rapide(n: &Gz) -> Gz {
+    if n.sgn() < 0 { erreur_runtime("factorial d'un négatif : impossible"); }
+    if !n.fits_i64() { erreur_runtime("factorial_rapide : n trop grand"); }
+    let nn = n.get_i64() as u64;
+    if nn <= 1 {
+        let r = Gz::neuf();
+        r.poser_u64(1);
+        return r;
+    }
+    if nn <= 1000 {
+        let mut r = Gz::neuf();
+        r.poser_u64(1);
+        for k in 2..=nn {
+            r.mul_u64(&r, k);
+        }
+        return r;
+    }
+    // Crible d'Ératosthène jusqu'à n
+    let mut est_premier = vec![true; (nn + 1) as usize];
+    est_premier[0] = false;
+    est_premier[1] = false;
+    let limite = (nn as f64).sqrt() as u64;
+    for p in 2..=limite {
+        if est_premier[p as usize] {
+            let mut multiple = p * p;
+            while multiple <= nn {
+                est_premier[multiple as usize] = false;
+                multiple += p;
+            }
+        }
+    }
+    // p^e_p pour chaque premier p ≤ n
+    let mut facteurs: Vec<Gz> = Vec::with_capacity(nn as usize / 10);
+    for p in 2..=nn {
+        if est_premier[p as usize] {
+            let mut e = 0u64;
+            let mut puissance = p;
+            while puissance <= nn {
+                e += nn / puissance;
+                if puissance > nn / p { break; }
+                puissance *= p;
+            }
+            if e > 0 {
+                let mut base = Gz::neuf();
+                base.poser_u64(p);
+                let mut pp = Gz::neuf();
+                pp.poser_u64(1);
+                let mut e_temp = e;
+                while e_temp > 0 {
+                    if e_temp & 1 == 1 {
+                        pp.mul(&pp, &base);
+                    }
+                    e_temp >>= 1;
+                    if e_temp > 0 {
+                        base.mul(&base, &base);
+                    }
+                }
+                facteurs.push(pp);
+            }
+        }
+    }
+    // Arbre de multiplication équilibré
+    fn arbre_mul(facteurs: &[Gz]) -> Gz {
+        match facteurs.len() {
+            0 => {
+                let r = Gz::neuf();
+                r.poser_u64(1);
+                r
+            }
+            1 => facteurs[0].clone(),
+            _ => {
+                let m = facteurs.len() / 2;
+                let g = arbre_mul(&facteurs[..m]);
+                let d = arbre_mul(&facteurs[m..]);
+                let r = Gz::neuf();
+                r.mul(&g, &d);
+                r
+            }
+        }
+    }
+    arbre_mul(&facteurs)
+}
+
+/// Formule de Stirling : n! ≈ √(2πn)·(n/e)^n
+/// Retourne une représentation compacte : mantisse × 10^exposant.
+pub fn factorial_approx(n: &Gz) -> String {
+    if n.sgn() < 0 { erreur_runtime("factorial d'un négatif : impossible"); }
+    if !n.fits_i64() { erreur_runtime("factorial_approx : n trop grand"); }
+    let nn = n.get_i64() as f64;
+    if nn <= 1.0 {
+        return "1".to_string();
+    }
+    // ln(n!) ≈ n·ln(n) - n + 0.5·ln(2πn)
+    let ln_nn_fact = nn * nn.ln() - nn + 0.5 * (2.0 * std::f64::consts::PI * nn).ln();
+    // log10(n!) = ln(n!) / ln(10)
+    let log10 = ln_nn_fact / std::f64::consts::LN_10;
+    let exposant = log10.floor() as i64;
+    let mantisse = 10.0_f64.powf(log10 - exposant as f64);
+    // Format : mantisse e exposant (ex: 2.846259e65657059)
+    format!("{:.6}e{}", mantisse, exposant)
+}
+

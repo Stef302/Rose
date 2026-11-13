@@ -17,6 +17,7 @@ pub struct Mpq { pub num: Mpz, pub den: Mpz }
 
 pub fn hors_plage() -> ! { erreur_runtime("entier hors plage"); }
 
+#[derive(Clone)]
 pub struct Gz(pub *mut Mpz);
 
 impl Gz {
@@ -26,7 +27,7 @@ impl Gz {
     pub fn de_i64(x: i64) -> Gz { Self::de_i128(x as i128) }
     pub fn de_u64(x: u64) -> Gz { Gz(Box::into_raw(Box::new(Mpz { v: BigInt::from(x) }))) }
     pub fn i128(&self) -> i128 { self.v().to_i128().unwrap_or(0) }
-    fn v(&self) -> BigInt { unsafe { (*self.0).v.clone() } }
+    pub fn v(&self) -> BigInt { unsafe { (*self.0).v.clone() } }
     pub fn set_v(&self, x: BigInt) { unsafe { (*self.0).v = x } }
 
     pub fn poser_i64(&self, x: i64) { self.set_v(BigInt::from(x)); }
