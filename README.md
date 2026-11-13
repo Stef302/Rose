@@ -531,9 +531,14 @@ PATH dans `~/.bashrc` / `~/.profile`, type MIME `.rose` enregistré.
 
 ---
 
-## 📜 Licence
+## 📜 Licence et gouvernance
 
-MIT — voir [LICENSE](LICENSE).
+- **Licence** : MIT — voir [LICENSE](LICENSE).
+- **Sécurité** : comment signaler une vulnérabilité, ce qui est garanti, la
+  chaîne de confiance des releases (SHA-256, Velopack) — voir [SECURITY.md](SECURITY.md).
+- **Contribuer** : environnement, règles de parité, style des PR — voir [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Documentation longue** : [wiki](https://github.com/Stef302/Rose/wiki) ·
+  [site](https://stef302.github.io/Rose/) · [releases](https://github.com/Stef302/Rose/releases).
 
 ---
 
