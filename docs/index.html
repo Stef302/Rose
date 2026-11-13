@@ -652,7 +652,7 @@ Salut, Alan !</pre>
           <li>Arithmétique exacte illimitée en Rust natif (num-bigint), sans dépendance GMP : entiers arbitraires, rationnels, IEEE-754 dominant.</li>
           <li>JIT taggé : entiers i64 avec promotion BigInt au débordement pour <code class="inline">*</code>, <code class="inline">+</code>, <code class="inline">-</code> ; bench global 0,109 s (vs 0,19 s C++).</li>
           <li>Windows x64 / Linux x64 / Linux arm64 ; installeur et tests C++ + Rust uniquement.</li>
-          <li>v3.14.x : front-end écrit en Rose (lexer, analyseur, vérificateur, émetteur RIR) — 104 fichiers, trois voies identiques.</li>
+          <li>front-end écrit en Rose (lexer, analyseur, vérificateur, émetteur RIR) — 104 fichiers, trois voies identiques.</li>
         </ul>
       </div>
       <div class="etat-col reste reveal">
@@ -685,7 +685,7 @@ Salut, Alan !</pre>
     <div class="overline reveal">EXÉCUTER SANS RIEN INSTALLER</div>
     <h2 class="reveal">Playground</h2>
     <div class="honest reveal">
-      <b>Moteur navigateur.</b> Cette page exécute un <b>sous-ensemble</b> de Rose v3.14, écrit en JavaScript :
+      <b>Moteur navigateur.</b> Cette page exécute un <b>sous-ensemble</b> de Rose, écrit en JavaScript :
       entiers exacts, rationnels, flottants, chaînes, listes, <code class="inline">si</code> /
       <code class="inline">tant_que</code> / <code class="inline">pour</code>, fonctions et récursion,
       bibliothèque standard de base. La console rend la sortie telle que l'écrirait le moteur.
@@ -772,7 +772,7 @@ Salut, Alan !</pre>
           <code class="inline">sinon</code>, <code class="inline">tant_que</code>, <code class="inline">pour</code>,
           <code class="inline">retour</code>, <code class="inline">vrai</code>, <code class="inline">faux</code> ;
           les variables portent un <code class="inline">$</code>. Les noms acceptent les lettres accentuées.</p>
-          <p>Le moteur de référence (Rust, v5.0, licence MIT) propose trois modes d'exécution —
+          <p>Le moteur (Rust v0.1.3, licence MIT) propose trois modes d'exécution —
           interprète, JIT, compilation native AOT — qui rendent la <b>même sortie, caractère par caractère</b> ;
           c'est vérifié par 119 tests de parité et des campagnes génératives.</p>
           <p>Deux promesses résument le projet : <b>le calcul est exact</b> (entiers arbitraires, rationnels sans
@@ -937,7 +937,7 @@ Bonjour, monde !</pre>
 
         <div class="doc-section" id="doc-biblio">
           <h3>Bibliothèque standard</h3>
-          <p>Sélection des fonctions du moteur v3.14 — les surlignées demandent le moteur installé.</p>
+          <p>Sélection des fonctions du moteur v0.1.3 — les surlignées demandent le moteur installé.</p>
           <table class="table">
             <tr><th>Fonction</th><th>Rôle</th></tr>
             <tr><td><code>longueur(x)</code></td><td>taille d'une chaîne, d'une liste, d'une table</td></tr>
@@ -988,7 +988,7 @@ Bonjour, monde !</pre>
     <h2 class="reveal">Le compilateur qui compile le compilateur</h2>
     <div class="cols">
       <div class="reveal">
-        <p>Le moteur de référence (Rust, v5.0) déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
+        <p>Le moteur (Rust v0.1.3) déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
         la vérification typographie les erreurs, l'émetteur produit la <b>représentation intermédiaire
         (RIR)</b>. Depuis la RIR, plusieurs départs : l'interprète exact, le JIT Cranelift (compilation à chaud),
         l'AOT LLVM (<code class="inline">rose llvm</code>), ou la transpilation C++ compilée par g++ — tous rendent
@@ -1023,7 +1023,7 @@ Bonjour, monde !</pre>
       </div>
       <div class="carte reveal">
         <div class="ico"><span class="ico-txt">⚙</span></div>
-        <h3>Moteur Rust (v5.0)</h3>
+        <h3>Moteur Rust (v0.1.3)</h3>
         <p>Le portage Rust est terminé : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM
         (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>).
         Parité parfaite avec le moteur C++ (54/54), 46/46 dorés, bench global 0,09 s (vs 0,19 s C++).
@@ -1344,7 +1344,7 @@ const searchData = [
   {t:'Auto-hébergement — le chantier', p:'projet'},
   {t:'Le Jardin des modules', p:'projet'},
   {t:'Créateurs', p:'createurs'},
-  {t:'Changelog v3.14.0', p:'changelog'},
+  {t:'Changelog v0.1.3 — le million !', p:'changelog'},
 ];
 function openSearch(){
   document.getElementById('searchOverlay').classList.add('open');
@@ -1443,7 +1443,7 @@ loop();
 
 <script>
 /* ══════════════════════════════════════════════════════════════════
-   Moteur navigateur — sous-ensemble de Rose v3.14.
+   Moteur navigateur — sous-ensemble de Rose v0.1.3.
    Miroir du moteur de référence : entiers exacts (BigInt), rationnels
    rendus en décimale périodique « 0.1[6] », flottants IEEE-754,
    variable typée par sa première affectation, erreurs nommées.
