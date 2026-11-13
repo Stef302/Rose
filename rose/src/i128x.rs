@@ -28,6 +28,7 @@ impl Gz {
     pub fn de_u64(x: u64) -> Gz { Gz(Box::into_raw(Box::new(Mpz { v: BigInt::from(x) }))) }
     pub fn i128(&self) -> i128 { self.v().to_i128().unwrap_or(0) }
     pub fn v(&self) -> BigInt { unsafe { (*self.0).v.clone() } }
+    pub fn clone_val(&self) -> Gz { let r = Gz::neuf(); r.set_v(self.v()); r }
     pub fn set_v(&self, x: BigInt) { unsafe { (*self.0).v = x } }
 
     pub fn poser_i64(&self, x: i64) { self.set_v(BigInt::from(x)); }

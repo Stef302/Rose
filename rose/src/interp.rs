@@ -1665,6 +1665,7 @@ impl Interp {
     fn stdlib_valeur(&mut self, nom: &str, a: &[Valeur]) -> Valeur {
         match nom {
             "afficher" => { afficher(&a[0]); Valeur::Vide }
+            "view" => { let s = chaine_de(&a[0]); view_grand_nombre(&s); Valeur::Vide }
             "saisir_entier" => self.lire_selon(TyKind::Entier),
             "saisir_flottant" => self.lire_selon(TyKind::Flottant),
             "time" => {
@@ -3237,7 +3238,7 @@ pub fn factorielle_rapide(n: &Gz) -> Gz {
                 r.poser_u64(1);
                 r
             }
-            1 => facteurs[0].clone(),
+            1 => facteurs[0].clone_val(),
             _ => {
                 let m = facteurs.len() / 2;
                 let g = arbre_mul(&facteurs[..m]);
