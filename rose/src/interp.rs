@@ -3158,12 +3158,13 @@ pub fn version() -> String {
 
 pub fn info() -> String {
     let arch = if cfg!(target_arch = "aarch64") { "ARM 64 bits" } else { "x86-64" };
-    format!("rose 5.12.0\n  \
+    format!("rose {}\n  \
              moteur            : Rust natif {} — JIT Cranelift + interpréteur exact\n  \
              maths exactes     : BigInt natif (num-bigint, illimité, zéro GMP)\n  \
              nombres           : entiers, rationnels, flottants, irrationnels (√n), complexes (a+bi)\n  \
              interpréteur      : intégré (repli du JIT, mêmes sorties)\n  \
-             compilation       : JIT à chaud des fonctions entiers/flottants/booléens\n", arch)
+             compilation       : JIT à chaud des fonctions entiers/flottants/booléens\n",
+             env!("CARGO_PKG_VERSION"), arch)
 }
 
 // ── Factorielle rapide (Chudnovsky-like / facteurs premiers) ────────────────
