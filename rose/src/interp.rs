@@ -1769,6 +1769,7 @@ impl Interp {
             }
             "factorielle" | "fact" => { let z = vers_z(&a[0]); Valeur::zg(factorielle(&z)) }
             "factorielle_rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
+            "factorial_rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
             "factorial_approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
             "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
