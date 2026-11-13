@@ -1405,3 +1405,130 @@ pub extern "C" fn rose_set_ret_tag(tag: i64) {
 pub extern "C" fn rose_get_ret_tag() -> i64 {
     unsafe { ROSE_RET_TAG }
 }
+
+// ── Viewer interactif pour nombres très grands (mode "nano/less") ──────────
+// Affiche un nombre par pages, avec navigation au clavier.
+
+use std::io::{self};
+
+/// Affiche un nombre décimal (sous forme de chaîne) de manière paginée.
+/// Contrôles :
+///   Espace / Entrée : page suivante
+///   q / Échap         : quitter
+///   b                 : page précédente
+///   h / gauche        : précédent (50 caractères)
+///   l / droite        : suivant (50 caractères)
+pub fn view_grand_nombre(s: &str) {
+    let s = s.trim();
+    if s.is_empty() {
+        println!("(vide)");
+        return;
+    }
+
+    let total_chars = s.chars().count();
+    let total_digits = s.chars().count();
+    println!("══════════════════════════════════════════════════════════════════════════════════");
+    println!("  Nombre : {} chiffres décimaux", total_digits);
+    println!("══════════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    if total_digits <= 2000 {
+        // Petit nombre : afficher directement
+        println!("{}", s);
+        println!();
+        println!("Appuyez sur Entrée pour continuer...");
+        let mut buf = String::new();
+        let _ = std::io::stdin().read_line(&mut buf);
+        return;
+    }
+
+    // Navigation paginée
+    let page_width = 70;
+    let page_lines = 20;
+    let chars_per_page = page_width * page_lines;
+    let mut pos: usize = 0;
+    let total = s.chars().count();
+
+    loop {
+        // Calculer la fenêtre courante
+        let mut idx = 0;
+        let start = pos;
+        let mut end = pos;
+        let mut count = 0;
+        for (i, c) in s.char_indices() {
+            if i >= pos {
+                count += 1;
+                if count >= chars_per_page {
+                    end = i + c.len_utf8();
+                    break;
+                }
+            }
+        }
+        if count == 0 || pos >= total {
+            end = total;
+        } else if end <= pos {
+            end = total;
+        }
+
+        // Afficher la page
+        print!("\x1b[2J\x1b[H"); // effacer l'écran et retourner en haut
+        println!("══════════════════════════════════════════════════════════════════════════════════");
+        println!("  ROSE VIEWER  —  {} chiffres  [{}/{} ({:.1}%)]", total_digits, pos + 1, total, (pos as f64 / total as f64) * 100.0);
+        println!("══════════════════════════════════════════════════════════════════════════════════");
+        println!();
+
+        let segment = &s[pos..end];
+        let mut col = 0;
+        for c in segment.chars() {
+            print!("{}", c);
+            col += 1;
+            if col >= page_width {
+                println!();
+                col = 0;
+            }
+        }
+        if col > 0 {
+            println!();
+        }
+
+        println!();
+        println!("══════════════════════════════════════════════════════════════════════════════════");
+        println!("  Contrôles : [Espace/Entrée] suivant   [b] précédent   [q] quitter   [flèches] défiler");
+        print!("  Position : {}/{}  >  ", pos + 1, total);
+        std::io::stdout().flush().unwrap();
+
+        // Lire une touche
+        let mut buf = String::new();
+        match std::io::stdin().read_line(&mut buf) {
+            Ok(_) => {
+                let cmd = buf.trim().to_lowercase();
+                match cmd.as_str() {
+                    "" | " " => {
+                        pos += chars_per_page;
+                        if pos >= total { pos = total; }
+                    }
+                    "q" | "quit" | "exit" => {
+                        println!();
+                        return;
+                    }
+                    "b" | "back" => {
+                        if pos >= chars_per_page {
+                            pos -= chars_per_page;
+                        } else {
+                            pos = 0;
+                        }
+                    }
+                    "h" | "gauche" | "left" => {
+                        if pos >= 50 { pos -= 50; } else { pos = 0; }
+                    }
+                    "l" | "droite" | "right" => {
+                        pos += 50;
+                        if pos > total { pos = total; }
+                    }
+                    _ => {}
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}

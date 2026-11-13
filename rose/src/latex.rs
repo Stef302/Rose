@@ -52,11 +52,11 @@ fn priorite(e: &Expr) -> u8 {
             "^" => P_PUISSANCE,
             _ => P_ADDITIF,
         },
-        // Le moins unaire et la factorielle « collent » comme une puissance :
-        // `(-a)^{b}` et `(a!)^{b}` doivent rester parenthésés pour que le
-        // LaTeX garde exactement le sens de l'AST (`-a^{b}` se lirait
-        // `-(a^{b})`).
-        Expr::Unaire { .. } | Expr::Factorielle(..) => P_PUISSANCE,
+        // Le moins unaire, la factorielle et la factorielle rapide « collent »
+        // comme une puissance : `(-a)^{b}`, `(a!)^{b}` et `(a!!)^{b}` doivent
+        // rester parenthésés pour que le LaTeX garde exactement le sens de
+        // l'AST.
+        Expr::Unaire { .. } | Expr::Factorielle(..) | Expr::FactorielleRapide(..) => P_PUISSANCE,
         Expr::Litteral { .. }
         | Expr::LitComplexe { .. }
         | Expr::ChaineLit(..)
@@ -138,7 +138,8 @@ fn expr_brut(e: &Expr) -> String {
         Expr::Binaire { op, a, b, .. } => binaire_latex(op, a, b),
         Expr::Unaire { op, a, .. } => unaire_latex(op, a),
         Expr::Factorielle(a, _) => format!("{}!", expr_avec_priorite(a, P_ATOME)),
-        Expr::Index { a, b, .. } => format!("{}_{{{}}}", expr_avec_priorite(a, P_ATOME), expr_brut(b)),
+        Expr::FactorielleRapide(a, _) => format!("{}!!", expr_avec_priorite(a, P_ATOME)),
+        Expr::Index { a, b, .. } => format!("{}_ {{{}}}", expr_avec_priorite(a, P_ATOME), expr_brut(b)),
         Expr::ListeLit(elems, _) => {
             let inner: Vec<String> = elems.iter().map(expr_latex).collect();
             format!("\\left[{} \\right]", inner.join(", "))
