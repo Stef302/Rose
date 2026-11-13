@@ -18,7 +18,7 @@ L'exemple vivant de toute la syntaxe : `rose/exemples/tour.rose`.
 
 ## Règle d'or : vérifier avec le moteur
 
-Le binaire de test est `rose/rose` (et sa copie `rose/rose-20`).
+Le binaire de test est `rose/rose` (et sa copie `rose-20`, un fichier à la racine).
 **Toujours tester chaque programme écrit** avant de le conclure :
 
 ```bash
@@ -32,8 +32,8 @@ Après une modification du moteur Rust (`rose/src/`) :
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
 cd rose && cargo build --release
-cp target/release/rose ../rose/rose && cp target/release/rose ../rose/rose-20
-cargo test --release                      # 52 tests attendus verts
+cp target/release/rose ../rose/rose && cp target/release/rose ../rose-20
+cargo test --release                      # tests attendus verts
 bash ../bench/suite/run_parite_jit.sh     # parité JIT ↔ interprète
 ```
 
@@ -122,11 +122,34 @@ l'utilisateur web)
 
 - `rose update` : installe / met à jour Rose (64 bits natif). Détecte une
   installation existante, propose réinstaller / réparer / désinstaller.
+- **Velopack** (Windows, recommandé) : `rose update --velopack` ou
+  `ROSE_VELOPACK=1` — deltas binaires + rollback automatique si la nouvelle
+  version casse. La chaîne de build est `installateur/tauri-installer/build.ps1`
+  (publish portable → packaging → `velopack pack --self-contained` →
+  `velopack local` pour tester). Publier en ligne : `velopack pack` +
+  `velopack push <artifact> --repository <url>`.
+  Velopack n'ayant pas d'installeur natif Linux, `rose update` simple reste
+  sur la voie artefacts (`docs/telechargements/` + SHA-256) sous Linux.
 - Windows : `Rose-Setup-<version>.exe` = binaire Rust `rose-setup` avec
   interface Win32 maison (bandeau rose, pétale, boutons GDI) — 64 bits natif,
   aucun droit admin, HKCU seulement.
 - Le script de build de l'installeur est `installateur/build-setup-windows.sh`
   (plus de NSIS). Le moteur `rose.exe` est EMBARQUÉ dans l'installeur.
+
+## Notation factorielle (v0.1.x)
+
+| Écriture | Sens | Sortie |
+|---|---|---|
+| `n!` | factorielle exacte (multi-cœur, facteurs premiers) | entier |
+| `n!!` | idem, voie rapide — `1000000!` en ~0,9 s | entier |
+| `n!?` | Stirling complet, série `1/12n − 1/360n³ + 1/1260n⁵` | chaîne `{:.6}e{}` |
+| `rapide(n)` / `factorielle_rapide(n)` | alias de `n!!` | entier |
+| `approx(n)` | alias de `n!?` | chaîne |
+| `view(x)` | visionneuse paginée façon nano (Espace / b / q) | — |
+| `type(x)` | nom du type (`entier`, `rationnel`, …) | chaine |
+
+Piège : le `#[derive(Clone)]` de `Gz` (i128x.rs, pointeur nu `*mut Mpz`) ne
+clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 
 ## Style
 

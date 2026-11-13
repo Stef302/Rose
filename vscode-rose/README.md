@@ -1,6 +1,6 @@
 # Rose Language Support for VS Code
 
-Prise en charge du langage **Rose** (v5.10) dans Visual Studio Code :
+Prise en charge du langage **Rose** (v0.1.3) dans Visual Studio Code :
 
 - coloration syntaxique complète (mots-clés, types, fonctions standard, opérateurs, chaînes, nombres, commentaires) ;
 - snippets pour les structures de contrôle, fonctions, tables, listes, FFI ;

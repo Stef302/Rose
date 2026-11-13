@@ -1,8 +1,8 @@
 {
   "name": "rose-language",
   "displayName": "Rose — langage de programmation en français",
-  "description": "Prise en charge complète du langage Rose (v5.10) : coloration syntaxique, snippets, icônes, ligatures, diagnostics, auto-complétion, navigation, formatage, et exécution.",
-  "version": "5.10.3",
+  "description": "Prise en charge complète du langage Rose (v0.1.3) : coloration syntaxique, snippets, icônes, ligatures, diagnostics, auto-complétion, navigation, formatage, et exécution.",
+  "version": "0.1.3",
   "publisher": "stef302",
   "author": "Stef_302",
   "license": "MIT",

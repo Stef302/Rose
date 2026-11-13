@@ -478,13 +478,14 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
 
   <div class="hero">
     <div>
-      <div class="overline">MOTEUR NATIF — V3.14</div>
+      <div class="overline">MOTEUR NATIF — V0.1.3</div>
       <h1>ROSE</h1>
       <p class="lead">
         Langage de programmation conçu en français : variables avec <span style="color:var(--vert)">$</span>,
         mots-clés <span class="k">si</span>, <span class="k">tant_que</span>, <span class="k">pour…de…vers</span>.
         L'arithmétique est exacte — entiers arbitraires et rationnels sans arrondi — et les erreurs nomment
-        la variable et la ligne. Surtout : le compilateur est réécrit <b>dans Rose</b>. Son lexer, son analyseur,
+        la variable et la ligne. <code class="inline">1000000!</code> en ~0,9 seconde, multi-cœur, zéro dépendance.
+        Surtout : le compilateur est réécrit <b>dans Rose</b>. Son lexer, son analyseur,
         son vérificateur et son émetteur tournent aujourd'hui dans Rose et rendent, octet par octet, le même
         résultat que le moteur de référence.
       </p>
@@ -494,10 +495,11 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
         <button class="btn btn-fantome" onclick="go('doc')">LIRE LA DOC</button>
       </div>
       <ul class="badges">
-        <li class="badge">v5.0.0</li>
+        <li class="badge">v0.1.3</li>
         <li class="badge">LICENCE MIT</li>
         <li class="badge">WINDOWS · LINUX</li>
-        <li class="badge">INTERPRÈTE · JIT · AOT</li>
+        <li class="badge">INTERPRÈTE · JIT · AOT · WASM</li>
+        <li class="badge">VELOPACK</li>
         <li class="badge">RIR × 3 VOIES</li>
       </ul>
     </div>
@@ -509,8 +511,8 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
   </div>
 
   <div class="stats">
-    <div class="stat reveal"><div class="stat-num">3.14</div><div class="stat-lbl">MOTEUR DE RÉFÉRENCE</div></div>
-    <div class="stat reveal"><div class="stat-num">46</div><div class="stat-lbl">TESTS DORÉS</div></div>
+    <div class="stat reveal"><div class="stat-num">0.1.3</div><div class="stat-lbl">MOTEUR RUST</div></div>
+    <div class="stat reveal"><div class="stat-num">0,9 s</div><div class="stat-lbl">POUR 1 000 000 ! (5 565 709 CHIFFRES)</div></div>
     <div class="stat reveal"><div class="stat-num">119</div><div class="stat-lbl">PARITÉS INTERPRÈTE ↔ COMPILÉ</div></div>
     <div class="stat reveal"><div class="stat-num">104</div><div class="stat-lbl">FICHIERS AUTO-HÉBERGÉS</div></div>
   </div>
@@ -618,21 +620,23 @@ Salut, Alan !</pre>
         <code class="inline">rose</code> dans le PATH, associe les fichiers <code class="inline">.rose</code> à leur
         icône (double-clic = exécution), propose « Modifier » avec le bloc-notes, et s'inscrit dans
         Applications et fonctionnalités pour une désinstallation propre.
+        La mise à jour passe par <b>Velopack</b> : <code class="inline">rose update</code> télécharge un delta,
+        l'applique, et revient à la version précédente tout seul si la nouvelle casse.
       </p>
       <div class="term">
         <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>powershell</span><button class="copy" onclick="copyTerm(this)">COPIER</button></div>
-<pre><span class="k">&gt;</span> .\Rose-Setup-3.14.0.exe
+<pre><span class="k">&gt;</span> .\Rose-Setup-0.1.3.exe
 <span class="c"># puis, dans un nouveau terminal :</span>
 <span class="k">&gt;</span> rose info
-<span class="k">&gt;</span> rose bonjour.rose</pre>
+<span class="k">&gt;</span> rose bonjour.rose
+<span class="k">&gt;</span> rose update          <span class="c"># Velopack : delta + rollback</span></pre>
       </div>
       <div style="display:flex;gap:1rem;flex-wrap:wrap">
-        <a class="btn btn-rouge" href="Rose-Setup-3.14.0.exe" download>TÉLÉCHARGER ROSE-SETUP-3.14.0.EXE</a>
-        <a class="btn btn-fantome" href="rose-windows.zip" download>ARCHIVE ZIP (SANS INSTALL)</a>
+        <a class="btn btn-rouge" href="telechargements/Rose-Setup-0.1.3.exe" download>TÉLÉCHARGER ROSE-SETUP-0.1.3.EXE</a>
+        <a class="btn btn-fantome" href="https://github.com/Stef302/Rose/releases/tag/v0.1.3" target="_blank" rel="noopener">RELEASES GITHUB ↗</a>
       </div>
-      <p class="small gris" style="line-height:2">SHA-256 (setup) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">363792c13a3e6d6a7c48169e21a1e5b19ad10852aefcf6c5f26848d1c571dc8a</span> · SHA-256 (zip) : <span style="font-family:'JetBrains Mono',ui-monospace,monospace">6c20bebe18fb4f84650dc26b021c62594700beae49f7404030745614c1f17074</span> — vérifiables via <a class="vert" href="SHA256SUMS.txt">SHA256SUMS.txt</a></p>
-      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : moteur Rust — <code class="inline">cd rose && cargo build --release</code>, puis copiez <code class="inline">rose/target/release/rose-20</code> dans <code class="inline">/usr/local/bin</code>. Le moteur C++ de référence reste disponible dans <code class="inline">rose-cpp</code>. Les sources et l'architecture sont sur GitHub.</p>
-    </div>
+      <p class="small gris" style="line-height:2">SHA-256 de chaque artefact : voir <a class="vert" href="telechargements/SHA256SUMS">telechargements/SHA256SUMS</a> et les assets de la release GitHub.</p>
+      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : binaire autonome — <code class="inline">curl -LO https://raw.githubusercontent.com/Stef302/Rose/main/docs/telechargements/rose-aarch64-linux && chmod +x rose-aarch64-linux</code>. Ou depuis les sources : <code class="inline">cd rose && cargo build --release</code>. Aucun runtime, aucune dépendance GMP.</p>    </div>
   </div>
 
   <div class="wrap">
@@ -722,14 +726,18 @@ Salut, Alan !</pre>
   <div class="wrap">
     <div class="overline reveal">MANUEL</div>
     <h2 class="reveal">Documentation</h2>
+    <div class="doc-sel reveal" style="margin-bottom:.6rem">
+      <a class="btn btn-fantome" href="https://github.com/Stef302/Rose/wiki" target="_blank" rel="noopener" style="font-size:.75rem">WIKI GITHUB (anglais) ↗</a>
+    </div>
     <div class="doc-sel reveal">
       <span class="gris" style="font-size:.8rem;letter-spacing:2px">VERSION</span>
       <select class="rose-select" id="docVer" onchange="setDocVer(this.value)">
-        <option value="314" selected>v3.14 — actuelle</option>
-        <option value="313">v3.13</option>
-        <option value="312">v3.12</option>
+        <option value="13" selected>v0.1.3 — actuelle</option>
+        <option value="12">v0.1.2</option>
+        <option value="11">v0.1.1</option>
+        <option value="10">v0.1.0</option>
       </select>
-      <span class="gris" style="font-size:.8rem;line-height:1.8;max-width:44ch" id="docVerNote">Blocs marqués « depuis v3.13 » ou « depuis v3.14 » masqués selon la version choisie.</span>
+      <span class="gris" style="font-size:.8rem;line-height:1.8;max-width:44ch" id="docVerNote">Version actuelle — tout le contenu est affiché.</span>
     </div>
     <div class="doc-layout reveal">
       <aside class="doc-sidebar">
@@ -744,6 +752,7 @@ Salut, Alan !</pre>
           <li><button onclick="showDoc('variables',this)">Variables</button></li>
           <li><button onclick="showDoc('types',this)">Types</button></li>
           <li><button onclick="showDoc('operateurs',this)">Opérateurs</button></li>
+          <li><button onclick="showDoc('factorielles',this)">Factorielles ! !! !?</button></li>
           <li><button onclick="showDoc('instructions',this)">Instructions</button></li>
           <li><button onclick="showDoc('boucles',this)">Conditions & boucles</button></li>
           <li><button onclick="showDoc('fonctions',this)">Fonctions</button></li>
@@ -767,13 +776,13 @@ Salut, Alan !</pre>
           c'est vérifié par 119 tests de parité et des campagnes génératives.</p>
           <p>Deux promesses résument le projet : <b>le calcul est exact</b> (entiers arbitraires, rationnels sans
           arrondi), et <b>le moteur ne se tait jamais</b> (toute erreur nomme la variable et l'endroit).</p>
-          <div class="badge-note" data-min="314">Depuis v5.0.0 : moteur Rust complet (Cranelift JIT + LLVM AOT), parité C++ 54/54.</div>
+          <div class="badge-note" data-min="10">Depuis v0.1.0 : moteur Rust complet (Cranelift JIT + LLVM ORC AOT + WASM), parité C++ 54/54.</div>
         </div>
 
         <div class="doc-section" id="doc-demarrer">
           <h3>Démarrer</h3>
           <h4>Windows</h4>
-          <p>Lance <code class="inline">Rose-Setup-3.14.0.exe</code> (page d'accueil). Aucun droit administrateur.
+          <p>Lance <code class="inline">Rose-Setup-0.1.3.exe</code> (page d'accueil). Aucun droit administrateur.
           Le dossier <code class="inline">bin</code> rejoint ton PATH utilisateur et les fichiers
           <code class="inline">.rose</code> deviennent double-cliquables.</p>
           <h4>Linux</h4>
@@ -783,9 +792,9 @@ Salut, Alan !</pre>
             <tr><th>Commande</th><th>Effet</th></tr>
             <tr><td><code>rose prog.rose</code></td><td>Interpréter le programme</td></tr>
             <tr><td><code>rose comp prog.rose -o prog.bin</code></td><td>Produire un exécutable natif (AOT)</td></tr>
-            <tr><td data-min="314"><code>rose build prog.rose -o prog.bin</code></td><td data-min="314">Idem — nom modernisé en v3.14</td></tr>
-            <tr><td data-min="314"><code>rose rir prog.rose</code></td><td data-min="314">Dumper la représentation intermédiaire (RIR)</td></tr>
-            <tr><td data-min="314"><code>rose tokens / ast / verif prog.rose</code></td><td data-min="314">Oracle du front-end auto-hébergé (jetons, arbre, vérification)</td></tr>
+            <tr><td data-min="10"><code>rose build prog.rose -o prog.bin</code></td><td data-min="10">Idem — nom modernisé</td></tr>
+            <tr><td data-min="10"><code>rose rir prog.rose</code></td><td data-min="10">Dumper la représentation intermédiaire (RIR)</td></tr>
+            <tr><td data-min="10"><code>rose tokens / ast / verif prog.rose</code></td><td data-min="10">Oracle du front-end auto-hébergé (jetons, arbre, vérification)</td></tr>
             <tr><td><code>rose info</code></td><td>État du moteur et dépendances</td></tr>
             <tr><td><code>rose version</code></td><td>Numéro de version</td></tr>
           </table>
@@ -852,6 +861,32 @@ Bonjour, monde !</pre>
           <p>Le playground de ce site applique les mêmes règles (sauf <code class="inline">≈</code>, réservé au moteur installé).</p>
         </div>
 
+        <div class="doc-section" id="doc-factorielles">
+          <h3>Factorielles : <code>!</code> · <code>!!</code> · <code>!?</code></h3>
+          <p>Trois notations postfixes pour trois intentions. Le moteur Rust calcule les factorielles exactes par
+          <b>facteurs premiers (Légendre) + exponentiation binaire + arbre glouton multi-cœur</b> :
+          <code class="inline">1000000!</code> — 5 565 709 chiffres — tombe en <b>~0,9 seconde</b>, à parité avec le
+          Rust natif même algorithme.</p>
+          <table class="table">
+            <tr><th>Écriture</th><th>Sens</th><th>Sortie</th></tr>
+            <tr><td><code>5!</code></td><td>factorielle <b>exacte</b>, tous les chiffres</td><td><code>120</code></td></tr>
+            <tr><td><code>1000000!!</code></td><td>factorielle <b>rapide</b> (même calcul, voie multi-cœur)</td><td>entier géant</td></tr>
+            <tr><td><code>100!</code> en <code>approx</code> · <code>100!?</code></td><td>Stirling <b>complet</b> (série <code>1/12n − 1/360n³ + 1/1260n⁵</code>)</td><td><code>9.332622e157</code></td></tr>
+          </table>
+          <p>Alias de bibliothèque, au choix : <code class="inline">rapide(n)</code> = <code class="inline">n!!</code>,
+          <code class="inline">approx(n)</code> = <code class="inline">n!?</code>,
+          <code class="inline">factorielle(n)</code> = <code class="inline">n!</code>.
+          <code class="inline">type(x)</code> rend le nom du type (<code>entier</code>, <code>rationnel</code>…).</p>
+          <div class="term" data-min="13">
+            <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>view.rose</span></div>
+<pre><span class="k">&gt;</span> rose view.rose
+<span class="c">// view(x) : visionneuse paginée façon nano pour les très grands nombres</span>
+&gt;&gt; <span class="f">view</span>(<span class="n">1000000</span>!!)
+<span class="c">// Espace = page suivante · b = retour · q = quitter</span></pre>
+          </div>
+          <div class="badge-note" data-min="10">Depuis v0.1.0 : <code>!</code>, <code>!!</code>, <code>!?</code> et les alias <code>rapide</code>/<code>approx</code>/<code>type</code>. Visionneuse <code>view</code> depuis v0.1.3.</div>
+        </div>
+
         <div class="doc-section" id="doc-instructions">
           <h3>Instructions</h3>
           <table class="table">
@@ -910,11 +945,12 @@ Bonjour, monde !</pre>
             <tr><td><code>joindre(l, x)</code> · <code>concatener(l)</code></td><td>ajouter un élément · joindre une liste de chaînes</td></tr>
             <tr><td><code>pgcd(a,b)</code> · <code>ppcm(a,b)</code></td><td>arithmétique entière</td></tr>
             <tr><td><code>factorielle(n)</code> · <code>fibonacci(n)</code></td><td>exactes, tous les chiffres</td></tr>
+            <tr><td><code>rapide(n)</code> · <code>approx(n)</code> · <code>view(x)</code> · <code>type(x)</code></td><td>factorielle multi-cœur · Stirling · visionneuse nano · nom du type</td></tr>
             <tr><td><code>est_premier(n)</code> · <code>compter_premiers(n)</code> · <code>nb_chiffres(n)</code> · <code>nombre_pi(n)</code></td><td>nombres premiers & π (n décimales)</td></tr>
             <tr><td><code>puissance(a, e)</code> · <code>partie_entiere(x)</code> · <code>fraction(p, q)</code></td><td>exponentiation · plancher · construction de rationnel</td></tr>
             <tr><td><code>abs(x)</code> · <code>min(a, b)</code> · <code>max(a, b)</code></td><td>mélangent types numériques</td></tr>
             <tr><td><code>entier(x)</code> · <code>flottant(x)</code> · <code>chaine(x)</code></td><td>conversions — <code>chaine</code> rend le texte de la valeur</td></tr>
-            <tr><td data-min="313"><code>temps()</code> · <code>duree(n)</code> · <code>millisecondes()</code></td><td data-min="313">chronomètre — depuis v3.13 (moteur installé)</td></tr>
+            <tr><td data-min="10"><code>temps()</code> · <code>duree(n)</code> · <code>millisecondes()</code></td><td data-min="10">chronomètre</td></tr>
             <tr><td><code>hasard(n)</code> · <code>graine(n)</code></td><td>aléatoire reproductible (moteur installé)</td></tr>
             <tr><td><code>table() inserer cle_existe supprimer cles</code></td><td>associations (moteur installé)</td></tr>
             <tr><td><code>nb_arguments() argument(i)</code> · <code>quitter(n)</code></td><td>ligne de commande · arrêt du programme</td></tr>
@@ -1055,6 +1091,34 @@ Bonjour, monde !</pre>
     <div class="timeline reveal">
 
       <div class="event">
+        <div class="event-head">
+          <span class="event-ver">V0.1.3</span>
+          <span class="event-date">13 NOVEMBRE 2026</span>
+        </div>
+        <h4 class="event-title">Le million ! en ~0,9 s + visionneuse nano</h4>
+        <ul>
+          <li>Factorielle réécrite : facteurs premiers (Légendre), exponentiation binaire, <b>arbre glouton multi-cœur</b> — <code class="inline">1000000!</code> (5 565 709 chiffres) en ~0,93 s, parité avec le Rust natif même algorithme (avant : 2,2 s).</li>
+          <li><code class="inline">view(x)</code> : visionneuse paginée façon nano pour les très grands nombres (Espace / b / q), fenêtre rendue en O(1) par page.</li>
+          <li><code class="inline">approx()</code> / <code class="inline">!??</code> : Stirling <b>complet</b> (série jusqu'au 1/1260n⁵), validé contre <code class="inline">lgamma</code>.</li>
+          <li><code class="inline">rose update</code> sous Windows passe à <b>Velopack</b> : deltas binaires + rollback automatique.</li>
+        </ul>
+      </div>
+
+      <div class="event">
+        <div class="event-head">
+          <span class="event-ver">V0.1.0</span>
+          <span class="event-date">NOVEMBRE 2026</span>
+        </div>
+        <h4 class="event-title">Nouvelle numérotation — le moteur Rust devient la référence</h4>
+        <ul>
+          <li>Le projet repart en <code class="inline">0.1.x</code> : le moteur Rust est désormais <b>le</b> moteur (interprète exact · JIT Cranelift · AOT LLVM ORC · WASM).</li>
+          <li>Notation factorielle postfixe : <code class="inline">n!</code> exact, <code class="inline">n!!</code> rapide, <code class="inline">n!?</code> Stirling ; alias courts <code class="inline">rapide</code> / <code class="inline">approx</code> / <code class="inline">type</code>.</li>
+          <li>Constantes irrationnelles exactes π / e / φ rendues en LaTeX automatique.</li>
+          <li>Parité C++ 54/54, zéro dépendance externe (pas de GMP).</li>
+        </ul>
+      </div>
+
+      <div class="event old">
         <div class="event-head">
           <span class="event-ver">V5.0.0</span>
           <span class="event-date">NOVEMBRE 2026</span>
@@ -1254,9 +1318,10 @@ function setDocVer(v){
     el.style.display = (parseInt(el.dataset.min) > ver) ? 'none' : '';
   });
   const note = document.getElementById('docVerNote');
-  note.textContent = ver >= 314 ? 'Version actuelle — tout le contenu est affiché.'
-    : ver === 313 ? 'Les blocs nés en v3.14 sont masqués.'
-    : 'Les blocs nés en v3.13 et v3.14 sont masqués.';
+  note.textContent = ver >= 13 ? 'Version actuelle — tout le contenu est affiché.'
+    : ver === 12 ? 'Les nouveautés nées en v0.1.3 (visionneuse view) sont masquées.'
+    : ver === 11 ? 'Les nouveautés nées en v0.1.2 et v0.1.3 sont masquées.'
+    : 'Seule la notation 0.1.0 de base est affichée (!, rapide, approx).';
 }
 
 /* ========== RECHERCHE ========== */

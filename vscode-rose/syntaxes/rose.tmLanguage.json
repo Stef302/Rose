@@ -125,7 +125,7 @@
         },
         {
           "name": "support.function.rose",
-          "match": "\\b(abs|min|max|partie_entiere|factorielle|fact|fib|fibonacci|pgcd|gcd|ppcm|lcm|puissance|pow|nb_chiffres|digits|est_premier|is_prime|compter_premiers|pi|e|phi|racine|fraction|re|im|conj|arg|modulus|longueur|len|ordre|caractere|sous_chaine|sub|concatener|table|map|inserer|cle_existe|supprimer|cles|valeurs|joindre|graine|seed|hasard|prng|hasard_systeme|rng_materiel|hasard_vrai|lire_texte|ecrire_texte|ecrire_binaire|argument|nb_arguments|temps|millisecondes|ms|time|duree|afficher|afficher_erreur|quitter|tampon|octets|eval_expr|breakpoint|watch)\\s*(?=\\()"
+          "match": "\\b(abs|min|max|partie_entiere|factorielle|fact|factorielle_rapide|rapide|approx|view|type|fib|fibonacci|pgcd|gcd|ppcm|lcm|puissance|pow|nb_chiffres|digits|est_premier|is_prime|compter_premiers|pi|e|phi|racine|fraction|re|im|conj|arg|modulus|longueur|len|ordre|caractere|sous_chaine|sub|concatener|table|map|inserer|cle_existe|supprimer|cles|valeurs|joindre|graine|seed|hasard|prng|hasard_systeme|rng_materiel|hasard_vrai|lire_texte|ecrire_texte|ecrire_binaire|argument|nb_arguments|temps|millisecondes|ms|time|duree|afficher|afficher_erreur|quitter|tampon|octets|eval_expr|breakpoint|watch)\\s*(?=\\()"
         }
       ]
     },
@@ -133,7 +133,7 @@
       "patterns": [
         {
           "name": "keyword.operator.rose",
-          "match": "(==|!=|<=|>=|<|>|≤|≥|≠|≈|→|->|\\+|-|\\*|⋅|·|×|/|÷|%|\\^|!|~|=|:)"
+          "match": "(==|!=|<=|>=|<|>|≤|≥|≠|≈|→|->|\\+|-|\\*|⋅|·|×|/|÷|%|\\^|!!|!\\?|!|~|=|:)"
         },
         {
           "name": "keyword.operator.logical.rose",

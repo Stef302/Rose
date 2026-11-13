@@ -154,5 +154,33 @@
       "rose console"
     ],
     "description": "Console interactive Rose"
+  },
+  "Factorielle rapide (!!)": {
+    "prefix": "fac!!",
+    "body": [
+      "${1:n}!!"
+    ],
+    "description": "Factorielle rapide multi-cœur (1000000! en ~0,9 s)"
+  },
+  "Factorielle approchée (!?)": {
+    "prefix": "fac!?",
+    "body": [
+      "${1:n}!?"
+    ],
+    "description": "Factorielle approximative (Stirling, notation scientifique)"
+  },
+  "Visionneuse (view)": {
+    "prefix": "viewtab",
+    "body": [
+      "view(${1:grand_nonbre})"
+    ],
+    "description": "Visionneuse paginée façon nano pour les très grands nombres"
+  },
+  "Type (type)": {
+    "prefix": "typetab",
+    "body": [
+      "type(${1:x})"
+    ],
+    "description": "Nom du type d'une valeur (entier, rationnel, …)"
   }
 }

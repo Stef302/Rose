@@ -17,5 +17,5 @@ vsce publish
 ## 3. Open VSX
 ```bash
 npm install -g ovsx
-ovsx publish rose-language-5.10.1.vsix -p <TOKEN>
+ovsx publish rose-language-0.1.3.vsix -p <TOKEN>
 ```
