@@ -3172,84 +3172,9 @@ pub fn info() -> String {
 pub fn factorielle_rapide(n: &Gz) -> Gz {
     if n.sgn() < 0 { erreur_runtime("factorial d'un négatif : impossible"); }
     if !n.fits_i64() { erreur_runtime("factorial_rapide : n trop grand"); }
-    let nn = n.get_i64() as u64;
-    if nn <= 1 {
-        let r = Gz::neuf();
-        r.poser_u64(1);
-        return r;
-    }
-    if nn <= 1000 {
-        let mut r = Gz::neuf();
-        r.poser_u64(1);
-        for k in 2..=nn {
-            r.mul_u64(&r, k);
-        }
-        return r;
-    }
-    // Crible d'Ératosthène jusqu'à n
-    let mut est_premier = vec![true; (nn + 1) as usize];
-    est_premier[0] = false;
-    est_premier[1] = false;
-    let limite = (nn as f64).sqrt() as u64;
-    for p in 2..=limite {
-        if est_premier[p as usize] {
-            let mut multiple = p * p;
-            while multiple <= nn {
-                est_premier[multiple as usize] = false;
-                multiple += p;
-            }
-        }
-    }
-    // p^e_p pour chaque premier p ≤ n
-    let mut facteurs: Vec<Gz> = Vec::with_capacity(nn as usize / 10);
-    for p in 2..=nn {
-        if est_premier[p as usize] {
-            let mut e = 0u64;
-            let mut puissance = p;
-            while puissance <= nn {
-                e += nn / puissance;
-                if puissance > nn / p { break; }
-                puissance *= p;
-            }
-            if e > 0 {
-                let mut base = Gz::neuf();
-                base.poser_u64(p);
-                let mut pp = Gz::neuf();
-                pp.poser_u64(1);
-                let mut e_temp = e;
-                while e_temp > 0 {
-                    if e_temp & 1 == 1 {
-                        pp.mul(&pp, &base);
-                    }
-                    e_temp >>= 1;
-                    if e_temp > 0 {
-                        base.mul(&base, &base);
-                    }
-                }
-                facteurs.push(pp);
-            }
-        }
-    }
-    // Arbre de multiplication équilibré
-    fn arbre_mul(facteurs: &[Gz]) -> Gz {
-        match facteurs.len() {
-            0 => {
-                let r = Gz::neuf();
-                r.poser_u64(1);
-                r
-            }
-            1 => facteurs[0].clone_val(),
-            _ => {
-                let m = facteurs.len() / 2;
-                let g = arbre_mul(&facteurs[..m]);
-                let d = arbre_mul(&facteurs[m..]);
-                let r = Gz::neuf();
-                r.mul(&g, &d);
-                r
-            }
-        }
-    }
-    arbre_mul(&facteurs)
+    // facteurs premiers (Légendre) + arbre glouton multi-cœur — même moteur
+    // que factorielle() : voir i128x::factorielle_parallele.
+    crate::i128x::factorielle_parallele(n.get_i64() as u64)
 }
 
 /// Formule de Stirling : n! ≈ √(2πn)·(n/e)^n
@@ -3261,13 +3186,15 @@ pub fn factorial_approx(n: &Gz) -> String {
     if nn <= 1.0 {
         return "1".to_string();
     }
-    // ln(n!) ≈ n·ln(n) - n + 0.5·ln(2πn)
-    let ln_nn_fact = nn * nn.ln() - nn + 0.5 * (2.0 * std::f64::consts::PI * nn).ln();
-    // log10(n!) = ln(n!) / ln(10)
-    let log10 = ln_nn_fact / std::f64::consts::LN_10;
-    let exposant = log10.floor() as i64;
+    // Stirling avec série asymptotique :
+    //   ln(n!) ≈ n·ln n − n + ½·ln(2πn) + 1/(12n) − 1/(360n³) + 1/(1260n⁵)
+    let ln_fact = nn * nn.ln() - nn + 0.5 * (2.0 * std::f64::consts::PI * nn).ln()
+        + 1.0 / (12.0 * nn)
+        - 1.0 / (360.0 * nn * nn * nn)
+        + 1.0 / (1260.0 * nn.powi(5));
+    let log10 = ln_fact / std::f64::consts::LN_10;
+    let exposant = log10.floor() as i128;
     let mantisse = 10.0_f64.powf(log10 - exposant as f64);
-    // Format : mantisse e exposant (ex: 2.846259e65657059)
     format!("{:.6}e{}", mantisse, exposant)
 }
 

@@ -59,6 +59,23 @@ Comparatif détaillé (`comparatif_moteurs.sh`) :
 | big (factorielle/puissance) | 0,002 s | 0,014 s |
 | crible 5 M | 0,013 s | 0,031 s |
 
+### Factorielle : le million ! en ~0,9 s
+
+`factorielle(1000000)` (5 565 709 chiffres) est calculé par facteurs premiers
+(Légendre) + **arbre de produit glouton multi-cœur** — le même algorithme que
+GMP, pur Rust, sans FFI :
+
+| Moteur | 1 000 000 ! | 100 000 ! |
+|---|---|---|
+| Rose (facteurs premiers + arbre glouton, 8 cœurs) | **~0,93 s** | **~25 ms** |
+| Rust natif (même algorithme) | ~0,92 s | ~25 ms |
+| GMP (même algorithme, séquentiel) | ~0,32 s | ~9 ms |
+| Rose avant l'optimisation (arbre simple cœur) | 2,2 s | 48 ms |
+
+Et pour les nombres géants, `view(x)` ouvre une visionneuse paginée dans le
+terminal (façon nano) : `[Espace]` page suivante, `b` page précédente, `q`
+pour quitter.
+
 ## 🧮 Constantes irrationnelles exactes
 
 Aucune valeur n'est figée : `pi(n)`, `e(n)`, `phi(n)` et `racine(n)` calculent
@@ -284,6 +301,8 @@ $a = tableau(10)         # tableau de 10 cases
 ⋅  ·  ×  ÷  ≤  ≥  ≠  ≈     # variantes Unicode (* ≤ ≥ != ~)
 et  ou  non                # logique (et/ou/non)
 n!   2³  √9                # postfixés : factorielle, puissance, racine
+n!!                        # factorielle exacte (moteur « rapide », multi-cœur)
+n!?                        # factorielle APPROXIMÉE (Stirling : mantisse e exposant)
 ```
 
 | Opérateur | Effet | Exemple |
@@ -391,7 +410,8 @@ formule exacte en LaTeX et une approximation `≈` :
 
 | Domaine | Fonctions |
 |---|---|
-| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
+| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `rapide`(`factorial_rapide`, `!!`) `approx`(`factorial_approx`, `!?`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
+| Gros nombres | `view(x)` — visionneuse paginée dans le terminal (façon nano) pour les nombres à des millions de chiffres |
 | Exact | `pi(n)` `e(n)` `phi(n)` `racine(n)` `fraction(a,b)` |
 | Types | `type(x)` → chaîne ("entier", "flottant", …) |
 | Complexes | `re(z)` `im(z)` `conj(z)` `arg(z)` `modulus(z)` |

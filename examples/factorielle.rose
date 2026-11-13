@@ -1,0 +1,22 @@
+// Factorielle dans tous ses états — Rose
+//
+//   n!            factorielle exacte (arbre glouton multi-cœur)
+//   n!!           idem, par la fonction « rapide »
+//   n!?           approximation de Stirling (mantisse e exposant)
+//   rapide(n)     la même que n!!
+//   approx(n)     la même que n!?
+//   view(x)       visionneuse paginé façon nano pour les gros nombres
+
+>> 5!
+>> 5!!
+>> 5!?
+
+$debut = temps()
+$million = factorielle(1000000)
+$fin = temps()
+>> ($fin - $debut) / 1000000
+>> longueur(chaine($million))
+>> $million == factorial_rapide(1000000)
+
+// Décommenter pour naviguer dans les 5 565 709 chiffres du million !
+// view($million)

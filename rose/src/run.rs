@@ -756,18 +756,10 @@ pub fn factorielle(n: &Gz) -> Gz {
     if n.sgn() < 0 { erreur_runtime("factorielle d'un négatif : impossible"); }
     if !n.fits_i64() || n.get_i64() as u64 > 0xFFFF_FFFF { erreur_runtime("factorielle trop grande"); }
     let n = n.get_i64() as u64;
-    // arbre, comme le C++
-    fn arbre(i: u64, j: u64) -> Gz {
-        if i > j { let r = Gz::neuf(); r.poser_u64(1); return r; }
-        if i == j { let r = Gz::neuf(); r.poser_u64(i); return r; }
-        let m = i + (j - i) / 2;
-        let a = arbre(i, m);
-        let b = arbre(m + 1, j);
-        let r = Gz::neuf();
-        r.mul(&a, &b);
-        r
-    }
-    arbre(1, n)
+    // Facteurs premiers (Légendre) + arbre de produit équilibré, tranches
+    // parallèles : 1 000 000 ! en une fraction de seconde (voir
+    // i128x::factorielle_parallele).
+    crate::i128x::factorielle_parallele(n)
 }
 
 pub fn fibonacci(nn: &Gz) -> Gz {
@@ -1449,26 +1441,16 @@ pub fn view_grand_nombre(s: &str) {
     let mut pos: usize = 0;
     let total = s.chars().count();
 
+    // Index d'octets de début de chaque caractère : fenêtre O(1) par page,
+    // même sur des millions de chiffres (une boucle par caractère à chaque
+    // page était O(n²) sur 5,5 M de chiffres).
+    let bornes: Vec<usize> = s.char_indices().map(|(i, _)| i).chain(std::iter::once(total)).collect();
+
     loop {
         // Calculer la fenêtre courante
-        let mut idx = 0;
-        let start = pos;
-        let mut end = pos;
-        let mut count = 0;
-        for (i, c) in s.char_indices() {
-            if i >= pos {
-                count += 1;
-                if count >= chars_per_page {
-                    end = i + c.len_utf8();
-                    break;
-                }
-            }
-        }
-        if count == 0 || pos >= total {
-            end = total;
-        } else if end <= pos {
-            end = total;
-        }
+        let clamped = pos.min(total);
+        let fin_idx = (clamped + chars_per_page).min(total);
+        let end = bornes[fin_idx];
 
         // Afficher la page
         print!("\x1b[2J\x1b[H"); // effacer l'écran et retourner en haut
