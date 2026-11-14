@@ -479,7 +479,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
 
   <div class="hero">
     <div>
-      <div class="overline">MOTEUR NATIF — V0.1.3</div>
+      <div class="overline">MOTEUR NATIF — V0.1.4</div>
       <h1>ROSE</h1>
       <p class="lead">
         Langage de programmation conçu en français : variables avec <span style="color:var(--vert)">$</span>,
@@ -496,7 +496,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
         <button class="btn btn-fantome" onclick="go('doc')">LIRE LA DOC</button>
       </div>
       <ul class="badges">
-        <li class="badge">v0.1.3</li>
+        <li class="badge">v0.1.4</li>
         <li class="badge">LICENCE MIT</li>
         <li class="badge">WINDOWS · LINUX</li>
         <li class="badge">INTERPRÈTE · JIT · AOT · WASM</li>
@@ -512,7 +512,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
   </div>
 
   <div class="stats">
-    <div class="stat reveal"><div class="stat-num">0.1.3</div><div class="stat-lbl">MOTEUR RUST</div></div>
+    <div class="stat reveal"><div class="stat-num">0.1.4</div><div class="stat-lbl">MOTEUR RUST</div></div>
     <div class="stat reveal"><div class="stat-num">0,9 s</div><div class="stat-lbl">POUR 1 000 000 ! (5 565 709 CHIFFRES)</div></div>
     <div class="stat reveal"><div class="stat-num">119</div><div class="stat-lbl">PARITÉS INTERPRÈTE ↔ COMPILÉ</div></div>
     <div class="stat reveal"><div class="stat-num">104</div><div class="stat-lbl">FICHIERS AUTO-HÉBERGÉS</div></div>
@@ -733,7 +733,8 @@ Salut, Alan !</pre>
     <div class="doc-sel reveal">
       <span class="gris" style="font-size:.8rem;letter-spacing:2px">VERSION</span>
       <select class="rose-select" id="docVer" onchange="setDocVer(this.value)">
-        <option value="13" selected>v0.1.3 — actuelle</option>
+        <option value="14" selected>v0.1.4 — actuelle</option>
+        <option value="13">v0.1.3</option>
         <option value="12">v0.1.2</option>
         <option value="11">v0.1.1</option>
         <option value="10">v0.1.0</option>
@@ -772,7 +773,7 @@ Salut, Alan !</pre>
           <code class="inline">sinon</code>, <code class="inline">tant_que</code>, <code class="inline">pour</code>,
           <code class="inline">retour</code>, <code class="inline">vrai</code>, <code class="inline">faux</code> ;
           les variables portent un <code class="inline">$</code>. Les noms acceptent les lettres accentuées.</p>
-          <p>Le moteur (Rust v0.1.3, licence MIT) propose trois modes d'exécution —
+          <p>Le moteur (Rust v0.1.4, licence MIT) propose trois modes d'exécution —
           interprète, JIT, compilation native AOT — qui rendent la <b>même sortie, caractère par caractère</b> ;
           c'est vérifié par 119 tests de parité et des campagnes génératives.</p>
           <p>Deux promesses résument le projet : <b>le calcul est exact</b> (entiers arbitraires, rationnels sans
@@ -889,7 +890,7 @@ Bonjour, monde !</pre>
 &gt;&gt; <span class="f">view</span>(<span class="f">factorielle</span>(<span class="n">1000000</span>))
 <span class="c">// Espace = page suivante · b = retour · q = quitter</span></pre>
           </div>
-          <div class="badge-note" data-min="10">Depuis v0.1.0 : <code>!</code> et les alias <code>rapide</code>/<code>approx</code>/<code>type</code>. Visionneuse <code>view</code> depuis v0.1.3. Depuis la prochaine version : <code>#</code> primorielle, <code>?</code> terminal, <code>$</code> super-factorielle.</div>
+          <div class="badge-note" data-min="10">Depuis v0.1.0 : <code>!</code> et les alias <code>rapide</code>/<code>approx</code>/<code>type</code>. Visionneuse <code>view</code> depuis v0.1.3. Depuis v0.1.4 : <code>#</code> primorielle, <code>?</code> terminal, <code>$</code> super-factorielle.</div>
         </div>
 
         <div class="doc-section" id="doc-instructions">
@@ -941,7 +942,7 @@ Bonjour, monde !</pre>
 
         <div class="doc-section" id="doc-biblio">
           <h3>Bibliothèque standard</h3>
-          <p>Sélection des fonctions du moteur v0.1.3 — les surlignées demandent le moteur installé.</p>
+          <p>Sélection des fonctions du moteur v0.1.4 — les surlignées demandent le moteur installé.</p>
           <table class="table">
             <tr><th>Fonction</th><th>Rôle</th></tr>
             <tr><td><code>longueur(x)</code></td><td>taille d'une chaîne, d'une liste, d'une table</td></tr>
@@ -992,7 +993,7 @@ Bonjour, monde !</pre>
     <h2 class="reveal">Le compilateur qui compile le compilateur</h2>
     <div class="cols">
       <div class="reveal">
-        <p>Le moteur (Rust v0.1.3) déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
+        <p>Le moteur (Rust v0.1.4) déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
         la vérification typographie les erreurs, l'émetteur produit la <b>représentation intermédiaire
         (RIR)</b>. Depuis la RIR, plusieurs départs : l'interprète exact, le JIT Cranelift (compilation à chaud),
         l'AOT LLVM (<code class="inline">rose llvm</code>), ou la transpilation C++ compilée par g++ — tous rendent
@@ -1027,7 +1028,7 @@ Bonjour, monde !</pre>
       </div>
       <div class="carte reveal">
         <div class="ico"><span class="ico-txt">⚙</span></div>
-        <h3>Moteur Rust (v0.1.3)</h3>
+        <h3>Moteur Rust (v0.1.4)</h3>
         <p>Le portage Rust est terminé : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM
         (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>).
         Parité parfaite avec le moteur C++ (54/54), 46/46 dorés, bench global 0,09 s (vs 0,19 s C++).
@@ -1098,7 +1099,7 @@ Bonjour, monde !</pre>
       <div class="event">
         <div class="event-head">
           <span class="event-ver">V0.1.4</span>
-          <span class="event-date">À VENIR</span>
+          <span class="event-date">14 NOVEMBRE 2026</span>
         </div>
         <h4 class="event-title">Primorielle <code>#</code> · terminal <code>?</code> · super-factorielle <code>$</code></h4>
         <ul>
@@ -1336,9 +1337,10 @@ function setDocVer(v){
     el.style.display = (parseInt(el.dataset.min) > ver) ? 'none' : '';
   });
   const note = document.getElementById('docVerNote');
-  note.textContent = ver >= 13 ? 'Version actuelle — tout le contenu est affiché.'
-    : ver === 12 ? 'Les nouveautés nées en v0.1.3 (visionneuse view) sont masquées.'
-    : ver === 11 ? 'Les nouveautés nées en v0.1.2 et v0.1.3 sont masquées.'
+  note.textContent = ver >= 14 ? 'Version actuelle — tout le contenu est affiché.'
+    : ver === 13 ? 'Les nouveautés nées en v0.1.4 (opérateurs # ? $) sont masquées.'
+    : ver === 12 ? 'Les nouveautés nées en v0.1.3 (visionneuse view) et v0.1.4 sont masquées.'
+    : ver === 11 ? 'Les nouveautés nées en v0.1.2, v0.1.3 et v0.1.4 sont masquées.'
     : 'Seule la notation 0.1.0 de base est affichée (!, rapide, approx).';
 }
 
