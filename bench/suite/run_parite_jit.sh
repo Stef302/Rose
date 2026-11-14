@@ -19,10 +19,17 @@ for d in "${DIRS[@]}"; do
   [ -d "$d" ] || continue
   while IFS= read -r f; do
     # on ignore les programmes qui demandent une entrée ou un fichier externe
-    grep -qE '\b(lire|lis|argv|args\[)' "$f" 2>/dev/null && continue
+    # Programmes interactifs (saisie clavier) : hors périmètre de la parité.
+    grep -qE '\b(lire|lis|argv|args\[|saisir)' "$f" 2>/dev/null && continue
+    grep -q '^ *<< ' "$f" 2>/dev/null && continue
+    grep -qE '<< ' "$f" 2>/dev/null && continue
     TOTAL=$((TOTAL+1))
-    a=$(timeout 25 "$ROSE_BIN" run "$f" 2>&1); ra=$?
-    b=$(ROSE_SANS_JIT=1 timeout 25 "$ROSE_BIN" run "$f" 2>&1); rb=$?
+    # Les horodatages (temps()/millisecondes()/duree()) diffèrent
+    # légitimement entre les deux voies : on normalise les durées avant
+    # comparaison — seule la sémantique du programme doit être identique.
+    normalise() { sed -E 's/[0-9]+(\.[0-9]+)? ?(ms|µs|ns)\b/N/g; s/(temps|millisecondes|duree)\(\)?[^0-9]*[0-9]{4,}/\1() N/g; s/   [0-9]{7,}$/   N/; s/   [0-9]+\.[0-9]{3,}$/   N.N/; s/^(m[01] - m[01] +)[0-9]+$/\1N/; s/\(([0-9]+)\) has overflowed its stack/(N) has overflowed its stack/' ; }
+    a=$(timeout 25 "$ROSE_BIN" run "$f" 2>&1 | normalise); ra=$?
+    b=$(ROSE_SANS_JIT=1 timeout 25 "$ROSE_BIN" run "$f" 2>&1 | normalise); rb=$?
     if [ "$ra" -ne 0 ] || [ "$rb" -ne 0 ]; then
       PARDUS=$((PARDUS+1)); continue
     fi

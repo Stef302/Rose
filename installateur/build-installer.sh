@@ -15,7 +15,7 @@ RACINE="$(cd "$(dirname "$0")/.." && pwd)"
 I="$RACINE/installateur"
 
 # ── configuration ──────────────────────────────────────────────────────
-VERSION="${VERSION:-0.1.3}"
+VERSION="${VERSION:-0.1.4}"
 APP_NAME="Rose"
 EXE_SRC="$RACINE/rose/target/release/rose.exe"   # binaire Windows (croisé)
 MAKENSIS="${MAKENSIS:-makensis}"

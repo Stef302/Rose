@@ -301,8 +301,9 @@ $a = tableau(10)         # tableau de 10 cases
 ⋅  ·  ×  ÷  ≤  ≥  ≠  ≈     # variantes Unicode (* ≤ ≥ != ~)
 et  ou  non                # logique (et/ou/non)
 n!   2³  √9                # postfixés : factorielle, puissance, racine
-n!!                        # factorielle exacte (moteur « rapide », multi-cœur)
-n!?                        # factorielle APPROXIMÉE (Stirling : mantisse e exposant)
+n#                         # primorielle : produit des premiers ≤ n   (10# → 210)
+n?                         # terminal : somme des factorielles 1!+…+n!   (5? → 154)
+n$                         # super-factorielle : 1!·2!·…·n!   (3$ → 12)
 ```
 
 | Opérateur | Effet | Exemple |
@@ -410,7 +411,7 @@ formule exacte en LaTeX et une approximation `≈` :
 
 | Domaine | Fonctions |
 |---|---|
-| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `rapide`(`factorial_rapide`, `!!`) `approx`(`factorial_approx`, `!?`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
+| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `rapide`(`factorial_rapide`) `approx`(`factorial_approx`) `primorielle`(`n#`) `terminal`(`n?`) `super_factorielle`(`n$`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
 | Gros nombres | `view(x)` — visionneuse paginée dans le terminal (façon nano) pour les nombres à des millions de chiffres |
 | Exact | `pi(n)` `e(n)` `phi(n)` `racine(n)` `fraction(a,b)` |
 | Types | `type(x)` → chaîne ("entier", "flottant", …) |

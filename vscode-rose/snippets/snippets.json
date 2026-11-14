@@ -155,19 +155,26 @@
     ],
     "description": "Console interactive Rose"
   },
-  "Factorielle rapide (!!)": {
-    "prefix": "fac!!",
+  "Primorielle (#)": {
+    "prefix": "fac#",
     "body": [
-      "${1:n}!!"
+      "${1:n}#"
     ],
-    "description": "Factorielle rapide multi-cœur (1000000! en ~0,9 s)"
+    "description": "Primorielle : produit des premiers ≤ n (10# → 210)"
   },
-  "Factorielle approchée (!?)": {
-    "prefix": "fac!?",
+  "Terminal (?)": {
+    "prefix": "fac?",
     "body": [
-      "${1:n}!?"
+      "${1:n}?"
     ],
-    "description": "Factorielle approximative (Stirling, notation scientifique)"
+    "description": "Terminal : somme des factorielles 1!+…+n! (5? → 154)"
+  },
+  "Super-factorielle ($)": {
+    "prefix": "fac$",
+    "body": [
+      "${1:n}$"
+    ],
+    "description": "Super-factorielle : produit 1!·2!·…·n! (3$ → 12)"
   },
   "Visionneuse (view)": {
     "prefix": "viewtab",

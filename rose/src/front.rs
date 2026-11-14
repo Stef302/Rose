@@ -70,7 +70,7 @@ pub fn promotion(a: &Ty, b: &Ty) -> Ty {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tk {
     Eof, Ident, Mot, Nombre, Flottant, Chaine,
-    Plus, Moins, Etoile, Slash, Pourcent, Chapeau, Bang, BangBang, BangQuestion,
+    Plus, Moins, Etoile, Slash, Pourcent, Chapeau, Bang, Diese, Terminal, SuperFacto,
     DivEntier, Affect, LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Semi, Virgule, DeuxPts, DeuxPoints, FlecheD, FlecheG,
     PointDInterro,
@@ -155,6 +155,18 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
     while i < n {
         let c = cps[i];
         if c == ' ' || c == '\t' || c == '\r' || c == '\n' { i += 1; if c == '\n' { ligne += 1; col = 1; } else { col += 1; } continue; }
+        // '#' : opérateur primorielle postfixe (produit des premiers ≤ n).
+        // Le commentaire de ligne reste '#' en DÉBUT de ligne ou après un
+        // blanc — ainsi « 5# » lexé comme opérateur, « # note » comme texte.
+        if c == '#' && i > 0 {
+            let p = cps[i - 1];
+            let apres_expr = !(p == '\n' || p == ' ' || p == '\t' || p == '\r');
+            if apres_expr {
+                tk.push(Token { tk: Tk::Diese, texte: "#".into(), ligne, col });
+                i += 1; col += 1;
+                continue;
+            }
+        }
         if c == '#' || (c == '/' && i + 1 < n && cps[i + 1] == '/') {
             while i < n && cps[i] != '\n' { i += 1; } continue;
         }
@@ -197,17 +209,30 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             tk.push(Token { tk: if flott { Tk::Flottant } else { Tk::Nombre }, texte, ligne: dl, col: dc });
             continue;
         }
-        // '!!' : opérateur factorielle rapide
-        if c == '!' && i + 1 < n && cps[i + 1] == '!' {
-            tk.push(Token { tk: Tk::BangBang, texte: "!!".into(), ligne, col });
-            i += 2; col += 2;
-            continue;
-        }
-        // '!?' : opérateur factorielle approximative (Stirling)
-        if c == '!' && i + 1 < n && cps[i + 1] == '?' {
-            tk.push(Token { tk: Tk::BangQuestion, texte: "!?".into(), ligne, col });
-            i += 2; col += 2;
-            continue;
+        // '!' simple : la factorielle classique suffit — plus de '!!' ni '!?'
+        // (opérateurs analogues reportés). '?' et '#' sont des postfixes à part.
+        // '?' postfixe (terminal) : devient opérateur SAUF s'il peut ouvrir
+        // l'instruction « si compact » « ? (cond) [ … ] » : en DÉBUT
+        // d'instruction (début de fichier, après un saut de ligne, un
+        // point-virgule ou '>' — le cas « [>> … ] ») ET suivi de '('.
+        // « 5? », « f(4)? », « $x? » → terminal.
+        if c == '?' {
+            let u = if i + 1 < n { cps[i + 1] } else { ' ' };
+            let p = if i > 0 { cps[i - 1] } else { '\u{0}' };
+            // l'instruction compacte s'écrit « ? (cond) [ … ] » : un « ? » en
+            // DÉBUT d'instruction (début de fichier, après '\n', ';' ou '>')
+            // suivi — à blanc près — de '(' ouvre un « si compact ». Sinon
+            // c'est le postfixe terminal.
+            let est_debut_instr = matches!(p, '\n' | ';' | '>' | '\u{0}');
+            let mut j = i + 1;
+            while j < n && (cps[j] == ' ' || cps[j] == '\t' || cps[j] == '\r') { j += 1; }
+            let suit_paren = j < n && cps[j] == '(';
+            let ouvre_si = est_debut_instr && suit_paren;
+            if !ouvre_si && u != '=' && u != '?' {
+                tk.push(Token { tk: Tk::Terminal, texte: "?".into(), ligne, col });
+                i += 1; col += 1;
+                continue;
+            }
         }
         if c == 'π' {
             tk.push(Token { tk: Tk::Mot, texte: "π".into(), ligne, col });
@@ -216,6 +241,14 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
         if c == 'φ' {
             tk.push(Token { tk: Tk::Mot, texte: "φ".into(), ligne, col });
             i += 1; col += 1; continue;
+        }
+        // '$' postfixe : super-factorielle. Un '$' suivi d'une lettre ouvre une
+        // variable ($x) ; un '$' seul (fin, chiffre, opérateur, blanc…) ferme
+        // l'expression précédente → opérateur.
+        if c == '$' && !(i + 1 < n && cp_lettre(cps[i + 1])) {
+            tk.push(Token { tk: Tk::SuperFacto, texte: "$".into(), ligne, col });
+            i += 1; col += 1;
+            continue;
         }
         if c == '$' || cp_lettre(c) {
             let (dl, dc) = (ligne, col);
@@ -297,8 +330,9 @@ pub enum Expr {
     Binaire { op: String, a: Box<Expr>, b: Box<Expr>, ligne: usize },
     Unaire { op: String, a: Box<Expr>, ligne: usize },
     Factorielle(Box<Expr>, usize),
-    FactorielleRapide(Box<Expr>, usize),
-    FactorielleApprox(Box<Expr>, usize),
+    Primorielle(Box<Expr>, usize),
+    Terminal(Box<Expr>, usize),
+    SuperFactorielle(Box<Expr>, usize),
     Index { a: Box<Expr>, b: Box<Expr>, ligne: usize },
     ListeLit(Vec<Expr>, usize),
     TableLit(Vec<(String, Expr)>, usize),
@@ -344,7 +378,7 @@ pub fn deplier_i_rec(e: &mut Expr) {
             *e = Expr::Var("i".into(), *ligne);
         }
         Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => { deplier_i_rec(a); deplier_i_rec(b); }
-        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::FactorielleRapide(a, _) | Expr::FactorielleApprox(a, _) => deplier_i_rec(a),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _) | Expr::SuperFactorielle(a, _) => deplier_i_rec(a),
         Expr::ListeLit(v, _) => { for x in v { deplier_i_rec(x); } }
         Expr::Appel { args, .. } => { for x in args { deplier_i_rec(x); } }
         Expr::TableLit(v, _) => { for (_, x) in v { deplier_i_rec(x); } }
@@ -361,7 +395,7 @@ pub fn ligne_expr(e: &Expr) -> usize {
         Expr::ChaineLit(_, l) | Expr::BooleenLit(_, l) | Expr::Var(_, l) => *l,
         Expr::Appel { ligne, .. } | Expr::Binaire { ligne, .. } => *ligne,
         Expr::Unaire { ligne, .. } | Expr::Index { ligne, .. } => *ligne,
-        Expr::Factorielle(_, l) | Expr::FactorielleRapide(_, l) | Expr::FactorielleApprox(_, l) | Expr::ListeLit(_, l) => *l,
+        Expr::Factorielle(_, l) | Expr::Primorielle(_, l) | Expr::Terminal(_, l) | Expr::SuperFactorielle(_, l) | Expr::ListeLit(_, l) => *l,
         Expr::TableLit(_, l) => *l,
     }
 }
@@ -447,6 +481,9 @@ EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "rapide", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "approx", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "factorial_approx", args: &["entier"], retour: "chaine" },
+    EntreeStd { nom: "primorielle", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "terminal", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "super_factorielle", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "view", args: &["entier"], retour: "vide" },
     EntreeStd { nom: "__i", args: &[], retour: "complexe" },
     EntreeStd { nom: "i", args: &[], retour: "complexe" },
@@ -1010,14 +1047,18 @@ impl Parser {
                 let ligne = self.voir(0).ligne;
                 self.suivant();
                 g = Expr::Factorielle(Box::new(g), ligne);
-            } else if tok == Tk::BangBang {
+            } else if tok == Tk::Diese {
                 let ligne = self.voir(0).ligne;
                 self.suivant();
-                g = Expr::FactorielleRapide(Box::new(g), ligne);
-            } else if tok == Tk::BangQuestion {
+                g = Expr::Primorielle(Box::new(g), ligne);
+            } else if tok == Tk::Terminal {
                 let ligne = self.voir(0).ligne;
                 self.suivant();
-                g = Expr::FactorielleApprox(Box::new(g), ligne);
+                g = Expr::Terminal(Box::new(g), ligne);
+            } else if tok == Tk::SuperFacto {
+                let ligne = self.voir(0).ligne;
+                self.suivant();
+                g = Expr::SuperFactorielle(Box::new(g), ligne);
             } else {
                 break;
             }
@@ -1668,19 +1709,26 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             }
             Ok(Ty::simple(TyKind::Entier))
         }
-        Expr::FactorielleRapide(a, ligne) => {
+        Expr::Primorielle(a, ligne) => {
             let t = expr_type(prog, a, env)?;
-            if t.n != TyKind::Entier {
-                return Err(fmt_err(&format!("factorielle_rapide attend un entier, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
+            if !est_numerique(&t) {
+                return Err(fmt_err(&format!("Primorielle attend un nombre, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
             }
             Ok(Ty::simple(TyKind::Entier))
         }
-        Expr::FactorielleApprox(a, ligne) => {
+        Expr::Terminal(a, ligne) => {
             let t = expr_type(prog, a, env)?;
-            if t.n != TyKind::Entier {
-                return Err(fmt_err(&format!("factorial_approx attend un entier, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
+            if !est_numerique(&t) {
+                return Err(fmt_err(&format!("Terminal attend un nombre, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
             }
-            Ok(Ty::simple(TyKind::Chaine))
+            Ok(Ty::simple(TyKind::Dyn))
+        }
+        Expr::SuperFactorielle(a, ligne) => {
+            let t = expr_type(prog, a, env)?;
+            if !est_numerique(&t) {
+                return Err(fmt_err(&format!("Super-factorielle attend un nombre, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
+            }
+            Ok(Ty::simple(TyKind::Entier))
         }
         Expr::Index { a, b, ligne } => {
             // miroir C++ NK::Index (rose.cpp:1409-1424)

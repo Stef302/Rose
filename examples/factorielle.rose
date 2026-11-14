@@ -1,15 +1,17 @@
 // Factorielle dans tous ses états — Rose
 //
 //   n!            factorielle exacte (arbre glouton multi-cœur)
-//   n!!           idem, par la fonction « rapide »
-//   n!?           approximation de Stirling (mantisse e exposant)
-//   rapide(n)     la même que n!!
-//   approx(n)     la même que n!?
+//   n#            primorielle : produit des premiers ≤ n  (5# = 2·3·5 = 30)
+//   n?            terminal : somme des factorielles 1!+2!+…+n!  (5? = 154)
+//   n$            super-factorielle : 1!·2!·…·n!  (3$ = 1!·2!·3! = 12)
+//   rapide(n)     factorielle par le même arbre rapide
+//   approx(n)     approximation de Stirling (mantisse e exposant)
 //   view(x)       visionneuse paginé façon nano pour les gros nombres
 
 >> 5!
->> 5!!
->> 5!?
+>> 5#
+>> 5?
+>> 5$
 
 $debut = temps()
 $million = factorielle(1000000)

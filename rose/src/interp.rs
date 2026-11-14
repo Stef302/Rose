@@ -1014,8 +1014,19 @@ impl Interp {
                 // voit « $i = <entier> ». Hors de ce verrou, « >> 2*i » et
                 // « >> i » sont le VRAI imaginaire (parite avec le moteur C++,
                 // qui rend « Variable 'i' utilisee sans valeur »).
-                if *re == 0.0 && *im == 1.0 && crate::front::i_est_entier_verifie() {
-                    if let Some(v) = self.cible("i") { return Ok(v); }
+                if *re == 0.0 && *im == 1.0 {
+                    // Le lexème « i » n'est la VARIABLE entière que dans un
+                    // contexte de COMPTEUR : drapeau du vérificateur (verrou
+                    // « i : entier » posé par « $i = <entier> ») OU variable
+                    // réellement liée dans une trame (le compteur vivant d'un
+                    // « pour i de … », encore absent de « globaux »). Un programme
+                    // qui ne fait jamais de « i » un entier ne lie aucune variable
+                    // « i » : le 0+1i reste le VRAI imaginaire.
+                    let compteur_vivant = crate::front::i_est_boucle()
+                        && self.trames.iter().any(|t| t.contains_key("i"));
+                    if crate::front::i_est_entier_verifie() || compteur_vivant {
+                        if let Some(v) = self.cible("i") { return Ok(v); }
+                    }
                 }
                 Ok(Valeur::Complexe { re: *re, im: *im })
             }
@@ -1160,15 +1171,19 @@ impl Interp {
                 let z = vers_z(&v);
                 Ok(Valeur::zg(factorielle(&z)))
             }
-            Expr::FactorielleRapide(a, _) => {
+            Expr::Primorielle(a, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
-                Ok(Valeur::zg(factorielle_rapide(&z)))
+                Ok(Valeur::zg(primorielle(&z)))
             }
-            Expr::FactorielleApprox(a, _) => {
+            Expr::Terminal(a, _) => {
+                let v = self.eval(a)?;
+                Ok(terminal(&v))
+            }
+            Expr::SuperFactorielle(a, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
-                Ok(Valeur::s(factorial_approx(&z)))
+                Ok(Valeur::zg(super_factorielle(&z)))
             }
             Expr::Binaire { op, a, b, ligne } => {
                 crate::run::noter_ligne(*ligne);
@@ -1779,6 +1794,9 @@ impl Interp {
             "rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
             "factorial_approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
+            "primorielle" => { let z = vers_z(&a[0]); Valeur::zg(primorielle(&z)) }
+            "terminal" => terminal(&a[0]),
+            "super_factorielle" => { let z = vers_z(&a[0]); Valeur::zg(super_factorielle(&z)) }
             "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
             "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
             "ppcm" | "lcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(ppcm(&x, &y)) }
@@ -2386,6 +2404,12 @@ impl Interp {
                 let z = Gz::neuf();
                 z.poser_u64(t);
                 Valeur::zg(z)
+            }
+            // millisecondes() (alias « ms ») : mêmes sémantiques que temps()
+            // mais en millisecondes — attendu par la suite de benchmarks.
+            "millisecondes" | "ms" => {
+                let t = crate::run::temps_unix_nanos() / 1_000_000;
+                Valeur::z(t as i64)
             }
             "duree" => {
                 let z = vers_z(&a[0]);
@@ -3197,5 +3221,88 @@ pub fn factorial_approx(n: &Gz) -> String {
     let exposant = log10.floor() as i128;
     let mantisse = 10.0_f64.powf(log10 - exposant as f64);
     format!("{:.6}e{}", mantisse, exposant)
+}
+
+// ── Primorielle, terminal, super-factorielle (opérateurs # ? $) ────────────
+// n#  = produit des nombres premiers ≤ n (primorielle, suite A002110).
+// n$  = super-factorielle : produit des factorielles 1!·2!·…·n! (A000178).
+// n?  = terminal : somme itérée des factorielles, F(0)=1, F(k)=k!+F(k−1)
+//       (A003422 : 0?→1, 1?→2, 2?→4, 3?→10, 4?→34, 5?→154).
+
+/// n# : produit des premiers ≤ n. Crible + arbre de produit parallèle.
+pub fn primorielle(n: &Gz) -> Gz {
+    if n.sgn() < 0 { erreur_runtime("primorielle d'un négatif : impossible"); }
+    if !n.fits_i64() { erreur_runtime("primorielle : n trop grand"); }
+    let nn = n.get_i64() as u64;
+    if nn < 2 { return Gz::de_i64(1); }
+    let mut est_premier = vec![true; (nn + 1) as usize];
+    est_premier[0] = false;
+    est_premier[1] = false;
+    let mut i = 2u64;
+    while i * i <= nn {
+        if est_premier[i as usize] {
+            let mut j = i * i;
+            while j <= nn { est_premier[j as usize] = false; j += i; }
+        }
+        i += 1;
+    }
+    let facteurs: Vec<num_bigint::BigInt> =
+        (2..=nn).filter(|&p| est_premier[p as usize]).map(num_bigint::BigInt::from).collect();
+    let r = crate::i128x::arbre_produit(facteurs);
+    // r est un Gz frais (Box + Drop) : le retourner tel quel est correct,
+    // la propriété du Box passe à l'appelant — jamais de copie du pointeur.
+    r
+}
+
+/// n$ : super-factorielle : produit des factorielles 1!·2!·…·n! (A000178).
+pub fn super_factorielle(n: &Gz) -> Gz {
+    if n.sgn() < 0 { erreur_runtime("super-factorielle d'un négatif : impossible"); }
+    if !n.fits_i64() { erreur_runtime("super-factorielle : n trop grand"); }
+    let nn = n.get_i64() as u64;
+    // ∏ k! = ∏_{k=1..n} k^(n+1−k) : un seul crible de Légendre généralisé,
+    // puis le même arbre glouton multi-cœur que la factorielle.
+    let r = Gz::neuf();
+    crate::i128x::super_factorielle_parallele(nn, &r);
+    r
+}
+
+/// n? : terminal (somme des factorielles itérées), polymorphe.
+pub fn terminal(v: &Valeur) -> Valeur {
+    match v {
+        Valeur::Rationnel(q) => {
+            let n = q.num_i128();
+            let d = q.den_i128();
+            if d == 0 { erreur_runtime("division par zéro"); }
+            terminal_entier(n as i64)
+        }
+        Valeur::Flottant(x) => {
+            if !x.is_finite() { erreur_runtime("terminal : nombre non fini"); }
+            terminal_entier(*x as i64)
+        }
+        Valeur::Chaine(s) => {
+            let k = s.trim().parse::<i64>().unwrap_or(0);
+            terminal_entier(k)
+        }
+        _ => {
+            let z = vers_z(v);
+            if z.sgn() < 0 { erreur_runtime("terminal d'un négatif : impossible"); }
+            if !z.fits_i64() { erreur_runtime("terminal : n trop grand"); }
+            terminal_entier(z.get_i64())
+        }
+    }
+}
+
+fn terminal_entier(nn: i64) -> Valeur {
+    if nn < 0 { erreur_runtime("terminal d'un négatif : impossible"); }
+    use std::ops::Mul;
+    let mut fact = num_bigint::BigInt::from(1u64); // k!
+    let mut somme = num_bigint::BigInt::from(1u64); // F(0) = 1
+    for k in 1..=nn {
+        fact = fact.mul(k as u64);
+        somme += &fact;
+    }
+    let r = Gz::neuf();
+    r.set_v(somme);
+    Valeur::zg(r)
 }
 

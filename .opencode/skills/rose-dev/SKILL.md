@@ -141,12 +141,23 @@ l'utilisateur web)
 | Écriture | Sens | Sortie |
 |---|---|---|
 | `n!` | factorielle exacte (multi-cœur, facteurs premiers) | entier |
-| `n!!` | idem, voie rapide — `1000000!` en ~0,9 s | entier |
-| `n!?` | Stirling complet, série `1/12n − 1/360n³ + 1/1260n⁵` | chaîne `{:.6}e{}` |
-| `rapide(n)` / `factorielle_rapide(n)` | alias de `n!!` | entier |
-| `approx(n)` | alias de `n!?` | chaîne |
+| `n#` | **primorielle** : produit des premiers ≤ n (`10#` → 210) | entier |
+| `n?` | **terminal** : somme des factorielles 1!+…+n! (`5?` → 154) | entier |
+| `n$` | **super-factorielle** : produit 1!·2!·…·n! (`3$` → 12) | entier |
+| `rapide(n)` / `factorielle_rapide(n)` | factorielle, voie rapide — `1000000!` en ~0,9 s | entier |
+| `approx(n)` | Stirling complet, série `1/12n − 1/360n³ + 1/1260n⁵` | chaîne `{:.6}e{}` |
+| `primorielle(n)` / `terminal(n)` / `super_factorielle(n)` | alias fonctions de `n#` / `n?` / `n$` | entier |
 | `view(x)` | visionneuse paginée façon nano (Espace / b / q) | — |
 | `type(x)` | nom du type (`entier`, `rationnel`, …) | chaine |
+
+Les opérateurs analogues `!!` / `!?` sont RETIRÉS (reportés) : `!` reste la
+seule factorielle postfixe. Lexage des nouveaux postfixes (front.rs) :
+- `#` est la primorielle s'il suit immédiatement un caractère non-blanc ;
+  en début de ligne ou après un blanc il reste le commentaire ;
+- `?` est le terminal SAUF en début d'instruction suivi de `(` à blanc près
+  (début de fichier, après `\n`, `;` ou `>`) → c'est le si compact `? (c) [ … ]` ;
+- `$` est la super-factorielle s'il n'est PAS suivi d'une lettre ; suivi d'une
+  lettre il ouvre une variable (`$x`).
 
 Piège : le `#[derive(Clone)]` de `Gz` (i128x.rs, pointeur nu `*mut Mpz`) ne
 clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.

@@ -52,11 +52,11 @@ fn priorite(e: &Expr) -> u8 {
             "^" => P_PUISSANCE,
             _ => P_ADDITIF,
         },
-        // Le moins unaire, la factorielle et la factorielle rapide « collent »
-        // comme une puissance : `(-a)^{b}`, `(a!)^{b}` et `(a!!)^{b}` doivent
-        // rester parenthésés pour que le LaTeX garde exactement le sens de
-        // l'AST.
-        Expr::Unaire { .. } | Expr::Factorielle(..) | Expr::FactorielleRapide(..) | Expr::FactorielleApprox(..) => P_PUISSANCE,
+        // Le moins unaire, la factorielle, la primorielle, le terminal et la
+        // super-factorielle « collent » comme une puissance : `(-a)^{b}`,
+        // `(a!)^{b}`, `(a#)^{b}`… doivent rester parenthésés pour que le LaTeX
+        // garde exactement le sens de l'AST.
+        Expr::Unaire { .. } | Expr::Factorielle(..) | Expr::Primorielle(..) | Expr::Terminal(..) | Expr::SuperFactorielle(..) => P_PUISSANCE,
         Expr::Litteral { .. }
         | Expr::LitComplexe { .. }
         | Expr::ChaineLit(..)
@@ -138,8 +138,9 @@ fn expr_brut(e: &Expr) -> String {
         Expr::Binaire { op, a, b, .. } => binaire_latex(op, a, b),
         Expr::Unaire { op, a, .. } => unaire_latex(op, a),
         Expr::Factorielle(a, _) => format!("{}!", expr_avec_priorite(a, P_ATOME)),
-        Expr::FactorielleRapide(a, _) => format!("{}!!", expr_avec_priorite(a, P_ATOME)),
-        Expr::FactorielleApprox(a, _) => format!("{}!?", expr_avec_priorite(a, P_ATOME)),
+        Expr::Primorielle(a, _) => format!("{}#", expr_avec_priorite(a, P_ATOME)),
+        Expr::Terminal(a, _) => format!("{}?", expr_avec_priorite(a, P_ATOME)),
+        Expr::SuperFactorielle(a, _) => format!("{}\\$", expr_avec_priorite(a, P_ATOME)),
         Expr::Index { a, b, .. } => format!("{}_ {{{}}}", expr_avec_priorite(a, P_ATOME), expr_brut(b)),
         Expr::ListeLit(elems, _) => {
             let inner: Vec<String> = elems.iter().map(expr_latex).collect();
@@ -686,6 +687,40 @@ mod tests {
             expr_latex(&Expr::Factorielle(Box::new(lit("5")), 1)),
             "5!"
         );
+    }
+
+    #[test]
+    fn postfixes_primaux() {
+        // « # » primorielle, « ? » terminal, « $ » super-factorielle :
+        // le LaTeX rend l'opérateur collé à son opérande ($ échappé).
+        assert_eq!(expr_latex(&Expr::Primorielle(Box::new(lit("10")), 1)), "10#");
+        assert_eq!(expr_latex(&Expr::Terminal(Box::new(lit("5")), 1)), "5?");
+        assert_eq!(expr_latex(&Expr::SuperFactorielle(Box::new(lit("3")), 1)), "3\\$");
+        // collants comme une puissance : (a#)^{b} reste parenthésé
+        assert_eq!(
+            expr_latex(&bin("^", Expr::Primorielle(Box::new(var("a")), 1), lit("2"))),
+            "(a#)^{2}"
+        );
+    }
+
+    #[test]
+    fn evaluer_postfixes_primaux() {
+        // valeurs de référence : suites A002110 (primorielle), A003422
+        // (terminal), A000178 (super-factorielle).
+        use crate::run::Valeur;
+        let z = |n: i64| crate::run::Gz::de_i64(n);
+        assert_eq!(crate::interp::primorielle(&z(10)).v().to_string(), "210");
+        assert_eq!(crate::interp::primorielle(&z(1)).v().to_string(), "1");
+        assert_eq!(crate::interp::super_factorielle(&z(5)).v().to_string(), "34560");
+        assert_eq!(crate::interp::super_factorielle(&z(0)).v().to_string(), "1");
+        match crate::interp::terminal(&Valeur::z(5)) {
+            Valeur::Entier(v, None) => assert_eq!(v, 154),
+            _ => panic!("terminal(5) attend un entier simple"),
+        }
+        match crate::interp::terminal(&Valeur::z(0)) {
+            Valeur::Entier(v, None) => assert_eq!(v, 1),
+            _ => panic!(),
+        }
     }
 
     #[test]

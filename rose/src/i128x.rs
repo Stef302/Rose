@@ -118,6 +118,106 @@ pub fn factorielle_parallele(n: u64) -> Gz {
     r
 }
 
+/// Arbre de produit équilibré multi-cœur sur une liste de facteurs déjà
+/// calculés (primorielle, super-factorielle…). Zéro clonage profond.
+pub fn arbre_produit(facteurs: Vec<BigInt>) -> Gz {
+    let r = Gz::neuf();
+    if facteurs.is_empty() { r.poser_u64(1); return r; }
+    fn arbre_seq(v: &mut Vec<BigInt>) {
+        while v.len() > 1 {
+            let m = v.len();
+            let mut i = 0usize;
+            while i + 1 < m {
+                let x = std::mem::replace(&mut v[i], BigInt::from(0u64));
+                let y = std::mem::replace(&mut v[i + 1], BigInt::from(0u64));
+                v[i / 2] = x * y;
+                i += 2;
+            }
+            if m % 2 == 1 { v[(m - 1) / 2] = std::mem::replace(&mut v[m - 1], BigInt::from(0u64)); }
+            v.truncate((m + 1) / 2);
+        }
+    }
+    fn niveau_par(v: &mut Vec<BigInt>, coeurs: usize) {
+        use std::thread;
+        v.sort_by_key(|x| std::cmp::Reverse(x.bits()));
+        let mut buckets: Vec<(u64, Vec<BigInt>)> = (0..coeurs).map(|_| (0u64, Vec::new())).collect();
+        for x in v.drain(..) {
+            let b = buckets.iter_mut().min_by_key(|(s, _)| *s).unwrap();
+            b.0 += x.bits();
+            b.1.push(x);
+        }
+        let mids: Vec<BigInt> = thread::scope(|s| {
+            let hs: Vec<_> = buckets.into_iter()
+                .map(|(_, mut lot)| s.spawn(move || {
+                    arbre_seq(&mut lot);
+                    std::mem::replace(&mut lot[0], BigInt::from(0u64))
+                }))
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        *v = mids;
+    }
+    let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
+    let mut v = facteurs;
+    while v.len() > coeurs.max(2) * 2 {
+        niveau_par(&mut v, coeurs);
+    }
+    arbre_seq(&mut v);
+    r.set_v(v.into_iter().next().unwrap());
+    r
+}
+
+/// n$ : super-factorielle ∏_{k=1..n} k! = ∏_{p premier ≤ n} p^{e_p}, avec
+/// e_p = Σ_{j=1..n} Σ_{k≥1} ⌊j/p^k⌋.
+/// ⚠ La surface Gz est un Box brut avec Drop : un retour direct de la valeur
+/// locale double-libère. On passe par une sortie en &Gz, remplie par l'appelant.
+pub fn super_factorielle_parallele(n: u64, sortie: &Gz) {
+    if n < 2 { sortie.poser_u64(1); return; }    let mut est_premier = vec![true; (n + 1) as usize];
+    est_premier[0] = false;
+    est_premier[1] = false;
+    let mut i = 2u64;
+    while i * i <= n {
+        if est_premier[i as usize] {
+            let mut j = i * i;
+            while j <= n { est_premier[j as usize] = false; j += i; }
+        }
+        i += 1;
+    }
+    // Σ_{j=1..n} ⌊j/q⌋ : formule fermée, exacte en u128.
+    fn somme_plancher(n: u64, q: u64) -> u128 {
+        let m = n / q;            // plus grand quotient
+        let r = n % q;            // dernier partiel incomplet
+        // q·(0+1+…+(m−1)) + r·m  +  m·(r+1)  … attention : les m+1 premiers
+        // blocs donnent le quotient 0..m-1 complets, puis un bloc partiel de
+        // r+1 termes de valeur m. Total : q·m(m−1)/2 + m·(r+1).
+        (q as u128) * (m as u128) * ((m as u128).saturating_sub(1)) / 2
+            + (m as u128) * ((r as u128) + 1)
+    }
+    fn pow_big(p: u64, e: u128) -> BigInt {
+        let mut base = BigInt::from(p);
+        let mut res = BigInt::from(1u64);
+        let mut ee = e;
+        while ee > 0 {
+            if ee & 1 == 1 { res *= &base; }
+            ee >>= 1;
+            if ee > 0 { base = &base * &base; }
+        }
+        res
+    }
+    let facteurs: Vec<BigInt> = (2..=n).filter(|&p| est_premier[p as usize]).map(|p| {
+        let mut e: u128 = 0;
+        let mut q = p;
+        while q <= n {
+            e += somme_plancher(n, q);
+            if q > n / p { break; }
+            q *= p;
+        }
+        pow_big(p, e)
+    }).collect();
+    let r = arbre_produit(facteurs);
+    sortie.copier_de(&r);
+}
+
 #[derive(Clone)]
 pub struct Gz(pub *mut Mpz);
 

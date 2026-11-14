@@ -300,7 +300,7 @@ fn expr_contient_lit_complexe(e: &Expr) -> bool {
     match e {
         Expr::LitComplexe { .. } => true,
         Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => expr_contient_lit_complexe(a) || expr_contient_lit_complexe(b),
-        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::FactorielleRapide(a, _) | Expr::FactorielleApprox(a, _) => expr_contient_lit_complexe(a),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _) | Expr::SuperFactorielle(a, _) => expr_contient_lit_complexe(a),
         Expr::ListeLit(v, _) => v.iter().any(expr_contient_lit_complexe),
         Expr::Appel { args, .. } => args.iter().any(expr_contient_lit_complexe),
         Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_contient_lit_complexe(x)),
@@ -436,6 +436,12 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
             Instr::Pour { nom, debut, fin, corps, .. } => {
                 if ty_statique(debut, env) != Some(TyKind::Entier) { return false; }
                 if ty_statique(fin, env) != Some(TyKind::Entier) { return false; }
+                // un corps qui porte le lexème « i » (littéral 0+1i) dépend de la
+                // réparation du compteur, que seule la voie interprétée applique
+                // (les fonctions synthétiques de interp.rs écartent déjà « touche_i »
+                // pour la même raison). Sans cette porte, la boucle compilée lit
+                // l'imaginaire et rend un résultat faux.
+                if corps_contient_lit_complexe(corps) { return false; }
                 env.insert(nom.clone(), TyKind::Entier);
                 if !bloc_compilable(corps, env, prog, attendu) { return false; }
             }

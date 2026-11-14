@@ -753,7 +753,7 @@ Salut, Alan !</pre>
           <li><button onclick="showDoc('variables',this)">Variables</button></li>
           <li><button onclick="showDoc('types',this)">Types</button></li>
           <li><button onclick="showDoc('operateurs',this)">Opérateurs</button></li>
-          <li><button onclick="showDoc('factorielles',this)">Factorielles ! !! !?</button></li>
+          <li><button onclick="showDoc('factorielles',this)">Factorielles ! # ? $</button></li>
           <li><button onclick="showDoc('instructions',this)">Instructions</button></li>
           <li><button onclick="showDoc('boucles',this)">Conditions & boucles</button></li>
           <li><button onclick="showDoc('fonctions',this)">Fonctions</button></li>
@@ -863,29 +863,33 @@ Bonjour, monde !</pre>
         </div>
 
         <div class="doc-section" id="doc-factorielles">
-          <h3>Factorielles : <code>!</code> · <code>!!</code> · <code>!?</code></h3>
-          <p>Trois notations postfixes pour trois intentions. Le moteur Rust calcule les factorielles exactes par
+          <h3>Factorielles : <code>!</code> · <code>#</code> · <code>?</code> · <code>$</code></h3>
+          <p>Quatre notations postfixes pour quatre intentions. Le moteur Rust calcule les factorielles exactes par
           <b>facteurs premiers (Légendre) + exponentiation binaire + arbre glouton multi-cœur</b> :
           <code class="inline">1000000!</code> — 5 565 709 chiffres — tombe en <b>~0,9 seconde</b>, à parité avec le
           Rust natif même algorithme.</p>
           <table class="table">
             <tr><th>Écriture</th><th>Sens</th><th>Sortie</th></tr>
             <tr><td><code>5!</code></td><td>factorielle <b>exacte</b>, tous les chiffres</td><td><code>120</code></td></tr>
-            <tr><td><code>1000000!!</code></td><td>factorielle <b>rapide</b> (même calcul, voie multi-cœur)</td><td>entier géant</td></tr>
-            <tr><td><code>100!</code> en <code>approx</code> · <code>100!?</code></td><td>Stirling <b>complet</b> (série <code>1/12n − 1/360n³ + 1/1260n⁵</code>)</td><td><code>9.332622e157</code></td></tr>
+            <tr><td><code>10#</code></td><td><b>primorielle</b> : produit des nombres premiers ≤ n</td><td><code>210</code> (2·3·5·7)</td></tr>
+            <tr><td><code>5?</code></td><td><b>terminal</b> : somme des factorielles 1!+2!+…+n!</td><td><code>154</code></td></tr>
+            <tr><td><code>3$</code></td><td><b>super-factorielle</b> : produit 1!·2!·…·n!</td><td><code>12</code></td></tr>
+            <tr><td><code>approx(100)</code></td><td>Stirling <b>complet</b> (série <code>1/12n − 1/360n³ + 1/1260n⁵</code>)</td><td><code>9.332622e157</code></td></tr>
           </table>
-          <p>Alias de bibliothèque, au choix : <code class="inline">rapide(n)</code> = <code class="inline">n!!</code>,
-          <code class="inline">approx(n)</code> = <code class="inline">n!?</code>,
-          <code class="inline">factorielle(n)</code> = <code class="inline">n!</code>.
+          <p>Alias de bibliothèque, au choix : <code class="inline">factorielle(n)</code> = <code class="inline">n!</code>,
+          <code class="inline">rapide(n)</code> (même voie multi-cœur), <code class="inline">approx(n)</code> (Stirling),
+          <code class="inline">primorielle(n)</code> = <code class="inline">n#</code>,
+          <code class="inline">terminal(n)</code> = <code class="inline">n?</code>,
+          <code class="inline">super_factorielle(n)</code> = <code class="inline">n$</code>.
           <code class="inline">type(x)</code> rend le nom du type (<code>entier</code>, <code>rationnel</code>…).</p>
           <div class="term" data-min="13">
             <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>view.rose</span></div>
 <pre><span class="k">&gt;</span> rose view.rose
 <span class="c">// view(x) : visionneuse paginée façon nano pour les très grands nombres</span>
-&gt;&gt; <span class="f">view</span>(<span class="n">1000000</span>!!)
+&gt;&gt; <span class="f">view</span>(<span class="f">factorielle</span>(<span class="n">1000000</span>))
 <span class="c">// Espace = page suivante · b = retour · q = quitter</span></pre>
           </div>
-          <div class="badge-note" data-min="10">Depuis v0.1.0 : <code>!</code>, <code>!!</code>, <code>!?</code> et les alias <code>rapide</code>/<code>approx</code>/<code>type</code>. Visionneuse <code>view</code> depuis v0.1.3.</div>
+          <div class="badge-note" data-min="10">Depuis v0.1.0 : <code>!</code> et les alias <code>rapide</code>/<code>approx</code>/<code>type</code>. Visionneuse <code>view</code> depuis v0.1.3. Depuis la prochaine version : <code>#</code> primorielle, <code>?</code> terminal, <code>$</code> super-factorielle.</div>
         </div>
 
         <div class="doc-section" id="doc-instructions">
@@ -1093,6 +1097,19 @@ Bonjour, monde !</pre>
 
       <div class="event">
         <div class="event-head">
+          <span class="event-ver">V0.1.4</span>
+          <span class="event-date">À VENIR</span>
+        </div>
+        <h4 class="event-title">Primorielle <code>#</code> · terminal <code>?</code> · super-factorielle <code>$</code></h4>
+        <ul>
+          <li>Nouveaux opérateurs postfixes : <code class="inline">10#</code> = produit des premiers ≤ n, <code class="inline">5?</code> = somme des factorielles 1!+…+n!, <code class="inline">3$</code> = produit 1!·2!·…·n! — tous trois exacts, multi-cœur, validés contre les suites A002110 / A003422 / A000178.</li>
+          <li>Alias de bibliothèque : <code class="inline">primorielle(n)</code>, <code class="inline">terminal(n)</code>, <code class="inline">super_factorielle(n)</code>.</li>
+          <li>Les opérateurs analogues <code class="inline">!!</code> / <code class="inline">!?</code> sont retirés — <code class="inline">!</code> reste la factorielle ; les fonctions <code class="inline">rapide(n)</code> et <code class="inline">approx(n)</code> restent disponibles.</li>
+        </ul>
+      </div>
+
+      <div class="event">
+        <div class="event-head">
           <span class="event-ver">V0.1.3</span>
           <span class="event-date">13 NOVEMBRE 2026</span>
         </div>
@@ -1100,7 +1117,7 @@ Bonjour, monde !</pre>
         <ul>
           <li>Factorielle réécrite : facteurs premiers (Légendre), exponentiation binaire, <b>arbre glouton multi-cœur</b> — <code class="inline">1000000!</code> (5 565 709 chiffres) en ~0,93 s, parité avec le Rust natif même algorithme (avant : 2,2 s).</li>
           <li><code class="inline">view(x)</code> : visionneuse paginée façon nano pour les très grands nombres (Espace / b / q), fenêtre rendue en O(1) par page.</li>
-          <li><code class="inline">approx()</code> / <code class="inline">!??</code> : Stirling <b>complet</b> (série jusqu'au 1/1260n⁵), validé contre <code class="inline">lgamma</code>.</li>
+          <li><code class="inline">approx()</code> : Stirling <b>complet</b> (série jusqu'au 1/1260n⁵), validé contre <code class="inline">lgamma</code>.</li>
           <li><code class="inline">rose update</code> sous Windows passe à <b>Velopack</b> : deltas binaires + rollback automatique.</li>
         </ul>
       </div>
@@ -1113,7 +1130,7 @@ Bonjour, monde !</pre>
         <h4 class="event-title">Nouvelle numérotation — le moteur Rust devient la référence</h4>
         <ul>
           <li>Le projet repart en <code class="inline">0.1.x</code> : le moteur Rust est désormais <b>le</b> moteur (interprète exact · JIT Cranelift · AOT LLVM ORC · WASM).</li>
-          <li>Notation factorielle postfixe : <code class="inline">n!</code> exact, <code class="inline">n!!</code> rapide, <code class="inline">n!?</code> Stirling ; alias courts <code class="inline">rapide</code> / <code class="inline">approx</code> / <code class="inline">type</code>.</li>
+          <li>Notation factorielle postfixe : <code class="inline">n!</code> exact ; alias courts <code class="inline">rapide</code> / <code class="inline">approx</code> / <code class="inline">type</code>. (Les analogues <code class="inline">n!!</code> / <code class="inline">n!?</code> ont été retirés depuis — voir V0.1.4.)</li>
           <li>Constantes irrationnelles exactes π / e / φ rendues en LaTeX automatique.</li>
           <li>Parité C++ 54/54, zéro dépendance externe (pas de GMP).</li>
         </ul>
@@ -1562,7 +1579,9 @@ function lexer(src){
     const ch = src[i], L0 = l, C0 = c;
     if (ch === '\n' || ch === ' ' || ch === '\t' || ch === '\r') { adv(1); continue; }
     if (ch === '/' && src[i+1] === '/') { while (i < src.length && src[i] !== '\n') adv(1); continue; }
-    if (ch === '$') { adv(1); let s = ''; while (i < src.length && /[\p{L}\p{N}_]/u.test(src[i])) { s += src[i]; adv(1); } if (!s) throw {l:L0,c:C0,m:'nom de variable attendu après « $ »'}; T.push({k:'var', v:s, l:L0, c:C0}); continue; }
+    if (ch === '#' && !(i > 0 && /[^\s;]/.test(src[i-1]))) { while (i < src.length && src[i] !== '\n') adv(1); continue; }
+    if (ch === '$' && /[\p{L}_]/u.test(src[i+1] || '')) { adv(1); let s = ''; while (i < src.length && /[\p{L}\p{N}_]/u.test(src[i])) { s += src[i]; adv(1); } if (!s) throw {l:L0,c:C0,m:'nom de variable attendu après « $ »'}; T.push({k:'var', v:s, l:L0, c:C0}); continue; }
+    if (ch === '$') { T.push({k:'op', v:'$', l:L0, c:C0}); adv(1); continue; }
     if (/[\p{L}_]/u.test(ch)) { let s = ''; while (i < src.length && /[\p{L}\p{N}_]/u.test(src[i])) { s += src[i]; adv(1); } T.push({k:MOTS.has(s) ? 'mot' : 'nom', v:s, l:L0, c:C0}); continue; }
     if (/\d/.test(ch)) { let s = ''; while (/\d/.test(src[i] || '')) { s += src[i]; adv(1); }
       if (src[i] === '.' && /\d/.test(src[i+1] || '')) { s += src[i]; adv(1); while (/\d/.test(src[i] || '')) { s += src[i]; adv(1); } T.push({k:'flott', v:parseFloat(s), l:L0, c:C0}); }
@@ -1570,7 +1589,7 @@ function lexer(src){
     if (ch === '"') { adv(1); let s = ''; while (i < src.length && src[i] !== '"') { if (src[i] === '\\') { const n = src[i+1]; s += (n === 'n' ? '\n' : n === 't' ? '\t' : n); adv(2); } else { s += src[i]; adv(1); } } if (src[i] !== '"') throw {l:L0,c:C0,m:'chaîne non terminée'}; adv(1); T.push({k:'chaine', v:s, l:L0, c:C0}); continue; }
     const d2 = src.substr(i, 2);
     if (['>>','==','!=','<=','>='].includes(d2)) { T.push({k:'op', v:d2, l:L0, c:C0}); adv(2); continue; }
-    if ('+-*/%^=<>(),.:;?@≈[]{}'.includes(ch)) { T.push({k:'op', v:ch, l:L0, c:C0}); adv(1); continue; }
+    if ('+-*/%^=<>(),.:;?@≈[]{}!#'.includes(ch)) { T.push({k:'op', v:ch, l:L0, c:C0}); adv(1); continue; }
     throw {l:L0, c:C0, m:'caractère « ' + ch + ' » non reconnu'};
   }
   T.push({k:'eof', l, c});
@@ -1600,6 +1619,26 @@ function parse(tokens){
   function instr(){
     while (est('op',';')) nv();
     const t = at();
+    // « ? (cond) [ … ] » : si compact — le « ? » ouvre une instruction quand
+    // « ( » le suit à blanc près et qu'il n'est pas collé à une expression
+    // (précédé d'un nombre, variable, ')' ou ']' → c'est le terminal).
+    if (est('op','?')) {
+      let j = p + 1;
+      while (j < tokens.length && tokens[j].k === 'op' && (tokens[j].v === ' ' || tokens[j].v === '\t')) j++;
+      const suit_paren = tokens[j] && tokens[j].k === 'op' && tokens[j].v === '(';
+      // règle du moteur : le '?' ouvre le si compact seulement en DÉBUT
+      // d'instruction — jeton précédent = début (p=0), fin de ligne
+      // (ligne suivante), ';' ou '>' du corps « [>> … ] » — et '(' à blanc près.
+      const prev = p > 0 ? tokens[p - 1] : null;
+      const debut = prev === null || prev.l !== tokens[p].l || prev.k === 'eof' ||
+        (prev.k === 'op' && (prev.v === ';' || prev.v === '>>'));
+      const colle = !debut;
+      const ferme = false;
+      if (suit_paren && !colle && !ferme) { nv(); opp('op','('); const cond = expr(); opp('op',')');
+        const bras = [{c:cond, b:corps()}]; let sinon = null;
+        if (est('mot','sinon')) { nv(); if (est('op','?')) { nv(); opp('op','('); const c2 = expr(); opp('op',')'); bras.push({c:c2, b:corps()}); } else sinon = corps(); }
+        return {k:'si', bras, sinon, l:t.l}; }
+    }
     if (est('op','>>')) { nv(); return {k:'out', e:expr(), l:t.l}; }
     if (est('mot','fn')) {
       nv(); const nom = nv().v; opp('op','(');
@@ -1626,10 +1665,6 @@ function parse(tokens){
     if (est('mot','retour')) { nv();
       if (est('op','}') || est('op',']') || est('eof') || est('mot','sinon')) return {k:'ret', e:null, l:t.l};
       return {k:'ret', e:expr(), l:t.l}; }
-    if (est('op','?')) { nv(); opp('op','('); const cond = expr(); opp('op',')');
-      const bras = [{c:cond, b:corps()}]; let sinon = null;
-      if (est('mot','sinon')) { nv(); if (est('op','?')) { nv(); opp('op','('); const c2 = expr(); opp('op',')'); bras.push({c:c2, b:corps()}); } else sinon = corps(); }
-      return {k:'si', bras, sinon, l:t.l}; }
     if (est('op','@')) { nv(); opp('op','('); const c = expr(); opp('op',')'); return {k:'tq', c, b:corps(), l:t.l}; }
     if (est('var')) {
       const nom = nv().v;
@@ -1657,7 +1692,16 @@ function parse(tokens){
   function powL(){ let a = unaire();
     if (est('op','^')) { nv(); return {k:'bin', op:'^', a, b:powExp()}; } return a; }
   function unaire(){ if (est('op','-')) { nv(); return {k:'uni', op:'-', a:unaire()}; }
-    if (est('mot','non')) { nv(); return {k:'non', a:unaire()}; } return postfix(); }
+    if (est('mot','non')) { nv(); return {k:'non', a:unaire()}; } return postFixes(); }
+  function postFixes(){ let a = postfix();
+    for (;;) {
+      if (est('op','!')) { nv(); a = {k:'post', op:'!', a}; continue; }
+      if (est('op','#')) { nv(); a = {k:'post', op:'#', a}; continue; }
+      if (est('op','$')) { nv(); a = {k:'post', op:'$', a}; continue; }
+      // « ? » postfixe (terminal) : tout « ? » qui n'ouvre pas « ( » est un
+      // opérateur — l'instruction « ? (cond) [ … ] » est absorbée plus haut.
+      if (est('op','?') && !(tokens[p + 1] && tokens[p + 1].v === '(')) { nv(); a = {k:'post', op:'?', a}; continue; }
+      return a; } }
   function powExp(){ if (est('op','-')) { nv(); return {k:'uni', op:'-', a:powExp()}; }
     const a = postfix();
     if (est('op','^')) { nv(); return {k:'bin', op:'^', a, b:powExp()}; } return a; }
@@ -1908,6 +1952,16 @@ function evn(n, env){ // valeur d'expression
     case 'uni': { const a = evn(n.a, env);
       if (!['z','q','f'].includes(a.t)) errE(0, 'unaire « - » sur « ' + NOMTY[a.t] + ' » impossible');
       return a.t==='z' ? Z(-a.v) : a.t==='q' ? Q(-a.v[0], a.v[1]) : F(-a.v); }
+    case 'post': { const a = evn(n.a, env);
+      if (a.t !== 'z') errE(n.l ?? 0, NOMTY[a.t] + ' impossible comme opérateur postfixe (entier attendu)');
+      if (a.v < 0n) errE(n.l ?? 0, 'opérateur postfixe d’un négatif : impossible');
+      if (a.v > 20000n) errE(n.l ?? 0, 'valeur trop grande pour le moteur navigateur');
+      if (n.op === '!') { let r = 1n; for (let k = 2n; k <= a.v; k++) r *= k; return Z(r); }
+      if (n.op === '#') { const nn = Number(a.v); const crib = new Uint8Array(nn + 1);
+        let r = 1n; for (let p2 = 2; p2 <= nn; p2++) if (!crib[p2]) { r *= BigInt(p2); for (let j = p2 * 2; j <= nn; j += p2) crib[j] = 1; } return Z(r); }
+      if (n.op === '?') { let f = 1n, s = 1n; for (let k = 1n; k <= a.v; k++) { f *= k; s += f; } return Z(s); }
+      if (n.op === '$') { let f = 1n, r = 1n; for (let k = 1n; k <= a.v; k++) { f *= k; r *= f; } return Z(r); }
+      errE(n.l ?? 0, 'opérateur postfixe inconnu'); return null; }
     case 'bin': { const a = evn(n.a, env), b = evn(n.b, env);
       return ['==','!=','<','<=','>','>=','≈'].includes(n.op) ? cmpop(n.op, a, b, n.l) : binop(n.op, a, b, n.l); }
     case 'idx': { const base = evn(n.a, env), i = evn(n.i, env);
