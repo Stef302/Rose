@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Rose" Language="1036" Version="0.1.4" Manufacturer="Stef302"
+           UpgradeCode="B7E4A1C2-3D4F-5A6B-7C8D-9E0F1A2B3C4D">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" Platform="x64"
+             Description="Rose 0.1.4 — moteur natif (interprète, JIT x64, AOT)"
+             Comments="© 2026 Stef302 — Licence MIT" />
+    <Media Id="1" Cabinet="rose.cab" EmbedCab="yes" />
+
+    <MajorUpgrade DowngradeErrorMessage="Une version plus récente de Rose est déjà installée sur cette machine." />
+    <Property Id="ARPPRODUCTICON" Value="RoseIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://stef302.github.io/Rose/" />
+    <Property Id="ARPHELPLINK" Value="https://stef302.github.io/Rose/" />
+    <Icon Id="RoseIcon" SourceFile="rose.ico" />
+
+    <!-- ============ ARBORESCENCE + COMPOSANTS ============ -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLDIR" Name="Rose">
+          <Directory Id="BINDIR" Name="bin">
+            <!-- Moteur natif (requis) -->
+            <Component Id="C_Core" Guid="11111111-2222-3333-4444-555555555555">
+              <File Id="rose.exe" Name="rose.exe" Source="rose.exe" KeyPath="yes" />
+              <File Id="llvm.dll" Name="LLVM-C.dll" Source="LLVM-C.dll" KeyPath="no" />
+            </Component>
+          </Directory>
+          <Directory Id="DOCDIR" Name="docs">
+            <!-- Documentation hors ligne -->
+            <Component Id="C_Docs" Guid="66666666-7777-8888-9999-AAAAAAAAAAAA">
+              <File Id="readme.txt" Name="README-PARTAGE.md" Source="README-PARTAGE.md" KeyPath="yes" />
+              <CreateFolder />
+            </Component>
+          </Directory>
+          <Directory Id="TESTDIR" Name="tests">
+            <!-- Suite de conformité -->
+            <Component Id="C_Tests" Guid="77777777-8888-9999-AAAA-BBBBBBBBBBBB">
+              <File Id="test_placeholder.txt" Name="conformite.txt" Source="conformite.txt" KeyPath="yes" />
+              <CreateFolder />
+            </Component>
+          </Directory>
+
+          <!-- PATH utilisateur -->
+          <Component Id="C_Path" Guid="22222222-3333-4444-5555-666666666666">
+            <Environment Id="EnvPath" Name="PATH" Value="[BINDIR]" Permanent="no"
+                         Part="last" Action="set" System="no" />
+            <RegistryValue Root="HKCU" Key="Software\Rose" Name="PathAdded" Type="string"
+                           Value="1" KeyPath="yes" />
+          </Component>
+
+          <!-- Association .rose -->
+          <Component Id="C_Assoc" Guid="33333333-4444-5555-6666-777777777777">
+            <RegistryValue Root="HKCU" Key="Software\Classes\.rose" Name="" Type="string"
+                           Value="Rose.Source" KeyPath="yes" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\Rose.Source" Name="" Type="string"
+                           Value="Fichier source Rose" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\Rose.Source\DefaultIcon" Name=""
+                           Type="string" Value="[BINDIR]rose.exe,0" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\Rose.Source\shell\open\command" Name=""
+                           Type="string" Value="&quot;[BINDIR]rose.exe&quot; &quot;%1&quot;" />
+          </Component>
+
+          <!-- Menu contextuel « Modifier » -->
+          <Component Id="C_Context" Guid="44444444-5555-6666-7777-888888888888">
+            <RegistryValue Root="HKCU" Key="Software\Classes\Rose.Source\shell\Modifier" Name=""
+                           Type="string" Value="Modifier" />
+            <RegistryValue Root="HKCU" Key="Software\Classes\Rose.Source\shell\Modifier\command" Name=""
+                           Type="string" Value="notepad.exe &quot;%1&quot;" KeyPath="yes" />
+          </Component>
+
+          <!-- Inscription dans Applications et fonctionnalités -->
+          <Component Id="C_Registry" Guid="88888888-9999-AAAA-BBBB-CCCCCCCCCCCC">
+            <RegistryValue Root="HKCU" Key="Software\Rose" Name="InstallDir" Type="string"
+                           Value="[INSTALLDIR]" KeyPath="yes" />
+            <RegistryValue Root="HKCU" Key="Software\Rose" Name="Version" Type="string"
+                           Value="0.1.4" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="DesktopFolder" Name="Desktop" />
+      <Directory Id="ProgramMenuFolder" Name="Programs">
+        <Directory Id="RoseMenuFolder" Name="Rose">
+          <!-- Raccourci Bureau / Menu démarrer -->
+          <Component Id="C_Shortcut" Guid="55555555-6666-7777-8888-999999999999">
+            <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="Rose"
+                      Target="[BINDIR]rose.exe" WorkingDirectory="BINDIR" Icon="RoseIcon" />
+            <Shortcut Id="StartMenuShortcut" Directory="RoseMenuFolder" Name="Rose"
+                      Target="[BINDIR]rose.exe" WorkingDirectory="BINDIR" Icon="RoseIcon" />
+            <RemoveFolder Id="RemoveRoseMenu" Directory="RoseMenuFolder" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\Rose" Name="Shortcut" Type="string"
+                           Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- ============ FONCTIONNALITÉS ============ -->
+    <Feature Id="ProductFeature" Title="Moteur natif Rose" Level="1" Absent="disallow">
+      <ComponentRef Id="C_Core" />
+      <ComponentRef Id="C_Registry" />
+    </Feature>
+    <Feature Id="FeatPath" Title="Ajouter rose au PATH utilisateur" Level="1">
+      <ComponentRef Id="C_Path" />
+    </Feature>
+    <Feature Id="FeatAssoc" Title="Associer les fichiers .rose" Level="1">
+      <ComponentRef Id="C_Assoc" />
+      <ComponentRef Id="C_Context" />
+    </Feature>
+    <Feature Id="FeatShortcut" Title="Raccourci sur le Bureau" Level="2">
+      <ComponentRef Id="C_Shortcut" />
+    </Feature>
+    <Feature Id="FeatDocs" Title="Documentation hors ligne" Level="1">
+      <ComponentRef Id="C_Docs" />
+    </Feature>
+    <Feature Id="FeatTests" Title="Suite de conformité" Level="2">
+      <ComponentRef Id="C_Tests" />
+    </Feature>
+
+    <!-- ============ INTERFACE (Windows / WiX Toolset uniquement) ============ -->
+    <?if $(var.UI) = 1 ?>
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLDIR" />
+    <UIRef Id="WixUI_Mondo" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <?endif?>
+  </Product>
+</Wix>
