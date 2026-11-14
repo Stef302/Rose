@@ -127,6 +127,7 @@ unsafe extern "system" {
     fn AlphaBlend(dst: HDC, x: i32, y: i32, cx: i32, cy: i32, src: HDC, sx: i32, sy: i32,
                   scx: i32, scy: i32, f: BLENDFUNCTION) -> i32;
     fn CreateCompatibleDC(dc: HDC) -> HDC;
+    fn CreateCompatibleBitmap(dc: HDC, cx: i32, cy: i32) -> HBITMAP;
     fn DeleteDC(dc: HDC) -> i32;
     fn SetDIBitsToDevice(dc: HDC, x: i32, y: i32, cx: i32, cy: i32, sx: i32, sy: i32,
                          debut: u32, lignes: u32, bits: *const c_void, bmi: *const BITMAPINFO, usage: u32) -> i32;
@@ -141,12 +142,20 @@ unsafe extern "system" {
     fn LineTo(dc: HDC, x: i32, y: i32) -> i32;
     fn MonitorFromWindow(h: HWND, drapeaux: u32) -> *mut c_void;
     fn GetMonitorInfoW(m: *mut c_void, info: *mut MONITORINFO) -> i32;
+    fn SetProcessDpiAwarenessContext(ctx: isize) -> i32;
+    fn SetProcessDPIAware() -> i32;
+    fn GetDpiForWindow(h: HWND) -> u32;
+    fn IsZoomed(h: HWND) -> i32;
+    fn GetSystemMetrics(i: i32) -> i32;
+    fn SetClassLongPtrW(h: HWND, index: i32, valeur: isize) -> isize;
 }
 
 const WM_DESTROY: u32 = 0x0002;
 const WM_PAINT: u32 = 0x000F;
 const WM_CLOSE: u32 = 0x0010;
 const WM_TIMER: u32 = 0x0113;
+const WM_SIZE: u32 = 0x0005;
+const WM_DPICHANGED: u32 = 0x02E0;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONUP: u32 = 0x0202;
 const WM_SETCURSOR: u32 = 0x0020;
@@ -158,8 +167,30 @@ const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SIZING: u32 = 0x0214;
 
 const HTCAPTION: isize = 2;
+const HTRIGHT: isize = 11;
+const HTBOTTOM: isize = 15;
+const HTBOTTOMRIGHT: isize = 17;
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF0000;
+const WS_POPUP: u32 = 0x80000000;
+const WS_THICKFRAME: u32 = 0x00040000;
+const WS_SYSMENU: u32 = 0x00080000;
+const WS_MINIMIZEBOX: u32 = 0x00020000;
+const WS_MAXIMIZEBOX: u32 = 0x00010000;
 const SW_SHOW: i32 = 5;
+const SW_MINIMIZE: i32 = 6;
+const SW_RESTORE: i32 = 9;
+const SW_MAXIMIZE: i32 = 3;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOMOVE: u32 = 0x0002;
+const SWP_NOSIZE: u32 = 0x0001;
+const HWND_TOP: HWND = 0 as HWND;
+const SM_CXSCREEN: i32 = 0;
+const SM_CYSCREEN: i32 = 1;
+const SM_CXSMICON: i32 = 49;
+const SM_CYSMICON: i32 = 50;
+const WS_EX_APPWINDOW: u32 = 0x00040000;
+const WS_EX_TOOLWINDOW: u32 = 0x00000080;
 const CS_HREDRAW: u32 = 0x0002;
 const CS_VREDRAW: u32 = 0x0001;
 const TRANSPARENT: i32 = 1;
@@ -172,11 +203,15 @@ const DT_LEFT: u32 = 0x0000;
 const IDC_ARROW: u16 = 32512;
 const IDC_HAND: u16 = 32649;
 const LOGPIXELSY: i32 = 90;
+/// Qualité de police : `ANTIALIASED_QUALITY` = 4. Le tracé passait par la
+/// qualité 5 (CLEARTYPE) mais sur un DC mémoire, où ClearType n'est pas
+/// appliqué : les textes sortaient crénelés. L'anti-aliasing gris lisse
+/// tous les DC, y compris la surface de double-bufferisation.
+const QUALITE_POLICE: i32 = 4;
 const SRCCOPY: u32 = 0x00CC0020;
 const TIMER_PROGRESSION: usize = 1;
 const ICON_BIG: usize = 1;
 const ICON_SMALL: usize = 0;
-const IMAGE_ICON: u32 = 1;
 const LR_SHARED: u32 = 0x8000;
 const RT_GROUP_ICON: *const u16 = 14 as *const u16;
 
@@ -250,9 +285,16 @@ struct Etat {
     statut: String,
     /// Vrai pendant une opération (barre de progression).
     occupe: bool,
+    /// Vrai quand la fenêtre est maximisée (plein écran) : le tracé ne doit
+    /// alors PAS conserver le ratio du gabarit, sinon la fenêtre déborde de
+    /// l'écran et la barre d'état sort par le bas.
+    maximise: bool,
     phase: i32,
     /// Bouton survolé : 0 = gauche, 1 = droite, -1 = aucun.
     survol: i32,
+    /// Bouton de la barre de titre survolé : 0 = réduire, 1 = agrandir,
+    /// 2 = fermer, -1 = aucun (ou zone de déplacement).
+    survol_titre: i32,
     /// Dernière version installée (après succès).
     version_installee: String,
     dpi: i32,
@@ -447,7 +489,7 @@ unsafe fn texte_echelle(dc: HDC, dpi: i32, famille: &str, s: &str, r: &mut RECT,
     let face = hex_w(famille);
     let poids = if gras { 700 } else { 400 };
     let taille = -points_ecrits(dpi, points, echelle);
-    let police = CreateFontW(taille, 0, 0, 0, poids, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
+    let police = CreateFontW(taille, 0, 0, 0, poids, 0, 0, 0, 1, 0, 0, QUALITE_POLICE, 0, face.as_ptr());
     let ancien = SelectObject(dc, police as *mut c_void);
     let v = hex_w(s);
     DrawTextW(dc, v.as_ptr(), (v.len() - 1) as i32, r, flags);
@@ -530,30 +572,43 @@ unsafe fn carte(dc: HDC, r: &RECT, accent: u32) {
 /// Mise en page : les deux boutons du pied de page pour la vue courante.
 fn boutons(vue: Vue, existant: bool) -> (Option<(Action, &'static str)>, Option<(Action, &'static str)>) {
     match vue {
-        Vue::Bienvenue | Vue::Licence => (Some((Action::Annuler, "Annuler")), Some((Action::Avancer, "Suivant ▸"))),
+        Vue::Bienvenue | Vue::Licence => (Some((Action::Annuler, "Annuler")), Some((Action::Avancer, "Suivant"))),
         Vue::Options => (
             if existant { Some((Action::Desinstaller, "Désinstaller")) } else { Some((Action::Annuler, "Annuler")) },
-            Some((Action::Avancer, "Installer ▸")),
+            Some((Action::Avancer, "Installer")),
         ),
         Vue::Installation => (Some((Action::Annuler, "Annuler")), None),
-        Vue::Termine => (Some((Action::Retour, "Fermer")), Some((Action::Fermer, "Terminer ▸"))),
+        Vue::Termine => (Some((Action::Retour, "Fermer")), Some((Action::Fermer, "Terminer"))),
     }
 }
 
 /// Libellé et couleur du bouton de droite de la vue « Options ».
 fn libelle_principal(existant: bool) -> &'static str {
-    if existant { "Mettre à jour ▸" } else { "Installer ▸" }
+    if existant { "Mettre à jour" } else { "Installer" }
 }
 
 unsafe fn dessiner(h: HWND) {
     let mut ps = std::mem::zeroed::<PAINTSTRUCT>();
-    let dc = BeginPaint(h, &mut ps);
+    let dc_ecran = BeginPaint(h, &mut ps);
     let mut rc = std::mem::zeroed::<RECT>();
     GetClientRect(h, &mut rc);
+    // Double-bufferisation : on dessine tout sur un DC mémoire puis on copie
+    // d'un bloc. Sans cela, chaque `InvalidateRect` repeignait directement la
+    // fenêtre, ce qui produisait un clignotement et des bords crénelés.
+    let dc_memoire = CreateCompatibleDC(dc_ecran);
+    let bitmap = CreateCompatibleBitmap(dc_ecran, rc.right.max(1), rc.bottom.max(1));
+    let ancien_bitmap = SelectObject(dc_memoire, bitmap as *mut c_void);
+    let dc = dc_memoire;
     let w = rc.right;
     let ht = rc.bottom;
     let etat = &mut *ETAT;
-    if etat.dpi == 0 {
+    // DPI réel de la fenêtre (par moniteur). `GetDpiForWindow` est exact même
+    // quand la fenêtre change d'écran ; `GetDeviceCaps(LOGPIXELSY)` ne donne
+    // que le DPI de démarrage du processus.
+    let dpi_fenetre = GetDpiForWindow(h);
+    if dpi_fenetre > 0 {
+        etat.dpi = dpi_fenetre as i32;
+    } else if etat.dpi == 0 {
         etat.dpi = GetDeviceCaps(dc, LOGPIXELSY);
         if etat.dpi <= 0 { etat.dpi = 96; }
     }
@@ -574,23 +629,85 @@ unsafe fn dessiner(h: HWND) {
     // fond général
     remplir(dc, &rc, FOND);
 
-    // ── barre de titre (dessinée par nous, la fenêtre est sans cadre) ──
+    // ── barre de titre PERSONNALISÉE (aucun cadre Windows) ──
+    // La fenêtre est un WS_POPUP : tout est dessiné ici — fond, rose, marque
+    // en Kare, pastille de version et trois boutons (réduire / agrandir /
+    // fermer) au style de la maquette, pas ceux de Windows 11.
     let barre = RECT { left: 0, top: 0, right: w, bottom: s(56) };
     remplir(dc, &barre, BARRE);
+    // filet lumineux sous la barre : sépare visuellement l'en-tête
+    let filet_barre = RECT { left: 0, top: s(55), right: w, bottom: s(56) };
+    remplir(dc, &filet_barre, LIGNE_FORTE);
     dessiner_rose(dc, s(18), s(16), s(24));
-    let mut rt = RECT { left: s(52), top: s(14), right: s(360), bottom: s(42) };
-    texte_echelle(dc, dpi, "Segoe UI", "Rose — Programme d'installation", &mut rt, DT_SINGLELINE | DT_VCENTER, TEXTE, 11, true, echelle);
+    // La marque « Rose » en Kare, comme sur le site et la maquette.
+    let mut rt = RECT { left: s(52), top: s(13), right: s(210), bottom: s(43) };
+    texte_echelle(dc, dpi, "Kare", "Rose", &mut rt, DT_LEFT | DT_VCENTER | DT_SINGLELINE, TEXTE, 15, false, echelle);
+    let mut rt2 = RECT { left: s(210), top: s(16), right: s(430), bottom: s(40) };
+    texte_echelle(dc, dpi, "Segoe UI", "— Programme d'installation", &mut rt2,
+          DT_LEFT | DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 10, false, echelle);
     // pastille de version
-    let pastille = RECT { left: s(362), top: s(16), right: s(362 + 128), bottom: s(40) };
+    let pastille = RECT { left: s(438), top: s(16), right: s(438 + 128), bottom: s(40) };
     contour(dc, &pastille, 8, LIGNE_FORTE);
     let mut rv = RECT { left: pastille.left, top: pastille.top, right: pastille.right, bottom: pastille.bottom };
     texte_echelle(dc, dpi, "Segoe UI", &format!("v{}  ·  x64", env!("CARGO_PKG_VERSION")), &mut rv,
           DT_CENTER | DT_VCENTER | DT_SINGLELINE, VERT, 9, true, echelle);
-    // boutons réduire / fermer
-    let mut rf = RECT { left: w - s(46), top: 0, right: w, bottom: s(56) };
-    texte_echelle(dc, dpi, "Segoe UI", "✕", &mut rf, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 10, false, echelle);
-    let mut rm = RECT { left: w - s(92), top: 0, right: w - s(46), bottom: s(56) };
-    texte_echelle(dc, dpi, "Segoe UI", "—", &mut rm, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 10, false, echelle);
+
+    // ── trois boutons de fenêtre, dessinés à la main ──
+    // Largeur 46 px chacun sur la grille ; le survol éclaircit, le bouton
+    // fermer passe au rouge (comportement attendu, mais dans NOTRE style).
+    let bouton_l = s(46);
+    let (b_fermer, b_agrandir, b_reduire) = (
+        w - bouton_l,
+        w - 2 * bouton_l,
+        w - 3 * bouton_l,
+    );
+    let survol_titre = if etat.survol_titre >= 0 { etat.survol_titre } else { -1 };
+    for (i, gauche) in [(0usize, b_reduire), (1, b_agrandir), (2, b_fermer)] {
+        let zone = RECT { left: gauche, top: 0, right: gauche + bouton_l, bottom: s(56) };
+        if survol_titre == i as i32 {
+            let fond = if i == 2 { ROUGE } else { SURVOL_SOMBRE };
+            remplir(dc, &zone, fond);
+        }
+        let couleur = if survol_titre == i as i32 && i == 2 { BLANC } else { TEXTE_DOUX };
+        let cx = gauche + bouton_l / 2;
+        let cy = s(28);
+        let g = s(5); // demi-taille du glyphe
+        match i {
+            // réduire : un trait horizontal
+            0 => ligne(dc, cx - g, cy, cx + g, cy, couleur, (s(1)).max(1)),
+            // agrandir : un carré (ou deux carrés si déjà maximisé)
+            1 => {
+                if etat.maximise {
+                    // deux carrés superposés : « restaurer »
+                    let d = g;
+                    let e2 = s(2);
+                    let stylo = CreatePen(0, (s(1)).max(1), couleur);
+                    let ancien = SelectObject(dc, stylo as *mut c_void);
+                    let pinceau_nul = SelectObject(dc, (1 as usize) as *mut c_void);
+                    RoundRect(dc, cx - d, cy - d + e2, cx + d - e2, cy + d, 0, 0);
+                    RoundRect(dc, cx - d + e2, cy - d, cx + d, cy + d - e2, 0, 0);
+                    SelectObject(dc, pinceau_nul);
+                    SelectObject(dc, ancien);
+                    DeleteObject(stylo as *mut c_void);
+                } else {
+                    let stylo = CreatePen(0, (s(1)).max(1), couleur);
+                    let ancien = SelectObject(dc, stylo as *mut c_void);
+                    let pinceau_nul = SelectObject(dc, (1 as usize) as *mut c_void);
+                    RoundRect(dc, cx - g, cy - g, cx + g, cy + g, 0, 0);
+                    SelectObject(dc, pinceau_nul);
+                    SelectObject(dc, ancien);
+                    DeleteObject(stylo as *mut c_void);
+                }
+            }
+            // fermer : une croix tracée au stylo
+            _ => {
+                let e = (s(1)).max(1);
+                ligne(dc, cx - g, cy - g, cx + g, cy + g, couleur, e);
+                ligne(dc, cx - g, cy + g, cx + g, cy - g, couleur, e);
+            }
+        }
+    }
+    ZONES_TITRE = [b_reduire, b_agrandir, b_fermer];
 
     // ── panneau latéral ──
     let pied_h = s(76);
@@ -603,10 +720,11 @@ unsafe fn dessiner(h: HWND) {
 
     // La rose de la maquette occupe ~110 px sur 320 de large, sous une barre
     // de titre de 56 px : 120 px centrés, titre « ROSE » juste dessous.
-    dessiner_rose(dc, lateral_w / 2 - s(60), s(80), s(120));
+    dessiner_rose(dc, lateral_w / 2 - s(60), s(78), s(124));
     let mut rl = RECT { left: 0, top: s(206), right: lateral_w, bottom: s(268) };
-    texte_echelle(dc, dpi, "Kare", "ROSE", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 34, false, echelle);
-    let mut rs = RECT { left: s(24), top: s(274), right: lateral_w - s(24), bottom: s(330) };
+    // Marque en Kare, comme le site : c'est la signature visuelle de Rose.
+    texte_echelle(dc, dpi, "Kare", "Rose", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 36, false, echelle);
+    let mut rs = RECT { left: s(24), top: s(274), right: lateral_w - s(24), bottom: s(334) };
     texte_echelle(dc, dpi, "Segoe UI", "Le langage compilé en français qui se compile lui-même.",
           &mut rs, DT_CENTER | DT_WORDBREAK, TEXTE_DOUX, 9, false, echelle);
 
@@ -664,12 +782,17 @@ unsafe fn dessiner(h: HWND) {
         Vue::Installation => ("Installation".to_string(), etat.statut.clone()),
         Vue::Termine => ("Terminé".to_string(), "Rose est prêt.".to_string()),
     };
-    let mut rti = RECT { left: g, top: yc, right: d, bottom: yc + s(40) };
-    texte_echelle(dc, dpi, "Segoe UI", &titre, &mut rti, DT_SINGLELINE | DT_VCENTER, TEXTE, 18, true, echelle);
-    yc += s(48);
+    let mut rti = RECT { left: g, top: yc, right: d, bottom: yc + s(44) };
+    // Titre de section en Kare — mais EN MAJUSCULES : Kare est une police
+    // d'AFFICHAGE (ses minuscules dessinent les capitales), donc un titre en
+    // minuscules se lit mal (« Options » → « PTIONS »). Le site réserve Kare
+    // aux titres, à la marque et aux boutons, et Segoe UI au texte courant.
+    let titre_kare = titre.to_uppercase();
+    texte_echelle(dc, dpi, "Kare", &titre_kare, &mut rti, DT_SINGLELINE | DT_VCENTER, TEXTE, 20, false, echelle);
+    yc += s(52);
     let mut rso = RECT { left: g, top: yc, right: d, bottom: yc + s(30) };
     texte_echelle(dc, dpi, "Segoe UI", &sous, &mut rso, DT_WORDBREAK, TEXTE_DOUX, 10, false, echelle);
-    yc += s(40);
+    yc += s(48);
 
     match etat.vue {
         Vue::Bienvenue => {
@@ -781,8 +904,12 @@ unsafe fn dessiner(h: HWND) {
         arrondi(dc, &r, 10, fond);
         contour(dc, &r, 10, if etat.survol == 0 { LIGNE_FORTE } else { LIGNE });
         let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-        texte_echelle(dc, dpi, "Segoe UI", libelle, &mut rt, DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-              if action == Action::Desinstaller { ROUGE_CLAIR } else { TEXTE }, 10, false, echelle);
+        // Libellés des boutons en Kare MAJUSCULE (comme `.btn` du site) :
+        // Kare dessine ses minuscules comme des capitales, l'uppercase est
+        // donc la seule forme cohérente.
+        texte_echelle(dc, dpi, "Kare", &libelle.to_uppercase(), &mut rt,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+              if action == Action::Desinstaller { ROUGE_CLAIR } else { TEXTE }, 11, false, echelle);
         zones[0] = r;
         let _ = action;
     }
@@ -791,7 +918,8 @@ unsafe fn dessiner(h: HWND) {
         let couleur = if etat.survol == 1 { ROUGE_CLAIR } else { ROUGE };
         arrondi(dc, &r, 10, couleur);
         let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-        texte_echelle(dc, dpi, "Segoe UI", libelle, &mut rt, DT_CENTER | DT_VCENTER | DT_SINGLELINE, BLANC, 10, true, echelle);
+        texte_echelle(dc, dpi, "Kare", &libelle.to_uppercase(), &mut rt,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE, BLANC, 11, false, echelle);
         zones[1] = r;
     }
 
@@ -809,6 +937,11 @@ unsafe fn dessiner(h: HWND) {
 
     // garder les zones pour le clic
     ZONES = zones;
+    // copie du tampon mémoire vers la fenêtre, puis libération
+    BitBlt(dc_ecran, 0, 0, rc.right, rc.bottom, dc_memoire, 0, 0, SRCCOPY);
+    SelectObject(dc_memoire, ancien_bitmap);
+    DeleteObject(bitmap as *mut c_void);
+    DeleteDC(dc_memoire);
     EndPaint(h, &ps);
 }
 
@@ -817,11 +950,16 @@ static mut ZONES: [RECT; 2] = [
     RECT { left: 0, top: 0, right: 0, bottom: 0 },
 ];
 
+/// Bords gauches des trois boutons de la barre de titre (réduire, agrandir,
+/// fermer), remplis par `dessiner`.
+static mut ZONES_TITRE: [i32; 3] = [0, 0, 0];
+
 fn dans(r: &RECT, x: i32, y: i32) -> bool {
     r.right > r.left && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
 }
 
-/// Zone de la barre de titre custom : bouton fermer / réduire.
+/// Zone de la barre de titre : -1 hors barre, 0 = déplacement, 1 = réduire,
+/// 2 = agrandir, 3 = fermer.
 /// Les bornes suivent l'échelle du tracé (barre de 56 px sur la grille
 /// 1120 × 780), sinon les zones cliquables ne correspondent plus au dessin
 /// quand la fenêtre est redimensionnée.
@@ -831,7 +969,20 @@ fn zone_titre(w: i32, h: i32, x: i32, y: i32) -> i32 {
     if y > s(56) {
         return -1;
     }
-    if x >= w - s(46) { 2 } else if x >= w - s(92) { 1 } else { 0 }
+    let bl = s(46);
+    let zones = unsafe { *std::ptr::addr_of!(ZONES_TITRE) };
+    if x >= zones[2] {
+        3
+    } else if x >= zones[1] {
+        2
+    } else if x >= zones[0] {
+        1
+    } else if x >= w - 3 * bl {
+        // zone restante des boutons (si pas encore peinte) : fermer
+        3
+    } else {
+        0
+    }
 }
 
 unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -865,9 +1016,15 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             0
         }
         WM_SIZING => {
-            // Le redimensionnement garde le ratio du gabarit : le tracé est
-            // calculé sur une grille 1120 × 780, une fenêtre très allongée
-            // laisserait de larges bandes vides ou rognerait le contenu.
+            // Le redimensionnement à la souris garde le ratio du gabarit :
+            // le tracé est calculé sur une grille 1120 × 780, une fenêtre très
+            // allongée laisserait de larges bandes vides ou rognerait le
+            // contenu. JAMAIS quand la fenêtre est maximisée : forcer le ratio
+            // sur un écran 16:9 rendait la fenêtre plus haute que l'écran, et
+            // la barre d'état passait sous le bord inférieur, inaccessible.
+            if (*ETAT).maximise {
+                return 1;
+            }
             let r = l as *mut RECT;
             if !r.is_null() {
                 let largeur = (*r).right - (*r).left;
@@ -875,6 +1032,32 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                 (*r).bottom = (*r).top + hauteur;
             }
             1
+        }
+        WM_SIZE => {
+            // `w` = SIZE_MAXIMIZED (2) ou SIZE_RESTORED (0) : on suit l'état
+            // pour que WM_SIZING et le tracé sachent s'il faut garder le ratio.
+            let etat = &mut *ETAT;
+            etat.maximise = w == 2;
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        WM_DPICHANGED => {
+            // La fenêtre a changé d'écran (ou l'utilisateur a modifié la mise
+            // à l'échelle) : on adopte le nouveau DPI et la taille proposée
+            // par Windows, sinon le tracé garde l'ancienne échelle.
+            let nouveau = (w & 0xffff) as i32;
+            if nouveau > 0 {
+                (*ETAT).dpi = nouveau;
+            }
+            let suggere = l as *const RECT;
+            if !suggere.is_null() {
+                let r = &*suggere;
+                SetWindowPos(h, HWND_TOP, r.left, r.top,
+                             r.right - r.left, r.bottom - r.top,
+                             SWP_NOZORDER | SWP_FRAMECHANGED);
+            }
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
         }
         WM_PAINT => { dessiner(h); 0 }
         WM_TIMER => {
@@ -886,15 +1069,30 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             0
         }
         WM_NCHITTEST => {
-            // fenêtre sans cadre : la barre de titre se comporte comme une vraie
+            // Fenêtre sans cadre : on rend nous-mêmes les zones de
+            // redimensionnement (bords et coins), la barre de déplacement et
+            // les trois boutons. Sans cela, WS_THICKFRAME n'aurait aucune
+            // bordure visible à attraper.
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
-            let x = (l & 0xffff) as i32;
-            let y = ((l >> 16) & 0xffff) as i32;
-            if zone_titre(rc.right, rc.bottom, x, y) == 0 {
-                HTCAPTION
+            let mut pos = POINT { x: (l & 0xffff) as i32, y: ((l >> 16) & 0xffff) as i32 };
+            ScreenToClient(h, &mut pos);
+            let (x, y) = (pos.x, pos.y);
+            let echelle = (rc.right as f64 / 1120.0).min(rc.bottom as f64 / 780.0);
+            let bord = ((8.0 * echelle).round() as i32).max(4);
+            let (w, ht) = (rc.right, rc.bottom);
+            // coins d'abord, puis bords
+            if x >= w - bord && y >= ht - bord {
+                HTBOTTOMRIGHT
+            } else if y >= ht - bord {
+                HTBOTTOM
+            } else if x >= w - bord {
+                HTRIGHT
             } else {
-                DefWindowProcW(h, msg, w, l)
+                match zone_titre(w, ht, x, y) {
+                    0 => HTCAPTION,
+                    _ => 1, // HTCLIENT : les boutons sont gérés dans WM_LBUTTONUP
+                }
             }
         }
         WM_MOUSEMOVE => {
@@ -907,12 +1105,20 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             let mut z = -1;
             if dans(&zones[0], pos.x, pos.y) { z = 0; }
             if dans(&zones[1], pos.x, pos.y) { z = 1; }
+            let zt = match zone_titre(rc.right, rc.bottom, pos.x, pos.y) {
+                1 => 0,
+                2 => 1,
+                3 => 2,
+                _ => -1,
+            };
             let etat = &mut *ETAT;
-            if z != etat.survol {
-                etat.survol = z;
+            let mut change = false;
+            if z != etat.survol { etat.survol = z; change = true; }
+            if zt != etat.survol_titre { etat.survol_titre = zt; change = true; }
+            if change {
                 InvalidateRect(h, std::ptr::null(), 0);
             }
-            SetCursor(if z >= 0 {
+            SetCursor(if z >= 0 || zt >= 0 {
                 LoadCursorW(std::ptr::null_mut(), IDC_HAND as *const u16)
             } else {
                 LoadCursorW(std::ptr::null_mut(), IDC_ARROW as *const u16)
@@ -920,13 +1126,24 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             0
         }
         WM_LBUTTONUP => {
-            let x = (l & 0xffff) as i32;
-            let y = ((l >> 16) & 0xffff) as i32;
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
+            let mut pos = POINT { x: (l & 0xffff) as i32, y: ((l >> 16) & 0xffff) as i32 };
+            ScreenToClient(h, &mut pos);
+            let (x, y) = (pos.x, pos.y);
             match zone_titre(rc.right, rc.bottom, x, y) {
-                2 => { PostQuitMessage(0); return 0; }
-                1 => { ShowWindow(h, 6); return 0; } // SW_MINIMIZE
+                3 => { PostQuitMessage(0); return 0; }
+                2 => {
+                    // agrandir / restaurer
+                    let etat = &mut *ETAT;
+                    if etat.maximise {
+                        ShowWindow(h, SW_RESTORE);
+                    } else {
+                        ShowWindow(h, SW_MAXIMIZE);
+                    }
+                    return 0;
+                }
+                1 => { ShowWindow(h, SW_MINIMIZE); return 0; }
                 _ => {}
             }
             let zones = &*std::ptr::addr_of!(ZONES);
@@ -1126,6 +1343,14 @@ fn est_inscriptible(dossier: &Path) -> bool {
 /// Point d'entrée de la fenêtre d'installation.
 pub fn lancer() {
     unsafe {
+        // Sensibilité au DPI : sans appel explicite, Windows rend la fenêtre
+        // dans une surface virtuelle puis l'ÉTIRE en bitmap sur les écrans
+        // mis à l'échelle (125 %, 150 %…), d'où le rendu pixélisé. On demande
+        // la conscience PER_MONITOR_V2 (-4) ; si l'API est absente
+        // (Windows 8.1), `SetProcessDPIAware` prend le relais.
+        if SetProcessDpiAwarenessContext(-4) == 0 {
+            SetProcessDPIAware();
+        }
         charger_police();
         let prefixe = crate::setup_core::installation_existante()
             .unwrap_or_else(crate::setup_core::prefixe_defaut);
@@ -1147,8 +1372,10 @@ pub fn lancer() {
             empreinte,
             statut,
             occupe: false,
+            maximise: false,
             phase: 0,
             survol: -1,
+            survol_titre: -1,
             version_installee: env!("CARGO_PKG_VERSION").to_string(),
             dpi: 0,
             icone: std::ptr::null_mut(),
@@ -1180,8 +1407,17 @@ pub fn lancer() {
         };
         RegisterClassExW(&wc);
         let titre_w = hex_w(&format!("Rose {} — Programme d'installation", env!("CARGO_PKG_VERSION")));
-        // fenêtre sans cadre : la barre de titre est dessinée par nous
-        let style = 0x00CF0000u32 & !0x00C00000; // WS_OVERLAPPEDWINDOW sans WS_CAPTION
+        // Fenêtre entièrement personnalisée : AUCUN cadre Windows. On utilise
+        // WS_POPUP + WS_THICKFRAME (bords redimensionnables sans cadre) et on
+        // dessine nous-mêmes la barre de titre, les boutons réduire / agrandir
+        // / fermer et les bords. `WS_CAPTION` ou `WS_OVERLAPPEDWINDOW`
+        // laissaient la barre Windows 11 (blanche, arrondie, avec le titre du
+        // système) au-dessus de la nôtre.
+        let style = WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+        // WS_EX_TOOLWINDOW : pas d'entrée « barre des tâches » redondante ;
+        // WS_EX_APPWINDOW la rétablit, nécessaire pour retrouver une fenêtre
+        // maximisée réduite. On garde APPWINDOW pour le comportement attendu.
+        let ex_style = WS_EX_APPWINDOW;
         // 1120 × 780 = le gabarit de tracé (voir `dessiner`), ajusté au DPI
         // de l'écran ; le tracé suit ensuite la taille réelle de la fenêtre.
         let dpi_ecran = {
@@ -1215,18 +1451,34 @@ pub fn lancer() {
         }
         let x = ((ecran_l.max(1) - largeur) / 2).max(0);
         let y = ((ecran_h.max(1) - hauteur) / 2).max(0);
-        let hwnd = CreateWindowExW(0, classe.as_ptr(), titre_w.as_ptr(), style,
+        let hwnd = CreateWindowExW(ex_style, classe.as_ptr(), titre_w.as_ptr(), style,
                                    x, y, largeur, hauteur, std::ptr::null_mut(), 0, inst, std::ptr::null_mut());
         if hwnd.is_null() {
             return;
         }
         HWND_FENETRE = hwnd;
-        // grande icône du programme
-        let icone = LoadImageW(inst, 1 as *const u16, IMAGE_ICON, 64, 64, LR_SHARED);
-        if !icone.is_null() {
-            (*ETAT).icone = icone as HICON;
-            SendMessageW(hwnd, WM_SETICON, ICON_BIG, icone as LPARAM);
-            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, icone as LPARAM);
+        // Icône de la fenêtre ET de la barre des tâches. Le groupe d'icônes
+        // embarqué est `RT_GROUP_ICON` (type 14) id 1 — PAS `RT_ICON`
+        // (type 1), qui ne contient que les images individuelles. Charger le
+        // type 1 par erreur laissait la fenêtre sans icône (icône Windows
+        // par défaut dans la barre des tâches et dans Alt+Tab).
+        let grande = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32, 0, 0, LR_SHARED);
+        if !grande.is_null() {
+            (*ETAT).icone = grande as HICON;
+            SendMessageW(hwnd, WM_SETICON, ICON_BIG, grande as LPARAM);
+        }
+        // petite icône : 16 px pour la barre de titre (sans cadre ici, mais
+        // Windows l'utilise dans la barre des tâches et Alt+Tab)
+        let petite = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32,
+                                GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
+        if !petite.is_null() {
+            SendMessageW(hwnd, WM_SETICON, ICON_SMALL, petite as LPARAM);
+        }
+        // Et l'icône de la CLASSE : c'est elle qui sert aux fenêtres créées
+        // ensuite et dans la boîte de dialogue système.
+        if !grande.is_null() {
+            SetClassLongPtrW(hwnd, -14 /* GCLP_HICON */, grande as isize);
+            SetClassLongPtrW(hwnd, -34 /* GCLP_HICONSM */, grande as isize);
         }
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);

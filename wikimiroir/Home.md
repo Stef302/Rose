@@ -14,32 +14,29 @@ afficher("Bonjour, monde !")
 
 fn carre(n: entier) -> entier { retour n * n }
 
-afficher(carre(12))
+>> carre(12)
 >> 10!
->> 10#
 ```
 
 `>>` prints the value of an expression; `afficher` prints a string.
 
-## The four postfix operators
+## What makes Rose different
 
-| Notation | Meaning | Example |
-|---|---|---|
-| `n!` | exact factorial | `5!` → `120` |
-| `n#` | primorial, product of primes ≤ n (A002110) | `10#` → `210` |
-| `n?` | terminal, 1!+2!+…+n! (A003422) | `5?` → `154` |
-| `n$` | superfactorial, 1!·2!·…·n! (A000178) | `3$` → `12` |
-
-`1000000!` (5 565 709 digits) is computed in about one second, using prime
-factorisation, binary exponentiation and a greedy multi-core product tree — no
-GMP.
+- **Exact numbers by default.** Integers are unbounded, rationals stay rational,
+  and π / e / φ are computed to any number of digits.
+- **LaTeX built in.** `rose latex prog.rose` turns a whole program into a formula.
+- **French syntax, no ceremony.** `si`, `sinon`, `pour`, `tant_que`, `retour`.
+- **Four execution paths.** Interpreter, Cranelift JIT, LLVM ORC AOT and WASM —
+  the interpreter, JIT and WASM agree on every value.
+- **A factorial family.** Beyond `n!`, Rose has `n#` (primorial), `n?` (terminal)
+  and `n$` (superfactorial), all exact.
 
 ## Where to go next
 
 | Page | Content |
 |---|---|
 | [Syntax](Syntax) | Literals, operators, control flow, functions |
-| [Numbers](Numbers) | Exact arithmetic, factorial family, π / e / φ |
+| [Numbers](Numbers) | Exact arithmetic, π / e / φ, complex, factorial family |
 | [CLI](CLI) | `rose run`, `rose latex`, `rose orc`, `rose update` |
 | [Install](Install) | Linux, Windows (Velopack), VS Code extension |
 | [Architecture](Architecture) | Engine layout, JIT, AOT, WASM |
@@ -48,5 +45,6 @@ GMP.
 ## Links
 
 - Engine and releases: <https://github.com/Stef302/Rose>
+- Discussions: <https://github.com/Stef302/Rose/discussions>
 - Documentation site: <https://stef302.github.io/Rose/>
 - Licence: MIT

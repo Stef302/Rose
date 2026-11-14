@@ -79,6 +79,13 @@ fn main() {
             println!("cargo:rustc-link-arg-bin=rose-setup=rose-setup.res");
             println!("cargo:rerun-if-changed=rose-setup.res");
         }
+        // Manifeste : DPI PerMonitorV2 (rendu net, pas de bitmap étiré),
+        // common controls v6 et Windows 10/11 déclarés.
+        // ⚠ lld-link REFUSE un manifeste externe dès qu'un .res est lié
+        // (« more than one resource obj file not allowed ») : le manifeste
+        // est donc embarqué dans `rose-setup.res` par `pack-res.py`
+        // (RT_MANIFEST type 24, id 1), pas passé en argument ici.
+        println!("cargo:rerun-if-changed=rose-setup.manifest");
         return;
     }
 

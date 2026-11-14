@@ -146,15 +146,30 @@ l'utilisateur web)
     `/ENTRY:mainCRTStartup` pour ce binôme SEULEMENT).
   Le moteur `rose.exe` et `rose-aot.exe` sont EMBARQUÉS dans le paquet.
 - **Interface de l'installeur — pièges vérifiés** (maquette de référence) :
+  - **plein écran** : `WM_SIZING` imposait le ratio 1120:780 ; une fenêtre
+    maximisée sur un écran 16:9 devenait plus haute que l'écran et la barre
+    d'état passait sous le bord inférieur. L'état `maximise` (suivi dans
+    `WM_SIZE`) neutralise le ratio ; `WM_GETMINMAXINFO` borne le minimum ;
+  - **barre de titre custom** : `WS_POPUP | WS_THICKFRAME | WS_SYSMENU` +
+    `WS_MINIMIZEBOX | WS_MAXIMIZEBOX`, jamais `WS_CAPTION` (sinon la barre
+    Windows 11 revient). `WM_NCHITTEST` rend HTCAPTION pour la zone de
+    déplacement, HTRIGHT/HTBOTTOM/HTBOTTOMRIGHT pour les bords ;
+  - **DPI** : manifeste `PerMonitorV2` embarqué en `RT_MANIFEST` (type 24,
+    id 1) — lld-link REFUSE `/MANIFESTINPUT` dès qu'un `.res` est lié
+    (« more than one resource obj file not allowed ») ; + double-bufferisation
+    (`CreateCompatibleBitmap` + `BitBlt`) et `ANTIALIASED_QUALITY` (4) ;
+  - **icône** : le groupe est `RT_GROUP_ICON` (type 14, id 1), PAS `RT_ICON`
+    (type 1). Charger `IMAGE_ICON` id 1 laissait la fenêtre sans icône ;
+    poser aussi `SetClassLongPtrW(GCLP_HICON)` ;
+  - **Kare** est une police d'AFFICHAGE : ses minuscules dessinent des
+    capitales (« Options » → « PTIONS »). Ne l'utiliser que pour la marque,
+    les titres de section et les boutons, EN MAJUSCULES ; Segoe UI pour le
+    texte courant. Elle n'a pas `▸` : ne pas mettre de flèche dans les libellés ;
   - GDI lit un `COLORREF` `0x00BBGGRR` : écrire `0xE62F1E` pour le rouge
     affiche RGB(0x1E,0x2F,0xE6), un BLEU. Toujours passer par
     `const fn couleur(0xRRGGBB)` de `setup_gui.rs` (tout l'installeur était
     bleu avant cette conversion) ;
-  - l'échelle du tracé est `min(largeur/1120, hauteur/780)` ; ne suivre que
-    la largeur laissait sortir le pied de page (bouton « Mettre à jour »
-    coupé) dès que la fenêtre était moins haute que le gabarit ;
-    `WM_GETMINMAXINFO` borne la taille minimale et `WM_SIZING` garde le
-    ratio ;
+  - l'échelle du tracé est `min(largeur/1120, hauteur/780)` ;
   - les cartes doivent être assez hautes pour leur contenu (la carte
     « Paquet à installer » débordait de 8 px) ;
   - la rose embarquée a son fond noir rendu TRANSPARENT (`embed-assets.py`)

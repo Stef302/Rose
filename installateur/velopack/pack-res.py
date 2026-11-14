@@ -34,12 +34,14 @@ RACINE = Path(__file__).resolve().parents[2]
 PNG = RACINE / "installateur" / "velopack" / "rose-installeur.png"
 WOFF2 = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
 ICO = RACINE / "installateur" / "assets" / "setup.ico"
+MANIFESTE = RACINE / "rose" / "rose-setup.manifest"
 SORTIE = RACINE / "rose" / "rose-setup.res"
 
 RT_ICON = 3
 RT_GROUP_ICON = 14
 RT_RCDATA = 10
 RT_FONT = 8
+RT_MANIFEST = 24
 
 
 def woff2_vers_ttf(chemin: Path) -> bytes:
@@ -163,6 +165,13 @@ def main():
     ressources = [(RT_RCDATA, 1, png), (RT_FONT, 2, ttf)]
     for i, e in enumerate(icones, start=1):
         ressources.append((RT_ICON, i, e["donnees"]))
+
+    # Manifeste (DPI PerMonitorV2, common controls v6, Windows 10/11).
+    # lld-link REFUSE un manifeste externe dès qu'un .res est déjà lié
+    # (« more than one resource obj file not allowed ») : on l'embarque ici
+    # comme RT_MANIFEST (type 24, id 1), ce qui est aussi la forme canonique.
+    if MANIFESTE.exists():
+        ressources.append((RT_MANIFEST, 1, MANIFESTE.read_bytes()))
 
     groupe = struct.pack("<HHH", 0, 1, len(icones))
     for i, e in enumerate(icones, start=1):

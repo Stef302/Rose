@@ -1113,6 +1113,9 @@ Bonjour, monde !</pre>
           <li>Correctif : les couleurs GDI étaient données en RGB au lieu de COLORREF — le rouge d'action s'affichait <b>bleu</b>.</li>
           <li>Correctif : l'arbre <code class="inline">.rsrc</code> regroupait mal les icônes (types dupliqués, compteur d'entrées doublé, pointeurs d'entrées de données tronqués) — la rose, la police et les icônes 128/256 px étaient introuvables. Arbre corrigé et validé par <code class="inline">verifier-res.py</code>.</li>
           <li>Correctif WebAssembly : la factorielle lançait des threads sans garde de cible, si bien que le playground trappait dès <code class="inline">2000!</code>. Le module prend un chemin séquentiel équilibré : <code class="inline">100000!</code> (456 574 chiffres) en 335 ms.</li>
+          <li>Fenêtre de l'installeur entièrement personnalisée : plus de cadre ni de barre Windows 11 (barre de titre, boutons réduire / agrandir / fermer et bords dessinés au GDI). Le plein écran ne sort plus la barre d'état sous le bord de l'écran.</li>
+          <li>Rendu net : manifeste <code class="inline">PerMonitorV2</code> embarqué (fin du bitmap étiré sur les écrans à 125 / 150 %), double-bufferisation et anti-aliasing des textes.</li>
+          <li>Branding Kare dans toute la fenêtre (marque, titres, boutons) et icône Rose posée sur la fenêtre et la barre des tâches.</li>
         </ul>
       </div>
 

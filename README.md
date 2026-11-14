@@ -525,17 +525,30 @@ commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
   - `rose.exe` — le moteur (console, PE32+ x86-64) ;
   - `rose-aot.exe` — le helper AOT LLVM ORC ;
   - `Rose-win-Setup.exe` — l'installeur **GUI** (fenêtre Win32 dessinée à la
-    main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`) : gabarit de
-    1120 × 780 **mis à l'échelle de la fenêtre** (aucun texte rogné, aucun
-    bouton coupé), la rose et la police Kare embarquées dans une section
-    `.rsrc` (PNG + TrueType + icônes 16 → 256 px, `installateur/velopack/pack-res.py`),
-    couleurs du site, et recherche automatique du moteur à poser
-    (`payload\rose.exe`, `rose.exe`, ou l'installeur lui-même s'il a été
-    renommé). Rendu de contrôle sous Linux : `installateur/velopack/previsualiser.py`
+    main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`) :
+    - **fenêtre entièrement personnalisée** : `WS_POPUP` + `WS_THICKFRAME`,
+      sans aucun cadre Windows 11 — barre de titre, boutons réduire / agrandir
+      / fermer et bords de redimensionnement dessinés au GDI ;
+    - gabarit de 1120 × 780 **mis à l'échelle de la fenêtre** (aucun texte
+      rogné, aucun bouton coupé) ; en plein écran le ratio n'est plus imposé,
+      sinon la barre d'état sortait sous le bord inférieur de l'écran ;
+    - **manifeste `PerMonitorV2`** embarqué (`RT_MANIFEST` dans le `.rsrc`) :
+      sans lui Windows étire la fenêtre en bitmap sur les écrans à 125 / 150 %,
+      d'où le rendu pixélisé ; double-bufferisation + `ANTIALIASED_QUALITY` ;
+    - **branding Kare** : marque « Rose », titres de section et libellés de
+      boutons en Kare majuscule (police d'affichage), texte courant en Segoe UI ;
+    - la rose et la police Kare embarquées dans une section `.rsrc`
+      (PNG + TrueType + icônes 16 → 256 px + manifeste,
+      `installateur/velopack/pack-res.py`) ; le groupe d'icônes `RT_GROUP_ICON`
+      est posé sur la fenêtre, la classe et la barre des tâches ;
+    - couleurs du site, et recherche automatique du moteur à poser
+      (`payload\rose.exe`, `rose.exe`, ou l'installeur lui-même s'il a été
+      renommé).
+    Rendu de contrôle sous Linux : `installateur/velopack/previsualiser.py`
     (aperçu PNG des cinq vues, textes réels, couleurs GDI exactes, contrôle
     mesuré des boutons et des cartes) ; ressources validées par
     `installateur/velopack/verifier-res.py` (arbre `.rsrc`, PNG, police,
-    icônes et groupe d'icônes).
+    icônes, groupe d'icônes et manifeste).
 - **Builds produits depuis cette machine Linux** (`clang` + `lld-link` +
   SDK/UCRT de `cargo-xwin`), pas seulement sur Windows :
   `sh installateur/velopack/build-linux.sh` puis

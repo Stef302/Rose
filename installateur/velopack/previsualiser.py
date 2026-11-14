@@ -13,7 +13,7 @@ Ce qu'il vérifie, et qui a réellement cassé l'interface :
 - les textes : chaque texte est mesuré avec une vraie police et doit tenir
   dans son rectangle (aucun texte rogné) ;
 - les boutons : ils doivent tenir dans le pied de page, avec la place pour
-  leur libellé (« Mettre à jour ▸ » est le plus long) ;
+  leur libellé (« Mettre à jour » est le plus long) ;
 - les cartes : le texte ne doit pas dépasser du fond de la carte.
 
 Usage :
@@ -77,31 +77,44 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
     pied_h = s(76)
     etat_h = s(30)
 
-    # ── barre de titre ──
+    # ── barre de titre PERSONNALISÉE (aucun cadre Windows) ──
     d.rectangle([0, 0, w, s(56)], fill=c("BARRE"))
-    d.line([0, s(56), w, s(56)], fill=c("LIGNE_FORTE"))
+    d.line([0, s(55), w, s(55)], fill=c("LIGNE_FORTE"))
     rose = Image.open(SORTIE / "rose-installeur.png").convert("RGBA")
     rose = rose.resize((s(24), s(24)), Image.LANCZOS)
     coller(img, rose, (s(18), s(16)))
-    texte(d, (s(52), s(28)), "Rose — Programme d'installation",
-          police(11, True, dpi, e), c("TEXTE"), "lm")
-    pastille = [s(362), s(16), s(362 + 128), s(40)]
+    # marque « Rose » en Kare, puis sous-titre
+    texte(d, (s(52), s(28)), "Rose",
+          ImageFont.truetype(str(POLICE_TITRE), s(20)), c("TEXTE"), "lm")
+    texte(d, (s(210), s(28)), "— Programme d'installation",
+          police(10, False, dpi, e), c("TEXTE_DOUX"), "lm")
+    pastille = [s(438), s(16), s(438 + 128), s(40)]
     d.rounded_rectangle(pastille, radius=s(8), outline=c("LIGNE_FORTE"))
     texte(d, ((pastille[0] + pastille[2]) // 2, (pastille[1] + pastille[3]) // 2),
           "v0.1.5  ·  x64", police(9, True, dpi, e), c("VERT"), "mm")
-    texte(d, (w - s(46) + s(23), s(28)), "✕", police(10, False, dpi, e), c("TEXTE_DOUX"), "mm")
-    texte(d, (w - s(92) + s(23), s(28)), "—", police(10, False, dpi, e), c("TEXTE_DOUX"), "mm")
+    # trois boutons de fenêtre : réduire, agrandir, fermer
+    bl = s(46)
+    cx_reduire = w - 3 * bl + bl // 2
+    cx_agrandir = w - 2 * bl + bl // 2
+    cx_fermer = w - bl + bl // 2
+    cy = s(28)
+    g = s(5)
+    e1 = max(1, s(1))
+    d.line([cx_reduire - g, cy, cx_reduire + g, cy], fill=c("TEXTE_DOUX"), width=e1)
+    d.rectangle([cx_agrandir - g, cy - g, cx_agrandir + g, cy + g], outline=c("TEXTE_DOUX"), width=e1)
+    d.line([cx_fermer - g, cy - g, cx_fermer + g, cy + g], fill=c("TEXTE_DOUX"), width=e1)
+    d.line([cx_fermer - g, cy + g, cx_fermer + g, cy - g], fill=c("TEXTE_DOUX"), width=e1)
 
     # ── panneau latéral ──
     d.rectangle([0, s(56), lateral_w, h - etat_h], fill=c("LATERAL"))
     d.line([lateral_w, s(56), lateral_w, h - etat_h], fill=c("LIGNE_FORTE"))
 
     logo = Image.open(SORTIE / "rose-installeur.png").convert("RGBA").resize(
-        (s(120), s(120)), Image.LANCZOS)
-    coller(img, logo, (lateral_w // 2 - s(60), s(80)))
-    texte(d, (lateral_w // 2, s(237)), "ROSE",
-          ImageFont.truetype(str(POLICE_TITRE), s(34)), c("TEXTE"), "mm")
-    texte(d, (lateral_w // 2, s(300)),
+        (s(124), s(124)), Image.LANCZOS)
+    coller(img, logo, (lateral_w // 2 - s(62), s(78)))
+    texte(d, (lateral_w // 2, s(237)), "Rose",
+          ImageFont.truetype(str(POLICE_TITRE), s(40)), c("TEXTE"), "mm")
+    texte(d, (lateral_w // 2, s(304)),
           "Le langage compilé en français\nqui se compile lui-même.",
           police(9, False, dpi, e), c("TEXTE_DOUX"), "mm")
 
@@ -147,10 +160,11 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
         "Installation de Rose…",
         "Rose est prêt.",
     ]
-    texte(d, (g, yc + s(20)), titres[vue], police(18, True, dpi, e), c("TEXTE"), "lm")
-    yc += s(48)
+    texte(d, (g, yc + s(22)), titres[vue].upper(),
+          ImageFont.truetype(str(POLICE_TITRE), s(22)), c("TEXTE"), "lm")
+    yc += s(52)
     texte(d, (g, yc), sous_titres[vue], police(10, False, dpi, e), c("TEXTE_DOUX"), "la")
-    yc += s(40)
+    yc += s(48)
 
     def carte(top, bas_, accent):
         d.rounded_rectangle([g, top, droite, bas_], radius=s(12), fill=c("CARTE"))
@@ -216,24 +230,24 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
     bw, bh = s(190), s(44)
     by = pied_top + (pied_h - bh) // 2
     libelles = [
-        ("Annuler", "Suivant ▸"),
-        ("Annuler", "Suivant ▸"),
-        ("Désinstaller", "Mettre à jour ▸" if etat_installe else "Installer ▸"),
+        ("Annuler", "Suivant"),
+        ("Annuler", "Suivant"),
+        ("Désinstaller", "Mettre à jour" if etat_installe else "Installer"),
         ("Annuler", None),
-        ("Fermer", "Terminer ▸"),
+        ("Fermer", "Terminer"),
     ][vue]
     zones = []
     if libelles[0]:
         r = [lateral_w + s(28), by, lateral_w + s(28) + bw, by + bh]
         d.rounded_rectangle(r, radius=s(10), fill=c("REPOS_SOMBRE"), outline=c("LIGNE"))
-        texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[0],
-              police(10, False, dpi, e), c("TEXTE"), "mm")
+        texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[0].upper(),
+              ImageFont.truetype(str(POLICE_TITRE), s(15)), c("TEXTE"), "mm")
         zones.append(r)
     if libelles[1]:
         r = [w - s(28) - bw, by, w - s(28), by + bh]
         d.rounded_rectangle(r, radius=s(10), fill=c("ROUGE"))
-        texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[1],
-              police(10, True, dpi, e), c("BLANC"), "mm")
+        texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[1].upper(),
+              ImageFont.truetype(str(POLICE_TITRE), s(15)), c("BLANC"), "mm")
         zones.append(r)
 
     # ── barre d'état ──
@@ -255,7 +269,7 @@ def controler(w, h):
     e = min(w / 1120.0, h / 780.0)
     s = lambda v: round(v * e)
     erreurs = []
-    for libelle in ("Mettre à jour ▸", "Installer ▸", "Désinstaller", "Terminer ▸"):
+    for libelle in ("Mettre à jour", "Installer", "Désinstaller", "Terminer"):
         largeur = mesurer(libelle, police(10, True if "▸" in libelle else False, 96, e))
         if largeur > s(190) - s(16):
             erreurs.append(f"bouton « {libelle} » : {largeur}px pour {s(190)}px de bouton")
