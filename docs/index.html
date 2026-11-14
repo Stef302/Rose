@@ -1111,6 +1111,7 @@ Bonjour, monde !</pre>
           <li>La rose du logo et la police d'affichage Kare sont <b>embarquées</b> dans l'exécutable (section <code class="inline">.rsrc</code> : PNG, TrueType, icônes 16 → 256 px), plus aucune ressource externe à côté de l'installeur.</li>
           <li>L'installeur trouve lui-même le moteur à poser (<code class="inline">payload\rose.exe</code>, <code class="inline">rose.exe</code>, ou lui-même s'il a été renommé) : l'installation ne peut plus copier l'installeur à la place du moteur.</li>
           <li>Correctif : les couleurs GDI étaient données en RGB au lieu de COLORREF — le rouge d'action s'affichait <b>bleu</b>.</li>
+          <li>Correctif : l'arbre <code class="inline">.rsrc</code> regroupait mal les icônes (types dupliqués, compteur d'entrées doublé, pointeurs d'entrées de données tronqués) — la rose, la police et les icônes 128/256 px étaient introuvables. Arbre corrigé et validé par <code class="inline">verifier-res.py</code>.</li>
         </ul>
       </div>
 
