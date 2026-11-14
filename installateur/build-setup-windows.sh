@@ -17,7 +17,7 @@ set -euo pipefail
 RACINE="$(cd "$(dirname "$0")/.." && pwd)"
 I="$RACINE/installateur"
 R="$RACINE/rose"
-VERSION="${VERSION:-5.10.1}"
+VERSION="${VERSION:-0.1.3}"
 CIBLE="x86_64-pc-windows-msvc"
 
 export PATH="$HOME/.cargo/bin:$PATH"
