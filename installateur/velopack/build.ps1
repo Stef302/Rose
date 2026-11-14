@@ -47,13 +47,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Le build Tauri a echoue (code $LASTEXITCODE)." }
 } finally { Pop-Location }
 
-# 3. dossier à packer : rose.exe + l'assistant
+# 3. dossier à packer : moteur + helper AOT + installeur autonome
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
-Copy-Item (Join-Path $moteur "target\$Target\release\rose.exe") $stage -Force
-Copy-Item (Join-Path $assistant "src-tauri\target\$Target\release\html-installer.exe") `
-    (Join-Path $stage "Rose-Setup.exe") -Force
-Copy-Item (Join-Path $assistant "payload") (Join-Path $stage "payload") -Recurse -Force
+$sortie = Join-Path $moteur "target\$Target\release"
+Copy-Item (Join-Path $sortie "rose.exe") $stage -Force
+Copy-Item (Join-Path $sortie "rose-aot.exe") $stage -Force
+Copy-Item (Join-Path $sortie "rose-setup.exe") (Join-Path $stage "Rose-win-Setup.exe") -Force
+New-Item -ItemType Directory -Path (Join-Path $stage "payload") -Force | Out-Null
+Copy-Item (Join-Path $sortie "rose.exe") (Join-Path $stage "payload") -Force
+Copy-Item (Join-Path $sortie "rose-aot.exe") (Join-Path $stage "payload") -Force
 
 # 4. packaging Velopack
 $vpkArgs = @(

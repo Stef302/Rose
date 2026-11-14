@@ -23,6 +23,16 @@ name = "rose-aot"
 path = "src/bin/rose-aot.rs"
 required-features = ["native"]
 
+# Installeur graphique autonome (Windows) : fenêtre Win32 de setup_gui,
+# publiée sous le nom « Rose-win-Setup.exe ». Velopack empaquette ensuite
+# le dossier `stage` (moteur + cet installeur + payload).
+# (Windows uniquement : setup_gui est #[cfg(windows)], le binôme ne
+# s'énumère pas sur Linux/macOS et ne casse pas `cargo test`.)
+[[bin]]
+name = "rose-setup"
+path = "src/bin/rose-setup.rs"
+required-features = ["native"]
+
 [dependencies]
 num-bigint = "0.4"
 num-integer = "0.1"

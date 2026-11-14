@@ -6,7 +6,7 @@
 ![Rose banner](docs/assets/img/og-rose.png)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.3-E6202A?style=for-the-badge" alt="version">
+  <img src="https://img.shields.io/badge/version-0.1.4-E6202A?style=for-the-badge" alt="version">
   <img src="https://img.shields.io/badge/moteur-Rust%20%2B%20Cranelift%20%2B%20LLVM-000000?style=for-the-badge" alt="moteur">
   <img src="https://img.shields.io/badge/licence-MIT-8CE026?style=for-the-badge" alt="licence">
   <img src="https://img.shields.io/badge/parité%20C++-54%2F54-8CE026?style=for-the-badge" alt="parité">
@@ -17,10 +17,15 @@
 
 ## ✨ En une phrase
 
-Rose est un langage de programmation en français, à typage dynamique, avec arithmétique
-exacte (entiers arbitraires, rationnels), qui se compile lui-même. Son moteur est écrit
-en Rust : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM (`rose llvm`),
-FFI dlopen, bundle AOT (`comp`). Parité parfaite avec le moteur C++ de référence.
+Rose est un **langage de programmation** en français, à typage dynamique, avec
+arithmétique exacte (entiers arbitraires, rationnels, complexes, constantes
+irrationnelles π/e/φ), **auto-hébergé** : ses maillons (lexer, analyseur,
+vérificateur, émetteur RIR) sont réécrits en Rose et rendent la sortie de l'oracle
+à l'octet près sur 104 fichiers.
+
+Le moteur Rust n'est qu'**une** implémentation du langage — interprète exact, JIT
+Cranelift (compilation à chaud), AOT LLVM (`rose llvm`, ORC), FFI dlopen, bundle
+AOT (`comp`), module WASM — à côté du moteur C++ de référence (parité 54/54).
 
 ## 🚀 Démarrage rapide
 
@@ -508,12 +513,24 @@ commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
 - **Aucun droit administrateur** : tout est écrit dans le profil utilisateur
   (`HKCU`, `%LOCALAPPDATA%`), compatible avec les stratégies d'entreprise qui
   verrouillent `HKLM`.
-- Le moteur `rose.exe` est **embarqué** : l'assistant copie le payload, pose le
-  PATH et les raccourcis ; la désinstallation est gérée par Velopack.
-- Chaîne de build : `installateur/velopack/build.ps1` (Windows) —
+- Le moteur `rose.exe` et le helper AOT `rose-aot.exe` sont **embarqués** dans le
+  paquet ; l'installeur pose le PATH et les raccourcis, la désinstallation est
+  gérée par Velopack.
+- **Trois exécutables Windows**, liés **statiquement** (aucune DLL
+  `VCRUNTIME140` ni `api-ms-win-crt-*` requise, Windows 10/11 les lance
+  directement) :
+  - `rose.exe` — le moteur (console, PE32+ x86-64) ;
+  - `rose-aot.exe` — le helper AOT LLVM ORC ;
+  - `Rose-win-Setup.exe` — l'installeur **GUI** (fenêtre Win32 dessinée à la
+    main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`).
+- **Builds produits depuis cette machine Linux** (`clang` + `lld-link` +
+  SDK/UCRT de `cargo-xwin`), pas seulement sur Windows :
+  `sh installateur/velopack/build-linux.sh` puis
+  `sh installateur/velopack/pack-linux.sh` (paquet Velopack + manifeste).
+- Chaîne de build Windows complète : `installateur/velopack/build.ps1` —
   `cargo tauri build` puis `vpk pack` (voir `installateur/velopack/README.md`).
-  La voie de mise à jour est vérifiable **sans Windows** :
-  `sh installateur/velopack/verifier.sh`.
+- La voie de mise à jour est vérifiable **sans Windows** :
+  `sh installateur/velopack/verifier.sh` (6/6).
 
 ### Windows / Linux — depuis le moteur
 

@@ -80,3 +80,10 @@ rose.res
 rose/src/bin/rose-embedded.exe
 rose/src/bin/rose-ico.ico
 rose/src/bin/setup-ico.ico
+# les SOURCES du binôme installeur (rose-setup.rs) sont suivies :
+!rose/src/bin/*.rs
+
+# installeur Velopack : le paquet et le stage sont reconstruits par
+# build-linux.sh / pack-linux.sh ; seuls les scripts et le README sont suivis.
+installateur/velopack/stage/
+installateur/velopack/Releases/

@@ -39,6 +39,12 @@ fn main() {
         // propres helpers rose_orc_*). Le lier inconditionnellement
         // faisait échouer le lien de rose-aot sur un symbole absent.
         // « rustc-link-arg-bin » applique l'argument à UN seul binaire.
+        // L'installeur graphique est une application GUI (pas de console noire
+        // derrière la fenêtre) : seul ce binaire passe en /SUBSYSTEM:WINDOWS.
+        // rustc pose déjà son propre point d'entrée (mainCRTStartup) : on le
+        // fixe explicitement, sinon le CRT msvcrt réclame WinMain.
+        println!("cargo:rustc-link-arg-bin=rose-setup=/SUBSYSTEM:WINDOWS");
+        println!("cargo:rustc-link-arg-bin=rose-setup=/ENTRY:mainCRTStartup");
         let def = std::path::Path::new("exports.def");
         if def.exists() {
             println!("cargo:rustc-link-arg-bin=rose=/DEF:exports.def");

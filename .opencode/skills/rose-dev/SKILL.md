@@ -137,9 +137,20 @@ l'utilisateur web)
   et `cargo test --release velopack`.
   Variables de test : `ROSE_VELOPACK_ROOT` (racine d'installation),
   `ROSE_VELOPACK_URL` (manifeste `file://` ou HTTP).
-- Windows : `Rose-win-Setup.exe` = assistant Tauri qui copie `payload\`
-  (rose.exe) et pose le PATH — aucun droit admin, profil utilisateur seulement.
-  Le moteur `rose.exe` est EMBARQUÉ dans le payload.
+- **Trois exécutables Windows, liés statiquement** (`+crt-static`, aucune DLL
+  `VCRUNTIME140` / `api-ms-win-crt-*` requise) :
+  - `rose.exe` — moteur (PE32+ console) ;
+  - `rose-aot.exe` — helper AOT LLVM ORC ;
+  - `Rose-win-Setup.exe` — installeur **GUI** (`rose/src/bin/rose-setup.rs`,
+    `setup_gui` Win32 ; `build.rs` pose `/SUBSYSTEM:WINDOWS` +
+    `/ENTRY:mainCRTStartup` pour ce binôme SEULEMENT).
+  Le moteur `rose.exe` et `rose-aot.exe` sont EMBARQUÉS dans le paquet.
+- **Builds Windows depuis Linux** (clang + lld-link + llvm-lib + SDK/UCRT de
+  `cargo-xwin` dans `~/.cache/cargo-xwin/xwin`) :
+  `sh installateur/velopack/build-linux.sh` puis
+  `sh installateur/velopack/pack-linux.sh` (paquet `.nupkg` + manifeste
+  `releases.win.json`, Python 3, sans CLI `vpk`).
+  La cible mingw est INUTILISABLE ici (pas de `dlltool`) : rester en msvc.
 - Sous Linux/macOS, `rose update` simple reste sur la voie artefacts GitHub
   (`docs/telechargements/` + SHA-256) : Velopack n'a pas d'installeur Linux.
 
