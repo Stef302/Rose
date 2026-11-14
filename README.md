@@ -6,7 +6,7 @@
 ![Rose banner](docs/assets/img/og-rose.png)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.10.1-E6202A?style=for-the-badge" alt="version">
+  <img src="https://img.shields.io/badge/version-0.1.3-E6202A?style=for-the-badge" alt="version">
   <img src="https://img.shields.io/badge/moteur-Rust%20%2B%20Cranelift%20%2B%20LLVM-000000?style=for-the-badge" alt="moteur">
   <img src="https://img.shields.io/badge/licence-MIT-8CE026?style=for-the-badge" alt="licence">
   <img src="https://img.shields.io/badge/parité%20C++-54%2F54-8CE026?style=for-the-badge" alt="parité">
@@ -45,7 +45,7 @@ listes, tables, récursion, RNG, fichiers) :
 
 | Moteur | Temps | Notes |
 |---|---|---|
-| **Rust rose (v5.0)** | **0,09 s** | JIT Cranelift + boucles accumulateur natives |
+| **Rust rose (v0.1.3)** | **0,09 s** | JIT Cranelift + boucles accumulateur natives |
 | C++ (référence) | 0,19 s | JIT x64 + GMP |
 | Rust ancien (GMP) | 5,10 s | obsolète |
 | Python (archivé) | n/a | non exécutable sur ce bench |
@@ -200,7 +200,7 @@ cargo build --release --features llvm        # binaire + helper AOT
 
 ### `rose orc` : fonctions utilisateur prises en charge
 
-Depuis v5.8.0, `rose orc` compile les **fonctions définies par le programme**
+`rose orc` compile les **fonctions définies par le programme**
 (appel croisé, récursion, boucles `pour` / `tant_que` avec phi nodes) : les
 en-têtes sont déclarés avant les corps, et l'objet émis se lie directement
 avec `gcc`/`clang`. Un appel de DLL « extern » reste résolu par le linker.
