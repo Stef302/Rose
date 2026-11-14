@@ -519,12 +519,23 @@ pétale logo, boutons au GDI, aucun template.
 ```bash
 rose update              # menu : mettre à jour / réinstaller / réparer / désinstaller
 rose update --force      # retélécharge même si la version est déjà à jour
+rose update --velopack   # Windows : passe par Velopack (delta + rollback)
 ```
 
 **« Mettre à jour »** interroge l'API GitHub (`releases/latest`), compare
 la version publiée à celle installée, **télécharge l'artefact** de la
 plateforme, **vérifie son SHA-256** contre `SHA256SUMS`, puis remplace le
 binaire installé.
+
+**Velopack (Windows, recommandé)** : pour les installations faites par
+l'installeur Velopack (variable `VELOCABI` posée par le launcher), `rose update`
+bascule automatiquement sur Velopack — **deltas binaires** (téléchargement
+réduit), **rollback automatique** si la nouvelle version casse au démarrage.
+La chaîne de build est `installateur/tauri-installer/build.ps1`
+(`cargo tauri build` → `velopack pack --self-contained` →
+`velopack local` pour tester en local, `velopack push` pour publier).
+Velopack n'ayant pas d'installeur natif Linux, `rose update` simple reste
+sous Linux sur la voie artefacts GitHub (`docs/telechargements/` + SHA-256).
 
 Même logique en console ; sur Linux : `~/.local/bin/rose` (ou `/usr/local`),
 PATH dans `~/.bashrc` / `~/.profile`, type MIME `.rose` enregistré.
