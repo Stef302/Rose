@@ -61,8 +61,23 @@ fn main() {
             }
             let res = std::path::Path::new("rose.res");
             if res.exists() {
-                println!("cargo:rustc-link-arg=rose.res");
+                // Un SEUL fichier de ressources par exécutable : l'installeur
+                // reçoit le sien (rose-setup.res, icônes multi-tailles + rose
+                // + police Kare) ; les autres reçoivent rose.rc (icône).
+                for bin in ["rose", "rose-aot"] {
+                    println!("cargo:rustc-link-arg-bin={bin}=rose.res");
+                }
             }
+        }
+        // L'installeur graphique embarque ses ressources (rose PNG, police
+        // Kare, icônes multi-tailles) dans `rose-setup.res`, produit par
+        // `installateur/velopack/pack-res.py` : une section `.rsrc` COFF
+        // complète, lue par FindResourceW dans setup_gui. Le fichier n'est
+        // lié qu'au binaire `rose-setup` (les autres n'en ont pas besoin).
+        let res_setup = std::path::Path::new("rose-setup.res");
+        if res_setup.exists() {
+            println!("cargo:rustc-link-arg-bin=rose-setup=rose-setup.res");
+            println!("cargo:rerun-if-changed=rose-setup.res");
         }
         return;
     }

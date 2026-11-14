@@ -20,6 +20,8 @@ mod cmd_llvm;
 mod sha256;
 mod setup_core;
 mod velopack;
+mod inflate;
+mod setup_gui;
 #[cfg(feature = "llvm")]
 mod aot_llvm_orc;
 #[cfg(feature = "llvm")]

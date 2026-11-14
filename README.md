@@ -6,7 +6,7 @@
 ![Rose banner](docs/assets/img/og-rose.png)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.4-E6202A?style=for-the-badge" alt="version">
+  <img src="https://img.shields.io/badge/version-0.1.5-E6202A?style=for-the-badge" alt="version">
   <img src="https://img.shields.io/badge/moteur-Rust%20%2B%20Cranelift%20%2B%20LLVM-000000?style=for-the-badge" alt="moteur">
   <img src="https://img.shields.io/badge/licence-MIT-8CE026?style=for-the-badge" alt="licence">
   <img src="https://img.shields.io/badge/parité%20C++-54%2F54-8CE026?style=for-the-badge" alt="parité">
@@ -246,7 +246,7 @@ rose/           moteur Rust (source)
 rose-cpp/       moteur C++ de référence (GMP)
 compilateur/    front-end écrit en Rose
 docs/           site GitHub Pages
-installateur/   installeur Windows (NSIS)
+installateur/   installeur Windows (Velopack : `.nupkg` + `Rose-win-Setup.exe`)
 bench/          bancs de référence
 rose-cpp/tests/ suites (courir.py, parite.py)
 ```
@@ -525,7 +525,14 @@ commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
   - `rose.exe` — le moteur (console, PE32+ x86-64) ;
   - `rose-aot.exe` — le helper AOT LLVM ORC ;
   - `Rose-win-Setup.exe` — l'installeur **GUI** (fenêtre Win32 dessinée à la
-    main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`).
+    main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`) : gabarit de
+    1120 × 780 **mis à l'échelle de la fenêtre** (aucun texte rogné, aucun
+    bouton coupé), la rose et la police Kare embarquées dans une section
+    `.rsrc` (PNG + TrueType + icônes 16 → 256 px, `installateur/velopack/pack-res.py`),
+    couleurs du site, et recherche automatique du moteur à poser
+    (`payload\rose.exe`, `rose.exe`, ou l'installeur lui-même s'il a été
+    renommé). Rendu de contrôle sous Linux : `installateur/velopack/previsualiser.py`
+    (aperçu PNG de la mise en page, contrôle des débordements).
 - **Builds produits depuis cette machine Linux** (`clang` + `lld-link` +
   SDK/UCRT de `cargo-xwin`), pas seulement sur Windows :
   `sh installateur/velopack/build-linux.sh` puis

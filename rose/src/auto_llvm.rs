@@ -36,12 +36,12 @@ pub fn sha256_attendu(cible: &str) -> &'static str {
 }
 
 const SHA256_HELPER_AARCH64_LINUX: &str =
-    "4cc7db58eb91de3db05bd61c2c3a819bfaa4e9c3b972c813572853dc2573da48";
+    "42e48fa074b113d587a7c9134adfbf33c58308a065448167f3c460feef384494";
 
 /// Empreinte de référence de la release (miroir versionné :
 /// docs/telechargements/, SHA256SUMS).
 pub const SHA256_HELPER: &str =
-    "4cc7db58eb91de3db05bd61c2c3a819bfaa4e9c3b972c813572853dc2573da48";
+    "42e48fa074b113d587a7c9134adfbf33c58308a065448167f3c460feef384494";
 
 /// Nom du binaire helper.
 pub const NOM_HELPER: &str = "rose-aot";

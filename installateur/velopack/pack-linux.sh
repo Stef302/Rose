@@ -29,18 +29,29 @@ os.makedirs(releases, exist_ok=True)
 nom = f"Rose-{version}-full.nupkg"
 cible = os.path.join(releases, nom)
 
+# Horodatage FIXE de chaque entrée : deux exécutions du même stage donnent
+# le même paquet, donc le même SHA-256 (sinon le manifeste publié et le
+# fichier servi divergent à chaque build).
+DATE_FIXE = (2026, 1, 1, 0, 0, 0)
+
+def entree(z, arc, donnees):
+    info = zipfile.ZipInfo(arc, date_time=DATE_FIXE)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    z.writestr(info, donnees)
+
 with zipfile.ZipFile(cible, "w", zipfile.ZIP_DEFLATED) as z:
     for racine, _, fichiers in os.walk(stage):
         for f in sorted(fichiers):
             chemin = os.path.join(racine, f)
             arc = os.path.join("lib", "net45", os.path.relpath(chemin, stage))
-            z.write(chemin, arc.replace(os.sep, "/"))
+            entree(z, arc.replace(os.sep, "/"), open(chemin, "rb").read())
     # sq.version : Velopack exige ce fichier à la racine du paquet
-    z.writestr("sq.version",
-               f'<Package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">'
-               f'<metadata><id>Rose</id><version>{version}</version>'
-               f'<authors>Stef302</authors><description>Rose</description>'
-               f'</metadata></Package>')
+    entree(z, "sq.version",
+           (f'<Package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">'
+            f'<metadata><id>Rose</id><version>{version}</version>'
+            f'<authors>Stef302</authors><description>Rose</description>'
+            f'</metadata></Package>').encode())
 
 octets = open(cible, "rb").read()
 sha256 = hashlib.sha256(octets).hexdigest()

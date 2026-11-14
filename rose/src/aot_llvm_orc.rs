@@ -658,6 +658,13 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 let _ = compile_expr(builder, context, module, named_values, a)?;
                 Err("factorielle non implémentée en ORC pour l'instant".to_string())
             }
+            // Les trois opérateurs postfixes ajoutés en 0.1.4 (# primorielle,
+            // ? terminal, $ super-factorielle) n'ont pas encore de code
+            // machine dans le chemin ORC : on refuse proprement, sans
+            // évaluer l'opérande (l'interpréteur et le JIT les gèrent).
+            Expr::Primorielle(..) => Err("primorielle (#) non implémentée en ORC pour l'instant".to_string()),
+            Expr::Terminal(..) => Err("terminal (?) non implémentée en ORC pour l'instant".to_string()),
+            Expr::SuperFactorielle(..) => Err("super-factorielle ($) non implémentée en ORC pour l'instant".to_string()),
             _ => Err(format!("expression non supportée en ORC : {:?}", expr)),
         }
     }

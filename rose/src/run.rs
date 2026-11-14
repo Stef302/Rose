@@ -898,6 +898,53 @@ pub fn nombre_phi(chiffres: &Gz) -> String {
 
 /// Somme d'un tableau d'i64 sur GPU via CUDA driver API + PTX précompilé.
 /// Retourne la somme, ou None si le GPU n'est pas disponible (fallback CPU).
+/// Les fonctions CUDA driver sont liées à `libcuda` (fournie par le pilote
+/// NVIDIA). Sur une machine sans pilote, le symbole est absent : le lieur
+/// exige alors l'import pour TOUT binaire de la crate, y compris ceux qui ne
+/// lancent jamais de GPU. On le charge donc à l'EXÉCUTION (`dlopen`), ce qui
+/// garde `rose`, `rose-aot` et `rose-setup` liables partout.
+#[cfg(target_os = "linux")]
+#[allow(non_snake_case)]
+mod cuda {
+    use std::ffi::{c_char, c_void};
+    use std::sync::OnceLock;
+
+    type Pointeur = *mut c_void;
+
+    unsafe extern "C" {
+        fn dlopen(nom: *const c_char, mode: i32) -> Pointeur;
+        fn dlsym(handle: Pointeur, nom: *const c_char) -> Pointeur;
+    }
+
+    const RTLD_NOW: i32 = 2;
+
+    fn symbole(nom: &str) -> Option<Pointeur> {
+        static LIB: OnceLock<usize> = OnceLock::new();
+        let lib = *LIB.get_or_init(|| {
+            let noms = ["libcuda.so.1", "libcuda.so", "/usr/lib/wsl/lib/libcuda.so.1"];
+            for n in noms {
+                let Ok(c) = std::ffi::CString::new(n) else { continue };
+                let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW) };
+                if !h.is_null() {
+                    return h as usize;
+                }
+            }
+            0
+        });
+        if lib == 0 {
+            return None;
+        }
+        let c = std::ffi::CString::new(nom).ok()?;
+        let p = unsafe { dlsym(lib as Pointeur, c.as_ptr()) };
+        if p.is_null() { None } else { Some(p) }
+    }
+
+    /// Adresse d'une fonction CUDA, ou `None` si le pilote n'est pas là.
+    pub fn fonction(nom: &str) -> Option<*const c_void> {
+        symbole(nom).map(|p| p as *const c_void)
+    }
+}
+
 pub fn gpu_somme_i64(buf: &[i64]) -> Option<i64> {
     if buf.is_empty() { return Some(0); }
     #[cfg(target_os = "linux")]
@@ -912,24 +959,31 @@ pub fn gpu_somme_i64(buf: &[i64]) -> Option<i64> {
             type CuDevicePtr = u64;
             type CuStream = *mut std::ffi::c_void;
 
-            unsafe extern "C" {
-                fn cuInit(flags: u32) -> CuResult;
-                fn cuDeviceGet(device: *mut CuDevice, ordinal: i32) -> CuResult;
-                fn cuCtxCreate_v2(ctx: *mut CuContext, flags: u32, dev: CuDevice) -> CuResult;
-                fn cuModuleLoadData(module: *mut CuModule, image: *const i8) -> CuResult;
-                fn cuModuleGetFunction(hfunc: *mut CuFunction, hmod: CuModule, name: *const i8) -> CuResult;
-                fn cuMemAlloc(dptr: *mut CuDevicePtr, bytesize: usize) -> CuResult;
-                fn cuMemcpyHtoD(dst: CuDevicePtr, src: *const i8, bytecount: usize) -> CuResult;
-                fn cuMemsetD8(dst: CuDevicePtr, uc: u8, n: usize) -> CuResult;
-                fn cuLaunchKernel(f: CuFunction, gridDimX: u32, gridDimY: u32, gridDimZ: u32,
-                                  blockDimX: u32, blockDimY: u32, blockDimZ: u32,
-                                  sharedMemBytes: usize, hStream: CuStream,
-                                  kernelParams: *mut *mut std::ffi::c_void, extra: *mut *mut std::ffi::c_void) -> CuResult;
-                fn cuMemcpyDtoH(dst: *mut i8, src: CuDevicePtr, bytecount: usize) -> CuResult;
-                fn cuMemFree(dptr: CuDevicePtr) -> CuResult;
-                fn cuModuleUnload(hmod: CuModule) -> CuResult;
-                fn cuCtxDestroy_v2(ctx: CuContext) -> CuResult;
+            // Chaque fonction CUDA est résolue à l'exécution : si le pilote
+            // manque, on rend `None` et l'appelant retombe sur le CPU.
+            macro_rules! cuda_fonction {
+                ($nom:literal, $type:ty) => {
+                    match cuda::fonction($nom) {
+                        Some(p) => unsafe { std::mem::transmute::<*const std::ffi::c_void, $type>(p) },
+                        None => return None,
+                    }
+                };
             }
+            let cuInit = cuda_fonction!("cuInit", unsafe extern "C" fn(u32) -> CuResult);
+            let cuDeviceGet = cuda_fonction!("cuDeviceGet", unsafe extern "C" fn(*mut CuDevice, i32) -> CuResult);
+            let cuCtxCreate_v2 = cuda_fonction!("cuCtxCreate_v2", unsafe extern "C" fn(*mut CuContext, u32, CuDevice) -> CuResult);
+            let cuModuleLoadData = cuda_fonction!("cuModuleLoadData", unsafe extern "C" fn(*mut CuModule, *const i8) -> CuResult);
+            let cuModuleGetFunction = cuda_fonction!("cuModuleGetFunction", unsafe extern "C" fn(*mut CuFunction, CuModule, *const i8) -> CuResult);
+            let cuMemAlloc = cuda_fonction!("cuMemAlloc", unsafe extern "C" fn(*mut CuDevicePtr, usize) -> CuResult);
+            let cuMemcpyHtoD = cuda_fonction!("cuMemcpyHtoD", unsafe extern "C" fn(CuDevicePtr, *const i8, usize) -> CuResult);
+            let cuMemsetD8 = cuda_fonction!("cuMemsetD8", unsafe extern "C" fn(CuDevicePtr, u8, usize) -> CuResult);
+            let cuLaunchKernel = cuda_fonction!("cuLaunchKernel", unsafe extern "C" fn(
+                CuFunction, u32, u32, u32, u32, u32, u32, usize, CuStream,
+                *mut *mut std::ffi::c_void, *mut *mut std::ffi::c_void) -> CuResult);
+            let cuMemcpyDtoH = cuda_fonction!("cuMemcpyDtoH", unsafe extern "C" fn(*mut i8, CuDevicePtr, usize) -> CuResult);
+            let cuMemFree = cuda_fonction!("cuMemFree", unsafe extern "C" fn(CuDevicePtr) -> CuResult);
+            let cuModuleUnload = cuda_fonction!("cuModuleUnload", unsafe extern "C" fn(CuModule) -> CuResult);
+            let cuCtxDestroy_v2 = cuda_fonction!("cuCtxDestroy_v2", unsafe extern "C" fn(CuContext) -> CuResult);
 
             if cuInit(0) != 0 { return None; }
             let mut dev: CuDevice = 0;

@@ -22,6 +22,13 @@ set -eu
 RACINE="$(cd "$(dirname "$0")/../.." && pwd)"
 export PATH="$HOME/.cargo/bin:$PATH"
 X="${XWIN_SDK:-$HOME/.cache/cargo-xwin/xwin}"
+
+# Ressources de l'installeur : rose PNG + police Kare + icônes multi-tailles
+# dans rose/rose-setup.res (section .rsrc COFF), liée au seul rose-setup.
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$RACINE/installateur/velopack/embed-assets.py" >/dev/null
+  python3 "$RACINE/installateur/velopack/pack-res.py"
+fi
 TARGET=x86_64-pc-windows-msvc
 
 if [ ! -d "$X/sdk/lib/um/x86_64" ]; then
@@ -48,6 +55,19 @@ cd "$RACINE/rose"
 cargo build --release --target "$TARGET" --bin rose --bin rose-aot --bin rose-setup
 
 R="$RACINE/rose/target/$TARGET/release"
+
+# Dossier de distribution Velopack : l'installeur graphique, les binaires
+# qu'il pose et son payload (rose.exe à côté de l'installeur, lu par
+# setup_gui pour afficher le SHA-256 et par setup_core pour la copie).
+STAGE="$RACINE/installateur/velopack/stage"
+mkdir -p "$STAGE/payload"
+cp "$R/rose-setup.exe" "$STAGE/Rose-win-Setup.exe"
+cp "$R/rose.exe" "$STAGE/rose.exe"
+cp "$R/rose-aot.exe" "$STAGE/rose-aot.exe"
+cp "$R/rose.exe" "$STAGE/payload/rose.exe"
+cp "$RACINE/installateur/assets/rose.ico" "$STAGE/rose.ico"
+cp "$RACINE/installateur/assets/setup.ico" "$STAGE/rose_app.ico"
+cp "$RACINE/LICENSE" "$STAGE/LICENSE"
 echo
 echo "Binaires produits :"
 for f in rose.exe rose-aot.exe rose-setup.exe; do

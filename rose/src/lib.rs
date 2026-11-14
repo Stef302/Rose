@@ -41,12 +41,18 @@ pub mod interp;
 pub mod run;
 pub mod latex;
 pub mod sha256;
+/// DEFLATE / zlib / PNG — partagé par l'installeur et la mise à jour Velopack.
+pub mod inflate;
 
 /// JIT Cranelift — disponible uniquement sur les cibles natives.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod jit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod auto_llvm;
+
+/// Mise à jour Velopack (manifeste, téléchargement, application des paquets).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod velopack;
 
 /// Installation Rose : cœur partagé (console + interface graphique).
 #[cfg(not(target_arch = "wasm32"))]
