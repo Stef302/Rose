@@ -139,8 +139,17 @@ def noeud(entrees):
     `entrees` : liste de (nom ou type, pointeur). Le pointeur porte le bit 31
     (0x80000000) s'il désigne un sous-répertoire ; sinon c'est l'offset d'une
     entrée de données.
+
+    En-tête IMAGE_RESOURCE_DIRECTORY : Characteristics, TimeDateStamp,
+    MajorVersion, MinorVersion, **NumberOfNamedEntries**, NumberOfIdEntries.
+    Toutes nos entrées sont NUMÉRIQUES (identifiants, pas des noms) : elles
+    vont donc dans NumberOfIdEntries (offset 14) et NumberOfNamedEntries
+    (offset 12) doit valoir 0. Écrire le total aux deux offsets faisait
+    déclarer 2 × n entrées au système, qui lisait ensuite la sentinelle et
+    les octets suivants comme de vraies entrées (icônes 128/256 px et
+    groupe d'icônes vus avec une taille nulle par l'explorateur).
     """
-    tete = struct.pack("<IIHHHH", 0, 0, 0, 0, len(entrees), len(entrees) & 0xffff)
+    tete = struct.pack("<IIHHHH", 0, 0, 0, 0, 0, len(entrees))
     corps = b"".join(struct.pack("<II", a, b) for a, b in entrees)
     return tete + corps + struct.pack("<II", 0, 0)
 
@@ -171,37 +180,74 @@ def main():
     ressources.append((RT_GROUP_ICON, 1, groupe))
 
     # ── arbre .rsrc ────────────────────────────────────────────────────
-    # Niveau 1 (racine)   : un enfant par type.
-    # Niveau 2 (par type) : un enfant par nom.
+    # Niveau 1 (racine)   : UN enfant par type, tous les noms du même type
+    #                       regroupés sous ce seul nœud de type.
+    # Niveau 2 (par type) : un enfant par nom (identifiant numérique).
     # Niveau 3 (par nom)  : une langue (id 0) -> entrée de données.
     # Chaque nœud = 16 o d'en-tête + 8 o par enfant + 8 o de sentinelle.
-    n = len(ressources)
-    noeud_enfant = 16 + 8 * 2  # un enfant + sentinelle
-    offset_types = 16 + 8 * (n + 1)  # racine : n types + sentinelle
-    offset_noms = offset_types + n * noeud_enfant
-    offset_donnees = offset_noms + n * noeud_enfant
-    offset_brut = offset_donnees + 16 * n  # 16 o par entrée de données
-    offset_brut += (-offset_brut) % 4
+    #
+    # ⚠ Le regroupement par type est OBLIGATOIRE : écrire les six icônes
+    # comme six enfants de la racine produisait six entrées « type 3 » en
+    # double, un groupe d'icônes illisible et des icônes de taille nulle.
+    types: dict[int, list[tuple[int, bytes]]] = {}
+    for type_, nom, octets in ressources:
+        types.setdefault(type_, []).append((nom, octets))
+    ordre_types = sorted(types)
 
-    racine = noeud(
-        [
-            (0x8000 | type_, 0x80000000 | (offset_types + i * noeud_enfant))
-            for i, (type_, _, _) in enumerate(ressources)
-        ]
-    )
+    taille_dir = lambda n: 16 + 8 * n + 8  # nœud complet avec sentinelle
+    # offsets absolus (relatifs au début de la section)
+    offset_types = taille_dir(len(ordre_types))
+    curseur = offset_types
+    offset_par_type = {}
+    for t in ordre_types:
+        offset_par_type[t] = curseur
+        curseur += taille_dir(len(types[t]))
+    offset_noms = curseur
+    offset_par_nom = {}
+    for t in ordre_types:
+        for nom, _ in types[t]:
+            offset_par_nom[(t, nom)] = curseur
+            curseur += taille_dir(1)
+    offset_donnees = curseur
+    # Chaque entrée de données IMAGE_RESOURCE_DATA_ENTRY = 16 octets :
+    # OffsetToData (4) + Size (4) + CodePage (4) + Reserved (4). Win32 lit
+    # les 16 octets ; n'en écrire que 8 laissait les quatre derniers à zéro
+    # (toléré) mais décalait surtout l'offset brut. On réserve et écrit 16.
+    curseur += 16 * len(ressources)
+    offset_brut = curseur + (-curseur) % 4
+
+    # Ordre canonique : types triés, puis noms dans l'ordre de déclaration.
+    # Les nœuds de nom ET les entrées de données sont émis dans CET ordre,
+    # pour que le i-ème nœud de nom pointe exactement sur la i-ème entrée de
+    # données (l'ordre de `ressources` n'est pas celui de l'arbre).
+    ordonnees: list[tuple[int, int, bytes]] = [
+        (t, nom, octets) for t in ordre_types for nom, octets in types[t]
+    ]
+
+    racine = noeud([(t, 0x80000000 | offset_par_type[t]) for t in ordre_types])
     blocs_types = bytearray()
+    for t in ordre_types:
+        blocs_types += noeud(
+            [(nom, 0x80000000 | offset_par_nom[(t, nom)]) for nom, _ in types[t]]
+        )
     blocs_noms = bytearray()
-    for i, (type_, nom, _) in enumerate(ressources):
-        blocs_types += noeud([(0x8000 | nom, 0x80000000 | (offset_noms + i * noeud_enfant))])
-        blocs_noms += noeud([(0, 0x80000000 | (offset_donnees + i * 16))])
+    curseur_donnees = offset_donnees
+    for _ in ordonnees:
+        # Le pointeur d'une entrée de LANGUE désigne une entrée de DONNÉES :
+        # ce n'est pas un sous-répertoire, donc le bit 31 reste à 0. Le poser
+        # faisait lire par Win32 un « répertoire » à l'offset de l'entrée de
+        # données (icônes et police introuvables, icônes de taille nulle).
+        blocs_noms += noeud([(0, curseur_donnees)])
+        curseur_donnees += 16
 
-    # Entrées de données (offset relatif au début de la section, puis taille)
-    # et octets bruts alignés sur 4.
+    # Entrées de données (IMAGE_RESOURCE_DATA_ENTRY, 16 o : offset relatif au
+    # début de la section, taille, page de code, réservé) et octets bruts
+    # alignés sur 4.
     blocs_donnees = bytearray()
     corps = bytearray()
     decalage = offset_brut
-    for _, _, octets in ressources:
-        blocs_donnees += struct.pack("<II", decalage, len(octets))
+    for _, _, octets in ordonnees:
+        blocs_donnees += struct.pack("<IIII", decalage, len(octets), 0, 0)
         decalage += len(aligner(octets))
         corps += aligner(octets)
 

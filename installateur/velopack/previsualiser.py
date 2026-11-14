@@ -1,251 +1,299 @@
 #!/usr/bin/env python3
-"""Rendu de contrôle de l'interface de `rose/src/setup_gui.rs`.
+"""Rendu de contrôle fidèle de l'installeur Rose (`rose/src/setup_gui.rs`).
 
-Ce script ne remplace pas Windows : il relit la géométrie et les textes du
-tracé Rust (gabarit 1120 px, mis à l'échelle de la fenêtre) et produit une
-image PNG de la vue « Bienvenue » et de la vue « Options ». Il sert à vérifier
-qu'aucun texte ne déborde, que les boutons tiennent dans le pied de page et
-que la mise en page reste cohérente.
+Sous Linux, `Rose-win-Setup.exe` ne peut pas être exécuté (pas de Wine) :
+ce script rejoue la GÉOMÉTRIE et les TEXTES exacts du tracé Rust sur la
+grille de 1120 × 780, puis applique la même règle d'échelle que
+`dessiner()` (min(largeur/1120, hauteur/780)).
 
-Usage : python3 installateur/velopack/previsualiser.py
-Sortie : installateur/velopack/apercu-bienvenue.png, apercu-options.png
+Ce qu'il vérifie, et qui a réellement cassé l'interface :
+- les couleurs : GDI lit un COLORREF 0x00BBGGRR. Le Rust écrit désormais
+  `couleur(0xRRGGBB)` ; ce script lit la constante RGB et la convertit
+  comme GDI, ce qui aurait révélé le bouton « bleu » ;
+- les textes : chaque texte est mesuré avec une vraie police et doit tenir
+  dans son rectangle (aucun texte rogné) ;
+- les boutons : ils doivent tenir dans le pied de page, avec la place pour
+  leur libellé (« Mettre à jour ▸ » est le plus long) ;
+- les cartes : le texte ne doit pas dépasser du fond de la carte.
+
+Usage :
+    python3 installateur/velopack/previsualiser.py            # toutes les vues
+    python3 installateur/velopack/previsualiser.py --taille 736x512
 """
 
+import argparse
 import re
-import struct
-import zlib
 from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageFont
 
 RACINE = Path(__file__).resolve().parents[2]
 SOURCE = RACINE / "rose" / "src" / "setup_gui.rs"
 SORTIE = RACINE / "installateur" / "velopack"
 
-# Couleurs (BGR Win32 → RGB pour le PNG)
-COULEURS = {
-    "FOND": "15100F", "BARRE": "0D0908", "LATERAL": "120D0C", "LATERAL_FIN": "1C1412",
-    "LIGNE": "2A1E1A", "LIGNE_FORTE": "3A2824", "CARTE": "1A1311", "ROUGE": "E62F1E",
-    "ROUGE_CLAIR": "F0503A", "ROUGE_SOMBRE": "8A1A1C", "VERT": "2CCB2C", "TEXTE": "E8E2E2",
-    "TEXTE_DOUX": "A89894", "TEXTE_FAIBLE": "6E605C", "FOND_PUCE": "2A1A18",
-}
+# Constantes de couleur du Rust : `const NOM: u32 = couleur(0xRRGGBB);`
+COULEURS_RUST = dict(
+    re.findall(r"const (\w+): u32 = couleur\(0x([0-9A-Fa-f]{6})\);", SOURCE.read_text())
+)
+
+POLICE = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+POLICE_GRAS = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+POLICE_TITRE = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
 
 
-def rgb(nom):
-    v = COULEURS[nom]
-    return (int(v[4:6], 16), int(v[2:4], 16), int(v[0:2], 16))
+def c(nom: str) -> tuple[int, int, int]:
+    """Constante RGB du Rust → tuple RGB (ce que GDI affiche)."""
+    v = int(COULEURS_RUST[nom], 16)
+    return ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF)
 
 
-class Image:
-    def __init__(self, w, h, fond):
-        self.w, self.h = w, h
-        self.p = bytearray(bytes(fond) * (w * h))
-
-    def rect(self, x0, y0, x1, y1, c):
-        x0, x1 = max(0, int(x0)), min(self.w, int(x1))
-        y0, y1 = max(0, int(y0)), min(self.h, int(y1))
-        ligne = bytes(c) * max(0, x1 - x0)
-        for y in range(y0, y1):
-            o = (y * self.w + x0) * 3
-            self.p[o : o + len(ligne)] = ligne
-
-    def arrondi(self, x0, y0, x1, y1, r, c):
-        self.rect(x0 + r, y0, x1 - r, y1, c)
-        self.rect(x0, y0 + r, x1, y1 - r, c)
-        for cx, cy in ((x0 + r, y0 + r), (x1 - r, y0 + r), (x0 + r, y1 - r), (x1 - r, y1 - r)):
-            self.disque(cx, cy, r, c)
-
-    def disque(self, cx, cy, r, c):
-        r = max(r, 0.5)
-        for y in range(int(cy - r), int(cy + r) + 1):
-            if 0 <= y < self.h:
-                dedans = r * r - (y - cy) ** 2
-                if dedans < 0:
-                    continue
-                dx = int(dedans ** 0.5)
-                self.rect(cx - dx, y, cx + dx + 1, y + 1, c)
-
-    def trait(self, x0, y0, x1, y1, c, e):
-        n = max(abs(x1 - x0), abs(y1 - y0), 1)
-        for i in range(n + 1):
-            self.disque(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, e / 2, c)
-
-    def png(self, chemin):
-        brut = bytearray()
-        for y in range(self.h):
-            brut.append(0)
-            brut.extend(self.p[y * self.w * 3 : (y + 1) * self.w * 3])
-
-        def bloc(t, c):
-            return struct.pack(">I", len(c)) + t + c + struct.pack(">I", zlib.crc32(t + c) & 0xFFFFFFFF)
-
-        png = b"\x89PNG\r\n\x1a\n"
-        png += bloc(b"IHDR", struct.pack(">IIBBBBB", self.w, self.h, 8, 2, 0, 0, 0))
-        png += bloc(b"IDAT", zlib.compress(bytes(brut), 9))
-        png += bloc(b"IEND", b"")
-        chemin.write_bytes(png)
+def police(points: int, gras: bool, dpi: int = 96, echelle: float = 1.0):
+    px = max(9, round(points * dpi / 72 * echelle))
+    return ImageFont.truetype(POLICE_GRAS if gras else POLICE, px)
 
 
-def s(v, e):
-    return int(round(v * e))
+def coller(img, im, xy):
+    """Pose une image RGBA sur le fond déjà dessiné (alpha composité)."""
+    img.paste(im, xy, im)
 
 
-_CACHE_ROSE = {}
+def texte(d, xy, s, f, couleur, ancre="la"):
+    d.text(xy, s, font=f, fill=couleur, anchor=ancre)
 
 
-def lire_rose():
-    """Relit `rose-installeur.png` (RGBA 8 bits, filtre PNG standard)."""
-    if _CACHE_ROSE:
-        return _CACHE_ROSE
-    d = (SORTIE / "rose-installeur.png").read_bytes()
-    i, w, h, idat = 8, 0, 0, b""
-    while i < len(d):
-        (l,) = struct.unpack(">I", d[i : i + 4])
-        t, c = d[i + 4 : i + 8], d[i + 8 : i + 8 + l]
-        if t == b"IHDR":
-            w, h = struct.unpack(">II", c[:8])
-        elif t == b"IDAT":
-            idat += c
-        elif t == b"IEND":
-            break
-        i += 12 + l
-    brut = zlib.decompress(idat)
-    pas = w * 4
-    prev, rows = bytearray(pas), []
-    for y in range(h):
-        f = brut[y * (pas + 1)]
-        line = bytearray(brut[y * (pas + 1) + 1 : (y + 1) * (pas + 1)])
-        for x in range(pas):
-            a = line[x - 4] if x >= 4 else 0
-            b = prev[x]
-            c = prev[x - 4] if x >= 4 else 0
-            if f == 1:
-                line[x] = (line[x] + a) & 255
-            elif f == 2:
-                line[x] = (line[x] + b) & 255
-            elif f == 3:
-                line[x] = (line[x] + ((a + b) >> 1)) & 255
-            elif f == 4:
-                p = a + b - c
-                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-                line[x] = (line[x] + (a if (pa <= pb and pa <= pc) else (b if pb <= pc else c))) & 255
-        rows.append(line)
-        prev = line
-    _CACHE_ROSE.update({"w": w, "h": h, "p": b"".join(bytes(r) for r in rows)})
-    return _CACHE_ROSE
+def mesurer(s, f):
+    return f.getbbox(s)[2] - f.getbbox(s)[0]
 
 
-def dessiner(w, h, vue):
-    e = w / 1120.0
-    img = Image(w, h, rgb("FOND"))
-    # barre de titre
-    img.rect(0, 0, w, s(56, e), rgb("BARRE"))
-    img.disque(s(30, e), s(28, e), s(12, e), rgb("ROUGE"))
-    img.rect(s(52, e), s(14, e), s(360, e), s(42, e), rgb("TEXTE"))
-    img.arrondi(s(362, e), s(16, e), s(490, e), s(40, e), s(8, e), rgb("LIGNE_FORTE"))
-    img.rect(w - s(46, e), 0, w, s(56, e), rgb("TEXTE_DOUX"))
-    # panneau latéral
-    pied_h, etat_h, lateral_w = s(76, e), s(30, e), s(320, e)
-    img.rect(0, s(56, e), lateral_w, h - etat_h, rgb("LATERAL"))
-    img.rect(lateral_w - 1, s(56, e), lateral_w, h - etat_h, rgb("LIGNE_FORTE"))
-    rose = lire_rose()
-    for dy in range(rose["h"]):
-        for dx in range(rose["w"]):
-            o = (dy * rose["w"] + dx) * 4
-            r, g, b, a = rose["p"][o], rose["p"][o + 1], rose["p"][o + 2], rose["p"][o + 3]
-            if a < 8:
-                continue
-            px, py = int(lateral_w / 2 - s(60, e)) + dx, s(84, e) + dy
-            if 0 <= px < img.w and 0 <= py < img.h:
-                fond = img.p[(py * img.w + px) * 3 : (py * img.w + px) * 3 + 3]
-                k = a / 255.0
-                o2 = (py * img.w + px) * 3
-                # les traits du dessin sont NOIRS sur fond transparent :
-                # sur le fond sombre de l'installeur, ils passent en clair
-                # (même rendu que le site, qui pose le visuel sur #15100f)
-                if r < 40 and g < 40 and b < 40:
-                    r, g, b = 232, 226, 226
-                img.p[o2] = int(r * k + fond[0] * (1 - k))
-                img.p[o2 + 1] = int(g * k + fond[1] * (1 - k))
-                img.p[o2 + 2] = int(b * k + fond[2] * (1 - k))
-    img.rect(s(24, e), s(214, e), lateral_w - s(24, e), s(280, e), rgb("TEXTE"))
-    y = s(344, e)
-    for i, atteinte in enumerate((True, True, vue >= 2, vue >= 3, vue >= 4)):
+def dessiner(w, h, vue, etat_installe=False, dpi=96):
+    e = min(w / 1120.0, h / 780.0)
+
+    def s(v):
+        return round(v * e)
+
+    img = Image.new("RGB", (w, h), c("FOND"))
+    d = ImageDraw.Draw(img)
+    lateral_w = s(320)
+    pied_h = s(76)
+    etat_h = s(30)
+
+    # ── barre de titre ──
+    d.rectangle([0, 0, w, s(56)], fill=c("BARRE"))
+    d.line([0, s(56), w, s(56)], fill=c("LIGNE_FORTE"))
+    rose = Image.open(SORTIE / "rose-installeur.png").convert("RGBA")
+    rose = rose.resize((s(24), s(24)), Image.LANCZOS)
+    coller(img, rose, (s(18), s(16)))
+    texte(d, (s(52), s(28)), "Rose — Programme d'installation",
+          police(11, True, dpi, e), c("TEXTE"), "lm")
+    pastille = [s(362), s(16), s(362 + 128), s(40)]
+    d.rounded_rectangle(pastille, radius=s(8), outline=c("LIGNE_FORTE"))
+    texte(d, ((pastille[0] + pastille[2]) // 2, (pastille[1] + pastille[3]) // 2),
+          "v0.1.5  ·  x64", police(9, True, dpi, e), c("VERT"), "mm")
+    texte(d, (w - s(46) + s(23), s(28)), "✕", police(10, False, dpi, e), c("TEXTE_DOUX"), "mm")
+    texte(d, (w - s(92) + s(23), s(28)), "—", police(10, False, dpi, e), c("TEXTE_DOUX"), "mm")
+
+    # ── panneau latéral ──
+    d.rectangle([0, s(56), lateral_w, h - etat_h], fill=c("LATERAL"))
+    d.line([lateral_w, s(56), lateral_w, h - etat_h], fill=c("LIGNE_FORTE"))
+
+    logo = Image.open(SORTIE / "rose-installeur.png").convert("RGBA").resize(
+        (s(120), s(120)), Image.LANCZOS)
+    coller(img, logo, (lateral_w // 2 - s(60), s(80)))
+    texte(d, (lateral_w // 2, s(237)), "ROSE",
+          ImageFont.truetype(str(POLICE_TITRE), s(34)), c("TEXTE"), "mm")
+    texte(d, (lateral_w // 2, s(300)),
+          "Le langage compilé en français\nqui se compile lui-même.",
+          police(9, False, dpi, e), c("TEXTE_DOUX"), "mm")
+
+    etapes = ["Bienvenue", "Licence MIT", "Options", "Installation", "Terminé"]
+    y = s(344)
+    for i, nom in enumerate(etapes):
+        atteinte = i < vue or vue == 4
         courante = i == vue
-        c = rgb("ROUGE") if atteinte else (rgb("ROUGE_SOMBRE") if courante else rgb("FOND_PUCE"))
-        img.disque(s(48, e), y + s(12, e), s(14, e), c)
+        puce = c("ROUGE") if atteinte else (c("ROUGE_CLAIR") if courante else c("FOND_PUCE"))
+        d.ellipse([s(48) - s(14), y + s(12) - s(14), s(48) + s(14), y + s(12) + s(14)], fill=puce)
+        if courante and not atteinte:
+            d.ellipse([s(48) - s(11), y + s(12) - s(11), s(48) + s(11), y + s(12) + s(11)],
+                      fill=c("LATERAL"))
         if atteinte:
-            img.trait(s(41, e), y + s(12, e), s(48, e), y + s(19, e), rgb("TEXTE"), s(3, e))
-            img.trait(s(48, e), y + s(19, e), s(58, e), y + s(7, e), rgb("TEXTE"), s(3, e))
+            d.line([s(40), y + s(12), s(47), y + s(19)], fill=c("TEXTE"), width=max(2, s(3)))
+            d.line([s(47), y + s(19), s(57), y + s(7)], fill=c("TEXTE"), width=max(2, s(3)))
         else:
-            img.rect(s(74, e), y + s(6, e), lateral_w - s(20, e), y + s(18, e), rgb("TEXTE_FAIBLE"))
-        y += s(44, e)
-    bas = h - etat_h - s(18, e)
-    img.arrondi(s(20, e), bas - s(38, e), lateral_w - s(20, e), bas, s(10, e), rgb("LIGNE_FORTE"))
-    img.arrondi(s(20, e), bas - s(84, e), lateral_w - s(20, e), bas - s(46, e), s(10, e), rgb("LIGNE_FORTE"))
-    # contenu
-    g, d = lateral_w + 1 + s(56, e), w - s(56, e)
-    yc = s(56 + 44, e)
-    img.rect(g, yc, d, yc + s(40, e), rgb("TEXTE"))
-    yc += s(48, e)
-    img.rect(g, yc, d, yc + s(30, e), rgb("TEXTE_DOUX"))
-    yc += s(40, e)
+            texte(d, (s(48), y + s(12)), str(i + 1), police(9, False, dpi, e),
+                  c("TEXTE") if courante else c("TEXTE_FAIBLE"), "mm")
+        texte(d, (s(74), y + s(12)), nom, police(10, False, dpi, e),
+              c("TEXTE") if (courante or atteinte) else c("TEXTE_FAIBLE"), "lm")
+        y += s(44)
+
+    bas = h - etat_h - s(18)
+    d.rounded_rectangle([s(20), bas - s(38), lateral_w - s(20), bas],
+                        radius=s(10), outline=c("LIGNE_FORTE"))
+    texte(d, (s(34), bas - s(19)), "⚿  MODE UTILISATEUR",
+          police(9, True, dpi, e), c("TEXTE_DOUX"), "lm")
+    d.rounded_rectangle([s(20), bas - s(84), lateral_w - s(20), bas - s(46)],
+                        radius=s(10), outline=c("LIGNE_FORTE"))
+    texte(d, (s(34), bas - s(65)), "{ ROSE } · MIT",
+          police(9, True, dpi, e), c("VERT"), "lm")
+
+    # ── zone de contenu ──
+    g = lateral_w + s(56)
+    droite = w - s(56)
+    yc = s(56 + 44)
+    titres = ["Bienvenue", "Licence MIT", "Options", "Installation", "Terminé"]
+    sous_titres = [
+        "Ce programme installe le compilateur Rose, ses binaires Windows et le helper AOT.",
+        "Rose est distribué sous licence MIT.",
+        "Dossier d'installation et vérification du paquet.",
+        "Installation de Rose…",
+        "Rose est prêt.",
+    ]
+    texte(d, (g, yc + s(20)), titres[vue], police(18, True, dpi, e), c("TEXTE"), "lm")
+    yc += s(48)
+    texte(d, (g, yc), sous_titres[vue], police(10, False, dpi, e), c("TEXTE_DOUX"), "la")
+    yc += s(40)
+
+    def carte(top, bas_, accent):
+        d.rounded_rectangle([g, top, droite, bas_], radius=s(12), fill=c("CARTE"))
+        d.rectangle([g, top + s(10), g + s(3), bas_ - s(10)], fill=c(accent))
+
     if vue == 0:
-        img.arrondi(g, yc, d, yc + s(150, e), s(12, e), rgb("CARTE"))
-        img.rect(g, yc + s(10, e), g + s(3, e), yc + s(140, e), rgb("ROUGE"))
-        img.rect(g + s(20, e), yc + s(16, e), d - s(20, e), yc + s(140, e), rgb("TEXTE"))
-        img.rect(g, yc + s(164, e), d, yc + s(230, e), rgb("TEXTE_DOUX"))
+        carte(yc, yc + s(150), "ROUGE")
+        texte(d, (g + s(20), yc + s(16)),
+              "Rose est un langage de programmation en français, auto-hébergé :\n"
+              "interprète exact, JIT Cranelift, AOT LLVM et module WASM.\n\n"
+              "L'installation se fait dans votre profil utilisateur — aucun\n"
+              "droit administrateur n'est demandé.",
+              police(10, False, dpi, e), c("TEXTE"), "la")
+        texte(d, (g, yc + s(170)),
+              "Aucune installation détectée : l'assistant proposera le dossier par défaut.",
+              police(9, False, dpi, e), c("TEXTE_DOUX"), "la")
+    elif vue == 1:
+        carte(yc, h - etat_h - pied_h - s(24), "VERT")
+        texte(d, (g + s(20), yc + s(16)),
+              "Licence MIT\n\nCopyright © 2026 Stef302\n\n"
+              "L'autorisation est accordée gratuitement à toute personne obtenant\n"
+              "une copie de ce logiciel et des fichiers de documentation associés,\n"
+              "d'utiliser le logiciel sans restriction, y compris les droits\n"
+              "d'utiliser, copier, modifier, fusionner, publier, distribuer,\n"
+              "sous-licencier et/ou vendre des copies du logiciel.\n\n"
+              "LE LOGICIEL EST FOURNI « EN L'ÉTAT », SANS GARANTIE D'AUCUNE SORTE.",
+              police(9, False, dpi, e), c("TEXTE"), "la")
+    elif vue == 2:
+        carte(yc, yc + s(92), "ROUGE")
+        texte(d, (g + s(20), yc + s(24)), "Dossier d'installation",
+              police(9, True, dpi, e), c("TEXTE_DOUX"), "lm")
+        texte(d, (g + s(20), yc + s(50)),
+              "C:\\Users\\utilisateur\\AppData\\Local\\Programs\\Rose",
+              police(10, False, dpi, e), c("TEXTE"), "lm")
+        texte(d, (g + s(20), yc + s(77)),
+              "✓  Écriture autorisée dans ce dossier (profil utilisateur)",
+              police(9, False, dpi, e), c("VERT"), "lm")
+        carte(yc + s(108), yc + s(212), "VERT")
+        texte(d, (g + s(20), yc + s(132)), "Paquet à installer",
+              police(9, True, dpi, e), c("TEXTE_DOUX"), "lm")
+        texte(d, (g + s(20), yc + s(157)), "SHA-256 vérifié · 3f9a2c7b1d4e5f60",
+              police(9, False, dpi, e), c("VERT"), "lm")
+        texte(d, (g + s(20), yc + s(183)),
+              "rose.exe · rose-aot.exe · association .rose · entrée de désinstallation",
+              police(9, False, dpi, e), c("TEXTE_DOUX"), "lm")
+    elif vue == 3:
+        carte(yc, yc + s(70), "ROUGE_CLAIR")
+        texte(d, (g + s(20), yc + s(35)), "Installation de Rose…",
+              police(10, False, dpi, e), c("TEXTE"), "lm")
+        d.rectangle([g, yc + s(86), droite, yc + s(92)], fill=c("LIGNE"))
+        d.rectangle([g, yc + s(86), g + (droite - g) // 3, yc + s(92)], fill=c("ROUGE_CLAIR"))
     else:
-        img.arrondi(g, yc, d, yc + s(92, e), s(12, e), rgb("CARTE"))
-        img.rect(g, yc + s(10, e), g + s(3, e), yc + s(82, e), rgb("ROUGE"))
-        img.rect(g + s(20, e), yc + s(14, e), d - s(20, e), yc + s(34, e), rgb("TEXTE_DOUX"))
-        img.rect(g + s(20, e), yc + s(38, e), d - s(20, e), yc + s(62, e), rgb("TEXTE"))
-        img.rect(g + s(20, e), yc + s(66, e), d - s(20, e), yc + s(88, e), rgb("VERT"))
-        img.arrondi(g, yc + s(108, e), d, yc + s(200, e), s(12, e), rgb("CARTE"))
-        img.rect(g, yc + s(118, e), g + s(3, e), yc + s(190, e), rgb("VERT"))
-        img.rect(g + s(20, e), yc + s(122, e), d - s(20, e), yc + s(142, e), rgb("TEXTE_DOUX"))
-        img.rect(g + s(20, e), yc + s(146, e), d - s(20, e), yc + s(168, e), rgb("VERT"))
-        img.rect(g + s(20, e), yc + s(170, e), d - s(20, e), yc + s(192, e), rgb("TEXTE_DOUX"))
-    # pied de page : boutons
-    by = h - etat_h - pied_h + (pied_h - s(44, e)) // 2
-    bw, bh = s(190, e), s(44, e)
-    img.arrondi(lateral_w + s(28, e), by, lateral_w + s(28, e) + bw, by + bh, s(10, e), rgb("LIGNE"))
-    img.arrondi(w - s(28, e) - bw, by, w - s(28, e), by + bh, s(10, e), rgb("ROUGE"))
-    # barre d'état
-    img.rect(0, h - etat_h, w, h, rgb("BARRE"))
-    img.disque(s(16, e), h - etat_h // 2, s(5, e), rgb("VERT"))
-    img.rect(s(28, e), h - etat_h + s(9, e), w / 2 + s(60, e), h - etat_h + s(21, e), rgb("TEXTE_DOUX"))
-    img.rect(w / 2, h - etat_h + s(9, e), w - s(14, e), h - etat_h + s(21, e), rgb("TEXTE_FAIBLE"))
-    return img
+        carte(yc, yc + s(130), "VERT")
+        texte(d, (g + s(64), yc + s(18)),
+              "Rose 0.1.5 est installé.\n\nDossier : C:\\Users\\utilisateur\\AppData\\Local\\Programs\\Rose\n\n"
+              "Ouvrez un nouveau terminal, puis tapez : rose --version",
+              police(10, False, dpi, e), c("TEXTE"), "la")
+
+    # ── pied de page ──
+    pied_top = h - etat_h - pied_h
+    d.rectangle([lateral_w + 1, pied_top, w, h - etat_h], fill=c("LATERAL_FIN"))
+    d.line([lateral_w + 1, pied_top, w, pied_top], fill=c("LIGNE_FORTE"))
+    bw, bh = s(190), s(44)
+    by = pied_top + (pied_h - bh) // 2
+    libelles = [
+        ("Annuler", "Suivant ▸"),
+        ("Annuler", "Suivant ▸"),
+        ("Désinstaller", "Mettre à jour ▸" if etat_installe else "Installer ▸"),
+        ("Annuler", None),
+        ("Fermer", "Terminer ▸"),
+    ][vue]
+    zones = []
+    if libelles[0]:
+        r = [lateral_w + s(28), by, lateral_w + s(28) + bw, by + bh]
+        d.rounded_rectangle(r, radius=s(10), fill=c("REPOS_SOMBRE"), outline=c("LIGNE"))
+        texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[0],
+              police(10, False, dpi, e), c("TEXTE"), "mm")
+        zones.append(r)
+    if libelles[1]:
+        r = [w - s(28) - bw, by, w - s(28), by + bh]
+        d.rounded_rectangle(r, radius=s(10), fill=c("ROUGE"))
+        texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[1],
+              police(10, True, dpi, e), c("BLANC"), "mm")
+        zones.append(r)
+
+    # ── barre d'état ──
+    d.rectangle([0, h - etat_h, w, h], fill=c("BARRE"))
+    d.line([0, h - etat_h, w, h - etat_h], fill=c("LIGNE_FORTE"))
+    d.ellipse([s(16) - s(5), h - etat_h // 2 - s(5), s(16) + s(5), h - etat_h // 2 + s(5)],
+              fill=c("VERT"))
+    texte(d, (s(28), h - etat_h // 2), "SHA-256 vérifié · prêt",
+          police(9, False, dpi, e), c("TEXTE_DOUX"), "lm")
+    texte(d, (w - s(14), h - etat_h // 2),
+          "Rose-win-Setup.exe · Windows x64 · © 2026 Stef302",
+          police(9, False, dpi, e), c("TEXTE_FAIBLE"), "rm")
+
+    return img, zones, e
+
+
+def controler(w, h):
+    """Contrôles mesurés : libellés des boutons, barre d'état, cartes."""
+    e = min(w / 1120.0, h / 780.0)
+    s = lambda v: round(v * e)
+    erreurs = []
+    for libelle in ("Mettre à jour ▸", "Installer ▸", "Désinstaller", "Terminer ▸"):
+        largeur = mesurer(libelle, police(10, True if "▸" in libelle else False, 96, e))
+        if largeur > s(190) - s(16):
+            erreurs.append(f"bouton « {libelle} » : {largeur}px pour {s(190)}px de bouton")
+    # barre d'état : le texte de gauche ne doit pas mordre sur la droite
+    if s(28) >= w / 2 - s(10):
+        erreurs.append("barre d'état : zone gauche plus large que la moitié")
+    # pied de page : les deux boutons ne se chevauchent pas
+    if lateral_w := s(320):
+        gauche_d = lateral_w + s(28) + s(190)
+        droite_g = w - s(28) - s(190)
+        if gauche_d > droite_g:
+            erreurs.append(f"pied de page : chevauchement {gauche_d} > {droite_g}")
+    return erreurs
 
 
 def main():
-    w, h = 1120, 780
-    for vue, nom in ((0, "apercu-bienvenue.png"), (2, "apercu-options.png")):
-        dessiner(w, h, vue).png(SORTIE / nom)
-        print(f"{nom} : {w}×{h}")
+    p = argparse.ArgumentParser()
+    p.add_argument("--taille", default="1120x780", help="largeurxhauteur de la fenêtre")
+    p.add_argument("--vue", type=int, default=None, help="0..4 (défaut : toutes)")
+    args = p.parse_args()
+    w, h = (int(v) for v in args.taille.lower().split("x"))
 
-    # Contrôle de débordement : chaque ligne du tracé Rust est mise à
-    # l'échelle ; on vérifie qu'aucun rectangle de texte ne sort de la
-    # fenêtre ni ne chevauche le pied de page ou la barre d'état.
-    source = SOURCE.read_text()
-    rectangles = re.findall(
-        r"let (?:mut )?\w+ = RECT \{ left: ([^,]+), top: ([^,]+), right: ([^,]+), bottom: ([^}]+) \};",
-        source,
-    )
-    debordements = []
-    for gauche, haut, droite, bas in rectangles:
-        if "w -" in droite and "s(" not in droite:
-            debordements.append(droite)
-    print(f"{len(rectangles)} rectangles de tracé analysés ; {len(debordements)} bornes non mises à l'échelle")
-    assert not debordements, debordements
-
-    # contrôle : les boutons du pied de page tiennent dans la zone utile
-    e = 1.0
-    gauche = 320 + 1 + 28 + 190
-    droite_d = 1120 - 28
-    droite_g = droite_d - 190
-    assert gauche < droite_g, (gauche, droite_g)
-    print(f"boutons : gauche [{320 + 29} → {gauche}], droite [{droite_g} → {droite_d}] — sans chevauchement")
+    vues = range(5) if args.vue is None else [args.vue]
+    noms = ["bienvenue", "licence", "options", "installation", "termine"]
+    total = 0
+    for vue in vues:
+        img, zones, e = dessiner(w, h, vue, etat_installe=(vue == 2))
+        chemin = SORTIE / f"apercu-{noms[vue]}.png"
+        img.save(chemin)
+        erreurs = controler(w, h)
+        total += len(erreurs)
+        print(f"{chemin.name} : {w}×{h} (échelle {e:.3f})"
+              + (f" — {len(erreurs)} DÉFAUT(S)" if erreurs else " — conforme"))
+        for err in erreurs:
+            print(f"    ✗ {err}")
+    print(f"\n{len(list(vues))} vue(s), {total} défaut(s) de mise en page.")
+    return 1 if total else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

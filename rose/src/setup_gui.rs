@@ -47,6 +47,12 @@ struct RECT { left: i32, top: i32, right: i32, bottom: i32 }
 struct MSG { hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, time: u32, pt: POINT }
 
 #[repr(C)]
+struct MINMAXINFO { pt_reservee: POINT, taille_max: POINT, position_max: POINT, taille_suivi_min: POINT, taille_suivi_max: POINT }
+
+#[repr(C)]
+struct MONITORINFO { cb_size: u32, rc_moniteur: RECT, rc_travail: RECT, drapeaux: u32 }
+
+#[repr(C)]
 struct WNDCLASSEXW {
     cbSize: u32, style: u32, lpfnWndProc: Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT>,
     cbClsExtra: i32, cbWndExtra: i32, hInstance: HINSTANCE, hIcon: HICON, hCursor: HCURSOR,
@@ -133,6 +139,8 @@ unsafe extern "system" {
     fn CreatePen(style: i32, epaisseur: i32, couleur: u32) -> *mut c_void;
     fn MoveToEx(dc: HDC, x: i32, y: i32, precedent: *mut POINT) -> i32;
     fn LineTo(dc: HDC, x: i32, y: i32) -> i32;
+    fn MonitorFromWindow(h: HWND, drapeaux: u32) -> *mut c_void;
+    fn GetMonitorInfoW(m: *mut c_void, info: *mut MONITORINFO) -> i32;
 }
 
 const WM_DESTROY: u32 = 0x0002;
@@ -146,6 +154,8 @@ const WM_SETICON: u32 = 0x0080;
 const WM_NCHITTEST: u32 = 0x0084;
 const WM_APP: u32 = 0x8000;
 const WM_APP_FIN: u32 = WM_APP + 1;
+const WM_GETMINMAXINFO: u32 = 0x0024;
+const WM_SIZING: u32 = 0x0214;
 
 const HTCAPTION: isize = 2;
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF0000;
@@ -171,22 +181,33 @@ const LR_SHARED: u32 = 0x8000;
 const RT_GROUP_ICON: *const u16 = 14 as *const u16;
 
 // Couleurs : fond sombre unique, un seul rouge d'action, un seul vert d'état.
-const FOND: u32 = 0x15100F;
-const BARRE: u32 = 0x0D0908;
-const LATERAL: u32 = 0x120D0C;
-const LATERAL_FIN: u32 = 0x1C1412;
-const LIGNE: u32 = 0x2A1E1A;
-const LIGNE_FORTE: u32 = 0x3A2824;
-const CARTE: u32 = 0x1A1311;
-// GDI veut du COLORREF : 0x00BBGGRR (rouge = 0x1E2FE6 serait BLEU).
-const ROUGE: u32 = 0xE62F1E;
-const ROUGE_CLAIR: u32 = 0xF0503A;
-const ROUGE_SOMBRE: u32 = 0x1C1A8A;
-const VERT: u32 = 0x2CCB2C;
-const TEXTE: u32 = 0xE8E2E2;
-const TEXTE_DOUX: u32 = 0xA89894;
-const TEXTE_FAIBLE: u32 = 0x6E605C;
-const FOND_PUCE: u32 = 0x2A1A18;
+// GDI veut un COLORREF 0x00BBGGRR : les valeurs ci-dessous sont écrites en
+// RGB lisible puis converties par `couleur()` — écrire directement l'hex RGB
+// (0xE62F1E) donnait RGB(0x1E, 0x2F, 0xE6), un BLEU : tout l'installeur
+// sortait bleu au lieu du rouge de la maquette.
+const fn couleur(rgb: u32) -> u32 {
+    ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
+}
+
+const FOND: u32 = couleur(0x15100F);
+const BARRE: u32 = couleur(0x0D0908);
+const LATERAL: u32 = couleur(0x120D0C);
+const LATERAL_FIN: u32 = couleur(0x1C1412);
+const LIGNE: u32 = couleur(0x2A1E1A);
+const LIGNE_FORTE: u32 = couleur(0x3A2824);
+const CARTE: u32 = couleur(0x1A1311);
+const ROUGE: u32 = couleur(0xE62F1E);
+const ROUGE_CLAIR: u32 = couleur(0xF0503A);
+const ROUGE_SOMBRE: u32 = couleur(0x8A1A1C);
+const VERT: u32 = couleur(0x2CCB2C);
+const TEXTE: u32 = couleur(0xE8E2E2);
+const TEXTE_DOUX: u32 = couleur(0xA89894);
+const TEXTE_FAIBLE: u32 = couleur(0x6E605C);
+const FOND_PUCE: u32 = couleur(0x2A1A18);
+const BLANC: u32 = couleur(0xFFFFFF);
+// Survols du bouton secondaire (dégradé léger, en RGB).
+const SURVOL_SOMBRE: u32 = couleur(0x2E2422);
+const REPOS_SOMBRE: u32 = couleur(0x1E1715);
 
 /// Les cinq étapes affichées dans le panneau latéral.
 const ETAPES: [&str; 5] = ["Bienvenue", "Licence MIT", "Options", "Installation", "Terminé"];
@@ -364,13 +385,24 @@ unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     if bitmap.is_null() || bits.is_null() {
         return false;
     }
-    // pixels PNG : RGBA → BGRA
+    // pixels PNG : RGBA → BGRA **prémultiplié**. `AlphaBlend` avec
+    // AC_SRC_ALPHA (alpha_format = 1) attend une source prémultipliée ;
+    // sans la multiplication, les bords transparents de la rose sortaient
+    // avec un halo clair.
+    //
+    // Le visuel embarqué (`embed-assets.py`) a ses pixels NOIRS rendus
+    // transparents : le fond sombre du panneau dessine donc lui-même les
+    // contours, comme sur la maquette. Aucune inversion de couleur ici.
     let cible = std::slice::from_raw_parts_mut(bits as *mut u8, largeur * hauteur * 4);
     for k in 0..largeur * hauteur {
-        cible[k * 4] = pixels[k * 4 + 2];
-        cible[k * 4 + 1] = pixels[k * 4 + 1];
-        cible[k * 4 + 2] = pixels[k * 4];
-        cible[k * 4 + 3] = pixels[k * 4 + 3];
+        let a = pixels[k * 4 + 3];
+        let r = pixels[k * 4];
+        let v = pixels[k * 4 + 1];
+        let b = pixels[k * 4 + 2];
+        cible[k * 4] = ((b as u32 * a as u32) / 255) as u8;
+        cible[k * 4 + 1] = ((v as u32 * a as u32) / 255) as u8;
+        cible[k * 4 + 2] = ((r as u32 * a as u32) / 255) as u8;
+        cible[k * 4 + 3] = a;
     }
     let memoire = CreateCompatibleDC(dc);
     let ancien = SelectObject(memoire, bitmap as *mut c_void);
@@ -437,12 +469,18 @@ unsafe fn arrondi(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
     DeleteObject(b as *mut c_void);
 }
 
+/// Bordure arrondie fine (1 px) : un vrai contour, pas un aplat.
+/// `RoundRect` avec un pinceau *nul* (HBRUSH null = pas de remplissage)
+/// ne trace que le crayon. L'ancienne version passait un pinceau plein et
+/// peignait toute la zone, ce qui masquait le fond des cartes.
 unsafe fn contour(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
-    let b = CreateSolidBrush(couleur);
-    let ancien = SelectObject(dc, b as *mut c_void);
+    let stylo = CreatePen(0, 1, couleur);
+    let ancien_stylo = SelectObject(dc, stylo as *mut c_void);
+    let ancien_pinceau = SelectObject(dc, (1 as usize) as *mut c_void); // NULL_BRUSH
     RoundRect(dc, r.left, r.top, r.right, r.bottom, rayon, rayon);
-    SelectObject(dc, ancien);
-    DeleteObject(b as *mut c_void);
+    SelectObject(dc, ancien_pinceau);
+    SelectObject(dc, ancien_stylo);
+    DeleteObject(stylo as *mut c_void);
 }
 
 unsafe fn cercle(dc: HDC, cx: i32, cy: i32, rayon: i32, couleur: u32) {
@@ -521,10 +559,16 @@ unsafe fn dessiner(h: HWND) {
     }
     let dpi = etat.dpi;
 
-    // Le tracé est décrit sur une grille de 1120 px de large : on le met à
+    // Le tracé est décrit sur une grille de 1120 × 780 : on le met à
     // l'échelle de la fenêtre réelle. Sans cela, une fenêtre de 736 px
     // dessinait un gabarit de 1256 px (boutons coupés, textes rognés).
-    let echelle = w as f64 / 1120.0;
+    //
+    // L'échelle tient compte de la LARGEUR **et** de la HAUTEUR : ne suivre
+    // que la largeur laissait le pied de page et la barre d'état sortir du
+    // cadre dès que la fenêtre était moins haute que le gabarit (le bouton
+    // « Mettre à jour » se retrouvait coupé). Le minimum est borné par
+    // `WM_GETMINMAXINFO` (voir `lancer`).
+    let echelle = (w as f64 / 1120.0).min(ht as f64 / 780.0);
     let s = |v: i32| -> i32 { (v as f64 * echelle).round() as i32 };
 
     // fond général
@@ -557,10 +601,12 @@ unsafe fn dessiner(h: HWND) {
     let filet = RECT { left: lateral_w - 1, top: s(56), right: lateral_w, bottom: ht - etat_h };
     remplir(dc, &filet, LIGNE_FORTE);
 
-    dessiner_rose(dc, lateral_w / 2 - s(60), s(84), s(120));
-    let mut rl = RECT { left: 0, top: s(214), right: lateral_w, bottom: s(280) };
-    texte_echelle(dc, dpi, "Kare", "ROSE", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 32, false, echelle);
-    let mut rs = RECT { left: s(24), top: s(282), right: lateral_w - s(24), bottom: s(330) };
+    // La rose de la maquette occupe ~110 px sur 320 de large, sous une barre
+    // de titre de 56 px : 120 px centrés, titre « ROSE » juste dessous.
+    dessiner_rose(dc, lateral_w / 2 - s(60), s(80), s(120));
+    let mut rl = RECT { left: 0, top: s(206), right: lateral_w, bottom: s(268) };
+    texte_echelle(dc, dpi, "Kare", "ROSE", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 34, false, echelle);
+    let mut rs = RECT { left: s(24), top: s(274), right: lateral_w - s(24), bottom: s(330) };
     texte_echelle(dc, dpi, "Segoe UI", "Le langage compilé en français qui se compile lui-même.",
           &mut rs, DT_CENTER | DT_WORDBREAK, TEXTE_DOUX, 9, false, echelle);
 
@@ -670,7 +716,7 @@ unsafe fn dessiner(h: HWND) {
                   &mut r3, DT_SINGLELINE | DT_VCENTER,
                   if etat.utilisateur { VERT } else { ROUGE_CLAIR }, 9, false, echelle);
 
-            let c2 = RECT { left: g, top: yc + s(108), right: d, bottom: yc + s(200) };
+            let c2 = RECT { left: g, top: yc + s(108), right: d, bottom: yc + s(212) };
             carte(dc, &c2, VERT);
             let mut r4 = RECT { left: g + s(20), top: yc + s(122), right: d - s(20), bottom: yc + s(142) };
             texte_echelle(dc, dpi, "Segoe UI", "Paquet à installer", &mut r4, DT_SINGLELINE | DT_VCENTER,
@@ -683,7 +729,7 @@ unsafe fn dessiner(h: HWND) {
                   },
                   &mut r5, DT_SINGLELINE | DT_VCENTER,
                   if etat.empreinte.is_some() { VERT } else { TEXTE_DOUX }, 9, false, echelle);
-            let mut r6 = RECT { left: g + s(20), top: yc + s(170), right: d - s(20), bottom: yc + s(192) };
+            let mut r6 = RECT { left: g + s(20), top: yc + s(170), right: d - s(20), bottom: yc + s(196) };
             texte_echelle(dc, dpi, "Segoe UI",
                   "rose.exe · rose-aot.exe · association .rose · entrée de désinstallation",
                   &mut r6, DT_SINGLELINE | DT_VCENTER, TEXTE_DOUX, 9, false, echelle);
@@ -730,8 +776,8 @@ unsafe fn dessiner(h: HWND) {
     let mut zones = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
     if let Some((action, libelle)) = gauche {
         let r = RECT { left: lateral_w + s(28), top: by, right: lateral_w + s(28) + bw, bottom: by + bh };
-        // COLORREF : le survol éclaircit (0x00BBGGRR).
-        let fond = if etat.survol == 0 { 0x2E2422 } else { 0x1E1715 };
+        // Le survol éclaircit le bouton secondaire.
+        let fond = if etat.survol == 0 { SURVOL_SOMBRE } else { REPOS_SOMBRE };
         arrondi(dc, &r, 10, fond);
         contour(dc, &r, 10, if etat.survol == 0 { LIGNE_FORTE } else { LIGNE });
         let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
@@ -745,7 +791,7 @@ unsafe fn dessiner(h: HWND) {
         let couleur = if etat.survol == 1 { ROUGE_CLAIR } else { ROUGE };
         arrondi(dc, &r, 10, couleur);
         let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
-        texte_echelle(dc, dpi, "Segoe UI", libelle, &mut rt, DT_CENTER | DT_VCENTER | DT_SINGLELINE, 0xFFFFFF, 10, true, echelle);
+        texte_echelle(dc, dpi, "Segoe UI", libelle, &mut rt, DT_CENTER | DT_VCENTER | DT_SINGLELINE, BLANC, 10, true, echelle);
         zones[1] = r;
     }
 
@@ -754,9 +800,9 @@ unsafe fn dessiner(h: HWND) {
     remplir(dc, &etat_barre, BARRE);
     remplir(dc, &RECT { left: 0, top: etat_barre.top, right: w, bottom: etat_barre.top + 1 }, LIGNE_FORTE);
     cercle(dc, s(16), ht - etat_h / 2, s(5), if etat.empreinte.is_some() { VERT } else { TEXTE_FAIBLE });
-    let mut rg = RECT { left: s(28), top: etat_barre.top, right: w / 2 + s(60), bottom: etat_barre.bottom };
+    let mut rg = RECT { left: s(28), top: etat_barre.top, right: w / 2 - s(10), bottom: etat_barre.bottom };
     texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut rg, DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 9, false, echelle);
-    let mut rd = RECT { left: w / 2, top: etat_barre.top, right: w - s(14), bottom: etat_barre.bottom };
+    let mut rd = RECT { left: w / 2 + s(10), top: etat_barre.top, right: w - s(14), bottom: etat_barre.bottom };
     texte_echelle(dc, dpi, "Segoe UI",
           &format!("Rose-win-Setup.exe · Windows x64 · © 2026 Stef302"),
           &mut rd, DT_VCENTER | DT_SINGLELINE | DT_RIGHT, TEXTE_FAIBLE, 9, false, echelle);
@@ -776,15 +822,60 @@ fn dans(r: &RECT, x: i32, y: i32) -> bool {
 }
 
 /// Zone de la barre de titre custom : bouton fermer / réduire.
-fn zone_titre(w: i32, x: i32, y: i32) -> i32 {
-    if y > 56 {
+/// Les bornes suivent l'échelle du tracé (barre de 56 px sur la grille
+/// 1120 × 780), sinon les zones cliquables ne correspondent plus au dessin
+/// quand la fenêtre est redimensionnée.
+fn zone_titre(w: i32, h: i32, x: i32, y: i32) -> i32 {
+    let echelle = (w as f64 / 1120.0).min(h as f64 / 780.0);
+    let s = |v: i32| -> i32 { (v as f64 * echelle).round() as i32 };
+    if y > s(56) {
         return -1;
     }
-    if x >= w - 46 { 2 } else if x >= w - 92 { 1 } else { 0 }
+    if x >= w - s(46) { 2 } else if x >= w - s(92) { 1 } else { 0 }
 }
 
 unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match msg {
+        WM_GETMINMAXINFO => {
+            // Taille minimale = la grille de tracé (1120 × 780) à l'échelle
+            // du DPI : en dessous, le pied de page et la barre d'état
+            // n'auraient plus la place de tenir (bouton « Mettre à jour »
+            // coupé). La taille maximale suit la zone utile de l'écran.
+            let info = l as *mut MINMAXINFO;
+            if !info.is_null() {
+                let dpi = if (*ETAT).dpi > 0 { (*ETAT).dpi } else { 96 };
+                let facteur = dpi as f64 / 96.0;
+                let mini_l = (1120.0 * facteur * 0.72).round() as i32;
+                let mini_h = (780.0 * facteur * 0.72).round() as i32;
+                (*info).taille_suivi_min = POINT { x: mini_l, y: mini_h };
+                let mut ecran = MONITORINFO {
+                    cb_size: std::mem::size_of::<MONITORINFO>() as u32,
+                    rc_moniteur: std::mem::zeroed(),
+                    rc_travail: std::mem::zeroed(),
+                    drapeaux: 0,
+                };
+                if GetMonitorInfoW(MonitorFromWindow(h, 2), &mut ecran) != 0 {
+                    (*info).position_max = POINT { x: ecran.rc_travail.right, y: ecran.rc_travail.bottom };
+                    (*info).taille_max = POINT {
+                        x: ecran.rc_travail.right - ecran.rc_travail.left,
+                        y: ecran.rc_travail.bottom - ecran.rc_travail.top,
+                    };
+                }
+            }
+            0
+        }
+        WM_SIZING => {
+            // Le redimensionnement garde le ratio du gabarit : le tracé est
+            // calculé sur une grille 1120 × 780, une fenêtre très allongée
+            // laisserait de larges bandes vides ou rognerait le contenu.
+            let r = l as *mut RECT;
+            if !r.is_null() {
+                let largeur = (*r).right - (*r).left;
+                let hauteur = ((largeur as f64) * 780.0 / 1120.0).round() as i32;
+                (*r).bottom = (*r).top + hauteur;
+            }
+            1
+        }
         WM_PAINT => { dessiner(h); 0 }
         WM_TIMER => {
             let etat = &mut *ETAT;
@@ -800,7 +891,7 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             GetClientRect(h, &mut rc);
             let x = (l & 0xffff) as i32;
             let y = ((l >> 16) & 0xffff) as i32;
-            if y < 56 && zone_titre(rc.right, x, y) == 0 {
+            if zone_titre(rc.right, rc.bottom, x, y) == 0 {
                 HTCAPTION
             } else {
                 DefWindowProcW(h, msg, w, l)
@@ -833,7 +924,7 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             let y = ((l >> 16) & 0xffff) as i32;
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
-            match zone_titre(rc.right, x, y) {
+            match zone_titre(rc.right, rc.bottom, x, y) {
                 2 => { PostQuitMessage(0); return 0; }
                 1 => { ShowWindow(h, 6); return 0; } // SW_MINIMIZE
                 _ => {}
@@ -1063,6 +1154,14 @@ pub fn lancer() {
             icone: std::ptr::null_mut(),
         });
         ETAT = Box::into_raw(etat);
+        // DPI lu avant la création de la fenêtre : `WM_GETMINMAXINFO` en a
+        // besoin dès le premier redimensionnement.
+        {
+            let dc = GetDC(std::ptr::null_mut());
+            let d = GetDeviceCaps(dc, LOGPIXELSY);
+            ReleaseDC(std::ptr::null_mut(), dc);
+            (*ETAT).dpi = if d <= 0 { 96 } else { d };
+        }
 
         let inst = GetModuleHandleW(std::ptr::null());
         let classe = hex_w("RoseSetupRose");
@@ -1092,10 +1191,32 @@ pub fn lancer() {
             if d <= 0 { 96 } else { d }
         };
         let facteur = dpi_ecran as f64 / 96.0;
-        let largeur = (1120.0 * facteur).round() as i32;
-        let hauteur = (780.0 * facteur).round() as i32;
+        // La grille est en pixels logiques (1120 × 780). Sur un écran
+        // 1080p en 150 %, elle ferait 1680 × 1170 : plus haute que la zone
+        // utile, et le pied de page sortait du cadre. On borne la fenêtre à
+        // 92 % de l'écran en gardant le ratio du gabarit.
+        let mut largeur = (1120.0 * facteur).round() as i32;
+        let mut hauteur = (780.0 * facteur).round() as i32;
+        let dc_ecran = GetDC(std::ptr::null_mut());
+        let ecran_l = GetDeviceCaps(dc_ecran, 8); // HORZRES
+        let ecran_h = GetDeviceCaps(dc_ecran, 10); // VERTRES
+        ReleaseDC(std::ptr::null_mut(), dc_ecran);
+        if ecran_l > 0 && ecran_h > 0 {
+            let max_l = (ecran_l as f64 * 0.92).round() as i32;
+            let max_h = (ecran_h as f64 * 0.92).round() as i32;
+            if largeur > max_l {
+                largeur = max_l;
+                hauteur = ((largeur as f64) * 780.0 / 1120.0).round() as i32;
+            }
+            if hauteur > max_h {
+                hauteur = max_h;
+                largeur = ((hauteur as f64) * 1120.0 / 780.0).round() as i32;
+            }
+        }
+        let x = ((ecran_l.max(1) - largeur) / 2).max(0);
+        let y = ((ecran_h.max(1) - hauteur) / 2).max(0);
         let hwnd = CreateWindowExW(0, classe.as_ptr(), titre_w.as_ptr(), style,
-                                   120, 80, largeur, hauteur, std::ptr::null_mut(), 0, inst, std::ptr::null_mut());
+                                   x, y, largeur, hauteur, std::ptr::null_mut(), 0, inst, std::ptr::null_mut());
         if hwnd.is_null() {
             return;
         }

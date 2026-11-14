@@ -532,7 +532,10 @@ commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
     couleurs du site, et recherche automatique du moteur à poser
     (`payload\rose.exe`, `rose.exe`, ou l'installeur lui-même s'il a été
     renommé). Rendu de contrôle sous Linux : `installateur/velopack/previsualiser.py`
-    (aperçu PNG de la mise en page, contrôle des débordements).
+    (aperçu PNG des cinq vues, textes réels, couleurs GDI exactes, contrôle
+    mesuré des boutons et des cartes) ; ressources validées par
+    `installateur/velopack/verifier-res.py` (arbre `.rsrc`, PNG, police,
+    icônes et groupe d'icônes).
 - **Builds produits depuis cette machine Linux** (`clang` + `lld-link` +
   SDK/UCRT de `cargo-xwin`), pas seulement sur Windows :
   `sh installateur/velopack/build-linux.sh` puis

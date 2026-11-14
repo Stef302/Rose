@@ -25,9 +25,14 @@ X="${XWIN_SDK:-$HOME/.cache/cargo-xwin/xwin}"
 
 # Ressources de l'installeur : rose PNG + police Kare + icônes multi-tailles
 # dans rose/rose-setup.res (section .rsrc COFF), liée au seul rose-setup.
+# L'arbre est VALIDÉ juste après : une section .rsrc mal formée (types
+# dupliqués, pointeurs avec bit 31, entrées de 8 o) ne se voit pas à la
+# compilation, mais rend la rose, la police et les grandes icônes
+# introuvables à l'exécution.
 if command -v python3 >/dev/null 2>&1; then
   python3 "$RACINE/installateur/velopack/embed-assets.py" >/dev/null
   python3 "$RACINE/installateur/velopack/pack-res.py"
+  python3 "$RACINE/installateur/velopack/verifier-res.py"
 fi
 TARGET=x86_64-pc-windows-msvc
 

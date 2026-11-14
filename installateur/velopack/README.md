@@ -1,7 +1,7 @@
 # Installeur Velopack de Rose (Windows)
 
 Velopack **remplace WiX et NSIS** : il installe Rose dans un dossier versionné
-(`%LOCALAPPDATA%\Rose\app-0.1.4\`, désigné par `current`), pose le PATH et les
+(`%LOCALAPPDATA%\Rose\app-0.1.5\`, désigné par `current`), pose le PATH et les
 raccourcis, et fournit un launcher (`Update.exe`) qui applique les mises à jour
 par **deltas binaires** et revient à la version précédente si la nouvelle ne
 démarre pas.
@@ -41,7 +41,7 @@ sh installateur/velopack/build-linux.sh   # → rose.exe, rose-aot.exe, rose-set
 le manifeste (Python 3 suffit, pas de CLI `vpk`) :
 
 ```sh
-sh installateur/velopack/pack-linux.sh    # → Releases/Rose-0.1.4-full.nupkg + releases.win.json
+sh installateur/velopack/pack-linux.sh    # → Releases/Rose-0.1.5-full.nupkg + releases.win.json
 ```
 
 ## Build depuis Windows (assistant Tauri + CLI Velopack)
@@ -51,7 +51,7 @@ Visual C++ Build Tools + Windows SDK, CLI Tauri 2 (`cargo install tauri-cli --ve
 et la CLI Velopack (`dotnet tool install -g vpk`).
 
 ```powershell
-powershell -File .\build.ps1 -Version 0.1.4
+powershell -File .\build.ps1 -Version 0.1.5
 ```
 
 `build.ps1` enchaîne :
@@ -83,13 +83,33 @@ La voie de mise à jour est portable et testée ici (`ROSE_VELOPACK_ROOT`,
 ```bash
 printf 'app-0.1.3' > /tmp/vpk/current
 ROSE_VELOPACK_ROOT=/tmp/vpk ROSE_VELOPACK_URL=file:///tmp/vpk/releases.win.json \
-  ./rose/rose update --velopack     # → paquet 0.1.4 téléchargé + SHA-256 vérifié
+  ./rose/rose update --velopack     # → paquet 0.1.5 téléchargé + SHA-256 vérifié
 ./rose/rose --veloapp-updated       # → code 0
 ```
 
 Tests Rust : `cargo test --release velopack` (3 tests : comparaison de versions,
 analyse du manifeste, détection du launcher). `installateur/velopack/verifier.sh`
-joue les 6 contrôles de bout en bout.
+joue les 12 contrôles de bout en bout.
+
+## Ressources embarquées et contrôle de l'interface
+
+- `embed-assets.py` produit `rose/src/assets_installeur.rs` : la rose
+  recadrée (fond noir rendu transparent pour que le panneau sombre dessine
+  les contours, comme sur la maquette) et la police Kare.
+- `pack-res.py` produit `rose/rose-setup.res` : une section `.rsrc` COFF
+  complète — `RT_RCDATA 1` (PNG), `RT_FONT 2` (Kare TrueType), six
+  `RT_ICON` **regroupées sous un seul type** et un `RT_GROUP_ICON`.
+- `verifier-res.py` valide cet arbre sans Windows (racine → types → noms →
+  langues → entrées de données, tailles, signatures) :
+
+```sh
+python3 installateur/velopack/verifier-res.py                       # le .res
+python3 installateur/velopack/verifier-res.py rose-setup.exe        # lié dans le PE
+```
+
+- `previsualiser.py` rejoue la géométrie et les textes de `setup_gui.rs`
+  sur la grille 1120 × 780 avec les couleurs GDI exactes et mesure les
+  libellés : aucun bouton coupé, aucun texte rogné.
 
 ## Remplacements
 

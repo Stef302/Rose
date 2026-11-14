@@ -145,12 +145,36 @@ l'utilisateur web)
     `setup_gui` Win32 ; `build.rs` pose `/SUBSYSTEM:WINDOWS` +
     `/ENTRY:mainCRTStartup` pour ce binôme SEULEMENT).
   Le moteur `rose.exe` et `rose-aot.exe` sont EMBARQUÉS dans le paquet.
+- **Interface de l'installeur — pièges vérifiés** (maquette de référence) :
+  - GDI lit un `COLORREF` `0x00BBGGRR` : écrire `0xE62F1E` pour le rouge
+    affiche RGB(0x1E,0x2F,0xE6), un BLEU. Toujours passer par
+    `const fn couleur(0xRRGGBB)` de `setup_gui.rs` (tout l'installeur était
+    bleu avant cette conversion) ;
+  - l'échelle du tracé est `min(largeur/1120, hauteur/780)` ; ne suivre que
+    la largeur laissait sortir le pied de page (bouton « Mettre à jour »
+    coupé) dès que la fenêtre était moins haute que le gabarit ;
+    `WM_GETMINMAXINFO` borne la taille minimale et `WM_SIZING` garde le
+    ratio ;
+  - les cartes doivent être assez hautes pour leur contenu (la carte
+    « Paquet à installer » débordait de 8 px) ;
+  - la rose embarquée a son fond noir rendu TRANSPARENT (`embed-assets.py`)
+    et ses pixels sont prémultipliés pour `AlphaBlend` (`AC_SRC_ALPHA`) ;
+  - `contour()` trace une vraie bordure (crayon + `NULL_BRUSH`), pas un
+    aplat : un pinceau plein masquait le fond des cartes ;
+  - la section `.rsrc` exige **un seul nœud par type** : les six icônes
+    doivent être six NOMS sous le seul `RT_ICON` (type 3), pas six types
+    répétés ; `NumberOfNamedEntries` = 0 ; les entrées de langue pointent
+    une entrée de données SANS le bit 31 ; une entrée de données fait
+    16 octets. Contrôle : `python3 installateur/velopack/verifier-res.py`.
 - **Builds Windows depuis Linux** (clang + lld-link + llvm-lib + SDK/UCRT de
   `cargo-xwin` dans `~/.cache/cargo-xwin/xwin`) :
   `sh installateur/velopack/build-linux.sh` puis
   `sh installateur/velopack/pack-linux.sh` (paquet `.nupkg` + manifeste
   `releases.win.json`, Python 3, sans CLI `vpk`).
   La cible mingw est INUTILISABLE ici (pas de `dlltool`) : rester en msvc.
+  Pas de Wine : l'interface se contrôle par
+  `python3 installateur/velopack/previsualiser.py` (cinq vues PNG, textes
+  réels, couleurs GDI exactes, contrôle mesuré des boutons).
 - Sous Linux/macOS, `rose update` simple reste sur la voie artefacts GitHub
   (`docs/telechargements/` + SHA-256) : Velopack n'a pas d'installeur Linux.
 

@@ -23,8 +23,10 @@ RACINE = Path(__file__).resolve().parents[2]
 SORTIE = RACINE / "rose" / "src" / "assets_installeur.rs"
 
 # zone du logo à garder (fraction de la largeur/hauteur) : la rose seule,
-# sans le mot « ROSE » gravé en bas du visuel d'origine
-FRACTION_BAS = 0.62
+# sans le mot « ROSE » gravé en bas du visuel d'origine. Mesuré sur
+# `logo-rose.png` : la tige s'arrête à la ligne 903/1400, le mot « ROSE »
+# commence à la ligne 904 → 0.645 coupe exactement entre les deux.
+FRACTION_BAS = 0.645
 
 
 def lire_png(chemin: Path):
@@ -141,7 +143,27 @@ def rust_bytes(nom, donnees: bytes) -> str:
 def main():
     w, h, lignes = lire_png(RACINE / "docs" / "assets" / "img" / "logo-rose.png")
 
-    # recadrage : la rose seule (haut du visuel), sans le mot ROSE gravé
+    def est_noir(p):
+        return p[0] < 40 and p[1] < 40 and p[2] < 40
+
+    # Le visuel source est posé sur un fond NOIR OPAQUE (alpha 255 partout) :
+    # embarqué tel quel, la rose apparaissait comme un carré noir sur le
+    # panneau sombre de l'installeur. Le dessin est en APLATS (rouge, vert,
+    # noir) : le noir n'apporte rien — ce sont le fond ET les contours. On
+    # rend donc TOUS les pixels noirs transparents et on laisse le fond du
+    # panneau faire les contours, exactement comme la maquette (rose posée
+    # sur le fond sombre, sans cadre).
+    for y in range(h):
+        ligne = lignes[y]
+        for x in range(w):
+            o = x * 4
+            if est_noir((ligne[o], ligne[o + 1], ligne[o + 2])):
+                ligne[o:o + 4] = b"\0\0\0\0"
+
+    # recadrage : la rose seule (haut du visuel), sans le mot ROSE gravé.
+    # La boîte englobante se calcule sur les pixels NON-FOND (le fond noir a
+    # déjà été rendu transparent), sinon elle englobait tout le visuel et
+    # ramenait le mot « ROSE » dans le cadre.
     bas = int(h * FRACTION_BAS)
     minx, maxx, miny, maxy = w, 0, bas, 0
     for y in range(bas):
@@ -157,6 +179,9 @@ def main():
     x1 = min(w, maxx + marge)
     y0 = max(0, miny - marge)
     y1 = min(bas, maxy + marge)
+    # Le bord bas ne doit pas déborder sur le mot « ROSE » : on rogne juste
+    # sous le dernier pixel de la tige (plus de marge en bas).
+    y1 = min(y1, maxy + 1)
     largeur = x1 - x0
     hauteur = y1 - y0
 
