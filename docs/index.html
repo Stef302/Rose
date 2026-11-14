@@ -621,20 +621,19 @@ Salut, Alan !</pre>
         <code class="inline">rose</code> dans le PATH, associe les fichiers <code class="inline">.rose</code> à leur
         icône (double-clic = exécution), propose « Modifier » avec le bloc-notes, et s'inscrit dans
         Applications et fonctionnalités pour une désinstallation propre.
-        La mise à jour passe par <b>Velopack</b> : <code class="inline">rose update</code> télécharge un delta,
-        l'applique, et revient à la version précédente tout seul si la nouvelle casse.
+        L'installeur est <b>Velopack</b> (WiX et NSIS sont retirés) : <code class="inline">rose update</code> télécharge
+        un delta, l'applique, et revient à la version précédente tout seul si la nouvelle casse.
       </p>
       <div class="term">
         <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>powershell</span><button class="copy" onclick="copyTerm(this)">COPIER</button></div>
-<pre><span class="k">&gt;</span> .\Rose-Setup-0.1.4.msi
-<span class="c"># ou, pour l'ancien installeur Windows : .\Rose-Setup-0.1.3.exe</span>
+<pre><span class="k">&gt;</span> .\Rose-win-Setup.exe
 <span class="c"># puis, dans un nouveau terminal :</span>
 <span class="k">&gt;</span> rose info
 <span class="k">&gt;</span> rose bonjour.rose
 <span class="k">&gt;</span> rose update          <span class="c"># Velopack : delta + rollback</span></pre>
       </div>
       <div style="display:flex;gap:1rem;flex-wrap:wrap">
-        <a class="btn btn-rouge" href="telechargements/Rose-Setup-0.1.4.msi" download>TÉLÉCHARGER ROSE-SETUP-0.1.4.MSI</a>
+        <a class="btn btn-rouge" href="https://github.com/Stef302/Rose/releases/latest" target="_blank" rel="noopener">TÉLÉCHARGER ROSE-WIN-SETUP.EXE</a>
         <a class="btn btn-fantome" href="https://github.com/Stef302/Rose/releases/tag/v0.1.4" target="_blank" rel="noopener">RELEASES GITHUB ↗</a>
       </div>
       <p class="small gris" style="line-height:2">SHA-256 de chaque artefact : voir <a class="vert" href="telechargements/SHA256SUMS">telechargements/SHA256SUMS</a> et les assets de la release GitHub.</p>
@@ -785,10 +784,12 @@ Salut, Alan !</pre>
         <div class="doc-section" id="doc-demarrer">
           <h3>Démarrer</h3>
           <h4>Windows</h4>
-          <p>Lance <code class="inline">Rose-Setup-0.1.4.msi</code> (assistant WiX : licence MIT, dossier, PATH).
-          Aucun droit administrateur. L'installeur historique <code class="inline">Rose-Setup-0.1.3.exe</code> reste disponible.
-          Le dossier <code class="inline">bin</code> rejoint ton PATH utilisateur et les fichiers
-          <code class="inline">.rose</code> deviennent double-cliquables.</p>
+          <p>Lance <code class="inline">Rose-win-Setup.exe</code> : c'est l'installeur <b>Velopack</b> (remplace WiX et NSIS).
+          Aucun droit administrateur : tout va dans ton profil (<code class="inline">%LOCALAPPDATA%\Rose</code>).
+          L'installation est versionnée (<code class="inline">app-&lt;version&gt;</code>) : <code class="inline">rose update</code>
+          télécharge le delta, l'applique et <b>revient à la version précédente</b> si la nouvelle casse.
+          Le dossier rejoint ton PATH utilisateur et les fichiers <code class="inline">.rose</code>
+          deviennent double-cliquables.</p>
           <h4>Linux</h4>
           <p>Compile <code class="inline">rose-cpp</code> avec <code class="inline">make</code> (GMP requis), puis installe le binaire.</p>
           <h4>Commandes du moteur</h4>

@@ -122,19 +122,26 @@ l'utilisateur web)
 
 - `rose update` : installe / met à jour Rose (64 bits natif). Détecte une
   installation existante, propose réinstaller / réparer / désinstaller.
-- **Velopack** (Windows, recommandé) : `rose update --velopack` ou
-  `ROSE_VELOPACK=1` — deltas binaires + rollback automatique si la nouvelle
-  version casse. La chaîne de build est `installateur/tauri-installer/build.ps1`
-  (publish portable → packaging → `velopack pack --self-contained` →
-  `velopack local` pour tester). Publier en ligne : `velopack pack` +
-  `velopack push <artifact> --repository <url>`.
-  Velopack n'ayant pas d'installeur natif Linux, `rose update` simple reste
-  sur la voie artefacts (`docs/telechargements/` + SHA-256) sous Linux.
-- Windows : `Rose-Setup-<version>.exe` = binaire Rust `rose-setup` avec
-  interface Win32 maison (bandeau rose, pétale, boutons GDI) — 64 bits natif,
-  aucun droit admin, HKCU seulement.
-- Le script de build de l'installeur est `installateur/build-setup-windows.sh`
-  (plus de NSIS). Le moteur `rose.exe` est EMBARQUÉ dans l'installeur.
+- **Velopack est LA voie Windows** (WiX et NSIS sont retirés). Le module
+  `rose/src/velopack.rs` reproduit le protocole sans dépendance :
+  `rose update --velopack` (ou `ROSE_VELOPACK=1`, ou `VELOCABI` posé par le
+  launcher) lit `releases.win.json`, compare `current` → `app-<version>`,
+  télécharge le paquet complet, vérifie le SHA-256 et le dépose dans
+  `packages\` ; le launcher applique au démarrage suivant (deltas + rollback).
+  Les arguments internes `--veloapp-updated` / `--veloapp-obsolete` sont routés
+  en tête de `main()` (jamais pris pour un fichier).
+- Chaîne de build : `installateur/velopack/build.ps1` (Windows) —
+  `cargo tauri build` → `vpk pack` → `vpk local` / `vpk push`.
+  Vérifiable sans Windows : `sh installateur/velopack/verifier.sh ./rose/rose`
+  (6 contrôles : téléchargement, dépôt, à-jour, SHA-256 falsifié, launcher ×2)
+  et `cargo test --release velopack`.
+  Variables de test : `ROSE_VELOPACK_ROOT` (racine d'installation),
+  `ROSE_VELOPACK_URL` (manifeste `file://` ou HTTP).
+- Windows : `Rose-win-Setup.exe` = assistant Tauri qui copie `payload\`
+  (rose.exe) et pose le PATH — aucun droit admin, profil utilisateur seulement.
+  Le moteur `rose.exe` est EMBARQUÉ dans le payload.
+- Sous Linux/macOS, `rose update` simple reste sur la voie artefacts GitHub
+  (`docs/telechargements/` + SHA-256) : Velopack n'a pas d'installeur Linux.
 
 ## Notation factorielle (v0.1.x)
 

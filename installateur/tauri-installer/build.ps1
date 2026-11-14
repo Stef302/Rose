@@ -53,14 +53,14 @@ try {
     }
 
     New-Item -ItemType Directory -Path $dist -Force | Out-Null
-    Copy-Item -Path $binary -Destination (Join-Path $dist "Rose-Setup.exe") -Force
+    Copy-Item -Path $binary -Destination (Join-Path $dist "Rose-win-Setup.exe") -Force
     $distPayload = Join-Path $dist "payload"
     if (Test-Path -LiteralPath $distPayload) {
         Remove-Item -LiteralPath $distPayload -Recurse -Force
     }
     New-Item -ItemType Directory -Path $distPayload -Force | Out-Null
     Get-ChildItem -LiteralPath $payload -Force | Copy-Item -Destination $distPayload -Recurse -Force
-    Write-Output "`nInstalleur pret : $(Join-Path $dist 'Rose-Setup.exe')"
+    Write-Output "`nInstalleur pret : $(Join-Path $dist 'Rose-win-Setup.exe')"
     Write-Output "Payload : $distPayload"
 } finally {
     Pop-Location

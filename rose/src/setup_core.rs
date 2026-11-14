@@ -291,7 +291,7 @@ pub fn comparer_versions(a: &str, b: &str) -> i32 {
 /// Nom de l'asset à télécharger pour la plateforme courante.
 pub fn nom_asset() -> &'static str {
     #[cfg(target_os = "windows")]
-    { "Rose-Setup" }              // complété par le tag
+    { "Rose-win-Setup.exe" }      // installeur Velopack
     #[cfg(target_os = "linux")]
     {
         if cfg!(target_arch = "aarch64") { "rose-aarch64-linux" } else { "rose-x86_64-linux" }
@@ -376,7 +376,7 @@ pub fn chercher_version_site() -> Option<Release> {
     let base = url_base_site();
     let mut noms = Vec::new();
     #[cfg(target_os = "windows")]
-    { noms.push(format!("Rose-Setup-{}.exe", version)); }
+    { noms.push("Rose-win-Setup.exe".to_string()); }
     #[cfg(target_os = "linux")]
     {
         if cfg!(target_arch = "aarch64") { noms.push("rose-aarch64-linux".to_string()); }
@@ -448,7 +448,7 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
                     let mut assets = Vec::new();
                     let base = url_base_pages();
                     #[cfg(target_os = "windows")]
-                    { assets.push((format!("Rose-Setup-{}.exe", version), format!("{}/Rose-Setup-{}.exe", base, version))); }
+                    { assets.push(("Rose-win-Setup.exe".to_string(), format!("{}/Rose-win-Setup.exe", base))); }
                     #[cfg(target_os = "linux")]
                     {
                         let nom = if cfg!(target_arch = "aarch64") { "rose-aarch64-linux" } else { "rose-x86_64-linux" };
@@ -475,7 +475,7 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
     let mut asset: Option<(String, String)> = None;
     if cfg!(windows) {
         asset = release.assets.iter()
-            .find(|(n, _)| n.starts_with("Rose-Setup") && n.ends_with(".exe"))
+            .find(|(n, _)| n.starts_with("Rose-win-Setup") && n.ends_with(".exe"))
             .cloned();
     } else {
         let cible = nom_asset();
@@ -530,7 +530,7 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
         // d'exécution : on télécharge le nouvel installeur graphique et on
         // le lance (il détectera l'installation existante et proposera de
         // réinstaller). L'installeur embarque déjà le moteur + les icônes.
-        if let Some((n, url)) = release.assets.iter().find(|(n, _)| n.starts_with("Rose-Setup") && n.ends_with(".exe")).cloned() {
+        if let Some((n, url)) = release.assets.iter().find(|(n, _)| n.starts_with("Rose-win-Setup") && n.ends_with(".exe")).cloned() {
             let dest = tmp.join(&n);
             j.push(format!("Téléchargement de l'installeur : {}", n));
             if http_telecharger(&url, &dest) {

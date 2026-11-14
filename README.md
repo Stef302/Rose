@@ -497,23 +497,23 @@ commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
 
 ## 📦 Installation
 
-### Windows — installeur graphique maison (64 bits natif)
+### Windows — installeur Velopack (remplace WiX et NSIS)
 
-`Rose-Setup-<version>.exe` n'est **plus du NSIS** : c'est un binaire Rust
-(`rose-setup`) avec une **interface Win32 dessinée à la main** — bandeau rose,
-pétale logo, boutons au GDI, aucun template.
+`Rose-win-Setup.exe` est l'installeur **Velopack** (assistant Tauri + paquets
+`.nupkg`). Il remplace définitivement les installeurs WiX et NSIS.
 
-- **64 bits natif** (PE32+ x86-64), apparaît comme tel dans le gestionnaire
-  des tâches.
-- Détecte une installation existante et propose : Réinstaller, Réparer,
-  Désinstaller, Fermer.
-- **Aucun droit administrateur** : tout est écrit dans `HKCU` et
-  `%LOCALAPPDATA%\Programs\Rose` (compatible avec les stratégies
-  d'entreprise qui verrouillent `HKLM`).
-- Désinstallation **rapide** : seuls les fichiers posés par l'installeur
-  sont supprimés (pas de cache d'icônes à purger).
-- Le moteur `rose.exe` est **embarqué** dans l'installeur : un seul fichier
-  à lancer, rien à télécharger.
+- Installation **versionnée** dans `%LOCALAPPDATA%\Rose\app-<version>\` :
+  le launcher `Update.exe` applique les mises à jour par **deltas binaires** et
+  **revient à la version précédente** si la nouvelle ne démarre pas.
+- **Aucun droit administrateur** : tout est écrit dans le profil utilisateur
+  (`HKCU`, `%LOCALAPPDATA%`), compatible avec les stratégies d'entreprise qui
+  verrouillent `HKLM`.
+- Le moteur `rose.exe` est **embarqué** : l'assistant copie le payload, pose le
+  PATH et les raccourcis ; la désinstallation est gérée par Velopack.
+- Chaîne de build : `installateur/velopack/build.ps1` (Windows) —
+  `cargo tauri build` puis `vpk pack` (voir `installateur/velopack/README.md`).
+  La voie de mise à jour est vérifiable **sans Windows** :
+  `sh installateur/velopack/verifier.sh`.
 
 ### Windows / Linux — depuis le moteur
 
@@ -528,13 +528,16 @@ la version publiée à celle installée, **télécharge l'artefact** de la
 plateforme, **vérifie son SHA-256** contre `SHA256SUMS`, puis remplace le
 binaire installé.
 
-**Velopack (Windows, recommandé)** : pour les installations faites par
+**Velopack (Windows, la seule voie)** : pour les installations faites par
 l'installeur Velopack (variable `VELOCABI` posée par le launcher), `rose update`
-bascule automatiquement sur Velopack — **deltas binaires** (téléchargement
-réduit), **rollback automatique** si la nouvelle version casse au démarrage.
-La chaîne de build est `installateur/tauri-installer/build.ps1`
-(`cargo tauri build` → `velopack pack --self-contained` →
-`velopack local` pour tester en local, `velopack push` pour publier).
+bascule automatiquement sur Velopack — il lit `releases.win.json`, compare la
+version installée (`current` → `app-<version>`), télécharge le paquet complet,
+**vérifie son SHA-256** et le dépose dans `packages\` ; le launcher applique la
+mise à jour au démarrage suivant avec **rollback automatique** si la nouvelle
+version casse. Les arguments internes `--veloapp-updated` / `--veloapp-obsolete`
+sont routés en tête de `main()`. La chaîne de build est
+`installateur/velopack/build.ps1` (`cargo tauri build` → `vpk pack` →
+`vpk local` pour tester, `vpk push` pour publier).
 Velopack n'ayant pas d'installeur natif Linux, `rose update` simple reste
 sous Linux sur la voie artefacts GitHub (`docs/telechargements/` + SHA-256).
 

@@ -1,2 +1,0 @@
-Suite de conformité Rose 0.1.4 — 46 tests dorés · 119 parités · corpus auto-hébergement.
-}

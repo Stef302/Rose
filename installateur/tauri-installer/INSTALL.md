@@ -26,11 +26,11 @@
 Le script va :
 1. Copier le HTML, CSS et JS dans `ui/`
 2. Compiler avec `cargo tauri build --no-bundle --target x86_64-pc-windows-msvc`
-3. Produire `dist/Rose-Setup.exe` + `dist/payload/`
+3. Produire `dist/Rose-win-Setup.exe` + `dist/payload/`
 
 ## Résultat
 
-- `dist/Rose-Setup.exe` : l'installeur graphique (WebView2)
+- `dist/Rose-win-Setup.exe` : l'installeur graphique (WebView2)
 - `dist/payload/rose.exe` : le moteur Rose embarqué
 - Les deux doivent rester côte à côte
 

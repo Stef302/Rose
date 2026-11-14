@@ -19,6 +19,7 @@ mod auto_llvm;
 mod cmd_llvm;
 mod sha256;
 mod setup_core;
+mod velopack;
 #[cfg(feature = "llvm")]
 mod aot_llvm_orc;
 #[cfg(feature = "llvm")]
@@ -134,6 +135,12 @@ fn main() {
     let mut argv: Vec<String> = std::env::args().collect();
     let console_apres = argv.iter().any(|a| a == "--console");
     argv.retain(|a| a != "--console");
+    // Velopack : le launcher relance l'application avec un argument interne
+    // (`--veloapp-updated`, `--veloapp-obsolete`) — il n'est PAS un nom de
+    // fichier, on le route avant toute autre action.
+    if velopack::is_update_launcher(&argv) {
+        std::process::exit(velopack::run_update_launcher(&argv));
+    }
     if argv.len() < 2 {
         // aucun argument : si l'exécutable porte un bundle, l'exécuter (mode
         // autonome, miroir du 'comp' C++ — rose.cpp:4783 lire_bundle).
@@ -468,22 +475,21 @@ fn install_rose() {
     // explicite : « rose update --velopack » ou ROSE_VELOPACK=1. Les builds
     // installés par Velopack portent la variable VELOCABI (posée par le
     // launcher) et basculent automatiquement.
-    #[cfg(windows)]
+    // (le module est portable : la voie Velopack est vérifiable sous Linux
+    // avec ROSE_VELOPACK_URL pointant sur un manifeste local `file://`).
     {
         let args: Vec<String> = std::env::args().collect();
-        if velopack::is_update_launcher(&args) {
-            std::process::exit(velopack::run_update_launcher(&args));
-        }
         let veut_velopack = std::env::var("ROSE_VELOPACK").is_ok()
             || std::env::var("VELOCABI").is_ok()
             || args.iter().any(|a| a == "--velopack");
         if veut_velopack {
             println!("Mise à jour Velopack…");
             match velopack::check_and_update(true) {
-                Ok(Some(v)) => println!("Rose mis à jour en {v} — relancez « rose »."),
+                Ok(Some(v)) => println!("Paquet {v} téléchargé — le launcher Velopack l'appliquera au prochain démarrage."),
                 Ok(None) => println!("Rose est déjà à jour."),
                 Err(e) => eprintln!("Velopack : {e} — repli sur l'installeur classique."),
             }
+            return;
         }
     }
 

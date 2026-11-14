@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "HtmlInstaller",
-  "version": "0.1.0",
-  "identifier": "com.example.htmlinstaller",
+  "productName": "Rose",
+  "version": "0.1.4",
+  "identifier": "io.github.stef302.rose",
   "build": {
     "frontendDist": "../frontend"
   },
