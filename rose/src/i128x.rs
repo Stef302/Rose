@@ -108,14 +108,29 @@ pub fn factorielle_parallele(n: u64) -> Gz {
         pow_big(p, e)
     }).collect();
 
-    let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
-    let mut v = facteurs;
-    while v.len() > coeurs.max(2) * 2 {
-        niveau_par(&mut v, coeurs);
+    // WebAssembly : PAS de threads (aucun `thread::spawn` ni
+    // `available_parallelism` fiable ; en WASM, lancer un fil de travail
+    // fait échouer/traper l'appel, ce qui rendait `2000!` inaccessible
+    // dans le playground alors que le natif va à `1000000!`). On broie donc
+    // l'arbre SÉQUENTIEL équilibré, qui ne dépend d'aucun fil.
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut v = facteurs;
+        arbre_seq(&mut v);
+        r.set_v(v.into_iter().next().unwrap());
+        return r;
     }
-    arbre_seq(&mut v);
-    r.set_v(v.into_iter().next().unwrap());
-    r
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
+        let mut v = facteurs;
+        while v.len() > coeurs.max(2) * 2 {
+            niveau_par(&mut v, coeurs);
+        }
+        arbre_seq(&mut v);
+        r.set_v(v.into_iter().next().unwrap());
+        r
+    }
 }
 
 /// Arbre de produit équilibré multi-cœur sur une liste de facteurs déjà
@@ -157,14 +172,24 @@ pub fn arbre_produit(facteurs: Vec<BigInt>) -> Gz {
         });
         *v = mids;
     }
-    let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
     let mut v = facteurs;
-    while v.len() > coeurs.max(2) * 2 {
-        niveau_par(&mut v, coeurs);
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Pas de threads en WebAssembly : arbre séquentiel équilibré.
+        arbre_seq(&mut v);
+        r.set_v(v.into_iter().next().unwrap());
+        return r;
     }
-    arbre_seq(&mut v);
-    r.set_v(v.into_iter().next().unwrap());
-    r
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
+        while v.len() > coeurs.max(2) * 2 {
+            niveau_par(&mut v, coeurs);
+        }
+        arbre_seq(&mut v);
+        r.set_v(v.into_iter().next().unwrap());
+        r
+    }
 }
 
 /// n$ : super-factorielle ∏_{k=1..n} k! = ∏_{p premier ≤ n} p^{e_p}, avec
@@ -663,4 +688,77 @@ fn modpow(base: &BigInt, exp: &BigInt, m: &BigInt) -> BigInt {
         e /= 2;
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Valeurs de contrôle (Python `math.factorial`).
+    #[test]
+    fn factorielle_petits_entiers() {
+        for (n, attendu) in [
+            (0u64, "1"),
+            (1, "1"),
+            (5, "120"),
+            (10, "3628800"),
+            (20, "2432902008176640000"),
+            (25, "15511210043330985984000000"),
+            (100, "93326215443944152681699238856266700490715968264381621468592963895217599993229915608941463976156518286253697920827223758251185210916864000000000000000000000000"),
+        ] {
+            assert_eq!(factorielle_parallele(n).v().to_string(), attendu, "{n}!");
+        }
+    }
+
+    /// Le chemin SÉQUENTIEL (celui que prend WebAssembly, sans threads) doit
+    /// donner exactement le même résultat que l'arbre multi-cœur. Régression :
+    /// `2000!` trappait dans le playground parce que `thread::spawn` était
+    /// appelé en WASM.
+    #[test]
+    fn arbre_sequentiel_egal_au_parallele() {
+        for n in [1001u64, 2000, 5000] {
+            let parallele = factorielle_parallele(n).v().to_string();
+            // même décomposition que `factorielle_parallele`, broyée en séquentiel
+            let mut facteurs: Vec<BigInt> = Vec::new();
+            let mut est_premier = vec![true; (n + 1) as usize];
+            est_premier[0] = false;
+            est_premier[1] = false;
+            let mut i = 2u64;
+            while i * i <= n {
+                if est_premier[i as usize] {
+                    let mut j = i * i;
+                    while j <= n { est_premier[j as usize] = false; j += i; }
+                    i += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            for p in (2..=n).filter(|&p| est_premier[p as usize]) {
+                let mut e = 0u64;
+                let mut q = p;
+                while q <= n {
+                    e += n / q;
+                    if q > n / p { break; }
+                    q *= p;
+                }
+                let mut base = BigInt::from(p);
+                let mut res = BigInt::from(1u64);
+                let mut ee = e;
+                while ee > 0 {
+                    if ee & 1 == 1 { res *= &base; }
+                    ee >>= 1;
+                    if ee > 0 { base = &base * &base; }
+                }
+                facteurs.push(res);
+            }
+            let sequentiel = arbre_produit(facteurs).v().to_string();
+            assert_eq!(parallele, sequentiel, "{n}! : séquentiel ≠ parallèle");
+        }
+    }
+
+    #[test]
+    fn arbre_produit_bord() {
+        assert_eq!(arbre_produit(Vec::new()).v().to_string(), "1");
+        assert_eq!(arbre_produit(vec![BigInt::from(2u64), BigInt::from(3u64), BigInt::from(5u64)]).v().to_string(), "30");
+    }
 }

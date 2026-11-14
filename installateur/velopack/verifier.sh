@@ -92,18 +92,15 @@ if [ -f "$PAQUET_REEL" ]; then
   rm -rf "$RACINE/packages" "$RACINE/app-$VERSION_COURANTE" "$RACINE/app-0.1.4" "$RACINE/Update.exe"
   mkdir -p "$RACINE/packages"
   cp "$PAQUET_REEL" "$RACINE/packages/"
-  SORTIE=$(ROSE_VELOPACK_ROOT="$RACINE" "$ROSE_BIN" update --velopack 2>&1)
-  # `rose update` demande la dernière version au manifeste avant de toucher au
-  # paquet déposé : on lui donne un manifeste LOCAL qui annonce la version du
-  # paquet réel, sinon il comparerait avec « latest » (GitHub) et ignorerait
-  # le fichier présent dans packages\.
   SHA_REEL=$(sha256sum "$PAQUET_REEL" | cut -d' ' -f1)
-  # le manifeste pointe sur le fichier VOISIN : on dépose le paquet à côté
+  # Manifeste LOCAL qui annonce la version du paquet réel, sinon `rose update`
+  # comparerait avec la release GitHub et pourrait ignorer le fichier déposé.
   cp "$PAQUET_REEL" "$RACINE/"
   cat > "$RACINE/manifeste-reel.json" <<EOF
 [{"PackageId":"Rose-$VERSION_COURANTE-full.nupkg","Version":"$VERSION_COURANTE","Type":"Full",
   "SHA256":"$SHA_REEL","SHA1":"11","Size":"$(stat -c%s "$PAQUET_REEL")"}]
 EOF
+  # Premier passage : paquet déjà présent dans `packages\`, manifeste local.
   SORTIE=$(ROSE_VELOPACK_ROOT="$RACINE" ROSE_VELOPACK_URL="file://$RACINE/manifeste-reel.json" "$ROSE_BIN" update --velopack 2>&1)
   verifier "paquet réel appliqué sans launcher" "installé — relancez" "$SORTIE"
   [ "$(cat "$RACINE/current")" = "app-$VERSION_COURANTE" ] \
