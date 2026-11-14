@@ -8,8 +8,11 @@ garantit (ou non).
 ## Signaler une vulnérabilité
 
 - **Ne ouvre pas d'issue publique** pour un problème de sécurité.
-- Écris à **security@stef302.dev** ou via
-  [GitHub Private Vulnerability Reporting](https://github.com/Stef302/Rose/security/advisories/new).
+- Signale-le en **private vulnerability reporting** :
+  [Ouvrir un avis privé](https://github.com/Stef302/Rose/security/advisories/new)
+  (l'onglet *Security* du dépôt), ou par message privé au compte
+  [Stef302](https://github.com/Stef302) / via son
+  [portfolio](https://stef-302-portefolio.vercel.app/).
 - Accusé de réception visé sous 72 h ; correctif et avis public sous 30 jours
   selon la gravité.
 
