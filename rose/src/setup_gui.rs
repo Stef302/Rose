@@ -2,6 +2,17 @@
 //!
 //! Fenêtre dessinée à la main (aucun contrôle standard, aucun template) :
 //! bandeau rose, pétale logo, boutons dessinés au GDI.
+//!
+//! Mise en page :
+//! - bandeau de 96 px (logo + nom + version) ;
+//! - panneau central qui occupe TOUT l'espace libre : le message y est mis à
+//!   l'échelle de la fenêtre, jamais rogné ;
+//! - barre d'état en bas, qui affiche le dernier événement (et une barre de
+//!   progression indéterminée pendant un travail) ;
+//! - boutons alignés en bas à droite, le principal (« Installer » /
+//!   « Mettre à jour ») à côté de « Fermer », jamais au milieu des actions
+//!   destructrices ;
+//! - une seule police (Segoe UI) pour tout, tailles 11 / 10 / 9 pt.
 
 #![cfg(windows)]
 
@@ -73,11 +84,18 @@ unsafe extern "system" {
     fn SetCursor(c: HCURSOR);
     fn GetCursorPos(p: *mut POINT) -> i32;
     fn ScreenToClient(h: HWND, p: *mut POINT) -> i32;
+    fn GetDC(h: HWND) -> HDC;
+    fn ReleaseDC(h: HWND, dc: HDC) -> i32;
+    fn GetDeviceCaps(dc: HDC, i: i32) -> i32;
+    fn SetWindowTextW(h: HWND, t: *const u16) -> i32;
+    fn SetTimer(h: HWND, id: usize, ms: u32, f: *const c_void) -> usize;
+    fn KillTimer(h: HWND, id: usize) -> i32;
 }
 
 const WM_DESTROY: u32 = 0x0002;
 const WM_PAINT: u32 = 0x000F;
 const WM_CLOSE: u32 = 0x0010;
+const WM_TIMER: u32 = 0x0113;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
@@ -90,51 +108,81 @@ const CS_VREDRAW: u32 = 0x0001;
 const TRANSPARENT: i32 = 1;
 const DT_WORDBREAK: u32 = 0x0010;
 const DT_CENTER: u32 = 0x0001;
+const DT_VCENTER: u32 = 0x0004;
+const DT_SINGLELINE: u32 = 0x0020;
+const DT_RIGHT: u32 = 0x0002;
 const IDC_ARROW: u16 = 32512;
 const IDC_HAND: u16 = 32649;
+const LOGPIXELSY: i32 = 90;
+const TIMER_PROGRESSION: usize = 1;
 
-// couleurs (RGB)
+// Couleurs (RGB) : fond sombre unique, un seul accent, un seul vert d'action.
 const FOND: u32 = 0x241A30;
 const BANDEAU: u32 = 0x7E2062;
 const PANNEAU: u32 = 0x322344;
 const ACCENT: u32 = 0xE6207E;
 const ACCENT_CLAIR: u32 = 0xFF6BB2;
+const ACTION: u32 = 0x2E9E5B;
+const ACTION_CLAIR: u32 = 0x45C878;
+const DANGER: u32 = 0x8E3030;
+const DANGER_CLAIR: u32 = 0xC84848;
+const NEUTRE: u32 = 0x4A3560;
+const NEUTRE_CLAIR: u32 = 0x6A5488;
 const TEXTE: u32 = 0xF5EFF7;
 const TEXTE_DOUX: u32 = 0xB9A8C6;
-const SURVOL: u32 = 0x4A3560;
+
+/// Libellé, action, couleur au repos, couleur au survol.
+const BOUTONS: [(&str, i32, u32, u32); 4] = [
+    ("Installer", 1, ACTION, ACTION_CLAIR),
+    ("Mettre à jour", 0, NEUTRE, NEUTRE_CLAIR),
+    ("Désinstaller", 2, DANGER, DANGER_CLAIR),
+    ("Fermer", 3, NEUTRE, NEUTRE_CLAIR),
+];
+
+/// Marge extérieure de la fenêtre (px logiques).
+const MARGE: i32 = 20;
+/// Hauteur du bandeau.
+const BANDEAU_H: i32 = 84;
+/// Hauteur de la barre d'état.
+const ETAT_H: i32 = 30;
+/// Hauteur des boutons.
+const BOUTON_H: i32 = 34;
+const ECART_BOUTONS: i32 = 10;
 
 // ── état global de la fenêtre ────────────────────────────────────────
 struct Etat {
     titre: String,
     message: String,
-    journal: Vec<String>,
+    /// Dernière ligne du journal, affichée dans la barre d'état.
+    statut: String,
     survol: i32,
-    termine: bool,
+    /// Vrai pendant un travail : barre de progression indéterminée.
+    occupe: bool,
+    /// Phase de l'animation de la barre.
+    phase: i32,
+    /// Échelle de police (points → pixels), calculée au premier paint.
+    dpi: i32,
 }
 
 static mut ETAT: *mut Etat = std::ptr::null_mut();
-
-/// Les 4 boutons : libellé, action, position x relative.
-const BOUTONS: [(&str, i32); 4] = [
-    ("Mettre à jour", 0),
-    ("Réinstaller", 1),
-    ("Désinstaller", 2),
-    ("Fermer", 3),
-];
 
 fn hex_w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-unsafe fn texte(dc: HDC, s: &str, r: &mut RECT, flags: u32, couleur: u32, gras: bool) {
+/// Hauteur d'une police en pixels à partir d'une taille en points.
+unsafe fn pixels(dpi: i32, points: i32) -> i32 {
+    -((points * dpi) / 72)
+}
+
+/// Dessine un texte avec une police Segoe UI à `points` points.
+unsafe fn texte_pt(dc: HDC, dpi: i32, s: &str, r: &mut RECT, flags: u32, couleur: u32,
+                   points: i32, gras: bool) {
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, couleur);
     let face = hex_w("Segoe UI");
-    let police = if gras {
-        CreateFontW(-22, 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr())
-    } else {
-        CreateFontW(-15, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr())
-    };
+    let poids = if gras { 600 } else { 400 };
+    let police = CreateFontW(pixels(dpi, points), 0, 0, 0, poids, 0, 0, 0, 1, 0, 0, 5, 0, face.as_ptr());
     let ancien = SelectObject(dc, police as *mut c_void);
     let v = hex_w(s);
     DrawTextW(dc, v.as_ptr(), (v.len() - 1) as i32, r, flags);
@@ -142,7 +190,21 @@ unsafe fn texte(dc: HDC, s: &str, r: &mut RECT, flags: u32, couleur: u32, gras: 
     DeleteObject(police as *mut c_void);
 }
 
-/// Dessine le pétale Rose : un cœur + 5 pétales en ellipses inclinées.
+unsafe fn remplir(dc: HDC, r: &RECT, couleur: u32) {
+    let b = CreateSolidBrush(couleur);
+    FillRect(dc, r, b);
+    DeleteObject(b as *mut c_void);
+}
+
+unsafe fn arrondi(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
+    let b = CreateSolidBrush(couleur);
+    let ancien = SelectObject(dc, b as *mut c_void);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, rayon, rayon);
+    SelectObject(dc, ancien);
+    DeleteObject(b as *mut c_void);
+}
+
+/// Dessine le pétale Rose : cinq pétales en ellipses + cœur crème.
 unsafe fn dessiner_petale(dc: HDC, cx: i32, cy: i32, rayon: i32) {
     let b = CreateSolidBrush(ACCENT);
     let ancien = SelectObject(dc, b as *mut c_void);
@@ -154,13 +216,18 @@ unsafe fn dessiner_petale(dc: HDC, cx: i32, cy: i32, rayon: i32) {
     }
     SelectObject(dc, ancien);
     DeleteObject(b as *mut c_void);
-    // cœur crème
     let bc = CreateSolidBrush(0xF7EDE4);
     let ancien = SelectObject(dc, bc as *mut c_void);
     Ellipse(dc, cx - rayon / 3, cy - rayon / 4, cx + rayon / 12, cy + rayon / 8);
     Ellipse(dc, cx - rayon / 12, cy - rayon / 4, cx + rayon / 3, cy + rayon / 8);
     SelectObject(dc, ancien);
     DeleteObject(bc as *mut c_void);
+}
+
+/// Largeur d'un bouton : les libellés sont mesurés une fois pour toutes avec
+/// une police de référence, puis ajustés à la taille de la fenêtre.
+fn largeur_boutons() -> i32 {
+    132
 }
 
 unsafe fn dessiner(h: HWND) {
@@ -170,79 +237,103 @@ unsafe fn dessiner(h: HWND) {
     GetClientRect(h, &mut rc);
     let w = rc.right;
     let ht = rc.bottom;
+    let etat = &mut *ETAT;
+    if etat.dpi == 0 {
+        etat.dpi = GetDeviceCaps(dc, LOGPIXELSY);
+        if etat.dpi <= 0 {
+            etat.dpi = 96;
+        }
+    }
+    let dpi = etat.dpi;
 
     // fond
-    let bf = CreateSolidBrush(FOND);
-    FillRect(dc, &rc, bf);
-    DeleteObject(bf as *mut c_void);
+    remplir(dc, &rc, FOND);
 
     // bandeau supérieur
-    let mut bandeau = RECT { left: 0, top: 0, right: w, bottom: 96 };
-    let bb = CreateSolidBrush(BANDEAU);
-    FillRect(dc, &bandeau, bb);
-    DeleteObject(bb as *mut c_void);
+    let bandeau = RECT { left: 0, top: 0, right: w, bottom: BANDEAU_H };
+    remplir(dc, &bandeau, BANDEAU);
 
-    // logo + titre
-    dessiner_petale(dc, 62, 48, 54);
-    let mut r1 = RECT { left: 112, top: 22, right: w - 20, bottom: 58 };
-    texte(dc, "Rose", &mut r1, DT_WORDBREAK, TEXTE, true);
-    let mut r2 = RECT { left: 112, top: 54, right: w - 20, bottom: 84 };
-    let etat = &*ETAT;
-    texte(dc, &format!("{} — installation", etat.titre), &mut r2, DT_WORDBREAK, TEXTE_DOUX, false);
+    // logo + nom + version
+    dessiner_petale(dc, 52, BANDEAU_H / 2, 48);
+    let mut r1 = RECT { left: 104, top: 18, right: w - MARGE, bottom: 52 };
+    texte_pt(dc, dpi, "Rose", &mut r1, DT_WORDBREAK, TEXTE, 16, true);
+    let mut r2 = RECT { left: 104, top: 52, right: w - MARGE, bottom: 76 };
+    texte_pt(dc, dpi, &etat.titre, &mut r2, DT_WORDBREAK, TEXTE_DOUX, 9, false);
 
-    // panneau message
-    let mut panneau = RECT { left: 24, top: 116, right: w - 24, bottom: 300 };
-    let bp = CreateSolidBrush(PANNEAU);
-    FillRect(dc, &panneau, bp);
-    DeleteObject(bp as *mut c_void);
-    let mut rm = RECT { left: 40, top: 132, right: w - 40, bottom: 288 };
-    texte(dc, &etat.message, &mut rm, DT_WORDBREAK, TEXTE, false);
+    // panneau central : TOUT l'espace libre, message mis à l'échelle
+    let bas_panneau = ht - ETAT_H - BOUTON_H - 2 * MARGE;
+    let panneau = RECT { left: MARGE, top: BANDEAU_H + MARGE, right: w - MARGE, bottom: bas_panneau };
+    remplir(dc, &panneau, PANNEAU);
+    let mut rm = RECT {
+        left: panneau.left + 18,
+        top: panneau.top + 16,
+        right: panneau.right - 18,
+        bottom: panneau.bottom - 14,
+    };
+    texte_pt(dc, dpi, &etat.message, &mut rm, DT_WORDBREAK, TEXTE, 10, false);
 
-    // journal (si des opérations ont été faites)
-    if !etat.journal.is_empty() {
-        let mut rj = RECT { left: 40, top: 288, right: w - 40, bottom: 300 };
-        let mut s = String::new();
-        for l in etat.journal.iter().rev().take(3).collect::<Vec<_>>().into_iter().rev() {
-            s.push_str(l);
-            s.push('\n');
+    // boutons alignés en bas à droite
+    let bw = largeur_boutons();
+    let total = 4 * bw + 3 * ECART_BOUTONS;
+    let mut x = w - MARGE - total;
+    if x < MARGE { x = MARGE; }
+    let y0 = ht - ETAT_H - BOUTON_H - MARGE + 6;
+    for (i, (libelle, _, repos, survol_c)) in BOUTONS.iter().enumerate() {
+        let r = RECT { left: x, top: y0, right: x + bw, bottom: y0 + BOUTON_H };
+        let couleur = if etat.survol == i as i32 { *survol_c } else { *repos };
+        arrondi(dc, &r, 8, couleur);
+        let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+        texte_pt(dc, dpi, libelle, &mut rt, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 9, true);
+        x += bw + ECART_BOUTONS;
+    }
+
+    // barre d'état : progression indéterminée + dernière ligne du journal
+    let barre = RECT { left: 0, top: ht - ETAT_H, right: w, bottom: ht };
+    remplir(dc, &barre, 0x1C1326);
+    let mut zone_etat = RECT {
+        left: MARGE,
+        top: barre.top,
+        right: w - MARGE,
+        bottom: barre.bottom,
+    };
+    if etat.occupe {
+        // trois segments qui défilent (animation par WM_TIMER)
+        let segment = (w / 4).max(40);
+        for k in 0..3 {
+            let debut = (etat.phase + (k * segment / 2)) % (w + segment);
+            let a = debut - segment;
+            let b = debut;
+            let r = RECT {
+                left: a.max(0),
+                top: barre.top + 3,
+                right: b.min(w),
+                bottom: barre.top + 6,
+            };
+            if r.right > r.left {
+                remplir(dc, &r, ACCENT_CLAIR);
+            }
         }
-        texte(dc, &s, &mut rj, DT_WORDBREAK, ACCENT_CLAIR, false);
+        zone_etat.top = barre.top + 9;
     }
+    texte_pt(dc, dpi, &etat.statut, &mut zone_etat, DT_VCENTER | DT_SINGLELINE | DT_RIGHT,
+             TEXTE_DOUX, 9, false);
 
-    // boutons dessinés à la main
-    let mut x = 24i32;
-    let bw = (w - 48 - 3 * 12) / 4;
-    for (i, (libelle, _)) in BOUTONS.iter().enumerate() {
-        let mut r = RECT { left: x, top: ht - 56, right: x + bw, bottom: ht - 18 };
-        let survol = etat.survol == i as i32;
-        let couleur = match i {
-            0 => if survol { ACCENT_CLAIR } else { ACCENT },
-            1 => if survol { 0x7A5C96 } else { 0x5A4478 },
-            2 => if survol { 0xE05050 } else { 0x8E3030 },
-            _ => if survol { 0x7A5C96 } else { 0x4A3560 },
-        };
-        let b = CreateSolidBrush(couleur);
-        let ancien = SelectObject(dc, b as *mut c_void);
-        RoundRect(dc, r.left, r.top, r.right, r.bottom, 10, 10);
-        SelectObject(dc, ancien);
-        DeleteObject(b as *mut c_void);
-        let mut rt = RECT { left: r.left, top: r.top + 9, right: r.right, bottom: r.bottom - 8 };
-        texte(dc, libelle, &mut rt, DT_CENTER | DT_WORDBREAK, TEXTE, true);
-        x += bw + 12;
-    }
     EndPaint(h, &ps);
 }
 
+/// Zone d'un bouton : rend l'index, ou -1.
 fn zone_bouton(x: i32, y: i32, largeur: i32, hauteur: i32) -> i32 {
-    let mut x0 = 24i32;
-    let bw = (largeur - 48 - 3 * 12) / 4;
-    for (i, _) in BOUTONS.iter().enumerate() {
-        let bx0 = x0;
+    let bw = largeur_boutons();
+    let total = 4 * bw + 3 * ECART_BOUTONS;
+    let mut x0 = largeur - MARGE - total;
+    if x0 < MARGE { x0 = MARGE; }
+    let y0 = hauteur - ETAT_H - BOUTON_H - MARGE + 6;
+    for i in 0..4 {
         let bx1 = x0 + bw;
-        let by0 = hauteur - 56;
-        let by1 = hauteur - 18;
-        if x >= bx0 && x <= bx1 && y >= by0 && y <= by1 { return i as i32; }
-        x0 = bx1 + 12;
+        if x >= x0 && x <= bx1 && y >= y0 && y <= y0 + BOUTON_H {
+            return i as i32;
+        }
+        x0 = bx1 + ECART_BOUTONS;
     }
     -1
 }
@@ -250,21 +341,31 @@ fn zone_bouton(x: i32, y: i32, largeur: i32, hauteur: i32) -> i32 {
 unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     match msg {
         WM_PAINT => { dessiner(h); 0 }
-        WM_MOUSEMOVE => {
-            let mut p = POINT { x: (l & 0xffff) as i32, y: ((l >> 16) & 0xffff) as i32 };
-            let mut rc = std::mem::zeroed::<RECT>();
-            GetClientRect(h, &mut rc);
-            let z = zone_bouton(p.x, p.y, rc.right, rc.bottom);
-            if z != (*ETAT).survol {
-                (*ETAT).survol = z;
+        WM_TIMER => {
+            let etat = &mut *ETAT;
+            if w == TIMER_PROGRESSION && etat.occupe {
+                etat.phase += 24;
                 InvalidateRect(h, std::ptr::null(), 0);
             }
+            0
+        }
+        WM_MOUSEMOVE => {
+            let mut rc = std::mem::zeroed::<RECT>();
+            GetClientRect(h, &mut rc);
             let mut pos = POINT { x: 0, y: 0 };
             GetCursorPos(&mut pos);
             ScreenToClient(h, &mut pos);
-            let zc = zone_bouton(pos.x, pos.y, rc.right, rc.bottom);
-            SetCursor(if zc >= 0 { LoadCursorW(std::ptr::null_mut(), IDC_HAND as *const u16) }
-                     else { LoadCursorW(std::ptr::null_mut(), IDC_ARROW as *const u16) });
+            let z = zone_bouton(pos.x, pos.y, rc.right, rc.bottom);
+            let etat = &mut *ETAT;
+            if z != etat.survol {
+                etat.survol = z;
+                InvalidateRect(h, std::ptr::null(), 0);
+            }
+            SetCursor(if z >= 0 {
+                LoadCursorW(std::ptr::null_mut(), IDC_HAND as *const u16)
+            } else {
+                LoadCursorW(std::ptr::null_mut(), IDC_ARROW as *const u16)
+            });
             0
         }
         WM_LBUTTONUP => {
@@ -273,65 +374,125 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
             let z = zone_bouton(x, y, rc.right, rc.bottom);
-            if z >= 0 { executer_action(h, z); }
+            if z >= 0 {
+                executer_action(h, z);
+            }
             0
         }
-        WM_CLOSE => { PostQuitMessage(0); 0 }
-        WM_DESTROY => { PostQuitMessage(0); 0 }
+        WM_CLOSE | WM_DESTROY => { PostQuitMessage(0); 0 }
         _ => DefWindowProcW(h, msg, w, l),
     }
 }
 
 /// Exécute l'action du bouton choisi et met à jour l'affichage.
-fn executer_action(h: HWND, action: i32) {
+fn executer_action(h: HWND, index: i32) {
     let existant = crate::setup_core::installation_existante();
     let prefixe = existant.clone().unwrap_or_else(crate::setup_core::prefixe_defaut);
-    let mut etat = unsafe { &mut *ETAT };
+    let etat = unsafe { &mut *ETAT };
     etat.survol = -1;
+    let action = BOUTONS.get(index as usize).map(|b| b.1).unwrap_or(3);
     match action {
         0 => {
-            etat.message = "Recherche de la dernière release sur GitHub…\n\nMerci de patienter…".to_string();
-            etat.journal = crate::setup_core::mettre_a_jour(&prefixe, false);
-            etat.termine = true;
-            etat.message = format!("Mise à jour terminée.\n\nDossier : {}\n\nOuvrez un nouveau terminal,\npuis tapez : rose --version", prefixe);
+            etat.message = "Recherche de la dernière version sur GitHub…\n\nMerci de patienter.".to_string();
+            etat.statut = "Mise à jour en cours…".to_string();
+            etat.occupe = true;
+            unsafe { rafraichir(h); }
+            let journal = crate::setup_core::mettre_a_jour(&prefixe, false);
+            etat.statut = journal.last().cloned().unwrap_or_else(|| "Terminé.".to_string());
+            etat.occupe = false;
+            etat.message = format!(
+                "Mise à jour terminée.\n\nDossier : {prefixe}\n\nOuvrez un nouveau terminal puis tapez : rose --version"
+            );
         }
         1 => {
-            etat.message = format!("Installation de Rose dans\n{}\n\nMerci de patienter…", prefixe);
-            etat.journal = crate::setup_core::installer(&prefixe, None);
-            etat.termine = true;
-            etat.message = format!("Rose {} est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal,\npuis tapez : rose --version",
-                                  env!("CARGO_PKG_VERSION"), prefixe);
+            etat.message = format!("Installation de Rose dans\n{prefixe}\n\nMerci de patienter.");
+            etat.statut = "Installation en cours…".to_string();
+            etat.occupe = true;
+            unsafe { rafraichir(h); }
+            let journal = crate::setup_core::installer(&prefixe, None);
+            etat.statut = journal.last().cloned().unwrap_or_else(|| "Terminé.".to_string());
+            etat.occupe = false;
+            etat.message = format!(
+                "Rose {} est installé.\n\nDossier : {prefixe}\n\nOuvrez un nouveau terminal puis tapez : rose --version",
+                env!("CARGO_PKG_VERSION")
+            );
         }
         2 => {
             match existant {
                 Some(ref p) => {
-                    etat.journal = crate::setup_core::desinstaller(p);
-                    etat.termine = true;
-                    etat.message = "Rose a été désinstallé.".to_string();
+                    etat.statut = "Désinstallation…".to_string();
+                    etat.occupe = true;
+                    unsafe { rafraichir(h); }
+                    let journal = crate::setup_core::desinstaller(p);
+                    etat.statut = journal.last().cloned().unwrap_or_else(|| "Terminé.".to_string());
+                    etat.occupe = false;
+                    etat.message = "Rose a été désinstallé.\n\nFermez cette fenêtre.".to_string();
                 }
-                None => { etat.message = "Aucune installation de Rose détectée.".to_string(); }
+                None => {
+                    etat.message = "Aucune installation de Rose détectée.".to_string();
+                    etat.statut = "Rien à désinstaller.".to_string();
+                }
             }
         }
-        _ => { unsafe { PostQuitMessage(0); } return; }
+        _ => {
+            unsafe { PostQuitMessage(0); }
+            return;
+        }
     }
-    unsafe { InvalidateRect(h, std::ptr::null(), 0); }
-    unsafe { UpdateWindow(h); }
+    unsafe { rafraichir(h); }
+}
+
+/// Force un repaint immédiat (l'animation et le texte restent cohérents).
+unsafe fn rafraichir(h: HWND) {
+    InvalidateRect(h, std::ptr::null(), 0);
+    UpdateWindow(h);
+    let etat = &*ETAT;
+    let titre = hex_w(&format!("Rose {} — Installation", env!("CARGO_PKG_VERSION")));
+    SetWindowTextW(h, titre.as_ptr());
+    if etat.occupe {
+        SetTimer(h, TIMER_PROGRESSION, 16, std::ptr::null());
+    } else {
+        KillTimer(h, TIMER_PROGRESSION);
+    }
 }
 
 /// Point d'entrée de la fenêtre d'installation.
 pub fn lancer() {
     unsafe {
-        let titre = format!("Rose {}", env!("CARGO_PKG_VERSION"));
+        let titre = format!("Rose {} — installation", env!("CARGO_PKG_VERSION"));
         let existant = crate::setup_core::installation_existante();
-        let message = match existant {
-            Some(ref p) => format!(
-                "Une installation de Rose a été détectée :\n\n{}\n\nQue souhaitez-vous faire ?", p),
-            None => format!(
-                "Rose {} va être installé.\n\nEmplacement :\n{}\n\nAucun droit administrateur n'est requis.", 
-                env!("CARGO_PKG_VERSION"),
-                crate::setup_core::prefixe_defaut()),
+        let (message, statut) = match existant {
+            Some(ref p) => (
+                format!(
+                    "Une installation de Rose a été détectée.\n\n\
+                     Emplacement :\n{p}\n\n\
+                     Choisissez une action ci-dessous.\n\
+                     « Mettre à jour » garde vos réglages ; pour repartir d'une copie
+                     neuve, désinstallez puis cliquez sur « Installer »."
+                ),
+                "Installation détectée.".to_string(),
+            ),
+            None => (
+                format!(
+                    "Rose {} n'est pas encore installé.\n\n\
+                     Emplacement prévu :\n{}\n\n\
+                     Cliquez sur « Installer ». Aucun droit administrateur n'est requis :\n\
+                     tout va dans votre profil utilisateur.",
+                    env!("CARGO_PKG_VERSION"),
+                    crate::setup_core::prefixe_defaut()
+                ),
+                "Prêt à installer.".to_string(),
+            ),
         };
-        let etat = Box::new(Etat { titre, message, journal: Vec::new(), survol: -1, termine: false });
+        let etat = Box::new(Etat {
+            titre,
+            message,
+            statut,
+            survol: -1,
+            occupe: false,
+            phase: 0,
+            dpi: 0,
+        });
         ETAT = Box::into_raw(etat);
 
         let inst = GetModuleHandleW(std::ptr::null());
@@ -351,9 +512,13 @@ pub fn lancer() {
         };
         RegisterClassExW(&wc);
         let titre_w = hex_w(&format!("Rose {} — Installation", env!("CARGO_PKG_VERSION")));
+        // 720 × 560 px client : assez large pour 4 boutons et une adresse de
+        // dossier entière sur une seule ligne.
         let hwnd = CreateWindowExW(0, classe.as_ptr(), titre_w.as_ptr(), WS_OVERLAPPEDWINDOW,
-                                   120, 100, 600, 430, std::ptr::null_mut(), 0, inst, std::ptr::null_mut());
-        if hwnd.is_null() { return; }
+                                   160, 140, 736, 600, std::ptr::null_mut(), 0, inst, std::ptr::null_mut());
+        if hwnd.is_null() {
+            return;
+        }
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
         let mut msg = std::mem::zeroed::<MSG>();
@@ -375,6 +540,6 @@ pub fn chemin_binaire_embarque() -> Option<std::path::PathBuf> {
 /// Texte d'aide pour la console (utilisé par « rose update »).
 pub fn aide() -> String {
     "Rose update : installe ou met à jour Rose (64 bits natif).\n\
-     Sur Windows, l'installeur graphique « Rose-Setup.exe » offre la même chose\n\
+     Sur Windows, l'installeur graphique « Rose-win-Setup.exe » offre la même chose\n\
      avec une fenêtre dédiée.".to_string()
 }

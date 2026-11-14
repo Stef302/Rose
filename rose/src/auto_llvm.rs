@@ -46,6 +46,12 @@ pub const SHA256_HELPER: &str =
 /// Nom du binaire helper.
 pub const NOM_HELPER: &str = "rose-aot";
 
+/// Nom RÉEL du fichier helper sur cette plateforme : Windows l'appelle
+/// `rose-aot.exe` (extension obligatoire, sinon CreateProcess échoue).
+pub fn nom_helper() -> &'static str {
+    if cfg!(windows) { "rose-aot.exe" } else { "rose-aot" }
+}
+
 /// Plateforme cible (pour le nom de l'artefact de release).
 pub fn cible() -> String {
     match (std::env::consts::ARCH, std::env::consts::OS) {
@@ -91,7 +97,7 @@ pub fn dossier_cache() -> PathBuf {
 
 /// Chemin du helper installé dans le cache.
 pub fn chemin_cache() -> PathBuf {
-    dossier_cache().join(format!("{}-{}", NOM_HELPER, VERSION_HELPER))
+    dossier_cache().join(format!("{}-{}", nom_helper(), VERSION_HELPER))
 }
 
 /// Cherche un helper déjà présent sur la machine.
@@ -99,7 +105,7 @@ pub fn trouver_helper() -> Option<PathBuf> {
     // 1. à côté de l'exécutable courant
     if let Ok(exe) = std::env::current_exe() {
         if let Some(d) = exe.parent() {
-            let p = d.join(NOM_HELPER);
+            let p = d.join(nom_helper());
             if est_executable(&p) {
                 return Some(p);
             }
@@ -114,7 +120,7 @@ pub fn trouver_helper() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("PATH") {
         for dir in path.split(':') {
             if dir.is_empty() { continue; }
-            let p = Path::new(dir).join(NOM_HELPER);
+            let p = Path::new(dir).join(nom_helper());
             if est_executable(&p) {
                 return Some(p);
             }
@@ -149,7 +155,7 @@ pub fn installer_helper() -> Result<PathBuf, String> {
 
     let cache = dossier_cache();
     std::fs::create_dir_all(&cache).map_err(|e| format!("création du cache : {}", e))?;
-    let tmp = cache.join(format!(".{}.tmp", NOM_HELPER));
+    let tmp = cache.join(format!(".{}.tmp", nom_helper()));
 
     // téléchargement : curl ou wget (pas de dépendance TLS à embarquer).
     // La release d'abord ; si elle ne sert pas l'artefact, le miroir

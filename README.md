@@ -187,10 +187,13 @@ Le binaire par défaut est **léger** : 4,8 Mo, aucune dépendance à `libLLVM`,
 démarrage en 1 ms. La chaîne AOT (`rose orc`, `rose link`) exige LLVM : le
 moteur la **cherche tout seul**.
 
-1. le helper `rose-aot` est cherché à côté de l'exécutable, dans
-   `~/.cache/rose/`, puis dans le `PATH` ;
+1. le helper `rose-aot` (Windows : `rose-aot.exe`) est cherché à côté de
+   l'exécutable, dans `~/.cache/rose/`, puis dans le `PATH` ;
 2. s'il est absent, il est **téléchargé** depuis la release du projet,
    vérifié par **SHA-256**, installé dans le cache, puis exécuté.
+
+Sur Windows, l'installeur pose `rose.exe` **et** `rose-aot.exe` côte à côte :
+l'étape 2 n'a donc jamais lieu, la chaîne AOT est déjà là.
 
 ```bash
 rose orc programme.rose -o programme.ll   # télécharge l'AOT si besoin

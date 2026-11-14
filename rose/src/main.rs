@@ -485,7 +485,20 @@ fn install_rose() {
         if veut_velopack {
             println!("Mise à jour Velopack…");
             match velopack::check_and_update(true) {
-                Ok(Some(v)) => println!("Paquet {v} téléchargé — le launcher Velopack l'appliquera au prochain démarrage."),
+                Ok(Some(v)) => {
+                    // Sans launcher Velopack (installation faite à la main par
+                    // Rose-win-Setup.exe), on applique NOUS-MÊMES le paquet :
+                    // sinon le fichier reste dans packages\ et rien ne change.
+                    match velopack::appliquer_paquets() {
+                        Ok(Some(appliquee)) => println!(
+                            "Rose {appliquee} installé — relancez « rose » (l'ancienne version reste en place pour un rollback)."
+                        ),
+                        Ok(None) => println!(
+                            "Paquet {v} déposé — le launcher Velopack l'appliquera au prochain démarrage."
+                        ),
+                        Err(e) => eprintln!("Application du paquet : {e}"),
+                    }
+                }
                 Ok(None) => println!("Rose est déjà à jour."),
                 Err(e) => eprintln!("Velopack : {e} — repli sur l'installeur classique."),
             }

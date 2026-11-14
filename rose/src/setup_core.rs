@@ -83,7 +83,7 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
         return j;
     }
     // nettoyage des anciens binaires (plus de rose-20.exe)
-    for nom in ["rose.exe", "rose", "rose-20", "rose-20.exe", "rose-aot"] {
+    for nom in ["rose.exe", "rose", "rose-20", "rose-20.exe", "rose-aot", "rose-aot.exe"] {
         let _ = std::fs::remove_file(bindir.join(nom));
     }
     let source = match source_exe {
@@ -120,16 +120,22 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
                 j.push(format!("✓ {}", dst));
             }
         }
-        // helper AOT
-        let aot = parent.join("rose-aot");
+        // helper AOT : « rose-aot.exe » sur Windows, « rose-aot » ailleurs.
+        // Sans lui, `rose orc` / `rose llvm` doivent télécharger la chaîne.
+        let (nom_aot_src, nom_aot_dst) = if cfg!(windows) {
+            ("rose-aot.exe", "rose-aot.exe")
+        } else {
+            ("rose-aot", "rose-aot")
+        };
+        let aot = parent.join(nom_aot_src);
         if aot.exists() {
-            let _ = std::fs::copy(&aot, bindir.join("rose-aot"));
+            let _ = std::fs::copy(&aot, bindir.join(nom_aot_dst));
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(bindir.join("rose-aot"), std::fs::Permissions::from_mode(0o755));
+                let _ = std::fs::set_permissions(bindir.join(nom_aot_dst), std::fs::Permissions::from_mode(0o755));
             }
-            j.push("✓ rose-aot".to_string());
+            j.push(format!("✓ {nom_aot_dst}"));
         }
     }
     j.push(format!("✓ {}", enregistrer(prefixe, &bindir)));
@@ -250,7 +256,7 @@ pub fn desinstaller(prefixe: &str) -> Journal {
     }
     // suppression des fichiers : uniquement ceux que nous avons posés
     let bin = PathBuf::from(prefixe).join("bin");
-    for nom in ["rose.exe", "rose", "rose-20", "rose-20.exe", "rose-aot", "rose.ico", "rose_app.ico"] {
+    for nom in ["rose.exe", "rose", "rose-20", "rose-20.exe", "rose-aot", "rose-aot.exe", "rose.ico", "rose_app.ico"] {
         let _ = std::fs::remove_file(bin.join(nom));
     }
     let _ = std::fs::remove_dir(&bin);
