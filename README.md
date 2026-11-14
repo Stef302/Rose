@@ -614,3 +614,12 @@ Variables d'environnement utiles :
 - `ROSE_DUMP_IR=1` : affiche l'IR Cranelift.
 - `ROSE_NO_AOT=1` : désactive la voie AOT (force le JIT).
 - `ROSE_DEBUG=1` / `ROSE_STEP=1` : débogage pas-à-pas.
+
+> **Portée des opérateurs postfixes.** `!`, `#`, `?` et `$` portent sur des
+> entiers **arbitraires** (BigInt). L'interpréteur et le JIT les exécutent ;
+> la voie AOT LLVM (`rose orc`, `ROSE_AOT=1`) ne sait pas abaisser un BigInt
+> en registre machine et **refuse explicitement** ces quatre opérateurs
+> (« primorielle (#) non implémentée en ORC pour l'instant ») plutôt que de
+> produire un résultat faux. Utiliser `rose run` (ou le module WASM) pour un
+> calcul factoriel. La voie `rose llvm` (transpilation C historique dans
+> `archive/`) ne connaît pas non plus ces opérateurs.

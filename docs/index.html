@@ -1112,6 +1112,7 @@ Bonjour, monde !</pre>
           <li>L'installeur trouve lui-même le moteur à poser (<code class="inline">payload\rose.exe</code>, <code class="inline">rose.exe</code>, ou lui-même s'il a été renommé) : l'installation ne peut plus copier l'installeur à la place du moteur.</li>
           <li>Correctif : les couleurs GDI étaient données en RGB au lieu de COLORREF — le rouge d'action s'affichait <b>bleu</b>.</li>
           <li>Correctif : l'arbre <code class="inline">.rsrc</code> regroupait mal les icônes (types dupliqués, compteur d'entrées doublé, pointeurs d'entrées de données tronqués) — la rose, la police et les icônes 128/256 px étaient introuvables. Arbre corrigé et validé par <code class="inline">verifier-res.py</code>.</li>
+          <li>Correctif WebAssembly : la factorielle lançait des threads sans garde de cible, si bien que le playground trappait dès <code class="inline">2000!</code>. Le module prend un chemin séquentiel équilibré : <code class="inline">100000!</code> (456 574 chiffres) en 335 ms.</li>
         </ul>
       </div>
 
