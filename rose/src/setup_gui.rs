@@ -1293,31 +1293,59 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
         WM_APP_FIN => {
             let etat = &mut *ETAT;
             etat.occupe = false;
-            etat.atteintes[3] = true;
-            etat.atteintes[4] = true;
-            etat.vue = Vue::Termine;
             let desinstalle = w == 1;
-            if desinstalle {
-                etat.existant = false;
-                etat.statut = STATUT
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone())
-                    .unwrap_or_else(|| "Rose a été désinstallé.".to_string());
+            // ⚠ LIRE LE JOURNAL pour savoir si l'opération a ÉCHOUÉ.
+            // `WM_APP_FIN` affichait TOUJOURS « Vue::Termine » avec « Rose X
+            // est installé », même quand le journal ne contenait que des
+            // « Échec : … » (mesuré : l'utilisateur voyait « Terminé » alors
+            // qu'aucun fichier n'avait été posé, ni PATH, ni association).
+            let journal: Vec<String> = JOURNAL
+                .lock()
+                .ok()
+                .map(|g| g.clone())
+                .unwrap_or_default();
+            let echec = journal.iter().any(|l| l.starts_with("Échec"));
+            let dernier = STATUT
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| {
+                    if desinstalle { "Rose a été désinstallé.".to_string() }
+                    else { "Installation terminée · prêt.".to_string() }
+                });
+
+            if echec {
+                // On RESTE sur la vue « Installation » pour montrer l'erreur,
+                // et on remet les étapes à leur état réel : l'installation
+                // n'a PAS eu lieu.
+                etat.vue = Vue::Installation;
+                etat.atteintes[3] = false;
+                etat.atteintes[4] = false;
+                etat.statut = format!(
+                    "ÉCHEC — {}\n\n{}",
+                    dernier,
+                    journal.iter().filter(|l| l.starts_with("Échec"))
+                        .cloned().collect::<Vec<_>>().join("\n")
+                );
             } else {
-                etat.existant = true;
-                // ⚠ RELIRE la version installée APRÈS l'opération.
-                // `version_installee` est figé au démarrage : il contenait la
-                // version de l'ANCIENNE installation (mesuré : « Rose 5.12.0
-                // est installé » alors que le setup venait d'installer
-                // 0.1.5). On interroge le binaire réellement présent.
-                etat.version_installee = crate::setup_core::version_installee(&etat.prefixe)
-                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-                etat.statut = STATUT
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.clone())
-                    .unwrap_or_else(|| "Installation terminée · prêt.".to_string());
+                etat.atteintes[3] = true;
+                etat.atteintes[4] = true;
+                etat.vue = Vue::Termine;
+                if desinstalle {
+                    etat.existant = false;
+                    etat.statut = dernier;
+                } else {
+                    etat.existant = true;
+                    // ⚠ RELIRE la version installée APRÈS l'opération.
+                    // `version_installee` est figé au démarrage : il
+                    // contenait la version de l'ANCIENNE installation
+                    // (mesuré : « Rose 5.12.0 est installé » alors que le
+                    // setup venait d'installer 0.1.5).
+                    etat.version_installee =
+                        crate::setup_core::version_installee(&etat.prefixe)
+                            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+                    etat.statut = dernier;
+                }
             }
             rafraichir(h);
             0
@@ -1378,6 +1406,9 @@ fn action(h: HWND, bouton: usize) {
             let cible = h as isize;
             std::thread::spawn(move || {
                 let journal = crate::setup_core::desinstaller(&prefixe);
+                if let Ok(mut g) = JOURNAL.lock() {
+                    *g = journal.clone();
+                }
                 STATUT.lock().unwrap().replace(journal.last().cloned().unwrap_or_else(|| "Désinstallation terminée.".to_string()));
                 let h = cible as HWND;
                 if !h.is_null() {
@@ -1390,6 +1421,11 @@ fn action(h: HWND, bouton: usize) {
 
 /// Texte partagé entre le fil de travail et la fenêtre.
 static STATUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Journal complet de la dernière opération. Il contient les lignes
+/// « Échec : … » produites par `setup_core`, ce qui permet à la fenêtre de
+/// savoir si l'installation a RÉELLEMENT eu lieu.
+static JOURNAL: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// Lance l'installation (ou la mise à jour) dans un fil, pour que la barre de
 /// progression continue d'animer : le résultat revient par `WM_APP_FIN`.
@@ -1420,6 +1456,11 @@ fn lancer_travail() {
             }
         }
         let derniere = journal.last().cloned().unwrap_or_else(|| "Terminé.".to_string());
+        // On mémorise le JOURNAL COMPLET : la fenêtre en a besoin pour savoir
+        // si l'opération a échoué (lignes « Échec : … »).
+        if let Ok(mut g) = JOURNAL.lock() {
+            *g = journal.clone();
+        }
         STATUT.lock().unwrap().replace(derniere);
         let cible = unsafe { HWND_FENETRE as isize };
         let h = cible as HWND;
@@ -1444,21 +1485,33 @@ unsafe fn rafraichir(h: HWND) {
     }
 }
 
-/// Binaire Rose à installer, trouvé à côté de l'installeur :
-/// `payload\rose.exe`, puis `rose.exe`, puis l'exécutable courant (quand
-/// `Rose-win-Setup.exe` a été renommé en `rose.exe`).
+/// Binaire Rose à installer.
+///
+/// Ordre :
+/// 1. `payload\rose.exe` à côté de l'installeur (distribution Velopack) ;
+/// 2. le moteur EMBARQUÉ dans les ressources (`RT_RCDATA 3`) — c'est ce qui
+///    fait de `Rose-win-Setup.exe` un fichier unique.
+///
+/// ⚠⚠ NE JAMAIS retomber sur `current_exe()`. C'était le bug : cette
+/// fonction-ci (distincte de celle de `rose-setup.rs`, et seule utilisée par
+/// `lancer_travail`) renvoyait l'INSTALLEUR lui-même, qui se copiait sous
+/// `rose.exe`. Le garde-fou `refuser_comme_moteur` le rejetait ensuite — et
+/// comme la fenêtre affichait « Terminé » sans lire le journal, l'utilisateur
+/// voyait une installation réussie alors que RIEN n'avait été posé (mesuré :
+/// aucun fichier, aucun PATH, aucune association `.rose`).
 pub fn source_moteur() -> Option<PathBuf> {
     let dossier = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let courant = std::env::current_exe().ok()?;
-    [
+    let candidats = [
         dossier.join("payload").join("rose.exe"),
         dossier.join("rose.exe"),
         dossier.join("payload").join("rose"),
         dossier.join("rose"),
-        courant,
-    ]
-    .into_iter()
-    .find(|p| p.is_file())
+    ];
+    if let Some(p) = candidats.into_iter().find(|p| p.is_file()) {
+        return Some(p);
+    }
+    // Moteur embarqué dans les ressources de l'installeur.
+    moteur_embarque()
 }
 
 /// Empreinte SHA-256 du payload posé à côté de l'installeur, si présent.

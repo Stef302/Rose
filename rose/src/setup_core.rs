@@ -207,13 +207,14 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
     }
     let source = match source_exe {
         Some(p) => p.to_path_buf(),
-        None => match std::env::current_exe() {
-            Ok(p) => p,
-            Err(e) => {
-                j.push(format!("Échec : binaire courant introuvable ({})", e));
-                return j;
-            }
-        },
+        None => {
+            // ⚠ PAS de repli sur `current_exe()` : dans l'installeur, cela
+            // copierait le setup sous `rose.exe`. On échoue proprement.
+            j.push("Échec : aucun moteur Rose à installer — l'installeur \
+                    n'embarque pas `rose.exe` et aucun `payload\\rose.exe` \
+                    n'est présent à côté de lui.".to_string());
+            return j;
+        }
     };
     // ⚠⚠ GARDE-FOU CRITIQUE : on ne doit JAMAIS installer l'installeur
     // lui-même sous le nom `rose.exe`.
@@ -915,6 +916,42 @@ mod tests {
         assert_eq!(comparer_versions("0.1.5", "5.12.0"), -1);
         assert_eq!(comparer_versions("5.12.0", "0.1.5"), 1);
         assert_eq!(comparer_versions("v0.1.5", "0.1.4"), 1);
+    }
+
+    #[test]
+    fn installation_pose_le_moteur_dans_bin() {
+        // Bout en bout : on installe dans un dossier temporaire à partir
+        // d'un VRAI exécutable (le binaire `rose` compilé, nommé « rose »).
+        // On vérifie que `bin/<moteur>` existe après coup.
+        let tmp = std::env::temp_dir().join("rose-test-install-complet");
+        let _ = std::fs::remove_dir_all(&tmp);
+        // Source : un fichier nommé « rose » (pas de « setup »), contenu
+        // quelconque — `installer` ne vérifie le PE que sous Windows.
+        let src = std::env::temp_dir().join("rose-source-test");
+        let _ = std::fs::write(&src, b"#!fake\n");
+        let j = installer(tmp.to_str().unwrap(), Some(&src));
+        let nom = if cfg!(windows) { "rose.exe" } else { "rose" };
+        let pose = tmp.join("bin").join(nom);
+        // Sous Windows le faux contenu est rejeté (pas un PE console) ;
+        // ailleurs l'installation doit avoir eu lieu.
+        if !cfg!(windows) {
+            assert!(pose.is_file(), "le moteur n'a pas été posé : {j:?}");
+            assert!(j.iter().all(|l| !l.starts_with("Échec")), "{j:?}");
+        }
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn installer_refuse_sans_source() {
+        // Sans source, `installer` doit ÉCHOUER explicitement — jamais
+        // retomber sur `current_exe()` (qui serait l'installeur lui-même).
+        let tmp = std::env::temp_dir().join("rose-test-sans-source");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let j = installer(tmp.to_str().unwrap(), None);
+        assert!(j.iter().any(|l| l.starts_with("Échec")),
+                "installer(None) doit signaler un échec, journal = {j:?}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
