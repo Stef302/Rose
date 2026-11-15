@@ -974,6 +974,25 @@ mod tests {
     }
 
     #[test]
+    fn couleur_et_argb_ne_confondent_pas_les_canaux() {
+        // `couleur(0xRRGGBB)` rend un COLORREF 0x00BBGGRR.
+        let cf = |rgb: u32| -> u32 {
+            ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
+        };
+        // GDI+ attend ARGB : il FAUT réinverser, sinon rouge et bleu
+        // s'échangent (bug mesuré : le lime 0x9ACD32 sortait cyan).
+        let argb = |c: u32| -> u32 {
+            let r = c & 0xFF;
+            let g = (c >> 8) & 0xFF;
+            let b = (c >> 16) & 0xFF;
+            0xFF00_0000 | (r << 16) | (g << 8) | b
+        };
+        assert_eq!(cf(0x9ACD32), 0x0032CD9A);
+        assert_eq!(argb(cf(0x9ACD32)), 0xFF9ACD32, "le lime doit rester lime");
+        assert_eq!(argb(cf(0xFF2D1A)), 0xFFFF2D1A, "le rouge doit rester rouge");
+    }
+
+    #[test]
     fn installation_pose_les_compagnons() {
         // Vérifie que les compagnons présents À CÔTÉ de la source sont
         // copiés : c'est ce qui manquait (seul `rose.exe` était posé).

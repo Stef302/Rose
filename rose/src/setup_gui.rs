@@ -76,6 +76,19 @@ unsafe extern "system" {
     fn GdipFillPath(graphique: *mut c_void, pinceau: *mut c_void, chemin: *mut c_void) -> u32;
 }
 
+/// Convertit un COLORREF GDI (`0x00BBGGRR`) en ARGB GDI+ (`0xAARRGGBB`).
+///
+/// ⚠⚠ INDISPENSABLE. Les deux API rangent les canaux dans l'ordre INVERSE :
+/// passer un COLORREF tel quel à GDI+ échange rouge et bleu. Mesuré sur la
+/// capture : le vert lime `0x9ACD32` s'affichait en CYAN (`0x32CD9A`), et le
+/// rouge vif `0xE62F1E` en BLEU.
+fn argb_depuis_colorref(couleur: u32) -> u32 {
+    let r = couleur & 0xFF;
+    let g = (couleur >> 8) & 0xFF;
+    let b = (couleur >> 16) & 0xFF;
+    0xFF00_0000 | (r << 16) | (g << 8) | b
+}
+
 /// `SmoothingModeAntiAlias` (4) : c'est lui qui anticrénèle les formes.
 const SMOOTHING_ANTIALIAS: i32 = 4;
 /// `FillModeAlternate` (0).
@@ -125,8 +138,7 @@ unsafe fn cercle_lisse(dc: HDC, cx: i32, cy: i32, rayon: f32, couleur: u32) -> b
     let mut fait = false;
     avec_gdiplus(dc, |g| {
         let mut pinceau: *mut c_void = std::ptr::null_mut();
-        // ARGB : opaque (0xFF) + couleur RVB (COLORREF est déjà BGR).
-        let argb = 0xFF00_0000u32 | (couleur & 0x00FF_FFFF);
+        let argb = argb_depuis_colorref(couleur);
         if GdipCreateSolidFill(argb, &mut pinceau) == 0 && !pinceau.is_null() {
             let x = cx as f32 - rayon;
             let y = cy as f32 - rayon;
@@ -336,10 +348,14 @@ const LATERAL_FIN: u32 = couleur(0x1C1412);
 const LIGNE: u32 = couleur(0x2A1E1A);
 const LIGNE_FORTE: u32 = couleur(0x3A2824);
 const CARTE: u32 = couleur(0x1A1311);
-const ROUGE: u32 = couleur(0xE62F1E);
-const ROUGE_CLAIR: u32 = couleur(0xF0503A);
-const ROUGE_SOMBRE: u32 = couleur(0x8A1A1C);
-const VERT: u32 = couleur(0x2CCB2C);
+// ROUGE VIF : la marque Rose, l'action principale. `ROUGE_CLAIR` sert au
+// survol et aux accents ; `ROUGE_SOMBRE` au contour des étapes en cours.
+const ROUGE: u32 = couleur(0xFF2D1A);
+const ROUGE_CLAIR: u32 = couleur(0xFF5A3C);
+const ROUGE_SOMBRE: u32 = couleur(0xA3220F);
+// VERT LIME : couleur d'état unique (succès, badges, boutons secondaires).
+// L'ancien `VERT` (0x2CCB2C) était un vert moyen, pas le lime de la marque.
+const VERT: u32 = couleur(0x9ACD32);
 const TEXTE: u32 = couleur(0xE8E2E2);
 const TEXTE_DOUX: u32 = couleur(0xA89894);
 const TEXTE_FAIBLE: u32 = couleur(0x6E605C);
@@ -595,11 +611,68 @@ fn decoder_png(donnees: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     Some((largeur, hauteur, pixels))
 }
 
+unsafe extern "system" {
+    fn GdipCreateBitmapFromScan0(largeur: i32, hauteur: i32, pas: i32, format: i32,
+                                 octets: *const u8, bitmap: *mut *mut c_void) -> u32;
+    fn GdipDrawImageRectI(graphique: *mut c_void, image: *mut c_void,
+                          x: i32, y: i32, largeur: i32, hauteur: i32) -> u32;
+    fn GdipDisposeImage(image: *mut c_void) -> u32;
+}
+
+/// Format pixel GDI+ `PixelFormat32bppARGB` (0x26200A).
+const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200A;
+
+/// Dessine un bitmap RGBA avec transparence, mis à l'échelle, via GDI+.
+///
+/// ⚠ Pourquoi pas `AlphaBlend` : le chemin GDI+DIB fonctionnait mal sur un
+/// DC mémoire (la rose ne s'affichait pas du tout — mesuré). GDI+ gère
+/// nativement l'alpha et la mise à l'échelle, sans prémultiplication.
+unsafe fn dessiner_rgba_gdiplus(dc: HDC, x: i32, y: i32, cote: i32,
+                               largeur: usize, hauteur: usize, pixels: &[u8]) -> bool {
+    demarrer_gdiplus();
+    if JETON_GDIPLUS == 0 {
+        return false;
+    }
+    let mut fait = false;
+    avec_gdiplus(dc, |g| {
+        let mut bitmap: *mut c_void = std::ptr::null_mut();
+        // GDI+ attend des pixels BGRA en mémoire ; le décodeur rend RGBA.
+        let mut bgra = Vec::with_capacity(pixels.len());
+        for k in 0..largeur * hauteur {
+            let r = pixels[k * 4];
+            let v = pixels[k * 4 + 1];
+            let b = pixels[k * 4 + 2];
+            let a = pixels[k * 4 + 3];
+            // NON prémultiplié : PixelFormat32bppARGB attend l'alpha droit.
+            bgra.push(b);
+            bgra.push(v);
+            bgra.push(r);
+            bgra.push(a);
+        }
+        let pas = (largeur * 4) as i32;
+        if GdipCreateBitmapFromScan0(largeur as i32, hauteur as i32, pas,
+                                     PIXEL_FORMAT_32BPP_ARGB, bgra.as_ptr(),
+                                     &mut bitmap) == 0 && !bitmap.is_null() {
+            if GdipDrawImageRectI(g, bitmap, x, y, cote, cote) == 0 {
+                fait = true;
+            }
+            GdipDisposeImage(bitmap);
+        }
+    });
+    fait
+}
+
 /// Dessine la rose embarquée, mise à l'échelle, avec transparence.
 unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     let Some(png) = ressource(1, 10) else { return false };
     let Some((largeur, hauteur, pixels)) = decoder_png(png) else { return false };
 
+    // Chemin principal : GDI+ (alpha et mise à l'échelle fiables).
+    if dessiner_rgba_gdiplus(dc, x, y, cote, largeur, hauteur, &pixels) {
+        return true;
+    }
+
+    // Repli GDI : DIB prémultiplié + AlphaBlend.
     let info = BITMAPINFO {
         header: BITMAPINFOHEADER {
             bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -739,7 +812,7 @@ unsafe fn arrondi_lisse(dc: HDC, r: &RECT, rayon: f32, couleur: u32) -> bool {
         GdipAddPathArc(chemin, x0, y1 - d, d, d, 90.0, 90.0);
         GdipClosePathFigure(chemin);
         let mut pinceau: *mut c_void = std::ptr::null_mut();
-        let argb = 0xFF00_0000u32 | (couleur & 0x00FF_FFFF);
+        let argb = argb_depuis_colorref(couleur);
         if GdipCreateSolidFill(argb, &mut pinceau) == 0 && !pinceau.is_null() {
             if GdipFillPath(g, pinceau, chemin) == 0 {
                 fait = true;
@@ -1118,8 +1191,33 @@ unsafe fn dessiner(h: HWND) {
                   if etat.empreinte.is_some() { VERT } else { TEXTE_DOUX }, 9, false, echelle);
             let mut r6 = RECT { left: g + s(20), top: yc + s(170), right: d - s(20), bottom: yc + s(196) };
             texte_echelle(dc, dpi, "Segoe UI",
-                  "rose.exe · rose-shell.exe · rose-aot.exe · association .rose · entrée de désinstallation",
+                  "rose.exe · rose-shell.exe · rose-aot.exe · icônes · association .rose · désinstallation",
                   &mut r6, DT_SINGLELINE | DT_VCENTER, TEXTE_DOUX, 9, false, echelle);
+
+            // ── Installation détectée : version et choix ────────────────
+            // ⚠ L'assistant doit DIRE ce qu'il a trouvé et ce qu'il fera.
+            // Sans ce bloc, l'utilisateur ne savait pas s'il réinstallait,
+            // mettait à jour ou installait à côté d'une installation
+            // existante (mesuré : « version 0.1.5 détectée » invisible).
+            if etat.existant {
+                let c3 = RECT { left: g, top: yc + s(228), right: d, bottom: yc + s(330) };
+                carte(dc, &c3, VERT_LIME);
+                let mut r7 = RECT { left: g + s(20), top: yc + s(240), right: d - s(20), bottom: yc + s(262) };
+                texte_echelle(dc, dpi, "Segoe UI", "Installation détectée", &mut r7,
+                      DT_SINGLELINE | DT_VCENTER, NOIR_DOUX, 9, true, echelle);
+                let mut r8 = RECT { left: g + s(20), top: yc + s(264), right: d - s(20), bottom: yc + s(288) };
+                let meme = crate::setup_core::comparer_versions(
+                    &etat.version_installee, env!("CARGO_PKG_VERSION")) == 0;
+                texte_echelle(dc, dpi, "Segoe UI",
+                      &format!("Version {} — {}", etat.version_installee,
+                          if meme { "identique au paquet : réinstallation (repair)" }
+                          else { "remplacée par la version du paquet" }),
+                      &mut r8, DT_SINGLELINE | DT_VCENTER, NOIR_DOUX, 9, false, echelle);
+                let mut r9 = RECT { left: g + s(20), top: yc + s(290), right: d - s(20), bottom: yc + s(322) };
+                texte_echelle(dc, dpi, "Segoe UI",
+                      "« Mettre à jour » réinstalle proprement ; « Désinstaller » retire tout.",
+                      &mut r9, DT_WORDBREAK, NOIR_DOUX, 9, false, echelle);
+            }
         }
         Vue::Installation => {
             let c = RECT { left: g, top: yc, right: d, bottom: yc + s(70) };
