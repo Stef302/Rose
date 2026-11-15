@@ -91,5 +91,13 @@ fn main() {
 
     println!("cargo:rustc-link-arg=-lm");
     println!("cargo:rustc-link-arg=-lc");
-    println!("cargo:rustc-link-arg=-rdynamic");
+    // `-rdynamic` exporte les symboles du binaire dans la table dynamique :
+    // c'est ce qui permet au JIT (Cranelift) de retrouver les helpers
+    // `rose_affiche_*` par `dlsym`. Il ne concerne QUE le binaire `rose`.
+    //
+    // Appliqué à tous les cibles, il casse les binaires de TEST : combiné à
+    // `--strip-all` + `-static-pie`, le harnais de test segfaultait au
+    // démarrage (SIGSEGV avant même d'afficher le premier test) sur la CI
+    // x86_64, alors que le même code passait en local sur aarch64.
+    println!("cargo:rustc-link-arg-bin=rose=-rdynamic");
 }
