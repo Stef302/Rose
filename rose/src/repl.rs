@@ -588,6 +588,28 @@ fn lire_ligne_simple(invite: &str) -> Entree {
     }
 }
 
+/// Nombre de COLONNES qu'occupe une chaîne à l'écran : les séquences ANSI
+/// (`\x1b[…m`) n'en occupent AUCUNE, mais elles comptent dans
+/// `chars().count()`.
+///
+/// ⚠ C'était le bug du « gros décalage » après le prompt : l'invite colorée
+/// `\x1b[1;38;5;203mrose> \x1b[0m` faisait 20+ caractères, donc le curseur
+/// était placé ~20 colonnes trop loin à droite de la saisie.
+fn colonnes(s: &str) -> usize {
+    let mut n = 0;
+    let mut dans_echappement = false;
+    for c in s.chars() {
+        if dans_echappement {
+            // Une séquence CSI se termine par une lettre finale (@..~).
+            if c.is_ascii_alphabetic() { dans_echappement = false; }
+            continue;
+        }
+        if c == '\x1b' { dans_echappement = true; continue; }
+        n += 1;
+    }
+    n
+}
+
 #[cfg(windows)]
 unsafe fn lire_ligne_win32(invite: &str, historique: &Historique, premiere: bool) -> Entree {
     use std::ffi::c_void;
@@ -686,11 +708,11 @@ unsafe fn lire_ligne_win32(invite: &str, historique: &Historique, premiere: bool
         ecrire(texte);
         // Efface la fin de la ligne (résidu d'une saisie précédente plus longue).
         let largeur_buf = info.taille.x as usize;
-        let occupe = invite.chars().count() + texte.chars().count();
+        let occupe = colonnes(invite) + texte.chars().count();
         if occupe < largeur_buf {
             ecrire(&" ".repeat(largeur_buf - occupe));
         }
-        let colonne = (invite.chars().count() + curseur) as i16;
+        let colonne = (colonnes(invite) + curseur) as i16;
         SetConsoleCursorPosition(h, Coord { x: colonne.min(info.taille.x - 1), y: ligne });
     }
 
@@ -1035,5 +1057,27 @@ mod tests_shell {
         assert_eq!(h.entrees[1], ">> 10!");
         // la position est remise à la fin après chaque ajout
         assert_eq!(h.position, 2);
+    }
+}
+
+#[cfg(test)]
+mod tests_colonnes {
+    use super::*;
+
+    #[test]
+    fn les_sequences_ansi_n_occupent_aucune_colonne() {
+        // Bug mesuré : le curseur était placé ~20 colonnes trop loin après
+        // le prompt, d'où le « gros décalage » avant la saisie.
+        let c = Couleur { actif: true };
+        let invite = c.prompt("rose> ");
+        assert_eq!(colonnes(&invite), 6, "« rose> » = 6 colonnes");
+        // Le prompt continu
+        assert_eq!(colonnes(&c.continuation("...> ")), 5);
+        // Texte simple : identité
+        assert_eq!(colonnes("bonjour"), 7);
+        // Séquence ANSI sans texte
+        assert_eq!(colonnes("\x1b[0m"), 0);
+        // Accents : une colonne par caractère (pas par octet)
+        assert_eq!(colonnes("été"), 3);
     }
 }

@@ -286,6 +286,41 @@ clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 - **`IMAGE_SECTION_HEADER` fait 40 octets** : 8s + 7×I + 2×H + I. Oublier
   `PointerToRelocations` décale tous les champs suivants.
 
+## `rose-aot.exe` : un stub INUTILE, à ne pas livrer
+
+- `rose/src/bin/rose-aot.rs` est compilé **sans** la feature `llvm` par le
+  script de build : il pèse 432 Ko et ne peut RIEN compiler. Le VRAI helper
+  (2,1 Mo, avec LLVM) est dans `~/.cache/rose/rose-aot-v5.10.0`, téléchargé
+  par `rose.exe` au premier `rose orc` / `rose link`.
+- Le livrer dans l'installation donnait l'illusion que la chaîne AOT était
+  disponible. `installer()` ne le pose plus, et `pack-res.py` ne l'embarque
+  plus (l'id `RT_RCDATA 4` est laissé LIBRE, ne pas le réutiliser).
+- `LLVM-C.dll` (90 Mo, `installateur/staging/`) n'est référencé par AUCUN
+  code : supprimé. Il ne servait à rien depuis que le helper embarque LLVM.
+
+## Console : compter les COLONNES, pas les caractères
+
+- `redessiner` (éditeur de ligne Win32) place le curseur à
+  `invite.chars().count() + curseur`. Or l'invite est COLORÉE : elle contient
+  des séquences ANSI (`\x1b[1;38;5;203mrose> \x1b[0m`) qui n'occupent
+  **aucune** colonne mais comptent dans `chars().count()`. Résultat mesuré :
+  le curseur était ~20 colonnes trop à droite — un « gros décalage » entre
+  le `>` et le texte saisi.
+- Utiliser `colonnes()` (fonction module, testée) : elle ignore les
+  séquences CSI.
+
+## GDI+ : ATTENTION à l'ordre des canaux
+
+- `COLORREF` GDI = `0x00BBGGRR` ; `ARGB` GDI+ = `0xAARRGGBB`. Passer la
+  valeur telle quelle **échange rouge et bleu** : le lime `0x9ACD32`
+  s'affichait en CYAN `0x32CD9A` (mesuré). Toujours passer par
+  `argb_depuis_colorref()`.
+- `GdipDeleteImage` n'existe pas : c'est `GdipDisposeImage`.
+- `AlphaBlend` sur un DC mémoire ne rend RIEN : la rose n'apparaissait pas
+  (ni barre de titre, ni panneau). Utiliser GDI+
+  (`GdipCreateBitmapFromScan0` + `GdipDrawImageRectI`), qui gère l'alpha et
+  la mise à l'échelle.
+
 ## Shell : un LANCEUR, pas une copie du moteur
 
 - `rose-shell.exe` ne doit PAS recompiler le moteur (`#[path]` sur front,

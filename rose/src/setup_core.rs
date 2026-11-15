@@ -274,10 +274,16 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
     // `rose-aot.exe`, pas de `rose-shell.exe`, pas d'icône `.rose`.
     //
     // `nom_src` = nom dans le dossier source ; `nom_dst` = nom final.
-    // Les noms diffèrent hors Windows (`rose-aot` vs `rose-aot.exe`).
-    let compagnons: [(Option<&str>, &str, u16); 4] = [
-        (Some(if cfg!(windows) { "rose-aot.exe" } else { "rose-aot" }),
-         if cfg!(windows) { "rose-aot.exe" } else { "rose-aot" }, 4),
+    // Les noms diffèrent hors Windows (`rose-shell` vs `rose-shell.exe`).
+    //
+    // ⚠ `rose-aot.exe` N'EST PLUS INSTALLÉ. Le stub de 432 Ko n'embarque PAS
+    // LLVM (pas de feature `llvm`) : il ne peut donc rien compiler. C'était
+    // un doublon inutile — `rose.exe` gère déjà `orc` et `link` (voir
+    // `main.rs`), et télécharge à la demande le VRAI helper LLVM dans
+    // `%LOCALAPPDATA%\rose\` quand la chaîne n'est pas embarquée.
+    // Le livrer laissait croire qu'il fonctionnait, et alourdissait
+    // l'installation d'un binaire mort.
+    let compagnons: [(Option<&str>, &str, u16); 3] = [
         (Some(if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }),
          if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }, 5),
         (Some("rose.ico"), "rose.ico", 6),

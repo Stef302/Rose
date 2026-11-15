@@ -192,8 +192,11 @@ moteur la **cherche tout seul**.
 2. s'il est absent, il est **téléchargé** depuis la release du projet,
    vérifié par **SHA-256**, installé dans le cache, puis exécuté.
 
-Sur Windows, l'installeur pose `rose.exe` **et** `rose-aot.exe` côte à côte :
-l'étape 2 n'a donc jamais lieu, la chaîne AOT est déjà là.
+Sur Windows, l'installeur ne pose que `rose.exe` et `rose-shell.exe` :
+`rose-aot.exe` n'est **pas** livré — le stub compilé ici n'embarque pas LLVM
+(il pèserait 432 Ko pour ne rien compiler). C'est `rose.exe` qui gère
+`orc` et `link`, et qui télécharge le **vrai** helper LLVM (2,1 Mo, avec
+LLVM) dans le cache au premier usage.
 
 ```bash
 rose orc programme.rose -o programme.ll   # télécharge l'AOT si besoin
@@ -572,14 +575,14 @@ saisie.
 - **Aucun droit administrateur** : tout est écrit dans le profil utilisateur
   (`HKCU`, `%LOCALAPPDATA%`), compatible avec les stratégies d'entreprise qui
   verrouillent `HKLM`.
-- Le moteur `rose.exe` et le helper AOT `rose-aot.exe` sont **embarqués** dans le
+- Le moteur `rose.exe` et le shell `rose-shell.exe` sont **embarqués** dans le
   paquet ; l'installeur pose le PATH et les raccourcis, la désinstallation est
-  gérée par Velopack.
+  gérée par Velopack. Le helper AOT LLVM n'est **pas** embarqué : `rose.exe`
+  le télécharge au premier `rose orc` / `rose link`.
 - **Trois exécutables Windows**, liés **statiquement** (aucune DLL
   `VCRUNTIME140` ni `api-ms-win-crt-*` requise, Windows 10/11 les lance
   directement) :
   - `rose.exe` — le moteur (console, PE32+ x86-64) ;
-  - `rose-aot.exe` — le helper AOT LLVM ORC ;
   - `rose-shell.exe` — le lanceur de la console interactive (délègue à `rose.exe`) ;
   - `Rose-win-Setup.exe` — l'installeur **GUI** (fenêtre Win32 dessinée à la
     main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`) :

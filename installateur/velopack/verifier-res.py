@@ -248,8 +248,9 @@ def main():
 
     # Fichiers compagnons : sans eux, l'installation ne pose QUE rose.exe
     # (mesuré : ni helper AOT, ni shell, ni icône de fichier .rose).
+    # ⚠ `rose-aot.exe` n'est PAS exigé : le stub n'embarque pas LLVM, il est
+    # inutile. `rose.exe` gère `orc`/`link` et télécharge le vrai helper.
     for res_id, nom, min_taille in [
-        (4, "rose-aot.exe", 100_000),
         (5, "rose-shell.exe", 100_000),
         (6, "rose.ico", 10_000),
         (7, "rose_app.ico", 10_000),

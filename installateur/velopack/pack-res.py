@@ -59,9 +59,11 @@ MANIFESTE = RACINE / "rose" / "rose-setup.manifest"
 # Binaires compilés, embarqués dans l'installeur (binaire unique).
 _REL = RACINE / "rose" / "target" / "x86_64-pc-windows-msvc" / "release"
 MOTEUR = _REL / "rose.exe"
-# Le helper AOT (`rose orc`, `rose llvm`) et le shell : sans eux, l'installation
-# ne contient QUE `rose.exe` (mesuré : ni `rose-aot.exe`, ni `rose-shell.exe`).
-HELPER_AOT = _REL / "rose-aot.exe"
+# Le shell : sans lui, l'installation ne contient QUE `rose.exe`.
+#
+# ⚠ `rose-aot.exe` N'EST PAS EMBARQUÉ : le stub compilé ici n'a pas la
+# feature `llvm`, il ne peut donc rien compiler. `rose.exe` gère déjà `orc`
+# et `link` et télécharge à la demande le vrai helper LLVM.
 SHELL = _REL / "rose-shell.exe"
 # Icônes à poser dans `bin\` : `rose.ico` sert au TYPE DE FICHIER `.rose`
 # (association Windows), `setup.ico` devient `rose_app.ico` (application).
@@ -73,8 +75,8 @@ SORTIE = RACINE / "rose" / "rose-setup.res"
 # synchronisés avec `setup_gui.rs` (voir `ressource()`).
 RCDATA_PNG = 1      # rose affichée dans la fenêtre
 RCDATA_MOTEUR = 3   # rose.exe
-RCDATA_AOT = 4      # rose-aot.exe
-RCDATA_SHELL = 5    # rose-shell.exe
+# L'id 4 (anciennement rose-aot.exe) est LIBRE : ne pas le réutiliser.
+RCDATA_SHELL = 5        # rose-shell.exe
 RCDATA_ICO_FICHIER = 6  # rose.ico  (type de fichier .rose)
 RCDATA_ICO_APP = 7      # setup.ico (application)
 
@@ -267,12 +269,11 @@ def main():
             lignes.append(f'{RCDATA_MOTEUR} {RT_RCDATA} "{moteur_path}"')
         # ── Binaires et icônes COMPAGNONS ───────────────────────────────
         # ⚠ Sans eux, l'installation ne contenait QUE `rose.exe` (mesuré) :
-        # `installer()` copiait `rose-aot.exe`, `rose-shell.exe` et les
-        # icônes depuis le dossier de la SOURCE — or la source est le moteur
-        # extrait dans `%TEMP%\rose-setup-payload\`, qui ne contient que
-        # `rose.exe`. Les fichiers compagnons n'ont donc jamais été posés.
+        # `installer()` copiait `rose-shell.exe` et les icônes depuis le
+        # dossier de la SOURCE — or la source est le moteur extrait dans
+        # `%TEMP%\rose-setup-payload\`, qui ne contient que `rose.exe`.
+        # Les fichiers compagnons n'ont donc jamais été posés.
         for res_id, chemin, nom in [
-            (RCDATA_AOT, HELPER_AOT, "rose-aot.exe"),
             (RCDATA_SHELL, SHELL, "rose-shell.exe"),
             (RCDATA_ICO_FICHIER, ICONE_FICHIER, "rose.ico"),
             (RCDATA_ICO_APP, ICONE_APP, "rose_app.ico"),
