@@ -251,6 +251,55 @@ seule factorielle postfixe. Lexage des nouveaux postfixes (front.rs) :
 Piège : le `#[derive(Clone)]` de `Gz` (i128x.rs, pointeur nu `*mut Mpz`) ne
 clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 
+## Installeur Windows : ressources et « Cette application ne peut pas s'exécuter »
+
+- **`OffsetToData` d'un PE est une RVA, pas un offset de section.** Le script
+  qui écrivait un objet COFF `.rsrc` à la main n'émettait aucune relocation :
+  le lieur laissait `0x2e8`, Windows le résolvait dans `.text` et lisait du
+  CODE MACHINE à la place du manifeste → refus au lancement. Symptôme :
+  `pe.get_data(OffsetToData, Size)` sur `RT_MANIFEST` commence par des octets
+  d'instructions x64 au lieu de `<?xml`. **Diagnostic rapide** :
+  `python3 installateur/velopack/verifier-res.py rose-setup.exe` (convertit les
+  RVA en offsets et exige que chaque ressource tombe dans `.rsrc`).
+- **Ne pas écrire l'objet COFF à la main.** `llvm-rc` produit le `.res` MSVC
+  canonique que `lld-link` lie correctement (il calcule les RVAs lui-même).
+  `pack-res.py` génère un `.rc` temporaire et appelle `llvm-rc`.
+- **`llvm-rc` NE découpe PAS un `.ico`.** Donné à `RT_ICON`, il embarque le
+  fichier entier comme UNE icône, sans `RT_GROUP_ICON` : aucune icône
+  utilisable. Il faut extraire chaque taille en `.ico` d'un seul élément
+  (`RT_ICON 1..n`) et écrire le `RT_GROUP_ICON 1` à la main.
+- **Taille d'une icône dans le groupe** = octets de l'image + 22 (l'en-tête
+  de ressource que `llvm-rc` écrit). Mesuré : 16x16 → 1128 + 22 = 1150 o.
+  Mettre `len(donnees)` ou `len(donnees)+40` fait rejeter chaque icône.
+- **`IMAGE_SECTION_HEADER` fait 40 octets** : 8s + 7×I + 2×H + I. Oublier
+  `PointerToRelocations` décale tous les champs suivants.
+
+## Shell : un LANCEUR, pas une copie du moteur
+
+- `rose-shell.exe` ne doit PAS recompiler le moteur (`#[path]` sur front,
+  interp, run, jit, latex…) : le `.exe` faisait 6,9 Mo, le langage était
+  embarqué DEUX fois dans l'installation. Il localise `rose.exe` (`ROSE_EXE`,
+  puis à côté de lui, puis `PATH`) et lui délègue `rose console`.
+- Un test `le_shell_n_embarque_pas_le_moteur` garde la taille sous 4 Mo en
+  release : c'est le garde-fou contre un retour à l'ancienne architecture.
+
+## Console Windows muette : le layout de `INPUT_RECORD`
+
+- **`INPUT_RECORD`** = `EventType` WORD (2) + padding (2) + union (16) = 20 o.
+  **`KEY_EVENT_RECORD`** = `bKeyDown` BOOL (4), `wRepeatCount` WORD,
+  `wVirtualKeyCode` WORD, `wVirtualScanCode` WORD, `UnicodeChar` WORD,
+  `dwControlKeyState` DWORD. Un `Cle` mal ordonné lit `code` à l'offset 4 au
+  lieu de 10 : la bannière s'affiche mais AUCUNE touche ne réagit (mesuré).
+  `bKeyDown` est un BOOL séparé, pas un bit de `dwControlKeyState`.
+- **Ne PAS activer `ENABLE_VIRTUAL_TERMINAL_INPUT` (0x0200)** quand on lit
+  avec `ReadConsoleInputW` : l'entrée VT traduit les touches en séquences
+  d'échappement, que `ReadConsoleInputW` ne reçoit pas. C'est la seconde
+  cause du clavier mort. `preparer_console` doit le RETIRER.
+- Profil Windows Terminal : déposer
+  `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\Rose\rose.json`
+  (`commandline`, `icon`, `startingDirectory`, `tabTitle`). Windows Terminal
+  fusionne automatiquement ces fragments : ne jamais éditer `settings.json`.
+
 ## CI et binaires de test (pièges mesurés le 15/11)
 
 - **`cargo test` ment sur x86_64.** `rose/.cargo/config.toml` force

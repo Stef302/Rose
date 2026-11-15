@@ -32,8 +32,10 @@ X="${XWIN_SDK:-$HOME/.cache/cargo-xwin/xwin}"
 # introuvables à l'exécution.
 if command -v python3 >/dev/null 2>&1; then
   python3 "$RACINE/installateur/velopack/embed-assets.py" >/dev/null
+  # pack-res.py produit un `.res` MSVC et VÉRIFIE lui-même ses types ; le
+  # contrôle du CONTENU (RVAs correctes, manifeste résoluble) se fait APRÈS
+  # le lien, sur `rose-setup.exe` — c'est là que les bugs apparaissent.
   python3 "$RACINE/installateur/velopack/pack-res.py"
-  python3 "$RACINE/installateur/velopack/verifier-res.py"
 fi
 TARGET=x86_64-pc-windows-msvc
 

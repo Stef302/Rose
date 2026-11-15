@@ -25,8 +25,50 @@ RACINE = Path(__file__).resolve().parents[2]
 RT_ICON, RT_GROUP_ICON, RT_RCDATA, RT_FONT, RT_MANIFEST = 3, 14, 10, 8, 24
 
 
+def sections_pe(donnees: bytes):
+    """Liste (VirtualAddress, PointerToRawData, SizeOfRawData) des sections."""
+    pe = struct.unpack("<I", donnees[0x3C:0x40])[0]
+    nsec = struct.unpack("<H", donnees[pe + 6:pe + 8])[0]
+    opt = pe + 24
+    taille_opt = struct.unpack("<H", donnees[pe + 20:pe + 22])[0]
+    debut = opt + taille_opt
+    out = []
+    for i in range(nsec):
+        o = debut + 40 * i
+        vsize, va, rawsize, rawptr = struct.unpack("<IIII", donnees[o + 8:o + 24])
+        out.append((va, rawptr, rawsize))
+    return out
+
+
+def pe_rsrc_rva(donnees: bytes) -> int:
+    """RVA de la section `.rsrc` (entrée 2 du répertoire de données)."""
+    pe = struct.unpack("<I", donnees[0x3C:0x40])[0]
+    opt = pe + 24
+    # DataDirectory commence après les champs fixes de l'en-tête optionnel :
+    # PE32+ -> 112 octets, PE32 -> 96.
+    magic = struct.unpack("<H", donnees[opt:opt + 2])[0]
+    base = opt + (112 if magic == 0x20B else 96)
+    return struct.unpack("<I", donnees[base + 2 * 8:base + 2 * 8 + 4])[0]
+
+
+def sous_systeme_pe(donnees: bytes) -> int:
+    """Subsystem de l'en-tête optionnel (2 = GUI, 3 = console)."""
+    pe = struct.unpack("<I", donnees[0x3C:0x40])[0]
+    opt = pe + 24
+    return struct.unpack("<H", donnees[opt + 68:opt + 70])[0]
+
+
+def rva_vers_offset(rva: int, sections) -> int:
+    """Convertit une RVA en offset de fichier ; lève si elle tombe hors section."""
+    for va, rawptr, rawsize in sections:
+        if va <= rva < va + rawsize:
+            return rawptr + (rva - va)
+    raise AssertionError(f"RVA {rva:#x} hors de toute section "
+                         f"(ressource illisible par Windows)")
+
+
 def section_rsrc(donnees: bytes) -> bytes:
-    """Extrait la section `.rsrc` d'un `.res` COFF ou d'un PE."""
+    """Extrait la section `.rsrc` d'un `.res` MSVC ou d'un PE."""
     if donnees[:2] == b"MZ":
         pe = struct.unpack("<I", donnees[0x3C:0x40])[0]
         assert donnees[pe:pe + 4] == b"PE\0\0", "signature PE absente"
@@ -41,13 +83,19 @@ def section_rsrc(donnees: bytes) -> bytes:
                 taille_brute, decalage = struct.unpack("<II", donnees[o + 16:o + 24])
                 return donnees[decalage:decalage + taille_brute]
         raise AssertionError("section .rsrc absente du PE")
-    # objet COFF : 20 o d'en-tête, puis une section de 40 o
-    machine, nsec = struct.unpack("<HH", donnees[:4])
-    assert machine == 0x8664, f"machine inattendue {machine:#x}"
-    assert nsec == 1, f"{nsec} sections dans le .res"
-    nom, taille_virt, va, taille_brute, decalage = struct.unpack("<8sIIII", donnees[20:44])
-    assert nom.rstrip(b"\0") == b".rsrc", nom
-    return donnees[decalage:decalage + taille_brute]
+    # `.res` MSVC : en-tête de 32 o, puis des entrées
+    #   DataSize(4) HeaderSize(4) ordinal(2) type(2) nom(2) nomNum(2) …
+    assert donnees[:4] == b"\x00\x00\x00\x00", "en-tête .res invalide"
+    rsrc = bytearray()
+    off = 32
+    while off + 8 <= len(donnees):
+        taille, hsize = struct.unpack("<II", donnees[off:off + 8])
+        rsrc += donnees[off + hsize:off + hsize + taille]
+        off += hsize + taille
+        if off % 4:
+            off += 4 - off % 4
+    raise AssertionError("verifier-res.py ne sait pas relire un .res directement ; "
+                         "utiliser l'EXE lié")
 
 
 def entrees(rsrc: bytes, offset: int):
@@ -62,8 +110,19 @@ def main():
     cible = Path(sys.argv[1]) if len(sys.argv) > 1 else RACINE / "rose" / "rose-setup.res"
     if not cible.is_absolute():
         cible = (RACINE / cible) if (RACINE / cible).exists() else cible
-    rsrc = section_rsrc(cible.read_bytes())
-    print(f"{cible.name} : section .rsrc de {len(rsrc)} o")
+    donnees = cible.read_bytes()
+    est_pe = donnees[:2] == b"MZ"
+    if est_pe:
+        # Dans un PE, `OffsetToData` est une RVA : on doit la convertir en
+        # offset de fichier. Ne pas le faire était le bug qui faisait lire du
+        # CODE à la place du manifeste (« Cette application ne peut pas
+        # s'exécuter sur votre PC »).
+        sections = sections_pe(donnees)
+    else:
+        sections = []
+    rsrc = section_rsrc(donnees)
+    print(f"{cible.name} : section .rsrc de {len(rsrc)} o"
+          + (" (PE lié, OffsetToData = RVA)" if est_pe else " (.res)"))
 
     racine, nommees, ids = entrees(rsrc, 0)
     assert nommees == 0, f"NumberOfNamedEntries doit valoir 0, lu {nommees}"
@@ -85,9 +144,24 @@ def main():
                 assert not p3 & 0x80000000, "entrée de données mal pointée"
                 decalage, taille, page, reserve = struct.unpack("<IIII", rsrc[o:o + 16])
                 assert decalage % 4 == 0, f"offset non aligné ({decalage})"
-                assert decalage + taille <= len(rsrc), (
-                    f"type {type_} nom {nom} : {decalage}+{taille} > {len(rsrc)}")
-                ressources[(type_, nom)] = rsrc[decalage:decalage + taille]
+                if est_pe:
+                    # `decalage` est une RVA : la convertir, sinon on lit du
+                    # code machine (c'est exactement le bug d'origine).
+                    decalage = rva_vers_offset(decalage, sections)
+                    assert decalage + taille <= len(donnees), (
+                        f"type {type_} nom {nom} : dépasse le fichier")
+                    # La ressource doit être DANS `.rsrc`, pas ailleurs.
+                    va_rsrc, ptr_rsrc, taille_rsrc = next(
+                        s for s in sections if s[1] == rva_vers_offset(
+                            pe_rsrc_rva(donnees), sections))
+                    assert ptr_rsrc <= decalage < ptr_rsrc + taille_rsrc, (
+                        f"type {type_} nom {nom} : RVA {decalage:#x} hors de "
+                        f"la section .rsrc (ressource illisible par Windows)")
+                    ressources[(type_, nom)] = donnees[decalage:decalage + taille]
+                else:
+                    assert decalage + taille <= len(rsrc), (
+                        f"type {type_} nom {nom} : {decalage}+{taille} > {len(rsrc)}")
+                    ressources[(type_, nom)] = rsrc[decalage:decalage + taille]
 
     print(f"  {len(ressources)} ressources :")
     for (type_, nom), octets in sorted(ressources.items()):
@@ -127,6 +201,14 @@ def main():
             'processorArchitecture doit valoir "*" (une valeur explicite fait échouer l\'activation)'
         assert b"PerMonitorV2" in manifeste, "manifeste : PerMonitorV2 absent"
         print(f"  manifeste : {len(manifeste)} o, ASCII, PerMonitorV2")
+
+    if est_pe:
+        # L'installeur est une application GUI : subsystem 2. Un subsystem 3
+        # (console) ouvrirait une fenêtre noire derrière la fenêtre.
+        if cible.name.lower().startswith("rose-setup"):
+            ss = sous_systeme_pe(donnees)
+            assert ss == 2, f"rose-setup doit être en subsystem 2 (GUI), lu {ss}"
+            print(f"  subsystem : {ss} (GUI)")
 
     print("RESSOURCES VALIDES")
 

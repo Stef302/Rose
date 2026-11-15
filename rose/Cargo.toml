@@ -35,10 +35,13 @@ required-features = ["native"]
 
 # Console interactive autonome (« shell » de Rose). Binaire séparé pour être
 # installé à côté du moteur et lancé comme un shell : rose-shell [fichier].
+#
+# Ce n'est qu'un LANCEUR (≈ 300 Ko) : il localise `rose.exe` et lui délègue
+# `rose console`. Il ne dépend donc PAS de la feature `native` et ne
+# recompile pas le moteur — le langage n'est embarqué qu'une seule fois.
 [[bin]]
 name = "rose-shell"
 path = "src/bin/rose-shell.rs"
-required-features = ["native"]
 
 [dependencies]
 num-bigint = "0.5"

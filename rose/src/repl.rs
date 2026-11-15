@@ -146,10 +146,15 @@ pub fn preparer_console() {
         if !entree.is_null() && entree as isize != -1 {
             let mut mode = 0u32;
             if GetConsoleMode(entree, &mut mode) != 0 {
-                // ENABLE_VIRTUAL_TERMINAL_INPUT (0x0200) : la console décode
-                // les séquences de touches, ce qui permet aux flèches de
-                // fonctionner comme des flèches.
-                SetConsoleMode(entree, mode | 0x0200);
+                // ⚠ PAS de ENABLE_VIRTUAL_TERMINAL_INPUT (0x0200) : le REPL
+                // lit la console avec `ReadConsoleInputW`, qui attend des
+                // enregistrements de touches. Activer l'entrée VT fait
+                // traduire les touches en séquences d'échappement par
+                // `ReadFile`, et les flèches n'arrivent plus — c'est
+                // exactement ce qui rendait la console muette.
+                // On garde l'écho et la saisie ligne : le REPL passe lui-même
+                // la console en mode brut pendant la lecture d'une ligne.
+                SetConsoleMode(entree, mode & !0x0200);
             }
         }
         // Le tampon de la console garde sa taille : pas de changement.
@@ -594,18 +599,29 @@ unsafe fn lire_ligne_win32(invite: &str, historique: &Historique, premiere: bool
     #[repr(C)]
     struct Csbi { taille: Coord, curseur: Coord, attributs: u16, fenetre: PetiteRect,
                   max_fenetre: Coord }
+    // ⚠ LAYOUT EXACT de INPUT_RECORD (wincon.h). La première version avait
+    // un `Cle` faux : elle lisait `code` à l'offset 4 alors que
+    // `wVirtualKeyCode` est à l'offset 10. Résultat mesuré sur Windows : la
+    // bannière s'affichait, mais AUCUNE touche n'était reconnue — on pouvait
+    // taper sans que rien n'apparaisse ni ne valide.
+    //
+    //   INPUT_RECORD : EventType WORD (2) + padding (2) + union (16)
+    //   KEY_EVENT_RECORD : bKeyDown BOOL(4) wRepeatCount WORD(2)
+    //                      wVirtualKeyCode WORD(2) wVirtualScanCode WORD(2)
+    //                      UnicodeChar WORD(2) dwControlKeyState DWORD(4)
     #[repr(C)]
     struct Cle {
-        evenement: u16,
-        _alignement: u16,
-        code: u16,
-        etat: u32,
-        // union : on ne lit que le premier mot du scan code pour les
-        // touches étendues, et le caractère Unicode pour les frappes.
-        donnees: u32,
+        en_appui: u32,       // bKeyDown
+        repetitions: u16,    // wRepeatCount
+        code: u16,           // wVirtualKeyCode
+        scan: u16,           // wVirtualScanCode
+        caractere: u16,      // UnicodeChar
+        etat: u32,           // dwControlKeyState
     }
     #[repr(C)]
     struct InputRecord { evenement: u16, _pad: u16, cle: Cle }
+    // 2 + 2 + 16 = 20 octets, la taille que ReadConsoleInputW attend.
+    const _: () = assert!(std::mem::size_of::<InputRecord>() == 20);
 
     unsafe extern "system" {
         fn GetStdHandle(n: u32) -> *mut c_void;
@@ -709,13 +725,13 @@ unsafe fn lire_ligne_win32(invite: &str, historique: &Historique, premiere: bool
             break Entree::Fin;
         }
         if rec.evenement != KEY_EVENT { continue; }
-        // On ne traite que les appuis (pas les relâchements).
-        let appui = (rec.cle.etat & 0x0001) != 0;
-        if !appui { continue; }
+        // On ne traite que les appuis (pas les relâchements) : `en_appui`
+        // est le BOOL bKeyDown, PAS un bit de `dwControlKeyState`.
+        if rec.cle.en_appui == 0 { continue; }
         let ctrl = (rec.cle.etat & LEFT_CTRL_PRESSED) != 0;
         let alt = (rec.cle.etat & LEFT_ALT_PRESSED) != 0;
         let code = rec.cle.code;
-        let u = rec.cle.donnees & 0xFFFF;
+        let u = rec.cle.caractere;
 
         match code {
             VK_RETURN => {

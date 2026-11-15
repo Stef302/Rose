@@ -495,12 +495,17 @@ rose-shell prog.rose          # charge le programme, puis console
 rose-shell prog.rose --sans-exec   # charge sans exécuter les >>
 ```
 
-`rose-shell` est un binaire séparé (PE32+ console sous Windows, ELF ailleurs)
-livré avec le moteur et posé dans le même `bin\`. Un **double-clic** dessus
-ouvre directement la console Rose — aucune fenêtre ne disparaît (le shell
-attend une touche avant de rendre la main). Lancé depuis Windows Terminal, il
-s'y intègre comme un shell ordinaire : titre d'onglet « Rose 0.1.5 — console
-interactive », icône Rose, couleurs de Rose.
+`rose-shell` est un **lanceur** (≈ 400 Ko, pas 7 Mo) : il localise `rose.exe`
+installé — à côté de lui dans `bin\`, dans le `PATH`, ou via `ROSE_EXE` — et lui
+délègue `rose console`. Le moteur n'est donc compilé qu'une fois, et le shell
+hérite forcément de la version du moteur installé (aucune désynchronisation
+entre un `rose.exe` 0.1.5 et un `rose-shell.exe` d'une autre version).
+
+L'installeur dépose aussi un **profil Windows Terminal**
+(`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\Rose\rose.json`) :
+« Rose » apparaît dans le menu déroulant des onglets, avec son icône et son
+titre d'onglet, sans toucher à `settings.json`. Le désinstalleur retire ce
+fragment.
 
 Édition de ligne réelle (console brute `ReadConsoleInputW`, sans dépendance) :
 
@@ -575,7 +580,7 @@ saisie.
   directement) :
   - `rose.exe` — le moteur (console, PE32+ x86-64) ;
   - `rose-aot.exe` — le helper AOT LLVM ORC ;
-  - `rose-shell.exe` — la console interactive autonome (REPL) ;
+  - `rose-shell.exe` — le lanceur de la console interactive (délègue à `rose.exe`) ;
   - `Rose-win-Setup.exe` — l'installeur **GUI** (fenêtre Win32 dessinée à la
     main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`) :
     - **fenêtre entièrement personnalisée** : `WS_POPUP` + `WS_THICKFRAME`,

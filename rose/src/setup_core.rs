@@ -200,7 +200,14 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         let _ = std::process::Command::new("reg")
             .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve", "/t", "REG_SZ",
                    "/d", &format!("\"{}\\rose.exe\" \"%1\"", bindir.display()), "/f"]).status();
-        "PATH et association .rose mis à jour".to_string()
+        // ── Profil Windows Terminal ──────────────────────────────────────
+        // Windows Terminal lit tous les `*.json` de son dossier
+        // « Fragments » (un fichier = un profil, fusionné automatiquement) :
+        // pas besoin de modifier `settings.json`, donc aucune casse des
+        // réglages de l'utilisateur. C'est ce qui fait apparaître « Rose »
+        // dans le menu déroulant, AVEC l'icône et la bonne ligne de commande.
+        let profil = ecrire_profil_terminal(bindir);
+        format!("PATH et association .rose mis à jour ; {profil}")
     }
     #[cfg(unix)]
     {
@@ -226,11 +233,86 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
     }
 }
 
+/// Écrit un profil « Fragment » pour Windows Terminal.
+///
+/// Windows Terminal fusionne automatiquement tout `*.json` déposé dans
+/// `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\<Application>\`.
+/// C'est la méthode recommandée par Microsoft : on ne touche JAMAIS à
+/// `settings.json`, donc les réglages de l'utilisateur ne peuvent pas être
+/// cassés. Le profil apparaît dans le menu déroulant des onglets, avec son
+/// icône et sa ligne de commande.
+///
+/// Le fragment pointe sur `rose-shell.exe`, qui délègue `rose console` au
+/// moteur installé : une seule implémentation du langage.
+#[cfg(windows)]
+fn ecrire_profil_terminal(bindir: &std::path::Path) -> String {
+    let local = match std::env::var("LOCALAPPDATA") {
+        Ok(v) => v,
+        Err(_) => return "profil Windows Terminal non écrit (LOCALAPPDATA absent)".to_string(),
+    };
+    let dossier = std::path::Path::new(&local)
+        .join("Microsoft")
+        .join("Windows Terminal")
+        .join("Fragments")
+        .join("Rose");
+    if std::fs::create_dir_all(&dossier).is_err() {
+        return "profil Windows Terminal non écrit".to_string();
+    }
+
+    // Chemins en JSON : les antislashs doivent être doublés.
+    let shell = bindir.join("rose-shell.exe").display().to_string().replace('\\', "\\\\");
+    let icone = bindir.join("rose.ico").display().to_string().replace('\\', "\\\\");
+
+    // `startingDirectory` = dossier de l'utilisateur : un shell s'ouvre là où
+    // l'on travaille, pas dans `bin\`.
+    let json = format!(
+        r#"{{
+  "profiles": [
+    {{
+      "name": "Rose",
+      "commandline": "\"{shell}\"",
+      "startingDirectory": "%USERPROFILE%",
+      "icon": "{icone}",
+      "colorScheme": "One Half Dark",
+      "historySize": 9001,
+      "snapOnInput": true,
+      "closeOnExit": "graceful",
+      "tabTitle": "Rose {version}",
+      "suppressApplicationTitle": false
+    }}
+  ]
+}}
+"#,
+        version = env!("CARGO_PKG_VERSION")
+    );
+
+    match std::fs::write(dossier.join("rose.json"), json) {
+        Ok(()) => "profil Windows Terminal « Rose » installé".to_string(),
+        Err(_) => "profil Windows Terminal non écrit".to_string(),
+    }
+}
+
+#[cfg(not(windows))]
+fn ecrire_profil_terminal(_bindir: &std::path::Path) -> String {
+    "profil Windows Terminal sans objet".to_string()
+}
+
 /// Supprime l'installation (binaires, registre, PATH, associations).
 pub fn desinstaller(prefixe: &str) -> Journal {
     let mut j = Journal::new();
     #[cfg(windows)]
     {
+        // Profil Windows Terminal : on retire le fragment « Rose » pour que
+        // le menu déroulant ne garde pas une entrée pointant sur un binaire
+        // supprimé.
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let dossier = std::path::Path::new(&local)
+                .join("Microsoft")
+                .join("Windows Terminal")
+                .join("Fragments")
+                .join("Rose");
+            let _ = std::fs::remove_dir_all(&dossier);
+        }
         let _ = std::process::Command::new("reg")
             .args(["delete", "HKCU\\Software\\Rose", "/f"]).status();
         let _ = std::process::Command::new("reg")
