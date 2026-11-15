@@ -13,7 +13,8 @@ Rose ships as a single `rose` binary. The LLVM AOT helper is a separate
 | `rose latex prog.rose` | LaTeX formula of the whole program |
 | `rose orc prog.rose [-o out]` | Native LLVM ORC AOT compilation |
 | `rose link objet.o [-o out]` | Link an ELF object into a binary |
-| `rose console [prog.rose]` | Interactive REPL |
+| `rose console [prog.rose]` | Interactive REPL (inside the engine) |
+| `rose-shell [prog.rose]` | Standalone interactive shell |
 | `rose info` / `rose version` | Engine status |
 | `rose update` | Install / update Rose |
 
@@ -25,6 +26,32 @@ rose latex hello.rose
 rose orc hello.rose -o hello.o
 rose link hello.o -o hello
 ```
+
+## Interactive shell
+
+`rose-shell` is a separate executable installed next to the engine. It is a
+full REPL, not a wrapper:
+
+```sh
+rose-shell                    # empty console
+rose-shell prog.rose          # load the program, then console
+rose-shell prog.rose --sans-exec   # load without running the >>
+```
+
+Features: in-memory history (↑ / ↓), Tab completion of `:` commands and
+language keywords, multi-line continuation while braces are open, and the
+commands `:help`, `:show`, `:reset`, `:load`, `:save`, `:type`, `:latex`,
+`:quit`.
+
+**Terminal compatibility.** At start-up the shell sets
+`SetConsoleOutputCP(65001)` (UTF-8) and enables
+`ENABLE_VIRTUAL_TERMINAL_PROCESSING` / `ENABLE_VIRTUAL_TERMINAL_INPUT`. Without
+that, conhost shows mojibake for accents and prints ANSI codes literally. It
+works in Windows Terminal, conhost, PowerShell, cmd, Git Bash, VS Code, and any
+ANSI terminal on Linux/macOS. Colours can be disabled with `ROSE_NO_COLOR=1`
+or forced with `ROSE_COLOR=1`.
+
+`rose console` and `rose-shell` share one implementation (`rose/src/repl.rs`).
 
 ## `rose update`
 

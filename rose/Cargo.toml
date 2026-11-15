@@ -33,6 +33,13 @@ name = "rose-setup"
 path = "src/bin/rose-setup.rs"
 required-features = ["native"]
 
+# Console interactive autonome (« shell » de Rose). Binaire séparé pour être
+# installé à côté du moteur et lancé comme un shell : rose-shell [fichier].
+[[bin]]
+name = "rose-shell"
+path = "src/bin/rose-shell.rs"
+required-features = ["native"]
+
 [dependencies]
 num-bigint = "0.4"
 num-integer = "0.1"

@@ -44,6 +44,10 @@ pub mod sha256;
 /// DEFLATE / zlib / PNG — partagé par l'installeur et la mise à jour Velopack.
 pub mod inflate;
 
+/// Console interactive (REPL) — partagée par `rose console` et `rose-shell`.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod repl;
+
 /// JIT Cranelift — disponible uniquement sur les cibles natives.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod jit;

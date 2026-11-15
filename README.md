@@ -469,15 +469,36 @@ comprises, signatures `n ∈ ℤ` incluses.
 
 ### Console interactive (REPL)
 
+Deux points d'entrée, **une seule implémentation** (`rose/src/repl.rs`) :
+
 ```bash
-rose console                  # console vide
+rose console                  # depuis le moteur
 rose console prog.rose        # charge prog.rose, puis console
 rose prog.rose --console      # exécute prog.rose, puis console (variables disponibles)
+
+rose-shell                    # exécutable AUTONOME (installé à côté du moteur)
+rose-shell prog.rose          # charge le programme, puis console
+rose-shell prog.rose --sans-exec   # charge sans exécuter les >>
 ```
 
-Dans la console : code Rose exécuté dans le contexte du buffer accumulé ;
-commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
-`:quit`. Les blocs multi-lignes (accolades) sont acceptés.
+`rose-shell` est un binaire séparé (PE32+ console sous Windows, ELF ailleurs)
+livré avec le moteur et posé dans le même `bin\`. Il s'utilise comme un vrai
+shell : historique en mémoire (↑ / ↓), complétion Tab des commandes `:` et des
+mots-clés, bannière, couleurs.
+
+**Compatibilité terminal** : Windows Terminal, conhost, PowerShell, cmd,
+Git Bash, VS Code, ainsi que tout terminal ANSI sous Linux/macOS. Au
+démarrage, `repl::preparer_console` pose `SetConsoleOutputCP(65001)` (UTF-8,
+donc accents et symboles mathématiques corrects) et active
+`ENABLE_VIRTUAL_TERMINAL_PROCESSING` / `ENABLE_VIRTUAL_TERMINAL_INPUT` : sans
+cela, sur conhost, les accents sortent en mojibake et les codes couleur
+s'affichent littéralement. Les couleurs se désactivent avec
+`ROSE_NO_COLOR=1` et se forcent avec `ROSE_COLOR=1` (utile dans un pipe).
+
+Commandes : `:help`, `:show`, `:reset`, `:load <fichier>`, `:save <fichier>`,
+`:type <expr>`, `:latex`, `:quit`. Les blocs multi-lignes (accolades) sont
+acceptés, et un `{` à l'intérieur d'un commentaire `#` ne prolonge pas la
+saisie.
 
 ### Pièges connus (à lire avant d'écrire du Rose)
 
@@ -524,6 +545,7 @@ commandes `:help`, `:show`, `:reset`, `:load <fichier>`, `:type <expr>`,
   directement) :
   - `rose.exe` — le moteur (console, PE32+ x86-64) ;
   - `rose-aot.exe` — le helper AOT LLVM ORC ;
+  - `rose-shell.exe` — la console interactive autonome (REPL) ;
   - `Rose-win-Setup.exe` — l'installeur **GUI** (fenêtre Win32 dessinée à la
     main, `rose/src/bin/rose-setup.rs` + `rose/src/setup_gui.rs`) :
     - **fenêtre entièrement personnalisée** : `WS_POPUP` + `WS_THICKFRAME`,
@@ -616,6 +638,7 @@ PATH dans `~/.bashrc` / `~/.profile`, type MIME `.rose` enregistré.
 | `rose orc prog.rose -o prog.o` | Compilation native LLVM ORC | AOT, vectorisation NEON |
 | `rose link prog.o [-o sortie]` | Lier un objet ELF en binaire | avec `rose orc` |
 | `rose console [prog.rose]` | Console interactive (REPL) | explorer un programme, taper des expressions |
+| `rose-shell [prog.rose]` | Console autonome (même module `repl`) | lancer un vrai shell Rose |
 | `rose update` | Installe / met à jour Rose (64 bits) | installation, réparation, désinstallation |
 | `rose info` / `rose version` | État du moteur | diagnostic |
 | `rose --help` | Aide | — |

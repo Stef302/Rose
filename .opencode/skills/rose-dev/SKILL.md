@@ -141,6 +141,8 @@ l'utilisateur web)
   `VCRUNTIME140` / `api-ms-win-crt-*` requise) :
   - `rose.exe` — moteur (PE32+ console) ;
   - `rose-aot.exe` — helper AOT LLVM ORC ;
+  - `rose-shell.exe` — console interactive autonome (REPL, `rose/src/repl.rs`,
+    partagée avec `rose console` : UNE implémentation, deux points d'entrée) ;
   - `Rose-win-Setup.exe` — installeur **GUI** (`rose/src/bin/rose-setup.rs`,
     `setup_gui` Win32 ; `build.rs` pose `/SUBSYSTEM:WINDOWS` +
     `/ENTRY:mainCRTStartup` pour ce binôme SEULEMENT).
@@ -192,6 +194,25 @@ l'utilisateur web)
   réels, couleurs GDI exactes, contrôle mesuré des boutons).
 - Sous Linux/macOS, `rose update` simple reste sur la voie artefacts GitHub
   (`docs/telechargements/` + SHA-256) : Velopack n'a pas d'installeur Linux.
+
+## Console / shell — pièges vérifiés
+
+- `repl::preparer_console()` DOIT être appelé au démarrage : sans
+  `SetConsoleOutputCP(65001)` les accents sortent en mojibake sur conhost, et
+  sans `ENABLE_VIRTUAL_TERMINAL_PROCESSING` les séquences ANSI s'affichent
+  littéralement (`←[1;38;5;203m`). Windows Terminal active VT par défaut,
+  conhost non.
+- La détection de terminal est `GetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE))`
+  sous Windows et `std::io::IsTerminal` ailleurs ; `ROSE_NO_COLOR=1` désactive,
+  `ROSE_COLOR=1` force.
+- L'interpréteur est récursif : exécuter dans un fil de 16 Mio
+  (`repl::executer`), sinon les programmes profonds débordent la pile.
+- `braces_balanced` ignore les `#` de commentaire en tête de ligne ET les
+  chaînes : un `{` dans un commentaire ne doit pas ouvrir de continuation.
+  Attention, `10#` en fin d'expression reste l'opérateur primorielle.
+- Un binaire `#[path]` (comme `rose-shell.rs`) doit déclarer TOUS les modules
+  atteints transitivement : `interp.rs` appelle `crate::auto_llvm`, oublier
+  `mod auto_llvm` casse la compilation.
 
 ## Notation factorielle (v0.1.x)
 

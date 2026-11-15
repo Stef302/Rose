@@ -20,6 +20,7 @@ pour un nom de fichier).
 |---|---|---|
 | `rose.exe` | PE32+ console | le moteur (interprète exact, JIT Cranelift, AOT, WASM côté module) |
 | `rose-aot.exe` | PE32+ console | helper AOT LLVM ORC, téléchargé à la demande par `rose orc` |
+| `rose-shell.exe` | PE32+ console | console interactive (REPL) autonome : `rose-shell`, ou `rose-shell prog.rose` |
 | `Rose-win-Setup.exe` | PE32+ **GUI** | installeur autonome : fenêtre Win32 de `setup_gui`, aucun droit admin |
 
 Les trois sont liés **statiquement** (`+crt-static`) : aucune DLL
@@ -34,7 +35,7 @@ les seules dépendances sont `kernel32` / `user32` / `gdi32` / `ntdll` /
 que `cargo-xwin` met en cache (`~/.cache/cargo-xwin/xwin`) :
 
 ```sh
-sh installateur/velopack/build-linux.sh   # → rose.exe, rose-aot.exe, rose-setup.exe
+sh installateur/velopack/build-linux.sh   # → rose.exe, rose-aot.exe, rose-shell.exe, rose-setup.exe
 ```
 
 `pack-linux.sh` emballe ensuite le dossier `stage` en paquet Velopack et écrit
@@ -71,7 +72,7 @@ powershell -File .\build.ps1 -Version 0.1.5
 | Fichier | Rôle |
 |---|---|
 | `Rose-win-Setup.exe` | installeur Velopack (deltas + rollback, sans admin) |
-| `Rose-<v>-full.nupkg` | paquet complet (contient `rose.exe`, `rose-aot.exe`, `Rose-win-Setup.exe`, `payload\`) |
+| `Rose-<v>-full.nupkg` | paquet complet (contient `rose.exe`, `rose-aot.exe`, `rose-shell.exe`, `Rose-win-Setup.exe`, `payload\`) |
 | `Rose-<v>-delta.nupkg` | delta depuis la version précédente (optionnel) |
 | `releases.win.json` | manifeste lu par `rose update` |
 

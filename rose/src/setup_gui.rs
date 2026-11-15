@@ -854,7 +854,7 @@ unsafe fn dessiner(h: HWND) {
                   if etat.empreinte.is_some() { VERT } else { TEXTE_DOUX }, 9, false, echelle);
             let mut r6 = RECT { left: g + s(20), top: yc + s(170), right: d - s(20), bottom: yc + s(196) };
             texte_echelle(dc, dpi, "Segoe UI",
-                  "rose.exe · rose-aot.exe · association .rose · entrée de désinstallation",
+                  "rose.exe · rose-shell.exe · rose-aot.exe · association .rose · entrée de désinstallation",
                   &mut r6, DT_SINGLELINE | DT_VCENTER, TEXTE_DOUX, 9, false, echelle);
         }
         Vue::Installation => {

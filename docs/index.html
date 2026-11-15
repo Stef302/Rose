@@ -630,6 +630,7 @@ Salut, Alan !</pre>
 <span class="c"># puis, dans un nouveau terminal :</span>
 <span class="k">&gt;</span> rose info
 <span class="k">&gt;</span> rose bonjour.rose
+<span class="k">&gt;</span> rose-shell           <span class="c"># console interactive autonome</span>
 <span class="k">&gt;</span> rose update          <span class="c"># Velopack : delta + rollback</span></pre>
       </div>
       <div style="display:flex;gap:1rem;flex-wrap:wrap">
@@ -637,7 +638,8 @@ Salut, Alan !</pre>
         <a class="btn btn-fantome" href="https://github.com/Stef302/Rose/releases/tag/v0.1.5" target="_blank" rel="noopener">RELEASES GITHUB ↗</a>
       </div>
       <p class="small gris" style="line-height:2">SHA-256 de chaque artefact : voir <a class="vert" href="telechargements/SHA256SUMS">telechargements/SHA256SUMS</a> et les assets de la release GitHub.</p>
-      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : binaire autonome — <code class="inline">curl -LO https://raw.githubusercontent.com/Stef302/Rose/main/docs/telechargements/rose-aarch64-linux && chmod +x rose-aarch64-linux</code>. Ou depuis les sources : <code class="inline">cd rose && cargo build --release</code>. Aucun runtime, aucune dépendance GMP.</p>    </div>
+      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : binaire autonome — <code class="inline">curl -LO https://raw.githubusercontent.com/Stef302/Rose/main/docs/telechargements/rose-aarch64-linux && chmod +x rose-aarch64-linux</code>. Ou depuis les sources : <code class="inline">cd rose && cargo build --release</code>. Aucun runtime, aucune dépendance GMP.</p>
+      <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Shell Rose</b> : <code class="inline">rose-shell.exe</code> est installé à côté du moteur — une console interactive complète (historique ↑ ↓, complétion Tab, <code class="inline">:help</code>, <code class="inline">:load</code>, <code class="inline">:save</code>, <code class="inline">:type</code>, <code class="inline">:latex</code>). Elle fonctionne dans <b>Windows Terminal</b>, conhost, PowerShell, cmd, Git Bash et VS Code : sortie UTF-8 et couleurs ANSI activées au démarrage, donc accents et symboles mathématiques s'affichent correctement. <code class="inline">rose-shell prog.rose</code> charge un programme puis ouvre la console.</p>    </div>
   </div>
 
   <div class="wrap">

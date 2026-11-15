@@ -11,6 +11,7 @@
 # Sortie : rose/target/x86_64-pc-windows-msvc/release/
 #   rose.exe         moteur (console)
 #   rose-aot.exe     helper AOT LLVM ORC (console)
+#   rose-shell.exe   console interactive de Rose (REPL, console)
 #   rose-setup.exe   installeur graphique (GUI, publié Rose-win-Setup.exe)
 #
 # Prérequis : rustup target add x86_64-pc-windows-msvc, cargo-xwin (pour le
@@ -57,7 +58,7 @@ export CFLAGS_x86_64_pc_windows_msvc="-isystem $X/crt/include -isystem $X/sdk/in
 export RUSTFLAGS="-L $X/crt/lib/x86_64 -L $X/sdk/lib/ucrt/x86_64 -L $X/sdk/lib/um/x86_64 -C target-feature=+crt-static"
 
 cd "$RACINE/rose"
-cargo build --release --target "$TARGET" --bin rose --bin rose-aot --bin rose-setup
+cargo build --release --target "$TARGET" --bin rose --bin rose-aot --bin rose-setup --bin rose-shell
 
 R="$RACINE/rose/target/$TARGET/release"
 
@@ -69,13 +70,14 @@ mkdir -p "$STAGE/payload"
 cp "$R/rose-setup.exe" "$STAGE/Rose-win-Setup.exe"
 cp "$R/rose.exe" "$STAGE/rose.exe"
 cp "$R/rose-aot.exe" "$STAGE/rose-aot.exe"
+cp "$R/rose-shell.exe" "$STAGE/rose-shell.exe"
 cp "$R/rose.exe" "$STAGE/payload/rose.exe"
 cp "$RACINE/installateur/assets/rose.ico" "$STAGE/rose.ico"
 cp "$RACINE/installateur/assets/setup.ico" "$STAGE/rose_app.ico"
 cp "$RACINE/LICENSE" "$STAGE/LICENSE"
 echo
 echo "Binaires produits :"
-for f in rose.exe rose-aot.exe rose-setup.exe; do
+for f in rose.exe rose-aot.exe rose-shell.exe rose-setup.exe; do
   printf '  %-16s %10s o  %s\n' "$f" "$(stat -c%s "$R/$f")" "$(file -b "$R/$f" | cut -d, -f1-2)"
 done
 
