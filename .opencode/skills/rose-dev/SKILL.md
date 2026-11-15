@@ -364,8 +364,14 @@ clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 ## Console ouverte par double-clic : icône et attente
 
 - `rose/src/console_win.rs` :
-  - `preparer()` pose le titre (« Rose 0.1.5 ») et l'icône de la fenêtre via
-    `SetConsoleWindow` + `WM_SETICON` (le groupe embarqué dans `rose.exe`) ;
+  - `preparer()` pose le titre (« Rose 0.1.5 ») et l'icône de la fenêtre
+    via `PostMessageW` + `WM_SETICON` (le groupe embarqué dans `rose.exe`) ;
+  - ⚠ **JAMAIS `SendMessageW` sur la fenêtre de console** : elle appartient à
+    `conhost.exe`, et un envoi SYNCHRONE depuis le programme console peut se
+    bloquer (chacun attend le verrou que l'autre détient) — le programme ne
+    rend plus la main et l'utilisateur ne voit qu'une fenêtre VIDE, avec les
+    seules bordures (mesuré). `PostMessageW` ne bloque jamais ; l'icône est
+    en outre posée depuis un fil séparé ;
   - `attendre_fermeture()` attend une frappe quand la console n'appartient
     qu'à nous (`GetConsoleProcessList` renvoie 1 seul PID). Sans ça, la
     fenêtre se fermait avant qu'on ait pu lire la sortie.
