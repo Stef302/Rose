@@ -56,9 +56,27 @@ WOFF2 = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
 # marqué « .ROSE ») : elle convient pour les `.rose`, pas pour l'installeur.
 ICO = RACINE / "installateur" / "assets" / "setup.ico"
 MANIFESTE = RACINE / "rose" / "rose-setup.manifest"
-# Moteur compilé, embarqué dans l'installeur (binaire unique).
-MOTEUR = RACINE / "rose" / "target" / "x86_64-pc-windows-msvc" / "release" / "rose.exe"
+# Binaires compilés, embarqués dans l'installeur (binaire unique).
+_REL = RACINE / "rose" / "target" / "x86_64-pc-windows-msvc" / "release"
+MOTEUR = _REL / "rose.exe"
+# Le helper AOT (`rose orc`, `rose llvm`) et le shell : sans eux, l'installation
+# ne contient QUE `rose.exe` (mesuré : ni `rose-aot.exe`, ni `rose-shell.exe`).
+HELPER_AOT = _REL / "rose-aot.exe"
+SHELL = _REL / "rose-shell.exe"
+# Icônes à poser dans `bin\` : `rose.ico` sert au TYPE DE FICHIER `.rose`
+# (association Windows), `setup.ico` devient `rose_app.ico` (application).
+ICONE_FICHIER = RACINE / "installateur" / "assets" / "rose.ico"
+ICONE_APP = RACINE / "installateur" / "assets" / "setup.ico"
 SORTIE = RACINE / "rose" / "rose-setup.res"
+
+# Identifiants des ressources RT_RCDATA embarquées. Ils doivent rester
+# synchronisés avec `setup_gui.rs` (voir `ressource()`).
+RCDATA_PNG = 1      # rose affichée dans la fenêtre
+RCDATA_MOTEUR = 3   # rose.exe
+RCDATA_AOT = 4      # rose-aot.exe
+RCDATA_SHELL = 5    # rose-shell.exe
+RCDATA_ICO_FICHIER = 6  # rose.ico  (type de fichier .rose)
+RCDATA_ICO_APP = 7      # setup.ico (application)
 
 # Langue des ressources : 1033 = en-US, la valeur qu'émet `llvm-rc`/`rc.exe`.
 LANGUE = 1033
@@ -246,7 +264,25 @@ def main():
             # lit par `FindResourceW` et l'écrit dans `bin\rose.exe`.
             moteur_path = tmp / "moteur.exe"
             moteur_path.write_bytes(moteur)
-            lignes.append(f'3 {RT_RCDATA} "{moteur_path}"')
+            lignes.append(f'{RCDATA_MOTEUR} {RT_RCDATA} "{moteur_path}"')
+        # ── Binaires et icônes COMPAGNONS ───────────────────────────────
+        # ⚠ Sans eux, l'installation ne contenait QUE `rose.exe` (mesuré) :
+        # `installer()` copiait `rose-aot.exe`, `rose-shell.exe` et les
+        # icônes depuis le dossier de la SOURCE — or la source est le moteur
+        # extrait dans `%TEMP%\rose-setup-payload\`, qui ne contient que
+        # `rose.exe`. Les fichiers compagnons n'ont donc jamais été posés.
+        for res_id, chemin, nom in [
+            (RCDATA_AOT, HELPER_AOT, "rose-aot.exe"),
+            (RCDATA_SHELL, SHELL, "rose-shell.exe"),
+            (RCDATA_ICO_FICHIER, ICONE_FICHIER, "rose.ico"),
+            (RCDATA_ICO_APP, ICONE_APP, "rose_app.ico"),
+        ]:
+            if chemin.exists():
+                copie = tmp / nom
+                copie.write_bytes(chemin.read_bytes())
+                lignes.append(f'{res_id} {RT_RCDATA} "{copie}"')
+            else:
+                print(f"  ⚠ {nom} absent ({chemin}) — ne sera pas installé")
         for i, e in enumerate(icones, start=1):
             brut = tmp / f"icone{i}.bin"
             brut.write_bytes(e["donnees"])

@@ -40,6 +40,105 @@ type HGLOBAL = *mut c_void;
 #[repr(C)]
 struct POINT { x: i32, y: i32 }
 
+// ── GDI+ : tracé ANTIALIASÉ ────────────────────────────────────────────
+// GDI (Ellipse, RoundRect) ne sait pas anticréneler : les bords des cercles
+// et des coins arrondis sortent escalier (mesuré : les pastilles des étapes
+// paraissaient pixelisées). GDI+ le fait, et c'est la seule façon d'obtenir
+// des cercles nets sans changer de framework.
+#[repr(C)]
+struct GdiplusStartupInput {
+    version: u32,
+    callback: *mut c_void,
+    callback_data: *mut c_void,
+    suppress_background_thread: i32,
+}
+
+#[repr(C)]
+struct GpRectF { x: f32, y: f32, largeur: f32, hauteur: f32 }
+
+unsafe extern "system" {
+    fn GdiplusStartup(jeton: *mut usize, entree: *const GdiplusStartupInput, sortie: *mut c_void) -> u32;
+    fn GdipCreateFromHDC(hdc: *mut c_void, graphique: *mut *mut c_void) -> u32;
+    fn GdipDeleteGraphics(graphique: *mut c_void) -> u32;
+    fn GdipSetSmoothingMode(graphique: *mut c_void, mode: i32) -> u32;
+    fn GdipCreateSolidFill(couleur: u32, pinceau: *mut *mut c_void) -> u32;
+    fn GdipDeleteBrush(pinceau: *mut c_void) -> u32;
+    fn GdipFillEllipse(graphique: *mut c_void, pinceau: *mut c_void,
+                       x: f32, y: f32, largeur: f32, hauteur: f32) -> u32;
+    fn GdipFillRectangle(graphique: *mut c_void, pinceau: *mut c_void,
+                         x: f32, y: f32, largeur: f32, hauteur: f32) -> u32;
+    fn GdipCreatePath(mode: i32, chemin: *mut *mut c_void) -> u32;
+    fn GdipDeletePath(chemin: *mut c_void) -> u32;
+    fn GdipAddPathArc(chemin: *mut c_void, x: f32, y: f32, largeur: f32, hauteur: f32,
+                      debut: f32, balayage: f32) -> u32;
+    fn GdipAddPathLine(chemin: *mut c_void, x1: f32, y1: f32, x2: f32, y2: f32) -> u32;
+    fn GdipClosePathFigure(chemin: *mut c_void) -> u32;
+    fn GdipFillPath(graphique: *mut c_void, pinceau: *mut c_void, chemin: *mut c_void) -> u32;
+}
+
+/// `SmoothingModeAntiAlias` (4) : c'est lui qui anticrénèle les formes.
+const SMOOTHING_ANTIALIAS: i32 = 4;
+/// `FillModeAlternate` (0).
+const FILL_MODE_ALTERNATE: i32 = 0;
+
+/// Jeton GDI+ (0 tant que non initialisé).
+static mut JETON_GDIPLUS: usize = 0;
+
+/// Initialise GDI+ une seule fois.
+unsafe fn demarrer_gdiplus() {
+    if JETON_GDIPLUS != 0 {
+        return;
+    }
+    let entree = GdiplusStartupInput {
+        version: 1,
+        callback: std::ptr::null_mut(),
+        callback_data: std::ptr::null_mut(),
+        suppress_background_thread: 0,
+    };
+    let mut jeton = 0usize;
+    if GdiplusStartup(&mut jeton, &entree, std::ptr::null_mut()) == 0 {
+        JETON_GDIPLUS = jeton;
+    }
+}
+
+/// Exécute `f` sur un contexte GDI+ anticrénelé associé à `dc`.
+unsafe fn avec_gdiplus<F: FnOnce(*mut c_void)>(dc: HDC, f: F) {
+    demarrer_gdiplus();
+    if JETON_GDIPLUS == 0 {
+        return; // GDI+ indisponible : on ne dessine rien de plus
+    }
+    let mut g: *mut c_void = std::ptr::null_mut();
+    if GdipCreateFromHDC(dc as *mut c_void, &mut g) != 0 || g.is_null() {
+        return;
+    }
+    GdipSetSmoothingMode(g, SMOOTHING_ANTIALIAS);
+    f(g);
+    GdipDeleteGraphics(g);
+}
+
+/// Cercle plein ANTIALIASÉ (pastilles des étapes, voyant de la barre d'état).
+unsafe fn cercle_lisse(dc: HDC, cx: i32, cy: i32, rayon: f32, couleur: u32) -> bool {
+    demarrer_gdiplus();
+    if JETON_GDIPLUS == 0 {
+        return false;
+    }
+    let mut fait = false;
+    avec_gdiplus(dc, |g| {
+        let mut pinceau: *mut c_void = std::ptr::null_mut();
+        // ARGB : opaque (0xFF) + couleur RVB (COLORREF est déjà BGR).
+        let argb = 0xFF00_0000u32 | (couleur & 0x00FF_FFFF);
+        if GdipCreateSolidFill(argb, &mut pinceau) == 0 && !pinceau.is_null() {
+            let x = cx as f32 - rayon;
+            let y = cy as f32 - rayon;
+            if GdipFillEllipse(g, pinceau, x, y, rayon * 2.0, rayon * 2.0) == 0 {
+                fait = true;
+            }
+            GdipDeleteBrush(pinceau);
+        }
+    });
+    fait
+}
+
 #[repr(C)]
 struct RECT { left: i32, top: i32, right: i32, bottom: i32 }
 
@@ -345,6 +444,30 @@ unsafe fn ressource(nom: u16, type_: u16) -> Option<&'static [u8]> {
 /// C'est ce qui fait de `Rose-win-Setup.exe` un installeur « un seul
 /// fichier ». Sans cette ressource, `source_moteur()` ne trouvait rien et
 /// l'installeur se copiait lui-même sous `rose.exe` — boucle de lancement.
+/// Extrait une ressource `RT_RCDATA` dans `%TEMP%\rose-setup-payload\` et
+/// rend son chemin.
+///
+/// `nom_fichier` = nom que portera le fichier temporaire (sans importance,
+/// `installer` le renomme à la copie).
+#[cfg(windows)]
+fn extraire_rcdata(id: u16, nom_fichier: &str) -> Option<std::path::PathBuf> {
+    let octets = unsafe { ressource(id, 10) }?; // RT_RCDATA = 10
+    if octets.len() < 64 {
+        return None;
+    }
+    let dossier = std::env::temp_dir().join("rose-setup-payload");
+    let _ = std::fs::create_dir_all(&dossier);
+    let chemin = dossier.join(format!("{}-{nom_fichier}", std::process::id()));
+    std::fs::write(&chemin, octets).ok()?;
+    Some(chemin)
+}
+
+#[cfg(not(windows))]
+fn extraire_rcdata(_id: u16, _nom_fichier: &str) -> Option<std::path::PathBuf> {
+    None
+}
+
+/// Moteur embarqué (`RT_RCDATA 3`), validé comme application CONSOLE.
 #[cfg(windows)]
 pub fn moteur_embarque() -> Option<std::path::PathBuf> {
     let octets = unsafe { ressource(3, 10) }?; // RT_RCDATA = 10
@@ -377,6 +500,25 @@ pub fn moteur_embarque() -> Option<std::path::PathBuf> {
 #[cfg(not(windows))]
 pub fn moteur_embarque() -> Option<std::path::PathBuf> {
     None
+}
+
+/// Fichiers compagnons embarqués : (id RT_RCDATA, nom final dans `bin\`).
+///
+/// ⚠ Ils étaient copiés depuis le dossier de la SOURCE — or la source est le
+/// moteur extrait dans `%TEMP%`, qui ne contient que `rose.exe`. Mesuré :
+/// l'installation ne posait QUE `rose.exe`, sans helper AOT, sans shell, sans
+/// icône de fichier.
+pub const COMPAGNONS: [(u16, &str); 4] = [
+    (4, "rose-aot.exe"),
+    (5, "rose-shell.exe"),
+    (6, "rose.ico"),
+    (7, "rose_app.ico"),
+];
+
+/// Extrait un compagnon embarqué (`None` s'il n'est pas dans les ressources).
+pub fn compagnon_embarque(id: u16, nom: &str) -> Option<std::path::PathBuf> {
+    let p = extraire_rcdata(id, nom)?;
+    if p.is_file() { Some(p) } else { None }
 }
 
 /// Charge la police Kare embarquée dans la session GDI du processus.
@@ -556,14 +698,13 @@ unsafe fn remplir(dc: HDC, r: &RECT, couleur: u32) {
 }
 
 unsafe fn arrondi(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
-    // ⚠ `RoundRect` remplit avec le pinceau sélectionné ET dessine son
-    // contour avec le STYLO sélectionné — qui, s'il n'est pas changé, est le
-    // stylo noir par défaut. Surtout : si `CreateSolidBrush` échoue ou si le
-    // DC garde un pinceau blanc par défaut, la forme sort BLANCHE (mesuré :
-    // les boutons secondaires et les badges du panneau latéral apparaissaient
-    // en blanc sur fond noir).
-    // On fixe donc explicitement le pinceau ET on remplit d'abord la zone,
-    // puis on trace le contour arrondi avec un stylo de la même couleur.
+    // Tracé ANTIALIASÉ (GDI+) : les coins arrondis des boutons et des cartes
+    // sortaient crénelés en GDI pur (`RoundRect`).
+    if arrondi_lisse(dc, r, rayon as f32, couleur) {
+        return;
+    }
+    // Repli GDI : on fixe pinceau ET stylo (sinon le contour sort noir, et un
+    // pinceau par défaut blanc rendrait la forme entièrement blanche).
     let pinceau = CreateSolidBrush(couleur);
     let stylo = CreatePen(0, 1, couleur);
     let ancien_pinceau = SelectObject(dc, pinceau as *mut c_void);
@@ -573,6 +714,41 @@ unsafe fn arrondi(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
     SelectObject(dc, ancien_pinceau);
     DeleteObject(stylo as *mut c_void);
     DeleteObject(pinceau as *mut c_void);
+}
+
+/// Rectangle à coins arrondis ANTIALIASÉ, construit comme un chemin GDI+
+/// (4 arcs + 4 segments). Rend `false` si GDI+ n'est pas disponible.
+unsafe fn arrondi_lisse(dc: HDC, r: &RECT, rayon: f32, couleur: u32) -> bool {
+    demarrer_gdiplus();
+    if JETON_GDIPLUS == 0 {
+        return false;
+    }
+    let mut fait = false;
+    avec_gdiplus(dc, |g| {
+        let mut chemin: *mut c_void = std::ptr::null_mut();
+        if GdipCreatePath(FILL_MODE_ALTERNATE, &mut chemin) != 0 || chemin.is_null() {
+            return;
+        }
+        let (x0, y0) = (r.left as f32, r.top as f32);
+        let (x1, y1) = (r.right as f32, r.bottom as f32);
+        let d = rayon * 2.0;
+        // Les arcs GDI+ vont dans le sens horaire, en degrés.
+        GdipAddPathArc(chemin, x0, y0, d, d, 180.0, 90.0);
+        GdipAddPathArc(chemin, x1 - d, y0, d, d, 270.0, 90.0);
+        GdipAddPathArc(chemin, x1 - d, y1 - d, d, d, 0.0, 90.0);
+        GdipAddPathArc(chemin, x0, y1 - d, d, d, 90.0, 90.0);
+        GdipClosePathFigure(chemin);
+        let mut pinceau: *mut c_void = std::ptr::null_mut();
+        let argb = 0xFF00_0000u32 | (couleur & 0x00FF_FFFF);
+        if GdipCreateSolidFill(argb, &mut pinceau) == 0 && !pinceau.is_null() {
+            if GdipFillPath(g, pinceau, chemin) == 0 {
+                fait = true;
+            }
+            GdipDeleteBrush(pinceau);
+        }
+        GdipDeletePath(chemin);
+    });
+    fait
 }
 
 /// Bordure arrondie fine (1 px) : un vrai contour, pas un aplat.
@@ -596,10 +772,21 @@ unsafe fn contour(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
 }
 
 unsafe fn cercle(dc: HDC, cx: i32, cy: i32, rayon: i32, couleur: u32) {
+    // Tracé ANTIALIASÉ via GDI+ (voir `cercle_lisse`). GDI pur produisait un
+    // bord crénelé, d'où l'aspect pixelisé des pastilles des étapes.
+    if cercle_lisse(dc, cx, cy, rayon as f32, couleur) {
+        return;
+    }
+    // Repli GDI si GDI+ n'est pas disponible : on fixe pinceau ET stylo,
+    // sinon le contour sort noir et encore plus crénelé.
     let b = CreateSolidBrush(couleur);
-    let ancien = SelectObject(dc, b as *mut c_void);
+    let stylo = CreatePen(0, 1, couleur);
+    let ancien_b = SelectObject(dc, b as *mut c_void);
+    let ancien_s = SelectObject(dc, stylo as *mut c_void);
     Ellipse(dc, cx - rayon, cy - rayon, cx + rayon, cy + rayon);
-    SelectObject(dc, ancien);
+    SelectObject(dc, ancien_s);
+    SelectObject(dc, ancien_b);
+    DeleteObject(stylo as *mut c_void);
     DeleteObject(b as *mut c_void);
 }
 

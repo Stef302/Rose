@@ -261,48 +261,64 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
             return j;
         }
     }
-    // icônes à côté du binaire source
-    if let Some(parent) = source.parent() {
-        for (src, dst) in [("rose.ico", "rose.ico"), ("setup.ico", "rose_app.ico")] {
-            let p = parent.join(src);
-            if p.exists() {
-                let _ = std::fs::copy(&p, bindir.join(dst));
-                j.push(format!("✓ {}", dst));
+    // ── Fichiers compagnons : helper AOT, shell, icônes ────────────────
+    //
+    // ⚠ Deux sources possibles, dans cet ordre :
+    //   1. le dossier du binaire source (distribution Velopack) ;
+    //   2. les ressources EMBARQUÉES de l'installeur (`RT_RCDATA 4..7`).
+    //
+    // La version précédente ne regardait QUE le dossier de la source. Or,
+    // pour l'installeur « un seul fichier », la source est le moteur extrait
+    // dans `%TEMP%\rose-setup-payload\` : il n'y contient que `rose.exe`.
+    // Résultat mesuré : l'installation ne posait QUE `rose.exe` — pas de
+    // `rose-aot.exe`, pas de `rose-shell.exe`, pas d'icône `.rose`.
+    //
+    // `nom_src` = nom dans le dossier source ; `nom_dst` = nom final.
+    // Les noms diffèrent hors Windows (`rose-aot` vs `rose-aot.exe`).
+    let compagnons: [(Option<&str>, &str, u16); 4] = [
+        (Some(if cfg!(windows) { "rose-aot.exe" } else { "rose-aot" }),
+         if cfg!(windows) { "rose-aot.exe" } else { "rose-aot" }, 4),
+        (Some(if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }),
+         if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }, 5),
+        (Some("rose.ico"), "rose.ico", 6),
+        (Some("setup.ico"), "rose_app.ico", 7),
+    ];
+
+    for (nom_src, nom_dst, res_id) in compagnons {
+        // `res_id` ne sert que sous Windows (ressource embarquée).
+        #[cfg(not(windows))]
+        let _ = res_id;
+        let depuis_dossier = nom_src
+            .and_then(|n| source.parent().map(|d| d.join(n)))
+            .filter(|p| p.is_file());
+        let chemin = match depuis_dossier {
+            Some(p) => Some(p),
+            None => {
+                // Ressource embarquée (Windows uniquement).
+                #[cfg(windows)]
+                { crate::setup_gui::compagnon_embarque(res_id, nom_dst) }
+                #[cfg(not(windows))]
+                { None }
             }
-        }
-        // helper AOT : « rose-aot.exe » sur Windows, « rose-aot » ailleurs.
-        // Sans lui, `rose orc` / `rose llvm` doivent télécharger la chaîne.
-        let (nom_aot_src, nom_aot_dst) = if cfg!(windows) {
-            ("rose-aot.exe", "rose-aot.exe")
-        } else {
-            ("rose-aot", "rose-aot")
         };
-        let aot = parent.join(nom_aot_src);
-        if aot.exists() {
-            let _ = std::fs::copy(&aot, bindir.join(nom_aot_dst));
+        let Some(src) = chemin else {
+            j.push(format!("· {nom_dst} absent"));
+            continue;
+        };
+        let dst = bindir.join(nom_dst);
+        if std::fs::copy(&src, &dst).is_ok() {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(bindir.join(nom_aot_dst), std::fs::Permissions::from_mode(0o755));
+                let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
             }
-            j.push(format!("✓ {nom_aot_dst}"));
-        }
-        // Console interactive autonome : « rose-shell.exe » / « rose-shell ».
-        // Installée à côté du moteur pour être lancée comme un shell.
-        let (nom_shell_src, nom_shell_dst) = if cfg!(windows) {
-            ("rose-shell.exe", "rose-shell.exe")
+            j.push(format!("✓ {nom_dst}"));
         } else {
-            ("rose-shell", "rose-shell")
-        };
-        let shell = parent.join(nom_shell_src);
-        if shell.exists() {
-            let _ = std::fs::copy(&shell, bindir.join(nom_shell_dst));
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(bindir.join(nom_shell_dst), std::fs::Permissions::from_mode(0o755));
-            }
-            j.push(format!("✓ {nom_shell_dst}"));
+            j.push(format!("Échec : copie de {nom_dst} impossible"));
+        }
+        // Nettoyage du temporaire extrait.
+        if src.to_string_lossy().contains("rose-setup-payload") {
+            let _ = std::fs::remove_file(&src);
         }
     }
     j.push(format!("✓ {}", enregistrer(prefixe, &bindir)));
@@ -399,6 +415,21 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve", "/t", "REG_SZ",
                    "/d", &format!("\"{}\\rose.exe\" \"%1\"", bindir.display()), "/f"]).status();
+        // ⚠ Notifier l'Explorateur : sans cela il garde l'icône générique en
+        // cache et les `.rose` n'affichent la rose qu'après redémarrage de la
+        // session. `SHChangeNotify(SHCNE_ASSOCCHANGED, ...)` force la
+        // relecture des associations et des icônes.
+        #[cfg(windows)]
+        unsafe {
+            use std::ffi::c_void;
+            #[link(name = "shell32")]
+            unsafe extern "system" {
+                fn SHChangeNotify(evenement: i32, drapeaux: u32, item1: *const c_void, item2: *const c_void);
+            }
+            const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
+            const SHCNF_IDLIST: u32 = 0x0000;
+            SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, std::ptr::null(), std::ptr::null());
+        }
         // ── Profil Windows Terminal ──────────────────────────────────────
         // Windows Terminal lit tous les `*.json` de son dossier
         // « Fragments » (un fichier = un profil, fusionné automatiquement) :
@@ -939,6 +970,27 @@ mod tests {
             assert!(j.iter().all(|l| !l.starts_with("Échec")), "{j:?}");
         }
         let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn installation_pose_les_compagnons() {
+        // Vérifie que les compagnons présents À CÔTÉ de la source sont
+        // copiés : c'est ce qui manquait (seul `rose.exe` était posé).
+        let tmp = std::env::temp_dir().join("rose-test-compagnons");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let src_dir = std::env::temp_dir().join("rose-test-src-compagnons");
+        let _ = std::fs::remove_dir_all(&src_dir);
+        let _ = std::fs::create_dir_all(&src_dir);
+        let nom = if cfg!(windows) { "rose.exe" } else { "rose" };
+        let _ = std::fs::write(src_dir.join(nom), b"#!fake\n");
+        let _ = std::fs::write(src_dir.join("rose.ico"), b"\x00\x00\x01\x00ICO");
+        let j = installer(tmp.to_str().unwrap(), Some(&src_dir.join(nom)));
+        if !cfg!(windows) {
+            assert!(tmp.join("bin").join("rose.ico").is_file(),
+                    "rose.ico non posé : {j:?}");
+        }
+        let _ = std::fs::remove_dir_all(&src_dir);
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

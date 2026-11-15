@@ -33,6 +33,10 @@ fn main() {
         println!("cargo:rustc-link-arg=/WHOLEARCHIVE:windows_compat.lib");
         println!("cargo:rustc-link-arg=-Wl,--export-all-symbols");
         println!("cargo:rustc-link-lib=dylib=advapi32");
+        // GDI+ : tracé ANTIALIASÉ des cercles et des coins arrondis de
+        // l'installeur (GDI pur ne sait pas anticréneler, d'où l'aspect
+        // pixelisé des pastilles d'étapes). Seul `rose-setup` s'en sert.
+        println!("cargo:rustc-link-lib=dylib=gdiplus");
         // Le fichier .def exporte les helpers du JIT (rose_affiche_*,
         // rose_powf) : ils n'existent QUE dans le binaire « rose » (qui
         // inclut le module jit), PAS dans « rose-aot » (qui embarque ses

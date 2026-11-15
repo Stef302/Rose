@@ -246,6 +246,23 @@ def main():
         "il provoquerait une boucle de lancement")
     print(f"  moteur embarqué : {len(moteur)} o (PE console)")
 
+    # Fichiers compagnons : sans eux, l'installation ne pose QUE rose.exe
+    # (mesuré : ni helper AOT, ni shell, ni icône de fichier .rose).
+    for res_id, nom, min_taille in [
+        (4, "rose-aot.exe", 100_000),
+        (5, "rose-shell.exe", 100_000),
+        (6, "rose.ico", 10_000),
+        (7, "rose_app.ico", 10_000),
+    ]:
+        blob = ressources.get((RT_RCDATA, res_id))
+        assert blob is not None, f"compagnon {nom} absent (RT_RCDATA {res_id})"
+        assert len(blob) > min_taille, f"compagnon {nom} suspect : {len(blob)} o"
+        if nom.endswith(".exe"):
+            assert blob[:2] == b"MZ", f"compagnon {nom} n'est pas un PE"
+        else:
+            assert blob[:4] == b"\x00\x00\x01\x00", f"compagnon {nom} n'est pas un ICO"
+        print(f"  {nom:<16} {len(blob):>8} o")
+
     print("RESSOURCES VALIDES")
 
 
