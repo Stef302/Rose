@@ -64,7 +64,7 @@ fn main() {
                 // Un SEUL fichier de ressources par exécutable : l'installeur
                 // reçoit le sien (rose-setup.res, icônes multi-tailles + rose
                 // + police Kare) ; les autres reçoivent rose.rc (icône).
-                for bin in ["rose", "rose-aot"] {
+                for bin in ["rose", "rose-aot", "rose-shell"] {
                     println!("cargo:rustc-link-arg-bin={bin}=rose.res");
                 }
             }

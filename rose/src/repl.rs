@@ -121,7 +121,16 @@ pub fn preparer_console() {
     // ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_OUTPUT |
     // ENABLE_VIRTUAL_TERMINAL_PROCESSING
     const MODE_SORTIE: u32 = 0x0001 | 0x0002 | 0x0004;
+    unsafe extern "system" {
+        fn SetConsoleTitleW(titre: *const u16) -> i32;
+    }
     unsafe {
+        // Titre de la fenêtre : « Rose 0.1.5 ». C'est ce qui identifie l'onglet
+        // dans Windows Terminal et l'entrée dans la barre des tâches ; sans
+        // cela la fenêtre s'appelle « rose-shell.exe ».
+        let titre: Vec<u16> = format!("Rose {} — console interactive", env!("CARGO_PKG_VERSION"))
+            .encode_utf16().chain(std::iter::once(0)).collect();
+        SetConsoleTitleW(titre.as_ptr());
         // 65001 = UTF-8 : accents, π, √, ≈ et les flèches s'affichent juste.
         SetConsoleOutputCP(65001);
         SetConsoleCP(65001);
@@ -253,11 +262,41 @@ fn aide(c: &Couleur) {
     println!("{} et {} rappellent l'historique, {} complète.", c.doux("↑"), c.doux("↓"), c.doux("Tab"));
 }
 
-/// Bannière d'accueil.
+/// Bannière d'accueil : la marque Rose, la version, et l'essentiel.
 fn banniere(c: &Couleur) {
     let version = env!("CARGO_PKG_VERSION");
-    println!("{}", c.titre(&format!("Rose {version} — console interactive")));
+    // Une rose dessinée en ASCII, comme signature visuelle du shell.
+    // Le remplissage se fait en NOMBRE DE CARACTÈRES (pas en octets), sinon
+    // la bordure du cadre se décale.
+    let rose = [
+        "   ,-.   ",
+        "  /   \\  ",
+        " |  .  | ",
+        "  \\   /  ",
+        "   `-|   ",
+        "     |   ",
+        "    _|_  ",
+    ];
+    let interieur = 44;
+    let centrer = |s: &str| -> String {
+        let n = s.chars().count();
+        if n >= interieur { s.to_string() }
+        else {
+            let gauche = (interieur - n) / 2;
+            format!("{}{}{}", " ".repeat(gauche), s, " ".repeat(interieur - n - gauche))
+        }
+    };
+    let ligne = |contenu: &str| -> String {
+        format!("│{}│", c.titre(&centrer(contenu)))
+    };
+    println!("{}", c.titre(&format!("╭{}╮", "─".repeat(interieur))));
+    for l in rose { println!("{}", ligne(l)); }
+    println!("{}", ligne(""));
+    println!("{}", ligne(&format!("Rose {version}")));
+    println!("{}", ligne("console interactive"));
+    println!("{}", c.titre(&format!("╰{}╯", "─".repeat(interieur))));
     println!("{}", c.doux("Tapez du code Rose. :help pour l'aide, :quit pour sortir."));
+    println!("{}", c.doux("↑/↓ historique · Tab complète · Ctrl-C annule · Ctrl-L efface"));
 }
 
 // ── exécution dans un fil à grande pile ───────────────────────────────────
@@ -333,29 +372,47 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
         println!("{}", couleur.doux(&format!("({} ligne(s) chargée(s))", buffer.len())));
     }
 
-    let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
     let mut historique = Historique::default();
     let mut code_sortie = 0;
+    // Un double-clic sur `rose-shell.exe` ouvre une console Windows qui se
+    // ferme aussitôt le programme terminé : on retient la fenêtre à la fin
+    // quand l'entrée n'est pas un terminal (redirection) ou quand le
+    // lanceur est une console « neuve » (cas du double-clic).
+    let fenetre_ephemere = console_ephemere();
 
     loop {
-        print!("{}", couleur.prompt("rose> "));
-        let _ = io::stdout().flush();
-
         // Lecture d'une entrée, avec continuation tant que les délimiteurs
-        // ne sont pas refermés.
+        // ne sont pas refermés. En terminal, on utilise l'éditeur de ligne
+        // (flèches, Tab, Home/End, Ctrl-C, Ctrl-L) ; sinon on lit stdin
+        // ligne par ligne (pipe, fichier).
         let mut entree = String::new();
         let mut premiere = true;
         loop {
-            match lines.next() {
-                None => {
+            let invite = if premiere { couleur.prompt("rose> ") } else { couleur.continuation("...> ") };
+            match lire_ligne(&invite, &historique, premiere) {
+                Entree::Fin => {
                     if entree.trim().is_empty() {
                         println!();
+                        if fenetre_ephemere { attendre_fermeture(); }
                         return code_sortie;
                     }
                     break;
                 }
-                Some(Ok(l)) => {
+                Entree::Interrompue => {
+                    // Ctrl-C : on annule la saisie en cours, comme un shell.
+                    println!("{}", couleur.doux("^C"));
+                    entree.clear();
+                    premiere = true;
+                    if premiere { break; }
+                }
+                Entree::Effacer => {
+                    // Ctrl-L : écran nettoyé, la saisie est relancée.
+                    print!("\x1b[2J\x1b[H");
+                    entree.clear();
+                    premiere = true;
+                    continue;
+                }
+                Entree::Ligne(l) => {
                     if premiere {
                         entree.push_str(&l);
                         premiere = false;
@@ -364,15 +421,12 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
                         entree.push_str(&l);
                     }
                     if braces_balanced(&entree) { break; }
-                    print!("{}", couleur.continuation("...> "));
-                    let _ = io::stdout().flush();
                 }
-                Some(Err(_)) => return code_sortie,
             }
         }
+        if entree.trim().is_empty() { continue; }
 
         let trimmed = entree.trim().to_string();
-        if trimmed.is_empty() { continue; }
         historique.ajouter(&trimmed);
 
         // ── commandes ──
@@ -382,7 +436,10 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
                 None => (trimmed.as_str(), ""),
             };
             match cmd {
-                ":quit" | ":q" | ":exit" => return code_sortie,
+                ":quit" | ":q" | ":exit" => {
+                    if fenetre_ephemere { attendre_fermeture(); }
+                    return code_sortie;
+                }
                 ":reset" => {
                     buffer.clear();
                     println!("{}", couleur.info("(buffer vidé)"));
@@ -476,6 +533,359 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
     }
 }
 
+/// Ce que rend la lecture d'une ligne.
+enum Entree {
+    /// La ligne saisie (sans le saut de ligne).
+    Ligne(String),
+    /// Fin de flux (Ctrl-Z / EOF) : l'appelant termine la console.
+    Fin,
+    /// Ctrl-C : la saisie est annulée.
+    Interrompue,
+    /// Ctrl-L : l'écran est nettoyé.
+    Effacer,
+}
+
+/// Lit une ligne avec édition : flèches gauche/droite, Home/End, Retour
+/// arrière, Suppr, ↑/↓ pour l'historique, Tab pour compléter, Ctrl-C pour
+/// annuler, Ctrl-L pour nettoyer.
+///
+/// Sur Windows on lit la console en mode brut (`ReadConsoleInputW`) : c'est le
+/// seul moyen d'obtenir les flèches sans dépendance externe, et cela
+/// fonctionne identiquement dans Windows Terminal, conhost, PowerShell et
+/// cmd. Ailleurs (ou quand l'entrée n'est pas un terminal), on lit stdin
+/// ligne par ligne.
+fn lire_ligne(invite: &str, historique: &Historique, premiere: bool) -> Entree {
+    #[cfg(windows)]
+    {
+        return unsafe { lire_ligne_win32(invite, historique, premiere) };
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (historique, premiere);
+        return lire_ligne_simple(invite);
+    }
+}
+
+/// Lecture simple (pipe, fichier, Linux/macOS sans édition de ligne).
+#[cfg(not(windows))]
+fn lire_ligne_simple(invite: &str) -> Entree {
+    print!("{invite}");
+    let _ = io::stdout().flush();
+    let mut l = String::new();
+    match io::stdin().read_line(&mut l) {
+        Ok(0) => Entree::Fin,
+        Ok(_) => {
+            if l.ends_with('\n') { l.pop(); }
+            if l.ends_with('\r') { l.pop(); }
+            Entree::Ligne(l)
+        }
+        Err(_) => Entree::Fin,
+    }
+}
+
+#[cfg(windows)]
+unsafe fn lire_ligne_win32(invite: &str, historique: &Historique, premiere: bool) -> Entree {
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct Coord { x: i16, y: i16 }
+    #[repr(C)]
+    struct PetiteRect { gauche: i16, haut: i16, droite: i16, bas: i16 }
+    #[repr(C)]
+    struct Csbi { taille: Coord, curseur: Coord, attributs: u16, fenetre: PetiteRect,
+                  max_fenetre: Coord }
+    #[repr(C)]
+    struct Cle {
+        evenement: u16,
+        _alignement: u16,
+        code: u16,
+        etat: u32,
+        // union : on ne lit que le premier mot du scan code pour les
+        // touches étendues, et le caractère Unicode pour les frappes.
+        donnees: u32,
+    }
+    #[repr(C)]
+    struct InputRecord { evenement: u16, _pad: u16, cle: Cle }
+
+    unsafe extern "system" {
+        fn GetStdHandle(n: u32) -> *mut c_void;
+        fn GetConsoleMode(h: *mut c_void, m: *mut u32) -> i32;
+        fn SetConsoleMode(h: *mut c_void, m: u32) -> i32;
+        fn ReadConsoleInputW(h: *mut c_void, buf: *mut InputRecord, n: u32, lu: *mut u32) -> i32;
+        fn GetConsoleScreenBufferInfo(h: *mut c_void, info: *mut Csbi) -> i32;
+        fn SetConsoleCursorPosition(h: *mut c_void, p: Coord) -> i32;
+        fn WriteConsoleW(h: *mut c_void, s: *const u16, n: u32, ecrit: *mut u32, r: *mut c_void) -> i32;
+    }
+
+    const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+    const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
+    const ENABLE_LINE_INPUT: u32 = 0x0002;
+    const ENABLE_ECHO_INPUT: u32 = 0x0004;
+    const ENABLE_WINDOW_INPUT: u32 = 0x0008;
+    const ENABLE_MOUSE_INPUT: u32 = 0x0010;
+    const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+    const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+    const KEY_EVENT: u16 = 0x0001;
+    const VK_BACK: u16 = 0x08;
+    const VK_TAB: u16 = 0x09;
+    const VK_RETURN: u16 = 0x0D;
+    const VK_ESCAPE: u16 = 0x1B;
+    const VK_PRIOR: u16 = 0x21;
+    const VK_NEXT: u16 = 0x22;
+    const VK_END: u16 = 0x23;
+    const VK_HOME: u16 = 0x24;
+    const VK_LEFT: u16 = 0x25;
+    const VK_UP: u16 = 0x26;
+    const VK_RIGHT: u16 = 0x27;
+    const VK_DOWN: u16 = 0x28;
+    const VK_DELETE: u16 = 0x2E;
+    const VK_C: u16 = 0x43;
+    const VK_L: u16 = 0x4C;
+    const VK_Z: u16 = 0x5A;
+    const LEFT_ALT_PRESSED: u32 = 0x0002;
+    const LEFT_CTRL_PRESSED: u32 = 0x0008;
+
+    unsafe fn ecrire(s: &str) {
+        let h = GetStdHandle(STD_OUTPUT_HANDLE);
+        let v: Vec<u16> = s.encode_utf16().collect();
+        let mut n = 0u32;
+        WriteConsoleW(h, v.as_ptr(), v.len() as u32, &mut n, std::ptr::null_mut());
+    }
+
+    unsafe fn largeur() -> i16 {
+        let h = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut info: Csbi = std::mem::zeroed();
+        if GetConsoleScreenBufferInfo(h, &mut info) != 0 { info.taille.x } else { 80 }
+    }
+
+    /// Redessine la ligne à partir de la colonne 0 de la ligne courante.
+    unsafe fn redessiner(invite: &str, texte: &str, curseur: usize) {
+        let h = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut info: Csbi = std::mem::zeroed();
+        if GetConsoleScreenBufferInfo(h, &mut info) == 0 { return; }
+        let ligne = info.curseur.y;
+        SetConsoleCursorPosition(h, Coord { x: 0, y: ligne });
+        ecrire(invite);
+        ecrire(texte);
+        // Efface la fin de la ligne (résidu d'une saisie précédente plus longue).
+        let largeur_buf = info.taille.x as usize;
+        let occupe = invite.chars().count() + texte.chars().count();
+        if occupe < largeur_buf {
+            ecrire(&" ".repeat(largeur_buf - occupe));
+        }
+        let colonne = (invite.chars().count() + curseur) as i16;
+        SetConsoleCursorPosition(h, Coord { x: colonne.min(info.taille.x - 1), y: ligne });
+    }
+
+    let entree = GetStdHandle(STD_INPUT_HANDLE);
+    let sortie = GetStdHandle(STD_OUTPUT_HANDLE);
+    let mut ancien = 0u32;
+    let brut = GetConsoleMode(entree, &mut ancien) != 0;
+    if brut {
+        // Mode brut : pas de saisie ligne ni d'écho, mais on GARDE
+        // ENABLE_PROCESSED_INPUT pour recevoir Ctrl-C, et on désactive la
+        // sélection souris qui volerait les touches.
+        let mode = (ancien
+            & !(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT | ENABLE_QUICK_EDIT_MODE))
+            | ENABLE_EXTENDED_FLAGS
+            | ENABLE_WINDOW_INPUT
+            | ENABLE_PROCESSED_INPUT;
+        SetConsoleMode(entree, mode);
+    }
+
+    let mut texte: Vec<char> = Vec::new();
+    let mut curseur = 0usize;
+    // Position dans l'historique : == entrees.len() quand on édite une
+    // nouvelle ligne.
+    let mut pos_hist = historique.entrees.len();
+    let mut brouillon = String::new();
+    redessiner(invite, "", 0);
+
+    let resultat = loop {
+        let mut rec: InputRecord = std::mem::zeroed();
+        let mut lu = 0u32;
+        if ReadConsoleInputW(entree, &mut rec, 1, &mut lu) == 0 || lu == 0 {
+            break Entree::Fin;
+        }
+        if rec.evenement != KEY_EVENT { continue; }
+        // On ne traite que les appuis (pas les relâchements).
+        let appui = (rec.cle.etat & 0x0001) != 0;
+        if !appui { continue; }
+        let ctrl = (rec.cle.etat & LEFT_CTRL_PRESSED) != 0;
+        let alt = (rec.cle.etat & LEFT_ALT_PRESSED) != 0;
+        let code = rec.cle.code;
+        let u = rec.cle.donnees & 0xFFFF;
+
+        match code {
+            VK_RETURN => {
+                ecrire("\r\n");
+                break Entree::Ligne(texte.iter().collect());
+            }
+            VK_BACK => {
+                if curseur > 0 {
+                    curseur -= 1;
+                    texte.remove(curseur);
+                    redessiner(invite, &texte.iter().collect::<String>(), curseur);
+                }
+                continue;
+            }
+            VK_DELETE => {
+                if curseur < texte.len() {
+                    texte.remove(curseur);
+                    redessiner(invite, &texte.iter().collect::<String>(), curseur);
+                }
+                continue;
+            }
+            VK_LEFT => { if curseur > 0 { curseur -= 1; } redessiner(invite, &texte.iter().collect::<String>(), curseur); continue; }
+            VK_RIGHT => { if curseur < texte.len() { curseur += 1; } redessiner(invite, &texte.iter().collect::<String>(), curseur); continue; }
+            VK_HOME => { curseur = 0; redessiner(invite, &texte.iter().collect::<String>(), curseur); continue; }
+            VK_END => { curseur = texte.len(); redessiner(invite, &texte.iter().collect::<String>(), curseur); continue; }
+            VK_UP => {
+                if pos_hist > 0 {
+                    if pos_hist == historique.entrees.len() {
+                        brouillon = texte.iter().collect();
+                    }
+                    pos_hist -= 1;
+                    texte = historique.entrees[pos_hist].chars().collect();
+                    curseur = texte.len();
+                    redessiner(invite, &texte.iter().collect::<String>(), curseur);
+                }
+                continue;
+            }
+            VK_DOWN => {
+                if pos_hist < historique.entrees.len() {
+                    pos_hist += 1;
+                    texte = if pos_hist == historique.entrees.len() {
+                        brouillon.chars().collect()
+                    } else {
+                        historique.entrees[pos_hist].chars().collect()
+                    };
+                    curseur = texte.len();
+                    redessiner(invite, &texte.iter().collect::<String>(), curseur);
+                }
+                continue;
+            }
+            VK_PRIOR | VK_NEXT => continue, // Page Up/Down : ignorées
+            VK_TAB => {
+                let prefixe: String = texte.iter().collect();
+                let debut_mot = prefixe[..curseur].rfind(|c: char| c.is_whitespace()).map(|i| i + 1).unwrap_or(0);
+                let mot = &prefixe[debut_mot..curseur];
+                if let Some(complet) = completer(mot) {
+                    let suite: String = complet.chars().skip(mot.chars().count()).collect();
+                    for c in suite.chars() {
+                        texte.insert(curseur, c);
+                        curseur += 1;
+                    }
+                    redessiner(invite, &texte.iter().collect::<String>(), curseur);
+                }
+                continue;
+            }
+            VK_ESCAPE => {
+                // Échap : ligne effacée (comportement des REPL).
+                texte.clear();
+                curseur = 0;
+                pos_hist = historique.entrees.len();
+                redessiner(invite, "", 0);
+                continue;
+            }
+            VK_C if ctrl => {
+                ecrire("^C\r\n");
+                break Entree::Interrompue;
+            }
+            VK_L if ctrl => {
+                ecrire("\x1b[2J\x1b[H");
+                break Entree::Effacer;
+            }
+            VK_Z if ctrl => {
+                ecrire("^Z\r\n");
+                break Entree::Fin;
+            }
+            _ => {}
+        }
+        // Caractère imprimable (y compris les accents : Unicode complet).
+        if !alt && !ctrl {
+            if let Some(ch) = char::from_u32(u as u32) {
+                if !ch.is_control() && ch != '\0' {
+                    texte.insert(curseur, ch);
+                    curseur += 1;
+                    redessiner(invite, &texte.iter().collect::<String>(), curseur);
+                }
+            }
+        }
+    };
+
+    if brut { SetConsoleMode(entree, ancien); }
+    let _ = (sortie, premiere, largeur());
+    resultat
+}
+
+/// Vrai quand la console a été ouverte PAR le programme (double-clic sur
+/// l'exécutable), auquel cas la fermeture est immédiate et la fenêtre
+/// disparaît : il faut alors attendre une touche.
+///
+/// On ne peut pas le savoir directement ; on approche par deux signaux :
+/// - l'entrée n'est PAS un terminal (pipe / redirection) : pas de fenêtre ;
+/// - sous Windows, une console « fraîche » du double-clic n'a pas d'historique
+///   de commandes et son titre est vide au démarrage. On retient donc la
+///   fenêtre dans TOUS les cas où l'on n'est pas lancé depuis un shell déjà
+///   ouvert, ce que `ROSE_SHELL_PERSIST=0` permet de désactiver.
+fn console_ephemere() -> bool {
+    if std::env::var("ROSE_SHELL_PERSIST").ok().as_deref() == Some("0") { return false; }
+    if !est_terminal() { return false; }
+    #[cfg(windows)]
+    {
+        // Lancé depuis cmd/PowerShell/Windows Terminal : la console a déjà un
+        // titre (celui du terminal) ou une historique. Sinon, c'est un
+        // double-clic et la fenêtre doit rester ouverte.
+        use std::ffi::c_void;
+        #[repr(C)]
+        struct Coord { x: i16, y: i16 }
+        #[repr(C)]
+        struct PetiteRect { gauche: i16, haut: i16, droite: i16, bas: i16 }
+        #[repr(C)]
+        struct Csbi { taille: Coord, curseur: Coord, attributs: u16, fenetre: PetiteRect,
+                      max_fenetre: Coord }
+        unsafe extern "system" {
+            fn GetStdHandle(n: u32) -> *mut c_void;
+            fn GetConsoleScreenBufferInfo(h: *mut c_void, info: *mut Csbi) -> i32;
+            fn GetConsoleTitleW(buf: *mut u16, n: u32) -> u32;
+            fn GetConsoleProcessList(pid: *mut u32, n: u32) -> u32;
+        }
+        const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+        unsafe {
+            // Une console créée pour un seul processus n'héberge qu'un PID.
+            let mut pids = [0u32; 8];
+            let n = GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32);
+            if n <= 1 { return true; }
+            let mut titre = [0u16; 512];
+            let l = GetConsoleTitleW(titre.as_mut_ptr(), titre.len() as u32);
+            let t = String::from_utf16_lossy(&titre[..l as usize]);
+            // Windows Terminal / cmd / PowerShell posent un titre au terminal.
+            if !t.trim().is_empty() { return false; }
+            // Dernier recours : une historique de commandes existe dans une
+            // console déjà utilisée par le shell.
+            let mut info: Csbi = std::mem::zeroed();
+            let h = GetStdHandle(STD_OUTPUT_HANDLE);
+            if GetConsoleScreenBufferInfo(h, &mut info) == 0 { return true; }
+            false
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Attend une touche avant de rendre la main : empêche la fenêtre ouverte par
+/// un double-clic de se fermer avant qu'on ait pu lire le résultat.
+fn attendre_fermeture() {
+    print!("{}", "Appuyez sur Entrée pour fermer… ");
+    let _ = io::stdout().flush();
+    let mut poubelle = String::new();
+    let _ = io::stdin().read_line(&mut poubelle);
+}
+
 /// Point d'entrée commun aux deux binaires : interprète les arguments de
 /// `rose console` / `rose-shell`.
 ///
@@ -565,5 +975,49 @@ mod tests {
         let a = Couleur { actif: true };
         assert!(a.prompt("rose> ").starts_with("\x1b["));
         assert!(a.prompt("rose> ").ends_with("\x1b[0m"));
+    }
+}
+
+#[cfg(test)]
+mod tests_shell {
+    use super::*;
+
+    #[test]
+    fn banniere_aligne_par_caracteres() {
+        // La bordure du cadre doit faire exactement 46 caractères : 1 + 44 + 1.
+        let interieur = 44;
+        let centrer = |s: &str| -> String {
+            let n = s.chars().count();
+            if n >= interieur { s.to_string() }
+            else {
+                let g = (interieur - n) / 2;
+                format!("{}{}{}", " ".repeat(g), s, " ".repeat(interieur - n - g))
+            }
+        };
+        for s in ["", "Rose 0.1.5", "console interactive", "   ,-.   "] {
+            let c = centrer(s);
+            assert_eq!(c.chars().count(), interieur, "{s:?}");
+            assert!(c.trim_start().starts_with(s.trim_start()));
+        }
+    }
+
+    #[test]
+    fn completions_du_shell() {
+        assert_eq!(completer(":sa").as_deref(), Some(":save"));
+        assert_eq!(completer(":la").as_deref(), Some(":latex"));
+        assert_eq!(completer("nomb").as_deref(), Some("nombre_pi"));
+        assert_eq!(completer("view").as_deref(), Some("view"));
+    }
+
+    #[test]
+    fn historique_navigation() {
+        let mut h = Historique::default();
+        h.ajouter("1 + 2");
+        h.ajouter(">> 10!");
+        assert_eq!(h.entrees.len(), 2);
+        assert_eq!(h.entrees[0], "1 + 2");
+        assert_eq!(h.entrees[1], ">> 10!");
+        // la position est remise à la fin après chaque ajout
+        assert_eq!(h.position, 2);
     }
 }
