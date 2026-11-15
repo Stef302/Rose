@@ -309,11 +309,26 @@ def main():
             "logo borné dans sa boîte (hauteur <= cote)": "let mut dh = cote;",
             "logo centré verticalement": "let dy = y + (cote - dh) / 2;",
             "marge entre logo et titre": "let marge_marque = s(16);",
+            # ⚠ CLIGNOTEMENT AU SURVOL DES BOUTONS : `dessiner` doit copier
+            # SEULEMENT `ps.rcPaint`, pas tout le tampon.
+            "repeint limité à ps.rcPaint": "let mut zone = ps.rcPaint;",
+            "BitBlt borné à la zone invalidée": "BitBlt(dc_ecran, zone.left, zone.top,",
+            # ⚠ CS_HREDRAW|CS_VREDRAW invalidait toute la fenêtre au resize.
+            "pas de CS_HREDRAW/CS_VREDRAW": "style: 0,",
+            # ⚠ Netteté : sans HALFTONE, tout dessin mis à l'échelle est
+            # pixélisé (le mode par défaut COLORONCOLOR supprime des lignes).
+            "étirement HALFTONE (netteté)": "SetStretchBltMode(dc, HALFTONE);",
+            "SetBrushOrgEx après HALFTONE": "SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());",
+            # ⚠ Animation : le timer ne doit pas repeindre toute la fenêtre.
+            "timer de progression ciblé": "InvalidateRect(h, &piste, 0);",
+            "timer à 30 i/s (pas 62)": "SetTimer(h, TIMER_PROGRESSION, 33,",
+            # ⚠ Logo jamais agrandi au-delà du PNG natif.
+            "logo jamais agrandi (borne 343)": ".min(343);",
         }
         manquants = [nom for nom, motif in garde_fous.items() if motif not in source]
         assert not manquants, (
             "garde-fous du tracé absents de setup_gui.rs : " + ", ".join(manquants)
-            + " — la fenêtre peut s'ouvrir VIDE ou clignoter")
+            + " — la fenêtre peut s'ouvrir VIDE, clignoter ou être pixélisée")
         # Aucun appel direct de `dessiner` depuis `WM_PAINT` : il doit passer
         # par le `catch_unwind` du gestionnaire.
         assert "WM_PAINT => { dessiner(h); 0 }" not in source, (
@@ -322,6 +337,12 @@ def main():
         # ⚠ Le survol ne doit plus invalider TOUTE la fenêtre.
         assert "InvalidateRect(h, std::ptr::null(), 0);\n            }\n            SetCursor" not in source, (
             "WM_MOUSEMOVE invalide la fenêtre entière au survol : clignotement")
+        # ⚠ Aucune copie pleine fenêtre dans le tracé.
+        assert "BitBlt(dc_ecran, 0, 0, rc.right, rc.bottom" not in source, (
+            "le tracé copie TOUT le tampon à chaque repeint : clignotement au survol")
+        # ⚠ CS_HREDRAW/CS_VREDRAW sont interdits (invalidation globale au resize).
+        assert "const CS_HREDRAW" not in source, (
+            "CS_HREDRAW|CS_VREDRAW force un repeint complet à chaque resize : clignotement")
         print(f"  tracé : {len(garde_fous)} garde-fous présents")
 
     print("RESSOURCES VALIDES")

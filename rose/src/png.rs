@@ -115,17 +115,16 @@ mod tests {
     #[test]
     fn decode_le_png_de_la_rose() {
         let (w, h, px) = decoder_png(PNG_ROSE).expect("le PNG embarqué doit se décoder");
-        // ⚠ Le logo n'est PAS carré : la rose et sa tige font 138 × 172.
-        // La version précédente était un carré 172 × 172 dont le dessin
-        // n'occupait qu'une bande de gauche (fond semi-opaque non nettoyé) :
-        // le logo paraissait minuscule, voire absent.
-        assert_eq!((w, h), (138, 172));
+        // ⚠ Le logo n'est PAS carré : la rose et sa tige font 276 × 343.
+        // Le PNG est maintenant rendu en 2× (l'ancien 138 × 172 était AGRANDI
+        // à l'écran sur les grands écrans, d'où la pixelisation mesurée).
+        assert_eq!((w, h), (276, 343));
         assert_eq!(px.len(), w * h * 4);
     }
 
     #[test]
     fn le_logo_remplit_sa_toute_surface() {
-        // Le dessin doit occuper TOUTE l'image (à 3 px de marge près), sinon
+        // Le dessin doit occuper TOUTE l'image (à 2,5 % de marge près), sinon
         // le tracé le réduit encore et l'utilisateur voit une tache.
         let (w, h, px) = decoder_png(PNG_ROSE).unwrap();
         let mut x0 = w;
@@ -142,8 +141,9 @@ mod tests {
                 }
             }
         }
-        assert!(x0 <= 4 && y0 <= 4, "marge gauche/haute trop grande : {x0},{y0}");
-        assert!(x1 >= w - 4, "marge droite trop grande : {x1} pour {w}");
+        let marge_max = (w / 40).max(4); // 2,5 % de la largeur
+        assert!(x0 <= marge_max && y0 <= marge_max, "marge gauche/haute trop grande : {x0},{y0}");
+        assert!(x1 >= w - marge_max, "marge droite trop grande : {x1} pour {w}");
         assert!(y1 >= h - 1, "marge basse trop grande : {y1} pour {h}");
     }
 

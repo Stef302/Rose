@@ -200,7 +200,7 @@ def main():
     # proportions réelles et on met à l'échelle sur le plus grand côté.
     cote = max(largeur, hauteur)
     facteur = 1
-    while cote // facteur > 192:
+    while cote // facteur > 344:
         facteur += 1
     # reste non divisible : on complète les DEUX dimensions en transparent
     reste_w = largeur % facteur
@@ -231,7 +231,7 @@ def main():
         "//!\n"
         "//! Fichier GÉNÉRÉ par `installateur/velopack/embed-assets.py` — ne pas\n"
         "//! éditer à la main. Contenu :\n"
-        "//! - `ROSE_PETALE_PNG` : la rose (logo-rose.png recadré, 192 px) ;\n"
+        "//! - `ROSE_PETALE_PNG` : la rose (logo-rose.png recadré, 344 px) ;\n"
         "//! - `KARE_WOFF2` : la police d'affichage Kare (domaine public).\n"
         "\n"
         "#![allow(dead_code)]\n\n"

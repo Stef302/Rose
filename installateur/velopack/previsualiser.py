@@ -186,8 +186,10 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
     place_logo = max(0, plancher - s(78) - s(150))
     # Même règle que le Rust : boîte de la HAUTEUR du logo (132x169), marge
     # de 16 px avant le titre.
-    hauteur_voulue = round(s(124) * 169 / 132)
-    hauteur_logo = min(hauteur_voulue, place_logo)
+    # Même règle que le Rust : 110 px de largeur visée, jamais d'agrandissement
+    # au-delà du PNG natif (343 px de haut).
+    hauteur_voulue = round(s(110) * 169 / 132)
+    hauteur_logo = min(hauteur_voulue, place_logo, 343)
     if hauteur_logo >= s(40):
         lw, lh = rose.size
         cote = hauteur_logo
@@ -413,7 +415,10 @@ def controler(w, h):
         erreurs.append("logo entièrement transparent")
     else:
         x0, y0, x1, y1 = boite
-        if x0 > 4 or y0 > 4 or x1 < lw - 4 or y1 < lh - 1:
+        # Seuil PROPORTIONNEL : le PNG est maintenant 276 × 343, la marge de
+        # recadrage de `embed-assets.py` (12 px source, ÷2) fait donc ~6 px.
+        marge_max = max(4, round(lw * 0.025))
+        if x0 > marge_max or y0 > marge_max or x1 < lw - marge_max or y1 < lh - 1:
             erreurs.append(
                 f"logo : contenu {x0},{y0}–{x1},{y1} dans {lw}×{lh} — "
                 "une bande transparente réduit le dessin à l'écran")
@@ -422,8 +427,8 @@ def controler(w, h):
     # les proportions. Un logo plus haut que large dans une boîte carrée
     # touchait le titre et paraissait coupé en bas.
     place = max(0, (h - s(30) - s(18) - s(38) - s(46) - s(16)) - s(78) - s(150))
-    hv = round(s(124) * 169 / 132)
-    hl = min(hv, place)
+    hv = round(s(110) * 169 / 132)
+    hl = min(hv, place, 343)
     if hl >= s(40):
         cote = hl
         dh = cote

@@ -173,7 +173,12 @@ unsafe fn cercle_lisse(dc: HDC, cx: i32, cy: i32, rayon: f32, couleur: u32) -> b
     fait
 }
 
+// ⚠ `Copy` : `RECT` est une structure triviale de quatre entiers, et le code
+// en copie constamment (`ps.rcPaint`, `zone = rc`). Sans `Copy`, Rust
+// interdit la copie implicite et refuse de compiler dès qu'on relit `rc`
+// après l'avoir affecté.
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct RECT { left: i32, top: i32, right: i32, bottom: i32 }
 
 #[repr(C)]
@@ -267,6 +272,8 @@ unsafe extern "system" {
     fn SetDIBitsToDevice(dc: HDC, x: i32, y: i32, cx: i32, cy: i32, sx: i32, sy: i32,
                          debut: u32, lignes: u32, bits: *const c_void, bmi: *const BITMAPINFO, usage: u32) -> i32;
     fn BitBlt(dst: HDC, x: i32, y: i32, cx: i32, cy: i32, src: HDC, sx: i32, sy: i32, op: u32) -> i32;
+    fn SetStretchBltMode(dc: HDC, mode: i32) -> i32;
+    fn SetBrushOrgEx(dc: HDC, x: i32, y: i32, precedent: *mut POINT) -> i32;
     fn SetWindowPos(h: HWND, apres: HWND, x: i32, y: i32, cx: i32, cy: i32, f: u32) -> i32;
     fn SetForegroundWindow(h: HWND) -> i32;
     fn GetLastError() -> u32;
@@ -333,8 +340,10 @@ const SM_CXSMICON: i32 = 49;
 const SM_CYSMICON: i32 = 50;
 const WS_EX_APPWINDOW: u32 = 0x00040000;
 const WS_EX_TOOLWINDOW: u32 = 0x00000080;
-const CS_HREDRAW: u32 = 0x0002;
-const CS_VREDRAW: u32 = 0x0001;
+// ⚠ `CS_HREDRAW` (0x0002) et `CS_VREDRAW` (0x0001) ne sont PAS déclarées :
+// ces styles de CLASSE forcent Windows à invalider toute la fenêtre à chaque
+// changement de taille, ce qui annule le repeint ciblé et provoque un
+// clignotement. `WM_SIZE` gère déjà l'invalidation.
 const TRANSPARENT: i32 = 1;
 const DT_WORDBREAK: u32 = 0x0010;
 const DT_CENTER: u32 = 0x0001;
@@ -362,6 +371,17 @@ const LOGPIXELSY: i32 = 90;
 /// tous les DC, y compris la surface de double-bufferisation.
 const QUALITE_POLICE: i32 = 4;
 const SRCCOPY: u32 = 0x00CC0020;
+// Mode d'étirement pour `AlphaBlend` et `BitBlt`.
+//
+// ⚠⚠ CAUSE DE LA FENÊTRE PIXÉLISÉE. Le mode par DÉFAUT d'un DC est
+// `COLORONCOLOR` (3) : il SUPPRIME des lignes/colonnes entières au lieu
+// d'interpoler. Tout dessin mis à l'échelle (logo 276×343 réduit à 141 px,
+// et surtout la double-bufferisation) sortait donc en escalier, avec des
+// traits irréguliers — « la fenêtre apparaît pixélisée et non nette ».
+// `HALFTONE` (4) fait une vraie moyenne de pixels. Il exige
+// `SetBrushOrgEx` après chaque changement de mode (exigence MSDN), sinon le
+// résultat est décalé.
+const HALFTONE: i32 = 4;
 const TIMER_PROGRESSION: usize = 1;
 const ICON_BIG: usize = 1;
 const ICON_SMALL: usize = 0;
@@ -718,6 +738,12 @@ unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     }
     let memoire = CreateCompatibleDC(dc);
     let ancien = SelectObject(memoire, bitmap as *mut c_void);
+    // ⚠ `HALFTONE` : sans lui, la réduction du logo (276×343 → ~141 px)
+    // supprime des lignes entières et le dessin sort pixélisé. Il faut aussi
+    // `SetBrushOrgEx` après le changement de mode (exigence MSDN), sinon le
+    // résultat est décalé d'un pixel.
+    SetStretchBltMode(dc, HALFTONE);
+    SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());
     let melange = BLENDFUNCTION {
         blend_op: 0,
         blend_flags: 0,
@@ -1104,14 +1130,42 @@ unsafe fn dessiner(h: HWND) {
     }
     let mut rc = std::mem::zeroed::<RECT>();
     GetClientRect(h, &mut rc);
+    // ── ZONE À REPEINDRE ───────────────────────────────────────────────────
+    //
+    // ⚠⚠ CAUSE DU CLIGNOTEMENT AU SURVOL DES BOUTONS. `BeginPaint` remplit
+    // `ps.rcPaint` avec le rectangle RÉELLEMENT invalidé (ici : un bouton,
+    // ou un bouton de barre de titre). L'ancienne version l'IGNORAIT : elle
+    // peignait le fond sur TOUTE la fenêtre puis copiait TOUT le tampon.
+    // Résultat : chaque entrée/sortie de souris dans un bouton repeignait
+    // 1120 × 780 pixels, et comme le fond est opaque, on voyait le contenu
+    // « disparaître » puis revenir — le clignotement « de fou ».
+    //
+    // On ne touche donc QUE `rcPaint`. Un rectangle vide (premier WM_PAINT,
+    // ou invalidation sans zone) est traité comme la fenêtre entière.
+    let mut zone = ps.rcPaint;
+    let zone_vide = zone.right <= zone.left || zone.bottom <= zone.top;
+    if zone_vide {
+        zone = rc;
+    }
+    // Clamp : `rcPaint` ne dépasse jamais le client, mais on s'en assure.
+    zone.left = zone.left.max(rc.left);
+    zone.top = zone.top.max(rc.top);
+    zone.right = zone.right.min(rc.right);
+    zone.bottom = zone.bottom.min(rc.bottom);
+    if zone.right <= zone.left || zone.bottom <= zone.top {
+        EndPaint(h, &ps);
+        return;
+    }
     // FILE DE SÉCURITÉ : le fond est posé SUR L'ÉCRAN avant toute
-    // décoration. Même si le tracé détaillé échoue, la fenêtre n'est jamais
-    // « transparente ».
-    remplir(dc_ecran, &rc, FOND);
+    // décoration, mais SEULEMENT dans la zone invalide. Même si le tracé
+    // détaillé échoue, la fenêtre n'est jamais « transparente ».
+    remplir(dc_ecran, &zone, FOND);
 
     // Le tracé détaillé est isolé : une panique ne tue pas le processus et ne
     // laisse pas la mise à jour en cours verrouillée.
-    let resultat = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dessiner_decore(h, dc_ecran, &rc)));
+    let resultat = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dessiner_decore(h, dc_ecran, &rc, &zone)
+    }));
     if resultat.is_err() {
         // On garde une trace lisible pour le diagnostic (et pour le journal
         // de l'installeur, qui affiche les lignes du setup).
@@ -1123,11 +1177,16 @@ unsafe fn dessiner(h: HWND) {
     EndPaint(h, &ps);
 }
 
-/// Tracé détaillé sur le DC mémoire, puis copie vers `dc_ecran`.
+/// Tracé détaillé sur le DC mémoire, puis copie de `zone` vers `dc_ecran`.
+///
+/// `rc` = le client entier (géométrie du tracé), `zone` = la partie à
+/// copier à l'écran (celle que Windows a invalidée). Le tampon mémoire est
+/// TOUJOURS peint en entier — la géométrie en dépend — mais seule `zone` est
+/// transférée : c'est ce qui supprime le clignotement au survol.
 ///
 /// ⚠ Ne JAMAIS appeler `EndPaint` ici : l'appelant (`dessiner`) le fait
 /// toujours, panique comprise.
-unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT) {
+unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // Double-bufferisation : on dessine tout sur un DC mémoire puis on copie
     // d'un bloc. Sans cela, chaque `InvalidateRect` repeignait directement la
     // fenêtre, ce qui produisait un clignotement et des bords crénelés.
@@ -1294,11 +1353,17 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT) {
     // titre « ROSE » se posait sur la tige — le logo paraissait coupé en bas.
     // Place laissée au logo : du haut du panneau (78) jusqu'au titre.
     let place_logo = (plancher - s(78) - s(150)).max(0);
-    // Hauteur du logo : on veut ~124 px de large, donc 124 * 169/132 ≈ 159 px
-    // de haut, borné par la place disponible.
-    let largeur_voulue = s(124);
+    // ⚠⚠ Le logo paraissait « trop zoomé » : il occupait toute la hauteur
+    // disponible du panneau (159 px en 1120 × 780). La maquette réserve ~124
+    // px de LARGEUR à la rose, ce qui donne ~159 px de haut — trop. On vise
+    // 110 px de largeur, soit ~141 px de haut : le logo respire, et le titre
+    // « ROSE » remonte.
+    let largeur_voulue = s(110);
     let hauteur_voulue = ((largeur_voulue as f64 * 169.0 / 132.0).round() as i32).max(1);
-    let hauteur_logo = hauteur_voulue.min(place_logo);
+    // ⚠ JAMAIS d'AGRANDISSEMENT : le PNG embarqué fait 276 × 343. Au-delà,
+    // `AlphaBlend` interpole des pixels qui n'existent pas et le logo sort
+    // PIXÉLISÉ. On borne donc la hauteur à celle du PNG natif.
+    let hauteur_logo = hauteur_voulue.min(place_logo).min(343);
     // Marge entre la tige et le titre « ROSE » : sans elle, la tige touchait
     // le titre au pixel près et donnait l'impression d'être rognée.
     let marge_marque = s(16);
@@ -1629,8 +1694,12 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT) {
 
     // garder les zones pour le clic
     ZONES = zones;
-    // copie du tampon mémoire vers la fenêtre, puis libération
-    BitBlt(dc_ecran, 0, 0, rc.right, rc.bottom, dc_memoire, 0, 0, SRCCOPY);
+    // copie du tampon mémoire vers la fenêtre, LIMITÉE à la zone invalidée,
+    // puis libération. Copier tout le tampon à chaque survol de bouton était
+    // la cause du clignotement.
+    BitBlt(dc_ecran, zone.left, zone.top,
+           zone.right - zone.left, zone.bottom - zone.top,
+           dc_memoire, zone.left, zone.top, SRCCOPY);
     SelectObject(dc_memoire, ancien_bitmap);
     DeleteObject(bitmap as *mut c_void);
     DeleteDC(dc_memoire);
@@ -1835,7 +1904,43 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             let etat = &mut *ETAT;
             if w == TIMER_PROGRESSION && etat.occupe {
                 etat.phase += 20;
-                InvalidateRect(h, std::ptr::null(), 0);
+                // ⚠⚠ CAUSE DU « GLITCH » PENDANT L'INSTALLATION. Cette
+                // branche invalidait TOUTE la fenêtre toutes les 16 ms : 62
+                // repeints complets par seconde (décodage PNG, mesures GDI,
+                // polices recréées), ce qui saturait le fil de messages et
+                // empêchait l'animation de suivre. On n'invalide QUE la
+                // piste de progression.
+                //
+                // Sa géométrie est la même que dans `dessiner` : sous la
+                // carte de statut, dans la zone de contenu.
+                let mut rc = std::mem::zeroed::<RECT>();
+                GetClientRect(h, &mut rc);
+                let echelle = crate::paint::echelle_tracé(rc.right, rc.bottom);
+                let s = |v: i32| -> i32 { (v as f64 * echelle).round() as i32 };
+                let lateral_w = s(320);
+                let pied_h = s(76);
+                let etat_h = s(30);
+                let contenu = RECT {
+                    left: lateral_w + 1,
+                    top: s(56),
+                    right: rc.right,
+                    bottom: rc.bottom - etat_h - pied_h,
+                };
+                let g = contenu.left + s(56);
+                let d = contenu.right - s(56);
+                // La piste est sous la carte de statut : on couvre largement
+                // (statut + piste) pour ne jamais laisser de résidu.
+                let piste = RECT {
+                    left: g - s(2),
+                    top: contenu.top + s(44) + s(52) + s(28),
+                    right: d + s(2),
+                    bottom: contenu.bottom - s(20),
+                };
+                if piste.right > piste.left && piste.bottom > piste.top {
+                    InvalidateRect(h, &piste, 0);
+                } else {
+                    InvalidateRect(h, std::ptr::null(), 0);
+                }
             }
             0
         }
@@ -2212,7 +2317,11 @@ unsafe fn rafraichir(h: HWND) {
     let titre = hex_w(&format!("Rose {} — Programme d'installation", env!("CARGO_PKG_VERSION")));
     SetWindowTextW(h, titre.as_ptr());
     if etat.occupe {
-        SetTimer(h, TIMER_PROGRESSION, 16, std::ptr::null());
+        // ⚠ 33 ms (≈30 images/s) et non 16 ms : à 62 Hz, le fil de messages
+        // passait plus de temps à repeindre qu'à traiter les messages, et
+        // l'animation paraissait saccadée puis figée pendant l'installation.
+        // 30 i/s est fluide à l'œil et laisse respirer la boucle.
+        SetTimer(h, TIMER_PROGRESSION, 33, std::ptr::null());
     } else {
         KillTimer(h, TIMER_PROGRESSION);
     }
@@ -2362,7 +2471,13 @@ pub fn lancer() {
         let classe = hex_w("RoseSetupRose");
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
+            // ⚠⚠ PAS de `CS_HREDRAW | CS_VREDRAW`. Ces styles forcent
+            // Windows à invalider TOUTE la fenêtre à chaque changement de
+            // largeur ou de hauteur : le repaint ciblé du survol était donc
+            // annulé, et un simple redimensionnement repeignait 1120 × 780
+            // pixels en boucle — d'où le clignotement. `WM_SIZE` appelle déjà
+            // `InvalidateRect`, on gère le repeint nous-mêmes.
+            style: 0,
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0, cbWndExtra: 0,
             hInstance: inst,
