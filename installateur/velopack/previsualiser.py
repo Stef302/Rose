@@ -217,8 +217,8 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
         d.rectangle([g, yc + s(86), droite, yc + s(92)], fill=c("LIGNE"))
         d.rectangle([g, yc + s(86), g + (droite - g) // 3, yc + s(92)], fill=c("ROUGE_CLAIR"))
     else:
-        carte(yc, yc + s(130), "VERT")
-        texte(d, (g + s(64), yc + s(18)),
+        carte(yc, yc + s(186), "VERT")
+        texte(d, (g + s(64), yc + s(16)),
               "Rose 0.1.5 est installé.\n\nDossier : C:\\Users\\utilisateur\\AppData\\Local\\Programs\\Rose\n\n"
               "Ouvrez un nouveau terminal, puis tapez : rose --version",
               police(10, False, dpi, e), c("TEXTE"), "la")

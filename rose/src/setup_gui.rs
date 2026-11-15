@@ -913,10 +913,15 @@ unsafe fn dessiner(h: HWND) {
             }
         }
         Vue::Termine => {
-            let c = RECT { left: g, top: yc, right: d, bottom: yc + s(130) };
+            // ⚠ La carte doit contenir TOUT le texte. À 130 px, la dernière
+            // ligne (« Ouvrez un nouveau terminal, puis tapez : rose
+            // --version ») était COUPÉE en bas (mesuré sur la capture).
+            // On dimensionne la carte d'après le nombre de lignes, et on
+            // laisse le texte s'étendre jusqu'au bord bas moins la marge.
+            let c = RECT { left: g, top: yc, right: d, bottom: yc + s(186) };
             carte(dc, &c, VERT);
             coche(dc, g + s(36), yc + s(32), VERT);
-            let mut r = RECT { left: g + s(64), top: yc + s(18), right: d - s(20), bottom: yc + s(120) };
+            let mut r = RECT { left: g + s(64), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(12) };
             texte_echelle(dc, dpi, "Segoe UI",
                   &format!("Rose {} est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
                            etat.version_installee, etat.prefixe),
@@ -1260,6 +1265,14 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                     .and_then(|g| g.clone())
                     .unwrap_or_else(|| "Rose a été désinstallé.".to_string());
             } else {
+                etat.existant = true;
+                // ⚠ RELIRE la version installée APRÈS l'opération.
+                // `version_installee` est figé au démarrage : il contenait la
+                // version de l'ANCIENNE installation (mesuré : « Rose 5.12.0
+                // est installé » alors que le setup venait d'installer
+                // 0.1.5). On interroge le binaire réellement présent.
+                etat.version_installee = crate::setup_core::version_installee(&etat.prefixe)
+                    .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
                 etat.statut = STATUT
                     .lock()
                     .ok()

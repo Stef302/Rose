@@ -195,7 +195,49 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
         }
     }
     j.push(format!("✓ {}", enregistrer(prefixe, &bindir)));
+    j.push(format!("✓ {}", nettoyer_anciennes_installations(prefixe)));
     j
+}
+
+/// Supprime les installations d'un ANCIEN installeur (Tauri), qui posait
+/// `rose.exe` dans `%LOCALAPPDATA%\Rose` au lieu de `...\Programs\Rose`.
+///
+/// ⚠ Sans ce nettoyage, le dossier obsolète reste dans le `PATH` (il y est
+/// même inséré AVANT la nouvelle installation par certaines versions) et
+/// `rose --version` annonce une version périmée — mesuré : « 5.12.0 » après
+/// avoir installé 0.1.5. On ne touche JAMAIS au dossier courant.
+#[cfg(windows)]
+fn nettoyer_anciennes_installations(prefixe: &str) -> String {
+    let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let mut retires = Vec::new();
+    let courant = std::path::Path::new(prefixe);
+    for p in [
+        format!("{local}\\Rose"),
+        format!("{home}\\AppData\\Local\\Rose"),
+    ] {
+        let d = std::path::Path::new(&p);
+        // Ne jamais supprimer le dossier qu'on vient d'installer.
+        if d == courant || !d.exists() {
+            continue;
+        }
+        // Sécurité : le dossier doit vraiment ressembler à une installation
+        // Rose (un `rose.exe` quelque part dedans).
+        let a_un_moteur = d.join("rose.exe").exists() || d.join("bin").join("rose.exe").exists();
+        if a_un_moteur && std::fs::remove_dir_all(d).is_ok() {
+            retires.push(p);
+        }
+    }
+    if retires.is_empty() {
+        "aucune ancienne installation à retirer".to_string()
+    } else {
+        format!("ancienne installation retirée : {}", retires.join(", "))
+    }
+}
+
+#[cfg(not(windows))]
+fn nettoyer_anciennes_installations(_prefixe: &str) -> String {
+    "aucune ancienne installation à retirer".to_string()
 }
 
 /// Écrit le registre / la configuration, le PATH et les associations.
@@ -220,7 +262,15 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         }
         let mut segments: Vec<String> = ancien.split(';')
             .filter(|s| !s.trim().is_empty())
-            .filter(|s| !s.to_lowercase().contains("rose"))
+            .filter(|s| {
+                // On retire TOUT dossier qui ressemble à une installation
+                // Rose (ancien installeur Tauri dans `%LOCALAPPDATA%\Rose`,
+                // `...\Programs\Rose`, `/usr/local`…). Comparaison insensible
+                // à la casse et aux antislashs doublés, car le registre peut
+                // stocker les chemins échappés.
+                let bas = s.to_lowercase().replace("\\\\", "\\");
+                !(bas.contains("\\rose") || bas.ends_with("rose") || bas.contains("/rose"))
+            })
             .map(|s| s.to_string())
             .collect();
         segments.insert(0, bindir.display().to_string());
@@ -722,4 +772,41 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
     let _ = std::fs::remove_dir_all(&tmp);
     j.push(format!("✓ Rose {} installé", release.version));
     j
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_lue_depuis_bin_ou_racine() {
+        // `version_installee` doit accepter les DEUX dispositions :
+        //   - `bin\rose.exe` (installeur actuel),
+        //   - `rose.exe` à la racine (ancien installeur Tauri).
+        // On fabrique un faux dossier et on vérifie qu'il ne panique pas et
+        // renvoie None quand rien n'est exécutable.
+        let tmp = std::env::temp_dir().join("rose-test-version");
+        let _ = std::fs::create_dir_all(&tmp);
+        assert!(version_installee(tmp.to_str().unwrap()).is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn comparer_versions_ordonne_correctement() {
+        assert_eq!(comparer_versions("0.1.5", "0.1.5"), 0);
+        assert_eq!(comparer_versions("0.1.5", "5.12.0"), -1);
+        assert_eq!(comparer_versions("5.12.0", "0.1.5"), 1);
+        assert_eq!(comparer_versions("v0.1.5", "0.1.4"), 1);
+    }
+
+    #[test]
+    fn nettoyage_ne_touche_pas_au_dossier_courant() {
+        // Le nettoyage des anciennes installations doit être inerte hors
+        // Windows et ne jamais supprimer le dossier demandé.
+        let tmp = std::env::temp_dir().join("rose-test-courant");
+        let _ = std::fs::create_dir_all(&tmp);
+        let _ = nettoyer_anciennes_installations(tmp.to_str().unwrap());
+        assert!(tmp.exists(), "le dossier courant a été supprimé");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
