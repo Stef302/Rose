@@ -46,6 +46,13 @@ jobs:
 
       - name: Tester
         working-directory: rose
+        # `strip = true` dans le profil release produit un binaire de test
+        # `static-pie` strippé qui segfaultait au démarrage sur x86_64
+        # (SIGSEGV avant d'afficher le premier test), alors que le même code
+        # passait en local sur aarch64. On désactive le strip POUR LES TESTS
+        # uniquement : le binaire distribué reste strippé.
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: none
         run: cargo test --release
 
       - name: Smoke test du shell
