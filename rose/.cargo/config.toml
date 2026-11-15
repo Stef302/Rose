@@ -21,3 +21,21 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# ── Tests : `cargo t` au lieu de `cargo test` ────────────────────────────
+#
+# `[lib]` déclare `crate-type = ["cdylib", "rlib"]` (le cdylib produit le
+# module WebAssembly). Sur une cible qui SUPPORTE cdylib (x86_64 Linux,
+# macOS, Windows), `cargo test` exécute le cdylib comme harnais de test de
+# la lib — or une bibliothèque partagée n'a PAS de point d'entrée : le
+# processus meurt en SIGSEGV avant le premier test (mesuré sur la CI
+# x86_64, rustc 1.100).
+#
+# `src/main.rs` déclare EXACTEMENT les mêmes modules que `lib.rs` (même
+# liste de `mod`, mêmes `#[path]`) : `--bins` y exécute donc les 52 tests
+# de la lib + ceux des binômes (rose-aot 12, rose-shell 47).
+#
+# L'alias rend l'usage sûr sur toutes les plateformes :
+#     cargo t --release
+[alias]
+t = "test --bins"
