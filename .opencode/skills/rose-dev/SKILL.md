@@ -251,6 +251,28 @@ seule factorielle postfixe. Lexage des nouveaux postfixes (front.rs) :
 Piège : le `#[derive(Clone)]` de `Gz` (i128x.rs, pointeur nu `*mut Mpz`) ne
 clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 
+## CI et binaires de test (pièges mesurés le 15/11)
+
+- **`cargo test` ment sur x86_64.** `rose/.cargo/config.toml` force
+  `-C target-feature=+crt-static` : le binaire de test devient un `static-pie`
+  que le runner GitHub x86_64 (rustc 1.100) **ne démarre pas** → SIGSEGV
+  immédiat, avant le premier test, sans aucun message. En local (aarch64) le
+  même binaire tourne : le bug est invisible.
+  Parade CI : `RUSTFLAGS=""` + `CARGO_PROFILE_RELEASE_STRIP=none` sur l'étape
+  de test. Les binaires PUBLIÉS (`docs/telechargements/rose-aarch64-linux`)
+  sont dynamiques et ne sont pas concernés.
+- **`--target <host>` change le chemin du harnais** mais ne corrige pas le
+  SIGSEGV : le cdylib n'a pas de point d'entrée. Utiliser `cargo t`
+  (alias `--bins` dans `.cargo/config.toml`) : `src/main.rs` déclare les
+  mêmes `mod` que `lib.rs`, donc les 52 tests de la lib y tournent.
+- **Un commentaire YAML contenant ` : `** casse le workflow (GitHub le
+  signale comme « .github/workflows/ci.yml failure », sans logs). Vérifier
+  avec `python3 -c "import yaml; yaml.safe_load(open(...))"` AVANT de pousser ;
+  `sed -n 's/^host: //p'` dans un `run:` non quoté en est un exemple réel.
+- **`.gitignore` : `bin/` sans ancre** correspondait à `rose/src/bin/` :
+  `rose-aot.rs` et `rose-shell.rs` n'ont jamais été versionnés, et un clone
+  neuf de `main` ne compilait pas. La règle doit être `/bin/`.
+
 ## Style
 
 - Messages et commentaires du moteur en français ; noms de fonctions Rust

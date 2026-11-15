@@ -259,6 +259,20 @@ cargo build --release
 # binaire : rose/target/release/rose-20
 ```
 
+Tests :
+
+```bash
+cd rose
+cargo t --release        # alias de `test --bins` (111 tests)
+```
+
+> ⚠ N'utilisez pas `cargo test` nu sur x86_64 : `[lib]` déclare un
+> `crate-type = ["cdylib", "rlib"]` (pour le module WebAssembly) et cargo
+> exécute alors le cdylib comme harnais de test — une bibliothèque partagée
+> n'a pas de point d'entrée, d'où un SIGSEGV avant le premier test. L'alias
+> `cargo t` passe par les binaires, dont `src/main.rs` déclare les mêmes
+> modules que `lib.rs`.
+
 ## 📖 Syntaxe Rose — référence complète
 
 Rose est un langage de programmation en français. Cette référence contient
