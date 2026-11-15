@@ -139,12 +139,21 @@ mod tests {
     fn le_shell_n_embarque_pas_le_moteur() {
         // Garde-fou de taille : le shell est un LANCEUR. S'il se remet à
         // compiler Cranelift + l'interpréteur, il dépassera plusieurs Mo.
-        // On mesure le fichier pour attraper une régression d'architecture.
-        let exe = std::env::current_exe().unwrap();
-        let taille = std::fs::metadata(&exe).map(|m| m.len()).unwrap_or(0);
-        // En debug les binaires sont plus gros ; on ne teste qu'en release.
-        if !cfg!(debug_assertions) && taille > 0 {
-            assert!(taille < 4_000_000, "rose-shell pèse {taille} o : le moteur est ré-embarqué");
+        //
+        // ⚠ `current_exe()` renvoie le HARNAIS DE TEST, pas `rose-shell.exe` :
+        // mesurer ce dernier donnait toujours un petit fichier et le test
+        // passait même si le vrai binaire avait grossi. On mesure donc le
+        // binaire produit par `cargo build`, s'il existe.
+        let Some(exe) = std::env::var_os("CARGO_BIN_EXE_rose-shell").map(std::path::PathBuf::from)
+        else { return; };
+        let Ok(meta) = std::fs::metadata(&exe) else { return; };
+        // En debug le binaire est plus gros : on n'impose la borne qu'en release.
+        if !cfg!(debug_assertions) {
+            assert!(
+                meta.len() < 4_000_000,
+                "{} pèse {} o : le moteur est ré-embarqué dans le shell",
+                exe.display(), meta.len()
+            );
         }
     }
 }
