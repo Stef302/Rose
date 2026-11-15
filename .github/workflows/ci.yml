@@ -64,7 +64,13 @@ jobs:
 
       - name: Smoke test du shell
         working-directory: rose
+        # Mêmes précautions que pour les tests : le lien statique
+        # (`+crt-static` de `.cargo/config.toml`) produit un `static-pie` que
+        # ce runner x86_64 ne parvient pas à démarrer (SIGSEGV immédiat).
+        env:
+          RUSTFLAGS: ""
         run: |
+          cargo build --release --bin rose --bin rose-shell
           printf '>> 10!\n>> fibonacci(20)\n:quit\n' | ./target/release/rose-shell
           printf 'afficher(10!)\n' > /tmp/t.rose
           ./target/release/rose run /tmp/t.rose
