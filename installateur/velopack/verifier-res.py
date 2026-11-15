@@ -296,19 +296,32 @@ def main():
             "repli GDI des coins arrondis": "RoundRect(dc, r.left",
             "boucle de messages qui distingue 0 de -1": "GetLastError()",
             "SW_SHOWNORMAL (fenêtre au premier plan)": "SW_SHOWNORMAL",
-            "WM_ERASEBKGND sans flash blanc": "WM_ERASEBKGND",
+            "WM_ERASEBKGND sans double peinture": "WM_ERASEBKGND",
             "zones de titre cohérentes": "let coherentes =",
             "police refusée → pas de DrawText géant": "let Some(police) = creer_police",
+            # ⚠ CLIGNOTEMENT : le survol ne doit JAMAIS invalider la fenêtre
+            # entière (repaint de 1120 × 780 à chaque pixel de souris).
+            "repeint ciblé au survol (pas InvalidateRect NULL)": "InvalidateRect(h, &zones[i as usize], 0)",
+            "curseurs mis en cache": "fn curseur_fleche()",
+            "WM_SETCURSOR traité": "WM_SETCURSOR =>",
+            "coordonnées client lues dans lParam": "let x = (l as i32) << 16 >> 16;",
+            # ⚠ LOGO : proportions conservées et centrage vertical.
+            "logo borné dans sa boîte (hauteur <= cote)": "let mut dh = cote;",
+            "logo centré verticalement": "let dy = y + (cote - dh) / 2;",
+            "marge entre logo et titre": "let marge_marque = s(16);",
         }
         manquants = [nom for nom, motif in garde_fous.items() if motif not in source]
         assert not manquants, (
             "garde-fous du tracé absents de setup_gui.rs : " + ", ".join(manquants)
-            + " — la fenêtre peut s'ouvrir VIDE (bordures seules)")
+            + " — la fenêtre peut s'ouvrir VIDE ou clignoter")
         # Aucun appel direct de `dessiner` depuis `WM_PAINT` : il doit passer
         # par le `catch_unwind` du gestionnaire.
         assert "WM_PAINT => { dessiner(h); 0 }" not in source, (
             "WM_PAINT appelle dessiner() sans isolation : une panique tue le processus "
             "et la fenêtre disparaît")
+        # ⚠ Le survol ne doit plus invalider TOUTE la fenêtre.
+        assert "InvalidateRect(h, std::ptr::null(), 0);\n            }\n            SetCursor" not in source, (
+            "WM_MOUSEMOVE invalide la fenêtre entière au survol : clignotement")
         print(f"  tracé : {len(garde_fous)} garde-fous présents")
 
     print("RESSOURCES VALIDES")

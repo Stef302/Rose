@@ -643,22 +643,37 @@ unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     if sw == 0 || sh == 0 {
         return false;
     }
-    // Conserver le rapport d'aspect du logo.
+    // ── Mise à l'échelle du logo ───────────────────────────────────────────
     //
-    // ⚠⚠ Le logo n'est PAS carré : la rose et sa tige font 138 × 172. Le
-    // plafonner sur un carré (`cote × cote`) puis le réduire à `cote` de
-    // haut écrasait le dessin dans la moitié de la place disponible et, sur
-    // une fenêtre basse, le logo disparaissait presque. On met à l'échelle
-    // sur le PLUS GRAND côté, en gardant les proportions.
-    let mut dw = cote;
-    let mut dh = ((cote as f64 * sh as f64 / sw as f64).round() as i32).max(1);
-    if dh > cote {
-        dh = cote;
-        dw = ((cote as f64 * sw as f64 / sh as f64).round() as i32).max(1);
+    // ⚠⚠ CAUSE DU LOGO « COUPÉ EN BAS ». Le logo n'est PAS carré : le
+    // contenu utile fait 132 × 169 (la rose et sa tige). L'ancienne version
+    // recevait un `cote` (une boîte CARRÉE) et calculait :
+    //   dh = cote * 169 / 132 = cote * 1,28
+    // puis, comme `dh > cote`, elle forçait `dh = cote` et recalculait
+    // `dw = cote * 132 / 169`. Résultat : le logo n'occupait que 78 % de la
+    // largeur de la boîte et 100 % de sa hauteur — il paraissait ÉCRASÉ et
+    // sa tige touchait exactement le bord bas, donc le titre « ROSE » dessiné
+    // juste dessous le recouvrait. Mesuré sur une fenêtre 1120 × 780 : logo
+    // 97 × 124 dans une boîte de 124 × 124.
+    //
+    // Correction : on met à l'échelle pour que le logo tienne EN ENTIER dans
+    // la boîte, en conservant ses proportions, et on le CENTRE dans les deux
+    // dimensions. `dw` et `dh` sont donc tous deux ≤ `cote`.
+    let rapport = sh as f64 / sw as f64; // hauteur / largeur du contenu utile
+    // On part de la boîte pleine en HAUTEUR (le côté contraignant pour un
+    // logo plus haut que large), puis on réduit si la largeur dépasse.
+    let mut dh = cote;
+    let mut dw = ((cote as f64 / rapport).round() as i32).max(1);
+    if dw > cote {
+        // Logo plus LARGE que haut : c'est la largeur qui contraint.
+        dw = cote;
+        dh = ((cote as f64 * rapport).round() as i32).max(1);
     }
     if dw <= 0 || dh <= 0 {
         return false;
     }
+    // Centrage HORIZONTAL et VERTICAL : la boîte `cote × cote` est plus
+    // large que haute pour ce logo, il doit être centré dedans.
     let dx = x + (cote - dw) / 2;
     let dy = y + (cote - dh) / 2;
 
@@ -1273,12 +1288,28 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT) {
     // ⚠ Le logo est BORNÉ par la place disponible : à 124 px fixes, il
     // chevauchait la liste des étapes sur une fenêtre de 600 px de haut, et
     // le titre « Rose » se retrouvait par-dessus les pastilles.
+    //
+    // ⚠⚠ Et la boîte n'est PAS carrée : le logo fait 132 × 169 (plus haut
+    // que large). On réserve donc `hauteur_logo` en HAUTEUR réelle, sinon le
+    // titre « ROSE » se posait sur la tige — le logo paraissait coupé en bas.
+    // Place laissée au logo : du haut du panneau (78) jusqu'au titre.
     let place_logo = (plancher - s(78) - s(150)).max(0);
-    let cote_logo = s(124).min(place_logo);
-    if cote_logo >= s(40) {
-        dessiner_rose(dc, lateral_w / 2 - cote_logo / 2, s(78), cote_logo);
+    // Hauteur du logo : on veut ~124 px de large, donc 124 * 169/132 ≈ 159 px
+    // de haut, borné par la place disponible.
+    let largeur_voulue = s(124);
+    let hauteur_voulue = ((largeur_voulue as f64 * 169.0 / 132.0).round() as i32).max(1);
+    let hauteur_logo = hauteur_voulue.min(place_logo);
+    // Marge entre la tige et le titre « ROSE » : sans elle, la tige touchait
+    // le titre au pixel près et donnait l'impression d'être rognée.
+    let marge_marque = s(16);
+    if hauteur_logo >= s(40) {
+        // `dessiner_rose` met à l'échelle pour tenir dans une boîte
+        // `cote × cote` et CENTRE le logo dedans. En donnant le côté de la
+        // hauteur, le logo occupe toute la hauteur disponible et se centre
+        // horizontalement tout seul : plus de tige sous le titre.
+        dessiner_rose(dc, lateral_w / 2 - hauteur_logo / 2, s(78), hauteur_logo);
     }
-    let y_marque = s(78) + cote_logo.max(0);
+    let y_marque = s(78) + hauteur_logo.max(0) + marge_marque;
     let mut rl = RECT { left: 0, top: y_marque, right: lateral_w, bottom: y_marque + s(56) };
     // Marque en Kare, comme le site : c'est la signature visuelle de Rose.
     texte_echelle(dc, dpi, "Kare", "Rose", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 36, false, echelle);
@@ -1618,6 +1649,32 @@ fn dans(r: &RECT, x: i32, y: i32) -> bool {
     r.right > r.left && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
 }
 
+/// Curseurs de stock, chargés UNE SEULE FOIS.
+///
+/// ⚠ `LoadCursorW` à chaque `WM_MOUSEMOVE` coûtait un appel système par
+/// pixel de souris déplacée : c'est une des causes du clignotement. Les
+/// curseurs de stock sont partagés (`LR_SHARED`) et restent valides pour
+/// toute la durée du processus, on peut donc les garder.
+fn curseur_fleche() -> HCURSOR {
+    static mut F: HCURSOR = std::ptr::null_mut();
+    unsafe {
+        if F.is_null() {
+            F = LoadCursorW(std::ptr::null_mut(), IDC_ARROW as *const u16);
+        }
+        F
+    }
+}
+
+fn curseur_main() -> HCURSOR {
+    static mut M: HCURSOR = std::ptr::null_mut();
+    unsafe {
+        if M.is_null() {
+            M = LoadCursorW(std::ptr::null_mut(), IDC_HAND as *const u16);
+        }
+        M
+    }
+}
+
 /// Zone de la barre de titre : -1 hors barre, 0 = déplacement, 1 = réduire,
 /// 2 = agrandir, 3 = fermer.
 /// Les bornes suivent l'échelle du tracé (barre de 56 px sur la grille
@@ -1745,19 +1802,34 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             0
         }
         WM_ERASEBKGND => {
-            // ⚠⚠ RENDRE 1 SANS RIEN DESSINER est la clé de l'absence de
-            // clignotement : `WM_PAINT` peint déjà le fond, et laisser
-            // Windows effacer avec `hbrBackground` (blanc) produisait un
-            // flash BLANC à chaque redimensionnement — l'utilisateur voyait
-            // la fenêtre « transparente » pendant le repeint.
-            // On remplit nous-mêmes, avec notre fond.
-            let dc = w as HDC;
+            // ⚠⚠ CAUSE DIRECTE DU CLIGNOTEMENT. Cette branche peignait le
+            // fond, puis `WM_PAINT` repeignait par-dessus : la fenêtre était
+            // remplie DEUX fois à chaque repeint, et comme les deux
+            // remplissages ne sont pas atomiques, on voyait un flash.
+            //
+            // `WM_PAINT` peint DÉJÀ le fond (`remplir(dc_ecran, …)`) avant
+            // toute décoration : effacer ici est donc INUTILE et nuisible.
+            // Rendre 1 (valeur non nulle = « effacé ») fait comprendre à
+            // Windows que le fond est traité et qu'il ne doit rien faire.
+            // C'est la technique standard pour une fenêtre à double tampon.
+            1
+        }
+        WM_SETCURSOR => {
+            // Windows demande le curseur à chaque déplacement : sans cette
+            // branche, `DefWindowProc` recharge le curseur de la CLASSE à
+            // chaque fois, ce qui provoque un scintillement du pointeur.
+            // On répond nous-mêmes, avec le curseur déjà en cache.
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
-            if !dc.is_null() {
-                remplir(dc, &rc, FOND);
-            }
-            1
+            let zones = &*std::ptr::addr_of!(ZONES);
+            let mut pos = POINT { x: 0, y: 0 };
+            GetCursorPos(&mut pos);
+            ScreenToClient(h, &mut pos);
+            let survol = dans(&zones[0], pos.x, pos.y)
+                || dans(&zones[1], pos.x, pos.y)
+                || zone_titre(rc.right, rc.bottom, pos.x, pos.y) > 0;
+            SetCursor(if survol { curseur_main() } else { curseur_fleche() });
+            1 // traité : ne pas laisser DefWindowProc recharger le curseur
         }
         WM_TIMER => {
             let etat = &mut *ETAT;
@@ -1774,10 +1846,16 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             // bordure visible à attraper.
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
-            let mut pos = POINT { x: (l & 0xffff) as i32, y: ((l >> 16) & 0xffff) as i32 };
+            // ⚠ `lParam` de `WM_NCHITTEST` est en coordonnées ÉCRAN : la
+            // conversion est ici LÉGITIME (contrairement à `WM_MOUSEMOVE` et
+            // `WM_LBUTTONUP`, qui sont déjà en coordonnées client).
+            let mut pos = POINT { x: (l as i32) << 16 >> 16, y: (l as i32) >> 16 };
             ScreenToClient(h, &mut pos);
             let (x, y) = (pos.x, pos.y);
-            let echelle = (rc.right as f64 / 1120.0).min(rc.bottom as f64 / 780.0);
+            // Même échelle que le tracé : une échelle nulle (fenêtre pas
+            // encore dimensionnée) donnait `bord = 4` partout, et les zones
+            // de redimensionnement ne correspondaient plus au dessin.
+            let echelle = crate::paint::echelle_tracé(rc.right, rc.bottom);
             let bord = ((8.0 * echelle).round() as i32).max(4);
             let (w, ht) = (rc.right, rc.bottom);
             // coins d'abord, puis bords
@@ -1795,33 +1873,72 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             }
         }
         WM_MOUSEMOVE => {
+            // ⚠⚠ CAUSE DU CLIGNOTEMENT MESURÉ. Trois défauts se cumulaient :
+            //
+            // 1. `GetCursorPos` + `ScreenToClient` à CHAQUE mouvement, alors
+            //    que `lParam` contient DÉJÀ les coordonnées client (comme
+            //    pour `WM_LBUTTONUP`). Le calcul était donc juste, mais il
+            //    coûtait deux appels système par pixel de souris ;
+            // 2. `LoadCursorW` à chaque mouvement : deux appels système de
+            //    plus par pixel de souris ;
+            // 3. `InvalidateRect(h, NULL, 0)` dès que le survol changeait :
+            //    le curseur entrait et sortait d'une zone à chaque pixel, ce
+            //    qui invalidait TOUTE la fenêtre. `WM_PAINT` redessinait donc
+            //    1120 × 780 pixels — décodage PNG, mesures GDI, polices
+            //    recréées — des dizaines de fois par seconde : la fenêtre
+            //    clignotait.
+            //
+            // Correction : coordonnées lues dans `lParam`, curseurs chargés
+            // UNE FOIS, et surtout on n'invalide QUE les zones dont
+            // l'apparence change (les deux boutons du pied de page et les
+            // trois de la barre de titre), jamais la fenêtre entière.
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
-            let mut pos = POINT { x: 0, y: 0 };
-            GetCursorPos(&mut pos);
-            ScreenToClient(h, &mut pos);
+            // `lParam` de WM_MOUSEMOVE : coordonnées CLIENT (x = LOWORD,
+            // y = HIWORD), signées.
+            let x = (l as i32) << 16 >> 16;
+            let y = (l as i32) >> 16;
             let zones = &*std::ptr::addr_of!(ZONES);
             let mut z = -1;
-            if dans(&zones[0], pos.x, pos.y) { z = 0; }
-            if dans(&zones[1], pos.x, pos.y) { z = 1; }
-            let zt = match zone_titre(rc.right, rc.bottom, pos.x, pos.y) {
+            if dans(&zones[0], x, y) { z = 0; }
+            if dans(&zones[1], x, y) { z = 1; }
+            let zt = match zone_titre(rc.right, rc.bottom, x, y) {
                 1 => 0,
                 2 => 1,
                 3 => 2,
                 _ => -1,
             };
             let etat = &mut *ETAT;
+            let mut ancien_z = etat.survol;
+            let mut ancien_zt = etat.survol_titre;
             let mut change = false;
-            if z != etat.survol { etat.survol = z; change = true; }
-            if zt != etat.survol_titre { etat.survol_titre = zt; change = true; }
+            if z != ancien_z { etat.survol = z; change = true; }
+            if zt != ancien_zt { etat.survol_titre = zt; change = true; }
             if change {
-                InvalidateRect(h, std::ptr::null(), 0);
+                // Repeint CIBLÉ : seulement les boutons concernés.
+                if ancien_z != z {
+                    for i in [ancien_z, z] {
+                        if i >= 0 && (i as usize) < zones.len() {
+                            InvalidateRect(h, &zones[i as usize], 0);
+                        }
+                    }
+                }
+                if ancien_zt != zt {
+                    // Zones de la barre de titre : réduire, agrandir, fermer.
+                    let bl = (rc.right as f64 * (46.0 / 1120.0)).round() as i32;
+                    let mut zt_rect = std::mem::zeroed::<RECT>();
+                    for i in [ancien_zt, zt] {
+                        if i < 0 { continue; }
+                        let gauche = rc.right - (3 - i as i32) * bl;
+                        zt_rect = RECT { left: gauche, top: 0, right: gauche + bl, bottom: rc.bottom.min(56) };
+                        InvalidateRect(h, &zt_rect, 0);
+                    }
+                }
             }
-            SetCursor(if z >= 0 || zt >= 0 {
-                LoadCursorW(std::ptr::null_mut(), IDC_HAND as *const u16)
-            } else {
-                LoadCursorW(std::ptr::null_mut(), IDC_ARROW as *const u16)
-            });
+            // Curseurs mis en cache : `LoadCursorW` à chaque mouvement de
+            // souris était un appel système inutile par pixel.
+            let curseur = if z >= 0 || zt >= 0 { curseur_main() } else { curseur_fleche() };
+            SetCursor(curseur);
             0
         }
         WM_LBUTTONUP => {

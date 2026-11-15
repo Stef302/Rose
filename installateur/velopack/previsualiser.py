@@ -184,16 +184,21 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
 
     # logo borné par la place disponible
     place_logo = max(0, plancher - s(78) - s(150))
-    cote_logo = min(s(124), place_logo)
-    if cote_logo >= s(40):
+    # Même règle que le Rust : boîte de la HAUTEUR du logo (132x169), marge
+    # de 16 px avant le titre.
+    hauteur_voulue = round(s(124) * 169 / 132)
+    hauteur_logo = min(hauteur_voulue, place_logo)
+    if hauteur_logo >= s(40):
         lw, lh = rose.size
-        if lh >= lw:
-            nw, nh = round(cote_logo * lw / lh), cote_logo
-        else:
-            nw, nh = cote_logo, round(cote_logo * lh / lw)
-        coller(img, rose.resize((nw, nh), Image.LANCZOS),
-               (lateral_w // 2 - nw // 2, s(78) + (cote_logo - nh) // 2))
-    y_marque = s(78) + max(0, cote_logo)
+        cote = hauteur_logo
+        dh = cote
+        dw = max(1, round(cote * lw / lh))
+        if dw > cote:
+            dw = cote
+            dh = max(1, round(cote * lh / lw))
+        coller(img, rose.resize((dw, dh), Image.LANCZOS),
+               (lateral_w // 2 - cote // 2 + (cote - dw) // 2, s(78) + (cote - dh) // 2))
+    y_marque = s(78) + max(0, hauteur_logo) + s(16)
     texte(d, (lateral_w // 2, y_marque + s(28)), "Rose",
           ImageFont.truetype(str(POLICE_TITRE), s(40)), c("TEXTE"), "mm")
     texte_multiligne(d, (s(24), y_marque + s(58)),
@@ -412,9 +417,25 @@ def controler(w, h):
             erreurs.append(
                 f"logo : contenu {x0},{y0}–{x1},{y1} dans {lw}×{lh} — "
                 "une bande transparente réduit le dessin à l'écran")
-        if lw == lh and lh > 0:
-            # Un carré forcé est le symptôme du centrage sur canevas carré.
-            pass
+    # Le logo doit tenir ENTIER dans sa boîte : `dessiner_rose` reçoit un
+    # côté `cote` et doit produire `dw <= cote` ET `dh <= cote`, en gardant
+    # les proportions. Un logo plus haut que large dans une boîte carrée
+    # touchait le titre et paraissait coupé en bas.
+    place = max(0, (h - s(30) - s(18) - s(38) - s(46) - s(16)) - s(78) - s(150))
+    hv = round(s(124) * 169 / 132)
+    hl = min(hv, place)
+    if hl >= s(40):
+        cote = hl
+        dh = cote
+        dw = max(1, round(cote * lw / lh))
+        if dw > cote:
+            dw, dh = cote, max(1, round(cote * lh / lw))
+        if dh > cote or dw > cote:
+            erreurs.append(f"logo {dw}x{dh} dépasse sa boîte {cote}x{cote}")
+        # Marge avant le titre : la tige ne doit pas toucher « ROSE ».
+        bas_logo = s(78) + (cote - dh) // 2 + dh
+        if bas_logo >= s(78) + hl + s(16):
+            erreurs.append(f"logo : bas {bas_logo} touche le titre {s(78)+hl+s(16)}")
 
     # Cartes : aucune ne doit déborder du pied de page, et la vue ne doit pas
     # être vide au-dessus du pied.
