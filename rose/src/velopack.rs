@@ -30,9 +30,26 @@
 //!
 //! Licence MIT.
 
+
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+/// Lance `curl` SANS fenêtre de console.
+///
+/// ⚠ `curl.exe` est un programme console : appelé depuis une application
+/// GUI (l'installeur), Windows lui alloue une console — une fenêtre noire
+/// apparaît brièvement. `CREATE_NO_WINDOW` la supprime.
+fn curl_sans_fenetre() -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new("curl");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
 
 /// Variable posée par le launcher Velopack : sa présence prouve que Rose
 /// tourne sous une installation Velopack.
@@ -241,7 +258,7 @@ fn lire_source(url: &str) -> Result<String, String> {
     if let Some(chemin) = url.strip_prefix("file://") {
         return fs::read_to_string(chemin).map_err(|e| format!("lecture {chemin} : {e}"));
     }
-    let sortie = std::process::Command::new("curl")
+    let sortie = curl_sans_fenetre()
         .args(["-sSL", "--fail", url])
         .output()
         .map_err(|e| format!("curl indisponible : {e}"))?;
@@ -289,7 +306,7 @@ pub fn check_and_update(_silencieux: bool) -> Result<Option<String>, String> {
         Some((d, _)) => format!("{}/{}", d, paquet.nom),
         None => return Err("URL du manifeste invalide".into()),
     };
-    let statut = std::process::Command::new("curl")
+    let statut = curl_sans_fenetre()
         .args(["-sSL", "--fail", "-o"])
         .arg(&cible)
         .arg(&url_paquet)

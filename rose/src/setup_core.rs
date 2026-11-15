@@ -7,6 +7,27 @@
 
 use std::path::PathBuf;
 
+/// Lance un programme SANS ouvrir de fenêtre de console.
+///
+/// ⚠ INDISPENSABLE dans l'installeur graphique. `reg.exe`, `curl.exe` et
+/// `wget.exe` sont des programmes CONSOLE. Lancés depuis une application
+/// GUI (sous-système 2), Windows leur alloue une console : une fenêtre noire
+/// apparaît brièvement à chaque appel (mesuré : une fenêtre cmd au
+/// lancement de l'installeur, avant la fenêtre Rose).
+///
+/// `CREATE_NO_WINDOW` (0x08000000) supprime cette allocation. Ailleurs
+/// qu'en Windows, la fonction est neutre.
+fn commande_sans_fenetre(programme: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut c = std::process::Command::new(programme);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
 /// Messages produits par une opération (affichés dans la console ou dans
 /// la zone de texte de la fenêtre).
 pub type Journal = Vec<String>;
@@ -21,7 +42,7 @@ pub type Journal = Vec<String>;
 pub fn installation_existante() -> Option<String> {
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("reg")
+        let out = commande_sans_fenetre("reg")
             .args(["query", "HKCU\\Software\\Rose", "/v", "InstallDir"])
             .output()
             .ok()?;
@@ -333,13 +354,13 @@ fn nettoyer_anciennes_installations(_prefixe: &str) -> String {
 fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
     #[cfg(windows)]
     {
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Rose", "/v", "InstallDir", "/t", "REG_SZ", "/d", prefixe, "/f"]).status();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Rose", "/v", "Version", "/t", "REG_SZ", "/d", env!("CARGO_PKG_VERSION"), "/f"]).status();
         // PATH : on retire d'abord TOUTES les entrées contenant « Rose »
         let mut ancien = String::new();
-        if let Ok(o) = std::process::Command::new("reg")
+        if let Ok(o) = commande_sans_fenetre("reg")
             .args(["query", "HKCU\\Environment", "/v", "Path"]).output() {
             let txt = String::from_utf8_lossy(&o.stdout);
             for ligne in txt.lines() {
@@ -363,18 +384,18 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
             .map(|s| s.to_string())
             .collect();
         segments.insert(0, bindir.display().to_string());
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
                    "/d", &segments.join(";"), "/f"]).status();
         // association .rose
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ", "/d", "Rose.File", "/f"]).status();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Classes\\Rose.File", "/ve", "/t", "REG_SZ", "/d", "Programme Rose", "/f"]).status();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Classes\\Rose.File\\DefaultIcon", "/ve", "/t", "REG_SZ",
                    "/d", &format!("{}\\rose.ico,0", bindir.display()), "/f"]).status();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve", "/t", "REG_SZ",
                    "/d", &format!("\"{}\\rose.exe\" \"%1\"", bindir.display()), "/f"]).status();
         // ── Profil Windows Terminal ──────────────────────────────────────
@@ -404,8 +425,8 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         let _ = std::fs::create_dir_all(&dir);
         let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mime-info xmlns=\"http://www.freedesktop.org/standards/shared-mime-info\">\n  <mime-type type=\"text/x-rose\">\n    <comment>Rose source file</comment>\n    <glob pattern=\"*.rose\"/>\n  </mime-type>\n</mime-info>\n";
         let _ = std::fs::write(format!("{}/x-rose.xml", dir), xml);
-        let _ = std::process::Command::new("xdg-mime").arg("install").arg(format!("{}/x-rose.xml", dir)).status();
-        let _ = std::process::Command::new("update-mime-database").arg(format!("{}/.local/share/mime", home)).status();
+        let _ = commande_sans_fenetre("xdg-mime").arg("install").arg(format!("{}/x-rose.xml", dir)).status();
+        let _ = commande_sans_fenetre("update-mime-database").arg(format!("{}/.local/share/mime", home)).status();
         "PATH et type MIME mis à jour".to_string()
     }
 }
@@ -490,16 +511,16 @@ pub fn desinstaller(prefixe: &str) -> Journal {
                 .join("Rose");
             let _ = std::fs::remove_dir_all(&dossier);
         }
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["delete", "HKCU\\Software\\Rose", "/f"]).status();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["delete", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Rose", "/f"]).status();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["delete", "HKCU\\Software\\Classes\\.rose", "/f"]).status();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["delete", "HKCU\\Software\\Classes\\Rose.File", "/f"]).status();
         let mut ancien = String::new();
-        if let Ok(o) = std::process::Command::new("reg")
+        if let Ok(o) = commande_sans_fenetre("reg")
             .args(["query", "HKCU\\Environment", "/v", "Path"]).output() {
             let txt = String::from_utf8_lossy(&o.stdout);
             for ligne in txt.lines() {
@@ -514,7 +535,7 @@ pub fn desinstaller(prefixe: &str) -> Journal {
             .filter(|s| !s.to_lowercase().contains("rose"))
             .map(|s| s.to_string())
             .collect();
-        let _ = std::process::Command::new("reg")
+        let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
                    "/d", &segments.join(";"), "/f"]).status();
     }
@@ -588,7 +609,7 @@ pub fn nom_asset() -> &'static str {
 
 /// Exécute `curl` (ou `wget`) pour récupérer une URL.
 fn http_get(url: &str) -> Option<String> {
-    let out = std::process::Command::new("curl")
+    let out = commande_sans_fenetre("curl")
         .args(["-sSL", "--max-time", "30", url])
         .output();
     if let Ok(o) = out {
@@ -597,7 +618,7 @@ fn http_get(url: &str) -> Option<String> {
         }
     }
     // repli : wget
-    let out = std::process::Command::new("wget")
+    let out = commande_sans_fenetre("wget")
         .args(["-q", "-O", "-", "--timeout=30", url])
         .output();
     if let Ok(o) = out {
@@ -612,7 +633,7 @@ fn http_get(url: &str) -> Option<String> {
 /// et n'est pas vide.
 fn http_telecharger(url: &str, dest: &std::path::Path) -> bool {
     let _ = std::fs::remove_file(dest);
-    let st = std::process::Command::new("curl")
+    let st = commande_sans_fenetre("curl")
         .args(["-sSL", "--max-time", "180", "-o", dest.to_string_lossy().as_ref(), url])
         .status();
     if let Ok(s) = st {
@@ -622,7 +643,7 @@ fn http_telecharger(url: &str, dest: &std::path::Path) -> bool {
             }
         }
     }
-    let st = std::process::Command::new("wget")
+    let st = commande_sans_fenetre("wget")
         .args(["-q", "-O", dest.to_string_lossy().as_ref(), url])
         .status();
     if let Ok(s) = st {
@@ -705,7 +726,13 @@ pub fn version_installee(prefixe: &str) -> Option<String> {
         PathBuf::from(prefixe).join(nom),
     ];
     for exe in candidats {
-        let Ok(out) = std::process::Command::new(&exe).arg("--version").output() else {
+        // `--version` s'exécute sans fenêtre : `rose.exe` est un programme
+        // CONSOLE et, lancé depuis l'installeur GUI, Windows lui allouerait
+        // une console (fenêtre noire fugace).
+        let Ok(out) = commande_sans_fenetre(&exe.display().to_string())
+            .arg("--version")
+            .output()
+        else {
             continue;
         };
         let txt = String::from_utf8_lossy(&out.stdout);
@@ -835,7 +862,9 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
             j.push(format!("Téléchargement de l'installeur : {}", n));
             if http_telecharger(&url, &dest) {
                 j.push("✓ Installeur téléchargé — lancement…".to_string());
-                let _ = std::process::Command::new(&dest).spawn();
+                // L'installeur téléchargé est une application GUI : on le
+                // lance sans console parasite.
+                let _ = commande_sans_fenetre(&dest.display().to_string()).spawn();
             } else {
                 j.push("✗ téléchargement de l'installeur impossible".to_string());
             }
@@ -886,6 +915,33 @@ mod tests {
         assert_eq!(comparer_versions("0.1.5", "5.12.0"), -1);
         assert_eq!(comparer_versions("5.12.0", "0.1.5"), 1);
         assert_eq!(comparer_versions("v0.1.5", "0.1.4"), 1);
+    }
+
+    #[test]
+    fn aucun_lancement_de_console_a_nu() {
+        // Garde-fou anti-clignotement : `reg`, `curl` et `wget` sont des
+        // programmes CONSOLE. Lancés depuis l'installeur GUI, ils ouvrent
+        // une fenêtre cmd (mesuré en VM). Tout appel doit donc passer par
+        // `commande_sans_fenetre` (CREATE_NO_WINDOW).
+        //
+        // On lit notre propre source, on coupe la zone du helper et celle du
+        // module de test, puis on compte les appels directs restants.
+        let src = include_str!("setup_core.rs");
+        let corps = match src.find("fn commande_sans_fenetre") {
+            Some(i) => {
+                // Fin du helper = prochain "\n}\n" après lui.
+                let fin = src[i..].find("\n}\n").map(|j| i + j + 3).unwrap_or(src.len());
+                &src[fin..]
+            }
+            None => src,
+        };
+        let corps = match corps.find("mod tests") {
+            Some(i) => &corps[..i],
+            None => corps,
+        };
+        let motif = concat!("std::process::Command", "::new");
+        let direct = corps.matches(motif).count();
+        assert_eq!(direct, 0, "{direct} lancement(s) de console à nu : utiliser commande_sans_fenetre");
     }
 
     #[test]
