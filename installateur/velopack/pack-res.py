@@ -51,10 +51,10 @@ from fontTools.ttLib.tables.ttProgram import Program
 RACINE = Path(__file__).resolve().parents[2]
 PNG = RACINE / "installateur" / "velopack" / "rose-installeur.png"
 WOFF2 = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
-# Icône de la fenêtre : `rose.ico` (la marque Rose), pas `setup.ico`
-# (la variante « installeur », qui a un autre dessin). C'est l'icône
-# demandée pour la fenêtre, la barre des tâches et Alt+Tab.
-ICO = RACINE / "installateur" / "assets" / "rose.ico"
+# Icône de la fenêtre et du setup : `setup.ico`, la ROSE de marque (la fleur
+# rouge et verte). `rose.ico` est l'icône de TYPE DE FICHIER (un document
+# marqué « .ROSE ») : elle convient pour les `.rose`, pas pour l'installeur.
+ICO = RACINE / "installateur" / "assets" / "setup.ico"
 MANIFESTE = RACINE / "rose" / "rose-setup.manifest"
 SORTIE = RACINE / "rose" / "rose-setup.res"
 
@@ -197,37 +197,34 @@ def main():
         # ⚠ Pour les icônes, `llvm-rc` NE découpe PAS un `.ico` : donné à
         # RT_ICON, il embarque le fichier entier (136 282 o pour notre ICO)
         # comme UNE icône, sans `RT_GROUP_ICON` — Windows n'a alors aucune
-        # icône utilisable. On extrait donc chaque taille en `.ico` d'un seul
-        # élément (RT_ICON 1..n) et on écrit le `RT_GROUP_ICON 1` à la main.
+        # icône utilisable. On extrait donc chaque taille en RT_ICON 1..n et
+        # on écrit le `RT_GROUP_ICON 1` à la main.
+        #
+        # ⚠⚠ Le fichier donné à `RT_ICON` doit contenir les OCTETS BRUTS de
+        # l'image (BITMAPINFOHEADER + pixels), PAS un conteneur `.ico`.
+        # `llvm-rc` recopie le fichier tel quel : en lui donnant un `.ico`
+        # d'un seul élément, chaque RT_ICON commençait par l'en-tête ICO
+        # `00 00 01 00 …` (reserved/type/count) que Windows n'attend pas à
+        # cet endroit. Résultat mesuré : la ressource existait, le groupe
+        # aussi, mais AUCUNE icône ne s'affichait — ni dans la fenêtre, ni
+        # dans l'Explorateur. On écrit donc `e["donnees"]` seul.
         lignes = [
             f'1 {RT_RCDATA} "{PNG}"',
             f'2 {RT_FONT} "{ttf_path}"',
         ]
         for i, e in enumerate(icones, start=1):
-            un = tmp / f"icone{i}.ico"
-            tete = struct.pack("<HHH", 0, 1, 1)
-            entree = struct.pack(
-                "<BBBBHHII",
-                e["largeur"] % 256,
-                e["hauteur"] % 256,
-                e["couleurs"],
-                0,
-                e["plans"],
-                e["bits"],
-                len(e["donnees"]),
-                22,  # 6 (en-tête) + 16 (entrée)
-            )
-            un.write_bytes(tete + entree + e["donnees"])
-            lignes.append(f'{i} {RT_ICON} "{un}"')
+            brut = tmp / f"icone{i}.bin"
+            brut.write_bytes(e["donnees"])
+            lignes.append(f'{i} {RT_ICON} "{brut}"')
 
         groupe = struct.pack("<HHH", 0, 1, len(icones))
         for i, e in enumerate(icones, start=1):
             # ⚠ La taille inscrite dans le groupe doit être celle que
             # `llvm-rc` écrit réellement dans l'ENTRÉE DE DONNÉES du `.res` :
-            # les octets de l'image + son en-tête de ressource (22 o).
-            # Mesuré : 16x16 → 1128 + 22 = 1150 o. Inscrire `len(donnees)`
-            # (1128) ou `len(donnees)+40` faisait rejeter chaque icône par
-            # le contrôle ci-dessous, et Windows n'aurait pas su la lire.
+            # Taille de l'image telle qu'elle est stockée dans RT_ICON : les
+            # OCTETS BRUTS du DIB, sans l'en-tête ICO ni celui du `.res`.
+            # (Avec l'ancien conteneur `.ico`, il fallait +22 ; maintenant
+            # c'est exactement `len(donnees)`.)
             groupe += struct.pack(
                 "<BBBBHHIH",
                 e["largeur"] % 256,
@@ -236,7 +233,7 @@ def main():
                 0,
                 e["plans"],
                 e["bits"],
-                len(e["donnees"]) + 22,
+                len(e["donnees"]),
                 i,
             )
         groupe_path = tmp / "groupe.bin"

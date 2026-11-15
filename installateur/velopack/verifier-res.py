@@ -182,6 +182,22 @@ def main():
         icone = ressources.get((RT_ICON, ident))
         assert icone is not None, f"icône {ident} référencée mais absente"
         assert len(icone) == taille, f"icône {ident} : {len(icone)} o au lieu de {taille}"
+        # ⚠ Une entrée RT_ICON doit contenir un DIB BRUT : elle commence par
+        # un BITMAPINFOHEADER, dont `biSize` vaut 40 (0x28) le plus souvent.
+        # Un conteneur `.ico` commence par `00 00 01 00` (reserved/type/count)
+        # et Windows ne le décode PAS à cet endroit : l'icône est alors
+        # ignorée, la fenêtre s'ouvre sans icône et l'Explorateur affiche
+        # l'icône générique. C'est le bug qui a fait rater l'icône deux fois.
+        tete = struct.unpack("<I", icone[:4])[0]
+        assert icone[:4] != b"\x00\x00\x01\x00", (
+            f"icône {ident} : contient un conteneur .ico au lieu d'un DIB brut "
+            "(Windows ne l'affichera pas)")
+        # Depuis Vista, une icône peut être un PNG COMPRESSÉ (256 px en
+        # particulier) : elle commence par la signature PNG. Sinon c'est un
+        # BITMAPINFOHEADER, dont `biSize` vaut 40 (ou 12 pour BITMAPCOREHEADER).
+        est_png = icone[:8] == b"\x89PNG\r\n\x1a\n"
+        assert est_png or tete in (12, 40, 108, 124), (
+            f"icône {ident} : ni PNG ni DIB (biSize={tete} inattendu)")
         attendues.append(f"{largeur or 256}x{hauteur or 256}")
 
     icones = sorted(n for (t, n) in ressources if t == RT_ICON)
