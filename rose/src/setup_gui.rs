@@ -545,71 +545,6 @@ unsafe fn charger_police() {
     }
 }
 
-/// Décode un PNG RGBA 8 bits en (largeur, hauteur, pixels RGBA).
-/// Aucune dépendance : en-têtes locaux + DEFLATE maison.
-fn decoder_png(donnees: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
-    if donnees.len() < 8 || &donnees[..8] != b"\x89PNG\r\n\x1a\n" {
-        return None;
-    }
-    let mut i = 8usize;
-    let mut largeur = 0usize;
-    let mut hauteur = 0usize;
-    let mut compression = Vec::new();
-    while i + 8 <= donnees.len() {
-        let taille = u32::from_be_bytes([donnees[i], donnees[i + 1], donnees[i + 2], donnees[i + 3]]) as usize;
-        let type_ = &donnees[i + 4..i + 8];
-        let corps = donnees.get(i + 8..i + 8 + taille)?;
-        match type_ {
-            b"IHDR" => {
-                largeur = u32::from_be_bytes([corps[0], corps[1], corps[2], corps[3]]) as usize;
-                hauteur = u32::from_be_bytes([corps[4], corps[5], corps[6], corps[7]]) as usize;
-                let profondeur = corps[8];
-                let couleur = corps[9];
-                if profondeur != 8 || couleur != 6 {
-                    return None;
-                }
-            }
-            b"IDAT" => compression.extend_from_slice(corps),
-            b"IEND" => break,
-            _ => {}
-        }
-        i += 12 + taille;
-    }
-    let brut = crate::inflate::decompresser(&compression)?;
-    let pas = largeur * 4;
-    if brut.len() < hauteur * (pas + 1) {
-        return None;
-    }
-    let mut precedent = vec![0u8; pas];
-    let mut pixels = Vec::with_capacity(pas * hauteur);
-    for y in 0..hauteur {
-        let filtre = brut[y * (pas + 1)];
-        let ligne = &brut[y * (pas + 1) + 1..(y + 1) * (pas + 1)];
-        let mut sortie = ligne.to_vec();
-        for x in 0..pas {
-            let a = if x >= 4 { sortie[x - 4] } else { 0 };
-            let b = precedent[x];
-            let c = if x >= 4 { precedent[x - 4] } else { 0 };
-            match filtre {
-                1 => sortie[x] = sortie[x].wrapping_add(a),
-                2 => sortie[x] = sortie[x].wrapping_add(b),
-                3 => sortie[x] = sortie[x].wrapping_add(((a as u16 + b as u16) >> 1) as u8),
-                4 => {
-                    let p = a as i32 + b as i32 - c as i32;
-                    let pa = (p - a as i32).abs();
-                    let pb = (p - b as i32).abs();
-                    let pc = (p - c as i32).abs();
-                    let pr = if pa <= pb && pa <= pc { a } else if pb <= pc { b } else { c };
-                    sortie[x] = sortie[x].wrapping_add(pr);
-                }
-                _ => {}
-            }
-        }
-        pixels.extend_from_slice(&sortie);
-        precedent = sortie;
-    }
-    Some((largeur, hauteur, pixels))
-}
 
 unsafe extern "system" {
     fn GdipCreateBitmapFromScan0(largeur: i32, hauteur: i32, pas: i32, format: i32,
@@ -665,7 +600,7 @@ unsafe fn dessiner_rgba_gdiplus(dc: HDC, x: i32, y: i32, cote: i32,
 /// Dessine la rose embarquée, mise à l'échelle, avec transparence.
 unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     let Some(png) = ressource(1, 10) else { return false };
-    let Some((largeur, hauteur, pixels)) = decoder_png(png) else { return false };
+    let Some((largeur, hauteur, pixels)) = crate::png::decoder_png(png) else { return false };
 
     // Chemin principal : GDI+ (alpha et mise à l'échelle fiables).
     if dessiner_rgba_gdiplus(dc, x, y, cote, largeur, hauteur, &pixels) {

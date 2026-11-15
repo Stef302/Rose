@@ -410,6 +410,41 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
                    "/d", &segments.join(";"), "/f"]).status();
+        // ⚠⚠ DIFFUSER LE CHANGEMENT D'ENVIRONNEMENT.
+        //
+        // Écrire la clé de registre ne met PAS à jour les applications
+        // DÉJÀ lancées : elles gardent l'environnement qu'elles ont reçu à
+        // leur démarrage. Mesuré chez l'utilisateur : `rose` fonctionnait
+        // dans cmd (ouvert APRÈS l'installation) mais VS Code disait
+        // « rose n'est pas reconnu » — VS Code avait été lancé AVANT et
+        // n'a jamais vu le nouveau PATH.
+        //
+        // `WM_SETTINGCHANGE` avec « Environment » demande à Windows de
+        // rafraîchir l'environnement des fenêtres applicatives.
+        #[cfg(windows)]
+        unsafe {
+            use std::ffi::c_void;
+            #[link(name = "user32")]
+            unsafe extern "system" {
+                fn SendMessageTimeoutW(hwnd: isize, msg: u32, wparam: usize,
+                                       lparam: *const c_void, flags: u32,
+                                       timeout: u32, result: *mut usize) -> usize;
+            }
+            const WM_SETTINGCHANGE: u32 = 0x001A;
+            const HWND_BROADCAST: isize = 0xFFFF;
+            const SMTO_ABORTIFHUNG: u32 = 0x0002;
+            let env = "Environment\0".encode_utf16().collect::<Vec<u16>>();
+            let mut result = 0usize;
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                env.as_ptr() as *const c_void,
+                SMTO_ABORTIFHUNG,
+                3000,   // 3 s : n'attend pas une application bloquée
+                &mut result,
+            );
+        }
         // association .rose
         let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ", "/d", "Rose.File", "/f"]).status();
@@ -497,7 +532,11 @@ fn ecrire_profil_terminal(bindir: &std::path::Path) -> String {
 
     // Chemins en JSON : les antislashs doivent être doublés.
     let shell = bindir.join("rose-shell.exe").display().to_string().replace('\\', "\\\\");
-    let icone = bindir.join("rose.ico").display().to_string().replace('\\', "\\\\");
+    // ⚠ L'icône du profil est `rose_app.ico` (la ROSE de marque), pas
+    // `rose.ico` : ce dernier est l'icône de TYPE DE FICHIER (un document
+    // marqué « .ROSE »), qui n'a rien à faire dans le menu des onglets.
+    // Mesuré : le profil « Rose » affichait le document au lieu de la rose.
+    let icone = bindir.join("rose_app.ico").display().to_string().replace('\\', "\\\\");
 
     // `startingDirectory` = dossier de l'utilisateur : un shell s'ouvre là où
     // l'on travaille, pas dans `bin\`.

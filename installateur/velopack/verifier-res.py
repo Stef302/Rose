@@ -264,6 +264,20 @@ def main():
             assert blob[:4] == b"\x00\x00\x01\x00", f"compagnon {nom} n'est pas un ICO"
         print(f"  {nom:<16} {len(blob):>8} o")
 
+    # La rose affichée dans l'installeur (RT_RCDATA 1) doit être un PNG
+    # DÉCODABLE. Mesuré : le décodeur maison fedait les IDAT à un
+    # décompresseur DEFLATE brut au lieu d'un décompresseur ZLIB → il
+    # rendait `None` → le logo n'était JAMAIS dessiné (ni dans la barre de
+    # titre, ni au-dessus de « ROSE »), sans aucun message d'erreur.
+    png = ressources.get((RT_RCDATA, 1))
+    assert png is not None, "rose PNG (RT_RCDATA 1) absente"
+    assert png[:8] == b"\x89PNG\r\n\x1a\n", "la rose n'est pas un PNG"
+    assert png[12:16] == b"IHDR", "en-tête IHDR absent"
+    w = int.from_bytes(png[16:20], "big")
+    h = int.from_bytes(png[20:24], "big")
+    assert png[24] == 8 and png[25] == 6, "le PNG doit être RGBA 8 bits"
+    print(f"  rose PNG      {len(png)} o ({w}x{h}, RGBA)")
+
     print("RESSOURCES VALIDES")
 
 

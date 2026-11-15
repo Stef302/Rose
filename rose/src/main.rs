@@ -22,6 +22,7 @@ mod repl;
 mod setup_core;
 mod velopack;
 mod inflate;
+mod png;
 mod setup_gui;
 #[cfg(feature = "llvm")]
 mod aot_llvm_orc;

@@ -44,6 +44,9 @@ pub mod sha256;
 /// DEFLATE / zlib / PNG — partagé par l'installeur et la mise à jour Velopack.
 pub mod inflate;
 
+/// Décodeur PNG minimal (RGBA 8 bits) — testable sous toutes les cibles.
+pub mod png;
+
 /// Console interactive (REPL) — partagée par `rose console` et `rose-shell`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod repl;

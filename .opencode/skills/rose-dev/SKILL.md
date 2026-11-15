@@ -309,6 +309,42 @@ clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 - Utiliser `colonnes()` (fonction module, testée) : elle ignore les
   séquences CSI.
 
+## PNG : ZLIB, pas DEFLATE brut (le logo invisible)
+
+- Les IDAT d'un PNG contiennent un flux **ZLIB** (en-tête 2 octets `78 DA`,
+  puis DEFLATE). `crate::inflate::decompresser()` attend du **DEFLATE brut**.
+ -feeding des IDAT à `decompresser` consomme l'en-tête comme des données :
+  le flux part en vrille et le décodeur rend `None`.
+- Conséquence mesurée : la rose de l'installeur ne s'affichait NI dans la
+  barre de titre, NI au-dessus de « ROSE » — `dessiner_rose` rendait `false`
+  et l'appel était **silencieusement** ignoré. Aucun message, aucune
+  erreur : juste un logo absent.
+- Utiliser `crate::inflate::decompresser_zlib()`.
+- Le décodeur vit dans `rose/src/png.rs` (module propre) pour être TESTABLE
+  sous Linux : `setup_gui` n'est compilé que sur Windows, un bug y resterait
+  invisible. Trois tests vérifient que le PNG réel se décode et contient des
+  pixels opaques rouges ET verts (une image entièrement transparente ne
+  s'afficherait jamais).
+
+## PATH : diffuser le changement d'environnement
+
+- Écrire `HKCU\Environment\Path` ne met PAS à jour les applications
+  DÉJÀ lancées : elles gardent l'environnement du démarrage. Mesuré :
+  `rose` marchait dans cmd (ouvert après l'installation) mais VS Code
+  disait « rose n'est pas reconnu » (lancé avant).
+- Diffuser `WM_SETTINGCHANGE` / `"Environment"` via `SendMessageTimeoutW`
+  (`HWND_BROADCAST`, `SMTO_ABORTIFHUNG`, 3 s).
+
+## Icônes : deux icônes, deux usages
+
+- `rose.ico` = icône de TYPE DE FICHIER (document « .ROSE ») → association
+  `Rose.File\DefaultIcon`, et `SHChangeNotify(SHCNE_ASSOCCHANGED)` pour que
+  l'Explorateur relise le cache.
+- `rose_app.ico` = la ROSE de marque → profil Windows Terminal, barre des
+  tâches, raccourcis.
+- Se tromper donnait un document dans le menu des onglets de Windows
+  Terminal (mesuré).
+
 ## GDI+ : ATTENTION à l'ordre des canaux
 
 - `COLORREF` GDI = `0x00BBGGRR` ; `ARGB` GDI+ = `0xAARRGGBB`. Passer la
