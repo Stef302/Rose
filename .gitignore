@@ -7,7 +7,10 @@ Rose language.zip
 *.zip
 
 # --- Binaires compilés (C++, Rust, Zig, v2) ---------------------------------
-bin/
+# `bin/` doit être ancré à la racine : sans le `/` initial, la règle
+# correspondait AUSSI à `rose/src/bin/`, et `rose-aot.rs` / `rose-shell.rs`
+# n'ont jamais été versionnés — un clone neuf de `main` ne compilait pas.
+/bin/
 *.exe
 *.pdb
 rose-cpp/rose-x64
