@@ -29,8 +29,10 @@ rose link hello.o -o hello
 
 ## Interactive shell
 
-`rose-shell` is a separate executable installed next to the engine. It is a
-full REPL, not a wrapper:
+`rose-shell` is a small **launcher** (~400 KB) installed next to the engine. It
+locates `rose.exe` (`ROSE_EXE`, then next to itself in `bin\`, then `PATH`) and
+delegates `rose console` to it, so the language is compiled only once and the
+shell always matches the installed engine version:
 
 ```sh
 rose-shell                    # empty console
@@ -39,9 +41,14 @@ rose-shell prog.rose --sans-exec   # load without running the >>
 ```
 
 Double-clicking `rose-shell.exe` opens the Rose console directly; the window
-waits for a key before closing, so it does not vanish. From Windows Terminal it
-behaves like any other shell: tab title "Rose 0.1.5 — console interactive", the
-Rose icon, and Rose colours.
+waits for a key before closing, so it does not vanish.
+
+The installer also writes a **Windows Terminal profile fragment** to
+`%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\Rose\rose.json`:
+"Rose" appears in the tab dropdown with its icon, the title "Rose 0.1.5" and
+`startingDirectory` set to the user's home. Windows Terminal merges these
+fragments automatically, so `settings.json` is never edited. The uninstaller
+removes the fragment.
 
 Real line editing (raw console `ReadConsoleInputW`, no dependency):
 
