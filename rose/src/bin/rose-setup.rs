@@ -20,18 +20,40 @@
 
 use std::path::PathBuf;
 
-/// Binaire Rose à installer, trouvé à côté de l'installeur.
+/// Binaire Rose à installer.
+///
+/// Ordre :
+/// 1. `payload\rose.exe` à côté de l'installeur (distribution Velopack) ;
+/// 2. le moteur EMBARQUÉ dans les ressources (`RT_RCDATA 3`), qui fait de
+///    `Rose-win-Setup.exe` un fichier unique.
+///
+/// ⚠⚠ NE JAMAIS retomber sur `current_exe()`. La version précédente le
+/// faisait : dans `Rose-win-Setup.exe`, l'installeur se copiait donc
+/// lui-même sous `bin\rose.exe`, puis s'inscrivait dans le PATH. Chaque
+/// `rose` relançait le setup, qui réinstallait, qui relançait le setup —
+/// jusqu'à 60 processus simultanés chez l'utilisateur, obligé de redémarrer
+/// son PC. Si rien n'est trouvé, on rend `None` et `installer` refuse
+/// proprement avec un message au lieu de boucler.
 pub fn source_moteur() -> Option<PathBuf> {
     let dossier = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let courant = std::env::current_exe().ok()?;
     let candidats = [
         dossier.join("payload").join("rose.exe"),
         dossier.join("rose.exe"),
         dossier.join("payload").join("rose"),
         dossier.join("rose"),
-        courant.clone(),
     ];
-    candidats.into_iter().find(|p| p.is_file())
+    if let Some(p) = candidats.into_iter().find(|p| p.is_file()) {
+        return Some(p);
+    }
+    // Moteur embarqué dans les ressources de l'installeur (Windows seul :
+    // `setup_gui` n'est compilé que sur cette cible).
+    #[cfg(windows)]
+    {
+        if let Some(p) = rose::setup_gui::moteur_embarque() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 fn main() {

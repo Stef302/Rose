@@ -56,6 +56,8 @@ WOFF2 = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
 # marqué « .ROSE ») : elle convient pour les `.rose`, pas pour l'installeur.
 ICO = RACINE / "installateur" / "assets" / "setup.ico"
 MANIFESTE = RACINE / "rose" / "rose-setup.manifest"
+# Moteur compilé, embarqué dans l'installeur (binaire unique).
+MOTEUR = RACINE / "rose" / "target" / "x86_64-pc-windows-msvc" / "release" / "rose.exe"
 SORTIE = RACINE / "rose" / "rose-setup.res"
 
 # Langue des ressources : 1033 = en-US, la valeur qu'émet `llvm-rc`/`rc.exe`.
@@ -185,6 +187,21 @@ def verifier_res(chemin: Path, attendus: set[int]) -> None:
 def main():
     ttf = woff2_vers_ttf(WOFF2)
     icones = entrees_ico(ICO)
+    # Moteur embarqué : c'est CE qui permet à `Rose-win-Setup.exe` d'être un
+    # fichier unique. Sans lui, l'installeur n'avait aucune source à copier
+    # et retombait sur lui-même — d'où la boucle de lancement.
+    moteur = MOTEUR.read_bytes() if MOTEUR.exists() else None
+    if moteur is None:
+        # ⚠ Un installeur SANS moteur embarqué n'a rien à installer : il se
+        # copiait lui-même sous `rose.exe`, créant une boucle de lancement
+        # (60 processus chez l'utilisateur). On refuse de produire un tel
+        # fichier plutôt que de le publier.
+        raise SystemExit(
+            f"moteur absent : {MOTEUR}\n"
+            "Compilez d'abord `cargo build --release --target "
+            "x86_64-pc-windows-msvc --bin rose`, sinon l'installeur n'aurait "
+            "rien à installer et se copierait lui-même sous rose.exe."
+        )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -212,6 +229,12 @@ def main():
             f'1 {RT_RCDATA} "{PNG}"',
             f'2 {RT_FONT} "{ttf_path}"',
         ]
+        if moteur is not None:
+            # RT_RCDATA id 3 : le moteur `rose.exe` lui-même. `setup_gui` le
+            # lit par `FindResourceW` et l'écrit dans `bin\rose.exe`.
+            moteur_path = tmp / "moteur.exe"
+            moteur_path.write_bytes(moteur)
+            lignes.append(f'3 {RT_RCDATA} "{moteur_path}"')
         for i, e in enumerate(icones, start=1):
             brut = tmp / f"icone{i}.bin"
             brut.write_bytes(e["donnees"])

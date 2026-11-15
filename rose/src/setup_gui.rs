@@ -339,6 +339,30 @@ unsafe fn ressource(nom: u16, type_: u16) -> Option<&'static [u8]> {
     Some(std::slice::from_raw_parts(p as *const u8, taille as usize))
 }
 
+/// Écrit le moteur embarqué (`RT_RCDATA 3`) dans un fichier temporaire et
+/// rend son chemin, pour que `setup_core::installer` le copie dans `bin\`.
+///
+/// C'est ce qui fait de `Rose-win-Setup.exe` un installeur « un seul
+/// fichier ». Sans cette ressource, `source_moteur()` ne trouvait rien et
+/// l'installeur se copiait lui-même sous `rose.exe` — boucle de lancement.
+#[cfg(windows)]
+pub fn moteur_embarque() -> Option<std::path::PathBuf> {
+    let octets = unsafe { ressource(3, 10) }?; // RT_RCDATA = 10
+    if octets.len() < 1024 || &octets[0..2] != b"MZ" {
+        return None; // ce n'est pas un PE : on refuse
+    }
+    let dossier = std::env::temp_dir().join("rose-setup-payload");
+    let _ = std::fs::create_dir_all(&dossier);
+    let chemin = dossier.join(format!("rose-{}.exe", std::process::id()));
+    std::fs::write(&chemin, octets).ok()?;
+    Some(chemin)
+}
+
+#[cfg(not(windows))]
+pub fn moteur_embarque() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Charge la police Kare embarquée dans la session GDI du processus.
 unsafe fn charger_police() {
     if let Some(ttf) = ressource(2, 8) {
@@ -1371,6 +1395,14 @@ fn lancer_travail() {
         } else {
             crate::setup_core::installer(&prefixe, source.as_deref())
         };
+        // Le moteur embarqué est écrit dans un fichier temporaire : on le
+        // retire une fois la copie faite, pour ne pas laisser traîner un
+        // `rose.exe` complet dans %TEMP%.
+        if let Some(p) = source.as_deref() {
+            if p.to_string_lossy().contains("rose-setup-payload") {
+                let _ = std::fs::remove_file(p);
+            }
+        }
         let derniere = journal.last().cloned().unwrap_or_else(|| "Terminé.".to_string());
         STATUT.lock().unwrap().replace(derniere);
         let cible = unsafe { HWND_FENETRE as isize };

@@ -106,6 +106,65 @@ pub fn inscriptible(dossier: &str) -> bool {
     }
 }
 
+/// Refuse un fichier qui n'est PAS le moteur Rose mais l'installeur.
+///
+/// Rend `Some(raison)` quand la source doit être rejetée.
+///
+/// Deux signaux, pour être robuste même si le setup a été renommé :
+/// 1. le nom du fichier contient « setup » (ou « install ») ;
+/// 2. sous Windows, le PE est en sous-système GUI (2), alors que `rose.exe`
+///    est en console (3). C'est le signal le plus fiable : il ne dépend ni du
+///    nom, ni du dossier.
+///
+/// Pourquoi c'est vital : installer l'installeur sous `rose.exe` crée une
+/// BOUCLE — chaque `rose` relance le setup, qui réinstalle, qui relance le
+/// setup. Mesuré chez l'utilisateur : 60 processus et obligation de
+/// redémarrer la machine.
+fn refuser_comme_moteur(source: &std::path::Path) -> Option<String> {
+    let nom = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if nom.contains("setup") || nom.contains("install") {
+        return Some(format!(
+            "{} est l'installeur, pas le moteur : il ne doit jamais être copié \
+             sous le nom « rose.exe » (cela créerait une boucle de lancement)",
+            source.display()
+        ));
+    }
+    #[cfg(windows)]
+    {
+        if let Some(2) = sous_systeme_pe(source) {
+            return Some(format!(
+                "{} est une application GUI (sous-système 2), pas le moteur \
+                 console : refusé pour éviter une boucle de lancement",
+                source.display()
+            ));
+        }
+    }
+    None
+}
+
+/// Sous-système PE d'un fichier (`None` si illisible ou trop court).
+#[cfg(windows)]
+fn sous_systeme_pe(chemin: &std::path::Path) -> Option<u16> {
+    let d = std::fs::read(chemin).ok()?;
+    if d.len() < 0x40 || &d[0..2] != b"MZ" {
+        return None;
+    }
+    let pe = u32::from_le_bytes([d[0x3C], d[0x3D], d[0x3E], d[0x3F]]) as usize;
+    if pe + 0x5A > d.len() || &d[pe..pe + 4] != b"PE\0\0" {
+        return None;
+    }
+    // Subsystem : offset 68 dans l'en-tête optionnel (PE32 et PE32+).
+    let o = pe + 24 + 68;
+    if o + 2 > d.len() {
+        return None;
+    }
+    Some(u16::from_le_bytes([d[o], d[o + 1]]))
+}
+
 /// Copie le binaire Rose + les icônes dans `prefixe`.
 pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal {
     let mut j = Journal::new();
@@ -135,6 +194,23 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
             }
         },
     };
+    // ⚠⚠ GARDE-FOU CRITIQUE : on ne doit JAMAIS installer l'installeur
+    // lui-même sous le nom `rose.exe`.
+    //
+    // `source_moteur()` retombe sur `current_exe()` quand aucun `payload\`
+    // n'est présent. Dans `Rose-win-Setup.exe`, cela copiait donc le SETUP
+    // sous `bin\rose.exe`, puis l'inscrivait dans le PATH. Résultat mesuré
+    // sur la machine de l'utilisateur : chaque `rose` relançait le setup,
+    // qui relançait une installation, qui relançait le setup… jusqu'à
+    // 60 processus et une console clignotante par lancement, obligeant à
+    // redémarrer le PC.
+    //
+    // On refuse explicitement quand la source est l'installeur graphique
+    // (sous-système GUI = 2) ou quand elle porte le nom du setup.
+    if let Some(raison) = refuser_comme_moteur(&source) {
+        j.push(format!("Échec : {raison}"));
+        return j;
+    }
     let dest = bindir.join(if cfg!(windows) { "rose.exe" } else { "rose" });
     match std::fs::copy(&source, &dest) {
         Ok(_) => {
@@ -797,6 +873,19 @@ mod tests {
         assert_eq!(comparer_versions("0.1.5", "5.12.0"), -1);
         assert_eq!(comparer_versions("5.12.0", "0.1.5"), 1);
         assert_eq!(comparer_versions("v0.1.5", "0.1.4"), 1);
+    }
+
+    #[test]
+    fn refuse_l_installeur_comme_moteur() {
+        // L'installeur ne doit JAMAIS être copié sous `rose.exe` : cela crée
+        // une boucle de lancement (mesuré : 60 processus chez l'utilisateur).
+        assert!(refuser_comme_moteur(std::path::Path::new(
+            "C:\\Users\\x\\Rose-win-Setup.exe")).is_some());
+        assert!(refuser_comme_moteur(std::path::Path::new("Rose-Setup.exe")).is_some());
+        assert!(refuser_comme_moteur(std::path::Path::new("install-rose.exe")).is_some());
+        // Le vrai moteur passe.
+        assert!(refuser_comme_moteur(std::path::Path::new("bin\\rose.exe")).is_none());
+        assert!(refuser_comme_moteur(std::path::Path::new("rose")).is_none());
     }
 
     #[test]

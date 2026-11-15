@@ -226,6 +226,17 @@ def main():
             assert ss == 2, f"rose-setup doit être en subsystem 2 (GUI), lu {ss}"
             print(f"  subsystem : {ss} (GUI)")
 
+    # Moteur embarqué : sans lui, l'installeur n'a RIEN à installer et se
+    # copie lui-même sous `rose.exe` → boucle de lancement (60 processus
+    # mesurés chez l'utilisateur). On refuse un setup qui n'en contient pas.
+    moteur = ressources.get((RT_RCDATA, 3))
+    assert moteur is not None, (
+        "moteur embarqué (RT_RCDATA 3) absent : l'installeur n'aurait rien "
+        "à installer et se copierait lui-même sous rose.exe (boucle)")
+    assert moteur[:2] == b"MZ", "le moteur embarqué n'est pas un PE"
+    assert len(moteur) > 1_000_000, f"moteur embarqué suspect : {len(moteur)} o"
+    print(f"  moteur embarqué : {len(moteur)} o (PE)")
+
     print("RESSOURCES VALIDES")
 
 
