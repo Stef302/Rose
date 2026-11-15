@@ -482,9 +482,25 @@ rose-shell prog.rose --sans-exec   # charge sans exécuter les >>
 ```
 
 `rose-shell` est un binaire séparé (PE32+ console sous Windows, ELF ailleurs)
-livré avec le moteur et posé dans le même `bin\`. Il s'utilise comme un vrai
-shell : historique en mémoire (↑ / ↓), complétion Tab des commandes `:` et des
-mots-clés, bannière, couleurs.
+livré avec le moteur et posé dans le même `bin\`. Un **double-clic** dessus
+ouvre directement la console Rose — aucune fenêtre ne disparaît (le shell
+attend une touche avant de rendre la main). Lancé depuis Windows Terminal, il
+s'y intègre comme un shell ordinaire : titre d'onglet « Rose 0.1.5 — console
+interactive », icône Rose, couleurs de Rose.
+
+Édition de ligne réelle (console brute `ReadConsoleInputW`, sans dépendance) :
+
+| Touche | Effet |
+|---|---|
+| ← / → | déplace le curseur |
+| Home / End | début / fin de ligne |
+| Retour arrière / Suppr | édite au milieu de la ligne |
+| ↑ / ↓ | historique (le brouillon en cours est conservé) |
+| Tab | complète le mot sous le curseur |
+| Ctrl-C | annule la saisie (`^C`) |
+| Ctrl-L | efface l'écran |
+| Ctrl-Z | termine |
+| Échap | efface la ligne |
 
 **Compatibilité terminal** : Windows Terminal, conhost, PowerShell, cmd,
 Git Bash, VS Code, ainsi que tout terminal ANSI sous Linux/macOS. Au

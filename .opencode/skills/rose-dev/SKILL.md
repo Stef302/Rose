@@ -213,6 +213,17 @@ l'utilisateur web)
 - Un binaire `#[path]` (comme `rose-shell.rs`) doit déclarer TOUS les modules
   atteints transitivement : `interp.rs` appelle `crate::auto_llvm`, oublier
   `mod auto_llvm` casse la compilation.
+- Éditeur de ligne : sur Windows on lit `ReadConsoleInputW` en mode brut
+  (retirer `ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT |
+  ENABLE_QUICK_EDIT_MODE`, garder `ENABLE_PROCESSED_INPUT` pour Ctrl-C).
+  On restaure TOUJOURS le mode d'origine en sortie. `WriteConsoleW` pour
+  écrire (Unicode complet). Nested `fn` items n'héritent PAS de l'unsafety :
+  les marquer `unsafe fn` et appeler depuis un bloc `unsafe`.
+- Un double-clic sur l'exe ferme la console dès la sortie : détecter via
+  `GetConsoleProcessList` (1 seul PID) + titre vide, puis attendre Entrée.
+  `ROSE_SHELL_PERSIST=0` désactive.
+- Centrage d'un cadre en console : compter des CARACTÈRES, jamais `{:<44}`
+  sur une chaîne UTF-8 (bordure décalée).
 
 ## Notation factorielle (v0.1.x)
 

@@ -38,10 +38,27 @@ rose-shell prog.rose          # load the program, then console
 rose-shell prog.rose --sans-exec   # load without running the >>
 ```
 
-Features: in-memory history (↑ / ↓), Tab completion of `:` commands and
-language keywords, multi-line continuation while braces are open, and the
-commands `:help`, `:show`, `:reset`, `:load`, `:save`, `:type`, `:latex`,
-`:quit`.
+Double-clicking `rose-shell.exe` opens the Rose console directly; the window
+waits for a key before closing, so it does not vanish. From Windows Terminal it
+behaves like any other shell: tab title "Rose 0.1.5 — console interactive", the
+Rose icon, and Rose colours.
+
+Real line editing (raw console `ReadConsoleInputW`, no dependency):
+
+| Key | Effect |
+|---|---|
+| ← / → | move the cursor |
+| Home / End | start / end of line |
+| Backspace / Delete | edit inside the line |
+| ↑ / ↓ | history (the current draft is kept) |
+| Tab | complete the word under the cursor |
+| Ctrl-C | cancel the input (`^C`) |
+| Ctrl-L | clear the screen |
+| Ctrl-Z | exit |
+| Esc | clear the line |
+
+Also: multi-line continuation while braces are open, and the commands `:help`,
+`:show`, `:reset`, `:load`, `:save`, `:type`, `:latex`, `:quit`.
 
 **Terminal compatibility.** At start-up the shell sets
 `SetConsoleOutputCP(65001)` (UTF-8) and enables
