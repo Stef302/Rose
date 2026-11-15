@@ -221,7 +221,7 @@ def main():
     if est_pe:
         # L'installeur est une application GUI : subsystem 2. Un subsystem 3
         # (console) ouvrirait une fenêtre noire derrière la fenêtre.
-        if cible.name.lower().startswith("rose-setup"):
+        if cible.name.lower().startswith(("rose-setup", "setup-")):
             ss = sous_systeme_pe(donnees)
             assert ss == 2, f"rose-setup doit être en subsystem 2 (GUI), lu {ss}"
             print(f"  subsystem : {ss} (GUI)")
@@ -286,7 +286,7 @@ def main():
     # disparaître. Aucun test d'exécution n'est possible sans Windows : on
     # vérifie donc que le CODE de `setup_gui.rs` contient les garde-fous qui
     # rendent ce symptôme impossible.
-    if cible.name.lower().startswith("rose-setup"):
+    if cible.name.lower().startswith(("rose-setup", "setup-")):
         source = (RACINE / "rose" / "src" / "setup_gui.rs").read_text(encoding="utf-8")
         garde_fous = {
             "tracé isolé dans catch_unwind": "std::panic::catch_unwind",
