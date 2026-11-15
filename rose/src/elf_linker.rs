@@ -1,4 +1,4 @@
-// Rose 2.0 — Linker ELF (délégation à cc/ld pour la résolution libc).
+// Rose — Linker ELF (délégation à cc/ld pour la résolution libc).
 // Le backend LLVM ORC produit des objets .o ne référençant que printf
 // (libc). On délègue le lien à `cc`/`gcc`/`ld` du système, ce qui résout
 // automatiquement libc et produit un ELF exécutable autonome.

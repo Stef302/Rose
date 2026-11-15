@@ -562,6 +562,22 @@ saisie.
 
 ---
 
+## 🧰 Skill Rose
+
+Le skill complet pour les agents IA est publié dans un dépôt dédié :
+
+**[`Stef302/Rose-skill`](https://github.com/Stef302/Rose-skill)** — `rose-skill.zip`
+(23 Ko) à décompresser dans `.opencode/skills/`, ou le contenu en clair dans
+`rose-dev/` :
+
+- `SKILL.md` — règles, architecture, et les pièges mesurés (ressources PE,
+  GDI+, ZLIB, PATH, colonnes console) ;
+- `references/syntaxe.md` — **toute la syntaxe** Rose ;
+- `references/cli.md` — la **ligne de commande** complète, le REPL, l'AOT ;
+- `tour.rose` — exemple vivant de toute la syntaxe.
+
+Le ZIP est aussi publié dans les ressources de la release `v0.1.5`.
+
 ## 📦 Installation
 
 ### Windows — installeur Velopack (remplace WiX et NSIS)

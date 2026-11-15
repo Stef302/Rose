@@ -551,11 +551,20 @@ unsafe extern "system" {
                                  octets: *const u8, bitmap: *mut *mut c_void) -> u32;
     fn GdipDrawImageRectI(graphique: *mut c_void, image: *mut c_void,
                           x: i32, y: i32, largeur: i32, hauteur: i32) -> u32;
+    fn GdipDrawImageRectRectI(graphique: *mut c_void, image: *mut c_void,
+                              dx: i32, dy: i32, dw: i32, dh: i32,
+                              sx: i32, sy: i32, sw: i32, sh: i32,
+                              unite: i32) -> u32;
+    fn GdipSetInterpolationMode(graphique: *mut c_void, mode: i32) -> u32;
     fn GdipDisposeImage(image: *mut c_void) -> u32;
 }
 
 /// Format pixel GDI+ `PixelFormat32bppARGB` (0x26200A).
 const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200A;
+/// `InterpolationModeHighQualityBicubic` (7).
+const INTERPOLATION_BICUBIC: i32 = 7;
+/// `UnitPixel` (2) : les rectangles source sont en pixels de l'image.
+const UNIT_PIXEL: i32 = 2;
 
 /// Dessine un bitmap RGBA avec transparence, mis à l'échelle, via GDI+.
 ///
@@ -568,6 +577,30 @@ unsafe fn dessiner_rgba_gdiplus(dc: HDC, x: i32, y: i32, cote: i32,
     if JETON_GDIPLUS == 0 {
         return false;
     }
+    // ⚠ On ne dessine QUE le CONTENU utile de l'image (les pixels dont l'alpha
+    // est non nul), pas l'image entière. Le PNG de la rose a sa tige qui
+    // descend jusqu'au DERNIER pixel de la bordure ; drawn tel quel, le bord
+    // inférieur était rogné et le pied de la fleur disparaissait (mesuré sur
+    // la capture). En bornant la zone source, plus rien ne touche le bord
+    // de l'image — et l'interpolation ne peut plus le rogner.
+    let (sx0, sy0, sx1, sy1) = bornes_opaques(largeur, hauteur, pixels);
+    let sw = sx1.saturating_sub(sx0) as i32;
+    let sh = sy1.saturating_sub(sy0) as i32;
+    if sw <= 0 || sh <= 0 {
+        return false;
+    }
+    // Conserver le RAPPORT : le logo n'est pas forcément carré.
+    let mut dw = cote;
+    let mut dh = ((cote as f64 * sh as f64 / sw as f64).round() as i32).max(1);
+    let (dx, dy) = if dh > cote {
+        // Trop haut : on borne sur la hauteur et on recalcule la largeur.
+        dh = cote;
+        dw = ((cote as f64 * sw as f64 / sh as f64).round() as i32).max(1);
+        (x + (cote - dw) / 2, y)
+    } else {
+        (x + (cote - dw) / 2, y)
+    };
+
     let mut fait = false;
     avec_gdiplus(dc, |g| {
         let mut bitmap: *mut c_void = std::ptr::null_mut();
@@ -588,13 +621,44 @@ unsafe fn dessiner_rgba_gdiplus(dc: HDC, x: i32, y: i32, cote: i32,
         if GdipCreateBitmapFromScan0(largeur as i32, hauteur as i32, pas,
                                      PIXEL_FORMAT_32BPP_ARGB, bgra.as_ptr(),
                                      &mut bitmap) == 0 && !bitmap.is_null() {
-            if GdipDrawImageRectI(g, bitmap, x, y, cote, cote) == 0 {
+            // Interpolation de haute qualité : le logo est réduit de 172 à
+            // ~124 px, un filtrage poor donnerait des bords dentelés.
+            GdipSetInterpolationMode(g, INTERPOLATION_BICUBIC);
+            // Dessin avec un RECTANGLE SOURCE borné au contenu utile.
+            if GdipDrawImageRectRectI(g, bitmap, dx, dy, dw, dh,
+                                      sx0 as i32, sy0 as i32, sw, sh,
+                                      UNIT_PIXEL) == 0 {
                 fait = true;
             }
             GdipDisposeImage(bitmap);
         }
     });
     fait
+}
+
+/// Bornes du contenu visible d'une image RGBA (alpha non nul).
+///
+/// Renvoie (x0, y0, x1, y1) — rectangle semi-ouvert. Si rien n'est
+/// visible, renvoie (0, 0, 0, 0).
+fn bornes_opaques(largeur: usize, hauteur: usize, pixels: &[u8]) -> (usize, usize, usize, usize) {
+    let mut x0 = largeur;
+    let mut y0 = hauteur;
+    let mut x1 = 0usize;
+    let mut y1 = 0usize;
+    for y in 0..hauteur {
+        for x in 0..largeur {
+            if pixels[(y * largeur + x) * 4 + 3] > 4 {
+                if x < x0 { x0 = x; }
+                if x + 1 > x1 { x1 = x + 1; }
+                if y < y0 { y0 = y; }
+                if y + 1 > y1 { y1 = y + 1; }
+            }
+        }
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return (0, 0, 0, 0);
+    }
+    (x0, y0, x1, y1)
 }
 
 /// Dessine la rose embarquée, mise à l'échelle, avec transparence.
@@ -799,16 +863,22 @@ unsafe fn cercle(dc: HDC, cx: i32, cy: i32, rayon: i32, couleur: u32) {
 }
 
 /// Coche dessinée (deux segments).
-unsafe fn coche(dc: HDC, cx: i32, cy: i32, couleur: u32) {
-    // Une coche = deux segments épais (GDI, pinceau plein) ; le gabarit de
-    // 1120 px est déjà appliqué à `cx`/`cy` par l'appelant.
-    let epaisseur = ((cx as f64 / 41.0).round() as i32).max(2);
+/// Coche dessinée : deux segments épais.
+///
+/// `demi` = demi-hauteur de la coche en pixels. L'ancien code déduisait
+/// l'épaisseur de l'ABSOLU de `cx` (une coordonnée de mise en page) : dans
+/// la carte « Terminé », la coche sortait énorme et recouvrait le texte
+/// « Rose X est installé » (mesuré sur la capture). La taille est donc
+/// demandée explicitement.
+unsafe fn coche(dc: HDC, cx: i32, cy: i32, demi: i32, couleur: u32) {
+    let d = demi.max(2);
+    let epaisseur = ((d as f64 * 0.34).round() as i32).max(2);
     let stylo = CreatePen(0, epaisseur, couleur);
     let ancien = SelectObject(dc, stylo as *mut c_void);
-    let k = epaisseur.max(2);
-    let a = (cx - k * 2, cy);
-    let b = (cx, cy + k * 2);
-    let c = (cx + k * 4, cy - k * 3);
+    // Trace « ✓ » : bras court descendant, bras long remontant.
+    let a = (cx - d, cy);
+    let b = (cx - d / 3, cy + d / 2);
+    let c = (cx + d, cy - d / 2);
     MoveToEx(dc, a.0, a.1, std::ptr::null_mut());
     LineTo(dc, b.0, b.1);
     MoveToEx(dc, b.0, b.1, std::ptr::null_mut());
@@ -1010,7 +1080,7 @@ unsafe fn dessiner(h: HWND) {
             cercle(dc, s(48), y + s(12), s(11), LATERAL);
         }
         if atteinte {
-            coche(dc, s(48), y + s(12), TEXTE);
+            coche(dc, s(48), y + s(12), s(7), TEXTE);
         } else {
             let mut rn = RECT { left: s(34), top: y, right: s(62), bottom: y + s(24) };
             texte_echelle(dc, dpi, "Segoe UI", &format!("{}", i + 1), &mut rn,
@@ -1074,7 +1144,11 @@ unsafe fn dessiner(h: HWND) {
                    L'installation se fait dans votre profil utilisateur — aucun droit \
                    administrateur n'est demandé.",
                   &mut r, DT_WORDBREAK, TEXTE, 10, false, echelle);
-            let mut ri = RECT { left: g, top: yc + s(164), right: d, bottom: yc + s(230) };
+            // ⚠ Le rectangle de texte doit aller jusqu'au bas de la zone de
+            // contenu : il était borné à 66 px, et la dernière ligne
+            // (« La suite de l'assistant propose… ») était COUPÉE (mesuré
+            // sur la capture).
+            let mut ri = RECT { left: g, top: yc + s(164), right: d, bottom: contenu.bottom - s(24) };
             texte_echelle(dc, dpi, "Segoe UI",
                   &if etat.existant {
                       format!(
@@ -1136,10 +1210,14 @@ unsafe fn dessiner(h: HWND) {
             // existante (mesuré : « version 0.1.5 détectée » invisible).
             if etat.existant {
                 let c3 = RECT { left: g, top: yc + s(228), right: d, bottom: yc + s(330) };
+                // ⚠ `carte()` remplit avec `CARTE` (FONDOIR) et n'ajoute
+                // qu'un filet d'accent à gauche. Un texte NOIR dessus était
+                // donc ILLISIBLE (mesuré : « l'installation détectée est
+                // affichée en noir »). Le texte reste clair.
                 carte(dc, &c3, VERT_LIME);
                 let mut r7 = RECT { left: g + s(20), top: yc + s(240), right: d - s(20), bottom: yc + s(262) };
                 texte_echelle(dc, dpi, "Segoe UI", "Installation détectée", &mut r7,
-                      DT_SINGLELINE | DT_VCENTER, NOIR_DOUX, 9, true, echelle);
+                      DT_SINGLELINE | DT_VCENTER, TEXTE, 9, true, echelle);
                 let mut r8 = RECT { left: g + s(20), top: yc + s(264), right: d - s(20), bottom: yc + s(288) };
                 let meme = crate::setup_core::comparer_versions(
                     &etat.version_installee, env!("CARGO_PKG_VERSION")) == 0;
@@ -1147,11 +1225,11 @@ unsafe fn dessiner(h: HWND) {
                       &format!("Version {} — {}", etat.version_installee,
                           if meme { "identique au paquet : réinstallation (repair)" }
                           else { "remplacée par la version du paquet" }),
-                      &mut r8, DT_SINGLELINE | DT_VCENTER, NOIR_DOUX, 9, false, echelle);
+                      &mut r8, DT_SINGLELINE | DT_VCENTER, TEXTE, 9, false, echelle);
                 let mut r9 = RECT { left: g + s(20), top: yc + s(290), right: d - s(20), bottom: yc + s(322) };
                 texte_echelle(dc, dpi, "Segoe UI",
                       "« Mettre à jour » réinstalle proprement ; « Désinstaller » retire tout.",
-                      &mut r9, DT_WORDBREAK, NOIR_DOUX, 9, false, echelle);
+                      &mut r9, DT_WORDBREAK, TEXTE_DOUX, 9, false, echelle);
             }
         }
         Vue::Installation => {
@@ -1180,7 +1258,7 @@ unsafe fn dessiner(h: HWND) {
             // laisse le texte s'étendre jusqu'au bord bas moins la marge.
             let c = RECT { left: g, top: yc, right: d, bottom: yc + s(186) };
             carte(dc, &c, VERT);
-            coche(dc, g + s(36), yc + s(32), VERT);
+            coche(dc, g + s(30), yc + s(30), s(11), VERT);
             let mut r = RECT { left: g + s(64), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(12) };
             texte_echelle(dc, dpi, "Segoe UI",
                   &format!("Rose {} est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
@@ -1934,6 +2012,24 @@ pub fn lancer() {
         if !grande.is_null() {
             SetClassLongPtrW(hwnd, -14 /* GCLP_HICON */, grande as isize);
             SetClassLongPtrW(hwnd, -34 /* GCLP_HICONSM */, grande as isize);
+        }
+        // ── Coins arrondis ──────────────────────────────────────────────
+        // `DWMWA_WINDOW_CORNER_PREFERENCE` (33) : 2 = « arrondi » (le
+        // système utilise le rayon standard), 1 = « petit rayon ».
+        // Indispensable car la fenêtre est `WS_POPUP` : sans cela, Windows
+        // dessine un rectangle à angles droits.
+        #[cfg(windows)]
+        unsafe {
+            #[link(name = "dwmapi")]
+            unsafe extern "system" {
+                fn DwmSetWindowAttribute(hwnd: isize, attr: u32, valeur: *const c_void, taille: u32) -> i32;
+            }
+            const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+            const DWMWCP_ROUND: i32 = 2;
+            let pref = DWMWCP_ROUND;
+            DwmSetWindowAttribute(hwnd as isize, DWMWA_WINDOW_CORNER_PREFERENCE,
+                                 &pref as *const i32 as *const c_void,
+                                 std::mem::size_of::<i32>() as u32);
         }
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);

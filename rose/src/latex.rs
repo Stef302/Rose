@@ -1,4 +1,4 @@
-// Rose 2.0 — rendu LaTeX de l'AST.
+// Rose — rendu LaTeX de l'AST.
 // Transforme l'AST de `front.rs` (expressions, instructions, programme) en
 // LaTeX mathématique : `\frac{1}{2}`, `\sqrt{2}`, `\sum_{j = 0}^{9}`, etc.
 //

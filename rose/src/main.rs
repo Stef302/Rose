@@ -1,4 +1,4 @@
-// Rose 2.0 — compilateur Rose en Rust + JIT Cranelift.
+// Rose — compilateur Rose en Rust + JIT Cranelift.
 // Front-end fidèle au moteur C++ (lexeur, vérificateur, repli de constantes),
 // interpréteur exact (arithmétique native i128, zéro dépendance) et JIT
 // natif Cranelift pour le code chaud.
@@ -38,8 +38,12 @@ fn lire(source: &mut String, chemin: &str) -> bool {
     }
 }
 
-const USAGE: &str = "\
-Rose 2.0 — compilateur Rust + Cranelift JIT + LLVM ORC AOT (maths exactes BigInt natif, zéro GMP)
+/// Aide du programme. La version vient du `Cargo.toml` — elle était en
+/// dur (« Rose 2.0 »), d'où un `rose` installé en 0.1.5 qui s'annonçait
+/// « Rose 2.0 » (mesuré par l'utilisateur).
+fn usage() -> String {
+    format!(
+        "Rose {} — compilateur Rust + Cranelift JIT + LLVM ORC AOT (maths exactes BigInt natif, zéro GMP)\n\
 Usage :
   rose prog.rose [args…]   interpréter / JIT un programme Rose
   rose run prog.rose       identique
@@ -52,7 +56,10 @@ Usage :
   rose console [fichier.rose]   console interactive (REPL) — tapez des commandes Rose
   rose repl [fichier.rose]      identique
   rose update              installe/met a jour Rose (64 bits, interface console)
-";
+",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 
 /* ── mode bundle : programme collé dans le moteur (miroir C++ rose.cpp:4344) ── */
 const ROSE_MAGIC: [u8; 8] = [b'R', b'O', b'S', b'E', b'B', b'1', 0x01, 0x02];
@@ -155,7 +162,7 @@ fn main() {
             let rc = match h { Ok(j) => j.join().unwrap_or(1), Err(_) => interp::executer_source(&source, Vec::new()) };
             std::process::exit(rc);
         }
-        eprint!("{}", USAGE);
+        eprint!("{}", usage());
         std::process::exit(1);
     }
     let action = argv[1].as_str();
@@ -193,7 +200,7 @@ fn main() {
     match action {
         "version" | "--version" => { println!("{}", interp::version()); return; }
         "info" => { print!("{}", interp::info()); return; }
-        "--help" | "-h" | "aide" => { print!("{}", USAGE); return; }
+        "--help" | "-h" | "aide" => { print!("{}", usage()); return; }
         "latex" => {
             // RENDU LaTeX DU PROGRAMME ENTIER : c'est la synthèse de ce
             // qu'on a programmé. La commande `run` montre, instruction par

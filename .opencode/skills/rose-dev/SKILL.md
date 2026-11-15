@@ -12,8 +12,12 @@ Rose est un langage de programmation **en français**, typé fort dynamiquement,
 (interprète · JIT Cranelift · AOT LLVM ORC · WASM).
 
 Avant d'écrire du Rose, lis la référence complète :
-`references/syntaxe.md` (à la racine du dépôt : section
-« 📖 Syntaxe Rose — référence complète » du `README.md`).
+
+- `references/syntaxe.md` — **toute la syntaxe** : types, instructions,
+  opérateurs, bibliothèque standard, exemples.
+- `references/cli.md` — **la ligne de commande** : commandes, REPL, AOT,
+  installation.
+
 L'exemple vivant de toute la syntaxe : `rose/exemples/tour.rose`.
 
 ## Règle d'or : vérifier avec le moteur

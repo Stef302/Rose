@@ -1,4 +1,4 @@
-// Rose 2.0 — JIT Cranelift : émet du code machine natif pour le code Rose
+// Rose — JIT Cranelift : émet du code machine natif pour le code Rose
 // « chaud » (entiers 64 bits, booléens, flottants, comparaisons, branches,
 // boucles, fonctions utilisateur avec récursion).
 // Comme le JIT du moteur C++ : TOUT ce qui sort du support (chaînes,

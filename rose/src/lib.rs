@@ -1,4 +1,4 @@
-// Rose 2.0 — le moteur Rose devient une BIBLIOTHÈQUE.
+// Rose — le moteur Rose devient une BIBLIOTHÈQUE.
 //
 // Ce fichier est le point d'entrée de la crate `rose` en tant que
 // bibliothèque : il expose le moteur (analyse, exécution, maths exactes,

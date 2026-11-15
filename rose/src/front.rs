@@ -1,4 +1,4 @@
-// Rose 2.0 — front-end fidèle au moteur C++ (moteur/cpp/src/rose.cpp).
+// Rose — front-end fidèle au moteur C++ (moteur/cpp/src/rose.cpp).
 // Lexeur, AST, vérificateur, repli de constantes — messages identiques.
 // Licence MIT.
 

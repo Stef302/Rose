@@ -1,4 +1,4 @@
-// Rose 2.0 — moteur d'exécution : valeurs exactes et bibliothèque standard.
+// Rose — moteur d'exécution : valeurs exactes et bibliothèque standard.
 // Sémantique miroir du moteur C++ (moteur/cpp/src/rose.cpp) : conversions,
 // comparaisons, rendus, RNG splitmix64+Lemire, messages d'erreur.
 // ZÉRO DÉPENDANCE : les entiers dépassant i64 et les rationnels vivent sur

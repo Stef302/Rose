@@ -1,4 +1,4 @@
-// Rose 2.0 — interface C ABI pour le navigateur (WebAssembly).
+// Rose — interface C ABI pour le navigateur (WebAssembly).
 //
 // Le module n'ajoute AUCUNE dépendance externe (pas de wasm-bindgen, pas de
 // wasm-pack) : il expose un petit jeu de fonctions `extern "C"` que le

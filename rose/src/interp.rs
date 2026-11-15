@@ -1,4 +1,4 @@
-// Rose 2.0 — interpréteur d'arbre complet : instructions, expressions,
+// Rose — interpréteur d'arbre complet : instructions, expressions,
 // bibliothèque standard (miroir du moteur C++), FFI dynamique::, RNG.
 // Sert de repli au JIT (mêmes sorties) et de moteur pour les types non
 // compilables (chaînes, rationnels, listes, tables, tampons).

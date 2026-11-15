@@ -1,4 +1,4 @@
-// Rose 2.0 — arithmétique exacte SANS GMP, sans FFI, sans dépendance externe.
+// Rose — arithmétique exacte SANS GMP, sans FFI, sans dépendance externe.
 // Entiers : num_bigint::BigInt (illimité, pur Rust). Rationnels : (BigInt,BigInt).
 // Surface (Gz/Gq + gmp_*/gmpq_*) inchangée pour interp.rs / run.rs / jit.rs.
 // Licence MIT.
