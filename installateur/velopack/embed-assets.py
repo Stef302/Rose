@@ -143,25 +143,32 @@ def rust_bytes(nom, donnees: bytes) -> str:
 def main():
     w, h, lignes = lire_png(RACINE / "docs" / "assets" / "img" / "logo-rose.png")
 
-    def est_noir(p):
-        return p[0] < 40 and p[1] < 40 and p[2] < 40
+    # ⚠⚠ Le fond du visuel source n'est PAS noir pur : c'est un dégradé
+    # sombre dont l'alpha varie de 0 à ~165. La version précédente testait
+    # `r,g,b < 40` SANS regarder l'alpha, et ne rendait transparents que les
+    # pixels dont les trois canaux étaient sous 40. Résultat mesuré : une
+    # BANDE de fond semi-opaque subsistait tout autour de la rose, et la
+    # boîte englobante « pixels alpha > 8 » englobait TOUT le visuel
+    # (273..1126 × 62..902) au lieu de la fleur (424..951 × 230..902).
+    # La rose se retrouvait collée au coin supérieur gauche d'un carré
+    # presque entièrement transparent : à l'écran, le logo était invisible
+    # ou réduit à une tache — l'installeur paraissait VIDE.
+    #
+    # Le bon critère est donc : transparent si l'alpha est faible, OU si le
+    # pixel est sombre (le dessin est en APLATS rouge/vert : le noir ne
+    # porte aucune information, il n'est que fond et contours).
+    def est_fond(p):
+        return p[3] <= 8 or (p[0] < 40 and p[1] < 40 and p[2] < 40)
 
-    # Le visuel source est posé sur un fond NOIR OPAQUE (alpha 255 partout) :
-    # embarqué tel quel, la rose apparaissait comme un carré noir sur le
-    # panneau sombre de l'installeur. Le dessin est en APLATS (rouge, vert,
-    # noir) : le noir n'apporte rien — ce sont le fond ET les contours. On
-    # rend donc TOUS les pixels noirs transparents et on laisse le fond du
-    # panneau faire les contours, exactement comme la maquette (rose posée
-    # sur le fond sombre, sans cadre).
     for y in range(h):
         ligne = lignes[y]
         for x in range(w):
             o = x * 4
-            if est_noir((ligne[o], ligne[o + 1], ligne[o + 2])):
+            if est_fond((ligne[o], ligne[o + 1], ligne[o + 2], ligne[o + 3])):
                 ligne[o:o + 4] = b"\0\0\0\0"
 
     # recadrage : la rose seule (haut du visuel), sans le mot ROSE gravé.
-    # La boîte englobante se calcule sur les pixels NON-FOND (le fond noir a
+    # La boîte englobante se calcule sur les pixels NON-FOND (le fond a
     # déjà été rendu transparent), sinon elle englobait tout le visuel et
     # ramenait le mot « ROSE » dans le cadre.
     bas = int(h * FRACTION_BAS)
@@ -185,39 +192,36 @@ def main():
     largeur = x1 - x0
     hauteur = y1 - y0
 
-    # carré : on centre la rose sur un canevas transparent
+    # ⚠⚠ PAS de canevas CARRÉ. La rose avec sa tige est plus HAUTE que large
+    # (528 × 673 dans le visuel source). La centrer sur un carré ajoutait
+    # deux bandes transparentes à gauche et à droite ; à l'écran, le logo
+    # occupait alors une fraction de la place prévue et paraissait minuscule
+    # — l'installeur semblait avoir « perdu » son logo. On garde donc les
+    # proportions réelles et on met à l'échelle sur le plus grand côté.
     cote = max(largeur, hauteur)
-    decal_x = (cote - largeur) // 2
-    decal_y = (cote - hauteur) // 2
-    canevas = []
-    for y in range(cote):
-        ligne = bytearray(cote * 4)
-        sy = y - decal_y
-        if 0 <= sy < hauteur:
-            src = lignes[y0 + sy]
-            for x in range(largeur):
-                o = (x + x0) * 4
-                d = (x + decal_x) * 4
-                ligne[d : d + 4] = src[o : o + 4]
-        canevas.append(ligne)
-
-    # taille finale : ≤ 192 px (affiché 160 px, donc net sur écrans HiDPI)
     facteur = 1
     while cote // facteur > 192:
         facteur += 1
-    if cote % facteur != 0:
-        # reste non divisible : on complète le bord droit/bas en transparent
-        reste = cote % facteur
-        complete = cote + (facteur - reste)
-        for _ in range(complete - cote):
-            canevas.append(bytearray(complete * 4))
-        for ligne in canevas:
-            ligne.extend(bytes((complete - cote) * 4))
-        cote = complete
-    petite = reduire(canevas, cote, cote, facteur)
-    n = cote // facteur
+    # reste non divisible : on complète les DEUX dimensions en transparent
+    reste_w = largeur % facteur
+    reste_h = hauteur % facteur
+    lw = largeur + (facteur - reste_w if reste_w else 0)
+    lh = hauteur + (facteur - reste_h if reste_h else 0)
+    canevas = []
+    for y in range(lh):
+        ligne = bytearray(lw * 4)
+        sy = y0 + y
+        if y < hauteur:
+            src = lignes[sy]
+            for x in range(largeur):
+                o = (x + x0) * 4
+                d = x * 4
+                ligne[d : d + 4] = src[o : o + 4]
+        canevas.append(ligne)
+    petite = reduire(canevas, lw, lh, facteur)
+    n_l, n_h = lw // facteur, lh // facteur
     temporaire = RACINE / "installateur" / "velopack" / "rose-installeur.png"
-    ecrire_png(temporaire, n, n, petite)
+    ecrire_png(temporaire, n_l, n_h, petite)
     png = temporaire.read_bytes()
 
     police = (RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2").read_bytes()
@@ -233,7 +237,7 @@ def main():
         "#![allow(dead_code)]\n\n"
     )
     SORTIE.write_text(entete + rust_bytes("ROSE_PETALE_PNG", png) + "\n" + rust_bytes("KARE_WOFF2", police))
-    print(f"rose-installeur.png : {n}×{n}, {len(png)} o")
+    print(f"rose-installeur.png : {n_l}×{n_h}, {len(png)} o")
     print(f"Kare.woff2 : {len(police)} o")
     print(f"écrit : {SORTIE.relative_to(RACINE)} ({SORTIE.stat().st_size} o)")
 

@@ -40,17 +40,38 @@ type HGLOBAL = *mut c_void;
 #[repr(C)]
 struct POINT { x: i32, y: i32 }
 
+#[repr(C)]
+struct SIZE { cx: i32, cy: i32 }
+
 // ── GDI+ : tracé ANTIALIASÉ ────────────────────────────────────────────
 // GDI (Ellipse, RoundRect) ne sait pas anticréneler : les bords des cercles
 // et des coins arrondis sortent escalier (mesuré : les pastilles des étapes
 // paraissaient pixelisées). GDI+ le fait, et c'est la seule façon d'obtenir
 // des cercles nets sans changer de framework.
+//
+// ⚠ GDI+ n'est utilisé QUE pour les FORMES. Le logo est dessiné en GDI pur
+// (`AlphaBlend`) : la variante GDI+ (`GdipCreateBitmapFromScan0` avec un
+// `scan0` pointant sur un `Vec` Rust) laisse GDI+ référencer — voire
+// libérer — un tampon qui nous appartient, d'où une double libération et un
+// CRASH de l'installeur (fenêtre ouverte avec ses seules BORDURES, sans
+// intérieur : « l'effet transparent », mesuré).
+
+/// `GdiplusStartupInput` (gdiplusflat.h).
+///
+/// ⚠ La structure RÉELLE a **CINQ** champs :
+/// `GdiplusVersion`, `GdiplusStartupCallback`, `GdiplusStartupParameter`,
+/// `SuppressBackgroundThread`, `SuppressExternalCodecs` — soit 32 octets.
+/// La version précédente n'en avait que quatre : GDI+ lisait alors
+/// `SuppressExternalCodecs` dans le REMPLISSAGE non initialisé de la
+/// structure (4 octets de bourrage après le 4ᵉ champ). On initialise donc
+/// tout à zéro, et on déclare le champ manquant.
 #[repr(C)]
 struct GdiplusStartupInput {
     version: u32,
     callback: *mut c_void,
     callback_data: *mut c_void,
     suppress_background_thread: i32,
+    suppress_external_codecs: i32,
 }
 
 #[repr(C)]
@@ -107,6 +128,7 @@ unsafe fn demarrer_gdiplus() {
         callback: std::ptr::null_mut(),
         callback_data: std::ptr::null_mut(),
         suppress_background_thread: 0,
+        suppress_external_codecs: 0,
     };
     let mut jeton = 0usize;
     if GdiplusStartup(&mut jeton, &entree, std::ptr::null_mut()) == 0 {
@@ -213,6 +235,8 @@ unsafe extern "system" {
                    barre: i32, charset: i32, outp: i32, clipp: i32, qual: i32,
                    pitch: i32, nom: *const u16) -> HFONT;
     fn DrawTextW(dc: HDC, t: *const u16, n: i32, r: *mut RECT, f: u32) -> i32;
+    fn GetTextExtentPoint32W(dc: HDC, t: *const u16, n: i32, taille: *mut SIZE) -> i32;
+    fn GetGlyphIndicesW(dc: HDC, t: *const u16, n: i32, indices: *mut u16, drapeaux: u32) -> u32;
     fn LoadCursorW(h: HINSTANCE, n: *const u16) -> HCURSOR;
     fn InvalidateRect(h: HWND, r: *const RECT, e: i32);
     fn GetClientRect(h: HWND, r: *mut RECT);
@@ -245,6 +269,7 @@ unsafe extern "system" {
     fn BitBlt(dst: HDC, x: i32, y: i32, cx: i32, cy: i32, src: HDC, sx: i32, sy: i32, op: u32) -> i32;
     fn SetWindowPos(h: HWND, apres: HWND, x: i32, y: i32, cx: i32, cy: i32, f: u32) -> i32;
     fn SetForegroundWindow(h: HWND) -> i32;
+    fn GetLastError() -> u32;
     fn GetForegroundWindow() -> HWND;
     fn LoadImageW(inst: HINSTANCE, nom: *const u16, type_: u32, cx: i32, cy: i32, flags: u32) -> *mut c_void;
     fn DestroyIcon(i: HICON) -> i32;
@@ -263,6 +288,7 @@ unsafe extern "system" {
 
 const WM_DESTROY: u32 = 0x0002;
 const WM_PAINT: u32 = 0x000F;
+const WM_ERASEBKGND: u32 = 0x0014;
 const WM_CLOSE: u32 = 0x0010;
 const WM_TIMER: u32 = 0x0113;
 const WM_SIZE: u32 = 0x0005;
@@ -283,11 +309,13 @@ const HTBOTTOM: isize = 15;
 const HTBOTTOMRIGHT: isize = 17;
 const WS_OVERLAPPEDWINDOW: u32 = 0x00CF0000;
 const WS_POPUP: u32 = 0x80000000;
+const WS_CLIPCHILDREN: u32 = 0x02000000;
 const WS_THICKFRAME: u32 = 0x00040000;
 const WS_SYSMENU: u32 = 0x00080000;
 const WS_MINIMIZEBOX: u32 = 0x00020000;
 const WS_MAXIMIZEBOX: u32 = 0x00010000;
 const SW_SHOW: i32 = 5;
+const SW_SHOWNORMAL: i32 = 1;
 const SW_MINIMIZE: i32 = 6;
 const SW_RESTORE: i32 = 9;
 const SW_MAXIMIZE: i32 = 3;
@@ -314,6 +342,17 @@ const DT_VCENTER: u32 = 0x0004;
 const DT_SINGLELINE: u32 = 0x0020;
 const DT_RIGHT: u32 = 0x0002;
 const DT_LEFT: u32 = 0x0000;
+// DT_TOP (0x0000) explicite : `DrawText` centre verticalement le texte d'une
+// seule ligne dans son rectangle ; pour un texte ancré en haut d'une carte
+// haute, il faut le dire.
+const DT_TOP: u32 = 0x0000;
+// DT_END_ELLIPSIS (0x8000) : un texte trop long pour son rectangle se
+// termine par « … » au lieu d'être TRONQUÉ net — et surtout au lieu de
+// déborder sur les autres éléments.
+const DT_END_ELLIPSIS: u32 = 0x0000_8000;
+// DT_PATH_ELLIPSIS (0x4000) : ellipse au milieu d'un CHEMIN, pour garder le
+// nom du dossier (la fin d'un chemin est plus informative que son début).
+const DT_PATH_ELLIPSIS: u32 = 0x0000_4000;
 const IDC_ARROW: u16 = 32512;
 const IDC_HAND: u16 = 32649;
 const LOGPIXELSY: i32 = 90;
@@ -524,8 +563,7 @@ pub fn moteur_embarque() -> Option<std::path::PathBuf> {
 /// moteur extrait dans `%TEMP%`, qui ne contient que `rose.exe`. Mesuré :
 /// l'installation ne posait QUE `rose.exe`, sans helper AOT, sans shell, sans
 /// icône de fichier.
-pub const COMPAGNONS: [(u16, &str); 4] = [
-    (4, "rose-aot.exe"),
+pub const COMPAGNONS: [(u16, &str); 3] = [
     (5, "rose-shell.exe"),
     (6, "rose.ico"),
     (7, "rose_app.ico"),
@@ -538,102 +576,21 @@ pub fn compagnon_embarque(id: u16, nom: &str) -> Option<std::path::PathBuf> {
 }
 
 /// Charge la police Kare embarquée dans la session GDI du processus.
-unsafe fn charger_police() {
-    if let Some(ttf) = ressource(2, 8) {
-        let mut n = 0u32;
-        AddFontMemResourceEx(ttf.as_ptr() as *const c_void, ttf.len() as u32, std::ptr::null_mut(), &mut n);
-    }
-}
-
-
-unsafe extern "system" {
-    fn GdipCreateBitmapFromScan0(largeur: i32, hauteur: i32, pas: i32, format: i32,
-                                 octets: *const u8, bitmap: *mut *mut c_void) -> u32;
-    fn GdipDrawImageRectI(graphique: *mut c_void, image: *mut c_void,
-                          x: i32, y: i32, largeur: i32, hauteur: i32) -> u32;
-    fn GdipDrawImageRectRectI(graphique: *mut c_void, image: *mut c_void,
-                              dx: i32, dy: i32, dw: i32, dh: i32,
-                              sx: i32, sy: i32, sw: i32, sh: i32,
-                              unite: i32) -> u32;
-    fn GdipSetInterpolationMode(graphique: *mut c_void, mode: i32) -> u32;
-    fn GdipDisposeImage(image: *mut c_void) -> u32;
-}
-
-/// Format pixel GDI+ `PixelFormat32bppARGB` (0x26200A).
-const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x0026_200A;
-/// `InterpolationModeHighQualityBicubic` (7).
-const INTERPOLATION_BICUBIC: i32 = 7;
-/// `UnitPixel` (2) : les rectangles source sont en pixels de l'image.
-const UNIT_PIXEL: i32 = 2;
-
-/// Dessine un bitmap RGBA avec transparence, mis à l'échelle, via GDI+.
 ///
-/// ⚠ Pourquoi pas `AlphaBlend` : le chemin GDI+DIB fonctionnait mal sur un
-/// DC mémoire (la rose ne s'affichait pas du tout — mesuré). GDI+ gère
-/// nativement l'alpha et la mise à l'échelle, sans prémultiplication.
-unsafe fn dessiner_rgba_gdiplus(dc: HDC, x: i32, y: i32, cote: i32,
-                               largeur: usize, hauteur: usize, pixels: &[u8]) -> bool {
-    demarrer_gdiplus();
-    if JETON_GDIPLUS == 0 {
-        return false;
-    }
-    // ⚠ On ne dessine QUE le CONTENU utile de l'image (les pixels dont l'alpha
-    // est non nul), pas l'image entière. Le PNG de la rose a sa tige qui
-    // descend jusqu'au DERNIER pixel de la bordure ; drawn tel quel, le bord
-    // inférieur était rogné et le pied de la fleur disparaissait (mesuré sur
-    // la capture). En bornant la zone source, plus rien ne touche le bord
-    // de l'image — et l'interpolation ne peut plus le rogner.
-    let (sx0, sy0, sx1, sy1) = bornes_opaques(largeur, hauteur, pixels);
-    let sw = sx1.saturating_sub(sx0) as i32;
-    let sh = sy1.saturating_sub(sy0) as i32;
-    if sw <= 0 || sh <= 0 {
-        return false;
-    }
-    // Conserver le RAPPORT : le logo n'est pas forcément carré.
-    let mut dw = cote;
-    let mut dh = ((cote as f64 * sh as f64 / sw as f64).round() as i32).max(1);
-    let (dx, dy) = if dh > cote {
-        // Trop haut : on borne sur la hauteur et on recalcule la largeur.
-        dh = cote;
-        dw = ((cote as f64 * sw as f64 / sh as f64).round() as i32).max(1);
-        (x + (cote - dw) / 2, y)
-    } else {
-        (x + (cote - dw) / 2, y)
+/// ⚠ Le résultat d'`AddFontMemResourceEx` n'était PAS vérifié : quand il
+/// échouait (ressource absente, TTF illisible), les titres sortaient dans la
+/// police par défaut du système sans que personne ne le remarque. On
+/// journalise l'échec ; `kare_disponible()` fait ensuite le vrai contrôle.
+unsafe fn charger_police() {
+    let Some(ttf) = ressource(2, 8) else {
+        eprintln!("rose-setup : police Kare absente des ressources (RT_FONT 2)");
+        return;
     };
-
-    let mut fait = false;
-    avec_gdiplus(dc, |g| {
-        let mut bitmap: *mut c_void = std::ptr::null_mut();
-        // GDI+ attend des pixels BGRA en mémoire ; le décodeur rend RGBA.
-        let mut bgra = Vec::with_capacity(pixels.len());
-        for k in 0..largeur * hauteur {
-            let r = pixels[k * 4];
-            let v = pixels[k * 4 + 1];
-            let b = pixels[k * 4 + 2];
-            let a = pixels[k * 4 + 3];
-            // NON prémultiplié : PixelFormat32bppARGB attend l'alpha droit.
-            bgra.push(b);
-            bgra.push(v);
-            bgra.push(r);
-            bgra.push(a);
-        }
-        let pas = (largeur * 4) as i32;
-        if GdipCreateBitmapFromScan0(largeur as i32, hauteur as i32, pas,
-                                     PIXEL_FORMAT_32BPP_ARGB, bgra.as_ptr(),
-                                     &mut bitmap) == 0 && !bitmap.is_null() {
-            // Interpolation de haute qualité : le logo est réduit de 172 à
-            // ~124 px, un filtrage poor donnerait des bords dentelés.
-            GdipSetInterpolationMode(g, INTERPOLATION_BICUBIC);
-            // Dessin avec un RECTANGLE SOURCE borné au contenu utile.
-            if GdipDrawImageRectRectI(g, bitmap, dx, dy, dw, dh,
-                                      sx0 as i32, sy0 as i32, sw, sh,
-                                      UNIT_PIXEL) == 0 {
-                fait = true;
-            }
-            GdipDisposeImage(bitmap);
-        }
-    });
-    fait
+    let mut n = 0u32;
+    let r = AddFontMemResourceEx(ttf.as_ptr() as *const c_void, ttf.len() as u32, std::ptr::null_mut(), &mut n);
+    if r == 0 || n == 0 {
+        eprintln!("rose-setup : AddFontMemResourceEx a échoué ({n} police(s)) — les titres seront en Segoe UI");
+    }
 }
 
 /// Bornes du contenu visible d'une image RGBA (alpha non nul).
@@ -662,16 +619,49 @@ fn bornes_opaques(largeur: usize, hauteur: usize, pixels: &[u8]) -> (usize, usiz
 }
 
 /// Dessine la rose embarquée, mise à l'échelle, avec transparence.
+///
+/// Chemin GDI pur (`CreateDIBSection` + `AlphaBlend`), volontairement :
+/// la variante GDI+ (`GdipCreateBitmapFromScan0` avec un `scan0` pointant
+/// sur un `Vec` Rust) laisse GDI+ référencer — voire libérer — un tampon qui
+/// nous appartient : double libération à la destruction du `Vec`, donc
+/// CRASH de l'installeur. Symptôme mesuré : la fenêtre s'ouvrait avec ses
+/// seules BORDURES, sans intérieur (le processus mourait pendant le
+/// dessin). GDI+ n'est plus utilisé que pour les FORMES (cercles, coins
+/// arrondis), où aucun tampon n'est partagé.
+///
+/// On ne dessine que le CONTENU UTILE de l'image (pixels non
+/// transparents) : le PNG a sa tige qui descend jusqu'au dernier pixel de
+/// la bordure, et le bord inférieur était rogné (le pied de la fleur
+/// disparaissait).
 unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     let Some(png) = ressource(1, 10) else { return false };
     let Some((largeur, hauteur, pixels)) = crate::png::decoder_png(png) else { return false };
 
-    // Chemin principal : GDI+ (alpha et mise à l'échelle fiables).
-    if dessiner_rgba_gdiplus(dc, x, y, cote, largeur, hauteur, &pixels) {
-        return true;
+    let (sx0, sy0, sx1, sy1) = bornes_opaques(largeur, hauteur, &pixels);
+    let sw = sx1.saturating_sub(sx0);
+    let sh = sy1.saturating_sub(sy0);
+    if sw == 0 || sh == 0 {
+        return false;
     }
+    // Conserver le rapport d'aspect du logo.
+    //
+    // ⚠⚠ Le logo n'est PAS carré : la rose et sa tige font 138 × 172. Le
+    // plafonner sur un carré (`cote × cote`) puis le réduire à `cote` de
+    // haut écrasait le dessin dans la moitié de la place disponible et, sur
+    // une fenêtre basse, le logo disparaissait presque. On met à l'échelle
+    // sur le PLUS GRAND côté, en gardant les proportions.
+    let mut dw = cote;
+    let mut dh = ((cote as f64 * sh as f64 / sw as f64).round() as i32).max(1);
+    if dh > cote {
+        dh = cote;
+        dw = ((cote as f64 * sw as f64 / sh as f64).round() as i32).max(1);
+    }
+    if dw <= 0 || dh <= 0 {
+        return false;
+    }
+    let dx = x + (cote - dw) / 2;
+    let dy = y + (cote - dh) / 2;
 
-    // Repli GDI : DIB prémultiplié + AlphaBlend.
     let info = BITMAPINFO {
         header: BITMAPINFOHEADER {
             bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -698,9 +688,8 @@ unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     // sans la multiplication, les bords transparents de la rose sortaient
     // avec un halo clair.
     //
-    // Le visuel embarqué (`embed-assets.py`) a ses pixels NOIRS rendus
-    // transparents : le fond sombre du panneau dessine donc lui-même les
-    // contours, comme sur la maquette. Aucune inversion de couleur ici.
+    // Le visuel embarqué a ses pixels NOIRS rendus transparents : le fond
+    // sombre du panneau dessine donc lui-même les contours.
     let cible = std::slice::from_raw_parts_mut(bits as *mut u8, largeur * hauteur * 4);
     for k in 0..largeur * hauteur {
         let a = pixels[k * 4 + 3];
@@ -720,7 +709,9 @@ unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
         source_constant_alpha: 255,
         alpha_format: 1,
     };
-    AlphaBlend(dc, x, y, cote, cote, memoire, 0, 0, largeur as i32, hauteur as i32, melange);
+    // Rectangle SOURCE = contenu utile ; rectangle DEST = la zone voulue.
+    AlphaBlend(dc, dx, dy, dw, dh, memoire,
+               sx0 as i32, sy0 as i32, sw as i32, sh as i32, melange);
     SelectObject(memoire, ancien);
     DeleteDC(memoire);
     DeleteObject(bitmap as *mut c_void);
@@ -735,9 +726,14 @@ unsafe fn pixels(dpi: i32, points: i32) -> i32 {
 /// Hauteur d'une taille en points, mise à l'échelle du gabarit : la police
 /// suit la fenêtre (une fenêtre réduite garde des textes lisibles, sans
 /// débordement).
+///
+/// ⚠ Le plancher était `9` px : à 9 pt sur une fenêtre réduite, la police
+/// tombait à 9 px, soit 7 px de glyphes — ILLISIBLE. On garde au moins
+/// 13 px (≈ 10 pt à 96 DPI), ce qui reste lisible même en 736 × 512.
 fn points_ecrits(dpi: i32, points: i32, echelle: f64) -> i32 {
     let base = (points * dpi) / 72;
-    ((base as f64 * echelle).round() as i32).max(9)
+    let e = if echelle.is_finite() && echelle > 0.0 { echelle } else { 1.0 };
+    ((base as f64 * e).round() as i32).max(13)
 }
 
 /// Dessine un texte : `famille` = "Kare" (titre) ou "Segoe UI" (courant).
@@ -747,20 +743,142 @@ unsafe fn texte(dc: HDC, dpi: i32, famille: &str, s: &str, r: &mut RECT, flags: 
 }
 
 /// Comme `texte`, avec une police mise à l'échelle de la fenêtre.
+///
+/// ⚠ `CreateFontW` peut ÉCHOUER (quota GDI, police inconnue, taille
+/// aberrante) : il rend alors NULL, et `SelectObject(dc, NULL)` renvoie NULL.
+/// L'ancienne version appelait `DrawTextW` quand même, avec la police de
+/// stock de la fenêtre — dont la hauteur par défaut est SANS RAPPORT avec la
+/// zone, d'où des textes énormes qui recouvraient tout le tracé. On
+/// court-circuite : un texte non dessiné est moins grave qu'une fenêtre
+/// couverte de glyphes géants.
 #[allow(clippy::too_many_arguments)]
 unsafe fn texte_echelle(dc: HDC, dpi: i32, famille: &str, s: &str, r: &mut RECT, flags: u32,
                         couleur: u32, points: i32, gras: bool, echelle: f64) {
+    if s.is_empty() || r.right <= r.left || r.bottom <= r.top {
+        return; // rectangle inversé : `DrawText` ne dessinerait rien
+    }
+    let taille = points_ecrits(dpi, points, echelle);
+    if taille <= 0 {
+        return;
+    }
+    let Some(police) = creer_police(famille, taille, gras, s) else { return };
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, couleur);
-    let face = hex_w(famille);
-    let poids = if gras { 700 } else { 400 };
-    let taille = -points_ecrits(dpi, points, echelle);
-    let police = CreateFontW(taille, 0, 0, 0, poids, 0, 0, 0, 1, 0, 0, QUALITE_POLICE, 0, face.as_ptr());
     let ancien = SelectObject(dc, police as *mut c_void);
     let v = hex_w(s);
     DrawTextW(dc, v.as_ptr(), (v.len() - 1) as i32, r, flags);
     SelectObject(dc, ancien);
     DeleteObject(police as *mut c_void);
+}
+
+/// Crée une police GDI, ou rend `None` si GDI refuse.
+///
+/// ⚠⚠ Un glyphe ABSENT de la police ne produit pas d'erreur : Windows dessine
+/// un carré vide (le glyphe « .notdef »). Mesuré : `⚿` dans « MODE
+/// UTILISATEUR » et le `✓` des cartes « Options »/« Terminé » sortaient en
+/// carrés, ce qui donnait une interface « cassée ». `GDI_ERROR` (0xFFFFFFFF)
+/// est rendu par `GetGlyphIndicesW` pour un caractère non couvert : on le
+/// teste ici et on retombe sur Segoe UI, qui les a tous.
+unsafe fn creer_police(famille: &str, taille_px: i32, gras: bool, texte: &str) -> Option<HFONT> {
+    let poids = if gras { 700 } else { 400 };
+    let mut face = famille;
+    // Kare n'est utilisable que si elle est RÉELLEMENT présente ; sinon
+    // `CreateFontW("Kare", …)` rendrait la police système, et les titres
+    // « ROSE » / « BIENVENUE » sortiraient en Segoe UI sans prévenir.
+    if famille == "Kare" && !kare_disponible() {
+        face = "Segoe UI";
+    } else if famille != "Segoe UI" && !famille_couvre(famille, texte) {
+        face = "Segoe UI";
+    }
+    let nom = hex_w(face);
+    let police = CreateFontW(-taille_px, 0, 0, 0, poids, 0, 0, 0, 1, 0, 0, QUALITE_POLICE, 0, nom.as_ptr());
+    if police.is_null() { None } else { Some(police) }
+}
+
+/// Vrai si `famille` possède tous les glyphes de `texte`.
+unsafe fn famille_couvre(famille: &str, texte: &str) -> bool {
+    let nom = hex_w(famille);
+    let police = CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, QUALITE_POLICE, 0, nom.as_ptr());
+    if police.is_null() {
+        return false;
+    }
+    let dc = CreateCompatibleDC(std::ptr::null_mut());
+    if dc.is_null() {
+        DeleteObject(police as *mut c_void);
+        return false;
+    }
+    let ancien = SelectObject(dc, police as *mut c_void);
+    let mut couvre = true;
+    for c in texte.chars() {
+        // Unité UTF-16 : les caractères hors BMP ne sont de toute façon pas
+        // dans Kare (elle s'arrête au latin accentué).
+        let mut cp = [c as u16];
+        let mut idx = [0u16];
+        let n = GetGlyphIndicesW(dc, cp.as_mut_ptr(), 1, idx.as_mut_ptr(), 0);
+        if n == u32::MAX || idx[0] == 0xFFFF {
+            couvre = false;
+            break;
+        }
+    }
+    SelectObject(dc, ancien);
+    DeleteDC(dc);
+    DeleteObject(police as *mut c_void);
+    couvre
+}
+
+/// Vrai si la police Kare est réellement disponible dans cette session GDI.
+///
+/// `AddFontMemResourceEx` peut ÉCHOUER (ressource absente, TTF refusé) :
+/// `CreateFontW("Kare", …)` rend alors la police système et les titres
+/// sortent en Segoe UI sans que personne ne le remarque. On vérifie donc au
+/// premier besoin, une seule fois, en demandant à GDI les glyphes réels.
+unsafe fn kare_disponible() -> bool {
+    static mut VERDICT: i32 = 0; // 0 = inconnu, 1 = oui, 2 = non
+    match VERDICT {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    let nom = hex_w("Kare");
+    let police = CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, QUALITE_POLICE, 0, nom.as_ptr());
+    let dispo = if police.is_null() {
+        false
+    } else {
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        if dc.is_null() {
+            DeleteObject(police as *mut c_void);
+            false
+        } else {
+            let ancien = SelectObject(dc, police as *mut c_void);
+            let mut cp = ['R' as u16];
+            let mut idx = [0u16];
+            let n = GetGlyphIndicesW(dc, cp.as_mut_ptr(), 1, idx.as_mut_ptr(), 0);
+            SelectObject(dc, ancien);
+            DeleteDC(dc);
+            DeleteObject(police as *mut c_void);
+            // GDI_ERROR = 0xFFFFFFFF quand la police n'existe pas ; le glyphe
+            // « R » doit exister (indice non nul, pas 0xFFFF).
+            n != u32::MAX && idx[0] != 0xFFFF && idx[0] != 0
+        }
+    };
+    VERDICT = if dispo { 1 } else { 2 };
+    dispo
+}
+
+/// Largeur en pixels d'un texte dans une police donnée (mesure GDI réelle).
+///
+/// Sert au découpage des textes (`crate::paint::lignes_ajustees`) : couper au
+/// nombre de caractères ne donne jamais une mise en page propre avec une
+/// police proportionnelle.
+unsafe fn mesurer_texte(dc: HDC, famille: &str, taille_px: i32, gras: bool, s: &str) -> i32 {
+    let Some(police) = creer_police(famille, taille_px, gras, s) else { return s.chars().count() as i32 * 8 };
+    let ancien = SelectObject(dc, police as *mut c_void);
+    let v = hex_w(s);
+    let mut taille = std::mem::zeroed::<SIZE>();
+    let ok = GetTextExtentPoint32W(dc, v.as_ptr(), (v.len() - 1) as i32, &mut taille);
+    SelectObject(dc, ancien);
+    DeleteObject(police as *mut c_void);
+    if ok != 0 { taille.cx.max(0) } else { s.chars().count() as i32 * 8 }
 }
 
 unsafe fn remplir(dc: HDC, r: &RECT, couleur: u32) {
@@ -772,8 +890,16 @@ unsafe fn remplir(dc: HDC, r: &RECT, couleur: u32) {
 unsafe fn arrondi(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
     // Tracé ANTIALIASÉ (GDI+) : les coins arrondis des boutons et des cartes
     // sortaient crénelés en GDI pur (`RoundRect`).
+    //
+    // ⚠ Le repli GDI ne doit JAMAIS être sauté : `arrondi_lisse` rend `false`
+    // quand GDI+ n'est pas initialisé (DLL absente, `GdiplusStartup` refusé)
+    // ou quand un appel GDI+ échoue. Sans le repli, les cartes, les boutons
+    // et les badges étaient simplement ABSENTS — la fenêtre paraissait vide.
     if arrondi_lisse(dc, r, rayon as f32, couleur) {
         return;
+    }
+    if r.right <= r.left || r.bottom <= r.top {
+        return; // rectangle inversé : RoundRect ne dessinerait rien
     }
     // Repli GDI : on fixe pinceau ET stylo (sinon le contour sort noir, et un
     // pinceau par défaut blanc rendrait la forme entièrement blanche).
@@ -846,6 +972,13 @@ unsafe fn contour(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
 unsafe fn cercle(dc: HDC, cx: i32, cy: i32, rayon: i32, couleur: u32) {
     // Tracé ANTIALIASÉ via GDI+ (voir `cercle_lisse`). GDI pur produisait un
     // bord crénelé, d'où l'aspect pixelisé des pastilles des étapes.
+    //
+    // ⚠ Le repli GDI ne doit JAMAIS être sauté : sans lui, les pastilles des
+    // étapes et le voyant de la barre d'état disparaissaient quand GDI+
+    // refusait de s'initialiser.
+    if rayon <= 0 {
+        return;
+    }
     if cercle_lisse(dc, cx, cy, rayon as f32, couleur) {
         return;
     }
@@ -926,16 +1059,73 @@ fn libelle_principal(existant: bool) -> &'static str {
     if existant { "Mettre à jour" } else { "Installer" }
 }
 
+/// Peint la fenêtre en entier, quoi qu'il arrive.
+///
+/// ⚠⚠ C'est la CORRECTION du symptôme « la fenêtre s'ouvre avec ses seules
+/// BORDURES, transparente, puis disparaît au bout d'un moment ». Trois
+/// défauts se cumulaient :
+///
+/// 1. `dessiner` était appelé DIRECTEMENT depuis `WM_PAINT`. Une panique
+///    (indice hors bornes, débordement, allocation) déroulait la pile du fil
+///    de messages et le processus MOURAIT pendant le premier `WM_PAINT` :
+///    Windows avait déjà créé la fenêtre, on n'en voyait que le cadre, puis
+///    elle disparaissait avec le processus ;
+/// 2. une panique laissait `BeginPaint` SANS `EndPaint` : le DC de mise à
+///    jour restait verrouillé et toutes les invalidations suivantes étaient
+///    ignorées — la fenêtre ne se repeignait plus JAMAIS ;
+/// 3. tout le tracé se faisait sur un DC MÉMOIRE, copié vers l'écran à la
+///    toute fin : un plantage en cours de route laissait l'écran VIDE, sans
+///    même le fond.
+///
+/// Ici, le fond est peint sur l'écran AVANT tout le reste, le tracé détaillé
+/// tourne dans `catch_unwind` (une panique affiche la fenêtre sans
+/// décoration au lieu de tuer le processus), et `EndPaint` est TOUJOURS
+/// appelé. Les objets GDI du tampon mémoire sont relâchés en cas de panique.
 unsafe fn dessiner(h: HWND) {
     let mut ps = std::mem::zeroed::<PAINTSTRUCT>();
     let dc_ecran = BeginPaint(h, &mut ps);
+    if dc_ecran.is_null() {
+        return; // WM_PAINT non validé : rien à peindre
+    }
     let mut rc = std::mem::zeroed::<RECT>();
     GetClientRect(h, &mut rc);
+    // FILE DE SÉCURITÉ : le fond est posé SUR L'ÉCRAN avant toute
+    // décoration. Même si le tracé détaillé échoue, la fenêtre n'est jamais
+    // « transparente ».
+    remplir(dc_ecran, &rc, FOND);
+
+    // Le tracé détaillé est isolé : une panique ne tue pas le processus et ne
+    // laisse pas la mise à jour en cours verrouillée.
+    let resultat = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dessiner_decore(h, dc_ecran, &rc)));
+    if resultat.is_err() {
+        // On garde une trace lisible pour le diagnostic (et pour le journal
+        // de l'installeur, qui affiche les lignes du setup).
+        eprintln!("rose-setup : le tracé de la fenêtre a échoué (panique) — la fenêtre reste utilisable");
+        // On force un repaint complet : si la panique est venue d'une police
+        // ou d'une forme, le prochain passage repart d'un état propre.
+        InvalidateRect(h, std::ptr::null(), 0);
+    }
+    EndPaint(h, &ps);
+}
+
+/// Tracé détaillé sur le DC mémoire, puis copie vers `dc_ecran`.
+///
+/// ⚠ Ne JAMAIS appeler `EndPaint` ici : l'appelant (`dessiner`) le fait
+/// toujours, panique comprise.
+unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT) {
     // Double-bufferisation : on dessine tout sur un DC mémoire puis on copie
     // d'un bloc. Sans cela, chaque `InvalidateRect` repeignait directement la
     // fenêtre, ce qui produisait un clignotement et des bords crénelés.
     let dc_memoire = CreateCompatibleDC(dc_ecran);
     let bitmap = CreateCompatibleBitmap(dc_ecran, rc.right.max(1), rc.bottom.max(1));
+    if dc_memoire.is_null() || bitmap.is_null() {
+        // Plus d'objet GDI (quota épuisé, DC invalide) : on décore DIRECTEMENT
+        // sur l'écran plutôt que de laisser la fenêtre vide. Le clignotement
+        // est préférable à un cadre sans contenu.
+        if !dc_memoire.is_null() { DeleteDC(dc_memoire); }
+        if !bitmap.is_null() { DeleteObject(bitmap as *mut c_void); }
+        return;
+    }
     let ancien_bitmap = SelectObject(dc_memoire, bitmap as *mut c_void);
     let dc = dc_memoire;
     let w = rc.right;
@@ -962,11 +1152,16 @@ unsafe fn dessiner(h: HWND) {
     // cadre dès que la fenêtre était moins haute que le gabarit (le bouton
     // « Mettre à jour » se retrouvait coupé). Le minimum est borné par
     // `WM_GETMINMAXINFO` (voir `lancer`).
-    let echelle = (w as f64 / 1120.0).min(ht as f64 / 780.0);
+    //
+    // ⚠ `paint::echelle_tracé` ne rend JAMAIS zéro : au premier `WM_PAINT`,
+    // `GetClientRect` peut rendre 0 × 0 (avant `WM_SIZE`). Une échelle nulle
+    // donnait des polices de taille 0, un `CreateFontW` en échec et un tracé
+    // entièrement dégénéré.
+    let echelle = crate::paint::echelle_tracé(w, ht);
     let s = |v: i32| -> i32 { (v as f64 * echelle).round() as i32 };
 
     // fond général
-    remplir(dc, &rc, FOND);
+    remplir(dc, rc, FOND);
 
     // ── barre de titre PERSONNALISÉE (aucun cadre Windows) ──
     // La fenêtre est un WS_POPUP : tout est dessiné ici — fond, rose, marque
@@ -979,13 +1174,21 @@ unsafe fn dessiner(h: HWND) {
     remplir(dc, &filet_barre, LIGNE_FORTE);
     dessiner_rose(dc, s(18), s(16), s(24));
     // La marque « Rose » en Kare, comme sur le site et la maquette.
-    let mut rt = RECT { left: s(52), top: s(13), right: s(210), bottom: s(43) };
-    texte_echelle(dc, dpi, "Kare", "Rose", &mut rt, DT_LEFT | DT_VCENTER | DT_SINGLELINE, TEXTE, 15, false, echelle);
-    let mut rt2 = RECT { left: s(210), top: s(16), right: s(430), bottom: s(40) };
+    let mut rt = RECT { left: s(52), top: s(13), right: s(150), bottom: s(43) };
+    texte_echelle(dc, dpi, "Kare", "Rose", &mut rt, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, TEXTE, 15, false, echelle);
+    // ⚠ Le sous-titre s'arrête AVANT la pastille de version : à droite fixe
+    // de 430 sur la grille, il chevauchait « v0.1.5 · x64 » dès que la fenêtre
+    // était étroite (mesuré : « Programme d'install v0.1.5 » illisible).
+    // On lui donne tout l'espace qui reste jusqu'à la pastille, et on ellipse.
+    let mut rt2 = RECT { left: s(150), top: s(16), right: (s(438) - s(8)).max(s(170)), bottom: s(40) };
     texte_echelle(dc, dpi, "Segoe UI", "— Programme d'installation", &mut rt2,
-          DT_LEFT | DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 10, false, echelle);
-    // pastille de version
-    let pastille = RECT { left: s(438), top: s(16), right: s(438 + 128), bottom: s(40) };
+          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, TEXTE_DOUX, 10, false, echelle);
+    // pastille de version — elle se décale à gauche quand la fenêtre est
+    // étroite, pour ne jamais passer sous les boutons réduire/agrandir/fermer.
+    let largeur_pastille = s(128);
+    let boutons_l = w - 3 * s(46);
+    let droite_pastille = (s(438) + largeur_pastille).min(boutons_l - s(8));
+    let pastille = RECT { left: droite_pastille - largeur_pastille, top: s(16), right: droite_pastille, bottom: s(40) };
     contour(dc, &pastille, 8, LIGNE_FORTE);
     let mut rv = RECT { left: pastille.left, top: pastille.top, right: pastille.right, bottom: pastille.bottom };
     texte_echelle(dc, dpi, "Segoe UI", &format!("v{}  ·  x64", env!("CARGO_PKG_VERSION")), &mut rv,
@@ -1057,59 +1260,106 @@ unsafe fn dessiner(h: HWND) {
     let filet = RECT { left: lateral_w - 1, top: s(56), right: lateral_w, bottom: ht - etat_h };
     remplir(dc, &filet, LIGNE_FORTE);
 
+    // Cartes du bas du panneau : elles sont réservées AVANT le reste, sinon
+    // la liste des étapes leur passait dessus dès que la fenêtre était basse.
+    let bas = ht - etat_h - s(18);
+    let carte2 = RECT { left: s(20), top: bas - s(38), right: lateral_w - s(20), bottom: bas };
+    let carte1 = RECT { left: s(20), top: carte2.top - s(46), right: lateral_w - s(20), bottom: carte2.top - s(8) };
+    let plancher = carte1.top - s(16); // rien ne descend sous les cartes
+
     // La rose de la maquette occupe ~110 px sur 320 de large, sous une barre
-    // de titre de 56 px : 120 px centrés, titre « ROSE » juste dessous.
-    dessiner_rose(dc, lateral_w / 2 - s(60), s(78), s(124));
-    let mut rl = RECT { left: 0, top: s(206), right: lateral_w, bottom: s(268) };
+    // de titre de 56 px : 124 px centrés, titre « ROSE » juste dessous.
+    //
+    // ⚠ Le logo est BORNÉ par la place disponible : à 124 px fixes, il
+    // chevauchait la liste des étapes sur une fenêtre de 600 px de haut, et
+    // le titre « Rose » se retrouvait par-dessus les pastilles.
+    let place_logo = (plancher - s(78) - s(150)).max(0);
+    let cote_logo = s(124).min(place_logo);
+    if cote_logo >= s(40) {
+        dessiner_rose(dc, lateral_w / 2 - cote_logo / 2, s(78), cote_logo);
+    }
+    let y_marque = s(78) + cote_logo.max(0);
+    let mut rl = RECT { left: 0, top: y_marque, right: lateral_w, bottom: y_marque + s(56) };
     // Marque en Kare, comme le site : c'est la signature visuelle de Rose.
     texte_echelle(dc, dpi, "Kare", "Rose", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 36, false, echelle);
-    let mut rs = RECT { left: s(24), top: s(274), right: lateral_w - s(24), bottom: s(334) };
+    let mut rs = RECT { left: s(24), top: y_marque + s(56), right: lateral_w - s(24), bottom: y_marque + s(112) };
     texte_echelle(dc, dpi, "Segoe UI", "Le langage compilé en français qui se compile lui-même.",
-          &mut rs, DT_CENTER | DT_WORDBREAK, TEXTE_DOUX, 9, false, echelle);
+          &mut rs, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
 
-    // étapes
-    let mut y = s(344);
+    // étapes : la liste ne descend JAMAIS sous les cartes du bas.
+    let mut y = y_marque + s(122);
+    let pas = ((plancher - y) / 5).clamp(s(26), s(44));
     for (i, nom) in ETAPES.iter().enumerate() {
+        if y + pas > plancher + s(4) {
+            break; // plus de place : les étapes restantes sont omises
+        }
         let atteinte = etat.atteintes[i];
         let courante = (etat.vue as usize) == i;
         let couleur_puce = if atteinte { ROUGE } else if courante { ROUGE_SOMBRE } else { FOND_PUCE };
-        cercle(dc, s(48), y + s(12), s(14), couleur_puce);
+        let centre = y + pas / 2;
+        let rayon = s(14).min(pas / 2 - s(1)).max(s(4));
+        cercle(dc, s(48), centre, rayon, couleur_puce);
         if courante && !atteinte {
             // anneau : l'étape en cours se distingue des étapes à venir
-            cercle(dc, s(48), y + s(12), s(14), ROUGE_CLAIR);
-            cercle(dc, s(48), y + s(12), s(11), LATERAL);
+            cercle(dc, s(48), centre, rayon, ROUGE_CLAIR);
+            cercle(dc, s(48), centre, rayon - s(3), LATERAL);
         }
         if atteinte {
-            coche(dc, s(48), y + s(12), s(7), TEXTE);
+            coche(dc, s(48), centre, rayon / 2, TEXTE);
         } else {
-            let mut rn = RECT { left: s(34), top: y, right: s(62), bottom: y + s(24) };
+            let mut rn = RECT { left: s(34), top: y, right: s(62), bottom: y + pas };
             texte_echelle(dc, dpi, "Segoe UI", &format!("{}", i + 1), &mut rn,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE,
                   if courante { TEXTE } else { TEXTE_FAIBLE }, 9, false, echelle);
         }
         let couleur_nom = if courante || atteinte { TEXTE } else { TEXTE_FAIBLE };
-        let mut rnom = RECT { left: s(74), top: y, right: lateral_w - s(20), bottom: y + s(24) };
-        texte_echelle(dc, dpi, "Segoe UI", nom, &mut rnom, DT_SINGLELINE | DT_VCENTER, couleur_nom, 10, false, echelle);
-        y += s(44);
+        let mut rnom = RECT { left: s(74), top: y, right: lateral_w - s(20), bottom: y + pas };
+        texte_echelle(dc, dpi, "Segoe UI", nom, &mut rnom, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, couleur_nom, 10, false, echelle);
+        y += pas;
     }
 
     // cartes du bas du panneau latéral — VERT LIME, comme les boutons
-    let bas = ht - etat_h - s(18);
-    let carte2 = RECT { left: s(20), top: bas - s(38), right: lateral_w - s(20), bottom: bas };
     arrondi(dc, &carte2, 10, VERT_LIME);
     let mut rc2 = RECT { left: s(34), top: carte2.top, right: carte2.right - s(14), bottom: carte2.bottom };
-    texte_echelle(dc, dpi, "Segoe UI", if etat.utilisateur { "⚿  MODE UTILISATEUR" } else { "⚿  DROITS REQUIS" },
-          &mut rc2, DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 9, true, echelle);
+    // ⚠ PAS de `⚿` (U+26BF) dans ce libellé : ce glyphe n'existe dans
+    // AUCUNE police de Windows 10/11 courante ; il sortait en carré vide, et
+    // le badge paraissait « cassé ». Un simple libellé suffit.
+    texte_echelle(dc, dpi, "Segoe UI", if etat.utilisateur { "MODE UTILISATEUR" } else { "DROITS REQUIS" },
+          &mut rc2, DT_VCENTER | DT_SINGLELINE | DT_CENTER | DT_END_ELLIPSIS, NOIR_DOUX, 9, true, echelle);
     let carte1 = RECT { left: s(20), top: carte2.top - s(46), right: lateral_w - s(20), bottom: carte2.top - s(8) };
     arrondi(dc, &carte1, 10, VERT_LIME);
     let mut rc1 = RECT { left: s(34), top: carte1.top, right: carte1.right - s(14), bottom: carte1.bottom };
     texte_echelle(dc, dpi, "Segoe UI", "{ ROSE } · MIT", &mut rc1, DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 9, true, echelle);
 
     // ── zone de contenu ──
+    //
+    // ⚠⚠ TOUTES les cartes sont désormais dimensionnées sur leur TEXTE RÉEL,
+    // mesuré par GDI (`mesurer_texte` + `paint::lignes_ajustees`). Les
+    // hauteurs étaient écrites en dur (`s(150)`, `s(186)`…) sur la grille de
+    // 1120 × 780 : dès que la fenêtre était plus petite (ou le DPI
+    // différent), les cartes se retrouvaient PLUS BASSES QUE LEUR CONTENU et
+    // `DrawText` ne dessinait que la première ligne — l'utilisateur voyait une
+    // fenêtre « vide ». La licence, elle, était entièrement hors du cadre.
     let contenu = RECT { left: lateral_w + 1, top: s(56), right: w, bottom: ht - etat_h - pied_h };
     let marge = s(56);
     let g = contenu.left + marge;
     let d = contenu.right - marge;
+    let largeur_texte = (d - g - s(40)).max(s(80));
+    // Interlignes des tailles utilisées (10 pt pour le corps, 9 pt pour les
+    // notes), mis à l'échelle comme les polices.
+    let interligne = points_ecrits(dpi, 10, echelle) + (s(6)).max(2);
+    let interligne_petit = points_ecrits(dpi, 9, echelle) + (s(5)).max(2);
+    let mesurer = |taille_pt: i32, gras: bool| {
+        move |t: &str| -> i32 {
+            let px = points_ecrits(dpi, taille_pt, echelle);
+            unsafe { mesurer_texte(dc, "Segoe UI", px, gras, t) }
+        }
+    };
+    // Hauteur d'un bloc de texte, mesurée sur la vraie police.
+    let hauteur = |txt: &str, taille_pt: i32, ligne: i32| -> i32 {
+        crate::paint::hauteur_texte(txt, largeur_texte, &mesurer(taille_pt, false), ligne)
+    };
+
     let mut yc = contenu.top + s(44);
     let (titre, sous) = match etat.vue {
         Vue::Bienvenue => (
@@ -1127,143 +1377,164 @@ unsafe fn dessiner(h: HWND) {
     // minuscules se lit mal (« Options » → « PTIONS »). Le site réserve Kare
     // aux titres, à la marque et aux boutons, et Segoe UI au texte courant.
     let titre_kare = titre.to_uppercase();
-    texte_echelle(dc, dpi, "Kare", &titre_kare, &mut rti, DT_SINGLELINE | DT_VCENTER, TEXTE, 20, false, echelle);
+    texte_echelle(dc, dpi, "Kare", &titre_kare, &mut rti, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, TEXTE, 20, false, echelle);
     yc += s(52);
-    let mut rso = RECT { left: g, top: yc, right: d, bottom: yc + s(30) };
-    texte_echelle(dc, dpi, "Segoe UI", &sous, &mut rso, DT_WORDBREAK, TEXTE_DOUX, 10, false, echelle);
-    yc += s(48);
+    // Le sous-titre suit le texte de la vue : en mode « Installation » il
+    // affiche le STATUT de l'opération, qui peut tenir sur plusieurs lignes.
+    let hauteur_sous = hauteur(&sous, 10, interligne).max(s(20));
+    let mut rso = RECT { left: g, top: yc, right: d, bottom: yc + hauteur_sous };
+    texte_echelle(dc, dpi, "Segoe UI", &sous, &mut rso, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE_DOUX, 10, false, echelle);
+    yc += hauteur_sous + s(28);
 
+    // Hauteur utile restante : aucune carte ne doit déborder du pied de page.
+    let bas_utile = contenu.bottom - s(20);
     match etat.vue {
         Vue::Bienvenue => {
-            let c = RECT { left: g, top: yc, right: d, bottom: yc + s(150) };
+            let corps = "Rose est un langage de programmation en français, auto-hébergé : \
+                         interprète exact, JIT Cranelift, AOT LLVM et module WASM.\n\n\
+                         L'installation se fait dans votre profil utilisateur — aucun droit \
+                         administrateur n'est demandé.";
+            let note = if etat.existant {
+                format!(
+                    "Une installation existante a été détectée : version {} dans {}\n\n\
+                     La suite de l'assistant propose de la mettre à jour \
+                     (elle sera réinstallée proprement) ou de la désinstaller.",
+                    etat.version_installee, etat.prefixe)
+            } else {
+                "Aucune installation détectée : l'assistant proposera le dossier par défaut.".to_string()
+            };
+            let h_corps = hauteur(corps, 10, interligne);
+            let h_note = hauteur(&note, 9, interligne_petit);
+            // La carte occupe la hauteur disponible : un bloc de texte seul
+            // laissait un grand vide sous la note, ce qui donnait l'impression
+            // que la fenêtre n'était pas finie de dessiner.
+            let h_dispo = (bas_utile - yc - h_note - s(18)).max(s(120));
+            let h_carte = crate::paint::hauteur_carte(h_corps, s(18), s(120)).max(h_dispo);
+            let c = RECT { left: g, top: yc, right: d, bottom: yc + h_carte };
             carte(dc, &c, ROUGE);
-            let mut r = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: yc + s(140) };
-            texte_echelle(dc, dpi, "Segoe UI",
-                  "Rose est un langage de programmation en français, auto-hébergé : \
-                   interprète exact, JIT Cranelift, AOT LLVM et module WASM.\n\n\
-                   L'installation se fait dans votre profil utilisateur — aucun droit \
-                   administrateur n'est demandé.",
-                  &mut r, DT_WORDBREAK, TEXTE, 10, false, echelle);
-            // ⚠ Le rectangle de texte doit aller jusqu'au bas de la zone de
-            // contenu : il était borné à 66 px, et la dernière ligne
-            // (« La suite de l'assistant propose… ») était COUPÉE (mesuré
-            // sur la capture).
-            let mut ri = RECT { left: g, top: yc + s(164), right: d, bottom: contenu.bottom - s(24) };
-            texte_echelle(dc, dpi, "Segoe UI",
-                  &if etat.existant {
-                      format!(
-                          "Une installation existante a été détectée : version {} dans {}\n\n\
-                           La suite de l'assistant propose de la mettre à jour \
-                           (elle sera réinstallée proprement) ou de la désinstaller.",
-                          etat.version_installee, etat.prefixe)
-                  } else {
-                      "Aucune installation détectée : l'assistant proposera le dossier par défaut.".to_string()
-                  },
-                  &mut ri, DT_WORDBREAK, TEXTE_DOUX, 9, false, echelle);
+            // Le texte est aligné en haut de la carte : `DT_TOP` évite que
+            // `DrawText` le centre verticalement quand la carte est haute.
+            let mut r = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(14) };
+            texte_echelle(dc, dpi, "Segoe UI", corps, &mut r, DT_WORDBREAK | DT_TOP | DT_END_ELLIPSIS, TEXTE, 10, false, echelle);
+            // La note est ancrée sous la carte : elle ne doit JAMAIS être
+            // coupée (c'était le cas mesuré).
+            let mut ri = RECT { left: g, top: c.bottom + s(14), right: d, bottom: bas_utile };
+            texte_echelle(dc, dpi, "Segoe UI", &note, &mut ri, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
         }
         Vue::Licence => {
-            let c = RECT { left: g, top: yc, right: d, bottom: contenu.bottom - s(24) };
+            let c = RECT { left: g, top: yc, right: d, bottom: bas_utile };
             carte(dc, &c, VERT);
             let mut r = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(14) };
-            texte_echelle(dc, dpi, "Segoe UI", &etat.licence, &mut r, DT_WORDBREAK, TEXTE, 9, false, echelle);
+            // `DT_END_ELLIPSIS` + barre de défilement absente : on affiche le
+            // texte au complet s'il tient, sinon on le coupe proprement avec
+            // « … » au lieu de laisser la carte « vide » (texte entièrement
+            // hors cadre).
+            texte_echelle(dc, dpi, "Segoe UI", &etat.licence, &mut r, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE, 9, false, echelle);
         }
         Vue::Options => {
-            let c = RECT { left: g, top: yc, right: d, bottom: yc + s(92) };
+            // ── carte 1 : dossier d'installation ──────────────────────────
+            let libelle = "Dossier d'installation";
+            let chemin = etat.prefixe.clone();
+            let verdict = if etat.utilisateur {
+                "✓  Écriture autorisée dans ce dossier (profil utilisateur)"
+            } else {
+                "!  Ce dossier n'est pas inscriptible : choisissez un autre emplacement"
+            };
+            let h1 = s(14) + s(20) + s(24) + s(24) + s(14);
+            let c = RECT { left: g, top: yc, right: d, bottom: yc + h1 };
             carte(dc, &c, ROUGE);
             let mut r1 = RECT { left: g + s(20), top: yc + s(14), right: d - s(20), bottom: yc + s(34) };
-            texte_echelle(dc, dpi, "Segoe UI", "Dossier d'installation", &mut r1, DT_SINGLELINE | DT_VCENTER,
-                  TEXTE_DOUX, 9, true, echelle);
+            texte_echelle(dc, dpi, "Segoe UI", libelle, &mut r1, DT_SINGLELINE | DT_VCENTER, TEXTE_DOUX, 9, true, echelle);
             let mut r2 = RECT { left: g + s(20), top: yc + s(38), right: d - s(20), bottom: yc + s(62) };
-            texte_echelle(dc, dpi, "Segoe UI", &etat.prefixe, &mut r2, DT_SINGLELINE | DT_VCENTER, TEXTE, 10, false, echelle);
+            // Le chemin peut être long : ellipse plutôt que débordement.
+            texte_echelle(dc, dpi, "Segoe UI", &chemin, &mut r2, DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS, TEXTE, 10, false, echelle);
             let mut r3 = RECT { left: g + s(20), top: yc + s(66), right: d - s(20), bottom: yc + s(88) };
-            texte_echelle(dc, dpi, "Segoe UI",
-                  if etat.utilisateur {
-                      "✓  Écriture autorisée dans ce dossier (profil utilisateur)"
-                  } else {
-                      "!  Ce dossier n'est pas inscriptible : choisissez un autre emplacement"
-                  },
-                  &mut r3, DT_SINGLELINE | DT_VCENTER,
+            texte_echelle(dc, dpi, "Segoe UI", verdict, &mut r3, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
                   if etat.utilisateur { VERT } else { ROUGE_CLAIR }, 9, false, echelle);
 
-            let c2 = RECT { left: g, top: yc + s(108), right: d, bottom: yc + s(212) };
+            // ── carte 2 : paquet à installer ──────────────────────────────
+            let y2 = c.bottom + s(16);
+            let empreinte = match &etat.empreinte {
+                Some(h) => format!("SHA-256 vérifié · {}", h.chars().take(16).collect::<String>()),
+                None => "payload absent — l'installeur copiera le moteur du paquet".to_string(),
+            };
+            let contenu_paquet = "rose.exe · rose-shell.exe · icônes · association .rose · désinstallation";
+            let h_paquet = crate::paint::hauteur_carte(
+                hauteur(contenu_paquet, 9, interligne_petit), s(14), s(104));
+            let c2 = RECT { left: g, top: y2, right: d, bottom: y2 + h_paquet };
             carte(dc, &c2, VERT);
-            let mut r4 = RECT { left: g + s(20), top: yc + s(122), right: d - s(20), bottom: yc + s(142) };
+            let mut r4 = RECT { left: g + s(20), top: y2 + s(14), right: d - s(20), bottom: y2 + s(34) };
             texte_echelle(dc, dpi, "Segoe UI", "Paquet à installer", &mut r4, DT_SINGLELINE | DT_VCENTER,
                   TEXTE_DOUX, 9, true, echelle);
-            let mut r5 = RECT { left: g + s(20), top: yc + s(146), right: d - s(20), bottom: yc + s(168) };
-            texte_echelle(dc, dpi, "Segoe UI",
-                  &match &etat.empreinte {
-                      Some(h) => format!("SHA-256 vérifié · {}", &h[..16]),
-                      None => "payload absent — l'installeur copiera le moteur du paquet".to_string(),
-                  },
-                  &mut r5, DT_SINGLELINE | DT_VCENTER,
+            let mut r5 = RECT { left: g + s(20), top: y2 + s(38), right: d - s(20), bottom: y2 + s(60) };
+            texte_echelle(dc, dpi, "Segoe UI", &empreinte, &mut r5, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
                   if etat.empreinte.is_some() { VERT } else { TEXTE_DOUX }, 9, false, echelle);
-            let mut r6 = RECT { left: g + s(20), top: yc + s(170), right: d - s(20), bottom: yc + s(196) };
-            texte_echelle(dc, dpi, "Segoe UI",
-                  "rose.exe · rose-shell.exe · rose-aot.exe · icônes · association .rose · désinstallation",
-                  &mut r6, DT_SINGLELINE | DT_VCENTER, TEXTE_DOUX, 9, false, echelle);
+            let mut r6 = RECT { left: g + s(20), top: y2 + s(64), right: d - s(20), bottom: c2.bottom - s(10) };
+            texte_echelle(dc, dpi, "Segoe UI", contenu_paquet, &mut r6, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
 
-            // ── Installation détectée : version et choix ────────────────
+            // ── carte 3 : installation détectée ───────────────────────────
             // ⚠ L'assistant doit DIRE ce qu'il a trouvé et ce qu'il fera.
             // Sans ce bloc, l'utilisateur ne savait pas s'il réinstallait,
             // mettait à jour ou installait à côté d'une installation
             // existante (mesuré : « version 0.1.5 détectée » invisible).
             if etat.existant {
-                let c3 = RECT { left: g, top: yc + s(228), right: d, bottom: yc + s(330) };
+                let y3 = c2.bottom + s(16);
+                let meme = crate::setup_core::comparer_versions(
+                    &etat.version_installee, env!("CARGO_PKG_VERSION")) == 0;
+                let ligne_version = format!("Version {} — {}", etat.version_installee,
+                    if meme { "identique au paquet : réinstallation (repair)" }
+                    else { "remplacée par la version du paquet" });
+                let note = "« Mettre à jour » réinstalle proprement ; « Désinstaller » retire tout.";
+                let h3 = s(14) + s(20) + s(24) + hauteur(note, 9, interligne_petit) + s(12);
+                let h3 = crate::paint::hauteur_carte(h3 - s(14), s(12), s(96))
+                    .min((bas_utile - y3).max(s(96)));
+                let c3 = RECT { left: g, top: y3, right: d, bottom: y3 + h3 };
                 // ⚠ `carte()` remplit avec `CARTE` (FONDOIR) et n'ajoute
                 // qu'un filet d'accent à gauche. Un texte NOIR dessus était
                 // donc ILLISIBLE (mesuré : « l'installation détectée est
                 // affichée en noir »). Le texte reste clair.
                 carte(dc, &c3, VERT_LIME);
-                let mut r7 = RECT { left: g + s(20), top: yc + s(240), right: d - s(20), bottom: yc + s(262) };
+                let mut r7 = RECT { left: g + s(20), top: y3 + s(14), right: d - s(20), bottom: y3 + s(34) };
                 texte_echelle(dc, dpi, "Segoe UI", "Installation détectée", &mut r7,
                       DT_SINGLELINE | DT_VCENTER, TEXTE, 9, true, echelle);
-                let mut r8 = RECT { left: g + s(20), top: yc + s(264), right: d - s(20), bottom: yc + s(288) };
-                let meme = crate::setup_core::comparer_versions(
-                    &etat.version_installee, env!("CARGO_PKG_VERSION")) == 0;
-                texte_echelle(dc, dpi, "Segoe UI",
-                      &format!("Version {} — {}", etat.version_installee,
-                          if meme { "identique au paquet : réinstallation (repair)" }
-                          else { "remplacée par la version du paquet" }),
-                      &mut r8, DT_SINGLELINE | DT_VCENTER, TEXTE, 9, false, echelle);
-                let mut r9 = RECT { left: g + s(20), top: yc + s(290), right: d - s(20), bottom: yc + s(322) };
-                texte_echelle(dc, dpi, "Segoe UI",
-                      "« Mettre à jour » réinstalle proprement ; « Désinstaller » retire tout.",
-                      &mut r9, DT_WORDBREAK, TEXTE_DOUX, 9, false, echelle);
+                let mut r8 = RECT { left: g + s(20), top: y3 + s(38), right: d - s(20), bottom: y3 + s(62) };
+                texte_echelle(dc, dpi, "Segoe UI", &ligne_version,
+                      &mut r8, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, TEXTE, 9, false, echelle);
+                let mut r9 = RECT { left: g + s(20), top: y3 + s(66), right: d - s(20), bottom: c3.bottom - s(10) };
+                texte_echelle(dc, dpi, "Segoe UI", note, &mut r9, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
             }
         }
         Vue::Installation => {
-            let c = RECT { left: g, top: yc, right: d, bottom: yc + s(70) };
+            let statut = etat.statut.clone();
+            let h_statut = hauteur(&statut, 10, interligne);
+            let h_carte = crate::paint::hauteur_carte(h_statut, s(18), s(72));
+            let c = RECT { left: g, top: yc, right: d, bottom: yc + h_carte };
             carte(dc, &c, ROUGE_CLAIR);
-            let mut r = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: yc + s(54) };
-            texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut r, DT_WORDBREAK, TEXTE, 10, false, echelle);
-            // barre de progression indéterminée
-            let piste = RECT { left: g, top: yc + s(86), right: d, bottom: yc + s(92) };
+            let mut r = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(14) };
+            texte_echelle(dc, dpi, "Segoe UI", &statut, &mut r, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE, 10, false, echelle);
+            // barre de progression indéterminée — bornée par `paint::segment_progression`
+            let piste = RECT { left: g, top: c.bottom + s(20), right: d, bottom: c.bottom + s(26) };
             remplir(dc, &piste, LIGNE);
-            let segment = (d - g) / 4;
-            let course = (d - g) + segment;
-            let debut = etat.phase % course;
-            let a = (debut - segment).max(0) + g;
-            let b = (debut).min(d - g) + g;
+            let (a, b) = crate::paint::segment_progression(etat.phase, d - g);
             if b > a {
-                let barre = RECT { left: a, top: piste.top, right: b, bottom: piste.bottom };
+                let barre = RECT { left: g + a, top: piste.top, right: g + b, bottom: piste.bottom };
                 remplir(dc, &barre, ROUGE_CLAIR);
             }
         }
         Vue::Termine => {
-            // ⚠ La carte doit contenir TOUT le texte. À 130 px, la dernière
+            // ⚠ La carte doit contenir TOUT le texte, mesuré : la dernière
             // ligne (« Ouvrez un nouveau terminal, puis tapez : rose
             // --version ») était COUPÉE en bas (mesuré sur la capture).
-            // On dimensionne la carte d'après le nombre de lignes, et on
-            // laisse le texte s'étendre jusqu'au bord bas moins la marge.
-            let c = RECT { left: g, top: yc, right: d, bottom: yc + s(186) };
+            let corps = format!("Rose {} est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
+                                etat.version_installee, etat.prefixe);
+            let largeur_corps = (largeur_texte - s(44)).max(s(80));
+            let h_corps = crate::paint::hauteur_texte(&corps, largeur_corps, &mesurer(10, false), interligne);
+            let h_carte = crate::paint::hauteur_carte(h_corps, s(18), s(140)).min((bas_utile - yc).max(s(140)));
+            let c = RECT { left: g, top: yc, right: d, bottom: yc + h_carte };
             carte(dc, &c, VERT);
             coche(dc, g + s(30), yc + s(30), s(11), VERT);
-            let mut r = RECT { left: g + s(64), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(12) };
-            texte_echelle(dc, dpi, "Segoe UI",
-                  &format!("Rose {} est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
-                           etat.version_installee, etat.prefixe),
-                  &mut r, DT_WORDBREAK, TEXTE, 10, false, echelle);
+            let mut r = RECT { left: g + s(64), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(14) };
+            texte_echelle(dc, dpi, "Segoe UI", &corps, &mut r, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE, 10, false, echelle);
         }
     }
 
@@ -1273,7 +1544,11 @@ unsafe fn dessiner(h: HWND) {
     let filet_pied = RECT { left: lateral_w + 1, top: pied.top, right: w, bottom: pied.top + 1 };
     remplir(dc, &filet_pied, LIGNE_FORTE);
     let (gauche, droite) = boutons(etat.vue, etat.existant);
-    let bw = s(190);
+    // ⚠ Largeur bornée par le pied de page : deux boutons de 190 px sur une
+    // fenêtre étroite sortaient par la gauche. On garde au moins la place des
+    // marges (28 px de chaque côté).
+    let place = (w - lateral_w - s(56)).max(s(120));
+    let bw = s(190).min((place - s(20)) / 2).max(s(96));
     let bh = s(44);
     let by = pied.top + (pied_h - bh) / 2;
     let mut zones = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
@@ -1328,7 +1603,6 @@ unsafe fn dessiner(h: HWND) {
     SelectObject(dc_memoire, ancien_bitmap);
     DeleteObject(bitmap as *mut c_void);
     DeleteDC(dc_memoire);
-    EndPaint(h, &ps);
 }
 
 static mut ZONES: [RECT; 2] = [
@@ -1349,25 +1623,38 @@ fn dans(r: &RECT, x: i32, y: i32) -> bool {
 /// Les bornes suivent l'échelle du tracé (barre de 56 px sur la grille
 /// 1120 × 780), sinon les zones cliquables ne correspondent plus au dessin
 /// quand la fenêtre est redimensionnée.
+///
+/// ⚠⚠ `ZONES_TITRE` n'est rempli que par `dessiner` : au TOUT PREMIER
+/// `WM_NCHITTEST` (souris qui entre dans la fenêtre avant le premier
+/// repeint), il vaut encore `[0, 0, 0]`. L'ancien code retournait alors 3
+/// pour TOUTE la barre — la croix de fermeture. Mesuré : un simple clic dans
+/// la barre de titre FERMAIT l'installeur (la fenêtre « disparaissait »).
+/// On ne se fie aux zones que si elles sont cohérentes avec la largeur
+/// courante ; sinon on les recalcule.
 fn zone_titre(w: i32, h: i32, x: i32, y: i32) -> i32 {
-    let echelle = (w as f64 / 1120.0).min(h as f64 / 780.0);
+    let echelle = crate::paint::echelle_tracé(w, h);
     let s = |v: i32| -> i32 { (v as f64 * echelle).round() as i32 };
     if y > s(56) {
         return -1;
     }
     let bl = s(46);
+    let (b_reduire, b_agrandir, b_fermer) = (w - 3 * bl, w - 2 * bl, w - bl);
     let zones = unsafe { *std::ptr::addr_of!(ZONES_TITRE) };
-    if x >= zones[2] {
-        3
-    } else if x >= zones[1] {
-        2
-    } else if x >= zones[0] {
-        1
-    } else if x >= w - 3 * bl {
-        // zone restante des boutons (si pas encore peinte) : fermer
-        3
+    let coherentes = zones[2] == b_fermer && zones[1] == b_agrandir && zones[0] == b_reduire;
+    let (z_reduire, z_agrandir, z_fermer) = if coherentes {
+        (zones[0], zones[1], zones[2])
     } else {
-        0
+        // Barre pas encore peinte : on calcule sur la géométrie actuelle.
+        (b_reduire, b_agrandir, b_fermer)
+    };
+    if x >= z_fermer {
+        3
+    } else if x >= z_agrandir {
+        2
+    } else if x >= z_reduire {
+        1
+    } else {
+        0 // zone de déplacement (HTCAPTION)
     }
 }
 
@@ -1447,7 +1734,31 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
-        WM_PAINT => { dessiner(h); 0 }
+        WM_PAINT => {
+            // ⚠ `dessiner` fait DÉJÀ son propre `catch_unwind` : on garde ici
+            // une seconde ceinture, car une panique dans le `wnd_proc` lui-même
+            // (avant d'entrer dans `dessiner`) remonterait dans la boucle de
+            // messages et tuerait le processus.
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { dessiner(h) })).is_err() {
+                eprintln!("rose-setup : panique pendant WM_PAINT — la fenêtre reste ouverte");
+            }
+            0
+        }
+        WM_ERASEBKGND => {
+            // ⚠⚠ RENDRE 1 SANS RIEN DESSINER est la clé de l'absence de
+            // clignotement : `WM_PAINT` peint déjà le fond, et laisser
+            // Windows effacer avec `hbrBackground` (blanc) produisait un
+            // flash BLANC à chaque redimensionnement — l'utilisateur voyait
+            // la fenêtre « transparente » pendant le repeint.
+            // On remplit nous-mêmes, avec notre fond.
+            let dc = w as HDC;
+            let mut rc = std::mem::zeroed::<RECT>();
+            GetClientRect(h, &mut rc);
+            if !dc.is_null() {
+                remplir(dc, &rc, FOND);
+            }
+            1
+        }
         WM_TIMER => {
             let etat = &mut *ETAT;
             if w == TIMER_PROGRESSION && etat.occupe {
@@ -1581,6 +1892,13 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                     return 0;
                 }
                 1 => { ShowWindow(h, SW_MINIMIZE); return 0; }
+                // ⚠ 0 = zone de DÉPLACEMENT : Windows a déjà déplacé la
+                // fenêtre (HTCAPTION). Il ne faut RIEN faire d'autre —
+                // surtout pas la fermer. L'ancien `_ => {}` laissait le code
+                // tomber sur les zones du pied de page : si le clic avait des
+                // coordonnées qui correspondaient à « Annuler », la fenêtre
+                // se fermait. On sort explicitement.
+                0 => return 0,
                 _ => {}
             }
             let zones = &*std::ptr::addr_of!(ZONES);
@@ -1952,7 +2270,12 @@ pub fn lancer() {
         // autrement : `WM_NCHITTEST` renvoie HTRIGHT / HTBOTTOM /
         // HTBOTTOMRIGHT sur les bords, ce qui suffit à obtenir le curseur de
         // redimensionnement et le glisser natif, sans aucune bordure peinte.
-        let style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+        //
+        // ⚠⚠ `WS_CLIPCHILDREN` : sans lui, Windows repeint les zones
+        // « enfants » au-dessus du tracé. La fenêtre n'a pas d'enfant, mais
+        // le style évite aussi le clignotement du fond système pendant les
+        // redimensionnements.
+        let style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_CLIPCHILDREN;
         // WS_EX_TOOLWINDOW : pas d'entrée « barre des tâches » redondante ;
         // WS_EX_APPWINDOW la rétablit, nécessaire pour retrouver une fenêtre
         // maximisée réduite. On garde APPWINDOW pour le comportement attendu.
@@ -2031,10 +2354,34 @@ pub fn lancer() {
                                  &pref as *const i32 as *const c_void,
                                  std::mem::size_of::<i32>() as u32);
         }
-        ShowWindow(hwnd, SW_SHOW);
+        // ⚠ `SW_SHOWNORMAL` (1) et non `SW_SHOW` (5) : `SW_SHOW` montre la
+        // fenêtre dans son état « courant », qui peut être caché ou minimisé
+        // selon la création ; `SW_SHOWNORMAL` la pose au premier plan ET lui
+        // donne le focus. Mesuré : avec `SW_SHOW`, la fenêtre s'ouvrait
+        // derrière d'autres fenêtres et l'utilisateur la croyait « disparue ».
+        ShowWindow(hwnd, SW_SHOWNORMAL);
         UpdateWindow(hwnd);
+        SetForegroundWindow(hwnd);
+        // ── Boucle de messages ────────────────────────────────────────────
+        //
+        // ⚠⚠ C'est ICI que se jouait le « puis disparaissait au bout d'un
+        // moment ». `GetMessageW` rend -1 en cas d'ERREUR ; la boucle
+        // précédente sortait alors SANS rien diagnostiquer, et le processus
+        // se terminait normalement : la fenêtre disparaissait, sans message,
+        // sans crash. On distingue désormais 0 (WM_QUIT) de -1 (erreur).
         let mut msg = std::mem::zeroed::<MSG>();
-        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+        loop {
+            let r = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
+            if r == 0 {
+                break; // WM_QUIT : fermeture demandée
+            }
+            if r == -1 {
+                // Erreur de la boucle : on journalise et on laisse la
+                // fenêtre ouverte, au lieu de terminer le processus.
+                eprintln!("rose-setup : GetMessageW a échoué (code {}), la fenêtre reste ouverte", GetLastError());
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }

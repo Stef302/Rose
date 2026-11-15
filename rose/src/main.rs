@@ -23,6 +23,7 @@ mod setup_core;
 mod velopack;
 mod inflate;
 mod png;
+mod paint;
 mod console_win;
 mod setup_gui;
 #[cfg(feature = "llvm")]

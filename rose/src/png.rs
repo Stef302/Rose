@@ -108,14 +108,43 @@ mod tests {
         // `decompresser_zlib` qui les décompresse, pas `decompresser`.
         let brut = crate::inflate::decompresser_zlib(&comp);
         assert!(brut.is_some(), "le DEFLATE maison echoue sur le PNG");
-        assert!(brut.unwrap().len() >= 172 * (172 * 4 + 1));
+        let brut = brut.unwrap();
+        assert!(brut.len() >= 138 * (172 * 4 + 1));
     }
 
     #[test]
     fn decode_le_png_de_la_rose() {
         let (w, h, px) = decoder_png(PNG_ROSE).expect("le PNG embarqué doit se décoder");
-        assert_eq!((w, h), (172, 172));
+        // ⚠ Le logo n'est PAS carré : la rose et sa tige font 138 × 172.
+        // La version précédente était un carré 172 × 172 dont le dessin
+        // n'occupait qu'une bande de gauche (fond semi-opaque non nettoyé) :
+        // le logo paraissait minuscule, voire absent.
+        assert_eq!((w, h), (138, 172));
         assert_eq!(px.len(), w * h * 4);
+    }
+
+    #[test]
+    fn le_logo_remplit_sa_toute_surface() {
+        // Le dessin doit occuper TOUTE l'image (à 3 px de marge près), sinon
+        // le tracé le réduit encore et l'utilisateur voit une tache.
+        let (w, h, px) = decoder_png(PNG_ROSE).unwrap();
+        let mut x0 = w;
+        let mut y0 = h;
+        let mut x1 = 0usize;
+        let mut y1 = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                if px[(y * w + x) * 4 + 3] > 4 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        assert!(x0 <= 4 && y0 <= 4, "marge gauche/haute trop grande : {x0},{y0}");
+        assert!(x1 >= w - 4, "marge droite trop grande : {x1} pour {w}");
+        assert!(y1 >= h - 1, "marge basse trop grande : {y1} pour {h}");
     }
 
     #[test]
@@ -125,6 +154,7 @@ mod tests {
         let mut rouges = 0usize;
         let mut verts = 0usize;
         let mut transparents = 0usize;
+        let mut sombres_opaques = 0usize;
         for k in 0..w * h {
             let r = px[k * 4] as u32;
             let v = px[k * 4 + 1] as u32;
@@ -136,6 +166,7 @@ mod tests {
                 opaques += 1;
                 if r > 150 && v < 120 && b < 120 { rouges += 1; }
                 if v > 120 && r < 160 && b < 120 { verts += 1; }
+                if r < 40 && v < 40 && b < 40 { sombres_opaques += 1; }
             }
         }
         // Une image entièrement transparente ne s'afficherait JAMAIS.
@@ -143,5 +174,9 @@ mod tests {
         assert!(rouges > 500, "pixels rouges absents : {rouges}");
         assert!(verts > 200, "pixels verts absents : {verts}");
         assert!(transparents > 100, "fond transparent absent : {transparents}");
+        // ⚠ La bande de fond semi-opaque qui encadrait la rose (alpha ~165,
+        // pixels noirs) est EXACTEMENT ce qui rendait le logo invisible.
+        assert!(sombres_opaques == 0,
+                "{sombres_opaques} pixels sombres opaques : la bande de fond n'a pas été nettoyée");
     }
 }

@@ -384,10 +384,19 @@ clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
   s'affichait en CYAN `0x32CD9A` (mesuré). Toujours passer par
   `argb_depuis_colorref()`.
 - `GdipDeleteImage` n'existe pas : c'est `GdipDisposeImage`.
-- `AlphaBlend` sur un DC mémoire ne rend RIEN : la rose n'apparaissait pas
-  (ni barre de titre, ni panneau). Utiliser GDI+
-  (`GdipCreateBitmapFromScan0` + `GdipDrawImageRectI`), qui gère l'alpha et
-  la mise à l'échelle.
+- ⚠⚠ **CORRECTION : la rose se dessine en GDI pur (`CreateDIBSection` +
+  `AlphaBlend`), PAS en GDI+.** L'ancienne note affirmait l'inverse ; elle
+  était fausse. `GdipCreateBitmapFromScan0` avec un `scan0` pointant sur un
+  `Vec` Rust laisse GDI+ référencer — voire libérer — un tampon qui nous
+  appartient : double libération à la destruction du `Vec`, donc CRASH de
+  l'installeur pendant le dessin. C'est une des causes du symptôme « fenêtre
+  avec ses seules bordures ».
+  Le chemin qui marche : DIB 32 bits top-down (`biHeight` négatif), pixels
+  BGRA **prémultipliés** (`c = c * a / 255`), puis `AlphaBlend` avec
+  `AC_SRC_ALPHA` (blend_op 0, blend_flags 0, constant_alpha 255,
+  alpha_format 1) depuis un DC mémoire.
+- GDI+ ne sert QUE pour les FORMES (cercles, coins arrondis, anticrénelage),
+  où aucun tampon n'est partagé — et chaque appel doit avoir son repli GDI.
 
 ## Shell : un LANCEUR, pas une copie du moteur
 
@@ -436,6 +445,91 @@ clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 - **`.gitignore` : `bin/` sans ancre** correspondait à `rose/src/bin/` :
   `rose-aot.rs` et `rose-shell.rs` n'ont jamais été versionnés, et un clone
   neuf de `main` ne compilait pas. La règle doit être `/bin/`.
+
+## Fenêtre de l'installeur « transparente » puis qui disparaît — les 6 causes
+
+Symptôme mesuré : « la fenêtre s'ouvre avec ses seules BORDURES, sans
+intérieur, puis disparaît au bout d'un moment ». Ce n'était PAS un bug de
+ressources : six défauts cumulés, tous dans `setup_gui.rs`.
+
+1. **`WM_PAINT` appelait `dessiner` SANS isolation.** Une panique (indice hors
+   bornes, allocation) déroulait la pile du fil de messages : le processus
+   mourait pendant le premier repeint. Windows avait déjà créé la fenêtre → on
+   n'en voyait que le cadre, puis elle disparaissait avec le processus.
+   Correction : `std::panic::catch_unwind` AUTOUR de `dessiner` **et** dans le
+   gestionnaire `WM_PAINT` (double ceinture).
+2. **`BeginPaint` sans `EndPaint` en cas de panique.** Le DC de mise à jour
+   restait verrouillé : toutes les invalidations suivantes étaient ignorées, la
+   fenêtre ne se repeignait plus JAMAIS. `EndPaint` doit être appelé
+   INCONDITIONNELLEMENT (le tracé détaillé est dans une fonction séparée).
+3. **Tout le tracé passait par un DC mémoire** copié à la fin : un plantage en
+   route laissait l'écran VIDE, même sans fond. On peint le FOND sur `dc_ecran`
+   AVANT toute décoration.
+4. **`GetMessageW` rend -1 en cas d'erreur** ; la boucle `while … > 0` sortait
+   sans diagnostic et le processus se terminait proprement → « disparaît ».
+   Distinguer 0 (`WM_QUIT`) de -1 (erreur) ; en cas d'erreur, journaliser et
+   laisser la fenêtre ouverte. Utiliser aussi `SW_SHOWNORMAL` (1), pas
+   `SW_SHOW` (5), et `SetForegroundWindow` : sinon la fenêtre s'ouvre DERRIÈRE.
+5. **`ZONES_TITRE` vide au premier `WM_NCHITTEST`** (`[0,0,0]`) : `zone_titre`
+   rendait 3 = FERMER pour TOUTE la barre de titre. Un simple clic dans la
+   barre fermait l'installeur. Les zones doivent être recalculées si elles ne
+   sont pas cohérentes avec la largeur courante.
+6. **`WM_LBUTTONUP` en zone de déplacement tombait dans `_ => {}`** puis testait
+   les zones du pied de page : un clic sur la barre de titre pouvait déclencher
+   « Annuler » (fermeture). `zone_titre == 0` doit sortir immédiatement.
+
+Gardes-fous vérifiés statiquement par `verifier-res.py` (10 motifs exigés dans
+le source). Sous Linux la fenêtre ne peut pas être exécutée : c'est le SEUL
+contrôle possible, avec `previsualiser.py`.
+
+## Contenu de la fenêtre invisible : hauteurs de cartes écrites en dur
+
+- Les cartes avaient des hauteurs CONSTANTES sur la grille 1120 × 780
+  (`s(150)`, `s(186)`, licence = tout l'espace restant). Dès que la fenêtre
+  était plus petite, la carte était plus basse que son texte et `DrawText`
+  n'en dessinait que la première ligne — la fenêtre paraissait VIDE.
+- Règle : la hauteur d'une carte suit son TEXTE MESURÉ (`mesurer_texte` +
+  `paint::hauteur_texte` + `paint::hauteur_carte`). `paint.rs` est un module
+  PUR, testé sous Linux — c'est le seul moyen de vérifier ces calculs sans
+  Windows.
+- `points_ecrits` a un plancher de **13 px** (et non 9) : à 9 pt sur une
+  fenêtre réduite, la police tombait à 9 px, illisible.
+- Ajouter `DT_END_ELLIPSIS` (0x8000) partout où le texte peut dépasser :
+  `DrawText` TRONQUE net sinon, sans « … ».
+- `CreateFontW` peut rendre NULL : `SelectObject(dc, NULL)` renvoie NULL et
+  `DrawTextW` dessine avec la police de stock (textes GÉANTS qui recouvrent
+  tout). Toujours tester `creer_police()` avant de dessiner.
+- Le repli GDI de `cercle` et `arrondi` ne doit JAMAIS être sauté : sans lui,
+  les pastilles, les cartes et les boutons sont ABSENTS quand GDI+ ne
+  s'initialise pas.
+
+## Logo de l'installeur : la bande de fond semi-opaque
+
+- `logo-rose.png` a un fond sombre dont l'**alpha varie de 0 à ~165** (ce n'est
+  PAS du noir pur). L'ancien `embed-assets.py` ne rendait transparents que les
+  pixels dont les trois canaux étaient sous 40, SANS regarder l'alpha : une
+  bande de fond semi-opaque subsistait autour de la rose.
+- La boîte englobante « alpha > 8 » englobait alors TOUT le visuel
+  (273..1126 × 62..902) au lieu de la fleur (424..951 × 230..902), et la rose
+  était collée au coin d'un carré presque transparent → logo invisible.
+- Critère correct : transparent si `alpha <= 8` **ou** si le pixel est sombre.
+- **PAS de canevas carré** : la rose avec sa tige fait **138 × 172**. La
+  centrer sur un carré ajoutait deux bandes transparentes et le logo
+  n'occupait qu'une fraction de la place prévue. Garder les proportions et
+  mettre à l'échelle sur le plus grand côté (`dessiner_rose` fait de même).
+- Tests dans `png.rs` : dimensions (138, 172), marges ≤ 4 px, et
+  `sombres_opaques == 0` (aucun pixel noir opaque = bande nettoyée).
+
+## Glyphes absents : carrés vides au lieu du texte
+
+- `⚿` (U+26BF) n'existe dans AUCUNE police Windows courante : le badge
+  « MODE UTILISATEUR » sortait avec un carré vide. Kare ne couvre pas `✓`
+  non plus.
+- `GetGlyphIndicesW` rend `GDI_ERROR` (0xFFFFFFFF) pour un caractère non
+  couvert : `famille_couvre()` teste chaque caractère et retombe sur Segoe UI.
+- Ne jamais supposer qu'`AddFontMemResourceEx` a réussi : `kare_disponible()`
+  demande à GDI le glyphe réel de « R » ; sinon tout retombe sur Segoe UI
+  (au lieu d'un « ROSE » en Segoe sans que personne ne le remarque).
 
 ## Style
 

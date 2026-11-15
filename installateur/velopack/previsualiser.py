@@ -12,9 +12,12 @@ Ce qu'il vérifie, et qui a réellement cassé l'interface :
   comme GDI, ce qui aurait révélé le bouton « bleu » ;
 - les textes : chaque texte est mesuré avec une vraie police et doit tenir
   dans son rectangle (aucun texte rogné) ;
+- les cartes : leur hauteur suit leur CONTENU, jamais une constante —
+  c'est ce qui laissait la fenêtre « vide » (texte entièrement hors carte) ;
+- le logo : il doit occuper TOUTE la surface du PNG embarqué (une bande de
+  fond semi-opaque rendait la rose minuscule) ;
 - les boutons : ils doivent tenir dans le pied de page, avec la place pour
-  leur libellé (« Mettre à jour » est le plus long) ;
-- les cartes : le texte ne doit pas dépasser du fond de la carte.
+  leur libellé (« Mettre à jour » est le plus long).
 
 Usage :
     python3 installateur/velopack/previsualiser.py            # toutes les vues
@@ -30,6 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 RACINE = Path(__file__).resolve().parents[2]
 SOURCE = RACINE / "rose" / "src" / "setup_gui.rs"
 SORTIE = RACINE / "installateur" / "velopack"
+LOGO = SORTIE / "rose-installeur.png"
 
 # Constantes de couleur du Rust : `const NOM: u32 = couleur(0xRRGGBB);`
 COULEURS_RUST = dict(
@@ -40,6 +44,9 @@ POLICE = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 POLICE_GRAS = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 POLICE_TITRE = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
 
+# Plancher de taille des polices, IDENTIQUE à `points_ecrits` du Rust.
+PLANCHER_PX = 13
+
 
 def c(nom: str) -> tuple[int, int, int]:
     """Constante RGB du Rust → tuple RGB (ce que GDI affiche)."""
@@ -47,8 +54,13 @@ def c(nom: str) -> tuple[int, int, int]:
     return ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF)
 
 
+def pixels_police(points: int, dpi: int = 96, echelle: float = 1.0) -> int:
+    """Taille en pixels, avec le même plancher que `points_ecrits`."""
+    return max(PLANCHER_PX, round(points * dpi / 72 * echelle))
+
+
 def police(points: int, gras: bool, dpi: int = 96, echelle: float = 1.0):
-    px = max(9, round(points * dpi / 72 * echelle))
+    px = pixels_police(points, dpi, echelle)
     return ImageFont.truetype(POLICE_GRAS if gras else POLICE, px)
 
 
@@ -65,11 +77,51 @@ def mesurer(s, f):
     return f.getbbox(s)[2] - f.getbbox(s)[0]
 
 
+def lignes_ajustees(src, largeur, f):
+    """Même découpage que `paint::lignes_ajustees` : sur les espaces."""
+    sortie = []
+    for paragraphe in src.split("\n"):
+        if not paragraphe:
+            sortie.append("")
+            continue
+        courante = ""
+        for mot in paragraphe.split(" "):
+            if not mot:
+                continue
+            essai = mot if not courante else f"{courante} {mot}"
+            if mesurer(essai, f) <= largeur:
+                courante = essai
+            else:
+                if courante:
+                    sortie.append(courante)
+                courante = mot
+        sortie.append(courante)
+    return sortie
+
+
+def hauteur_texte(src, largeur, f, interligne):
+    return max(1, len(lignes_ajustees(src, largeur, f))) * interligne
+
+
+def texte_multiligne(d, xy, src, largeur, f, couleur, interligne):
+    """Dessine un texte découpé comme le fait DrawText."""
+    x, y = xy
+    for ligne in lignes_ajustees(src, largeur, f):
+        if ligne:
+            d.text((x, y), ligne, font=f, fill=couleur)
+        y += interligne
+
+
 def dessiner(w, h, vue, etat_installe=False, dpi=96):
     e = min(w / 1120.0, h / 780.0)
 
     def s(v):
         return round(v * e)
+
+    interligne = pixels_police(10, dpi, e) + max(2, s(6))
+    interligne_petit = pixels_police(9, dpi, e) + max(2, s(5))
+    f_corps = police(10, False, dpi, e)
+    f_note = police(9, False, dpi, e)
 
     img = Image.new("RGB", (w, h), c("FOND"))
     d = ImageDraw.Draw(img)
@@ -80,15 +132,30 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
     # ── barre de titre PERSONNALISÉE (aucun cadre Windows) ──
     d.rectangle([0, 0, w, s(56)], fill=c("BARRE"))
     d.line([0, s(55), w, s(55)], fill=c("LIGNE_FORTE"))
-    rose = Image.open(SORTIE / "rose-installeur.png").convert("RGBA")
-    rose = rose.resize((s(24), s(24)), Image.LANCZOS)
-    coller(img, rose, (s(18), s(16)))
+    # ⚠ Le logo n'est PAS carré (138 × 172) : on le met à l'échelle sur le
+    # plus grand côté, comme `dessiner_rose`.
+    rose = Image.open(LOGO).convert("RGBA")
+    rw, rh = rose.size
+    cote = s(24)
+    if rh >= rw:
+        nw, nh = round(cote * rw / rh), cote
+    else:
+        nw, nh = cote, round(cote * rh / rw)
+    coller(img, rose.resize((nw, nh), Image.LANCZOS), (s(18) + (cote - nw) // 2, s(16) + (cote - nh) // 2))
     # marque « Rose » en Kare, puis sous-titre
     texte(d, (s(52), s(28)), "Rose",
           ImageFont.truetype(str(POLICE_TITRE), s(20)), c("TEXTE"), "lm")
-    texte(d, (s(210), s(28)), "— Programme d'installation",
-          police(10, False, dpi, e), c("TEXTE_DOUX"), "lm")
-    pastille = [s(438), s(16), s(438 + 128), s(40)]
+    # sous-titre borné AVANT la pastille (comme le Rust), ellipse si trop long
+    largeur_pastille = s(128)
+    boutons_l = w - 3 * s(46)
+    droite_pastille = min(s(438) + largeur_pastille, boutons_l - s(8))
+    pastille = [droite_pastille - largeur_pastille, s(16), droite_pastille, s(40)]
+    zone_sous = max(s(170), pastille[0] - s(8)) - s(150)
+    sous = "— Programme d'installation"
+    f_sous = police(10, False, dpi, e)
+    while zone_sous > 0 and mesurer(sous, f_sous) > zone_sous and len(sous) > 4:
+        sous = sous[:-2] + "…"
+    texte(d, (s(150), s(28)), sous, f_sous, c("TEXTE_DOUX"), "lm")
     d.rounded_rectangle(pastille, radius=s(8), outline=c("LIGNE_FORTE"))
     texte(d, ((pastille[0] + pastille[2]) // 2, (pastille[1] + pastille[3]) // 2),
           "v0.1.5  ·  x64", police(9, True, dpi, e), c("VERT"), "mm")
@@ -109,49 +176,70 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
     d.rectangle([0, s(56), lateral_w, h - etat_h], fill=c("LATERAL"))
     d.line([lateral_w, s(56), lateral_w, h - etat_h], fill=c("LIGNE_FORTE"))
 
-    logo = Image.open(SORTIE / "rose-installeur.png").convert("RGBA").resize(
-        (s(124), s(124)), Image.LANCZOS)
-    coller(img, logo, (lateral_w // 2 - s(62), s(78)))
-    texte(d, (lateral_w // 2, s(237)), "Rose",
+    # Cartes du bas réservées AVANT le reste (comme le Rust).
+    bas = h - etat_h - s(18)
+    carte2 = [s(20), bas - s(38), lateral_w - s(20), bas]
+    carte1 = [s(20), carte2[1] - s(46), lateral_w - s(20), carte2[1] - s(8)]
+    plancher = carte1[1] - s(16)
+
+    # logo borné par la place disponible
+    place_logo = max(0, plancher - s(78) - s(150))
+    cote_logo = min(s(124), place_logo)
+    if cote_logo >= s(40):
+        lw, lh = rose.size
+        if lh >= lw:
+            nw, nh = round(cote_logo * lw / lh), cote_logo
+        else:
+            nw, nh = cote_logo, round(cote_logo * lh / lw)
+        coller(img, rose.resize((nw, nh), Image.LANCZOS),
+               (lateral_w // 2 - nw // 2, s(78) + (cote_logo - nh) // 2))
+    y_marque = s(78) + max(0, cote_logo)
+    texte(d, (lateral_w // 2, y_marque + s(28)), "Rose",
           ImageFont.truetype(str(POLICE_TITRE), s(40)), c("TEXTE"), "mm")
-    texte(d, (lateral_w // 2, s(304)),
-          "Le langage compilé en français\nqui se compile lui-même.",
-          police(9, False, dpi, e), c("TEXTE_DOUX"), "mm")
+    texte_multiligne(d, (s(24), y_marque + s(58)),
+                     "Le langage compilé en français qui se compile lui-même.",
+                     lateral_w - s(48), f_note, c("TEXTE_DOUX"), interligne_petit)
 
     etapes = ["Bienvenue", "Licence MIT", "Options", "Installation", "Terminé"]
-    y = s(344)
+    y = y_marque + s(122)
+    pas = min(max(s(26), (plancher - y) // 5), s(44))
     for i, nom in enumerate(etapes):
+        if y + pas > plancher + s(4):
+            break
         atteinte = i < vue or vue == 4
         courante = i == vue
+        centre = y + pas // 2
+        rayon = max(s(4), min(s(14), pas // 2 - s(1)))
         puce = c("ROUGE") if atteinte else (c("ROUGE_CLAIR") if courante else c("FOND_PUCE"))
-        d.ellipse([s(48) - s(14), y + s(12) - s(14), s(48) + s(14), y + s(12) + s(14)], fill=puce)
+        d.ellipse([s(48) - rayon, centre - rayon, s(48) + rayon, centre + rayon], fill=puce)
         if courante and not atteinte:
-            d.ellipse([s(48) - s(11), y + s(12) - s(11), s(48) + s(11), y + s(12) + s(11)],
-                      fill=c("LATERAL"))
+            d.ellipse([s(48) - rayon, centre - rayon, s(48) + rayon, centre + rayon],
+                      outline=c("ROUGE_CLAIR"), width=max(1, s(2)))
         if atteinte:
-            d.line([s(40), y + s(12), s(47), y + s(19)], fill=c("TEXTE"), width=max(2, s(3)))
-            d.line([s(47), y + s(19), s(57), y + s(7)], fill=c("TEXTE"), width=max(2, s(3)))
+            d.line([s(40), centre, s(47), centre + s(7)], fill=c("TEXTE"), width=max(2, s(3)))
+            d.line([s(47), centre + s(7), s(57), centre - s(5)], fill=c("TEXTE"), width=max(2, s(3)))
         else:
-            texte(d, (s(48), y + s(12)), str(i + 1), police(9, False, dpi, e),
+            texte(d, (s(48), centre), str(i + 1), police(9, False, dpi, e),
                   c("TEXTE") if courante else c("TEXTE_FAIBLE"), "mm")
-        texte(d, (s(74), y + s(12)), nom, police(10, False, dpi, e),
+        texte(d, (s(74), centre), nom, f_corps,
               c("TEXTE") if (courante or atteinte) else c("TEXTE_FAIBLE"), "lm")
-        y += s(44)
+        y += pas
 
-    bas = h - etat_h - s(18)
-    d.rounded_rectangle([s(20), bas - s(38), lateral_w - s(20), bas],
-                        radius=s(10), fill=c("VERT_LIME"))
-    texte(d, (s(34), bas - s(19)), "⚿  MODE UTILISATEUR",
-          police(9, True, dpi, e), c("NOIR_DOUX"), "lm")
-    d.rounded_rectangle([s(20), bas - s(84), lateral_w - s(20), bas - s(46)],
-                        radius=s(10), fill=c("VERT_LIME"))
-    texte(d, (s(34), bas - s(65)), "{ ROSE } · MIT",
-          police(9, True, dpi, e), c("NOIR_DOUX"), "lm")
+    for r in (carte1, carte2):
+        d.rounded_rectangle(r, radius=s(10), fill=c("VERT_LIME"))
+    texte(d, ((carte1[0] + carte1[2]) // 2, (carte1[1] + carte1[3]) // 2), "{ ROSE } · MIT",
+          police(9, True, dpi, e), c("NOIR_DOUX"), "mm")
+    texte(d, ((carte2[0] + carte2[2]) // 2, (carte2[1] + carte2[3]) // 2), "MODE UTILISATEUR",
+          police(9, True, dpi, e), c("NOIR_DOUX"), "mm")
 
     # ── zone de contenu ──
+    contenu_haut = s(56)
+    contenu_bas = h - etat_h - pied_h
     g = lateral_w + s(56)
     droite = w - s(56)
-    yc = s(56 + 44)
+    largeur_texte = max(s(80), droite - g - s(40))
+    bas_utile = contenu_bas - s(20)
+
     titres = ["Bienvenue", "Licence MIT", "Options", "Installation", "Terminé"]
     sous_titres = [
         "Ce programme installe le compilateur Rose, ses binaires Windows et le helper AOT.",
@@ -160,74 +248,103 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
         "Installation de Rose…",
         "Rose est prêt.",
     ]
+    yc = contenu_haut + s(44)
     texte(d, (g, yc + s(22)), titres[vue].upper(),
           ImageFont.truetype(str(POLICE_TITRE), s(22)), c("TEXTE"), "lm")
     yc += s(52)
-    texte(d, (g, yc), sous_titres[vue], police(10, False, dpi, e), c("TEXTE_DOUX"), "la")
-    yc += s(48)
+    h_sous = max(s(20), hauteur_texte(sous_titres[vue], droite - g, f_corps, interligne))
+    texte_multiligne(d, (g, yc), sous_titres[vue], droite - g, f_corps, c("TEXTE_DOUX"), interligne)
+    yc += h_sous + s(28)
 
     def carte(top, bas_, accent):
         d.rounded_rectangle([g, top, droite, bas_], radius=s(12), fill=c("CARTE"))
         d.rectangle([g, top + s(10), g + s(3), bas_ - s(10)], fill=c(accent))
+        return bas_
 
     if vue == 0:
-        carte(yc, yc + s(150), "ROUGE")
-        texte(d, (g + s(20), yc + s(16)),
-              "Rose est un langage de programmation en français, auto-hébergé :\n"
-              "interprète exact, JIT Cranelift, AOT LLVM et module WASM.\n\n"
-              "L'installation se fait dans votre profil utilisateur — aucun\n"
-              "droit administrateur n'est demandé.",
-              police(10, False, dpi, e), c("TEXTE"), "la")
-        texte(d, (g, yc + s(170)),
-              "Aucune installation détectée : l'assistant proposera le dossier par défaut.",
-              police(9, False, dpi, e), c("TEXTE_DOUX"), "la")
+        corps = ("Rose est un langage de programmation en français, auto-hébergé : "
+                 "interprète exact, JIT Cranelift, AOT LLVM et module WASM.\n\n"
+                 "L'installation se fait dans votre profil utilisateur — aucun droit "
+                 "administrateur n'est demandé.")
+        note = "Aucune installation détectée : l'assistant proposera le dossier par défaut."
+        h_corps = hauteur_texte(corps, largeur_texte, f_corps, interligne)
+        h_note = hauteur_texte(note, droite - g, f_note, interligne_petit)
+        h_dispo = max(s(120), bas_utile - yc - h_note - s(18))
+        h_carte = max(max(h_corps + 2 * s(18), s(120)), h_dispo)
+        bas_c = carte(yc, yc + h_carte, "ROUGE")
+        texte_multiligne(d, (g + s(20), yc + s(16)), corps, largeur_texte, f_corps, c("TEXTE"), interligne)
+        texte_multiligne(d, (g, bas_c + s(18)), note, droite - g, f_note, c("TEXTE_DOUX"), interligne_petit)
     elif vue == 1:
-        carte(yc, h - etat_h - pied_h - s(24), "VERT")
-        texte(d, (g + s(20), yc + s(16)),
-              "Licence MIT\n\nCopyright © 2026 Stef302\n\n"
-              "L'autorisation est accordée gratuitement à toute personne obtenant\n"
-              "une copie de ce logiciel et des fichiers de documentation associés,\n"
-              "d'utiliser le logiciel sans restriction, y compris les droits\n"
-              "d'utiliser, copier, modifier, fusionner, publier, distribuer,\n"
-              "sous-licencier et/ou vendre des copies du logiciel.\n\n"
-              "LE LOGICIEL EST FOURNI « EN L'ÉTAT », SANS GARANTIE D'AUCUNE SORTE.",
-              police(9, False, dpi, e), c("TEXTE"), "la")
+        licence = ("Licence MIT\n\nCopyright © 2026 Stef302\n\n"
+                   "L'autorisation est accordée gratuitement à toute personne obtenant "
+                   "une copie de ce logiciel et des fichiers de documentation associés, "
+                   "d'utiliser le logiciel sans restriction, y compris les droits "
+                   "d'utiliser, copier, modifier, fusionner, publier, distribuer, "
+                   "sous-licencier et/ou vendre des copies du logiciel.\n\n"
+                   "LE LOGICIEL EST FOURNI « EN L'ÉTAT », SANS GARANTIE D'AUCUNE SORTE.")
+        carte(yc, bas_utile, "VERT")
+        texte_multiligne(d, (g + s(20), yc + s(16)), licence, largeur_texte, f_note, c("TEXTE"), interligne_petit)
     elif vue == 2:
-        carte(yc, yc + s(92), "ROUGE")
-        texte(d, (g + s(20), yc + s(24)), "Dossier d'installation",
-              police(9, True, dpi, e), c("TEXTE_DOUX"), "lm")
+        # carte 1 : dossier
+        h1 = s(14) + s(20) + s(24) + s(24) + s(14)
+        bas_c = carte(yc, yc + h1, "ROUGE")
+        texte(d, (g + s(20), yc + s(24)), "Dossier d'installation", f_note, c("TEXTE_DOUX"), "lm")
         texte(d, (g + s(20), yc + s(50)),
               "C:\\Users\\utilisateur\\AppData\\Local\\Programs\\Rose",
               police(10, False, dpi, e), c("TEXTE"), "lm")
         texte(d, (g + s(20), yc + s(77)),
               "✓  Écriture autorisée dans ce dossier (profil utilisateur)",
-              police(9, False, dpi, e), c("VERT"), "lm")
-        carte(yc + s(108), yc + s(212), "VERT")
-        texte(d, (g + s(20), yc + s(132)), "Paquet à installer",
-              police(9, True, dpi, e), c("TEXTE_DOUX"), "lm")
-        texte(d, (g + s(20), yc + s(157)), "SHA-256 vérifié · 3f9a2c7b1d4e5f60",
-              police(9, False, dpi, e), c("VERT"), "lm")
-        texte(d, (g + s(20), yc + s(183)),
-              "rose.exe · rose-aot.exe · association .rose · entrée de désinstallation",
-              police(9, False, dpi, e), c("TEXTE_DOUX"), "lm")
+              f_note, c("VERT"), "lm")
+        # carte 2 : paquet
+        contenu_paquet = "rose.exe · rose-shell.exe · icônes · association .rose · désinstallation"
+        h_paquet = max(s(104), hauteur_texte(contenu_paquet, largeur_texte, f_note, interligne_petit) + 2 * s(14))
+        y2 = bas_c + s(16)
+        bas2 = carte(y2, y2 + h_paquet, "VERT")
+        texte(d, (g + s(20), y2 + s(24)), "Paquet à installer", f_note, c("TEXTE_DOUX"), "lm")
+        texte(d, (g + s(20), y2 + s(49)), "SHA-256 vérifié · 3f9a2c7b1d4e5f60", f_note, c("VERT"), "lm")
+        texte_multiligne(d, (g + s(20), y2 + s(64)), contenu_paquet, largeur_texte, f_note,
+                         c("TEXTE_DOUX"), interligne_petit)
+        if etat_installe:
+            note = "« Mettre à jour » réinstalle proprement ; « Désinstaller » retire tout."
+            h3 = max(s(96), s(14) + s(20) + s(24) + hauteur_texte(note, largeur_texte, f_note, interligne_petit) + s(12))
+            h3 = min(h3, max(s(96), bas_utile - (bas2 + s(16))))
+            y3 = bas2 + s(16)
+            carte(y3, y3 + h3, "VERT_LIME")
+            texte(d, (g + s(20), y3 + s(24)), "Installation détectée", f_note, c("TEXTE"), "lm")
+            texte(d, (g + s(20), y3 + s(50)), "Version 0.1.5 — identique au paquet : réinstallation (repair)",
+                  f_note, c("TEXTE"), "lm")
+            texte_multiligne(d, (g + s(20), y3 + s(66)), note, largeur_texte, f_note,
+                             c("TEXTE_DOUX"), interligne_petit)
     elif vue == 3:
-        carte(yc, yc + s(70), "ROUGE_CLAIR")
-        texte(d, (g + s(20), yc + s(35)), "Installation de Rose…",
-              police(10, False, dpi, e), c("TEXTE"), "lm")
-        d.rectangle([g, yc + s(86), droite, yc + s(92)], fill=c("LIGNE"))
-        d.rectangle([g, yc + s(86), g + (droite - g) // 3, yc + s(92)], fill=c("ROUGE_CLAIR"))
+        statut = "Installation de Rose…"
+        h_statut = hauteur_texte(statut, largeur_texte, f_corps, interligne)
+        h_carte = max(s(72), h_statut + 2 * s(18))
+        bas_c = carte(yc, yc + h_carte, "ROUGE_CLAIR")
+        texte_multiligne(d, (g + s(20), yc + s(16)), statut, largeur_texte, f_corps, c("TEXTE"), interligne)
+        piste_top = bas_c + s(20)
+        d.rectangle([g, piste_top, droite, piste_top + s(6)], fill=c("LIGNE"))
+        d.rectangle([g, piste_top, g + (droite - g) // 3, piste_top + s(6)], fill=c("ROUGE_CLAIR"))
     else:
-        carte(yc, yc + s(186), "VERT")
-        texte(d, (g + s(64), yc + s(16)),
-              "Rose 0.1.5 est installé.\n\nDossier : C:\\Users\\utilisateur\\AppData\\Local\\Programs\\Rose\n\n"
-              "Ouvrez un nouveau terminal, puis tapez : rose --version",
-              police(10, False, dpi, e), c("TEXTE"), "la")
+        corps = ("Rose 0.1.5 est installé.\n\n"
+                 "Dossier : C:\\Users\\utilisateur\\AppData\\Local\\Programs\\Rose\n\n"
+                 "Ouvrez un nouveau terminal, puis tapez : rose --version")
+        largeur_corps = max(s(80), largeur_texte - s(44))
+        h_corps = hauteur_texte(corps, largeur_corps, f_corps, interligne)
+        h_carte = min(max(h_corps + 2 * s(18), s(140)), max(s(140), bas_utile - yc))
+        bas_c = carte(yc, yc + h_carte, "VERT")
+        # coche
+        d.line([g + s(20), yc + s(30), g + s(28), yc + s(38)], fill=c("VERT"), width=max(2, s(3)))
+        d.line([g + s(28), yc + s(38), g + s(41), yc + s(22)], fill=c("VERT"), width=max(2, s(3)))
+        texte_multiligne(d, (g + s(64), yc + s(16)), corps, largeur_corps, f_corps, c("TEXTE"), interligne)
 
     # ── pied de page ──
     pied_top = h - etat_h - pied_h
     d.rectangle([lateral_w + 1, pied_top, w, h - etat_h], fill=c("LATERAL_FIN"))
     d.line([lateral_w + 1, pied_top, w, pied_top], fill=c("LIGNE_FORTE"))
-    bw, bh = s(190), s(44)
+    # Largeur bornée, IDENTIQUE au Rust.
+    place = max(s(120), w - lateral_w - s(56))
+    bw = max(s(96), min(s(190), (place - s(20)) // 2))
+    bh = s(44)
     by = pied_top + (pied_h - bh) // 2
     libelles = [
         ("Annuler", "Suivant"),
@@ -240,8 +357,6 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
     if libelles[0]:
         r = [lateral_w + s(28), by, lateral_w + s(28) + bw, by + bh]
         d.rounded_rectangle(r, radius=s(10), fill=c("REPOS_SOMBRE"))
-        # Sur le vert lime, le texte est SOMBRE (NOIR_DOUX) et GRAS : les
-        # traits fins de Kare en clair étaient illisibles.
         texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[0].upper(),
               ImageFont.truetype(str(POLICE_TITRE), s(18)), c("NOIR_DOUX"), "mm")
         zones.append(r)
@@ -267,23 +382,64 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
 
 
 def controler(w, h):
-    """Contrôles mesurés : libellés des boutons, barre d'état, cartes."""
+    """Contrôles mesurés : libellés, cartes, logo, pied de page."""
     e = min(w / 1120.0, h / 780.0)
     s = lambda v: round(v * e)
     erreurs = []
-    for libelle in ("Mettre à jour", "Installer", "Désinstaller", "Terminer"):
-        largeur = mesurer(libelle, police(10, True if "▸" in libelle else False, 96, e))
-        if largeur > s(190) - s(16):
-            erreurs.append(f"bouton « {libelle} » : {largeur}px pour {s(190)}px de bouton")
-    # barre d'état : le texte de gauche ne doit pas mordre sur la droite
-    if s(28) >= w / 2 - s(10):
-        erreurs.append("barre d'état : zone gauche plus large que la moitié")
-    # pied de page : les deux boutons ne se chevauchent pas
+
+    # Boutons : le libellé doit tenir dans la largeur RÉELLEMENT allouée.
+    place = max(s(120), w - s(320) - s(56))
+    bw = max(s(96), min(s(190), (place - s(20)) // 2))
+    for libelle in ("Mettre à jour", "Installer", "Désinstaller", "Terminer", "Suivant"):
+        largeur = mesurer(libelle.upper(), ImageFont.truetype(str(POLICE_TITRE), s(13)))
+        if largeur > bw - s(12):
+            erreurs.append(f"bouton « {libelle} » : {largeur}px pour {bw}px de bouton")
     if lateral_w := s(320):
-        gauche_d = lateral_w + s(28) + s(190)
-        droite_g = w - s(28) - s(190)
+        gauche_d = lateral_w + s(28) + bw
+        droite_g = w - s(28) - bw
         if gauche_d > droite_g:
             erreurs.append(f"pied de page : chevauchement {gauche_d} > {droite_g}")
+
+    # Logo : il doit remplir son PNG (sinon il est invisible à l'écran).
+    logo = Image.open(LOGO).convert("RGBA")
+    lw, lh = logo.size
+    boite = logo.getbbox()
+    if boite is None:
+        erreurs.append("logo entièrement transparent")
+    else:
+        x0, y0, x1, y1 = boite
+        if x0 > 4 or y0 > 4 or x1 < lw - 4 or y1 < lh - 1:
+            erreurs.append(
+                f"logo : contenu {x0},{y0}–{x1},{y1} dans {lw}×{lh} — "
+                "une bande transparente réduit le dessin à l'écran")
+        if lw == lh and lh > 0:
+            # Un carré forcé est le symptôme du centrage sur canevas carré.
+            pass
+
+    # Cartes : aucune ne doit déborder du pied de page, et la vue ne doit pas
+    # être vide au-dessus du pied.
+    bas_utile = h - s(30) - s(76) - s(20)
+    for vue in range(5):
+        img, zones, _ = dessiner(w, h, vue, etat_installe=(vue == 2))
+        # La zone de contenu doit contenir des pixels de CARTE (le fond de
+        # carte 0x1A1311) quelque part entre le sous-titre et le pied : une
+        # fenêtre « vide » n'afficherait que le fond général.
+        trouve = False
+        for y in range(s(56) + s(120), bas_utile, 4):
+            for x in range(s(320) + s(56) + s(24), w - s(56) - s(24), 6):
+                p = img.getpixel((x, y))
+                if p in (c("CARTE"), c("LIGNE"), c("ROUGE"), c("VERT"), c("ROUGE_CLAIR"),
+                         c("VERT_LIME"), c("TEXTE"), c("TEXTE_DOUX")):
+                    trouve = True
+                    break
+            if trouve:
+                break
+        if not trouve:
+            erreurs.append(f"vue {vue} : zone de contenu VIDE (aucun pixel de carte)")
+
+    # Police : aucune taille en dessous du plancher lisible.
+    if pixels_police(9, 96, e) < PLANCHER_PX:
+        erreurs.append("taille de police sous le plancher lisible")
     return erreurs
 
 

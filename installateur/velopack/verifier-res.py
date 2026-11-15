@@ -278,6 +278,39 @@ def main():
     assert png[24] == 8 and png[25] == 6, "le PNG doit être RGBA 8 bits"
     print(f"  rose PNG      {len(png)} o ({w}x{h}, RGBA)")
 
+    # ── Contrôle du TRACÉ : la fenêtre doit être PEINTE ────────────────────
+    #
+    # Symptôme mesuré : « la fenêtre s'ouvre avec ses seules BORDURES, elle est
+    # transparente, puis disparaît au bout d'un moment ». Un plantage dans
+    # `WM_PAINT` laisse une fenêtre vide, et un processus mort la fait
+    # disparaître. Aucun test d'exécution n'est possible sans Windows : on
+    # vérifie donc que le CODE de `setup_gui.rs` contient les garde-fous qui
+    # rendent ce symptôme impossible.
+    if cible.name.lower().startswith("rose-setup"):
+        source = (RACINE / "rose" / "src" / "setup_gui.rs").read_text(encoding="utf-8")
+        garde_fous = {
+            "tracé isolé dans catch_unwind": "std::panic::catch_unwind",
+            "fond peint sur l'écran AVANT la décoration": "remplir(dc_ecran",
+            "EndPaint hors du tracé détaillé": "EndPaint(h, &ps);",
+            "repli GDI du cercle": "Ellipse(dc, cx - rayon",
+            "repli GDI des coins arrondis": "RoundRect(dc, r.left",
+            "boucle de messages qui distingue 0 de -1": "GetLastError()",
+            "SW_SHOWNORMAL (fenêtre au premier plan)": "SW_SHOWNORMAL",
+            "WM_ERASEBKGND sans flash blanc": "WM_ERASEBKGND",
+            "zones de titre cohérentes": "let coherentes =",
+            "police refusée → pas de DrawText géant": "let Some(police) = creer_police",
+        }
+        manquants = [nom for nom, motif in garde_fous.items() if motif not in source]
+        assert not manquants, (
+            "garde-fous du tracé absents de setup_gui.rs : " + ", ".join(manquants)
+            + " — la fenêtre peut s'ouvrir VIDE (bordures seules)")
+        # Aucun appel direct de `dessiner` depuis `WM_PAINT` : il doit passer
+        # par le `catch_unwind` du gestionnaire.
+        assert "WM_PAINT => { dessiner(h); 0 }" not in source, (
+            "WM_PAINT appelle dessiner() sans isolation : une panique tue le processus "
+            "et la fenêtre disparaît")
+        print(f"  tracé : {len(garde_fous)} garde-fous présents")
+
     print("RESSOURCES VALIDES")
 
 

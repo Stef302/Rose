@@ -47,6 +47,11 @@ pub mod inflate;
 /// Décodeur PNG minimal (RGBA 8 bits) — testable sous toutes les cibles.
 pub mod png;
 
+/// Calculs de TRACÉ de l'installeur (découpe de texte, progression, échelle).
+/// Module PUR, testable sous Linux : le tracé Win32 de `setup_gui` ne l'est
+/// pas, et un plantage y laissait la fenêtre vide (bordures seules).
+pub mod paint;
+
 /// Spécificités Windows de la console : icône de la fenêtre, attente avant
 /// fermeture quand la console a été ouverte par un double-clic.
 pub mod console_win;
