@@ -1,19 +1,18 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!-- Manifeste de l'installeur Rose.
-     Sans lui, Windows considère le processus comme non-DPI-aware et rend la
-     fenêtre dans une surface virtuelle qu'il ÉTIRE en bitmap sur les écrans
-     mis à l'échelle (125 %, 150 %, 200 %) : d'où le rendu pixélisé.
-     `PerMonitorV2` donne un rendu net sur chaque écran, et l'icône/le thème
-     Windows 10-11 sont déclarés pour que la fenêtre ne reçoive ni cadre
-     système ni boutons standard. -->
+<!-- Rose Setup manifest: DPI PerMonitorV2 (crisp rendering, no bitmap
+     stretching on 125/150% displays) and common controls v6.
+
+     Win32 loader rules, otherwise Windows shows "This app can't run on your
+     PC": processorArchitecture must be "*", ASCII only, no comment before
+     the XML declaration, and only Microsoft's official supportedOS GUIDs. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="Rose.Setup" version="0.1.5.0" processorArchitecture="amd64"/>
-  <description>Rose — Programme d'installation</description>
+  <assemblyIdentity type="win32" name="Rose.Setup" version="0.1.5.0" processorArchitecture="*"/>
+  <description>Rose Setup</description>
 
   <dependency>
     <dependentAssembly>
       <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls"
-                        version="6.0.0.0" processorArchitecture="amd64"
+                        version="6.0.0.0" processorArchitecture="*"
                         publicKeyToken="6595b64144ccf1df" language="*"/>
     </dependentAssembly>
   </dependency>
@@ -22,17 +21,12 @@
     <windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
-      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
-      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
     </windowsSettings>
   </application>
 
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
-      <!-- Windows 10 / 11 -->
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
-      <!-- Windows 8.1 -->
-      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
     </application>
   </compatibility>
 </assembly>

@@ -78,3 +78,13 @@ echo "Binaires produits :"
 for f in rose.exe rose-aot.exe rose-setup.exe; do
   printf '  %-16s %10s o  %s\n' "$f" "$(stat -c%s "$R/$f")" "$(file -b "$R/$f" | cut -d, -f1-2)"
 done
+
+# Contrôle de l'IMAGE LIÉE : un .rsrc valide peut malgré tout produire un PE
+# que Windows refuse (« Cette application ne peut pas s'exécuter sur votre
+# PC »). On vérifie l'arbre des ressources DU BINAIRE, le sous-système, et
+# que le manifeste est ASCII avec processorArchitecture "*" et langue 1033.
+if command -v python3 >/dev/null 2>&1; then
+  echo
+  python3 "$RACINE/installateur/velopack/verifier-res.py" "$R/rose-setup.exe"
+fi
+

@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 RACINE = Path(__file__).resolve().parents[2]
-RT_ICON, RT_GROUP_ICON, RT_RCDATA, RT_FONT = 3, 14, 10, 8
+RT_ICON, RT_GROUP_ICON, RT_RCDATA, RT_FONT, RT_MANIFEST = 3, 14, 10, 8, 24
 
 
 def section_rsrc(donnees: bytes) -> bytes:
@@ -77,7 +77,10 @@ def main():
         for nom, p2 in noeuds:
             assert p2 & 0x80000000, f"nom {nom} du type {type_} sans langue"
             langues, _, _ = entrees(rsrc, p2 & 0x7FFFFFFF)
-            for _, p3 in langues:
+            for langue, p3 in langues:
+                # Windows résout par langue : 1033 (en-US) comme `llvm-rc`.
+                assert langue == 1033, (
+                    f"type {type_} nom {nom} : langue {langue} au lieu de 1033")
                 o = p3 & 0x7FFFFFFF
                 assert not p3 & 0x80000000, "entrée de données mal pointée"
                 decalage, taille, page, reserve = struct.unpack("<IIII", rsrc[o:o + 16])
@@ -110,6 +113,21 @@ def main():
     icones = sorted(n for (t, n) in ressources if t == RT_ICON)
     assert icones == list(range(1, n + 1)), f"identifiants d'icônes non contigus : {icones}"
     print(f"  groupe d'icônes : {n} tailles ({', '.join(attendues)})")
+
+    # Manifeste : les règles Win32 que le CHARGEUR impose. Un manifeste
+    # refusé fait afficher « Cette application ne peut pas s'exécuter sur
+    # votre PC » avant même l'exécution du programme.
+    manifeste = ressources.get((RT_MANIFEST, 1))
+    if manifeste is not None:
+        assert manifeste[:5] == b"<?xml", "le manifeste ne commence pas par la déclaration XML"
+        assert b"<!--" not in manifeste.split(b"?>")[0], "commentaire avant la déclaration XML"
+        non_ascii = sum(1 for b in manifeste if b > 127)
+        assert non_ascii == 0, f"manifeste : {non_ascii} octet(s) non-ASCII (activation stricte)"
+        assert b'processorArchitecture="*"' in manifeste, \
+            'processorArchitecture doit valoir "*" (une valeur explicite fait échouer l\'activation)'
+        assert b"PerMonitorV2" in manifeste, "manifeste : PerMonitorV2 absent"
+        print(f"  manifeste : {len(manifeste)} o, ASCII, PerMonitorV2")
+
     print("RESSOURCES VALIDES")
 
 

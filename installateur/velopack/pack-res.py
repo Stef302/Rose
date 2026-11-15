@@ -43,6 +43,11 @@ RT_RCDATA = 10
 RT_FONT = 8
 RT_MANIFEST = 24
 
+# Langue des ressources : 1033 = en-US, la valeur qu'émet `llvm-rc`/`rc.exe`.
+# Windows résout les ressources par langue ; une entrée de langue 0 est
+# tolérée pour les icônes mais peut rendre le manifeste irrésoluble.
+LANGUE = 1033
+
 
 def woff2_vers_ttf(chemin: Path) -> bytes:
     """Convertit la police WOFF2 en TrueType simple (glyphes + métriques)."""
@@ -246,7 +251,12 @@ def main():
         # ce n'est pas un sous-répertoire, donc le bit 31 reste à 0. Le poser
         # faisait lire par Win32 un « répertoire » à l'offset de l'entrée de
         # données (icônes et police introuvables, icônes de taille nulle).
-        blocs_noms += noeud([(0, curseur_donnees)])
+        # Entrée de LANGUE : id 1033 (en-US), comme le fait `llvm-rc` et
+        # comme l'attend le chargeur Windows. Une entrée de langue 0 est
+        # tolérée pour les icônes mais rend le manifeste RT_MANIFEST
+        # irrésoluble sur certaines configurations, ce qui fait REFUSER
+        # l'image (« Cette application ne peut pas s'exécuter sur votre PC »).
+        blocs_noms += noeud([(LANGUE, curseur_donnees)])
         curseur_donnees += 16
 
     # Entrées de données (IMAGE_RESOURCE_DATA_ENTRY, 16 o : offset relatif au
