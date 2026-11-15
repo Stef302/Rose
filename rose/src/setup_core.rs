@@ -287,7 +287,11 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
         (Some(if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }),
          if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }, 5),
         (Some("rose.ico"), "rose.ico", 6),
-        (Some("setup.ico"), "rose_app.ico", 7),
+        // ⚠ `rose_app.ico` = l'icône de CONSOLE (terminal + rose), livrée sous
+        // le nom `rose_shell.ico` dans le dossier de distribution. Elle sert
+        // de profil Windows Terminal et de raccourci : c'est la marque de
+        // l'APPLICATION, pas celle de l'installeur (une boîte de livraison).
+        (Some("rose_shell.ico"), "rose_app.ico", 7),
     ];
 
     for (nom_src, nom_dst, res_id) in compagnons {

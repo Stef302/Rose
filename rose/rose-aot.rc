@@ -1,0 +1,7 @@
+// Ressources du binaire `rose-aot.exe` (helper AOT LLVM ORC).
+//
+// `rose_shell.ico` : c'est un outil de ligne de commande, pas l'installeur.
+// Il était auparavant livré avec l'icône du setup, ce qui prêtait à confusion
+// dans la barre des tâches.
+
+1 ICON "rose_shell.ico"

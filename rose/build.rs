@@ -53,25 +53,45 @@ fn main() {
         if def.exists() {
             println!("cargo:rustc-link-arg-bin=rose=/DEF:exports.def");
         }
-        // Compile .rc icon if present
-        let rc = std::path::Path::new("rose.rc");
-        if rc.exists() {
-            // llvm-windres (LLVM) -> COFF .res compatible MSVC linker
+        // ── Icônes par binaire ─────────────────────────────────────────────
+        //
+        // ⚠⚠ Chaque exécutable a son PROPRE `.rc` : avant, les trois
+        // recevaient `rose.res` (l'icône du SETUP). Résultat mesuré : dans
+        // Windows Terminal, un onglet de console Rose affichait une boîte de
+        // livraison, et `rose.exe` — le moteur, une CONSOLE — montrait la même
+        // icône que l'installeur. Trois fichiers, trois rôles :
+        //   rose.rc       → rose.exe       (console + rose)
+        //   rose-shell.rc → rose-shell.exe (console + rose)
+        //   rose-aot.rc   → rose-aot.exe   (console + rose)
+        // L'installeur reçoit `rose-setup.res` (icône de setup + ressources).
+        for (bin, rc_name, res_name) in [
+            ("rose", "rose.rc", "rose.res"),
+            ("rose-shell", "rose-shell.rc", "rose-shell.res"),
+            ("rose-aot", "rose-aot.rc", "rose-aot.res"),
+        ] {
+            let rc = std::path::Path::new(rc_name);
+            if !rc.exists() {
+                println!("cargo:warning={rc_name} absent : {bin} n'aura pas d'icône");
+                continue;
+            }
+            println!("cargo:rerun-if-changed={rc_name}");
+            // llvm-windres (LLVM) -> COFF .res compatible MSVC linker.
+            let mut fait = false;
             for tool in ["llvm-windres", "windres", "x86_64-w64-mingw32-windres"] {
                 let st = std::process::Command::new(tool)
-                    .args(["rose.rc", "--target=pe-x86-64", "-O", "coff", "-o", "rose.res"])
+                    .args([rc_name, "--target=pe-x86-64", "-O", "coff", "-o", res_name])
                     .status();
-                if st.map(|s| s.success()).unwrap_or(false) { break; }
-            }
-            let res = std::path::Path::new("rose.res");
-            if res.exists() {
-                // Un SEUL fichier de ressources par exécutable : l'installeur
-                // reçoit le sien (rose-setup.res, icônes multi-tailles + rose
-                // + police Kare) ; les autres reçoivent rose.rc (icône).
-                for bin in ["rose", "rose-aot", "rose-shell"] {
-                    println!("cargo:rustc-link-arg-bin={bin}=rose.res");
+                if st.map(|s| s.success()).unwrap_or(false) {
+                    fait = true;
+                    break;
                 }
             }
+            if !fait {
+                println!("cargo:warning=aucun compilateur .rc trouvé : {bin} n'aura pas d'icône");
+                continue;
+            }
+            // Un SEUL fichier de ressources par exécutable.
+            println!("cargo:rustc-link-arg-bin={bin}={res_name}");
         }
         // L'installeur graphique embarque ses ressources (rose PNG, police
         // Kare, icônes multi-tailles) dans `rose-setup.res`, produit par

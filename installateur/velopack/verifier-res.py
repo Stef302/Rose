@@ -167,10 +167,16 @@ def main():
     for (type_, nom), octets in sorted(ressources.items()):
         print(f"    type {type_:<2} nom {nom:<2} {len(octets):>7} o")
 
-    png = ressources.get((RT_RCDATA, 1))
-    assert png and png[:8] == b"\x89PNG\r\n\x1a\n", "rose PNG absente ou invalide"
-    ttf = ressources.get((RT_FONT, 2))
-    assert ttf and ttf[:4] in (b"\x00\x01\x00\x00", b"true"), "police Kare absente"
+    # ⚠ La rose PNG et la police Kare ne sont embarquées QUE dans
+    # l'installeur (`rose-setup.exe`). `rose.exe`, `rose-shell.exe` et
+    # `rose-aot.exe` n'ont que leur icône : exiger la PNG sur ces binaires
+    # faisait échouer le contrôle alors que leurs ressources étaient saines.
+    est_installeur = cible.name.lower().startswith(("rose-setup", "setup-"))
+    if est_installeur:
+        png = ressources.get((RT_RCDATA, 1))
+        assert png and png[:8] == b"\x89PNG\r\n\x1a\n", "rose PNG absente ou invalide"
+        ttf = ressources.get((RT_FONT, 2))
+        assert ttf and ttf[:4] in (b"\x00\x01\x00\x00", b"true"), "police Kare absente"
     groupe = ressources.get((RT_GROUP_ICON, 1))
     assert groupe, "groupe d'icônes absent"
     _, _, n = struct.unpack("<HHH", groupe[:6])
@@ -229,32 +235,38 @@ def main():
     # Moteur embarqué : sans lui, l'installeur n'a RIEN à installer et se
     # copie lui-même sous `rose.exe` → boucle de lancement (60 processus
     # mesurés chez l'utilisateur). On refuse un setup qui n'en contient pas.
-    moteur = ressources.get((RT_RCDATA, 3))
-    assert moteur is not None, (
-        "moteur embarqué (RT_RCDATA 3) absent : l'installeur n'aurait rien "
-        "à installer et se copierait lui-même sous rose.exe (boucle)")
-    assert moteur[:2] == b"MZ", "le moteur embarqué n'est pas un PE"
-    assert len(moteur) > 1_000_000, f"moteur embarqué suspect : {len(moteur)} o"
-    # ⚠ Le moteur doit être une application CONSOLE (sous-système 3). Un
-    # moteur en GUI (2) serait l'installeur : l'installer sous `rose.exe`
-    # provoque une boucle de lancement (fenêtres Terminal en rafale).
-    pe_off = struct.unpack("<I", moteur[0x3C:0x40])[0]
-    assert moteur[pe_off:pe_off + 4] == b"PE\0\0", "en-tête PE du moteur invalide"
-    ss = struct.unpack("<H", moteur[pe_off + 24 + 68:pe_off + 24 + 70])[0]
-    assert ss == 3, (
-        f"le moteur embarqué est en sous-système {ss} (GUI=2), pas 3 (console) : "
-        "il provoquerait une boucle de lancement")
-    print(f"  moteur embarqué : {len(moteur)} o (PE console)")
+    # ⚠ Le moteur embarqué et les compagnons n'existent QUE dans
+    # l'installeur : `rose.exe`, `rose-shell.exe` et `rose-aot.exe` n'ont
+    # que leur icône. Les exiger sur les binaires simples faisait échouer
+    # le contrôle alors que leurs ressources étaient saines.
+    if est_installeur:
+        moteur = ressources.get((RT_RCDATA, 3))
+        assert moteur is not None, (
+            "moteur embarqué (RT_RCDATA 3) absent : l'installeur n'aurait rien "
+            "à installer et se copierait lui-même sous rose.exe (boucle)")
+        assert moteur[:2] == b"MZ", "le moteur embarqué n'est pas un PE"
+        assert len(moteur) > 1_000_000, f"moteur embarqué suspect : {len(moteur)} o"
+        # ⚠ Le moteur doit être une application CONSOLE (sous-système 3). Un
+        # moteur en GUI (2) serait l'installeur : l'installer sous `rose.exe`
+        # provoque une boucle de lancement (fenêtres Terminal en rafale).
+        pe_off = struct.unpack("<I", moteur[0x3C:0x40])[0]
+        assert moteur[pe_off:pe_off + 4] == b"PE\0\0", "en-tête PE du moteur invalide"
+        ss = struct.unpack("<H", moteur[pe_off + 24 + 68:pe_off + 24 + 70])[0]
+        assert ss == 3, (
+            f"le moteur embarqué est en sous-système {ss} (GUI=2), pas 3 (console) : "
+            "il provoquerait une boucle de lancement")
+        print(f"  moteur embarqué : {len(moteur)} o (PE console)")
 
     # Fichiers compagnons : sans eux, l'installation ne pose QUE rose.exe
     # (mesuré : ni helper AOT, ni shell, ni icône de fichier .rose).
     # ⚠ `rose-aot.exe` n'est PAS exigé : le stub n'embarque pas LLVM, il est
     # inutile. `rose.exe` gère `orc`/`link` et télécharge le vrai helper.
-    for res_id, nom, min_taille in [
+    compagnons = [
         (5, "rose-shell.exe", 100_000),
         (6, "rose.ico", 10_000),
         (7, "rose_app.ico", 10_000),
-    ]:
+    ]
+    for res_id, nom, min_taille in (compagnons if est_installeur else []):
         blob = ressources.get((RT_RCDATA, res_id))
         assert blob is not None, f"compagnon {nom} absent (RT_RCDATA {res_id})"
         assert len(blob) > min_taille, f"compagnon {nom} suspect : {len(blob)} o"
@@ -269,14 +281,15 @@ def main():
     # décompresseur DEFLATE brut au lieu d'un décompresseur ZLIB → il
     # rendait `None` → le logo n'était JAMAIS dessiné (ni dans la barre de
     # titre, ni au-dessus de « ROSE »), sans aucun message d'erreur.
-    png = ressources.get((RT_RCDATA, 1))
-    assert png is not None, "rose PNG (RT_RCDATA 1) absente"
-    assert png[:8] == b"\x89PNG\r\n\x1a\n", "la rose n'est pas un PNG"
-    assert png[12:16] == b"IHDR", "en-tête IHDR absent"
-    w = int.from_bytes(png[16:20], "big")
-    h = int.from_bytes(png[20:24], "big")
-    assert png[24] == 8 and png[25] == 6, "le PNG doit être RGBA 8 bits"
-    print(f"  rose PNG      {len(png)} o ({w}x{h}, RGBA)")
+    if est_installeur:
+        png = ressources.get((RT_RCDATA, 1))
+        assert png is not None, "rose PNG (RT_RCDATA 1) absente"
+        assert png[:8] == b"\x89PNG\r\n\x1a\n", "la rose n'est pas un PNG"
+        assert png[12:16] == b"IHDR", "en-tête IHDR absent"
+        w = int.from_bytes(png[16:20], "big")
+        h = int.from_bytes(png[20:24], "big")
+        assert png[24] == 8 and png[25] == 6, "le PNG doit être RGBA 8 bits"
+        print(f"  rose PNG      {len(png)} o ({w}x{h}, RGBA)")
 
     # ── Contrôle du TRACÉ : la fenêtre doit être PEINTE ────────────────────
     #

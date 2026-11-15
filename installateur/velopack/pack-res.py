@@ -6,7 +6,7 @@ construit une table des ressources qui contient
 
 - `RT_RCDATA 10 1` : la rose (PNG, 176 px) ;
 - `RT_FONT   8  2` : la police Kare convertie en TrueType ;
-- `RT_ICON` + `RT_GROUP_ICON 1` : toutes les tailles de `setup.ico`
+- `RT_ICON` + `RT_GROUP_ICON 1` : toutes les tailles de `rose_setup.ico`
   (16, 32, 48, 64, 128, 256) — Win32 choisit celle qui convient, et la grande
   sert de `WM_SETICON` de la fenêtre ;
 - `RT_MANIFEST 24 1` : le manifeste (DPI PerMonitorV2, common controls v6).
@@ -51,10 +51,16 @@ from fontTools.ttLib.tables.ttProgram import Program
 RACINE = Path(__file__).resolve().parents[2]
 PNG = RACINE / "installateur" / "velopack" / "rose-installeur.png"
 WOFF2 = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
-# Icône de la fenêtre et du setup : `setup.ico`, la ROSE de marque (la fleur
-# rouge et verte). `rose.ico` est l'icône de TYPE DE FICHIER (un document
-# marqué « .ROSE ») : elle convient pour les `.rose`, pas pour l'installeur.
-ICO = RACINE / "installateur" / "assets" / "setup.ico"
+# Icône de la fenêtre et du setup : `rose_setup.ico`, la BOÎTE D'INSTALLATION
+# avec la rose (convertie depuis `icone_installeur.svg`).
+#
+# ⚠ Trois icônes, trois rôles — ne pas les confondre :
+#   `rose.ico`       = TYPE DE FICHIER (document marqué « .ROSE ») ;
+#   `rose_shell.ico` = CONSOLE (terminal + invite + rose), pour rose.exe,
+#                      rose-shell.exe et rose-aot.exe ;
+#   `rose_setup.ico` = INSTALLEUR (boîte + flèches), pour Rose-win-Setup.exe
+#                      et la fenêtre de l'assistant.
+ICO = RACINE / "installateur" / "assets" / "rose_setup.ico"
 MANIFESTE = RACINE / "rose" / "rose-setup.manifest"
 # Binaires compilés, embarqués dans l'installeur (binaire unique).
 _REL = RACINE / "rose" / "target" / "x86_64-pc-windows-msvc" / "release"
@@ -66,9 +72,10 @@ MOTEUR = _REL / "rose.exe"
 # et `link` et télécharge à la demande le vrai helper LLVM.
 SHELL = _REL / "rose-shell.exe"
 # Icônes à poser dans `bin\` : `rose.ico` sert au TYPE DE FICHIER `.rose`
-# (association Windows), `setup.ico` devient `rose_app.ico` (application).
+# (association Windows), `rose_shell.ico` devient `rose_app.ico` (icône de
+# l'APPLICATION, posée sur les raccourcis et le profil Windows Terminal).
 ICONE_FICHIER = RACINE / "installateur" / "assets" / "rose.ico"
-ICONE_APP = RACINE / "installateur" / "assets" / "setup.ico"
+ICONE_APP = RACINE / "installateur" / "assets" / "rose_shell.ico"
 SORTIE = RACINE / "rose" / "rose-setup.res"
 
 # Identifiants des ressources RT_RCDATA embarquées. Ils doivent rester
@@ -78,7 +85,7 @@ RCDATA_MOTEUR = 3   # rose.exe
 # L'id 4 (anciennement rose-aot.exe) est LIBRE : ne pas le réutiliser.
 RCDATA_SHELL = 5        # rose-shell.exe
 RCDATA_ICO_FICHIER = 6  # rose.ico  (type de fichier .rose)
-RCDATA_ICO_APP = 7      # setup.ico (application)
+RCDATA_ICO_APP = 7      # rose_shell.ico (application / console)
 
 # Langue des ressources : 1033 = en-US, la valeur qu'émet `llvm-rc`/`rc.exe`.
 LANGUE = 1033
