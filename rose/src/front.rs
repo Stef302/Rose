@@ -71,6 +71,11 @@ pub fn promotion(a: &Ty, b: &Ty) -> Ty {
 pub enum Tk {
     Eof, Ident, Mot, Nombre, Flottant, Chaine,
     Plus, Moins, Etoile, Slash, Pourcent, Chapeau, Bang, Diese, Terminal, SuperFacto,
+    /// Factorielles multiples POSTFIXES : `n!` = 1, `n!!` = 2, `n!!!` = 3…
+    /// Le nombre de « ! » est la classe du multifactoriel.
+    MultiFacto(u8),
+    /// Sous-factorielle PRÉFIXE `!n` (dérangements, A000166).
+    SousFacto,
     DivEntier, Affect, LParen, RParen, LBrace, RBrace, LBracket, RBracket,
     Semi, Virgule, DeuxPts, DeuxPoints, FlecheD, FlecheG,
     PointDInterro,
@@ -209,8 +214,49 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             tk.push(Token { tk: if flott { Tk::Flottant } else { Tk::Nombre }, texte, ligne: dl, col: dc });
             continue;
         }
-        // '!' simple : la factorielle classique suffit — plus de '!!' ni '!?'
-        // (opérateurs analogues reportés). '?' et '#' sont des postfixes à part.
+        // '!' : plusieurs usages distincts.
+        //
+        // 1. POSTFIXE MULTIFACTORIEL : « n!! », « n!!! », « n!!!! »… = produit
+        //    des entiers ≤ n de même classe modulo k (k = nombre de « ! »).
+        //    ⚠ C'est la convention mathématique (7!! = 7·5·3·1 = 105), PAS
+        //    « (n!)! » (qui donnerait 5040! ≈ 10^168186). L'ancien lexer
+        //    émettait deux `Tk::Bang` successifs, et le parser appliquait la
+        //    factorielle DEUX FOIS : « 7!! » sortait le factoriel du
+        //    factoriel, un nombre de 168 186 chiffres. On compte donc les
+        //    « ! » consécutifs et on émet UN token `Tk::MultiFacto(k)`.
+        // 2. PRÉFIXE « !n » : sous-factorielle (nombre de dérangements,
+        //    A000166 : !0=1, !1=0, !2=1, !3=2, !4=9, !5=44). Un « ! » qui
+        //    n'est PAS précédé d'une expression (début d'instruction, après
+        //    un opérateur, une parenthèse ouvrante…) est donc PRÉFIXE.
+        //    ⚠ Ne pas confondre avec la « factorielle gauche » de Kurepa
+        //    (A003422 : 0, 1, 2, 4, 10, 34, 154…), que Rose nomme déjà `n?`.
+        if c == '!' {
+            // ⚠⚠ La décision se prend sur le DERNIER TOKEN ÉMIS, pas sur le
+            // caractère précédent dans le texte. Mesuré : « 5 ! » (avec un
+            // espace avant le « ! ») était lu comme PRÉFIXE parce que le
+            // caractère précédent était un blanc — le « ! » attendait alors un
+            // opérande et avalait la ligne suivante (« Attente d'une
+            // expression, trouvé '>>' »). Un blanc ne change pas le fait que
+            // « 5 » est une expression terminée.
+            let apres_expr = matches!(tk.last().map(|t| &t.tk),
+                Some(Tk::Nombre) | Some(Tk::Flottant) | Some(Tk::Chaine)
+                | Some(Tk::Ident) | Some(Tk::Mot) | Some(Tk::RParen)
+                | Some(Tk::RBracket) | Some(Tk::MultiFacto(_)) | Some(Tk::Diese)
+                | Some(Tk::Terminal) | Some(Tk::SuperFacto) | Some(Tk::Chapeau)
+                | Some(Tk::DeuxPts));
+            if !apres_expr {
+                tk.push(Token { tk: Tk::SousFacto, texte: "!".into(), ligne, col });
+                i += 1; col += 1;
+                continue;
+            }
+            // Postfixe : compter les « ! » consécutifs (sans blanc).
+            let debut = i;
+            while i < n && cps[i] == '!' { i += 1; col += 1; }
+            let k = (i - debut).min(u8::MAX as usize) as u8;
+            let texte: String = cps[debut..i].iter().collect();
+            tk.push(Token { tk: Tk::MultiFacto(k), texte, ligne, col: col - (i - debut) });
+            continue;
+        }
         // '?' postfixe (terminal) : devient opérateur SAUF s'il peut ouvrir
         // l'instruction « si compact » « ? (cond) [ … ] » : en DÉBUT
         // d'instruction (début de fichier, après un saut de ligne, un
@@ -330,6 +376,18 @@ pub enum Expr {
     Binaire { op: String, a: Box<Expr>, b: Box<Expr>, ligne: usize },
     Unaire { op: String, a: Box<Expr>, ligne: usize },
     Factorielle(Box<Expr>, usize),
+    /// Multifactorielle postfixe : `n!` (k=1), `n!!` (k=2), `n!!!` (k=3)…
+    /// = ∏_{i=0}^{⌊(n−1)/k⌋} (n − i·k). Le second champ est k.
+    ///
+    /// ⚠ `n!!` n'est PAS `(n!)!` : c'est le produit des entiers ≤ n de même
+    /// classe modulo k (7!! = 7·5·3·1 = 105, pas 5040!).
+    MultiFactorielle(Box<Expr>, u8, usize),
+    /// Sous-factorielle PRÉFIXE `!n` : nombre de dérangements (A000166).
+    /// `!0` = 1, `!1` = 0, `!2` = 1, `!3` = 2, `!4` = 9, `!5` = 44.
+    ///
+    /// ⚠ Ne pas confondre avec la factorielle GAUCHE de Kurepa (A003422 :
+    /// 0, 1, 2, 4, 10, 34, 154…), qui est ce que Rose appelle `n?`.
+    SousFactorielle(Box<Expr>, usize),
     Primorielle(Box<Expr>, usize),
     Terminal(Box<Expr>, usize),
     SuperFactorielle(Box<Expr>, usize),
@@ -378,7 +436,9 @@ pub fn deplier_i_rec(e: &mut Expr) {
             *e = Expr::Var("i".into(), *ligne);
         }
         Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => { deplier_i_rec(a); deplier_i_rec(b); }
-        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _) | Expr::SuperFactorielle(a, _) => deplier_i_rec(a),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+        | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+        | Expr::SuperFactorielle(a, _) => deplier_i_rec(a),
         Expr::ListeLit(v, _) => { for x in v { deplier_i_rec(x); } }
         Expr::Appel { args, .. } => { for x in args { deplier_i_rec(x); } }
         Expr::TableLit(v, _) => { for (_, x) in v { deplier_i_rec(x); } }
@@ -395,7 +455,9 @@ pub fn ligne_expr(e: &Expr) -> usize {
         Expr::ChaineLit(_, l) | Expr::BooleenLit(_, l) | Expr::Var(_, l) => *l,
         Expr::Appel { ligne, .. } | Expr::Binaire { ligne, .. } => *ligne,
         Expr::Unaire { ligne, .. } | Expr::Index { ligne, .. } => *ligne,
-        Expr::Factorielle(_, l) | Expr::Primorielle(_, l) | Expr::Terminal(_, l) | Expr::SuperFactorielle(_, l) | Expr::ListeLit(_, l) => *l,
+        Expr::Factorielle(_, l) | Expr::MultiFactorielle(_, _, l) | Expr::SousFactorielle(_, l)
+        | Expr::Primorielle(_, l) | Expr::Terminal(_, l) | Expr::SuperFactorielle(_, l)
+        | Expr::ListeLit(_, l) => *l,
         Expr::TableLit(_, l) => *l,
     }
 }
@@ -484,6 +546,11 @@ EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "primorielle", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "terminal", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "super_factorielle", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "multifactorielle", args: &["entier", "entier"], retour: "entier" },
+    EntreeStd { nom: "multifactoriel", args: &["entier", "entier"], retour: "entier" },
+    EntreeStd { nom: "sous_factorielle", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "derangement", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "sous_factorial", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "view", args: &["entier"], retour: "vide" },
     EntreeStd { nom: "__i", args: &[], retour: "complexe" },
     EntreeStd { nom: "i", args: &[], retour: "complexe" },
@@ -1043,7 +1110,21 @@ impl Parser {
         let mut g = self.unaire()?;
         loop {
             let tok = self.voir(0).tk;
-            if tok == Tk::Bang {
+            // ⚠ UN SEUL token `MultiFacto(k)` regroupe les « ! » consécutifs :
+            // « n!! » = multifactorielle d'ordre 2, PAS deux factorielles
+            // successives. `Factorielle` reste utilisé pour k = 1 afin que le
+            // reste du moteur (JIT, ORC, type) ne change pas.
+            if let Tk::MultiFacto(k) = tok {
+                let ligne = self.voir(0).ligne;
+                self.suivant();
+                g = if k == 1 {
+                    Expr::Factorielle(Box::new(g), ligne)
+                } else {
+                    Expr::MultiFactorielle(Box::new(g), k, ligne)
+                };
+            } else if tok == Tk::Bang {
+                // Conservé pour compatibilité : un `Tk::Bang` isolé (ancien
+                // lexer, ou `!` après un blanc) reste la factorielle simple.
                 let ligne = self.voir(0).ligne;
                 self.suivant();
                 g = Expr::Factorielle(Box::new(g), ligne);
@@ -1082,6 +1163,17 @@ impl Parser {
             return Ok(Expr::Unaire { op: "-".into(), a: Box::new(a), ligne });
         }
         if self.est(&[Tk::Plus]) { self.suivant(); return self.unaire(); }
+        // Préfixe `!n` = sous-factorielle (dérangements). Placé AVANT
+        // `postfixe()` pour que `!5` ne soit jamais lu comme un opérande
+        // manquant ; la suite (`unaire` → `postfixe`) accepte « !5! » =
+        // (sous-factorielle de 5) puis factorielle simple, ce qui reste
+        // cohérent avec la lecture gauche-droite.
+        if self.est(&[Tk::SousFacto]) {
+            let ligne = self.voir(0).ligne;
+            self.suivant();
+            let a = self.unaire()?;
+            return Ok(Expr::SousFactorielle(Box::new(a), ligne));
+        }
         self.postfixe()
     }
     fn postfixe(&mut self) -> Result<Expr, Err> {
@@ -1709,6 +1801,23 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             }
             Ok(Ty::simple(TyKind::Entier))
         }
+        Expr::MultiFactorielle(a, k, ligne) => {
+            let t = expr_type(prog, a, env)?;
+            if t.n != TyKind::Entier && !est_numerique(&t) {
+                return Err(fmt_err(&format!(
+                    "Multifactorielle ({}) attend un entier, trouvé {}",
+                    "!".repeat(*k as usize), nom_pour_msg(&t)), *ligne, 0));
+            }
+            Ok(Ty::simple(TyKind::Entier))
+        }
+        Expr::SousFactorielle(a, ligne) => {
+            let t = expr_type(prog, a, env)?;
+            if t.n != TyKind::Entier && !est_numerique(&t) {
+                return Err(fmt_err(&format!(
+                    "Sous-factorielle (!n) attend un entier, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
+            }
+            Ok(Ty::simple(TyKind::Entier))
+        }
         Expr::Primorielle(a, ligne) => {
             let t = expr_type(prog, a, env)?;
             if !est_numerique(&t) {
@@ -1721,7 +1830,16 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             if !est_numerique(&t) {
                 return Err(fmt_err(&format!("Terminal attend un nombre, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
             }
-            Ok(Ty::simple(TyKind::Dyn))
+            // ⚠ `terminal` était TOUJOURS typé `Dyn`, même sur un entier.
+            // Conséquence mesurée : `f(0?)` était refusé (« Argument de f :
+            // ? reçu, entier attendu ») parce que `Dyn` n'est pas promu vers
+            // `Entier` — alors que `0?` vaut bien un entier (1). Le type suit
+            // maintenant l'opérande : entier → entier, sinon polymorphe.
+            if t.n == TyKind::Entier {
+                Ok(Ty::simple(TyKind::Entier))
+            } else {
+                Ok(Ty::simple(TyKind::Dyn))
+            }
         }
         Expr::SuperFactorielle(a, ligne) => {
             let t = expr_type(prog, a, env)?;
@@ -2531,4 +2649,85 @@ pub fn replier_instr(i: &Instr) -> Instr {
 
 fn t_ligne(tk: &[Token], pos: usize) -> usize {
     tk.get(pos.min(tk.len()-1)).map(|t| t.ligne).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Compte les tokens `MultiFacto(k)` et `SousFacto` d'une source.
+    fn tokens(src: &str) -> Vec<Tk> {
+        let tk = tokeniser(src).expect("lexage");
+        tk.iter().map(|t| t.tk.clone()).collect()
+    }
+
+    #[test]
+    fn deux_points_exclamation_donnent_une_multifactorielle_d_ordre_2() {
+        // ⚠ LE BUG HISTORIQUE : « 7!! » émettait DEUX `Tk::Bang`, donc le
+        // parser appliquait la factorielle deux fois → (7!)! = 5040!, un
+        // nombre de 16 686 chiffres. Il doit y avoir UN `MultiFacto(2)`.
+        let t = tokens("7!!");
+        let mult: Vec<u8> = t.iter().filter_map(|x| if let Tk::MultiFacto(k) = x { Some(*k) } else { None }).collect();
+        assert_eq!(mult, vec![2], "« 7!! » doit produire un seul MultiFacto(2), lu {t:?}");
+        // Aucun `Bang` isolé ne doit subsister.
+        assert!(!t.contains(&Tk::Bang), "un Tk::Bang isolé subsiste : {t:?}");
+    }
+
+    #[test]
+    fn trois_et_quatre_points_exclamation() {
+        for (src, attendu) in [("8!!!", 3u8), ("11!!!!", 4u8), ("5! ", 1u8)] {
+            let t = tokens(src);
+            let mult: Vec<u8> = t.iter().filter_map(|x| if let Tk::MultiFacto(k) = x { Some(*k) } else { None }).collect();
+            assert_eq!(mult, vec![attendu], "« {src} » : lu {t:?}");
+        }
+    }
+
+    #[test]
+    fn point_exclamation_en_prefixe_donne_une_sous_factorielle() {
+        // « !5 » : le « ! » suit un début d'instruction, c'est un PRÉFIXE.
+        let t = tokens("!5");
+        assert!(t.contains(&Tk::SousFacto), "« !5 » doit produire SousFacto, lu {t:?}");
+        assert!(!t.contains(&Tk::MultiFacto(1)), "« !5 » ne doit pas être une factorielle postfixe");
+        // Après un opérateur aussi : « 2 + !3 ».
+        let t = tokens("2 + !3");
+        assert!(t.contains(&Tk::SousFacto), "« 2 + !3 » doit produire SousFacto, lu {t:?}");
+        // Après une parenthèse ouvrante.
+        let t = tokens("f(!4)");
+        assert!(t.contains(&Tk::SousFacto), "« f(!4) » doit produire SousFacto, lu {t:?}");
+    }
+
+    #[test]
+    fn point_exclamation_apres_une_expression_reste_postfixe() {
+        // « 5! » : postfixe, pas sous-factorielle.
+        let t = tokens("5!");
+        assert!(t.contains(&Tk::MultiFacto(1)), "« 5! » doit être MultiFacto(1), lu {t:?}");
+        assert!(!t.contains(&Tk::SousFacto), "« 5! » ne doit pas être SousFacto");
+        // Après une parenthèse FERMANTE.
+        let t = tokens("(3)!");
+        assert!(t.contains(&Tk::MultiFacto(1)), "« (3)! » doit être postfixe, lu {t:?}");
+    }
+
+    #[test]
+    fn un_blanc_avant_le_point_exclamation_ne_change_pas_la_nature() {
+        // ⚠ BUG MESURÉ : « 5 ! » (espace avant le « ! ») était lu comme
+        // PRÉFIXE, parce que la décision regardait le caractère précédent dans
+        // le texte. Le « ! » attendait alors un opérande et avalait la ligne
+        // suivante (« Attente d'une expression, trouvé '>>' »). La décision
+        // doit se prendre sur le dernier TOKEN émis.
+        let t = tokens("5 !");
+        assert!(t.contains(&Tk::MultiFacto(1)), "« 5 ! » doit rester postfixe, lu {t:?}");
+        assert!(!t.contains(&Tk::SousFacto), "« 5 ! » ne doit pas devenir SousFacto");
+        // Même chose avec plusieurs blancs.
+        let t = tokens("7   !!");
+        assert!(t.contains(&Tk::MultiFacto(2)), "« 7   !! » doit être MultiFacto(2), lu {t:?}");
+    }
+
+    #[test]
+    fn la_multifactorielle_est_un_seul_token_et_non_deux_factorisations() {
+        // Preuve structurelle : le nombre de tokens de « 7!! » est celui de
+        // « 7! » + 1 (le jeton final), pas + 2.
+        let un = tokens("7!").len();
+        let deux = tokens("7!!").len();
+        assert_eq!(un, deux, "« 7!! » doit produire le MÊME nombre de tokens que « 7! »");
+    }
 }

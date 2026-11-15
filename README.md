@@ -326,9 +326,11 @@ $a = tableau(10)         # tableau de 10 cases
 ⋅  ·  ×  ÷  ≤  ≥  ≠  ≈     # variantes Unicode (* ≤ ≥ != ~)
 et  ou  non                # logique (et/ou/non)
 n!   2³  √9                # postfixés : factorielle, puissance, racine
+n!!  n!!!  n!!!!           # MULTIFACTORIELLES (k = nombre de « ! »)
 n#                         # primorielle : produit des premiers ≤ n   (10# → 210)
 n?                         # terminal : somme des factorielles 1!+…+n!   (5? → 154)
 n$                         # super-factorielle : 1!·2!·…·n!   (3$ → 12)
+!n                         # PRÉFIXE : sous-factorielle (dérangements)  (!5 → 44)
 ```
 
 | Opérateur | Effet | Exemple |
@@ -339,6 +341,44 @@ n$                         # super-factorielle : 1!·2!·…·n!   (3$ → 12)
 | `^` | puissance | `2 ^ 10` → `1024` |
 | `≈` | comparaison approchée | `0.1 + 0.2 ≈ 0.3` → `vrai` |
 | `==` `!=` `<` `<=` `>` `>=` | comparaison (nombres et chaînes) | |
+| `n!` | factorielle ordinaire (A000142) | `5!` → `120` |
+| `n!!` | **multifactorielle** d'ordre 2 (A000165/A001147) | `7!!` → `105` |
+| `n!!!` | multifactorielle d'ordre 3 (A007661) | `8!!!` → `80` |
+| `!n` | **sous-factorielle** (dérangements, A000166) | `!5` → `44` |
+
+#### Les multifactorielles ne sont pas des factorielles répétées
+
+`n!!` **n'est pas** `(n!)!`. C'est le produit des entiers ≤ n de même classe
+modulo k, k étant le nombre de `!` :
+
+```
+n!⁽ᵏ⁾ = ∏_{i=0}^{⌊(n−1)/k⌋} (n − i·k)
+```
+
+| Écriture | Calcul | Valeur |
+|---|---|---|
+| `7!!` | 7·5·3·1 | **105** |
+| `8!!` | 8·6·4·2 | **384** |
+| `8!!!` | 8·5·2 | **80** |
+| `9!!!` | 9·6·3 | **162** |
+| `11!!!!` | 11·7·3 | **231** |
+| `(7!)!` | factorielle **du** factoriel | 5040! (16 686 chiffres) |
+
+`0!!` et `(−1)!!` valent 1 (produit vide), comme `0!` = 1.
+Pour une factorielle répétée, écris `(n!)!` **avec les parenthèses**.
+
+#### `!n` : deux significations, une seule retenue
+
+Le même symbole `!n` désigne historiquement deux choses :
+
+- la **sous-factorielle** (dérangements, A000166) : `!0`=1, `!1`=0, `!2`=1,
+  `!3`=2, `!4`=9, `!5`=44 — c'est l'usage retenu par Rose ;
+- la **factorielle gauche de Kurepa** (A003422) : 0, 1, 2, 4, 10, 34, 154…
+  — c'est ce que Rose nomme **`n?`** (terminal), déjà présent avant.
+
+Les deux sont donc accessibles, sans ambiguïté : `!n` = dérangements,
+`n?` = Kurepa. Les fonctions nommées `sous_factorielle(n)` et
+`multifactorielle(n, k)` donnent le même résultat quand k est calculé.
 
 ### Affichage et saisie
 
@@ -436,7 +476,7 @@ formule exacte en LaTeX et une approximation `≈` :
 
 | Domaine | Fonctions |
 |---|---|
-| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `rapide`(`factorial_rapide`) `approx`(`factorial_approx`) `primorielle`(`n#`) `terminal`(`n?`) `super_factorielle`(`n$`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
+| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `rapide`(`factorial_rapide`) `approx`(`factorial_approx`) `multifactorielle`(`n!!`) `sous_factorielle`(`derangement`, `!n`) `primorielle`(`n#`) `terminal`(`n?`) `super_factorielle`(`n$`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
 | Gros nombres | `view(x)` — visionneuse paginée dans le terminal (façon nano) pour les nombres à des millions de chiffres |
 | Exact | `pi(n)` `e(n)` `phi(n)` `racine(n)` `fraction(a,b)` |
 | Types | `type(x)` → chaîne ("entier", "flottant", …) |

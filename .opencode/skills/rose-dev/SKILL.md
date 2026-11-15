@@ -234,17 +234,23 @@ l'utilisateur web)
 | Écriture | Sens | Sortie |
 |---|---|---|
 | `n!` | factorielle exacte (multi-cœur, facteurs premiers) | entier |
+| `n!!` `n!!!` `n!!!!` | **multifactorielle** d'ordre k (k = nb de `!`) : `7!!` → **105** (PAS `(7!)!`) | entier |
+| `!n` | **sous-factorielle** (dérangements, A000166) : `!5` → 44 (≠ Kurepa, qui est `n?`) | entier |
 | `n#` | **primorielle** : produit des premiers ≤ n (`10#` → 210) | entier |
 | `n?` | **terminal** : somme des factorielles 1!+…+n! (`5?` → 154) | entier |
 | `n$` | **super-factorielle** : produit 1!·2!·…·n! (`3$` → 12) | entier |
 | `rapide(n)` / `factorielle_rapide(n)` | factorielle, voie rapide — `1000000!` en ~0,9 s | entier |
 | `approx(n)` | Stirling complet, série `1/12n − 1/360n³ + 1/1260n⁵` | chaîne `{:.6}e{}` |
 | `primorielle(n)` / `terminal(n)` / `super_factorielle(n)` | alias fonctions de `n#` / `n?` / `n$` | entier |
+| `multifactorielle(n, k)` | alias de `n!!` (k=2), `n!!!` (k=3)… quand k est calculé | entier |
+| `sous_factorielle(n)` / `derangement(n)` | alias de `!n` | entier |
 | `view(x)` | visionneuse paginée façon nano (Espace / b / q) | — |
 | `type(x)` | nom du type (`entier`, `rationnel`, …) | chaine |
 
-Les opérateurs analogues `!!` / `!?` sont RETIRÉS (reportés) : `!` reste la
-seule factorielle postfixe. Lexage des nouveaux postfixes (front.rs) :
+⚠ Cette note disait « `!!` / `!?` sont RETIRÉS » : c'est PÉRIMÉ. `!!`,
+`!!!`… sont désormais les multifactorielles, et `!n` en préfixe est la
+sous-factorielle (voir la section « Factorielles étendues » plus bas).
+Lexage des postfixes (front.rs) :
 - `#` est la primorielle s'il suit immédiatement un caractère non-blanc ;
   en début de ligne ou après un blanc il reste le commentaire ;
 - `?` est le terminal SAUF en début d'instruction suivi de `(` à blanc près
@@ -530,6 +536,39 @@ contrôle possible, avec `previsualiser.py`.
 - Ne jamais supposer qu'`AddFontMemResourceEx` a réussi : `kare_disponible()`
   demande à GDI le glyphe réel de « R » ; sinon tout retombe sur Segoe UI
   (au lieu d'un « ROSE » en Segoe sans que personne ne le remarque).
+
+## Factorielles étendues : multifactorielles et sous-factorielle
+
+- **`n!!` n'est PAS `(n!)!`.** C'est la **multifactorielle** d'ordre k (k =
+  nombre de `!`) : `n!⁽ᵏ⁾ = ∏_{i=0}^{⌊(n−1)/k⌋} (n − i·k)`.
+  `7!!` = 7·5·3·1 = **105**, alors que `(7!)!` = 5040! = 16 686 chiffres.
+  Valeurs : `8!!`=384, `8!!!`=80, `9!!!`=162, `11!!!!`=231, `0!!`=`1!!`=1.
+- **Le lexer doit compter les `!` consécutifs en UN token** (`Tk::MultiFacto(k)`).
+  L'ancien code émettait deux `Tk::Bang` et le parser appliquait la
+  factorielle deux fois — c'est exactement le piège de la notation.
+- **`!n` préfixe = SOUS-FACTORIELLE** (dérangements, A000166) :
+  `!0`=1, `!1`=0, `!2`=1, `!3`=2, `!4`=9, `!5`=44. Récurrence
+  `!n = n·!(n−1) + (−1)^n`.
+- ⚠⚠ **`!n` est AMBIGU en mathématiques** : ce symbole désigne aussi la
+  **factorielle gauche de Kurepa** (A003422 : 0, 1, 2, 4, 10, 34, 154…), qui
+  vaut `∑_{k=0}^{n−1} k!`. Rose réserve `!n` aux dérangements et garde
+  `n?` (terminal) pour Kurepa — les deux sont donc accessibles sans
+  ambiguïté. Ne pas « corriger » `!n` en Kurepa : cela casserait `n?`.
+- **La décision postfixe/préfixe se prend sur le DERNIER TOKEN ÉMIS**, jamais
+  sur le caractère précédent. Mesuré : `5 !` (blanc avant `!`) était lu comme
+  préfixe, le `!` attendait un opérande et avalait la ligne suivante
+  (« Attente d'une expression, trouvé '>>' »).
+- `terminal` (`n?`) était typé `Dyn` **même sur un entier** : `f(0?)` était
+  refusé (« Argument de f : ? reçu, entier attendu »). Le type suit
+  maintenant l'opérande : entier → `Entier`, sinon `Dyn`.
+- Fonctions nommées : `multifactorielle(n, k)` et `sous_factorielle(n)` /
+  `derangement(n)` — utiles quand k est calculé.
+- Bench et vérification : `bench/suite/factorielles.rose` (temps + nombre de
+  chiffres, sans imprimer les valeurs) et
+  `bench/suite/verifier_factorielles.rose` (58 comparaisons à des constantes
+  OEIS). ⚠ `n$` explose (∏k! ≈ n!^(n+1)/2) : à N=5000 elle fait 38 millions
+  de chiffres en ~15 s ; à N=20000 le bench dépasse plusieurs minutes. Elle
+  est donc mesurée sur un N séparé, plus petit.
 
 ## Style
 

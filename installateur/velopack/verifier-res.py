@@ -337,11 +337,36 @@ def main():
             "timer à 30 i/s (pas 62)": "SetTimer(h, TIMER_PROGRESSION, 33,",
             # ⚠ Logo jamais agrandi au-delà du PNG natif.
             "logo jamais agrandi (borne 343)": ".min(343);",
+            # ⚠⚠ « SEULEMENT LES BORDURES / EFFET TRANSPARENT ». Le fond doit
+            # être peint AVANT toute décoration (la double-bufferisation ne
+            # copie qu'à la fin : un plantage du tracé détaillé laissait la
+            # fenêtre VIDE).
+            "fond peint avant le tracé détaillé": "remplir(dc_ecran, &zone, FOND);",
+            "tracé détaillé isolé (catch_unwind)": "std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {\n        dessiner_decore",
+            # ⚠⚠ AUCUN appel à `DwmSetWindowAttribute` : demander au DWM
+            # d'arrondir une `WS_POPUP` sans brosse de classe laissait la zone
+            # cliente VIDE. Les coins sont arrondis par notre tracé GDI+.
+            "pas d'arrondi DWM (zone cliente vide)": "let _ = DwmSetWindowAttribute;",
+            "coins arrondis par le tracé (fond)": "if !arrondi_lisse(dc, rc, 12.0, FOND)",
+            "coins bas de la barre d'état arrondis": "if !arrondi_bas(dc, &etat_barre, 12.0, BARRE)",
+            "coin bas-gauche du panneau arrondi": "if !arrondi_bas_gauche(dc, &lateral, 12.0, LATERAL)",
+            # ⚠ Logo en GDI pur : `GdipCreateBitmapFromScan0` sur un tampon
+            # Rust provoquait une double libération (crash de l'installeur).
+            "logo en GDI pur (AlphaBlend)": "AlphaBlend(dc, dx, dy, dw, dh, memoire,",
+            # ⚠ Structure `GdiplusStartupInput` complète (5 champs).
+            "GdiplusStartupInput à 5 champs": "suppress_external_codecs: i32,",
         }
         manquants = [nom for nom, motif in garde_fous.items() if motif not in source]
         assert not manquants, (
             "garde-fous du tracé absents de setup_gui.rs : " + ", ".join(manquants)
             + " — la fenêtre peut s'ouvrir VIDE, clignoter ou être pixélisée")
+        # ⚠ Le bitmap GDI+ sur `scan0` doit avoir DISPARU (double libération).
+        assert "bgra.as_ptr()" not in source, (
+            "le logo repasse par GdipCreateBitmapFromScan0 sur un tampon Rust : "
+            "double libération et crash de l'installeur")
+        # ⚠ Aucun appel RÉEL à DwmSetWindowAttribute (seule la référence subsiste).
+        assert "DwmSetWindowAttribute(hwnd as isize" not in source, (
+            "arrondi DWM rappelé : la zone cliente peut rester vide (fenêtre transparente)")
         # Aucun appel direct de `dessiner` depuis `WM_PAINT` : il doit passer
         # par le `catch_unwind` du gestionnaire.
         assert "WM_PAINT => { dessiner(h); 0 }" not in source, (

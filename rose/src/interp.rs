@@ -1171,6 +1171,16 @@ impl Interp {
                 let z = vers_z(&v);
                 Ok(Valeur::zg(factorielle(&z)))
             }
+            Expr::MultiFactorielle(a, k, _) => {
+                let v = self.eval(a)?;
+                let z = vers_z(&v);
+                Ok(Valeur::zg(multifactorielle(&z, *k)))
+            }
+            Expr::SousFactorielle(a, _) => {
+                let v = self.eval(a)?;
+                let z = vers_z(&v);
+                Ok(Valeur::zg(sous_factorielle(&z)))
+            }
             Expr::Primorielle(a, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
@@ -1796,6 +1806,19 @@ impl Interp {
             "approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "primorielle" => { let z = vers_z(&a[0]); Valeur::zg(primorielle(&z)) }
             "terminal" => terminal(&a[0]),
+            // `multifactorielle(n, k)` : équivalent fonctionnel de `n!!`
+            // (k = 2), `n!!!` (k = 3), etc. Utile quand k est calculé.
+            "multifactorielle" | "multifactoriel" => {
+                let z = vers_z(&a[0]);
+                let kz = vers_z(&a[1]);
+                let k = if kz.fits_i64() { kz.get_i64().clamp(1, 255) as u8 } else { 1 };
+                Valeur::zg(multifactorielle(&z, k))
+            }
+            // `sous_factorielle(n)` : équivalent fonctionnel de `!n`.
+            "sous_factorielle" | "derangement" | "sous_factorial" => {
+                let z = vers_z(&a[0]);
+                Valeur::zg(sous_factorielle(&z))
+            }
             "super_factorielle" => { let z = vers_z(&a[0]); Valeur::zg(super_factorielle(&z)) }
             "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
             "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
@@ -3266,7 +3289,88 @@ pub fn super_factorielle(n: &Gz) -> Gz {
     r
 }
 
-/// n? : terminal (somme des factorielles itérées), polymorphe.
+/// n!!, n!!!, n!!!! … : MULTIFACTORIELLE d'ordre `k`.
+///
+/// `n!^{(k)} = n · (n−k) · (n−2k) · …`, le produit s'arrêtant au dernier
+/// facteur strictement positif :
+///
+///   n!^{(k)} = ∏_{i=0}^{⌊(n−1)/k⌋} (n − i·k)
+///
+/// ⚠⚠ `n!!` n'est **PAS** `(n!)!`. C'est le piège historique de cette
+/// notation : `7!!` vaut 7·5·3·1 = **105**, alors que `(7!)!` = 5040! est un
+/// nombre de 16 686 chiffres. L'ancien lexer émettait deux `Tk::Bang` et le
+/// parser appliquait donc la factorielle deux fois.
+///
+/// Valeurs de référence :
+///   5!! = 5·3·1 = 15          6!! = 6·4·2 = 48
+///   7!! = 7·5·3·1 = 105       8!! = 8·6·4·2 = 384
+///   7!!! = 7·4·1 = 28         8!!! = 8·5·2 = 80
+///   9!!! = 9·6·3 = 162        10!!! = 10·7·4·1 = 280
+///
+/// `0!!` et `(−1)!!` valent 1 (produit vide), comme `0!` = 1.
+/// Pour `k = 1`, on retrouve la factorielle ordinaire.
+pub fn multifactorielle(n: &Gz, k: u8) -> Gz {
+    let k = k.max(1) as i64;
+    if n.sgn() < 0 {
+        // Convention : (−1)!! = 1, et de façon générale les négatifs dont la
+        // valeur absolue est ≤ k donnent un produit vide. Au-delà, la
+        // multifactorielle n'est pas définie pour les entiers négatifs.
+        if k >= 2 && n.get_i64() >= -k {
+            return Gz::de_i64(1);
+        }
+        erreur_runtime("multifactorielle d'un négatif : impossible");
+    }
+    if !n.fits_i64() { erreur_runtime("multifactorielle : n trop grand"); }
+    let nn = n.get_i64();
+    if nn == 0 { return Gz::de_i64(1); }
+    if k == 1 {
+        return factorielle(n);
+    }
+    // Produit en arbre pour rester multi-cœur comme `factorielle`.
+    let facteurs: Vec<num_bigint::BigInt> = (0..)
+        .map(|i| nn - i * k)
+        .take_while(|&v| v > 0)
+        .map(num_bigint::BigInt::from)
+        .collect();
+    if facteurs.is_empty() { return Gz::de_i64(1); }
+    let r = crate::i128x::arbre_produit(facteurs);
+    r
+}
+
+/// `!n` : SOUS-FACTORIELLE — nombre de dérangements d'un ensemble de n
+/// éléments (permutations SANS point fixe), suite A000166.
+///
+///   !0 = 1, !1 = 0, !2 = 1, !3 = 2, !4 = 9, !5 = 44, !6 = 265, !7 = 1854
+///
+/// Récurrence : !n = n·!(n−1) + (−1)^n.
+/// Forme close : !n = n! · ∑_{i=0}^{n} (−1)^i / i!.
+///
+/// ⚠⚠ NE PAS CONFONDRE avec la « factorielle gauche » de Kurepa
+/// (`!n = ∑_{k=0}^{n−1} k!`, A003422 : 0, 1, 2, 4, 10, 34, 154…). Le même
+/// symbole `!n` désigne les deux selon les auteurs. Rose a DÉJÀ `n?` pour
+/// Kurepa (voir `terminal`), donc `!n` est réservé aux dérangements — c'est
+/// l'usage le plus courant en combinatoire (notation de Whitworth, 1877).
+pub fn sous_factorielle(n: &Gz) -> Gz {
+    if n.sgn() < 0 { erreur_runtime("sous-factorielle d'un négatif : impossible"); }
+    if !n.fits_i64() { erreur_runtime("sous-factorielle : n trop grand"); }
+    let nn = n.get_i64();
+    if nn < 0 { erreur_runtime("sous-factorielle d'un négatif : impossible"); }
+    // Récurrence : !n = n·!(n−1) + (−1)^n, avec !0 = 1.
+    let mut d = num_bigint::BigInt::from(1u64);
+    for i in 1..=nn {
+        d *= num_bigint::BigInt::from(i);
+        if i % 2 == 0 {
+            d += 1;
+        } else {
+            d -= 1;
+        }
+    }
+    let r = Gz::neuf();
+    r.set_v(d);
+    r
+}
+
+
 pub fn terminal(v: &Valeur) -> Valeur {
     match v {
         Valeur::Rationnel(q) => {

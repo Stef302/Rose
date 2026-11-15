@@ -1,1 +1,52 @@
-écrit par Rose ⋅ 2026
+42
+0.[3]
+0.1
+chaîne
+vrai
+\left[1, 2, 3 \right]   [1, 2, 3]
+\left[\text{a}, \text{b} \right]   [a, b]
+n \cdot n   49
+14
+14
+3.5
+3
+7 \bmod 3   1
+1024
+8
+3
+5!   120
+0.5
+3 \leq 5 \land 5 \geq 5 \land 5 \neq 4   vrai
+0.1 + 0.2 \approx 0.3   vrai
+100!   93326215443944152681699238856266700490715968264381621468592963895217599993229915608941463976156518286253697920827223758251185210916864000000000000000000000000
+7!!   105
+8!!!   80
+!5   44
+(3!)!   720
+grand
+0
+\sum_{k = 1}^{10} \langle total = total + k\rangle
+55
+\operatorname{fib}(20)   6765
+\operatorname{double}(3.5)   7
+\operatorname{longueur}(t)   11
+t_ {0}   é
+\operatorname{ordre}(\text{é})   233
+\operatorname{caractere}(960)   π
+\operatorname{sous_chaine}(t, 2, 4)   é 
+\operatorname{concatener}(l)   radieux!
+[nom => Bob, age => 30]
+\operatorname{longueur}(tab)   2
+\operatorname{cle_existe}(tab, \text{nom})   vrai
+tab_ {\text{nom}}   Bob
+\operatorname{cles}(tab)   [nom, age]
+\operatorname{valeurs}(tab)   [Bob, 30]
+tab = u   vrai
+\operatorname{supprimer}(tab, \text{age})   vrai
+[nom => Bob]
+piles_ {1}   2
+[1, 2, 3, 4]
+\operatorname{longueur}(piles)   4
+\left[1, 2 \right] = \left[1, 2 \right]   vrai
+\operatorname{lire_texte}(\text{tour\_sortie.txt})   écrit par Rose ⋅ 2026
+\operatorname{pow_c}(2.0, 10.0)   1024

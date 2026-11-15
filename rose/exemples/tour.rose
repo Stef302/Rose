@@ -29,6 +29,10 @@ $s = $s + " et second"        # même type → OK
 >> 3 ≤ 5 et 5 ≥ 5 et 5 ≠ 4    # logique : et ou non (≤ ≥ ≠ ou <= >= !=)
 >> 0.1 + 0.2 ≈ 0.3            # ≈ comparaison approchée
 >> 100 !                      # 158 chiffres exacts
+>> 7!!                        # 105  multifactorielle d'ordre 2 (PAS (7!)!)
+>> 8!!!                       # 80   multifactorielle d'ordre 3
+>> !5                         # 44   sous-factorielle (dérangements)
+>> (3!)!                      # 720  factorielle répétée : parenthèses obligatoires
 
 # 4) Contrôle de flux
 si ($n ≥ 5) { >> "grand" } sinon { >> "petit" }

@@ -56,7 +56,9 @@ fn priorite(e: &Expr) -> u8 {
         // super-factorielle « collent » comme une puissance : `(-a)^{b}`,
         // `(a!)^{b}`, `(a#)^{b}`… doivent rester parenthésés pour que le LaTeX
         // garde exactement le sens de l'AST.
-        Expr::Unaire { .. } | Expr::Factorielle(..) | Expr::Primorielle(..) | Expr::Terminal(..) | Expr::SuperFactorielle(..) => P_PUISSANCE,
+        Expr::Unaire { .. } | Expr::Factorielle(..) | Expr::MultiFactorielle(..)
+        | Expr::SousFactorielle(..) | Expr::Primorielle(..) | Expr::Terminal(..)
+        | Expr::SuperFactorielle(..) => P_PUISSANCE,
         Expr::Litteral { .. }
         | Expr::LitComplexe { .. }
         | Expr::ChaineLit(..)
@@ -138,6 +140,11 @@ fn expr_brut(e: &Expr) -> String {
         Expr::Binaire { op, a, b, .. } => binaire_latex(op, a, b),
         Expr::Unaire { op, a, .. } => unaire_latex(op, a),
         Expr::Factorielle(a, _) => format!("{}!", expr_avec_priorite(a, P_ATOME)),
+        // `n!!`, `n!!!`… : les « ! » se répètent, c'est la multifactorielle.
+        Expr::MultiFactorielle(a, k, _) => format!("{}{}",
+            expr_avec_priorite(a, P_ATOME), "!".repeat(*k as usize)),
+        // `!n` préfixe : sous-factorielle (dérangements).
+        Expr::SousFactorielle(a, _) => format!("!{}", expr_avec_priorite(a, P_ATOME)),
         Expr::Primorielle(a, _) => format!("{}#", expr_avec_priorite(a, P_ATOME)),
         Expr::Terminal(a, _) => format!("{}?", expr_avec_priorite(a, P_ATOME)),
         Expr::SuperFactorielle(a, _) => format!("{}\\$", expr_avec_priorite(a, P_ATOME)),
@@ -687,6 +694,17 @@ mod tests {
             expr_latex(&Expr::Factorielle(Box::new(lit("5")), 1)),
             "5!"
         );
+    }
+
+    #[test]
+    fn multifactorielle_et_sous_factorielle() {
+        // « n!! » = multifactorielle d'ordre 2 : les « ! » se RÉPÈTENT.
+        assert_eq!(expr_latex(&Expr::MultiFactorielle(Box::new(lit("7")), 2, 1)), "7!!");
+        assert_eq!(expr_latex(&Expr::MultiFactorielle(Box::new(lit("8")), 3, 1)), "8!!!");
+        assert_eq!(expr_latex(&Expr::MultiFactorielle(Box::new(lit("11")), 4, 1)), "11!!!!");
+        // « !n » préfixe = sous-factorielle.
+        assert_eq!(expr_latex(&Expr::SousFactorielle(Box::new(lit("5")), 1)), "!5");
+        assert_eq!(expr_latex(&Expr::SousFactorielle(Box::new(var("n")), 1)), "!n");
     }
 
     #[test]

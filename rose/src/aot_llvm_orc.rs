@@ -662,6 +662,8 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
             // ? terminal, $ super-factorielle) n'ont pas encore de code
             // machine dans le chemin ORC : on refuse proprement, sans
             // évaluer l'opérande (l'interpréteur et le JIT les gèrent).
+            Expr::MultiFactorielle(..) => Err("multifactorielle (!!) non implémentée en ORC pour l'instant".to_string()),
+            Expr::SousFactorielle(..) => Err("sous-factorielle (!n) non implémentée en ORC pour l'instant".to_string()),
             Expr::Primorielle(..) => Err("primorielle (#) non implémentée en ORC pour l'instant".to_string()),
             Expr::Terminal(..) => Err("terminal (?) non implémentée en ORC pour l'instant".to_string()),
             Expr::SuperFactorielle(..) => Err("super-factorielle ($) non implémentée en ORC pour l'instant".to_string()),

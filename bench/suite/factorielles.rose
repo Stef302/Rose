@@ -1,0 +1,58 @@
+# Benchmark : notations factorielles étendues de Rose.
+#
+# ⚠ Ce programme N'AFFICHE PAS les valeurs (n! a des centaines de milliers
+# de chiffres) : il imprime le NOMBRE DE CHIFFRES et le TEMPS. Les valeurs
+# exactes sont vérifiées séparément par `verifier_factorielles.rose`, qui les
+# compare à des constantes connues.
+#
+# Couvre :
+#   n!      factorielle ordinaire            (A000142)
+#   n!!     multifactorielle d'ordre 2       (A000165 / A001147)
+#   n!!!    multifactorielle d'ordre 3       (A007661)
+#   n!!!!   multifactorielle d'ordre 4
+#   n#      primorielle                      (A002110)
+#   n?      terminal = factorielle gauche    (A003422)
+#   n$      super-factorielle                (A000178)
+#   !n      sous-factorielle (dérangements)  (A000166)
+#
+# ⚠ « n!! » N'EST PAS « (n!)! » : 7!! = 7·5·3·1 = 105. Le piège est mesuré
+# à part dans `verifier_factorielles.rose`.
+#
+# Usage : ./rose bench/suite/factorielles.rose [N]
+#
+# ⚠ `n$` (super-factorielle) est EXCLUSIF : elle vaut ∏k! ≈ n!^(n+1)/2, donc
+# son coût explose. À N=5000 elle produit 38 millions de chiffres en ~15 s ;
+# à N=20000 le bench dépasse plusieurs minutes. On la mesure donc sur un N
+# SÉPARÉ, plus petit, pour que le bench reste utilisable.
+
+$N = 5000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+$N_SUPER = 1000
+si ($N < 1000) { $N_SUPER = $N }
+
+fn mesurer(nom: chaine, k: entier, n: entier) -> entier {
+  $m0 = millisecondes()
+  $v = 1
+  si (k == 1) { $v = n! }
+  si (k == 2) { $v = n!! }
+  si (k == 3) { $v = n!!! }
+  si (k == 4) { $v = n!!!! }
+  si (k == 5) { $v = n# }
+  si (k == 6) { $v = n? }
+  si (k == 7) { $v = n$ }
+  si (k == 8) { $v = !n }
+  $m1 = millisecondes()
+  >> nom + " : " + chaine($m1 - $m0) + " ms, " + chaine(longueur(chaine($v))) + " chiffres"
+  retour 0
+}
+
+>> "N = " + chaine($N)
+>> mesurer("factorielle      n!", 1, $N)
+>> mesurer("double           n!!", 2, $N)
+>> mesurer("triple           n!!!", 3, $N)
+>> mesurer("quadruple        n!!!!", 4, $N)
+>> mesurer("primorielle      n#", 5, $N)
+>> mesurer("terminal         n?", 6, $N)
+>> mesurer("sous-factorielle !n", 8, $N)
+>> "N = " + chaine($N_SUPER) + " pour la super-factorielle (coût quadratique)"
+>> mesurer("super-factorielle n$", 7, $N_SUPER)

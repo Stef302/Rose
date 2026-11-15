@@ -1,0 +1,110 @@
+# VÉRIFICATION des notations factorielles étendues.
+#
+# Chaque ligne compare la sortie de Rose à une valeur mathématique connue
+# (OEIS). Ce programme ne mesure rien : il PROUVE que les opérateurs sont
+# justes. À exécuter avant tout bench.
+#
+# Usage : ./rose bench/suite/verifier_factorielles.rose
+
+$erreurs = 0
+
+fn verifier(nom: chaine, obtenu: entier, attendu: entier) {
+  si (obtenu == attendu) {
+    >> "✓ " + nom
+  } sinon {
+    >> "✗ " + nom + " : obtenu " + chaine(obtenu) + ", attendu " + chaine(attendu)
+  }
+}
+
+# ── Factorielle ordinaire (A000142) ──────────────────────────────────────
+>> "── n! ──"
+verifier("0!", 0!, 1)
+verifier("1!", 1!, 1)
+verifier("5!", 5!, 120)
+verifier("10!", 10!, 3628800)
+
+# ── Multifactorielle d'ordre 2 (A000165 pair / A001147 impair) ───────────
+# ⚠ LE PIÈGE : 7!! = 105, PAS (7!)! = 5040! (16 686 chiffres).
+>> "── n!! (double) ──"
+verifier("0!!", 0!!, 1)
+verifier("1!!", 1!!, 1)
+verifier("2!!", 2!!, 2)
+verifier("3!!", 3!!, 3)
+verifier("4!!", 4!!, 8)
+verifier("5!!", 5!!, 15)
+verifier("6!!", 6!!, 48)
+verifier("7!!", 7!!, 105)
+verifier("8!!", 8!!, 384)
+verifier("9!!", 9!!, 945)
+verifier("10!!", 10!!, 3840)
+
+# ── Multifactorielle d'ordre 3 (A007661) ────────────────────────────────
+>> "── n!!! (triple) ──"
+verifier("1!!!", 1!!!, 1)
+verifier("2!!!", 2!!!, 2)
+verifier("3!!!", 3!!!, 3)
+verifier("4!!!", 4!!!, 4)
+verifier("5!!!", 5!!!, 10)
+verifier("6!!!", 6!!!, 18)
+verifier("7!!!", 7!!!, 28)
+verifier("8!!!", 8!!!, 80)
+verifier("9!!!", 9!!!, 162)
+verifier("10!!!", 10!!!, 280)
+
+# ── Multifactorielle d'ordre 4 ──────────────────────────────────────────
+>> "── n!!!! (quadruple) ──"
+verifier("5!!!!", 5!!!!, 5)
+verifier("8!!!!", 8!!!!, 8 * 4)
+verifier("11!!!!", 11!!!!, 11 * 7 * 3)
+
+# ── Primorielle (A002110) ───────────────────────────────────────────────
+>> "── n# (primorielle) ──"
+verifier("2#", 2#, 2)
+verifier("3#", 3#, 6)
+verifier("5#", 5#, 30)
+verifier("7#", 7#, 210)
+verifier("10#", 10#, 210)
+verifier("11#", 11#, 2310)
+
+# ── Terminal / factorielle gauche de Kurepa (A003422) ───────────────────
+>> "── n? (terminal) ──"
+verifier("0?", 0?, 1)
+verifier("1?", 1?, 2)
+verifier("2?", 2?, 4)
+verifier("3?", 3?, 10)
+verifier("4?", 4?, 34)
+verifier("5?", 5?, 154)
+
+# ── Super-factorielle (A000178) ─────────────────────────────────────────
+>> "── n$ (super-factorielle) ──"
+verifier("0$", 0$, 1)
+verifier("1$", 1$, 1)
+verifier("2$", 2$, 2)
+verifier("3$", 3$, 12)
+verifier("4$", 4$, 288)
+
+# ── Sous-factorielle / dérangements (A000166) ───────────────────────────
+# ⚠ !n en PRÉFIXE. NE PAS confondre avec la factorielle gauche de Kurepa
+# (A003422), qui est n? en Rose.
+>> "── !n (sous-factorielle) ──"
+verifier("!0", !0, 1)
+verifier("!1", !1, 0)
+verifier("!2", !2, 1)
+verifier("!3", !3, 2)
+verifier("!4", !4, 9)
+verifier("!5", !5, 44)
+verifier("!6", !6, 265)
+verifier("!7", !7, 1854)
+
+# ── Le piège inverse : (n!)! reste possible avec des PARENTHÈSES ────────
+>> "── (n!)! explicite ──"
+verifier("(3!)!", (3!)!, 720)
+verifier("(4!)!", (4!)!, 620448401733239439360000)
+
+# ── Fonctions nommées ───────────────────────────────────────────────────
+>> "── fonctions nommées ──"
+verifier("multifactorielle(10,2)", multifactorielle(10, 2), 3840)
+verifier("multifactorielle(9,3)", multifactorielle(9, 3), 162)
+verifier("sous_factorielle(7)", sous_factorielle(7), 1854)
+
+>> "FIN DE LA VÉRIFICATION"

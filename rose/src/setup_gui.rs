@@ -990,7 +990,75 @@ unsafe fn arrondi_lisse(dc: HDC, r: &RECT, rayon: f32, couleur: u32) -> bool {
     fait
 }
 
-/// Bordure arrondie fine (1 px) : un vrai contour, pas un aplat.
+/// Comme `arrondi_lisse`, mais seuls les DEUX coins du BAS sont arrondis.
+///
+/// Sert à la barre d'état et au panneau latéral : le fond de la fenêtre est
+/// arrondi sur les quatre coins, et une bande pleine largeur (ou le panneau
+/// de gauche) repeignait le bas en carré. Le chemin GDI+ est le même que
+/// `arrondi_lisse` (arcs + segments), restreint aux coins inférieurs.
+unsafe fn arrondi_bas(dc: HDC, r: &RECT, rayon: f32, couleur: u32) -> bool {
+    arrondi_coins(dc, r, rayon, couleur, false, true)
+}
+
+/// Comme `arrondi_lisse`, mais seul le coin BAS-GAUCHE est arrondi.
+unsafe fn arrondi_bas_gauche(dc: HDC, r: &RECT, rayon: f32, couleur: u32) -> bool {
+    arrondi_coins(dc, r, rayon, couleur, true, false)
+}
+
+/// Tracé d'un rectangle à coins arrondis SÉLECTIONNÉS.
+///
+/// `haut` = coins supérieurs arrondis, `bas` = coins inférieurs arrondis.
+/// Rend `false` si GDI+ n'est pas disponible (l'appelant a alors un repli).
+unsafe fn arrondi_coins(dc: HDC, r: &RECT, rayon: f32, couleur: u32,
+                        haut: bool, bas: bool) -> bool {
+    demarrer_gdiplus();
+    if JETON_GDIPLUS == 0 {
+        return false;
+    }
+    if r.right <= r.left || r.bottom <= r.top {
+        return false;
+    }
+    let mut fait = false;
+    avec_gdiplus(dc, |g| {
+        let mut chemin: *mut c_void = std::ptr::null_mut();
+        if GdipCreatePath(FILL_MODE_ALTERNATE, &mut chemin) != 0 || chemin.is_null() {
+            return;
+        }
+        let (x0, y0) = (r.left as f32, r.top as f32);
+        let (x1, y1) = (r.right as f32, r.bottom as f32);
+        let d = rayon * 2.0;
+        // On suit le contour dans le sens horaire, en n'arrondissant que les
+        // coins demandés ; les autres passent par un segment droit.
+        // Coin haut-gauche → coin haut-droit → bas-droit → bas-gauche.
+        GdipAddPathLine(chemin, x0, y0, x1, y0); // côté haut
+        if haut {
+            GdipAddPathArc(chemin, x1 - d, y0, d, d, 270.0, 90.0);
+        }
+        GdipAddPathLine(chemin, x1, y0, x1, y1); // côté droit
+        if bas {
+            GdipAddPathArc(chemin, x1 - d, y1 - d, d, d, 0.0, 90.0);
+        }
+        GdipAddPathLine(chemin, x1, y1, x0, y1); // côté bas
+        if bas {
+            GdipAddPathArc(chemin, x0, y1 - d, d, d, 90.0, 90.0);
+        }
+        GdipAddPathLine(chemin, x0, y1, x0, y0); // côté gauche
+        if haut {
+            GdipAddPathArc(chemin, x0, y0, d, d, 180.0, 90.0);
+        }
+        GdipClosePathFigure(chemin);
+        let mut pinceau: *mut c_void = std::ptr::null_mut();
+        let argb = argb_depuis_colorref(couleur);
+        if GdipCreateSolidFill(argb, &mut pinceau) == 0 && !pinceau.is_null() {
+            if GdipFillPath(g, pinceau, chemin) == 0 {
+                fait = true;
+            }
+            GdipDeleteBrush(pinceau);
+        }
+        GdipDeletePath(chemin);
+    });
+    fait
+}
 /// `RoundRect` avec un pinceau *nul* (HBRUSH null = pas de remplissage)
 /// ne trace que le crayon.
 unsafe fn contour(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
@@ -1234,8 +1302,21 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let echelle = crate::paint::echelle_tracé(w, ht);
     let s = |v: i32| -> i32 { (v as f64 * echelle).round() as i32 };
 
-    // fond général
-    remplir(dc, rc, FOND);
+    // ── fond général, COINS ARRONDIS ──
+    //
+    // Le fond est peint comme un rectangle à coins arrondis (rayon 12 px,
+    // comme les cartes) : c'est CE tracé qui donne à la fenêtre ses coins
+    // arrondis. On ne demande rien au DWM (voir `lancer` : l'attribut
+    // `DWMWA_WINDOW_CORNER_PREFERENCE` laissait la zone cliente VIDE sur une
+    // fenêtre `WS_POPUP` sans brosse de classe — « seulement les bordures »).
+    //
+    // Les quatre coins hors du rayon ne sont pas peints : la fenêtre n'a pas
+    // de brosse de fond (`hbrBackground = NULL`) et `WM_ERASEBKGND` rend 1,
+    // donc ils restent transparents — le bureau y apparaît, comme sur une
+    // fenêtre Windows 11 arrondie.
+    if !arrondi_lisse(dc, rc, 12.0, FOND) {
+        remplir(dc, rc, FOND); // GDI+ indisponible : coins droits
+    }
 
     // ── barre de titre PERSONNALISÉE (aucun cadre Windows) ──
     // La fenêtre est un WS_POPUP : tout est dessiné ici — fond, rose, marque
@@ -1330,7 +1411,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let etat_h = s(30);
     let lateral_w = s(320);
     let lateral = RECT { left: 0, top: s(56), right: lateral_w, bottom: ht - etat_h };
-    remplir(dc, &lateral, LATERAL);
+    // Coin BAS-GAUCHE de la fenêtre : il est arrondi sur le fond ; le panneau
+    // latéral ne doit pas le recouvrir carrément.
+    if !arrondi_bas_gauche(dc, &lateral, 12.0, LATERAL) {
+        remplir(dc, &lateral, LATERAL);
+    }
     let filet = RECT { left: lateral_w - 1, top: s(56), right: lateral_w, bottom: ht - etat_h };
     remplir(dc, &filet, LIGNE_FORTE);
 
@@ -1682,7 +1767,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
 
     // ── barre d'état ──
     let etat_barre = RECT { left: 0, top: ht - etat_h, right: w, bottom: ht };
-    remplir(dc, &etat_barre, BARRE);
+    // Coins BAS de la fenêtre : même rayon que le fond, sinon la barre d'état
+    // repeignait les coins arrondis du fond en carré.
+    if !arrondi_bas(dc, &etat_barre, 12.0, BARRE) {
+        remplir(dc, &etat_barre, BARRE);
+    }
     remplir(dc, &RECT { left: 0, top: etat_barre.top, right: w, bottom: etat_barre.top + 1 }, LIGNE_FORTE);
     cercle(dc, s(16), ht - etat_h / 2, s(5), if etat.empreinte.is_some() { VERT } else { TEXTE_FAIBLE });
     let mut rg = RECT { left: s(28), top: etat_barre.top, right: w / 2 - s(10), bottom: etat_barre.bottom };
@@ -2579,12 +2668,16 @@ pub fn lancer() {
             unsafe extern "system" {
                 fn DwmSetWindowAttribute(hwnd: isize, attr: u32, valeur: *const c_void, taille: u32) -> i32;
             }
-            const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-            const DWMWCP_ROUND: i32 = 2;
-            let pref = DWMWCP_ROUND;
-            DwmSetWindowAttribute(hwnd as isize, DWMWA_WINDOW_CORNER_PREFERENCE,
-                                 &pref as *const i32 as *const c_void,
-                                 std::mem::size_of::<i32>() as u32);
+            // ⚠⚠ SURTOUT PAS `DWMWA_WINDOW_CORNER_PREFERENCE` (33) ICI.
+            // Mesuré sur Windows 11 : demander au DWM d'arrondir une fenêtre
+            // `WS_POPUP` dont la classe n'a PAS de brosse de fond
+            // (`hbrBackground = NULL`) fait peindre à DWM le cadre arrondi
+            // PAR-DESSUS la surface composée ; la zone cliente restait alors
+            // VIDE — l'utilisateur ne voyait que les BORDURES, avec « l'effet
+            // transparent ». Les coins sont donc arrondis par NOTRE tracé
+            // (GDI+ dans `dessiner_decore`, rayon de 12 px) : le résultat est
+            // identique, sans dépendre de la composition DWM.
+            let _ = DwmSetWindowAttribute; // garde le lien, aucun appel
         }
         // ⚠ `SW_SHOWNORMAL` (1) et non `SW_SHOW` (5) : `SW_SHOW` montre la
         // fenêtre dans son état « courant », qui peut être caché ou minimisé
