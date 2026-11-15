@@ -12,6 +12,12 @@ use std::path::PathBuf;
 pub type Journal = Vec<String>;
 
 /// Emplacement d'installation détecté (None = pas d'installation).
+///
+/// ⚠ La seule clé de registre `HKCU\Software\Rose\InstallDir` ne suffit
+/// PAS : une installation faite par un ANCIEN installeur (Tauri, NSIS, MSI…)
+/// n'écrit pas cette clé. On vérifie donc aussi les emplacements connus sur
+/// le disque, sinon l'assistant ne voit pas l'installation et propose
+/// « Installer » au lieu de « Mettre à jour » / « Désinstaller ».
 pub fn installation_existante() -> Option<String> {
     #[cfg(windows)]
     {
@@ -29,6 +35,32 @@ pub fn installation_existante() -> Option<String> {
                         return Some(p);
                     }
                 }
+            }
+        }
+        // Repli 1 : emplacements standard des installateurs successifs.
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+        let candidats = [
+            // Velopack / installeur actuel
+            format!("{local}\\Programs\\Rose"),
+            format!("{home}\\AppData\\Local\\Programs\\Rose"),
+            // ancien installeur Tauri (dossier du bundle)
+            format!("{local}\\Rose"),
+            format!("{local}\\Programs\\Rose-Setup"),
+            // installations « machine »
+            "C:\\Program Files\\Rose".to_string(),
+            "C:\\Program Files (x86)\\Rose".to_string(),
+        ];
+        for p in candidats {
+            if PathBuf::from(&p).join("bin").join("rose.exe").exists() {
+                return Some(p);
+            }
+        }
+        // Repli 2 : l'ancien installeur Tauri posait `rose.exe` à la RACINE
+        // du dossier (pas dans `bin\`).
+        for p in [format!("{local}\\Rose"), format!("{local}\\Programs\\Rose")] {
+            if PathBuf::from(&p).join("rose.exe").exists() {
+                return Some(p);
             }
         }
         None
@@ -86,6 +118,12 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
     for nom in ["rose.exe", "rose", "rose-20", "rose-20.exe", "rose-aot", "rose-aot.exe",
                 "rose-shell", "rose-shell.exe"] {
         let _ = std::fs::remove_file(bindir.join(nom));
+        // ⚠ L'ANCIEN installeur (Tauri) posait `rose.exe` à la RACINE du
+        // dossier d'installation, pas dans `bin\`. Sans ce nettoyage, ce
+        // binaire obsolète reste à côté de la nouvelle installation, le
+        // PATH peut le trouver avant `bin\`, et `rose --version` annonce une
+        // version périmée (mesuré : « 5.12.0 » après une installation neuve).
+        let _ = std::fs::remove_file(PathBuf::from(prefixe).join(nom));
     }
     let source = match source_exe {
         Some(p) => p.to_path_buf(),
@@ -359,6 +397,8 @@ pub fn desinstaller(prefixe: &str) -> Journal {
     for nom in ["rose.exe", "rose", "rose-20", "rose-20.exe", "rose-aot", "rose-aot.exe",
                 "rose-shell", "rose-shell.exe", "rose.ico", "rose_app.ico"] {
         let _ = std::fs::remove_file(bin.join(nom));
+        // Racine du dossier : vestige de l'ancien installeur (Tauri).
+        let _ = std::fs::remove_file(PathBuf::from(prefixe).join(nom));
     }
     let _ = std::fs::remove_dir(&bin);
     let _ = std::fs::remove_dir(prefixe);
@@ -518,13 +558,27 @@ fn extraire_valeur_json(json: &str, cle: &str) -> String {
 
 /// Version du binaire installé (exécuté) — None si absent.
 pub fn version_installee(prefixe: &str) -> Option<String> {
-    let exe = PathBuf::from(prefixe).join("bin").join(if cfg!(windows) { "rose.exe" } else { "rose" });
-    let out = std::process::Command::new(&exe).arg("--version").output().ok()?;
-    let txt = String::from_utf8_lossy(&out.stdout);
-    // « Rose 5.11.0 — … »
-    let apres = txt.strip_prefix("Rose ")?;
-    let v: String = apres.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
-    if v.is_empty() { None } else { Some(v) }
+    let nom = if cfg!(windows) { "rose.exe" } else { "rose" };
+    // `bin\` d'abord (installeur actuel), puis la RACINE (ancien installeur
+    // Tauri, qui posait `rose.exe` directement dans le dossier).
+    let candidats = [
+        PathBuf::from(prefixe).join("bin").join(nom),
+        PathBuf::from(prefixe).join(nom),
+    ];
+    for exe in candidats {
+        let Ok(out) = std::process::Command::new(&exe).arg("--version").output() else {
+            continue;
+        };
+        let txt = String::from_utf8_lossy(&out.stdout);
+        // « Rose 0.1.5 — … » ou « Rose 5.12.0 — … »
+        if let Some(apres) = txt.strip_prefix("Rose ") {
+            let v: String = apres.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 /// SHA-256 d'un fichier local (hexadécimal).

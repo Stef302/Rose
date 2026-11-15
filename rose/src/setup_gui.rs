@@ -216,6 +216,9 @@ const TIMER_PROGRESSION: usize = 1;
 const ICON_BIG: usize = 1;
 const ICON_SMALL: usize = 0;
 const LR_SHARED: u32 = 0x8000;
+// LR_DEFAULTSIZE = 0x0040 : avec cx = cy = 0, Windows prend la taille
+// système par défaut au lieu de renvoyer NULL.
+const LR_DEFAULTSIZE: u32 = 0x0040;
 const RT_GROUP_ICON: *const u16 = 14 as *const u16;
 
 // Couleurs : fond sombre unique, un seul rouge d'action, un seul vert d'état.
@@ -602,14 +605,18 @@ fn boutons(vue: Vue, existant: bool) -> (Option<(Action, &'static str)>, Option<
         Vue::Bienvenue | Vue::Licence => (Some((Action::Annuler, "Annuler")), Some((Action::Avancer, "Suivant"))),
         Vue::Options => (
             if existant { Some((Action::Desinstaller, "Désinstaller")) } else { Some((Action::Annuler, "Annuler")) },
-            Some((Action::Avancer, "Installer")),
+            Some((Action::Avancer, libelle_principal(existant))),
         ),
         Vue::Installation => (Some((Action::Annuler, "Annuler")), None),
         Vue::Termine => (Some((Action::Retour, "Fermer")), Some((Action::Fermer, "Terminer"))),
     }
 }
 
-/// Libellé et couleur du bouton de droite de la vue « Options ».
+/// Libellé du bouton de droite de la vue « Options ».
+///
+/// ⚠ Il était DÉFINI mais jamais utilisé : `boutons` écrivait « Installer »
+/// en dur, même quand une installation existait. L'utilisateur ne pouvait
+/// donc pas savoir s'il installait ou mettait à jour.
 fn libelle_principal(existant: bool) -> &'static str {
     if existant { "Mettre à jour" } else { "Installer" }
 }
@@ -834,11 +841,14 @@ unsafe fn dessiner(h: HWND) {
                   &mut r, DT_WORDBREAK, TEXTE, 10, false, echelle);
             let mut ri = RECT { left: g, top: yc + s(164), right: d, bottom: yc + s(230) };
             texte_echelle(dc, dpi, "Segoe UI",
-                  if etat.existant {
-                      "Une installation existante a été détectée : la suite de l'assistant \
-                       propose de la mettre à jour ou de la désinstaller."
+                  &if etat.existant {
+                      format!(
+                          "Une installation existante a été détectée : version {} dans {}\n\n\
+                           La suite de l'assistant propose de la mettre à jour \
+                           (elle sera réinstallée proprement) ou de la désinstaller.",
+                          etat.version_installee, etat.prefixe)
                   } else {
-                      "Aucune installation détectée : l'assistant proposera le dossier par défaut."
+                      "Aucune installation détectée : l'assistant proposera le dossier par défaut.".to_string()
                   },
                   &mut ri, DT_WORDBREAK, TEXTE_DOUX, 9, false, echelle);
         }
@@ -1067,10 +1077,12 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             1
         }
         WM_SIZE => {
-            // `w` = SIZE_MAXIMIZED (2) ou SIZE_RESTORED (0) : on suit l'état
-            // pour que WM_SIZING et le tracé sachent s'il faut garder le ratio.
-            let etat = &mut *ETAT;
-            etat.maximise = w == 2;
+            // ⚠ NE PAS écrire `etat.maximise = w == 2`. L'agrandissement est
+            // fait nous-mêmes par `SetWindowPos` sur la zone de travail (voir
+            // WM_LBUTTONUP) : la fenêtre reste alors en SIZE_RESTORED (0) et
+            // ce test remettait `maximise` à `false` juste après le clic,
+            // d'où une fenêtre impossible à restaurer et un ratio qui se
+            // réappliquait au redimensionnement.
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
@@ -1174,13 +1186,55 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             match zone_titre(rc.right, rc.bottom, x, y) {
                 3 => { PostQuitMessage(0); return 0; }
                 2 => {
-                    // agrandir / restaurer
+                    // Agrandir / restaurer.
+                    //
+                    // ⚠ `ShowWindow(h, SW_MAXIMIZE)` sur une fenêtre
+                    // `WS_POPUP` SANS `WS_CAPTION` fait DISPARAÎTRE la
+                    // fenêtre (mesuré) : Windows la redimensionne sur la
+                    // zone maximisée du cadre, qui n'existe pas ici, et la
+                    // fenêtre sort de l'écran sans jamais se fermer.
+                    // On redimensionne donc NOUS-MÊMES sur la zone de
+                    // travail du moniteur, ce qui est aussi plus sûr avec
+                    // la barre des tâches.
                     let etat = &mut *ETAT;
                     if etat.maximise {
-                        ShowWindow(h, SW_RESTORE);
+                        // Restaurer : on revient à la taille initiale
+                        // (1120 × 780 à l'échelle du DPI), centrée.
+                        etat.maximise = false;
+                        let facteur = (if etat.dpi > 0 { etat.dpi } else { 96 }) as f64 / 96.0;
+                        let l_w = (1120.0 * facteur).round() as i32;
+                        let l_h = (780.0 * facteur).round() as i32;
+                        let mut ecran = MONITORINFO {
+                            cb_size: std::mem::size_of::<MONITORINFO>() as u32,
+                            rc_moniteur: std::mem::zeroed(),
+                            rc_travail: std::mem::zeroed(),
+                            drapeaux: 0,
+                        };
+                        let (mut x, mut y) = (0, 0);
+                        if GetMonitorInfoW(MonitorFromWindow(h, 2), &mut ecran) != 0 {
+                            let z = ecran.rc_travail;
+                            x = z.left + ((z.right - z.left) - l_w) / 2;
+                            y = z.top + ((z.bottom - z.top) - l_h) / 2;
+                        }
+                        SetWindowPos(h, HWND_TOP, x, y, l_w, l_h,
+                                     SWP_NOZORDER | SWP_FRAMECHANGED);
                     } else {
-                        ShowWindow(h, SW_MAXIMIZE);
+                        // Agrandir : toute la zone de travail, jamais plus.
+                        etat.maximise = true;
+                        let mut ecran = MONITORINFO {
+                            cb_size: std::mem::size_of::<MONITORINFO>() as u32,
+                            rc_moniteur: std::mem::zeroed(),
+                            rc_travail: std::mem::zeroed(),
+                            drapeaux: 0,
+                        };
+                        if GetMonitorInfoW(MonitorFromWindow(h, 2), &mut ecran) != 0 {
+                            let z = ecran.rc_travail;
+                            SetWindowPos(h, HWND_TOP, z.left, z.top,
+                                         z.right - z.left, z.bottom - z.top,
+                                         SWP_NOZORDER | SWP_FRAMECHANGED);
+                        }
                     }
+                    InvalidateRect(h, std::ptr::null(), 0);
                     return 0;
                 }
                 1 => { ShowWindow(h, SW_MINIMIZE); return 0; }
@@ -1293,7 +1347,13 @@ fn lancer_travail() {
         // Source du moteur : `payload\rose.exe` (ou `rose.exe`) à côté de
         // l'installeur, sinon l'exécutable courant (installeur autonome).
         let source = source_moteur();
-        let journal = if existant {
+        // ⚠ Si l'installeur EMBARQUE le moteur, on réinstalle TOUJOURS à
+        // partir de ce payload : c'est la version que l'utilisateur vient de
+        // télécharger. Passer par `mettre_a_jour` (qui interroge le réseau)
+        // pouvait réinstaller une AUTRE version que celle du setup, et
+        // échouait sans réseau. `mettre_a_jour` ne sert que si le payload est
+        // absent (installeur « nu » qui va chercher la dernière version).
+        let journal = if existant && source.is_none() {
             crate::setup_core::mettre_a_jour(&prefixe, false)
         } else {
             crate::setup_core::installer(&prefixe, source.as_deref())
@@ -1416,7 +1476,9 @@ pub fn lancer() {
             phase: 0,
             survol: -1,
             survol_titre: -1,
-            version_installee: env!("CARGO_PKG_VERSION").to_string(),
+            version_installee: crate::setup_core::installation_existante()
+                .and_then(|p| crate::setup_core::version_installee(&p))
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
             dpi: 0,
             icone: std::ptr::null_mut(),
         });
@@ -1438,14 +1500,16 @@ pub fn lancer() {
         // `CreateWindowExW` laissait l'icône par défaut (mesuré : la fenêtre
         // s'ouvrait sans icône Rose).
         //
-        // `LoadImageW` sur `RT_GROUP_ICON` (type 14, id 1) avec une taille
-        // explicite choisit la meilleure image du groupe ; 0×0 + LR_SHARED
-        // marche aussi, mais on demande les tailles natives.
+        // ⚠ `LoadImageW` sur `RT_GROUP_ICON` avec des tailles EXPLICITES et
+        // `LR_SHARED` renvoie NULL sur plusieurs versions de Windows : c'est
+        // pourquoi la fenêtre restait sans icône. La combinaison qui marche
+        // est `cx = cy = 0` + `LR_DEFAULTSIZE | LR_SHARED` : Windows choisit
+        // lui-même la meilleure image du groupe.
         let (grande, petite) = {
             let g = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32,
-                               GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+                               0, 0, LR_DEFAULTSIZE | LR_SHARED);
             let p = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32,
-                               GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+                               0, 0, LR_DEFAULTSIZE | LR_SHARED);
             (g as HICON, p as HICON)
         };
         let classe = hex_w("RoseSetupRose");
