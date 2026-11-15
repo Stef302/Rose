@@ -48,15 +48,17 @@ jobs:
         working-directory: rose
         # ⚠ `--target` explicite OBLIGATOIRE. Sans lui, cargo 1.100 place le
         # harnais de test de la lib dans `target/release/build/rose/<hash>/out/`
-        # quand `[lib]` déclare `crate-type = ["cdylib", "rlib"]` : c'est le
+        # quand `[lib]` déclare `crate-type = ["cdylib", "rlib"]` — c'est le
         # binaire cdylib (une bibliothèque partagée, SANS point d'entrée) qui
-        # est exécuté → SIGSEGV au démarrage, avant le premier test.
+        # est exécuté, d'où SIGSEGV au démarrage, avant le premier test.
         # Avec `--target <host>`, le harnais atterrit dans `deps/` et tourne.
-        # Vérifié en local : `cargo test --lib --target aarch64-unknown-linux-gnu`
-        # → 52 tests verts ; sans `--target` → chemin `build/.../out/`.
+        # Vérifié en local avec `--target aarch64-unknown-linux-gnu` (52 tests
+        # verts) contre le chemin `build/.../out/` sans `--target`.
         env:
           CARGO_PROFILE_RELEASE_STRIP: none
-        run: cargo test --release --target "$(rustc -vV | sed -n 's/^host: //p')"
+        run: |
+          HOST=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --release --target "$HOST"
 
       - name: Smoke test du shell
         working-directory: rose
