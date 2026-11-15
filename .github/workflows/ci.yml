@@ -46,14 +46,17 @@ jobs:
 
       - name: Tester
         working-directory: rose
-        # `strip = true` dans le profil release produit un binaire de test
-        # `static-pie` strippé qui segfaultait au démarrage sur x86_64
-        # (SIGSEGV avant d'afficher le premier test), alors que le même code
-        # passait en local sur aarch64. On désactive le strip POUR LES TESTS
-        # uniquement : le binaire distribué reste strippé.
+        # ⚠ `--target` explicite OBLIGATOIRE. Sans lui, cargo 1.100 place le
+        # harnais de test de la lib dans `target/release/build/rose/<hash>/out/`
+        # quand `[lib]` déclare `crate-type = ["cdylib", "rlib"]` : c'est le
+        # binaire cdylib (une bibliothèque partagée, SANS point d'entrée) qui
+        # est exécuté → SIGSEGV au démarrage, avant le premier test.
+        # Avec `--target <host>`, le harnais atterrit dans `deps/` et tourne.
+        # Vérifié en local : `cargo test --lib --target aarch64-unknown-linux-gnu`
+        # → 52 tests verts ; sans `--target` → chemin `build/.../out/`.
         env:
           CARGO_PROFILE_RELEASE_STRIP: none
-        run: cargo test --release
+        run: cargo test --release --target "$(rustc -vV | sed -n 's/^host: //p')"
 
       - name: Smoke test du shell
         working-directory: rose
