@@ -46,17 +46,18 @@ jobs:
 
       - name: Tester
         working-directory: rose
-        # ⚠ On teste les BINAIRES, pas `--lib`. Avec
-        # `crate-type = ["cdylib", "rlib"]`, cargo exécute le cdylib comme
-        # harnais de test de la lib — une bibliothèque partagée n'a pas de
-        # point d'entrée, d'où SIGSEGV au démarrage (avant le premier test)
-        # sur x86_64. `--target` ne corrige pas : le cdylib y est supporté.
+        # ⚠ Les binaires de test segfaultaient au démarrage sur x86_64
+        # (SIGSEGV avant le premier test). `rose/.cargo/config.toml` force
+        # `-C target-feature=+crt-static` : le harnais devient un `static-pie`
+        # que le chargeur x86_64 ne sait pas démarrer dans cet environnement
+        # (aarch64, lui, fonctionne). On désactive le lien statique POUR LES
+        # TESTS seulement — le binaire distribué reste statique.
         #
-        # `src/main.rs` déclare les mêmes modules que `lib.rs` (même liste de
-        # `mod`, mêmes `#[path]`) : `cargo test --bins` y exécute donc les 52
-        # tests de la lib + ceux des binômes (rose-aot 12, rose-shell 47).
+        # `src/main.rs` déclare les mêmes modules que `lib.rs` : `--bins`
+        # exécute les 52 tests de la lib + ceux des binômes (12 + 47).
         env:
           CARGO_PROFILE_RELEASE_STRIP: none
+          RUSTFLAGS: ""
         run: |
           HOST=$(rustc -vV | sed -n 's/^host: //p')
           cargo test --release --target "$HOST" --bins
