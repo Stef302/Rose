@@ -233,14 +233,20 @@ pub fn braces_balanced(s: &str) -> bool {
 fn aide(c: &Couleur) {
     let t = |s: &str| c.titre(s);
     println!("{}", t("Console Rose — commandes"));
-    println!("  {}            cette aide", c.doux(":help"));
-    println!("  {}            affiche le code accumulé", c.doux(":show"));
-    println!("  {}           vide le buffer", c.doux(":reset"));
-    println!("  {}   charge un fichier et l'exécute", c.doux(":load <fichier>"));
-    println!("  {}   écrit le buffer dans un fichier", c.doux(":save <fichier>"));
-    println!("  {}   type d'une expression", c.doux(":type <expr>"));
-    println!("  {}  formule LaTeX du buffer", c.doux(":latex"));
-    println!("  {}        quitter", c.doux(":quit"));
+    let lignes: [(&str, &str); 8] = [
+        (":help", "cette aide"),
+        (":show", "affiche le code accumulé"),
+        (":reset", "vide le buffer"),
+        (":load <fichier>", "charge un fichier et l'exécute"),
+        (":save <fichier>", "écrit le buffer dans un fichier"),
+        (":type <expr>", "type d'une expression"),
+        (":latex", "formule LaTeX du buffer"),
+        (":quit", "quitter"),
+    ];
+    let largeur = lignes.iter().map(|(cmd, _)| cmd.len()).max().unwrap_or(0);
+    for (cmd, desc) in lignes {
+        println!("  {}  {}", c.doux(&format!("{cmd:<largeur$}")), desc);
+    }
     println!();
     println!("Toute autre ligne est du code Rose, exécuté dans le contexte du buffer.");
     println!("Les définitions sont mémorisées ; les {} s'affichent.", c.doux(">> expr"));
