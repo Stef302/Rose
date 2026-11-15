@@ -1,0 +1,56 @@
+name: CI
+
+# Pourquoi ce workflow : `main` a été poussée pendant des semaines alors que
+# `rose/src/bin/rose-shell.rs` et `rose/src/bin/rose-aot.rs` étaient absents du
+# dépôt (règle `.gitignore` `bin/` non ancrée). Un clone neuf ne compilait pas,
+# et rien ne le signalait : aucun workflow ne compilait le Rust.
+#
+# Ici on compile ET on teste depuis un clone réel, sans cache, pour que les
+# fichiers manquants soient détectés.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Compilation et tests (Linux x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Installer la chaîne Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Vérifier que les sources déclarées existent
+        # `cargo metadata` résout les `[[bin]]` : un chemin absent échoue ici,
+        # avant même la compilation.
+        working-directory: rose
+        run: cargo metadata --no-deps --format-version 1 > /dev/null
+
+      - name: Compiler
+        working-directory: rose
+        run: cargo build --release --all-targets
+
+      - name: Tester
+        working-directory: rose
+        run: cargo test --release
+
+      - name: Smoke test du shell
+        working-directory: rose
+        run: |
+          printf '>> 10!\n>> fibonacci(20)\n:quit\n' | ./target/release/rose-shell
+          printf 'afficher(10!)\n' > /tmp/t.rose
+          ./target/release/rose run /tmp/t.rose
