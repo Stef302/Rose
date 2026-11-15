@@ -140,13 +140,13 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
 
     bas = h - etat_h - s(18)
     d.rounded_rectangle([s(20), bas - s(38), lateral_w - s(20), bas],
-                        radius=s(10), outline=c("LIGNE_FORTE"))
+                        radius=s(10), fill=c("VERT_LIME"))
     texte(d, (s(34), bas - s(19)), "⚿  MODE UTILISATEUR",
-          police(9, True, dpi, e), c("TEXTE_DOUX"), "lm")
+          police(9, True, dpi, e), c("NOIR_DOUX"), "lm")
     d.rounded_rectangle([s(20), bas - s(84), lateral_w - s(20), bas - s(46)],
-                        radius=s(10), outline=c("LIGNE_FORTE"))
+                        radius=s(10), fill=c("VERT_LIME"))
     texte(d, (s(34), bas - s(65)), "{ ROSE } · MIT",
-          police(9, True, dpi, e), c("VERT"), "lm")
+          police(9, True, dpi, e), c("NOIR_DOUX"), "lm")
 
     # ── zone de contenu ──
     g = lateral_w + s(56)
@@ -239,9 +239,11 @@ def dessiner(w, h, vue, etat_installe=False, dpi=96):
     zones = []
     if libelles[0]:
         r = [lateral_w + s(28), by, lateral_w + s(28) + bw, by + bh]
-        d.rounded_rectangle(r, radius=s(10), fill=c("REPOS_SOMBRE"), outline=c("LIGNE"))
+        d.rounded_rectangle(r, radius=s(10), fill=c("REPOS_SOMBRE"))
+        # Sur le vert lime, le texte est SOMBRE (NOIR_DOUX) et GRAS : les
+        # traits fins de Kare en clair étaient illisibles.
         texte(d, ((r[0] + r[2]) // 2, (r[1] + r[3]) // 2), libelles[0].upper(),
-              ImageFont.truetype(str(POLICE_TITRE), s(15)), c("TEXTE"), "mm")
+              ImageFont.truetype(str(POLICE_TITRE), s(18)), c("NOIR_DOUX"), "mm")
         zones.append(r)
     if libelles[1]:
         r = [w - s(28) - bw, by, w - s(28), by + bh]

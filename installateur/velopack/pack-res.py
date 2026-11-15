@@ -51,7 +51,10 @@ from fontTools.ttLib.tables.ttProgram import Program
 RACINE = Path(__file__).resolve().parents[2]
 PNG = RACINE / "installateur" / "velopack" / "rose-installeur.png"
 WOFF2 = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
-ICO = RACINE / "installateur" / "assets" / "setup.ico"
+# Icône de la fenêtre : `rose.ico` (la marque Rose), pas `setup.ico`
+# (la variante « installeur », qui a un autre dessin). C'est l'icône
+# demandée pour la fenêtre, la barre des tâches et Alt+Tab.
+ICO = RACINE / "installateur" / "assets" / "rose.ico"
 MANIFESTE = RACINE / "rose" / "rose-setup.manifest"
 SORTIE = RACINE / "rose" / "rose-setup.res"
 

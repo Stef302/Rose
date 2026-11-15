@@ -187,6 +187,9 @@ const SWP_NOSIZE: u32 = 0x0001;
 const HWND_TOP: HWND = 0 as HWND;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
+// Taille d'une grande icône (barre des tâches / Alt+Tab) : 32 px à 96 DPI.
+const SM_CXICON: i32 = 11;
+const SM_CYICON: i32 = 12;
 const SM_CXSMICON: i32 = 49;
 const SM_CYSMICON: i32 = 50;
 const WS_EX_APPWINDOW: u32 = 0x00040000;
@@ -240,9 +243,15 @@ const TEXTE_DOUX: u32 = couleur(0xA89894);
 const TEXTE_FAIBLE: u32 = couleur(0x6E605C);
 const FOND_PUCE: u32 = couleur(0x2A1A18);
 const BLANC: u32 = couleur(0xFFFFFF);
-// Survols du bouton secondaire (dégradé léger, en RGB).
-const SURVOL_SOMBRE: u32 = couleur(0x2E2422);
-const REPOS_SOMBRE: u32 = couleur(0x1E1715);
+// Boutons secondaires (Annuler, badges du panneau latéral) : VERT LIME.
+// `VERT_LIME` = 0x9ACD32 (yellowgreen/lime-green), lisible sur le fond sombre
+// et cohérent avec l'accent vert de Rose. Le survol éclaircit vers
+// `VERT_LIME_CLAIR`, le repos reste `VERT_LIME`.
+const VERT_LIME: u32 = couleur(0x9ACD32);
+const VERT_LIME_CLAIR: u32 = couleur(0xB8E05A);
+const NOIR_DOUX: u32 = couleur(0x14100F);
+const SURVOL_SOMBRE: u32 = couleur(0xB8E05A);
+const REPOS_SOMBRE: u32 = couleur(0x9ACD32);
 
 /// Les cinq étapes affichées dans le panneau latéral.
 const ETAPES: [&str; 5] = ["Bienvenue", "Licence MIT", "Options", "Installation", "Terminé"];
@@ -504,22 +513,40 @@ unsafe fn remplir(dc: HDC, r: &RECT, couleur: u32) {
 }
 
 unsafe fn arrondi(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
-    let b = CreateSolidBrush(couleur);
-    let ancien = SelectObject(dc, b as *mut c_void);
+    // ⚠ `RoundRect` remplit avec le pinceau sélectionné ET dessine son
+    // contour avec le STYLO sélectionné — qui, s'il n'est pas changé, est le
+    // stylo noir par défaut. Surtout : si `CreateSolidBrush` échoue ou si le
+    // DC garde un pinceau blanc par défaut, la forme sort BLANCHE (mesuré :
+    // les boutons secondaires et les badges du panneau latéral apparaissaient
+    // en blanc sur fond noir).
+    // On fixe donc explicitement le pinceau ET on remplit d'abord la zone,
+    // puis on trace le contour arrondi avec un stylo de la même couleur.
+    let pinceau = CreateSolidBrush(couleur);
+    let stylo = CreatePen(0, 1, couleur);
+    let ancien_pinceau = SelectObject(dc, pinceau as *mut c_void);
+    let ancien_stylo = SelectObject(dc, stylo as *mut c_void);
     RoundRect(dc, r.left, r.top, r.right, r.bottom, rayon, rayon);
-    SelectObject(dc, ancien);
-    DeleteObject(b as *mut c_void);
+    SelectObject(dc, ancien_stylo);
+    SelectObject(dc, ancien_pinceau);
+    DeleteObject(stylo as *mut c_void);
+    DeleteObject(pinceau as *mut c_void);
 }
 
 /// Bordure arrondie fine (1 px) : un vrai contour, pas un aplat.
 /// `RoundRect` avec un pinceau *nul* (HBRUSH null = pas de remplissage)
-/// ne trace que le crayon. L'ancienne version passait un pinceau plein et
-/// peignait toute la zone, ce qui masquait le fond des cartes.
+/// ne trace que le crayon.
 unsafe fn contour(dc: HDC, r: &RECT, rayon: i32, couleur: u32) {
     let stylo = CreatePen(0, 1, couleur);
     let ancien_stylo = SelectObject(dc, stylo as *mut c_void);
-    let ancien_pinceau = SelectObject(dc, (1 as usize) as *mut c_void); // NULL_BRUSH
+    // HOLLOW_BRUSH = 1 : c'est l'objet de stock qui ne remplit RIEN. Le
+    // sélectionner évite que `RoundRect` n'aplatisse la zone avec le pinceau
+    // courant (qui pouvait être BLANC et masquer le fond sombre).
+    let ancien_pinceau = SelectObject(dc, 1 as *mut c_void);
     RoundRect(dc, r.left, r.top, r.right, r.bottom, rayon, rayon);
+    // On restaure TOUJOURS les objets d'origine : laisser HOLLOW_BRUSH
+    // sélectionné dans le DC ferait remplir les formes suivantes avec le
+    // pinceau de stock de la fenêtre (BLANC), d'où les boutons et badges
+    // entièrement blancs sur fond noir.
     SelectObject(dc, ancien_pinceau);
     SelectObject(dc, ancien_stylo);
     DeleteObject(stylo as *mut c_void);
@@ -754,17 +781,17 @@ unsafe fn dessiner(h: HWND) {
         y += s(44);
     }
 
-    // cartes du bas du panneau latéral
+    // cartes du bas du panneau latéral — VERT LIME, comme les boutons
     let bas = ht - etat_h - s(18);
     let carte2 = RECT { left: s(20), top: bas - s(38), right: lateral_w - s(20), bottom: bas };
-    contour(dc, &carte2, 10, LIGNE_FORTE);
+    arrondi(dc, &carte2, 10, VERT_LIME);
     let mut rc2 = RECT { left: s(34), top: carte2.top, right: carte2.right - s(14), bottom: carte2.bottom };
     texte_echelle(dc, dpi, "Segoe UI", if etat.utilisateur { "⚿  MODE UTILISATEUR" } else { "⚿  DROITS REQUIS" },
-          &mut rc2, DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 9, true, echelle);
+          &mut rc2, DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 9, true, echelle);
     let carte1 = RECT { left: s(20), top: carte2.top - s(46), right: lateral_w - s(20), bottom: carte2.top - s(8) };
-    contour(dc, &carte1, 10, LIGNE_FORTE);
+    arrondi(dc, &carte1, 10, VERT_LIME);
     let mut rc1 = RECT { left: s(34), top: carte1.top, right: carte1.right - s(14), bottom: carte1.bottom };
-    texte_echelle(dc, dpi, "Segoe UI", "{ ROSE } · MIT", &mut rc1, DT_VCENTER | DT_SINGLELINE, VERT, 9, true, echelle);
+    texte_echelle(dc, dpi, "Segoe UI", "{ ROSE } · MIT", &mut rc1, DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 9, true, echelle);
 
     // ── zone de contenu ──
     let contenu = RECT { left: lateral_w + 1, top: s(56), right: w, bottom: ht - etat_h - pied_h };
@@ -899,17 +926,23 @@ unsafe fn dessiner(h: HWND) {
     let mut zones = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
     if let Some((action, libelle)) = gauche {
         let r = RECT { left: lateral_w + s(28), top: by, right: lateral_w + s(28) + bw, bottom: by + bh };
-        // Le survol éclaircit le bouton secondaire.
+        // Bouton secondaire en VERT LIME ; le survol éclaircit.
         let fond = if etat.survol == 0 { SURVOL_SOMBRE } else { REPOS_SOMBRE };
         arrondi(dc, &r, 10, fond);
-        contour(dc, &r, 10, if etat.survol == 0 { LIGNE_FORTE } else { LIGNE });
+        contour(dc, &r, 10, fond);
         let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
         // Libellés des boutons en Kare MAJUSCULE (comme `.btn` du site) :
         // Kare dessine ses minuscules comme des capitales, l'uppercase est
         // donc la seule forme cohérente.
+        // ⚠ Sur un fond vert lime CLAIR, le texte doit être SOMBRE : du texte
+        // clair (TEXTE) y serait illisible. `NOIR_DOUX` donne le contraste.
+        let teinte = if action == Action::Desinstaller { ROUGE_SOMBRE } else { NOIR_DOUX };
+        // Kare n'a PAS de graisse grasse : GDI la fabrique en « smearing »,
+        // ce qui rend les glyphes pâteux (mesuré sur l'aperçu). On garde donc
+        // le poids normal et on AGrandit le corps (13 pt) : les traits fins
+        // restent lisibles sur le vert lime clair.
         texte_echelle(dc, dpi, "Kare", &libelle.to_uppercase(), &mut rt,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE,
-              if action == Action::Desinstaller { ROUGE_CLAIR } else { TEXTE }, 11, false, echelle);
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE, teinte, 13, false, echelle);
         zones[0] = r;
         let _ = action;
     }
@@ -1126,11 +1159,18 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             0
         }
         WM_LBUTTONUP => {
+            // ⚠ `lParam` de WM_LBUTTONUP contient DÉJÀ des coordonnées
+            // CLIENT (relatives au contenu de la fenêtre). La première
+            // version les passait à `ScreenToClient`, qui les décalait une
+            // seconde fois du coin de la fenêtre : aucun bouton ne
+            // répondait (Suivant, Annuler et la croix inertes), alors que le
+            // survol fonctionnait (WM_MOUSEMOVE utilise GetCursorPos, donc
+            // des coordonnées écran légitimes).
             let mut rc = std::mem::zeroed::<RECT>();
             GetClientRect(h, &mut rc);
-            let mut pos = POINT { x: (l & 0xffff) as i32, y: ((l >> 16) & 0xffff) as i32 };
-            ScreenToClient(h, &mut pos);
-            let (x, y) = (pos.x, pos.y);
+            let x = (l & 0xffff) as i32;
+            let y = ((l >> 16) & 0xffff) as i32;
+            let (x, y) = (x, y);
             match zone_titre(rc.right, rc.bottom, x, y) {
                 3 => { PostQuitMessage(0); return 0; }
                 2 => {
@@ -1391,6 +1431,23 @@ pub fn lancer() {
         }
 
         let inst = GetModuleHandleW(std::ptr::null());
+        // ── Icône ────────────────────────────────────────────────────────
+        // Chargée AVANT `RegisterClassExW` et posée sur la CLASSE : c'est ce
+        // que Windows utilise pour la barre des tâches, Alt+Tab et le
+        // sélecteur de fenêtres. La poser seulement par `WM_SETICON` après
+        // `CreateWindowExW` laissait l'icône par défaut (mesuré : la fenêtre
+        // s'ouvrait sans icône Rose).
+        //
+        // `LoadImageW` sur `RT_GROUP_ICON` (type 14, id 1) avec une taille
+        // explicite choisit la meilleure image du groupe ; 0×0 + LR_SHARED
+        // marche aussi, mais on demande les tailles natives.
+        let (grande, petite) = {
+            let g = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32,
+                               GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+            let p = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32,
+                               GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+            (g as HICON, p as HICON)
+        };
         let classe = hex_w("RoseSetupRose");
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -1398,22 +1455,28 @@ pub fn lancer() {
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0, cbWndExtra: 0,
             hInstance: inst,
-            hIcon: std::ptr::null_mut(),
+            hIcon: if grande.is_null() { std::ptr::null_mut() } else { grande },
             hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW as *const u16),
             hbrBackground: std::ptr::null_mut(),
             lpszMenuName: std::ptr::null(),
             lpszClassName: classe.as_ptr(),
-            hIconSm: std::ptr::null_mut(),
+            hIconSm: if petite.is_null() { std::ptr::null_mut() } else { petite },
         };
         RegisterClassExW(&wc);
         let titre_w = hex_w(&format!("Rose {} — Programme d'installation", env!("CARGO_PKG_VERSION")));
-        // Fenêtre entièrement personnalisée : AUCUN cadre Windows. On utilise
-        // WS_POPUP + WS_THICKFRAME (bords redimensionnables sans cadre) et on
-        // dessine nous-mêmes la barre de titre, les boutons réduire / agrandir
-        // / fermer et les bords. `WS_CAPTION` ou `WS_OVERLAPPEDWINDOW`
+        // Fenêtre entièrement personnalisée : AUCUN cadre Windows. On dessine
+        // nous-mêmes la barre de titre, les boutons réduire / agrandir /
+        // fermer et les bords. `WS_CAPTION` ou `WS_OVERLAPPEDWINDOW`
         // laissaient la barre Windows 11 (blanche, arrondie, avec le titre du
         // système) au-dessus de la nôtre.
-        let style = WS_POPUP | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+        //
+        // ⚠ PAS de `WS_THICKFRAME` : même avec `WS_POPUP`, ce style fait
+        // dessiner par Windows une bordure non-cliente — la BARRE BLANCHE
+        // visible au-dessus de la fenêtre. Le redimensionnement est assuré
+        // autrement : `WM_NCHITTEST` renvoie HTRIGHT / HTBOTTOM /
+        // HTBOTTOMRIGHT sur les bords, ce qui suffit à obtenir le curseur de
+        // redimensionnement et le glisser natif, sans aucune bordure peinte.
+        let style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
         // WS_EX_TOOLWINDOW : pas d'entrée « barre des tâches » redondante ;
         // WS_EX_APPWINDOW la rétablit, nécessaire pour retrouver une fenêtre
         // maximisée réduite. On garde APPWINDOW pour le comportement attendu.
@@ -1457,20 +1520,14 @@ pub fn lancer() {
             return;
         }
         HWND_FENETRE = hwnd;
-        // Icône de la fenêtre ET de la barre des tâches. Le groupe d'icônes
-        // embarqué est `RT_GROUP_ICON` (type 14) id 1 — PAS `RT_ICON`
-        // (type 1), qui ne contient que les images individuelles. Charger le
-        // type 1 par erreur laissait la fenêtre sans icône (icône Windows
-        // par défaut dans la barre des tâches et dans Alt+Tab).
-        let grande = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32, 0, 0, LR_SHARED);
+        // L'icône est déjà posée sur la CLASSE (voir plus haut). On la
+        // ré-applique sur la FENÊTRE par WM_SETICON : certaines versions de
+        // Windows n'honorent l'icône de classe qu'après création, et cela ne
+        // coûte rien.
         if !grande.is_null() {
-            (*ETAT).icone = grande as HICON;
+            (*ETAT).icone = grande;
             SendMessageW(hwnd, WM_SETICON, ICON_BIG, grande as LPARAM);
         }
-        // petite icône : 16 px pour la barre de titre (sans cadre ici, mais
-        // Windows l'utilise dans la barre des tâches et Alt+Tab)
-        let petite = LoadImageW(inst, 1 as *const u16, RT_GROUP_ICON as u32,
-                                GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
         if !petite.is_null() {
             SendMessageW(hwnd, WM_SETICON, ICON_SMALL, petite as LPARAM);
         }
