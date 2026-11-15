@@ -351,6 +351,22 @@ pub fn moteur_embarque() -> Option<std::path::PathBuf> {
     if octets.len() < 1024 || &octets[0..2] != b"MZ" {
         return None; // ce n'est pas un PE : on refuse
     }
+    // ⚠ Le sous-système doit être CONSOLE (3). Un moteur en GUI (2) est
+    // l'installeur : l'installer sous `rose.exe` provoquerait une boucle de
+    // lancement (fenêtres Windows Terminal en rafale).
+    let pe = u32::from_le_bytes([octets[0x3C], octets[0x3D], octets[0x3E], octets[0x3F]]) as usize;
+    if pe + 0x5A > octets.len() || &octets[pe..pe + 4] != b"PE\0\0" {
+        return None;
+    }
+    let o = pe + 24 + 68;
+    if o + 2 > octets.len() {
+        return None;
+    }
+    let sous_systeme = u16::from_le_bytes([octets[o], octets[o + 1]]);
+    if sous_systeme != 3 {
+        // GUI ou autre : ce n'est pas le moteur console.
+        return None;
+    }
     let dossier = std::env::temp_dir().join("rose-setup-payload");
     let _ = std::fs::create_dir_all(&dossier);
     let chemin = dossier.join(format!("rose-{}.exe", std::process::id()));

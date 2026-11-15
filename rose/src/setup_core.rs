@@ -219,6 +219,19 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
             }
+            // ⚠ VÉRIFICATION APRÈS COPIE : le fichier posé doit être un
+            // moteur CONSOLE. Si c'est une application GUI, c'est
+            // l'installeur : on le supprime aussitôt plutôt que de le
+            // laisser dans `bin\`, d'où il serait relancé en boucle.
+            #[cfg(windows)]
+            if sous_systeme_pe(&dest) == Some(2) {
+                let _ = std::fs::remove_file(&dest);
+                j.push(format!(
+                    "Échec : {} est une application GUI, pas le moteur — \
+                     fichier retiré pour éviter une boucle de lancement",
+                    dest.display()));
+                return j;
+            }
             j.push(format!("✓ {}", dest.display()));
         }
         Err(e) => {

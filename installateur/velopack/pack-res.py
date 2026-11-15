@@ -202,6 +202,18 @@ def main():
             "x86_64-pc-windows-msvc --bin rose`, sinon l'installeur n'aurait "
             "rien à installer et se copierait lui-même sous rose.exe."
         )
+    # ⚠ Le moteur embarqué doit être une application CONSOLE (sous-système 3).
+    # Un binaire GUI (2) est l'installeur : l'embarquer puis l'installer sous
+    # `rose.exe` produit une boucle de fenêtres Windows Terminal.
+    if moteur[:2] != b"MZ":
+        raise SystemExit(f"moteur invalide (pas un PE) : {MOTEUR}")
+    pe_off = struct.unpack("<I", moteur[0x3C:0x40])[0]
+    ss = struct.unpack("<H", moteur[pe_off + 24 + 68:pe_off + 24 + 70])[0]
+    if ss != 3:
+        raise SystemExit(
+            f"le moteur {MOTEUR} est en sous-système {ss} (GUI=2 attendu 3=console) : "
+            "c'est probablement l'installeur, pas le moteur Rose."
+        )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)

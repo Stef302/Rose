@@ -235,7 +235,16 @@ def main():
         "à installer et se copierait lui-même sous rose.exe (boucle)")
     assert moteur[:2] == b"MZ", "le moteur embarqué n'est pas un PE"
     assert len(moteur) > 1_000_000, f"moteur embarqué suspect : {len(moteur)} o"
-    print(f"  moteur embarqué : {len(moteur)} o (PE)")
+    # ⚠ Le moteur doit être une application CONSOLE (sous-système 3). Un
+    # moteur en GUI (2) serait l'installeur : l'installer sous `rose.exe`
+    # provoque une boucle de lancement (fenêtres Terminal en rafale).
+    pe_off = struct.unpack("<I", moteur[0x3C:0x40])[0]
+    assert moteur[pe_off:pe_off + 4] == b"PE\0\0", "en-tête PE du moteur invalide"
+    ss = struct.unpack("<H", moteur[pe_off + 24 + 68:pe_off + 24 + 70])[0]
+    assert ss == 3, (
+        f"le moteur embarqué est en sous-système {ss} (GUI=2), pas 3 (console) : "
+        "il provoquerait une boucle de lancement")
+    print(f"  moteur embarqué : {len(moteur)} o (PE console)")
 
     print("RESSOURCES VALIDES")
 
