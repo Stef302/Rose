@@ -266,11 +266,23 @@ clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
   `pack-res.py` génère un `.rc` temporaire et appelle `llvm-rc`.
 - **`llvm-rc` NE découpe PAS un `.ico`.** Donné à `RT_ICON`, il embarque le
   fichier entier comme UNE icône, sans `RT_GROUP_ICON` : aucune icône
-  utilisable. Il faut extraire chaque taille en `.ico` d'un seul élément
-  (`RT_ICON 1..n`) et écrire le `RT_GROUP_ICON 1` à la main.
-- **Taille d'une icône dans le groupe** = octets de l'image + 22 (l'en-tête
-  de ressource que `llvm-rc` écrit). Mesuré : 16x16 → 1128 + 22 = 1150 o.
-  Mettre `len(donnees)` ou `len(donnees)+40` fait rejeter chaque icône.
+  utilisable. Il faut extraire chaque taille (`RT_ICON 1..n`) et écrire le
+  `RT_GROUP_ICON 1` à la main.
+- **⚠⚠ Une entrée `RT_ICON` doit contenir le DIB BRUT, pas un `.ico`.**
+  Écrire un `.ico` d'un seul élément (en-tête `00 00 01 00` + entrée + image)
+  produit une ressource qui EXISTE — arbre valide, groupe valide, tailles
+  concordantes — mais que Windows ne décode JAMAIS : la fenêtre s'ouvre sans
+  icône, l'Explorateur affiche l'icône générique. C'est le piège qui a fait
+  rater l'icône deux fois alors que tous les contrôles passaient.
+  Donner `e["donnees"]` (les octets de l'image seuls) à `llvm-rc`.
+- **Contrôle qui l'attrape** : chaque `RT_ICON` doit commencer par un
+  BITMAPINFOHEADER (`biSize` 12/40/108/124) ou la signature PNG
+  (`89 50 4E 47`), JAMAIS par `00 00 01 00`. Voir `verifier-res.py`.
+- **Taille d'une icône dans le groupe** = `len(donnees)` quand on donne le
+  DIB brut (le `+22` ne valait que pour l'ancien conteneur `.ico`).
+- **Deux icônes différentes** : `setup.ico` = la ROSE de marque (rouge et
+  verte) pour la fenêtre et le setup ; `rose.ico` = icône de TYPE DE FICHIER
+  (document marqué « .ROSE »). Ne pas les confondre.
 - **`IMAGE_SECTION_HEADER` fait 40 octets** : 8s + 7×I + 2×H + I. Oublier
   `PointerToRelocations` décale tous les champs suivants.
 
