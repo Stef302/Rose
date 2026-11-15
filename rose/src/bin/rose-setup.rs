@@ -60,6 +60,7 @@ fn main() {
     // Mode console : `Rose-win-Setup.exe --console` rejoue l'installation
     // texte de `rose update` (utile en SSH ou dans un script silencieux).
     if std::env::args().any(|a| a == "--console" || a == "-c") {
+        rose::console_win::preparer();
         let prefixe = rose::setup_core::prefixe_defaut();
         let source = source_moteur();
         let journal = rose::setup_core::installer(&prefixe, source.as_deref());
@@ -67,6 +68,7 @@ fn main() {
             println!("{ligne}");
         }
         let echec = journal.iter().any(|l| l.starts_with("Échec"));
+        rose::console_win::attendre_fermeture();
         std::process::exit(if echec { 1 } else { 0 });
     }
     // La fenêtre Win32 n'existe que sous Windows (setup_gui est `#[cfg(windows)]`) :

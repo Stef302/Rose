@@ -47,6 +47,10 @@ pub mod inflate;
 /// Décodeur PNG minimal (RGBA 8 bits) — testable sous toutes les cibles.
 pub mod png;
 
+/// Spécificités Windows de la console : icône de la fenêtre, attente avant
+/// fermeture quand la console a été ouverte par un double-clic.
+pub mod console_win;
+
 /// Console interactive (REPL) — partagée par `rose console` et `rose-shell`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod repl;

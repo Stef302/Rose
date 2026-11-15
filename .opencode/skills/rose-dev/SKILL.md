@@ -349,6 +349,28 @@ clone QUE le pointeur — utiliser `clone_val()` sinon double-free/segfault.
 - Se tromper donnait un document dans le menu des onglets de Windows
   Terminal (mesuré).
 
+## Icônes : TROIS usages, trois fichiers
+
+- `rose.ico` = icône de TYPE DE FICHIER (document « .ROSE ») → association
+  `Rose.File\DefaultIcon`, et `SHChangeNotify(SHCNE_ASSOCCHANGED)` pour que
+  l'Explorateur relise le cache.
+- `rose_app.ico` = la ROSE de marque → profil Windows Terminal, barre des
+  tâches, raccourcis.
+- `rose.exe` embarque la ROSE DE MARQUE (`rose.rc` : `1 ICON "setup.ico"`),
+  parce que c'est son icône dans l'Explorateur, dans la barre des tâches et
+  — surtout — sur la FENÊTRE DE CONSOLE qui s'ouvre au double-clic sur un
+  `.rose`. Avant, c'était le document : la console affichait un document.
+
+## Console ouverte par double-clic : icône et attente
+
+- `rose/src/console_win.rs` :
+  - `preparer()` pose le titre (« Rose 0.1.5 ») et l'icône de la fenêtre via
+    `SetConsoleWindow` + `WM_SETICON` (le groupe embarqué dans `rose.exe`) ;
+  - `attendre_fermeture()` attend une frappe quand la console n'appartient
+    qu'à nous (`GetConsoleProcessList` renvoie 1 seul PID). Sans ça, la
+    fenêtre se fermait avant qu'on ait pu lire la sortie.
+- `ROSE_NO_PAUSE=1` désactive l'attente (scripts, CI).
+
 ## GDI+ : ATTENTION à l'ordre des canaux
 
 - `COLORREF` GDI = `0x00BBGGRR` ; `ARGB` GDI+ = `0xAARRGGBB`. Passer la

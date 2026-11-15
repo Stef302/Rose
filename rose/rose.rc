@@ -1,1 +1,13 @@
-1 ICON "rose.ico"
+// Ressources de l'exécutable `rose.exe`.
+//
+// RT_ICON 1..n + RT_GROUP_ICON 1 : `setup.ico`, la ROSE DE MARQUE.
+//
+// C'est l'icône de `rose.exe` lui-même : dans l'Explorateur, dans la barre
+// des tâches, dans Alt+Tab et — surtout — sur la fenêtre de CONSOLE qui
+// s'ouvre quand on double-clique un fichier `.rose` (le fichier garde pour
+// lui `rose.ico`, l'icône de TYPE DE FICHIER, posée par l'association).
+//
+// Ancien contenu : `rose.ico` (un document marqué « .ROSE »), qui
+// affichait un document à la place de la rose.
+
+1 ICON "setup.ico"

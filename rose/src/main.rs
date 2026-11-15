@@ -23,6 +23,7 @@ mod setup_core;
 mod velopack;
 mod inflate;
 mod png;
+mod console_win;
 mod setup_gui;
 #[cfg(feature = "llvm")]
 mod aot_llvm_orc;
@@ -132,6 +133,10 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
 
 fn main() {
     let _t_start = std::time::Instant::now();
+    // Titre et icône de la fenêtre de console (Windows). Doit être fait
+    // AVANT toute écriture : le double-clic sur un `.rose` ouvre cette
+    // fenêtre, et elle doit porter la rose de marque.
+    console_win::preparer();
     // Hook de panic silencieux pour les erreurs Rose récupérables (ROSE_ERR:),
     // afin d'éviter le bruit « thread panicked » sur stderr. Les vrais bugs
     // (panics non ROSE_ERR) sont toujours affichés.
@@ -300,6 +305,15 @@ fn main() {
     }
     if std::env::var("ROSE_TIMING").is_ok() {
         eprintln!("TIMING-MAIN pret={:?} post_spawn={:?}", _t_pret, _t_post);
+    }
+    // ⚠ La fenêtre de console ouverte par un DOUBLE-CLIC sur un `.rose` se
+    // ferme avec le programme : l'utilisateur n'a pas le temps de lire la
+    // sortie (« la fenêtre apparaît et disparaît »). On attend une frappe
+    // quand la console n'appartient qu'à nous.
+    // En mode REPL, c'est le REPL qui attend (à sa sortie) : on ne fait pas
+    // attendre deux fois.
+    if !console_apres {
+        console_win::attendre_fermeture();
     }
     std::process::exit(rc);
 }
