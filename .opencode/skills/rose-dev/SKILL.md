@@ -673,6 +673,52 @@ La feature `llvm` ne compile pas sur cette machine
    Le code diffuse `WM_SETTINGCHANGE` ; pour les shells déjà ouverts il faut
    relancer la session ou `set PATH=%PATH%;<bin>`.
 
+### FFT de Fermat — MESURÉE PUIS REJETÉE (16/11)
+
+⚠⚠⚠ GMP bat notre NTT parce que **ses papillons n'ont AUCUNE
+multiplication modulaire** : il travaille modulo 2^64+1, où 2^64 ≡ −1,
+donc multiplier par 2^k est une ROTATION (décalage + soustraction).
+
+**LE GAIN ARITHMÉTIQUE EST RÉEL** (mesuré) :
+
+| Opération | Coût |
+|---|---|
+| Montgomery (1 multiplication modulaire) | 1,86 ns |
+| Fermat u64 : (add, rot, sub) | 1,74 ns pour 3 op → **0,58 ns/op** |
+
+Soit **3,2× plus rapide par opération**.
+
+**LES FORMULES EXACTES** (vérifiées sur 300 000 opérations, en u64 pur) :
+
+    fadd : (s, d) = a + b ; si d → s − 1   (car 2^64 ≡ −1)
+    fsub : (d, e) = a − b ; si e → d + 1   (car il faut ajouter F = 2^64+1)
+    frot : bas = a << k ; haut = a >> (64−k) ;
+           (d, e) = bas − haut ; si e → d + 1
+
+⚠ **LA REPRÉSENTATION EST AMBIGUË SUR DEUX RÉSIDUS** :
+  • le résidu F ≡ 0 s'écrit 0 (indistinguable de zéro) ;
+  • le résidu F−1 = 2^64 ≡ −1 n'a AUCUN représentant en u64.
+Acceptable pour la convolution (les coefficients restent ≪ F).
+
+⚠⚠⚠ **MAIS LA FFT EST IMPOSSIBLE — ET C'EST RÉDHIBITOIRE** :
+
+    2^64 + 1 = 641 · 6700417     ← n'est PAS premier
+
+Ce n'est donc pas un corps. L'exposant du groupe multiplicatif est
+λ = lcm(640, 6700416) = 33 502 080, dont la **2-adicité n'est que 7**.
+Il n'existe donc **aucune racine d'ordre 2^m pour m > 7** dans
+Z/(2^64+1). Vérifié : g^(2^64) ≠ 1 pour g = 3, 5, 7, 11, 13, 17, 19, 23.
+
+⚠ GMP ne fait PAS une FFT de longueur 2^m sur 2^64+1 : il fait de la
+**multiplication par BLOCS** (Schönhage-Strassen simplifié), où les
+twiddles sont des rotations appliquées à des blocs de 64 bits. C'est un
+algorithme MULTI-DIMENSIONNEL, pas une NTT de longueur 2^m : le
+réimplanter demande de repenser toute la structure.
+
+**CONCLUSION** : ne pas retenter une « FFT de Fermat » dans notre
+architecture de NTT de longueur 2^m. Le gain arithmétique existe mais la
+structure ne s'y prête pas.
+
 ### Ce qui a été essayé et ABANDONNÉ (ne pas retenter sans preuve)
 
 - **RÉDUCTION DE BARRETT** : essayée pour remplacer `u128 % u64` dans la NTT.
