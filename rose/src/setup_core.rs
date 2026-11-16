@@ -484,20 +484,39 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
             t
         };
         let nouveau_bin = normaliser(&bindir.display().to_string());
-        // Dossiers Rose CONNUS à retirer (anciennes installations).
-        // ⚠ On compare le chemin COMPLET, pas un sous-chemin : `\bin` est
-        // conservé, `\rose` seul est retiré.
+        // Dossiers Rose OBSOLÈTES à retirer.
+        //
+        // ⚠⚠⚠ DEUXIÈME BUG MESURÉ ICI (après correction du filtre) : la
+        // règle « avant == rose » retirait AUSSI `C:\Program Files\Rose\bin`
+        // — un dossier Rose LÉGITIME — dès qu'on installait ailleurs. Elle
+        // était trop agressive : le NOM ne dit rien de la VALIDITÉ.
+        //
+        // La bonne règle : on ne retire un segment que s'il est le dossier
+        // courant (remplacé par le nouveau) OU s'il désigne un dossier
+        // Rose qui N'EXISTE PLUS (ou qui n'a plus de `rose.exe`). Un
+        // dossier Rose vivant est CONSERVÉ — l'utilisateur peut avoir
+        // plusieurs versions installées.
+        //
+        // ⚠ On garde aussi une règle de NOM pour les chemins qui ne sont
+        // pas des chemins locaux valides (variables `%LOCALAPPDATA%\Rose`,
+        // chemins inexistants sous Linux) : on les retire seulement si le
+        // chemin n'existe pas ET finit par « rose » ou « rose\bin ».
         let est_rose = |seg: &str| -> bool {
             let n = normaliser(seg);
             if n.is_empty() { return false; }
-            // Le dossier d'installation courant ou un ancien.
+            // Le dossier courant est TOUJOURS remplacé par le nouveau.
             if n == nouveau_bin { return true; }
-            // Un dossier Rose obsolète : se termine par « \rose » ou
-            // « \rose\bin » ET contient « rose » comme dernier élément.
             let dernier = n.rsplit('\\').next().unwrap_or("");
             let avant = n.rsplit('\\').nth(1).unwrap_or("");
-            // ex. `...\local\rose\bin` → avant = « rose »
-            dernier == "rose" || avant == "rose"
+            let nomme_rose = dernier == "rose" || avant == "rose";
+            if !nomme_rose { return false; }
+            // ⚠ Dossier Rose VIVANT : on le conserve.
+            let p = std::path::Path::new(seg.trim());
+            if p.join("rose.exe").exists() || p.join("rose").exists() {
+                return false;
+            }
+            // Dossier Rose mort (supprimé) : on le retire.
+            true
         };
         let mut segments: Vec<String> = ancien.split(';')
             .map(|s| s.trim().to_string())
@@ -1148,7 +1167,14 @@ mod tests {
             if n == nouveau_bin { return true; }
             let dernier = n.rsplit('\\').next().unwrap_or("");
             let avant = n.rsplit('\\').nth(1).unwrap_or("");
-            dernier == "rose" || avant == "rose"
+            let nomme_rose = dernier == "rose" || avant == "rose";
+            if !nomme_rose { return false; }
+            // Dossier Rose VIVANT → conservé.
+            let p = std::path::Path::new(seg.trim());
+            if p.join("rose.exe").exists() || p.join("rose").exists() {
+                return false;
+            }
+            true
         };
         // ⚠⚠ LE BUG : l'ancien filtre `contains("\\rose")` supprimait le
         // BON dossier (…\Rose\bin contient « \rose »). Le nouveau filtre
@@ -1162,6 +1188,45 @@ mod tests {
         // Casse et séparateurs mélangés.
         assert!(est_rose("c:/users/x/appdata/local/rose"));
         assert!(!est_rose("C:\\tools\\rosetta"));
+    }
+
+    /// ⚠⚠⚠ BUG MESURÉ : la règle « avant == rose » retirait un dossier Rose
+    /// LÉGITIME (`C:\Program Files\Rose\bin`) dès qu'on installait ailleurs.
+    /// Un dossier Rose VIVANT (il contient `rose.exe`) doit être CONSERVÉ.
+    #[test]
+    fn path_garde_un_dossier_rose_vivant() {
+        let tmp = std::env::temp_dir().join("rose-test-path-vivant");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let vivant = tmp.join("Rose").join("bin");
+        std::fs::create_dir_all(&vivant).unwrap();
+        // Un vrai exécutable factice : la règle regarde son EXISTENCE.
+        std::fs::write(vivant.join("rose.exe"), b"MZ").unwrap();
+
+        let normaliser = |s: &str| -> String {
+            s.trim().replace('/', "\\").replace("\\\\", "\\")
+                .trim_end_matches('\\').to_lowercase()
+        };
+        let nouveau_bin = normaliser("/autre/Rose/bin");
+        let est_rose = |seg: &str| -> bool {
+            let n = normaliser(seg);
+            if n.is_empty() { return false; }
+            if n == nouveau_bin { return true; }
+            let dernier = n.rsplit('\\').next().unwrap_or("");
+            let avant = n.rsplit('\\').nth(1).unwrap_or("");
+            let nomme_rose = dernier == "rose" || avant == "rose";
+            if !nomme_rose { return false; }
+            let p = std::path::Path::new(seg.trim());
+            if p.join("rose.exe").exists() || p.join("rose").exists() {
+                return false;
+            }
+            true
+        };
+        let v = vivant.display().to_string();
+        assert!(!est_rose(&v), "un dossier Rose vivant doit être GARDÉ : {v}");
+        // Un dossier Rose qui n'existe pas est retiré.
+        let mort = tmp.join("Ancien").join("Rose").display().to_string();
+        assert!(est_rose(&mort), "un dossier Rose mort doit être retiré : {mort}");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
