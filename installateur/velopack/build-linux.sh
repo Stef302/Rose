@@ -71,6 +71,11 @@ R="$RACINE/rose/target/$TARGET/release"
 # qu'il pose et son payload (rose.exe à côté de l'installeur, lu par
 # setup_gui pour afficher le SHA-256 et par setup_core pour la copie).
 STAGE="$RACINE/installateur/velopack/stage"
+# ⚠⚠⚠ ON REPART D'UN DOSSIER PROPRE. Sans ce nettoyage, des fichiers d'un
+# build PRÉCÉDENT restaient dans `payload/` : mesuré, le paquet 0.1.5
+# contenait encore `payload/rose-aot.exe` (432 Ko, le stub mort retiré du
+# script mais resté sur le disque), et il aurait été livré à l'utilisateur.
+rm -rf "$STAGE"
 mkdir -p "$STAGE/payload"
 cp "$R/rose-setup.exe" "$STAGE/Rose-win-Setup.exe"
 cp "$R/rose.exe" "$STAGE/rose.exe"
