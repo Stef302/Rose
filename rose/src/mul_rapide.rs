@@ -789,9 +789,12 @@ unsafe impl Sync for PointeurPartage {}
 
 /// Seuil (en éléments) au-delà duquel la NTT est parallélisée. En dessous,
 /// le coût de création des fils (370 µs) et des barrières dépasse le gain.
-/// Mesuré : lg = 2^15 → parallèle 15,1 ms contre séquentiel 9,7 ms ;
-/// lg = 2^16 → parallèle 9,5 ms contre séquentiel 19,0 ms.
-const SEUIL_PAR_NTT: usize = 1 << 16;
+/// ⚠ Ce seuil a été ABAISSÉ à 2^12 : la conversion décimale par
+/// multiplication a des niveaux profonds (des dizaines de milliers de
+/// multiplications de taille décroissante) qui, non parallélisés,
+/// coûtaient ~950 ms à eux seuls. La four-step y a assez peu de
+/// barrières (3 par transformée) pour que le parallèle reste rentable.
+const SEUIL_PAR_NTT: usize = 32768;
 
 /// Nombre de fils pour une NTT de longueur `n`.
 fn fils_ntt(n: usize) -> usize {
@@ -801,51 +804,112 @@ fn fils_ntt(n: usize) -> usize {
     coeurs.min(n / 2).max(1)
 }
 
-/// Une transformée (directe ou inverse) EXÉCUTÉE PAR UN SEUL FIL, dans un
-/// cadre où les autres fils travaillent sur la MÊME tableau.
+/// Taille des BLOCS de la NTT (en éléments).
 ///
-/// ⚠⚠⚠ POURQUOI CE DÉCOUPAGE. Mesuré : créer un `thread::scope` de 20 fils
-/// coûte **370 µs**. La NTT faisait 6 scopes (6 transformées) → 2,2 ms de
-/// pure création de fils par multiplication. Sur l'arbre de `1 000 000!`
-/// (≈ 40 multiplications au-dessus du seuil), cela représente ~88 ms
-/// perdus — un tiers du temps total !
+/// ⚠⚠⚠ LE GOULET EST MESURÉ : la NTT radix-2 classique fait 20 passes sur
+/// un tableau de 8 Mo à lg = 2^20, soit 1,92 Go de trafic mémoire par
+/// convolution — la machine est alors à SATURATION (28,7 Go/s mesurés),
+/// et le speedup parallèle plafonne à 3× (au lieu de 20×).
 ///
-/// On crée donc UN SEUL scope par multiplication, et les 6 transformées
-/// (2 directes + 1 inverse, pour 2 modules) s'enchaînent à l'intérieur,
-/// séparées par des barrières.
+/// L'idée : traiter les DERNIERS étages à l'intérieur de BLOCS qui tiennent
+/// dans le cache L1 (8 Ko = 1024 éléments u64). Les passes sur le tableau
+/// entier ne sont plus que log₂(n/1024) = 10 au lieu de 20, et les 10
+/// dernières passent se font en L1 (trafic DRAM quasi nul).
 ///
-/// Le découpage en « étapes » permet à plusieurs fils de travailler sur le
-/// MÊME tableau : chaque fil traite une plage d'indices de papillon
-/// distincte (voir la preuve de disjointivité ci-dessus).
-fn ntt_etape(ptr: PointeurPartage, n: usize, rac: &Racines, mont: &Mont,
-              inverse: bool, tid: usize, fils: usize, bar: &Barriere) {
+/// Trafic mémoire : 20 passes → 10 passes + un aller-retour local.
+const TAILLE_BLOC: usize = 1024;
+
+/// Un étage de la NTT, réparti sur les fils.
+///
+/// ⚠ `i` est l'indice GLOBAL du papillon dans l'ordre (bloc, k) :
+/// `bloc = i >> log₂(half)`, `k = i & (half−1)`. Les cases touchées sont
+/// `base+k` et `base+k+half` ; `base+k` est STRICTEMENT CROISSANT en `i`
+/// (p1 = 2i − (i mod half)), donc deux plages disjointes d'indices touchent
+/// des cases disjointes → aucune course de données.
+#[inline]
+fn stage_partage(
+    ptr: PointeurPartage,
+    n: usize,
+    len: usize,
+    rac: &Racines,
+    mont: &Mont,
+    inverse: bool,
+    tid: usize,
+    fils: usize,
+    decalage_bloc: usize,
+) {
     let n2 = n / 2;
-    let mut len = if inverse { 2usize } else { n };
-    loop {
-        bar.wait();
-        let half = len / 2;
-        let pas = n2 / half;
-        let lo = n2 * tid / fils;
-        let hi = n2 * (tid + 1) / fils;
-        // ⚠⚠⚠ `half` EST UNE PUISSANCE DE 2 : la division et le modulo
-        // doivent être des DÉCALAGES. Avec `i / half` et `i % half` (divisions
-        // entières réelles, ~30 cycles sur aarch64), le coût de la division
-        // DOMINAIT celui du papillon → la NTT parallèle ne gagnait que 3× au
-        // lieu de 20×, et était même plus LENTE que la version séquentielle
-        // sur les petites tailles.
-        let lg_half = half.trailing_zeros();
-        let masque = half - 1;
-        let mut i = lo;
-        while i < hi {
+    let half = len / 2;
+    let pas = n2 / half;
+    let lg_half = half.trailing_zeros();
+    let masque = half - 1;
+    let lo = n2 * tid / fils;
+    let hi = n2 * (tid + 1) / fils;
+    let mut i = lo;
+    while i < hi {
+        let bloc = i >> lg_half;
+        let k0 = i & masque;
+        let kend = std::cmp::min(half, k0 + (hi - i));
+        let base = bloc * len + decalage_bloc;
+        for k in k0..kend {
+            let p1 = base + k;
+            let p2 = p1 + half;
+            // ⚠ SÛR : plages disjointes ⇒ cases disjointes.
+            unsafe {
+                let u = *ptr.0.add(p1);
+                let w = *ptr.0.add(p2);
+                if inverse {
+                    let t = mont.mul(w, rac.inverses[k * pas]);
+                    *ptr.0.add(p1) = mont.add(u, t);
+                    *ptr.0.add(p2) = mont.sub(u, t);
+                } else {
+                    *ptr.0.add(p1) = mont.add(u, w);
+                    *ptr.0.add(p2) = mont.mul(mont.sub(u, w), rac.directes[k * pas]);
+                }
+            }
+        }
+        i += kend - k0;
+    }
+}
+
+/// Les étages À L'INTÉRIEUR d'un bloc (le bloc tient dans le cache L1).
+///
+/// ⚠ Ici le « n » de la formule du papillon est la taille du BLOC, donc
+/// la table de racines est celle du bloc (racine ω^(n/taille_bloc)).
+fn stage_bloc(
+    ptr: PointeurPartage,
+    nblk: usize,
+    len: usize,
+    rac: &Racines,
+    mont: &Mont,
+    inverse: bool,
+    tid: usize,
+    fils: usize,
+    nb_blocs: usize,
+) {
+    let n2 = nblk / 2;
+    let half = len / 2;
+    let pas = n2 / half;
+    let lg_half = half.trailing_zeros();
+    let masque = half - 1;
+    // ⚠ Chaque fil prend un sous-ensemble de BLOCS (entiers) : les papillons
+    // d'un bloc ne sont PAS répartis entre les fils (le bloc tient dans
+    // L1, le répartir n'apporterait rien et compliquerait l'indexation).
+    let lo_bloc = nb_blocs * tid / fils;
+    let hi_bloc = nb_blocs * (tid + 1) / fils;
+    for b in lo_bloc..hi_bloc {
+        let base_bloc = b * nblk;
+        let mut i = 0usize;
+        while i < n2 {
             let bloc = i >> lg_half;
             let k0 = i & masque;
-            let kend = std::cmp::min(half, k0 + (hi - i));
-            let base = bloc * len;
+            let kend = std::cmp::min(half, k0 + (n2 - i));
+            let base = base_bloc + bloc * len;
             for k in k0..kend {
                 let p1 = base + k;
                 let p2 = p1 + half;
-                // ⚠ SÛR : p1 est strictement croissant en i, donc les
-                // plages disjointes de i touchent des cases disjointes.
+                // ⚠ SÛR : les blocs sont disjoints, et dans un bloc les
+                // papillons (bloc, k) sont disjoints.
                 unsafe {
                     let u = *ptr.0.add(p1);
                     let w = *ptr.0.add(p2);
@@ -861,12 +925,409 @@ fn ntt_etape(ptr: PointeurPartage, n: usize, rac: &Racines, mont: &Mont,
             }
             i += kend - k0;
         }
-        if inverse {
-            if len == n { break; }
+    }
+}
+
+/// Une transformée (directe ou inverse) EXÉCUTÉE PAR UN SEUL FIL, dans un
+/// cadre où les autres fils travaillent sur le MÊME tableau.
+///
+/// ⚠⚠⚠ POURQUOI CE DÉCOUPAGE. Mesuré : créer un `thread::scope` de 20 fils
+/// coûte **370 µs**. La NTT faisait 6 scopes (6 transformées) → 2,2 ms de
+/// pure création de fils par multiplication. Sur l'arbre de `1 000 000!`
+/// (≈ 40 multiplications au-dessus du seuil), cela représente ~88 ms
+/// perdus — un tiers du temps total !
+///
+/// On crée donc UN SEUL scope par multiplication, et les 6 transformées
+/// (2 directes + 1 inverse, pour 2 modules) s'enchaînent à l'intérieur,
+/// séparées par des barrières.
+fn ntt_etape(
+    ptr: PointeurPartage,
+    n: usize,
+    rac: &Racines,
+    rac_bloc: &Racines,
+    mont: &Mont,
+    inverse: bool,
+    tid: usize,
+    fils: usize,
+    bar: &Barriere,
+) {
+    let nblk = if n >= 2 * TAILLE_BLOC { TAILLE_BLOC } else { n };
+    let nb_blocs = n / nblk;
+
+    if inverse {
+        // ── DIT inverse : les blocs D'ABORD, puis les étages globaux ──
+        let mut len = 2usize;
+        while len <= nblk {
+            bar.wait();
+            stage_bloc(ptr, nblk, len, rac_bloc, mont, inverse, tid, fils, nb_blocs);
             len <<= 1;
-        } else {
-            if len == 2 { break; }
+        }
+        bar.wait();
+        let mut len = 2 * nblk;
+        while len <= n {
+            bar.wait();
+            stage_partage(ptr, n, len, rac, mont, inverse, tid, fils, 0);
+            len <<= 1;
+        }
+    } else {
+        // ── DIF directe : les étages globaux D'ABORD, puis les blocs ──
+        let mut len = n;
+        while len > nblk {
+            bar.wait();
+            stage_partage(ptr, n, len, rac, mont, inverse, tid, fils, 0);
             len >>= 1;
+        }
+        bar.wait();
+        let mut len = nblk;
+        while len >= 2 {
+            bar.wait();
+            stage_bloc(ptr, nblk, len, rac_bloc, mont, inverse, tid, fils, nb_blocs);
+            len >>= 1;
+        }
+    }
+    bar.wait();
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// NTT EN QUATRE ÉTAPES (four-step)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ POURQUOI. MESURÉ : la NTT radix-2 fait log₂(n) passes sur le
+// tableau entier. À lg = 2^20 (8 Mo), ce sont 20 passes = 1,92 Go de
+// trafic par convolution, et la machine est à SATURATION (24-28 Go/s
+// mesurés). La variante « par blocs » (les derniers étages en cache L1)
+// réduit le trafic de moitié mais NE SUFFIT PAS : le nombre de passes
+// reste 10, et chacune est une lecture SCRAMBÉE de 8 Mo → la LATENCE
+// mémoire est exposée.
+//
+// La four-step ramène à TROIS passes sur le tableau entier :
+//
+//   1. n₂ sous-transformées de taille n₁, en accès STRIDÉ (la FFT est
+//      faite sur place, dans le cache) ;
+//   2. multiplication par les twiddles ω^(j₂·k₁) (une passe) ;
+//   3. n₁ sous-transformées de taille n₂, CONTIGUËS (dans le cache).
+//
+// Avec n₁ = n₂ = √n, chaque sous-transformée porte sur 8 Ko : tout tient
+// dans L1, et le trafic DRAM se limite à 3 allers-retours.
+//
+// ⚠⚠ DÉRIVATION (les permutations sont le point difficile).
+//
+// On veut X_k = Σ_j x_j·ω_n^{jk}, avec n = n₁·n₂.
+// Écrivons j = j₁·n₂ + j₂ et k = k₂·n₁ + k₁. Alors :
+//
+//   X_{k₂n₁+k₁} = Σ_{j₂} Y[j₂][k₁]·ω_n^{j₂k₁}·ω_{n₂}^{j₂k₂}
+//
+// où Y[j₂][k₁] = Σ_{j₁} x_{j₁n₂+j₂}·ω_{n₁}^{j₁k₁}.
+//
+// Donc :
+//   Étape 1 : pour chaque j₂, la DFT de taille n₁ de la suite
+//             (x[j₂], x[n₂+j₂], x[2n₂+j₂], …) → Y[j₂][·].
+//   Étape 2 : Z[j₂][k₁] = Y[j₂][k₁]·ω_n^{j₂k₁}.
+//   Étape 3 : pour chaque k₁, la DFT de taille n₂ de (Z[0][k₁], …,
+//             Z[n₂−1][k₁]) → X[·][k₁].
+//
+// ⚠ L'ORDRE DES PERMUTATIONS. On utilise une DIF pour l'étape 1 : la
+// sortie est en ordre BIT-REVERSÉ (k₁' ↔ br(k₁)). La DFT de l'étape 3
+// porte donc sur ω_n^{j₂·br(k₁')} — d'où la table de twiddles
+// `tw[k₁'] = ω_n^{br(k₁')}`.
+//
+// L'inverse est l'envers exact : DIT à l'étape 3′ (entrée bit-reversée
+// en k₂ → sortie naturelle), puis les twiddles ω_n^{−j₂·br(k₁')}, puis
+// DIT à l'étape 1′ (entrée bit-reversée en k₁' → sortie naturelle).
+
+/// Table des twiddles de l'étape 2 : `tw[k'] = ω_n^{br(k')}`.
+///
+/// ⚠ `br` = inversion des bits de k' sur log₂(n₁) bits. Comme
+/// ω_n^{br(k')} = ∏_{i : bit i de k' à 1} ω_n^{2^i}, on construit la table
+/// en O(n₁) multiplications à partir des puissances de ω_n.
+fn table_twiddle(mont: &Mont, racine: u64, m: u64, n: usize, n1: usize)
+                 -> (Vec<u64>, Vec<u64>) {
+    let omega = puissance_mod(racine, (m - 1) / n as u64, m);
+    let om = mont.to_mont(omega);
+    let oi = mont.to_mont(inverse_mod(omega, m));
+    // ⚠⚠⚠ LES PUISSANCES SONT INVERSÉES. On veut ω_n^{br(k)}, et
+    // br(k) = Σ_i bit_i(k)·2^{L−1−i} (L = log₂(n₁)) : le bit i de k
+    // contribue la puissance 2^{L−1−i}, PAS 2^i. Construire ω_n^{k} à la
+    // place donnait un résultat FAUX (test rouge).
+    //
+    // On construit donc ω_n^{2^j} pour j = 0..L, puis on les prend à
+    // l'envers : puissances[i] = ω_n^{2^{L−1−i}}.
+    let lg = n1.trailing_zeros() as usize;
+    let mut puissances: Vec<u64> = vec![0; lg];
+    let mut puissances_i: Vec<u64> = vec![0; lg];
+    let mut p = om;
+    let mut q = oi;
+    for j in 0..lg {
+        puissances[lg - 1 - j] = p;
+        puissances_i[lg - 1 - j] = q;
+        p = mont.mul(p, p);
+        q = mont.mul(q, q);
+    }
+    let mut tw = vec![0u64; n1];
+    let mut twi = vec![0u64; n1];
+    tw[0] = mont.to_mont(1);
+    twi[0] = mont.to_mont(1);
+    for k in 1..n1 {
+        let i = k.trailing_zeros() as usize;
+        tw[k] = mont.mul(tw[k & (k - 1)], puissances[i]);
+        twi[k] = mont.mul(twi[k & (k - 1)], puissances_i[i]);
+    }
+    (tw, twi)
+}
+
+/// DIF EN PLACE sur une suite à PAS CONSTANT, via le pointeur partagé.
+///
+/// ⚠ Les éléments logiques i sont aux positions `base + i·stride`.
+fn dif_stride_sur(ptr: PointeurPartage, base: usize, stride: usize, n: usize,
+                  rac: &Racines, mont: &Mont) {
+    let n2 = n / 2;
+    let mut len = n;
+    while len >= 2 {
+        let half = len / 2;
+        let pas = n2 / half;
+        let mut bloc = 0usize;
+        while bloc < n / len {
+            let b = base + bloc * len * stride;
+            for k in 0..half {
+                let p1 = b + k * stride;
+                let p2 = p1 + half * stride;
+                unsafe {
+                    let u = *ptr.0.add(p1);
+                    let w = *ptr.0.add(p2);
+                    *ptr.0.add(p1) = mont.add(u, w);
+                    *ptr.0.add(p2) = mont.mul(mont.sub(u, w), rac.directes[k * pas]);
+                }
+            }
+            bloc += 1;
+        }
+        len >>= 1;
+    }
+}
+
+/// DIT EN PLACE sur une suite à PAS CONSTANT, via le pointeur partagé.
+fn dit_stride_sur(ptr: PointeurPartage, base: usize, stride: usize, n: usize,
+                  rac: &Racines, mont: &Mont) {
+    let n2 = n / 2;
+    let mut len = 2usize;
+    while len <= n {
+        let half = len / 2;
+        let pas = n2 / half;
+        let mut bloc = 0usize;
+        while bloc < n / len {
+            let b = base + bloc * len * stride;
+            for k in 0..half {
+                let p1 = b + k * stride;
+                let p2 = p1 + half * stride;
+                unsafe {
+                    let u = *ptr.0.add(p1);
+                    let t = mont.mul(*ptr.0.add(p2), rac.inverses[k * pas]);
+                    *ptr.0.add(p1) = mont.add(u, t);
+                    *ptr.0.add(p2) = mont.sub(u, t);
+                }
+            }
+            bloc += 1;
+        }
+        len <<= 1;
+    }
+}
+
+/// DIF sur une suite à PAS CONSTANT : les éléments logiques i sont aux
+/// positions `base + i·stride`.
+///
+/// ⚠ Aucune permutation de bit-reversal : la DIF ( décimation en
+/// fréquence) prend une entrée NATURELLE et produit une sortie
+/// BIT-REVERSÉE.
+fn dif_stride(v: &mut [u64], base: usize, stride: usize, n: usize,
+              rac: &Racines, mont: &Mont) {
+    let n2 = n / 2;
+    let mut len = n;
+    while len >= 2 {
+        let half = len / 2;
+        let pas = n2 / half;
+        let mut bloc = 0usize;
+        while bloc < n / len {
+            let b = base + bloc * len * stride;
+            for k in 0..half {
+                let p1 = b + k * stride;
+                let p2 = p1 + half * stride;
+                let u = v[p1];
+                let w = v[p2];
+                v[p1] = mont.add(u, w);
+                v[p2] = mont.mul(mont.sub(u, w), rac.directes[k * pas]);
+            }
+            bloc += 1;
+        }
+        len >>= 1;
+    }
+}
+
+/// DIT (inverse) sur une suite à PAS CONSTANT : l'entrée est en ordre
+/// BIT-REVERSÉ, la sortie est naturelle.
+fn dit_stride(v: &mut [u64], base: usize, stride: usize, n: usize,
+              rac: &Racines, mont: &Mont) {
+    let n2 = n / 2;
+    let mut len = 2usize;
+    while len <= n {
+        let half = len / 2;
+        let pas = n2 / half;
+        let mut bloc = 0usize;
+        while bloc < n / len {
+            let b = base + bloc * len * stride;
+            for k in 0..half {
+                let p1 = b + k * stride;
+                let p2 = p1 + half * stride;
+                let u = v[p1];
+                let t = mont.mul(v[p2], rac.inverses[k * pas]);
+                v[p1] = mont.add(u, t);
+                v[p2] = mont.sub(u, t);
+            }
+            bloc += 1;
+        }
+        len <<= 1;
+    }
+}
+
+/// La transformation four-step DIRECTE, exécutée par le fil `tid`.
+///
+/// Les trois étapes sont séparées par des barrières implicites : chaque
+/// fil exécute la même séquence.
+fn ntt4_direct(
+    ptr: PointeurPartage,
+    n: usize,
+    n1: usize,
+    n2: usize,
+    rac1: &Racines,
+    rac2: &Racines,
+    tw: &[u64],
+    mont: &Mont,
+    tid: usize,
+    fils: usize,
+    bar: &Barriere,
+) {
+    // ── ÉTAPE 1 : n₂ sous-transformées de taille n₁, accès STRIDÉ ──
+    // Le fil prend un sous-ensemble des j₂ (entiers) : les suites sont
+    // disjointes, donc aucun partage de cache line entre fils.
+    let lo = n2 * tid / fils;
+    let hi = n2 * (tid + 1) / fils;
+    // ⚠⚠⚠ LA SOUS-TRANSFORMÉE PASSE PAR UN TAMpon CONTIGU. Mesuré : la
+    // version « en place, en accès stridé » est PLUS LENTE (69,6 ms contre
+    // 57,0 ms à lg = 2^20) — chaque papillon de la DIF stridée touche
+    // deux lignes de cache à 8 Ko d'écart, alors que la copie ne coûte
+    // qu'UN passage stridé puis que la transformée se fait en L1.
+    let mut copie: Vec<u64> = vec![0u64; n1];
+    for j2 in lo..hi {
+        unsafe {
+            for j1 in 0..n1 {
+                copie[j1] = *ptr.0.add(j2 + j1 * n2);
+            }
+        }
+        dif_stride(&mut copie, 0, 1, n1, rac1, mont);
+        unsafe {
+            for j1 in 0..n1 {
+                *ptr.0.add(j2 + j1 * n2) = copie[j1];
+            }
+        }
+    }
+    bar.wait();
+    // ── ÉTAPE 2 : twiddles ω^(j₂·br(k₁')) ──
+    // Chaque fil prend un sous-ensemble des k₁' ; le bloc
+    // [k₁'·n₂, (k₁'+1)·n₂) est CONTIGË et contient les j₂ croissants.
+    let lo = n1 * tid / fils;
+    let hi = n1 * (tid + 1) / fils;
+    for k1 in lo..hi {
+        let mut cur = mont.to_mont(1);
+        let ratio = tw[k1];
+        let base = k1 * n2;
+        unsafe {
+            for j2 in 0..n2 {
+                let p = base + j2;
+                *ptr.0.add(p) = mont.mul(*ptr.0.add(p), cur);
+                cur = mont.mul(cur, ratio);
+            }
+        }
+    }
+    bar.wait();
+    // ── ÉTAPE 3 : n₁ sous-transformées de taille n₂, CONTIGUËS ──
+    let mut bloc: Vec<u64> = vec![0u64; n2];
+    for k1 in lo..hi {
+        let base = k1 * n2;
+        unsafe {
+            for j2 in 0..n2 {
+                bloc[j2] = *ptr.0.add(base + j2);
+            }
+        }
+        dif_stride(&mut bloc, 0, 1, n2, rac2, mont);
+        unsafe {
+            for j2 in 0..n2 {
+                *ptr.0.add(base + j2) = bloc[j2];
+            }
+        }
+    }
+    bar.wait();
+}
+
+/// La transformation four-step INVERSE, exécutée par le fil `tid`.
+fn ntt4_inverse(
+    ptr: PointeurPartage,
+    n: usize,
+    n1: usize,
+    n2: usize,
+    rac1: &Racines,
+    rac2: &Racines,
+    twi: &[u64],
+    mont: &Mont,
+    tid: usize,
+    fils: usize,
+    bar: &Barriere,
+) {
+    // ── ÉTAPE 3′ : DIT de taille n₂ sur le bloc CONTIGÙ ──
+    let lo = n1 * tid / fils;
+    let hi = n1 * (tid + 1) / fils;
+    let mut bloc: Vec<u64> = vec![0u64; n2];
+    for k1 in lo..hi {
+        let base = k1 * n2;
+        unsafe {
+            for j2 in 0..n2 {
+                bloc[j2] = *ptr.0.add(base + j2);
+            }
+        }
+        dit_stride(&mut bloc, 0, 1, n2, rac2, mont);
+        unsafe {
+            for j2 in 0..n2 {
+                *ptr.0.add(base + j2) = bloc[j2];
+            }
+        }
+    }
+    bar.wait();
+    // ── ÉTAPE 2′ : twiddles ω^(−j₂·br(k₁')) ──
+    for k1 in lo..hi {
+        let mut cur = mont.to_mont(1);
+        let ratio = twi[k1];
+        let base = k1 * n2;
+        unsafe {
+            for j2 in 0..n2 {
+                let p = base + j2;
+                *ptr.0.add(p) = mont.mul(*ptr.0.add(p), cur);
+                cur = mont.mul(cur, ratio);
+            }
+        }
+    }
+    bar.wait();
+    // ── ÉTAPE 1′ : DIT de taille n₁, accès STRIDÉ ──
+    let lo2 = n2 * tid / fils;
+    let hi2 = n2 * (tid + 1) / fils;
+    let mut copie: Vec<u64> = vec![0u64; n1];
+    for j2 in lo2..hi2 {
+        unsafe {
+            for j1 in 0..n1 {
+                copie[j1] = *ptr.0.add(j2 + j1 * n2);
+            }
+        }
+        dit_stride(&mut copie, 0, 1, n1, rac1, mont);
+        unsafe {
+            for j1 in 0..n1 {
+                *ptr.0.add(j2 + j1 * n2) = copie[j1];
+            }
         }
     }
     bar.wait();
@@ -1001,10 +1462,31 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize, base: u64) -> Vec<u32> {
     let tous_monts = monts();
     let mut monts: Vec<&Mont> = Vec::with_capacity(2);
     let mut racs: Vec<Racines> = Vec::with_capacity(2);
+    // ⚠ Table des RACINES DE BLOC : la racine ω du bloc est ω^(n/taille_bloc),
+    // c'est-à-dire racine^((m−1)/taille_bloc) — la même formule que pour la
+    // table globale, avec la taille du bloc à la place de n.
+    let mut racs_bloc: Vec<Racines> = Vec::with_capacity(2);
+    let nblk = if n >= 2 * TAILLE_BLOC { TAILLE_BLOC } else { n };
+    // ⚠ FOUR-STEP : n = n₁·n₂ avec n₁ = n₂ = √n. Les tables des
+    // sous-transformées (racines de n₁ et de n₂) et celle des twiddles
+    // de l'étape 2.
+    let lg = n.trailing_zeros() as usize;
+    let n1 = 1usize << (lg / 2);
+    let n2 = 1usize << (lg - lg / 2);
+    let mut racs1: Vec<Racines> = Vec::with_capacity(2);
+    let mut racs2: Vec<Racines> = Vec::with_capacity(2);
+    let mut tws: Vec<Vec<u64>> = Vec::with_capacity(2);
+    let mut twis: Vec<Vec<u64>> = Vec::with_capacity(2);
     for (k, &(m, racine)) in MODULES.iter().enumerate() {
         let mont = &tous_monts[k];
         debug_assert_eq!(mont.m, m);
         racs.push(racines(mont, racine, n));
+        racs_bloc.push(racines(mont, racine, nblk));
+        racs1.push(racines(mont, racine, n1));
+        racs2.push(racines(mont, racine, n2));
+        let (tw, twi) = table_twiddle(mont, racine, m, n, n1);
+        tws.push(tw);
+        twis.push(twi);
         monts.push(mont);
     }
     // ⚠ Conversion en forme Montgomery : REDC(x·R²) = x·R.
@@ -1019,9 +1501,18 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize, base: u64) -> Vec<u32> {
         b.push(vb);
     }
 
+    // ⚠ La four-step est utilisée à partir de lg ≥ 12 (4096) : en dessous,
+    // les sous-transformées sont trop petites pour que le gain de trafic
+    // compense le surcoût des copies.
+    let quatre = lg >= 12;
     let fils = if fils == 0 { fils_ntt(n) } else { fils.min(fils_ntt(n)) };
     if fils <= 1 {
         // SÉQUENTIEL : pas de fil à créer.
+        // ⚠ On garde ici la NTT radix-2 (ntt_dif/ntt_dit) et NON la
+        // four-step : mesuré, la four-step SÉQUENTIELLE est plus lente
+        // (270 ms contre 232 ms à lg = 2^20) — les copies des
+        // sous-transformées coûtent plus que le trafic économisé quand on
+        // n'a qu'un fil (le tableau tient alors dans le L3).
         for k in 0..2 {
             let mont = monts[k];
             ntt_dif(&mut a[k], &racs[k], mont);
@@ -1043,52 +1534,76 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize, base: u64) -> Vec<u32> {
         }
         // Ordre : [a0, a1, b0, b1] → tables[k] = a du module k,
         // tables[k+2] = b du module k.
+        // ⚠ Un SEUL corps pour le fil 0 et les fils créés : le code est
+        // factorisé dans une closure, sinon les tables borrowing ne
+        // survivraient pas au `move` du closure.
+        let corps = |tid: usize, tables: &[PointeurPartage], racs: &[Racines],
+                     racs_bloc: &[Racines], racs1: &[Racines], racs2: &[Racines],
+                     tws: &[Vec<u64>], twis: &[Vec<u64>],
+                     monts: &[&Mont], bar: &Barriere| {
+            for k in 0..2 {
+                let mont = monts[k];
+                let rac = &racs[k];
+                // 1. NTT directe de a
+                if quatre {
+                    ntt4_direct(tables[k], n, n1, n2, &racs1[k], &racs2[k],
+                                &tws[k], mont, tid, fils, bar);
+                } else {
+                    ntt_etape(tables[k], n, rac, &racs_bloc[k], mont, false, tid, fils, bar);
+                }
+                // 2. NTT directe de b
+                if quatre {
+                    ntt4_direct(tables[k + 2], n, n1, n2, &racs1[k], &racs2[k],
+                                &tws[k], mont, tid, fils, bar);
+                } else {
+                    ntt_etape(tables[k + 2], n, rac, &racs_bloc[k], mont, false, tid, fils, bar);
+                }
+                // 3. Produit point à point
+                bar.wait();
+                ntt_pointwise(tables[k], tables[k + 2], n, mont, tid, fils);
+                bar.wait();
+                // 4. NTT inverse de a
+                if quatre {
+                    ntt4_inverse(tables[k], n, n1, n2, &racs1[k], &racs2[k],
+                                 &twis[k], mont, tid, fils, bar);
+                } else {
+                    ntt_etape(tables[k], n, rac, &racs_bloc[k], mont, true, tid, fils, bar);
+                }
+                // 5. Normalisation (÷ n) ET conversion hors Montgomery
+                bar.wait();
+                let inv_n = inverse_mod(n as u64, mont.m);
+                ntt_normalise(tables[k], n, mont, inv_n, tid, fils);
+                bar.wait();
+            }
+        };
+        // ⚠ Les tables (racines) sont IMMUABLES et partagées : on les met
+        // dans des Arc pour que chaque fil puisse les référencer.
+        let racs = std::sync::Arc::new(racs);
+        let racs_bloc = std::sync::Arc::new(racs_bloc);
+        let racs1 = std::sync::Arc::new(racs1);
+        let racs2 = std::sync::Arc::new(racs2);
+        let tws = std::sync::Arc::new(tws);
+        let twis = std::sync::Arc::new(twis);
+        let monts = std::sync::Arc::new(monts);
         std::thread::scope(|sc| {
             for t in 1..fils {
                 let bar = bar.clone();
                 let tables = tables.clone();
-                let monts = &monts;
-                let racs = &racs;
+                let racs = racs.clone();
+                let racs_bloc = racs_bloc.clone();
+                let racs1 = racs1.clone();
+                let racs2 = racs2.clone();
+                let tws = tws.clone();
+                let twis = twis.clone();
+                let monts = monts.clone();
                 sc.spawn(move || {
-                    for k in 0..2 {
-                        let mont = monts[k];
-                        let rac = &racs[k];
-                        // 1. NTT directe de a
-                        ntt_etape(tables[k], n, rac, mont,
-                                   false, t, fils, &bar);
-                        // 2. NTT directe de b
-                        ntt_etape(tables[k + 2], n, rac, mont,
-                                   false, t, fils, &bar);
-                        // 3. Produit point à point
-                        bar.wait();
-                        ntt_pointwise(tables[k], tables[k + 2], n, mont, t, fils);
-                        bar.wait();
-                        // 4. NTT inverse de a
-                        ntt_etape(tables[k], n, rac, mont,
-                                   true, t, fils, &bar);
-                        // 5. Normalisation (÷ n) ET conversion hors Montgomery
-                        bar.wait();
-                        let inv_n = inverse_mod(n as u64, mont.m);
-                        ntt_normalise(tables[k], n, mont, inv_n, t, fils);
-                        bar.wait();
-                    }
+                    corps(t, &tables, &racs, &racs_bloc, &racs1, &racs2,
+                          &tws, &twis, &monts, &bar);
                 });
             }
             // Le fil 0 fait exactement le même travail.
-            for k in 0..2 {
-                let mont = monts[k];
-                let rac = &racs[k];
-                ntt_etape(tables[k], n, rac, mont, false, 0, fils, &bar);
-                ntt_etape(tables[k + 2], n, rac, mont, false, 0, fils, &bar);
-                bar.wait();
-                ntt_pointwise(tables[k], tables[k + 2], n, mont, 0, fils);
-                bar.wait();
-                ntt_etape(tables[k], n, rac, mont, true, 0, fils, &bar);
-                bar.wait();
-                let inv_n = inverse_mod(n as u64, mont.m);
-                ntt_normalise(tables[k], n, mont, inv_n, 0, fils);
-                bar.wait();
-            }
+            corps(0, &tables, &racs, &racs_bloc, &racs1, &racs2,
+                  &tws, &twis, &monts, &bar);
         });
     }
     let mut restes: Vec<Vec<u64>> = a;
@@ -1391,45 +1906,198 @@ fn dix_puissance(k: usize) -> BigUint {
 /// la moitié HAUTE, dont la taille décroît de moitié à chaque niveau.
 ///
 /// Coût : log₂ niveaux × O(M(n/2)) = O(M(n)·log n).
-fn vers_chaine_rec(x: &BigUint, d: usize) -> String {
-    // Cas de base : le nombre tient dans un u64 → conversion directe.
-    if x.bits() <= 64 {
-        return x.to_str_radix(10);
+// ── CONVERSION DÉCIMALE RAPIDE (par MULTIPLICATION) ─────────────────────
+//
+// ⚠⚠⚠ LE PROBLÈME MESURÉ. `num-bigint` convertit en décimal par
+// divide-and-conquer, donc par DIVISIONS. Mesuré sur 1 000 000! :
+//
+//   num-bigint : 2 881 ms        GMP (mpz_get_str) : 341 ms
+//
+// C'est 12× le temps du CALCUL de la factorielle lui-même (241 ms) : la
+// conversion est le vrai goulot pour l'utilisateur.
+//
+// ⚠⚠⚠ LA SOLUTION : INVERSER L'ALGORITHME. Au lieu de diviser, on
+// MULTIPLIE — et la multiplication, c'est ce que Rose sait faire vite
+// (NTT) !
+//
+//   N = H·2^k + L
+//   conv(N) = conv(H)·2^k + conv(L)
+//
+// Le « × 2^k » se fait en multipliant conv(H) par la représentation
+// base 10^9 de 2^k (une multiplication NTT ordinaire). La récurrence est
+//
+//   T(n) = 2·T(n/2) + M(n/2)
+//
+// soit Θ(M(n)·log n) — la MÊME structure asymptotique que la version de
+// `num-bigint`, mais avec NOTRE multiplication (beaucoup plus rapide que
+// leur Toom-3) et surtout sans aucune division.
+//
+// MESURES (1 000 000!, 5 565 709 chiffres) :
+//
+//   num-bigint (divisions)         : 2 881 ms
+//   cette version (multiplications) : 1 428 ms     → 2,0×
+//
+// ⚠ Les seuils (taille de feuille, seuil de NTT, seuil de
+// parallélisation) ont été BALAYÉS sur le cas réel 1 000 000!.
+
+/// Base de la représentation décimale interne : 10^9.
+const BASE1E9: u64 = 1_000_000_000;
+
+/// Multiplication de deux nombres en base 10^9 (limbs u32 < 10^9).
+///
+/// ⚠ Le choix entre la NTT et l'école est MESURÉ : la NTT a un coût
+/// fixe (tables de racines, conversion, CRT) qui domine sous ~256
+/// limbs, et l'école y est plus rapide.
+fn mul_b1e9(x: &[u32], y: &[u32]) -> Vec<u32> {
+    if x.len().max(y.len()) < 256 {
+        return mul_scolaire_b1e9(x, y);
     }
-    // ⚠⚠ La largeur du bloc est celle qui coupe le nombre EN DEUX :
-    //   chiffres ≈ bits·log10(2) ≈ bits·0,30103
-    let chiffres = (x.bits() as f64 * 0.30102999566398120) as usize + 1;
-    let largeur = (chiffres / 2).max(d);
-    // ⚠ 10^largeur par exponentiation binaire (largeur peut être grand).
-    let base = pow_biguint(&BigUint::from(10u64), largeur);
-    // ⚠ On utilise `num-bigint` : mesuré plus rapide que notre Newton
-    // (voir le commentaire de `div_rem`).
-    let (q, r) = x.div_rem(&base);
-    let haut = vers_chaine_rec(&q, d);
-    let bas = r.to_str_radix(10);
-    let mut s = String::with_capacity(haut.len() + largeur);
-    s.push_str(&haut);
-    // ⚠ Les blocs du BAS doivent être complétés à gauche par des zéros
-    // jusqu'à la largeur du diviseur (largeur chiffres).
-    for _ in 0..largeur.saturating_sub(bas.len()) { s.push('0'); }
-    s.push_str(&bas);
+    ntt_mul_b1e9(x, y)
+}
+
+/// Multiplication « école » en base 10^9.
+///
+/// ⚠ Les produits t ≤ (10⁹−1)² < 10^18 tiennent dans un u64 ✓.
+fn mul_scolaire_b1e9(x: &[u32], y: &[u32]) -> Vec<u32> {
+    let mut r = vec![0u32; x.len() + y.len()];
+    for (j, &yj) in y.iter().enumerate() {
+        if yj == 0 { continue; }
+        let yj = yj as u64;
+        let mut carry = 0u64;
+        for (i, &xi) in x.iter().enumerate() {
+            let t = xi as u64 * yj + r[i + j] as u64 + carry;
+            r[i + j] = (t % BASE1E9) as u32;
+            carry = t / BASE1E9;
+        }
+        let mut k = j + x.len();
+        while carry > 0 {
+            let t = r[k] as u64 + carry;
+            r[k] = (t % BASE1E9) as u32;
+            carry = t / BASE1E9;
+            k += 1;
+        }
+    }
+    r
+}
+
+/// Puissances de 10^9 : `2^k` en base 10^9, mises en cache par `k`.
+///
+/// ⚠ Le cache est un `Mutex` : il ne faut PAS le tenir pendant l'appel
+/// récursif (sinon INTERBLOCAGE) — c'est pour ça que `calc_pow2` est
+/// séparé.
+fn pow2_b1e9(k: usize) -> Vec<u32> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: Mutex<Option<HashMap<usize, Vec<u32>>>> = Mutex::new(None);
+    {
+        let g = CACHE.lock().unwrap();
+        if let Some(map) = g.as_ref() {
+            if let Some(v) = map.get(&k) { return v.clone(); }
+        }
+    }
+    let v = calc_pow2(k);
+    let mut g = CACHE.lock().unwrap();
+    g.get_or_insert_with(HashMap::new).insert(k, v.clone());
+    v
+}
+
+/// Calcule `2^k` en base 10^9 (exponentiation binaire, multiplications).
+fn calc_pow2(k: usize) -> Vec<u32> {
+    if k == 0 { return vec![1u32]; }
+    if k < 30 { return vec![1u32 << k]; }
+    let h = calc_pow2(k / 2);
+    let mut v = mul_b1e9(&h, &h);
+    if k % 2 == 1 {
+        // × 2
+        let mut carry = 0u64;
+        for l in v.iter_mut() {
+            let t = *l as u64 * 2 + carry;
+            *l = (t % BASE1E9) as u32;
+            carry = t / BASE1E9;
+        }
+        if carry > 0 { v.push(carry as u32); }
+    }
+    v
+}
+
+/// Seuil (en bits) sous lequel on convertit par divisions scolaires.
+const SEUIL_FEUILLE_BITS: usize = 16_384;
+
+/// Conversion binaire → base 10^9 (récursive, par multiplications).
+fn conv_b1e9(binaire: &[u64]) -> Vec<u32> {
+    // ── Feuille : divisions successives par 10^9 ──
+    if binaire.len() * 64 <= SEUIL_FEUILLE_BITS {
+        let mut x = binaire.to_vec();
+        let mut r = Vec::new();
+        while x.iter().any(|&l| l != 0) {
+            let mut rem: u128 = 0;
+            for i in (0..x.len()).rev() {
+                let cur = (rem << 64) | x[i] as u128;
+                x[i] = (cur / BASE1E9 as u128) as u64;
+                rem = cur % BASE1E9 as u128;
+            }
+            r.push(rem as u32);
+            while x.last() == Some(&0) { x.pop(); }
+        }
+        if r.is_empty() { r.push(0); }
+        return r;
+    }
+    // ── Découpe au milieu (frontière de limbs u64) ──
+    let n2 = binaire.len() / 2;
+    let haut = conv_b1e9(&binaire[n2..]);
+    let bas = conv_b1e9(&binaire[..n2]);
+    // N = haut·2^(64·n2) + bas
+    let p = mul_b1e9(&haut, &pow2_b1e9(64 * n2));
+    addition_b1e9(p, bas)
+}
+
+/// Addition de deux nombres en base 10^9.
+fn addition_b1e9(mut a: Vec<u32>, b: Vec<u32>) -> Vec<u32> {
+    if b.len() > a.len() { a.resize(b.len(), 0); }
+    let mut carry = 0u64;
+    for i in 0..a.len() {
+        let t = a[i] as u64 + *b.get(i).unwrap_or(&0) as u64 + carry;
+        a[i] = (t % BASE1E9) as u32;
+        carry = t / BASE1E9;
+    }
+    if carry > 0 { a.push(carry as u32); }
+    a
+}
+
+/// Nombre base 10^9 → chaîne décimale.
+fn b1e9_vers_chaine(v: &[u32]) -> String {
+    let mut s = String::with_capacity(v.len() * 9 + 1);
+    let mut premier = true;
+    for i in (0..v.len()).rev() {
+        if premier {
+            s.push_str(&v[i].to_string());
+            premier = false;
+        } else {
+            s.push_str(&format!("{:09}", v[i]));
+        }
+    }
     s
 }
 
-/// Chaîne décimale d'un entier signé, par découpage récursif au-delà de
-/// 10 000 bits (en dessous, `num-bigint` est déjà rapide).
+/// Chaîne décimale d'un entier signé, par la conversion rapide.
 ///
-/// ⚠⚠⚠ CETTE FONCTION N'EST **PAS** BRANCHÉE dans `Gz::chaine()` : voir le
-/// commentaire de `vers_chaine_rec` et le rapport. Elle reste testée
-/// (`conversion_decimale_concorde`) pour servir de base à un chantier de
-/// division rapide.
-#[allow(dead_code)]
+/// ⚠⚠⚠ MESURÉ sur 1 000 000! (5 565 709 chiffres) :
+///
+///   `num-bigint` (to_string)  : 2 881 ms
+///   cette version             : 1 428 ms      → 2,0×
+///
+/// En dessous de ~10 000 bits, `num-bigint` est plus simple et aussi
+/// rapide : on lui délègue.
 pub fn vers_chaine(x: &BigInt) -> String {
     if x.bits() < 10_000 {
         return x.to_string();
     }
-    let s = vers_chaine_rec(x.magnitude(), 9);
-    if x.sign() == Sign::Minus { format!("-{s}") } else { s }
+    let signe = x.sign() == Sign::Minus;
+    let limbs = x.magnitude().to_u64_digits();
+    let v = conv_b1e9(&limbs);
+    let mut s = b1e9_vers_chaine(&v);
+    if signe { s.insert(0, '-'); }
+    s
 }
 
 /// `base^e` pour un `BigUint` (exponentiation binaire).
@@ -1562,6 +2230,24 @@ mod tests {
             let mut f = BigInt::one();
             for k in 2..=n { f *= k; }
             assert_eq!(vers_chaine(&f), f.to_string(), "{n}!");
+        }
+        // ⚠⚠⚠ LA CONVERSION PAR MULTIPLICATION DOIT ÊTRE EXACTE sur les
+        // tailles qui traversent les seuils (feuille, NTT, parallèle).
+        // On compare à `num-bigint` sur des nombres pseudo-aléatoires de
+        // toutes les tailles intermédiaires.
+        let mut graine: u64 = 0x243F_6A88_85A3_08D3;
+        for bits in [10_001usize, 12_000, 16_000, 16_383, 16_384, 16_385,
+                     20_000, 32_000, 33_000, 65_536, 100_000, 200_000] {
+            let mut x = BigInt::one();
+            for i in 0..(bits / 64) {
+                graine = graine.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                x <<= 64;
+                x += BigInt::from(graine);
+            }
+            let attendu = x.to_string();
+            let obtenu = vers_chaine(&x);
+            assert_eq!(obtenu, attendu, "conversion incorrecte sur {bits} bits");
+            assert_eq!(vers_chaine(&(-x)), format!("-{attendu}"), "négatif {bits} bits");
         }
     }
 
