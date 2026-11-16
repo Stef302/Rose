@@ -69,6 +69,23 @@ const SEUIL_NTT: usize = 12000;
 // Mesuré : voir `profil_division` dans les tests.
 const SEUIL_DIVISION: usize = 100;
 
+/// Multiplication de deux nombres en base 2^32 (pour comparaison).
+pub fn ntt_mul_b32(x: &[u32], y: &[u32]) -> Vec<u32> {
+    ntt_mul_par(x, y, 0, 0)
+}
+
+/// Idem avec un nombre de fils imposé (pour mesurer l'échelle).
+pub fn ntt_mul_par_b32(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
+    ntt_mul_par(x, y, fils, 0)
+}
+
+/// Multiplication de deux nombres en base 10^9 (limbs u32 < 10^9).
+///
+/// ⚠ Utilisé par la conversion décimale rapide (voir `conv_b1e9`).
+pub fn ntt_mul_b1e9(x: &[u32], y: &[u32]) -> Vec<u32> {
+    ntt_mul_par(x, y, 0, 1_000_000_000)
+}
+
 /// Multiplication de deux entiers signés, par le meilleur algorithme selon
 /// la taille. Sémantique STRICTEMENT identique à `BigInt * BigInt`.
 pub fn mul(a: &BigInt, b: &BigInt) -> BigInt {
@@ -136,7 +153,7 @@ pub fn mul_par(a: &BigInt, b: &BigInt, fils: usize) -> BigInt {
         let signe = if a.sign() == b.sign() { Sign::Plus } else { Sign::Minus };
         let x = a.magnitude().to_u32_digits();
         let y = b.magnitude().to_u32_digits();
-        let m = ntt_mul_par(&x, &y, fils);
+        let m = ntt_mul_par(&x, &y, fils, 0);
         return BigInt::from_biguint(signe, BigUint::from_slice(&m));
     }
     let _ = (SEUIL_KARATSUBA, SEUIL_TOOM3, SEUIL_NTT);
@@ -157,7 +174,7 @@ fn mul_limbs(x: &[u32], y: &[u32]) -> Vec<u32> {
     if y.len() < SEUIL_NTT {
         return toom3(x, y);
     }
-    ntt_mul_par(x, y, 0)
+    ntt_mul_par(x, y, 0, 0)
 }
 
 /// Multiplication « école » : O(n·m), la plus rapide pour les petites tailles.
@@ -556,6 +573,24 @@ struct Mont {
     r2: u64,
 }
 
+/// ⚠⚠⚠ CONSTANTES MONTGOMERY MISES EN CACHE (UNE SEULE FOIS).
+///
+/// `Mont::nouveau` calcule l'inverse de Newton (6 itérations) ET
+/// `2^128 mod m` par 128 doublements avec division u128 → ~26 µs par
+/// module, ~50 µs par appel de NTT.
+///
+/// Mesuré : la conversion décimale fait 292 379 appels de multiplication
+/// → 50 µs × 292 379 = 14 s de recalcul de constantes pour rien !
+/// (`2^128 mod m` se calcule en ~26 µs mais était refait à chaque fois.)
+static MONTGOMERY: std::sync::OnceLock<[Mont; 2]> = std::sync::OnceLock::new();
+
+/// Les deux modules, avec leurs constantes Montgomery calculées UNE FOIS.
+fn monts() -> &'static [Mont; 2] {
+    MONTGOMERY.get_or_init(|| {
+        [Mont::nouveau(MODULES[0].0), Mont::nouveau(MODULES[1].0)]
+    })
+}
+
 impl Mont {
     fn nouveau(m: u64) -> Mont {
         // Inverse de m mod 2^64 par itération de Newton (5 suffit, on en
@@ -674,6 +709,72 @@ fn racines(mont: &Mont, racine: u64, n: usize) -> Racines {
 // La barrière entre étages est indispensable : l'étage suivant lit ce
 // que le précédent a écrit.
 
+/// ⚠⚠⚠ BARRIÈRE HYBRIDE (spin court puis PARKING).
+///
+/// `std::sync::Barrier` est fondée sur un futex : chaque attente coûte
+/// ~30 µs quand les fils se réveillent en même temps. La NTT en a
+/// besoin de ~90 par multiplication (2 modules × [2 transformées ×
+/// (log₂n + 1) + 3]) → 2,7 ms par multiplication, soit plus que le
+/// TRAVAIL réel pour les petites tailles.
+///
+/// ⚠ MAIS LE SPIN PUR EST PIRE : MESURÉ. Sur cette machine, Chrome
+/// consomme 8,6 cœurs sur 20 ; les fils qui font du spin actif vole du
+/// temps aux fils qui TRAVAILLENT (effet de convoi) :
+///
+///   lg = 2^16 : spin pur 389 ms  |  std::sync::Barrier 10,8 ms
+///   lg = 2^20 : spin pur 456 ms  |  std::sync::Barrier  48,5 ms
+///
+/// D'où l'hybride : on tourne en BOUCLE ACTIVE un court moment (le cas
+/// normal : les autres fils arrivent en quelques centaines de
+/// nanosecondes), puis on se PARQUE sur une variable de condition
+/// (le cas chargé : on ne vole pas de temps).
+struct Barriere {
+    compteur: std::sync::atomic::AtomicUsize,
+    generation: std::sync::atomic::AtomicUsize,
+    n: usize,
+    verrou: std::sync::Mutex<()>,
+    cond: std::sync::Condvar,
+}
+
+/// Nombre de tours de boucle active avant de se parquer.
+const SPIN_BARRIERE: usize = 64;
+
+impl Barriere {
+    fn nouveau(n: usize) -> Barriere {
+        Barriere {
+            compteur: std::sync::atomic::AtomicUsize::new(0),
+            generation: std::sync::atomic::AtomicUsize::new(0),
+            n,
+            verrou: std::sync::Mutex::new(()),
+            cond: std::sync::Condvar::new(),
+        }
+    }
+
+    #[inline]
+    fn wait(&self) {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
+        let g = self.generation.load(Relaxed);
+        if self.compteur.fetch_add(1, AcqRel) + 1 == self.n {
+            self.compteur.store(0, Relaxed);
+            self.generation.fetch_add(1, Release);
+            // Réveiller les fils parqués (s'ils existent).
+            let _g = self.verrou.lock();
+            self.cond.notify_all();
+            return;
+        }
+        // ── Spin court ──
+        for _ in 0..SPIN_BARRIERE {
+            if self.generation.load(Acquire) != g { return; }
+            std::hint::spin_loop();
+        }
+        // ── Parking ──
+        let mut v = self.verrou.lock().unwrap();
+        while self.generation.load(Acquire) == g {
+            v = self.cond.wait(v).unwrap();
+        }
+    }
+}
+
 /// Pointeur brut partagé entre fils de la NTT.
 ///
 /// ⚠ `*mut u64` n'est pas `Sync`. On encapsule le pointeur dans ce type
@@ -687,8 +788,10 @@ unsafe impl Send for PointeurPartage {}
 unsafe impl Sync for PointeurPartage {}
 
 /// Seuil (en éléments) au-delà duquel la NTT est parallélisée. En dessous,
-/// le coût de création des fils dépasse le gain.
-const SEUIL_PAR_NTT: usize = 1 << 15;
+/// le coût de création des fils (370 µs) et des barrières dépasse le gain.
+/// Mesuré : lg = 2^15 → parallèle 15,1 ms contre séquentiel 9,7 ms ;
+/// lg = 2^16 → parallèle 9,5 ms contre séquentiel 19,0 ms.
+const SEUIL_PAR_NTT: usize = 1 << 16;
 
 /// Nombre de fils pour une NTT de longueur `n`.
 fn fils_ntt(n: usize) -> usize {
@@ -715,7 +818,7 @@ fn fils_ntt(n: usize) -> usize {
 /// MÊME tableau : chaque fil traite une plage d'indices de papillon
 /// distincte (voir la preuve de disjointivité ci-dessus).
 fn ntt_etape(ptr: PointeurPartage, n: usize, rac: &Racines, mont: &Mont,
-              inverse: bool, tid: usize, fils: usize, bar: &std::sync::Barrier) {
+              inverse: bool, tid: usize, fils: usize, bar: &Barriere) {
     let n2 = n / 2;
     let mut len = if inverse { 2usize } else { n };
     loop {
@@ -724,10 +827,18 @@ fn ntt_etape(ptr: PointeurPartage, n: usize, rac: &Racines, mont: &Mont,
         let pas = n2 / half;
         let lo = n2 * tid / fils;
         let hi = n2 * (tid + 1) / fils;
+        // ⚠⚠⚠ `half` EST UNE PUISSANCE DE 2 : la division et le modulo
+        // doivent être des DÉCALAGES. Avec `i / half` et `i % half` (divisions
+        // entières réelles, ~30 cycles sur aarch64), le coût de la division
+        // DOMINAIT celui du papillon → la NTT parallèle ne gagnait que 3× au
+        // lieu de 20×, et était même plus LENTE que la version séquentielle
+        // sur les petites tailles.
+        let lg_half = half.trailing_zeros();
+        let masque = half - 1;
         let mut i = lo;
         while i < hi {
-            let bloc = i / half;
-            let k0 = i % half;
+            let bloc = i >> lg_half;
+            let k0 = i & masque;
             let kend = std::cmp::min(half, k0 + (hi - i));
             let base = bloc * len;
             for k in k0..kend {
@@ -854,7 +965,9 @@ fn ntt_dit(v: &mut [u64], rac: &Racines, mont: &Mont) {
 /// Multiplication NTT avec 2 modules de 62 bits + rests chinois.
 ///
 /// `fils` = nombre de fils pour la NTT (0 = tous les cœurs).
-fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
+/// `base` = base de propagation des retenues (0 = 2³², sinon la base
+/// demandée, typiquement 10⁹).
+fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize, base: u64) -> Vec<u32> {
     let besoin = x.len() + y.len();
     // ⚠ La convolution linéaire exige une longueur ≥ |x|+|y|−1, puissance
     // de 2. On prend la puissance de 2 immédiatement supérieure.
@@ -885,17 +998,19 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
     // total — c'est le coût incompressible de la méthode.
 
     // Préparation des deux modules.
-    let mut monts: Vec<Mont> = Vec::with_capacity(2);
+    let tous_monts = monts();
+    let mut monts: Vec<&Mont> = Vec::with_capacity(2);
     let mut racs: Vec<Racines> = Vec::with_capacity(2);
-    for &(m, racine) in MODULES.iter() {
-        let mont = Mont::nouveau(m);
-        racs.push(racines(&mont, racine, n));
+    for (k, &(m, racine)) in MODULES.iter().enumerate() {
+        let mont = &tous_monts[k];
+        debug_assert_eq!(mont.m, m);
+        racs.push(racines(mont, racine, n));
         monts.push(mont);
     }
     // ⚠ Conversion en forme Montgomery : REDC(x·R²) = x·R.
     let mut a: Vec<Vec<u64>> = Vec::with_capacity(2);
     let mut b: Vec<Vec<u64>> = Vec::with_capacity(2);
-    for mont in &monts {
+    for mont in monts.iter() {
         let mut va: Vec<u64> = x.iter().map(|&v| mont.to_mont(v as u64)).collect();
         let mut vb: Vec<u64> = y.iter().map(|&v| mont.to_mont(v as u64)).collect();
         va.resize(n, 0);
@@ -908,7 +1023,7 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
     if fils <= 1 {
         // SÉQUENTIEL : pas de fil à créer.
         for k in 0..2 {
-            let mont = &monts[k];
+            let mont = monts[k];
             ntt_dif(&mut a[k], &racs[k], mont);
             ntt_dif(&mut b[k], &racs[k], mont);
             for i in 0..n { a[k][i] = mont.mul(a[k][i], b[k][i]); }
@@ -917,8 +1032,8 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
             for i in 0..n { a[k][i] = mont.mul(a[k][i], inv_n); }
         }
     } else {
-        use std::sync::{Arc, Barrier};
-        let bar = Arc::new(Barrier::new(fils));
+        use std::sync::Arc;
+        let bar = Arc::new(Barriere::nouveau(fils));
         let mut tables: Vec<PointeurPartage> = Vec::with_capacity(4);
         for k in 0..2 {
             tables.push(PointeurPartage(a[k].as_mut_ptr()));
@@ -936,7 +1051,7 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
                 let racs = &racs;
                 sc.spawn(move || {
                     for k in 0..2 {
-                        let mont = &monts[k];
+                        let mont = monts[k];
                         let rac = &racs[k];
                         // 1. NTT directe de a
                         ntt_etape(tables[k], n, rac, mont,
@@ -961,7 +1076,7 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
             }
             // Le fil 0 fait exactement le même travail.
             for k in 0..2 {
-                let mont = &monts[k];
+                let mont = monts[k];
                 let rac = &racs[k];
                 ntt_etape(tables[k], n, rac, mont, false, 0, fils, &bar);
                 ntt_etape(tables[k + 2], n, rac, mont, false, 0, fils, &bar);
@@ -998,8 +1113,28 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
         let diff = if r2 >= r1 % m2 { r2 - r1 % m2 } else { r2 + m2 - r1 % m2 };
         let t = (diff as u128 * inv_m1) % m2 as u128;
         let mut c = r1 as u128 + m1u * t + retenue;
-        r[i] = c as u32;
-        retenue = c >> 32;
+        // ⚠ Propagation des retenues dans la base demandée.
+        //   base 2³² : un simple décalage (le cas normal).
+        //   base 10⁹ : une division — mais 10⁹ est une CONSTANTE, donc le
+        //   compilateur la transforme en multiplication-shift ✓.
+        if base == 0 {
+            r[i] = c as u32;
+            retenue = c >> 32;
+        } else if base == 1_000_000_000 {
+            // ⚠⚠⚠ LA CONSTANTE DOIT ÊTRE LITTÉRALE. Avec une base RUNTIME,
+            // `c % base` sur un u128 compilait en un APPEL à `__udivti3`
+            // (division 128/128 logicielle, ~50-100 ns) — par élément !
+            // Mesuré : la conversion décimale de 1 000 000! coûtait 2,0 s
+            // à cause de ça. Avec la constante littérale, LLVM génère une
+            // suite multiplication-décalage (~10 instructions, sans appel).
+            const B: u128 = 1_000_000_000;
+            r[i] = (c % B) as u32;
+            retenue = c / B;
+        } else {
+            let b = base as u128;
+            r[i] = (c % b) as u32;
+            retenue = c / b;
+        }
     }
     normaliser(r)
 }
@@ -1350,7 +1485,7 @@ mod tests {
             let t = Instant::now(); let _ = ecole(&x, &y); let te = t.elapsed();
             let t = Instant::now(); let _ = karatsuba(&x, &y); let tk = t.elapsed();
             let t = Instant::now(); let _ = toom3(&x, &y); let tt = t.elapsed();
-            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0); let tn = t.elapsed();
+            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0, 0); let tn = t.elapsed();
             let t = Instant::now(); let _ = mul_limbs(&x, &y); let td = t.elapsed();
             let a = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&x));
             let b = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&y));
@@ -1399,7 +1534,7 @@ mod tests {
             let a = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&x));
             let b = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&y));
             let t = Instant::now(); let _ = &a * &b; let tn = t.elapsed();
-            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0); let tt = t.elapsed();
+            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0, 0); let tt = t.elapsed();
             eprintln!("n={:>7} : num-bigint {:>10.2?}   NTT {:>10.2?}   {}", n, tn, tt,
                       if tt < tn { "NTT GAGNE" } else { "num-bigint gagne" });
         }
@@ -1518,7 +1653,7 @@ mod tests {
     #[test]
     fn profil_ntt_interne() {
         use std::time::Instant;
-        for &n in &[100_000usize, 512_000] {
+        for &n in &[8_000usize, 16_000, 32_000, 100_000, 256_000, 512_000] {
             let x: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
             let y: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
             let besoin = 2 * n;
@@ -1528,11 +1663,11 @@ mod tests {
             // dans UN SEUL scope (création de fils mesurée à 370 µs :
             // 6 scopes = 2,2 ms perdus par multiplication).
             let t = Instant::now();
-            let r = ntt_mul_par(&x, &y, 0);
+            let r = ntt_mul_par(&x, &y, 0, 0);
             let t_par = t.elapsed();
             // La même chose en SÉQUENTIEL (1 fil) pour comparer.
             let t = Instant::now();
-            let r1 = ntt_mul_par(&x, &y, 1);
+            let r1 = ntt_mul_par(&x, &y, 1, 0);
             let t_seq = t.elapsed();
             assert_eq!(r, r1, "la NTT parallèle doit donner le même résultat");
             eprintln!("n={:>7} lg={:>7} : ntt_mul_par parallèle {:?} | séquentiel {:?}",
@@ -1579,7 +1714,7 @@ mod tests {
             let b = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&y));
             let t = Instant::now(); let _ = &a * &b; let tn = t.elapsed();
             let t = Instant::now(); let _ = mul(&a, &b); let tm = t.elapsed();
-            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0); let tt = t.elapsed();
+            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0, 0); let tt = t.elapsed();
             eprintln!("n={:>7} : num-bigint {:>10.2?}  mul(NTT) {:>10.2?}  ntt direct {:>10.2?}", n, tn, tm, tt);
         }
     }
@@ -1622,6 +1757,6 @@ mod tests {
         let xl: Vec<u32> = (0..3000).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
         let yl: Vec<u32> = (0..3000).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
         let reference = BigUint::from_slice(&ecole(&xl, &yl));
-        assert_eq!(BigUint::from_slice(&ntt_mul_par(&xl, &yl, 0)), reference, "ntt");
+        assert_eq!(BigUint::from_slice(&ntt_mul_par(&xl, &yl, 0, 0)), reference, "ntt");
     }
 }
