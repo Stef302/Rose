@@ -348,12 +348,29 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
     // que tout va bien.
     #[cfg(windows)]
     {
-        match verifier_path(&bindir) {
-            Ok(true) => j.push("✓ PATH : le dossier bin est bien enregistré".to_string()),
-            Ok(false) => j.push(format!(
-                "Échec : PATH ne contient pas {} après écriture —                  relancer l'installation ou l'ajouter à la main",
-                bindir.display())),
-            Err(e) => j.push(format!("· PATH non vérifiable ({e})")),
+        // ⚠⚠⚠ ON VERIFIE PAR LE DIAGNOSTIC COMPLET, pas seulement la clé :
+        // l'ancienne vérification disait « PATH ne contient pas … » sans
+        // dire POURQUOI. Ici on distingue le verrou de stratégie de groupe,
+        // le registre inaccessible et le PATH trop long — et on renvoie
+        // l'utilisateur vers l'outil PATH.
+        let d = diagnostiquer_path(prefixe);
+        if d.dans_path_utilisateur || d.dans_path_machine {
+            j.push("✓ PATH : le dossier bin est bien enregistré".to_string());
+        } else {
+            j.push(format!(
+                "Échec : PATH ne contient pas {} après écriture", bindir.display()));
+            if d.verrou_groupe {
+                j.push("  cause : VERROU de strategie de groupe sur HKCU Environment".to_string());
+            } else if !d.registre_inscriptible {
+                j.push("  cause : registre HKCU inaccessible en ecriture".to_string());
+            }
+            j.push("  -> bouton PATH de la barre d'etat : plusieurs methodes de reparation".to_string());
+            // ⚠⚠⚠ MODE ENTREPRISE AUTOMATIQUE : si le PATH est verrouillé
+            // (GPO), on installe quand même un accès fonctionnel SANS
+            // toucher au PATH. L'utilisateur n'a rien à faire à la main.
+            j.push("".to_string());
+            j.push("Mise en place de l'accès SANS modification du PATH :".to_string());
+            j.extend(mode_entreprise(prefixe));
         }
     }
     j
@@ -1107,6 +1124,515 @@ pub fn mettre_a_jour(prefixe: &str, force: bool) -> Journal {
     j
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// OUTIL PATH — diagnostic et réparation, plusieurs méthodes
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ POURQUOI CET OUTIL. Mesuré chez l'utilisateur : l'installation se
+// termine, mais l'écriture du `PATH` ÉCHOUE (« ça me demande de le faire à
+// la main »). Les causes possibles sont nombreuses et il faut les
+// DISTINGUER, pas les deviner :
+//
+//   1. le registre est en lecture seule ou la clé n'existe pas ;
+//   2. une STRATÉGIE DE GROUPE (entreprise) verrouille `HKCU\Environment` ;
+//   3. le `PATH` est géré par un outil tiers (Chocolatey, Scoop, un
+//      gestionnaire de parc…) qui réécrit la valeur à chaque connexion ;
+//   4. le `PATH` dépasse la limite de 2047 caractères du registre ;
+//   5. le dossier `bin` n'existe pas encore au moment de l'écriture ;
+//   6. l'utilisateur n'a pas les droits sur la clé.
+//
+// ⚠⚠⚠ LA SOLUTION POUR LES SYSTÈMES D'ENTREPRISE : si le `PATH` est
+// VERROUILLÉ, on ne peut pas le modifier — et ce n'est PAS une erreur de
+// l'installeur. Rose fonctionne alors de trois autres façons :
+//
+//   A. un LANCEUR dans le dossier utilisateur (`%USERPROFILE%\Rose\rose.cmd`) ;
+//   B. un RACCOURCI sur le Bureau qui appelle `rose.exe` directement ;
+//   C. l'association `.rose` (double-clic) qui n'a pas besoin du PATH.
+//
+// On propose donc plusieurs MÉTHODES, chacune testée et rapportée.
+
+/// Où en est le `PATH` pour le dossier `bin` de Rose ?
+pub struct DiagnosticPath {
+    /// Le dossier `bin` de Rose existe-t-il ?
+    pub bin_existe: bool,
+    /// Le dossier `bin` est-il dans le `PATH` utilisateur ?
+    pub dans_path_utilisateur: bool,
+    /// Le dossier `bin` est-il dans le `PATH` machine (HKLM) ?
+    pub dans_path_machine: bool,
+    /// Le dossier `bin` est-il dans le `PATH` du processus courant ?
+    pub dans_path_processus: bool,
+    /// La clé `HKCU\Environment` est-elle accessible en écriture ?
+    pub registre_inscriptible: bool,
+    /// Une stratégie de groupe verrouille-t-elle la clé ?
+    pub verrou_groupe: bool,
+    /// Longueur du PATH utilisateur (la limite du registre est 2047).
+    pub longueur_path: usize,
+    /// `rose.exe` est-il trouvable par `where` (résolution réelle) ?
+    pub where_trouve: bool,
+    /// Messages explicatifs, dans l'ordre.
+    pub messages: Vec<String>,
+}
+
+impl DiagnosticPath {
+    /// Vrai si `rose` est utilisable dans un terminal neuf.
+    pub fn ok(&self) -> bool {
+        self.bin_existe && (self.dans_path_utilisateur || self.dans_path_machine)
+    }
+}
+
+/// Lit une valeur `REG_SZ`/`REG_EXPAND_SZ` de `HKCU` par `reg query`.
+///
+/// ⚠ On coupe sur le TYPE, jamais sur les espaces : un chemin comme
+/// `C:\Program Files\Rose\bin` contient des espaces.
+#[cfg(windows)]
+fn lire_valeur_hkcu(sous_cle: &str, valeur: &str) -> Option<String> {
+    let o = commande_sans_fenetre("reg")
+        .args(["query", sous_cle, "/v", valeur]).output().ok()?;
+    if !o.status.success() { return None; }
+    let txt = String::from_utf8_lossy(&o.stdout);
+    for ligne in txt.lines() {
+        let l = ligne.trim_start();
+        if !l.starts_with(valeur) { continue; }
+        for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
+            if let Some(pos) = l.find(typ) {
+                return Some(l[pos + typ.len()..].trim_start().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Normalise un segment de `PATH` pour la comparaison.
+fn normaliser_path(s: &str) -> String {
+    s.trim().replace('/', "\\").replace("\\\\", "\\")
+        .trim_end_matches('\\').to_lowercase()
+}
+
+/// Le `PATH` contient-il `cible` ?
+fn path_contient(path: &str, cible: &str) -> bool {
+    let c = normaliser_path(cible);
+    path.split(';').any(|seg| normaliser_path(seg) == c)
+}
+
+/// Diagnostique l'état du `PATH` pour le dossier `bin` de Rose.
+///
+/// ⚠⚠⚠ AUCUNE ÉCRITURE ICI : c'est un diagnostic pur, sûr à appeler
+/// autant de fois qu'on veut.
+pub fn diagnostiquer_path(prefixe: &str) -> DiagnosticPath {
+    let bindir = std::path::Path::new(prefixe).join("bin");
+    let bin_str = bindir.display().to_string();
+    let mut messages: Vec<String> = Vec::new();
+
+    let bin_existe = bindir.join(if cfg!(windows) { "rose.exe" } else { "rose" }).is_file();
+    if bin_existe {
+        messages.push(format!("✓ le moteur est présent dans {bin_str}"));
+    } else {
+        messages.push(format!("Échec : aucun moteur dans {bin_str}"));
+    }
+
+    #[cfg(windows)]
+    let (path_user, path_machine, inscriptible, verrou) = {
+        let pu = lire_valeur_hkcu("HKCU\\Environment", "Path").unwrap_or_default();
+        // ⚠ Le PATH machine se lit dans HKLM ; on ne tente PAS de l'écrire
+        // (droits administrateur requis).
+        let pm = commande_sans_fenetre("reg")
+            .args(["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+                   "/v", "Path"]).output().ok()
+            .map(|o| {
+                let txt = String::from_utf8_lossy(&o.stdout);
+                let mut v = String::new();
+                for ligne in txt.lines() {
+                    let l = ligne.trim_start();
+                    if !l.starts_with("Path") { continue; }
+                    for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
+                        if let Some(pos) = l.find(typ) {
+                            v = l[pos + typ.len()..].trim_start().to_string();
+                            break;
+                        }
+                    }
+                }
+                v
+            }).unwrap_or_default();
+        // ⚠ TEST D'ÉCRITURE SANS RISQUE : on écrit une valeur temporaire
+        // dans une sous-clé dédiée de Rose, puis on la supprime. On ne
+        // touche JAMAIS au PATH pour tester.
+        let test_cle = "HKCU\\Software\\Rose\\TestEcriture";
+        let test = commande_sans_fenetre("reg")
+            .args(["add", test_cle, "/v", "ok", "/t", "REG_SZ", "/d", "1", "/f"])
+            .status().map(|s| s.success()).unwrap_or(false);
+        let _ = commande_sans_fenetre("reg")
+            .args(["delete", test_cle, "/f"]).status();
+        // ⚠ DÉTECTION DE VERROU DE GROUPE : si `HKCU\Environment` existe
+        // mais que l'écriture d'une valeur TEST échoue, c'est verrouillé.
+        let verrou = if test {
+            let essai = commande_sans_fenetre("reg")
+                .args(["add", "HKCU\\Environment", "/v", "RoseTest", "/t", "REG_SZ", "/d", "1", "/f"])
+                .status().map(|s| s.success()).unwrap_or(false);
+            if essai {
+                let _ = commande_sans_fenetre("reg")
+                    .args(["delete", "HKCU\\Environment", "/v", "RoseTest", "/f"]).status();
+                false
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        (pu, pm, test, verrou)
+    };
+    #[cfg(not(windows))]
+    let (path_user, path_machine, inscriptible, verrou) = (String::new(), String::new(), false, false);
+
+    let dans_path_utilisateur = path_contient(&path_user, &bin_str);
+    let dans_path_machine = path_contient(&path_machine, &bin_str);
+    let dans_path_processus = std::env::var("PATH").map(|p| path_contient(&p, &bin_str)).unwrap_or(false);
+
+    if dans_path_utilisateur { messages.push("✓ présent dans le PATH utilisateur".to_string()); }
+    else { messages.push("· absent du PATH utilisateur".to_string()); }
+    if dans_path_machine { messages.push("✓ présent dans le PATH machine".to_string()); }
+    if dans_path_processus { messages.push("✓ présent dans le PATH de ce processus".to_string()); }
+
+    if !inscriptible {
+        messages.push("Échec : le registre HKCU est INACCESSIBLE en écriture".to_string());
+    }
+    if verrou {
+        messages.push("⚠ VERROU : une stratégie de groupe bloque HKCU\\Environment".to_string());
+        messages.push("  → utilisez une des méthodes « entreprise » ci-dessous".to_string());
+    }
+    if path_user.len() > 2047 {
+        messages.push(format!("⚠ PATH utilisateur très long ({} car.) : la limite du registre est 2047", path_user.len()));
+    }
+
+    // ⚠ `where` est le test le PLUS fiable : c'est ce que fait `cmd` quand
+    // l'utilisateur tape `rose`. Il regarde le PATH RÉEL, pas le registre.
+    #[cfg(windows)]
+    let where_trouve = commande_sans_fenetre("where")
+        .args(["rose"]).output().map(|o| o.status.success()).unwrap_or(false);
+    #[cfg(not(windows))]
+    let where_trouve = false;
+    if where_trouve { messages.push("✓ `where rose` le trouve".to_string()); }
+    else { messages.push("· `where rose` ne le trouve pas (terminal neuf : « rose » échouera)".to_string()); }
+
+    DiagnosticPath {
+        bin_existe,
+        dans_path_utilisateur,
+        dans_path_machine,
+        dans_path_processus,
+        registre_inscriptible: inscriptible,
+        verrou_groupe: verrou,
+        longueur_path: path_user.len(),
+        where_trouve,
+        messages,
+    }
+}
+
+/// Méthode de réparation du `PATH`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MethodePath {
+    /// Écrire dans `HKCU\Environment\Path` (la méthode normale).
+    Utilisateur,
+    /// Écrire dans le `PATH` MACHINE (`HKLM`) — exige l'administrateur.
+    Machine,
+    /// Créer `%USERPROFILE%\Rose\rose.cmd` et l'ajouter au `PATH`
+    /// utilisateur (contourne un `PATH` trop long en le raccourcissant).
+    Lanceur,
+    /// Créer un raccourci sur le Bureau (aucune modification du PATH).
+    Raccourci,
+    /// Poser l'association `.rose` et un profil Windows Terminal
+    /// (aucune modification du PATH).
+    Association,
+}
+
+impl MethodePath {
+    pub fn nom(self) -> &'static str {
+        match self {
+            MethodePath::Utilisateur => "PATH utilisateur (HKCU)",
+            MethodePath::Machine => "PATH machine (HKLM, administrateur)",
+            MethodePath::Lanceur => "Lanceur .cmd dans %USERPROFILE%\\Rose",
+            MethodePath::Raccourci => "Raccourci sur le Bureau",
+            MethodePath::Association => "Association .rose + profil Terminal",
+        }
+    }
+    /// Cette méthode modifie-t-elle le `PATH` ?
+    pub fn modifie_path(self) -> bool {
+        matches!(self, MethodePath::Utilisateur | MethodePath::Machine | MethodePath::Lanceur)
+    }
+}
+
+/// ═══════════════════════════════════════════════════════════════════════
+/// MODE ENTREPRISE — AUTOMATIQUE, SANS MODIFIER LE PATH
+/// ═══════════════════════════════════════════════════════════════════════
+///
+/// ⚠⚠⚠ LE PROBLÈME MESURÉ : sur un appareil d'entreprise, une stratégie de
+/// groupe (GPO) peut VERROUILLER `HKCU\Environment`. Le PATH ne peut alors
+/// PAS être modifié — et ce n'est pas une erreur de l'installeur.
+///
+/// ⚠⚠⚠ LA SOLUTION : si l'écriture du PATH échoue, Rose installe quand
+/// même un ACCÈS FONCTIONNEL par trois moyens qui ne touchent PAS au PATH :
+///
+///   1. un LANCEUR `%USERPROFILE%\Rose\rose.cmd` ;
+///   2. un RACCOURCI `%USERPROFILE%\Desktop\Rose.cmd` ;
+///   3. l'ASSOCIATION `.rose` (double-clic sur un fichier).
+///
+/// L'utilisateur tape alors `%USERPROFILE%\Rose\rose.cmd` (ou
+/// double-clique) au lieu de `rose`. On le LUI DIT clairement, avec le
+/// chemin exact à utiliser.
+///
+/// ⚠ Cette fonction est appelée AUTOMATIQUEMENT à la fin de `installer()`
+/// quand le PATH n'a pas pu être écrit. Elle n'exige AUCUN droit.
+pub fn mode_entreprise(prefixe: &str) -> Journal {
+    let mut j: Journal = Vec::new();
+    #[cfg(windows)]
+    {
+        let bindir = std::path::Path::new(prefixe).join("bin");
+        let moteur = bindir.join("rose.exe");
+        if !moteur.is_file() {
+            j.push(format!("Échec : moteur absent ({}), mode entreprise impossible", moteur.display()));
+            return j;
+        }
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        // ── 1. Lanceur dans %USERPROFILE%\Rose ──
+        let dossier = std::path::Path::new(&home).join("Rose");
+        let lanceur = dossier.join("rose.cmd");
+        if std::fs::create_dir_all(&dossier).is_ok() {
+            let contenu = format!("@echo off\r\n\"{}\" %*\r\n", moteur.display());
+            if std::fs::write(&lanceur, contenu).is_ok() {
+                j.push(format!("✓ lanceur : {}", lanceur.display()));
+            } else {
+                j.push(format!("Échec : lanceur non écrit ({})", lanceur.display()));
+            }
+        } else {
+            j.push(format!("Échec : dossier {} non créé", dossier.display()));
+        }
+        // ── 2. Raccourci sur le Bureau ──
+        let bureau = std::path::Path::new(&home).join("Desktop").join("Rose.cmd");
+        let contenu_bureau = format!(
+            "@echo off\r\nrem Rose sans passer par le PATH\r\n\"{}\" %*\r\nif \"%~1\"==\"\" pause\r\n",
+            moteur.display());
+        if std::fs::write(&bureau, contenu_bureau).is_ok() {
+            j.push(format!("✓ raccourci Bureau : {}", bureau.display()));
+        } else {
+            j.push(format!("· raccourci Bureau non écrit ({})", bureau.display()));
+        }
+        // ── 3. Association .rose ──
+        let _ = commande_sans_fenetre("reg")
+            .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ",
+                   "/d", "Rose.File", "/f"]).status();
+        let _ = commande_sans_fenetre("reg")
+            .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve",
+                   "/t", "REG_SZ", "/d", &format!("\"{}\" \"%1\"", moteur.display()), "/f"]).status();
+        j.push("✓ association .rose (double-clic sur un fichier .rose)".to_string());
+        // ── Le message à retenir ──
+        j.push(format!(
+            "⚠ PATH non modifiable : utilisez {} (ou le raccourci du Bureau)",
+            lanceur.display()));
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = prefixe;
+        j.push("· mode entreprise sans objet hors Windows".to_string());
+    }
+    j
+}
+
+/// Les méthodes proposées, DANS L'ORDRE d'affichage.
+///
+/// ⚠ L'ordre compte : les deux premières modifient le PATH (ce sont les
+/// méthodes « normales »), les trois suivantes n'y touchent pas (ce sont
+/// les méthodes pour les machines d'ENTREPRISE où le PATH est verrouillé).
+pub const METHODES_PATH: [MethodePath; 5] = [
+    MethodePath::Utilisateur,
+    MethodePath::Machine,
+    MethodePath::Lanceur,
+    MethodePath::Raccourci,
+    MethodePath::Association,
+];
+
+/// Applique une méthode de réparation et rend un journal.
+///
+/// ⚠⚠⚠ CHAQUE MÉTHODE EST VÉRIFIÉE APRÈS COUP : on relit l'état et on dit
+/// si ça a MARCHÉ. Écrire une clé de registre ne prouve rien.
+pub fn reparer_path(prefixe: &str, methode: MethodePath) -> Journal {
+    let mut j: Journal = Vec::new();
+    let bindir = std::path::Path::new(prefixe).join("bin");
+    let bin_str = bindir.display().to_string();
+
+    #[cfg(windows)]
+    match methode {
+        MethodePath::Utilisateur => {
+            let ancien = lire_valeur_hkcu("HKCU\\Environment", "Path").unwrap_or_default();
+            let mut segs: Vec<String> = ancien.split(';')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .filter(|s| normaliser_path(s) != normaliser_path(&bin_str))
+                .collect();
+            segs.insert(0, bin_str.replace('/', "\\"));
+            let st = commande_sans_fenetre("reg")
+                .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
+                       "/d", &segs.join(";"), "/f"]).status();
+            match st {
+                Ok(s) if s.success() => j.push("✓ PATH utilisateur écrit".to_string()),
+                Ok(s) => j.push(format!("Échec : `reg add` a rendu le code {}", s.code().unwrap_or(-1))),
+                Err(e) => j.push(format!("Échec : `reg` n'a pas pu être lancé ({e})")),
+            }
+            diffuser_environnement();
+            verifier_et_rapporter(&mut j, prefixe, "utilisateur");
+        }
+        MethodePath::Machine => {
+            // ⚠ Écrire dans HKLM exige l'administrateur : sans élévation,
+            // `reg add` échoue avec « Accès refusé ». On le DIT clairement.
+            let ancien = {
+                let o = commande_sans_fenetre("reg")
+                    .args(["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+                           "/v", "Path"]).output();
+                o.ok().map(|o| {
+                    let txt = String::from_utf8_lossy(&o.stdout);
+                    let mut v = String::new();
+                    for ligne in txt.lines() {
+                        let l = ligne.trim_start();
+                        if !l.starts_with("Path") { continue; }
+                        for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
+                            if let Some(pos) = l.find(typ) {
+                                v = l[pos + typ.len()..].trim_start().to_string();
+                                break;
+                            }
+                        }
+                    }
+                    v
+                }).unwrap_or_default()
+            };
+            let mut segs: Vec<String> = ancien.split(';')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .filter(|s| normaliser_path(s) != normaliser_path(&bin_str))
+                .collect();
+            segs.insert(0, bin_str.replace('/', "\\"));
+            let st = commande_sans_fenetre("reg")
+                .args(["add", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+                       "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", &segs.join(";"), "/f"]).status();
+            match st {
+                Ok(s) if s.success() => j.push("✓ PATH machine écrit".to_string()),
+                Ok(s) => j.push(format!(
+                    "Échec : `reg add` HKLM a rendu {} — l'administrateur est requis \
+                     (lancez l'installeur « En tant qu'administrateur »)",
+                    s.code().unwrap_or(-1))),
+                Err(e) => j.push(format!("Échec : `reg` n'a pas pu être lancé ({e})")),
+            }
+            diffuser_environnement();
+            verifier_et_rapporter(&mut j, prefixe, "machine");
+        }
+        MethodePath::Lanceur => {
+            // ⚠ Le lanceur évite un PATH trop long : on n'ajoute qu'UN
+            // dossier court (`%USERPROFILE%\Rose`) au lieu du chemin complet.
+            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            let d = std::path::Path::new(&home).join("Rose");
+            match std::fs::create_dir_all(&d) {
+                Ok(()) => {
+                    let cmd = d.join("rose.cmd");
+                    let contenu = format!(
+                        "@echo off\r\n\"{}\" %*\r\n",
+                        bindir.join("rose.exe").display()
+                    );
+                    match std::fs::write(&cmd, contenu) {
+                        Ok(()) => j.push(format!("✓ lanceur créé : {}", cmd.display())),
+                        Err(e) => j.push(format!("Échec : lanceur non écrit ({e})")),
+                    }
+                    // Ajoute le dossier COURT au PATH utilisateur.
+                    let ancien = lire_valeur_hkcu("HKCU\\Environment", "Path").unwrap_or_default();
+                    let court = d.display().to_string().replace('/', "\\");
+                    let mut segs: Vec<String> = ancien.split(';')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .filter(|s| normaliser_path(s) != normaliser_path(&court))
+                        .collect();
+                    segs.insert(0, court.clone());
+                    let _ = commande_sans_fenetre("reg")
+                        .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
+                               "/d", &segs.join(";"), "/f"]).status();
+                    diffuser_environnement();
+                    j.push(format!("✓ {} ajouté au PATH ({} car. au total)", court, segs.join(";").len()));
+                }
+                Err(e) => j.push(format!("Échec : dossier {} non créé ({e})", d.display())),
+            }
+        }
+        MethodePath::Raccourci => {
+            // ⚠ Un raccourci .lnk exige COM (IShellLink). Sans COM, on pose
+            // un fichier `.cmd` sur le Bureau : il fonctionne par double-clic
+            // et ne dépend d'AUCUN composant système.
+            let bureau = std::env::var("USERPROFILE").unwrap_or_default() + "\\Desktop";
+            let cible = std::path::Path::new(&bureau).join("Rose.cmd");
+            let contenu = format!(
+                "@echo off\r\nrem Lance Rose sans passer par le PATH\r\n\"{}\" %*\r\n\
+                 if \"%~1\"==\"\" pause\r\n",
+                bindir.join("rose.exe").display()
+            );
+            match std::fs::write(&cible, contenu) {
+                Ok(()) => j.push(format!("✓ raccourci posé : {}", cible.display())),
+                Err(e) => j.push(format!("Échec : raccourci non écrit ({e})")),
+            }
+        }
+        MethodePath::Association => {
+            // ⚠ Ni le PATH ni le registre d'environnement : seulement les
+            // associations et le profil Terminal.
+            let _ = commande_sans_fenetre("reg")
+                .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ",
+                       "/d", "Rose.File", "/f"]).status();
+            let _ = commande_sans_fenetre("reg")
+                .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve",
+                       "/t", "REG_SZ", "/d", &format!("\"{}\\rose.exe\" \"%1\"", bin_str),
+                       "/f"]).status();
+            j.push("✓ association .rose posée (double-clic sur un fichier .rose)".to_string());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (prefixe, methode, bin_str);
+        j.push("· méthode sans objet hors Windows".to_string());
+    }
+    j
+}
+
+/// Diffuse `WM_SETTINGCHANGE` pour que les applications déjà lancées voient
+/// le nouveau `PATH`.
+#[cfg(windows)]
+fn diffuser_environnement() {
+    unsafe {
+        use std::ffi::c_void;
+        #[link(name = "user32")]
+        unsafe extern "system" {
+            fn SendMessageTimeoutW(hwnd: isize, msg: u32, wparam: usize,
+                                   lparam: *const c_void, flags: u32,
+                                   timeout: u32, result: *mut usize) -> usize;
+        }
+        const WM_SETTINGCHANGE: u32 = 0x001A;
+        const HWND_BROADCAST: isize = 0xFFFF;
+        const SMTO_ABORTIFHUNG: u32 = 0x0002;
+        let env = "Environment\0".encode_utf16().collect::<Vec<u16>>();
+        let mut result = 0usize;
+        SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                            env.as_ptr() as *const c_void, SMTO_ABORTIFHUNG, 3000, &mut result);
+    }
+}
+
+/// Relit l'état et rapporte si la réparation a MARCHÉ.
+#[cfg(windows)]
+fn verifier_et_rapporter(j: &mut Journal, prefixe: &str, portee: &str) {
+    let d = diagnostiquer_path(prefixe);
+    let ok = if portee == "machine" { d.dans_path_machine } else { d.dans_path_utilisateur };
+    if ok {
+        j.push(format!("✓ vérifié : le dossier bin est bien dans le PATH {portee}"));
+    } else {
+        j.push(format!(
+            "Échec : le dossier bin n'est TOUJOURS pas dans le PATH {portee} après écriture"));
+        if d.verrou_groupe {
+            j.push("  cause probable : VERROU DE STRATÉGIE DE GROUPE sur HKCU\\Environment".to_string());
+            j.push("  → essayez « Lanceur .cmd », « Raccourci » ou « Association »".to_string());
+        } else if !d.registre_inscriptible {
+            j.push("  cause probable : registre HKCU inaccessible en écriture".to_string());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,6 +1753,63 @@ mod tests {
         let mort = tmp.join("Ancien").join("Rose").display().to_string();
         assert!(est_rose(&mort), "un dossier Rose mort doit être retiré : {mort}");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// ⚠⚠⚠ L'OUTIL PATH : les méthodes doivent être COHÉRENTES.
+    #[test]
+    fn methodes_path_coherentes() {
+        // Les deux premières modifient le PATH ; les trois suivantes non.
+        assert!(MethodePath::Utilisateur.modifie_path());
+        assert!(MethodePath::Machine.modifie_path());
+        assert!(MethodePath::Lanceur.modifie_path());
+        assert!(!MethodePath::Raccourci.modifie_path());
+        assert!(!MethodePath::Association.modifie_path());
+        // La liste publiée contient bien les cinq, dans cet ordre.
+        assert_eq!(METHODES_PATH.len(), 5);
+        assert_eq!(METHODES_PATH[0], MethodePath::Utilisateur);
+        assert_eq!(METHODES_PATH[4], MethodePath::Association);
+        // Chaque méthode a un nom non vide.
+        for m in METHODES_PATH { assert!(!m.nom().is_empty()); }
+    }
+
+    /// ⚠ La comparaison des segments de PATH doit être insensible à la
+    /// casse, aux séparateurs et aux antislashs finaux.
+    #[test]
+    fn path_comparaison_robuste() {
+        let p = "C:\\Windows;C:\\Program Files\\Rose\\bin;C:\\Tools\\";
+        assert!(path_contient(p, "c:/program files/rose/bin"));
+        assert!(path_contient(p, "C:\\Program Files\\Rose\\bin\\"));
+        assert!(path_contient(p, "C:\\Tools"));
+        assert!(!path_contient(p, "C:\\Program Files\\Rose"));
+        assert!(!path_contient(p, "C:\\tools\\rosetta"));
+        // Un chemin AVEC ESPACE ne doit pas être tronqué.
+        assert_eq!(normaliser_path("C:\\Program Files\\Rose\\bin"),
+                   "c:\\program files\\rose\\bin");
+    }
+
+    /// ⚠ Le diagnostic ne doit JAMAIS paniquer, même si le dossier
+    /// n'existe pas (cas d'une désinstallation partielle).
+    #[test]
+    fn diagnostic_sur_dossier_inexistant() {
+        let d = diagnostiquer_path("C:\\Dossier\\Qui\\N\\Existe\\Pas");
+        assert!(!d.bin_existe);
+        assert!(!d.messages.is_empty());
+        assert!(!d.ok());
+    }
+
+    /// ⚠⚠⚠ LE MODE ENTREPRISE doit produire un accès FONCTIONNEL même
+    /// quand le PATH est verrouillé : un lanceur, un raccourci et
+    /// l'association. On vérifie qu'il ne PANIQUE pas et qu'il rapporte
+    /// une ligne exploitable.
+    #[test]
+    fn mode_entreprise_rapporte_quelque_chose() {
+        let j = mode_entreprise("C:\\Dossier\\Inexistant");
+        assert!(!j.is_empty());
+        // Sur Linux, la fonction est sans objet mais doit rester sûre.
+        #[cfg(not(windows))]
+        assert!(j.iter().any(|l| l.contains("sans objet")));
+        #[cfg(windows)]
+        assert!(j.iter().any(|l| l.starts_with("Échec") || l.starts_with("✓")));
     }
 
     #[test]

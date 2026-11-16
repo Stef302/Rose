@@ -441,6 +441,10 @@ enum Vue {
     Options,
     Installation,
     Termine,
+    /// ⚠ Outil PATH : diagnostic et réparation par plusieurs méthodes.
+    /// C'est la réponse à « ça échoue à écrire le PATH » — notamment sur
+    /// les machines d'entreprise où la clé est verrouillée par une GPO.
+    Path,
 }
 
 /// Action des deux boutons du pied de page.
@@ -451,6 +455,13 @@ enum Action {
     Annuler,
     Fermer,
     Desinstaller,
+    /// Ouvre l'outil PATH.
+    OutilPath,
+    /// Applique une méthode de réparation du PATH (l'index est porté par
+    /// l'état, pas par l'action).
+    ReparerPath,
+    /// Revient à l'écran précédent (depuis l'outil PATH).
+    FermerOutil,
 }
 
 struct Etat {
@@ -483,6 +494,12 @@ struct Etat {
     survol_titre: i32,
     /// Dernière version installée (après succès).
     version_installee: String,
+    /// Diagnostic PATH courant (None = pas encore calculé).
+    diagnostic: Option<crate::setup_core::DiagnosticPath>,
+    /// Méthode de réparation choisie (index dans METHODES).
+    methode: usize,
+    /// Journal de la dernière réparation PATH.
+    journal_path: Vec<String>,
     dpi: i32,
     /// Icône de la fenêtre.
     icone: HICON,
@@ -1156,6 +1173,10 @@ fn boutons(vue: Vue, existant: bool) -> (Option<(Action, &'static str)>, Option<
         ),
         Vue::Installation => (Some((Action::Annuler, "Annuler")), None),
         Vue::Termine => (Some((Action::Retour, "Fermer")), Some((Action::Fermer, "Terminer"))),
+        // ⚠ L'outil PATH propose « Réparer » (applique la méthode choisie)
+        // et « Fermer ». C'est là que l'utilisateur règle l'écriture du PATH
+        // quand l'installation automatique a échoué.
+        Vue::Path => (Some((Action::FermerOutil, "Fermer")), Some((Action::ReparerPath, "Réparer"))),
     }
 }
 
@@ -1551,6 +1572,10 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
         Vue::Options => ("Options".to_string(), "Dossier d'installation et vérification du paquet.".to_string()),
         Vue::Installation => ("Installation".to_string(), etat.statut.clone()),
         Vue::Termine => ("Terminé".to_string(), "Rose est prêt.".to_string()),
+        Vue::Path => (
+            "Outil PATH".to_string(),
+            "Diagnostic et réparation — plusieurs méthodes, dont un mode entreprise.".to_string(),
+        ),
     };
     let mut rti = RECT { left: g, top: yc, right: d, bottom: yc + s(44) };
     // Titre de section en Kare — mais EN MAJUSCULES : Kare est une police
@@ -1687,6 +1712,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
         }
         Vue::Installation => {
             let statut = etat.statut.clone();
+            // ⚠ Si l'opération a ÉCHOUÉ, on ajoute un bouton bien visible
+            // « Ouvrir l'outil PATH » : c'est le geste attendu par
+            // l'utilisateur, pas un message lui demandant de le faire à la
+            // main. Le bouton est dessiné sous la carte d'erreur.
+            let en_echec = statut.starts_with("ÉCHEC");
             let h_statut = hauteur(&statut, 10, interligne);
             let h_carte = crate::paint::hauteur_carte(h_statut, s(18), s(72));
             let c = RECT { left: g, top: yc, right: d, bottom: yc + h_carte };
@@ -1694,12 +1724,77 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             let mut r = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(14) };
             texte_echelle(dc, dpi, "Segoe UI", &statut, &mut r, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE, 10, false, echelle);
             // barre de progression indéterminée — bornée par `paint::segment_progression`
-            let piste = RECT { left: g, top: c.bottom + s(20), right: d, bottom: c.bottom + s(26) };
-            remplir(dc, &piste, LIGNE);
-            let (a, b) = crate::paint::segment_progression(etat.phase, d - g);
-            if b > a {
-                let barre = RECT { left: g + a, top: piste.top, right: g + b, bottom: piste.bottom };
-                remplir(dc, &barre, ROUGE_CLAIR);
+            if en_echec {
+                // Bouton d'action : ouvre l'outil PATH.
+                let rb = RECT { left: g, top: c.bottom + s(20), right: g + s(280).min(d - g), bottom: c.bottom + s(64) };
+                let fond = if etat.survol == 2 { VERT_LIME_CLAIR } else { VERT_LIME };
+                arrondi(dc, &rb, 10, fond);
+                let mut rt = RECT { left: rb.left, top: rb.top, right: rb.right, bottom: rb.bottom };
+                texte_echelle(dc, dpi, "Kare", "OUVRIR L'OUTIL PATH", &mut rt,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 11, false, echelle);
+                ZONES_ZONE_PATH = rb;
+            } else {
+                let piste = RECT { left: g, top: c.bottom + s(20), right: d, bottom: c.bottom + s(26) };
+                remplir(dc, &piste, LIGNE);
+                let (a, b) = crate::paint::segment_progression(etat.phase, d - g);
+                if b > a {
+                    let barre = RECT { left: g + a, top: piste.top, right: g + b, bottom: piste.bottom };
+                    remplir(dc, &barre, ROUGE_CLAIR);
+                }
+                ZONES_ZONE_PATH = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            }
+        }
+        Vue::Path => {
+            // ⚠⚠⚠ L'OUTIL PATH. On affiche :
+            //   1. le DIAGNOSTIC (une ligne par constat, avec ✓ ou Échec) ;
+            //   2. la MÉTHODE choisie (clic sur les lignes pour changer) ;
+            //   3. le JOURNAL de la dernière réparation.
+            //
+            // ⚠ Les méthodes « entreprise » (Lanceur, Raccourci, Association)
+            // ne modifient PAS le PATH : elles fonctionnent même quand une
+            // stratégie de groupe verrouille HKCU\Environment.
+            let diag = match &etat.diagnostic {
+                Some(d) => d.messages.join("\n"),
+                None => "Diagnostic non calculé.".to_string(),
+            };
+            let h_diag = hauteur(&diag, 9, interligne_petit);
+            let h_c1 = crate::paint::hauteur_carte(h_diag, s(18), s(96));
+            let c1 = RECT { left: g, top: yc, right: d, bottom: yc + h_c1 };
+            let ok = etat.diagnostic.as_ref().map(|d| d.ok()).unwrap_or(false);
+            carte(dc, &c1, if ok { VERT } else { ROUGE_CLAIR });
+            let mut r1 = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: c1.bottom - s(14) };
+            texte_echelle(dc, dpi, "Segoe UI", &diag, &mut r1, DT_WORDBREAK | DT_TOP | DT_END_ELLIPSIS,
+                          TEXTE, 9, false, echelle);
+
+            // ── carte 2 : méthodes ──────────────────────────────────────
+            let y2 = c1.bottom + s(16);
+            let mut lignes = String::new();
+            for (i, m) in crate::setup_core::METHODES_PATH.iter().enumerate() {
+                let marque = if i == etat.methode { "▶" } else { "  " };
+                let tag = if m.modifie_path() { "modifie le PATH" } else { "sans toucher au PATH" };
+                lignes.push_str(&format!("{marque} {}  ({tag})\n", m.nom()));
+            }
+            let h_m = hauteur(&lignes, 9, interligne_petit);
+            let h_c2 = crate::paint::hauteur_carte(h_m, s(18), s(110));
+            let c2 = RECT { left: g, top: y2, right: d, bottom: y2 + h_c2 };
+            carte(dc, &c2, VERT_LIME);
+            let mut r2 = RECT { left: g + s(20), top: y2 + s(16), right: d - s(20), bottom: c2.bottom - s(14) };
+            texte_echelle(dc, dpi, "Segoe UI", &lignes, &mut r2, DT_WORDBREAK | DT_TOP | DT_END_ELLIPSIS,
+                          TEXTE, 9, false, echelle);
+            ZONES_METHODES = r2;
+
+            // ── carte 3 : journal de la réparation ──────────────────────
+            if !etat.journal_path.is_empty() {
+                let y3 = c2.bottom + s(16);
+                let journal = etat.journal_path.join("\n");
+                let h_j = hauteur(&journal, 9, interligne_petit);
+                let h_c3 = crate::paint::hauteur_carte(h_j, s(18), s(96))
+                    .min((bas_utile - y3).max(s(96)));
+                let c3 = RECT { left: g, top: y3, right: d, bottom: y3 + h_c3 };
+                carte(dc, &c3, ROUGE);
+                let mut r3 = RECT { left: g + s(20), top: y3 + s(16), right: d - s(20), bottom: c3.bottom - s(14) };
+                texte_echelle(dc, dpi, "Segoe UI", &journal, &mut r3,
+                              DT_WORDBREAK | DT_TOP | DT_END_ELLIPSIS, TEXTE, 9, false, echelle);
             }
         }
         Vue::Termine => {
@@ -1732,7 +1827,8 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let bw = s(190).min((place - s(20)) / 2).max(s(96));
     let bh = s(44);
     let by = pied.top + (pied_h - bh) / 2;
-    let mut zones = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
+    let mut zones = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>(),
+                     std::mem::zeroed::<RECT>()];
     if let Some((action, libelle)) = gauche {
         let r = RECT { left: lateral_w + s(28), top: by, right: lateral_w + s(28) + bw, bottom: by + bh };
         // Bouton secondaire en VERT LIME ; le survol éclaircit.
@@ -1776,10 +1872,22 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     cercle(dc, s(16), ht - etat_h / 2, s(5), if etat.empreinte.is_some() { VERT } else { TEXTE_FAIBLE });
     let mut rg = RECT { left: s(28), top: etat_barre.top, right: w / 2 - s(10), bottom: etat_barre.bottom };
     texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut rg, DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 9, false, echelle);
-    let mut rd = RECT { left: w / 2 + s(10), top: etat_barre.top, right: w - s(14), bottom: etat_barre.bottom };
+    let mut rd = RECT { left: w / 2 + s(10), top: etat_barre.top, right: w - s(110), bottom: etat_barre.bottom };
     texte_echelle(dc, dpi, "Segoe UI",
           &format!("Rose-win-Setup.exe · Windows x64 · © 2026 Stef302"),
           &mut rd, DT_VCENTER | DT_SINGLELINE | DT_RIGHT, TEXTE_FAIBLE, 9, false, echelle);
+    // ⚠ Bouton « PATH » dans la barre d'état : ouvre l'outil de diagnostic.
+    // Il est TOUJOURS là, y compris sur l'écran d'échec — c'est le seul
+    // moyen pour l'utilisateur de régler un PATH verrouillé.
+    {
+        let r = RECT { left: w - s(100), top: etat_barre.top + s(3), right: w - s(8), bottom: etat_barre.bottom - s(3) };
+        let fond = if etat.survol == 2 { VERT_LIME_CLAIR } else { VERT_LIME };
+        arrondi(dc, &r, 6, fond);
+        let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+        texte_echelle(dc, dpi, "Kare", "PATH", &mut rt, DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                      NOIR_DOUX, 10, false, echelle);
+        zones[2] = r;
+    }
 
     // garder les zones pour le clic
     ZONES = zones;
@@ -1794,13 +1902,23 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     DeleteDC(dc_memoire);
 }
 
-static mut ZONES: [RECT; 2] = [
+/// ⚠ ZONES[2] = bouton « PATH » de la barre d'état : il ouvre l'outil
+/// de diagnostic/réparation du PATH. Il est TOUJOURS visible, y compris
+/// quand l'installation a échoué — c'est précisément là qu'on en a besoin.
+static mut ZONES: [RECT; 3] = [
+    RECT { left: 0, top: 0, right: 0, bottom: 0 },
     RECT { left: 0, top: 0, right: 0, bottom: 0 },
     RECT { left: 0, top: 0, right: 0, bottom: 0 },
 ];
 
 /// Bords gauches des trois boutons de la barre de titre (réduire, agrandir,
 /// fermer), remplis par `dessiner`.
+/// Zone cliquable du bouton « Ouvrir l'outil PATH » sur l'écran d'échec.
+static mut ZONES_ZONE_PATH: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+
+/// Zone cliquable de la carte des MÉTHODES (vue PATH).
+static mut ZONES_METHODES: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+
 static mut ZONES_TITRE: [i32; 3] = [0, 0, 0];
 
 fn dans(r: &RECT, x: i32, y: i32) -> bool {
@@ -2096,6 +2214,8 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             let mut z = -1;
             if dans(&zones[0], x, y) { z = 0; }
             if dans(&zones[1], x, y) { z = 1; }
+            // ⚠ La zone 2 est le bouton « PATH » de la barre d'état.
+            if dans(&zones[2], x, y) { z = 2; }
             let zt = match zone_titre(rc.right, rc.bottom, x, y) {
                 1 => 0,
                 2 => 1,
@@ -2213,13 +2333,38 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                 _ => {}
             }
             let zones = &*std::ptr::addr_of!(ZONES);
-            if dans(&zones[0], x, y) { action(h, 0); }
+            // ⚠ Sur la vue PATH, un clic dans la carte des méthodes CHOISIT
+            // la méthode (pas de bouton par méthode : la carte est
+            // cliquable ligne par ligne).
+            let etat = &mut *ETAT;
+            // ⚠ Rust 2024 interdit `&STATIC_MUT` : on passe par `addr_of!`.
+            let zm = &*std::ptr::addr_of!(ZONES_METHODES);
+            if etat.vue == Vue::Path && dans(zm, x, y) {
+                let n = crate::setup_core::METHODES_PATH.len();
+                let h_carte = (zm.bottom - zm.top).max(1);
+                let ligne = ((y - zm.top) * n as i32 / h_carte) as usize;
+                etat.methode = ligne.min(n - 1);
+                rafraichir(h);
+                return 0;
+            }
+            let zp = &*std::ptr::addr_of!(ZONES_ZONE_PATH);
+            if dans(zp, x, y) { action_path(h); }
+            else if dans(&zones[2], x, y) { action_path(h); }
+            else if dans(&zones[0], x, y) { action(h, 0); }
             else if dans(&zones[1], x, y) { action(h, 1); }
             0
         }
         WM_APP_FIN => {
             let etat = &mut *ETAT;
             etat.occupe = false;
+            // ⚠ w == 2 : c'est la fin d'une RÉPARATION PATH, pas d'une
+            // installation. On relit le diagnostic et on reste sur l'outil.
+            if w == 2 {
+                etat.journal_path = JOURNAL_PATH.lock().ok().map(|g| g.clone()).unwrap_or_default();
+                etat.diagnostic = Some(crate::setup_core::diagnostiquer_path(&etat.prefixe));
+                unsafe { rafraichir(h); }
+                return 0;
+            }
             let desinstalle = w == 1;
             // ⚠ LIRE LE JOURNAL pour savoir si l'opération a ÉCHOUÉ.
             // `WM_APP_FIN` affichait TOUJOURS « Vue::Termine » avec « Rose X
@@ -2320,6 +2465,34 @@ fn action(h: HWND, bouton: usize) {
             }
             unsafe { rafraichir(h); }
         }
+        Action::OutilPath => {
+            // ⚠ On CALCULE le diagnostic AVANT d'afficher : l'utilisateur
+            // doit voir l'état réel, pas un écran vide.
+            etat.diagnostic = Some(crate::setup_core::diagnostiquer_path(&etat.prefixe));
+            etat.journal_path.clear();
+            etat.vue = Vue::Path;
+            unsafe { rafraichir(h); }
+        }
+        Action::FermerOutil => {
+            etat.vue = Vue::Termine;
+            unsafe { rafraichir(h); }
+        }
+        Action::ReparerPath => {
+            let prefixe = etat.prefixe.clone();
+            let methode = crate::setup_core::METHODES_PATH[
+                etat.methode.min(crate::setup_core::METHODES_PATH.len() - 1)];
+            etat.journal_path = vec![format!("Application de « {} »…", methode.nom())];
+            unsafe { rafraichir(h); }
+            // ⚠ La réparation peut prendre du temps (reg, écritures) : on la
+            // fait dans un fil pour ne pas figer la fenêtre.
+            let cible = h as isize;
+            std::thread::spawn(move || {
+                let journal = crate::setup_core::reparer_path(&prefixe, methode);
+                if let Ok(mut g) = JOURNAL_PATH.lock() { *g = journal; }
+                let h = cible as HWND;
+                if !h.is_null() { unsafe { SendMessageW(h, WM_APP_FIN, 2, 0); } }
+            });
+        }
         Action::Desinstaller => {
             etat.vue = Vue::Installation;
             etat.occupe = true;
@@ -2346,8 +2519,23 @@ fn action(h: HWND, bouton: usize) {
     }
 }
 
+/// Ouvre l'outil PATH (bouton de la barre d'état).
+///
+/// ⚠ C'est le SEUL accès garanti à l'outil : il est visible sur TOUTES les
+/// vues, y compris l'écran d'échec, là où l'utilisateur en a besoin.
+unsafe fn action_path(h: HWND) {
+    let etat = &mut *ETAT;
+    etat.diagnostic = Some(crate::setup_core::diagnostiquer_path(&etat.prefixe));
+    etat.journal_path.clear();
+    etat.vue = Vue::Path;
+    rafraichir(h);
+}
+
 /// Texte partagé entre le fil de travail et la fenêtre.
 static STATUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Journal de la dernière réparation PATH (fil de travail → fenêtre).
+static JOURNAL_PATH: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// Journal complet de la dernière opération. Il contient les lignes
 /// « Échec : … » produites par `setup_core`, ce qui permet à la fenêtre de
@@ -2508,6 +2696,9 @@ pub fn lancer() {
             "Payload absent · prêt.".to_string()
         };
         let etat = Box::new(Etat {
+            diagnostic: None,
+            methode: 0,
+            journal_path: Vec::new(),
             vue: Vue::Bienvenue,
             atteintes: [false; 5],
             licence: lire_licence(),
