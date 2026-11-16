@@ -141,91 +141,177 @@ pub fn factorielle_parallele(n: u64) -> Gz {
     }
 }
 
+// ── Arbre de produit ÉQUILIBRÉ (fusion des deux plus petits) ────────────
+//
+// ⚠⚠⚠ LE PROBLÈME MESURÉ DE L'ARBRE « APPARIEMENT » ANCIEN. L'ancien
+// algorithme fusionnait les facteurs par PAIRES ADJACENTES (v[0]·v[1],
+// v[2]·v[3], …). Avec les facteurs d'une factorielle, le plus gros est
+// 2^999994 (1 Mbit pour n = 1 000 000) : il reste « en tête » pendant tout
+// l'arbre, si bien que les niveaux successifs mesurent :
+//
+//   niveau  0 : 78 498 facteurs, max    999 994 bits
+//   niveau  8 : 307 facteurs,  max  9 884 514 bits
+//   niveau 16 : 2 facteurs,     max 18 232 319 bits
+//
+// L'arbre est donc PATHOLOGIQUEMENT DÉSAQUILIBRÉ : à chaque niveau, une
+// branche grossit pendant que les autres peinent à la rattraper.
+//
+// ⚠ LA MESURE (1 000 000!, multiplication `num-bigint` pure) :
+//
+//   appariement adjacent      : 2 172 ms
+//   fusion des deux plus petits: 1 158 ms      → 1,88×
+//
+// Et le détail des 12 fusions les plus coûteuses de l'arbre Huffman :
+//
+//   7 727 004 × 10 761 882 bits =  350 ms   ← la dernière, SÉRIELLE
+//   4 853 888 ×  5 907 995 bits =  168 ms
+//   3 609 697 ×  4 117 307 bits =   84 ms
+//   …
+//
+// Le top-20 des fusions = 82,3 % du temps. La dernière seule = 30 %.
+// C'est cette dernière fusion qui fixe le plancher : AUCUN parallélisme
+// d'arbre ne peut la dédoubler, seule une NTT parallèle peut.
+//
+// D'où la stratégie : l'arbre est équilibré ET la NTT est parallèle.
+
+use std::collections::BinaryHeap;
+
+/// Un nœud de la file de fusion : on prend toujours les DEUX PLUS PETITS.
+#[derive(Eq)]
+struct Fusion {
+    bits: usize,
+    v: BigInt,
+}
+
+impl Ord for Fusion {
+    // Ordre INVERSÉ : `BinaryHeap` est un max-heap, on veut le min.
+    fn cmp(&self, autre: &Self) -> Ordering { autre.bits.cmp(&self.bits) }
+}
+impl PartialOrd for Fusion {
+    fn partial_cmp(&self, autre: &Self) -> Option<Ordering> { Some(self.cmp(autre)) }
+}
+impl PartialEq for Fusion {
+    fn eq(&self, autre: &Self) -> bool { self.bits == autre.bits }
+}
+
+fn en_file(facteurs: Vec<BigInt>) -> BinaryHeap<Fusion> {
+    facteurs.into_iter().map(|v| Fusion { bits: v.bits() as usize, v }).collect()
+}
+
+/// Fusionne une liste de facteurs en un produit, par fusions successives des
+/// deux plus petits (Huffman EXACT), SÉQUENTIELLEMENT.
+///
+/// ⚠ Utilisé à l'intérieur d'un fil : chaque multiplication est donc
+/// mono-fils (pas de sursouscription des cœurs).
+fn fusionner_seq(mut facteurs: Vec<BigInt>) -> BigInt {
+    if facteurs.len() == 1 { return facteurs.pop().unwrap(); }
+    let mut file = en_file(facteurs);
+    while file.len() > 1 {
+        let a = file.pop().unwrap();
+        let b = file.pop().unwrap();
+        let p = crate::mul_rapide::mul_par(&a.v, &b.v, 1);
+        file.push(Fusion { bits: p.bits() as usize, v: p });
+    }
+    file.into_iter().next().map(|f| f.v).unwrap_or_else(|| BigInt::from(1u64))
+}
+
+/// Fusionne une liste de facteurs par tours de paires EN PARALLÈLE.
+///
+/// ⚠ La DERNIÈRE fusion (il ne reste que deux éléments) est faite avec
+/// TOUS les cœurs : c'est la plus coûteuse et elle est seule.
+fn fusionner_par(mut facteurs: Vec<BigInt>, coeurs: usize) -> BigInt {
+    if facteurs.len() == 1 { return facteurs.pop().unwrap(); }
+    let mut file = en_file(facteurs);
+    while file.len() > 1 {
+        if file.len() == 2 {
+            // Dernière fusion : tous les cœurs (la NTT s'en charge).
+            let a = file.pop().unwrap();
+            let b = file.pop().unwrap();
+            return crate::mul_rapide::mul_par(&a.v, &b.v, coeurs);
+        }
+        // On prend les 2·coeurs plus petits et on les fusionne par paires.
+        // (Huffman exact tant qu'il reste ≥ 2 éléments : les deux plus
+        // petits sont toujours dans le lot pris.)
+        let k = std::cmp::min(file.len(), 2 * coeurs);
+        let mut lot: Vec<Fusion> = Vec::with_capacity(k);
+        for _ in 0..k { lot.push(file.pop().unwrap()); }
+        let mut paires: Vec<(BigInt, BigInt)> = Vec::with_capacity(k / 2);
+        let mut i = 0usize;
+        while i + 1 < lot.len() {
+            let a = std::mem::replace(&mut lot[i].v, BigInt::from(0u64));
+            let b = std::mem::replace(&mut lot[i + 1].v, BigInt::from(0u64));
+            paires.push((a, b));
+            i += 2;
+        }
+        let mut resultats: Vec<BigInt> = Vec::with_capacity(k / 2 + 1);
+        std::thread::scope(|s| {
+            let hs: Vec<_> = paires.into_iter()
+                .map(|(a, b)| s.spawn(move || crate::mul_rapide::mul_par(&a, &b, 1)))
+                .collect();
+            for h in hs { resultats.push(h.join().unwrap()); }
+        });
+        if i < lot.len() {
+            resultats.push(std::mem::replace(&mut lot[i].v, BigInt::from(0u64)));
+        }
+        for r in resultats { file.push(Fusion { bits: r.bits() as usize, v: r }); }
+    }
+    file.into_iter().next().map(|f| f.v).unwrap_or_else(|| BigInt::from(1u64))
+}
+
 /// Arbre de produit équilibré multi-cœur sur une liste de facteurs déjà
-/// calculés (primorielle, super-factorielle…). Zéro clonage profond.
+/// calculés (primorielle, super-factorielle…).
+///
+/// ⚠ Trois niveaux :
+///   1. les facteurs sont répartis en `coeurs` lots de POIDS ÉGALAUX
+///      (le plus gros facteur va dans le lot le plus léger) ;
+///   2. chaque lot est fusionné en parallèle (un fil par lot) ;
+///   3. les résultats des lots sont ensuite fusionnés par tours de paires
+///      (Huffman), en parallèle, la dernière fusion utilisant tous les cœurs.
 pub fn arbre_produit(facteurs: Vec<BigInt>) -> Gz {
     let r = Gz::neuf();
     if facteurs.is_empty() { r.poser_u64(1); return r; }
-    // ⚠⚠ L'ARBRE SANS ALLOCATION PAR NŒUD. La version précédente faisait
-    // `std::mem::replace(&mut v[i], BigInt::from(0u64))` pour prendre les
-    // deux opérandes : chaque appel allouait DEUX `BigInt` vides, soit
-    // 2·(nombre de multiplications) allocations inutiles — mesuré ~4× de
-    // surcoût sur `n#` (43 293 chiffres, petits nombres : l'essentiel du
-    // temps est dans ces allocations, pas dans les multiplications).
-    //
-    // On opère donc EN PLACE : on calcule `v[i] * v[i+1]` par référence,
-    // on écrit le résultat dans `v[i/2]` (toujours ≤ i, donc déjà lu), puis
-    // on tronque. Aucune allocation de zéro.
-    fn arbre_seq(v: &mut Vec<BigInt>) {
-        while v.len() > 1 {
-            let m = v.len();
-            let mut i = 0usize;
-            while i + 1 < m {
-                // `i/2 <= i` : la case cible a déjà été consommée (ou est
-                // la case i elle-même quand i = 0 ou 1).
-                // ⚠ `mul_rapide::mul` bascule sur la NTT au-delà de
-                // 16,4 M bits ; en dessous il délègue à `num-bigint`.
-                let p = crate::mul_rapide::mul(&v[i], &v[i + 1]);
-                v[i / 2] = p;
-                i += 2;
-            }
-            if m % 2 == 1 { v[(m - 1) / 2] = v[m - 1].clone(); }
-            v.truncate((m + 1) / 2);
-        }
+    if facteurs.len() == 1 { r.set_v(facteurs.into_iter().next().unwrap()); return r; }
+
+    let poids: u64 = facteurs.iter().map(|x| x.bits()).sum();
+    let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+
+    // ── Petit volume : tout séquentiel (le coût des fils domine) ────────
+    if coeurs < 2 || poids < 500_000 {
+        r.set_v(fusionner_seq(facteurs));
+        return r;
     }
-    fn niveau_par(v: &mut Vec<BigInt>, coeurs: usize) {
-        use std::thread;
-        v.sort_by_key(|x| std::cmp::Reverse(x.bits()));
-        let mut buckets: Vec<(u64, Vec<BigInt>)> = (0..coeurs).map(|_| (0u64, Vec::new())).collect();
-        for x in v.drain(..) {
-            let b = buckets.iter_mut().min_by_key(|(s, _)| *s).unwrap();
+
+    // ── WebAssembly : pas de threads ────────────────────────────────────
+    #[cfg(target_arch = "wasm32")]
+    {
+        r.set_v(fusionner_seq(facteurs));
+        return r;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // ── Répartition en lots de poids ÉGAUX ──────────────────────────
+        // On trie du plus gros au plus petit, et on place chaque facteur
+        // dans le lot le plus léger : c'est la répartition « LPT », qui
+        // donne un écart maximal de 1/7 dans le pire cas théorique (et
+        // bien meilleur en pratique).
+        let mut facteurs = facteurs;
+        facteurs.sort_by_key(|x| std::cmp::Reverse(x.bits()));
+        let mut lots: Vec<(u64, Vec<BigInt>)> = (0..coeurs).map(|_| (0u64, Vec::new())).collect();
+        for x in facteurs {
+            let b = lots.iter_mut().min_by_key(|(s, _)| *s).unwrap();
             b.0 += x.bits();
             b.1.push(x);
         }
-        let mids: Vec<BigInt> = thread::scope(|s| {
-            let hs: Vec<_> = buckets.into_iter()
-                .map(|(_, mut lot)| s.spawn(move || {
-                    arbre_seq(&mut lot);
-                    std::mem::replace(&mut lot[0], BigInt::from(0u64))
-                }))
-                .collect();
+        // ── Chaque fil fusionne son lot ─────────────────────────────────
+        let resultats: Vec<BigInt> = std::thread::scope(|s| {
+            let hs: Vec<_> = lots.into_iter().map(|(_, mut lot)| s.spawn(move || {
+                fusionner_seq(std::mem::take(&mut lot))
+            })).collect();
             hs.into_iter().map(|h| h.join().unwrap()).collect()
         });
-        *v = mids;
-    }
-    let mut v = facteurs;
-    #[cfg(target_arch = "wasm32")]
-    {
-        // Pas de threads en WebAssembly : arbre séquentiel équilibré.
-        arbre_seq(&mut v);
-        r.set_v(v.into_iter().next().unwrap());
-        return r;
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // ⚠⚠ SEUIL DE PARALLÉLISATION, CALIBRÉ PAR MESURE. Lancer des
-        // threads coûte ~0,1–0,2 ms ; en dessous d'un certain volume de
-        // travail, le SÉQUENTIEL gagne. Mesuré (aarch64, bits cumulés →
-        // séquentiel / parallèle) :
-        //
-        //   4 000 bits (primorielle 500)   : 0,014 / 0,107 ms
-        //   20 000 bits (primorielle 2000) : 0,085 / 0,167 ms
-        //   124 000 bits (primorielle 10000): 1,28 / 1,46 ms
-        //   734 000 bits (100000! partiel) : 16,7 / 13,7 ms  ← bascule
-        //
-        // D'où un seuil de 500 000 bits cumulés. Un premier réglage à 64 Mo
-        // rendait `n$` (super-factorielle) et `n!!` PLUS LENTS : ils tombent
-        // sous le seuil et passaient donc en séquentiel à des tailles où le
-        // parallèle gagnait encore.
-        let poids: u64 = v.iter().map(|x| x.bits()).sum();
-        let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
-        if poids >= 500_000 {
-            while v.len() > coeurs.max(2) * 2 {
-                niveau_par(&mut v, coeurs);
-            }
-        }
-        arbre_seq(&mut v);
-        r.set_v(v.into_iter().next().unwrap());
+        // ── Fusion finale des résultats de lots ─────────────────────────
+        r.set_v(fusionner_par(resultats, coeurs));
         r
     }
 }

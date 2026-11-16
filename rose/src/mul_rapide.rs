@@ -72,6 +72,17 @@ const SEUIL_DIVISION: usize = 100;
 /// Multiplication de deux entiers signés, par le meilleur algorithme selon
 /// la taille. Sémantique STRICTEMENT identique à `BigInt * BigInt`.
 pub fn mul(a: &BigInt, b: &BigInt) -> BigInt {
+    mul_par(a, b, 0)
+}
+
+/// ⚠⚠ Multiplication avec CHOIX DU NOMBRE DE FILS pour la NTT.
+///
+/// `fils = 0` → tous les cœurs disponibles (le cas normal).
+/// `fils = 1` → NTT mono-fils : c'est ce qu'il faut quand PLUSIEURS
+/// multiplications tournent EN PARALLÈLE ( tours de paires de l'arbre de
+/// produit), sinon on sursouscrit les cœurs et l'on perd plus qu'on ne
+/// gagne.
+pub fn mul_par(a: &BigInt, b: &BigInt, fils: usize) -> BigInt {
     if a.is_zero() || b.is_zero() { return BigInt::zero(); }
     // ⚠⚠⚠ CE QUE LA MESURE A RÉVÉLÉ (et qui change toute la stratégie) :
     // `num-bigint` N'EST PAS limité à Karatsuba. Sa `multiplication.rs`
@@ -108,21 +119,26 @@ pub fn mul(a: &BigInt, b: &BigInt) -> BigInt {
     // grosses factorielles (1 000 000! ≈ 5,6 millions de chiffres).
     //
     // ⚠⚠ SEUIL BALAYÉ SUR L'ARBRE RÉEL de 1 000 000! (mesuré) :
-    //   2,05 M bits → 1568 ms   4,1 M → 1226 ms   8,19 M → 1037 ms
-    //  16,4 M → 930 ms         32,7 M → 900 ms   ∞ → 912 ms
-    // Le meilleur est 32,7 M bits. Au-delà, la NTT ne s'applique plus du
-    // tout et on perd 12 ms ; en dessous, elle entre trop tôt et coûte plus
-    // que Toom-3 sur les nœuds intermédiaires.
-    // La bascule isolée est à 256 000 limbs (8,19 M bits), mais dans un
-    // arbre de produit les nœuds voisins de cette taille sont rares et la
-    // conversion coûte : mesuré 1074 ms à 8,19 M bits contre 913 ms à
-    // 16,4 M bits pour `1 000 000!`. On garde donc 512 000 limbs.
-    const SEUIL_NTT_BITS: u64 = 16_384_000;
+    //
+    //   1,02 M bits → 787 ms    2,05 M → 549 ms    3,07 M → 502 ms
+    //   4,10 M bits → 497 ms  ←  5,12 M → 650 ms    6,14 M → 656 ms
+    //   8,19 M → 664 ms         16,4 M → 912 ms
+    //
+    // Le seuil est descendu de 16,4 M à 4,1 M bits parce que la NTT a été
+    // RÉÉCRITE (Montgomery + DIF/DIT + parallélisation) : elle est ~2,4×
+    // plus rapide qu'avant et ~3,3× plus rapide encore en parallèle.
+    //
+    // ⚠ Pourquoi 4,1 M et pas le point de bascule ISOLÉ (32 000 limbs,
+    // soit 1,02 M bits, où la NTT bat `num-bigint` de 1,2×) : dans l'arbre
+    // réel, les nœuds de cette taille sont NOMBREUX et la conversion
+    // (`to_u32_digits`) coûte ; en dessous de 4,1 M bits, on mesure 787 ms
+    // contre 497 ms. Le seuil se cale sur l'ARBRE, pas sur un couple isolé.
+    const SEUIL_NTT_BITS: u64 = 4_096_000;
     if a.bits().max(b.bits()) >= SEUIL_NTT_BITS {
         let signe = if a.sign() == b.sign() { Sign::Plus } else { Sign::Minus };
         let x = a.magnitude().to_u32_digits();
         let y = b.magnitude().to_u32_digits();
-        let m = ntt_mul(&x, &y);
+        let m = ntt_mul_par(&x, &y, fils);
         return BigInt::from_biguint(signe, BigUint::from_slice(&m));
     }
     let _ = (SEUIL_KARATSUBA, SEUIL_TOOM3, SEUIL_NTT);
@@ -143,7 +159,7 @@ fn mul_limbs(x: &[u32], y: &[u32]) -> Vec<u32> {
     if y.len() < SEUIL_NTT {
         return toom3(x, y);
     }
-    ntt_mul(x, y)
+    ntt_mul_par(x, y, 0)
 }
 
 /// Multiplication « école » : O(n·m), la plus rapide pour les petites tailles.
@@ -459,27 +475,23 @@ fn div_petit(a: &[u32], d: u64) -> Vec<u32> {
 // Chaque module est de la forme k·2^m + 1, ce qui garantit l'existence
 // d'une racine primitive de l'unité d'ordre 2^m : c'est ce qui permet la
 // NTT de longueur puissance de 2.
+//
 // ⚠⚠ LA RACINE PRIMITIVE COMPTE AUTANT QUE LE MODULE. Une première version
 // donnait (2013265921, 5) : `5^((m−1)/2) mod m = 1`, donc 5 n'était PAS une
 // racine primitive et la NTT produisait des valeurs fausses (test rouge).
 // Vérification systématique : `g^((m−1)/2) ≡ −1` et `g^(m−1) ≡ 1`.
-// ⚠⚠⚠ LA RACINE PRIMITIVE COMPTE AUTANT QUE LE MODULE. Une première version
-// donnait (2013265921, 5) : `5^((m−1)/2) mod m = 1`, donc 5 n'était PAS une
-// racine primitive et la NTT produisait des valeurs fausses (test rouge).
-// Vérification systématique : `g^((m−1)/2) ≡ −1` et `g^(m−1) ≡ 1`.
 //
-// ⚠⚠ POURQUOI DEUX MODULES DE 62 BITS PLUTÔT QUE TROIS DE 30. Mesuré : avec
+// ⚠⚠⚠ POURQUOI DEUX MODULES DE 62 BITS PLUTÔT QUE TROIS DE 30. Mesuré : avec
 // trois modules de 30 bits, la NTT coûtait 9 transformées (3 modules ×
 // 2 + 1 inverse) et un `%` u128 par papillon — elle ne battait `num-bigint`
 // qu'à 512 000 limbs. Avec DEUX modules de 62 bits, le produit de deux
-// valeurs tient dans u128 et le `%` par un u64 est une instruction matérielle
-// (`udiv`), ce qui divise le coût par ~2.
+// valeurs tient dans u128.
 //
 // Couverture : deux modules de ~62 bits donnent ~124 bits. Le coefficient
 // maximal d'une convolution est L·(2³²−1)² ≈ L·2⁶⁴, donc L < 2⁶⁰ limbs
 // (≈ 64 Go de chiffres) — largement au-delà de ce que Rose manipule.
 //
-// ⚠ Ces modules ont été VÉRIFIÉS premiers et leur racine primitive testée :
+// Ces modules ont été VÉRIFIÉS premiers et leur racine primitive testée :
 //   m = 2850325311931809793 = k·2^32+1, racine 5
 //   m = 3874380531890126849 = k·2^32+1, racine 3
 // (2-adicité 32 : longueur NTT jusqu'à 2³²).
@@ -503,71 +515,328 @@ fn inverse_mod(a: u64, m: u64) -> u64 {
     puissance_mod(a, m - 2, m)
 }
 
-/// NTT itérative (Cooley-Tukey) sur un vecteur de longueur 2^p.
-///
-/// ⚠⚠⚠ LES TROIS OPTIMISATIONS QUI COMPTENT (mesurées : 7,85 ns/papillon
-/// avant, c'était trop lent — attendu 2–3 ns sur aarch64) :
-///   1. les racines sont PRÉCALCULÉES une fois pour toute la transformée
-///      (une seule table de n/2 valeurs), au lieu d'une table par étage ;
-///   2. la boucle interne travaille par SLICES (`split_at_mut`) pour que le
-///      compilateur sache que les deux moitiés sont disjointes : plus de
-///      vérification de bornes, accès linéaire ;
-///   3. les racines sont indexées par `k * (n/len)` : une seule table,
-///      accès direct, pas de reconstruction à chaque étage.
-fn ntt(v: &mut [u64], racine: u64, m: u64, inverse: bool) {
-    let n = v.len();
-    // Bit-reversal.
-    let mut j = 0usize;
-    for i in 1..n {
-        let mut bit = n >> 1;
-        while j & bit != 0 { j ^= bit; bit >>= 1; }
-        j |= bit;
-        if i < j { v.swap(i, j); }
-    }
-    // ⚠ UNE SEULE TABLE de n/2 racines : w^k pour k = 0..n/2, où w est la
-    // racine primitive d'ordre n. C'est ce qui rend l'accès direct possible.
-    let w = {
-        let base = puissance_mod(racine, (m - 1) / n as u64, m);
-        if inverse { inverse_mod(base, m) } else { base }
-    };
-    let demi_n = n / 2;
-    let mut racines = Vec::with_capacity(demi_n);
-    let mut cur = 1u64;
-    for _ in 0..demi_n {
-        racines.push(cur);
-        cur = (cur as u128 * w as u128 % m as u128) as u64;
-    }
-    let mut len = 2usize;
-    while len <= n {
-        let demi = len / 2;
-        let pas = demi_n / demi; // pas d'avance dans la table des racines
-        let mut i = 0usize;
-        while i < n {
-            // ⚠ Slice disjointe : `split_at_mut` garantit l'absence d'aliasing,
-            // le compilateur retire les vérifications de bornes.
-            let (gauche, droite) = v[i..i + len].split_at_mut(demi);
-            for k in 0..demi {
-                let u = gauche[k];
-                let t = (racines[k * pas] as u128 * droite[k] as u128 % m as u128) as u64;
-                let s = u + t;
-                gauche[k] = if s >= m { s - m } else { s };
-                droite[k] = if u >= t { u - t } else { u + m - t };
-            }
-            i += len;
+// ═══════════════════════════════════════════════════════════════════════
+// MONTGOMERY
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ POURQUOI MONTGOMERY ET PLUS LE `%`. Mesuré (aarch64, 4 M ops) :
+//
+//   `% u128` par un module de 62 bits : 1,68 ns/op
+//   Montgomery (REDC)             : 0,96 ns/op   → 1,74× plus rapide
+//   Barrett avec estimation f64   : 8,26 ns/op   → 4,9× plus LENT
+//
+// Le `%` u128 sur aarch64 passe par `__umodti3` (une division 128/64
+// logicielle). Montgomery remplace cette division par deux multiplications
+// 64×64 et un décalage, sans division.
+//
+// ⚠⚠ MONTGOMERY AVAIT ÉTÉ REJETÉ PLUS TÔT À TORT : l'analyse de coût
+// disait « 1,8× plus lent qu'un % u64, donc Montgomery ne gagne pas ». La
+// MESURE montre l'inverse (1,74× de gain) : le `%` u128 n'était pas
+// « 1,8× plus lent », c'était le `%` u128 tout court qui était lent.
+//
+// Représentation : un élément x du corps est stocké sous la forme
+// MONTGOMER `x·R mod m` avec R = 2^64.
+//
+//   mont_mul(a, b) = REDC(a·b) = a·b·R⁻¹ mod m
+//
+// Si a et b sont tous deux en forme Montgomery (a = x·R, b = y·R),
+// alors mont_mul(a, b) = x·y·R → le résultat est EN FORME MONTGOMER ✓.
+// C'est ce qui rend la NTT entière working : l'addition et la soustraction
+// sont linéaires (donc préservent la forme), et la multiplication
+// point à point aussi.
+//
+// La conversion d'entrée `to_mont` vaut REDC(x·R²) = x·R ✓.
+// La conversion de sortie se fait gratuitement : à la fin de la NTT
+// inverse, la valeur est n·résultat·R ; on multiplie par inv_n (forme
+// NORMALE) → REDC(n·résultat·R·inv_n) = résultat ✓ (une seule
+// multiplication de Montgomery fait les deux).
+struct Mont {
+    m: u64,
+    /// −m⁻¹ mod 2^64.
+    m_inv_neg: u64,
+    /// 2^128 mod m.
+    r2: u64,
+}
+
+impl Mont {
+    fn nouveau(m: u64) -> Mont {
+        // Inverse de m mod 2^64 par itération de Newton (5 suffit, on en
+        // fait 6 pour la marge).
+        let mut inv: u64 = 1;
+        for _ in 0..6 {
+            inv = inv.wrapping_mul(2u64.wrapping_sub(m.wrapping_mul(inv)));
         }
-        // ⚠ (Montgomery testé et REJETÉ : voir le rapport — le % u128 n'est
-        // que 1,8× plus lent qu'un % u64, et Montgomery ajoute deux
-        // multiplications 64×64 + un décalage, donc il ne gagne pas.)
-        len <<= 1;
+        debug_assert_eq!(m.wrapping_mul(inv), 1, "m doit être impair");
+        // 2^128 mod m : on part de 1 et on double 128 fois en réduisant.
+        let mut r: u128 = 1;
+        for _ in 0..128 {
+            r = (r << 1) % m as u128;
+        }
+        Mont { m, m_inv_neg: inv.wrapping_neg(), r2: r as u64 }
     }
-    if inverse {
-        let inv_n = inverse_mod(n as u64, m);
-        for x in v.iter_mut() { *x = (*x as u128 * inv_n as u128 % m as u128) as u64; }
+
+    /// REDC(a·b) = a·b·R⁻¹ mod m. Exige a, b < m (alors a·b < m·R ✓).
+    #[inline(always)]
+    fn mul(&self, a: u64, b: u64) -> u64 {
+        let t = (a as u128) * (b as u128);
+        let u = (t as u64).wrapping_mul(self.m_inv_neg);
+        let t2 = t + (u as u128) * (self.m as u128);
+        // t2 < 2·m·R ⇒ t2 >> 64 < 2m ⇒ un seul retrait suffit.
+        let r = (t2 >> 64) as u64;
+        if r >= self.m { r - self.m } else { r }
+    }
+
+    /// Forme Montgomery d'un élément NORMAL : x·R mod m.
+    #[inline(always)]
+    fn to_mont(&self, x: u64) -> u64 { self.mul(x, self.r2) }
+
+    #[inline(always)]
+    fn add(&self, a: u64, b: u64) -> u64 {
+        let s = a + b;
+        if s >= self.m { s - self.m } else { s }
+    }
+
+    #[inline(always)]
+    fn sub(&self, a: u64, b: u64) -> u64 {
+        if a >= b { a - b } else { a + self.m - b }
     }
 }
 
-/// Multiplication NTT avec 2 modules de 62 bits + restes chinois.
-fn ntt_mul(x: &[u32], y: &[u32]) -> Vec<u32> {
+/// Tables des racines pour une transformée de longueur `n`.
+///
+/// `directes[j] = mont(ω^j)` et `inverses[j] = mont(ω^-j)`, pour
+/// j = 0..n/2−1 (ω = racine primitive d'ordre n).
+///
+/// ⚠ L'inverse se déduit des directes SANS multiplication : ω^(n/2) = −1
+/// (racine d'ordre n, n pair), donc ω^-j = ω^(n−j) = −ω^(n/2−j). Un simple
+/// retrait suffit — c'est n/2 soustractions au lieu de n/2 multiplications
+/// de Montgomery.
+struct Racines {
+    directes: Vec<u64>,
+    inverses: Vec<u64>,
+}
+
+fn racines(mont: &Mont, racine: u64, n: usize) -> Racines {
+    let m = mont.m;
+    let demi = n / 2;
+    // ω = racine^((m−1)/n) : racine d'ordre n.
+    let omega = puissance_mod(racine, (m - 1) / n as u64, m);
+    let om = mont.to_mont(omega);
+    let mut directes = Vec::with_capacity(demi);
+    let mut cur = mont.to_mont(1);
+    for _ in 0..demi {
+        directes.push(cur);
+        cur = mont.mul(cur, om);
+    }
+    let mut inverses = vec![0u64; demi];
+    if demi > 0 {
+        inverses[0] = mont.to_mont(1);
+        for j in 1..demi {
+            // ω^-j = −ω^(n/2−j)
+            inverses[j] = mont.sub(0, directes[demi - j]);
+        }
+    }
+    Racines { directes, inverses }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PARALLÉLISATION DE LA NTT
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ POURQUOI PARALLÉLISER LA NTT ET PAS SEULEMENT L'ARBRE. Mesuré sur
+// `1 000 000!` (arbre de produit réel) : la FUSION FINALE (7,73 Mbit ×
+// 10,76 Mbit) coûte 350 ms à elle seule — 30 % du total, et elle est
+// SÉRIELLE par construction (c'est la dernière multiplication). Aucun
+// parallélisme de l'arbre ne peut la diviser : c'est la NTT elle-même qui
+// doit être parallèle.
+//
+// La machine a 20 cœurs. Une NTT à lg = 2^20 fait 20 étages × 524 288
+// papillons = 10,5 M papillons par transformée, 6 transformées.
+//
+// ⚠⚠⚠ LE DÉCOMPTE DES PAPILLONS EST LE POINT CRITIQUE. On ne peut PAS
+// partager les PAPILLONS d'un bloc entre fils (un papillon lit deux cases
+// distantes de `half` éléments) sans danger d'aliasing ; on peut en
+// revanche partager les BLOCS.
+//
+// La répartition choisie : le travail d'un étage est la suite des
+// « papillons globaux » i = 0..n/2, indexés par (bloc, k) :
+//
+//     bloc = i >> log2(half),  k = i & (half−1)
+//     cases touchées : base+k et base+k+half, base = bloc·len
+//
+// La case p1 = base+k est une fonction STRICTEMENT CROISSANTE de i
+// (p1 = 2i − (i mod half)), donc deux indices distincts touchent des
+// cases distinctes. Des plages de i disjointes ⇒ des cases disjointes ⇒
+// AUCUNE course de données. C'est ce qui rend le partage sûr.
+//
+// L'accès mémoire est bon : tant que la plage d'un fil tient dans un
+// bloc, les cases sont contiguës ; au-delà, chaque bloc est traité par
+// une plage contigue de k.
+//
+// La barrière entre étages est indispensable : l'étage suivant lit ce
+// que le précédent a écrit.
+
+/// Pointeur brut partagé entre fils de la NTT.
+///
+/// ⚠ `*mut u64` n'est pas `Sync`. On encapsule le pointeur dans ce type
+/// pour que le compilateur accepte le partage. C'est SÛR parce que les
+/// plages d'indices traitées par chaque fil sont DISJOINTES (démontré
+/// dans le commentaire de `ntt_par`).
+#[derive(Copy, Clone)]
+struct PointeurPartage(*mut u64);
+// SAFETY : voir ci-dessus — chaque fil n'accède qu'à sa propre plage.
+unsafe impl Send for PointeurPartage {}
+unsafe impl Sync for PointeurPartage {}
+
+/// Seuil (en éléments) au-delà duquel la NTT est parallélisée. En dessous,
+/// le coût de création des fils dépasse le gain.
+const SEUIL_PAR_NTT: usize = 1 << 15;
+
+/// Nombre de fils pour une NTT de longueur `n`.
+fn fils_ntt(n: usize) -> usize {
+    if n < SEUIL_PAR_NTT { return 1; }
+    let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+    // On garde au plus n/2 fils : au-delà, chaque fil n'aurait rien à faire.
+    coeurs.min(n / 2).max(1)
+}
+
+/// Une transformée (directe ou inverse) parallèle sur `threads` fils.
+///
+/// ⚠ `unsafe` : les écritures sont prouvées disjointes (voir le commentaire
+/// ci-dessus sur la monotonie de p1). Le pointeur brut ne sert qu'à
+/// contourner le fait que `&mut` ne peut pas être partagé entre fils.
+fn ntt_par(v: &mut [u64], rac: &Racines, mont: &Mont, inverse: bool, threads: usize) {
+    let n = v.len();
+    if threads <= 1 {
+        if inverse { ntt_dit(v, rac, mont); } else { ntt_dif(v, rac, mont); }
+        return;
+    }
+    use std::sync::{Arc, Barrier};
+    let bar = Arc::new(Barrier::new(threads));
+    let ptr = v.as_mut_ptr();
+    let n2 = n / 2;
+    let worker = |tid: usize, ptr: PointeurPartage| {
+        let mut len = if inverse { 2usize } else { n };
+        loop {
+            bar.wait();
+            let half = len / 2;
+            let pas = n2 / half;
+            let lo = n2 * tid / threads;
+            let hi = n2 * (tid + 1) / threads;
+            let mut i = lo;
+            while i < hi {
+                let bloc = i / half;
+                let k0 = i % half;
+                let kend = std::cmp::min(half, k0 + (hi - i));
+                let base = bloc * len;
+                for k in k0..kend {
+                    let p1 = base + k;
+                    let p2 = p1 + half;
+                    // ⚠ SÛR : p1 est strictement croissant en i, donc les
+                    // plages disjointes de i touchent des cases disjointes.
+                    unsafe {
+                        let u = *ptr.0.add(p1);
+                        let w = *ptr.0.add(p2);
+                        if inverse {
+                            let t = mont.mul(w, rac.inverses[k * pas]);
+                            *ptr.0.add(p1) = mont.add(u, t);
+                            *ptr.0.add(p2) = mont.sub(u, t);
+                        } else {
+                            *ptr.0.add(p1) = mont.add(u, w);
+                            *ptr.0.add(p2) = mont.mul(mont.sub(u, w), rac.directes[k * pas]);
+                        }
+                    }
+                }
+                i += kend - k0;
+            }
+            if inverse {
+                if len == n { break; }
+                len <<= 1;
+            } else {
+                if len == 2 { break; }
+                len >>= 1;
+            }
+        }
+        bar.wait();
+    };
+    std::thread::scope(|s| {
+        for t in 1..threads {
+            let bar = bar.clone();
+            // ⚠ Le pointeur brut n'est pas `Sync` : on l'encapsule dans un
+            // nouveau type qui l'est. C'est SAFE parce que chaque fil
+            // n'écrit que dans SA plage d'indices (démontré plus haut).
+            let ptr = PointeurPartage(ptr);
+            s.spawn(move || { worker(t, ptr); });
+        }
+        worker(0, PointeurPartage(ptr));
+    });
+}
+
+/// NTT directe — décimation en FREQUENCE (DIF).
+///
+/// ⚠⚠⚠ LE CHOIX DIF/DIT SUPPRIME TOUTES LES PERMUTATIONS DE BIT-REVERSAL.
+/// L'ancienne version en faisait TROIS (une au début de chacune des trois
+/// transformées) : chacune est un accès ALÉATOIRE sur 4–8 Mo, donc très
+/// pénalisant en bande passante mémoire.
+///
+///   DIF : entrée en ordre NATUREL → sortie en ordre BIT-REVERSÉ.
+///   DIT inverse : entrée en ordre BIT-REVERSÉ → sortie en ordre NATUREL.
+///
+/// Les deux tableaux du produit point à point sont bit-reversés de la même
+/// façon, donc le produit point à point se fait position par position ✓.
+fn ntt_dif(v: &mut [u64], rac: &Racines, mont: &Mont) {
+    let n = v.len();
+    let demi_n = n / 2;
+    let mut len = n;
+    while len >= 2 {
+        let demi = len / 2;
+        let pas = demi_n / demi; // pas d'avance dans la table des racines
+        let mut base = 0usize;
+        while base < n {
+            let (gauche, droite) = v[base..base + len].split_at_mut(demi);
+            for k in 0..demi {
+                let u = gauche[k];
+                let w = droite[k];
+                gauche[k] = mont.add(u, w);
+                droite[k] = mont.mul(mont.sub(u, w), rac.directes[k * pas]);
+            }
+            base += len;
+        }
+        len >>= 1;
+    }
+}
+
+/// NTT inverse — décimation en TEMPS (DIT), racine inverse.
+///
+/// ⚠ La normalisation (÷ n) est faite par l'appelant, en une seule
+/// multiplication de Montgomery qui fait aussi la conversion hors forme
+/// Montgomery.
+fn ntt_dit(v: &mut [u64], rac: &Racines, mont: &Mont) {
+    let n = v.len();
+    let demi_n = n / 2;
+    let mut len = 2usize;
+    while len <= n {
+        let demi = len / 2;
+        let pas = demi_n / demi;
+        let mut base = 0usize;
+        while base < n {
+            let (gauche, droite) = v[base..base + len].split_at_mut(demi);
+            for k in 0..demi {
+                let u = gauche[k];
+                let t = mont.mul(droite[k], rac.inverses[k * pas]);
+                gauche[k] = mont.add(u, t);
+                droite[k] = mont.sub(u, t);
+            }
+            base += len;
+        }
+        len <<= 1;
+    }
+}
+
+/// Multiplication NTT avec 2 modules de 62 bits + rests chinois.
+///
+/// `fils` = nombre de fils pour la NTT (0 = tous les cœurs).
+fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
     let besoin = x.len() + y.len();
     // ⚠ La convolution linéaire exige une longueur ≥ |x|+|y|−1, puissance
     // de 2. On prend la puissance de 2 immédiatement supérieure.
@@ -592,21 +861,28 @@ fn ntt_mul(x: &[u32], y: &[u32]) -> Vec<u32> {
     //     par `c[(n−k)%n]` est fausse (test `toom3_et_ntt_egalent_lecole`).
     //  2. « symétrie hermitienne A[k] = (C[k]+C[n−k])/2 » : NE S'APPLIQUE PAS.
     //     La symétrie hermitienne suppose des coefficients RÉELS ; ici x et y
-    //     sont des entiers mod m (le corps n'a pas de conjugaison). On ne
-    //     peut donc pas extraire les deux transformées d'une seule.
+    //     sont des entiers mod m (le corps fini n'a pas de conjugaison).
     //
     // On garde donc 3 NTT par module (2 directes + 1 inverse), soit 6 au
     // total — c'est le coût incompressible de la méthode.
     let mut restes: Vec<Vec<u64>> = Vec::with_capacity(2);
     for &(m, racine) in MODULES.iter() {
-        let mut a: Vec<u64> = x.iter().map(|&v| (v as u64) % m).collect();
-        let mut b: Vec<u64> = y.iter().map(|&v| (v as u64) % m).collect();
+        let mont = Mont::nouveau(m);
+        let rac = racines(&mont, racine, n);
+        // ⚠ Conversion en forme Montgomery : REDC(x·R²) = x·R.
+        let mut a: Vec<u64> = x.iter().map(|&v| mont.to_mont(v as u64)).collect();
+        let mut b: Vec<u64> = y.iter().map(|&v| mont.to_mont(v as u64)).collect();
         a.resize(n, 0);
         b.resize(n, 0);
-        ntt(&mut a, racine, m, false);
-        ntt(&mut b, racine, m, false);
-        for i in 0..n { a[i] = (a[i] as u128 * b[i] as u128 % m as u128) as u64; }
-        ntt(&mut a, racine, m, true);
+        let fils = if fils == 0 { fils_ntt(n) } else { fils.min(fils_ntt(n)) };
+        ntt_par(&mut a, &rac, &mont, false, fils);
+        ntt_par(&mut b, &rac, &mont, false, fils);
+        for i in 0..n { a[i] = mont.mul(a[i], b[i]); }
+        ntt_par(&mut a, &rac, &mont, true, fils);
+        // ⚠ Normalisation ET conversion hors Montgomery en UNE seule
+        // multiplication : REDC((n·résultat·R)·inv_n) = résultat.
+        let inv_n = inverse_mod(n as u64, m);
+        for i in 0..n { a[i] = mont.mul(a[i], inv_n); }
         restes.push(a);
     }
 
@@ -982,7 +1258,7 @@ mod tests {
             let t = Instant::now(); let _ = ecole(&x, &y); let te = t.elapsed();
             let t = Instant::now(); let _ = karatsuba(&x, &y); let tk = t.elapsed();
             let t = Instant::now(); let _ = toom3(&x, &y); let tt = t.elapsed();
-            let t = Instant::now(); let _ = ntt_mul(&x, &y); let tn = t.elapsed();
+            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0); let tn = t.elapsed();
             let t = Instant::now(); let _ = mul_limbs(&x, &y); let td = t.elapsed();
             let a = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&x));
             let b = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&y));
@@ -1024,14 +1300,14 @@ mod tests {
     #[test]
     fn ntt_bat_num_bigint() {
         use std::time::Instant;
-        for &n in &[64000usize, 128000, 256000, 512000] {
+        for &n in &[4000usize, 8000, 12000, 16000, 24000, 32000, 64000] {
             let mut x: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
             let mut y: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
             x[n-1] |= 1; y[n-1] |= 1;
             let a = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&x));
             let b = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&y));
             let t = Instant::now(); let _ = &a * &b; let tn = t.elapsed();
-            let t = Instant::now(); let _ = ntt_mul(&x, &y); let tt = t.elapsed();
+            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0); let tt = t.elapsed();
             eprintln!("n={:>7} : num-bigint {:>10.2?}   NTT {:>10.2?}   {}", n, tn, tt,
                       if tt < tn { "NTT GAGNE" } else { "num-bigint gagne" });
         }
@@ -1159,13 +1435,18 @@ mod tests {
             let t = Instant::now();
             let mut restes: Vec<Vec<u64>> = Vec::new();
             for &(m, racine) in MODULES.iter() {
-                let mut a: Vec<u64> = x.iter().map(|&v| (v as u64) % m).collect();
-                let mut b: Vec<u64> = y.iter().map(|&v| (v as u64) % m).collect();
+                let mont = Mont::nouveau(m);
+                let rac = racines(&mont, racine, lg);
+                let mut a: Vec<u64> = x.iter().map(|&v| mont.to_mont(v as u64)).collect();
+                let mut b: Vec<u64> = y.iter().map(|&v| mont.to_mont(v as u64)).collect();
                 a.resize(lg, 0); b.resize(lg, 0);
-                ntt(&mut a, racine, m, false);
-                ntt(&mut b, racine, m, false);
-                for i in 0..lg { a[i] = (a[i] as u128 * b[i] as u128 % m as u128) as u64; }
-                ntt(&mut a, racine, m, true);
+                let fils = fils_ntt(lg);
+                ntt_par(&mut a, &rac, &mont, false, fils);
+                ntt_par(&mut b, &rac, &mont, false, fils);
+                for i in 0..lg { a[i] = mont.mul(a[i], b[i]); }
+                ntt_par(&mut a, &rac, &mont, true, fils);
+                let inv_n = inverse_mod(lg as u64, m);
+                for i in 0..lg { a[i] = mont.mul(a[i], inv_n); }
                 restes.push(a);
             }
             let t_ntt = t.elapsed();
@@ -1212,7 +1493,7 @@ mod tests {
             let b = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&y));
             let t = Instant::now(); let _ = &a * &b; let tn = t.elapsed();
             let t = Instant::now(); let _ = mul(&a, &b); let tm = t.elapsed();
-            let t = Instant::now(); let _ = ntt_mul(&x, &y); let tt = t.elapsed();
+            let t = Instant::now(); let _ = ntt_mul_par(&x, &y, 0); let tt = t.elapsed();
             eprintln!("n={:>7} : num-bigint {:>10.2?}  mul(NTT) {:>10.2?}  ntt direct {:>10.2?}", n, tn, tm, tt);
         }
     }
@@ -1255,6 +1536,6 @@ mod tests {
         let xl: Vec<u32> = (0..3000).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
         let yl: Vec<u32> = (0..3000).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
         let reference = BigUint::from_slice(&ecole(&xl, &yl));
-        assert_eq!(BigUint::from_slice(&ntt_mul(&xl, &yl)), reference, "ntt");
+        assert_eq!(BigUint::from_slice(&ntt_mul_par(&xl, &yl, 0)), reference, "ntt");
     }
 }
