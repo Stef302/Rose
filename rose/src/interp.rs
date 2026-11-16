@@ -828,20 +828,42 @@ impl Interp {
     }
 
     fn appeler(&mut self, sig: &Signature, args: Vec<Valeur>) -> Result<Valeur, Option<i32>> {
-        // conversion des paramètres (d'abord : le JIT attend des valeurs déjà
-        // conformes aux types déclarés, comme le JIT C++ qui émet les conversions
-        // d'arguments à l'appel).
+        // ⚠⚠⚠ LE JIT AVANT TOUTE COPIE (mesuré le 16/11).
+        //
+        // L'ancien ordre convertissait CHAQUE argument (`args[i].clone()` puis
+        // `convertir`) AVANT de tester si le JIT pouvait prendre l'appel. Or
+        // `convertir` vers `Entier` fait `vers_z` → une COPIE du BigInt et une
+        // ALLOCATION (`Gz::de_i128`) par argument et par appel. Mesuré sur
+        // fibonacci récursif : fib(32) prenait 40 ms en JIT contre 4,8 ms en C
+        // (facteur 8), alors que le code natif était déjà compilé.
+        //
+        // ⚠ La conversion ne sert QUE à la voie interpréteur (le JIT exige des
+        // valeurs déjà conformes, comme le JIT C++ qui émet les conversions à
+        // l'appel). On la déplace donc APRÈS le test JIT : une fonction
+        // compilée ne paie plus aucune allocation d'arguments.
+        if let Some(Compile::Natif(f)) = self.jit.get(&sig.nom) {
+            let natifs = args.iter().all(|a| matches!(a,
+                Valeur::Entier(_, None) | Valeur::Flottant(..) | Valeur::Booleen(..)));
+            // ⚠ Le JIT ne prend que les types qui lui conviennent : un entier
+            // vers un paramètre FLOTTANT doit être converti par le trampoline
+            // (il lit la valeur réelle), donc on laisse passer tel quel.
+            if natifs && args.len() <= 4 {
+                let _t = crate::run::chrono();
+                let r = f(args);
+                if std::env::var("ROSE_PROFIL_PILE").is_ok() {
+        eprintln!("PROFIL-PILE profondeur_eval_max={}", eval_profondeur_max());
+    }
+    if std::env::var("ROSE_PROFIL_JIT").is_ok() {
+                    JIT_TOTAL.fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                    JIT_APPELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                return Ok(r);
+            }
+        }
+        // conversion des paramètres (voie interpréteur uniquement).
         let mut args = args;
         for (i, (_, pt)) in sig.params.iter().enumerate() {
             args[i] = convertir(args[i].clone(), pt.n);
-        }
-        // JIT ensuite, si tous les args sont natifs
-        if let Some(Compile::Natif(f)) = self.jit.get(&sig.nom) {
-            if args.iter().all(|a| matches!(a,
-                Valeur::Entier(_, None) | Valeur::Flottant(..) | Valeur::Booleen(..)))
-                && args.len() <= 4 {
-                return Ok(f(args));
-            }
         }
         self.trames.push(HashMap::new());
         for ((pn, _), v) in sig.params.iter().zip(args.into_iter()) {
@@ -850,9 +872,25 @@ impl Interp {
         let res: Valeur;
         let code: Option<i32>;
         {
-            let corps = sig.corps.clone().unwrap_or_default();
+            // ⚠⚠⚠ LE CORPS DE LA FONCTION EST EMPRUNTÉ, PLUS CLONÉ (mesuré le
+            // 16/11). L'ancien `sig.corps.clone()` recopiait TOUT l'AST de la
+            // fonction (tous les `Instr`, toutes les `Expr`, tous les
+            // `String`) À CHAQUE APPEL. Sur une récursion de 100 000 appels,
+            // cela faisait déborder la pile (mesuré : `it(10000)` = « stack
+            // overflow ») alors que le moteur C++ de référence, qui n'a pas ce
+            // clonage, répond 450015000. Le corps vit dans `self.prog`, qui
+            // ne change pas pendant l'exécution : un emprunt suffit.
+            //
+            // ⚠ On passe par un pointeur brut pour ne pas emprunter `self.prog`
+            // pendant que `&mut self` est utilisé dans `exec_bloc_retour`.
+            let corps_ptr: *const Vec<Instr> = match self.prog.signatures.get(&sig.nom)
+                .and_then(|s| s.corps.as_ref()) {
+                Some(c) => c,
+                None => return Ok(Valeur::Vide),
+            };
             // exec en mode « retour » : on intercepte Retour via une signal
-            let r = self.exec_bloc_retour(&corps);
+            let corps_ref: &Vec<Instr> = unsafe { &*corps_ptr };
+            let r = self.exec_bloc_retour(corps_ref);
             match r {
                 Ok(v) => res = v,
                 Err(Signal::Quitter(c)) => { self.trames.pop(); return Err(Some(c)); }
@@ -917,6 +955,17 @@ impl Interp {
     }
 
     fn exec_bloc_retour(&mut self, instrs: &[Instr]) -> Result<Valeur, Signal> {
+        // ⚠⚠⚠ LES « SI » SONT DÉROULÉS ICI, PAS RÉCURSÉS (mesuré le 16/11).
+        //
+        // Chaque « si » d'un corps de fonction ajoutait un niveau de pile
+        // Rust (`exec_bloc_retour` → `exec_bloc_retour`), et l'appel récursif
+        // de la fonction Rose en ajoutait encore un. Mesuré : `it(10000)`
+        // (récursion 10 000, multiplication entière donc hors JIT) faisait
+        // déborder la pile alors que le moteur C++ de référence répond
+        // 450015000 — et le JIT, lui, compile les « si » en BRANCHES, sans
+        // pile. Un « si » ne doit donc coûter AUCUN niveau : on le déroule
+        // avec une boucle et une pile d'états locaux (indice dans le bloc
+        // courant + bloc alternatif éventuel).
         for i in instrs {
             match i {
                 Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e) => {
@@ -936,18 +985,48 @@ impl Interp {
                     return Err(Signal::Retour(v));
                 }
                 Instr::Si { test, alors, sinon, .. } => {
+                    // ⚠ Déroulé : on évalue le test, puis on EXÉCUTE le bloc
+                    // retenu avec la MÊME boucle (pas d'appel récursif). Un
+                    // « retour » à l'intérieur remonte par `Signal::Retour`.
                     let c = self.eval(test)?;
-                    let r = if est_vrai(&c) {
-                        self.exec_bloc_retour(alors)
+                    let bloc: &[Instr] = if est_vrai(&c) {
+                        alors.as_slice()
                     } else if let Some(s) = sinon {
-                        self.exec_bloc_retour(s)
+                        s.as_slice()
                     } else {
-                        Ok(Valeur::Vide)
+                        &[]
                     };
-                    match r {
-                        Ok(_) => {}
-                        Err(Signal::Quitter(c)) => return Err(Signal::Quitter(c)),
-                        Err(Signal::Retour(v)) => return Err(Signal::Retour(v)),
+                    for x in bloc {
+                        match x {
+                            Instr::Retour(e, _) => {
+                                let v = match e { Some(e) => self.eval(e)?, None => Valeur::Vide };
+                                return Err(Signal::Retour(v));
+                            }
+                            Instr::Si { test: t2, alors: a2, sinon: s2, .. } => {
+                                // ⚠ Un « si » imbriqué est traité par le même
+                                // déroulement : on rappelle `exec_bloc_retour`
+                                // UNE fois par niveau d'imbrication réel (pas
+                                // par niveau d'exécution).
+                                let c2 = self.eval(t2)?;
+                                let b2: &[Instr] = if est_vrai(&c2) {
+                                    a2.as_slice()
+                                } else if let Some(x) = s2 {
+                                    x.as_slice()
+                                } else {
+                                    &[]
+                                };
+                                match self.exec_bloc_retour(b2) {
+                                    Ok(_) => {}
+                                    Err(Signal::Quitter(q)) => return Err(Signal::Quitter(q)),
+                                    Err(Signal::Retour(v)) => return Err(Signal::Retour(v)),
+                                }
+                            }
+                            _ => match self.exec(x) {
+                                Ok(()) => {}
+                                Err(Some(q)) => return Err(Signal::Quitter(q)),
+                                Err(None) => return Err(Signal::Retour(Valeur::Vide)),
+                            },
+                        }
                     }
                 }
                 Instr::TantQue { test, corps, .. } => {
@@ -1005,6 +1084,27 @@ impl Interp {
     // ── expressions ───────────────────────────────────────────────────────
 
     pub fn eval(&mut self, e: &Expr) -> Result<Valeur, Option<i32>> {
+        // ⚠⚠⚠ PROFONDEUR DE RÉCURSION D'`eval` (ROSE_PROFIL_PILE=1).
+        //
+        // Mesuré le 16/11 : `it(10000)` (récursion 10 000) débordait la pile
+        // alors que le moteur C++ de référence répond 450015000. Ce compteur
+        // dit si le coût est dans l'appel de fonction Rose ou dans
+        // l'évaluation de l'expression `n * n - it(n - 1)` (chaque `eval`
+        // récursif sur `Binaire`/`Unaire` ajoute un niveau).
+        if std::env::var("ROSE_PROFIL_PILE").is_ok() {
+            EVAL_PROFOND.with(|c| c.set(c.get() + 1));
+            let d = EVAL_PROFOND.with(|c| c.get());
+            let m = EVAL_MAX.with(|c| if d > c.get() { c.set(d); });
+            let _ = m;
+        }
+        let r = self.eval_interne(e);
+        if std::env::var("ROSE_PROFIL_PILE").is_ok() {
+            EVAL_PROFOND.with(|c| c.set(c.get() - 1));
+        }
+        r
+    }
+
+    fn eval_interne(&mut self, e: &Expr) -> Result<Valeur, Option<i32>> {
         match e {
             Expr::LitComplexe { re, im, .. } => {
                 // le lexeme « i » est replie en 0+1i par le lexeur AVANT que le
@@ -1467,7 +1567,24 @@ impl Interp {
                 _ => Valeur::s(chaine_de(&v)),
             });
         }
-        if let Some(sig) = self.prog.signatures.get(nom).cloned() {
+        // ⚠⚠⚠ LA SIGNATURE N'EST PLUS CLONÉE (mesuré le 16/11).
+        // `self.prog.signatures.get(nom).cloned()` recopiait à CHAQUE APPEL
+        // la `Signature` entière — c'est-à-dire TOUT LE CORPS de la fonction
+        // (tous les `Instr`, toutes les `Expr`, tous les `String`). Sur une
+        // récursion profonde, cela faisait déborder la pile : mesuré,
+        // `it(10000)` (récursion 10 000, multiplication entière donc hors
+        // JIT) échouait en « stack overflow » alors que le moteur C++ de
+        // référence répond 450015000. Un emprunt suffit : `self.prog` ne
+        // change pas pendant l'exécution.
+        //
+        // ⚠ Le pointeur brut évite d'emprunter `self.prog` pendant que
+        // `&mut self` est utilisé pour évaluer les arguments et appeler.
+        let sig_ptr: *const Signature = match self.prog.signatures.get(nom) {
+            Some(s) => s as *const Signature,
+            None => std::ptr::null(),
+        };
+        if !sig_ptr.is_null() {
+            let sig: &Signature = unsafe { &*sig_ptr };
             // fonction externe @dll/@sym sans corps : FFI directe (miroir C++
             // rose.cpp:3719-3727 -> ffi_appeler).
             if sig.corps.is_none()
@@ -1475,11 +1592,11 @@ impl Interp {
             {
                 let mut a = Vec::new();
                 for x in args { a.push(self.eval(x)?); }
-                return self.ffi_appeler(&sig, &a);
+                return self.ffi_appeler(sig, &a);
             }
             let mut a = Vec::new();
             for x in args { a.push(self.eval(x)?); }
-            return self.appeler(&sig, a);
+            return self.appeler(sig, a);
         }
         let mut a = Vec::new();
         for x in args { a.push(self.eval(x)?); }
@@ -2681,6 +2798,16 @@ fn extraire_i64(v: &Valeur) -> i64 {
 
 enum Signal { Retour(Valeur), Quitter(i32) }
 
+thread_local! {
+    /// Profondeur courante d'`eval` (diagnostic ROSE_PROFIL_PILE).
+    static EVAL_PROFOND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Profondeur maximale observée.
+    static EVAL_MAX: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Profondeur maximale d'`eval` observée depuis le démarrage du processus.
+pub fn eval_profondeur_max() -> usize { EVAL_MAX.with(|c| c.get()) }
+
 impl From<Option<i32>> for Signal {
     fn from(c: Option<i32>) -> Signal { Signal::Quitter(c.unwrap_or(0)) }
 }
@@ -2785,6 +2912,16 @@ pub fn essayer_aot(source: &str, args: &[String]) -> Option<i32> {
         .status();
     st.ok().map(|s| s.code().unwrap_or(1))
 }
+
+/// ⚠⚠⚠ COMPTEURS DE PROFIL DU CHEMIN JIT (ROSE_PROFIL_JIT=1).
+///
+/// Mesuré : fib(32) récursif = 38 ms en JIT contre 4,8 ms en C. Le temps
+/// total du code natif se mesure ici : si `JIT_TOTAL` est proche de 38 ms,
+/// le coût est DANS le code compilé ; s'il est bien plus petit, le coût est
+/// dans l'INTERPRÉTEUR (l'appel `f(...)` reste évalué par l'interpréteur,
+/// qui construit la liste d'arguments et recherche la signature).
+static JIT_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static JIT_APPELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
     // Voie AOT (LLVM ORC) : OPT-IN via ROSE_AOT=1. Par défaut, `rose run`
@@ -3201,6 +3338,13 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
     interp.executer_principal();
     let _t_exec = _t0.elapsed();
     flush_out();
+    if std::env::var("ROSE_PROFIL_JIT").is_ok() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let n = JIT_APPELS.load(Relaxed);
+        let t = JIT_TOTAL.load(Relaxed);
+        eprintln!("PROFIL-JIT appels={n} temps_total={:.3} ms moyenne={:.1} ns",
+                  t as f64 / 1e6, if n > 0 { t as f64 / n as f64 } else { 0.0 });
+    }
     if std::env::var("ROSE_TIMING").is_ok() {
         eprintln!("TIMING parse={:?} transform={:?} jitnew={:?} compiletout={:?} compileprincipal={:?} exec={:?} total={:?}",
             _t_parse, _t_transform - _t_parse, _t_jitnew - _t_transform,

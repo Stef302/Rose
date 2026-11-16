@@ -130,6 +130,28 @@ comme du code Rose (variable). Vérifier le rendu SANS LaTeX installé :
 traduit en Unicode (`\frac` → `1/3`, `\sqrt` → `√`, `Σ[k=1…n]`,
 exposants `²`/`¹⁰⁰`) ; une commande inconnue s'affiche entre `« »`.
 
+⚠⚠⚠ PIÈGES DE PERF MESURÉS (16/11) — à ne pas ré-introduire :
+1. **Le corps d'une fonction ne doit JAMAIS être cloné à l'appel.** Un
+   `sig.corps.clone()` (ou `signatures.get(nom).cloned()`) recopie TOUT l'AST
+   à chaque appel : `it(10000)` débordait la pile. Emprunter via un pointeur
+   brut (`*const Signature`) pour ne pas emprunter `self.prog` pendant
+   `&mut self`.
+2. **La conversion des arguments doit venir APRÈS le test JIT.** `convertir`
+   vers `Entier` fait `vers_z` = une copie BigInt + une allocation par
+   argument ; l'ancien ordre payait cela même pour les fonctions compilées.
+3. **Le repli de constantes transforme « 0 + n » en `LitComplexe 0+1i`.**
+   Ce 0+1i n'est PAS l'imaginaire : `bloc_compilable` refusait tout corps
+   avec `retour 0+1i`, ce qui éjectait `fn f(n) { si (n<2) { retour n } … }`
+   du JIT (fib(32) : 120 ms → 38 ms après correction). La porte est
+   `i_est_compteur()` : si aucune variable `i` n'existe, c'est la variable
+   repliée.
+4. **Les « si » ne doivent pas être récursifs dans `exec_bloc_retour`** :
+   chaque niveau d'exécution ajoutait un cadre Rust. Déroulés, un « si »
+   imbriqué ne coûte que son niveau d'IMBRICATION.
+5. **Pile du fil d'exécution = 512 Mo** (miroir du C++), pas 8 Mo.
+   `ROSE_PROFIL_PILE=1` donne la profondeur max d'`eval` ;
+   `ROSE_PROFIL_JIT=1` le temps total passé dans le code natif.
+
 ⚠⚠ Console éphémère : `attendre_fermeture()` ne pose PAS la question quand
 l'entrée n'est pas un terminal (`GetConsoleMode` = 0). Sinon un programme
 lancé avec `Stdio::null()` restait bloqué sur « Appuyez sur Entrée ».

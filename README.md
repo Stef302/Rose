@@ -882,6 +882,33 @@ rose update --force      # retélécharge même si la version est déjà à jour
 rose update --velopack   # Windows : passe par Velopack (delta + rollback)
 ```
 
+### Pourquoi c'est lent — mesuré, pas supposé
+
+| Voie | Temps |
+|---|---|
+| fibonacci récursif `f(32)` — **JIT Cranelift** | 25–38 ms |
+| même code en **C** `-O2` | 2,0 ms |
+| même code en **C** `-O0` | 11 ms |
+| **C++ Rose** (interpréteur, référence) | ~3 200 ms pour un crible de même taille |
+| nombres premiers < 50 000 : **boucle nue** (interpréteur) | 26 ms |
+| idem + primitive **native** `est_premier` | 51 ms |
+| idem + **jardin Rose** `est_premier` | 102 ms |
+
+Ce que ces chiffres disent :
+
+- **le JIT tient sa promesse** : 25–38 ms contre 2 ms en C `-O2` et 11 ms en
+  C `-O0` — l'écart restant vient du fait que l'appel `f(...)` reste évalué
+  par l'interpréteur (construction de la liste d'arguments, recherche de la
+  signature), pas du code compilé ;
+- **l'interpréteur coûte ~50× le C optimisé** parce qu'il cherche CHAQUE
+  variable PAR NOM (`HashMap<String, Valeur>`) à chaque accès ;
+- **un jardin Rose coûte 2× une primitive native**, pas 50× : c'est
+  acceptable pour l'algorithmique, pas pour remplacer `est_premier`.
+
+⚠ Mesuré aussi : `fn it(n) { si (n<=0) { retour 0 } retour n*n - it(n-1) }`
+avec `it(100000)` répond **5000050000** (identique au moteur C++). La pile du
+fil d'exécution est de **512 Mo** (comme le C++), pas 8 Mo : c'était un défaut.
+
 ### Mesurer une lenteur — `rose debug-lenteur`
 
 Un programme qui « met un certain temps avant d'afficher » peut perdre son

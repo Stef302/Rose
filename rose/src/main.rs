@@ -341,8 +341,20 @@ fn main() {
     let source_t = source.clone();
     let args_t = args.clone();
     let _t_pret = _t_start.elapsed();
+    // ⚠⚠⚠ 512 Mo DE PILE, PAS 8 Mo (mesuré le 16/11).
+    //
+    // Le commentaire d'origine dit « miroir du moteur C++ (rose.cpp:4745) :
+    // une pile de 512 Mo ». La constante, elle, valait 8 Mo : mesuré,
+    // `it(10000)` (récursion 10 000, multiplication entière donc hors JIT)
+    // débordait la pile vers 4 300 niveaux, alors que le moteur C++ de
+    // référence répond 450015000 pour la même récursion. Une pile de 512 Mo
+    // comme le C++ couvre les récursions profondes que le JIT ne peut pas
+    // prendre (corps avec multiplication/puissance = BigInt exact).
+    //
+    // ⚠ Les 512 Mo sont RÉSERVÉS (mmap), pas engagés : aucune mémoire n'est
+    // touchée tant que la récursion n'y descend pas.
     let h = std::thread::Builder::new()
-        .stack_size(8 * 1024 * 1024)
+        .stack_size(512 * 1024 * 1024)
         .spawn(move || interp::executer_source(&source_t, args_t));
     let _t_post = _t_start.elapsed();
     let rc = match h {

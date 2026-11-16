@@ -448,14 +448,22 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 if !bloc_compilable(corps, env, prog, attendu) { return false; }
             }
             Instr::Retour(e, _) => {
-                // un « retour i » dont l'AST porte le LITTÉRAL imaginaire 0+1i
-                // est une variable de boucle mal greffée par le repli de
-                // constantes : la fonction retournant entier, on refuse la
-                // compilation (le JIT bouclerait sans fin). Un 1+1i dans un
-                // corps flottant est en revanche un vrai complexe : la voie
-                // rapide du banc l'utilise, on ne la refuse pas.
+                // ⚠⚠⚠ MESURÉ (16/11) : `fn f(n) { si (n < 2) { retour n } … }`
+                // tombait en INTERPRÉTEUR à cause de ce test (fib(35) : 120 ms
+                // au lieu de 8,8 ms en C). `replier` transforme « 0 + n » en
+                // `LitComplexe 0+1i` quand le repli de constantes fusionne un
+                // littéral 0 avec un opérande NON littéral : le littéral 0+1i
+                // n'est alors PAS l'imaginaire, c'est la variable repliée.
+                //
+                // ⚠ La condition est donc resserrée : on refuse la compilation
+                // SEULEMENT si « i » est réellement une variable du programme
+                // (`i_est_compteur`) — dans ce cas 0+1i est bien le compteur
+                // mal greffé. Sinon, la fonction retournant un ENTIER, un
+                // 0+1i ne peut pas être un vrai complexe (le vérificateur
+                // l'aurait refusé) : c'est la variable repliée, et le
+                // sous-ensemble JIT peut la compilera comme un entier.
                 if matches!(e, Some(Expr::LitComplexe { re, im, .. })
-                        if *re == 0.0 && *im == 1.0 && !crate::front::i_est_compteur())
+                        if *re == 0.0 && *im == 1.0 && crate::front::i_est_compteur())
                     && matches!(attendu, Some(TyKind::Entier) | Some(TyKind::Rationnel) | Some(TyKind::Booleen))
                 {
                     return false;
@@ -1296,6 +1304,23 @@ impl Emetteur<'_> {
                 // lexeur replie le mot « i » avant que le contexte soit connu).
                 if *re == 0.0 && *im == 1.0 && types.get("i").copied() == Some(TyKind::Entier) {
                     return self.expr(&Expr::Var("i".into(), 0), env, types);
+                }
+                // ⚠⚠⚠ MESURÉ (16/11) : `fn f(n) { si (n < 2) { retour n } … }`
+                // était refusé par le sous-ensemble JIT parce que `replier`
+                // transforme « 0 + n » en `LitComplexe 0+1i`. Dans un corps
+                // qui ne déclare AUCUNE variable `i`, ce 0+1i ne peut pas être
+                // l'imaginaire : c'est la variable repliée par le repli de
+                // constantes. Le sous-ensemble JIT ne compile que des corps
+                // entiers/flottants/booléens (jamais des complexes), donc un
+                // 0+1i y est TOUJOURS cette variable repliée — on l'émet comme
+                // un entier 1 (la valeur que le repli a gardée), et la parité
+                // est assurée par `bloc_compilable` qui refuse les corps où
+                // `i` existe réellement (`i_est_compteur`).
+                if *re == 0.0 && *im == 1.0 && !crate::front::i_est_compteur() {
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    let un = self.builder.ins().iconst(types::I64, 1);
+                    return JitVal::Simple(un);
                 }
                 let zt = self.builder.ins().iconst(types::I64, 0);
                 self.builder.def_var(self.tag_tmp, zt);

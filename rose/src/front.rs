@@ -2426,6 +2426,54 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
     let (i_compteur, i_boucle) = {
         // deux drapeaux : « i est entier » (compteur) et « i est bouclé »
         // (seule situation où le repli peut avoir écrasé un incrément).
+        // ⚠⚠⚠ BUG MESURÉ (16/11) : `fn f(n) { si (n < 2) { retour n } ... }`
+        // faisait passer la fonction en INTERPRÉTEUR au lieu du JIT (fib(35) :
+        // 120 ms contre 8,8 ms en C), parce que `retour n` était replié en
+        // `LitComplexe 0+1i` et que `bloc_compilable` refusait tout corps
+        // contenant ce littéral. Or il ne s'agit PAS de l'imaginaire : c'est
+        // la VARIABLE `i`… ou ici une variable quelconque `n`, repliée par
+        // `replier` (0 + n → 0+1i). On répare donc le corps AVANT la passe
+        // « i compteur » : un `LitComplexe 0+1i` dans un `retour`/`affichage`
+        // d'une fonction dont AUCUNE variable ni paramètre ne s'appelle `i`
+        // ne peut être que cette variable repliée, jamais l'imaginaire.
+        fn variables_nommees_i(b: &[Instr]) -> bool {
+            fn dans_expr(e: &Expr) -> bool {
+                match e {
+                    Expr::Var(x, _) => x == "i",
+                    Expr::Appel { args, .. } => args.iter().any(dans_expr),
+                    Expr::Binaire { a, b, .. } => dans_expr(a) || dans_expr(b),
+                    Expr::Unaire { a, .. } => dans_expr(a),
+                    Expr::Factorielle(a, _) | Expr::SousFactorielle(a, _)
+                    | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+                    | Expr::SuperFactorielle(a, _) | Expr::MultiFactorielle(a, _, _) => dans_expr(a),
+                    Expr::Index { a, b, .. } => dans_expr(a) || dans_expr(b),
+                    Expr::ListeLit(el, _) => el.iter().any(dans_expr),
+                    Expr::TableLit(p, _) => p.iter().any(|(_, v)| dans_expr(v)),
+                    _ => false,
+                }
+            }
+            b.iter().any(|i| match i {
+                Instr::Affect { nom, .. } => nom == "i",
+                Instr::Pour { nom, .. } => nom == "i",
+                Instr::Afficher(es, _) => es.iter().any(dans_expr),
+                Instr::ExprStmt(e) | Instr::Lever(e, _) | Instr::Retour(Some(e), _) => dans_expr(e),
+                Instr::AffectIndex { nom, index, valeur, .. } =>
+                    nom == "i" || dans_expr(index) || dans_expr(valeur),
+                Instr::Si { test, alors, sinon, .. } =>
+                    dans_expr(test) || variables_nommees_i(alors)
+                    || sinon.as_ref().map(|s| variables_nommees_i(s)).unwrap_or(false),
+                Instr::TantQue { test, corps, .. } => dans_expr(test) || variables_nommees_i(corps),
+                Instr::Pour { debut, fin, corps, .. } =>
+                    dans_expr(debut) || dans_expr(fin) || variables_nommees_i(corps),
+                Instr::Bloc(b) => variables_nommees_i(b),
+                Instr::Spawn(b, _) => variables_nommees_i(b),
+                Instr::Essayer { corps, attraper, finalment, .. } =>
+                    variables_nommees_i(corps)
+                    || attraper.as_ref().map(|(_, c)| variables_nommees_i(c)).unwrap_or(false)
+                    || finalment.as_ref().map(|f| variables_nommees_i(f)).unwrap_or(false),
+                _ => false,
+            })
+        }
         fn dans(b: &[Instr]) -> (bool, bool) {
             let mut a = (false, false);
             for i in b {
