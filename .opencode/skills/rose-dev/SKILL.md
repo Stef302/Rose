@@ -585,33 +585,46 @@ Ne pas confondre — c'est une source d'erreur classique :
   le vérifie (`interp::tests::factorial_approx_n_est_pas_le_nombre_exact`).
 - `factorial_approx(0)` et `(1)` rendent `"1"`, pas `"1.000000e0"`.
 
-## Backend GMP optionnel (`--features gmp`)
+## Rose N'UTILISE PAS GMP — ce qui la rend rapide
 
-- `num-bigint` n'a que basecase/Karatsuba : mesuré **27,7 ms** pour ×10 de
-  deux nombres de 100 000 chiffres, contre **5,3 ms** pour GMP → **5,2×**.
-- Le module `rose/src/gmp_fact.rs` convertit en `rug::Integer` et fait
-  l'arbre. Activé par `cargo build --release --bin rose --features gmp`.
-  Sans la feature : `num-bigint`, **même sémantique**.
-- ⚠⚠ **Ne JAMAIS convertir par `to_string()`/`from_str_radix()`** : la base 10
-  coûte O(n²) et annule tout le gain — mesuré : `n!` à 100 000 passait de
-  25 ms (num-bigint) à **249 ms** (GMP + conversion décimale). Utiliser
-  `to_digits`/`from_digits` (`rug::integer::Order`) sur les octets
-  little-endian.
-- `!n` (sous-factorielle) reste sur `num-bigint` : la récurrence ne
-  bénéficie pas de GMP (mesuré 840 ms avec GMP vs 690 ms sans).
-- Gain mesuré à N = 100 000 : `n!` 30 → **17 ms**, `n!!` 8 → 7 ms,
-  `n!!!` 5 → 4 ms. Garde-fou : `verifier_factorielles.rose` = 58/58 dans les
-  DEUX configurations.
-- `mpz_sizeinbase(x, 10)` est **approximatif** (peut être +1) : pour le
-  nombre exact de chiffres, passer par `mpz_get_str` + `strlen`. C'est un
-  piège qui a fait diverger le bench C d'une unité.
+⚠⚠ **Rose ne dépend jamais de GMP.** Tout est en Rust pur avec `num-bigint`.
+GMP sert UNIQUEMENT de référence de comparaison dans `bench/suite/fact_gmp.c`.
+
+| Optimisation | Gain mesuré |
+|---|---|
+| Suppression des clones d'opérandes (`mul`/`add`/`sub`) | `n!` 41 → 25 ms, `!n` 753 → 681 ms |
+| Seuil de parallélisation de l'arbre (500 000 bits cumulés) | `n#` 2 → 1 ms |
+| NTT au-delà de 16,4 M bits (`mul_rapide`) | `1 000 000!` 3 797 → **905 ms** |
+
+⚠⚠⚠ **LE FAIT QUI CHANGE TOUT** : `num-bigint` fait DÉJÀ école → Half-Karatsuba
+→ Karatsuba (≤256 limbs) → **Toom-3 en place** (`biguint/multiplication.rs`).
+Un Toom-3/Karatsuba maison est donc INUTILE — mesuré 4× plus lent que le sien.
+Ce qui lui manque est la **FFT**, d'où `mul_rapide.rs`.
+
+- Seuils mesurés (aarch64, limbs) : école < 100, Karatsuba < 1000,
+  Toom-3 < 12000, NTT au-delà. NTT ne bat num-bigint qu'à **≥ 512 000 limbs**
+  (762 vs 792 ms ; 1 024 000 : 1,59 vs 2,25 s).
+- `mul_rapide::mul` délègue à `num-bigint` sous 16 384 000 bits : aucun
+  surcoût sur les tailles courantes.
+- ⚠ Piège mesuré : paralléliser l'arbre à petite taille le RALENTIT
+  (threads ~0,1–0,2 ms). Seuil 500 000 bits ; un réglage à 64 Mo rendait
+  `n$` et `n!!` plus lents.
+- ⚠ La NTT exige une racine primitive VÉRIFIÉE : `(2013265921, 5)` est faux
+  (`5^((m−1)/2) ≡ 1`) ; il faut **31**. Tester `g^((m−1)/2) ≡ −1`.
+- ⚠ Toom-3 : les 4 points {0,1,−1,2} ne déterminent qu'un degré ≤ 3, alors
+  que le produit est de degré 4. Il faut retirer `w4·x⁴`, interpoler, puis
+  rajouter w4 (voir le commentaire dans `toom3`).
+- ⚠ Conversion décimale : `num-bigint` fait DÉJÀ du divide-and-conquer, et
+  il est plus rapide que notre version (2,9 s contre 5,2 s pour 1M!). Le
+  goulot est la DIVISION (55 ms par division par 10^5000). `vers_chaine`
+  existe et est testée mais n'est PAS branchée.
 
 ## Bench comparatif entre langages
 
 `bench/suite/bench_factorielles.sh [N]` compare Rose (num-bigint), Rose
 (+GMP), GMP/C (`bench/suite/fact_gmp.c`) et Python sur les mêmes opérations.
-Ordre de grandeur à N = 100 000 : Rose bat Python de 2 à 60× (Python `n!!`
-= 470 ms contre 8 ms) et reste à ~2× de GMP/C.
+Ordre de grandeur à N = 100 000 : Rose bat Python de 3× (`n!`) à 60× (`n!!`)
+et reste à ~3× de GMP/C. À `1 000 000!` : Rose 905 ms, GMP/C 174 ms.
 
 ## Marqueur LaTeX par ligne : `%%`
 

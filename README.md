@@ -399,9 +399,21 @@ Trois façons de calculer une factorielle, à ne pas confondre :
 6 décimales et un exposant. Pour `n ≤ 170` un `f64` suffirait, mais Rose passe
 toujours par Stirling — pour `n!` exact, utilise `n!`.
 
-Avec la feature `gmp` (`cargo build --release --features gmp`), `n!` et
-`n!!`… passent par GMP (Toom-Cook + FFT) : mesuré ~1,8× plus rapide à
-n = 100 000. Sans la feature, tout reste sur `num-bigint`, **même résultat**.
+#### Ce que Rose fait pour être rapide (sans GMP)
+
+Rose **ne dépend pas de GMP** : tout est en Rust pur, avec `num-bigint`.
+
+| Optimisation | Effet mesuré |
+|---|---|
+| Suppression des clones d'opérandes (`mul`, `add`, `sub`) | `n!` 41 → 25 ms, `!n` 753 → 681 ms |
+| Seuil de parallélisation de l'arbre (500 000 bits cumulés) | `n#` 2 → 1 ms ; séquentiel au-delà de 100 000 bits où les threads coûtent plus que le travail |
+| NTT (FFT sur corps fini) au-delà de 16,4 millions de bits | `1 000 000!` : 3 797 → **905 ms** (4,2×) |
+
+⚠ Ce que la mesure a montré : `num-bigint` fait **déjà** école → Half-Karatsuba
+→ Karatsuba → **Toom-3** en place, et il est excellent. Notre propre Toom-3 est
+4× plus lent que le sien. La seule chose qui manquait à `num-bigint` est la
+**FFT** — d'où `rose/src/mul_rapide.rs`, qui ne s'active qu'au-delà du seuil où
+elle bat réellement Toom-3 (mesuré : 512 000 limbs, 16,4 M bits).
 
 #### Bench comparatif entre langages (N = 100 000, médiane de 3 tours)
 
@@ -409,25 +421,28 @@ n = 100 000. Sans la feature, tout reste sur `num-bigint`, **même résultat**.
 cinq implémentations, nombre de chiffres vérifié à chaque ligne (456 574
 pour `n!`) :
 
-| Opération | Rose | Rose + GMP | Rust + rug | GMP/C | GMP/C++ | Python |
-|---|---|---|---|---|---|---|
-| `n!` | 25 ms | **17 ms** | 11,6 ms | 8,2 ms | 12,2 ms | 74 ms |
-| `n!!` | 8 ms | 7 ms | 4,8 ms | 3,3 ms | 5,1 ms | 470 ms |
-| `n!!!` | 5 ms | 4 ms | 2,9 ms | 1,9 ms | 3,1 ms | 209 ms |
-| `n!!!!` | 3 ms | 3 ms | 2,0 ms | 1,3 ms | 2,2 ms | 118 ms |
-| `n#` | 1 ms | 1–2 ms | 0,7 ms | 0,5 ms | 0,9 ms | — |
-| `!n` | **681 ms** | 835 ms | 436 ms | 441 ms | 441 ms | 2958 ms |
+| Opération | Rose | Rust + rug | GMP/C | GMP/C++ | Python |
+|---|---|---|---|---|---|
+| `n!` | 25 ms | 11,6 ms | 8,2 ms | 12,2 ms | 74 ms |
+| `n!!` | 8 ms | 4,8 ms | 3,3 ms | 5,1 ms | 470 ms |
+| `n!!!` | 5 ms | 2,9 ms | 1,9 ms | 3,1 ms | 209 ms |
+| `n!!!!` | 3 ms | 2,0 ms | 1,3 ms | 2,2 ms | 118 ms |
+| `n#` | 1 ms | 0,7 ms | 0,5 ms | 0,9 ms | — |
+| `!n` | **715 ms** | 436 ms | 441 ms | 441 ms | 2958 ms |
+
+Et à `1 000 000!` (5 565 709 chiffres) : Rose **905 ms** de calcul,
+GMP/C 174 ms, Python ~9 s.
 
 Lecture :
 
 - **Rose bat Python de 3× (`n!`) à 60× (`n!!`)** et de 4× sur `!n` ;
-- avec GMP, Rose est à **2×** de GMP/C sur `n!` et à **~1,4×** de Rust+rug
-  (même backend, même LLVM) — l'écart restant est le runtime interprété
-  (`Gz` boxé, dispatch dynamique), pas l'arithmétique ;
-- `!n` est une **récurrence** : GMP n'aide pas (830 vs 681 ms), Rose la
-  laisse donc sur `num-bigint`, et reste au niveau de C/C++/Rust ;
+- Rose est à **~3× de GMP/C** sur `n!` : l'écart restant est la division
+  et la conversion décimale (mesuré : 2,9 s pour convertir 5,5 millions de
+  chiffres, contre ~0,3 s pour GMP qui emploie un inverse de Newton) ;
+- `!n` est une **récurrence** : aucune implémentation ne peut la vectoriser,
+  Rose est au niveau de C/C++/Rust ;
 - `n?` (Kurepa) est intrinsèquement O(n²) : 1,9 s à n = 100 000, contre
-  3,4 s pour Python — aucune implémentation ne peut faire mieux.
+  3,4 s pour Python.
 
 Sources : `bench/suite/fact_gmp.c` (GMP/C), `fact_gmp.cpp` (gmpxx),
 `fact_rs.rs` (Rust + `rug`), `bench_factorielles.sh` (orchestrateur).

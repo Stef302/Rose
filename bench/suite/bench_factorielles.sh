@@ -23,7 +23,6 @@ mkdir -p "$TMP"
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 ROSE_BIN="${ROSE_BIN:-./rose/rose}"
-ROSE_GMP="${ROSE_GMP:-./rose-gmp}"
 
 echo "══════════════════════════════════════════════════════════════════"
 echo "  Bench factorielles étendues — N = $N"
@@ -36,16 +35,6 @@ if [ -x "$ROSE_BIN" ]; then
   "$ROSE_BIN" bench/suite/factorielles.rose "$N" 2>&1 | grep -E "ms, " | sed 's/.*   /  /'
 else
   echo "  (binaire absent : $ROSE_BIN)"
-fi
-
-# ── 2. Rose (GMP) ───────────────────────────────────────────────────────
-echo
-echo "── Rose (backend GMP) ──"
-if [ -x "$ROSE_GMP" ]; then
-  "$ROSE_GMP" bench/suite/factorielles.rose "$N" 2>&1 | grep -E "ms, " | sed 's/.*   /  /'
-else
-  echo "  (binaire absent : $ROSE_GMP — construire avec"
-  echo "   cargo build --release --features gmp --bin rose && cp target/release/rose rose-gmp)"
 fi
 
 # ── 3. GMP/C ────────────────────────────────────────────────────────────

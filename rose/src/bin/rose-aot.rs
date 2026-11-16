@@ -19,6 +19,9 @@ mod front;
 mod run;
 #[path = "../i128x.rs"]
 mod i128x;
+// i128x.rs appelle `crate::mul_rapide` : le helper AOT doit donc le fournir.
+#[path = "../mul_rapide.rs"]
+mod mul_rapide;
 #[path = "../irrationnel.rs"]
 mod irrationnel;
 #[path = "../cmd_llvm.rs"]

@@ -58,19 +58,22 @@ pub fn factorielle_parallele(n: u64) -> Gz {
         }
         res
     }
-    // Arbre séquentiel équilibré, sans clonage profond : on « prend » les
-    // éléments (replace) avant de multiplier.
+    // Arbre séquentiel équilibré. ⚠ On opère EN PLACE et on passe par
+    // `mul_rapide::mul` : c'est lui qui bascule sur la NTT pour les nombres
+    // au-delà de 16,4 millions de bits (les seuls où elle bat `num-bigint`,
+    // mesuré). En dessous, `mul_rapide::mul` délègue à `num-bigint` : aucun
+    // surcoût, c'est exactement la même opération.
     fn arbre_seq(v: &mut Vec<BigInt>) {
         while v.len() > 1 {
             let m = v.len();
             let mut i = 0usize;
             while i + 1 < m {
-                let x = std::mem::replace(&mut v[i], BigInt::from(0u64));
-                let y = std::mem::replace(&mut v[i + 1], BigInt::from(0u64));
-                v[i / 2] = x * y;
+                // `i/2 ≤ i` : la case cible a déjà été consommée.
+                let p = crate::mul_rapide::mul(&v[i], &v[i + 1]);
+                v[i / 2] = p;
                 i += 2;
             }
-            if m % 2 == 1 { v[(m - 1) / 2] = std::mem::replace(&mut v[m - 1], BigInt::from(0u64)); }
+            if m % 2 == 1 { v[(m - 1) / 2] = v[m - 1].clone(); }
             v.truncate((m + 1) / 2);
         }
     }
@@ -138,17 +141,30 @@ pub fn factorielle_parallele(n: u64) -> Gz {
 pub fn arbre_produit(facteurs: Vec<BigInt>) -> Gz {
     let r = Gz::neuf();
     if facteurs.is_empty() { r.poser_u64(1); return r; }
+    // ⚠⚠ L'ARBRE SANS ALLOCATION PAR NŒUD. La version précédente faisait
+    // `std::mem::replace(&mut v[i], BigInt::from(0u64))` pour prendre les
+    // deux opérandes : chaque appel allouait DEUX `BigInt` vides, soit
+    // 2·(nombre de multiplications) allocations inutiles — mesuré ~4× de
+    // surcoût sur `n#` (43 293 chiffres, petits nombres : l'essentiel du
+    // temps est dans ces allocations, pas dans les multiplications).
+    //
+    // On opère donc EN PLACE : on calcule `v[i] * v[i+1]` par référence,
+    // on écrit le résultat dans `v[i/2]` (toujours ≤ i, donc déjà lu), puis
+    // on tronque. Aucune allocation de zéro.
     fn arbre_seq(v: &mut Vec<BigInt>) {
         while v.len() > 1 {
             let m = v.len();
             let mut i = 0usize;
             while i + 1 < m {
-                let x = std::mem::replace(&mut v[i], BigInt::from(0u64));
-                let y = std::mem::replace(&mut v[i + 1], BigInt::from(0u64));
-                v[i / 2] = x * y;
+                // `i/2 <= i` : la case cible a déjà été consommée (ou est
+                // la case i elle-même quand i = 0 ou 1).
+                // ⚠ `mul_rapide::mul` bascule sur la NTT au-delà de
+                // 16,4 M bits ; en dessous il délègue à `num-bigint`.
+                let p = crate::mul_rapide::mul(&v[i], &v[i + 1]);
+                v[i / 2] = p;
                 i += 2;
             }
-            if m % 2 == 1 { v[(m - 1) / 2] = std::mem::replace(&mut v[m - 1], BigInt::from(0u64)); }
+            if m % 2 == 1 { v[(m - 1) / 2] = v[m - 1].clone(); }
             v.truncate((m + 1) / 2);
         }
     }
@@ -182,9 +198,26 @@ pub fn arbre_produit(facteurs: Vec<BigInt>) -> Gz {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // ⚠⚠ SEUIL DE PARALLÉLISATION, CALIBRÉ PAR MESURE. Lancer des
+        // threads coûte ~0,1–0,2 ms ; en dessous d'un certain volume de
+        // travail, le SÉQUENTIEL gagne. Mesuré (aarch64, bits cumulés →
+        // séquentiel / parallèle) :
+        //
+        //   4 000 bits (primorielle 500)   : 0,014 / 0,107 ms
+        //   20 000 bits (primorielle 2000) : 0,085 / 0,167 ms
+        //   124 000 bits (primorielle 10000): 1,28 / 1,46 ms
+        //   734 000 bits (100000! partiel) : 16,7 / 13,7 ms  ← bascule
+        //
+        // D'où un seuil de 500 000 bits cumulés. Un premier réglage à 64 Mo
+        // rendait `n$` (super-factorielle) et `n!!` PLUS LENTS : ils tombent
+        // sous le seuil et passaient donc en séquentiel à des tailles où le
+        // parallèle gagnait encore.
+        let poids: u64 = v.iter().map(|x| x.bits()).sum();
         let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
-        while v.len() > coeurs.max(2) * 2 {
-            niveau_par(&mut v, coeurs);
+        if poids >= 500_000 {
+            while v.len() > coeurs.max(2) * 2 {
+                niveau_par(&mut v, coeurs);
+            }
         }
         arbre_seq(&mut v);
         r.set_v(v.into_iter().next().unwrap());

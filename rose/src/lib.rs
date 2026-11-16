@@ -47,10 +47,8 @@ pub mod inflate;
 /// Décodeur PNG minimal (RGBA 8 bits) — testable sous toutes les cibles.
 pub mod png;
 
-/// Backend GMP OPTIONNEL pour les opérateurs factoriels (feature `gmp`).
-/// Sans la feature, tout retombe sur `num-bigint` — même sémantique.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod gmp_fact;
+/// Multiplication rapide (Karatsuba → Toom-3 → NTT), à la manière de GMP.
+pub mod mul_rapide;
 
 /// Calculs de TRACÉ de l'installeur (découpe de texte, progression, échelle).
 /// Module PUR, testable sous Linux : le tracé Win32 de `setup_gui` ne l'est

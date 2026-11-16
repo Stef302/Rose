@@ -3326,32 +3326,16 @@ pub fn multifactorielle(n: &Gz, k: u8) -> Gz {
     if k == 1 {
         return factorielle(n);
     }
-    // ── Backend ────────────────────────────────────────────────────────────
-    //
-    // Avec la feature `gmp`, GMP fait le produit en arbre (Toom/FFT) : mesuré
-    // ~5× plus rapide que `num-bigint` au-delà de quelques milliers de
-    // chiffres. Sans la feature, on garde `arbre_produit` (num-bigint,
-    // parallélisé) — même résultat exact.
-    #[cfg(feature = "gmp")]
-    {
-        let v = crate::gmp_fact::multifactorielle(nn as u64, k as u64);
-        let r = Gz::neuf();
-        r.set_v(v);
-        return r;
-    }
-    #[cfg(not(feature = "gmp"))]
-    {
-        // Produit en arbre pour rester multi-cœur comme `factorielle`.
-        // ⚠ `nn - i * k` peut devenir ≤ 0 : `take_while(v > 0)` arrête la
-        // suite, donc aucun facteur nul n'entre dans le produit.
-        let facteurs: Vec<num_bigint::BigInt> = (0..)
-            .map(|i| nn - i * k)
-            .take_while(|&v| v > 0)
-            .map(num_bigint::BigInt::from)
-            .collect();
-        if facteurs.is_empty() { return Gz::de_i64(1); }
-        crate::i128x::arbre_produit(facteurs)
-    }
+    // Produit en arbre pour rester multi-cœur comme `factorielle`.
+    // ⚠ `nn - i * k` peut devenir ≤ 0 : `take_while(v > 0)` arrête la
+    // suite, donc aucun facteur nul n'entre dans le produit.
+    let facteurs: Vec<num_bigint::BigInt> = (0..)
+        .map(|i| nn - i * k)
+        .take_while(|&v| v > 0)
+        .map(num_bigint::BigInt::from)
+        .collect();
+    if facteurs.is_empty() { return Gz::de_i64(1); }
+    crate::i128x::arbre_produit(facteurs)
 }
 
 /// `!n` : SOUS-FACTORIELLE — nombre de dérangements d'un ensemble de n
