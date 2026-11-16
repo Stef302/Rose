@@ -107,3 +107,4 @@ installateur/velopack/Releases/
 rose/target-gmp/
 # Binaire du backend GMP (reconstruit par bench_factorielles.sh)
 rose-gmp
+rose-s
