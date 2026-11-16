@@ -620,11 +620,17 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
     }
 }
 
-/// Affiche une valeur accompagnée de sa FORMULE EXACTE en LaTeX.
-/// Miroir de la convention déjà en place pour π, φ et e :
-///     π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 3.14159…
-/// On rend donc « formule   valeur », la formule étant produite par le
-/// module `latex` à partir de l'AST du programme.
+/// Affiche une valeur, avec un préfixe éventuel.
+///
+/// ⚠⚠⚠ DEPUIS LE 16/11, `formule` EST TOUJOURS VIDE (demande utilisateur :
+/// « le tout est affiché en LaTeX à part pour la commande faite pour ça »,
+/// puis « plus nécessaire de tout en latex même constantes »). La sortie
+/// d'exécution est la VALEUR SEULE ; le LaTeX se lit par `rose latex`
+/// (programme entier) ou par les lignes marquées `%%`.
+///
+/// ⚠ La fonction est CONSERVÉE comme point unique d'affichage : si un jour
+/// un préfixe redevient utile, c'est ICI qu'il se pose (interpréteur ET
+/// JIT passent par là).
 pub fn afficher_formule(v: &Valeur, formule: &str) {
     if formule.is_empty() {
         afficher(v);
@@ -829,9 +835,18 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
     let bytes = s.as_bytes();
     if bytes.is_empty() { return "π ≈ 0".to_string(); }
     let mut sortie = String::with_capacity(s.len() + 60);
-    // Formule exacte (LaTeX)
+    // ⚠⚠⚠ LA FORMULE EXACTE RESTE, MAIS SUR UNE LIGNE À PART (16/11).
+    //
+    // Demande utilisateur : « pour le latex c'était des symboles pour
+    // définir quelque ligne du programme s'affiche en latex ». La ligne
+    // `%%` est EXACTEMENT ça : un symbole qui désigne une ligne à rendre en
+    // LaTeX. Pour les constantes, la formule est donc écrite sur la ligne
+    // précédente — la sortie de la valeur n'est plus préfixée.
+    //
+    // ⚠ C'est aussi ce qui préserve la PARITÉ avec le moteur C++ : il
+    // imprime déjà la formule sur sa propre ligne, puis « π ≈ … ».
     sortie.push_str("π = 4\\cdot\\arctan(1/5) - \\arctan(1/239)");
-    sortie.push_str("   ");
+    sortie.push('\n');
     sortie.push_str("π ≈ ");
     sortie.push(bytes[0] as char);
     sortie.push('.');
@@ -854,9 +869,18 @@ pub fn nombre_e(chiffres: &Gz) -> String {
     let bytes = s.as_bytes();
     if bytes.is_empty() { return "e ≈ 0".to_string(); }
     let mut sortie = String::with_capacity(s.len() + 60);
-    // Formule exacte (LaTeX)
+    // ⚠⚠⚠ LA FORMULE EXACTE RESTE, MAIS SUR UNE LIGNE À PART (16/11).
+    //
+    // Demande utilisateur : « pour le latex c'était des symboles pour
+    // définir quelque ligne du programme s'affiche en latex ». La ligne
+    // `%%` est EXACTEMENT ça : un symbole qui désigne une ligne à rendre en
+    // LaTeX. Pour les constantes, la formule est donc écrite sur la ligne
+    // précédente — la sortie de la valeur n'est plus préfixée.
+    //
+    // ⚠ C'est aussi ce qui préserve la PARITÉ avec le moteur C++ : il
+    // imprime déjà la formule sur sa propre ligne, puis « π ≈ … ».
     sortie.push_str("e = \\sum_{k=0}^{\\infty} \\frac{1}{k!}");
-    sortie.push_str("   ");
+    sortie.push('\n');
     sortie.push_str("e ≈ ");
     sortie.push(bytes[0] as char);
     sortie.push('.');
@@ -879,9 +903,18 @@ pub fn nombre_phi(chiffres: &Gz) -> String {
     let bytes = s.as_bytes();
     if bytes.is_empty() { return "φ ≈ 0".to_string(); }
     let mut sortie = String::with_capacity(s.len() + 60);
-    // Formule exacte (LaTeX)
+    // ⚠⚠⚠ LA FORMULE EXACTE RESTE, MAIS SUR UNE LIGNE À PART (16/11).
+    //
+    // Demande utilisateur : « pour le latex c'était des symboles pour
+    // définir quelque ligne du programme s'affiche en latex ». La ligne
+    // `%%` est EXACTEMENT ça : un symbole qui désigne une ligne à rendre en
+    // LaTeX. Pour les constantes, la formule est donc écrite sur la ligne
+    // précédente — la sortie de la valeur n'est plus préfixée.
+    //
+    // ⚠ C'est aussi ce qui préserve la PARITÉ avec le moteur C++ : il
+    // imprime déjà la formule sur sa propre ligne, puis « π ≈ … ».
     sortie.push_str("φ = \\frac{1 + \\sqrt{5}}{2}");
-    sortie.push_str("   ");
+    sortie.push('\n');
     sortie.push_str("φ ≈ ");
     sortie.push(bytes[0] as char);
     sortie.push('.');

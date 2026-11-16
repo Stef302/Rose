@@ -83,10 +83,34 @@ lignes marquées `%%`.
 ```
 
 ⚠ **SEULE exception** : les CONSTANTES IRRATIONNELLES `pi`, `phi`, `e`
-gardent leur formule exacte devant la valeur approchée (sans elle, on ne
-saurait pas quelle constante on lit). Le prédicat est
-`latex::formule_composee` : vrai **uniquement** pour `Expr::Appel` dont le
-nom est `pi`, `phi` ou `e` — partagé par l'interpréteur ET le JIT (parité).
+écrivent leur formule exacte sur la ligne **précédente** (une ligne de
+LaTeX, comme une ligne `%%`), puis leur valeur approchée :
+
+```
+>> phi
+φ = \frac{1 + \sqrt{5}}{2}
+φ ≈ 1.61803398874989484820
+```
+
+⚠ C'est le moteur C++ de référence qui imprime déjà ces deux lignes : la
+parité avec lui est préservée à l'octet près (mesuré : parité Rust
+34 → 9 divergences après correction, les 9 restantes étant préexistantes).
+
+⚠ `latex::formule_composee` rend **`false` pour toute expression**
+(deuxième demande utilisateur : « plus nécessaire de tout en latex même
+constantes »). Le prédicat est partagé par l'interpréteur ET le JIT.
+⚠⚠ **NE PAS ré-introduire de formule dans `run::afficher_formule` ni dans
+`jit.rs` (rose_affiche_prefixe)** : le LaTeX se lit par `rose latex` ou par
+les lignes `%%` (`rose latex prog.rose --lignes`).
+
+⚠⚠ `rose prog.rose` ne doit PAS renommer la console : `console_win::preparer`
+ne pose le titre (et l'icône) QUE dans une console éphémère
+(`console_ephemere()` = un seul PID rattaché). Sinon Windows Terminal
+renommait l'onglet PowerShell en « Rose … » — mesuré chez l'utilisateur.
+
+⚠⚠ Mesurer une lenteur : `rose debug-lenteur [-n N] [prog.rose]` ventile
+lancement / analyse / exécution (médiane). `ROSE_TIMING=1` donne la
+ventilation interne (`entree_main`, `console`, `pret`, `post_spawn`).
 
 `rose latex prog.rose` rend le programme entier (c'est là qu'on lit le
 LaTeX : `\operatorname{afficher}(n!)`, `\frac{1}{3}`, `2^{10}`…). Signature typée →

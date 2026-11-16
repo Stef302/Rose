@@ -1067,7 +1067,7 @@ fn ecrire_profil_terminal(bindir: &std::path::Path) -> String {
       "snapOnInput": true,
       "closeOnExit": "graceful",
       "tabTitle": "Rose {version}",
-      "suppressApplicationTitle": false
+      "suppressApplicationTitle": true
     }}
   ]
 }}

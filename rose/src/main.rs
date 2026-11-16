@@ -15,6 +15,7 @@ mod interp;
 mod jit;
 mod run;
 mod latex;
+mod debug_lenteur;
 mod auto_llvm;
 mod cmd_llvm;
 mod sha256;
@@ -58,6 +59,7 @@ Usage :
   rose info                état du moteur
   rose console [fichier.rose]   console interactive (REPL) — tapez des commandes Rose
   rose repl [fichier.rose]      identique
+  rose debug-lenteur [-n N] [prog.rose]   OÙ VA LE TEMPS ? lancement, analyse, exécution
   rose update              installe/met a jour Rose (64 bits, interface console)
 ",
         env!("CARGO_PKG_VERSION")
@@ -135,10 +137,16 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
 
 fn main() {
     let _t_start = std::time::Instant::now();
+    // ⚠⚠ MESURE : le temps passé dans la préparation de la console
+    // (`SetConsoleTitleW` + fil d'icône) est ventilé à part quand
+    // `ROSE_TIMING` est posé. C'est le suspect n°2 de la « lenteur avant
+    // la première sortie » signalée sur Windows.
+    let _t_entree = _t_start.elapsed();
     // Titre et icône de la fenêtre de console (Windows). Doit être fait
     // AVANT toute écriture : le double-clic sur un `.rose` ouvre cette
     // fenêtre, et elle doit porter la rose de marque.
     console_win::preparer();
+    let _t_console = _t_start.elapsed();
     // Hook de panic silencieux pour les erreurs Rose récupérables (ROSE_ERR:),
     // afin d'éviter le bruit « thread panicked » sur stderr. Les vrais bugs
     // (panics non ROSE_ERR) sont toujours affichés.
@@ -173,6 +181,12 @@ fn main() {
         std::process::exit(1);
     }
     let action = argv[1].as_str();
+    // ⚠ `debug-lenteur` : diagnostic du temps de lancement / analyse /
+    // exécution. Il ne dépend de RIEN (std seul) et se place AVANT toute
+    // initialisation lourde.
+    if action == "debug-lenteur" || action == "lenteur" {
+        std::process::exit(debug_lenteur::execute(&argv));
+    }
     // La commande « llvm » (transpilation vers C) n'a pas besoin de LLVM :
     // elle est disponible meme dans le binaire leger.
     if action == "llvm" {
@@ -226,6 +240,14 @@ fn main() {
             // Le marqueur est une ANNOTATION, pas une instruction — le
             // fichier reste exécutable tel quel, l'analyseur ignore `%%`
             // comme un commentaire (TeX) s'il le rencontre.
+            //
+            // ⚠⚠ LA SORTIE COMPORTE UN `\\` APRÈS CHAQUE LIGNE, Y COMPRIS LA
+            // DERNIÈRE (16/11). L'ancienne version le séparait seulement
+            // ENTRE les lignes : la dernière marque se retrouvait collée à
+            // la suivante (`$n!$` sans `\\`), donc invisible dans un
+            // `align`/`gather` LaTeX. Les tests unitaires l'avaient figé
+            // (« sans séparateur final ») — c'est le COMPORTEMENT qui était
+            // faux, pas le test.
             if argv.iter().any(|a| a == "--lignes" || a == "-l") {
                 print!("{}", latex::programme_latex_lignes(&source));
                 return;
@@ -317,7 +339,10 @@ fn main() {
         repl::lancer(Some(&fichier), false);
     }
     if std::env::var("ROSE_TIMING").is_ok() {
-        eprintln!("TIMING-MAIN pret={:?} post_spawn={:?}", _t_pret, _t_post);
+        // ⚠ Ventilation COMPLÈTE : entrée dans main, préparation console,
+        // lecture du fichier, spawn du fil d'exécution, total.
+        eprintln!("TIMING entree_main={:?} console={:?} pret={:?} post_spawn={:?}",
+                  _t_entree, _t_console, _t_pret, _t_post);
     }
     // ⚠ La fenêtre de console ouverte par un DOUBLE-CLIC sur un `.rose` se
     // ferme avec le programme : l'utilisateur n'a pas le temps de lire la

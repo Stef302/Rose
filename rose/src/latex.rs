@@ -107,15 +107,20 @@ fn expr_avec_priorite(e: &Expr, min: u8) -> String {
 /// pas quelle constante c'est. C'est ce que l'utilisateur garde (« ça
 /// marche pour la commande faite pour ça »).
 ///
-/// Donc : un appel à `pi`, `phi` ou `e` est « composé » ; tout le reste
-/// (binaire, factorielle, appel utilisateur, index…) ne l'est plus.
-pub fn formule_composee(e: &Expr) -> bool {
-    match e {
-        // ⚠ Constante irrationnelle : la formule EST l'information.
-        Expr::Appel { nom, .. } if matches!(nom.as_str(), "pi" | "phi" | "e") => true,
-        // Tout le reste : la valeur suffit, le LaTeX se demande par `latex`.
-        _ => false,
-    }
+/// ⚠⚠ CORRECTION (16/11, deuxième demande) : « pour le latex c'était des
+/// symboles pour définir quelque ligne du programme s'affiche en latex,
+/// plus nécessaire de tout en latex même constantes ». Même les CONSTANTES
+/// ne portent plus leur formule dans la sortie : `afficher(phi)` imprime la
+/// valeur seule. Le LaTeX se lit UNIQUEMENT par `rose latex` (programme
+/// entier) ou par les lignes marquées `%%` — le mécanisme des symboles.
+///
+/// ⚠ La fonction est CONSERVÉE (et toujours partagée par l'interpréteur et
+/// le JIT) parce que c'est le point unique de la règle : elle rend
+/// maintenant `false` pour TOUTE expression. La formule exacte de π, φ, e
+/// reste disponible dans `rose latex` et dans le rendu du programme.
+pub fn formule_composee(_e: &Expr) -> bool {
+    // ⚠ Sortie d'exécution = la VALEUR SEULE, sans aucune formule LaTeX.
+    false
 }
 
 pub fn expr_latex(e: &Expr) -> String {
@@ -511,7 +516,12 @@ pub fn contenu_ligne_latex(ligne: &str) -> String {
 }
 
 /// Rendu des SEULES lignes marquées `%%` d'un programme, dans l'ordre du
-/// fichier, séparées par `\\` (une ligne LaTeX par ligne marquée).
+/// fichier, chacune suivie de `\\` (une ligne LaTeX par ligne marquée).
+///
+/// ⚠⚠ Le `\\` est posé APRÈS CHAQUE ligne, DERNIÈRE COMPRISE (16/11) :
+/// dans un `align`/`gather` LaTeX, une ligne sans séparateur final est collée
+/// à la suivante. L'ancienne règle (« séparateur entre les lignes seulement »)
+/// rendait `$n!$` sans `\\` quand c'était la dernière marque.
 ///
 /// Les lignes qui ne sont pas des marques sont IGNORÉES : le programme Rose
 /// reste exécutable tel quel, le marqueur n'est qu'une annotation.
@@ -521,11 +531,12 @@ pub fn programme_latex_lignes(source: &str) -> String {
         .map(contenu_ligne_latex)
         .filter(|l| !l.is_empty())
         .collect();
-    let n = lignes.len();
     let mut s = String::new();
-    for (i, l) in lignes.iter().enumerate() {
+    // ⚠ `\\` APRÈS CHAQUE LIGNE, dernière comprise : dans un `align` LaTeX,
+    // une ligne sans séparateur est collée à la suivante.
+    for l in lignes.iter() {
         s.push_str(l);
-        if i + 1 < n { s.push_str(" \\\\"); }
+        s.push_str(" \\\\");
         s.push('\n');
     }
     s
@@ -661,10 +672,12 @@ mod tests_formule_composee {
     }
 
     #[test]
-    fn les_constantes_gardent_leur_formule() {
+    fn meme_les_constantes_n_affichent_plus_de_formule() {
+        // ⚠ Deuxième demande utilisateur : « plus nécessaire de tout en
+        // latex même constantes ». `afficher(phi)` imprime la valeur seule.
         for nom in ["pi", "phi", "e"] {
             let e = appel(nom, vec![lit("50")]);
-            assert!(formule_composee(&e), "{nom} doit garder sa formule");
+            assert!(!formule_composee(&e), "{nom} ne doit plus porter sa formule");
         }
     }
 
@@ -838,7 +851,9 @@ mod tests {
         // ⚠ Le séparateur `\\` est suivi d'un SAUT DE LIGNE (une ligne LaTeX
         // par ligne marquée) : la sortie est donc
         //   "$N!$ : factorielle \\\\" puis "\n" puis "$N!!$" puis "\n".
-        assert_eq!(programme_latex_lignes(src), "$N!$ : factorielle \\\\\n$N!!$\n");
+        // ⚠ `\\` après CHAQUE ligne, dernière comprise (16/11).
+        assert_eq!(programme_latex_lignes(src),
+                   "$N!$ : factorielle \\\\\n$N!!$ \\\\\n");
         // Le marqueur est reconnu même après des blancs.
         assert!(est_ligne_latex("   %% x"));
         assert!(!est_ligne_latex("x = 5 % 3"));

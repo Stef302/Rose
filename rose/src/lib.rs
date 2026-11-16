@@ -143,6 +143,10 @@ pub mod jit {
 /// telles quelles.
 pub mod wasm;
 
+/// ⚠ Outil de diagnostic `rose debug-lenteur` : ventilé le temps de
+/// lancement, d'analyse et d'exécution. Voir le module.
+pub mod debug_lenteur;
+
 // ── API de haut niveau ────────────────────────────────────────────────────
 //
 // Ces trois fonctions encapsulent tout ce qu'il faut pour faire tourner un

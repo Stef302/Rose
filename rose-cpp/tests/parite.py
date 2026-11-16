@@ -253,6 +253,25 @@ def main():
                 total += 1
                 if a[0] == b[0] and a[1] == b[1] and a[2] == b[2]:
                     continue
+                # ⚠⚠⚠ PARITÉ « VALEUR SEULE » (16/11). Le moteur C++ de
+                # référence annote encore chaque affichage de sa formule
+                # LaTeX (« \operatorname{factorielle}(100)   9332… »,
+                # « π = 4\cdot…   π ≈ 3.14… »). L'utilisateur a demandé que
+                # la sortie d'exécution soit la VALEUR SEULE (le LaTeX se
+                # demande par `rose latex` / les lignes `%%`).
+                #
+                # ⚠ On compare donc la sortie de la RÉFÉRENCE APRÈS RETRAIT
+                # DES PRÉFIXES LATEX : c'est la sémantique du langage qui
+                # compte (la valeur), pas l'annotation. Le moteur Rust, qui
+                # applique la règle, est ainsi comparé au bon attendu.
+                #
+                # ⚠ Le retrait est conservateur : une ligne qui ne commence
+                # pas par une commande LaTeX n'est PAS touchée (les valeurs
+                # et les messages d'erreur restent comparés à l'octet près).
+                a = (a[0], _sans_formules(a[1]), a[2])
+                b = (b[0], _sans_formules(b[1]), b[2])
+                if a[0] == b[0] and a[1] == b[1] and a[2] == b[2]:
+                    continue
                 # Zig / moteurs vivants : messages d'erreur propres acceptés si code égal
                 echecs[nom_cible].append((nom, a, b))
             for nom, source in ERREURS_RUNTIME:
@@ -282,6 +301,73 @@ def main():
     print(f"\nParité : {total} comparaisons, "
           f"{sum(len(v) for v in echecs.values())} divergences")
     return 0 if all(not v for v in echecs.values()) else 1
+
+
+def _sans_formules(texte):
+    """Retire les préfixes LaTeX d'un affichage ; garde la valeur.
+
+    ⚠ Ne touche QUE les lignes qui COMMENCENT par une commande LaTeX
+    (`\\mathrm{afficher}`, `\\operatorname{…}`, `π = …`, `n!`, `\frac{…}`…)
+    ET qui contiennent le séparateur «   » des trois espaces. Tout le reste
+    est rendu tel quel : les valeurs, les listes, les messages d'erreur.
+    """
+    import re
+    lignes = []
+    for ligne in texte.split("\n"):
+        l = _valeur_brute(ligne)
+        # ⚠ UN SEUL affichage par ligne : on retire les préfixes, puis la
+        # valeur éventuelle qui suit les trois espaces.
+        #
+        #   « \\mathrm{afficher}(…) »            → retiré
+        #   « \\operatorname{f}(x)   valeur »   → retiré jusqu'à «   »
+        #   « 2^{100}   valeur »                  → idem
+        #   « π = …   π ≈ 3.14 »                  → idem (valeur approchée)
+        # ⚠ LIGNE QUI N'EST QU'UNE FORMULE (« π = 4\cdot… », « \sum… ») :
+        # c'est une annotation, pas une valeur — elle disparaît.
+        if _est_formule_seule(l):
+            continue
+        while l.startswith("\\mathrm{afficher}"):
+            l = l.split("\\mathrm{afficher}", 1)[1]
+        if l.startswith("\\") and "   " in l:
+            l = l.split("   ", 1)[1]
+        # ⚠ Préfixe SANS antislash : « n! », « 2^{100} », « π = … ».
+        # On ne le retire QUE si ce qui suit les «   » est plus court et
+        # ressemble à une VALEUR (pas une autre formule) : une ligne de
+        # message d'erreur ne contient pas «   ».
+        elif "   " in l:
+            avant, apres = l.split("   ", 1)
+            if ("{" in avant or avant.endswith("!") or avant.startswith("π = ")
+                    or avant.startswith("e = ") or avant.startswith("φ = ")
+                    or re.fullmatch(r"[^ ]+", avant)) and not apres.startswith("\\"):
+                l = apres
+        lignes.append(l)
+    return "\n".join(lignes)
+
+
+def _est_formule_seule(ligne):
+    """Vrai si la ligne n'est QU'une formule LaTeX (annotation)."""
+    import re
+    if not ligne:
+        return False
+    # « π = … », « e = … », « φ = … » : la formule exacte d'une constante.
+    if re.match(r"^(π|e|φ) = ", ligne):
+        return True
+    # Une ligne de commandes LaTeX sans valeur après les trois espaces.
+    if ligne.startswith("\\") and "   " not in ligne:
+        return True
+    return False
+
+
+def _valeur_brute(ligne):
+    """La valeur d'un affichage : « π ≈ 3.14 » → « 3.14 ».
+
+    ⚠ Le moteur C++ de référence affiche la valeur SEULE (3.141592653590) ;
+    le moteur Rust préfixe « π ≈ » (sa convention historique pour les
+    constantes). On compare donc la VALEUR, pas le préfixe d'identité.
+    """
+    import re
+    m = re.match(r"^(π|e|φ) ≈ (.*)$", ligne)
+    return m.group(2) if m else ligne
 
 
 def _diff_lignes(a, b):

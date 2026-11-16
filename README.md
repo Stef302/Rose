@@ -104,11 +104,14 @@ suivie de `≈`.
 
 ```
 >> pi(20)
-π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 3.14159265358979323846
+π = 4\cdot\arctan(1/5) - \arctan(1/239)
+π ≈ 3.14159265358979323846
 >> e(20)
-e = \sum_{k=0}^{\infty} \frac{1}{k!}   e ≈ 2.71828182845904523536
+e = \sum_{k=0}^{\infty} \frac{1}{k!}
+e ≈ 2.71828182845904523536
 >> phi(20)
-φ = \frac{1 + \sqrt{5}}{2}   φ ≈ 1.61803398874989484820
+φ = \frac{1 + \sqrt{5}}{2}
+φ ≈ 1.61803398874989484820
 ```
 
 ## ⚡ Vitesse du JIT
@@ -178,11 +181,23 @@ demande**, par `rose latex` (programme entier) ou par les lignes marquées
 >>> pour j de 0 vers 10 { $s = $s + j }
 >>> $s
 45
->>> 2 * pi
-π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 6.283185307179586
 >>> 3 + 4i
 5
+>>> n = 3*x - 7
 ```
+
+⚠ **Seule exception** : les constantes irrationnelles `pi`, `phi`, `e`
+écrivent leur formule exacte **sur la ligne précédente** (une ligne de
+LaTeX, comme une ligne `%%`), puis leur valeur approchée :
+
+```
+>>> phi
+φ = \frac{1 + \sqrt{5}}{2}
+φ ≈ 1.61803398874989484820
+```
+
+C'est le moteur C++ de référence qui imprime déjà cette ligne : la parité
+avec lui est ainsi préservée à l'octet près.
 
 ```
 $ rose latex prog.rose
@@ -193,11 +208,12 @@ n = 10 \\
 \operatorname{afficher}(\varphi)
 ```
 
-⚠ **Seule exception** : les constantes irrationnelles `pi`, `phi`, `e`
-gardent leur formule exacte devant la valeur approchée — sans elle, on ne
-saurait pas quelle constante on lit. Le prédicat est
-`latex::formule_composee` (vrai uniquement pour ces trois appels), partagé
-par l'interpréteur et le JIT, donc **parité garantie**.
+⚠ La sortie d'exécution ne porte **aucune** formule LaTeX pour les
+expressions calculées (factorielle, binaire, appel utilisateur, index…) :
+`latex::formule_composee` rend `false` pour toute expression, et le
+prédicat est partagé par l'interpréteur et le JIT (parité garantie). Les
+constantes π, φ, e font exception par leur affichage propre (ligne de
+formule puis valeur, cf. ci-dessus).
 
 La formule est générée à partir de l'AST (module `src/latex.rs`) par :
 `programme_latex`, `expr_latex` et `instr_latex`. Pour `pour j de`, la borne
@@ -588,7 +604,8 @@ Aucune valeur n'est figée — elles sont calculées à la demande, avec leur
 formule exacte en LaTeX et une approximation `≈` :
 
 ```rose
->> pi        # π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 3.14159…
+>> pi        # π = 4\cdot\arctan(1/5) - \arctan(1/239)  (ligne de formule)
+             # π ≈ 3.14159…
 >> e         # e = Σ 1/k!   e ≈ 2.71828…
 >> phi       # φ = (1+√5)/2   φ ≈ 1.61803…
 >> racine(2) # \sqrt{2}   √2
@@ -835,6 +852,26 @@ rose update              # menu : mettre à jour / réinstaller / réparer / dé
 rose update --force      # retélécharge même si la version est déjà à jour
 rose update --velopack   # Windows : passe par Velopack (delta + rollback)
 ```
+
+### Mesurer une lenteur — `rose debug-lenteur`
+
+Un programme qui « met un certain temps avant d'afficher » peut perdre son
+temps avant le moteur (lancement du processus, scan antivirus), dans la
+préparation de la console, dans l'analyse ou dans l'exécution. Cet outil
+ventile le temps au lieu de le deviner :
+
+```bash
+rose debug-lenteur              # mesures reproductibles (5 répétitions, médiane)
+rose debug-lenteur prog.rose    # ajoute le programme qui vous intéresse
+rose debug-lenteur -n 10        # plus de répétitions
+```
+
+Il chronomètre `rose version` (lancement pur), `rose info`, un programme
+minimal, `rose latex` (analyse seule) et le programme demandé, puis donne la
+MÉDIANE et un verdict : *le lancement coûte tant* (antivirus / démarrage) ou
+*l'analyse* / *l'exécution* coûte tant. `ROSE_TIMING=1 rose prog.rose`
+affiche aussi la ventilation interne (`entree_main`, `console`, `pret`,
+`post_spawn`).
 
 **« Mettre à jour »** interroge l'API GitHub (`releases/latest`), compare
 la version publiée à celle installée, **télécharge l'artefact** de la

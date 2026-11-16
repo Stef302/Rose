@@ -62,10 +62,33 @@ pub fn attendre_fermeture() {
 }
 
 /// Prépare la console : titre de la fenêtre, et icône posée en différé.
+///
+/// ⚠⚠⚠ LE TITRE N'EST POSÉ QUE DANS UNE CONSOLE ÉPHÉMÈRE (16/11).
+/// Mesuré chez l'utilisateur : « je vois que ça met à jour dans Windows
+/// Terminal l'entête passant de powershell à Rose et sa description quand
+/// c'est exécuté ». C'est exactement ce que faisait `SetConsoleTitleW`
+/// appelé ici pour TOUS les lancements : dans Windows Terminal, le titre
+/// de la fenêtre devient celui de l'onglet, donc lancer un programme Rose
+/// depuis un onglet PowerShell renommait l'onglet « Rose 0.1.5 — console
+/// interactive ».
+///
+/// ⚠ La règle : si la console est PARTAGÉE (Windows Terminal, cmd ouvert,
+/// PowerShell…), elle a plusieurs processus rattachés — c'est le shell de
+/// l'utilisateur, PAS la nôtre : on ne touche NI au titre NI à l'icône.
+/// Si la console a été ouverte POUR NOUS (double-clic sur un `.rose`), on
+/// la personnalise : elle porte la rose et son titre.
+///
+/// ⚠ Effet de bord bienvenu : on supprime aussi les deux appels système
+/// qui précédaient la première écriture. C'est le suspect n°2 de la
+/// « lenteur avant l'affichage » (voir `rose debug-lenteur`).
 pub fn preparer() {
     #[cfg(windows)]
     {
-        use std::ffi::c_void;
+        // ⚠ Console PARTAGÉE : on ne renomme rien et on ne pose aucune
+        // icône. Le shell de l'utilisateur garde son identité.
+        if !console_ephemere() {
+            return;
+        }
         unsafe extern "system" {
             fn SetConsoleTitleW(titre: *const u16) -> i32;
         }
