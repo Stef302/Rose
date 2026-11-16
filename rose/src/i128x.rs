@@ -137,11 +137,36 @@ fn calculer_puissances(premiers: &[u64], n: u64) -> Vec<BigInt> {
         if coeurs < 2 || premiers.len() < 256 {
             return premiers.iter().map(|&p| puissance(p)).collect();
         }
-        let tranche = (premiers.len() + coeurs - 1) / coeurs;
-        let morceaux: Vec<Vec<u64>> = premiers.chunks(tranche).map(|c| c.to_vec()).collect();
+        // ⚠⚠⚠ RÉPARTITION PAR POIDS (LPT), PAS PAR CONTIGUÏTÉ.
+        //
+        // Mesuré : une répartition par tranches CONTIGUËS ne gagnait rien
+        // (36 ms parallèles contre 39 ms séquentiels) : les puissances sont
+        // TRÈS déséquilibrées — 2^999994 fait 1 Mbit, 3^499996 fait
+        // 792 Kbit, 5^249998 fait 464 Kbit… et le reste est minuscule.
+        // Un seul fil se retrouvait avec tous les gros calculs.
+        //
+        // On estime donc le poids de chaque puissance (bits) et on
+        // distribue les plus lourdes d'abord sur le cœur le moins chargé
+        // (algorithme « LPT » : le plus petit écart possible).
+        let mut charges: Vec<u64> = vec![0; coeurs];
+        let mut lots: Vec<Vec<u64>> = vec![Vec::new(); coeurs];
+        // Poids ≈ (n/p)·log2(p) : décroissant en p.
+        let mut tries: Vec<(u64, u64)> = premiers.iter()
+            .map(|&p| {
+                let lg = 64 - (p as u64).leading_zeros() as u64;   // ⌊log2 p⌋+1
+                let poids = (n / p) * lg;
+                (poids, p)
+            }).collect();
+        tries.sort_by(|a, b| b.0.cmp(&a.0));
+        for (poids, p) in tries {
+            let c = charges.iter().enumerate()
+                .min_by_key(|&(i, s)| s).map(|(i, _)| i).unwrap_or(0);
+            charges[c] += poids;
+            lots[c].push(p);
+        }
         let mut tous: Vec<BigInt> = Vec::with_capacity(premiers.len());
         std::thread::scope(|s| {
-            let hs: Vec<_> = morceaux.into_iter().map(|m| s.spawn(move || {
+            let hs: Vec<_> = lots.into_iter().map(|m| s.spawn(move || {
                 m.into_iter().map(puissance).collect::<Vec<BigInt>>()
             })).collect();
             for h in hs { tous.extend(h.join().unwrap()); }

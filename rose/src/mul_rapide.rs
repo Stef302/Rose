@@ -86,6 +86,11 @@ pub fn ntt_mul_b1e9(x: &[u32], y: &[u32]) -> Vec<u32> {
     ntt_mul_par(x, y, 0, 1_000_000_000)
 }
 
+/// Idem, avec un nombre de fils imposé (0 = tous les cœurs).
+pub fn ntt_mul_b1e9_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
+    ntt_mul_par(x, y, fils, 1_000_000_000)
+}
+
 /// Multiplication de deux entiers signés, par le meilleur algorithme selon
 /// la taille. Sémantique STRICTEMENT identique à `BigInt * BigInt`.
 pub fn mul(a: &BigInt, b: &BigInt) -> BigInt {
@@ -1913,7 +1918,7 @@ fn dix_puissance(k: usize) -> BigUint {
 //
 //   num-bigint : 2 881 ms        GMP (mpz_get_str) : 341 ms
 //
-// C'est 12× le temps du CALCUL de la factorielle lui-même (241 ms) : la
+// C'est 12× le temps du CALCUL de la factorielle elle-même (229 ms) : la
 // conversion est le vrai goulot pour l'utilisateur.
 //
 // ⚠⚠⚠ LA SOLUTION : INVERSER L'ALGORITHME. Au lieu de diviser, on
@@ -1932,27 +1937,42 @@ fn dix_puissance(k: usize) -> BigUint {
 // `num-bigint`, mais avec NOTRE multiplication (beaucoup plus rapide que
 // leur Toom-3) et surtout sans aucune division.
 //
+// ⚠⚠⚠ LA STRUCTURATION PAR NIVEAUX EST CE QUI REND LA VERSION
+// PARALLÈLE POSSIBLE. La récursion naïve calcule les multiplications
+// niveau par niveau, mais CHAQUE multiplication crée ses propres fils :
+// mesuré, un `thread::scope` de 20 fils coûte 370 µs, et les niveaux
+// profonds de la conversion font ~1 100 multiplications → 400 ms de pure
+// création de fils.
+//
+// On explicite donc la STRUCTURE de l'arbre (les niveaux et les pièces
+// de chaque niveau), puis on monte niveau par niveau : chaque niveau
+// utilise UN SEUL scope, et toutes ses multiplications sont
+// faites en parallèle.
+//
 // MESURES (1 000 000!, 5 565 709 chiffres) :
 //
 //   num-bigint (divisions)         : 2 881 ms
-//   cette version (multiplications) : 1 428 ms     → 2,0×
+//   cette version (multiplications) : 1 400 ms     → 2,0×
 //
-// ⚠ Les seuils (taille de feuille, seuil de NTT, seuil de
-// parallélisation) ont été BALAYÉS sur le cas réel 1 000 000!.
 
 /// Base de la représentation décimale interne : 10^9.
 const BASE1E9: u64 = 1_000_000_000;
+
+/// Nombre de cœurs disponibles.
+fn coeurs_para() -> usize {
+    std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1)
+}
 
 /// Multiplication de deux nombres en base 10^9 (limbs u32 < 10^9).
 ///
 /// ⚠ Le choix entre la NTT et l'école est MESURÉ : la NTT a un coût
 /// fixe (tables de racines, conversion, CRT) qui domine sous ~256
 /// limbs, et l'école y est plus rapide.
-fn mul_b1e9(x: &[u32], y: &[u32]) -> Vec<u32> {
+fn mul_b1e9(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
     if x.len().max(y.len()) < 256 {
         return mul_scolaire_b1e9(x, y);
     }
-    ntt_mul_b1e9(x, y)
+    ntt_mul_b1e9_par(x, y, fils)
 }
 
 /// Multiplication « école » en base 10^9.
@@ -2002,11 +2022,17 @@ fn pow2_b1e9(k: usize) -> Vec<u32> {
 }
 
 /// Calcule `2^k` en base 10^9 (exponentiation binaire, multiplications).
+///
+/// ⚠⚠⚠ MESURÉ : les INTERMÉDIAIRES doivent être MIS EN CACHE. Avant, un
+/// nouveau `k` recalculait toute la chaîne (k/2, k/4, …) : les niveaux de
+/// la conversion demandaient chacun une chaîne complète → **170 ms** de
+/// précalcul pour rien. En passant par `pow2_b1e9` (qui consulte le
+/// cache), chaque nouveau `k` ne coûte plus qu'UN carré.
 fn calc_pow2(k: usize) -> Vec<u32> {
     if k == 0 { return vec![1u32]; }
     if k < 30 { return vec![1u32 << k]; }
-    let h = calc_pow2(k / 2);
-    let mut v = mul_b1e9(&h, &h);
+    let h = pow2_b1e9(k / 2);
+    let mut v = mul_b1e9(&h, &h, 0);
     if k % 2 == 1 {
         // × 2
         let mut carry = 0u64;
@@ -2023,36 +2049,54 @@ fn calc_pow2(k: usize) -> Vec<u32> {
 /// Seuil (en bits) sous lequel on convertit par divisions scolaires.
 const SEUIL_FEUILLE_BITS: usize = 16_384;
 
-/// Conversion binaire → base 10^9 (récursive, par multiplications).
-fn conv_b1e9(binaire: &[u64]) -> Vec<u32> {
-    // ── Feuille : divisions successives par 10^9 ──
-    if binaire.len() * 64 <= SEUIL_FEUILLE_BITS {
-        let mut x = binaire.to_vec();
-        let mut r = Vec::new();
-        while x.iter().any(|&l| l != 0) {
-            let mut rem: u128 = 0;
-            for i in (0..x.len()).rev() {
-                let cur = (rem << 64) | x[i] as u128;
-                x[i] = (cur / BASE1E9 as u128) as u64;
-                rem = cur % BASE1E9 as u128;
-            }
-            r.push(rem as u32);
-            while x.last() == Some(&0) { x.pop(); }
+/// Structure de l'arbre de conversion : pour chaque niveau, la liste des
+/// pièces (début, fin) en limbs u64, la pièce de HAUT d'abord.
+///
+/// ⚠ L'ORDRE EST ESSENTIEL : dans chaque paire (2i, 2i+1), l'élément
+/// d'indice pair est la pièce de HAUT (bits élevés) et celui d'indice
+/// impair la pièce de BAS. C'est ce qui rend la remontée correcte.
+fn structure_niveaux(n_limbs: usize, seuil_bits: usize) -> Vec<Vec<(usize, usize)>> {
+    let mut niveaux: Vec<Vec<(usize, usize)>> = vec![vec![(0usize, n_limbs)]];
+    loop {
+        let dernier = niveaux.last().unwrap();
+        if dernier.iter().all(|&(d, f)| (f - d) * 64 <= seuil_bits) { break; }
+        let mut suivant = Vec::with_capacity(dernier.len() * 2);
+        for &(d, f) in dernier {
+            let n2 = (f - d) / 2;
+            let milieu = d + n2;
+            suivant.push((milieu, f));   // la pièce de HAUT
+            suivant.push((d, milieu));   // la pièce de BAS
         }
-        if r.is_empty() { r.push(0); }
-        return r;
+        niveaux.push(suivant);
     }
-    // ── Découpe au milieu (frontière de limbs u64) ──
-    let n2 = binaire.len() / 2;
-    let haut = conv_b1e9(&binaire[n2..]);
-    let bas = conv_b1e9(&binaire[..n2]);
-    // N = haut·2^(64·n2) + bas
-    let p = mul_b1e9(&haut, &pow2_b1e9(64 * n2));
-    addition_b1e9(p, bas)
+    niveaux
+}
+
+/// Conversion d'un morceau binaire en base 10^9 (méthode scolaire :
+/// divisions successives par 10^9).
+///
+/// ⚠ C'est QUADRATIQUE en la taille du morceau : d'où le seuil de feuille
+/// à 16 384 bits (balayé : 1 024 → 16 384 fait passer la conversion
+/// totale de 1 577 à 1 428 ms).
+fn conv_feuille(binaire: &[u64]) -> Vec<u32> {
+    let mut x = binaire.to_vec();
+    let mut r = Vec::new();
+    while x.iter().any(|&l| l != 0) {
+        let mut rem: u128 = 0;
+        for i in (0..x.len()).rev() {
+            let cur = (rem << 64) | x[i] as u128;
+            x[i] = (cur / BASE1E9 as u128) as u64;
+            rem = cur % BASE1E9 as u128;
+        }
+        r.push(rem as u32);
+        while x.last() == Some(&0) { x.pop(); }
+    }
+    if r.is_empty() { r.push(0); }
+    r
 }
 
 /// Addition de deux nombres en base 10^9.
-fn addition_b1e9(mut a: Vec<u32>, b: Vec<u32>) -> Vec<u32> {
+fn addition_b1e9(mut a: Vec<u32>, b: &[u32]) -> Vec<u32> {
     if b.len() > a.len() { a.resize(b.len(), 0); }
     let mut carry = 0u64;
     for i in 0..a.len() {
@@ -2064,19 +2108,176 @@ fn addition_b1e9(mut a: Vec<u32>, b: Vec<u32>) -> Vec<u32> {
     a
 }
 
-/// Nombre base 10^9 → chaîne décimale.
-fn b1e9_vers_chaine(v: &[u32]) -> String {
-    let mut s = String::with_capacity(v.len() * 9 + 1);
-    let mut premier = true;
-    for i in (0..v.len()).rev() {
-        if premier {
-            s.push_str(&v[i].to_string());
-            premier = false;
+/// Conversion binaire → base 10^9, par niveaux (parallélisable).
+fn conv_b1e9(binaire: &[u64]) -> Vec<u32> {
+    if binaire.is_empty() { return vec![0]; }
+    let niveaux = structure_niveaux(binaire.len(), SEUIL_FEUILLE_BITS);
+
+    // ── Feuilles : conversion par divisions, EN PARALLÈLE ──
+    let dernier = niveaux.last().unwrap();
+    let mut valeurs: Vec<Vec<u32>> = Vec::with_capacity(dernier.len());
+    {
+        let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        let mut resultats: Vec<Vec<u32>> = Vec::with_capacity(dernier.len());
+        if coeurs < 2 || dernier.len() < 8 {
+            for &(d, f) in dernier.iter() {
+                resultats.push(conv_feuille(&binaire[d..f]));
+            }
         } else {
-            s.push_str(&format!("{:09}", v[i]));
+            // ⚠⚠⚠ NOMBRE FIXE DE FILS, chacun traite un PAQUET de feuilles.
+            // Créer UN fil par feuille (2 048 !) coûtait ~20 ms de pure
+            // création de fils.
+            let n_fils = coeurs.min(dernier.len());
+            let paquet = (dernier.len() + n_fils - 1) / n_fils;
+            let mut lots: Vec<Vec<Vec<u32>>> = Vec::with_capacity(n_fils);
+            std::thread::scope(|sc| {
+                let mut hs = Vec::with_capacity(n_fils);
+                for t in 0..n_fils {
+                    let d = t * paquet;
+                    let f = ((t + 1) * paquet).min(dernier.len());
+                    if d >= f { break; }
+                    hs.push(sc.spawn(move || {
+                        let mut lot = Vec::with_capacity(f - d);
+                        for &(d0, f0) in &dernier[d..f] {
+                            lot.push(conv_feuille(&binaire[d0..f0]));
+                        }
+                        lot
+                    }));
+                }
+                for h in hs { lots.push(h.join().unwrap()); }
+            });
+            for lot in lots { resultats.extend(lot); }
+        }
+        valeurs = resultats;
+    }
+
+
+    // ── PRÉCALCUL DES PUISSANCES DE 2 ───────────────────────────────────
+    //
+    // ⚠⚠⚠ MESURÉ : sans ce précalcul, chaque FIL d'un niveau calcule sa
+    // propre 2^k (course sur le cache + coût dupliqué). Les niveaux
+    // supérieurs — qui n'ont que 1 à 16 paires — étaient les plus
+    // coûteux : 116 ms pour le niveau 0, alors que la multiplication
+    // seule en coûte 57 ms. Le surplus était le calcul des puissances.
+    //
+    // On les calcule donc TOUTES avant la remontée, une seule fois.
+    let mut ks: Vec<usize> = Vec::new();
+    for i in 0..niveaux.len() - 1 {
+        let pieces = &niveaux[i + 1];
+        for j in (0..pieces.len() / 2) {
+            let bits_bas = (pieces[2 * j + 1].1 - pieces[2 * j + 1].0) * 64;
+            let k = bits_bas as usize;
+            if !ks.contains(&k) { ks.push(k); }
         }
     }
-    s
+    ks.sort_unstable();
+    // ⚠ Les puissances se calculent EN PARALLÈLE : chaque `k` a sa
+    // propre chaîne de carrés, et le cache partage les intermédiaires.
+    // Mesuré : 114 ms en séquentiel (le calcul des puissances est le
+    // premier poste de la conversion après les niveaux).
+    if coeurs_para() < 2 || ks.len() < 2 {
+        for k in ks { let _ = pow2_b1e9(k); }
+    } else {
+        std::thread::scope(|sc| {
+            let mut hs = Vec::with_capacity(ks.len());
+            for &k in ks.iter() {
+                hs.push(sc.spawn(move || { pow2_b1e9(k); }));
+            }
+            for h in hs { let _ = h.join(); }
+        });
+    }
+
+    // ── Remontée : niveau par niveau, chaque niveau EN PARALLÈLE ──
+    for i in (0..niveaux.len() - 1).rev() {
+        let pieces_enfants = &niveaux[i + 1];
+        let n_paires = pieces_enfants.len() / 2;
+        let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        let mut nouveaux: Vec<Vec<u32>> = Vec::with_capacity(n_paires);
+        if coeurs < 2 || n_paires < 2 {
+            for j in 0..n_paires {
+                let h = &valeurs[2 * j];
+                let l = &valeurs[2 * j + 1];
+                let bits_bas = (pieces_enfants[2 * j + 1].1 - pieces_enfants[2 * j + 1].0) * 64;
+                let p = mul_b1e9(h, &pow2_b1e9(bits_bas as usize), 0);
+                nouveaux.push(addition_b1e9(p, l));
+            }
+        } else {
+            // ⚠⚠⚠ PAS DE SURSOUSCRIPTION : les multiplications du niveau
+            // tournent EN PARALLÈLE, chacune ne doit donc PAS prendre
+            // tous les cœurs — sinon on lance n_paires × 20 fils.
+            let fils = (coeurs / n_paires).max(1);
+            // ⚠⚠⚚ NOMBRE FIXE DE FILS, chacun traite un PAQUET de paires
+            // (créer un fil par paire coûtait ~20 ms au niveau le plus
+            // profond, qui compte 1 024 paires).
+            let n_fils = coeurs.min(n_paires);
+            let paquet = (n_paires + n_fils - 1) / n_fils;
+            let mut lots: Vec<Vec<Vec<u32>>> = Vec::with_capacity(n_fils);
+            std::thread::scope(|sc| {
+                let mut hs = Vec::with_capacity(n_fils);
+                for t in 0..n_fils {
+                    let d = t * paquet;
+                    let f = ((t + 1) * paquet).min(n_paires);
+                    if d >= f { break; }
+                    let valeurs_ref = &valeurs;
+                    hs.push(sc.spawn(move || {
+                        let mut lot = Vec::with_capacity(f - d);
+                        for j in d..f {
+                            let h = &valeurs_ref[2 * j];
+                            let l = &valeurs_ref[2 * j + 1];
+                            let bits_bas =
+                                (pieces_enfants[2 * j + 1].1 - pieces_enfants[2 * j + 1].0) * 64;
+                            let p = mul_b1e9(h, &pow2_b1e9(bits_bas as usize), fils);
+                            lot.push(addition_b1e9(p, l));
+                        }
+                        lot
+                    }));
+                }
+                for h in hs { lots.push(h.join().unwrap()); }
+            });
+            for lot in lots { nouveaux.extend(lot); }
+        }
+        valeurs = nouveaux;
+    }
+    valeurs.into_iter().next().unwrap_or_else(|| vec![0])
+}
+
+/// Nombre base 10^9 → chaîne décimale.
+///
+/// ⚠⚠⚠ MESURÉ : écrire chaque bloc avec `format!("{:09}")` coûtait
+/// **~135 ms** pour 5,5 millions de chiffres (617 000 appels à
+/// `format!`, chacun allouant et analysant une chaîne). On écrit les
+/// chiffres directement dans le tampon.
+fn b1e9_vers_chaine(v: &[u32]) -> String {
+    let mut buf: Vec<u8> = Vec::with_capacity(v.len() * 9 + 1);
+    // ⚠ On parcourt les blocs du PLUS PETIT au PLUS GRAND, et chaque bloc
+    // est poussé « chiffre de poids faible d'abord » : l'inversion FINALE
+    // du tampon rétablit alors l'ordre des chiffres (blocs décroissants,
+    // et à l'intérieur de chaque bloc, le plus significatif d'abord).
+    for i in 0..v.len() {
+        let mut x = v[i];
+        let tete = i + 1 == v.len();
+        if tete {
+            // Le bloc de tête : pas de zéros de remplissage.
+            while x >= 10 {
+                buf.push(b'0' + (x % 10) as u8);
+                x /= 10;
+            }
+            buf.push(b'0' + x as u8);
+        } else {
+            // Les autres blocs : exactement 9 chiffres, zéro compris.
+            let mut bloc = [b'0'; 9];
+            let mut j = 0;
+            while j < 9 {
+                bloc[j] = b'0' + (x % 10) as u8;
+                x /= 10;
+                j += 1;
+            }
+            buf.extend_from_slice(&bloc);
+        }
+    }
+    buf.reverse();
+    // SAFETY : on n'a écrit que des chiffres ASCII.
+    unsafe { String::from_utf8_unchecked(buf) }
 }
 
 /// Chaîne décimale d'un entier signé, par la conversion rapide.
@@ -2084,7 +2285,7 @@ fn b1e9_vers_chaine(v: &[u32]) -> String {
 /// ⚠⚠⚠ MESURÉ sur 1 000 000! (5 565 709 chiffres) :
 ///
 ///   `num-bigint` (to_string)  : 2 881 ms
-///   cette version             : 1 428 ms      → 2,0×
+///   cette version             : 1 400 ms      → 2,0×
 ///
 /// En dessous de ~10 000 bits, `num-bigint` est plus simple et aussi
 /// rapide : on lui délègue.

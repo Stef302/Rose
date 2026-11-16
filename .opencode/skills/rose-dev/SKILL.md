@@ -690,9 +690,11 @@ La feature `llvm` ne compile pas sur cette machine
      la symétrie hermitienne suppose des coefficients RÉELS, alors qu'ici x
      et y sont des entiers mod m (le corps fini n'a pas de conjugaison).
   On garde donc 6 NTT (3 par module) : c'est incompressible.
-- **PARALLÉLISATION DES PUISSANCES p^e** (factorielle) : mesuré 904–941 ms
-  avec, 906–920 ms sans — aucun gain net. Le temps est dans l'ARBRE de
-  produit, pas dans le calcul des p^e.
+- **PARALLÉLISATION DES PUISSANCES p^e**, première tentative : mesuré 904–941
+  ms avec, 906–920 ms sans — aucun gain net. ⚠ Ce n'était VRAI qu parce
+  que le temps était alors dominé par l'arbre (906 ms) ; une fois l'arbre
+  accéléré, les p^e pesaient 39-50 ms et la parallélisation devenait
+  utile — mais il fallait une répartition par POIDS (voir plus bas).
 - **SEUIL NTT BALAYÉ** (1 000 000!, mesuré) : 2,05 M bits → 1568 ms ;
   4,1 M → 1226 ; 6,14 M → 1024 ; 9,2 M → 1053 ; 16,4 M → **907** ;
   32,7 M → 900–941 (variance) ; ∞ → 912. Le meilleur stable est **16,4 M**.
@@ -709,6 +711,12 @@ La feature `llvm` ne compile pas sur cette machine
 - **PARALLÉLISATION DES PUISSANCES p^e** : acceptée, puis mesurée à 39-50 ms
   séquentiels (~10 % du total) → parallélisée entre cœurs (l'ordre des
   facteurs n'importe pas, l'arbre trie de toute façon).
+  ⚠ MAIS la répartition par TRANCHES CONTIGUËS ne gagnait rien (36 ms
+  parallèles contre 39 ms séquentiels) : les puissances sont TRÈS
+  déséquilibrées (2^999994 = 1 Mbit, 3^499996 = 792 Kbit, puis tout petit).
+  → répartition par POIDS (LPT) : on estime le poids (n/p)·log₂p et on
+  place les plus lourdes d'abord sur le cœur le moins chargé. Gain :
+  224 → 200 ms sur le calcul total.
 - **ARBRE « APPARIEMENT ADJACENT »** (l'ancien) : pathologiquement
   déséquilibré (2^999994 = 1 Mbit restait en tête : niveau 0 = 1 Mbit,
   niveau 16 = 18,2 Mbit) → remplacé par la fusion des deux plus petits
