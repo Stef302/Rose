@@ -49,6 +49,7 @@ pub mod png;
 
 /// Multiplication rapide (Karatsuba → Toom-3 → NTT), à la manière de GMP.
 pub mod mul_rapide;
+pub mod rir;
 
 /// Calculs de TRACÉ de l'installeur (découpe de texte, progression, échelle).
 /// Module PUR, testable sous Linux : le tracé Win32 de `setup_gui` ne l'est

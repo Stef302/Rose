@@ -400,6 +400,9 @@ fn appel_latex(nom: &str, args: &[Expr]) -> String {
 /// Rend une instruction en LaTeX.
 pub fn instr_latex(i: &Instr) -> String {
     match i {
+        // ⚠ Un corps RIR n'est pas rendu : le LaTeX se forme sur la
+        // structure `Instr` (front-end), pas sur la forme d'exécution.
+        Instr::Rir(_) => String::new(),
         Instr::Afficher(exprs, _) => {
             let inner: Vec<String> = exprs.iter().map(expr_latex).collect();
             format!("\\mathrm{{afficher}}\\left({}\\right)", inner.join(", "))

@@ -70,9 +70,13 @@ primitive native comme accélérateur (ou l'accepter 2× plus lent).
 2. **Liste vide typée** — Rose refuse `[]` (« le type d'élément est
    introuvable ») ; le jardin doit rembourrer à l'index 0 puis dépouiller.
    Une annotation `[0 : entier]` réglerait le problème une fois pour toutes.
-3. **Accès par nom** — chaque variable est une entrée de `HashMap<String,…>`.
-   Des slots indexés par position (résolus à l'analyse) supprimeraient une
-   grande part des 2×.
+3. ~~**Accès par nom**~~ — **RÉSOLU le 16/11** : les corps de fonction hors JIT
+   sont abaissés en **RIR** (`rose/src/rir.rs`) : un tableau plat
+   d'opérations, des sauts numériques et des variables en **slots indexés**.
+   C'est la forme d'exécution « comme Zig ». Mesuré sur le jardin des
+   premiers : sans JIT, 3,65 s → **0,57 s** (6×) ; avec JIT, le jardin passe
+   de 44-56 ms à **40 ms**. `it(30000)` (récursion) passe de 44-57 ms à
+   **27 ms**.
 
 ## Ajouter un jardin
 

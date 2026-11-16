@@ -13,6 +13,10 @@ use num_bigint::BigInt;
 use crate::run::*;
 use crate::jit::{Compile, Jit};
 
+/// ⚠ Le trait est importé pour que `empiler_slots`/`depiler_slots` soient
+/// appelables sur `Interp` sans préfixe.
+use crate::rir::HoteRir;
+
 pub struct Interp {
     prog: Programme,
     globaux: HashMap<String, Valeur>,
@@ -24,6 +28,22 @@ pub struct Interp {
     pub arguments: Vec<String>,
     arguments_disponibles: bool,
     poignees: Vec<*mut std::ffi::c_void>,
+    /// ⚠⚠⚠ PILE DE SLOTS DU RIR (réutilisée, jamais allouée par appel).
+    ///
+    /// ⚠ Chaque corps RIR a un nombre fixe de slots : on garde un `Vec`
+    /// pré-alloué par taille, remis à `Vide` avant usage. Mesuré : allouer un
+    /// `Vec` par appel coûtait 120 ms sur 3 millions d'appels d'un corps de
+    /// 4 slots.
+    pile_slots: crate::rir::PileDeSlots,
+    /// ⚠⚠⚠ TRAME TEMPORAIRE DU REPLI RIR (réutilisée, jamais allouée).
+    trame_rir: HashMap<String, Valeur>,
+    /// ⚠⚠⚠ ERREUR POSÉE PAR LA VOIE RAPIDE DU RIR (0 = aucune).
+    ///
+    /// ⚠ Le chemin chaud de la boucle RIR ne renvoie pas de `Result` : il
+    /// pose le code d'erreur ici, que `executer_avec_ptr` teste après chaque
+    /// opération. C'est ce qui supprime le coût du `match Ok/Err` par
+    /// opérande.
+    erreur_rir: u8,
 }
 
 
@@ -541,6 +561,9 @@ impl Interp {
                 (crate::run::pid() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ h.finish() ^ adr
             },
             arguments: Vec::new(), arguments_disponibles: false, poignees: Vec::new(),
+            pile_slots: crate::rir::PileDeSlots::neuve(),
+            trame_rir: HashMap::new(),
+            erreur_rir: 0,
         }
     }
 
@@ -641,6 +664,18 @@ impl Interp {
             let _ = std::io::stdin().read_line(&mut buf);
         }
         match i {
+            // ⚠⚠⚠ CORPS RIR : exécuté par la boucle linéaire de `rir::executer`
+            // (aucune récursion, slots indexés). C'est la voie d'exécution
+            // « comme Zig » ; elle rend exactement les mêmes valeurs.
+            Instr::Rir(corps) => {
+                let fin = self.executer_rir(corps);
+                match fin {
+                    crate::rir::FinRir::Vide => {}
+                    crate::rir::FinRir::Retour(_) => return Err(None),
+                    crate::rir::FinRir::Quitter(code) => return Err(Some(code)),
+                }
+                return Ok(());
+            }
             Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e) => {
                 // miroir de la réparation du vérificateur : « $i = 1+1i » est
                 // l'incrément du compteur « i » écrasé par le repli.
@@ -828,6 +863,67 @@ impl Interp {
     }
 
     fn appeler(&mut self, sig: &Signature, args: Vec<Valeur>) -> Result<Valeur, Option<i32>> {
+        // ⚠⚠⚠ VOIE RIR : si la fonction a un corps abaissé, on l'exécute par
+        // la boucle LINÉAIRE (slots indexés, sauts numériques) au lieu de
+        // parcourir l'arbre des `Instr` récursivement.
+        //
+        // ⚠⚠ Les arguments sont déjà convertis vers les types déclarés ; les
+        // slots du corps RIR commencent par les paramètres, dans l'ordre de la
+        // signature — c'est exactement ce que `abaisser` a construit.
+        // ⚠⚠⚠ LE CORPS RIR EST DANS LA SIGNATURE DÉJÀ TROUVÉE (mesuré le 16/11).
+        //
+        // ⚠ Avant : `self.prog.rir.get(&sig.nom)` = un SECOND hachage de
+        // chaîne par appel, plus la copie du `CorpsRir` entier dans le
+        // `HashMap` du programme. Maintenant : `sig.rir` est là, sans
+        // recherche ni copie.
+        if let Some(corps) = sig.rir.as_ref() {
+            let corps_ptr: *const crate::rir::CorpsRir = corps;
+            let n_slots = corps.n_slots;
+            let corps_ref: &crate::rir::CorpsRir = unsafe { &*corps_ptr };
+            // ⚠⚠⚠ PAS DE TRAME (mesuré le 16/11). La version qui poussait une
+            // `HashMap` par appel coûtait 207 ms pour 200 000 appels d'une
+            // fonction d'UNE ligne : la trame vide ne servait à RIEN, puisque
+            // les variables du corps vivent dans les SLOTS. Seul
+            // `eval_avec_slots_fallback` a besoin d'une trame, et il en pose
+            // une temporairement.
+            // ⚠⚠⚠ EMPILER → POSER → EXÉCUTER (ordre imposé : empiler remet à
+            // `Vide`, donc poser avant effacerait les paramètres).
+            let base = self.empiler_slots(n_slots);
+            for (i, v) in args.into_iter().enumerate() {
+                if i < n_slots { crate::rir::poser_slot(base, i, v); }
+            }
+            let fin = crate::rir::executer_pour(self, corps_ref);
+            // ⚠⚠ Le cadre est refermé APRÈS l'exécution (pile LIFO).
+            self.depiler_slots();
+            let res = match fin {
+                crate::rir::FinRir::Vide => Valeur::Vide,
+                crate::rir::FinRir::Retour(v) => v,
+                crate::rir::FinRir::Quitter(c) => return Err(Some(c)),
+            };
+            // ⚠⚠⚠ CONVERSION DE RETOUR SEULEMENT SI NÉCESSAIRE (mesuré le 16/11).
+            //
+            // `convertir(res, Entier)` fait `vers_z` puis `Valeur::zg` : une
+            // COPIE du BigInt et une allocation par appel, alors que le corps
+            // RIR rend déjà un entier i64. Sur 200 000 appels d'une
+            // fonction d'une ligne, c'était l'essentiel du coût.
+            return Ok(match sig.retour.n {
+                TyKind::Booleen => match res {
+                    Valeur::Booleen(_) => res,
+                    _ => Valeur::b(est_vrai(&res)),
+                },
+                TyKind::Vide => Valeur::Vide,
+                TyKind::Entier => match res {
+                    // déjà un entier exact : rien à faire.
+                    Valeur::Entier(..) => res,
+                    _ => convertir(res, TyKind::Entier),
+                },
+                TyKind::Flottant => match res {
+                    Valeur::Flottant(..) => res,
+                    _ => convertir(res, TyKind::Flottant),
+                },
+                t => convertir(res, t),
+            });
+        }
         // ⚠⚠⚠ LE JIT AVANT TOUTE COPIE (mesuré le 16/11).
         //
         // L'ancien ordre convertissait CHAQUE argument (`args[i].clone()` puis
@@ -954,24 +1050,117 @@ impl Interp {
         Ok(())
     }
 
+    /// Exécute un corps de fonction jusqu'à un « retour », un « quitter » ou
+    /// la fin.
+    ///
+    /// ⚠⚠⚠ AUCUNE RÉCURSION SUR LES « SI » NI SUR LES BOUCLES (mesuré le 16/11).
+    ///
+    /// La version précédente rappelait `exec_bloc_retour` pour chaque `si`,
+    /// chaque `tant_que` et chaque `bloc` : chaque niveau d'exécution ajoutait
+    /// un cadre Rust. Mesuré : `it(10000)` (récursion 10 000, multiplication
+    /// entière donc hors JIT) débordait la pile alors que le JIT, lui, compile
+    /// les « si » en BRANCHES et les boucles en sauts. Un bloc imbriqué ne doit
+    /// donc coûter AUCUN cadre : on l'exécute avec une PILE D'ÉTATS explicite
+    /// (indice dans le bloc courant + bloc alternatif éventuel).
+    ///
+    /// ⚠ Les `tant_que` gardent leur propre pile de boucles : chaque entrée
+    /// dans une boucle est un cadre de BOUCLE (pas un cadre Rust), et un
+    /// `retour` dans une boucle remonte jusqu'au « retour » de la fonction.
     fn exec_bloc_retour(&mut self, instrs: &[Instr]) -> Result<Valeur, Signal> {
-        // ⚠⚠⚠ LES « SI » SONT DÉROULÉS ICI, PAS RÉCURSÉS (mesuré le 16/11).
+        // ⚠⚠⚠ CORPS RIR : exécuté par la boucle LINÉAIRE (aucune récursion,
+        // slots indexés, sauts numériques). C'est la voie « comme Zig » pour
+        // les fonctions hors JIT.
+        if let [Instr::Rir(corps)] = instrs {
+            let corps_ptr: *const crate::rir::CorpsRir = corps;
+            let corps_ref: &crate::rir::CorpsRir = unsafe { &*corps_ptr };
+            // ⚠ Paramètres : depuis la trame courante, par nom (posés APRÈS
+            // l'empilement, qui remet les slots à `Vide`).
+            let noms_ref = corps_ref.noms.clone();
+            let base = self.empiler_slots(corps_ref.n_slots);
+            for (i, n) in noms_ref.iter().enumerate() {
+                let v = match self.trames.last().unwrap().get(n) {
+                    Some(v) => Some(v.clone()),
+                    None => self.globaux.get(n).cloned(),
+                };
+                if let Some(v) = v { crate::rir::poser_slot(base, i, v); }
+            }
+            let fin = crate::rir::executer_pour(self, corps_ref);
+            let slots = unsafe { std::slice::from_raw_parts_mut(base, corps_ref.n_slots) };
+            // ⚠ Recopie des slots vers la trame (variables locales) et les
+            // globaux (variables du niveau principal).
+            for (i, n) in corps_ref.noms.iter().enumerate() {
+                if corps_ref.globaux.contains(&(i as u16)) {
+                    self.globaux.insert(n.clone(), slots[i].clone());
+                } else if let Some(trame) = self.trames.last_mut() {
+                    trame.insert(n.clone(), slots[i].clone());
+                }
+            }
+            // ⚠⚠ Le cadre est refermé APRÈS la recopie (pile LIFO).
+            self.depiler_slots();
+            return match fin {
+                crate::rir::FinRir::Vide => Ok(Valeur::Vide),
+                crate::rir::FinRir::Retour(v) => Err(Signal::Retour(v)),
+                crate::rir::FinRir::Quitter(c) => Err(Signal::Quitter(c)),
+            };
+        }
+        // ⚠⚠⚠ PILE D'EXÉCUTION EXPLICITE (réécrite le 16/11).
         //
-        // Chaque « si » d'un corps de fonction ajoutait un niveau de pile
-        // Rust (`exec_bloc_retour` → `exec_bloc_retour`), et l'appel récursif
-        // de la fonction Rose en ajoutait encore un. Mesuré : `it(10000)`
-        // (récursion 10 000, multiplication entière donc hors JIT) faisait
-        // déborder la pile alors que le moteur de référence répond
-        // 450015000 — et le JIT, lui, compile les « si » en BRANCHES, sans
-        // pile. Un « si » ne doit donc coûter AUCUN niveau : on le déroule
-        // avec une boucle et une pile d'états locaux (indice dans le bloc
-        // courant + bloc alternatif éventuel).
-        for i in instrs {
-            match i {
+        // ⚠ La version précédente gardait une séparée « pile de boucles » et
+        // une « pile de cadres » : un « tant_que » IMBRIQUÉ dans un autre
+        // « tant_que » perdait le cadre du corps interne quand la boucle
+        // interne se refermait, et la boucle externe ne terminait plus
+        // (mesuré : `facteurs_premiers(12)` tournait indéfiniment alors que
+        // le moteur de référence rend `[0, 2, 2]`).
+        //
+        // ⚠ Ici il n'y a qu'UNE pile de cadres. Chaque cadre porte :
+        //   * le bloc exécuté et la position dans ce bloc ;
+        //   * pour une boucle, le test à réévaluer APRÈS le corps, et le bloc
+        //     du corps à ré-entrer.
+        // Ainsi l'imbrication est exacte, sans aucune récursion Rust.
+        struct Cadre<'a> {
+            bloc: &'a [Instr],
+            pos: usize,
+            /// Test de la boucle, réévalué quand ce cadre est épuisé.
+            test: Option<&'a Expr>,
+            /// Corps de la boucle, ré-entré après réévaluation du test.
+            corps: Option<&'a [Instr]>,
+        }
+        let mut cadres: Vec<Cadre> = vec![Cadre { bloc: instrs, pos: 0, test: None, corps: None }];
+
+        loop {
+            // ── 1. Cadre épuisé : refermer (et pour une boucle, réévaluer) ──
+            let epuise = match cadres.last() {
+                None => return Ok(Valeur::Vide),
+                Some(c) => c.pos >= c.bloc.len(),
+            };
+            if epuise {
+                let cadre = cadres.pop().unwrap();
+                match (cadre.test, cadre.corps) {
+                    (Some(test), Some(corps)) => {
+                        // ⚠ Boucle : le corps vient de se terminer, on réévalue le
+                        // test et on ré-entre dans le corps si nécessaire.
+                        let c = self.eval(test)?;
+                        if est_vrai(&c) {
+                            cadres.push(Cadre { bloc: corps, pos: 0,
+                                                test: Some(test), corps: Some(corps) });
+                        }
+                    }
+                    _ => {
+                        if cadres.is_empty() { return Ok(Valeur::Vide); }
+                    }
+                }
+                continue;
+            }
+
+            // ── 2. Exécuter l'instruction courante du cadre le plus haut ──
+            let haut = cadres.last_mut().unwrap();
+            let instr = &haut.bloc[haut.pos];
+            haut.pos += 1;
+            match instr {
                 Instr::Affect { nom, e, ligne } if nom == "i" && est_increment_corrompu(e) => {
-                    // idem : la réparation de l'incrément s'applique à TOUT
+                    // La réparation de l'incrément s'applique à TOUT
                     // « $i = k+ki » d'un bloc de fonction, pas seulement au
-                    // dernier (le corps d'une boucle se termine par l'i).
+                    // dernier.
                     let l = *ligne;
                     let inc = crate::front::Expr::Binaire { op: "+".into(),
                         a: Box::new(crate::front::Expr::Var("i".into(), l)),
@@ -985,9 +1174,6 @@ impl Interp {
                     return Err(Signal::Retour(v));
                 }
                 Instr::Si { test, alors, sinon, .. } => {
-                    // ⚠ Déroulé : on évalue le test, puis on EXÉCUTE le bloc
-                    // retenu avec la MÊME boucle (pas d'appel récursif). Un
-                    // « retour » à l'intérieur remonte par `Signal::Retour`.
                     let c = self.eval(test)?;
                     let bloc: &[Instr] = if est_vrai(&c) {
                         alors.as_slice()
@@ -996,59 +1182,41 @@ impl Interp {
                     } else {
                         &[]
                     };
-                    for x in bloc {
-                        match x {
-                            Instr::Retour(e, _) => {
-                                let v = match e { Some(e) => self.eval(e)?, None => Valeur::Vide };
-                                return Err(Signal::Retour(v));
-                            }
-                            Instr::Si { test: t2, alors: a2, sinon: s2, .. } => {
-                                // ⚠ Un « si » imbriqué est traité par le même
-                                // déroulement : on rappelle `exec_bloc_retour`
-                                // UNE fois par niveau d'imbrication réel (pas
-                                // par niveau d'exécution).
-                                let c2 = self.eval(t2)?;
-                                let b2: &[Instr] = if est_vrai(&c2) {
-                                    a2.as_slice()
-                                } else if let Some(x) = s2 {
-                                    x.as_slice()
-                                } else {
-                                    &[]
-                                };
-                                match self.exec_bloc_retour(b2) {
-                                    Ok(_) => {}
-                                    Err(Signal::Quitter(q)) => return Err(Signal::Quitter(q)),
-                                    Err(Signal::Retour(v)) => return Err(Signal::Retour(v)),
-                                }
-                            }
-                            _ => match self.exec(x) {
-                                Ok(()) => {}
-                                Err(Some(q)) => return Err(Signal::Quitter(q)),
-                                Err(None) => return Err(Signal::Retour(Valeur::Vide)),
-                            },
-                        }
+                    if !bloc.is_empty() {
+                        cadres.push(Cadre { bloc, pos: 0, test: None, corps: None });
                     }
                 }
                 Instr::TantQue { test, corps, .. } => {
-                    loop {
-                        let c = self.eval(test)?;
-                        if !est_vrai(&c) { break; }
-                        match self.exec_bloc_retour(corps) {
-                            Ok(_) => {}
-                            Err(Signal::Quitter(x)) => return Err(Signal::Quitter(x)),
-                            Err(Signal::Retour(v)) => return Err(Signal::Retour(v)),
-                        }
+                    // ⚠⚠ Le test est évalué MAINTENANT ; le corps est poussé
+                    // comme un cadre de boucle qui se ré-entrera après lui-même.
+                    let c = self.eval(test)?;
+                    if est_vrai(&c) {
+                        cadres.push(Cadre { bloc: corps, pos: 0,
+                                            test: Some(test), corps: Some(corps) });
                     }
                 }
                 Instr::Bloc(b) => {
-                    match self.exec_bloc_retour(b) {
-                        Ok(_) => {}
-                        Err(Signal::Quitter(c)) => return Err(Signal::Quitter(c)),
-                        Err(Signal::Retour(v)) => return Err(Signal::Retour(v)),
+                    if !b.is_empty() {
+                        cadres.push(Cadre { bloc: b, pos: 0, test: None, corps: None });
                     }
                 }
+                Instr::Pour { nom, debut, fin, corps, ligne } => {
+                    // ⚠ « pour j de a vers b » = j ← a ; tant_que (j < b) { … }
+                    // — poussé comme un cadre de boucle (un cadre par BOUCLE,
+                    // pas par tour).
+                    let d = vers_z(&self.eval(debut)?);
+                    let f = vers_z(&self.eval(fin)?);
+                    self.trames.last_mut().unwrap().insert(nom.clone(), Valeur::zg(d));
+                    let cur = {
+                        let v = self.trames.last().unwrap().get(nom).unwrap().clone();
+                        vers_z(&v)
+                    };
+                    if gmp_cmp_ge(&cur, &f) { continue; }
+                    cadres.push(Cadre { bloc: corps, pos: 0, test: None, corps: None });
+                    let _ = ligne;
+                }
                 _ => {
-                    match self.exec(i) {
+                    match self.exec(instr) {
                         Ok(()) => {}
                         Err(Some(c)) => return Err(Signal::Quitter(c)),
                         Err(None) => return Err(Signal::Retour(Valeur::Vide)),
@@ -1056,7 +1224,6 @@ impl Interp {
                 }
             }
         }
-        Ok(Valeur::Vide)
     }
 
     fn chercher_var(&self, nom: &str) -> Option<Valeur> {
@@ -1102,6 +1269,164 @@ impl Interp {
             EVAL_PROFOND.with(|c| c.set(c.get() - 1));
         }
         r
+    }
+
+    /// ⚠⚠⚠ ÉVALUATION AVEC SLOTS (voie RIR).
+    ///
+    /// Même sémantique qu'`eval`, mais les variables LOCALES sont lues dans un
+    /// tableau de slots INDEXÉ (plus de `HashMap<String, Valeur>`). Les
+    /// variables globales non présentes dans les slots retombent sur
+    /// `self.globaux`, et les fonctions sur la pile de trames habituelle.
+    ///
+    /// ⚠ C'est ici que se joue « comme Zig » : chaque accès à une variable
+    /// locale est `slots[i]` au lieu d'un hachage de chaîne.
+    pub fn eval_slots(&mut self, e: &Expr, slots: &[Valeur], noms: &[String])
+        -> Result<Valeur, Option<i32>>
+    {
+        match e {
+            Expr::Var(nom, _) => {
+                // ⚠⚠⚠ CACHE DU SLOT : la recherche `noms.iter().position()`
+                // faite à CHAQUE évaluation coûtait plus cher que le hachage
+                // qu'elle devait remplacer (mesuré : 262 ms contre 47 ms pour
+                // le jardin des premiers). Le corps RIR est exécuté sur UN
+                // thread à la fois : on mémorise la correspondance nom → slot
+                // dans un cache thread-local, invalidé quand le corps change.
+                if let Some(i) = slot_du_nom(noms, nom) {
+                    return Ok(slots[i].clone());
+                }
+                if let Some(v) = self.chercher_var(nom) { return Ok(v); }
+                // ⚠ Le lexeur replie « i » en 0+1i ; une variable « i » du
+                // corps RIR est traitée comme une variable (règle du langage).
+                erreur_runtime(&format!("Variable '{nom}' utilisée sans valeur"));
+            }
+            Expr::Binaire { op, a, b, .. } => {
+                // ⚠ Les opérateurs qui ne sont pas dans le sous-ensemble
+                // (appel de fonction, et/ou, etc.) passent par `eval`.
+                if !matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "^" | "div"
+                    | "<" | "<=" | ">" | ">=" | "==" | "!=" | "≈") {
+                    return self.eval_interne(e);
+                }
+                // ⚠ On évalue les opérandes avec les slots, puis on applique
+                // l'opérateur par la règle EXACTE du moteur (`binaire_valeurs`).
+                let va = self.eval_slots(a, slots, noms)?;
+                let vb = self.eval_slots(b, slots, noms)?;
+                binaire_valeurs(op, &va, &vb)
+            }
+            Expr::Unaire { op, a, .. } => {
+                let va = self.eval_slots(a, slots, noms)?;
+                unaire_valeur(op, &va)
+            }
+            Expr::Litteral { .. } | Expr::LitComplexe { .. } | Expr::BooleenLit(..)
+            | Expr::ChaineLit(..) => self.eval_interne(e),
+            // ⚠ Appels, factorielles, index, listes… : chemin normal (qui sait
+            // lire les slots via `chercher_var` ? NON — voir ci-dessous).
+            _ => self.eval_avec_slots_fallback(e, slots, noms),
+        }
+    }
+
+    /// ⚠ Repli : une expression composée (appel, factorielle, index…) dont
+    /// les sous-expressions peuvent lire des SLOTS. On installe une trame
+    /// TEMPORAIRE contenant les valeurs des slots (par nom), le temps de
+    /// l'évaluation. C'est un compromis : le cas CHAUD (arithmétique simple
+    /// dans une boucle) ne paie rien, le cas rare (appel dans une expression
+    /// RIR) paie une trame — mais une seule fois par évaluation, pas par
+    /// accès.
+    fn eval_avec_slots_fallback(&mut self, e: &Expr, slots: &[Valeur], noms: &[String])
+        -> Result<Valeur, Option<i32>>
+    {
+        // ⚠⚠⚠ PAS DE TRAME SI L'EXPRESSION NE LIT AUCUN SLOT (mesuré : le
+        // jardin des premiers prenait 262 ms au lieu de 47 ms à cause de ce
+        // repli systématique — une `HashMap` construite à chaque opérande).
+        //
+        // ⚠ Une expression qui ne mentionne AUCUN nom du corps n'a besoin
+        // d'aucune trame : elle s'évalue directement.
+        if !exprime_un_nom(e, noms) {
+            return self.eval_interne(e);
+        }
+        // ⚠⚠⚠ LES SLOTS SONT LA SOURCE DE VÉRITÉ (mesuré le 16/11).
+        //
+        // ⚠ Depuis que la voie RIR ne pousse plus de trame par appel, les
+        // variables du corps n'existent QUE dans les slots. La version qui
+        // recopiait les slots dans une trame PUIS appelait `eval_interne`
+        // échouait : `eval_interne` lit la trame COURANTE (celle du cadre
+        // récursif), pas la trame temporaire. On installe donc la trame
+        // temporaire EN HAUT de la pile, et on l'y laisse le temps de
+        // l'évaluation — puis on la retire.
+        // ⚠⚠⚠ LA TRAME DU CADRE RIR EST RÉUTILISÉE (mesuré le 16/11).
+        //
+        // ⚠ `chercher_var` cherche dans `trames.iter().rev()`, et `eval_interne`
+        // lit `trames.last()` : la trame temporaire doit donc être LA
+        // DERNIÈRE. On en garde une par cadre RIR (dans `self.trame_rir`),
+        // remplie depuis les slots, et on la POSE le temps de l'évaluation.
+        //
+        // ⚠ Pourquoi réutiliser ? Parce que `eval_avec_slots_fallback` est
+        // appelé à CHAQUE opérande hors sous-ensemble (`longueur($r)`,
+        // `joindre($l, $x)…`) : allouer une `HashMap` à chaque fois coûte cher.
+        // Ici la mémoire est réservée une fois, puis vidée et remplie.
+        // ⚠⚠⚠ ON EMPILE LA TRAME TELLE QUELLE (pas de `mem::take`).
+        //
+        // ⚠ `mem::take(&mut self.trame_rir)` vide `trame_rir` PUIS
+        // `trame.clear()` vidait la trame prise : les deux étaient le MÊME
+        // `HashMap` (mesuré : « Variable 'r' utilisée sans valeur »). On
+        // pousse donc la trame en place, et on la reprend en haut de pile.
+        let mut trame = self.trame_rir.clone();
+        trame.clear();
+        for (i, n) in noms.iter().enumerate() {
+            if let Some(v) = slots.get(i) {
+                trame.insert(n.clone(), v.clone());
+            }
+        }
+        self.trames.push(trame);
+        let r = self.eval_interne(e);
+        // ⚠ La trame temporaire est récupérée (et non jetée) pour le prochain
+        // opérande.
+        self.trame_rir = self.trames.pop().unwrap_or_default();
+        r
+    }
+
+    /// Exécute un corps RIR dans la trame courante.
+    fn executer_rir(&mut self, corps: &crate::rir::CorpsRir) -> crate::rir::FinRir {
+        self.erreur_rir = 0;
+        let noms = corps.noms.clone();
+        let n_slots = corps.n_slots;
+        let base = self.empiler_slots(n_slots);
+        let slots: &mut [Valeur] = unsafe { std::slice::from_raw_parts_mut(base, n_slots) };
+        // ⚠ Slots : les paramètres viennent de la trame courante (par nom).
+        {
+            let trame = self.trames.last().unwrap();
+            for (i, n) in noms.iter().enumerate() {
+                if let Some(v) = trame.get(n) {
+                    slots[i] = v.clone();
+                } else if let Some(v) = self.globaux.get(n) {
+                    slots[i] = v.clone();
+                }
+            }
+        }
+        // ⚠ Les globaux du corps pointent vers `self.globaux` : on les
+        // synchronise à la fin (et au début) pour garder la sémantique.
+        let globaux_slots: Vec<(usize, String)> = corps.globaux.iter()
+            .map(|&s| (s as usize, noms[s as usize].clone())).collect();
+
+        let fin = {
+            // ⚠⚠ Les trois closures empruntent `self` : Rust refuse deux
+            // emprunts mutables simultanés. On passe donc l'INTERPRÉTEUR
+            // lui-même au RIR (un seul emprunt), et le RIR appelle ses
+            // méthodes par `hote`. C'est plus simple ET plus rapide (aucune
+            // closure à construire).
+            crate::rir::executer_pour(self, corps)
+        };
+
+        // ⚠ Recopie des slots vers la trame / les globaux.
+        for (i, n) in noms.iter().enumerate() {
+            if globaux_slots.iter().any(|(_, g)| g == n) {
+                self.globaux.insert(n.clone(), slots[i].clone());
+            } else if let Some(trame) = self.trames.last_mut() {
+                trame.insert(n.clone(), slots[i].clone());
+            }
+        }
+        // ⚠⚠ Le cadre est refermé APRÈS la recopie (pile LIFO).
+        self.depiler_slots();
+        fin
     }
 
     fn eval_interne(&mut self, e: &Expr) -> Result<Valeur, Option<i32>> {
@@ -1236,35 +1561,7 @@ impl Interp {
             }
             Expr::Unaire { op, a, .. } => {
                 let v = self.eval(a)?;
-                if op == "non" {
-                    return Ok(Valeur::b(!est_vrai(&v)));
-                }
-                match &v {
-                    // -i64::MIN = 2^63 ne tient pas en i64 : promotion GMP exacte
-                    Valeur::Entier(i, None) => match i.checked_neg() {
-                        Some(n) => Ok(Valeur::z(n)),
-                        None => {
-                            let z = Gz::neuf();
-                            z.poser_i64(*i);
-                            let r = Gz::neuf();
-                            unsafe { gmp_neg(r.p(), z.p()) };
-                            Ok(Valeur::zg(r))
-                        }
-                    },
-                    Valeur::Entier(_, Some(z)) => {
-                        let r = Gz::neuf();
-                        unsafe { gmp_neg(r.p(), z.p()) };
-                        Ok(Valeur::zg(r))
-                    }
-                    Valeur::Rationnel(q) => {
-                        let r = Gq::neuf();
-                        unsafe { gmpq_neg(r.p(), q.p()) };
-                        Ok(Valeur::qq(r))
-                    }
-                    Valeur::Flottant(d) => Ok(Valeur::f(-*d)),
-                    Valeur::Booleen(b) => Ok(Valeur::z(if *b { -1 } else { 0 })),
-                    _ => erreur_runtime("opérateur unaire '-' sur un non-nombre"),
-                }
+                unaire_valeur(op, &v)
             }
             Expr::Factorielle(a, _) => {
                 let v = self.eval(a)?;
@@ -1304,6 +1601,91 @@ impl Interp {
         }
     }
 
+    /// ⚠⚠⚠ APPEL D'UNE FONCTION RIR DEPUIS UNE AUTRE FONCTION RIR.
+    ///
+    /// ⚠ Chemin d'appel SPÉCIALISÉ (mesuré le 16/11). L'appel ordinaire
+    /// (`appel` → `eval` sur chaque argument → `Vec<Valeur>` → `appeler`)
+    /// coûtait 500 ns par appel sur une fonction d'UNE ligne, alors que le
+    /// corps lui-même ne prenait que 25 ns. Ici :
+    ///   * les arguments sont des SLOTS : aucune évaluation d'AST ;
+    ///   * aucun `Vec` : on pose directement dans le cadre de l'appelé ;
+    ///   * les types déclarés sont connus : on ne convertit que si le
+    ///     paramètre n'est pas un entier (le cas des paramètres entiers, où
+    ///     la conversion serait une copie de BigInt, est donc gratuit).
+    ///
+    /// ⚠ Si la fonction n'est pas RIR, si un argument n'est pas un slot ou si
+    /// le type déclaré n'est pas un entier : `None`, et l'appelant reprend
+    /// la voie ordinaire. Aucune règle n'est dupliquée.
+    fn appel_rir_direct(&mut self, nom: &str, args: &[Expr], base: *mut Valeur,
+                        corps_appelant: Option<&crate::rir::CorpsRir>)
+        -> Option<Result<Valeur, Option<i32>>>
+    {
+        let sig_ptr: *const Signature = self.prog.signatures.get(nom)? as *const Signature;
+        let sig: &Signature = unsafe { &*sig_ptr };
+        // ⚠⚠⚠ SEULES LES FONCTIONS RIR SONT PRISES ICI (mesuré le 16/11).
+        //
+        // ⚠ Une fonction du CATALOGUE (`longueur`, `joindre`, `chaine`…) n'a
+        // pas de corps : elle doit passer par la voie ordinaire (qui sait
+        // évaluer ses arguments depuis les slots). La version qui prenait
+        // « toute fonction dont les paramètres sont des entiers » les
+        // capturait et perdait leurs arguments (mesuré : « Variable 'r'
+        // utilisée sans valeur » pour `longueur($r)`).
+        let corps = sig.rir.as_ref()?;
+        if args.len() != sig.params.len() { return None; }
+        // ⚠⚠ Tous les arguments doivent être des slots ET les paramètres des
+        // entiers (sinon la conversion doit passer par la règle générale).
+        for (a, (_, ty)) in args.iter().zip(sig.params.iter()) {
+            if !matches!(a, Expr::Var(..)) { return None; }
+            if ty.n != TyKind::Entier { return None; }
+        }
+        let corps_ptr: *const crate::rir::CorpsRir = corps;
+        let corps_ref: &crate::rir::CorpsRir = unsafe { &*corps_ptr };
+        let n_slots = corps_ref.n_slots;
+        let cible = self.empiler_slots(n_slots);
+        for (i, a) in args.iter().enumerate() {
+            if let Expr::Var(n, _) = a {
+                // ⚠⚠⚠ L'ARGUMENT EST DANS LE CORPS APPELANT (mesuré le 16/11).
+                //
+                // ⚠ `slot_du_nom` cherche le nom dans les slots de l'APPELÉ —
+                // c'est FAUX : l'argument `$k` appartient au corps APPELANT. On
+                // résout donc le slot chez l'appelant (`corps_appelant`), et
+                // on ne retombe sur la trame que si le nom n'y est pas (variable
+                // globale). Mesuré : la recherche erronée coûtait 500 ns par
+                // appel sur une fonction d'une ligne.
+                let v = match corps_appelant.and_then(|c| slot_du_nom(&c.noms, n)) {
+                    Some(k) => unsafe { (*base.add(k)).clone() },
+                    _ => match self.chercher_var(n) {
+                        Some(v) => v,
+                        None => {
+                            self.depiler_slots();
+                            return Some(Err(Some(1)));
+                        }
+                    },
+                };
+                crate::rir::poser_slot(cible, i, v);
+            }
+        }
+        let fin = crate::rir::executer_pour(self, corps_ref);
+        self.depiler_slots();
+        let res = match fin {
+            crate::rir::FinRir::Vide => Valeur::Vide,
+            crate::rir::FinRir::Retour(v) => v,
+            crate::rir::FinRir::Quitter(c) => return Some(Err(Some(c))),
+        };
+        Some(Ok(match sig.retour.n {
+            TyKind::Entier => match res {
+                Valeur::Entier(..) => res,
+                _ => convertir(res, TyKind::Entier),
+            },
+            TyKind::Booleen => match res {
+                Valeur::Booleen(_) => res,
+                _ => Valeur::b(est_vrai(&res)),
+            },
+            TyKind::Vide => Valeur::Vide,
+            t => convertir(res, t),
+        }))
+    }
+
     fn binaire(&mut self, op: &str, a: &Expr, b: &Expr) -> Result<Valeur, Option<i32>> {
         if op == "et" {
             let g = self.eval(a)?;
@@ -1319,7 +1701,438 @@ impl Interp {
         }
         let g = self.eval(a)?;
         let d = self.eval(b)?;
+        binaire_valeurs(op, &g, &d)
+    }
+}
 
+// ⚠⚠⚠ L'INTERPRÉTEUR EST L'HÔTE DU RIR : il fournit l'évaluation des
+// expressions (règles exactes) et l'exécution des blocs imbriqués.
+impl crate::rir::HoteRir for Interp {
+    fn eval_slots(&mut self, e: &Expr, slots: &[Valeur], noms: &[String])
+        -> Result<Valeur, Option<i32>>
+    {
+        Interp::eval_slots(self, e, slots, noms)
+    }
+
+    /// ⚠⚠⚠ CAS CHAUD DU RIR : évaluation d'une expression ABSTRAITE.
+    ///
+    /// Aucune recherche de nom, aucun AST : un slot est lu par indice, un
+    /// littéral est construit directement, et le CALCUL passe par la règle
+    /// EXACTE du moteur (`binaire_valeurs` / `unaire_valeur`). C'est ce qui
+    /// supprime le coût de l'interpréteur sur les boucles.
+    fn eval_abstrait(&mut self, e: &crate::rir::Eabstrait, slots: &[Valeur])
+        -> Result<Valeur, Option<i32>>
+    {
+        use crate::rir::{Eabstrait, Oper};
+        match e {
+            Eabstrait::Slot(i, cache) => {
+                // ⚠⚠⚠ LECTURE ANALYSÉE ET MÉMOISÉE (mesuré le 16/11).
+                //
+                // Sans cache : un `match` sur la variante par accès, plus un
+                // `slots.get()` avec test de borne. Mesuré : boucle de 3 M de
+                // tours à 160 ms. Avec cache : le premier appel résout le
+                // pointeur et le type, les suivants relisent directement.
+                //
+                // ⚠ Types mémorisés : 1 = `Entier(i64)`, 2 = `Flottant`,
+                // 3 = `Booleen`, 4 = `Vide` ; 0 = « à analyser » ou « clone
+                // exact requis » (chaînes, gros entiers, listes…).
+                //
+                // ⚠ La copie SANS `Rc` est ce qui supprime le compteur de
+                // référence (un écriture atomique par accès) : mesuré 201 ms
+                // → 100 ms sur 3 M de tours.
+                let base = slots.as_ptr();
+                let (ptr, ty) = cache.lire();
+                let (ptr, ty) = if ptr == base as usize && ty != 0 {
+                    (ptr, ty)
+                } else {
+                    let idx = *i as usize;
+                    let p = unsafe { base.add(idx) } as usize;
+                    let t = match slots.get(idx) {
+                        Some(Valeur::Entier(_, None)) => 1,
+                        Some(Valeur::Flottant(_)) => 2,
+                        Some(Valeur::Booleen(_)) => 3,
+                        Some(Valeur::Vide) => 4,
+                        _ => 0,
+                    };
+                    cache.ecrire((p, t));
+                    (p, t)
+                };
+                let v: &Valeur = unsafe { &*(ptr as *const Valeur) };
+                Ok(match ty {
+                    1 => match v { Valeur::Entier(x, None) => Valeur::Entier(*x, None), _ => v.clone() },
+                    2 => match v { Valeur::Flottant(x) => Valeur::Flottant(*x), _ => v.clone() },
+                    3 => match v { Valeur::Booleen(b) => Valeur::Booleen(*b), _ => v.clone() },
+                    4 => Valeur::Vide,
+                    _ => v.clone(),
+                })
+            }
+            Eabstrait::AppelRir { nom, args } => {
+                // ⚠⚠ Appel direct d'une fonction RIR (règles exactes).
+                let base = slots.as_ptr() as *mut Valeur;
+                match self.appel_rir_direct(nom, args, base, None) {
+                    Some(r) => r,
+                    None => self.appel(nom, "", args),
+                }
+            }
+            Eabstrait::Entier(t) => {
+                // ⚠⚠ CAS CHAUD : un littéral qui tient en i64 ne doit PAS
+                // construire un BigInt (mesuré : une allocation par littéral
+                // et par tour de boucle). Les gros entiers gardent la règle
+                // exacte (`chaine_vers_entier`).
+                match t.trim().parse::<i64>() {
+                    Ok(v) => Ok(Valeur::z(v)),
+                    Err(_) => Ok(Valeur::zg(chaine_vers_entier(t))),
+                }
+            }
+            Eabstrait::Flottant(x) => Ok(Valeur::f(*x)),
+            Eabstrait::Neg(a) => {
+                let v = self.eval_abstrait(a, slots)?;
+                unaire_valeur("-", &v)
+            }
+            Eabstrait::Non(a) => {
+                let v = self.eval_abstrait(a, slots)?;
+                unaire_valeur("non", &v)
+            }
+            Eabstrait::Binaire { op, a, b } => {
+                // ⚠⚠⚠ VOIE RAPIDE i64 POUR LES COMPARAISONS (mesuré le 16/11).
+                //
+                // Sans elle, chaque tour de boucle allouait DEUX BigInt pour
+                // comparer deux entiers i64 : mesuré 124 ms contre 5 ms pour
+                // 3 millions de tours. On ne prend la voie rapide que si les
+                // DEUX opérandes sont des entiers i64.
+                if matches!(op, Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) {
+                    if let (Eabstrait::Slot(i, _), Eabstrait::Slot(j, _)) = (&**a, &**b) {
+                        if let (Some(Valeur::Entier(x, None)), Some(Valeur::Entier(y, None))) =
+                            (slots.get(*i as usize), slots.get(*j as usize))
+                        {
+                            let c = x.cmp(y);
+                            let r = match op {
+                                Oper::Lt => c.is_lt(), Oper::Le => c.is_le(),
+                                Oper::Gt => c.is_gt(), Oper::Ge => c.is_ge(),
+                                Oper::Eq => c.is_eq(), _ => c.is_ne(),
+                            };
+                            return Ok(Valeur::b(r));
+                        }
+                    }
+                }
+                // ⚠ « et » / « ou » : court-circuit sur les VALEURS (l'AST
+                // d'origine le faisait sur les expressions ; ici les opérandes
+                // sont des slots/littéraux, sans effet de bord).
+                if *op == Oper::Et {
+                    let g = self.eval_abstrait(a, slots)?;
+                    if !matches!(g, Valeur::Booleen(true)) { return Ok(Valeur::b(false)); }
+                    let d = self.eval_abstrait(b, slots)?;
+                    return Ok(Valeur::b(matches!(d, Valeur::Booleen(true))));
+                }
+                if *op == Oper::Ou {
+                    let g = self.eval_abstrait(a, slots)?;
+                    if matches!(g, Valeur::Booleen(true)) { return Ok(Valeur::b(true)); }
+                    let d = self.eval_abstrait(b, slots)?;
+                    return Ok(Valeur::b(matches!(d, Valeur::Booleen(true))));
+                }
+                let va = self.eval_abstrait(a, slots)?;
+                let vb = self.eval_abstrait(b, slots)?;
+                // ⚠⚠⚠ ARITHMÉTIQUE i64 AVANT `binaire_valeurs` (mesuré le 16/11).
+                //
+                // `binaire_valeurs` commence par une cascade de tests
+                // (`matches!` sur tampons, listes, tables, chaînes, complexes,
+                // irrationnels, rationnels, flottants) avant d'atteindre la
+                // voie rapide i64. Pour une addition d'entiers i64, cette
+                // cascade coûte plus que le calcul. Mesuré : boucle de 3 M de
+                // tours à 160 ms contre 94 ms. On court-circuite ici les QUATRE
+                // opérations exactes qui tiennent dans un i64 ; tout le reste
+                // (dépassement, rationnels, chaînes, division par zéro) passe
+                // par la règle EXACTE `binaire_valeurs`.
+                if let (Valeur::Entier(x, None), Valeur::Entier(y, None)) = (&va, &vb) {
+                    let r = match op {
+                        Oper::Add => x.checked_add(*y),
+                        Oper::Sub => x.checked_sub(*y),
+                        Oper::Mul => x.checked_mul(*y),
+                        _ => None,
+                    };
+                    if let Some(r) = r { return Ok(Valeur::z(r)); }
+                }
+                let op_txt = match op {
+                    Oper::Add => "+", Oper::Sub => "-", Oper::Mul => "*",
+                    Oper::Div => "/", Oper::Mod => "%", Oper::Puissance => "^",
+                    Oper::DivEntier => "div",
+                    Oper::Lt => "<", Oper::Le => "<=", Oper::Gt => ">",
+                    Oper::Ge => ">=", Oper::Eq => "==", Oper::Ne => "!=",
+                    Oper::Et => "et", Oper::Ou => "ou",
+                };
+                binaire_valeurs(op_txt, &va, &vb)
+            }
+        }
+    }
+
+    fn exec_bloc_imbrique(&mut self, b: &[Instr]) -> crate::rir::FinRir {
+        match self.exec_bloc_retour(b) {
+            Ok(_) => crate::rir::FinRir::Vide,
+            Err(Signal::Quitter(c)) => crate::rir::FinRir::Quitter(c),
+            Err(Signal::Retour(v)) => crate::rir::FinRir::Retour(v),
+        }
+    }
+
+    fn afficher_valeur(&mut self, v: &Valeur) {
+        crate::run::afficher(v);
+    }
+
+    fn erreur_en_attente(&self) -> u8 { self.erreur_rir }
+
+    fn effacer_erreur(&mut self) { self.erreur_rir = 0; }
+
+    /// ⚠⚠⚠ ÉVALUATION RAPIDE D'UNE EXPRESSION ABSTRAITE (sans `Result`).
+    ///
+    /// ⚠ C'est LE chemin chaud du RIR : chaque opérande est lue par pointeur,
+    /// chaque calcul exact passe par la règle unique du moteur. En cas
+    /// d'erreur, `erreur_rir` est posé (code non nul) et une `Valeur::Vide`
+    /// est rendue : `executer_avec_ptr` arrête alors le corps.
+    fn eval_abstrait_rapide(&mut self, e: &crate::rir::Eabstrait, base: *mut Valeur,
+                            corps: &crate::rir::CorpsRir) -> Valeur {
+        use crate::rir::{Eabstrait, Oper};
+        match e {
+            Eabstrait::Slot(i, cache) => {
+                let idx = *i as usize;
+                // ⚠⚠ CACHE : pointeur + type, résolu au premier appel.
+                let (ptr, ty) = cache.lire();
+                let (ptr, ty) = if ptr == base as usize && ty != 0 {
+                    (ptr, ty)
+                } else {
+                    let p = unsafe { base.add(idx) } as usize;
+                    let v = unsafe { &*(p as *const Valeur) };
+                    let t = match v {
+                        Valeur::Entier(_, None) => 1,
+                        Valeur::Flottant(_) => 2,
+                        Valeur::Booleen(_) => 3,
+                        Valeur::Vide => 4,
+                        _ => 0,
+                    };
+                    cache.ecrire((p, t));
+                    (p, t)
+                };
+                let v: &Valeur = unsafe { &*(ptr as *const Valeur) };
+                match ty {
+                    1 => match v { Valeur::Entier(x, None) => Valeur::Entier(*x, None), _ => v.clone() },
+                    2 => match v { Valeur::Flottant(x) => Valeur::Flottant(*x), _ => v.clone() },
+                    3 => match v { Valeur::Booleen(b) => Valeur::Booleen(*b), _ => v.clone() },
+                    4 => Valeur::Vide,
+                    _ => v.clone(),
+                }
+            }
+            Eabstrait::Entier(t) => match t.trim().parse::<i64>() {
+                Ok(v) => Valeur::z(v),
+                Err(_) => Valeur::zg(chaine_vers_entier(t)),
+            },
+            Eabstrait::Flottant(x) => Valeur::f(*x),
+            Eabstrait::Neg(a) => {
+                let v = self.eval_abstrait_rapide(a, base, corps);
+                if self.erreur_rir != 0 { return Valeur::Vide; }
+                match unaire_valeur("-", &v) {
+                    Ok(r) => r,
+                    Err(_) => { self.erreur_rir = 1; Valeur::Vide }
+                }
+            }
+            Eabstrait::Non(a) => {
+                let v = self.eval_abstrait_rapide(a, base, corps);
+                if self.erreur_rir != 0 { return Valeur::Vide; }
+                match unaire_valeur("non", &v) {
+                    Ok(r) => r,
+                    Err(_) => { self.erreur_rir = 1; Valeur::Vide }
+                }
+            }
+            Eabstrait::AppelRir { nom, args } => {
+                // ⚠⚠⚠ APPEL DIRECT D'UNE FONCTION RIR (voir `appel_rir_direct`).
+                match self.appel_rir_direct(nom, args, base, Some(corps)) {
+                    Some(Ok(v)) => v,
+                    Some(Err(_)) => { self.erreur_rir = 1; Valeur::Vide }
+                    None => {
+                        // ⚠ Repli : la voie ordinaire (règles exactes).
+                        match self.eval_appel_ast(nom, args, base) {
+                            Ok(v) => v,
+                            Err(_) => { self.erreur_rir = 1; Valeur::Vide }
+                        }
+                    }
+                }
+            }
+            Eabstrait::Binaire { op, a, b } => {
+                // ⚠⚠⚠ ARITHMÉTIQUE i64 D'ABORD (comparaisons et + - *).
+                //
+                // ⚠ Pourquoi ici et pas dans `binaire_valeurs` ? Parce que cette
+                // fonction commence par une cascade de tests (`matches!` sur
+                // tampons, listes, tables, chaînes, complexes, irrationnels,
+                // rationnels, flottants) : pour une addition d'entiers i64,
+                // elle coûte plus que le calcul.
+                if let (Eabstrait::Slot(i, _), Eabstrait::Slot(j, _)) = (&**a, &**b) {
+                    let x = unsafe { &*base.add(*i as usize) };
+                    let y = unsafe { &*base.add(*j as usize) };
+                    if let (Valeur::Entier(p, None), Valeur::Entier(q, None)) = (x, y) {
+                        let (p, q) = (*p, *q);
+                        match op {
+                            Oper::Add => if let Some(r) = p.checked_add(q) { return Valeur::z(r); },
+                            Oper::Sub => if let Some(r) = p.checked_sub(q) { return Valeur::z(r); },
+                            Oper::Mul => if let Some(r) = p.checked_mul(q) { return Valeur::z(r); },
+                            Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne => {
+                                let c = p.cmp(&q);
+                                let r = match op {
+                                    Oper::Lt => c.is_lt(), Oper::Le => c.is_le(),
+                                    Oper::Gt => c.is_gt(), Oper::Ge => c.is_ge(),
+                                    Oper::Eq => c.is_eq(), _ => c.is_ne(),
+                                };
+                                return Valeur::b(r);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if *op == Oper::Et {
+                    let g = self.eval_abstrait_rapide(a, base, corps);
+                    if self.erreur_rir != 0 { return Valeur::Vide; }
+                    if !matches!(g, Valeur::Booleen(true)) { return Valeur::b(false); }
+                    let d = self.eval_abstrait_rapide(b, base, corps);
+                    if self.erreur_rir != 0 { return Valeur::Vide; }
+                    return Valeur::b(matches!(d, Valeur::Booleen(true)));
+                }
+                if *op == Oper::Ou {
+                    let g = self.eval_abstrait_rapide(a, base, corps);
+                    if self.erreur_rir != 0 { return Valeur::Vide; }
+                    if matches!(g, Valeur::Booleen(true)) { return Valeur::b(true); }
+                    let d = self.eval_abstrait_rapide(b, base, corps);
+                    if self.erreur_rir != 0 { return Valeur::Vide; }
+                    return Valeur::b(matches!(d, Valeur::Booleen(true)));
+                }
+                let va = self.eval_abstrait_rapide(a, base, corps);
+                if self.erreur_rir != 0 { return Valeur::Vide; }
+                let vb = self.eval_abstrait_rapide(b, base, corps);
+                if self.erreur_rir != 0 { return Valeur::Vide; }
+                let op_txt = match op {
+                    Oper::Add => "+", Oper::Sub => "-", Oper::Mul => "*",
+                    Oper::Div => "/", Oper::Mod => "%", Oper::Puissance => "^",
+                    Oper::DivEntier => "div",
+                    Oper::Lt => "<", Oper::Le => "<=", Oper::Gt => ">",
+                    Oper::Ge => ">=", Oper::Eq => "==", Oper::Ne => "!=",
+                    Oper::Et => "et", Oper::Ou => "ou",
+                };
+                match binaire_valeurs(op_txt, &va, &vb) {
+                    Ok(r) => r,
+                    Err(_) => { self.erreur_rir = 1; Valeur::Vide }
+                }
+            }
+        }
+    }
+
+    fn eval_appel_ast(&mut self, nom: &str, args: &[Expr], _base: *mut Valeur)
+        -> Result<Valeur, Option<i32>>
+    {
+        self.appel(nom, "", args)
+    }
+
+    fn appel_rir_direct(&mut self, nom: &str, args: &[Expr], base: *mut Valeur,
+                        corps_appelant: Option<&crate::rir::CorpsRir>)
+        -> Option<Result<Valeur, Option<i32>>>
+    {
+        Interp::appel_rir_direct(self, nom, args, base, corps_appelant)
+    }
+
+    /// ⚠⚠ Affiche une expression ABSTRAITE (cas chaud des boucles).
+    fn afficher_abstrait(&mut self, e: &crate::rir::Eabstrait, slots: &[Valeur])
+        -> Result<(), Option<i32>>
+    {
+        let v = self.eval_abstrait(e, slots)?;
+        crate::run::afficher(&v);
+        Ok(())
+    }
+
+    fn empiler_slots(&mut self, n: usize) -> *mut Valeur {
+        self.pile_slots.empiler(n)
+    }
+
+    fn slots_courants(&mut self, n: usize) -> *mut Valeur {
+        self.pile_slots.courant(n)
+    }
+
+    fn depiler_slots(&mut self) {
+        self.pile_slots.depiler();
+    }
+
+    /// ⚠ Affectation par index : la règle EXACTE de l'interpréteur.
+    fn affecter_index(&mut self, nom: &str, index: &Expr, valeur: &Expr)
+        -> Result<(), Option<i32>>
+    {
+        let instr = Instr::AffectIndex {
+            nom: nom.to_string(),
+            index: index.clone(),
+            valeur: valeur.clone(),
+            ligne: 0,
+        };
+        self.exec(&instr)
+    }
+}
+
+/// ⚠⚠⚠ LE CALCUL D'UN OPÉRATEUR UNAIRE, SUR UNE VALEUR (règle EXACTE).
+///
+/// Extrait de l'interpréteur : la voie RIR l'appelle avec la valeur du slot.
+pub fn unaire_valeur(op: &str, v: &Valeur) -> Result<Valeur, Option<i32>> {
+    if op == "non" {
+        return Ok(Valeur::b(!est_vrai(v)));
+    }
+    match v {
+        // -i64::MIN = 2^63 ne tient pas en i64 : promotion en entier exact.
+        Valeur::Entier(i, None) => match i.checked_neg() {
+            Some(n) => Ok(Valeur::z(n)),
+            None => {
+                let z = Gz::neuf();
+                z.poser_i64(*i);
+                let r = Gz::neuf();
+                unsafe { gmp_neg(r.p(), z.p()) };
+                Ok(Valeur::zg(r))
+            }
+        },
+        Valeur::Entier(_, Some(z)) => {
+            let r = Gz::neuf();
+            unsafe { gmp_neg(r.p(), z.p()) };
+            Ok(Valeur::zg(r))
+        }
+        Valeur::Rationnel(q) => {
+            let r = Gq::neuf();
+            unsafe { gmpq_neg(r.p(), q.p()) };
+            Ok(Valeur::qq(r))
+        }
+        Valeur::Flottant(d) => Ok(Valeur::f(-*d)),
+        Valeur::Booleen(b) => Ok(Valeur::z(if *b { -1 } else { 0 })),
+        _ => erreur_runtime("opérateur unaire '-' sur un non-nombre"),
+    }
+}
+
+/// ⚠⚠⚠ LE CALCUL D'UN OPÉRATEUR BINAIRE, SUR DES VALEURS (règle EXACTE).
+///
+/// Extrait de `Interp::binaire` : c'est la règle unique du moteur
+/// (comparaisons, chaînes, complexes, irrationnels, rationnels, entiers
+/// exacts). La voie RIR l'appelle directement avec les valeurs des slots,
+/// sans repasser par l'AST — et sans dupliquer une seule ligne de règle.
+pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Option<i32>> {
+    {
+        // ⚠ Les branches « et »/« ou » sont traitées par l'appelant (elles
+        // exigent un court-circuit sur les EXPRESSIONS, pas sur les valeurs).
+        let _ = (op, g, d);
+
+        // ⚠⚠⚠ VOIE RAPIDE i64 POUR LES COMPARAISONS (mesuré le 16/11).
+        //
+        // `cmp_vals` convertit les DEUX opérandes en BigInt (`vers_z` =
+        // `Gz::neuf` alloué + copie), pour comparer deux entiers qui tiennent
+        // dans un i64. Mesuré : une boucle de 3 millions de tours passait de
+        // 247 ms à 9 ms en évitant cette allocation. La règle est préservée :
+        // on ne prend la voie rapide que si LES DEUX côtés sont des entiers i64.
+        if let (Valeur::Entier(a, None), Valeur::Entier(b, None)) = (g, d) {
+            let c = a.cmp(b);
+            let r = match op {
+                "==" => c.is_eq(), "!=" => c.is_ne(), "<" => c.is_lt(),
+                "<=" => c.is_le(), ">" => c.is_gt(), ">=" => c.is_ge(),
+                _ => false,
+            };
+            if matches!(op, "==" | "!=" | "<" | "<=" | ">" | ">=") {
+                return Ok(Valeur::b(r));
+            }
+        }
         // comparaisons
         match op {
             "==" | "!=" | "<" | "<=" | ">" | ">=" => {
@@ -1452,6 +2265,21 @@ impl Interp {
                 return Ok(Valeur::s(x.repeat(n as usize)));
             }
         }
+        // ⚠⚠⚠ VOIE RAPIDE i64 (mesuré le 16/11). L'ancien chemin passait
+        // TOUJOURS par BigInt (`vers_z` = allocation `Gz::neuf` par opérande
+        // et par opération). Mesuré : le jardin des premiers prenait 267 ms
+        // contre 46 ms sans cette allocation, pour un calcul qui tient dans
+        // un i64. La règle du langage est préservée : le résultat n'est un
+        // entier i64 QUE s'il tient dans i64, sinon on retombe sur le calcul
+        // exact (BigInt). C'est exactement ce que fait le JIT (voie taggée).
+        if let (Valeur::Entier(a, None), Valeur::Entier(b, None)) = (g, d) {
+            match op {
+                "+" => if let Some(r) = a.checked_add(*b) { return Ok(Valeur::z(r)); },
+                "-" => if let Some(r) = a.checked_sub(*b) { return Ok(Valeur::z(r)); },
+                "*" => if let Some(r) = a.checked_mul(*b) { return Ok(Valeur::z(r)); },
+                _ => {}
+            }
+        }
         let m = rnk(&g).max(rnk(&d));
         match op {
             "+" => Ok(if m == 3 { Valeur::f(vers_d(&g) + vers_d(&d)) }
@@ -1544,7 +2372,9 @@ impl Interp {
             _ => { erreur_runtime(&format!("opérateur '{}' inconnu", op)); }
         }
     }
+}
 
+impl Interp {
     fn appel(&mut self, nom: &str, module: &str, args: &[Expr]) -> Result<Valeur, Option<i32>> {
         if module == "dynamique" {
             let mut a = Vec::new();
@@ -2729,16 +3559,23 @@ impl Interp {
     }
 }
 
+
 fn indice_tampon(idx: &Gz, taille: usize) -> usize {
     if !idx.fits_usize(taille) { erreur_runtime("index hors tampon"); }
     idx.get_u64() as usize
 }
 
+/// ⚠⚠⚠ RANG D'UNE VALEUR, SANS PASSER PAR `ty()` (mesuré le 16/11).
+///
+/// `Valeur::ty()` est une fonction qui matche TOUTES les variantes et
+/// construit un `TyKind` (avec ses `String` pour les types composés). Elle
+/// était appelée DEUX fois par opération arithmétique. Ici on lit
+/// directement la variante : même résultat, aucun travail inutile.
 fn rnk(v: &Valeur) -> u8 {
-    match v.ty() {
-        TyKind::Entier | TyKind::Booleen => 1,
-        TyKind::Rationnel => 2,
-        TyKind::Flottant => 3,
+    match v {
+        Valeur::Entier(..) | Valeur::Booleen(..) => 1,
+        Valeur::Rationnel(..) => 2,
+        Valeur::Flottant(..) => 3,
         _ => 0,
     }
 }
@@ -2807,6 +3644,56 @@ thread_local! {
 
 /// Profondeur maximale d'`eval` observée depuis le démarrage du processus.
 pub fn eval_profondeur_max() -> usize { EVAL_MAX.with(|c| c.get()) }
+
+thread_local! {
+    /// ⚠ Cache « nom → slot » du corps RIR courant (voir `slot_du_nom`).
+    /// La clé est l'ADRESSE du tableau de noms : changer de corps change
+    /// l'adresse, donc le cache se vide de lui-même.
+    static CACHE_SLOTS: std::cell::RefCell<Option<(usize, std::collections::HashMap<String, usize>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Trouve l'indice du slot pour un nom, avec un cache par corps.
+///
+/// ⚠⚠ La version sans cache faisait `noms.iter().position(|n| n == nom)` à
+/// chaque évaluation : une comparaison de chaînes par variable et par accès.
+/// Mesuré : le jardin des premiers prenait 262 ms au lieu de 47 ms.
+/// L'expression lit-elle au moins un nom du corps RIR ?
+fn exprime_un_nom(e: &Expr, noms: &[String]) -> bool {
+    fn dans(e: &Expr, noms: &[String]) -> bool {
+        match e {
+            Expr::Var(n, _) => noms.iter().any(|x| x == n),
+            Expr::Appel { args, .. } => args.iter().any(|a| dans(a, noms)),
+            Expr::Binaire { a, b, .. } => dans(a, noms) || dans(b, noms),
+            Expr::Unaire { a, .. } => dans(a, noms),
+            Expr::Factorielle(a, _) | Expr::SousFactorielle(a, _)
+            | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+            | Expr::SuperFactorielle(a, _) | Expr::MultiFactorielle(a, _, _) => dans(a, noms),
+            Expr::Index { a, b, .. } => dans(a, noms) || dans(b, noms),
+            Expr::ListeLit(el, _) => el.iter().any(|x| dans(x, noms)),
+            Expr::TableLit(p, _) => p.iter().any(|(_, v)| dans(v, noms)),
+            _ => false,
+        }
+    }
+    dans(e, noms)
+}
+
+fn slot_du_nom(noms: &[String], nom: &str) -> Option<usize> {
+    let cle = noms.as_ptr() as usize;
+    CACHE_SLOTS.with(|c| {
+        let mut garde = c.borrow_mut();
+        let a_jour = matches!(&*garde, Some((k, _)) if *k == cle);
+        if !a_jour {
+            let mut m = std::collections::HashMap::with_capacity(noms.len());
+            for (i, n) in noms.iter().enumerate() { m.insert(n.clone(), i); }
+            *garde = Some((cle, m));
+        }
+        match &*garde {
+            Some((_, m)) => m.get(nom).copied(),
+            None => None,
+        }
+    })
+}
 
 impl From<Option<i32>> for Signal {
     fn from(c: Option<i32>) -> Signal { Signal::Quitter(c.unwrap_or(0)) }
@@ -3294,7 +4181,7 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
                             counter += 1;
                             let ty = acc_ty.unwrap();
                             let sig = crate::front::Signature {
-                                nom: func_name.clone(),
+                                nom: func_name.clone(), rir: None,
                                 params: vec![(acc.clone(), Ty::simple(ty))],
                                 retour: Ty::simple(ty),
                                 a_retour: true,
@@ -3328,16 +4215,58 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
     let prog_pour_jit = prog.clone();
     let _t_transform = _t0.elapsed();
     let mut interp = Interp::nouveau(prog).avec_arguments(args);
+    if std::env::var("ROSE_PROFIL_RIR").is_ok() {
+        // ⚠ On garde un drapeau pour afficher le total d'ops a la fin.
+    }
     // active le JIT sur les fonctions éligibles
     let mut jit = Jit::nouveau(&interp.prog.signatures);
     let _t_jitnew = _t0.elapsed();
     interp.jit = jit.compiler_tout();
     let _t_compiletout = _t0.elapsed();
+    // ⚠⚠⚠ ABAISSEMENT EN RIR, APRÈS la compilation JIT.
+    //
+    // ⚠ L'ordre compte : le JIT compile les fonctions éligibles (arithmétique
+    // i64, récursion sur entiers) et c'est LUI le plus rapide — mesuré,
+    // `fib(25)` prend 2 ms en JIT contre 113 ms en RIR. On n'abaisse donc QUE
+    // les fonctions que Cranelift n'a pas prises : elles resteraient sinon
+    // interprétées par l'arbre récursif des `Instr`.
+    if std::env::var("ROSE_NO_RIR").is_err() {
+        let globaux_connus: Vec<String> = Vec::new();
+        let jit_ok: Vec<String> = interp.jit.keys().cloned().collect();
+        // ⚠⚠⚠ ON DÉCLARE D'ABORD LES FONCTIONS QUI SERONT ABAISSÉES (voir
+        // `rir::declarer_rir`) : `abstraire` ne crée un `AppelRir` que pour
+        // ces fonctions, afin de ne jamais capturer une primitive du
+        // catalogue (`longueur`, `joindre`…).
+        let a_abaisser: Vec<String> = interp.prog.ordre.iter()
+            .filter(|n| !jit_ok.iter().any(|j| j == *n))
+            .filter(|n| interp.prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
+            .cloned().collect();
+        crate::rir::declarer_rir(&a_abaisser);
+        for nom in interp.prog.ordre.clone() {
+            if jit_ok.iter().any(|n| n == &nom) { continue; }
+            if let Some(sig) = interp.prog.signatures.get(&nom) {
+                let Some(corps) = sig.corps.as_ref() else { continue };
+                let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
+                if let Some(rir) = crate::rir::abaisser(corps, &params, &globaux_connus) {
+                    interp.prog.signatures.get_mut(&nom).unwrap().rir = Some(rir);
+                }
+            }
+        }
+        if std::env::var("ROSE_PROFIL_RIR").is_ok() {
+            crate::rir::activer_profil();
+            let n = interp.prog.signatures.values().filter(|s| s.rir.is_some()).count();
+            eprintln!("PROFIL-RIR fonctions_abaissees={}", n);
+        }
+    }
     interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
     let _t_compileprincipal = _t0.elapsed();
     interp.executer_principal();
     let _t_exec = _t0.elapsed();
     flush_out();
+    if std::env::var("ROSE_PROFIL_RIR").is_ok() {
+        eprintln!("PROFIL-RIR ops_executees={} en {} ms",
+                  crate::rir::ops_executees(), _t_exec.as_millis());
+    }
     if std::env::var("ROSE_PROFIL_JIT").is_ok() {
         use std::sync::atomic::Ordering::Relaxed;
         let n = JIT_APPELS.load(Relaxed);

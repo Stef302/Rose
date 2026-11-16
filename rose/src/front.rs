@@ -492,6 +492,20 @@ pub fn ligne_expr(e: &Expr) -> usize {
 
 #[derive(Clone, Debug)]
 pub enum Instr {
+    /// ⚠⚠⚠ RIR — REPRÉSENTATION INTERMÉDIAIRE LINÉAIRE (chantier « comme Zig »).
+    ///
+    /// Chaque corps de fonction est ABBAISSÉ en un tableau plat d'opérations
+    /// indexées (`ops`) : plus de récursion sur les `Instr` à l'exécution, plus
+    /// de `HashMap` de noms par accès (les variables sont des SLOTS).
+    ///
+    /// ⚠ C'est ce que Zig fait : une seule forme linéaire, des sauts et des
+    /// registres indexés. La structure `Instr` reste le FRONT-END (analyse,
+    /// vérification, JIT, LaTeX) ; le RIR est la forme d'EXÉCUTION.
+    ///
+    /// ⚠ `Instr::Rir` n'est produit que par `rir::abaisser` ; si l'abaissement
+    /// n'est pas possible (fonctionnalité hors sous-ensemble), la fonction
+    /// garde son corps en `Instr` et reste interprétée comme avant.
+    Rir(crate::rir::CorpsRir),
     Afficher(Vec<Expr>, usize),
     Lire { nom: String, ty: TyKind, ligne: usize },
     Affect { nom: String, e: Expr, ligne: usize },
@@ -515,6 +529,18 @@ pub struct Signature {
     #[allow(dead_code)]
     pub a_retour: bool,
     pub corps: Option<Vec<Instr>>,
+    /// ⚠⚠⚠ LE MÊME CORPS, ABAISSÉ EN RIR (forme d'EXÉCUTION linéaire).
+    ///
+    /// ⚠ Pourquoi ici et pas dans un `HashMap<String, CorpsRir>` à part ?
+    /// Mesuré : chaque appel payait DEUX hachages de chaînes (`sig.nom`) pour
+    /// retrouver le corps, plus la copie du `CorpsRir` entier (tous les `Op`,
+    /// tous les `String`) dans le `HashMap` du programme. En le rangeant dans
+    /// la `Signature` DÉJÀ trouvée par l'appel, il n'y a plus aucune
+    /// recherche supplémentaire ni copie.
+    ///
+    /// ⚠ `None` = fonction non abaissée (prise par le JIT, ou hors du
+    /// sous-ensemble) : elle suit la voie historique.
+    pub rir: Option<crate::rir::CorpsRir>,
     #[allow(dead_code)]
     pub dll: String,
     #[allow(dead_code)]
@@ -529,11 +555,19 @@ pub struct Programme {
     pub signatures: HashMap<String, Signature>,
     pub ordre: Vec<String>,
     pub instructions: Vec<Instr>,
+    // ⚠⚠⚠ LE RIR VIT DANS `Signature::rir` (mesuré le 16/11).
+    //
+    // ⚠ Il a d'abord été rangé ici, dans un `HashMap<String, CorpsRir>` à
+    // part : chaque appel payait alors DEUX hachages de chaînes pour retrouver
+    // le corps, plus la copie du `CorpsRir` entier. En le rangeant dans la
+    // `Signature` déjà trouvée par l'appel (`sig.rir`), il ne reste plus
+    // aucune recherche ni copie.
 }
 
 impl Default for Programme {
     fn default() -> Self {
-        Programme { signatures: HashMap::new(), ordre: Vec::new(), instructions: Vec::new() }
+        Programme { signatures: HashMap::new(), ordre: Vec::new(),
+                    instructions: Vec::new() }
     }
 }
 
@@ -845,7 +879,7 @@ impl Parser {
         // accepté sans contrôle strict (le type est résolu à l'exécution).
         if corps.is_some() && !a_retour { retour = Ty::simple(TyKind::Dyn); }
         let sig = Signature {
-            nom, params, retour, a_retour, corps,
+            nom, params, retour, a_retour, corps, rir: None,
             dll: std::mem::take(ann_dll), dll_son: std::mem::take(ann_dll_son),
             symbole: std::mem::take(ann_sym), ligne: tok.ligne,
         };
@@ -1448,6 +1482,11 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                  retour: &Ty, en_fonction: bool) -> Result<(), Err> {
     for (position, i) in instrs.iter().enumerate() {
         match i {
+            // ⚠ Le RIR est produit APRÈS la vérification : sa présence ici
+            // serait un défaut interne (on vérifie toujours la forme `Instr`).
+            Instr::Rir(_) => {
+                return Err(fmt_err("corps RIR rencontré pendant la vérification", 0, 0));
+            }
             Instr::Afficher(exprs, lg) => {
                 for e in exprs {
                     let t = expr_type(prog, e, env)?;
@@ -2699,6 +2738,9 @@ pub fn est_cote_i(e: &Expr) -> bool {
 
 pub fn replier_instr(i: &Instr) -> Instr {
     match i {
+        // ⚠ Un corps RIR est déjà abaissé (les expressions sont les mêmes) :
+        // on le rend tel quel.
+        Instr::Rir(c) => Instr::Rir(c.clone()),
         Instr::Afficher(exprs, l) => Instr::Afficher(exprs.iter().map(replier).collect(), *l),
         Instr::Lire { nom, ty, ligne } => Instr::Lire { nom: nom.clone(), ty: *ty, ligne: *ligne },
         Instr::Affect { nom, e, ligne } => Instr::Affect { nom: nom.clone(), e: replier(e), ligne: *ligne },

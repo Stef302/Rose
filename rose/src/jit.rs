@@ -820,7 +820,7 @@ impl Jit {
             self.compiler_tout();
         }
         let sig = Signature {
-            nom: "$principal".into(), params: Vec::new(),
+            nom: "$principal".into(), rir: None, params: Vec::new(),
             retour: crate::front::Ty::vide(), a_retour: false,
             corps: Some(prog.instructions.clone()),
             dll: String::new(), dll_son: String::new(), symbole: String::new(),

@@ -26,6 +26,7 @@ mod velopack;
 mod inflate;
 mod png;
 mod mul_rapide;
+mod rir;
 mod paint;
 mod console_win;
 mod setup_gui;
