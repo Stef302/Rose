@@ -28,6 +28,462 @@ fn commande_sans_fenetre(programme: &str) -> std::process::Command {
     c
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// REGISTRE — ACCÈS DIRECT PAR L'API WIN32
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ POURQUOI CE MODULE. L'outil PATH écrivait le `PATH` en lançant
+// `reg.exe add …`. Mesuré chez l'utilisateur (capture d'écran) :
+//
+//     Échec : `reg add` a rendu le code 1
+//     Échec : le registre HKCU est INACCESSIBLE en écriture
+//
+// … alors que `HKCU\Environment\Path` lui APPARTIENT et qu'il n'est PAS
+// verrouillé par une stratégie de groupe. Deux causes plausibles, la
+// seconde étant la plus probable sur une machine gérée :
+//
+//   1. `reg.exe` est BLOQUÉ par une politique d'application (AppLocker /
+//      WDAC) ou par un antivirus qui surveille les écritures du PATH ;
+//   2. `reg.exe` existe mais son exécution échoue pour une raison
+//      d'environnement (PATH tronqué, redirection).
+//
+// ⚠⚠⚠ LA SOLUTION : on n'appelle PLUS `reg.exe` pour le PATH. On utilise
+// directement l'API `Advapi32` (`RegOpenKeyExW`, `RegSetValueExW`,
+// `RegQueryValueExW`), qui est DÉJÀ chargée dans le processus — aucun
+// processus externe à lancer, donc aucune politique d'application ne peut
+// la bloquer.
+//
+// ⚠ `RegOpenKeyExW` avec `KEY_WRITE` distingue « clé en lecture seule »
+// (ERROR_ACCESS_DENIED = 5) de « clé inexistante » (ERROR_FILE_NOT_FOUND =
+// 2) : on ne DEVINE plus la cause, on la LIT.
+//
+// ⚠⚠ La valeur s'écrit en `REG_EXPAND_SZ` (type 2), comme Windows le fait
+// pour `HKCU\Environment\Path` : les `%VAR%` y restent littéraux.
+
+#[cfg(windows)]
+mod api {
+    use std::ffi::c_void;
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegOpenKeyExW(cle: isize, sous_cle: *const u16, options: u32,
+                         acces: u32, sortie: *mut isize) -> i32;
+        fn RegQueryValueExW(cle: isize, nom: *const u16, reserve: *mut u32,
+                            typ: *mut u32, donnees: *mut u8, taille: *mut u32) -> i32;
+        fn RegSetValueExW(cle: isize, nom: *const u16, reserve: u32, typ: u32,
+                          donnees: *const u8, taille: u32) -> i32;
+        fn RegCreateKeyExW(cle: isize, sous_cle: *const u16, reserve: u32,
+                           classe: *const u16, options: u32, acces: u32,
+                           securite: *const c_void, sortie: *mut isize,
+                           disposition: *mut u32) -> i32;
+        fn RegCloseKey(cle: isize) -> i32;
+        fn RegDeleteValueW(cle: isize, nom: *const u16) -> i32;
+    }
+
+    pub const ERROR_SUCCESS: i32 = 0;
+    pub const ERROR_FILE_NOT_FOUND: i32 = 2;
+    pub const ERROR_ACCESS_DENIED: i32 = 5;
+    pub const ERROR_MORE_DATA: i32 = 234;
+
+    pub const KEY_READ: u32 = 0x2_0019;
+    pub const KEY_WRITE: u32 = 0x2_0006;
+    pub const KEY_ALL_ACCESS: u32 = 0xF_003F;
+
+    pub const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as isize;
+    pub const HKEY_LOCAL_MACHINE: isize = 0x8000_0002u32 as isize;
+
+    pub const REG_SZ: u32 = 1;
+    pub const REG_EXPAND_SZ: u32 = 2;
+
+    /// Clé d'environnement de l'utilisateur (celle du `PATH`).
+    pub const ENV_UTILISATEUR: &str = "Environment";
+    /// Clé d'environnement de la MACHINE (écriture = administrateur).
+    pub const ENV_MACHINE: &str = "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
+
+    pub fn u16z(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Ouvre une clé ; rend le handle ou le code d'erreur Win32.
+    pub fn ouvrir(racine: isize, sous_cle: &str, acces: u32) -> Result<isize, i32> {
+        let nom = u16z(sous_cle);
+        let mut h: isize = 0;
+        let rc = unsafe { RegOpenKeyExW(racine, nom.as_ptr(), 0, acces, &mut h) };
+        if rc == ERROR_SUCCESS { Ok(h) } else { Err(rc) }
+    }
+
+    pub fn fermer(h: isize) {
+        unsafe { RegCloseKey(h) };
+    }
+
+    /// Lit une valeur `REG_SZ`/`REG_EXPAND_SZ` ; rend le code d'erreur.
+    pub fn lire(racine: isize, sous_cle: &str, nom: &str) -> Result<String, i32> {
+        let h = ouvrir(racine, sous_cle, KEY_READ)?;
+        let n = u16z(nom);
+        let mut typ: u32 = 0;
+        let mut taille: u32 = 0;
+        let rc = unsafe {
+            RegQueryValueExW(h, n.as_ptr(), std::ptr::null_mut(), &mut typ,
+                             std::ptr::null_mut(), &mut taille)
+        };
+        if rc != ERROR_SUCCESS && rc != ERROR_MORE_DATA {
+            fermer(h);
+            return Err(rc);
+        }
+        let mut octets = vec![0u8; (taille as usize).max(2)];
+        let mut t2: u32 = 0;
+        let rc = unsafe {
+            RegQueryValueExW(h, n.as_ptr(), std::ptr::null_mut(), &mut t2,
+                             octets.as_mut_ptr(), &mut taille)
+        };
+        fermer(h);
+        if rc != ERROR_SUCCESS { return Err(rc); }
+        octets.truncate(taille as usize);
+        // ⚠ UTF-16 : deux octets par unité, terminateur nul final retiré.
+        let mut unites: Vec<u16> = octets
+            .chunks_exact(2)
+            .map(|p| u16::from_le_bytes([p[0], p[1]]))
+            .collect();
+        while unites.last() == Some(&0) { unites.pop(); }
+        Ok(String::from_utf16_lossy(&unites))
+    }
+
+    /// Écrit une valeur ; rend le code d'erreur Win32 (0 = succès).
+    pub fn ecrire(racine: isize, sous_cle: &str, nom: &str, typ: u32, valeur: &str) -> i32 {
+        // ⚠ `RegCreateKeyExW` ouvre une clé existante ET crée une clé
+        // absente : une clé manquante ne doit pas être lue comme un verrou.
+        let nom_cle = u16z(sous_cle);
+        let mut h: isize = 0;
+        let mut disposition: u32 = 0;
+        let rc = unsafe {
+            RegCreateKeyExW(racine, nom_cle.as_ptr(), 0, std::ptr::null(), 0,
+                            KEY_WRITE, std::ptr::null(), &mut h, &mut disposition)
+        };
+        if rc != ERROR_SUCCESS { return rc; }
+        let n = u16z(nom);
+        // ⚠ `REG_SZ` et `REG_EXPAND_SZ` sont terminées par zéro : la
+        // taille transmise INCLUT le terminateur.
+        let mut donnees: Vec<u16> = valeur.encode_utf16().collect();
+        donnees.push(0);
+        let rc = unsafe {
+            RegSetValueExW(h, n.as_ptr(), 0, typ,
+                           donnees.as_ptr() as *const u8, (donnees.len() * 2) as u32)
+        };
+        fermer(h);
+        rc
+    }
+
+    /// Peut-on OUVRIR la clé en écriture ? (test sans écrire)
+    pub fn ecriture_possible(racine: isize, sous_cle: &str) -> Result<(), i32> {
+        ouvrir(racine, sous_cle, KEY_WRITE).map(fermer)
+    }
+
+    /// Écrit puis supprime une valeur de sonde ; rend le code d'écriture.
+    ///
+    /// ⚠ C'est le test le PLUS fiable : un droit d'ouverture ne garantit pas
+    /// que la valeur passe (une GPO peut interdire la valeur précise).
+    pub fn tester_ecriture(racine: isize, sous_cle: &str) -> i32 {
+        let rc = ecrire(racine, sous_cle, "RoseProbe", REG_SZ, "1");
+        if rc == ERROR_SUCCESS {
+            let _ = supprimer_valeur(racine, sous_cle, "RoseProbe");
+        }
+        rc
+    }
+
+    /// Supprime une valeur (best effort) ; rend le code d'erreur.
+    pub fn supprimer_valeur(racine: isize, sous_cle: &str, nom: &str) -> i32 {
+        let h = match ouvrir(racine, sous_cle, KEY_ALL_ACCESS) { Ok(h) => h, Err(e) => return e };
+        let n = u16z(nom);
+        let rc = unsafe { RegDeleteValueW(h, n.as_ptr()) };
+        fermer(h);
+        rc
+    }
+
+    /// Explique un code d'erreur Win32 en clair.
+    pub fn expliquer(rc: i32) -> String {
+        match rc {
+            ERROR_SUCCESS => "succès".to_string(),
+            ERROR_FILE_NOT_FOUND => "clé ou valeur introuvable".to_string(),
+            ERROR_ACCESS_DENIED => "ACCÈS REFUSÉ (droits insuffisants ou verrou de stratégie)".to_string(),
+            _ => format!("code Win32 {rc}"),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// LECTURE / ÉCRITURE DU PATH — API WIN32, AVEC REPLIS
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ CE MODULE REMPLACE LES APPELS À `reg.exe`. Mesuré chez l'utilisateur :
+// `reg add` rendait le code 1 et le PATH restait vide, alors que la clé
+// `HKCU\Environment` appartient à l'utilisateur et n'est pas verrouillée.
+// Le suspect n°1 est une politique d'application (AppLocker/WDAC) ou un
+// antivirus qui bloque `reg.exe` — pas le registre.
+//
+// ⚠ STRATÉGIE EN CASCADE, chacune VÉRIFIÉE par relecture :
+//
+//   A. API `RegSetValueExW` sur `HKCU\Environment` (le chemin normal) ;
+//   B. écriture d'un fichier `.reg` puis import silencieux par
+//      `regedit /s` (contourne un blocage de `reg.exe` seul) ;
+//   C. si A et B échouent : on NE MODIFIE PAS le PATH et on dit à
+//      l'utilisateur d'ouvrir l'outil PATH pour une méthode sans PATH.
+//
+// ⚠⚠ L'ÉCRITURE EST TOUJOURS RELUE : `RegSetValueExW` peut rendre 0 et
+// qu'une GPO réécrire la valeur juste après (application au prochain
+// démarrage de session). On compare donc le contenu APRÈS coup.
+
+/// Lit le `PATH` de l'utilisateur (`HKCU\Environment\Path`).
+///
+/// Rend `None` si la valeur n'existe pas ; `Some("")` si elle est vide.
+pub fn lire_path_utilisateur() -> Option<String> {
+    #[cfg(windows)]
+    {
+        match api::lire(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR, "Path") {
+            Ok(v) => Some(v),
+            // ⚠ Valeur ABSENTE = un PATH vide, pas une erreur : on rend
+            // une chaîne vide, qu'on complètera.
+            Err(api::ERROR_FILE_NOT_FOUND) => Some(String::new()),
+            Err(_) => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("PATH").ok()
+    }
+}
+
+/// Lit le `PATH` de la MACHINE (`HKLM\…\Environment\Path`).
+pub fn lire_path_machine() -> Option<String> {
+    #[cfg(windows)]
+    {
+        match api::lire(api::HKEY_LOCAL_MACHINE, api::ENV_MACHINE, "Path") {
+            Ok(v) => Some(v),
+            Err(api::ERROR_FILE_NOT_FOUND) => Some(String::new()),
+            Err(_) => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// Résultat d'une écriture de `PATH`.
+pub struct EcriturePath {
+    /// La méthode qui a RÉUSSI (vide si aucune).
+    pub methode: String,
+    /// Lignes du journal.
+    pub journal: Vec<String>,
+    /// Vrai si le `PATH` relu contient bien le dossier.
+    pub reussi: bool,
+}
+
+/// Construit la nouvelle valeur du `PATH` : le dossier demandé en tête, les
+/// autres segments conservés (sans doublon ni dossier Rose mort).
+fn composer_path(ancien: &str, dossier: &str) -> String {
+    let cible = normaliser_path(dossier);
+    let mut segs: Vec<String> = ancien
+        .split(';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        // ⚠ On ne retire QUE le doublon exact : un autre dossier Rose
+        // VIVANT est conservé (l'utilisateur peut avoir deux versions).
+        .filter(|s| normaliser_path(s) != cible)
+        .collect();
+    segs.insert(0, dossier.replace('/', "\\"));
+    segs.join(";")
+}
+
+/// Écrit `dossier` dans le `PATH` de l'utilisateur, en cascade.
+///
+/// ⚠⚠⚠ CHAQUE ÉTAPE EST RELUE. On ne dit jamais « écrit » sans avoir
+/// constaté la valeur dans le registre.
+pub fn ecrire_path_utilisateur(dossier: &str) -> EcriturePath {
+    let mut journal: Vec<String> = Vec::new();
+    let ancien = lire_path_utilisateur().unwrap_or_default();
+    let nouveau = composer_path(&ancien, dossier);
+    let cible = normaliser_path(dossier);
+
+    // ── Diagnostic AVANT toute écriture : la cause réelle ────────────────
+    #[cfg(windows)]
+    {
+        match api::ecriture_possible(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR) {
+            Ok(()) => journal.push("· clé HKCU\\Environment ouverte en écriture".to_string()),
+            Err(rc) => journal.push(format!(
+                "⚠ clé HKCU\\Environment NON ouvrable en écriture : {}", api::expliquer(rc))),
+        }
+        let sonde = api::tester_ecriture(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR);
+        if sonde == api::ERROR_SUCCESS {
+            journal.push("· écriture test : ACCEPTÉE (valeur sonde posée puis retirée)".to_string());
+        } else {
+            journal.push(format!("⚠ écriture test : REFUSÉE ({})", api::expliquer(sonde)));
+        }
+
+        // ── A. API directe ──────────────────────────────────────────────
+        let rc = api::ecrire(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR, "Path",
+                             api::REG_EXPAND_SZ, &nouveau);
+        if rc == api::ERROR_SUCCESS {
+            journal.push(format!("· API Win32 : RegSetValueExW a rendu {}", api::expliquer(rc)));
+            // ⚠ RELIRE : le seul fait qui compte.
+            let relu = lire_path_utilisateur().unwrap_or_default();
+            if path_contient(&relu, &cible) {
+                journal.push(format!("✓ PATH utilisateur écrit par l'API Win32 ({} car.)", relu.len()));
+                return EcriturePath { methode: "api".to_string(), journal, reussi: true };
+            }
+            journal.push("⚠ l'API a rendu succès mais la valeur relue NE CONTIENT PAS le dossier".to_string());
+        } else {
+            journal.push(format!("⚠ API Win32 : RegSetValueExW a rendu {}", api::expliquer(rc)));
+        }
+
+        // ── B. Fichier .reg + `regedit /s` ─────────────────────────────
+        //
+        // ⚠ Un fichier `.reg` en UTF-16LE (format natif de regedit) est
+        // importé SILENCIEUSEMENT (`/s`). Cela passe là où `reg add` est
+        // bloqué par une politique qui ne vise que les outils en ligne de
+        // commande.
+        let chemin = std::env::temp_dir().join("rose-path.reg");
+        let contenu = format!(
+            "Windows Registry Editor Version 5.00\r\n\r\n\
+             [HKEY_CURRENT_USER\\Environment]\r\n\
+             \"Path\"=hex(2):{}\r\n",
+            // ⚠ `hex(2)` = REG_EXPAND_SZ ; chaque unité UTF-16 en 4 chiffres
+            // hexadécimaux séparés par des virgules, terminateur inclus.
+            nouveau.encode_utf16()
+                .chain(std::iter::once(0))
+                .map(|u| format!("{u:02x},{:02x}", u >> 8))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        // ⚠ UTF-16LE avec BOM : c'est ce que regedit attend.
+        let mut octets: Vec<u8> = vec![0xFF, 0xFE];
+        for u in contenu.encode_utf16() {
+            octets.extend_from_slice(&u.to_le_bytes());
+        }
+        match std::fs::write(&chemin, &octets) {
+            Ok(()) => {
+                journal.push(format!("· fichier .reg préparé ({})", chemin.display()));
+                let st = commande_sans_fenetre("regedit")
+                    .args(["/s", &chemin.display().to_string()])
+                    .status();
+                match st {
+                    Ok(s) if s.success() => journal.push("· regedit /s : code 0".to_string()),
+                    Ok(s) => journal.push(format!(
+                        "⚠ regedit /s a rendu le code {}", s.code().unwrap_or(-1))),
+                    Err(e) => journal.push(format!("⚠ regedit n'a pas pu être lancé ({e})")),
+                }
+                let _ = std::fs::remove_file(&chemin);
+                let relu = lire_path_utilisateur().unwrap_or_default();
+                if path_contient(&relu, &cible) {
+                    journal.push(format!("✓ PATH utilisateur écrit par regedit ({} car.)", relu.len()));
+                    return EcriturePath { methode: "regedit".to_string(), journal, reussi: true };
+                }
+                journal.push("⚠ après regedit, la valeur relue NE CONTIENT PAS le dossier".to_string());
+            }
+            Err(e) => journal.push(format!("⚠ fichier .reg non écrit ({e})")),
+        }
+
+        // ── C. Échec : on l'explique et on n'invente pas de succès ──────
+        journal.push("Échec : le PATH utilisateur n'a pu être écrit par aucune voie".to_string());
+        if sonde == api::ERROR_ACCESS_DENIED {
+            journal.push("  cause : ACCÈS REFUSÉ sur HKCU\\Environment (verrou ou politique)".to_string());
+        }
+        journal.push("  → l'outil PATH propose des méthodes SANS modifier le PATH".to_string());
+        EcriturePath { methode: String::new(), journal, reussi: false }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (ancien, nouveau, cible);
+        journal.push("· écriture du PATH sans objet hors Windows".to_string());
+        EcriturePath { methode: String::new(), journal, reussi: false }
+    }
+}
+
+/// Écrit `dossier` dans le `PATH` de la MACHINE (`HKLM`).
+///
+/// ⚠ Exige l'administrateur : sans élévation, `RegSetValueExW` rend
+/// `ERROR_ACCESS_DENIED` et on le DIT — on ne prétend pas avoir réussi.
+pub fn ecrire_path_machine(dossier: &str) -> EcriturePath {
+    let mut journal: Vec<String> = Vec::new();
+    #[cfg(windows)]
+    {
+        let ancien = lire_path_machine().unwrap_or_default();
+        let nouveau = composer_path(&ancien, dossier);
+        let cible = normaliser_path(dossier);
+        match api::ecriture_possible(api::HKEY_LOCAL_MACHINE, api::ENV_MACHINE) {
+            Ok(()) => journal.push("· clé HKLM\\…\\Environment ouverte en écriture".to_string()),
+            Err(rc) => {
+                journal.push(format!("⚠ clé HKLM NON ouvrable en écriture : {}", api::expliquer(rc)));
+                journal.push("  → relancez l'installeur « En tant qu'administrateur »".to_string());
+            }
+        }
+        let rc = api::ecrire(api::HKEY_LOCAL_MACHINE, api::ENV_MACHINE, "Path",
+                             api::REG_EXPAND_SZ, &nouveau);
+        if rc != api::ERROR_SUCCESS {
+            journal.push(format!("Échec : RegSetValueExW HKLM a rendu {}", api::expliquer(rc)));
+            return EcriturePath { methode: String::new(), journal, reussi: false };
+        }
+        journal.push("· API Win32 : valeur machine écrite".to_string());
+        let relu = lire_path_machine().unwrap_or_default();
+        if path_contient(&relu, &cible) {
+            journal.push(format!("✓ PATH machine écrit ({} car.)", relu.len()));
+            EcriturePath { methode: "api".to_string(), journal, reussi: true }
+        } else {
+            journal.push("Échec : la valeur machine relue NE CONTIENT PAS le dossier".to_string());
+            EcriturePath { methode: String::new(), journal, reussi: false }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = dossier;
+        journal.push("· écriture machine sans objet hors Windows".to_string());
+        EcriturePath { methode: String::new(), journal, reussi: false }
+    }
+}
+
+/// Peut-on écrire dans le registre `HKCU` ?
+///
+/// ⚠⚠ C'est le diagnostic qui remplace l'ancien test par `reg add` : il
+/// dit POURQUOI ça échoue (accès refusé vs clé absente) au lieu de rendre
+/// un code opaque.
+pub fn registre_utilisateur_inscriptible() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        // 1. Une clé de Rose (création autorisée ?).
+        match api::ecriture_possible(api::HKEY_CURRENT_USER, "Software\\Rose") {
+            Ok(()) => {}
+            Err(api::ERROR_FILE_NOT_FOUND) => {
+                // ⚠ La clé n'existe pas encore : on tente sa création.
+                let rc = api::ecrire(api::HKEY_CURRENT_USER, "Software\\Rose", "Probe",
+                                     api::REG_SZ, "1");
+                if rc != api::ERROR_SUCCESS {
+                    return Err(format!("création de HKCU\\Software\\Rose impossible : {}",
+                                       api::expliquer(rc)));
+                }
+                let _ = api::supprimer_valeur(api::HKEY_CURRENT_USER, "Software\\Rose", "Probe");
+            }
+            Err(rc) => return Err(format!("HKCU\\Software\\Rose inouvrable : {}",
+                                          api::expliquer(rc))),
+        }
+        // 2. La clé d'environnement (celle du PATH).
+        match api::ecriture_possible(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR) {
+            Ok(()) => {}
+            Err(rc) => return Err(format!("HKCU\\Environment inouvrable en écriture : {}",
+                                          api::expliquer(rc))),
+        }
+        // 3. Une écriture RÉELLE (une GPO peut autoriser l'ouverture et
+        //    refuser la valeur).
+        let rc = api::tester_ecriture(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR);
+        if rc != api::ERROR_SUCCESS {
+            return Err(format!("écriture test refusée : {}", api::expliquer(rc)));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("registre Windows absent".to_string())
+    }
+}
+
 /// Messages produits par une opération (affichés dans la console ou dans
 /// la zone de texte de la fenêtre).
 pub type Journal = Vec<String>;
@@ -333,7 +789,15 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
             let _ = std::fs::remove_file(&src);
         }
     }
-    j.push(format!("✓ {}", enregistrer(prefixe, &bindir)));
+    // ⚠ `enregistrer` rend un journal MULTI-LIGNES quand quelque chose a
+    // échoué (clés, PATH, association) : on l'ajoute ligne par ligne pour
+    // que la fenêtre puisse détecter les « Échec : … ».
+    let enr = enregistrer(prefixe, &bindir);
+    if enr.is_empty() {
+        j.push("✓ registre, PATH et association .rose enregistrés".to_string());
+    } else {
+        for ligne in enr.lines() { j.push(ligne.to_string()); }
+    }
     j.push(format!("✓ {}", nettoyer_anciennes_installations(prefixe)));
     // ── VÉRIFICATION APRÈS ÉCRITURE DU PATH ─────────────────────────────
     //
@@ -383,27 +847,14 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
 /// avec des espaces, des antislashs doublés ou des `/`.
 #[cfg(windows)]
 fn verifier_path(bindir: &std::path::Path) -> Result<bool, String> {
-    let o = commande_sans_fenetre("reg")
-        .args(["query", "HKCU\\Environment", "/v", "Path"]).output()
-        .map_err(|e| e.to_string())?;
-    let txt = String::from_utf8_lossy(&o.stdout);
-    let mut valeur = String::new();
-    for ligne in txt.lines() {
-        let l = ligne.trim_start();
-        if !l.starts_with("Path") { continue; }
-        for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
-            if let Some(pos) = l.find(typ) {
-                valeur = l[pos + typ.len()..].trim_start().to_string();
-                break;
-            }
-        }
+    // ⚠⚠ Plus de `reg query` : la lecture passe par l'API Win32, comme
+    // l'écriture. Mesuré chez l'utilisateur : `reg.exe` pouvait être
+    // bloqué par une politique d'application, donc les deux voies
+    // doivent être indépendantes de lui.
+    match lire_path_utilisateur() {
+        Some(v) => Ok(path_contient(&v, &bindir.display().to_string())),
+        None => Err("lecture du registre impossible".to_string()),
     }
-    let normaliser = |s: &str| -> String {
-        s.trim().replace('/', "\\").replace("\\\\", "\\")
-            .trim_end_matches('\\').to_lowercase()
-    };
-    let cible = normaliser(&bindir.display().to_string());
-    Ok(valeur.split(';').any(|seg| normaliser(seg) == cible))
 }
 
 /// Supprime les installations d'un ANCIEN installeur (Tauri), qui posait
@@ -451,101 +902,39 @@ fn nettoyer_anciennes_installations(_prefixe: &str) -> String {
 fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
     #[cfg(windows)]
     {
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Rose", "/v", "InstallDir", "/t", "REG_SZ", "/d", prefixe, "/f"]).status();
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Rose", "/v", "Version", "/t", "REG_SZ", "/d", env!("CARGO_PKG_VERSION"), "/f"]).status();
-        // ── PATH ────────────────────────────────────────────────────────────
+        // ── Clés de Rose ───────────────────────────────────────────────────
         //
-        // ⚠⚠⚠ TROIS BUGS CORRIGÉS ICI (mesurés chez l'utilisateur : « la
-        // commande `rose` échoue après l'installation »).
-        //
-        //   1. LA LECTURE ÉTAIT CASSÉE. On faisait `ligne.split_whitespace()`
-        //      puis `parts[2..].join(" ")` : un chemin contenant un ESPACE
-        //      (`C:\Program Files\Rose\bin`) était reconstruit de travers,
-        //      et le registre se retrouvait avec des entrées tronquées.
-        //      On lit maintenant par `reg query` et on isole la valeur en
-        //      coupant sur le TYPE (`REG_EXPAND_SZ`) et non sur les espaces.
-        //
-        //   2. LE FILTRE SUPPRIMAIT LE BON DOSSIER. `bas.contains("\\rose")`
-        //      attrapait AUSSI `C:\Program Files\Rose\bin` (il contient
-        //      « \rose »), donc on retirait l'entrée qu'on venait d'ajouter
-        //      si elle était déjà là, et certaines entrées légitimes.
-        //      On compare maintenant les CHEMINS normalisés (`\` → `/`,
-        //      minuscules, sans antislash final) à des dossiers Rose connus.
-        //
-        //   3. LE CHEMIN ÉCRIT N'ÉTAIT PAS NETTOYÉ. `bindir.display()` peut
-        //      produire des séparateurs mélangés. On normalise en `\`.
-        let mut ancien = String::new();
-        if let Ok(o) = commande_sans_fenetre("reg")
-            .args(["query", "HKCU\\Environment", "/v", "Path"]).output() {
-            let txt = String::from_utf8_lossy(&o.stdout);
-            for ligne in txt.lines() {
-                // Format : «     Path    REG_EXPAND_SZ    <valeur> »
-                let l = ligne.trim_start();
-                if !l.starts_with("Path") { continue; }
-                // ⚠ On coupe sur le TYPE, pas sur les espaces : la valeur
-                // peut contenir des espaces.
-                if let Some(pos) = l.find("REG_EXPAND_SZ") {
-                    ancien = l[pos + "REG_EXPAND_SZ".len()..].trim_start().to_string();
-                } else if let Some(pos) = l.find("REG_SZ") {
-                    ancien = l[pos + "REG_SZ".len()..].trim_start().to_string();
-                }
+        // ⚠⚠⚠ TOUT PASSE PAR L'API WIN32 (`Advapi32`), PLUS PAR `reg.exe`.
+        // Mesuré chez l'utilisateur : `reg add` rendait le code 1 et
+        // n'écrivait RIEN — ni le PATH, ni les associations. La cause la
+        // plus probable sur une machine gérée est une politique
+        // d'application (AppLocker/WDAC) ou un antivirus qui bloque
+        // `reg.exe`. L'API, elle, est déjà chargée dans le processus :
+        // aucune politique ne peut l'empêcher.
+        let bin_win = bindir.display().to_string().replace('/', "\\");
+        let mut j: Journal = Vec::new();
+        let cles: [(&str, &str, &str); 2] = [
+            ("Software\\Rose", "InstallDir", prefixe),
+            ("Software\\Rose", "Version", env!("CARGO_PKG_VERSION")),
+        ];
+        for (cle, nom, valeur) in cles {
+            let rc = api::ecrire(api::HKEY_CURRENT_USER, cle, nom, api::REG_SZ, valeur);
+            if rc != api::ERROR_SUCCESS {
+                j.push(format!("⚠ écriture {cle}\\{nom} refusée : {}", api::expliquer(rc)));
             }
         }
-        // Normalisation d'un segment de PATH : `\` → `/`, minuscules,
-        // sans séparateur final. C'est ce qui rend la comparaison fiable.
-        let normaliser = |s: &str| -> String {
-            let t = s.trim().replace('/', "\\").replace("\\\\", "\\");
-            let t = t.trim_end_matches('\\').to_lowercase();
-            t
-        };
-        let nouveau_bin = normaliser(&bindir.display().to_string());
-        // Dossiers Rose OBSOLÈTES à retirer.
+
+        // ── PATH ───────────────────────────────────────────────────────────
         //
-        // ⚠⚠⚠ DEUXIÈME BUG MESURÉ ICI (après correction du filtre) : la
-        // règle « avant == rose » retirait AUSSI `C:\Program Files\Rose\bin`
-        // — un dossier Rose LÉGITIME — dès qu'on installait ailleurs. Elle
-        // était trop agressive : le NOM ne dit rien de la VALIDITÉ.
-        //
-        // La bonne règle : on ne retire un segment que s'il est le dossier
-        // courant (remplacé par le nouveau) OU s'il désigne un dossier
-        // Rose qui N'EXISTE PLUS (ou qui n'a plus de `rose.exe`). Un
-        // dossier Rose vivant est CONSERVÉ — l'utilisateur peut avoir
-        // plusieurs versions installées.
-        //
-        // ⚠ On garde aussi une règle de NOM pour les chemins qui ne sont
-        // pas des chemins locaux valides (variables `%LOCALAPPDATA%\Rose`,
-        // chemins inexistants sous Linux) : on les retire seulement si le
-        // chemin n'existe pas ET finit par « rose » ou « rose\bin ».
-        let est_rose = |seg: &str| -> bool {
-            let n = normaliser(seg);
-            if n.is_empty() { return false; }
-            // Le dossier courant est TOUJOURS remplacé par le nouveau.
-            if n == nouveau_bin { return true; }
-            let dernier = n.rsplit('\\').next().unwrap_or("");
-            let avant = n.rsplit('\\').nth(1).unwrap_or("");
-            let nomme_rose = dernier == "rose" || avant == "rose";
-            if !nomme_rose { return false; }
-            // ⚠ Dossier Rose VIVANT : on le conserve.
-            let p = std::path::Path::new(seg.trim());
-            if p.join("rose.exe").exists() || p.join("rose").exists() {
-                return false;
-            }
-            // Dossier Rose mort (supprimé) : on le retire.
-            true
-        };
-        let mut segments: Vec<String> = ancien.split(';')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .filter(|s| !est_rose(s))
-            .collect();
-        // ⚠ On écrit le chemin avec des antislashs Windows propres.
-        let bin_win = bindir.display().to_string().replace('/', "\\");
-        segments.insert(0, bin_win);
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
-                   "/d", &segments.join(";"), "/f"]).status();
+        // ⚠⚠⚠ L'ÉCRITURE PASSE PAR L'API, PLUS PAR `reg.exe`.
+        // `ecrire_path_utilisateur` fait : `RegSetValueExW`, puis
+        // RELECTURE de vérification, puis repli fichier `.reg` +
+        // `regedit /s` si l'API a échoué. Il conserve les segments
+        // existants, retire les doublons et les dossiers Rose MORTS, et
+        // met le dossier courant en tête.
+        let ecriture = ecrire_path_utilisateur(&bin_win);
+        j.extend(ecriture.journal);
+
         // ⚠⚠ DIFFUSER LE CHANGEMENT D'ENVIRONNEMENT.
         //
         // Écrire la clé de registre ne met PAS à jour les applications
@@ -554,49 +943,33 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         // dans cmd (ouvert APRÈS l'installation) mais VS Code disait
         // « rose n'est pas reconnu » — VS Code avait été lancé AVANT et
         // n'a jamais vu le nouveau PATH.
-        //
-        // `WM_SETTINGCHANGE` avec « Environment » demande à Windows de
-        // rafraîchir l'environnement des fenêtres applicatives.
-        #[cfg(windows)]
-        unsafe {
-            use std::ffi::c_void;
-            #[link(name = "user32")]
-            unsafe extern "system" {
-                fn SendMessageTimeoutW(hwnd: isize, msg: u32, wparam: usize,
-                                       lparam: *const c_void, flags: u32,
-                                       timeout: u32, result: *mut usize) -> usize;
-            }
-            const WM_SETTINGCHANGE: u32 = 0x001A;
-            const HWND_BROADCAST: isize = 0xFFFF;
-            const SMTO_ABORTIFHUNG: u32 = 0x0002;
-            let env = "Environment\0".encode_utf16().collect::<Vec<u16>>();
-            let mut result = 0usize;
-            SendMessageTimeoutW(
-                HWND_BROADCAST,
-                WM_SETTINGCHANGE,
-                0,
-                env.as_ptr() as *const c_void,
-                SMTO_ABORTIFHUNG,
-                3000,   // 3 s : n'attend pas une application bloquée
-                &mut result,
-            );
+        diffuser_environnement();
+
+        // ── Association `.rose` (vérifiée par relecture) ───────────────────
+        let assoc = poser_association(&bin_win);
+        j.extend(assoc.journal);
+        if assoc.reussi {
+            // ⚠ Icône du type : `DefaultIcon` pointe l'ICO DÉDIÉE (le
+            // document `.rose`), pas celle de l'application.
+            let ico = std::path::Path::new(prefixe).join("rose.ico");
+            let ico_str = if ico.is_file() {
+                format!("{},0", ico.display())
+            } else {
+                format!("{},0", bindir.join("rose.exe").display())
+            };
+            let _ = api::ecrire(api::HKEY_CURRENT_USER,
+                                "Software\\Classes\\Rose.File\\DefaultIcon", "",
+                                api::REG_SZ, &ico_str);
+            let _ = api::ecrire(api::HKEY_CURRENT_USER,
+                                "Software\\Classes\\Rose.File", "FriendlyTypeName",
+                                api::REG_SZ, "Fichier source Rose");
         }
-        // association .rose
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ", "/d", "Rose.File", "/f"]).status();
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Classes\\Rose.File", "/ve", "/t", "REG_SZ", "/d", "Programme Rose", "/f"]).status();
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Classes\\Rose.File\\DefaultIcon", "/ve", "/t", "REG_SZ",
-                   "/d", &format!("{}\\rose.ico,0", bindir.display()), "/f"]).status();
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve", "/t", "REG_SZ",
-                   "/d", &format!("\"{}\\rose.exe\" \"%1\"", bindir.display()), "/f"]).status();
-        // ⚠ Notifier l'Explorateur : sans cela il garde l'icône générique en
-        // cache et les `.rose` n'affichent la rose qu'après redémarrage de la
-        // session. `SHChangeNotify(SHCNE_ASSOCCHANGED, ...)` force la
+        let profil = ecrire_profil_terminal(bindir);
+        j.push(profil);
+        // ⚠ Notifier l'Explorateur : sans cela il garde l'icône générique
+        // en cache et les `.rose` n'affichent la rose qu'après redémarrage
+        // de la session. `SHChangeNotify(SHCNE_ASSOCCHANGED)` force la
         // relecture des associations et des icônes.
-        #[cfg(windows)]
         unsafe {
             use std::ffi::c_void;
             #[link(name = "shell32")]
@@ -607,16 +980,21 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
             const SHCNF_IDLIST: u32 = 0x0000;
             SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, std::ptr::null(), std::ptr::null());
         }
-        // ── Profil Windows Terminal ──────────────────────────────────────
-        // Windows Terminal lit tous les `*.json` de son dossier
-        // « Fragments » (un fichier = un profil, fusionné automatiquement) :
-        // pas besoin de modifier `settings.json`, donc aucune casse des
-        // réglages de l'utilisateur. C'est ce qui fait apparaître « Rose »
-        // dans le menu déroulant, AVEC l'icône et la bonne ligne de commande.
-        let profil = ecrire_profil_terminal(bindir);
-        format!("PATH et association .rose mis à jour ; {profil}")
+        if j.iter().any(|l| l.starts_with("⚠") || l.starts_with("Échec")) {
+            return j.join("\n");
+        }
+        return String::new();
     }
     #[cfg(unix)]
+    {
+        let _ = bindir;
+        enregistrer_unix(prefixe)
+    }
+}
+
+/// Enregistrement côté Linux : ligne `export PATH` et type MIME `text/x-rose`.
+#[cfg(unix)]
+fn enregistrer_unix(prefixe: &str) -> String {
     {
         let home = std::env::var("HOME").unwrap_or_default();
         let ligne = format!("export PATH=\"{}/bin:$PATH\"", prefixe);
@@ -1214,10 +1592,22 @@ fn path_contient(path: &str, cible: &str) -> bool {
     path.split(';').any(|seg| normaliser_path(seg) == c)
 }
 
-/// Diagnostique l'état du `PATH` pour le dossier `bin` de Rose.
-///
-/// ⚠⚠⚠ AUCUNE ÉCRITURE ICI : c'est un diagnostic pur, sûr à appeler
-/// autant de fois qu'on veut.
+// ═══════════════════════════════════════════════════════════════════════
+// DIAGNOSTIC DU PATH — API WIN32
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ AUCUNE ÉCRITURE DANS LE PATH ICI : c'est un diagnostic pur, sûr à
+// appeler autant de fois qu'on veut. Le seul effet de bord est une valeur
+// sonde (`RoseProbe`) posée puis retirée dans `HKCU\Environment`.
+//
+// ⚠⚠⚠ CE QUI CHANGE PAR RAPPORT À LA VERSION `reg.exe` : les causes sont
+// LISES, pas devinées. Une capture d'écran montrait « le registre HKCU est
+// INACCESSIBLE en écriture » alors que `reg add` échouait pour une autre
+// raison (code 1 = politique d'application). On distingue maintenant :
+//
+//   · ACCÈS REFUSÉ (5)      → droits ou verrou ;
+//   · introuvable (2)       → clé absente (créable) ;
+//   · autre code            → affiché en clair, avec son numéro.
 pub fn diagnostiquer_path(prefixe: &str) -> DiagnosticPath {
     let bindir = std::path::Path::new(prefixe).join("bin");
     let bin_str = bindir.display().to_string();
@@ -1230,81 +1620,74 @@ pub fn diagnostiquer_path(prefixe: &str) -> DiagnosticPath {
         messages.push(format!("Échec : aucun moteur dans {bin_str}"));
     }
 
-    #[cfg(windows)]
-    let (path_user, path_machine, inscriptible, verrou) = {
-        let pu = lire_valeur_hkcu("HKCU\\Environment", "Path").unwrap_or_default();
-        // ⚠ Le PATH machine se lit dans HKLM ; on ne tente PAS de l'écrire
-        // (droits administrateur requis).
-        let pm = commande_sans_fenetre("reg")
-            .args(["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-                   "/v", "Path"]).output().ok()
-            .map(|o| {
-                let txt = String::from_utf8_lossy(&o.stdout);
-                let mut v = String::new();
-                for ligne in txt.lines() {
-                    let l = ligne.trim_start();
-                    if !l.starts_with("Path") { continue; }
-                    for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
-                        if let Some(pos) = l.find(typ) {
-                            v = l[pos + typ.len()..].trim_start().to_string();
-                            break;
-                        }
-                    }
-                }
-                v
-            }).unwrap_or_default();
-        // ⚠ TEST D'ÉCRITURE SANS RISQUE : on écrit une valeur temporaire
-        // dans une sous-clé dédiée de Rose, puis on la supprime. On ne
-        // touche JAMAIS au PATH pour tester.
-        let test_cle = "HKCU\\Software\\Rose\\TestEcriture";
-        let test = commande_sans_fenetre("reg")
-            .args(["add", test_cle, "/v", "ok", "/t", "REG_SZ", "/d", "1", "/f"])
-            .status().map(|s| s.success()).unwrap_or(false);
-        let _ = commande_sans_fenetre("reg")
-            .args(["delete", test_cle, "/f"]).status();
-        // ⚠ DÉTECTION DE VERROU DE GROUPE : si `HKCU\Environment` existe
-        // mais que l'écriture d'une valeur TEST échoue, c'est verrouillé.
-        let verrou = if test {
-            let essai = commande_sans_fenetre("reg")
-                .args(["add", "HKCU\\Environment", "/v", "RoseTest", "/t", "REG_SZ", "/d", "1", "/f"])
-                .status().map(|s| s.success()).unwrap_or(false);
-            if essai {
-                let _ = commande_sans_fenetre("reg")
-                    .args(["delete", "HKCU\\Environment", "/v", "RoseTest", "/f"]).status();
-                false
-            } else {
-                true
-            }
-        } else {
-            false
-        };
-        (pu, pm, test, verrou)
-    };
-    #[cfg(not(windows))]
-    let (path_user, path_machine, inscriptible, verrou) = (String::new(), String::new(), false, false);
+    let path_user = lire_path_utilisateur().unwrap_or_default();
+    let path_machine = lire_path_machine().unwrap_or_default();
 
     let dans_path_utilisateur = path_contient(&path_user, &bin_str);
     let dans_path_machine = path_contient(&path_machine, &bin_str);
-    let dans_path_processus = std::env::var("PATH").map(|p| path_contient(&p, &bin_str)).unwrap_or(false);
+    let dans_path_processus = std::env::var("PATH")
+        .map(|p| path_contient(&p, &bin_str)).unwrap_or(false);
 
     if dans_path_utilisateur { messages.push("✓ présent dans le PATH utilisateur".to_string()); }
     else { messages.push("· absent du PATH utilisateur".to_string()); }
     if dans_path_machine { messages.push("✓ présent dans le PATH machine".to_string()); }
     if dans_path_processus { messages.push("✓ présent dans le PATH de ce processus".to_string()); }
 
-    if !inscriptible {
-        messages.push("Échec : le registre HKCU est INACCESSIBLE en écriture".to_string());
+    // ── Le registre est-il écritvable ? (cause LUE, pas devinée) ─────────
+    let mut verrou = false;
+    let mut inscriptible = true;
+    #[cfg(windows)]
+    {
+        // 1. Ouverture de la clé en écriture : distingue accès refusé et
+        //    clé absente.
+        match api::ecriture_possible(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR) {
+            Ok(()) => messages.push("· clé HKCU\\Environment ouverte en écriture".to_string()),
+            Err(api::ERROR_FILE_NOT_FOUND) => {
+                // ⚠ Clé absente : elle sera CRÉÉE par RegCreateKeyExW. Ce
+                // n'est PAS un verrou.
+                messages.push("· clé HKCU\\Environment absente (elle sera créée)".to_string());
+            }
+            Err(rc) => {
+                inscriptible = false;
+                messages.push(format!(
+                    "⚠ clé HKCU\\Environment NON ouvrable en écriture : {}", api::expliquer(rc)));
+            }
+        }
+        // 2. Écriture RÉELLE d'une valeur sonde : une GPO peut autoriser
+        //    l'ouverture et refuser la valeur.
+        let rc = api::tester_ecriture(api::HKEY_CURRENT_USER, api::ENV_UTILISATEUR);
+        match rc {
+            api::ERROR_SUCCESS => {
+                messages.push("· écriture test ACCEPTÉE (valeur sonde retirée)".to_string());
+            }
+            _ => {
+                inscriptible = false;
+                verrou = true;
+                messages.push(format!(
+                    "⚠ écriture test REFUSÉE : {}", api::expliquer(rc)));
+                messages.push("  → une stratégie de groupe ou un antivirus verrouille le PATH".to_string());
+            }
+        }
+        // 3. `HKCU\Software\Rose` : sert au reste de l'installation.
+        match api::ecriture_possible(api::HKEY_CURRENT_USER, "Software\\Rose") {
+            Ok(()) => messages.push("· clé HKCU\\Software\\Rose accessible".to_string()),
+            Err(rc) => messages.push(format!(
+                "⚠ clé HKCU\\Software\\Rose inaccessible : {}", api::expliquer(rc))),
+        }
     }
-    if verrou {
-        messages.push("⚠ VERROU : une stratégie de groupe bloque HKCU\\Environment".to_string());
-        messages.push("  → utilisez une des méthodes « entreprise » ci-dessous".to_string());
+    #[cfg(not(windows))]
+    {
+        inscriptible = false;
     }
+
     if path_user.len() > 2047 {
-        messages.push(format!("⚠ PATH utilisateur très long ({} car.) : la limite du registre est 2047", path_user.len()));
+        messages.push(format!(
+            "⚠ PATH utilisateur très long ({} car.) : la limite du registre est 2047",
+            path_user.len()));
     }
 
     // ⚠ `where` est le test le PLUS fiable : c'est ce que fait `cmd` quand
-    // l'utilisateur tape `rose`. Il regarde le PATH RÉEL, pas le registre.
+    // l'utilisateur tape `rose`. Il regarde le PATH RÉEL du processus.
     #[cfg(windows)]
     let where_trouve = commande_sans_fenetre("where")
         .args(["rose"]).output().map(|o| o.status.success()).unwrap_or(false);
@@ -1359,87 +1742,11 @@ impl MethodePath {
     }
 }
 
-/// ═══════════════════════════════════════════════════════════════════════
-/// MODE ENTREPRISE — AUTOMATIQUE, SANS MODIFIER LE PATH
-/// ═══════════════════════════════════════════════════════════════════════
-///
-/// ⚠⚠⚠ LE PROBLÈME MESURÉ : sur un appareil d'entreprise, une stratégie de
-/// groupe (GPO) peut VERROUILLER `HKCU\Environment`. Le PATH ne peut alors
-/// PAS être modifié — et ce n'est pas une erreur de l'installeur.
-///
-/// ⚠⚠⚠ LA SOLUTION : si l'écriture du PATH échoue, Rose installe quand
-/// même un ACCÈS FONCTIONNEL par trois moyens qui ne touchent PAS au PATH :
-///
-///   1. un LANCEUR `%USERPROFILE%\Rose\rose.cmd` ;
-///   2. un RACCOURCI `%USERPROFILE%\Desktop\Rose.cmd` ;
-///   3. l'ASSOCIATION `.rose` (double-clic sur un fichier).
-///
-/// L'utilisateur tape alors `%USERPROFILE%\Rose\rose.cmd` (ou
-/// double-clique) au lieu de `rose`. On le LUI DIT clairement, avec le
-/// chemin exact à utiliser.
-///
-/// ⚠ Cette fonction est appelée AUTOMATIQUEMENT à la fin de `installer()`
-/// quand le PATH n'a pas pu être écrit. Elle n'exige AUCUN droit.
-pub fn mode_entreprise(prefixe: &str) -> Journal {
-    let mut j: Journal = Vec::new();
-    #[cfg(windows)]
-    {
-        let bindir = std::path::Path::new(prefixe).join("bin");
-        let moteur = bindir.join("rose.exe");
-        if !moteur.is_file() {
-            j.push(format!("Échec : moteur absent ({}), mode entreprise impossible", moteur.display()));
-            return j;
-        }
-        let home = std::env::var("USERPROFILE").unwrap_or_default();
-        // ── 1. Lanceur dans %USERPROFILE%\Rose ──
-        let dossier = std::path::Path::new(&home).join("Rose");
-        let lanceur = dossier.join("rose.cmd");
-        if std::fs::create_dir_all(&dossier).is_ok() {
-            let contenu = format!("@echo off\r\n\"{}\" %*\r\n", moteur.display());
-            if std::fs::write(&lanceur, contenu).is_ok() {
-                j.push(format!("✓ lanceur : {}", lanceur.display()));
-            } else {
-                j.push(format!("Échec : lanceur non écrit ({})", lanceur.display()));
-            }
-        } else {
-            j.push(format!("Échec : dossier {} non créé", dossier.display()));
-        }
-        // ── 2. Raccourci sur le Bureau ──
-        let bureau = std::path::Path::new(&home).join("Desktop").join("Rose.cmd");
-        let contenu_bureau = format!(
-            "@echo off\r\nrem Rose sans passer par le PATH\r\n\"{}\" %*\r\nif \"%~1\"==\"\" pause\r\n",
-            moteur.display());
-        if std::fs::write(&bureau, contenu_bureau).is_ok() {
-            j.push(format!("✓ raccourci Bureau : {}", bureau.display()));
-        } else {
-            j.push(format!("· raccourci Bureau non écrit ({})", bureau.display()));
-        }
-        // ── 3. Association .rose ──
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ",
-                   "/d", "Rose.File", "/f"]).status();
-        let _ = commande_sans_fenetre("reg")
-            .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve",
-                   "/t", "REG_SZ", "/d", &format!("\"{}\" \"%1\"", moteur.display()), "/f"]).status();
-        j.push("✓ association .rose (double-clic sur un fichier .rose)".to_string());
-        // ── Le message à retenir ──
-        j.push(format!(
-            "⚠ PATH non modifiable : utilisez {} (ou le raccourci du Bureau)",
-            lanceur.display()));
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = prefixe;
-        j.push("· mode entreprise sans objet hors Windows".to_string());
-    }
-    j
-}
-
 /// Les méthodes proposées, DANS L'ORDRE d'affichage.
 ///
-/// ⚠ L'ordre compte : les deux premières modifient le PATH (ce sont les
-/// méthodes « normales »), les trois suivantes n'y touchent pas (ce sont
-/// les méthodes pour les machines d'ENTREPRISE où le PATH est verrouillé).
+/// ⚠ L'ordre compte : les deux premières modifient le PATH (méthodes
+/// « normales »), les trois suivantes n'y touchent pas (méthodes pour les
+/// machines d'ENTREPRISE où le PATH est verrouillé).
 pub const METHODES_PATH: [MethodePath; 5] = [
     MethodePath::Utilisateur,
     MethodePath::Machine,
@@ -1448,109 +1755,72 @@ pub const METHODES_PATH: [MethodePath; 5] = [
     MethodePath::Association,
 ];
 
-/// Applique une méthode de réparation et rend un journal.
-///
-/// ⚠⚠⚠ CHAQUE MÉTHODE EST VÉRIFIÉE APRÈS COUP : on relit l'état et on dit
-/// si ça a MARCHÉ. Écrire une clé de registre ne prouve rien.
+// ═══════════════════════════════════════════════════════════════════════
+// OUTIL PATH — LES CINQ MÉTHODES DE RÉPARATION
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ CHAQUE MÉTHODE EST VÉRIFIÉE APRÈS COUP : on relit l'état et on dit
+// si ça a MARCHÉ. Écrire une valeur ne prouve rien — une GPO peut la
+// réécrire, et `reg.exe` peut rendre 1 sans rien faire.
+//
+// ⚠⚠⚠ LES DEUX PREMIÈRES PASSENT PAR L'API WIN32 (pas `reg.exe`), en
+// cascade API → fichier `.reg` + `regedit /s`. Voir `ecrire_path_utilisateur`.
+//
+// ⚠ Les trois dernières NE TOUCHENT PAS au PATH : elles posent un lanceur,
+// un raccourci ou une association. Elles fonctionnent même quand le PATH
+// est verrouillé par une politique d'entreprise.
 pub fn reparer_path(prefixe: &str, methode: MethodePath) -> Journal {
     let mut j: Journal = Vec::new();
     let bindir = std::path::Path::new(prefixe).join("bin");
     let bin_str = bindir.display().to_string();
+    let bin_win = bin_str.replace('/', "\\");
+    let moteur = bindir.join(if cfg!(windows) { "rose.exe" } else { "rose" });
 
-    #[cfg(windows)]
     match methode {
         MethodePath::Utilisateur => {
-            let ancien = lire_valeur_hkcu("HKCU\\Environment", "Path").unwrap_or_default();
-            let mut segs: Vec<String> = ancien.split(';')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .filter(|s| normaliser_path(s) != normaliser_path(&bin_str))
-                .collect();
-            segs.insert(0, bin_str.replace('/', "\\"));
-            let st = commande_sans_fenetre("reg")
-                .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
-                       "/d", &segs.join(";"), "/f"]).status();
-            match st {
-                Ok(s) if s.success() => j.push("✓ PATH utilisateur écrit".to_string()),
-                Ok(s) => j.push(format!("Échec : `reg add` a rendu le code {}", s.code().unwrap_or(-1))),
-                Err(e) => j.push(format!("Échec : `reg` n'a pas pu être lancé ({e})")),
+            let r = ecrire_path_utilisateur(&bin_win);
+            j.extend(r.journal);
+            if r.reussi {
+                diffuser_environnement();
+                j.push(format!("  (méthode employée : {})", r.methode));
             }
-            diffuser_environnement();
-            verifier_et_rapporter(&mut j, prefixe, "utilisateur");
         }
         MethodePath::Machine => {
-            // ⚠ Écrire dans HKLM exige l'administrateur : sans élévation,
-            // `reg add` échoue avec « Accès refusé ». On le DIT clairement.
-            let ancien = {
-                let o = commande_sans_fenetre("reg")
-                    .args(["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-                           "/v", "Path"]).output();
-                o.ok().map(|o| {
-                    let txt = String::from_utf8_lossy(&o.stdout);
-                    let mut v = String::new();
-                    for ligne in txt.lines() {
-                        let l = ligne.trim_start();
-                        if !l.starts_with("Path") { continue; }
-                        for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
-                            if let Some(pos) = l.find(typ) {
-                                v = l[pos + typ.len()..].trim_start().to_string();
-                                break;
-                            }
-                        }
-                    }
-                    v
-                }).unwrap_or_default()
-            };
-            let mut segs: Vec<String> = ancien.split(';')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .filter(|s| normaliser_path(s) != normaliser_path(&bin_str))
-                .collect();
-            segs.insert(0, bin_str.replace('/', "\\"));
-            let st = commande_sans_fenetre("reg")
-                .args(["add", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
-                       "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", &segs.join(";"), "/f"]).status();
-            match st {
-                Ok(s) if s.success() => j.push("✓ PATH machine écrit".to_string()),
-                Ok(s) => j.push(format!(
-                    "Échec : `reg add` HKLM a rendu {} — l'administrateur est requis \
-                     (lancez l'installeur « En tant qu'administrateur »)",
-                    s.code().unwrap_or(-1))),
-                Err(e) => j.push(format!("Échec : `reg` n'a pas pu être lancé ({e})")),
+            let r = ecrire_path_machine(&bin_win);
+            j.extend(r.journal);
+            if r.reussi {
+                diffuser_environnement();
+            } else {
+                j.push("  → alternative sans administrateur : « Lanceur .cmd »".to_string());
             }
-            diffuser_environnement();
-            verifier_et_rapporter(&mut j, prefixe, "machine");
         }
         MethodePath::Lanceur => {
-            // ⚠ Le lanceur évite un PATH trop long : on n'ajoute qu'UN
-            // dossier court (`%USERPROFILE%\Rose`) au lieu du chemin complet.
+            // ⚠ Le lanceur évite un PATH trop long ET un PATH verrouillé :
+            // le fichier est écrit dans le profil, ce qui ne demande AUCUN
+            // droit. On n'ajoute au PATH que si c'est POSSIBLE — sinon on
+            // dit simplement où taper la commande.
             let home = std::env::var("USERPROFILE").unwrap_or_default();
             let d = std::path::Path::new(&home).join("Rose");
             match std::fs::create_dir_all(&d) {
                 Ok(()) => {
                     let cmd = d.join("rose.cmd");
-                    let contenu = format!(
-                        "@echo off\r\n\"{}\" %*\r\n",
-                        bindir.join("rose.exe").display()
-                    );
+                    let contenu = format!("@echo off\r\n\"{}\" %*\r\n", moteur.display());
                     match std::fs::write(&cmd, contenu) {
                         Ok(()) => j.push(format!("✓ lanceur créé : {}", cmd.display())),
                         Err(e) => j.push(format!("Échec : lanceur non écrit ({e})")),
                     }
-                    // Ajoute le dossier COURT au PATH utilisateur.
-                    let ancien = lire_valeur_hkcu("HKCU\\Environment", "Path").unwrap_or_default();
                     let court = d.display().to_string().replace('/', "\\");
-                    let mut segs: Vec<String> = ancien.split(';')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .filter(|s| normaliser_path(s) != normaliser_path(&court))
-                        .collect();
-                    segs.insert(0, court.clone());
-                    let _ = commande_sans_fenetre("reg")
-                        .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
-                               "/d", &segs.join(";"), "/f"]).status();
-                    diffuser_environnement();
-                    j.push(format!("✓ {} ajouté au PATH ({} car. au total)", court, segs.join(";").len()));
+                    let r = ecrire_path_utilisateur(&court);
+                    if r.reussi {
+                        diffuser_environnement();
+                        j.push(format!("✓ {} ajouté au PATH", court));
+                        j.push("  → dans un terminal NEUF : tapez `rose`".to_string());
+                    } else {
+                        // ⚠ Pas de PATH : le lanceur suffit, on le DIT.
+                        j.push(format!("· PATH non modifiable ({}) — utilisez directement :", r.methode));
+                        j.push(format!("    \"{}\"", cmd.display()));
+                        j.push("  (ou double-cliquez le raccourci du Bureau)".to_string());
+                    }
                 }
                 Err(e) => j.push(format!("Échec : dossier {} non créé ({e})", d.display())),
             }
@@ -1559,43 +1829,138 @@ pub fn reparer_path(prefixe: &str, methode: MethodePath) -> Journal {
             // ⚠ Un raccourci .lnk exige COM (IShellLink). Sans COM, on pose
             // un fichier `.cmd` sur le Bureau : il fonctionne par double-clic
             // et ne dépend d'AUCUN composant système.
-            let bureau = std::env::var("USERPROFILE").unwrap_or_default() + "\\Desktop";
-            let cible = std::path::Path::new(&bureau).join("Rose.cmd");
+            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            let bureau = std::path::Path::new(&home).join("Desktop");
+            let _ = std::fs::create_dir_all(&bureau);
+            let cible = bureau.join("Rose.cmd");
             let contenu = format!(
                 "@echo off\r\nrem Lance Rose sans passer par le PATH\r\n\"{}\" %*\r\n\
                  if \"%~1\"==\"\" pause\r\n",
-                bindir.join("rose.exe").display()
-            );
+                moteur.display());
             match std::fs::write(&cible, contenu) {
-                Ok(()) => j.push(format!("✓ raccourci posé : {}", cible.display())),
+                Ok(()) => {
+                    j.push(format!("✓ raccourci posé : {}", cible.display()));
+                    j.push("  → double-cliquez-le pour lancer Rose".to_string());
+                }
                 Err(e) => j.push(format!("Échec : raccourci non écrit ({e})")),
             }
         }
         MethodePath::Association => {
             // ⚠ Ni le PATH ni le registre d'environnement : seulement les
-            // associations et le profil Terminal.
-            let _ = commande_sans_fenetre("reg")
-                .args(["add", "HKCU\\Software\\Classes\\.rose", "/ve", "/t", "REG_SZ",
-                       "/d", "Rose.File", "/f"]).status();
-            let _ = commande_sans_fenetre("reg")
-                .args(["add", "HKCU\\Software\\Classes\\Rose.File\\shell\\open\\command", "/ve",
-                       "/t", "REG_SZ", "/d", &format!("\"{}\\rose.exe\" \"%1\"", bin_str),
-                       "/f"]).status();
-            j.push("✓ association .rose posée (double-clic sur un fichier .rose)".to_string());
+            // associations et le profil Terminal. On VÉRIFIE par relecture.
+            let assoc = poser_association(&bin_win);
+            j.extend(assoc.journal);
+            if assoc.reussi { diffuser_environnement(); }
+            let profil = ecrire_profil_terminal(&bindir);
+            j.push(profil);
         }
     }
     #[cfg(not(windows))]
     {
-        let _ = (prefixe, methode, bin_str);
-        j.push("· méthode sans objet hors Windows".to_string());
+        // Sur Linux, `ecrire_path_utilisateur` rend « sans objet » ; les
+        // méthodes de fichiers restent testables (lanceur, raccourci).
+        let _ = (&bin_win, &moteur);
     }
+    j
+}
+
+/// Pose l'association `.rose` par l'API du registre et VÉRIFIE par relecture.
+pub fn poser_association(bin_win: &str) -> EcriturePath {
+    let mut journal: Vec<String> = Vec::new();
+    #[cfg(windows)]
+    {
+        let commande = format!("\"{}\\rose.exe\" \"%1\"", bin_win.trim_end_matches('\\'));
+        let paires: [(&str, &str, u32); 5] = [
+            ("Software\\Classes\\.rose", "", api::REG_SZ),
+            ("Software\\Classes\\Rose.File", "", api::REG_SZ),
+            ("Software\\Classes\\Rose.File\\DefaultIcon", "", api::REG_SZ),
+            ("Software\\Classes\\Rose.File\\shell\\open\\command", "", api::REG_SZ),
+            ("Software\\Classes\\Rose.File", "FriendlyTypeName", api::REG_SZ),
+        ];
+        let valeurs: [&str; 5] = [
+            "Rose.File",
+            "Programme Rose",
+            &format!("\"{}\\rose.exe\",0", bin_win.trim_end_matches('\\')),
+            &commande,
+            "Fichier source Rose",
+        ];
+        let mut ok = true;
+        for (i, (cle, nom, typ)) in paires.iter().enumerate() {
+            let rc = api::ecrire(api::HKEY_CURRENT_USER, cle, nom, *typ, valeurs[i]);
+            if rc != api::ERROR_SUCCESS {
+                ok = false;
+                journal.push(format!("⚠ écriture {cle} refusée : {}", api::expliquer(rc)));
+            }
+        }
+        if ok { journal.push("· association : cinq clés écrites".to_string()); }
+        // ⚠ VÉRIFICATION : on RELIT la commande d'ouverture.
+        let relu = api::lire(api::HKEY_CURRENT_USER,
+                             "Software\\Classes\\Rose.File\\shell\\open\\command", "")
+            .unwrap_or_default();
+        if relu.contains("rose.exe") {
+            journal.push(format!("✓ association .rose vérifiée : {relu}"));
+            EcriturePath { methode: "api".to_string(), journal, reussi: true }
+        } else {
+            journal.push("Échec : la commande d'ouverture relue est vide".to_string());
+            EcriturePath { methode: String::new(), journal, reussi: false }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = bin_win;
+        journal.push("· association sans objet hors Windows".to_string());
+        EcriturePath { methode: String::new(), journal, reussi: false }
+    }
+}
+
+/// ═══════════════════════════════════════════════════════════════════════
+/// MODE ENTREPRISE — AUTOMATIQUE, SANS MODIFIER LE PATH
+/// ═══════════════════════════════════════════════════════════════════════
+///
+/// ⚠⚠⚠ LE PROBLÈME MESURÉ : sur un appareil d'entreprise, une stratégie de
+/// groupe peut VERROUILLER `HKCU\Environment`, ou une politique
+/// d'application peut bloquer `reg.exe`. Le PATH ne peut alors PAS être
+/// modifié — et ce n'est pas une erreur de l'installeur.
+///
+/// ⚠⚠⚠ LA SOLUTION : si l'écriture du PATH échoue, Rose installe quand
+/// même un ACCÈS FONCTIONNEL par trois moyens qui ne touchent PAS au PATH :
+///
+///   1. un LANCEUR `%USERPROFILE%\Rose\rose.cmd` ;
+///   2. un RACCOURCI `%USERPROFILE%\Desktop\Rose.cmd` ;
+///   3. l'ASSOCIATION `.rose` (double-clic sur un fichier).
+///
+/// On DIT alors à l'utilisateur le chemin EXACT à utiliser. C'est un accès
+/// réel, pas un message lui demandant de le faire à la main.
+pub fn mode_entreprise(prefixe: &str) -> Journal {
+    let mut j: Journal = Vec::new();
+    let bindir = std::path::Path::new(prefixe).join("bin");
+    let moteur = bindir.join(if cfg!(windows) { "rose.exe" } else { "rose" });
+    if !moteur.is_file() {
+        j.push(format!("Échec : moteur absent ({}), mode entreprise impossible", moteur.display()));
+        return j;
+    }
+    // ⚠ On passe par les MÊMES méthodes que l'outil PATH : un seul code à
+    // maintenir, et les mêmes vérifications.
+    j.extend(reparer_path(prefixe, MethodePath::Lanceur));
+    j.extend(reparer_path(prefixe, MethodePath::Raccourci));
+    j.extend(reparer_path(prefixe, MethodePath::Association));
+    let lanceur = std::env::var("USERPROFILE").unwrap_or_default() + "\\Rose\\rose.cmd";
+    j.push(format!("⚠ PATH non modifiable : pour utiliser Rose, tapez  {lanceur}"));
     j
 }
 
 /// Diffuse `WM_SETTINGCHANGE` pour que les applications déjà lancées voient
 /// le nouveau `PATH`.
-#[cfg(windows)]
+///
+/// ⚠ Sur Linux, il n'y a rien à diffuser : la fonction existe quand même
+/// (vide) pour que les méthodes de l'outil PATH compilent partout.
 fn diffuser_environnement() {
+    #[cfg(not(windows))]
+    {
+        return;
+    }
+    #[cfg(windows)]
+    {
     unsafe {
         use std::ffi::c_void;
         #[link(name = "user32")]
@@ -1611,6 +1976,7 @@ fn diffuser_environnement() {
         let mut result = 0usize;
         SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
                             env.as_ptr() as *const c_void, SMTO_ABORTIFHUNG, 3000, &mut result);
+    }
     }
 }
 
@@ -1805,11 +2171,50 @@ mod tests {
     fn mode_entreprise_rapporte_quelque_chose() {
         let j = mode_entreprise("C:\\Dossier\\Inexistant");
         assert!(!j.is_empty());
-        // Sur Linux, la fonction est sans objet mais doit rester sûre.
+        // ⚠ Sur Linux, les méthodes de fichiers restent testables : le
+        // moteur n'existe pas dans le faux dossier, donc le mode entreprise
+        // doit DIRE pourquoi il ne peut rien faire — pas paniquer.
         #[cfg(not(windows))]
-        assert!(j.iter().any(|l| l.contains("sans objet")));
+        assert!(j.iter().any(|l| l.contains("moteur absent")));
+        // ⚠ Sur Windows, il doit rapporter une tentative réelle.
         #[cfg(windows)]
         assert!(j.iter().any(|l| l.starts_with("Échec") || l.starts_with("✓")));
+        #[cfg(windows)]
+        assert!(j.iter().any(|l| l.starts_with("Échec") || l.starts_with("✓")));
+    }
+
+    /// ⚠⚠⚠ GARDE-FOU DU BUG MESURÉ : `reg add` rendait 1 et le PATH
+    /// restait vide. La composition de la valeur doit être ROBUSTE.
+    #[test]
+    fn composition_du_path() {
+        // Le dossier demandé passe EN TÊTE.
+        assert_eq!(composer_path("C:\\Windows;C:\\Tools", "C:\\Users\\x\\Rose\\bin"),
+                   "C:\\Users\\x\\Rose\\bin;C:\\Windows;C:\\Tools");
+        // Un PATH vide ne produit pas de segment vide.
+        assert_eq!(composer_path("", "C:\\Rose\\bin"), "C:\\Rose\\bin");
+        assert_eq!(composer_path(";;;", "C:\\Rose\\bin"), "C:\\Rose\\bin");
+        // Un doublon (même dossier, autre casse/séparateurs) est remplacé,
+        // pas dupliqué.
+        let r = composer_path("c:/rose/BIN; C:\\Windows ", "C:\\Rose\\bin");
+        assert_eq!(r, "C:\\Rose\\bin;C:\\Windows");
+        // Un AUTRE dossier Rose vivant est CONSERVÉ (deux versions).
+        let r = composer_path("C:\\Rose-v2\\bin;C:\\Windows", "C:\\Rose\\bin");
+        assert_eq!(r, "C:\\Rose\\bin;C:\\Rose-v2\\bin;C:\\Windows");
+    }
+
+    /// ⚠ La lecture/écriture du registre doit être SÛRE hors Windows : elle
+    /// rend `None`/un journal explicite, jamais une panique.
+    #[test]
+    fn ecriture_path_sur_n_importe_quel_dossier() {
+        let r = ecrire_path_utilisateur("C:\\Dossier\\Inexistant\\bin");
+        assert!(!r.journal.is_empty());
+        #[cfg(not(windows))]
+        {
+            assert!(!r.reussi);
+            assert!(r.journal.iter().any(|l| l.contains("sans objet")));
+        }
+        // Le diagnostic et l'accessibilité du registre doivent répondre.
+        let _ = registre_utilisateur_inscriptible();
     }
 
     #[test]

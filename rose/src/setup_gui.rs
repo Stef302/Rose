@@ -2483,8 +2483,10 @@ fn action(h: HWND, bouton: usize) {
                 etat.methode.min(crate::setup_core::METHODES_PATH.len() - 1)];
             etat.journal_path = vec![format!("Application de « {} »…", methode.nom())];
             unsafe { rafraichir(h); }
-            // ⚠ La réparation peut prendre du temps (reg, écritures) : on la
-            // fait dans un fil pour ne pas figer la fenêtre.
+            // ⚠⚠ La réparation passe par l'API du registre : c'est rapide
+            // (quelques millisecondes), mais une GPO ou un antivirus peut
+            // la ralentir. On la fait donc dans un fil pour ne pas figer
+            // la fenêtre, et on relit le diagnostic en arrivant.
             let cible = h as isize;
             std::thread::spawn(move || {
                 let journal = crate::setup_core::reparer_path(&prefixe, methode);
