@@ -75,9 +75,10 @@ cp "$R/rose-aot.exe" "$STAGE/rose-aot.exe"
 cp "$R/rose-shell.exe" "$STAGE/rose-shell.exe"
 cp "$R/rose.exe" "$STAGE/payload/rose.exe"
 cp "$RACINE/installateur/assets/rose.ico" "$STAGE/rose.ico"
-# ⚠ `rose_app.ico` = l'icône de CONSOLE (terminal + rose), pas celle du setup.
-# C'est elle que `setup_core` pose comme profil Windows Terminal et raccourci.
-cp "$RACINE/installateur/assets/rose_shell.ico" "$STAGE/rose_app.ico"
+# ⚠⚠ CORRECTION DU 16/11 : `rose_app.ico` (profil Windows Terminal, raccourci)
+# est le LOGO DE BASE (`rose.ico`), plus la fenêtre de console. `rose_shell.ico`
+# ne va que sur `rose-shell.exe` / `rose-aot.exe`, via leurs `.rc`.
+cp "$RACINE/installateur/assets/rose.ico" "$STAGE/rose_app.ico"
 # L'icône de l'INSTALLEUR reste disponible dans la distribution : elle est
 # liée dans `rose-setup.exe` (via rose-setup.res) et sert à l'Explorateur.
 cp "$RACINE/installateur/assets/rose_setup.ico" "$STAGE/rose_setup.ico"

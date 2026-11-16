@@ -1,15 +1,19 @@
 // Ressources de l'exécutable `rose.exe` (le MOTEUR).
 //
-// RT_ICON 1..n + RT_GROUP_ICON 1 : `rose_shell.ico`, l'icône de CONSOLE
-// (fenêtre de terminal avec l'invite et une rose en médaillon).
+// RT_ICON 1..n + RT_GROUP_ICON 1 : `rose_base.ico` — le LOGO DE BASE de Rose
+// (la rose), identique à `installateur/assets/rose.ico`.
 //
-// C'est l'icône de `rose.exe` lui-même : dans l'Explorateur, dans la barre
-// des tâches, dans Alt+Tab et — surtout — sur la fenêtre de CONSOLE qui
-// s'ouvre quand on double-clique un fichier `.rose` (le fichier garde pour
-// lui `rose.ico`, l'icône de TYPE DE FICHIER, posée par l'association).
+// ⚠⚠ CORRECTION DU 16/11 : `rose.exe` portait `rose_shell.ico` (la fenêtre de
+// terminal avec une rose en médaillon). C'était une erreur de ma part :
+// l'utilisateur veut le LOGO DE BASE sur le moteur, comme avant.
 //
-// ⚠ L'icône de CONSOLE n'est pas celle du setup : une fenêtre de terminal
-// avec une rose dit « ici on tape du Rose », alors que le setup dit « ici on
-// installe Rose ». Elles étaient identiques avant cette séparation.
+// Les trois rôles sont maintenant :
+//   `rose_base.ico`  → rose.exe       (le logo Rose)
+//   `rose_shell.ico` → rose-shell.exe (la console : terminal + invite)
+//   `rose_setup.ico` → rose-setup.exe (la boîte d'installation)
+//
+// ⚠ `rose_base.ico` est une COPIE de `installateur/assets/rose.ico` placée
+// dans `rose/` : `build.rs` tourne avec `rose/` pour répertoire courant,
+// `llvm-windres` résout donc `rose_base.ico` relativement à `rose/`.
 
-1 ICON "rose_shell.ico"
+1 ICON "rose_base.ico"

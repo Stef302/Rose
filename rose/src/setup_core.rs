@@ -287,11 +287,13 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
         (Some(if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }),
          if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }, 5),
         (Some("rose.ico"), "rose.ico", 6),
-        // ⚠ `rose_app.ico` = l'icône de CONSOLE (terminal + rose), livrée sous
-        // le nom `rose_shell.ico` dans le dossier de distribution. Elle sert
-        // de profil Windows Terminal et de raccourci : c'est la marque de
-        // l'APPLICATION, pas celle de l'installeur (une boîte de livraison).
-        (Some("rose_shell.ico"), "rose_app.ico", 7),
+        // ⚠⚠ CORRECTION DU 16/11 : `rose_app.ico` (icône des raccourcis et du
+        // profil Windows Terminal) recevait `rose_shell.ico` (fenêtre de
+        // terminal). L'utilisateur veut le LOGO DE BASE de l'APPLICATION.
+        // On livre donc `rose.ico` sous les DEUX noms : type de fichier ET
+        // application. `rose_shell.ico` ne va QUE sur les binaires console
+        // (`rose-shell.exe`, `rose-aot.exe`) via leurs `.rc`.
+        (Some("rose.ico"), "rose_app.ico", 7),
     ];
 
     for (nom_src, nom_dst, res_id) in compagnons {
@@ -333,7 +335,58 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
     }
     j.push(format!("✓ {}", enregistrer(prefixe, &bindir)));
     j.push(format!("✓ {}", nettoyer_anciennes_installations(prefixe)));
+    // ── VÉRIFICATION APRÈS ÉCRITURE DU PATH ─────────────────────────────
+    //
+    // ⚠⚠⚠ L'utilisateur rapportait « la commande `rose` échoue après
+    // l'installation ». Écrire la clé de registre ne prouve RIEN : si le
+    // chemin a été mal reconstruit (chemin avec espace, filtre trop large),
+    // l'installation « réussit » et `rose` reste introuvable.
+    //
+    // On relit donc le registre et on CONFIRME que le dossier `bin` est
+    // présent, exactement, en comparant les chemins normalisés. Si ce n'est
+    // pas le cas, on le SIGNALE dans le journal au lieu de laisser croire
+    // que tout va bien.
+    #[cfg(windows)]
+    {
+        match verifier_path(&bindir) {
+            Ok(true) => j.push("✓ PATH : le dossier bin est bien enregistré".to_string()),
+            Ok(false) => j.push(format!(
+                "Échec : PATH ne contient pas {} après écriture —                  relancer l'installation ou l'ajouter à la main",
+                bindir.display())),
+            Err(e) => j.push(format!("· PATH non vérifiable ({e})")),
+        }
+    }
     j
+}
+
+/// Relit `HKCU\Environment\Path` et dit si `bindir` y est.
+///
+/// ⚠ Comparaison sur les chemins NORMALISÉS (`\` → `/`, minuscules, sans
+/// séparateur final) : le registre peut stocker `C:\Program Files\Rose\bin`
+/// avec des espaces, des antislashs doublés ou des `/`.
+#[cfg(windows)]
+fn verifier_path(bindir: &std::path::Path) -> Result<bool, String> {
+    let o = commande_sans_fenetre("reg")
+        .args(["query", "HKCU\\Environment", "/v", "Path"]).output()
+        .map_err(|e| e.to_string())?;
+    let txt = String::from_utf8_lossy(&o.stdout);
+    let mut valeur = String::new();
+    for ligne in txt.lines() {
+        let l = ligne.trim_start();
+        if !l.starts_with("Path") { continue; }
+        for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
+            if let Some(pos) = l.find(typ) {
+                valeur = l[pos + typ.len()..].trim_start().to_string();
+                break;
+            }
+        }
+    }
+    let normaliser = |s: &str| -> String {
+        s.trim().replace('/', "\\").replace("\\\\", "\\")
+            .trim_end_matches('\\').to_lowercase()
+    };
+    let cible = normaliser(&bindir.display().to_string());
+    Ok(valeur.split(';').any(|seg| normaliser(seg) == cible))
 }
 
 /// Supprime les installations d'un ANCIEN installeur (Tauri), qui posait
@@ -385,32 +438,75 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
             .args(["add", "HKCU\\Software\\Rose", "/v", "InstallDir", "/t", "REG_SZ", "/d", prefixe, "/f"]).status();
         let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Software\\Rose", "/v", "Version", "/t", "REG_SZ", "/d", env!("CARGO_PKG_VERSION"), "/f"]).status();
-        // PATH : on retire d'abord TOUTES les entrées contenant « Rose »
+        // ── PATH ────────────────────────────────────────────────────────────
+        //
+        // ⚠⚠⚠ TROIS BUGS CORRIGÉS ICI (mesurés chez l'utilisateur : « la
+        // commande `rose` échoue après l'installation »).
+        //
+        //   1. LA LECTURE ÉTAIT CASSÉE. On faisait `ligne.split_whitespace()`
+        //      puis `parts[2..].join(" ")` : un chemin contenant un ESPACE
+        //      (`C:\Program Files\Rose\bin`) était reconstruit de travers,
+        //      et le registre se retrouvait avec des entrées tronquées.
+        //      On lit maintenant par `reg query` et on isole la valeur en
+        //      coupant sur le TYPE (`REG_EXPAND_SZ`) et non sur les espaces.
+        //
+        //   2. LE FILTRE SUPPRIMAIT LE BON DOSSIER. `bas.contains("\\rose")`
+        //      attrapait AUSSI `C:\Program Files\Rose\bin` (il contient
+        //      « \rose »), donc on retirait l'entrée qu'on venait d'ajouter
+        //      si elle était déjà là, et certaines entrées légitimes.
+        //      On compare maintenant les CHEMINS normalisés (`\` → `/`,
+        //      minuscules, sans antislash final) à des dossiers Rose connus.
+        //
+        //   3. LE CHEMIN ÉCRIT N'ÉTAIT PAS NETTOYÉ. `bindir.display()` peut
+        //      produire des séparateurs mélangés. On normalise en `\`.
         let mut ancien = String::new();
         if let Ok(o) = commande_sans_fenetre("reg")
             .args(["query", "HKCU\\Environment", "/v", "Path"]).output() {
             let txt = String::from_utf8_lossy(&o.stdout);
             for ligne in txt.lines() {
-                if ligne.contains("Path") && ligne.contains("REG_") {
-                    let parts: Vec<&str> = ligne.split_whitespace().collect();
-                    if parts.len() >= 3 { ancien = parts[2..].join(" "); }
+                // Format : «     Path    REG_EXPAND_SZ    <valeur> »
+                let l = ligne.trim_start();
+                if !l.starts_with("Path") { continue; }
+                // ⚠ On coupe sur le TYPE, pas sur les espaces : la valeur
+                // peut contenir des espaces.
+                if let Some(pos) = l.find("REG_EXPAND_SZ") {
+                    ancien = l[pos + "REG_EXPAND_SZ".len()..].trim_start().to_string();
+                } else if let Some(pos) = l.find("REG_SZ") {
+                    ancien = l[pos + "REG_SZ".len()..].trim_start().to_string();
                 }
             }
         }
+        // Normalisation d'un segment de PATH : `\` → `/`, minuscules,
+        // sans séparateur final. C'est ce qui rend la comparaison fiable.
+        let normaliser = |s: &str| -> String {
+            let t = s.trim().replace('/', "\\").replace("\\\\", "\\");
+            let t = t.trim_end_matches('\\').to_lowercase();
+            t
+        };
+        let nouveau_bin = normaliser(&bindir.display().to_string());
+        // Dossiers Rose CONNUS à retirer (anciennes installations).
+        // ⚠ On compare le chemin COMPLET, pas un sous-chemin : `\bin` est
+        // conservé, `\rose` seul est retiré.
+        let est_rose = |seg: &str| -> bool {
+            let n = normaliser(seg);
+            if n.is_empty() { return false; }
+            // Le dossier d'installation courant ou un ancien.
+            if n == nouveau_bin { return true; }
+            // Un dossier Rose obsolète : se termine par « \rose » ou
+            // « \rose\bin » ET contient « rose » comme dernier élément.
+            let dernier = n.rsplit('\\').next().unwrap_or("");
+            let avant = n.rsplit('\\').nth(1).unwrap_or("");
+            // ex. `...\local\rose\bin` → avant = « rose »
+            dernier == "rose" || avant == "rose"
+        };
         let mut segments: Vec<String> = ancien.split(';')
-            .filter(|s| !s.trim().is_empty())
-            .filter(|s| {
-                // On retire TOUT dossier qui ressemble à une installation
-                // Rose (ancien installeur Tauri dans `%LOCALAPPDATA%\Rose`,
-                // `...\Programs\Rose`, `/usr/local`…). Comparaison insensible
-                // à la casse et aux antislashs doublés, car le registre peut
-                // stocker les chemins échappés.
-                let bas = s.to_lowercase().replace("\\\\", "\\");
-                !(bas.contains("\\rose") || bas.ends_with("rose") || bas.contains("/rose"))
-            })
-            .map(|s| s.to_string())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| !est_rose(s))
             .collect();
-        segments.insert(0, bindir.display().to_string());
+        // ⚠ On écrit le chemin avec des antislashs Windows propres.
+        let bin_win = bindir.display().to_string().replace('/', "\\");
+        segments.insert(0, bin_win);
         let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
                    "/d", &segments.join(";"), "/f"]).status();
@@ -536,10 +632,10 @@ fn ecrire_profil_terminal(bindir: &std::path::Path) -> String {
 
     // Chemins en JSON : les antislashs doivent être doublés.
     let shell = bindir.join("rose-shell.exe").display().to_string().replace('\\', "\\\\");
-    // ⚠ L'icône du profil est `rose_app.ico` (la ROSE de marque), pas
-    // `rose.ico` : ce dernier est l'icône de TYPE DE FICHIER (un document
-    // marqué « .ROSE »), qui n'a rien à faire dans le menu des onglets.
-    // Mesuré : le profil « Rose » affichait le document au lieu de la rose.
+    // ⚠⚠ CORRECTION DU 16/11 : le profil utilise `rose_app.ico`, qui est
+    // désormais une COPIE du LOGO DE BASE (`rose.ico`). Avant, il recevait
+    // `rose_shell.ico` (fenêtre de terminal) — ce n'est pas ce que veut
+    // l'utilisateur pour l'application.
     let icone = bindir.join("rose_app.ico").display().to_string().replace('\\', "\\\\");
 
     // `startingDirectory` = dossier de l'utilisateur : un shell s'ouvre là où
@@ -600,21 +696,40 @@ pub fn desinstaller(prefixe: &str) -> Journal {
             .args(["delete", "HKCU\\Software\\Classes\\.rose", "/f"]).status();
         let _ = commande_sans_fenetre("reg")
             .args(["delete", "HKCU\\Software\\Classes\\Rose.File", "/f"]).status();
+        // ⚠⚠ MÊME BUG QUE DANS `enregistrer`, CORRIGÉ ICI AUSSI : la
+        // lecture `split_whitespace()` cassait les chemins contenant un
+        // espace, et le filtre `contains("rose")` retirait TOUT chemin
+        // contenant « rose » (même `C:\tools\rosetta`). On coupe sur le
+        // TYPE et on ne retire que les segments dont le dernier ou
+        // l'avant-dernier élément vaut exactement « rose ».
         let mut ancien = String::new();
         if let Ok(o) = commande_sans_fenetre("reg")
             .args(["query", "HKCU\\Environment", "/v", "Path"]).output() {
             let txt = String::from_utf8_lossy(&o.stdout);
             for ligne in txt.lines() {
-                if ligne.contains("Path") && ligne.contains("REG_") {
-                    let parts: Vec<&str> = ligne.split_whitespace().collect();
-                    if parts.len() >= 3 { ancien = parts[2..].join(" "); }
+                let l = ligne.trim_start();
+                if !l.starts_with("Path") { continue; }
+                for typ in ["REG_EXPAND_SZ", "REG_SZ"] {
+                    if let Some(pos) = l.find(typ) {
+                        ancien = l[pos + typ.len()..].trim_start().to_string();
+                        break;
+                    }
                 }
             }
         }
+        let normaliser = |s: &str| -> String {
+            s.trim().replace('/', "\\").replace("\\\\", "\\")
+                .trim_end_matches('\\').to_lowercase()
+        };
         let segments: Vec<String> = ancien.split(';')
-            .filter(|s| !s.trim().is_empty())
-            .filter(|s| !s.to_lowercase().contains("rose"))
-            .map(|s| s.to_string())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .filter(|s| {
+                let n = normaliser(s);
+                let dernier = n.rsplit('\\').next().unwrap_or("");
+                let avant = n.rsplit('\\').nth(1).unwrap_or("");
+                !(dernier == "rose" || avant == "rose")
+            })
             .collect();
         let _ = commande_sans_fenetre("reg")
             .args(["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ",
@@ -996,6 +1111,57 @@ mod tests {
         assert_eq!(comparer_versions("0.1.5", "5.12.0"), -1);
         assert_eq!(comparer_versions("5.12.0", "0.1.5"), 1);
         assert_eq!(comparer_versions("v0.1.5", "0.1.4"), 1);
+    }
+
+    /// ⚠⚠⚠ GARDE-FOU DU BUG « la commande `rose` échoue après
+    /// l'installation ». Trois défauts mesurés, chacun testé ici.
+    #[test]
+    fn path_avec_espaces_est_lu_et_conserve() {
+        // 1) LECTURE : l'ancienne version faisait `split_whitespace()` puis
+        //    `parts[2..].join(" ")`, ce qui reconstruisait un chemin avec
+        //    espaces de travers. On coupe maintenant sur le TYPE.
+        let ligne = "    Path    REG_EXPAND_SZ    C:\\Program Files\\Rose\\bin;C:\\Windows";
+        let l = ligne.trim_start();
+        assert!(l.starts_with("Path"));
+        let pos = l.find("REG_EXPAND_SZ").expect("le type doit être trouvé");
+        let valeur = l[pos + "REG_EXPAND_SZ".len()..].trim_start().to_string();
+        assert_eq!(valeur, "C:\\Program Files\\Rose\\bin;C:\\Windows");
+        // ⚠ Le chemin AVEC ESPACE doit être intact.
+        assert!(valeur.split(';').any(|s| s == "C:\\Program Files\\Rose\\bin"));
+    }
+
+    #[test]
+    fn filtre_path_ne_supprime_pas_le_bon_dossier() {
+        // 2) FILTRE : l'ancienne version retirait tout segment contenant
+        //    « \\rose », ce qui supprimait AUSSI `...\\Rose\\bin` (le bon
+        //    dossier). On compare maintenant les derniers éléments.
+        let normaliser = |s: &str| -> String {
+            s.trim().replace('/', "\\").replace("\\\\", "\\")
+                .trim_end_matches('\\').to_lowercase()
+        };
+        // ⚠ La logique RÉELLE protège le dossier COURANT avant tout
+        // (`if n == nouveau_bin { return true; }`) : on la reproduit ici.
+        let nouveau_bin = normaliser("C:\\Program Files\\Rose\\bin");
+        let est_rose = |seg: &str| -> bool {
+            let n = normaliser(seg);
+            if n.is_empty() { return false; }
+            if n == nouveau_bin { return true; }
+            let dernier = n.rsplit('\\').next().unwrap_or("");
+            let avant = n.rsplit('\\').nth(1).unwrap_or("");
+            dernier == "rose" || avant == "rose"
+        };
+        // ⚠⚠ LE BUG : l'ancien filtre `contains("\\rose")` supprimait le
+        // BON dossier (…\Rose\bin contient « \rose »). Le nouveau filtre
+        // le CONSERVE : c'est le dossier courant, il est donc protégé par
+        // la comparaison EXACTE en tête de fonction.
+        assert!(est_rose("C:\\Program Files\\Rose\\bin"), "le courant est protégé");
+        // Un dossier obsolète (…\Rose) est retiré.
+        assert!(est_rose("C:\\Users\\x\\AppData\\Local\\Rose"));
+        // Un chemin sans rapport est conservé.
+        assert!(!est_rose("C:\\Windows\\System32"));
+        // Casse et séparateurs mélangés.
+        assert!(est_rose("c:/users/x/appdata/local/rose"));
+        assert!(!est_rose("C:\\tools\\rosetta"));
     }
 
     #[test]

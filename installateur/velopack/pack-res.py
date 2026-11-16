@@ -55,9 +55,11 @@ WOFF2 = RACINE / "docs" / "assets" / "fonts" / "kare" / "Kare.woff2"
 # avec la rose (convertie depuis `icone_installeur.svg`).
 #
 # ⚠ Trois icônes, trois rôles — ne pas les confondre :
-#   `rose.ico`       = TYPE DE FICHIER (document marqué « .ROSE ») ;
-#   `rose_shell.ico` = CONSOLE (terminal + invite + rose), pour rose.exe,
-#                      rose-shell.exe et rose-aot.exe ;
+#   `rose.ico`       = TYPE DE FICHIER (document « .ROSE ») **et** LOGO DE
+#                      BASE de l'APPLICATION (raccourcis, barre des tâches) ;
+#   `rose_shell.ico` = CONSOLE (terminal + invite + rose), pour
+#                      rose-shell.exe et rose-aot.exe SEULEMENT — plus
+#                      jamais sur rose.exe (correction du 16/11) ;
 #   `rose_setup.ico` = INSTALLEUR (boîte + flèches), pour Rose-win-Setup.exe
 #                      et la fenêtre de l'assistant.
 ICO = RACINE / "installateur" / "assets" / "rose_setup.ico"
@@ -72,10 +74,15 @@ MOTEUR = _REL / "rose.exe"
 # et `link` et télécharge à la demande le vrai helper LLVM.
 SHELL = _REL / "rose-shell.exe"
 # Icônes à poser dans `bin\` : `rose.ico` sert au TYPE DE FICHIER `.rose`
-# (association Windows), `rose_shell.ico` devient `rose_app.ico` (icône de
-# l'APPLICATION, posée sur les raccourcis et le profil Windows Terminal).
+# (association Windows) ET devient `rose_app.ico` (icône de l'APPLICATION :
+# raccourcis, profil Windows Terminal, barre des tâches).
 ICONE_FICHIER = RACINE / "installateur" / "assets" / "rose.ico"
-ICONE_APP = RACINE / "installateur" / "assets" / "rose_shell.ico"
+# ⚠⚠ CORRECTION DU 16/11 : `rose_app.ico` portait `rose_shell.ico` (fenêtre de
+# terminal). L'utilisateur veut le LOGO DE BASE sur l'APPLICATION (raccourcis,
+# profil Windows Terminal, barre des tâches) — donc `rose.ico`.
+# `rose_shell.ico` reste UNIQUEMENT sur les binaires console `rose-shell.exe`
+# et `rose-aot.exe` (via leurs `.rc`).
+ICONE_APP = RACINE / "installateur" / "assets" / "rose.ico"
 SORTIE = RACINE / "rose" / "rose-setup.res"
 
 # Identifiants des ressources RT_RCDATA embarquées. Ils doivent rester
@@ -85,7 +92,7 @@ RCDATA_MOTEUR = 3   # rose.exe
 # L'id 4 (anciennement rose-aot.exe) est LIBRE : ne pas le réutiliser.
 RCDATA_SHELL = 5        # rose-shell.exe
 RCDATA_ICO_FICHIER = 6  # rose.ico  (type de fichier .rose)
-RCDATA_ICO_APP = 7      # rose_shell.ico (application / console)
+RCDATA_ICO_APP = 7      # rose.ico (application : logo de base)
 
 # Langue des ressources : 1033 = en-US, la valeur qu'émet `llvm-rc`/`rc.exe`.
 LANGUE = 1033

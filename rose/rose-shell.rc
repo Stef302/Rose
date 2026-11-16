@@ -1,8 +1,11 @@
 // Ressources du binaire `rose-shell.exe` (console interactive autonome).
 //
-// Même icône que `rose.exe` : `rose_shell.ico`, la fenêtre de terminal avec
-// l'invite et la rose. C'est cohérent — `rose-shell` EST une console Rose —
-// et cela évite que l'onglet Windows Terminal affiche l'icône du setup.
+// `rose_shell.ico` : la fenêtre de terminal avec l'invite et la rose.
+// C'est cohérent — `rose-shell` EST une console Rose.
+//
+// ⚠⚠ CORRECTION DU 16/11 : `rose.exe` (le moteur) ne porte PLUS cette icône ;
+// il porte le LOGO DE BASE (`rose_base.ico`). `rose_shell.ico` est réservée
+// aux binaires CONSOLE : `rose-shell.exe` et `rose-aot.exe`.
 //
 // ⚠ Auparavant, `rose-shell.exe` recevait `rose.res` (donc `setup.ico`, la
 // boîte d'installation) : dans Windows Terminal, un onglet de console Rose

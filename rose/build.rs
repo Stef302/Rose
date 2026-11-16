@@ -60,9 +60,13 @@ fn main() {
         // Windows Terminal, un onglet de console Rose affichait une boîte de
         // livraison, et `rose.exe` — le moteur, une CONSOLE — montrait la même
         // icône que l'installeur. Trois fichiers, trois rôles :
-        //   rose.rc       → rose.exe       (console + rose)
-        //   rose-shell.rc → rose-shell.exe (console + rose)
-        //   rose-aot.rc   → rose-aot.exe   (console + rose)
+        //   rose.rc       → rose.exe       (LOGO DE BASE, la rose)
+        //   rose-shell.rc → rose-shell.exe (console : terminal + invite)
+        //   rose-aot.rc   → rose-aot.exe   (console : terminal + invite)
+        //
+        // ⚠⚠ CORRECTION : `rose.exe` portait `rose_shell.ico`. C'était une
+        // erreur — le moteur doit porter le LOGO DE BASE (`rose_base.ico`,
+        // copie de `installateur/assets/rose.ico`), comme avant.
         // L'installeur reçoit `rose-setup.res` (icône de setup + ressources).
         for (bin, rc_name, res_name) in [
             ("rose", "rose.rc", "rose.res"),
