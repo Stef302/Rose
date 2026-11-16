@@ -25,7 +25,6 @@ pub fn hors_plage() -> ! { erreur_runtime("entier hors plage"); }
 // séquentiel (zéro clonage profond), puis on réitère sur les milieux.
 // 1 000 000 ! (5 565 709 chiffres) ≈ 0,9 s, multi-cœur, pur Rust, sans FFI.
 pub fn factorielle_parallele(n: u64) -> Gz {
-    use std::thread;
     let r = Gz::neuf();
     if n < 2 { r.poser_u64(1); return r; }
     if n <= 1000 {
@@ -46,7 +45,7 @@ pub fn factorielle_parallele(n: u64) -> Gz {
         }
         i += 1;
     }
-    // p^e_p (Légendre + exponentiation binaire), criblés par tranches.
+    // p^e_p (Légendre + exponentiation binaire).
     fn pow_big(p: u64, e: u64) -> BigInt {
         let mut base = BigInt::from(p);
         let mut res = BigInt::from(1u64);
@@ -58,17 +57,22 @@ pub fn factorielle_parallele(n: u64) -> Gz {
         }
         res
     }
-    // Arbre séquentiel équilibré. ⚠ On opère EN PLACE et on passe par
-    // `mul_rapide::mul` : c'est lui qui bascule sur la NTT pour les nombres
-    // au-delà de 16,4 millions de bits (les seuls où elle bat `num-bigint`,
-    // mesuré). En dessous, `mul_rapide::mul` délègue à `num-bigint` : aucun
-    // surcoût, c'est exactement la même opération.
-    fn arbre_seq(v: &mut Vec<BigInt>) {
+    let premiers: Vec<u64> = (2..=n).filter(|&p| est_premier[p as usize]).collect();
+    let facteurs: Vec<BigInt> = calculer_puissances(&premiers, n);
+
+    // WebAssembly : PAS de threads (aucun `thread::spawn` ni
+    // `available_parallelism` fiable ; en WASM, lancer un fil de travail
+    // fait échouer/traper l'appel, ce qui rendait `2000!` inaccessible
+    // dans le playground alors que le natif va à `1000000!`).
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut facteurs = facteurs;
+        let mut v = facteurs.drain(..).collect::<Vec<_>>();
+        // Arbre séquentiel équilibré.
         while v.len() > 1 {
             let m = v.len();
             let mut i = 0usize;
             while i + 1 < m {
-                // `i/2 ≤ i` : la case cible a déjà été consommée.
                 let p = crate::mul_rapide::mul(&v[i], &v[i + 1]);
                 v[i / 2] = p;
                 i += 2;
@@ -76,36 +80,44 @@ pub fn factorielle_parallele(n: u64) -> Gz {
             if m % 2 == 1 { v[(m - 1) / 2] = v[m - 1].clone(); }
             v.truncate((m + 1) / 2);
         }
+        r.set_v(v.into_iter().next().unwrap());
+        return r;
     }
-    // niveau parallèle : tri desc par poids, distribution gloutonne au cœur
-    // le moins chargé, broyage séquentiel par cœur.
-    fn niveau_par(v: &mut Vec<BigInt>, coeurs: usize) {
-        use std::thread;
-        v.sort_by_key(|x| std::cmp::Reverse(x.bits()));
-        let mut buckets: Vec<(u64, Vec<BigInt>)> = (0..coeurs).map(|_| (0u64, Vec::new())).collect();
-        for x in v.drain(..) {
-            let b = buckets.iter_mut().min_by_key(|(s, _)| *s).unwrap();
-            b.0 += x.bits();
-            b.1.push(x);
-        }
-        let mids: Vec<BigInt> = thread::scope(|s| {
-            let hs: Vec<_> = buckets.into_iter()
-                .map(|(_, mut lot)| s.spawn(move || {
-                    arbre_seq(&mut lot);
-                    std::mem::replace(&mut lot[0], BigInt::from(0u64))
-                }))
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap()).collect()
-        });
-        *v = mids;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // ⚠⚠ L'ARBRE ÉQUILIBRÉ (fusion des deux plus petits) est dans
+        // `arbre_produit`. L'AUTRE VERSION (fusion par paires adjacentes,
+        // cœur le moins chargé) était MESURÉE 1,88× PLUS LENTE : elle
+        // gardait le facteur 2^999994 (1 Mbit) en tête pendant tout
+        // l'arbre, si bien que les niveaux successifs mesuraient 1 Mbit
+        // puis 18,2 Mbit.
+        let a = arbre_produit(facteurs); r.set_v(a.v());
+        r
     }
+}
 
-    // ⚠⚠ PARALLÉLISATION DES PUISSANCES TESTÉE ET REJETÉE (mesuré : 904–941
-    // ms avec, 906–920 ms sans — aucun gain net). Les p^e ne pèsent que
-    // quelques dizaines de ms sur 900 ; le temps est dans l'ARBRE de
-    // produit, pas dans leur calcul. On garde donc le séquentiel, plus
-    // simple.
-    let facteurs: Vec<BigInt> = (2..=n).filter(|&p| est_premier[p as usize]).map(|p| {
+/// ⚠⚠ CALCUL DES PUISSANCES p^e EN PARALLÈLE.
+///
+/// Pour n = 1 000 000 il y a 78 498 puissances à calculer ; en séquentiel
+/// elles coûtent 39 ms (mesuré) — soit ~10 % du temps total de `1 000 000!`.
+/// Chaque puissance est indépendante : on répartit donc les nombres
+/// premiers entre les cœurs.
+///
+/// ⚠ L'ordre des facteurs n'a pas d'importance : l'arbre les trie de toute
+/// façon.
+fn calculer_puissances(premiers: &[u64], n: u64) -> Vec<BigInt> {
+    fn pow_big(p: u64, e: u64) -> BigInt {
+        let mut base = BigInt::from(p);
+        let mut res = BigInt::from(1u64);
+        let mut ee = e;
+        while ee > 0 {
+            if ee & 1 == 1 { res *= &base; }
+            ee >>= 1;
+            if ee > 0 { base = &base * &base; }
+        }
+        res
+    }
+    let puissance = |p: u64| -> BigInt {
         let mut e = 0u64;
         let mut q = p;
         while q <= n {
@@ -114,30 +126,27 @@ pub fn factorielle_parallele(n: u64) -> Gz {
             q *= p;
         }
         pow_big(p, e)
-    }).collect();
-
-    // WebAssembly : PAS de threads (aucun `thread::spawn` ni
-    // `available_parallelism` fiable ; en WASM, lancer un fil de travail
-    // fait échouer/traper l'appel, ce qui rendait `2000!` inaccessible
-    // dans le playground alors que le natif va à `1000000!`). On broie donc
-    // l'arbre SÉQUENTIEL équilibré, qui ne dépend d'aucun fil.
+    };
     #[cfg(target_arch = "wasm32")]
     {
-        let mut v = facteurs;
-        arbre_seq(&mut v);
-        r.set_v(v.into_iter().next().unwrap());
-        return r;
+        return premiers.iter().map(|&p| puissance(p)).collect();
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).min(8);
-        let mut v = facteurs;
-        while v.len() > coeurs.max(2) * 2 {
-            niveau_par(&mut v, coeurs);
+        let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        if coeurs < 2 || premiers.len() < 256 {
+            return premiers.iter().map(|&p| puissance(p)).collect();
         }
-        arbre_seq(&mut v);
-        r.set_v(v.into_iter().next().unwrap());
-        r
+        let tranche = (premiers.len() + coeurs - 1) / coeurs;
+        let morceaux: Vec<Vec<u64>> = premiers.chunks(tranche).map(|c| c.to_vec()).collect();
+        let mut tous: Vec<BigInt> = Vec::with_capacity(premiers.len());
+        std::thread::scope(|s| {
+            let hs: Vec<_> = morceaux.into_iter().map(|m| s.spawn(move || {
+                m.into_iter().map(puissance).collect::<Vec<BigInt>>()
+            })).collect();
+            for h in hs { tous.extend(h.join().unwrap()); }
+        });
+        tous
     }
 }
 
@@ -243,10 +252,17 @@ fn fusionner_par(mut facteurs: Vec<BigInt>, coeurs: usize) -> BigInt {
             paires.push((a, b));
             i += 2;
         }
+        // ⚠⚠⚠ RÉPARTITION DES FILS ENTRE LES PAIRES. Mesuré : avec 1 fil par
+        // paire, les tours où il ne reste que 2-3 paires n'utilisent que
+        // 2-3 cœurs sur 20 — et les multiplications LOURDES (celles qui
+        // passent par la NTT) sont précisément dans ces tours. On donne donc
+        // à chaque paire `coeurs / nombre_de_paires` fils (au moins 1).
+        let n_paires = paires.len().max(1);
+        let fils = (coeurs / n_paires).max(1);
         let mut resultats: Vec<BigInt> = Vec::with_capacity(k / 2 + 1);
         std::thread::scope(|s| {
             let hs: Vec<_> = paires.into_iter()
-                .map(|(a, b)| s.spawn(move || crate::mul_rapide::mul_par(&a, &b, 1)))
+                .map(|(a, b)| s.spawn(move || crate::mul_rapide::mul_par(&a, &b, fils)))
                 .collect();
             for h in hs { resultats.push(h.join().unwrap()); }
         });

@@ -120,20 +120,18 @@ pub fn mul_par(a: &BigInt, b: &BigInt, fils: usize) -> BigInt {
     //
     // ⚠⚠ SEUIL BALAYÉ SUR L'ARBRE RÉEL de 1 000 000! (mesuré) :
     //
-    //   1,02 M bits → 787 ms    2,05 M → 549 ms    3,07 M → 502 ms
-    //   4,10 M bits → 497 ms  ←  5,12 M → 650 ms    6,14 M → 656 ms
-    //   8,19 M → 664 ms         16,4 M → 912 ms
+    //   0,26 M bits → 252 ms    0,52 M → 252 ms    0,79 M → 244 ms
+    //   1,02 M bits → 260 ms ←  1,54 M → 249 ms    3,07 M → 307 ms
     //
-    // Le seuil est descendu de 16,4 M à 4,1 M bits parce que la NTT a été
-    // RÉÉCRITE (Montgomery + DIF/DIT + parallélisation) : elle est ~2,4×
-    // plus rapide qu'avant et ~3,3× plus rapide encore en parallèle.
+    // Au-delà d'environ 1,5 M bits, l'arbre s'appesantit : les nœuds de
+    // cette taille passent à `num-bigint` (Toom-3 mono-fils) et la NTT
+    // parallèle n'est plus mobilisée. En dessous, la NTT est plus rapide
+    // mais ses COÛTS FIXES (conversion en u32, table de racines, création
+    // des fils) commencent à dominer.
     //
-    // ⚠ Pourquoi 4,1 M et pas le point de bascule ISOLÉ (32 000 limbs,
-    // soit 1,02 M bits, où la NTT bat `num-bigint` de 1,2×) : dans l'arbre
-    // réel, les nœuds de cette taille sont NOMBREUX et la conversion
-    // (`to_u32_digits`) coûte ; en dessous de 4,1 M bits, on mesure 787 ms
-    // contre 497 ms. Le seuil se cale sur l'ARBRE, pas sur un couple isolé.
-    const SEUIL_NTT_BITS: u64 = 4_096_000;
+    // 1,02 M bits = 32 000 limbs : c'est exactement le point de bascule
+    // ISOLÉ mesuré (la NTT parallèle y bat `num-bigint` de 1,2×).
+    const SEUIL_NTT_BITS: u64 = 1_024_000;
     if a.bits().max(b.bits()) >= SEUIL_NTT_BITS {
         let signe = if a.sign() == b.sign() { Sign::Plus } else { Sign::Minus };
         let x = a.magnitude().to_u32_digits();
@@ -700,76 +698,96 @@ fn fils_ntt(n: usize) -> usize {
     coeurs.min(n / 2).max(1)
 }
 
-/// Une transformée (directe ou inverse) parallèle sur `threads` fils.
+/// Une transformée (directe ou inverse) EXÉCUTÉE PAR UN SEUL FIL, dans un
+/// cadre où les autres fils travaillent sur la MÊME tableau.
 ///
-/// ⚠ `unsafe` : les écritures sont prouvées disjointes (voir le commentaire
-/// ci-dessus sur la monotonie de p1). Le pointeur brut ne sert qu'à
-/// contourner le fait que `&mut` ne peut pas être partagé entre fils.
-fn ntt_par(v: &mut [u64], rac: &Racines, mont: &Mont, inverse: bool, threads: usize) {
-    let n = v.len();
-    if threads <= 1 {
-        if inverse { ntt_dit(v, rac, mont); } else { ntt_dif(v, rac, mont); }
-        return;
-    }
-    use std::sync::{Arc, Barrier};
-    let bar = Arc::new(Barrier::new(threads));
-    let ptr = v.as_mut_ptr();
+/// ⚠⚠⚠ POURQUOI CE DÉCOUPAGE. Mesuré : créer un `thread::scope` de 20 fils
+/// coûte **370 µs**. La NTT faisait 6 scopes (6 transformées) → 2,2 ms de
+/// pure création de fils par multiplication. Sur l'arbre de `1 000 000!`
+/// (≈ 40 multiplications au-dessus du seuil), cela représente ~88 ms
+/// perdus — un tiers du temps total !
+///
+/// On crée donc UN SEUL scope par multiplication, et les 6 transformées
+/// (2 directes + 1 inverse, pour 2 modules) s'enchaînent à l'intérieur,
+/// séparées par des barrières.
+///
+/// Le découpage en « étapes » permet à plusieurs fils de travailler sur le
+/// MÊME tableau : chaque fil traite une plage d'indices de papillon
+/// distincte (voir la preuve de disjointivité ci-dessus).
+fn ntt_etape(ptr: PointeurPartage, n: usize, rac: &Racines, mont: &Mont,
+              inverse: bool, tid: usize, fils: usize, bar: &std::sync::Barrier) {
     let n2 = n / 2;
-    let worker = |tid: usize, ptr: PointeurPartage| {
-        let mut len = if inverse { 2usize } else { n };
-        loop {
-            bar.wait();
-            let half = len / 2;
-            let pas = n2 / half;
-            let lo = n2 * tid / threads;
-            let hi = n2 * (tid + 1) / threads;
-            let mut i = lo;
-            while i < hi {
-                let bloc = i / half;
-                let k0 = i % half;
-                let kend = std::cmp::min(half, k0 + (hi - i));
-                let base = bloc * len;
-                for k in k0..kend {
-                    let p1 = base + k;
-                    let p2 = p1 + half;
-                    // ⚠ SÛR : p1 est strictement croissant en i, donc les
-                    // plages disjointes de i touchent des cases disjointes.
-                    unsafe {
-                        let u = *ptr.0.add(p1);
-                        let w = *ptr.0.add(p2);
-                        if inverse {
-                            let t = mont.mul(w, rac.inverses[k * pas]);
-                            *ptr.0.add(p1) = mont.add(u, t);
-                            *ptr.0.add(p2) = mont.sub(u, t);
-                        } else {
-                            *ptr.0.add(p1) = mont.add(u, w);
-                            *ptr.0.add(p2) = mont.mul(mont.sub(u, w), rac.directes[k * pas]);
-                        }
+    let mut len = if inverse { 2usize } else { n };
+    loop {
+        bar.wait();
+        let half = len / 2;
+        let pas = n2 / half;
+        let lo = n2 * tid / fils;
+        let hi = n2 * (tid + 1) / fils;
+        let mut i = lo;
+        while i < hi {
+            let bloc = i / half;
+            let k0 = i % half;
+            let kend = std::cmp::min(half, k0 + (hi - i));
+            let base = bloc * len;
+            for k in k0..kend {
+                let p1 = base + k;
+                let p2 = p1 + half;
+                // ⚠ SÛR : p1 est strictement croissant en i, donc les
+                // plages disjointes de i touchent des cases disjointes.
+                unsafe {
+                    let u = *ptr.0.add(p1);
+                    let w = *ptr.0.add(p2);
+                    if inverse {
+                        let t = mont.mul(w, rac.inverses[k * pas]);
+                        *ptr.0.add(p1) = mont.add(u, t);
+                        *ptr.0.add(p2) = mont.sub(u, t);
+                    } else {
+                        *ptr.0.add(p1) = mont.add(u, w);
+                        *ptr.0.add(p2) = mont.mul(mont.sub(u, w), rac.directes[k * pas]);
                     }
                 }
-                i += kend - k0;
             }
-            if inverse {
-                if len == n { break; }
-                len <<= 1;
-            } else {
-                if len == 2 { break; }
-                len >>= 1;
-            }
+            i += kend - k0;
         }
-        bar.wait();
-    };
-    std::thread::scope(|s| {
-        for t in 1..threads {
-            let bar = bar.clone();
-            // ⚠ Le pointeur brut n'est pas `Sync` : on l'encapsule dans un
-            // nouveau type qui l'est. C'est SAFE parce que chaque fil
-            // n'écrit que dans SA plage d'indices (démontré plus haut).
-            let ptr = PointeurPartage(ptr);
-            s.spawn(move || { worker(t, ptr); });
+        if inverse {
+            if len == n { break; }
+            len <<= 1;
+        } else {
+            if len == 2 { break; }
+            len >>= 1;
         }
-        worker(0, PointeurPartage(ptr));
-    });
+    }
+    bar.wait();
+}
+
+/// Produit point à point, partagé entre les fils.
+fn ntt_pointwise(pa: PointeurPartage, pb: PointeurPartage, n: usize, mont: &Mont,
+                 tid: usize, fils: usize) {
+    let lo = n * tid / fils;
+    let hi = n * (tid + 1) / fils;
+    for i in lo..hi {
+        // ⚠ SÛR : chaque fil a sa propre plage d'indices.
+        unsafe {
+            let av = *pa.0.add(i);
+            let bv = *pb.0.add(i);
+            *pa.0.add(i) = mont.mul(av, bv);
+        }
+    }
+}
+
+/// Normalisation (÷ n) ET conversion hors forme Montgomery, partagée.
+fn ntt_normalise(pa: PointeurPartage, n: usize, mont: &Mont, inv_n: u64,
+                 tid: usize, fils: usize) {
+    let lo = n * tid / fils;
+    let hi = n * (tid + 1) / fils;
+    for i in lo..hi {
+        // ⚠ SÛR : chaque fil a sa propre plage d'indices.
+        unsafe {
+            let v = *pa.0.add(i);
+            *pa.0.add(i) = mont.mul(v, inv_n);
+        }
+    }
 }
 
 /// NTT directe — décimation en FREQUENCE (DIF).
@@ -865,26 +883,100 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
     //
     // On garde donc 3 NTT par module (2 directes + 1 inverse), soit 6 au
     // total — c'est le coût incompressible de la méthode.
-    let mut restes: Vec<Vec<u64>> = Vec::with_capacity(2);
+
+    // Préparation des deux modules.
+    let mut monts: Vec<Mont> = Vec::with_capacity(2);
+    let mut racs: Vec<Racines> = Vec::with_capacity(2);
     for &(m, racine) in MODULES.iter() {
         let mont = Mont::nouveau(m);
-        let rac = racines(&mont, racine, n);
-        // ⚠ Conversion en forme Montgomery : REDC(x·R²) = x·R.
-        let mut a: Vec<u64> = x.iter().map(|&v| mont.to_mont(v as u64)).collect();
-        let mut b: Vec<u64> = y.iter().map(|&v| mont.to_mont(v as u64)).collect();
-        a.resize(n, 0);
-        b.resize(n, 0);
-        let fils = if fils == 0 { fils_ntt(n) } else { fils.min(fils_ntt(n)) };
-        ntt_par(&mut a, &rac, &mont, false, fils);
-        ntt_par(&mut b, &rac, &mont, false, fils);
-        for i in 0..n { a[i] = mont.mul(a[i], b[i]); }
-        ntt_par(&mut a, &rac, &mont, true, fils);
-        // ⚠ Normalisation ET conversion hors Montgomery en UNE seule
-        // multiplication : REDC((n·résultat·R)·inv_n) = résultat.
-        let inv_n = inverse_mod(n as u64, m);
-        for i in 0..n { a[i] = mont.mul(a[i], inv_n); }
-        restes.push(a);
+        racs.push(racines(&mont, racine, n));
+        monts.push(mont);
     }
+    // ⚠ Conversion en forme Montgomery : REDC(x·R²) = x·R.
+    let mut a: Vec<Vec<u64>> = Vec::with_capacity(2);
+    let mut b: Vec<Vec<u64>> = Vec::with_capacity(2);
+    for mont in &monts {
+        let mut va: Vec<u64> = x.iter().map(|&v| mont.to_mont(v as u64)).collect();
+        let mut vb: Vec<u64> = y.iter().map(|&v| mont.to_mont(v as u64)).collect();
+        va.resize(n, 0);
+        vb.resize(n, 0);
+        a.push(va);
+        b.push(vb);
+    }
+
+    let fils = if fils == 0 { fils_ntt(n) } else { fils.min(fils_ntt(n)) };
+    if fils <= 1 {
+        // SÉQUENTIEL : pas de fil à créer.
+        for k in 0..2 {
+            let mont = &monts[k];
+            ntt_dif(&mut a[k], &racs[k], mont);
+            ntt_dif(&mut b[k], &racs[k], mont);
+            for i in 0..n { a[k][i] = mont.mul(a[k][i], b[k][i]); }
+            ntt_dit(&mut a[k], &racs[k], mont);
+            let inv_n = inverse_mod(n as u64, mont.m);
+            for i in 0..n { a[k][i] = mont.mul(a[k][i], inv_n); }
+        }
+    } else {
+        use std::sync::{Arc, Barrier};
+        let bar = Arc::new(Barrier::new(fils));
+        let mut tables: Vec<PointeurPartage> = Vec::with_capacity(4);
+        for k in 0..2 {
+            tables.push(PointeurPartage(a[k].as_mut_ptr()));
+        }
+        for k in 0..2 {
+            tables.push(PointeurPartage(b[k].as_mut_ptr()));
+        }
+        // Ordre : [a0, a1, b0, b1] → tables[k] = a du module k,
+        // tables[k+2] = b du module k.
+        std::thread::scope(|sc| {
+            for t in 1..fils {
+                let bar = bar.clone();
+                let tables = tables.clone();
+                let monts = &monts;
+                let racs = &racs;
+                sc.spawn(move || {
+                    for k in 0..2 {
+                        let mont = &monts[k];
+                        let rac = &racs[k];
+                        // 1. NTT directe de a
+                        ntt_etape(tables[k], n, rac, mont,
+                                   false, t, fils, &bar);
+                        // 2. NTT directe de b
+                        ntt_etape(tables[k + 2], n, rac, mont,
+                                   false, t, fils, &bar);
+                        // 3. Produit point à point
+                        bar.wait();
+                        ntt_pointwise(tables[k], tables[k + 2], n, mont, t, fils);
+                        bar.wait();
+                        // 4. NTT inverse de a
+                        ntt_etape(tables[k], n, rac, mont,
+                                   true, t, fils, &bar);
+                        // 5. Normalisation (÷ n) ET conversion hors Montgomery
+                        bar.wait();
+                        let inv_n = inverse_mod(n as u64, mont.m);
+                        ntt_normalise(tables[k], n, mont, inv_n, t, fils);
+                        bar.wait();
+                    }
+                });
+            }
+            // Le fil 0 fait exactement le même travail.
+            for k in 0..2 {
+                let mont = &monts[k];
+                let rac = &racs[k];
+                ntt_etape(tables[k], n, rac, mont, false, 0, fils, &bar);
+                ntt_etape(tables[k + 2], n, rac, mont, false, 0, fils, &bar);
+                bar.wait();
+                ntt_pointwise(tables[k], tables[k + 2], n, mont, 0, fils);
+                bar.wait();
+                ntt_etape(tables[k], n, rac, mont, true, 0, fils, &bar);
+                bar.wait();
+                let inv_n = inverse_mod(n as u64, mont.m);
+                ntt_normalise(tables[k], n, mont, inv_n, 0, fils);
+                bar.wait();
+            }
+        });
+    }
+    let mut restes: Vec<Vec<u64>> = a;
 
     // ── Restes chinois à DEUX modules ──────────────────────────────────
     //
@@ -1432,25 +1524,19 @@ mod tests {
             let besoin = 2 * n;
             let mut lg = 1usize;
             while lg < besoin { lg <<= 1; }
+            // Le CHEMIN RÉEL : `ntt_mul_par` regroupe les 6 transformées
+            // dans UN SEUL scope (création de fils mesurée à 370 µs :
+            // 6 scopes = 2,2 ms perdus par multiplication).
             let t = Instant::now();
-            let mut restes: Vec<Vec<u64>> = Vec::new();
-            for &(m, racine) in MODULES.iter() {
-                let mont = Mont::nouveau(m);
-                let rac = racines(&mont, racine, lg);
-                let mut a: Vec<u64> = x.iter().map(|&v| mont.to_mont(v as u64)).collect();
-                let mut b: Vec<u64> = y.iter().map(|&v| mont.to_mont(v as u64)).collect();
-                a.resize(lg, 0); b.resize(lg, 0);
-                let fils = fils_ntt(lg);
-                ntt_par(&mut a, &rac, &mont, false, fils);
-                ntt_par(&mut b, &rac, &mont, false, fils);
-                for i in 0..lg { a[i] = mont.mul(a[i], b[i]); }
-                ntt_par(&mut a, &rac, &mont, true, fils);
-                let inv_n = inverse_mod(lg as u64, m);
-                for i in 0..lg { a[i] = mont.mul(a[i], inv_n); }
-                restes.push(a);
-            }
-            let t_ntt = t.elapsed();
-            eprintln!("n={:>7} lg={:>7} : 6 NTT = {:?}", n, lg, t_ntt);
+            let r = ntt_mul_par(&x, &y, 0);
+            let t_par = t.elapsed();
+            // La même chose en SÉQUENTIEL (1 fil) pour comparer.
+            let t = Instant::now();
+            let r1 = ntt_mul_par(&x, &y, 1);
+            let t_seq = t.elapsed();
+            assert_eq!(r, r1, "la NTT parallèle doit donner le même résultat");
+            eprintln!("n={:>7} lg={:>7} : ntt_mul_par parallèle {:?} | séquentiel {:?}",
+                      n, lg, t_par, t_seq);
         }
     }
 
