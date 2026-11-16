@@ -84,6 +84,27 @@ else
   echo "  (cargo absent)"
 fi
 
+# ── 3 quater. Rust PUR (num-bigint, AUCUNE dépendance GMP) ──────────────
+echo
+echo "── Rust pur (num-bigint) ──"
+PUR_DIR="${TMPDIR:-/tmp}/rose_bench_rs_pur"
+if command -v cargo >/dev/null 2>&1; then
+  if [ ! -x "$PUR_DIR/target/release/fact_rs_pur" ]; then
+    mkdir -p "$PUR_DIR"
+    ( cd "$PUR_DIR" && cargo init --name fact_rs_pur --bin -q 2>/dev/null || cargo init --name fact_rs_pur --bin ) >/dev/null 2>&1
+    ( cd "$PUR_DIR" && cargo add num-bigint num-traits -q ) >/dev/null 2>&1
+    cp bench/suite/fact_rs_pur.rs "$PUR_DIR/src/main.rs"
+    ( cd "$PUR_DIR" && cargo build --release -q ) >/dev/null 2>&1
+  fi
+  if [ -x "$PUR_DIR/target/release/fact_rs_pur" ]; then
+    "$PUR_DIR/target/release/fact_rs_pur" "$N" | sed 's/^/  /'
+  else
+    echo "  (échec de compilation num-bigint)"
+  fi
+else
+  echo "  (cargo absent)"
+fi
+
 # ── 4. Python ───────────────────────────────────────────────────────────
 echo
 echo "── Python (math.factorial) ──"

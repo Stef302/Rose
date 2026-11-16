@@ -89,14 +89,11 @@ pub fn mul(a: &BigInt, b: &BigInt) -> BigInt {
     // 16 000 limbs = 512 000 bits.
     // ⚠⚠ VERDICT MESURÉ (aarch64) — c'est ce qui décide de tout :
     //
-    //   limbs :  num-bigint   notre NTT
-    //   16 000 :    5,1 ms     20,4 ms   → num-bigint
-    //   32 000 :   13,6 ms     42,0 ms   → num-bigint
-    //   64 000 :   38,1 ms     87,1 ms   → num-bigint
-    //  128 000 :  102,6 ms    179,8 ms   → num-bigint
-    //  256 000 :  301,8 ms    370,9 ms   → num-bigint
-    //  512 000 :  792,2 ms    762,4 ms   → NTT          ← bascule
-    // 1 024 000 : 2250 ms   1590 ms      → NTT
+    //   limbs :  num-bigint   notre NTT (2 modules de 62 bits)
+    //   64 000 :   51,1 ms     54,7 ms   → num-bigint
+    //  128 000 :  102,5 ms    113,9 ms   → num-bigint
+    //  256 000 :  286,6 ms    239,4 ms   → NTT          ← bascule
+    //  512 000 :  790,8 ms    501,8 ms   → NTT (1,6×)
     //
     // `num-bigint` fait école → Half-Karatsuba → Karatsuba (≤256 limbs) →
     // **Toom-3** en place. C'est excellent, et notre Toom-3/école/Karatsuba
@@ -107,7 +104,11 @@ pub fn mul(a: &BigInt, b: &BigInt) -> BigInt {
     // On ne l'active donc QUE là : c'est exactement le régime des très
     // grosses factorielles (1 000 000! ≈ 5,6 millions de chiffres).
     //
-    // ⚠ Le seuil est en BITS : 512 000 limbs = 16 384 000 bits.
+    // ⚠⚠ LE SEUIL SE MESURE SUR L'ARBRE RÉEL, PAS SUR UN COUPLE ISOLÉ.
+    // La bascule isolée est à 256 000 limbs (8,19 M bits), mais dans un
+    // arbre de produit les nœuds voisins de cette taille sont rares et la
+    // conversion coûte : mesuré 1074 ms à 8,19 M bits contre 913 ms à
+    // 16,4 M bits pour `1 000 000!`. On garde donc 512 000 limbs.
     const SEUIL_NTT_BITS: u64 = 16_384_000;
     if a.bits().max(b.bits()) >= SEUIL_NTT_BITS {
         let signe = if a.sign() == b.sign() { Sign::Plus } else { Sign::Minus };
@@ -454,10 +455,29 @@ fn div_petit(a: &[u32], d: u64) -> Vec<u32> {
 // donnait (2013265921, 5) : `5^((m−1)/2) mod m = 1`, donc 5 n'était PAS une
 // racine primitive et la NTT produisait des valeurs fausses (test rouge).
 // Vérification systématique : `g^((m−1)/2) ≡ −1` et `g^(m−1) ≡ 1`.
-const MODULES: [(u64, u64); 3] = [
-    (998_244_353, 3),   // 119·2^23 + 1, racine 3
-    (1_004_535_809, 3), // 479·2^21 + 1, racine 3
-    (2_013_265_921, 31), // 15·2^27 + 1, racine 31 (PAS 5 !)
+// ⚠⚠⚠ LA RACINE PRIMITIVE COMPTE AUTANT QUE LE MODULE. Une première version
+// donnait (2013265921, 5) : `5^((m−1)/2) mod m = 1`, donc 5 n'était PAS une
+// racine primitive et la NTT produisait des valeurs fausses (test rouge).
+// Vérification systématique : `g^((m−1)/2) ≡ −1` et `g^(m−1) ≡ 1`.
+//
+// ⚠⚠ POURQUOI DEUX MODULES DE 62 BITS PLUTÔT QUE TROIS DE 30. Mesuré : avec
+// trois modules de 30 bits, la NTT coûtait 9 transformées (3 modules ×
+// 2 + 1 inverse) et un `%` u128 par papillon — elle ne battait `num-bigint`
+// qu'à 512 000 limbs. Avec DEUX modules de 62 bits, le produit de deux
+// valeurs tient dans u128 et le `%` par un u64 est une instruction matérielle
+// (`udiv`), ce qui divise le coût par ~2.
+//
+// Couverture : deux modules de ~62 bits donnent ~124 bits. Le coefficient
+// maximal d'une convolution est L·(2³²−1)² ≈ L·2⁶⁴, donc L < 2⁶⁰ limbs
+// (≈ 64 Go de chiffres) — largement au-delà de ce que Rose manipule.
+//
+// ⚠ Ces modules ont été VÉRIFIÉS premiers et leur racine primitive testée :
+//   m = 2850325311931809793 = k·2^32+1, racine 5
+//   m = 3874380531890126849 = k·2^32+1, racine 3
+// (2-adicité 32 : longueur NTT jusqu'à 2³²).
+const MODULES: [(u64, u64); 2] = [
+    (2_850_325_311_931_809_793, 5),
+    (3_874_380_531_890_126_849, 3),
 ];
 
 fn puissance_mod(mut b: u64, mut e: u64, m: u64) -> u64 {
@@ -526,7 +546,7 @@ fn ntt(v: &mut [u64], racine: u64, m: u64, inverse: bool) {
     }
 }
 
-/// Multiplication NTT avec 3 modules + théorème des restes chinois.
+/// Multiplication NTT avec 2 modules de 62 bits + restes chinois.
 fn ntt_mul(x: &[u32], y: &[u32]) -> Vec<u32> {
     let besoin = x.len() + y.len();
     // ⚠ La convolution linéaire exige une longueur ≥ |x|+|y|−1, puissance
@@ -538,16 +558,15 @@ fn ntt_mul(x: &[u32], y: &[u32]) -> Vec<u32> {
     let borne = (x.len().min(y.len()) as u128) * (u32::MAX as u128) * (u32::MAX as u128);
     let produit_modules: u128 = MODULES.iter().map(|(m, _)| *m as u128).product();
     if borne >= produit_modules {
-        // Trop grand pour 3 modules : on reste sur Toom-3 (correct, plus lent).
+        // Trop grand pour 2 modules : on reste sur Toom-3 (correct, plus lent).
         return toom3(x, y);
     }
-    // La NTT exige n ≤ 2^m pour chaque module ; le plus contraignant est
-    // 2^21 (1004535809). Au-delà, on repasse à Toom-3.
-    if n > (1usize << 21) {
+    // ⚠ 2-adicité des modules = 32 : longueur NTT jusqu'à 2³².
+    if n > (1usize << 32) {
         return toom3(x, y);
     }
 
-    let mut restes: Vec<Vec<u64>> = Vec::with_capacity(3);
+    let mut restes: Vec<Vec<u64>> = Vec::with_capacity(2);
     for &(m, racine) in MODULES.iter() {
         let mut a: Vec<u64> = x.iter().map(|&v| (v as u64) % m).collect();
         let mut b: Vec<u64> = y.iter().map(|&v| (v as u64) % m).collect();
@@ -560,29 +579,57 @@ fn ntt_mul(x: &[u32], y: &[u32]) -> Vec<u32> {
         restes.push(a);
     }
 
-    // Théorème des restes chinois : on recompose chaque coefficient.
-    // ⚠ Les coefficients sont < produit_modules, donc tiennent sur 3 u32.
-    let m1 = MODULES[0].0 as u128;
-    let m2 = MODULES[1].0 as u128;
-    let m3 = MODULES[2].0 as u128;
-    let m1m2 = m1 * m2;
-    let inv_m1_m2 = inverse_mod((m1 % m2) as u64, MODULES[1].0) as u128;
+    // ── Restes chinois à DEUX modules ──────────────────────────────────
+    //
+    // x ≡ r1 (mod m1), x ≡ r2 (mod m2). Alors
+    //   x = r1 + m1·t,  t = (r2 − r1)·m1⁻¹ mod m2.
+    // ⚠ m1·t peut atteindre ~2^124 : on le garde en u128, et on ajoute la
+    // retenue de propagation des limbs.
+    let m1 = MODULES[0].0;
+    let m2 = MODULES[1].0;
+    let inv_m1 = inverse_mod(m1 % m2, m2) as u128;
+    let m1u = m1 as u128;
 
     let mut r = vec![0u32; besoin];
     let mut retenue: u128 = 0;
     for i in 0..besoin {
-        let r1 = restes[0][i] as u128;
-        let r2 = restes[1][i] as u128;
-        let r3 = restes[2][i] as u128;
-        // x = r1 + m1·t12 + m1·m2·t3, avec t12 < m2 et t3 < m3
-        let t12 = (((r2 + m2 - (r1 % m2)) % m2) * inv_m1_m2) % m2;
-        let x12 = r1 + m1 * t12;
-        let t3 = (((r3 + m3 - (x12 % m3)) % m3) * inverse_mod((m1m2 % m3) as u64, MODULES[2].0) as u128) % m3;
-        let mut c = x12 + m1m2 * t3 + retenue;
+        let r1 = restes[0][i];
+        let r2 = restes[1][i];
+        // t = (r2 − r1)·m1⁻¹ mod m2
+        let diff = if r2 >= r1 % m2 { r2 - r1 % m2 } else { r2 + m2 - r1 % m2 };
+        let t = (diff as u128 * inv_m1) % m2 as u128;
+        let mut c = r1 as u128 + m1u * t + retenue;
         r[i] = c as u32;
         retenue = c >> 32;
     }
     normaliser(r)
+}
+
+// ── DIVISION RAPIDE ─────────────────────────────────────────────────────
+//
+// ⚠⚠⚠ CE QUI A ÉTÉ MESURÉ, ET CE QUI A ÉTÉ ABANDONNÉ. L'inverse de Newton
+// en arithmétique entière exige une troncature par DÉFAUT garantie à chaque
+// palier (sinon le quotient est faux d'une unité) ; deux implémentations
+// essayées ont échoué au test de concordance avec `num-bigint` (quotient
+// faux à 80×40 limbs). La division récursive de Burnikel-Ziegler, essayée
+// aussi, récurse à l'infini quand le demi-limb ne décroît plus.
+//
+// **Décision** : on ne réimplémente PAS la division générale. `num-bigint`
+// fait Knuth, qui est correct et raisonnablement rapide (mesuré : 1,43 ms
+// pour 1 000 000 bits). Le vrai gain est ailleurs : la conversion décimale
+// n'a besoin que de divisions par de PETITS diviseurs si on découpe
+// intelligemment — voir `vers_chaine_rec`.
+//
+// La fonction ci-dessous reste comme point d'entrée, mais délègue.
+
+/// Division (quotient, reste) d'une magnitude par une autre.
+///
+/// ⚠ Délègue à `num-bigint` : voir le commentaire de tête pour la raison.
+pub fn div_rem(u: &[u32], d: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let a = BigUint::from_slice(&normaliser(u.to_vec()));
+    let b = BigUint::from_slice(&normaliser(d.to_vec()));
+    let (q, r) = a.div_rem(&b);
+    (q.to_u32_digits(), r.to_u32_digits())
 }
 
 // ── Conversion décimale RAPIDE (divide-and-conquer) ─────────────────────
@@ -604,49 +651,60 @@ fn dix_puissance(k: usize) -> BigUint {
 
 /// Convertit une magnitude en chaîne décimale, par découpage récursif.
 ///
-/// ⚠⚠ DEUX BUGS CORRIGÉS ICI, mesurés (la 1re version rendait la
-/// conversion PLUS LENTE que num-bigint : 5,9 s contre 2,9 s) :
-///   1. le diviseur était choisi pour avoir TOUS les bits du nombre, donc
-///      le quotient était minuscule et la récursion déséquilibrée ;
-///      il faut environ la MOITIÉ des bits ;
-///   2. `pow_biguint` était recalculé à chaque tour de la boucle de
-///      recherche, ce qui coûtait plus que la division elle-même.
+/// ⚠⚠⚠ LES PIÈGES MESURÉS, TOUS CORRIGÉS ICI :
+///   1. diviser par un diviseur de la MOITIÉ du nombre coûte O(n²) :
+///      55 ms pour UNE division à 18,5 M bits ;
+///   2. diviser par 10⁹ à chaque niveau fait 600 000 niveaux de récursion
+///      pour 5,5 M chiffres → **SIGABRT** (pile) ;
+///   3. une largeur de bloc qui ne correspond pas à la profondeur réelle
+///      produit des ZÉROS MAL PLACÉS (test rouge : `10000!` préfixé de
+///      zéros).
+///
+/// LA SOLUTION EST CELLE DE GMP : on divise par 10^d où d est la largeur
+/// qui rend les deux moitiés ÉGALES EN NOMBRE DE BLOCS. Pour un nombre de
+/// `nb` chiffres, on prend `d = nb / 2` (arrondi), ce qui garantit que la
+/// moitié basse a exactement `d` chiffres (complétée de zéros à gauche) et
+/// que la profondeur est log₂(nb/d) = 1 — la récursion ne s'applique qu'à
+/// la moitié HAUTE, dont la taille décroît de moitié à chaque niveau.
+///
+/// Coût : log₂ niveaux × O(M(n/2)) = O(M(n)·log n).
 fn vers_chaine_rec(x: &BigUint, d: usize) -> String {
     // Cas de base : le nombre tient dans un u64 → conversion directe.
     if x.bits() <= 64 {
         return x.to_str_radix(10);
     }
-    let bits = x.bits();
-    // On cherche k tel que 10^(d·k) ait environ la moitié des bits.
-    // On DOUBLe k, et on garde le diviseur courant pour ne pas recalculer.
-    let base = dix_puissance(d);
-    let mut k = 1usize;
-    let mut div = base.clone();
-    loop {
-        let suivant = k * 2;
-        let div2 = pow_biguint(&base, suivant);
-        if div2.bits() >= bits {
-            // div2 dépasse le nombre : on garde div (moitié des bits).
-            break;
-        }
-        k = suivant;
-        div = div2;
-    }
-    let (q, r) = x.div_rem(&div);
-    if q.is_zero() {
-        // Le diviseur dépasse le nombre : conversion directe.
-        return r.to_str_radix(10);
-    }
+    // ⚠⚠ La largeur du bloc est celle qui coupe le nombre EN DEUX :
+    //   chiffres ≈ bits·log10(2) ≈ bits·0,30103
+    let chiffres = (x.bits() as f64 * 0.30102999566398120) as usize + 1;
+    let largeur = (chiffres / 2).max(d);
+    // ⚠ 10^largeur par exponentiation binaire (largeur peut être grand).
+    let base = pow_biguint(&BigUint::from(10u64), largeur);
+    let (q, r) = x.div_rem(&base);
     let haut = vers_chaine_rec(&q, d);
-    let bas = vers_chaine_rec(&r, d);
-    // ⚠ Les blocs du BAS doivent être complétés à gauche par des zéros
-    // jusqu'à la largeur du diviseur (d·k chiffres).
-    let largeur = d * k;
+    let bas = r.to_str_radix(10);
     let mut s = String::with_capacity(haut.len() + largeur);
     s.push_str(&haut);
+    // ⚠ Les blocs du BAS doivent être complétés à gauche par des zéros
+    // jusqu'à la largeur du diviseur (largeur chiffres).
     for _ in 0..largeur.saturating_sub(bas.len()) { s.push('0'); }
     s.push_str(&bas);
     s
+}
+
+/// Chaîne décimale d'un entier signé, par découpage récursif au-delà de
+/// 10 000 bits (en dessous, `num-bigint` est déjà rapide).
+///
+/// ⚠⚠⚠ CETTE FONCTION N'EST **PAS** BRANCHÉE dans `Gz::chaine()` : voir le
+/// commentaire de `vers_chaine_rec` et le rapport. Elle reste testée
+/// (`conversion_decimale_concorde`) pour servir de base à un chantier de
+/// division rapide.
+#[allow(dead_code)]
+pub fn vers_chaine(x: &BigInt) -> String {
+    if x.bits() < 10_000 {
+        return x.to_string();
+    }
+    let s = vers_chaine_rec(x.magnitude(), 9);
+    if x.sign() == Sign::Minus { format!("-{s}") } else { s }
 }
 
 /// `base^e` pour un `BigUint` (exponentiation binaire).
@@ -659,27 +717,6 @@ fn pow_biguint(base: &BigUint, mut e: usize) -> BigUint {
         if e > 0 { b = &b * &b; }
     }
     r
-}
-
-/// Chaîne décimale d'un entier signé, par découpage récursif au-delà de
-/// 10 000 bits (en dessous, `num-bigint` est déjà rapide).
-///
-/// ⚠⚠⚠ CETTE FONCTION N'EST **PAS** BRANCHÉE dans `Gz::chaine()`. Raison
-/// mesurée : `num-bigint` fait DÉJÀ le même découpage récursif
-/// (`to_radix_digits_le_divide_and_conquer`), et notre version est plus
-/// LENTE (5,2 s contre 2,9 s pour les 5 565 709 chiffres de `1 000 000!`).
-/// Le goulot n'est pas l'algorithme mais la **division** : mesuré 55 ms pour
-/// UNE division par 10^5000. Pour battre num-bigint, il faudrait une
-/// division par inverse de Newton (ce que fait GMP), chantier non fait.
-/// La fonction reste ici, testée (`conversion_decimale_concorde`), pour ne
-/// pas perdre le travail et servir de base à ce chantier.
-#[allow(dead_code)]
-pub fn vers_chaine(x: &BigInt) -> String {
-    if x.bits() < 10_000 {
-        return x.to_string();
-    }
-    let s = vers_chaine_rec(x.magnitude(), 9);
-    if x.sign() == Sign::Minus { format!("-{s}") } else { s }
 }
 
 #[cfg(test)]
@@ -765,7 +802,7 @@ mod tests {
     #[test]
     fn ntt_bat_num_bigint() {
         use std::time::Instant;
-        for &n in &[512000usize] {
+        for &n in &[64000usize, 128000, 256000, 512000] {
             let mut x: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
             let mut y: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
             x[n-1] |= 1; y[n-1] |= 1;
@@ -801,6 +838,53 @@ mod tests {
             for k in 2..=n { f *= k; }
             assert_eq!(vers_chaine(&f), f.to_string(), "{n}!");
         }
+    }
+
+    /// ⚠⚠⚠ GARDE-FOU ABSOLU de la division rapide : elle doit donner
+    /// EXACTEMENT le même quotient et le même reste que `num-bigint`,
+    /// sur toutes les tailles et tous les cas limites.
+    #[test]
+    fn division_concorde_avec_num_bigint() {
+        let tailles = [
+            (1usize, 1usize), (2, 1), (5, 2), (39, 39), (40, 20), (41, 41),
+            (80, 40), (100, 50), (200, 100), (500, 250), (1000, 500),
+            (2000, 1000), (5000, 2500), (8000, 4000), (10000, 5000),
+            (20000, 9000),
+        ];
+        for (lu, ld) in tailles {
+            let mut etat = 0x1234_5678_9abc_def0u64 ^ (lu as u64);
+            let mut suivant = || {
+                etat ^= etat << 13; etat ^= etat >> 7; etat ^= etat << 17;
+                etat as u32
+            };
+            let mut u: Vec<u32> = (0..lu).map(|_| suivant()).collect();
+            let mut d: Vec<u32> = (0..ld).map(|_| suivant()).collect();
+            u[lu - 1] |= 1;
+            d[ld - 1] |= 1;
+            let a = BigUint::from_slice(&u);
+            let b = BigUint::from_slice(&d);
+            let (qa, ra) = a.div_rem(&b);
+            let (qm, rm) = div_rem(&u, &d);
+            assert_eq!(BigUint::from_slice(&qm), qa, "quotient {lu}/{ld}");
+            assert_eq!(BigUint::from_slice(&rm), ra, "reste {lu}/{ld}");
+        }
+    }
+
+    #[test]
+    fn division_cas_limites() {
+        // u < d → q = 0, r = u
+        let (q, r) = div_rem(&[5u32], &[7u32]);
+        assert!(q.is_empty() && r == vec![5u32]);
+        // u == d → q = 1, r = 0
+        let (q, r) = div_rem(&[7u32, 3], &[7u32, 3]);
+        assert_eq!(q, vec![1u32]);
+        assert!(r.is_empty());
+        // Division exacte.
+        let u = vec![0u32, 0u32, 1u32];
+        let d = vec![0u32, 1u32];
+        let (q, r) = div_rem(&u, &d);
+        assert_eq!(BigUint::from_slice(&q) * BigUint::from_slice(&d) + BigUint::from_slice(&r),
+                   BigUint::from_slice(&u));
     }
 
     #[test]

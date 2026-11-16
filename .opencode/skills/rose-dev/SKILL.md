@@ -588,43 +588,53 @@ Ne pas confondre — c'est une source d'erreur classique :
 ## Rose N'UTILISE PAS GMP — ce qui la rend rapide
 
 ⚠⚠ **Rose ne dépend jamais de GMP.** Tout est en Rust pur avec `num-bigint`.
-GMP sert UNIQUEMENT de référence de comparaison dans `bench/suite/fact_gmp.c`.
+GMP sert UNIQUEMENT de référence de comparaison dans `bench/suite/fact_gmp.c`
+et `bench/suite/fact_rs.rs` (rug).
 
 | Optimisation | Gain mesuré |
 |---|---|
-| Suppression des clones d'opérandes (`mul`/`add`/`sub`) | `n!` 41 → 25 ms, `!n` 753 → 681 ms |
-| Seuil de parallélisation de l'arbre (500 000 bits cumulés) | `n#` 2 → 1 ms |
-| NTT au-delà de 16,4 M bits (`mul_rapide`) | `1 000 000!` 3 797 → **905 ms** |
+| Suppression des clones d'opérandes | `n!` 41 → 25 ms |
+| Seuil de parallélisation de l'arbre (500 000 bits) | `n#` 2 → 1 ms |
+| **NTT à 2 modules de 62 bits** (> 16,4 M bits) | `1 000 000!` 3 797 → **906 ms** |
 
 ⚠⚠⚠ **LE FAIT QUI CHANGE TOUT** : `num-bigint` fait DÉJÀ école → Half-Karatsuba
-→ Karatsuba (≤256 limbs) → **Toom-3 en place** (`biguint/multiplication.rs`).
-Un Toom-3/Karatsuba maison est donc INUTILE — mesuré 4× plus lent que le sien.
-Ce qui lui manque est la **FFT**, d'où `mul_rapide.rs`.
+→ Karatsuba (≤256 limbs) → **Toom-3 en place**. Un Toom-3 maison est inutile
+(4× plus lent que le sien). Ce qui lui manque est la **FFT**.
 
-- Seuils mesurés (aarch64, limbs) : école < 100, Karatsuba < 1000,
-  Toom-3 < 12000, NTT au-delà. NTT ne bat num-bigint qu'à **≥ 512 000 limbs**
-  (762 vs 792 ms ; 1 024 000 : 1,59 vs 2,25 s).
-- `mul_rapide::mul` délègue à `num-bigint` sous 16 384 000 bits : aucun
-  surcoût sur les tailles courantes.
-- ⚠ Piège mesuré : paralléliser l'arbre à petite taille le RALENTIT
-  (threads ~0,1–0,2 ms). Seuil 500 000 bits ; un réglage à 64 Mo rendait
-  `n$` et `n!!` plus lents.
-- ⚠ La NTT exige une racine primitive VÉRIFIÉE : `(2013265921, 5)` est faux
-  (`5^((m−1)/2) ≡ 1`) ; il faut **31**. Tester `g^((m−1)/2) ≡ −1`.
-- ⚠ Toom-3 : les 4 points {0,1,−1,2} ne déterminent qu'un degré ≤ 3, alors
-  que le produit est de degré 4. Il faut retirer `w4·x⁴`, interpoler, puis
-  rajouter w4 (voir le commentaire dans `toom3`).
-- ⚠ Conversion décimale : `num-bigint` fait DÉJÀ du divide-and-conquer, et
-  il est plus rapide que notre version (2,9 s contre 5,2 s pour 1M!). Le
-  goulot est la DIVISION (55 ms par division par 10^5000). `vers_chaine`
-  existe et est testée mais n'est PAS branchée.
+- **Seuil NTT : 16 384 000 bits (512 000 limbs).** ⚠ La bascule ISOLÉE est à
+  256 000 limbs, mais dans un ARBRE de produit le seuil 8,19 M bits rendait
+  `1 000 000!` PLUS LENT (1074 ms contre 913). Toujours mesurer sur l'arbre réel.
+- **2 modules de 62 bits, pas 3 de 30** : mesuré 1,6× plus rapide
+  (498 ms contre 790 à 512 000 limbs). Modules vérifiés premiers, racines
+  testées : `(2850325311931809793, 5)` et `(3874380531890126849, 3)`.
+- ⚠ **Racine primitive à VÉRIFIER** : `(2013265921, 5)` est faux
+  (`5^((m−1)/2) ≡ 1`), il faut 31. Tester `g^((m−1)/2) ≡ −1`.
+- ⚠ **Toom-3 degré 4** : les 4 points {0,1,−1,2} ne déterminent qu'un degré
+  ≤ 3 ; retirer `w4·x⁴`, interpoler, puis le rajouter.
+- ⚠ **2-adicité** : pour une NTT de longueur 2^k, il faut `m−1 ≡ 0 mod 2^k`.
+  `2^61−1` a une 2-adicité de 1 → INUTILISABLE (piège classique).
+
+### Ce qui a été essayé et ABANDONNÉ (ne pas retenter sans preuve)
+
+- **Inverse de Newton pour la division** : deux implémentations ont ÉCHOUÉ au
+  test de concordance (quotient faux à 80×40 limbs). En arithmétique entière,
+  chaque palier doit garantir une troncature PAR DÉFAUT ; sinon le quotient
+  est faux d'une unité. Non maîtrisé → `div_rem` délègue à `num-bigint`.
+- **Burnikel-Ziegler** : récursion infinie quand le demi-limb ne décroît plus.
+- **Conversion décimale maison** : `num-bigint` fait déjà le même découpage
+  récursif (`to_radix_digits_le_divide_and_conquer`) ; notre version est plus
+  lente (3,07 s contre 2,88 s). ⚠ Piège : diviser par 10⁹ à chaque niveau fait
+  600 000 niveaux de récursion → **SIGABRT** (pile).
+- Le goulot réel de la conversion est la **division** (Knuth O(n·m)). Pour
+  battre GMP il faudrait un inverse de Newton CORRECT.
 
 ## Bench comparatif entre langages
 
 `bench/suite/bench_factorielles.sh [N]` compare Rose (num-bigint), Rose
 (+GMP), GMP/C (`bench/suite/fact_gmp.c`) et Python sur les mêmes opérations.
-Ordre de grandeur à N = 100 000 : Rose bat Python de 3× (`n!`) à 60× (`n!!`)
-et reste à ~3× de GMP/C. À `1 000 000!` : Rose 905 ms, GMP/C 174 ms.
+Ordre de grandeur à N = 100 000 : Rose bat Python de 3× à 60× et Rust pur de
+1,4× ; reste à ~2× de GMP/C. À `1 000 000!` : Rose 906 ms, Rust pur 2 231 ms,
+GMP/C 173 ms.
 
 ## Marqueur LaTeX par ligne : `%%`
 
