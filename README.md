@@ -412,7 +412,7 @@ Rose **ne dépend pas de GMP** : tout est en Rust pur, avec `num-bigint`.
 |---|---|
 | Suppression des clones d'opérandes (`mul`, `add`, `sub`) | `n!` 41 → 25 ms, `!n` 753 → 681 ms |
 | Seuil de parallélisation de l'arbre (500 000 bits cumulés) | `n#` 2 → 1 ms ; en dessous les threads coûtent plus que le travail |
-| **NTT à 2 modules de 62 bits** au-delà de 16,4 M bits | `1 000 000!` : 3 797 → **906 ms** (4,2×) |
+| **NTT à 2 modules de 62 bits**, seuil 16,4 M bits balayé | `1 000 000!` : 3 797 → **906 ms** (4,2×) |
 
 ⚠ Ce que la mesure a montré : `num-bigint` fait **déjà** école → Half-Karatsuba
 → Karatsuba → **Toom-3** en place, et il est excellent. Notre propre Toom-3 est
@@ -459,6 +459,14 @@ Lecture :
   ne doit **jamais** être tronqué, le ré-échelonnage entre paliers est
   `(m2−m)` limbs et non `2(m2−m)`, et l'amorçage doit être décalé de `B^(n−1)`.
 - **Burnikel-Ziegler** : récursion infinie quand le demi-limb ne décroît plus.
+  ⚠ À noter : `num-bigint` a DÉJÀ Burnikel-Ziegler (seuil 64 limbs), en plus
+  de Knuth, Toom-3 et Karatsuba. Il ne lui manque que la FFT.
+- **Réduction de Barrett** : rejetée (μ ne couvre pas un produit de 124 bits).
+  Le `% u128` n'est que 1,8× plus lent qu'un `% u64` : ce n'est pas le goulot.
+- **Une seule NTT par module** (c = a + i·b) : deux formes essayées, toutes
+  deux fausses. La symétrie hermitienne ne s'applique pas dans un corps fini.
+- **Seuil NTT** : balayé sur `1 000 000!` — 16,4 M bits est le meilleur
+  (907 ms ; 6,14 M → 1024 ms ; ∞ → 912 ms).
 - **Conversion décimale maison** : `num-bigint` fait déjà le même découpage
   récursif ; notre version est légèrement plus lente (3,07 s contre 2,88 s).
   Elle reste testée et disponible, non branchée.

@@ -616,6 +616,29 @@ et `bench/suite/fact_rs.rs` (rug).
 
 ### Ce qui a été essayé et ABANDONNÉ (ne pas retenter sans preuve)
 
+- **RÉDUCTION DE BARRETT** : essayée pour remplacer `u128 % u64` dans la NTT.
+  REJETÉE : `μ = u64::MAX/m` ne couvre pas un produit de 124 bits (test rouge,
+  valeurs énormes). Mesuré par ailleurs : `% u128` n'est que **1,8×** plus
+  lent qu'un `% u64` (3,0 ms contre 1,7 ms pour 1M opérations) — ce n'est PAS
+  le goulot de la NTT.
+- **MONTGOMERY** : rejeté par calcul — deux multiplications 64×64 + décalage
+  coûtent plus que le `% u128` qu'il évite, vu le facteur 1,8 ci-dessus.
+- **UNE SEULE TRANSFORMÉE PAR MODULE** (c = a + i·b, i² = −1) : DEUX formes
+  essayées, toutes deux FAUSSES (tests rouges) :
+  1. « c ← c² puis NTT inverse, partie imaginaire » : la reconstruction par
+     `c[(n−k)%n]` est fausse ;
+  2. « symétrie hermitienne A[k] = (C[k]+C[n−k])/2 » : **ne s'applique pas** —
+     la symétrie hermitienne suppose des coefficients RÉELS, alors qu'ici x
+     et y sont des entiers mod m (le corps fini n'a pas de conjugaison).
+  On garde donc 6 NTT (3 par module) : c'est incompressible.
+- **PARALLÉLISATION DES PUISSANCES p^e** (factorielle) : mesuré 904–941 ms
+  avec, 906–920 ms sans — aucun gain net. Le temps est dans l'ARBRE de
+  produit, pas dans le calcul des p^e.
+- **SEUIL NTT BALAYÉ** (1 000 000!, mesuré) : 2,05 M bits → 1568 ms ;
+  4,1 M → 1226 ; 6,14 M → 1024 ; 9,2 M → 1053 ; 16,4 M → **907** ;
+  32,7 M → 900–941 (variance) ; ∞ → 912. Le meilleur stable est **16,4 M**.
+
+
 - **Inverse de Newton pour la division** : désormais CORRECT
   (`div_rem_newton`, testé 40→1000 limbs contre num-bigint) MAIS **25× PLUS
   LENT** que num-bigint à toutes les tailles mesurées :

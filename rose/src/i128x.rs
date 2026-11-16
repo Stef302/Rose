@@ -100,6 +100,11 @@ pub fn factorielle_parallele(n: u64) -> Gz {
         *v = mids;
     }
 
+    // ⚠⚠ PARALLÉLISATION DES PUISSANCES TESTÉE ET REJETÉE (mesuré : 904–941
+    // ms avec, 906–920 ms sans — aucun gain net). Les p^e ne pèsent que
+    // quelques dizaines de ms sur 900 ; le temps est dans l'ARBRE de
+    // produit, pas dans leur calcul. On garde donc le séquentiel, plus
+    // simple.
     let facteurs: Vec<BigInt> = (2..=n).filter(|&p| est_premier[p as usize]).map(|p| {
         let mut e = 0u64;
         let mut q = p;

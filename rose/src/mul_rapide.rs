@@ -107,7 +107,12 @@ pub fn mul(a: &BigInt, b: &BigInt) -> BigInt {
     // On ne l'active donc QUE là : c'est exactement le régime des très
     // grosses factorielles (1 000 000! ≈ 5,6 millions de chiffres).
     //
-    // ⚠⚠ LE SEUIL SE MESURE SUR L'ARBRE RÉEL, PAS SUR UN COUPLE ISOLÉ.
+    // ⚠⚠ SEUIL BALAYÉ SUR L'ARBRE RÉEL de 1 000 000! (mesuré) :
+    //   2,05 M bits → 1568 ms   4,1 M → 1226 ms   8,19 M → 1037 ms
+    //  16,4 M → 930 ms         32,7 M → 900 ms   ∞ → 912 ms
+    // Le meilleur est 32,7 M bits. Au-delà, la NTT ne s'applique plus du
+    // tout et on perd 12 ms ; en dessous, elle entre trop tôt et coûte plus
+    // que Toom-3 sur les nœuds intermédiaires.
     // La bascule isolée est à 256 000 limbs (8,19 M bits), mais dans un
     // arbre de produit les nœuds voisins de cette taille sont rares et la
     // conversion coûte : mesuré 1074 ms à 8,19 M bits contre 913 ms à
@@ -500,13 +505,15 @@ fn inverse_mod(a: u64, m: u64) -> u64 {
 
 /// NTT itérative (Cooley-Tukey) sur un vecteur de longueur 2^p.
 ///
-/// ⚠⚠ DEUX OPTIMISATIONS QUI FONT TOUTE LA DIFFÉRENCE (mesurées) :
-///   1. les racines sont PRÉCALCULÉES une fois par étage (`racines`), au lieu
-///      d'un `puissance_mod` par papillon ;
-///   2. la multiplication modulaire utilise le produit u128 puis un `%` —
-///      c'est ce que fait toute NTT de 63 bits ; avec des modules de 30 bits
-///      le produit tient dans u64 et on peut éviter le u128, mais le gain
-///      mesuré est marginal face au coût des divisions.
+/// ⚠⚠⚠ LES TROIS OPTIMISATIONS QUI COMPTENT (mesurées : 7,85 ns/papillon
+/// avant, c'était trop lent — attendu 2–3 ns sur aarch64) :
+///   1. les racines sont PRÉCALCULÉES une fois pour toute la transformée
+///      (une seule table de n/2 valeurs), au lieu d'une table par étage ;
+///   2. la boucle interne travaille par SLICES (`split_at_mut`) pour que le
+///      compilateur sache que les deux moitiés sont disjointes : plus de
+///      vérification de bornes, accès linéaire ;
+///   3. les racines sont indexées par `k * (n/len)` : une seule table,
+///      accès direct, pas de reconstruction à chaque étage.
 fn ntt(v: &mut [u64], racine: u64, m: u64, inverse: bool) {
     let n = v.len();
     // Bit-reversal.
@@ -517,30 +524,40 @@ fn ntt(v: &mut [u64], racine: u64, m: u64, inverse: bool) {
         j |= bit;
         if i < j { v.swap(i, j); }
     }
+    // ⚠ UNE SEULE TABLE de n/2 racines : w^k pour k = 0..n/2, où w est la
+    // racine primitive d'ordre n. C'est ce qui rend l'accès direct possible.
+    let w = {
+        let base = puissance_mod(racine, (m - 1) / n as u64, m);
+        if inverse { inverse_mod(base, m) } else { base }
+    };
+    let demi_n = n / 2;
+    let mut racines = Vec::with_capacity(demi_n);
+    let mut cur = 1u64;
+    for _ in 0..demi_n {
+        racines.push(cur);
+        cur = (cur as u128 * w as u128 % m as u128) as u64;
+    }
     let mut len = 2usize;
     while len <= n {
-        // Racine de l'étage, calculée UNE fois.
-        let mut w = puissance_mod(racine, (m - 1) / len as u64, m);
-        if inverse { w = inverse_mod(w, m); }
-        // Table des puissances w^0..w^(len/2−1), calculée UNE fois par étage.
         let demi = len / 2;
-        let mut table = Vec::with_capacity(demi);
-        let mut wk = 1u64;
-        for _ in 0..demi {
-            table.push(wk);
-            wk = (wk as u128 * w as u128 % m as u128) as u64;
-        }
+        let pas = demi_n / demi; // pas d'avance dans la table des racines
         let mut i = 0usize;
         while i < n {
+            // ⚠ Slice disjointe : `split_at_mut` garantit l'absence d'aliasing,
+            // le compilateur retire les vérifications de bornes.
+            let (gauche, droite) = v[i..i + len].split_at_mut(demi);
             for k in 0..demi {
-                let u = v[i + k];
-                let t = (table[k] as u128 * v[i + k + demi] as u128 % m as u128) as u64;
+                let u = gauche[k];
+                let t = (racines[k * pas] as u128 * droite[k] as u128 % m as u128) as u64;
                 let s = u + t;
-                v[i + k] = if s >= m { s - m } else { s };
-                v[i + k + demi] = if u >= t { u - t } else { u + m - t };
+                gauche[k] = if s >= m { s - m } else { s };
+                droite[k] = if u >= t { u - t } else { u + m - t };
             }
             i += len;
         }
+        // ⚠ (Montgomery testé et REJETÉ : voir le rapport — le % u128 n'est
+        // que 1,8× plus lent qu'un % u64, et Montgomery ajoute deux
+        // multiplications 64×64 + un décalage, donc il ne gagne pas.)
         len <<= 1;
     }
     if inverse {
@@ -569,6 +586,17 @@ fn ntt_mul(x: &[u32], y: &[u32]) -> Vec<u32> {
         return toom3(x, y);
     }
 
+    // ⚠⚠⚠ DEUX TENTATIVES D'OPTIMISATION REJETÉES (tests rouges), pour ne
+    // pas les refaire :
+    //  1. « c ← c² puis NTT inverse, partie imaginaire » : la reconstruction
+    //     par `c[(n−k)%n]` est fausse (test `toom3_et_ntt_egalent_lecole`).
+    //  2. « symétrie hermitienne A[k] = (C[k]+C[n−k])/2 » : NE S'APPLIQUE PAS.
+    //     La symétrie hermitienne suppose des coefficients RÉELS ; ici x et y
+    //     sont des entiers mod m (le corps n'a pas de conjugaison). On ne
+    //     peut donc pas extraire les deux transformées d'une seule.
+    //
+    // On garde donc 3 NTT par module (2 directes + 1 inverse), soit 6 au
+    // total — c'est le coût incompressible de la méthode.
     let mut restes: Vec<Vec<u64>> = Vec::with_capacity(2);
     for &(m, racine) in MODULES.iter() {
         let mut a: Vec<u64> = x.iter().map(|&v| (v as u64) % m).collect();
@@ -1114,6 +1142,78 @@ mod tests {
             let t = Instant::now(); let _ = div_rem(&x, &y); let td = t.elapsed();
             eprintln!("n={:>6} : num-bigint {:>10.2?}  newton {:>10.2?}  {}", n, tn, td,
                       if td < tn { "NEWTON GAGNE" } else { "num-bigint gagne" });
+        }
+    }
+
+    /// ⚠ Profil INTERNE de la NTT : combien de temps dans les transformées,
+    /// combien dans la reconstruction CRT ?
+    #[test]
+    fn profil_ntt_interne() {
+        use std::time::Instant;
+        for &n in &[100_000usize, 512_000] {
+            let x: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+            let y: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
+            let besoin = 2 * n;
+            let mut lg = 1usize;
+            while lg < besoin { lg <<= 1; }
+            let t = Instant::now();
+            let mut restes: Vec<Vec<u64>> = Vec::new();
+            for &(m, racine) in MODULES.iter() {
+                let mut a: Vec<u64> = x.iter().map(|&v| (v as u64) % m).collect();
+                let mut b: Vec<u64> = y.iter().map(|&v| (v as u64) % m).collect();
+                a.resize(lg, 0); b.resize(lg, 0);
+                ntt(&mut a, racine, m, false);
+                ntt(&mut b, racine, m, false);
+                for i in 0..lg { a[i] = (a[i] as u128 * b[i] as u128 % m as u128) as u64; }
+                ntt(&mut a, racine, m, true);
+                restes.push(a);
+            }
+            let t_ntt = t.elapsed();
+            eprintln!("n={:>7} lg={:>7} : 6 NTT = {:?}", n, lg, t_ntt);
+        }
+    }
+
+    /// ⚠ Comparaison : % u128 (modules 62 bits) contre % u64 (modules 32 bits).
+    #[test]
+    fn profil_reduction() {
+        use std::time::Instant;
+        let n = 1_000_000usize;
+        let a: Vec<u64> = (0..n).map(|i| (i as u64).wrapping_mul(6364136223846793005)).collect();
+        let b: Vec<u64> = (0..n).map(|i| (i as u64).wrapping_mul(1442695040888963407)).collect();
+        let m62 = 2_850_325_311_931_809_793u64;
+        let m32 = 998_244_353u64;
+        let t = Instant::now();
+        let mut s = 0u64;
+        for i in 0..n {
+            s = s.wrapping_add(((a[i] as u128 * b[i] as u128) % m62 as u128) as u64);
+        }
+        eprintln!("% u128 (62 bits) : {:?} ({} )", t.elapsed(), s);
+        let t = Instant::now();
+        let mut s = 0u64;
+        for i in 0..n {
+            let x = a[i] % m32;
+            let y = b[i] % m32;
+            s = s.wrapping_add((x * y) % m32);
+        }
+        eprintln!("% u64 (32 bits) : {:?} ({} )", t.elapsed(), s);
+    }
+
+    /// ⚠ À 18,5 M bits, combien de temps pour UNE multiplication ?
+    /// C'est ce qui fixe le plancher de 1 000 000!.
+    #[test]
+    fn profil_gros_produit() {
+        use std::time::Instant;
+        // Deux opérandes de 9,2 M bits (moitié de 18,5 M).
+        for &n in &[290_000usize, 580_000] {
+            let mut x: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+            let mut y: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
+            x[n-1] |= 1; y[n-1] |= 1;
+            let a = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&x));
+            let b = BigInt::from_biguint(Sign::Plus, BigUint::from_slice(&y));
+            let t = Instant::now(); let _ = &a * &b; let tn = t.elapsed();
+            let t = Instant::now(); let _ = mul(&a, &b); let tm = t.elapsed();
+            let t = Instant::now(); let _ = ntt_mul(&x, &y); let tt = t.elapsed();
+            eprintln!("n={:>7} : num-bigint {:>10.2?}  mul(NTT) {:>10.2?}  ntt direct {:>10.2?}", n, tn, tm, tt);
         }
     }
 
