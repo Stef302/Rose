@@ -614,6 +614,43 @@ et `bench/suite/fact_rs.rs` (rug).
 - ⚠ **2-adicité** : pour une NTT de longueur 2^k, il faut `m−1 ≡ 0 mod 2^k`.
   `2^61−1` a une 2-adicité de 1 → INUTILISABLE (piège classique).
 
+### Pièges Windows — icônes et PATH (mesurés le 16/11)
+
+**Icônes : trois rôles, à ne pas confondre.**
+- `rose_base.ico` (= copie de `installateur/assets/rose.ico`, 6 tailles,
+  112 510 o) → **rose.exe**, le moteur. C'est le LOGO DE BASE.
+- `rose_shell.ico` (7 tailles, 113 565 o, fenêtre de terminal) →
+  **rose-shell.exe** et **rose-aot.exe** UNIQUEMENT.
+- `rose_setup.ico` → **rose-setup.exe** (la boîte d'installation).
+- `rose_app.ico` dans `bin\` = copie de `rose.ico` (raccourcis, profil
+  Windows Terminal). Elle recevait `rose_shell.ico` : erreur corrigée.
+- Vérification : `llvm-readobj --coff-resources <fichier>.res` → `rose.res`
+  doit avoir **6** icônes, `rose-shell.res` **7**. Dans `rose-setup.res`,
+  RCDATA 6 et 7 doivent peser **112 510 o** chacun.
+- `llvm-windres rose/rose.rc --target=pe-x86-64 -O coff -o x.res` compile
+  sous Linux (rc=0, 113 300 o) : la vérification des `.rc` est possible sans
+  Windows. En revanche la cible `x86_64-pc-windows-msvc` NE COMPILE PAS ici
+  (`windows_compat.c` → `cc: unrecognized option '-m64'`).
+
+**PATH : trois bugs qui font échouer `rose` après installation.**
+1. LECTURE : `ligne.split_whitespace()` puis `parts[2..].join(" ")`
+   reconstruit de travers un chemin avec espace
+   (`C:\Program Files\Rose\bin`). → couper sur le TYPE
+   (`REG_EXPAND_SZ` / `REG_SZ`), jamais sur les espaces.
+2. FILTRE : `contains("\rose")` retirait AUSSI le bon dossier. → comparer
+   les derniers éléments normalisés.
+3. SUR-FILTRAGE : `avant == "rose"` retirait un dossier Rose LÉGITIME dès
+   qu'on installait ailleurs. Mesuré : gardés = `['C:\Windows\System32']`
+   seulement, le bon dossier PERDU. → ne retirer que si le dossier n'a plus
+   `rose.exe` / `rose` (Rose mort), ou s'il est le dossier courant.
+4. Le même bug de LECTURE existait dans `desinstaller()` : corrigé aussi.
+5. Après écriture, `verifier_path()` RELIT le registre et CONFIRME la
+   présence de `bin\` : écrire la clé ne prouve rien.
+6. Écrire `HKCU\Environment\Path` ne met PAS à jour les processus déjà
+   lancés (VS Code ouvert avant l'installation dit « rose non reconnu »).
+   Le code diffuse `WM_SETTINGCHANGE` ; pour les shells déjà ouverts il faut
+   relancer la session ou `set PATH=%PATH%;<bin>`.
+
 ### Ce qui a été essayé et ABANDONNÉ (ne pas retenter sans preuve)
 
 - **RÉDUCTION DE BARRETT** : essayée pour remplacer `u128 % u64` dans la NTT.
