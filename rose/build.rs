@@ -79,6 +79,15 @@ fn main() {
                 continue;
             }
             println!("cargo:rerun-if-changed={rc_name}");
+            // ⚠⚠ Le `.rc` référence une icône : si SEULE l'icône change, cargo
+            // ne reconstruit pas le `.res` sans cette ligne (cache périmé —
+            // mesuré : une icône remplacée restait l'ancienne dans le .exe).
+            // On surveille donc aussi les `.ico` du dossier et le dossier
+            // des assets partagés.
+            println!("cargo:rerun-if-changed=rose.ico");
+            println!("cargo:rerun-if-changed=rose_shell.ico");
+            println!("cargo:rerun-if-changed=../installateur/assets/rose.ico");
+            println!("cargo:rerun-if-changed=../installateur/assets/rose_shell.ico");
             // llvm-windres (LLVM) -> COFF .res compatible MSVC linker.
             let mut fait = false;
             for tool in ["llvm-windres", "windres", "x86_64-w64-mingw32-windres"] {

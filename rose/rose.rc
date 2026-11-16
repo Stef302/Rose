@@ -1,19 +1,24 @@
 // Ressources de l'exécutable `rose.exe` (le MOTEUR).
 //
-// RT_ICON 1..n + RT_GROUP_ICON 1 : `rose_base.ico` — le LOGO DE BASE de Rose
-// (la rose), identique à `installateur/assets/rose.ico`.
+// RT_ICON 1..n + RT_GROUP_ICON 1 : `rose.ico` — LE LOGO DE BASE, la ROSE
+// elle-même (low-poly, rouge, tige verte). 6 tailles : 16, 32, 48, 64,
+// 128, 256. C'est exactement le fichier `rose/rose.ico` du dépôt.
 //
-// ⚠⚠ CORRECTION DU 16/11 : `rose.exe` portait `rose_shell.ico` (la fenêtre de
-// terminal avec une rose en médaillon). C'était une erreur de ma part :
-// l'utilisateur veut le LOGO DE BASE sur le moteur, comme avant.
+// ⚠⚠⚠ NE PAS CONFONDRE (vérifié visuellement le 16/11) :
+//   `rose/rose.ico`                 = LA ROSE SEULE → application (rose.exe)
+//   `installateur/assets/rose.ico`  = UN DOCUMENT « .ROSE » → type de fichier
 //
-// Les trois rôles sont maintenant :
-//   `rose_base.ico`  → rose.exe       (le logo Rose)
+// J'avais d'abord posé une copie `rose_base.ico` de
+// `installateur/assets/rose.ico` — donc le DOCUMENT sur le moteur. C'était
+// faux deux fois : ce n'était pas `rose.ico`, et ce n'était pas la rose.
+//
+// Les trois rôles :
+//   `rose.ico`       → rose.exe       (la rose, logo de base)
 //   `rose_shell.ico` → rose-shell.exe (la console : terminal + invite)
 //   `rose_setup.ico` → rose-setup.exe (la boîte d'installation)
 //
-// ⚠ `rose_base.ico` est une COPIE de `installateur/assets/rose.ico` placée
-// dans `rose/` : `build.rs` tourne avec `rose/` pour répertoire courant,
-// `llvm-windres` résout donc `rose_base.ico` relativement à `rose/`.
+// ⚠ `rose-aot` n'est PAS un binaire installé : c'est le helper LLVM que
+// `rose.exe` télécharge à la demande (auto_llvm.rs). Son `.rc` ne sert qu'à
+// l'artefact de release.
 
-1 ICON "rose_base.ico"
+1 ICON "rose.ico"

@@ -10,7 +10,6 @@
 #
 # Sortie : rose/target/x86_64-pc-windows-msvc/release/
 #   rose.exe         moteur (console)
-#   rose-aot.exe     helper AOT LLVM ORC (console)
 #   rose-shell.exe   console interactive de Rose (REPL, console)
 #   rose-setup.exe   installeur graphique (GUI, publié Rose-win-Setup.exe)
 #
@@ -60,7 +59,11 @@ export CFLAGS_x86_64_pc_windows_msvc="-isystem $X/crt/include -isystem $X/sdk/in
 export RUSTFLAGS="-L $X/crt/lib/x86_64 -L $X/sdk/lib/ucrt/x86_64 -L $X/sdk/lib/um/x86_64 -C target-feature=+crt-static"
 
 cd "$RACINE/rose"
-cargo build --release --target "$TARGET" --bin rose --bin rose-aot --bin rose-setup --bin rose-shell
+# ⚠⚠ `rose-aot` N'EST PAS CONSTRUIT POUR LA DISTRIBUTION : le stub
+# (sans feature `llvm`) ne peut rien compiler. Le VRAI helper LLVM est
+# téléchargé à la demande par `rose.exe` (auto_llvm.rs). Livrer le stub
+# laissait croire qu'il fonctionnait.
+cargo build --release --target "$TARGET" --bin rose --bin rose-setup --bin rose-shell
 
 R="$RACINE/rose/target/$TARGET/release"
 
@@ -71,21 +74,23 @@ STAGE="$RACINE/installateur/velopack/stage"
 mkdir -p "$STAGE/payload"
 cp "$R/rose-setup.exe" "$STAGE/Rose-win-Setup.exe"
 cp "$R/rose.exe" "$STAGE/rose.exe"
-cp "$R/rose-aot.exe" "$STAGE/rose-aot.exe"
 cp "$R/rose-shell.exe" "$STAGE/rose-shell.exe"
 cp "$R/rose.exe" "$STAGE/payload/rose.exe"
+# ⚠ `rose.ico` dans bin\ = le DOCUMENT (.ROSE), type de fichier.
 cp "$RACINE/installateur/assets/rose.ico" "$STAGE/rose.ico"
-# ⚠⚠ CORRECTION DU 16/11 : `rose_app.ico` (profil Windows Terminal, raccourci)
-# est le LOGO DE BASE (`rose.ico`), plus la fenêtre de console. `rose_shell.ico`
-# ne va que sur `rose-shell.exe` / `rose-aot.exe`, via leurs `.rc`.
-cp "$RACINE/installateur/assets/rose.ico" "$STAGE/rose_app.ico"
+# ⚠⚠⚠ DEUX fichiers `rose.ico` DIFFÉRENTS : `installateur/assets/rose.ico` =
+# un DOCUMENT « .ROSE » (type de fichier) ; `rose/rose.ico` = LA ROSE (logo de
+# l'application). `rose_app.ico` reçoit LA ROSE. `rose_shell.ico` ne va que
+# sur `rose-shell.exe`, via son `.rc`.
+# ⚠ `rose_app.ico` = LA ROSE (`rose/rose.ico`), pas le document.
+cp "$RACINE/rose/rose.ico" "$STAGE/rose_app.ico"
 # L'icône de l'INSTALLEUR reste disponible dans la distribution : elle est
 # liée dans `rose-setup.exe` (via rose-setup.res) et sert à l'Explorateur.
 cp "$RACINE/installateur/assets/rose_setup.ico" "$STAGE/rose_setup.ico"
 cp "$RACINE/LICENSE" "$STAGE/LICENSE"
 echo
 echo "Binaires produits :"
-for f in rose.exe rose-aot.exe rose-shell.exe rose-setup.exe; do
+for f in rose.exe rose-shell.exe rose-setup.exe; do
   printf '  %-16s %10s o  %s\n' "$f" "$(stat -c%s "$R/$f")" "$(file -b "$R/$f" | cut -d, -f1-2)"
 done
 
