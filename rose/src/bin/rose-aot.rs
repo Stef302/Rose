@@ -15,6 +15,11 @@
 // besoin que du front-end, du runtime et de la chaîne LLVM.
 #[path = "../front.rs"]
 mod front;
+// ⚠⚠⚠ LE RIR EST NÉCESSAIRE AU FRONT : `Instr::Rir` et `Signature::rir`
+// citent `crate::rir` (voir `front.rs`). Le helper AOT ne l'exécute pas, mais
+// le module doit exister pour que le front compile.
+#[path = "../rir.rs"]
+mod rir;
 #[path = "../run.rs"]
 mod run;
 #[path = "../i128x.rs"]
