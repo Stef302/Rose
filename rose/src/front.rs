@@ -1,4 +1,4 @@
-// Rose — front-end fidèle au moteur C++ (moteur/cpp/src/rose.cpp).
+// Rose — front-end du langage (lexeur, analyse, repli, vérification).
 // Lexeur, AST, vérificateur, repli de constantes — messages identiques.
 // Licence MIT.
 
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub type Err = String;
 
 pub fn fmt_err(msg: &str, l: usize, c: usize) -> Err {
-    // préfixe d'affichage par le CLI, comme le moteur C++ :
+    // préfixe d'affichage par le CLI :
     // « Rose : erreur — … » sur stderr.
     let corps = if l == 0 { msg.to_string() }
     else { format!("[Ligne {}, Colonne {}] {}", l, c, msg) };
@@ -263,7 +263,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             // de DEUX caractères `!=` (et `!=` est la forme ASCII de `≠`).
             //
             // BUG MESURÉ (16/11) : `tant_que ($z != 10)` était refusé
-            // (« Attendu ')', trouvé '=' ») et le moteur C++ de référence
+            // (« Attendu ')', trouvé '=' ») et le langage Rose
             // ACCEPTAIT le même programme. Cause : ce bloc avalait le `!`
             // comme postfixe (`MultiFacto`) AVANT que la paire `!=` ne soit
             // reconnue — le lexeur produisait « $z ! » puis « = ».
@@ -335,7 +335,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             while i < n && cp_ident_suite(cps[i]) { i += 1; col += 1; }
             let texte: String = cps[debut..i].iter().collect();
             if dollar {
-                // le C++ n'interdit pas les mots-cles apres '$' ($de, $si sont des
+                // les mots-clés après '$' sont permis ($de, $si sont des
                 // noms valides) — miroir strict, aucun controle ici.
                 let nu = texte[1..].to_string();
                 tk.push(Token { tk: Tk::Ident, texte: nu, ligne: dl, col: dc });
@@ -360,7 +360,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             i += 2; col += 2; continue;
         }
         if c == '-' && i + 1 < n && cps[i + 1] == '>' {
-            // '->' de signature : émis comme deux tokens (comme le C++, qui a un
+            // '->' de signature : émis comme deux tokens (le lexer a un
             // token PointDInterro ; on garde '-' puis '>' et le parser accepte)
             tk.push(Token { tk: Tk::Moins, texte: "-".into(), ligne, col });
             tk.push(Token { tk: Tk::Sup, texte: ">".into(), ligne, col: col + 1 });
@@ -474,7 +474,7 @@ pub fn deplier_i_rec(e: &mut Expr) {
     }
 }
 
-/// Ligne d'un noeud d'expression (miroir de e->ligne du C++) : sert aux
+/// Ligne d'un noeud d'expression (numéro de ligne du nœud) : sert aux
 /// messages d'erreur du vérificateur et du repli de constantes.
 pub fn ligne_expr(e: &Expr) -> usize {
     match e {
@@ -537,7 +537,7 @@ impl Default for Programme {
     }
 }
 
-// ── Bibliothèque standard (table STDLIB du C++) ───────────────────────────
+// ── Bibliothèque standard (table STDLIB) ───────────────────────────
 
 pub struct EntreeStd { pub nom: &'static str, pub args: &'static [&'static str], pub retour: &'static str }
 
@@ -835,7 +835,7 @@ impl Parser {
             }
             None
         };
-        // C++ ne force a_retour qu'EN ABSENCE de corps déclaré (rose.cpp:617,
+        // règle : a_retour n'est forcé qu'EN ABSENCE de corps déclaré (
         // dans la branche « corps ») ; avec un corps, a_retour reste faux tant
         // que « -> type » est absent — le vérificateur s'en sert pour refuser
         // « retour » hors de fonction et exiger le type de retour déclaré.
@@ -922,7 +922,7 @@ impl Parser {
                 let valeur = self.expression()?;
                 return Ok(Instr::AffectIndex { nom, index, valeur, ligne: t.ligne });
             }
-            // affectation d'un mot non dollar : « b = a % b » (comme le C++,
+            // affectation d'un mot non dollar : « b = a % b » (règle du langage,
             // qui tokenise « b » en Mot puis le traite comme une variable).
             if self.voir(1).tk == Tk::Affect {
                 let nom = self.nom_ident()?;
@@ -1357,7 +1357,7 @@ impl Parser {
     }
 }
 
-// ── Vérificateur (miroir de Verificateur du C++) ─────────────────────────
+// ── Vérificateur ─────────────────────────
 
 fn nom_fonction_connue(prog: &Programme, module: &str, nom: &str) -> bool {
     if !module.is_empty() { return module == "dynamique"; }
@@ -1435,7 +1435,7 @@ pub fn verifier(prog: &mut Programme) -> Result<(), Err> {
 }
 
 fn verifier_nom_reserve(nom: &str, ligne: usize) -> Result<(), Err> {
-    // miroir C++ verifier_nom_reserve : « t1 », « t2 »… sont des temporaires
+    // règle du langage : « t1 », « t2 »… sont des temporaires
     // du JIT, interdits comme noms de variable.
     let b = nom.as_bytes();
     if b.len() > 1 && b[0] == b't' && b[1..].iter().all(|c| c.is_ascii_digit()) {
@@ -1457,7 +1457,7 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 }
             }
             Instr::Lire { nom, ty, ligne } => {
-                // miroir C++ IK::Lire (rose.cpp:1280-1293) : variable inconnue ->
+                // règle du langage : variable inconnue ->
                 // entier ; variable existante -> entier/flottant/rationnel sinon erreur.
                 if let Some(t) = env.get(nom) {
                     if !matches!(t.n, TyKind::Entier | TyKind::Flottant | TyKind::Rationnel) {
@@ -1468,13 +1468,13 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 } else {
                     verifier_nom_reserve(nom, *ligne)?;
                 }
-                // le C++ typer la lue en ENTIER si inconnue, sinon garde le type
-                // existant (rose.cpp:1283-1292 : instr->type_read = T_ENTIER / existant)
+                // la lecture est typée ENTIER si inconnue, sinon garde le type
+                // existant (le type de lecture est celui de la variable)
                 let t_final = env.get(nom).cloned().unwrap_or_else(|| Ty::simple(TyKind::Entier));
                 env.insert(nom.clone(), t_final);
             }
             Instr::Affect { nom, e, ligne } => {
-                // miroir C++ instruction() IK::Affectation : le nom réservé est
+                // règle du langage : le nom réservé est
                 // vérifié APRÈS l'expression ; et « valeur sans type » rejeté.
                 // Si la variable « i » est déjà un entier (compteur de boucle),
                 // tout littéral imaginaire pur de l'expression est en réalité
@@ -1497,7 +1497,7 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 // affectation dans une variable existante : contrôle de domaine
                 let mut cible = t.clone();
                 // si la variable est un global, on la traite comme un shadow
-                // (pas de contrôle de type, comme le moteur C++)
+                // (pas de contrôle de type)
                 let is_global = GLOBALS.with(|g| g.borrow().contains_key(nom));
                 let existante = if is_global { None } else { env.get(nom).cloned() };
                 if let Some(ex) = &existante {
@@ -1565,7 +1565,7 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 verifier_bloc(prog, corps, env, retour, en_fonction)?;
             }
             Instr::Retour(e, lg) => {
-                // miroir C++ instruction() IK::Retour : « retour » hors de
+                // règle du langage : « retour » hors de
                 // fonction, et « La fonction doit retourner un X » si le corps
                 // omet le retour attendu.
 
@@ -1591,8 +1591,8 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                                 *lg, 0));
                         }
                     }
-                    // C++ ne signale « La fonction doit retourner un X » que
-                    // sur un « retour » SANS expression (rose.cpp:1346-1348) ;
+                    // le message « La fonction doit retourner un X » n'apparaît que
+                    // sur un « retour » SANS expression ;
                     // un corps qui omet tout retour n'est pas vérifié.
                     None => {
                         if retour.n != TyKind::Vide {
@@ -1661,10 +1661,10 @@ fn exiger_booleen(t: &Ty, ligne: usize, quoi: &str) -> Result<(), Err> {
     Ok(())
 }
 
-/// Miroir exact de Verificateur::verifier_args (rose.cpp:1206-1244).
+/// Règle exacte de la vérification des arguments.
 /// Chaque attendu : "entier", "flottant", "num", "booleen", "chaine", "liste",
 /// "table", "tampon", "liste_ou_chaine_ou_table", "liste_elt", "tout".
-/// Miroir exact de Verificateur::verifier_args (rose.cpp:1514-1551).
+/// Règle exacte de la vérification des arguments.
 fn verifier_type_std(nom: &str, attendus: &[&str], args: &[Expr],
                      env: &mut HashMap<String, Ty>, prog: &Programme,
                      ligne: usize) -> Result<(), Err> {
@@ -1732,10 +1732,10 @@ fn verifier_type_std(nom: &str, attendus: &[&str], args: &[Expr],
                 }
             }
             "table" => {
-                // le C++ n'a PAS de branche « table » dans verifier_args :
+                // la vérification des arguments n'a PAS de branche « table » :
                 // l'appel passe la vérification statique et l'erreur
                 // « <nom> attend une table » est levée à l'EXÉCUTION, sans
-                // ligne (rose.cpp:2616-2643). Même comportement ici.
+                // ligne. Même comportement ici.
             }
             _ => { /* "tout" et inconnu : tout type est accepté (afficher_erreur) */ }
         }
@@ -1744,7 +1744,7 @@ fn verifier_type_std(nom: &str, attendus: &[&str], args: &[Expr],
 }
 
 fn nom_pour_msg(t: &Ty) -> String {
-    // le C++ affiche T_VALEUR « ? » dans les messages du vérificateur ;
+    // le message affiche « ? » pour un type non résolu ;
     // côté rose-20 c'est Dyn, et une liste d'élément Dyn garde liste<?>
     match t.n {
         TyKind::Dyn => "?".into(),
@@ -1793,7 +1793,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             Err(fmt_err(&format!("Variable '{}' utilisée sans valeur", n), *l, 0))
         }
         Expr::ListeLit(el, ligne) => {
-            // miroir C++ NK::ListeLit (rose.cpp:1393-1407)
+            // liste littérale
             let ligne = *ligne;
             if el.is_empty() {
                 return Err(fmt_err("Liste vide : le type d'élément est introuvable", ligne, 0));
@@ -1815,12 +1815,12 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             Ok(Ty::liste(t_elt.n))
         }
         Expr::TableLit(el, ligne) => {
-            // miroir C++ NK::TableLit (rose.cpp:1408-1420)
+            // table littérale
             let ligne = *ligne;
             Ok(Ty::simple(TyKind::Table))
         }
         Expr::Unaire { op, a, ligne } => {
-            // miroir C++ NK::Unaire
+            // opérateur unaire
             let t = expr_type(prog, a, env)?;
             if op == "non" {
                 exiger_booleen(&t, *ligne, "non")?;
@@ -1891,7 +1891,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             Ok(Ty::simple(TyKind::Entier))
         }
         Expr::Index { a, b, ligne } => {
-            // miroir C++ NK::Index (rose.cpp:1409-1424)
+            // accès par index
             let ligne = *ligne;
             let tb = expr_type(prog, a, env)?;
             let ti = expr_type(prog, b, env)?;
@@ -1905,7 +1905,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 {
                     return Err(fmt_err("Index d'une table doit être un texte ou un nombre", ligne, 0));
                 }
-                return Ok(Ty { n: TyKind::Dyn, elt: TyKind::Dyn });   // T_VALEUR côté C++
+                return Ok(Ty { n: TyKind::Dyn, elt: TyKind::Dyn });   // type non résolu
             }
             if ti.n != TyKind::Entier {
                 return Err(fmt_err(if tb.n == TyKind::Chaine { "Index d'une chaîne doit être entier" }
@@ -1917,7 +1917,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                else { Ty::simple(tb.elt) })
         }
         Expr::Binaire { op, a, b, ligne } => {
-            // miroir exact Verificateur::binaire (rose.cpp:1450-1510)
+            // règle exacte la vérification des binaires
             let ligne = *ligne;
             let ta = expr_type(prog, a, env)?;
             let tb = expr_type(prog, b, env)?;
@@ -2032,7 +2032,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 return Err(fmt_err(&format!("Fonction '{}' inconnue", nom), ligne, 0));
             }
 
-            // conversions à un argument — miroir C++ rose.cpp:1564-1579
+            // conversions à un argument
             if args.len() == 1 && matches!(nom.as_str(), "entier" | "rationnel" | "flottant" | "chaine") {
                 let cible = match nom.as_str() {
                     "entier" => Ty::simple(TyKind::Entier),
@@ -2058,7 +2058,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                     return Err(fmt_err(&format!("{} attend {} argument(s), reçu {}",
                         nom, sig.params.len(), args.len()), ligne, 0));
                 }
-                // miroir C++ rose.cpp:1589-1596 : le type de chaque argument est
+                // règle du langage : le type de chaque argument est
                 // comparé au paramètre (promotion numérique admise dans le sens
                 // ta -> t_att uniquement).
                 for (i, a) in args.iter().enumerate() {
@@ -2076,7 +2076,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 return Ok(sig.retour.clone());
             }
             if !module.is_empty() {
-                // miroir C++ rose.cpp:1555-1562
+                // règle du langage
                 if !matches!(nom.as_str(), "charger" | "fermer" | "appeler0" | "appeler1" | "appeler2") {
                     return Err(fmt_err(&format!(
                         "Fonction dynamique::{} inconnue \
@@ -2094,8 +2094,8 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             if args.len() != sd.args.len() {
                 return Err(fmt_err(&format!("{} attend {} argument(s), reçu {}", nom, sd.args.len(), args.len()), ligne, 0));
             }
-            // miroir Verificateur::verifier_args : le TYPE de chaque argument est
-            // vérifié contre la table STDLIB (les messages exacts viennent du C++)
+            // miroir la vérification des arguments : le TYPE de chaque argument est
+            // vérifié contre la table STDLIB (messages du vérificateur)
             verifier_type_std(nom, sd.args, args, env, prog, ligne)?;
             match sd.retour {
                 "MIXTE" => {
@@ -2113,9 +2113,9 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
     }
 }
 
-// ── Repli de constantes (miroir de replier() du C++) ──────────────────────
+// ── Repli de constantes ──────────────────────
 
-// Calcule a op b sur la chaîne de littéral, comme le C++ : flottants en
+// Calcule a op b sur la chaîne de littéral : flottants en
 // double, sinon rationnels exacts sur des i128 bornés ; si le nombre dépasse
 // i128, on laisse l'expression telle quelle (évaluée à l'exécution, même
 // résultat exact).
@@ -2178,7 +2178,7 @@ pub fn replier(e: &Expr) -> Expr {
                     let vb = lit_d(tb, *fb);
                     let r = match op.as_str() {
                         "+" => Some(va + vb), "-" => Some(va - vb), "*" => Some(va * vb),
-                        // miroir du C++ (fold_bin) : une division flottante par zéro au
+                        // repli de constantes : une division flottante par zéro au
                         // repli → return nullptr → on NE replie pas ; l'erreur « division
                         // par zéro » n'est levée qu'au runtime, via binaire().
                         "/" => { if vb == 0.0 { None } else { Some(va / vb) } }
@@ -2296,7 +2296,7 @@ fn a_or(e: Expr, _a: &Expr, _b: &Expr, _op: &str) -> Expr {
 }
 
 fn lit_d(t: &str, _flott: bool) -> f64 {
-    // « p/q » : strtod s'arrête à '/', on divise par le dénominateur (miroir C++)
+    // « p/q » : strtod s'arrête à '/', on divise par le dénominateur
     let d: f64 = t.parse().unwrap_or(f64::NAN);
     if let Some(p) = t.find('/') {
         let a: f64 = t[..p].parse().unwrap_or(f64::NAN);
@@ -2326,7 +2326,7 @@ fn pgcd128(a: num_bigint::BigInt, b: num_bigint::BigInt) -> num_bigint::BigInt {
     a
 }
 
-// Formatteur « plus court fidèle » : miroir de texte_flottant (C++ %.*g).
+// Formatteur « plus court fidèle » : format « plus court fidèle » (%.*g).
 pub fn texte_flottant(d: f64) -> String {
     if d == 0.0 { return if d.is_sign_negative() { "-0.0".into() } else { "0.0".into() }; }
     for p in 1..=17usize {
@@ -2406,7 +2406,7 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
     // (« $i = 0 + i » -> 0+1i, « $i + 1 » -> 1+1i) alors que « i » est le
     // COMPTEUR ENTIER. On replie donc d'abord, on repare la signature du
     // compteur, puis on verifie : c'est le seul ordre qui donne la meme
-    // decision aux voies « comp », JIT et interpreteur (parite avec le C++,
+    // decision aux voies « comp », JIT et interpreteur (parité entre voies,
     // qui suit « i » par un etat de l'interpreteur).
     // repli de constantes sur les instructions
     prog.instructions = prog.instructions.iter().map(|i| replier_instr(i)).collect();
@@ -2419,7 +2419,7 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
     // Le repli de constantes a pu FUSIONNER des litteraux en 0+1i / k+ki alors
     // que « i » est le COMPTEUR ENTIER du programme (« $i = 0 + i », le test
     // « @ (i < n) », l'increment « $i = $i + 1 »). Le parser ne peut pas le
-    // voir sans borne de boucle en vue ; le C++ suit « i » par un etat de
+    // voir sans borne de boucle en vue ; le moteur suit « i » par un état de
     // l'interpreteur, on le reproduit par une pre-passe qui decide une fois
     // pour toutes si « i » est un entier. Sans cette passe, « comp » rejette
     // un programme que l'execution accepte (divergence des voies).
@@ -2520,7 +2520,7 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
         r
     };
     // le drapeau est partage par tout le processus (miroir de l'etat de
-    // l'interpreteur C++) : les portes d'execution de interp.rs le lisent.
+    // l'interpréteur) : les portes d'execution de interp.rs le lisent.
     I_COMPTEUR.with(|c| c.set(i_compteur || c.get()));
     I_BBOUCLE.with(|c| c.set(i_boucle || c.get()));
     {
@@ -2744,7 +2744,7 @@ fn t_ligne(tk: &[Token], pos: usize) -> usize {
 #[cfg(test)]
 mod tests_diff_operateur {
     //! ⚠⚠⚠ GARDE-FOU DU BUG MESURÉ (16/11) : `tant_que ($z != 10)` était
-    //! REFUSÉ (« Attendu ')', trouvé '=' ») alors que le moteur C++ de
+    //! REFUSÉ (« Attendu ')', trouvé '=' ») alors que le langage
     //! référence l'acceptait. Le lexeur avalait le `!` comme factorielle
     //! postfixe AVANT de reconnaître la paire `!=`.
     use super::*;

@@ -1,5 +1,5 @@
 // Rose — interpréteur d'arbre complet : instructions, expressions,
-// bibliothèque standard (miroir du moteur C++), FFI dynamique::, RNG.
+// bibliothèque standard, FFI dynamique::, RNG.
 // Sert de repli au JIT (mêmes sorties) et de moteur pour les types non
 // compilables (chaînes, rationnels, listes, tables, tampons).
 // Licence MIT.
@@ -526,7 +526,7 @@ impl Interp {
             jit: HashMap::new(),
             jit_principal: None,
             // état initial : pid × constante d'or XOR adresse ASLR d'une variable
-            // globale (miroir du g_rng_etat du moteur C++), pour que deux
+            // globale, pour que deux
             // exécutions successives sans graine() ne rendent pas la même suite.
             rng: {
                 use std::collections::hash_map::DefaultHasher;
@@ -557,7 +557,7 @@ impl Interp {
     }
 
     fn affecter(&mut self, nom: &str, v: Valeur) {
-        // miroir C++ : la variable existante garde son type (conversion)
+        // règle du langage : la variable existante garde son type (conversion)
         let (ty, existe) = {
             let f = self.trames.last().unwrap();
             match f.get(nom) {
@@ -568,7 +568,7 @@ impl Interp {
                 },
             }
         };
-        // miroir C++ : convertir() ne convertit QUE vers entier/rationnel/
+        // règle du langage : convertir() ne convertit QUE vers entier/rationnel/
         // flottant ; les autres cibles (table, liste, chaine…) gardent la
         // valeur telle quelle (variable à type dynamique).
         let v = match ty {
@@ -596,7 +596,7 @@ impl Interp {
     }
 
     pub fn executer_principal(&mut self) {
-        // voie JIT du corps principal (miroir C++ $principal natif) : si le
+        // voie JIT du corps principal : si le
         // corps entier est dans le sous-ensemble, on saute l'interpréteur.
         if let Some(Compile::Principal(f)) = self.jit_principal.take() {
             f();
@@ -838,7 +838,7 @@ impl Interp {
         // (facteur 8), alors que le code natif était déjà compilé.
         //
         // ⚠ La conversion ne sert QUE à la voie interpréteur (le JIT exige des
-        // valeurs déjà conformes, comme le JIT C++ qui émet les conversions à
+        // valeurs déjà conformes (les conversions sont émises à
         // l'appel). On la déplace donc APRÈS le test JIT : une fonction
         // compilée ne paie plus aucune allocation d'arguments.
         if let Some(Compile::Natif(f)) = self.jit.get(&sig.nom) {
@@ -877,7 +877,7 @@ impl Interp {
             // fonction (tous les `Instr`, toutes les `Expr`, tous les
             // `String`) À CHAQUE APPEL. Sur une récursion de 100 000 appels,
             // cela faisait déborder la pile (mesuré : `it(10000)` = « stack
-            // overflow ») alors que le moteur C++ de référence, qui n'a pas ce
+            // overflow ») alors que le moteur, qui n'a pas ce
             // clonage, répond 450015000. Le corps vit dans `self.prog`, qui
             // ne change pas pendant l'exécution : un emprunt suffit.
             //
@@ -900,7 +900,7 @@ impl Interp {
         self.trames.pop();
         let _ = code;
         // le rendu est converti vers le type déclaré (booleen ⇄ entier compris),
-        // comme le moteur C++ qui rend une Valeur déjà typée.
+        // la valeur rendue est déjà typée.
         Ok(match sig.retour.n {
             TyKind::Booleen => match &res {
                 Valeur::Booleen(_) => res,
@@ -961,7 +961,7 @@ impl Interp {
         // Rust (`exec_bloc_retour` → `exec_bloc_retour`), et l'appel récursif
         // de la fonction Rose en ajoutait encore un. Mesuré : `it(10000)`
         // (récursion 10 000, multiplication entière donc hors JIT) faisait
-        // déborder la pile alors que le moteur C++ de référence répond
+        // déborder la pile alors que le moteur de référence répond
         // 450015000 — et le JIT, lui, compile les « si » en BRANCHES, sans
         // pile. Un « si » ne doit donc coûter AUCUN niveau : on le déroule
         // avec une boucle et une pile d'états locaux (indice dans le bloc
@@ -1087,7 +1087,7 @@ impl Interp {
         // ⚠⚠⚠ PROFONDEUR DE RÉCURSION D'`eval` (ROSE_PROFIL_PILE=1).
         //
         // Mesuré le 16/11 : `it(10000)` (récursion 10 000) débordait la pile
-        // alors que le moteur C++ de référence répond 450015000. Ce compteur
+        // alors que le moteur répond 450015000 en 0,06 s. Ce compteur
         // dit si le coût est dans l'appel de fonction Rose ou dans
         // l'évaluation de l'expression `n * n - it(n - 1)` (chaque `eval`
         // récursif sur `Binaire`/`Unaire` ajoute un niveau).
@@ -1112,7 +1112,7 @@ impl Interp {
                 // le programme en fait reellement une variable : c'est ce que
                 // decide verifier(), qui verrouille « i » comme entier quand il
                 // voit « $i = <entier> ». Hors de ce verrou, « >> 2*i » et
-                // « >> i » sont le VRAI imaginaire (parite avec le moteur C++,
+                // « >> i » sont le VRAI imaginaire (règle du langage,
                 // qui rend « Variable 'i' utilisee sans valeur »).
                 if *re == 0.0 && *im == 1.0 {
                     // Le lexème « i » n'est la VARIABLE entière que dans un
@@ -1353,7 +1353,7 @@ impl Interp {
             _ => {}
         }
         // add. (chaînes) — le parser n'émet jamais « add. » ; la concaténation
-        // passe par l'opérateur « + » (comme dans le C++, + sur chaînes).
+        // passe par l'opérateur « + » (+ sur chaînes).
         if op == "+" {
             if let (Valeur::Chaine(x), Valeur::Chaine(y)) = (&g, &d) {
                 return Ok(Valeur::s(format!("{}{}", x, y)));
@@ -1500,7 +1500,7 @@ impl Interp {
                 Ok(Valeur::zg(r))
             }
             "%" => {
-                // miroir C++ (verificateur ligne 1487) : le modulo n'accepte
+                // règle du langage : le modulo n'accepte
                 // que deux entiers — un operand rationnel/flottant est une
                 // erreur, jamais une promotion silencieuse.
                 if rnk(&g) != 1 || rnk(&d) != 1 {
@@ -1573,7 +1573,7 @@ impl Interp {
         // (tous les `Instr`, toutes les `Expr`, tous les `String`). Sur une
         // récursion profonde, cela faisait déborder la pile : mesuré,
         // `it(10000)` (récursion 10 000, multiplication entière donc hors
-        // JIT) échouait en « stack overflow » alors que le moteur C++ de
+        // JIT) échouait en « stack overflow » alors que le moteur de
         // référence répond 450015000. Un emprunt suffit : `self.prog` ne
         // change pas pendant l'exécution.
         //
@@ -1585,8 +1585,8 @@ impl Interp {
         };
         if !sig_ptr.is_null() {
             let sig: &Signature = unsafe { &*sig_ptr };
-            // fonction externe @dll/@sym sans corps : FFI directe (miroir C++
-            // rose.cpp:3719-3727 -> ffi_appeler).
+            // fonction externe @dll/@sym sans corps : FFI directe (
+            // ffi_appeler).
             if sig.corps.is_none()
                 && !(sig.dll.is_empty() && sig.dll_son.is_empty() && sig.symbole.is_empty())
             {
@@ -1603,7 +1603,7 @@ impl Interp {
         self.stdlib(nom, &a)
     }
 
-    /// Poignée de bibliothèque pour une signature @dll/@sym (miroir C++
+    /// Poignée de bibliothèque pour une signature @dll/@sym (
     /// ffi_poignee : candidats lib<n>.so, <n>.so, <n>, lib<n>.so.6/7/8).
     fn ffi_poignee(&mut self, sig: &Signature) -> *mut std::ffi::c_void {
         let nom = if !sig.dll_son.is_empty() { sig.dll_son.clone() }
@@ -1626,7 +1626,7 @@ impl Interp {
         std::ptr::null_mut()
     }
 
-    /// Appel FFI d'une fonction externe (miroir C++ ffi_appeler rose.cpp:3253) :
+    /// Appel FFI d'une fonction externe (ffi_appeler) :
     /// entier→long long, flottant→double, booleen→int, chaine→char*.
     fn ffi_appeler(&mut self, sig: &Signature, args: &[Valeur]) -> Result<Valeur, Option<i32>> {
         use crate::front::TyKind as K;
@@ -2660,7 +2660,7 @@ impl Interp {
                 }
             }
             "min" | "max" => {
-                // miroir C++ : les deux valeurs sont d'abord converties vers le
+                // règle du langage : les deux valeurs sont d'abord converties vers le
                 // rang max (entier<rationnel<flottant), puis comparées.
                 let rang = |v: &Valeur| -> u8 {
                     match v {
@@ -2678,7 +2678,7 @@ impl Interp {
                 if (c <= 0 && take_min) || (c >= 0 && !take_min) { x } else { y }
             }
             "partie_entiere" => {
-                // miroir C++ : floor exact (rationnel → fdiv_q, flottant → floor).
+                // floor exact (rationnel → fdiv_q, flottant → floor).
                 match &a[0] {
                     Valeur::Rationnel(q) => {
                         let z = Gz::neuf();
@@ -2706,10 +2706,10 @@ impl Interp {
                 Valeur::qq(q)
             }
             _ => {
-                // miroir C++ (rose.cpp ~3668) : un corps de fonction
+                // règle du langage : un corps de fonction
                 // utilisateur appele par un chemin non resolu (par ex. via
                 // une expression dans une position non-Eval) — message et
-                // code 1 identiques au moteur C++.
+                // code 1 identiques au moteur.
                 if self.prog.signatures.contains_key(nom) {
                     #[cfg(not(target_arch = "wasm32"))]
                     {
@@ -2754,7 +2754,7 @@ fn est_increment_corrompu(e: &crate::front::Expr) -> bool {
     // n'est pose que par « pour i de … », « tant_que (i < n) » ou
     // « $i = $i + k ». Une simple affectation « $i = 5 » ne suffit pas : elle
     // laisserait « $i = 1+1i » (VRAI complexe) se faire transformer en
-    // incrément, ce qui divergerait du moteur C++.
+    // incrément, ce qui divergerait du comportement attendu.
     crate::front::i_est_boucle()
         && matches!(e, crate::front::Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0)
 }
@@ -2997,7 +2997,7 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
                 _ => false,
             }
         }
-        // le raccourci « @ (i < 2) [ … ] » (miroir du C++) et toute comparaison
+        // le raccourci « @ (i < 2) [ … ] » et toute comparaison
         // d'ordre avec le 0+1i : le parser n'a pas vu de borne de boucle, donc
         // « i » reste replié en imaginaire pur et le vérificateur refuserait
         // « Ordre complexe < entier impossible ». Le 0+1i comparé à un nombre
@@ -3211,7 +3211,7 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
                     }
                     Instr::Si { test, alors, sinon, ligne } => {
                         // le raccourci « @ (i < 2) » (boucle du compteur, miroir
-                        // du C++) est le seul « si » dont le test compare la
+                        // du langage) est le seul « si » dont le test compare la
                         // VARIABLE entière « i » repliée en 0+1i.
                         let mut t2 = reparer_expr(test);
                         if est_boucle_i_repar(test) { crate::front::deplier_i_rec(&mut t2); }
@@ -3355,7 +3355,7 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
 }
 
 pub fn version() -> String {
-    format!("Rose {} — compilateur Rust + JIT Cranelift (sémantique du moteur C++)", env!("CARGO_PKG_VERSION"))
+    format!("Rose {} — compilateur Rust + JIT Cranelift (sémantique exacte)", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn info() -> String {

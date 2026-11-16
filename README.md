@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/version-0.1.5-E6202A?style=for-the-badge" alt="version">
   <img src="https://img.shields.io/badge/moteur-Rust%20%2B%20Cranelift%20%2B%20LLVM-000000?style=for-the-badge" alt="moteur">
   <img src="https://img.shields.io/badge/licence-MIT-8CE026?style=for-the-badge" alt="licence">
-  <img src="https://img.shields.io/badge/parité%20C++-54%2F54-8CE026?style=for-the-badge" alt="parité">
+  <img src="https://img.shields.io/badge/parité%20interpr%C3%A9teur%20%C2%B7%20JIT%20%C2%B7%20AOT-identique-8CE026?style=for-the-badge" alt="parité">
   <img src="https://img.shields.io/badge/bench%20global-0.09s-8CE026?style=for-the-badge" alt="bench">
 </p>
 
@@ -25,7 +25,8 @@ vérificateur, émetteur RIR) sont réécrits en Rose et rendent la sortie de l'
 
 Le moteur Rust n'est qu'**une** implémentation du langage — interprète exact, JIT
 Cranelift (compilation à chaud), AOT LLVM (`rose llvm`, ORC), FFI dlopen, bundle
-AOT (`comp`), module WASM — à côté du moteur C++ de référence (parité 54/54).
+AOT (`comp`), module WASM. Les sorties sont identiques au caractère près
+entre l'interpréteur, le JIT et l'AOT (parité entre voies).
 
 ## 🚀 Démarrage rapide
 
@@ -51,13 +52,13 @@ listes, tables, récursion, RNG, fichiers) :
 | Moteur | Temps | Notes |
 |---|---|---|
 | **Rust rose (v0.1.3)** | **0,09 s** | JIT Cranelift + boucles accumulateur natives |
-| C++ (référence) | 0,19 s | JIT x64 + GMP |
+| Ancien moteur C++ | 0,19 s | **OBSOLÈTE** (conservé pour l'historique) |
 | Rust ancien (GMP) | 5,10 s | obsolète |
 | Python (archivé) | n/a | non exécutable sur ce bench |
 
 Comparatif détaillé (`comparatif_moteurs.sh`) :
 
-| Domaine | C++ | Rust rose |
+| Domaine | Ancien C++ (obsolète) | Rose actuel |
 |---|---|---|
 | boucle 10 M | 0,037 s | **0,023 s** |
 | fib(28) | 0,043 s | **0,016 s** |
@@ -122,7 +123,7 @@ complet inclus, meilleur de 40 entrelacés.
 | Moteur | Temps |
 |---|---|
 | Rust (`-O`) | ~0,9 ms |
-| C++ (`-O3`) | ~1,7 ms |
+| Ancien moteur C++ (`-O3`) | ~1,7 ms |
 | **Rose (JIT Cranelift)** | **~1,5–2,6 ms** |
 | Python (CPython) | 256 ms |
 | Rose (interprète) | ~700 ms |
@@ -133,9 +134,8 @@ Le goulot de Rose est le **démarrage** (chargement + JIT, ≈ 0,5 ms), qui a d�
 Rust (0,35 ms). Le reste de l'écart (vectorisation NEON de LLVM que Cranelift
 ne produit pas encore) est le prochain chantier.
 
-Les trois versions C++ / Rust / Python expriment le **produit complexe
-général**, comme le programme Rose — sinon la comparaison ne serait pas
-équivalente.
+Les trois implémentations expriment le **produit complexe général**, comme le
+programme Rose — sinon la comparaison ne serait pas équivalente.
 
 ## 🌐 WebAssembly — Rose sur le web
 
@@ -196,8 +196,8 @@ LaTeX, comme une ligne `%%`), puis leur valeur approchée :
 φ ≈ 1.61803398874989484820
 ```
 
-C'est le moteur C++ de référence qui imprime déjà cette ligne : la parité
-avec lui est ainsi préservée à l'octet près.
+La formule est écrite sur sa PROPRE ligne (une ligne de LaTeX, comme une
+ligne `%%`) : c'est la forme choisie par le langage pour les constantes.
 
 ```
 $ rose latex prog.rose
@@ -260,7 +260,8 @@ rose orc fib.rose -o fib.o && gcc fib.o -o fib && ./fib
 
 ## 🧪 Conformité
 
-- **54/54** comparaisons parité C++ ↔ Rust, **0 divergence**.
+- **Parité interpréteur ↔ JIT ↔ AOT** : identique au caractère près (campagnes de tests).
+- Les dorés de `rose-cpp/tests/dorés/` sont la **spécification** des valeurs attendues.
 - **46/46** tests dorés (moteur).
 - Campagnes génératives sans divergence.
 - Arithmétique exacte illimitée (num-bigint, zéro GMP).
@@ -284,12 +285,12 @@ Trois voies d'exécution, une seule sortie :
 
 ```
 rose/           moteur Rust (source)
-rose-cpp/       moteur C++ de référence (GMP)
+rose-cpp/       ANCIEN moteur C++ (OBSOLÈTE — conservé pour l'historique)
 compilateur/    front-end écrit en Rose
 docs/           site GitHub Pages
 installateur/   installeur Windows (Velopack : `.nupkg` + `Rose-win-Setup.exe`)
 bench/          bancs de référence
-rose-cpp/tests/ suites (courir.py, parite.py)
+rose-cpp/tests/ suites de conformité (courir.py, parite.py) — dorés du langage
 ```
 
 ## 🔧 Compiler depuis les sources
@@ -889,7 +890,7 @@ rose update --velopack   # Windows : passe par Velopack (delta + rollback)
 | fibonacci récursif `f(32)` — **JIT Cranelift** | 25–38 ms |
 | même code en **C** `-O2` | 2,0 ms |
 | même code en **C** `-O0` | 11 ms |
-| **C++ Rose** (interpréteur, référence) | ~3 200 ms pour un crible de même taille |
+| **ancien moteur C++** (interpréteur, obsolète) | ~3 200 ms pour un crible de même taille |
 | nombres premiers < 50 000 : **boucle nue** (interpréteur) | 26 ms |
 | idem + primitive **native** `est_premier` | 51 ms |
 | idem + **jardin Rose** `est_premier` | 102 ms |
@@ -906,8 +907,8 @@ Ce que ces chiffres disent :
   acceptable pour l'algorithmique, pas pour remplacer `est_premier`.
 
 ⚠ Mesuré aussi : `fn it(n) { si (n<=0) { retour 0 } retour n*n - it(n-1) }`
-avec `it(100000)` répond **5000050000** (identique au moteur C++). La pile du
-fil d'exécution est de **512 Mo** (comme le C++), pas 8 Mo : c'était un défaut.
+avec `it(100000)` répond **5000050000** (la valeur attendue). La pile du fil
+d'exécution est de **512 Mo** (et non 8 Mo) : c'était un défaut.
 
 ### Mesurer une lenteur — `rose debug-lenteur`
 

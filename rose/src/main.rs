@@ -1,8 +1,8 @@
 // Rose — compilateur Rose en Rust + JIT Cranelift.
-// Front-end fidèle au moteur C++ (lexeur, vérificateur, repli de constantes),
+// Front-end du langage (lexeur, vérificateur, repli de constantes),
 // interpréteur exact (arithmétique native i128, zéro dépendance) et JIT
 // natif Cranelift pour le code chaud.
-// Les sorties sont identiques au caractère près à `bin/rose` (moteur C++).
+// Les sorties sont identiques au caractère près entre l'interpréteur et le JIT.
 //
 // Use of this source code is governed by an MIT-style license.
 
@@ -70,7 +70,7 @@ Usage :
     )
 }
 
-/* ── mode bundle : programme collé dans le moteur (miroir C++ rose.cpp:4344) ── */
+/* ── mode bundle : programme collé dans le moteur  ── */
 const ROSE_MAGIC: [u8; 8] = [b'R', b'O', b'S', b'E', b'B', b'1', 0x01, 0x02];
 
 fn chemin_moteur() -> Option<String> {
@@ -173,7 +173,7 @@ fn main() {
     }
     if argv.len() < 2 {
         // aucun argument : si l'exécutable porte un bundle, l'exécuter (mode
-        // autonome, miroir du 'comp' C++ — rose.cpp:4783 lire_bundle).
+        // autonome — lire_bundle).
         if let Some(source) = lire_bundle() {
             let source_t = source.clone();
             let h = std::thread::Builder::new().stack_size(8 * 1024 * 1024)
@@ -329,8 +329,8 @@ fn main() {
         eprintln!("rose: fichier introuvable : {}", fichier);
         std::process::exit(1);
     }
-    // le moteur C++ execute le pipeline dans un thread a pile de 512 Mo
-    // (rose.cpp:4745-4747) ; la recursion profonde de l'interpreteur Rust en a
+    // le pipeline s'execute dans un thread a pile de 512 Mo
+    // ; la recursion profonde de l'interpreteur Rust en a
     // autant. Repli en ligne si le thread ne peut etre cree.
     if argv.iter().any(|a| a == "--debug") || std::env::var("ROSE_DEBUG").is_ok() {
         crate::run::set_debug_mode(true);
@@ -343,12 +343,12 @@ fn main() {
     let _t_pret = _t_start.elapsed();
     // ⚠⚠⚠ 512 Mo DE PILE, PAS 8 Mo (mesuré le 16/11).
     //
-    // Le commentaire d'origine dit « miroir du moteur C++ (rose.cpp:4745) :
+    // Le commentaire d'origine dit « pile de 512 Mo :
     // une pile de 512 Mo ». La constante, elle, valait 8 Mo : mesuré,
     // `it(10000)` (récursion 10 000, multiplication entière donc hors JIT)
-    // débordait la pile vers 4 300 niveaux, alors que le moteur C++ de
+    // débordait la pile vers 4 300 niveaux, alors que le moteur de
     // référence répond 450015000 pour la même récursion. Une pile de 512 Mo
-    // comme le C++ couvre les récursions profondes que le JIT ne peut pas
+    // comme la pile de référence couvre les récursions profondes que le JIT ne peut pas
     // prendre (corps avec multiplication/puissance = BigInt exact).
     //
     // ⚠ Les 512 Mo sont RÉSERVÉS (mmap), pas engagés : aucune mémoire n'est

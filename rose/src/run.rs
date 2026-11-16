@@ -1,5 +1,5 @@
 // Rose — moteur d'exécution : valeurs exactes et bibliothèque standard.
-// Sémantique miroir du moteur C++ (moteur/cpp/src/rose.cpp) : conversions,
+// Sémantique du langage : conversions,
 // comparaisons, rendus, RNG splitmix64+Lemire, messages d'erreur.
 // ZÉRO DÉPENDANCE : les entiers dépassant i64 et les rationnels vivent sur
 // l'arithmétique exacte native i128 (src/i128x.rs) — plus aucun GMP, plus
@@ -85,7 +85,7 @@ impl Valeur {
     }
 }
 
-// ── Sorties et erreur runtime (miroir erreur_runtime du C++) ──────────────
+// ── Sorties et erreur runtime ──────────────
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -278,16 +278,16 @@ pub fn erreur_runtime(msg: &str) -> ! {
     panic!("ROSE_ERR:{}", msg);
 }
 
-/// Erreur levée pendant le repli de constantes : le C++ la signale comme une
+/// Erreur levée pendant le repli de constantes : elle est signalée comme une
 /// erreur du vérificateur, avec le préfixe de position [Ligne L, Colonne C]
-/// (les expressions repliées ne portent pas de position : 1,0, comme le C++
+/// (les expressions repliées ne portent pas de position : 1,0,
 /// qui replie à la racine avec ligne=1 par défaut).
 pub fn erreur_runtime_ligne(msg: &str) -> ! {
     flush_out();
     panic!("ROSE_ERR:[Ligne {}, Colonne 0] {}", ligne_programme(), msg);
 }
 
-/// Erreur levée pendant le vérificateur / le repli de constantes : le C++
+/// Erreur levée pendant le vérificateur / le repli de constantes : elle
 /// remonte une ErreurRose(msg, ligne) jusqu'au driver qui l'affiche via
 /// « Rose : erreur — %s » avec le préfixe [Ligne L, Colonne C] si ligne != 0.
 pub fn erreur_front(msg: &str, l: usize, c: usize) -> ! {
@@ -301,7 +301,7 @@ pub fn erreur_front(msg: &str, l: usize, c: usize) -> ! {
 }
 
 /// Ligne du dernier jeton consommé par le lexeur (position approximative des
-/// erreurs de vérification/repli, là où le C++ connaît e->ligne).
+/// erreurs de vérification/repli (qui portent leur ligne).
 pub fn ligne_programme() -> usize {
     LIGNE_COURANTE.with(|l| l.get().max(1))
 }
@@ -362,7 +362,7 @@ pub fn vers_d(v: &Valeur) -> f64 {
         Valeur::Entier(_, Some(z)) => z.get_d(),
         Valeur::Rationnel(q) => q.get_d(),
         Valeur::Booleen(b) => if *b { 1.0 } else { 0.0 },
-        // le C++ convertit une chaine en flottant via chaine_vers_flottant dans
+        // une chaine est convertie en flottant via chaine_vers_flottant dans
         // les conversions ; miroir : 'flottant' depuis chaine est possible ici.
         _ => { let _ = &v; vers_d_chaine(&v) },
     }
@@ -544,13 +544,13 @@ pub fn texte_rationnel(q: &Gq) -> String {
 }
 
 pub fn chaine_de(v: &Valeur) -> String {
-    // miroir C++ chaine_de() : a/b BRUT a tous les niveaux (les listes et
+    // chaine_de() : a/b BRUT a tous les niveaux (les listes et
     // tables rendent leurs rationnels en « 12/5 »). La forme periodique est
     // reservee a afficher() (miroir ecri).
     chaine_de_p(v, false)
 }
 
-/// Miroir de chaine_de() du C++. « peri » = affichage direct (>> ) : le
+/// chaine_de(). « peri » = affichage direct (>> ) : le
 /// rationnel y passe par la forme decimale periodique (2/5 → 0.4, comme ecri()).
 pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
     match v {
@@ -651,7 +651,7 @@ pub fn afficher_formule(v: &Valeur, formule: &str) {
 
 /// affichage : le rationnel passe par la forme périodique (miroir ecri()).
 pub fn afficher(v: &Valeur) {
-    // miroir ecri() du C++ : T_RATIONNEL et T_LISTE passent par la forme
+    // ecri() : T_RATIONNEL et T_LISTE passent par la forme
     // periodique ; T_TABLE rend chaine_de() → a/b BRUT pour ses rationnels ;
     // T_TAMPON refuse de s'afficher.
     match v {
@@ -719,7 +719,7 @@ pub fn tirage_systeme() -> u64 {
     }
 }
 
-/// hasard(n) : Lemire, miroir exact du C++ (-borné hors i64 inclus).
+/// hasard(n) : Lemire, borné, hors i64 inclus.
 pub fn hasard(etat: &mut u64, n: &Gz) -> Gz {
     if n.sgn() <= 0 { erreur_runtime("hasard : bornage positif attendu"); }
     let r = Gz::neuf();
@@ -843,8 +843,8 @@ pub fn nombre_pi(chiffres: &Gz) -> String {
     // LaTeX. Pour les constantes, la formule est donc écrite sur la ligne
     // précédente — la sortie de la valeur n'est plus préfixée.
     //
-    // ⚠ C'est aussi ce qui préserve la PARITÉ avec le moteur C++ : il
-    // imprime déjà la formule sur sa propre ligne, puis « π ≈ … ».
+    // ⚠ La formule est écrite sur sa PROPRE ligne (une ligne de LaTeX,
+    // comme une ligne `%%`), puis la valeur approchée.
     sortie.push_str("π = 4\\cdot\\arctan(1/5) - \\arctan(1/239)");
     sortie.push('\n');
     sortie.push_str("π ≈ ");
@@ -877,8 +877,8 @@ pub fn nombre_e(chiffres: &Gz) -> String {
     // LaTeX. Pour les constantes, la formule est donc écrite sur la ligne
     // précédente — la sortie de la valeur n'est plus préfixée.
     //
-    // ⚠ C'est aussi ce qui préserve la PARITÉ avec le moteur C++ : il
-    // imprime déjà la formule sur sa propre ligne, puis « π ≈ … ».
+    // ⚠ La formule est écrite sur sa PROPRE ligne (une ligne de LaTeX,
+    // comme une ligne `%%`), puis la valeur approchée.
     sortie.push_str("e = \\sum_{k=0}^{\\infty} \\frac{1}{k!}");
     sortie.push('\n');
     sortie.push_str("e ≈ ");
@@ -911,8 +911,8 @@ pub fn nombre_phi(chiffres: &Gz) -> String {
     // LaTeX. Pour les constantes, la formule est donc écrite sur la ligne
     // précédente — la sortie de la valeur n'est plus préfixée.
     //
-    // ⚠ C'est aussi ce qui préserve la PARITÉ avec le moteur C++ : il
-    // imprime déjà la formule sur sa propre ligne, puis « π ≈ … ».
+    // ⚠ La formule est écrite sur sa PROPRE ligne (une ligne de LaTeX,
+    // comme une ligne `%%`), puis la valeur approchée.
     sortie.push_str("φ = \\frac{1 + \\sqrt{5}}{2}");
     sortie.push('\n');
     sortie.push_str("φ ≈ ");
@@ -1222,7 +1222,7 @@ pub fn remplir_philox(buf: &mut [u8], ab: &[u8], graine: i64) {
     if s == 1 { for x in buf.iter_mut() { *x = ab[0]; } return; }
     let k0 = graine as u32;
     let k1 = (graine >> 32) as u32;
-    // Miroir exact du C++ : un bloc Philox (4 mots de 32 bits) remplit 4 OCTETS,
+    // Un bloc Philox (4 mots de 32 bits) remplit 4 OCTETS,
     // chaque octet étant glané dans un mot DIFFÉRENT (un mot par octet, seul son
     // octet de poids faible sert). Le compteur du bloc = indice b de bloc.
     let pow2 = s.is_power_of_two();
@@ -1273,7 +1273,7 @@ pub fn chaine_vers_flottant(ch: &str) -> f64 {
                 "infini" => f64::INFINITY,
                 "-infini" => f64::NEG_INFINITY,
                 _ => {
-                    // « 1/3 » accepté aussi (miroir C++ strtod puis fraction)
+                    // « 1/3 » accepté aussi (strtod puis fraction)
                     if let Some(p) = clean.find('/') {
                         if let (Ok(a), Ok(b)) = (clean[..p].parse::<f64>(), clean[p + 1..].parse::<f64>()) {
                             return a / b;
@@ -1307,10 +1307,10 @@ pub extern "C" fn rose_erreur_div_zero() {
 /// Division flottante par zéro : le JIT doit signaler l'erreur comme
 /// l'interpréteur (et non produire inf / non_nombre).
 ///
-/// Miroir de `jit_erreur` du moteur C++ (rose-cpp/src/jit.cpp:388) : une
+/// Erreur runtime du code compilé : une
 /// erreur levée dans du code JIT ne peut pas être rattrapée (une trame
 /// Cranelift n'a pas d'information de défilement) — on affiche l'erreur et on
-/// quitte, exactement comme le fait le JIT C++.
+/// quitte.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_erreur_div_flottant_zero() {
     flush_out();

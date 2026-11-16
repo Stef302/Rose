@@ -92,9 +92,14 @@ LaTeX, comme une ligne `%%`), puis leur valeur approchée :
 φ ≈ 1.61803398874989484820
 ```
 
-⚠ C'est le moteur C++ de référence qui imprime déjà ces deux lignes : la
-parité avec lui est préservée à l'octet près (mesuré : parité Rust
-34 → 9 divergences après correction, les 9 restantes étant préexistantes).
+⚠ Ces deux lignes (formule puis valeur approchée) sont la forme choisie par
+le langage pour les constantes : elles sont identiques dans l'interpréteur,
+le JIT et l'AOT.
+
+⚠⚠⚠ LE MOTEUR C++ (`rose-cpp/`) EST OBSOLÈTE : ce n'est PLUS la référence.
+La référence, c'est le langage Rose (ces règles) et les dorés de
+`rose-cpp/tests/dorés/` (valeurs attendues). Ne JAMAIS écrire « parité avec
+le moteur C++ » ni « miroir du C++ » : c'est la RÈGLE DU LANGAGE qui compte.
 
 ⚠ `latex::formule_composee` rend **`false` pour toute expression**
 (deuxième demande utilisateur : « plus nécessaire de tout en latex même
@@ -148,7 +153,7 @@ exposants `²`/`¹⁰⁰`) ; une commande inconnue s'affiche entre `« »`.
 4. **Les « si » ne doivent pas être récursifs dans `exec_bloc_retour`** :
    chaque niveau d'exécution ajoutait un cadre Rust. Déroulés, un « si »
    imbriqué ne coûte que son niveau d'IMBRICATION.
-5. **Pile du fil d'exécution = 512 Mo** (miroir du C++), pas 8 Mo.
+5. **Pile du fil d'exécution = 512 Mo** (et non 8 Mo), pas 8 Mo.
    `ROSE_PROFIL_PILE=1` donne la profondeur max d'`eval` ;
    `ROSE_PROFIL_JIT=1` le temps total passé dans le code natif.
 

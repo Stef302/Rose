@@ -1,7 +1,7 @@
 // Rose — JIT Cranelift : émet du code machine natif pour le code Rose
 // « chaud » (entiers 64 bits, booléens, flottants, comparaisons, branches,
 // boucles, fonctions utilisateur avec récursion).
-// Comme le JIT du moteur C++ : TOUT ce qui sort du support (chaînes,
+// Comme le JIT du langage : TOUT ce qui sort du support (chaînes,
 // rationnels, listes, tables, tampons, FFI, appels runtime) fait basculer la
 // fonction entière sur l'interpréteur — repli transparent, sorties identiques.
 //
@@ -102,7 +102,7 @@ fn ty_statique_f(e: &Expr, get: &dyn Fn(&str) -> Option<TyKind>) -> Option<TyKin
         Expr::Appel { nom, module, args, .. } => {
             // appel compilable si : pas de module, args compilables, et la
             // signature connue est dans le sous-ensemble JIT (miroir de la
-            // porte du JIT C++ qui n'accepte que entier/flottant/booleen).
+            // porte du JIT qui n'accepte que entier/flottant/booleen).
             if !module.is_empty() { return None; }
             for a in args { if ty_statique_f(a, get).is_none() { return None; } }
             // 1) fonctions du programme utilisateur
@@ -332,7 +332,7 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
     TY_CONTEXTE.with(|t| *t.borrow_mut() = env.clone());
 
     // Sous-ensemble i64 STRICT : la multiplication et la puissance entières
-    // sont exclues, car le moteur C++ promeut en GMP dès que le produit
+    // sont exclues, car le moteur promeut en entier exact dès que le produit
     // dépasse int64 (rose_ent) alors que Cranelift wrappe. Une fonction qui
     // multiplie des entiers reste donc interprétée (parité exacte).
     fn multiplicatif(e: &Expr) -> bool {
@@ -808,7 +808,7 @@ impl Jit {
 
     /// Compile toutes les fonctions éligibles ; les autres restent Interprète.
     /// Compile le corps du programme principal en code natif Cranelift
-    /// (miroir du C++ qui émet $principal dans le module RIR et en prend
+    /// (le corps principal est émis dans le module RIR et pris
     /// get_entry("$principal")). Les globales deviennent des slots i64/f64
     /// de la trame, exactement comme les locales d'une fonction.
     pub fn compiler_principal(&mut self, prog: &crate::front::Programme)
@@ -1775,7 +1775,7 @@ impl Emetteur<'_> {
                     "^" => {
                         if flot {
                             // Puissance flottante par powf (miroir de l'appel
-                            // std::pow du moteur C++, même arrondi libm).
+                            // std::pow, même arrondi libm).
                             let f = self.powf();
                             let inst = self.builder.ins().call(f, &[g, d]);
                             JitVal::Simple(self.builder.inst_results(inst)[0])
@@ -1957,7 +1957,7 @@ fn powf(&mut self) -> FuncRef {
         }
         if matches!(e, Expr::Unaire { op, .. } if op == "-") {
             // negation entiere : voie exacte (rose_neg_ent) — -i64::MIN = 2^63
-            // ne tient pas en i64, le C++ promote en GMP (jit_neg_z).
+            // ne tient pas en i64, la valeur est promue en entier exact.
             if let Expr::Unaire { a, .. } = e {
                 let vj = self.expr(a, env, types);
                 let v = self.simple(vj);
@@ -2004,7 +2004,7 @@ fn powf(&mut self) -> FuncRef {
         self.builder.ins().stack_addr(types::I64, slot, 0)
     }
 
-    /// Negation exacte (miroir jit_neg_z C++) : le tag signale la Box Gz.
+    /// Négation exacte : le tag signale la valeur BigInt.
     fn neg_exact_tag(&mut self, g: Value, _gt: Value) -> (Value, Value) {
         let (s, t) = self.neg_exact(g);
         (s, t)
