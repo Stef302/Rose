@@ -696,6 +696,31 @@ La feature `llvm` ne compile pas sur cette machine
 - **SEUIL NTT BALAYÉ** (1 000 000!, mesuré) : 2,05 M bits → 1568 ms ;
   4,1 M → 1226 ; 6,14 M → 1024 ; 9,2 M → 1053 ; 16,4 M → **907** ;
   32,7 M → 900–941 (variance) ; ∞ → 912. Le meilleur stable est **16,4 M**.
+  ⚠ Ce balayage est PÉRIMÉ : la NTT a été réécrite (Montgomery + DIF/DIT +
+  parallèle + four-step). Le nouveau seuil est **1,02 M bits** (balayé :
+  0,26 M → 252 ms ; 0,52 → 252 ; 0,79 → 244 ; **1,02 → 260** ; 1,54 → 249 ;
+  3,07 → 307).
+- **BARRETT** pour la multiplication modulaire : 8,26 ns/op contre 0,96
+  pour Montgomery → 8,6× plus lent (l'estimation par `f64` est fausse).
+- **MONTGOMERY, première tentative (rejetée à tort)** : l'analyse de coût
+  disait « le `% u128` n'est que 1,8× plus lent qu'un `% u64`, donc
+  Montgomery ne gagne pas ». La MESURE montre l'inverse : `% u128` =
+  1,68 ns/op, Montgomery = 0,96 ns/op → **1,74× de gain**.
+- **PARALLÉLISATION DES PUISSANCES p^e** : acceptée, puis mesurée à 39-50 ms
+  séquentiels (~10 % du total) → parallélisée entre cœurs (l'ordre des
+  facteurs n'importe pas, l'arbre trie de toute façon).
+- **ARBRE « APPARIEMENT ADJACENT »** (l'ancien) : pathologiquement
+  déséquilibré (2^999994 = 1 Mbit restait en tête : niveau 0 = 1 Mbit,
+  niveau 16 = 18,2 Mbit) → remplacé par la fusion des deux plus petits
+  (Huffman) : 2 172 → 1 158 ms sur l'arbre seul.
+- **DIVISION RAPIDE DE NEWTON** : correcte mais 25× plus lente que Knuth
+  (le nôtre utilise une échelle FIXE de 2n limbs à chaque itération :
+  O(M(n)·log n) au lieu de O(M(n)). Une version à précision doublée reste
+  à écrire.
+- **TOOM-COOK / KARATSUBA maison** : inutiles, `num-bigint` fait déjà
+  école → Half-Karatsuba → Karatsuba → Toom-3 **en place**, et le sien est
+  4× plus rapide que le nôtre (il n'alloue pas de vecteurs
+  intermédiaires).
 
 
 - **Inverse de Newton pour la division** : désormais CORRECT

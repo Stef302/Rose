@@ -72,13 +72,16 @@ GMP, pur Rust, sans FFI :
 
 | Moteur | 1 000 000 ! | 100 000 ! |
 |---|---|---|
-| **Rose** (Légendre + arbre + NTT maison) | **906 ms** | **25 ms** |
-| Rust pur, même algorithme (`num-bigint`) | 2 231 ms | 62 ms |
-| GMP/C (référence) | 173 ms | 15,6 ms |
+| **Rose** (Légendre + arbre Huffman + NTT maison) | **229 ms** | **27 ms** |
+| Rust pur, même algorithme (`num-bigint`) | 2 231 ms | 49 ms |
+| GMP/C (référence) | 173 ms | 8,2 ms |
 | Rose avant la NTT | 3 797 ms | 41 ms |
 
-Rose est **2,5× plus rapide que Rust pur** sur `1 000 000!`, grâce à sa NTT
-(`rose/src/mul_rapide.rs`) que `num-bigint` n'a pas. Détail complet des mesures
+Rose est **9,7× plus rapide que Rust pur** sur `1 000 000!`, grâce à sa NTT
+(`rose/src/mul_rapide.rs`) que `num-bigint` n'a pas, à son arbre de produit
+équilibré et à sa conversion décimale par multiplication. GMP reste **1,19×
+plus rapide** sur le calcul : sa FFT de style Fermat reste plus rapide que
+notre NTT de Montgomery. Détail complet des mesures
 et de ce qui a été essayé (et abandonné) plus bas, à la section
 « Ce que Rose fait pour être rapide ».
 
@@ -412,7 +415,13 @@ Rose **ne dépend pas de GMP** : tout est en Rust pur, avec `num-bigint`.
 |---|---|
 | Suppression des clones d'opérandes (`mul`, `add`, `sub`) | `n!` 41 → 25 ms, `!n` 753 → 681 ms |
 | Seuil de parallélisation de l'arbre (500 000 bits cumulés) | `n#` 2 → 1 ms ; en dessous les threads coûtent plus que le travail |
-| **NTT à 2 modules de 62 bits**, seuil 16,4 M bits balayé | `1 000 000!` : 3 797 → **906 ms** (4,2×) |
+| **Arbre « fusion des deux plus petits »** (Huffman) au lieu de l'appariement adjacent | `1 000 000!` : 2 172 → 1 158 ms sur l'arbre seul (1,88×) |
+| **NTT à 2 modules de 62 bits en Montgomery** | 1,74× sur la multiplication modulaire (1,68 → 0,96 ns/op) |
+| **NTT DIF/DIT** (plus de permutation de bit-reversal) | 2,4× sur la NTT (460 → 225 ms à 2²⁰) |
+| **NTT parallèle** (20 cœurs, un seul scope par multiplication) | NTT à 2²⁰ : 225 → 57 ms |
+| **NTT four-step** (3 passes mémoire au lieu de log₂ n) | NTT à 2²⁰ : 78,6 → 57 ms |
+| **Conversion décimale par multiplication** (au lieu de division) | `1 000 000!` : 2 881 → **1 400 ms** |
+| Bilan global | `1 000 000!` : 906 → **229 ms** (4,0×) |
 
 ⚠ Ce que la mesure a montré : `num-bigint` fait **déjà** école → Half-Karatsuba
 → Karatsuba → **Toom-3** en place, et il est excellent. Notre propre Toom-3 est
@@ -423,31 +432,34 @@ Rose **ne dépend pas de GMP** : tout est en Rust pur, avec `num-bigint`.
 
 | Opération | Rose | Rust pur (`num-bigint`) | Rust + `rug` (GMP) | GMP/C | GMP/C++ | Python |
 |---|---|---|---|---|---|---|
-| `n!` | 25 ms | 61,7 ms | 11,6 ms | 15,6 ms | 12,3 ms | 80 ms |
-| `n!!` | 8 ms | 9,9 ms | 4,8 ms | 3,4 ms | 5,1 ms | 470 ms |
-| `n!!!` | 4 ms | 5,8 ms | 2,9 ms | 1,9 ms | 3,1 ms | 209 ms |
-| `n!!!!` | 3 ms | 3,1 ms | 2,0 ms | 1,3 ms | 2,2 ms | 118 ms |
+| `n!` | 27 ms | 49,2 ms | 22,9 ms | 8,2 ms | 12,3 ms | 74 ms |
+| `n!!` | 9 ms | 10,0 ms | 4,8 ms | 3,3 ms | 5,0 ms | 469 ms |
+| `n!!!` | 6 ms | 5,8 ms | 2,9 ms | 1,9 ms | 3,1 ms | 209 ms |
+| `n!!!!` | 5 ms | 3,1 ms | 2,1 ms | 1,3 ms | 2,2 ms | 118 ms |
 | `n#` | 2 ms | 1,2 ms | 0,7 ms | 0,5 ms | 0,9 ms | — |
-| `!n` | **774 ms** | 704 ms | 436 ms | 441 ms | 441 ms | 2958 ms |
+| `!n` | **715 ms** | 713 ms | 436 ms | 441 ms | 441 ms | 2958 ms |
 
 À `1 000 000!` (5 565 709 chiffres) :
 
-| Implémentation | Calcul | Conversion en chaîne |
-|---|---|---|
-| **Rose** | **906 ms** | 2,88 s |
-| Rust pur (`num-bigint`) | 2 231 ms | 2,88 s |
-| GMP/C++ (gmpxx) | 230 ms | — |
-| GMP/C | 173 ms | — |
+| Implémentation | Calcul | Conversion en chaîne | Total |
+|---|---|---|---|
+| **Rose** | **229 ms** | 1,40 s | 1,63 s |
+| Rust pur (`num-bigint`) | 2 231 ms | 2,88 s | 5,11 s |
+| GMP/C++ (gmpxx) | 193 ms | 0,34 s | 0,53 s |
+| GMP/C | 173 ms | 0,34 s | 0,51 s |
 
 Lecture :
 
-- **Rose bat Rust pur (`num-bigint`) de 2,5×** sur `1 000 000!` et de 1,4×
-  sur `n!` — grâce à la NTT, que `num-bigint` n'a pas ;
-- **Rose bat Python de 3× (`n!`) à 60× (`n!!`)** ;
-- Rose reste à **~2× de GMP/C** sur `n!` : l'écart restant est la **division**
-  (Knuth O(n·m) chez `num-bigint`, Burnikel-Ziegler O(M(n)) chez GMP). La
-  conversion décimale de 5,5 millions de chiffres coûte 2,88 s, contre ~0,3 s
-  pour GMP qui divise par inverse de Newton.
+- **Rose bat Rust pur (`num-bigint`) de 9,7×** sur `1 000 000!` (calcul) et
+  de 3,1× sur le total (calcul + affichage) — grâce à la NTT, que
+  `num-bigint` n'a pas, et à la conversion par multiplication ;
+- **Rose bat Python de 2,7× (`n!`) à 52× (`n!!`)** ;
+- ⚠ **Rose n'a PAS encore depassé GMP** : 1,19× sur le calcul, mais 4,1× sur
+  la conversion. L'écart restant est structurel : GMP utilise une FFT de
+  style **Fermat** (moduli `2^k+1`, dont les papillons ne sont que des
+  rotations — *aucune* multiplication modulaire), alors que la nôtre fait
+  une multiplication de Montgomery par papillon. C'est le chantier
+  suivant si l'on veut franchir la barre.
 
 ⚠ **Ce qui a été essayé et ABANDONNÉ** (et pourquoi, mesures à l'appui) :
 
