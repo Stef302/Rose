@@ -91,11 +91,30 @@ fn expr_avec_priorite(e: &Expr, min: u8) -> String {
 ///   * `>> min(1, 2.5)` → composé → « \operatorname{min}(1, 2.5)   1 ».
 /// Les deux voies (JIT et interpréteur) utilisent le MÊME prédicat
 /// purement syntaxique → parité garantie sans coordination runtime.
+///
+/// ⚠⚠⚠ LA FORMULE EST UNE ANNOTATION, PAS LA SORTIE (corrigé le 16/11).
+/// L'ancienne règle rendait la formule LaTeX de TOUT affichage composé :
+/// `afficher(n!)` imprimait « n!   3628800 », `afficher(1/3)` imprimait
+/// « \frac{1}{3}   0.[3] ». L'utilisateur a demandé l'inverse : « le tout
+/// est affiché en LaTeX à part pour la commande faite pour ça ». La sortie
+/// d'exécution doit donc être la VALEUR SEULE ; le LaTeX se demande par
+/// `rose latex` (programme entier) ou par les lignes marquées `%%`.
+///
+/// ⚠ La SEULE exception est la convention historique des CONSTANTES
+/// irrationnelles : π, φ et e portent leur définition exacte devant leur
+/// valeur approchée (« π = 4\cdot\arctan(1/5) - …   π ≈ 3.14… »), parce que
+/// la valeur affichée est une APPROXIMATION : sans la formule, on ne sait
+/// pas quelle constante c'est. C'est ce que l'utilisateur garde (« ça
+/// marche pour la commande faite pour ça »).
+///
+/// Donc : un appel à `pi`, `phi` ou `e` est « composé » ; tout le reste
+/// (binaire, factorielle, appel utilisateur, index…) ne l'est plus.
 pub fn formule_composee(e: &Expr) -> bool {
     match e {
-        Expr::Litteral { .. } | Expr::LitComplexe { .. }
-        | Expr::Var(..) | Expr::BooleenLit(..) | Expr::ChaineLit(..) => false,
-        _ => true,
+        // ⚠ Constante irrationnelle : la formule EST l'information.
+        Expr::Appel { nom, .. } if matches!(nom.as_str(), "pi" | "phi" | "e") => true,
+        // Tout le reste : la valeur suffit, le LaTeX se demande par `latex`.
+        _ => false,
     }
 }
 
@@ -621,6 +640,53 @@ fn type_latex(t: &crate::front::Ty) -> String {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests_formule_composee {
+    //! ⚠⚠⚠ GARDE-FOU DE LA DEMANDE UTILISATEUR (16/11) : « le tout est
+    //! affiché en LaTeX à part pour la commande faite pour ça ».
+    //!
+    //! La sortie d'exécution doit être la VALEUR SEULE ; la formule LaTeX
+    //! ne s'affiche que pour les CONSTANTES irrationnelles (π, φ, e), dont
+    //! la valeur affichée est une approximation.
+    use super::*;
+    use crate::front::{Expr, TyKind};
+
+    fn lit(texte: &str) -> Expr {
+        Expr::Litteral { texte: texte.into(), flott: false, rationnel: false,
+                         neg: false, ty: TyKind::Dyn, ligne: 1 }
+    }
+    fn appel(nom: &str, args: Vec<Expr>) -> Expr {
+        Expr::Appel { nom: nom.into(), module: String::new(), args, ligne: 1 }
+    }
+
+    #[test]
+    fn les_constantes_gardent_leur_formule() {
+        for nom in ["pi", "phi", "e"] {
+            let e = appel(nom, vec![lit("50")]);
+            assert!(formule_composee(&e), "{nom} doit garder sa formule");
+        }
+    }
+
+    #[test]
+    fn les_calculs_n_affichent_plus_de_formule() {
+        // ⚠ Le bug mesuré : « n!   3628800 », « \frac{1}{3}   0.[3] ».
+        let fact = Expr::Factorielle(Box::new(Expr::Var("n".into(), 1)), 1);
+        assert!(!formule_composee(&fact));
+        let somme = Expr::Binaire { op: "+".into(),
+            a: Box::new(lit("1")), b: Box::new(lit("2")), ligne: 1 };
+        assert!(!formule_composee(&somme));
+        let quotient = Expr::Binaire { op: "/".into(),
+            a: Box::new(lit("1")), b: Box::new(lit("3")), ligne: 1 };
+        assert!(!formule_composee(&quotient));
+        // Un appel UTILISATEUR ne porte plus sa formule non plus.
+        let f = appel("carre", vec![lit("7")]);
+        assert!(!formule_composee(&f));
+        // Un atome reste un atome.
+        assert!(!formule_composee(&lit("42")));
+        assert!(!formule_composee(&Expr::Var("x".into(), 1)));
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -169,26 +169,39 @@ navigateur, glue JS, tests Node).
 
 ## ⚛️ Formule exacte en LaTeX
 
-Chaque affichage `>>` est précédé de la **formule exacte** du programme en
-LaTeX, suivie du résultat (convention déjà en place pour π, φ et e) :
+L'exécution affiche la **valeur seule** ; le LaTeX est rendu **à la
+demande**, par `rose latex` (programme entier) ou par les lignes marquées
+`%%` :
 
 ```
 >>> $s = 0
 >>> pour j de 0 vers 10 { $s = $s + j }
 >>> $s
-\sum_{j = 0}^{9} \langle s = s + j\rangle
-s   45
+45
 >>> 2 * pi
-2 * pi   6.283185307179586
+π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 6.283185307179586
 >>> 3 + 4i
-3 + 4\mathrm{i}   5
+5
 ```
 
+```
+$ rose latex prog.rose
+n = 10 \\
+\operatorname{afficher}(n!) \\
+\operatorname{afficher}(1024) \\
+\operatorname{afficher}(\frac{1}{3}) \\
+\operatorname{afficher}(\varphi)
+```
+
+⚠ **Seule exception** : les constantes irrationnelles `pi`, `phi`, `e`
+gardent leur formule exacte devant la valeur approchée — sans elle, on ne
+saurait pas quelle constante on lit. Le prédicat est
+`latex::formule_composee` (vrai uniquement pour ces trois appels), partagé
+par l'interpréteur et le JIT, donc **parité garantie**.
+
 La formule est générée à partir de l'AST (module `src/latex.rs`) par :
-`programme_latex`, `expr_latex` et `instr_latex`. Elle est produite de façon
-**identique par le JIT et l'interpréteur** (parité prouvée par campagne de
-tests). Pour `pour j de`, la borne finale est exclusive : `pour j de 0 vers 3`
-rendra `Σ_{j=0}^{2}`.
+`programme_latex`, `expr_latex` et `instr_latex`. Pour `pour j de`, la borne
+finale est exclusive : `pour j de 0 vers 3` rendra `Σ_{j=0}^{2}`.
 
 ## 📦 Chaîne AOT LLVM « à la demande »
 
@@ -493,7 +506,7 @@ Sources : `bench/suite/fact_gmp.c`, `fact_gmp.cpp` (gmpxx), `fact_rs.rs`
 ### Affichage et saisie
 
 ```rose
->> expr1, expr2        # affiche : [formule LaTeX]  résultat
+>> expr1, expr2        # affiche : les valeurs (LaTeX via `rose latex`)
 << entier_var          # saisit un entier au clavier
 << float_var           # saisit un flottant (la variable doit exister, typée)
 ```
@@ -614,25 +627,24 @@ fn pow_c(x: flottant, y: flottant) -> flottant   # pas de corps = externe
 # tout ce qui suit « # » sur la ligne est ignoré
 ```
 
-### Affichage LaTeX automatique
+### Affichage : la valeur, et le LaTeX sur demande
 
-Chaque `>> expr` affiche la **formule exacte en LaTeX formée du programme**
-puis le résultat :
+`>> expr` affiche la **valeur seule** (`45`, `49`, `3628800`). La formule
+LaTeX s'obtient par `rose latex prog.rose` (programme entier, fonctions
+comprises, signatures `n ∈ ℤ` incluses) ou par les lignes `%%` — voir la
+section « Formule exacte en LaTeX ».
 
 ```
 >>> $s = 0
 >>> pour j de 0 vers 10 { $s = $s + j }
 >>> $s
-\sum_{j = 0}^{9} \langle s = s + j\rangle
-s   45
->>> 3 + 4i
-3 + 4\mathrm{i}   5
+45
 >>> carre(7)
-\operatorname{carre}(7)   49
+49
 ```
 
-`rose latex prog.rose` rend le **programme entier** en LaTeX, fonctions
-comprises, signatures `n ∈ ℤ` incluses.
+⚠ Exception : `pi`, `phi` et `e` affichent leur formule exacte devant leur
+valeur approchée.
 
 #### LaTeX des lignes choisies : le marqueur `%%`
 

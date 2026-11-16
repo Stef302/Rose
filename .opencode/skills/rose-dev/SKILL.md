@@ -68,16 +68,28 @@ pas rustc.
 
 ## Formules LaTeX (comportement de sortie)
 
-Chaque `>> expr` affiche `formule_latex   résultat` (JIT et interprète, à
-l'octet près) :
+⚠⚠ **Depuis le 16/11 : la sortie d'exécution est la VALEUR SEULE.** Les
+formules LaTeX ne sont plus imprimées devant chaque affichage — l'utilisateur
+l'a demandé explicitement (« le tout est affiché en LaTeX à part pour la
+commande faite pour ça »). Le LaTeX se demande par `rose latex` ou par les
+lignes marquées `%%`.
 
 ```
->> 3 + 4i      →  3 + 4\mathrm{i}   5
->> modulus($z) →  \left|z\right|   5
->> pi          →  π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 3.14159…
+>> n!            →  3628800
+>> 1/3           →  0.[3]
+>> 2^10          →  1024
+>> 3 + 4i        →  5
+>> pi            →  π = 4\cdot\arctan(1/5) - \arctan(1/239)   π ≈ 3.14159…
 ```
 
-`rose latex prog.rose` rend le programme entier. Signature typée →
+⚠ **SEULE exception** : les CONSTANTES IRRATIONNELLES `pi`, `phi`, `e`
+gardent leur formule exacte devant la valeur approchée (sans elle, on ne
+saurait pas quelle constante on lit). Le prédicat est
+`latex::formule_composee` : vrai **uniquement** pour `Expr::Appel` dont le
+nom est `pi`, `phi` ou `e` — partagé par l'interpréteur ET le JIT (parité).
+
+`rose latex prog.rose` rend le programme entier (c'est là qu'on lit le
+LaTeX : `\operatorname{afficher}(n!)`, `\frac{1}{3}`, `2^{10}`…). Signature typée →
 `\operatorname{fib}(n \in \mathbb{Z}) \to \mathbb{Z}` ; signature allégée →
 `\operatorname{carre}(x)` (pas de `∈ ?` ni de `→ ?` parasites).
 
