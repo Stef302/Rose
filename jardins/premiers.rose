@@ -1,0 +1,105 @@
+# jardin/premiers.rose — nombres premiers, écrit en ROSE pur.
+#
+# ⚠⚠⚠ CE FICHIER EST UNE BIBLIOTHÈQUE (un « jardin »), pas un programme :
+# il ne s'exécute pas seul. Il est chargé par un programme qui le demande.
+#
+# ⚠⚠ Pourquoi c'est LENT comparé à la fonction native `est_premier` :
+#   le natif appelle une seule fonction Rust compilée en code machine ;
+#   ici, chaque instruction est lue, évaluée et chaque variable est
+#   recherchée par NOM dans une table (HashMap) à CHAQUE accès. C'est le
+#   coût de l'interpréteur : environ 50 à 200 fois plus lent, selon la
+#   boucle. Le jardin Rose ne remplace donc PAS une primitive chaude ;
+#   il est fait pour l'ALGORITHMIQUE que le natif n'a pas à porter.
+
+# ── est_premier(n) : test de division jusqu'à la racine ────────────────────
+# Complexité O(√n) : suffisant et lisible, c'est le but d'un jardin.
+fn est_premier(n: entier) -> booleen {
+  si (n < 2) { retour faux }
+  si (n < 4) { retour vrai }
+  si (n % 2 == 0) { retour faux }
+  $d = 3
+  tant_que ($d * $d <= n) {
+    si (n % $d == 0) { retour faux }
+    $d = $d + 2
+  }
+  retour vrai
+}
+
+# ── nb_premiers_inferieurs(n) : comptage naïf (pas un crible) ──────────────
+# ⚠ Volontairement SIMPLE : le crible vit dans la primitive native
+# `compter_premiers`. Ce jardin montre ce qu'on peut écrire sans Rust.
+fn nb_premiers_inferieurs(n: entier) -> entier {
+  $c = 0
+  $k = 2
+  tant_que ($k < n) {
+    si (est_premier($k)) { $c = $c + 1 }
+    $k = $k + 1
+  }
+  retour $c
+}
+
+# ── prochain_premier(n) : premier strictement supérieur à n ────────────────
+fn prochain_premier(n: entier) -> entier {
+  $k = n + 1
+  tant_que (non est_premier($k)) {
+    $k = $k + 1
+  }
+  retour $k
+}
+
+# ── facteurs_premiers(n) : liste des facteurs premiers, avec répétition ────
+# 360 → [2, 2, 2, 3, 3, 5]. Liste VIDE si n < 2.
+#
+# ⚠⚠ ROSE REFUSE `[]` (liste vide : « le type d'élément est introuvable »).
+# C'est une LIMITE DU LANGAGE, pas du jardin : la seule façon d'avoir une
+# liste vide aujourd'hui est de la REMBOURRER à l'index 0 puis de la
+# dépouiller. On le fait ICI, en un seul endroit, et on le documente.
+#
+# ⚠ Candidat d'évolution du langage : une annotation `[0 : entier]` (liste
+# vide typée) supprimerait ce rembourrage partout. À discuter, pas à
+# contourner en silence dans chaque jardin.
+fn facteurs_premiers(n: entier) -> liste<entier> {
+  $rembourre = [0]
+  $m = n
+  $d = 2
+  tant_que ($d * $d <= $m) {
+    tant_que ($m % $d == 0) {
+      joindre($rembourre, $d)
+      $m = $m div $d
+    }
+    $d = $d + 1
+  }
+  si ($m > 1) { joindre($rembourre, $m) }
+  # Dépouillement : on rend la liste SANS son rembourrage (index 0).
+  $out = [0]
+  $j = 1
+  tant_que ($j < longueur($rembourre)) {
+    joindre($out, $rembourre[$j])
+    $j = $j + 1
+  }
+  retour $out
+}
+
+# ── pgcd_jardin(a, b) : Euclide, pour comparer au natif ────────────────────
+fn pgcd_jardin(a: entier, b: entier) -> entier {
+  $x = a
+  $y = b
+  tant_que ($y != 0) {
+    $t = $y
+    $y = $x % $y
+    $x = $t
+  }
+  si ($x < 0) { $x = -$x }
+  retour $x
+}
+
+# ── somme_premiers(n) : somme des premiers inférieurs à n ──────────────────
+fn somme_premiers(n: entier) -> entier {
+  $s = 0
+  $k = 2
+  tant_que ($k < n) {
+    si (est_premier($k)) { $s = $s + $k }
+    $k = $k + 1
+  }
+  retour $s
+}

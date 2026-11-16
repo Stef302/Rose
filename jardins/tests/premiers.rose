@@ -1,0 +1,121 @@
+# jardin/tests/premiers.rose — TESTS du jardin `premiers`.
+#
+# ⚠⚠ Faute d'`importer`, ce fichier REÇOIT une copie du corps du jardin.
+# Il est régénéré par `jardins/tests/fabriquer.sh` (ou à la main tant que
+# l'import n'existe pas). Le jour où `importer "jardins/premiers.rose"`
+# marchera, ce bloc sera remplacé par cette seule ligne.
+
+$erreurs = 0
+
+fn verifier(nom: chaine, obtenu: chaine, attendu: chaine) {
+  si (obtenu == attendu) {
+    >> "✓ " + nom
+  } sinon {
+    >> "✗ " + nom + " : obtenu " + obtenu + ", attendu " + attendu
+  }
+}
+
+
+fn est_premier_jardin_natif(n: entier) -> booleen {
+  si (n < 2) { retour faux }
+  si (n < 4) { retour vrai }
+  si (n % 2 == 0) { retour faux }
+  $d = 3
+  tant_que ($d * $d <= n) {
+    si (n % $d == 0) { retour faux }
+    $d = $d + 2
+  }
+  retour vrai
+}
+
+fn nb_premiers_inferieurs(n: entier) -> entier {
+  $c = 0
+  $k = 2
+  tant_que ($k < n) {
+    si (est_premier_jardin_natif($k)) { $c = $c + 1 }
+    $k = $k + 1
+  }
+  retour $c
+}
+
+fn prochain_premier(n: entier) -> entier {
+  $k = n + 1
+  tant_que (non est_premier_jardin_natif($k)) {
+    $k = $k + 1
+  }
+  retour $k
+}
+
+fn facteurs_premiers(n: entier) -> liste<entier> {
+  $rembourre = [0]
+  $m = n
+  $d = 2
+  tant_que ($d * $d <= $m) {
+    tant_que ($m % $d == 0) {
+      joindre($rembourre, $d)
+      $m = $m div $d
+    }
+    $d = $d + 1
+  }
+  si ($m > 1) { joindre($rembourre, $m) }
+  # Dépouillement : on rend la liste SANS son rembourrage (index 0).
+  $out = [0]
+  $j = 1
+  tant_que ($j < longueur($rembourre)) {
+    joindre($out, $rembourre[$j])
+    $j = $j + 1
+  }
+  retour $out
+}
+
+fn pgcd_jardin(a: entier, b: entier) -> entier {
+  $x = a
+  $y = b
+  tant_que ($y != 0) {
+    $t = $y
+    $y = $x % $y
+    $x = $t
+  }
+  si ($x < 0) { $x = -$x }
+  retour $x
+}
+
+fn somme_premiers(n: entier) -> entier {
+  $s = 0
+  $k = 2
+  tant_que ($k < n) {
+    si (est_premier_jardin_natif($k)) { $s = $s + $k }
+    $k = $k + 1
+  }
+  retour $s
+}
+>> "── jardin/premiers.rose ──"
+verifier("est_premier_jardin_natif(2)", chaine(est_premier_jardin_natif(2)), "vrai")
+verifier("est_premier_jardin_natif(3)", chaine(est_premier_jardin_natif(3)), "vrai")
+verifier("est_premier_jardin_natif(4)", chaine(est_premier_jardin_natif(4)), "faux")
+verifier("est_premier_jardin_natif(91)", chaine(est_premier_jardin_natif(91)), "faux")
+verifier("est_premier_jardin_natif(97)", chaine(est_premier_jardin_natif(97)), "vrai")
+verifier("est_premier_jardin_natif(1)", chaine(est_premier_jardin_natif(1)), "faux")
+verifier("est_premier_jardin_natif(0)", chaine(est_premier_jardin_natif(0)), "faux")
+verifier("prochain_premier(97)", chaine(prochain_premier(97)), "101")
+verifier("prochain_premier(1)", chaine(prochain_premier(1)), "2")
+verifier("nb_premiers_inferieurs(100)", chaine(nb_premiers_inferieurs(100)), "25")
+verifier("nb_premiers_inferieurs(10)", chaine(nb_premiers_inferieurs(10)), "4")
+verifier("somme_premiers(10)", chaine(somme_premiers(10)), "17")
+verifier("somme_premiers(100)", chaine(somme_premiers(100)), "1060")
+verifier("pgcd_jardin(48, 18)", chaine(pgcd_jardin(48, 18)), "6")
+verifier("pgcd_jardin(0, 5)", chaine(pgcd_jardin(0, 5)), "5")
+verifier("pgcd_jardin(17, 13)", chaine(pgcd_jardin(17, 13)), "1")
+verifier("facteurs_premiers(360)", chaine(facteurs_premiers(360)), "[0, 2, 2, 2, 3, 3, 5]")
+verifier("facteurs_premiers(97)", chaine(facteurs_premiers(97)), "[0, 97]")
+verifier("longueur(facteurs_premiers(1))", chaine(longueur(facteurs_premiers(1))), "1")
+
+# ⚠ CROSS-CHECK : le jardin doit donner LE MÊME RÉSULTAT que la primitive
+# native sur 500 entiers — c'est ce qui prouve qu'un jardin Rose est exact.
+$desaccords = 0
+$k = 0
+tant_que ($k < 500) {
+  si (est_premier($k) != est_premier_jardin_natif($k)) { $desaccords = $desaccords + 1 }
+  $k = $k + 1
+}
+verifier("cross-check natif/jardin sur 0..499", chaine($desaccords), "0")

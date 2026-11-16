@@ -259,9 +259,23 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 i += 1; col += 1;
                 continue;
             }
+            // ⚠⚠⚠ AVANT de compter les « ! » postfixes, vérifier le jeton
+            // de DEUX caractères `!=` (et `!=` est la forme ASCII de `≠`).
+            //
+            // BUG MESURÉ (16/11) : `tant_que ($z != 10)` était refusé
+            // (« Attendu ')', trouvé '=' ») et le moteur C++ de référence
+            // ACCEPTAIT le même programme. Cause : ce bloc avalait le `!`
+            // comme postfixe (`MultiFacto`) AVANT que la paire `!=` ne soit
+            // reconnue — le lexeur produisait « $z ! » puis « = ».
+            // Un « ! » suivi d'un « = » n'est JAMAIS une factorielle.
+            if i + 1 < n && cps[i + 1] == '=' {
+                tk.push(Token { tk: Tk::Diff, texte: "!=".into(), ligne, col });
+                i += 2; col += 2;
+                continue;
+            }
             // Postfixe : compter les « ! » consécutifs (sans blanc).
             let debut = i;
-            while i < n && cps[i] == '!' { i += 1; col += 1; }
+            while i < n && cps[i] == '!' && !(i + 1 < n && cps[i + 1] == '=') { i += 1; col += 1; }
             let k = (i - debut).min(u8::MAX as usize) as u8;
             let texte: String = cps[debut..i].iter().collect();
             tk.push(Token { tk: Tk::MultiFacto(k), texte, ligne, col: col - (i - debut) });
@@ -2677,6 +2691,57 @@ pub fn replier_instr(i: &Instr) -> Instr {
 
 fn t_ligne(tk: &[Token], pos: usize) -> usize {
     tk.get(pos.min(tk.len()-1)).map(|t| t.ligne).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests_diff_operateur {
+    //! ⚠⚠⚠ GARDE-FOU DU BUG MESURÉ (16/11) : `tant_que ($z != 10)` était
+    //! REFUSÉ (« Attendu ')', trouvé '=' ») alors que le moteur C++ de
+    //! référence l'acceptait. Le lexeur avalait le `!` comme factorielle
+    //! postfixe AVANT de reconnaître la paire `!=`.
+    use super::*;
+
+    #[test]
+    fn diff_est_reconnu_dans_une_condition() {
+        let src = "$z = 0\ntant_que ($z != 10) {\n  $z = $z + 1\n}\n>> $z\n";
+        // ⚠ Le programme contient 3 instructions (affectation, tant_que,
+        // afficher) : ce qui compte est que l'ANALYSE réussisse et que la
+        // condition soit un `!=`.
+        let prog = analyser(src).expect("`!=` doit être accepté");
+        assert_eq!(prog.instructions.len(), 3);
+        match &prog.instructions[1] {
+            Instr::TantQue { test, .. } => match test {
+                Expr::Binaire { op, .. } => assert_eq!(op, "!="),
+                autre => panic!("condition attendue Binaire(!=), reçu {autre:?}"),
+            },
+            autre => panic!("attendu TantQue, reçu {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_reste_un_operateur_binaire() {
+        let prog = analyser(">> 5 != 3\n").unwrap();
+        match &prog.instructions[0] {
+            Instr::Afficher(es, _) => match &es[0] {
+                Expr::Binaire { op, .. } => assert_eq!(op, "!="),
+                autre => panic!("attendu Binaire(!=), reçu {autre:?}"),
+            },
+            autre => panic!("attendu Afficher, reçu {autre:?}"),
+        }
+    }
+
+    #[test]
+    fn factorielle_postfixe_intacte() {
+        // ⚠ Ne PAS casser `n!`, `n!!` : ce sont des jetons MultiFacto.
+        let prog = analyser(">> 5!!\n").unwrap();
+        match &prog.instructions[0] {
+            Instr::Afficher(es, _) => match &es[0] {
+                Expr::MultiFactorielle(_, k, _) => assert_eq!(*k, 2),
+                autre => panic!("attendu MultiFactorielle(2), reçu {autre:?}"),
+            },
+            autre => panic!("attendu Afficher, reçu {autre:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
