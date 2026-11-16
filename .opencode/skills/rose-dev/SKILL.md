@@ -616,17 +616,39 @@ et `bench/suite/fact_rs.rs` (rug).
 
 ### Pièges Windows — icônes et PATH (mesurés le 16/11)
 
-**Icônes : trois rôles, à ne pas confondre.**
-- `rose_base.ico` (= copie de `installateur/assets/rose.ico`, 6 tailles,
-  112 510 o) → **rose.exe**, le moteur. C'est le LOGO DE BASE.
+**Icônes : ⚠⚠⚠ DEUX fichiers `rose.ico` DIFFÉRENTS (vérifié visuellement).**
+- `rose/rose.ico` (6 tailles, **64 700 o**, md5 `2ea01977…`) = **LA ROSE
+  SEULE** (low-poly, rouge, tige verte). C'est le LOGO DE BASE.
+- `installateur/assets/rose.ico` (6 tailles, **112 510 o**, md5
+  `306732b5…`) = **UN DOCUMENT « .ROSE »**. C'est le TYPE DE FICHIER.
+
+Rôles :
+- `rose/rose.ico` → **rose.exe** (moteur) ET `rose_app.ico` dans `bin\`
+  (raccourcis, profil Windows Terminal).
+- `installateur/assets/rose.ico` → `rose.ico` dans `bin\` (type `.rose`).
 - `rose_shell.ico` (7 tailles, 113 565 o, fenêtre de terminal) →
-  **rose-shell.exe** et **rose-aot.exe** UNIQUEMENT.
+  **rose-shell.exe** uniquement.
 - `rose_setup.ico` → **rose-setup.exe** (la boîte d'installation).
-- `rose_app.ico` dans `bin\` = copie de `rose.ico` (raccourcis, profil
-  Windows Terminal). Elle recevait `rose_shell.ico` : erreur corrigée.
-- Vérification : `llvm-readobj --coff-resources <fichier>.res` → `rose.res`
-  doit avoir **6** icônes, `rose-shell.res` **7**. Dans `rose-setup.res`,
-  RCDATA 6 et 7 doivent peser **112 510 o** chacun.
+
+⚠⚠ ERREUR À NE PAS REFAIRE : j'ai posé une copie `rose_base.ico` de
+`installateur/assets/rose.ico` sur `rose.exe` — donc le DOCUMENT sur le
+moteur, deux fois faux. `rose_base.ico` est supprimé.
+
+Vérification : `llvm-readobj --coff-resources <f>.res` → `rose.res` = 6
+icônes de **691/1908/3547/5647/16423/36382 o** (tailles de `rose/rose.ico`) ;
+`rose-shell.res` = 7. Dans `rose-setup.res`, RCDATA **6 = 112 510 o**
+(document) et **7 = 64 700 o** (la rose) — s'ils sont égaux, c'est faux.
+
+⚠ `build.rs` doit déclarer `rerun-if-changed` sur les `.ico` : sans cela,
+remplacer une icône ne reconstruit PAS le `.res` (cache périmé mesuré).
+
+**`rose-aot` : PAS un binaire d'installation.** C'est le helper LLVM
+(~libLLVM) que `rose.exe` télécharge à la demande dans `~/.cache/rose`
+(`auto_llvm.rs`). Le stub construit sans `--features llvm` (480 Ko) ne peut
+RIEN compiler : il était livré dans le stage alors que `setup_core` ne
+l'installe pas = fichier mort et trompeur. **Retiré de `build-linux.sh`.**
+La feature `llvm` ne compile pas sur cette machine
+(`inkwell_internals` : « cannot produce proc-macro for this target »).
 - `llvm-windres rose/rose.rc --target=pe-x86-64 -O coff -o x.res` compile
   sous Linux (rc=0, 113 300 o) : la vérification des `.rc` est possible sans
   Windows. En revanche la cible `x86_64-pc-windows-msvc` NE COMPILE PAS ici
