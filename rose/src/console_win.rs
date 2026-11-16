@@ -23,6 +23,29 @@
 //! poste depuis un fil séparé pour que le programme ne dépende même pas du
 //! résultat.
 
+/// Vrai quand l'entrée standard est un terminal (un vrai clavier).
+#[cfg(windows)]
+fn entree_est_un_terminal() -> bool {
+    use std::ffi::c_void;
+    unsafe extern "system" {
+        fn GetStdHandle(n: u32) -> *mut c_void;
+        fn GetConsoleMode(h: *mut c_void, m: *mut u32) -> i32;
+    }
+    const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;
+    unsafe {
+        let h = GetStdHandle(STD_INPUT_HANDLE);
+        if h.is_null() || h as isize == -1 { return false; }
+        let mut mode = 0u32;
+        GetConsoleMode(h, &mut mode) != 0
+    }
+}
+
+#[cfg(not(windows))]
+fn entree_est_un_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
+}
+
 /// Vrai quand la console a été ouverte pour ce seul programme.
 pub fn console_ephemere() -> bool {
     if std::env::var("ROSE_NO_PAUSE").is_ok() || std::env::var("ROSE_SHELL_PERSIST").is_ok() {
@@ -50,8 +73,17 @@ pub fn console_ephemere() -> bool {
 }
 
 /// Attend une frappe avant de rendre la main (fenêtre ouverte par double-clic).
+///
+/// ⚠⚠⚠ PAS D'ATTENTE QUAND L'ENTRÉE EST REDIRIGÉE (16/11).
+/// Mesuré : un programme lancé avec l'entrée en « nul » (`Stdio::null()`,
+/// un script, un outil de mesure) restait BLOQUÉ sur « Appuyez sur Entrée »
+/// — la lecture rendait EOF et la fenêtre ne se fermait jamais. On ne pose
+/// donc la question que si l'entrée est un VRAI clavier (terminal).
 pub fn attendre_fermeture() {
     if !console_ephemere() {
+        return;
+    }
+    if !entree_est_un_terminal() {
         return;
     }
     print!("\nAppuyez sur Entrée pour fermer… ");

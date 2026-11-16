@@ -222,10 +222,28 @@ pub fn execute(args: &[String]) -> i32 {
     // DÉSIGNER la coupable. Trois verdicts possibles.
     let lancement = mesures[0].duree;
     let analyse = mesures.last().map(|m| m.duree).unwrap_or_default();
+    // ⚠⚠⚠ VERDICT RENFORCÉ (mesuré chez l'utilisateur) : le lancement ET
+    // l'analyse coûtent la MÊME chose (~570-590 ms) et le programme minimal
+    // ajoute ~10-80 ms. Un parseur qui coûterait autant que le démarrage du
+    // processus est impossible : c'est la PREUVE que le coût est dans le
+    // LANCEMENT de chaque processus. On le DIT explicitement, avec le calcul.
+    let ecart_analyse = if analyse > lancement {
+        analyse - lancement
+    } else {
+        lancement - analyse
+    };
+    let seuil_commun = Duration::from_millis(50);
     println!("INTERPRÉTATION");
     if lancement >= Duration::from_millis(200) {
         println!("  ⚠ Le LANCEMENT coûte {} : le délai est AVANT l'entrée dans le",
                  ms(lancement));
+        if ecart_analyse <= seuil_commun {
+            println!("    ⚠⚠ PREUVE : `rose latex` (analyse SEULE, sans exécution) coûte");
+            println!("    {} — le MÊME temps, à {} près. Un parseur ne peut pas",
+                     ms(analyse), ms(ecart_analyse));
+            println!("    coûter autant que `rose version`, qui n'analyse RIEN :");
+            println!("    le coût est le LANCEMENT de chaque processus, pas le langage.");
+        }
         println!("    moteur (CreateProcess, scan antivirus d'un .exe non signé,");
         println!("    dossier hors des exclusions Defender). `rose version` ne fait");
         println!("    RIEN et coûte autant → ce n'est pas le langage.");
@@ -256,6 +274,14 @@ pub fn execute(args: &[String]) -> i32 {
                  std::path::Path::new(&exe).parent()
                      .map(|p| p.display().to_string())
                      .unwrap_or_default());
+        println!();
+        // ⚠⚠ PowerShell n'accepte PAS la syntaxe `VAR=valeur commande` de
+        // POSIX (« ROSE_TIMING=1 : Le terme … n'est pas reconnu », mesuré).
+        // On donne donc les DEUX formes.
+        println!("VARIABLE D'ENVIRONNEMENT (ventilation interne)");
+        println!("  PowerShell :  $env:ROSE_TIMING=1; rose prog.rose");
+        println!("  cmd        :  set ROSE_TIMING=1 && rose prog.rose");
+        println!("  bash       :  ROSE_TIMING=1 rose prog.rose");
     }
     #[cfg(not(windows))]
     {
@@ -263,6 +289,11 @@ pub fn execute(args: &[String]) -> i32 {
         println!("  · ces chiffres sont ceux de CETTE machine ({}).", std::env::consts::OS);
         println!("    Sur Windows, comparez `rose version` ici et dans un dossier");
         println!("    exclu de Defender : la différence est le coût de l'antivirus.");
+        println!();
+        println!("VARIABLE D'ENVIRONNEMENT (ventilation interne)");
+        println!("  bash       :  ROSE_TIMING=1 rose prog.rose");
+        println!("  PowerShell :  $env:ROSE_TIMING=1; rose prog.rose");
+        println!("  cmd        :  set ROSE_TIMING=1 && rose prog.rose");
     }
     0
 }

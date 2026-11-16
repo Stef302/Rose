@@ -366,7 +366,9 @@ et  ou  non                # logique (et/ou/non)
 n!   2³  √9                # postfixés : factorielle, puissance, racine
 n!!  n!!!  n!!!!           # MULTIFACTORIELLES (k = nombre de « ! »)
 n#                         # primorielle : produit des premiers ≤ n   (10# → 210)
-n?                         # terminal : somme des factorielles 1!+…+n!   (5? → 154)
+n?                         # termial de KUREPA : somme des factorielles 1!+…+n!   (5? → 154)
+termial(n)                 # termial CLASSIQUE n(n+1)/2 (triangulaire)   (38 → 741)
+termial_kurepa(n)          # Kurepa, écrit sans ambiguïté   (38 → 537169001220328488991089808037100875620940314)
 n$                         # super-factorielle : 1!·2!·…·n!   (3$ → 12)
 !n                         # PRÉFIXE : sous-factorielle (dérangements)  (!5 → 44)
 ```
@@ -679,14 +681,32 @@ $N = 100
 | Commande | Ce qu'elle rend |
 |---|---|
 | `rose latex prog.rose` | tout le programme |
-| `rose latex prog.rose --lignes` (ou `-l`) | **seulement** les lignes `%%`, séparées par `\\` |
+| `rose latex prog.rose --lignes` (ou `-l`) | **seulement** les lignes `%%`, chacune suivie de `\\` |
+| `rose latex prog.rose --apercu` (ou `-a`) | rendu **visible** (Unicode), sans LaTeX installé |
+| `rose latex prog.rose --lignes --apercu` | les lignes `%%` en rendu visible |
 
 Sortie de `--lignes` sur l'exemple :
 
 ```
 $N!$ : la factorielle \\
-$N!!$ : la multifactorielle, PAS $(N!)!$
+$N!!$ : la multifactorielle, PAS $(N!)!$ \\
 ```
+
+⚠ Le marqueur est `%%` **en début de ligne** — pas `$…$` : `$x$` seul
+serait lu comme du code Rose (une variable). Pour VÉRIFIER le rendu sans
+LaTeX installé, `--apercu` traduit les commandes en caractères Unicode :
+
+```
+$ rose latex prog.rose --apercu
+n = 12
+afficher(n!)
+S = n · (n + 1)/2
+afficher(φ)
+afficher(√2 · √2)
+```
+
+Toute commande que l'aperçu ne connaît pas est affichée entre `« »`
+(`«\inconnue»`) au lieu d'être perdue : rien n'est jamais silencieux.
 
 ⚠ `%` est l'opérateur modulo en Rose : sans la reconnaissance de `%%` **en
 début de ligne**, le lexer voyait deux modulos et rejetait le programme

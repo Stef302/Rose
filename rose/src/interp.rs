@@ -1806,6 +1806,15 @@ impl Interp {
             "approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "primorielle" => { let z = vers_z(&a[0]); Valeur::zg(primorielle(&z)) }
             "terminal" => terminal(&a[0]),
+            // ⚠ Deux termials, DEUX NOMS (demande utilisateur) :
+            //   `n?`                = termial de Kurepa (A003422) ;
+            //   `termial(n)`        = termial CLASSIQUE n(n+1)/2 (A000217) ;
+            //   `termial_kurepa(n)` = Kurepa, sans ambiguïté.
+            "termial" | "triangulaire" | "termial_classique" => {
+                let z = vers_z(&a[0]);
+                Valeur::zg(termial_classique(&z))
+            }
+            "termial_kurepa" | "kurepa" => terminal(&a[0]),
             // `multifactorielle(n, k)` : équivalent fonctionnel de `n!!`
             // (k = 2), `n!!!` (k = 3), etc. Utile quand k est calculé.
             "multifactorielle" | "multifactoriel" => {
@@ -3277,6 +3286,35 @@ pub fn primorielle(n: &Gz) -> Gz {
     r
 }
 
+/// n(n+1)/2 : termial CLASSIQUE (nombres triangulaires, A000217).
+///
+/// ⚠⚠⚠ NE PAS CONFONDRE AVEC `n?` (TERMIAL DE KUREPA).
+/// Mesuré chez l'utilisateur : `38?` rend 537 169 001 220 328 488 991 089 808
+/// 037 100 875 620 940 314 (39 chiffres) — c'est la somme des FACTORIELLES
+/// (A003422), et il trouvait ce nombre « aussi grand ». Le termial CLASSIQUE
+/// vaut n(n+1)/2 : pour 38, 38·39/2 = 741.
+///
+/// Les deux existent désormais sous des noms DISTINCTS :
+///   `n?`                 → Kurepa (A003422) ;
+///   `termial(n)`         → classique (A000217) ;
+///   `termial_kurepa(n)`  → Kurepa (nom explicite).
+///
+/// ⚠ `n(n+1)/2` est calculé en EXACT (BigInt) : aucun débordement, aucun
+/// arrondi, même pour n astronomique.
+pub fn termial_classique(n: &Gz) -> Gz {
+    if n.sgn() < 0 { erreur_runtime("termial d'un négatif : impossible"); }
+    let r = Gz::neuf();
+    // ⚠ `Gz` est un pointeur partagé : `n` peut être référencé ailleurs, on
+    // ne le modifie JAMAIS en place. On construit la valeur dans un Gz neuf.
+    let n1 = Gz::neuf();
+    n1.add_u64(n, 1);          // n + 1
+    r.mul(n, &n1);             // n(n+1)
+    // n(n+1) est PAIR : la division par 2 est exacte (aucun reste).
+    let v = r.v() >> 1;
+    r.set_v(v);
+    r
+}
+
 /// n$ : super-factorielle : produit des factorielles 1!·2!·…·n! (A000178).
 pub fn super_factorielle(n: &Gz) -> Gz {
     if n.sgn() < 0 { erreur_runtime("super-factorielle d'un négatif : impossible"); }
@@ -3431,6 +3469,35 @@ fn terminal_entier(nn: i64) -> Valeur {
     Valeur::zg(r)
 }
 
+
+#[cfg(test)]
+mod tests_termial {
+    //! ⚠⚠⚠ GARDE-FOU DE LA CONFUSION DE NOMS (16/11) : l'utilisateur a
+    //! trouvé `38?` « aussi grand ». C'est le termial de KUREPA (somme des
+    //! FACTORIELLES, A003422) ; le termial CLASSIQUE vaut n(n+1)/2 (A000217).
+    //! Les deux existent sous des noms DISTINCTS.
+    use super::*;
+
+    #[test]
+    fn termial_classique_vaut_741_pour_38() {
+        let n = Gz::de_i64(38);
+        assert_eq!(termial_classique(&n).chaine(), "741");
+        assert_eq!(termial_classique(&Gz::de_i64(0)).chaine(), "0");
+        assert_eq!(termial_classique(&Gz::de_i64(1)).chaine(), "1");
+        assert_eq!(termial_classique(&Gz::de_i64(10)).chaine(), "55");
+        // Exact, sans débordement, même pour n astronomique.
+        assert_eq!(termial_classique(&Gz::de_i64(1_000_000)).chaine(), "500000500000");
+    }
+
+    #[test]
+    fn kurepa_reste_a003422() {
+        // F(5) = 1+1+2+6+24+120 = 154.
+        match terminal(&Valeur::z(5)) {
+            Valeur::Entier(v, None) => assert_eq!(v, 154),
+            _ => panic!("terminal(5) doit rendre un entier simple"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

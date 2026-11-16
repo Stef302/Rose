@@ -147,6 +147,10 @@ pub mod wasm;
 /// lancement, d'analyse et d'exécution. Voir le module.
 pub mod debug_lenteur;
 
+/// ⚠ Rendu VISIBLE (Unicode) d'une chaîne LaTeX : `rose latex --apercu`.
+/// Permet de vérifier le rendu sans LaTeX installé.
+pub mod apercu_latex;
+
 // ── API de haut niveau ────────────────────────────────────────────────────
 //
 // Ces trois fonctions encapsulent tout ce qu'il faut pour faire tourner un

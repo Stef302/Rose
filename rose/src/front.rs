@@ -555,6 +555,18 @@ EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "factorial_approx", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "primorielle", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "terminal", args: &["entier"], retour: "entier" },
+    // ⚠⚠ TERMIAL CLASSIQUE (n(n+1)/2, nombres triangulaires A000217).
+    // Mesuré chez l'utilisateur : « je voudrais savoir pourquoi la termielle
+    // aussi grande » — `n?` est le termial de KUREPA (somme des factorielles),
+    // pas le termial classique. Les deux existent donc :
+    //   `n?`                 → Kurepa (A003422) ;
+    //   `termial(n)`         → classique (A000217) ;
+    //   `termial_kurepa(n)`  → Kurepa, écrit explicitement.
+    EntreeStd { nom: "termial", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "triangulaire", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "termial_classique", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "termial_kurepa", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "kurepa", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "super_factorielle", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "multifactorielle", args: &["entier", "entier"], retour: "entier" },
     EntreeStd { nom: "multifactoriel", args: &["entier", "entier"], retour: "entier" },

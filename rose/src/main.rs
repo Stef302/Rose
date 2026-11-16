@@ -16,6 +16,7 @@ mod jit;
 mod run;
 mod latex;
 mod debug_lenteur;
+mod apercu_latex;
 mod auto_llvm;
 mod cmd_llvm;
 mod sha256;
@@ -53,6 +54,9 @@ Usage :
   rose run prog.rose       identique
   rose comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
   rose latex prog.rose              formule LaTeX du programme entier
+  rose latex prog.rose --apercu     idem, rendu VISIBLE (Unicode, sans LaTeX)
+  rose latex prog.rose --lignes     seulement les lignes marquees %% (LaTeX brut)
+  rose latex prog.rose --lignes --apercu   les lignes %% en rendu visible
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
   rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
@@ -248,15 +252,38 @@ fn main() {
             // `align`/`gather` LaTeX. Les tests unitaires l'avaient figé
             // (« sans séparateur final ») — c'est le COMPORTEMENT qui était
             // faux, pas le test.
+            // ⚠ `--apercu` : rendu VISIBLE (Unicode) au lieu du LaTeX brut.
+            // C'est la réponse à « un programme qui contient du latex pour
+            // voir dans ton output ce que ça donne » : on vérifie le rendu
+            // sans LaTeX installé, et toute commande non gérée s'affiche
+            // entre « » au lieu d'être perdue.
+            let apercu = argv.iter().any(|a| a == "--apercu" || a == "-a");
             if argv.iter().any(|a| a == "--lignes" || a == "-l") {
-                print!("{}", latex::programme_latex_lignes(&source));
+                let texte = latex::programme_latex_lignes(&source);
+                if apercu {
+                    for ligne in texte.lines() {
+                        let l = ligne.trim_end_matches(" \\\\").trim_end();
+                        print!("{}\n", apercu_latex::rendre(l));
+                    }
+                } else {
+                    print!("{}", texte);
+                }
                 return;
             }
             let prog = match front::analyser(&source) {
                 Ok(p) => p,
                 Err(e) => { eprintln!("Rose : erreur — {}", e); std::process::exit(1); }
             };
-            print!("{}", latex::programme_latex(&prog));
+            let texte = latex::programme_latex(&prog);
+            if apercu {
+                for ligne in texte.lines() {
+                    let l = ligne.trim_end_matches(" \\\\").trim_end();
+                    if l.is_empty() { continue; }
+                    print!("{}\n", apercu_latex::rendre(l));
+                }
+                return;
+            }
+            print!("{}", texte);
             println!();
             return;
         }

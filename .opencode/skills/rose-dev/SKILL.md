@@ -111,6 +111,26 @@ renommait l'onglet PowerShell en « Rose … » — mesuré chez l'utilisateur.
 ⚠⚠ Mesurer une lenteur : `rose debug-lenteur [-n N] [prog.rose]` ventile
 lancement / analyse / exécution (médiane). `ROSE_TIMING=1` donne la
 ventilation interne (`entree_main`, `console`, `pret`, `post_spawn`).
+⚠ PowerShell n'accepte pas `VAR=valeur cmd` : `$env:ROSE_TIMING=1; rose …`
+(cmd : `set ROSE_TIMING=1 && rose …`).
+
+⚠⚠ TERMIAL — DEUX NOTIONS, DEUX NOMS (mesuré : l'utilisateur trouvait
+`38?` « aussi grand ») :
+- `n?` / `terminal(n)` / `termial_kurepa(n)` / `kurepa(n)` = termial de
+  KUREPA, somme des factorielles (A003422) : `38?` = 53716900122032848899…314 ;
+- `termial(n)` / `triangulaire(n)` / `termial_classique(n)` = termial
+  CLASSIQUE n(n+1)/2 (A000217) : `termial(38)` = 741.
+⚠ Le nom `terminal` reste attaché à KUREPA (compatibilité) ; ne pas l'inverser.
+
+⚠⚠ MARQUEUR LATEX = `%%` EN DÉBUT DE LIGNE, pas `$…$` : `$x$` seul est lu
+comme du code Rose (variable). Vérifier le rendu SANS LaTeX installé :
+`rose latex prog.rose --apercu` (ou `--lignes --apercu`) → `apercu_latex.rs`
+traduit en Unicode (`\frac` → `1/3`, `\sqrt` → `√`, `Σ[k=1…n]`,
+exposants `²`/`¹⁰⁰`) ; une commande inconnue s'affiche entre `« »`.
+
+⚠⚠ Console éphémère : `attendre_fermeture()` ne pose PAS la question quand
+l'entrée n'est pas un terminal (`GetConsoleMode` = 0). Sinon un programme
+lancé avec `Stdio::null()` restait bloqué sur « Appuyez sur Entrée ».
 
 `rose latex prog.rose` rend le programme entier (c'est là qu'on lit le
 LaTeX : `\operatorname{afficher}(n!)`, `\frac{1}{3}`, `2^{10}`…). Signature typée →

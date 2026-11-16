@@ -196,6 +196,9 @@ const COMPLETIONS: &[&str] = &[
     ":help", ":show", ":reset", ":load", ":save", ":type", ":latex", ":quit", ":q",
     "afficher", "fn", "retour", "si", "sinon", "pour", "tant_que", "vrai", "faux",
     "factorielle", "primorielle", "terminal", "super_factorielle",
+    // ⚠ Deux termials : `terminal`/`termial_kurepa` = Kurepa (A003422),
+    // `termial`/`triangulaire` = classique n(n+1)/2 (A000217).
+    "termial", "triangulaire", "termial_classique", "termial_kurepa", "kurepa",
     "nombre_pi", "nombre_e", "phi", "racine", "fraction", "abs", "min", "max",
     "entier", "flottant", "chaine", "longueur", "joindre", "type", "view",
     "fibonacci", "est_premier", "compter_premiers", "nb_chiffres",
