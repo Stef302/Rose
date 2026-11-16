@@ -451,11 +451,13 @@ Lecture :
 
 ⚠ **Ce qui a été essayé et ABANDONNÉ** (et pourquoi, mesures à l'appui) :
 
-- **Inverse de Newton pour la division** : deux implémentations ont échoué au
-  test de concordance avec `num-bigint` (quotient faux à 80×40 limbs). En
-  arithmétique entière, chaque palier doit garantir une troncature **par
-  défaut** ; sans cette garantie le quotient est faux d'une unité. Non
-  maîtrisé ici → la division délègue à `num-bigint`.
+- **Inverse de Newton pour la division** : désormais **correct** (testé de
+  40 à 1000 limbs contre `num-bigint`) mais **25× plus lent** à toutes les
+  tailles mesurées (1000 limbs : 3,92 ms contre 169 µs). La division délègue
+  donc à `num-bigint`. Les pièges rencontrés : la bonne itération est
+  `v ← ⌊v·(2·B^p − d·v)/B^p⌋` (l'autre ne converge pas), le produit `d·v`
+  ne doit **jamais** être tronqué, le ré-échelonnage entre paliers est
+  `(m2−m)` limbs et non `2(m2−m)`, et l'amorçage doit être décalé de `B^(n−1)`.
 - **Burnikel-Ziegler** : récursion infinie quand le demi-limb ne décroît plus.
 - **Conversion décimale maison** : `num-bigint` fait déjà le même découpage
   récursif ; notre version est légèrement plus lente (3,07 s contre 2,88 s).

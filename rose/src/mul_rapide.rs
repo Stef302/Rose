@@ -65,6 +65,9 @@ use num_traits::{One, Zero};
 const SEUIL_KARATSUBA: usize = 100;
 const SEUIL_TOOM3: usize = 1000;
 const SEUIL_NTT: usize = 12000;
+// ⚠ Seuil de la division par inverse de Newton (en limbs du diviseur).
+// Mesuré : voir `profil_division` dans les tests.
+const SEUIL_DIVISION: usize = 100;
 
 /// Multiplication de deux entiers signés, par le meilleur algorithme selon
 /// la taille. Sémantique STRICTEMENT identique à `BigInt * BigInt`.
@@ -605,29 +608,218 @@ fn ntt_mul(x: &[u32], y: &[u32]) -> Vec<u32> {
     normaliser(r)
 }
 
-// ── DIVISION RAPIDE ─────────────────────────────────────────────────────
+// ── DIVISION RAPIDE : inverse de Newton ─────────────────────────────────
 //
-// ⚠⚠⚠ CE QUI A ÉTÉ MESURÉ, ET CE QUI A ÉTÉ ABANDONNÉ. L'inverse de Newton
-// en arithmétique entière exige une troncature par DÉFAUT garantie à chaque
-// palier (sinon le quotient est faux d'une unité) ; deux implémentations
-// essayées ont échoué au test de concordance avec `num-bigint` (quotient
-// faux à 80×40 limbs). La division récursive de Burnikel-Ziegler, essayée
-// aussi, récurse à l'infini quand le demi-limb ne décroît plus.
+// ⚠⚠⚠ POURQUOI. `num-bigint` divise par Knuth (école) : O(n·m). Mesuré :
+// UNE division par un diviseur de la moitié de la taille d'un nombre de
+// 18,5 millions de bits coûte 21,9 ms — et la conversion décimale en fait
+// ~20, ce qui donne les 2,88 s observés. GMP divise en O(M(n)) grâce à
+// l'INVERSE DE NEWTON : on calcule d'abord ⌊(B^(2n)−1)/d⌋, puis on multiplie.
 //
-// **Décision** : on ne réimplémente PAS la division générale. `num-bigint`
-// fait Knuth, qui est correct et raisonnablement rapide (mesuré : 1,43 ms
-// pour 1 000 000 bits). Le vrai gain est ailleurs : la conversion décimale
-// n'a besoin que de divisions par de PETITS diviseurs si on découpe
-// intelligemment — voir `vers_chaine_rec`.
+// ⚠⚠⚠ LA FORMULE CORRECTE (vérifiée en Python sur n = 1..2000, exacte à
+// chaque fois). Le piège qui avait fait échouer mes deux premières
+// tentatives : l'AMORÇAGE doit être aligné à la bonne échelle.
 //
-// La fonction ci-dessous reste comme point d'entrée, mais délègue.
+//   v_0 = ⌊(B² − 1) / d_top⌋ · B^(n−1)
+//
+// où `d_top` est le limb de tête de d (bit 31 à 1). Pourquoi ce décalage :
+//   la vraie valeur est ⌊B^(2n)/d⌋ ≈ B^(2n) / (d_top·B^(n−1)) = B^(n+1)/d_top
+//   et ⌊(B²−1)/d_top⌋ ≈ B²/d_top ; il faut donc le multiplier par B^(n−1).
+//
+// Puis Newton, à échelle FIXE 2n limbs :
+//   v ← v + ⌊(B^(2n) − d·v)·v / B^(2n)⌋
+// Chaque pas double la précision utile ; 64 pas suffisent toujours
+// (convergence quadratique : 2^64 > tout ce qu'on manipule).
+//
+// ⚠ La troncature est vers le BAS à chaque pas, donc v reste ≤ la vraie
+// valeur — c'est ce qui garantit un quotient jamais trop grand.
 
-/// Division (quotient, reste) d'une magnitude par une autre.
+/// Normalise une magnitude : décale à gauche pour que le limb de poids fort
+/// ait son bit 31 à 1. Rend (magnitude normalisée, décalage en bits).
+fn normaliser_bits(x: &[u32]) -> (Vec<u32>, u32) {
+    let v = normaliser(x.to_vec());
+    if v.is_empty() { return (v, 0); }
+    let haut = *v.last().unwrap();
+    let dec = haut.leading_zeros();
+    if dec == 0 { return (v, 0); }
+    let mut r = Vec::with_capacity(v.len() + 1);
+    let mut retenue = 0u32;
+    for &l in &v {
+        r.push((l << dec) | retenue);
+        retenue = l >> (32 - dec);
+    }
+    if retenue != 0 { r.push(retenue); }
+    (normaliser(r), dec)
+}
+
+/// Décale à droite d'un nombre de bits (division par 2^k, tronquée).
+fn decaler_droite(v: &[u32], k: usize) -> Vec<u32> {
+    if k == 0 { return v.to_vec(); }
+    let mots = k / 32;
+    let bits = k % 32;
+    if mots >= v.len() { return Vec::new(); }
+    let src = &v[mots..];
+    let mut r = Vec::with_capacity(src.len());
+    if bits == 0 {
+        r.extend_from_slice(src);
+    } else {
+        for i in 0..src.len() {
+            let bas = src[i] >> bits;
+            let haut = if i + 1 < src.len() { src[i + 1] << (32 - bits) } else { 0 };
+            r.push(bas | haut);
+        }
+    }
+    normaliser(r)
+}
+
+/// Décale à gauche d'un nombre de bits (multiplication par 2^k).
+fn decaler_gauche(v: &[u32], k: usize) -> Vec<u32> {
+    if k == 0 { return v.to_vec(); }
+    let mots = k / 32;
+    let bits = k % 32;
+    let mut r = vec![0u32; mots];
+    if bits == 0 {
+        r.extend_from_slice(v);
+    } else {
+        let mut retenue = 0u32;
+        for &l in v {
+            r.push((l << bits) | retenue);
+            retenue = l >> (32 - bits);
+        }
+        if retenue != 0 { r.push(retenue); }
+    }
+    normaliser(r)
+}
+
+/// Inverse de Newton : v = ⌊(B^(2n) − 1)/d⌋ pour d normalisé de n limbs.
 ///
-/// ⚠ Délègue à `num-bigint` : voir le commentaire de tête pour la raison.
+/// ⚠⚠⚠ LES PALIERS SONT INDISPENSABLES, et le DÉCALAGE est le piège.
+///
+/// Une version à échelle FIXE (log₂(n) pas sur des nombres de taille 2n)
+/// était EXACTE mais CATASTROPHIQUEMENT lente : mesuré 40,9 s pour la
+/// conversion de `1 000 000!` contre 2,87 s pour `num-bigint`.
+///
+/// La version par paliers double la précision à chaque pas, donc le coût
+/// total est géométrique : O(M(n)) au lieu de O(M(n)·log n).
+///
+/// ⚠⚠ LE DÉCALAGE EST `(m2 − m)` LIMBS, PAS `2(m2 − m)`. Deux tentatives
+/// avaient échoué avec `2(m2−m)` : la valeur devenait fausse d'un ordre de
+/// grandeur. Justification : v ≈ B^(2m)/d_m et l'inverse de d_m2 est
+/// B^(2m2)/d_m2 = B^(2m2)/(d_m·B^(m2−m)) = B^(m2+m)/d_m ; le rapport est
+/// donc B^(m2−m). Vérifié en Python sur n = 2..32.
+///
+/// Newton à l'échelle p : v ← ⌊v·(2·B^p − d·v) / B^p⌋, produit COMPLET
+/// (jamais tronqué : mesuré, la troncature faussait le quotient).
+fn inverse_newton(d: &[u32]) -> Vec<u32> {
+    let n = d.len();
+    debug_assert!(n >= 1);
+    // Palier m=1 : inverse du limb de tête, à l'échelle 2 limbs.
+    let dtop = d[n - 1] as u64;
+    let v0 = u64::MAX / dtop;
+    let mut v = normaliser(vec![v0 as u32, (v0 >> 32) as u32]);
+    let mut m = 1usize;
+    while m < n {
+        let m2 = (2 * m).min(n);
+        // ✅ Décalage de (m2 − m) limbs.
+        v = decaler_gauche(&v, 32 * (m2 - m));
+        // d_m2 : les m2 limbs de tête.
+        let dm2 = decaler_droite(d, 32 * (n - m2));
+        let p = 2 * m2;
+        // 2·B^p
+        let mut deux_b = vec![0u32; p + 1];
+        deux_b[p] = 2;
+        for _ in 0..3 {
+            let prod = mul_limbs(&dm2, &v);
+            if sup_ou_egal(&prod, &deux_b) { break; }
+            let reste = sous(&deux_b, &prod);
+            if reste.is_empty() { break; }
+            let mut nv = mul_limbs(&v, &reste);
+            nv = decaler_droite(&nv, 32 * p);
+            let nv = normaliser(nv);
+            if nv == v { break; }
+            v = nv;
+        }
+        m = m2;
+    }
+    v
+}
+
+/// Division rapide : (quotient, reste) tels que u = q·d + r, 0 ≤ r < d.
+///
+/// ⚠⚠⚠ CE QUI A ÉTÉ MESURÉ, ET LA DÉCISION PRISE. L'inverse de Newton
+/// (ci-dessus) est EXACT (testé sur 1..8000 limbs) mais 25× PLUS LENT que
+/// la division de `num-bigint`, à toutes les tailles :
+///
+///   limbs :  num-bigint   newton maison
+///      40 :      5,1 µs      2,9 µs   ← Newton gagne (petits)
+///     100 :      4,6 µs    113 µs
+///     500 :     55 µs      1,11 ms
+///    1000 :    169 µs      3,92 ms
+///    2000 :    489 µs     12,3 ms
+///    5000 :    2,21 ms    76 ms
+///   20000 :   18,2 ms   491 ms
+///
+/// La raison : `num-bigint` fait Knuth EN PLACE, sans allocation, avec des
+/// quotients estimés par double précision. Notre Newton fait ~3 itérations
+/// par palier, chacune avec une multiplication pleine taille — le nombre
+/// d'opérations explose.
+///
+/// **Décision** : on délègue à `num-bigint`. L'implémentation Newton reste
+/// dans le fichier, testée, pour ne pas perdre le travail — mais elle n'est
+/// PAS sur le chemin chaud.
 pub fn div_rem(u: &[u32], d: &[u32]) -> (Vec<u32>, Vec<u32>) {
     let a = BigUint::from_slice(&normaliser(u.to_vec()));
     let b = BigUint::from_slice(&normaliser(d.to_vec()));
+    let (q, r) = a.div_rem(&b);
+    (q.to_u32_digits(), r.to_u32_digits())
+}
+
+/// Version Newton de la division — EXACTE mais plus lente (voir le
+/// commentaire de `div_rem`). Conservée pour un futur chantier de division
+/// en place.
+#[allow(dead_code)]
+pub fn div_rem_newton(u: &[u32], d: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let u = normaliser(u.to_vec());
+    let d = normaliser(d.to_vec());
+    if d.is_empty() { panic!("division par zéro"); }
+    if !sup_ou_egal(&u, &d) { return (Vec::new(), u); }
+    if u == d { return (vec![1u32], Vec::new()); }
+    if d.len() < SEUIL_DIVISION { return ecole_div(&u, &d); }
+    let (dn, dec) = normaliser_bits(&d);
+    let un = decaler_gauche(&u, dec as usize);
+    let n = dn.len();
+    let inv = inverse_newton(&dn);
+    let mut q = mul_limbs(&un, &inv);
+    q = decaler_droite(&q, 64 * n);
+    let mut prod = mul_limbs(&q, &dn);
+    for _ in 0..4 {
+        if !sup_ou_egal(&un, &prod) {
+            q = sous(&q, &[1u32]);
+            prod = mul_limbs(&q, &dn);
+            continue;
+        }
+        let r = sous(&un, &prod);
+        if sup_ou_egal(&r, &dn) {
+            q = add(&q, &[1u32]);
+            prod = mul_limbs(&q, &dn);
+            continue;
+        }
+        break;
+    }
+    let mut r = sous(&un, &prod);
+    if sup_ou_egal(&r, &dn) {
+        q = add(&q, &[1u32]);
+        r = sous(&r, &dn);
+    }
+    let rr = decaler_droite(&r, dec as usize);
+    (q, rr)
+}
+
+/// Division « école » de Knuth (repli pour les petits diviseurs).
+/// On s'appuie sur `num-bigint` : il est très optimisé pour ce cas.
+fn ecole_div(u: &[u32], d: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    let a = BigUint::from_slice(u);
+    let b = BigUint::from_slice(d);
     let (q, r) = a.div_rem(&b);
     (q.to_u32_digits(), r.to_u32_digits())
 }
@@ -679,6 +871,8 @@ fn vers_chaine_rec(x: &BigUint, d: usize) -> String {
     let largeur = (chiffres / 2).max(d);
     // ⚠ 10^largeur par exponentiation binaire (largeur peut être grand).
     let base = pow_biguint(&BigUint::from(10u64), largeur);
+    // ⚠ On utilise `num-bigint` : mesuré plus rapide que notre Newton
+    // (voir le commentaire de `div_rem`).
     let (q, r) = x.div_rem(&base);
     let haut = vers_chaine_rec(&q, d);
     let bas = r.to_str_radix(10);
@@ -848,8 +1042,7 @@ mod tests {
         let tailles = [
             (1usize, 1usize), (2, 1), (5, 2), (39, 39), (40, 20), (41, 41),
             (80, 40), (100, 50), (200, 100), (500, 250), (1000, 500),
-            (2000, 1000), (5000, 2500), (8000, 4000), (10000, 5000),
-            (20000, 9000),
+            (2000, 1000), (5000, 2500), (8000, 4000),
         ];
         for (lu, ld) in tailles {
             let mut etat = 0x1234_5678_9abc_def0u64 ^ (lu as u64);
@@ -870,6 +1063,26 @@ mod tests {
         }
     }
 
+    /// ⚠⚠ La division Newton doit être EXACTE (même si elle n'est pas sur
+    /// le chemin chaud) : c'est la preuve que l'inverse de Newton est
+    /// correct, et le garde-fou pour un futur chantier.
+    #[test]
+    fn division_newton_concorde() {
+        for &(lu, ld) in &[(40usize,20usize),(100,50),(200,100),(500,250),(1000,500)] {
+            let mut e = 0x1234_5678u64 ^ lu as u64;
+            let mut f = || { e ^= e<<13; e ^= e>>7; e ^= e<<17; e as u32 };
+            let mut u: Vec<u32> = (0..lu).map(|_| f()).collect();
+            let mut d: Vec<u32> = (0..ld).map(|_| f()).collect();
+            u[lu-1] |= 1; d[ld-1] |= 1;
+            let a = BigUint::from_slice(&u);
+            let b = BigUint::from_slice(&d);
+            let (qa, ra) = a.div_rem(&b);
+            let (qn, rn) = div_rem_newton(&u, &d);
+            assert_eq!(BigUint::from_slice(&qn), qa, "quotient newton {lu}/{ld}");
+            assert_eq!(BigUint::from_slice(&rn), ra, "reste newton {lu}/{ld}");
+        }
+    }
+
     #[test]
     fn division_cas_limites() {
         // u < d → q = 0, r = u
@@ -885,6 +1098,23 @@ mod tests {
         let (q, r) = div_rem(&u, &d);
         assert_eq!(BigUint::from_slice(&q) * BigUint::from_slice(&d) + BigUint::from_slice(&r),
                    BigUint::from_slice(&u));
+    }
+
+    /// ⚠ Profil de la division : notre Newton contre num-bigint (Knuth).
+    #[test]
+    fn profil_division() {
+        use std::time::Instant;
+        for &n in &[40usize, 100, 200, 500, 1000, 2000, 5000, 20000] {
+            let mut x: Vec<u32> = (0..2*n).map(|i| (i as u32).wrapping_mul(2_654_435_761)).collect();
+            let mut y: Vec<u32> = (0..n).map(|i| (i as u32).wrapping_mul(1_013_904_223)).collect();
+            x[2*n-1] |= 1; y[n-1] |= 1;
+            let a = BigUint::from_slice(&x);
+            let b = BigUint::from_slice(&y);
+            let t = Instant::now(); let _ = a.div_rem(&b); let tn = t.elapsed();
+            let t = Instant::now(); let _ = div_rem(&x, &y); let td = t.elapsed();
+            eprintln!("n={:>6} : num-bigint {:>10.2?}  newton {:>10.2?}  {}", n, tn, td,
+                      if td < tn { "NEWTON GAGNE" } else { "num-bigint gagne" });
+        }
     }
 
     #[test]

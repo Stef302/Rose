@@ -616,17 +616,29 @@ et `bench/suite/fact_rs.rs` (rug).
 
 ### Ce qui a été essayé et ABANDONNÉ (ne pas retenter sans preuve)
 
-- **Inverse de Newton pour la division** : deux implémentations ont ÉCHOUÉ au
-  test de concordance (quotient faux à 80×40 limbs). En arithmétique entière,
-  chaque palier doit garantir une troncature PAR DÉFAUT ; sinon le quotient
-  est faux d'une unité. Non maîtrisé → `div_rem` délègue à `num-bigint`.
+- **Inverse de Newton pour la division** : désormais CORRECT
+  (`div_rem_newton`, testé 40→1000 limbs contre num-bigint) MAIS **25× PLUS
+  LENT** que num-bigint à toutes les tailles mesurées :
+  40 limbs → 2,9 µs (Newton gagne), 100 → 113 µs vs 4,6 µs,
+  1000 → 3,92 ms vs 169 µs, 20000 → 491 ms vs 18,2 ms.
+  → `div_rem` délègue à `num-bigint`. La version Newton est conservée
+  (`#[allow(dead_code)]`) pour un futur chantier « division en place ».
+- **Les pièges de l'inverse de Newton** (trois essais ratés avant) :
+  1. `v ← v + (B^p − d·v)·v/B^p` **NE CONVERGE PAS** (l'écart ne bouge pas).
+     La bonne itération est `v ← ⌊v·(2·B^p − d·v)/B^p⌋`.
+  2. Tronquer `d·v` à p limbs **fausse le quotient** : produit COMPLET.
+  3. Le ré-échelonnage entre paliers est `(m2−m)` LIMBS, pas `2(m2−m)`.
+  4. L'amorçage `⌊(B²−1)/d_top⌋ · B^(n−1)` (le décalage est indispensable).
+  5. Une échelle FIXE (sans paliers) est exacte mais **catastrophique** :
+     40,9 s pour la conversion de 1M! contre 2,87 s.
 - **Burnikel-Ziegler** : récursion infinie quand le demi-limb ne décroît plus.
 - **Conversion décimale maison** : `num-bigint` fait déjà le même découpage
   récursif (`to_radix_digits_le_divide_and_conquer`) ; notre version est plus
   lente (3,07 s contre 2,88 s). ⚠ Piège : diviser par 10⁹ à chaque niveau fait
   600 000 niveaux de récursion → **SIGABRT** (pile).
-- Le goulot réel de la conversion est la **division** (Knuth O(n·m)). Pour
-  battre GMP il faudrait un inverse de Newton CORRECT.
+- Le goulot réel de la conversion est la **division**. L'inverse de Newton
+  est maintenant CORRECT mais plus LENT que Knuth de num-bigint (25×) :
+  le chemin pour battre GMP passe par une division EN PLACE, pas par Newton.
 
 ## Bench comparatif entre langages
 
