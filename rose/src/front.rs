@@ -267,7 +267,11 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             tk.push(Token { tk: Tk::MultiFacto(k), texte, ligne, col: col - (i - debut) });
             continue;
         }
-        // '?' postfixe (terminal) : devient opérateur SAUF s'il peut ouvrir
+        // '?' postfixe : TERMIAL CLASSIQUE n(n+1)/2 (A000217), depuis le
+        // 16/11. ⚠ Demande explicite de l'utilisateur : « plutôt l'inverse,
+        // 38? pour classique ». Le termial de KUREPA (A003422) garde des
+        // noms explicites : `terminal(n)`, `termial_kurepa(n)`, `kurepa(n)`.
+        // '?' devient opérateur SAUF s'il peut ouvrir
         // l'instruction « si compact » « ? (cond) [ … ] » : en DÉBUT
         // d'instruction (début de fichier, après un saut de ligne, un
         // point-virgule ou '>' — le cas « [>> … ] ») ET suivi de '('.
@@ -554,14 +558,15 @@ EntreeStd { nom: "digits", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "approx", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "factorial_approx", args: &["entier"], retour: "chaine" },
     EntreeStd { nom: "primorielle", args: &["entier"], retour: "entier" },
+    // ⚠⚠⚠ DEUX TERMIALS, DEUX NOTATIONS (16/11, demande utilisateur) :
+    //   `n?`                 → termial CLASSIQUE n(n+1)/2 (A000217) : 38? = 741 ;
+    //   `termial(n)`         → classique aussi (nom explicite) ;
+    //   `terminal(n)`        → termial de KUREPA, somme des factorielles
+    //                          (A003422) : terminal(38) = 5371690012203284… ;
+    //   `termial_kurepa(n)`  → Kurepa, nom explicite ;
+    //   `kurepa(n)`          → Kurepa (raccourci).
+    // ⚠ `terminal(n)` GARDE Kurepa (compatibilité des programmes existants).
     EntreeStd { nom: "terminal", args: &["entier"], retour: "entier" },
-    // ⚠⚠ TERMIAL CLASSIQUE (n(n+1)/2, nombres triangulaires A000217).
-    // Mesuré chez l'utilisateur : « je voudrais savoir pourquoi la termielle
-    // aussi grande » — `n?` est le termial de KUREPA (somme des factorielles),
-    // pas le termial classique. Les deux existent donc :
-    //   `n?`                 → Kurepa (A003422) ;
-    //   `termial(n)`         → classique (A000217) ;
-    //   `termial_kurepa(n)`  → Kurepa, écrit explicitement.
     EntreeStd { nom: "termial", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "triangulaire", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "termial_classique", args: &["entier"], retour: "entier" },
@@ -1850,7 +1855,8 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
         Expr::Terminal(a, ligne) => {
             let t = expr_type(prog, a, env)?;
             if !est_numerique(&t) {
-                return Err(fmt_err(&format!("Terminal attend un nombre, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
+                // ⚠ `n?` = termial classique (n(n+1)/2) : le message le DIT.
+                return Err(fmt_err(&format!("Termial (?) attend un nombre, trouvé {}", nom_pour_msg(&t)), *ligne, 0));
             }
             // ⚠ `terminal` était TOUJOURS typé `Dyn`, même sur un entier.
             // Conséquence mesurée : `f(0?)` était refusé (« Argument de f :

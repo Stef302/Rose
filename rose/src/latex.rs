@@ -865,7 +865,7 @@ mod tests {
 
     #[test]
     fn postfixes_primaux() {
-        // « # » primorielle, « ? » terminal, « $ » super-factorielle :
+        // « # » primorielle, « ? » termial classique, « $ » super-factorielle :
         // le LaTeX rend l'opérateur collé à son opérande ($ échappé).
         assert_eq!(expr_latex(&Expr::Primorielle(Box::new(lit("10")), 1)), "10#");
         assert_eq!(expr_latex(&Expr::Terminal(Box::new(lit("5")), 1)), "5?");
@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn evaluer_postfixes_primaux() {
         // valeurs de référence : suites A002110 (primorielle), A003422
-        // (terminal), A000178 (super-factorielle).
+        // (terminal(n) = Kurepa), A000178 (super-factorielle).
         use crate::run::Valeur;
         let z = |n: i64| crate::run::Gz::de_i64(n);
         assert_eq!(crate::interp::primorielle(&z(10)).v().to_string(), "210");

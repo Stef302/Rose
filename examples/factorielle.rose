@@ -2,7 +2,8 @@
 //
 //   n!            factorielle exacte (arbre glouton multi-cœur)
 //   n#            primorielle : produit des premiers ≤ n  (5# = 2·3·5 = 30)
-//   n?            terminal : somme des factorielles 1!+2!+…+n!  (5? = 154)
+//   n?            termial classique n(n+1)/2                    (38? = 741)
+//   terminal(n)   factorielle gauche de Kurepa 1!+2!+…+n!       (terminal(5) = 154)
 //   n$            super-factorielle : 1!·2!·…·n!  (3$ = 1!·2!·3! = 12)
 //   rapide(n)     factorielle par le même arbre rapide
 //   approx(n)     approximation de Stirling (mantisse e exposant)

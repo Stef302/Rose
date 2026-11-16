@@ -1188,7 +1188,8 @@ impl Interp {
             }
             Expr::Terminal(a, _) => {
                 let v = self.eval(a)?;
-                Ok(terminal(&v))
+                // ⚠ `n?` = termial CLASSIQUE n(n+1)/2 (A000217), pas Kurepa.
+                Ok(Valeur::zg(termial_classique(&vers_z(&v))))
             }
             Expr::SuperFactorielle(a, _) => {
                 let v = self.eval(a)?;
@@ -1805,16 +1806,17 @@ impl Interp {
             "factorial_approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "primorielle" => { let z = vers_z(&a[0]); Valeur::zg(primorielle(&z)) }
-            "terminal" => terminal(&a[0]),
-            // ⚠ Deux termials, DEUX NOMS (demande utilisateur) :
-            //   `n?`                = termial de Kurepa (A003422) ;
-            //   `termial(n)`        = termial CLASSIQUE n(n+1)/2 (A000217) ;
+            // ⚠ Deux termials, DEUX NOTATIONS (demande utilisateur) :
+            //   `n?`                = termial CLASSIQUE n(n+1)/2 (A000217) ;
+            //   `termial(n)`        = idem, nom explicite ;
+            //   `terminal(n)`       = termial de KUREPA (A003422) — conservé
+            //                          pour les programmes existants ;
             //   `termial_kurepa(n)` = Kurepa, sans ambiguïté.
+            "terminal" | "termial_kurepa" | "kurepa" => terminal(&a[0]),
             "termial" | "triangulaire" | "termial_classique" => {
                 let z = vers_z(&a[0]);
                 Valeur::zg(termial_classique(&z))
             }
-            "termial_kurepa" | "kurepa" => terminal(&a[0]),
             // `multifactorielle(n, k)` : équivalent fonctionnel de `n!!`
             // (k = 2), `n!!!` (k = 3), etc. Utile quand k est calculé.
             "multifactorielle" | "multifactoriel" => {
@@ -3258,8 +3260,9 @@ pub fn factorial_approx(n: &Gz) -> String {
 // ── Primorielle, terminal, super-factorielle (opérateurs # ? $) ────────────
 // n#  = produit des nombres premiers ≤ n (primorielle, suite A002110).
 // n$  = super-factorielle : produit des factorielles 1!·2!·…·n! (A000178).
-// n?  = terminal : somme itérée des factorielles, F(0)=1, F(k)=k!+F(k−1)
-//       (A003422 : 0?→1, 1?→2, 2?→4, 3?→10, 4?→34, 5?→154).
+// n?  = termial CLASSIQUE : n(n+1)/2 (A000217 : 0?→0, 1?→1, 2?→3, 5?→15).
+// terminal(n) = termial de KUREPA : somme itérée des factorielles, F(0)=1,
+//       F(k)=k!+F(k−1) (A003422 : 1→2, 2→4, 3→10, 4→34, 5→154).
 
 /// n# : produit des premiers ≤ n. Crible + arbre de produit parallèle.
 pub fn primorielle(n: &Gz) -> Gz {
@@ -3288,15 +3291,16 @@ pub fn primorielle(n: &Gz) -> Gz {
 
 /// n(n+1)/2 : termial CLASSIQUE (nombres triangulaires, A000217).
 ///
-/// ⚠⚠⚠ NE PAS CONFONDRE AVEC `n?` (TERMIAL DE KUREPA).
-/// Mesuré chez l'utilisateur : `38?` rend 537 169 001 220 328 488 991 089 808
-/// 037 100 875 620 940 314 (39 chiffres) — c'est la somme des FACTORIELLES
-/// (A003422), et il trouvait ce nombre « aussi grand ». Le termial CLASSIQUE
-/// vaut n(n+1)/2 : pour 38, 38·39/2 = 741.
+/// ⚠⚠⚠ C'EST CE QUE FAIT `n?` DEPUIS LE 16/11 (demande utilisateur :
+/// « plutôt l'inverse, 38? pour classique »). Mesuré : `38?` rendait
+/// 537 169 001 220 328 488 991 089 808 037 100 875 620 940 314 (39 chiffres,
+/// la somme des FACTORIELLES) et l'utilisateur trouvait ce nombre « aussi
+/// grand ». Le termial classique vaut n(n+1)/2 : pour 38, 38·39/2 = 741.
 ///
-/// Les deux existent désormais sous des noms DISTINCTS :
-///   `n?`                 → Kurepa (A003422) ;
-///   `termial(n)`         → classique (A000217) ;
+/// Les deux existent donc, sous des notations DISTINCTES :
+///   `n?`                 → CLASSIQUE (A000217) : 38? = 741 ;
+///   `termial(n)`         → classique aussi ;
+///   `terminal(n)`        → Kurepa (A003422) — conservé pour compatibilité ;
 ///   `termial_kurepa(n)`  → Kurepa (nom explicite).
 ///
 /// ⚠ `n(n+1)/2` est calculé en EXACT (BigInt) : aucun débordement, aucun
@@ -3490,11 +3494,33 @@ mod tests_termial {
     }
 
     #[test]
-    fn kurepa_reste_a003422() {
+    fn kurepa_reste_a003422_sous_terminal() {
+        // ⚠ `n?` est le CLASSIQUE ; Kurepa se demande par `terminal(n)`.
         // F(5) = 1+1+2+6+24+120 = 154.
         match terminal(&Valeur::z(5)) {
             Valeur::Entier(v, None) => assert_eq!(v, 154),
             _ => panic!("terminal(5) doit rendre un entier simple"),
+        }
+    }
+
+    #[test]
+    fn le_postfixe_question_est_le_classique() {
+        // ⚠ Vérifie la RÈGLE : `5?` = 15 (classique), pas 154 (Kurepa), et
+        // `38?` = 741 (demande utilisateur : « 38? pour classique »).
+        for (source, attendu) in [("5?", "15"), ("38?", "741"), ("0?", "0"), ("1?", "1")] {
+            let prog = crate::front::analyser(source).unwrap();
+            let mut it = Interp::nouveau(prog);
+            it.executer_principal();
+            let e = match &it.prog.instructions[0] {
+                crate::front::Instr::ExprStmt(es) => es.clone(),
+                crate::front::Instr::Afficher(es, _) => es[0].clone(),
+                _ => panic!("instruction inattendue pour {source}"),
+            };
+            match it.eval(&e) {
+                Ok(Valeur::Entier(v, None)) => assert_eq!(v.to_string(), attendu, "{source}"),
+                Ok(Valeur::Entier(_, Some(z))) => assert_eq!(z.chaine(), attendu, "{source}"),
+                _ => panic!("{source} doit rendre un entier"),
+            }
         }
     }
 }

@@ -114,13 +114,15 @@ ventilation interne (`entree_main`, `console`, `pret`, `post_spawn`).
 ⚠ PowerShell n'accepte pas `VAR=valeur cmd` : `$env:ROSE_TIMING=1; rose …`
 (cmd : `set ROSE_TIMING=1 && rose …`).
 
-⚠⚠ TERMIAL — DEUX NOTIONS, DEUX NOMS (mesuré : l'utilisateur trouvait
-`38?` « aussi grand ») :
-- `n?` / `terminal(n)` / `termial_kurepa(n)` / `kurepa(n)` = termial de
-  KUREPA, somme des factorielles (A003422) : `38?` = 53716900122032848899…314 ;
-- `termial(n)` / `triangulaire(n)` / `termial_classique(n)` = termial
-  CLASSIQUE n(n+1)/2 (A000217) : `termial(38)` = 741.
-⚠ Le nom `terminal` reste attaché à KUREPA (compatibilité) ; ne pas l'inverser.
+⚠⚠ TERMIAL — DEUX NOTIONS, DEUX NOTATIONS (demande utilisateur du 16/11 :
+« plutôt l'inverse, 38? pour classique ») :
+- `n?` / `termial(n)` / `triangulaire(n)` / `termial_classique(n)` = termial
+  CLASSIQUE n(n+1)/2 (A000217) : `38?` = 741, `5?` = 15 ;
+- `terminal(n)` / `termial_kurepa(n)` / `kurepa(n)` = termial de KUREPA,
+  somme des factorielles (A003422) : `terminal(38)` = 53716900122032848899…314.
+⚠ `terminal(n)` GARDE Kurepa (compatibilité) ; ne pas l'inverser.
+⚠ Le bench `bench/suite/factorielles.rose` mesure KUREPA via `terminal(n)`
+  (k==6), pas `n?` (qui rend un nombre de 3 chiffres à n=5000).
 
 ⚠⚠ MARQUEUR LATEX = `%%` EN DÉBUT DE LIGNE, pas `$…$` : `$x$` seul est lu
 comme du code Rose (variable). Vérifier le rendu SANS LaTeX installé :

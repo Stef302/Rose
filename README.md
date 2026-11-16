@@ -366,8 +366,9 @@ et  ou  non                # logique (et/ou/non)
 n!   2³  √9                # postfixés : factorielle, puissance, racine
 n!!  n!!!  n!!!!           # MULTIFACTORIELLES (k = nombre de « ! »)
 n#                         # primorielle : produit des premiers ≤ n   (10# → 210)
-n?                         # termial de KUREPA : somme des factorielles 1!+…+n!   (5? → 154)
-termial(n)                 # termial CLASSIQUE n(n+1)/2 (triangulaire)   (38 → 741)
+n?                         # termial CLASSIQUE n(n+1)/2 (triangulaire)   (38? → 741)
+termial(n)                 # idem, nom explicite   (termial(38) → 741)
+terminal(n)                # termial de KUREPA : somme des factorielles 1!+…+n!   (terminal(5) → 154)
 termial_kurepa(n)          # Kurepa, écrit sans ambiguïté   (38 → 537169001220328488991089808037100875620940314)
 n$                         # super-factorielle : 1!·2!·…·n!   (3$ → 12)
 !n                         # PRÉFIXE : sous-factorielle (dérangements)  (!5 → 44)
@@ -413,12 +414,20 @@ Le même symbole `!n` désigne historiquement deux choses :
 
 - la **sous-factorielle** (dérangements, A000166) : `!0`=1, `!1`=0, `!2`=1,
   `!3`=2, `!4`=9, `!5`=44 — c'est l'usage retenu par Rose ;
-- la **factorielle gauche de Kurepa** (A003422) : 0, 1, 2, 4, 10, 34, 154…
-  — c'est ce que Rose nomme **`n?`** (terminal), déjà présent avant.
+- la **factorielle gauche de Kurepa** (A003422) : 1, 2, 4, 10, 34, 154…
+  — c'est ce que Rose nomme **`terminal(n)`** (ou `termial_kurepa(n)`).
 
 Les deux sont donc accessibles, sans ambiguïté : `!n` = dérangements,
-`n?` = Kurepa. Les fonctions nommées `sous_factorielle(n)` et
+`terminal(n)` = Kurepa. Les fonctions nommées `sous_factorielle(n)` et
 `multifactorielle(n, k)` donnent le même résultat quand k est calculé.
+
+#### `n?` : le termial classique
+
+⚠ `n?` est le **termial classique** `n(n+1)/2` (nombres triangulaires,
+A000217) : `0?`=0, `1?`=1, `2?`=3, `5?`=15, `38?`=741. Il ne faut pas le
+confondre avec le termial de **Kurepa** (somme des factorielles), qui se
+demande par `terminal(n)` : `terminal(5)`=154, `terminal(38)` =
+537169001220328488991089808037100875620940314.
 
 #### `n!` exact, `factorial_approx(n)` approximatif, `factorielle_rapide(n)` : les trois vitesses
 
@@ -618,7 +627,7 @@ formule exacte en LaTeX et une approximation `≈` :
 
 | Domaine | Fonctions |
 |---|---|
-| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `rapide`(`factorial_rapide`) `approx`(`factorial_approx`) `multifactorielle`(`n!!`) `sous_factorielle`(`derangement`, `!n`) `primorielle`(`n#`) `terminal`(`n?`) `super_factorielle`(`n$`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
+| Nombres | `abs` `min` `max` `partie_entiere` `factorielle`(`fact`) `rapide`(`factorial_rapide`) `approx`(`factorial_approx`) `multifactorielle`(`n!!`) `sous_factorielle`(`derangement`, `!n`) `primorielle`(`n#`) `terminal`(Kurepa) `termial`(`n?`, classique) `super_factorielle`(`n$`) `fib`(`fibonacci`) `pgcd`(`gcd`) `ppcm`(`lcm`) `puissance`(`pow`) `nb_chiffres`(`digits`) `est_premier`(`is_prime`) `compter_premiers` |
 | Gros nombres | `view(x)` — visionneuse paginée dans le terminal (façon nano) pour les nombres à des millions de chiffres |
 | Exact | `pi(n)` `e(n)` `phi(n)` `racine(n)` `fraction(a,b)` |
 | Types | `type(x)` → chaîne ("entier", "flottant", …) |

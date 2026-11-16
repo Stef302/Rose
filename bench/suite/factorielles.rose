@@ -11,7 +11,8 @@
 #   n!!!    multifactorielle d'ordre 3       (A007661)
 #   n!!!!   multifactorielle d'ordre 4
 #   n#      primorielle                      (A002110)
-#   n?      terminal = factorielle gauche    (A003422)
+#   n?      termial CLASSIQUE n(n+1)/2       (A000217)
+#   terminal(n)  factorielle gauche de KUREPA (A003422)
 #   n$      super-factorielle                (A000178)
 #   !n      sous-factorielle (dérangements)  (A000166)
 #
@@ -38,7 +39,8 @@ fn mesurer(nom: chaine, k: entier, n: entier) -> entier {
   si (k == 3) { $v = n!!! }
   si (k == 4) { $v = n!!!! }
   si (k == 5) { $v = n# }
-  si (k == 6) { $v = n? }
+  # ⚠ Kurepa (grand nombre), PAS `n?` (termial classique, 3 chiffres à n=5000).
+  si (k == 6) { $v = terminal(n) }
   si (k == 7) { $v = n$ }
   si (k == 8) { $v = !n }
   $m1 = millisecondes()
@@ -52,7 +54,7 @@ fn mesurer(nom: chaine, k: entier, n: entier) -> entier {
 >> mesurer("triple           n!!!", 3, $N)
 >> mesurer("quadruple        n!!!!", 4, $N)
 >> mesurer("primorielle      n#", 5, $N)
->> mesurer("terminal         n?", 6, $N)
+>> mesurer("kurepa           terminal(n)", 6, $N)
 >> mesurer("sous-factorielle !n", 8, $N)
 >> "N = " + chaine($N_SUPER) + " pour la super-factorielle (coût quadratique)"
 >> mesurer("super-factorielle n$", 7, $N_SUPER)
