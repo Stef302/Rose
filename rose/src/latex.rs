@@ -147,7 +147,13 @@ fn expr_brut(e: &Expr) -> String {
         Expr::SousFactorielle(a, _) => format!("!{}", expr_avec_priorite(a, P_ATOME)),
         Expr::Primorielle(a, _) => format!("{}#", expr_avec_priorite(a, P_ATOME)),
         Expr::Terminal(a, _) => format!("{}?", expr_avec_priorite(a, P_ATOME)),
-        Expr::SuperFactorielle(a, _) => format!("{}\\$", expr_avec_priorite(a, P_ATOME)),
+        // ⚠ La super-factorielle s'écrit `n$` en Rose, mais `$` est le
+        // caractère des MATHÉMATIQUES en LaTeX : « 3\$ » s'affiche comme un
+        // « 3$ » ambigu, qu'on lit comme un signe monétaire. On rend donc
+        // `sf(n)`, qui est la notation usuelle en combinatoire (A000178) et
+        // ne peut pas être confondue avec un prix.
+        Expr::SuperFactorielle(a, _) => format!("\\operatorname{{sf}}\\left({}\\right)",
+            expr_avec_priorite(a, P_ATOME)),
         Expr::Index { a, b, .. } => format!("{}_ {{{}}}", expr_avec_priorite(a, P_ATOME), expr_brut(b)),
         Expr::ListeLit(elems, _) => {
             let inner: Vec<String> = elems.iter().map(expr_latex).collect();
@@ -454,6 +460,58 @@ fn borne_fin_latex(fin: &Expr) -> String {
 
 /// Rend un programme Rose en LaTeX : une instruction par ligne, séparées par
 /// un saut de ligne LaTeX (`\\`).
+/// Marqueur de ligne LaTeX : une ligne de code qui COMMENCE par `%%` (à
+/// blanc près) est rendue en LaTeX à part, ligne par ligne.
+///
+/// Pourquoi `%%` : c'est le commentaire de TeX lui-même. Un programme Rose
+/// peut donc marquer les lignes qu'il veut voir rendues sans introduire de
+/// syntaxe nouvelle dans le langage :
+///
+/// ```rose
+/// %% $N!$ : la factorielle
+/// $N = 100
+/// %% $N!!$ : la multifactorielle, PAS $(N!)!$
+/// >> $N!!
+/// ```
+///
+/// `rose latex prog.rose` rend TOUT le programme ; `rose latex prog.rose
+/// --lignes` ne rend QUE les lignes marquées. Les deux sont complémentaires :
+/// le premier donne la synthèse, le second les formules choisies.
+pub const MARQUEUR_LIGNE: &str = "%%";
+
+/// Vrai si la ligne est une marque LaTeX (`%%` en tête, à blanc près).
+pub fn est_ligne_latex(ligne: &str) -> bool {
+    ligne.trim_start().starts_with(MARQUEUR_LIGNE)
+}
+
+/// Contenu LaTeX d'une ligne marquée : tout ce qui suit `%%`, débarrassé des
+/// blancs de tête et de queue.
+pub fn contenu_ligne_latex(ligne: &str) -> String {
+    let t = ligne.trim_start();
+    t.strip_prefix(MARQUEUR_LIGNE).unwrap_or(t).trim().to_string()
+}
+
+/// Rendu des SEULES lignes marquées `%%` d'un programme, dans l'ordre du
+/// fichier, séparées par `\\` (une ligne LaTeX par ligne marquée).
+///
+/// Les lignes qui ne sont pas des marques sont IGNORÉES : le programme Rose
+/// reste exécutable tel quel, le marqueur n'est qu'une annotation.
+pub fn programme_latex_lignes(source: &str) -> String {
+    let lignes: Vec<String> = source.lines()
+        .filter(|l| est_ligne_latex(l))
+        .map(contenu_ligne_latex)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let n = lignes.len();
+    let mut s = String::new();
+    for (i, l) in lignes.iter().enumerate() {
+        s.push_str(l);
+        if i + 1 < n { s.push_str(" \\\\"); }
+        s.push('\n');
+    }
+    s
+}
+
 pub fn programme_latex(p: &Programme) -> String {
     let mut s = String::new();
     // 1) les fonctions définies par le programme, dans l'ordre de
@@ -708,12 +766,32 @@ mod tests {
     }
 
     #[test]
+    fn lignes_marquees_latex() {
+        let src = "%% $N!$ : factorielle\n$N = 100\n%% $N!!$\n>> $N!!\n";
+        // Seules les lignes `%%` sont rendues, séparées par `\\`.
+        // ⚠ Le séparateur `\\` est suivi d'un SAUT DE LIGNE (une ligne LaTeX
+        // par ligne marquée) : la sortie est donc
+        //   "$N!$ : factorielle \\\\" puis "\n" puis "$N!!$" puis "\n".
+        assert_eq!(programme_latex_lignes(src), "$N!$ : factorielle \\\\\n$N!!$\n");
+        // Le marqueur est reconnu même après des blancs.
+        assert!(est_ligne_latex("   %% x"));
+        assert!(!est_ligne_latex("x = 5 % 3"));
+        // Le contenu est débarrassé des blancs.
+        assert_eq!(contenu_ligne_latex("  %%  $x^2$  "), "$x^2$");
+        // Un programme sans marqueur rend une chaîne vide.
+        assert_eq!(programme_latex_lignes(">> 5 % 3\n"), "");
+    }
+
+    #[test]
     fn postfixes_primaux() {
         // « # » primorielle, « ? » terminal, « $ » super-factorielle :
         // le LaTeX rend l'opérateur collé à son opérande ($ échappé).
         assert_eq!(expr_latex(&Expr::Primorielle(Box::new(lit("10")), 1)), "10#");
         assert_eq!(expr_latex(&Expr::Terminal(Box::new(lit("5")), 1)), "5?");
-        assert_eq!(expr_latex(&Expr::SuperFactorielle(Box::new(lit("3")), 1)), "3\\$");
+        // ⚠ `n$` s'affiche `sf(n)` : `$` en LaTeX est le caractère des maths,
+        // « 3\$ » se lirait comme un prix.
+        assert_eq!(expr_latex(&Expr::SuperFactorielle(Box::new(lit("3")), 1)),
+                   "\\operatorname{sf}\\left(3\\right)");
         // collants comme une puissance : (a#)^{b} reste parenthésé
         assert_eq!(
             expr_latex(&bin("^", Expr::Primorielle(Box::new(var("a")), 1), lit("2"))),

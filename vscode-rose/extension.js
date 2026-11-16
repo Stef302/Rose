@@ -512,6 +512,22 @@ function activate(context) {
   });
   context.subscriptions.push(latexFile);
 
+  // Rend UNIQUEMENT les lignes marquées `%%` (annotation TeX), en appelant
+  // `rose latex fichier --lignes`. C'est le pendant de la commande LaTeX
+  // complète : celle-ci rend la synthèse du programme entier, celle-là les
+  // formules choisies, ligne par ligne.
+  const latexLines = vscode.commands.registerCommand('rose.latexLines', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== 'rose') { vscode.window.showWarningMessage('Aucun fichier Rose actif.'); return; }
+    await editor.document.save();
+    const bin = getBinaryPath();
+    const filePath = editor.document.uri.fsPath;
+    const terminal = vscode.window.createTerminal('Rose LaTeX (lignes %%)');
+    terminal.show();
+    terminal.sendText(`${bin} latex "${filePath}" --lignes`);
+  });
+  context.subscriptions.push(latexLines);
+
   const consoleFile = vscode.commands.registerCommand('rose.consoleFile', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.languageId !== 'rose') { vscode.window.showWarningMessage('Aucun fichier Rose actif.'); return; }

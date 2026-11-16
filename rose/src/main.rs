@@ -23,6 +23,7 @@ mod setup_core;
 mod velopack;
 mod inflate;
 mod png;
+mod gmp_fact;
 mod paint;
 mod console_win;
 mod setup_gui;
@@ -217,6 +218,17 @@ fn main() {
             if !lire(&mut source, &argv[2]) {
                 eprintln!("rose: fichier introuvable : {}", argv[2]);
                 std::process::exit(1);
+            }
+            // `--lignes` : ne rendre QUE les lignes marquées `%%`.
+            //
+            // ⚠ On ne passe PAS par l'analyseur : une ligne `%% $N!$` n'est
+            // pas du code Rose valide, et le programme peut être incomplet.
+            // Le marqueur est une ANNOTATION, pas une instruction — le
+            // fichier reste exécutable tel quel, l'analyseur ignore `%%`
+            // comme un commentaire (TeX) s'il le rencontre.
+            if argv.iter().any(|a| a == "--lignes" || a == "-l") {
+                print!("{}", latex::programme_latex_lignes(&source));
+                return;
             }
             let prog = match front::analyser(&source) {
                 Ok(p) => p,

@@ -320,13 +320,24 @@ impl Gz {
         if x < BigInt::zero() || bit >= 1_000_000 { return false; }
         ((x >> bit) & BigInt::one()) == BigInt::one()
     }
-    pub fn add(&self, a: &Gz, b: &Gz) { self.set_v(a.v() + b.v()); }
-    pub fn sub(&self, a: &Gz, b: &Gz) { self.set_v(a.v() - b.v()); }
-    pub fn mul(&self, a: &Gz, b: &Gz) { self.set_v(a.bref().clone() * b.bref()); }
+    // ⚠⚠ `a.v()` CLONE l'opérande avant chaque opération : un clone complet
+    // d'un BigInt (allocation + copie de tous les limbs) pour rien. Sur les
+    // boucles chaudes (terminal, sous-factorielle), c'est des centaines de
+    // milliers de clones inutiles. On opère par RÉFÉRENCE (`&BigInt + &BigInt`,
+    // `* &BigInt`) : seul le résultat est alloué.
+    pub fn add(&self, a: &Gz, b: &Gz) { self.set_v(a.bref() + b.bref()); }
+    pub fn sub(&self, a: &Gz, b: &Gz) { self.set_v(a.bref() - b.bref()); }
+    /// ⚠ `a.bref().clone() * b.bref()` CLONAIT l'opérande gauche avant de
+    /// multiplier : un clone complet d'un BigInt (allocation + copie de tous
+    /// les limbs) pour rien, sur l'opération la plus chaude du moteur. On
+    /// multiplie par RÉFÉRENCE des deux côtés (`&BigInt * &BigInt`), puis on
+    /// déplace le résultat dans le `Gz` cible.
+    pub fn mul(&self, a: &Gz, b: &Gz) { self.set_v(a.bref() * b.bref()); }
     pub fn neg(&self, a: &Gz) { self.set_v(-a.v()); }
-    pub fn add_u64(&self, a: &Gz, u: u64) { self.set_v(a.v() + BigInt::from(u)); }
-    pub fn mul_u64(&self, a: &Gz, u: u64) { self.set_v(a.v() * BigInt::from(u)); }
-    pub fn mul_i64(&self, a: &Gz, u: i64) { self.set_v(a.v() * BigInt::from(u)); }
+    // Même correction : par référence, sans cloner l'opérande.
+    pub fn add_u64(&self, a: &Gz, u: u64) { self.set_v(a.bref() + &BigInt::from(u)); }
+    pub fn mul_u64(&self, a: &Gz, u: u64) { self.set_v(a.bref() * &BigInt::from(u)); }
+    pub fn mul_i64(&self, a: &Gz, u: i64) { self.set_v(a.bref() * &BigInt::from(u)); }
     pub fn mul_2exp(&self, a: &Gz, e: u64) { self.set_v(a.v() << (e as usize)); }
     pub fn fdiv_q(&self, a: &Gz, b: &Gz) {
         let bv = b.v();

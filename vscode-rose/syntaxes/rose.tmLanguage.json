@@ -6,20 +6,45 @@
     "rose"
   ],
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#strings" },
-    { "include": "#directives" },
-    { "include": "#numbers" },
-    { "include": "#keywords" },
-    { "include": "#types" },
-    { "include": "#functions" },
-    { "include": "#variables" },
-    { "include": "#operators" },
-    { "include": "#punctuation" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#directives"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#variables"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
   ],
   "repository": {
     "comments": {
       "patterns": [
+        {
+          "name": "comment.line.latex.rose",
+          "match": "^\\s*%%.*$",
+          "comment": "Marqueur de rendu LaTeX (rose latex --lignes) : annotation TeX ignorée par le lexer."
+        },
         {
           "name": "comment.line.number-sign.rose",
           "match": "^\\s*#.*$|(?<=[\\s;])#.*$"
@@ -120,12 +145,14 @@
           "name": "entity.name.function.rose",
           "match": "\\bfn\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
-            "1": { "name": "entity.name.function.rose" }
+            "1": {
+              "name": "entity.name.function.rose"
+            }
           }
         },
         {
           "name": "support.function.rose",
-          "match": "\\b(abs|min|max|partie_entiere|factorielle|fact|factorielle_rapide|rapide|approx|primorielle|terminal|super_factorielle|view|type|fib|fibonacci|pgcd|gcd|ppcm|lcm|puissance|pow|nb_chiffres|digits|est_premier|is_prime|compter_premiers|pi|e|phi|racine|fraction|re|im|conj|arg|modulus|longueur|len|ordre|caractere|sous_chaine|sub|concatener|table|map|inserer|cle_existe|supprimer|cles|valeurs|joindre|graine|seed|hasard|prng|hasard_systeme|rng_materiel|hasard_vrai|lire_texte|ecrire_texte|ecrire_binaire|argument|nb_arguments|temps|millisecondes|ms|time|duree|afficher|afficher_erreur|quitter|tampon|octets|eval_expr|breakpoint|watch)\\s*(?=\\()"
+          "match": "\\b(abs|min|max|partie_entiere|factorielle|fact|factorielle_rapide|rapide|factorial_rapide|factorial_approx|approx|primorielle|terminal|super_factorielle|multifactorielle|sous_factorielle|derangement|view|type|fib|fibonacci|pgcd|gcd|ppcm|lcm|puissance|pow|nb_chiffres|digits|est_premier|is_prime|compter_premiers|pi|e|phi|racine|fraction|re|im|conj|arg|modulus|longueur|len|ordre|caractere|sous_chaine|sub|concatener|table|map|inserer|cle_existe|supprimer|cles|valeurs|joindre|graine|seed|hasard|prng|hasard_systeme|rng_materiel|hasard_vrai|lire_texte|ecrire_texte|ecrire_binaire|argument|nb_arguments|temps|millisecondes|ms|time|duree|afficher|afficher_erreur|quitter|tampon|octets|eval_expr|breakpoint|watch)\\s*(?=\\()"
         }
       ]
     },

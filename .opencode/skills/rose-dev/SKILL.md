@@ -240,7 +240,7 @@ l'utilisateur web)
 | `n?` | **terminal** : somme des factorielles 1!+…+n! (`5?` → 154) | entier |
 | `n$` | **super-factorielle** : produit 1!·2!·…·n! (`3$` → 12) | entier |
 | `rapide(n)` / `factorielle_rapide(n)` | factorielle, voie rapide — `1000000!` en ~0,9 s | entier |
-| `approx(n)` | Stirling complet, série `1/12n − 1/360n³ + 1/1260n⁵` | chaîne `{:.6}e{}` |
+| `approx(n)` | **Stirling** (approximatif, O(1)) : `approx(100)` → `9.332622e157` — ⚠ PAS exact (100! a 158 chiffres) | chaîne `{:.6}e{}` |
 | `primorielle(n)` / `terminal(n)` / `super_factorielle(n)` | alias fonctions de `n#` / `n?` / `n$` | entier |
 | `multifactorielle(n, k)` | alias de `n!!` (k=2), `n!!!` (k=3)… quand k est calculé | entier |
 | `sous_factorielle(n)` / `derangement(n)` | alias de `!n` | entier |
@@ -569,6 +569,61 @@ contrôle possible, avec `previsualiser.py`.
   OEIS). ⚠ `n$` explose (∏k! ≈ n!^(n+1)/2) : à N=5000 elle fait 38 millions
   de chiffres en ~15 s ; à N=20000 le bench dépasse plusieurs minutes. Elle
   est donc mesurée sur un N séparé, plus petit.
+
+## Trois factorielles : exacte, approximative, « rapide »
+
+Ne pas confondre — c'est une source d'erreur classique :
+
+| Écriture | Résultat | Coût | Usage |
+|---|---|---|---|
+| `n!` | entier **exact**, tous les chiffres | arbre de produit, O(n log²n) | résultat final |
+| `factorial_approx(n)` (`approx`) | `"m.eE"` — **Stirling** √(2πn)(n/e)^n + série asymptotique `1/(12n) − 1/(360n³) + 1/(1260n⁵)` | O(1) | **taille** seulement (`100000!` ≈ `2.824229e456573`) |
+| `factorielle_rapide(n)` (`rapide`, `factorial_rapide`) | entier exact, même moteur crible+arbre | = `n!` | alias explicite |
+
+- ⚠ `factorial_approx` **n'est pas exact** : `factorial_approx(100)` =
+  `9.332622e157` (14 caractères) alors que `100!` a **158 chiffres**. Un test
+  le vérifie (`interp::tests::factorial_approx_n_est_pas_le_nombre_exact`).
+- `factorial_approx(0)` et `(1)` rendent `"1"`, pas `"1.000000e0"`.
+
+## Backend GMP optionnel (`--features gmp`)
+
+- `num-bigint` n'a que basecase/Karatsuba : mesuré **27,7 ms** pour ×10 de
+  deux nombres de 100 000 chiffres, contre **5,3 ms** pour GMP → **5,2×**.
+- Le module `rose/src/gmp_fact.rs` convertit en `rug::Integer` et fait
+  l'arbre. Activé par `cargo build --release --bin rose --features gmp`.
+  Sans la feature : `num-bigint`, **même sémantique**.
+- ⚠⚠ **Ne JAMAIS convertir par `to_string()`/`from_str_radix()`** : la base 10
+  coûte O(n²) et annule tout le gain — mesuré : `n!` à 100 000 passait de
+  25 ms (num-bigint) à **249 ms** (GMP + conversion décimale). Utiliser
+  `to_digits`/`from_digits` (`rug::integer::Order`) sur les octets
+  little-endian.
+- `!n` (sous-factorielle) reste sur `num-bigint` : la récurrence ne
+  bénéficie pas de GMP (mesuré 840 ms avec GMP vs 690 ms sans).
+- Gain mesuré à N = 100 000 : `n!` 30 → **17 ms**, `n!!` 8 → 7 ms,
+  `n!!!` 5 → 4 ms. Garde-fou : `verifier_factorielles.rose` = 58/58 dans les
+  DEUX configurations.
+- `mpz_sizeinbase(x, 10)` est **approximatif** (peut être +1) : pour le
+  nombre exact de chiffres, passer par `mpz_get_str` + `strlen`. C'est un
+  piège qui a fait diverger le bench C d'une unité.
+
+## Bench comparatif entre langages
+
+`bench/suite/bench_factorielles.sh [N]` compare Rose (num-bigint), Rose
+(+GMP), GMP/C (`bench/suite/fact_gmp.c`) et Python sur les mêmes opérations.
+Ordre de grandeur à N = 100 000 : Rose bat Python de 2 à 60× (Python `n!!`
+= 470 ms contre 8 ms) et reste à ~2× de GMP/C.
+
+## Marqueur LaTeX par ligne : `%%`
+
+- Une ligne qui **commence** par `%%` (à blanc près) est une annotation TeX,
+  ignorée par le lexer comme un commentaire — le programme reste EXÉCUTABLE.
+- `rose latex prog.rose` rend TOUT le programme ; `rose latex prog.rose
+  --lignes` (ou `-l`) ne rend QUE les lignes `%%`, séparées par `\\`.
+- ⚠ Le lexer doit reconnaître `%%` EN DÉBUT DE LIGNE (`i == 0` ou précédé de
+  `\n`) : `%` est l'opérateur modulo en Rose, et sans ce cas le programme est
+  rejeté (« Attente d'une expression, trouvé '%' »).
+- La super-factorielle `n$` s'affiche `\operatorname{sf}(n)` en LaTeX : `$`
+  est le délimiteur des maths, `3\$` se lirait comme un prix.
 
 ## Style
 

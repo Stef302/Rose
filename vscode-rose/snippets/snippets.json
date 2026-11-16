@@ -189,5 +189,40 @@
       "type(${1:x})"
     ],
     "description": "Nom du type d'une valeur (entier, rationnel, …)"
+  },
+  "Multifactorielle (n!!)": {
+    "prefix": "rose-multifacto",
+    "body": [
+      "${1:n}!!  # multifactorielle d'ordre 2 (A000165/A001147) — PAS (${1:n}!)!"
+    ],
+    "description": "Multifactorielle : produit des entiers ≤ n de même parité (7!! = 105)"
+  },
+  "Multifactorielle d'ordre k": {
+    "prefix": "rose-multifacto-k",
+    "body": [
+      "multifactorielle(${1:n}, ${2:k})  # k = 3 → n!!!, k = 4 → n!!!!"
+    ],
+    "description": "Multifactorielle quand l'ordre k est calculé"
+  },
+  "Sous-factorielle (!n)": {
+    "prefix": "rose-derangement",
+    "body": [
+      "!${1:n}  # sous-factorielle = dérangements (A000166) : !5 = 44"
+    ],
+    "description": "Sous-factorielle (préfixe) — à ne pas confondre avec n? (Kurepa)"
+  },
+  "Factorielle approximative": {
+    "prefix": "rose-approx",
+    "body": [
+      "factorial_approx(${1:n})  # Stirling : mantisse × 10^exposant, O(1), PAS exact"
+    ],
+    "description": "Approximation de Stirling : donne la taille du nombre, pas le nombre"
+  },
+  "Ligne LaTeX (%% )": {
+    "prefix": "rose-latex-ligne",
+    "body": [
+      "%% $${1:x^2}$ ${2:commentaire}"
+    ],
+    "description": "Ligne marquée pour le rendu LaTeX (rose latex fichier --lignes)"
   }
 }

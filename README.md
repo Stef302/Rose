@@ -380,6 +380,58 @@ Les deux sont donc accessibles, sans ambiguïté : `!n` = dérangements,
 `n?` = Kurepa. Les fonctions nommées `sous_factorielle(n)` et
 `multifactorielle(n, k)` donnent le même résultat quand k est calculé.
 
+#### `n!` exact, `factorial_approx(n)` approximatif, `factorielle_rapide(n)` : les trois vitesses
+
+Trois façons de calculer une factorielle, à ne pas confondre :
+
+| Écriture | Ce qu'elle donne | Coût | Usage |
+|---|---|---|---|
+| `n!` | l'entier **exact**, tous les chiffres | O(n log²n) — arbre de produit | résultat final, vérification |
+| `factorial_approx(n)` | `"m.eE"` — **Stirling** : √(2πn)·(n/e)^n, série asymptotique `1/(12n) − 1/(360n³) + 1/(1260n⁵)` | **O(1)** — quelques `f64` | savoir la **taille** (`100000!` ≈ `2.8e456573`) sans calculer |
+| `factorielle_rapide(n)` | l'entier exact, par le même moteur crible+arbre | identique à `n!` | alias explicite (le nom `rapide`/`factorial_rapide` marche aussi) |
+
+```rose
+>> factorial_approx(100)     # 9.332622e157  (≈ 100! = 9.3326…×10¹⁵⁷)
+>> nb_chiffres(100!)         # 158  — le nombre EXACT
+```
+
+⚠ `factorial_approx` **ne donne pas le nombre exact** : c'est une mantisse à
+6 décimales et un exposant. Pour `n ≤ 170` un `f64` suffirait, mais Rose passe
+toujours par Stirling — pour `n!` exact, utilise `n!`.
+
+Avec la feature `gmp` (`cargo build --release --features gmp`), `n!` et
+`n!!`… passent par GMP (Toom-Cook + FFT) : mesuré ~1,8× plus rapide à
+n = 100 000. Sans la feature, tout reste sur `num-bigint`, **même résultat**.
+
+#### Bench comparatif entre langages (N = 100 000, médiane de 3 tours)
+
+`sh bench/suite/bench_factorielles.sh 100000` — mêmes opérations dans les
+cinq implémentations, nombre de chiffres vérifié à chaque ligne (456 574
+pour `n!`) :
+
+| Opération | Rose | Rose + GMP | Rust + rug | GMP/C | GMP/C++ | Python |
+|---|---|---|---|---|---|---|
+| `n!` | 25 ms | **17 ms** | 11,6 ms | 8,2 ms | 12,2 ms | 74 ms |
+| `n!!` | 8 ms | 7 ms | 4,8 ms | 3,3 ms | 5,1 ms | 470 ms |
+| `n!!!` | 5 ms | 4 ms | 2,9 ms | 1,9 ms | 3,1 ms | 209 ms |
+| `n!!!!` | 3 ms | 3 ms | 2,0 ms | 1,3 ms | 2,2 ms | 118 ms |
+| `n#` | 1 ms | 1–2 ms | 0,7 ms | 0,5 ms | 0,9 ms | — |
+| `!n` | **681 ms** | 835 ms | 436 ms | 441 ms | 441 ms | 2958 ms |
+
+Lecture :
+
+- **Rose bat Python de 3× (`n!`) à 60× (`n!!`)** et de 4× sur `!n` ;
+- avec GMP, Rose est à **2×** de GMP/C sur `n!` et à **~1,4×** de Rust+rug
+  (même backend, même LLVM) — l'écart restant est le runtime interprété
+  (`Gz` boxé, dispatch dynamique), pas l'arithmétique ;
+- `!n` est une **récurrence** : GMP n'aide pas (830 vs 681 ms), Rose la
+  laisse donc sur `num-bigint`, et reste au niveau de C/C++/Rust ;
+- `n?` (Kurepa) est intrinsèquement O(n²) : 1,9 s à n = 100 000, contre
+  3,4 s pour Python — aucune implémentation ne peut faire mieux.
+
+Sources : `bench/suite/fact_gmp.c` (GMP/C), `fact_gmp.cpp` (gmpxx),
+`fact_rs.rs` (Rust + `rug`), `bench_factorielles.sh` (orchestrateur).
+
 ### Affichage et saisie
 
 ```rose
@@ -523,6 +575,38 @@ s   45
 
 `rose latex prog.rose` rend le **programme entier** en LaTeX, fonctions
 comprises, signatures `n ∈ ℤ` incluses.
+
+#### LaTeX des lignes choisies : le marqueur `%%`
+
+Une ligne qui **commence** par `%%` (à blanc près) est une annotation TeX,
+**ignorée par le lexer** comme un commentaire : le programme reste exécutable
+tel quel.
+
+```rose
+%% $N!$ : la factorielle
+$N = 100
+%% $N!!$ : la multifactorielle, PAS $(N!)!$
+>> $N!!
+```
+
+| Commande | Ce qu'elle rend |
+|---|---|
+| `rose latex prog.rose` | tout le programme |
+| `rose latex prog.rose --lignes` (ou `-l`) | **seulement** les lignes `%%`, séparées par `\\` |
+
+Sortie de `--lignes` sur l'exemple :
+
+```
+$N!$ : la factorielle \\
+$N!!$ : la multifactorielle, PAS $(N!)!$
+```
+
+⚠ `%` est l'opérateur modulo en Rose : sans la reconnaissance de `%%` **en
+début de ligne**, le lexer voyait deux modulos et rejetait le programme
+(« Attente d'une expression, trouvé '%' »).
+
+La super-factorielle `n$` s'affiche `\operatorname{sf}(n)` : `$` est le
+délimiteur des mathématiques en LaTeX, « `3$` » se lirait comme un prix.
 
 ### Console interactive (REPL)
 
@@ -728,6 +812,7 @@ PATH dans `~/.bashrc` / `~/.profile`, type MIME `.rose` enregistré.
 | `rose run prog.rose` | Identique | alias explicite |
 | `rose run prog.rose` + `ROSE_AOT=1` | AOT LLVM ORC si disponible | vitesse maximale (≈ Rust) |
 | `rose latex prog.rose` | Formule LaTeX du programme entier | jouer avec le code, puis obtenir le LaTeX |
+| `rose latex prog.rose --lignes` | Formule LaTeX des seules lignes `%%` | choisir les formules à rendre |
 | `rose comp prog.rose [-o sortie]` | Exécutable autonome (moteur + source) | distribution |
 | `rose orc prog.rose -o prog.o` | Compilation native LLVM ORC | AOT, vectorisation NEON |
 | `rose link prog.o [-o sortie]` | Lier un objet ELF en binaire | avec `rose orc` |

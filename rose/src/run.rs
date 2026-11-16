@@ -756,10 +756,25 @@ pub fn factorielle(n: &Gz) -> Gz {
     if n.sgn() < 0 { erreur_runtime("factorielle d'un négatif : impossible"); }
     if !n.fits_i64() || n.get_i64() as u64 > 0xFFFF_FFFF { erreur_runtime("factorielle trop grande"); }
     let n = n.get_i64() as u64;
-    // Facteurs premiers (Légendre) + arbre de produit équilibré, tranches
-    // parallèles : 1 000 000 ! en une fraction de seconde (voir
-    // i128x::factorielle_parallele).
-    crate::i128x::factorielle_parallele(n)
+    // ── Backend ────────────────────────────────────────────────────────────
+    //
+    // Avec la feature `gmp`, on passe par GMP (`gmp_fact::factorielle`) :
+    // Toom-Cook complet + FFT, coût quasi-linéaire. Mesuré 5,2× plus rapide
+    // que `num-bigint` sur la multiplication de base, soit ~2× sur n! à
+    // n = 100 000. Sans la feature, on garde le chemin historique :
+    // facteurs premiers (Légendre) + arbre de produit équilibré, tranches
+    // parallèles — voir i128x::factorielle_parallele.
+    #[cfg(feature = "gmp")]
+    {
+        let v = crate::gmp_fact::factorielle(n);
+        let r = Gz::neuf();
+        r.set_v(v);
+        return r;
+    }
+    #[cfg(not(feature = "gmp"))]
+    {
+        crate::i128x::factorielle_parallele(n)
+    }
 }
 
 pub fn fibonacci(nn: &Gz) -> Gz {

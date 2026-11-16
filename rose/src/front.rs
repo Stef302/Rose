@@ -175,6 +175,16 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
         if c == '#' || (c == '/' && i + 1 < n && cps[i + 1] == '/') {
             while i < n && cps[i] != '\n' { i += 1; } continue;
         }
+        // ⚠ « %% » en DÉBUT de ligne : marqueur de rendu LaTeX (voir
+        // `latex::MARQUEUR_LIGNE`). C'est un commentaire TeX, PAS du code
+        // Rose : sans ce cas, le lexer voyait deux opérateurs modulo et
+        // rejetait le programme (« Attente d'une expression, trouvé '%' »).
+        // Le programme reste donc EXÉCUTABLE tel quel : le marqueur n'est
+        // qu'une annotation, lue par `rose latex --lignes`.
+        if c == '%' && i + 1 < n && cps[i + 1] == '%'
+            && (i == 0 || cps[i - 1] == '\n') {
+            while i < n && cps[i] != '\n' { i += 1; } continue;
+        }
         if c == '"' || c == '\'' {
             let quote = c;
             let (dl, dc) = (ligne, col);

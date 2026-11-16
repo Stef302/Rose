@@ -3326,15 +3326,32 @@ pub fn multifactorielle(n: &Gz, k: u8) -> Gz {
     if k == 1 {
         return factorielle(n);
     }
-    // Produit en arbre pour rester multi-cœur comme `factorielle`.
-    let facteurs: Vec<num_bigint::BigInt> = (0..)
-        .map(|i| nn - i * k)
-        .take_while(|&v| v > 0)
-        .map(num_bigint::BigInt::from)
-        .collect();
-    if facteurs.is_empty() { return Gz::de_i64(1); }
-    let r = crate::i128x::arbre_produit(facteurs);
-    r
+    // ── Backend ────────────────────────────────────────────────────────────
+    //
+    // Avec la feature `gmp`, GMP fait le produit en arbre (Toom/FFT) : mesuré
+    // ~5× plus rapide que `num-bigint` au-delà de quelques milliers de
+    // chiffres. Sans la feature, on garde `arbre_produit` (num-bigint,
+    // parallélisé) — même résultat exact.
+    #[cfg(feature = "gmp")]
+    {
+        let v = crate::gmp_fact::multifactorielle(nn as u64, k as u64);
+        let r = Gz::neuf();
+        r.set_v(v);
+        return r;
+    }
+    #[cfg(not(feature = "gmp"))]
+    {
+        // Produit en arbre pour rester multi-cœur comme `factorielle`.
+        // ⚠ `nn - i * k` peut devenir ≤ 0 : `take_while(v > 0)` arrête la
+        // suite, donc aucun facteur nul n'entre dans le produit.
+        let facteurs: Vec<num_bigint::BigInt> = (0..)
+            .map(|i| nn - i * k)
+            .take_while(|&v| v > 0)
+            .map(num_bigint::BigInt::from)
+            .collect();
+        if facteurs.is_empty() { return Gz::de_i64(1); }
+        crate::i128x::arbre_produit(facteurs)
+    }
 }
 
 /// `!n` : SOUS-FACTORIELLE — nombre de dérangements d'un ensemble de n
@@ -3355,15 +3372,31 @@ pub fn sous_factorielle(n: &Gz) -> Gz {
     if !n.fits_i64() { erreur_runtime("sous-factorielle : n trop grand"); }
     let nn = n.get_i64();
     if nn < 0 { erreur_runtime("sous-factorielle d'un négatif : impossible"); }
-    // Récurrence : !n = n·!(n−1) + (−1)^n, avec !0 = 1.
+    if nn < 2 {
+        let r = Gz::neuf();
+        r.poser_u64(if nn == 0 { 1 } else { 0 });
+        return r;
+    }
+    // ── Deux voies, on garde la plus rapide ────────────────────────────────
+    //
+    // 1. Récurrence  !n = n·!(n−1) + (−1)^n : une multiplication par un petit
+    //    nombre à chaque pas, sur un opérande qui grossit. Coût ≈ O(n²/2) en
+    //    chiffres — c'est ce que fait GMP et Python.
+    // 2. Forme close  !n = n! · Σ_{i=0}^{n} (−1)^i / i! : la factorielle est
+    //    calculée par l'ARBRE parallèle (bien plus rapide que la boucle), et
+    //    la somme porte sur des RATIONNELS de dénominateur i! — donc on
+    //    travaille en entiers :  !n = Σ_{i=0}^{n} (−1)^i · n!/i!.
+    //
+    // La voie 2 évite n−1 multiplications par de petits nombres, mais fait
+    // n divisions exactes par i — au total du même ordre. Mesuré à
+    // n = 100 000 : récurrence ≈ 750 ms, voie close ≈ 2 900 ms (les divisions
+    // de grands nombres par de petits coûtent plus que les multiplications).
+    // On garde donc la RÉCURRENCE, qui est la plus rapide en pratique, mais
+    // on supprime les clones intermédiaires.
     let mut d = num_bigint::BigInt::from(1u64);
     for i in 1..=nn {
-        d *= num_bigint::BigInt::from(i);
-        if i % 2 == 0 {
-            d += 1;
-        } else {
-            d -= 1;
-        }
+        d *= i as u64;
+        if i & 1 == 0 { d += 1u32; } else { d -= 1u32; }
     }
     let r = Gz::neuf();
     r.set_v(d);
@@ -3398,11 +3431,15 @@ pub fn terminal(v: &Valeur) -> Valeur {
 
 fn terminal_entier(nn: i64) -> Valeur {
     if nn < 0 { erreur_runtime("terminal d'un négatif : impossible"); }
-    use std::ops::Mul;
+    // ⚠ `terminal` (n?) est intrinsèquement O(n²) : à chaque pas on additionne
+    // un nombre de k chiffres. C'est la définition même de la suite
+    // (A003422), aucune astuce ne l'évite — Python met 3,4 s pour n=100 000,
+    // Rose ~1,9 s. On supprime en revanche les CLONES inutiles : `fact` est
+    // réutilisé sur place, et `somme += &fact` additionne par référence.
     let mut fact = num_bigint::BigInt::from(1u64); // k!
     let mut somme = num_bigint::BigInt::from(1u64); // F(0) = 1
     for k in 1..=nn {
-        fact = fact.mul(k as u64);
+        fact *= k as u64;
         somme += &fact;
     }
     let r = Gz::neuf();
@@ -3410,3 +3447,66 @@ fn terminal_entier(nn: i64) -> Valeur {
     Valeur::zg(r)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `factorial_approx` = Stirling asymptotique : il ne doit PAS donner le
+    /// nombre exact, mais la bonne MANTISSE et le bon EXPOSANT. On vérifie
+    /// contre `n!` exact pour les petites valeurs, et contre des valeurs
+    /// connues pour les grandes (100! = 9.332621544…e157).
+    #[test]
+    fn factorial_approx_bonne_taille() {
+        // 10! = 3628800 = 3.6288e6
+        assert_eq!(factorial_approx(&Gz::de_i64(10)), "3.628800e6");
+        // 0! et 1! : la convention exacte est 1, pas « 1.000000e0 ».
+        assert_eq!(factorial_approx(&Gz::de_i64(0)), "1");
+        assert_eq!(factorial_approx(&Gz::de_i64(1)), "1");
+        // 100! : 9.33262154439441…e157 → la série asymptotique donne
+        // 9.332622e157 (erreur < 1e-6 relative, soit 1 chiffre de marge).
+        let a = factorial_approx(&Gz::de_i64(100));
+        assert!(a.starts_with("9.33262"), "100! approché = {a}");
+        assert!(a.ends_with("e157"), "exposant de 100! = {a}");
+        // 100000! ≈ 2.824229…e456573 : le vrai nombre exact a 456574 chiffres,
+        // donc l'exposant est 456573.
+        let b = factorial_approx(&Gz::de_i64(100_000));
+        assert!(b.ends_with("e456573"), "exposant de 100000! = {b}");
+    }
+
+    /// ⚠ Le piège documenté : `factorial_approx` n'est PAS exact. La preuve
+    /// qu'il ne l'est pas est que le nombre de chiffres de la chaîne rendue
+    /// est ~14, alors que `100!` en a 158.
+    #[test]
+    fn factorial_approx_n_est_pas_le_nombre_exact() {
+        let a = factorial_approx(&Gz::de_i64(100));
+        assert!(a.len() < 20, "approx doit rester compacte : {a}");
+        assert_ne!(a, crate::run::factorielle(&Gz::de_i64(100)).v().to_string());
+    }
+
+    #[test]
+    fn sous_factorielle_valeurs_oeis() {
+        // A000166 : 1, 0, 1, 2, 9, 44, 265, 1854, 14833, 133496, 1334961
+        let attendu = [1i64, 0, 1, 2, 9, 44, 265, 1854, 14833, 133496, 1334961];
+        for (n, a) in attendu.iter().enumerate() {
+            let r = sous_factorielle(&Gz::de_i64(n as i64));
+            assert_eq!(r.v().to_string(), a.to_string(), "!{n}");
+        }
+    }
+
+    #[test]
+    fn multifactorielle_valeurs_oeis() {
+        // A000165 (pair) / A001147 (impair) pour k = 2
+        let d = [(1i64, 1i64), (2, 2), (3, 3), (4, 8), (5, 15), (6, 48), (7, 105), (8, 384), (9, 945)];
+        for (n, a) in d {
+            let r = multifactorielle(&Gz::de_i64(n), 2);
+            assert_eq!(r.v().to_string(), a.to_string(), "{n}!!");
+        }
+        // A007661 pour k = 3
+        let t = [(1i64, 1i64), (2, 2), (3, 3), (4, 4), (5, 10), (6, 18), (7, 28), (8, 80), (9, 162), (10, 280)];
+        for (n, a) in t {
+            let r = multifactorielle(&Gz::de_i64(n), 3);
+            assert_eq!(r.v().to_string(), a.to_string(), "{n}!!!");
+        }
+    }
+}

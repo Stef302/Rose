@@ -102,3 +102,8 @@ rose/src/bin/setup-ico.ico
 # build-linux.sh / pack-linux.sh ; seuls les scripts et le README sont suivis.
 installateur/velopack/stage/
 installateur/velopack/Releases/
+
+# Backend GMP : dossier de compilation séparé (ne pas écraser target/release)
+rose/target-gmp/
+# Binaire du backend GMP (reconstruit par bench_factorielles.sh)
+rose-gmp
