@@ -48,9 +48,9 @@ fn paire(a: entier, b: entier) -> chaine {
   si (a == 61 et b == 61) { retour "==" }
   si (a == 33 et b == 61) { retour "!=" }
   si (a == 47 et b == 61) { retour "!=" }
-  si (a == 63 et b == 61) { retour "?=" }
-  si (a == 61 et b == 126) { retour "=~" }
-  si (a == 126 et b == 61) { retour "=~" }
+  si (a == 63 et b == 61) { retour "≈" }
+  si (a == 61 et b == 126) { retour "≈" }
+  si (a == 126 et b == 61) { retour "≈" }
   retour ""
 }
 
@@ -518,6 +518,17 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
         si (T0($g, $q) == ",") { $q = $q + 1 } sinon { $ok = 0 }
       }
     }
+    # [0 : type] : liste vide typée (M2.4) — on fait un élément entier factice
+    # pour que le type inféré soit liste<entier> (identique à l'oracle).
+    si ($nc == 1 et $col[1] >= 0 et $k[$col[1]] == "lit" et $tx[$col[1]] == "0" et T0($g, $q) == ":") {
+      $q = $q + 1
+      $q = $q + 1
+      si (T0($g, $q) == "]") { $q = $q + 1 }
+      $z = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lit", "0", "", -1, -1, 0, 0, $l)
+      joindre($al, $z)
+      $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lst", "", "", -1, -1, longueur($al) - 1, 1, $l)
+      retour chaine($q) + "|" + chaine($i)
+    }
     si (T0($g, $q) == "]") { $q = $q + 1 }
     $sa = longueur($al)
     $u = 1
@@ -673,13 +684,24 @@ fn unai($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
   si ($t == "+") {
     retour unai($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
   }
+  # préfixe !n = sous-factorielle (type entier, comme factorielle)
+  si ($t == "sfact") {
+    $r = unai($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
+    $lf = GL0($gl, $p)
+    $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", entier(NOD($r)), -1, 0, 0, $lf)
+    retour chaine(SEPR($r)) + "|" + chaine($e)
+  }
   $r = post($g, $x, $gl, $p, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
   $q = SEPR($r)
   $e = entier(NOD($r))
-  tant_que (T0($g, $q) == "!") {
-    $lf = GL0($gl, $q)
-    $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", $e, -1, 0, 0, $lf)
-    $q = $q + 1
+  $ok = 1
+  tant_que ($ok == 1) {
+    $tt = T0($g, $q)
+    si ($tt == "multifacto" ou $tt == "diese" ou $tt == "terminal" ou $tt == "superfacto" ou $tt == "!") {
+      $lf = GL0($gl, $q)
+      $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", $e, -1, 0, 0, $lf)
+      $q = $q + 1
+    } sinon { $ok = 0 }
   }
   retour chaine($q) + "|" + chaine($e)
 }
@@ -776,12 +798,19 @@ fn nonx($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
         $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
         $lg: liste<entier>, $al: liste<entier>) -> chaine {
   si (EMOT($g, $x, $p, "non")) {
-    $l = GL0($gl, $p)
-    $r = nonx($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
-    $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "uni", "non", "", entier(NOD($r)), -1, 0, 0, $l)
-    retour chaine(SEPR($r)) + "|" + chaine($i)
+    retour nonx_helper($g, $x, $gl, $p, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
   }
   retour compa($g, $x, $gl, $p, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
+}
+
+fn nonx_helper($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
+       $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+       $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+       $lg: liste<entier>, $al: liste<entier>) -> chaine {
+  $l = GL0($gl, $p)
+  $r = nonx($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
+  $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "uni", "non", "", entier(NOD($r)), -1, 0, 0, $l)
+  retour chaine(SEPR($r)) + "|" + chaine($i)
 }
 
 # « et »/« ou » : le nœud porte la ligne du PREMIER jeton de l'opérande
@@ -1039,7 +1068,7 @@ fn def_fn($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
     }
   }
   si (T0($g, $q) == ")") { $q = $q + 1 }
-  $ret = "vide|vide"
+  $ret = "?|vide"
   si (T0($g, $q) == "->") {
     $rt = typex($g, $x, $q + 1)
     $ret = NOD($rt)
@@ -1613,6 +1642,23 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "tampon_pose") { retour "vide|tampon,entier,entier" }
   si ($nom == "remplir_hasard") { retour "vide|tampon,tampon" }
   si ($nom == "millisecondes") { retour "entier|" }
+  # alias de maths exactes (miroir STDLIB Rust)
+  si ($nom == "fact") { retour "entier|entier" }
+  si ($nom == "fib") { retour "entier|entier" }
+  si ($nom == "gcd") { retour "entier|entier,entier" }
+  si ($nom == "lcm") { retour "entier|entier,entier" }
+  si ($nom == "pow") { retour "entier|num,entier" }
+  si ($nom == "racine") { retour "irrationnel|entier" }
+  si ($nom == "is_prime") { retour "booleen|entier" }
+  si ($nom == "digits") { retour "entier|entier" }
+  si ($nom == "pi" ou $nom == "nombre_e" ou $nom == "e" ou $nom == "phi") { retour "chaine|entier" }
+  si ($nom == "factorielle_rapide" ou $nom == "factorial_rapide" ou $nom == "rapide") { retour "entier|entier" }
+  si ($nom == "approx" ou $nom == "factorial_approx") { retour "chaine|entier" }
+  si ($nom == "primorielle") { retour "entier|entier" }
+  si ($nom == "termial" ou $nom == "triangulaire" ou $nom == "termial_classique" ou $nom == "termial_kurepa" ou $nom == "kurepa" ou $nom == "terminal") { retour "entier|entier" }
+  si ($nom == "super_factorielle") { retour "entier|entier" }
+  si ($nom == "multifactorielle" ou $nom == "multifactoriel") { retour "entier|entier,entier" }
+  si ($nom == "sous_factorielle" ou $nom == "derangement" ou $nom == "sous_factorial") { retour "entier|entier" }
   retour ""
 }
 
@@ -1859,8 +1905,12 @@ fn check_instr($i: entier,
     }
     $nom = $ino[$i]
     $ex = env_get($nom, $vn, $vt)
+    $est_global = 0
+    si ($nom == "i" ou $nom == "pi" ou $nom == "phi" ou $nom == "e") { $est_global = 1 }
+    si ($est_global == 1) { $ex = "" }
     si ($ex == "") { $ex = env_get($nom, $gn, $gt) }
     $cible = $t
+    si ($est_global == 1) { $ex = "" }
     si ($ex != "") {
       $cible = $ex
       $be = BASE($ex)
@@ -2075,16 +2125,22 @@ inserer($cles, "chaine", 1)
 inserer($cles, "liste", 1)
 inserer($cles, "table", 1)
 
+$dernier = "debut"
+
 tant_que ($i < $N) {
   $c = ordre($src[$i])
   $suiv = -1
   si ($i + 1 < $N) { $suiv = ordre($src[$i + 1]) }
+  $pchar = 10
+  si ($i > 0) { $pchar = ordre($src[$i - 1]) }
+  $apres = 0
+  si ($dernier == "nombre" ou $dernier == "flottant" ou $dernier == "chaine" ou $dernier == "ident" ou $dernier == "mot" ou $dernier == "rparen" ou $dernier == "rbracket" ou $dernier == "multifacto" ou $dernier == "diese" ou $dernier == "terminal" ou $dernier == "superfacto" ou $dernier == "chapeau" ou $dernier == "deuxpts") { $apres = 1 }
 
   si ($c == 32 ou $c == 9 ou $c == 13 ou $c == 10) {
     si ($c == 10) { $lnr = $lnr + 1 }
     $i = $i + 1
   }
-  sinon si ($c == 35 ou ($c == 47 et $suiv == 47)) {
+  sinon si ($c == 37 et $suiv == 37 et ($i == 0 ou $pchar == 10)) {
     $ok = 1
     tant_que ($ok == 1) {
       si ($i >= $N) { $ok = 0 }
@@ -2092,8 +2148,80 @@ tant_que ($i < $N) {
       sinon { $i = $i + 1 }
     }
   }
+  sinon si ($c == 35) {
+    si ($apres == 1 et $i > 0 et $pchar != 32 et $pchar != 9 et $pchar != 13 et $pchar != 10) {
+      joindre($gen, "diese")
+      joindre($x, "#")
+      joindre($gl, $lnr)
+      $i = $i + 1
+      $dernier = "diese"
+    } sinon {
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (ordre($src[$i]) == 10) { $ok = 0 }
+        sinon { $i = $i + 1 }
+      }
+    }
+  }
+  sinon si ($c == 47 et $suiv == 47) {
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (ordre($src[$i]) == 10) { $ok = 0 }
+      sinon { $i = $i + 1 }
+    }
+  }
+  sinon si ($c == 33) {
+    si ($apres == 0) {
+      joindre($gen, "sfact"); joindre($x, "!"); joindre($gl, $lnr); $i = $i + 1; $dernier = "sfact"
+    } sinon si ($suiv == 61) {
+      joindre($gen, "!="); joindre($x, "!="); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre"
+    } sinon {
+      $txt = ""
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (ordre($src[$i]) == 33 et non ($i + 1 < $N et ordre($src[$i + 1]) == 61)) {
+          $txt = $txt + "!"
+          $i = $i + 1
+        } sinon { $ok = 0 }
+      }
+      joindre($gen, "multifacto"); joindre($x, $txt); joindre($gl, $lnr); $dernier = "multifacto"
+    }
+  }
+  sinon si ($c == 63) {
+    si ($suiv == 61) {
+      joindre($gen, "≈"); joindre($x, "?="); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre"
+    } sinon {
+      $est_debut = 0
+      si ($pchar == 10 ou $pchar == 59 ou $pchar == 62 ou $i == 0) { $est_debut = 1 }
+      $j = $i + 1
+      $okq = 1
+      tant_que ($okq == 1) {
+        si ($j >= $N) { $okq = 0 }
+        sinon si (ordre($src[$j]) == 32 ou ordre($src[$j]) == 9 ou ordre($src[$j]) == 13) { $j = $j + 1 }
+        sinon { $okq = 0 }
+      }
+      $suit_paren = 0
+      si ($j < $N et ordre($src[$j]) == 40) { $suit_paren = 1 }
+      $ouvre_si = 0
+      si ($est_debut == 1 et $suit_paren == 1) { $ouvre_si = 1 }
+      si ($ouvre_si == 0) {
+        joindre($gen, "terminal")
+        joindre($x, "?")
+      } sinon {
+        joindre($gen, "?")
+        joindre($x, "?")
+      }
+      joindre($gl, $lnr)
+      $i = $i + 1
+      $dernier = "autre"
+    }
+  }
   sinon si ($c == 34 ou $c == 39) {
     $q = $c
+    $dl = $lnr
     $i = $i + 1
     $buf = ""
     $ok = 1
@@ -2123,9 +2251,7 @@ tant_que ($i < $N) {
         }
       }
     }
-    joindre($gen, "chaine")
-    joindre($x, $buf)
-    joindre($gl, $lnr)
+    joindre($gen, "chaine"); joindre($x, $buf); joindre($gl, $dl); $dernier = "chaine"
   }
   sinon si (est_chiffre($c)) {
     $txt = ""
@@ -2159,19 +2285,38 @@ tant_que ($i < $N) {
         sinon { $ok = 0 }
       }
     }
-    si ($flott == 1) { joindre($gen, "flottant") } sinon { joindre($gen, "nombre") }
+    si ($flott == 1) { joindre($gen, "flottant"); $dernier = "flottant" }
+    sinon { joindre($gen, "nombre"); $dernier = "nombre" }
     joindre($x, $txt)
     joindre($gl, $lnr)
   }
   sinon si ($c == 960) {
-    joindre($gen, "flottant")
-    joindre($x, "3.141592653589793")
-    joindre($gl, $lnr)
-    $i = $i + 1
+    joindre($gen, "mot"); joindre($x, "π"); joindre($gl, $lnr); $i = $i + 1; $dernier = "mot"
   }
-  sinon si ($c == 36 ou est_lettre($c)) {
-    $dollar = 0
-    si ($c == 36) { $dollar = 1; $i = $i + 1 }
+  sinon si ($c == 966) {
+    joindre($gen, "mot"); joindre($x, "φ"); joindre($gl, $lnr); $i = $i + 1; $dernier = "mot"
+  }
+  sinon si ($c == 36) {
+    $est_var = 0
+    si ($suiv != -1 et est_lettre($suiv)) { $est_var = 1 }
+    si ($est_var == 0) {
+      joindre($gen, "superfacto"); joindre($x, "$"); joindre($gl, $lnr); $i = $i + 1; $dernier = "superfacto"
+    } sinon {
+      $i = $i + 1
+      $nu = ""
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (est_suite(ordre($src[$i]))) {
+          $nu = $nu + $src[$i]
+          $i = $i + 1
+        }
+        sinon { $ok = 0 }
+      }
+      joindre($gen, "ident"); joindre($x, $nu); joindre($gl, $lnr); $dernier = "ident"
+    }
+  }
+  sinon si (est_lettre($c)) {
     $nu = ""
     $ok = 1
     tant_que ($ok == 1) {
@@ -2182,31 +2327,36 @@ tant_que ($i < $N) {
       }
       sinon { $ok = 0 }
     }
-    si ($dollar == 1 ou cle_existe($cles, $nu)) { joindre($gen, "ident") }
-    sinon { joindre($gen, "mot") }
+    si (cle_existe($cles, $nu)) { joindre($gen, "ident") } sinon { joindre($gen, "mot") }
     joindre($x, $nu)
     joindre($gl, $lnr)
+    $dernier = "mot"
   }
   sinon si (paire($c, $suiv) != "") {
-    joindre($gen, paire($c, $suiv))
-    joindre($x, sous_chaine($src, $i, $i + 2))
-    joindre($gl, $lnr)
-    $i = $i + 2
+    joindre($gen, paire($c, $suiv)); joindre($x, sous_chaine($src, $i, $i + 2)); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre"
   }
-  sinon si ($c == 62 et $suiv == 62) { joindre($gen, ">>"); joindre($x, ">>"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 60 et $suiv == 60) { joindre($gen, "<<"); joindre($x, "<<"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 45 et $suiv == 62) { joindre($gen, "->"); joindre($x, "->"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 61) { joindre($gen, "="); joindre($x, "="); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si ($c == 58 et $suiv == 58) { joindre($gen, "::"); joindre($x, "::"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 178) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "2"); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si ($c == 179) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "3"); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si (uni($c) != "") { joindre($gen, uni($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si (car($c) != "") { joindre($gen, car($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1 }
+  sinon si ($c == 62 et $suiv == 62) { joindre($gen, ">>"); joindre($x, ">>"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 60 et $suiv == 60) { joindre($gen, "<<"); joindre($x, "<<"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 45 et $suiv == 62) { joindre($gen, "->"); joindre($x, "->"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 61) { joindre($gen, "="); joindre($x, "="); joindre($gl, $lnr); $i = $i + 1; $dernier = "autre" }
+  sinon si ($c == 58 et $suiv == 58) { joindre($gen, "::"); joindre($x, "::"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 178) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "2"); joindre($gl, $lnr); $i = $i + 1; $dernier = "nombre" }
+  sinon si ($c == 179) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "3"); joindre($gl, $lnr); $i = $i + 1; $dernier = "nombre" }
+  sinon si (uni($c) != "") { joindre($gen, uni($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1; $dernier = "autre" }
+  sinon si (car($c) != "") {
+    joindre($gen, car($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1
+    si ($c == 41) { $dernier = "rparen" }
+    sinon si ($c == 93) { $dernier = "rbracket" }
+    sinon si ($c == 94) { $dernier = "chapeau" }
+    sinon si ($c == 58) { $dernier = "deuxpts" }
+    sinon { $dernier = "autre" }
+  }
   sinon { $i = $i + 1 }
 }
 joindre($gen, "eof")
 joindre($x, "")
 joindre($gl, $lnr)
+
 
 # —— phase 2 : descente vers les pools ——
 $k = [""]
@@ -2248,6 +2398,12 @@ $sym = ""
 tant_que (T0($gen, $p) != "eof") {
   $t = T0($gen, $p)
   si ($t == ";") { $p = $p + 1 }
+  # importer "f.rose" : noté, non vérifié ici (rose verif résout dans analyser_fichier)
+  sinon si (EMOT($gen, $x, $p, "importer")) {
+    $q = $p + 1
+    si (T0($gen, $q) == "chaine") { $q = $q + 1 }
+    $p = $q
+  }
   sinon si ($t == "@" et (EMOT($gen, $x, $p + 1, "dll") ou EMOT($gen, $x, $p + 1, "sym"))) {
     $genre = VX0($x, $p + 1)
     $q = $p + 2
@@ -2320,9 +2476,17 @@ si (longueur($err) == 1) {
                  $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $err)
 }
 
-# —— passe 2 : vérification — d'abord les signatures, globals encore vides ——
+# —— passe 2 : vérification — collecte d'abord les globals du niveau principal ——
 $gln = [""]
 $glt = [""]
+# Le corps principal est vérifié en premier avec ses variables comme globales :
+# le moteur Rust collecte GLOBALS avant de vérifier les fonctions.
+$lc0 = [""]
+$lct0 = [""]
+parcourir($topb, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+          $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
+          $gln, $glt, $gln, $glt, $lc0, $lct0,
+          $fnoms, $fparams, $fret, $foi, $fot, $fof, 0, "vide|vide", $err)
 $w = 1
 tant_que ($w < longueur($ordre)) {
   si (longueur($err) == 1) {
