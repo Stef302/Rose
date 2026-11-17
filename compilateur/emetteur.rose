@@ -353,7 +353,7 @@ fn rnorm($p: entier, $q: entier) -> chaine {
 # $err : liste partagée, la première erreur gagne ; toute fonction gardée
 # rend la main à vide dès qu'elle est pleine (miroir de l'exception C++).
 
-fn lever($lg: entier, $msg: chaine, $err: liste<chaine>) {
+fn signaler($lg: entier, $msg: chaine, $err: liste<chaine>) {
   si (longueur($err) == 1) {
     $s = "Rose : erreur — "
     si ($lg > 0) { $s = $s + "[Ligne " + chaine($lg) + ", Colonne 0] " }
@@ -373,7 +373,7 @@ fn reserver($nom: chaine, $lg: entier, $err: liste<chaine>) {
       }
       $k = $k + 1
     }
-    si ($chiffres == 1) { lever($lg, "Le nom '" + $nom + "' est réservé par le moteur", $err) }
+    si ($chiffres == 1) { signaler($lg, "Le nom '" + $nom + "' est réservé par le moteur", $err) }
   }
 }
 
@@ -1232,12 +1232,12 @@ fn replier_expr($i: entier,
     sinon si ($op == "-") { $np = $p1 * $q2 - $p2 * $q1; $nq = $q1 * $q2 }
     sinon si ($op == "*") { $np = $p1 * $p2; $nq = $q1 * $q2 }
     sinon si ($op == "/") {
-      si (rnul($tb)) { lever($l, "Division par zéro dans une constante", $err); retour "0" }
+      si (rnul($tb)) { signaler($l, "Division par zéro dans une constante", $err); retour "0" }
       $np = $p1 * $q2; $nq = $q1 * $p2
     }
     sinon si ($op == "^") {
       si ($q2 != 1) { retour "0" }
-      si ($p2 < 0 et rnul($ta)) { lever($l, "0^négatif dans une constante", $err); retour "0" }
+      si ($p2 < 0 et rnul($ta)) { signaler($l, "0^négatif dans une constante", $err); retour "0" }
       si ($p2 > 9223372036854775807 ou 0 - $p2 > 9223372036854775807) { retour "0" }
       $num = 1
       $den = 1
@@ -1250,7 +1250,7 @@ fn replier_expr($i: entier,
       $np = $num; $nq = $den
     }
     sinon si ($op == "div") {
-      si (rnul($tb)) { lever($l, "division par zéro dans une constante", $err); retour "0" }
+      si (rnul($tb)) { signaler($l, "division par zéro dans une constante", $err); retour "0" }
       $r = chaine($p1 * $q2 div ($q1 * $p2))
       stocker($i, $r, "", $foi, $fot, $fof)
       retour "1|" + $r + "|"
@@ -1305,18 +1305,18 @@ fn replier_instr($i: entier,
                  $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
                  $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
                  $err: liste<chaine>) {
-  si (longueur($err) > 1) { retour }
+  si (longueur($err) > 1) { retour 0 }
   $kd = $ik[$i]
   si ($kd == "aff" ou $kd == "expr" ou $kd == "affi") {
     replier_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err)
-    retour
+    retour 0
   }
   si ($kd == "retour") {
     $e = $ie[$i]
     si ($e >= 0) {
       replier_expr($e, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err)
     }
-    retour
+    retour 0
   }
   si ($kd == "si") {
     replier_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err)
@@ -1327,20 +1327,20 @@ fn replier_instr($i: entier,
       replier_chaine($b2, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                      $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $err)
     }
-    retour
+    retour 0
   }
   si ($kd == "tq") {
     replier_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err)
     replier_chaine($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                    $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $err)
-    retour
+    retour 0
   }
   si ($kd == "pour") {
     replier_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err)
     replier_expr($ie2[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err)
     replier_chaine($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                    $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $err)
-    retour
+    retour 0
   }
   si ($kd == "bloc") {
     replier_chaine($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
@@ -1395,7 +1395,7 @@ fn ce_raw($i: entier,
     $t = env_get($nom, $vn, $vt)
     si ($t == "") { $t = env_get($nom, $gn, $gt) }
     si ($t == "") {
-      lever($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
+      signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
     }
     retour $t
@@ -1404,7 +1404,7 @@ fn ce_raw($i: entier,
     $n = $ac[$i]
     $sa = $as[$i]
     si ($n == 0) {
-      lever($lg0, "Liste vide : le type d'élément est introuvable", $err)
+      signaler($lg0, "Liste vide : le type d'élément est introuvable", $err)
       retour "vide|vide"
     }
     $t_elt = check_expr($al[$sa], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
@@ -1416,7 +1416,7 @@ fn ce_raw($i: entier,
       si ($tch != $t_elt) {
         si (estnum($tch) et estnum($t_elt)) { $t_elt = promote($tch, $t_elt) }
         sinon {
-          lever($lg0, "Liste hétérogène : " + nomty($t_elt) + " puis " + nomty($tch), $err)
+          signaler($lg0, "Liste hétérogène : " + nomty($t_elt) + " puis " + nomty($tch), $err)
           retour "vide|vide"
         }
       }
@@ -1424,7 +1424,7 @@ fn ce_raw($i: entier,
     }
     si (longueur($err) > 1) { retour "vide|vide" }
     si (BASE($t_elt) == "liste") {
-      lever($lg0, "Listes de listes non supportées pour l'instant", $err)
+      signaler($lg0, "Listes de listes non supportées pour l'instant", $err)
       retour "vide|vide"
     }
     retour "liste|" + BASE($t_elt)
@@ -1437,7 +1437,7 @@ fn ce_raw($i: entier,
     $bb = BASE($tb)
     $bi = BASE($ti)
     si ($bb != "liste" et $bb != "chaine" et $bb != "table" et $bb != "valeur") {
-      lever($lg0, "Index sur un " + nomty($tb) + ", une liste est attendue", $err)
+      signaler($lg0, "Index sur un " + nomty($tb) + ", une liste est attendue", $err)
       retour "vide|vide"
     }
     si ($bb == "table" ou $bb == "valeur") {
@@ -1448,7 +1448,7 @@ fn ce_raw($i: entier,
       sinon si ($bi == "chaine") { $cle_ok = 1 }
       sinon si ($bi == "booleen") { $cle_ok = 1 }
       si ($bb == "table" et $cle_ok == 0) {
-        lever($lg0, "Index d'une table doit être un texte ou un nombre", $err)
+        signaler($lg0, "Index d'une table doit être un texte ou un nombre", $err)
         retour "vide|vide"
       }
       retour "valeur|vide"
@@ -1456,7 +1456,7 @@ fn ce_raw($i: entier,
     si ($bi != "entier") {
       $msg = "Index d'une liste doit être entier"
       si ($bb == "chaine") { $msg = "Index d'une chaîne doit être entier" }
-      lever($lg0, $msg, $err)
+      signaler($lg0, $msg, $err)
       retour "vide|vide"
     }
     si ($bb == "chaine") { retour "chaine|vide" }
@@ -1467,13 +1467,13 @@ fn ce_raw($i: entier,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si ($tx[$i] == "non") {
       si (BASE($t) != "booleen") {
-        lever($lg0, "La condition de non doit être booléenne, trouvé " + nomty($t), $err)
+        signaler($lg0, "La condition de non doit être booléenne, trouvé " + nomty($t), $err)
         retour "vide|vide"
       }
       retour "booleen|vide"
     }
     si (non estnum($t)) {
-      lever($lg0, "Unaire " + $tx[$i] + " sur un " + nomty($t), $err)
+      signaler($lg0, "Unaire " + $tx[$i] + " sur un " + nomty($t), $err)
       retour "vide|vide"
     }
     retour $t
@@ -1482,7 +1482,7 @@ fn ce_raw($i: entier,
     $t = check_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si (BASE($t) != "entier") {
-      lever($lg0, "Factorielle attend un entier, trouvé " + nomty($t), $err)
+      signaler($lg0, "Factorielle attend un entier, trouvé " + nomty($t), $err)
       retour "vide|vide"
     }
     retour "entier|vide"
@@ -1493,7 +1493,7 @@ fn ce_raw($i: entier,
   si ($kd == "app") { retour check_appel($i, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                                           $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret,
                                           $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt) }
-  lever($lg0, "Expression inconnue", $err)
+  signaler($lg0, "Expression inconnue", $err)
   retour "vide|vide"
 }
 
@@ -1515,18 +1515,18 @@ fn check_bin($i: entier,
   si (longueur($err) > 1) { retour "vide|vide" }
   si ($op == "et" ou $op == "ou") {
     si (BASE($tg) != "booleen") {
-      lever($lg0, "La condition de et/ou doit être booléenne, trouvé " + nomty($tg), $err)
+      signaler($lg0, "La condition de et/ou doit être booléenne, trouvé " + nomty($tg), $err)
       retour "vide|vide"
     }
     si (BASE($td) != "booleen") {
-      lever($lg0, "La condition de et/ou doit être booléenne, trouvé " + nomty($td), $err)
+      signaler($lg0, "La condition de et/ou doit être booléenne, trouvé " + nomty($td), $err)
       retour "vide|vide"
     }
     retour "booleen|vide"
   }
   si ($op == "==" ou $op == "!=" ou $op == "≈" ou $op == "?=" ou $op == "=~") {
     si ($tg != $td et non(estnum($tg) et estnum($td))) {
-      lever($lg0, "Comparaison " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
+      signaler($lg0, "Comparaison " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
       retour "vide|vide"
     }
     retour "booleen|vide"
@@ -1536,7 +1536,7 @@ fn check_bin($i: entier,
     si (estnum($tg) et estnum($td)) { $okordre = 1 }
     si (BASE($tg) == "chaine" et BASE($td) == "chaine") { $okordre = 1 }
     si ($okordre == 0) {
-      lever($lg0, "Ordre " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
+      signaler($lg0, "Ordre " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
       retour "vide|vide"
     }
     retour "booleen|vide"
@@ -1544,12 +1544,12 @@ fn check_bin($i: entier,
   si ($op == "+") {
     si (BASE($tg) == "chaine" et BASE($td) == "chaine") { retour "chaine|vide" }
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
-    lever($lg0, "Addition " + nomty($tg) + " + " + nomty($td) + " impossible", $err)
+    signaler($lg0, "Addition " + nomty($tg) + " + " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
   si ($op == "-" ou $op == "*") {
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
-    lever($lg0, "Opération " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
+    signaler($lg0, "Opération " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
   si ($op == "/") {
@@ -1558,21 +1558,21 @@ fn check_bin($i: entier,
       si (BASE($r) == "entier") { retour "rationnel|vide" }
       retour $r
     }
-    lever($lg0, "Division " + nomty($tg) + " / " + nomty($td) + " impossible", $err)
+    signaler($lg0, "Division " + nomty($tg) + " / " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
   si ($op == "%") {
     si (BASE($tg) == "entier" et BASE($td) == "entier") { retour "entier|vide" }
-    lever($lg0, "Le modulo exige deux entiers", $err)
+    signaler($lg0, "Le modulo exige deux entiers", $err)
     retour "vide|vide"
   }
   si ($op == "div") {
     si (non(estnum($tg) ou BASE($tg) == "booleen")) {
-      lever($lg0, "div attend un nombre à gauche, trouvé " + nomty($tg), $err)
+      signaler($lg0, "div attend un nombre à gauche, trouvé " + nomty($tg), $err)
       retour "vide|vide"
     }
     si (non(estnum($td) ou BASE($td) == "booleen")) {
-      lever($lg0, "div attend un nombre à droite, trouvé " + nomty($td), $err)
+      signaler($lg0, "div attend un nombre à droite, trouvé " + nomty($td), $err)
       retour "vide|vide"
     }
     si (BASE($tg) == "flottant" ou BASE($td) == "flottant") { retour "flottant|vide" }
@@ -1580,7 +1580,7 @@ fn check_bin($i: entier,
   }
   si ($op == "^") {
     si (non estnum($tg)) {
-      lever($lg0, "Puissance sur une base " + nomty($tg), $err)
+      signaler($lg0, "Puissance sur une base " + nomty($tg), $err)
       retour "vide|vide"
     }
     si (BASE($td) == "flottant") { retour "flottant|vide" }
@@ -1598,10 +1598,10 @@ fn check_bin($i: entier,
       si (BASE($tg) == "entier") { retour "entier|vide" }
       retour $tg
     }
-    lever($lg0, "Exposant " + nomty($td) + " impossible", $err)
+    signaler($lg0, "Exposant " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
-  lever($lg0, "Opérateur '" + $op + "' inconnu", $err)
+  signaler($lg0, "Opérateur '" + $op + "' inconnu", $err)
   retour "vide|vide"
 }
 
@@ -1679,8 +1679,8 @@ fn vargs($i: entier, $codes: chaine, $nom: chaine,
   $nargs = $ac[$i]
   $np = nb_pieces($codes, 44)
   si ($nargs != $np) {
-    lever($lg[$i], $nom + " attend " + chaine($np) + " argument(s), reçu " + chaine($nargs), $err)
-    retour
+    signaler($lg[$i], $nom + " attend " + chaine($np) + " argument(s), reçu " + chaine($nargs), $err)
+    retour 0
   }
   $sa = $as[$i]
   $t_elt = "vide|vide"
@@ -1691,34 +1691,34 @@ fn vargs($i: entier, $codes: chaine, $nom: chaine,
                      $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     $code = piece($codes, 44, $j + 1)
     si ($code == "chaine") {
-      si (BASE($ta) != "chaine") { lever($lg[$i], $nom + ": une chaine est attendue", $err) }
+      si (BASE($ta) != "chaine") { signaler($lg[$i], $nom + ": une chaine est attendue", $err) }
     }
     sinon si ($code == "num") {
       si (non estnum($ta)) {
-        lever($lg[$i], $nom + ": un nombre est attendu, reçu " + nomty($ta), $err)
+        signaler($lg[$i], $nom + ": un nombre est attendu, reçu " + nomty($ta), $err)
       }
     }
     sinon si ($code == "entier") {
       si (BASE($ta) != "entier") {
-        lever($lg[$i], $nom + ": un entier est attendu, reçu " + nomty($ta), $err)
+        signaler($lg[$i], $nom + ": un entier est attendu, reçu " + nomty($ta), $err)
       }
     }
     sinon si ($code == "liste") {
       si (BASE($ta) != "liste") {
-        lever($lg[$i], $nom + ": une liste est attendue, reçu " + nomty($ta), $err)
+        signaler($lg[$i], $nom + ": une liste est attendue, reçu " + nomty($ta), $err)
       }
       $t_elt = tyb(ELTT($ta))
       $a_elt = 1
     }
     sinon si ($code == "tampon") {
       si (BASE($ta) != "tampon") {
-        lever($lg[$i], $nom + ": un tampon est attendu, reçu " + nomty($ta), $err)
+        signaler($lg[$i], $nom + ": un tampon est attendu, reçu " + nomty($ta), $err)
       }
     }
     sinon si ($code == "lct") {
       $bb = BASE($ta)
       si ($bb != "liste" et $bb != "chaine" et $bb != "table" et $bb != "tampon") {
-        lever($lg[$i], $nom + ": une liste, une chaîne ou une table est attendue, reçu " + nomty($ta), $err)
+        signaler($lg[$i], $nom + ": une liste, une chaîne ou une table est attendue, reçu " + nomty($ta), $err)
       }
     }
     sinon si ($code == "liste_elt") {
@@ -1726,7 +1726,7 @@ fn vargs($i: entier, $codes: chaine, $nom: chaine,
       si ($a_elt == 1 et BASE($t_elt) != "vide" et $ta != $t_elt) {
         si (estnum($ta) et estnum($t_elt) et promote($ta, $t_elt) == $t_elt) { $tolere = 1 }
         si ($tolere == 0) {
-          lever($lg[$i], $nom + ": élément " + nomty($ta) + " ne correspond pas à la liste " + nomty($t_elt), $err)
+          signaler($lg[$i], $nom + ": élément " + nomty($ta) + " ne correspond pas à la liste " + nomty($t_elt), $err)
         }
       }
     }
@@ -1751,7 +1751,7 @@ fn check_appel($i: entier,
   si ($mod == "dynamique") {
     $spec = dyn_sig($nom)
     si ($spec == "") {
-      lever($lg0, "Fonction dynamique::" + $nom + " inconnue (disponibles: charger, fermer, appeler0, appeler1, appeler2)", $err)
+      signaler($lg0, "Fonction dynamique::" + $nom + " inconnue (disponibles: charger, fermer, appeler0, appeler1, appeler2)", $err)
       retour "vide|vide"
     }
     vargs($i, piece($spec, 124, 2), "dynamique::" + $nom,
@@ -1772,11 +1772,11 @@ fn check_appel($i: entier,
     si (BASE($t) == "chaine") {
       si ($nom == "entier") { retour "entier|vide" }
       si ($nom == "flottant") { retour "flottant|vide" }
-      lever($lg0, "Conversion chaine → rationnel non disponible, passez par flottant", $err)
+      signaler($lg0, "Conversion chaine → rationnel non disponible, passez par flottant", $err)
       retour "vide|vide"
     }
     si (non estnum($t)) {
-      lever($lg0, "Conversion " + nomty($t) + " → " + nomty(tyb($nom)) + " impossible", $err)
+      signaler($lg0, "Conversion " + nomty($t) + " → " + nomty(tyb($nom)) + " impossible", $err)
       retour "vide|vide"
     }
     retour tyb($nom)
@@ -1793,7 +1793,7 @@ fn check_appel($i: entier,
     $ps = $fparams[$pos]
     $np = nb_pieces($ps, 59)
     si ($ac[$i] != $np) {
-      lever($lg0, $nom + " attend " + chaine($np) + " argument(s), reçu " + chaine($ac[$i]), $err)
+      signaler($lg0, $nom + " attend " + chaine($np) + " argument(s), reçu " + chaine($ac[$i]), $err)
       retour "vide|vide"
     }
     $sa = $as[$i]
@@ -1810,7 +1810,7 @@ fn check_appel($i: entier,
           si (non(estnum($ta) et estnum($t_att) et promote($ta, $t_att) == $t_att)) { $bad = 1 }
         }
         si ($bad == 1) {
-          lever($lg0, "Argument de " + $nom + ": " + nomty($ta) + " reçu, " + nomty($t_att) + " attendu", $err)
+          signaler($lg0, "Argument de " + $nom + ": " + nomty($ta) + " reçu, " + nomty($t_att) + " attendu", $err)
           $ok = 0
         }
       }
@@ -1821,7 +1821,7 @@ fn check_appel($i: entier,
   # — bibliothèque standard —
   $spec = std_sig($nom)
   si ($spec == "") {
-    lever($lg0, "Fonction '" + $nom + "' inconnue", $err)
+    signaler($lg0, "Fonction '" + $nom + "' inconnue", $err)
     retour "vide|vide"
   }
   vargs($i, piece($spec, 124, 2), $nom,
@@ -1872,14 +1872,14 @@ fn check_instr($i: entier,
                $ass: entier, $ra: chaine, $err: liste<chaine>,
                $tni: liste<entier>, $tnt: liste<chaine>,
                $tri: liste<entier>, $trt: liste<chaine>) {
-  si (longueur($err) > 1) { retour }
+  si (longueur($err) > 1) { retour 0 }
   $kd = $ik[$i]
   $lg0 = $ilg[$i]
   si ($kd == "aff") {
     $t = check_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
-    si (BASE($t) == "vide") { lever($lg0, "Rien à afficher ici", $err) }
-    retour
+    si (BASE($t) == "vide") { signaler($lg0, "Rien à afficher ici", $err) }
+    retour 0
   }
   si ($kd == "lire") {
     $nom = $ino[$i]
@@ -1892,7 +1892,7 @@ fn check_instr($i: entier,
     sinon {
       $bb = BASE($t)
       si ($bb != "entier" et $bb != "flottant" et $bb != "rationnel") {
-        lever($lg0, "Ne peut pas lire dans une variable " + nomty($t) + " (entier/flottant attendus)", $err)
+        signaler($lg0, "Ne peut pas lire dans une variable " + nomty($t) + " (entier/flottant attendus)", $err)
       }
       sinon {
         $nu = "1"
@@ -1902,14 +1902,14 @@ fn check_instr($i: entier,
         joindre($trt, $nu)
       }
     }
-    retour
+    retour 0
   }
   si ($kd == "affi") {
     $t = check_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si (BASE($t) == "vide") {
-      lever($lg0, "Impossible d'affecter une valeur sans type", $err)
-      retour
+      signaler($lg0, "Impossible d'affecter une valeur sans type", $err)
+      retour 0
     }
     $nom = $ino[$i]
     $ex = env_get($nom, $vn, $vt)
@@ -1926,21 +1926,21 @@ fn check_instr($i: entier,
         $domaine_ok = 0
         si (promote($t, $ex) == $ex et estnum($t) et estnum($ex)) { $domaine_ok = 1 }
         si ($domaine_ok == 0) {
-          lever($lg0, "'" + $nom + "' est " + nomty($ex) + ", on ne peut pas y stocker du " + nomty($t), $err)
-          retour
+          signaler($lg0, "'" + $nom + "' est " + nomty($ex) + ", on ne peut pas y stocker du " + nomty($t), $err)
+          retour 0
         }
       }
     }
     reserver($nom, $lg0, $err)
     env_put($nom, $cible, $vn, $vt)
-    retour
+    retour 0
   }
   si ($kd == "si") {
     $t = check_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si (BASE($t) != "booleen") {
-      lever($lg0, "La condition de si doit être booléenne, trouvé " + nomty($t), $err)
-      retour
+      signaler($lg0, "La condition de si doit être booléenne, trouvé " + nomty($t), $err)
+      retour 0
     }
     parcourir($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
@@ -1951,50 +1951,50 @@ fn check_instr($i: entier,
                 $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
                 $ln, $lt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err, $tni, $tnt, $tri, $trt)
     }
-    retour
+    retour 0
   }
   si ($kd == "tq") {
     $t = check_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si (BASE($t) != "booleen") {
-      lever($lg0, "La condition de tant_que doit être booléenne, trouvé " + nomty($t), $err)
-      retour
+      signaler($lg0, "La condition de tant_que doit être booléenne, trouvé " + nomty($t), $err)
+      retour 0
     }
     parcourir($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
               $ln, $lt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err, $tni, $tnt, $tri, $trt)
-    retour
+    retour 0
   }
   si ($kd == "pour") {
     $nom = $ino[$i]
     si (env_get($nom, $vn, $vt) != "") {
-      lever($lg0, "La variable de boucle '" + $nom + "' existe déjà", $err)
-      retour
+      signaler($lg0, "La variable de boucle '" + $nom + "' existe déjà", $err)
+      retour 0
     }
     $td = check_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                      $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     $tfin = check_expr($ie2[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                        $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si (BASE($td) != "entier" ou BASE($tfin) != "entier") {
-      lever($lg0, "pour…de…vers exige des bornes entières", $err)
-      retour
+      signaler($lg0, "pour…de…vers exige des bornes entières", $err)
+      retour 0
     }
     reserver($nom, $lg0, $err)
     env_put($nom, "entier|vide", $vn, $vt)
     parcourir($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
               $ln, $lt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err, $tni, $tnt, $tri, $trt)
-    retour
+    retour 0
   }
   si ($kd == "retour") {
     si ($ass == 0) {
-      lever($lg0, "'retour' hors de fonction", $err)
-      retour
+      signaler($lg0, "'retour' hors de fonction", $err)
+      retour 0
     }
     $e = $ie[$i]
     si ($e < 0) {
       si ($ra != "vide|vide") {
-        lever($lg0, "La fonction doit retourner un " + nomty($ra), $err)
+        signaler($lg0, "La fonction doit retourner un " + nomty($ra), $err)
       }
     }
     sinon {
@@ -2005,15 +2005,15 @@ fn check_instr($i: entier,
         si (non(estnum($t) et estnum($ra) et promote($t, $ra) == $ra)) { $bad = 1 }
       }
       si ($bad == 1) {
-        lever($lg0, "La fonction retourne " + nomty($t) + ", attendu " + nomty($ra), $err)
+        signaler($lg0, "La fonction retourne " + nomty($t) + ", attendu " + nomty($ra), $err)
       }
     }
-    retour
+    retour 0
   }
   si ($kd == "expr") {
     check_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
-    retour
+    retour 0
   }
   si ($kd == "bloc") {
     parcourir($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
@@ -2454,7 +2454,7 @@ fn em_instr($ix: entier,
   si ($kd == "aff") {
     $v = em_expr($ie[$ix], "u", $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $tni, $tnt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
     e_ligne($fl, $flb, $fp, $cc, "", "afficher", $v, "", vrai)
-    retour
+    retour 0
   }
   si ($kd == "lire") {
     $t = tick_t($tc)
@@ -2468,12 +2468,12 @@ fn em_instr($ix: entier,
     }
     e_ligne($fl, $flb, $fp, $cc, $t, "lire", "%" + $ino[$ix], $nu, vrai)
     e_ligne($fl, $flb, $fp, $cc, "", "affect", $t, $ino[$ix], vrai)
-    retour
+    retour 0
   }
   si ($kd == "affi") {
     $v = em_expr($ie[$ix], "u", $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $tni, $tnt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
     e_ligne($fl, $flb, $fp, $cc, "", "affect", $v, $ino[$ix], vrai)
-    retour
+    retour 0
   }
   si ($kd == "si") {
     $v = em_expr($ie[$ix], "b", $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $tni, $tnt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
@@ -2491,7 +2491,7 @@ fn em_instr($ix: entier,
     }
     e_ligne($fl, $flb, $fp, $cc, "", "br", $l3, "", vrai)
     e_bloc($fb, $cc, $l3)
-    retour
+    retour 0
   }
   si ($kd == "tq") {
     $sf = tick_b($bc)
@@ -2506,7 +2506,7 @@ fn em_instr($ix: entier,
     em_corps($ib1[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
     e_ligne($fl, $flb, $fp, $cc, "", "br", $l1, "", vrai)
     e_bloc($fb, $cc, $l3)
-    retour
+    retour 0
   }
   si ($kd == "pour") {
     $var = $ino[$ix]
@@ -2532,7 +2532,7 @@ fn em_instr($ix: entier,
     e_ligne($fl, $flb, $fp, $cc, "", "affect", $nt, $var, vrai)
     e_ligne($fl, $flb, $fp, $cc, "", "br", $l1, "", vrai)
     e_bloc($fb, $cc, $l4)
-    retour
+    retour 0
   }
   si ($kd == "retour") {
     si ($ie[$ix] >= 0) {
@@ -2542,11 +2542,11 @@ fn em_instr($ix: entier,
     sinon {
       e_ligne($fl, $flb, $fp, $cc, "", "ret.u", "", "", faux)
     }
-    retour
+    retour 0
   }
   si ($kd == "expr") {
     em_expr($ie[$ix], "u", $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $tni, $tnt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
-    retour
+    retour 0
   }
   si ($kd == "bloc") {
     em_corps($ib1[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
@@ -2960,14 +2960,14 @@ tant_que ($w < longueur($ordre)) {
         $pt = sous_chaine($ent, $pp + 1, longueur($ent))
         $bb = BASE($pt)
         si ($bb != "entier" et $bb != "flottant" et $bb != "booleen" et $bb != "chaine") {
-          lever($fligne[$ix], "Type " + nomty($pt) + " non supporté aux frontières d'une fonction externe (utilisez entier/flottant/booleen/chaine)", $err)
+          signaler($fligne[$ix], "Type " + nomty($pt) + " non supporté aux frontières d'une fonction externe (utilisez entier/flottant/booleen/chaine)", $err)
         }
         $u = $u + 1
       }
       $bb = BASE($fret[$ix])
       si (longueur($err) == 1) {
         si ($bb != "entier" et $bb != "flottant" et $bb != "booleen" et $bb != "chaine") {
-          lever($fligne[$ix], "Type " + nomty($fret[$ix]) + " non supporté aux frontières d'une fonction externe (utilisez entier/flottant/booleen/chaine)", $err)
+          signaler($fligne[$ix], "Type " + nomty($fret[$ix]) + " non supporté aux frontières d'une fonction externe (utilisez entier/flottant/booleen/chaine)", $err)
         }
       }
     }
