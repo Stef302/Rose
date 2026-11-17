@@ -274,13 +274,19 @@ tant_que ($i < $N) {
       >> chaine($dl) + ":" + chaine($dc) + " nombre " + $txt
     }
   }
-  # —— π : constante flottante (texte remplacé, comme l'oracle) ——
+  # —— π et φ : mots (miroir du tokeniseur Rust) ——
   sinon si ($c == 960) {
-    >> chaine($ligne) + ":" + chaine($col) + " flottant 3.141592653589793"
+    >> chaine($ligne) + ":" + chaine($col) + " mot π"
     $i = $i + 1
     $col = $col + 1
   }
-  # —— identifiants, $variables et mots-clés ——
+  sinon si ($c == 966) {
+    >> chaine($ligne) + ":" + chaine($col) + " mot φ"
+    $i = $i + 1
+    $col = $col + 1
+  }
+  # —— identifiants, $variables et mots ——
+  # Miroir Rust : $nom -> ident (sans $), nom nu -> mot (mots-clés inclus).
   sinon si ($c == 36 ou est_lettre($c)) {
     $dl = $ligne
     $dc = $col
@@ -297,7 +303,7 @@ tant_que ($i < $N) {
       }
       sinon { $ok = 0 }
     }
-    si ($dollar == 1 ou cle_existe($mots, $nu)) {
+    si ($dollar == 1) {
       >> chaine($dl) + ":" + chaine($dc) + " ident " + $nu
     } sinon {
       >> chaine($dl) + ":" + chaine($dc) + " mot " + $nu
@@ -327,7 +333,9 @@ tant_que ($i < $N) {
     $col = $col + 1
   }
   sinon si ($c == 45 et $suiv == 62) {
-    >> chaine($ligne) + ":" + chaine($col) + " -> ->"
+    # Miroir Rust : « -> » émis comme deux jetons (« - » puis « > »)
+    >> chaine($ligne) + ":" + chaine($col) + " - -"
+    >> chaine($ligne) + ":" + chaine($col + 1) + " > >"
     $i = $i + 1
     $col = $col + 1
     $i = $i + 1
