@@ -62,6 +62,7 @@ Usage :
   rose latex prog.rose --lignes --apercu   les lignes %% en rendu visible
   rose tokens prog.rose             liste les jetons (oracle : ligne:colonne type texte)
   rose ast prog.rose                arbre syntaxique (oracle, S-expressions)
+  rose rir prog.rose                représentation intermédiaire (RIR)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
@@ -75,6 +76,181 @@ Usage :
 ",
         env!("CARGO_PKG_VERSION")
     )
+}
+
+// ── Oracle RIR (M4.4) ─────────────────────────────────────────────────────
+
+fn rir_oper(o: &rir::Oper) -> &'static str {
+    match o {
+        rir::Oper::Add => "+", rir::Oper::Sub => "-", rir::Oper::Mul => "*",
+        rir::Oper::Div => "/", rir::Oper::Mod => "%", rir::Oper::Puissance => "^",
+        rir::Oper::DivEntier => "div",
+        rir::Oper::Lt => "<", rir::Oper::Le => "<=", rir::Oper::Gt => ">",
+        rir::Oper::Ge => ">=", rir::Oper::Eq => "==", rir::Oper::Ne => "!=",
+        rir::Oper::Et => "et", rir::Oper::Ou => "ou",
+    }
+}
+
+fn rir_eabstrait(e: &rir::Eabstrait, out: &mut String) {
+    use rir::Eabstrait;
+    match e {
+        Eabstrait::Slot(s, _) => { out.push_str("slot "); out.push_str(&s.to_string()); }
+        Eabstrait::Entier(t) => { out.push_str("entier "); out.push_str(t); }
+        Eabstrait::Flottant(d) => { out.push_str("flottant "); out.push_str(&d.to_string()); }
+        Eabstrait::Neg(a) => { out.push_str("(neg "); rir_eabstrait(a, out); out.push(')'); }
+        Eabstrait::Non(a) => { out.push_str("(non "); rir_eabstrait(a, out); out.push(')'); }
+        Eabstrait::Binaire { op, a, b } => {
+            out.push_str("(bin ");
+            out.push_str(rir_oper(op));
+            out.push(' ');
+            rir_eabstrait(a, out);
+            out.push(' ');
+            rir_eabstrait(b, out);
+            out.push(')');
+        }
+        Eabstrait::AppelRir { nom, args } => {
+            out.push_str("(appel_rir ");
+            out.push_str(nom);
+            for a in args { out.push(' '); ast_expr(a, out); }
+            out.push(')');
+        }
+    }
+}
+
+fn rir_op(op: &rir::Op, idx: usize, out: &mut String) {
+    use rir::Op;
+    out.push_str(&format!("{:04} ", idx));
+    match op {
+        Op::Affect { slot, expr } => {
+            out.push_str(&format!("affect slot {} = ", slot));
+            rir_eabstrait(expr, out);
+            out.push('\n');
+        }
+        Op::AffectAst { slot, e, .. } => {
+            out.push_str(&format!("affect_ast slot {} = ", slot));
+            ast_expr(e, out);
+            out.push('\n');
+        }
+        Op::AffectIndex { slot: _, nom, index, valeur } => {
+            out.push_str(&format!("affect_index {}[", nom));
+            ast_expr(index, out);
+            out.push_str("] = ");
+            ast_expr(valeur, out);
+            out.push('\n');
+        }
+        Op::Afficher(exprs) => {
+            out.push_str("afficher");
+            for e in exprs { out.push(' '); ast_expr(e, out); }
+            out.push('\n');
+        }
+        Op::AfficherAbstrait(e) => {
+            out.push_str("afficher_abstrait ");
+            rir_eabstrait(e, out);
+            out.push('\n');
+        }
+        Op::Lire { slot, ty } => {
+            out.push_str(&format!("lire slot {} {:?}", slot, ty));
+            out.push('\n');
+        }
+        Op::Saut { cible } => { out.push_str(&format!("saut {}\n", cible)); }
+        Op::SautSiFaux { test, cible } => {
+            out.push_str(&format!("saut_si_faux {} ", cible));
+            ast_expr(test, out);
+            out.push('\n');
+        }
+        Op::SautSiFauxAbstrait { test, cible } => {
+            out.push_str(&format!("saut_si_faux_abstrait {} ", cible));
+            rir_eabstrait(test, out);
+            out.push('\n');
+        }
+        Op::Retour(e) => {
+            out.push_str("retour");
+            if let Some(ex) = e { out.push(' '); ast_expr(ex, out); }
+            out.push('\n');
+        }
+        Op::RetourAbstrait(e) => {
+            out.push_str("retour_abstrait ");
+            rir_eabstrait(e, out);
+            out.push('\n');
+        }
+        Op::ExprStmt(e) => {
+            out.push_str("expr ");
+            ast_expr(e, out);
+            out.push('\n');
+        }
+        Op::Lever(e) => {
+            out.push_str("lever ");
+            ast_expr(e, out);
+            out.push('\n');
+        }
+        Op::Bloc(instrs) => {
+            out.push_str(&format!("bloc ({} instrs)\n", instrs.len()));
+        }
+    }
+}
+
+fn rir_corps_dump(nom: &str, corps: &rir::CorpsRir, params: &[(String, front::Ty)], retour: &front::Ty, out: &mut String) {
+    out.push_str(&format!("fonction {}\n", nom));
+    for (pn, pt) in params {
+        out.push_str(&format!("  param {} {}\n", pn, pt.nom()));
+    }
+    out.push_str(&format!("  retour {}\n", retour.nom()));
+    out.push_str(&format!("  n_slots {}\n", corps.n_slots));
+    out.push_str("  noms");
+    for (i, n) in corps.noms.iter().enumerate() {
+        out.push_str(&format!(" [{}]{}", i, n));
+    }
+    out.push('\n');
+    if !corps.globaux.is_empty() {
+        out.push_str("  globaux");
+        for g in &corps.globaux { out.push_str(&format!(" {}", g)); }
+        out.push('\n');
+    }
+    out.push_str("  ops\n");
+    for (i, op) in corps.ops.iter().enumerate() {
+        out.push_str("    ");
+        rir_op(op, i, out);
+    }
+}
+
+fn rir_programme_dump(prog: &mut front::Programme) -> String {
+    // Abaissement RIR comme pour l'exécution (M1.2)
+    let globaux_connus: Vec<String> = Vec::new();
+    let candidats: Vec<String> = prog.ordre.iter()
+        .filter(|n| prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
+        .cloned().collect();
+    rir::declarer_rir(&candidats);
+    for nom in prog.ordre.clone() {
+        if let Some(sig) = prog.signatures.get(&nom) {
+            let Some(corps) = sig.corps.as_ref() else { continue; };
+            let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
+            if let Some(r) = rir::abaisser(corps, &params, &globaux_connus) {
+                prog.signatures.get_mut(&nom).unwrap().rir = Some(r);
+            }
+        }
+    }
+    let principal_rir = if std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
+        rir::abaisser_principal(&prog.instructions)
+    } else { None };
+
+    let mut out = String::from("rir\n");
+    let mut noms: Vec<String> = prog.signatures.keys().cloned().collect();
+    noms.sort();
+    for nom in noms {
+        let s = &prog.signatures[&nom];
+        if let Some(ref r) = s.rir {
+            rir_corps_dump(&nom, r, &s.params, &s.retour, &mut out);
+        } else {
+            out.push_str(&format!("fonction {} (sans RIR)\n", nom));
+        }
+    }
+    if let Some(r) = principal_rir {
+        let vide = front::Ty::vide();
+        rir_corps_dump("$principal", &r, &[], &vide, &mut out);
+    } else {
+        out.push_str("$principal (sans RIR)\n");
+    }
+    out
 }
 
 // ── Oracle AST (M4.2) ─────────────────────────────────────────────────────
@@ -660,6 +836,16 @@ fn main() {
             };
             print!("{}", ast_programme(&prog));
             std::process::exit(0);
+        }
+        "rir" => {
+            if argv.len() < 3 { eprintln!("rose rir : quel programme ?"); std::process::exit(1); }
+            match front::analyser_fichier(&argv[2]) {
+                Ok(mut prog) => {
+                    print!("{}", rir_programme_dump(&mut prog));
+                    std::process::exit(0);
+                }
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            }
         }
         "verif" => {
             if argv.len() < 3 { eprintln!("rose verif : quel programme ?"); std::process::exit(1); }
