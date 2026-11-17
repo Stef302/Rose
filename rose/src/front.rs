@@ -1416,7 +1416,7 @@ impl Parser {
             Tk::Ident | Tk::Mot => {
                 if t.texte == "vrai" { self.suivant(); return Ok(Expr::BooleenLit(true, t.ligne)); }
                 if t.texte == "faux" { self.suivant(); return Ok(Expr::BooleenLit(false, t.ligne)); }
-                if t.texte == "i" { self.suivant(); return Ok(Expr::LitComplexe { re: 0.0, im: 1.0, ligne: t.ligne }); }
+                if t.tk == Tk::Mot && t.texte == "i" { self.suivant(); return Ok(Expr::LitComplexe { re: 0.0, im: 1.0, ligne: t.ligne }); }
                 if t.texte == "π" {
                     self.suivant();
                     return Ok(Expr::Appel { nom: "pi".into(), module: String::new(), args: vec![Expr::Litteral { ligne: t.ligne, texte: "50".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }], ligne: t.ligne });
