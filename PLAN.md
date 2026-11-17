@@ -46,7 +46,7 @@ M4  Auto-hébergement : compilateur en Rose
 M4.1 lexeur en Rose (miroir de tokeniser)      ← FAIT (181 fichiers, 22b1ae5)
 M4.2 analyseur en Rose                         ← FAIT (148 fichiers, 5b214b6)
 M4.3 vérificateur en Rose                      ← FAIT (60/61, 3aa6df5)
-M4.4 émetteur RIR en Rose                      ← EN COURS (21/46, 97be6f6)
+M4.4 émetteur RIR en Rose                      ← EN COURS (26/46, d9cb522)
 M4.5 point fixe de bootstrap                   ← À FAIRE
 M5  Runtime autonome (sans Rust std, sans GMP)
 M5.1 arithmétique exacte en Rose pur           ← FAIT (mul_rapide, i128x)
@@ -364,3 +364,20 @@ liste de 10 000 entiers.
 8. **M6.2 → M6.3** (interop) — en parallèle, quand le besoin apparaît.
 
 **Release 0.1.6** seulement si **M2.1 ou M5.1 dépasse GMP** au banc `factorielles.rose`.
+
+---
+
+## Chantiers parallèles (lancés le 17/11, orchestration centralisée)
+
+Six agents indépendants, chacun propriétaire de fichiers distincts (aucun chevauchement) :
+
+| Agent | Étape | Fichiers possédés | Porte à prouver |
+|---|---|---|---|
+| A1 | **M4.4** fin émetteur RIR | `compilateur/emetteur.rose` | 46/46 RIR identiques + auto-émission |
+| A2 | **M2.1** jardin = primitive | `rose/src/{jit,interp,rir}.rs` | jardin ≤ 30 ms, 20 tests conservés |
+| A3 | **M6.2** runtime wasm optionnel | `rose/src/wasm_runtime.rs`, `rose/docs/WASM_RUNTIME.md` | cache + SHA-256, repli maison |
+| A4 | **M3.1** émission machine depuis RIR | `rose/src/natif_emetteur.rs`, `rose/docs/NATIF.md` | octets machine vérifiés |
+| A5 | **M5.2** E/S sans std | `rose/src/sys_io.rs`, `rose/docs/NO_STD.md` | read/write via syscalls bruts |
+| A6 | **M6.3** étude Component Model | `rose/docs/COMPONENT_MODEL.md` | recommendation documentée |
+
+L'orchestrateur (session principale) seul touche à `main.rs`, `lib.rs`, `Cargo.toml`, `PLAN.md` et fait les commits après revue de chaque agent. Règle : aucune mesure n'est acceptée sans commande exécutée ; aucun commit d'agent.
