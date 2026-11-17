@@ -835,7 +835,64 @@ pub unsafe fn gmpq_canonicalize(q: *mut Mpq) {
     (*q).den.v = d / g;
 }
 // Miller-Rabin
+/// ⚠⚠⚠ TEST DE PRIMALITÉ EN u64 POUR LES PETITS ENTIERS (mesuré le 17/11).
+///
+/// ⚠ `miller_rabin` travaille sur `BigInt` : CHAQUE division, chaque
+/// multiplication modulaire et chaque `BigInt::from` alloue. Mesuré :
+/// `est_premier($k)` sur 0..49999 coûtait 70 ms, soit 1,4 µs par appel,
+/// pour des nombres de 5 chiffres qui tiennent dans un u64.
+///
+/// ⚠ Ici, tout se fait en arithmétique 64 bits (aucune allocation), avec
+/// les mêmes bases témoins : Miller-Rabin déterministe pour n < 2^64
+/// (bases 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37 — suffisantes). ⚠ Les
+/// nombres plus grands gardent la règle exacte (`miller_rabin` sur BigInt).
+fn miller_rabin_u64(n: u64) -> bool {
+    if n < 2 { return false; }
+    for p in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+        if n == p { return true; }
+        if n % p == 0 { return false; }
+    }
+    // n - 1 = d * 2^s avec d impair
+    let mut d = n - 1;
+    let mut s = 0u32;
+    while d & 1 == 0 { d >>= 1; s += 1; }
+    'temoins: for a in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+        let a = a % n;
+        if a == 0 { continue; }
+        let mut x = mulmod_pow(a, d, n);
+        if x == 1 || x == n - 1 { continue; }
+        for _ in 0..s - 1 {
+            x = mulmod(x, x, n);
+            if x == n - 1 { continue 'temoins; }
+        }
+        return false;
+    }
+    true
+}
+
+/// ⚠ `a * b mod m` sans dépassement (u128 intermédiaire).
+#[inline]
+fn mulmod(a: u64, b: u64, m: u64) -> u64 {
+    ((a as u128 * b as u128) % m as u128) as u64
+}
+
+/// ⚠ `base^exposant mod m` en 64 bits (exponentiation binaire).
+fn mulmod_pow(mut base: u64, mut e: u64, m: u64) -> u64 {
+    let mut r = 1u64 % m;
+    base %= m;
+    while e > 0 {
+        if e & 1 == 1 { r = mulmod(r, base, m); }
+        base = mulmod(base, base, m);
+        e >>= 1;
+    }
+    r
+}
+
 fn miller_rabin(n: &BigInt) -> bool {
+    // ⚠⚠ Voie rapide 64 bits : aucun BigInt, aucune allocation.
+    if let Some(v) = n.to_u64() {
+        if v <= u64::MAX { return miller_rabin_u64(v); }
+    }
     if n < &BigInt::from(2) { return false; }
     let small = [2i64,3,5,7,11,13,17,19,23,29,31,37];
     for &p in &small {

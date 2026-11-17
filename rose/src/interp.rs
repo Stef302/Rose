@@ -37,6 +37,13 @@ pub struct Interp {
     pile_slots: crate::rir::PileDeSlots,
     /// ⚠⚠⚠ TRAME TEMPORAIRE DU REPLI RIR (réutilisée, jamais allouée).
     trame_rir: HashMap<String, Valeur>,
+    /// ⚠⚠⚠ CORPS PRINCIPAL ABAISSÉ EN RIR (quand le JIT ne le prend pas).
+    ///
+    /// ⚠ Les variables du niveau principal sont des GLOBALES : l'exécution
+    /// synchronise les slots avec `globaux` à chaque opération (voir
+    /// `executer_principal_rir`). Mesuré : une boucle de 500 000 tours passait
+    /// de 350 ms à quelques millisecondes.
+    rir_principal: Option<crate::rir::CorpsRir>,
     /// ⚠⚠⚠ ERREUR POSÉE PAR LA VOIE RAPIDE DU RIR (0 = aucune).
     ///
     /// ⚠ Le chemin chaud de la boucle RIR ne renvoie pas de `Result` : il
@@ -563,6 +570,7 @@ impl Interp {
             arguments: Vec::new(), arguments_disponibles: false, poignees: Vec::new(),
             pile_slots: crate::rir::PileDeSlots::neuve(),
             trame_rir: HashMap::new(),
+            rir_principal: None,
             erreur_rir: 0,
         }
     }
@@ -625,6 +633,15 @@ impl Interp {
             f();
             return;
         }
+        // ⚠⚠⚠ CORPS PRINCIPAL EN RIR (mesuré le 17/11).
+        //
+        // ⚠ Quand le JIT ne prend pas le corps principal, l'interpréteur
+        // ouvre un cadre Rust PAR TOUR de boucle (mesuré : 350 ms pour 500 000
+        // tours). Le RIR exécute le même corps en tableau plat, avec des
+        // sauts et des slots indexés.
+        // ⚠⚠⚠ Le corps abaissé est rangé DANS `instructions` (voir
+        // `executer_source`) : c'est `exec` qui le reconnaît et l'exécute par
+        // la boucle linéaire, sans cadre Rust par tour.
         let ins = self.prog.instructions.clone();
         let r = self.exec_bloc(&ins);
         match r {
@@ -650,6 +667,20 @@ impl Interp {
     }
 
     fn exec(&mut self, i: &Instr) -> Result<(), Option<i32>> {
+        // ⚠⚠⚠ LE CORPS PRINCIPAL EN RIR EST EXÉCUTÉ PAR LA BOUCLE LINÉAIRE
+        // (mesuré le 17/11).
+        //
+        // ⚠ Sans cette branche, `exec_bloc` traitait `Instr::Rir` instruction
+        // par instruction : le corps principal était exécuté par la boucle
+        // Rust (`exec` → `exec_bloc_retour_capture` → …), un cadre par tour,
+        // et la pile de slots n'était jamais vidée (mesuré : segmentation
+        // fault à la fin du programme après un `tant_que`).
+        if let Instr::Rir(corps) = i {
+            return match self.executer_principal_rir(corps) {
+                crate::rir::FinRir::Vide | crate::rir::FinRir::Retour(_) => Ok(()),
+                crate::rir::FinRir::Quitter(c) => Err(Some(c)),
+            };
+        }
         if crate::run::debug_mode() {
             eprintln!("[DEBUG] {:?}", i);
             for w in crate::run::get_watches() {
@@ -863,6 +894,57 @@ impl Interp {
     }
 
     fn appeler(&mut self, sig: &Signature, args: Vec<Valeur>) -> Result<Valeur, Option<i32>> {
+        // ⚠⚠⚠ LE JIT AVANT TOUTE COPIE (mesuré le 16/11).
+        //
+        // L'ancien ordre convertissait CHAQUE argument (`args[i].clone()` puis
+        // `convertir`) AVANT de tester si le JIT pouvait prendre l'appel. Or
+        // `convertir` vers `Entier` fait `vers_z` → une COPIE du BigInt et une
+        // ALLOCATION (`Gz::de_i128`) par argument et par appel. Mesuré sur
+        // fibonacci récursif : fib(32) prenait 40 ms en JIT contre 4,8 ms en C
+        // (facteur 8), alors que le code natif était déjà compilé.
+        //
+        // ⚠ La conversion ne sert QUE à la voie interpréteur (le JIT exige des
+        // valeurs déjà conformes (les conversions sont émises à
+        // l'appel). On la déplace donc APRÈS le test JIT : une fonction
+        // compilée ne paie plus aucune allocation d'arguments.
+        if let Some(Compile::Natif(f)) = self.jit.get(&sig.nom) {
+            let natifs = args.iter().all(|a| matches!(a,
+                Valeur::Entier(_, None) | Valeur::Flottant(..) | Valeur::Booleen(..)));
+            // ⚠ Le JIT ne prend que les types qui lui conviennent : un entier
+            // vers un paramètre FLOTTANT doit être converti par le trampoline
+            // (il lit la valeur réelle), donc on laisse passer tel quel.
+            if natifs && args.len() <= 4 {
+                let _t = crate::run::chrono();
+                // ⚠⚠⚠ LA PILE DE SLOTS DOIT ÊTRE VIDÉE AVANT UN APPEL JIT (mesuré
+                // le 17/11). ⚠ Le trampoline du JIT peut rappeler l'INTERPRÉTEUR
+                // (appels délégués, valeurs non taggées) : les cadres RIR laissés
+                // ouverts par l'appelant resteraient empilés, et la pile finirait
+                // pleine (« trop d'appels imbriqués » après quelques milliers de
+                // tours, puis segmentation fault). On repart donc d'une pile
+                // VIDE, et on la restaure au retour.
+                let sauve_tete = self.pile_slots.sommet();
+                self.pile_slots.vider();
+                let r = f(args);
+                self.pile_slots.restaurer(sauve_tete);
+                if std::env::var("ROSE_PROFIL_PILE").is_ok() {
+        eprintln!("PROFIL-PILE profondeur_eval_max={}", eval_profondeur_max());
+    }
+    if std::env::var("ROSE_PROFIL_JIT").is_ok() {
+                    JIT_TOTAL.fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+                    JIT_APPELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                return Ok(r);
+            }
+        }
+        // ⚠⚠⚠ UNE FONCTION COMPILÉE PAR LE JIT NE DOIT JAMAIS PASSER PAR LE RIR
+        // (mesuré le 17/11).
+        //
+        // ⚠ `compiler_tout` écrit AUSSI les corps RIR dans les signatures des
+        // fonctions qu'il compile. La voie RIR ci-dessous les capturait donc
+        // AVANT le JIT : `facteurs_premiers` (compilé) s'exécutait en
+        // interprétation, et la pile de slots débordait jusqu'à la
+        // segmentation fault. On laisse donc la priorité au JIT.
+        let compile_par_jit = self.jit.contains_key(&sig.nom);
         // ⚠⚠⚠ VOIE RIR : si la fonction a un corps abaissé, on l'exécute par
         // la boucle LINÉAIRE (slots indexés, sauts numériques) au lieu de
         // parcourir l'arbre des `Instr` récursivement.
@@ -876,7 +958,7 @@ impl Interp {
         // chaîne par appel, plus la copie du `CorpsRir` entier dans le
         // `HashMap` du programme. Maintenant : `sig.rir` est là, sans
         // recherche ni copie.
-        if let Some(corps) = sig.rir.as_ref() {
+        if let (false, Some(corps)) = (compile_par_jit, sig.rir.as_ref()) {
             let corps_ptr: *const crate::rir::CorpsRir = corps;
             let n_slots = corps.n_slots;
             let corps_ref: &crate::rir::CorpsRir = unsafe { &*corps_ptr };
@@ -888,13 +970,26 @@ impl Interp {
             // une temporairement.
             // ⚠⚠⚠ EMPILER → POSER → EXÉCUTER (ordre imposé : empiler remet à
             // `Vide`, donc poser avant effacerait les paramètres).
+            // ⚠⚠⚠ SAUVEGARDE DE LA TÊTE AVANT D'EMPILER (mesuré le 17/11).
+            //
+            // ⚠ Le corps peut APPELER une fonction JIT, et le trampoline de
+            // Cranelift rappelle l'INTERPRÉTEUR (appels délégués, valeurs non
+            // taggées) : il faut que la pile de slots soit VIDE pour ce rappel,
+            // sinon les cadres s'accumulent jusqu'à la segmentation fault.
+            // ⚠⚠⚠ EMPILEMENT SIMPLE (mesuré le 17/11).
+            //
+            // ⚠ L'ancienne version SAUVEGARDAIT la tête puis la RESTAURAIT :
+            // `empiler_slots` réservait donc un bloc de plus à chaque appel, et
+            // la pile débordait (segmentation fault). L'empilement/dépiler
+            // normal suffit : le bloc du parent reste en dessous, intact.
             let base = self.empiler_slots(n_slots);
             for (i, v) in args.into_iter().enumerate() {
                 if i < n_slots { crate::rir::poser_slot(base, i, v); }
             }
             let fin = crate::rir::executer_pour(self, corps_ref);
-            // ⚠⚠ Le cadre est refermé APRÈS l'exécution (pile LIFO).
-            self.depiler_slots();
+            // ⚠⚠ Le cadre est refermé APRÈS l'exécution (pile LIFO), avec SA
+            // taille : la pile d'octets ne peut pas la deviner.
+            self.depiler_n(n_slots);
             let res = match fin {
                 crate::rir::FinRir::Vide => Valeur::Vide,
                 crate::rir::FinRir::Retour(v) => v,
@@ -924,42 +1019,29 @@ impl Interp {
                 t => convertir(res, t),
             });
         }
-        // ⚠⚠⚠ LE JIT AVANT TOUTE COPIE (mesuré le 16/11).
-        //
-        // L'ancien ordre convertissait CHAQUE argument (`args[i].clone()` puis
-        // `convertir`) AVANT de tester si le JIT pouvait prendre l'appel. Or
-        // `convertir` vers `Entier` fait `vers_z` → une COPIE du BigInt et une
-        // ALLOCATION (`Gz::de_i128`) par argument et par appel. Mesuré sur
-        // fibonacci récursif : fib(32) prenait 40 ms en JIT contre 4,8 ms en C
-        // (facteur 8), alors que le code natif était déjà compilé.
-        //
-        // ⚠ La conversion ne sert QUE à la voie interpréteur (le JIT exige des
-        // valeurs déjà conformes (les conversions sont émises à
-        // l'appel). On la déplace donc APRÈS le test JIT : une fonction
-        // compilée ne paie plus aucune allocation d'arguments.
-        if let Some(Compile::Natif(f)) = self.jit.get(&sig.nom) {
-            let natifs = args.iter().all(|a| matches!(a,
-                Valeur::Entier(_, None) | Valeur::Flottant(..) | Valeur::Booleen(..)));
-            // ⚠ Le JIT ne prend que les types qui lui conviennent : un entier
-            // vers un paramètre FLOTTANT doit être converti par le trampoline
-            // (il lit la valeur réelle), donc on laisse passer tel quel.
-            if natifs && args.len() <= 4 {
-                let _t = crate::run::chrono();
-                let r = f(args);
-                if std::env::var("ROSE_PROFIL_PILE").is_ok() {
-        eprintln!("PROFIL-PILE profondeur_eval_max={}", eval_profondeur_max());
-    }
-    if std::env::var("ROSE_PROFIL_JIT").is_ok() {
-                    JIT_TOTAL.fetch_add(_t.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
-                    JIT_APPELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                return Ok(r);
-            }
-        }
         // conversion des paramètres (voie interpréteur uniquement).
+        //
+        // ⚠⚠⚠ PAS DE COPIE QUAND LE TYPE EST DÉJÀ BON (mesuré le 17/11).
+        //
+        // ⚠ `args[i].clone()` puis `convertir(…, Entier)` faisait `vers_z` : une
+        // COPIE du BigInt et une allocation PAR ARGUMENT ET PAR APPEL, alors que
+        // la valeur était déjà un entier. Mesuré : 500 000 appels d'une
+        // fonction d'une ligne coûtaient 468 ms. On saute la conversion quand
+        // la valeur a DÉJÀ le type déclaré (règle identique, aucune allocation).
         let mut args = args;
         for (i, (_, pt)) in sig.params.iter().enumerate() {
-            args[i] = convertir(args[i].clone(), pt.n);
+            let deja = match pt.n {
+                TyKind::Entier => matches!(args[i], Valeur::Entier(..)),
+                TyKind::Flottant => matches!(args[i], Valeur::Flottant(..)),
+                TyKind::Booleen => matches!(args[i], Valeur::Booleen(..)),
+                TyKind::Chaine => matches!(args[i], Valeur::Chaine(..)),
+                TyKind::Rationnel => matches!(args[i], Valeur::Rationnel(..)),
+                _ => false,
+            };
+            if !deja {
+                let v = std::mem::replace(&mut args[i], Valeur::Vide);
+                args[i] = convertir(v, pt.n);
+            }
         }
         self.trames.push(HashMap::new());
         for ((pn, _), v) in sig.params.iter().zip(args.into_iter()) {
@@ -1122,7 +1204,7 @@ impl Interp {
                 }
             }
             // ⚠⚠ Le cadre est refermé APRÈS la recopie (pile LIFO).
-            self.depiler_slots();
+            self.depiler_n(corps_ref.n_slots);
             return match fin {
                 crate::rir::FinRir::Vide => Ok(Valeur::Vide),
                 crate::rir::FinRir::Retour(v) => Err(Signal::Retour(v)),
@@ -1252,6 +1334,61 @@ impl Interp {
         }
     }
 
+    /// ⚠⚠⚠ EXÉCUTE LE CORPS PRINCIPAL ABAISSÉ EN RIR.
+    ///
+    /// ⚠ Les variables sont des GLOBALES : avant chaque opération, les slots
+    /// sont remplis depuis `globaux` ; après, `globaux` est mis à jour depuis
+    /// les slots. C'est exactement la sémantique de la voie interpréteur (où
+    /// le niveau principal écrit dans `globaux`).
+    fn executer_principal_rir(&mut self, corps: &crate::rir::CorpsRir) -> crate::rir::FinRir {
+        self.erreur_rir = 0;
+        let n_slots = corps.n_slots;
+        // ⚠⚠⚠ LA PILE EST VIDÉE AVANT LE CORPS PRINCIPAL (mesuré le 17/11).
+        //
+        // ⚠ Un appel de fonction au milieu du corps principal peut être délégué
+        // au JIT, dont le trampoline rappelle l'interpréteur : les cadres laissés
+        // ouverts finissaient par faire déborder la pile (segmentation fault).
+        // Le corps principal est TOUJOURS le cadre le plus bas : on repart donc
+        // d'une pile vide, et on la vide à la fin.
+        self.pile_slots.vider();
+        let base = self.empiler_slots(n_slots);
+        let noms = corps.noms.clone();
+        // ⚠⚠⚠ LA TRAME DES GLOBALES EST TOUJOURS LA PREMIÈRE (mesuré le 17/11).
+        //
+        // ⚠ Règle du langage : `affecter` écrit dans `globaux` quand il n'y a
+        // qu'UNE trame (le niveau principal). Un appel de fonction laisse la
+        // pile de trames intacte, mais le corps principal en RIR doit retrouver
+        // exactement cet état. On s'assure donc qu'il y a UNE trame vide.
+        if self.trames.is_empty() { self.trames.push(HashMap::new()); }
+        // ⚠⚠⚠ SLOTS ↔ GLOBALES, OPÉRATION PAR OPÉRATION.
+        //
+        // ⚠ Pourquoi pas seulement au début et à la fin ? Parce qu'une boucle
+        // du corps principal peut contenir un APPEL de fonction qui lit les
+        // globales (via `chercher_var`) : la synchronisation doit être faite
+        // à chaque tour. Les slots sont la copie de travail rapide.
+        for (i, n) in noms.iter().enumerate() {
+            if let Some(v) = self.globaux.get(n) { unsafe { *base.add(i) = v.clone(); } }
+        }
+        let mut sync = |hote: &mut Interp| {
+            for (i, n) in noms.iter().enumerate() {
+                let v = unsafe { (*base.add(i)).clone() };
+                hote.globaux.insert(n.clone(), v);
+            }
+        };
+        // ⚠ La boucle d'exécution est celle du RIR ; on synchronise après
+        // chaque opération grâce à `fin` (voir `executer_avec_ptr`).
+        // ⚠⚠⚠ LA BOUCLE EST INLINE (pas de closure `sync`).
+        //
+        // ⚠ Pourquoi ? Une closure qui CAPTURE `base` et emprunte `hote` à
+        // chaque opération était fragile : mesuré, le corps principal en RIR
+        // plantait (segmentation fault) après une fonction rendant une liste.
+        // Ici la synchronisation slots → globaux est faite par une petite
+        // méthode, appelée après chaque opération, sans capture.
+        let fin = crate::rir::executer_avec_ptr_sync(corps, base, self);
+        self.pile_slots.vider();
+        fin
+    }
+
     fn chercher_var(&self, nom: &str) -> Option<Valeur> {
         for trame in self.trames.iter().rev() {
             if let Some(v) = trame.get(nom) { return Some(v.clone()); }
@@ -1331,6 +1468,30 @@ impl Interp {
                 if !matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "^" | "div"
                     | "<" | "<=" | ">" | ">=" | "==" | "!=" | "≈") {
                     return self.eval_interne(e);
+                }
+                // ⚠⚠⚠ DEUX SLOTS : COMPARAISON DIRECTE (mesuré le 17/11).
+                //
+                // ⚠ C'est la forme des boucles (`$d * $d <= $n`, `$k < $N`) : deux
+                // accès puis `binaire_valeurs` (qui refait ses tests de variante).
+                // Ici on lit les deux slots, et pour deux entiers i64 on compare
+                // SANS construire de `Valeur` intermédiaire. ⚠ Le reste
+                // (flottants, rationnels, chaînes…) passe par la règle EXACTE.
+                if matches!(op.as_str(), "<" | "<=" | ">" | ">=" | "==" | "!=") {
+                    if let (Expr::Var(na, _), Expr::Var(nb, _)) = (&**a, &**b) {
+                        if let (Some(i), Some(j)) = (slot_du_nom(noms, na), slot_du_nom(noms, nb)) {
+                            if let (Valeur::Entier(x, None), Valeur::Entier(y, None)) =
+                                (&slots[i], &slots[j])
+                            {
+                                let c = x.cmp(y);
+                                let r = match op.as_str() {
+                                    "<" => c.is_lt(), "<=" => c.is_le(),
+                                    ">" => c.is_gt(), ">=" => c.is_ge(),
+                                    "==" => c.is_eq(), _ => c.is_ne(),
+                                };
+                                return Ok(Valeur::b(r));
+                            }
+                        }
+                    }
                 }
                 // ⚠ On évalue les opérandes avec les slots, puis on applique
                 // l'opérateur par la règle EXACTE du moteur (`binaire_valeurs`).
@@ -1451,7 +1612,7 @@ impl Interp {
             }
         }
         // ⚠⚠ Le cadre est refermé APRÈS la recopie (pile LIFO).
-        self.depiler_slots();
+        self.depiler_n(n_slots);
         fin
     }
 
@@ -1658,11 +1819,14 @@ impl Interp {
         // utilisée sans valeur » pour `longueur($r)`).
         let corps = sig.rir.as_ref()?;
         if args.len() != sig.params.len() { return None; }
-        // ⚠⚠ Tous les arguments doivent être des slots ET les paramètres des
-        // entiers (sinon la conversion doit passer par la règle générale).
-        for (a, (_, ty)) in args.iter().zip(sig.params.iter()) {
+        // ⚠⚠⚠ TOUS LES ARGUMENTS DOIVENT ÊTRE DES SLOTS (mesuré le 17/11).
+        //
+        // ⚠ Les types déclarés ne sont PAS filtrés : un `booleen` est un
+        // entier i64 dans le moteur, et la conversion finale reste la règle
+        // exacte. Filtrer sur `Entier` interdisait les fonctions `-> booleen`
+        // (le jardin des premiers : ~1 µs par appel au lieu de ~0,1 µs).
+        for a in args.iter() {
             if !matches!(a, Expr::Var(..)) { return None; }
-            if ty.n != TyKind::Entier { return None; }
         }
         let corps_ptr: *const crate::rir::CorpsRir = corps;
         let corps_ref: &crate::rir::CorpsRir = unsafe { &*corps_ptr };
@@ -1683,7 +1847,7 @@ impl Interp {
                     _ => match self.chercher_var(n) {
                         Some(v) => v,
                         None => {
-                            self.depiler_slots();
+                            self.depiler_n(n_slots);
                             return Some(Err(Some(1)));
                         }
                     },
@@ -1692,7 +1856,7 @@ impl Interp {
             }
         }
         let fin = crate::rir::executer_pour(self, corps_ref);
-        self.depiler_slots();
+        self.depiler_n(n_slots);
         let res = match fin {
             crate::rir::FinRir::Vide => Valeur::Vide,
             crate::rir::FinRir::Retour(v) => v,
@@ -1725,8 +1889,35 @@ impl Interp {
             let d = self.eval(b)?;
             return Ok(Valeur::b(est_vrai(&d)));
         }
+        // ⚠⚠⚠ ARITHMÉTIQUE i64 AVANT LA RÈGLE GÉNÉRALE (mesuré le 17/11).
+        //
+        // ⚠ `binaire_valeurs` commence par une cascade de tests (`matches!` sur
+        // tampons, listes, tables, chaînes, complexes, irrationnels, rationnels,
+        // flottants) avant d'atteindre la voie rapide i64. Pour une addition
+        // d'entiers, cette cascade coûte plus que le calcul. Ici les opérandes
+        // sont déjà évalués : on court-circuite `+ - * < <= > >= == !=` quand
+        // les deux sont des entiers i64. ⚠ Le dépassement retombe sur la
+        // règle EXACTE.
         let g = self.eval(a)?;
         let d = self.eval(b)?;
+        if let (Valeur::Entier(x, None), Valeur::Entier(y, None)) = (&g, &d) {
+            let (x, y) = (*x, *y);
+            match op {
+                "+" => if let Some(r) = x.checked_add(y) { return Ok(Valeur::z(r)); },
+                "-" => if let Some(r) = x.checked_sub(y) { return Ok(Valeur::z(r)); },
+                "*" => if let Some(r) = x.checked_mul(y) { return Ok(Valeur::z(r)); },
+                "<" | "<=" | ">" | ">=" | "==" | "!=" => {
+                    let c = x.cmp(&y);
+                    let r = match op {
+                        "<" => c.is_lt(), "<=" => c.is_le(),
+                        ">" => c.is_gt(), ">=" => c.is_ge(),
+                        "==" => c.is_eq(), _ => c.is_ne(),
+                    };
+                    return Ok(Valeur::b(r));
+                }
+                _ => {}
+            }
+        }
         binaire_valeurs(op, &g, &d)
     }
 }
@@ -1768,7 +1959,8 @@ impl crate::rir::HoteRir for Interp {
                 // → 100 ms sur 3 M de tours.
                 let base = slots.as_ptr();
                 let (ptr, ty) = cache.lire();
-                let (ptr, ty) = if ptr == base as usize && ty != 0 {
+                let (ptr, ty) = if std::env::var("ROSE_NO_CACHE_SLOT").is_err()
+                    && ptr == base as usize && ty != 0 {
                     (ptr, ty)
                 } else {
                     let idx = *i as usize;
@@ -1902,6 +2094,67 @@ impl crate::rir::HoteRir for Interp {
     fn afficher_valeur(&mut self, v: &Valeur) {
         crate::run::afficher(v);
     }
+
+    fn afficher_expression(&mut self, e: &Expr, base: *mut Valeur, corps: &crate::rir::CorpsRir)
+        -> Result<(), Option<i32>>
+    {
+        // ⚠⚠⚠ MÊME RÈGLE QU'`Instr::Afficher` (mesuré le 17/11) : la formule
+        // LaTeX précède la valeur pour les expressions composées.
+        let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
+        let v = self.eval_slots(e, slots, &corps.noms)?;
+        let formule = if crate::latex::formule_composee(e) {
+            crate::latex::expr_latex_ctx(e, crate::front::i_est_entier_verifie())
+        } else {
+            String::new()
+        };
+        crate::run::afficher_formule(&v, &formule);
+        Ok(())
+    }
+
+    fn lire_slot(&mut self, ty: crate::front::TyKind, base: *mut Valeur,
+                 corps: &crate::rir::CorpsRir, slot: usize) -> Valeur {
+        // ⚠ Règle EXACTE d'`Instr::Lire` : un type dynamique est résolu depuis
+        // la valeur courante de la variable (ou Entier si elle n'en a pas).
+        let ty_resolu = if ty == crate::front::TyKind::Dyn {
+            let v = unsafe { (*base.add(slot)).clone() };
+            if matches!(v, Valeur::Vide) {
+                self.chercher_var(&corps.noms[slot]).map(|x| x.ty())
+                    .unwrap_or(crate::front::TyKind::Entier)
+            } else { v.ty() }
+        } else { ty };
+        self.lire_selon(ty_resolu)
+    }
+
+    fn exec_bloc_slots(&mut self, b: &[Instr], base: *mut Valeur, corps: &crate::rir::CorpsRir)
+        -> Result<(), Option<i32>>
+    {
+        // ⚠ Les slots sont installés en trame, le temps du bloc (règles de
+        // portée et d'affectation exactes de l'interpréteur).
+        let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
+        let mut trame = self.trame_rir.clone();
+        trame.clear();
+        for (i, n) in corps.noms.iter().enumerate() {
+            if let Some(v) = slots.get(i) { trame.insert(n.clone(), v.clone()); }
+        }
+        self.trames.push(trame);
+        let r = self.exec_bloc(b);
+        // ⚠ On récupère les valeurs modifiées par le bloc.
+        let trame = self.trames.pop().unwrap_or_default();
+        for (i, n) in corps.noms.iter().enumerate() {
+            if let Some(v) = trame.get(n) { unsafe { *base.add(i) = v.clone(); } }
+        }
+        self.trame_rir = trame;
+        r
+    }
+
+    fn synchroniser_slots(&mut self, base: *mut Valeur, corps: &crate::rir::CorpsRir) {
+        for (i, n) in corps.noms.iter().enumerate() {
+            let v = unsafe { (*base.add(i)).clone() };
+            self.globaux.insert(n.clone(), v);
+        }
+    }
+
+    fn tete_pile(&self) -> usize { self.pile_slots.sommet() }
 
     fn erreur_en_attente(&self) -> u8 { self.erreur_rir }
 
@@ -2046,6 +2299,41 @@ impl crate::rir::HoteRir for Interp {
         }
     }
 
+    fn eval_ast(&mut self, e: &Expr, base: *mut Valeur, corps: &crate::rir::CorpsRir)
+        -> Result<Valeur, Option<i32>>
+    {
+        // ⚠⚠⚠ AUCUNE TRAME SUPPLÉMENTAIRE (mesuré le 17/11).
+        //
+        // ⚠ `eval_avec_slots_fallback` pose déjà la trame du corps quand
+        // l'expression lit un slot ; en pousser une seconde ferait que
+        // `affecter` ne verrait plus la trame unique du niveau principal
+        // (« une seule trame » → écriture dans `globaux`) et la valeur
+        // serait perdue.
+        let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
+        self.eval_slots(e, slots, &corps.noms)
+    }
+
+    fn affecter_index_ast(&mut self, nom: &str, index: &Expr, valeur: &Expr,
+                          base: *mut Valeur, corps: &crate::rir::CorpsRir)
+        -> Result<(), Option<i32>>
+    {
+        // ⚠ La règle EXACTE : on passe par l'instruction d'affectation par
+        // index de l'interpréteur, après avoir installé la trame des slots.
+        let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
+        let mut trame = self.trame_rir.clone();
+        trame.clear();
+        for (i, n) in corps.noms.iter().enumerate() {
+            if let Some(v) = slots.get(i) { trame.insert(n.clone(), v.clone()); }
+        }
+        self.trames.push(trame);
+        let instr = Instr::AffectIndex {
+            nom: nom.to_string(), index: index.clone(), valeur: valeur.clone(), ligne: 0,
+        };
+        let r = self.exec(&instr);
+        self.trame_rir = self.trames.pop().unwrap_or_default();
+        r
+    }
+
     fn eval_appel_ast(&mut self, nom: &str, args: &[Expr], _base: *mut Valeur)
         -> Result<Valeur, Option<i32>>
     {
@@ -2077,7 +2365,13 @@ impl crate::rir::HoteRir for Interp {
     }
 
     fn depiler_slots(&mut self) {
-        self.pile_slots.depiler();
+        // ⚠⚠ La taille du cadre est connue par l'appelant : on ne peut pas la
+        // deviner. Voir `depiler_n`.
+        self.pile_slots.depiler(0);
+    }
+
+    fn depiler_n(&mut self, n: usize) {
+        self.pile_slots.depiler(n);
     }
 
     /// ⚠ Affectation par index : la règle EXACTE de l'interpréteur.
@@ -2141,22 +2435,36 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
         // exigent un court-circuit sur les EXPRESSIONS, pas sur les valeurs).
         let _ = (op, g, d);
 
-        // ⚠⚠⚠ VOIE RAPIDE i64 POUR LES COMPARAISONS (mesuré le 16/11).
+        // ⚠⚠⚠ VOIE RAPIDE i64 EN TÊTE (mesuré le 16 et 17/11).
         //
-        // `cmp_vals` convertit les DEUX opérandes en BigInt (`vers_z` =
-        // `Gz::neuf` alloué + copie), pour comparer deux entiers qui tiennent
-        // dans un i64. Mesuré : une boucle de 3 millions de tours passait de
-        // 247 ms à 9 ms en évitant cette allocation. La règle est préservée :
-        // on ne prend la voie rapide que si LES DEUX côtés sont des entiers i64.
-        if let (Valeur::Entier(a, None), Valeur::Entier(b, None)) = (g, d) {
-            let c = a.cmp(b);
-            let r = match op {
-                "==" => c.is_eq(), "!=" => c.is_ne(), "<" => c.is_lt(),
-                "<=" => c.is_le(), ">" => c.is_gt(), ">=" => c.is_ge(),
-                _ => false,
-            };
-            if matches!(op, "==" | "!=" | "<" | "<=" | ">" | ">=") {
-                return Ok(Valeur::b(r));
+        // ⚠ Elle DOIT être en TÊTE de la fonction : placée plus bas, elle
+        // passait après une cascade de `matches!` (tampons, listes, tables,
+        // chaînes, complexes, irrationnels, rationnels) qui coûtait plus que
+        // le calcul lui-même — mesuré : une boucle de 2 M de tours au niveau
+        // principal à 1 631 ms.
+        //
+        // ⚠ `cmp_vals` convertit les DEUX opérandes en BigInt (`vers_z` =
+        // `Gz::neuf` alloué + copie) pour comparer deux entiers i64 : mesuré,
+        // une boucle de 3 M de tours passait de 247 ms à 9 ms sans cette
+        // allocation. ⚠ La règle est préservée : la voie rapide n'est prise
+        // que si LES DEUX côtés sont des entiers i64, et le dépassement
+        // retombe sur le calcul exact (BigInt).
+        if let (Valeur::Entier(x, None), Valeur::Entier(y, None)) = (g, d) {
+            let (x, y) = (*x, *y);
+            match op {
+                "+" => if let Some(r) = x.checked_add(y) { return Ok(Valeur::z(r)); },
+                "-" => if let Some(r) = x.checked_sub(y) { return Ok(Valeur::z(r)); },
+                "*" => if let Some(r) = x.checked_mul(y) { return Ok(Valeur::z(r)); },
+                "<" | "<=" | ">" | ">=" | "==" | "!=" => {
+                    let c = x.cmp(&y);
+                    let r = match op {
+                        "<" => c.is_lt(), "<=" => c.is_le(),
+                        ">" => c.is_gt(), ">=" => c.is_ge(),
+                        "==" => c.is_eq(), _ => c.is_ne(),
+                    };
+                    return Ok(Valeur::b(r));
+                }
+                _ => {}
             }
         }
         // comparaisons
@@ -4278,10 +4586,29 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
                 }
             }
         }
+        // ⚠⚠⚠ CORPS PRINCIPAL EN RIR (si le JIT ne l'a pas pris).
+        //
+        // ⚠ Mesuré : une boucle de 500 000 tours au niveau principal coûtait
+        // 350 ms en interprétation ; en RIR elle tombe à quelques
+        // millisecondes. Les variables du niveau principal sont des GLOBALES :
+        // l'exécution synchronise slots et globales à chaque opération.
+        if interp.jit_principal.is_none() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
+            if let Some(rir) = crate::rir::abaisser_principal(&interp.prog.instructions) {
+                if std::env::var("ROSE_PROFIL_RIR").is_ok() {
+                    eprintln!("PROFIL-RIR principal noms={:?} ops={}",
+                              rir.noms, rir.ops.len());
+                }
+                // ⚠⚠⚠ LE CORPS PRINCIPAL EST REMPLACÉ PAR SA FORME RIR :
+                // `exec` la reconnaît et l'exécute par la boucle linéaire.
+                interp.prog.instructions = vec![Instr::Rir(rir)];
+            }
+        }
         if std::env::var("ROSE_PROFIL_RIR").is_ok() {
             crate::rir::activer_profil();
             let n = interp.prog.signatures.values().filter(|s| s.rir.is_some()).count();
-            eprintln!("PROFIL-RIR fonctions_abaissees={}", n);
+            let principal = matches!(interp.prog.instructions.first(),
+                Some(Instr::Rir(_)));
+            eprintln!("PROFIL-RIR fonctions_abaissees={} principal={}", n, principal);
         }
     }
     interp.jit_principal = jit.compiler_principal(&prog_pour_jit);

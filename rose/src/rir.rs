@@ -72,6 +72,12 @@ pub enum Op {
     SautSiFauxAbstrait { test: Eabstrait, cible: usize },
     /// Retour d'une expression (ou `Vide`).
     Retour(Option<Expr>),
+    /// ⚠⚠⚠ RETOUR D'UNE EXPRESSION ABSTRAITE (cas chaud : `retour n + 1`).
+    ///
+    /// ⚠ Mesuré : un corps d'UNE ligne (`retour n + 1`) coûtait 130 ns par
+    /// appel parce que le retour passait par l'AST (`eval_slots`). Abstrait,
+    /// il tombe dans la voie rapide de la boucle.
+    RetourAbstrait(Eabstrait),
     /// Appel d'une instruction d'expression (effet de bord).
     ExprStmt(Expr),
     /// Lèvement d'une erreur.
@@ -220,16 +226,7 @@ pub fn abstraire(e: &Expr, index: &std::collections::HashMap<String, u16>)
             // ⚠⚠⚠ UN APPEL DEVIENT `AppelRir` QUAND TOUS SES ARGUMENTS SONT DES
             // SLOTS DU CORPS (le cas dominant : `f($k)`, `g($n)`).
             //
-            // ⚠ Sinon, l'appel reste hors du sous-ensemble et l'expression
-            // entière garde son AST (règles exactes).
-            if !module.is_empty() { return None; }
-            // ⚠⚠⚠ `abstraire` NE CONNAÎT PAS LE PROGRAMME : elle ne peut donc pas
-            // savoir si `nom` est une FONCTION RIR ou une primitive du
-            // catalogue (`longueur`, `joindre`…). L'appel est donc TOUJOURS
-            // écarté de l'abstraction (il reste dans l'AST) : c'est ce qui
-            // garantit qu'aucune variable n'est perdue. `abaisser` réintroduit
-            // `AppelRir` après coup, et SEULEMENT pour les fonctions RIR.
-            // ⚠⚠⚠ SEULES LES FONCTIONS DÉCLARÉES RIR DEVIENNENT `AppelRir`.
+            // ⚠ SEULES LES FONCTIONS DÉCLARÉES RIR DEVIENNENT `AppelRir`.
             //
             // ⚠ `abstraire` ne connaît pas le programme : `declarer_rir` lui a
             // donné la liste des fonctions qui auront un corps RIR. Tout le
@@ -240,6 +237,20 @@ pub fn abstraire(e: &Expr, index: &std::collections::HashMap<String, u16>)
             if !RIR_CONNUS.with(|c| c.borrow().contains(nom.as_str())) { return None; }
             if args.is_empty() || args.iter().any(|a| !matches!(a, Expr::Var(..))) { return None; }
             Some(Eabstrait::AppelRir { nom: nom.clone(), args: args.clone() })
+        }
+        Expr::LitComplexe { re, im, .. } => {
+            // ⚠⚠⚠ LE COMPTEUR « i » REPLIÉ EN `0+1i` (mesuré le 17/11).
+            //
+            // ⚠ Le lexeur replie le mot « i » en `0+1i` avant de savoir s'il
+            // s'agit de l'imaginaire ou du COMPTEUR de boucle. Quand le corps a
+            // une variable « i » (boucle « pour $i »), c'est le compteur : on
+            // l'abaisse en SLOT. ⚠ Les autres complexes gardent l'AST (règle
+            // exacte : le VRAI imaginaire).
+            if index.contains_key("i") && *re == 0.0 && *im == 1.0 {
+                Some(Eabstrait::Slot(index["i"], CacheSlot::neuve()))
+            } else {
+                None
+            }
         }
         Expr::Litteral { texte, flott, .. } => {
             if *flott {
@@ -286,6 +297,42 @@ pub fn abstraire(e: &Expr, index: &std::collections::HashMap<String, u16>)
 ///
 /// ⚠⚠ Les paramètres occupent les PREMIERS slots (0..params.len()), dans
 /// l'ordre de la signature. L'appelant les remplit avant d'exécuter.
+/// ⚠⚠⚠ ABAISSE LE CORPS PRINCIPAL (niveau principal, sans paramètres).
+///
+/// ⚠ Pourquoi séparément ? Les variables du niveau principal sont des
+/// GLOBALES : elles vivent dans `Interp::globaux`, pas dans les slots. Le
+/// RIR les déclare donc dans `globaux` et l'exécution synchronise les slots
+/// avec les globales à chaque opération (voir `executer_principal_rir`).
+///
+/// ⚠ Mesuré : une boucle de 500 000 tours au niveau principal coûtait 350 ms
+/// en interprétation (« si » et boucles en appels récursifs Rust) ; en RIR
+/// elle tombe à quelques millisecondes.
+pub fn abaisser_principal(corps: &[Instr]) -> Option<CorpsRir> {
+    // ⚠ On collecte d'abord TOUS les noms affectés : au niveau principal, tout
+    // est GLOBAL (il n'y a pas de trame). Ils sont déclarés « connus » pour
+    // que l'abaissement les marque dans `globaux`.
+    fn collecter(bloc: &[Instr], noms: &mut Vec<String>) {
+        for i in bloc {
+            match i {
+                Instr::Affect { nom, .. } | Instr::AffectIndex { nom, .. }
+                | Instr::Lire { nom, .. } | Instr::Pour { nom, .. } => {
+                    if !noms.iter().any(|n| n == nom) { noms.push(nom.clone()); }
+                }
+                Instr::Si { alors, sinon, .. } => {
+                    collecter(alors, noms);
+                    if let Some(s) = sinon { collecter(s, noms); }
+                }
+                Instr::TantQue { corps, .. } | Instr::Pour { corps, .. }
+                | Instr::Bloc(corps) => collecter(corps, noms),
+                _ => {}
+            }
+        }
+    }
+    let mut noms = Vec::new();
+    collecter(corps, &mut noms);
+    abaisser(corps, &[], &noms)
+}
+
 pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -> Option<CorpsRir> {
     // ── Table de noms → slot ────────────────────────────────────────────
     let mut noms: Vec<String> = Vec::new();
@@ -366,7 +413,17 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                     ops.push(Op::Lire { slot: s, ty: *ty });
                 }
                 Instr::ExprStmt(e) => ops.push(Op::ExprStmt(e.clone())),
-                Instr::Retour(e, _) => ops.push(Op::Retour(e.clone())),
+                Instr::Retour(e, _) => {
+                    // ⚠⚠ CAS CHAUD : `retour <expr>` dans le sous-ensemble devient
+                    // un retour ABSTRAIT (aucune recherche de nom, aucun AST).
+                    match e {
+                        Some(x) => match abstraire(x, index) {
+                            Some(ab) => ops.push(Op::RetourAbstrait(ab)),
+                            None => ops.push(Op::Retour(e.clone())),
+                        },
+                        None => ops.push(Op::Retour(None)),
+                    }
+                }
                 Instr::Lever(e, _) => ops.push(Op::Lever(e.clone())),
                 Instr::Si { test, alors, sinon, .. } => {
                     // saut-si-faux → sinon (ou après) ; le bloc « alors » est
@@ -561,6 +618,27 @@ pub trait HoteRir {
     /// ⚠⚠⚠ L'APPEL ORDINAIRE D'UNE FONCTION (règles exactes, via l'AST).
     fn eval_appel_ast(&mut self, nom: &str, args: &[Expr], base: *mut Valeur)
         -> Result<Valeur, Option<i32>>;
+    /// ⚠⚠⚠ ÉVALUE UNE EXPRESSION AST EN LISANT LES VARIABLES DANS LES SLOTS.
+    fn eval_ast(&mut self, e: &Expr, base: *mut Valeur, corps: &CorpsRir)
+        -> Result<Valeur, Option<i32>>;
+    /// ⚠⚠⚠ AFFECTE `nom[index] ← valeur` (règle exacte de l'interpréteur).
+    fn affecter_index_ast(&mut self, nom: &str, index: &Expr, valeur: &Expr,
+                          base: *mut Valeur, corps: &CorpsRir) -> Result<(), Option<i32>>;
+    /// ⚠⚠⚠ AFFICHE UNE EXPRESSION AVEC SA FORMULE (règle exacte d'`Instr::Afficher`).
+    fn afficher_expression(&mut self, e: &Expr, base: *mut Valeur, corps: &CorpsRir)
+        -> Result<(), Option<i32>>;
+    /// ⚠⚠⚠ LIT UNE VALEUR AU CLAVIER SELON LE TYPE (règle exacte d'`Instr::Lire`).
+    fn lire_slot(&mut self, ty: crate::front::TyKind, base: *mut Valeur,
+                 corps: &CorpsRir, slot: usize) -> Valeur;
+    /// ⚠⚠⚠ EXÉCUTE UN BLOC IMBRIQUÉ AVEC LES SLOTS EN TRAME.
+    fn exec_bloc_slots(&mut self, b: &[Instr], base: *mut Valeur, corps: &CorpsRir)
+        -> Result<(), Option<i32>>;
+    /// ⚠⚠⚠ SYNCHRONISE LES SLOTS VERS LES GLOBALES (corps principal).
+    fn synchroniser_slots(&mut self, base: *mut Valeur, corps: &CorpsRir);
+    /// ⚠⚠⚠ NOMBRE DE CADRES EMPILÉS (diagnostic).
+    fn tete_pile(&self) -> usize;
+    /// ⚠⚠⚠ REFERME LE CADRE COURANT (de `n` slots).
+    fn depiler_n(&mut self, n: usize);
     /// ⚠⚠⚠ L'ERREUR POSÉE PAR `eval_abstrait_rapide` (0 = aucune).
     fn erreur_en_attente(&self) -> u8;
     /// ⚠⚠⚠ REMET À ZÉRO L'ERREUR EN ATTENTE (début d'un corps).
@@ -591,77 +669,81 @@ pub trait HoteRir {
         -> Result<(), Option<i32>>;
 }
 
-/// ⚠⚠⚠ PILE DE SLOTS RÉUTILISABLES (pas d'allocation par appel).
+/// ⚠⚠⚠ PILE DE SLOTS : UNE VRAIE PILE LIFO D'OCTETS (mesuré le 17/11).
 ///
-/// ⚠ C'est une VRAIE PILE (LIFO) : chaque appel prend le bloc courant et
-/// avance la tête ; le retour la recule. Deux appels imbriqués ont donc
-/// des blocs DIFFÉRENTS — indispensable pour la récursion, et sans aucune
-/// allocation dès que la capacité est atteinte.
+/// ⚠ Pourquoi pas un `Vec<Valeur>` indexé par taille de bloc ? Parce que les
+/// blocs de tailles DIFFÉRENTES se chevauchaient : un corps de 2 slots puis un
+/// corps de 5 slots écrivaient dans la même zone, et les pointeurs rendus aux
+/// cadres parents devenaient faux (mesuré : segmentation fault).
 ///
-/// ⚠ Mesuré : la version qui allouait un `Vec` par appel coûtait 120 ms sur
-/// 3 millions d'appels d'un corps de 4 slots.
+/// ⚠ Ici, chaque cadre réserve EXACTEMENT `n` emplacements de `Valeur` au
+/// sommet de la pile ; le pointeur rendu reste valable tant que le cadre est
+/// empilé, quel que soit l'ordre des appels. ⚠ Aucune allocation après le
+/// démarrage : la capacité est réservée une fois, et un débordement est
+/// refusé proprement.
 pub struct PileDeSlots {
-    /// Tous les blocs, contigus : `[bloc 0][bloc 1][bloc 2]...`
-    donnees: Vec<Valeur>,
-    /// Taille d'un bloc (fixe : `max_slots + 1`).
-    taille: usize,
-    /// Indice du bloc courant.
-    tete: usize,
+    /// Les octets de la pile (des `Valeur`).
+    memoire: Vec<Valeur>,
+    /// Nombre de slots utilisés au sommet.
+    sommet: usize,
+    /// Profondeur maximale observée (diagnostic).
+    max: usize,
 }
 
 impl PileDeSlots {
-    /// ⚠⚠⚠ CAPACITÉ RÉSERVÉE UNE FOIS POUR TOUTES (mesuré : segmentation fault).
+    /// ⚠⚠⚠ CAPACITÉ RÉSERVÉE UNE FOIS POUR TOUTES.
     ///
-    /// ⚠ Pourquoi pas un `resize` à la demande ? Un `resize` peut RÉALLOUER
-    /// le `Vec` : tous les pointeurs déjà rendus aux cadres PARENTS
-    /// deviennent invalides, et la récursion écrit dans de la mémoire libérée.
-    /// On réserve donc dès le départ la place des cadres les plus profonds
-    /// (mesuré : `it(30000)` tient sans débordement avec 512 Mo de pile).
-    pub const CADRES_MAX: usize = 262_144;
+    /// ⚠ Mesuré : `it(30000)` (récursion 30 000, 3 slots par cadre) tient
+    /// sans débordement avec 512 Mo de pile Rust. On réserve de quoi tenir
+    /// 262 144 cadres de 8 slots, soit ~2 M de slots : largement suffisant, et
+    /// alloué une seule fois au premier appel.
+    pub const SLOTS_MAX: usize = 2_097_152;
 
     pub fn neuve() -> PileDeSlots {
-        PileDeSlots { donnees: Vec::new(), taille: 1, tete: 0 }
+        PileDeSlots { memoire: Vec::new(), sommet: 0, max: 0 }
     }
 
-    /// ⚠ Prépare la pile pour une taille de bloc `n` : la capacité est
-    /// réservée UNE FOIS, et ne change plus jamais.
-    fn preparer(&mut self, n: usize) {
-        let besoin = n + 1;
-        if self.taille < besoin {
-            self.taille = besoin.max(self.taille * 2);
-            self.donnees = Vec::with_capacity(self.taille * Self::CADRES_MAX);
-            self.donnees.resize(self.taille * Self::CADRES_MAX, Valeur::Vide);
+    fn preparer(&mut self) {
+        if self.memoire.is_empty() {
+            self.memoire = Vec::with_capacity(Self::SLOTS_MAX);
+            self.memoire.resize(Self::SLOTS_MAX, Valeur::Vide);
         }
     }
 
-    /// Prépare un bloc pour un corps de `n` slots, et rend son pointeur.
-    ///
-    /// ⚠ Les slots sont remis à `Vide` : c'est un NOUVEAU cadre d'appel.
+    /// ⚠ Empile un cadre de `n` slots (remis à `Vide`) et rend son pointeur.
     pub fn empiler(&mut self, n: usize) -> *mut Valeur {
-        // ⚠⚠⚠ AUCUN `resize` APRÈS LE PREMIER APPEL : la capacité est
-        // réservée une fois pour toutes (sinon les pointeurs des cadres
-        // parents deviennent invalides → segmentation fault en récursion).
-        if self.donnees.is_empty() || self.taille < n + 1 { self.preparer(n); }
-        let debut = self.tete * self.taille;
-        if debut + self.taille > self.donnees.len() {
-            // ⚠ Débordement de la pile de cadres : on refuse proprement plutôt
-            // que d'écrire hors des limites.
+        self.preparer();
+        if self.sommet + n > self.memoire.len() {
             crate::run::erreur_runtime("trop d'appels imbriqués (pile de slots RIR pleine)");
         }
-        for i in debut..debut + n { self.donnees[i] = Valeur::Vide; }
-        self.tete += 1;
-        unsafe { self.donnees.as_mut_ptr().add(debut) }
+        let debut = self.sommet;
+        self.sommet += n;
+        if self.sommet > self.max { self.max = self.sommet; }
+        for i in debut..debut + n { self.memoire[i] = Valeur::Vide; }
+        unsafe { self.memoire.as_mut_ptr().add(debut) }
     }
 
-    /// Rend les slots du bloc courant (déjà empilé, sans remise à `Vide`).
+    /// ⚠ Rend le pointeur du cadre courant (le dernier empilé).
+    ///
+    /// ⚠ Le cadre appelant doit nous dire sa taille : on ne peut pas la
+    /// retrouver depuis la pile. C'est l'appelant qui la connaît (il vient de
+    /// l'empiler).
     pub fn courant(&mut self, n: usize) -> *mut Valeur {
-        let debut = (self.tete - 1) * self.taille;
-        let _ = n;
-        unsafe { self.donnees.as_mut_ptr().add(debut) }
+        let debut = self.sommet - n;
+        unsafe { self.memoire.as_mut_ptr().add(debut) }
     }
 
-    /// Referme le bloc courant.
-    pub fn depiler(&mut self) { self.tete -= 1; }
+    /// ⚠ Referme un cadre de `n` slots.
+    pub fn depiler(&mut self, n: usize) { self.sommet -= n; }
+
+    /// ⚠ Nombre de slots utilisés (diagnostic).
+    pub fn sommet(&self) -> usize { self.sommet }
+
+    /// ⚠⚠ VIDE LA PILE (avant un appel JIT qui peut rappeler l'interpréteur).
+    pub fn vider(&mut self) { self.sommet = 0; }
+
+    /// ⚠⚠ RESTAURE LE SOMMET À UNE VALEUR DONNÉE.
+    pub fn restaurer(&mut self, sommet: usize) { self.sommet = sommet; }
 }
 
 /// ⚠⚠⚠ ÉXÉCUTE UN CORPS RIR EN PRENANT SES SLOTS DANS LA PILE DE L'HÔTE.
@@ -691,6 +773,128 @@ pub fn executer_pour<H: HoteRir>(hote: &mut H, corps: &CorpsRir) -> FinRir {
 /// ⚠⚠⚠ POSE UNE VALEUR DANS UN SLOT DU CADRE COURANT (après `empiler_slots`).
 pub fn poser_slot(base: *mut Valeur, i: usize, v: Valeur) {
     unsafe { *base.add(i) = v; }
+}
+
+/// ⚠⚠⚠ EXÉCUTE UN CORPS RIR EN SYNCHRONISANT LES SLOTS APRÈS CHAQUE OPÉRATION.
+///
+/// ⚠ Sert au CORPS PRINCIPAL : ses variables sont des GLOBALES, et un appel
+/// de fonction au milieu d'une boucle doit voir les valeurs à jour. La
+/// synchronisation se fait par `sync` (qui copie slots → globales).
+pub fn executer_avec_ptr_sync<H: HoteRir>(
+    corps: &CorpsRir,
+    base: *mut Valeur,
+    hote: &mut H,
+) -> FinRir {
+    hote.effacer_erreur();
+    let mut pc: usize = 0;
+    while pc < corps.ops.len() {
+        let op = &corps.ops[pc];
+        pc += 1;
+        let saut = match op {
+            Op::Affect { slot, expr } => {
+                let v = hote.eval_abstrait_rapide(expr, base, corps);
+                if hote.erreur_en_attente() != 0 { return FinRir::Quitter(1); }
+                unsafe { *base.add(*slot as usize) = v; }
+                None
+            }
+            Op::AffectAst { slot, e } => {
+                match hote.eval_ast(e, base, corps) {
+                    Ok(v) => unsafe { *base.add(*slot as usize) = v },
+                    Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
+                }
+                None
+            }
+            Op::Saut { cible } => Some(*cible),
+            Op::SautSiFauxAbstrait { test, cible } => {
+                let v = hote.eval_abstrait_rapide(test, base, corps);
+                if hote.erreur_en_attente() != 0 { return FinRir::Quitter(1); }
+                if !matches!(v, Valeur::Booleen(true)) { Some(*cible) } else { None }
+            }
+            Op::SautSiFaux { test, cible } => {
+                match hote.eval_ast(test, base, corps) {
+                    Ok(v) => if !matches!(v, Valeur::Booleen(true)) { Some(*cible) } else { None },
+                    Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
+                }
+            }
+            Op::RetourAbstrait(ab) => {
+                let v = hote.eval_abstrait_rapide(ab, base, corps);
+                if hote.erreur_en_attente() != 0 { return FinRir::Quitter(1); }
+                return FinRir::Retour(v);
+            }
+            Op::Retour(e) => {
+                let v = match e {
+                    Some(e) => match hote.eval_ast(e, base, corps) {
+                        Ok(v) => v,
+                        Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
+                    },
+                    None => Valeur::Vide,
+                };
+                return FinRir::Retour(v);
+            }
+            Op::AfficherAbstrait(ab) => {
+                let v = hote.eval_abstrait_rapide(ab, base, corps);
+                if hote.erreur_en_attente() != 0 { return FinRir::Quitter(1); }
+                hote.afficher_valeur(&v);
+                None
+            }
+            Op::Afficher(es) => {
+                // ⚠⚠⚠ LA FORMULE LaTeX EST AUSSI AFFICHÉE (mesuré le 17/11).
+                //
+                // ⚠ La version qui n'affichait que la valeur perdait les formules
+                // des expressions composées (« \sum_{k = 1}^{100} \langle T = T + k\rangle »
+                // avant la valeur) : c'est la règle d'affichage du langage. On
+                // délègue donc à l'hôte, qui applique EXACTEMENT la même règle
+                // qu'`Instr::Afficher`.
+                for e in es {
+                    match hote.afficher_expression(e, base, corps) {
+                        Ok(()) => {}
+                        Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
+                    }
+                }
+                None
+            }
+            Op::AffectIndex { nom, index, valeur, .. } => {
+                match hote.affecter_index_ast(nom, index, valeur, base, corps) {
+                    Ok(()) => {}
+                    Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
+                }
+                None
+            }
+            Op::ExprStmt(e) => {
+                match hote.eval_ast(e, base, corps) {
+                    Ok(_) => {}
+                    Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
+                }
+                None
+            }
+            Op::Lever(e) => {
+                let _ = hote.eval_ast(e, base, corps);
+                return FinRir::Quitter(1);
+            }
+            Op::Lire { slot, ty } => {
+                // ⚠⚠⚠ LA LECTURE CLAVIER PASSE PAR L'INTERPRÉTEUR (mesuré le
+                // 17/11). ⚠ La version qui l'ignorait laissait le slot à `Vide` :
+                // les programmes de lecture échouaient (« conversion vers entier
+                // impossible »). `lire_slot` applique EXACTEMENT la règle de
+                // `Instr::Lire` (type dynamique résolu depuis la valeur courante).
+                let v = hote.lire_slot(*ty, base, corps, *slot as usize);
+                unsafe { *base.add(*slot as usize) = v; }
+                None
+            }
+            Op::Bloc(b) => {
+                // ⚠⚠ Un bloc imbriqué est exécuté par l'interpréteur (règles de
+                // portée exactes), avec les slots installés en trame.
+                match hote.exec_bloc_slots(b, base, corps) {
+                    Ok(()) => {}
+                    Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
+                }
+                None
+            }
+        };
+        hote.synchroniser_slots(base, corps);
+        if let Some(c) = saut { pc = c; }
+    }
+    FinRir::Vide
 }
 
 /// Exécute un corps RIR avec l'hôte.
@@ -768,10 +972,19 @@ pub fn executer_avec_ptr<H: HoteRir>(corps: &CorpsRir, base: *mut Valeur, hote: 
                 unsafe { *base.add(i) = v; }
             }
             Op::AffectAst { slot, e } => {
-                match hote.eval_slots(e, slots, &corps.noms) {
+                // ⚠⚠⚠ ÉVALUATION PAR SLOTS, PAS PAR LA TRAME (mesuré le 17/11).
+                //
+                // ⚠ La version qui appelait `eval_slots(e, slots, noms)` sur la
+                // TRANCHE des slots fonctionnait… mais les appels imbriqués
+                // (une fonction appelée dans l'expression) réallouaient la pile :
+                // la tranche pointait alors sur de la mémoire périmée (mesuré :
+                // segmentation fault). On passe par `eval_ast`, qui relit les
+                // slots PAR POINTEUR, comme le reste du RIR.
+                let v = hote.eval_ast(e, base, corps);
+                match v {
                     Ok(v) => {
                         let i = *slot as usize;
-                        if i < slots.len() { slots[i] = v; }
+                        unsafe { *base.add(i) = v; }
                     }
                     Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
                 }
@@ -818,6 +1031,11 @@ pub fn executer_avec_ptr<H: HoteRir>(corps: &CorpsRir, base: *mut Valeur, hote: 
                 if hote.erreur_en_attente() != 0 { return FinRir::Quitter(1); }
                 let vrai = matches!(v, Valeur::Booleen(true));
                 if !vrai { pc = *cible; }
+            }
+            Op::RetourAbstrait(ab) => {
+                let v = hote.eval_abstrait_rapide(ab, base, corps);
+                if hote.erreur_en_attente() != 0 { return FinRir::Quitter(1); }
+                return FinRir::Retour(v);
             }
             Op::Retour(e) => {
                 let v = match e {
@@ -888,7 +1106,9 @@ mod tests {
         // ⚠ Le test est ABSTRAIT (cas chaud) : `SautSiFauxAbstrait`.
         assert!(rir.ops.iter().any(|o| matches!(o,
             Op::SautSiFaux { .. } | Op::SautSiFauxAbstrait { .. })));
-        assert!(rir.ops.iter().any(|o| matches!(o, Op::Retour(_))));
+        // ⚠ Le retour est ABSTRAIT quand l'expression est dans le sous-ensemble.
+        assert!(rir.ops.iter().any(|o| matches!(o,
+            Op::Retour(_) | Op::RetourAbstrait(_))));
     }
 
     #[test]
