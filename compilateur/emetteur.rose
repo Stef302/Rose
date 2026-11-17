@@ -186,13 +186,11 @@ fn nomty($v: chaine) -> chaine {
 fn BASE($v: chaine) -> chaine {
   $n = longueur($v)
   $k = 0
-  $ok = 1
-  tant_que ($ok == 1) {
-    si ($k >= $n) { $ok = 0 }
-    sinon si (ordre($v[$k]) == 124) { $ok = 0 }
-    sinon { $k = $k + 1 }
+  tant_que ($k < $n) {
+    si (ordre($v[$k]) == 124) { retour sous_chaine($v, 0, $k) }
+    $k = $k + 1
   }
-  retour sous_chaine($v, 0, $k)
+  retour $v
 }
 
 fn tyb($b: chaine) -> chaine {
@@ -1955,8 +1953,9 @@ fn check_instr($i: entier,
       retour 0
     }
     $nom = $ino[$i]
+    # Le moteur traite une globale comme un SHADOW dans un corps de fonction :
+    # `$k = 0` local ne doit pas être confronté au type de la globale $k.
     $ex = env_get($nom, $vn, $vt)
-    si ($ex == "") { $ex = env_get($nom, $gn, $gt) }
     $cible = $t
     si ($ex != "") {
       $cible = $ex
@@ -2044,7 +2043,10 @@ fn check_instr($i: entier,
       $t = check_expr($e, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                       $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
       $bad = 0
-      si ($t != $ra) {
+      # fonction sans type de retour déclaré : le moteur met le retour en
+      # Dyn (« ? ») et accepte n'importe quel type de valeur.
+      si (BASE($ra) == "?") { $bad = 0 }
+      sinon si ($t != $ra) {
         si (non(estnum($t) et estnum($ra) et promote($t, $ra) == $ra)) { $bad = 1 }
       }
       si ($bad == 1) {
@@ -2346,6 +2348,14 @@ fn em_ast_expr($i: entier,
   $kd = $k[$i]
   $op0 = $tx[$i]
   $txt = $tx[$i]
+  # repli de `-` sur un littéral : le moteur garde le drapeau neg et ecrit
+  # "(f -" + texte. Quand le texte replié porte deja un '-', le neg rend
+  # deux moins (ex. `moitie(-2.5)` -> `(f --2.5)`).
+  si ($vue != "0" et $kd == "uni" et $op0 == "-" et vue_flag($vue) == "1") {
+    $un = vue_texte($vue)
+    si (longueur($un) > 0 et ordre($un[0]) == 45) { retour "(f -" + $un + ")" }
+    retour "(f " + $un + ")"
+  }
   # nœud replié : utiliser le texte/flag de la vue
   si ($vue != "0") {
     $txt = vue_texte($vue)
@@ -2519,8 +2529,28 @@ fn em_abstrait($i: entier,
   # Binaire : op dans le sous-ensemble, deux opérandes abstractibles
   $ops = "|" + $op0 + "|"
   si ($kd == "bin" et contient_ops("|+|-|*|/|%|^|div|<|<=|>|>=|==|!=|et|ou|", $ops)) {
-    $g = em_abstrait($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
-    $d = em_abstrait($b[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    $g = ""
+    $ga = $a[$i]
+    $vga = entree($ga, $foi, $fot, $fof)
+    si ($k[$ga] == "uni" et $tx[$ga] == "-" et $vga != "0" et vue_flag($vga) == "1") {
+      $tga = vue_texte($vga)
+      $fga = vue_flag($vga)
+      $pga = $tga
+      si (longueur($pga) > 0 et ordre($pga[0]) == 45) { $pga = sous_chaine($pga, 1, longueur($pga)) }
+      si ($fga == "1") { $g = "(neg flottant " + vers_flottant($pga) + ")" }
+      sinon { $g = "(neg entier " + $pga + ")" }
+    } sinon { $g = em_abstrait($ga, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus) }
+    $d = ""
+    $gb = $b[$i]
+    $vgb = entree($gb, $foi, $fot, $fof)
+    si ($k[$gb] == "uni" et $tx[$gb] == "-" et $vgb != "0" et vue_flag($vgb) == "1") {
+      $tgb = vue_texte($vgb)
+      $fgb = vue_flag($vgb)
+      $pgb = $tgb
+      si (longueur($pgb) > 0 et ordre($pgb[0]) == 45) { $pgb = sous_chaine($pgb, 1, longueur($pgb)) }
+      si ($fgb == "1") { $d = "(neg flottant " + vers_flottant($pgb) + ")" }
+      sinon { $d = "(neg entier " + $pgb + ")" }
+    } sinon { $d = em_abstrait($gb, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus) }
     si ($g != "" et $d != "") { retour "(bin " + $op0 + " " + $g + " " + $d + ")" }
     retour ""
   }
@@ -2546,9 +2576,56 @@ fn contient_ops($s: chaine, $sub: chaine) -> booleen {
   retour faux
 }
 
+# main.rs ecrit Eabstrait::Flottant avec d.to_string() (Display Rust) :
+# decimal plein, jamais d'exposant, et "-0" pour le zero negatif. chaine()
+# de Rose donne le plus court qui se relit (texte_flottant, style %g) ; on
+# developpe l'exponentielle et on recolle le signe du zero.
 fn vers_flottant($t: chaine) -> chaine {
-  # chaine(flottant) de Rose donne déjà le texte Display attendu
-  retour flot_txt(flottant($t), faux)
+  $neg = faux
+  si (longueur($t) > 0 et ordre($t[0]) == 45) { $neg = vrai }
+  $s = chaine(flottant($t))
+  $u = $s
+  $signe = ""
+  si (longueur($u) > 0 et ordre($u[0]) == 45) { $signe = "-"; $u = sous_chaine($u, 1, longueur($u)) }
+  $n = longueur($u)
+  $e = -1
+  $i = 0
+  tant_que ($i < $n) {
+    si (ordre($u[$i]) == 101) { $e = $i }
+    $i = $i + 1
+  }
+  si ($e < 0) {
+    si ($neg et $u == "0") { retour "-0" }
+    retour $s
+  }
+  $mant = sous_chaine($u, 0, $e)
+  $expo = entier(sous_chaine($u, $e + 1, $n))
+  $digits = ""
+  $dec = -1
+  $j = 0
+  $lm = longueur($mant)
+  tant_que ($j < $lm) {
+    si (ordre($mant[$j]) == 46) { $dec = longueur($digits) }
+    sinon { $digits = $digits + $mant[$j] }
+    $j = $j + 1
+  }
+  si ($dec < 0) { $dec = longueur($digits) }
+  $pt = $dec + $expo
+  $nd = longueur($digits)
+  $res = ""
+  si ($pt <= 0) {
+    $res = "0."
+    $z = 0
+    tant_que ($z < 0 - $pt) { $res = $res + "0"; $z = $z + 1 }
+    $res = $res + $digits
+  } sinon si ($pt >= $nd) {
+    $res = $digits
+    $z = 0
+    tant_que ($z < $pt - $nd) { $res = $res + "0"; $z = $z + 1 }
+  } sinon {
+    $res = sous_chaine($digits, 0, $pt) + "." + sous_chaine($digits, $pt, $nd)
+  }
+  retour $signe + $res
 }
 
 fn em_expr($i: entier, $ta: chaine,
@@ -3239,6 +3316,59 @@ fn em_fonction($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
 
 $src = ""
 si (nb_arguments() > 0) { $src = lire_texte(argument(0)) }
+# —— résolution des imports (miroir de analyser_fichier) ——
+# Le moteur charge le fichier importé AVANT vérification et fusionne ses
+# fonctions. Ici on retire le mot « importer » du flux et on concatène le
+# source importé : les fonctions sont triées par nom plus bas, donc l'ordre
+# d'arrivée n'a pas d'importance ; les numéros de ligne ne sortent pas dans
+# le dump RIR.
+$imax = 32
+$ii = 0
+tant_que ($ii < $imax) {
+  $nsrc = longueur($src)
+  $ipos = -1
+  $j = 0
+  $egc = faux
+  $ecl = faux
+  tant_que ($j + 8 <= $nsrc) {
+    $cc0 = ordre($src[$j])
+    si ($ecl) {
+      si ($cc0 == 10) { $ecl = faux }
+    } sinon si ($egc) {
+      si ($cc0 == 92) { $j = $j + 1 }
+      sinon si ($cc0 == 34) { $egc = faux }
+    } sinon {
+      si ($cc0 == 35) { $ecl = vrai }
+      sinon si ($cc0 == 34) { $egc = vrai }
+      sinon si (sous_chaine($src, $j, $j + 8) == "importer") {
+        $av = " "
+        si ($j > 0) { $av = $src[$j - 1] }
+        $ap = " "
+        si ($j + 8 < $nsrc) { $ap = $src[$j + 8] }
+        si (non est_suite(ordre($av)) et non est_suite(ordre($ap))) { $ipos = $j }
+      }
+    }
+    $j = $j + 1
+  }
+  si ($ipos < 0) { $ii = $imax }
+  sinon {
+    $q = $ipos + 8
+    tant_que ($q < $nsrc et (ordre($src[$q]) == 32 ou ordre($src[$q]) == 9 ou ordre($src[$q]) == 10)) { $q = $q + 1 }
+    $fin = $q
+    si ($fin < $nsrc et ordre($src[$fin]) == 34) {
+      $fin = $fin + 1
+      tant_que ($fin < $nsrc et ordre($src[$fin]) != 34) { $fin = $fin + 1 }
+      $chemin = sous_chaine($src, $q + 1, $fin)
+      $ajout = "\n" + lire_texte($chemin) + "\n"
+      $blanc = ""
+      $z = $ipos
+      tant_que ($z < $fin + 1) { $blanc = $blanc + " "; $z = $z + 1 }
+      $src = sous_chaine($src, 0, $ipos) + $blanc + sous_chaine($src, $fin + 1, $nsrc)
+      $src = $src + $ajout
+    }
+    $ii = $ii + 1
+  }
+}
 $N = longueur($src)
 
 # —— phase 1 : lexage vers $gen (types), $x (textes), $gl (lignes) ——
@@ -3632,9 +3762,51 @@ si (longueur($err) == 1) {
                  $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $err)
 }
 
-# —— passe 2 : vérification — d'abord les signatures, globals encore vides ——
+# —— passe 2 : vérification ——
+# pré-passe (miroir de verifier) : ne collecte que les affectations et lectures
+# globales du niveau supérieur, pour que les corps de fonction les voient.
+# On ne passe PAS par parcourir sur $topb entier : les boucles `pour` y
+# enregistreraient leur compteur comme globale, ce que le moteur ne fait pas.
 $gln = [""]
 $glt = [""]
+$topg = ""
+$gp = 0
+$gn2 = longueur($topb)
+$gcur = ""
+tant_que ($gp < $gn2) {
+  $gc = ordre($topb[$gp])
+  si ($gc == 44) {
+    si ($gcur != "") {
+      $gix = entier($gcur)
+      si ($ik[$gix] == "affi" ou $ik[$gix] == "lire") {
+        si ($topg != "") { $topg = $topg + "," }
+        $topg = $topg + $gcur
+      }
+      $gcur = ""
+    }
+  } sinon { $gcur = $gcur + $topb[$gp] }
+  $gp = $gp + 1
+}
+si ($gcur != "") {
+  $gix = entier($gcur)
+  si ($ik[$gix] == "affi" ou $ik[$gix] == "lire") {
+    si ($topg != "") { $topg = $topg + "," }
+    $topg = $topg + $gcur
+  }
+}
+$err2 = [""]
+$tni2 = [0]
+$tnt2 = [""]
+$tri2 = [0]
+$trt2 = [""]
+$lc0 = [""]
+$lct0 = [""]
+si (longueur($err) == 1) {
+  parcourir($topg, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+            $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
+            $gln, $glt, $gln, $glt, $lc0, $lct0,
+            $fnoms, $fparams, $fret, $foi, $fot, $fof, 0, "vide|vide", $err2, $tni2, $tnt2, $tri2, $trt2)
+}
 $w = 1
 tant_que ($w < longueur($ordre)) {
   si (longueur($err) == 1) {
