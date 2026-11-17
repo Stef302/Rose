@@ -367,17 +367,32 @@ liste de 10 000 entiers.
 
 ---
 
-## Chantiers parallèles (lancés le 17/11, orchestration centralisée)
+## Chantiers parallèles — vague 1 (17/11, TOUS LIVRÉS et poussés sur Stef302/Rose)
 
-Six agents indépendants, chacun propriétaire de fichiers distincts (aucun chevauchement) :
+Six agents indépendants, fichiers distincts, tous intégrés et committés :
 
-| Agent | Étape | Fichiers possédés | Porte à prouver |
+| Agent | Étape | Résultat livré |
+|---|---|---|
+| A1 | M4.4 fin émetteur RIR | 30/46 + auto-émission (`08c42a0`) |
+| A2 | M2.1 jardin = primitive | 4,11 ms, jardin bat la primitive (`82b3e6b`) |
+| A3 | M6.2 runtime wasm optionnel | câblé, `carre(7)`→49 (`f8bcf93`+`ab0651b`) |
+| A4 | M3.1 émission machine RIR | module + 6/6 tests, 1,57 ms (`8fdef8d`) |
+| A5 | M5.2 E/S sans std | binaire `no_std` prouvé (`de2fc4a`) |
+| A6 | M6.3 étude Component Model | recommandation documentée (`845f5e0`) |
+
+Push confirmé : `main` local = distant = `e96093f`.
+
+## Chantiers parallèles — vague 2 (lancés après le push)
+
+Six nouveaux agents sur les étapes restantes :
+
+| Agent | Étape | Fichiers possédés | Porte |
 |---|---|---|---|
-| A1 | **M4.4** fin émetteur RIR | `compilateur/emetteur.rose` | 46/46 RIR identiques + auto-émission |
-| A2 | **M2.1** jardin = primitive | `rose/src/{jit,interp,rir}.rs` | jardin ≤ 30 ms, 20 tests conservés |
-| A3 | **M6.2** runtime wasm optionnel | `rose/src/wasm_runtime.rs`, `rose/docs/WASM_RUNTIME.md` | cache + SHA-256, repli maison |
-| A4 | **M3.1** émission machine depuis RIR | `rose/src/natif_emetteur.rs`, `rose/docs/NATIF.md` | octets machine vérifiés |
-| A5 | **M5.2** E/S sans std | `rose/src/sys_io.rs`, `rose/docs/NO_STD.md` | read/write via syscalls bruts |
-| A6 | **M6.3** étude Component Model | `rose/docs/COMPONENT_MODEL.md` | recommendation documentée |
+| B1 | **M4.5** point fixe bootstrap | `compilateur/{emetteur,compilateur}.rose` | RIR auto-émis octet-identique (ou point fixe structurel documenté) |
+| B2 | **M3.2** link natif ELF/PE | `rose/src/link_natif.rs`, `rose/docs/LINK_NATIF.md` | ELF exécutable sans gcc (exit 49) |
+| B3 | **M5.3** produit sans Rust | `rose/docs/PRODUIT_SANS_RUST.md` | étude + mesures nm/ldd |
+| B4 | **câblage M3.1** dans JIT | `rose/src/{natif_emetteur,jit,interp}.rs` | tests API, fib machine = 75025 |
+| B5 | **M2.2/M2.3** perf mémoire | `rose/src/{interp,rir}.rs`, `rose/src/gz_pool.rs` | factorielles N=5000 ≥15%, valeur identique |
+| B6 | **M6.2 porte perf** | `scripts/mesurer-wasm.sh`, `rose/docs/PORTE_WASM.md` | mesure ou « non mesurable » documenté |
 
-L'orchestrateur (session principale) seul touche à `main.rs`, `lib.rs`, `Cargo.toml`, `PLAN.md` et fait les commits après revue de chaque agent. Règle : aucune mesure n'est acceptée sans commande exécutée ; aucun commit d'agent.
+L'orchestrateur (session principale) seul touche à `main.rs`, `lib.rs`, `Cargo.toml`, `PLAN.md` et fait les commits après revue. Règle : aucune mesure acceptée sans commande exécutée ; aucun commit d'agent.
