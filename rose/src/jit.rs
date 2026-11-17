@@ -26,6 +26,7 @@ use cranelift::module::{default_libcall_names, Linkage, Module};
 use cranelift::prelude::{Block, FloatCC, FunctionBuilder, IntCC, types, Variable};
 
 use crate::front::{Expr, Instr, Signature, TyKind};
+use crate::rir::{CorpsRir, Eabstrait, Op, Oper};
 
 /// Vrai si la séquence d'instructions finit toujours par un retour (le code
 /// qui suit est mort) — sert à ne pas réémettre un return final illégal.
@@ -514,6 +515,124 @@ fn retour_coherent(t: TyKind, attendu: Option<TyKind>) -> bool {
     }
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// M1.2 — COMPILATION JIT DU RIR (forme d'exécution linéaire)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn ty_eabstrait_rir(e: &Eabstrait, slots: &[TyKind], prog: &HashMap<String, Signature>) -> Option<TyKind> {
+    match e {
+        Eabstrait::Slot(s, _) => slots.get(*s as usize).copied(),
+        Eabstrait::Entier(_) => Some(TyKind::Entier),
+        Eabstrait::Flottant(_) => Some(TyKind::Flottant),
+        Eabstrait::Neg(a) => ty_eabstrait_rir(a, slots, prog),
+        Eabstrait::Non(_) => Some(TyKind::Booleen),
+        Eabstrait::Binaire { op, a, b } => {
+            let ta = ty_eabstrait_rir(a, slots, prog)?;
+            let tb = ty_eabstrait_rir(b, slots, prog)?;
+            Some(match op {
+                Oper::Lt|Oper::Le|Oper::Gt|Oper::Ge|Oper::Eq|Oper::Ne|Oper::Et|Oper::Ou => TyKind::Booleen,
+                Oper::Add|Oper::Sub|Oper::Mul|Oper::Mod|Oper::Puissance|Oper::DivEntier => {
+                    if ta==TyKind::Flottant || tb==TyKind::Flottant { TyKind::Flottant } else { TyKind::Entier }
+                }
+                Oper::Div => if ta==TyKind::Flottant || tb==TyKind::Flottant { TyKind::Flottant } else { TyKind::Entier },
+            })
+        }
+        Eabstrait::AppelRir { nom, .. } => {
+            let sig = prog.get(nom)?;
+            let r = sig.retour.n;
+            if compilable(r) || r == TyKind::Vide { Some(r) } else { None }
+        }
+    }
+}
+
+fn slot_types_rir(corps: &CorpsRir, sig: &Signature, prog: &HashMap<String, Signature>) -> Vec<TyKind> {
+    let mut slot_types: Vec<TyKind> = vec![TyKind::Entier; corps.n_slots];
+    for (i,(_,t)) in sig.params.iter().enumerate() {
+        if i < slot_types.len() { slot_types[i] = t.n; }
+    }
+    for _ in 0..8 {
+        let mut changed = false;
+        for op in &corps.ops {
+            if let Op::Affect { slot, expr } = op {
+                if let Some(t) = ty_eabstrait_rir(expr, &slot_types, prog) {
+                    let i = *slot as usize;
+                    if i < slot_types.len() && slot_types[i] != t {
+                        slot_types[i] = t;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed { break; }
+    }
+    slot_types
+}
+
+fn eabstrait_rir_compilable(e: &Eabstrait, slot_types: &[TyKind], corps_noms: &[String], prog: &HashMap<String, Signature>) -> bool {
+    match e {
+        Eabstrait::Slot(s, _) => slot_types.get(*s as usize).map(|t| matches!(t, TyKind::Entier|TyKind::Booleen|TyKind::Flottant)).unwrap_or(false),
+        Eabstrait::Entier(t) => t.parse::<i64>().is_ok(),
+        Eabstrait::Flottant(_) => true,
+        Eabstrait::Neg(a) => eabstrait_rir_compilable(a, slot_types, corps_noms, prog) && matches!(ty_eabstrait_rir(a, slot_types, prog), Some(TyKind::Entier)|Some(TyKind::Flottant)),
+        Eabstrait::Non(a) => eabstrait_rir_compilable(a, slot_types, corps_noms, prog) && ty_eabstrait_rir(a, slot_types, prog) == Some(TyKind::Booleen),
+        Eabstrait::Binaire { op, a, b } => {
+            if !eabstrait_rir_compilable(a, slot_types, corps_noms, prog) || !eabstrait_rir_compilable(b, slot_types, corps_noms, prog) { return false; }
+            let ta = match ty_eabstrait_rir(a, slot_types, prog) { Some(t)=>t, None=>return false };
+            let tb = match ty_eabstrait_rir(b, slot_types, prog) { Some(t)=>t, None=>return false };
+            match op {
+                Oper::Add|Oper::Sub => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)|(TyKind::Flottant,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)),
+                Oper::Mul => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)|(TyKind::Flottant,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)),
+                Oper::Mod => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)),
+                Oper::Div => matches!((ta,tb),(TyKind::Flottant,TyKind::Flottant)|(TyKind::Flottant,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)),
+                Oper::Puissance|Oper::DivEntier => false, // pas encore
+                Oper::Lt|Oper::Le|Oper::Gt|Oper::Ge|Oper::Eq|Oper::Ne => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)|(TyKind::Booleen,TyKind::Booleen)),
+                Oper::Et|Oper::Ou => ta==TyKind::Booleen && tb==TyKind::Booleen,
+            }
+        }
+        Eabstrait::AppelRir { nom, args } => {
+            let sig = match prog.get(nom) { Some(s)=>s, None=>return false };
+            if args.len() != sig.params.len() { return false; }
+            for (i,a) in args.iter().enumerate() {
+                let pt = sig.params[i].1.n;
+                if !compilable(pt) { return false; }
+                let vn = match a { Expr::Var(v,_)=>v, _=>return false };
+                let sl = match corps_noms.iter().position(|n| n==vn) { Some(i)=>i, None=>return false };
+                let at = slot_types.get(sl).copied().unwrap_or(TyKind::Entier);
+                if !compatible_jit(pt, at) { return false; }
+            }
+            compilable(sig.retour.n) || sig.retour.n == TyKind::Vide
+        }
+    }
+}
+
+fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>) -> bool {
+    let corps = match &sig.rir { Some(c)=>c, None=>return false };
+    if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
+    if sig.params.iter().any(|(_,t)| !compilable(t.n)) { return false; }
+    let slot_types = slot_types_rir(corps, sig, prog);
+    for op in &corps.ops {
+        match op {
+            Op::Affect { expr, .. } => {
+                if !eabstrait_rir_compilable(expr, &slot_types, &corps.noms, prog) { return false; }
+            }
+            Op::RetourAbstrait(e) => {
+                if !eabstrait_rir_compilable(e, &slot_types, &corps.noms, prog) { return false; }
+            }
+            Op::Retour(None) => {}
+            Op::Saut { .. } => {}
+            Op::SautSiFauxAbstrait { test, .. } => {
+                if !eabstrait_rir_compilable(test, &slot_types, &corps.noms, prog) { return false; }
+                if ty_eabstrait_rir(test, &slot_types, prog) != Some(TyKind::Booleen) { return false; }
+            }
+            // Tout le reste (AST, blocs, lire, affect index, afficher AST...) -> fallback
+            _ => return false,
+        }
+    }
+    true
+}
+
+
 // ── Mémoire JIT ──────────────────────────────────────────────────────────
 
 /// Table (nom, adresse) des helpers runtime appelables depuis le code JIT.
@@ -953,26 +1072,36 @@ impl Jit {
         if self.foncs.is_empty() {
             self.compiler_tout();
         }
-        let sig = Signature {
+        let mut sig = Signature {
             nom: "$principal".into(), rir: None, params: Vec::new(),
             retour: crate::front::Ty::vide(), a_retour: false,
             corps: Some(prog.instructions.clone()),
             dll: String::new(), dll_son: String::new(), symbole: String::new(),
             ligne: 0,
         };
-        // mêmes portes de parité qu'une fonction ordinaire
-        let mut env = HashMap::new();
-        if crate::front::i_est_compteur() {
-            // « i » est le COMPTEUR ENTIER du programme : le 0+1i que le lexeur
-            // a laissé dans un test « @ (i < n) » est cette variable. Sans
-            // cette entrée, ty_statique la croirait Complexe et $principal
-            // resterait interprété (divergence de voie avec l'interpréteur).
-            env.insert("i".into(), crate::front::TyKind::Entier);
+
+        // M1.2 : préférer le RIR (forme d'exécution linéaire)
+        let mut use_rir = false;
+        if std::env::var("ROSE_NO_RIR").is_err() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
+            if let Some(rir) = crate::rir::abaisser_principal(&prog.instructions) {
+                sig.rir = Some(rir);
+                use_rir = rir_compilable_jit(&sig, &self.signatures);
+                if !use_rir { sig.rir = None; }
+            }
         }
-        if !bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env,
-                            &self.signatures, Some(crate::front::TyKind::Vide)) {
-            return None;
+
+        if !use_rir {
+            // mêmes portes de parité qu'une fonction ordinaire
+            let mut env = HashMap::new();
+            if crate::front::i_est_compteur() {
+                env.insert("i".into(), crate::front::TyKind::Entier);
+            }
+            if !bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env,
+                                &self.signatures, Some(crate::front::TyKind::Vide)) {
+                return None;
+            }
         }
+
         use cranelift::codegen::Context;
         let fid = self.module.declare_function("$principal", Linkage::Preemptible,
                                                &make_signature(&sig)).unwrap();
@@ -988,7 +1117,11 @@ impl Jit {
                 runtime: &self.runtime_decls,
             builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
         };
-        e.emettre_fonction(&sig);
+        if use_rir {
+            if !e.emettre_fonction_rir(&sig) { return None; }
+        } else {
+            e.emettre_fonction(&sig);
+        }
         // une borne de « pour » non entière (0+1i du lexème « i » que la table
         // des types ne connaissait pas) : la boucle native ne terminerait pas,
         // on laisse le programme à l'interpréteur.
@@ -996,11 +1129,10 @@ impl Jit {
         let mut b = e.builder;
         b.seal_all_blocks();
         b.finalize(cible);
-        if let Err(e) = self.module.define_function(fid, &mut fcx) { return None; }
+        if let Err(_e) = self.module.define_function(fid, &mut fcx) { return None; }
         if let Err(e) = self.module.finalize_definitions() { if std::env::var("ROSE_TIMING").is_ok() { eprintln!("finalize_definitions err: {}", e); } return None; }
         let code = self.module.get_finalized_function(fid);
         let fptr: usize = code as usize;
-        // appel direct du code natif (pas de trampoline d'arguments : zéro param)
         Some(Compile::Principal(Box::new(move || {
             unsafe { let f: extern "C" fn() = std::mem::transmute(fptr); f(); }
         })))
@@ -1086,17 +1218,19 @@ impl Jit {
         }
         
         // passe 1 : déclaration de toutes les fonctions éligibles (récursion)
+        // M1.2 : on préfère le RIR quand il est compilable, sinon l'arbre Instr.
         let _tt = std::time::Instant::now();
-        let eligibles: Vec<String> = self.signatures.iter()
-            .filter(|(_, s)| s.corps.is_some() && fonction_compilable(s, &self.signatures))
-            .map(|(n, _)| n.clone()).collect();
-        // ⚠⚠⚠ DÉCLARER LES DÉLÉGUÉS AVANT LA PASSE 2 (mesuré le 17/11).
-        //
-        // ⚠ Une fonction compilée peut appeler une fonction IMPORTÉE ou hors
-        // sous-ensemble : `fonction_ref` exige alors une déclaration dans
-        // `decls` (sinon « no entry found for key »). `declarer_delegues` a
-        // déjà déclaré les non-éligibles… mais on le rappelle au cas où le JIT
-        // est utilisé sans passer par `executer_source_analyse`.
+        let mut eligibles: Vec<String> = Vec::new();
+        let mut eligible_rir: HashMap<String, bool> = HashMap::new();
+        for (nom, s) in self.signatures.iter() {
+            if s.corps.is_none() { continue; }
+            let use_rir = rir_compilable_jit(s, &self.signatures);
+            let use_instr = fonction_compilable(s, &self.signatures);
+            if use_rir || use_instr {
+                eligibles.push(nom.clone());
+                eligible_rir.insert(nom.clone(), use_rir);
+            }
+        }
         self.declarer_delegues();
         if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT eligibles={:?} t={:?}", eligibles, _tt.elapsed()); }
         let _tt2 = std::time::Instant::now();
@@ -1160,7 +1294,13 @@ impl Jit {
                 builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
             };
             let _te = std::time::Instant::now();
-            e.emettre_fonction(&sig);
+            let mut emitted_rir = false;
+            if *eligible_rir.get(nom).unwrap_or(&false) {
+                emitted_rir = e.emettre_fonction_rir(&sig);
+            }
+            if !emitted_rir {
+                e.emettre_fonction(&sig);
+            }
             let _t_emit = _te.elapsed();
             if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT emit={:?}", _t_emit); }
             let mut b = e.builder;
@@ -1366,6 +1506,359 @@ impl Emetteur<'_> {
         let b: Vec<BlockArg> = args_sinon.iter().map(|v| (*v).into()).collect();
         self.builder.ins().brif(c, alors, &a[..], sinon, &b[..]);
     }
+
+    // ── M1.2 : émission RIR ─────────────────────────────────────────────
+
+    fn expr_eabstrait_rir(&mut self, e: &Eabstrait, slot_vars: &[Variable], slot_types: &[TyKind], corps: &CorpsRir) -> JitVal {
+        match e {
+            Eabstrait::Slot(s, _) => {
+                let i = *s as usize;
+                let v = self.builder.use_var(slot_vars[i]);
+                JitVal::Simple(v)
+            }
+            Eabstrait::Entier(t) => {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                let v: i64 = t.parse().unwrap_or(0);
+                JitVal::Simple(self.builder.ins().iconst(types::I64, v))
+            }
+            Eabstrait::Flottant(d) => {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                let c = self.builder.ins().iconst(types::I64, d.to_bits() as i64);
+                JitVal::Simple(self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c))
+            }
+            Eabstrait::Neg(a) => {
+                let ta = ty_eabstrait_rir(a, slot_types, self.signatures).unwrap_or(TyKind::Entier);
+                let av_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                let av = self.simple(av_j);
+                if ta == TyKind::Flottant {
+                    JitVal::Simple(self.builder.ins().fneg(av))
+                } else {
+                    // entier taggé via helper
+                    let tag_v = self.builder.use_var(self.tag_tmp);
+                    let ss = self.module.target_config().pointer_bytes() as u32;
+                    let sv = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+                    let st = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+                    let p_sv = self.builder.ins().stack_addr(types::I64, sv, 0);
+                    let p_st = self.builder.ins().stack_addr(types::I64, st, 0);
+                    let f = self.import_runtime("rose_neg_ent");
+                    let _ = self.builder.ins().call(f, &[av, tag_v, p_sv, p_st]);
+                    let rv = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
+                    let rt = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
+                    self.builder.def_var(self.tag_tmp, rt);
+                    JitVal::Simple(rv)
+                }
+            }
+            Eabstrait::Non(a) => {
+                let av_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                let av = self.simple(av_j);
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let is_zero = self.builder.ins().icmp(IntCC::Equal, av, zero);
+                let one = self.builder.ins().iconst(types::I64, 1);
+                let res = self.builder.ins().select(is_zero, one, zero);
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                JitVal::Simple(res)
+            }
+            Eabstrait::Binaire { op, a, b } => {
+                let ta = ty_eabstrait_rir(a, slot_types, self.signatures).unwrap_or(TyKind::Entier);
+                let tb = ty_eabstrait_rir(b, slot_types, self.signatures).unwrap_or(TyKind::Entier);
+                match op {
+                    Oper::Lt|Oper::Le|Oper::Gt|Oper::Ge|Oper::Eq|Oper::Ne => {
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va = self.simple(va_j);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb = self.simple(vb_j);
+                        let (va,vb,floating) = if ta==TyKind::Flottant || tb==TyKind::Flottant {
+                            let va = if ta==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, va) } else { va };
+                            let vb = if tb==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, vb) } else { vb };
+                            (va,vb,true)
+                        } else { (va,vb,false) };
+                        let cond = if floating {
+                            let cc = match op { Oper::Lt=>FloatCC::LessThan, Oper::Le=>FloatCC::LessThanOrEqual, Oper::Gt=>FloatCC::GreaterThan, Oper::Ge=>FloatCC::GreaterThanOrEqual, Oper::Eq=>FloatCC::Equal, Oper::Ne=>FloatCC::NotEqual, _=>unreachable!() };
+                            self.builder.ins().fcmp(cc, va, vb)
+                        } else {
+                            let cc = match op { Oper::Lt=>IntCC::SignedLessThan, Oper::Le=>IntCC::SignedLessThanOrEqual, Oper::Gt=>IntCC::SignedGreaterThan, Oper::Ge=>IntCC::SignedGreaterThanOrEqual, Oper::Eq=>IntCC::Equal, Oper::Ne=>IntCC::NotEqual, _=>unreachable!() };
+                            self.builder.ins().icmp(cc, va, vb)
+                        };
+                        let one = self.builder.ins().iconst(types::I64, 1);
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        let res = self.builder.ins().select(cond, one, zero);
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        JitVal::Simple(res)
+                    }
+                    Oper::Et|Oper::Ou => {
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va = self.simple(va_j);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb = self.simple(vb_j);
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        let ba = self.builder.ins().icmp(IntCC::NotEqual, va, zero);
+                        let bb = self.builder.ins().icmp(IntCC::NotEqual, vb, zero);
+                        let r = if *op==Oper::Et { self.builder.ins().band(ba, bb) } else { self.builder.ins().bor(ba, bb) };
+                        let one = self.builder.ins().iconst(types::I64, 1);
+                        let res = self.builder.ins().select(r, one, zero);
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        JitVal::Simple(res)
+                    }
+                    Oper::Add|Oper::Sub|Oper::Mul => {
+                        let is_f = ta==TyKind::Flottant || tb==TyKind::Flottant;
+                        if is_f {
+                            let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                            let va = self.simple(va_j);
+                            let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                            let vb = self.simple(vb_j);
+                            let va = if ta==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, va) } else { va };
+                            let vb = if tb==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, vb) } else { vb };
+                            let r = match op { Oper::Add=>self.builder.ins().fadd(va,vb), Oper::Sub=>self.builder.ins().fsub(va,vb), Oper::Mul=>self.builder.ins().fmul(va,vb), _=>unreachable!() };
+                            let zt = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.def_var(self.tag_tmp, zt);
+                            JitVal::Simple(r)
+                        } else {
+                            // entier taggé
+                            let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                            let va = self.simple(va_j);
+                            // tag de a: pour un slot simple on suppose 0; pour un résultat taggé on a tag_tmp
+                            let tag_a = self.builder.use_var(self.tag_tmp);
+                            let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                            let vb = self.simple(vb_j);
+                            let tag_b = self.builder.use_var(self.tag_tmp);
+                            let fid_name = match op { Oper::Add=>"rose_add_ent", Oper::Sub=>"rose_sub_ent", Oper::Mul=>"rose_mul_ent", _=>unreachable!() };
+                            let ss = self.module.target_config().pointer_bytes() as u32;
+                            let sv = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+                            let st = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+                            let p_sv = self.builder.ins().stack_addr(types::I64, sv, 0);
+                            let p_st = self.builder.ins().stack_addr(types::I64, st, 0);
+                            let f = self.import_runtime(fid_name);
+                            let _ = self.builder.ins().call(f, &[va, tag_a, vb, tag_b, p_sv, p_st]);
+                            let rv = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
+                            let rt = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
+                            self.builder.def_var(self.tag_tmp, rt);
+                            JitVal::Simple(rv)
+                        }
+                    }
+                    Oper::Mod => {
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va = self.simple(va_j);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb = self.simple(vb_j);
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        JitVal::Simple(self.builder.ins().srem(va, vb))
+                    }
+                    Oper::Div => {
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va = self.simple(va_j);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb = self.simple(vb_j);
+                        let va = if ta==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, va) } else { va };
+                        let vb = if tb==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, vb) } else { vb };
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        JitVal::Simple(self.builder.ins().fdiv(va, vb))
+                    }
+                    Oper::Puissance|Oper::DivEntier => {
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        JitVal::Simple(self.builder.ins().iconst(types::I64, 0))
+                    }
+                }
+            }
+            Eabstrait::AppelRir { nom, args } => {
+                // args sont des Expr::Var
+                let mut call_args: Vec<Value> = Vec::new();
+                let sig_callee = self.signatures.get(nom).cloned();
+                if let Some(cs) = sig_callee {
+                    for (i,a) in args.iter().enumerate() {
+                        if let Expr::Var(vn, _) = a {
+                            let sl = corps.noms.iter().position(|n| n==vn).unwrap_or(0);
+                            let v = self.builder.use_var(slot_vars[sl]);
+                            let pt = cs.params[i].1.n;
+                            let at = slot_types.get(sl).copied().unwrap_or(TyKind::Entier);
+                            if pt==TyKind::Flottant && at!=TyKind::Flottant {
+                                call_args.push(self.builder.ins().fcvt_from_sint(types::F64, v));
+                            } else {
+                                call_args.push(v);
+                            }
+                        }
+                    }
+                    if let Some(&fid) = self.decls.get(nom).or_else(|| self.foncs.get(nom)).or_else(|| self.delegues.get(nom)) {
+                        let fref = self.module.declare_func_in_func(fid, self.builder.func);
+                        let call = self.builder.ins().call(fref, &call_args);
+                        let res0 = self.builder.inst_results(call).first().copied();
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        if let Some(r0) = res0 {
+                            JitVal::Simple(r0)
+                        } else {
+                            JitVal::Simple(self.builder.ins().iconst(types::I64, 0))
+                        }
+                    } else {
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        JitVal::Simple(self.builder.ins().iconst(types::I64, 0))
+                    }
+                } else {
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    JitVal::Simple(self.builder.ins().iconst(types::I64, 0))
+                }
+            }
+        }
+    }
+
+    fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
+        let corps = match &sig.rir { Some(c) => c, None => return false };
+        let slot_types = slot_types_rir(corps, sig, self.signatures);
+
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+
+        // Variables Cranelift pour chaque slot RIR
+        let mut slot_vars: Vec<Variable> = Vec::with_capacity(corps.n_slots);
+        let zt0 = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(self.tag_tmp, zt0);
+
+        // params
+        let mut pidx = 0usize;
+        for i in 0..corps.n_slots {
+            let t = slot_types.get(i).copied().unwrap_or(TyKind::Entier);
+            let vty = if t == TyKind::Flottant { types::F64 } else { types::I64 };
+            let var = self.builder.declare_var(vty);
+            slot_vars.push(var);
+            if i < sig.params.len() {
+                let param = self.builder.block_params(entry)[pidx];
+                pidx += 1;
+                self.builder.def_var(var, param);
+            } else {
+                if t == TyKind::Flottant {
+                    let c = self.builder.ins().iconst(types::I64, 0);
+                    let z = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                    self.builder.def_var(var, z);
+                } else {
+                    let z = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(var, z);
+                }
+            }
+        }
+
+        let n = corps.ops.len();
+        let mut blocks: Vec<Block> = Vec::with_capacity(n + 1);
+        for _ in 0..n { blocks.push(self.builder.create_block()); }
+        let end_block = self.builder.create_block();
+
+        if n > 0 {
+            self.saut(blocks[0], &[]);
+        } else {
+            self.saut(end_block, &[]);
+        }
+
+        for pc in 0..n {
+            self.builder.switch_to_block(blocks[pc]);
+            let next = if pc + 1 < n { blocks[pc + 1] } else { end_block };
+            match &corps.ops[pc] {
+                Op::Affect { slot, expr } => {
+                    let val_j = self.expr_eabstrait_rir(expr, &slot_vars, &slot_types, corps);
+                    let v = self.simple(val_j);
+                    let st = slot_types.get(*slot as usize).copied().unwrap_or(TyKind::Entier);
+                    let v = if st == TyKind::Flottant && self.builder.func.dfg.value_type(v) == types::I64 {
+                        self.builder.ins().fcvt_from_sint(types::F64, v)
+                    } else { v };
+                    self.builder.def_var(slot_vars[*slot as usize], v);
+                    self.saut(next, &[]);
+                }
+                Op::Saut { cible } => {
+                    let tgt = if *cible < n { blocks[*cible] } else { end_block };
+                    self.saut(tgt, &[]);
+                }
+                Op::SautSiFauxAbstrait { test, cible } => {
+                    let tv_j = self.expr_eabstrait_rir(test, &slot_vars, &slot_types, corps);
+                    let tv = self.simple(tv_j);
+                    let zero = self.builder.ins().iconst(types::I64, 0);
+                    let cond = self.builder.ins().icmp(IntCC::NotEqual, tv, zero);
+                    let tgt_false = if *cible < n { blocks[*cible] } else { end_block };
+                    self.br_args(cond, next, &[], tgt_false, &[]);
+                }
+                Op::RetourAbstrait(e) => {
+                    let val_j = self.expr_eabstrait_rir(e, &slot_vars, &slot_types, corps);
+                    let v = self.simple(val_j);
+                    match sig.retour.n {
+                        TyKind::Vide => { self.builder.ins().return_(&[]); }
+                        TyKind::Flottant => {
+                            let v = if self.builder.func.dfg.value_type(v) == types::I64 {
+                                self.builder.ins().fcvt_from_sint(types::F64, v)
+                            } else { v };
+                            self.builder.ins().return_(&[v]);
+                        }
+                        TyKind::Booleen => {
+                            let v = if self.builder.func.dfg.value_type(v) == types::F64 {
+                                self.builder.ins().fcvt_to_sint_sat(types::I64, v)
+                            } else { v };
+                            let zt = self.builder.ins().iconst(types::I64, 0);
+                            let f = self.import_runtime("rose_set_ret_tag");
+                            let _ = self.builder.ins().call(f, &[zt]);
+                            self.builder.ins().return_(&[v]);
+                        }
+                        _ => {
+                            let tag = self.builder.use_var(self.tag_tmp);
+                            let f = self.import_runtime("rose_set_ret_tag");
+                            let _ = self.builder.ins().call(f, &[tag]);
+                            let v = if self.builder.func.dfg.value_type(v) == types::F64 {
+                                self.builder.ins().fcvt_to_sint_sat(types::I64, v)
+                            } else { v };
+                            self.builder.ins().return_(&[v]);
+                        }
+                    }
+                }
+                Op::Retour(None) => {
+                    match sig.retour.n {
+                        TyKind::Vide => { self.builder.ins().return_(&[]); }
+                        TyKind::Flottant => {
+                            let c = self.builder.ins().iconst(types::I64, 0);
+                            let z = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                            self.builder.ins().return_(&[z]);
+                        }
+                        _ => {
+                            let zt = self.builder.ins().iconst(types::I64, 0);
+                            let f = self.import_runtime("rose_set_ret_tag");
+                            let _ = self.builder.ins().call(f, &[zt]);
+                            let c = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.ins().return_(&[c]);
+                        }
+                    }
+                }
+                _ => {
+                    // ne devrait pas arriver si rir_compilable_jit
+                    self.saut(next, &[]);
+                }
+            }
+        }
+
+        self.builder.switch_to_block(end_block);
+        // retour par défaut (fin sans retour explicite)
+        match sig.retour.n {
+            TyKind::Vide => { self.builder.ins().return_(&[]); }
+            TyKind::Flottant => {
+                let c = self.builder.ins().iconst(types::I64, 0);
+                let z = self.builder.ins().bitcast(types::F64, MemFlagsData::new(), c);
+                self.builder.ins().return_(&[z]);
+            }
+            _ => {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                let f = self.import_runtime("rose_set_ret_tag");
+                let _ = self.builder.ins().call(f, &[zt]);
+                let c = self.builder.ins().iconst(types::I64, 0);
+                self.builder.ins().return_(&[c]);
+            }
+        }
+        self.returned = true;
+        true
+    }
+
 
     fn emettre_fonction(&mut self, sig: &Signature) {
         // chaque variable (paramètre comme locale) a SON propre slot : deux
