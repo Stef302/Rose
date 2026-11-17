@@ -61,6 +61,7 @@ Usage :
   rose latex prog.rose --lignes     seulement les lignes marquees %% (LaTeX brut)
   rose latex prog.rose --lignes --apercu   les lignes %% en rendu visible
   rose tokens prog.rose             liste les jetons (oracle : ligne:colonne type texte)
+  rose ast prog.rose                arbre syntaxique (oracle, S-expressions)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
@@ -74,6 +75,292 @@ Usage :
 ",
         env!("CARGO_PKG_VERSION")
     )
+}
+
+// ── Oracle AST (M4.2) ─────────────────────────────────────────────────────
+
+fn ast_echapper(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn ast_type_nom(t: &front::Ty) -> String {
+    t.nom()
+}
+
+fn ast_expr(e: &front::Expr, out: &mut String) {
+    use front::Expr;
+    match e {
+        Expr::Litteral { texte, flott, rationnel, neg, .. } => {
+            if *flott || *rationnel {
+                out.push_str("(f ");
+            } else {
+                out.push_str("(n ");
+            }
+            if *neg { out.push('-'); }
+            out.push_str(texte);
+            out.push(')');
+        }
+        Expr::LitComplexe { re, im, .. } => {
+            // extension Rust : littéral complexe
+            out.push_str(&format!("(c {} {})", re, im));
+        }
+        Expr::ChaineLit(s, _) => {
+            out.push_str("(s ");
+            out.push_str(&ast_echapper(s));
+            out.push(')');
+        }
+        Expr::BooleenLit(v, _) => {
+            out.push_str(if *v { "(b vraie)" } else { "(b faux)" });
+        }
+        Expr::Var(n, _) => {
+            out.push_str("(v ");
+            out.push_str(n);
+            out.push(')');
+        }
+        Expr::Appel { nom, module, args, .. } => {
+            out.push_str("(app ");
+            if !module.is_empty() {
+                out.push_str(module);
+                out.push_str("::");
+            }
+            out.push_str(nom);
+            for a in args {
+                out.push(' ');
+                ast_expr(a, out);
+            }
+            out.push(')');
+        }
+        Expr::Index { a, b, .. } => {
+            out.push_str("(idx ");
+            ast_expr(a, out);
+            out.push(' ');
+            ast_expr(b, out);
+            out.push(')');
+        }
+        Expr::Binaire { op, a, b, .. } => {
+            out.push_str("(bin ");
+            out.push_str(op);
+            out.push(' ');
+            ast_expr(a, out);
+            out.push(' ');
+            ast_expr(b, out);
+            out.push(')');
+        }
+        Expr::Unaire { op, a, .. } => {
+            out.push_str("(uni ");
+            out.push_str(op);
+            out.push(' ');
+            ast_expr(a, out);
+            out.push(')');
+        }
+        Expr::Factorielle(a, _) => { out.push_str("(fact "); ast_expr(a, out); out.push(')'); }
+        Expr::MultiFactorielle(a, k, _) => {
+            out.push_str("(mfact ");
+            out.push_str(&k.to_string());
+            out.push(' ');
+            ast_expr(a, out);
+            out.push(')');
+        }
+        Expr::SousFactorielle(a, _) => { out.push_str("(sfact "); ast_expr(a, out); out.push(')'); }
+        Expr::Primorielle(a, _) => { out.push_str("(prim "); ast_expr(a, out); out.push(')'); }
+        Expr::Terminal(a, _) => { out.push_str("(term "); ast_expr(a, out); out.push(')'); }
+        Expr::SuperFactorielle(a, _) => { out.push_str("(super "); ast_expr(a, out); out.push(')'); }
+        Expr::ListeLit(elems, _) => {
+            out.push_str("(lst");
+            for e in elems { out.push(' '); ast_expr(e, out); }
+            out.push(')');
+        }
+        Expr::ListeVideTypee(ty, _) => {
+            // extension : liste vide typée
+            out.push_str("(lstvide ");
+            out.push_str(&front::Ty::simple(*ty).nom());
+            out.push(')');
+        }
+        Expr::TableLit(paires, _) => {
+            out.push_str("(tbl");
+            for (k, v) in paires {
+                out.push(' ');
+                out.push_str(&ast_echapper(k));
+                out.push(' ');
+                ast_expr(v, out);
+            }
+            out.push(')');
+        }
+    }
+}
+
+fn ast_ind(n: usize) -> String { "  ".repeat(n) }
+
+fn ast_instrs(instrs: &[front::Instr], ind: usize, out: &mut String) {
+    for i in instrs { ast_instr(i, ind, out); }
+}
+
+fn ast_instr(i: &front::Instr, ind: usize, out: &mut String) {
+    use front::Instr;
+    let p = ast_ind(ind);
+    match i {
+        Instr::Afficher(args, _) => {
+            out.push_str(&p);
+            out.push_str("afficher");
+            for a in args { out.push(' '); ast_expr(a, out); }
+            out.push('\n');
+        }
+        Instr::Lire { nom, .. } => {
+            out.push_str(&p);
+            out.push_str("lire ");
+            out.push_str(nom);
+            out.push('\n');
+        }
+        Instr::Affect { nom, e, .. } => {
+            out.push_str(&p);
+            out.push_str("affect ");
+            out.push_str(nom);
+            out.push(' ');
+            ast_expr(e, out);
+            out.push('\n');
+        }
+        Instr::AffectIndex { nom, index, valeur, .. } => {
+            out.push_str(&p);
+            out.push_str("affect_index ");
+            out.push_str(nom);
+            out.push(' ');
+            ast_expr(index, out);
+            out.push(' ');
+            ast_expr(valeur, out);
+            out.push('\n');
+        }
+        Instr::Si { test, alors, sinon, .. } => {
+            out.push_str(&p);
+            out.push_str("si ");
+            ast_expr(test, out);
+            out.push('\n');
+            out.push_str(&p);
+            out.push_str("alors\n");
+            ast_instrs(alors, ind + 1, out);
+            if let Some(s) = sinon {
+                out.push_str(&p);
+                out.push_str("sinon\n");
+                ast_instrs(s, ind + 1, out);
+            }
+        }
+        Instr::TantQue { test, corps, .. } => {
+            out.push_str(&p);
+            out.push_str("tant_que ");
+            ast_expr(test, out);
+            out.push('\n');
+            ast_instrs(corps, ind + 1, out);
+        }
+        Instr::Pour { nom, debut, fin, corps, .. } => {
+            out.push_str(&p);
+            out.push_str("pour ");
+            out.push_str(nom);
+            out.push(' ');
+            ast_expr(debut, out);
+            out.push(' ');
+            ast_expr(fin, out);
+            out.push('\n');
+            ast_instrs(corps, ind + 1, out);
+        }
+        Instr::Retour(e, _) => {
+            out.push_str(&p);
+            out.push_str("retour");
+            if let Some(ex) = e { out.push(' '); ast_expr(ex, out); }
+            out.push('\n');
+        }
+        Instr::ExprStmt(e) => {
+            out.push_str(&p);
+            out.push_str("expr ");
+            ast_expr(e, out);
+            out.push('\n');
+        }
+        Instr::Bloc(b) => {
+            out.push_str(&p);
+            out.push_str("bloc\n");
+            ast_instrs(b, ind + 1, out);
+        }
+        Instr::Spawn(b, _) => {
+            out.push_str(&p);
+            out.push_str("spawn\n");
+            ast_instrs(b, ind + 1, out);
+        }
+        Instr::Essayer { corps, attraper, finalment, .. } => {
+            out.push_str(&p);
+            out.push_str("essayer\n");
+            ast_instrs(corps, ind + 1, out);
+            if let Some((nom, b)) = attraper {
+                out.push_str(&p);
+                out.push_str("attraper ");
+                out.push_str(nom);
+                out.push('\n');
+                ast_instrs(b, ind + 1, out);
+            }
+            if let Some(b) = finalment {
+                out.push_str(&p);
+                out.push_str("finalement\n");
+                ast_instrs(b, ind + 1, out);
+            }
+        }
+        Instr::Lever(e, _) => {
+            out.push_str(&p);
+            out.push_str("lever ");
+            ast_expr(e, out);
+            out.push('\n');
+        }
+        Instr::Rir(_) => {
+            out.push_str(&p);
+            out.push_str("rir\n");
+        }
+    }
+}
+
+fn ast_programme(prog: &front::Programme) -> String {
+    let mut out = String::from("programme\n");
+    // signatures triées par nom (ordre déterministe)
+    let mut noms: Vec<&String> = prog.signatures.keys().collect();
+    noms.sort();
+    for nom in noms {
+        let s = &prog.signatures[nom];
+        out.push_str("fonction ");
+        out.push_str(&s.nom);
+        out.push('\n');
+        if s.corps.is_none() {
+            out.push_str("externe ");
+            out.push_str(&ast_echapper(&s.dll));
+            out.push(' ');
+            out.push_str(&ast_echapper(&s.dll_son));
+            out.push(' ');
+            out.push_str(&ast_echapper(&s.symbole));
+            out.push('\n');
+        }
+        for (pn, pt) in &s.params {
+            out.push_str("param ");
+            out.push_str(pn);
+            out.push(' ');
+            out.push_str(&ast_type_nom(pt));
+            out.push('\n');
+        }
+        out.push_str("retour ");
+        out.push_str(&ast_type_nom(&s.retour));
+        out.push('\n');
+        if let Some(corps) = &s.corps {
+            ast_instrs(corps, 1, &mut out);
+        }
+    }
+    ast_instrs(&prog.instructions, 0, &mut out);
+    out
 }
 
 /* ── mode bundle : programme collé dans le moteur  ── */
@@ -354,6 +641,24 @@ fn main() {
                 // M4.1 oracle : ligne:colonne type texte
                 println!("{}:{} {} {}", t.ligne, t.col, type_nom, t.texte);
             }
+            std::process::exit(0);
+        }
+        "ast" => {
+            if argv.len() < 3 { eprintln!("rose ast : quel programme ?"); std::process::exit(1); }
+            let mut source = String::new();
+            if !lire(&mut source, &argv[2]) {
+                eprintln!("rose: fichier introuvable : {}", argv[2]);
+                std::process::exit(1);
+            }
+            let toks = match front::tokeniser(&source) {
+                Ok(t) => t,
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            };
+            let prog = match front::Parser::nouveau(toks).programmer() {
+                Ok(p) => p,
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            };
+            print!("{}", ast_programme(&prog));
             std::process::exit(0);
         }
         "verif" => {
