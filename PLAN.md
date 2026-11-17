@@ -46,7 +46,7 @@ M4  Auto-hébergement : compilateur en Rose
 M4.1 lexeur en Rose (miroir de tokeniser)      ← FAIT (181 fichiers, 22b1ae5)
 M4.2 analyseur en Rose                         ← FAIT (148 fichiers, 5b214b6)
 M4.3 vérificateur en Rose                      ← FAIT (60/61, 3aa6df5)
-M4.4 émetteur RIR en Rose                      ← À FAIRE
+M4.4 émetteur RIR en Rose                      ← EN COURS (21/46, 97be6f6)
 M4.5 point fixe de bootstrap                   ← À FAIRE
 M5  Runtime autonome (sans Rust std, sans GMP)
 M5.1 arithmétique exacte en Rose pur           ← FAIT (mul_rapide, i128x)
