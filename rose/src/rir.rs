@@ -704,17 +704,30 @@ impl PileDeSlots {
     }
 
     fn preparer(&mut self) {
-        if self.memoire.is_empty() {
+        // ⚠⚠⚠ M2.1 (17/11) : réserver la capacité SANS `resize` géant.
+        //
+        // L'ancien `resize(SLOTS_MAX, Valeur::Vide)` zeroïsait 2 M de `Valeur`
+        // (~64 Mio) au PREMIER appel RIR, mesuré à ~15 ms sur ce programme —
+        // soit plus cher que tout le calcul du jardin. `with_capacity` réserve
+        // la même zone (mmap paresseux, pointeur stable) sans toucher les pages ;
+        // `empiler` étend la LONGUEUR juste assez pour le cadre courant. Comme
+        // la capacité est déjà SLOTS_MAX, ce `resize` ne réalloue JAMAIS : les
+        // pointeurs de cadres parents restent valides (piège mesuré du 16/11).
+        if self.memoire.capacity() == 0 {
             self.memoire = Vec::with_capacity(Self::SLOTS_MAX);
-            self.memoire.resize(Self::SLOTS_MAX, Valeur::Vide);
         }
     }
 
     /// ⚠ Empile un cadre de `n` slots (remis à `Vide`) et rend son pointeur.
     pub fn empiler(&mut self, n: usize) -> *mut Valeur {
         self.preparer();
-        if self.sommet + n > self.memoire.len() {
+        if self.sommet + n > Self::SLOTS_MAX {
             crate::run::erreur_runtime("trop d'appels imbriqués (pile de slots RIR pleine)");
+        }
+        if self.sommet + n > self.memoire.len() {
+            // ⚠ Pas de réallocation : la capacité est réservée une fois pour
+            // toutes dans `preparer`. Seule la longueur utile grandit.
+            self.memoire.resize(self.sommet + n, Valeur::Vide);
         }
         let debut = self.sommet;
         self.sommet += n;

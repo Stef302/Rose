@@ -1960,15 +1960,6 @@ impl Interp {
     {
         let sig_ptr: *const Signature = self.prog.signatures.get(nom)? as *const Signature;
         let sig: &Signature = unsafe { &*sig_ptr };
-        // ⚠⚠⚠ SEULES LES FONCTIONS RIR SONT PRISES ICI (mesuré le 16/11).
-        //
-        // ⚠ Une fonction du CATALOGUE (`longueur`, `joindre`, `chaine`…) n'a
-        // pas de corps : elle doit passer par la voie ordinaire (qui sait
-        // évaluer ses arguments depuis les slots). La version qui prenait
-        // « toute fonction dont les paramètres sont des entiers » les
-        // capturait et perdait leurs arguments (mesuré : « Variable 'r'
-        // utilisée sans valeur » pour `longueur($r)`).
-        let corps = sig.rir.as_ref()?;
         if args.len() != sig.params.len() { return None; }
         // ⚠⚠⚠ TOUS LES ARGUMENTS DOIVENT ÊTRE DES SLOTS (mesuré le 17/11).
         //
@@ -1979,6 +1970,57 @@ impl Interp {
         for a in args.iter() {
             if !matches!(a, Expr::Var(..)) { return None; }
         }
+        // ⚠⚠⚠ M2.1 (17/11) : LE CHEMIN CHAUD RIR APPELAIT TOUJOURS
+        // L'INTERPRÉTEUR, MEME QUAND LA FONCTION ÉTAIT COMPILÉE PAR LE JIT.
+        //
+        // `appel()` teste `self.jit` AVANT la voie RIR, mais les appels
+        // `f($k)` émis DANS un corps RIR (la boucle de cross-check du jardin
+        // des premiers) arrivent ici, où seul le corps RIR était exécuté :
+        // 1000 appels de `est_premier` interprétés ≈ 11 ms, alors que le
+        // code natif du JIT existe déjà. On appelle donc ce code natif,
+        // exactement comme `appel()` le fait (même vidage de la pile de
+        // slots, cf. le piège mesuré du 17/11).
+        if let Some(Compile::Natif(f)) = self.jit.get(nom) {
+            let mut nargs: Vec<Valeur> = Vec::with_capacity(args.len());
+            for a in args.iter() {
+                if let Expr::Var(n, _) = a {
+                    // ⚠ L'ARGUMENT EST DANS LE CORPS APPELANT (pas dans l'appelé).
+                    let v = match corps_appelant.and_then(|c| slot_du_nom(&c.noms, n)) {
+                        Some(k) => unsafe { (*base.add(k)).clone() },
+                        _ => match self.chercher_var(n) {
+                            Some(v) => v,
+                            None => return Some(Err(Some(1))),
+                        },
+                    };
+                    nargs.push(v);
+                }
+            }
+            let sauve_tete = self.pile_slots.sommet();
+            self.pile_slots.vider();
+            let r = f(nargs);
+            self.pile_slots.restaurer(sauve_tete);
+            return Some(Ok(match sig.retour.n {
+                TyKind::Entier => match r {
+                    Valeur::Entier(..) => r,
+                    _ => convertir(r, TyKind::Entier),
+                },
+                TyKind::Booleen => match r {
+                    Valeur::Booleen(_) => r,
+                    _ => Valeur::b(est_vrai(&r)),
+                },
+                TyKind::Vide => Valeur::Vide,
+                t => convertir(r, t),
+            }));
+        }
+        // ⚠⚠⚠ SEULES LES FONCTIONS RIR SONT PRISES ICI (mesuré le 16/11).
+        //
+        // ⚠ Une fonction du CATALOGUE (`longueur`, `joindre`, `chaine`…) n'a
+        // pas de corps : elle doit passer par la voie ordinaire (qui sait
+        // évaluer ses arguments depuis les slots). La version qui prenait
+        // « toute fonction dont les paramètres sont des entiers » les
+        // capturait et perdait leurs arguments (mesuré : « Variable 'r'
+        // utilisée sans valeur » pour `longueur($r)`).
+        let corps = sig.rir.as_ref()?;
         let corps_ptr: *const crate::rir::CorpsRir = corps;
         let corps_ref: &crate::rir::CorpsRir = unsafe { &*corps_ptr };
         let n_slots = corps_ref.n_slots;
