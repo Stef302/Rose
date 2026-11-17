@@ -15,6 +15,14 @@
 //! 2. Le démarrage no_std (allocateur global, point d'entrée, panic handler)
 //!    n'est PAS dans ce module : il appartient au binaire. Voir `docs/NO_STD.md`.
 //!
+//! ✅ M5.3 (17/11/2026) — VÉRIFIÉ : ce fichier, inclus par `#[path]` dans une
+//! crate `#![no_std]` dont l'unique dépendance est
+//! `libc = { version = "0.2", default-features = false }`, compile, s'exécute
+//! (écriture + lecture + mmap/munmap de 51 octets) et ne contient AUCUN
+//! symbole `std::` ni dépendance `libstd` (`ldd` = `libc.so.6` seul).
+//! Harnais : `/tmp/opencode/rose_sys_io_nostd/`. Porte et pièges :
+//! `docs/NO_STD_CHECKLIST.md`.
+//!
 //! Architecture mesurée avant écriture : `uname -m` → `aarch64`. Les numéros
 //! de syscalls utilisés viennent de `libc::SYS_*` (aarch64 : openat 56,
 //! close 57, read 63, write 64, munmap 215, mmap 222) : aucun appel asm
