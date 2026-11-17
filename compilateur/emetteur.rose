@@ -522,6 +522,16 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
         si (T0($g, $q) == ",") { $q = $q + 1 } sinon { $ok = 0 }
       }
     }
+    # [0 : type] : liste vide typée (M2.4)
+    si ($nc == 1 et $col[1] >= 0 et $k[$col[1]] == "lit" et $tx[$col[1]] == "0" et T0($g, $q) == ":") {
+      $q = $q + 1
+      $q = $q + 1
+      si (T0($g, $q) == "]") { $q = $q + 1 }
+      $z = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lit", "0", "", -1, -1, 0, 0, $l)
+      joindre($al, $z)
+      $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lst", "", "", -1, -1, longueur($al) - 1, 1, $l)
+      retour chaine($q) + "|" + chaine($i)
+    }
     si (T0($g, $q) == "]") { $q = $q + 1 }
     $sa = longueur($al)
     $u = 1
@@ -2856,7 +2866,7 @@ fn rir_instr($ix: entier, $ipc: entier,
              $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
              $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
              $sn: liste<chaine>, $glst: liste<entier>, $connus: liste<chaine>, $ops: liste<chaine>,
-             $estprincipal: booleen) -> entier {
+             $estprincipal: booleen, $dans_pour: booleen) -> entier {
   $kd = $ik[$ix]
   $pc = $ipc
   si ($kd == "aff") {
@@ -2906,21 +2916,26 @@ fn rir_instr($ix: entier, $ipc: entier,
   si ($kd == "si") {
     $ab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
     $ex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
-    si ($ab != "") { rir_op("saut_si_faux_abstrait @sinon " + $ab, $pc, $ops) }
-    sinon { rir_op("saut_si_faux @sinon " + $ex, $pc, $ops) }
-    $pc = $pc + 1
-    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
-    # pas de saut si la branche se termine par un retour
-    $dern = $ops[longueur($ops) - 1]
-    $a_retour = 0
-    si (contient_ops($dern, "retour") et non contient_ops($dern, "saut")) { $a_retour = 1 }
-    si ($a_retour == 0) {
+    $a_sinon = 0
+    si (longueur($ib2[$ix]) > 0) { $a_sinon = 1 }
+    si ($a_sinon == 1) {
+      si ($ab != "") { rir_op("saut_si_faux_abstrait @sinon " + $ab, $pc, $ops) }
+      sinon { rir_op("saut_si_faux @sinon " + $ex, $pc, $ops) }
+      $pc = $pc + 1
+      $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
       rir_op("saut @fin", $pc, $ops)
       $pc = $pc + 1
+      joindre($ops, "@sinon:")
+      $pc = rir_corps($ib2[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
+      joindre($ops, "@fin:")
+    } sinon {
+      # sans sinon : saut-si-faux vise directement « après », aucun saut final
+      si ($ab != "") { rir_op("saut_si_faux_abstrait @fin " + $ab, $pc, $ops) }
+      sinon { rir_op("saut_si_faux @fin " + $ex, $pc, $ops) }
+      $pc = $pc + 1
+      $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
+      joindre($ops, "@fin:")
     }
-    joindre($ops, "@sinon:")
-    $pc = rir_corps($ib2[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
-    joindre($ops, "@fin:")
     retour $pc
   }
   si ($kd == "tq") {
@@ -2930,7 +2945,7 @@ fn rir_instr($ix: entier, $ipc: entier,
     si ($ab != "") { rir_op("saut_si_faux_abstrait @fin " + $ab, $pc, $ops) }
     sinon { rir_op("saut_si_faux @fin " + $ex, $pc, $ops) }
     $pc = $pc + 1
-    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
     rir_op("saut @cond", $pc, $ops)
     $pc = $pc + 1
     joindre($ops, "@fin:")
@@ -2938,32 +2953,33 @@ fn rir_instr($ix: entier, $ipc: entier,
   }
   si ($kd == "pour") {
     $pslot = slot_de($ino[$ix], $sn)
+    si ($estprincipal et non $dans_pour) { marquer_global($pslot, $glst) }
     $pdebut = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
     $pab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
     si ($pab != "") { rir_op("affect slot " + chaine($pslot) + " = " + $pab, $pc, $ops) }
     sinon { rir_op("affect_ast slot " + chaine($pslot) + " = " + $pdebut, $pc, $ops) }
     $pc = $pc + 1
-    joindre($ops, "@pcond:")
+    joindre($ops, "@pcond_" + $ino[$ix] + ":")
     # test : bin < (v var) fin
     $pfin = em_ast_expr($ie2[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
     $pfab = em_abstrait($ie2[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
     $pvar = "slot " + chaine($pslot)
     si ($pfab != "") {
-      rir_op("saut_si_faux_abstrait @pfin (bin < " + $pvar + " " + $pfab + ")", $pc, $ops)
+      rir_op("saut_si_faux_abstrait @pfin_" + $ino[$ix] + " (bin < " + $pvar + " " + $pfab + ")", $pc, $ops)
     } sinon {
-      rir_op("saut_si_faux @pfin (bin < " + $pvar + " " + $pfin + ")", $pc, $ops)
+      rir_op("saut_si_faux @pfin_" + $ino[$ix] + " (bin < (v " + $ino[$ix] + ") " + $pfin + ")", $pc, $ops)
     }
     $pc = $pc + 1
-    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, vrai)
     rir_op("affect slot " + chaine($pslot) + " = (bin + slot " + chaine($pslot) + " entier 1)", $pc, $ops)
     $pc = $pc + 1
-    rir_op("saut @pcond", $pc, $ops)
+    rir_op("saut @pcond_" + $ino[$ix], $pc, $ops)
     $pc = $pc + 1
-    joindre($ops, "@pfin:")
+    joindre($ops, "@pfin_" + $ino[$ix] + ":")
     retour $pc
   }
   si ($kd == "bloc") {
-    retour rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    retour rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
   }
   retour $pc
 }
@@ -2976,7 +2992,7 @@ fn rir_corps($cs: chaine, $ipc: entier,
              $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
              $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
              $sn: liste<chaine>, $glst: liste<entier>, $connus: liste<chaine>, $ops: liste<chaine>,
-             $estprincipal: booleen) -> entier {
+             $estprincipal: booleen, $dans_pour: booleen) -> entier {
   $pc = $ipc
   $j = 0
   $n = longueur($cs)
@@ -2985,14 +3001,14 @@ fn rir_corps($cs: chaine, $ipc: entier,
     $c = ordre($cs[$j])
     si ($c == 44) {
       si ($cur != "") {
-        $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+        $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
         $cur = ""
       }
     } sinon { $cur = $cur + $cs[$j] }
     $j = $j + 1
   }
   si ($cur != "") {
-    $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
   }
   retour $pc
 }
@@ -3035,14 +3051,23 @@ fn rir_patch_op($ch: chaine, $pos: entier, $labels: liste<chaine>, $cibles: list
     $pat = "@" + $labels[$k]
     $p = position_sous($r, $pat)
     si ($p >= 0) {
-      # choisir la cible la plus proche : après si saut avant, sinon avant
+      # "saut @x" (inconditionnel) => cible AVANT la plus proche ;
+      # "saut_si_faux @x" => cible APRES la plus proche.
+      $arriere = 0
+      si (contient_ops($r, "saut @") et non contient_ops($r, "saut_si_faux")) { $arriere = 1 }
       $best = -1
       $bestd = 1000000
       $j = 1
       tant_que ($j < longueur($labels)) {
         si ($labels[$j] == $labels[$k]) {
-          $d = cibles_distance($cibles[$j], $pos)
-          si ($d < $bestd) { $bestd = $d; $best = $cibles[$j] }
+          $c = $cibles[$j]
+          $ok = 0
+          si ($arriere == 1 et $c <= $pos) { $ok = 1 }
+          si ($arriere == 0 et $c > $pos) { $ok = 1 }
+          si ($ok == 1) {
+            $d = cibles_distance($c, $pos)
+            si ($d < $bestd) { $bestd = $d; $best = $c }
+          }
         }
         $j = $j + 1
       }
@@ -3109,7 +3134,7 @@ fn em_fonction_rir($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
     $u = $u + 1
   }
   $ops = [""]
-  $pc = rir_corps($corps, 0, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+  $pc = rir_corps($corps, 0, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, faux)
   $ops = rir_patcher($ops)
   # patch des marqueurs : d'abord retirer les lignes marqueurs, noter leur cible
   # (les marqueurs sont émis avec un numéro séquentiel dans $ops).
