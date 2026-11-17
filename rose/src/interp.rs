@@ -4882,45 +4882,20 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     if std::env::var("ROSE_PROFIL_RIR").is_ok() {
         // ⚠ On garde un drapeau pour afficher le total d'ops a la fin.
     }
-    // active le JIT sur les fonctions éligibles
-    let mut jit = Jit::nouveau(&interp.prog.signatures);
-    let _t_jitnew = _t0.elapsed();
-    // ⚠⚠⚠ DÉCLARER PUIS DÉFINIR LES DÉLÉGUÉS AVANT LA COMPILATION (17/11).
+    // ⚠⚠⚠ M1.2 (étape 1) : ABAISSEMENT EN RIR AVANT LA COMPILATION JIT.
     //
-    // ⚠ Une fonction compilée peut appeler une fonction IMPORTÉE d'un jardin ou
-    // hors sous-ensemble : Cranelift exige que le symbole soit DÉFINI dans le
-    // module (sinon « can't resolve symbol », ou pire, panique « no entry
-    // found for key »). Le corps des délégués appelle le helper runtime
-    // `rose_appel_interpreteur`, qui exécute la vraie fonction Rose.
-    jit.declarer_delegues();
-    // ⚠⚠⚠ LE JIT PRINCIPAL EST DÉCIDÉ AVANT (il détermine si le corps
-    // principal passe par le RIR). ⚠⚠ Il doit être posé dans `interp.jit_principal`
-    // AVANT l'exécution : sinon le corps principal s'exécuterait en RIR alors
-    // qu'il est compilé (mesuré : ~50 % plus lent sur les boucles chaudes).
-    interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
-    interp.jit = jit.compiler_tout();
-    let _t_compiletout = _t0.elapsed();
-    // ⚠⚠⚠ ABAISSEMENT EN RIR, APRÈS la compilation JIT.
-    //
-    // ⚠ L'ordre compte : le JIT compile les fonctions éligibles (arithmétique
-    // i64, récursion sur entiers) et c'est LUI le plus rapide — mesuré,
-    // `fib(25)` prend 2 ms en JIT contre 113 ms en RIR. On n'abaisse donc QUE
-    // les fonctions que Cranelift n'a pas prises : elles resteraient sinon
-    // interprétées par l'arbre récursif des `Instr`.
+    // Objectif M1.2 : le JIT doit consommer le RIR. Première étape : abaisser
+    // toutes les fonctions avant la compilation pour que le RIR soit disponible
+    // (et pour l'interpréteur de repli). Le JIT compile encore depuis l'arbre
+    // Instr (compatibilité) ; la consommation directe du RIR par le JIT est
+    // le chantier suivant.
     if std::env::var("ROSE_NO_RIR").is_err() {
         let globaux_connus: Vec<String> = Vec::new();
-        let jit_ok: Vec<String> = interp.jit.keys().cloned().collect();
-        // ⚠⚠⚠ ON DÉCLARE D'ABORD LES FONCTIONS QUI SERONT ABAISSÉES (voir
-        // `rir::declarer_rir`) : `abstraire` ne crée un `AppelRir` que pour
-        // ces fonctions, afin de ne jamais capturer une primitive du
-        // catalogue (`longueur`, `joindre`…).
-        let a_abaisser: Vec<String> = interp.prog.ordre.iter()
-            .filter(|n| !jit_ok.iter().any(|j| j == *n))
+        let candidats: Vec<String> = interp.prog.ordre.iter()
             .filter(|n| interp.prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
             .cloned().collect();
-        crate::rir::declarer_rir(&a_abaisser);
+        crate::rir::declarer_rir(&candidats);
         for nom in interp.prog.ordre.clone() {
-            if jit_ok.iter().any(|n| n == &nom) { continue; }
             if let Some(sig) = interp.prog.signatures.get(&nom) {
                 let Some(corps) = sig.corps.as_ref() else { continue };
                 let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
@@ -4929,28 +4904,34 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
                 }
             }
         }
-        // ⚠⚠⚠ CORPS PRINCIPAL EN RIR (si le JIT ne l'a pas pris).
-        //
-        // ⚠ Mesuré : une boucle de 500 000 tours au niveau principal coûtait
-        // 350 ms en interprétation ; en RIR elle tombe à quelques
-        // millisecondes. Les variables du niveau principal sont des GLOBALES :
-        // l'exécution synchronise slots et globales à chaque opération.
-        if interp.jit_principal.is_none() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
+        if std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
             if let Some(rir) = crate::rir::abaisser_principal(&interp.prog.instructions) {
+                interp.rir_principal = Some(rir);
+            }
+        }
+    }
+
+    // active le JIT sur les fonctions éligibles (après abaissement RIR)
+    let mut jit = Jit::nouveau(&interp.prog.signatures);
+    let _t_jitnew = _t0.elapsed();
+    jit.declarer_delegues();
+    interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
+    interp.jit = jit.compiler_tout();
+    let _t_compiletout = _t0.elapsed();
+
+    if std::env::var("ROSE_NO_RIR").is_err() {
+        if interp.jit_principal.is_none() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
+            if let Some(rir) = interp.rir_principal.take() {
                 if std::env::var("ROSE_PROFIL_RIR").is_ok() {
-                    eprintln!("PROFIL-RIR principal noms={:?} ops={}",
-                              rir.noms, rir.ops.len());
+                    eprintln!("PROFIL-RIR principal noms={:?} ops={}", rir.noms, rir.ops.len());
                 }
-                // ⚠⚠⚠ LE CORPS PRINCIPAL EST REMPLACÉ PAR SA FORME RIR :
-                // `exec` la reconnaît et l'exécute par la boucle linéaire.
                 interp.prog.instructions = vec![Instr::Rir(rir)];
             }
         }
         if std::env::var("ROSE_PROFIL_RIR").is_ok() {
             crate::rir::activer_profil();
             let n = interp.prog.signatures.values().filter(|s| s.rir.is_some()).count();
-            let principal = matches!(interp.prog.instructions.first(),
-                Some(Instr::Rir(_)));
+            let principal = matches!(interp.prog.instructions.first(), Some(Instr::Rir(_)));
             eprintln!("PROFIL-RIR fonctions_abaissees={} principal={}", n, principal);
         }
     }
