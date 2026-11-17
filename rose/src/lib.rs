@@ -87,6 +87,10 @@ pub mod auto_llvm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod natif_emetteur;
 
+/// M3.2 — écrivains ELF64/PE64 sans gcc, clang ni linker externe.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod link_natif;
+
 /// Mise à jour Velopack (manifeste, téléchargement, application des paquets).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod velopack;
