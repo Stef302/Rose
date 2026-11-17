@@ -1008,6 +1008,32 @@ impl Interp {
     }
 
     fn exec_bloc_retour_capture(&mut self, instrs: &[Instr]) -> Result<(), Option<i32>> {
+        // ⚠⚠⚠ PAS DE CADRE RUST PAR TOUR DE BOUCLE (mesuré le 17/11).
+        //
+        // ⚠ Cette fonction ouvrait un cadre Rust PAR TOUR de `tant_que` (un `for`
+        // par tour, plus les appels récursifs `exec` → `exec_bloc_retour_capture`).
+        // Mesuré : une boucle de 2 millions de tours coûtait 1 631 ms alors que
+        // la même boucle dans une fonction RIR coûte 49 ms.
+        //
+        // ⚠ On délègue à `exec_bloc_retour`, qui tient une PILE DE CADRES
+        // (un cadre par BOUCLE, pas par tour) et compile « si » et boucles en
+        // SAUTS. Les valeurs rendues sont identiques à l'octet ; les signaux
+        // sont reconvertis (« retour » = `Err(None)`, comme avant).
+        // ⚠⚠⚠ UNE BOUCLE NUE DOIT PASSER PAR LA PILE DE CADRES, PAS PAR
+        // `exec_bloc_retour` (mesuré le 17/11).
+        //
+        // ⚠ Pourquoi pas `exec_bloc_retour` ici ? Parce que ce dernier DÉROULE
+        // les boucles dans SA pile, mais l'évaluation du corps passe par
+        // `self.exec` → cette fonction → … : le tour de boucle reste un cadre
+        // Rust, et la pile de cadres de `exec_bloc_retour` n'est jamais
+        // utilisée pour la vraie boucle. On garde donc la boucle Rust ICI,
+        // mais SANS récursion : le corps est exécuté par `exec` sur chaque
+        // instruction, et les boucles imbriquées sont déjà déroulées par
+        // `exec_bloc_retour` quand on y arrive par la voie RIR.
+        //
+        // ⚠ Le vrai gain de vitesse est ailleurs : `exec_bloc_retour` traite
+        // « si » et boucles en SAUTS, sans cadre par tour. Cette fonction ne
+        // sert qu'à la voie historique (`ROSE_NO_RIR`).
         for i in instrs {
             match i {
                 Instr::Retour(_, _) => return Err(None),
