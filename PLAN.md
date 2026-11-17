@@ -396,3 +396,18 @@ Six nouveaux agents sur les étapes restantes :
 | B6 | **M6.2 porte perf** | `scripts/mesurer-wasm.sh`, `rose/docs/PORTE_WASM.md` | mesure ou « non mesurable » documenté |
 
 L'orchestrateur (session principale) seul touche à `main.rs`, `lib.rs`, `Cargo.toml`, `PLAN.md` et fait les commits après revue. Règle : aucune mesure acceptée sans commande exécutée ; aucun commit d'agent.
+
+## Chantiers parallèles — vague 3 (lancés après M4.5 atteint)
+
+Derniers points ouverts du plan, six agents sur des fichiers distincts :
+
+| Agent | Étape | Fichiers possédés | Porte |
+|---|---|---|---|
+| C1 | **M4.4** 30→46/46 | `compilateur/emetteur.rose` | plus de matchs SANS casser le point fixe M4.5 (md5) |
+| C2 | **M2.3** vraie bouteille | `rose/src/{i128x,mul_rapide}.rs` | factorielles N=5000 ≥15%, md5 sortie identique |
+| C3 | **bug SIGSEGV bench_global** | `rose/src/run.rs` | JIT actif sans crash, valeur = interprété |
+| C4 | **M3.2** PE64 | `rose/src/link_natif.rs`, `rose/docs/LINK_NATIF.md` | structure PE vérifiée (exécution Windows non prouvable ici) |
+| C5 | **M5.3** préparation G3 | `rose/src/sys_io.rs`, `rose/docs/NO_STD_CHECKLIST.md` | sys_io compile avec libc sans std |
+| C6 | **M6.2** artefact runner | `scripts/publier-runtime.sh`, `rose/docs/RUNTIME_RUNNER.md` | dry-run sans publication, compte Stef302 vérifié |
+
+Même règle que la vague 2 : orchestrateur seul sur `main.rs`/`lib.rs`/`Cargo.toml`/`PLAN.md`, preuve réelle exigée, aucun commit d'agent.
