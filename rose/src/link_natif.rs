@@ -32,6 +32,36 @@ use std::path::Path;
 /// Adresse virtuelle de chargement par défaut (non-PIE, pas de relocations).
 pub const ADRESSE_BASE: u64 = 0x0040_0000;
 
+/// Convention d'appel du **stub d'entrée** inséré devant le code émis.
+///
+/// Ce choix ne concerne que l'interface stub → code émis et stub → API Windows.
+/// Le corps émis par `natif_emetteur` (M3.1) garde sa convention SysV/AAPCS64
+/// interne : voir `docs/LINK_NATIF.md` §7 pour ce qui doit encore y changer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Abi {
+    /// SysV AMD64 (`rdi`, `rsi`, `rdx`, `rcx`) / AAPCS64 (`x0`, `x1`) — ELF.
+    SysV,
+    /// Microsoft x64 / Windows ARM64 : 4 registres d'arguments, **32 octets
+    /// de shadow space** réservés par l'appelant, pile alignée sur 16, et
+    /// sortie du processus par `kernel32!ExitProcess` appelé via l'IAT.
+    Win64,
+}
+
+// ── constantes PE ───────────────────────────────────────────────────────
+/// RVA de `.text` (début du stub d'entrée).
+const PE_RVA_TEXT: u32 = 0x1000;
+/// RVA de `.data` (table de trampoline + structures d'import).
+const PE_RVA_DATA: u32 = 0x2000;
+/// ImageBase typique d'un PE64 non-PIE.
+const PE_IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
+/// Décalages dans `.data`, relatifs à `PE_RVA_DATA`.
+const PE_TRAMP_OFF: u32 = 0x000;  // table de trampoline : 3 × u64 = 24 o
+const PE_IMPORT_DESC_OFF: u32 = 0x020; // 2 descripteurs de 20 o (dont le nul)
+const PE_HINT_NAME_OFF: u32 = 0x050;   // IMAGE_IMPORT_BY_NAME(ExitProcess)
+const PE_ILT_OFF: u32 = 0x060;         // Import Lookup Table (2 × u64)
+const PE_IAT_OFF: u32 = 0x070;         // Import Address Table (2 × u64)
+const PE_DLL_NAME_OFF: u32 = 0x080;    // "KERNEL32.DLL\0"
+
 // ── API PUBLIQUE ───────────────────────────────────────────────────────
 
 /// Réglages de l'édition de liens.
@@ -130,13 +160,16 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     let off_text: usize = 0x100;
     let vaddr_text = base + off_text as u64;
 
-    let stub_len = taille_stub(options.architecture, frame);
+    // Un ELF est un format Unix : le stub utilise toujours SysV/AAPCS64 et
+    // termine par le syscall exit (aucune table d'imports n'existe en ELF).
+    let abi = Abi::SysV;
+    let stub_len = taille_stub(options.architecture, abi, frame);
     let vaddr_code = vaddr_text + stub_len as u64;
     let off_tramp_stub = stub_len + code.len();
     let vaddr_tramp_stub = vaddr_text + off_tramp_stub as u64;
 
-    let stub = stub_depart(options.architecture, vaddr_text, vaddr_code,
-                           vaddr_tramp_stub, frame);
+    let stub = stub_depart(options.architecture, abi, vaddr_text, vaddr_code,
+                           vaddr_tramp_stub, 0, frame);
     debug_assert_eq!(stub.len(), stub_len);
     let tramp_stub = stub_trampoline(options.architecture);
 
@@ -255,26 +288,44 @@ pub fn ecrire_elf_depuis_emitted(emitted: &Emitted, chemin: &Path) -> Result<(),
     ecrire_elf(&emitted.code, &Options::depuis_emitted(emitted), chemin)
 }
 
-/// Construit un squelette PE64 en mémoire (non exécuté/testé sous Linux).
+/// Construit un exécutable PE64 en mémoire avec une table d'imports minimale
+/// (`kernel32.dll!ExitProcess`) et un stub d'entrée **Win64**.
 ///
-/// La structure est valide (DOS header, PE signature, COFF, optional header
-/// PE32+, .text/.data), mais le stub d'entrée ne fait PAS encore d'appel à
-/// `ExitProcess` : voir `docs/LINK_NATIF.md` pour les limites.
+/// Structure vérifiable sous Linux (`file`, `objdump -x`, assertions octet par
+/// octet) ; **l'exécution sous Windows n'a PAS été testée ici**. Voir
+/// `docs/LINK_NATIF.md` §6 (preuves) et §7 (ABI du code émis, hors périmètre).
 pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
     if code.is_empty() { return Err(ErreurLien::CodeVide); }
-    let frame = aligner(options.n_slots_total * 8, 16);
-    let stub_len = taille_stub(options.architecture, frame);
-    let rva_text = 0x1000u32;
-    let rva_data = 0x2000u32;
+    let octets_slots = options.n_slots_total.checked_mul(8).ok_or_else(|| {
+        ErreurLien::Depassement("table de slots déborde usize".to_string())
+    })?;
+    let frame = aligner(octets_slots, 16);
+    // `sub sp, #alloc` (ARM64) utilise un imm12 : 4095 o maximum.
+    if frame > 0xFFF {
+        return Err(ErreurLien::Depassement(
+            "table de slots trop grande pour le stub Win64 (imm12)".to_string()));
+    }
+
+    // Un PE ne tourne que sous Windows : l'ABI Win64 est imposée ici, quel
+    // que soit l'hôte qui produit le fichier (vérifiable sous Linux).
+    let abi = Abi::Win64;
+    let stub_len = taille_stub(options.architecture, abi, frame);
+    let rva_text = PE_RVA_TEXT;
+    let rva_data = PE_RVA_DATA;
     let rva_code = rva_text + stub_len as u32;
     let rva_tramp_stub = rva_code + code.len() as u32;
-    let image_base = 0x0000_0001_4000_0000u64;
+    let image_base = PE_IMAGE_BASE;
+    // Adresse virtuelle de l'entrée IAT de ExitProcess, patchée par le loader.
+    let iat_abs = image_base + (rva_data + PE_IAT_OFF) as u64;
 
-    let stub = stub_depart(options.architecture, image_base + rva_text as u64,
+    let stub = stub_depart(options.architecture, abi,
+                           image_base + rva_text as u64,
                            image_base + rva_code as u64,
-                           image_base + rva_tramp_stub as u64, frame);
+                           image_base + rva_tramp_stub as u64,
+                           iat_abs, frame);
+    debug_assert_eq!(stub.len(), stub_len);
     let tramp = stub_trampoline(options.architecture);
-    let mut text = Vec::new();
+    let mut text = Vec::with_capacity(stub_len + code.len() + tramp.len());
     text.extend_from_slice(&stub);
     text.extend_from_slice(code);
     text.extend_from_slice(&tramp);
@@ -284,64 +335,91 @@ pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
     let off_data = off_text + text_raw;
     let taille = off_data + 0x200;
 
-    let mut data = Vec::new();
-    p_u64(&mut data, image_base + rva_tramp_stub as u64);
-    p_u64(&mut data, image_base + rva_tramp_stub as u64);
-    p_u64(&mut data, 0);
+    // ── .data : trampoline + table d'imports ────────────────────────────
+    let mut data = vec![0u8; 0x200];
+    // table de trampoline (3 pointeurs lus par le code émis)
+    ecrire_u64(&mut data, PE_TRAMP_OFF as usize, image_base + rva_tramp_stub as u64);
+    ecrire_u64(&mut data, PE_TRAMP_OFF as usize + 8, image_base + rva_tramp_stub as u64);
+    ecrire_u64(&mut data, PE_TRAMP_OFF as usize + 16, 0);
+    // IMAGE_IMPORT_DESCRIPTOR pour KERNEL32.DLL + descripteur nul.
+    let d = PE_IMPORT_DESC_OFF as usize;
+    ecrire_u32(&mut data, d + 0, rva_data + PE_ILT_OFF);       // OriginalFirstThunk
+    ecrire_u32(&mut data, d + 4, 0);                           // TimeDateStamp
+    ecrire_u32(&mut data, d + 8, 0);                           // ForwarderChain
+    ecrire_u32(&mut data, d + 12, rva_data + PE_DLL_NAME_OFF); // Name
+    ecrire_u32(&mut data, d + 16, rva_data + PE_IAT_OFF);      // FirstThunk
+    // (le second descripteur, à d+20, reste à zéro =terminateur)
+    // IMAGE_IMPORT_BY_NAME : Hint (u16) + "ExitProcess\0".
+    let h = PE_HINT_NAME_OFF as usize;
+    ecrire_u16(&mut data, h, 0);
+    data[h + 2..h + 14].copy_from_slice(b"ExitProcess\0");
+    // ILT et IAT : RVA du nom, puis entrée nulle (PE32+ = 8 octets/entrée).
+    for &off in &[PE_ILT_OFF, PE_IAT_OFF] {
+        ecrire_u64(&mut data, off as usize, (rva_data + PE_HINT_NAME_OFF) as u64);
+        ecrire_u64(&mut data, off as usize + 8, 0);
+    }
+    data[PE_DLL_NAME_OFF as usize..PE_DLL_NAME_OFF as usize + 13]
+        .copy_from_slice(b"KERNEL32.DLL\0");
 
+    // ── en-têtes ────────────────────────────────────────────────────────
     let mut f = vec![0u8; taille];
-    // ── DOS header ──────────────────────────────────────────────────────
     f[0] = b'M'; f[1] = b'Z';
     ecrire_u32(&mut f, 0x3C, 0x80); // e_lfanew
     f[0x40..0x4A].copy_from_slice(b"Rose PE64\0");
-    // ── PE signature + COFF ─────────────────────────────────────────────
     f[0x80..0x84].copy_from_slice(b"PE\0\0");
     ecrire_u16(&mut f, 0x84, machine_pe(options.architecture));
     ecrire_u16(&mut f, 0x86, 2);   // NumberOfSections
     ecrire_u16(&mut f, 0x94, 0xF0); // SizeOfOptionalHeader (PE32+)
     ecrire_u16(&mut f, 0x96, 0x22); // EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE
-    // ── Optional header PE32+ ───────────────────────────────────────────
-    let o = 0x98usize;
-    ecrire_u16(&mut f, o, 0x20B);              // magic PE32+
+    let o = 0x98usize;              // début de l'en-tête optionnel PE32+
+    ecrire_u16(&mut f, o, 0x20B);               // Magic = PE32+
     ecrire_u32(&mut f, o + 4, text_raw as u32); // SizeOfCode
     ecrire_u32(&mut f, o + 8, 0x200);           // SizeOfInitializedData
-    ecrire_u32(&mut f, o + 16, rva_text + stub_len as u32); // AddressOfEntryPoint
-    ecrire_u32(&mut f, o + 20, rva_text);       // BaseOfCode
-    ecrire_u64(&mut f, o + 24, image_base);     // ImageBase
-    ecrire_u32(&mut f, o + 32, 0x1000);         // SectionAlignment
-    ecrire_u32(&mut f, o + 36, 0x200);          // FileAlignment
-    ecrire_u16(&mut f, o + 40, 6);              // MajorOSVersion
-    ecrire_u16(&mut f, o + 48, 6);              // MajorSubsystemVersion
-    ecrire_u32(&mut f, o + 56, 0x3000);         // SizeOfImage
-    ecrire_u32(&mut f, o + 60, 0x400);          // SizeOfHeaders
-    ecrire_u16(&mut f, o + 68, 3);              // Subsystem = CUI
-    ecrire_u64(&mut f, o + 72, 0x10_0000);      // SizeOfStackReserve
-    ecrire_u64(&mut f, o + 80, 0x1000);         // SizeOfStackCommit
-    ecrire_u64(&mut f, o + 88, 0x10_0000);      // SizeOfHeapReserve
-    ecrire_u64(&mut f, o + 96, 0x1000);         // SizeOfHeapCommit
-    ecrire_u32(&mut f, o + 108, 16);            // NumberOfRvaAndSizes
+    // ⚠ L'entrée est le STUB, pas le code émis (l'ancien writer pointait
+    //   directement sur le code : le loader n'aurait jamais fait le setup).
+    ecrire_u32(&mut f, o + 16, rva_text);        // AddressOfEntryPoint
+    ecrire_u32(&mut f, o + 20, rva_text);        // BaseOfCode
+    ecrire_u64(&mut f, o + 24, image_base);      // ImageBase
+    ecrire_u32(&mut f, o + 32, 0x1000);          // SectionAlignment
+    ecrire_u32(&mut f, o + 36, 0x200);           // FileAlignment
+    ecrire_u16(&mut f, o + 40, 6);               // MajorOSVersion
+    ecrire_u16(&mut f, o + 48, 6);               // MajorSubsystemVersion
+    ecrire_u32(&mut f, o + 56, 0x3000);          // SizeOfImage
+    ecrire_u32(&mut f, o + 60, 0x400);           // SizeOfHeaders
+    ecrire_u16(&mut f, o + 68, 3);               // Subsystem = CUI
+    ecrire_u64(&mut f, o + 72, 0x10_0000);       // SizeOfStackReserve
+    ecrire_u64(&mut f, o + 80, 0x1000);          // SizeOfStackCommit
+    ecrire_u64(&mut f, o + 88, 0x10_0000);       // SizeOfHeapReserve
+    ecrire_u64(&mut f, o + 96, 0x1000);          // SizeOfHeapCommit
+    ecrire_u32(&mut f, o + 108, 16);             // NumberOfRvaAndSizes
+    // Data directories (PE32+ : 16 × 8 octets à o+112).
+    let dirs = o + 112;
+    ecrire_u32(&mut f, dirs + 1 * 8, rva_data + PE_IMPORT_DESC_OFF); // [1] IMPORT
+    ecrire_u32(&mut f, dirs + 1 * 8 + 4, 40);   // 2 descripteurs (dont le nul)
+    ecrire_u32(&mut f, dirs + 12 * 8, rva_data + PE_IAT_OFF);        // [12] IAT
+    ecrire_u32(&mut f, dirs + 12 * 8 + 4, 16);  // 2 entrées de 8 octets
     // ── section headers ─────────────────────────────────────────────────
     let s = o + 0xF0;
     f[s..s + 5].copy_from_slice(b".text");
-    ecrire_u32(&mut f, s + 8, text.len() as u32);  // VirtualSize
-    ecrire_u32(&mut f, s + 12, rva_text);          // VirtualAddress
-    ecrire_u32(&mut f, s + 16, text_raw as u32);   // SizeOfRawData
-    ecrire_u32(&mut f, s + 20, off_text as u32);   // PointerToRawData
-    ecrire_u32(&mut f, s + 36, 0x6000_0020);       // CODE|EXECUTE|READ
+    ecrire_u32(&mut f, s + 8, text.len() as u32);
+    ecrire_u32(&mut f, s + 12, rva_text);
+    ecrire_u32(&mut f, s + 16, text_raw as u32);
+    ecrire_u32(&mut f, s + 20, off_text as u32);
+    ecrire_u32(&mut f, s + 36, 0x6000_0020);     // CODE|EXECUTE|READ
     let d = s + 40;
     f[d..d + 5].copy_from_slice(b".data");
-    ecrire_u32(&mut f, d + 8, 24);
+    ecrire_u32(&mut f, d + 8, 0x200);
     ecrire_u32(&mut f, d + 12, rva_data);
     ecrire_u32(&mut f, d + 16, 0x200);
     ecrire_u32(&mut f, d + 20, off_data as u32);
-    ecrire_u32(&mut f, d + 36, 0xC000_0040);       // INITIALIZED_DATA|READ|WRITE
+    ecrire_u32(&mut f, d + 36, 0xC000_0040);     // INITIALIZED_DATA|READ|WRITE
     // ── contenu brut ────────────────────────────────────────────────────
     f[off_text..off_text + text.len()].copy_from_slice(&text);
     f[off_data..off_data + data.len()].copy_from_slice(&data);
     Ok(f)
 }
 
-/// Écrit le squelette PE64 sur disque.
+/// Écrit l'exécutable PE64 sur disque.
 pub fn ecrire_pe(code: &[u8], options: &Options, chemin: &Path) -> Result<(), ErreurLien> {
     std::fs::write(chemin, pe_bytes(code, options)?)?;
     rendre_executable(chemin)
@@ -376,20 +454,18 @@ fn rendre_executable(_chemin: &Path) -> Result<(), ErreurLien> { Ok(()) }
 // ENCODAGE MACHINE DES STUBS
 // ═══════════════════════════════════════════════════════════════════════
 
-fn taille_stub(arch: Architecture, frame: usize) -> usize {
-    match arch {
-        // sub sp / mov x0,sp / adr x1 / bl / mov x8,#nr / svc
-        Architecture::Aarch64 => 6 * 4,
-        // sub rsp / mov rdi,rsp / lea rsi / call / mov rdi,rax / mov eax,nr / syscall
-        Architecture::X86_64 => (if frame <= 127 { 4 } else { 7 }) + 3 + 7 + 5 + 3 + 5 + 2,
-    }
+/// Longueur du stub : on le génère une fois avec des adresses factices (les
+/// déplacements ne changent pas la taille des instructions).
+fn taille_stub(arch: Architecture, abi: Abi, frame: usize) -> usize {
+    stub_depart(arch, abi, 0, 0, 0, 0, frame).len()
 }
 
-fn stub_depart(arch: Architecture, text_vaddr: u64, code_vaddr: u64,
-               tramp_vaddr: u64, frame: usize) -> Vec<u8> {
+fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
+               tramp_vaddr: u64, iat_vaddr: u64, frame: usize) -> Vec<u8> {
     let mut s = Vec::new();
-    match arch {
-        Architecture::Aarch64 => {
+    match (abi, arch) {
+        // ── SysV / AAPCS64 (ELF) : terminer par le syscall exit ─────────
+        (Abi::SysV, Architecture::Aarch64) => {
             // sub sp, sp, #frame  (imm12 non mis à l'échelle)
             p_u32(&mut s, 0xD100_0000 | (((frame as u32) & 0xFFF) << 10) | (31 << 5) | 31);
             p_u32(&mut s, 0x9100_03E0); // mov x0, sp   → base
@@ -400,7 +476,7 @@ fn stub_depart(arch: Architecture, text_vaddr: u64, code_vaddr: u64,
             p_u32(&mut s, 0xD280_0BA8); // mov x8, #93 (__NR_exit)
             p_u32(&mut s, 0xD400_0001); // svc #0
         }
-        Architecture::X86_64 => {
+        (Abi::SysV, Architecture::X86_64) => {
             if frame <= 127 {
                 s.extend_from_slice(&[0x48, 0x83, 0xEC, frame as u8]); // sub rsp, imm8
             } else {
@@ -419,6 +495,62 @@ fn stub_depart(arch: Architecture, text_vaddr: u64, code_vaddr: u64,
             s.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax → code de sortie
             s.extend_from_slice(&[0xB8, 0x3C, 0x00, 0x00, 0x00]); // mov eax, 60 (__NR_exit)
             s.extend_from_slice(&[0x0F, 0x05]); // syscall
+        }
+        // ── Win64 (PE) : ExitProcess via l'IAT, shadow space + align 16 ──
+        (Abi::Win64, Architecture::X86_64) => {
+            // À l'entrée RSP ≡ 8 (mod 16) (l'appelant a poussé l'adresse de
+            // retour). On réserve 32 o de shadow space + 8 o d'alignement +
+            // le frame des slots : RSP ≡ 0 (mod 16) avant chaque `call`.
+            let alloc = 40usize + frame;
+            if alloc <= 127 {
+                s.extend_from_slice(&[0x48, 0x83, 0xEC, alloc as u8]); // sub rsp, imm8
+            } else {
+                s.extend_from_slice(&[0x48, 0x81, 0xEC]);
+                s.extend_from_slice(&(alloc as u32).to_le_bytes());
+            }
+            // L'émetteur M3.1 attend base dans rdi et tramp dans rsi (SysV),
+            // quelles que soient les conventions utilisées plus haut : on les
+            // pose explicitement ici, l'appelant étant notre propre stub.
+            s.extend_from_slice(&[0x48, 0x89, 0xE7]); // mov rdi, rsp → base
+            s.extend_from_slice(&[0x48, 0xBE]);       // movabs rsi, tramp
+            s.extend_from_slice(&tramp_vaddr.to_le_bytes());
+            let off = s.len();
+            s.push(0xE8); // call rose_code
+            let d = code_vaddr as i64 - (text_vaddr + off as u64 + 5) as i64;
+            s.extend_from_slice(&(d as i32).to_le_bytes());
+            s.extend_from_slice(&[0x89, 0xC1]); // mov ecx, eax → uExitCode
+            if frame <= 127 {
+                s.extend_from_slice(&[0x48, 0x83, 0xC4, frame as u8]); // add rsp, frame
+            } else {
+                s.extend_from_slice(&[0x48, 0x81, 0xC4]);
+                s.extend_from_slice(&(frame as u32).to_le_bytes());
+            }
+            // RSP pointe maintenant sur les 32 octets de shadow space.
+            let off = s.len();
+            s.extend_from_slice(&[0xFF, 0x15]); // call qword ptr [rip+d32]
+            let d = iat_vaddr as i64 - (text_vaddr + off as u64 + 6) as i64;
+            s.extend_from_slice(&(d as i32).to_le_bytes());
+            s.extend_from_slice(&[0x0F, 0x0B]); // ud2 (ExitProcess ne revient pas)
+        }
+        (Abi::Win64, Architecture::Aarch64) => {
+            // Windows ARM64 : SP déjà aligné sur 16 à l'entrée (LR porte
+            // l'adresse de retour). 32 o de "home space" + le frame des slots.
+            let alloc = 32usize + frame;
+            debug_assert!(alloc <= 0xFFF);
+            p_u32(&mut s, 0xD100_0000 | (((alloc as u32) & 0xFFF) << 10) | (31 << 5) | 31);
+            p_u32(&mut s, 0x9100_03E0); // mov x0, sp → base (AAPCS64/WinARM64)
+            let ici = text_vaddr + 8;
+            p_u32(&mut s, a64_adr(1, tramp_vaddr as i64 - ici as i64)); // adr x1, tramp
+            let ici = text_vaddr + 12;
+            p_u32(&mut s, a64_bl(code_vaddr as i64 - ici as i64));      // bl rose_code
+            // x0 contient déjà le code de retour (uExitCode = 32 bits).
+            p_u32(&mut s, 0x9100_0000 | (((frame as u32) & 0xFFF) << 10) | (31 << 5) | 31);
+            // add sp, sp, #frame → sp pointe sur la home space
+            let ici = text_vaddr + 20;
+            p_u32(&mut s, a64_adr(9, iat_vaddr as i64 - ici as i64)); // adr x9, IAT
+            p_u32(&mut s, 0xF940_0129); // ldr x9, [x9]  (adresse ExitProcess)
+            p_u32(&mut s, 0xD63F_0120); // blr x9
+            p_u32(&mut s, 0xD420_0000); // brk #0
         }
     }
     s
@@ -448,7 +580,9 @@ fn machine_elf(arch: Architecture) -> u16 {
     match arch { Architecture::Aarch64 => 183, Architecture::X86_64 => 62 }
 }
 fn machine_pe(arch: Architecture) -> u16 {
-    match arch { Architecture::Aarch64 => 0xA641, Architecture::X86_64 => 0x8664 }
+    // 0xAA64 = IMAGE_FILE_MACHINE_ARM64. (0xA641 = ARM64EC, une saveur
+    // d'émulation différente : ne pas l'utiliser pour un PE ARM64 natif.)
+    match arch { Architecture::Aarch64 => 0xAA64, Architecture::X86_64 => 0x8664 }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -565,12 +699,125 @@ mod tests {
         let lfanew = u32::from_le_bytes(o[0x3C..0x40].try_into().unwrap()) as usize;
         assert_eq!(&o[lfanew..lfanew + 4], b"PE\0\0");
         let machine = u16::from_le_bytes([o[0x84], o[0x85]]);
-        assert_eq!(machine, 0xA641); // IMAGE_FILE_MACHINE_ARM64
+        assert_eq!(machine, 0xAA64); // IMAGE_FILE_MACHINE_ARM64
         let opt = lfanew + 4 + 20;
         assert_eq!(u16::from_le_bytes([o[opt], o[opt + 1]]), 0x20B); // PE32+
+        // L'entrée pointe sur le stub (0x1000), pas sur le code émis.
+        assert_eq!(u32::from_le_bytes(o[opt + 16..opt + 20].try_into().unwrap()), PE_RVA_TEXT);
         let sections = opt + 0xF0;
         assert_eq!(&o[sections..sections + 5], b".text");
         assert_eq!(&o[sections + 40..sections + 45], b".data");
+    }
+
+    fn programme_49_x86() -> Emitted {
+        let corps = CorpsRir {
+            ops: vec![Op::RetourAbstrait(Eabstrait::Entier("49".into()))],
+            noms: vec![], globaux: vec![], n_slots: 0,
+        };
+        crate::natif_emetteur::emettre(&corps, Architecture::X86_64).unwrap()
+    }
+
+    #[test]
+    fn pe_import_et_stub_win64_sont_complets() {
+        let e = programme_49_x86();
+        let o = pe_bytes(&e.code, &Options::depuis_emitted(&e)).unwrap();
+
+        // ── en-têtes ────────────────────────────────────────────────────
+        assert_eq!(&o[0..2], b"MZ");
+        assert_eq!(u32::from_le_bytes(o[0x3C..0x40].try_into().unwrap()), 0x80);
+        assert_eq!(&o[0x80..0x84], b"PE\0\0");
+        assert_eq!(u16::from_le_bytes([o[0x84], o[0x85]]), 0x8664); // AMD64
+        assert_eq!(u16::from_le_bytes([o[0x94], o[0x95]]), 0xF0);
+        let opt = 0x98usize;
+        assert_eq!(u16::from_le_bytes([o[opt], o[opt + 1]]), 0x20B); // PE32+
+        assert_eq!(u32::from_le_bytes(o[opt + 16..opt + 20].try_into().unwrap()),
+                   PE_RVA_TEXT, "AddressOfEntryPoint doit viser le stub");
+        assert_eq!(u64::from_le_bytes(o[opt + 24..opt + 32].try_into().unwrap()),
+                   PE_IMAGE_BASE);
+        assert_eq!(u32::from_le_bytes(o[opt + 108..opt + 112].try_into().unwrap()), 16);
+
+        // ── data directories ────────────────────────────────────────────
+        let dirs = opt + 112;
+        assert_eq!(u32::from_le_bytes(o[dirs..dirs + 4].try_into().unwrap()), 0,
+                   "pas de table d'export");
+        assert_eq!(u32::from_le_bytes(o[dirs + 8..dirs + 12].try_into().unwrap()),
+                   PE_RVA_DATA + PE_IMPORT_DESC_OFF, "IMAGE_DIRECTORY_ENTRY_IMPORT");
+        assert_eq!(u32::from_le_bytes(o[dirs + 12..dirs + 16].try_into().unwrap()), 40);
+        assert_eq!(u32::from_le_bytes(o[dirs + 12 * 8..dirs + 12 * 8 + 4].try_into().unwrap()),
+                   PE_RVA_DATA + PE_IAT_OFF, "IMAGE_DIRECTORY_ENTRY_IAT");
+        assert_eq!(u32::from_le_bytes(o[dirs + 12 * 8 + 4..dirs + 12 * 8 + 8].try_into().unwrap()), 16);
+
+        // ── .data : descripteurs, ILT/IAT, noms ─────────────────────────
+        let sec = opt + 0xF0;
+        let off_data = u32::from_le_bytes(o[sec + 40 + 20..sec + 40 + 24].try_into().unwrap()) as usize;
+        assert_eq!(&o[sec + 40..sec + 45], b".data");
+        let d = off_data + PE_IMPORT_DESC_OFF as usize;
+        assert_eq!(u32::from_le_bytes(o[d..d + 4].try_into().unwrap()), PE_RVA_DATA + PE_ILT_OFF);
+        assert_eq!(u32::from_le_bytes(o[d + 12..d + 16].try_into().unwrap()), PE_RVA_DATA + PE_DLL_NAME_OFF);
+        assert_eq!(u32::from_le_bytes(o[d + 16..d + 20].try_into().unwrap()), PE_RVA_DATA + PE_IAT_OFF);
+        assert_eq!(&o[d + 20..d + 40], &[0u8; 20], "descripteur nul de fin");
+        let h = off_data + PE_HINT_NAME_OFF as usize;
+        assert_eq!(u16::from_le_bytes([o[h], o[h + 1]]), 0);
+        assert_eq!(&o[h + 2..h + 14], b"ExitProcess\0");
+        for &off in &[PE_ILT_OFF, PE_IAT_OFF] {
+            let p = off_data + off as usize;
+            assert_eq!(u64::from_le_bytes(o[p..p + 8].try_into().unwrap()),
+                       (PE_RVA_DATA + PE_HINT_NAME_OFF) as u64);
+            assert_eq!(&o[p + 8..p + 16], &[0u8; 8]);
+        }
+        assert_eq!(&o[off_data + PE_DLL_NAME_OFF as usize..
+                      off_data + PE_DLL_NAME_OFF as usize + 13], b"KERNEL32.DLL\0");
+
+        // ── stub Win64 : shadow space, alignement, appel via IAT ────────
+        let off_text = u32::from_le_bytes(o[sec + 20..sec + 24].try_into().unwrap()) as usize;
+        let frame = aligner(e.n_slots_total * 8, 16); // 16 slots → 128 o
+        assert_eq!(frame, 128);
+        let stub = &o[off_text..off_text + 42];
+        assert_eq!(&stub[0..3], &[0x48, 0x81, 0xEC], "sub rsp, imm32");
+        assert_eq!(u32::from_le_bytes(stub[3..7].try_into().unwrap()), (40 + frame) as u32);
+        assert_eq!(&stub[7..10], &[0x48, 0x89, 0xE7], "mov rdi, rsp (base)");
+        assert_eq!(&stub[10..12], &[0x48, 0xBE], "movabs rsi, tramp");
+        assert_eq!(stub[20], 0xE8, "call rose_code");
+        assert_eq!(&stub[25..27], &[0x89, 0xC1], "mov ecx, eax (uExitCode)");
+        assert_eq!(&stub[27..30], &[0x48, 0x81, 0xC4], "add rsp, imm32");
+        assert_eq!(u32::from_le_bytes(stub[30..34].try_into().unwrap()), frame as u32);
+        assert_eq!(&stub[34..36], &[0xFF, 0x15], "call [rip+d32] via IAT");
+        let iat_abs = PE_IMAGE_BASE + (PE_RVA_DATA + PE_IAT_OFF) as u64;
+        let rip = PE_IMAGE_BASE + PE_RVA_TEXT as u64 + 40;
+        assert_eq!(i32::from_le_bytes(stub[36..40].try_into().unwrap()) as i64,
+                   iat_abs as i64 - rip as i64);
+        assert_eq!(&stub[40..42], &[0x0F, 0x0B], "ud2");
+    }
+
+    #[test]
+    fn pe_arm64_machine_et_stub_blr() {
+        let e = programme_49();
+        let o = pe_bytes(&e.code, &Options::depuis_emitted(&e)).unwrap();
+        assert_eq!(u16::from_le_bytes([o[0x84], o[0x85]]), 0xAA64); // ARM64
+        let sec = 0x98 + 0xF0;
+        let off_text = u32::from_le_bytes(o[sec + 20..sec + 24].try_into().unwrap()) as usize;
+        let stub = &o[off_text..off_text + 32];
+        let alloc = 32 + aligner(e.n_slots_total * 8, 16); // home space + frame
+        let sub_sp = 0xD100_0000u32 | (((alloc as u32) & 0xFFF) << 10) | (31 << 5) | 31;
+        assert_eq!(&stub[0..4], &sub_sp.to_le_bytes()); // sub sp,sp,#alloc
+        assert_eq!(&stub[24..28], &0xF940_0129u32.to_le_bytes()); // ldr x9,[x9]
+        assert_eq!(&stub[28..32], &0xD63F_0120u32.to_le_bytes()); // blr x9
+        assert_eq!(&o[off_text + 32..off_text + 36], &0xD420_0000u32.to_le_bytes()); // brk #0
+    }
+
+    #[test]
+    fn pe_ecrit_fichiers_pour_outils_externes() {
+        let dir = std::env::temp_dir().join("opencode");
+        std::fs::create_dir_all(&dir).unwrap();
+        for (nom, e) in [
+            ("rose_m3_2_pe_x86_64.exe", programme_49_x86()),
+            ("rose_m3_2_pe_arm64.exe", programme_49()),
+        ] {
+            let chemin = dir.join(nom);
+            let octets = pe_bytes(&e.code, &Options::depuis_emitted(&e)).unwrap();
+            std::fs::write(&chemin, &octets).unwrap();
+            eprintln!("PE écrit : {} ({} octets)", chemin.display(), octets.len());
+        }
     }
 
     #[test]
