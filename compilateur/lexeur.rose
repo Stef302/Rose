@@ -53,9 +53,9 @@ fn paire(a: entier, b: entier) -> chaine {
   si (a == 61 et b == 61) { retour "==" }
   si (a == 33 et b == 61) { retour "!=" }
   si (a == 47 et b == 61) { retour "!=" }
-  si (a == 63 et b == 61) { retour "?=" }
-  si (a == 61 et b == 126) { retour "=~" }
-  si (a == 126 et b == 61) { retour "=~" }
+  si (a == 63 et b == 61) { retour "≈" }
+  si (a == 61 et b == 126) { retour "≈" }
+  si (a == 126 et b == 61) { retour "≈" }
   retour ""
 }
 
