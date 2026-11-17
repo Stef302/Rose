@@ -61,6 +61,7 @@ Usage :
   rose latex prog.rose --lignes     seulement les lignes marquees %% (LaTeX brut)
   rose latex prog.rose --lignes --apercu   les lignes %% en rendu visible
   rose tokens prog.rose             liste les jetons (oracle : ligne:colonne type texte)
+  rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
   rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
@@ -354,6 +355,14 @@ fn main() {
                 println!("{}:{} {} {}", t.ligne, t.col, type_nom, t.texte);
             }
             std::process::exit(0);
+        }
+        "verif" => {
+            if argv.len() < 3 { eprintln!("rose verif : quel programme ?"); std::process::exit(1); }
+            // Résolution des imports par rapport au fichier.
+            match front::analyser_fichier(&argv[2]) {
+                Ok(_) => { println!("vérifié"); std::process::exit(0); }
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            }
         }
         "wasm" => {
             // ⚠ Inspecte un module WebAssembly SANS l'exécuter : les fonctions
