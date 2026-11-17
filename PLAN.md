@@ -33,18 +33,18 @@ s'est recompilé. Rose suit le même chemin : le moteur Rust joue le rôle du st
 ```
 M1  RIR : forme d'exécution unique            ← FAIT (17/11)
 M1.1 slots indexés, corps principal abaissé   ← FAIT
-M1.2 RIR du JIT (plus de compilation d'arbre)  ← À FAIRE
+M1.2 RIR du JIT (plus de compilation d'arbre)  ← FAIT (9fe647b, 03c5049)
 M2  Performance : fermer l'écart avec Zig
 M2.1 jardin = primitive native                ← À FAIRE (56 vs 53 ms)
 M2.2 interpréteur sans HashMap par accès       ← À FAIRE
 M2.3 arène d'allocation pour les Gz            ← À FAIRE
-M2.4 liste vide typée `[0 : entier]`           ← À FAIRE
+M2.4 liste vide typée `[0 : entier]`           ← FAIT (2af045c)
 M3  Backend propre (AOT sans LLVM externe)
 M3.1 émission x86-64 / aarch64 depuis le RIR   ← À FAIRE
 M3.2 link natif (ELF/PE) sans gcc                ← À FAIRE
 M4  Auto-hébergement : compilateur en Rose
-M4.1 lexeur en Rose (miroir de tokeniser)      ← À FAIRE
-M4.2 analyseur en Rose                         ← À FAIRE
+M4.1 lexeur en Rose (miroir de tokeniser)      ← FAIT (181 fichiers, 22b1ae5)
+M4.2 analyseur en Rose                         ← FAIT (148 fichiers, 5b214b6)
 M4.3 vérificateur en Rose                      ← À FAIRE
 M4.4 émetteur RIR en Rose                      ← À FAIRE
 M4.5 point fixe de bootstrap                   ← À FAIRE
