@@ -49,7 +49,7 @@ num-integer = "0.1"
 # rationnels de Rose sont des types internes (`i128x`, `latex`), pas des
 # `Ratio<BigInt>`. Dépendance retirée : une seule version de `num-bigint`.
 num-traits = "0.2"
-libc = "0.2"
+libc = { version = "0.2", default-features = false }
 inkwell = { version = "0.7", optional = true, features = ["llvm18-1-prefer-dynamic", "target-aarch64", "target-x86", "no-libffi-linking"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
