@@ -70,13 +70,14 @@ primitive native comme accélérateur (ou l'accepter 2× plus lent).
 2. **Liste vide typée** — Rose refuse `[]` (« le type d'élément est
    introuvable ») ; le jardin doit rembourrer à l'index 0 puis dépouiller.
    Une annotation `[0 : entier]` réglerait le problème une fois pour toutes.
-3. ~~**Accès par nom**~~ — **RÉSOLU le 16/11** : les corps de fonction hors JIT
-   sont abaissés en **RIR** (`rose/src/rir.rs`) : un tableau plat
-   d'opérations, des sauts numériques et des variables en **slots indexés**.
-   C'est la forme d'exécution « comme Zig ». Mesuré sur le jardin des
-   premiers : sans JIT, 3,65 s → **0,57 s** (6×) ; avec JIT, le jardin passe
-   de 44-56 ms à **40 ms**. `it(30000)` (récursion) passe de 44-57 ms à
-   **27 ms**.
+3. ~~**Accès par nom**~~ — **RÉSOLU le 16 et 17/11** : les corps de fonction
+   ET le corps principal sont abaissés en **RIR** (`rose/src/rir.rs`) : un
+   tableau plat d'opérations, des sauts numériques et des variables en
+   **slots indexés**. C'est la forme d'exécution « comme Zig ».
+   Mesures : sans JIT, le jardin des premiers passe de 3,65 s à **0,57 s**
+   (6×) ; une boucle nue de 2 M de tours au niveau principal de 1 660 ms à
+   **826 ms** ; `it(30000)` (récursion) de 44-62 ms à **31 ms** ; le jardin
+   avec JIT de 50 ms à **47 ms**.
 
 ## Ajouter un jardin
 
