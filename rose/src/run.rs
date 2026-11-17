@@ -8,6 +8,7 @@
 // Licence MIT.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::io::Write;
 use std::rc::Rc;
 
@@ -51,7 +52,20 @@ pub enum Valeur {
 }
 
 impl Valeur {
-    pub fn z(v: i64) -> Valeur { Valeur::Entier(v, None) }
+    pub fn z(v: i64) -> Valeur {
+        // Le JIT ramène ses résultats vers l'interpréteur avec un tag lu dans
+        // `tag_tmp`, qui peut être périmé (dernier calcul de la boucle, pas la
+        // valeur retournée). Un grand entier arrive alors comme une simple
+        // adresse i64 : la reconnaissance par l'ABI taggée le récupère.
+        if v < -0x1000_0000 || v > 0x1000_0000 {
+            if let Some(p) = mpz_ptr(v, 0) {
+                let g = Gz::neuf();
+                unsafe { g.copier_de_ptr(p); }
+                return Valeur::Entier(0, Some(Rc::new(g)));
+            }
+        }
+        Valeur::Entier(v, None)
+    }
     pub fn zg(z: Gz) -> Valeur {
         if z.fits_i64() { Valeur::z(z.get_i64()) } else { Valeur::Entier(0, Some(Rc::new(z))) }
     }
@@ -1344,6 +1358,37 @@ pub extern "C" fn rose_affiche_packed(v: i128) {
 
 
 // ── Voie taggée : helpers pour le JIT (ABI i64, sortie via pointeurs) ──
+
+// Un entier "taggé" est (valeur: i64, tag: i64) : tag == 0 → la valeur est un
+// i64 ; tag != 0 → la valeur est l'adresse d'un `Mpz` boxé. Le JIT réutilise
+// une seule variable `tag_tmp` pour le tag du résultat courant, et un
+// `Eabstrait::Slot` ne la réinitialise pas : un tag périmé peut donc arriver
+// sur un simple i64 de slot (mesuré sur `bench_global` : `a=3024617, at=1`
+// pour l'incrément de boucle, juste après le débordement de `$total`).
+// Déréférencer cette valeur comme un pointeur fait SIGSEGV. On ne fait donc
+// confiance au tag que si l'adresse est bien une boîte que CETTE ABI a créée.
+thread_local! {
+    static MPZ_BOXES: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
+/// Boxe un `Mpz`, enregistre son adresse et la renvoie au JIT.
+fn mpz_box(r: Box<Mpz>) -> i64 {
+    let p = Box::into_raw(r) as usize;
+    MPZ_BOXES.with(|s| { s.borrow_mut().insert(p); });
+    p as i64
+}
+
+/// Traduit un (valeur, tag) taggé en pointeur. Le tag n'est pas fiable (le
+/// JIT le laisse fuir d'une expression sur la suivante, et le perd sur un
+/// `Eabstrait::Slot`) : la seule preuve est que la valeur est une adresse
+/// boxée par cette ABI. Un grand entier est TOUJOURS boxé ici ; un i64
+/// ordinaire n'a aucune raison d'égaler une de ces adresses.
+#[inline]
+fn mpz_ptr(v: i64, _t: i64) -> Option<*mut Mpz> {
+    let p = v as usize;
+    if MPZ_BOXES.with(|s| s.borrow().contains(&p)) { Some(p as *mut Mpz) } else { None }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_add_ent(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64) {
     tagged_binop_abi(a, at, b, bt, out, outt, TaggedOp2::Add)
@@ -1358,25 +1403,27 @@ pub extern "C" fn rose_mul_ent(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, 
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_neg_ent(a: i64, at: i64, out: *mut i64, outt: *mut i64) {
-    if at == 0 {
-        if a == i64::MIN {
-            let mut r = Box::new(Mpz { v: BigInt::from(0) });
-            r.v = -BigInt::from(a);
-            unsafe { *out = Box::into_raw(r) as i64; *outt = 1; }
+    // Un tag périmé sur un i64 de slot doit être ignoré, pas déréférencé.
+    let pa = match mpz_ptr(a, at) {
+        Some(p) => p,
+        None => {
+            if a == i64::MIN {
+                let r = Box::new(Mpz { v: -BigInt::from(a) });
+                unsafe { *out = mpz_box(r); *outt = 1; }
+            } else {
+                unsafe { *out = a.wrapping_neg(); *outt = 0; }
+            }
             return;
         }
-        unsafe { *out = a.wrapping_neg(); *outt = 0; }
-        return;
-    }
+    };
     unsafe {
-        let src = &*(a as *const Mpz);
-        let mut r = Box::new(Mpz { v: -src.v.clone() });
+        let mut r = Box::new(Mpz { v: -(*pa).v.clone() });
         if r.v >= BigInt::from(i64::MIN) && r.v <= BigInt::from(i64::MAX) {
             *out = r.v.to_i64().unwrap_or(0);
             *outt = 0;
-            let _ = Box::from_raw(Box::into_raw(r));
+            drop(r);
         } else {
-            *out = Box::into_raw(r) as i64;
+            *out = mpz_box(r);
             *outt = 1;
         }
     }
@@ -1386,12 +1433,18 @@ pub extern "C" fn rose_neg_ent(a: i64, at: i64, out: *mut i64, outt: *mut i64) {
 enum TaggedOp2 { Add, Sub, Mul }
 
 fn to_bigint(av: i64, at: i64) -> BigInt {
-    if at == 0 { BigInt::from(av) }
-    else { unsafe { (*(av as *const Mpz)).v.clone() } }
+    match mpz_ptr(av, at) {
+        Some(p) => unsafe { (*p).v.clone() },
+        None => BigInt::from(av),
+    }
 }
 
 fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut i64, op: TaggedOp2) {
-    if at == 0 && bt == 0 {
+    // Le tag n'est fiable que si la valeur est une adresse que nous avons
+    // boxée. Un tag périmé est donc ramené à un simple i64.
+    let pa = mpz_ptr(a, at);
+    let pb = mpz_ptr(b, bt);
+    if pa.is_none() && pb.is_none() {
         let small = match op {
             TaggedOp2::Add => a.checked_add(b),
             TaggedOp2::Sub => a.checked_sub(b),
@@ -1408,16 +1461,14 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
             TaggedOp2::Sub => ba - bb,
             TaggedOp2::Mul => ba * bb,
         };
-        let r = Box::new(Mpz { v: br });
-        unsafe { *out = Box::into_raw(r) as i64; *outt = 1; }
+        unsafe { *out = mpz_box(Box::new(Mpz { v: br })); *outt = 1; }
         return;
     }
     // In-place mutation quand un operande est deja un BigInt (tag 1) :
     // on reutilise sa boite, pas d'allocation de resultat.
-    if at == 1 {
+    if let Some(ptr) = pa {
         let bb = to_bigint(b, bt);
         unsafe {
-            let ptr = a as *mut Mpz;
             match op {
                 TaggedOp2::Add => (*ptr).v += bb,
                 TaggedOp2::Sub => (*ptr).v -= bb,
@@ -1428,10 +1479,9 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
         }
         return;
     }
-    if bt == 1 {
+    if let Some(ptr) = pb {
         let aa = to_bigint(a, at);
         unsafe {
-            let ptr = b as *mut Mpz;
             match op {
                 TaggedOp2::Add => (*ptr).v += aa,
                 TaggedOp2::Sub => (*ptr).v = aa - (*ptr).v.clone(),
@@ -1442,33 +1492,18 @@ fn tagged_binop_abi(a: i64, at: i64, b: i64, bt: i64, out: *mut i64, outt: *mut 
         }
         return;
     }
-    // les deux i64 avec debordement : promotion BigInt (allocation unique)
-    let ba = BigInt::from(a);
-    let bb = BigInt::from(b);
-    let br = match op {
-        TaggedOp2::Add => ba + bb,
-        TaggedOp2::Sub => ba - bb,
-        TaggedOp2::Mul => ba * bb,
-    };
-    if br >= BigInt::from(i64::MIN) && br <= BigInt::from(i64::MAX) {
-        unsafe { *out = br.to_i64().unwrap_or(0); *outt = 0; }
-        return;
-    }
-    let r = Box::new(Mpz { v: br });
-    unsafe { *out = Box::into_raw(r) as i64; *outt = 1; }
+    unreachable!()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_clone_ent(v: i64, t: i64, out: *mut i64, outt: *mut i64) {
-    if t == 0 {
-        unsafe { *out = v; *outt = 0; }
-    } else {
-        unsafe {
-            let src = &*(v as *const Mpz);
-            let r = Box::new(Mpz { v: src.v.clone() });
-            *out = Box::into_raw(r) as i64;
+    match mpz_ptr(v, t) {
+        None => unsafe { *out = v; *outt = 0; },
+        Some(src) => unsafe {
+            let r = Box::new(Mpz { v: (*src).v.clone() });
+            *out = mpz_box(r);
             *outt = 1;
-        }
+        },
     }
 }
 
