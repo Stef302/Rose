@@ -29,6 +29,8 @@ mod mul_rapide;
 mod rir;
 #[allow(dead_code)]
 mod wasm_lecteur;
+#[allow(dead_code)]
+mod wasm_runtime;
 mod paint;
 mod console_win;
 mod setup_gui;
@@ -844,12 +846,62 @@ fn main() {
             }
         }
         "wasm" => {
-            // ⚠ Inspecte un module WebAssembly SANS l'exécuter : les fonctions
-            // exportées et leurs types (pour écrire les `@sym`/`fn` Rose).
-            let fichier = match argv.get(2) {
-                Some(f) => f.clone(),
+            // ⚠ M6.1 : inspecte un module WebAssembly SANS l'exécuter (défaut).
+            // M6.2 : --runtime officiel / --install-runtime / --export / --args.
+            let mut runtime_officiel = false;
+            let mut fichier_opt: Option<String> = None;
+            let mut export: Option<String> = None;
+            let mut arguments: Vec<i64> = Vec::new();
+            let mut i = 2;
+            while i < argv.len() {
+                match argv[i].as_str() {
+                    "--runtime" if i + 1 < argv.len() => {
+                        runtime_officiel = matches!(argv[i + 1].as_str(),
+                            "officiel" | "official" | "wasmtime" | "wasmer");
+                        i += 2;
+                    }
+                    "--install-runtime" if i + 1 < argv.len() => {
+                        match wasm_runtime::RuntimeOfficiel::depuis_str(&argv[i + 1]) {
+                            Some(rt) => match wasm_runtime::installer(rt) {
+                                Ok(p) => println!("rose wasm : runtime installé : {}", p.display()),
+                                Err(e) => { eprintln!("rose wasm : {e}"); std::process::exit(1); }
+                            },
+                            None => { eprintln!("rose wasm : runtime inconnu"); std::process::exit(1); }
+                        }
+                        std::process::exit(0);
+                    }
+                    "--export" if i + 1 < argv.len() => { export = Some(argv[i + 1].clone()); i += 2; }
+                    "--args" if i + 1 < argv.len() => {
+                        match argv[i + 1].parse::<i64>() {
+                            Ok(v) => arguments.push(v),
+                            Err(_) => { eprintln!("rose wasm : argument invalide : {}", argv[i + 1]); std::process::exit(1); }
+                        }
+                        i += 2;
+                    }
+                    a if a.starts_with('-') => { i += 1; }
+                    a => { fichier_opt = Some(a.to_string()); i += 1; }
+                }
+            }
+            let fichier = match fichier_opt {
+                Some(f) => f,
                 None => { eprintln!("rose wasm : quel module ? (rose wasm lib.wasm)"); std::process::exit(1); }
             };
+
+            if let Some(nom_export) = export {
+                let choix = if runtime_officiel { Some(wasm_runtime::RuntimeOfficiel::Wasmtime) } else { None };
+                match wasm_runtime::executer_export(
+                    std::path::Path::new(&fichier), &nom_export, &arguments, choix
+                ) {
+                    Ok(r) => {
+                        for v in &r.valeurs { println!("{v}"); }
+                        if let Some(motif) = &r.repli { eprintln!("rose wasm : {motif}"); }
+                    }
+                    Err(e) => { eprintln!("rose wasm : {e}"); std::process::exit(1); }
+                }
+                std::process::exit(0);
+            }
+
+            // Inspection par défaut (M6.1) : fonctions exportées et leurs types.
             let octets = match std::fs::read(&fichier) {
                 Ok(o) => o,
                 Err(e) => { eprintln!("rose wasm : {fichier} illisible ({e})"); std::process::exit(1); }
