@@ -50,12 +50,12 @@ M4.4 émetteur RIR en Rose                      ← EN COURS (26/46, d9cb522)
 M4.5 point fixe de bootstrap                   ← À FAIRE
 M5  Runtime autonome (sans Rust std, sans GMP)
 M5.1 arithmétique exacte en Rose pur           ← FAIT (mul_rapide, i128x)
-M5.2 E/S et mémoire sans std                    ← À FAIRE
+M5.2 E/S et mémoire sans std                    ← FAIT (de2fc4a, module sys_io)
 M5.3 produit sans dépendance Rust               ← À FAIRE
 M6  Interop sans runtime
 M6.1 pont wasm maison (compatibilité)          ← FAIT (115e705)
 M6.2 runtime wasm optionnel (installeur)       ← À FAIRE
-M6.3 Component Model / WIT (types complexes)   ← À ÉTUDIER
+M6.3 Component Model / WIT (types complexes)   ← ÉTUDIÉ (845f5e0)
 ```
 
 ---
