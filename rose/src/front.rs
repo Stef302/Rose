@@ -88,6 +88,7 @@ pub struct Token { pub tk: Tk, pub texte: String, pub ligne: usize, pub col: usi
 fn est_mot_cle(s: &str) -> bool {
     matches!(s,
         "fn" | "fonction" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
+        | "importer"
         | "vrai" | "faux" | "et" | "ou" | "non" | "div"
         | "entier" | "rationnel" | "flottant" | "booleen" | "chaine" | "liste" | "table"
                 | "π" | "φ" | "i" | "time")
@@ -555,6 +556,13 @@ pub struct Programme {
     pub signatures: HashMap<String, Signature>,
     pub ordre: Vec<String>,
     pub instructions: Vec<Instr>,
+    /// ⚠⚠⚠ LES FICHIERS IMPORTÉS, DANS L'ORDRE DES `importer` (17/11).
+    ///
+    /// ⚠ Le parseur ne lit PAS les fichiers : il note seulement leur nom
+    /// (« jardins/premiers.rose »). C'est l'appelant (`analyser_fichier`)
+    /// qui les résout et les fusionne — un analyseur ne doit pas dépendre du
+    /// disque (il sert aussi à `comp`, au WASM et aux tests).
+    pub imports: Vec<String>,
     // ⚠⚠⚠ LE RIR VIT DANS `Signature::rir` (mesuré le 16/11).
     //
     // ⚠ Il a d'abord été rangé ici, dans un `HashMap<String, CorpsRir>` à
@@ -567,7 +575,7 @@ pub struct Programme {
 impl Default for Programme {
     fn default() -> Self {
         Programme { signatures: HashMap::new(), ordre: Vec::new(),
-                    instructions: Vec::new() }
+                    instructions: Vec::new(), imports: Vec::new() }
     }
 }
 
@@ -797,6 +805,18 @@ impl Parser {
                     ann_actif = true;
                     continue;
                 }
+            }
+            // ⚠⚠⚠ `importer "fichier.rose"` (mesuré le 17/11).
+            //
+            // ⚠ Le parseur NOTE le fichier, il ne l'ouvre pas : l'analyse reste
+            // pure (aucun accès disque), et c'est `analyser_fichier` qui résout
+            // les imports récursivement puis fusionne les programmes.
+            if self.est_mot("importer") {
+                let t = self.suivant();
+                let nom = self.exiger(Tk::Chaine, "nom de fichier après 'importer'")?.texte;
+                prog.imports.push(nom);
+                let _ = t;
+                continue;
             }
             if self.est_mot("fn") || self.est_mot("fonction") {
                 let sig = self.def_fonction(&mut ann_dll, &mut ann_dll_son, &mut ann_sym, &mut ann_actif)?;
@@ -2436,7 +2456,100 @@ fn format_g(d: f64, p: usize) -> String {
 
 // ── Point d'entrée ────────────────────────────────────────────────────────
 
+/// ⚠⚠⚠ ANALYSE UN FICHIER ET SES IMPORTS (mesuré le 17/11).
+///
+/// ⚠ Règle des jardins : un fichier peut commencer par
+///     importer "jardins/premiers.rose"
+/// et les fonctions du fichier importé deviennent disponibles. Les imports
+/// sont RÉSOLUS RÉCURSIVEMENT (un jardin peut importer un autre jardin),
+/// chaque fichier n'étant lu qu'UNE fois (pas de doublon de définition), et
+/// le programme principal est celui du fichier DEMANDÉ (ses instructions).
+///
+/// ⚠ Résolution des chemins : tel quel si absolu, sinon à côté du fichier
+/// qui importe (c'est la règle des jardins : `jardins/tests/x.rose` importe
+/// `jardins/premiers.rose` via le chemin relatif à la RACINE du projet, donc
+/// on essaie aussi depuis le répertoire courant).
+///
+/// ⚠ `deja` : les fichiers déjà chargés (chemins canoniques), pour éviter
+/// les cycles et les doublons.
+pub fn analyser_fichier(chemin: &str) -> Result<Programme, Err> {
+    let mut deja: std::collections::HashSet<String> = std::collections::HashSet::new();
+    analyser_fichier_rec(chemin, &mut deja)
+}
+
+fn analyser_fichier_rec(chemin: &str, deja: &mut std::collections::HashSet<String>)
+    -> Result<Programme, Err>
+{
+    let canonique = std::fs::canonicalize(chemin)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| chemin.to_string());
+    if !deja.insert(canonique.clone()) {
+        // ⚠ Déjà chargé : un programme VIDE (ses fonctions sont déjà là).
+        return Ok(Programme::default());
+    }
+    let source = match std::fs::read_to_string(chemin) {
+        Ok(s) => s,
+        Err(e) => return Err(fmt_err(&format!("importer : impossible de lire '{}' ({})", chemin, e), 0, 0)),
+    };
+    // ⚠⚠⚠ LES IMPORTS SONT FUSIONNÉS AVANT LA VÉRIFICATION (mesuré le 17/11).
+    //
+    // ⚠ `analyser` termine par `verifier`, qui refuse toute fonction inconnue :
+    // le fichier qui importe un jardin était donc rejeté avant même la
+    // fusion (« Fonction 'prochain_premier' inconnue »). On analyse donc en
+    // MODE BRUT, on fusionne, puis on vérifie UNE fois le programme complet.
+    let mut prog = analyser_sans_verifier(&source)?;
+    let imports = prog.imports.clone();
+    prog.imports.clear();
+    let base = std::path::Path::new(chemin).parent()
+        .map(|p| p.to_path_buf()).unwrap_or_default();
+    for nom in imports {
+        // ⚠ Résolution : chemin tel quel, puis à côté du fichier importateur.
+        let candidats = vec![
+            std::path::PathBuf::from(&nom),
+            base.join(&nom),
+        ];
+        let mut choisi = None;
+        for c in candidats {
+            if c.is_file() { choisi = Some(c); break; }
+        }
+        let chemin_import = match choisi {
+            Some(c) => c.to_string_lossy().to_string(),
+            None => return Err(fmt_err(&format!(
+                "importer : fichier introuvable '{}' (depuis '{}')", nom, chemin), 0, 0)),
+        };
+        let sous = analyser_fichier_rec(&chemin_import, deja)?;
+        // ⚠ Fusion : les signatures d'abord, les instructions APRÈS celles du
+        // fichier courant (une fonction importée peut appeler une fonction
+        // locale, l'ordre d'exécution des instructions reste celui du fichier).
+        for n in sous.ordre {
+            if prog.signatures.contains_key(&n) {
+                return Err(fmt_err(&format!(
+                    "Fonction '{}' définie deux fois (import de '{}')", n, chemin_import), 0, 0));
+            }
+            prog.ordre.push(n.clone());
+            prog.signatures.insert(n.clone(), sous.signatures[&n].clone());
+        }
+        prog.instructions.extend(sous.instructions);
+    }
+    // ⚠⚠⚠ UNE SEULE VÉRIFICATION, SUR LE PROGRAMME COMPLET (imports inclus).
+    verifier(&mut prog)?;
+    Ok(prog)
+}
+
 pub fn analyser(source: &str) -> Result<Programme, Err> {
+    let mut prog = analyser_sans_verifier(source)?;
+    verifier(&mut prog)?;
+    Ok(prog)
+}
+
+/// ⚠⚠⚠ ANALYSE SANS VÉRIFIER (parse + repli + réparation du compteur).
+///
+/// ⚠ Nécessaire aux IMPORTS : un fichier qui importe un jardin appelle des
+/// fonctions définies AILLEURS ; la vérification doit donc avoir lieu APRÈS
+/// la fusion (sinon « Fonction 'prochain_premier' inconnue »). Le repli et la
+/// réparation du compteur « i » restent par fichier (ils dépendent de SON
+/// texte), la vérification est faite une seule fois sur l'ensemble.
+pub fn analyser_sans_verifier(source: &str) -> Result<Programme, Err> {
     let tk = tokeniser(source)?;
     let mut p = Parser::nouveau(tk);
     let mut prog = p.programmer()?;
@@ -2663,7 +2776,8 @@ pub fn analyser(source: &str) -> Result<Programme, Err> {
                 sig.corps = Some(cc.iter().map(|x| rep(x, i_compteur)).collect());
             }
         }
-        verifier(&mut prog)?;
+        // ⚠ La vérification est faite par `analyser` (ou après la fusion des
+        // imports) : la réparation du compteur doit précéder les deux.
     }
     Ok(prog)
 }

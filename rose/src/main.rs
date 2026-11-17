@@ -341,6 +341,7 @@ fn main() {
     }
     let source_t = source.clone();
     let args_t = args.clone();
+    let fichier_t = fichier.clone();
     let _t_pret = _t_start.elapsed();
     // ⚠⚠⚠ 512 Mo DE PILE, PAS 8 Mo (mesuré le 16/11).
     //
@@ -354,9 +355,10 @@ fn main() {
     //
     // ⚠ Les 512 Mo sont RÉSERVÉS (mmap), pas engagés : aucune mémoire n'est
     // touchée tant que la récursion n'y descend pas.
+    // ⚠⚠⚠ L'EXÉCUTION PASSE PAR LE FICHIER (imports résolus) (mesuré le 17/11).
     let h = std::thread::Builder::new()
         .stack_size(512 * 1024 * 1024)
-        .spawn(move || interp::executer_source(&source_t, args_t));
+        .spawn(move || interp::executer_fichier(&fichier_t, args_t));
     let _t_post = _t_start.elapsed();
     let rc = match h {
         Ok(j) => match j.join() {
@@ -373,7 +375,7 @@ fn main() {
                 1
             }
         },
-        Err(_) => interp::executer_source(&source, args),
+        Err(_) => interp::executer_fichier(&fichier, args),
     };
     if console_apres {
         repl::lancer(Some(&fichier), false);

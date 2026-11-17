@@ -63,10 +63,13 @@ primitive native comme accélérateur (ou l'accepter 2× plus lent).
 
 ## Ce qui manque au langage pour que les jardins vivent
 
-1. **`importer`** — sans lui, chaque fichier recopie le corps du jardin.
-   C'est DÉJÀ le défaut du compilateur : `est_chiffre`, `car`, `uni`,
-   `paire` sont copiés **à l'identique** dans 5 fichiers
-   (`lexeur`, `analyseur`, `verifieur`, `emetteur`, `compilateur`).
+1. ~~**`importer`**~~ — **RÉSOLU le 17/11**. Un fichier commence par
+   `importer "jardins/premiers.rose"` et les fonctions du jardin sont
+   disponibles SANS recopier leur corps. Les imports sont résolus
+   récursivement (un jardin peut importer un autre jardin), chaque fichier
+   n'étant lu qu'une fois, et la vérification a lieu APRÈS la fusion.
+   `jardins/tests/premiers.rose` est passé de 121 à **72 lignes** en
+   remplaçant la copie du jardin par une seule ligne d'import.
 2. **Liste vide typée** — Rose refuse `[]` (« le type d'élément est
    introuvable ») ; le jardin doit rembourrer à l'index 0 puis dépouiller.
    Une annotation `[0 : entier]` réglerait le problème une fois pour toutes.

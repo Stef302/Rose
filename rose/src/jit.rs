@@ -539,6 +539,9 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_erreur_mod_zero", crate::run::rose_erreur_mod_zero as *const u8),
         ("rose_erreur_div_zero", crate::run::rose_erreur_div_zero as *const u8),
         ("rose_erreur_div_flottant_zero", crate::run::rose_erreur_div_flottant_zero as *const u8),
+        // ⚠⚠⚠ DÉLÉGATION À L'INTERPRÉTEUR (17/11) : les fonctions importées ou
+        // hors sous-ensemble sont appelées par ce helper.
+        ("rose_appel_interpreteur", rose_appel_interpreteur as *const u8),
     ]
 }
 
@@ -719,6 +722,9 @@ struct Emetteur<'a> {
     #[allow(dead_code)]
     foncs: &'a HashMap<String, FuncId>,
     decls: &'a HashMap<String, FuncId>,
+    /// ⚠ Fonctions NON ÉLIGIBLES (déléguées à l'interpréteur) : leur déclaration
+    /// n'est pas dans `decls`, mais un corps compilé peut les appeler.
+    delegues: &'a HashMap<String, FuncId>,
     runtime: &'a HashMap<String, FuncId>,
     builder: FunctionBuilder<'a>,
     returned: bool,
@@ -765,6 +771,14 @@ fn make_signature(sig: &Signature) -> ClSignature {
 
 pub struct Jit {
     module: JITModule,
+    /// ⚠ Noms de fonctions en C-string (pour la délégation à l'interpréteur).
+    chaines: HashMap<String, Value>,
+    /// ⚠⚠⚠ LES FONCTIONS NON ÉLIGIBLES DÉCLARÉES (déléguées à l'interpréteur).
+    ///
+    /// ⚠ Table SÉPARÉE de `decls` (qui porte les fonctions compilées par
+    /// Cranelift) : chaque nom n'est défini qu'UNE fois (mesuré le 17/11 :
+    /// `DuplicateDefinition` quand les deux tables se recouvraient).
+    delegues: HashMap<String, FuncId>,
     decls: HashMap<String, FuncId>,
     runtime_decls: HashMap<String, FuncId>,
     #[allow(dead_code)]
@@ -802,11 +816,131 @@ impl Jit {
         #[cfg(unix)]
         builder.memory_provider(Box::new(MemoireJit::new()));
         let module = JITModule::new(builder);
-        Jit { module, decls: HashMap::new(), runtime_decls: HashMap::new(),
+        Jit { module, chaines: HashMap::new(), delegues: HashMap::new(), decls: HashMap::new(),
+              runtime_decls: HashMap::new(),
               foncs: HashMap::new(), signatures: signatures.clone() }
     }
 
-    /// Compile toutes les fonctions éligibles ; les autres restent Interprète.
+}
+
+impl Jit {
+    /// ⚠⚠⚠ DÉFINIT LES DÉLÉGUÉS DES FONCTIONS RESTANTES (celles que le JIT
+    /// n'a pas compilées). À appeler AVANT `finalize_definitions`.
+    fn definir_delegues_restants(&mut self) {
+        let mut a_definir: Vec<(String, Signature)> = Vec::new();
+        for (nom, sig) in self.signatures.iter() {
+            if self.foncs.contains_key(nom) { continue; }
+            // ⚠⚠⚠ LES FONCTIONS ÉLIGIBLES SONT COMPILÉES PAR Cranelift : leur
+            // définir un délégué ferait un DOUBLE `define_function`
+            // (`DuplicateDefinition`, mesuré le 17/11).
+            if fonction_compilable(sig, &self.signatures) { continue; }
+            if sig.corps.is_none() { continue; }
+            if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
+            if sig.params.iter().any(|(_, t)| !compilable(t.n)) { continue; }
+            // ⚠⚠⚠ PAS LES ÉLIGIBLES (mesuré le 17/11 : `DuplicateDefinition`) :
+            // Cranelift les compile dans la passe 2 ; leur ajouter un délégué
+            // définirait leur corps deux fois.
+            if fonction_compilable(sig, &self.signatures) { continue; }
+            if self.delegues.contains_key(nom) { a_definir.push((nom.clone(), sig.clone())); }
+        }
+        for (nom, sig) in a_definir {
+            // ⚠⚠⚠ DÉJÀ DÉFINIE : ne pas redéfinir (mesuré le 17/11).
+            if self.foncs.contains_key(&nom) { continue; }
+            let fid = self.delegues[&nom];
+            self.emettre_delegue(fid, &nom, &sig);
+        }
+    }
+
+    /// ⚠⚠⚠ ÉMET LE CORPS D'UN DÉLÉGUÉ (appel de `rose_appel_interpreteur`).
+    fn emettre_delegue(&mut self, fid: FuncId, nom: &str, sig: &Signature) {
+        use cranelift::codegen::Context;
+        let cible = self.module.target_config();
+        let cnom = std::ffi::CString::new(nom.to_string()).unwrap();
+        let octets = cnom.as_bytes_with_nul().to_vec();
+        let data_id = self.module.declare_data(&format!("__nom_{}", nom), Linkage::Local, false, false).unwrap();
+        let mut desc = cranelift::module::DataDescription::new();
+        desc.define(octets.into_boxed_slice());
+        self.module.define_data(data_id, &desc).unwrap();
+        let mut fcx = Context::new();
+        fcx.func.signature = make_signature(sig);
+        let mut fctx = cranelift::frontend::FunctionBuilderContext::new();
+        let mut b = FunctionBuilder::new(&mut fcx.func, &mut fctx);
+        let entree = b.create_block();
+        b.append_block_params_for_function_params(entree);
+        b.switch_to_block(entree);
+        b.seal_block(entree);
+        let mut args: Vec<Value> = b.block_params(entree).to_vec();
+        let zero = b.ins().iconst(types::I64, 0);
+        while args.len() < 4 { args.push(zero); }
+        let gv = self.module.declare_data_in_func(data_id, &mut b.func);
+        let ptr_nom = b.ins().symbol_value(types::I64, gv);
+        args.push(ptr_nom);
+        let fid_h = match self.runtime_decls.get("rose_appel_interpreteur") {
+            Some(f) => *f,
+            None => *self.decls.get("rose_appel_interpreteur")
+                .expect("helper rose_appel_interpreteur non déclaré"),
+        };
+        let rsig = self.module.declarations().get_function_decl(fid_h).signature.clone();
+        let sigref = b.import_signature(rsig);
+        let uref = b.func.declare_imported_user_function(
+            cranelift::codegen::ir::UserExternalName { namespace: 0, index: fid_h.as_u32() });
+        let f = b.import_function(cranelift::codegen::ir::ExtFuncData {
+            name: cranelift::codegen::ir::ExternalName::User(uref),
+            signature: sigref, colocated: false, patchable: false,
+        });
+        let appel = b.ins().call(f, &args);
+        let res = b.inst_results(appel)[0];
+        if sig.retour.n == TyKind::Vide {
+            b.ins().return_(&[]);
+        } else if sig.retour.n == TyKind::Flottant {
+            let fl = b.ins().bitcast(types::F64, MemFlagsData::new(), res);
+            b.ins().return_(&[fl]);
+        } else {
+            b.ins().return_(&[res]);
+        }
+        b.seal_all_blocks();
+        b.finalize(cible);
+        self.module.define_function(fid, &mut fcx).unwrap();
+        self.foncs.insert(nom.to_string(), fid);
+    }
+}
+
+/// ⚠⚠⚠ LA LISTE DES HELPERS RUNTIME DU JIT (une seule source).
+///
+/// ⚠ Partagée par `declarer_delegues` (déclaration AVANT les délégués) et
+/// `compiler_tout` : deux listes divergeraient.
+fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Option<cranelift::codegen::ir::Type>)> {
+    vec![
+                ("rose_affiche_i64", vec![types::I64], None),
+                ("rose_affiche_bool", vec![types::I64], None),
+                ("rose_affiche_f64", vec![types::F64], None),
+                ("rose_affiche_complexe", vec![types::F64, types::F64], None),
+                ("rose_affiche_formule", vec![types::I64, types::I64], None),
+                ("rose_affiche_prefixe", vec![types::I64, types::I64], None),
+                ("rose_powf", vec![types::F64, types::F64], Some(types::F64)),
+                ("rose_sqrt", vec![types::F64], Some(types::F64)),
+                ("rose_add_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_sub_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_mul_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_neg_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_clone_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
+                ("rose_affiche_ent", vec![types::I64, types::I64], None),
+                ("rose_set_ret_tag", vec![types::I64], None),
+                ("rose_erreur_mod_zero", vec![], None),
+                ("rose_erreur_div_zero", vec![], None),
+                ("rose_erreur_div_flottant_zero", vec![], None),
+                // ⚠⚠⚠ DÉLÉGATION À L'INTERPRÉTEUR (17/11) : une fonction compilée
+                // peut appeler une fonction hors sous-ensemble (listes, chaînes…)
+                // ou IMPORTÉE. Cranelift exige que le symbole soit DÉFINI dans le
+                // module : on émet un corps qui appelle ce helper.
+                // ⚠⚠⚠ IL REND i64 (la valeur de retour de la fonction Rose) :
+                // sans type de retour, `inst_results` est vide (mesuré le 17/11).
+                ("rose_appel_interpreteur", vec![types::I64, types::I64, types::I64,
+                                                 types::I64, types::I64], Some(types::I64)),
+    ]
+}
+
+impl Jit {
     /// Compile le corps du programme principal en code natif Cranelift
     /// (le corps principal est émis dans le module RIR et pris
     /// get_entry("$principal")). Les globales deviennent des slots i64/f64
@@ -850,7 +984,8 @@ impl Jit {
         let tag_tmp_var = b.declare_var(types::I64);
         let mut e = Emetteur {
             module: &mut self.module, signatures: &self.signatures,
-            foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
+            foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
+                runtime: &self.runtime_decls,
             builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
         };
         e.emettre_fonction(&sig);
@@ -871,32 +1006,192 @@ impl Jit {
         })))
     }
 
+    /// ⚠⚠⚠ DÉCLARE LES FONCTIONS NON ÉLIGIBLES ET LEUR NOM EN C-STRING.
+    ///
+    /// ⚠ À appeler AVANT `compiler_tout` : une fonction compilée qui appelle
+    /// une fonction importée ou hors sous-ensemble a besoin du symbole déclaré
+    /// dans le module.
+    pub fn declarer_delegues(&mut self) {
+        // ⚠⚠⚠ LES HELPERS RUNTIME SONT DÉCLARÉS ICI (mesuré le 17/11).
+        //
+        // ⚠ `runtime_decls` est rempli par `compiler_tout`, qui tourne APRÈS.
+        // Or les délégués (définis AVANT) appellent ces helpers : on les
+        // déclare donc dans le MODULE (et dans `decls`, que `import_runtime`
+        // consulte en repli).
+        if self.runtime_decls.is_empty() {
+            for (nom, params, ret) in helpers_runtime() {
+                let mut s = ClSignature::new(DEFAULT_CC);
+                for p in params { s.params.push(AbiParam::new(p)); }
+                if let Some(r) = ret { s.returns.push(AbiParam::new(r)); }
+                let fid = self.module.declare_function(nom, Linkage::Import, &s).unwrap();
+                self.runtime_decls.insert(nom.to_string(), fid);
+                self.decls.insert(nom.to_string(), fid);
+            }
+        }
+        for (nom, sig) in self.signatures.iter() {
+            if self.foncs.contains_key(nom) { continue; }
+            if self.decls.contains_key(nom) { continue; }
+            // ⚠⚠⚠ PAS LES FONCTIONS ÉLIGIBLES : Cranelift les déclare et les
+            // DÉFINIT lui-même dans `compiler_tout` (un délégué sur la même
+            // déclaration donnerait `DuplicateDefinition`, mesuré le 17/11).
+            if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
+            if sig.params.iter().any(|(_, t)| !compilable(t.n)) { continue; }
+            // ⚠⚠⚠ Déclarée Preemptible MAIS HORS DE `decls` (mesuré le 17/11).
+            //
+            // ⚠ Pourquoi hors de `decls` ? Parce que `compiler_tout` y lit les
+            // déclarations des fonctions ÉLIGIBLES (`let fid = self.decls[nom]`)
+            // et DÉFINIT leur corps. Une fonction non éligible est donc suivie
+            // dans `delegues` à part, et c'est `definir_delegues_restants` qui
+            // définit SON corps. ⚠ Deux tables distinctes = aucun
+            // `DuplicateDefinition`.
+            if let Ok(fid) = self.module.declare_function(nom, Linkage::Preemptible, &make_signature(sig)) {
+                self.delegues.insert(nom.clone(), fid);
+            }
+        }
+    }
+
+    /// ⚠⚠⚠ DÉFINIT LES CORPS DES FONCTIONS NON ÉLIGIBLES (17/11).
+    ///
+    /// ⚠ Une fonction compilée peut APPELER une fonction hors sous-ensemble
+    /// (listes, chaînes, FFI…) ou IMPORTÉE. Cranelift exige que le symbole
+    /// soit DÉFINI dans le module (sinon « can't resolve symbol »). On émet donc
+    /// un corps qui DÉLÈGUE à l'interpréteur : il pose les arguments dans une
+    /// trame et appelle `rose_appel_interpreteur`, qui exécute la vraie
+    /// fonction (mêmes règles, mêmes valeurs).
+    pub fn definir_delegues(&mut self, prog: &crate::front::Programme) {
+        use cranelift::codegen::Context;
+        let cible = self.module.target_config();
+        // ⚠⚠⚠ ON NE PRÉPARE RIEN ICI : la définition des délégués est faite
+        // par `definir_delegues_restants`, appelée par `compiler_tout` APRÈS la
+        // compilation (seules les fonctions REFUSÉES par le JIT en reçoivent
+        // un — sinon `DuplicateDefinition`, mesuré le 17/11).
+        //
+        // ⚠ Cette fonction ne garde que la déclaration des helpers runtime
+        // (déjà faite par `declarer_delegues`).
+        let _ = prog;
+    }
+
+    #[allow(dead_code)]
+    fn definir_delegues_ancien(&mut self, prog: &crate::front::Programme) {
+        use cranelift::codegen::Context;
+        let cible = self.module.target_config();
+        let mut delegues: Vec<(String, Signature)> = Vec::new();
+        for (nom, sig) in self.signatures.iter() {
+            if self.foncs.contains_key(nom) { continue; }
+            if sig.corps.is_none() { continue; }
+            if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
+            if sig.params.iter().any(|(_, t)| !compilable(t.n)) { continue; }
+            delegues.push((nom.clone(), sig.clone()));
+        }
+        for (nom, sig) in delegues {
+            // ⚠⚠⚠ UNE FONCTION DÉCLARÉE `Import` NE PEUT PAS ÊTRE DÉFINIE (mesuré
+            // le 17/11 : `InvalidImportDefinition`). Les délégués doivent donc
+            // être déclarés EN PROPRE (Preemptible) — déjà fait par
+            // `declarer_delegues`. ⚠ On ne REDÉCLARE PAS : Cranelift refuse un
+            // second `declare_function` du même nom (`DuplicateDefinition`).
+            // ⚠⚠⚠ UNE FONCTION ÉLIGIBLE EST COMPILÉE PAR `compiler_tout`, PAS ICI.
+            //
+            // ⚠ La version qui définissait un délégué pour TOUTES les fonctions
+            // non compilées incluait celles que Cranelift compile ensuite : leur
+            // corps était défini DEUX fois (`DuplicateDefinition`, mesuré le
+            // 17/11). On ne délègue donc que les fonctions que le JIT REFUSE.
+            if fonction_compilable(&sig, &self.signatures) { continue; }
+            let Some(&fid) = self.decls.get(&nom) else { continue };
+            // ⚠ La C-string du nom, DÉCLARÉE dans le module (données en lecture
+            // seule) : le helper résout la fonction Rose par ce nom.
+            // ⚠⚠⚠ LE NOM EST UNE DONNÉE STATIQUE DU MODULE (mesuré le 17/11).
+            //
+            // ⚠ API Cranelift : `declare_data` (lien + mutabilité) puis
+            // `define_data` avec une `DataDescription` qui porte les octets
+            // (alignement 1, contenu, relocations aucune). Le corps compilé
+            // relit ce pointeur et le passe au helper.
+            use cranelift::module::DataDescription;
+            let cnom = std::ffi::CString::new(nom.clone()).unwrap();
+            let octets = cnom.as_bytes_with_nul().to_vec();
+            // ⚠⚠⚠ L'ORDRE DES ARGUMENTS EST `(nom, lien, écrivable, TLS)`
+            // (mesuré le 17/11) : le 4e est le drapeau TLS, PAS l'alignement.
+            // À `true`, Cranelift panique « JIT doesn't yet support TLS ».
+            // ⚠ La donnée est en LECTURE SEULE (le nom ne change jamais).
+            let data_id = self.module.declare_data(&format!("__nom_{}", nom), Linkage::Local, false, false).unwrap();
+            let mut desc = DataDescription::new();
+            desc.define(octets.into_boxed_slice());
+            self.module.define_data(data_id, &desc).unwrap();
+            let mut fcx = Context::new();
+            fcx.func.signature = make_signature(&sig);
+            let mut fctx = cranelift::frontend::FunctionBuilderContext::new();
+            let mut b = FunctionBuilder::new(&mut fcx.func, &mut fctx);
+            let entree = b.create_block();
+            b.append_block_params_for_function_params(entree);
+            b.switch_to_block(entree);
+            b.seal_block(entree);
+            // ⚠ Arguments : les paramètres réels, complétés à 4 par des zéros,
+            // puis le POINTEUR sur le nom.
+            let mut args: Vec<Value> = b.block_params(entree).to_vec();
+            let zero = b.ins().iconst(types::I64, 0);
+            while args.len() < 4 { args.push(zero); }
+            let gv = self.module.declare_data_in_func(data_id, &mut b.func);
+            let ptr_nom = b.ins().symbol_value(types::I64, gv);
+            args.push(ptr_nom);
+            // ⚠ L'appel du helper runtime (importé, même mécanisme que les autres).
+            // ⚠⚠⚠ LA DÉCLARATION DU HELPER PEUT NE PAS ENCORE EXISTER (17/11).
+            //
+            // ⚠ `runtime_decls` est rempli par `compiler_tout` ; `definir_delegues`
+            // tourne AVANT. On déclare donc le helper à la demande, avec la
+            // même signature que dans `compiler_tout` (5 arguments i64).
+            if !self.runtime_decls.contains_key("rose_appel_interpreteur") {
+                let mut hs = ClSignature::new(DEFAULT_CC);
+                for _ in 0..5 { hs.params.push(AbiParam::new(types::I64)); }
+                // ⚠ Rend i64 (valeur de retour de la fonction Rose).
+                hs.returns.push(AbiParam::new(types::I64));
+                let fid = self.module.declare_function("rose_appel_interpreteur",
+                    Linkage::Import, &hs).unwrap();
+                self.runtime_decls.insert("rose_appel_interpreteur".to_string(), fid);
+            }
+            let rfid = self.runtime_decls["rose_appel_interpreteur"];
+            let rsig = self.module.declarations().get_function_decl(rfid).signature.clone();
+            let sigref = b.import_signature(rsig);
+            let uref = b.func.declare_imported_user_function(
+                cranelift::codegen::ir::UserExternalName { namespace: 0, index: rfid.as_u32() });
+            let f = b.import_function(cranelift::codegen::ir::ExtFuncData {
+                name: cranelift::codegen::ir::ExternalName::User(uref),
+                signature: sigref,
+                colocated: false,
+                patchable: false,
+            });
+            let _ = b.ins().call(f, &args);
+            // ⚠⚠⚠ LE RÉSULTAT EST LE RETOUR DU HELPER (mesuré le 17/11).
+            //
+            // ⚠ Pas de trame partagée : le helper rend directement la valeur en
+            // i64 (les flottants passent par leur bit pattern, comme partout dans
+            // le trampoline). ⚠ Les valeurs non i64 (BigInt, chaîne…) restent
+            // correctes : c'est le TRAMPOLINE qui relit la VALEUR réelle depuis le
+            // registre de retour du moteur (`rose_get_ret_tag`), pas le code
+            // compilé.
+            let appel = b.ins().call(f, &args);
+            let res = b.inst_results(appel)[0];
+            if sig.retour.n == TyKind::Vide {
+                b.ins().return_(&[]);
+            } else if sig.retour.n == TyKind::Flottant {
+                let fl = b.ins().bitcast(types::F64, MemFlagsData::new(), res);
+                b.ins().return_(&[fl]);
+            } else {
+                b.ins().return_(&[res]);
+            }
+            b.seal_all_blocks();
+            b.finalize(cible);
+            self.module.define_function(fid, &mut fcx).unwrap();
+            self.foncs.insert(nom.clone(), fid);
+        }
+        let _ = prog;
+    }
+
     pub fn compiler_tout(&mut self) -> HashMap<String, Compile> {
         let mut out: HashMap<String, Compile> = HashMap::new();
         // échappatoire de debug : ROSE_SANS_JIT=1 force l'interpréteur pur
         if std::env::var("ROSE_SANS_JIT").is_ok() { return out; }
         // déclarations Import des helpers runtime (utilisées par l'émetteur)
         if self.runtime_decls.is_empty() {
-            for (nom, params, ret) in [
-                ("rose_affiche_i64", vec![types::I64], None),
-                ("rose_affiche_bool", vec![types::I64], None),
-                ("rose_affiche_f64", vec![types::F64], None),
-                ("rose_affiche_complexe", vec![types::F64, types::F64], None),
-                ("rose_affiche_formule", vec![types::I64, types::I64], None),
-                ("rose_affiche_prefixe", vec![types::I64, types::I64], None),
-                ("rose_powf", vec![types::F64, types::F64], Some(types::F64)),
-                ("rose_sqrt", vec![types::F64], Some(types::F64)),
-                ("rose_add_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
-                ("rose_sub_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
-                ("rose_mul_ent", vec![types::I64, types::I64, types::I64, types::I64, types::I64, types::I64], None),
-                ("rose_neg_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
-                ("rose_clone_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
-                ("rose_affiche_ent", vec![types::I64, types::I64], None),
-                ("rose_set_ret_tag", vec![types::I64], None),
-                ("rose_erreur_mod_zero", vec![], None),
-                ("rose_erreur_div_zero", vec![], None),
-                ("rose_erreur_div_flottant_zero", vec![], None),
-            ] {
+            for (nom, params, ret) in helpers_runtime() {
                 let mut s = ClSignature::new(DEFAULT_CC);
                 for p in params { s.params.push(AbiParam::new(p)); }
                 if let Some(r) = ret { s.returns.push(AbiParam::new(r)); }
@@ -922,6 +1217,14 @@ impl Jit {
         let eligibles: Vec<String> = self.signatures.iter()
             .filter(|(_, s)| s.corps.is_some() && fonction_compilable(s, &self.signatures))
             .map(|(n, _)| n.clone()).collect();
+        // ⚠⚠⚠ DÉCLARER LES DÉLÉGUÉS AVANT LA PASSE 2 (mesuré le 17/11).
+        //
+        // ⚠ Une fonction compilée peut appeler une fonction IMPORTÉE ou hors
+        // sous-ensemble : `fonction_ref` exige alors une déclaration dans
+        // `decls` (sinon « no entry found for key »). `declarer_delegues` a
+        // déjà déclaré les non-éligibles… mais on le rappelle au cas où le JIT
+        // est utilisé sans passer par `executer_source_analyse`.
+        self.declarer_delegues();
         if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT eligibles={:?} t={:?}", eligibles, _tt.elapsed()); }
         let _tt2 = std::time::Instant::now();
         for nom in &eligibles {
@@ -929,7 +1232,35 @@ impl Jit {
             let fid = self.module.declare_function(nom, Linkage::Preemptible, &make_signature(sig)).unwrap();
             self.decls.insert(nom.clone(), fid);
         }
+        // ⚠⚠⚠ DÉCLARATION DES FONCTIONS NON ÉLIGIBLES APPELÉES (mesuré le 17/11).
+        //
+        // ⚠ Une fonction compilée peut appeler une fonction qui N'EST PAS
+        // compilée (corps hors sous-ensemble : listes, chaînes…) ou une
+        // fonction IMPORTÉE d'un jardin. `fonction_ref` exige alors une
+        // déclaration dans `self.decls` : sans elle, panique « no entry found
+        // for key » (mesuré sur un programme qui importe deux jardins).
+        //
+        // ⚠ On déclare donc TOUTES les signatures connues en `Import` (l'appel
+        // est délégué à l'interpréteur, qui sait tout faire), sauf celles déjà
+        // déclarées ci-dessus.
+        for (nom, sig) in self.signatures.iter() {
+            // ⚠⚠⚠ DÉJÀ DÉCLARÉE (par `declarer_delegues`) : on n'y touche pas.
+            // ⚠ Cranelift refuse un second `declare_function` du même nom
+            // (`DuplicateDefinition`, mesuré le 17/11). Les délégués sont
+            // déclarés Preemptible puis DÉFINIS : il faut les laisser ainsi.
+            if self.decls.contains_key(nom) { continue; }
+            if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
+            if sig.params.iter().any(|(_, t)| !compilable(t.n)) { continue; }
+            // ⚠⚠⚠ ON NE REDÉCLARE PAS : ces fonctions sont DÉJÀ déclarées par
+            // `declarer_delegues` (Preemptible) et leur corps est DÉFINI par
+            // `definir_delegues`. Un second `declare_function` rendrait
+            // `DuplicateDefinition` (mesuré le 17/11), et `define_function` sur
+            // une déclaration Preemptible échoue également : on les laisse
+            // telles quelles, elles sont prêtes.
+            let _ = nom; let _ = sig;
+        }
         if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT declare={:?}", _tt2.elapsed()); }
+
         let _tt3 = std::time::Instant::now();
         // passe 2 : émission
         use cranelift::codegen::Context;
@@ -937,6 +1268,12 @@ impl Jit {
         let cible = self.module.target_config();
         for nom in &eligibles {
             let sig = self.signatures[nom].clone();
+            // ⚠⚠⚠ UNE FONCTION DÉLÉGUÉE A DÉJÀ SON CORPS (mesuré le 17/11) :
+            // la redéfinir donnerait `DuplicateDefinition`. ⚠ Cela arrive quand
+            // `fonction_compilable` a changé d'avis entre la déclaration et la
+            // compilation (le JIT refuse une fonction que la passe de déclaration
+            // avait jugée éligible).
+            if self.foncs.contains_key(nom) && self.delegues.contains_key(nom) { continue; }
             let fid = self.decls[nom];
             fcx.clear();
             fcx.func.signature = make_signature(&sig);
@@ -945,7 +1282,8 @@ impl Jit {
             let tag_tmp_var = b.declare_var(types::I64);
             let mut e = Emetteur {
                 module: &mut self.module, signatures: &self.signatures,
-                foncs: &self.foncs, decls: &self.decls, runtime: &self.runtime_decls,
+                foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
+                runtime: &self.runtime_decls,
                 builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
             };
             let _te = std::time::Instant::now();
@@ -969,6 +1307,15 @@ impl Jit {
             }
             self.foncs.insert(nom.clone(), fid);
         }
+        // ⚠⚠⚠ LES DÉLÉGUÉS SONT DÉFINIS APRÈS LA PASSE 2 (mesuré le 17/11).
+        //
+        // ⚠ Pourquoi pas avant ? Parce que `fonction_compilable` peut changer
+        // d'avis (le JIT refuse une fonction que la déclaration jugeait
+        // éligible) : définir les délégués AVANT ferait un DOUBLE
+        // `define_function` (`DuplicateDefinition`). Après la passe 2, on sait
+        // exactement quelles fonctions ont été compilées : on ne délègue
+        // que les autres.
+        self.definir_delegues_restants();
         self.module.finalize_definitions().unwrap();
         if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT finalize={:?}", _tt3.elapsed()); }
         for nom in &eligibles {
@@ -982,6 +1329,26 @@ impl Jit {
         }
         out
     }
+}
+
+/// ⚠⚠⚠ APPEL DÉLÉGUÉ À L'INTERPRÉTEUR (17/11).
+///
+/// ⚠ Signature GÉNÉRIQUE : jusqu'à 4 arguments i64 (les arguments
+/// compilables sont i64/f64/booleen), plus un pointeur vers le nom de la
+/// fonction Rose. Le résultat est posé dans `rose_trame`, que le corps
+/// compilé relit. ⚠ Les f64 passent par leur BIT PATTERN (même convention
+/// que le trampoline), la délégation les reconvertit.
+///
+/// ⚠ Pourquoi déléguer ? Parce que la fonction appelée peut être IMPORTÉE
+/// d'un jardin ou hors du sous-ensemble compilable : l'interpréteur est le
+/// seul à savoir l'exécuter avec les règles exactes.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_appel_interpreteur(a0: i64, a1: i64, a2: i64, a3: i64, nom: *const u8) -> i64 {
+    let nom = unsafe {
+        if nom.is_null() { return 0; }
+        std::ffi::CStr::from_ptr(nom as *const std::ffi::c_char).to_string_lossy().to_string()
+    };
+    crate::interp::appeler_delegue(&nom, &[a0, a1, a2, a3])
 }
 
 #[allow(dead_code)]
@@ -2057,12 +2424,19 @@ fn powf(&mut self) -> FuncRef {
     /// passe 1 devient un FuncRef importé (colocalisé, résolu à la finalisation).
     fn fonction_ref(&mut self, nom: &str, sig: &Signature) -> FuncRef {
         if let Some(&r) = self.refs.get(nom) { return r; }
-        let fid = self.decls[nom];
+        // ⚠⚠⚠ LA FONCTION PEUT ÊTRE UN DÉLÉGUÉ (mesuré le 17/11).
+        //
+        // ⚠ Une fonction non éligible (importée d'un jardin, hors sous-ensemble)
+        // est déclarée dans `delegues`, pas dans `decls` : sans ce repli, un
+        // appel compilé vers elle panique « no entry found for key ».
+        let fid = match self.decls.get(nom).or_else(|| self.delegues.get(nom)) {
+            Some(f) => *f,
+            None => return self.import_runtime("rose_appel_interpreteur"),
+        };
         let s = self.module.declarations().get_function_decl(fid).signature.clone();
         let sigref = self.builder.import_signature(s);
         // déclaration d'un nom utilisateur (namespace 0 = fonction, index =
         // FuncId du module) que le module résoudra sur le symbole défini.
-        let fid = self.decls[nom];
         let uref = self.builder.func.declare_imported_user_function(
             cranelift::codegen::ir::UserExternalName { namespace: 0, index: fid.as_u32() });
         let name = cranelift::codegen::ir::ExternalName::User(uref);
@@ -2082,7 +2456,17 @@ fn powf(&mut self) -> FuncRef {
     }
 
     fn import_runtime(&mut self, nom: &str) -> FuncRef {
-        let fid = self.runtime[nom];
+        // ⚠⚠⚠ LA DÉCLARATION DU HELPER PEUT MANQUER (mesuré le 17/11).
+        //
+        // ⚠ `runtime` est la table remplie par `compiler_tout` ; `definir_delegues`
+        // s'exécute AVANT et déclare le helper à la demande, dans le MODULE
+        // seulement. Il faut donc aussi l'ajouter ici (même signature).
+        let fid = match self.runtime.get(nom) {
+            Some(f) => *f,
+            // ⚠⚠ Repli : le helper a été déclaré par `declarer_delegues`.
+            None => *self.decls.get(nom)
+                .unwrap_or_else(|| panic!("helper runtime non déclaré : {}", nom)),
+        };
         let sig = self.module.declarations().get_function_decl(fid).signature.clone();
         let sigref = self.builder.import_signature(sig);
         let uref = self.builder.func.declare_imported_user_function(

@@ -846,7 +846,8 @@ impl Interp {
                 let ordre = self.prog.ordre.clone();
                 let corps = corps.clone();
                 let id = crate::run::spawn_thread(move || {
-                    let prog = crate::front::Programme { instructions: corps, signatures: sigs, ordre };
+                    let prog = crate::front::Programme { instructions: corps, signatures: sigs, ordre,
+                        imports: Vec::new() };
                     let mut interp = Interp::nouveau(prog);
                     let _ = interp.exec_bloc(&interp.prog.instructions.clone());
                 });
@@ -4144,7 +4145,94 @@ pub fn essayer_aot(source: &str, args: &[String]) -> Option<i32> {
 static JIT_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static JIT_APPELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// ⚠⚠⚠ EXÉCUTE UN FICHIER, AVEC SES IMPORTS (mesuré le 17/11).
+///
+/// ⚠ Même pipeline qu'`executer_source`, mais l'analyse passe par
+/// `analyser_fichier` : les `importer "…"` du programme sont résolus et les
+/// fonctions des jardins fusionnées. C'est ce que `rose prog.rose` utilise
+/// désormais.
+pub fn executer_fichier(chemin: &str, args: Vec<String>) -> i32 {
+    // ⚠ Voie AOT : OPT-IN (même règle qu'`executer_source`).
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::env::var("ROSE_AOT").is_ok() {
+        if let Ok(src) = std::fs::read_to_string(chemin) {
+            if let Some(rc) = essayer_aot(&src, &args) { return rc; }
+        }
+    }
+    let source = match std::fs::read_to_string(chemin) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("rose: fichier introuvable : {} ({})", chemin, e); return 1; }
+    };
+    executer_source_analyse(&source, args, Some(chemin))
+}
+
+/// ⚠⚠⚠ L'INTERPRÉTEUR COURANT, POUR LA DÉLÉGATION DEPUIS LE JIT (17/11).
+///
+/// ⚠ Pourquoi des STATIQUES GLOBAUX et pas des thread-locals ? Parce que le
+/// helper `rose_appel_interpreteur` est appelé depuis du code COMPILÉ, et
+/// que Cranelift refuse les accès TLS (« JIT doesn't yet support TLS »,
+/// mesuré le 17/11). ⚠ Une seule exécution à la fois : le pointeur est posé
+/// par `executer_source_analyse` et retiré après.
+static mut INTERP_COURANT: *mut Interp = std::ptr::null_mut();
+
+/// ⚠ Pointeur de l'interpréteur courant (voir `INTERP_COURANT`).
+pub fn poser_interp_courant(p: *mut Interp) {
+    unsafe { INTERP_COURANT = p; }
+}
+
+/// ⚠⚠⚠ EXÉCUTE UNE FONCTION ROSE POUR LE COMPTE DU CODE COMPILÉ.
+///
+/// ⚠ Appelé par `rose_appel_interpreteur` (helper runtime du JIT). Les
+/// arguments arrivent en i64 (bit pattern pour les flottants) ; le résultat
+/// est renvoyé en i64, et lu par le corps compilé dans `rose_trame`.
+///
+/// ⚠ `n` est le nombre RéEL d'arguments : le corps compilé passe toujours
+/// 4 registres, les suivants valent 0.
+pub fn appeler_delegue(nom: &str, bruts: &[i64]) -> i64 {
+    let interp_ptr = unsafe { INTERP_COURANT };
+    if interp_ptr.is_null() { return 0; }
+    // ⚠ Les valeurs sont converties selon la SIGNATURE de la fonction appelée.
+    let sig_ptr: *const Signature = unsafe { (*interp_ptr).prog.signatures.get(nom) }
+        .map(|s| s as *const Signature).unwrap_or(std::ptr::null());
+    if sig_ptr.is_null() { return 0; }
+    let sig: &Signature = unsafe { &*sig_ptr };
+    let mut args: Vec<Valeur> = Vec::new();
+    for (i, (_, ty)) in sig.params.iter().enumerate() {
+        let b = bruts.get(i).copied().unwrap_or(0);
+        args.push(match ty.n {
+            TyKind::Flottant => Valeur::f(f64::from_bits(b as u64)),
+            TyKind::Booleen => Valeur::b(b != 0),
+            _ => Valeur::z(b),
+        });
+    }
+    // ⚠⚠⚠ LA PILE DE SLOTS EST VIDÉE AVANT LA DÉLÉGATION (mesuré le 17/11).
+    //
+    // ⚠ Le code compilé peut être appelé depuis un corps RIR dont les cadres
+    // sont empilés : la fonction déléguée ne doit pas hériter de ces cadres
+    // (elle ouvrirait les siens par-dessus, et la pile déborderait).
+    let interp: &mut Interp = unsafe { &mut *interp_ptr };
+    interp.pile_slots.vider();
+    let r = match interp.appeler(sig, args) {
+        Ok(v) => v,
+        Err(Some(code)) => { std::process::exit(code); }
+        Err(None) => Valeur::Vide,
+    };
+    interp.pile_slots.vider();
+    let bits = match r {
+        Valeur::Entier(x, None) => x,
+        Valeur::Flottant(x) => x.to_bits() as i64,
+        Valeur::Booleen(b) => if b { 1 } else { 0 },
+        _ => 0,
+    };
+    bits
+}
+
 pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
+    executer_source_analyse(source, args, None)
+}
+
+/// ⚠ Le pipeline commun : `origine` = le fichier (pour résoudre les imports).
+fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str>) -> i32 {
     // Voie AOT (LLVM ORC) : OPT-IN via ROSE_AOT=1. Par défaut, `rose run`
     // utilise le JIT Cranelift (avec les formules LaTeX par affichage).
     // ROSE_AOT=1 active la compilation LLVM ORC (vectorisation NEON) quand
@@ -4157,7 +4245,11 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
         }
     }
     let _t0 = crate::run::chrono();
-    let mut prog = match crate::front::analyser(source) {
+    let mut prog = match origine {
+        Some(f) => crate::front::analyser_fichier(f),
+        None => crate::front::analyser(source),
+    };
+    let mut prog = match prog {
         Ok(p) => p,
         Err(e) => { eprintln!("{}", e); return 1; }
     };
@@ -4555,6 +4647,20 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
     // active le JIT sur les fonctions éligibles
     let mut jit = Jit::nouveau(&interp.prog.signatures);
     let _t_jitnew = _t0.elapsed();
+    // ⚠⚠⚠ DÉCLARER PUIS DÉFINIR LES DÉLÉGUÉS AVANT LA COMPILATION (17/11).
+    //
+    // ⚠ Une fonction compilée peut appeler une fonction IMPORTÉE d'un jardin ou
+    // hors sous-ensemble : Cranelift exige que le symbole soit DÉFINI dans le
+    // module (sinon « can't resolve symbol », ou pire, panique « no entry
+    // found for key »). Le corps des délégués appelle le helper runtime
+    // `rose_appel_interpreteur`, qui exécute la vraie fonction Rose.
+    jit.declarer_delegues();
+    jit.definir_delegues(&interp.prog);
+    // ⚠⚠⚠ LE JIT PRINCIPAL EST DÉCIDÉ AVANT (il détermine si le corps
+    // principal passe par le RIR). ⚠⚠ Il doit être posé dans `interp.jit_principal`
+    // AVANT l'exécution : sinon le corps principal s'exécuterait en RIR alors
+    // qu'il est compilé (mesuré : ~50 % plus lent sur les boucles chaudes).
+    interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
     interp.jit = jit.compiler_tout();
     let _t_compiletout = _t0.elapsed();
     // ⚠⚠⚠ ABAISSEMENT EN RIR, APRÈS la compilation JIT.
@@ -4611,9 +4717,19 @@ pub fn executer_source(source: &str, args: Vec<String>) -> i32 {
             eprintln!("PROFIL-RIR fonctions_abaissees={} principal={}", n, principal);
         }
     }
-    interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
+    // ⚠⚠⚠ ON COMPILE D'ABORD, ON EXÉCUTE ENSUITE (mesuré le 17/11).
+    //
+    // ⚠ Le corps compilé peut être appelé PENDANT l'exécution (par un
+    // corps RIR ou l'interpréteur) : `interp.jit` doit être rempli AVANT
+    // `executer_principal`. Le JIT principal, lui, est décidé avant
+    // l'abaissement (il détermine si le corps principal passe par le RIR).
     let _t_compileprincipal = _t0.elapsed();
+    // ⚠⚠⚠ L'INTERPRÉTEUR EST EXPOSÉ AU CODE COMPILÉ (délégation, voir
+    // `appeler_delegue`). On le retire après l'exécution.
+    let interp_ptr: *mut Interp = &mut interp;
+    poser_interp_courant(interp_ptr);
     interp.executer_principal();
+    poser_interp_courant(std::ptr::null_mut());
     let _t_exec = _t0.elapsed();
     flush_out();
     if std::env::var("ROSE_PROFIL_RIR").is_ok() {
