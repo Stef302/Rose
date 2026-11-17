@@ -1601,11 +1601,23 @@ impl Interp {
                 erreur_runtime(&format!("Variable '{nom}' utilisée sans valeur"));
             }
             Expr::Binaire { op, a, b, .. } => {
-                // ⚠ Les opérateurs qui ne sont pas dans le sous-ensemble
-                // (appel de fonction, et/ou, etc.) passent par `eval`.
+                // ⚠ et/ou : évaluer avec les slots (les opérandes peuvent lire des slots)
+                if op == "et" {
+                    let g = self.eval_slots(a, slots, noms)?;
+                    if !est_vrai(&g) { return Ok(Valeur::b(false)); }
+                    let d = self.eval_slots(b, slots, noms)?;
+                    return Ok(Valeur::b(est_vrai(&d)));
+                }
+                if op == "ou" {
+                    let g = self.eval_slots(a, slots, noms)?;
+                    if est_vrai(&g) { return Ok(Valeur::b(true)); }
+                    let d = self.eval_slots(b, slots, noms)?;
+                    return Ok(Valeur::b(est_vrai(&d)));
+                }
+                // ⚠ Autres opérateurs hors sous-ensemble : repli via trame des slots
                 if !matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "^" | "div"
                     | "<" | "<=" | ">" | ">=" | "==" | "!=" | "≈") {
-                    return self.eval_interne(e);
+                    return self.eval_avec_slots_fallback(e, slots, noms);
                 }
                 // ⚠⚠⚠ DEUX SLOTS : COMPARAISON DIRECTE (mesuré le 17/11).
                 //
