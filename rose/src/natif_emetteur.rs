@@ -218,7 +218,7 @@ pub struct MemoireExecutable {
     len: usize,
 }
 
-extern "C" {
+unsafe extern "C" {
     fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32,
             fd: i32, offset: i64) -> *mut std::ffi::c_void;
     fn mprotect(addr: *mut std::ffi::c_void, len: usize, prot: i32) -> i32;

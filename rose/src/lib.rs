@@ -51,6 +51,12 @@ pub mod png;
 pub mod mul_rapide;
 pub mod rir;
 
+/// M5.2 — E/S et mémoire par appels système directs (sans std).
+pub mod sys_io;
+
+/// M6.2 — runtime WebAssembly officiel optionnel (cache + SHA-256).
+pub mod wasm_runtime;
+
 /// ⚠⚠⚠ LECTEUR WEBASSEMBLY : Rose exécute des modules compilés par n'importe
 /// quel compilateur (`clang --target=wasm32 -nostdlib`, `rustc`, `emcc`…).
 /// C'est le pont qui permet d'utiliser des bibliothèques d'AUTRES langages
@@ -76,6 +82,10 @@ pub mod repl;
 pub mod jit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod auto_llvm;
+
+/// M3.1 — émetteur machine natif depuis le RIR (code machine, pas de WASM).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod natif_emetteur;
 
 /// Mise à jour Velopack (manifeste, téléchargement, application des paquets).
 #[cfg(not(target_arch = "wasm32"))]
@@ -143,6 +153,11 @@ pub mod jit {
 
         /// Le corps principal n'est jamais compilé.
         pub fn compiler_principal(&mut self, _prog: &Programme) -> Option<Compile> { None }
+
+        /// Déclaration des délégués Cranelift : sans objet en WASM (aucun
+        /// code machine émis), mais l'API doit rester identique à `jit.rs`
+        /// pour que `interp.rs` compile sans adaptation sur toutes les cibles.
+        pub fn declarer_delegues(&mut self) {}
     }
 }
 
