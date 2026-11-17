@@ -16,13 +16,11 @@ name = "rose"
 path = "src/main.rs"
 required-features = ["native"]
 
-# Helper AOT : la chaîne LLVM vit dans un binaire séparé, que le binaire
-# principal télécharge à la demande (voir src/auto_llvm.rs).
-[[bin]]
-name = "rose-aot"
-path = "src/bin/rose-aot.rs"
-required-features = ["native"]
-
+# ⚠ `rose-aot` n'est PLUS un binaire séparé : sa fonctionnalité (orc/link)
+# est intégrée directement dans `rose.exe` (sous-commandes `rose orc` et
+# `rose link`, voir src/main.rs). Le fichier src/bin/rose-aot.rs est conservé
+# à titre d'archive mais n'est plus compilé.
+#
 # Installeur graphique autonome (Windows) : fenêtre Win32 de setup_gui,
 # publiée sous le nom « Rose-win-Setup.exe ». Velopack empaquette ensuite
 # le dossier `stage` (moteur + cet installeur + payload).

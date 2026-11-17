@@ -88,9 +88,10 @@ fn main() {
             println!("cargo:rerun-if-changed=rose_shell.ico");
             println!("cargo:rerun-if-changed=../installateur/assets/rose.ico");
             println!("cargo:rerun-if-changed=../installateur/assets/rose_shell.ico");
-            // llvm-windres (LLVM) -> COFF .res compatible MSVC linker.
+            // rc.exe (MSVC, Windows natif) -> COFF .res compatible MSVC linker.
+            // llvm-windres / windres (MinGW/LLVM) -> COFF .res.
             let mut fait = false;
-            for tool in ["llvm-windres", "windres", "x86_64-w64-mingw32-windres"] {
+            for tool in ["rc.exe", "llvm-windres", "windres", "x86_64-w64-mingw32-windres"] {
                 let st = std::process::Command::new(tool)
                     .args([rc_name, "--target=pe-x86-64", "-O", "coff", "-o", res_name])
                     .status();
