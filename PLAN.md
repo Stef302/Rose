@@ -40,7 +40,7 @@ M2.2 interpréteur sans HashMap par accès       ← À FAIRE
 M2.3 arène d'allocation pour les Gz            ← À FAIRE
 M2.4 liste vide typée `[0 : entier]`           ← FAIT (2af045c)
 M3  Backend propre (AOT sans LLVM externe)
-M3.1 émission x86-64 / aarch64 depuis le RIR   ← À FAIRE
+M3.1 émission x86-64 / aarch64 depuis le RIR   ← MODULE FAIT (8fdef8d, non câblé CLI/JIT, 1,57ms harnais)
 M3.2 link natif (ELF/PE) sans gcc                ← À FAIRE
 M4  Auto-hébergement : compilateur en Rose
 M4.1 lexeur en Rose (miroir de tokeniser)      ← FAIT (181 fichiers, 22b1ae5)
