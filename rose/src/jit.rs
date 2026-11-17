@@ -3308,3 +3308,342 @@ pub extern "C" fn rose_affiche_complexe(re: f64, im: f64) {
     crate::run::ecrire_out(&s);
     crate::run::ecrire_out("\n");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// M3.1 — CÂBLAGE DE L'ÉMETTEUR MACHINE NATIF DANS LE CHEMIN JIT
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Le JIT Cranelift reste LA voie par défaut (priorité historique). Ce
+// câblage est une voie ADDITIONNELLE, activée explicitement par l'appelant
+// (l'orchestrateur appellera `compiler_natif` depuis `main.rs`, par exemple
+// sous `ROSE_NATIF=1`, et seulement après avoir laissé Cranelift décider).
+//
+// ⚠ L'émetteur M3.1 travaille sur des i64 non boxés et une table de
+// trampoline `#[repr(C)]`. On ne touche JAMAIS à la layout de `Valeur` : la
+// conversion `Valeur ↔ i64` est faite ICI, aux frontières, exactement comme
+// `appeler_trampoline` le fait pour Cranelift.
+//
+// Sous-ensemble accepté (trois portes, toutes conservatrices) :
+//   1. types Entier / Booleen uniquement (Vide toléré en retour) ;
+//   2. `natif_emetteur::peut_emettre(corps)` ;
+//   3. `Emitted::fallbacks.is_empty()` — aucun fallback non câblé.
+// Toute fonction refusée rend `None` : l'appelant garde Cranelift ou
+// l'interpréteur. Aucune régression possible.
+//
+// ABI : `i64 code(base: *mut i64, tramp: *const Trampoline)`.
+// `Trampoline::appel_rir` réutilise `rose_appel_interpreteur` (A4 : ABI
+// identique), donc un AppelRir est délégué à l'interpréteur courant.
+
+// ⚠ Le binaire (`main.rs`) compile `jit.rs` en module SANS déclarer
+// `natif_emetteur` (seul `lib.rs` le déclare). On inclut donc le fichier
+// SOUS UN NOM LOCAL : `crate::jit::ne_local`. Les types manipulés
+// (`CorpsRir`, `Signature`, `Valeur`) viennent des modules partagés, donc
+// l'API reste compatible avec le `crate::natif_emetteur` de lib.rs.
+#[path = "natif_emetteur.rs"]
+mod ne_local;
+use ne_local as ne;
+
+/// `eval_fallback` de la trampoline. Jamais appelé (la porte 3 refuse tout
+/// corps qui demanderait un fallback), mais l'ABI exige un pointeur non nul.
+extern "C" fn natif_fallback_neant(_ctx: *mut std::ffi::c_void,
+                                   _id: u32, _base: *mut i64) -> i64 { 0 }
+
+fn natif_type_ok(t: TyKind) -> bool {
+    matches!(t, TyKind::Entier | TyKind::Booleen)
+}
+
+/// Une fonction Rose compilée en code machine par l'émetteur M3.1.
+///
+/// `Send + Sync` : le code vit dans une page mmap'ée indépendante
+/// (`MemoireExecutable` porte déjà les `unsafe impl`), l'`Arc` est
+/// partageable et le pointeur d'appel est un simple `fn` pointer.
+pub struct Natif {
+    /// `Arc` et non `Box` : la page reste à une adresse STABLE quand le
+    /// `Natif` est déplacé dans la closure `Compile::Natif`, ce qui permet
+    /// à une trampoline récursive de conserver un pointeur valide.
+    mem: std::sync::Arc<ne::MemoireExecutable>,
+    n_slots: usize,
+    n_slots_total: usize,
+    retour: TyKind,
+    appel_rir: extern "C" fn(i64, i64, i64, i64, *const u8) -> i64,
+}
+
+impl Natif {
+    /// Compile `corps` pour la fonction `sig`. Les appels à d'autres
+    /// fonctions Rose passent par `rose_appel_interpreteur`.
+    pub fn nouveau(corps: &CorpsRir, sig: &Signature) -> Option<Self> {
+        Self::nouveau_avec(corps, sig, rose_appel_interpreteur)
+    }
+
+    /// Variante d'intégration / de test : fournit un `appel_rir` spécifique
+    /// (récursion locale, moteur intégré sans `INTERP_COURANT`…).
+    pub fn nouveau_avec(corps: &CorpsRir, sig: &Signature,
+                        appel_rir: extern "C" fn(i64, i64, i64, i64, *const u8) -> i64)
+        -> Option<Self>
+    {
+        // porte 1 — types
+        if sig.params.iter().any(|(_, t)| !natif_type_ok(t.n)) { return None; }
+        if sig.retour.n != TyKind::Vide && !natif_type_ok(sig.retour.n) { return None; }
+        // porte 2 — sous-ensemble RIR
+        if !ne::peut_emettre(corps) { return None; }
+        // porte 3 — émission effective, sans fallback à câbler
+        let e = ne::emettre(corps, ne::Architecture::native()).ok()?;
+        if !e.fallbacks.is_empty() { return None; }
+        let mem = std::sync::Arc::new(ne::MemoireExecutable::nouveau(&e.code).ok()?);
+        Some(Natif {
+            mem, n_slots: e.n_slots, n_slots_total: e.n_slots_total,
+            retour: sig.retour.n, appel_rir,
+        })
+    }
+
+    /// Page de code partagée (adresse stable) — sert à câbler une trampoline
+    /// récursive dans un harnais de test ou un moteur intégré.
+    pub fn mem(&self) -> std::sync::Arc<ne::MemoireExecutable> { std::sync::Arc::clone(&self.mem) }
+
+    /// Nombre de slots utilisateur (paramètres compris).
+    pub fn n_slots(&self) -> usize { self.n_slots }
+
+    /// La trampoline est construite à chaque appel : elle ne contient que
+    /// des pointeurs de fonction et un ctx nul. Aucun état non-Send ne vit
+    /// dans la closure `Compile::Natif`.
+    fn trampoline(&self) -> ne::Trampoline {
+        ne::Trampoline {
+            appel_rir: self.appel_rir,
+            eval_fallback: natif_fallback_neant,
+            ctx: std::ptr::null_mut(),
+        }
+    }
+
+    /// Appelle le code machine : `Vec<Valeur>` → slots i64 → `Valeur`.
+    pub fn appeler(&self, args: Vec<Valeur>) -> Valeur {
+        if args.len() > self.n_slots { return Valeur::Vide; }
+        let mut slots = vec![0i64; self.n_slots_total];
+        for (i, a) in args.iter().enumerate() {
+            slots[i] = match a {
+                Valeur::Entier(v, None) => *v,
+                Valeur::Booleen(b) => if *b { 1 } else { 0 },
+                // bit pattern : miroir de `appeler_trampoline` /
+                // `appeler_delegue`.
+                Valeur::Flottant(d) => d.to_bits() as i64,
+                // bigint, rationnel, chaîne… : hors sous-ensemble.
+                _ => return Valeur::Vide,
+            };
+        }
+        let r = unsafe { self.mem.appeler(slots.as_mut_ptr(), &self.trampoline()) };
+        match self.retour {
+            TyKind::Vide => Valeur::Vide,
+            TyKind::Booleen => Valeur::b(r != 0),
+            TyKind::Flottant => Valeur::f(f64::from_bits(r as u64)),
+            _ => Valeur::z(r),
+        }
+    }
+
+    /// Enveloppe dans la forme `Compile` attendue par `Interp`.
+    pub fn dans_compile(self) -> Compile {
+        Compile::Natif(Box::new(move |args| self.appeler(args)))
+    }
+}
+
+/// API demandée pour le câblage CLI : compile un corps RIR en code machine
+/// M3.1 et le rend sous forme de `Compile::Natif`.
+///
+/// `None` = le corps sort du sous-ensemble émettable ; l'appelant doit alors
+/// conserver le JIT Cranelift (prioritaire) ou l'interpréteur.
+pub fn compiler_natif(corps: &CorpsRir, sig: &Signature) -> Option<Compile> {
+    Natif::nouveau(corps, sig).map(|n| n.dans_compile())
+}
+
+/// Comme `compiler_natif`, mais avec un `appel_rir` fourni (récursion locale
+/// ou moteur intégré sans `INTERP_COURANT`).
+pub fn compiler_natif_avec_appel(
+    corps: &CorpsRir, sig: &Signature,
+    appel_rir: extern "C" fn(i64, i64, i64, i64, *const u8) -> i64,
+) -> Option<Compile> {
+    Natif::nouveau_avec(corps, sig, appel_rir).map(|n| n.dans_compile())
+}
+
+#[cfg(test)]
+mod tests_natif {
+    use super::*;
+    use crate::front::Ty;
+    use super::ne_local as ne;
+    use crate::rir::{CacheSlot, Oper};
+
+    fn slot(i: u16) -> Eabstrait { Eabstrait::Slot(i, CacheSlot::neuve()) }
+    fn bin(op: Oper, a: Eabstrait, b: Eabstrait) -> Eabstrait {
+        Eabstrait::Binaire { op, a: Box::new(a), b: Box::new(b) }
+    }
+    /// `Valeur` n'implémente ni `PartialEq` ni `Debug` : on compare le contenu.
+    fn v_i64(v: &Valeur) -> i64 {
+        match v {
+            Valeur::Entier(x, None) => *x,
+            _ => panic!("attendu Valeur::Entier(_, None), obtenu {:?}", v.ty()),
+        }
+    }
+
+    /// fib en RIR « pré-abaissé » : les arguments d'appel sont des SLOTS
+    /// (s1 = n-1, s2 = n-2), forme que l'émetteur M3.1 sait traiter.
+    fn corps_fib() -> CorpsRir {
+        let var = |i: u16| Expr::Var(format!("s{}", i), 0);
+        let app = |i: u16| Eabstrait::AppelRir { nom: "fib".into(), args: vec![var(i)] };
+        CorpsRir {
+            ops: vec![
+                Op::SautSiFauxAbstrait {
+                    test: bin(Oper::Lt, slot(0), Eabstrait::Entier("2".into())),
+                    cible: 2,
+                },
+                Op::RetourAbstrait(slot(0)),
+                Op::Affect { slot: 1, expr: bin(Oper::Sub, slot(0), Eabstrait::Entier("1".into())) },
+                Op::Affect { slot: 3, expr: app(1) },
+                Op::Affect { slot: 2, expr: bin(Oper::Sub, slot(0), Eabstrait::Entier("2".into())) },
+                Op::Affect { slot: 4, expr: app(2) },
+                Op::RetourAbstrait(bin(Oper::Add, slot(3), slot(4))),
+            ],
+            noms: (0..5).map(|i| format!("s{}", i)).collect(),
+            globaux: vec![],
+            n_slots: 5,
+        }
+    }
+    fn sig_entier(nom: &str) -> Signature {
+        Signature {
+            nom: nom.into(),
+            params: vec![("n".into(), Ty { n: TyKind::Entier, elt: TyKind::Dyn })],
+            retour: Ty { n: TyKind::Entier, elt: TyKind::Dyn },
+            a_retour: true,
+            corps: None, rir: None,
+            dll: String::new(), dll_son: String::new(), symbole: String::new(), ligne: 0,
+        }
+    }
+
+    thread_local! {
+        /// `Arc` dans un thread-local : la page reste vivante même quand le
+        /// `Natif` est déplacé dans la closure `Compile::Natif`.
+        static CODE_FIB_JIT: std::cell::RefCell<Option<std::sync::Arc<ne::MemoireExecutable>>> =
+            std::cell::RefCell::new(None);
+    }
+    extern "C" fn pas_de_fallback(_: *mut std::ffi::c_void, _: u32, _: *mut i64) -> i64 { 0 }
+    extern "C" fn fib_tramp(a0: i64, _: i64, _: i64, _: i64, _: *const u8) -> i64 {
+        let mem = CODE_FIB_JIT.with(|c| c.borrow().clone()).expect("code fib non publie");
+        let mut slots = [0i64; 5 + ne::SCRATCH_SLOTS as usize];
+        slots[0] = a0;
+        let tramp = ne::Trampoline {
+            appel_rir: fib_tramp, eval_fallback: pas_de_fallback, ctx: std::ptr::null_mut()
+        };
+        unsafe { mem.appeler(slots.as_mut_ptr(), &tramp) }
+    }
+
+    #[test]
+    fn api_native_fib25_via_trampoline() {
+        let corps = corps_fib();
+        let sig = sig_entier("fib");
+        let natif = Natif::nouveau_avec(&corps, &sig, fib_tramp).expect("fib émettable");
+        CODE_FIB_JIT.with(|c| *c.borrow_mut() = Some(natif.mem()));
+
+        // 1) appel direct via la structure Natif (preuve chronométrée)
+        let t0 = std::time::Instant::now();
+        let r25 = v_i64(&natif.appeler(vec![Valeur::z(25)]));
+        let dt = t0.elapsed();
+        eprintln!("M3.1 API fib(25) = {} sur {} en {:?}", r25, ne::Architecture::native().nom(), dt);
+        assert_eq!(r25, 75025);
+
+        // 2) via la forme Compile::Natif (ce que main.rs appellera)
+        let c = natif.dans_compile();
+        if let Compile::Natif(f) = &c {
+            assert_eq!(v_i64(&f(vec![Valeur::z(25)])), 75025);
+        } else { panic!("pas un Compile::Natif"); }
+
+        // 3) via la fonction publique compiler_natif_avec_appel : on publie
+        //    les octets d'un second mmap (même code) pour la récursion.
+        let c2 = compiler_natif_avec_appel(&corps, &sig, fib_tramp).expect("compile natif");
+        let octets = ne::emettre(&corps, ne::Architecture::native()).unwrap().code;
+        CODE_FIB_JIT.with(|c| *c.borrow_mut() = Some(
+            std::sync::Arc::new(ne::MemoireExecutable::nouveau(&octets).unwrap())));
+        if let Compile::Natif(f) = &c2 {
+            assert_eq!(v_i64(&f(vec![Valeur::z(25)])), 75025);
+        } else { panic!("pas un Compile::Natif"); }
+
+        CODE_FIB_JIT.with(|c| *c.borrow_mut() = None);
+    }
+
+    #[test]
+    fn refuse_types_hors_i64_et_corps_a_fallback() {
+        let corps = corps_fib();
+        let mut sig = sig_entier("fib");
+        sig.params[0].1.n = TyKind::Flottant;
+        assert!(compiler_natif(&corps, &sig).is_none(), "paramètre flottant refusé");
+        // un retour Flottant littéral passe `peut_emettre` mais demande un
+        // fallback : la porte 3 doit le refuser.
+        let c = CorpsRir {
+            ops: vec![Op::RetourAbstrait(Eabstrait::Flottant(1.5))],
+            noms: vec![], globaux: vec![], n_slots: 0,
+        };
+        assert!(compiler_natif(&c, &sig_entier("f")).is_none(), "fallback refusé");
+    }
+
+    #[test]
+    fn parite_natif_cranelift_interpreteur() {
+        // `calc(n) = si n<2 alors n+10 sinon n*n-n` — vrai RIR issu de
+        // l'analyse Rose, sans AppelRir (donc sans dépendance au global).
+        let source = "fn calc(n: entier) -> entier {\n\
+                        si (n < 2) { retour n + 10 }\n\
+                        retour n * n - n\n\
+                      }\n";
+        let mut prog = crate::front::analyser(source).expect("analyse calc");
+
+        // abaissement RIR (miroir de executer_source_analyse), AVANT de
+        // construire l'Interp : le programme analysé est public, le champ
+        // `Interp::prog` ne l'est pas.
+        let globaux_connus: Vec<String> = Vec::new();
+        let candidats: Vec<String> = prog.ordre.iter()
+            .filter(|n| prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
+            .cloned().collect();
+        crate::rir::declarer_rir(&candidats);
+        for nom in prog.ordre.clone() {
+            if let Some(sig) = prog.signatures.get(&nom) {
+                let Some(corps) = sig.corps.as_ref() else { continue };
+                let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
+                if let Some(rir) = crate::rir::abaisser(corps, &params, &globaux_connus) {
+                    prog.signatures.get_mut(&nom).unwrap().rir = Some(rir);
+                }
+            }
+        }
+        let sig = prog.signatures.get("calc").unwrap().clone();
+        let corps = sig.rir.clone().expect("RIR calc");
+        assert!(ne::peut_emettre(&corps), "calc doit être émettable: {:?}", corps.ops);
+        let mut signatures = std::collections::HashMap::new();
+        signatures.insert("calc".to_string(), sig.clone());
+
+        let mut interp = crate::interp::Interp::nouveau(prog);
+
+        // 1) INTERPRÉTEUR (helper officiel, pile de slots vidée)
+        crate::interp::poser_interp_courant(&mut interp as *mut _);
+        let r_interp = crate::interp::appeler_delegue("calc", &[25]);
+        let r_interp_petit = crate::interp::appeler_delegue("calc", &[1]);
+
+        // 2) CRANELIFT (voie prioritaire, inchangée)
+        let mut jit = Jit::nouveau(&signatures);
+        let compiles = jit.compiler_tout();
+        let r_cl = match compiles.get("calc") {
+            Some(Compile::Natif(f)) => f(vec![Valeur::z(25)]),
+            _ => panic!("Cranelift n'a pas compilé calc"),
+        };
+
+        // 3) ÉMETTEUR MACHINE M3.1
+        let r_nat = match compiler_natif(&corps, &sig) {
+            Some(Compile::Natif(f)) => f(vec![Valeur::z(25)]),
+            None => panic!("émetteur machine a refusé calc"),
+            Some(_) => panic!("émetteur machine a rendu un Compile non-Natif"),
+        };
+        let natif_petit = Natif::nouveau(&corps, &sig).expect("calc natif");
+        let r_nat_petit = natif_petit.appeler(vec![Valeur::z(1)]);
+
+        // Les TROIS moteurs donnent la même valeur.
+        assert_eq!(r_interp, 25 * 25 - 25, "interpréteur n=25");
+        assert_eq!(v_i64(&r_cl), r_interp, "Cranelift n=25");
+        assert_eq!(v_i64(&r_nat), r_interp, "émetteur machine n=25");
+        assert_eq!(v_i64(&r_nat_petit), r_interp_petit, "n=1");
+        assert_eq!(r_interp_petit, 11, "interpréteur n=1");
+
+        crate::interp::poser_interp_courant(std::ptr::null_mut());
+    }
+}

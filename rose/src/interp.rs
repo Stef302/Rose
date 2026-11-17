@@ -10,12 +10,19 @@ use std::rc::Rc;
 
 use crate::front::{Expr, Instr, Programme, Signature, TyKind};
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use crate::run::*;
 use crate::jit::{Compile, Jit};
 
 /// ⚠ Le trait est importé pour que `empiler_slots`/`depiler_slots` soient
 /// appelables sur `Interp` sans préfixe.
 use crate::rir::HoteRir;
+
+// ⚠ M2.2 (17/11) : pool de `Gz` réutilisables pour les temporaires d'une
+// opération. Le fichier est inclus D'ICI (et non déclaré dans lib.rs/main.rs)
+// parce que ces deux fichiers appartiennent à l'orchestrateur.
+#[path = "gz_pool.rs"]
+mod gz_pool;
 
 pub struct Interp {
     prog: Programme,
@@ -203,7 +210,7 @@ fn si_val_atomique(val: &str) -> Valeur {
             || (val.len() > 1
                 && (val.as_bytes()[0] == b'+' || val.as_bytes()[0] == b'-')
                 && val[1..].chars().all(|c| c.is_ascii_digit())));
-    if est_entier_pur { return Valeur::zg(chaine_vers_entier(val)); }
+    if est_entier_pur { return zg_rapide(chaine_vers_entier(val)); }
     Valeur::s(val.to_string())
 }
 
@@ -718,6 +725,35 @@ impl Interp {
         self
     }
 
+    /// ⚠ M3.1 — CÂBLAGE OPTIONNEL DE L'ÉMETTEUR MACHINE NATIF.
+    ///
+    /// Installe les fonctions que Cranelift n'a PAS compilées (`self.jit`
+    /// vide pour elles) mais dont le corps RIR est émettable, via
+    /// `jit::compiler_natif`. La page mmap'ée est créée par l'émetteur, la
+    /// trampoline `appel_rir` réutilise `rose_appel_interpreteur`.
+    ///
+    /// ⚠ INERTE TANT QU'ELLE N'EST PAS APPELÉE, et auto-guardée par
+    /// `ROSE_NATIF=1`. Le JIT Cranelift reste donc strictement prioritaire :
+    /// une fonction déjà dans `self.jit` n'est jamais écrasée.
+    ///
+    /// ⚠ À appeler dans `executer_source_analyse`, APRÈS
+    /// `interp.jit = jit.compiler_tout();` et AVANT `poser_interp_courant`.
+    pub fn activer_emetteur_natif(&mut self) -> usize {
+        if std::env::var("ROSE_NATIF").is_err() { return 0; }
+        let candidats: Vec<(String, crate::rir::CorpsRir, Signature)> = self.prog.signatures.iter()
+            .filter(|(nom, _)| !self.jit.contains_key(*nom))
+            .filter_map(|(_, s)| s.rir.clone().map(|r| (s.nom.clone(), r, s.clone())))
+            .collect();
+        let mut installées = 0;
+        for (nom, corps, sig) in candidats {
+            if let Some(c) = crate::jit::compiler_natif(&corps, &sig) {
+                self.jit.insert(nom, c);
+                installées += 1;
+            }
+        }
+        installées
+    }
+
     fn cible(&self, nom: &str) -> Option<Valeur> {
         let f = self.trames.last().unwrap();
         if let Some(v) = f.get(nom) { return Some(v.clone()); }
@@ -950,7 +986,7 @@ impl Interp {
                 crate::run::ecrire_out("\n");
                 let d = vers_z(&self.eval(debut)?);
                 let f = vers_z(&self.eval(fin)?);
-                self.trames.last_mut().unwrap().insert(nom.clone(), Valeur::zg(d));
+                self.trames.last_mut().unwrap().insert(nom.clone(), zg_rapide(d));
                 loop {
                     let cur = {
                         let v = self.trames.last().unwrap().get(nom).unwrap().clone();
@@ -964,7 +1000,7 @@ impl Interp {
                     let cur = vers_z(self.trames.last().unwrap().get(nom).unwrap());
                     let suivant = Gz::neuf();
                     unsafe { gmp_add_ui(suivant.p(), cur.p(), 1) };
-                    self.trames.last_mut().unwrap().insert(nom.clone(), Valeur::zg(suivant));
+                    self.trames.last_mut().unwrap().insert(nom.clone(), zg_rapide(suivant));
                 }
                 self.trames.last_mut().unwrap().remove(nom);
             }
@@ -1452,7 +1488,7 @@ impl Interp {
                     // pas par tour).
                     let d = vers_z(&self.eval(debut)?);
                     let f = vers_z(&self.eval(fin)?);
-                    self.trames.last_mut().unwrap().insert(nom.clone(), Valeur::zg(d));
+                    self.trames.last_mut().unwrap().insert(nom.clone(), zg_rapide(d));
                     let cur = {
                         let v = self.trames.last().unwrap().get(nom).unwrap().clone();
                         vers_z(&v)
@@ -1545,7 +1581,7 @@ impl Interp {
         match ty {
             TyKind::Flottant => Valeur::f(chaine_vers_flottant(ligne)),
             TyKind::Rationnel => Valeur::qq(chaine_vers_rationnel(ligne)),
-            _ => Valeur::zg(chaine_vers_entier(ligne)),
+            _ => zg_rapide(chaine_vers_entier(ligne)),
         }
     }
 
@@ -1814,7 +1850,7 @@ impl Interp {
                     if !z.depuis_chaine(texte) {
                         erreur_runtime(&format!("constante invalide ({})", texte));
                     }
-                    Ok(Valeur::zg(z))
+                    Ok(zg_rapide(z))
                 }
             }
             Expr::ChaineLit(s, _) => Ok(Valeur::s(s.clone())),
@@ -1904,32 +1940,32 @@ impl Interp {
             Expr::Factorielle(a, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
-                Ok(Valeur::zg(factorielle(&z)))
+                Ok(zg_rapide(factorielle(&z)))
             }
             Expr::MultiFactorielle(a, k, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
-                Ok(Valeur::zg(multifactorielle(&z, *k)))
+                Ok(zg_rapide(multifactorielle(&z, *k)))
             }
             Expr::SousFactorielle(a, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
-                Ok(Valeur::zg(sous_factorielle(&z)))
+                Ok(zg_rapide(sous_factorielle(&z)))
             }
             Expr::Primorielle(a, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
-                Ok(Valeur::zg(primorielle(&z)))
+                Ok(zg_rapide(primorielle(&z)))
             }
             Expr::Terminal(a, _) => {
                 let v = self.eval(a)?;
                 // ⚠ `n?` = termial CLASSIQUE n(n+1)/2 (A000217), pas Kurepa.
-                Ok(Valeur::zg(termial_classique(&vers_z(&v))))
+                Ok(zg_rapide(termial_classique(&vers_z(&v))))
             }
             Expr::SuperFactorielle(a, _) => {
                 let v = self.eval(a)?;
                 let z = vers_z(&v);
-                Ok(Valeur::zg(super_factorielle(&z)))
+                Ok(zg_rapide(super_factorielle(&z)))
             }
             Expr::Binaire { op, a, b, ligne } => {
                 crate::run::noter_ligne(*ligne);
@@ -2192,7 +2228,7 @@ impl crate::rir::HoteRir for Interp {
                 // exacte (`chaine_vers_entier`).
                 match t.trim().parse::<i64>() {
                     Ok(v) => Ok(Valeur::z(v)),
-                    Err(_) => Ok(Valeur::zg(chaine_vers_entier(t))),
+                    Err(_) => Ok(zg_rapide(chaine_vers_entier(t))),
                 }
             }
             Eabstrait::Flottant(x) => Ok(Valeur::f(*x)),
@@ -2393,7 +2429,7 @@ impl crate::rir::HoteRir for Interp {
             }
             Eabstrait::Entier(t) => match t.trim().parse::<i64>() {
                 Ok(v) => Valeur::z(v),
-                Err(_) => Valeur::zg(chaine_vers_entier(t)),
+                Err(_) => zg_rapide(chaine_vers_entier(t)),
             },
             Eabstrait::Flottant(x) => Valeur::f(*x),
             Eabstrait::Neg(a) => {
@@ -2597,13 +2633,13 @@ pub fn unaire_valeur(op: &str, v: &Valeur) -> Result<Valeur, Option<i32>> {
                 z.poser_i64(*i);
                 let r = Gz::neuf();
                 unsafe { gmp_neg(r.p(), z.p()) };
-                Ok(Valeur::zg(r))
+                Ok(zg_rapide(r))
             }
         },
         Valeur::Entier(_, Some(z)) => {
             let r = Gz::neuf();
             unsafe { gmp_neg(r.p(), z.p()) };
-            Ok(Valeur::zg(r))
+            Ok(zg_rapide(r))
         }
         Valeur::Rationnel(q) => {
             let r = Gq::neuf();
@@ -2811,13 +2847,13 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
         match op {
             "+" => Ok(if m == 3 { Valeur::f(vers_d(&g) + vers_d(&d)) }
                       else if m == 2 { let (x, y) = (vers_q(&g), vers_q(&d)); let r = Gq::neuf(); unsafe { gmpq_add(r.p(), x.p(), y.p()) }; Valeur::qq(r) }
-                      else { let (x, y) = (vers_z(&g), vers_z(&d)); let r = Gz::neuf(); unsafe { gmp_add(r.p(), x.p(), y.p()) }; Valeur::zg(r) }),
+                      else { binop_z_pool("+", &g, &d) }),
             "-" => Ok(if m == 3 { Valeur::f(vers_d(&g) - vers_d(&d)) }
                       else if m == 2 { let (x, y) = (vers_q(&g), vers_q(&d)); let r = Gq::neuf(); unsafe { gmpq_sub(r.p(), x.p(), y.p()) }; Valeur::qq(r) }
-                      else { let (x, y) = (vers_z(&g), vers_z(&d)); let r = Gz::neuf(); unsafe { gmp_sub(r.p(), x.p(), y.p()) }; Valeur::zg(r) }),
+                      else { binop_z_pool("-", &g, &d) }),
             "*" => Ok(if m == 3 { Valeur::f(vers_d(&g) * vers_d(&d)) }
                       else if m == 2 { let (x, y) = (vers_q(&g), vers_q(&d)); let r = Gq::neuf(); unsafe { gmpq_mul(r.p(), x.p(), y.p()) }; Valeur::qq(r) }
-                      else { let (x, y) = (vers_z(&g), vers_z(&d)); let r = Gz::neuf(); unsafe { gmp_mul(r.p(), x.p(), y.p()) }; Valeur::zg(r) }),
+                      else { binop_z_pool("*", &g, &d) }),
             "/" => {
                 if m == 3 {
                     let (x, y) = (vers_d(&g), vers_d(&d));
@@ -2845,14 +2881,14 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
                     unsafe { gmpq_div(q.p(), x.p(), y.p()) };
                     let r = Gz::neuf();
                     unsafe { gmp_fdiv_q(r.p(), q.num_raw(), q.den_raw()) };
-                    return Ok(Valeur::zg(r));
+                    return Ok(zg_rapide(r));
                 }
                 let y = vers_z(&d);
                 if y.chaine() == "0" { erreur_runtime("division euclidienne par zéro"); }
                 let x = vers_z(&g);
                 let r = Gz::neuf();
                 unsafe { gmp_fdiv_q(r.p(), x.p(), y.p()) };
-                Ok(Valeur::zg(r))
+                Ok(zg_rapide(r))
             }
             "%" => {
                 // règle du langage : le modulo n'accepte
@@ -2866,7 +2902,7 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
                 let x = vers_z(&g);
                 let r = Gz::neuf();
                 unsafe { gmp_fdiv_r(r.p(), x.p(), y.p()) };
-                Ok(Valeur::zg(r))
+                Ok(zg_rapide(r))
             }
             "^" => {
                 if matches!(d, Valeur::Flottant(..)) {
@@ -2888,7 +2924,7 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
                 if e >= 0 {
                     let r = Gz::neuf();
                     unsafe { gmp_pow_ui(r.p(), base.p(), e as u64) };
-                    Ok(Valeur::zg(r))
+                    Ok(zg_rapide(r))
                 } else {
                     if base.sgn() == 0 { erreur_runtime("0^exposant négatif"); }
                     let q = Gq::neuf();
@@ -2913,7 +2949,7 @@ impl Interp {
             let v = self.eval(&args[0])?;
             return Ok(match nom {
                 "entier" => {
-                    if let Valeur::Chaine(s) = &v { return Ok(Valeur::zg(chaine_vers_entier(s))); }
+                    if let Valeur::Chaine(s) = &v { return Ok(zg_rapide(chaine_vers_entier(s))); }
                     convertir(v, TyKind::Entier)
                 }
                 "rationnel" => convertir(v, TyKind::Rationnel),
@@ -3296,12 +3332,12 @@ impl Interp {
             "rng_materiel" | "rng_mat" => {
                 let z = Gz::neuf();
                 z.poser_u64(tirage_systeme());
-                Valeur::zg(z)
+                zg_rapide(z)
             }
             "hasard" | "prng" => {
                 let n = vers_z(&a[0]);
                 let r = hasard(&mut self.rng, &n);
-                Valeur::zg(r)
+                zg_rapide(r)
             }
             "hasard_systeme" | "hasard_vrai" | "trng" => {
                 let n = vers_z(&a[0]);
@@ -3319,7 +3355,7 @@ impl Interp {
                         gmp_fdiv_r(r.p(), r.p(), n.p());
                     }
                 }
-                Valeur::zg(r)
+                zg_rapide(r)
             }
             "tampon" | "buf" => {
                 let n = vers_z(&a[0]);
@@ -3374,13 +3410,13 @@ impl Interp {
                 remplir_philox(&mut buf, &ab, gr);
                 Valeur::Vide
             }
-            "factorielle" | "fact" => { let z = vers_z(&a[0]); Valeur::zg(factorielle(&z)) }
-            "factorielle_rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
-            "factorial_rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
-            "rapide" => { let z = vers_z(&a[0]); Valeur::zg(factorielle_rapide(&z)) }
+            "factorielle" | "fact" => { let z = vers_z(&a[0]); zg_rapide(factorielle(&z)) }
+            "factorielle_rapide" => { let z = vers_z(&a[0]); zg_rapide(factorielle_rapide(&z)) }
+            "factorial_rapide" => { let z = vers_z(&a[0]); zg_rapide(factorielle_rapide(&z)) }
+            "rapide" => { let z = vers_z(&a[0]); zg_rapide(factorielle_rapide(&z)) }
             "factorial_approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
             "approx" => { let z = vers_z(&a[0]); Valeur::s(factorial_approx(&z)) }
-            "primorielle" => { let z = vers_z(&a[0]); Valeur::zg(primorielle(&z)) }
+            "primorielle" => { let z = vers_z(&a[0]); zg_rapide(primorielle(&z)) }
             // ⚠ Deux termials, DEUX NOTATIONS (demande utilisateur) :
             //   `n?`                = termial CLASSIQUE n(n+1)/2 (A000217) ;
             //   `termial(n)`        = idem, nom explicite ;
@@ -3390,7 +3426,7 @@ impl Interp {
             "terminal" | "termial_kurepa" | "kurepa" => terminal(&a[0]),
             "termial" | "triangulaire" | "termial_classique" => {
                 let z = vers_z(&a[0]);
-                Valeur::zg(termial_classique(&z))
+                zg_rapide(termial_classique(&z))
             }
             // `multifactorielle(n, k)` : équivalent fonctionnel de `n!!`
             // (k = 2), `n!!!` (k = 3), etc. Utile quand k est calculé.
@@ -3398,17 +3434,17 @@ impl Interp {
                 let z = vers_z(&a[0]);
                 let kz = vers_z(&a[1]);
                 let k = if kz.fits_i64() { kz.get_i64().clamp(1, 255) as u8 } else { 1 };
-                Valeur::zg(multifactorielle(&z, k))
+                zg_rapide(multifactorielle(&z, k))
             }
             // `sous_factorielle(n)` : équivalent fonctionnel de `!n`.
             "sous_factorielle" | "derangement" | "sous_factorial" => {
                 let z = vers_z(&a[0]);
-                Valeur::zg(sous_factorielle(&z))
+                zg_rapide(sous_factorielle(&z))
             }
-            "super_factorielle" => { let z = vers_z(&a[0]); Valeur::zg(super_factorielle(&z)) }
-            "fibonacci" | "fib" => { let z = vers_z(&a[0]); Valeur::zg(fibonacci(&z)) }
-            "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(pgcd(&x, &y)) }
-            "ppcm" | "lcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); Valeur::zg(ppcm(&x, &y)) }
+            "super_factorielle" => { let z = vers_z(&a[0]); zg_rapide(super_factorielle(&z)) }
+            "fibonacci" | "fib" => { let z = vers_z(&a[0]); zg_rapide(fibonacci(&z)) }
+            "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); zg_rapide(pgcd(&x, &y)) }
+            "ppcm" | "lcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); zg_rapide(ppcm(&x, &y)) }
             "puissance" | "pow" => {
                 let e = vers_z(&a[1]);
                 puissance(&a[0], &e)
@@ -3447,7 +3483,7 @@ impl Interp {
                 };
                 let z = Gz::neuf();
                 z.poser_u64(n);
-                Valeur::zg(z)
+                zg_rapide(z)
             }
             "table" | "map" => Valeur::table(),
             "inserer" => {
@@ -3497,7 +3533,7 @@ impl Interp {
                 if cps.len() != 1 { erreur_runtime("ordre attend une chaîne d'un seul caractère"); }
                 let z = Gz::neuf();
                 z.poser_u64(cps[0] as u32 as u64);
-                Valeur::zg(z)
+                zg_rapide(z)
             }
             "caractere" => {
                 let n = vers_z(&a[0]);
@@ -3999,7 +4035,7 @@ impl Interp {
             "nb_arguments" => {
                 let z = Gz::neuf();
                 z.poser_u64(self.arguments.len() as u64);
-                Valeur::zg(z)
+                zg_rapide(z)
             }
             "argument" => {
                 let i = vers_z(&a[0]);
@@ -4012,7 +4048,7 @@ impl Interp {
                 let t = crate::run::temps_unix_nanos();
                 let z = Gz::neuf();
                 z.poser_u64(t);
-                Valeur::zg(z)
+                zg_rapide(z)
             }
             // millisecondes() (alias « ms ») : mêmes sémantiques que temps()
             // mais en millisecondes — attendu par la suite de benchmarks.
@@ -4106,7 +4142,7 @@ impl Interp {
                     Valeur::Entier(_, Some(z)) => {
                         let r = Gz::neuf();
                         unsafe { if gmp_sgn(z.p()) < 0 { gmp_neg(r.p(), z.p()) } else { gmp_set(r.p(), z.p()) } };
-                        Valeur::zg(r)
+                        zg_rapide(r)
                     }
                     Valeur::Rationnel(q) => {
                         let r = Gq::neuf();
@@ -4141,14 +4177,14 @@ impl Interp {
                     Valeur::Rationnel(q) => {
                         let z = Gz::neuf();
                         unsafe { gmp_fdiv_q(z.p(), q.num(), q.den()) };
-                        Valeur::zg(z)
+                        zg_rapide(z)
                     }
                     Valeur::Flottant(d) => {
                         let z = Gz::neuf();
                         unsafe { gmp_set_d(z.p(), d.floor()) };
-                        Valeur::zg(z)
+                        zg_rapide(z)
                     }
-                    _ => { let z = vers_z(&a[0]); Valeur::zg(z) }
+                    _ => { let z = vers_z(&a[0]); zg_rapide(z) }
                 }
             }
             "fraction" => {
@@ -4191,6 +4227,69 @@ impl Interp {
 fn indice_tampon(idx: &Gz, taille: usize) -> usize {
     if !idx.fits_usize(taille) { erreur_runtime("index hors tampon"); }
     idx.get_u64() as usize
+}
+
+/// ⚠⚠⚠ M2.2 : construit une `Valeur` depuis un `Gz` SANS CLONER le `BigInt`.
+///
+/// `Valeur::zg` (run.rs) appelle `z.fits_i64()` PUIS `z.get_i64()`, et chacune
+/// de ces méthodes fait `self.v()` = une copie complète de TOUS les limbs.
+/// Sur les grands entiers c'est deux clones de centaines de kilo-octets par
+/// résultat. Ici on lit par référence (`bref()`) : `to_i64()` rend `None` dès
+/// que la valeur sort de l'intervalle i64, exactement la règle de
+/// `fits_i64()`. La valeur produite est STRICTEMENT IDENTIQUE.
+fn zg_rapide(z: Gz) -> Valeur {
+    match z.bref().to_i64() {
+        Some(v) => Valeur::z(v),
+        None => Valeur::Entier(0, Some(Rc::new(z))),
+    }
+}
+
+/// ⚠ M2.2 : écrit une `Valeur` DANS un `Gz` déjà alloué (emprunté au pool).
+/// Miroir exact de `run::vers_z`, mais sans `Gz::neuf()` : l'allocation de la
+/// boîte `Box<Mpz>` est économisée, le contenu est copié de la même façon.
+fn vers_z_dans(v: &Valeur, z: &Gz) {
+    match v {
+        Valeur::Entier(i, None) => z.poser_i64(*i),
+        Valeur::Entier(_, Some(o)) => z.copier_de(o),
+        Valeur::Booleen(b) => z.poser_i64(if *b { 1 } else { 0 }),
+        Valeur::Rationnel(q) => {
+            let n = q.num_i128();
+            let d = q.den_i128();
+            if d == 0 { erreur_runtime("division par zéro"); }
+            z.poser_i64((n / d) as i64);
+        }
+        Valeur::Flottant(d) => z.poser_d(*d),
+        Valeur::Chaine(s) => {
+            if s.is_empty() { z.poser_i64(0); }
+            else if !z.depuis_chaine(s) {
+                erreur_runtime(&format!("conversion vers entier impossible (chaine: {:?})", s));
+            }
+        }
+        _ => erreur_runtime(&format!(
+            "conversion vers entier impossible (type {:?}, val={:?}, ligne={})",
+            v.ty(), chaine_de(v), LIGNE_COURANTE.with(|c| c.get()),
+        )),
+    }
+}
+
+/// ⚠ M2.2 : addition/soustraction/multiplication de grands entiers avec les
+/// deux OPÉRANDES empruntés au pool. `Gz::{add,sub,mul}` opèrent par référence
+/// (`bref()` des deux côtés) : aucun clone d'opérande, contrairement aux
+/// `gmp_add/sub/mul` qui clonaient l'opérande gauche (et droite pour add/sub).
+/// Le résultat, lui, reste possédé par la `Valeur` qui le reçoit.
+fn binop_z_pool(op: &str, g: &Valeur, d: &Valeur) -> Valeur {
+    gz_pool::avec_deux(|x, y| {
+        vers_z_dans(g, x);
+        vers_z_dans(d, y);
+        let r = Gz::neuf();
+        match op {
+            "+" => r.add(x, y),
+            "-" => r.sub(x, y),
+            "*" => r.mul(x, y),
+            _ => unreachable!("binop_z_pool: opérateur inattendu"),
+        }
+        zg_rapide(r)
+    })
 }
 
 /// ⚠⚠⚠ RANG D'UNE VALEUR, SANS PASSER PAR `ty()` (mesuré le 16/11).
@@ -4974,6 +5073,9 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
     interp.jit = jit.compiler_tout();
     let _t_compiletout = _t0.elapsed();
+    // M3.1 : active l'émetteur machine natif si ROSE_NATIF=1. Inerte par
+    // défaut ; n'écrase aucun Compile::Natif déjà produit par Cranelift.
+    let _installées = interp.activer_emetteur_natif();
 
     if std::env::var("ROSE_NO_RIR").is_err() {
         if interp.jit_principal.is_none() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
@@ -5286,7 +5388,7 @@ fn terminal_entier(nn: i64) -> Valeur {
     }
     let r = Gz::neuf();
     r.set_v(somme);
-    Valeur::zg(r)
+    zg_rapide(r)
 }
 
 
