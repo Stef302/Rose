@@ -305,6 +305,7 @@ fn expr_contient_lit_complexe(e: &Expr) -> bool {
         | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
         | Expr::SuperFactorielle(a, _) => expr_contient_lit_complexe(a),
         Expr::ListeLit(v, _) => v.iter().any(expr_contient_lit_complexe),
+        Expr::ListeVideTypee(_, _) => false,
         Expr::Appel { args, .. } => args.iter().any(expr_contient_lit_complexe),
         Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_contient_lit_complexe(x)),
         _ => false,

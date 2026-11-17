@@ -67,6 +67,7 @@ fn priorite(e: &Expr) -> u8 {
         | Expr::Appel { .. }
         | Expr::Index { .. }
         | Expr::ListeLit(..)
+        | Expr::ListeVideTypee(..)
         | Expr::TableLit(..) => P_ATOME,
     }
 }
@@ -183,6 +184,7 @@ fn expr_brut(e: &Expr) -> String {
             let inner: Vec<String> = elems.iter().map(expr_latex).collect();
             format!("\\left[{} \\right]", inner.join(", "))
         }
+        Expr::ListeVideTypee(_, _) => "\\left[ \\right]".to_string(),
         Expr::TableLit(paires, _) => {
             let inner: Vec<String> = paires
                 .iter()

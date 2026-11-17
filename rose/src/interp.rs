@@ -1834,6 +1834,7 @@ impl Interp {
                 for x in el { v.push(self.eval(x)?); }
                 Ok(Valeur::liste_de(v))
             }
+            Expr::ListeVideTypee(_, _) => Ok(Valeur::liste_de(Vec::new())),
             Expr::TableLit(el, _) => {
                 let mut items: Vec<(Valeur, Valeur)> = Vec::new();
                 for (k, v) in el {
@@ -4244,6 +4245,7 @@ fn exprime_un_nom(e: &Expr, noms: &[String]) -> bool {
             | Expr::SuperFactorielle(a, _) | Expr::MultiFactorielle(a, _, _) => dans(a, noms),
             Expr::Index { a, b, .. } => dans(a, noms) || dans(b, noms),
             Expr::ListeLit(el, _) => el.iter().any(|x| dans(x, noms)),
+            Expr::ListeVideTypee(_, _) => false,
             Expr::TableLit(p, _) => p.iter().any(|(_, v)| dans(v, noms)),
             _ => false,
         }

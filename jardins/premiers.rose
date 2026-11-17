@@ -48,35 +48,19 @@ fn prochain_premier(n: entier) -> entier {
 }
 
 # ── facteurs_premiers(n) : liste des facteurs premiers, avec répétition ────
-# 360 → [2, 2, 2, 3, 3, 5]. Liste VIDE si n < 2.
-#
-# ⚠⚠ ROSE REFUSE `[]` (liste vide : « le type d'élément est introuvable »).
-# C'est une LIMITE DU LANGAGE, pas du jardin : la seule façon d'avoir une
-# liste vide aujourd'hui est de la REMBOURRER à l'index 0 puis de la
-# dépouiller. On le fait ICI, en un seul endroit, et on le documente.
-#
-# ⚠ Candidat d'évolution du langage : une annotation `[0 : entier]` (liste
-# vide typée) supprimerait ce rembourrage partout. À discuter, pas à
-# contourner en silence dans chaque jardin.
+# 360 → [2, 2, 2, 3, 3, 5]. Liste vide si n < 2.
 fn facteurs_premiers(n: entier) -> liste<entier> {
-  $rembourre = [0]
+  $out = [0 : entier]
   $m = n
   $d = 2
   tant_que ($d * $d <= $m) {
     tant_que ($m % $d == 0) {
-      joindre($rembourre, $d)
+      joindre($out, $d)
       $m = $m div $d
     }
     $d = $d + 1
   }
-  si ($m > 1) { joindre($rembourre, $m) }
-  # Dépouillement : on rend la liste SANS son rembourrage (index 0).
-  $out = [0]
-  $j = 1
-  tant_que ($j < longueur($rembourre)) {
-    joindre($out, $rembourre[$j])
-    $j = $j + 1
-  }
+  si ($m > 1) { joindre($out, $m) }
   retour $out
 }
 

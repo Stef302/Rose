@@ -422,6 +422,8 @@ pub enum Expr {
     SuperFactorielle(Box<Expr>, usize),
     Index { a: Box<Expr>, b: Box<Expr>, ligne: usize },
     ListeLit(Vec<Expr>, usize),
+    /// Liste vide avec type d'élément annoté : `[0 : entier]` → liste vide de entiers.
+    ListeVideTypee(TyKind, usize),
     TableLit(Vec<(String, Expr)>, usize),
 }
 
@@ -469,6 +471,7 @@ pub fn deplier_i_rec(e: &mut Expr) {
         | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
         | Expr::SuperFactorielle(a, _) => deplier_i_rec(a),
         Expr::ListeLit(v, _) => { for x in v { deplier_i_rec(x); } }
+        Expr::ListeVideTypee(_, _) => {}
         Expr::Appel { args, .. } => { for x in args { deplier_i_rec(x); } }
         Expr::TableLit(v, _) => { for (_, x) in v { deplier_i_rec(x); } }
         _ => {}
@@ -486,7 +489,8 @@ pub fn ligne_expr(e: &Expr) -> usize {
         Expr::Unaire { ligne, .. } | Expr::Index { ligne, .. } => *ligne,
         Expr::Factorielle(_, l) | Expr::MultiFactorielle(_, _, l) | Expr::SousFactorielle(_, l)
         | Expr::Primorielle(_, l) | Expr::Terminal(_, l) | Expr::SuperFactorielle(_, l)
-        | Expr::ListeLit(_, l) => *l,
+        | Expr::ListeLit(_, l)
+        | Expr::ListeVideTypee(_, l) => *l,
         Expr::TableLit(_, l) => *l,
     }
 }
@@ -1361,6 +1365,30 @@ impl Parser {
                         if !self.accepter(&[Tk::Virgule]) { break; }
                     }
                 }
+                // M2.4 : `[0 : type]` = liste vide typée (annotation d'élément).
+                if elems.len() == 1 && self.est(&[Tk::DeuxPts]) {
+                    if let Expr::Litteral { texte, flott, rationnel, neg, .. } = &elems[0] {
+                        if !*flott && !*rationnel && !*neg && texte == "0" {
+                            self.suivant(); // ':'
+                            let ty_tok = self.suivant();
+                            let ty_elem = match ty_tok.texte.as_str() {
+                                "entier" => TyKind::Entier,
+                                "rationnel" => TyKind::Rationnel,
+                                "flottant" => TyKind::Flottant,
+                                "booleen" => TyKind::Booleen,
+                                "chaine" => TyKind::Chaine,
+                                "complexe" => TyKind::Complexe,
+                                "table" => TyKind::Table,
+                                _ => return Err(fmt_err(
+                                    &format!("Type d'élément de liste inconnu '{}'", ty_tok.texte),
+                                    ty_tok.ligne, ty_tok.col,
+                                )),
+                            };
+                            self.exiger(Tk::RBracket, "']' de liste vide typée")?;
+                            return Ok(Expr::ListeVideTypee(ty_elem, t.ligne));
+                        }
+                    }
+                }
                 self.exiger(Tk::RBracket, "']' de liste")?;
                 Ok(Expr::ListeLit(elems, t.ligne))
             }
@@ -1873,6 +1901,7 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
             }
             Ok(Ty::liste(t_elt.n))
         }
+        Expr::ListeVideTypee(elt, _) => Ok(Ty::liste(*elt)),
         Expr::TableLit(el, ligne) => {
             // table littérale
             let ligne = *ligne;
@@ -2341,6 +2370,7 @@ pub fn replier(e: &Expr) -> Expr {
         Expr::Appel { nom, module, args, ligne } => Expr::Appel {
             nom: nom.clone(), module: module.clone(), args: args.iter().map(replier).collect(), ligne: *ligne },
         Expr::ListeLit(l, ligne) => Expr::ListeLit(l.iter().map(replier).collect(), *ligne),
+        Expr::ListeVideTypee(t, l) => Expr::ListeVideTypee(*t, *l),
         Expr::TableLit(el, ligne) => {
             let el: Vec<(String, Expr)> = el.iter().map(|(k, v)| (k.clone(), replier(v))).collect();
             Expr::TableLit(el, *ligne)
@@ -2600,6 +2630,7 @@ pub fn analyser_sans_verifier(source: &str) -> Result<Programme, Err> {
                     | Expr::SuperFactorielle(a, _) | Expr::MultiFactorielle(a, _, _) => dans_expr(a),
                     Expr::Index { a, b, .. } => dans_expr(a) || dans_expr(b),
                     Expr::ListeLit(el, _) => el.iter().any(dans_expr),
+                    Expr::ListeVideTypee(_, _) => false,
                     Expr::TableLit(p, _) => p.iter().any(|(_, v)| dans_expr(v)),
                     _ => false,
                 }

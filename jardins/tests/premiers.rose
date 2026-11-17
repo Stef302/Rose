@@ -50,9 +50,9 @@ verifier("pgcd_jardin(0, 5)", chaine(pgcd_jardin(0, 5)), "5")
 verifier("pgcd_jardin(17, 13)", chaine(pgcd_jardin(17, 13)), "1")
 
 # ── facteurs_premiers ──────────────────────────────────────────────────────
-verifier("facteurs_premiers(360)", chaine(facteurs_premiers(360)), "[0, 2, 2, 2, 3, 3, 5]")
-verifier("facteurs_premiers(97)", chaine(facteurs_premiers(97)), "[0, 97]")
-verifier("longueur(facteurs_premiers(1))", chaine(longueur(facteurs_premiers(1))), "1")
+verifier("facteurs_premiers(360)", chaine(facteurs_premiers(360)), "[2, 2, 2, 3, 3, 5]")
+verifier("facteurs_premiers(97)", chaine(facteurs_premiers(97)), "[97]")
+verifier("longueur(facteurs_premiers(1))", chaine(longueur(facteurs_premiers(1))), "0")
 
 # ── CROSS-CHECK : le jardin doit donner LE MÊME RÉSULTAT que la primitive
 # native sur 500 entiers — c'est ce qui prouve qu'un jardin Rose est exact.
