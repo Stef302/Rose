@@ -394,7 +394,11 @@ pub fn super_factorielle_parallele(n: u64, sortie: &Gz) {
         }
         res
     }
-    let facteurs: Vec<BigInt> = (2..=n).filter(|&p| est_premier[p as usize]).map(|p| {
+    // ⚠⚠ M2.3 : les p^e sont INDÉPENDANTS et très déséquilibrés (2^e pèse
+    // ~500 000 bits, les petits primes quelques bits). On les répartit par
+    // POIDS DÉCROISSANT (LPT) sur les cœurs, comme `calculer_puissances`.
+    // Mesuré séquentiellement : 10,6 ms pour n = 1000.
+    let puissance = |p: u64| -> BigInt {
         let mut e: u128 = 0;
         let mut q = p;
         while q <= n {
@@ -403,7 +407,49 @@ pub fn super_factorielle_parallele(n: u64, sortie: &Gz) {
             q *= p;
         }
         pow_big(p, e)
-    }).collect();
+    };
+    let facteurs: Vec<BigInt> = {
+        #[cfg(target_arch = "wasm32")]
+        { (2..=n).filter(|&p| est_premier[p as usize]).map(puissance).collect() }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let coeurs = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+            let premiers: Vec<u64> = (2..=n).filter(|&p| est_premier[p as usize]).collect();
+            if coeurs < 2 || premiers.len() < 32 {
+                premiers.into_iter().map(puissance).collect()
+            } else {
+                // poids ≈ bits(p^e) = e·log2(p) : décroissant en p.
+                let mut tries: Vec<(u128, u64)> = premiers.iter().map(|&p| {
+                    let mut e: u128 = 0;
+                    let mut q = p;
+                    while q <= n {
+                        e += somme_plancher(n, q);
+                        if q > n / p { break; }
+                        q *= p;
+                    }
+                    let lg = 64 - p.leading_zeros() as u128;
+                    (e.saturating_mul(lg), p)
+                }).collect();
+                tries.sort_by(|a, b| b.0.cmp(&a.0));
+                let mut charges: Vec<u128> = vec![0; coeurs];
+                let mut lots: Vec<Vec<u64>> = vec![Vec::new(); coeurs];
+                for (w, p) in tries {
+                    let c = charges.iter().enumerate()
+                        .min_by_key(|&(_, s)| s).map(|(i, _)| i).unwrap_or(0);
+                    charges[c] += w;
+                    lots[c].push(p);
+                }
+                let mut tous: Vec<BigInt> = Vec::with_capacity(premiers.len());
+                std::thread::scope(|sc| {
+                    let hs: Vec<_> = lots.into_iter().map(|lot| sc.spawn(move || {
+                        lot.into_iter().map(puissance).collect::<Vec<BigInt>>()
+                    })).collect();
+                    for h in hs { tous.extend(h.join().unwrap()); }
+                });
+                tous
+            }
+        }
+    };
     let r = arbre_produit(facteurs);
     sortie.copier_de(&r);
 }

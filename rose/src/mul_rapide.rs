@@ -153,7 +153,10 @@ pub fn mul_par(a: &BigInt, b: &BigInt, fils: usize) -> BigInt {
     //
     // 1,02 M bits = 32 000 limbs : c'est exactement le point de bascule
     // ISOLÉ mesuré (la NTT parallèle y bat `num-bigint` de 1,2×).
-    const SEUIL_NTT_BITS: u64 = 1_024_000;
+    // ⚠⚠ M2.3 : BALAYÉ À NOUVEAU sur l'arbre réel de 1000$ (3,9 M bits).
+    // 520 000 bits bat 1 024 000 : mesuré 300 k → +12 %, 520 k → +14 %,
+    // 700 k → +11 %, 900 k → +5 %, 1,5 M → −8 % sur factorielles N=5000.
+    const SEUIL_NTT_BITS: u64 = 520_000;
     if a.bits().max(b.bits()) >= SEUIL_NTT_BITS {
         let signe = if a.sign() == b.sign() { Sign::Plus } else { Sign::Minus };
         let x = a.magnitude().to_u32_digits();
@@ -1966,10 +1969,14 @@ fn coeurs_para() -> usize {
 /// Multiplication de deux nombres en base 10^9 (limbs u32 < 10^9).
 ///
 /// ⚠ Le choix entre la NTT et l'école est MESURÉ : la NTT a un coût
-/// fixe (tables de racines, conversion, CRT) qui domine sous ~256
-/// limbs, et l'école y est plus rapide.
+/// fixe (tables de racines, conversion, CRT) qui domine sous ~64
+/// limbs, et l'école y est plus rapide. ⚠ M2.3 : le seuil est passé de
+/// 256 à 64 après balayage sur `factorielles.rose` N=5000 (256 → +12 %,
+/// 128 → +13 %, 64 → +15-17 %, 32 → +14 %) : la chaîne de carrés de
+/// `pow2_b1e9` (conversion décimale) travaille précisément dans cette
+/// zone de tailles.
 fn mul_b1e9(x: &[u32], y: &[u32], fils: usize) -> Vec<u32> {
-    if x.len().max(y.len()) < 256 {
+    if x.len().max(y.len()) < 64 {
         return mul_scolaire_b1e9(x, y);
     }
     ntt_mul_b1e9_par(x, y, fils)
@@ -2081,16 +2088,25 @@ fn structure_niveaux(n_limbs: usize, seuil_bits: usize) -> Vec<Vec<(usize, usize
 fn conv_feuille(binaire: &[u64]) -> Vec<u32> {
     let mut x = binaire.to_vec();
     let mut r = Vec::new();
+    // ⚠ M2.3 : on sort DEUX chiffres base 10⁹ par passe en divisant par
+    // 10¹⁸. `rem·2⁶⁴ + limb < 10¹⁸·2⁶⁴ < 2¹²⁸`, donc u128 suffit, et le
+    // compilateur remplace la division par une multiplication-décalage.
+    // Le nombre de passes (donc le coût de la boucle `while x != 0`) est
+    // divisé par deux ; le travail par passe reste identique.
+    const B18: u128 = 1_000_000_000_000_000_000;
     while x.iter().any(|&l| l != 0) {
         let mut rem: u128 = 0;
         for i in (0..x.len()).rev() {
             let cur = (rem << 64) | x[i] as u128;
-            x[i] = (cur / BASE1E9 as u128) as u64;
-            rem = cur % BASE1E9 as u128;
+            x[i] = (cur / B18) as u64;
+            rem = cur % B18;
         }
-        r.push(rem as u32);
+        r.push((rem % BASE1E9 as u128) as u32);
+        r.push((rem / BASE1E9 as u128) as u32);
         while x.last() == Some(&0) { x.pop(); }
     }
+    // Le dernier groupe peut n'avoir qu'un chiffre significatif.
+    while r.len() > 1 && r.last() == Some(&0) { r.pop(); }
     if r.is_empty() { r.push(0); }
     r
 }
