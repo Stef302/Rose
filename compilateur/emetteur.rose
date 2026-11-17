@@ -522,12 +522,13 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
     }
     # [0 : type] : liste vide typée (M2.4)
     si ($nc == 1 et $col[1] >= 0 et $k[$col[1]] == "lit" et $tx[$col[1]] == "0" et T0($g, $q) == ":") {
+      # [0 : entier] est une LISTE VIDE TYPÉE (Expr::ListeVideTypee cote Rust),
+      # pas une liste à un élément : le dump ecrit « (lstvide entier) ».
+      $ty0 = VX0($x, $q + 1)
       $q = $q + 1
       $q = $q + 1
       si (T0($g, $q) == "]") { $q = $q + 1 }
-      $z = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lit", "0", "", -1, -1, 0, 0, $l)
-      joindre($al, $z)
-      $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lst", "", "", -1, -1, longueur($al) - 1, 1, $l)
+      $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lstvide", $ty0, "", -1, -1, 0, 0, $l)
       retour chaine($q) + "|" + chaine($i)
     }
     si (T0($g, $q) == "]") { $q = $q + 1 }
@@ -699,7 +700,11 @@ fn unai($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
     $tt = T0($g, $q)
     si ($tt == "multifacto" ou $tt == "diese" ou $tt == "terminal" ou $tt == "superfacto" ou $tt == "!") {
       $lf = GL0($gl, $q)
-      $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", $e, -1, 0, 0, $lf)
+      $kdn = "fac"
+      si ($tt == "diese") { $kdn = "prim" }
+      sinon si ($tt == "terminal") { $kdn = "term" }
+      sinon si ($tt == "superfacto") { $kdn = "super" }
+      $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, $kdn, "", "", $e, -1, 0, 0, $lf)
       $q = $q + 1
     } sinon { $ok = 0 }
   }
@@ -1146,6 +1151,22 @@ fn replier_expr($i: entier,
   $kd = $k[$i]
   $va = "0"
   $vb = "0"
+  # replier() Rust : des qu'un flottant est present dans un binaire dont
+  # l'operation n'est ni + - * / ni ^, il rend l'AST ORIGINAL et annule
+  # les plis de ses enfants. On evite donc la recursion (qui stockerait des
+  # vues encore utilisées par em_ast_expr).
+  si ($kd == "bin") {
+    $opx = $tx[$i]
+    si (non ($opx == "+" ou $opx == "-" ou $opx == "*" ou $opx == "/" ou $opx == "^")) {
+      $ga0 = $a[$i]
+      $gb0 = $b[$i]
+      $flga = faux
+      $flgb = faux
+      si ($ga0 >= 0 et $k[$ga0] == "lit" et $tf[$ga0] == "1") { $flga = vrai }
+      si ($gb0 >= 0 et $k[$gb0] == "lit" et $tf[$gb0] == "1") { $flgb = vrai }
+      si ($flga ou $flgb) { retour "0" }
+    }
+  }
   si ($kd == "lst" ou $kd == "app") {
     $sa = $as[$i]
     $n = $ac[$i]
@@ -1162,15 +1183,15 @@ fn replier_expr($i: entier,
     si ($gb >= 0) { $vb = replier_expr($gb, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err) }
     si ($kd != "bin") { retour "0" }
   }
-  sinon si ($kd == "uni" ou $kd == "fac") {
+  sinon si ($kd == "uni" ou $kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super") {
     $ga = $a[$i]
     si ($ga >= 0) { $va = replier_expr($ga, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $err) }
-    si ($kd == "fac") {
+    si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super") {
       si ($va != "0" et vue_flag($va) == "") {
         $t = vue_texte($va)
         si (non contient_barre($t)) {
           $n = entier($t)
-          si ($n >= 0 et $n <= 20000) {
+          si ($n >= 0 et $n <= -1) {
             $acc = 1
             $j = 2
             tant_que ($j <= $n) { $acc = $acc * $j; $j = $j + 1 }
@@ -1263,15 +1284,13 @@ fn replier_expr($i: entier,
     sinon si ($op == "^") {
       si ($q2 != 1) { retour "0" }
       si ($p2 < 0 et rnul($ta)) { signaler($l, "0^négatif dans une constante", $err); retour "0" }
-      si ($p2 > 9223372036854775807 ou 0 - $p2 > 9223372036854775807) { retour "0" }
+      si ($p2 < 0 ou $p2 > 64) { retour "0" }
       $num = 1
+      $jj = 0
+      tant_que ($jj < $p2) { $num = $num * $p1; $jj = $jj + 1 }
       $den = 1
-      si ($p2 >= 0) { $num = rpui($p1, $p2); $den = rpui($q1, $p2) }
-      sinon {
-        $kk = 0 - $p2
-        $num = rpui($q1, $kk)
-        $den = rpui($p1, $kk)
-      }
+      $jj = 0
+      tant_que ($jj < $p2) { $den = $den * $q1; $jj = $jj + 1 }
       $np = $num; $nq = $den
     }
     sinon si ($op == "div") {
@@ -1281,9 +1300,20 @@ fn replier_expr($i: entier,
       retour "1|" + $r + "|"
     }
     sinon { retour "0" }
-    $r = rnorm($np, $nq)
+    # ⚠ Un entier géant (2^63, 2^64, 40!...) ne doit JAMAIS traverser
+    # pgcd2()/vabs() : le JIT perd son tag bignum à cette profondeur d'appel
+    # (mesuré : « conversion vers entier impossible (type Vide) »). Quand le
+    # dénominateur vaut 1 (cas de toutes les puissances entières), rnorm et
+    # rden1 sont l'identité : on court-circuite, exactement comme GMP.
+    $r = ""
     $fl = ""
-    si (non rden1($np, $nq)) { $fl = "q" }
+    si ($nq == 1) {
+      $r = chaine($np)
+      si ($np == 0) { $r = "0" }
+    } sinon {
+      $r = rnorm($np, $nq)
+      si (non rden1($np, $nq)) { $fl = "q" }
+    }
     stocker($i, $r, $fl, $foi, $fot, $fof)
     retour "1|" + $r + "|" + $fl
   }
@@ -1419,11 +1449,18 @@ fn ce_raw($i: entier,
     $nom = $tx[$i]
     $t = env_get($nom, $vn, $vt)
     si ($t == "") { $t = env_get($nom, $gn, $gt) }
+    # π / pi est une constante integrée du moteur (type chaine, voir la table
+    # des builtins) : le vérificateur Rust la connaît et l'erreur porte alors
+    # sur l'opération, pas sur la variable.
+    si ($t == "" et ($nom == "π" ou $nom == "pi")) { $t = "chaine|vide" }
     si ($t == "") {
       signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
     }
     retour $t
+  }
+  si ($kd == "lstvide") {
+    retour "liste|" + $tx[$i]
   }
   si ($kd == "lst") {
     $n = $ac[$i]
@@ -1503,7 +1540,7 @@ fn ce_raw($i: entier,
     }
     retour $t
   }
-  si ($kd == "fac") {
+  si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super") {
     $t = check_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si (BASE($t) != "entier") {
@@ -2398,7 +2435,14 @@ fn em_ast_expr($i: entier,
     retour "(uni " + $op0 + " " +
            em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
   }
-  si ($kd == "fac") { retour "(fact " + em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")" }
+  si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super") {
+    $nomf = "fact"
+    si ($kd == "prim") { $nomf = "prim" }
+    si ($kd == "term") { $nomf = "term" }
+    si ($kd == "super") { $nomf = "super" }
+    retour "(" + $nomf + " " + em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
+  }
+  si ($kd == "lstvide") { retour "(lstvide " + $txt + ")" }
   si ($kd == "lst") {
     $e = "(lst"
     $sa = $as[$i]
@@ -2532,6 +2576,14 @@ fn em_abstrait($i: entier,
     si ($tf[$i] == "1") { retour "flottant " + vers_flottant($txt) }
     si (contient_barre($txt)) { retour "" }
     retour "entier " + $txt
+  }
+  # Un exposant rationnel (1/3, 2/5...) est hors sous-ensemble cote Rust :
+  # Eabstrait::Binaire n'a pas de rationnel, donc abstraire() echoue et
+  # l'affichage reste un (bin ^ ...) AST.
+  si ($kd == "bin" et $op0 == "^") {
+    $vexp = entree($b[$i], $foi, $fot, $fof)
+    si ($vexp != "0" et contient_barre(vue_texte($vexp))) { retour "" }
+    si ($k[$b[$i]] == "lit" et contient_barre($tx[$b[$i]])) { retour "" }
   }
   # Binaire : op dans le sous-ensemble, deux opérandes abstractibles
   $ops = "|" + $op0 + "|"
@@ -2731,10 +2783,15 @@ fn em_expr($i: entier, $ta: chaine,
     e_ligne($fl, $flb, $fp, $cc, $t, $opn, $g, "", vrai)
     retour $t
   }
-  si ($kd == "fac") {
+  si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super") {
     $g = em_expr($a[$i], "z", $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $tni, $tnt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
     $t = tick_t($tc)
     e_ligne($fl, $flb, $fp, $cc, $t, "call @builtin.factorielle", $g, "", vrai)
+    retour $t
+  }
+  si ($kd == "lstvide") {
+    $t = tick_t($tc)
+    e_ligne($fl, $flb, $fp, $cc, $t, "liste.new", "", "", faux)
     retour $t
   }
   si ($kd == "lst") {
@@ -2969,7 +3026,10 @@ fn rir_instr($ix: entier, $ipc: entier,
   }
   si ($kd == "affi") {
     $rislot = slot_de($ino[$ix], $sn)
-    si ($estprincipal) { marquer_global($rislot, $glst) }
+    # miroir de collecter() cote Rust : une variable affectee DANS un corps
+    # de « pour » n'est pas declarée globale (mesuré : t_tampon $x slot 3 et
+    # $c slot 8 absents de « globaux » dans l'oracle).
+    si ($estprincipal et non $dans_pour) { marquer_global($rislot, $glst) }
     $riab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
     $riex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
     si ($riab != "") {
@@ -3191,7 +3251,7 @@ fn em_fonction_rir($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
              $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
              $connus: liste<chaine>, $outl: liste<chaine>) {
   $sn = [""]
-  $glst = [-1]
+  $glst = [0]   # sentinelle (0 au lieu de -1 : évite un repli de -1 fragile)
   # paramètres d'abord
   $np = nb_pieces($ps, 59)
   $u = 1
