@@ -1,0 +1,30 @@
+$a = 1.5
+>> $a + 2.25
+>> $a * 2
+>> 0.1 + 0.2
+>> $a / 3.0
+>> -8.0 div 3.0
+>> 2.0 ^ 0.5
+>> 1.0 / (2 ^ 40)
+>> 100.0
+>> -(2.5)
+>> $a < 2
+>> $a >= 1.5
+>> $a == 3 / 2
+>> $a != 1.5
+>> 1 < 1.5
+$s = 0.0
+pour i de 1 vers 10 { $s = $s + 0.5 }
+>> $s
+$p = 1.0
+pour j de 1 vers 5 { $p = $p * 1.1 }
+>> $p
+fn moitie(v: flottant) -> flottant { retour v / 2.0 }
+>> moitie(7)
+>> moitie(-2.5)
+fn aire(r: flottant) -> flottant { retour 3.141592653589793 * r * r }
+>> aire(2.0)
+fn echelle(x: flottant, k: entier) -> flottant { retour x * k }
+>> echelle(2.5, 3)
+>> echelle(1.5, 2)
+si ($a < 2) { >> "petit" } si ($a > 2) { >> "grand" }

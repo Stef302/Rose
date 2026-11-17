@@ -1,0 +1,22 @@
+>> "escalier"[2]
+>> ordre("a")
+>> ordre("é")
+>> ordre("\n")
+>> caractere(233)
+>> caractere(97)
+>> caractere(128169)
+>> sous_chaine("bonjour", 1, 4)
+>> sous_chaine("bonjour", 0, 0)
+>> sous_chaine("bonjour", 7, 7)
+>> sous_chaine("été", 1, 2)
+>> "été"[1]
+>> longueur("été")
+>> longueur("abcd")
+$p = ["li", "gne", "!"]
+joindre($p, "?")
+>> concatener($p)
+>> longueur($p)
+$f = [1, 2]
+joindre($f, 3)
+>> $f
+>> sous_chaine(concatener(["ab", "cd", "ef"]), 2, 4)

@@ -27,6 +27,8 @@ mod inflate;
 mod png;
 mod mul_rapide;
 mod rir;
+#[allow(dead_code)]
+mod wasm_lecteur;
 mod paint;
 mod console_win;
 mod setup_gui;
@@ -65,6 +67,7 @@ Usage :
   rose console [fichier.rose]   console interactive (REPL) — tapez des commandes Rose
   rose repl [fichier.rose]      identique
   rose debug-lenteur [-n N] [prog.rose]   OÙ VA LE TEMPS ? lancement, analyse, exécution
+  rose wasm lib.wasm       fonctions exportées d'un module WebAssembly (pont @dll(\"wasm\", …))
   rose update              installe/met a jour Rose (64 bits, interface console)
 ",
         env!("CARGO_PKG_VERSION")
@@ -287,6 +290,42 @@ fn main() {
             print!("{}", texte);
             println!();
             return;
+        }
+        "wasm" => {
+            // ⚠ Inspecte un module WebAssembly SANS l'exécuter : les fonctions
+            // exportées et leurs types (pour écrire les `@sym`/`fn` Rose).
+            let fichier = match argv.get(2) {
+                Some(f) => f.clone(),
+                None => { eprintln!("rose wasm : quel module ? (rose wasm lib.wasm)"); std::process::exit(1); }
+            };
+            let octets = match std::fs::read(&fichier) {
+                Ok(o) => o,
+                Err(e) => { eprintln!("rose wasm : {fichier} illisible ({e})"); std::process::exit(1); }
+            };
+            let module = match wasm_lecteur::charger(&octets) {
+                Ok(m) => m,
+                Err(e) => { eprintln!("rose wasm : {fichier} : {e}"); std::process::exit(1); }
+            };
+            let inst = wasm_lecteur::InstanceWasm::nouveau(std::sync::Arc::new(module));
+            let mut n = 0;
+            for (nom, params, resultats) in inst.exports_fonctions() {
+                let ty = |t: wasm_lecteur::TyWasm| match t {
+                    wasm_lecteur::TyWasm::I32 => "entier",
+                    wasm_lecteur::TyWasm::I64 => "entier64",
+                    wasm_lecteur::TyWasm::F32 => "flottant32",
+                    wasm_lecteur::TyWasm::F64 => "flottant",
+                };
+                let ps: Vec<String> = params.iter().enumerate()
+                    .map(|(i, t)| format!("a{i}: {}", ty(*t))).collect();
+                let r = resultats.first().map(|t| ty(*t)).unwrap_or("vide");
+                println!("@dll(\"wasm\", \"{fichier}\")");
+                println!("@sym(\"{nom}\")");
+                println!("fn {nom}({}) -> {r}", ps.join(", "));
+                println!();
+                n += 1;
+            }
+            eprintln!("{n} fonction(s) exportée(s)");
+            std::process::exit(0);
         }
         "comp" => {
             let mut sortie = String::new();

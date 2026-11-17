@@ -1,0 +1,18 @@
+$s = "symbole"
+>> 2 + 3 ⋅ 4
+>> 6 × 7
+>> 7 ÷ 2
+>> 3 ≤ 5 et 5 ≥ 5 et 5 ≠ 4
+>> √9
+>> √2
+>> √(1/4)
+>> 2³ + 5²
+>> π
+>> π ⋅ 2.0 ²
+>> $s
+>> longueur($s)
+>> sous_chaine($s, 0, 3)
+$s ← "rose"
+>> $s
+fn aire(r: flottant) → flottant { retour π ⋅ r ² }
+>> aire(2.0)

@@ -1,0 +1,26 @@
+// t_chrono — v3.13 : duree() adaptatif et monotonie de temps()
+>> duree(0)
+>> duree(1)
+>> duree(999)
+>> duree(1000)
+>> duree(1500)
+>> duree(999999)
+>> duree(1000000)
+>> duree(999999999)
+>> duree(1000000000)
+>> duree(1500000000)
+>> duree(59999999999)
+>> duree(60000000000)
+>> duree(90000000000)
+>> duree(3599999999999)
+>> duree(3600000000000)
+>> duree(3723000000000)
+>> duree(1000000000000000000000)
+>> duree(2 ^ 200)
+fn avance() → booleen {
+  $a = temps()
+  $b = temps()
+  tant_que ($b == $a) { $b = temps() }
+  retour $b > $a
+}
+>> avance()

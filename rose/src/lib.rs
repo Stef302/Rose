@@ -51,6 +51,13 @@ pub mod png;
 pub mod mul_rapide;
 pub mod rir;
 
+/// ⚠⚠⚠ LECTEUR WEBASSEMBLY : Rose exécute des modules compilés par n'importe
+/// quel compilateur (`clang --target=wasm32 -nostdlib`, `rustc`, `emcc`…).
+/// C'est le pont qui permet d'utiliser des bibliothèques d'AUTRES langages
+/// sans embarquer leur runtime : le binaire est le contrat commun (voir
+/// `docs/WASM_FFI.md` et `interp::ffi_appeler` pour `@dll("wasm", "x.wasm")`).
+pub mod wasm_lecteur;
+
 /// Calculs de TRACÉ de l'installeur (découpe de texte, progression, échelle).
 /// Module PUR, testable sous Linux : le tracé Win32 de `setup_gui` ne l'est
 /// pas, et un plantage y laissait la fenêtre vide (bordures seules).

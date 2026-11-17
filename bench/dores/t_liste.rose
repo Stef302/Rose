@@ -1,0 +1,23 @@
+$l = [1, 2, 3]
+>> longueur($l)
+>> $l[1]
+joindre($l, 4)
+>> longueur($l)
+>> $l[3]
+$s = concatener(["ab", "cd"])
+>> $s
+>> longueur(concatener(["a", "bb", "ccc"]))
+>> longueur("abcdef")
+$p = ["bon", "jour"]
+joindre($p, "tout")
+>> concatener($p)
+$t = "typo"
+$c = $t[2]
+>> $c
+$m = [10, 20]
+joindre($m, 30)
+>> $m[0] + $m[1] + $m[2]
+$a = 0
+pour k de 1 vers 100 { joindre($m, k) }
+>> longueur($m)
+>> $m[101]

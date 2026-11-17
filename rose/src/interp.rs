@@ -543,6 +543,143 @@ unsafe fn ffi_dlclose(handle: *mut std::ffi::c_void) {
     FreeLibrary(handle);
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// WEBASSEMBLY — LES BIBLIOTHÈQUES D'AUTRES LANGAGES, SANS LEUR RUNTIME
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// ⚠ Chaque langage a ses bibliothèques écrites dans son propre langage, et
+// les exécuter exige son runtime. Le WebAssembly est le SEUL format binaire
+// que tous les compilateurs modernes savent produire (`clang --target=wasm32
+// -nostdlib`, `rustc`, `zig`, `emcc`…), et il ne demande AUCUN runtime de
+// langage pour tourner. Rose compile donc ces bibliothèques en wasm et les
+// APPELLE directement avec son propre interpréteur (`wasm_lecteur`).
+//
+// ⚠ `@dll("wasm", "lib.wasm")` : le premier argument est le mot `wasm`, le
+// second le FICHIER. Le module est chargé UNE fois (une seule instance, avec
+// son état : mémoire linéaire et globals), puis chaque `@sym` devient un
+// appel direct à la fonction exportée.
+//
+// ⚠ La poignée était `@dll("wasm", …)` est un NUMÉRO d'instance (≥ 0x1000),
+// distinct des descripteurs dlopen. C'est ce qui permet de reconnaître,
+// dans `ffi_appeler`, qu'un symbole est une fonction WebAssembly.
+//
+// ⚠ Cette module n'est compilé QUE hors wasm32 (Rose ne peut pas s'auto-héberger
+// en wasm pour l'instant).
+#[cfg(not(target_arch = "wasm32"))]
+mod wasm_ffi {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use crate::wasm_lecteur::{InstanceWasm, ModuleWasm, TyWasm, ValWasm};
+
+    /// ⚠ Première poignée WebAssembly (au-dessus des descripteurs Unix).
+    pub const BASE: i64 = 0x1000;
+
+    struct Entree {
+        poignee: i64,
+        instance: InstanceWasm,
+        /// ⚠ Nom du fichier (pour les messages d'erreur).
+        chemin: String,
+    }
+
+    static BIBLIOTHEQUES: Mutex<Vec<Entree>> = Mutex::new(Vec::new());
+
+    /// ⚠ Charge un module wasm et rend sa poignée (`BASE + n`).
+    pub fn charger(chemin: &str) -> Result<i64, String> {
+        let octets = std::fs::read(chemin)
+            .map_err(|e| format!("WebAssembly introuvable ({chemin}) : {e}"))?;
+        let module = crate::wasm_lecteur::charger(&octets)
+            .map_err(|e| format!("module WebAssembly invalide ({chemin}) : {e}"))?;
+        let instance = InstanceWasm::nouveau(std::sync::Arc::new(module));
+        let mut g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        let poignee = BASE + g.len() as i64;
+        g.push(Entree { poignee, instance, chemin: chemin.to_string() });
+        Ok(poignee)
+    }
+
+    /// ⚠ La poignée `h` est-elle une instance WebAssembly ?
+    pub fn est_wasm(h: i64) -> bool {
+        let g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        g.iter().any(|e| e.poignee == h)
+    }
+
+    /// ⚠ Le type wasm correspondant à un type Rose.
+    pub fn ty_wasm(k: crate::front::TyKind) -> TyWasm {
+        use crate::front::TyKind as K;
+        match k {
+            K::Flottant => TyWasm::F64,
+            K::Rationnel => TyWasm::F64,
+            K::Complexe => TyWasm::F64,
+            K::Chaine => TyWasm::I32, // ⚠ pointeur dans la mémoire linéaire
+            _ => TyWasm::I32,         // entier, booléen, tableau, tampon…
+        }
+    }
+
+    /// ⚠ Appelle une fonction exportée d'une instance.
+    pub fn appeler(h: i64, fonction: &str, args: &[ValWasm]) -> Result<Vec<ValWasm>, String> {
+        let mut g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        let e = g.iter_mut().find(|e| e.poignee == h)
+            .ok_or_else(|| format!("bibliothèque WebAssembly {h:#X} inconnue"))?;
+        e.instance.appeler(fonction, args)
+            .map_err(|err| format!("{} : {}", e.chemin, err))
+    }
+
+    /// ⚠ Écrit des octets dans la mémoire linéaire de l'instance.
+    pub fn ecrire_memoire(h: i64, adresse: usize, octets: &[u8]) -> Result<(), String> {
+        let mut g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        let e = g.iter_mut().find(|e| e.poignee == h)
+            .ok_or_else(|| format!("bibliothèque WebAssembly {h:#X} inconnue"))?;
+        let fin = adresse + octets.len();
+        if fin > e.instance.memoire.len() {
+            e.instance.memoire.resize(fin, 0);
+        }
+        e.instance.memoire[adresse..fin].copy_from_slice(octets);
+        Ok(())
+    }
+
+    /// ⚠ Lit un octet de la mémoire linéaire (pour une chaîne rendue).
+    pub fn lire_octet(h: i64, adresse: usize) -> Option<u8> {
+        let g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        g.iter().find(|e| e.poignee == h).and_then(|e| e.instance.memoire.get(adresse).copied())
+    }
+
+    /// ⚠ La taille de la mémoire linéaire.
+    pub fn memoire_taille(h: i64) -> Option<usize> {
+        let g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        g.iter().find(|e| e.poignee == h).map(|e| e.instance.memoire.len())
+    }
+
+    /// ⚠ Libère toutes les instances (fin d'exécution).
+    pub fn tout_liberer() {
+        let mut g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        g.clear();
+    }
+
+    /// ⚠ Les modules déjà chargés (chemin → poignée).
+    pub fn deja_charge() -> HashMap<String, i64> {
+        let g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        g.iter().map(|e| (e.chemin.clone(), e.poignee)).collect()
+    }
+
+    /// ⚠ Les fonctions exportées d'une instance.
+    #[allow(dead_code)]
+    pub fn exports(h: i64) -> Vec<(String, Vec<TyWasm>, Vec<TyWasm>)> {
+        let g = match BIBLIOTHEQUES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        match g.iter().find(|e| e.poignee == h) {
+            Some(e) => e.instance.exports_fonctions(),
+            None => Vec::new(),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+use wasm_ffi as wf;
+
+#[cfg(not(target_arch = "wasm32"))]
+/// ⚠ Libère toutes les instances wasm (appelé en fin d'exécution).
+pub fn wasm_tout_liberer() {
+    wf::tout_liberer();
+}
+
 
 impl Interp {
     pub fn nouveau(prog: Programme) -> Self {
@@ -2774,6 +2911,24 @@ impl Interp {
         let nom = if !sig.dll_son.is_empty() { sig.dll_son.clone() }
                   else if !sig.dll.is_empty() { sig.dll.clone() }
                   else { "c".to_string() };
+        // ⚠⚠⚠ `@dll("wasm", "lib.wasm")` : le nom de bibliothèque est "wasm",
+        // le FICHIER est le module wasm. Une seule instance par fichier.
+        #[cfg(not(target_arch = "wasm32"))]
+        if sig.dll == "wasm" {
+            let chemin = if sig.dll_son.is_empty() { sig.dll.clone() } else { sig.dll_son.clone() };
+            if chemin.is_empty() {
+                erreur_runtime("WebAssembly : nom de fichier attendu (@dll(\"wasm\", \"x.wasm\"))");
+            }
+            let deja = wf::deja_charge();
+            let poignee = match deja.get(&chemin) {
+                Some(p) => *p,
+                None => match wf::charger(&chemin) {
+                    Ok(p) => p,
+                    Err(e) => erreur_runtime(&format!("appel WebAssembly : {e}")),
+                },
+            };
+            return poignee as usize as *mut std::ffi::c_void;
+        }
         let candidats: Vec<String> = if !sig.dll_son.is_empty() || nom.contains('/') {
             vec![nom.clone()]
         } else {
@@ -2797,6 +2952,14 @@ impl Interp {
         use crate::front::TyKind as K;
         let h = self.ffi_poignee(sig);
         let sym = if sig.symbole.is_empty() { sig.nom.clone() } else { sig.symbole.clone() };
+        // ⚠⚠⚠ UNE POIGNÉE WEBASSEMBLY N'EST PAS UNE BIBLIOTHÈQUE DYNAMIQUE :
+        // `@dll("wasm", "lib.wasm")` rend un NUMÉRO d'instance (≥ 0x1000). Le
+        // symbole y est une FONCTION EXPORTÉE du module, appelée par
+        // l'interpréteur wasm — pas par `dlsym`.
+        #[cfg(not(target_arch = "wasm32"))]
+        if wf::est_wasm(h as usize as i64) {
+            return self.ffi_appeler_wasm(h as usize as i64, &sym, sig, args);
+        }
         let cs = std::ffi::CString::new(sym.clone()).unwrap();
         let s = unsafe { ffi_dlsym(h, cs.as_ptr() as *const i8) };
         if s.is_null() { erreur_runtime(&format!("symbole introuvable dans la bibliothèque ({sym})")); }
@@ -2875,6 +3038,81 @@ impl Interp {
             _ => { erreur_runtime("type de retour externe non supporté"); }
         };
         Ok(r)
+    }
+
+    /// ⚠ Appel d'une fonction WebAssembly : conversion Rose → wasm32, appel,
+    /// puis conversion wasm32 → Rose (le type de retour est celui de la
+    /// déclaration `fn`).
+    ///
+    /// ⚠ LA CONVENTION DES POINTEURS : `entier`/`booleen` → i32, `flottant` →
+    /// f64, `chaine` → POINTEUR dans la mémoire linéaire du module (les octets
+    /// y sont copiés puis terminés par un zéro, comme une `char*` C).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ffi_appeler_wasm(&mut self, h: i64, sym: &str, sig: &Signature,
+                        args: &[Valeur]) -> Result<Valeur, Option<i32>> {
+        use crate::front::TyKind as K;
+        use crate::wasm_lecteur::{TyWasm, ValWasm};
+        let mut vals: Vec<ValWasm> = Vec::with_capacity(args.len());
+        // ⚠ Les chaînes sont copiées à la fin de la mémoire linéaire.
+        let mut adresse_libre = wf::memoire_taille(h).unwrap_or(0);
+        for (i, a) in args.iter().enumerate() {
+            let ty = sig.params.get(i).map(|p| p.1.n).unwrap_or(K::Entier);
+            match ty {
+                K::Flottant | K::Rationnel => vals.push(ValWasm::F64(vers_d(a))),
+                K::Chaine => {
+                    let s = chaine_de(a);
+                    let octets = s.as_bytes();
+                    adresse_libre += 8;
+                    let adresse = adresse_libre;
+                    let mut tampon = octets.to_vec();
+                    tampon.push(0);
+                    if let Err(e) = wf::ecrire_memoire(h, adresse, &tampon) {
+                        erreur_runtime(&format!("appel WebAssembly : {e}"));
+                    }
+                    adresse_libre += tampon.len();
+                    vals.push(ValWasm::I32(adresse as i32));
+                }
+                K::Booleen => vals.push(ValWasm::I32(if est_vrai(a) { 1 } else { 0 })),
+                _ => {
+                    let z = vers_z(a);
+                    if !z.fits_i64() {
+                        erreur_runtime("appel WebAssembly : argument entier hors i64");
+                    }
+                    vals.push(ValWasm::I32(z.get_i64() as i32));
+                }
+            }
+        }
+        let res = match wf::appeler(h, sym, &vals) {
+            Ok(r) => r,
+            Err(e) => erreur_runtime(&format!("appel WebAssembly : {e}")),
+        };
+        let premier = res.first().copied().unwrap_or(ValWasm::I32(0));
+        Ok(match sig.retour.n {
+            K::Flottant => Valeur::f(premier.as_f64()),
+            K::Rationnel => {
+                let mut q = Gq::neuf();
+                q.depuis_d(premier.as_f64());
+                Valeur::qq(q)
+            }
+            K::Booleen => Valeur::b(premier.as_i32() != 0),
+            K::Chaine => {
+                let a = premier.as_i32() as usize;
+                let mut s = Vec::new();
+                if let Some(taille) = wf::memoire_taille(h) {
+                    let mut i = a;
+                    while i < taille {
+                        match wf::lire_octet(h, i) {
+                            Some(0) => break,
+                            Some(o) => s.push(o),
+                            None => break,
+                        }
+                        i += 1;
+                    }
+                }
+                Valeur::s(String::from_utf8_lossy(&s).into_owned())
+            }
+            _ => Valeur::z(premier.as_i32() as i64),
+        })
     }
 
     fn dynamique(&mut self, nom: &str, args: &[Valeur]) -> Result<Valeur, Option<i32>> {
@@ -4655,7 +4893,6 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // found for key »). Le corps des délégués appelle le helper runtime
     // `rose_appel_interpreteur`, qui exécute la vraie fonction Rose.
     jit.declarer_delegues();
-    jit.definir_delegues(&interp.prog);
     // ⚠⚠⚠ LE JIT PRINCIPAL EST DÉCIDÉ AVANT (il détermine si le corps
     // principal passe par le RIR). ⚠⚠ Il doit être posé dans `interp.jit_principal`
     // AVANT l'exécution : sinon le corps principal s'exécuterait en RIR alors
