@@ -767,55 +767,43 @@ fn main() {
                 Ok(t) => t,
                 Err(e) => { eprintln!("{}", e); std::process::exit(1); }
             };
+            fn tk_nom_cpp(t: &front::Tk) -> String {
+                use front::Tk;
+                match t {
+                    Tk::Eof => "eof".into(), Tk::Ident => "ident".into(), Tk::Mot => "mot".into(),
+                    Tk::Nombre => "nombre".into(), Tk::Flottant => "flottant".into(), Tk::Chaine => "chaine".into(),
+                    Tk::Plus => "+".into(), Tk::Moins => "-".into(), Tk::Etoile => "*".into(),
+                    Tk::Slash => "/".into(), Tk::Pourcent => "%".into(), Tk::Chapeau => "^".into(),
+                    Tk::Bang => "!".into(), Tk::Diese => "#".into(), Tk::Terminal => "?".into(),
+                    Tk::SuperFacto => "$".into(), Tk::MultiFacto(_) => "!".into(), Tk::SousFacto => "!".into(),
+                    Tk::DivEntier => "div".into(), Tk::Affect => "=".into(), Tk::LParen => "(".into(),
+                    Tk::RParen => ")".into(), Tk::LBrace => "{".into(), Tk::RBrace => "}".into(),
+                    Tk::LBracket => "[".into(), Tk::RBracket => "]".into(), Tk::Semi => ";".into(),
+                    Tk::Virgule => ",".into(), Tk::DeuxPts => ":".into(), Tk::DeuxPoints => "::".into(),
+                    Tk::FlecheD => ">>".into(), Tk::FlecheG => "<<".into(), Tk::PointDInterro => "->".into(),
+                    Tk::Inf => "<".into(), Tk::Sup => ">".into(), Tk::InfEg => "<=".into(),
+                    Tk::SupEg => ">=".into(), Tk::DoubleEg => "==".into(), Tk::Diff => "!=".into(),
+                    Tk::Environ => "≈".into(), Tk::Racine => "racine".into(), Tk::Tilde => "~".into(),
+                    Tk::Arobase => "@".into(), Tk::Question => "?".into(),
+                }
+            }
+            fn echapper_token(s: &str) -> String {
+                let mut o = String::with_capacity(s.len());
+                for c in s.chars() {
+                    match c {
+                        '\\' => o.push_str("\\\\"),
+                        '\n' => o.push_str("\\n"),
+                        '\t' => o.push_str("\\t"),
+                        '\r' => o.push_str("\\r"),
+                        '\x1f' => o.push_str("\\u241f"),
+                        _ => o.push(c),
+                    }
+                }
+                o
+            }
             for t in &toks {
-                let type_nom = match &t.tk {
-                    front::Tk::Eof => "Eof",
-                    front::Tk::Ident => "Ident",
-                    front::Tk::Mot => "Mot",
-                    front::Tk::Nombre => "Nombre",
-                    front::Tk::Flottant => "Flottant",
-                    front::Tk::Chaine => "Chaine",
-                    front::Tk::Plus => "Plus",
-                    front::Tk::Moins => "Moins",
-                    front::Tk::Etoile => "Etoile",
-                    front::Tk::Slash => "Slash",
-                    front::Tk::Pourcent => "Pourcent",
-                    front::Tk::Chapeau => "Chapeau",
-                    front::Tk::Bang => "Bang",
-                    front::Tk::Diese => "Diese",
-                    front::Tk::Terminal => "Terminal",
-                    front::Tk::SuperFacto => "SuperFacto",
-                    front::Tk::MultiFacto(_) => "MultiFacto",
-                    front::Tk::SousFacto => "SousFacto",
-                    front::Tk::DivEntier => "DivEntier",
-                    front::Tk::Affect => "Affect",
-                    front::Tk::LParen => "LParen",
-                    front::Tk::RParen => "RParen",
-                    front::Tk::LBrace => "LBrace",
-                    front::Tk::RBrace => "RBrace",
-                    front::Tk::LBracket => "LBracket",
-                    front::Tk::RBracket => "RBracket",
-                    front::Tk::Semi => "Semi",
-                    front::Tk::Virgule => "Virgule",
-                    front::Tk::DeuxPts => "DeuxPts",
-                    front::Tk::DeuxPoints => "DeuxPoints",
-                    front::Tk::FlecheD => "FlecheD",
-                    front::Tk::FlecheG => "FlecheG",
-                    front::Tk::PointDInterro => "PointDInterro",
-                    front::Tk::Inf => "Inf",
-                    front::Tk::Sup => "Sup",
-                    front::Tk::InfEg => "InfEg",
-                    front::Tk::SupEg => "SupEg",
-                    front::Tk::DoubleEg => "DoubleEg",
-                    front::Tk::Diff => "Diff",
-                    front::Tk::Environ => "Environ",
-                    front::Tk::Racine => "Racine",
-                    front::Tk::Tilde => "Tilde",
-                    front::Tk::Arobase => "Arobase",
-                    front::Tk::Question => "Question",
-                };
-                // M4.1 oracle : ligne:colonne type texte
-                println!("{}:{} {} {}", t.ligne, t.col, type_nom, t.texte);
+                // M4.1 oracle : ligne:colonne type texte (format C++ tk_nom)
+                println!("{}:{} {} {}", t.ligne, t.col, tk_nom_cpp(&t.tk), echapper_token(&t.texte));
             }
             std::process::exit(0);
         }
