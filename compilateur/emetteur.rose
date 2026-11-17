@@ -2356,6 +2356,13 @@ fn em_ast_expr($i: entier,
     si (longueur($un) > 0 et ordre($un[0]) == 45) { retour "(f -" + $un + ")" }
     retour "(f " + $un + ")"
   }
+  # `-1` source : le moteur Rust garde le drapeau neg ET le texte replié
+  # (déjà signé) -> `(n --1)`. Double négation repliée -> `(n 1)`.
+  si ($vue != "0" et $kd == "uni" et $op0 == "-" et vue_flag($vue) == "") {
+    $un = vue_texte($vue)
+    si (longueur($un) > 0 et ordre($un[0]) == 45) { retour "(n -" + $un + ")" }
+    retour "(n " + $un + ")"
+  }
   # nœud replié : utiliser le texte/flag de la vue
   si ($vue != "0") {
     $txt = vue_texte($vue)
@@ -2996,36 +3003,36 @@ fn rir_instr($ix: entier, $ipc: entier,
     $a_sinon = 0
     si (longueur($ib2[$ix]) > 0) { $a_sinon = 1 }
     si ($a_sinon == 1) {
-      si ($ab != "") { rir_op("saut_si_faux_abstrait @sinon " + $ab, $pc, $ops) }
-      sinon { rir_op("saut_si_faux @sinon " + $ex, $pc, $ops) }
+      si ($ab != "") { rir_op("saut_si_faux_abstrait @sinon_" + chaine($ix) + "_ " + $ab, $pc, $ops) }
+      sinon { rir_op("saut_si_faux @sinon_" + chaine($ix) + "_ " + $ex, $pc, $ops) }
       $pc = $pc + 1
       $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
-      rir_op("saut @fin", $pc, $ops)
+      rir_op("saut @fin_" + chaine($ix) + "_", $pc, $ops)
       $pc = $pc + 1
-      joindre($ops, "@sinon:")
+      joindre($ops, "@sinon_" + chaine($ix) + "_:")
       $pc = rir_corps($ib2[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
-      joindre($ops, "@fin:")
+      joindre($ops, "@fin_" + chaine($ix) + "_:")
     } sinon {
       # sans sinon : saut-si-faux vise directement « après », aucun saut final
-      si ($ab != "") { rir_op("saut_si_faux_abstrait @fin " + $ab, $pc, $ops) }
-      sinon { rir_op("saut_si_faux @fin " + $ex, $pc, $ops) }
+      si ($ab != "") { rir_op("saut_si_faux_abstrait @fin_" + chaine($ix) + "_ " + $ab, $pc, $ops) }
+      sinon { rir_op("saut_si_faux @fin_" + chaine($ix) + "_ " + $ex, $pc, $ops) }
       $pc = $pc + 1
       $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
-      joindre($ops, "@fin:")
+      joindre($ops, "@fin_" + chaine($ix) + "_:")
     }
     retour $pc
   }
   si ($kd == "tq") {
-    joindre($ops, "@cond:")
+    joindre($ops, "@cond_" + chaine($ix) + "_:")
     $ab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
     $ex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
-    si ($ab != "") { rir_op("saut_si_faux_abstrait @fin " + $ab, $pc, $ops) }
-    sinon { rir_op("saut_si_faux @fin " + $ex, $pc, $ops) }
+    si ($ab != "") { rir_op("saut_si_faux_abstrait @fin_" + chaine($ix) + "_ " + $ab, $pc, $ops) }
+    sinon { rir_op("saut_si_faux @fin_" + chaine($ix) + "_ " + $ex, $pc, $ops) }
     $pc = $pc + 1
     $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
-    rir_op("saut @cond", $pc, $ops)
+    rir_op("saut @cond_" + chaine($ix) + "_", $pc, $ops)
     $pc = $pc + 1
-    joindre($ops, "@fin:")
+    joindre($ops, "@fin_" + chaine($ix) + "_:")
     retour $pc
   }
   si ($kd == "pour") {
@@ -3036,23 +3043,23 @@ fn rir_instr($ix: entier, $ipc: entier,
     si ($pab != "") { rir_op("affect slot " + chaine($pslot) + " = " + $pab, $pc, $ops) }
     sinon { rir_op("affect_ast slot " + chaine($pslot) + " = " + $pdebut, $pc, $ops) }
     $pc = $pc + 1
-    joindre($ops, "@pcond_" + $ino[$ix] + ":")
+    joindre($ops, "@pcond_" + chaine($ix) + "_:")
     # test : bin < (v var) fin
     $pfin = em_ast_expr($ie2[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
     $pfab = em_abstrait($ie2[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
     $pvar = "slot " + chaine($pslot)
     si ($pfab != "") {
-      rir_op("saut_si_faux_abstrait @pfin_" + $ino[$ix] + " (bin < " + $pvar + " " + $pfab + ")", $pc, $ops)
+      rir_op("saut_si_faux_abstrait @pfin_" + chaine($ix) + "_ (bin < " + $pvar + " " + $pfab + ")", $pc, $ops)
     } sinon {
-      rir_op("saut_si_faux @pfin_" + $ino[$ix] + " (bin < (v " + $ino[$ix] + ") " + $pfin + ")", $pc, $ops)
+      rir_op("saut_si_faux @pfin_" + chaine($ix) + "_ (bin < (v " + $ino[$ix] + ") " + $pfin + ")", $pc, $ops)
     }
     $pc = $pc + 1
     $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, vrai)
     rir_op("affect slot " + chaine($pslot) + " = (bin + slot " + chaine($pslot) + " entier 1)", $pc, $ops)
     $pc = $pc + 1
-    rir_op("saut @pcond_" + $ino[$ix], $pc, $ops)
+    rir_op("saut @pcond_" + chaine($ix) + "_", $pc, $ops)
     $pc = $pc + 1
-    joindre($ops, "@pfin_" + $ino[$ix] + ":")
+    joindre($ops, "@pfin_" + chaine($ix) + "_:")
     retour $pc
   }
   si ($kd == "bloc") {
@@ -3122,33 +3129,18 @@ fn rir_patcher($ops: liste<chaine>) -> liste<chaine> {
 }
 
 fn rir_patch_op($ch: chaine, $pos: entier, $labels: liste<chaine>, $cibles: liste<entier>) -> chaine {
+  # Chaque marqueur porte un nom UNIQUE (@fin_<ix>_, @cond_<ix>_, ...).
+  # Il n'y a donc qu'une seule cible par label : plus besoin de deviner une
+  # direction (avant/après) ni de choisir le "plus proche". Cela reproduit
+  # exactement le patchage par index du moteur Rust, et évite de remplacer
+  # un @label survenant dans un littéral de chaîne (nos marqueurs, suffixés,
+  # ne collent jamais à un tel littéral).
   $r = $ch
   $k = 1
   tant_que ($k < longueur($labels)) {
     $pat = "@" + $labels[$k]
-    $p = position_sous($r, $pat)
-    si ($p >= 0) {
-      # "saut @x" (inconditionnel) => cible AVANT la plus proche ;
-      # "saut_si_faux @x" => cible APRES la plus proche.
-      $arriere = 0
-      si (contient_ops($r, "saut @") et non contient_ops($r, "saut_si_faux")) { $arriere = 1 }
-      $best = -1
-      $bestd = 1000000
-      $j = 1
-      tant_que ($j < longueur($labels)) {
-        si ($labels[$j] == $labels[$k]) {
-          $c = $cibles[$j]
-          $ok = 0
-          si ($arriere == 1 et $c <= $pos) { $ok = 1 }
-          si ($arriere == 0 et $c > $pos) { $ok = 1 }
-          si ($ok == 1) {
-            $d = cibles_distance($c, $pos)
-            si ($d < $bestd) { $bestd = $d; $best = $c }
-          }
-        }
-        $j = $j + 1
-      }
-      si ($best >= 0) { $r = remplacer_tout($r, $pat, chaine($best)) }
+    si (position_sous($r, $pat) >= 0) {
+      $r = remplacer_tout($r, $pat, chaine($cibles[$k]))
     }
     $k = $k + 1
   }
