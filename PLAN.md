@@ -36,8 +36,8 @@ M1.1 slots indexés, corps principal abaissé   ← FAIT
 M1.2 RIR du JIT (plus de compilation d'arbre)  ← FAIT (9fe647b, 03c5049)
 M2  Performance : fermer l'écart avec Zig
 M2.1 jardin = primitive native                ← FAIT (82b3e6b, 4,11 ms)
-M2.2 interpréteur sans HashMap par accès       ← À FAIRE
-M2.3 arène d'allocation pour les Gz            ← À FAIRE
+M2.2 interpréteur sans HashMap par accès       ← FAIT (b50eefd, zg_rapide par réf.)
+M2.3 arène d'allocation pour les Gz            ← PARTIEL (b50eefd, pool Gz ~26% boucle, ~7% factorielles; arène complète reportée)
 M2.4 liste vide typée `[0 : entier]`           ← FAIT (2af045c)
 M3  Backend propre (AOT sans LLVM externe)
 M3.1 émission x86-64 / aarch64 depuis le RIR   ← FAIT (8fdef8d+1b73c74, API JIT + ROSE_NATIF, parité 3 moteurs)
