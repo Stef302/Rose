@@ -60,6 +60,7 @@ Usage :
   rose latex prog.rose --apercu     idem, rendu VISIBLE (Unicode, sans LaTeX)
   rose latex prog.rose --lignes     seulement les lignes marquees %% (LaTeX brut)
   rose latex prog.rose --lignes --apercu   les lignes %% en rendu visible
+  rose tokens prog.rose             liste les jetons (oracle : ligne:colonne type texte)
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
   rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
@@ -290,6 +291,69 @@ fn main() {
             print!("{}", texte);
             println!();
             return;
+        }
+        "tokens" => {
+            if argv.len() < 3 { eprintln!("rose tokens : quel programme ?"); std::process::exit(1); }
+            let mut source = String::new();
+            if !lire(&mut source, &argv[2]) {
+                eprintln!("rose: fichier introuvable : {}", argv[2]);
+                std::process::exit(1);
+            }
+            let toks = match front::tokeniser(&source) {
+                Ok(t) => t,
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            };
+            for t in &toks {
+                let type_nom = match &t.tk {
+                    front::Tk::Eof => "Eof",
+                    front::Tk::Ident => "Ident",
+                    front::Tk::Mot => "Mot",
+                    front::Tk::Nombre => "Nombre",
+                    front::Tk::Flottant => "Flottant",
+                    front::Tk::Chaine => "Chaine",
+                    front::Tk::Plus => "Plus",
+                    front::Tk::Moins => "Moins",
+                    front::Tk::Etoile => "Etoile",
+                    front::Tk::Slash => "Slash",
+                    front::Tk::Pourcent => "Pourcent",
+                    front::Tk::Chapeau => "Chapeau",
+                    front::Tk::Bang => "Bang",
+                    front::Tk::Diese => "Diese",
+                    front::Tk::Terminal => "Terminal",
+                    front::Tk::SuperFacto => "SuperFacto",
+                    front::Tk::MultiFacto(_) => "MultiFacto",
+                    front::Tk::SousFacto => "SousFacto",
+                    front::Tk::DivEntier => "DivEntier",
+                    front::Tk::Affect => "Affect",
+                    front::Tk::LParen => "LParen",
+                    front::Tk::RParen => "RParen",
+                    front::Tk::LBrace => "LBrace",
+                    front::Tk::RBrace => "RBrace",
+                    front::Tk::LBracket => "LBracket",
+                    front::Tk::RBracket => "RBracket",
+                    front::Tk::Semi => "Semi",
+                    front::Tk::Virgule => "Virgule",
+                    front::Tk::DeuxPts => "DeuxPts",
+                    front::Tk::DeuxPoints => "DeuxPoints",
+                    front::Tk::FlecheD => "FlecheD",
+                    front::Tk::FlecheG => "FlecheG",
+                    front::Tk::PointDInterro => "PointDInterro",
+                    front::Tk::Inf => "Inf",
+                    front::Tk::Sup => "Sup",
+                    front::Tk::InfEg => "InfEg",
+                    front::Tk::SupEg => "SupEg",
+                    front::Tk::DoubleEg => "DoubleEg",
+                    front::Tk::Diff => "Diff",
+                    front::Tk::Environ => "Environ",
+                    front::Tk::Racine => "Racine",
+                    front::Tk::Tilde => "Tilde",
+                    front::Tk::Arobase => "Arobase",
+                    front::Tk::Question => "Question",
+                };
+                // M4.1 oracle : ligne:colonne type texte
+                println!("{}:{} {} {}", t.ligne, t.col, type_nom, t.texte);
+            }
+            std::process::exit(0);
         }
         "wasm" => {
             // ⚠ Inspecte un module WebAssembly SANS l'exécuter : les fonctions
