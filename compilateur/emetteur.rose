@@ -50,9 +50,9 @@ fn paire(a: entier, b: entier) -> chaine {
   si (a == 61 et b == 61) { retour "==" }
   si (a == 33 et b == 61) { retour "!=" }
   si (a == 47 et b == 61) { retour "!=" }
-  si (a == 63 et b == 61) { retour "?=" }
-  si (a == 61 et b == 126) { retour "=~" }
-  si (a == 126 et b == 61) { retour "=~" }
+  si (a == 63 et b == 61) { retour "≈" }
+  si (a == 61 et b == 126) { retour "≈" }
+  si (a == 126 et b == 61) { retour "≈" }
   retour ""
 }
 
@@ -677,13 +677,23 @@ fn unai($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
   si ($t == "+") {
     retour unai($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
   }
+  si ($t == "sfact") {
+    $r = unai($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
+    $lf = GL0($gl, $p)
+    $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", entier(NOD($r)), -1, 0, 0, $lf)
+    retour chaine(SEPR($r)) + "|" + chaine($e)
+  }
   $r = post($g, $x, $gl, $p, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
   $q = SEPR($r)
   $e = entier(NOD($r))
-  tant_que (T0($g, $q) == "!") {
-    $lf = GL0($gl, $q)
-    $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", $e, -1, 0, 0, $lf)
-    $q = $q + 1
+  $ok = 1
+  tant_que ($ok == 1) {
+    $tt = T0($g, $q)
+    si ($tt == "multifacto" ou $tt == "diese" ou $tt == "terminal" ou $tt == "superfacto" ou $tt == "!") {
+      $lf = GL0($gl, $q)
+      $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", $e, -1, 0, 0, $lf)
+      $q = $q + 1
+    } sinon { $ok = 0 }
   }
   retour chaine($q) + "|" + chaine($e)
 }
@@ -780,12 +790,19 @@ fn nonx($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
         $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
         $lg: liste<entier>, $al: liste<entier>) -> chaine {
   si (EMOT($g, $x, $p, "non")) {
-    $l = GL0($gl, $p)
-    $r = nonx($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
-    $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "uni", "non", "", entier(NOD($r)), -1, 0, 0, $l)
-    retour chaine(SEPR($r)) + "|" + chaine($i)
+    retour nonx_helper($g, $x, $gl, $p, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
   }
   retour compa($g, $x, $gl, $p, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
+}
+
+fn nonx_helper($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
+       $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+       $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+       $lg: liste<entier>, $al: liste<entier>) -> chaine {
+  $l = GL0($gl, $p)
+  $r = nonx($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
+  $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "uni", "non", "", entier(NOD($r)), -1, 0, 0, $l)
+  retour chaine(SEPR($r)) + "|" + chaine($i)
 }
 
 # « et »/« ou » : le nœud porte la ligne du PREMIER jeton de l'opérande
@@ -1043,7 +1060,7 @@ fn def_fn($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
     }
   }
   si (T0($g, $q) == ")") { $q = $q + 1 }
-  $ret = "vide|vide"
+  $ret = "?|vide"
   si (T0($g, $q) == "->") {
     $rt = typex($g, $x, $q + 1)
     $ret = NOD($rt)
@@ -1655,6 +1672,22 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "tampon_pose") { retour "vide|tampon,entier,entier" }
   si ($nom == "remplir_hasard") { retour "vide|tampon,tampon" }
   si ($nom == "millisecondes") { retour "entier|" }
+  si ($nom == "fact") { retour "entier|entier" }
+  si ($nom == "fib") { retour "entier|entier" }
+  si ($nom == "gcd") { retour "entier|entier,entier" }
+  si ($nom == "lcm") { retour "entier|entier,entier" }
+  si ($nom == "pow") { retour "entier|num,entier" }
+  si ($nom == "racine") { retour "irrationnel|entier" }
+  si ($nom == "is_prime") { retour "booleen|entier" }
+  si ($nom == "digits") { retour "entier|entier" }
+  si ($nom == "pi" ou $nom == "nombre_e" ou $nom == "e" ou $nom == "phi") { retour "chaine|entier" }
+  si ($nom == "factorielle_rapide" ou $nom == "factorial_rapide" ou $nom == "rapide") { retour "entier|entier" }
+  si ($nom == "approx" ou $nom == "factorial_approx") { retour "chaine|entier" }
+  si ($nom == "primorielle") { retour "entier|entier" }
+  si ($nom == "termial" ou $nom == "triangulaire" ou $nom == "termial_classique" ou $nom == "termial_kurepa" ou $nom == "kurepa" ou $nom == "terminal") { retour "entier|entier" }
+  si ($nom == "super_factorielle") { retour "entier|entier" }
+  si ($nom == "multifactorielle" ou $nom == "multifactoriel") { retour "entier|entier,entier" }
+  si ($nom == "sous_factorielle" ou $nom == "derangement" ou $nom == "sous_factorial") { retour "entier|entier" }
   retour ""
 }
 
@@ -2291,6 +2324,223 @@ fn e_ligne($fl: liste<chaine>, $flb: liste<entier>, $fp: liste<chaine>, $cc: lis
   joindre($fp, $op)
 }
 
+# ══════════════════ émission RIR (format actuel) ══════════════════
+# S-expression d'une expression depuis les pools (miroir de analyseur.rose).
+# Les vues repliées (entree()) ont priorité sur le nœud brut.
+fn em_ast_expr($i: entier,
+              $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+              $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+              $lg: liste<entier>, $al: liste<entier>,
+              $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>) -> chaine {
+  $vue = entree($i, $foi, $fot, $fof)
+  $kd = $k[$i]
+  $op0 = $tx[$i]
+  $txt = $tx[$i]
+  # nœud replié : utiliser le texte/flag de la vue
+  si ($vue != "0") {
+    $txt = vue_texte($vue)
+    $fl = vue_flag($vue)
+    $kd = "lit"
+    $op0 = ""
+    $tf0 = $fl
+    si ($fl == "1") { retour "(f " + $txt + ")" }
+    si (contient_barre($txt)) { retour "(f " + $txt + ")" }
+    retour "(n " + $txt + ")"
+  }
+  si ($kd == "lit") {
+    si ($tf[$i] == "1") { retour "(f " + $txt + ")" }
+    si (contient_barre($txt)) { retour "(f " + $txt + ")" }
+    retour "(n " + $txt + ")"
+  }
+  si ($kd == "ch") { retour "(s \"" + ast_echapper($txt) + "\")" }
+  si ($kd == "bol") {
+    si ($txt == "1") { retour "(b vraie)" }
+    retour "(b faux)"
+  }
+  si ($kd == "v") { retour "(v " + $txt + ")" }
+  si ($kd == "idx") {
+    retour "(idx " + em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) +
+           " " + em_ast_expr($b[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
+  }
+  si ($kd == "bin") {
+    retour "(bin " + $op0 + " " +
+           em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + " " +
+           em_ast_expr($b[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
+  }
+  si ($kd == "uni") {
+    retour "(uni " + $op0 + " " +
+           em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
+  }
+  si ($kd == "fac") { retour "(fact " + em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")" }
+  si ($kd == "lst") {
+    $e = "(lst"
+    $sa = $as[$i]
+    $nb = $ac[$i]
+    $j = 0
+    tant_que ($j < $nb) {
+      $e = $e + " " + em_ast_expr($al[$sa + $j], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+      $j = $j + 1
+    }
+    retour $e + ")"
+  }
+  si ($kd == "app") {
+    $mod = eclate_mod($txt)
+    $nom = eclate_nom($txt)
+    $e = "(app "
+    si ($mod != "") { $e = $e + $mod + "::" }
+    $e = $e + $nom
+    $sa = $as[$i]
+    $nb = $ac[$i]
+    $j = 0
+    tant_que ($j < $nb) {
+      $e = $e + " " + em_ast_expr($al[$sa + $j], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+      $j = $j + 1
+    }
+    retour $e + ")"
+  }
+  retour "(v ?)"
+}
+
+fn ast_echapper($s: chaine) -> chaine {
+  $o = ""
+  $j = 0
+  $n = longueur($s)
+  tant_que ($j < $n) {
+    $c = ordre($s[$j])
+    si ($c == 92) { $o = $o + "\\\\" }
+    sinon si ($c == 34) { $o = $o + "\\\"" }
+    sinon si ($c == 10) { $o = $o + "\\n" }
+    sinon si ($c == 13) { $o = $o + "\\r" }
+    sinon si ($c == 9) { $o = $o + "\\t" }
+    sinon { $o = $o + $s[$j] }
+    $j = $j + 1
+  }
+  retour $o
+}
+
+# ── table des slots : nom → index (listes rembourrées à 0) ──
+# $sn contient les noms, $sg les flags globaux (1 si global).
+fn slot_index($slnom: chaine, $sln: liste<chaine>) -> entier {
+  $sixn = longueur($sln)
+  $sixj = 1
+  tant_que ($sixj < $sixn) {
+    si ($sln[$sixj] == $slnom) { retour $sixj - 1 }
+    $sixj = $sixj + 1
+  }
+  retour -1
+}
+
+fn slot_de($slnom: chaine, $sln: liste<chaine>) -> entier {
+  $sdk = slot_index($slnom, $sln)
+  si ($sdk >= 0) { retour $sdk }
+  joindre($sln, $slnom)
+  retour longueur($sln) - 2
+}
+
+# marque un slot comme global
+fn marquer_global($k: entier, $sg: liste<entier>) {
+  $mgj = 1
+  $mgn = longueur($sg)
+  tant_que ($mgj < $mgn et $sg[$mgj] != $k) { $mgj = $mgj + 1 }
+  si ($mgj >= $mgn) { joindre($sg, $k) }
+}
+
+# abstraction d'une expression en Eabstrait (S-expression RIR).
+# $connus : liste des noms de fonctions à corps (RIR_CONNUS).
+# rend "" si non abstractible (⇒ forme AST).
+fn em_abstrait($i: entier,
+              $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+              $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+              $lg: liste<entier>, $al: liste<entier>,
+              $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
+              $sn: liste<chaine>, $connus: liste<chaine>) -> chaine {
+  $vue = entree($i, $foi, $fot, $fof)
+  $kd = $k[$i]
+  $op0 = $tx[$i]
+  $txt = $tx[$i]
+  # Var → slot (le nom doit avoir un slot)
+  si ($kd == "v") {
+    $s = slot_index($tx[$i], $sn)
+    si ($s >= 0) { retour "slot " + chaine($s) }
+    retour ""
+  }
+  # Appel → appel_rir si fonction connue, args non vides et tous des Var
+  si ($kd == "app") {
+    $nom = eclate_nom($tx[$i])
+    $connu = 0
+    $u = 1
+    tant_que ($u < longueur($connus)) {
+      si ($connus[$u] == $nom) { $connu = 1 }
+      $u = $u + 1
+    }
+    $sa = $as[$i]
+    $nb = $ac[$i]
+    $tousvar = 1
+    si ($nb == 0) { $tousvar = 0 }
+    $j = 0
+    tant_que ($j < $nb) {
+      si ($k[$al[$sa + $j]] != "v") { $tousvar = 0 }
+      $j = $j + 1
+    }
+    si ($connu == 1 et $tousvar == 1) {
+      $e = "(appel_rir " + $nom
+      $j = 0
+      tant_que ($j < $nb) {
+        $e = $e + " " + em_ast_expr($al[$sa + $j], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+        $j = $j + 1
+      }
+      retour $e + ")"
+    }
+    retour ""
+  }
+  # Littéral replié : entier / flottant (rationnel refusé)
+  si ($vue != "0") {
+    $txt = vue_texte($vue)
+    $fl = vue_flag($vue)
+    si ($fl == "1") { retour "flottant " + vers_flottant($txt) }
+    si (contient_barre($txt)) { retour "" }
+    retour "entier " + $txt
+  }
+  si ($kd == "lit") {
+    si ($tf[$i] == "1") { retour "flottant " + vers_flottant($txt) }
+    si (contient_barre($txt)) { retour "" }
+    retour "entier " + $txt
+  }
+  # Binaire : op dans le sous-ensemble, deux opérandes abstractibles
+  $ops = "|" + $op0 + "|"
+  si ($kd == "bin" et contient_ops("|+|-|*|/|%|^|div|<|<=|>|>=|==|!=|et|ou|", $ops)) {
+    $g = em_abstrait($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    $d = em_abstrait($b[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    si ($g != "" et $d != "") { retour "(bin " + $op0 + " " + $g + " " + $d + ")" }
+    retour ""
+  }
+  # Unaire : - → neg, non → non
+  si ($kd == "uni") {
+    $g = em_abstrait($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    si ($g == "") { retour "" }
+    si ($op0 == "-") { retour "(neg " + $g + ")" }
+    si ($op0 == "non") { retour "(non " + $g + ")" }
+    retour ""
+  }
+  retour ""
+}
+
+fn contient_ops($s: chaine, $sub: chaine) -> booleen {
+  $n = longueur($s)
+  $m = longueur($sub)
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $sub) { retour vrai }
+    $i = $i + 1
+  }
+  retour faux
+}
+
+fn vers_flottant($t: chaine) -> chaine {
+  # chaine(flottant) de Rose donne déjà le texte Display attendu
+  retour flot_txt(flottant($t), faux)
+}
+
 fn em_expr($i: entier, $ta: chaine,
            $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
            $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
@@ -2584,6 +2834,321 @@ fn em_corps($cs: chaine,
   }
 }
 
+# ── abaissement d'un corps en opérations RIR ──────────────────────────
+# Les ops sont accumulées dans $op (chaîne « instruction\n»), numérotées par
+# $ipc. Les sauts utilisent des marqueurs « @label » remplacés en fin de passe.
+# $sn = noms des slots, $sg = flags globaux, $connus = fonctions RIR.
+
+fn rir_op($opch: chaine, $ipc: entier, $ops: liste<chaine>) {
+  $s = chaine($ipc)
+  $pad = ""
+  $z = longueur($s)
+  tant_que ($z < 4) { $pad = $pad + "0"; $z = $z + 1 }
+  joindre($ops, "    " + $pad + $s + " " + $opch)
+}
+
+# émet une op pour une instruction ; rend le nouveau $ipc
+fn rir_instr($ix: entier, $ipc: entier,
+             $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+             $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+             $lg: liste<entier>, $al: liste<entier>,
+             $ik: liste<chaine>, $ino: liste<chaine>, $ie: liste<entier>, $ie2: liste<entier>,
+             $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
+             $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
+             $sn: liste<chaine>, $glst: liste<entier>, $connus: liste<chaine>, $ops: liste<chaine>,
+             $estprincipal: booleen) -> entier {
+  $kd = $ik[$ix]
+  $pc = $ipc
+  si ($kd == "aff") {
+    $absres = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    $ex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+    si ($absres != "") {
+      rir_op("afficher_abstrait " + $absres, $pc, $ops)
+    } sinon {
+      rir_op("afficher " + $ex, $pc, $ops)
+    }
+    retour $pc + 1
+  }
+  si ($kd == "expr") {
+    rir_op("expr " + em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof), $pc, $ops)
+    retour $pc + 1
+  }
+  si ($kd == "affi") {
+    $rislot = slot_de($ino[$ix], $sn)
+    si ($estprincipal) { marquer_global($rislot, $glst) }
+    $riab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    $riex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+    si ($riab != "") {
+      rir_op("affect slot " + chaine($rislot) + " = " + $riab, $pc, $ops)
+    } sinon {
+      rir_op("affect_ast slot " + chaine($rislot) + " = " + $riex, $pc, $ops)
+    }
+    retour $pc + 1
+  }
+  si ($kd == "retour") {
+    si ($ie[$ix] >= 0) {
+      $ab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+      $ex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+      si ($ab != "") { rir_op("retour_abstrait " + $ab, $pc, $ops) }
+      sinon { rir_op("retour " + $ex, $pc, $ops) }
+    } sinon {
+      rir_op("retour", $pc, $ops)
+    }
+    retour $pc + 1
+  }
+  si ($kd == "lire") {
+    $s = slot_de($ino[$ix], $sn)
+    si ($estprincipal) { marquer_global($s, $glst) }
+    rir_op("lire slot " + chaine($s) + " Dyn", $pc, $ops)
+    retour $pc + 1
+  }
+  # contrôle de flux : sauts (à patcher)
+  si ($kd == "si") {
+    $ab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    $ex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+    si ($ab != "") { rir_op("saut_si_faux_abstrait @sinon " + $ab, $pc, $ops) }
+    sinon { rir_op("saut_si_faux @sinon " + $ex, $pc, $ops) }
+    $pc = $pc + 1
+    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    # pas de saut si la branche se termine par un retour
+    $dern = $ops[longueur($ops) - 1]
+    $a_retour = 0
+    si (contient_ops($dern, "retour") et non contient_ops($dern, "saut")) { $a_retour = 1 }
+    si ($a_retour == 0) {
+      rir_op("saut @fin", $pc, $ops)
+      $pc = $pc + 1
+    }
+    joindre($ops, "@sinon:")
+    $pc = rir_corps($ib2[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    joindre($ops, "@fin:")
+    retour $pc
+  }
+  si ($kd == "tq") {
+    joindre($ops, "@cond:")
+    $ab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    $ex = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+    si ($ab != "") { rir_op("saut_si_faux_abstrait @fin " + $ab, $pc, $ops) }
+    sinon { rir_op("saut_si_faux @fin " + $ex, $pc, $ops) }
+    $pc = $pc + 1
+    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    rir_op("saut @cond", $pc, $ops)
+    $pc = $pc + 1
+    joindre($ops, "@fin:")
+    retour $pc
+  }
+  si ($kd == "pour") {
+    $pslot = slot_de($ino[$ix], $sn)
+    $pdebut = em_ast_expr($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+    $pab = em_abstrait($ie[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    si ($pab != "") { rir_op("affect slot " + chaine($pslot) + " = " + $pab, $pc, $ops) }
+    sinon { rir_op("affect_ast slot " + chaine($pslot) + " = " + $pdebut, $pc, $ops) }
+    $pc = $pc + 1
+    joindre($ops, "@pcond:")
+    # test : bin < (v var) fin
+    $pfin = em_ast_expr($ie2[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+    $pfab = em_abstrait($ie2[$ix], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+    $pvar = "slot " + chaine($pslot)
+    si ($pfab != "") {
+      rir_op("saut_si_faux_abstrait @pfin (bin < " + $pvar + " " + $pfab + ")", $pc, $ops)
+    } sinon {
+      rir_op("saut_si_faux @pfin (bin < " + $pvar + " " + $pfin + ")", $pc, $ops)
+    }
+    $pc = $pc + 1
+    $pc = rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+    rir_op("affect slot " + chaine($pslot) + " = (bin + slot " + chaine($pslot) + " entier 1)", $pc, $ops)
+    $pc = $pc + 1
+    rir_op("saut @pcond", $pc, $ops)
+    $pc = $pc + 1
+    joindre($ops, "@pfin:")
+    retour $pc
+  }
+  si ($kd == "bloc") {
+    retour rir_corps($ib1[$ix], $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+  }
+  retour $pc
+}
+
+fn rir_corps($cs: chaine, $ipc: entier,
+             $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+             $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+             $lg: liste<entier>, $al: liste<entier>,
+             $ik: liste<chaine>, $ino: liste<chaine>, $ie: liste<entier>, $ie2: liste<entier>,
+             $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
+             $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
+             $sn: liste<chaine>, $glst: liste<entier>, $connus: liste<chaine>, $ops: liste<chaine>,
+             $estprincipal: booleen) -> entier {
+  $pc = $ipc
+  $j = 0
+  $n = longueur($cs)
+  $cur = ""
+  tant_que ($j < $n) {
+    $c = ordre($cs[$j])
+    si ($c == 44) {
+      si ($cur != "") {
+        $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+        $cur = ""
+      }
+    } sinon { $cur = $cur + $cs[$j] }
+    $j = $j + 1
+  }
+  si ($cur != "") {
+    $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+  }
+  retour $pc
+}
+
+# patche les marqueurs @label dans les sauts : remplacer @label par le numéro
+# de l'op qui porte le marqueur "@label:" ; supprimer les lignes marqueurs.
+fn rir_patcher($ops: liste<chaine>) -> liste<chaine> {
+  # 1) enlever les lignes marqueurs, garder la liste des ops réelles
+  $res = [""]
+  $labels = [""]
+  $cibles = [0]
+  $u = 1
+  tant_que ($u < longueur($ops)) {
+    $ch = $ops[$u]
+    si (longueur($ch) > 0 et ordre($ch[0]) == 64) {
+      joindre($labels, sous_chaine($ch, 1, longueur($ch) - 1))
+      joindre($cibles, longueur($res) - 1)
+    } sinon {
+      joindre($res, $ch)
+    }
+    $u = $u + 1
+  }
+  # 2) pour chaque op, remplacer @label par la cible du PREMIER marqueur
+  #    de ce label situé APRÈS l'op (le plus proche en avant).
+  $out = [""]
+  $u = 1
+  tant_que ($u < longueur($res)) {
+    $ch = $res[$u]
+    $ch = rir_patch_op($ch, $u, $labels, $cibles)
+    joindre($out, $ch)
+    $u = $u + 1
+  }
+  retour $out
+}
+
+fn rir_patch_op($ch: chaine, $pos: entier, $labels: liste<chaine>, $cibles: liste<entier>) -> chaine {
+  $r = $ch
+  $k = 1
+  tant_que ($k < longueur($labels)) {
+    $pat = "@" + $labels[$k]
+    $p = position_sous($r, $pat)
+    si ($p >= 0) {
+      # choisir la cible la plus proche : après si saut avant, sinon avant
+      $best = -1
+      $bestd = 1000000
+      $j = 1
+      tant_que ($j < longueur($labels)) {
+        si ($labels[$j] == $labels[$k]) {
+          $d = cibles_distance($cibles[$j], $pos)
+          si ($d < $bestd) { $bestd = $d; $best = $cibles[$j] }
+        }
+        $j = $j + 1
+      }
+      si ($best >= 0) { $r = remplacer_tout($r, $pat, chaine($best)) }
+    }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn cibles_distance($c: entier, $p: entier) -> entier {
+  $d = $c - $p
+  si ($d < 0) { $d = -$d }
+  retour $d
+}
+
+fn position_sous($s: chaine, $sub: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($sub)
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $sub) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn remplacer_tout($s: chaine, $de: chaine, $vers: chaine) -> chaine {
+  $o = ""
+  $i = 0
+  $nd = longueur($de)
+  $ns = longueur($s)
+  tant_que ($i < $ns) {
+    si ($i + $nd <= $ns et sous_chaine($s, $i, $i + $nd) == $de) {
+      $o = $o + $vers
+      $i = $i + $nd
+    } sinon {
+      $o = $o + $s[$i]
+      $i = $i + 1
+    }
+  }
+  retour $o
+}
+
+fn em_fonction_rir($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
+             $estprincipal: booleen,
+             $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+             $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+             $lg: liste<entier>, $al: liste<entier>,
+             $ik: liste<chaine>, $ino: liste<chaine>, $ie: liste<entier>, $ie2: liste<entier>,
+             $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
+             $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>,
+             $connus: liste<chaine>, $outl: liste<chaine>) {
+  $sn = [""]
+  $glst = [-1]
+  # paramètres d'abord
+  $np = nb_pieces($ps, 59)
+  $u = 1
+  tant_que ($u <= $np) {
+    $ent = piece($ps, 59, $u)
+    $pp = premier_pipe($ent)
+    $pn = sous_chaine($ent, 0, $pp)
+    joindre($sn, $pn)
+    $u = $u + 1
+  }
+  $ops = [""]
+  $pc = rir_corps($corps, 0, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal)
+  $ops = rir_patcher($ops)
+  # patch des marqueurs : d'abord retirer les lignes marqueurs, noter leur cible
+  # (les marqueurs sont émis avec un numéro séquentiel dans $ops).
+  joindre($outl, "fonction " + $nom)
+  $u = 1
+  tant_que ($u <= $np) {
+    $ent = piece($ps, 59, $u)
+    $pp = premier_pipe($ent)
+    $pn = sous_chaine($ent, 0, $pp)
+    $pt = sous_chaine($ent, $pp + 1, longueur($ent))
+    joindre($outl, "  param " + $pn + " " + nomty($pt))
+    $u = $u + 1
+  }
+  joindre($outl, "  retour " + nomty($ra))
+  joindre($outl, "  n_slots " + chaine(longueur($sn) - 1))
+  $lgn = "  noms"
+  $u = 1
+  tant_que ($u < longueur($sn)) {
+    $lgn = $lgn + " [" + chaine($u - 1) + "]" + $sn[$u]
+    $u = $u + 1
+  }
+  joindre($outl, $lgn)
+  si (longueur($glst) > 1) {
+    $lgg = "  globaux"
+    $u = 1
+    tant_que ($u < longueur($glst)) {
+      $lgg = $lgg + " " + chaine($glst[$u])
+      $u = $u + 1
+    }
+    joindre($outl, $lgg)
+  }
+  joindre($outl, "  ops")
+  $u = 1
+  tant_que ($u < longueur($ops)) {
+    joindre($outl, $ops[$u])
+    $u = $u + 1
+  }
+}
+
 fn em_fonction($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
                $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
                $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
@@ -2694,16 +3259,22 @@ inserer($cles, "chaine", 1)
 inserer($cles, "liste", 1)
 inserer($cles, "table", 1)
 
+$dernier = "debut"
+
 tant_que ($i < $N) {
   $c = ordre($src[$i])
   $suiv = -1
   si ($i + 1 < $N) { $suiv = ordre($src[$i + 1]) }
+  $pchar = 10
+  si ($i > 0) { $pchar = ordre($src[$i - 1]) }
+  $apres = 0
+  si ($dernier == "nombre" ou $dernier == "flottant" ou $dernier == "chaine" ou $dernier == "ident" ou $dernier == "mot" ou $dernier == "rparen" ou $dernier == "rbracket" ou $dernier == "multifacto" ou $dernier == "diese" ou $dernier == "terminal" ou $dernier == "superfacto" ou $dernier == "chapeau" ou $dernier == "deuxpts") { $apres = 1 }
 
   si ($c == 32 ou $c == 9 ou $c == 13 ou $c == 10) {
     si ($c == 10) { $lnr = $lnr + 1 }
     $i = $i + 1
   }
-  sinon si ($c == 35 ou ($c == 47 et $suiv == 47)) {
+  sinon si ($c == 37 et $suiv == 37 et ($i == 0 ou $pchar == 10)) {
     $ok = 1
     tant_que ($ok == 1) {
       si ($i >= $N) { $ok = 0 }
@@ -2711,8 +3282,80 @@ tant_que ($i < $N) {
       sinon { $i = $i + 1 }
     }
   }
+  sinon si ($c == 35) {
+    si ($apres == 1 et $i > 0 et $pchar != 32 et $pchar != 9 et $pchar != 13 et $pchar != 10) {
+      joindre($gen, "diese")
+      joindre($x, "#")
+      joindre($gl, $lnr)
+      $i = $i + 1
+      $dernier = "diese"
+    } sinon {
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (ordre($src[$i]) == 10) { $ok = 0 }
+        sinon { $i = $i + 1 }
+      }
+    }
+  }
+  sinon si ($c == 47 et $suiv == 47) {
+    $ok = 1
+    tant_que ($ok == 1) {
+      si ($i >= $N) { $ok = 0 }
+      sinon si (ordre($src[$i]) == 10) { $ok = 0 }
+      sinon { $i = $i + 1 }
+    }
+  }
+  sinon si ($c == 33) {
+    si ($apres == 0) {
+      joindre($gen, "sfact"); joindre($x, "!"); joindre($gl, $lnr); $i = $i + 1; $dernier = "sfact"
+    } sinon si ($suiv == 61) {
+      joindre($gen, "!="); joindre($x, "!="); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre"
+    } sinon {
+      $txt = ""
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (ordre($src[$i]) == 33 et non ($i + 1 < $N et ordre($src[$i + 1]) == 61)) {
+          $txt = $txt + "!"
+          $i = $i + 1
+        } sinon { $ok = 0 }
+      }
+      joindre($gen, "multifacto"); joindre($x, $txt); joindre($gl, $lnr); $dernier = "multifacto"
+    }
+  }
+  sinon si ($c == 63) {
+    si ($suiv == 61) {
+      joindre($gen, "≈"); joindre($x, "?="); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre"
+    } sinon {
+      $est_debut = 0
+      si ($pchar == 10 ou $pchar == 59 ou $pchar == 62 ou $i == 0) { $est_debut = 1 }
+      $j = $i + 1
+      $okq = 1
+      tant_que ($okq == 1) {
+        si ($j >= $N) { $okq = 0 }
+        sinon si (ordre($src[$j]) == 32 ou ordre($src[$j]) == 9 ou ordre($src[$j]) == 13) { $j = $j + 1 }
+        sinon { $okq = 0 }
+      }
+      $suit_paren = 0
+      si ($j < $N et ordre($src[$j]) == 40) { $suit_paren = 1 }
+      $ouvre_si = 0
+      si ($est_debut == 1 et $suit_paren == 1) { $ouvre_si = 1 }
+      si ($ouvre_si == 0) {
+        joindre($gen, "terminal")
+        joindre($x, "?")
+      } sinon {
+        joindre($gen, "?")
+        joindre($x, "?")
+      }
+      joindre($gl, $lnr)
+      $i = $i + 1
+      $dernier = "autre"
+    }
+  }
   sinon si ($c == 34 ou $c == 39) {
     $q = $c
+    $dl = $lnr
     $i = $i + 1
     $buf = ""
     $ok = 1
@@ -2742,9 +3385,7 @@ tant_que ($i < $N) {
         }
       }
     }
-    joindre($gen, "chaine")
-    joindre($x, $buf)
-    joindre($gl, $lnr)
+    joindre($gen, "chaine"); joindre($x, $buf); joindre($gl, $dl); $dernier = "chaine"
   }
   sinon si (est_chiffre($c)) {
     $txt = ""
@@ -2778,19 +3419,38 @@ tant_que ($i < $N) {
         sinon { $ok = 0 }
       }
     }
-    si ($flott == 1) { joindre($gen, "flottant") } sinon { joindre($gen, "nombre") }
+    si ($flott == 1) { joindre($gen, "flottant"); $dernier = "flottant" }
+    sinon { joindre($gen, "nombre"); $dernier = "nombre" }
     joindre($x, $txt)
     joindre($gl, $lnr)
   }
   sinon si ($c == 960) {
-    joindre($gen, "flottant")
-    joindre($x, "3.141592653589793")
-    joindre($gl, $lnr)
-    $i = $i + 1
+    joindre($gen, "mot"); joindre($x, "π"); joindre($gl, $lnr); $i = $i + 1; $dernier = "mot"
   }
-  sinon si ($c == 36 ou est_lettre($c)) {
-    $dollar = 0
-    si ($c == 36) { $dollar = 1; $i = $i + 1 }
+  sinon si ($c == 966) {
+    joindre($gen, "mot"); joindre($x, "φ"); joindre($gl, $lnr); $i = $i + 1; $dernier = "mot"
+  }
+  sinon si ($c == 36) {
+    $est_var = 0
+    si ($suiv != -1 et est_lettre($suiv)) { $est_var = 1 }
+    si ($est_var == 0) {
+      joindre($gen, "superfacto"); joindre($x, "$"); joindre($gl, $lnr); $i = $i + 1; $dernier = "superfacto"
+    } sinon {
+      $i = $i + 1
+      $nu = ""
+      $ok = 1
+      tant_que ($ok == 1) {
+        si ($i >= $N) { $ok = 0 }
+        sinon si (est_suite(ordre($src[$i]))) {
+          $nu = $nu + $src[$i]
+          $i = $i + 1
+        }
+        sinon { $ok = 0 }
+      }
+      joindre($gen, "ident"); joindre($x, $nu); joindre($gl, $lnr); $dernier = "ident"
+    }
+  }
+  sinon si (est_lettre($c)) {
     $nu = ""
     $ok = 1
     tant_que ($ok == 1) {
@@ -2801,26 +3461,30 @@ tant_que ($i < $N) {
       }
       sinon { $ok = 0 }
     }
-    si ($dollar == 1 ou cle_existe($cles, $nu)) { joindre($gen, "ident") }
-    sinon { joindre($gen, "mot") }
+    si (cle_existe($cles, $nu)) { joindre($gen, "ident") } sinon { joindre($gen, "mot") }
     joindre($x, $nu)
     joindre($gl, $lnr)
+    $dernier = "mot"
   }
   sinon si (paire($c, $suiv) != "") {
-    joindre($gen, paire($c, $suiv))
-    joindre($x, sous_chaine($src, $i, $i + 2))
-    joindre($gl, $lnr)
-    $i = $i + 2
+    joindre($gen, paire($c, $suiv)); joindre($x, sous_chaine($src, $i, $i + 2)); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre"
   }
-  sinon si ($c == 62 et $suiv == 62) { joindre($gen, ">>"); joindre($x, ">>"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 60 et $suiv == 60) { joindre($gen, "<<"); joindre($x, "<<"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 45 et $suiv == 62) { joindre($gen, "->"); joindre($x, "->"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 61) { joindre($gen, "="); joindre($x, "="); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si ($c == 58 et $suiv == 58) { joindre($gen, "::"); joindre($x, "::"); joindre($gl, $lnr); $i = $i + 2 }
-  sinon si ($c == 178) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "2"); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si ($c == 179) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "3"); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si (uni($c) != "") { joindre($gen, uni($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1 }
-  sinon si (car($c) != "") { joindre($gen, car($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1 }
+  sinon si ($c == 62 et $suiv == 62) { joindre($gen, ">>"); joindre($x, ">>"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 60 et $suiv == 60) { joindre($gen, "<<"); joindre($x, "<<"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 45 et $suiv == 62) { joindre($gen, "->"); joindre($x, "->"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 61) { joindre($gen, "="); joindre($x, "="); joindre($gl, $lnr); $i = $i + 1; $dernier = "autre" }
+  sinon si ($c == 58 et $suiv == 58) { joindre($gen, "::"); joindre($x, "::"); joindre($gl, $lnr); $i = $i + 2; $dernier = "autre" }
+  sinon si ($c == 178) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "2"); joindre($gl, $lnr); $i = $i + 1; $dernier = "nombre" }
+  sinon si ($c == 179) { joindre($gen, "^"); joindre($x, "^"); joindre($gl, $lnr); joindre($gen, "nombre"); joindre($x, "3"); joindre($gl, $lnr); $i = $i + 1; $dernier = "nombre" }
+  sinon si (uni($c) != "") { joindre($gen, uni($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1; $dernier = "autre" }
+  sinon si (car($c) != "") {
+    joindre($gen, car($c)); joindre($x, $src[$i]); joindre($gl, $lnr); $i = $i + 1
+    si ($c == 41) { $dernier = "rparen" }
+    sinon si ($c == 93) { $dernier = "rbracket" }
+    sinon si ($c == 94) { $dernier = "chapeau" }
+    sinon si ($c == 58) { $dernier = "deuxpts" }
+    sinon { $dernier = "autre" }
+  }
   sinon { $i = $i + 1 }
 }
 joindre($gen, "eof")
@@ -3008,26 +3672,34 @@ si (longueur($err) == 1) {
 # —— passe 3 : émission RIR (oracle « rose rir ») ——
 # Fonctions triées (ordre std::map, externes sans corps), puis le niveau
 # supérieur sous $principal ; compteurs %t et suffixes de bloc sans reprise.
-$tc = [-1]
-$bc = [-1]
 $outl = [""]
-joindre($outl, "rir 1")
+joindre($outl, "rir")
+# liste des fonctions à corps (RIR_CONNUS)
+$connus = [""]
+$w = 1
+tant_que ($w < longueur($ordre)) {
+  $ix = $ordre[$w]
+  si ($fext[$ix] == "") { joindre($connus, $fnoms[$ix]) }
+  $w = $w + 1
+}
 si (longueur($err) == 1) {
   $w = 1
   tant_que ($w < longueur($ordre)) {
     $ix = $ordre[$w]
     si ($fext[$ix] == "") {
-      em_fonction("$" + $fnoms[$ix], $fparams[$ix], $fret[$ix], $fcorps[$ix],
+      em_fonction_rir($fnoms[$ix], $fparams[$ix], $fret[$ix], $fcorps[$ix], faux,
                   $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                   $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
-                  $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $outl)
+                  $foi, $fot, $fof, $connus, $outl)
+    } sinon {
+      joindre($outl, "fonction " + $fnoms[$ix] + " (sans RIR)")
     }
     $w = $w + 1
   }
-  em_fonction("$principal", "", "vide|vide", $topb,
+  em_fonction_rir("$principal", "", "vide|vide", $topb, vrai,
               $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
-              $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $outl)
+              $foi, $fot, $fof, $connus, $outl)
 }
 si (longueur($err) > 1) { >> $err[1] } sinon {
   $u = 1
