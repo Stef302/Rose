@@ -8,9 +8,8 @@
 //   `rose/rose.ico`                 = LA ROSE SEULE → application (rose.exe)
 //   `installateur/assets/rose.ico`  = UN DOCUMENT « .ROSE » → type de fichier
 //
-// J'avais d'abord posé une copie `rose_base.ico` de
-// `installateur/assets/rose.ico` — donc le DOCUMENT sur le moteur. C'était
-// faux deux fois : ce n'était pas `rose.ico`, et ce n'était pas la rose.
+// (Note : la correction du 17/11 a retiré la mention obsolète de
+// `rose_base.ico` ; le fichier réel est `rose.ico`.)
 //
 // Les trois rôles :
 //   `rose.ico`       → rose.exe       (la rose, logo de base)
