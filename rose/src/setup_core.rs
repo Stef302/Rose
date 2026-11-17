@@ -739,17 +739,24 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
     // `%LOCALAPPDATA%\rose\` quand la chaîne n'est pas embarquée.
     // Le livrer laissait croire qu'il fonctionnait, et alourdissait
     // l'installation d'un binaire mort.
-    let compagnons: [(Option<&str>, &str, u16); 3] = [
+    let compagnons: [(Option<&str>, &str, u16); 4] = [
         (Some(if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }),
          if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }, 5),
         (Some("rose.ico"), "rose.ico", 6),
-        // ⚠⚠ CORRECTION DU 16/11 : `rose_app.ico` (icône des raccourcis et du
-        // profil Windows Terminal) recevait `rose_shell.ico` (fenêtre de
-        // terminal). L'utilisateur veut le LOGO DE BASE de l'APPLICATION.
-        // On livre donc `rose.ico` sous les DEUX noms : type de fichier ET
-        // application. `rose_shell.ico` ne va QUE sur les binaires console
-        // (`rose-shell.exe`, `rose-aot.exe`) via leurs `.rc`.
+        // ⚠⚠ CORRECTION DU 16/11 : `rose_app.ico` (icône des raccourcis et de
+        // l'application) recevait `rose_shell.ico` (fenêtre de terminal).
+        // L'utilisateur veut le LOGO DE BASE de l'APPLICATION (la rose).
         (Some("rose.ico"), "rose_app.ico", 7),
+        // ⚠⚠⚠ AJOUT DU 17/11 : `rose_shell.ico` (fenêtre de terminal + rose)
+        // est la SEULE icône correcte pour le profil Windows Terminal.
+        // Mesuré chez l'utilisateur : le profil affichait `rose_app.ico`
+        // (la rose seule) au lieu de l'icône de console. Le fichier n'était
+        // même pas installé — le setup n'embarquait que la rose.
+        // ⚠⚠⚠ NE JAMAIS CONFONDRE (vérifié visuellement le 17/11) :
+        //   `rose.ico`       = LA ROSE SEULE (low-poly) → rose.exe, raccourcis
+        //   `assets/rose.ico` = UN DOCUMENT « .ROSE »   → type de fichier
+        //   `rose_shell.ico` = TERMINAL + rose          → profil Windows Terminal
+        (Some("rose_shell.ico"), "rose_shell.ico", 8),
     ];
 
     for (nom_src, nom_dst, res_id) in compagnons {
@@ -949,12 +956,25 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         let assoc = poser_association(&bin_win);
         j.extend(assoc.journal);
         if assoc.reussi {
-            // ⚠ Icône du type : `DefaultIcon` pointe l'ICO DÉDIÉE (le
-            // document `.rose`), pas celle de l'application.
-            let ico = std::path::Path::new(prefixe).join("rose.ico");
+            // ⚠⚠⚠ CORRECTION DU 17/11 : `DefaultIcon` doit pointer le
+            // DOCUMENT `.ROSE` (`installateur/assets/rose.ico`, embarqué en
+            // RT_RCDATA 6 et posé dans `bin\rose.ico`). L'ancien code lisait
+            // `prefixe/rose.ico`, qui n'est JAMAIS posé (les icônes vont
+            // dans `bin\`), et retombait sur `bin\rose.exe,0` — donc la
+            // ROSE de l'application. Mesuré chez l'utilisateur : les
+            // fichiers `.rose` affichaient le logo de l'app au lieu du
+            // document.
+            // ⚠ Ne PAS confondre `bin\rose.ico` (document) et
+            // `bin\rose_app.ico` (la rose) : ce sont deux fichiers différents.
+            let ico = bindir.join("rose.ico");
             let ico_str = if ico.is_file() {
                 format!("{},0", ico.display())
             } else {
+                // Repli : l'icône embarquée dans le setup lui-même
+                // (rose_setup.res, RT_ICON du groupe d'icônes de l'installeur
+                // n'est pas un document) — mieux vaut le moteur que rien,
+                // mais on journalise le manque.
+                j.push("⚠ bin\\rose.ico absent : l'association .rose retombe sur l'icône du moteur".to_string());
                 format!("{},0", bindir.join("rose.exe").display())
             };
             let _ = api::ecrire(api::HKEY_CURRENT_USER,
@@ -1046,11 +1066,17 @@ fn ecrire_profil_terminal(bindir: &std::path::Path) -> String {
 
     // Chemins en JSON : les antislashs doivent être doublés.
     let shell = bindir.join("rose-shell.exe").display().to_string().replace('\\', "\\\\");
-    // ⚠⚠ CORRECTION DU 16/11 : le profil utilise `rose_app.ico`, qui est
-    // désormais une COPIE du LOGO DE BASE (`rose.ico`). Avant, il recevait
-    // `rose_shell.ico` (fenêtre de terminal) — ce n'est pas ce que veut
-    // l'utilisateur pour l'application.
-    let icone = bindir.join("rose_app.ico").display().to_string().replace('\\', "\\\\");
+    // ⚠⚠⚠ CORRECTION DU 17/11 : le profil utilise `rose_shell.ico` (fenêtre
+    // de TERMINAL + rose), pas `rose_app.ico` (la rose seule). Mesuré chez
+    // l'utilisateur : avec la rose, l'onglet du terminal Rose montrait le
+    // logo de l'APPLICATION — ce n'est pas une console. `rose_shell.ico`
+    // est désormais embarqué (RT_RCDATA 8) et posé dans `bin\`.
+    // Repli : si `rose_shell.ico` manque (vieille installation), on
+    // retombe sur `rose_app.ico` pour ne jamais écrire un chemin mort.
+    let ico_shell = bindir.join("rose_shell.ico");
+    let ico_repli = bindir.join("rose_app.ico");
+    let ico_path = if ico_shell.is_file() { ico_shell } else { ico_repli };
+    let icone = ico_path.display().to_string().replace('\\', "\\\\");
 
     // `startingDirectory` = dossier de l'utilisateur : un shell s'ouvre là où
     // l'on travaille, pas dans `bin\`.
@@ -1165,7 +1191,7 @@ pub fn desinstaller(prefixe: &str) -> Journal {
     // suppression des fichiers : uniquement ceux que nous avons posés
     let bin = PathBuf::from(prefixe).join("bin");
     for nom in ["rose.exe", "rose", "rose-20", "rose-20.exe", "rose-aot", "rose-aot.exe",
-                "rose-shell", "rose-shell.exe", "rose.ico", "rose_app.ico"] {
+                "rose-shell", "rose-shell.exe", "rose.ico", "rose_app.ico", "rose_shell.ico"] {
         let _ = std::fs::remove_file(bin.join(nom));
         // Racine du dossier : vestige de l'ancien installeur (Tauri).
         let _ = std::fs::remove_file(PathBuf::from(prefixe).join(nom));
@@ -1880,7 +1906,11 @@ pub fn poser_association(bin_win: &str) -> EcriturePath {
         let valeurs: [&str; 5] = [
             "Rose.File",
             "Programme Rose",
-            &format!("\"{}\\rose.exe\",0", bin_win.trim_end_matches('\\')),
+            // ⚠⚠ CORRECTION DU 17/11 : le `DefaultIcon` du TYPE est posé ici
+            // aussi (pas seulement dans `enregistrer`), et il pointe le
+            // DOCUMENT `bin\rose.ico` — pas le moteur (qui porte la rose).
+            // Mesuré : les `.rose` affichaient le logo de l'app.
+            &format!("{}\\rose.ico,0", bin_win.trim_end_matches('\\')),
             &commande,
             "Fichier source Rose",
         ];
@@ -2272,10 +2302,16 @@ mod tests {
         let nom = if cfg!(windows) { "rose.exe" } else { "rose" };
         let _ = std::fs::write(src_dir.join(nom), b"#!fake\n");
         let _ = std::fs::write(src_dir.join("rose.ico"), b"\x00\x00\x01\x00ICO");
+        // ⚠⚠ AJOUT DU 17/11 : `rose_shell.ico` doit être posé — c'est
+        // l'icône du profil Windows Terminal. Sans elle, le profil
+        // affichait la rose de l'application (mesuré chez l'utilisateur).
+        let _ = std::fs::write(src_dir.join("rose_shell.ico"), b"\x00\x00\x01\x00ICO");
         let j = installer(tmp.to_str().unwrap(), Some(&src_dir.join(nom)));
         if !cfg!(windows) {
             assert!(tmp.join("bin").join("rose.ico").is_file(),
                     "rose.ico non posé : {j:?}");
+            assert!(tmp.join("bin").join("rose_shell.ico").is_file(),
+                    "rose_shell.ico non posé : {j:?}");
         }
         let _ = std::fs::remove_dir_all(&src_dir);
         let _ = std::fs::remove_dir_all(&tmp);

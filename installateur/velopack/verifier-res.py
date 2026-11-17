@@ -265,6 +265,10 @@ def main():
         (5, "rose-shell.exe", 100_000),
         (6, "rose.ico", 10_000),
         (7, "rose_app.ico", 10_000),
+        # ⚠⚠ AJOUT DU 17/11 : sans `rose_shell.ico`, le profil Windows Terminal
+        # affichait la rose de l'app au lieu de l'icône de console (mesuré
+        # chez l'utilisateur). Ce contrôle empêche de livrer à nouveau sans.
+        (8, "rose_shell.ico", 10_000),
     ]
     for res_id, nom, min_taille in (compagnons if est_installeur else []):
         blob = ressources.get((RT_RCDATA, res_id))

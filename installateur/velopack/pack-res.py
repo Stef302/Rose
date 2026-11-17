@@ -83,6 +83,13 @@ SHELL = _REL / "rose-shell.exe"
 # moteur). `ICONE_APP` doit être LA ROSE, pas le document.
 ICONE_FICHIER = RACINE / "installateur" / "assets" / "rose.ico"
 ICONE_APP = RACINE / "rose" / "rose.ico"
+# ⚠⚠⚠ TROISIÈME icône, indispensable depuis le 17/11 : le profil Windows
+# Terminal doit porter `rose_shell.ico` (fenêtre de terminal + rose), PAS
+# `rose_app.ico` (la rose seule). Mesuré chez l'utilisateur : avec la rose,
+# l'onglet du terminal Rose affichait le logo de l'application au lieu de
+# l'icône de console. `rose_shell.ico` n'était PAS embarqué, donc le setup
+# ne pouvait pas le poser.
+ICONE_SHELL = RACINE / "rose" / "rose_shell.ico"
 SORTIE = RACINE / "rose" / "rose-setup.res"
 
 # Identifiants des ressources RT_RCDATA embarquées. Ils doivent rester
@@ -93,6 +100,11 @@ RCDATA_MOTEUR = 3   # rose.exe
 RCDATA_SHELL = 5        # rose-shell.exe
 RCDATA_ICO_FICHIER = 6  # rose.ico  (type de fichier .rose)
 RCDATA_ICO_APP = 7      # rose/rose.ico (la rose : logo de base)
+# ⚠ id 8 ajouté le 17/11 : `rose_shell.ico` (fenêtre de terminal + rose),
+# posée dans `bin\` et référencée par le profil Windows Terminal. Sans elle,
+# le profil retombait sur `rose_app.ico` (la rose seule) — mesuré chez
+# l'utilisateur. L'id 4 reste LIBRE (ancien rose-aot.exe).
+RCDATA_ICO_SHELL = 8    # rose/rose_shell.ico (terminal + rose)
 
 # Langue des ressources : 1033 = en-US, la valeur qu'émet `llvm-rc`/`rc.exe`.
 LANGUE = 1033
@@ -291,6 +303,7 @@ def main():
             (RCDATA_SHELL, SHELL, "rose-shell.exe"),
             (RCDATA_ICO_FICHIER, ICONE_FICHIER, "rose.ico"),
             (RCDATA_ICO_APP, ICONE_APP, "rose_app.ico"),
+            (RCDATA_ICO_SHELL, ICONE_SHELL, "rose_shell.ico"),
         ]:
             if chemin.exists():
                 copie = tmp / nom

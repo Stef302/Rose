@@ -85,10 +85,14 @@ cp "$R/rose.exe" "$STAGE/payload/rose.exe"
 cp "$RACINE/installateur/assets/rose.ico" "$STAGE/rose.ico"
 # ⚠⚠⚠ DEUX fichiers `rose.ico` DIFFÉRENTS : `installateur/assets/rose.ico` =
 # un DOCUMENT « .ROSE » (type de fichier) ; `rose/rose.ico` = LA ROSE (logo de
-# l'application). `rose_app.ico` reçoit LA ROSE. `rose_shell.ico` ne va que
-# sur `rose-shell.exe`, via son `.rc`.
+# l'application). `rose_app.ico` reçoit LA ROSE.
 # ⚠ `rose_app.ico` = LA ROSE (`rose/rose.ico`), pas le document.
 cp "$RACINE/rose/rose.ico" "$STAGE/rose_app.ico"
+# ⚠⚠⚠ AJOUT DU 17/11 : `rose_shell.ico` (fenêtre de terminal + rose) doit
+# être DANS LE STAGE. Le setup la cherche d'abord dans le dossier source
+# (ce stage), puis dans les ressources embarquées (RT_RCDATA 8). Sans elle,
+# le profil Windows Terminal retombait sur `rose_app.ico` (la rose seule).
+cp "$RACINE/rose/rose_shell.ico" "$STAGE/rose_shell.ico"
 # L'icône de l'INSTALLEUR reste disponible dans la distribution : elle est
 # liée dans `rose-setup.exe` (via rose-setup.res) et sert à l'Explorateur.
 cp "$RACINE/installateur/assets/rose_setup.ico" "$STAGE/rose_setup.ico"

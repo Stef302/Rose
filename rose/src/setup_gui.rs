@@ -600,10 +600,13 @@ pub fn moteur_embarque() -> Option<std::path::PathBuf> {
 /// moteur extrait dans `%TEMP%`, qui ne contient que `rose.exe`. Mesuré :
 /// l'installation ne posait QUE `rose.exe`, sans helper AOT, sans shell, sans
 /// icône de fichier.
-pub const COMPAGNONS: [(u16, &str); 3] = [
+pub const COMPAGNONS: [(u16, &str); 4] = [
     (5, "rose-shell.exe"),
     (6, "rose.ico"),
     (7, "rose_app.ico"),
+    // ⚠⚠ AJOUT DU 17/11 : `rose_shell.ico` (terminal + rose) pour le profil
+    // Windows Terminal. Sans lui, le profil affichait la rose de l'app.
+    (8, "rose_shell.ico"),
 ];
 
 /// Extrait un compagnon embarqué (`None` s'il n'est pas dans les ressources).
