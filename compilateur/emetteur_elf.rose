@@ -45,6 +45,245 @@ fn u64le($v: entier) -> chaine {
   retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3) + caractere($b4) + caractere($b5) + caractere($b6) + caractere($b7)
 }
 
+# ════════════════════════════════════════════════════════════════════════
+# G4 — émetteur RIR → ELF64 aarch64 minimal (auto-hébergement)
+# ════════════════════════════════════════════════════════════════════════
+# Entrée : un dump RIR TEXTE tel que `rose rir prog.rose` le produit :
+#   rir
+#   fonction $principal
+#     retour vide
+#     n_slots 1
+#     noms [0]x
+#     globaux 0
+#     ops
+#       0000 affect slot 0 = entier 42
+#       0001 afficher_abstrait slot 0
+# Sous-ensemble couvert : $principal seul, sans appel/runtime, ops
+# « affect slot N = entier K » puis « retour_abstrait » /
+# « afficher_abstrait » d'un entier ou d'un slot. On écrit DIRECTEMENT les
+# octets : un ET_EXEC aarch64 dont le stub fait exit(K) (syscall 93).
+# Aucun linker, aucune libc, aucun .rs, aucun GMP.
+
+fn g4_pos($s: chaine, $mot: chaine) -> entier {
+  $p = 0
+  $ln = longueur($s)
+  $lm = longueur($mot)
+  si ($lm == 0) { retour 0 }
+  tant_que ($p + $lm <= $ln et sous_chaine($s, $p, $p + $lm) != $mot) {
+    $p = $p + 1
+  }
+  si ($p + $lm > $ln) { retour -1 }
+  retour $p
+}
+
+fn g4_entier_ou_zero($s: chaine) -> entier {
+  $n = longueur($s)
+  si ($n == 0) { retour 0 }
+  $i = 0
+  $ok = 1
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c < "0" ou $c > "9") { $ok = 0 }
+    $i = $i + 1
+  }
+  si ($ok == 0) { retour 0 }
+  retour entier($s)
+}
+
+fn g4_trim($s: chaine) -> chaine {
+  $r = $s
+  $n = longueur($r)
+  tant_que ($n > 0 et sous_chaine($r, 0, 1) == " ") {
+    $r = sous_chaine($r, 1, $n)
+    $n = longueur($r)
+  }
+  tant_que ($n > 0 et sous_chaine($r, $n - 1, $n) == " ") {
+    $r = sous_chaine($r, 0, $n - 1)
+    $n = longueur($r)
+  }
+  retour $r
+}
+
+# Opération nue d'une ligne RIR : «     0000 affect ... » → « affect ... ».
+fn g4_nu_op($ligne: chaine) -> chaine {
+  $n = longueur($ligne)
+  $i = 0
+  tant_que ($i < $n et sous_chaine($ligne, $i, $i + 1) == " ") { $i = $i + 1 }
+  $j = 0
+  tant_que ($i < $n et $j < 4 et sous_chaine($ligne, $i, $i + 1) >= "0" et sous_chaine($ligne, $i, $i + 1) <= "9") {
+    $i = $i + 1
+    $j = $j + 1
+  }
+  tant_que ($i < $n et sous_chaine($ligne, $i, $i + 1) == " ") { $i = $i + 1 }
+  retour sous_chaine($ligne, $i, $n)
+}
+
+# Texte suivant un mot-clé dans une op (» «.» absent => chaîne vide).
+fn g4_operand($op: chaine, $mot: chaine) -> chaine {
+  $p = g4_pos($op, $mot)
+  si ($p < 0) { retour "" }
+  $i = $p + longueur($mot)
+  $n = longueur($op)
+  tant_que ($i < $n et sous_chaine($op, $i, $i + 1) == " ") { $i = $i + 1 }
+  retour g4_trim(sous_chaine($op, $i, $n))
+}
+
+fn g4_lignes($s: chaine) -> liste<chaine> {
+  $res = [""]
+  $i = 0
+  $n = longueur($s)
+  $deb = 0
+  tant_que ($i <= $n) {
+    si ($i == $n ou sous_chaine($s, $i, $i + 1) == "\n") {
+      $ligne = sous_chaine($s, $deb, $i)
+      $ln = longueur($ligne)
+      si ($ln > 0 et sous_chaine($ligne, $ln - 1, $ln) == "\r") {
+        $ligne = sous_chaine($ligne, 0, $ln - 1)
+      }
+      joindre($res, $ligne)
+      $deb = $i + 1
+    }
+    $i = $i + 1
+  }
+  retour $res
+}
+
+# Dernière valeur « affect slot $slot = entier K » de la liste d'ops.
+fn g4_affect_val($ops: liste<chaine>, $slot: entier) -> entier {
+  $val = 0
+  $i = 1
+  tant_que ($i < longueur($ops)) {
+    $r = g4_operand($ops[$i], "affect slot ")
+    si (longueur($r) > 0) {
+      $eq = g4_pos($r, "=")
+      si ($eq >= 0) {
+        $ns = g4_trim(sous_chaine($r, 0, $eq))
+        si (g4_entier_ou_zero($ns) == $slot) {
+          $ap = sous_chaine($r, $eq + 1, longueur($r))
+          $kv = g4_operand($ap, "entier")
+          si (longueur($kv) > 0) { $val = g4_entier_ou_zero($kv) }
+        }
+      }
+    }
+    $i = $i + 1
+  }
+  retour $val
+}
+
+# Analyse le RIR et rend le code de sortie, ou -1 si hors sous-ensemble.
+fn g4_depuis_rir($src: chaine) -> entier {
+  $n = longueur($src)
+  $deb = 0
+  $fin = $n
+  $pp = g4_pos($src, "fonction $principal")
+  si ($pp >= 0) {
+    $deb = $pp
+    $suiv = g4_pos(sous_chaine($src, $pp + 9, $n), "fonction ")
+    si ($suiv >= 0) { $fin = $pp + 9 + $suiv }
+  }
+  $ll = g4_lignes(sous_chaine($src, $deb, $fin))
+  $en_ops = 0
+  $ops = [""]
+  $i = 1
+  tant_que ($i < longueur($ll)) {
+    $t = g4_trim($ll[$i])
+    si (sous_chaine($t, 0, 8) == "fonction") {
+      $en_ops = 0
+    } sinon si ($t == "ops") {
+      $en_ops = 1
+    } sinon si ($en_ops == 1 et longueur($t) > 0) {
+      joindre($ops, g4_nu_op($t))
+    }
+    $i = $i + 1
+  }
+  # Refus explicite de tout ce qui demande le runtime Rose.
+  $i = 1
+  tant_que ($i < longueur($ops)) {
+    $op = $ops[$i]
+    si (g4_pos($op, "app ") >= 0 ou g4_pos($op, "appel") >= 0 ou
+        g4_pos($op, "saut") >= 0 ou g4_pos($op, "(bin") >= 0) { retour -1 }
+    $i = $i + 1
+  }
+  # Dernier retour/affichage : entier littéral ou slot à résoudre.
+  $ty = 0
+  $v = 0
+  $slot = 0
+  $i = 1
+  tant_que ($i < longueur($ops)) {
+    $op = $ops[$i]
+    $a = g4_operand($op, "retour_abstrait")
+    si (longueur($a) == 0) { $a = g4_operand($op, "afficher_abstrait") }
+    si (longueur($a) == 0) { $a = g4_operand($op, "retour") }
+    si (longueur($a) >= 6 et sous_chaine($a, 0, 6) == "entier") {
+      $ty = 1
+      $v = g4_entier_ou_zero(sous_chaine($a, 7, longueur($a)))
+    } sinon si (longueur($a) >= 4 et sous_chaine($a, 0, 4) == "slot") {
+      $ty = 2
+      $slot = g4_entier_ou_zero(sous_chaine($a, 5, longueur($a)))
+    }
+    $i = $i + 1
+  }
+  si ($ty == 0) { retour -1 }
+  si ($ty == 1) { retour $v }
+  retour g4_affect_val($ops, $slot)
+}
+
+# ELF64 ET_EXEC aarch64 minimal : 64 o de header, 56 o de phdr, 12 o de code.
+fn g4_elf($code: entier) -> chaine {
+  $k = $code % 256
+  $base = 4194304
+  $code_off = 120
+  $out = ""
+  $out = $out + caractere(127) + "ELF" + caractere(2) + caractere(1) + caractere(1) + caractere(0)
+  $z = 0
+  tant_que ($z < 8) { $out = $out + caractere(0); $z = $z + 1 }
+  $out = $out + u16le(2)                          # e_type = ET_EXEC
+  $out = $out + u16le(183)                        # e_machine = EM_AARCH64
+  $out = $out + u32le(1)                          # e_version
+  $out = $out + u64le($base + $code_off)          # e_entry
+  $out = $out + u64le(64)                         # e_phoff
+  $out = $out + u64le(0)                          # e_shoff
+  $out = $out + u32le(0)                          # e_flags
+  $out = $out + u16le(64)                         # e_ehsize
+  $out = $out + u16le(56)                         # e_phentsize
+  $out = $out + u16le(1)                          # e_phnum
+  $out = $out + u16le(0)                          # e_shentsize
+  $out = $out + u16le(0)                          # e_shnum
+  $out = $out + u16le(0)                          # e_shstrndx
+  $out = $out + u32le(1)                          # p_type = PT_LOAD
+  $out = $out + u32le(5)                          # p_flags = R|X
+  $out = $out + u64le(0)                          # p_offset
+  $out = $out + u64le($base)                      # p_vaddr
+  $out = $out + u64le($base)                      # p_paddr
+  $fsz = $code_off + 12
+  $out = $out + u64le($fsz)                       # p_filesz
+  $out = $out + u64le($fsz)                       # p_memsz
+  $out = $out + u64le(4096)                       # p_align
+  # mov x0, #K ; mov x8, #93 (__NR_exit) ; svc #0
+  $out = $out + u32le(3531603968 + $k * 32)
+  $out = $out + u32le(3531606952)
+  $out = $out + u32le(3556769793)
+  retour $out
+}
+
+# ── Dispatch G4 : RIR texte → ELF sur stdout ; sinon voie historique ──
+si (nb_arguments() >= 1) {
+  $g4_src = lire_texte(argument(0))
+  $g4_est_rir = 0
+  si (longueur($g4_src) >= 3) {
+    si (sous_chaine($g4_src, 0, 3) == "rir") { $g4_est_rir = 1 }
+  }
+  si ($g4_est_rir == 1) {
+    $g4_code = g4_depuis_rir($g4_src)
+    si ($g4_code < 0) {
+      afficher_erreur("emetteur_elf G4 : RIR hors sous-ensemble (fonctions, appels, bin, sauts : runtime requis)")
+      quitter(2)
+    }
+    ecrire_bytes("/dev/stdout", g4_elf($g4_code))
+    quitter(0)
+  }
+}
+
 # ── Substitution d'un nom de variable nu (bornes alphanumeriques) ──
 fn substituer_nom($txt: chaine, $nom: chaine, $val: chaine) -> chaine {
   $res = ""
@@ -513,7 +752,7 @@ fn plier_expression($expr: chaine) -> chaine {
   retour $cour
 }
 
-fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $expr_texte: chaine, $cible: chaine) {
+fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $expr_texte: chaine, $cible: chaine) -> entier {
   $out = ""
   $ELFMAG = "ELF"
   $ELFCLASS64 = 2
@@ -813,7 +1052,7 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
     }
     ecrire_bytes($sortie, $out)
     >> "rose: " + $sortie + " produit (binaire ELF x86_64, " + chaine(longueur($out)) + " octets)"
-    retour
+    retour 0
   }
 
   # ── ELF header (64 octets) ──
@@ -948,6 +1187,7 @@ fn emettre_elf_print($sortie: chaine, $texte: chaine, $code_sortie: chaine, $exp
   }
   ecrire_bytes($sortie, $out)
   >> "rose: " + $sortie + " produit (binaire ELF autonome, " + chaine(longueur($out)) + " octets)"
+  retour 0
 }
 
 # ── Point d'entrée ──
