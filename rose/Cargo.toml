@@ -2,6 +2,10 @@
 name = "rose"
 version = "0.1.5"
 edition = "2024"
+# ⚠ Les binaires sont déclarés explicitement ci-dessous. `autobins = false`
+# empêche Cargo d'auto-découvrir `src/bin/rose_nostd.rs` (démo M5.3 no_std,
+# qui exige panic=abort et ne doit PAS être compilé avec le moteur std).
+autobins = false
 
 # Bibliothèque : le moteur est utilisable depuis Rust… et compilé en
 # WebAssembly (voir docs/WASM.md). Le crate-type « cdylib » produit le
