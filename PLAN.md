@@ -549,3 +549,7 @@ Règle: gain structurel mesuré A/A/A piné, valeurs identiques (jardin 20/20, f
 | M2 | **goulot architectural global** | `rose/docs/GOULOT_ARCHITECTURE.md` | % temps par phase mesuré, goulot #1 prouvé, décision structurante |
 
 Rich est installé (`~/.local/lib/python3.12/site-packages/rich`). CPython n'a pas wasmtime, RustPython absent — à vérifier/tester par l'agent.
+
+⚠ Correction utilisateur (18/11, après M1): « ne pas dépendre de cpython pour voir ». La voie CPython/wasmtime est ABANDONNÉE pour le rendu texte. Rich sert de MODÈLE: on réimplémente panneaux/tableaux/barres en **jardin Rose pur** (`jardins/texte.rose`), testé uniquement avec `./rose/rose` — zéro Python dans l'exécution. Agent M3.
+
+**Bilan partiel vague 13**: M2 (goulot architectural) en cours. M1 a produit `WASM_TEXTUEL.md` (32baf85) — Rose exécute du texte via wasm/Node/Python, utile comme démonstration d'universalité mais PAS la voie Rich retenue.
