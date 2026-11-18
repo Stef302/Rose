@@ -104,3 +104,31 @@ Détails, variantes rejetées et exactitude : `CHAINE_O1.md`.
 slots↔globaux dans `rir.rs` (hors périmètre de l'agent). Régression D2 de 3 %
 reproductible, non isolée (apparaît dès que le code d'internage est présent).
 Constat daté, pas consigne.
+
+---
+
+## Addendum — après E/S zéro recopie (18/11, 15:55Z)
+
+Binaire `aa0f8c7ed5e6ab98cd07bca69337571b45f7ba2438ad4513f41a992becce6ee0`.
+2 salves A/A indépendantes (9 échantillons, c15 **et** c19).
+
+| # | Domaine | Avant | Après | Ratio Rust (c15 / c19) |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,55 | 11,64 / 11,56 | 0,918 / 0,911 ✅ |
+| 2 | Boucle 1..10⁶ | 9,05 | 9,03 / 9,05 | 34,4 / 34,9 |
+| 3 | Premiers < 50 000 | 9,34 | 9,35 (stable) | 9,4 |
+| 4 | Factorielle 5 000 | 1,48 | 1,56 (bruit) | 0,23 ✅ |
+| 4b | PGCD 1 000 chiffres | 6,72 | 6,72 (stable) | 45,5 |
+| 5 | Chaîne 20 000 car. | 3,29 | 3,29 / 3,28 | 235 / 234 |
+| 6 | Liste 100 000 entiers | 38,12 | 38,06 / 38,05 | 203 / 209 |
+| 7 | Table 3 000 clés | 6,29 | 6,34 / 6,33 | 66,6 / 67,2 |
+| 8 | E/S 10 Mo | 14,76 | **6,05 / 5,95** | **0,998 / 0,992** ≈ |
+
+**Bilan : 2 victoires nettes** (fib35, factorielle) **+ 1 domaine au niveau de
+Rust** (E/S, écarts < 2 % = bruit, pas une victoire revendiquée). Les 6 autres
+domaines restent en retard.
+
+Décomposition mesurée du coût E/S avant correction : `fs::read` 2 143 µs,
+`from_utf8_lossy().into_owned()` **6 043 µs**, `aplatir()` **1 869 µs**,
+`fs::write` 4 083 µs — les deux recopies représentaient 54,8 % du total.
+Détails : `ES_ZERO_COPY.md`. Constat daté, pas consigne.
