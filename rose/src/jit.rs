@@ -5504,6 +5504,21 @@ fn table_du_handle(h: i64) -> Option<crate::run::Table> {
     }
 }
 
+/// Vague 24 (D7) — accès DIRECT au handle sans cloner le `Valeur::Table`
+/// (un Rc par appel dans `table_du_handle`). 6000 appels/bench : on évite
+/// 6000 increments/décréments de compteur Rc + 6000 drops.
+#[inline]
+fn avec_table_ref<R, F>(h: i64, f: F) -> R
+where F: FnOnce(&crate::run::Table) -> R, R: Default {
+    JIT_HANDLES.with(|t| {
+        let tab = t.borrow();
+        match tab.get(h as usize) {
+            Some(crate::run::Valeur::Table(tb)) => f(tb),
+            _ => R::default(),
+        }
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_table_vide() -> i64 {
     jit_allouer_handle(crate::run::Valeur::table())
@@ -5511,16 +5526,12 @@ pub extern "C" fn rose_jit_table_vide() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_table_inserer_i64(h: i64, k: i64, v: i64) {
-    if let Some(t) = table_du_handle(h) {
-        t.inserer(crate::run::Valeur::z(k), crate::run::Valeur::z(v));
-    }
+    avec_table_ref(h, |t| t.inserer(crate::run::Valeur::z(k), crate::run::Valeur::z(v)));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_table_cle_existe_i64(h: i64, k: i64) -> i64 {
-    if let Some(t) = table_du_handle(h) {
-        if t.trouver(&crate::run::Valeur::z(k)).is_some() { 1 } else { 0 }
-    } else { 0 }
+    avec_table_ref(h, |t| if t.trouver(&crate::run::Valeur::z(k)).is_some() { 1 } else { 0 })
 }
 
 /// Helper JIT : affichage d'un i64 taggé (valeur, tag) rendu par rose_mul_ent /
