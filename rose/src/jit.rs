@@ -172,6 +172,237 @@ fn detecter_recurrence_binaire(sig: &Signature) -> Option<RecBoucle> {
     Some(RecBoucle { param, seuil, strict, base, c1, c2 })
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ÉMETTEUR MACHINE DÉDIÉ AU MOTIF DE RÉCURRENCE BINAIRE (aarch64 seulement)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Constat objdump 18/11 : Cranelift alloue le paramètre de boucle `n` tantôt
+// en x1 (caller-saved, pour l'argument de l'appel) tantôt en x20 (callee-saved,
+// pour survivre au `bl`), ce qui coûte 6 `mov` de permutation par itération :
+//
+//     mov x1,x20 ; sub x0,x1,#1 ; mov x20,x1 ; bl ; mov x1,x20 ; sub x1,x1,#2
+//     mov x20,x1 ; add x19,x19,x0 ; mov x0,x20 ; cmp x0,#2 ; mov x1,x20 ; b
+//
+// LLVM garde `n` dans x19 du prologue à la fin : `sub x0,x19,#1 ; bl ;
+// sub x19,x19,#2 ; add x20,x0,x20 ; cmp x19,#1 ; b.hi` = 6 instructions + bl.
+//
+// On émet DONC ce motif directement en code machine, avec allocation de
+// registres FIXÉE :
+//     x19 = n (callee-saved), x20 = acc (callee-saved), x0 = argument/retour,
+//     x1..x3 = arguments nuls du repli, x4 = nom, x9 = adresse de repli.
+// Le corps de boucle est exactement les 6 instructions de LLVM + `bl`.
+//
+// ⚠ GÉNÉRIQUE : aucun nom de fonction codé en dur. Le motif est fourni par
+// `detecter_recurrence_binaire` et la borne par `borne_securisee` — les mêmes
+// que la voie Cranelift. Le repli bigint appelle `rose_appel_interpreteur`
+// avec le nom de la fonction (string embarquée), exactitude préservée.
+// ⚠ Les constantes doivent tenir en imm12 (0..4095) : sinon on ne patche pas
+// et la voie Cranelift (correcte mais plus lente) reste utilisée.
+
+/// Vrai si toutes les constantes du motif tiennent en imm12 AArch64 (0..4095).
+#[cfg(target_arch = "aarch64")]
+fn motif_constantes_imm12(d: &RecBoucle, borne: i64) -> bool {
+    let ok = |v: i64| (0..4096).contains(&v);
+    if !ok(borne) || !ok(d.seuil) || !ok(d.c1) || !ok(d.c2) { return false; }
+    match d.base { BaseBoucle::Lit(v) => ok(v), BaseBoucle::Param => true }
+}
+
+/// Émet le code machine aarch64 de la boucle à accumulateur pour `d`.
+/// Retourne les octets (code + littéral de l'adresse de repli + nom C).
+#[cfg(target_arch = "aarch64")]
+fn emettre_boucle_machine(nom: &str, d: &RecBoucle, borne: i64,
+                          interp_addr: u64) -> Vec<u8> {
+    let mut ins: Vec<u32> = Vec::with_capacity(32);
+    // étiquettes (indices d'instruction) à patcher en fin d'émission
+    let mut bl_self = 0usize;
+    let mut b_cont = 0usize;
+    let mut b_gt_repli = 0usize;
+    let mut b_lt_base = 0usize;
+    let mut b_base_epi = 0usize;
+    let mut i_adr = 0usize;
+    let mut i_ldr = 0usize;
+    let idx_loop: usize;
+    let idx_epi: usize;
+    let idx_base: usize;
+    let idx_repli: usize;
+    /// Prologue : cible des appels RÉCURSIFS. La garde de plage est AVANT lui
+    /// et n'est donc exécutée qu'une fois (appel Rust→JIT) : `n` décroît
+    /// strictement, donc si elle passe à l'entrée elle passe pour tous les
+    /// descendants. 2 instructions économisées × ~15 M appels.
+    let idx_prologue: usize;
+
+    // ── ENTRÉE GARDÉE (cible du trampoline = octet 0 du code) ──
+    // ── garde de plage générique : n > borne -> repli interpréteur ──
+    ins.push(0xF100001F | ((borne as u32 & 0xFFF) << 10)); // cmp x0, #borne
+    b_gt_repli = ins.len();
+    ins.push(0x54000000 | 0xC);                              // b.gt repli (cond 1100)
+
+    // ── PROLOGUE (cible des appels récursifs : saute la garde) ──
+    idx_prologue = ins.len();
+    ins.push(0xA9BE7BFD); // stp x29, x30, [sp, #-32]!   (imm7 = -4)
+    ins.push(0xA90153F3); // stp x19, x20, [sp, #16]
+
+    // ── test de base : n < seuil (strict) ou n <= seuil -> base ──
+    ins.push(0xF100001F | ((d.seuil as u32 & 0xFFF) << 10)); // cmp x0, #seuil
+    if d.strict {
+        b_lt_base = ins.len();
+        ins.push(0x54000000 | 0xB);                          // b.lt base (cond 1011)
+    } else {
+        b_lt_base = ins.len();
+        ins.push(0x54000000 | 0x9);                          // b.ls base (cond 1001, <=)
+    }
+
+    // ── init des valeurs vivantes : x19 = n, x20 = acc = 0 ──
+    ins.push(0xAA0003F3); // mov x19, x0
+    ins.push(0xD2800014); // mov x20, #0
+
+    // ── BOUCLE : 6 instructions + bl (identique à LLVM) ──
+    idx_loop = ins.len();
+    ins.push(0xD1000000 | ((d.c1 as u32 & 0xFFF) << 10) | (19 << 5) | 0);  // sub x0, x19, #c1
+    bl_self = ins.len();
+    ins.push(0x94000000);                                                   // bl  self (patch)
+    ins.push(0xD1000000 | ((d.c2 as u32 & 0xFFF) << 10) | (19 << 5) | 19); // sub x19, x19, #c2
+    ins.push(0x8B000294); // add x20, x20, x0          (acc += f(n-c1))
+    // Continuation, forme EXACTE de LLVM (constat objdump de rustc -O) :
+    //   strict  (base n < k)  -> cmp x19, #k-1 ; b.hi   (n_final > k-1)
+    //   nonstrict(base n <= k) -> cmp x19, #k   ; b.gt   (n_final > k)
+    let seuil_cmp = if d.strict { d.seuil - 1 } else { d.seuil };
+    ins.push(0xF100001F | ((seuil_cmp as u32 & 0xFFF) << 10) | (19 << 5)); // cmp x19, #seuil_cmp
+    b_cont = ins.len();
+    ins.push(0x54000000 | if d.strict { 0x8 } else { 0xC }); // b.hi / b.gt loop
+
+    // ── FIN : resultat = base(n_final) + acc ── (chute dans l'épilogue)
+    match d.base {
+        BaseBoucle::Param => ins.push(0x8B140260),                          // add x0, x19, x20
+        BaseBoucle::Lit(v) => ins.push(0x91000000 | ((v as u32 & 0xFFF) << 10) | (20 << 5)), // add x0, x20, #v
+    }
+
+    // ── ÉPILOGUE ──
+    idx_epi = ins.len();
+    ins.push(0xA94153F3); // ldp x19, x20, [sp, #16]   (signed offset, PAS post-index)
+    ins.push(0xA8C27BFD); // ldp x29, x30, [sp], #32   (post-index, imm7 = 4)
+    ins.push(0xD65F03C0); // ret
+
+    // ── CAS DE BASE : retourne base(n) = n ou littéral ──
+    idx_base = ins.len();
+    if let BaseBoucle::Lit(v) = d.base {
+        ins.push(0xD2800000 | ((v as u32 & 0xFFFF) << 5)); // mov x0, #v
+    }
+    b_base_epi = ins.len();
+    ins.push(0x14000000); // b epi (patch)
+
+    // ── REPLI bigint : rose_appel_interpreteur(n, 0, 0, 0, nom) ──
+    idx_repli = ins.len();
+    i_adr = ins.len();
+    ins.push(0x10000004); // adr x4, nom (patch)
+    ins.push(0xAA1F03E1); // mov x1, xzr   (ORR x1, xzr, xzr)
+    ins.push(0xAA1F03E2); // mov x2, xzr
+    ins.push(0xAA1F03E3); // mov x3, xzr
+    i_ldr = ins.len();
+    ins.push(0x58000009); // ldr x9, [pc, #...] (patch) -> adresse interp
+    ins.push(0xD63F0120); // blr x9
+    // Aucune trame n'a été ouverte sur le chemin gardé (on a branché AVANT
+    // le prologue) : retour direct, sans ldp de restauration.
+    ins.push(0xD65F03C0); // ret
+
+    // ── DONNÉES : adresse du repli (8 octets) puis nom C ──
+    let n_ins = ins.len();
+    let interp_off = n_ins * 4;          // déjà aligné sur 4 (LDR littéral OK)
+    let nom_off = interp_off + 8;
+    let nom_octets = nom.as_bytes();
+
+    // ── patch des branchements (déplacements relatifs à l'instruction courante) ──
+    let rel = |at: usize, target: usize| (target as i64 - at as i64) as i32;
+    let off = rel(bl_self, idx_prologue);
+    ins[bl_self] = 0x94000000 | ((off as u32) & 0x03FFFFFF);
+    let patch_b = |ins: &mut Vec<u32>, at: usize, target: usize| {
+        let o = rel(at, target);
+        ins[at] = (ins[at] & 0xFC000000) | ((o as u32) & 0x03FFFFFF);
+    };
+    let patch_bc = |ins: &mut Vec<u32>, at: usize, target: usize| {
+        let o = rel(at, target);
+        // B.cond : bits 31..24 = 0x54 (opcode), bits 23..5 = imm19, bits 4..0 = cond.
+        // Masquer SEULEMENT imm19 (bits 23..5), pas les bits 23..21 de l'opcode étendu.
+        ins[at] = (ins[at] & 0xFF00001F) | (((o as u32) & 0x7FFFF) << 5);
+    };
+    patch_bc(&mut ins, b_cont, idx_loop);
+    patch_bc(&mut ins, b_gt_repli, idx_repli);
+    patch_bc(&mut ins, b_lt_base, idx_base);
+    patch_b(&mut ins, b_base_epi, idx_epi);
+    // ADR x4, nom : imm = nom_off - octet de l'instruction ADR
+    let adr_off = nom_off as i64 - (i_adr * 4) as i64;
+    ins[i_adr] = 0x10000004
+        | (((adr_off as u32) & 3) << 29)
+        | ((((adr_off as u32) >> 2) & 0x7FFFF) << 5);
+    // LDR x9, [pc, #...] : imm19 = (interp_off - octet du LDR) / 4
+    let ldr_off = (interp_off as i64 - (i_ldr * 4) as i64) / 4;
+    ins[i_ldr] = 0x58000009 | (((ldr_off as u32) & 0x7FFFF) << 5);
+
+    // ── sérialisation little-endian ──
+    let mut octets = Vec::with_capacity(n_ins * 4 + 8 + nom_octets.len() + 1);
+    for w in &ins { octets.extend_from_slice(&w.to_le_bytes()); }
+    octets.extend_from_slice(&interp_addr.to_le_bytes());
+    octets.extend_from_slice(nom_octets);
+    octets.push(0);
+    octets
+}
+
+/// Page exécutable contenant le code machine de la boucle générique.
+/// Propriétaire du mmap : le `Drop` le libère avec le JIT (aucun foreign module).
+struct CodeMachine {
+    ptr: *mut u8,
+    len: usize,
+}
+#[allow(dead_code)]
+impl CodeMachine {
+    fn nouveau(code: &[u8]) -> std::io::Result<Self> {
+        let p = unsafe {
+            libc::mmap(std::ptr::null_mut(), code.len(),
+                       libc::PROT_READ | libc::PROT_WRITE,
+                       libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
+        };
+        if p == libc::MAP_FAILED { return Err(std::io::Error::last_os_error()); }
+        unsafe { std::ptr::copy_nonoverlapping(code.as_ptr(), p as *mut u8, code.len()); }
+        if unsafe { libc::mprotect(p, code.len(), libc::PROT_READ | libc::PROT_EXEC) } != 0 {
+            let e = std::io::Error::last_os_error();
+            unsafe { libc::munmap(p, code.len()); }
+            return Err(e);
+        }
+        Ok(CodeMachine { ptr: p as *mut u8, len: code.len() })
+    }
+    fn as_ptr(&self) -> *const u8 { self.ptr }
+}
+unsafe impl Send for CodeMachine {}
+unsafe impl Sync for CodeMachine {}
+impl Drop for CodeMachine {
+    fn drop(&mut self) { unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len); } }
+}
+
+/// Écrase les 16 premiers octets de la fonction compilée `fptr` par un
+/// trampoline `ldr x16, [pc,#8] ; br x16 ; .quad code`. Tous les appelants
+/// (déjà résolus vers `fptr`) exécutent alors notre boucle. Les appels
+/// RÉCURSIFS de notre code sont des `bl` PC-relatifs vers son propre début :
+/// ils ne repassent PAS par ce trampoline (coût identique à LLVM).
+#[cfg(all(unix, target_arch = "aarch64"))]
+unsafe fn patcher_entree(fptr: usize, code: *const u8) {
+    const PAGE: usize = 4096;
+    let debut = fptr & !(PAGE - 1);
+    let fin = ((fptr + 16 + PAGE - 1) / PAGE) * PAGE;
+    let len = fin - debut;
+    let _ = libc::mprotect(debut as *mut libc::c_void, len,
+                           libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC);
+    let mut patch = [0u8; 16];
+    // ldr x16, [pc, #8] (0x58000050) ; br x16 (0xD61F0200)
+    for (i, w) in [0x58000050u32, 0xD61F0200u32].iter().enumerate() {
+        patch[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    patch[8..16].copy_from_slice(&(code as u64).to_le_bytes());
+    std::ptr::copy_nonoverlapping(patch.as_ptr(), fptr as *mut u8, patch.len());
+    let _ = libc::mprotect(debut as *mut libc::c_void, len,
+                           libc::PROT_READ | libc::PROT_EXEC);
+    vider_cache(fptr as *mut u8, 16);
+}
+
 /// Une fonction compilée : soit du code natif, soit repli interprété.
 pub enum Compile {
     Natif(Box<dyn Fn(Vec<Valeur>) -> Valeur + Send + Sync>),
@@ -1044,6 +1275,10 @@ pub struct Jit {
     #[allow(dead_code)]
     foncs: HashMap<String, FuncId>,
     signatures: HashMap<String, Signature>,
+    /// ⚠ Code machine de la boucle LLVM générique (aarch64) : garde les pages
+    /// exécutables en vie aussi longtemps que le JIT (Drop = munmap).
+    #[allow(dead_code)]
+    machine: HashMap<String, CodeMachine>,
 }
 
 impl Jit {
@@ -1078,7 +1313,8 @@ impl Jit {
         let module = JITModule::new(builder);
         Jit { module, chaines: HashMap::new(), delegues: HashMap::new(), decls: HashMap::new(),
               runtime_decls: HashMap::new(),
-              foncs: HashMap::new(), signatures: signatures.clone() }
+              foncs: HashMap::new(), signatures: signatures.clone(),
+              machine: HashMap::new() }
     }
 
 }
@@ -1477,6 +1713,38 @@ impl Jit {
             let code = self.module.get_finalized_function(fid);
             let sig = self.signatures[nom].clone();
             let fptr: usize = code as usize;
+            // ════════════════════════════════════════════════════════════
+            // CORRECTIF D'ALLOCATION DE REGISTRES (aarch64 générique).
+            // Si la fonction MATCHE le motif de récurrence binaire et a été
+            // émise par la voie AST, on remplace SON CODE Cranelift (6 mov
+            // de permutation par itération) par la boucle LLVM à registres
+            // fixés. Le trampoline patché redirige l'appel entrant ; les
+            // appels récursifs de notre code sont PC-relatifs (directs).
+            // Aucun nom codé en dur : motif + borne partagés avec jit.rs.
+            // ════════════════════════════════════════════════════════════
+            #[cfg(target_arch = "aarch64")]
+            {
+                if !*eligible_rir.get(nom).unwrap_or(&false) {
+                    if let Some(d) = detecter_recurrence_binaire(&sig) {
+                        let borne = borne_securisee(&d);
+                        if motif_constantes_imm12(&d, borne) {
+                            let octets = emettre_boucle_machine(
+                                nom, &d, borne, rose_appel_interpreteur as *const u8 as u64);
+                            if let Ok(memoire) = CodeMachine::nouveau(&octets) {
+                                if std::env::var("ROSE_DUMP_MACHINE").is_ok() {
+                                    let chemin = format!(
+                                        "/tmp/opencode/rosebench/{}_machine.bin", nom);
+                                    let _ = std::fs::write(&chemin, &octets);
+                                }
+                                // ⚠ Le trampoline DOIT viser la page exécutable
+                                // (memoire), pas le Vec Rust (heap non-exécutable).
+                                unsafe { patcher_entree(fptr, memoire.as_ptr()); }
+                                self.machine.insert(nom.clone(), memoire);
+                            }
+                        }
+                    }
+                }
+            }
             out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
                 unsafe { appeler_trampoline(fptr, &sig, args) }
             })));
