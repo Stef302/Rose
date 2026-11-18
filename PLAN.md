@@ -411,3 +411,17 @@ Derniers points ouverts du plan, six agents sur des fichiers distincts :
 | C6 | **M6.2** artefact runner | `scripts/publier-runtime.sh`, `rose/docs/RUNTIME_RUNNER.md` | dry-run sans publication, compte Stef302 vérifié |
 
 Même règle que la vague 2 : orchestrateur seul sur `main.rs`/`lib.rs`/`Cargo.toml`/`PLAN.md`, preuve réelle exigée, aucun commit d'agent.
+
+## Chantiers parallèles — vague 4 (18/11, derniers points ouverts)
+
+Cinq agents sur les livrables finaux et l'audit :
+
+| Agent | Étape | Fichiers possédés | Porte |
+|---|---|---|---|
+| D1 | **M6.2 runner réel** | `scripts/build-runtime-runner.sh`, `rose/docs/RUNNER_REEL.md` | runner compilé + fib(27) ≤20ms mesuré (ou échec documenté) |
+| D2 | **artefacts Windows** | `installateur/**` | rose.exe/rose-shell.exe reconstruits + hashs |
+| D3 | **M5.3 binaire no_std** | `rose/src/bin/rose_nostd.rs`, `rose/docs/BINAIRE_NO_STD.md` | calcul exact sans std, nm ancré = 0 |
+| D4 | **M4.5 compilateur complet** | `compilateur/compilateur.rose` | RIR valide des deux côtés (ou limite documentée) |
+| D5 | **audit final QA** | `scripts/audit-final.sh`, `rose/docs/AUDIT_FINAL.md` | rapport factuel horodaté de toutes les portes |
+
+Même règle : orchestrateur seul sur `main.rs`/`lib.rs`/`Cargo.toml`/`PLAN.md`, preuve réelle, aucun commit d'agent, aucune publication GitHub.
