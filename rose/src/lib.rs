@@ -110,6 +110,7 @@ pub mod setup_gui;
 #[cfg(target_arch = "wasm32")]
 pub mod jit {
     use crate::front::{Expr, Instr, Programme, Signature, TyKind};
+    use crate::rir::CorpsRir;
     use crate::run::Valeur;
     use std::collections::HashMap;
 
@@ -131,6 +132,14 @@ pub mod jit {
 
     /// Une fonction utilisateur n'est jamais compilée en WASM.
     pub fn fonction_compilable(_sig: &Signature, _prog: &HashMap<String, Signature>) -> bool { false }
+
+    /// M3.1 — émetteur machine natif depuis le RIR : sans objet en WASM (le
+    /// JIT émet du code machine, qu'un module WASM ne peut pas contenir).
+    /// L'API doit rester identique à `jit.rs` pour que `interp.rs` compile
+    /// sans adaptation sur toutes les cibles. On ne compile jamais rien :
+    /// `None` laisse l'appelant sur la voie interprétée (M3.1 est de toute
+    /// façon gardé par `ROSE_NATIF` dans `interp.rs`).
+    pub fn compiler_natif(_corps: &CorpsRir, _sig: &Signature) -> Option<Compile> { None }
 
     /// Un bloc d'instructions n'est jamais compilé en WASM.
     pub fn bloc_compilable(

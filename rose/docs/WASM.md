@@ -16,6 +16,57 @@ propres modules et de fonctionner exactement comme avant.
 
 ---
 
+## 0. Build réparé — 18/11/2026
+
+Le build WASM était **cassé** par deux commits récents et est à nouveau
+**vert** (vérifié le 18/11/2026 sur `main` @ `4a3bec7`, Rust 1.99.1,
+cible `wasm32-unknown-unknown`, machine aarch64) :
+
+| Erreur avant réparation | Cause | Correctif |
+|---|---|---|
+| `error[E0425]: cannot find function compiler_natif in module crate::jit` (`interp.rs:749`) | M3.1 (`1b73c74`) a ajouté l'appel `jit::compiler_natif` sans étendre le shim WASM de `src/lib.rs` | Le shim `jit` cfg(wasm32) expose désormais `pub fn compiler_natif(&CorpsRir, &Signature) -> Option<Compile>` qui rend toujours `None` (no-op sûr, voie interprétée) |
+| `error: this arithmetic operation will overflow` — `1usize << 32` (`mul_rapide.rs:1454`) | M2.3 (`24daf0c`) a ajouté une garde NTT qui déborde sur un pointeur 32 bits | Seuil comparé en `u64` : `if (n as u64) > (1u64 << 32)`. **Sémantiquement identique sur 64 bits** (gain M2.3 préservé) ; sur 32 bits la garde ne déclenche jamais, ce qui est correct |
+
+Commandes **réellement exécutées** et sorties :
+
+```bash
+cd rose
+cargo build --release --target wasm32-unknown-unknown --lib
+#   Finished `release` profile [optimized] target(s) in 2.27s
+#   → target/wasm32-unknown-unknown/release/rose.wasm  (848 346 o)
+
+cargo build --profile wasm-release --target wasm32-unknown-unknown --no-default-features
+#   Finished `wasm-release` profile [optimized] target(s) in 4.94s
+#   → target/wasm32-unknown-unknown/wasm-release/rose.wasm  (736 683 o)
+```
+
+Test d'exécution sur le module **neuf** (`wasm-release`) avec le glue officiel
+(`web/rose-wasm.js`) — sortie réelle :
+
+```
+version : Rose 0.1.5 — compilateur Rust + JIT Cranelift (sémantique exacte)
+1+1     : "2\n"
+6*7     : "42\n"
+latex   : "\\mathrm{afficher}\\left(2\\right)\n"
+analyse : "programme valide — 1 instruction(s), 0 fonction(s)\nvérification : OK"
+# exit 0
+```
+
+Non-régression native aarch64 (même session) : `cargo build --release --bin rose`
+OK ; `jardins/tests/premiers.rose` **20 tests, 0 échec** ; `fib(25) = 75025` ;
+factorielles N=5000 médiane **0,11 s** sur 10 échantillons (inchangé vs M2.3) ;
+`cargo test --release` **311 passés, 0 échec**.
+
+> Le test complet `node web/test-wasm.mjs` a été rejoué sur le module neuf :
+> **15 contrôles OK, exit 0** (addition, flottants, rationnel exact, entier
+> exact, boucle, fonction, sortie multiple, complexes, irrationnels,
+> comparaisons, erreurs runtime, erreurs d'analyse, latex, parité latex,
+> analyse). Les 6 écarts de formatage décrits dans `UNIVERSEL_WASM.md` §1.2
+> venaient d'un module périmé (12/11) face à un natif du 18/11 : avec les deux
+> artefacts reconstruits ensemble, la parité est totale.
+
+---
+
 ## 1. Prérequis
 
 ```bash
@@ -204,6 +255,9 @@ pub mod jit {
     pub fn compilable(_ty: TyKind) -> bool { false }
     pub fn ty_statique(_e: &Expr, _env: &HashMap<String, TyKind>) -> Option<TyKind> { None }
     pub fn fonction_compilable(..) -> bool { false }
+    // M3.1 — émetteur machine natif : no-op en WASM (ROSE_NATIF est de toute
+    // façon ignoré). `None` laisse l'appelant sur la voie interprétée.
+    pub fn compiler_natif(_corps: &CorpsRir, _sig: &Signature) -> Option<Compile> { None }
     pub fn bloc_compilable(..) -> bool { false }
     pub fn pipeline_flush_si_threads() {}
     pub struct Jit;
@@ -211,6 +265,7 @@ pub mod jit {
         pub fn nouveau(_signatures: &HashMap<String, Signature>) -> Jit { Jit }
         pub fn compiler_tout(&mut self) -> HashMap<String, Compile> { HashMap::new() }
         pub fn compiler_principal(&mut self, _prog: &Programme) -> Option<Compile> { None }
+        pub fn declarer_delegues(&mut self) {}
     }
 }
 ```

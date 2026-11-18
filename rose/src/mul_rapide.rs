@@ -1451,7 +1451,13 @@ fn ntt_mul_par(x: &[u32], y: &[u32], fils: usize, base: u64) -> Vec<u32> {
         return toom3(x, y);
     }
     // ⚠ 2-adicité des modules = 32 : longueur NTT jusqu'à 2³².
-    if n > (1usize << 32) {
+    // ⚠ Le seuil est comparé en u64 : `1usize << 32` déborde sur wasm32
+    // (pointeur 32 bits) et est refusé par `#[deny(arithmetic_overflow)]`.
+    // Sur 64 bits, `n as u64 > 1u64 << 32` est EXACTEMENT équivalent à
+    // `n > 1usize << 32` (aucun changement du gain M2.3). Sur 32 bits, `n`
+    // ne peut pas dépasser 2³² : la garde ne déclenche jamais, ce qui est
+    // correct (la NTT reste valable pour toute longueur représentable).
+    if (n as u64) > (1u64 << 32) {
         return toom3(x, y);
     }
 
