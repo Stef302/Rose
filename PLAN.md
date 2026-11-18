@@ -653,3 +653,11 @@ Dump objdump fait par l'orchestrateur: ~25 instr/it dont 2 checks tag + 2 checks
 | E/S 10Mo | 6,12 | 6,05 | ≈ 1,0 |
 
 Prochaine cible la plus proche: **D3 premiers 1,48×** (residu = code natif est_premier).
+
+## Vague 22 (18/11) — battre Rust sur les premiers
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| PB1 | spécialisation `est_premier` avec preuve de borne | `rose/src/jit.rs`, `rose/docs/JIT_PREMIERS_BAT.md` | D3 < 1,00ms (aujourd'hui 1,479ms) |
+
+Modèle H1: pour n<=2^32, d*d<=n => d<=2^16, tous calculs i64, diviseur non nul. Garde explicite au-dela. ⚠ Pas de changement d'algorithme (pas de crible) — sinon la victoire ne compte pas comme "meme source".
