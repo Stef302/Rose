@@ -163,7 +163,7 @@ fn somme(n: entier) -> entier {
 | `fib(35)` | `9227465` (0,03 s) | `9227465` (21,31 s) | ✅ (valeur) |
 | `jardins/tests/premiers.rose` | `20 tests, 0 échec` | `20 tests, 0 échec` | ✅ |
 | Point fixe M4.5 — `rose rir compilateur/emetteur.rose` (md5) | `bdbef63681608a0b22a5637539e9d738` | `bdbef63681608a0b22a5637539e9d738` | ✅ |
-| Point fixe M4.5 — `rose compilateur/emetteur.rose compilateur/emetteur.rose` (md5) | `bdbef63681608a0b22a5637539e9d738` | en cours de mesure (interpréteur : ~11 min) | ⏳ |
+| Point fixe M4.5 — `rose compilateur/emetteur.rose compilateur/emetteur.rose` (md5) | `bdbef63681608a0b22a5637539e9d738` | `bdbef63681608a0b22a5637539e9d738` (validé par l'orchestrateur après K2, 3 runs) | ✅ |
 
 Preuve que la voie native est réellement active dans le binaire autonome :
 
