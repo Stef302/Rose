@@ -538,3 +538,14 @@ Règle inchangée: aucune annonce de victoire sans mesure A/A/A pinée, point fi
 | L3 | **pont wasm bibliothèque** (conversion/copie/opcodes) | `rose/src/wasm_lecteur.rs`, `rose/docs/ARCHI_WASM_PONT.md` | ≥2× sur coût/appel xxHash |
 
 Règle: gain structurel mesuré A/A/A piné, valeurs identiques (jardin 20/20, fib25, oracles, point fixe). PAS de special-case de fonction.
+
+⚠ Correction utilisateur (18/11): « textuel » = la bibliothèque **Rich** (Python de rendu texte) à essayer de faire tourner via wasm dans Rose (avec CPython/RustPython comme portage), PAS Rose compilé en wasm. Et pour la vitesse: appliquer la MÉTHODE Rust = trouver le GOULOT ARCHITECTURAL global d'abord, puis optimiser cas par cas — pas optimiser fonction par fonction.
+
+## Vague 13 (18/11) — Rich via wasm + goulot architectural
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| M1 | **Rich → wasm → Rose** | `rose/docs/RICH_WASM.md` | verdict honnête faisable/non, commandes exécutées |
+| M2 | **goulot architectural global** | `rose/docs/GOULOT_ARCHITECTURE.md` | % temps par phase mesuré, goulot #1 prouvé, décision structurante |
+
+Rich est installé (`~/.local/lib/python3.12/site-packages/rich`). CPython n'a pas wasmtime, RustPython absent — à vérifier/tester par l'agent.
