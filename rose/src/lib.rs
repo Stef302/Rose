@@ -77,8 +77,11 @@ pub mod console_win;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod repl;
 
-/// JIT Cranelift — disponible uniquement sur les cibles natives.
-#[cfg(not(target_arch = "wasm32"))]
+/// JIT Cranelift — disponible uniquement sur les cibles natives AVEC la
+/// feature `jit` (activée par `native`, le défaut). Sans cette feature
+/// (`--no-default-features --features autonome`), le module `jit` est fourni
+/// par le shim autonome ci-dessous : même API, zéro Cranelift.
+#[cfg(all(not(target_arch = "wasm32"), feature = "jit"))]
 pub mod jit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod auto_llvm;
@@ -86,6 +89,14 @@ pub mod auto_llvm;
 /// M3.1 — émetteur machine natif depuis le RIR (code machine, pas de WASM).
 #[cfg(not(target_arch = "wasm32"))]
 pub mod natif_emetteur;
+
+/// G2 — copie locale de l'émetteur pour le shim `jit` autonome. Déclarée au
+/// niveau `crate` (et non dans un module inline) pour que `#[path]` soit
+/// résolu depuis `src/`. Sans Cranelift, c'est cette copie qui émet le code
+/// machine du sous-ensemble couvert.
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "jit")))]
+#[path = "natif_emetteur.rs"]
+mod jit_ne;
 
 /// M3.2 — écrivains ELF64/PE64 sans gcc, clang ni linker externe.
 #[cfg(not(target_arch = "wasm32"))]
@@ -171,6 +182,198 @@ pub mod jit {
         /// code machine émis), mais l'API doit rester identique à `jit.rs`
         /// pour que `interp.rs` compile sans adaptation sur toutes les cibles.
         pub fn declarer_delegues(&mut self) {}
+    }
+}
+
+/// ════════════════════════════════════════════════════════════════════════════
+/// G2 — SHIM `jit` SANS CRANELIFT (cible native, feature `jit` ABSENTE)
+/// ════════════════════════════════════════════════════════════════════════════
+///
+/// API STRICTEMENT identique à `src/jit.rs` : `interp.rs` compile sans la
+/// moindre adaptation. Deux voies seulement :
+///
+///   1. **Compilation native** (par défaut) : `compiler_tout` parcourt les
+///      fonctions dont le RIR a été abaissé et demande à l'émetteur M3.1
+///      (`natif_emetteur`, code machine écrit par Rose, zéro dépendance) de
+///      produire la page exécutable. Portes conservatrices : types i64/bool,
+///      `peut_emettre`, AUCUN appel RIR (donc pas de récursion), aucun
+///      fallback runtime. Le sous-ensemble couvert = boucles arithmétiques.
+///   2. **Repli interpréteur** pour tout le reste (récursion, bigint,
+///      rationnels, chaînes, listes, FFI, expressions à fallback…) : la table
+///      reste vide pour ces fonctions et l'interpréteur les exécute telles
+///      quelles. Sorties identiques au caractère près.
+///
+/// Aucun appel à `crate::jit::rose_appel_interpreteur` n'est nécessaire ici :
+/// les fonctions à AppelRir sont refusées à la compilation (porte ci-dessus).
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "jit")))]
+pub mod jit {
+    use std::collections::HashMap;
+
+    use crate::front::{Expr, Instr, Programme, Signature, TyKind};
+    use crate::rir::CorpsRir;
+    use crate::run::Valeur;
+
+    // L'émetteur M3.1 est déclaré au niveau `crate` sous le nom `jit_ne`
+    // (voir plus haut) : le binaire (`main.rs`) ne déclare pas
+    // `natif_emetteur`. Le fichier est le même, les types manipulés
+    // (`CorpsRir`, `Signature`, `Valeur`) viennent des modules partagés.
+    use crate::jit_ne as ne;
+
+    /// Même forme que `jit::Compile` : une fonction compilée en code machine,
+    /// le corps du programme principal compilé, ou le repli interprété.
+    pub enum Compile {
+        Natif(Box<dyn Fn(Vec<Valeur>) -> Valeur + Send + Sync>),
+        #[allow(dead_code)]
+        Principal(Box<dyn Fn() + Send + Sync>),
+        #[allow(dead_code)]
+        Interprete,
+    }
+
+    /// Aucune analyse JIT n'a lieu : tout ce qui n'est pas émis par M3.1
+    /// reste à l'interpréteur.
+    pub fn compilable(_ty: TyKind) -> bool { false }
+    pub fn ty_statique(_e: &Expr, _env: &HashMap<String, TyKind>) -> Option<TyKind> { None }
+    pub fn fonction_compilable(_sig: &Signature, _prog: &HashMap<String, Signature>) -> bool { false }
+    pub fn bloc_compilable(
+        _instrs: &[Instr],
+        _env: &mut HashMap<String, TyKind>,
+        _prog: &HashMap<String, Signature>,
+        _attendu: Option<TyKind>,
+    ) -> bool { false }
+    pub fn pipeline_flush_si_threads() {}
+
+    /// Seuls les entiers i64 et les booléens traversent la frontière machine.
+    fn natif_type_ok(t: TyKind) -> bool { matches!(t, TyKind::Entier | TyKind::Booleen) }
+
+    /// Jamais appelés : les fonctions qui en auraient besoin sont refusées
+    /// par `Natif::nouveau`. L'ABI exige malgré tout des pointeurs non nuls.
+    extern "C" fn pas_d_appel(_: i64, _: i64, _: i64, _: i64, _: *const u8) -> i64 { 0 }
+    extern "C" fn pas_de_fallback(_: *mut std::ffi::c_void, _: u32, _: *mut i64) -> i64 { 0 }
+
+    /// Une fonction Rose compilée en code machine par l'émetteur M3.1.
+    struct Natif {
+        mem: std::sync::Arc<ne::MemoireExecutable>,
+        n_slots: usize,
+        n_slots_total: usize,
+        retour: TyKind,
+    }
+
+    impl Natif {
+        fn nouveau(corps: &CorpsRir, sig: &Signature) -> Option<Self> {
+            // porte 1 — types
+            if sig.params.iter().any(|(_, t)| !natif_type_ok(t.n)) { return None; }
+            // ⚠ Une procédure sans annotation (`-> Vide`) ne doit jamais être
+            // émise : `appeler()` rendrait `Valeur::Vide` là où l'appelant
+            // attend un entier (bug mesuré sur le jardin, voir main.rs).
+            if !natif_type_ok(sig.retour.n) { return None; }
+            // porte 2 — sous-ensemble RIR
+            if !ne::peut_emettre(corps) { return None; }
+            // porte 3 — émission effective
+            let e = ne::emettre(corps, ne::Architecture::native()).ok()?;
+            // ⚠ Pas de runtime Rose embarqué dans ce binaire : un AppelRir
+            // (récursion comprise) déléguerait à une trampoline absente.
+            // Ces fonctions replient donc sur l'interpréteur. Idem pour les
+            // expressions que l'émetteur confie à `eval_fallback`.
+            if !e.appels.is_empty() || !e.fallbacks.is_empty() { return None; }
+            let mem = std::sync::Arc::new(ne::MemoireExecutable::nouveau(&e.code).ok()?);
+            Some(Natif { mem, n_slots: e.n_slots, n_slots_total: e.n_slots_total, retour: sig.retour.n })
+        }
+
+        fn appeler(&self, args: Vec<Valeur>) -> Valeur {
+            if args.len() > self.n_slots { return Valeur::Vide; }
+            let mut slots = vec![0i64; self.n_slots_total];
+            for (i, a) in args.iter().enumerate() {
+                slots[i] = match a {
+                    Valeur::Entier(v, None) => *v,
+                    Valeur::Booleen(b) => if *b { 1 } else { 0 },
+                    Valeur::Flottant(d) => d.to_bits() as i64,
+                    _ => return Valeur::Vide,
+                };
+            }
+            let tramp = ne::Trampoline {
+                appel_rir: pas_d_appel,
+                eval_fallback: pas_de_fallback,
+                ctx: std::ptr::null_mut(),
+            };
+            let r = unsafe { self.mem.appeler(slots.as_mut_ptr(), &tramp) };
+            match self.retour {
+                TyKind::Vide => Valeur::Vide,
+                TyKind::Booleen => Valeur::b(r != 0),
+                TyKind::Flottant => Valeur::f(f64::from_bits(r as u64)),
+                _ => Valeur::z(r),
+            }
+        }
+
+        fn dans_compile(self) -> Compile {
+            Compile::Natif(Box::new(move |args| self.appeler(args)))
+        }
+    }
+
+    /// Compile un corps RIR en code machine M3.1. `None` = repli interprété.
+    pub fn compiler_natif(corps: &CorpsRir, sig: &Signature) -> Option<Compile> {
+        Natif::nouveau(corps, sig).map(|n| n.dans_compile())
+    }
+
+    /// Le « JIT » autonome : aucune déclaration de délégué Cranelift.
+    pub struct Jit {
+        signatures: HashMap<String, Signature>,
+    }
+
+    impl Jit {
+        pub fn nouveau(signatures: &HashMap<String, Signature>) -> Jit {
+            Jit { signatures: signatures.clone() }
+        }
+
+        pub fn declarer_delegues(&mut self) {}
+
+        /// Le programme principal reste sur la voie interpréteur AST.
+        ///
+        /// ⚠ Sans JIT Cranelift, le corps principal abaissé en RIR sature la
+        /// pile de slots sur les programmes profonds (mesuré : `rose
+        /// compilateur/emetteur.rose compilateur/emetteur.rose` échoue en
+        /// 142 s avec « trop d'appels imbriqués »). On désactive donc cette
+        /// optimisation ici, avant le test `ROSE_NO_RIR_PRINCIPAL` de
+        /// `executer_source`. L'interpréteur AST, lui, est prouvé (20/20,
+        /// point fixe md5).
+        pub fn compiler_principal(&mut self, _prog: &Programme) -> Option<Compile> {
+            // SAFETY: aucun autre thread ne lit l'environnement à ce stade de
+            // l'exécution (appelé avant le démarrage de l'interpréteur).
+            unsafe { std::env::set_var("ROSE_NO_RIR_PRINCIPAL", "1"); }
+            None
+        }
+
+        /// Compile par défaut le sous-ensemble couvert ; les autres
+        /// fonctions ne sont pas insérées dans la table et l'interpréteur
+        /// les exécute (repli transparent).
+        pub fn compiler_tout(&mut self) -> HashMap<String, Compile> {
+            let mut table = HashMap::new();
+            for (nom, sig) in &self.signatures {
+                if let Some(corps) = sig.rir.as_ref() {
+                    if let Some(c) = compiler_natif(corps, sig) {
+                        table.insert(nom.clone(), c);
+                        continue;
+                    }
+                }
+                // ⚠⚠⚠ CE MARQUEUR EST LA CORRECTION DU REPLI, NE PAS LE
+                // RETIRER. Sans Cranelift, la voie RIR rend des valeurs fausses
+                // (`nb_premiers_inferieurs(100)` = 4 au lieu de 25) puis un
+                // `Valeur::Vide` converti vers entier (erreur « ligne=90 »).
+                // `Compile::Interprete` garde la fonction dans `self.jit` :
+                // `appeler()` saute alors le RIR et l'interpréteur AST fait
+                // tout le travail que l'émetteur ne compile pas.
+                table.insert(nom.clone(), Compile::Interprete);
+            }
+            // Diagnostic optionnel : ne compter que les vraies `Compile::Natif`.
+            if std::env::var("ROSE_G2_PROF").is_ok() {
+                let mut noms: Vec<&String> = table.iter()
+                    .filter(|(_, c)| matches!(c, Compile::Natif(_)))
+                    .map(|(n, _)| n)
+                    .collect();
+                noms.sort();
+                eprintln!("G2 natif : {} fonction(s) sur {} — {:?}", noms.len(), self.signatures.len(), noms);
+            }
+            table
+        }
     }
 }
 

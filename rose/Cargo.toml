@@ -18,7 +18,18 @@ path = "src/lib.rs"
 [[bin]]
 name = "rose"
 path = "src/main.rs"
-required-features = ["native"]
+# ⚠ G2 : le binaire est disponible dans DEUX configurations mutuellement
+# exclusives :
+#   * --features native (= défaut) : moteur + JIT Cranelift (comportement
+#     historique, inchangé) ;
+#   * --no-default-features --features autonome : moteur SANS Cranelift,
+#     émetteur machine natif M3.1 pour le sous-ensemble couvert et repli
+#     interpréteur pour le reste.
+# `required-features` est un ET logique : on ne peut donc pas y mettre
+# `["native", "autonome"]`. La feature `binaire`, activée par les deux, sert
+# de garde (et continue d'empêcher la compilation du binaire sur une cible
+# wasm où seul le module `--lib` est voulu).
+required-features = ["binaire"]
 
 # ⚠ `rose-aot` n'est PLUS un binaire séparé : sa fonctionnalité (orc/link)
 # est intégrée directement dans `rose.exe` (sous-commandes `rose orc` et
@@ -62,14 +73,28 @@ libc = { version = "0.2", default-features = false }
 inkwell = { version = "0.7", optional = true, features = ["llvm18-1-prefer-dynamic", "target-aarch64", "target-x86", "no-libffi-linking"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"] }
+# ⚠ G2 — Cranelift est OPTIONNEL. Il n'est tiré que par la feature `jit`
+# (via `dep:cranelift`), activée par `native` = défaut. La configuration
+# `--no-default-features --features autonome` ne le compile PAS du tout :
+# c'est ce qui fait tomber `libc feature "default"/"std"` du graphe.
+cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"], optional = true }
 
 [build-dependencies]
 cc = "1"
 
 [features]
 default = ["native"]
-native = []
+# Configuration HISTORIQUE (inchangée) : JIT Cranelift + binaire natif.
+native = ["jit", "binaire"]
+# Feature technique : tire uniquement la dépendance Cranelift.
+jit = ["dep:cranelift"]
+# ⚠ G2 — configuration AUTONOME : ZÉRO Cranelift. Le module `jit` est alors
+# remplacé par un shim de même API qui compile le sous-ensemble émettable
+# (boucles arithmétiques sur i64/booléens, sans appel à une autre fonction
+# Rose) via l'émetteur machine M3.1, et laisse TOUT le reste à l'interpréteur.
+autonome = ["binaire"]
+# Garde commune aux deux binaires natifs (voir [[bin]] rose ci-dessus).
+binaire = []
 wasm = []
 llvm = ["dep:inkwell"]
 

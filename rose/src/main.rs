@@ -12,7 +12,160 @@ mod front;
 mod i128x;
 mod irrationnel;
 mod interp;
+/// G2 : le vrai JIT Cranelift uniquement avec la feature `jit` (= défaut).
+/// Sinon, le shim autonome ci-dessous (émetteur M3.1 + repli interpréteur).
+#[cfg(feature = "jit")]
 mod jit;
+#[cfg(not(feature = "jit"))]
+mod jit {
+    use std::collections::HashMap;
+
+    use crate::front::{Expr, Instr, Programme, Signature, TyKind};
+    use crate::rir::CorpsRir;
+    use crate::run::Valeur;
+
+    // Même émetteur M3.1 que `jit.rs`, déclaré au niveau crate sous `jit_ne`.
+    use crate::jit_ne as ne;
+
+    pub enum Compile {
+        Natif(Box<dyn Fn(Vec<Valeur>) -> Valeur + Send + Sync>),
+        #[allow(dead_code)]
+        Principal(Box<dyn Fn() + Send + Sync>),
+        #[allow(dead_code)]
+        Interprete,
+    }
+
+    pub fn compilable(_ty: TyKind) -> bool { false }
+    pub fn ty_statique(_e: &Expr, _env: &HashMap<String, TyKind>) -> Option<TyKind> { None }
+    pub fn fonction_compilable(_sig: &Signature, _prog: &HashMap<String, Signature>) -> bool { false }
+    pub fn bloc_compilable(
+        _instrs: &[Instr],
+        _env: &mut HashMap<String, TyKind>,
+        _prog: &HashMap<String, Signature>,
+        _attendu: Option<TyKind>,
+    ) -> bool { false }
+    pub fn pipeline_flush_si_threads() {}
+
+    fn natif_type_ok(t: TyKind) -> bool { matches!(t, TyKind::Entier | TyKind::Booleen) }
+
+    /// Jamais appelés (les fonctions concernées replient sur l'interpréteur).
+    extern "C" fn pas_d_appel(_: i64, _: i64, _: i64, _: i64, _: *const u8) -> i64 { 0 }
+    extern "C" fn pas_de_fallback(_: *mut std::ffi::c_void, _: u32, _: *mut i64) -> i64 { 0 }
+
+    struct Natif {
+        mem: std::sync::Arc<ne::MemoireExecutable>,
+        n_slots: usize,
+        n_slots_total: usize,
+        retour: TyKind,
+    }
+
+    impl Natif {
+        fn nouveau(corps: &CorpsRir, sig: &Signature) -> Option<Self> {
+            if sig.params.iter().any(|(_, t)| !natif_type_ok(t.n)) { return None; }
+            // ⚠⚠⚠ K2 : UNE FONCTION SANS ANNOTATION DE RETOUR (`-> Vide`) ne
+            // doit JAMAIS être émise en code machine ici. `appeler()` rendrait
+            // `Valeur::Vide` pour un slot que l'interpréteur convertit ensuite
+            // vers `Entier` → « conversion vers entier impossible (type Vide,
+            // val="", ligne=N) » (bug reproduit le 18/11 sur le jardin). Ces
+            // procédures restent donc TOUJOURS à l'interpréteur (marqueur
+            // `Compile::Interprete` ci-dessous).
+            if !natif_type_ok(sig.retour.n) { return None; }
+            if !ne::peut_emettre(corps) { return None; }
+            let e = ne::emettre(corps, ne::Architecture::native()).ok()?;
+            // Sans runtime embarqué : AppelRir / fallbacks → interpréteur.
+            if !e.appels.is_empty() || !e.fallbacks.is_empty() { return None; }
+            let mem = std::sync::Arc::new(ne::MemoireExecutable::nouveau(&e.code).ok()?);
+            Some(Natif { mem, n_slots: e.n_slots, n_slots_total: e.n_slots_total, retour: sig.retour.n })
+        }
+
+        fn appeler(&self, args: Vec<Valeur>) -> Valeur {
+            if args.len() > self.n_slots { return Valeur::Vide; }
+            let mut slots = vec![0i64; self.n_slots_total];
+            for (i, a) in args.iter().enumerate() {
+                slots[i] = match a {
+                    Valeur::Entier(v, None) => *v,
+                    Valeur::Booleen(b) => if *b { 1 } else { 0 },
+                    Valeur::Flottant(d) => d.to_bits() as i64,
+                    _ => return Valeur::Vide,
+                };
+            }
+            let tramp = ne::Trampoline {
+                appel_rir: pas_d_appel,
+                eval_fallback: pas_de_fallback,
+                ctx: std::ptr::null_mut(),
+            };
+            let r = unsafe { self.mem.appeler(slots.as_mut_ptr(), &tramp) };
+            match self.retour {
+                TyKind::Vide => Valeur::Vide,
+                TyKind::Booleen => Valeur::b(r != 0),
+                TyKind::Flottant => Valeur::f(f64::from_bits(r as u64)),
+                _ => Valeur::z(r),
+            }
+        }
+
+        fn dans_compile(self) -> Compile {
+            Compile::Natif(Box::new(move |args| self.appeler(args)))
+        }
+    }
+
+    pub fn compiler_natif(corps: &CorpsRir, sig: &Signature) -> Option<Compile> {
+        Natif::nouveau(corps, sig).map(|n| n.dans_compile())
+    }
+
+    pub struct Jit {
+        signatures: HashMap<String, Signature>,
+    }
+
+    impl Jit {
+        pub fn nouveau(signatures: &HashMap<String, Signature>) -> Jit {
+            Jit { signatures: signatures.clone() }
+        }
+
+        pub fn declarer_delegues(&mut self) {}
+
+        pub fn compiler_principal(&mut self, _prog: &Programme) -> Option<Compile> {
+            // Sans Cranelift, le RIR principal sature la pile sur les programmes
+            // profonds : on force la voie interpréteur AST (voir lib.rs).
+            // SAFETY: appelé avant le démarrage de l'interpréteur, aucun thread
+            // concurrent ne lit l'environnement.
+            unsafe { std::env::set_var("ROSE_NO_RIR_PRINCIPAL", "1"); }
+            None
+        }
+
+        pub fn compiler_tout(&mut self) -> HashMap<String, Compile> {
+            let mut table = HashMap::new();
+            for (nom, sig) in &self.signatures {
+                if let Some(corps) = sig.rir.as_ref() {
+                    if let Some(c) = compiler_natif(corps, sig) {
+                        table.insert(nom.clone(), c);
+                        continue;
+                    }
+                }
+                // ⚠⚠⚠ K2 — CE MARQUEUR EST LA CORRECTION DU REPLI, NE PAS LE
+                // RETIRER. Sans Cranelift, les appels RIR n'ont ni trampoline ni
+                // délégués : la voie RIR rend des valeurs fausses (mesuré :
+                // `nb_premiers_inferieurs(100)` = 4 au lieu de 25) puis un
+                // `Valeur::Vide` converti vers entier (erreur « ligne=90 »).
+                // Marquer la fonction `Interprete` la garde dans `self.jit` :
+                // `appeler()` saute alors la voie RIR et l'interpréteur AST fait
+                // TOUT le travail que l'émetteur ne compile pas.
+                table.insert(nom.clone(), Compile::Interprete);
+            }
+            if std::env::var("ROSE_G2_PROF").is_ok() {
+                // Diagnostic HONNÊTE : ne compter que les vraies `Compile::Natif`
+                // (l'ancien compteur affichait la taille de la table, donc
+                // « 7 fonction(s) sur 7 » alors qu'aucune n'était émise).
+                let mut noms: Vec<&String> = table.iter()
+                    .filter(|(_, c)| matches!(c, Compile::Natif(_)))
+                    .map(|(n, _)| n)
+                    .collect();
+                noms.sort();
+                eprintln!("G2 natif : {} fonction(s) sur {} — {:?}", noms.len(), self.signatures.len(), noms);
+            }
+            table
+        }
+    }
+}
 mod run;
 mod latex;
 mod debug_lenteur;
@@ -39,6 +192,13 @@ mod aot_llvm_orc;
 #[cfg(feature = "llvm")]
 mod elf_linker;
 
+/// G2 — émetteur machine M3.1 pour le shim `jit` autonome (sans Cranelift).
+/// Déclaré au niveau `crate` pour que `#[path]` soit résolu depuis `src/`,
+/// comme la copie équivalente dans `lib.rs`.
+#[cfg(not(feature = "jit"))]
+#[path = "natif_emetteur.rs"]
+mod jit_ne;
+
 use std::io::Read;
 
 fn lire(source: &mut String, chemin: &str) -> bool {
@@ -48,12 +208,18 @@ fn lire(source: &mut String, chemin: &str) -> bool {
     }
 }
 
+/// Nom du moteur affiché dans l'aide : dépend de la feature `jit`.
+#[cfg(feature = "jit")]
+const MOTEUR: &str = "JIT Cranelift";
+#[cfg(not(feature = "jit"))]
+const MOTEUR: &str = "émetteur machine natif autonome";
+
 /// Aide du programme. La version vient du `Cargo.toml` — elle était en
 /// dur (« Rose 2.0 »), d'où un `rose` installé en 0.1.5 qui s'annonçait
 /// « Rose 2.0 » (mesuré par l'utilisateur).
 fn usage() -> String {
     format!(
-        "Rose {} — compilateur Rust + Cranelift JIT + LLVM ORC AOT (maths exactes BigInt natif, zéro GMP)\n\
+        "Rose {} — compilateur Rust + {} + LLVM ORC AOT (maths exactes BigInt natif, zéro GMP)\n\
 Usage :
   rose prog.rose [args…]   interpréter / JIT un programme Rose
   rose run prog.rose       identique
@@ -76,7 +242,8 @@ Usage :
   rose wasm lib.wasm       fonctions exportées d'un module WebAssembly (pont @dll(\"wasm\", …))
   rose update              installe/met a jour Rose (64 bits, interface console)
 ",
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_VERSION"),
+        MOTEUR
     )
 }
 
