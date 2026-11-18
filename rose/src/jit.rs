@@ -1000,7 +1000,35 @@ fn eabstrait_rir_compilable(e: &Eabstrait, slot_types: &[TyKind], corps_noms: &[
     }
 }
 
-fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>) -> bool {
+/// Une affectation AST est émissible en natif SI et SEULEMENT si elle est
+/// sans effet sur l'état Rose visible par l'interpréteur. `temps()` est une
+/// primitive stdlib sans paramètre qui lit l'horloge système
+/// (`front::STDLIB`, `interp.rs:4208`) : aucun slot, aucune globale, aucun
+/// appel de fonction utilisateur. C'est la seule primitive autorisée ici.
+fn est_affect_ast_natif(e: &Expr) -> bool {
+    matches!(e, Expr::Appel { nom, args, .. } if args.is_empty() && nom == "temps")
+}
+
+/// Une expression peut-elle POSER un entier boxé dans un slot ? `+`/`-` sont
+/// protégés par le repli inline de J1 (le helper publie son tag) ; `*`, `/`,
+/// `^`, `div`, la négation unaire et un appel rendant un entier peuvent
+/// promouvoir un BigInt. Le JIT du corps principal ne suit pas encore le tag
+/// d'un slot boxé : on refuse ces expressions dans LE PRINCIPAL uniquement
+/// (jamais dans les fonctions déjà compilées), voir `JIT_PREMIERS.md`.
+fn expr_peut_boxer(e: &Eabstrait) -> bool {
+    match e {
+        Eabstrait::Binaire { op, a, b } => {
+            matches!(op, Oper::Mul | Oper::Div | Oper::Puissance | Oper::DivEntier)
+                || expr_peut_boxer(a) || expr_peut_boxer(b)
+        }
+        Eabstrait::Neg(_) => true,
+        Eabstrait::AppelRir { .. } => true,
+        _ => false,
+    }
+}
+
+fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
+                      principal_sans_boxage: bool) -> bool {
     let corps = match &sig.rir { Some(c)=>c, None=>return false };
     if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
     if sig.params.iter().any(|(_,t)| !compilable(t.n)) { return false; }
@@ -1009,6 +1037,7 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>) -> boo
         match op {
             Op::Affect { expr, .. } => {
                 if !eabstrait_rir_compilable(expr, &slot_types, &corps.noms, prog) { return false; }
+                if principal_sans_boxage && expr_peut_boxer(expr) { return false; }
             }
             Op::RetourAbstrait(e) => {
                 if !eabstrait_rir_compilable(e, &slot_types, &corps.noms, prog) { return false; }
@@ -1018,6 +1047,23 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>) -> boo
             Op::SautSiFauxAbstrait { test, .. } => {
                 if !eabstrait_rir_compilable(test, &slot_types, &corps.noms, prog) { return false; }
                 if ty_eabstrait_rir(test, &slot_types, prog) != Some(TyKind::Booleen) { return false; }
+            }
+            // 18/11 — D3 : le corps principal peut contenir DES OPÉRATIONS
+            // D'ENTRÉE/SORTIE sans état Rose. Les émettre en natif supprime la
+            // synchro slots↔globaux à chaque tour de boucle (5,4 ms mesurés
+            // sur 50 000 itérations). `temps()` est une primitive sans
+            // paramètre et sans accès aux globales (front::STDLIB,
+            // interp.rs:4208) : son résultat est rendu par `rose_temps`, le
+            // MÊME horodatage que l'interpréteur. Les affichages abstraits
+            // utilisent les helpers déjà présents (aucun préfixe LaTeX,
+            // exactement comme `HoteRir::afficher_valeur` du RIR).
+            Op::AffectAst { e, .. } => {
+                if !est_affect_ast_natif(e) { return false; }
+            }
+            Op::AfficherAbstrait(e) => {
+                if !eabstrait_rir_compilable(e, &slot_types, &corps.noms, prog) { return false; }
+                if !matches!(ty_eabstrait_rir(e, &slot_types, prog),
+                             Some(TyKind::Entier) | Some(TyKind::Booleen) | Some(TyKind::Flottant)) { return false; }
             }
             // Tout le reste (AST, blocs, lire, affect index, afficher AST...) -> fallback
             _ => return false,
@@ -1049,6 +1095,8 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_neg_ent", crate::run::rose_neg_ent as *const u8),
         ("rose_clone_ent", crate::run::rose_clone_ent as *const u8),
         ("rose_set_ret_tag", crate::run::rose_set_ret_tag as *const u8),
+        // 18/11 — D3 : horodatage de la primitive sans état `temps()`.
+        ("rose_temps", rose_temps as *const u8),
         ("rose_erreur_mod_zero", crate::run::rose_erreur_mod_zero as *const u8),
         ("rose_erreur_div_zero", crate::run::rose_erreur_div_zero as *const u8),
         ("rose_erreur_div_flottant_zero", crate::run::rose_erreur_div_flottant_zero as *const u8),
@@ -1452,6 +1500,7 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 ("rose_clone_ent", vec![types::I64, types::I64, types::I64, types::I64], None),
                 ("rose_affiche_ent", vec![types::I64, types::I64], None),
                 ("rose_set_ret_tag", vec![types::I64], None),
+                ("rose_temps", vec![], Some(types::I64)),
                 ("rose_erreur_mod_zero", vec![], None),
                 ("rose_erreur_div_zero", vec![], None),
                 ("rose_erreur_div_flottant_zero", vec![], None),
@@ -1492,7 +1541,7 @@ impl Jit {
         if std::env::var("ROSE_NO_RIR").is_err() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
             if let Some(rir) = crate::rir::abaisser_principal(&prog.instructions) {
                 sig.rir = Some(rir);
-                use_rir = rir_compilable_jit(&sig, &self.signatures);
+                use_rir = rir_compilable_jit(&sig, &self.signatures, true);
                 if !use_rir { sig.rir = None; }
             }
         }
@@ -1631,7 +1680,7 @@ impl Jit {
         let mut eligible_rir: HashMap<String, bool> = HashMap::new();
         for (nom, s) in self.signatures.iter() {
             if s.corps.is_none() { continue; }
-            let use_rir = rir_compilable_jit(s, &self.signatures);
+            let use_rir = rir_compilable_jit(s, &self.signatures, false);
             let use_instr = fonction_compilable(s, &self.signatures);
             if use_rir || use_instr {
                 eligibles.push(nom.clone());
@@ -2336,6 +2385,43 @@ impl Emetteur<'_> {
                     } else { v };
                     self.builder.def_var(slot_vars[*slot as usize], v);
                     self.builder.def_var(slot_unboxed[*slot as usize], u);
+                    self.saut(next, &[]);
+                }
+                // 18/11 — D3 : `temps()` sans état ; même horodatage que
+                // l'interpréteur, tag nul (l'horloge tient dans un i64).
+                Op::AffectAst { slot, e } => {
+                    if !est_affect_ast_natif(e) { return false; }
+                    let f = self.import_runtime("rose_temps");
+                    let appel = self.builder.ins().call(f, &[]);
+                    let r = self.builder.inst_results(appel)[0];
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    self.builder.def_var(slot_vars[*slot as usize], r);
+                    self.builder.def_var(slot_unboxed[*slot as usize], unboxed1);
+                    self.saut(next, &[]);
+                }
+                // 18/11 — D3 : affichage abstrait. `rir::executer_avec_ptr_sync`
+                // appelle `HoteRir::afficher_valeur` (pas de préfixe LaTeX) :
+                // on reproduit exactement `rose_affiche_ent/bool/f64`.
+                Op::AfficherAbstrait(e) => {
+                    let vj = self.expr_eabstrait_rir(e, &slot_vars, &slot_types, corps, &slot_unboxed);
+                    let v = self.simple(vj);
+                    let t = ty_eabstrait_rir(e, &slot_types, self.signatures).unwrap_or(TyKind::Entier);
+                    match t {
+                        TyKind::Flottant => {
+                            let f = self.import_runtime("rose_affiche_f64");
+                            let _ = self.builder.ins().call(f, &[v]);
+                        }
+                        TyKind::Booleen => {
+                            let f = self.import_runtime("rose_affiche_bool");
+                            let _ = self.builder.ins().call(f, &[v]);
+                        }
+                        _ => {
+                            let tag = self.builder.use_var(self.tag_tmp);
+                            let f = self.import_runtime("rose_affiche_ent");
+                            let _ = self.builder.ins().call(f, &[v, tag]);
+                        }
+                    }
                     self.saut(next, &[]);
                 }
                 Op::Saut { cible } => {
@@ -3980,6 +4066,11 @@ fn si_flottant(b: &mut FunctionBuilder, flot: bool, g: Value, d: Value) -> (Valu
 #[allow(dead_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_affiche_i64(v: i64) { crate::run::ecrire_out(&format!("{}\n", v)); }
+
+/// 18/11 — D3 : primitive `temps()` sans état (même horodatage que
+/// `interp.rs:4208`), rendue comme i64 nu (l'horloge tient en i64).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_temps() -> i64 { crate::run::temps_unix_nanos() as i64 }
 
 /// Helper JIT : affichage d'un i64 taggé (valeur, tag) rendu par rose_mul_ent /
 /// rose_pow_ent / rose_neg_ent. tag ≠ 0 recycle la Box<Valeur>.
