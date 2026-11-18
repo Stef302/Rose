@@ -578,4 +578,14 @@ C'est la porte de vitesse architecturale: traiter la cause, pas les symptômes.
 |---|---|---|---|
 | C1 | chaîne O(1) (append en place / rope) | `rose/src/{interp,run}.rs`, `rose/docs/CHAINE_O1.md` | domaine 5 < 1,0 ms (aujourd'hui 6,16 ms) |
 
-⚠ `interp.rs`/`run.rs` sont EXCLUSIFS à C1 pendant son chantier — ne pas éditer ni rebuilder ces fichiers ailleurs.
+⚠ `interp.rs`/`run.rs` étaient EXCLUSIFS à C1 pendant son chantier — chantier terminé et commité (`4cf0324`).
+
+**Bilan vague 15 (18/11, 15:40Z)**: C1 ✅ rope persistante `Valeur::Chaine(Rc<ChaineRep>)`, `+` O(1), `longueur` O(1), Drop/flatten itératifs. **O(n²)→O(n) PROUVÉ** (N=5k/10k/20k/40k → 0,82/1,65/3,30/6,57ms, ×2,01/×2,00/×1,99). D5 6,16→3,29ms (1,87×, ratio Rust 439→233×). Porte <1ms NON atteinte (plancher 1,7–2,2ms de sync dans `rir.rs`, hors périmètre). Régression D2 +3% reproductible non isolée. Re-mesuré indépendamment 2 salves A/A, oracles 152/0×4, point fixe intact. `CHAINE_O1.md`.
+
+## Vague 16 (18/11) — goulot E/S
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| E1 | E/S zéro recopie | `rose/src/{interp,sys_io}.rs`, `rose/docs/ES_ZERO_COPY.md` | battre Rust 4,73ms (secondaire <8ms) |
+
+Domaine 8: 13,49ms Rose vs 4,73ms Rust (×2,85). Causes mesurées à confirmer: `String::from_utf8_lossy(&b).into_owned()` (recopie 10 Mo), `chaine_de` aplatie la rope pour l'écriture.
