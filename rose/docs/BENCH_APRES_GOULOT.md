@@ -271,3 +271,28 @@ au-delà. Détails : `JIT_BOUCLE_HOT.md`.
 
 **Écarts résiduels** : PGCD ×46, chaîne ×65, table ×14, liste ×11,7,
 premiers ×1,48. Constat daté, pas consigne.
+
+---
+
+## Addendum — 3ᵉ victoire : premiers (18/11, 21:00Z)
+
+Binaire `caa7ba9c75871258c97fc397bc1d3b122f036075443e4b2ea7bc9b44c0020da1`.
+2 salves A/A indépendantes (9 échantillons, c19 et c15).
+
+| # | Domaine | Avant | Après (c19 / c15) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,65 | 11,65 / 11,65 | **0,915 / 0,917** ✅ |
+| 2 | Boucle 1..10⁶ | 0,259 | 0,259 / 0,259 | 1,005 ≈ |
+| 3 | Premiers < 50 000 | 1,479 | **0,855 / 0,854** | **0,852 / 0,852** ✅ |
+| 4 | Factorielle 5 000 | 1,43 | 1,43 / 1,43 | 0,22 ✅ |
+| 4b | PGCD 1 000 chiffres | 6,73 | 6,75 / 6,73 | 45,8 |
+| 5 | Chaîne 20 000 car. | 0,93 | 0,93 / 0,94 | 63–65 |
+| 6 | Liste 100 000 entiers | 2,15 | 2,17 / 2,15 | 11,6 |
+| 7 | Table 3 000 clés | 1,36 | 1,36 / 1,36 | 14,5 / 14,3 |
+| 8 | E/S 10 Mo | ~6,1 | 4,98 / 4,95 (bruit) | 1,03 / 1,02 ≈ |
+
+**3 victoires nettes** (`fib(35)`, factorielle, premiers) **+ 2 domaines au
+niveau** (boucle, E/S). Premiers : 1,479 → 0,854 ms (×1,73), Rose bat Rust
+de 15 % **dans la même salve sur les deux cœurs**, sans changement d'algorithme
+(toujours division d'essai ; 6 `udiv` supprimés par produits magiques).
+Détails : `JIT_PREMIERS_BAT.md`. Constat daté, pas consigne.
