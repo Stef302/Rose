@@ -526,3 +526,5 @@ Six agents sur les goulots exacts identifiés par les mesures :
 | K2 | **fix repli autonome** | `rose/src/main.rs`, `rose/docs/G2_FIX.md` | jardin 20/20 sur build `--features autonome` |
 
 Règle inchangée: aucune annonce de victoire sans mesure A/A/A pinée, point fixe et 4 oracles re-vérifiés après.
+
+**Bilan vague 11** : K1 ✅ `5de6d20` **Rose bat Rust sur fib(35): 11,53ms vs 12,61ms (-8,6%)** — branchement de base pris (`b.cs`) + prologue 3 registres, générique; K2 ✅ `0d1c36a` G2 autonome jardin 20/20. Vérification indépendante 21 échantillons c15: ratio 0,9141. Point fixe `bdbef636` intact, 4 oracles 20/20. ⚠ Victoire sur UN domaine seulement (BENCH_MULTI: 1/8 avec même source); les autres restent à fermer.
