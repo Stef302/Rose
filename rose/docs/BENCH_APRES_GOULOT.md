@@ -242,3 +242,32 @@ runtime et handles de `Valeur`. Détails : `JIT_TYPES_NON_NUM.md`.
 
 **Écarts résiduels** : PGCD ×45, chaîne ×64, table ×14, liste ×11,7, boucle
 ×5,0, premiers ×1,48. Constat daté, pas consigne.
+
+---
+
+## Addendum — après hot-path boucle JIT (18/11, 20:30Z)
+
+Binaire `316fbfc696071fd25e645068507f2506363705fa0c239846ba5a97e027aa3b45`.
+2 salves A/A indépendantes (9 échantillons, c19 et c15).
+
+| # | Domaine | Avant | Après (c19 / c15) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,70 | 11,77 / 11,72 | 0,93 / 0,92 ✅ |
+| 2 | Boucle 1..10⁶ | 1,293 | **0,267 / 0,258** | **1,024 / 0,983** ≈ |
+| 3 | Premiers < 50 000 | 1,481 | 1,479 / 1,482 | 1,48 |
+| 4 | Factorielle 5 000 | 1,386 | 1,424 / 1,423 | 0,22 ✅ |
+| 4b | PGCD 1 000 chiffres | 6,733 | 6,725 / 6,737 | 45,7 / 45,8 |
+| 5 | Chaîne 20 000 car. | 0,941 | 0,947 / 0,927 | 64,9 / 65,3 |
+| 6 | Liste 100 000 entiers | 2,146 | 2,153 / 2,193 | 11,6 / 11,7 |
+| 7 | Table 3 000 clés | 1,357 | 1,351 / 1,349 | 14,3 / 14,1 |
+| 8 | E/S 10 Mo | 6,12 | 6,12 / 6,09 (bruit) | 1,01 / 1,00 ≈ |
+
+**2 victoires nettes + 2 domaines au niveau de Rust** (boucle et E/S).
+La boucle atteint le **plancher machine mesuré** 0,2564 ms (écart +0,6 %)
+avec 9 instructions pour 2 itérations. Ce n'est pas revendiqué comme une
+victoire : le ratio c19 est 1,024 (légèrement derrière Rust), c15 0,983 —
+écart dans le bruit. Preuve de borne formelle pour `n ≤ 2^32`, repli vérifié
+au-delà. Détails : `JIT_BOUCLE_HOT.md`.
+
+**Écarts résiduels** : PGCD ×46, chaîne ×65, table ×14, liste ×11,7,
+premiers ×1,48. Constat daté, pas consigne.
