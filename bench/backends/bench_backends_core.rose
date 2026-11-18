@@ -1,0 +1,42 @@
+# bench_backends_core.rose — sous-ensemble AOT du banc de backends.
+#
+# Ce fichier est un COMPAGNON de bench_backends.rose, pas un banc différent :
+# les corps de charge_arith() et fib()/charge_recur() sont COPIÉS À L'IDENTIQUE.
+# Il n'imprime QUE des entiers, et n'appelle NI temps(), NI aucune fonction sur
+# chaîne/liste/table : c'est le sous-ensemble que savent compiler les backends
+# AOT (rose orc, rose llvm). Le harnais mesure leur temps avec son horloge
+# MURALE externe (perf_counter), jamais avec l'horloge interne Rose.
+#
+# Usage :
+#   ./rose/rose bench/backends/bench_backends_core.rose
+#   ./rose/rose orc bench/backends/bench_backends_core.rose -o Programme --link
+#   (depuis la racine du dépôt, pour rose llvm : PYTHONPATH relatif)
+#
+# Sortie (deux lignes d'entiers, dans cet ordre) :
+#   <valeur arithmétique>
+#   <valeur récursion>
+# Ces deux valeurs doivent être IDENTIQUES à celles de bench_backends.rose.
+
+$N_ARITH = 2000000
+$N_RECUR = 30
+
+# ── Copie exacte de charge_arith() de bench_backends.rose ──
+fn charge_arith(n: entier) -> entier {
+    $s = 0
+    pour k de 1 vers n {
+        $s = $s + k * k
+    }
+    retour $s
+}
+
+# ── Copie exacte de fib()/charge_recur() de bench_backends.rose ──
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+fn charge_recur(n: entier) -> entier {
+    retour fib(n)
+}
+
+>> charge_arith($N_ARITH)
+>> charge_recur($N_RECUR)

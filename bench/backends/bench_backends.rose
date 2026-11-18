@@ -1,0 +1,122 @@
+# bench_backends.rose — banc de comparaison des MOTEURS d'exécution de Rose.
+# Écrit en Rose, aucun fichier externe, aucune dépendance.
+#
+# Usage :
+#   ./rose/rose bench/backends/bench_backends.rose          # jeu complet
+#   ./rose/rose bench/backends/bench_backends.rose rapide   # jeu réduit (mise au point)
+#
+# Cinq charges représentatives : arithmétique, récursion, chaîne, liste, table.
+# Chaque charge est chronométrée avec temps() (horloge INTERNE Rose, nanoseconds
+# depuis l'époque Unix) ; le harnais shell chronomètre séparément le PROCESSUS
+# avec une horloge MURALE externe (perf_counter). Les deux ne sont jamais
+# additionnées ni confondues.
+#
+# ⚠ En Rose, `i` est l'unité imaginaire (i*i = -1) : TOUS les compteurs de
+#   boucle s'appellent `k`, jamais `i`.
+#
+# Sortie machine (une ligne par mesure) :
+#   RESULT <domain> <valeur> <nanos_interne>
+#   CHECKSUM <somme_des_5_valeurs>
+# Les valeurs RESULT sont déterministes : elles doivent être IDENTIQUES sous
+# tous les backends capables d'exécuter ce programme.
+#
+# ⚠ Les backends AOT (rose llvm / rose orc) ne compilent NI temps(), NI les
+#   littéraux chaîne, NI les listes/tables. Voir bench_backends_core.rose et
+#   rose/docs/BENCH_BACKENDS.md. Ce programme-ci cible les backends qui
+#   exécutent le langage Rose complet (JIT, interpréteur, RIR, natif, comp).
+
+$N_ARITH  = 2000000
+$N_RECUR  = 30
+$N_CHAINE = 8000
+$N_LISTE  = 15000
+$N_TABLE  = 8000
+si (nb_arguments() > 0) {
+    si (argument(0) == "rapide") {
+        $N_ARITH  = 10000
+        $N_RECUR  = 18
+        $N_CHAINE = 50
+        $N_LISTE  = 100
+        $N_TABLE  = 50
+    }
+}
+
+# ── 1. Arithmétique : somme des carrés (boucle serrée, entiers) ──
+fn charge_arith(n: entier) -> entier {
+    $s = 0
+    pour k de 1 vers n {
+        $s = $s + k * k
+    }
+    retour $s
+}
+
+# ── 2. Récursion : Fibonacci naïf (profondeur + appels) ──
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+fn charge_recur(n: entier) -> entier {
+    retour fib(n)
+}
+
+# ── 3. Chaîne : concaténations et sous-chaînes ──
+fn charge_chaine(n: entier) -> entier {
+    $motif = "ete radieux"
+    $acc = ""
+    pour k de 1 vers n {
+        $acc = sous_chaine($motif, 0, 3) + $acc
+    }
+    retour longueur($acc)
+}
+
+# ── 4. Liste : croissance et accès indexé ──
+fn charge_liste(n: entier) -> entier {
+    $p = [0]
+    pour k de 1 vers n {
+        joindre($p, k)
+    }
+    retour longueur($p) + $p[partie_entiere(n / 2)]
+}
+
+# ── 5. Table : insertion et lookup ──
+fn charge_table(n: entier) -> entier {
+    $tab = table()
+    pour k de 1 vers n {
+        inserer($tab, "k" + chaine(k), k * k)
+    }
+    $cle = "k" + chaine(partie_entiere(n / 2))
+    $ok = 0
+    si (cle_existe($tab, $cle)) { $ok = 1 }
+    retour longueur($tab) + $ok
+}
+
+# ── Exécution des cinq charges, chronométrage interne ──
+>> "=== BENCH BACKENDS ROSE v1 ==="
+>> "TAILLES " + chaine($N_ARITH) + " " + chaine($N_RECUR) + " " + chaine($N_CHAINE) + " " + chaine($N_LISTE) + " " + chaine($N_TABLE)
+
+$deb = temps()
+$v_arith = charge_arith($N_ARITH)
+$fin = temps()
+>> "RESULT arith " + chaine($v_arith) + " " + chaine($fin - $deb) + " ns (" + duree($fin - $deb) + ")"
+
+$deb = temps()
+$v_recur = charge_recur($N_RECUR)
+$fin = temps()
+>> "RESULT recur " + chaine($v_recur) + " " + chaine($fin - $deb) + " ns (" + duree($fin - $deb) + ")"
+
+$deb = temps()
+$v_chaine = charge_chaine($N_CHAINE)
+$fin = temps()
+>> "RESULT chaine " + chaine($v_chaine) + " " + chaine($fin - $deb) + " ns (" + duree($fin - $deb) + ")"
+
+$deb = temps()
+$v_liste = charge_liste($N_LISTE)
+$fin = temps()
+>> "RESULT liste " + chaine($v_liste) + " " + chaine($fin - $deb) + " ns (" + duree($fin - $deb) + ")"
+
+$deb = temps()
+$v_table = charge_table($N_TABLE)
+$fin = temps()
+>> "RESULT table " + chaine($v_table) + " " + chaine($fin - $deb) + " ns (" + duree($fin - $deb) + ")"
+
+# Signature déterministe : la même sous tous les backends complets.
+>> "CHECKSUM " + chaine($v_arith + $v_recur + $v_chaine + $v_liste + $v_table)
