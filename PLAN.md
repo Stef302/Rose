@@ -483,3 +483,18 @@ Cinq agents sur les questions ouvertes de l'utilisateur, fichiers distincts :
 ⚠ H1 peut modifier le moteur (jit/interp/rir) : après livraison, re-vérifier les 4 oracles 150/150 et le point fixe md5 avant publication.
 
 **Bilan vague 8** : H1 ✅ `b3c0b72` fib(35) 208→51,3ms (×4,05; Rust reste 4,05× devant, Rose bat Rust 5,34× sur factorielle) · H2 ✅ Mach-O structure prouvée · H3 ✅ RIR = bytecode interne (`BYTECODE_ROSE.md`) · H4 ✅ guide universel wasm · Fix ✅ build wasm réparé (`3328ce5`, 15 tests Node) · H5 ✅ plafond vitesse (`PLAFOND_VITESSE.md`: natif 4× JIT, plafond NTT 2,25×). Après H1: point fixe `bdbef636` intact, 30/30 oracles sur échantillon, débordements i64 exacts.
+
+## Vague 9 (18/11) — dépasser Rust + autonomie + JVM Rose + mémoire Zig
+
+Six agents pour franchir les deux limites restantes, fichiers distincts :
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| I1 | **battre Rust sur fib** | `rose/src/{jit,rir}.rs`, `rose/docs/BATTRE_RUST.md` | fib35 ≤ 12,7ms par transformation récursion→boucle générique |
+| I2 | **autonomie G2/G3** | `rose/src/bin/rose-autonome.rs`, `rose/docs/AUTONOMIE_G2.md` | compiler sans Cranelift, `cargo tree` réel |
+| I3 | **JVM Rose** | `rose/src/rosevm.rs`, `rose/docs/ROSE_VM.md` | `.rosebc` sérialisé/rechargé/exécuté, GC+andbox |
+| I4 | **mémoire style Zig** | `rose/src/mem_modele.rs`, `rose/docs/MEMOIRE_ZIG.md` | allocateur explicite prototype + mesure |
+| I5 | **bench multi-domaines** | `rose/docs/BENCH_MULTI.md` | 8 domaines Rose/Rust/Python, verdict |
+| I6 | **guide autonomie** | `rose/docs/AUTONOMIE_COMPLETE.md` | route G2→G4 vérifiable, état réel |
+
+⚠ I1 modifie `jit.rs`/`rir.rs` (moteur) : après livraison re-vérifier 4 oracles + point fixe. I3/I4 ajoutent des modules non câblés (orchestrateur décide).
