@@ -76,3 +76,31 @@ sha256sum /home/clausake/Stefan/ROSE/rose/rose
 
 Données brutes : `/tmp/opencode/benchmulti/bench_after_goulot.log`,
 `bench_after_goulot_ctrl.log`, `multi_results.csv`, `multi_summary.json`.
+
+---
+
+## Addendum — après fermeture du goulot chaîne (18/11, 15:40Z)
+
+Binaire `c05d72e5574a8279326aa2f3b8bc24f88b8b68df1abc2e1219d2aaca6725a4fb`,
+2 salves A/A de 9 échantillons rejouées indépendamment (c19), mêmes harnais.
+
+| # | Domaine | Avant (ce2188) | Après rope (c05d72) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,600 | 11,553 – 11,595 | 0,91 × ✅ |
+| 2 | Boucle 1..10⁶ | 8,743 | 9,045 – 9,054 | 34,9 × (**+3 % régression**) |
+| 3 | Premiers < 50 000 | 9,453 | 9,323 – 9,339 | 9,4 × |
+| 4 | Factorielle 5 000 | 1,484 | 1,480 – 1,482 | 0,23 × ✅ |
+| 4b | PGCD 1 000 chiffres | 6,735 | 6,708 – 6,721 | 45,5 × |
+| 5 | Chaîne 20 000 car. | 6,160 | **3,294 – 3,321** | 233 × (**×1,87**) |
+| 6 | Liste 100 000 entiers | 38,591 | 38,124 – 38,126 | 203 × |
+| 7 | Table 3 000 clés | 6,332 | 6,283 – 6,286 | 66,6 × |
+| 8 | E/S 10 Mo | 13,490 | 14,564 – 14,822 (bruité) | 2,85 × |
+
+Toujours **2 domaines / 9** battant Rust. Chaîne : O(n²) → O(n) **prouvé**
+(N = 5k/10k/20k/40k → 0,82/1,65/3,30/6,57 ms, ×2,01/×2,00/×1,99).
+Détails, variantes rejetées et exactitude : `CHAINE_O1.md`.
+
+**Porte chaîne < 1 ms NON atteinte** : plancher ~1,7–2,2 ms de synchronisation
+slots↔globaux dans `rir.rs` (hors périmètre de l'agent). Régression D2 de 3 %
+reproductible, non isolée (apparaît dès que le code d'internage est présent).
+Constat daté, pas consigne.
