@@ -1,0 +1,210 @@
+# jardins/tests/math.rose — TESTS D'ÉQUIVALENCE du jardin `math`.
+#
+# ⚠ Ce programme IMPORTE le jardin (aucune recopie de corps de fonction) et
+#   compare SA sortie à la PRIMITIVE RUST native, sur un corpus d'au moins
+#   20 valeurs par fonction délocalisée. Un « ✗ » = divergence réelle.
+#
+# Exécution :  taskset -c 10 ./rose/rose jardins/tests/math.rose
+
+importer "jardins/math.rose"
+
+
+$erreurs = 0
+
+fn verifier(nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
+  si (obtenu == attendu) {
+    >> "✓ " + nom + " (" + obtenu + ")"
+    retour 0
+  }
+  >> "✗ " + nom + " : obtenu " + obtenu + ", attendu " + attendu
+  retour 1
+}
+
+# ── Groupe A : 22 fonctions unaires sur entier, corpus 0..24 (25 cas) ─────
+$d01 = 0
+$d02 = 0
+$d03 = 0
+$d04 = 0
+$d05 = 0
+$d06 = 0
+$d07 = 0
+$d08 = 0
+$d09 = 0
+$d10 = 0
+$d11 = 0
+$d12 = 0
+$d13 = 0
+$d14 = 0
+$d15 = 0
+$d16 = 0
+$d17 = 0
+$d18 = 0
+$d19 = 0
+$d20 = 0
+$d21 = 0
+$d22 = 0
+$n = 0
+tant_que ($n <= 24) {
+  si (chaine(factorielle_jardin($n)) != chaine(factorielle($n))) { $d01 = $d01 + 1 }
+  si (chaine(fact_jardin($n)) != chaine(fact($n))) { $d02 = $d02 + 1 }
+  si (chaine(fibonacci_jardin($n)) != chaine(fibonacci($n))) { $d03 = $d03 + 1 }
+  si (chaine(fib_jardin($n)) != chaine(fib($n))) { $d04 = $d04 + 1 }
+  si (chaine(nb_chiffres_jardin($n)) != chaine(nb_chiffres($n))) { $d05 = $d05 + 1 }
+  si (chaine(digits_jardin($n)) != chaine(digits($n))) { $d06 = $d06 + 1 }
+  si (chaine(factorielle_rapide_jardin($n)) != chaine(factorielle_rapide($n))) { $d07 = $d07 + 1 }
+  si (chaine(factorial_rapide_jardin($n)) != chaine(factorial_rapide($n))) { $d08 = $d08 + 1 }
+  si (chaine(rapide_jardin($n)) != chaine(rapide($n))) { $d09 = $d09 + 1 }
+  si (chaine(primorielle_jardin($n)) != chaine(primorielle($n))) { $d10 = $d10 + 1 }
+  si (chaine(termial_jardin($n)) != chaine(termial($n))) { $d11 = $d11 + 1 }
+  si (chaine(triangulaire_jardin($n)) != chaine(triangulaire($n))) { $d12 = $d12 + 1 }
+  si (chaine(termial_classique_jardin($n)) != chaine(termial_classique($n))) { $d13 = $d13 + 1 }
+  si (chaine(terminal_jardin($n)) != chaine(terminal($n))) { $d14 = $d14 + 1 }
+  si (chaine(termial_kurepa_jardin($n)) != chaine(termial_kurepa($n))) { $d15 = $d15 + 1 }
+  si (chaine(kurepa_jardin($n)) != chaine(kurepa($n))) { $d16 = $d16 + 1 }
+  si (chaine(super_factorielle_jardin($n)) != chaine(super_factorielle($n))) { $d17 = $d17 + 1 }
+  si (chaine(sous_factorielle_jardin($n)) != chaine(sous_factorielle($n))) { $d18 = $d18 + 1 }
+  si (chaine(derangement_jardin($n)) != chaine(derangement($n))) { $d19 = $d19 + 1 }
+  si (chaine(sous_factorial_jardin($n)) != chaine(sous_factorial($n))) { $d20 = $d20 + 1 }
+  si (chaine(compter_premiers_jardin($n)) != chaine(compter_premiers($n))) { $d21 = $d21 + 1 }
+  si (chaine(duree_jardin($n)) != chaine(duree($n))) { $d22 = $d22 + 1 }
+  $n = $n + 1
+}
+$erreurs = $erreurs + verifier("factorielle / 25 cas", chaine($d01), "0")
+$erreurs = $erreurs + verifier("fact / 25 cas", chaine($d02), "0")
+$erreurs = $erreurs + verifier("fibonacci / 25 cas", chaine($d03), "0")
+$erreurs = $erreurs + verifier("fib / 25 cas", chaine($d04), "0")
+$erreurs = $erreurs + verifier("nb_chiffres / 25 cas", chaine($d05), "0")
+$erreurs = $erreurs + verifier("digits / 25 cas", chaine($d06), "0")
+$erreurs = $erreurs + verifier("factorielle_rapide / 25 cas", chaine($d07), "0")
+$erreurs = $erreurs + verifier("factorial_rapide / 25 cas", chaine($d08), "0")
+$erreurs = $erreurs + verifier("rapide / 25 cas", chaine($d09), "0")
+$erreurs = $erreurs + verifier("primorielle / 25 cas", chaine($d10), "0")
+$erreurs = $erreurs + verifier("termial / 25 cas", chaine($d11), "0")
+$erreurs = $erreurs + verifier("triangulaire / 25 cas", chaine($d12), "0")
+$erreurs = $erreurs + verifier("termial_classique / 25 cas", chaine($d13), "0")
+$erreurs = $erreurs + verifier("terminal / 25 cas", chaine($d14), "0")
+$erreurs = $erreurs + verifier("termial_kurepa / 25 cas", chaine($d15), "0")
+$erreurs = $erreurs + verifier("kurepa / 25 cas", chaine($d16), "0")
+$erreurs = $erreurs + verifier("super_factorielle / 25 cas", chaine($d17), "0")
+$erreurs = $erreurs + verifier("sous_factorielle / 25 cas", chaine($d18), "0")
+$erreurs = $erreurs + verifier("derangement / 25 cas", chaine($d19), "0")
+$erreurs = $erreurs + verifier("sous_factorial / 25 cas", chaine($d20), "0")
+$erreurs = $erreurs + verifier("compter_premiers / 25 cas", chaine($d21), "0")
+$erreurs = $erreurs + verifier("duree / 25 cas", chaine($d22), "0")
+
+# ── Groupe B : 10 fonctions binaires, 24 paires ───────────────────────────
+$as = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+$bs = [24, 23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+$e01 = 0
+$e02 = 0
+$e03 = 0
+$e04 = 0
+$e05 = 0
+$e06 = 0
+$e07 = 0
+$e08 = 0
+$e09 = 0
+$e10 = 0
+$i = 0
+tant_que ($i < 24) {
+  $a = $as[$i]
+  $b = $bs[$i]
+  si (chaine(pgcd_jardin($a, $b)) != chaine(pgcd($a, $b))) { $e01 = $e01 + 1 }
+  si (chaine(gcd_jardin($a, $b)) != chaine(gcd($a, $b))) { $e02 = $e02 + 1 }
+  si (chaine(ppcm_jardin($a, $b)) != chaine(ppcm($a, $b))) { $e03 = $e03 + 1 }
+  si (chaine(lcm_jardin($a, $b)) != chaine(lcm($a, $b))) { $e04 = $e04 + 1 }
+  si (chaine(puissance_jardin($a, $b)) != chaine(puissance($a, $b))) { $e05 = $e05 + 1 }
+  si (chaine(pow_jardin($a, $b)) != chaine(pow($a, $b))) { $e06 = $e06 + 1 }
+  si (chaine(multifactorielle_jardin($a, $b)) != chaine(multifactorielle($a, $b))) { $e07 = $e07 + 1 }
+  si (chaine(multifactoriel_jardin($a, $b)) != chaine(multifactoriel($a, $b))) { $e08 = $e08 + 1 }
+  si (chaine(fraction_jardin($a, $b)) != chaine(fraction($a, $b))) { $e09 = $e09 + 1 }
+  si (chaine(pgcd_jardin(-$a, $b)) != chaine(pgcd(-$a, $b))) { $e10 = $e10 + 1 }
+  $i = $i + 1
+}
+$erreurs = $erreurs + verifier("pgcd / 24 paires", chaine($e01), "0")
+$erreurs = $erreurs + verifier("gcd / 24 paires", chaine($e02), "0")
+$erreurs = $erreurs + verifier("ppcm / 24 paires", chaine($e03), "0")
+$erreurs = $erreurs + verifier("lcm / 24 paires", chaine($e04), "0")
+$erreurs = $erreurs + verifier("puissance / 24 paires", chaine($e05), "0")
+$erreurs = $erreurs + verifier("pow / 24 paires", chaine($e06), "0")
+$erreurs = $erreurs + verifier("multifactorielle / 24 paires", chaine($e07), "0")
+$erreurs = $erreurs + verifier("multifactoriel / 24 paires", chaine($e08), "0")
+$erreurs = $erreurs + verifier("fraction / 24 paires", chaine($e09), "0")
+$erreurs = $erreurs + verifier("pgcd sur négatifs / 24 paires", chaine($e10), "0")
+
+# ── Groupe C : exposants négatifs (sortie rationnelle) ────────────────────
+# ⚠ Domaine : dénominateur tenant en i64 (limite de l'opérateur `/` de Rose,
+#   documentée dans math.rose). Corpus : 2^-1 … 2^-20 = 20 cas.
+$x = 1
+$f01 = 0
+$f02 = 0
+tant_que ($x <= 20) {
+  $e = -$x
+  si (chaine(puissance_jardin(2, $e)) != chaine(puissance(2, $e))) { $f01 = $f01 + 1 }
+  si (type_de(puissance_jardin(2, $e)) != type_de(puissance(2, $e))) { $f02 = $f02 + 1 }
+  $x = $x + 1
+}
+$erreurs = $erreurs + verifier("puissance, exposant négatif / 20 cas", chaine($f01), "0")
+$erreurs = $erreurs + verifier("puissance, type rationnel / 20 cas", chaine($f02), "0")
+
+# ── Groupe D : abs/min/max/plancher (entier, rationnel, flottant) ─────────
+$vals = [-20, -19, -18, -17, -16, -15, -14, -13, -12, -11, -10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4]
+$g01 = 0
+$g02 = 0
+$g03 = 0
+$g04 = 0
+$i = 0
+tant_que ($i < longueur($vals)) {
+  $v = $vals[$i]
+  si (chaine(abs_jardin($v)) != chaine(abs($v))) { $g01 = $g01 + 1 }
+  si (chaine(max_jardin($v, 3)) != chaine(max($v, 3)) ou type_de(max_jardin($v, 3)) != type_de(max($v, 3))) { $g02 = $g02 + 1 }
+  si (chaine(min_jardin($v, 3)) != chaine(min($v, 3)) ou type_de(min_jardin($v, 3)) != type_de(min($v, 3))) { $g03 = $g03 + 1 }
+  si (chaine(partie_entiere_entier_jardin($v)) != chaine(partie_entiere($v))) { $g04 = $g04 + 1 }
+  $i = $i + 1
+}
+$erreurs = $erreurs + verifier("abs / 25 cas", chaine($g01), "0")
+$erreurs = $erreurs + verifier("max / 25 cas (valeur + type)", chaine($g02), "0")
+$erreurs = $erreurs + verifier("min / 25 cas (valeur + type)", chaine($g03), "0")
+$erreurs = $erreurs + verifier("partie_entiere (entiers) / 25 cas", chaine($g04), "0")
+
+# ── Groupe E : promotion de type de min/max + plancher flottant/rationnel ─
+$fl = [-9.7, -8.6, -7.5, -6.4, -5.3, -4.2, -3.1, -2.9, -1.8, -0.7, 0.0, 0.5, 1.6, 2.7, 3.8, 4.9, 5.4, 6.3, 7.2, 8.1]
+$h01 = 0
+$h02 = 0
+$h03 = 0
+$h04 = 0
+$if = 0
+tant_que ($if < longueur($fl)) {
+  $vf = $fl[$if]
+  si (chaine(abs_jardin($vf)) != chaine(abs($vf))) { $h01 = $h01 + 1 }
+  si (chaine(min_jardin($vf, 3)) != chaine(min($vf, 3)) ou type_de(min_jardin($vf, 3)) != type_de(min($vf, 3))) { $h02 = $h02 + 1 }
+  si (chaine(max_jardin(3, $vf)) != chaine(max(3, $vf)) ou type_de(max_jardin(3, $vf)) != type_de(max(3, $vf))) { $h03 = $h03 + 1 }
+  si (chaine(partie_entiere_flottant_jardin($vf)) != chaine(partie_entiere($vf))) { $h04 = $h04 + 1 }
+  $if = $if + 1
+}
+$erreurs = $erreurs + verifier("abs (flottants) / 20 cas", chaine($h01), "0")
+$erreurs = $erreurs + verifier("min (flottants) / 20 cas", chaine($h02), "0")
+$erreurs = $erreurs + verifier("max (flottants) / 20 cas", chaine($h03), "0")
+$erreurs = $erreurs + verifier("partie_entiere (flottants) / 20 cas", chaine($h04), "0")
+
+$rats = [-9/2, -7/2, -5/2, -3/2, -1/2, 0/1, 1/2, 3/2, 5/2, 7/2, 9/2, 11/2, 13/2, 15/2, 17/2, 19/2, 21/2, 23/2, 25/2, 27/2]
+$k01 = 0
+$k02 = 0
+$k03 = 0
+$ir = 0
+tant_que ($ir < longueur($rats)) {
+  $vr = $rats[$ir]
+  si (chaine(abs_jardin($vr)) != chaine(abs($vr))) { $k01 = $k01 + 1 }
+  si (chaine(min_jardin($vr, 3)) != chaine(min($vr, 3)) ou type_de(min_jardin($vr, 3)) != type_de(min($vr, 3))) { $k02 = $k02 + 1 }
+  si (chaine(partie_entiere_rationnel_jardin($vr)) != chaine(partie_entiere($vr))) { $k03 = $k03 + 1 }
+  $ir = $ir + 1
+}
+$erreurs = $erreurs + verifier("abs (rationnels) / 20 cas", chaine($k01), "0")
+$erreurs = $erreurs + verifier("min (rationnels) / 20 cas", chaine($k02), "0")
+$erreurs = $erreurs + verifier("partie_entiere (rationnels) / 20 cas", chaine($k03), "0")
+
+si ($erreurs == 0) {
+  >> "── jardin/math : 35 primitives, 45 vérifications, 0 échec ──"
+} sinon {
+  >> "── jardin/math : " + chaine($erreurs) + " échec(s) ──"
+}

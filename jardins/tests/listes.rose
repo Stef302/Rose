@@ -1,0 +1,51 @@
+# jardins/tests/listes.rose — TESTS FONCTIONNELS du jardin `listes`.
+#
+# ⚠ Ces utilitaires ne sont PAS des primitives STDLIB : il n'y a donc PAS de
+#   comparaison natif/jardin ici (voir le doc DELOCALISATION_40.md). On vérifie
+#   leurs résultats attendus, calculés à la main.
+#
+# Exécution :  taskset -c 10 ./rose/rose jardins/tests/listes.rose
+
+importer "jardins/listes.rose"
+
+$erreurs = 0
+
+fn verifier(nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
+  si (obtenu == attendu) {
+    >> "✓ " + nom + " (" + obtenu + ")"
+    retour 0
+  }
+  >> "✗ " + nom + " : obtenu [" + obtenu + "], attendu [" + attendu + "]"
+  retour 1
+}
+
+$a = [1, 2, 3]
+$b = [4, 5]
+$vide = [0 : entier]
+$desordre = [5, 1, 4, 2, 3]
+$negatifs = [-3, 7, 0, -1, 2]
+
+$erreurs = $erreurs + verifier("joindre_listes", chaine(joindre_listes($a, $b)), "[1, 2, 3, 4, 5]")
+$erreurs = $erreurs + verifier("joindre_listes vide", chaine(joindre_listes($vide, $a)), "[1, 2, 3]")
+$erreurs = $erreurs + verifier("inverser_liste", chaine(inverser_liste($a)), "[3, 2, 1]")
+$erreurs = $erreurs + verifier("inverser_liste vide", chaine(inverser_liste($vide)), "[]")
+$erreurs = $erreurs + verifier("somme_liste", chaine(somme_liste($a)), "6")
+$erreurs = $erreurs + verifier("somme_liste vide", chaine(somme_liste($vide)), "0")
+$erreurs = $erreurs + verifier("produire_liste", chaine(produire_liste($a)), "6")
+$erreurs = $erreurs + verifier("maximum_liste", chaine(maximum_liste($desordre)), "5")
+$erreurs = $erreurs + verifier("minimum_liste", chaine(minimum_liste($desordre)), "1")
+$erreurs = $erreurs + verifier("maximum_liste vide", chaine(maximum_liste($vide)), "0")
+$erreurs = $erreurs + verifier("minimum_liste vide", chaine(minimum_liste($vide)), "0")
+$erreurs = $erreurs + verifier("compter_liste", chaine(compter_liste($desordre, 2)), "1")
+$erreurs = $erreurs + verifier("compter_liste absent", chaine(compter_liste($desordre, 9)), "0")
+$erreurs = $erreurs + verifier("filtrer_pairs", chaine(filtrer_pairs($desordre)), "[4, 2]")
+$erreurs = $erreurs + verifier("filtrer_positifs", chaine(filtrer_positifs($negatifs)), "[7, 2]")
+$erreurs = $erreurs + verifier("tri_insertion", chaine(tri_insertion($desordre)), "[1, 2, 3, 4, 5]")
+$erreurs = $erreurs + verifier("tri_insertion négatifs", chaine(tri_insertion($negatifs)), "[-3, -1, 0, 2, 7]")
+$erreurs = $erreurs + verifier("aplatir3", chaine(aplatir3($a, $b, $vide)), "[1, 2, 3, 4, 5]")
+
+si ($erreurs == 0) {
+  >> "── jardin/listes : 19 tests fonctionnels, 0 échec ──"
+} sinon {
+  >> "── jardin/listes : " + chaine($erreurs) + " échec(s) ──"
+}

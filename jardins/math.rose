@@ -1,0 +1,392 @@
+# jardins/math.rose — arithmétique exacte, écrite en ROSE PUR.
+#
+# ⚠ CE FICHIER EST UNE BIBLIOTHÈQUE (un « jardin »), pas un programme :
+# il ne s'exécute pas seul. On le charge avec :
+#
+#     importer "jardins/math.rose"
+#
+# Aucune dépendance : ni Rust, ni C, ni wasm, ni FFI, ni runtime externe.
+# Tout est calculé en entier exact (BigInt natif de Rose, zéro GMP).
+#
+# ⚠ NOMMAGE : les fonctions portent le suffixe `_jardin`. C'est volontaire :
+#   le moteur JIT a des SPÉCIALISATIONS SENSIBLES AUX NOMS (`est_premier`,
+#   `joindre`, `inserer`, tables). Un jardin ne doit JAMAIS réutiliser ces
+#   noms, sinon il contournerait la spécialisation. Le suffixe rend aussi
+#   les tests d'équivalence non ambigus : `factorielle(10)` = primitif Rust,
+#   `factorielle_jardin(10)` = jardin Rose.
+#
+# ⚠ DOMAINE : les entrées sont des entiers ≥ 0 sauf indication contraire.
+#   Les primitives natives renvoient une ERREUR sur les entiers négatifs
+#   (factorielle, primorielle, …) ; un jardin Rose ne sait pas lever d'erreur,
+#   donc il ne couvre que le domaine où la primitive est définie. Les tests
+#   d'équivalence (jardins/tests/) vérifient exactement ce domaine.
+
+# ── est_premier_basique(n) : divisionTrial jusqu'à √n ──────────────────────
+# Helper INTERNE. ⚠ Ne PAS appeler `est_premier` : nom réservé au JIT.
+# Complexité O(√n).
+fn est_premier_basique(n: entier) -> booleen {
+  si (n < 2) { retour faux }
+  si (n < 4) { retour vrai }
+  si (n % 2 == 0) { retour faux }
+  $d = 3
+  tant_que ($d * $d <= n) {
+    si (n % $d == 0) { retour faux }
+    $d = $d + 2
+  }
+  retour vrai
+}
+
+# ── factorielle_jardin(n) : n! = 1·2·…·n ──────────────────────────────────
+# Produit itératoire. factorielle_jardin(0) = 1. O(n).
+fn factorielle_jardin(n: entier) -> entier {
+  $p = 1
+  $i = 2
+  tant_que ($i <= n) { $p = $p * $i; $i = $i + 1 }
+  retour $p
+}
+
+# ── fact_jardin(n) : alias de factorielle_jardin ──────────────────────────
+fn fact_jardin(n: entier) -> entier { retour factorielle_jardin(n) }
+
+# ── fibonacci_jardin(n) : F(0)=0, F(1)=1, F(n)=F(n-1)+F(n-2) ─────────────
+# O(n) itératif (pas récursif : la récursion est exponentielle).
+fn fibonacci_jardin(n: entier) -> entier {
+  si (n <= 0) { retour 0 }
+  si (n == 1) { retour 1 }
+  $a = 0
+  $b = 1
+  $i = 2
+  tant_que ($i <= n) {
+    $t = $a + $b
+    $a = $b
+    $b = $t
+    $i = $i + 1
+  }
+  retour $b
+}
+
+# ── fib_jardin(n) : alias de fibonacci_jardin ─────────────────────────────
+fn fib_jardin(n: entier) -> entier { retour fibonacci_jardin(n) }
+
+# ── pgcd_jardin(a, b) : Euclide, résultat positif ─────────────────────────
+# La primitive native renvoie aussi une valeur positive (pgcd(-12,8)=4).
+fn pgcd_jardin(a: entier, b: entier) -> entier {
+  $x = a
+  $y = b
+  si ($x < 0) { $x = -$x }
+  si ($y < 0) { $y = -$y }
+  tant_que ($y != 0) {
+    $t = $y
+    $y = $x % $y
+    $x = $t
+  }
+  retour $x
+}
+
+# ── gcd_jardin(a, b) : alias de pgcd_jardin ───────────────────────────────
+fn gcd_jardin(a: entier, b: entier) -> entier { retour pgcd_jardin(a, b) }
+
+# ── ppcm_jardin(a, b) : |a·b| / pgcd(a,b), 0 si l'un est nul ──────────────
+fn ppcm_jardin(a: entier, b: entier) -> entier {
+  si (a == 0 ou b == 0) { retour 0 }
+  $g = pgcd_jardin(a, b)
+  $r = ($a div $g) * $b
+  si ($r < 0) { $r = -$r }
+  retour $r
+}
+
+# ── lcm_jardin(a, b) : alias de ppcm_jardin ───────────────────────────────
+fn lcm_jardin(a: entier, b: entier) -> entier { retour ppcm_jardin(a, b) }
+
+# ── puissance_jardin(a, e) : a^e ──────────────────────────────────────────
+# e ≥ 0 → entier ; e < 0 → rationnel 1/a^(-e) (comportement natif vérifié :
+# `puissance(2,-1)` rend `1/2`). Type de retour DYNAMIQUE (pas de `->`).
+fn puissance_pos_jardin(a: entier, e: entier) -> entier {
+  $r = 1
+  $i = 0
+  tant_que ($i < e) { $r = $r * a; $i = $i + 1 }
+  retour $r
+}
+
+fn puissance_jardin(a: entier, e: entier) {
+  # ⚠⚠⚠ DOMAINE RATIONNEL RESTREINT (mesure du 19/11) : l'opérateur `/` de
+  #   Rose ne sait pas construire un rationnel dont le DÉNOMINATEUR dépasse
+  #   i64 : `1 / puissance_pos_jardin(16,16)` lève « division par zéro »,
+  #   alors que la primitive GMP `puissance(16,-16)` rend
+  #   1/18446744073709551616. Le jardin couvre donc les exposants négatifs
+  #   dont le dénominateur tient en i64 (ex. 2^-1 … 2^-20), et RIEN au-delà.
+  #   Le noyau reste nécessaire pour ces cas : à documenter dans la feuille
+  #   de route, ne PAS retirer `puissance` aveuglément.
+  si (e < 0) { retour 1 / puissance_pos_jardin(a, -e) }
+  retour puissance_pos_jardin(a, e)
+}
+
+# ── pow_jardin(a, e) : alias de puissance_jardin ──────────────────────────
+fn pow_jardin(a: entier, e: entier) { retour puissance_jardin(a, e) }
+
+# ── compter_premiers_jardin(n) : nombre de premiers ≤ n ───────────────────
+# Le natif utilise un crible (A000720) ; ici on teste chaque k par division
+# trial. Même sortie, complexité plus élevée — c'est le prix du Rose pur.
+fn compter_premiers_jardin(n: entier) -> entier {
+  si (n < 2) { retour 0 }
+  $c = 0
+  $k = 2
+  tant_que ($k <= n) {
+    si (est_premier_basique($k)) { $c = $c + 1 }
+    $k = $k + 1
+  }
+  retour $c
+}
+
+# ── nb_chiffres_jardin(n) : taille décimale, SIGNE COMPRIS ─────────────────
+# ⚠ Mesure du 19/11 : le natif compte le signe MOINS comme une « taille » :
+#   nb_chiffres(0)=1, (123)=3, (-123)=4, (-5)=2, (-10)=3. On le reproduit.
+fn nb_chiffres_jardin(n: entier) -> entier {
+  $m = n
+  $signe = 0
+  si ($m < 0) { $m = -$m; $signe = 1 }
+  si ($m == 0) { retour 1 }
+  $c = 0
+  tant_que ($m > 0) { $c = $c + 1; $m = $m div 10 }
+  retour $c + $signe
+}
+
+# ── digits_jardin(n) : alias de nb_chiffres_jardin ────────────────────────
+fn digits_jardin(n: entier) -> entier { retour nb_chiffres_jardin(n) }
+
+# ── factorielle_rapide_jardin(n) : produit en arbre (même résultat que n!) ─
+# La version native réorganise le produit en arbre pour la vitesse ; la
+# VALEUR est exactement n!. Ici on garde le produit itératif, plus lisible.
+fn factorielle_rapide_jardin(n: entier) -> entier { retour factorielle_jardin(n) }
+
+# ── factorial_rapide_jardin(n), rapide_jardin(n) : alias ──────────────────
+fn factorial_rapide_jardin(n: entier) -> entier { retour factorielle_jardin(n) }
+fn rapide_jardin(n: entier) -> entier { retour factorielle_jardin(n) }
+
+# ── primorielle_jardin(n) : produit des nombres premiers ≤ n (A002110) ────
+# primorielle_jardin(0)=1, (1)=1, (2)=2.
+fn primorielle_jardin(n: entier) -> entier {
+  $p = 1
+  $k = 2
+  tant_que ($k <= n) {
+    si (est_premier_basique($k)) { $p = $p * $k }
+    $k = $k + 1
+  }
+  retour $p
+}
+
+# ── termial_jardin(n) : termial CLASSIQUE n(n+1)/2 (A000217) ──────────────
+# ⚠ Ne PAS confondre avec `terminal` (Kurepa) plus bas.
+fn termial_jardin(n: entier) -> entier {
+  # ⚠ Forme décomposée en variables locales : l'expression DIRECTE
+  #   `n * (n + 1) div 2` déclenche (mesure 19/11) une spécialisation JIT
+  #   qui CLOBERRE un global appelant quand la fonction est appelée via un
+  #   alias (triangulaire_jardin / termial_classique_jardin) :
+  #   `$e` passait de 0 à 1,2,3,… à chaque appel. Aucun Rust n'est modifié
+  #   ici : on évite simplement le motif, puis on revérifie l'équivalence.
+  $a = n + 1
+  $b = n * $a
+  $c = $b div 2
+  retour $c
+}
+
+# ── triangulaire_jardin(n), termial_classique_jardin(n) : alias ───────────
+fn triangulaire_jardin(n: entier) -> entier { retour termial_jardin(n) }
+fn termial_classique_jardin(n: entier) -> entier { retour termial_jardin(n) }
+
+# ── terminal_jardin(n) : termial de KUREPA, Σ k! pour k=0..n (A003422) ────
+# terminal_jardin(0)=1, (1)=2, (6)=874.
+fn terminal_jardin(n: entier) -> entier {
+  $s = 1
+  $k = 1
+  tant_que ($k <= n) {
+    # ⚠ On RECALE factorielle_jardin(k) à chaque pas au lieu d'entretenir un
+    #   `$f = $f * $k` mutable. Mesure du 19/11 : la forme « accumulateur
+    #   mutable + somme de deux boxés » DIVERGE du natif dès k=22 dans le JIT
+    #   (acc(22)=2360699865296135453816, natif=1177652997443428940314).
+    #   Le JIT n'est PAS modifié ici : le jardin contourne le motif par une
+    #   forme plus simple, dont la sortie est vérifiée sur 0..40.
+    $s = $s + factorielle_jardin($k)
+    $k = $k + 1
+  }
+  retour $s
+}
+
+# ── termial_kurepa_jardin(n), kurepa_jardin(n) : alias ────────────────────
+fn termial_kurepa_jardin(n: entier) -> entier { retour terminal_jardin(n) }
+fn kurepa_jardin(n: entier) -> entier { retour terminal_jardin(n) }
+
+# ── super_factorielle_jardin(n) : ∏ k! pour k=1..n (A000178) ──────────────
+fn super_factorielle_jardin(n: entier) -> entier {
+  $p = 1
+  $f = 1
+  $k = 1
+  tant_que ($k <= n) {
+    $f = $f * $k
+    $p = $p * $f
+    $k = $k + 1
+  }
+  retour $p
+}
+
+# ── multifactorielle_jardin(n, k) : n·(n-k)·(n-2k)·… ──────────────────────
+# k est ramené dans [1,255] comme dans la primitive native.
+fn multifactorielle_jardin(n: entier, k: entier) -> entier {
+  $pas = k
+  si ($pas < 1) { $pas = 1 }
+  si ($pas > 255) { $pas = 255 }
+  $p = 1
+  $m = n
+  tant_que ($m > 0) {
+    $p = $p * $m
+    $m = $m - $pas
+  }
+  si ($n <= 0) { retour 1 }
+  retour $p
+}
+
+# ── multifactoriel_jardin(n, k) : alias ───────────────────────────────────
+fn multifactoriel_jardin(n: entier, k: entier) -> entier {
+  retour multifactorielle_jardin(n, k)
+}
+
+# ── sous_factorielle_jardin(n) : dérangement !n (A000166) ─────────────────
+# !0=1, !1=0, !n=(n-1)(!(n-1)+!(n-2)).
+fn sous_factorielle_jardin(n: entier) -> entier {
+  $d = 1
+  $k = 1
+  $signe = -1
+  tant_que ($k <= n) {
+    # Forme !k = k·!(k-1) + (-1)^k : l'addition ne porte que sur ±1, ce qui
+    # évite le motif JIT « somme de deux grands boxés » (voir terminal_jardin).
+    $d = $k * $d + $signe
+    $signe = -$signe
+    $k = $k + 1
+  }
+  retour $d
+}
+
+# ── derangement_jardin(n), sous_factorial_jardin(n) : alias ───────────────
+fn derangement_jardin(n: entier) -> entier { retour sous_factorielle_jardin(n) }
+fn sous_factorial_jardin(n: entier) -> entier { retour sous_factorielle_jardin(n) }
+
+# ── Utilitaires numériques (abs, min, max, partie_entiere, fraction) ───────
+# Ces cinq primitives sont pures et déterministes : elles peuvent aussi
+# quitter le noyau. Leurs types de retour sont dynamiques (entier, rationnel
+# ou flottant selon l'entrée) — c'est pourquoi la déclaration omet `->`.
+
+# ── abs_jardin(x) : valeur absolue (entier, rationnel ou flottant) ─────────
+fn abs_jardin(x) {
+  # ⚠ Mesure du 19/11 : le NATIF `abs` rend un FLOTTANT pour un rationnel
+  #   (abs(-9/2) = 4.5, type flottant), car la branche « modulus | abs » du
+  #   module interp du noyau est atteinte avant la branche rationnelle. On
+  #   reproduit cela en multipliant par 1.0 (promotion vers flottant).
+  $t = type_de(x)
+  si ($t == "rationnel") {
+    $y = x * 1.0
+    si ($y < 0.0) { retour -$y }
+    retour $y
+  }
+  si (x < 0) { retour -x }
+  retour x
+}
+
+# ── rang_numerique(x) : 1=entier, 2=rationnel, 3=flottant ─────────────────
+# Helper INTERNE : reproduit la règle du langage utilisée par min/max natifs
+# (les deux valeurs sont converties au RANG LE PLUS ÉLEVÉ avant comparaison).
+fn rang_numerique(x) -> entier {
+  $t = type_de(x)
+  si ($t == "flottant") { retour 3 }
+  si ($t == "rationnel") { retour 2 }
+  retour 1
+}
+
+# ── min_jardin(a, b) : minimum avec promotion de type conforme au natif ───
+# min(3, 4.5) rend le FLOTTANT 3 (pas l'entier 3) : la promotion est
+# indispensable pour une sortie identique, type compris.
+fn min_jardin(a, b) {
+  $x = a
+  $y = b
+  $r = rang_numerique(a)
+  si (rang_numerique(b) > $r) { $r = rang_numerique(b) }
+  # ⚠ Pas de conversion explicite `flottant(a)` : le vérificateur refuse une
+  #   conversion depuis un paramètre DYNAMIQUE. La multiplication par 1.0
+  #   (resp. par le rationnel 1/1) fait exactement la même promotion.
+  si ($r == 3) { $x = a * 1.0; $y = b * 1.0 }
+  # ⚠ `b * (1/1)` simplifie en ENTIER pour un entier b (mesuré : type_de
+  #   rend « entier ») : le type du résultat ne serait pas celui du natif.
+  #   `(b * (1/2)) * 2` force un RATIONNEL pour tout b, même entier.
+  si ($r == 2) { $x = (a * (1/2)) * 2; $y = (b * (1/2)) * 2 }
+  si ($x <= $y) { retour $x }
+  retour $y
+}
+
+# ── max_jardin(a, b) : maximum avec promotion de type conforme au natif ───
+fn max_jardin(a, b) {
+  $x = a
+  $y = b
+  $r = rang_numerique(a)
+  si (rang_numerique(b) > $r) { $r = rang_numerique(b) }
+  si ($r == 3) { $x = a * 1.0; $y = b * 1.0 }
+  si ($r == 2) { $x = (a * (1/2)) * 2; $y = (b * (1/2)) * 2 }
+  si ($x >= $y) { retour $x }
+  retour $y
+}
+
+# ── partie_entiere_*_jardin(x) : PLANCHER exact ───────────────────────────
+# `entier(x)` tronque vers ZÉRO ; le natif `partie_entiere` fait un floor.
+# On corrige donc d'une unité quand x<0 et qu'il reste une fraction.
+# ⚠ Le vérificateur Rose refuse `entier(x)` sur un paramètre DYNAMIQUE :
+#   on fournit donc TROIS variantes typées (une par rang numérique), pour
+#   UNE seule primitive native délocalisée. Vérifié :
+#   partie_entiere(-3.7) = -4, partie_entiere(-7/2) = -4.
+fn partie_entiere_entier_jardin(x: entier) -> entier { retour x }
+
+fn partie_entiere_flottant_jardin(x: flottant) -> entier {
+  $t = entier(x)
+  si (x < 0.0 et $t != x) { retour $t - 1 }
+  retour $t
+}
+
+fn partie_entiere_rationnel_jardin(x: rationnel) -> entier {
+  $t = entier(x)
+  si (x < 0 et $t != x) { retour $t - 1 }
+  retour $t
+}
+
+# ── fraction_jardin(n, d) : rationnel canonicalisé n/d ────────────────────
+# Domaine : d != 0 (le natif lève « dénominateur nul », la division Rose
+# lève elle aussi une erreur). La division entière de Rose produit déjà un
+# rationnel canonicalisé (ex. 6/8 → 3/4), comme la primitive native.
+fn fraction_jardin(n: entier, d: entier) {
+  retour n / d
+}
+
+# ── duree_jardin(ns) : formatage d'une durée en nanosecondes ──────────────
+# Purement calculatoire (aucune lecture d'horloge) : `duree` ne fait que
+# choisir une unité (ns, µs, ms, s, min, h) et formater jusqu'à 3 décimales.
+# Domaine : ns >= 0 (le natif lève une erreur sur un négatif).
+fn duree_jardin(ns: entier) -> chaine {
+  $echelles = [1, 1000, 1000000, 1000000000, 60000000000, 3600000000000]
+  $unites = [" ns", " µs", " ms", " s", " min", " h"]
+  $u = 0
+  $i = 1
+  tant_que ($i <= 5) {
+    si (ns >= $echelles[$i]) { $u = $i }
+    $i = $i + 1
+  }
+  $div = $echelles[$u]
+  $part = ns div $div
+  $reste = ns % $div
+  si ($u == 0 ou $reste == 0) { retour chaine($part) + $unites[$u] }
+  $frac = ($reste * 1000) div $div
+  # 3 chiffres, zéros à gauche, puis suppression des zéros à droite.
+  $fs = ""
+  $t = $frac
+  $j = 0
+  tant_que ($j < 3) { $fs = chaine($t % 10) + $fs; $t = $t div 10; $j = $j + 1 }
+  tant_que (longueur($fs) > 1 et sous_chaine($fs, longueur($fs) - 1, longueur($fs)) == "0") {
+    $fs = sous_chaine($fs, 0, longueur($fs) - 1)
+  }
+  retour chaine($part) + "." + $fs + $unites[$u]
+}

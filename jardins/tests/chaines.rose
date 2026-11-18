@@ -1,0 +1,109 @@
+# jardins/tests/chaines.rose — TESTS D'ÉQUIVALENCE du jardin `chaines`.
+#
+# Compare la sortie du jardin Rose à la primitive Rust native sur un corpus
+# d'au moins 20 cas par fonction.
+#   ⚠ `ordre_jardin` / `caractere_jardin` : domaine = ASCII imprimable (32..126)
+#     (le natif couvre tout Unicode : restriction documentée dans le jardin).
+#
+# Exécution :  taskset -c 10 ./rose/rose jardins/tests/chaines.rose
+
+importer "jardins/chaines.rose"
+
+$erreurs = 0
+
+fn verifier(nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
+  si (obtenu == attendu) {
+    >> "✓ " + nom + " (" + obtenu + ")"
+    retour 0
+  }
+  >> "✗ " + nom + " : obtenu [" + obtenu + "], attendu [" + attendu + "]"
+  retour 1
+}
+
+# ── longueur / len : 22 chaînes, ASCII + Unicode + vide ────────────────────
+$chains = ["", "a", "ab", "abc", "Rose", "bonjour", "héllo", "é", "中文", "日本語", "🌍", "a🌍b", "a b c", "  ", "0123456789", "abcdefghij", "αβγ", "привет", "مرحبا", "🚀🚀", "ß", "é"]
+$d01 = 0
+$d02 = 0
+$i = 0
+tant_que ($i < longueur($chains)) {
+  $s = $chains[$i]
+  si (longueur_jardin($s) != longueur($s)) { $d01 = $d01 + 1 }
+  si (len_jardin($s) != len($s)) { $d02 = $d02 + 1 }
+  $i = $i + 1
+}
+$erreurs = $erreurs + verifier("longueur / 22 cas", chaine($d01), "0")
+$erreurs = $erreurs + verifier("len / 22 cas", chaine($d02), "0")
+
+# ── ordre : 20 caractères ASCII imprimables ────────────────────────────────
+# Les 20 caractères couvrent espaces, chiffres, majuscules, minuscules et
+# ponctuation (y compris les caractères échappés " et \).
+$chars = [" ", "!", "\"", "#", "$", "0", "5", "9", "A", "B", "M", "Z", "[", "\\", "]", "_", "a", "m", "z", "~"]
+$d03 = 0
+$ic = 0
+tant_que ($ic < longueur($chars)) {
+  $c = $chars[$ic]
+  si (ordre_jardin($c) != ordre($c)) { $d03 = $d03 + 1 }
+  $ic = $ic + 1
+}
+$erreurs = $erreurs + verifier("ordre (ASCII imprimable) / 20 cas", chaine($d03), "0")
+
+# ── caractere : 20 codes ASCII imprimables ────────────────────────────────
+$codes = [32, 33, 34, 35, 36, 48, 53, 57, 65, 66, 77, 90, 91, 92, 93, 95, 97, 109, 122, 126]
+$d04 = 0
+$ik = 0
+tant_que ($ik < longueur($codes)) {
+  $cd = $codes[$ik]
+  si (caractere_jardin($cd) != caractere($cd)) { $d04 = $d04 + 1 }
+  $ik = $ik + 1
+}
+$erreurs = $erreurs + verifier("caractere (ASCII imprimable) / 20 cas", chaine($d04), "0")
+
+# ── concatener : 20 listes de chaînes ─────────────────────────────────────
+$l01 = [0 : chaine]
+$l02 = ["a"]
+$l03 = ["a", "b"]
+$l04 = ["ab", "cd"]
+$l05 = ["", ""]
+$l06 = ["", "x"]
+$l07 = ["x", ""]
+$l08 = ["Rose", " ", "est", " ", "léger"]
+$l09 = ["1", "2", "3", "4", "5"]
+$l10 = ["é", "中文", "🌍"]
+$l11 = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"]
+$l12 = ["  ", "  "]
+$l13 = ["-", "-", "-", "-"]
+$l14 = ["ab"]
+$l15 = ["a", "a", "a", "a", "a"]
+$l16 = ["longue chaîne", " courte"]
+$l17 = ["x", "y", "z"]
+$l18 = ["\n", "\n"]
+$l19 = ["A", "B", "C"]
+$l20 = ["fin"]
+$d05 = 0
+si (concatener_jardin($l01) != concatener($l01)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l02) != concatener($l02)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l03) != concatener($l03)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l04) != concatener($l04)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l05) != concatener($l05)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l06) != concatener($l06)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l07) != concatener($l07)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l08) != concatener($l08)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l09) != concatener($l09)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l10) != concatener($l10)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l11) != concatener($l11)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l12) != concatener($l12)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l13) != concatener($l13)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l14) != concatener($l14)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l15) != concatener($l15)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l16) != concatener($l16)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l17) != concatener($l17)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l18) != concatener($l18)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l19) != concatener($l19)) { $d05 = $d05 + 1 }
+si (concatener_jardin($l20) != concatener($l20)) { $d05 = $d05 + 1 }
+$erreurs = $erreurs + verifier("concatener / 20 listes", chaine($d05), "0")
+
+si ($erreurs == 0) {
+  >> "── jardin/chaines : 5 fonctions testées, 0 échec ──"
+} sinon {
+  >> "── jardin/chaines : " + chaine($erreurs) + " échec(s) ──"
+}

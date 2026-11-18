@@ -14,7 +14,7 @@ ni au vérificateur de types, ni à la mémoire (`Gz`, `Gq`, `Rc`, `Box`), ni au
 opérateurs. C'est de l'algorithmique exprimée dans le langage, avec les
 symboles et le calcul entier exact de Rose.
 
-## 2. Catalogue des jardins (état au 18/11/2026)
+## 2. Catalogue des jardins (état au 19/11/2026)
 
 | Jardin | Contenu | Fonctions exportées | Import |
 |---|---|---|---|
@@ -22,6 +22,9 @@ symboles et le calcul entier exact de Rose.
 | [`hachage.rose`](hachage.rose) | codes de caractères, checksum, hachage djb2 exact et modéré | `codes_caracteres`, `somme_caracteres`, `hachage_djb2`, `hachage_djb2_mod` | `importer "jardins/hachage.rose"` |
 | [`texte.rose`](texte.rose) | rendu texte inspiré de Rich, en Rose pur (panneau, tableau, règle) — **sans Python** | `panneau`, `tableau_simple`, `barre`, `motif_repetit`, `ajuster` | `importer "jardins/texte.rose"` |
 | [`gui.rose`](gui.rose) | fenêtres et widgets « comme tkinter », en Rose pur : `rendre` produit un HTML autonome (le navigateur est l'hôte du rendu, **aucune fenêtre Os n'est ouverte**) | `fenetre`, `bouton`, `champ`, `etiquette`, `case`, `liste`, `ajouter`, `rendre`, `evenement`, `lier_evenement`, `grille`, `empiler`, `cadrer`, `compter_widgets`, `compter_actions` | `importer "jardins/gui.rose"` |
+| [`math.rose`](math.rose) | délocalisation de 34 primitives numériques de la stdlib (arithmétique, suites, abs/min/max, plancher, fraction, durée) | 40 `fn` (dont 6 helpers) — voir `rose/docs/DELOCALISATION_40.md` | `importer "jardins/math.rose"` |
+| [`chaines.rose`](chaines.rose) | délocalisation de 5 primitives chaîne (`longueur`, `len`, `ordre`, `caractere`, `concatener`) — `ordre`/`caractere` sur l'ASCII imprimable uniquement | 6 `fn` (dont 1 helper) | `importer "jardins/chaines.rose"` |
+| [`listes.rose`](listes.rose) | utilitaires de listes (tri, filtres, replis, aplatissement) — **hors STDLIB**, ne comptent PAS dans la délocalisation | 11 `fn` | `importer "jardins/listes.rose"` |
 
 Les tests vivent dans `jardins/tests/` et importent le jardin au lieu d'en
 copier le corps : `jardins/tests/premiers.rose` est passé de 121 à 72 lignes
@@ -31,9 +34,21 @@ quand `importer` a été introduit. Le catalogue est générable à tout moment 
 scripts/rose-jardin.sh liste
 ```
 
-Sortie réelle au 18/11/2026 : **3 jardins, 15 fonctions exportées**. Le jardin
+Sortie réelle au 19/11/2026 : **7 jardins, 95 fonctions exportées**. Le jardin
 `texte.rose` est documenté dans
-[`rose/docs/RICH_SANS_PYTHON.md`](../rose/docs/RICH_SANS_PYTHON.md).
+[`rose/docs/RICH_SANS_PYTHON.md`](../rose/docs/RICH_SANS_PYTHON.md), et la
+délocalisation de la stdlib dans
+[`rose/docs/DELOCALISATION_40.md`](../rose/docs/DELOCALISATION_40.md).
+
+Les tests d'équivalence des nouveaux jardins se lancent ainsi (tous passent,
+constat du 19/11/2026) :
+
+```sh
+taskset -c 10 ./rose/rose jardins/tests/math.rose      # 35 primitives, 45 vérifications, 0 échec
+taskset -c 10 ./rose/rose jardins/tests/chaines.rose   # 5 fonctions, 0 échec
+taskset -c 10 ./rose/rose jardins/tests/listes.rose    # 19 tests hors STDLIB, 0 échec
+taskset -c 10 ./rose/rose jardins/tests/premiers.rose  # 20 tests existants, 0 échec
+```
 
 ## 3. Comment importer un jardin
 

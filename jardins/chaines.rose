@@ -1,0 +1,80 @@
+# jardins/chaines.rose — chaînes Unicode et texte, écrites en ROSE PUR.
+#
+# ⚠ CE FICHIER EST UNE BIBLIOTHÈQUE (un « jardin »), pas un programme :
+# il ne s'exécute pas seul. On le charge avec :
+#
+#     importer "jardins/chaines.rose"
+#
+# Aucune dépendance : ni Rust, ni C, ni wasm, ni FFI, ni runtime externe.
+# Les chaînes sont celles de Rose (rope Unicode), longueur comptée en
+# CARACTÈRES et non en octets.
+#
+# ⚠ NOMMAGE : suffixe `_jardin` pour ne jamais réutiliser un nom sensible au
+#   JIT (`est_premier`, `joindre`, `inserer`, tables) ni masquer une
+#   primitive native dans les tests d'équivalence.
+#
+# ⚠ DOMAINE RESTREINT (honneté) : `ordre_jardin` / `caractere_jardin` couvrent
+#   l'ASCII IMPRIMABLE (codes 32..126). Le natif `ordre`/`caractere` couvre
+#   l'Unicode entier (0..1114111) ; le jardin ne le remplace DONC PAS sur tout
+#   le domaine. Ce sont des fonctions de tableau, pas une table Unicode.
+
+# ── table_ascii() : les 95 caractères ASCII imprimables (32..126) ──────────
+# Helper INTERNE. Le décalage 32 transforme un index en code ASCII.
+fn table_ascii() -> chaine {
+  retour " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+}
+
+# ── longueur_jardin(s) : nombre de CARACTÈRES de s ─────────────────────────
+# On avance avec `sous_chaine(s, i, i+1)` jusqu'à obtenir la chaîne vide.
+# ⚠ Quand i == longueur(s), `sous_chaine(s, i, i+1)` est VALIDE (borne de fin
+#   ramenée à la taille) et rend "" — c'est le signal d'arrêt, sans erreur.
+# Fonctionne sur l'Unicode (accentués, CJK, emoji) car Rose compte en chars.
+fn longueur_jardin(s: chaine) -> entier {
+  $i = 0
+  $c = "x"
+  tant_que ($c != "") {
+    $c = sous_chaine(s, $i, $i + 1)
+    si ($c != "") { $i = $i + 1 }
+  }
+  retour $i
+}
+
+# ── len_jardin(s) : alias de longueur_jardin ──────────────────────────────
+fn len_jardin(s: chaine) -> entier { retour longueur_jardin(s) }
+
+# ── ordre_jardin(c) : code ASCII d'un caractère imprimable ────────────────
+# Cherche c dans table_ascii() et rend index + 32. Rend -1 si c est hors
+# domaine (le natif lève une erreur : la sortie n'est donc comparable que
+# sur l'ASCII imprimable).
+fn ordre_jardin(c: chaine) -> entier {
+  $t = table_ascii()
+  $n = longueur($t)
+  $i = 0
+  tant_que ($i < $n) {
+    si (sous_chaine($t, $i, $i + 1) == c) { retour $i + 32 }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+# ── caractere_jardin(n) : caractère ASCII imprimable de code n ────────────
+# Rend "" si n hors de [32,126] (le natif lève une erreur ou rend un autre
+# caractère : domaine de comparaison = ASCII imprimable uniquement).
+fn caractere_jardin(n: entier) -> chaine {
+  $t = table_ascii()
+  si (n < 32 ou n > 126) { retour "" }
+  retour sous_chaine($t, n - 32, n - 31)
+}
+
+# ── concatener_jardin(l) : concaténation de tous les éléments d'une liste ──
+# ⚠ Le natif `concatener` lève une erreur si un élément n'est PAS une chaîne.
+#   Ici le paramètre est typé `liste<chaine>` : le vérificateur Rose refuse
+#   une liste d'entiers avant l'exécution. Sur une liste de chaînes, sortie
+#   identique (y compris liste vide → "").
+fn concatener_jardin(l: liste<chaine>) -> chaine {
+  $r = ""
+  $i = 0
+  $n = longueur(l)
+  tant_que ($i < $n) { $r = $r + l[$i]; $i = $i + 1 }
+  retour $r
+}

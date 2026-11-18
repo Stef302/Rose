@@ -1,0 +1,157 @@
+# jardins/listes.rose — utilitaires de listes, écrits en ROSE PUR.
+#
+# ⚠ CE FICHIER EST UNE BIBLIOTHÈQUE (un « jardin »), pas un programme :
+# il ne s'exécute pas seul. On le charge avec :
+#
+#     importer "jardins/listes.rose"
+#
+# Aucune dépendance : ni Rust, ni C, ni wasm, ni FFI, ni runtime externe.
+#
+# ⚠⚠⚠ HONNETETÉ DE COMPTAGE : AUCUNE fonction de ce jardin n'appartient à la
+#   table STDLIB du module `front` du noyau. Ce sont des utilitaires de LISTES que
+#   le noyau n'expose PAS comme primitives. Ils NE COMPTENT DONC PAS dans le
+#   pourcentage de délocalisation de la bibliothèque standard. Ils servent
+#   de briques de démonstration (tri, filtre, repli, aplatissement) pour les
+#   programmes qui utilisent les jardins, et docs / tests sont fournis.
+#
+# ⚠ NOMMAGE : le JIT a une spécialisation sur le nom `somme` (et sur
+#   `joindre` / `inserer`). Aucune fonction ne réutilise ces noms : on écrit
+#   `somme_liste`, `joindre_listes`, etc.
+
+# ── joindre_listes(a, b) : concaténation de deux listes (nouvelle liste) ───
+# ⚠ Ne PAS confondre avec la primitive `joindre` (JIT-spécialisée), qui
+#   MUTATE une liste et rend `vide`. Ici on ne mute rien et on rend la liste.
+fn joindre_listes(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $r = [0 : entier]
+  $i = 0
+  $na = longueur(a)
+  tant_que ($i < $na) { joindre($r, a[$i]); $i = $i + 1 }
+  $i = 0
+  $nb = longueur(b)
+  tant_que ($i < $nb) { joindre($r, b[$i]); $i = $i + 1 }
+  retour $r
+}
+
+# ── inverser_liste(l) : copie inversée, sans muter l'originale ─────────────
+fn inverser_liste(l: liste<entier>) -> liste<entier> {
+  $r = [0 : entier]
+  $i = longueur(l) - 1
+  tant_que ($i >= 0) { joindre($r, l[$i]); $i = $i - 1 }
+  retour $r
+}
+
+# ── somme_liste(l) : somme des éléments ───────────────────────────────────
+# ⚠ Nom volontairement DIFFÉRENT de `somme` (spécialisation JIT).
+fn somme_liste(l: liste<entier>) -> entier {
+  $s = 0
+  $i = 0
+  $n = longueur(l)
+  tant_que ($i < $n) { $s = $s + l[$i]; $i = $i + 1 }
+  retour $s
+}
+
+# ── produire_liste(l) : produit des éléments (repli multiplicatif) ────────
+fn produire_liste(l: liste<entier>) -> entier {
+  $p = 1
+  $i = 0
+  $n = longueur(l)
+  tant_que ($i < $n) { $p = $p * l[$i]; $i = $i + 1 }
+  retour $p
+}
+
+# ── maximum_liste(l) : plus grand élément ; 0 si la liste est vide ────────
+fn maximum_liste(l: liste<entier>) -> entier {
+  $n = longueur(l)
+  si ($n == 0) { retour 0 }
+  $m = l[0]
+  $i = 1
+  tant_que ($i < $n) {
+    si (l[$i] > $m) { $m = l[$i] }
+    $i = $i + 1
+  }
+  retour $m
+}
+
+# ── minimum_liste(l) : plus petit élément ; 0 si la liste est vide ────────
+fn minimum_liste(l: liste<entier>) -> entier {
+  $n = longueur(l)
+  si ($n == 0) { retour 0 }
+  $m = l[0]
+  $i = 1
+  tant_que ($i < $n) {
+    si (l[$i] < $m) { $m = l[$i] }
+    $i = $i + 1
+  }
+  retour $m
+}
+
+# ── compter_liste(l, x) : nombre d'occurrences de x ───────────────────────
+fn compter_liste(l: liste<entier>, x: entier) -> entier {
+  $c = 0
+  $i = 0
+  $n = longueur(l)
+  tant_que ($i < $n) {
+    si (l[$i] == x) { $c = $c + 1 }
+    $i = $i + 1
+  }
+  retour $c
+}
+
+# ── filtrer_pairs(l) : filtre des éléments pairs ──────────────────────────
+# Rose n'a pas (encore) de pointeur de fonction : on fournit des filtres
+# nommés. Les autres filtres se écrivent en recopiant cette boucle.
+fn filtrer_pairs(l: liste<entier>) -> liste<entier> {
+  $r = [0 : entier]
+  $i = 0
+  $n = longueur(l)
+  tant_que ($i < $n) {
+    si (l[$i] % 2 == 0) { joindre($r, l[$i]) }
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# ── filtrer_positifs(l) : filtre des éléments strictement positifs ────────
+fn filtrer_positifs(l: liste<entier>) -> liste<entier> {
+  $r = [0 : entier]
+  $i = 0
+  $n = longueur(l)
+  tant_que ($i < $n) {
+    si (l[$i] > 0) { joindre($r, l[$i]) }
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# ── tri_insertion(l) : copie triée par ordre croissant ────────────────────
+# O(n²), stable, sans muter l'originale.
+fn tri_insertion(l: liste<entier>) -> liste<entier> {
+  $r = [0 : entier]
+  $i = 0
+  $n = longueur(l)
+  tant_que ($i < $n) {
+    $v = l[$i]
+    $m = longueur($r)
+    # Position d'insertion dans la portion déjà triée.
+    $pos = 0
+    $j = 0
+    tant_que ($j < $m et $r[$j] <= $v) { $pos = $pos + 1; $j = $j + 1 }
+    # Rose ne sait pas insérer ni retirer par index : on RECONSTRUIT la liste
+    # (préfixe trié < v, puis v, puis suffixe >= v).
+    $t = [0 : entier]
+    $k = 0
+    tant_que ($k < $pos) { joindre($t, $r[$k]); $k = $k + 1 }
+    joindre($t, $v)
+    tant_que ($k < $m) { joindre($t, $r[$k]); $k = $k + 1 }
+    $r = $t
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# ── aplatir3(a, b, c) : aplatissement de trois listes en une seule ────────
+# Rose ne type pas encore `liste<liste<entier>>` de façon pratique : on
+# aplatit un nombre FIXE de listes, ce qui couvre l'usage des jardins.
+fn aplatir3(a: liste<entier>, b: liste<entier>, c: liste<entier>) -> liste<entier> {
+  retour joindre_listes(joindre_listes(a, b), c)
+}
