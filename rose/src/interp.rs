@@ -1952,7 +1952,7 @@ impl Interp {
                     let v = self.eval(v)?;
                     items.push((k, v));
                 }
-                Ok(Valeur::Table(Table(Rc::new(RefCell::new(items)))))
+                Ok(Valeur::Table(Table::neuf(items)))
             }
             Expr::Index { a, b, .. } => {
                 let base = self.eval(a)?;
@@ -3629,7 +3629,7 @@ impl Interp {
                     // toute la chaîne, à chaque appel de `longueur`).
                     Valeur::Chaine(s) => s.n as u64,
                     Valeur::Liste(l) => l.0.borrow().len() as u64,
-                    Valeur::Table(t) => t.0.borrow().len() as u64,
+                    Valeur::Table(t) => t.0.borrow().items.len() as u64,
                     Valeur::Tampon(t) => t.0.borrow().len() as u64,
                     Valeur::Tableau(t) => t.0.borrow().len() as u64,
                     // un mot non atomique peut rester une chaine : on rend sa longueur
@@ -3645,39 +3645,24 @@ impl Interp {
             "table" | "map" => Valeur::table(),
             "inserer" => {
                 let Valeur::Table(t) = &a[0] else { erreur_runtime("inserer attend une table") };
-                let (k, v) = (a[1].clone(), a[2].clone());
-                {
-                    let mut items = t.0.borrow_mut();
-                    for kv in items.iter_mut() {
-                        if valeur_egale(&kv.0, &k) { kv.1 = v; return Valeur::Vide; }
-                    }
-                    items.push((k, v));
-                }
+                t.inserer(a[1].clone(), a[2].clone());
                 Valeur::Vide
             }
             "cle_existe" => {
                 let Valeur::Table(t) = &a[0] else { erreur_runtime("cle_existe attend une table") };
-                for (k, _) in t.0.borrow().iter() {
-                    if valeur_egale(k, &a[1]) { return Valeur::b(true); }
-                }
-                Valeur::b(false)
+                Valeur::b(t.trouver(&a[1]).is_some())
             }
             "supprimer" => {
                 let Valeur::Table(t) = &a[0] else { erreur_runtime("supprimer attend une table") };
-                let mut items = t.0.borrow_mut();
-                if let Some(i) = items.iter().position(|(k, _)| valeur_egale(k, &a[1])) {
-                    items.remove(i);
-                    return Valeur::b(true);
-                }
-                Valeur::b(false)
+                Valeur::b(t.retirer(&a[1]))
             }
             "cles" => {
                 let Valeur::Table(t) = &a[0] else { erreur_runtime("cles attend une table") };
-                Valeur::liste_de(t.0.borrow().iter().map(|(k, _)| k.clone()).collect())
+                Valeur::liste_de(t.0.borrow().items.iter().map(|(k, _)| k.clone()).collect())
             }
             "valeurs" => {
                 let Valeur::Table(t) = &a[0] else { erreur_runtime("valeurs attend une table") };
-                Valeur::liste_de(t.0.borrow().iter().map(|(_, v)| v.clone()).collect())
+                Valeur::liste_de(t.0.borrow().items.iter().map(|(_, v)| v.clone()).collect())
             }
             "joindre" => {
                 let Valeur::Liste(l) = &a[0] else { erreur_runtime("joindre attend une liste") };
@@ -4569,8 +4554,8 @@ thread_local! {
 fn indexer_valeur(base: &Valeur, cle: &Valeur) -> Result<Valeur, Option<i32>> {
     match base {
         Valeur::Table(t) => {
-            for (k, v) in t.0.borrow().iter() {
-                if valeur_egale(k, cle) { return Ok(v.clone()); }
+            if let Some(i) = t.trouver(cle) {
+                return Ok(t.0.borrow().items[i].1.clone());
             }
             erreur_runtime("clé absente de la table");
         }
@@ -4625,18 +4610,7 @@ fn affecter_index_valeur(nom: &str, table_opt: Option<&Valeur>, idx: &Valeur, va
         if !v.fits_i64() { erreur_runtime("tableau : valeur hors i64"); }
         t.0.borrow_mut()[i] = v.get_i64();
     } else if let Some(Valeur::Table(t)) = table_opt {
-        let mut items = t.0.borrow_mut();
-        let mut trouve = false;
-        for (k, v) in items.iter_mut() {
-            if valeur_egale(k, idx) {
-                *v = val.clone();
-                trouve = true;
-                break;
-            }
-        }
-        if !trouve {
-            items.push((idx.clone(), val.clone()));
-        }
+        t.inserer(idx.clone(), val.clone());
     } else {
         erreur_runtime(&format!("Affectation par index sur une non-table: {}", nom));
     }

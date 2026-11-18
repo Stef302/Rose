@@ -28,8 +28,23 @@ pub use crate::i128x::{Gq, Gz, Mpq, Mpz};
 
 #[derive(Clone)]
 pub struct Liste(pub Rc<RefCell<Vec<Valeur>>>);
+// ── Table : ordre d'insertion + index de hachage auxiliaire ────────────────
+//
+// 18/11/26 — domaine 7 du bench multi : 3 000 insertions + 3 000 recherches
+// coûtaient 6,34 ms (×67 vs Rust/HashMap). Mesuré par instrumentation :
+// 4 498 500 + 4 501 500 = 9 000 000 appels à `valeur_egale`, dont ZÉRO
+// chemin lent d'allocation (tous des i64). Le coût est le SCAN LINÉAIRE,
+// pas la comparaison ni l'allocation. Le `Vec` reste la source de vérité
+// (ordre d'insertion, égalité, affichage, `cles`/`valeurs`) ; l'index
+// `h canonique → position` ramène recherche/insertion à O(1) amorti.
+// Les collisions sont résolues par `valeur_egale` : l'égalité sémantique
+// est inchangée (y compris Entier ≡ Rationnel ≡ Flottant).
+//
+// ⚠ UN SEUL `Rc` — avec deux `Rc`, `Valeur` garde 24 octets mais la
+// drop-glue changeait et D5/D6 régressaient de 4 à 10 % (mesuré le 18/11
+// en A/A/A entrelacé). Ici `Table` reste exactement un `Rc<RefCell<T>>`.
 #[derive(Clone)]
-pub struct Table(pub Rc<RefCell<Vec<(Valeur, Valeur)>>>);
+pub struct Table(pub Rc<RefCell<TableRep>>);
 #[derive(Clone)]
 pub struct Tampon(pub Rc<RefCell<Vec<u8>>>);
 #[derive(Clone)]
@@ -203,7 +218,7 @@ impl Valeur {
     #[allow(dead_code)]
     pub fn liste() -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(Vec::new())))) }
     pub fn liste_de(v: Vec<Valeur>) -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(v)))) }
-    pub fn table() -> Valeur { Valeur::Table(Table(Rc::new(RefCell::new(Vec::new())))) }
+    pub fn table() -> Valeur { Valeur::Table(Table::neuf(Vec::new())) }
     pub fn tampon(n: usize) -> Valeur { Valeur::Tampon(Tampon(Rc::new(RefCell::new(vec![0u8; n])))) }
     pub fn tableau(n: usize) -> Valeur { Valeur::Tableau(Tableau(Rc::new(RefCell::new(vec![0i64; n])))) }
     pub fn irrationnel(n: Gz) -> Valeur { Valeur::Irrationnel(Rc::new(n)) }
@@ -646,8 +661,8 @@ pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
         (_, Valeur::Liste(..)) | (Valeur::Liste(..), _) => false,
         (Valeur::Table(x), Valeur::Table(y)) => {
             let (x, y) = (x.0.borrow(), y.0.borrow());
-            if x.len() != y.len() { return false; }
-            x.iter().all(|(k, v)| y.iter().any(|(k2, v2)| valeur_egale(k, k2) && valeur_egale(v, v2)))
+            if x.items.len() != y.items.len() { return false; }
+            x.items.iter().all(|(k, v)| y.items.iter().any(|(k2, v2)| valeur_egale(k, k2) && valeur_egale(v, v2)))
         }
         (_, Valeur::Table(..)) | (Valeur::Table(..), _) => false,
         (Valeur::Chaine(x), Valeur::Chaine(y)) => ChaineRep::egale_rep(x, y),
@@ -752,7 +767,8 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
             r
         }
         Valeur::Table(t) => {
-            let items = t.0.borrow();
+            let rep = t.0.borrow();
+            let items = &rep.items;
             let mut r = String::from("[");
             for (i, (k, v2)) in items.iter().enumerate() {
                 if i > 0 { r.push_str(", "); }
@@ -1795,3 +1811,143 @@ pub fn view_grand_nombre(s: &str) {
         }
     }
 }
+
+// ── Index de hachage de Table (implanté ici, en fin de module) ─────────────
+impl Table {
+    /// Construit une table et son index à partir des paires déjà ordonnées.
+    pub fn neuf(items: Vec<(Valeur, Valeur)>) -> Table {
+        let t = Table(Rc::new(RefCell::new(TableRep {
+            items,
+            index: HashMap::new(),
+            fallback: Vec::new(),
+            collisions: Vec::new(),
+        })));
+        t.reindexer();
+        t
+    }
+
+    /// Reconstruit l'index depuis `items` (usage : construction littérale).
+    pub fn reindexer(&self) {
+        let mut rep = self.0.borrow_mut();
+        let TableRep { items, index, fallback, collisions } = &mut *rep;
+        index.clear();
+        fallback.clear();
+        collisions.clear();
+        for (i, (k, _)) in items.iter().enumerate() {
+            match Self::h(k) {
+                Some(h) => {
+                    if index.insert(h, i).is_some() { collisions.push((h, i)); }
+                }
+                None => fallback.push(i),
+            }
+        }
+    }
+
+    /// Hachage CANONIQUE : deux valeurs que `valeur_egale` déclare égales
+    /// produisent le MÊME h. Les numériques sont hachés par leur f64
+    /// normalisé — c'est la comparaison qu'utilise `cmp_vals` dès qu'un
+    /// flottant est impliqué, et elle concorde avec l'égalité exacte des
+    /// i64/rationnels (les collisions sont résolues par `valeur_egale`).
+    /// `None` = pas de hachage sûr : repli linéaire.
+    #[inline]
+    fn h(v: &Valeur) -> Option<u64> {
+        match v {
+            Valeur::Vide => Some(0x9E37_79B9_7F4A_7C15),
+            Valeur::Entier(..) | Valeur::Rationnel(..) | Valeur::Flottant(..) => {
+                let d = vers_d(v);
+                let bits = if d == 0.0 { 0u64 }                        // -0 ≡ +0
+                           else if d.is_nan() { 0x7FF8_0000_0000_0000 } // NaN ≡ NaN
+                           else { d.to_bits() };
+                Some(bits.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x243F_6A88_85A3_08D3)
+            }
+            Valeur::Booleen(b) => Some(0xCBF2_9CE4_8422_2325 ^ (*b as u64)),
+            Valeur::Chaine(s) => {
+                let t = s.aplatir();
+                let mut h = 0xCBF2_9CE4_8422_2325u64;
+                for &o in t.as_bytes() { h = (h ^ o as u64).wrapping_mul(0x100_0000_01B3); }
+                Some(h)
+            }
+            // Liste, Table, Tampon, Tableau, Complexe, Irrationnel :
+            // pas de hachage canonique garanti → repli.
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn trouver_h(&self, cle: &Valeur, h: Option<u64>) -> Option<usize> {
+        let rep = self.0.borrow();
+        match h {
+            Some(h) => {
+                if let Some(&i) = rep.index.get(&h) {
+                    if valeur_egale(&rep.items[i].0, cle) { return Some(i); }
+                }
+                for (hh, i) in rep.collisions.iter() {
+                    if *hh == h && valeur_egale(&rep.items[*i].0, cle) { return Some(*i); }
+                }
+                None
+            }
+            None => {
+                for &i in rep.fallback.iter() {
+                    if valeur_egale(&rep.items[i].0, cle) { return Some(i); }
+                }
+                None
+            }
+        }
+    }
+
+    /// Position d'une clé, ou `None`. Sémantique = `valeur_egale`.
+    #[inline]
+    pub fn trouver(&self, cle: &Valeur) -> Option<usize> {
+        let h = Self::h(cle);
+        self.trouver_h(cle, h)
+    }
+
+    /// Insère ou met à jour (jamais de doublon), en maintenant l'index.
+    #[inline]
+    pub fn inserer(&self, cle: Valeur, val: Valeur) {
+        let h = Self::h(&cle);
+        if let Some(i) = self.trouver_h(&cle, h) {
+            self.0.borrow_mut().items[i].1 = val;
+            return;
+        }
+        let mut rep = self.0.borrow_mut();
+        let i = rep.items.len();
+        rep.items.push((cle, val));
+        match h {
+            Some(h) => {
+                if rep.index.contains_key(&h) { rep.collisions.push((h, i)); }
+                else { rep.index.insert(h, i); }
+            }
+            None => rep.fallback.push(i),
+        }
+    }
+
+    /// Supprime une clé ; `false` si absente. Décalage des positions.
+    pub fn retirer(&self, cle: &Valeur) -> bool {
+        let Some(i) = self.trouver(cle) else { return false; };
+        let mut rep = self.0.borrow_mut();
+        rep.items.remove(i);
+        let a_retirer = rep.index.iter().find(|(_, p)| **p == i).map(|(h, _)| *h);
+        if let Some(h) = a_retirer { rep.index.remove(&h); }
+        for p in rep.index.values_mut() { if *p > i { *p -= 1; } }
+        rep.fallback.retain(|&x| x != i);
+        for x in rep.fallback.iter_mut() { if *x > i { *x -= 1; } }
+        rep.collisions.retain(|(_, p)| *p != i);
+        for (_, p) in rep.collisions.iter_mut() { if *p > i { *p -= 1; } }
+        true
+    }
+}
+
+// TableRep déplacé ici (layout des fonctions chaudes préservé).
+pub struct TableRep {
+    /// Source de vérité : paires dans l'ordre d'insertion.
+    pub items: Vec<(Valeur, Valeur)>,
+    /// hachage canonique → position dans `items`.
+    index: HashMap<u64, usize>,
+    /// positions des clés sans hachage canonique (repli linéaire).
+    fallback: Vec<usize>,
+    /// collisions de hachage : (h, position), normalement vide.
+    collisions: Vec<(u64, usize)>,
+}
+
+
