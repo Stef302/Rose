@@ -691,3 +691,13 @@ Recette H1/PB1: preuve n<=2^32 => i+1,c<=2^32, checks supprimes, repli au-dela. 
 | TI1 | `inserer_i64` / `contient_i64` hash direct | `rose/src/{run,jit}.rs`, `rose/docs/TABLE_I64_FAST.md` | D7 < 0,094ms (battre Rust) |
 
 ⚠ Cohérence critique: clé i64 insérée par voie rapide doit être trouvée par `cle_existe` général et inversement. Tester JIT↔interpréteur.
+
+**Bilan vague 25 (18/11, 22:20Z)**: TI1 ✅ `d9d9f7d` — prémisse confirmée (insertions 0,209ms = 83%). `h_entier` factorisé partagé par les 2 voies = UN seul index, cohérence prouvee. `inserer_i64/contient_i64` + reservation capacite + RefCell verifie. **D7 0,253→0,096ms (×2,6), ratio Rust 0,999/1,080 = AU NIVEAU** (agent: 0,96-0,99 en salves adjacentes, pas revendique comme 4e victoire nette). Diff vide 43+8+13+4 programmes. `TABLE_I64_FAST.md`.
+
+## Vague 26 (18/11) — liste i64 typée
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| LI1 | `Vec<i64>` dédié pour listes entières | `rose/src/{run,jit}.rs`, `rose/docs/LISTE_I64_FAST.md` | D6 < 0,189ms (battre Rust) |
+
+Recette TI1 transposée. ⚠ Cohérence critique: liste JIT lisible par l'interpréteur et inversement (longueur, joindre, index, affichage, égalité, hétérogène).
