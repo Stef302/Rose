@@ -440,3 +440,17 @@ L'audit sur le corpus élargi (99 fichiers) a trouvé 14 écarts au vérificateu
 **Bilan vague 5 FINAL** (mesure fraîche 18/11 sur 150 fichiers): **lexeur 150/150, analyseur 150/150, vérificateur 150/150, émetteur 150/150**. Point fixe M4.5 maintenu md5 `bdbef636...`. Sans-faute sur tout le corpus élargi.
 
 **Bilan vague 4**: runner wasm réel **porte ≤20ms PASS (4,15ms)**, artefacts Windows reconstruits, binaire no_std démo (non câblé: panic=abort), diagnostic compilateur.rose (`rir` rc=0, 6590 lignes — l'erreur rapportée était un artefact de pipe), audit final horodaté.
+
+## Vague 6 (18/11) — finalisation M5.3 / M6.2 et contrôles
+
+Cinq agents sur les derniers points ouverts, fichiers distincts :
+
+| Agent | Étape | Fichiers possédés | Porte |
+|---|---|---|---|
+| F1 | **M6.2 bout-en-bout** | `rose/src/wasm_runtime.rs`, `rose/docs/WASM_RUNTIME.md` | voie officielle via CLI Rose, médiane ≤20ms |
+| F2 | **M5.3 chemin no_std** | `rose/docs/NO_STD_MOTEUR.md` | tests isolés num-bigint sans std |
+| F3 | **audit rafraîchi** | `scripts/audit-final.sh`, `rose/docs/AUDIT_FINAL.md` | 150 fichiers, chiffres horodatés |
+| F4 | **publication runner** | `scripts/publier-runtime.sh`, `rose/docs/PUBLICATION_RUNNER.md` | asset publié sur Stef302/Rose v0.1.5, SHA vérifié |
+| F5 | **contrôle Windows** | `rose/docs/VERIF_WINDOWS.md` | md5/ressources re-vérifiés, limites documentées |
+
+⚠ F4 est la seule action de publication réelle: compte Stef302 vérifié avant, SHA `c7b2bf3c…`, aucun autre asset touché.
