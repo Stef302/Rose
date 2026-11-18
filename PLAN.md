@@ -553,3 +553,5 @@ Rich est installé (`~/.local/lib/python3.12/site-packages/rich`). CPython n'a p
 ⚠ Correction utilisateur (18/11, après M1): « ne pas dépendre de cpython pour voir ». La voie CPython/wasmtime est ABANDONNÉE pour le rendu texte. Rich sert de MODÈLE: on réimplémente panneaux/tableaux/barres en **jardin Rose pur** (`jardins/texte.rose`), testé uniquement avec `./rose/rose` — zéro Python dans l'exécution. Agent M3.
 
 **Bilan partiel vague 13**: M2 (goulot architectural) en cours. M1 a produit `WASM_TEXTUEL.md` (32baf85) — Rose exécute du texte via wasm/Node/Python, utile comme démonstration d'universalité mais PAS la voie Rich retenue.
+
+⚠ Précision finale utilisateur: tester le **convertisseur wasm** (`scripts/rose-wasm-lib.sh`) avec une vraie bibliothèque **Python (Rich)**: compiler Python→C→wasm, appeler depuis Rose. CPython = outil de compilation, PAS runtime. Agent M4 (`PYTHON_WASM_RICH.md`). Rich entier via Cython est probablement bloqué (API CPython → imports), à documenter honnêtement.
