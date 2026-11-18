@@ -589,3 +589,9 @@ C'est la porte de vitesse architecturale: traiter la cause, pas les symptômes.
 | E1 | E/S zéro recopie | `rose/src/{interp,sys_io}.rs`, `rose/docs/ES_ZERO_COPY.md` | battre Rust 4,73ms (secondaire <8ms) |
 
 Domaine 8: 13,49ms Rose vs 4,73ms Rust (×2,85). Causes mesurées à confirmer: `String::from_utf8_lossy(&b).into_owned()` (recopie 10 Mo), `chaine_de` aplatie la rope pour l'écriture.
+
+**Bilan vague 16 (18/11, 15:55Z)**: E1 ✅ E/S 14,76→6,0ms (−59,3%). Diagnostic: 2 recopies = 54,8% du temps. `String::from_utf8` + emprunt `&str` du `NoeudChaine::Plein`. Rejoué c15+c19: ratio Rose/Rust 0,998/0,992 = **au niveau** (pas une victoire revendiquée). Porte absolue <4,73ms atteinte 1 salve/4 = non reproductible; secondaire <8ms 4/4. Aucune régression D1-D7. `ES_ZERO_COPY.md`. Commit `6f0962d`.
+
+## Vague 17 (18/11) — prochain goulot
+
+État mesuré: **2 victoires nettes** (fib35 0,91×, fact 0,23×) + 1 au niveau (E/S). Reste: boucle ×34,4 / PGCD ×45,5 / table ×66,6 / liste ×203 / chaîne ×234 / primes ×9,4. Candidate: **table native** (D7) — `Valeur::Table` est une liste d'associations → recherche O(n) sur 3000 clés.
