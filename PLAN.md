@@ -625,3 +625,13 @@ D3: 9,51ms vs Rust 1,00ms (×9,49). Prémisse corrigée par la mesure: 57% du co
 | W1 | diagnostic + JIT/spec des ops rope & liste dans le principal | `rose/src/{jit,rir,interp}.rs`, `rose/docs/JIT_TYPES_NON_NUM.md` | D6 <10ms et/ou D5 <1,5ms |
 
 D5 chaîne 3,33ms (×237), D6 liste 38,75ms (×212) — toujours interprétés car ops non numériques hors sous-ensemble JIT. Diagnostic d'abord (prémisses souvent fausses), puis décision ou verdict d'infaisabilité prouvé.
+
+**Bilan vague 20 (18/11, 20:05Z)**: W1 ✅ `e5528ee` — extension JIT avec délégués runtime + handles `Valeur`. Diagnostic: dispatch RIR interprété = 58% de D5, boucle vide JIT 0,024ms vs 2,18ms interprétée (×91). **D5 3,34→0,93ms (×3,56, ratio 237→64), D6 38,6→2,15ms (×18,1, ratio 212→11,7)**, portes atteintes. Un seul .rs modifié (jit.rs +559), exactitude 7/7 baseline et 7/7 JIT=sans-JIT. `JIT_TYPES_NON_NUM.md`.
+
+## Vague 21 (18/11) — résidu boucle chaude
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| H1 | checks tag/overflow redondants boucle JIT | `rose/src/jit.rs`, `rose/docs/JIT_BOUCLE_HOT.md` | D2 < 0,60ms (aujourd'hui 1,29ms) |
+
+Dump objdump fait par l'orchestrateur: ~25 instr/it dont 2 checks tag + 2 checks overflow + rechargement tags depuis la pile, drapeaux pourtant invariants.
