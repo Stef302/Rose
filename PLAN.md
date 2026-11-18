@@ -671,3 +671,13 @@ Modèle H1: pour n<=2^32, d*d<=n => d<=2^16, tous calculs i64, diviseur non nul.
 | TB1 | délégués/handles pour inserer/cle_existe | `rose/src/jit.rs`, `rose/docs/JIT_TABLE_BAT.md` | D7 < 0,40ms (aujourd'hui 1,36ms) |
 
 D7 = 6000 ops à ~226ns/op (dispatch interprète). Réutiliser l'infrastructure W1. Exactitude: 43+8 sorties TABLE_NATIVE.md.
+
+**Bilan vague 23 (18/11, 21:30Z)**: TB1 ✅ `dd75680` — prémisse corrigée (principal jamais compile en natif: regions=0, dump vide). `NatureSlot::Table` + 3 helpers runtime. **D7 1,36→0,277ms (×5,0), porte <0,40ms atteinte 3/3**, écart Rust 14,5→2,9 (Rust pas battu). Résidu: contrôle overflow compteurs ~12 instr/incrément. `JIT_TABLE_BAT.md`.
+
+## Vague 24 (18/11) — compteurs table, 4e victoire ?
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| TC1 | spécialisation bornes `pour i de 0 vers L` (table) | `rose/src/jit.rs`, `rose/docs/JIT_TABLE_COMPTEURS.md` | D7 < 0,094ms (battre Rust) |
+
+Recette H1/PB1: preuve n<=2^32 => i+1,c<=2^32, checks supprimes, repli au-dela. ⚠ $c plafonne a L (pas L²).
