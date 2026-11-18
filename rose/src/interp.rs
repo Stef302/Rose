@@ -1914,7 +1914,8 @@ impl Interp {
                     Ok(zg_rapide(z))
                 }
             }
-            Expr::ChaineLit(s, _) => Ok(Valeur::s(s.clone())),
+            // ⚠ Littéral interné (18/11) : immuable, partagé sans recopie.
+            Expr::ChaineLit(s, _) => Ok(valeur_litteral_chaine(s)),
             Expr::BooleenLit(b, _) => Ok(Valeur::b(*b)),
             Expr::Var(n, _) => {
                 // une variable PORTE LE NOM : elle masque la constante
@@ -2877,7 +2878,10 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
         // passe par l'opérateur « + » (+ sur chaînes).
         if op == "+" {
             if let (Valeur::Chaine(x), Valeur::Chaine(y)) = (&g, &d) {
-                return Ok(Valeur::s(format!("{}{}", x, y)));
+                // ⚠ ROPE (18/11) : O(1), aucun octet recopié. L'ancien
+                // `format!("{}{}", x, y)` était O(longueur de x) et faisait
+                // de `$s = $s + "x"` un O(n²) (~200 Mo copiés sur 20 000 tours).
+                return Ok(Valeur::Chaine(ChaineRep::concat(x, y)));
             }
         }
         // Complexe : opérations sur a+bi
@@ -2965,12 +2969,12 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
             if let (Valeur::Chaine(x), Valeur::Entier(n, None)) = (&g, &d) {
                 let n = *n;
                 if n < 0 { erreur_runtime("répétition de chaîne avec compte négatif"); }
-                return Ok(Valeur::s(x.repeat(n as usize)));
+                return Ok(Valeur::s(x.aplatir().repeat(n as usize)));
             }
             if let (Valeur::Entier(n, None), Valeur::Chaine(x)) = (&g, &d) {
                 let n = *n;
                 if n < 0 { erreur_runtime("répétition de chaîne avec compte négatif"); }
-                return Ok(Valeur::s(x.repeat(n as usize)));
+                return Ok(Valeur::s(x.aplatir().repeat(n as usize)));
             }
         }
         // ⚠⚠⚠ VOIE RAPIDE i64 (mesuré le 16/11). L'ancien chemin passait
@@ -3105,12 +3109,12 @@ impl Interp {
             let v = a.into_iter().next().unwrap();
             return Ok(match nom {
                 "entier" => {
-                    if let Valeur::Chaine(s) = &v { return Ok(zg_rapide(chaine_vers_entier(s))); }
+                    if let Valeur::Chaine(s) = &v { return Ok(zg_rapide(chaine_vers_entier(&s.aplatir()))); }
                     convertir(v, TyKind::Entier)
                 }
                 "rationnel" => convertir(v, TyKind::Rationnel),
                 "flottant" => {
-                    if let Valeur::Chaine(s) = &v { return Ok(Valeur::f(chaine_vers_flottant(s))); }
+                    if let Valeur::Chaine(s) = &v { return Ok(Valeur::f(chaine_vers_flottant(&s.aplatir()))); }
                     convertir(v, TyKind::Flottant)
                 }
                 _ => Valeur::s(chaine_de(&v)),
@@ -3620,7 +3624,10 @@ impl Interp {
             "i" => Valeur::Complexe { re: 0.0, im: 1.0 },
             "longueur" | "len" => {
                 let n: u64 = match &a[0] {
-                    Valeur::Chaine(s) => s.chars().count() as u64,
+                    // ⚠ ROPE : O(1) — le nombre de caractères est maintenu
+                    // à chaque concaténation (avant : `chars().count()` sur
+                    // toute la chaîne, à chaque appel de `longueur`).
+                    Valeur::Chaine(s) => s.n as u64,
                     Valeur::Liste(l) => l.0.borrow().len() as u64,
                     Valeur::Table(t) => t.0.borrow().len() as u64,
                     Valeur::Tampon(t) => t.0.borrow().len() as u64,
@@ -4150,9 +4157,10 @@ impl Interp {
                     for v in lst.0.borrow().iter() {
                         match v {
                             Valeur::Chaine(s) => {
-                                match s.parse::<u8>() {
+                                let t = s.aplatir();
+                                match t.parse::<u8>() {
                                     Ok(n) => bytes.push(n),
-                                    Err(_) => erreur_runtime(&format!("octet invalide: {}", s)),
+                                    Err(_) => erreur_runtime(&format!("octet invalide: {}", t)),
                                 }
                             }
                             _ => erreur_runtime("ecrire_binaire: liste doit contenir des nombres entiers"),
@@ -4410,9 +4418,10 @@ fn vers_z_dans(v: &Valeur, z: &Gz) {
         }
         Valeur::Flottant(d) => z.poser_d(*d),
         Valeur::Chaine(s) => {
-            if s.is_empty() { z.poser_i64(0); }
-            else if !z.depuis_chaine(s) {
-                erreur_runtime(&format!("conversion vers entier impossible (chaine: {:?})", s));
+            let t = s.aplatir();
+            if t.is_empty() { z.poser_i64(0); }
+            else if !z.depuis_chaine(&t) {
+                erreur_runtime(&format!("conversion vers entier impossible (chaine: {:?})", t));
             }
         }
         _ => erreur_runtime(&format!(
@@ -4558,7 +4567,7 @@ fn indexer_valeur(base: &Valeur, cle: &Valeur) -> Result<Valeur, Option<i32>> {
         }
         Valeur::Chaine(s) => {
             let idx = vers_z(cle);
-            let cps: Vec<char> = s.chars().collect();
+            let cps: Vec<char> = s.aplatir().chars().collect();
             if !idx.fits_u64_lt(cps.len() as u64) {
                 erreur_runtime("index hors des limites de la chaîne");
             }
@@ -5592,7 +5601,8 @@ pub fn terminal(v: &Valeur) -> Valeur {
             terminal_entier(*x as i64)
         }
         Valeur::Chaine(s) => {
-            let k = s.trim().parse::<i64>().unwrap_or(0);
+            let t = s.aplatir();
+            let k = t.trim().parse::<i64>().unwrap_or(0);
             terminal_entier(k)
         }
         _ => {

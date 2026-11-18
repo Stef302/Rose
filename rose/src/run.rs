@@ -8,7 +8,7 @@
 // Licence MIT.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::rc::Rc;
 
@@ -35,6 +35,130 @@ pub struct Tampon(pub Rc<RefCell<Vec<u8>>>);
 #[derive(Clone)]
 pub struct Tableau(pub Rc<RefCell<Vec<i64>>>);
 
+// ── Chaîne en morceaux (rope) ────────────────────────────────────────────
+//
+// 18/11/26 — goulot chaîne : `$s = $s + "x"` (20 000 tours) coûtait 6,18 ms
+// contre 2,22 ms pour la même boucle sans concaténer. La concaténation
+// `format!("{}{}", x, y)` recopiait la chaîne entière à chaque tour = O(n²),
+// ~200 Mo copiés. Une `Valeur::Chaine` porte désormais un arbre de morceaux :
+// `+` est O(1) (deux clones de `Rc`), `longueur` est O(1) (compte mémorisé),
+// et l'aplatissement n'a lieu qu'aux primitives qui ont besoin des octets.
+//
+// ⚠ Le `Drop` est ÉCRIT À LA MAIN et itératif : un arbre de 20 000 nœuds
+// détruit par le `drop` récursif par défaut déborderait la pile.
+#[derive(Debug)]
+pub enum NoeudChaine {
+    Plein(String),
+    Concat(Rc<ChaineRep>, Rc<ChaineRep>),
+}
+
+#[derive(Debug)]
+pub struct ChaineRep {
+    /// nombre de CARACTÈRES Unicode (sémantique de `longueur`)
+    pub n: usize,
+    /// nombre d'octets UTF-8 (capacité exacte de l'aplatissement)
+    pub octets: usize,
+    pub noeud: NoeudChaine,
+}
+
+impl ChaineRep {
+    #[inline]
+    pub fn plein(s: String) -> Rc<ChaineRep> {
+        let n = s.chars().count();
+        let octets = s.len();
+        Rc::new(ChaineRep { n, octets, noeud: NoeudChaine::Plein(s) })
+    }
+
+    /// Concaténation en O(1) : aucun octet n'est copié, seul l'arbre grandit.
+    #[inline]
+    pub fn concat(a: &Rc<ChaineRep>, b: &Rc<ChaineRep>) -> Rc<ChaineRep> {
+        Rc::new(ChaineRep {
+            n: a.n + b.n,
+            octets: a.octets + b.octets,
+            noeud: NoeudChaine::Concat(a.clone(), b.clone()),
+        })
+    }
+
+    /// Aplatit en une `String` — O(longueur totale), itératif (pile explicite
+    /// pour ne pas déborder sur un arbre profond).
+    pub fn aplatir(&self) -> String {
+        let mut s = String::with_capacity(self.octets);
+        let mut pile: Vec<&ChaineRep> = Vec::new();
+        pile.push(self);
+        while let Some(r) = pile.pop() {
+            match &r.noeud {
+                NoeudChaine::Plein(t) => s.push_str(t),
+                NoeudChaine::Concat(a, b) => { pile.push(b.as_ref()); pile.push(a.as_ref()); }
+            }
+        }
+        s
+    }
+
+    /// Comparaison lexicographique sans aplatir quand les deux feuilles sont
+    /// pleines (cas des clés de table : aucun regain d'allocation).
+    pub fn cmp_rep(a: &Rc<ChaineRep>, b: &Rc<ChaineRep>) -> std::cmp::Ordering {
+        if let (NoeudChaine::Plein(x), NoeudChaine::Plein(y)) = (&a.noeud, &b.noeud) {
+            return x.cmp(y);
+        }
+        a.aplatir().cmp(&b.aplatir())
+    }
+
+    pub fn egale_rep(a: &Rc<ChaineRep>, b: &Rc<ChaineRep>) -> bool {
+        if a.n != b.n { return false; }
+        if let (NoeudChaine::Plein(x), NoeudChaine::Plein(y)) = (&a.noeud, &b.noeud) {
+            return x == y;
+        }
+        a.aplatir() == b.aplatir()
+    }
+}
+
+thread_local! {
+    /// Littéraux chaînes internés par thread. Un littéral est immuable (la
+    /// rope ne se modifie jamais via `Rc::make_mut`) : le partager est sûr.
+    static CACHE_LITTERAUX: RefCell<HashMap<String, Rc<ChaineRep>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Valeur d'un littéral chaîne, allouée UNE fois par texte et par thread.
+///
+/// 18/11/26 : mesuré sur `$s = $s + "x"` (20 000 tours), le littéral `"x"`
+/// recréait un `String` + un `Rc<ChaineRep>` à chaque tour : 1,6 ms sur 3,9 ms.
+/// Le harnais avec `"x"` hoisté hors boucle tournait en 2,29 ms.
+#[inline]
+pub fn valeur_litteral_chaine(s: &str) -> Valeur {
+    if let Some(rc) = CACHE_LITTERAUX.with(|c| c.borrow().get(s).cloned()) {
+        return Valeur::Chaine(rc);
+    }
+    let rc = ChaineRep::plein(s.to_string());
+    CACHE_LITTERAUX.with(|c| { c.borrow_mut().insert(s.to_string(), rc.clone()); });
+    Valeur::Chaine(rc)
+}
+
+impl Drop for ChaineRep {
+    fn drop(&mut self) {
+        // Destruction itérative : on vide le nœud courant, puis on parcourt
+        // les descendants en profitant de `Rc::get_mut` quand on est le
+        // dernier propriétaire. Un nœud partagé se contente de décrémenter.
+        // ⚠ Cas dominant (feuille) : AUCUNE allocation — le `Vec` n'est créé
+        // que si l'arbre a réellement des descendants (mesuré : `vec![noeud]`
+        // coûtait une allocation par feuille, soit 20 000 de trop ici).
+        let mut noeud = std::mem::replace(&mut self.noeud, NoeudChaine::Plein(String::new()));
+        if matches!(noeud, NoeudChaine::Plein(_)) { return; }
+        let mut pile: Vec<NoeudChaine> = Vec::new();
+        loop {
+            if let NoeudChaine::Concat(mut a, mut b) = noeud {
+                if let Some(ra) = Rc::get_mut(&mut a) {
+                    pile.push(std::mem::replace(&mut ra.noeud, NoeudChaine::Plein(String::new())));
+                }
+                if let Some(rb) = Rc::get_mut(&mut b) {
+                    pile.push(std::mem::replace(&mut rb.noeud, NoeudChaine::Plein(String::new())));
+                }
+            }
+            match pile.pop() { Some(n) => noeud = n, None => break }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Valeur {
     Vide,
@@ -42,7 +166,7 @@ pub enum Valeur {
     Rationnel(Rc<Gq>),
     Flottant(f64),
     Booleen(bool),
-    Chaine(Rc<String>),
+    Chaine(Rc<ChaineRep>),
     Liste(Liste),
     Table(Table),
     Tampon(Tampon),
@@ -75,7 +199,7 @@ impl Valeur {
     #[inline]
     pub fn b(v: bool) -> Valeur { Valeur::Booleen(v) }
     #[inline]
-    pub fn s(v: impl Into<String>) -> Valeur { Valeur::Chaine(Rc::new(v.into())) }
+    pub fn s(v: impl Into<String>) -> Valeur { Valeur::Chaine(ChaineRep::plein(v.into())) }
     #[allow(dead_code)]
     pub fn liste() -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(Vec::new())))) }
     pub fn liste_de(v: Vec<Valeur>) -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(v)))) }
@@ -343,8 +467,9 @@ pub fn vers_z(v: &Valeur) -> Gz {
         Valeur::Rationnel(q) => { let n = q.num_i128(); let d = q.den_i128(); if d == 0 { erreur_runtime("division par zéro"); } z.poser_i64((n / d) as i64); }
         Valeur::Flottant(d) => z.poser_d(*d),
         Valeur::Chaine(s) => {
-            if s.is_empty() { z.poser_i64(0); }
-            else if !z.depuis_chaine(s) { erreur_runtime(&format!("conversion vers entier impossible (chaine: {:?})", s)); }
+            let t = s.aplatir();
+            if t.is_empty() { z.poser_i64(0); }
+            else if !z.depuis_chaine(&t) { erreur_runtime(&format!("conversion vers entier impossible (chaine: {:?})", t)); }
         }
         _ => erreur_runtime(&format!(
             "conversion vers entier impossible (type {:?}, val={:?}, ligne={})",
@@ -388,7 +513,7 @@ pub fn vers_d(v: &Valeur) -> f64 {
 
 fn vers_d_chaine(v: &Valeur) -> f64 {
     match v {
-        Valeur::Chaine(s) => chaine_vers_flottant(s),
+        Valeur::Chaine(s) => chaine_vers_flottant(&s.aplatir()),
         _ => erreur_runtime("conversion vers flottant impossible"),
     }
 }
@@ -475,7 +600,11 @@ pub fn cmp_vals(g: &Valeur, d: &Valeur) -> i32 {
         };
     }
     if let (Valeur::Chaine(a), Valeur::Chaine(b)) = (g, d) {
-        return if a == b { 0 } else if a < b { -1 } else { 1 };
+        return match ChaineRep::cmp_rep(a, b) {
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Greater => 1,
+        };
     }
     let flot = matches!(g, Valeur::Flottant(..)) || matches!(d, Valeur::Flottant(..));
     if flot {
@@ -521,7 +650,7 @@ pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
             x.iter().all(|(k, v)| y.iter().any(|(k2, v2)| valeur_egale(k, k2) && valeur_egale(v, v2)))
         }
         (_, Valeur::Table(..)) | (Valeur::Table(..), _) => false,
-        (Valeur::Chaine(x), Valeur::Chaine(y)) => x == y,
+        (Valeur::Chaine(x), Valeur::Chaine(y)) => ChaineRep::egale_rep(x, y),
         (Valeur::Chaine(..), _) | (_, Valeur::Chaine(..)) => false,
         (Valeur::Booleen(x), Valeur::Booleen(y)) => x == y,
         (Valeur::Booleen(..), _) | (_, Valeur::Booleen(..)) => false,
@@ -611,7 +740,7 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
             texte_flottant(d)
         }
         Valeur::Booleen(b) => if *b { "vrai".into() } else { "faux".into() },
-        Valeur::Chaine(s) => s.to_string(),
+        Valeur::Chaine(s) => s.aplatir(),
         Valeur::Liste(l) => {
             let items = l.0.borrow();
             let mut r = String::from("[");
