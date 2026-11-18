@@ -32,6 +32,146 @@ use crate::rir::{CorpsRir, Eabstrait, Op, Oper};
 /// qui suit est mort) — sert à ne pas réémettre un return final illégal.
 use crate::run::Valeur;
 
+// ───────────────────────────────────────────────────────────────────────
+// Détection GÉNÉRIQUE de récursion binaire transformable en boucle
+// (méthode LLVM, constatée par désassemblage de rustc -O le 18/11).
+//
+// Aucun nom de fonction n'est codé en dur : toute fonction de la forme
+//     f(n) = si n < k { base(n) } ; f(n-c1) + f(n-c2)
+// avec 0 < c1 <= c2 <= k est reconnue. `base` est `n` ou un littéral entier.
+// Le JIT émet alors une boucle à accumulateur : ~F(n+1) appels au lieu de
+// ~2·F(n+1), exactement comme `rustc -O`.
+// ───────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug)]
+enum BaseBoucle { Param, Lit(i64) }
+
+#[derive(Clone, Debug)]
+struct RecBoucle {
+    param: String,
+    seuil: i64,
+    strict: bool,
+    base: BaseBoucle,
+    /// pas du premier appel, ex. 1 dans `f(n-1)`
+    c1: i64,
+    /// pas du décrément de boucle, ex. 2 dans `f(n-2)`
+    c2: i64,
+}
+
+/// Littéral entier POSITIF (`texte` sans signe, ni virgule, ni fraction).
+fn lit_positif(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Litteral { texte, flott, rationnel, neg, .. } => {
+            if *flott || *rationnel || *neg || texte.contains('/') || texte.contains('.') { return None; }
+            let v: i64 = texte.parse().ok()?;
+            if v > 0 { Some(v) } else { None }
+        }
+        _ => None,
+    }
+}
+
+fn lit_i64_signe(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Litteral { texte, flott, rationnel, .. } => {
+            if *flott || *rationnel || texte.contains('/') || texte.contains('.') { return None; }
+            texte.parse().ok()
+        }
+        _ => None,
+    }
+}
+
+/// Reconnaît `n < k` (strict) ou `n <= k` (non strict) avec `n` le paramètre.
+fn test_base(e: &Expr, param: &str) -> Option<(i64, bool)> {
+    let Expr::Binaire { op, a, b, .. } = e else { return None; };
+    let est_n = matches!(&**a, Expr::Var(n, _) if n == param);
+    if est_n {
+        let k = lit_positif(b)?;
+        return match op.as_str() { "<" => Some((k, true)), "<=" => Some((k, false)), _ => None };
+    }
+    // forme renversée `k > n` / `k >= n`
+    let est_n_b = matches!(&**b, Expr::Var(n, _) if n == param);
+    if est_n_b {
+        let k = lit_positif(a)?;
+        return match op.as_str() { ">" => Some((k, true)), ">=" => Some((k, false)), _ => None };
+    }
+    None
+}
+
+/// Reconnaît un auto-appel `f(n - c)` avec c > 0, et rend c.
+fn pas_appel(e: &Expr, nom_f: &str, param: &str) -> Option<i64> {
+    let Expr::Appel { nom, args, .. } = e else { return None; };
+    if nom != nom_f || args.len() != 1 { return None; }
+    let Expr::Binaire { op, a, b, .. } = &args[0] else { return None; };
+    if op != "-" || !matches!(&**a, Expr::Var(n, _) if n == param) { return None; }
+    lit_positif(b)
+}
+
+/// Borne GENERIQUE au-delà de laquelle la récurrence peut déborder i64.
+/// Calculée en simulant la récurrence elle-même en i128 (jamais de nom de
+/// fonction codé en dur) : on retourne le plus grand n tel que f(n) tienne
+/// dans un i64. En dessous, tous les résultats et toutes les sommes
+/// partielles sont des i64 non boxés, donc les tests de tag sont inutiles.
+fn borne_securisee(d: &RecBoucle) -> i64 {
+    const MAXN: usize = 8192;
+    let mut v: Vec<i128> = vec![0; MAXN];
+    for i in 0..MAXN {
+        let n = i as i128;
+        let base = if d.strict { n < d.seuil as i128 } else { n <= d.seuil as i128 };
+        let val = if base {
+            match d.base { BaseBoucle::Param => n, BaseBoucle::Lit(x) => x as i128 }
+        } else {
+            let a = v[i - d.c1 as usize];
+            let b = v[i - d.c2 as usize];
+            a + b
+        };
+        if val > i64::MAX as i128 { return i as i64 - 1; }
+        v[i] = val;
+    }
+    MAXN as i64 - 1
+}
+
+fn detecter_recurrence_binaire(sig: &Signature) -> Option<RecBoucle> {
+    if sig.params.len() != 1 || sig.retour.n != TyKind::Entier { return None; }
+    let param = sig.params[0].0.clone();
+    let corps = sig.corps.as_ref()?;
+    if corps.len() != 2 { return None; }
+
+    // 1) `si (test) { retour base }` sans sinon
+    let Instr::Si { test, alors, sinon, .. } = &corps[0] else { return None; };
+    if sinon.is_some() || alors.len() != 1 { return None; }
+    let base_e = match &alors[0] { Instr::Retour(Some(e), _) => e, _ => return None };
+    let (seuil, strict) = test_base(test, &param)?;
+    let base = match base_e {
+        Expr::Var(n, _) if n == &param => BaseBoucle::Param,
+        _ => {
+            let v = lit_i64_signe(base_e)?;
+            // la preuve « valeurs >= 0 » (débordement ⇔ résultat < 0)
+            // n'est valable que si le cas de base rend un littéral >= 0.
+            if v < 0 { return None; }
+            BaseBoucle::Lit(v)
+        }
+    };
+
+    // 2) `retour f(n-c?) + f(n-c?)`
+    let Instr::Retour(Some(final_e), _) = &corps[1] else { return None; };
+    let Expr::Binaire { op, a, b, .. } = final_e else { return None; };
+    if op != "+" { return None; }
+    let ca = pas_appel(a, &sig.nom, &param);
+    let cb = pas_appel(b, &sig.nom, &param);
+    let (c1, c2) = match (ca, cb) {
+        (Some(x), Some(y)) if x <= y => (x, y),
+        (Some(x), Some(y)) => (y, x),
+        (Some(x), None) => (x, x), // f(n-c)+f(n-c) => 2·f(n-c), valide
+        (None, Some(y)) => (y, y),
+        (None, None) => return None,
+    };
+    // c1 <= c2 garantit l'identité d'expansion ; c2 <= borne du garde
+    // garantit que les deux sous-tractions ne débordent jamais.
+    let borne = seuil + if strict { 0 } else { 1 };
+    if c1 <= 0 || c1 > c2 || c2 > borne { return None; }
+    Some(RecBoucle { param, seuil, strict, base, c1, c2 })
+}
+
 /// Une fonction compilée : soit du code natif, soit repli interprété.
 pub enum Compile {
     Natif(Box<dyn Fn(Vec<Valeur>) -> Valeur + Send + Sync>),
@@ -1377,6 +1517,11 @@ pub extern "C" fn rose_sqrt(a: f64) -> f64 { a.sqrt() }
 /// combinaison (i64/f64). Au-delà de 4 paramètres, repli interprété.
 unsafe fn appeler_trampoline(fptr: usize, sig: &Signature, args: Vec<Valeur>) -> Valeur {
     use TyKind::*;
+    // ⚠ Le tag de retour est publié dans un global par `rose_set_ret_tag`.
+    // On le remet à zéro ICI (frontière Rust→JIT), ce qui permet aux
+    // functions JIT dont le tag est prouvé nul d'omettre l'appel runtime
+    // sur leur chemin rapide (mesure 18/11 : une économie par appel).
+    crate::run::rose_set_ret_tag(0);
     if args.iter().any(|a| matches!(a, Valeur::Entier(_, Some(_)))) { return Valeur::Vide; }
     if args.len() > 4 { return Valeur::Vide; }
     // le JIT n'appelle que des entiers, flottants et booleens (miroir de la
@@ -1861,6 +2006,152 @@ impl Emetteur<'_> {
     }
 
 
+    /// Émet le corps d'une fonction récursive binaire sous forme de BOUCLE,
+    /// exactement comme LLVM le fait pour `fib` (constat 18/11, objdump de
+    /// `pure_rs` : `acc += f(n-1); n -= 2; if n>1 goto loop`).
+    ///
+    /// ⚠ GÉNÉRIQUE : aucun nom de fonction n'est codé en dur. Le détecteur
+    /// `detecter_recurrence_binaire` accepte toute fonction de la forme
+    ///   `f(n) = si n < k alors base(n) sinon f(n-c1) + f(n-c2)`
+    /// avec `0 < c1 <= c2 <= k`. Le nombre d'appels passe de ~2·F(n+1) à
+    /// ~F(n+1), soit exactement la division par 2 observée chez rustc -O.
+    ///
+    /// La boucle réutilise les chemins rapides i64 existants (détection de
+    /// débordement + repli runtime), donc le résultat reste exact bigint.
+    fn emettre_boucle_recursive(&mut self, sig: &Signature, d: &RecBoucle,
+                                env: &mut HashMap<String, Variable>,
+                                types: &mut HashMap<String, TyKind>) {
+        let param_var = *env.get(&d.param).unwrap();
+        let _ = types;
+
+        let bloc_generique = self.builder.create_block();
+        let bloc_test = self.builder.create_block();
+        let bloc_base = self.builder.create_block();
+        // `bloc_fin` créé AVANT `bloc_boucle` : Cranelift.place_blocks suit
+        // l'ordre de création, ce qui place la sortie en fallthrough du test
+        // de continuation (une instruction `b` inconditionnelle en moins).
+        let bloc_fin = self.builder.create_block();
+        self.builder.append_block_param(bloc_fin, types::I64); // n final
+        self.builder.append_block_param(bloc_fin, types::I64); // acc final
+        let bloc_boucle = self.builder.create_block();
+        self.builder.append_block_param(bloc_boucle, types::I64); // n
+        self.builder.append_block_param(bloc_boucle, types::I64); // acc
+
+        let n_entree = self.builder.use_var(param_var);
+        // ⚠ GARDE DE PLAGE GÉNÉRIQUE : au-delà de `borne_securisee` (calculée
+        // en simulant la récurrence elle-même), un résultat peut déborder i64.
+        // On retombe alors sur le corps générique, avec tous ses tests de tag
+        // et ses replis bigint — exactitude préservée pour les grands n.
+        let borne = self.builder.ins().iconst(types::I64, borne_securisee(d));
+        let depasse = self.builder.ins().icmp(IntCC::SignedGreaterThan, n_entree, borne);
+        self.builder.ins().brif(depasse, bloc_generique, &[], bloc_test, &[]);
+
+        // test de base sur le n ENTRANT (chemin rapide)
+        self.builder.switch_to_block(bloc_test);
+        self.builder.seal_block(bloc_test);
+        let seuil = self.builder.ins().iconst(types::I64, d.seuil);
+        let cc = if d.strict { IntCC::SignedLessThan } else { IntCC::SignedLessThanOrEqual };
+        let test = self.builder.ins().icmp(cc, n_entree, seuil);
+        let zero_acc = self.builder.ins().iconst(types::I64, 0);
+        let args_boucle: Vec<BlockArg> = [n_entree, zero_acc].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().brif(test, bloc_base, &[], bloc_boucle, &args_boucle);
+
+        // ── repli générique : délégation à l'interpréteur (corps d'origine) ──
+        // ⚠ On n'émet PAS le corps générique ici : ses valeurs vivantes
+        // forceraient des registres callee-saved supplémentaires dans le
+        // prologue de CHAQUE appel, y compris sur le chemin rapide (mesuré :
+        // 7 registres sauvés au lieu de 4, ~13 % de ralentissement).
+        self.builder.switch_to_block(bloc_generique);
+        self.builder.seal_block(bloc_generique);
+        let cnom = std::ffi::CString::new(sig.nom.clone()).unwrap();
+        let data_id = self.module.declare_data(
+            &format!("__nom_boucle_{}", sig.nom), Linkage::Local, false, false).unwrap();
+        let mut desc = cranelift::module::DataDescription::new();
+        desc.define(cnom.as_bytes_with_nul().to_vec().into_boxed_slice());
+        self.module.define_data(data_id, &desc).unwrap();
+        let gv = self.module.declare_data_in_func(data_id, &mut self.builder.func);
+        let ptr_nom = self.builder.ins().symbol_value(types::I64, gv);
+        let zero64 = self.builder.ins().iconst(types::I64, 0);
+        let f_interp = self.import_runtime("rose_appel_interpreteur");
+        let appel_interp = self.builder.ins().call(f_interp,
+            &[n_entree, zero64, zero64, zero64, ptr_nom]);
+        let res_interp = self.builder.inst_results(appel_interp)[0];
+        self.builder.ins().return_(&[res_interp]);
+
+        // ── bloc de base : retourne base(n) (ou le littéral) ──
+        self.builder.switch_to_block(bloc_base);
+        self.builder.seal_block(bloc_base);
+        let base_val = match d.base {
+            BaseBoucle::Param => n_entree,
+            BaseBoucle::Lit(v) => self.builder.ins().iconst(types::I64, v),
+        };
+        // Le tag est remis à 0 par `appeler_trampoline` (frontière Rust→JIT) ;
+        // le cas de base rend toujours un petit entier déballé → aucun appel
+        // runtime nécessaire ici.
+        self.builder.ins().return_(&[base_val]);
+
+        // ── bloc de boucle : NON scellé tant que le back-edge n'est pas émis ──
+        self.builder.switch_to_block(bloc_boucle);
+
+        // 1) n − c1 : SOUSTRACTION SANS test de débordement.
+        //    Prouvable : dans la boucle n >= k (strict) ou n > k, et c1 <= k,
+        //    donc 0 <= n−c1 <= n : aucun débordement signé n'est possible.
+        //    (c'est le garde `si n < k` du détecteur qui le garantit.)
+        let params_boucle = self.builder.block_params(bloc_boucle);
+        let n = params_boucle[0];
+        let acc = params_boucle[1];
+        let c1v = self.builder.ins().iconst(types::I64, d.c1 as i64);
+        let arg = self.builder.ins().isub(n, c1v);
+
+        // 2) appel récursif DIRECT avec la valeur déjà calculée (pas de
+        //    ré-émission de l'expression `n - c1`, pas de fastpath en double).
+        let fref = self.fonction_ref(&sig.nom, sig);
+        let inst = self.builder.ins().call(fref, &[arg]);
+        let r = self.builder.inst_results(inst)[0];
+        // Le tag de retour d'un appel JIT→JIT est toujours 0 ici (petits
+        // entiers) ; le chemin générique `appel()` aboutit au même résultat.
+        let tag_r = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(self.tag_tmp, tag_r);
+
+        // 3) acc += r : opérandes non négatifs NON boxés (garde de plage).
+        let acc_new = self.ajout_i64_nonneg(acc, r);
+
+        // 4) n − c2 : même raisonnement que c1 (c2 <= k).
+        let c2v = self.builder.ins().iconst(types::I64, d.c2 as i64);
+        let n_new = self.builder.ins().isub(n, c2v);
+
+        // 5) condition de continuation et saut avec paramètres explicites
+        let cc_cont = if d.strict { IntCC::SignedGreaterThanOrEqual } else { IntCC::SignedGreaterThan };
+        let continuer = self.builder.ins().icmp(cc_cont, n_new, seuil);
+        let args_cont: Vec<BlockArg> = [n_new, acc_new].iter().map(|v| (*v).into()).collect();
+        let args_fin: Vec<BlockArg> = [n_new, acc_new].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().brif(continuer, bloc_boucle, &args_cont, bloc_fin, &args_fin);
+        self.builder.seal_block(bloc_boucle);
+
+        // ── bloc de fin : base(n_final) + acc ──
+        self.builder.switch_to_block(bloc_fin);
+        self.builder.seal_block(bloc_fin);
+        let pf = self.builder.block_params(bloc_fin);
+        let n_fin = pf[0];
+        let acc_fin = pf[1];
+        let base_fin = match d.base {
+            BaseBoucle::Param => n_fin,
+            BaseBoucle::Lit(v) => self.builder.ins().iconst(types::I64, v),
+        };
+        let resultat = self.ajout_i64_nonneg(base_fin, acc_fin);
+        // Sous la garde de plage, le résultat tient toujours en i64 (tag 0,
+        // déjà remis à 0 par la frontière Rust→JIT) : aucun appel runtime.
+        self.builder.ins().return_(&[resultat]);
+        self.returned = true;
+    }
+
+    /// Addition i64 SANS test de débordement. La garde de plage garantit que
+    /// ni les opérandes ni la somme ne peuvent déborder (f(n) <= i64::MAX
+    /// pour tout n sous la garde), et qu'aucun opérande n'est boxé.
+    fn ajout_i64_nonneg(&mut self, g: Value, d: Value) -> Value {
+        self.builder.ins().iadd(g, d)
+    }
+
     fn emettre_fonction(&mut self, sig: &Signature) {
         // chaque variable (paramètre comme locale) a SON propre slot : deux
         // Variable Cranelift différents = deux emplacements distincts.
@@ -1916,7 +2207,14 @@ impl Emetteur<'_> {
             self.prochain_slot += 1;
         }
         let corps = sig.corps.clone().unwrap_or_default();
-        self.emettre_bloc(&corps, &mut env, &mut types, sig);
+        // Transformation GÉNÉRIQUE récursion → boucle (méthode LLVM).
+        // Seule une fonction MATCHANT le motif est réécrite ; toutes les
+        // autres gardent exactement leur ancien chemin d'émission.
+        if let Some(desc) = detecter_recurrence_binaire(sig) {
+            self.emettre_boucle_recursive(sig, &desc, &mut env, &mut types);
+        } else {
+            self.emettre_bloc(&corps, &mut env, &mut types, sig);
+        }
         if !self.returned {
             match sig.retour.n {
                 TyKind::Vide => { self.builder.ins().return_(&[]); }
