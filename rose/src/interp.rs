@@ -58,6 +58,13 @@ pub struct Interp {
     /// opération. C'est ce qui supprime le coût du `match Ok/Err` par
     /// opérande.
     erreur_rir: u8,
+    /// ⚠⚠⚠ SLOTS MODIFIÉS DEPUIS LA DERNIÈRE SYNCHRONISATION (goulot #1).
+    ///
+    /// Le corps principal doit rendre ses variables visibles à `globaux`
+    /// (les fonctions les lisent par nom). Recopier TOUS les slots après
+    /// CHAQUE opération coûtait O(variables × opérations) — le même goulot
+    /// que la trame AST. On ne recopie plus que les slots réellement écrits.
+    slots_sales: Vec<usize>,
 }
 
 
@@ -716,6 +723,7 @@ impl Interp {
             trame_rir: HashMap::new(),
             rir_principal: None,
             erreur_rir: 0,
+            slots_sales: Vec::new(),
         }
     }
 
@@ -752,6 +760,18 @@ impl Interp {
             }
         }
         installées
+    }
+
+    /// ⚠⚠⚠ ARCHI A2 — vrai code compilé, PAR OPPOSITION au marqueur
+    /// `Compile::Interprete` posé par le shim autonome (voir `main.rs`).
+    ///
+    /// `Compile::Interprete` signifie « l'émetteur machine n'a pas pris cette
+    /// fonction » : ce n'est PAS du code natif. Le test historique
+    /// `self.jit.contains_key(nom)` le traitait comme tel et interdisait le RIR
+    /// à TOUTE fonction en mode autonome — d'où fib(35) à 21 s. Ici on ne
+    /// considère comme compilées que les vraies variantes machine.
+    fn jit_reel(&self, nom: &str) -> bool {
+        matches!(self.jit.get(nom), Some(Compile::Natif(_)) | Some(Compile::Principal(_)))
     }
 
     fn cible(&self, nom: &str) -> Option<Valeur> {
@@ -929,33 +949,9 @@ impl Interp {
                 let table_opt = self.trames.iter().rev()
                     .find_map(|t| t.get(nom))
                     .or_else(|| self.globaux.get(nom));
-                if let Some(Valeur::Tableau(t)) = table_opt {
-                    let idx = vers_z(&idx);
-                    let len = t.0.borrow().len();
-                    if !idx.fits_u64_lt(len as u64) {
-                        erreur_runtime("index hors des limites du tableau");
-                    }
-                    let i = idx.get_u64() as usize;
-                    let v = vers_z(&val);
-                    if !v.fits_i64() { erreur_runtime("tableau : valeur hors i64"); }
-                    t.0.borrow_mut()[i] = v.get_i64();
-                } else if let Some(Valeur::Table(t)) = table_opt {
-                    let mut items = t.0.borrow_mut();
-                    // chercher si la clé existe déjà
-                    let mut trouve = false;
-                    for (k, v) in items.iter_mut() {
-                        if valeur_egale(k, &idx) {
-                            *v = val.clone();
-                            trouve = true;
-                            break;
-                        }
-                    }
-                    if !trouve {
-                        items.push((idx, val));
-                    }
-                } else {
-                    erreur_runtime(&format!("Affectation par index sur une non-table: {}", nom));
-                }
+                // ⚠ `?` propage le `Result` déjà rendu par l'aide (édition
+                // concurrente) : le bras doit rendre `()` comme `exec`.
+                affecter_index_valeur(nom, table_opt, &idx, &val)?
             }
             Instr::Si { test, alors, sinon, .. } => {
                 let c = self.eval(test)?;
@@ -1118,7 +1114,7 @@ impl Interp {
         // AVANT le JIT : `facteurs_premiers` (compilé) s'exécutait en
         // interprétation, et la pile de slots débordait jusqu'à la
         // segmentation fault. On laisse donc la priorité au JIT.
-        let compile_par_jit = self.jit.contains_key(&sig.nom);
+        let compile_par_jit = self.jit_reel(&sig.nom);
         // ⚠⚠⚠ VOIE RIR : si la fonction a un corps abaissé, on l'exécute par
         // la boucle LINÉAIRE (slots indexés, sauts numériques) au lieu de
         // parcourir l'arbre des `Instr` récursivement.
@@ -1525,6 +1521,7 @@ impl Interp {
         // Le corps principal est TOUJOURS le cadre le plus bas : on repart donc
         // d'une pile vide, et on la vide à la fin.
         self.pile_slots.vider();
+        self.slots_sales.clear();
         let base = self.empiler_slots(n_slots);
         let noms = corps.noms.clone();
         // ⚠⚠⚠ LA TRAME DES GLOBALES EST TOUJOURS LA PREMIÈRE (mesuré le 17/11).
@@ -1689,12 +1686,76 @@ impl Interp {
                 let va = self.eval_slots(a, slots, noms)?;
                 unaire_valeur(op, &va)
             }
+            Expr::Litteral { texte, flott, .. } if !*flott && !texte.contains('/') => {
+                // ⚠⚠⚠ ARCHI A2 — mêm règle que `eval_abstrait_rapide` : un
+                // littéral entier qui tient en i64 ne DOIT PAS allouer un
+                // BigInt (`chaine_vers_entier`) à chaque évaluation. C'est
+                // l'argument de `fib(n-1)` : 2 allocations par appel récursif.
+                match texte.trim().parse::<i64>() {
+                    Ok(v) => Ok(Valeur::z(v)),
+                    Err(_) => self.eval_interne(e),
+                }
+            }
             Expr::Litteral { .. } | Expr::LitComplexe { .. } | Expr::BooleenLit(..)
             | Expr::ChaineLit(..) => self.eval_interne(e),
-            // ⚠ Appels, factorielles, index, listes… : chemin normal (qui sait
-            // lire les slots via `chercher_var` ? NON — voir ci-dessous).
+            // ⚠⚠⚠ PROTOCOLE DE TRAME UNIQUE (goulot #1) — indexation lue
+            // DIRECTEMENT depuis les slots. L'ancien chemin reconstruisait la
+            // trame entière (`HashMap`) pour chaque lecture `$a[$q]`.
+            Expr::Index { a, b, .. } => {
+                let base = self.eval_slots(a, slots, noms)?;
+                let cle = self.eval_slots(b, slots, noms)?;
+                indexer_valeur(&base, &cle)
+            }
+            // ⚠⚠⚠ ARCHI A2 — APPEL DIRECT DEPUIS LES SLOTS (le vrai gain).
+            //
+            // Un appel dont les arguments ne sont PAS de simples variables
+            // (`fib(n-1)`) n'était PAS abaissé en `Eabstrait::AppelRir` par
+            // `rir::abstraire` : il retombait sur `eval_avec_slots_fallback`,
+            // qui reconstruisait une TRAME `HashMap<String, Valeur>` (clone +
+            // `String::clone` par slot) puis faisait `eval` → `appeler`. Sur
+            // fib(30) c'est ~2 millions de trames et de hachages par nom.
+            //
+            // Ici on garde l'appel DANS LES SLOTS : chaque argument est évalué
+            // par `eval_slots` (lecture par index via le cache, aucune trame),
+            // puis posé directement dans le cadre de l'appelé. Mêmes règles
+            // exactes de conversion de retour que `appeler` (voir
+            // `appel_rir_slots`). Les gardes reproduisent exactement les
+            // priorités de `appel` : JIT d'abord, catalogue/FFI ensuite.
+            Expr::Appel { nom, module, args, .. }
+                if module.is_empty()
+                    && !matches!(nom.as_str(), "entier" | "rationnel" | "flottant" | "chaine")
+                    && !self.jit_reel(nom)
+                    && self.prog.signatures.get(nom).map_or(false, |s| s.rir.is_some()) =>
+            {
+                let base = slots.as_ptr() as *mut Valeur;
+                match self.appel_rir_slots(nom, args, base, noms) {
+                    Some(r) => r,
+                    None => self.appel_slots_sans_trame(nom, module, args, slots, noms),
+                }
+            }
+            // ⚠⚠⚠ PROTOCOLE DE TRAME UNIQUE (goulot #1) — tout appel non-RIR
+            // (primitive du catalogue, conversion, FFI, fonction AST) a ses
+            // arguments évalués dans les slots puis passés EN TANT QUE VALEURS :
+            // aucune trame `HashMap<String, Valeur>` n'est matérialisée.
+            Expr::Appel { nom, module, args, .. } =>
+                self.appel_slots_sans_trame(nom, module, args, slots, noms),
+            // ⚠ Factorielles, listes, tables… : repli historique (rare).
             _ => self.eval_avec_slots_fallback(e, slots, noms),
         }
+    }
+
+    /// ⚠⚠⚠ APPEL SANS TRAME (protocole de trame unique, goulot #1).
+    ///
+    /// Chaque argument est évalué par `eval_slots` (lecture par index, jamais
+    /// de hachage), puis passé à `appel_valeurs` — la dispatch exacte de
+    /// `appel`, avec des `Valeur` déjà résolues. Aucun `HashMap` n'est créé.
+    fn appel_slots_sans_trame(&mut self, nom: &str, module: &str, args: &[Expr],
+                              slots: &[Valeur], noms: &[String])
+        -> Result<Valeur, Option<i32>>
+    {
+        let mut a = Vec::with_capacity(args.len());
+        for x in args { a.push(self.eval_slots(x, slots, noms)?); }
+        self.appel_valeurs(nom, module, a)
     }
 
     /// ⚠ Repli : une expression composée (appel, factorielle, index…) dont
@@ -1894,44 +1955,8 @@ impl Interp {
             }
             Expr::Index { a, b, .. } => {
                 let base = self.eval(a)?;
-                match &base {
-                    Valeur::Table(t) => {
-                        let cle = self.eval(b)?;
-                        for (k, v) in t.0.borrow().iter() {
-                            if valeur_egale(k, &cle) { return Ok(v.clone()); }
-                        }
-                        erreur_runtime("clé absente de la table");
-                    }
-                    Valeur::Liste(l) => {
-                        let idx = vers_z(&self.eval(b)?);
-                        let taille = l.0.borrow().len();
-                        if !idx.fits_u64_lt(taille as u64) {
-                            erreur_runtime("index hors des limites de la liste");
-                        }
-                        let i = idx.get_u64();
-                        let v = l.0.borrow()[i as usize].clone();
-                        Ok(v)
-                    }
-                    Valeur::Chaine(s) => {
-                        let idx = vers_z(&self.eval(b)?);
-                        let cps: Vec<char> = s.chars().collect();
-                        if !idx.fits_u64_lt(cps.len() as u64) {
-                            erreur_runtime("index hors des limites de la chaîne");
-                        }
-                        let i = idx.get_u64();
-                        Ok(Valeur::s(cps[i as usize].to_string()))
-                    }
-                    Valeur::Tableau(t) => {
-                        let idx = vers_z(&self.eval(b)?);
-                        let len = t.0.borrow().len();
-                        if !idx.fits_u64_lt(len as u64) {
-                            erreur_runtime("index hors des limites du tableau");
-                        }
-                        let i = idx.get_u64() as usize;
-                        Ok(Valeur::z(t.0.borrow()[i]))
-                    }
-                    _ => erreur_runtime("index sur une valeur qui n'est pas une liste"),
-                }
+                let cle = self.eval(b)?;
+                indexer_valeur(&base, &cle)
             }
             Expr::Unaire { op, a, .. } => {
                 let v = self.eval(a)?;
@@ -1977,6 +2002,86 @@ impl Interp {
 
     /// ⚠⚠⚠ APPEL D'UNE FONCTION RIR DEPUIS UNE AUTRE FONCTION RIR.
     ///
+    /// ⚠⚠⚠ ARCHI A2 — APPEL RIR DIRECT DEPUIS UNE TRAME DE SLOTS.
+    ///
+    /// Contrairement à `appel_rir_direct` (qui n'accepte que des arguments
+    /// `Expr::Var`, c'est-à-dire des slots déjà résolus par `rir::abstraire`),
+    /// ce chemin accepte N'IMPORTE QUELLE expression d'argument : elle est
+    /// évaluée par `eval_slots` sur la trame de slots DE L'APPELANT, sans
+    /// installer de `HashMap<String, Valeur>` temporaire.
+    ///
+    /// `None` = pas applicable (l'appelant reprend `eval_avec_slots_fallback`,
+    /// qui est la voie historique aux règles exactes). Aucune règle n'est
+    /// dupliquée : la conversion de retour est celle de `appeler`.
+    fn appel_rir_slots(&mut self, nom: &str, args: &[Expr], base: *mut Valeur,
+                       noms: &[String]) -> Option<Result<Valeur, Option<i32>>>
+    {
+        let sig_ptr: *const Signature = self.prog.signatures.get(nom)? as *const Signature;
+        let sig: &Signature = unsafe { &*sig_ptr };
+        if args.len() != sig.params.len() { return None; }
+        // ⚠ Le VRAI JIT reste prioritaire (le marqueur `Interprete` du shim
+        // autonome n'est pas du code compilé, voir `jit_reel`).
+        if self.jit_reel(nom) { return None; }
+        let corps: &crate::rir::CorpsRir = sig.rir.as_ref()?;
+        let n_slots = corps.n_slots;
+        // ⚠⚠ Les arguments sont évalués DANS LE CADRE DE L'APPELÉ dès qu'il est
+        // empilé. La pile de slots a une capacité réservée une fois pour toutes
+        // (`PileDeSlots::preparer`) : `base` reste valide, même si un argument
+        // contient un appel récursif qui empile par-dessus.
+        let cible = self.empiler_slots(n_slots);
+        for (i, a) in args.iter().enumerate() {
+            let v = match a {
+                Expr::Var(n, _) => {
+                    if let Some(k) = slot_du_nom(noms, n) {
+                        unsafe { (*base.add(k)).clone() }
+                    } else {
+                        match self.chercher_var(n) {
+                            Some(v) => v,
+                            // ⚠ Même code d'erreur que `appel_rir_direct`.
+                            None => { self.depiler_n(n_slots); return Some(Err(Some(1))); }
+                        }
+                    }
+                }
+                _ => {
+                    // ⚠ Aucun `Vec` d'arguments, aucune trame : l'expression
+                    // est lue directement dans les slots de l'appelant.
+                    let slots = unsafe {
+                        std::slice::from_raw_parts(base as *const Valeur, noms.len())
+                    };
+                    match self.eval_slots(a, slots, noms) {
+                        Ok(v) => v,
+                        Err(e) => { self.depiler_n(n_slots); return Some(Err(e)); }
+                    }
+                }
+            };
+            crate::rir::poser_slot(cible, i, v);
+        }
+        let fin = crate::rir::executer_pour(self, corps);
+        self.depiler_n(n_slots);
+        let res = match fin {
+            crate::rir::FinRir::Vide => Valeur::Vide,
+            crate::rir::FinRir::Retour(v) => v,
+            crate::rir::FinRir::Quitter(c) => return Some(Err(Some(c))),
+        };
+        // ⚠ Conversion de retour EXACTEMENT identique à `appeler` (voie RIR).
+        Some(Ok(match sig.retour.n {
+            TyKind::Booleen => match res {
+                Valeur::Booleen(_) => res,
+                _ => Valeur::b(est_vrai(&res)),
+            },
+            TyKind::Vide => Valeur::Vide,
+            TyKind::Entier => match res {
+                Valeur::Entier(..) => res,
+                _ => convertir(res, TyKind::Entier),
+            },
+            TyKind::Flottant => match res {
+                Valeur::Flottant(..) => res,
+                _ => convertir(res, TyKind::Flottant),
+            },
+            t => convertir(res, t),
+        }))
+    }
+
     /// ⚠ Chemin d'appel SPÉCIALISÉ (mesuré le 16/11). L'appel ordinaire
     /// (`appel` → `eval` sur chaque argument → `Vec<Valeur>` → `appeler`)
     /// coûtait 500 ns par appel sur une fonction d'UNE ligne, alors que le
@@ -2187,12 +2292,18 @@ impl crate::rir::HoteRir for Interp {
                 // référence (un écriture atomique par accès) : mesuré 201 ms
                 // → 100 ms sur 3 M de tours.
                 let base = slots.as_ptr();
+                let idx = *i as usize;
                 let (ptr, ty) = cache.lire();
+                // ⚠⚠⚠ ARCHI A2 — valider l'adresse DE CE SLOT, pas celle du
+                // cadre. L'ancien test `ptr == base` était FAUX dès que
+                // `idx != 0` : un cadre ultérieur qui démarre à l'adresse où
+                // pointait le slot 1 du cadre précédent faisait croire à un
+                // cache valide et lisait `n` à la place de `d` (mesuré :
+                // `11 % 11 = 0`, jardin 4 au lieu de 25, build autonome).
                 let (ptr, ty) = if std::env::var("ROSE_NO_CACHE_SLOT").is_err()
-                    && ptr == base as usize && ty != 0 {
+                    && ptr == unsafe { base.add(idx) } as usize && ty != 0 {
                     (ptr, ty)
                 } else {
-                    let idx = *i as usize;
                     let p = unsafe { base.add(idx) } as usize;
                     let t = match slots.get(idx) {
                         Some(Valeur::Entier(_, None)) => 1,
@@ -2376,10 +2487,19 @@ impl crate::rir::HoteRir for Interp {
         r
     }
 
+    /// ⚠⚠⚠ SYNCHRONISATION INCRÉMENTALE (goulot #1, protocole de trame unique).
+    ///
+    /// Historicalement : tous les slots étaient recopiés dans `globaux` après
+    /// CHAQUE opération du corps principal — O(variables × opérations), le
+    /// même goulot que la trame AST (×8 avec 30 variables inutiles). Le RIR
+    /// marque désormais les slots réellement écrits ; on ne recopie qu'eux.
     fn synchroniser_slots(&mut self, base: *mut Valeur, corps: &crate::rir::CorpsRir) {
-        for (i, n) in corps.noms.iter().enumerate() {
-            let v = unsafe { (*base.add(i)).clone() };
-            self.globaux.insert(n.clone(), v);
+        for i in self.slots_sales.drain(..) {
+            if i < corps.n_slots {
+                let n = &corps.noms[i];
+                let v = unsafe { (*base.add(i)).clone() };
+                self.globaux.insert(n.clone(), v);
+            }
         }
     }
 
@@ -2403,7 +2523,11 @@ impl crate::rir::HoteRir for Interp {
                 let idx = *i as usize;
                 // ⚠⚠ CACHE : pointeur + type, résolu au premier appel.
                 let (ptr, ty) = cache.lire();
-                let (ptr, ty) = if ptr == base as usize && ty != 0 {
+                // ⚠⚠⚠ ARCHI A2 — même correction que dans `eval_abstrait` :
+                // comparer l'adresse de CE SLOT, pas l'adresse du cadre. Le
+                // test `ptr == base` laissait un cache périmé passer pour
+                // valide quand un cadre ultérieur commençait à cette adresse.
+                let (ptr, ty) = if ptr == unsafe { base.add(idx) } as usize && ty != 0 {
                     (ptr, ty)
                 } else {
                     let p = unsafe { base.add(idx) } as usize;
@@ -2546,21 +2670,38 @@ impl crate::rir::HoteRir for Interp {
                           base: *mut Valeur, corps: &crate::rir::CorpsRir)
         -> Result<(), Option<i32>>
     {
-        // ⚠ La règle EXACTE : on passe par l'instruction d'affectation par
-        // index de l'interpréteur, après avoir installé la trame des slots.
-        let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
-        let mut trame = self.trame_rir.clone();
-        trame.clear();
-        for (i, n) in corps.noms.iter().enumerate() {
-            if let Some(v) = slots.get(i) { trame.insert(n.clone(), v.clone()); }
+        self.affecter_index_slots(nom, index, valeur, base, corps, true)
+    }
+
+    /// ⚠⚠⚠ PROTOCOLE DE TRAME UNIQUE (goulot #1) — `nom[index] ← valeur`
+    /// sans construire `HashMap<String, Valeur>`.
+    ///
+    /// L'index et la valeur sont évalués dans les slots ; la table est lue
+    /// depuis le slot de `nom` (les `Valeur` de table portent un
+    /// `Rc<RefCell<_>>` : la muter à travers la copie modifie la variable
+    /// d'origine). Repli par nom uniquement pour les variables hors slots.
+    fn affecter_index_slots(&mut self, nom: &str, index: &Expr, valeur: &Expr,
+                            base: *mut Valeur, corps: &crate::rir::CorpsRir,
+                            depuis_slots: bool)
+        -> Result<(), Option<i32>>
+    {
+        if !depuis_slots {
+            // ⚠ Chemin historique des corps de fonction : aucune trame n'est
+            // construite ici (`self.exec` lit la trame courante par nom).
+            let instr = Instr::AffectIndex {
+                nom: nom.to_string(), index: index.clone(), valeur: valeur.clone(), ligne: 0,
+            };
+            return self.exec(&instr);
         }
-        self.trames.push(trame);
-        let instr = Instr::AffectIndex {
-            nom: nom.to_string(), index: index.clone(), valeur: valeur.clone(), ligne: 0,
+        let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
+        let idx = self.eval_slots(index, slots, &corps.noms)?;
+        let val = self.eval_slots(valeur, slots, &corps.noms)?;
+        let table_opt = match slot_du_nom(&corps.noms, nom) {
+            Some(i) => slots.get(i),
+            None => self.trames.iter().rev().find_map(|t| t.get(nom))
+                .or_else(|| self.globaux.get(nom)),
         };
-        let r = self.exec(&instr);
-        self.trame_rir = self.trames.pop().unwrap_or_default();
-        r
+        affecter_index_valeur(nom, table_opt, &idx, &val)
     }
 
     fn eval_appel_ast(&mut self, nom: &str, args: &[Expr], _base: *mut Valeur)
@@ -2597,6 +2738,10 @@ impl crate::rir::HoteRir for Interp {
         // ⚠⚠ La taille du cadre est connue par l'appelant : on ne peut pas la
         // deviner. Voir `depiler_n`.
         self.pile_slots.depiler(0);
+    }
+
+    fn marquer_slot_modifie(&mut self, slot: usize) {
+        self.slots_sales.push(slot);
     }
 
     fn depiler_n(&mut self, n: usize) {
@@ -2939,14 +3084,25 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
 
 impl Interp {
     fn appel(&mut self, nom: &str, module: &str, args: &[Expr]) -> Result<Valeur, Option<i32>> {
+        let mut a = Vec::with_capacity(args.len());
+        for x in args { a.push(self.eval(x)?); }
+        self.appel_valeurs(nom, module, a)
+    }
+
+    /// ⚠⚠⚠ PROTOCOLE DE TRAME UNIQUE (goulot #1) — appel à opérandes déjà
+    /// résolues. Même règles exactes que `appel` ; seuls les arguments changent
+    /// de nature (des `Valeur` au lieu d'expressions à réévaluer dans une
+    /// trame `HashMap`). Le chemin chaud du RIR évalue ses arguments dans les
+    /// slots puis vient directement ici : aucune trame n'est construite.
+    fn appel_valeurs(&mut self, nom: &str, module: &str, a: Vec<Valeur>)
+        -> Result<Valeur, Option<i32>>
+    {
         if module == "dynamique" {
-            let mut a = Vec::new();
-            for x in args { a.push(self.eval(x)?); }
             return self.dynamique(nom, &a);
         }
         // conversions
-        if args.len() == 1 && matches!(nom, "entier" | "rationnel" | "flottant" | "chaine") {
-            let v = self.eval(&args[0])?;
+        if a.len() == 1 && matches!(nom, "entier" | "rationnel" | "flottant" | "chaine") {
+            let v = a.into_iter().next().unwrap();
             return Ok(match nom {
                 "entier" => {
                     if let Valeur::Chaine(s) = &v { return Ok(zg_rapide(chaine_vers_entier(s))); }
@@ -2983,16 +3139,10 @@ impl Interp {
             if sig.corps.is_none()
                 && !(sig.dll.is_empty() && sig.dll_son.is_empty() && sig.symbole.is_empty())
             {
-                let mut a = Vec::new();
-                for x in args { a.push(self.eval(x)?); }
                 return self.ffi_appeler(sig, &a);
             }
-            let mut a = Vec::new();
-            for x in args { a.push(self.eval(x)?); }
             return self.appeler(sig, a);
         }
-        let mut a = Vec::new();
-        for x in args { a.push(self.eval(x)?); }
         self.stdlib(nom, &a)
     }
 
@@ -4385,6 +4535,87 @@ thread_local! {
 /// ⚠⚠ La version sans cache faisait `noms.iter().position(|n| n == nom)` à
 /// chaque évaluation : une comparaison de chaînes par variable et par accès.
 /// Mesuré : le jardin des premiers prenait 262 ms au lieu de 47 ms.
+/// ⚠⚠⚠ PROTOCOLE DE TRAME UNIQUE (goulot #1) — lecture par index.
+///
+/// Logique EXACTE de `Expr::Index`, extraite de `eval_interne` pour être
+/// appelée aussi depuis les slots (aucun `HashMap<String, Valeur>` construit).
+fn indexer_valeur(base: &Valeur, cle: &Valeur) -> Result<Valeur, Option<i32>> {
+    match base {
+        Valeur::Table(t) => {
+            for (k, v) in t.0.borrow().iter() {
+                if valeur_egale(k, cle) { return Ok(v.clone()); }
+            }
+            erreur_runtime("clé absente de la table");
+        }
+        Valeur::Liste(l) => {
+            let idx = vers_z(cle);
+            let taille = l.0.borrow().len();
+            if !idx.fits_u64_lt(taille as u64) {
+                erreur_runtime("index hors des limites de la liste");
+            }
+            let i = idx.get_u64();
+            Ok(l.0.borrow()[i as usize].clone())
+        }
+        Valeur::Chaine(s) => {
+            let idx = vers_z(cle);
+            let cps: Vec<char> = s.chars().collect();
+            if !idx.fits_u64_lt(cps.len() as u64) {
+                erreur_runtime("index hors des limites de la chaîne");
+            }
+            let i = idx.get_u64();
+            Ok(Valeur::s(cps[i as usize].to_string()))
+        }
+        Valeur::Tableau(t) => {
+            let idx = vers_z(cle);
+            let len = t.0.borrow().len();
+            if !idx.fits_u64_lt(len as u64) {
+                erreur_runtime("index hors des limites du tableau");
+            }
+            let i = idx.get_u64() as usize;
+            Ok(Valeur::z(t.0.borrow()[i]))
+        }
+        _ => erreur_runtime("index sur une valeur qui n'est pas une liste"),
+    }
+}
+
+/// ⚠⚠⚠ PROTOCOLE DE TRAME UNIQUE (goulot #1) — affectation par index.
+///
+/// Logique EXACTE de `Instr::AffectIndex`, extraite pour être appelée avec une
+/// valeur de table déjà résolue (depuis les slots, sans trame). Les `Valeur`
+/// de table/liste portent un `Rc<RefCell<_>>` : muter à travers la copie issue
+/// du slot modifie bien la variable d'origine.
+fn affecter_index_valeur(nom: &str, table_opt: Option<&Valeur>, idx: &Valeur, val: &Valeur)
+    -> Result<(), Option<i32>>
+{
+    if let Some(Valeur::Tableau(t)) = table_opt {
+        let idx = vers_z(idx);
+        let len = t.0.borrow().len();
+        if !idx.fits_u64_lt(len as u64) {
+            erreur_runtime("index hors des limites du tableau");
+        }
+        let i = idx.get_u64() as usize;
+        let v = vers_z(val);
+        if !v.fits_i64() { erreur_runtime("tableau : valeur hors i64"); }
+        t.0.borrow_mut()[i] = v.get_i64();
+    } else if let Some(Valeur::Table(t)) = table_opt {
+        let mut items = t.0.borrow_mut();
+        let mut trouve = false;
+        for (k, v) in items.iter_mut() {
+            if valeur_egale(k, idx) {
+                *v = val.clone();
+                trouve = true;
+                break;
+            }
+        }
+        if !trouve {
+            items.push((idx.clone(), val.clone()));
+        }
+    } else {
+        erreur_runtime(&format!("Affectation par index sur une non-table: {}", nom));
+    }
+    Ok(())
+}
+
 /// L'expression lit-elle au moins un nom du corps RIR ?
 fn exprime_un_nom(e: &Expr, noms: &[String]) -> bool {
     fn dans(e: &Expr, noms: &[String]) -> bool {

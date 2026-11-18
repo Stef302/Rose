@@ -654,6 +654,12 @@ pub trait HoteRir {
     fn slots_courants(&mut self, n: usize) -> *mut Valeur;
     /// ⚠⚠⚠ REFERME LE CADRE COURANT.
     fn depiler_slots(&mut self);
+    /// ⚠⚠⚠ NOTifie qu'un slot du corps principal vient d'être écrit.
+    ///
+    /// Par défaut : rien (les hôtes sans `globaux` n'ont rien à synchroniser).
+    /// L'interpréteur mémorise l'indice pour ne recopier QUE ce slot-là dans
+    /// `globaux` — plus jamais tous les slots à chaque opération.
+    fn marquer_slot_modifie(&mut self, _slot: usize) {}
 
     /// Exécute un bloc imbriqué (règles de portée et de contrôle exactes).
     fn exec_bloc_imbrique(&mut self, b: &[Instr]) -> FinRir;
@@ -667,6 +673,20 @@ pub trait HoteRir {
     /// (tableaux, tables, erreurs d'index).
     fn affecter_index(&mut self, nom: &str, index: &Expr, valeur: &Expr)
         -> Result<(), Option<i32>>;
+    /// ⚠⚠⚠ PROTOCOLE DE TRAME UNIQUE (goulot #1) : affectation par index
+    /// avec les opérandes résolues dans les SLOTS, sans `HashMap`.
+    ///
+    /// Default = chemin historique (pour les hôtes qui n'implémentent pas
+    /// encore les slots, ex. `HoteBc`). L'interpréteur surcharge avec la voie
+    /// sans trame.
+    fn affecter_index_slots(&mut self, nom: &str, index: &Expr, valeur: &Expr,
+                            base: *mut Valeur, corps: &CorpsRir,
+                            depuis_slots: bool)
+        -> Result<(), Option<i32>>
+    {
+        let _ = (base, corps, depuis_slots);
+        self.affecter_index(nom, index, valeur)
+    }
 }
 
 /// ⚠⚠⚠ PILE DE SLOTS : UNE VRAIE PILE LIFO D'OCTETS (mesuré le 17/11).
@@ -808,11 +828,15 @@ pub fn executer_avec_ptr_sync<H: HoteRir>(
                 let v = hote.eval_abstrait_rapide(expr, base, corps);
                 if hote.erreur_en_attente() != 0 { return FinRir::Quitter(1); }
                 unsafe { *base.add(*slot as usize) = v; }
+                hote.marquer_slot_modifie(*slot as usize);
                 None
             }
             Op::AffectAst { slot, e } => {
                 match hote.eval_ast(e, base, corps) {
-                    Ok(v) => unsafe { *base.add(*slot as usize) = v },
+                    Ok(v) => {
+                        unsafe { *base.add(*slot as usize) = v };
+                        hote.marquer_slot_modifie(*slot as usize);
+                    }
                     Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
                 }
                 None
@@ -867,7 +891,7 @@ pub fn executer_avec_ptr_sync<H: HoteRir>(
                 None
             }
             Op::AffectIndex { nom, index, valeur, .. } => {
-                match hote.affecter_index_ast(nom, index, valeur, base, corps) {
+                match hote.affecter_index_slots(nom, index, valeur, base, corps, true) {
                     Ok(()) => {}
                     Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
                 }
@@ -892,6 +916,7 @@ pub fn executer_avec_ptr_sync<H: HoteRir>(
                 // `Instr::Lire` (type dynamique résolu depuis la valeur courante).
                 let v = hote.lire_slot(*ty, base, corps, *slot as usize);
                 unsafe { *base.add(*slot as usize) = v; }
+                hote.marquer_slot_modifie(*slot as usize);
                 None
             }
             Op::Bloc(b) => {
@@ -1007,7 +1032,11 @@ pub fn executer_avec_ptr<H: HoteRir>(corps: &CorpsRir, base: *mut Valeur, hote: 
                 // règle EXACTE de l'interpréteur (tableau, table, erreur
                 // d'index). Le RIR ne la réimplémente pas.
                 let _ = slot;
-                match hote.affecter_index(nom, index, valeur) {
+                // ⚠ Corps de FONCTION : on garde la règle historique
+                // (`HoteRir::affecter_index`) — aucun `HashMap` n'y est créé,
+                // et cela préserve exactement la sémantique des globals non
+                // initialisés dans les slots de l'appelé (bug préexistant).
+                match hote.affecter_index_slots(nom, index, valeur, base, corps, false) {
                     Ok(()) => {}
                     Err(c) => return FinRir::Quitter(c.unwrap_or(1)),
                 }
