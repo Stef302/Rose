@@ -323,3 +323,19 @@ runtime le font passer sous JIT. Rust reste devant (×2,9 assumé). Résidu
 identifié par instrumentation : contrôle d'overflow des compteurs (~12
 instructions/incrément) — même goulot que H1 avait résolu sur `somme`.
 Détails : `JIT_TABLE_BAT.md`. Constat daté, pas consigne.
+
+### Addendum — compteurs table (18/11, 21:50Z), binaire `d435a711…`
+
+**Prémisse « checks overflow = goulot » RÉFUTÉE par la mesure** : la
+spécialisation complète (×2,5 moins d'instructions) **régresse de 5,2 %**
+sur c15 et c19 — ces instructions s'exécutent dans l'ombre de la latence
+des 6 000 appels aux helpers table. Vrai goulot : `Table::inserer`/`trouver`
+dans `run.rs` ≈ 0,207 ms des 0,267 ms. Gain sûr conservé : emprunt du handle
+sans clonage `Rc` (6 000 increments+drops supprimés) → **−6,4 %**.
+
+| Domaine | 21:30Z | 21:50Z (c19 / c15) | Ratio Rust |
+|---|---:|---:|---:|
+| Table 3 000 clés | 0,277 | **0,255 / 0,262** | **2,68 / 2,69** |
+
+Les 3 victoires et les 2 domaines au niveau sont conservés, aucune régression
+sur D1–D6/D8. Détails : `JIT_TABLE_COMPTEURS.md`. Constat daté, pas consigne.
