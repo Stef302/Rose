@@ -41,6 +41,11 @@ required-features = ["native"]
 name = "rose-shell"
 path = "src/bin/rose-shell.rs"
 
+# ⚠ M5.3 / G3 — src/bin/rose_nostd.rs n'est PAS câblé ici : il exige
+# `panic = "abort"` alors que le profil release du moteur DOIT rester
+# `panic = "unwind"` (catch_unwind, voir commentaire l.85). Le binaire est
+# donc compilé dans un harnais isolé (voir docs/BINAIRE_NO_STD.md).
+
 [dependencies]
 num-bigint = "0.5"
 num-integer = "0.1"
