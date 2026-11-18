@@ -555,3 +555,13 @@ Rich est installé (`~/.local/lib/python3.12/site-packages/rich`). CPython n'a p
 **Bilan partiel vague 13**: M2 (goulot architectural) en cours. M1 a produit `WASM_TEXTUEL.md` (32baf85) — Rose exécute du texte via wasm/Node/Python, utile comme démonstration d'universalité mais PAS la voie Rich retenue.
 
 ⚠ Précision finale utilisateur: tester le **convertisseur wasm** (`scripts/rose-wasm-lib.sh`) avec une vraie bibliothèque **Python (Rich)**: compiler Python→C→wasm, appeler depuis Rose. CPython = outil de compilation, PAS runtime. Agent M4 (`PYTHON_WASM_RICH.md`). Rich entier via Cython est probablement bloqué (API CPython → imports), à documenter honnêtement.
+
+**Bilan vagues 13/14** : M2 ✅ `GOULOT_ARCHITECTURE.md` — goulot #1 PROUVÉ: 99,9072% du temps dans `exec`, clonage du HashMap entier par op non-abstractable (30 variables inutilisées → joindre 8,2× plus lent). Décision structurante: **protocole de trame unique**, porte V30/V0 ≤ 1,1. M3 ✅ jardin texte (d74ecdc). M4 ✅ `PYTHON_WASM_RICH.md`: Rich entier impossible via Cython (Python.h), mais port C de 3 fonctions Rich → 28/28 valeurs et 4/4 panneaux octet-identiques appelés depuis Rose via wasm. L3 ✅ pont wasm 2,375× (`ARCHI_WASM_PONT.md`).
+
+## Vague 14 (18/11) — implémenter la décision structurante
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| N1 | **trame unique** (goulot #1) | `rose/src/{interp,rir}.rs`, `rose/docs/TRAME_UNIQUE.md` | ratio V30/V0 ≤ 1,1 (aujourd'hui 8,2) |
+
+C'est la porte de vitesse architecturale: traiter la cause, pas les symptômes.
