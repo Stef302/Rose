@@ -500,3 +500,18 @@ Six agents pour franchir les deux limites restantes, fichiers distincts :
 ⚠ I1 modifie `jit.rs`/`rir.rs` (moteur) : après livraison re-vérifier 4 oracles + point fixe. I3/I4 ajoutent des modules non câblés (orchestrateur décide).
 
 **Bilan vague 9** : I1 ✅ `fde9baf` fib35 51,3→19,9ms (×2,58; Rust 12,6ms reste 1,58× devant — transformation récursion→boucle générique, 29,9M→14,9M appels) · I2 ✅ AOT sans Cranelift ELF exit55 · I3 ✅ JVM Rose `.rosebc` 36o + GC + sandbox · I4 ✅ allocateur arène 7,89× Box · I5 ✅ bench multi **1 victoire/7 défaites** (factorielle) · I6 ✅ guide autonomie. Après I1: point fixe `bdbef636` intact, 20/20 oracles, débordements exacts.
+
+## Vague 10 (18/11) — fermer les écarts mesurés
+
+Six agents sur les goulots exacts identifiés par les mesures :
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| J1 | **allocation registres** | `rose/src/jit.rs`, `rose/docs/REGISTRES_RUST.md` | fib35 ≤ 12,6ms (fermer 1,58×) |
+| J2 | **types non numériques** | `rose/src/run.rs`, `rose/docs/TYPES_RAPIDES.md` | ≥2× sur chaîne/liste/table |
+| J3 | **G2 réel** | `rose/Cargo.toml`, `rose/src/{lib,main}.rs`, `rose/docs/G2_REEL.md` | build sans cranelift, `libc features=[]` |
+| J4 | **câblage VM/arène** | harnais /tmp + `rose/docs/CABLAGE_VM.md` | intégration prouvée, lignes exactes |
+| J5 | **validation finale** | `rose/docs/VALIDATION_FINALE.md` | audit après changements moteur |
+| J6 | **plafond après** | `rose/docs/PLAFOND_APRES.md` | bornes [E] recalculées, verdict |
+
+⚠ J1 modifie `jit.rs` (moteur) et J3 modifie `lib.rs`/`main.rs`/`Cargo.toml` : après livraison re-vérifier point fixe + 4 oracles + builds. Règle: ne jamais annoncer une victoire sans mesure pinée.
