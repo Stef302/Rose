@@ -373,3 +373,41 @@ pointeur tagué vers le même `RefCell`, repli explicite.
 Rust exigerait du codegen inline, hors de la recette de voie typée.
 Régression D4 +6 % assumée (disposition de code, présente aussi sans JIT ;
 D4 reste 0,23×). Détails : `LISTE_I64_FAST.md`. Constat daté, pas consigne.
+
+### Addendum final — boucles liste inline (18/11, 23:20Z), binaire `94d3cf24…`
+
+Spécialisation stricte des 16 ops RIR + boucle machine aarch64 à registres
+fixés : 15 instructions/4 éléments en écriture, 10/4 en lecture, **0 `blr`,
+0 `mov` de permutation**. Garde `L ≤ 2²⁴` et `L % 4 == 0`, repli Cranelift.
+
+| Domaine | 22:50Z | 23:20Z (c19 / c15) | Ratio Rust |
+|---|---:|---:|---:|
+| Liste 100k | 0,920 | **0,370 / 0,371** | **1,99 / 1,95** |
+
+×2,26. Porte < 0,184 ms **non atteinte** : ~305 µs de `str`/`ldr` observables
+que le JIT doit émettre (la source Rust fait aussi `v.iter().fold`, les sources
+sont équivalentes) contre 189 µs à LLVM. Rejetés par mesure : `resize` 0,866 ms,
+gabarit `memset` 0,53–0,57 ms, `dmb sy` 0,69 ms (régression), fusion de
+boucles (résultat faux 11 249 925 000). Détails : `LISTE_INLINE.md`.
+
+---
+
+## Bilan final de la session (23:20Z)
+
+| # | Domaine | Rose (ms) | Rust (ms) | Verdict |
+|---|---|---:|---:|---|
+| 1 | `fib(35)` | 11,59 | 12,69 | **0,91 × victoire** |
+| 2 | Boucle 1..10⁶ | 0,260 | 0,261 | ≈ 1,0 × au niveau (plancher machine) |
+| 3 | Premiers 50k | 0,852 | 1,001 | **0,85 × victoire** |
+| 4 | Factorielle 5000 | 1,386 | 6,54 | **0,21 × victoire** |
+| 4b | PGCD 1000 ch. | 6,74 | 0,147 | 45,7 × |
+| 5 | Chaîne 20k | 0,92 | 0,0142 | 64,8 × |
+| 6 | Liste 100k | 0,370 | 0,186 | 1,99 × |
+| 7 | Table 3000 | 0,093 | 0,095 | ≈ 1,0 × au niveau |
+| 8 | E/S 10 Mo | 6,23 | 6,27 | ≈ 1,0 × au niveau |
+
+**3 victoires nettes + 3 domaines au niveau.** Comparé au constat initial
+(1/8 victoire, 7 défaites dont 5 par 200 à 2000 ×), tous les domaines ont été
+amenés sous 65 × et 6 sur 9 sont au niveau ou devant. Ce document est un
+constat daté, pas une consigne : re-mesurer après tout changement de moteur,
+de quantification ou de topologie.
