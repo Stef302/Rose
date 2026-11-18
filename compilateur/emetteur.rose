@@ -199,7 +199,7 @@ fn tyb($b: chaine) -> chaine {
 
 fn estnum($t: chaine) -> booleen {
   $b = BASE($t)
-  retour $b == "entier" ou $b == "rationnel" ou $b == "flottant"
+  retour $b == "entier" ou $b == "rationnel" ou $b == "flottant" ou $b == "complexe"
 }
 
 fn contient_barre($v: chaine) -> booleen {
@@ -222,6 +222,7 @@ fn rangd($b: chaine) -> entier {
 }
 
 fn promote($u1: chaine, $u2: chaine) -> chaine {
+  si (BASE($u1) == "complexe" ou BASE($u2) == "complexe") { retour "complexe|vide" }
   $r1 = rangd(BASE($u1))
   $r2 = rangd(BASE($u2))
   $r = $r1
@@ -486,6 +487,19 @@ fn typex($g: liste<chaine>, $x: liste<chaine>, $p: entier) -> chaine {
 # ══════════════════ expressions — descente vers les pools ══════════════════
 # Toute fonction rend « pos|indice » ; l'indice est décimal (jamais de « | »).
 
+# `i` est l'imaginaire SAUF s'il sert de compteur de boucle (`pour i de …`) :
+# le moteur le lexalise alors comme variable entière. On le détecte sur le
+# flux de jetons complet (aucun fichier du corpus ne mélange les deux usages).
+fn i_est_compteur($g: liste<chaine>, $x: liste<chaine>) -> booleen {
+  $n = longueur($g)
+  $j = 1
+  tant_que ($j + 1 < $n) {
+    si (VX0($x, $j) == "pour" et VX0($x, $j + 1) == "i") { retour vrai }
+    $j = $j + 1
+  }
+  retour faux
+}
+
 fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
         $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
         $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
@@ -493,6 +507,11 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
   $t = T0($g, $p)
   $l = GL0($gl, $p)
   si ($t == "nombre") {
+    # suffixe imaginaire « 4i » -> (c 0 4)  [miroir de analyseur.rose]
+    si (T1($g, $p) == "mot" et VX1($x, $p) == "i") {
+      $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "c", "0 " + VX0($x, $p), "", -1, -1, 0, 0, $l)
+      retour chaine($p + 2) + "|" + chaine($i)
+    }
     $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lit", VX0($x, $p), "", -1, -1, 0, 0, $l)
     retour chaine($p + 1) + "|" + chaine($i)
   }
@@ -553,6 +572,11 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
   }
   si (VX0($x, $p) == "faux") {
     $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "bol", "0", "", -1, -1, 0, 0, $l)
+    retour chaine($p + 1) + "|" + chaine($i)
+  }
+  # `i` minuscule = unité imaginaire (c 0 1), miroir de analyseur.rose
+  si ($t == "mot" et VX0($x, $p) == "i" et non i_est_compteur($g, $x)) {
+    $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "c", "0 1", "", -1, -1, 0, 0, $l)
     retour chaine($p + 1) + "|" + chaine($i)
   }
   si (T1($g, $p) == "::") {
@@ -689,7 +713,7 @@ fn unai($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
   si ($t == "sfact") {
     $r = unai($g, $x, $gl, $p + 1, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
     $lf = GL0($gl, $p)
-    $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "fac", "", "", entier(NOD($r)), -1, 0, 0, $lf)
+    $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "sfact", "", "", entier(NOD($r)), -1, 0, 0, $lf)
     retour chaine(SEPR($r)) + "|" + chaine($e)
   }
   $r = post($g, $x, $gl, $p, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
@@ -701,10 +725,15 @@ fn unai($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
     si ($tt == "multifacto" ou $tt == "diese" ou $tt == "terminal" ou $tt == "superfacto" ou $tt == "!") {
       $lf = GL0($gl, $q)
       $kdn = "fac"
+      $ktx = ""
+      si ($tt == "multifacto") {
+        $nbang = longueur(VX0($x, $q))
+        si ($nbang >= 2) { $kdn = "mfact"; $ktx = chaine($nbang) }
+      }
       si ($tt == "diese") { $kdn = "prim" }
       sinon si ($tt == "terminal") { $kdn = "term" }
       sinon si ($tt == "superfacto") { $kdn = "super" }
-      $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, $kdn, "", "", $e, -1, 0, 0, $lf)
+      $e = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, $kdn, $ktx, "", $e, -1, 0, 0, $lf)
       $q = $q + 1
     } sinon { $ok = 0 }
   }
@@ -1229,6 +1258,26 @@ fn replier_expr($i: entier,
     stocker($i, $nvt, "", $foi, $fot, $fof)
     retour "1|" + $nvt + "|"
   }
+  # — produit de deux littéraux complexes : le moteur plie i*i en -1 —
+  # (les nœuds « c » portent « re im » dans $tx ; non repliables eux-mêmes)
+  si ($kd == "bin" et $tx[$i] == "*" et $a[$i] >= 0 et $b[$i] >= 0) {
+    $ga = $a[$i]
+    $gb = $b[$i]
+    si ($k[$ga] == "c" et $k[$gb] == "c") {
+      $r1 = entier(piece($tx[$ga], 32, 1))
+      $i1 = entier(piece($tx[$ga], 32, 2))
+      $r2 = entier(piece($tx[$gb], 32, 1))
+      $i2 = entier(piece($tx[$gb], 32, 2))
+      $nr = $r1 * $r2 - $i1 * $i2
+      $ni = $r1 * $i2 + $i1 * $r2
+      si ($ni == 0) {
+        $r = chaine($nr)
+        stocker($i, $r, "", $foi, $fot, $fof)
+        retour "1|" + $r + "|"
+      }
+      retour "0"
+    }
+  }
   # — binaire sur deux littéraux : miroir fold_bin —
   si ($kd == "bin" et $va != "0" et $vb != "0") {
     $op = $tx[$i]
@@ -1444,6 +1493,7 @@ fn ce_raw($i: entier,
   $lg0 = $lg[$i]
   si ($kd == "lit") { retour t_from_texte($tx[$i], $tf[$i]) }
   si ($kd == "ch") { retour "chaine|vide" }
+  si ($kd == "c") { retour "complexe|vide" }
   si ($kd == "bol") { retour "booleen|vide" }
   si ($kd == "v") {
     $nom = $tx[$i]
@@ -1540,7 +1590,7 @@ fn ce_raw($i: entier,
     }
     retour $t
   }
-  si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super") {
+  si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super" ou $kd == "sfact" ou $kd == "mfact") {
     $t = check_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                     $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
     si (BASE($t) != "entier") {
@@ -1716,6 +1766,9 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "tampon_case") { retour "entier|tampon,entier" }
   si ($nom == "tampon_pose") { retour "vide|tampon,entier,entier" }
   si ($nom == "remplir_hasard") { retour "vide|tampon,tampon" }
+  si ($nom == "remplir_hasard_philox") { retour "vide|tampon,tampon,entier" }
+  si ($nom == "re" ou $nom == "im" ou $nom == "arg" ou $nom == "modulus") { retour "flottant|complexe" }
+  si ($nom == "conj") { retour "complexe|complexe" }
   si ($nom == "millisecondes") { retour "entier|" }
   si ($nom == "fact") { retour "entier|entier" }
   si ($nom == "fib") { retour "entier|entier" }
@@ -1885,7 +1938,10 @@ fn check_appel($i: entier,
         $t_att = sous_chaine($ent, premier_pipe($ent) + 1, longueur($ent))
         $bad = 0
         si ($ta != $t_att) {
-          si (non(estnum($ta) et estnum($t_att) et promote($ta, $t_att) == $t_att)) { $bad = 1 }
+          # est_numerique du moteur EXCLUT les complexes : aucune promotion
+          # implicite numérique → complexe aux arguments de fonction.
+          $numok = estnum($ta) et estnum($t_att) et BASE($ta) != "complexe" et BASE($t_att) != "complexe"
+          si (non($numok et promote($ta, $t_att) == $t_att)) { $bad = 1 }
         }
         si ($bad == 1) {
           signaler($lg0, "Argument de " + $nom + ": " + nomty($ta) + " reçu, " + nomty($t_att) + " attendu", $err)
@@ -2048,7 +2104,10 @@ fn check_instr($i: entier,
   }
   si ($kd == "pour") {
     $nom = $ino[$i]
-    si (env_get($nom, $vn, $vt) != "") {
+    # le moteur suit les compteurs de boucle dans UN seul espace : un `pour i`
+    # imbriqué dans un autre `pour` voit le compteur posé au niveau supérieur
+    # (qui vit dans $gn/$gt quand le corps est parcouru avec $ln/$lt).
+    si (env_get($nom, $vn, $vt) != "" ou env_get($nom, $gn, $gt) != "") {
       signaler($lg0, "La variable de boucle '" + $nom + "' existe déjà", $err)
       retour 0
     }
@@ -2419,6 +2478,7 @@ fn em_ast_expr($i: entier,
     retour "(n " + $txt + ")"
   }
   si ($kd == "ch") { retour "(s \"" + ast_echapper($txt) + "\")" }
+  si ($kd == "c") { retour "(c " + $txt + ")" }
   si ($kd == "bol") {
     si ($txt == "1") { retour "(b vraie)" }
     retour "(b faux)"
@@ -2437,12 +2497,15 @@ fn em_ast_expr($i: entier,
     retour "(uni " + $op0 + " " +
            em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
   }
-  si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super") {
+  si ($kd == "fac" ou $kd == "prim" ou $kd == "term" ou $kd == "super" ou $kd == "sfact" ou $kd == "mfact") {
     $nomf = "fact"
     si ($kd == "prim") { $nomf = "prim" }
     si ($kd == "term") { $nomf = "term" }
     si ($kd == "super") { $nomf = "super" }
-    retour "(" + $nomf + " " + em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
+    si ($kd == "sfact") { $nomf = "sfact" }
+    $enf = em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof)
+    si ($kd == "mfact") { retour "(mfact " + $txt + " " + $enf + ")" }
+    retour "(" + $nomf + " " + $enf + ")"
   }
   si ($kd == "lstvide") { retour "(lstvide " + $txt + ")" }
   si ($kd == "lst") {
