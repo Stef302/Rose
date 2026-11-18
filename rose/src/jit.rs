@@ -5432,6 +5432,73 @@ fn jit_lire_handle(h: i64) -> Valeur {
     JIT_HANDLES.with(|t| t.borrow()[h as usize].clone())
 }
 
+/// Accès SANS CLONAGE au `Valeur` pointé par un handle (voie i64 liste).
+///
+/// INVARIANT (identique à `Table::rep_nv` en `run.rs`, voir TABLE_I64_FAST.md) :
+/// le moteur est MONOTHREADÉ (`Rc`, jamais `Arc`) et les helpers ci-dessous
+/// sont des appels FEUILLE : aucun d'eux n'appelle `jit_allouer_handle` ni ne
+/// réalloue le `Vec` de handles pendant qu'il détient la référence. Le drapeau
+/// d'emprunt `RefCell` est donc toujours libre. `debug_assert!` (actif en debug,
+/// vérifié par `cargo test`, éliminé en release) détecte toute violation.
+/// Le moteur n'a qu'UNE représentation de liste (`Valeur::Liste`), donc aucun
+/// risque de divergence JIT ↔ interpréteur : c'est le même objet.
+#[inline(always)]
+fn jit_handle_ref(h: i64) -> &'static Valeur {
+    JIT_HANDLES.with(|t| {
+        #[cfg(debug_assertions)] debug_assert!(t.try_borrow().is_ok(), "emprunt JIT_HANDLES actif");
+        let ptr = t.as_ptr();
+        debug_assert!((h as usize) < unsafe { (*ptr).len() }, "handle JIT invalide");
+        let items = unsafe { (*ptr).as_ptr() };
+        unsafe { &*items.add(h as usize) }
+    })
+}
+
+/// Accès SANS contrôle dynamique au `Vec<Valeur>` d'une `Liste`.
+/// Même invariant que `jit_handle_ref` : helper feuille, monothreadé, pas
+/// d'emprunt `RefCell` actif. Le `Vec` reste la source de vérité unique —
+/// affichage, égalité, `sous_liste` et interpréteur voient exactement les
+/// mêmes éléments (aucune représentation parallèle, aucune conversion).
+#[inline(always)]
+fn liste_vec_nv(l: &crate::run::Liste) -> &'static mut Vec<Valeur> {
+    #[cfg(debug_assertions)] debug_assert!(l.0.try_borrow_mut().is_ok(), "emprunt Liste actif");
+    unsafe { &mut *l.0.as_ptr() }
+}
+
+/// Handle « pointeur » d'une liste JIT : BIT 63 à 1 pour distinguer un
+/// pointeur de `RefCell<Vec<Valeur>>` d'un index dans `JIT_HANDLES`.
+/// ⚠ Le bit 0 NE PEUT PAS servir : les indices de handles sont petits et
+/// peuvent être impairs (mesuré : `r_str.rose` segfaultait avec un tag bit 0).
+/// Bit 63 : les adresses utilisateur aarch64 n'utilisent que 48 bits, donc
+/// le bit haut est toujours 0 ; un index de handle est toujours < 2^31.
+/// La `Valeur` reste ENREGISTRÉE dans `JIT_HANDLES` : c'est la MÊME liste,
+/// lue par l'interpréteur sans conversion (une seule représentation).
+const LISTE_TAG: i64 = i64::MIN;
+#[inline]
+fn liste_handle_ptr(l: &crate::run::Liste) -> i64 {
+    let p = std::rc::Rc::as_ptr(&l.0) as i64;
+    debug_assert_eq!(p & LISTE_TAG, 0, "pointeur Liste: bit 63 déjà posé");
+    p | LISTE_TAG
+}
+
+/// Résout le `Vec` d'une liste à partir de son handle (pointeur tagué ou,
+/// repli, index `JIT_HANDLES`). Zéro accès thread-local sur le chemin
+/// pointeur : c'est le gain mesuré de la voie i64 liste.
+#[inline(always)]
+fn liste_mut_depuis_handle(h: i64) -> Option<&'static mut Vec<Valeur>> {
+    if h & LISTE_TAG != 0 {
+        let p = (h & !LISTE_TAG) as *mut std::cell::RefCell<Vec<Valeur>>;
+        let cell: &std::cell::RefCell<Vec<Valeur>> = unsafe { &*p };
+        #[cfg(debug_assertions)] debug_assert!(cell.try_borrow_mut().is_ok(), "emprunt Liste actif");
+        let vp: *mut Vec<Valeur> = cell.as_ptr();
+        Some(unsafe { &mut *vp })
+    } else {
+        match jit_handle_ref(h) {
+            Valeur::Liste(l) => Some(liste_vec_nv(l)),
+            _ => None,
+        }
+    }
+}
+
 /// Concaténation `+` de deux chaînes : la RÈGLE EXACTE (`binaire_valeurs`).
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_chaine_concat(a: i64, b: i64) -> i64 {
@@ -5446,30 +5513,51 @@ pub extern "C" fn rose_jit_chaine_concat(a: i64, b: i64) -> i64 {
 /// Liste vide typée entier (`[0 : entier]`).
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_liste_vide() -> i64 {
-    jit_allouer_handle(Valeur::liste_de(Vec::new()))
+    // Réservation de capacité (recette TI1, voir TABLE_I64_FAST.md §2.3) :
+    // une liste JIT est prouvée homogène i64 et typiquement remplie par une
+    // boucle comptée. Réserver évite les recopies géométriques du
+    // `Vec<Valeur>` pendant le remplissage. Coût mémoire assumé documenté
+    // dans LISTE_I64_FAST.md.
+    let v = Valeur::liste_de(Vec::with_capacity(131072));
+    match &v {
+        Valeur::Liste(l) => {
+            let h = liste_handle_ptr(l);
+            // La Valeur reste accessible par l'interpréteur : une seule
+            // représentation, aucune conversion, cohérence totale.
+            jit_allouer_handle(v);
+            h
+        }
+        _ => unreachable!(),
+    }
 }
 
-/// `joindre(liste, entier)` : mutation en place (`Rc<RefCell>`), pas de
-/// nouveau handle. L'entier est passé en i64 nu — sûr car le garde
-/// `principal_sans_boxage` prouve que les slots numériques du principal ne
-/// posent jamais de BigInt (voir `expr_peut_boxer`).
+/// `joindre(liste, entier)` : mutation en place, SANS clone de handle ni
+/// contrôle `RefCell` dynamique (voie i64 liste, voir le doc LISTE_I64_FAST).
+/// L'entier est passé en i64 nu — sûr car le garde `principal_sans_boxage`
+/// prouve que les slots numériques du principal ne posent jamais de BigInt
+/// (voir `expr_peut_boxer`). `Valeur::z` conserve le boxage au-delà de 2²⁴ :
+/// la représentation reste UNIQUE et identique à l'interpréteur.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_joindre(h: i64, v: i64) {
-    let l = jit_lire_handle(h);
-    if let Valeur::Liste(l) = l {
-        l.0.borrow_mut().push(Valeur::z(v));
+    if let Some(vec) = liste_mut_depuis_handle(h) {
+        vec.push(Valeur::z(v));
     }
 }
 
 /// `longueur(liste_ou_chaine)` : O(1) pour la rope et la liste.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_longueur(h: i64) -> i64 {
-    let v = jit_lire_handle(h);
-    match &v {
+    // Chemin liste (handle pointeur tagué) : zéro thread-local, zéro clone.
+    if h & LISTE_TAG != 0 {
+        if let Some(vec) = liste_mut_depuis_handle(h) {
+            return vec.len() as i64;
+        }
+    }
+    match jit_handle_ref(h) {
         Valeur::Chaine(s) => s.n as i64,
-        Valeur::Liste(l) => l.0.borrow().len() as i64,
+        Valeur::Liste(l) => liste_vec_nv(l).len() as i64,
         Valeur::Table(t) => t.0.borrow().items.len() as i64,
-        _ => crate::run::chaine_de(&v).chars().count() as i64,
+        v => crate::run::chaine_de(v).chars().count() as i64,
     }
 }
 
@@ -5477,9 +5565,8 @@ pub extern "C" fn rose_jit_longueur(h: i64) -> i64 {
 /// le garde `liste_entiers_nus` le prouve statiquement avant d'accepter le JIT.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_index_i64(h: i64, i: i64) -> i64 {
-    let v = jit_lire_handle(h);
-    if let Valeur::Liste(l) = &v {
-        if let Some(Valeur::Entier(x, None)) = l.0.borrow().get(i as usize) {
+    if let Some(vec) = liste_mut_depuis_handle(h) {
+        if let Some(Valeur::Entier(x, None)) = vec.get(i as usize) {
             return *x;
         }
     }
