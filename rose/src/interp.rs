@@ -3727,7 +3727,14 @@ impl Interp {
             "lire_texte" => {
                 let p = chaine_de(&a[0]);
                 match std::fs::read(&p) {
-                    Ok(b) if b.len() <= (1 << 28) => Valeur::s(String::from_utf8_lossy(&b).into_owned()),
+                    // `String::from_utf8` reprend le tampon de `fs::read` sans
+                    // le recopier quand l'UTF-8 est valide (cas usuel). Repli
+                    // explicite sur `from_utf8_lossy` si les octets sont
+                    // invalides : comportement historique préservé.
+                    Ok(b) if b.len() <= (1 << 28) => match String::from_utf8(b) {
+                        Ok(s) => Valeur::s(s),
+                        Err(e) => Valeur::s(String::from_utf8_lossy(e.as_bytes()).into_owned()),
+                    },
                     Ok(_) => erreur_runtime(&format!("fichier trop volumineux ({})", p)),
                     Err(_) => erreur_runtime(&format!("lecture du fichier impossible ({})", p)),
                 }
@@ -4144,8 +4151,19 @@ impl Interp {
             }
             "ecrire_texte" => {
                 let p = chaine_de(&a[0]);
-                let t = chaine_de(&a[1]);
-                if std::fs::write(&p, t.as_bytes()).is_err() {
+                // Variante (b) : une valeur lue est un unique noeud `Plein`.
+                // Emprunter son `&str` evite l'aplatissement (recopie de 10 Mo).
+                // Repli sur `aplatir`/`chaine_de` pour les ropes concaténées
+                // et les valeurs non-chaine (conversion historique préservée).
+                let aplat: String;
+                let octets: &[u8] = match &a[1] {
+                    Valeur::Chaine(r) => match &r.noeud {
+                        NoeudChaine::Plein(s) => s.as_bytes(),
+                        _ => { aplat = r.aplatir(); aplat.as_bytes() },
+                    },
+                    v => { aplat = chaine_de(v); aplat.as_bytes() },
+                };
+                if std::fs::write(&p, octets).is_err() {
                     erreur_runtime(&format!("écriture du fichier impossible ({})", p));
                 }
                 Valeur::Vide
