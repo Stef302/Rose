@@ -467,3 +467,17 @@ Cinq agents, fichiers distincts, pour répondre à la demande d'un langage COMPL
 | G4 | **jardins 1re classe** | `jardins/`, `scripts/rose-jardin.sh`, `rose/docs/JARDINS.md` | catalogue + utilitaire + jardin de démo vérifié |
 
 Rappel: les jardins sont du Rose PUR, jamais du Rust. GMP jamais dépendance. Mesures A/A/A, constats datés.
+
+## Vague 8 (18/11) — vitesse, universalité, bytecode
+
+Cinq agents sur les questions ouvertes de l'utilisateur, fichiers distincts :
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| H1 | **Rose ≥ Rust AOT** | `rose/src/{jit,interp,rir,natif_emetteur}.rs`, `rose/docs/VITESSE_VS_RUST.md` | améliorer fib(35) mesuré, verdict honnête |
+| H2 | **Mach-O + format universel** | `rose/src/macho_writer.rs`, `rose/docs/MACHO_UNIVERSEL.md` | structure Mach-O prouvée, wasm = universel expliqué |
+| H3 | **bytecode style JVM** | `rose/docs/BYTECODE_ROSE.md` | étude: RIR est-il déjà le bytecode? recommandation |
+| H4 | **guide universel wasm** | `rose/docs/UNIVERSEL_WASM.md` | build wasm Rose testé + guide 5 min |
+| H5 | **plafond de vitesse** | `rose/docs/PLAFOND_VITESSE.md` | démarrage/natif/JIT/interp mesurés, plafond calculé |
+
+⚠ H1 peut modifier le moteur (jit/interp/rir) : après livraison, re-vérifier les 4 oracles 150/150 et le point fixe md5 avant publication.
