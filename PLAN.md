@@ -711,3 +711,11 @@ Recette TI1 transposée. ⚠ Cohérence critique: liste JIT lisible par l'interp
 | LI2 | inline push/lecture + spécialisation boucles `pour` | `rose/src/jit.rs`, `rose/docs/LISTE_INLINE.md` | D6 < 0,184ms (battre Rust) |
 
 Marge réelle: H1 a fait 0,258ns/it sur somme; 200k it à ce rythme = 52us < 189us. ⚠ Préserver tag bit63 (bit0 = segfault D5).
+
+**Bilan vague 27 (18/11, 23:20Z)**: LI2 ✅ `f7cd39d` — boucle machine aarch64 15 instr/4 ecriture, 10/4 lecture, 0 blr/0 mov permutation, garde L<=2^24 et L%4==0. **D6 0,92→0,37ms (×2,6), ratio 1,99/1,95**, porte <0,184ms NON atteinte (305us de str/ldr observables vs LLVM). 40 comparaisons 0 diff. `LISTE_INLINE.md`.
+
+## BILAN FINAL SESSION (18/11 23:20Z) — HEAD `8a4ae54`
+
+**3 victoires nettes** (fib 0,91× · fact 0,21× · premiers 0,85×) **+ 3 au niveau** (boucle, table, E/S ~1,0×). Tous les domaines < 65× (initial: 5 domaines à 200–2000×). 21 livraisons architecturales, chacune re-mesurée c15+c19 avec oracles 152/0×4, point fixe `bdbef636`, jardin 20/20, 311 tests.
+
+**Restent ouverts** (causes documentées, non contournables dans leur périmètre): D6 ×2 (LLVM élimine les lectures), D4b ×45 (bigint), D5 ×65 (push_str SIMD Rust). Chaque porte non atteinte a sa cause chiffrée dans son doc.
