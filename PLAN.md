@@ -498,3 +498,5 @@ Six agents pour franchir les deux limites restantes, fichiers distincts :
 | I6 | **guide autonomie** | `rose/docs/AUTONOMIE_COMPLETE.md` | route G2→G4 vérifiable, état réel |
 
 ⚠ I1 modifie `jit.rs`/`rir.rs` (moteur) : après livraison re-vérifier 4 oracles + point fixe. I3/I4 ajoutent des modules non câblés (orchestrateur décide).
+
+**Bilan vague 9** : I1 ✅ `fde9baf` fib35 51,3→19,9ms (×2,58; Rust 12,6ms reste 1,58× devant — transformation récursion→boucle générique, 29,9M→14,9M appels) · I2 ✅ AOT sans Cranelift ELF exit55 · I3 ✅ JVM Rose `.rosebc` 36o + GC + sandbox · I4 ✅ allocateur arène 7,89× Box · I5 ✅ bench multi **1 victoire/7 défaites** (factorielle) · I6 ✅ guide autonomie. Après I1: point fixe `bdbef636` intact, 20/20 oracles, débordements exacts.
