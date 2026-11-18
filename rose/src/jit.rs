@@ -1248,6 +1248,14 @@ struct Emetteur<'a> {
     /// (le slot de la partie réelle est celui retourné par `var`).
     complex_im: HashMap<String, Variable>,
     tag_tmp: Variable,
+    /// 18/11 — drapeau « valeur non boxée » du résultat de la dernière
+    /// `expr_eabstrait_rir` (1 = i64 nu, 0 = peut être un pointeur Mpz).
+    /// Complète `tag_tmp`, qui n'est PAS fiable sur un `Eabstrait::Slot`
+    /// (run.rs:1541 documente les tags périmés). ⚠ Les paramètres sont
+    /// volontairement marqués 0 (non prouvés) : `appeler_trampoline`
+    /// prouve l'absence de boxe pour Rust→JIT, mais pas pour les appels
+    /// JIT→JIT `AppelRir`, qui transmettent des i64 de slot bruts.
+    unboxed_tmp: Option<Value>,
     /// une émission a rencontré une borne de « pour » non entière : le bloc
     /// n'est pas compilable, l'appelant doit retomber sur l'interpréteur.
     refus_i: bool,
@@ -1514,7 +1522,7 @@ impl Jit {
             module: &mut self.module, signatures: &self.signatures,
             foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
                 runtime: &self.runtime_decls,
-            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
+            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, refus_i: false,
         };
         if use_rir {
             if !e.emettre_fonction_rir(&sig) { return None; }
@@ -1690,7 +1698,7 @@ impl Jit {
                 module: &mut self.module, signatures: &self.signatures,
                 foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
                 runtime: &self.runtime_decls,
-                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, refus_i: false,
+                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, refus_i: false,
             };
             let _te = std::time::Instant::now();
             let mut emitted_rir = false;
@@ -1945,16 +1953,33 @@ impl Emetteur<'_> {
 
     // ── M1.2 : émission RIR ─────────────────────────────────────────────
 
-    fn expr_eabstrait_rir(&mut self, e: &Eabstrait, slot_vars: &[Variable], slot_types: &[TyKind], corps: &CorpsRir) -> JitVal {
+    fn expr_eabstrait_rir(&mut self, e: &Eabstrait, slot_vars: &[Variable], slot_types: &[TyKind],
+                          corps: &CorpsRir, slot_unboxed: &[Variable]) -> JitVal {
+        // Conservateur par défaut : seules les branches qui PROUVENT le
+        // non-boxage remontent 1. Le champ est relu immédiatement après
+        // chaque appel (avant l'appel suivant, qui l'écrase).
+        let zt_def = self.builder.ins().iconst(types::I64, 0);
+        self.unboxed_tmp = Some(zt_def);
         match e {
             Eabstrait::Slot(s, _) => {
                 let i = *s as usize;
                 let v = self.builder.use_var(slot_vars[i]);
+                let u = self.builder.use_var(slot_unboxed[i]);
+                self.unboxed_tmp = Some(u);
+                // ⚠ NE PAS dériver `tag_tmp` du drapeau : 0 signifie
+                // « non prouvé », PAS « boxé ». Mesuré 18/11 : pgcd_jardin
+                // rendait un i64 (6) avec un tag 1 fabriqué ici → le
+                // trampoline déréférençait l'adresse 6 → SIGSEGV. On conserve
+                // le tag existant (le helper runtime, lui, ne s'y fie pas).
                 JitVal::Simple(v)
             }
             Eabstrait::Entier(t) => {
                 let zt = self.builder.ins().iconst(types::I64, 0);
                 self.builder.def_var(self.tag_tmp, zt);
+                // `eabstrait_rir_compilable` exige t.parse::<i64>() : un
+                // littéral entier est TOUJOURS un i64 nu, jamais boxé.
+                let one = self.builder.ins().iconst(types::I64, 1);
+                self.unboxed_tmp = Some(one);
                 let v: i64 = t.parse().unwrap_or(0);
                 JitVal::Simple(self.builder.ins().iconst(types::I64, v))
             }
@@ -1966,7 +1991,7 @@ impl Emetteur<'_> {
             }
             Eabstrait::Neg(a) => {
                 let ta = ty_eabstrait_rir(a, slot_types, self.signatures).unwrap_or(TyKind::Entier);
-                let av_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                let av_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
                 let av = self.simple(av_j);
                 if ta == TyKind::Flottant {
                     JitVal::Simple(self.builder.ins().fneg(av))
@@ -1987,7 +2012,7 @@ impl Emetteur<'_> {
                 }
             }
             Eabstrait::Non(a) => {
-                let av_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                let av_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
                 let av = self.simple(av_j);
                 let zero = self.builder.ins().iconst(types::I64, 0);
                 let is_zero = self.builder.ins().icmp(IntCC::Equal, av, zero);
@@ -2002,9 +2027,9 @@ impl Emetteur<'_> {
                 let tb = ty_eabstrait_rir(b, slot_types, self.signatures).unwrap_or(TyKind::Entier);
                 match op {
                     Oper::Lt|Oper::Le|Oper::Gt|Oper::Ge|Oper::Eq|Oper::Ne => {
-                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
                         let va = self.simple(va_j);
-                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
                         let vb = self.simple(vb_j);
                         let (va,vb,floating) = if ta==TyKind::Flottant || tb==TyKind::Flottant {
                             let va = if ta==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, va) } else { va };
@@ -2026,9 +2051,9 @@ impl Emetteur<'_> {
                         JitVal::Simple(res)
                     }
                     Oper::Et|Oper::Ou => {
-                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
                         let va = self.simple(va_j);
-                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
                         let vb = self.simple(vb_j);
                         let zero = self.builder.ins().iconst(types::I64, 0);
                         let ba = self.builder.ins().icmp(IntCC::NotEqual, va, zero);
@@ -2043,9 +2068,9 @@ impl Emetteur<'_> {
                     Oper::Add|Oper::Sub|Oper::Mul => {
                         let is_f = ta==TyKind::Flottant || tb==TyKind::Flottant;
                         if is_f {
-                            let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                            let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
                             let va = self.simple(va_j);
-                            let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                            let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
                             let vb = self.simple(vb_j);
                             let va = if ta==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, va) } else { va };
                             let vb = if tb==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, vb) } else { vb };
@@ -2053,42 +2078,130 @@ impl Emetteur<'_> {
                             let zt = self.builder.ins().iconst(types::I64, 0);
                             self.builder.def_var(self.tag_tmp, zt);
                             JitVal::Simple(r)
-                        } else {
-                            // entier taggé
-                            let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        } else if matches!(op, Oper::Add | Oper::Sub) {
+                            // ═══════════════════════════════════════════════════
+                            // 18/11 — CHEMIN RAPIDE ENTIER (domaine 2, ×35,8)
+                            // ═══════════════════════════════════════════════════
+                            // Preuve de sûreté, en trois maillons :
+                            //  1. Un `Eabstrait::Slot` porte un drapeau PAR
+                            //     SLOT (`slot_unboxed`), jamais un tag périmé
+                            //     partagé (run.rs:1541 documente le piège).
+                            //  2. Ce drapeau vaut 1 seulement pour un
+                            //     littéral i64, une locale initialisée à 0,
+                            //     ou un résultat dont l'overflow vient
+                            //     d'être écarté par le test inline ci-dessous.
+                            //     Les paramètres restent 0 (appels JIT→JIT).
+                            //  3. Le repli appelle le MÊME helper runtime :
+                            //     `tagged_binop_abi` ne se fie pas au tag,
+                            //     il teste l'appartenance au registre des
+                            //     boîtes. Lui passer 0 est donc correct.
+                            // Un débordement réel bascule sur le repli, qui
+                            // boxe exactement comme avant : aucune régression
+                            // d'exactitude, y compris sur les grands entiers.
+                            let zero64 = self.builder.ins().iconst(types::I64, 0);
+                            let one = self.builder.ins().iconst(types::I64, 1);
+                            let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
+                            let fa = self.unboxed_tmp.unwrap_or(zero64);
                             let va = self.simple(va_j);
-                            // tag de a: pour un slot simple on suppose 0; pour un résultat taggé on a tag_tmp
-                            let tag_a = self.builder.use_var(self.tag_tmp);
-                            let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                            let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
+                            let fb = self.unboxed_tmp.unwrap_or(zero64);
                             let vb = self.simple(vb_j);
-                            let tag_b = self.builder.use_var(self.tag_tmp);
-                            let fid_name = match op { Oper::Add=>"rose_add_ent", Oper::Sub=>"rose_sub_ent", Oper::Mul=>"rose_mul_ent", _=>unreachable!() };
+                            let r = if *op == Oper::Add {
+                                self.builder.ins().iadd(va, vb)
+                            } else {
+                                self.builder.ins().isub(va, vb)
+                            };
+                            // overflow signé (formule vérifiée 18/11) :
+                            //   + : ((r^a) & (r^b)) < 0
+                            //   - : ((a^b) & (a^r)) < 0
+                            // ⚠ La formule « (a^b)&(r^a) » initiale était
+                            // FAUSSE pour + (mesuré : acc_pos(100) rendait
+                            // -9223372036854675816 au lieu de
+                            // 9223372036854875800). Corrigée avant toute mesure.
+                            let is_add = *op == Oper::Add;
+                            let x1 = self.builder.ins().bxor(r, va);
+                            let x2 = if is_add {
+                                self.builder.ins().bxor(r, vb)
+                            } else {
+                                self.builder.ins().bxor(va, vb)
+                            };
+                            let ov_bits = self.builder.ins().band(x1, x2);
+                            let no_ov = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, ov_bits, zero64);
+                            let both_flags = self.builder.ins().band(fa, fb);
+                            let both_ok = self.builder.ins().icmp(IntCC::NotEqual, both_flags, zero64);
+                            let ok = self.builder.ins().band(both_ok, no_ov);
+                            let fast_b = self.builder.create_block();
+                            let slow_b = self.builder.create_block();
+                            let merge_b = self.builder.create_block();
+                            self.builder.append_block_param(merge_b, types::I64); // valeur
+                            self.builder.append_block_param(merge_b, types::I64); // drapeau
+                            self.builder.ins().brif(ok, fast_b, &[], slow_b, &[]);
+                            self.builder.switch_to_block(fast_b);
+                            self.builder.seal_block(fast_b);
+                            let ztag = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.def_var(self.tag_tmp, ztag);
+                            self.saut(merge_b, &[r, one]);
+                            self.builder.switch_to_block(slow_b);
+                            self.builder.seal_block(slow_b);
                             let ss = self.module.target_config().pointer_bytes() as u32;
                             let sv = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
                             let st = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
                             let p_sv = self.builder.ins().stack_addr(types::I64, sv, 0);
                             let p_st = self.builder.ins().stack_addr(types::I64, st, 0);
+                            let fid_name = if *op == Oper::Add { "rose_add_ent" } else { "rose_sub_ent" };
                             let f = self.import_runtime(fid_name);
+                            let _ = self.builder.ins().call(f, &[va, zero64, vb, zero64, p_sv, p_st]);
+                            let rv = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
+                            let rt = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
+                            self.builder.def_var(self.tag_tmp, rt);
+                            let inline = self.builder.ins().icmp(IntCC::Equal, rt, zero64);
+                            let flag = self.builder.ins().uextend(types::I64, inline);
+                            self.saut(merge_b, &[rv, flag]);
+                            self.builder.switch_to_block(merge_b);
+                            self.builder.seal_block(merge_b);
+                            let mv = self.builder.block_params(merge_b)[0];
+                            let mf = self.builder.block_params(merge_b)[1];
+                            self.unboxed_tmp = Some(mf);
+                            JitVal::Simple(mv)
+                        } else {
+                            // '*' entier : conservé sur le helper runtime
+                            // (promotion bigint au dépassement, non prouvable
+                            // ici sans test i128 coûteux). Aucune régression.
+                            let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
+                            let va = self.simple(va_j);
+                            let tag_a = self.builder.use_var(self.tag_tmp);
+                            let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
+                            let vb = self.simple(vb_j);
+                            let tag_b = self.builder.use_var(self.tag_tmp);
+                            let ss = self.module.target_config().pointer_bytes() as u32;
+                            let sv = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+                            let st = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+                            let p_sv = self.builder.ins().stack_addr(types::I64, sv, 0);
+                            let p_st = self.builder.ins().stack_addr(types::I64, st, 0);
+                            let f = self.import_runtime("rose_mul_ent");
                             let _ = self.builder.ins().call(f, &[va, tag_a, vb, tag_b, p_sv, p_st]);
                             let rv = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
                             let rt = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
                             self.builder.def_var(self.tag_tmp, rt);
+                            let zero = self.builder.ins().iconst(types::I64, 0);
+                            let inline = self.builder.ins().icmp(IntCC::Equal, rt, zero);
+                            self.unboxed_tmp = Some(self.builder.ins().uextend(types::I64, inline));
                             JitVal::Simple(rv)
                         }
                     }
                     Oper::Mod => {
-                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
                         let va = self.simple(va_j);
-                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
                         let vb = self.simple(vb_j);
                         let zt = self.builder.ins().iconst(types::I64, 0);
                         self.builder.def_var(self.tag_tmp, zt);
                         JitVal::Simple(self.builder.ins().srem(va, vb))
                     }
                     Oper::Div => {
-                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps);
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
                         let va = self.simple(va_j);
-                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
                         let vb = self.simple(vb_j);
                         let va = if ta==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, va) } else { va };
                         let vb = if tb==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, vb) } else { vb };
@@ -2156,8 +2269,19 @@ impl Emetteur<'_> {
 
         // Variables Cranelift pour chaque slot RIR
         let mut slot_vars: Vec<Variable> = Vec::with_capacity(corps.n_slots);
+        // 18/11 — un drapeau « non boxé » PAR SLOT (1 = i64 nu).
+        // ⚠ Les PARAMÈTRES restent conservatifs (0 = « peut être boxé ») :
+        // `appeler_trampoline` prouve l'absence de boxe pour les appels
+        // Rust→JIT, mais un `AppelRir` JIT→JIT transmet des i64 bruts de slot
+        // sans cette garantie. Un pointeur Mpz reçu comme paramètre ne doit
+        // JAMAIS entrer dans le chemin inline. Les accumulateurs de D2 sont
+        // des LOCALES (littéral 0, puis résultats d'additions prouvées), donc
+        // cette précaution ne coûte rien sur la boucle cible (à mesurer).
+        let mut slot_unboxed: Vec<Variable> = Vec::with_capacity(corps.n_slots);
         let zt0 = self.builder.ins().iconst(types::I64, 0);
+        let unboxed1 = self.builder.ins().iconst(types::I64, 1);
         self.builder.def_var(self.tag_tmp, zt0);
+        self.unboxed_tmp = Some(unboxed1);
 
         // params
         let mut pidx = 0usize;
@@ -2166,6 +2290,11 @@ impl Emetteur<'_> {
             let vty = if t == TyKind::Flottant { types::F64 } else { types::I64 };
             let var = self.builder.declare_var(vty);
             slot_vars.push(var);
+            let uvar = self.builder.declare_var(types::I64);
+            // paramètre → conservatif ; locale (valeur initiale 0) → nu
+            let u0 = if i < sig.params.len() { zt0 } else { unboxed1 };
+            self.builder.def_var(uvar, u0);
+            slot_unboxed.push(uvar);
             if i < sig.params.len() {
                 let param = self.builder.block_params(entry)[pidx];
                 pidx += 1;
@@ -2198,13 +2327,15 @@ impl Emetteur<'_> {
             let next = if pc + 1 < n { blocks[pc + 1] } else { end_block };
             match &corps.ops[pc] {
                 Op::Affect { slot, expr } => {
-                    let val_j = self.expr_eabstrait_rir(expr, &slot_vars, &slot_types, corps);
+                    let val_j = self.expr_eabstrait_rir(expr, &slot_vars, &slot_types, corps, &slot_unboxed);
+                    let u = self.unboxed_tmp.unwrap_or(zt0);
                     let v = self.simple(val_j);
                     let st = slot_types.get(*slot as usize).copied().unwrap_or(TyKind::Entier);
                     let v = if st == TyKind::Flottant && self.builder.func.dfg.value_type(v) == types::I64 {
                         self.builder.ins().fcvt_from_sint(types::F64, v)
                     } else { v };
                     self.builder.def_var(slot_vars[*slot as usize], v);
+                    self.builder.def_var(slot_unboxed[*slot as usize], u);
                     self.saut(next, &[]);
                 }
                 Op::Saut { cible } => {
@@ -2212,7 +2343,7 @@ impl Emetteur<'_> {
                     self.saut(tgt, &[]);
                 }
                 Op::SautSiFauxAbstrait { test, cible } => {
-                    let tv_j = self.expr_eabstrait_rir(test, &slot_vars, &slot_types, corps);
+                    let tv_j = self.expr_eabstrait_rir(test, &slot_vars, &slot_types, corps, &slot_unboxed);
                     let tv = self.simple(tv_j);
                     let zero = self.builder.ins().iconst(types::I64, 0);
                     let cond = self.builder.ins().icmp(IntCC::NotEqual, tv, zero);
@@ -2220,7 +2351,7 @@ impl Emetteur<'_> {
                     self.br_args(cond, next, &[], tgt_false, &[]);
                 }
                 Op::RetourAbstrait(e) => {
-                    let val_j = self.expr_eabstrait_rir(e, &slot_vars, &slot_types, corps);
+                    let val_j = self.expr_eabstrait_rir(e, &slot_vars, &slot_types, corps, &slot_unboxed);
                     let v = self.simple(val_j);
                     match sig.retour.n {
                         TyKind::Vide => { self.builder.ins().return_(&[]); }
@@ -2969,12 +3100,16 @@ impl Emetteur<'_> {
                         let tag_g_zero64 = self.builder.ins().uextend(types::I64, tag_g_zero);
                         let tag_d_zero64 = self.builder.ins().uextend(types::I64, tag_d_zero);
                         let both_i64 = self.builder.ins().band(tag_g_zero64, tag_d_zero64);
-                        // overflow check signé en i64 (18/11) :
-                        //   overflow ⇔ ((g^d) & (sum^g)) < 0
+                        // overflow check signé en i64 (18/11, CORRIGÉ 18/11) :
+                        //   overflow ⇔ ((sum^g) & (sum^d)) < 0
+                        // ⚠ L'ancienne formule ((g^d)&(sum^g)) manquait le
+                        // débordement positif (ex. i64::MAX + 1) : le signe de
+                        // (g^d) y est nul. Remplacée après mesure du bug sur
+                        // acc_pos dans le chemin RIR.
                         let sum64 = self.builder.ins().iadd(g, d);
-                        let gxd = self.builder.ins().bxor(g, d);
                         let sumxg = self.builder.ins().bxor(sum64, g);
-                        let ov_bits = self.builder.ins().band(gxd, sumxg);
+                        let sumxd = self.builder.ins().bxor(sum64, d);
+                        let ov_bits = self.builder.ins().band(sumxg, sumxd);
                         let no_ov_flag = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, ov_bits, zero_tag);
                         let no_ov = self.builder.ins().uextend(types::I64, no_ov_flag);
                         let fast_ok = self.builder.ins().band(both_i64, no_ov);
