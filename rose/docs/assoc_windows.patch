@@ -1,0 +1,96 @@
+# PATCH PROPOSÉ — NON APPLIQUÉ
+#
+# Association des fichiers .rose sur Windows — intégration de `src/assoc_windows.rs`.
+#
+# Ce fichier est une PROPOSITION : aucun des fichiers ci-dessous n'a été modifié.
+# Vérifié avec : patch -p1 --dry-run < rose/docs/assoc_windows.patch  (3 fichiers OK)
+#
+# Appliquer depuis la racine du dépôt :
+#   patch -p1 < rose/docs/assoc_windows.patch
+#
+# Fichiers touchés par le patch : rose/src/main.rs, rose/src/lib.rs,
+# rose/src/velopack.rs. Le module rose/src/assoc_windows.rs et le document
+# rose/docs/ASSOCIATION_WINDOWS.md existent déjà et ne sont pas concernés.
+#
+# ⚠ setup_core.rs (non modifié ici) écrit DÉJÀ une association `Rose.File`
+#    dans `poser_association()`. Le hook de main.rs est placé APRÈS
+#    `setup_core::installer()` pour que `.rose` pointe finalement sur
+#    `Rose.Source.1`. Voir le doc pour le nettoyage du ProgID hérité.
+#
+--- a/rose/src/main.rs
++++ b/rose/src/main.rs
+@@ -186,6 +186,7 @@
+ mod wasm_runtime;
+ mod paint;
+ mod console_win;
++mod assoc_windows;
+ mod setup_gui;
+ #[cfg(feature = "llvm")]
+ mod aot_llvm_orc;
+@@ -241,6 +242,9 @@
+   rose debug-lenteur [-n N] [prog.rose]   OÙ VA LE TEMPS ? lancement, analyse, exécution
+   rose wasm lib.wasm       fonctions exportées d'un module WebAssembly (pont @dll(\"wasm\", …))
+   rose update              installe/met a jour Rose (64 bits, interface console)
++  rose assoc [--user|--system] [--lang fr|en]   associer .rose à rose.exe (Windows)
++  rose assoc --remove [--user|--system]         retirer l'association .rose
++  rose assoc --dry-run                          afficher les reg add (marche sous Linux)
+ ",
+         env!("CARGO_PKG_VERSION"),
+         MOTEUR
+@@ -1116,6 +1120,9 @@
+             }
+             std::process::exit(comp_programme(&fichier, &sortie));
+         }
++        "assoc" => {
++            std::process::exit(assoc_windows::execute(&argv));
++        }
+         "console" | "repl" => {
+             let fichier = if argv.len() >= 3 { Some(argv[2].as_str()) } else { None };
+             std::process::exit(repl::lancer(fichier, true));
+@@ -1308,6 +1315,16 @@
+     println!("  Dossier : {}", prefixe);
+     println!();
+     println!("Ouvrez un nouveau terminal et tapez : rose --version");
++    // Association .rose : double-clic = exécution, clic droit = shell Rose.
++    // HKCU, sans élévation ; silencieux si reg.exe est indisponible.
++    // ⚠ `poser_association()` (setup_core) a écrit .rose -> Rose.File ;
++    //    notre hook réécrit .rose -> Rose.Source.1 et doit rester APRÈS.
++    let exe_installe = std::path::PathBuf::from(&prefixe)
++        .join("bin")
++        .join(if cfg!(windows) { "rose.exe" } else { "rose" });
++    if let Err(e) = assoc_windows::appliquer_silencieuse(Some(&exe_installe)) {
++        eprintln!("Association .rose : {e}");
++    }
+ }
+ 
+ fn couleur(s: &str, code: &str) -> String {
+--- a/rose/src/lib.rs
++++ b/rose/src/lib.rs
+@@ -73,6 +73,10 @@
+ /// fermeture quand la console a été ouverte par un double-clic.
+ pub mod console_win;
+ 
++/// Association des fichiers `.rose` sur Windows (clic droit / double-clic).
++/// Module autonome, testable depuis Linux ; voir docs/ASSOCIATION_WINDOWS.md.
++pub mod assoc_windows;
++
+ /// Console interactive (REPL) — partagée par `rose console` et `rose-shell`.
+ #[cfg(not(target_arch = "wasm32"))]
+ pub mod repl;
+--- a/rose/src/velopack.rs
++++ b/rose/src/velopack.rs
+@@ -380,6 +380,14 @@
+     fs::write(racine.join("current"), format!("app-{version}"))
+         .map_err(|e| format!("écriture de current : {e}"))?;
+     let _ = fs::remove_file(&nupkg);
++    // Réaffirme l'association APRÈS la mise à jour, en pointant le chemin
++    // STABLE `current\rose.exe` (pas `app-<version>\rose.exe`) : l'icône
++    // et les verbes restent valides quand une nouvelle version est posée.
++    // `appliquer_silencieuse` est un no-op hors Windows (tests Linux intact).
++    let exe_courant = racine.join("current").join("rose.exe");
++    if let Err(e) = crate::assoc_windows::appliquer_silencieuse(Some(&exe_courant)) {
++        eprintln!("Association .rose après mise à jour : {e}");
++    }
+     Ok(Some(version))
+ }
+ 
