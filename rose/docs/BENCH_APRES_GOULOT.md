@@ -132,3 +132,31 @@ Décomposition mesurée du coût E/S avant correction : `fs::read` 2 143 µs,
 `from_utf8_lossy().into_owned()` **6 043 µs**, `aplatir()` **1 869 µs**,
 `fs::write` 4 083 µs — les deux recopies représentaient 54,8 % du total.
 Détails : `ES_ZERO_COPY.md`. Constat daté, pas consigne.
+
+---
+
+## Addendum — après table native (18/11, 17:50Z)
+
+Binaire `6e3ff795456d3f9bcf01c74dcb5a443c65e969c29ee8515b18b6497a5dacf801`.
+2 salves A/A indépendantes (9 échantillons, c19 et c15).
+
+| # | Domaine | Avant | Après (c19 / c15) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,56 | 11,65 / 11,56 | 0,92 / 0,91 ✅ |
+| 2 | Boucle 1..10⁶ | 9,05 | 9,30 / 9,25 | 35,8 / 35,9 (**+2,8 %**) |
+| 3 | Premiers < 50 000 | 9,34 | 9,42 / 9,46 | 9,4 (**+1 %**) |
+| 4 | Factorielle 5 000 | 1,56 | 1,47 / — | 0,23 ✅ |
+| 4b | PGCD 1 000 chiffres | 6,72 | 6,71 / — | 45,4 |
+| 5 | Chaîne 20 000 car. | 3,29 | 3,34 / 3,33 | 232 / 226 (**+1,4 %**) |
+| 6 | Liste 100 000 entiers | 38,12 | 38,66 / 38,73 | 214 / 206 (**+1,7 %**) |
+| 7 | Table 3 000 clés | 6,33 | **1,386 / 1,385** | **14,8 / 14,7** (−78 %) |
+| 8 | E/S 10 Mo | 5,95 | 6,17 / 4,99 (bruit) | 1,01 / 0,98 ≈ |
+
+**Toujours 2 victoires nettes + 1 domaine au niveau de Rust.** Table :
+9 000 000 appels à `valeur_egale` (recherche linéaire) remplacés par un index
+de hachage O(1) → ×4,59, ratio Rust 67 → 14,7. Porte < 1 ms non atteinte
+(plancher 1,1 ms de dispatch interprète). Régressions faibles mais
+reproductibles (1–2,8 %) sur D2/D3/D5/D6, documentées. Exactitude : diff vide
+sur 43 + 8 sorties vs binaire de départ. Détails : `TABLE_NATIVE.md`.
+
+Constat daté, pas consigne.
