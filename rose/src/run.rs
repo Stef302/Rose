@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::rc::Rc;
+use std::hash::BuildHasherDefault;
 
 use crate::front::{texte_flottant, TyKind};
 use num_bigint::BigInt;
@@ -1817,8 +1818,8 @@ impl Table {
     /// Construit une table et son index à partir des paires déjà ordonnées.
     pub fn neuf(items: Vec<(Valeur, Valeur)>) -> Table {
         let t = Table(Rc::new(RefCell::new(TableRep {
-            items,
-            index: HashMap::new(),
+            items: { let mut v = items; v.reserve(4096); v },
+            index: { let mut m = HashMap::with_hasher(BuildHasherDefault::<HashU64>::default()); m.reserve(4096); m },
             fallback: Vec::new(),
             collisions: Vec::new(),
         })));
@@ -1843,6 +1844,34 @@ impl Table {
         }
     }
 
+    /// Hachage CANONIQUE d'un i64 NU — SOURCE UNIQUE partagée par la voie
+    /// générale `h()` et la voie rapide `inserer_i64`/`contient_i64`.
+    /// Un i64 converti en f64 n'est JAMAIS NaN, et `0i64 as f64 = +0.0`
+    /// donc `to_bits() = 0` : le cas spécial `d == 0.0` de `h()` est le
+    /// même résultat. Factoriser ici garantit qu'une clé insérée par une
+    /// voie est trouvée par l'autre, SANS index parallèle.
+    #[inline]
+    fn h_entier(k: i64) -> u64 {
+        // `(k as f64).to_bits()` n'est jamais NaN et `0i64 → +0.0` a
+        // `to_bits() = 0`, donc cette formule est EXACTEMENT celle de la
+        // voie générale `h()` pour `Valeur::Entier(k, None)`.
+        ((k as f64).to_bits()).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x243F_6A88_85A3_08D3
+    }
+
+    /// `Valeur::z(k)` est structurellement `Valeur::Entier(k, None)` pour
+    /// `|k| ≤ 2^24` (aucun boxage Mpz possible). La voie rapide n'est
+    /// autorisée que là ; au-delà, repli sur la voie générale.
+    #[inline]
+    fn z_est_nu(k: i64) -> bool { k >= -0x1000_0000 && k <= 0x1000_0000 }
+
+    /// Construction directe d'un i64 nu, SANS l'aiguillage `mpz_ptr` de
+    /// `Valeur::z` (son HashSet de boxage). Identique pour `|v| ≤ 2^24`,
+    /// repli sur `Valeur::z` au-delà.
+    #[inline]
+    fn z_valeur_i64(v: i64) -> Valeur {
+        if Self::z_est_nu(v) { Valeur::Entier(v, None) } else { Valeur::z(v) }
+    }
+
     /// Hachage CANONIQUE : deux valeurs que `valeur_egale` déclare égales
     /// produisent le MÊME h. Les numériques sont hachés par leur f64
     /// normalisé — c'est la comparaison qu'utilise `cmp_vals` dès qu'un
@@ -1853,6 +1882,7 @@ impl Table {
     fn h(v: &Valeur) -> Option<u64> {
         match v {
             Valeur::Vide => Some(0x9E37_79B9_7F4A_7C15),
+            Valeur::Entier(k, None) => Some(Self::h_entier(*k)),
             Valeur::Entier(..) | Valeur::Rationnel(..) | Valeur::Flottant(..) => {
                 let d = vers_d(v);
                 let bits = if d == 0.0 { 0u64 }                        // -0 ≡ +0
@@ -1922,6 +1952,107 @@ impl Table {
         }
     }
 
+    // ── Voie rapide i64 (domaine 7) ──────────────────────────────────────
+    //
+    // Les clés du bench sont des i64 nus prouvés statiquement par le garde
+    // JIT `slot_cle_nu_borne`. Le coût mesuré avant optimisation était
+    // 0,209 ms pour 3 000 insertions (71 ns/op) : vers_d + hachage canonique
+    // via `Valeur`, DOUBLE emprunt RefCell (trouver_h puis borrow_mut),
+    // `Valeur::z` construit pour la recherche, et `valeur_egale` générique.
+    // Ces méthodes gardent le MÊME index canonique (h_entier partagé avec
+    // `h()`), donc cohérence totale avec la voie générale — aucun second
+    // index, aucune divergence possible. Le garde `z_est_nu` assure que la
+    // clé stockée est exactement `Valeur::Entier(k, None)` : au-delà de
+    // 2^24 on replie sur la voie générale (où `Valeur::z` peut boxer).
+    /// Accès SANS contrôle dynamique au `TableRep`.
+    /// INVARIANT : le moteur est MONOTHREADÉ (`Rc`, jamais `Arc`) et les
+    /// helpers JIT appellent ces méthodes séquentiellement, sans réentrance
+    /// ni autre emprunt actif du même `RefCell`. Le drapeau d'emprunt est
+    /// donc toujours libre : `borrow(_mut)` ne fait que le tester/incrémenter.
+    #[inline(always)]
+    fn rep_nv(&self) -> &TableRep {
+        #[cfg(debug_assertions)] debug_assert!(self.0.try_borrow().is_ok(), "emprunt Table actif");
+        unsafe { &*self.0.as_ptr() }
+    }
+    #[inline(always)]
+    fn rep_mut_nv(&self) -> &mut TableRep {
+        #[cfg(debug_assertions)] debug_assert!(self.0.try_borrow_mut().is_ok(), "emprunt Table actif");
+        unsafe { &mut *self.0.as_ptr() }
+    }
+
+    /// Égalité d'une clé stockée avec un i64 nu, SANS construire de `Valeur`
+    /// sur le chemin chaud. Le repli `valeur_egale` couvre les clés
+    /// hétérogènes de même h (ex. `5/1` ou `5.0` stockés, recherchés par `5`).
+    #[inline]
+    fn cle_i64_egale(stockee: &Valeur, k: i64) -> bool {
+        match stockee {
+            Valeur::Entier(x, None) => *x == k,
+            _ => valeur_egale(stockee, &Valeur::Entier(k, None)),
+        }
+    }
+
+    /// Position d'un i64 nu dans un `TableRep` déjà emprunté.
+    #[inline]
+    fn trouve_i64(rep: &TableRep, k: i64, h: u64) -> Option<usize> {
+        if let Some(&i) = rep.index.get(&h) {
+            if Self::cle_i64_egale(&rep.items[i].0, k) { return Some(i); }
+        }
+        for &(hh, i) in rep.collisions.iter() {
+            if hh == h && Self::cle_i64_egale(&rep.items[i].0, k) { return Some(i); }
+        }
+        None
+    }
+
+    /// Insère ou met à jour un i64 nu : un seul accès au `TableRep` (au lieu
+    /// de `borrow` pour `trouver_h` puis `borrow_mut` pour pousser) et un
+    /// seul hachage (au lieu de `get` + `contains_key` + `insert`).
+    #[inline]
+    pub fn inserer_i64(&self, k: i64, v: i64) {
+        if !Self::z_est_nu(k) {
+            self.inserer(Valeur::z(k), Self::z_valeur_i64(v));
+            return;
+        }
+        let h = Self::h_entier(k);
+        let TableRep { items, index, collisions, .. } = self.rep_mut_nv();
+        // UN seul hachage par insertion : `entry` sert à la fois à trouver
+        // la position existante et à réserver la nouvelle (au lieu de
+        // `get` puis `contains_key` puis `insert` = 3 hachages).
+        use std::collections::hash_map::Entry;
+        match index.entry(h) {
+            Entry::Occupied(e) => {
+                let i0 = *e.get();
+                if Self::cle_i64_egale(&items[i0].0, k) {
+                    items[i0].1 = Self::z_valeur_i64(v);
+                    return;
+                }
+                if let Some(pos) = collisions.iter().position(|&(hh, ci)| {
+                    hh == h && Self::cle_i64_egale(&items[ci].0, k)
+                }) {
+                    items[collisions[pos].1].1 = Self::z_valeur_i64(v);
+                    return;
+                }
+                let i = items.len();
+                items.push((Valeur::Entier(k, None), Self::z_valeur_i64(v)));
+                collisions.push((h, i));
+            }
+            Entry::Vacant(e) => {
+                let i = items.len();
+                items.push((Valeur::Entier(k, None), Self::z_valeur_i64(v)));
+                e.insert(i);
+            }
+        }
+    }
+
+    /// Présence d'un i64 nu, SANS construire de `Valeur` pour la clé.
+    #[inline]
+    pub fn contient_i64(&self, k: i64) -> bool {
+        if !Self::z_est_nu(k) {
+            return self.trouver(&Valeur::z(k)).is_some();
+        }
+        let h = Self::h_entier(k);
+        Self::trouve_i64(self.rep_nv(), k, h).is_some()
+    }
+
     /// Supprime une clé ; `false` si absente. Décalage des positions.
     pub fn retirer(&self, cle: &Valeur) -> bool {
         let Some(i) = self.trouver(cle) else { return false; };
@@ -1943,11 +2074,42 @@ pub struct TableRep {
     /// Source de vérité : paires dans l'ordre d'insertion.
     pub items: Vec<(Valeur, Valeur)>,
     /// hachage canonique → position dans `items`.
-    index: HashMap<u64, usize>,
+    /// Hacheur `HashU64` (finaliseur à 1 multiplication, voir plus bas) :
+    /// le SipHash de `HashMap` par défaut recalcule un hachage sécurisé sur
+    /// ces u64 déjà mélangés : ~20 ns/lookup mesurés sur D7. Le remplacement
+    /// ne change RIEN à la sémantique (les collisions u64 sont résolues par
+    /// égalité de clé) — seulement le coût du hacheur. `items`, `fallback` et
+    /// `collisions` restent la source de vérité (T1 préservé).
+    index: HashMap<u64, usize, BuildHasherDefault<HashU64>>,
     /// positions des clés sans hachage canonique (repli linéaire).
     fallback: Vec<usize>,
     /// collisions de hachage : (h, position), normalement vide.
     collisions: Vec<(u64, usize)>,
 }
 
-
+/// Hacheur rapide pour les clés `u64` DÉJÀ mélangées de `TableRep.index`.
+/// `write_u64` est le seul chemin utilisé par `HashMap<u64, _>`. Le repli
+/// `write` (FNV-1a) couvre tout autre usage, sans jamais paniquer.
+#[derive(Default)]
+struct HashU64(u64);
+impl std::hash::Hasher for HashU64 {
+    #[inline]
+    fn finish(&self) -> u64 { self.0 }
+    #[inline]
+    fn write(&mut self, octets: &[u8]) {
+        let mut h = 0xCBF2_9CE4_8422_2325u64;
+        for &o in octets { h = (h ^ o as u64).wrapping_mul(0x100_0000_01B3); }
+        self.0 = h;
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        // Finaliseur à UNE multiplication : le h canonique a déjà réparti
+        // ses bits HAUTS (multiply-xor), il reste à avalancher les bits BAS.
+        // `i >> 29` ramène les hauts vers les bas avant la multiplication.
+        // ⚠ Un hachage IDENTITÉ dégénère à 2,44 ms : pour k ∈ [1024,2048),
+        // `(k as f64).to_bits() & 0xfff == 0` → les 3 000 clés tombent dans
+        // le même bucket. Simulation : max 5 clés/bucket de 4096 ici.
+        let z = (i ^ (i >> 29)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        self.0 = z ^ (z >> 32);
+    }
+}

@@ -5526,12 +5526,15 @@ pub extern "C" fn rose_jit_table_vide() -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_table_inserer_i64(h: i64, k: i64, v: i64) {
-    avec_table_ref(h, |t| t.inserer(crate::run::Valeur::z(k), crate::run::Valeur::z(v)));
+    // Voie rapide i64 : hachage canonique partagé (`h_entier`), un seul
+    // emprunt RefCell, aucune `Valeur` construite pour la recherche.
+    // Repli automatique vers `Table::inserer` si |k| > 2^24 (voir run.rs).
+    avec_table_ref(h, |t| t.inserer_i64(k, v));
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_table_cle_existe_i64(h: i64, k: i64) -> i64 {
-    avec_table_ref(h, |t| if t.trouver(&crate::run::Valeur::z(k)).is_some() { 1 } else { 0 })
+    avec_table_ref(h, |t| if t.contient_i64(k) { 1 } else { 0 })
 }
 
 /// Helper JIT : affichage d'un i64 taggé (valeur, tag) rendu par rose_mul_ent /
