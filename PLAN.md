@@ -595,3 +595,13 @@ Domaine 8: 13,49ms Rose vs 4,73ms Rust (×2,85). Causes mesurées à confirmer: 
 ## Vague 17 (18/11) — prochain goulot
 
 État mesuré: **2 victoires nettes** (fib35 0,91×, fact 0,23×) + 1 au niveau (E/S). Reste: boucle ×34,4 / PGCD ×45,5 / table ×66,6 / liste ×203 / chaîne ×234 / primes ×9,4. Candidate: **table native** (D7) — `Valeur::Table` est une liste d'associations → recherche O(n) sur 3000 clés.
+
+**Bilan vague 17 (18/11, 17:50Z)**: table native ✅ `aaa1218` — `Table` = 1 `Rc<RefCell<TableRep>>` avec `items` (source de vérité) + `index HashMap<u64,usize>` + fallback/collisions. 9M appels `valeur_egale` → lookups O(1). D7 6,34→1,38ms (×4,59), ratio Rust 67→14,7. Porte <1ms NON atteinte (plancher 1,1ms dispatch). Régressions faibles documentées D2 +2,8%, D3 +1%, D5 +1,4%, D6 +1,7%. Diff vide sur 43+8 sorties. Re-mesuré c19+c15, oracles 152/0×4, point fixe intact. `TABLE_NATIVE.md`.
+
+## Vague 18 (18/11) — JIT boucle i64
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| J1 | JIT boucle fast path | `rose/src/jit.rs`, `rose/docs/JIT_BOUCLE_I64.md` | D2 < 3,0ms (aujourd'hui 9,30ms) |
+
+D2: 9,30ms vs Rust 0,260ms (×35,8), plancher machine 0,2564ms. Chemin `+` = ~20 instr Cranelift, 3 blocs, brif (tag + overflow). ⚠ Exactitude bigintCritique: tout débordement doit rester correct.
