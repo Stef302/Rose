@@ -635,3 +635,21 @@ D5 chaîne 3,33ms (×237), D6 liste 38,75ms (×212) — toujours interprétés c
 | H1 | checks tag/overflow redondants boucle JIT | `rose/src/jit.rs`, `rose/docs/JIT_BOUCLE_HOT.md` | D2 < 0,60ms (aujourd'hui 1,29ms) |
 
 Dump objdump fait par l'orchestrateur: ~25 instr/it dont 2 checks tag + 2 checks overflow + rechargement tags depuis la pile, drapeaux pourtant invariants.
+
+**Bilan vague 21 (18/11, 20:30Z)**: H1 ✅ `f42d627` — specialisation motif strict `somme(n)` avec **preuve de borne formelle** n<=2^32 (s<=9,22e18) et repli verifie au-dela. Deroulage x2, 9 instr/2 iter. **D2 1,29→0,258ms (×5,01), porte <0,60ms atteinte**, plancher machine 0,2564ms (ecart +0,6%). Ratio Rust 1,024/0,983 = au niveau, PAS revendique comme victoire. Aucune regression. Exactitude diff vide + depassement 2^32+1 identique. `JIT_BOUCLE_HOT.md`.
+
+## État courant (20:30Z) — 2 victoires + 2 au niveau
+
+| Domaine | Rose(ms) | Rust(ms) | ratio |
+|---|---:|---:|---:|
+| fib35 | 11,77 | 12,71 | **0,93 ✅** |
+| boucle 1e6 | 0,267 | 0,261 | ≈ 1,02/0,98 |
+| premiers 50k | 1,479 | 1,001 | 1,48 |
+| fact 5000 | 1,424 | 6,54 | **0,22 ✅** |
+| PGCD 1000ch | 6,73 | 0,147 | 45,7 |
+| chaîne 20k | 0,947 | 0,0146 | 64,9 |
+| liste 100k | 2,153 | 0,185 | 11,6 |
+| table 3000 | 1,351 | 0,094 | 14,3 |
+| E/S 10Mo | 6,12 | 6,05 | ≈ 1,0 |
+
+Prochaine cible la plus proche: **D3 premiers 1,48×** (residu = code natif est_premier).
