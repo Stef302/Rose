@@ -719,3 +719,20 @@ Marge réelle: H1 a fait 0,258ns/it sur somme; 200k it à ce rythme = 52us < 189
 **3 victoires nettes** (fib 0,91× · fact 0,21× · premiers 0,85×) **+ 3 au niveau** (boucle, table, E/S ~1,0×). Tous les domaines < 65× (initial: 5 domaines à 200–2000×). 21 livraisons architecturales, chacune re-mesurée c15+c19 avec oracles 152/0×4, point fixe `bdbef636`, jardin 20/20, 311 tests.
 
 **Restent ouverts** (causes documentées, non contournables dans leur périmètre): D6 ×2 (LLVM élimine les lectures), D4b ×45 (bigint), D5 ×65 (push_str SIMD Rust). Chaque porte non atteinte a sa cause chiffrée dans son doc.
+
+## Vague 28 (19/11) — repousser les limites (consigne utilisateur)
+
+Consigne: continuer à battre Rust (général puis cas par cas), délocaliser ~40% de la stdlib dans les jardins, convertisseur tous langages, accepter wasm AVEC imports, association .rose Windows (clic droit + « toujours ouvrir avec »), jardin GUI pure Rose sans Rust/Python, self-hosting complet, RVM ultra-complète style JVM, transpilation, bench JIT/AOT/interpréteur/RVM.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| WA | imports wasm + convertisseur universel | `wasm_lecteur.rs`, `rose-wasm-lib.sh`, `WASM_IMPORTS_UNIVERSEL.md` | 8 |
+| WB | RVM JVM ultra complète | `rosevm.rs`, `RVM_JVM_COMPLETE.md` | 5 |
+| WC | jardin GUI pure Rose | `jardins/gui.rose`, `GUI_SANS_DEPENDANCE.md` | 9 |
+| WD | association .rose Windows | `assoc_windows.rs`, `ASSOCIATION_WINDOWS.md`, patch | — |
+| WE | transpilation Rose→JS/Py/C | `transpile.rs`, `TRANSPILATION.md`, patch | 6 |
+| WF | bench des backends | `bench/backends/**`, `BENCH_BACKENDS.md` | 7 |
+| WG | délocalisation 40% stdlib | `jardins/{math,chaines,listes}.rose`, `DELOCALISATION_40.md` | 10 |
+| WH | vérification self-hosted réel | `SELF_HOSTED_REEL.md`, patch | — |
+
+⚠ Fichiers verrouillés pour tous: `main.rs`, `lib.rs`, `Cargo.toml`, `jit.rs`, `interp.rs`, `run.rs`, `rir.rs`, `PLAN.md`. Les commands CLI proposées sont livrées sous forme de patches, pas appliquées.
