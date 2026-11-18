@@ -54,7 +54,7 @@ M5.2 E/S et mémoire sans std                    ← FAIT (de2fc4a, module sys_i
 M5.3 produit sans dépendance Rust               ← À FAIRE
 M6  Interop sans runtime
 M6.1 pont wasm maison (compatibilité)          ← FAIT (115e705)
-M6.2 runtime wasm optionnel (installeur)       ← FAIT (f8bcf93+ab0651b, porte ≤20ms à mesurer après publication artefact)
+M6.2 runtime wasm optionnel (installeur)       ← FAIT (f70ae72: porte ≤20ms PASS, 4,15ms vs 172,1ms; artefact runner NON publié, SHA c7b2bf3c...)
 M6.3 Component Model / WIT (types complexes)   ← ÉTUDIÉ (845f5e0)
 ```
 
