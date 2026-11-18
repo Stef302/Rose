@@ -356,3 +356,20 @@ en salves adjacentes ; dans le bench 9-domaines complet le ratio est ~1,0 avec
 dispersion). Non revendiqué comme 4ᵉ victoire nette dans ce constat.
 3 victoires (fib, factorielle, premiers) + 3 au niveau (boucle, table, E/S).
 Détails : `TABLE_I64_FAST.md`. Constat daté, pas consigne.
+
+### Addendum — liste JIT pointeur tagué (18/11, 22:50Z), binaire `9196da46…`
+
+Deux prémisses corrigées : `joindre` isolé n'était pas JIT-qualifié (13,9 ms
+dans les deux modes) ; un tag sur le bit 0 segfaultait D5 (handles impairs)
+→ déplacé en bit 63. Une seule représentation : `Valeur::Liste` inchangée,
+pointeur tagué vers le même `RefCell`, repli explicite.
+
+| Domaine | 22:20Z | 22:50Z (c19 / c15) | Ratio Rust |
+|---|---:|---:|---:|
+| Liste 100k | 2,058 | **0,920 / 0,924** | **4,99 / 4,95** |
+
+×2,26, mais Rust reste devant ×5. Cause mesurée : ~200 000 appels `extern
+"C"` + deux boucles `pour` à 1,28 ns/it (256 µs > 189 µs de Rust). Battre
+Rust exigerait du codegen inline, hors de la recette de voie typée.
+Régression D4 +6 % assumée (disposition de code, présente aussi sans JIT ;
+D4 reste 0,23×). Détails : `LISTE_I64_FAST.md`. Constat daté, pas consigne.
