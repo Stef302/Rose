@@ -1,0 +1,64 @@
+# jardin/hachage.rose — hachage de chaînes, écrit en ROSE PUR.
+#
+# ⚠⚠⚠ CE FICHIER EST UNE BIBLIOTHÈQUE (un « jardin »), pas un programme :
+# il ne s'exécute pas seul. Il est chargé par un programme qui le demande :
+#
+#     importer "jardins/hachage.rose"
+#
+# Aucune dépendance : ni Rust, ni wasm, ni bibliothèque C, ni runtime externe.
+# Tout est calculé en entier exact (BigInt natif de Rose, zéro GMP).
+
+# ── codes_caracteres(s) : codes des caractères de s (liste<entier>) ─────────
+# « abc » → [97, 98, 99]. Liste vide pour la chaîne vide.
+# Rose n'a pas (encore) de liste vide littérale typée : on part d'une liste
+# vide typée `[0 : entier]` (le 0 est le type d'élément, PAS un élément).
+fn codes_caracteres(s: chaine) -> liste<entier> {
+  $out = [0 : entier]
+  $n = longueur(s)
+  $i = 0
+  tant_que ($i < $n) {
+    joindre($out, ordre(sous_chaine(s, $i, $i + 1)))
+    $i = $i + 1
+  }
+  retour $out
+}
+
+# ── somme_caracteres(s) : somme simple des codes (checksum) ─────────────────
+# « abc » → 294. Utile comme contrôle rapide, très faible pouvoir discriminant.
+fn somme_caracteres(s: chaine) -> entier {
+  $acc = 0
+  $n = longueur(s)
+  $i = 0
+  tant_que ($i < $n) {
+    $acc = $acc + ordre(sous_chaine(s, $i, $i + 1))
+    $i = $i + 1
+  }
+  retour $acc
+}
+
+# ── hachage_djb2(s) : djb2, en entier EXACT (sans débordement 32 bits) ──────
+# h = 5381 ; pour chaque caractère c : h = h * 33 + code(c).
+# Exemples (valeurs exactes, non tronquées) :
+#   ""     → 5381
+#   "abc"  → 193485963
+#   "hello"→ 210714636441
+# Le C tronque à 2^32 et donnerait 261238937 pour "hello" : ici Rose garde
+# la valeur exacte, c'est tout l'intérêt du calcul entier exact.
+fn hachage_djb2(s: chaine) -> entier {
+  $h = 5381
+  $n = longueur(s)
+  $i = 0
+  tant_que ($i < $n) {
+    $h = $h * 33 + ordre(sous_chaine(s, $i, $i + 1))
+    $i = $i + 1
+  }
+  retour $h
+}
+
+# ── hachage_djb2_mod(s, m) : indice de seau dans une table de taille m ──────
+# Renvoie hachage_djb2(s) % m. Renvoie 0 si m <= 0 (valeur neutre : on évite
+# une division par zéro sans faire échouer le programme appelant).
+fn hachage_djb2_mod(s: chaine, m: entier) -> entier {
+  si (m <= 0) { retour 0 }
+  retour hachage_djb2(s) % m
+}
