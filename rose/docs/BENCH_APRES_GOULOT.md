@@ -183,4 +183,34 @@ Binaire `2c46dd2deca2db92349cfb47b9aa50cc950c0785f8e14ba75ae79483f8e5493c`.
 (« checks tag/overflow de `jit.rs:2966` ») était **fausse** : le dump code a
 montré 2 appels `rose_add_ent` par itération (~8 ns des 9,3 ns) via
 `expr_eabstrait_rir`. Détails et deux bugs d'exactitude corrigés :
-`JIT_BOUCLE_I64.md`. Constat daté, pas consigne.
+`JIT_BOUCLE_I64.md`.
+
+---
+
+## Addendum — après JIT du corps principal (18/11, 19:25Z)
+
+Binaire `f9ae30b379e6689db912cbbc60cebdb74c9d8ef8a1343cf19e32f9c51d5f5871`.
+2 salves A/A indépendantes (9 échantillons, c19 et c15).
+
+| # | Domaine | Avant | Après (c19 / c15) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,62 | 11,58 / 11,69 | 0,91 / 0,92 ✅ |
+| 2 | Boucle 1..10⁶ | 1,294 | 1,290 / 1,293 | 5,00 / 4,87 |
+| 3 | Premiers < 50 000 | 9,51 | **1,481 / 1,481** | **1,48 / 1,48** |
+| 4 | Factorielle 5 000 | 1,43 | 1,45 / 1,45 | 0,22 ✅ |
+| 4b | PGCD 1 000 chiffres | 6,72 | 6,73 / — | 45,4 |
+| 5 | Chaîne 20 000 car. | 3,33 | 3,33 / 3,33 | 238 / 234 |
+| 6 | Liste 100 000 entiers | 38,52 | 38,75 / 38,78 | 212 / 206 |
+| 7 | Table 3 000 clés | 1,383 | 1,377 / 1,384 | 14,6 / 14,3 |
+| 8 | E/S 10 Mo | 6,07 | 5,47 / 6,12 (bruit) | 0,93 / 1,02 ≈ |
+
+**2 victoires nettes + 1 au niveau de Rust + D3 tout proche (1,48×).**
+Décision structurante : le **corps principal est désormais compilé en JIT**
+quand il est prouvable sans BigInt (`principal_sans_boxage`). La décomposition
+a montré que 57 % du coût de D3 venait de l'interprétation de la boucle du
+principal (108 ns/it) et ~47 % du trampoline d'appel (89 ns/appel) — le code
+natif de `est_premier` ne coûtait que 1,48 ms. Détails : `JIT_PREMIERS.md`.
+
+**Mur restant** : D5 chaîne ×237 et D6 liste ×210 — ces programmes ont des
+opérations sur types non numériques dans le principal, hors sous-ensemble JIT
+actuel, donc toujours interprétés. Constat daté, pas consigne.
