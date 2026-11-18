@@ -436,3 +436,7 @@ L'audit sur le corpus élargi (99 fichiers) a trouvé 14 écarts au vérificateu
 | E2 | émetteur 98/99 → 99/99 | `compilateur/emetteur.rose` | 0 écart SANS casser point fixe M4.5 ni 46/46 |
 
 ⚠ Ces deux agents travaillent sur les fichiers M4.3/M4.4 : après livraison, re-vérifier le point fixe M4.5 (md5) et le corpus complet avant publication.
+
+**Bilan vague 5** (mesure fraîche 18/11 sur 150 fichiers): lexeur/analyseur/vérificateur **150/150**, émetteur **143/150** (7 écarts résiduels: multifactorielles `!!`, complexe/philox, erreurs en cascade). Point fixe M4.5 maintenu md5 `80ed3b01...`. Un dernier agent corrige les 7 écarts.
+
+**Bilan vague 4**: runner wasm réel **porte ≤20ms PASS (4,15ms)**, artefacts Windows reconstruits, binaire no_std démo (non câblé: panic=abort), diagnostic compilateur.rose (`rir` rc=0, 6590 lignes — l'erreur rapportée était un artefact de pipe), audit final horodaté.
