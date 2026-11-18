@@ -1,0 +1,71 @@
+--- a/rose/src/lib.rs
++++ b/rose/src/lib.rs
+@@ -50,6 +50,8 @@
+ /// Multiplication rapide (Karatsuba → Toom-3 → NTT), à la manière de GMP.
+ pub mod mul_rapide;
+ pub mod rir;
++/// Transpilation Rose -> JavaScript / Python / C (produit de sortie, zéro dépendance runtime).
++pub mod transpile;
+ 
+ /// M5.2 — E/S et mémoire par appels système directs (sans std).
+ pub mod sys_io;
+--- a/rose/src/main.rs
++++ b/rose/src/main.rs
+@@ -180,6 +180,7 @@
+ mod png;
+ mod mul_rapide;
+ mod rir;
++mod transpile;
+ #[allow(dead_code)]
+ mod wasm_lecteur;
+ #[allow(dead_code)]
+@@ -231,6 +232,7 @@
+   rose tokens prog.rose             liste les jetons (oracle : ligne:colonne type texte)
+   rose ast prog.rose                arbre syntaxique (oracle, S-expressions)
+   rose rir prog.rose                représentation intermédiaire (RIR)
++  rose transpile prog.rose --cible js|py|c [-o sortie]   transpilation lisible (JS/Python/C)
+   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
+   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
+   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
+@@ -1012,6 +1014,41 @@
+                 Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+             }
+         }
++        "transpile" => {
++            // Rose -> JS / Python / C. Aucun runtime externe n'est appelé :
++            // Node/python3/gcc ne servent qu'à VALIDER la sortie, jamais à
++            // exécuter Rose. Ce module est un produit de sortie du moteur.
++            if argv.len() < 3 { eprintln!("rose transpile : quel programme ?"); std::process::exit(1); }
++            let mut cible = String::new();
++            let mut sortie: Option<String> = None;
++            let mut fichier = String::new();
++            let mut i = 2;
++            while i < argv.len() {
++                match argv[i].as_str() {
++                    "--cible" | "-t" if i + 1 < argv.len() => { cible = argv[i + 1].clone(); i += 2; }
++                    "-o" | "--sortie" if i + 1 < argv.len() => { sortie = Some(argv[i + 1].clone()); i += 2; }
++                    x if x.starts_with("--cible=") => { cible = x[8..].to_string(); i += 1; }
++                    x if x.starts_with('-') => { i += 1; }
++                    x => { if fichier.is_empty() { fichier = x.to_string(); } i += 1; }
++                }
++            }
++            if fichier.is_empty() { eprintln!("rose transpile : quel programme ?"); std::process::exit(1); }
++            let cible = match transpile::Cible::parser(&cible) {
++                Ok(c) => c,
++                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
++            };
++            match transpile::transpiler_fichier(&fichier, cible) {
++                Ok(code) => match sortie {
++                    Some(p) => match std::fs::write(&p, code.as_bytes()) {
++                        Ok(()) => println!("rose: {} produit (transpilation {})", p, cible.nom()),
++                        Err(e) => { eprintln!("rose: ne peut écrire {} ({})", p, e); std::process::exit(1); }
++                    },
++                    None => print!("{}", code),
++                },
++                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
++            }
++            std::process::exit(0);
++        }
+         "wasm" => {
+             // ⚠ M6.1 : inspecte un module WebAssembly SANS l'exécuter (défaut).
+             // M6.2 : --runtime officiel / --install-runtime / --export / --args.
