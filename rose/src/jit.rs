@@ -960,6 +960,20 @@ fn slot_types_rir(corps: &CorpsRir, sig: &Signature, prog: &HashMap<String, Sign
         }
         if !changed { break; }
     }
+    // vague 20 — un slot qui porte un HANDLE (chaîne/liste) n'est pas un
+    // entier : `eabstrait_rir_compilable` doit REFUSER de l'utiliser dans une
+    // expression numérique. Sans cela, un `$s` chaîne pourrait être lu comme
+    // i64. Les handles restent des variables I64 pour l'émetteur.
+    let natures = naturesDuCorps(corps);
+    for (i, nat) in natures.iter().enumerate() {
+        if i < slot_types.len() {
+            match nat {
+                NatureSlot::Chaine => slot_types[i] = TyKind::Chaine,
+                NatureSlot::ListeEntiers => slot_types[i] = TyKind::Liste,
+                _ => {}
+            }
+        }
+    }
     slot_types
 }
 
@@ -1009,6 +1023,163 @@ fn est_affect_ast_natif(e: &Expr) -> bool {
     matches!(e, Expr::Appel { nom, args, .. } if args.is_empty() && nom == "temps")
 }
 
+// ── VAGUE 20 : garde statique des types non numériques ──────────────────
+//
+// Un slot non numérique est un HANDLE (indice dans la table de `Valeur`).
+// On infère la nature des slots par point fixe sur les opérations du corps,
+// exactement comme `slot_types_rir` le fait pour les types scalaires.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NatureSlot { Inconnu, Entier, Chaine, ListeEntiers }
+
+fn nature_expr_ast(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Option<NatureSlot> {
+    let slot_de = |n: &str| corps_noms.iter().position(|x| x == n).map(|i| i as usize);
+    match e {
+        Expr::ChaineLit(..) => Some(NatureSlot::Chaine),
+        Expr::ListeVideTypee(..) => Some(NatureSlot::ListeEntiers),
+        Expr::Appel { nom, args, .. } if (nom == "longueur" || nom == "len") && args.len() == 1 => {
+            Some(NatureSlot::Entier)
+        }
+        Expr::Appel { nom, args, .. } if nom == "temps" && args.is_empty() => Some(NatureSlot::Entier),
+        Expr::Binaire { op, a, b, .. } if op == "+" => {
+            let na = nature_expr_ast(a, natures, corps_noms);
+            let nb = nature_expr_ast(b, natures, corps_noms);
+            if na == Some(NatureSlot::Chaine) || nb == Some(NatureSlot::Chaine) {
+                Some(NatureSlot::Chaine)
+            } else if na == Some(NatureSlot::Entier) && nb == Some(NatureSlot::Entier) {
+                Some(NatureSlot::Entier)
+            } else { None }
+        }
+        Expr::Var(n, _) => slot_de(n).map(|i| natures[i]),
+        Expr::Index { .. } => Some(NatureSlot::Entier),
+        _ => None,
+    }
+}
+
+/// Un slot est-il un compteur i64 NU ? Initialisé par un littéral entier,
+/// puis uniquement mis à jour par `slot ← slot ± littéral` (les seules
+/// opérations que `expr_peut_boxer` considère comme non boxing).
+fn slot_entier_nu_statique(corps: &CorpsRir, slot: u16) -> bool {
+    let mut init = false;
+    for op in &corps.ops {
+        match op {
+            Op::Affect { slot: s, expr: Eabstrait::Entier(_) } if *s == slot => init = true,
+            Op::Affect { slot: s, expr: Eabstrait::Binaire { op, a, b } } if *s == slot => {
+                if !matches!(op, Oper::Add | Oper::Sub) { return false; }
+                if !matches!(&**a, Eabstrait::Slot(x, _) if *x == slot) { return false; }
+                if !matches!(&**b, Eabstrait::Entier(_)) { return false; }
+            }
+            Op::AffectAst { slot: s, .. } if *s == slot => return false,
+            _ => {}
+        }
+    }
+    init
+}
+
+/// nature des slots du principal (point fixe, au plus n_slots passes).
+fn naturesDuCorps(corps: &CorpsRir) -> Vec<NatureSlot> {
+    let mut nat = vec![NatureSlot::Inconnu; corps.n_slots];
+    for _ in 0..corps.n_slots.max(1) {
+        let mut changed = false;
+        for op in &corps.ops {
+            let cible = match op {
+                Op::Affect { slot, .. } | Op::AffectAst { slot, .. } => Some(*slot as usize),
+                _ => None,
+            };
+            if let Some(i) = cible {
+                let n = match op {
+                    Op::Affect { expr, .. } => {
+                        Some(match ty_eabstrait_rir(expr, &vec![TyKind::Entier; corps.n_slots], &HashMap::new()) {
+                            Some(_) => NatureSlot::Entier,
+                            None => NatureSlot::Inconnu,
+                        })
+                    }
+                    Op::AffectAst { e, .. } => nature_expr_ast(e, &nat, &corps.noms),
+                    _ => None,
+                };
+                if let Some(n) = n {
+                    if n != nat[i] { nat[i] = n; changed = true; }
+                }
+            }
+        }
+        if !changed { break; }
+    }
+    // Une liste n'est réputée « d'entiers nus » que si TOUS ses `joindre`
+    // reçoivent un compteur prouvé i64 nu.
+    for op in &corps.ops {
+        if let Op::ExprStmt(Expr::Appel { nom, args, .. }) = op {
+            if nom == "joindre" && args.len() == 2 {
+                if let Expr::Var(n, _) = &args[0] {
+                    if let Some(i) = corps.noms.iter().position(|x| x == n) {
+                        let src_nu = match &args[1] {
+                            Expr::Var(v, _) => corps.noms.iter().position(|x| x == v)
+                                .map_or(false, |s| slot_entier_nu_statique(corps, s as u16)),
+                            Expr::Litteral { .. } => true,
+                            _ => false,
+                        };
+                        if !src_nu { nat[i] = NatureSlot::Inconnu; }
+                    }
+                }
+            }
+        }
+    }
+    nat
+}
+
+/// Une expression AST est-elle émissible par l'extension vague 20 ?
+/// `void` = expression sans valeur (joindre) ; sinon la nature du résultat.
+fn expr_ast_jit(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Option<Option<NatureSlot>> {
+    let slot = |n: &str| corps_noms.iter().position(|x| x == n).map(|i| i as usize);
+    match e {
+        Expr::ChaineLit(..) => Some(Some(NatureSlot::Chaine)),
+        Expr::ListeVideTypee(TyKind::Entier, _) => Some(Some(NatureSlot::ListeEntiers)),
+        Expr::Appel { nom, args, .. } if nom == "temps" && args.is_empty() =>
+            Some(Some(NatureSlot::Entier)),
+        Expr::Appel { nom, args, .. } if (nom == "longueur" || nom == "len") && args.len() == 1 => {
+            match &args[0] {
+                Expr::Var(n, _) => slot(n).and_then(|i| match natures[i] {
+                    NatureSlot::Chaine | NatureSlot::ListeEntiers => Some(Some(NatureSlot::Entier)),
+                    _ => None,
+                }),
+                _ => None,
+            }
+        }
+        Expr::Appel { nom, args, .. } if nom == "joindre" && args.len() == 2 => {
+            match (&args[0], &args[1]) {
+                (Expr::Var(n, _), Expr::Var(..) | Expr::Litteral { .. }) =>
+                    slot(n).and_then(|i| if natures[i] == NatureSlot::ListeEntiers {
+                        Some(None) // void
+                    } else { None }),
+                _ => None,
+            }
+        }
+        Expr::Binaire { op, a, b, .. } if op == "+" => {
+            let na = expr_ast_jit(a, natures, corps_noms)??;
+            let nb = expr_ast_jit(b, natures, corps_noms)??;
+            if na == NatureSlot::Chaine && nb == NatureSlot::Chaine {
+                Some(Some(NatureSlot::Chaine))
+            } else if na == NatureSlot::Entier && nb == NatureSlot::Entier {
+                Some(Some(NatureSlot::Entier))
+            } else { None }
+        }
+        Expr::Index { a, b, .. } => {
+            match (&**a, &**b) {
+                (Expr::Var(n, _), Expr::Var(..)) =>
+                    slot(n).and_then(|i| if natures[i] == NatureSlot::ListeEntiers {
+                        Some(Some(NatureSlot::Entier))
+                    } else { None }),
+                _ => None,
+            }
+        }
+        Expr::Var(n, _) => slot(n).and_then(|i| match natures[i] {
+            NatureSlot::Chaine | NatureSlot::ListeEntiers | NatureSlot::Entier =>
+                Some(Some(natures[i])),
+            NatureSlot::Inconnu => None,
+        }),
+        _ => None,
+    }
+}
+
 /// Une expression peut-elle POSER un entier boxé dans un slot ? `+`/`-` sont
 /// protégés par le repli inline de J1 (le helper publie son tag) ; `*`, `/`,
 /// `^`, `div`, la négation unaire et un appel rendant un entier peuvent
@@ -1033,6 +1204,8 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
     if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
     if sig.params.iter().any(|(_,t)| !compilable(t.n)) { return false; }
     let slot_types = slot_types_rir(corps, sig, prog);
+    // vague 20 — natures des slots (handles chaîne/liste) pour les ops AST.
+    let natures = if principal_sans_boxage { naturesDuCorps(corps) } else { Vec::new() };
     for op in &corps.ops {
         match op {
             Op::Affect { expr, .. } => {
@@ -1048,6 +1221,31 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
                 if !eabstrait_rir_compilable(test, &slot_types, &corps.noms, prog) { return false; }
                 if ty_eabstrait_rir(test, &slot_types, prog) != Some(TyKind::Booleen) { return false; }
             }
+            // vague 20 — `j < longueur($liste)` : forme reconnue par l'émetteur.
+            Op::SautSiFaux { test, .. } => {
+                if !principal_sans_boxage { return false; }
+                let mut ok = false;
+                if let Expr::Binaire { op, a, b, .. } = test {
+                    if op == "<" {
+                        if let (Expr::Var(na, _), Expr::Appel { nom, args, .. }) =
+                            (a.as_ref(), b.as_ref())
+                        {
+                            if (nom == "longueur" || nom == "len") && args.len() == 1 {
+                                if let Expr::Var(nl, _) = &args[0] {
+                                    let i = corps.noms.iter().position(|x| x == na);
+                                    let l = corps.noms.iter().position(|x| x == nl);
+                                    if let (Some(i), Some(l)) = (i, l) {
+                                        if natures.get(i) == Some(&NatureSlot::Entier)
+                                            && natures.get(l) == Some(&NatureSlot::ListeEntiers)
+                                        { ok = true; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !ok { return false; }
+            }
             // 18/11 — D3 : le corps principal peut contenir DES OPÉRATIONS
             // D'ENTRÉE/SORTIE sans état Rose. Les émettre en natif supprime la
             // synchro slots↔globaux à chaque tour de boucle (5,4 ms mesurés
@@ -1058,7 +1256,26 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
             // utilisent les helpers déjà présents (aucun préfixe LaTeX,
             // exactement comme `HoteRir::afficher_valeur` du RIR).
             Op::AffectAst { e, .. } => {
-                if !est_affect_ast_natif(e) { return false; }
+                if !est_affect_ast_natif(e) {
+                    if !principal_sans_boxage { return false; }
+                    match expr_ast_jit(e, &natures, &corps.noms) {
+                        Some(Some(NatureSlot::Chaine)) | Some(Some(NatureSlot::ListeEntiers))
+                        | Some(Some(NatureSlot::Entier)) => {}
+                        _ => return false,
+                    }
+                }
+            }
+            // vague 20 — `joindre($l, $i)` (mutation en place, void).
+            Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "joindre" => {
+                if !principal_sans_boxage { return false; }
+                match args.len() {
+                    2 => {}
+                    _ => return false,
+                }
+                let Some(i) = (match &args[0] {
+                    Expr::Var(n, _) => corps.noms.iter().position(|x| x == n), _ => None,
+                }) else { return false; };
+                if natures.get(i) != Some(&NatureSlot::ListeEntiers) { return false; }
             }
             Op::AfficherAbstrait(e) => {
                 if !eabstrait_rir_compilable(e, &slot_types, &corps.noms, prog) { return false; }
@@ -1088,6 +1305,11 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_affiche_prefixe", rose_affiche_prefixe as *const u8),
         ("rose_affiche_ent", rose_affiche_ent as *const u8),
         ("rose_powf", rose_powf as *const u8),
+        ("rose_jit_chaine_concat", rose_jit_chaine_concat as *const u8),
+        ("rose_jit_liste_vide", rose_jit_liste_vide as *const u8),
+        ("rose_jit_joindre", rose_jit_joindre as *const u8),
+        ("rose_jit_longueur", rose_jit_longueur as *const u8),
+        ("rose_jit_index_i64", rose_jit_index_i64 as *const u8),
         ("rose_sqrt", rose_sqrt as *const u8),
         ("rose_add_ent", crate::run::rose_add_ent as *const u8),
         ("rose_sub_ent", crate::run::rose_sub_ent as *const u8),
@@ -1504,6 +1726,12 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 ("rose_erreur_mod_zero", vec![], None),
                 ("rose_erreur_div_zero", vec![], None),
                 ("rose_erreur_div_flottant_zero", vec![], None),
+                // vague 20 — types non numériques du principal (handles)
+                ("rose_jit_chaine_concat", vec![types::I64, types::I64], Some(types::I64)),
+                ("rose_jit_liste_vide", vec![], Some(types::I64)),
+                ("rose_jit_joindre", vec![types::I64, types::I64], None),
+                ("rose_jit_longueur", vec![types::I64], Some(types::I64)),
+                ("rose_jit_index_i64", vec![types::I64, types::I64], Some(types::I64)),
                 // ⚠⚠⚠ DÉLÉGATION À L'INTERPRÉTEUR (17/11) : une fonction compilée
                 // peut appeler une fonction hors sous-ensemble (listes, chaînes…)
                 // ou IMPORTÉE. Cranelift exige que le symbole soit DÉFINI dans le
@@ -1523,6 +1751,7 @@ impl Jit {
     pub fn compiler_principal(&mut self, prog: &crate::front::Programme)
         -> Option<Compile> {
         if std::env::var("ROSE_SANS_JIT").is_ok() { return None; }
+        jit_handles_reinitialiser();
         // les fonctions appelees doivent exister (declarees+definiens) AVANT
         // d'etre referencees depuis $principal :
         if self.foncs.is_empty() {
@@ -2002,6 +2231,167 @@ impl Emetteur<'_> {
 
     // ── M1.2 : émission RIR ─────────────────────────────────────────────
 
+    /// Addition/soustraction i64 avec le MÊME chemin rapide et le MÊME repli
+    /// BigInt que `expr_eabstrait_rir` (recopié à l'identique, vague 20).
+    /// Sert aux expressions AST étendues (index de liste d'entiers) : on y
+    /// connaît déjà les valeurs et leurs drapeaux « non boxé ».
+    fn expr_add_sous_inline(&mut self, va: Value, fa: Value, vb: Value, fb: Value,
+                            op: Oper) -> JitVal {
+        let zero64 = self.builder.ins().iconst(types::I64, 0);
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let r = if op == Oper::Add {
+            self.builder.ins().iadd(va, vb)
+        } else {
+            self.builder.ins().isub(va, vb)
+        };
+        let is_add = op == Oper::Add;
+        let x1 = self.builder.ins().bxor(r, va);
+        let x2 = if is_add {
+            self.builder.ins().bxor(r, vb)
+        } else {
+            self.builder.ins().bxor(va, vb)
+        };
+        let ov_bits = self.builder.ins().band(x1, x2);
+        let no_ov = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, ov_bits, zero64);
+        let both_flags = self.builder.ins().band(fa, fb);
+        let both_ok = self.builder.ins().icmp(IntCC::NotEqual, both_flags, zero64);
+        let ok = self.builder.ins().band(both_ok, no_ov);
+        let fast_b = self.builder.create_block();
+        let slow_b = self.builder.create_block();
+        let merge_b = self.builder.create_block();
+        self.builder.append_block_param(merge_b, types::I64);
+        self.builder.append_block_param(merge_b, types::I64);
+        self.builder.ins().brif(ok, fast_b, &[], slow_b, &[]);
+        self.builder.switch_to_block(fast_b);
+        self.builder.seal_block(fast_b);
+        let ztag = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(self.tag_tmp, ztag);
+        self.saut(merge_b, &[r, one]);
+        self.builder.switch_to_block(slow_b);
+        self.builder.seal_block(slow_b);
+        let ss = self.module.target_config().pointer_bytes() as u32;
+        let sv = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+        let st = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+        let p_sv = self.builder.ins().stack_addr(types::I64, sv, 0);
+        let p_st = self.builder.ins().stack_addr(types::I64, st, 0);
+        let fid_name = if is_add { "rose_add_ent" } else { "rose_sub_ent" };
+        let f = self.import_runtime(fid_name);
+        let _ = self.builder.ins().call(f, &[va, zero64, vb, zero64, p_sv, p_st]);
+        let rv = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
+        let rt = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
+        self.builder.def_var(self.tag_tmp, rt);
+        let inline = self.builder.ins().icmp(IntCC::Equal, rt, zero64);
+        let flag = self.builder.ins().uextend(types::I64, inline);
+        self.saut(merge_b, &[rv, flag]);
+        self.builder.switch_to_block(merge_b);
+        self.builder.seal_block(merge_b);
+        let mv = self.builder.block_params(merge_b)[0];
+        let mf = self.builder.block_params(merge_b)[1];
+        self.unboxed_tmp = Some(mf);
+        JitVal::Simple(mv)
+    }
+
+    /// Émet une expression AST de l'extension vague 20 (types non numériques
+    /// du principal). `None` = forme non reconnue (le garde l'a déjà refusée).
+    fn expr_ast_rir(&mut self, e: &Expr, slot_vars: &[Variable], natures: &[NatureSlot],
+                    corps: &CorpsRir, slot_unboxed: &[Variable]) -> Option<JitVal> {
+        let slot = |n: &str| corps.noms.iter().position(|x| x == n).map(|i| i as usize);
+        match e {
+            Expr::ChaineLit(s, _) => {
+                // ⚠ Le handle du littéral est ALLOUÉ UNE FOIS à l'émission,
+                // pas à chaque itération (mesuré : 0,21 ms gagnés sur D5).
+                let h = jit_allouer_handle(crate::run::valeur_litteral_chaine(s));
+                Some(JitVal::Simple(self.builder.ins().iconst(types::I64, h)))
+            }
+            Expr::ListeVideTypee(TyKind::Entier, _) => {
+                let f = self.import_runtime("rose_jit_liste_vide");
+                let c = self.builder.ins().call(f, &[]);
+                Some(JitVal::Simple(self.builder.inst_results(c)[0]))
+            }
+            Expr::Appel { nom, args, .. } if nom == "temps" && args.is_empty() => {
+                let f = self.import_runtime("rose_temps");
+                let c = self.builder.ins().call(f, &[]);
+                Some(JitVal::Simple(self.builder.inst_results(c)[0]))
+            }
+            Expr::Appel { nom, args, .. } if (nom == "longueur" || nom == "len") && args.len() == 1 => {
+                if let Expr::Var(n, _) = &args[0] {
+                    let i = slot(n)?;
+                    let h = self.builder.use_var(slot_vars[i]);
+                    let f = self.import_runtime("rose_jit_longueur");
+                    let c = self.builder.ins().call(f, &[h]);
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    let one = self.builder.ins().iconst(types::I64, 1);
+                    self.unboxed_tmp = Some(one);
+                    return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+                }
+                None
+            }
+            Expr::Index { a, b, .. } => {
+                if let (Expr::Var(nl, _), Expr::Var(ni, _)) = (&**a, &**b) {
+                    let l = slot(nl)?; let i = slot(ni)?;
+                    if natures.get(l) != Some(&NatureSlot::ListeEntiers) { return None; }
+                    let h = self.builder.use_var(slot_vars[l]);
+                    let idx = self.builder.use_var(slot_vars[i]);
+                    let f = self.import_runtime("rose_jit_index_i64");
+                    let c = self.builder.ins().call(f, &[h, idx]);
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    let one = self.builder.ins().iconst(types::I64, 1);
+                    self.unboxed_tmp = Some(one);
+                    return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+                }
+                None
+            }
+            Expr::Binaire { op, a, b, .. } if op == "+" => {
+                // concaténation de chaînes (handles) ?
+                let na = expr_ast_jit(a, natures, &corps.noms)??;
+                let nb = expr_ast_jit(b, natures, &corps.noms)??;
+                if na == NatureSlot::Chaine && nb == NatureSlot::Chaine {
+                    let vja = self.expr_ast_rir(a, slot_vars, natures, corps, slot_unboxed)?;
+                    let va = self.simple(vja);
+                    let vjb = self.expr_ast_rir(b, slot_vars, natures, corps, slot_unboxed)?;
+                    let vb = self.simple(vjb);
+                    let f = self.import_runtime("rose_jit_chaine_concat");
+                    let c = self.builder.ins().call(f, &[va, vb]);
+                    return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+                }
+                // `$s + $l[$j]` : élément de liste d'entiers nus.
+                if let Expr::Index { .. } = &**b {
+                    let vja = self.expr_ast_rir(a, slot_vars, natures, corps, slot_unboxed)?;
+                    let va = self.simple(vja);
+                    let fa = match &**a {
+                        Expr::Var(n, _) => self.builder.use_var(slot_unboxed[slot(n)?]),
+                        _ => self.builder.ins().iconst(types::I64, 1),
+                    };
+                    let vjb = self.expr_ast_rir(b, slot_vars, natures, corps, slot_unboxed)?;
+                    let vb = self.simple(vjb);
+                    let fb = self.builder.ins().iconst(types::I64, 1);
+                    return Some(self.expr_add_sous_inline(va, fa, vb, fb, Oper::Add));
+                }
+                // somme de deux entiers nus.
+                let vja = self.expr_ast_rir(a, slot_vars, natures, corps, slot_unboxed)?;
+                let va = self.simple(vja);
+                let fa = match &**a {
+                    Expr::Var(n, _) => self.builder.use_var(slot_unboxed[slot(n)?]),
+                    _ => self.builder.ins().iconst(types::I64, 1),
+                };
+                let vjb = self.expr_ast_rir(b, slot_vars, natures, corps, slot_unboxed)?;
+                let vb = self.simple(vjb);
+                let fb = match &**b {
+                    Expr::Var(n, _) => self.builder.use_var(slot_unboxed[slot(n)?]),
+                    _ => self.builder.ins().iconst(types::I64, 1),
+                };
+                Some(self.expr_add_sous_inline(va, fa, vb, fb, Oper::Add))
+            }
+            Expr::Var(n, _) => {
+                let i = slot(n)?;
+                Some(JitVal::Simple(self.builder.use_var(slot_vars[i])))
+            }
+            _ => None,
+        }
+    }
+
     fn expr_eabstrait_rir(&mut self, e: &Eabstrait, slot_vars: &[Variable], slot_types: &[TyKind],
                           corps: &CorpsRir, slot_unboxed: &[Variable]) -> JitVal {
         // Conservateur par défaut : seules les branches qui PROUVENT le
@@ -2311,6 +2701,7 @@ impl Emetteur<'_> {
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
         let slot_types = slot_types_rir(corps, sig, self.signatures);
+        let natures = naturesDuCorps(corps);
 
         let entry = self.builder.create_block();
         self.builder.append_block_params_for_function_params(entry);
@@ -2390,15 +2781,30 @@ impl Emetteur<'_> {
                 // 18/11 — D3 : `temps()` sans état ; même horodatage que
                 // l'interpréteur, tag nul (l'horloge tient dans un i64).
                 Op::AffectAst { slot, e } => {
-                    if !est_affect_ast_natif(e) { return false; }
-                    let f = self.import_runtime("rose_temps");
-                    let appel = self.builder.ins().call(f, &[]);
-                    let r = self.builder.inst_results(appel)[0];
-                    let zt = self.builder.ins().iconst(types::I64, 0);
-                    self.builder.def_var(self.tag_tmp, zt);
-                    self.builder.def_var(slot_vars[*slot as usize], r);
-                    self.builder.def_var(slot_unboxed[*slot as usize], unboxed1);
-                    self.saut(next, &[]);
+                    if est_affect_ast_natif(e) {
+                        let f = self.import_runtime("rose_temps");
+                        let appel = self.builder.ins().call(f, &[]);
+                        let r = self.builder.inst_results(appel)[0];
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        self.builder.def_var(slot_vars[*slot as usize], r);
+                        self.builder.def_var(slot_unboxed[*slot as usize], unboxed1);
+                        self.saut(next, &[]);
+                    } else {
+                        // vague 20 — chaîne, liste, longueur, index d'entiers.
+                        let Some(vj) = self.expr_ast_rir(e, &slot_vars, &natures, corps, &slot_unboxed)
+                        else { return false; };
+                        let v = self.simple(vj);
+                        let u = self.unboxed_tmp.unwrap_or(zt0);
+                        let nat = expr_ast_jit(e, &natures, &corps.noms).flatten()
+                            .unwrap_or(NatureSlot::Entier);
+                        let u = if nat == NatureSlot::Chaine || nat == NatureSlot::ListeEntiers {
+                            zt0 // handle : jamais d'arithmétique i64 inline dessus
+                        } else { u };
+                        self.builder.def_var(slot_vars[*slot as usize], v);
+                        self.builder.def_var(slot_unboxed[*slot as usize], u);
+                        self.saut(next, &[]);
+                    }
                 }
                 // 18/11 — D3 : affichage abstrait. `rir::executer_avec_ptr_sync`
                 // appelle `HoteRir::afficher_valeur` (pas de préfixe LaTeX) :
@@ -2427,6 +2833,54 @@ impl Emetteur<'_> {
                 Op::Saut { cible } => {
                     let tgt = if *cible < n { blocks[*cible] } else { end_block };
                     self.saut(tgt, &[]);
+                }
+                // vague 20 — test de boucle `j < longueur($l)` : le garde a
+                // prouvé que `$l` est une liste d'entiers nus. Un seul appel
+                // runtime par itération, au lieu de l'évaluation AST complète.
+                Op::SautSiFaux { test, cible } => {
+                    let mut emitted = false;
+                    if let Expr::Binaire { op, a, b, .. } = test {
+                        if op == "<" {
+                            if let (Expr::Var(na, _), Expr::Appel { nom, args, .. }) =
+                                (a.as_ref(), b.as_ref())
+                            {
+                                if (nom == "longueur" || nom == "len") && args.len() == 1 {
+                                    if let Expr::Var(nl, _) = &args[0] {
+                                        let i = corps.noms.iter().position(|x| x == na);
+                                        let l = corps.noms.iter().position(|x| x == nl);
+                                        if let (Some(i), Some(l)) = (i, l) {
+                                            if natures.get(l) == Some(&NatureSlot::ListeEntiers) {
+                                                let va = self.builder.use_var(slot_vars[i]);
+                                                let h = self.builder.use_var(slot_vars[l]);
+                                                let f = self.import_runtime("rose_jit_longueur");
+                                                let c = self.builder.ins().call(f, &[h]);
+                                                let vb = self.builder.inst_results(c)[0];
+                                                let cond = self.builder.ins().icmp(IntCC::SignedLessThan, va, vb);
+                                                let tgt_false = if *cible < n { blocks[*cible] } else { end_block };
+                                                self.br_args(cond, next, &[], tgt_false, &[]);
+                                                emitted = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !emitted { return false; }
+                }
+                // vague 20 — `joindre($liste, $entier)` (void).
+                Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "joindre" && args.len() == 2 => {
+                    let (Expr::Var(nl, _), Expr::Var(nv, _)) = (&args[0], &args[1]) else { return false; };
+                    let (Some(l), Some(v)) = (
+                        corps.noms.iter().position(|x| x == nl),
+                        corps.noms.iter().position(|x| x == nv),
+                    ) else { return false; };
+                    if natures.get(l) != Some(&NatureSlot::ListeEntiers) { return false; }
+                    let h = self.builder.use_var(slot_vars[l]);
+                    let val = self.builder.use_var(slot_vars[v]);
+                    let f = self.import_runtime("rose_jit_joindre");
+                    let _ = self.builder.ins().call(f, &[h, val]);
+                    self.saut(next, &[]);
                 }
                 Op::SautSiFauxAbstrait { test, cible } => {
                     let tv_j = self.expr_eabstrait_rir(test, &slot_vars, &slot_types, corps, &slot_unboxed);
@@ -4071,6 +4525,101 @@ pub extern "C" fn rose_affiche_i64(v: i64) { crate::run::ecrire_out(&format!("{}
 /// `interp.rs:4208`), rendue comme i64 nu (l'horloge tient en i64).
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_temps() -> i64 { crate::run::temps_unix_nanos() as i64 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// VAGUE 20 — TYPES NON NUMÉRIQUES DANS LE CORPS PRINCIPAL JIT
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Le principal est compilé en natif quand `rir_compilable_jit` le prouve
+// (J1/P1/L1). D5 (chaîne) et D6 (liste) restaient interprétés : leurs boucles
+// contiennent `$s = $s + "x"`, `joindre`, `longueur`, `$l[$j]` — autant
+// d'expressions AST hors sous-ensemble. Le diagnostic du 18/11 a montré que
+// le DISPATCH interprété domine (97 ns/it sur 167 ns pour D5 ; boucle vide
+// JIT 0,024 ms contre 2,18 ms interprétée, ×91).
+//
+// Les valeurs non numériques sont représentées dans les slots JIT par des
+// HANDLES : des indices i64 dans une table thread-local de `Valeur`. Le code
+// natif ne manipule jamais la `Valeur` elle-même, il passe les handles aux
+// helpers ci-dessous. Les littéraux de chaîne sont internés au moment de
+// l'émission (une seule fois, pas par itération).
+thread_local! {
+    static JIT_HANDLES: std::cell::RefCell<Vec<Valeur>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Réinitialise la table de handles avant une compilation du principal.
+pub(crate) fn jit_handles_reinitialiser() {
+    JIT_HANDLES.with(|t| t.borrow_mut().clear());
+}
+
+fn jit_allouer_handle(v: Valeur) -> i64 {
+    JIT_HANDLES.with(|t| {
+        let mut t = t.borrow_mut();
+        let h = t.len() as i64;
+        t.push(v);
+        h
+    })
+}
+
+#[inline]
+fn jit_lire_handle(h: i64) -> Valeur {
+    JIT_HANDLES.with(|t| t.borrow()[h as usize].clone())
+}
+
+/// Concaténation `+` de deux chaînes : la RÈGLE EXACTE (`binaire_valeurs`).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_chaine_concat(a: i64, b: i64) -> i64 {
+    let x = jit_lire_handle(a);
+    let y = jit_lire_handle(b);
+    match crate::interp::binaire_valeurs("+", &x, &y) {
+        Ok(v) => jit_allouer_handle(v),
+        Err(_) => jit_allouer_handle(Valeur::Vide),
+    }
+}
+
+/// Liste vide typée entier (`[0 : entier]`).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_liste_vide() -> i64 {
+    jit_allouer_handle(Valeur::liste_de(Vec::new()))
+}
+
+/// `joindre(liste, entier)` : mutation en place (`Rc<RefCell>`), pas de
+/// nouveau handle. L'entier est passé en i64 nu — sûr car le garde
+/// `principal_sans_boxage` prouve que les slots numériques du principal ne
+/// posent jamais de BigInt (voir `expr_peut_boxer`).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_joindre(h: i64, v: i64) {
+    let l = jit_lire_handle(h);
+    if let Valeur::Liste(l) = l {
+        l.0.borrow_mut().push(Valeur::z(v));
+    }
+}
+
+/// `longueur(liste_ou_chaine)` : O(1) pour la rope et la liste.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_longueur(h: i64) -> i64 {
+    let v = jit_lire_handle(h);
+    match &v {
+        Valeur::Chaine(s) => s.n as i64,
+        Valeur::Liste(l) => l.0.borrow().len() as i64,
+        Valeur::Table(t) => t.0.borrow().items.len() as i64,
+        _ => crate::run::chaine_de(&v).chars().count() as i64,
+    }
+}
+
+/// `liste[i]` rendu comme i64 nu. ⚠ Réservé aux listes d'entiers non boxés :
+/// le garde `liste_entiers_nus` le prouve statiquement avant d'accepter le JIT.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_index_i64(h: i64, i: i64) -> i64 {
+    let v = jit_lire_handle(h);
+    if let Valeur::Liste(l) = &v {
+        if let Some(Valeur::Entier(x, None)) = l.0.borrow().get(i as usize) {
+            return *x;
+        }
+    }
+    // Ne doit jamais arriver sous le garde ; valeur neutre pour éviter UB.
+    0
+}
 
 /// Helper JIT : affichage d'un i64 taggé (valeur, tag) rendu par rose_mul_ent /
 /// rose_pow_ent / rose_neg_ent. tag ≠ 0 recycle la Box<Valeur>.
