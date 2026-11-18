@@ -159,4 +159,28 @@ de hachage O(1) → ×4,59, ratio Rust 67 → 14,7. Porte < 1 ms non atteinte
 reproductibles (1–2,8 %) sur D2/D3/D5/D6, documentées. Exactitude : diff vide
 sur 43 + 8 sorties vs binaire de départ. Détails : `TABLE_NATIVE.md`.
 
-Constat daté, pas consigne.
+---
+
+## Addendum — après JIT boucle i64 (18/11, 18:45Z)
+
+Binaire `2c46dd2deca2db92349cfb47b9aa50cc950c0785f8e14ba75ae79483f8e5493c`.
+2 salves A/A indépendantes (9 échantillons, c19 et c15).
+
+| # | Domaine | Avant | Après (c19 / c15) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,62 | 11,62 / 11,79 | 0,91 / 0,93 ✅ |
+| 2 | Boucle 1..10⁶ | 9,30 | **1,294 / 1,297** | **5,00 / 4,93** (−86 %) |
+| 3 | Premiers < 50 000 | 9,42 | 9,51 / 9,46 | 9,49 / 9,44 |
+| 4 | Factorielle 5 000 | 1,47 | 1,43 / 1,43 | 0,22 ✅ |
+| 4b | PGCD 1 000 chiffres | 6,71 | 6,72 / — | 45,4 |
+| 5 | Chaîne 20 000 car. | 3,33 | 3,33 / 3,32 | 238 / 236 |
+| 6 | Liste 100 000 entiers | 38,66 | 38,52 / 38,54 | 210 / 206 |
+| 7 | Table 3 000 clés | 1,386 | 1,383 / 1,378 | 14,2 / 14,5 |
+| 8 | E/S 10 Mo | 6,07 | 6,07 / 6,00 (bruit) | 0,99 / 0,98 ≈ |
+
+**Toujours 2 victoires nettes + 1 au niveau de Rust.** La boucle passe de
+×35,8 à ×5,0 sans régression systématique ailleurs. La prémisse initiale
+(« checks tag/overflow de `jit.rs:2966` ») était **fausse** : le dump code a
+montré 2 appels `rose_add_ent` par itération (~8 ns des 9,3 ns) via
+`expr_eabstrait_rir`. Détails et deux bugs d'exactitude corrigés :
+`JIT_BOUCLE_I64.md`. Constat daté, pas consigne.
