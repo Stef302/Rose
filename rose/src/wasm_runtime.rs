@@ -161,19 +161,35 @@ pub fn url_runtime(rt: RuntimeOfficiel) -> String {
     )
 }
 
-/// Empreinte SHA-256 attendue. `ROSE_WASM_RUNTIME_SHA256` permet de
-/// surcharger (miroir interne, tests, déploiement privé).
+/// Empreinte SHA-256 de `rose-wasmtime-runner-v0.1.5-aarch64-linux`.
 ///
-/// ⚠ Tant qu'un runner officiel n'a PAS été publié, la table intégrée est
-/// vide : `installer()` refuse alors de télécharger (on n'exécute jamais un
-/// binaire non authentifié). Renseigner la constante quand l'artefact est
-/// publié, ou définir la variable d'environnement.
+/// Runner réel compilé et vérifié localement pour la release v0.1.5
+/// (6 493 120 octets). Mesuré le 18/11/2026 :
+/// `sha256sum rose-wasmtime-runner-v0.1.5-aarch64-linux` → cette valeur, et
+/// `runner fib27.wasm fib 27` → `196418`. L'artefact n'étant PAS (encore)
+/// publié sur `Stef302/Rose`, cette table sert à la fois au miroir local et
+/// à la publication future : c'est la source de vérité de l'empreinte.
+pub const SHA_WASMTIME_V0_1_5_AARCH64_LINUX: &str =
+    "c7b2bf3c2b85e72ec37192f2ba855bd98de0c144288c9cf04aa63f11880739d1";
+
+/// Empreinte SHA-256 attendue. `ROSE_WASM_RUNTIME_SHA256` permet de
+/// surcharger (miroir interne, tests, déploiement privé) — prioritaire.
+///
+/// Table intégrée indexée par (runtime, cible). Une paire absente rend `""` :
+/// `installer()` refuse alors de télécharger (on n'exécute jamais un binaire
+/// dont on ne connaît pas l'empreinte). Seule la cible réellement vérifiée
+/// est renseignée ; les autres restent vides jusqu'à la publication de leur
+/// artefact et la mesure de leur empreinte.
 pub fn sha256_attendu(rt: RuntimeOfficiel) -> String {
     if let Ok(v) = std::env::var("ROSE_WASM_RUNTIME_SHA256") {
         return v;
     }
-    let _ = rt; // table par runtime à renseigner lors de la publication
-    String::new()
+    match (rt, cible().as_str()) {
+        (RuntimeOfficiel::Wasmtime, "aarch64-linux") => {
+            SHA_WASMTIME_V0_1_5_AARCH64_LINUX.to_string()
+        }
+        _ => String::new(),
+    }
 }
 
 /// Vérifie des octets contre une empreinte SHA-256 (hexadécimale).
@@ -472,6 +488,23 @@ mod tests {
         assert_eq!(RuntimeOfficiel::depuis_str("WASMTIME"), Some(RuntimeOfficiel::Wasmtime));
         assert_eq!(RuntimeOfficiel::depuis_str("wasmer"), Some(RuntimeOfficiel::Wasmer));
         assert_eq!(RuntimeOfficiel::depuis_str("inconnu"), None);
+    }
+
+    #[test]
+    fn table_sha_integree_aarch64() {
+        // Empreinte du runner réel v0.1.5 aarch64-linux (mesurée le 18/11/2026).
+        assert_eq!(
+            SHA_WASMTIME_V0_1_5_AARCH64_LINUX,
+            "c7b2bf3c2b85e72ec37192f2ba855bd98de0c144288c9cf04aa63f11880739d1"
+        );
+        // Sur la cible vérifiée, la table intégrée rend cette empreinte
+        // (sauf surcharge explicite par ROSE_WASM_RUNTIME_SHA256).
+        if cible() == "aarch64-linux" && std::env::var("ROSE_WASM_RUNTIME_SHA256").is_err() {
+            assert_eq!(
+                sha256_attendu(RuntimeOfficiel::Wasmtime),
+                SHA_WASMTIME_V0_1_5_AARCH64_LINUX
+            );
+        }
     }
 
     #[test]

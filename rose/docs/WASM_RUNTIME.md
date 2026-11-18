@@ -13,7 +13,7 @@ pour les modules chauds.
 | Dépendance dans `rose.exe` | aucune | **aucune** (exécutable séparé) |
 | Emplacement | code du moteur | `~/.cache/rose/runtimes/` |
 | Téléchargement | jamais | **explicite seulement** |
-| Perf visée `fib(27)` | ~150 ms | ≤ 20 ms |
+| Perf `fib(27)` | ~150 ms (référence historique) | ≤ 20 ms — **mesuré 2,885 ms** (18/11/2026, CLI réelle) |
 | Sortie | référence | **identique** (normalisée en i64) |
 
 Règles contractuelles :
@@ -90,6 +90,38 @@ rose wasm --install-runtime wasmer
 `--runtime officiel` sélectionne wasmtime ; `wasmtime` / `wasmer` sont aussi
 acceptés. `--args` est une liste d'entiers décimaux.
 
+## Installation locale (SANS réseau) vs publication — 18/11/2026
+
+L'artefact n'étant **pas encore publié** sur `Stef302/Rose`,
+`rose wasm --install-runtime wasmtime` échouerait au téléchargement (URL de
+release introuvable). Pour installer le runner **déjà construit et vérifié**
+sans aucun accès réseau, copier le fichier dans le cache sous le nom
+déterministe attendu par `dossier_cache()` / `nom_fichier()` :
+
+```sh
+SHA=c7b2bf3c2b85e72ec37192f2ba855bd98de0c144288c9cf04aa63f11880739d1
+SRC=/tmp/opencode/rose-runner-final1/rose-wasmtime-runner-v0.1.5-aarch64-linux
+DST="$HOME/.cache/rose/runtimes/wasmtime-v0.1.5"   # ROSE_CACHE / XDG_CACHE_HOME non définis ici
+mkdir -p "$(dirname "$DST")"
+[ "$(sha256sum "$SRC" | cut -d' ' -f1)" = "$SHA" ] || { echo 'SHA inattendu'; exit 1; }
+cp "$SRC" "$DST" && chmod 0755 "$DST"
+sha256sum "$DST"          # → c7b2bf3c…80739d1  (6 493 120 octets)
+```
+
+C'est exactement ce que fait `installer()` **après** son téléchargement :
+même chemin, même nom de fichier, droits `0755`, même contrôle SHA-256.
+`trouver_runtime()` (et donc `est_installe()`) le trouve ensuite sans
+distinction, qu'il vienne d'une copie locale ou d'un téléchargement.
+
+Quand l'artefact sera publié, la procédure normale reprendra : publication
+côté mainteneur `Stef302` (release `v0.1.5`, fichier
+`rose-wasmtime-runner-v0.1.5-aarch64-linux`), puis, côté utilisateur,
+`rose wasm --install-runtime wasmtime`. L'empreinte intégrée
+`SHA_WASMTIME_V0_1_5_AARCH64_LINUX` (**source de vérité**, surchargeable par
+`ROSE_WASM_RUNTIME_SHA256`) doit alors être celle du fichier **réellement
+publié** : la re-mesurer avant toute publication. **Rien n'a été publié sur
+GitHub lors de cette étape.**
+
 ## Variables d'environnement
 
 | Variable | Rôle |
@@ -160,24 +192,63 @@ fib(27) = 196418
   sortie           : IDENTIQUE au caractère près
 ```
 
-Protocole : même module `fib.wasm`, mêmes arguments, A/A/A entrelacé, ≥6
-échantillons, médianes ; accepter le changement seulement s'il bat les deux
-contrôles voisins. Ne jamais citer une spec : mesurer.
+Protocole : même module `fib.wasm`, mêmes arguments, ≥6 échantillons,
+médianes ; accepter le changement seulement s'il bat les contrôles voisins.
+Ne jamais citer une spec : mesurer.
 
-Constat daté (17/11/2026, crate de validation isolée, profil `release`) :
+### Constat daté du 18/11/2026 — CLI Rose réelle, voie officielle
+
+Binaire `release` reconstruit depuis `rose/src/wasm_runtime.rs` (table SHA
+renseignée), runner installé localement dans le cache (voir section précédente).
+Commande exacte, depuis la racine du dépôt :
+
+```sh
+./rose/rose wasm /tmp/opencode/fib27.wasm --export fib --args 27 --runtime officiel
+```
+
+`/tmp/opencode/fib27.wasm` = module du base64
+`AGFzbQEAAAABBgFgAX8BfwMCAQAHBwEDZmliAAAKHgEcACAAQQJIBH8gAAUgAEEBaxAAIABBAmsQAGoLCw==`
+(61 octets, export `fib`). Chronométrage du **processus CLI complet**, 6
+échantillons consécutifs :
+
+```
+3.069 / 2.286 / 3.748 / 2.700 / 3.881 / 2.058 ms
+```
+
+**Médiane 2.885 ms** (min 2.058, max 3.881) — porte ≤ 20 ms **validée**,
+avec ~7× de marge. Chaque échantillon : `stdout = 196418`, `stderr = ''`,
+code de sortie 0 : **aucun message de repli**. Le câblage CLI confirme
+qu'`--runtime officiel` → `Some(Wasmtime)` → `trouver_runtime()` → cache, et
+que `executer_export()` ne rapporte `Voie::Maison` qu'en émettant le message
+`rose wasm : … repli …` sur stderr. Son absence prouve la voie officielle.
+
+**Contrôle négatif** : runner temporairement retiré du cache, la même commande
+rend `stderr = "rose wasm : appel de 'fib' : récursion wasm trop profonde (>256)"`,
+code 1 — le repli maison échoue sur ce module avec ce binaire. Le `196418`
+obtenu avec le runner en place ne peut donc **pas** venir du repli. Le runner
+a été restauré ensuite (SHA inchangé, droits `0755`).
+
+### Constat historique du 17/11/2026 (crate de validation isolée)
+
 `fib(27) = 196418` via l'interpréteur maison, 6 échantillons
 `171.4 / 171.8 / 172.0 / 172.2 / 172.4 / 172.5 ms`, **médiane 172.1 ms**.
-La voie officielle n'a PAS pu être mesurée ici : aucun binaire wasmtime/wasmer
-n'est installé et l'artefact du runner n'est pas encore publié — la porte
-≤ 20 ms reste donc **à valider**, elle n'est pas présentée comme acquise.
+La voie officielle n'avait PAS pu être mesurée alors : aucun binaire
+wasmtime/wasmer n'était installé et l'artefact du runner n'était pas publié.
+Ce chiffre est conservé à titre historique ; il n'est pas la mesure CLI du
+binaire livré, et le repli maison de ce binaire échoue sur `fib(27)` (voir
+contrôle négatif ci-dessus).
 
 ## Limites
 
 * **Aucun runtime n'est embarqué** et aucun n'est téléchargé par défaut :
   `installer()` est le seul chemin de téléchargement, et il exige une empreinte
-  SHA-256. Tant que l'artefact n'est pas publié avec son empreinte dans la
-  table intégrée, `installer()` refuse (définir `ROSE_WASM_RUNTIME_SHA256`
-  pour un miroir de test). Ce n'est pas un bug : c'est la garde-fou.
+  SHA-256. La table intégrée contient désormais l'empreinte du runner
+  `v0.1.5-aarch64-linux` vérifié localement ; les autres cibles restent vides
+  et refusent l'installation jusqu'à mesure de leur artefact. L'artefact
+  n'étant pas encore publié, le téléchargement échouera côté réseau : utiliser
+  la procédure de copie locale ci-dessus (définir `ROSE_WASM_RUNTIME_SHA256`
+  reste possible pour un miroir de test). Ce n'est pas un bug : c'est la
+  garde-fou.
 * Téléchargement via `curl` (puis `wget`) en ligne de commande : aucune
   bibliothèque TLS n'est ajoutée, aucun proxy n'est géré en propre (curl/wget
   s'en chargent). Nécessite ces outils et un accès réseau au moment de
