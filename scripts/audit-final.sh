@@ -30,10 +30,10 @@ printf '  racine: %s\n' "$RACINE"
 printf '  moteur: %s\n' "$ROSE"
 printf '════════════════════════════════════════════════════════════════════════\n'
 
-# Corpus M4 : les 5 familles citées dans la mission (examples, jardins,
-# bench/dores, roses, verifs). Comparaison OCTET POUR OCTET (cmp -s) de la
-# sortie fusionnée stdout+stderr de l'oracle Rust et du composant Rose.
-CORPUS="$(find examples jardins bench/dores rose-cpp/tests/roses rose-cpp/tests/verifs \
+# Corpus M4 complet : 150 fichiers .rose = examples (6) + jardins (2) +
+# bench (41) + rose-cpp/tests (101). Comparaison OCTET POUR OCTET (cmp -s)
+# de la sortie fusionnée stdout+stderr de l'oracle Rust et du composant Rose.
+CORPUS="$(find examples jardins bench rose-cpp/tests \
           -name '*.rose' 2>/dev/null | sort)"
 NB_CORPUS="$(printf '%s\n' "$CORPUS" | grep -c .)"
 
@@ -58,15 +58,15 @@ oracle() {
 }
 
 hdr "1 — Oracles M4 (corpus $NB_CORPUS fichiers, sortie octet pour octet)"
-printf '  corpus = examples + jardins + bench/dores + roses + verifs\n\n'
+printf '  corpus = examples + jardins + bench + rose-cpp/tests (150 fichiers)\n\n'
 oracle "M4.1 lexeur (rose tokens)"      tokens compilateur/lexeur.rose
-R_LEX="$OK/$KO"
+R_LEX="$OK/$KO"; R_LEX_KO=$KO
 oracle "M4.2 analyseur (rose ast)"      ast    compilateur/analyseur.rose
-R_AST="$OK/$KO"
+R_AST="$OK/$KO"; R_AST_KO=$KO
 oracle "M4.3 vérificateur (rose verif)" verif  compilateur/verifieur.rose
-R_VERIF="$OK/$KO"
+R_VERIF="$OK/$KO"; R_VERIF_KO=$KO
 oracle "M4.4 émetteur RIR (rose rir)"   rir    compilateur/emetteur.rose
-R_RIR="$OK/$KO"
+R_RIR="$OK/$KO"; R_RIR_KO=$KO
 
 printf '\n  --- référence : scripts/valider-chantiers.sh (corpus historique) ---\n'
 bash scripts/valider-chantiers.sh 2>&1 \
@@ -202,14 +202,30 @@ printf '  2. Point fixe M4.5 : %s (%s)\n' "$PF" "$M1"
 printf '  3. Perf M2         : jardin %s | fib(25) %s | bench_global %s\n' "$J20" "$VFIB" "$VBENCH"
 printf '  4. Backend M3      : cargo link_natif rc=%d | natif_emetteur rc=%d | bin rose rc=%d\n' \
        "$RCL" "$RCN" "$RCB"
-printf '  5. Invariants      : rug absent du code Rust %s | jardins Rust %s | version 0.1.5 (%s)\n' \
+printf '  5. Invariants      : rug absent du code Rust %s | jardins Rust %s | version (%s)\n' \
        "$([ -z "$RS" ] && [ -z "$CG" ] && echo CONFIRMÉ || echo ÉCHEC)" \
        "$([ "$NB_RS_JARDIN" -eq 0 ] && echo CONFIRMÉ || echo ÉCHEC)" \
        "$(grep -m1 '^version' rose/Cargo.toml | tr -d ' ')"
 printf '  6. Git             : HEAD/main %s | status %s\n' "$GCOH" \
        "$([ -z "$GS" ] && echo propre || echo 'non propre (concurrent)')"
 printf '  7. Horodatage      : %s\n' "$(date --iso-8601=seconds)"
-printf '\n  Portes NON atteintes constatées : écarts oracles M4.3/M4.4 sur le corpus\n'
-printf '  élargi (voir détails en section 1) — à ne pas confondre avec le corpus\n'
-printf '  historique de scripts/valider-chantiers.sh.\n'
+
+NON_ATTEINTES=""
+[ "$R_LEX_KO" -gt 0 ]   && NON_ATTEINTES="$NON_ATTEINTES M4.1-lexeur:$R_LEX_KO"
+[ "$R_AST_KO" -gt 0 ]   && NON_ATTEINTES="$NON_ATTEINTES M4.2-analyseur:$R_AST_KO"
+[ "$R_VERIF_KO" -gt 0 ] && NON_ATTEINTES="$NON_ATTEINTES M4.3-verificateur:$R_VERIF_KO"
+[ "$R_RIR_KO" -gt 0 ]   && NON_ATTEINTES="$NON_ATTEINTES M4.4-emetteur:$R_RIR_KO"
+[ "$PF" != "ATTEINT" ]  && NON_ATTEINTES="$NON_ATTEINTES M4.5-point-fixe"
+[ "$J20" != "20/20" ]   && NON_ATTEINTES="$NON_ATTEINTES M2-jardin"
+[ "$VFIB" != "OK" ]     && NON_ATTEINTES="$NON_ATTEINTES M2-fib25"
+case "$VBENCH" in rc=0) ;; *) NON_ATTEINTES="$NON_ATTEINTES M2-bench_global" ;; esac
+[ "$RCL" -ne 0 ] && NON_ATTEINTES="$NON_ATTEINTES M3-link_natif"
+[ "$RCN" -ne 0 ] && NON_ATTEINTES="$NON_ATTEINTES M3-natif_emetteur"
+[ "$RCB" -ne 0 ] && NON_ATTEINTES="$NON_ATTEINTES M3-bin_rose"
+printf '\n'
+if [ -z "$NON_ATTEINTES" ]; then
+  printf '  Portes NON atteintes constatées : AUCUNE (toutes les portes mesurées sont atteintes).\n'
+else
+  printf '  Portes NON atteintes constatées :%s\n' "$NON_ATTEINTES"
+fi
 exit 0
