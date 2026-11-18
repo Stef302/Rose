@@ -207,6 +207,25 @@ fn motif_constantes_imm12(d: &RecBoucle, borne: i64) -> bool {
     match d.base { BaseBoucle::Lit(v) => ok(v), BaseBoucle::Param => true }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// CONSTAT MESURÉ 18/11/2026 (FERMER_ECART.md) — deux correctifs GÉNÉRIQUES,
+// aucun nom de fonction codé en dur, appliqués à TOUTE fonction du motif :
+//
+//  1. TEST DE BASE EN BRANCHEMENT PRIS (forme LLVM). L'ancienne forme
+//     `cmp x0,#k ; b.lt base` (non pris sur le chemin chaud) coûtait ~1 ms sur
+//     fib(35) par rapport à `cmp x0,#k ; b.cs init_boucle` (pris). Même nombre
+//     d'instructions, même résultat : seule la prédiction diffère. Mesuré en
+//     A/A/A entrelacé (21 échantillons, cœurs 15 ET 19) : 12,75 → 11,70 ms,
+//     soit Rust (12,62 ms) battu de ~7 %.
+//  2. PROLOGUE À 3 REGISTRES. Ce code ne MODIFIE jamais x29 : le sauver et le
+//     restaurer est inutile. `stp x19,x30 ; str x20` + `ldr x20 ; ldp x19,x30`
+//     = même nombre d'instructions, un stockage de moins par appel. Gain
+//     additionnel ~1 % (11,70 → 11,60 ms), validé sur les deux cœurs.
+//
+// La garde de plage bigint est CONSERVÉE (elle garantit l'exactitude des grands
+// n) : sa désactivation diagnostique n'a montré AUCUN gain mesurable.
+// ═══════════════════════════════════════════════════════════════════════════
+
 /// Émet le code machine aarch64 de la boucle à accumulateur pour `d`.
 /// Retourne les octets (code + littéral de l'adresse de repli + nom C).
 #[cfg(target_arch = "aarch64")]
@@ -216,14 +235,15 @@ fn emettre_boucle_machine(nom: &str, d: &RecBoucle, borne: i64,
     // étiquettes (indices d'instruction) à patcher en fin d'émission
     let mut bl_self = 0usize;
     let mut b_cont = 0usize;
-    let mut b_gt_repli = 0usize;
-    let mut b_lt_base = 0usize;
-    let mut b_base_epi = 0usize;
+    let b_gt_repli: usize;
+    let b_init_boucle: usize;
+    let b_base_epi: usize;
     let mut i_adr = 0usize;
     let mut i_ldr = 0usize;
     let idx_loop: usize;
     let idx_epi: usize;
     let idx_base: usize;
+    let idx_init: usize; // cible du branchement PRIS (début de l'init de la boucle)
     let idx_repli: usize;
     /// Prologue : cible des appels RÉCURSIFS. La garde de plage est AVANT lui
     /// et n'est donc exécutée qu'une fois (appel Rust→JIT) : `n` décroît
@@ -232,27 +252,37 @@ fn emettre_boucle_machine(nom: &str, d: &RecBoucle, borne: i64,
     let idx_prologue: usize;
 
     // ── ENTRÉE GARDÉE (cible du trampoline = octet 0 du code) ──
-    // ── garde de plage générique : n > borne -> repli interpréteur ──
+    // Garde de plage générique, CONSERVÉE : n > borne -> repli interpréteur.
+    // Exécutée UNE SEULE fois (les appels récursifs sautent directement au
+    // prologue) ; elle garantit l'exactitude bigint pour les grands n.
     ins.push(0xF100001F | ((borne as u32 & 0xFFF) << 10)); // cmp x0, #borne
     b_gt_repli = ins.len();
-    ins.push(0x54000000 | 0xC);                              // b.gt repli (cond 1100)
+    ins.push(0x54000000 | 0xC);                          // b.gt repli (cond 1100)
 
     // ── PROLOGUE (cible des appels récursifs : saute la garde) ──
+    // 3 registres seulement : x19, x30 (stp) + x20 (str). x29 n'est jamais
+    // modifié par ce code : inutile de le sauver ni de le restaurer.
     idx_prologue = ins.len();
-    ins.push(0xA9BE7BFD); // stp x29, x30, [sp, #-32]!   (imm7 = -4)
-    ins.push(0xA90153F3); // stp x19, x20, [sp, #16]
+    ins.push(0xA9BE7BF3); // stp x19, x30, [sp, #-32]!
+    ins.push(0xF9000BF4); // str x20, [sp, #16]
 
-    // ── test de base : n < seuil (strict) ou n <= seuil -> base ──
+    // ── test de base en BRANCHEMENT PRIS (forme LLVM, mesurée plus rapide) ──
+    // `cmp x0,#k ; b.cs init_boucle` : chemin chaud = branchement PRIS,
+    // cas de base en fallthrough. Même nombre d'instructions que l'ancien
+    // `b.lt base` non pris, mais ~1 ms gagné sur fib(35) (voir en-tête).
     ins.push(0xF100001F | ((d.seuil as u32 & 0xFFF) << 10)); // cmp x0, #seuil
-    if d.strict {
-        b_lt_base = ins.len();
-        ins.push(0x54000000 | 0xB);                          // b.lt base (cond 1011)
-    } else {
-        b_lt_base = ins.len();
-        ins.push(0x54000000 | 0x9);                          // b.ls base (cond 1001, <=)
+    b_init_boucle = ins.len();
+    let cond_init = if d.strict { 0x2 } else { 0x8 }; // b.cs (n>=k) / b.hi (n>k)
+    ins.push(0x54000000 | cond_init);
+    // ── CAS DE BASE (fallthrough froid) : retourne base(n) = n ou littéral ──
+    idx_base = ins.len();
+    if let BaseBoucle::Lit(v) = d.base {
+        ins.push(0xD2800000 | ((v as u32 & 0xFFFF) << 5)); // mov x0, #v
     }
-
+    b_base_epi = ins.len();
+    ins.push(0x14000000); // b epi (patch)
     // ── init des valeurs vivantes : x19 = n, x20 = acc = 0 ──
+    idx_init = ins.len();
     ins.push(0xAA0003F3); // mov x19, x0
     ins.push(0xD2800014); // mov x20, #0
 
@@ -279,17 +309,9 @@ fn emettre_boucle_machine(nom: &str, d: &RecBoucle, borne: i64,
 
     // ── ÉPILOGUE ──
     idx_epi = ins.len();
-    ins.push(0xA94153F3); // ldp x19, x20, [sp, #16]   (signed offset, PAS post-index)
-    ins.push(0xA8C27BFD); // ldp x29, x30, [sp], #32   (post-index, imm7 = 4)
+    ins.push(0xF9400BF4); // ldr x20, [sp, #16]
+    ins.push(0xA8C27BF3); // ldp x19, x30, [sp], #32
     ins.push(0xD65F03C0); // ret
-
-    // ── CAS DE BASE : retourne base(n) = n ou littéral ──
-    idx_base = ins.len();
-    if let BaseBoucle::Lit(v) = d.base {
-        ins.push(0xD2800000 | ((v as u32 & 0xFFFF) << 5)); // mov x0, #v
-    }
-    b_base_epi = ins.len();
-    ins.push(0x14000000); // b epi (patch)
 
     // ── REPLI bigint : rose_appel_interpreteur(n, 0, 0, 0, nom) ──
     idx_repli = ins.len();
@@ -327,7 +349,7 @@ fn emettre_boucle_machine(nom: &str, d: &RecBoucle, borne: i64,
     };
     patch_bc(&mut ins, b_cont, idx_loop);
     patch_bc(&mut ins, b_gt_repli, idx_repli);
-    patch_bc(&mut ins, b_lt_base, idx_base);
+    patch_bc(&mut ins, b_init_boucle, idx_init);
     patch_b(&mut ins, b_base_epi, idx_epi);
     // ADR x4, nom : imm = nom_off - octet de l'instruction ADR
     let adr_off = nom_off as i64 - (i_adr * 4) as i64;
