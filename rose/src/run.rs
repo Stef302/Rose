@@ -52,6 +52,7 @@ pub enum Valeur {
 }
 
 impl Valeur {
+    #[inline]
     pub fn z(v: i64) -> Valeur {
         // Le JIT ramène ses résultats vers l'interpréteur avec un tag lu dans
         // `tag_tmp`, qui peut être périmé (dernier calcul de la boucle, pas la
@@ -71,7 +72,9 @@ impl Valeur {
     }
     pub fn qq(q: Gq) -> Valeur { Valeur::Rationnel(Rc::new(q)) }
     pub fn f(v: f64) -> Valeur { Valeur::Flottant(v) }
+    #[inline]
     pub fn b(v: bool) -> Valeur { Valeur::Booleen(v) }
+    #[inline]
     pub fn s(v: impl Into<String>) -> Valeur { Valeur::Chaine(Rc::new(v.into())) }
     #[allow(dead_code)]
     pub fn liste() -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(Vec::new())))) }
@@ -330,9 +333,9 @@ pub fn noter_ligne(l: usize) {
 
 // ── Conversions (miroir vers_z / vers_q / vers_d / convertir) ─────────────
 
+#[inline(always)]
 pub fn vers_z(v: &Valeur) -> Gz {
     let z = Gz::neuf();
-    let ligne = LIGNE_COURANTE.with(|c| c.get());
     match v {
         Valeur::Entier(i, None) => z.poser_i64(*i),
         Valeur::Entier(_, Some(o)) => z.copier_de(o),
@@ -369,6 +372,7 @@ pub fn vers_q(v: &Valeur) -> Gq {
     q
 }
 
+#[inline]
 pub fn vers_d(v: &Valeur) -> f64 {
     match v {
         Valeur::Flottant(d) => *d,
@@ -389,6 +393,7 @@ fn vers_d_chaine(v: &Valeur) -> f64 {
     }
 }
 
+#[inline]
 pub fn convertir(v: Valeur, ty: TyKind) -> Valeur {
     match ty {
         TyKind::Entier => match &v {
@@ -451,6 +456,7 @@ pub fn chaine_vers_entier(ch: &str) -> Gz {
 
 // ── Comparaisons (miroir cmp_vals / rose_valeur_egale) ────────────────────
 
+#[inline(always)]
 pub fn cmp_vals(g: &Valeur, d: &Valeur) -> i32 {
     // ⚠⚠⚠ VOIE RAPIDE i64 EN TÊTE (mesuré le 18/11/26).
     // `vers_z` alloue un `Mpz` boxé ET un `BigInt` pour chaque opérande,
@@ -488,6 +494,7 @@ pub fn cmp_vals(g: &Valeur, d: &Valeur) -> i32 {
     za.cmp_gz(&zb) as i32
 }
 
+#[inline(always)]
 pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
     // ⚠ Même voie rapide que `cmp_vals` : deux i64 s'égalisent par
     // comparaison directe, sans boxer de `Gz`/`BigInt`. C'est LE chemin
@@ -580,6 +587,7 @@ pub fn texte_rationnel(q: &Gq) -> String {
     out
 }
 
+#[inline]
 pub fn chaine_de(v: &Valeur) -> String {
     // chaine_de() : a/b BRUT a tous les niveaux (les listes et
     // tables rendent leurs rationnels en « 12/5 »). La forme periodique est
