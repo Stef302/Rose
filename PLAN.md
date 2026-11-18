@@ -481,3 +481,5 @@ Cinq agents sur les questions ouvertes de l'utilisateur, fichiers distincts :
 | H5 | **plafond de vitesse** | `rose/docs/PLAFOND_VITESSE.md` | démarrage/natif/JIT/interp mesurés, plafond calculé |
 
 ⚠ H1 peut modifier le moteur (jit/interp/rir) : après livraison, re-vérifier les 4 oracles 150/150 et le point fixe md5 avant publication.
+
+**Bilan vague 8** : H1 ✅ `b3c0b72` fib(35) 208→51,3ms (×4,05; Rust reste 4,05× devant, Rose bat Rust 5,34× sur factorielle) · H2 ✅ Mach-O structure prouvée · H3 ✅ RIR = bytecode interne (`BYTECODE_ROSE.md`) · H4 ✅ guide universel wasm · Fix ✅ build wasm réparé (`3328ce5`, 15 tests Node) · H5 ✅ plafond vitesse (`PLAFOND_VITESSE.md`: natif 4× JIT, plafond NTT 2,25×). Après H1: point fixe `bdbef636` intact, 30/30 oracles sur échantillon, débordements i64 exacts.
