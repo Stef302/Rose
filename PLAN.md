@@ -515,3 +515,14 @@ Six agents sur les goulots exacts identifiés par les mesures :
 | J6 | **plafond après** | `rose/docs/PLAFOND_APRES.md` | bornes [E] recalculées, verdict |
 
 ⚠ J1 modifie `jit.rs` (moteur) et J3 modifie `lib.rs`/`main.rs`/`Cargo.toml` : après livraison re-vérifier point fixe + 4 oracles + builds. Règle: ne jamais annoncer une victoire sans mesure pinée.
+
+**Bilan vague 10** : J1 ✅ `4d0b04d` fib35 19,9→**12,739ms** (1,0116× de Rust, 1,16% d'écart — émetteur aarch64 à registres fixés identique LLVM) · J2 ✅ `3abfe12` table 8,38× · J3 🔄 G2 build sans cranelift réussi mais repli jardin cassé · J4 ✅ câblage VM/arène · J5 ✅ `f102fe3` 151/151 · J6 ✅ plafond 1,899 cycles/appel.
+
+## Vague 11 (18/11) — derniers 1,16 % et autonomie
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| K1 | **fermer 1,16 %** | `rose/src/jit.rs`, `rose/docs/FERMER_ECART.md` | fib35 < 12,593ms (Rose bat Rust) |
+| K2 | **fix repli autonome** | `rose/src/main.rs`, `rose/docs/G2_FIX.md` | jardin 20/20 sur build `--features autonome` |
+
+Règle inchangée: aucune annonce de victoire sans mesure A/A/A pinée, point fixe et 4 oracles re-vérifiés après.
