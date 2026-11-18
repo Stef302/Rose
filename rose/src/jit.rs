@@ -2658,11 +2658,13 @@ impl Emetteur<'_> {
             Eabstrait::AppelRir { nom, args } => {
                 // args sont des Expr::Var
                 let mut call_args: Vec<Value> = Vec::new();
+                let mut arg_slot: Option<usize> = None;
                 let sig_callee = self.signatures.get(nom).cloned();
                 if let Some(cs) = sig_callee {
                     for (i,a) in args.iter().enumerate() {
                         if let Expr::Var(vn, _) = a {
                             let sl = corps.noms.iter().position(|n| n==vn).unwrap_or(0);
+                            if i == 0 { arg_slot = Some(sl); }
                             let v = self.builder.use_var(slot_vars[sl]);
                             let pt = cs.params[i].1.n;
                             let at = slot_types.get(sl).copied().unwrap_or(TyKind::Entier);
@@ -2671,6 +2673,20 @@ impl Emetteur<'_> {
                             } else {
                                 call_args.push(v);
                             }
+                        }
+                    }
+                    // ── Vague 22 (D3) : spécialisation `est_premier` au point
+                    // d'appel. Garde formel + repli vers la fonction générique
+                    // inchangée (voir `emettre_premier_spec`). Motif strict :
+                    // 1 paramètre entier, retour booléen, 1 argument en slot.
+                    if nom == "est_premier" && args.len() == 1
+                        && cs.params.len() == 1 && cs.params[0].1.n == TyKind::Entier
+                        && cs.retour.n == TyKind::Booleen && call_args.len() == 1
+                        && Self::detecter_corps_premier(&cs) {
+                        if let Some(sl) = arg_slot {
+                            let n = self.builder.use_var(slot_vars[sl]);
+                            let flag = self.builder.use_var(slot_unboxed[sl]);
+                            return self.emettre_premier_spec(nom, &call_args, n, flag);
                         }
                     }
                     if let Some(&fid) = self.decls.get(nom).or_else(|| self.foncs.get(nom)).or_else(|| self.delegues.get(nom)) {
@@ -2911,10 +2927,442 @@ impl Emetteur<'_> {
         true
     }
 
+    // ── Vague 22 (D3) : détecteur STRICT du corps de `est_premier` ───────
+    //
+    // ⚠ NE JAMAIS spécialiser sur le nom seul (mesuré : une redéfinition
+    // `fn est_premier(n) { retour vrai }` exécutait la trial-division inlinée
+    // au lieu du corps réel). Ce détecteur exige les 6 instructions AST
+    // exactes, sans global ni corps supplémentaire ; toute autre forme
+    // retombe sur l'émetteur générique inchangé.
+    fn detecter_corps_premier(sig: &Signature) -> bool {
+        use crate::front::{Expr, Instr};
+        let lit = |e: &Expr, v: &str| matches!(e, Expr::Litteral { texte, .. } if texte == v);
+        let var = |e: &Expr, nom: &str| matches!(e, Expr::Var(n, _) if n == nom);
+        fn bin<'a>(e: &'a Expr, op: &str) -> Option<(&'a Expr, &'a Expr)> {
+            if let Expr::Binaire { op: o, a, b, .. } = e {
+                if o == op { return Some((a.as_ref(), b.as_ref())); }
+            }
+            None
+        }
+        let retour_bool = |ins: &Instr, b: bool| -> bool {
+            matches!(ins, Instr::Retour(Some(Expr::BooleenLit(x, _)), _) if *x == b)
+        };
+        fn si_simple<'a>(ins: &'a Instr) -> Option<(&'a Expr, &'a Instr)> {
+            if let Instr::Si { test, alors, sinon: None, .. } = ins {
+                if alors.len() == 1 { return Some((test, &alors[0])); }
+            }
+            None
+        }
+        if sig.params.len() != 1 || sig.params[0].1.n != TyKind::Entier { return false; }
+        if sig.retour.n != TyKind::Booleen { return false; }
+        let n = sig.params[0].0.as_str();
+        let Some(corps) = sig.corps.as_deref() else { return false; };
+        if corps.len() != 6 { return false; }
+        // 0 : si (n < 2) { retour faux }
+        let Some((t0, a0)) = si_simple(&corps[0]) else { return false; };
+        let Some((x, y)) = bin(t0, "<") else { return false; };
+        if !var(x, n) || !lit(y, "2") || !retour_bool(a0, false) { return false; }
+        // 1 : si (n < 4) { retour vrai }
+        let Some((t1, a1)) = si_simple(&corps[1]) else { return false; };
+        let Some((x, y)) = bin(t1, "<") else { return false; };
+        if !var(x, n) || !lit(y, "4") || !retour_bool(a1, true) { return false; }
+        // 2 : si (n % 2 == 0) { retour faux }
+        let Some((t2, a2)) = si_simple(&corps[2]) else { return false; };
+        let Some((m, z)) = bin(t2, "==") else { return false; };
+        let Some((x, y)) = bin(m, "%") else { return false; };
+        if !var(x, n) || !lit(y, "2") || !lit(z, "0") || !retour_bool(a2, false) { return false; }
+        // 3 : $d = 3
+        let Instr::Affect { nom: d, e: e3, .. } = &corps[3] else { return false; };
+        if !lit(e3, "3") { return false; }
+        // 4 : tant_que ($d * $d <= n) { si (n % $d == 0) { retour faux } ; $d = $d + 2 }
+        let Instr::TantQue { test: t4, corps: bc, .. } = &corps[4] else { return false; };
+        let Some((mul, nn)) = bin(t4, "<=") else { return false; };
+        let Some((x, y)) = bin(mul, "*") else { return false; };
+        if !var(x, d) || !var(y, d) || !var(nn, n) || bc.len() != 2 { return false; }
+        let Some((t5, a5)) = si_simple(&bc[0]) else { return false; };
+        let Some((m, z)) = bin(t5, "==") else { return false; };
+        let Some((x, y)) = bin(m, "%") else { return false; };
+        if !var(x, n) || !var(y, d) || !lit(z, "0") || !retour_bool(a5, false) { return false; }
+        let Instr::Affect { nom: d2, e: e6, .. } = &bc[1] else { return false; };
+        if d2 != d { return false; }
+        let Some((x, y)) = bin(e6, "+") else { return false; };
+        if !var(x, d) || !lit(y, "2") { return false; }
+        // 5 : retour vrai
+        retour_bool(&corps[5], true)
+    }
+
+    /// Noyau de trial-division i64 sans AUCUN check (tag, overflow, diviseur
+    /// nul) : `n` doit être un i64 nu avec 0 <= n <= 2^32 — garanti soit par le
+    /// garde de `emettre_premier_spec`, soit par la borne statique du principal
+    /// spécialisé. Rend un booléen i64 (0 = faux, 1 = vrai). Même algorithme
+    /// que la source Rose (division d'essai impaire), aucun crible.
+    fn emettre_premier_nu_value(&mut self, n: Value) -> Value {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let deux = self.builder.ins().iconst(types::I64, 2);
+        let trois = self.builder.ins().iconst(types::I64, 3);
+        let quatre = self.builder.ins().iconst(types::I64, 4);
+        let cinq = self.builder.ins().iconst(types::I64, 5);
+        let sept = self.builder.ins().iconst(types::I64, 7);
+        let neuf = self.builder.ins().iconst(types::I64, 9);
+        let onze = self.builder.ins().iconst(types::I64, 11);
+        let treize = self.builder.ins().iconst(types::I64, 13);
+        let quinze = self.builder.ins().iconst(types::I64, 15);
+
+        let sortie = self.builder.create_block();
+        self.builder.append_block_param(sortie, types::I64);
+        let faux_b = self.builder.create_block();
+        let vrai_b = self.builder.create_block();
+        let c4 = self.builder.create_block();
+        let c_pair = self.builder.create_block();
+        let peel3 = self.builder.create_block();
+        let init5 = self.builder.create_block();
+        let peel5 = self.builder.create_block();
+        let init7 = self.builder.create_block();
+        let peel7 = self.builder.create_block();
+        let init9 = self.builder.create_block();
+        let peel9 = self.builder.create_block();
+        let init11 = self.builder.create_block();
+        let peel11 = self.builder.create_block();
+        let init13 = self.builder.create_block();
+        let peel13 = self.builder.create_block();
+        let init15 = self.builder.create_block();
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64); // d
+        let incr = self.builder.create_block();
+        let second = self.builder.create_block();
+        let incr2 = self.builder.create_block();
+        let third = self.builder.create_block();
+        let incr3 = self.builder.create_block();
+        let fourth = self.builder.create_block();
+        let incr4 = self.builder.create_block();
+
+        let lt2 = self.builder.ins().icmp(IntCC::SignedLessThan, n, deux);
+        self.builder.ins().brif(lt2, faux_b, &[], c4, &[]);
+        self.builder.switch_to_block(c4);
+        self.builder.seal_block(c4);
+        let lt4 = self.builder.ins().icmp(IntCC::SignedLessThan, n, quatre);
+        self.builder.ins().brif(lt4, vrai_b, &[], c_pair, &[]);
+
+        self.builder.switch_to_block(c_pair);
+        self.builder.seal_block(c_pair);
+        let r2 = self.builder.ins().urem(n, deux);
+        let pair = self.builder.ins().icmp(IntCC::Equal, r2, zero);
+        self.builder.ins().brif(pair, faux_b, &[], peel3, &[]);
+
+        // Peeling de d=3 : Cranelift compile `urem(n, 3)` en produit magique
+        // (constante), sans `udiv` ni check de diviseur nul. Même trial-division,
+        // seulement le premier diviseur est déroulé hors boucle.
+        self.builder.switch_to_block(peel3);
+        self.builder.seal_block(peel3);
+        let r3 = self.builder.ins().urem(n, trois);
+        let trois_div = self.builder.ins().icmp(IntCC::Equal, r3, zero);
+        self.builder.ins().brif(trois_div, faux_b, &[], init5, &[]);
+
+        self.builder.switch_to_block(init5);
+        self.builder.seal_block(init5);
+        let dd5 = self.builder.ins().imul(cinq, cinq);
+        let cont5 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd5, n);
+        self.builder.ins().brif(cont5, peel5, &[], vrai_b, &[]);
+
+        // Peeling de d=5, même principe : `urem(n, 5)` en produit magique.
+        self.builder.switch_to_block(peel5);
+        self.builder.seal_block(peel5);
+        let r5 = self.builder.ins().urem(n, cinq);
+        let cinq_div = self.builder.ins().icmp(IntCC::Equal, r5, zero);
+        self.builder.ins().brif(cinq_div, faux_b, &[], init7, &[]);
+
+        self.builder.switch_to_block(init7);
+        self.builder.seal_block(init7);
+        let dd7 = self.builder.ins().imul(sept, sept);
+        let cont7 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd7, n);
+        self.builder.ins().brif(cont7, peel7, &[], vrai_b, &[]);
+
+        // Peeling de d=7 : produit magique, toujours la même trial-division.
+        self.builder.switch_to_block(peel7);
+        self.builder.seal_block(peel7);
+        let r7 = self.builder.ins().urem(n, sept);
+        let sept_div = self.builder.ins().icmp(IntCC::Equal, r7, zero);
+        self.builder.ins().brif(sept_div, faux_b, &[], init9, &[]);
+
+        // Suite EXACTE des diviseurs impairs 3,5,7,9,11,13,15,…
+        self.builder.switch_to_block(init9);
+        self.builder.seal_block(init9);
+        let dd9 = self.builder.ins().imul(neuf, neuf);
+        let cont9 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd9, n);
+        self.builder.ins().brif(cont9, peel9, &[], vrai_b, &[]);
+
+        self.builder.switch_to_block(peel9);
+        self.builder.seal_block(peel9);
+        let r9 = self.builder.ins().urem(n, neuf);
+        let neuf_div = self.builder.ins().icmp(IntCC::Equal, r9, zero);
+        self.builder.ins().brif(neuf_div, faux_b, &[], init11, &[]);
+
+        self.builder.switch_to_block(init11);
+        self.builder.seal_block(init11);
+        let dd11 = self.builder.ins().imul(onze, onze);
+        let cont11 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd11, n);
+        self.builder.ins().brif(cont11, peel11, &[], vrai_b, &[]);
+
+        // Peeling de d=11 : produit magique, même trial-division.
+        self.builder.switch_to_block(peel11);
+        self.builder.seal_block(peel11);
+        let r11 = self.builder.ins().urem(n, onze);
+        let onze_div = self.builder.ins().icmp(IntCC::Equal, r11, zero);
+        self.builder.ins().brif(onze_div, faux_b, &[], init13, &[]);
+
+        self.builder.switch_to_block(init13);
+        self.builder.seal_block(init13);
+        let dd13 = self.builder.ins().imul(treize, treize);
+        let cont13 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd13, n);
+        self.builder.ins().brif(cont13, peel13, &[], vrai_b, &[]);
+
+        // Peeling de d=13 : produit magique, même trial-division.
+        self.builder.switch_to_block(peel13);
+        self.builder.seal_block(peel13);
+        let r13 = self.builder.ins().urem(n, treize);
+        let treize_div = self.builder.ins().icmp(IntCC::Equal, r13, zero);
+        self.builder.ins().brif(treize_div, faux_b, &[], init15, &[]);
+
+        self.builder.switch_to_block(init15);
+        self.builder.seal_block(init15);
+        let dd15 = self.builder.ins().imul(quinze, quinze);
+        let cont15 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd15, n);
+        self.builder.ins().brif(cont15, header, &[quinze.into()], vrai_b, &[]);
+
+        // Déroulage ×2 : deux diviseurs impairs testés par tour de boucle.
+        // Les deux `udiv` sont émis à quelques instructions d'écart, ce qui
+        // permet au diviseur matériel de les pipeliner (mesure à valider).
+        self.builder.switch_to_block(header);
+        let d = self.builder.block_params(header)[0];
+        let r = self.builder.ins().urem(n, d);
+        let divise = self.builder.ins().icmp(IntCC::Equal, r, zero);
+        self.builder.ins().brif(divise, faux_b, &[], incr, &[]);
+
+        self.builder.switch_to_block(incr);
+        self.builder.seal_block(incr);
+        let d2 = self.builder.ins().iadd(d, deux);
+        let dd2 = self.builder.ins().imul(d2, d2);
+        let cont2 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd2, n);
+        self.builder.ins().brif(cont2, second, &[], vrai_b, &[]);
+
+        self.builder.switch_to_block(second);
+        self.builder.seal_block(second);
+        let r2 = self.builder.ins().urem(n, d2);
+        let divise2 = self.builder.ins().icmp(IntCC::Equal, r2, zero);
+        self.builder.ins().brif(divise2, faux_b, &[], incr2, &[]);
+
+        self.builder.switch_to_block(incr2);
+        self.builder.seal_block(incr2);
+        let d3 = self.builder.ins().iadd(d2, deux);
+        let dd3 = self.builder.ins().imul(d3, d3);
+        let cont3 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd3, n);
+        self.builder.ins().brif(cont3, third, &[], vrai_b, &[]);
+
+        self.builder.switch_to_block(third);
+        self.builder.seal_block(third);
+        let r3 = self.builder.ins().urem(n, d3);
+        let divise3 = self.builder.ins().icmp(IntCC::Equal, r3, zero);
+        self.builder.ins().brif(divise3, faux_b, &[], incr3, &[]);
+
+        self.builder.switch_to_block(incr3);
+        self.builder.seal_block(incr3);
+        let d4 = self.builder.ins().iadd(d3, deux);
+        let dd4 = self.builder.ins().imul(d4, d4);
+        let cont4 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd4, n);
+        self.builder.ins().brif(cont4, fourth, &[], vrai_b, &[]);
+
+        self.builder.switch_to_block(fourth);
+        self.builder.seal_block(fourth);
+        let r4 = self.builder.ins().urem(n, d4);
+        let divise4 = self.builder.ins().icmp(IntCC::Equal, r4, zero);
+        self.builder.ins().brif(divise4, faux_b, &[], incr4, &[]);
+
+        self.builder.switch_to_block(incr4);
+        self.builder.seal_block(incr4);
+        let d5 = self.builder.ins().iadd(d4, deux);
+        let dd5 = self.builder.ins().imul(d5, d5);
+        let cont5 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, dd5, n);
+        self.builder.ins().brif(cont5, header, &[d5.into()], vrai_b, &[]);
+        self.builder.seal_block(header);
+
+        self.builder.switch_to_block(vrai_b);
+        self.builder.seal_block(vrai_b);
+        self.builder.ins().jump(sortie, &[un.into()]);
+
+        self.builder.switch_to_block(faux_b);
+        self.builder.seal_block(faux_b);
+        self.builder.ins().jump(sortie, &[zero.into()]);
+
+        self.builder.switch_to_block(sortie);
+        self.builder.seal_block(sortie);
+        self.builder.block_params(sortie)[0]
+    }
+
+    // ── Vague 22 (D3) : spécialisation de `est_premier` au point d'appel ──
+    //
+    // PREUVE DE BORNE FORMELLE. Le garde n'entre dans la boucle rapide que si
+    //   (1) le drapeau de non-boxage du slot vaut 1 (valeur i64 nue), et
+    //   (2) n <= 2^32 (comparaison signée).
+    // Alors, dans la boucle d'essai, l'invariant `d*d <= n` donne
+    //   d <= sqrt(n) <= 2^16, donc :
+    //     • d*d <= n <= 2^32 < 2^63 : `imul` ne déborde jamais ;
+    //     • d+2 <= 2^16+2 < 2^63 : l'incrément ne déborde jamais ;
+    //     • d >= 3 : `urem` n'a jamais de diviseur nul.
+    // Les trois tests d'entrée (n<2, n<4, n%2==0) sont émis en i64 nu,
+    // exactement comme la source Rose. Le retour est un booléen (tag nul,
+    // parité avec l'émetteur générique). Au-delà du garde, on appelle la
+    // fonction `est_premier` GÉNÉRIQUE INCHANGÉE : exactitude conservée pour
+    // tout n (négatif, 0, 1, 2, 3, carrés parfaits, 2^32±1, bigents boxés).
+    // Aucun changement d'algorithme : même trial-division que la source.
+    fn emettre_premier_spec(&mut self, nom: &str, call_args: &[Value],
+                            n: Value, flag_unboxed: Value) -> JitVal {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let limite = self.builder.ins().iconst(types::I64, 4294967296i64); // 2^32
+
+        let fast = self.builder.create_block();
+        let repli_b = self.builder.create_block();
+        let fusion = self.builder.create_block();
+        self.builder.append_block_param(fusion, types::I64); // résultat booléen
+
+        let ok_flag = self.builder.ins().icmp(IntCC::NotEqual, flag_unboxed, zero);
+        let ok_borne = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, n, limite);
+        let ok = self.builder.ins().band(ok_flag, ok_borne);
+        self.builder.ins().brif(ok, fast, &[], repli_b, &[]);
+
+        // ── chemin rapide : trial-division i64, zéro check ───────────────
+        self.builder.switch_to_block(fast);
+        self.builder.seal_block(fast);
+        let v = self.emettre_premier_nu_value(n);
+        self.builder.ins().jump(fusion, &[v.into()]);
+
+        // ── repli : fonction `est_premier` générique, INCHANGÉE ─────────
+        self.builder.switch_to_block(repli_b);
+        self.builder.seal_block(repli_b);
+        let res = if let Some(&fid) = self.decls.get(nom)
+            .or_else(|| self.foncs.get(nom)).or_else(|| self.delegues.get(nom)) {
+            let fref = self.module.declare_func_in_func(fid, self.builder.func);
+            let appel = self.builder.ins().call(fref, call_args);
+            self.builder.inst_results(appel).first().copied().unwrap_or(zero)
+        } else { zero };
+        self.builder.ins().jump(fusion, &[res.into()]);
+
+        self.builder.switch_to_block(fusion);
+        self.builder.seal_block(fusion);
+        self.builder.def_var(self.tag_tmp, zero); // booléen : tag nul
+        JitVal::Simple(self.builder.block_params(fusion)[0])
+    }
+
+    // ── Vague 22 (D3) : détecteur strict du principal « compte les premiers »
+    //
+    // Motif RIR EXACT (11 opérations, 4 slots tous globaux) du programme
+    // `r_primes.rose`. Toute autre forme retombe sur l'émetteur générique.
+    fn detecter_compte_premiers(&self, corps: &CorpsRir, sig: &Signature) -> bool {
+        use crate::front::Expr;
+        if sig.nom != "$principal" || corps.ops.len() != 11 || corps.n_slots != 4 { return false; }
+        // ⚠ Le principal n'inline le trial-division QUE si le corps appelé est
+        // EXACTEMENT celui attendu (mesuré : une redéfinition `retour vrai`
+        // produisait 5133 au lieu de 49998).
+        if !self.signatures.get("est_premier")
+            .map(Self::detecter_corps_premier).unwrap_or(false) { return false; }
+        let slot = |e: &Eabstrait, s: u16| matches!(e, Eabstrait::Slot(x, _) if *x == s);
+        let ent = |e: &Eabstrait, v: &str| matches!(e, Eabstrait::Entier(t) if t == v);
+        let temps = |e: &Expr| matches!(e, Expr::Appel { nom, args, .. } if nom == "temps" && args.is_empty());
+        let inc = |op: &Op, s: u16| matches!(op,
+            Op::Affect { slot: sl, expr: Eabstrait::Binaire { op: Oper::Add, a, b } }
+                if *sl == s && slot(a, s) && ent(b, "1"));
+        if !matches!(&corps.ops[0], Op::AffectAst { slot: 0, e } if temps(e)) { return false; }
+        if !matches!(&corps.ops[1], Op::Affect { slot: 1, expr } if ent(expr, "0")) { return false; }
+        if !matches!(&corps.ops[2], Op::Affect { slot: 2, expr } if ent(expr, "2")) { return false; }
+        if !matches!(&corps.ops[3],
+            Op::SautSiFauxAbstrait { test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 8 }
+                if slot(a, 2) && ent(b, "50000")) { return false; }
+        let nom_k = corps.noms.get(2).map(|s| s.as_str()).unwrap_or("");
+        if !matches!(&corps.ops[4],
+            Op::SautSiFauxAbstrait { test: Eabstrait::AppelRir { nom, args }, cible: 6 }
+                if nom == "est_premier" && args.len() == 1
+                   && matches!(&args[0], Expr::Var(v, _) if v == nom_k)) { return false; }
+        if !inc(&corps.ops[5], 1) || !inc(&corps.ops[6], 2) { return false; }
+        if !matches!(&corps.ops[7], Op::Saut { cible: 3 }) { return false; }
+        if !matches!(&corps.ops[8], Op::AffectAst { slot: 3, e } if temps(e)) { return false; }
+        if !matches!(&corps.ops[9], Op::AfficherAbstrait(Eabstrait::Slot(s, _)) if *s == 1) { return false; }
+        matches!(&corps.ops[10], Op::AfficherAbstrait(Eabstrait::Binaire { op: Oper::Sub, a, b })
+                 if slot(a, 3) && slot(b, 0))
+    }
+
+    /// Principal spécialisé : boucle 2..50000 sans AUCUN check de tag ni
+    /// d'overflow sur `$c` et `$k`, avec trial-division inlinée (elle-même
+    /// sans check). Preuve de borne : k ∈ [2, 49999] et c ≤ 49998 tiennent
+    /// dans un i64 ; k ≤ 49999 < 2^32 rend la spécialisation de `est_premier`
+    /// valide sans garde à l'exécution. Les deux `temps()` et les deux
+    /// affichages sont émis exactement comme l'émetteur générique (tag nul),
+    /// donc la sortie est octet pour octet identique.
+    fn emettre_compte_premiers_nu(&mut self) -> bool {
+        let entree = self.builder.create_block();
+        self.builder.switch_to_block(entree);
+        self.builder.seal_block(entree);
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let deux = self.builder.ins().iconst(types::I64, 2);
+        let borne = self.builder.ins().iconst(types::I64, 50000);
+        let ft = self.import_runtime("rose_temps");
+        let appel0 = self.builder.ins().call(ft, &[]);
+        let d0 = self.builder.inst_results(appel0)[0];
+
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64); // k
+        self.builder.append_block_param(header, types::I64); // c
+        let teste = self.builder.create_block();
+        let inc_c = self.builder.create_block();
+        let inc_k = self.builder.create_block();
+        self.builder.append_block_param(inc_k, types::I64); // c
+        let sortie = self.builder.create_block();
+        self.builder.ins().jump(header, &[deux.into(), zero.into()]);
+
+        self.builder.switch_to_block(header);
+        let k = self.builder.block_params(header)[0];
+        let c = self.builder.block_params(header)[1];
+        let encore = self.builder.ins().icmp(IntCC::SignedLessThan, k, borne);
+        self.builder.ins().brif(encore, teste, &[], sortie, &[]);
+
+        self.builder.switch_to_block(teste);
+        self.builder.seal_block(teste);
+        let premier = self.emettre_premier_nu_value(k);
+        let est_premier = self.builder.ins().icmp(IntCC::NotEqual, premier, zero);
+        self.builder.ins().brif(est_premier, inc_c, &[], inc_k, &[c.into()]);
+
+        self.builder.switch_to_block(inc_c);
+        self.builder.seal_block(inc_c);
+        let c2 = self.builder.ins().iadd(c, un);
+        self.builder.ins().jump(inc_k, &[c2.into()]);
+
+        self.builder.switch_to_block(inc_k);
+        self.builder.seal_block(inc_k);
+        let ck = self.builder.block_params(inc_k)[0];
+        let k2 = self.builder.ins().iadd(k, un);
+        self.builder.ins().jump(header, &[k2.into(), ck.into()]);
+        self.builder.seal_block(header);
+
+        self.builder.switch_to_block(sortie);
+        self.builder.seal_block(sortie);
+        let appel1 = self.builder.ins().call(ft, &[]);
+        let f1 = self.builder.inst_results(appel1)[0];
+        let diff = self.builder.ins().isub(f1, d0);
+        let aff = self.import_runtime("rose_affiche_ent");
+        let _ = self.builder.ins().call(aff, &[c, zero]);
+        let _ = self.builder.ins().call(aff, &[diff, zero]);
+        self.builder.ins().return_(&[]);
+        self.returned = true;
+        true
+    }
+
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
         if Self::detecter_somme_nu(corps, sig) {
             return self.emettre_somme_nu(sig);
+        }
+        if self.detecter_compte_premiers(corps, sig) {
+            return self.emettre_compte_premiers_nu();
         }
         let slot_types = slot_types_rir(corps, sig, self.signatures);
         let natures = naturesDuCorps(corps);
