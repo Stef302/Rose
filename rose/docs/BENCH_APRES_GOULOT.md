@@ -214,3 +214,31 @@ natif de `est_premier` ne coûtait que 1,48 ms. Détails : `JIT_PREMIERS.md`.
 **Mur restant** : D5 chaîne ×237 et D6 liste ×210 — ces programmes ont des
 opérations sur types non numériques dans le principal, hors sous-ensemble JIT
 actuel, donc toujours interprétés. Constat daté, pas consigne.
+
+---
+
+## Addendum — après JIT types non numériques (18/11, 20:05Z)
+
+Binaire `8383468b745439c6993b1553bb7c960a40844a42494af9f91c40017b61c00950`.
+2 salves A/A indépendantes (9 échantillons, c19 et c15).
+
+| # | Domaine | Avant | Après (c19 / c15) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,58 | 11,70 / 11,51 | 0,92 / 0,90 ✅ |
+| 2 | Boucle 1..10⁶ | 1,290 | 1,293 / 1,293 | 5,01 / 4,97 |
+| 3 | Premiers < 50 000 | 1,481 | 1,477 / 1,481 | 1,48 |
+| 4 | Factorielle 5 000 | 1,45 | 1,386 / 1,386 | **0,21** ✅ |
+| 4b | PGCD 1 000 chiffres | 6,73 | 6,733 / 6,722 | 45,6 / 44,8 |
+| 5 | Chaîne 20 000 car. | 3,33 | **0,941 / 0,929** | **65,6 / 63,9** |
+| 6 | Liste 100 000 entiers | 38,75 | **2,146 / 2,155** | **11,7** |
+| 7 | Table 3 000 clés | 1,377 | 1,357 / 1,355 | 14,3 / 14,0 |
+| 8 | E/S 10 Mo | 5,47 | 5,09 / 4,86 (bruit) | 1,01 / 1,00 ≈ |
+
+**Toujours 2 victoires nettes + 1 au niveau de Rust**, mais le mur est tombé :
+D5 ×237 → ×64 (3,56×) et D6 ×212 → ×11,7 (18,1×). Diagnostic décisif : le
+dispatch RIR interprété dominait (58 % de D5) ; une boucle vide JIT coûte
+0,024 ms contre 2,18 ms interprétée (×91). Extension du JIT avec délégués
+runtime et handles de `Valeur`. Détails : `JIT_TYPES_NON_NUM.md`.
+
+**Écarts résiduels** : PGCD ×45, chaîne ×64, table ×14, liste ×11,7, boucle
+×5,0, premiers ×1,48. Constat daté, pas consigne.
