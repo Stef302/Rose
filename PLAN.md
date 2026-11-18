@@ -565,3 +565,17 @@ Rich est installé (`~/.local/lib/python3.12/site-packages/rich`). CPython n'a p
 | N1 | **trame unique** (goulot #1) | `rose/src/{interp,rir}.rs`, `rose/docs/TRAME_UNIQUE.md` | ratio V30/V0 ≤ 1,1 (aujourd'hui 8,2) |
 
 C'est la porte de vitesse architecturale: traiter la cause, pas les symptômes.
+
+**Bilan vague 14 (18/11, 15:30Z)** — tout commité et poussé jusqu'à `0935cee`:
+- Goulot #1 **FERMÉ** (`TRAME_UNIQUE.md`): ratios V30/V0 7,958→0,995 (v5), 8,337→0,993 (v7), 6,188→1,015 (v8). Re-mesuré indépendamment c15+c19. Porte ≤1,1 atteinte.
+- `BENCH_APRES_GOULOT.md`: 2 salves A/A 9 échantillons c19, binaire `ce2188...`. Rose bat Rust sur **2/9 domaines** (fib35 0,91×, fact5000 0,23×). Gains vs 12:48Z: table ×29,7, liste ×6,2, fib ×4,4, chaîne ×2,3. Reste: chaîne 439×, liste 207×, table 67×, E/S 2,85×.
+- Tous travaux d'architecture intégrés: A2 RIR slots (5,59× récursion), L1 inline valeurs (1,807× table), L3 pont wasm (2,375×), N1 trame unique.
+- Correctifs d'exactitude: cache de slot (`11%11=0`), bug G2 attribué honnêtement.
+
+## Vague 15 (18/11) — goulot #2 chaîne
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| C1 | chaîne O(1) (append en place / rope) | `rose/src/{interp,run}.rs`, `rose/docs/CHAINE_O1.md` | domaine 5 < 1,0 ms (aujourd'hui 6,16 ms) |
+
+⚠ `interp.rs`/`run.rs` sont EXCLUSIFS à C1 pendant son chantier — ne pas éditer ni rebuilder ces fichiers ailleurs.
