@@ -296,3 +296,30 @@ niveau** (boucle, E/S). Premiers : 1,479 → 0,854 ms (×1,73), Rose bat Rust
 de 15 % **dans la même salve sur les deux cœurs**, sans changement d'algorithme
 (toujours division d'essai ; 6 `udiv` supprimés par produits magiques).
 Détails : `JIT_PREMIERS_BAT.md`. Constat daté, pas consigne.
+
+---
+
+## Addendum — table sous JIT (18/11, 21:30Z)
+
+Binaire `e89f430fd76fb9a4ae01f4a8c0dd794442758770ae39166dc03e275cf3219fdd`.
+2 salves A/A indépendantes (9 échantillons, c19 et c15).
+
+| # | Domaine | Avant | Après (c19 / c15) | Ratio Rust |
+|---|---|---:|---:|---:|
+| 1 | `fib(35)` | 11,65 | 11,60 / 11,62 | 0,91 ✅ |
+| 2 | Boucle 1..10⁶ | 0,259 | 0,259 / 0,258 | 1,00 / 0,98 ≈ |
+| 3 | Premiers < 50 000 | 0,854 | 0,853 / 0,853 | 0,85 ✅ |
+| 4 | Factorielle 5 000 | 1,43 | 1,43 / 1,44 | 0,22 ✅ |
+| 4b | PGCD 1 000 chiffres | 6,73 | 6,71 / 6,71 | 45,5 |
+| 5 | Chaîne 20 000 car. | 0,93 | 0,94 / 0,93 | 64,5 / 65,0 |
+| 6 | Liste 100 000 entiers | 2,15 | 2,16 / 2,18 | 11,4 / 11,5 |
+| 7 | Table 3 000 clés | 1,36 | **0,277 / 0,276** | **2,93 / 2,88** |
+| 8 | E/S 10 Mo | ~5,0 | 4,83 / 4,95 (bruit) | 1,00 / 1,01 ≈ |
+
+**3 victoires + 2 au niveau conservées.** Table : 1,36 → 0,277 ms (×5,0),
+écart Rust 14,5 → 2,9. Prémisse corrigée : le principal n'était **jamais**
+compilé en natif (`regions=0`, dump vide) ; `NatureSlot::Table` + 3 helpers
+runtime le font passer sous JIT. Rust reste devant (×2,9 assumé). Résidu
+identifié par instrumentation : contrôle d'overflow des compteurs (~12
+instructions/incrément) — même goulot que H1 avait résolu sur `somme`.
+Détails : `JIT_TABLE_BAT.md`. Constat daté, pas consigne.
