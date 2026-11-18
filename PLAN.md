@@ -454,3 +454,16 @@ Cinq agents sur les derniers points ouverts, fichiers distincts :
 | F5 | **contrôle Windows** | `rose/docs/VERIF_WINDOWS.md` | md5/ressources re-vérifiés, limites documentées |
 
 ⚠ F4 est la seule action de publication réelle: compte Stef302 vérifié avant, SHA `c7b2bf3c…`, aucun autre asset touché.
+
+## Vague 7 (18/11) — complétude du langage (utilitaires, jardins, comparaisons, G4)
+
+Cinq agents, fichiers distincts, pour répondre à la demande d'un langage COMPLET (pas seulement un pont vers C) :
+
+| Agent | Étape | Fichiers possédés | Porte |
+|---|---|---|---|
+| G1 | **utilitaire C→wasm Rose** | `scripts/rose-wasm-lib.sh`, `rose/docs/WASM_LIB_UTILITY.md` | une commande produit wasm + déclarations Rose, 2 démos |
+| G2 | **bench comparatif** | `rose/docs/BENCH_COMPARATIF.md` | Rose vs Rust pur vs Python, expérience 40% en jardins |
+| G3 | **auto-hébergement G4** | `compilateur/emetteur_elf.rose`, `rose/docs/AUTOHOST_G4.md` | ELF émis par le compilateur Rose, exécuté |
+| G4 | **jardins 1re classe** | `jardins/`, `scripts/rose-jardin.sh`, `rose/docs/JARDINS.md` | catalogue + utilitaire + jardin de démo vérifié |
+
+Rappel: les jardins sont du Rose PUR, jamais du Rust. GMP jamais dépendance. Mesures A/A/A, constats datés.
