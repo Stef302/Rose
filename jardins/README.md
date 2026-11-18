@@ -21,6 +21,7 @@ symboles et le calcul entier exact de Rose.
 | [`premiers.rose`](premiers.rose) | nombres premiers, facteurs, pgcd, sommes | `est_premier`, `nb_premiers_inferieurs`, `prochain_premier`, `facteurs_premiers`, `pgcd_jardin`, `somme_premiers` | `importer "jardins/premiers.rose"` |
 | [`hachage.rose`](hachage.rose) | codes de caractères, checksum, hachage djb2 exact et modéré | `codes_caracteres`, `somme_caracteres`, `hachage_djb2`, `hachage_djb2_mod` | `importer "jardins/hachage.rose"` |
 | [`texte.rose`](texte.rose) | rendu texte inspiré de Rich, en Rose pur (panneau, tableau, règle) — **sans Python** | `panneau`, `tableau_simple`, `barre`, `motif_repetit`, `ajuster` | `importer "jardins/texte.rose"` |
+| [`gui.rose`](gui.rose) | fenêtres et widgets « comme tkinter », en Rose pur : `rendre` produit un HTML autonome (le navigateur est l'hôte du rendu, **aucune fenêtre Os n'est ouverte**) | `fenetre`, `bouton`, `champ`, `etiquette`, `case`, `liste`, `ajouter`, `rendre`, `evenement`, `lier_evenement`, `grille`, `empiler`, `cadrer`, `compter_widgets`, `compter_actions` | `importer "jardins/gui.rose"` |
 
 Les tests vivent dans `jardins/tests/` et importent le jardin au lieu d'en
 copier le corps : `jardins/tests/premiers.rose` est passé de 121 à 72 lignes

@@ -1,0 +1,55 @@
+# jardins/tests/gui_demo.rose — DÉMO du jardin `gui` (programme, pas un jardin).
+#
+# Exécution :
+#     ./rose/rose jardins/tests/gui_demo.rose
+#
+# Construit une fenêtre « Bonjour Rose » avec une étiquette, un champ et un
+# bouton « OK », lie trois événements, puis produit le document HTML complet
+# et une REÇUE déterministe (comparable octet pour octet à un littéral).
+#
+# Aucune dépendance : ni Rust, ni Python, ni navigateur au moment de
+# l'exécution Rose. Le HTML produit s'ouvre dans un navigateur si on le
+# souhaite — le navigateur est l'hôte du rendu, pas une dépendance du jardin.
+
+importer "jardins/gui.rose"
+importer "jardins/hachage.rose"
+
+$f = fenetre("Bonjour Rose", 360, 180)
+cadrer($f, 12)
+
+$t = etiquette("Saisissez votre nom :")
+ajouter($f, $t, 16, 20)
+
+$c = champ("Nom", "Rose")
+ajouter($f, $c, 16, 48)
+
+$b = bouton("OK", 90)
+ajouter($f, $b, 16, 86)
+
+lier_evenement($f, "clic", "bouton", "b2", "dire bonjour")
+lier_evenement($f, "saisie", "champ", "c1", "memoriser le nom")
+lier_evenement($f, "fermeture", "fenetre", "f0", "quitter")
+
+$html = rendre($f)
+
+>> $html
+
+$widgets = compter_widgets($f)
+$actions = compter_actions($f)
+$par_nom = evenement($f, "clic")
+$n_clic = entier(chaine($par_nom["n"]))
+$recu = "GUI-DEMO | titre=Bonjour Rose | widgets=" + chaine($widgets)
+  + " | actions=" + chaine($actions) + " | clic=" + chaine($n_clic)
+  + " | octets=" + chaine(longueur($html))
+  + " | djb2mod=" + chaine(hachage_djb2_mod($html, 1000000007))
+
+# REÇUE ATTENDUE — littéral déterministe, comparé octet pour octet.
+$attendu = "GUI-DEMO | titre=Bonjour Rose | widgets=3 | actions=3 | clic=1 | octets=2139 | djb2mod=425427703"
+
+si ($recu == $attendu) {
+  >> "✓ " + $recu
+} sinon {
+  >> "✗ INCONFORME"
+  >> "  attendu : " + $attendu
+  >> "  reçu    : " + $recu
+}

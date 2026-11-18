@@ -1,0 +1,390 @@
+# jardins/gui.rose — modèles de fenêtres et de widgets, en ROSE PUR.
+#
+# ⚠ CE FICHIER EST UNE BIBLIOTHÈQUE (un « jardin »), pas un programme :
+# il ne s'exécute pas seul. On le charge avec :
+#
+#     importer "jardins/gui.rose"
+#
+# Aucune dépendance : ni Rust, ni C, ni wasm, ni FFI, ni Python, ni
+# navigateur obligatoire à l'exécution du code Rose. Tout est calculé par
+# le moteur Rose, avec ses chaînes Unicode et ses tables ordonnées.
+#
+# ── CE QUE CE JARDIN PRODUIT, ET CE QU'IL NE FAIT PAS ────────────────────────
+# `rendre(f)` renvoie un DOCUMENT HTML AUTONOME (CSS + JS intégrés). C'est une
+# vraie GUI interactive, mais elle s'affiche dans un NAVIGATEUR : le navigateur
+# est l'hôte du rendu. Ce jardin n'ouvre AUCUNE fenêtre Os et ne lance AUCUN
+# processus : il n'a aucun primitive system/exec et n'en demande aucune.
+# Voir rose/docs/GUI_SANS_DEPENDANCE.md pour le choix de rendu et ses limites.
+#
+# ── MODÈLE DE DONNÉES ───────────────────────────────────────────────────────
+# Une fenêtre est une table Rose. Un widget est une table Rose. Les champs
+# sont stockés sous forme de CHAÎNES (même les nombres) : une valeur lue dans
+# une table a le type dynamique `?` en Rose, donc on la convertit avec
+# `chaine(...)` à la lecture et `chaine(entier)` à l'écriture. Les widgets
+# sont rangés dans la table "widgets" sous des clés "0", "1", … ; les
+# événements sont une table d'actions indexée de la même façon.
+
+# ── _widget(genre, label, largeur) : constructeur interne ───────────────────
+# Tous les widgets ont les MÊMES clés : le rendu n'a aucun test de présence.
+fn _widget(genre: chaine, label: chaine, largeur: entier) -> table {
+  $w = table()
+  inserer($w, "type", genre)
+  inserer($w, "label", label)
+  inserer($w, "valeur", "")
+  inserer($w, "coche", "0")
+  inserer($w, "choix", "")
+  inserer($w, "nchoix", "0")
+  inserer($w, "selection", "0")
+  inserer($w, "largeur", chaine(largeur))
+  inserer($w, "x", "0")
+  inserer($w, "y", "0")
+  inserer($w, "id", "-1")
+  retour $w
+}
+
+# ── fenetre(titre, largeur, hauteur) -> table ───────────────────────────────
+# Crée une fenêtre vide. `widgets` et `evenements` sont des tables ; `actions`
+# est la liste plate des liaisons d'événements, dans l'ordre d'enregistrement.
+fn fenetre(titre: chaine, largeur: entier, hauteur: entier) -> table {
+  $f = table()
+  inserer($f, "titre", titre)
+  inserer($f, "largeur", chaine(largeur))
+  inserer($f, "hauteur", chaine(hauteur))
+  inserer($f, "widgets", table())
+  inserer($f, "nwidgets", "0")
+  inserer($f, "evenements", table())
+  inserer($f, "actions", table())
+  inserer($f, "nactions", "0")
+  inserer($f, "marge", "0")
+  retour $f
+}
+
+# ── bouton(label, largeur) -> table ─────────────────────────────────────────
+fn bouton(label: chaine, largeur: entier) -> table {
+  retour _widget("bouton", label, largeur)
+}
+
+# ── champ(label, valeur) -> table ───────────────────────────────────────────
+fn champ(label: chaine, valeur: chaine) -> table {
+  $w = _widget("champ", label, 180)
+  inserer($w, "valeur", valeur)
+  retour $w
+}
+
+# ── etiquette(texte) -> table ───────────────────────────────────────────────
+fn etiquette(texte: chaine) -> table {
+  retour _widget("etiquette", texte, 0)
+}
+
+# ── case(a_cocher, texte) -> table ──────────────────────────────────────────
+# Le booléen est stocké sous "1"/"0" pour rester lisible après une lecture
+# dans une table (type dynamique).
+fn case(a_cocher: booleen, texte: chaine) -> table {
+  $w = _widget("case", texte, 0)
+  si (a_cocher) { inserer($w, "coche", "1") }
+  retour $w
+}
+
+# ── liste(choix, selection) -> table ────────────────────────────────────────
+# `choix` est une liste<chaine> ; `selection` est un INDICE (0-based).
+# La liste est sérialisée en une chaîne séparée par '|' (voir _choix_chaine).
+fn liste(choix: liste<chaine>, selection: entier) -> table {
+  $w = _widget("liste", "", 160)
+  inserer($w, "choix", _choix_chaine(choix))
+  inserer($w, "nchoix", chaine(longueur(choix)))
+  inserer($w, "selection", chaine(selection))
+  retour $w
+}
+
+# ── _choix_chaine(choix) : "a|b|c" (séparateur '|', code 124) ───────────────
+fn _choix_chaine(choix: liste<chaine>) -> chaine {
+  $s = ""
+  $n = longueur(choix)
+  $i = 0
+  tant_que ($i < $n) {
+    $s = $s + choix[$i]
+    si ($i + 1 < $n) { $s = $s + "|" }
+    $i = $i + 1
+  }
+  retour $s
+}
+
+# ── ajouter(fenetre, widget, x, y) -> table ─────────────────────────────────
+# Place le widget et lui attribue un identifiant unique. Renvoie le widget.
+fn ajouter(fenetre: table, widget: table, x: entier, y: entier) -> table {
+  $id = entier(chaine($fenetre["nwidgets"]))
+  inserer($widget, "id", chaine($id))
+  inserer($widget, "x", chaine(x))
+  inserer($widget, "y", chaine(y))
+  $widgets = $fenetre["widgets"]
+  inserer($widgets, chaine($id), $widget)
+  inserer($fenetre, "nwidgets", chaine($id + 1))
+  retour $widget
+}
+
+# ── compter_widgets(fenetre) -> entier ──────────────────────────────────────
+fn compter_widgets(fenetre: table) -> entier {
+  retour entier(chaine($fenetre["nwidgets"]))
+}
+
+# ── compter_actions(fenetre) -> entier ──────────────────────────────────────
+fn compter_actions(fenetre: table) -> entier {
+  retour entier(chaine($fenetre["nactions"]))
+}
+
+# ── lier_evenement(fenetre, nom, genre, cible, action) ──────────────────────
+# Enregistre une action. `nom` est le nom de l'événement (clic, saisie,
+# fermeture, ou tout autre nom) ; `genre` et `cible` décrivent le widget ;
+# `action` est une étiquette lisible. L'action est rangée à la fois dans la
+# table par nom (consultable par `evenement`) et dans la liste plate (rendue
+# en HTML par `rendre`).
+fn lier_evenement(fenetre: table, nom: chaine, genre: chaine, cible: chaine, action: chaine) {
+  $tout = $fenetre["evenements"]
+  si (non cle_existe($tout, nom)) {
+    $nouveau = table()
+    inserer($nouveau, "n", "0")
+    inserer($tout, nom, $nouveau)
+  }
+  $par_nom = $tout[nom]
+  $n = entier(chaine($par_nom["n"]))
+  $a = table()
+  inserer($a, "genre", genre)
+  inserer($a, "cible", cible)
+  inserer($a, "action", action)
+  inserer($par_nom, chaine($n), $a)
+  inserer($par_nom, "n", chaine($n + 1))
+  $actions = $fenetre["actions"]
+  $na = entier(chaine($fenetre["nactions"]))
+  inserer($actions, chaine($na), $a)
+  inserer($fenetre, "nactions", chaine($na + 1))
+}
+
+# ── evenement(fenetre, nom) -> table ────────────────────────────────────────
+# Renvoie la TABLE DES ACTIONS de l'événement `nom` (table vide si aucun
+# action n'a été liée). Clés : "n" (nombre) et "0", "1", … (tables d'actions
+# avec genre / cible / action). Crée l'entrée si elle n'existe pas encore.
+fn evenement(fenetre: table, nom: chaine) -> table {
+  $tout = $fenetre["evenements"]
+  si (non cle_existe($tout, nom)) {
+    $nouveau = table()
+    inserer($nouveau, "n", "0")
+    inserer($tout, nom, $nouveau)
+  }
+  $source = $tout[nom]
+  $resultat = table()
+  inserer($resultat, "nom", nom)
+  $n = entier(chaine($source["n"]))
+  inserer($resultat, "n", chaine($n))
+  $i = 0
+  tant_que ($i < $n) {
+    inserer($resultat, chaine($i), $source[chaine($i)])
+    $i = $i + 1
+  }
+  retour $resultat
+}
+
+# ── grille(fenetre, colonnes, largeur_case, hauteur_case) ───────────────────
+# Remet tous les widgets sur une grille : x = (i % colonnes) * largeur_case,
+# y = (i div colonnes) * hauteur_case. colonnes < 1 est ramené à 1.
+fn grille(fenetre: table, colonnes: entier, largeur_case: entier, hauteur_case: entier) {
+  $col = colonnes
+  si ($col < 1) { $col = 1 }
+  $widgets = $fenetre["widgets"]
+  $n = entier(chaine($fenetre["nwidgets"]))
+  $i = 0
+  tant_que ($i < $n) {
+    $w = $widgets[chaine($i)]
+    inserer($w, "x", chaine(($i % $col) * largeur_case))
+    inserer($w, "y", chaine(($i div $col) * hauteur_case))
+    $i = $i + 1
+  }
+}
+
+# ── empiler(fenetre, ecart) ─────────────────────────────────────────────────
+# Empile les widgets verticalement : x = 0, y = i * ecart.
+fn empiler(fenetre: table, ecart: entier) {
+  $widgets = $fenetre["widgets"]
+  $n = entier(chaine($fenetre["nwidgets"]))
+  $i = 0
+  tant_que ($i < $n) {
+    $w = $widgets[chaine($i)]
+    inserer($w, "x", "0")
+    inserer($w, "y", chaine($i * ecart))
+    $i = $i + 1
+  }
+}
+
+# ── cadrer(fenetre, marge) ──────────────────────────────────────────────────
+# Fixe la marge intérieure, en pixels, utilisée par `rendre`.
+fn cadrer(fenetre: table, marge: entier) {
+  $m = marge
+  si ($m < 0) { $m = 0 }
+  inserer($fenetre, "marge", chaine($m))
+}
+
+# ── echapper(s) : échappement HTML (& < > " ') ─────────────────────────────
+# Caractère par caractère : `sous_chaine` compte les CARACTÈRES Unicode.
+fn echapper(s: chaine) -> chaine {
+  $out = ""
+  $n = longueur(s)
+  $i = 0
+  tant_que ($i < $n) {
+    $c = sous_chaine(s, $i, $i + 1)
+    $o = ordre($c)
+    si ($o == 38) { $out = $out + "&amp;" }
+    sinon si ($o == 60) { $out = $out + "&lt;" }
+    sinon si ($o == 62) { $out = $out + "&gt;" }
+    sinon si ($o == 34) { $out = $out + "&quot;" }
+    sinon si ($o == 39) { $out = $out + "&#39;" }
+    sinon { $out = $out + $c }
+    $i = $i + 1
+  }
+  retour $out
+}
+
+# ── _indice_barre(s, debut) : prochain '|' (124), ou longueur(s) ────────────
+fn _indice_barre(s: chaine, debut: entier) -> entier {
+  $n = longueur(s)
+  $i = debut
+  tant_que ($i < $n) {
+    si (ordre(sous_chaine(s, $i, $i + 1)) == 124) { retour $i }
+    $i = $i + 1
+  }
+  retour $n
+}
+
+# ── html_widget(w) : balise HTML d'un widget ────────────────────────────────
+# Paramètre SANS type : une valeur lue dans une table a le type dynamique `?`.
+fn html_widget(w) -> chaine {
+  $type = chaine(w["type"])
+  $label = chaine(w["label"])
+  $valeur = chaine(w["valeur"])
+  $x = chaine(w["x"])
+  $y = chaine(w["y"])
+  $lg = chaine(w["largeur"])
+  $id = chaine(w["id"])
+  $pos = " style=\"left:" + $x + "px;top:" + $y + "px"
+  si ($type == "bouton") { $pos = $pos + ";width:" + $lg + "px" }
+  $pos = $pos + "\""
+
+  si ($type == "bouton") {
+    retour "<button class=\"rose-bouton\" data-id=\"" + $id + "\"" + $pos + ">" + echapper($label) + "</button>\n"
+  }
+  si ($type == "champ") {
+    retour "<label class=\"rose-champ\"" + $pos + ">" + echapper($label)
+      + " <input type=\"text\" data-id=\"" + $id + "\" value=\""
+      + echapper($valeur) + "\"></label>\n"
+  }
+  si ($type == "etiquette") {
+    retour "<span class=\"rose-etiquette\"" + $pos + ">" + echapper($label) + "</span>\n"
+  }
+  si ($type == "case") {
+    $marque = ""
+    si (chaine(w["coche"]) == "1") { $marque = " checked" }
+    retour "<label class=\"rose-case\"" + $pos + "><input type=\"checkbox\""
+      + $marque + " data-id=\"" + $id + "\"> " + echapper($label) + "</label>\n"
+  }
+  si ($type == "liste") {
+    $s = "<select class=\"rose-liste\" data-id=\"" + $id + "\"" + $pos + ">"
+    $choix = chaine(w["choix"])
+    $nc = entier(chaine(w["nchoix"]))
+    $sel = entier(chaine(w["selection"]))
+    $j = 0
+    $deb = 0
+    tant_que ($j < $nc) {
+      $fin = _indice_barre($choix, $deb)
+      $opt = sous_chaine($choix, $deb, $fin)
+      $marque = ""
+      si ($j == $sel) { $marque = " selected" }
+      $s = $s + "<option value=\"" + echapper($opt) + "\"" + $marque + ">"
+        + echapper($opt) + "</option>"
+      $deb = $fin + 1
+      $j = $j + 1
+    }
+    retour $s + "</select>\n"
+  }
+  retour ""
+}
+
+# ── html_actions(f) : registre des liaisons, en HTML déclaratif ─────────────
+fn html_actions(f: table) -> chaine {
+  $s = ""
+  $n = entier(chaine($f["nactions"]))
+  $actions = $f["actions"]
+  $i = 0
+  tant_que ($i < $n) {
+    $a = $actions[chaine($i)]
+    $genre = chaine($a["genre"])
+    $cible = chaine($a["cible"])
+    $action = chaine($a["action"])
+    $s = $s + "<span class=\"rose-action\" data-genre=\"" + echapper($genre)
+      + "\" data-cible=\"" + echapper($cible) + "\">"
+      + echapper($action) + "</span>\n"
+    $i = $i + 1
+  }
+  retour $s
+}
+
+# ── feuille_de_style(f) -> chaine ───────────────────────────────────────────
+fn feuille_de_style(f: table) -> chaine {
+  $lg = chaine(f["largeur"])
+  $ht = chaine(f["hauteur"])
+  $m = chaine(f["marge"])
+  $s = "body{font-family:sans-serif;background:#eef2f7;margin:24px;color:#1b2340}\n"
+  $s = $s + ".rose-fenetre{position:relative;width:" + lg + "px;height:" + ht
+    + "px;padding:" + m + "px;background:#fff;border:1px solid #9aa8c0;"
+    + "border-radius:8px;box-shadow:0 6px 18px #0002;overflow:hidden}\n"
+  $s = $s + ".rose-barre{background:#2b3a67;color:#fff;padding:8px 12px;"
+    + "font-weight:bold;margin:-" + m + "px -" + m + "px 10px}\n"
+  $s = $s + ".rose-bouton{position:absolute;padding:6px 10px;cursor:pointer;"
+    + "background:#3a6bd8;color:#fff;border:0;border-radius:4px}\n"
+  $s = $s + ".rose-champ{position:absolute;font-size:14px}\n"
+  $s = $s + ".rose-etiquette,.rose-case{position:absolute;font-size:14px}\n"
+  $s = $s + ".rose-liste{position:absolute;padding:4px}\n"
+  $s = $s + ".rose-actions{margin-top:14px;font-size:12px;color:#556}\n"
+  $s = $s + ".rose-action{display:inline-block;background:#e6ecfa;border-radius:3px;"
+    + "padding:2px 6px;margin:2px}\n"
+  $s = $s + "#rose-statut{margin-top:12px;font-style:italic;color:#284}\n"
+  retour $s
+}
+
+# ── script(f) -> chaine ─────────────────────────────────────────────────────
+# JS GÉNÉRIQUE, sans dépendance : il ne fait que refléter les interactions
+# dans la zone de statut. Les actions enregistrées sont des données HTML
+# (voir html_actions), pas du code exécuté : aucun appel réseau, aucun eval.
+fn script(f: table) -> chaine {
+  $s = "function roseStatut(t){var e=document.getElementById('rose-statut');"
+  $s = $s + "if(e){e.textContent=t}}\n"
+  $s = $s + "document.addEventListener('click',function(e){var n=e.target;"
+  $s = $s + "if(n&&n.dataset&&n.dataset.id){roseStatut('clic -> '+n.dataset.id)}});\n"
+  $s = $s + "document.addEventListener('input',function(e){var n=e.target;"
+  $s = $s + "if(n&&n.dataset&&n.dataset.id){roseStatut('saisie -> '+n.dataset.id)}});\n"
+  $s = $s + "var roseAct=document.querySelectorAll('.rose-action');\n"
+  $s = $s + "roseStatut('pret : '+roseAct.length+' action(s) declaree(s)');\n"
+  retour $s
+}
+
+# ── rendre(fenetre) -> chaine ───────────────────────────────────────────────
+# Produit un document HTML COMPLET et AUTONOME (CSS + JS en ligne).
+# Aucune horodatage, aucun nombre aléatoire : la sortie est déterministe et
+# peut être comparée octet pour octet.
+fn rendre(fenetre: table) -> chaine {
+  $titre = chaine($fenetre["titre"])
+  $h = "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n"
+  $h = $h + "<title>" + echapper($titre) + "</title>\n"
+  $h = $h + "<style>\n" + feuille_de_style($fenetre) + "</style>\n</head>\n<body>\n"
+  $h = $h + "<div class=\"rose-fenetre\">\n"
+  $h = $h + "<div class=\"rose-barre\">" + echapper($titre) + "</div>\n"
+  $widgets = $fenetre["widgets"]
+  $n = entier(chaine($fenetre["nwidgets"]))
+  $i = 0
+  tant_que ($i < $n) {
+    $h = $h + html_widget($widgets[chaine($i)])
+    $i = $i + 1
+  }
+  $h = $h + "</div>\n<div class=\"rose-actions\">\n"
+  $h = $h + html_actions($fenetre)
+  $h = $h + "</div>\n<div id=\"rose-statut\"></div>\n"
+  $h = $h + "<script>\n" + script($fenetre) + "</script>\n</body>\n</html>\n"
+  retour $h
+}
