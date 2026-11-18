@@ -219,6 +219,12 @@ test result: ok.   0 passed; 0 failed   (doc-tests)
 5. **Le parallélisme d'agents** a modifié `jit.rs` pendant ce travail ; les builds
    défaut/autonome et tous les tests ont été re-mesurés **après** la dernière modification
    de `jit.rs` (15:20). Re-mesurer si I1/J1 reprend la main.
+6. **M2 autonome — attribution** : le ✅ du tableau vient des 3 runs de l'orchestrateur
+   après K2. De mon côté, sur le binaire `/tmp/opencode/g2-rose-final` construit à 15:23,
+   la même commande n'a **pas complété en 3600 s** (fichiers de sortie vides, aucun
+   message d'erreur) — cohérent avec le ralentissement ×710 mesuré sur `fib(35)`. Je ne
+   revendique donc pas cette mesure comme mienne ; elle doit être re-jouée sur le binaire
+   exact validé par l'orchestrateur avant toute publication.
 
 ---
 

@@ -121,6 +121,21 @@ pub struct Fonction {
     /// ⚠ Index du bloc de types (pour `call_indirect`).
     #[allow(dead_code)]
     pub type_idx: u32,
+    // ═══════════════════════════════════════════════════════════════════
+    // ⚠⚠⚠ CACHE DE DÉCODAGE (architecture du pont, voir docs/ARCHI_WASM_PONT.md).
+    // Le corps était auparavant re-décodé (LEB128, blocs, tables) À CHAQUE
+    // APPEL : 5 décodages par appel xxHash, ~0,63 µs/appel mesuré (7,6 % du
+    // coût wasm). Ces champs sont remplis UNE SEULE FOIS dans `charger`, puis
+    // réutilisés tels quels par `appeler_index` / `executer`.
+    // ───────────────────────────────────────────────────────────────────
+    /// ⚠ Suite d'instructions pré-décodée (opcode + immédiats résolus).
+    pub code: Vec<InstrWasm>,
+    /// ⚠ Cibles de blocs pré-calculées (indices d'instructions).
+    pub blocs_info: Vec<InfoBloc>,
+    /// ⚠ Tables de sauts `br_table` pré-décodées.
+    pub tables_info: Vec<Vec<usize>>,
+    /// ⚠ Types des locales déclarées (après les paramètres), pré-décodés.
+    pub locales_types: Vec<TyWasm>,
 }
 
 /// ⚠ Une entrée de la table des fonctions (`call_indirect`).
@@ -151,13 +166,10 @@ pub struct InstanceWasm {
     pub globals: Vec<ValWasm>,
     /// ⚠ Profondeur maximale d'appels (garde-fou : pas de pile infinie).
     pub profondeur_max: usize,
-    /// ⚠ Longueur du corps en cours (cible d'un `br` vers la fonction).
-    corps_len: usize,
-    /// ⚠ PILE des blocs décodés : un niveau par fonction en cours d'exécution
-    /// (voir `decouper`). Le dernier niveau est celui du corps courant.
-    blocs: Vec<Vec<InfoBloc>>,
-    /// ⚠ PILE des tables de `br_table` (cibles + défaut en dernier).
-    tables: Vec<Vec<Vec<usize>>>,
+    // ⚠ Les anciennes piles `blocs`/`tables`/`corps_len` ont été SUPPRIMÉES :
+    // elles étaient empilées/dépilées (et CLONÉES) à chaque appel. Les cibles
+    // vivent désormais dans le cache immuable de `Fonction` et sont transmises
+    // à `executer` par référence. `corps_len` est dans `Frame` (un par appel).
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -359,7 +371,24 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
             Some(t) => t.clone(),
             None => return err(format!("type de fonction {ti} inconnu")),
         };
-        m.fonctions.push(Fonction { params: ps, resultats: rs, corps: corps_f, type_idx: *ti });
+        // ⚠⚠⚠ DÉCODAGE UNIQUE AU CHARGEMENT. On lit l'en-tête des locales
+        // (compte + type) puis on pré-décode le reste du corps. Tout est
+        // stocké dans la `Fonction` : plus aucun LEB128 ni allocation
+        // d'instructions pendant les 1000 appels suivants.
+        let mut l = Lecteur::neuf(&corps_f);
+        let nloc = l.uleb()? as usize;
+        let mut locales_types: Vec<TyWasm> = Vec::new();
+        for _ in 0..nloc {
+            let compte = l.uleb()? as usize;
+            let t = TyWasm::de(l.octet()?)?;
+            for _ in 0..compte { locales_types.push(t); }
+        }
+        let brut = l.octets(corps_f.len() - l.p)?;
+        let (code, blocs_info, tables_info) = decouper(brut)?;
+        m.fonctions.push(Fonction {
+            params: ps, resultats: rs, corps: corps_f, type_idx: *ti,
+            code, blocs_info, tables_info, locales_types,
+        });
     }
 
     Ok(m)
@@ -666,6 +695,10 @@ struct Frame {
     /// ⚠ Pile de contrôle : un `Bloc` par bloc englobant (cibles pré-calculées).
     blocs: Vec<Bloc>,
     pile: Vec<ValWasm>,
+    /// ⚠ Longueur du corps en cours (cible d'un `br` vers la fonction).
+    /// Était un champ unique sur `InstanceWasm`, écrasé par les appels
+    /// imbriqués ; un par frame est correct et sans état partagé.
+    corps_len: usize,
 }
 
 impl InstanceWasm {
@@ -676,8 +709,7 @@ impl InstanceWasm {
             memoire.resize((min as usize) * 65536, 0);
         }
         let globals: Vec<ValWasm> = module.globals.iter().map(|(_, _, v)| *v).collect();
-        let mut inst = InstanceWasm { module, memoire, globals, profondeur_max: 256, corps_len: 0,
-            blocs: Vec::new(), tables: Vec::new() };
+        let mut inst = InstanceWasm { module, memoire, globals, profondeur_max: 256 };
         // ⚠ Les données initiales et les tables de fonctions.
         let data: Vec<(u32, Vec<u8>)> = inst.module.data.clone();
         for (adresse, octets) in data {
@@ -723,38 +755,29 @@ impl InstanceWasm {
         if profondeur > self.profondeur_max {
             return err(format!("récursion wasm trop profonde (>{})", self.profondeur_max));
         }
-        let f = match self.module.fonctions.get(idx as usize) {
-            Some(f) => f.clone(),
+        // ⚠ On emprunte le module via un Arc local (incrément de refcount,
+        // pas de clone du corps). `f clone()` recopiait le `Vec<u8>` du corps
+        // à chaque appel — 5 allocations par appel xxHash.
+        let module = Arc::clone(&self.module);
+        let f = match module.fonctions.get(idx as usize) {
+            Some(f) => f,
             None => return err(format!("fonction {idx} inexistante")),
         };
         if args.len() != f.params.len() {
             return err(format!("'{}' attend {} argument(s), {} reçu(s)",
                 nom_de_fonction(&self.module, idx), f.params.len(), args.len()));
         }
-        let mut frame = Frame { locales: Vec::new(), blocs: Vec::new(), pile: Vec::new() };
+        let mut frame = Frame { locales: Vec::with_capacity(f.params.len() + f.locales_types.len()),
+            blocs: Vec::new(), pile: Vec::new(), corps_len: f.code.len() };
         // ⚠ Locales : paramètres d'abord, puis les locales déclarées (zéro).
+        // `locales_types` est pré-décodé au chargement.
         for (i, t) in f.params.iter().enumerate() {
             frame.locales.push(convertir(args[i], *t));
         }
-        let mut l = Lecteur::neuf(&f.corps);
-        let nloc = l.uleb()? as usize;
-        for _ in 0..nloc {
-            let compte = l.uleb()? as usize;
-            let t = TyWasm::de(l.octet()?)?;
-            for _ in 0..compte { frame.locales.push(zero(t)); }
-        }
-        let brut = l.octets(f.corps.len() - l.p)?;
-        // ⚠ Découpage UNE FOIS : cibles des blocs, adresses des `else`/`end`.
-        let (code, blocs, tables) = decouper(brut)?;
-        self.corps_len = code.len();
-        // ⚠⚠⚠ Les blocs et tables sont EMPILÉS : une fonction appelée depuis
-        // ce corps a ses propres cibles et ne doit pas écraser celles de
-        // l'appelant (sinon le premier `br` après le retour saute ailleurs).
-        self.blocs.push(blocs);
-        self.tables.push(tables);
-        let r = self.executer(&code, &mut frame, profondeur, idx);
-        self.blocs.pop();
-        self.tables.pop();
+        for t in &f.locales_types { frame.locales.push(zero(*t)); }
+        // ⚠⚠⚠ PLUS DE `decouper` ICI : le code, les cibles de blocs et les
+        // tables viennent du CACHE immuable construit dans `charger`.
+        let r = self.executer(&f.code, &f.blocs_info, &f.tables_info, &mut frame, profondeur, idx);
         r?;
         // ⚠ Résultats : les derniers de la pile, dans l'ordre.
         let n = f.resultats.len();
@@ -790,7 +813,9 @@ impl InstanceWasm {
     }
 
     /// ⚠ La boucle d'exécution : un programme de pile avec sauts.
-    fn executer(&mut self, code: &[InstrWasm], frame: &mut Frame, profondeur: usize, _fn_idx: u32)
+    fn executer(&mut self, code: &[InstrWasm], blocs_info: &[InfoBloc],
+                tables_info: &[Vec<usize>], frame: &mut Frame,
+                profondeur: usize, _fn_idx: u32)
         -> Result<(), WasmErr>
     {
         // ⚠⚠⚠ LES NOMS SONT DIFFÉRENTS À DESSEIN : `imm`/`aux` sont les
@@ -914,8 +939,8 @@ impl InstanceWasm {
                     let genre = aux as u8;
                     let (na, nr) = (0, 0);
                     let ib = imm as usize;
-                    let info = match self.blocs.last().and_then(|v| v.get(ib)) {
-                        Some(i) => i.clone(),
+                    let info = match blocs_info.get(ib) {
+                        Some(i) => i,
                         None => return err(format!("bloc {ib} non décodé")),
                     };
                     if genre == 0x04 {
@@ -980,8 +1005,8 @@ impl InstanceWasm {
                 }
                 0x0E => {
                     // ⚠ `br_table` : table de sauts.
-                    let cibles = match self.tables.last().and_then(|v| v.get(aux as usize)) {
-                        Some(c) => c.clone(),
+                    let cibles = match tables_info.get(aux as usize) {
+                        Some(c) => c,
                         None => return err(format!("br_table {} non décodée", aux)),
                     };
                     let i = frame.pile.pop().ok_or_else(|| WasmErr("pile vide (br_table)".into()))?.as_i32();
@@ -1005,9 +1030,9 @@ impl InstanceWasm {
                 0x10 => {
                     // ⚠ `call idx` : appel direct.
                     let idx = imm as u32;
-                    let f = self.module.fonctions.get(idx as usize)
-                        .ok_or_else(|| WasmErr(format!("fonction {idx} inexistante")))?
-                        .clone();
+                    let module = Arc::clone(&self.module);
+                    let f = module.fonctions.get(idx as usize)
+                        .ok_or_else(|| WasmErr(format!("fonction {idx} inexistante")))?;
                     let mut args = Vec::new();
                     for t in f.params.iter().rev() {
                         let v = frame.pile.pop().ok_or_else(|| WasmErr("pile vide (call)".into()))?;
@@ -1136,14 +1161,31 @@ impl InstanceWasm {
                     // 49 pour `0x69`, et `g`/`d` imprimés valaient bien 7/7).
                     // Le calcul imbriqué dans `push` ne voyait pas les mêmes
                     // valeurs : bug d'optimisation, pas une formule fausse.
-                    let valeur = op_i32(op, g, d)?;
+                    let valeur = match op {
+                        0x6A => g.wrapping_add(d),
+                        0x6B => g.wrapping_sub(d),
+                        0x6C => g.wrapping_mul(d),
+                        0x71 => g & d,
+                        0x72 => g | d,
+                        0x73 => g ^ d,
+                        0x74 => g.wrapping_shl(d as u32 & 31),
+                        0x75 => g.wrapping_shr(d as u32 & 31),
+                        0x76 => ((g as u32) >> (d as u32 & 31)) as i32,
+                        _ => op_i32(op, g, d)?,
+                    };
                     frame.pile.push(ValWasm::I32(valeur));
                 }
                 // ── Arithmétique i64 (0x7C..0x8D) ──────────────────────
                 0x7C..=0x8D => {
                     let d = frame.pile.pop().ok_or_else(|| WasmErr("pile vide (i64)".into()))?.as_i64();
                     let g = frame.pile.pop().ok_or_else(|| WasmErr("pile vide (i64)".into()))?.as_i64();
-                    frame.pile.push(ValWasm::I64(op_i64(op, g, d)?));
+                    let valeur = match op {
+                        0x7C => g.wrapping_add(d), 0x7D => g.wrapping_sub(d),
+                        0x7E => g.wrapping_mul(d), 0x83 => g & d,
+                        0x84 => g | d, 0x85 => g ^ d,
+                        _ => op_i64(op, g, d)?,
+                    };
+                    frame.pile.push(ValWasm::I64(valeur));
                 }
                 // ── Arithmétique f32 ────────────────────────────────────
                 0x8B..=0x98 => {
@@ -1382,7 +1424,7 @@ impl InstanceWasm {
     }
 
     fn cible_saut(&self, frame: &Frame, n: usize) -> usize {
-        if n >= frame.blocs.len() { return self.corps_len; }
+        if n >= frame.blocs.len() { return frame.corps_len; }
         let b = &frame.blocs[frame.blocs.len() - 1 - n];
         let c = if b.op == 0x03 { b.debut } else { b.fin };
         std::hint::black_box(c)
