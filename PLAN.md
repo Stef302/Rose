@@ -425,3 +425,14 @@ Cinq agents sur les livrables finaux et l'audit :
 | D5 | **audit final QA** | `scripts/audit-final.sh`, `rose/docs/AUDIT_FINAL.md` | rapport factuel horodaté de toutes les portes |
 
 Même règle : orchestrateur seul sur `main.rs`/`lib.rs`/`Cargo.toml`/`PLAN.md`, preuve réelle, aucun commit d'agent, aucune publication GitHub.
+
+## Vague 5 (18/11) — écarts révélés par l'audit final
+
+L'audit sur le corpus élargi (99 fichiers) a trouvé 14 écarts au vérificateur et 1 à l'émetteur, masqués par les scripts précédents plus étroits. Deux agents ciblés :
+
+| Agent | Étape | Fichier possédé | Porte |
+|---|---|---|---|
+| E1 | vérificateur 85/99 → 99/99 | `compilateur/verifieur.rose` | 0 écart sur 99 fichiers |
+| E2 | émetteur 98/99 → 99/99 | `compilateur/emetteur.rose` | 0 écart SANS casser point fixe M4.5 ni 46/46 |
+
+⚠ Ces deux agents travaillent sur les fichiers M4.3/M4.4 : après livraison, re-vérifier le point fixe M4.5 (md5) et le corpus complet avant publication.
