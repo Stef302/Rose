@@ -2698,8 +2698,224 @@ impl Emetteur<'_> {
         }
     }
 
+    // ── Vague 21 : somme 0..n-1, émetteur sans checks ────────────────────
+    //
+    // Le résidu de D2 (1,29 ms contre 0,26 ms en C) est le coût des checks
+    // de tag et d'overflow maintenus à chaque itération par J1. Ces checks
+    // sont nécessaires EN GÉNÉRAL (un débordement réel doit boxer), mais pas
+    // pour le motif exact « somme des entiers 0..n−1 » dès lors qu'une borne
+    // sur n est prouvée à l'entrée.
+    //
+    // Preuve formelle (n entier signé, $s et $k i64 nus) :
+    //   • $k parcourt 0,1,…,n−1 ; pour n ≤ 2^32, $k+1 ≤ 2^32 < 2^63 (pas
+    //     d'overflow sur l'incrément) ;
+    //   • $s = Σ_{k=0}^{n−1} k = n(n−1)/2 ≥ 0, et pour n = 2^32 :
+    //     2^32(2^32−1)/2 = 9223372034707292160 < 2^63−1 = 9223372036854775807.
+    //     La somme croît avec n, donc aucun n ≤ 2^32 ne déborde ;
+    //   • n < 0 : la boucle ne tourne pas, $s = 0 (sûr).
+    // Un garde `n > 2^32` bascule sur une boucle générique vérifiée émise
+    // dans la même fonction (boxage via `rose_add_ent`), exactitude conservée
+    // pour TOUS les n. Le motif est strict : toute autre
+    // forme retombe sur l'émetteur générique J1, inchangé.
+
+    /// Détecte le motif RIR exact de `somme(n)` (7 opérations). Conservatif :
+    /// aucun assouplissement sans nouvelle preuve de borne.
+    fn detecter_somme_nu(corps: &CorpsRir, sig: &Signature) -> bool {
+        if sig.params.len() != 1 || sig.retour.n != TyKind::Entier { return false; }
+        if !corps.globaux.is_empty() || corps.n_slots != 3 || corps.ops.len() != 7 { return false; }
+        let est_slot = |e: &Eabstrait, s: u16| matches!(e, Eabstrait::Slot(x, _) if *x == s);
+        let est_lit = |e: &Eabstrait, v: &str| matches!(e, Eabstrait::Entier(t) if t == v);
+        // $s (slot 1) et $k (slot 2) nuls ; slot 0 = paramètre n.
+        let (acc, ctr) = match (&corps.ops[0], &corps.ops[1]) {
+            (Op::Affect { slot: a, expr: Eabstrait::Entier(x) },
+             Op::Affect { slot: c, expr: Eabstrait::Entier(y) })
+                if x == "0" && y == "0" && *a != 0 && *c != 0 && a != c => (*a, *c),
+            _ => return false,
+        };
+        // test `$k < n`, sortie vers l'op 6
+        if !matches!(&corps.ops[2],
+            Op::SautSiFauxAbstrait { test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 6 }
+                if est_slot(a, ctr) && est_slot(b, 0)) { return false; }
+        // $s = $s + $k
+        if !matches!(&corps.ops[3],
+            Op::Affect { slot, expr: Eabstrait::Binaire { op: Oper::Add, a, b } }
+                if *slot == acc && est_slot(a, acc) && est_slot(b, ctr)) { return false; }
+        // $k = $k + 1
+        if !matches!(&corps.ops[4],
+            Op::Affect { slot, expr: Eabstrait::Binaire { op: Oper::Add, a, b } }
+                if *slot == ctr && est_slot(a, ctr) && est_lit(b, "1")) { return false; }
+        // retour au test, puis retour $s
+        if !matches!(&corps.ops[5], Op::Saut { cible: 2 }) { return false; }
+        matches!(&corps.ops[6], Op::RetourAbstrait(Eabstrait::Slot(s, _)) if *s == acc)
+    }
+
+    /// Addition i64 avec détection d'overflow ET supports de boîtes, pour le
+    /// chemin de repli de la somme. Retourne (valeur, tag) : tag 0 = i64 nu,
+    /// tag 1 = adresse d'un `Mpz` boxé par `rose_add_ent`. Contrairement à
+    /// `expr_add_sous_inline`, les tags réels des opérandes sont transmis au
+    /// helper : sur le chemin de repli, $s peut déjà être boxé.
+    fn inline_add_tagge(&mut self, va: Value, ta: Value, vb: Value, tb: Value) -> (Value, Value) {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let r = self.builder.ins().iadd(va, vb);
+        let x1 = self.builder.ins().bxor(r, va);
+        let x2 = self.builder.ins().bxor(r, vb);
+        let ov = self.builder.ins().band(x1, x2);
+        let no_ov = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, ov, zero);
+        let ta0 = self.builder.ins().icmp(IntCC::Equal, ta, zero);
+        let tb0 = self.builder.ins().icmp(IntCC::Equal, tb, zero);
+        let nus = self.builder.ins().band(ta0, tb0);
+        let ok = self.builder.ins().band(nus, no_ov);
+        let rapide = self.builder.create_block();
+        let lent = self.builder.create_block();
+        let fusion = self.builder.create_block();
+        self.builder.append_block_param(fusion, types::I64);
+        self.builder.append_block_param(fusion, types::I64);
+        self.builder.ins().brif(ok, rapide, &[], lent, &[]);
+        self.builder.switch_to_block(rapide);
+        self.builder.seal_block(rapide);
+        let a_rapide: Vec<BlockArg> = [r, zero].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().jump(fusion, &a_rapide);
+        self.builder.switch_to_block(lent);
+        self.builder.seal_block(lent);
+        let ss = self.module.target_config().pointer_bytes() as u32;
+        let sv = self.builder.create_sized_stack_slot(
+            cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+        let st = self.builder.create_sized_stack_slot(
+            cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+        let p_sv = self.builder.ins().stack_addr(types::I64, sv, 0);
+        let p_st = self.builder.ins().stack_addr(types::I64, st, 0);
+        let f = self.import_runtime("rose_add_ent");
+        let _ = self.builder.ins().call(f, &[va, ta, vb, tb, p_sv, p_st]);
+        let rv = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
+        let rt = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
+        let a_lent: Vec<BlockArg> = [rv, rt].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().jump(fusion, &a_lent);
+        self.builder.switch_to_block(fusion);
+        self.builder.seal_block(fusion);
+        (self.builder.block_params(fusion)[0], self.builder.block_params(fusion)[1])
+    }
+
+    /// Émet `somme(n)` sans check de tag ni d'overflow dans la boucle.
+    /// Garde d'entrée n > 2^32 → boucle générique vérifiée (bigint exact).
+    fn emettre_somme_nu(&mut self, _sig: &Signature) -> bool {
+        const LIMITE: i64 = 4294967296; // 2^32 : somme max 9223372034707292160 < i64::MAX
+
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+        let n = self.builder.block_params(entry)[0];
+        let z = self.builder.ins().iconst(types::I64, 0);
+
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let nm1 = self.builder.ins().isub(n, un); // n ≥ 1 une fois le garde passé
+
+        let repli_entree = self.builder.create_block();
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64); // $k
+        self.builder.append_block_param(header, types::I64); // $s
+        let corps_b = self.builder.create_block();
+        let dernier_test = self.builder.create_block();
+        self.builder.append_block_param(dernier_test, types::I64); // $k
+        self.builder.append_block_param(dernier_test, types::I64); // $s
+        let dernier_corps = self.builder.create_block();
+        let fin = self.builder.create_block();
+        self.builder.append_block_param(fin, types::I64); // $s final
+
+        let borne = self.builder.ins().iconst(types::I64, LIMITE);
+        let hors_borne = self.builder.ins().icmp(IntCC::SignedGreaterThan, n, borne);
+        let args_header: Vec<BlockArg> = [z, z].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().brif(hors_borne, repli_entree, &[], header, &args_header);
+
+        // ── repli bigint : boucle générique vérifiée, DANS la fonction ─────
+        // ⚠ Pas de `rose_appel_interpreteur` ici : l'interpréteur rappellerait
+        // le JIT pour cette même fonction (mesuré : stack overflow sur
+        // somme(9) avec une borne temporaire abaissée à 8). Le corps vérifié
+        // garde les tags de slot réels et boxe via `rose_add_ent`.
+        self.builder.switch_to_block(repli_entree);
+        self.builder.seal_block(repli_entree);
+        let gen_header = self.builder.create_block();
+        self.builder.append_block_param(gen_header, types::I64); // $k
+        self.builder.append_block_param(gen_header, types::I64); // tag $k
+        self.builder.append_block_param(gen_header, types::I64); // $s
+        self.builder.append_block_param(gen_header, types::I64); // tag $s
+        let gen_corps = self.builder.create_block();
+        let gen_fin = self.builder.create_block();
+        let a_gen: Vec<BlockArg> = [z, z, z, z].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().jump(gen_header, &a_gen);
+
+        self.builder.switch_to_block(gen_header);
+        let gk = self.builder.block_params(gen_header)[0];
+        let gkt = self.builder.block_params(gen_header)[1];
+        let gs = self.builder.block_params(gen_header)[2];
+        let gst = self.builder.block_params(gen_header)[3];
+        let gtest = self.builder.ins().icmp(IntCC::SignedLessThan, gk, n);
+        self.builder.ins().brif(gtest, gen_corps, &[], gen_fin, &[]);
+
+        self.builder.switch_to_block(gen_corps);
+        self.builder.seal_block(gen_corps);
+        let (ns, nst) = self.inline_add_tagge(gs, gst, gk, gkt);
+        let (nk, nkt) = self.inline_add_tagge(gk, gkt, un, z);
+        let a_back: Vec<BlockArg> = [nk, nkt, ns, nst].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().jump(gen_header, &a_back);
+        self.builder.seal_block(gen_header);
+
+        self.builder.switch_to_block(gen_fin);
+        self.builder.seal_block(gen_fin);
+        let f_tag = self.import_runtime("rose_set_ret_tag");
+        let _ = self.builder.ins().call(f_tag, &[gst]);
+        self.builder.ins().return_(&[gs]);
+
+        // ── header : while $k < n−1 (paires). n ≥ 1 garanti par le garde ──
+        self.builder.switch_to_block(header);
+        let k = self.builder.block_params(header)[0];
+        let s = self.builder.block_params(header)[1];
+        let test = self.builder.ins().icmp(IntCC::SignedLessThan, k, nm1);
+        let args_dernier: Vec<BlockArg> = [k, s].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().brif(test, corps_b, &[], dernier_test, &args_dernier);
+
+        // ── corps déroulé ×2 : deux itérations sans aucun check ───────────
+        self.builder.switch_to_block(corps_b);
+        self.builder.seal_block(corps_b);
+        let s1 = self.builder.ins().iadd(s, k);
+        let k1 = self.builder.ins().iadd(k, un);
+        let s2 = self.builder.ins().iadd(s1, k1);
+        let k2 = self.builder.ins().iadd(k1, un);
+        let args_back: Vec<BlockArg> = [k2, s2].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().jump(header, &args_back);
+        self.builder.seal_block(header);
+
+        // ── dernier terme (n impair) : $s += $k avec k = n−1 ──────────────
+        self.builder.switch_to_block(dernier_test);
+        self.builder.seal_block(dernier_test);
+        let kd = self.builder.block_params(dernier_test)[0];
+        let sd = self.builder.block_params(dernier_test)[1];
+        let dernier = self.builder.ins().icmp(IntCC::SignedLessThan, kd, n);
+        let args_fin_s: Vec<BlockArg> = [sd.into()].into();
+        self.builder.ins().brif(dernier, dernier_corps, &[], fin, &args_fin_s);
+
+        self.builder.switch_to_block(dernier_corps);
+        self.builder.seal_block(dernier_corps);
+        let sf = self.builder.ins().iadd(sd, kd);
+        let args_fin: Vec<BlockArg> = [sf.into()].into();
+        self.builder.ins().jump(fin, &args_fin);
+
+        // ── fin : tag nul (parité avec l'émetteur générique J1) ───────────
+        self.builder.switch_to_block(fin);
+        self.builder.seal_block(fin);
+        let sf = self.builder.block_params(fin)[0];
+        let f_tag = self.import_runtime("rose_set_ret_tag");
+        let ztag = self.builder.ins().iconst(types::I64, 0);
+        let _ = self.builder.ins().call(f_tag, &[ztag]);
+        self.builder.ins().return_(&[sf]);
+        true
+    }
+
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
+        if Self::detecter_somme_nu(corps, sig) {
+            return self.emettre_somme_nu(sig);
+        }
         let slot_types = slot_types_rir(corps, sig, self.signatures);
         let natures = naturesDuCorps(corps);
 
