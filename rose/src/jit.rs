@@ -970,6 +970,7 @@ fn slot_types_rir(corps: &CorpsRir, sig: &Signature, prog: &HashMap<String, Sign
             match nat {
                 NatureSlot::Chaine => slot_types[i] = TyKind::Chaine,
                 NatureSlot::ListeEntiers => slot_types[i] = TyKind::Liste,
+                NatureSlot::Table => slot_types[i] = TyKind::Table,
                 _ => {}
             }
         }
@@ -1030,13 +1031,18 @@ fn est_affect_ast_natif(e: &Expr) -> bool {
 // exactement comme `slot_types_rir` le fait pour les types scalaires.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NatureSlot { Inconnu, Entier, Chaine, ListeEntiers }
+enum NatureSlot { Inconnu, Entier, Chaine, ListeEntiers, Table }
 
 fn nature_expr_ast(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Option<NatureSlot> {
     let slot_de = |n: &str| corps_noms.iter().position(|x| x == n).map(|i| i as usize);
     match e {
         Expr::ChaineLit(..) => Some(NatureSlot::Chaine),
         Expr::ListeVideTypee(..) => Some(NatureSlot::ListeEntiers),
+        // Vague 23 (D7) : `table()` crée une table native à handle, exactement
+        // comme `[]` crée une liste native. Le handle est alloué UNE FOIS à
+        // l'émission (hors boucle), puis transmis en registre aux helpers.
+        Expr::Appel { nom, args, .. } if nom == "table" && args.is_empty() =>
+            Some(NatureSlot::Table),
         Expr::Appel { nom, args, .. } if (nom == "longueur" || nom == "len") && args.len() == 1 => {
             Some(NatureSlot::Entier)
         }
@@ -1135,10 +1141,13 @@ fn expr_ast_jit(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Opti
         Expr::ListeVideTypee(TyKind::Entier, _) => Some(Some(NatureSlot::ListeEntiers)),
         Expr::Appel { nom, args, .. } if nom == "temps" && args.is_empty() =>
             Some(Some(NatureSlot::Entier)),
+        Expr::Appel { nom, args, .. } if nom == "table" && args.is_empty() =>
+            Some(Some(NatureSlot::Table)),
         Expr::Appel { nom, args, .. } if (nom == "longueur" || nom == "len") && args.len() == 1 => {
             match &args[0] {
                 Expr::Var(n, _) => slot(n).and_then(|i| match natures[i] {
-                    NatureSlot::Chaine | NatureSlot::ListeEntiers => Some(Some(NatureSlot::Entier)),
+                    NatureSlot::Chaine | NatureSlot::ListeEntiers | NatureSlot::Table =>
+                        Some(Some(NatureSlot::Entier)),
                     _ => None,
                 }),
                 _ => None,
@@ -1172,7 +1181,7 @@ fn expr_ast_jit(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Opti
             }
         }
         Expr::Var(n, _) => slot(n).and_then(|i| match natures[i] {
-            NatureSlot::Chaine | NatureSlot::ListeEntiers | NatureSlot::Entier =>
+            NatureSlot::Chaine | NatureSlot::ListeEntiers | NatureSlot::Entier | NatureSlot::Table =>
                 Some(Some(natures[i])),
             NatureSlot::Inconnu => None,
         }),
@@ -1195,6 +1204,97 @@ fn expr_peut_boxer(e: &Eabstrait) -> bool {
         Eabstrait::Neg(_) => true,
         Eabstrait::AppelRir { .. } => true,
         _ => false,
+    }
+}
+
+/// Vague 23 (D7) — expression AST dont on prouve STATIQUEMENT qu'elle rend un
+/// i64 nu (jamais de BigInt, jamais de handle). C'est la porte de la table
+/// native : clé et valeur sont ainsi transmises en registre au helper runtime,
+/// sans `Valeur` boxée ni recherche de slot par nom.
+///
+/// Trois formes seulement, toutes prouvables :
+///   * un compteur local prouvé par `slot_cle_nu_borne` : init bornée, pas
+///     `±petit littéral`, test de boucle `compteur < L` borné ;
+///   * un littéral entier ;
+///   * `compteur * petite_constante` (c ≤ 4095) sous la même borne — la valeur
+///     du compteur reste dans ±2^33, donc le produit tient en i64 sur toute
+///     la boucle (aucun débordement, aucun boxage).
+enum ValeurNu { Slot(u16), Litteral(i64), Produit(u16, i64) }
+
+/// Borne STRICTE : la valeur du slot reste dans ±2^33 sur toute l'exécution.
+/// `slot_entier_nu_statique` seul ne suffit pas ici : il accepte un pas
+/// `slot ± 2^62` qui boxerait au second tour, et notre helper recevrait un
+/// pointeur Mpz comme i64. On exige donc : init borné, pas ±petit littéral, et
+/// un test de boucle `slot < L` avec L borné. Au-delà : repli interprété.
+fn slot_cle_nu_borne(corps: &CorpsRir, slot: u16) -> bool {
+    const LIM: i64 = 1i64 << 33;
+    let mut init = false;
+    for op in &corps.ops {
+        match op {
+            Op::Affect { slot: s, expr: Eabstrait::Entier(t) } if *s == slot => {
+                match t.parse::<i64>() { Ok(v) if (-LIM..=LIM).contains(&v) => init = true, _ => return false }
+            }
+            Op::Affect { slot: s, expr: Eabstrait::Binaire { op: Oper::Add | Oper::Sub, a, b } }
+                if *s == slot => {
+                if !matches!(&**a, Eabstrait::Slot(x, _) if *x == slot) { return false; }
+                let Eabstrait::Entier(t) = &**b else { return false; };
+                match t.parse::<i64>() { Ok(d) if (-4095..=4095).contains(&d) => {}, _ => return false }
+            }
+            Op::Affect { slot: s, .. } | Op::AffectAst { slot: s, .. } if *s == slot => return false,
+            _ => {}
+        }
+    }
+    if !init { return false; }
+    corps.ops.iter().any(|op| {
+        if let Op::SautSiFauxAbstrait { test: Eabstrait::Binaire { op: Oper::Lt, a, b }, .. } = op {
+            if let (Eabstrait::Slot(s, _), Eabstrait::Entier(t)) = (&**a, &**b) {
+                return *s == slot && t.parse::<i64>().map_or(false, |l| (-LIM..=LIM).contains(&l));
+            }
+        }
+        false
+    })
+}
+
+fn valeur_nue_ast(corps: &CorpsRir, e: &Expr) -> Option<ValeurNu> {
+    match e {
+        Expr::Var(v, _) => {
+            let s = corps.noms.iter().position(|n| n == v)? as u16;
+            if slot_cle_nu_borne(corps, s) { Some(ValeurNu::Slot(s)) } else { None }
+        }
+        Expr::Litteral { texte, flott: false, rationnel: false, neg, .. } => {
+            let mut x: i64 = texte.parse().ok()?;
+            if *neg { x = x.checked_neg()?; }
+            Some(ValeurNu::Litteral(x))
+        }
+        Expr::Binaire { op, a, b, .. } if op == "*" => {
+            let (var, lit) = match (&**a, &**b) {
+                (Expr::Var(..), Expr::Litteral { .. }) => (a.as_ref(), b.as_ref()),
+                (Expr::Litteral { .. }, Expr::Var(..)) => (b.as_ref(), a.as_ref()),
+                _ => return None,
+            };
+            let Expr::Var(v, _) = var else { return None; };
+            let s = corps.noms.iter().position(|n| n == v)? as u16;
+            if !slot_cle_nu_borne(corps, s) { return None; }
+            let Expr::Litteral { texte, flott: false, rationnel: false, neg, .. } = lit
+                else { return None; };
+            let mut c: i64 = texte.parse().ok()?;
+            if *neg { c = c.checked_neg()?; }
+            if c == 0 || c > 4095 { return None; }
+            let mut borne: Option<i64> = None;
+            for o in &corps.ops {
+                if let Op::SautSiFauxAbstrait {
+                    test: Eabstrait::Binaire { op: Oper::Lt, a: x, b: y }, .. } = o {
+                    if let (Eabstrait::Slot(ss, _), Eabstrait::Entier(t)) = (&**x, &**y) {
+                        if *ss == s { borne = t.parse::<i64>().ok(); }
+                    }
+                }
+            }
+            let l = borne?;
+            if l < 0 { return None; }
+            if l.checked_mul(c).map_or(true, |m| m > i64::MAX / 2) { return None; }
+            Some(ValeurNu::Produit(s, c))
+        }
+        _ => None,
     }
 }
 
@@ -1225,19 +1325,35 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
             Op::SautSiFaux { test, .. } => {
                 if !principal_sans_boxage { return false; }
                 let mut ok = false;
-                if let Expr::Binaire { op, a, b, .. } = test {
-                    if op == "<" {
-                        if let (Expr::Var(na, _), Expr::Appel { nom, args, .. }) =
-                            (a.as_ref(), b.as_ref())
-                        {
-                            if (nom == "longueur" || nom == "len") && args.len() == 1 {
-                                if let Expr::Var(nl, _) = &args[0] {
-                                    let i = corps.noms.iter().position(|x| x == na);
-                                    let l = corps.noms.iter().position(|x| x == nl);
-                                    if let (Some(i), Some(l)) = (i, l) {
-                                        if natures.get(i) == Some(&NatureSlot::Entier)
-                                            && natures.get(l) == Some(&NatureSlot::ListeEntiers)
-                                        { ok = true; }
+                // vague 23 (D7) : `si cle_existe($t, $k) { … }`.
+                if let Expr::Appel { nom, args, .. } = test {
+                    if nom == "cle_existe" && args.len() == 2 {
+                        if let (Expr::Var(tn, _), Expr::Var(kn, _)) = (&args[0], &args[1]) {
+                            let t = corps.noms.iter().position(|x| x == tn);
+                            let k = corps.noms.iter().position(|x| x == kn);
+                            if let (Some(t), Some(k)) = (t, k) {
+                                if natures.get(t) == Some(&NatureSlot::Table)
+                                    && slot_cle_nu_borne(corps, k as u16)
+                                { ok = true; }
+                            }
+                        }
+                    }
+                }
+                if !ok {
+                    if let Expr::Binaire { op, a, b, .. } = test {
+                        if op == "<" {
+                            if let (Expr::Var(na, _), Expr::Appel { nom, args, .. }) =
+                                (a.as_ref(), b.as_ref())
+                            {
+                                if (nom == "longueur" || nom == "len") && args.len() == 1 {
+                                    if let Expr::Var(nl, _) = &args[0] {
+                                        let i = corps.noms.iter().position(|x| x == na);
+                                        let l = corps.noms.iter().position(|x| x == nl);
+                                        if let (Some(i), Some(l)) = (i, l) {
+                                            if natures.get(i) == Some(&NatureSlot::Entier)
+                                                && natures.get(l) == Some(&NatureSlot::ListeEntiers)
+                                            { ok = true; }
+                                        }
                                     }
                                 }
                             }
@@ -1260,7 +1376,7 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
                     if !principal_sans_boxage { return false; }
                     match expr_ast_jit(e, &natures, &corps.noms) {
                         Some(Some(NatureSlot::Chaine)) | Some(Some(NatureSlot::ListeEntiers))
-                        | Some(Some(NatureSlot::Entier)) => {}
+                        | Some(Some(NatureSlot::Entier)) | Some(Some(NatureSlot::Table)) => {}
                         _ => return false,
                     }
                 }
@@ -1276,6 +1392,17 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
                     Expr::Var(n, _) => corps.noms.iter().position(|x| x == n), _ => None,
                 }) else { return false; };
                 if natures.get(i) != Some(&NatureSlot::ListeEntiers) { return false; }
+            }
+            // vague 23 (D7) — `inserer($t, $k, $v)` : table à handle + clé/valeur
+            // i64 nues prouvées. Aucun repli à l'exécution : le garde couvre
+            // TOUTES les valeurs possibles de k et v sur la boucle entière.
+            Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "inserer" => {
+                if !principal_sans_boxage || args.len() != 3 { return false; }
+                let Expr::Var(tn, _) = &args[0] else { return false; };
+                let Some(t) = corps.noms.iter().position(|x| x == tn) else { return false; };
+                if natures.get(t) != Some(&NatureSlot::Table) { return false; }
+                if valeur_nue_ast(corps, &args[1]).is_none() { return false; }
+                if valeur_nue_ast(corps, &args[2]).is_none() { return false; }
             }
             Op::AfficherAbstrait(e) => {
                 if !eabstrait_rir_compilable(e, &slot_types, &corps.noms, prog) { return false; }
@@ -1310,6 +1437,9 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_jit_joindre", rose_jit_joindre as *const u8),
         ("rose_jit_longueur", rose_jit_longueur as *const u8),
         ("rose_jit_index_i64", rose_jit_index_i64 as *const u8),
+        ("rose_jit_table_vide", rose_jit_table_vide as *const u8),
+        ("rose_jit_table_inserer_i64", rose_jit_table_inserer_i64 as *const u8),
+        ("rose_jit_table_cle_existe_i64", rose_jit_table_cle_existe_i64 as *const u8),
         ("rose_sqrt", rose_sqrt as *const u8),
         ("rose_add_ent", crate::run::rose_add_ent as *const u8),
         ("rose_sub_ent", crate::run::rose_sub_ent as *const u8),
@@ -1732,6 +1862,12 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 ("rose_jit_joindre", vec![types::I64, types::I64], None),
                 ("rose_jit_longueur", vec![types::I64], Some(types::I64)),
                 ("rose_jit_index_i64", vec![types::I64, types::I64], Some(types::I64)),
+                // vague 23 — table native à clés/valeurs entières prouvées nues
+                // (D7). Le handle de table reste en registre dans la boucle :
+                // aucun `Valeur` boxé, aucune recherche de slot par nom.
+                ("rose_jit_table_vide", vec![], Some(types::I64)),
+                ("rose_jit_table_inserer_i64", vec![types::I64, types::I64, types::I64], None),
+                ("rose_jit_table_cle_existe_i64", vec![types::I64, types::I64], Some(types::I64)),
                 // ⚠⚠⚠ DÉLÉGATION À L'INTERPRÉTEUR (17/11) : une fonction compilée
                 // peut appeler une fonction hors sous-ensemble (listes, chaînes…)
                 // ou IMPORTÉE. Cranelift exige que le symbole soit DÉFINI dans le
@@ -2293,6 +2429,19 @@ impl Emetteur<'_> {
 
     /// Émet une expression AST de l'extension vague 20 (types non numériques
     /// du principal). `None` = forme non reconnue (le garde l'a déjà refusée).
+    /// Vague 23 (D7) — émet une `ValeurNu` en i64 nu, sans boxage ni tag.
+    fn emettre_valeur_nue(&mut self, v: &ValeurNu, slot_vars: &[Variable]) -> Value {
+        match v {
+            ValeurNu::Slot(s) => self.builder.use_var(slot_vars[*s as usize]),
+            ValeurNu::Litteral(x) => self.builder.ins().iconst(types::I64, *x),
+            ValeurNu::Produit(s, c) => {
+                let x = self.builder.use_var(slot_vars[*s as usize]);
+                let k = self.builder.ins().iconst(types::I64, *c);
+                self.builder.ins().imul(x, k)
+            }
+        }
+    }
+
     fn expr_ast_rir(&mut self, e: &Expr, slot_vars: &[Variable], natures: &[NatureSlot],
                     corps: &CorpsRir, slot_unboxed: &[Variable]) -> Option<JitVal> {
         let slot = |n: &str| corps.noms.iter().position(|x| x == n).map(|i| i as usize);
@@ -2305,6 +2454,11 @@ impl Emetteur<'_> {
             }
             Expr::ListeVideTypee(TyKind::Entier, _) => {
                 let f = self.import_runtime("rose_jit_liste_vide");
+                let c = self.builder.ins().call(f, &[]);
+                Some(JitVal::Simple(self.builder.inst_results(c)[0]))
+            }
+            Expr::Appel { nom, args, .. } if nom == "table" && args.is_empty() => {
+                let f = self.import_runtime("rose_jit_table_vide");
                 let c = self.builder.ins().call(f, &[]);
                 Some(JitVal::Simple(self.builder.inst_results(c)[0]))
             }
@@ -3462,7 +3616,8 @@ impl Emetteur<'_> {
                         let u = self.unboxed_tmp.unwrap_or(zt0);
                         let nat = expr_ast_jit(e, &natures, &corps.noms).flatten()
                             .unwrap_or(NatureSlot::Entier);
-                        let u = if nat == NatureSlot::Chaine || nat == NatureSlot::ListeEntiers {
+                        let u = if nat == NatureSlot::Chaine || nat == NatureSlot::ListeEntiers
+                            || nat == NatureSlot::Table {
                             zt0 // handle : jamais d'arithmétique i64 inline dessus
                         } else { u };
                         self.builder.def_var(slot_vars[*slot as usize], v);
@@ -3503,6 +3658,33 @@ impl Emetteur<'_> {
                 // runtime par itération, au lieu de l'évaluation AST complète.
                 Op::SautSiFaux { test, cible } => {
                     let mut emitted = false;
+                    // vague 23 (D7) — `si cle_existe($t, $k)`. Le handle de
+                    // table et la clé i64 nue sont lus directement dans les
+                    // slots (registres), sans AST ni synchro slots↔globaux.
+                    if let Expr::Appel { nom, args, .. } = test {
+                        if nom == "cle_existe" && args.len() == 2 {
+                            if let (Expr::Var(tn, _), Expr::Var(kn, _)) = (&args[0], &args[1]) {
+                                let t = corps.noms.iter().position(|x| x == tn);
+                                let k = corps.noms.iter().position(|x| x == kn);
+                                if let (Some(t), Some(k)) = (t, k) {
+                                    if natures.get(t) == Some(&NatureSlot::Table)
+                                        && slot_cle_nu_borne(corps, k as u16) {
+                                        let hv = self.builder.use_var(slot_vars[t]);
+                                        let kv = self.builder.use_var(slot_vars[k]);
+                                        let f = self.import_runtime("rose_jit_table_cle_existe_i64");
+                                        let call = self.builder.ins().call(f, &[hv, kv]);
+                                        let r = self.builder.inst_results(call)[0];
+                                        let zero = self.builder.ins().iconst(types::I64, 0);
+                                        let cond = self.builder.ins().icmp(IntCC::NotEqual, r, zero);
+                                        let tgt_false = if *cible < n { blocks[*cible] } else { end_block };
+                                        self.br_args(cond, next, &[], tgt_false, &[]);
+                                        emitted = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !emitted {
                     if let Expr::Binaire { op, a, b, .. } = test {
                         if op == "<" {
                             if let (Expr::Var(na, _), Expr::Appel { nom, args, .. }) =
@@ -3530,6 +3712,7 @@ impl Emetteur<'_> {
                             }
                         }
                     }
+                    }
                     if !emitted { return false; }
                 }
                 // vague 20 — `joindre($liste, $entier)` (void).
@@ -3544,6 +3727,25 @@ impl Emetteur<'_> {
                     let val = self.builder.use_var(slot_vars[v]);
                     let f = self.import_runtime("rose_jit_joindre");
                     let _ = self.builder.ins().call(f, &[h, val]);
+                    self.saut(next, &[]);
+                }
+                // vague 23 (D7) — `inserer($t, $k, $v)` : table à handle, clé
+                // et valeur i64 nues prouvées en entrée. Un appel runtime,
+                // zéro Valeur boxée, zéro recherche de slot par nom.
+                Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "inserer" => {
+                    let Expr::Var(tn, _) = &args[0] else { return false; };
+                    let Some(t) = corps.noms.iter().position(|x| x == tn) else { return false; };
+                    if natures.get(t) != Some(&NatureSlot::Table) { return false; }
+                    let Some(k) = valeur_nue_ast(corps, &args[1]) else { return false; };
+                    let Some(v) = valeur_nue_ast(corps, &args[2]) else { return false; };
+                    let hv = self.builder.use_var(slot_vars[t]);
+                    let kv = self.emettre_valeur_nue(&k, &slot_vars);
+                    let vv = self.emettre_valeur_nue(&v, &slot_vars);
+                    let f = self.import_runtime("rose_jit_table_inserer_i64");
+                    let _ = self.builder.ins().call(f, &[hv, kv, vv]);
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    self.unboxed_tmp = Some(self.builder.ins().iconst(types::I64, 1));
                     self.saut(next, &[]);
                 }
                 Op::SautSiFauxAbstrait { test, cible } => {
@@ -5283,6 +5485,42 @@ pub extern "C" fn rose_jit_index_i64(h: i64, i: i64) -> i64 {
     }
     // Ne doit jamais arriver sous le garde ; valeur neutre pour éviter UB.
     0
+}
+
+// ── Vague 23 (D7) : table native à clés/valeurs entières ─────────────────
+//
+// Le handle pointe sur une `Valeur::Table` rc-partagée. Les helpers délèguent
+// à `Table::inserer`/`Table::trouver`, dont l'index canonique est la SOURCE
+// DE VÉRITÉ : `longueur`, `cles`, `valeurs`, l'indexation et l'affichage
+// voient exactement les mêmes paires que l'interpréteur. Le garde statique
+// (slot initialisé par un littéral entier, seulement mis à jour par ±littéral)
+// prouve que la clé et la valeur sont des i64 nus : aucun `Valeur` boxé,
+// aucun `HashMap<String, _>` de slots, aucun appel de délégation ici.
+#[inline]
+fn table_du_handle(h: i64) -> Option<crate::run::Table> {
+    match jit_lire_handle(h) {
+        crate::run::Valeur::Table(t) => Some(t),
+        _ => None,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_table_vide() -> i64 {
+    jit_allouer_handle(crate::run::Valeur::table())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_table_inserer_i64(h: i64, k: i64, v: i64) {
+    if let Some(t) = table_du_handle(h) {
+        t.inserer(crate::run::Valeur::z(k), crate::run::Valeur::z(v));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_table_cle_existe_i64(h: i64, k: i64) -> i64 {
+    if let Some(t) = table_du_handle(h) {
+        if t.trouver(&crate::run::Valeur::z(k)).is_some() { 1 } else { 0 }
+    } else { 0 }
 }
 
 /// Helper JIT : affichage d'un i64 taggé (valeur, tag) rendu par rose_mul_ent /
