@@ -2381,13 +2381,13 @@ impl Emetteur<'_> {
                         let tag_g_zero64 = self.builder.ins().uextend(types::I64, tag_g_zero);
                         let tag_d_zero64 = self.builder.ins().uextend(types::I64, tag_d_zero);
                         let both_i64 = self.builder.ins().band(tag_g_zero64, tag_d_zero64);
-                        // overflow check via i128
-                        let g128 = self.builder.ins().sextend(types::I128, g);
-                        let d128 = self.builder.ins().sextend(types::I128, d);
-                        let sum128 = self.builder.ins().iadd(g128, d128);
-                        let sum64 = self.builder.ins().ireduce(types::I64, sum128);
-                        let back128 = self.builder.ins().sextend(types::I128, sum64);
-                        let no_ov_flag = self.builder.ins().icmp(IntCC::Equal, sum128, back128);
+                        // overflow check signé en i64 (18/11) :
+                        //   overflow ⇔ ((g^d) & (sum^g)) < 0
+                        let sum64 = self.builder.ins().iadd(g, d);
+                        let gxd = self.builder.ins().bxor(g, d);
+                        let sumxg = self.builder.ins().bxor(sum64, g);
+                        let ov_bits = self.builder.ins().band(gxd, sumxg);
+                        let no_ov_flag = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, ov_bits, zero_tag);
                         let no_ov = self.builder.ins().uextend(types::I64, no_ov_flag);
                         let fast_ok = self.builder.ins().band(both_i64, no_ov);
                         let fast_b = self.builder.create_block();
@@ -2421,14 +2421,57 @@ impl Emetteur<'_> {
                         JitVal::Simple(mv)
                     },
                     "-" => if flot { JitVal::Simple(self.builder.ins().fsub(g, d)) } else {
+                        // ⚠ Même chemin rapide que `+` (mesuré le 18/11, fib(35)) :
+                        // un `isub` i64 inline avec détection de débordement
+                        // signé, repli sur `rose_sub_ent` seulement si un
+                        // opérande est boxé ou si le résultat déborde i64.
+                        // Avant : 2 appels `rose_sub_ent` par appel de fib,
+                        // chacun avec 2 recherches HashSet dans `mpz_ptr`.
+                        let zero_tag = self.builder.ins().iconst(types::I64, 0);
+                        let tag_g_zero = self.builder.ins().icmp(IntCC::Equal, tag_g, zero_tag);
+                        let tag_d_zero = self.builder.ins().icmp(IntCC::Equal, tag_d, zero_tag);
+                        let tag_g_zero64 = self.builder.ins().uextend(types::I64, tag_g_zero);
+                        let tag_d_zero64 = self.builder.ins().uextend(types::I64, tag_d_zero);
+                        let both_i64 = self.builder.ins().band(tag_g_zero64, tag_d_zero64);
+                        let diff = self.builder.ins().isub(g, d);
+                        // Détection de débordement SIGNÉ en 4 instructions i64
+                        // au lieu d'un aller-retour i128 (mesuré 18/11) :
+                        //   overflow ⇔ ((g^d) & (diff^g)) < 0
+                        let gxd = self.builder.ins().bxor(g, d);
+                        let diffxg = self.builder.ins().bxor(diff, g);
+                        let ov_bits = self.builder.ins().band(gxd, diffxg);
+                        let zero64 = self.builder.ins().iconst(types::I64, 0);
+                        let no_ov_flag = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, ov_bits, zero64);
+                        let no_ov_i64 = self.builder.ins().uextend(types::I64, no_ov_flag);
+                        let fast_ok = self.builder.ins().band(both_i64, no_ov_i64);
+                        let fast_b = self.builder.create_block();
+                        let slow_b = self.builder.create_block();
+                        let merge_b = self.builder.create_block();
+                        self.builder.append_block_param(merge_b, types::I64);
+                        self.builder.append_block_param(merge_b, types::I64);
+                        let fast_ok_i8 = self.builder.ins().icmp(IntCC::NotEqual, fast_ok, zero64);
+                        self.builder.ins().brif(fast_ok_i8, fast_b, &[], slow_b, &[]);
+                        self.builder.switch_to_block(fast_b);
+                        self.builder.seal_block(fast_b);
+                        let zero_tag2 = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zero_tag2);
+                        self.saut(merge_b, &[diff, zero_tag2]);
+                        self.builder.switch_to_block(slow_b);
+                        self.builder.seal_block(slow_b);
                         let trame = self.trame_deux_mots();
-                        let f = self.import_runtime("rose_sub_ent");
                         let trame8 = self.builder.ins().iadd_imm(trame, 8);
+                        let f = self.import_runtime("rose_sub_ent");
                         let _ = self.builder.ins().call(f, &[g, tag_g, d, tag_d, trame, trame8]);
-                        let val = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
-                        let tag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
-                        self.builder.def_var(self.tag_tmp, tag);
-                        JitVal::Simple(val)
+                        let hval = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 0);
+                        let htag = self.builder.ins().load(types::I64, MemFlagsData::new(), trame, 8);
+                        self.builder.def_var(self.tag_tmp, htag);
+                        self.saut(merge_b, &[hval, htag]);
+                        self.builder.switch_to_block(merge_b);
+                        self.builder.seal_block(merge_b);
+                        let mv = self.builder.block_params(merge_b)[0];
+                        let mt = self.builder.block_params(merge_b)[1];
+                        self.builder.def_var(self.tag_tmp, mt);
+                        JitVal::Simple(mv)
                     },
                     "*" => if flot { JitVal::Simple(self.builder.ins().fmul(g, d)) } else {
                         let zero_tag = self.builder.ins().iconst(types::I64, 0);
