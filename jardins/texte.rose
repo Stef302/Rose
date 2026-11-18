@@ -1,0 +1,105 @@
+# jardins/texte.rose — rendu texte inspiré de Rich, écrit en ROSE PUR.
+#
+# ⚠ CE FICHIER EST UNE BIBLIOTHÈQUE (un « jardin »), pas un programme :
+# il ne s'exécute pas seul. On le charge avec :
+#
+#     importer "jardins/texte.rose"
+#
+# Aucune dépendance : ni Rust, ni C, ni wasm, ni FFI, ni runtime externe,
+# et surtout aucun interpréteur Python. Rich n'a servi QUE de modèle de
+# format (panneau bordé, tableau aligné, règle titrée) : tout ce qui suit
+# est calculé par le moteur Rose, avec ses chaînes Unicode et ses entiers
+# exacts. Voir rose/docs/RICH_SANS_PYTHON.md pour ce qui est porté ou non.
+
+# ── motif_repetit(motif, n) : motif répété puis coupé à n caractères ────────
+# Utilitaire interne. n <= 0 ou motif vide → chaîne vide.
+# sous_chaine est en bornes [début, fin[ et compte les CARACTÈRES (Unicode),
+# donc les bordures ┌ ─ ┐ │ └ ┘ sont bien comptées pour un chacune.
+fn motif_repetit(motif: chaine, n: entier) -> chaine {
+  si (n <= 0) { retour "" }
+  $m = longueur(motif)
+  si ($m == 0) { retour "" }
+  $s = ""
+  tant_que (longueur($s) < n) { $s = $s + motif }
+  retour sous_chaine($s, 0, n)
+}
+
+# ── ajuster(texte, n) : texte aligné à gauche sur exactement n cases ───────
+# Utilitaire interne. Tronque si texte est plus long, sinon complète avec
+# des espaces. n <= 0 → chaîne vide.
+fn ajuster(texte: chaine, n: entier) -> chaine {
+  si (n <= 0) { retour "" }
+  $l = longueur(texte)
+  si ($l >= n) { retour sous_chaine(texte, 0, n) }
+  $p = ""
+  $i = 0
+  tant_que ($i < n - $l) { $p = $p + " "; $i = $i + 1 }
+  retour texte + $p
+}
+
+# ── panneau(t, largeur) : cadre Rich-like à une ligne ──────────────────────
+# largeur = largeur TOTALE en caractères, bordures comprises ; ramenée à 4
+# si elle est plus petite. Une case de marge à gauche et à droite du texte
+# (le padding (0, 1) par défaut de Rich). Le texte est centré ; s'il déborde,
+# il est tronqué. Renvoie 3 lignes séparées par "\n" :
+#   ┌──────────────────┐
+#   │      Bonjour      │
+#   └──────────────────┘
+fn panneau(t: chaine, largeur: entier) -> chaine {
+  $w = largeur
+  si ($w < 4) { $w = 4 }
+  $interieur = $w - 4
+  $l = longueur(t)
+  $txt = t
+  si ($l > $interieur) {
+    $txt = sous_chaine(t, 0, $interieur)
+    $l = $interieur
+  }
+  $reste = $interieur - $l
+  $gauche = $reste div 2
+  $droite = $reste - $gauche
+  $bord = motif_repetit("─", $w - 2)
+  $haut = "┌" + $bord + "┐"
+  $bas = "└" + $bord + "┘"
+  $milieu = "│ " + motif_repetit(" ", $gauche) + $txt + motif_repetit(" ", $droite) + " │"
+  retour $haut + "\n" + $milieu + "\n" + $bas
+}
+
+# ── tableau_simple(colonnes, largeurs) : ligne d'en-tête alignée ──────────
+# Un `│` au début, entre chaque colonne et à la fin (box SQUARE de Rich,
+# pad_edge activé). Chaque cellule est alignée à gauche et bourrée à la
+# largeur demandée. Si largeurs est plus courte que colonnes, la largeur
+# par défaut vaut 8 ; si elle est plus longue, l'excédent est ignoré.
+# Renvoie UNE seule ligne (pas de séparateur ├─┼─┤ : voir le document
+# RICH_SANS_PYTHON.md, c'est une différence assumée avec Rich).
+fn tableau_simple(colonnes: liste<chaine>, largeurs: liste<entier>) -> chaine {
+  $n = longueur(colonnes)
+  $m = longueur(largeurs)
+  $ligne = "│"
+  $i = 0
+  tant_que ($i < $n) {
+    $w = 8
+    si ($i < $m) { $w = largeurs[$i] }
+    $ligne = $ligne + " " + ajuster(colonnes[$i], $w) + " │"
+    $i = $i + 1
+  }
+  retour $ligne
+}
+
+# ── barre(t, largeur, motif) : règle titrée (rich.rule.Rule) ───────────────
+# Une seule ligne de largeur exacte : motif répété, avec le texte entouré
+# d'espaces au milieu (le titre centré de Rule). Si motif fait plusieurs
+# caractères, il est répété puis coupé, ce qui peut le tronquer en fin de
+# ligne. Si le titre n'entre pas (largeur < longueur(t) + 2), on renvoie la
+# règle sans titre. largeur <= 0 → chaîne vide.
+fn barre(t: chaine, largeur: entier, motif: chaine) -> chaine {
+  si (largeur <= 0) { retour "" }
+  $l = longueur(t)
+  si ($l + 2 <= largeur) {
+    $reste = largeur - $l - 2
+    $g = $reste div 2
+    $d = $reste - $g
+    retour motif_repetit(motif, $g) + " " + t + " " + motif_repetit(motif, $d)
+  }
+  retour motif_repetit(motif, largeur)
+}

@@ -20,6 +20,7 @@ symboles et le calcul entier exact de Rose.
 |---|---|---|---|
 | [`premiers.rose`](premiers.rose) | nombres premiers, facteurs, pgcd, sommes | `est_premier`, `nb_premiers_inferieurs`, `prochain_premier`, `facteurs_premiers`, `pgcd_jardin`, `somme_premiers` | `importer "jardins/premiers.rose"` |
 | [`hachage.rose`](hachage.rose) | codes de caractères, checksum, hachage djb2 exact et modéré | `codes_caracteres`, `somme_caracteres`, `hachage_djb2`, `hachage_djb2_mod` | `importer "jardins/hachage.rose"` |
+| [`texte.rose`](texte.rose) | rendu texte inspiré de Rich, en Rose pur (panneau, tableau, règle) — **sans Python** | `panneau`, `tableau_simple`, `barre`, `motif_repetit`, `ajuster` | `importer "jardins/texte.rose"` |
 
 Les tests vivent dans `jardins/tests/` et importent le jardin au lieu d'en
 copier le corps : `jardins/tests/premiers.rose` est passé de 121 à 72 lignes
@@ -29,7 +30,9 @@ quand `importer` a été introduit. Le catalogue est générable à tout moment 
 scripts/rose-jardin.sh liste
 ```
 
-Sortie réelle au 18/11/2026 : **2 jardins, 10 fonctions exportées**.
+Sortie réelle au 18/11/2026 : **3 jardins, 15 fonctions exportées**. Le jardin
+`texte.rose` est documenté dans
+[`rose/docs/RICH_SANS_PYTHON.md`](../rose/docs/RICH_SANS_PYTHON.md).
 
 ## 3. Comment importer un jardin
 
