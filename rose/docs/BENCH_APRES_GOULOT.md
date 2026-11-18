@@ -339,3 +339,20 @@ sans clonage `Rc` (6 000 increments+drops supprimés) → **−6,4 %**.
 
 Les 3 victoires et les 2 domaines au niveau sont conservés, aucune régression
 sur D1–D6/D8. Détails : `JIT_TABLE_COMPTEURS.md`. Constat daté, pas consigne.
+
+### Addendum — voie i64 table (18/11, 22:20Z), binaire `c0b24278…`
+
+Prémisse confirmée : 3 000 insertions seules = 0,209 ms (83 % du temps).
+`h_entier(k)` factorisé et partagé par la voie générale et la voie rapide →
+**un seul index**, cohérence prouvée. `inserer_i64`/`contient_i64` avec garde
+`|k| ≤ 2²⁴`, réservation de capacité, accès `RefCell` vérifié.
+
+| Domaine | 21:50Z | 22:20Z (c19 / c15) | Ratio Rust |
+|---|---:|---:|---:|
+| Table 3 000 clés | 0,255 | **0,096 / 0,102** | **0,999 / 1,080** ≈ |
+
+**Table rejoint les domaines « au niveau de Rust »** (l'agent a mesuré 0,96–0,99
+en salves adjacentes ; dans le bench 9-domaines complet le ratio est ~1,0 avec
+dispersion). Non revendiqué comme 4ᵉ victoire nette dans ce constat.
+3 victoires (fib, factorielle, premiers) + 3 au niveau (boucle, table, E/S).
+Détails : `TABLE_I64_FAST.md`. Constat daté, pas consigne.
