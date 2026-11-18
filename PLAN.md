@@ -614,4 +614,14 @@ D2: 9,30ms vs Rust 0,260ms (×35,8), plancher machine 0,2564ms. Prémisse « che
 |---|---|---|---|
 | P1 | JIT `est_premier` (50k appels) | `rose/src/jit.rs`, `rose/docs/JIT_PREMIERS.md` | D3 < 3,0ms (aujourd'hui 9,5ms) |
 
-D3: 9,51ms vs Rust 1,00ms (×9,49). À mesurer: appels `rose_mul_ent` (`d*d`), coût d'appel JIT→JIT, `%` déjà srem inline. Préserver le mécanisme de slot de J1.
+D3: 9,51ms vs Rust 1,00ms (×9,49). Prémisse corrigée par la mesure: 57% du cout = interpretation boucle principal (108ns/it), 47% = trampoline (89ns/appel), JIT est_premier = 1,48ms seulement.
+
+**Bilan vague 19 (18/11, 19:25Z)**: P1 ✅ `f4644a3` — **JIT du corps principal** avec garde `principal_sans_boxage` (rir_compilable_jit accepte temps()/affichages abstraits). **D3 9,45→1,48ms (×6,4), porte <3ms atteinte**, ratio Rust 9,45→1,48. Aucune regression <=1,4% sauf D8 bruit. Exactitude 0 diff/16 programmes, corpus 152 (9 ecarts = durees seulement), md5 identiques. `JIT_PREMIERS.md`.
+
+## Vague 20 (18/11) — mur types non numeriques
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| W1 | diagnostic + JIT/spec des ops rope & liste dans le principal | `rose/src/{jit,rir,interp}.rs`, `rose/docs/JIT_TYPES_NON_NUM.md` | D6 <10ms et/ou D5 <1,5ms |
+
+D5 chaîne 3,33ms (×237), D6 liste 38,75ms (×212) — toujours interprétés car ops non numériques hors sous-ensemble JIT. Diagnostic d'abord (prémisses souvent fausses), puis décision ou verdict d'infaisabilité prouvé.
