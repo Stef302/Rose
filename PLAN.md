@@ -681,3 +681,13 @@ D7 = 6000 ops à ~226ns/op (dispatch interprète). Réutiliser l'infrastructure 
 | TC1 | spécialisation bornes `pour i de 0 vers L` (table) | `rose/src/jit.rs`, `rose/docs/JIT_TABLE_COMPTEURS.md` | D7 < 0,094ms (battre Rust) |
 
 Recette H1/PB1: preuve n<=2^32 => i+1,c<=2^32, checks supprimes, repli au-dela. ⚠ $c plafonne a L (pas L²).
+
+**Bilan vague 24 (18/11, 21:50Z)**: TC1 ✅ `319ee8b` — **prémisse réfutée par la mesure**: specialisation checks (x2,5 moins d'instr) REGRESSE 5,2% (instructions dans l'ombre des 6000 blr). Vrai goulot `Table::inserer/trouver` (run.rs, 0,207/0,267ms). Gain sûr: emprunt handle sans clone Rc → **D7 0,277→0,255ms (−6,4%, ratio 2,68)**. Diff vide 43+8+9.
+
+## Vague 25 (18/11) — voie i64 `Table::inserer` (run.rs)
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| TI1 | `inserer_i64` / `contient_i64` hash direct | `rose/src/{run,jit}.rs`, `rose/docs/TABLE_I64_FAST.md` | D7 < 0,094ms (battre Rust) |
+
+⚠ Cohérence critique: clé i64 insérée par voie rapide doit être trouvée par `cle_existe` général et inversement. Tester JIT↔interpréteur.
