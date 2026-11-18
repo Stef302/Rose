@@ -1,0 +1,172 @@
+# PROPOSITION DE PATCH — NON APPLIQUÉE — NON COMPILÉE — NON TESTÉE
+# Date : 19/11/2026. Dépôt : /home/clausake/Stefan/ROSE, HEAD 477736f.
+# Auteur : sous-agent mission « self-hosting ». Aucun de ces fichiers n'a été modifié.
+#
+# ⚠ CE PATCH NE REND PAS ROSE ENTIÈREMENT SELF-HOSTED.
+# Il corrige un écart de fidélité mesuré (`var`) et ajoute un DIAGNOSTIC.
+# Le blocage réel (binaire Rust + std + Cranelift) est décrit en PARTIE C :
+# il n'existe PAS de petit patch main.rs/lib.rs/Cargo.toml qui le supprime.
+#
+# Application manuelle (si le propriétaire le décide) :
+#   cd /home/clausake/Stefan/ROSE && git apply --check rose/docs/self_hosted.patch
+# Les fichiers `compilateur/*.rose` appartiennent à d'autres agents : ne pas appliquer
+# sans leur accord.
+
+===============================================================================
+PARTIE A — mot-clé `var` absent du front-end Rose (écart mesuré le 19/11)
+===============================================================================
+Mesure : `rose rir /tmp/.../p47.rose` → fe0f3ae4aafd98756c27787a507ea96c
+         `rose compilateur/emetteur.rose /tmp/.../p47.rose` → 8f27be11d32d4ed272d0219664aa2976
+         contenu rendu : « Rose : erreur — [Ligne 1, Colonne 0] Variable 'var' utilisée sans valeur »
+Référence Rust : rose/src/front.rs:1069-1077 (`"var" => ... Instr::Affect`), commit 26987c55 (08/11/2026).
+
+--- a/compilateur/analyseur.rose
++++ b/compilateur/analyseur.rose
+@@ -882,6 +882,7 @@
+ inserer($cles, "importer", 1)
+ inserer($cles, "retour", 1)
++inserer($cles, "var", 1)
+ inserer($cles, "si", 1)
+ inserer($cles, "sinon", 1)
+ inserer($cles, "tant_que", 1)
+@@ -681,6 +682,15 @@
+     ligne($o, $ind, "retour " + NOD($r))
+     retour chaine(SEPR($r)) + "|"
+   }
++  # miroir de front.rs:1069 — « var x = e » est une affectation nue.
++  si ($t == "ident" et VX0($x, $p) == "var") {
++    $rn = nomid($g, $x, $p + 1)
++    $q = SEPR($rn)
++    si (T0($g, $q) == "=") { $q = $q + 1 }
++    $r = expr1($g, $x, $q)
++    ligne($o, $ind, "affect " + NOD($rn) + " " + NOD($r))
++    retour chaine(SEPR($r)) + "|"
++  }
+   # affectation par index : t[cle] = valeur (déléquée, évite collision de slots)
+   si (($t == "ident" ou $t == "mot") et T1($g, $p) == "[") {
+
+--- a/compilateur/verifieur.rose
++++ b/compilateur/verifieur.rose
+@@ -2280,6 +2280,7 @@
+ inserer($cles, "fn", 1)
+ inserer($cles, "retour", 1)
++inserer($cles, "var", 1)
+ inserer($cles, "si", 1)
+ inserer($cles, "sinon", 1)
+ inserer($cles, "tant_que", 1)
+@@ -990,6 +991,15 @@
+     $i = inoeud7($ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, "retour", "", entier(NOD($r)), -1, "", "", $l)
+     retour chaine(SEPR($r)) + "|" + chaine($i)
+   }
++  # miroir de front.rs:1069 — « var x = e » est une affectation nue.
++  si ($t == "ident" et VX0($x, $p) == "var") {
++    $rn = nomid($g, $x, $p + 1)
++    $q = SEPR($rn)
++    si (T0($g, $q) == "=") { $q = $q + 1 }
++    $r = expr1($g, $x, $gl, $q, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
++    $i = inoeud7($ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, "affi", NOD($rn), entier(NOD($r)), -1, "", "", $l)
++    retour chaine(SEPR($r)) + "|" + chaine($i)
++  }
+   si (($t == "ident" ou $t == "mot") et T1($g, $p) == "=") {
+     $rn = nomid($g, $x, $p)
+
+--- a/compilateur/emetteur.rose
++++ b/compilateur/emetteur.rose
+@@ -3513,6 +3513,7 @@
+ inserer($cles, "fn", 1)
+ inserer($cles, "retour", 1)
++inserer($cles, "var", 1)
+ inserer($cles, "si", 1)
+ inserer($cles, "sinon", 1)
+ inserer($cles, "tant_que", 1)
+@@ -1000,6 +1001,15 @@
+   }
++  # miroir de front.rs:1069 — « var x = e » est une affectation nue.
++  si ($t == "ident" et VX0($x, $p) == "var") {
++    $rn = nomid($g, $x, $p + 1)
++    $q = SEPR($rn)
++    si (T0($g, $q) == "=") { $q = $q + 1 }
++    $r = expr1($g, $x, $gl, $q, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al)
++    $i = inoeud7($ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, "affi", NOD($rn), entier(NOD($r)), -1, "", "", $l)
++    retour chaine(SEPR($r)) + "|" + chaine($i)
++  }
+   si (($t == "ident" ou $t == "mot") et T1($g, $p) == "=") {
+     $rn = nomid($g, $x, $p)
+
+Validation attendue après application (à faire par le propriétaire) :
+  ./rose/rose rir p47.rose | md5sum                       # fe0f3ae4...
+  ./rose/rose compilateur/emetteur.rose p47.rose | md5sum # doit devenir fe0f3ae4...
+  ./rose/rose rir compilateur/emetteur.rose | md5sum      # doit rester bdbef636...
+  python3 /tmp/opencode/rose-selfhost/oracles2.py         # doit rester 20/20
+  # Vérifier aussi que l'ajout de "var" dans $cles ne casse pas nomid() sur les mots-clés.
+
+===============================================================================
+PARTIE B — diagnostic `rose bootstrap` (main.rs) — NE SUPPRIME PAS rustc
+===============================================================================
+But : rendre l'état réel vérifiable par une commande, sans prétendre que le binaire
+devient autonome. Ce code reste compilé par cargo et n'est PAS une étape de bootstrap.
+
+--- a/rose/src/main.rs
++++ b/rose/src/main.rs
+@@ -238,6 +238,7 @@
+    rose info                état du moteur
++   rose bootstrap            diagnostic du point fixe Rose (NON un build sans rustc)
+    rose console [fichier.rose]   console interactive (REPL) — tapez des commandes Rose
+@@ -864,6 +865,25 @@
+     match action {
+         "version" | "--version" => { println!("{}", interp::version()); return; }
+         "info" => { print!("{}", interp::info()); return; }
++        "bootstrap" => {
++            // Diagnostic honnête : compare les deux dumps du front-end, puis
++            // rappelle que le binaire courant reste construit par cargo.
++            let exe = std::env::current_exe().unwrap_or_default();
++            let exe = exe.to_string_lossy().to_string();
++            let src = "compilateur/emetteur.rose";
++            let a = std::process::Command::new(&exe).arg("rir").arg(src).output();
++            let b = std::process::Command::new(&exe).arg(src).arg(src).output();
++            match (a, b) {
++                (Ok(a), Ok(b)) if a.status.success() && b.status.success() && a.stdout == b.stdout => {
++                    println!("front-end Rose : OK — point fixe identique ({} octets)", a.stdout.len());
++                    println!("produit : NON self-hosted — binaire Rust + std + Cranelift (cargo build --release)");
++                }
++                _ => {
++                    eprintln!("rose bootstrap : point fixe ROMPU — ne pas publier");
++                    std::process::exit(1);
++                }
++            }
++            return;
++        }
+         "--help" | "-h" | "aide" => { print!("{}", usage()); return; }
+
+Cette partie n'a PAS été compilée (modifier main.rs est interdit dans cette mission).
+Elle devra être validée par `cargo build --release` puis `./rose/rose bootstrap`.
+Aucun changement de Cargo.toml ni de lib.rs n'est proposé : il n'y a rien d'utile
+à y changer tant que G2/G3/G4 ne sont pas faits.
+
+===============================================================================
+PARTIE C — ce qui empêche VRAIMENT l'auto-hébergement complet (pas de patch court)
+===============================================================================
+Mesuré le 19/11/2026, voir rose/docs/SELF_HOSTED_REEL.md §4-§6 :
+
+1. `rose/rose` = md5 c21b91a46b58995f11138c766f2ec2dc = rose/target/release/rose.
+   Cargo.toml : `cranelift 0.137` (feature native par défaut), `inkwell 0.7`,
+   `num-bigint 0.5`, `libc 0.2`, `[build-dependencies] cc = "1"`.
+2. `rose comp` copie le moteur Rust (5 128 968 o = 5 128 936 + 32) ; `strings` y lit
+   `/rustc/58cf8f9c…/library/...` et `cranelift-module-0.137.1`.
+3. Porte G2 non atteinte : Cranelift réinjecte `libc/std` (Cargo.toml:65).
+4. Porte G3 non atteinte : 270 erreurs `no_std` dans `i128x.rs` + `mul_rapide.rs`,
+   783 symboles `std` dans le binaire release-dbg, `catch_unwind`/`Any` incompatibles
+   avec `panic=abort`.
+5. Porte G4 non atteinte : `emetteur_elf.rose` refuse `app`, `appel`, `saut`, `(bin`
+   et toute 2e fonction (rc=2, 0 octet) — y compris pour `emetteur.rose` lui-même.
+   Il n'émet qu'un `mov x0,#K; mov x8,#93; svc` de 132 octets, sans `_start`, sans
+   trampolines, sans sections, sans runtime bigint, sans PE64.
+
+Travail réel requis, dans cet ordre (aucun n'est un patch de quelques lignes) :
+  G2 retrait de Cranelift (émetteur machine M3.1 comme chemin principal) ;
+  G3 port `no_std` du moteur (270 erreurs + 783 symboles std) ;
+  G4 abaissement RIR général en Rose (frames AAPCS64, appels, runtime) + linker complet ;
+  alors seulement : produire `rose-3` depuis `rose-2` sans rustc.
+
+TANT QUE CES QUATRE PORTES NE SONT PAS FAITES, LA RÉPONSE RESTE :
+**NON, ROSE N'EST PAS ENTIÈREMENT SELF-HOSTED.**
