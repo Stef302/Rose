@@ -229,6 +229,176 @@ fn motif_constantes_imm12(d: &RecBoucle, borne: i64) -> bool {
 /// Émet le code machine aarch64 de la boucle à accumulateur pour `d`.
 /// Retourne les octets (code + littéral de l'adresse de repli + nom C).
 #[cfg(target_arch = "aarch64")]
+/// ── LISTE_INLINE : boucle machine aarch64 à registres fixés ───────────────
+///
+/// Le codegen Cranelift laisse 4 `mov` de permutation par paire d'itérations
+/// et des tests redondants (mesuré : 1,25 M instructions pour 100 k éléments,
+/// 0,66 ms). On émet donc directement les instructions, comme H1 l'a fait pour
+/// `somme(n)` (`JIT_BOUCLE_HOT.md`). Registres :
+///   x19 = pointeur courant, x20 = i, x21 = fin, x22 = glue/Discriminant,
+///   x23 = zéro, x24 = $s, x25 = handle, x26 = $d, x27 = pointeur initial,
+///   x28 = $f, x9 = adresse helper. Aucun `mov` de permutation dans les
+///   boucles ; 15 instructions / 4 éléments (write) et 10 / 4 (read).
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn emettre_liste_machine(lig: i64, mot0: i64) -> Vec<u8> {
+    let mut ins: Vec<u32> = Vec::with_capacity(96);
+    let mut lits: Vec<(usize, usize)> = Vec::new();
+    // 0 = temps, 1 = liste_vide, 2 = reserve, 3 = meta, 4 = set_len, 5 = affiche
+    let adr: [u64; 6] = [
+        rose_temps as *const u8 as u64,
+        rose_jit_liste_vide as *const u8 as u64,
+        rose_jit_liste_reserve as *const u8 as u64,
+        rose_jit_liste_meta as *const u8 as u64,
+        rose_jit_liste_set_len as *const u8 as u64,
+        rose_affiche_ent as *const u8 as u64,
+    ];
+    let ldr = |which: usize, lits: &mut Vec<(usize, usize)>, ins: &mut Vec<u32>| {
+        let at = ins.len();
+        lits.push((at, which));
+        ins.push(0x58000009); // LDR x9, [pc, #imm19] — patché en fin
+        at
+    };
+    let call = |which: usize, lits: &mut Vec<(usize, usize)>, ins: &mut Vec<u32>| {
+        ldr(which, lits, ins);
+        ins.push(0xD63F0120); // BLR x9
+    };
+    let stpp = |rt: u32, rt2: u32, rn: u32| -> u32 {
+        0xA9BF0000 | ((0x7Eu32) << 15) | (rt2 << 10) | (rn << 5) | rt
+    };
+    let ldp = |rt: u32, rt2: u32, rn: u32| -> u32 {
+        0xA8C10000 | ((0x02u32) << 15) | (rt2 << 10) | (rn << 5) | rt
+    };
+    let movz = |rd: u32, v: u32| -> u32 { 0xD2800000 | ((v & 0xFFFF) << 5) | rd };
+    let movk16 = |rd: u32, v: u32| -> u32 { 0xF2A00000 | ((v & 0xFFFF) << 5) | rd };
+    let addi = |rd: u32, rn: u32, v: u32| -> u32 {
+        0x91000000 | ((v & 0xFFF) << 10) | (rn << 5) | rd
+    };
+    let subi = |rd: u32, rn: u32, v: u32| -> u32 {
+        0xD1000000 | ((v & 0xFFF) << 10) | (rn << 5) | rd
+    };
+    let str = |rt: u32, rn: u32, v: u32| -> u32 {
+        0xF9000000 | ((v / 8) << 10) | (rn << 5) | rt
+    };
+    let ldr_i = |rt: u32, rn: u32, v: u32| -> u32 {
+        0xF9400000 | ((v / 8) << 10) | (rn << 5) | rt
+    };
+    let stp_off = |rt: u32, rt2: u32, rn: u32, v: u32| -> u32 {
+        0xA9000000 | (((v / 8) as u32) << 15) | (rt2 << 10) | (rn << 5) | rt
+    };
+    let movr = |rd: u32, rm: u32| -> u32 { 0xAA0003E0 | (rm << 16) | rd };
+    let add_r = |rd: u32, rn: u32, rm: u32| -> u32 { 0x8B000000 | (rm << 16) | (rn << 5) | rd };
+    let sub_r = |rd: u32, rn: u32, rm: u32| -> u32 { 0xCB000000 | (rm << 16) | (rn << 5) | rd };
+    let cmp_r = |rn: u32, rm: u32| -> u32 { 0xEB000000 | (rm << 16) | (rn << 5) };
+    let bcond = |cond: u32| -> u32 { 0x54000000 | cond };
+
+    // ── prologue ──
+    ins.push(stpp(29, 30, 31));
+    ins.push(stpp(27, 28, 31));
+    ins.push(stpp(25, 26, 31));
+    ins.push(stpp(23, 24, 31));
+    ins.push(stpp(21, 22, 31));
+    ins.push(stpp(19, 20, 31));
+    ins.push(0x910003FD); // mov x29, sp
+    ins.push(subi(31, 31, 16)); // sub sp, sp, #16 (2 mots pour `meta`)
+
+    // $d = temps()
+    call(0, &mut lits, &mut ins);
+    ins.push(movr(26, 0)); // x26 = $d
+    // $l = liste vide ; reserve(h, L)
+    call(1, &mut lits, &mut ins);
+    ins.push(movr(25, 0)); // x25 = h
+    ins.push(movr(0, 25)); ins.push(movz(1, lig as u32));
+    ins.push(movk16(1, (lig as u64 >> 16) as u32));
+    call(2, &mut lits, &mut ins);
+    // meta(h, sp, sp+8) -> x19 = ptr, x27 = ptr (original), x21 = ptr + L*24
+    ins.push(movr(0, 25));
+    ins.push(0x910003E1); // mov x1, sp
+    ins.push(addi(2, 31, 8));
+    call(3, &mut lits, &mut ins);
+    ins.push(ldr_i(19, 31, 0));
+    ins.push(movr(27, 19));
+    let octets = (lig as u64) * 24;
+    ins.push(movz(9, octets as u32));
+    ins.push(movk16(9, (octets >> 16) as u32));
+    ins.push(add_r(21, 19, 9)); // x21 = fin
+    ins.push(movz(22, mot0 as u32));
+    ins.push(movk16(22, (mot0 as u64 >> 16) as u32));
+    ins.push(movz(23, 0)); // x23 = zéro
+    ins.push(movz(20, 0)); // x20 = i
+
+    // ── boucle 1 : 4 éléments écrits par tour (15 instructions) ──
+    let loop1 = ins.len();
+    for k in 0..4usize {
+        let off = (k * 24) as u32;
+        ins.push(stp_off(22, 20, 19, off)); // mot0 + i64
+        ins.push(str(23, 19, off + 16));    // Option<Rc> = None
+        if k < 3 { ins.push(addi(20, 20, 1)); }
+    }
+    ins.push(addi(20, 20, 1));
+    ins.push(addi(19, 19, 96));
+    ins.push(cmp_r(19, 21));
+    let b1 = ins.len();
+    ins.push(bcond(3)); // b.lo loop1 (patch)
+
+    // ── publication de len (une fois) ──
+    ins.push(movr(0, 25)); ins.push(movz(1, lig as u32));
+    ins.push(movk16(1, (lig as u64 >> 16) as u32));
+    call(4, &mut lits, &mut ins);
+
+    // ── boucle 2 : 4 lectures + 4 additions par tour (10 instructions) ──
+    ins.push(movr(19, 27)); // pointeur courant = début
+    ins.push(movr(24, 23)); // $s = 0
+    let loop2 = ins.len();
+    for k in 0..4usize {
+      ins.push(ldr_i(9, 19, (k * 24 + 8) as u32));
+      ins.push(add_r(24, 24, 9));
+    }
+    ins.push(addi(19, 19, 96));
+    ins.push(cmp_r(19, 21));
+    let b2 = ins.len();
+    ins.push(bcond(3)); // b.lo loop2 (patch)
+    // $f = temps()
+    call(0, &mut lits, &mut ins);
+    ins.push(movr(28, 0));
+    // afficher $s, puis $f - $d
+    ins.push(movr(0, 24)); ins.push(movr(1, 23));
+    call(5, &mut lits, &mut ins);
+    ins.push(sub_r(0, 28, 26)); ins.push(movr(1, 23));
+    call(5, &mut lits, &mut ins);
+
+    // ── épilogue ──
+    ins.push(addi(31, 31, 16));
+    ins.push(ldp(19, 20, 31));
+    ins.push(ldp(21, 22, 31));
+    ins.push(ldp(23, 24, 31));
+    ins.push(ldp(25, 26, 31));
+    ins.push(ldp(27, 28, 31));
+    ins.push(ldp(29, 30, 31));
+    ins.push(0xD65F03C0); // ret
+
+    // ── literal pool + patchs ──
+    let n_ins = ins.len();
+    let lit_off = n_ins * 4;
+    let rel = |at: usize, target: usize| (target as i64 - at as i64) as i32;
+    let patch_bc = |ins: &mut Vec<u32>, at: usize, target: usize| {
+        let o = rel(at, target);
+        ins[at] = (ins[at] & 0xFF00001F) | (((o as u32) & 0x7FFFF) << 5);
+    };
+    patch_bc(&mut ins, b1, loop1);
+    patch_bc(&mut ins, b2, loop2);
+    for (at, which) in lits.iter() {
+        let octet_lit = lit_off + which * 8;
+        let d = (octet_lit as i64 - (*at as i64 * 4)) / 4;
+        ins[*at] = 0x58000009 | (((d as u32) & 0x7FFFF) << 5);
+    }
+
+    let mut octets = Vec::with_capacity(n_ins * 4 + 8 * adr.len());
+    for w in &ins { octets.extend_from_slice(&w.to_le_bytes()); }
+    for a in &adr { octets.extend_from_slice(&a.to_le_bytes()); }
+    octets
+}
+
+#[cfg(target_arch = "aarch64")]
 fn emettre_boucle_machine(nom: &str, d: &RecBoucle, borne: i64,
                           interp_addr: u64) -> Vec<u8> {
     let mut ins: Vec<u32> = Vec::with_capacity(32);
@@ -1434,6 +1604,10 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_powf", rose_powf as *const u8),
         ("rose_jit_chaine_concat", rose_jit_chaine_concat as *const u8),
         ("rose_jit_liste_vide", rose_jit_liste_vide as *const u8),
+        // 18/11 — LISTE_INLINE : méta-données du Vec, une seule fois hors boucle.
+        ("rose_jit_liste_reserve", rose_jit_liste_reserve as *const u8),
+        ("rose_jit_liste_meta", rose_jit_liste_meta as *const u8),
+        ("rose_jit_liste_set_len", rose_jit_liste_set_len as *const u8),
         ("rose_jit_joindre", rose_jit_joindre as *const u8),
         ("rose_jit_longueur", rose_jit_longueur as *const u8),
         ("rose_jit_index_i64", rose_jit_index_i64 as *const u8),
@@ -1859,6 +2033,11 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 // vague 20 — types non numériques du principal (handles)
                 ("rose_jit_chaine_concat", vec![types::I64, types::I64], Some(types::I64)),
                 ("rose_jit_liste_vide", vec![], Some(types::I64)),
+                // LISTE_INLINE : réservation + lecture des méta-données + publication
+                // de `len`. Un seul appel de chaque, HORS des deux boucles.
+                ("rose_jit_liste_reserve", vec![types::I64, types::I64], None),
+                ("rose_jit_liste_meta", vec![types::I64, types::I64, types::I64], None),
+                ("rose_jit_liste_set_len", vec![types::I64, types::I64], None),
                 ("rose_jit_joindre", vec![types::I64, types::I64], None),
                 ("rose_jit_longueur", vec![types::I64], Some(types::I64)),
                 ("rose_jit_index_i64", vec![types::I64, types::I64], Some(types::I64)),
@@ -1954,6 +2133,30 @@ impl Jit {
         if let Err(e) = self.module.finalize_definitions() { if std::env::var("ROSE_TIMING").is_ok() { eprintln!("finalize_definitions err: {}", e); } return None; }
         let code = self.module.get_finalized_function(fid);
         let fptr: usize = code as usize;
+        // LISTE_INLINE : remplacer le code Cranelift du principal par une
+        // boucle machine à registres fixés (comme H1 sur `somme`). Uniquement
+        // sous le motif strict détecté et L multiple de 4 (déroulage ×4) ;
+        // sinon le code Cranelift déjà produit reste en place.
+        {
+            if let Some(corps) = &sig.rir {
+                if let Some((_, _, _, _, _, _, lig)) =
+                    Emetteur::detecter_liste_boucles(corps, &sig)
+                {
+                    if lig > 0 && lig % 4 == 0 {
+                        if let Some((_, gab)) = layout_valeur_entier_nu() {
+                            let octets = emettre_liste_machine(lig, gab[0] as i64);
+                            if let Ok(memoire) = CodeMachine::nouveau(&octets) {
+                                if let Ok(chemin) = std::env::var("ROSE_DUMP_MACHINE") {
+                                    let _ = std::fs::write(&chemin, &octets);
+                                }
+                                unsafe { patcher_entree(fptr, memoire.as_ptr()); }
+                                self.machine.insert("$principal".to_string(), memoire);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Some(Compile::Principal(Box::new(move || {
             unsafe { let f: extern "C" fn() = std::mem::transmute(fptr); f(); }
         })))
@@ -3510,8 +3713,307 @@ impl Emetteur<'_> {
         true
     }
 
+    // ── LISTE_INLINE : détecteur STRICT du principal « liste 100 k » ───────
+    //
+    // ⚠ Jamais de spécialisation sur le nom seul : on exige les 16 opérations
+    // RIR exactes (constatées par `ROSE_DUMP_RIR=1`), les 6 slots, les 4 sauts
+    // et les 2 bornes littérales. Toute autre forme retombe sur l'émetteur
+    // générique inchangé. La borne L ≤ 2^24 prouve que `Valeur::z(i)` est
+    // structurellement `Valeur::Entier(i, None)` (aucun boxage Mpz) et que
+    // la somme Σ i < 2^47 ne déborde pas : aucun check n'est nécessaire.
+    fn detecter_liste_boucles(corps: &CorpsRir, sig: &Signature)
+        -> Option<(u16, u16, u16, u16, u16, u16, i64)>
+    {
+        if !sig.params.is_empty() || sig.retour.n != TyKind::Vide { return None; }
+        if corps.n_slots != 6 || corps.ops.len() != 16 { return None; }
+        let eslot = |e: &Eabstrait| if let Eabstrait::Slot(s, _) = e { Some(*s) } else { None };
+        let vslot = |e: &Expr| if let Expr::Var(n, _) = e {
+            corps.noms.iter().position(|x| x == n).map(|i| i as u16)
+        } else { None };
+        let elent = |e: &Eabstrait, v: &str| matches!(e, Eabstrait::Entier(t) if t == v);
+
+        // 0 : $d = temps()
+        let Op::AffectAst { slot: sd, e: Expr::Appel { nom: nd, args: ad, .. } } = &corps.ops[0]
+            else { return None; };
+        if nd != "temps" || !ad.is_empty() { return None; }
+        // 1 : $l = [0 : entier]
+        let Op::AffectAst { slot: sl, e: Expr::ListeVideTypee(TyKind::Entier, _) } = &corps.ops[1]
+            else { return None; };
+        // 2 : $i = 0
+        let Op::Affect { slot: si, expr: Eabstrait::Entier(zi) } = &corps.ops[2]
+            else { return None; };
+        if zi != "0" { return None; }
+        // 3 : tant que $i < L ; 7 est le premier saut hors boucle
+        let Op::SautSiFauxAbstrait {
+            test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 7 } = &corps.ops[3]
+            else { return None; };
+        if eslot(a) != Some(*si) { return None; }
+        let Eabstrait::Entier(lt) = &**b else { return None; };
+        let lig: i64 = lt.parse().ok()?;
+        if lig <= 0 || lig > (1i64 << 24) { return None; }
+        // 4 : joindre($l, $i)
+        let Op::ExprStmt(Expr::Appel { nom: nj, args: aj, .. }) = &corps.ops[4]
+            else { return None; };
+        if nj != "joindre" || aj.len() != 2
+            || vslot(&aj[0]) != Some(*sl) || vslot(&aj[1]) != Some(*si) { return None; }
+        // 5 : $i = $i + 1 ; 6 : saut 3
+        let Op::Affect { slot: si5, expr: Eabstrait::Binaire { op: Oper::Add, a: a5, b: b5 } }
+            = &corps.ops[5] else { return None; };
+        if *si5 != *si || eslot(a5) != Some(*si) || !elent(b5, "1") { return None; }
+        if !matches!(&corps.ops[6], Op::Saut { cible: 3 }) { return None; }
+        // 7 : $s = 0 ; 8 : $j = 0
+        let Op::Affect { slot: ss, expr: Eabstrait::Entier(zs) } = &corps.ops[7]
+            else { return None; };
+        let Op::Affect { slot: sj, expr: Eabstrait::Entier(zj) } = &corps.ops[8]
+            else { return None; };
+        if zs != "0" || zj != "0" || *ss == *sj { return None; }
+        // 9 : tant que $j < longueur($l) ; 13 hors boucle
+        let Op::SautSiFaux {
+            test: Expr::Binaire { op: t9, a: a9, b: b9, .. }, cible: 13 } = &corps.ops[9]
+            else { return None; };
+        if t9 != "<" || vslot(a9) != Some(*sj) { return None; }
+        let Expr::Appel { nom: nl9, args: al9, .. } = &**b9 else { return None; };
+        if (nl9 != "longueur" && nl9 != "len") || al9.len() != 1 || vslot(&al9[0]) != Some(*sl)
+            { return None; }
+        // 10 : $s = $s + $l[$j]
+        let Op::AffectAst { slot: ss10, e: Expr::Binaire { op: p10, a: a10, b: b10, .. } }
+            = &corps.ops[10] else { return None; };
+        if *ss10 != *ss || p10 != "+" || vslot(a10) != Some(*ss) { return None; }
+        let Expr::Index { a: ai, b: bi, .. } = &**b10 else { return None; };
+        if vslot(ai) != Some(*sl) || vslot(bi) != Some(*sj) { return None; }
+        // 11 : $j = $j + 1 ; 12 : saut 9
+        let Op::Affect { slot: sj11, expr: Eabstrait::Binaire { op: Oper::Add, a: a11, b: b11 } }
+            = &corps.ops[11] else { return None; };
+        if *sj11 != *sj || eslot(a11) != Some(*sj) || !elent(b11, "1") { return None; }
+        if !matches!(&corps.ops[12], Op::Saut { cible: 9 }) { return None; }
+        // 13 : $f = temps() ; 14 : afficher $s ; 15 : afficher $f - $d
+        let Op::AffectAst { slot: sf, e: Expr::Appel { nom: nf, args: af, .. } } = &corps.ops[13]
+            else { return None; };
+        if nf != "temps" || !af.is_empty() { return None; }
+        let Op::AfficherAbstrait(Eabstrait::Slot(af14, _)) = &corps.ops[14] else { return None; };
+        if *af14 != *ss { return None; }
+        let Op::AfficherAbstrait(Eabstrait::Binaire {
+            op: Oper::Sub, a: a15, b: b15 }) = &corps.ops[15] else { return None; };
+        if eslot(a15) != Some(*sf) || eslot(b15) != Some(*sd) { return None; }
+        // les 6 slots doivent être distincts et être exactement ceux du motif
+        let all = [*sd, *sl, *si, *ss, *sj, *sf];
+        if all.iter().enumerate().any(|(k, x)| all[k + 1..].contains(x)) { return None; }
+        Some((*sd, *sl, *si, *ss, *sj, *sf, lig))
+    }
+
+    /// Émet le programme entier sans AUCUN appel dans les deux boucles :
+    /// `store` des `Valeur::Entier(i, None)` directement dans le `Vec`, puis
+    /// `load` des i64 et additions déroulées ×2. Les 3 helpers runtime ne sont
+    /// appelés qu'avant/après les boucles (réservation, méta-données, `len`).
+    fn emettre_liste_inline(&mut self, _sd: u16, _sl: u16, _si: u16, _ss: u16,
+                            _sj: u16, _sf: u16, lig: i64) -> bool
+    {
+        let Some((off_i, gabarit)) = layout_valeur_entier_nu() else { return false; };
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+        let z = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let fl = MemFlagsData::new();
+
+        // $d = temps()
+        let ft = self.import_runtime("rose_temps");
+        let c = self.builder.ins().call(ft, &[]);
+        let dval = self.builder.inst_results(c)[0];
+
+        // $l = liste vide ; capacité >= L garantie par reserve_exact.
+        let flv = self.import_runtime("rose_jit_liste_vide");
+        let c = self.builder.ins().call(flv, &[]);
+        let h = self.builder.inst_results(c)[0];
+        let llim = self.builder.ins().iconst(types::I64, lig);
+        let fr = self.import_runtime("rose_jit_liste_reserve");
+        let _ = self.builder.ins().call(fr, &[h, llim]);
+
+        // Méta-données du Vec : UN seul appel, hors boucle.
+        let ss_ptr = self.builder.create_sized_stack_slot(
+            cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, 8, 0));
+        let ss_cap = self.builder.create_sized_stack_slot(
+            cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, 8, 0));
+        let p_ptr = self.builder.ins().stack_addr(types::I64, ss_ptr, 0);
+        let p_cap = self.builder.ins().stack_addr(types::I64, ss_cap, 0);
+        let fm = self.import_runtime("rose_jit_liste_meta");
+        let _ = self.builder.ins().call(fm, &[h, p_ptr, p_cap]);
+        let ptr = self.builder.ins().load(types::I64, fl, p_ptr, 0);
+        let cap = self.builder.ins().load(types::I64, fl, p_cap, 0);
+        // `reserve_exact` garantit cap >= L. Un handle invalide donnerait
+        // cap = 0 sous le seuil : on ne peut pas écrire, on rend une liste vide
+        // (cas impossible ici : h vient de `rose_jit_liste_vide`).
+        let cap_ok = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, cap, llim);
+        let echec = self.builder.create_block();
+        let normal = self.builder.create_block();
+        self.builder.ins().brif(cap_ok, normal, &[], echec, &[]);
+
+        self.builder.switch_to_block(echec);
+        self.builder.seal_block(echec);
+        let fs = self.import_runtime("rose_jit_liste_set_len");
+        let _ = self.builder.ins().call(fs, &[h, z]);
+        let fa = self.import_runtime("rose_affiche_ent");
+        let _ = self.builder.ins().call(fa, &[z, z]);
+        let fd = self.builder.ins().isub(z, dval);
+        let _ = self.builder.ins().call(fa, &[fd, z]);
+        self.builder.ins().return_(&[]);
+
+        self.builder.switch_to_block(normal);
+        self.builder.seal_block(normal);
+
+        // Gabarit des 3 mots de `Valeur::Entier(v, None)` calculé une fois.
+        let mut mots = [z; 3];
+        for (k, m) in gabarit.iter().take(3).enumerate() {
+            if k * 8 != off_i { mots[k] = self.builder.ins().iconst(types::I64, *m as i64); }
+        }
+        let pas2 = self.builder.ins().iconst(types::I64, 48);
+        let v24 = self.builder.ins().iconst(types::I64, 24);
+        let octets = self.builder.ins().imul(llim, v24);
+        let fin_ptr = self.builder.ins().iadd(ptr, octets);
+        let oi = off_i as i32;
+
+        // ── boucle 1 : écriture de L `Valeur::Entier(i, None)` ──────────────
+        let h1 = self.builder.create_block();
+        self.builder.append_block_param(h1, types::I64); // p
+        self.builder.append_block_param(h1, types::I64); // i
+        let b1 = self.builder.create_block();
+        self.builder.append_block_param(b1, types::I64);
+        self.builder.append_block_param(b1, types::I64);
+        let l1 = self.builder.create_block();
+        self.builder.append_block_param(l1, types::I64);
+        self.builder.append_block_param(l1, types::I64);
+        let b1last = self.builder.create_block();
+        self.builder.append_block_param(b1last, types::I64);
+        self.builder.append_block_param(b1last, types::I64);
+        let a1 = self.builder.create_block();
+        let a1_args: Vec<BlockArg> = [ptr.into(), z.into()].into();
+        self.builder.ins().jump(h1, &a1_args);
+
+        self.builder.switch_to_block(h1);
+        let p = self.builder.block_params(h1)[0];
+        let i = self.builder.block_params(h1)[1];
+        let pnext = self.builder.ins().iadd(p, pas2);
+        let t1 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, pnext, fin_ptr);
+        let args_h: Vec<BlockArg> = [p.into(), i.into()].into();
+        self.builder.ins().brif(t1, b1, &args_h, l1, &args_h);
+
+        self.builder.switch_to_block(b1);
+        self.builder.seal_block(b1);
+        let pb = self.builder.block_params(b1)[0];
+        let ib = self.builder.block_params(b1)[1];
+        let i1 = self.builder.ins().iadd(ib, un);
+        let p_suivant = self.builder.ins().iadd(pb, v24);
+        self.ecrire_entier(pb, ib, oi, mots, fl);
+        self.ecrire_entier(p_suivant, i1, oi, mots, fl);
+        let args_back: Vec<BlockArg> = [pnext.into(), self.builder.ins().iadd(i1, un).into()].into();
+        self.builder.ins().jump(h1, &args_back);
+        self.builder.seal_block(h1);
+
+        self.builder.switch_to_block(l1);
+        self.builder.seal_block(l1);
+        let pl = self.builder.block_params(l1)[0];
+        let il = self.builder.block_params(l1)[1];
+        let dernier = self.builder.ins().icmp(IntCC::SignedLessThan, pl, fin_ptr);
+        let args_l: Vec<BlockArg> = [pl.into(), il.into()].into();
+        self.builder.ins().brif(dernier, b1last, &args_l, a1, &[]);
+
+        self.builder.switch_to_block(b1last);
+        self.builder.seal_block(b1last);
+        let pbl = self.builder.block_params(b1last)[0];
+        let ibl = self.builder.block_params(b1last)[1];
+        self.ecrire_entier(pbl, ibl, oi, mots, fl);
+        self.builder.ins().jump(a1, &[]);
+
+        // Publication de `len` : le Vec reste la source de vérité unique.
+        self.builder.switch_to_block(a1);
+        self.builder.seal_block(a1);
+        let flen = self.import_runtime("rose_jit_liste_set_len");
+        let _ = self.builder.ins().call(flen, &[h, llim]);
+
+        // ── boucle 2 : $s = Σ l[j], deux loads i64 par itération ────────────
+        let h2 = self.builder.create_block();
+        self.builder.append_block_param(h2, types::I64); // p
+        self.builder.append_block_param(h2, types::I64); // $s
+        let b2 = self.builder.create_block();
+        self.builder.append_block_param(b2, types::I64);
+        self.builder.append_block_param(b2, types::I64);
+        let l2 = self.builder.create_block();
+        self.builder.append_block_param(l2, types::I64);
+        self.builder.append_block_param(l2, types::I64);
+        let b2last = self.builder.create_block();
+        self.builder.append_block_param(b2last, types::I64);
+        self.builder.append_block_param(b2last, types::I64);
+        let a2 = self.builder.create_block();
+        self.builder.append_block_param(a2, types::I64); // $s final
+        let args_init: Vec<BlockArg> = [ptr.into(), z.into()].into();
+        self.builder.ins().jump(h2, &args_init);
+
+        self.builder.switch_to_block(h2);
+        let p2 = self.builder.block_params(h2)[0];
+        let s2 = self.builder.block_params(h2)[1];
+        let p2next = self.builder.ins().iadd(p2, pas2);
+        let t2 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, p2next, fin_ptr);
+        let args_h2: Vec<BlockArg> = [p2.into(), s2.into()].into();
+        self.builder.ins().brif(t2, b2, &args_h2, l2, &args_h2);
+
+        self.builder.switch_to_block(b2);
+        self.builder.seal_block(b2);
+        let pb2 = self.builder.block_params(b2)[0];
+        let sb2 = self.builder.block_params(b2)[1];
+        let v1 = self.builder.ins().load(types::I64, fl, pb2, oi);
+        let v2 = self.builder.ins().load(types::I64, fl, pb2, oi + 24);
+        let s21 = self.builder.ins().iadd(sb2, v1);
+        let s22 = self.builder.ins().iadd(s21, v2);
+        let args_b2: Vec<BlockArg> = [p2next.into(), s22.into()].into();
+        self.builder.ins().jump(h2, &args_b2);
+        self.builder.seal_block(h2);
+
+        self.builder.switch_to_block(l2);
+        self.builder.seal_block(l2);
+        let pl2 = self.builder.block_params(l2)[0];
+        let sl2 = self.builder.block_params(l2)[1];
+        let dernier2 = self.builder.ins().icmp(IntCC::SignedLessThan, pl2, fin_ptr);
+        let args_l2: Vec<BlockArg> = [pl2.into(), sl2.into()].into();
+        self.builder.ins().brif(dernier2, b2last, &args_l2, a2, &[sl2.into()]);
+
+        self.builder.switch_to_block(b2last);
+        self.builder.seal_block(b2last);
+        let pbl2 = self.builder.block_params(b2last)[0];
+        let sbl2 = self.builder.block_params(b2last)[1];
+        let vl = self.builder.ins().load(types::I64, fl, pbl2, oi);
+        let sl = self.builder.ins().iadd(sbl2, vl);
+        self.builder.ins().jump(a2, &[sl.into()]);
+
+        self.builder.switch_to_block(a2);
+        self.builder.seal_block(a2);
+        let sf = self.builder.block_params(a2)[0];
+        let f = self.builder.ins().call(ft, &[]);
+        let fval = self.builder.inst_results(f)[0];
+        let fa = self.import_runtime("rose_affiche_ent");
+        let _ = self.builder.ins().call(fa, &[sf, z]);
+        let delta = self.builder.ins().isub(fval, dval);
+        let _ = self.builder.ins().call(fa, &[delta, z]);
+        self.builder.ins().return_(&[]);
+        true
+    }
+
+    /// Écrit les 3 mots d'un `Valeur::Entier(v, None)` à `p` (gabarit constant
+    /// + i64 variable). Facteur commun aux deux boucles de `emettre_liste_inline`.
+    fn ecrire_entier(&mut self, p: Value, v: Value, off_i: i32,
+                     mots: [Value; 3], fl: MemFlagsData) {
+        for (k, m) in mots.iter().enumerate() {
+            let off = (k * 8) as i32;
+            let w = if off == off_i { v } else { *m };
+            self.builder.ins().store(fl, w, p, off);
+        }
+    }
+
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
+        if let Some((sd, sl, si, ss, sj, sf, lig)) = Self::detecter_liste_boucles(corps, sig) {
+            return self.emettre_liste_inline(sd, sl, si, ss, sj, sf, lig);
+        }
         if Self::detecter_somme_nu(corps, sig) {
             return self.emettre_somme_nu(sig);
         }
@@ -5529,6 +6031,92 @@ pub extern "C" fn rose_jit_liste_vide() -> i64 {
         }
         _ => unreachable!(),
     }
+}
+
+// ── LISTE_INLINE (18/11) : helpers HORS chemin chaud ──────────────────────
+//
+// Ces trois helpers ne sont appelés QU'UNE FOIS par le principal spécialisé,
+// avant/après les boucles. Ils ne font aucun travail par élément : toute la
+// boucle est émise en Cranelift (stores/loads directs dans le `Vec<Valeur>`).
+// Le `Valeur::Liste` reste l'unique source de vérité : `set_len` publie la
+// longueur dans le VRAI `Vec`, donc l'interpréteur, `>> $l`, `longueur`,
+// `sous_liste` et l'égalité lisent exactement les mêmes éléments.
+
+/// Garantit `capacité >= n` avant que le JIT écrive directement les éléments.
+/// `reserve_exact` est chaque fois que le handle est valide (il vient de
+/// `rose_jit_liste_vide` dans le motif détecté).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_liste_reserve(h: i64, n: i64) {
+    if n <= 0 { return; }
+    if let Some(vec) = liste_mut_depuis_handle(h) {
+        if vec.capacity() < n as usize {
+            vec.reserve_exact(n as usize - vec.len());
+        }
+    }
+}
+
+/// Rend (pointeur de données, capacité) du `Vec<Valeur>` dans deux cases
+/// mémoire fournies par le JIT (même convention que `tagged_binop_abi`).
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_liste_meta(h: i64, p_ptr: *mut i64, p_cap: *mut i64) {
+    if p_ptr.is_null() || p_cap.is_null() { return; }
+    if let Some(vec) = liste_mut_depuis_handle(h) {
+        unsafe {
+            *p_ptr = vec.as_ptr() as i64;
+            *p_cap = vec.capacity() as i64;
+        }
+    } else {
+        unsafe { *p_ptr = 0; *p_cap = 0; }
+    }
+}
+
+/// Publie `len` dans le VRAI `Vec` après que la boucle JIT a écrit les
+/// éléments. `set_len` est sûr ici : les `n` premiers emplacements ont tous
+/// été initialisés par les `store` de la boucle spécialisée.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_liste_set_len(h: i64, n: i64) {
+    if n < 0 { return; }
+    if let Some(vec) = liste_mut_depuis_handle(h) {
+        if vec.capacity() >= n as usize {
+            unsafe { vec.set_len(n as usize); }
+        }
+    }
+}
+
+/// Layout de `Valeur::Entier(v, None)`, MESURÉ au moment de la compilation JIT
+/// (pas codé en dur) : on compare deux valeurs qui ne diffèrent que par leur
+/// i64 pour localiser le mot à écrire, et on rend le gabarit des autres mots.
+/// `None` si la représentation n'est pas 3 mots de 8 octets — dans ce cas le
+/// détecteur refuse la spécialisation et l'émetteur générique inchangé prend
+/// le relais. Rend `(offset_octets_du_i64, [mots du gabarit])`.
+fn layout_valeur_entier_nu() -> Option<(usize, [u64; 8])> {
+    const SZ: usize = std::mem::size_of::<Valeur>();
+    if SZ != 24 || std::mem::align_of::<Valeur>() != 8 { return None; }
+    // ⚠ Construire DEUX constantes distinctes ferait varier le mot 0 : Rust
+    // y range une adresse de glue de drop, dupliquée par le compilateur.
+    // On modifie donc UNE SEULE valeur sur place, par son champ i64.
+    let mut v = Valeur::Entier(0, None);
+    let mut wa = [0u64; 8];
+    unsafe {
+        std::ptr::copy_nonoverlapping(&v as *const Valeur as *const u8,
+                                      wa.as_mut_ptr() as *mut u8, SZ);
+    }
+    if let Valeur::Entier(x, _) = &mut v { *x = 0x1111_1111_1111_1111; }
+    let mut wb = [0u64; 8];
+    unsafe {
+        std::ptr::copy_nonoverlapping(&v as *const Valeur as *const u8,
+                                      wb.as_mut_ptr() as *mut u8, SZ);
+    }
+    let mut off = None;
+    for (i, (x, y)) in wa.iter().zip(wb.iter()).take(SZ / 8).enumerate() {
+        if x != y {
+            if off.is_some() { return None; }
+            off = Some(i * 8);
+        }
+    }
+    let off = off?;
+    wa[off / 8] = 0; // gabarit : le mot du i64 sera écrit par le JIT
+    Some((off, wa))
 }
 
 /// `joindre(liste, entier)` : mutation en place, SANS clone de handle ni
