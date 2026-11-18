@@ -222,8 +222,28 @@ fn rangd($b: chaine) -> entier {
 }
 
 fn promote($u1: chaine, $u2: chaine) -> chaine {
-  $r1 = rangd(BASE($u1))
-  $r2 = rangd(BASE($u2))
+  $b1 = $u1
+  $n1 = longueur($b1)
+  $k1 = 0
+  $ok1 = 1
+  tant_que ($ok1 == 1) {
+    si ($k1 >= $n1) { $ok1 = 0 }
+    sinon si (ordre($b1[$k1]) == 124) { $ok1 = 0 }
+    sinon { $k1 = $k1 + 1 }
+  }
+  $b1 = sous_chaine($u1, 0, $k1)
+  $b2 = $u2
+  $n2 = longueur($b2)
+  $k2 = 0
+  $ok2 = 1
+  tant_que ($ok2 == 1) {
+    si ($k2 >= $n2) { $ok2 = 0 }
+    sinon si (ordre($b2[$k2]) == 124) { $ok2 = 0 }
+    sinon { $k2 = $k2 + 1 }
+  }
+  $b2 = sous_chaine($u2, 0, $k2)
+  $r1 = rangd($b1)
+  $r2 = rangd($b2)
   $r = $r1
   si ($r2 > $r) { $r = $r2 }
   si ($r <= 1) { retour "entier|vide" }
@@ -274,8 +294,8 @@ fn vabs($x: entier) -> entier {
 }
 
 fn pgcd2($a: entier, $b: entier) -> entier {
-  $x = vabs($a)
-  $y = vabs($b)
+  $x = vabs($a + 0)
+  $y = vabs($b + 0)
   tant_que ($y > 0) {
     $r = $x % $y
     $x = $y
@@ -339,7 +359,7 @@ fn rnorm($p: entier, $q: entier) -> chaine {
   $nq = $q
   si ($nq < 0) { $np = 0 - $np; $nq = 0 - $nq }
   si ($np == 0) { retour "0" }
-  $g = pgcd2($np, $nq)
+  $g = pgcd2($np + 0, $nq + 0)
   si ($g > 1) { $np = $np div $g; $nq = $nq div $g }
   si ($nq == 1) { retour chaine($np) }
   retour chaine($np) + "/" + chaine($nq)
@@ -558,6 +578,10 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
     $nom = VX1($x, $p + 1)
     $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "app", $mod + ";" + $nom, "", -1, -1, longueur($al), 0, $l)
     retour chaine($p + 3) + "|" + chaine($i)
+  }
+  si (T0($g, $p) == "mot" et VX0($x, $p) == "i") {
+    $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "cplx", "i", "", -1, -1, 0, 0, $l)
+    retour chaine($p + 1) + "|" + chaine($i)
   }
   $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "v", VX0($x, $p), "", -1, -1, 0, 0, $l)
   retour chaine($p + 1) + "|" + chaine($i)
@@ -1184,6 +1208,10 @@ fn replier_expr($i: entier,
   sinon si ($kd == "lit") {
     retour "1|" + $tx[$i] + "|" + $tf[$i]
   }
+  sinon si ($kd == "cplx" et $foi[0] != 1) {
+    stocker($i, "0,1", "c", $foi, $fot, $fof)
+    retour "1|0,1|c"
+  }
   sinon { retour "0" }
   si (longueur($err) > 1) { retour "0" }
   $l = $lg[$i]
@@ -1205,6 +1233,35 @@ fn replier_expr($i: entier,
   # — binaire sur deux littéraux : miroir fold_bin —
   si ($kd == "bin" et $va != "0" et $vb != "0") {
     $op = $tx[$i]
+    $fa = vue_flag($va)
+    $fb = vue_flag($vb)
+    si ($fa == "c" ou $fb == "c") {
+      $ta0 = vue_texte($va)
+      $tb0 = vue_texte($vb)
+      si (contient_barre($ta0) ou contient_barre($tb0)) { retour "0" }
+      $ra = 0
+      $ia = 0
+      $rb = 0
+      $ib = 0
+      si ($fa == "c") { $ra = entier(piece($ta0, 44, 1)); $ia = entier(piece($ta0, 44, 2)) }
+      sinon { $ra = entier($ta0) }
+      si ($fb == "c") { $rb = entier(piece($tb0, 44, 1)); $ib = entier(piece($tb0, 44, 2)) }
+      sinon { $rb = entier($tb0) }
+      $nr = 0
+      $ni = 0
+      si ($op == "+") { $nr = $ra + $rb; $ni = $ia + $ib }
+      sinon si ($op == "-") { $nr = $ra - $rb; $ni = $ia - $ib }
+      sinon si ($op == "*") { $nr = $ra * $rb - $ia * $ib; $ni = $ra * $ib + $ia * $rb }
+      sinon { retour "0" }
+      si ($ni == 0) {
+        $rc = rnorm($nr, 1)
+        stocker($i, $rc, "", $foi, $fot, $fof)
+        retour "1|" + $rc + "|"
+      }
+      $rc = chaine($nr) + "," + chaine($ni)
+      stocker($i, $rc, "c", $foi, $fot, $fof)
+      retour "1|" + $rc + "|c"
+    }
     si (vue_flag($va) == "1" ou vue_flag($vb) == "1") {
       si ($op == "+" ou $op == "-" ou $op == "*" ou $op == "/" ou $op == "^") {
         stocker($i, "F", "1", $foi, $fot, $fof)
@@ -1235,13 +1292,13 @@ fn replier_expr($i: entier,
       si ($p2 > 200000 ou 0 - $p2 > 200000) { retour "0" }
       $num = 1
       $den = 1
-      si ($p2 >= 0) { $num = rpui($p1, $p2); $den = rpui($q1, $p2) }
+      si ($p2 >= 0) { $num = rpui($p1 + 0, $p2); $den = rpui($q1 + 0, $p2) }
       sinon {
         $kk = 0 - $p2
         $num = rpui($q1, $kk)
         $den = rpui($p1, $kk)
       }
-      $r = rnorm($num, $den)
+      $r = rnorm($num + 0, $den + 0)
     }
     sinon si ($op == "div") {
       si (rnul($tb)) { signaler($l, "division par zéro dans une constante", $err); retour "0" }
@@ -1357,6 +1414,7 @@ fn ELTT($v: chaine) -> chaine {
 }
 
 fn t_from_texte($t: chaine, $f: chaine) -> chaine {
+  si ($f == "c") { retour "complexe|vide" }
   si ($f == "1") { retour "flottant|vide" }
   si (contient_barre($t)) { retour "rationnel|vide" }
   retour "entier|vide"
@@ -1376,12 +1434,19 @@ fn check_expr($i: entier,
   $kd = $k[$i]
   $lg0 = $lg[$i]
   si ($kd == "lit") { retour t_from_texte($tx[$i], $tf[$i]) }
+  si ($kd == "cplx") {
+    $ti = env_get("i", $vn, $vt)
+    si ($ti == "") { $ti = env_get("i", $gn, $gt) }
+    si ($ti == "") { $ti = "complexe|vide" }
+    retour $ti
+  }
   si ($kd == "ch") { retour "chaine|vide" }
   si ($kd == "bol") { retour "booleen|vide" }
   si ($kd == "v") {
     $nom = $tx[$i]
     $t = env_get($nom, $vn, $vt)
     si ($t == "") { $t = env_get($nom, $gn, $gt) }
+    si ($t == "" et ($nom == "π" ou $nom == "φ" ou $nom == "pi" ou $nom == "phi" ou $nom == "e")) { $t = "chaine|entier" }
     si ($t == "") {
       signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
@@ -1529,17 +1594,20 @@ fn check_bin($i: entier,
     retour "booleen|vide"
   }
   si ($op == "+") {
+    si (BASE($tg) == "complexe" ou BASE($td) == "complexe") { retour "complexe|vide" }
     si (BASE($tg) == "chaine" et BASE($td) == "chaine") { retour "chaine|vide" }
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
     signaler($lg0, "Addition " + nomty($tg) + " + " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
   si ($op == "-" ou $op == "*") {
+    si (BASE($tg) == "complexe" ou BASE($td) == "complexe") { retour "complexe|vide" }
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
     signaler($lg0, "Opération " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
   si ($op == "/") {
+    si (BASE($tg) == "complexe" ou BASE($td) == "complexe") { retour "complexe|vide" }
     si (estnum($tg) et estnum($td)) {
       $r = promote($tg, $td)
       si (BASE($r) == "entier") { retour "rationnel|vide" }
@@ -1641,6 +1709,10 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "tampon_case") { retour "entier|tampon,entier" }
   si ($nom == "tampon_pose") { retour "vide|tampon,entier,entier" }
   si ($nom == "remplir_hasard") { retour "vide|tampon,tampon" }
+  si ($nom == "remplir_hasard_philox") { retour "vide|tampon,tampon,entier" }
+  si ($nom == "re" ou $nom == "im" ou $nom == "arg" ou $nom == "modulus") { retour "flottant|complexe" }
+  si ($nom == "conj") { retour "complexe|complexe" }
+  si ($nom == "__i" ou $nom == "i") { retour "complexe|" }
   si ($nom == "millisecondes") { retour "entier|" }
   # alias de maths exactes (miroir STDLIB Rust)
   si ($nom == "fact") { retour "entier|entier" }
@@ -1940,12 +2012,12 @@ fn check_instr($i: entier,
     }
     parcourir($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
-              $ln, $lt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
+              $vn, $vt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
     $b2 = $ib2[$i]
     si ($b2 != "" et longueur($err) == 1) {
       parcourir($b2, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                 $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
-                $ln, $lt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
+                $vn, $vt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
     }
     retour 0
   }
@@ -1958,7 +2030,7 @@ fn check_instr($i: entier,
     }
     parcourir($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
-              $ln, $lt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
+              $vn, $vt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
     retour 0
   }
   si ($kd == "pour") {
@@ -1979,7 +2051,7 @@ fn check_instr($i: entier,
     env_put($nom, "entier|vide", $vn, $vt)
     parcourir($ib1[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
-              $ln, $lt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
+              $vn, $vt, $gn, $gt, $ln, $lt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $ass, $ra, $err)
     retour 0
   }
   si ($kd == "retour") {
@@ -2076,10 +2148,111 @@ fn cmp_str($a: chaine, $b: chaine) -> entier {
   retour 0
 }
 
+
+# ——— pré-passe : collecte des globales du niveau supérieur ———
+# Miroir de verifier() (front.rs) : seules les affectations et lectures de
+# tête alimentent GLOBALS. En particulier les « pour » ne doivent PAS y
+# ajouter leur variable de boucle — sinon la passe 2 la voit « déjà existante ».
+
+fn collecter_glob_instr($i: entier,
+                        $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+                        $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+                        $lg: liste<entier>, $al: liste<entier>,
+                        $ik: liste<chaine>, $ino: liste<chaine>, $ie: liste<entier>, $ie2: liste<entier>,
+                        $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
+                        $gn: liste<chaine>, $gt: liste<chaine>,
+                        $fnoms: liste<chaine>, $fparams: liste<chaine>, $fret: liste<chaine>,
+                        $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>) {
+  $kd = $ik[$i]
+  $tmp = [""]
+  # « aff » = afficher (>>), « affi » = affectation (ident = expr).
+  si ($kd == "affi") {
+    $t = check_expr($ie[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                    $gn, $gt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $tmp)
+    si (BASE($t) != "vide") {
+      $nom = $ino[$i]
+      $ex = env_get($nom, $gn, $gt)
+      $cible = $t
+      si ($ex != "") { $cible = $ex }
+      env_put($nom, $cible, $gn, $gt)
+    }
+  }
+  sinon si ($kd == "lire") {
+    $nom = $ino[$i]
+    $t = env_get($nom, $gn, $gt)
+    si ($t == "") { $t = "entier|vide" }
+    env_put($nom, $t, $gn, $gt)
+  }
+}
+
+fn collecter_globaux($cs: chaine,
+                     $k: liste<chaine>, $tx: liste<chaine>, $tf: liste<chaine>,
+                     $a: liste<entier>, $b: liste<entier>, $as: liste<entier>, $ac: liste<entier>,
+                     $lg: liste<entier>, $al: liste<entier>,
+                     $ik: liste<chaine>, $ino: liste<chaine>, $ie: liste<entier>, $ie2: liste<entier>,
+                     $ib1: liste<chaine>, $ib2: liste<chaine>, $ilg: liste<entier>,
+                     $gn: liste<chaine>, $gt: liste<chaine>,
+                     $fnoms: liste<chaine>, $fparams: liste<chaine>, $fret: liste<chaine>,
+                     $foi: liste<entier>, $fot: liste<chaine>, $fof: liste<chaine>) {
+  $j = 0
+  $n = longueur($cs)
+  $cur = ""
+  tant_que ($j < $n) {
+    $c = ordre($cs[$j])
+    si ($c == 44) {
+      si ($cur != "") {
+        collecter_glob_instr(entier($cur), $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                             $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $gn, $gt,
+                             $fnoms, $fparams, $fret, $foi, $fot, $fof)
+        $cur = ""
+      }
+    }
+    sinon { $cur = $cur + $cs[$j] }
+    $j = $j + 1
+  }
+  si ($cur != "") {
+    collecter_glob_instr(entier($cur), $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                         $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $gn, $gt,
+                         $fnoms, $fparams, $fret, $foi, $fot, $fof)
+  }
+}
+
+
+# ——— fusion des « importer "f.rose" » (miroir de analyser_fichier_rec) ———
+# Le moteur Rust analyse le fichier en mode brut, fusionne les signatures
+# importées, puis vérifie UNE fois le programme complet. On recopie ici le
+# texte des jardins importés en fin de source pour que la descente les voie.
+
+fn fusionner_imports($src: chaine) -> chaine {
+  $res = $src
+  $ajout = ""
+  $n = nb_pieces($src, 10)
+  $k = 1
+  tant_que ($k <= $n) {
+    $l = piece($src, 10, $k)
+    $nl = longueur($l)
+    $p = 0
+    tant_que ($p < $nl et (ordre($l[$p]) == 32 ou ordre($l[$p]) == 9)) { $p = $p + 1 }
+    si (sous_chaine($l, $p, $p + 8) == "importer") {
+      $q = $p + 8
+      tant_que ($q < $nl et (ordre($l[$q]) == 32 ou ordre($l[$q]) == 9)) { $q = $q + 1 }
+      si ($q < $nl et ordre($l[$q]) == 34) {
+        $debut = $q + 1
+        $fin = $debut
+        tant_que ($fin < $nl et ordre($l[$fin]) != 34) { $fin = $fin + 1 }
+        $chemin = sous_chaine($l, $debut, $fin)
+        $ajout = $ajout + "\n" + lire_texte($chemin)
+      }
+    }
+    $k = $k + 1
+  }
+  retour $res + $ajout
+}
+
 # ══════════════════ programme principal ══════════════════
 
 $src = ""
-si (nb_arguments() > 0) { $src = lire_texte(argument(0)) }
+si (nb_arguments() > 0) { $src = fusionner_imports(lire_texte(argument(0))) }
 $N = longueur($src)
 
 # —— phase 1 : lexage vers $gen (types), $x (textes), $gl (lignes) ——
@@ -2462,6 +2635,36 @@ tant_que ($w < $nn) {
 }
 
 # —— passe 1 : repli de constantes (fonctions triées, puis niveau supérieur) ——
+# « réparation du compteur i » (front.rs) : si un « pour i » existe, le mot « i »
+# est le compteur entier, PAS le littéral imaginaire. On le note en $foi[0].
+$i_compteur = 0
+$j = 1
+tant_que ($j < longueur($ik)) {
+  si ($ik[$j] == "pour" et $ino[$j] == "i") { $i_compteur = 1 }
+  $j = $j + 1
+}
+$foineuf = [$i_compteur]
+$j = 0
+tant_que ($j < longueur($foi)) {
+  joindre($foineuf, $foi[$j])
+  $j = $j + 1
+}
+$foi = $foineuf
+$fotneuf = [""]
+$j = 0
+tant_que ($j < longueur($fot)) {
+  joindre($fotneuf, $fot[$j])
+  $j = $j + 1
+}
+$fot = $fotneuf
+$fofneuf = [""]
+$j = 0
+tant_que ($j < longueur($fof)) {
+  joindre($fofneuf, $fof[$j])
+  $j = $j + 1
+}
+$fof = $fofneuf
+
 $w = 1
 tant_que ($w < longueur($ordre)) {
   $ix = $ordre[$w]
@@ -2481,12 +2684,10 @@ $gln = [""]
 $glt = [""]
 # Le corps principal est vérifié en premier avec ses variables comme globales :
 # le moteur Rust collecte GLOBALS avant de vérifier les fonctions.
-$lc0 = [""]
-$lct0 = [""]
-parcourir($topb, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
-          $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
-          $gln, $glt, $gln, $glt, $lc0, $lct0,
-          $fnoms, $fparams, $fret, $foi, $fot, $fof, 0, "vide|vide", $err)
+collecter_globaux($topb, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                  $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
+                  $gln, $glt,
+                  $fnoms, $fparams, $fret, $foi, $fot, $fof)
 $w = 1
 tant_que ($w < longueur($ordre)) {
   si (longueur($err) == 1) {
