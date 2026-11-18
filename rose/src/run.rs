@@ -452,6 +452,22 @@ pub fn chaine_vers_entier(ch: &str) -> Gz {
 // ── Comparaisons (miroir cmp_vals / rose_valeur_egale) ────────────────────
 
 pub fn cmp_vals(g: &Valeur, d: &Valeur) -> i32 {
+    // ⚠⚠⚠ VOIE RAPIDE i64 EN TÊTE (mesuré le 18/11/26).
+    // `vers_z` alloue un `Mpz` boxé ET un `BigInt` pour chaque opérande,
+    // puis `cmp_gz` reclône les deux `BigInt` : ~6 allocations par
+    // comparaison. Or `inserer`/`cle_existe`/`Expr::Index` appellent
+    // `valeur_egale` (donc `cmp_vals`) des MILLIONS de fois sur des clés
+    // entières i64. La règle est EXACTE : deux `Valeur::Entier(_, None)`
+    // sont des i64, leur comparaison est identique à celle des BigInt.
+    // Les valeurs `Some(Rc<Gz>)` (hors i64 ou issues de l'ABI JIT) ne
+    // prennent PAS cette voie : elles retombent sur l'arithmétique exacte.
+    if let (Valeur::Entier(x, None), Valeur::Entier(y, None)) = (g, d) {
+        return match x.cmp(y) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+        };
+    }
     if let (Valeur::Chaine(a), Valeur::Chaine(b)) = (g, d) {
         return if a == b { 0 } else if a < b { -1 } else { 1 };
     }
@@ -473,6 +489,13 @@ pub fn cmp_vals(g: &Valeur, d: &Valeur) -> i32 {
 }
 
 pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
+    // ⚠ Même voie rapide que `cmp_vals` : deux i64 s'égalisent par
+    // comparaison directe, sans boxer de `Gz`/`BigInt`. C'est LE chemin
+    // des scans linéaires de `table()` (`inserer`, `cle_existe`,
+    // `supprimer`) et des comparaisons de listes.
+    if let (Valeur::Entier(x, None), Valeur::Entier(y, None)) = (a, b) {
+        return x == y;
+    }
     match (a, b) {
         (Valeur::Tampon(x), Valeur::Tampon(y)) => *x.0.borrow() == *y.0.borrow(),
         (_, Valeur::Tampon(..)) | (Valeur::Tampon(..), _) => false,
