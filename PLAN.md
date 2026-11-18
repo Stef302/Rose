@@ -701,3 +701,13 @@ Recette H1/PB1: preuve n<=2^32 => i+1,c<=2^32, checks supprimes, repli au-dela. 
 | LI1 | `Vec<i64>` dédié pour listes entières | `rose/src/{run,jit}.rs`, `rose/docs/LISTE_I64_FAST.md` | D6 < 0,189ms (battre Rust) |
 
 Recette TI1 transposée. ⚠ Cohérence critique: liste JIT lisible par l'interpréteur et inversement (longueur, joindre, index, affichage, égalité, hétérogène).
+
+**Bilan vague 26 (18/11, 22:50Z)**: LI1 ✅ `96c0cdf` — 2 prémisses corrigées (joindre isole non JIT-qualifie; tag bit0 segfaultait D5 → bit63). Pointeur tague vers le MEME `Valeur::Liste`, une seule representation. **D6 2,06→0,92ms (×2,26), ratio 11,1→4,95**, porte NON atteinte. Cause: ~200k appels extern C + boucles a 1,28ns/it (256us > 189us Rust). Regression D4 +6% (disposition, aussi sans JIT). 28 comparaisons JIT/noJIT 0 diff. `LISTE_I64_FAST.md`.
+
+## Vague 27 (18/11) — inline boucle liste
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| LI2 | inline push/lecture + spécialisation boucles `pour` | `rose/src/jit.rs`, `rose/docs/LISTE_INLINE.md` | D6 < 0,184ms (battre Rust) |
+
+Marge réelle: H1 a fait 0,258ns/it sur somme; 200k it à ce rythme = 52us < 189us. ⚠ Préserver tag bit63 (bit0 = segfault D5).
