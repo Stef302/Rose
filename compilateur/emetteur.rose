@@ -1993,6 +1993,8 @@ fn check_instr($i: entier,
     # Le moteur traite une globale comme un SHADOW dans un corps de fonction :
     # `$k = 0` local ne doit pas être confronté au type de la globale $k.
     $ex = env_get($nom, $vn, $vt)
+    # i/pi/phi/e sont des globales du moteur : shadow, pas de contrôle de domaine
+    si ($nom == "i" ou $nom == "pi" ou $nom == "phi" ou $nom == "e") { $ex = "" }
     $cible = $t
     si ($ex != "") {
       $cible = $ex
