@@ -661,3 +661,13 @@ Prochaine cible la plus proche: **D3 premiers 1,48×** (residu = code natif est_
 | PB1 | spécialisation `est_premier` avec preuve de borne | `rose/src/jit.rs`, `rose/docs/JIT_PREMIERS_BAT.md` | D3 < 1,00ms (aujourd'hui 1,479ms) |
 
 Modèle H1: pour n<=2^32, d*d<=n => d<=2^16, tous calculs i64, diviseur non nul. Garde explicite au-dela. ⚠ Pas de changement d'algorithme (pas de crible) — sinon la victoire ne compte pas comme "meme source".
+
+**Bilan vague 22 (18/11, 21:00Z)**: PB1 ✅ `8e376d9` — **3e VICTOIRE**: D3 1,479→0,854ms (×1,73), Rose bat Rust de 15% dans la meme salve c15 ET c19 (ratio 0,852). Specialisation est_premier + 6 udiv supprimes par produits magiques (diviseurs constants 3..13), suite de diviseurs inchangee. Diff vide 25 cas. `JIT_PREMIERS_BAT.md`.
+
+## Vague 23 (18/11) — table JIT handles
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| TB1 | délégués/handles pour inserer/cle_existe | `rose/src/jit.rs`, `rose/docs/JIT_TABLE_BAT.md` | D7 < 0,40ms (aujourd'hui 1,36ms) |
+
+D7 = 6000 ops à ~226ns/op (dispatch interprète). Réutiliser l'infrastructure W1. Exactitude: 43+8 sorties TABLE_NATIVE.md.
