@@ -604,4 +604,14 @@ Domaine 8: 13,49ms Rose vs 4,73ms Rust (×2,85). Causes mesurées à confirmer: 
 |---|---|---|---|
 | J1 | JIT boucle fast path | `rose/src/jit.rs`, `rose/docs/JIT_BOUCLE_I64.md` | D2 < 3,0ms (aujourd'hui 9,30ms) |
 
-D2: 9,30ms vs Rust 0,260ms (×35,8), plancher machine 0,2564ms. Chemin `+` = ~20 instr Cranelift, 3 blocs, brif (tag + overflow). ⚠ Exactitude bigintCritique: tout débordement doit rester correct.
+D2: 9,30ms vs Rust 0,260ms (×35,8), plancher machine 0,2564ms. Prémisse « checks AST » ÉTAIT FAUSSE: dump = 2 `blr rose_add_ent`/itération (~8ns des 9,3ns).
+
+**Bilan vague 18 (18/11, 18:45Z)**: J1 ✅ `d0b71fe` — drapeau non-boxage par slot RIR, iadd/isub inline + overflow signé, repli helper. **D2 9,28→1,29ms (×7,2), porte <3ms atteinte**, ratio Rust 35,8→5,0. 2 bugs réels corrigés (formule overflow `+`, tag dérivé du drapeau → SIGSEGV jardin). Aucune régression D1/D3-D8. Diff vide sur 8 cas grands entiers. `JIT_BOUCLE_I64.md`.
+
+## Vague 19 (18/11) — JIT premiers
+
+| Agent | Sujet | Fichiers possédés | Porte |
+|---|---|---|---|
+| P1 | JIT `est_premier` (50k appels) | `rose/src/jit.rs`, `rose/docs/JIT_PREMIERS.md` | D3 < 3,0ms (aujourd'hui 9,5ms) |
+
+D3: 9,51ms vs Rust 1,00ms (×9,49). À mesurer: appels `rose_mul_ent` (`d*d`), coût d'appel JIT→JIT, `%` déjà srem inline. Préserver le mécanisme de slot de J1.
