@@ -736,3 +736,18 @@ Consigne: continuer à battre Rust (général puis cas par cas), délocaliser ~4
 | WH | vérification self-hosted réel | `SELF_HOSTED_REEL.md`, patch | — |
 
 ⚠ Fichiers verrouillés pour tous: `main.rs`, `lib.rs`, `Cargo.toml`, `jit.rs`, `interp.rs`, `run.rs`, `rir.rs`, `PLAN.md`. Les commands CLI proposées sont livrées sous forme de patches, pas appliquées.
+
+## Vague 29 (19/11) — jardins rapides, vraie GUI, self-hosting, dépasser Rust
+
+Consigne: « jardins plus rapide pour délocaliser ensuite, idem continue faut dépasser rust, le gui je veux pas html vraie fenêtre comparé aot jit, continue self host ».
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| JA | optimiser les jardins (algorithmes + diagnostic JIT) | `jardins/**`, `rose/docs/JARDINS_RAPIDES.md` | 8 |
+| JB | JIT des fonctions à paramètres implicites (clé des jardins) + domaines restants | `rose/src/jit.rs`, `rose/docs/JIT_JARDINS.md` | 15 |
+| JC | vraie fenêtre GUI native (Win32/X11, zéro HTML) | `rose/src/gui_native.rs`, patch CLI, `rose/docs/GUI_FENETRE_REELLE.md` | 9 |
+| JD | combler les 5 écarts d'oracles (vérif/émetteur Rose) | `compilateur/{verifieur,emetteur}.rose`, `rose/docs/ORACLES_FIDELITE_FINALE.md` | 10 |
+| JE | réparer `ROSE_NO_RIR` et `ROSE_NATIF` (résultats faux / temps aberrant) | `rose/src/{interp,natif_emetteur}.rs`, `rose/docs/BACKENDS_REPARES.md` | 19 |
+| JF | PGCD/bigint : dépasser Rust sur D4b | `rose/src/{run,i128x}.rs`, `rose/docs/BIGINT_VS_RUST.md` | 6 |
+
+⚠ Chaque agent construit son propre binaire sous `/tmp/opencode/<agent>/` et ne remplace PAS `rose/rose` (conflits « Text file busy » observés).
