@@ -312,6 +312,9 @@ const WM_SETICON: u32 = 0x0080;
 const WM_NCHITTEST: u32 = 0x0084;
 const WM_APP: u32 = 0x8000;
 const WM_APP_FIN: u32 = WM_APP + 1;
+/// Fin d'une vérification ou d'un téléchargement de mise à jour lancé en
+/// tâche de fond depuis le premier écran (ne fige pas l'interface).
+const WM_APP_MAJ: u32 = WM_APP + 2;
 const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SIZING: u32 = 0x0214;
 
@@ -457,6 +460,11 @@ enum Vue {
     /// C'est la réponse à « ça échoue à écrire le PATH » — notamment sur
     /// les machines d'entreprise où la clé est verrouillée par une GPO.
     Path,
+    /// ⚠ PREMIER ÉCRAN : choix du mode de mise à jour, AVANT toute
+    /// installation ou sélection de version. Ajouté EN FIN d'énumération
+    /// pour ne pas décaler les valeurs numériques des cinq étapes (le
+    /// panneau latéral compare `etat.vue as usize` à l'index d'étape).
+    MisesAJour,
 }
 
 /// Action des deux boutons du pied de page.
@@ -474,6 +482,8 @@ enum Action {
     ReparerPath,
     /// Revient à l'écran précédent (depuis l'outil PATH).
     FermerOutil,
+    /// Enregistre le mode de mise à jour choisi et quitte le premier écran.
+    Continuer,
 }
 
 struct Etat {
@@ -512,6 +522,9 @@ struct Etat {
     methode: usize,
     /// Journal de la dernière réparation PATH.
     journal_path: Vec<String>,
+    /// Mode de mise à jour choisi sur le premier écran (relu de la config
+    /// au démarrage, écrit par « Continuer »).
+    mode_maj: crate::velopack::ModeMiseAJour,
     dpi: i32,
     /// Icône de la fenêtre.
     icone: HICON,
@@ -1253,6 +1266,9 @@ unsafe fn carte(dc: HDC, r: &RECT, accent: u32) {
 /// Mise en page : les deux boutons du pied de page pour la vue courante.
 fn boutons(vue: Vue, existant: bool) -> (Option<(Action, &'static str)>, Option<(Action, &'static str)>) {
     match vue {
+        // Premier écran : « Continuer » enregistre le choix puis ouvre
+        // l'assistant d'installation. L'action principale garde le ROUGE_VIF.
+        Vue::MisesAJour => (Some((Action::Annuler, "Annuler")), Some((Action::Continuer, "Continuer"))),
         Vue::Bienvenue | Vue::Licence => (Some((Action::Annuler, "Annuler")), Some((Action::Avancer, "Suivant"))),
         Vue::Options => (
             if existant { Some((Action::Desinstaller, "Désinstaller")) } else { Some((Action::Annuler, "Annuler")) },
@@ -1664,6 +1680,12 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
 
     let mut yc = contenu.top + s(44);
     let (titre, sous) = match etat.vue {
+        Vue::MisesAJour => (
+            "Mises à jour".to_string(),
+            "Choisissez comment Rose vérifie ses mises à jour. Ce choix est enregistré \
+             dans votre profil et relu à chaque lancement — aucun service Windows \
+             ni tâche planifiée n'est installé.".to_string(),
+        ),
         Vue::Bienvenue => (
             "Bienvenue".to_string(),
             "Ce programme installe le compilateur Rose, ses binaires Windows et le helper AOT.".to_string(),
@@ -1695,6 +1717,103 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // Hauteur utile restante : aucune carte ne doit déborder du pied de page.
     let bas_utile = contenu.bottom - s(20);
     match etat.vue {
+        // ── PREMIER ÉCRAN : choix du mode de mise à jour ──────────────
+        // Trois cartes radio, thème Rose (ROUGE_VIF / VERT_LIME_VIF),
+        // indicateur = cercle + COCHE ANTIALIASÉE (correction LA). Le choix
+        // est écrit par « Continuer » dans le pied de page.
+        Vue::MisesAJour => {
+            use crate::velopack::ModeMiseAJour;
+            let options: [(ModeMiseAJour, &str, &str); 3] = [
+                (ModeMiseAJour::Auto, "Auto au démarrage",
+                 "Vérifie les versions à chaque lancement. Ne télécharge qu'après votre accord — recommandé."),
+                (ModeMiseAJour::Manuel, "Manuel",
+                 "Aucune vérification automatique : « rose update » ou le bouton « Vérifier les mises à jour »."),
+                (ModeMiseAJour::Desactive, "Désactivées",
+                 "Aucune vérification, même « rose update » est ignoré (message explicite)."),
+            ];
+            let h_opt = s(84);
+            let ecart = s(12);
+            let mut zm = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
+            for (i, (mode, titre_opt, desc)) in options.iter().enumerate() {
+                let haut = yc + i as i32 * (h_opt + ecart);
+                let c = RECT { left: g, top: haut, right: d, bottom: haut + h_opt };
+                let selectionne = *mode == etat.mode_maj;
+                carte(dc, &c, if selectionne { VERT_LIME_VIF } else { LIGNE_FORTE });
+                zm[i] = c;
+                let cx = g + s(30);
+                let cy = haut + h_opt / 2;
+                cercle(dc, cx, cy, s(13), if selectionne { VERT_LIME_VIF } else { LIGNE_FORTE });
+                cercle(dc, cx, cy, s(10), CARTE);
+                if selectionne { coche(dc, cx, cy, s(6), VERT_LIME_VIF); }
+                let mut rt = RECT { left: g + s(58), top: haut + s(12), right: d - s(20), bottom: haut + s(38) };
+                texte_echelle(dc, dpi, "Segoe UI", titre_opt, &mut rt,
+                              DT_SINGLELINE | DT_VCENTER, if selectionne { TEXTE } else { TEXTE_DOUX },
+                              11, selectionne, echelle);
+                let mut rd = RECT { left: g + s(58), top: haut + s(40), right: d - s(20), bottom: c.bottom - s(10) };
+                texte_echelle(dc, dpi, "Segoe UI", desc, &mut rd,
+                              DT_WORDBREAK | DT_TOP | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
+            }
+            *std::ptr::addr_of_mut!(ZONES_MAJ) = zm;
+
+            // Ligne de statut : vérification auto / bouton de consentement.
+            let ys = yc + 3 * (h_opt + ecart) + s(4);
+            let suiv = SUIVI_MAJ.lock().unwrap_or_else(|e| e.into_inner());
+            let mut libelle_action: Option<&str> = None;
+            let (statut, couleur_statut): (String, u32) = match etat.mode_maj {
+                ModeMiseAJour::Desactive => (
+                    "Mises à jour DÉSACTIVÉES : aucune vérification, même « rose update ».".to_string(),
+                    ROUGE_VIF,
+                ),
+                _ if suiv.telecharge_en_cours => (
+                    "Téléchargement de la mise à jour…".to_string(), VERT_LIME_VIF),
+                _ if suiv.telechargement.is_some() => match &suiv.telechargement {
+                    Some(Ok(Some(v))) => (
+                        format!("Paquet Rose {v} téléchargé — relancez l'installation pour l'appliquer."),
+                        VERT_LIME_VIF),
+                    Some(Ok(None)) => ("Rose est déjà à jour.".to_string(), VERT_LIME_VIF),
+                    Some(Err(e)) => (format!("Téléchargement impossible : {e}"), ROUGE_VIF),
+                    _ => unreachable!(),
+                },
+                _ if suiv.verifie_en_cours => (
+                    "Vérification des versions disponibles…".to_string(), TEXTE_DOUX),
+                _ if suiv.verification.is_some() => match &suiv.verification {
+                    Some(Ok(Some(v))) => {
+                        libelle_action = Some("Télécharger");
+                        (format!("Mise à jour disponible : Rose {v} — téléchargez seulement si vous le souhaitez."),
+                         VERT_LIME_VIF)
+                    }
+                    Some(Ok(None)) => ("Rose est à jour.".to_string(), VERT_LIME_VIF),
+                    Some(Err(e)) => {
+                        // Échec réseau/hors-ligne : laisser un bouton pour
+                        // retenter une vérification explicite.
+                        libelle_action = Some("Vérifier les mises à jour");
+                        (format!("Vérification impossible : {e}"), ROUGE_CLAIR)
+                    }
+                    _ => unreachable!(),
+                },
+                _ if etat.mode_maj == ModeMiseAJour::Manuel => {
+                    libelle_action = Some("Vérifier les mises à jour");
+                    ("Mode manuel : aucune vérification automatique.".to_string(), TEXTE_DOUX)
+                }
+                _ => ("Vérification au démarrage…".to_string(), TEXTE_DOUX),
+            };
+            drop(suiv);
+            let mut rs = RECT { left: g, top: ys, right: d - s(218), bottom: (ys + s(46)).min(bas_utile) };
+            texte_echelle(dc, dpi, "Segoe UI", &statut, &mut rs,
+                          DT_WORDBREAK | DT_END_ELLIPSIS | DT_TOP, couleur_statut, 9, false, echelle);
+            if let Some(libelle) = libelle_action {
+                let bouton = RECT { left: d - s(210), top: ys, right: d, bottom: ys + s(34) };
+                let fond = if libelle == "Télécharger" { VERT_LIME_VIF } else { VERT_LIME };
+                arrondi(dc, &bouton, 8, fond);
+                contour(dc, &bouton, 8, fond);
+                let mut rb = bouton;
+                texte_echelle(dc, dpi, "Kare", &libelle.to_uppercase(), &mut rb,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 9, false, echelle);
+                *std::ptr::addr_of_mut!(ZONE_MAJ_ACTION) = bouton;
+            } else {
+                *std::ptr::addr_of_mut!(ZONE_MAJ_ACTION) = std::mem::zeroed::<RECT>();
+            }
+        }
         Vue::Bienvenue => {
             let corps = "Rose est un langage de programmation en français, auto-hébergé : \
                          interprète exact, JIT Cranelift, AOT LLVM et module WASM.\n\n\
@@ -2038,6 +2157,81 @@ static mut ZONES_ZONE_PATH: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 }
 static mut ZONES_METHODES: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
 
 static mut ZONES_TITRE: [i32; 3] = [0, 0, 0];
+
+/// Zones cliquables des TROIS cartes du premier écran (choix du mode).
+static mut ZONES_MAJ: [RECT; 3] = [
+    RECT { left: 0, top: 0, right: 0, bottom: 0 },
+    RECT { left: 0, top: 0, right: 0, bottom: 0 },
+    RECT { left: 0, top: 0, right: 0, bottom: 0 },
+];
+/// Bouton unique de la ligne de statut du premier écran : « Vérifier les
+/// mises à jour » (mode manuel) puis « Télécharger » (consentement).
+static mut ZONE_MAJ_ACTION: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+
+/// Suivi des opérations réseau du premier écran, rempli par les fils de
+/// travail et lu par `dessiner`. `None` = pas encore lancée / pas de résultat.
+struct SuiviMaj {
+    verifie_en_cours: bool,
+    verification: Option<Result<Option<String>, String>>,
+    telecharge_en_cours: bool,
+    telechargement: Option<Result<Option<String>, String>>,
+}
+static SUIVI_MAJ: std::sync::Mutex<SuiviMaj> = std::sync::Mutex::new(SuiviMaj {
+    verifie_en_cours: false,
+    verification: None,
+    telecharge_en_cours: false,
+    telechargement: None,
+});
+
+/// Lance une vérification en tâche de fond.
+///
+/// `explicite = false` : vérification AU DÉMARRAGE (mode « Auto » seulement,
+/// garde-fou dans `velopack::verifier_au_demarrage`) — ne télécharge RIEN.
+/// `explicite = true` : bouton « Vérifier les mises à jour » (mode manuel).
+fn lancer_verification_maj(h: HWND, explicite: bool) {
+    {
+        let mut g = match SUIVI_MAJ.lock() { Ok(g) => g, Err(_) => return };
+        if g.verifie_en_cours || g.telecharge_en_cours { return; }
+        g.verifie_en_cours = true;
+        g.verification = None;
+        g.telechargement = None;
+    }
+    let cible = h as isize;
+    std::thread::spawn(move || {
+        let resultat = if explicite {
+            crate::velopack::verifier_manifeste()
+        } else {
+            crate::velopack::verifier_au_demarrage()
+        };
+        if let Ok(mut g) = SUIVI_MAJ.lock() {
+            g.verification = Some(resultat);
+            g.verifie_en_cours = false;
+        }
+        let h = cible as HWND;
+        if !h.is_null() { unsafe { SendMessageW(h, WM_APP_MAJ, 0, 0); } }
+    });
+}
+
+/// Consentement explicite de l'utilisateur : télécharge effectivement la
+/// version trouvée. En mode « désactivé », `check_and_update` refuse avec
+/// un message lisible dans la ligne de statut.
+fn lancer_telechargement_maj(h: HWND) {
+    {
+        let mut g = match SUIVI_MAJ.lock() { Ok(g) => g, Err(_) => return };
+        if g.verifie_en_cours || g.telecharge_en_cours { return; }
+        g.telecharge_en_cours = true;
+    }
+    let cible = h as isize;
+    std::thread::spawn(move || {
+        let resultat = crate::velopack::check_and_update(false);
+        if let Ok(mut g) = SUIVI_MAJ.lock() {
+            g.telechargement = Some(resultat);
+            g.telecharge_en_cours = false;
+        }
+        let h = cible as HWND;
+        if !h.is_null() { unsafe { SendMessageW(h, WM_APP_MAJ, 0, 0); } }
+    });
+}
 
 fn dans(r: &RECT, x: i32, y: i32) -> bool {
     r.right > r.left && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom
@@ -2455,6 +2649,47 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             // la méthode (pas de bouton par méthode : la carte est
             // cliquable ligne par ligne).
             let etat = &mut *ETAT;
+            // ── Premier écran : 3 cartes radio + bouton d'action ────────
+            if etat.vue == Vue::MisesAJour {
+                let z_maj = &*std::ptr::addr_of!(ZONES_MAJ);
+                for (i, z) in z_maj.iter().enumerate() {
+                    if dans(z, x, y) {
+                        etat.mode_maj = match i {
+                            0 => crate::velopack::ModeMiseAJour::Auto,
+                            1 => crate::velopack::ModeMiseAJour::Manuel,
+                            _ => crate::velopack::ModeMiseAJour::Desactive,
+                        };
+                        {
+                            let mut g = SUIVI_MAJ.lock().unwrap_or_else(|e| e.into_inner());
+                            g.verification = None;
+                            g.telechargement = None;
+                        }
+                        // Rejoindre le mode « Auto » relance la vérification
+                        // au démarrage ; les deux autres n'appellent RIEN.
+                        if etat.mode_maj == crate::velopack::ModeMiseAJour::Auto {
+                            lancer_verification_maj(h, false);
+                        }
+                        rafraichir(h);
+                        return 0;
+                    }
+                }
+                let za = &*std::ptr::addr_of!(ZONE_MAJ_ACTION);
+                if dans(za, x, y) {
+                    let suiv = SUIVI_MAJ.lock().unwrap_or_else(|e| e.into_inner());
+                    // « Télécharger » n'apparaît qu'après une version trouvée ;
+                    // sinon le bouton est « Vérifier les mises à jour ».
+                    let consentement = suiv.telechargement.is_none()
+                        && suiv.verification.as_ref()
+                            .map(|r| matches!(r, Ok(Some(_)))).unwrap_or(false);
+                    drop(suiv);
+                    if consentement { lancer_telechargement_maj(h); }
+                    else { lancer_verification_maj(h, true); }
+                    rafraichir(h);
+                    return 0;
+                }
+                // Sinon : laisser tomber sur les boutons du pied de page
+                // (« Annuler » / « Continuer »).
+            }
             // ⚠ Rust 2024 interdit `&STATIC_MUT` : on passe par `addr_of!`.
             let zm = &*std::ptr::addr_of!(ZONES_METHODES);
             if etat.vue == Vue::Path && dans(zm, x, y) {
@@ -2470,6 +2705,12 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             else if dans(&zones[2], x, y) { action_path(h); }
             else if dans(&zones[0], x, y) { action(h, 0); }
             else if dans(&zones[1], x, y) { action(h, 1); }
+            0
+        }
+        WM_APP_MAJ => {
+            // Une vérification / un téléchargement du premier écran est
+            // terminé (tâche de fond) : on repeint pour afficher le statut.
+            rafraichir(h);
             0
         }
         WM_APP_FIN => {
@@ -2553,6 +2794,23 @@ fn action(h: HWND, bouton: usize) {
     let choix = if bouton == 0 { gauche } else { droite };
     let Some((action, _)) = choix else { return };
     match action {
+        Action::Continuer => {
+            // Premier écran : PERSISTANCE du choix avant toute installation.
+            match crate::velopack::ecrire_config(etat.mode_maj) {
+                Ok(chemin) => {
+                    etat.statut = format!("Mode « {} » enregistré dans {}",
+                        etat.mode_maj.comme_str(), chemin.display());
+                }
+                Err(e) => {
+                    // On n'empêche PAS l'installation si l'écriture échoue
+                    // (profil verrouillé) : le défaut reste appliqué, et
+                    // l'erreur est visible dans la barre d'état.
+                    etat.statut = format!("Configuration non enregistrée : {e}");
+                }
+            }
+            etat.vue = Vue::Bienvenue;
+            unsafe { rafraichir(h); }
+        }
         Action::Annuler => {
             unsafe { PostQuitMessage(0); }
         }
@@ -2819,7 +3077,10 @@ pub fn lancer() {
             diagnostic: None,
             methode: 0,
             journal_path: Vec::new(),
-            vue: Vue::Bienvenue,
+            // Le mode affiché est CELUI DÉJÀ ENREGISTRÉ : relu au démarrage,
+            // il peut être changé sur le premier écran puis « Continuer ».
+            mode_maj: crate::velopack::lire_config().mode,
+            vue: Vue::MisesAJour,
             atteintes: [false; 5],
             licence: lire_licence(),
             prefixe,
@@ -2951,6 +3212,15 @@ pub fn lancer() {
             return;
         }
         HWND_FENETRE = hwnd;
+        // ── Vérification AU DÉMARRAGE (mode « Auto » uniquement) ──────
+        // Le garde-fou est dans `velopack::verifier_au_demarrage` : en mode
+        // « Manuel » ou « Désactivé », cette fonction ne fait aucun appel
+        // réseau et l'écran n'affiche aucun résultat de vérification.
+        // La vérification NE TÉLÉCHARGE RIEN : le bouton « Télécharger »
+        // n'apparaît qu'ensuite, comme accord explicite de l'utilisateur.
+        if crate::velopack::doit_verifier_au_demarrage() {
+            lancer_verification_maj(hwnd, false);
+        }
         // L'icône est déjà posée sur la CLASSE (voir plus haut). On la
         // ré-applique sur la FENÊTRE par WM_SETICON : certaines versions de
         // Windows n'honorent l'icône de classe qu'après création, et cela ne

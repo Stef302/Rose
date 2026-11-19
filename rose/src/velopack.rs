@@ -276,6 +276,169 @@ pub fn url_manifeste() -> String {
     "https://github.com/Stef302/Rose/releases/latest/download/releases.win.json".to_string()
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   MODE DE MISE À JOUR — CHOIX DU PREMIER ÉCRAN
+
+   Le premier écran de l'installateur/launcher demande à l'utilisateur
+   comment Rose doit gérer ses mises à jour. Le choix est persisté dans un
+   JSON PLAT écrit sous le profil utilisateur (`%APPDATA%\Rose\config.json`
+   sur Windows), relu à chaque démarrage.
+
+   ⚠ Aucun crate externe : on réutilise `valeur()` (le parseur JSON maison
+   déjà présent plus haut pour `releases.win.json`). Aucun service Windows,
+   aucune tâche planifiée, aucune clé HKLM : le choix est un simple fichier
+   HKCU, sans privilège administrateur. Voir `docs/AUTO_UPDATE_CHOIX.md`.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/// Mode choisi au premier écran, AVANT toute installation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModeMiseAJour {
+    /// Vérifie les versions à chaque lancement ; ne télécharge qu'après
+    /// accord explicite de l'utilisateur (bouton de l'écran).
+    Auto,
+    /// Aucune vérification automatique : seulement `rose update` ou le
+    /// bouton « Vérifier les mises à jour ».
+    Manuel,
+    /// Aucune vérification, y compris `rose update` (message explicite).
+    Desactive,
+}
+
+impl ModeMiseAJour {
+    /// Valeur exacte écrite dans `config.json`.
+    pub fn comme_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manuel => "manuel",
+            Self::Desactive => "desactive",
+        }
+    }
+
+    /// Accepte la valeur canonique et quelques alias lisibles. Inconnu →
+    /// `None` : l'appelant retombe sur le mode par défaut.
+    pub fn depuis_str(s: &str) -> Option<Self> {
+        // `to_lowercase()` (Unicode) et non `to_ascii_lowercase()` : l'alias
+        // « DÉSACTIVÉ » doit devenir « désactivé » (É → é), sinon il est
+        // rejeté et retombe sur « auto » — mesuré en test.
+        let normalise = s.trim().to_lowercase();
+        match normalise.as_str() {
+            "auto" | "automatique" | "startup" => Some(Self::Auto),
+            "manuel" | "manual" => Some(Self::Manuel),
+            "desactive" | "désactivé" | "desactivee" | "off" | "none" => Some(Self::Desactive),
+            _ => None,
+        }
+    }
+}
+
+/// Mode par défaut quand aucun fichier n'existe encore : la vérification
+/// au démarrage est utile, mais le TÉLÉCHARGEMENT reste soumis à accord.
+/// Un défaut « désactivé » casserait `rose update` sur une machine neuve.
+pub const MODE_PAR_DEFAUT: ModeMiseAJour = ModeMiseAJour::Auto;
+
+/// Nom du fichier de configuration.
+pub const NOM_CONFIG: &str = "config.json";
+/// Clé JSON du mode.
+pub const CLE_MODE: &str = "mode";
+
+/// Chemin de la configuration : `%APPDATA%\Rose\config.json` sur Windows.
+///
+/// `ROSE_CONFIG_DIR` le redirige (tests, profils nomades) ; sans APPDATA on
+/// retombe sur la racine Velopack, puis sur un chemin relatif. Jamais HKLM.
+pub fn chemin_config() -> PathBuf {
+    if let Some(d) = std::env::var_os("ROSE_CONFIG_DIR") {
+        return PathBuf::from(d).join(NOM_CONFIG);
+    }
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        return PathBuf::from(appdata).join(DOSSIER_VELOPACK).join(NOM_CONFIG);
+    }
+    if let Some(r) = dossier_racine() {
+        return r.join(NOM_CONFIG);
+    }
+    PathBuf::from(NOM_CONFIG)
+}
+
+/// Configuration lue : pour l'instant un seul champ, le mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigMiseAJour {
+    pub mode: ModeMiseAJour,
+}
+
+impl Default for ConfigMiseAJour {
+    fn default() -> Self {
+        Self { mode: MODE_PAR_DEFAUT }
+    }
+}
+
+/// Analyse un JSON plat `{"mode":"auto"}`. Toute valeur absente, invalide
+/// ou non-string retombe sur `MODE_PAR_DEFAUT` (jamais une erreur fatale).
+pub fn parser_config(json: &str) -> ConfigMiseAJour {
+    let mode = valeur(json, CLE_MODE)
+        .and_then(|v| ModeMiseAJour::depuis_str(&v))
+        .unwrap_or(MODE_PAR_DEFAUT);
+    ConfigMiseAJour { mode }
+}
+
+/// Relit la configuration au démarrage. Fichier absent ou illisible =
+/// `MODE_PAR_DEFAUT` (le premier écran permet de changer immédiatement).
+pub fn lire_config() -> ConfigMiseAJour {
+    match fs::read_to_string(chemin_config()) {
+        Ok(s) => parser_config(&s),
+        Err(_) => ConfigMiseAJour::default(),
+    }
+}
+
+/// Écrit le choix de l'utilisateur. Crée le dossier au besoin.
+pub fn ecrire_config(mode: ModeMiseAJour) -> Result<PathBuf, String> {
+    let chemin = chemin_config();
+    if let Some(parent) = chemin.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("création de {} : {e}", parent.display()))?;
+    }
+    let json = format!("{{\n  \"{}\": \"{}\"\n}}\n", CLE_MODE, mode.comme_str());
+    fs::write(&chemin, json)
+        .map_err(|e| format!("écriture de {} : {e}", chemin.display()))?;
+    Ok(chemin)
+}
+
+/// Message renvoyé quand le mode « désactivé » bloque une opération.
+fn message_desactive() -> String {
+    format!(
+        "mises à jour DÉSACTIVÉES par {} (mode \"desactive\") : aucune \
+         vérification ni téléchargement, même depuis « rose update ». \
+         Choisissez « Auto » ou « Manuel » au premier écran pour réactiver.",
+        chemin_config().display()
+    )
+}
+
+/// Décision prise au démarrage : le launcher ne lance une vérification QUE
+/// dans le mode « Auto ». « Manuel » et « Désactivé » ne font RIEN — pas
+/// même un appel réseau.
+pub fn doit_verifier_au_demarrage() -> bool {
+    lire_config().mode == ModeMiseAJour::Auto
+}
+
+/// Vérification AU DÉMARRAGE, en mode « Auto » uniquement : lit le
+/// manifeste et renvoie la version disponible SANS RIEN TÉLÉCHARGER.
+/// Le téléchargement n'a lieu que si l'utilisateur accepte ensuite
+/// (`check_and_update` depuis le bouton de consentement de l'UI).
+pub fn verifier_au_demarrage() -> Result<Option<String>, String> {
+    if !doit_verifier_au_demarrage() {
+        return Ok(None); // manuel / désactivé : aucun appel, aucun réseau
+    }
+    verifier_manifeste()
+}
+
+/// Vérification EXPLICITE (bouton « Vérifier les mises à jour », mode
+/// manuel). Refusée en mode « désactivé », avec le message explicite.
+pub fn verifier_manifeste() -> Result<Option<String>, String> {
+    if lire_config().mode == ModeMiseAJour::Desactive {
+        return Err(message_desactive());
+    }
+    let installee = version_installee().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let manifeste = Manifeste::analyser(&lire_source(&url_manifeste())?)?;
+    Ok(manifeste.paquet_a_jour(&installee).map(|p| p.version.clone()))
+}
+
 /// SHA-256 d'un fichier (implémentation maison, sans dépendance).
 fn sha256_fichier(chemin: &Path) -> Result<String, String> {
     let mut f = fs::File::open(chemin).map_err(|e| format!("ouverture : {e}"))?;
@@ -287,9 +450,26 @@ fn sha256_fichier(chemin: &Path) -> Result<String, String> {
 /// Interroge le manifeste, télécharge le paquet complet de la dernière
 /// version et le dépose dans `packages\`.
 ///
+/// ⚠ RESPECT DU CHOIX DU PREMIER ÉCRAN : en mode « désactivé », AUCUNE
+/// vérification n'est faite — même quand cette fonction est appelée
+/// explicitement par `rose update` — et un message explicite est renvoyé.
+/// En mode « manuel », l'appel explicite est autorisé (c'est précisément
+/// l'action de l'utilisateur). En mode « auto », cet appel est le
+/// téléchargement consenti à la suite de `verifier_au_demarrage`.
+///
 /// `Ok(Some(version))` : paquet téléchargé et vérifié ;
 /// `Ok(None)` : Rose est déjà à jour ; `Err` : tout autre échec.
-pub fn check_and_update(_silencieux: bool) -> Result<Option<String>, String> {
+pub fn check_and_update(silencieux: bool) -> Result<Option<String>, String> {
+    if lire_config().mode == ModeMiseAJour::Desactive {
+        return Err(message_desactive());
+    }
+    verifier_et_telecharger(silencieux)
+}
+
+/// Ancien corps de `check_and_update` : SUPPOSÉ explicite (consentement
+/// déjà obtenu par l'appelant). Ne jamais appeler directement sans passer
+/// par le garde-fou de mode ci-dessus.
+fn verifier_et_telecharger(_silencieux: bool) -> Result<Option<String>, String> {
     let installee = version_installee().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     let manifeste = Manifeste::analyser(&lire_source(&url_manifeste())?)?;
     let paquet = match manifeste.paquet_a_jour(&installee) {
@@ -1275,6 +1455,127 @@ mod tests {
             std::env::remove_var("ROSE_LAUNCHER_BASE");
             std::env::remove_var("ROSE_LAUNCHER_API");
             std::env::remove_var("ROSE_VELOPACK_ROOT");
+        }
+        let _ = fs::remove_dir_all(&racine);
+    }
+
+    /* ── MODE DE MISE À JOUR : parser, persistance, effet réel ───────── */
+
+    #[test]
+    fn parser_config_reconnait_les_trois_modes() {
+        assert_eq!(parser_config(r#"{"mode":"auto"}"#).mode, ModeMiseAJour::Auto);
+        assert_eq!(parser_config(r#"{"mode":"manuel"}"#).mode, ModeMiseAJour::Manuel);
+        assert_eq!(parser_config(r#"{"mode":"desactive"}"#).mode, ModeMiseAJour::Desactive);
+        // alias tolérés
+        assert_eq!(parser_config(r#"{"mode":"DÉSACTIVÉ"}"#).mode, ModeMiseAJour::Desactive);
+        assert_eq!(parser_config(r#"{"mode":"MANUAL"}"#).mode, ModeMiseAJour::Manuel);
+        assert_eq!(parser_config(r#"{"mode":"Automatic"}"#).mode, ModeMiseAJour::Auto);
+    }
+
+    #[test]
+    fn parser_config_valeurs_invalides_retombent_sur_le_defaut() {
+        let cas = [
+            "",
+            "{}",
+            "du texte",
+            r#"{"mode":"inconnu"}"#,
+            r#"{"mode":42}"#,
+            r#"{"autre":"auto"}"#,
+            r#"{"mode":null}"#,
+        ];
+        for json in cas {
+            assert_eq!(
+                parser_config(json).mode,
+                MODE_PAR_DEFAUT,
+                "json invalide {json:?} doit retomber sur le défaut"
+            );
+        }
+        assert_eq!(MODE_PAR_DEFAUT, ModeMiseAJour::Auto);
+    }
+
+    /// Un SEUL test pose `ROSE_CONFIG_DIR`/`ROSE_VELOPACK_URL` : les tests
+    /// Rust tournant en parallèle, on ne touche PAS `ROSE_VELOPACK_ROOT`,
+    /// déjà posé par `launcher_selection_et_cache` (mesuré : collision
+    /// `LOCALAPPDATA indisponible` quand les deux tests le posent ensemble).
+    #[test]
+    fn config_persistance_et_effet_au_demarrage() {
+        let racine = std::env::temp_dir().join(format!(
+            "rose_config_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let dossier_cfg = racine.join("AppData").join("Roaming").join("Rose");
+        let manifeste_absent = racine.join("manifeste-absent.json");
+        // Édition 2024 : set_var est `unsafe`.
+        unsafe {
+            std::env::set_var("ROSE_CONFIG_DIR", &dossier_cfg);
+            // Manifest intentionnellement absent : si une vérification est
+            // tentée, `lire_source` renvoie une Erreur de lecture LOCALE
+            // (aucun réseau) — preuve que l'appel a bien eu lieu.
+            std::env::set_var(
+                "ROSE_VELOPACK_URL",
+                format!("file://{}", manifeste_absent.display()),
+            );
+        }
+        let chemin = chemin_config();
+        assert_eq!(chemin, dossier_cfg.join(NOM_CONFIG));
+        assert!(!chemin.exists(), "aucun fichier au départ");
+
+        // 1. Défaut : pas de fichier → Auto (config lue sans planter).
+        assert_eq!(lire_config().mode, MODE_PAR_DEFAUT);
+        assert_eq!(lire_config().mode, ModeMiseAJour::Auto);
+
+        // 2. Aller-retour pour CHAQUE mode : écrit → fichier lisible → relu.
+        for mode in [ModeMiseAJour::Auto, ModeMiseAJour::Manuel, ModeMiseAJour::Desactive] {
+            ecrire_config(mode).expect("écriture config");
+            let brut = fs::read_to_string(&chemin).expect("config lisible");
+            assert!(brut.contains(&format!("\"{}\": \"{}\"", CLE_MODE, mode.comme_str())), "{brut}");
+            assert_eq!(lire_config().mode, mode, "aller-retour {mode:?}");
+        }
+
+        // 3. Écriture invalide → relecture tolérante sur le défaut.
+        fs::write(&chemin, r#"{"mode":"bizarre"}"#).unwrap();
+        assert_eq!(lire_config().mode, MODE_PAR_DEFAUT);
+
+        // 4. Effet réel — mode MANUEL : AUCUNE vérification au démarrage,
+        //    aucun appel réseau/fichier, donc Ok(None) même avec un manifeste
+        //    absent.
+        ecrire_config(ModeMiseAJour::Manuel).unwrap();
+        assert!(!doit_verifier_au_demarrage());
+        assert_eq!(verifier_au_demarrage().unwrap(), None);
+        // Une vérification EXPLICITE, elle, est autorisée : elle échoue ici
+        // uniquement parce que le manifeste n'existe pas (preuve de l'appel).
+        let explicite = verifier_manifeste().unwrap_err();
+        assert!(explicite.contains("lecture"), "vérification explicite attendue : {explicite}");
+        // `rose update` (velopack) est autorisé en manuel : il échoue sur le
+        // manifeste absent, PAS sur le mode.
+        let update = check_and_update(true).unwrap_err();
+        assert!(update.contains("lecture"), "rose update autorisé en manuel : {update}");
+
+        // 5. Effet réel — mode DÉSACTIVÉ : tout est bloqué AVANT le manifeste,
+        //    y compris `rose update`, avec le message explicite.
+        ecrire_config(ModeMiseAJour::Desactive).unwrap();
+        assert!(!doit_verifier_au_demarrage());
+        assert_eq!(verifier_au_demarrage().unwrap(), None);
+        let bloque = check_and_update(true).unwrap_err();
+        assert!(bloque.contains("DÉSACTIVÉ"), "{bloque}");
+        assert!(bloque.contains("rose update"), "{bloque}");
+        let bloque_explicite = verifier_manifeste().unwrap_err();
+        assert!(bloque_explicite.contains("DÉSACTIVÉ"), "{bloque_explicite}");
+
+        // 6. Effet réel — mode AUTO : la décision de démarrage est vraie et
+        //    la vérification EST tentée (échec de lecture du manifeste absent).
+        ecrire_config(ModeMiseAJour::Auto).unwrap();
+        assert!(doit_verifier_au_demarrage());
+        let auto = verifier_au_demarrage().unwrap_err();
+        assert!(auto.contains("lecture"), "vérification auto attendue : {auto}");
+
+        unsafe {
+            std::env::remove_var("ROSE_CONFIG_DIR");
+            std::env::remove_var("ROSE_VELOPACK_URL");
         }
         let _ = fs::remove_dir_all(&racine);
     }
