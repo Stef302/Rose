@@ -27,8 +27,13 @@
 //                  shifts, rotations, comparaisons, conversions, clz/ctz/popcnt ;
 //   globals : get/set (mutables inclus).
 //
-// ⚠ HORS SUPPORT (refusé PROPREMENT, avec message) : la section de
-//    démarrage (`start`), `call_indirect`, les exceptions, les SIMD, les threads.
+// ⚠ HORS SUPPORT (refusé PROPREMENT, avec message) : les exceptions, les SIMD,
+//    les threads, les références (externref), les tables multiples.
+//
+// ⚠⚠⚠ VAGUE 32 (19/11/2026) : `call_indirect` ET la section `start` sont
+//    DÉSORMAIS SUPPORTÉS (voir plus bas). C'est ce qui débloque les bibliothèques
+//    réelles compilées avec optimisation : clang -O1/-O2 prend l'adresse de
+//    helpers `static` et émet des `call_indirect`.
 //
 // ⚠⚠⚠ IMPORTS (M6.3) : la section d'import est désormais LUE. Les imports de
 //    fonction sont résolus vers un registre de FONCTIONS HÔTES Rose (voir
@@ -60,6 +65,16 @@ impl std::fmt::Display for WasmErr {
 }
 
 fn err<T>(m: impl Into<String>) -> Result<T, WasmErr> { Err(WasmErr(m.into())) }
+
+// ⚠⚠⚠ VAGUE 32 — BORNES D'INSTRUCTIONS (anti-boucle infinie).
+// Un module non fiable peut boucler pour toujours : l'interpréteur doit rendre
+// la main. Le budget est COMPTÉ PAR INSTRUCTION EXÉCUTÉE et partagé par tous
+// les appels imbriqués d'un même appel public. Valeurs mesurées : xxHash/FNV
+// < 100 k instructions, miniz CRC32 ~200 k, LZ4 compress -O2 ~12 M.
+/// Budget pour un appel public (généreux : les algo réels ont besoin de millions).
+pub const BUDGET_APPEL: u64 = 500_000_000;
+/// Budget pour la fonction de la section `start` (init doit rester courte).
+pub const BUDGET_START: u64 = 20_000_000;
 
 // ═══════════════════════════════════════════════════════════════════════
 // REGISTRE DES FONCTIONS HÔTES (M6.3)
@@ -105,18 +120,95 @@ static HOTES: Mutex<Option<HashMap<(String, String), HoteFonction>>> = Mutex::ne
 // ⚠ La table intégrée, par (module, nom). Les alias `wasi_unstable` couvrent
 // les anciens outils (clang wasi-sdk < 14) ; `env.ecrire` est l'équivalent
 // francophone de `env.log`.
+//
+// ⚠⚠⚠ VAGUE 32 : le registre WASI passe de 4 à 22 fonctions par namespace.
+// Les hôtes de CHEMIN (`path_*`) et de PRÉOUVERTURE (`fd_prestat_*`) sont des
+// stubs SANDBOXés HONNÊTES : ils rendent un errno WASI explicite (ENOTCAPABLE
+// = 76, EBADF = 8), jamais une réussite simulée. Aucun accès disque/réseau.
 const HOTES_INTEGRES: &[(&str, &str, HoteFonction)] = &[
     ("env", "log", hote_log),
     ("env", "ecrire", hote_ecrire),
+    // ── WASI : E/S et divers (réels) ────────────────────────────────────
     ("wasi_snapshot_preview1", "fd_write", hote_fd_write),
     ("wasi_snapshot_preview1", "fd_read", hote_fd_read),
     ("wasi_snapshot_preview1", "proc_exit", hote_proc_exit),
     ("wasi_snapshot_preview1", "random_get", hote_random_get),
+    ("wasi_snapshot_preview1", "args_get", hote_args_get),
+    ("wasi_snapshot_preview1", "args_sizes_get", hote_args_sizes_get),
+    ("wasi_snapshot_preview1", "environ_get", hote_environ_get),
+    ("wasi_snapshot_preview1", "environ_sizes_get", hote_environ_sizes_get),
+    ("wasi_snapshot_preview1", "clock_time_get", hote_clock_time_get),
+    ("wasi_snapshot_preview1", "sched_yield", hote_sched_yield),
+    ("wasi_snapshot_preview1", "fd_close", hote_fd_close),
+    ("wasi_snapshot_preview1", "fd_seek", hote_fd_seek),
+    ("wasi_snapshot_preview1", "fd_fdstat_get", hote_fd_fdstat_get),
+    ("wasi_snapshot_preview1", "fd_filestat_get", hote_fd_stub),
+    ("wasi_snapshot_preview1", "fd_prestat_get", hote_fd_prestat_get),
+    ("wasi_snapshot_preview1", "fd_prestat_dir_name", hote_fd_prestat_get),
+    ("wasi_snapshot_preview1", "fd_sync", hote_fd_stub),
+    ("wasi_snapshot_preview1", "fd_datasync", hote_fd_stub),
+    ("wasi_snapshot_preview1", "path_open", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_filestat_get", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_link", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_rename", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_symlink", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_readlink", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_unlink_file", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_remove_directory", hote_path_stub),
+    ("wasi_snapshot_preview1", "path_create_directory", hote_path_stub),
+    // ── Alias historique `wasi_unstable` (wasi-sdk < 14) ───────────────
     ("wasi_unstable", "fd_write", hote_fd_write),
     ("wasi_unstable", "fd_read", hote_fd_read),
     ("wasi_unstable", "proc_exit", hote_proc_exit),
     ("wasi_unstable", "random_get", hote_random_get),
+    ("wasi_unstable", "args_get", hote_args_get),
+    ("wasi_unstable", "args_sizes_get", hote_args_sizes_get),
+    ("wasi_unstable", "environ_get", hote_environ_get),
+    ("wasi_unstable", "environ_sizes_get", hote_environ_sizes_get),
+    ("wasi_unstable", "clock_time_get", hote_clock_time_get),
+    ("wasi_unstable", "sched_yield", hote_sched_yield),
+    ("wasi_unstable", "fd_close", hote_fd_close),
+    ("wasi_unstable", "fd_seek", hote_fd_seek),
+    ("wasi_unstable", "fd_fdstat_get", hote_fd_fdstat_get),
+    ("wasi_unstable", "fd_filestat_get", hote_fd_stub),
+    ("wasi_unstable", "fd_prestat_get", hote_fd_prestat_get),
+    ("wasi_unstable", "fd_prestat_dir_name", hote_fd_prestat_get),
+    ("wasi_unstable", "fd_sync", hote_fd_stub),
+    ("wasi_unstable", "fd_datasync", hote_fd_stub),
+    ("wasi_unstable", "path_open", hote_path_stub),
+    ("wasi_unstable", "path_filestat_get", hote_path_stub),
+    ("wasi_unstable", "path_link", hote_path_stub),
+    ("wasi_unstable", "path_rename", hote_path_stub),
+    ("wasi_unstable", "path_symlink", hote_path_stub),
+    ("wasi_unstable", "path_readlink", hote_path_stub),
+    ("wasi_unstable", "path_unlink_file", hote_path_stub),
+    ("wasi_unstable", "path_remove_directory", hote_path_stub),
+    ("wasi_unstable", "path_create_directory", hote_path_stub),
 ];
+
+// ⚠ Valeurs initiales des GLOBALS IMPORTÉS (vague 32). Un hôte peut fournir
+// une valeur explicite avant `charger` ; sinon le global importé vaut zéro.
+static GLOBALS_INIT: Mutex<Option<HashMap<(String, String), ValWasm>>> = Mutex::new(None);
+
+/// ⚠ Enregistre la valeur initiale d'un global importé `(module, nom)`.
+/// Appelable AVANT `charger`. Typage vérifié au chargement.
+pub fn enregistrer_global_initial(module: &str, nom: &str, v: ValWasm) {
+    let mut g = match GLOBALS_INIT.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+    if g.is_none() { *g = Some(HashMap::new()); }
+    if let Some(table) = g.as_mut() {
+        table.insert((module.to_string(), nom.to_string()), v);
+    }
+}
+
+/// ⚠ Résout la valeur initiale d'un global importé (sinon `None` → zéro).
+pub fn global_initial(module: &str, nom: &str) -> Option<ValWasm> {
+    if let Ok(g) = GLOBALS_INIT.lock() {
+        if let Some(table) = g.as_ref() {
+            return table.get(&(module.to_string(), nom.to_string())).copied();
+        }
+    }
+    None
+}
 
 /// ⚠ La liste des hôtes intégrés (pour les messages d'erreur et les outils).
 pub fn hotes_integres() -> Vec<(String, String)> {
@@ -130,9 +222,11 @@ pub enum GenreImport {
     Fonction(u32),
     /// ⚠ Import de mémoire : limites en pages de 64 Kio.
     Memoire { min: u32, max: Option<u32> },
-    /// ⚠ Import de table (déclaré pour garder le décodage aligné).
-    Table,
-    /// ⚠ Import de global (déclaré pour garder le décodage aligné).
+    /// ⚠ Import de table : la table est allouée par Rose à la taille `min`.
+    /// Vague 32 : accepté (c'est la table utilisée par `call_indirect`).
+    Table { min: u32, max: Option<u32> },
+    /// ⚠ Import de global :.accepté, valeur initiale zéro ou fournie par
+    /// `enregistrer_global_initial`. Vague 32.
     Global(TyWasm, bool),
 }
 
@@ -257,6 +351,11 @@ pub struct ModuleWasm {
     pub memoire: Option<(u32, Option<u32>)>,
     pub globals: Vec<(TyWasm, bool, ValWasm)>,
     pub table: Vec<EntreeTable>,
+    /// ⚠ Vague 32 : taille MINIMALE de la table 0 (en entrées), lue dans la
+    /// section 4 et/ou un import de table. `call_indirect` indexe cette table.
+    pub table_min: u32,
+    /// ⚠ Vague 32 : section `start` (index de fonction à exécuter au chargement).
+    pub start: Option<u32>,
     /// ⚠ Exports : nom → (type, index) ; 0 = fonction, 3 = mémoire, 2 = table, 1 = global.
     pub exports: Vec<(String, u8, u32)>,
     pub data: Vec<(u32, Vec<u8>)>,
@@ -286,6 +385,15 @@ pub struct InstanceWasm {
     pub module: Arc<ModuleWasm>,
     pub memoire: Vec<u8>,
     pub globals: Vec<ValWasm>,
+    /// ⚠ Vague 32 : table d'appels indirects. `None` = funcref nul (piège
+    /// explicite) ; `Some(idx)` = index de fonction dans l'espace wasm.
+    pub table: Vec<Option<u32>>,
+    /// ⚠ Budget d'instructions restant (garde-fou anti-boucle infinie).
+    /// Réinitialisé à chaque appel public ; partagé par les appels imbriqués.
+    budget_restant: u64,
+    /// ⚠ Erreur de la section `start` (exécutée dans `nouveau`, surfaceée au
+    /// premier `appeler` : le pont ne peut pas changer la signature de `nouveau`).
+    pub start_erreur: Option<String>,
     /// ⚠ Profondeur maximale d'appels (garde-fou : pas de pile infinie).
     pub profondeur_max: usize,
     // ⚠ Les anciennes piles `blocs`/`tables`/`corps_len` ont été SUPPRIMÉES :
@@ -365,7 +473,8 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
     let mut m = ModuleWasm {
         types: Vec::new(), imports: Vec::new(), nb_imports_fonction: 0,
         fonctions: Vec::new(), memoire: None, globals: Vec::new(),
-        table: Vec::new(), exports: Vec::new(), data: Vec::new(), elem: Vec::new(),
+        table: Vec::new(), table_min: 0, start: None,
+        exports: Vec::new(), data: Vec::new(), elem: Vec::new(),
     };
     // ⚠ La section `code` arrive APRÈS les types et les déclarations de
     // fonctions : on la garde pour la fin (les corps ont besoin des types).
@@ -416,9 +525,9 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
                         0x01 => {
                             let _elemtype = s.octet()?; // 0x70 = funcref
                             let drapeaux = s.uleb()? as u32;
-                            let _min = s.uleb()? as u32;
-                            if drapeaux & 1 == 1 { let _max = s.uleb()?; }
-                            (GenreImport::Table, None)
+                            let min = s.uleb()? as u32;
+                            let max = if drapeaux & 1 == 1 { Some(s.uleb()? as u32) } else { None };
+                            (GenreImport::Table { min, max }, None)
                         }
                         0x02 => {
                             let drapeaux = s.uleb()? as u32;
@@ -429,6 +538,15 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
                         0x03 => {
                             let t = TyWasm::de(s.octet()?)?;
                             let mutable = s.octet()? != 0;
+                            // ⚠ Vague 32 : le global importé est accepté et
+                            // PRÉPENDU à `m.globals` (l'espace des globals compte
+                            // les imports AVANT les définitions, cf. spéc.).
+                            // Valeur par défaut : zéro, ou valeur enregistrée.
+                            let v = match global_initial(&module, &nom) {
+                                Some(v) => convertir(v, t),
+                                None => zero(t),
+                            };
+                            m.globals.push((t, mutable, v));
                             (GenreImport::Global(t, mutable), None)
                         }
                         autre => return err(format!("genre d'import inconnu : 0x{autre:02X}")),
@@ -443,15 +561,18 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
                 for _ in 0..n { type_idx_fonctions.push(s.uleb()? as u32); }
             }
             4 => {
-                // ⚠ Une table : forme (0x70 = funcref) + limites (drapeau, min,
-                // max facultatif). `call_indirect` n'est pas supporté, mais la
-                // section doit être lue pour ne pas désaligner le fichier.
+                // ⚠ Vague 32 : la section table est LUE et sa taille minimale
+                // retenue : elle dimensionne la table de `call_indirect`.
+                // Une seule table (index 0) est supportée.
                 let n = s.uleb()? as usize;
+                if n > 1 { return err("tables multiples : non supporté (une seule table)"); }
                 for _ in 0..n {
-                    s.octet()?; // forme (0x70 = funcref)
+                    let forme = s.octet()?;
+                    if forme != 0x70 { return err(format!("type de table 0x{forme:02X} : non supporté (funcref 0x70 attendu)")); }
                     let drapeaux = s.uleb()? as u32;
-                    let _min = s.uleb()? as u32;
+                    let min = s.uleb()? as u32;
                     if drapeaux & 1 == 1 { let _max = s.uleb()?; }
+                    if min > m.table_min { m.table_min = min; }
                 }
             }
             5 => {
@@ -482,7 +603,12 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
                     m.exports.push((nom, genre, idx));
                 }
             }
-            8 => return err("section de départ (`start`) : non supportée"),
+            8 => {
+                // ⚠ Vague 32 : la section `start` contient UN index de fonction
+                // (pas un compte). Elle est exécutée dans `InstanceWasm::nouveau`.
+                if m.start.is_some() { return err("plusieurs sections `start`"); }
+                m.start = Some(s.uleb()? as u32);
+            }
             9 => {
                 let n = s.uleb()? as usize;
                 for _ in 0..n {
@@ -578,11 +704,14 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
                 }
                 mem_importee = Some((min, max));
             }
-            GenreImport::Table => {
-                return err(format!("import de table {}.{} : non supporté", imp.module, imp.nom));
+            GenreImport::Table { min, .. } => {
+                // ⚠ Vague 32 : accepté. La table importée est allouée par Rose
+                // (les segments `elem` la remplissent dans `nouveau`).
+                if min > m.table_min { m.table_min = min; }
             }
             GenreImport::Global(_, _) => {
-                return err(format!("import de global {}.{} : non supporté", imp.module, imp.nom));
+                // ⚠ Vague 32 : accepté ; la valeur a déjà été prépendue dans
+                // `m.globals` à la lecture de la section d'import.
             }
         }
     }
@@ -799,12 +928,14 @@ pub fn decouper(code: &[u8]) -> Result<(Vec<InstrWasm>, Vec<InfoBloc>, Vec<Vec<u
                 let (n, q) = lire_uleb(code, pc)?; pc = q;
                 for _ in 0..n { if pc < code.len() { pc += 1; } }
             }
-            // ⚠ `call_indirect` (0x11) est refusé à l'exécution : on saute ses
-            // deux immédiats pour garder le décodage aligné.
+            // ⚠⚠⚠ VAGUE 32 — `call_indirect` (0x11) : on CONSERVE ses deux
+            // immédiats : `a` = index du type attendu, `b` = index de la table
+            // (0 dans le sous-ensemble supporté). Auparavant ils étaient Jetés,
+            // ce qui rendait toute résolution impossible.
             0x11 => {
-                let (_, q) = lire_uleb(code, pc)?;
-                let (_, r) = lire_uleb(code, q)?;
-                pc = r;
+                let (ti, q) = lire_uleb(code, pc)?;
+                let (tb, r) = lire_uleb(code, q)?;
+                a = ti as i64; b = tb as i64; pc = r;
             }
             // ── Toutes les autres : aucun immédiat ──────────────────────
             _ => {}
@@ -950,14 +1081,41 @@ impl InstanceWasm {
             memoire.resize((min as usize) * 65536, 0);
         }
         let globals: Vec<ValWasm> = module.globals.iter().map(|(_, _, v)| *v).collect();
-        let mut inst = InstanceWasm { module, memoire, globals, profondeur_max: 256 };
-        // ⚠ Les données initiales et les tables de fonctions.
+        let mut inst = InstanceWasm {
+            module, memoire, globals,
+            table: Vec::new(), budget_restant: BUDGET_APPEL,
+            start_erreur: None, profondeur_max: 256,
+        };
+        // ⚠ Les données initiales.
         let data: Vec<(u32, Vec<u8>)> = inst.module.data.clone();
         for (adresse, octets) in data {
             let a = adresse as usize;
             if a + octets.len() <= inst.memoire.len() {
                 inst.memoire[a..a + octets.len()].copy_from_slice(&octets);
             }
+        }
+        // ⚠⚠⚠ VAGUE 32 — LA TABLE DE `call_indirect`. Les segments `elem`
+        // (section 9) mappent des indices de table vers des indices de fonction.
+        let taille = inst.module.table_min as usize;
+        inst.table = vec![None; taille];
+        let elem: Vec<(u32, Vec<u32>)> = inst.module.elem.clone();
+        for (offset, fs) in elem {
+            for (j, f) in fs.into_iter().enumerate() {
+                let idx = (offset as usize).saturating_add(j);
+                if idx < inst.table.len() { inst.table[idx] = Some(f); }
+                // ⚠ Un segment hors table est IGNORÉ (comportement wasm :
+                // segmentation hors limites = trap ; ici on reste sandboxé).
+            }
+        }
+        // ⚠⚠⚠ VAGUE 32 — SECTION `start`. Exécutée ICI (au chargement), avec
+        // un budget dédié. Le pont ne peut pas changer la signature de
+        // `nouveau`, donc une erreur est mémorisée et surfaceée par `appeler`.
+        if let Some(idx) = inst.module.start {
+            inst.budget_restant = BUDGET_START;
+            if let Err(e) = inst.appeler_index(idx, &[], 0) {
+                inst.start_erreur = Some(e.0);
+            }
+            inst.budget_restant = BUDGET_APPEL;
         }
         inst
     }
@@ -983,6 +1141,13 @@ impl InstanceWasm {
 
     /// ⚠ Appelle une fonction exportée par son nom.
     pub fn appeler(&mut self, nom: &str, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+        // ⚠ La section `start` a été exécutée dans `nouveau` : on surface son
+        // erreur ici, avant tout appel utilisateur.
+        if let Some(e) = &self.start_erreur {
+            return err(format!("section `start` du module wasm : {e}"));
+        }
+        // ⚠ Budget frais pour cet appel public (les appels imbriqués le partagent).
+        self.budget_restant = BUDGET_APPEL;
         let idx = match self.export_fonction(nom) {
             Some(i) => i,
             None => return err(format!("fonction exportée '{nom}' introuvable dans le module")),
@@ -1080,6 +1245,12 @@ impl InstanceWasm {
         // sinon 0x6B/0x6C tombaient dans `count_ones`.
         let mut pc = 0usize;
         while pc < code.len() {
+            // ⚠⚠⚠ VAGUE 32 — BORNE D'INSTRUCTIONS. Sans elle, une boucle
+            // infinie dans un module non fiable bloquerait le programme Rose.
+            if self.budget_restant == 0 {
+                return err("budget d'instructions wasm épuisé (boucle infinie ou calcul trop long)");
+            }
+            self.budget_restant -= 1;
             let InstrWasm(op, imm, aux) = code[pc]; pc += 1;
             if trace_active() {
                 eprintln!("  [{pc:3}] {op:#04X} pile={:?} blocs={:?}", frame.pile,
@@ -1177,7 +1348,7 @@ impl InstanceWasm {
                 0x40 => {
                     let n = frame.pile.pop().ok_or_else(|| WasmErr("pile vide (memory.grow)".into()))?.as_i32();
                     let avant = self.memoire_taille() / 65536;
-                    if n > 0 { self.memoire.resize((avant + n as usize) * 65536, 0); }
+                                if n > 0 { self.memoire.resize((avant + n as usize) * 65536, 0); }
                     frame.pile.push(ValWasm::I32(avant as i32));
                 }
 
@@ -1246,8 +1417,8 @@ impl InstanceWasm {
                     // garde `nr` résultats). Sans cette remise à niveau, la
                     // pile grandissait à chaque tour de boucle (mesuré :
                     // `pgcd` en wasm échouait sur « pile vide (i32) »).
-                    self.remettre_pile(frame, imm as usize);
-                    pc = self.cible_saut(frame, imm as usize);
+                    self.sauter_et_pile_ecrire(&mut pc, frame, imm as usize);
+                    continue;
                 }
                 0x0D => {
                     // ⚠ `br_if N` : saut conditionnel.
@@ -1301,8 +1472,51 @@ impl InstanceWasm {
                     for v in res { frame.pile.push(v); }
                 }
                 0x11 => {
-                    // ⚠ `call_indirect type_idx` : appel via la table (non supporté).
-                    return err("call_indirect : non supporté (les modules autonomes n'en ont pas besoin)");
+                    // ⚠⚠⚠ VAGUE 32 — `call_indirect type_idx, table_idx`.
+                    // Pile attendue : [args…, index_table]. On résout l'index
+                    // dans la table de l'INSTANCE, on VÉRIFIE LE TYPE (sinon trap),
+                    // puis on appelle la fonction résolue.
+                    let type_idx = imm as u32;
+                    let table_idx = aux as u32;
+                    if table_idx != 0 {
+                        return err(format!("call_indirect : table {table_idx} non supportée (seule la table 0 est acceptée)"));
+                    }
+                    let idx_table = frame.pile.pop()
+                        .ok_or_else(|| WasmErr("pile vide (call_indirect : index de table)".into()))?
+                        .as_i32() as u32;
+                    let fidx = match self.table.get(idx_table as usize).copied().flatten() {
+                        Some(f) => f,
+                        None => return err(format!(
+                            "call_indirect : index {idx_table} invalide (table de {} entrée(s), funcref nul ou hors limites)",
+                            self.table.len())),
+                    };
+                    // ⚠ Vérification de type : la signature de la fonction
+                    // résolue doit être EXACTEMENT celle attendue par le site
+                    // d'appel. C'est une trap wasm, pas une conversion souple.
+                    let (attendus_p, attendus_r) = {
+                        let t = self.module.types.get(type_idx as usize)
+                            .ok_or_else(|| WasmErr(format!("call_indirect : type {type_idx} inconnu")))?;
+                        (t.0.clone(), t.1.clone())
+                    };
+                    let (reels_p, reels_r) = {
+                        let s = self.module.signature_de(fidx)
+                            .ok_or_else(|| WasmErr(format!("call_indirect : fonction {fidx} inexistante")))?;
+                        (s.0.to_vec(), s.1.to_vec())
+                    };
+                    if reels_p != attendus_p || reels_r != attendus_r {
+                        return err(format!(
+                            "call_indirect : incompatibilité de types à l'index {idx_table} (attendu {:?}->{:?}, trouvé {:?}->{:?})",
+                            attendus_p, attendus_r, reels_p, reels_r));
+                    }
+                    let mut args = Vec::with_capacity(attendus_p.len());
+                    for t in attendus_p.iter().rev() {
+                        let v = frame.pile.pop()
+                            .ok_or_else(|| WasmErr("pile vide (call_indirect : argument)".into()))?;
+                        args.push(convertir(v, *t));
+                    }
+                    args.reverse();
+                    let res = self.appeler_index(fidx, &args, profondeur + 1)?;
+                    for v in res { frame.pile.push(v); }
                 }
                 0x00 => return err("`unreachable` exécuté (piège wasm)"),
                 0x01 => {}
@@ -1672,8 +1886,23 @@ impl InstanceWasm {
     /// L'appel unique touche `frame` ET rend la cible : il ne peut pas être
     /// replié, et la pile est déjà remise à niveau quand le saut est posé.
     fn sauter_et_pile_ecrire(&self, pc: &mut usize, frame: &mut Frame, n: usize) {
+        // ⚠⚠⚠ VAGUE 32 — CORRECTION DE CONTRÔLE. Un `br N` quitte N+1 blocs
+        // (N=0 → le bloc courant). La version précédente remettait la pile et
+        // posait `pc` mais LAISAIT LES BLOCS SUR LA PILE DE CONTRÔLE : les
+        // `end` suivants dépilaient les mauvais blocs et un `br` imbriqué
+        // sautait au mauvais `fin`. Mesuré : clang -O2 (xxHash) entrait dans
+        // la boucle de 16 octets avec len=3 → accès mémoire hors limites.
+        // Un `br` vers un `loop` REVIENT au début du loop : le loop reste
+        // actif, on ne dépile donc que N blocs. Tout autre saut dépile N+1.
         self.remettre_pile(frame, n);
-        *pc = self.cible_saut(frame, n);
+        let c = self.cible_saut(frame, n);
+        let vers_loop = n < frame.blocs.len()
+            && frame.blocs[frame.blocs.len() - 1 - n].op == 0x03;
+        let a_depiler = if vers_loop { n } else { n + 1 };
+        let a_depiler = a_depiler.min(frame.blocs.len());
+        let nouveau = frame.blocs.len() - a_depiler;
+        frame.blocs.truncate(nouveau);
+        *pc = c;
     }
 
     fn sauter_et_pile(&self, frame: &mut Frame, n: usize) -> usize {
@@ -1841,5 +2070,121 @@ fn hote_random_get(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValW
         inst.memoire[ptr + i] = etat as u8;
     }
     Ok(vec![ValWasm::I32(0)])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// HÔTES WASI ÉTENDUS (VAGUE 32, 19/11/2026)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ HONNÊTETÉ : ces hôtes sont des STUBS SANDBOXés, pas une libc complète.
+//   * `args_*` / `environ_*` : le module ne voit AUCUN argument ni variable
+//     d'environnement (compte = 0, taille = 0). C'est un choix de sandbox, pas
+//     un oubli : exposer l'environnement hôte à du code non fiable serait une
+//     fuite d'information.
+//   * `clock_time_get` : vraie horloge système (ns depuis l'époque UNIX).
+//   * `fd_*` : stdin n'est JAMAIS lu (évite un blocage), stdout/stderr sont
+//     réels via `fd_write`. Les autres opérations rendent 0 (succès inoffensif).
+//   * `fd_prestat_*` : EBADF (8) — il n'y a AUCUN répertoire préouvert.
+//   * `path_*` : ENOTCAPABLE (76) — AUCUN accès au système de fichiers.
+//   Un module qui a VRAIMENT besoin de fichiers échouera Proprement ici.
+
+/// ⚠ Écrit un i64 little-endian dans la mémoire linéaire de l'instance.
+fn mem_ecrire_i64(inst: &mut InstanceWasm, adresse: usize, v: i64) -> Result<(), WasmErr> {
+    let taille_mem = inst.memoire.len();
+    let octets = inst.memoire.get_mut(adresse..adresse + 8)
+        .ok_or_else(|| WasmErr(format!("écriture mémoire hors limites : {adresse}+8 > {taille_mem}")))?;
+    octets.copy_from_slice(&v.to_le_bytes());
+    Ok(())
+}
+
+/// ⚠ `args_sizes_get(argc_ptr, argv_buf_size_ptr)` : 0 argument, 0 octet.
+fn hote_args_sizes_get(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("args_sizes_get : 2 arguments attendus, {} reçu(s)", args.len())); }
+    mem_ecrire_i32(inst, args[0].as_i32() as u32 as usize, 0)?;
+    mem_ecrire_i32(inst, args[1].as_i32() as u32 as usize, 0)?;
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `args_get(argv_ptr, argv_buf_ptr)` : aucun argument à copier.
+fn hote_args_get(_inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("args_get : 2 arguments attendus, {} reçu(s)", args.len())); }
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `environ_sizes_get(count_ptr, buf_size_ptr)` : 0 variable, 0 octet.
+fn hote_environ_sizes_get(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("environ_sizes_get : 2 arguments attendus, {} reçu(s)", args.len())); }
+    mem_ecrire_i32(inst, args[0].as_i32() as u32 as usize, 0)?;
+    mem_ecrire_i32(inst, args[1].as_i32() as u32 as usize, 0)?;
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `environ_get(environ_ptr, environ_buf_ptr)` : aucune variable à copier.
+fn hote_environ_get(_inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("environ_get : 2 arguments attendus, {} reçu(s)", args.len())); }
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `clock_time_get(clock_id, precision, time_ptr)` : nanoseconds depuis
+/// l'époque UNIX (horloge réelle). `clock_id` est accepté sans distinction.
+fn hote_clock_time_get(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 3 { return err(format!("clock_time_get : 3 arguments attendus, {} reçu(s)", args.len())); }
+    let ptr = args[2].as_i32() as u32 as usize;
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+        .as_nanos() as u64;
+    mem_ecrire_i64(inst, ptr, ns as i64)?;
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `sched_yield()` : sans effet dans un interpréteur mono-thread.
+fn hote_sched_yield(_inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if !args.is_empty() { return err(format!("sched_yield : 0 argument attendu, {} reçu(s)", args.len())); }
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `fd_close(fd)` : succès inoffensif (pas de descripteur réel côté hôte).
+fn hote_fd_close(_inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 1 { return err(format!("fd_close : 1 argument attendu, {} reçu(s)", args.len())); }
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `fd_seek(fd, offset, whence, new_offset_ptr)` : pose 0, rend 0.
+fn hote_fd_seek(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 4 { return err(format!("fd_seek : 4 arguments attendus, {} reçu(s)", args.len())); }
+    let ptr = args[3].as_i32() as u32 as usize;
+    mem_ecrire_i64(inst, ptr, 0)?;
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `fd_fdstat_get(fd, stat_ptr)` : structure WASI de 24 octets mise à zéro
+/// (filetype = unknown, rights = 0). Succès sandboxé.
+fn hote_fd_fdstat_get(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("fd_fdstat_get : 2 arguments attendus, {} reçu(s)", args.len())); }
+    let ptr = args[1].as_i32() as u32 as usize;
+    let fin = ptr.saturating_add(24);
+    if fin > inst.memoire.len() {
+        return err(format!("fd_fdstat_get hors limites : {ptr}+24 > {}", inst.memoire.len()));
+    }
+    for i in ptr..fin { inst.memoire[i] = 0; }
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `fd_prestat_get` / `fd_prestat_dir_name` : EBADF (8) — aucun répertoire
+/// préouvert n'est exposé au module. Stub HONNÊTE, pas une réussite simulée.
+fn hote_fd_prestat_get(_inst: &mut InstanceWasm, _args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    Ok(vec![ValWasm::I32(8)])
+}
+
+/// ⚠ Autres opérations sur fd (`fd_sync`, `fd_datasync`, `fd_filestat_get`) :
+/// succès inoffensif, aucun état modifié.
+fn hote_fd_stub(_inst: &mut InstanceWasm, _args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ Tous les `path_*` : ENOTCAPABLE (76) — le sandbox n'a PAS de système de
+/// fichiers. Un module qui ouvre un fichier échoue PROPREMENT, sans toucher au disque.
+fn hote_path_stub(_inst: &mut InstanceWasm, _args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    Ok(vec![ValWasm::I32(76)])
 }
 

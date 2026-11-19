@@ -10,9 +10,11 @@
 #   .zig              zig build-exe (si zig est installe ; sinon message explicite)
 #   .py .go .js       REFUSES avec une explication honnete (voir doc WASM_IMPORTS_UNIVERSEL.md)
 #
-# Le comportement C historique est PRESERVE : -O0 force, shim + glue, verification
-# 0 import / 0 start / 0 call_indirect / memoire exportee. L'option --allow-imports
-# Autorise les imports de fonction resolus par le pont Rose (M6.3).
+# Le comportement C historique est PRESERVE par defaut (-O0, 0 import), mais la
+# vague 32 (19/11) ajoute --opt 1|2|s|z : le pont Rose execute desormais
+# call_indirect (table d'elements + verification de type) et la section start,
+# avec un budget d'instructions borne. --allow-imports autorise les imports
+# resolus par le pont (fonctions, memoire, table, globals importes).
 #
 # Aucune dependance GMP. Aucun fichier .rs / Cargo.toml du projet n'est touche.
 set -euo pipefail
@@ -55,6 +57,10 @@ OPTIONS
   --buf N          Taille du tampon statique pour les chaines (defaut: 16384)
   --header H       Ajoute #include <H> / "H" au glue (rare; repeatable)
   --allow-imports  Autorise les imports de fonction (resolus par le pont Rose)
+  --opt NIVEAU     Niveau d'optimisation C/C++/Rust : 0 (defaut historique),
+                   1, 2, s (taille) ou z (taille agressive). Depuis la vague 32,
+                   le pont Rose execute call_indirect ET la section start : -O1/-O2
+                   sont donc utilisables (mesure : LZ4/miniz debloques).
   -h, --help       Cette aide
 
 TYPES ROSE ACCEPTES (et leur passage ABI)
@@ -67,10 +73,11 @@ EXEMPLE (xxHash v0.8.2)
       --out libxxhash xxhash.c
 
 NOTE
-  -O0 est FORCE pour le C/C++ : -O1/-O2/-Os sont executes faux par le pont Rose.
-  Le module est verifie : 0 start, 0 call_indirect, memoire exportee ; les imports
-  sont listes et refuses par defaut (--allow-imports pour les autoriser).
-  .py/.go/.js : non convertibles directement — voir le document de limites.
+  -O0 restait force HISTORIQUEMENT (le pont refusait call_indirect / start).
+  Depuis la vague 32, --opt 1|2|s|z est accepte : le pont resout la table
+  d'appels indirects, execute `start` et borne les instructions. Le module est
+  TOUJOURS verifie : imports resolus, memoire exportee ; start/call_indirect
+  sont RAPPORTES (plus refusés). .py/.go/.js : non convertibles directement.
 EOF
 }
 
@@ -84,6 +91,7 @@ OUT=""
 DIR="."
 BUF=16384
 ALLOW_IMPORTS=0
+OPT_NIVEAU=0
 
 while (($#)); do
     case "$1" in
@@ -104,6 +112,9 @@ while (($#)); do
             HEADERS+=("$2"); shift 2 ;;
         --allow-imports)
             ALLOW_IMPORTS=1; shift ;;
+        --opt)
+            [[ $# -ge 2 ]] || { echo "ERREUR: --opt attend un argument." >&2; exit 1; }
+            OPT_NIVEAU="$2"; shift 2 ;;
         -h|--help)
             usage; exit 0 ;;
         --)
@@ -118,6 +129,11 @@ done
 (( ${#EXPORTS[@]} > 0 )) || { echo "ERREUR: au moins un --export est requis." >&2; usage >&2; exit 1; }
 (( ${#SOURCES[@]} > 0 )) || { echo "ERREUR: au moins un fichier source est requis." >&2; exit 1; }
 [[ "$BUF" =~ ^[0-9]+$ ]] || { echo "ERREUR: --buf doit etre un entier." >&2; exit 1; }
+case "$OPT_NIVEAU" in
+    0|1|2|s|z) ;;
+    *) echo "ERREUR: --opt doit etre 0, 1, 2, s ou z (recu: $OPT_NIVEAU)." >&2; exit 1 ;;
+esac
+OPT_CFLAG="-O$OPT_NIVEAU"
 for s in "${SOURCES[@]}"; do
     [[ -f "$s" ]] || { echo "ERREUR: source introuvable: $s" >&2; exit 1; }
 done
@@ -305,7 +321,7 @@ fi
 # Compilation par famille
 # ---------------------------------------------------------------------------
 if [[ "$FAMILLE" == c || "$FAMILLE" == cpp ]]; then
-    CFLAGS=( --target=wasm32-wasi --sysroot="$SYSROOT" -O0 -nostdlib -Wl,--no-entry -Wl,--export-memory )
+    CFLAGS=( --target=wasm32-wasi --sysroot="$SYSROOT" "$OPT_CFLAG" -nostdlib -Wl,--no-entry -Wl,--export-memory )
     # Crochet de test : RW_ALLOW_UNDEFINED=1 laisse wasm-ld produire un module
     # avec des imports, afin de prouver que le detecteur de sections les refuse.
     if [[ -n "${RW_ALLOW_UNDEFINED:-}" ]]; then CFLAGS+=( -Wl,--allow-undefined ); fi
@@ -338,10 +354,10 @@ if [[ "$FAMILLE" == c || "$FAMILLE" == cpp ]]; then
             "$CLANG" "${CFLAGS_COMPILE[@]}" -c "$g" -o "$o"
             GLUE_OBJ+=( "$o" )
         done
-        echo "==> compilation C++: $CXX ... -O0 ... -> $OUT_WASM"
+        echo "==> compilation C++: $CXX ... $OPT_CFLAG ... -> $OUT_WASM"
         "$CXX" "${CFLAGS[@]}" "${GLUE_OBJ[@]}" "${OBJ[@]}" -o "$OUT_WASM"
     else
-        echo "==> compilation: $CLANG ... -O0 ... -> $OUT_WASM"
+        echo "==> compilation: $CLANG ... $OPT_CFLAG ... -> $OUT_WASM"
         "$CLANG" "${CFLAGS[@]}" "${GLUES[@]}" "$WORK/rw_shim.c" "${SOURCES[@]}" -o "$OUT_WASM"
     fi
 
@@ -400,7 +416,7 @@ elif [[ "$FAMILLE" == rust ]]; then
     # ⚠ overflow-checks=off + panic=abort : les vérifications Rust -O0 génèrent
     #    des blocs imbriqués mal gérés par le pont (mesuré : appel bloqué).
     "$RUSTC" --target wasm32-unknown-unknown --crate-type cdylib \
-        -C opt-level=0 -C overflow-checks=off -C panic=abort \
+        -C opt-level="$OPT_NIVEAU" -C overflow-checks=off -C panic=abort \
         "$GLUE_RS" -o "$OUT_WASM"
 
 elif [[ "$FAMILLE" == wat ]]; then
@@ -633,7 +649,7 @@ elif [[ "$FAMILLE" == zig ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Verification : imports resolus, 0 start, 0 call_indirect, memoire exportee
+# Verification : imports resolus, memoire exportee ; start/call_indirect rapportes
 # ---------------------------------------------------------------------------
 python3 - "$OUT_WASM" "$OBJDUMP" "$ALLOW_IMPORTS" "$WORK/imports.txt" "$(IFS=,; echo "${EXP_NAME[*]}")" <<'PY'
 import sys, subprocess
@@ -704,12 +720,20 @@ print("exports=" + ",".join(fns))
 print("imports_liste=" + ",".join("%s(kind=%d)" % (n, k) for n, k in imports_liste))
 if imports_file:
     open(imports_file, 'w').write(','.join(n for n, k in imports_liste))
-# ⚠ Miroir du registre Rust (wasm_lecteur.rs::HOTES_INTEGRES).
-HOSTS = {'env.log', 'env.ecrire',
-         'wasi_snapshot_preview1.fd_write', 'wasi_snapshot_preview1.fd_read',
-         'wasi_snapshot_preview1.proc_exit', 'wasi_snapshot_preview1.random_get',
-         'wasi_unstable.fd_write', 'wasi_unstable.fd_read',
-         'wasi_unstable.proc_exit', 'wasi_unstable.random_get'}
+# ⚠ Miroir du registre Rust (wasm_lecteur.rs::HOTES_INTEGRES) — VAGUE 32.
+# 22 fonctions WASI par namespace (dont les stubs sandboxes path_*/prestat_*).
+WASI_NOMS = ['fd_write', 'fd_read', 'proc_exit', 'random_get',
+             'args_get', 'args_sizes_get', 'environ_get', 'environ_sizes_get',
+             'clock_time_get', 'sched_yield', 'fd_close', 'fd_seek',
+             'fd_fdstat_get', 'fd_filestat_get', 'fd_prestat_get', 'fd_prestat_dir_name',
+             'fd_sync', 'fd_datasync',
+             'path_open', 'path_filestat_get', 'path_link', 'path_rename',
+             'path_symlink', 'path_readlink', 'path_unlink_file',
+             'path_remove_directory', 'path_create_directory']
+HOSTS = {'env.log', 'env.ecrire'}
+for ns in ('wasi_snapshot_preview1', 'wasi_unstable'):
+    for n in WASI_NOMS:
+        HOSTS.add(ns + '.' + n)
 manquants = [e for e in attendus if e not in fns]
 if manquants:
     raise SystemExit("ERREUR: exports attendus absents du wasm: " + ', '.join(manquants) +
@@ -718,13 +742,14 @@ nonres = []
 for n, k in imports_liste:
     if k == 0 and n not in HOSTS: nonres.append(n + ' (fonction)')
     elif k == 2 and n != 'env.memory': nonres.append(n + ' (memoire)')
-    elif k in (1, 3): nonres.append(n + ' (table/global)')
+    # k == 1 (table) et k == 3 (global) sont ACCEPTES depuis la vague 32 :
+    # le pont alloue la table et initialise les globals importes a zero.
 if nonres:
     raise SystemExit("ERREUR: imports non resolus par le pont Rose: " + ', '.join(nonres))
 bad = []
 if imports and not allow: bad.append("%d import(s) (utiliser --allow-imports)" % imports)
-if start: bad.append("section start")
-if ci and ci > 0: bad.append("%d call_indirect" % ci)
+# ⚠ VAGUE 32 : `start` et `call_indirect` ne sont PLUS des motifs de refus.
+# Le pont les execute (table d'elements, verification de type, budget borne).
 if not mem: bad.append("memoire non exportee")
 if bad:
     raise SystemExit("ERREUR: incompatible avec le pont Rose: " + ", ".join(bad))
@@ -758,9 +783,10 @@ PY
 
 echo "==> OK: $OUT_WASM  ($(stat -c%s "$OUT_WASM") octets)"
 echo "==> OK: $OUT_ROSE"
-echo "==> Verifie: imports resolus, 0 start, 0 call_indirect, memoire exportee."
+echo "==> Verifie: imports resolus, memoire exportee (start/call_indirect: voir WASM_CHECK)."
 if (( ALLOW_IMPORTS )); then
-    echo "==> --allow-imports: imports de fonction/MEMOIRE autorises et verifies."
+    echo "==> --allow-imports: imports de fonction/MEMOIRE/TABLE/GLOBAL autorises et verifies."
 else
-    echo "==> 0 import exige (comportement C historique). -O0 force pour C/C++."
+    echo "==> 0 import exige (comportement C historique)."
 fi
+echo "==> Optimisation: $OPT_CFLAG (pont: call_indirect + start + budget bornes)."
