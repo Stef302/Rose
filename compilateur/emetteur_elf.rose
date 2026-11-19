@@ -61,7 +61,19 @@ fn g4_entier_ou_zero($s: chaine) -> entier {
   si ($n == 0) { retour 0 }
   $neg = 0
   $i = 0
-  si (sous_chaine($t, 0, 1) == "-") { $neg = 1; $i = 1 }
+  si (sous_chaine($t, 0, 1) == "-") {
+    $neg = 1
+    $i = 1
+    # G5-TYPE : le RIR sérialise les entiers négatifs avec un DOUBLE moins
+    # (« (n --1) », 62 occurrences dans fp.rir), pour les distinguer du
+    # token de soustraction. N'enlever qu'un seul '-' rendait --1 = 0 et
+    # faussait le dump réflexif.
+    si ($n >= 2 et sous_chaine($t, 1, 2) == "-") { $i = 2 }
+  }
+  # $deb = début des chiffres (après un ou deux '-'), capturé AVANT la
+  # boucle de validation qui avance $i. L'ancien `$deb = 1` fixe rendait
+  # entier("-7") = -7 puis -(-7) = +7 : le signe était perdu.
+  $deb = $i
   $ok = 1
   tant_que ($i < $n) {
     $c = sous_chaine($t, $i, $i + 1)
@@ -69,8 +81,6 @@ fn g4_entier_ou_zero($s: chaine) -> entier {
     $i = $i + 1
   }
   si ($ok == 0) { retour 0 }
-  $deb = 0
-  si ($neg == 1) { $deb = 1 }
   $v = entier(sous_chaine($t, $deb, $n))
   si ($neg == 1) { retour -$v }
   retour $v
@@ -1260,26 +1270,111 @@ fn g5_emit_entier($lbl: entier) -> entier {
   retour 0
 }
 
-# `chaine(x)` : si x est déjà une chaîne taguée (bits bas = 1), identité ;
-# sinon on fabrique une chaîne vide [tag=1][len=0]. La conversion décimale
-# d'un entier n'est PAS implémentée ici (elle n'est pas nécessaire au chemin
-# d'émission de l'émetteur lui-même) — constat documenté.
+# `chaine(x)` : chaîne taguée -> identité ; ENTier -> décimale signée exacte.
+# G5-TYPE : la conversion décimale est indispensable au dump réflexif :
+# emetteur.rose sérialise ses ast avec `chaine($p+1) + "|" + chaine($i)`
+# (140 occurrences `(app chaine ...)` dans fp.rir). Une chaîne vide ici
+# rendait le dump différent de 8ac53eed… même après correction du collision
+# de labels. Scratch décimal : 0x60003800..0x60004000 (2 Kio libres entre la
+# table de caractères 0x60003000+2 Kio et le tas 0x60004000).
 fn g5_emit_ch($lbl: entier) -> entier {
   g5_mark($lbl)
-  # ABI unique : test du TAG (bits bas), plus de test de plage ad hoc.
+  $lconv = g5_next()
+  # ABI unique : le tag (bits bas) décide du comportement.
   g5_emit(g5_tagbits(2, 0))
   g5_emit(cmpi(2, 1))
-  g5_branch(101, $lbl + 1)
-  g5_emit(RET_I())
-  g5_mark($lbl + 1)
-  g5_load(0, 16)
-  g5_alloc_inline()
-  g5_emit(orrr(5, 31, 0))
-  g5_emit(movz(1, 1))
-  g5_emit(stroff(1, 5, 0))
-  g5_emit(movz(1, 0))
-  g5_emit(stroff(1, 5, 8))
-  g5_emit(g5_tag1(0, 5))
+  g5_branch(101, $lconv)          # b.ne : entier -> conversion
+  g5_emit(RET_I())                # chaîne : identité
+
+  g5_mark($lconv)
+  $lneg    = g5_next()
+  $lpos    = g5_next()
+  $lcd0    = g5_next()
+  $lcd1    = g5_next()
+  $lzero   = g5_next()
+  $lgd0    = g5_next()
+  $lgd1    = g5_next()
+  $lnosign = g5_next()
+  $lcp0    = g5_next()
+  $lcp1    = g5_next()
+
+  # x3 = n signé, x4 = drapeau de signe
+  g5_emit(g5_asr3(3, 0))
+  g5_emit(movz(4, 0))
+  g5_emit(cmpi(3, 0))
+  g5_branch(111, $lneg)           # b.lt : négatif (kind = 100 + cond 11)
+  g5_branch(0, $lpos)             # b : positif
+  g5_mark($lneg)
+  g5_emit(movz(4, 1))
+  g5_emit(subr(3, 31, 3))         # x3 = -x3
+  g5_mark($lpos)
+
+  # x5 = nombre de chiffres décimaux
+  g5_emit(movz(5, 0))
+  g5_emit(orrr(6, 31, 3))
+  g5_mark($lcd0)
+  g5_emit(cmpi(6, 0))
+  g5_branch(100, $lcd1)           # b.eq : fin comptage
+  g5_emit(movz(7, 10))
+  g5_emit(udivr(6, 6, 7))
+  g5_emit(addi(5, 5, 1))
+  g5_branch(0, $lcd0)
+  g5_mark($lcd1)
+  g5_emit(cmpi(5, 0))
+  g5_branch(101, $lzero)          # b.ne : chiffres comptés
+  g5_emit(movz(5, 1))             # n = 0 -> un chiffre
+  g5_mark($lzero)
+
+  # x10 = longueur totale = chiffres + signe
+  g5_emit(addr(10, 5, 4))
+  # x11 = fin du tampon scratch ; on remplit en revenant vers 0x60003800.
+  g5_load(11, 1610627072)
+  g5_emit(addr(11, 11, 10))
+  g5_emit(orrr(6, 31, 3))
+
+  g5_mark($lgd0)
+  g5_emit(cmpi(5, 0))
+  g5_branch(100, $lgd1)           # b.eq : chiffres générés
+  g5_emit(movz(7, 10))
+  g5_emit(udivr(1, 6, 7))         # x1 = quotient
+  g5_emit(msubr(2, 1, 7, 6))      # x2 = reste = x6 - quotient*10
+  g5_emit(addi(2, 2, 48))         # '0'
+  g5_emit(subi(11, 11, 1))
+  g5_emit(strbio(2, 11, 0))       # strb w2,[x11,#0]
+  g5_emit(orrr(6, 31, 1))
+  g5_emit(subi(5, 5, 1))
+  g5_branch(0, $lgd0)
+  g5_mark($lgd1)
+
+  # signe '-' (0x2D) si nécessaire
+  g5_emit(cmpi(4, 0))
+  g5_branch(100, $lnosign)        # b.eq : pas de signe
+  g5_emit(movz(2, 45))
+  g5_emit(subi(11, 11, 1))
+  g5_emit(strbio(2, 11, 0))
+  g5_mark($lnosign)
+
+  # x11 = premier octet, x10 = longueur -> descripteur [1][len][octets…]
+  g5_emit(addi(2, 10, 7))
+  g5_emit(g5_lsr3(2, 2))
+  g5_emit(g5_lsl3(2, 2))
+  g5_emit(addi(0, 2, 16))
+  g5_alloc_inline()               # x0 = pointeur brut
+  g5_emit(orrr(5, 31, 0))         # x5 = descripteur
+  g5_emit(movz(2, 1))
+  g5_emit(stroff(2, 5, 0))        # tag = 1
+  g5_emit(stroff(10, 5, 8))       # longueur
+  g5_emit(addi(7, 5, 16))         # x7 = données
+  g5_emit(movz(6, 0))
+  g5_mark($lcp0)
+  g5_emit(cmpr(6, 10))
+  g5_branch(110, $lcp1)           # b.ge : copie terminée
+  g5_emit(ldrbr(2, 11, 6))        # ldrb w2,[x11,x6]
+  g5_emit(strbr(2, 7, 6))         # strb w2,[x7,x6]
+  g5_emit(addi(6, 6, 1))
+  g5_branch(0, $lcp0)
+  g5_mark($lcp1)
+  g5_emit(g5_tag1(0, 5))          # orr x0,x5,#1
   g5_emit(RET_I())
   retour 0
 }
@@ -1666,7 +1761,13 @@ $k = 0
 tant_que ($k < 2) { g5_next(); $k = $k + 1 }
 $g5_idxl = g5_next()
 $k = 0
-tant_que ($k < 1) { g5_next(); $k = $k + 1 }
+# G5-TYPE : g5_emit_idx utilise TROIS labels ($lbl, $lbl+1, $lbl+2 :
+# le +2 est le tag final `orr x0,x0,#1` de la branche chaîne). Réserver
+# seulement UN label supplémentaire faisait de $g5_chl (= idx+2) un
+# DOUBLON de $lbl+2 : chaque appel à `chaine()` atterrissait sur la queue
+# de idx (`orr #1`) au lieu de g5_emit_ch, taguant un entier comme chaîne
+# (0x10 -> 0x11) avant concaténation. Deux labels supplémentaires requis.
+tant_que ($k < 2) { g5_next(); $k = $k + 1 }
 $g5_chl = g5_next()
 $k = 0
 tant_que ($k < 2) { g5_next(); $k = $k + 1 }
