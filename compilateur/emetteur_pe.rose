@@ -1343,7 +1343,10 @@ fn g5_pe() -> chaine {
   $text_raw = partie_entiere(($text_len + 511) / 512) * 512
   $off_text = 1024            # 0x400 = SizeOfHeaders
   $off_data = $off_text + $text_raw
-  $size_image = partie_entiere(($rva_data + $g5_data_size + 4095) / 4096) * 4096
+  $off_pdata = $off_data + 512
+  # ARM64 exige une table d'exceptions (.pdata) pour charger l'image.
+  $rva_pdata = partie_entiere(($rva_data + $g5_data_size + 4095) / 4096) * 4096
+  $size_image = $rva_pdata + 4096
 
   # ── DOS header + signature PE ──
   $out = "MZ"
@@ -1355,7 +1358,7 @@ fn g5_pe() -> chaine {
 
   # ── COFF header (0x84, 20 octets) ──
   $out = $out + u16le(43620)            # Machine = 0xAA64 IMAGE_FILE_MACHINE_ARM64
-  $out = $out + u16le(2)                # NumberOfSections
+  $out = $out + u16le(3)                # NumberOfSections (.text, .data, .pdata)
   $out = $out + u32le(0)                # TimeDateStamp
   $out = $out + u32le(0)                # PointerToSymbolTable
   $out = $out + u32le(0)                # NumberOfSymbols
@@ -1381,7 +1384,7 @@ fn g5_pe() -> chaine {
   $out = $out + u32le(1024)             # SizeOfHeaders = 0x400
   $out = $out + u32le(0)                # CheckSum
   $out = $out + u16le(3)                # Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI
-  $out = $out + u16le(0)                # DllCharacteristics
+  $out = $out + u16le(33120)            # 0x8160 DYNAMIC_BASE|HIGH_ENTROPY_VA|NX|TS_AWARE
   $out = $out + u64le(1048576)          # SizeOfStackReserve
   $out = $out + u64le(4096)             # SizeOfStackCommit
   $out = $out + u64le(1048576)          # SizeOfHeapReserve
@@ -1390,7 +1393,9 @@ fn g5_pe() -> chaine {
   $out = $out + u32le(16)               # NumberOfRvaAndSizes
   $out = $out + pe_z(8)                 # [0] EXPORT (vide)
   $out = $out + u32le($rva_data + $import_desc_off) + u32le(40)  # [1] IMPORT
-  $out = $out + pe_z(80)                # [2..11] vides
+  $out = $out + pe_z(8)                 # [2] RESOURCE (vide)
+  $out = $out + u32le($rva_pdata) + u32le(12)  # [3] EXCEPTION : 1 RUNTIME_FUNCTION
+  $out = $out + pe_z(64)                # [4..11] vides
   $out = $out + u32le($rva_data + $iat_off) + u32le(8 * $nimports)  # [12] IAT
   $out = $out + pe_z(24)                # [13..15] vides
 
@@ -1410,6 +1415,13 @@ fn g5_pe() -> chaine {
   $out = $out + u32le($off_data)        # PointerToRawData
   $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0)
   $out = $out + u32le(3221225536)       # 0xC0000040 INIT|READ|WRITE
+  $out = $out + ".pdata" + pe_z(2)
+  $out = $out + u32le(20)               # VirtualSize : RUNTIME_FUNCTION(12) + UNWIND_INFO(4)
+  $out = $out + u32le($rva_pdata)       # VirtualAddress
+  $out = $out + u32le(512)              # SizeOfRawData
+  $out = $out + u32le($off_pdata)       # PointerToRawData
+  $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0)
+  $out = $out + u32le(1073741888)       # 0x40000040 INIT|READ
   $out = pe_c($out, 1024)               # 0x400
 
   # ── .data : table d'imports KERNEL32.DLL (6 fonctions) + tas G5 ──
@@ -1455,6 +1467,15 @@ fn g5_pe() -> chaine {
   tant_que ($i < $n) { $out = $out + u32le($g5_code[$i]); $i = $i + 1 }
   $out = pe_c($out, $off_data)
   $out = $out + $dat
+  # ── .pdata : RUNTIME_FUNCTION + UNWIND_INFO minimal (ARM64) ──
+  $pd = ""
+  $pd = $pd + u32le($rva_text)              # BeginAddress = entrée du programme
+  $pd = $pd + u32le($rva_text + $text_len)  # EndAddress = fin de .text
+  $pd = $pd + u32le($rva_pdata + 16)        # UnwindData = RVA du UNWIND_INFO
+  $pd = $pd + u32le(0)                      # alignement 4 octets
+  $pd = $pd + u8le(1) + u8le(0) + u8le(0) + u8le(0)  # v1, flags 0, prolog 0, 0 codes, frame 0
+  $pd = pe_c($pd, 512)
+  $out = $out + $pd
   retour $out
 }
 

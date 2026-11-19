@@ -1,9 +1,16 @@
 # PE Win32 exécutable — backend KERNEL32 dans `emetteur_pe.rose`
 
-**Constat daté : 19/11/2026.** Agent PE2 (vague 37). Aucun commit, aucune
-publication, aucun fichier du dépôt modifié hors
-`compilateur/emetteur_pe.rose` et ce document. `emetteur_elf.rose` est possédé
-par un autre agent et n'a pas été touché.
+**Constat daté : 19/11/2026, mis à jour en fin de soirée après diagnostic Wine.**
+Agent PE2 (vague 37). Aucun commit, aucune publication, aucun fichier du dépôt
+modifié hors `compilateur/emetteur_pe.rose` et ce document. `emetteur_elf.rose`
+est possédé par un autre agent et n'a pas été touché.
+
+⚠ **Mise à jour décisive** : l'utilisateur a installé Wine et l'orchestrateur a
+compilé **Wine 11.12 depuis les sources** avec clang
+(`/tmp/opencode/winebuild/build64/wine`). Le PE Rose a d'abord été refusé
+(`Bad EXE format`, erreur 193) : cause = absence de table d'exceptions ARM64.
+Après ajout de `.pdata`, **les PE Rose s'exécutent réellement sous Wine 11.12 :
+`47`, `55`, `55`**. Voir section « Diagnostic Wine ».
 
 ## Objectif et résultat
 
@@ -15,6 +22,60 @@ des appels à six fonctions KERNEL32.DLL via la table d'imports. Le tas G5 n'est
 plus à l'adresse absolue Linux `0x60000000` mais dans une zone RW de l'image,
 adressée en PC-relatif. Le mode `--elf` du même fichier conserve le backend
 Linux d'origine : `emetteur_pe.rose` est autonome.
+
+## Diagnostic Wine 11.12 — le vrai blocage et le correctif
+
+### Symptôme reproduit
+
+```
+$ wine /tmp/opencode/launcher.exe C:/t47.exe
+launching C:/t47.exe
+error Bad EXE format for %1. (os error 193)
+```
+
+Le lanceur Rust de référence (PE ARM64 MSVC) tourne, lui, sous le même Wine :
+le chargeur rejette donc bien **notre image**, pas Wine.
+
+### Différence d'en-tête décisive
+
+| Champ | PE de référence (Rust ARM64 MSVC) | PE Rose avant correctif |
+|---|---|---|
+| `ExceptionTableRVA` | `0x37000` | **`0x0`** |
+| `ExceptionTableSize` | `0x1340` | **`0x0`** |
+| section `.pdata` | présente (VirtualSize `0xA60`) | **absente** |
+| `DllCharacteristics` | `0x8160` | `0x0` |
+
+Sur ARM64, la table d'exceptions n'est pas un luxe : le chargeur exige au
+moins un `RUNTIME_FUNCTION` valide pour accepter l'image.
+
+### Correctif apporté à `g5_pe()`
+
+1. **Troisième section `.pdata`** (RVA = `.data` + sa taille virtuelle, alignée
+   page ; 512 octets bruts, `INIT|READ`), avec :
+   - `RUNTIME_FUNCTION` (12 octets) : `BeginAddress = 0x1000`,
+     `EndAddress = 0x1000 + text_len`, `UnwindData = RVA(.pdata)+16` ;
+   - `UNWIND_INFO` minimal (4 octets `01 00 00 00`) : version 1, flags 0,
+     prolog 0, CountOfCodes 0, frame 0.
+2. **DataDirectory[3]** (EXCEPTION) renseigné : `ExceptionTableRVA = RVA(.pdata)`,
+   `ExceptionTableSize = 12`.
+3. **`DllCharacteristics = 0x8160`** (DYNAMIC_BASE | HIGH_ENTROPY_VA |
+   NX_COMPAT | TERMINAL_SERVER_AWARE), comme la référence.
+4. NumberOfSections 2 → 3 ; SizeOfImage recalculé.
+
+Contrôle `llvm-readobj --file-headers t47.exe` après correctif :
+
+```
+SectionCount: 3
+IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE (0x40)
+IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA (0x20)
+IMAGE_DLL_CHARACTERISTICS_NX_COMPAT (0x100)
+IMAGE_DLL_CHARACTERISTICS_TERMINAL_SERVER_AWARE (0x8000)
+ExceptionTableRVA: 0x403000
+ExceptionTableSize: 0xC
+```
+
+Contenu réel de `.pdata` (t47) : `RUNTIME_FUNCTION = (0x1000, 0x155C, 0x403010)`,
+`UNWIND_INFO = 01 00 00 00`.
 
 ## Backend Win32
 
@@ -83,23 +144,25 @@ des immediats (`movz(x7, 64)`), pas des pointeurs.
 
 ## Preuves
 
-### 1. `rose verif` et trois PE
+### 1. `rose verif` et six PE
 
 ```
 rose verif compilateur/emetteur_pe.rose  -> vérifié
 rose compilateur/emetteur_pe.rose <prog>.rir > <prog>.exe
 ```
 
-| programme | taille .exe | VirtualSize .text | RVA .data | `file` |
-|---|---|---|---|---|
-| `>> 47` | 3 072 o | 0x55C | 0x2000 | PE32+ console Aarch64, 2 sections |
-| `fib(10)` | 3 584 o | 0x608 | 0x2000 | idem |
-| `somme(10)` | 3 072 o | 0x5F4 | 0x2000 | idem |
-| `self.exe` (émetteur se compilant) | 75 264 o | 0x11E10 | 0x13000 | idem |
+| programme | taille .exe | VirtualSize .text | RVA .data | RVA .pdata | `file` |
+|---|---|---|---|---|---|
+| `>> 47` | 3 584 o | 0x55C | 0x2000 | 0x403000 | PE32+ console Aarch64, 3 sections |
+| `fib(10)` | 4 096 o | 0x608 | 0x2000 | 0x403000 | idem |
+| `somme(10)` | 3 584 o | 0x5F4 | 0x2000 | 0x403000 | idem |
+| `>> -47/0/1234567890123` | 3 584 o | 0x580 | 0x2000 | 0x403000 | idem |
+| `>> "ABC"` | 3 584 o | 0x5A0 | 0x2000 | 0x403000 | idem |
+| `self.exe` (émetteur se compilant) | 75 776 o | 0x11E10 | 0x13000 | 0x414000 | idem |
 
-`llvm-readobj --coff-imports` : **rc=0 et 6 symboles** pour les quatre.
+`llvm-readobj --coff-imports` : **rc=0 et 6 symboles** pour les six.
 `llvm-readobj --file-headers` : Machine `0xAA64`, Magic `0x20B`, entry `0x1000`,
-ImageBase `0x140000000`.
+ImageBase `0x140000000`, `ExceptionTableRVA != 0` sur les six.
 
 ### 2. Plus aucun syscall Linux
 
@@ -128,25 +191,36 @@ Les 6 `br x16` correspondent exactement aux 6 trampolines.
 1400015d8: adrp x17, 0x140002000 ; ldr x16,[x17,#168] ; br x16  <- ExitProcess
 ```
 
-### 3. Exécution RÉELLE des instructions émises (sous qemu, avec shims)
+### 3. Exécution RÉELLE sous Wine 11.12 (chargeur PE complet)
 
-Wine est absent et `sudo` demande un mot de passe : **aucune exécution Windows
-n'a eu lieu ici**. En revanche, le `.text` du PE a été extrait et exécuté sous
-`qemu-aarch64-static` dans un ELF harnais qui branche l'IAT sur des shims
-`GetStdHandle`/`WriteFile`/`ExitProcess` (écrivant via le syscall Linux
-`write`). Ce n'est **pas** Windows : c'est une exécution réelle du code machine
-émis, avec des fonctions hôtes factices.
+Commande rejouée (Wine compilé depuis les sources par l'orchestrateur) :
 
 ```
-t47      -> 47        (rc=0)
-fib(10)  -> 55        (rc=0)
-somme(10)-> 55        (rc=0)
->> -47 / 0 / 1234567890123 -> -4701234567890123 (rc=0, concaténés : le print
-                              G5 n'ajoute pas de retour à la ligne, comportement
-                              préexistant)
+cd /tmp/opencode/winebuild/build64
+WINEARCH=win64 WINEPREFIX=/tmp/opencode/wine_new WINEDEBUG=-all \
+  ./wine /tmp/opencode/launcher.exe 'C:/t47.exe'
 ```
 
-Le harnais est `/tmp/opencode/pe2_agents/mk_harness.py` (hors dépôt).
+| PE | sortie Wine | statut |
+|---|---|---|
+| `t47.exe` (`>> 47`) | `47` | `status exit code: 0` |
+| `fib.exe` (`fib(10)`) | `55` | `status exit code: 0` |
+| `somme.exe` (`somme(10)`) | `55` | `status exit code: 0` |
+| `neg.exe` | `-4701234567890123` | `status exit code: 0` |
+| `chaine.exe` | `5368717840` (pointeur du descripteur) | `status exit code: 0` |
+| `self.exe` | *(rien — E/S G5 encore stubées)* | `status exit code: 0` |
+
+Le `status exit code: 0` prouve que `ExitProcess(0)` a été réellement appelé via
+l'IAT et que l'image a été chargée sans erreur. Ce n'est **pas** Windows natif :
+c'est Wine 11.12, chargeur PE complet avec KERNEL32 réel.
+
+### 3b. Complément : exécution sous qemu + shims
+
+Le `.text` du PE a aussi été extrait et exécuté sous `qemu-aarch64-static` dans
+un ELF harnais qui branche l'IAT sur des shims `GetStdHandle`/`WriteFile`/
+`ExitProcess` (écrivant via le syscall Linux `write`) : `47`, `55`, `55`, rc=0.
+Harnais : `/tmp/opencode/pe2_agents/mk_harness.py` (hors dépôt). Cette voie
+restait disponible avant Wine ; elle n'est plus la seule preuve d'exécution.
 
 ### 4. Différence `.text` PE vs `.text` ELF (backend Linux du même fichier)
 
@@ -174,37 +248,46 @@ six trampolines diffèrent. L'ELF produit par `--elf` contient bien 2 `svc #0`
 - `cargo test --release` : **220 + 204 + 0 + 6 + 1 + 0 = 431 passés, 0 échec** ;
 - jardin `jardins/tests/premiers.rose` : **20 tests, 0 échec**.
 
-## Test à faire sur Windows ARM64 (à faire par l'utilisateur)
+Ces trois contrôlent le moteur/émetteur Rust et `compilateur/emetteur.rose` :
+aucun d'eux n'a été modifié par ce correctif (seul `g5_pe()` de
+`emetteur_pe.rose` a changé depuis la première version).
 
-Copier `self.exe` (ou un PE d'exemple) sur une machine **Windows ARM64**, puis
+## Test sur Windows ARM64 natif (recommandé, non fait ici)
+
+Le chargement PE complet a été validé sous **Wine 11.12**, pas sous Windows
+natif. Pour confirmer sur une machine **Windows ARM64**, copier `fib.exe` puis,
 dans `cmd.exe` :
 
 ```
-self.exe
+fib.exe
 ```
 
-Pour un programme `fib.exe` contenant `>> fib(10)`, la console doit afficher
-`55`. Vérification complémentaire : `dumpbin /imports fib.exe` doit lister les
-six symboles KERNEL32 ci-dessus, et `dumpbin /disasm` ne doit montrer aucun
-`svc`.
+La console doit afficher `55`. `dumpbin /imports fib.exe` doit lister les six
+symboles KERNEL32 ; `dumpbin /disasm` ne doit montrer aucun `svc` ;
+`dumpbin /headers fib.exe` doit montrer `ExceptionTableRVA != 0`.
 
 ## Limites — honnêteté absolue
 
-1. **Aucun PE n'a été exécuté sous Windows ici.** Wine absent, sudo verrouillé.
-   Seule l'exécution sous qemu + shims a été faite (section 3).
-2. `self.exe` est une **preuve structurelle d'auto-compilation** : l'émetteur
-   sait compiler son propre RIR en PE valide. Fonctionnellement, ses primitives
-   d'entrée (`lire_texte`) restent les stubs neutres du G5 : lancé sur Windows,
-   il ne relira pas son fichier d'entrée. La self-hosting *fonctionnelle*
-   (E/S réelles dans l'émetteur auto-compilé) n'est pas réalisée ici.
+1. **Aucun PE n'a été exécuté sous Windows natif ici.** L'exécution réelle a été
+   faite sous **Wine 11.12** (chargeur PE + KERNEL32), pas sous Windows. Wine
+   n'a pas été modifié : c'est le binaire compilé par l'orchestrateur.
+2. `self.exe` est une **preuve d'auto-compilation structurelle** : l'émetteur
+   sait compiler son propre RIR en PE valide, et ce PE **se charge sous Wine**
+   (`status exit code: 0`). Fonctionnellement, ses primitives d'entrée
+   (`lire_texte`) restent les stubs neutres du G5 : il ne relira pas son fichier
+   d'entrée. La self-hosting *fonctionnelle* (E/S réelles dans l'émetteur
+   auto-compilé) n'est pas réalisée ici.
 3. `>> "ABC"` affiche le pointeur du descripteur, pas les octets : le stub
    `print_i64` du PE G5 ne sait pas afficher les chaînes (limite préexistante
    du G5 de `emetteur_pe.rose` ; l'autre agent a ajouté l'impression de chaînes
    dans `emetteur_elf.rose`, non fusionné ici, conformément à la consigne).
-4. L'émetteur n'ajoute pas de section de relocations `.reloc`. Les accès tas/IAT sont
-   PC-relatifs et `DllCharacteristics=0` (pas de `DYNAMIC_BASE`), donc l'image
-   charge à `0x140000000` ; si Windows la déplace malgré tout, les sauts
-   internes restent valides mais d'éventuelles adresses absolues résiduelles
-   (hors tas/IAT) ne seraient pas réparées.
-5. Les fichiers de validation et les binaires générés vivent dans
+4. `DllCharacteristics=0x8160` active ASLR, mais l'émetteur ne produit **aucune
+   section `.reloc`**. Les accès tas/IAT et les sauts sont PC-relatifs/RVA, donc
+   le chargement sous Wine a réussi ; si un chargeur déplaçait l'image,
+   d'éventuelles adresses absolues résiduelles ne seraient pas réparées.
+5. Le `UNWIND_INFO` est volontairement minimal (0 code de déroulement) : il
+   suffit à faire accepter l'image par le chargeur, mais il ne décrit pas les
+   prologues réels — le débogage/déroulement d'exceptions natives serait
+   incomplet.
+6. Les fichiers de validation et les binaires générés vivent dans
    `/tmp/opencode/pe2_agents/`, pas dans le dépôt.
