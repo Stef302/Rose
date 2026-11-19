@@ -11,7 +11,7 @@
 //   trame de frame par Cranelift (stack_store/load natifs).
 // Licence MIT.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cranelift::codegen::ir::{AbiParam, BlockArg, FuncRef, Inst, InstBuilder, MemFlagsData, Signature as ClSignature, Value};
 use cranelift::codegen::isa::CallConv;
@@ -823,6 +823,212 @@ fn contient_retour(instrs: &[Instr]) -> bool {
         Instr::Bloc(b) => contient_retour(b),
         _ => false,
     })
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// INFÉRENCE DES PARAMÈTRES IMPLICITES (`fn carre(x) { … }`)
+//
+// Le vérificateur Rose accepte les paramètres et le retour SANS annotation :
+// il leur donne le type `TyKind::Dyn` (« ? »), résolu à l'exécution par
+// l'interpréteur. Le JIT, lui, refuse `Dyn` (porte `compilable`), et REFUSE
+// AUSSI tout appelant qui appelle une telle fonction (`ty_statique_f` rend
+// `None` sur l'`Expr::Appel`) : une seule fonction implicite dans une chaîne
+// d'appels suffit à faire tomber toute la chaîne en interpréteur.
+//
+// On infère ici un type JIT CONCRET pour chaque `Dyn`, par trial des types
+// du sous-ensemble, et on ne retient un type que si LES PORTES EXISTANTES
+// (`rir_compilable_jit` / `fonction_compilable`) l'acceptent. Aucune porte
+// n'est assouplie : l'inférence échoue → la signature reste `Dyn` →
+// l'interpréteur garde la main. Les signatures inférées ne vivent QUE dans
+// `Jit.signatures` (copie interne) : le programme de `interp.rs` et
+// `appeler_delegue` continuent à voir les types déclarés d'origine.
+// ───────────────────────────────────────────────────────────────────────
+
+/// Candidats de type pour un `Dyn` (complexe exclu : le trampoline ne sait
+/// pas le transporter, voir `fonction_compilable`). `Entier` en tête : c'est
+/// le cas dominant et le moins promoteur.
+const TYPES_INFERABLES: [TyKind; 3] = [TyKind::Entier, TyKind::Flottant, TyKind::Booleen];
+
+fn retour_a_une_valeur(instrs: &[Instr]) -> bool {
+    instrs.iter().any(|i| match i {
+        Instr::Retour(Some(_), _) => true,
+        Instr::Si { alors, sinon, .. } => {
+            retour_a_une_valeur(alors) || sinon.as_deref().map(retour_a_une_valeur).unwrap_or(false)
+        }
+        Instr::TantQue { corps, .. } | Instr::Pour { corps, .. } => retour_a_une_valeur(corps),
+        Instr::Bloc(b) => retour_a_une_valeur(b),
+        _ => false,
+    })
+}
+
+/// Cohérence du retour sur la voie RIR (que `rir_compilable_jit` ne vérifie
+/// pas : il accepte n'importe quel `RetourAbstrait` compilable).
+fn retour_rir_coherent(corps: &CorpsRir, sig: &Signature,
+                       prog: &HashMap<String, Signature>) -> bool {
+    let mut vus = 0usize;
+    let a_valeur = corps.ops.iter().any(|o| matches!(o, Op::RetourAbstrait(_)));
+    for op in &corps.ops {
+        match op {
+            Op::RetourAbstrait(_) => vus += 1,
+            Op::Retour(Some(_)) => return false, // refusé par rir_compilable_jit
+            _ => {}
+        }
+    }
+    if sig.retour.n == TyKind::Vide { return !a_valeur; }
+    if vus == 0 { return false; }
+    let slot_types = slot_types_rir(corps, sig, prog);
+    for op in &corps.ops {
+        if let Op::RetourAbstrait(e) = op {
+            let Some(t) = ty_eabstrait_rir(e, &slot_types, prog) else { return false; };
+            if t != sig.retour.n
+                && !(sig.retour.n == TyKind::Flottant && t == TyKind::Entier)
+            { return false; }
+        }
+    }
+    true
+}
+
+/// Retourne `true` dès qu'une affectation des `Dyn` satisfait les portes.
+fn chercher_types(orig: &Signature, prog: &HashMap<String, Signature>,
+                  params: &mut [TyKind], pidx: usize,
+                  rets: &[TyKind], ridx: usize,
+                  trouve: &mut Option<Signature>) {
+    if trouve.is_some() { return; }
+    if pidx < orig.params.len() {
+        if orig.params[pidx].1.n != TyKind::Dyn {
+            params[pidx] = orig.params[pidx].1.n;
+            chercher_types(orig, prog, params, pidx + 1, rets, ridx, trouve);
+            return;
+        }
+        for t in TYPES_INFERABLES {
+            params[pidx] = t;
+            chercher_types(orig, prog, params, pidx + 1, rets, ridx, trouve);
+            if trouve.is_some() { return; }
+        }
+        return;
+    }
+    if ridx >= rets.len() { return; }
+    let mut cand = orig.clone();
+    for ((_, ty), t) in cand.params.iter_mut().zip(params.iter()) { ty.n = *t; }
+    cand.retour.n = rets[ridx];
+
+    let use_rir = rir_compilable_jit(&cand, prog, false);
+    let use_ast = !use_rir && fonction_compilable(&cand, prog);
+    let coherent = if use_rir {
+        cand.rir.as_ref().map(|c| retour_rir_coherent(c, &cand, prog)).unwrap_or(true)
+    } else { true };
+    if (use_rir || use_ast) && coherent { *trouve = Some(cand); }
+}
+
+fn inferer_une(orig: &Signature, prog: &HashMap<String, Signature>) -> Option<Signature> {
+    if orig.corps.is_none() { return None; }
+    let mut params: Vec<TyKind> = vec![TyKind::Entier; orig.params.len()];
+    let mut rets: Vec<TyKind> = Vec::new();
+    if orig.retour.n == TyKind::Dyn {
+        rets.extend_from_slice(&TYPES_INFERABLES);
+        // une fonction sans `retour expr` rend `Vide` même si le front a
+        // posé `Dyn` (corps sans `->`).
+        let a_valeur = orig.rir.as_ref()
+            .map(|c| c.ops.iter().any(|o| matches!(o, Op::RetourAbstrait(_))))
+            .unwrap_or_else(|| orig.corps.as_deref().map(retour_a_une_valeur).unwrap_or(false));
+        if !a_valeur { rets.push(TyKind::Vide); }
+    } else {
+        rets.push(orig.retour.n);
+    }
+    let mut trouve = None;
+    chercher_types(orig, prog, &mut params, 0, &rets, 0, &mut trouve);
+    trouve
+}
+
+/// Table des signatures vues par le JIT : les `Dyn` inférables y sont
+/// remplacés par des types concrets. Plusieurs passes : le type d'un
+/// appelé inféré peut débloquer l'inférence de son appelant.
+thread_local! {
+    /// Noms des fonctions dont AU MOINS un paramètre `Dyn` a été inféré.
+    /// Sert à prévoir une variante flottante (garde d'ABI, voir
+    /// `signature_flottante`) : le trampoline achemine les appels réels vers
+    /// la variante dont la convention d'appel correspond aux valeurs passées.
+    static INFEREES: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
+}
+
+pub fn signatures_inferées(sigs: &HashMap<String, Signature>) -> HashMap<String, Signature> {
+    INFEREES.with(|s| s.borrow_mut().clear());
+    let mut out = sigs.clone();
+    for _ in 0..2 {
+        let noms: Vec<String> = sigs.keys().cloned().collect();
+        let mut change = false;
+        for nom in noms {
+            let orig = &sigs[&nom];
+            if orig.params.iter().all(|(_, t)| t.n != TyKind::Dyn) && orig.retour.n != TyKind::Dyn {
+                continue;
+            }
+            if let Some(s) = inferer_une(orig, &out) {
+                if out.get(&nom).map(|v| v.params != s.params || v.retour != s.retour).unwrap_or(true) {
+                    let implicite = orig.params.iter().any(|(_, t)| t.n == TyKind::Dyn)
+                        && s.params.iter().any(|(_, t)| t.n != TyKind::Dyn);
+                    out.insert(nom.clone(), s);
+                    if implicite { INFEREES.with(|z| { z.borrow_mut().insert(nom); }); }
+                    change = true;
+                }
+            }
+        }
+        if !change { break; }
+    }
+    out
+}
+
+/// Variante flottante d'une fonction à paramètres inférés. Le JIT compile
+/// une fonction implicite avec des paramètres i64 (le cas dominant), mais un
+/// appel réel peut passer des flottants : sans variante, le trampoline
+/// transmettrait le f64 dans `d0` alors que le code lu `x0` (valeur fausse,
+/// mesuré : `carre(7.0)` rendait un bigint absurde). On émet donc une seconde
+/// version de la fonction, à paramètres f64, quand le corps le permet.
+/// Rejet conservateur : récursion, mixed returns, corps non-RIR, ou porte JIT
+/// en échec → pas de variante → le trampoline refuse l'appel (Vide) au lieu
+/// de faire de l'UB.
+fn signature_flottante(sig: &Signature, prog: &HashMap<String, Signature>) -> Option<Signature> {
+    if sig.params.is_empty() || sig.params.iter().any(|(_, t)| t.n != TyKind::Entier) {
+        return None;
+    }
+    if sig.retour.n == TyKind::Complexe { return None; }
+    let corps = sig.rir.as_ref()?;
+    // pas de récursion : la variante flottante appellerait sinon la variante
+    // entière (les appels internes portent le nom Rose d'origine).
+    let recursion = |n: &str| -> bool {
+        corps.ops.iter().any(|o| match o {
+            Op::Affect { expr, .. } => matches!(expr, Eabstrait::AppelRir { nom, .. } if nom == n),
+            Op::AffectAst { e, .. } | Op::ExprStmt(e) | Op::Lever(e) => {
+                matches!(e, Expr::Appel { nom, .. } if nom == n)
+            }
+            _ => false,
+        })
+    };
+    if recursion(&sig.nom) { return None; }
+
+    let mut sf = sig.clone();
+    sf.nom = format!("__jf_{}", sig.nom);
+    for (_, t) in &mut sf.params { t.n = TyKind::Flottant; }
+    let slot_types = slot_types_rir(corps, &sf, prog);
+    let mut rets: Vec<TyKind> = Vec::new();
+    for op in &corps.ops {
+        if let Op::RetourAbstrait(e) = op {
+            let t = ty_eabstrait_rir(e, &slot_types, prog)?;
+            if !compilable(t) { return None; }
+            rets.push(t);
+        } else if matches!(op, Op::Retour(Some(_))) {
+            return None;
+        }
+    }
+    sf.retour.n = if rets.is_empty() {
+        if sig.retour.n != TyKind::Vide { return None; }
+        TyKind::Vide
+    } else if rets.iter().all(|t| *t == rets[0]) {
+        rets[0]
+    } else { return None; };
+    if !rir_compilable_jit(&sf, prog, false) { return None; }
+    if !retour_rir_coherent(corps, &sf, prog) { return None; }
+    Some(sf)
 }
 
 fn est_boucle_i(test: &Expr) -> bool {
@@ -1875,6 +2081,10 @@ pub struct Jit {
     /// `DuplicateDefinition` quand les deux tables se recouvraient).
     delegues: HashMap<String, FuncId>,
     decls: HashMap<String, FuncId>,
+    /// Variantes flottantes des fonctions à paramètres inférés (`__jf_*`).
+    /// Table séparée de `decls` : les appels INTERNES gardent la variante
+    /// entière, seul le trampoline Rust→JIT choisit la variante flottante.
+    decls_f: HashMap<String, FuncId>,
     runtime_decls: HashMap<String, FuncId>,
     #[allow(dead_code)]
     foncs: HashMap<String, FuncId>,
@@ -1917,8 +2127,12 @@ impl Jit {
         let module = JITModule::new(builder);
         Jit { module, chaines: HashMap::new(), delegues: HashMap::new(), decls: HashMap::new(),
               runtime_decls: HashMap::new(),
-              foncs: HashMap::new(), signatures: signatures.clone(),
-              machine: HashMap::new() }
+              // ⚠ Les signatures DU JIT portent les types inférés des
+              // paramètres implicites. Le programme de interp.rs garde ses
+              // types d'origine : l'interpréteur et `appeler_delegue`
+              // continuent à résoudre `Dyn` à l'exécution.
+              foncs: HashMap::new(), signatures: signatures_inferées(signatures),
+              decls_f: HashMap::new(), machine: HashMap::new() }
     }
 
 }
@@ -2263,6 +2477,23 @@ impl Jit {
             let fid = self.module.declare_function(nom, Linkage::Preemptible, &make_signature(sig)).unwrap();
             self.decls.insert(nom.clone(), fid);
         }
+        // Variante flottante des fonctions inférées : déclarée SOUS UN AUTRE
+        // NOM, hors de `decls` (les appels internes gardent la variante i64).
+        let _ttf = std::time::Instant::now();
+        let mut variantes: Vec<(String, Signature)> = Vec::new();
+        for nom in &eligibles {
+            if !INFEREES.with(|s| s.borrow().contains(nom)) { continue; }
+            if let Some(sf) = signature_flottante(&self.signatures[nom], &self.signatures) {
+                variantes.push((nom.clone(), sf));
+            }
+        }
+        for (nom, sf) in variantes {
+            if let Ok(fid) = self.module.declare_function(&sf.nom, Linkage::Preemptible,
+                                                          &make_signature(&sf)) {
+                self.decls_f.insert(nom, fid);
+            }
+        }
+        if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT variantes-f={:?}", _ttf.elapsed()); }
         // ⚠⚠⚠ DÉCLARATION DES FONCTIONS NON ÉLIGIBLES APPELÉES (mesuré le 17/11).
         //
         // ⚠ Une fonction compilée peut appeler une fonction qui N'EST PAS
@@ -2343,6 +2574,39 @@ impl Jit {
                 fcx.set_disasm(true);
             }
             self.foncs.insert(nom.clone(), fid);
+
+            // ── variante flottante (fonction inférée appelée avec des f64) ──
+            if let Some(&fid_f) = self.decls_f.get(nom) {
+                let sf = signature_flottante(&self.signatures[nom], &self.signatures).unwrap();
+                fcx.clear();
+                fcx.func.signature = make_signature(&sf);
+                let mut fctx_f = cranelift::frontend::FunctionBuilderContext::new();
+                let mut bf = FunctionBuilder::new(&mut fcx.func, &mut fctx_f);
+                let tag_f = bf.declare_var(types::I64);
+                let mut ef = Emetteur {
+                    module: &mut self.module, signatures: &self.signatures,
+                    foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
+                    runtime: &self.runtime_decls,
+                    builder: bf, returned: false, prochain_slot: 100,
+                    refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(),
+                    tag_tmp: tag_f, unboxed_tmp: None, refus_i: false,
+                };
+                let mut emitted_f = false;
+                if *eligible_rir.get(nom).unwrap_or(&false) {
+                    emitted_f = ef.emettre_fonction_rir(&sf);
+                }
+                if !emitted_f {
+                    // variante non émettable : on ne la définit PAS (le helper
+                    // de décision aurait dû la refuser, garde de sûreté).
+                    continue;
+                }
+                let mut bf = ef.builder;
+                bf.seal_all_blocks();
+                bf.finalize(cible);
+                self.module.define_function(fid_f, &mut fcx).unwrap();
+                // clé distincte : ne pas écraser la variante entière.
+                self.foncs.insert(sf.nom.clone(), fid_f);
+            }
         }
         // ⚠⚠⚠ LES DÉLÉGUÉS SONT DÉFINIS APRÈS LA PASSE 2 (mesuré le 17/11).
         //
@@ -2392,8 +2656,22 @@ impl Jit {
                     }
                 }
             }
+            // variante flottante : même corps, paramètres f64. Le
+            // trampoline choisit selon les types RÉELS des arguments, ce qui
+            // interdit toute divergence d'ABI (mesuré : sans garde, un
+            // `carre(7.0)` sur une fonction inférée i64 rendait un bigint
+            // absurde au lieu de 49).
+            let mut fptr_f: Option<usize> = None;
+            let mut sig_f: Option<Signature> = None;
+            if INFEREES.with(|s| s.borrow().contains(nom)) {
+                if let Some(&fid_f) = self.decls_f.get(nom) {
+                    let code_f = self.module.get_finalized_function(fid_f);
+                    fptr_f = Some(code_f as usize);
+                    sig_f = signature_flottante(&self.signatures[nom], &self.signatures);
+                }
+            }
             out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
-                unsafe { appeler_trampoline(fptr, &sig, args) }
+                unsafe { appeler_trampoline_dual(fptr, &sig, fptr_f, sig_f.as_ref(), args) }
             })));
         }
         out
@@ -2427,10 +2705,31 @@ pub extern "C" fn rose_powf(a: f64, b: f64) -> f64 { a.powf(b) }
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_sqrt(a: f64) -> f64 { a.sqrt() }
 
+/// Choix de la variante d'appel pour une fonction à paramètres inférés.
+/// Sans variante flottante disponible, on refuse l'appel (`Valeur::Vide`)
+/// plutôt que de transmettre un f64 dans `d0` à du code qui lit `x0`.
+unsafe fn appeler_trampoline_dual(fptr: usize, sig: &Signature,
+                                  fptr_f: Option<usize>, sig_f: Option<&Signature>,
+                                  args: Vec<Valeur>) -> Valeur {
+    let a_flottant = args.iter().any(|a| matches!(a, Valeur::Flottant(..)));
+    if a_flottant {
+        match (fptr_f, sig_f) {
+            (Some(fp), Some(sf)) => appeler_trampoline_impl(fp, sf, args, true),
+            // garde conservatrice : pas d'UB, l'appelant interprété recevra
+            // `Vide` (aucun test du corpus ne prend cette voie, mesuré).
+            _ => Valeur::Vide,
+        }
+    } else {
+        appeler_trampoline_impl(fptr, sig, args, false)
+    }
+}
+
 /// Trampoline d'appel : la convention SystemV place les entiers dans x0..x7
 /// et les flottants dans d0..d7 ; on transmute vers une signature typée par
 /// combinaison (i64/f64). Au-delà de 4 paramètres, repli interprété.
-unsafe fn appeler_trampoline(fptr: usize, sig: &Signature, args: Vec<Valeur>) -> Valeur {
+/// `force_f` = variante flottante : TOUS les arguments passent par `d0..`.
+unsafe fn appeler_trampoline_impl(fptr: usize, sig: &Signature, args: Vec<Valeur>,
+                                  force_f: bool) -> Valeur {
     use TyKind::*;
     // ⚠ Le tag de retour est publié dans un global par `rose_set_ret_tag`.
     // On le remet à zéro ICI (frontière Rust→JIT), ce qui permet aux
@@ -2448,19 +2747,32 @@ unsafe fn appeler_trampoline(fptr: usize, sig: &Signature, args: Vec<Valeur>) ->
     }
     // le typage du registre suit la VALEUR RÉELLEMENT passée, pas le type
     // déclaré (le vérificateur autorise « demi(7) » : entier vers flottant).
-    let types: Vec<TyKind> = args.iter().map(|a| match a {
-        Valeur::Flottant(..) => Flottant,
-        _ => Entier,
+    let types: Vec<TyKind> = args.iter().map(|a| if force_f {
+        Flottant
+    } else {
+        match a {
+            Valeur::Flottant(..) => Flottant,
+            _ => Entier,
+        }
     }).collect();
     // prépare les emplacements
     let mut ints: Vec<u64> = Vec::new();
     let mut flts: Vec<f64> = Vec::new();
     for a in &args {
-        match a {
-            Valeur::Flottant(d) => flts.push(*d),
-            Valeur::Booleen(b) => ints.push(if *b { 1 } else { 0 }),
-            Valeur::Entier(i, None) => ints.push(*i as u64),
-            _ => {}
+        if force_f {
+            flts.push(match a {
+                Valeur::Flottant(d) => *d,
+                Valeur::Booleen(b) => if *b { 1.0 } else { 0.0 },
+                Valeur::Entier(i, None) => *i as f64,
+                _ => 0.0,
+            });
+        } else {
+            match a {
+                Valeur::Flottant(d) => flts.push(*d),
+                Valeur::Booleen(b) => ints.push(if *b { 1 } else { 0 }),
+                Valeur::Entier(i, None) => ints.push(*i as u64),
+                _ => {}
+            }
         }
     }
     // helper : lit la k-ième valeur d'entier / flottant
