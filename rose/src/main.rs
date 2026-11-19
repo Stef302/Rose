@@ -12,6 +12,8 @@ mod front;
 mod i128x;
 mod irrationnel;
 mod interp;
+/// JVM Rose : bytecode `.rosebc`, classes, méthodes et sandbox.
+mod rosevm;
 /// G2 : le vrai JIT Cranelift uniquement avec la feature `jit` (= défaut).
 /// Sinon, le shim autonome ci-dessous (émetteur M3.1 + repli interpréteur).
 #[cfg(feature = "jit")]
@@ -180,12 +182,14 @@ mod inflate;
 mod png;
 mod mul_rapide;
 mod rir;
+mod transpile;
 #[allow(dead_code)]
 mod wasm_lecteur;
 #[allow(dead_code)]
 mod wasm_runtime;
 mod paint;
 mod console_win;
+mod assoc_windows;
 mod setup_gui;
 #[cfg(feature = "llvm")]
 mod aot_llvm_orc;
@@ -231,6 +235,9 @@ Usage :
   rose tokens prog.rose             liste les jetons (oracle : ligne:colonne type texte)
   rose ast prog.rose                arbre syntaxique (oracle, S-expressions)
   rose rir prog.rose                représentation intermédiaire (RIR)
+  rose bc prog.rose [-o sortie]     bytecode JVM Rose .rosebc (classe v2)
+  rose rvm fichier.rosebc [classe] [methode] [args...]   exécuter dans la JVM Rose sandboxée
+  rose transpile prog.rose --cible js|py|c [-o sortie]   transpilation lisible (JS/Python/C)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
@@ -241,6 +248,9 @@ Usage :
   rose debug-lenteur [-n N] [prog.rose]   OÙ VA LE TEMPS ? lancement, analyse, exécution
   rose wasm lib.wasm       fonctions exportées d'un module WebAssembly (pont @dll(\"wasm\", …))
   rose update              installe/met a jour Rose (64 bits, interface console)
+  rose assoc [--user|--system] [--lang fr|en]   associer .rose à rose.exe (Windows)
+  rose assoc --remove [--user|--system]         retirer l'association .rose
+  rose assoc --dry-run                          afficher les reg add (marche sous Linux)
 ",
         env!("CARGO_PKG_VERSION"),
         MOTEUR
@@ -1004,6 +1014,62 @@ fn main() {
                 Err(e) => { eprintln!("{}", e); std::process::exit(1); }
             }
         }
+        "bc" => {
+            if argv.len() < 3 { eprintln!("rose bc : quel programme ?"); std::process::exit(1); }
+            match front::analyser_fichier(&argv[2]) {
+                Ok(prog) => match rir::abaisser_principal(&prog.instructions) {
+                    Some(corps) => {
+                        if let Err(e) = rosevm::verifier_sous_ensemble(&corps) {
+                            eprintln!("rose bc : {}", e); std::process::exit(1);
+                        }
+                        // Le programme principal n'a pas de paramètres : on
+                        // déclare arité 0 (plutôt que tous les slots) pour que
+                        // `rose rvm fichier.rosebc` marche sans argument.
+                        let classe = match rosevm::promouvoir_corps_avec_parametres(
+                            &corps, "<principal>", 0) {
+                            Ok(c) => c,
+                            Err(e) => { eprintln!("rose bc : {}", e); std::process::exit(1); }
+                        };
+                        let octets = rosevm::ecrire_classe(&classe);
+                        let chemin = if argv.get(3).map(String::as_str) == Some("-o") {
+                            argv.get(4).map(String::as_str).unwrap_or(&argv[2]).to_string()
+                        } else if argv.len() >= 4 && !argv[3].starts_with('-') {
+                            argv[3].clone()
+                        } else {
+                            format!("{}.rosebc", argv[2])
+                        };
+                        if let Err(e) = std::fs::write(&chemin, &octets) {
+                            eprintln!("rose bc : écriture impossible : {}", e); std::process::exit(1);
+                        }
+                        println!("rose bc : {} octets -> {}", octets.len(), chemin);
+                        std::process::exit(0);
+                    }
+                    None => { eprintln!("rose bc : corps principal non abaissable"); std::process::exit(1); }
+                },
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            }
+        }
+        "rvm" => {
+            if argv.len() < 3 { eprintln!("rose rvm : quel fichier .rosebc ?"); std::process::exit(2); }
+            let octets = match std::fs::read(&argv[2]) {
+                Ok(o) => o,
+                Err(e) => { eprintln!("rose rvm : lecture impossible : {}", e); std::process::exit(1); }
+            };
+            let classe = argv.get(3).map(String::as_str).unwrap_or("Principal");
+            let methode = argv.get(4).map(String::as_str).unwrap_or("<principal>");
+            let arguments: Vec<rosevm::Valeur> = argv.iter().skip(5)
+                .filter_map(|s| s.parse::<i64>().ok()).map(rosevm::Valeur::z).collect();
+            let mut hote = rosevm::HoteBc::neuf(rosevm::GcPool::LIMITE_DEFAUT);
+            let limites = rosevm::LimitesJvm::default();
+            match rosevm::executer_fichier(&octets, classe, methode, &arguments, &mut hote, &limites) {
+                Ok(v) => {
+                    print!("{}", hote.sortie);
+                    println!("{}", rosevm::chaine_publique(&v));
+                    std::process::exit(0);
+                }
+                Err(e) => { eprintln!("rose rvm : {}", e); std::process::exit(1); }
+            }
+        }
         "verif" => {
             if argv.len() < 3 { eprintln!("rose verif : quel programme ?"); std::process::exit(1); }
             // Résolution des imports par rapport au fichier.
@@ -1011,6 +1077,41 @@ fn main() {
                 Ok(_) => { println!("vérifié"); std::process::exit(0); }
                 Err(e) => { eprintln!("{}", e); std::process::exit(1); }
             }
+        }
+        "transpile" => {
+            // Rose -> JS / Python / C. Aucun runtime externe n'est appelé :
+            // Node/python3/gcc ne servent qu'à VALIDER la sortie, jamais à
+            // exécuter Rose. Ce module est un produit de sortie du moteur.
+            if argv.len() < 3 { eprintln!("rose transpile : quel programme ?"); std::process::exit(1); }
+            let mut cible = String::new();
+            let mut sortie: Option<String> = None;
+            let mut fichier = String::new();
+            let mut i = 2;
+            while i < argv.len() {
+                match argv[i].as_str() {
+                    "--cible" | "-t" if i + 1 < argv.len() => { cible = argv[i + 1].clone(); i += 2; }
+                    "-o" | "--sortie" if i + 1 < argv.len() => { sortie = Some(argv[i + 1].clone()); i += 2; }
+                    x if x.starts_with("--cible=") => { cible = x[8..].to_string(); i += 1; }
+                    x if x.starts_with('-') => { i += 1; }
+                    x => { if fichier.is_empty() { fichier = x.to_string(); } i += 1; }
+                }
+            }
+            if fichier.is_empty() { eprintln!("rose transpile : quel programme ?"); std::process::exit(1); }
+            let cible = match transpile::Cible::parser(&cible) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            };
+            match transpile::transpiler_fichier(&fichier, cible) {
+                Ok(code) => match sortie {
+                    Some(p) => match std::fs::write(&p, code.as_bytes()) {
+                        Ok(()) => println!("rose: {} produit (transpilation {})", p, cible.nom()),
+                        Err(e) => { eprintln!("rose: ne peut écrire {} ({})", p, e); std::process::exit(1); }
+                    },
+                    None => print!("{}", code),
+                },
+                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
+            }
+            std::process::exit(0);
         }
         "wasm" => {
             // ⚠ M6.1 : inspecte un module WebAssembly SANS l'exécuter (défaut).
@@ -1115,6 +1216,9 @@ fn main() {
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
             std::process::exit(comp_programme(&fichier, &sortie));
+        }
+        "assoc" => {
+            std::process::exit(assoc_windows::execute(&argv));
         }
         "console" | "repl" => {
             let fichier = if argv.len() >= 3 { Some(argv[2].as_str()) } else { None };
@@ -1308,6 +1412,16 @@ fn install_rose() {
     println!("  Dossier : {}", prefixe);
     println!();
     println!("Ouvrez un nouveau terminal et tapez : rose --version");
+    // Association .rose : double-clic = exécution, clic droit = shell Rose.
+    // HKCU, sans élévation ; silencieux si reg.exe est indisponible.
+    // ⚠ `poser_association()` (setup_core) a écrit .rose -> Rose.File ;
+    //    notre hook réécrit .rose -> Rose.Source.1 et doit rester APRÈS.
+    let exe_installe = std::path::PathBuf::from(&prefixe)
+        .join("bin")
+        .join(if cfg!(windows) { "rose.exe" } else { "rose" });
+    if let Err(e) = assoc_windows::appliquer_silencieuse(Some(&exe_installe)) {
+        eprintln!("Association .rose : {e}");
+    }
 }
 
 fn couleur(s: &str, code: &str) -> String {

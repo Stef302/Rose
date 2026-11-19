@@ -2318,6 +2318,18 @@ mod tests {
     use crate::rir::abaisser;
     use crate::run::{set_sink, take_sink};
 
+    // Le tampon de sortie (`run::SINK`) est GLOBAL : plusieurs tests qui
+    // l'activent en parallèle se le volent mutuellement (échec intermittent
+    // `sortie inattendue : ""`). Ce verrou rend les tests qui capturent la
+    // sortie séquentiels, sans toucher au moteur.
+    static TEST_SINK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn sink_guard() -> std::sync::MutexGuard<'static, ()> {
+        match TEST_SINK_LOCK.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        }
+    }
+
     const SOURCE_CARRE: &str = "fn carre(n: entier) -> entier {\n  retour n * n\n}\n";
 
     fn corps_carre() -> CorpsRir {
@@ -2340,6 +2352,7 @@ mod tests {
 
     #[test]
     fn round_trip_carre_chargement_execution_et_parite() {
+        let _sink = sink_guard();
         let corps = corps_carre();
         verifier_sous_ensemble(&corps).expect("carre dans le sous-ensemble");
 
@@ -2597,6 +2610,7 @@ mod tests {
 
     #[test]
     fn round_trip_classe_v2_et_parite_interpreteur() {
+        let _sink = sink_guard();
         let c = promouvoir_corps(&corps_carre(), "carre").unwrap();
         let octets = ecrire_classe(&c);
         assert!(octets.starts_with(MAGIC));
@@ -2894,6 +2908,7 @@ mod tests {
 
     #[test]
     fn programme_reel_fib_recursif_par_methodes() {
+        let _sink = sink_guard();
         // fib compilé en méthode JVM Rose, avec Appel récursif.
         let mut c = ClasseRose::neuf("Fib");
         let cf = sym(&mut c.cp, "Fib");

@@ -380,6 +380,14 @@ pub fn appliquer_paquets() -> Result<Option<String>, String> {
     fs::write(racine.join("current"), format!("app-{version}"))
         .map_err(|e| format!("écriture de current : {e}"))?;
     let _ = fs::remove_file(&nupkg);
+    // Réaffirme l'association APRÈS la mise à jour, en pointant le chemin
+    // STABLE `current\rose.exe` (pas `app-<version>\rose.exe`) : l'icône
+    // et les verbes restent valides quand une nouvelle version est posée.
+    // `appliquer_silencieuse` est un no-op hors Windows (tests Linux intact).
+    let exe_courant = racine.join("current").join("rose.exe");
+    if let Err(e) = crate::assoc_windows::appliquer_silencieuse(Some(&exe_courant)) {
+        eprintln!("Association .rose après mise à jour : {e}");
+    }
     Ok(Some(version))
 }
 

@@ -50,6 +50,8 @@ pub mod png;
 /// Multiplication rapide (Karatsuba → Toom-3 → NTT), à la manière de GMP.
 pub mod mul_rapide;
 pub mod rir;
+/// Transpilation Rose -> JavaScript / Python / C (produit de sortie, zéro dépendance runtime).
+pub mod transpile;
 
 /// M5.2 — E/S et mémoire par appels système directs (sans std).
 pub mod sys_io;
@@ -72,6 +74,10 @@ pub mod paint;
 /// Spécificités Windows de la console : icône de la fenêtre, attente avant
 /// fermeture quand la console a été ouverte par un double-clic.
 pub mod console_win;
+
+/// Association des fichiers `.rose` sur Windows (clic droit / double-clic).
+/// Module autonome, testable depuis Linux ; voir docs/ASSOCIATION_WINDOWS.md.
+pub mod assoc_windows;
 
 /// Console interactive (REPL) — partagée par `rose console` et `rose-shell`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -389,6 +395,10 @@ pub mod debug_lenteur;
 /// ⚠ Rendu VISIBLE (Unicode) d'une chaîne LaTeX : `rose latex --apercu`.
 /// Permet de vérifier le rendu sans LaTeX installé.
 pub mod apercu_latex;
+
+/// ⚠ JVM Rose : bytecode `.rosebc` v1/v2, classes, méthodes, exceptions et
+/// sandbox. Commandes `rose bc` (produire) et `rose rvm` (exécuter).
+pub mod rosevm;
 
 // ── API de haut niveau ────────────────────────────────────────────────────
 //
