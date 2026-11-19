@@ -2,17 +2,29 @@
 #
 # Dérivé de compilateur/emetteur_elf.rose : le cœur G5 (analyse RIR, émission
 # aarch64, résolution de sauts) est repris à l'identique ; seul le writer final
-# diffère — `g5_pe()` écrit un PE32+ (IMAGE_FILE_MACHINE_ARM64) avec une table
-# d'imports minimale KERNEL32.DLL!ExitProcess, calquée sur rose/src/link_natif.rs.
+# ET le backend d'exécution diffèrent. `g5_pe()` écrit un PE32+
+# (IMAGE_FILE_MACHINE_ARM64) avec une table d'imports KERNEL32.DLL complète,
+# calquée sur rose/src/link_natif.rs.
 #
 # Chaîne :
 #   rose rir prog.rose > prog.rir
 #   rose compilateur/emetteur_pe.rose prog.rir > prog.exe
 #
-# ⚠ Le code machine émis par G5 utilise des syscalls Linux (svc #0) : le PE est
-#   structurellement valide et vérifiable sous Linux, mais son EXÉCUTION sous
-#   Windows n'a PAS été testée (et n'est pas possible sur cette machine).
-#   Aucune modification de emetteur_elf.rose / link_natif.rs n'est faite ici.
+# BACKEND WIN32 (vague 37) — plus AUCUN syscall Linux dans le PE :
+#   * les `svc #0` (write=64, exit=93) sont remplacés par des appels à des
+#     trampolines who font `br x16` sur une entrée de l'IAT (KERNEL32.DLL) ;
+#   * imports : GetStdHandle, WriteFile, ExitProcess, ReadFile, CreateFileA,
+#     CloseHandle ;
+#   * stubs Win64 : print_i64 (formatage décimal + WriteFile), ecrire_octets,
+#     lire_fichier, exit (ExitProcess) ;
+#   * le tas G5 n'est plus à l'adresse absolue Linux 0x60000000 : il réside
+#     dans une zone RW de l'image à 0x140004200 (image_base + 0x4200).
+# Le mode `--elf` conserve le backend Linux d'origine : ce fichier est
+# autonome et n'impose rien à emetteur_elf.rose (possédé par un autre agent).
+#
+# ⚠ Aucune exécution Windows n'est possible ici (Wine absent, sudo verrouillé).
+#   La validation est STRUCTURELLE (file / llvm-readobj / objdump) ; le test
+#   réel se fait sur Windows ARM64 avec `self.exe`.
 
 # ── Utilitaires d'écriture little-endian ──
 
@@ -169,6 +181,13 @@ fn g5_emit($w: entier) -> entier {
   joindre($g5_meta, "")
   retour longueur($g5_code) - 1
 }
+# Émet un mot avec une méta « A|<rd>|<offset-dans-.data> » : g5_patch()
+# recalculera l'immédiat ADRP quand le RVA final de .data sera connu.
+fn g5_emit_m($w: entier, $m: chaine) -> entier {
+  joindre($g5_code, g5_wrap($w, 4294967296))
+  joindre($g5_meta, $m)
+  retour longueur($g5_code) - 1
+}
 fn g5_branch($kind: entier, $l: entier) -> entier {
   joindre($g5_code, 0)
   joindre($g5_meta, "F" + chaine($l) + "|" + chaine($kind))
@@ -219,6 +238,19 @@ fn cset($rd: entier, $cond: entier) -> entier {
 }
 fn RET_I() -> entier { retour 3596551104 }
 fn SVC_I() -> entier { retour 3556769793 }
+# ── Encodages AArch64 pour le backend Win32 (vérifiés avec as/objdump) ──
+fn BLR_I($rm: entier) -> entier { retour 3594452992 + $rm * 32 }   # 0xD63F0000
+fn BR_I($rm: entier) -> entier { retour 3592355840 + $rm * 32 }    # 0xD61F0000
+fn adrp_i($rd: entier, $imm: entier) -> entier {
+  $v = g5_wrap($imm, 2097152)
+  $lo = $v % 4
+  $hi = partie_entiere($v / 4)
+  retour 2415919104 + $lo * 536870912 + $hi * 32 + $rd
+}
+fn ldr_i($rt: entier, $rn: entier, $off: entier) -> entier {
+  retour 4181721088 + partie_entiere($off / 8) * 1024 + $rn * 32 + $rt
+}
+fn movn_i($rd: entier, $im: entier) -> entier { retour 2457862144 + $im * 32 + $rd }
 
 # ── G5-R (réflexivité) : extensions chaînes/listes ──
 # Encodages vérifiés avec as/objdump sur aarch64 :
@@ -243,6 +275,49 @@ $g5_inserrel = 0
 $g5_entierl = 0
 $g5_stub0l = 0
 $g5_stubsl = 0
+
+# ── Backend Win32 : état ──
+# 1 = PE (backend Win32), 0 = mode --elf (backend Linux d'origine, inchangé).
+$g5_win = 1
+# Adresse VA du tas G5 dans l'image PE (image_base 0x140000000 + 0x4200).
+# En mode ELF on garde le tas absolu Linux 0x60000000 = 1610612736.
+$g5_heap_va_pe = 5368726016
+# Ordre des entrées de l'IAT KERNEL32.DLL (doit suivre g5_pe()).
+$g5_iat_getstd = 0
+$g5_iat_write = 1
+$g5_iat_exit = 2
+$g5_iat_read = 3
+$g5_iat_create = 4
+$g5_iat_close = 5
+# Labels des trampolines (ADRP+LDR+BR vers l'IAT) et des stubs Win64.
+$g5_t_getstd = 0
+$g5_t_write = 0
+$g5_t_exit = 0
+$g5_t_read = 0
+$g5_t_create = 0
+$g5_t_close = 0
+$g5_ecrl = 0
+$g5_lirel = 0
+# Constantes de layout (identiques dans l'émetteur de trampolines et g5_pe()).
+$g5_rva_data = 16384       # 0x4000 — recalculé après émission (voir dispatch)
+$g5_iat_off = 152           # 0x98 (ILT 0x60..0x8F + terminates à 0x90)
+$g5_data_size = 4194816     # 0x400200 : 0x200 d'imports + 4 Mio de tas G5
+
+fn g5_heap() -> entier {
+  si ($g5_win == 1) { retour $g5_heap_va_pe }
+  retour 1610612736
+}
+# Charge dans xRd l'adresse du tas G5. En mode PE on utilise ADRP+ADD
+# (PC-relative) : l'image reste correcte même si le chargeur la décale.
+fn g5_load_heap($rd: entier) -> entier {
+  g5_emit_m(0, "A|" + chaine($rd) + "|512")  # ADRP patché : tas à .data+0x200
+  g5_emit(addi($rd, $rd, 512))
+  retour 0
+}
+fn g5_setheap($rd: entier) -> entier {
+  si ($g5_win == 1) { retour g5_load_heap($rd) }
+  retour g5_load($rd, g5_heap())
+}
 
 fn g5_load($rd: entier, $v: entier) -> entier {
   $u = $v
@@ -318,7 +393,7 @@ fn g5_unescape($tok: chaine) -> chaine {
 
 # Allocation EN LIGNE : évite de clobber x30 (BL écraserait le LR de la fonction).
 fn g5_alloc_inline() -> entier {
-  g5_load(9, 1610612736)
+  g5_setheap(9)
   g5_emit(ldroff(2, 9, 0))
   g5_emit(orrr(1, 31, 0))
   g5_emit(orrr(0, 31, 2))
@@ -639,6 +714,17 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
     g5_branch(1, $printl)
     retour 0
   }
+  # Backend Win32 : primitives d'E/S directes (x0 = descripteur / nom C).
+  si ($g5_win == 1 et ($head == "ecrire_octets" ou $head == "ecrire_bytes")) {
+    g5_eval($t, 1, 0, $f)
+    g5_branch(1, $g5_ecrl)
+    retour 0
+  }
+  si ($g5_win == 1 et ($head == "lire_fichier" ou $head == "lire_bytes")) {
+    g5_eval($t, 1, 0, $f)
+    g5_branch(1, $g5_lirel)
+    retour 0
+  }
   retour g5_fail("op non couverte : " + $op)
 }
 
@@ -684,8 +770,9 @@ fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: 
   g5_emit(subi(31, 31, g5_framesize($f)))
   g5_emit(stroff(30, 31, 0))
   si ($f == $principal) {
-    g5_load(9, 1610612736)
-    g5_load(8, 1610612744)
+    g5_setheap(9)
+    g5_setheap(8)
+    g5_emit(addi(8, 8, 16))
     g5_emit(stroff(8, 9, 0))
   }
   $p = 0
@@ -770,12 +857,177 @@ fn g5_emit_print($lbl: entier) -> entier {
   retour 0
 }
 
+# ─────────────────────────────────────────────────────────────────────────
+# BACKEND WIN32 — trampolines d'import et stubs KERNEL32 (plus de svc).
+# ─────────────────────────────────────────────────────────────────────────
+# Un trampoline est un appel tail : `adrp x17, page(IAT[i]) ; ldr x16,[x17,#off] ; br x16`.
+# Appelé par `bl <trampoline>`, x30 contient déjà l'adresse de retour : `br x16`
+# saute dans KERNEL32 qui revient DIRECTEMENT à l'appelant (LR préservé).
+# L'adresse est PC-relative : le PE reste valide même si le chargeur le décale.
+fn g5_emit_tramp($lbl: entier, $idx: entier) -> entier {
+  g5_mark($lbl)
+  $off = $g5_iat_off + 8 * $idx
+  g5_emit_m(0, "A|17|" + chaine($off))  # ADRP patché : page de l'IAT
+  g5_emit(ldr_i(16, 17, $off % 4096))
+  g5_emit(BR_I(16))
+  retour 0
+}
+
+# print_i64 — x0 = entier signé 64 bits ; formate en décimal dans un tampon
+# pile puis WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), tampon, len, &écrits, 0).
+# Cadre de 96 octets : [0..31] home space Win64, [40] LR, [48] valeur,
+# [56] bytesWritten (réutilisé), [64..95] 32 octets de chiffres.
+fn g5_emit_print_win($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(subi(31, 31, 96))
+  g5_emit(stroff(30, 31, 40))
+  g5_emit(stroff(0, 31, 48))
+  g5_emit(movz(10, 0))                 # x10 = signe (0 = pas de '-')
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lbl + 1)             # zéro
+  g5_branch(110, $lbl + 2)             # positif
+  g5_emit(ldroff(0, 31, 48))           # négatif : -x0
+  g5_emit(subr(0, 31, 0))
+  g5_emit(movz(10, 1))
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 1)                    # zéro → un seul '0'
+  g5_emit(movz(1, 48))
+  g5_emit(strbio(1, 31, 64))
+  g5_emit(movz(2, 1))
+  g5_branch(0, $lbl + 4)               # → écriture
+  g5_mark($lbl + 2)
+  g5_mark($lbl + 3)                    # conversion (x0 = valeur)
+  g5_emit(movz(7, 64))                 # x7 = OFFSET 64 depuis sp (strboff = [sp,x7])
+  g5_emit(movz(2, 0))                  # x2 = nombre de chiffres
+  g5_mark($lbl + 5)                    # boucle de division
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lbl + 6)             # → inversion
+  g5_emit(movz(1, 10))
+  g5_emit(udivr(3, 0, 1))              # x3 = x0 / 10
+  g5_emit(msubr(4, 3, 1, 0))           # x4 = reste
+  g5_emit(addi(4, 4, 48))
+  g5_emit(strboff(4, 7))               # stocker '0'+reste
+  g5_emit(addi(7, 7, 1))
+  g5_emit(addi(2, 2, 1))
+  g5_emit(orrr(0, 31, 3))
+  g5_branch(0, $lbl + 5)
+  g5_mark($lbl + 6)                    # inversion sur place
+  g5_emit(movz(6, 0))                  # i = 0
+  g5_mark($lbl + 7)
+  g5_emit(subr(5, 2, 6))               # j = len - i - 1
+  g5_emit(subi(5, 5, 1))
+  g5_emit(cmpr(6, 5))
+  g5_branch(110, $lbl + 8)             # i >= j → terminé
+  g5_emit(movz(3, 64))
+  g5_emit(addr(3, 3, 6))               # offset sp+64+i
+  g5_emit(movz(4, 64))
+  g5_emit(addr(4, 4, 5))               # offset sp+64+j
+  g5_emit(ldrboff(8, 3))
+  g5_emit(ldrboff(9, 4))
+  g5_emit(strboff(9, 3))
+  g5_emit(strboff(8, 4))
+  g5_emit(addi(6, 6, 1))
+  g5_branch(0, $lbl + 7)
+  g5_mark($lbl + 8)
+  g5_emit(cmpi(10, 0))
+  g5_branch(100, $lbl + 4)             # pas de signe → écriture
+  g5_emit(orrr(6, 31, 2))              # décalage d'un octet pour '@-'
+  g5_mark($lbl + 9)
+  g5_emit(cmpi(6, 0))
+  g5_branch(100, $lbl + 10)
+  g5_emit(movz(3, 64))
+  g5_emit(addr(3, 3, 6))
+  g5_emit(subi(4, 3, 1))
+  g5_emit(ldrboff(8, 4))
+  g5_emit(strboff(8, 3))
+  g5_emit(subi(6, 6, 1))
+  g5_branch(0, $lbl + 9)
+  g5_mark($lbl + 10)
+  g5_emit(movz(1, 45))                 # '-'
+  g5_emit(strbio(1, 31, 64))
+  g5_emit(addi(2, 2, 1))
+  g5_mark($lbl + 4)                    # écriture
+  g5_load(0, -11)                      # STD_OUTPUT_HANDLE
+  g5_branch(1, $g5_t_getstd)
+  g5_emit(orrr(19, 31, 0))             # x19 = handle (callee-saved)
+  g5_emit(orrr(0, 31, 19))
+  g5_emit(addi(1, 31, 64))             # tampon
+  g5_emit(orrr(2, 31, 2))              # longueur
+  g5_emit(addi(3, 31, 56))             # &bytesWritten
+  g5_emit(orrr(4, 31, 31))             # lpOverlapped = NULL
+  g5_branch(1, $g5_t_write)
+  g5_emit(ldroff(30, 31, 40))
+  g5_emit(addi(31, 31, 96))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# ecrire_octets — x0 = descripteur G5 [tag][len][octets…] ; écrit les octets
+# sur stdout avec WriteFile. Retour = nombre d'octets écrits (x0).
+fn g5_emit_ecrire_win($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(subi(31, 31, 64))
+  g5_emit(stroff(30, 31, 40))
+  g5_emit(ldroff(1, 0, 8))             # longueur
+  g5_emit(addi(2, 0, 16))              # octets
+  g5_emit(stroff(2, 31, 48))
+  g5_emit(stroff(1, 31, 56))
+  g5_load(0, -11)
+  g5_branch(1, $g5_t_getstd)
+  g5_emit(orrr(19, 31, 0))
+  g5_emit(orrr(0, 31, 19))
+  g5_emit(ldroff(1, 31, 48))
+  g5_emit(ldroff(2, 31, 56))
+  g5_emit(addi(3, 31, 32))             # &bytesWritten
+  g5_emit(orrr(4, 31, 31))
+  g5_branch(1, $g5_t_write)
+  g5_emit(ldroff(0, 31, 32))           # retour = octets écrits
+  g5_emit(ldroff(30, 31, 40))
+  g5_emit(addi(31, 31, 64))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# lire_fichier — x0 = nom C, x1 = tampon, x2 = taille max ; ouvre avec
+# CreateFileA, lit avec ReadFile, ferme avec CloseHandle, retourne les octets lus.
+fn g5_emit_lire_win($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(subi(31, 31, 96))
+  g5_emit(stroff(30, 31, 40))
+  g5_emit(stroff(1, 31, 48))
+  g5_emit(stroff(2, 31, 56))
+  g5_emit(orrr(19, 31, 0))             # x19 = nom de fichier
+  g5_load(1, 2147483648)               # GENERIC_READ
+  g5_emit(movz(2, 1))                  # FILE_SHARE_READ
+  g5_emit(orrr(3, 31, 31))             # LPSECURITY_ATTRIBUTES = NULL
+  g5_emit(movz(4, 3))                  # OPEN_EXISTING
+  g5_emit(movz(5, 128))                # FILE_ATTRIBUTE_NORMAL
+  g5_emit(orrr(6, 31, 31))             # hTemplateFile = NULL
+  g5_emit(orrr(0, 31, 19))
+  g5_branch(1, $g5_t_create)
+  g5_emit(orrr(20, 31, 0))             # x20 = handle
+  g5_emit(orrr(0, 31, 20))
+  g5_emit(ldroff(1, 31, 48))
+  g5_emit(ldroff(2, 31, 56))
+  g5_emit(addi(3, 31, 64))             # &bytesRead
+  g5_emit(orrr(4, 31, 31))
+  g5_branch(1, $g5_t_read)
+  g5_emit(ldroff(19, 31, 64))          # x19 = octets lus
+  g5_emit(orrr(0, 31, 20))             # CloseHandle(handle)
+  g5_branch(1, $g5_t_close)
+  g5_emit(orrr(0, 31, 19))
+  g5_emit(ldroff(30, 31, 40))
+  g5_emit(addi(31, 31, 96))
+  g5_emit(RET_I())
+  retour 0
+}
+
 # ── G5-R : runtime des valeurs chaîne/liste ──
 # Descripteur : [tag: 1=chaîne, 2=liste][longueur][données…].
 # Tas : page RW à 0x60000000 ; le mot [0x60000000] contient le pointeur libre.
 fn g5_emit_alloc($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_load(9, 1610612736)
+  g5_setheap(9)
   g5_emit(ldroff(2, 9, 0))
   g5_emit(orrr(1, 31, 0))
   g5_emit(orrr(0, 31, 2))
@@ -1000,6 +1252,8 @@ fn g5_emit_stubs($lbl: entier) -> entier {
   retour 0
 }
 
+fn g5_final_rva() -> entier { retour 4096 + partie_entiere((4 * longueur($g5_code) + 4095) / 4096) * 4096 }
+
 fn g5_patch() -> liste<entier> {
   $out = [0 : entier]
   $i = 0
@@ -1007,6 +1261,17 @@ fn g5_patch() -> liste<entier> {
     $m = $g5_meta[$i]
     si ($m == "") {
       joindre($out, $g5_code[$i])
+    } sinon si (g5_sub($m, 0, 1) == "A") {
+      # ADRP différé : le RVA final de .data dépend de la taille de .text.
+      $bar = g4_pos($m, "|")
+      $bar2 = g4_pos(g5_sub($m, $bar + 1, longueur($m)), "|") + $bar + 1
+      $rd = g4_entier_ou_zero(g5_sub($m, $bar + 1, $bar2))
+      $doff = g4_entier_ou_zero(g5_sub($m, $bar2 + 1, longueur($m)))
+      $cible = $g5_rva_data + $doff
+      $page = partie_entiere($cible / 4096) * 4096
+      $pcrva = 4096 + 4 * $i
+      $pcpage = partie_entiere($pcrva / 4096) * 4096
+      joindre($out, adrp_i($rd, partie_entiere(($page - $pcpage) / 4096)))
     } sinon {
       $bar = g4_pos($m, "|")
       $l = g4_entier_ou_zero(g5_sub($m, 1, $bar))
@@ -1064,19 +1329,21 @@ fn pe_c($s: chaine, $cible: entier) -> chaine {
 fn g5_pe() -> chaine {
   # Constantes PE (décimal : Rose n'a pas de littéral hexadécimal).
   $rva_text = 4096            # 0x1000
-  $rva_data = 8192            # 0x2000
+  $rva_data = $g5_rva_data    # 0x4000 — laisse 12 Kio à .text
   $image_base = 5368709120    # 0x0000000140000000
   $import_desc_off = 32       # 0x20
-  $hint_name_off = 80         # 0x50
-  $ilt_off = 96               # 0x60
-  $iat_off = 112              # 0x70
-  $dll_name_off = 128         # 0x80
+  $ilt_off = 96               # 0x60 (6 entrées ILT + terminateur à 0x90)
+  $iat_off = $g5_iat_off      # 0x98 (6 entrées IAT + terminateur à 0xC8)
+  $hint_base = 208            # 0xD0 (6 × 16 octets)
+  $dll_name_off = 304         # 0x130
+  $nimports = 6
 
   $n = longueur($g5_code)
   $text_len = 4 * $n
   $text_raw = partie_entiere(($text_len + 511) / 512) * 512
   $off_text = 1024            # 0x400 = SizeOfHeaders
   $off_data = $off_text + $text_raw
+  $size_image = partie_entiere(($rva_data + $g5_data_size + 4095) / 4096) * 4096
 
   # ── DOS header + signature PE ──
   $out = "MZ"
@@ -1110,7 +1377,7 @@ fn g5_pe() -> chaine {
   $out = $out + u16le(0) + u16le(0)     # Major/MinorImageVersion
   $out = $out + u16le(6) + u16le(0)     # Major/MinorSubsystemVersion
   $out = $out + u32le(0)                # Win32VersionValue
-  $out = $out + u32le(12288)            # SizeOfImage = 0x3000
+  $out = $out + u32le($size_image)      # SizeOfImage (.data contient le tas G5)
   $out = $out + u32le(1024)             # SizeOfHeaders = 0x400
   $out = $out + u32le(0)                # CheckSum
   $out = $out + u16le(3)                # Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI
@@ -1124,7 +1391,7 @@ fn g5_pe() -> chaine {
   $out = $out + pe_z(8)                 # [0] EXPORT (vide)
   $out = $out + u32le($rva_data + $import_desc_off) + u32le(40)  # [1] IMPORT
   $out = $out + pe_z(80)                # [2..11] vides
-  $out = $out + u32le($rva_data + $iat_off) + u32le(16)          # [12] IAT
+  $out = $out + u32le($rva_data + $iat_off) + u32le(8 * $nimports)  # [12] IAT
   $out = $out + pe_z(24)                # [13..15] vides
 
   # ── Section headers (0x188, 2 × 40 octets) ──
@@ -1137,38 +1404,51 @@ fn g5_pe() -> chaine {
   $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0)
   $out = $out + u32le(1610612768)       # 0x60000020 CODE|EXECUTE|READ
   $out = $out + ".data" + pe_z(3)
-  $out = $out + u32le(512)              # VirtualSize
+  $out = $out + u32le($g5_data_size)    # VirtualSize : 0x200 imports + 0x10000 tas
   $out = $out + u32le($rva_data)        # VirtualAddress
-  $out = $out + u32le(512)              # SizeOfRawData
+  $out = $out + u32le(512)              # SizeOfRawData (le reste est zéro-fill par le loader)
   $out = $out + u32le($off_data)        # PointerToRawData
   $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0)
   $out = $out + u32le(3221225536)       # 0xC0000040 INIT|READ|WRITE
   $out = pe_c($out, 1024)               # 0x400
 
-  # ── .data : table d'imports minimale (KERNEL32.DLL!ExitProcess) ──
+  # ── .data : table d'imports KERNEL32.DLL (6 fonctions) + tas G5 ──
+  # Les noms sont dans l'ordre de l'IAT : GetStdHandle, WriteFile,
+  # ExitProcess, ReadFile, CreateFileA, CloseHandle.
+  $noms = ["GetStdHandle", "WriteFile", "ExitProcess", "ReadFile", "CreateFileA", "CloseHandle"]
   $dat = ""
-  $dat = $dat + u64le($image_base + $rva_text)   # trampoline [0] (réservé)
-  $dat = $dat + u64le($image_base + $rva_text)   # trampoline [1]
-  $dat = $dat + u64le(0)                         # trampoline [2]
   $dat = pe_c($dat, 32)                          # 0x20 IMAGE_IMPORT_DESCRIPTOR
   $dat = $dat + u32le($rva_data + $ilt_off)      # OriginalFirstThunk
   $dat = $dat + u32le(0)                         # TimeDateStamp
   $dat = $dat + u32le(0)                         # ForwarderChain
   $dat = $dat + u32le($rva_data + $dll_name_off) # Name
   $dat = $dat + u32le($rva_data + $iat_off)      # FirstThunk
-  # descripteur nul à 0x34 (déjà zéro)
-  $dat = pe_c($dat, 80)                          # 0x50 IMAGE_IMPORT_BY_NAME
-  $dat = $dat + u16le(0)                         # Hint
-  $dat = $dat + "ExitProcess" + caractere(0)
-  $dat = pe_c($dat, 96)                          # 0x60 ILT
-  $dat = $dat + u64le($rva_data + $hint_name_off)
-  $dat = $dat + u64le(0)
-  $dat = pe_c($dat, 112)                         # 0x70 IAT
-  $dat = $dat + u64le($rva_data + $hint_name_off)
-  $dat = $dat + u64le(0)
-  $dat = pe_c($dat, 128)                         # 0x80 nom de DLL
+  # descripteur nul à 0x34 (déjà zéro), zone 0x38..0x5F réservée
+  $dat = pe_c($dat, 96)                          # 0x60 ILT (Import Lookup Table)
+  $i = 0
+  tant_que ($i < $nimports) {
+    $dat = $dat + u64le($rva_data + $hint_base + 16 * $i)
+    $i = $i + 1
+  }
+  $dat = $dat + u64le(0)                         # 0x90 terminateur ILT (OBLIGATOIRE)
+  $dat = pe_c($dat, 152)                         # 0x98 IAT (Import Address Table)
+  $i = 0
+  tant_que ($i < $nimports) {
+    $dat = $dat + u64le($rva_data + $hint_base + 16 * $i)
+    $i = $i + 1
+  }
+  $dat = $dat + u64le(0)                         # 0xC8 terminateur IAT (OBLIGATOIRE)
+  $dat = pe_c($dat, 208)                         # 0xD0 IMAGE_IMPORT_BY_NAME × 6
+  $i = 0
+  tant_que ($i < $nimports) {
+    $dat = $dat + u16le(0)                       # Hint
+    $dat = $dat + $noms[$i] + caractere(0)
+    $dat = pe_c($dat, 208 + 16 * ($i + 1))
+    $i = $i + 1
+  }
+  $dat = pe_c($dat, 304)                         # 0x130 nom de DLL
   $dat = $dat + "KERNEL32.DLL" + caractere(0)
-  $dat = pe_c($dat, 512)
+  $dat = pe_c($dat, 512)                         # 0x200 = début du tas G5 (zéro-fill)
 
   # ── .text : le code machine G5 (déjà résolu par g5_patch) ──
   $i = 0
@@ -1183,6 +1463,11 @@ fn g5_pe() -> chaine {
 si (nb_arguments() >= 1) {
 $src = lire_texte(argument(0))
 si (longueur($src) >= 3 et sous_chaine($src, 0, 3) == "rir") {
+# --elf redonne le backend Linux d'origine ; défaut = backend Win32.
+$g5_win = 1
+si (nb_arguments() >= 2) {
+  si (argument(1) == "--elf") { $g5_win = 0 }
+}
 $nfn = g5_parse($src)
 $principal = 0
 $i = 0
@@ -1192,7 +1477,7 @@ tant_que ($i < $nfn) {
 }
 $printl = g5_next()
 $k = 0
-tant_que ($k < 7) { g5_next(); $k = $k + 1 }
+tant_que ($k < 10) { g5_next(); $k = $k + 1 }
 $g5_allocl = g5_next()
 $g5_lenl = g5_next()
 $k = 0
@@ -1217,6 +1502,15 @@ tant_que ($k < 4) { g5_next(); $k = $k + 1 }
 $g5_stub0l = g5_next()
 $g5_stubsl = g5_next()
 $exitl = g5_next()
+# Trampolines d'imports + stubs Win64 (réservés dans les deux modes).
+$g5_t_getstd = g5_next()
+$g5_t_write = g5_next()
+$g5_t_exit = g5_next()
+$g5_t_read = g5_next()
+$g5_t_create = g5_next()
+$g5_t_close = g5_next()
+$g5_ecrl = g5_next()
+$g5_lirel = g5_next()
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
 tant_que ($i < $nfn) {
@@ -1233,15 +1527,34 @@ g5_emit_inser($g5_inserrel)
 g5_emit_entier($g5_entierl)
 g5_emit_stub0($g5_stub0l)
 g5_emit_stubs($g5_stubsl)
-g5_emit_print($printl)
-g5_mark($exitl)
-g5_emit(movz(0, 0))
-g5_emit(movz(8, 93))
-g5_emit(SVC_I())
+si ($g5_win == 1) {
+  g5_emit_ecrire_win($g5_ecrl)
+  g5_emit_lire_win($g5_lirel)
+  g5_emit_print_win($printl)
+  g5_mark($exitl)
+  g5_emit(movz(0, 0))
+  g5_branch(1, $g5_t_exit)             # ExitProcess(0) — plus de svc #0
+  g5_emit(RET_I())                     # non atteint
+  g5_emit_tramp($g5_t_getstd, $g5_iat_getstd)
+  g5_emit_tramp($g5_t_write, $g5_iat_write)
+  g5_emit_tramp($g5_t_exit, $g5_iat_exit)
+  g5_emit_tramp($g5_t_read, $g5_iat_read)
+  g5_emit_tramp($g5_t_create, $g5_iat_create)
+  g5_emit_tramp($g5_t_close, $g5_iat_close)
+} sinon {
+  g5_emit_print($printl)
+  g5_mark($exitl)
+  g5_emit(movz(0, 0))
+  g5_emit(movz(8, 93))
+  g5_emit(SVC_I())
+}
 si (longueur($g5_err) > 0) {
   afficher_erreur("G5 : " + $g5_err[0])
   quitter(2)
 }
+# .data est placé juste après .text (aligné page) : plus de chevauchement,
+# même pour l'émetteur se compilant lui-même (~18 000 instructions).
+$g5_rva_data = g5_final_rva()
 $g5_code = g5_patch()
 # Mode optionnel : `rose emetteur_pe.rose prog.rir --elf` redonne l'ELF64
 # d'origine (writer copié, aucun fichier du dépôt modifié). Défaut = PE32+.
