@@ -2715,8 +2715,16 @@ unsafe fn appeler_trampoline_dual(fptr: usize, sig: &Signature,
     if a_flottant {
         match (fptr_f, sig_f) {
             (Some(fp), Some(sf)) => appeler_trampoline_impl(fp, sf, args, true),
+            // ⚠ Une fonction dont la signature DÉCLARE un flottant (ex: la
+            // boucle synthétique `__rose_loop_0` qui accumule dans un f64)
+            // est compilée avec ce paramètre dans d0 : le trampoline normal,
+            // qui choisit les registres depuis les types RÉELS, est correct.
+            // Le `Vide` n'est requis que quand le code a été compilé en i64
+            // alors qu'un flottant est passé (fonction inférée sans variante).
+            _ if sig.params.iter().any(|(_, t)| t.n == TyKind::Flottant) =>
+                appeler_trampoline_impl(fptr, sig, args, false),
             // garde conservatrice : pas d'UB, l'appelant interprété recevra
-            // `Vide` (aucun test du corpus ne prend cette voie, mesuré).
+            // `Vide` (fonction inférée i64 appelée avec un f64).
             _ => Valeur::Vide,
         }
     } else {
