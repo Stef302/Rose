@@ -2,6 +2,11 @@
 
 > **Constat daté au 19/11/2026.** Ces notes décrivent un état mesuré du dépôt
 > `Stef302/Rose` (branche `main`, HEAD poussé `5665bf7` au début de la rédaction).
+> **Logo/titre corrigés après capture utilisateur** : le mot « ROSE » en Kare
+> était amputé en bas et la tige du logo compressée. Marge basse agrandie
+> (h_marque ≥ 72 px, +28 px sous la cellule), boîte du logo Libérée de 30 px,
+> marge tige→titre 16→26 px. `rose-setup.exe` reconstruit (9 582 080 o) et
+> remplacé dans la release.
 > **Vérification des mises à jour** : le manifeste `releases.win.json` et le
 > paquet `Rose-0.1.6-full.nupkg` (2 988 307 o, SHA-256 `e194f979…117e9`) sont
 > publiés dans la release. Sans eux le launcher affichait « vérification
