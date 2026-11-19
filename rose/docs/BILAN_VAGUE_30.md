@@ -66,3 +66,11 @@ oracles 170/170 · point fixe `b084ac5c926f6ae486845f9bc96c616d` ×2 ·
 `rug` absent · version `0.1.5` · `bench_global rc=0`.
 
 Constat daté, pas consigne.
+
+## Addendum — audit officiel (v5)
+
+`scripts/audit-final.sh` rejoué sur `cfd3cec` : **AUCUNE porte non atteinte**.
+Oracles 170/0 ×4 · point fixe `b084ac5c…` · jardin 20/20 · fib(25) `75025` ·
+`bench_global rc=0` · `rug` absent · version `0.1.5`. L'audit a tourné pendant
+que commençaient les agents de la vague 31 ; ses résultats sont donc antérieurs
+à leurs modifications, qui seront re-auditées après intégration.
