@@ -2029,6 +2029,36 @@ fn verifier_et_rapporter(j: &mut Journal, prefixe: &str, portee: &str) {
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   LAUNCHER UNIQUE — ponts vers `velopack`
+
+   L'installeur n'a plus besoin d'embarquer un moteur Rose complet : il
+   devient un launcher stable qui interroge le dépôt, télécharge UNIQUEMENT
+   la version choisie et pointe `current\`. Ces ponts exposent la même API
+   depuis le cœur d'installation (utilisable par `rose versions/installer`
+   et par l'interface graphique sans dupliquer de logique réseau).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/// Versions Windows disponibles sur le dépôt (API GitHub, lecture seule).
+pub fn launcher_versions() -> Result<Vec<crate::velopack::VersionDistante>, String> {
+    crate::velopack::lister_versions()
+}
+
+/// Télécharge et installe UNIQUEMENT la version demandée (SHA-256 vérifié).
+pub fn launcher_installer(tag: &str) -> Result<String, String> {
+    crate::velopack::telecharger_version(tag)
+}
+
+/// Fait pointer `current` sur une version déjà présente sur disque.
+pub fn launcher_selectionner(tag: &str) -> Result<String, String> {
+    crate::velopack::selectionner_version(tag)
+}
+
+/// Plan d'un lancement, sans effet de bord (équivalent de `--dry-run`).
+pub fn launcher_dry_run(tag: Option<&str>) -> Result<String, String> {
+    crate::velopack::dry_run(tag)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

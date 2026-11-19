@@ -501,6 +501,540 @@ fn taille_centrale(octets: &[u8], nom: &str) -> Option<usize> {
     None
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   LAUNCHER UNIQUE — un seul exécutable, les versions viennent du dépôt
+
+   Principe (remplace « un Rose-win-Setup-<version>.exe par release ») :
+
+   1. `lister_versions()` interroge l'API PUBLIQUE des releases GitHub
+      (`GET /repos/Stef302/Rose/releases`). Aucune version n'est codée en
+      dur : une release future apparaît dès qu'elle est publiée.
+   2. L'utilisateur choisit un tag (0.1.3, 0.1.5, …).
+   3. `telecharger_version(tag)` ne télécharge QUE le paquet complet
+      (`Rose-<v>-full.nupkg`) de CE tag, vérifie son SHA-256, l'extrait dans
+      `app-<v>\` et fait pointer `current\`. Le moteur Rose n'est PAS
+      embarqué dans le launcher : il n'y a qu'UN téléchargement, une seule
+      fois, pour la version choisie.
+   4. `selectionner_version(tag)` rebascule `current\` sur une version déjà
+      présente sur disque (changement de version sans rien retélécharger).
+   5. Le binaire launcher reste IDENTIQUE d'une release à l'autre.
+
+   Accès réseau : `gh api` si l'outil est présent, sinon `curl` (présent sur
+   Windows 10/11). Aucun crate externe. `file://` + variables
+   `ROSE_LAUNCHER_API`, `ROSE_LAUNCHER_BASE`, `ROSE_LAUNCHER_REPO` permettent
+   de tout tester hors ligne (voir les tests en fin de module).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/// Dépôt GitHub des releases (lecture seule — aucune publication ici).
+pub const DEPOT: &str = "Stef302/Rose";
+
+/// API qui liste TOUTES les releases (contrairement à `/releases/latest`,
+/// qui ne donne que la dernière, et au manifeste `releases.win.json`, qui
+/// ne contient qu'UNE version).
+pub const API_RELEASES: &str =
+    "https://api.github.com/repos/Stef302/Rose/releases?per_page=100";
+
+/// Base des artefacts téléchargeables : `<base>/<tag>/<fichier>`.
+pub const BASE_ARTIFACTS: &str = "https://github.com/Stef302/Rose/releases/download";
+
+/// Nom du cache local du manifeste (dernière version consultée).
+pub const NOM_CACHE: &str = "releases.win.json";
+
+/// `v0.1.5` → `0.1.5`. Le préfixe `v` n'est retiré que s'il est suivi d'un
+/// chiffre (un tag exotique comme `version-test` reste intact).
+fn version_depuis_tag(tag: &str) -> String {
+    let t = tag.trim();
+    if let Some(reste) = t.strip_prefix('v') {
+        if matches!(reste.as_bytes().first(), Some(b'0'..=b'9')) {
+            return reste.to_string();
+        }
+    }
+    t.to_string()
+}
+
+fn api_url() -> String {
+    std::env::var("ROSE_LAUNCHER_API").unwrap_or_else(|_| API_RELEASES.to_string())
+}
+
+fn depot() -> String {
+    std::env::var("ROSE_LAUNCHER_REPO").unwrap_or_else(|_| DEPOT.to_string())
+}
+
+fn base_artifacts() -> String {
+    std::env::var("ROSE_LAUNCHER_BASE").unwrap_or_else(|_| BASE_ARTIFACTS.to_string())
+}
+
+fn url_asset(tag: &str, fichier: &str) -> String {
+    format!("{}/{}/{}", base_artifacts(), tag, fichier)
+}
+
+/// `gh api` si l'outil est présent ET répond du JSON ; `None` sinon. `gh`
+/// n'est pas obligatoire : c'est une optimisation (déjà authentifié, quota
+/// API plus large). Le CLI de cette machine est connecté comme `clausake`,
+/// mais l'API est PUBLIQUE : aucune publication n'est faite ici.
+fn essayer_gh(endpoint: &str) -> Option<String> {
+    let sortie = std::process::Command::new("gh")
+        .args(["api", endpoint])
+        .output()
+        .ok()?;
+    if !sortie.status.success() {
+        return None;
+    }
+    let texte = String::from_utf8(sortie.stdout).ok()?;
+    let t = texte.trim_start();
+    if !(t.starts_with('[') || t.starts_with('{')) {
+        return None;
+    }
+    Some(texte)
+}
+
+/// Lit du JSON depuis `file://` (tests), `gh` (si disponible) ou `curl`.
+fn requeter_json(url: &str, endpoint: &str) -> Result<String, String> {
+    if let Some(chemin) = url.strip_prefix("file://") {
+        return fs::read_to_string(chemin).map_err(|e| format!("lecture {chemin} : {e}"));
+    }
+    if url == API_RELEASES {
+        if let Some(texte) = essayer_gh(endpoint) {
+            return Ok(texte);
+        }
+    }
+    let sortie = curl_sans_fenetre()
+        .args(["-sSL", "--fail", "-H", "Accept: application/vnd.github+json", url])
+        .output()
+        .map_err(|e| format!("curl indisponible : {e}"))?;
+    if !sortie.status.success() {
+        return Err(format!("API GitHub inaccessible ({url}) : code {}", sortie.status));
+    }
+    String::from_utf8(sortie.stdout).map_err(|e| format!("réponse non UTF-8 : {e}"))
+}
+
+/// Découpe un tableau JSON en objets de PREMIER NIVEAU, en ignorant les
+/// accolades à l'intérieur des chaînes (un titre peut contenir `{...}`).
+fn objets_racine(json: &str) -> Vec<String> {
+    let mut sortie = Vec::new();
+    let mut profondeur = 0i32;
+    let mut debut = None;
+    let mut chaine = false;
+    let mut echap = false;
+    for (i, c) in json.char_indices() {
+        if chaine {
+            if echap {
+                echap = false;
+            } else if c == '\\' {
+                echap = true;
+            } else if c == '"' {
+                chaine = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => chaine = true,
+            '{' => {
+                if profondeur == 0 {
+                    debut = Some(i);
+                }
+                profondeur += 1;
+            }
+            '}' => {
+                profondeur -= 1;
+                if profondeur == 0 {
+                    if let Some(d) = debut {
+                        sortie.push(json[d..=i].to_string());
+                    }
+                    debut = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    sortie
+}
+
+/// Lit un champ de PREMIER NIVEAU d'un objet JSON. Les champs des objets
+/// imbriqués (`author`, `assets`) sont ignorés : sans cela, `"name"` de
+/// l'auteur pourrait masquer le titre de la release.
+fn champ_racine(objet: &str, cle: &str) -> Option<String> {
+    let motif = format!("\"{cle}\"");
+    let octets = objet.as_bytes();
+    let mut profondeur = 0i32;
+    let mut chaine = false;
+    let mut echap = false;
+    let mut i = 0usize;
+    while i < octets.len() {
+        let c = octets[i];
+        if chaine {
+            if echap {
+                echap = false;
+            } else if c == b'\\' {
+                echap = true;
+            } else if c == b'"' {
+                chaine = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            if profondeur == 1 && objet[i..].starts_with(&motif) {
+                let mut j = i + motif.len();
+                while j < octets.len() && (octets[j] as char).is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < octets.len() && octets[j] == b':' {
+                    j += 1;
+                    while j < octets.len() && (octets[j] as char).is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j < octets.len() && octets[j] == b'"' {
+                        let debut = j + 1;
+                        let mut k = debut;
+                        let mut ech = false;
+                        while k < octets.len() {
+                            let ch = octets[k];
+                            if ech {
+                                ech = false;
+                            } else if ch == b'\\' {
+                                ech = true;
+                            } else if ch == b'"' {
+                                break;
+                            }
+                            k += 1;
+                        }
+                        if k <= octets.len() {
+                            return Some(objet[debut..k].to_string());
+                        }
+                    }
+                }
+            }
+            chaine = true;
+        } else if c == b'{' || c == b'[' {
+            profondeur += 1;
+        } else if c == b'}' || c == b']' {
+            profondeur -= 1;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Une release Windows visible par le launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionDistante {
+    pub tag: String,
+    pub version: String,
+    pub titre: String,
+    /// `Rose-<v>-full.nupkg`, vide si la release n'en a pas.
+    pub nupkg: String,
+    /// Vrai si le launcher sait installer cette version (manifeste + nupkg).
+    pub installable: bool,
+    /// Ancien installeur `Rose-Setup-<v>.exe`, vide si absent.
+    pub legacy: String,
+}
+
+/// Analyse pure de la réponse de l'API GitHub (séparée du réseau pour être
+/// testable). La plus récente est placée en premier.
+fn analyser_releases(json: &str) -> Vec<VersionDistante> {
+    let mut versions: Vec<VersionDistante> = Vec::new();
+    for objet in objets_racine(json) {
+        let tag = match champ_racine(&objet, "tag_name") {
+            Some(t) if !t.is_empty() => t,
+            _ => continue,
+        };
+        let version = version_depuis_tag(&tag);
+        // La présence du nom de fichier dans l'objet (qui contient son
+        // tableau `assets`) suffit : on n'a pas besoin d'un parseur complet.
+        let nupkg = format!("Rose-{version}-full.nupkg");
+        let legacy = format!("Rose-Setup-{version}.exe");
+        let a_nupkg = objet.contains(&nupkg);
+        let a_legacy = objet.contains(&legacy);
+        if !a_nupkg && !a_legacy {
+            continue; // release sans installateur Windows
+        }
+        versions.push(VersionDistante {
+            titre: champ_racine(&objet, "name").unwrap_or_else(|| tag.clone()),
+            tag,
+            version,
+            nupkg: if a_nupkg { nupkg } else { String::new() },
+            installable: a_nupkg,
+            legacy: if a_legacy { legacy } else { String::new() },
+        });
+    }
+    versions.sort_by(|a, b| comparer_versions(&b.version, &a.version));
+    versions.dedup_by(|a, b| a.version == b.version);
+    versions
+}
+
+/// Liste DYNAMIQUEMENT les versions disponibles (lecture seule).
+///
+/// `Ok(vec)` même si certaines releases n'ont pas de paquet Velopack : elles
+/// sont marquées `installable: false` avec un `legacy` renseigné. `Err` only
+/// si l'API est inaccessible ou ne renvoie aucune release Windows.
+pub fn lister_versions() -> Result<Vec<VersionDistante>, String> {
+    let url = api_url();
+    let endpoint = format!("repos/{}/releases?per_page=100", depot());
+    let json = requeter_json(&url, &endpoint)?;
+    let versions = analyser_releases(&json);
+    if versions.is_empty() {
+        return Err("aucune release Windows installable trouvée dans l'API GitHub".into());
+    }
+    Ok(versions)
+}
+
+/// Télécharge un fichier vers `cible` : copie locale pour `file://` (tests),
+/// sinon `curl -o` (sans fenêtre de console sous Windows).
+fn telecharger_fichier(url: &str, cible: &Path) -> Result<(), String> {
+    if let Some(chemin) = url.strip_prefix("file://") {
+        fs::copy(chemin, cible).map_err(|e| format!("copie {chemin} : {e}"))?;
+        return Ok(());
+    }
+    let statut = curl_sans_fenetre()
+        .args(["-sSL", "--fail", "-o"])
+        .arg(cible)
+        .arg(url)
+        .status()
+        .map_err(|e| format!("curl indisponible : {e}"))?;
+    if !statut.success() {
+        return Err(format!("téléchargement de {url} impossible (code {statut})"));
+    }
+    Ok(())
+}
+
+/// Versions déjà sur disque (`app-<v>`), la plus récente d'abord.
+pub fn versions_installees() -> Vec<String> {
+    let mut versions = Vec::new();
+    if let Some(racine) = dossier_racine() {
+        if let Ok(entrees) = fs::read_dir(&racine) {
+            for entree in entrees.flatten() {
+                let nom = entree.file_name().to_string_lossy().into_owned();
+                if entree.path().is_dir() {
+                    if let Some(v) = nom.strip_prefix("app-") {
+                        versions.push(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    versions.sort_by(|a, b| comparer_versions(b, a));
+    versions
+}
+
+/// Versions lues dans le cache local `releases.win.json` (mode hors ligne).
+pub fn versions_cachees() -> Vec<String> {
+    let Some(racine) = dossier_racine() else {
+        return Vec::new();
+    };
+    let Ok(texte) = fs::read_to_string(racine.join(NOM_CACHE)) else {
+        return Vec::new();
+    };
+    let Ok(manifeste) = Manifeste::analyser(&texte) else {
+        return Vec::new();
+    };
+    let mut versions: Vec<String> = manifeste
+        .paquets
+        .into_iter()
+        .filter(|p| p.complet)
+        .map(|p| p.version)
+        .collect();
+    versions.sort_by(|a, b| comparer_versions(b, a));
+    versions.dedup();
+    versions
+}
+
+/// Fait pointer `current\` sur `app-<tag>`. NE TÉLÉCHARGE RIEN : la version
+/// doit déjà être installée. Rend la version sélectionnée.
+pub fn selectionner_version(tag: &str) -> Result<String, String> {
+    let version = version_depuis_tag(tag);
+    let racine = dossier_racine().ok_or("LOCALAPPDATA indisponible")?;
+    let dossier = racine.join(format!("app-{version}"));
+    if !dossier.is_dir() {
+        return Err(format!(
+            "version {version} absente de {} — lancez d'abord le téléchargement",
+            racine.display()
+        ));
+    }
+    fs::write(racine.join("current"), format!("app-{version}"))
+        .map_err(|e| format!("écriture de current : {e}"))?;
+    let exe = racine
+        .join("current")
+        .join(if cfg!(windows) { "rose.exe" } else { "rose" });
+    if let Err(e) = crate::assoc_windows::appliquer_silencieuse(Some(&exe)) {
+        eprintln!("Association .rose après sélection : {e}");
+    }
+    Ok(version)
+}
+
+/// Télécharge UNIQUEMENT la version demandée, vérifie son SHA-256, l'extrait
+/// dans `app-<version>\` et fait pointer `current\`. Le manifeste est gardé
+/// en cache local (`releases.win.json`). Aucun moteur n'est embarqué dans le
+/// launcher : c'est le seul téléchargement nécessaire.
+pub fn telecharger_version(tag: &str) -> Result<String, String> {
+    let version = version_depuis_tag(tag);
+    let racine = dossier_racine().ok_or("LOCALAPPDATA indisponible")?;
+
+    // Le manifeste est propre à CE tag (celui de /latest ne connaît que la
+    // dernière version). On le met en cache pour le mode hors ligne.
+    let url_manifeste = url_asset(tag, NOM_CACHE);
+    let json = lire_source(&url_manifeste).map_err(|e| {
+        format!(
+            "release {tag} : manifeste Velopack inaccessible ({e}) — \
+             si c'est une ancienne release, voir telecharger_legacy()"
+        )
+    })?;
+    let cache = racine.join(NOM_CACHE);
+    if let Err(e) = fs::write(&cache, &json) {
+        eprintln!("Cache {NOM_CACHE} non écrit : {e}");
+    }
+    let manifeste = Manifeste::analyser(&json)?;
+    let paquet = manifeste
+        .paquets
+        .iter()
+        .find(|p| p.complet && comparer_versions(&p.version, &version) == std::cmp::Ordering::Equal)
+        .ok_or_else(|| {
+            format!("release {tag} : aucun paquet complet pour {version} dans le manifeste")
+        })?
+        .clone();
+
+    let dossier_paquets = racine.join("packages");
+    fs::create_dir_all(&dossier_paquets)
+        .map_err(|e| format!("création {} : {e}", dossier_paquets.display()))?;
+    let cible = dossier_paquets.join(&paquet.nom);
+    telecharger_fichier(&url_asset(tag, &paquet.nom), &cible)?;
+
+    if paquet.sha256.is_empty() {
+        let _ = fs::remove_file(&cible);
+        return Err(format!(
+            "release {tag} : SHA-256 absent du manifeste, téléchargement refusé"
+        ));
+    }
+    let empreinte = sha256_fichier(&cible)?;
+    if !empreinte.eq_ignore_ascii_case(&paquet.sha256) {
+        let _ = fs::remove_file(&cible);
+        return Err(format!(
+            "SHA-256 invalide pour {} (attendu {}, obtenu {})",
+            paquet.nom, paquet.sha256, empreinte
+        ));
+    }
+
+    let destination = racine.join(format!("app-{}", paquet.version));
+    fs::create_dir_all(&destination)
+        .map_err(|e| format!("création {} : {e}", destination.display()))?;
+    extraire_net45(&cible, &destination)?;
+    let _ = fs::remove_file(&cible);
+    selectionner_version(&paquet.version)
+}
+
+/// Anciennes releases (ex. v0.1.3) : pas de manifeste Velopack, mais un
+/// installeur autonome `Rose-Setup-<v>.exe` ET un `SHA256SUMS`. On télécharge
+/// et VÉRIFIE l'exe ; son EXÉCUTION (silencieuse) dépend du format de cet
+/// installeur et reste à valider sur Windows — rien n'est lancé ici.
+pub fn telecharger_legacy(tag: &str) -> Result<PathBuf, String> {
+    let version = version_depuis_tag(tag);
+    let exe = format!("Rose-Setup-{version}.exe");
+    let racine = dossier_racine().ok_or("LOCALAPPDATA indisponible")?;
+    let sommes = lire_source(&url_asset(tag, "SHA256SUMS"))?;
+    let attendu = sommes
+        .lines()
+        .find_map(|ligne| {
+            let (h, n) = ligne.split_once(' ')?;
+            if n.trim() == exe {
+                Some(h.trim().to_string())
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| format!("{exe} absent de SHA256SUMS"))?;
+    let dossier_paquets = racine.join("packages");
+    fs::create_dir_all(&dossier_paquets)
+        .map_err(|e| format!("création {} : {e}", dossier_paquets.display()))?;
+    let cible = dossier_paquets.join(&exe);
+    telecharger_fichier(&url_asset(tag, &exe), &cible)?;
+    let empreinte = sha256_fichier(&cible)?;
+    if !empreinte.eq_ignore_ascii_case(&attendu) {
+        let _ = fs::remove_file(&cible);
+        return Err(format!(
+            "SHA-256 invalide pour {exe} (attendu {attendu}, obtenu {empreinte})"
+        ));
+    }
+    Ok(cible)
+}
+
+/// Décrit ce que le launcher ferait, SANS télécharger ni installer quoi que
+/// ce soit. `tag = None` = afficher la liste et laisser choisir ; `Some(tag)`
+/// = installation ciblée. La liste distante est lue (lecture seule) pour être
+/// exacte, mais aucun fichier n'est modifié.
+pub fn dry_run(tag: Option<&str>) -> Result<String, String> {
+    let racine = dossier_racine();
+    let mut lignes: Vec<String> = Vec::new();
+    lignes.push("[dry-run] aucun fichier ne sera modifié".to_string());
+    lignes.push(format!(
+        "[dry-run] racine      : {}",
+        racine
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(indéfinie — poser LOCALAPPDATA ou ROSE_VELOPACK_ROOT)".into())
+    ));
+    lignes.push(format!(
+        "[dry-run] installée   : {}",
+        version_installee().unwrap_or_else(|| "(aucune)".into())
+    ));
+    let sur_disque = versions_installees();
+    lignes.push(format!(
+        "[dry-run] sur disque  : {}",
+        if sur_disque.is_empty() {
+            "(aucune)".into()
+        } else {
+            sur_disque.join(", ")
+        }
+    ));
+    let en_cache = versions_cachees();
+    lignes.push(format!(
+        "[dry-run] cache      : {}",
+        if en_cache.is_empty() {
+            "(vide)".into()
+        } else {
+            en_cache.join(", ")
+        }
+    ));
+
+    let versions = lister_versions().unwrap_or_default();
+    if versions.is_empty() {
+        lignes.push(
+            "[dry-run] API GitHub : inaccessible — un lancement réel échouera sans réseau".into(),
+        );
+    } else {
+        lignes.push(format!("[dry-run] versions distantes ({}) :", versions.len()));
+        for v in &versions {
+            lignes.push(format!(
+                "[dry-run]   {:<8} {}",
+                v.tag,
+                if v.installable {
+                    "paquet complet disponible"
+                } else {
+                    "ancien installeur (legacy)"
+                }
+            ));
+        }
+    }
+    match tag {
+        None => lignes.push(
+            "[dry-run] action     : afficher la liste, laisser l'utilisateur choisir, puis telecharger_version(choix)".into(),
+        ),
+        Some(t) => {
+            let v = version_depuis_tag(t);
+            match versions.iter().find(|x| x.version == v) {
+                Some(x) if x.installable => lignes.push(format!(
+                    "[dry-run] action     : telecharger_version({t}) → SHA-256 → app-{v} → current"
+                )),
+                Some(x) => lignes.push(format!(
+                    "[dry-run] action     : telecharger_legacy({t}) → SHA-256 via SHA256SUMS ({}) — exécution Windows à valider",
+                    x.legacy
+                )),
+                None => lignes.push(format!("[dry-run] action     : '{t}' inconnu — refuser")),
+            }
+        }
+    }
+    Ok(lignes.join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +1071,212 @@ mod tests {
         let args = vec!["rose".to_string(), "run".to_string(), "a.rose".to_string()];
         assert!(!is_update_launcher(&args));
         assert_eq!(run_update_launcher(&["rose".into(), ARG_OBSOLETE.into()]), 0);
+    }
+
+    /// Fausse réponse de l'API GitHub : 4 releases, dont une sans
+    /// installateur Windows (v0.1.2) et une en installeur legacy (v0.1.3).
+    /// Le titre de v0.1.5 contient des accolades pour éprouver
+    /// `objets_racine` et le champ `author` porte un `name` piège.
+    const API_FIXTURE: &str = r#"[
+      {"author":{"login":"Stef302","name":"Piège"},"tag_name":"v0.1.5",
+       "name":"Rose {v0.1.5} — installeur Windows refait",
+       "assets":[{"name":"Rose-0.1.5-full.nupkg","size":8213857},
+                 {"name":"releases.win.json","size":402}]},
+      {"author":{"login":"Stef302","name":"Piège"},"tag_name":"v0.1.4",
+       "name":"Rose v0.1.4",
+       "assets":[{"name":"Rose-0.1.4-full.nupkg"},{"name":"releases.win.json"}]},
+      {"author":{"login":"Stef302"},"tag_name":"v0.1.3","name":"Rose v0.1.3",
+       "assets":[{"name":"Rose-Setup-0.1.3.exe"}]},
+      {"author":{"login":"Stef302"},"tag_name":"v0.1.2","name":"Rose v0.1.2","assets":[]}
+    ]"#;
+
+    #[test]
+    fn launcher_etiquettes() {
+        assert_eq!(version_depuis_tag("v0.1.5"), "0.1.5");
+        assert_eq!(version_depuis_tag("0.1.3"), "0.1.3");
+        assert_eq!(version_depuis_tag("version-test"), "version-test");
+    }
+
+    #[test]
+    fn launcher_liste_versions() {
+        let versions = analyser_releases(API_FIXTURE);
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions[0].tag, "v0.1.5");
+        assert_eq!(versions[0].version, "0.1.5");
+        assert_eq!(versions[0].titre, "Rose {v0.1.5} — installeur Windows refait");
+        assert!(versions[0].installable);
+        assert_eq!(versions[0].nupkg, "Rose-0.1.5-full.nupkg");
+        assert_eq!(versions[1].tag, "v0.1.4");
+        assert!(!versions[2].installable);
+        assert_eq!(versions[2].legacy, "Rose-Setup-0.1.3.exe");
+        // v0.1.2 (sans artefact Windows) est écarté
+        assert!(versions.iter().all(|v| v.tag != "v0.1.2"));
+    }
+
+    /// ZIP minimal en méthode « stored » (0) : `entrees_zip` lit les
+    /// en-têtes locaux et ne vérifie pas le CRC, un seul en-tête suffit.
+    fn zip_stored(nom: &str, donnees: &[u8]) -> Vec<u8> {
+        let mut z = Vec::new();
+        z.extend_from_slice(b"PK\x03\x04");
+        z.extend_from_slice(&20u16.to_le_bytes()); // version nécessaire
+        z.extend_from_slice(&0u16.to_le_bytes());  // drapeaux
+        z.extend_from_slice(&0u16.to_le_bytes());  // méthode 0 = stored
+        z.extend_from_slice(&0u16.to_le_bytes());  // heure
+        z.extend_from_slice(&0u16.to_le_bytes());  // date
+        z.extend_from_slice(&0u32.to_le_bytes());  // CRC (non vérifié ici)
+        z.extend_from_slice(&(donnees.len() as u32).to_le_bytes());
+        z.extend_from_slice(&(donnees.len() as u32).to_le_bytes());
+        z.extend_from_slice(&(nom.len() as u16).to_le_bytes());
+        z.extend_from_slice(&0u16.to_le_bytes());  // champ extra
+        z.extend_from_slice(nom.as_bytes());
+        z.extend_from_slice(donnees);
+        z
+    }
+
+    /// Test RÉEL en lecture seule (ignoré par défaut pour que `cargo test`
+    /// reste hors réseau). Commande :
+    /// `cargo test --release launcher_api_reelle -- --ignored --nocapture`
+    /// `--dry-run` réel : imprime le plan complet, sans rien modifier.
+    #[test]
+    #[ignore = "accès réseau à api.github.com, lecture seule"]
+    fn launcher_dry_run_reel() {
+        println!("{}", dry_run(None).expect("plan général"));
+        println!("{}", dry_run(Some("v0.1.5")).expect("plan v0.1.5"));
+        println!("{}", dry_run(Some("v0.1.3")).expect("plan v0.1.3"));
+    }
+
+    #[test]
+    #[ignore = "accès réseau à api.github.com, lecture seule"]
+    fn launcher_api_reelle() {
+        let versions = lister_versions().expect("API GitHub accessible en lecture seule");
+        assert!(!versions.is_empty());
+        for v in &versions {
+            println!(
+                "TAG REEL {} | version={} | installable={} | nupkg={} | legacy={}",
+                v.tag, v.version, v.installable,
+                if v.nupkg.is_empty() { "-" } else { &v.nupkg },
+                if v.legacy.is_empty() { "-" } else { &v.legacy }
+            );
+        }
+        assert!(versions.iter().any(|v| v.version == "0.1.5"));
+    }
+
+    /// Installation RÉELLE (ignorée par défaut) : pointe `ROSE_LAUNCHER_BASE`
+    /// vers un miroir LOCAL des artefacts v0.1.5 déjà téléchargés, avec
+    /// `ROSE_VELOPACK_ROOT` dans /tmp. Aucun fichier du dépôt n'est touché.
+    #[test]
+    #[ignore = "nécessite ROSE_VELOPACK_ROOT + ROSE_LAUNCHER_BASE (miroir local)"]
+    fn launcher_installation_reelle_locale() {
+        let racine = dossier_racine().expect("ROSE_VELOPACK_ROOT requis");
+        let version = telecharger_version("v0.1.5").expect("installation v0.1.5 réelle");
+        assert_eq!(version, "0.1.5");
+        assert_eq!(
+            fs::read_to_string(racine.join("current")).unwrap().trim(),
+            "app-0.1.5"
+        );
+        let nb = fs::read_dir(racine.join("app-0.1.5"))
+            .expect("app-0.1.5 présent")
+            .count();
+        println!("INSTALLATION REELLE v{version} : {nb} entrées dans {}", racine.display());
+        assert!(nb > 0);
+    }
+
+    #[test]
+    fn launcher_selection_et_cache() {
+        // Un SEUL test pose les variables d'environnement : les tests Rust
+        // tournant en parallèle, on évite ainsi toute interférence.
+        let racine = std::env::temp_dir().join(format!(
+            "rose_launcher_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::create_dir_all(racine.join("app-0.1.4"));
+        let _ = fs::create_dir_all(racine.join("app-0.1.5"));
+        let _ = fs::write(
+            racine.join(NOM_CACHE),
+            r#"[{"PackageId":"x","Version":"0.1.5","SHA256":"aa","Type":"Full"}]"#,
+        );
+        let _ = fs::write(racine.join("api.json"), API_FIXTURE);
+
+        // Édition 2024 : set_var/remove_var sont `unsafe` (concurrence
+        // inter-threads). Un seul test les pose, les autres ne les lisent pas.
+        unsafe {
+            std::env::set_var("ROSE_VELOPACK_ROOT", &racine);
+            std::env::set_var(
+                "ROSE_LAUNCHER_API",
+                format!("file://{}", racine.join("api.json").display()),
+            );
+        }
+
+        assert_eq!(selectionner_version("v0.1.4").unwrap(), "0.1.4");
+        assert_eq!(
+            fs::read_to_string(racine.join("current")).unwrap().trim(),
+            "app-0.1.4"
+        );
+        assert_eq!(version_installee().as_deref(), Some("0.1.4"));
+        assert_eq!(versions_installees(), vec!["0.1.5".to_string(), "0.1.4".to_string()]);
+        assert_eq!(versions_cachees(), vec!["0.1.5".to_string()]);
+        assert!(selectionner_version("v0.1.3").is_err()); // pas sur disque
+
+        let plan = dry_run(Some("v0.1.5")).unwrap();
+        assert!(plan.contains("telecharger_version(v0.1.5)"));
+        assert!(plan.contains("Rose {v0.1.5}") || plan.contains("v0.1.5"));
+        let plan_legacy = dry_run(Some("v0.1.3")).unwrap();
+        assert!(plan_legacy.contains("telecharger_legacy(v0.1.3)"));
+        let plan_liste = dry_run(None).unwrap();
+        assert!(plan_liste.contains("versions distantes (3)"));
+
+        // ── parcours COMPLET, hors ligne : manifeste → téléchargement →
+        // SHA-256 → extraction → `current`. La source `file://` tient lieu
+        // de GitHub ; le moteur factice prouve qu'aucun moteur n'est embarqué.
+        let artefacts = racine.join("artefacts").join("v0.1.6");
+        let _ = fs::create_dir_all(&artefacts);
+        let moteur_factice = b"MOTEUR ROSE FACTICE - telecharge, pas embarque";
+        let paquet = zip_stored("lib/net45/rose.exe", moteur_factice);
+        let h = crate::sha256::sha256_hex(&paquet);
+        let manifeste = format!(
+            r#"[{{"PackageId":"Rose-0.1.6-full.nupkg","Version":"0.1.6","SHA256":"{h}","SHA1":"00","Size":"{}","Type":"Full"}}]"#,
+            paquet.len()
+        );
+        let _ = fs::write(artefacts.join("releases.win.json"), &manifeste);
+        let _ = fs::write(artefacts.join("Rose-0.1.6-full.nupkg"), &paquet);
+        unsafe {
+            std::env::set_var(
+                "ROSE_LAUNCHER_BASE",
+                format!("file://{}", racine.join("artefacts").display()),
+            );
+        }
+        assert_eq!(telecharger_version("v0.1.6").unwrap(), "0.1.6");
+        assert_eq!(
+            fs::read(racine.join("app-0.1.6").join("rose.exe")).unwrap(),
+            moteur_factice
+        );
+        assert_eq!(
+            fs::read_to_string(racine.join("current")).unwrap().trim(),
+            "app-0.1.6"
+        );
+        // Le paquet téléchargé est supprimé après extraction.
+        assert!(!racine.join("packages").join("Rose-0.1.6-full.nupkg").exists());
+
+        // ── SHA-256 erroné : REFUS, aucune corruption de l'installation.
+        let mauvais = manifeste.replace(&h, &"0".repeat(64));
+        let _ = fs::write(artefacts.join("releases.win.json"), mauvais);
+        let erreur = telecharger_version("v0.1.6").unwrap_err();
+        assert!(erreur.contains("SHA-256 invalide"), "{erreur}");
+        assert_eq!(
+            fs::read_to_string(racine.join("current")).unwrap().trim(),
+            "app-0.1.6"
+        );
+
+        unsafe {
+            std::env::remove_var("ROSE_LAUNCHER_BASE");
+            std::env::remove_var("ROSE_LAUNCHER_API");
+            std::env::remove_var("ROSE_VELOPACK_ROOT");
+        }
+        let _ = fs::remove_dir_all(&racine);
     }
 
 }

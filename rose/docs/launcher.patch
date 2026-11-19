@@ -1,0 +1,240 @@
+# PATCH CLI — launcher unique (NON APPLIQUÉ)
+
+⚠ **Ce patch n'a PAS été appliqué** : `rose/src/main.rs` est possédé par une
+autre session. Il est fourni sous forme de document. Les fonctions qu'il appelle
+(`velopack::lister_versions`, `telecharger_version`, `selectionner_version`,
+`dry_run`, `setup_core::launcher_*`) sont, elles, **implémentées et testées**
+dans `velopack.rs` / `setup_core.rs` (voir `LAUNCHER_VERSIONS.md`).
+
+Date : 19/11/2026. Cible : `rose/src/main.rs` (HEAD `006ea56`).
+
+---
+
+## 1. Ajouter les commandes dans `match action` (~l. 874)
+
+Ancre : juste **avant** l'arme cul-de-jatte
+
+```rust
+        "update" | "install" => {
+            install_rose();
+            return;
+        }
+        _ => {}
+```
+
+Remplacer par :
+
+```rust
+        "versions" => {
+            // Liste DYNAMIQUE depuis l'API GitHub (lecture seule).
+            match velopack::lister_versions() {
+                Ok(versions) => {
+                    println!("Versions Rose disponibles (dépôt Stef302/Rose) :");
+                    for v in &versions {
+                        if v.installable {
+                            println!("  {:<8} {}  [paquet complet]", v.tag, v.titre);
+                        } else {
+                            println!(
+                                "  {:<8} {}  [ancien installeur : {}]",
+                                v.tag, v.titre,
+                                if v.legacy.is_empty() { "aucun" } else { &v.legacy }
+                            );
+                        }
+                    }
+                    println!("\nInstaller : rose installer <tag>   (ex. rose installer v0.1.5)");
+                }
+                Err(e) => { eprintln!("rose versions : {e}"); std::process::exit(1); }
+            }
+            return;
+        }
+        "installer" => {
+            // Un seul téléchargement : la version choisie, SHA-256 vérifié.
+            let tag = match argv.get(2) {
+                Some(t) => t.as_str(),
+                None => { eprintln!("rose installer : quel tag ? (voir rose versions)"); std::process::exit(1); }
+            };
+            if argv.iter().any(|a| a == "--dry-run") {
+                match velopack::dry_run(Some(tag)) {
+                    Ok(plan) => println!("{plan}"),
+                    Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                }
+                return;
+            }
+            match velopack::telecharger_version(tag) {
+                Ok(v) => println!(
+                    "Rose {v} installé — relancez « rose ». L'ancienne version reste en place (rollback)."
+                ),
+                Err(e) => eprintln!("rose installer : {e}"),
+            }
+            return;
+        }
+        "select" => {
+            // Change de version SANS rien télécharger (app-<v> déjà sur disque).
+            let tag = match argv.get(2) {
+                Some(t) => t.as_str(),
+                None => { eprintln!("rose select : quel tag ? (voir rose versions)"); std::process::exit(1); }
+            };
+            match velopack::selectionner_version(tag) {
+                Ok(v) => println!("Rose {v} sélectionné (current → app-{v})."),
+                Err(e) => eprintln!("rose select : {e}"),
+            }
+            return;
+        }
+        "update" | "install" => {
+            if argv.iter().any(|a| a == "--dry-run") {
+                match velopack::dry_run(None) {
+                    Ok(plan) => println!("{plan}"),
+                    Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+                }
+                return;
+            }
+            install_rose();
+            return;
+        }
+        _ => {}
+```
+
+---
+
+## 2. `--dry-run` dans la voie Velopack de `install_rose()` (~l. 1338)
+
+Ancre, dans `install_rose()` :
+
+```rust
+        if veut_velopack {
+            println!("Mise à jour Velopack…");
+```
+
+Insérer juste après :
+
+```rust
+        if veut_velopack {
+            if args.iter().any(|a| a == "--dry-run") {
+                match velopack::dry_run(None) {
+                    Ok(plan) => println!("{plan}"),
+                    Err(e) => eprintln!("{e}"),
+                }
+                return;
+            }
+            println!("Mise à jour Velopack…");
+```
+
+---
+
+## 3. Point d'entrée « launcher » (optionnel, pour le setup.exe stable)
+
+Le `Rose-win-Setup.exe` doit devenir un binaire unique qui, au premier
+lancement, propose la liste puis lance la version choisie. Ajouter **après**
+`install_rose()` (fin de fonction) :
+
+```rust
+/// Lanceur stable : interroge le dépôt, laisse choisir une version, télécharge
+/// uniquement celle-ci, puis exécute `current\rose.exe` avec les arguments
+/// reçus. Le binaire lui-même ne change jamais d'une release à l'autre.
+fn launcher_interactif(argv: &[String]) -> i32 {
+    use std::io::{self, BufRead, Write};
+
+    let versions = match velopack::lister_versions() {
+        Ok(v) => v,
+        Err(e) => { eprintln!("Launcher : {e}"); return 1; }
+    };
+    if versions.is_empty() { return 1; }
+
+    let installee = velopack::version_installee();
+    println!("Rose — choisissez une version :");
+    for (i, v) in versions.iter().enumerate() {
+        let marque = if installee.as_deref() == Some(v.version.as_str()) { " (installée)" } else { "" };
+        println!("  {}) {:<8} {}{}", i + 1, v.tag, v.titre, marque);
+    }
+    print!("Numéro ou tag [1] : ");
+    let _ = io::stdout().flush();
+    let mut ligne = String::new();
+    let _ = io::stdin().lock().read_line(&mut ligne);
+    let choix = ligne.trim();
+    let tag = if choix.is_empty() {
+        versions[0].tag.clone()
+    } else if let Ok(n) = choix.parse::<usize>() {
+        match versions.get(n.saturating_sub(1)) {
+            Some(v) => v.tag.clone(),
+            None => { eprintln!("Choix invalide"); return 1; }
+        }
+    } else {
+        choix.to_string()
+    };
+
+    let version = match velopack::telecharger_version(&tag) {
+        Ok(v) => v,
+        Err(e) => {
+            // Ancienne release : seul l'installeur legacy existe. On le
+            // télécharge et le VÉRIFIE ; son exécution est volontairement
+            // explicite (non testée sur Windows dans ce chantier).
+            eprintln!("{e}");
+            match velopack::telecharger_legacy(&tag) {
+                Ok(p) => {
+                    println!("Installeur legacy vérifié : {}", p.display());
+                    println!("Lancez-le manuellement : {}", p.display());
+                    return 0;
+                }
+                Err(e2) => { eprintln!("Launcher : {e2}"); return 1; }
+            }
+        }
+    };
+
+    let exe = velopack::dossier_racine()
+        .unwrap_or_default()
+        .join("current")
+        .join(if cfg!(windows) { "rose.exe" } else { "rose" });
+    let arguments: Vec<String> = argv.iter().skip(1).cloned().collect();
+    let statut = std::process::Command::new(&exe)
+        .args(&arguments)
+        .status();
+    match statut {
+        Ok(s) => s.code().unwrap_or(1),
+        Err(e) => { eprintln!("Impossible de lancer Rose {version} : {e}"); 1 }
+    }
+}
+```
+
+Puis, dans `main()`, juste après la détection Velopack interne (~l. 816) :
+
+```rust
+    // Un binaire nommé « rose-setup.exe » agit comme launcher stable :
+    // il n'embarque aucun moteur et télécharge une seule version au choix.
+    if argv.get(0).map(|s| s.to_ascii_lowercase().contains("setup")).unwrap_or(false)
+        && argv.iter().any(|a| a == "--launcher")
+    {
+        let rc = launcher_interactif(&argv);
+        std::process::exit(rc);
+    }
+```
+
+(Le garde `--launcher` évite de changer le comportement de l'installeur existant
+tant que le nouveau packaging n'est pas validé sur Windows.)
+
+---
+
+## 4. Câblage CI / packaging — hors de ce patch
+
+Le `.nupkg` v0.1.5 réel contient encore `Rose-win-Setup.exe` **et**
+`payload/rose.exe` en plus de `rose.exe` (constat sur l'artefact téléchargé).
+Pour obtenir un launcher réellement minimal il faut, dans le workflow de
+publication `Stef302/Rose` (pas touché ici) :
+
+1. publier un `Rose-Setup.exe` **unique et stable** (jamais re numéroté),
+   dont le contenu ne change plus ;
+2. retirer `Rose-win-Setup.exe` et `payload/rose.exe` du `.nupkg` ;
+3. publier `releases.win.json` pour **chaque** tag (v0.1.3 n'en a pas), ou
+   laisser le launcher se rabattre sur `SHA256SUMS`.
+
+## 5. Vérification après application (à faire par le propriétaire de `main.rs`)
+
+```
+cd rose
+~/.cargo/bin/cargo build --release --bin rose
+~/.cargo/bin/cargo test --release
+./target/release/rose versions
+./target/release/rose installer v0.1.5 --dry-run
+```
+
+`versions` et `installer --dry-run` doivent afficher les tags réels
+(`v0.1.5`, `v0.1.4`, `v0.1.3`) sans modifier de fichier.
