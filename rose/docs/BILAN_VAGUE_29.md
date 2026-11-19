@@ -87,3 +87,30 @@ Le produit reste **partiellement self-hosted** : `rose/rose` exige toujours
 6. Rien n'a été testé sur une machine Windows réelle pour l'association `.rose`.
 
 Constat daté, pas consigne.
+
+## Addendum — pontier OS 100 % Rose (19/11, fin de journée)
+
+`jardins/os_syscalls.rose` (37 `fn`, Rose pur) construit octet par octet des
+ELF64 aarch64 avec `MOVZ`/`ADR`/`SVC` : `write(64)`, `exit(93)`, `socket(198)`,
+`connect(203)`, `read(63)`, handshake X11. `jardins/os_natif.rose` (7 `fn`)
+expose les 5 opérations OS sans primitive GUI dans le moteur.
+
+**Preuve réelle rejouée** : ELF 168 octets généré par Rose → `Bonjour Rose OS`,
+`rc=0`, `objdump` montre `mov x0,#1 / adr / mov x2,#16 / mov x8,#0x40 / svc #0`.
+Handshake X11 → 3 652 octets de réponse. Vraie fenêtre `Fenetre Rose pure`
+400×220 `IsViewable` observée par `xwininfo` depuis un autre processus.
+
+`jardins/gui_native.rose` importe désormais `os_natif.rose` et expose
+`generer_fenetre`/`generer_message`/`generer_ecran`. Le chemin Rose pur est
+prioritaire ; les anciennes primitives du moteur restent pour compatibilité.
+
+**Honnêteté** : le lancement des ELF se fait encore par le shell (Rose n'a pas
+`exec`/`mmap`), et le runtime `rose/rose` reste Rust (G2/G3/G4 non achevés).
+Le pontier OS et l'interface, eux, sont générés par Rose — plus de
+`dlopen`/`dlsym` ni de code Rust spécifique à la GUI.
+
+Les compilateurs Rose ont dû apprendre les **imports imbriqués** (3 niveaux)
+et les primitives `ecrire_bytes`/`ecrire_binaire` : 6 jardins étaient en écart
+d'oracle, maintenant 6/6 en `verif` et `rir`. Nouveau point fixe M4.5
+`b084ac5c926f6ae486845f9bc96c616d` (idempotent, source de l'émetteur modifiée).
+Corpus : tokens 170/170, ast 170/170, 10 jardins valides.
