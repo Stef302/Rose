@@ -884,3 +884,15 @@ Consigne: « corriger les défauts de rose du comparatif et perdre sur 10 domain
 | DISP1 | racines i64 ×85 et dispatch | `rose/src/{jit,front}.rs`, `rose/docs/DISPATCH_RAPIDE.md` | 16 |
 
 Rappel: SH1 travaille sur `compilateur/emetteur_elf.rose`, ne pas toucher.
+
+## Vague 41 (19/11) — offensive totale : aucun domaine perdu ou à égalité
+
+Consigne: « on fait tout pour réduire l'écart de ×59, l'égalité et la défaite pas acceptables, pleins d'agents qui s'arrêtent pas avant d'avoir dépassé, idem self-host, pas d'arrêt avant d'avoir fini ».
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| JIT2 | global ×59 + liste ×2 (boucles JIT / mémoire) | `rose/src/jit.rs`, `rose/docs/JIT_OFFENSIVE.md` | 6 |
+| RUN2 | table ×1,01 + suite complexe ×180 (valeurs) | `rose/src/run.rs`, `rose/docs/RUN_OFFENSIVE.md` | 16 |
+| INT2 | englobant ×66 (interprétation) | `rose/src/interp.rs`, `rose/docs/INTERP_OFFENSIVE.md` | 19 |
+
+SH2 continue sur `compilateur/emetteur_elf.rose`. Chacun isole son binaire dans /tmp/opencode/<agent>/.
