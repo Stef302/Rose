@@ -375,14 +375,36 @@ fn g5_slot_of($f: entier, $nom: chaine) -> entier {
   # à zéro plutôt que de bloquer l'émission. Ce n'est PAS une sémantiqueRose.
   retour -1
 }
+# G5-FIX (19/11) : régions de gratte-papier SÉPARÉES PAR PROFONDEUR D'IMBRICATION.
+# Avant : tmp = mot 32+$d, args = mot 64+$i, listes = mot 80+$i (regions FIXES).
+# Un appel imbriqué dans une expression d'argument (ex. noeud8(... (app VX0 x p) ...))
+# ecrivait ses propres arguments dans argoff(0..1) et DETRUISait ceux de l'appel
+# externe deja stipies : noeud8 recevait tx=1 au lieu d'un descripteur de liste.
+# Desormais chaque profondeur $d possede une bande de 64 mots :
+#   [0..7]=tmp, [8..51]=args (jusqu'a 36 params), [52..63]=listes.
+# Les 128 premiers mots restent les slots (n_slots max observe = 116).
+# Profondeur max observee = 13 ; 16 bandes suffisent (marge).
 fn g5_slotoff($s: entier) -> entier { retour 16 + 8 * $s }
-fn g5_tmpoff($d: entier) -> entier { retour 16 + 8 * (32 + $d) }
-fn g5_argoff($i: entier) -> entier { retour 16 + 8 * (64 + $i) }
-fn g5_listoff($i: entier) -> entier { retour 16 + 8 * (80 + $i) }
+fn g5_tmpoff($d: entier) -> entier { retour 16 + 8 * (128 + 64 * $d) }
+fn g5_argoff($i: entier, $d: entier) -> entier { retour 16 + 8 * (128 + 64 * $d + 8 + $i) }
+fn g5_listoff($i: entier, $d: entier) -> entier { retour 16 + 8 * (128 + 64 * $d + 52 + $i) }
 fn g5_framesize($f: entier) -> entier {
-  $n = $g5_fnslot[$f] + 160
-  si ($n % 2 == 1) { $n = $n + 1 }
-  retour 8 * $n
+  # 16 + 8*(128 + 64*16) = 9232 octets, multiple de 16 (alignement AArch64).
+  retour 9232
+}
+# `sub sp,sp,#imm` / `add sp,sp,#imm` ne codent que 12 bits (<= 4095).
+# 9232 > 4095 : on découpe en tranches de 4080 (multiples de 16).
+fn g5_emit_subsp($sz: entier) -> entier {
+  $r = $sz
+  tant_que ($r > 4080) { g5_emit(subi(31, 31, 4080)); $r = $r - 4080 }
+  si ($r > 0) { g5_emit(subi(31, 31, $r)) }
+  retour 0
+}
+fn g5_emit_addsp($sz: entier) -> entier {
+  $r = $sz
+  tant_que ($r > 4080) { g5_emit(addi(31, 31, 4080)); $r = $r - 4080 }
+  si ($r > 0) { g5_emit(addi(31, 31, $r)) }
+  retour 0
 }
 fn g5_cond($op: chaine) -> entier {
   si ($op == "==") { retour 0 }
@@ -445,7 +467,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       tant_que ($p < $n et $t[$p] != ")") {
         $p = g5_eval($t, $p, $d + 1, $f)
         si ($p < 0) { retour -1 }
-        g5_emit(stroff(0, 31, g5_listoff($k)))
+        g5_emit(stroff(0, 31, g5_listoff($k, $d)))
         $k = $k + 1
       }
       g5_load(0, 24 + 8 * $k)
@@ -458,7 +480,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       g5_emit(stroff(1, 0, 16))
       $j = 0
       tant_que ($j < $k) {
-        g5_emit(ldroff(1, 31, g5_listoff($j)))
+        g5_emit(ldroff(1, 31, g5_listoff($j, $d)))
         g5_emit(stroff(1, 0, 24 + 8 * $j))
         $j = $j + 1
       }
@@ -518,11 +540,11 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       tant_que ($p < $n et $t[$p] != ")") {
         $p = g5_eval($t, $p, $d + 1, $f)
         si ($p < 0) { retour -1 }
-        g5_emit(stroff(0, 31, g5_argoff($k)))
+        g5_emit(stroff(0, 31, g5_argoff($k, $d)))
         $k = $k + 1
       }
       $i = 0
-      tant_que ($i < $k) { g5_emit(ldroff($i, 31, g5_argoff($i))); $i = $i + 1 }
+      tant_que ($i < $k) { g5_emit(ldroff($i, 31, g5_argoff($i, $d))); $i = $i + 1 }
       $lbl = -1
       si ($nom == "longueur") { $lbl = $g5_lenl }
       si ($nom == "ordre") { $lbl = $g5_ordl }
@@ -620,7 +642,7 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
   si ($head == "retour" ou $head == "retour_abstrait") {
     g5_eval($t, 1, 0, $f)
     si ($f == $principal) { g5_branch(1, $printl)
-    } sinon { g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, g5_framesize($f))); g5_emit(RET_I()) }
+    } sinon { g5_emit(ldroff(30, 31, 0)); g5_emit_addsp(g5_framesize($f)); g5_emit(RET_I()) }
     retour 0
   }
   si ($head == "afficher" ou $head == "afficher_abstrait") {
@@ -670,7 +692,7 @@ fn g5_parse($src: chaine) -> entier {
 
 fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: entier) -> entier {
   g5_mark($g5_flbl[$f])
-  g5_emit(subi(31, 31, g5_framesize($f)))
+  g5_emit_subsp(g5_framesize($f))
   g5_emit(stroff(30, 31, 0))
   si ($f == $principal) {
     g5_load(9, 1610612736)
@@ -688,7 +710,7 @@ fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: 
   }
   g5_mark($g5_endlbl[$f])
   si ($f == $principal) { g5_branch(1, $exitl)
-  } sinon { g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, g5_framesize($f))); g5_emit(RET_I()) }
+  } sinon { g5_emit(ldroff(30, 31, 0)); g5_emit_addsp(g5_framesize($f)); g5_emit(RET_I()) }
   retour 0
 }
 
@@ -970,6 +992,37 @@ fn g5_emit_entier($lbl: entier) -> entier {
   retour 0
 }
 
+# `chaine(x)` : si x est déjà un descripteur chaîne (tag=1), identité ;
+# sinon on fabrique une chaîne vide [tag=1][len=0]. La conversion décimale
+# d'un entier n'est PAS implémentée ici (elle n'est pas nécessaire au chemin
+# d'émission de l'émetteur lui-même) — constat documenté.
+fn g5_emit_ch($lbl: entier) -> entier {
+  g5_mark($lbl)
+  # ⚠ Les entiers sont passés BRUTS (x0=2 par exemple), sans tag : un test
+  # de plage évite de déréférencer un petit entier comme un pointeur.
+  g5_load(9, 1610612736)
+  g5_emit(cmpr(0, 9))
+  g5_branch(103, $lbl + 1)
+  g5_load(9, 1610612736 + 33554432)
+  g5_emit(cmpr(0, 9))
+  g5_branch(108, $lbl + 1)
+  g5_emit(ldroff(1, 0, 0))
+  g5_emit(cmpi(1, 1))
+  g5_branch(100, $lbl + 1)
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)
+  g5_load(0, 16)
+  g5_alloc_inline()
+  g5_emit(orrr(5, 31, 0))
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 5, 0))
+  g5_emit(movz(1, 0))
+  g5_emit(stroff(1, 5, 8))
+  g5_emit(orrr(0, 31, 5))
+  g5_emit(RET_I())
+  retour 0
+}
+
 # Primitives non implémentées : retour neutre (0 ou chaîne vide).
 fn g5_emit_stub0($lbl: entier) -> entier {
   g5_mark($lbl)
@@ -1084,6 +1137,7 @@ g5_emit_len($g5_lenl)
 g5_emit_ordre($g5_ordl)
 g5_emit_sous($g5_sousl)
 g5_emit_idx($g5_idxl)
+g5_emit_ch($g5_chl)
 g5_emit_join($g5_joindrel)
 g5_emit_inser($g5_inserrel)
 g5_emit_entier($g5_entierl)
