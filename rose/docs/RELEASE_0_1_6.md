@@ -9,9 +9,8 @@
 > **Honnêteté** : aucun binnaire Windows n'a été lancé, aucune capture d'écran
 > n'a été observée sur cette machine (Linux/aarch64). Le rendu graphique final
 > et l'exécutable launcher « slim » restent à valider sur Windows réel. Les
-> sections « Mises à jour auto » et « Site wasm » sont livrées séparément par
-> RE2 et RE3 : elles sont laissées en attente de leur rapport, non annoncées
-> comme livrées ici.
+> sections « Mises à jour auto » et « Site wasm » ont été livrées séparément
+> par RE2 et RE3 puis intégrées ci-dessous ; l’ensemble a été re-vérifié après.
 
 ---
 
@@ -90,17 +89,33 @@ compilation sur Linux ; **rendu visuel à confirmer sur Windows réel**.
 
 ---
 
-## Mises à jour auto — choix au premier écran *(livré séparément — RE2)*
+## Mises à jour auto — choix au premier écran
 
-> **Section à compléter par l'orchestrateur.** Le choix de configurer les
-> mises à jour auto au premier écran est le chantier de **RE2**, qui possède
-> `rose/src/{setup_gui,setup_core,velopack}.rs` et
-> `rose/docs/AUTO_UPDATE_CHOIX.md`. Au moment de la rédaction de ces notes,
-> `AUTO_UPDATE_CHOIX.md` n'était **pas encore présent** dans le dépôt : aucun
-> comportement n'est annoncé ici faute de rapport mesuré. Insérer ici le
-> comportement exact (prompts, écriture de config, opt-in/opt-out, valeurs par
-> défaut) dès que le rapport RE2 sera disponible, puis re-vérifier le build et
-> les tests après intégration.
+**Livré (RE2, 19/11/2026).** Le premier écran de `rose-setup` est désormais
+`Vue::MisesAJour`, avant Bienvenue/Licence/Options/Installation/Terminé. Il
+présente trois cartes radio dans le thème Rose (`ROUGE_VIF 0xFF2D1A`,
+`VERT_LIME_VIF 0x9CFF00`) avec la coche antialiasée corrigée par ailleurs :
+
+- **Auto au démarrage** (défaut) : le launcher vérifie les versions à chaque
+  lancement mais **ne télécharge rien sans accord** ;
+- **Manuel** : rien au démarrage, l'utilisateur lance `rose update` ou le
+  bouton « Vérifier les mises à jour » ;
+- **Désactivées** : aucune vérification, y compris `rose update` — un garde-fou
+  dans `check_and_update()` refuse immédiatement avec un message explicite,
+  avant tout appel réseau.
+
+Le choix est persisté dans `%APPDATA%\Rose\config.json` sous la forme
+`{ "mode": "auto" }` (valeurs `auto` / `manuel` / `desactive`, parseur maison
+sans crate externe, repli `ROSE_VELOPACK_ROOT`, défaut `Auto` sur fichier
+absent ou invalide). La vérification s'exécute en fil de fond via `WM_APP_MAJ`
+— aucune fenêtre figée. **Aucun service Windows ni tâche planifiée n'est créé.**
+
+Preuves : 220 + 204 + 6 + 1 tests / 0 échec, dont 3 tests de persistance
+(défaut, aller-retour des 3 modes, valeurs invalides, effet au démarrage), et
+type-check sur `x86_64-pc-windows-gnu` (`EXIT 0` via harnais isolé). **Non
+observé sur cette machine** (Linux/aarch64) : rendu réel des cartes, clics
+effectifs, création du fichier au second lancement —documenté sans capture
+inventée. Source : `rose/docs/AUTO_UPDATE_CHOIX.md`.
 
 ---
 
@@ -135,6 +150,29 @@ optimisation** (`-O1`/`-O2`). **Verdict honnête** : ce n'est toujours pas
   c'est l'optimisation qui les débloque.
 
   Source : `rose/docs/WASM_UNIVERSEL.md` (19/11/2026), `rose/docs/WASM_BIBLIOTHEQUE_REELLE.md`.
+
+---
+
+## Site — le vrai moteur Rose WASM remplace le JavaScript factice
+
+**Livré (RE3, 19/11/2026).** Le site `docs/index.html` n'affiche plus une sortie
+codée en dur : le terminal d'accueil envoie la source à `Rose.execute()` par le
+glue C ABI (`rose_alloc` / `rose_execute` / …), et le playground utilise le
+vrai moteur en priorité — l'ancien interpréteur JS (~640 lignes) ne subsiste
+que comme repli explicitement signalé dans la console. Chargement différé par
+`import()` dynamique, aucun `await` bloquant le premier rendu.
+
+Les fichiers `docs/rose.wasm` et `docs/rose-wasm.js` sont servis à côté de la
+page ; le module est identique octet pour octet à `rose/web/rose.wasm`
+(md5 `89c6b117…`). Tests réels : `test-wasm.mjs` **15/15**, `test-site.mjs`
+tous OK (HTTP 200, types MIME `application/wasm`, `Rose.execute(">> 47")` →
+`"47\n"`, trois exemples), `test-dom.mjs` **6/6** et **6/6** en mode fallback.
+
+**Limite documentée** : navigation, thème, recherche, particules et
+presse-papiers restent en JavaScript — c'est du pilotage du DOM, aucun calcul.
+**Non, tout le site n'est pas en Rose.** Aucun test de rendu visuel (Firefox
+headless inutilisable ici, pas de Playwright) ; le fallback affiche un message
+explicite et n'invente jamais de résultat. Source : `rose/docs/SITE_WASM.md`.
 
 ---
 
