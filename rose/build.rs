@@ -30,7 +30,16 @@ fn main() {
         if let Ok(entries) = std::fs::read_dir("target") {
             for _ in entries {}
         }
-        println!("cargo:rustc-link-arg=/WHOLEARCHIVE:windows_compat.lib");
+        // ⚠ MSVC utilise /WHOLEARCHIVE:… ; lld-link GNU (cible *-windows-gnu)
+        // ne comprend pas ce drapeau et cherche un fichier '/WHOLEARCHIVE:…'.
+        let cible = std::env::var("TARGET").unwrap_or_default();
+        if cible.ends_with("-windows-msvc") {
+            println!("cargo:rustc-link-arg=/WHOLEARCHIVE:windows_compat.lib");
+        } else {
+            println!("cargo:rustc-link-arg=-Wl,--whole-archive");
+            println!("cargo:rustc-link-arg=-lwindows_compat");
+            println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
+        }
         println!("cargo:rustc-link-arg=-Wl,--export-all-symbols");
         println!("cargo:rustc-link-lib=dylib=advapi32");
         // GDI+ : tracé ANTIALIASÉ des cercles et des coins arrondis de
@@ -50,7 +59,10 @@ fn main() {
         println!("cargo:rustc-link-arg-bin=rose-setup=/SUBSYSTEM:WINDOWS");
         println!("cargo:rustc-link-arg-bin=rose-setup=/ENTRY:mainCRTStartup");
         let def = std::path::Path::new("exports.def");
-        if def.exists() {
+        // ⚠ exports.def est écrit pour l'ABI x64 (noms non décortiqués).
+        // Sur i686 l'exportateur ajoute des underscores/EXPORTAS et lld-link
+        // rejette le fichier : on ne l'applique qu'aux cibles 64 bits.
+        if def.exists() && cible.contains("64") {
             println!("cargo:rustc-link-arg-bin=rose=/DEF:exports.def");
         }
         // ── Icônes par binaire ─────────────────────────────────────────────

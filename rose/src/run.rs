@@ -116,6 +116,7 @@ impl ChaineRep {
     /// le comptage des caractères restent identiques à `plein` (même
     /// sémantique `longueur`). Repli explicite sur `from_utf8_lossy` + copie
     /// quand les octets ne sont pas UTF-8 valides (comportement historique).
+    #[cfg(unix)]
     pub fn depuis_fichier(chemin: &str) -> Result<Rc<ChaineRep>, ()> {
         use std::os::raw::{c_char, c_int, c_void};
         unsafe extern "C" {
@@ -159,6 +160,15 @@ impl ChaineRep {
                 Ok(ChaineRep::plein(owned))
             }
         }
+    }
+
+    // ⚠ Windows n'a pas mmap dans `libc` : lecture classique (copie unique).
+    #[cfg(not(unix))]
+    pub fn depuis_fichier(chemin: &str) -> Result<Rc<ChaineRep>, ()> {
+        let octets = std::fs::read(chemin).map_err(|_| ())?;
+        if octets.len() > (1 << 28) { return Err(()); }
+        let s = String::from_utf8_lossy(&octets).into_owned();
+        Ok(ChaineRep::plein(s))
     }
 
     /// Emprunt des octets quand la feuille les expose déjà contiguëment
@@ -243,6 +253,13 @@ pub fn valeur_litteral_chaine(s: &str) -> Valeur {
     Valeur::Chaine(rc)
 }
 
+#[cfg(unix)]
+fn liberer_mmap_ptr(ptr: *const u8, len: usize) {
+    unsafe { libc::munmap(ptr as *mut std::os::raw::c_void, len); }
+}
+#[cfg(not(unix))]
+fn liberer_mmap_ptr(_ptr: *const u8, _len: usize) {}
+
 impl Drop for ChaineRep {
     fn drop(&mut self) {
         // Destruction itérative : on vide le nœud courant, puis on parcourt
@@ -255,7 +272,7 @@ impl Drop for ChaineRep {
         match &noeud {
             NoeudChaine::Plein(_) => return,
             NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
-                unsafe { libc::munmap(*ptr as *mut std::os::raw::c_void, *mapping_len); }
+                liberer_mmap_ptr(*ptr, *mapping_len);
                 return;
             }
             NoeudChaine::Concat(..) => {}
@@ -265,7 +282,7 @@ impl Drop for ChaineRep {
             match noeud {
                 NoeudChaine::Plein(_) => {}
                 NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
-                    unsafe { libc::munmap(ptr as *mut std::os::raw::c_void, mapping_len); }
+                    liberer_mmap_ptr(ptr, mapping_len);
                 }
                 NoeudChaine::Concat(mut a, mut b) => {
                     if let Some(ra) = Rc::get_mut(&mut a) {
