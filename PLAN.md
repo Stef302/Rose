@@ -751,3 +751,16 @@ Consigne: « jardins plus rapide pour délocaliser ensuite, idem continue faut d
 | JF | PGCD/bigint : dépasser Rust sur D4b | `rose/src/{run,i128x}.rs`, `rose/docs/BIGINT_VS_RUST.md` | 6 |
 
 ⚠ Chaque agent construit son propre binaire sous `/tmp/opencode/<agent>/` et ne remplace PAS `rose/rose` (conflits « Text file busy » observés).
+
+## Vague 30 (19/11) — bibliothèque quelconque → wasm avec imports, self-hosted, dépasser Rust
+
+Consigne: « réessaye de prendre une bibliothèque quelconque, utiliser l'utilitaire pour convertir en wasm, même avec import, tente de l'exploiter, montre le code; dis si full hosted; continue à dépasser Rust en reprenant les méthodes ».
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| WA2 | vraie bibliothèque convertie en wasm AVEC imports + code montré | `scripts/rose-wasm-lib.sh`, `rose/docs/WASM_BIBLIOTHEQUE_REELLE.md` | 8 |
+| WB2 | verdict self-hosted re-mesuré | `rose/docs/SELF_HOSTED_VERDIT_FINAL.md` | 10 |
+| WC2 | D6 liste battre Rust (méthode: phase → goulot → décision) | `rose/src/jit.rs`, `rose/docs/LISTE_BAT_RUST.md` | 15 |
+| WD2 | D4b PGCD battre Rust (même méthode) | `rose/src/{run,i128x,interp}.rs`, `rose/docs/PGCD_BAT_RUST.md` | 19 |
+
+⚠ Chacun construit son binaire dans `/tmp/opencode/<agent>/`, ne remplace PAS `rose/rose`.
