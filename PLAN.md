@@ -830,3 +830,13 @@ Consigne: « un ELF c'est bien mais n'oublie pas le PE pour Windows, rose est pl
 | SH1 | self-hosting : réparer le segfault de l'ELF de emetteur.rose | `compilateur/emetteur_elf.rose`, `rose/docs/G5_SEGFAULT.md` | 11 |
 
 ⚠ Chacun construit son binaire dans `/tmp/opencode/<agent>/`, ne remplace PAS `rose/rose`.
+
+## Vague 36 (19/11) — objectifs restants
+
+État: 7 victoires, table ~1,0×, racines Rust gagne à algo égal, self-hosting PARTIEL (ABI des valeurs G5 incohérente).
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| TA2 | table 3000 : battre Rust | `rose/src/run.rs`, `rose/docs/TABLE_BAT_RUST.md` | 6 |
+| RA2 | racines : battre Rust (même algo) | `rose/src/{interp,irrationnel}.rs`, `rose/docs/RACINES_BAT_RUST.md` | 11 |
+| AB1 | G5 : uniformiser le tag des valeurs (réflexivité) | `compilateur/emetteur_elf.rose`, `rose/docs/G5_ABI_VALEURS.md` | 10 |
