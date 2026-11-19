@@ -274,7 +274,9 @@ fn nom_std_connu(nom: &str) -> bool {
         | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi" | "i"
         | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "breakpoint_if" | "watch" | "unwatch" | "join"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
-        | "fraction")
+        | "fraction"
+        | "fenetre_native" | "fenetre_afficher" | "fenetre_attendre"
+        | "fenetre_fermer" | "message_native")
 }
 
 fn fonction_atomique(nom: &str, args: &[Valeur]) -> Option<Valeur> {
@@ -3457,6 +3459,35 @@ impl Interp {
         match nom {
             "afficher" => { afficher(&a[0]); Valeur::Vide }
             "view" => { let s = chaine_de(&a[0]); view_grand_nombre(&s); Valeur::Vide }
+            // GUI native : vraie fenêtre OS, sans navigateur ni dépendance.
+            // Le module échoue EXPLICITEMENT s'il n'y a pas d'affichage.
+            "fenetre_native" => {
+                let titre = chaine_de(&a[0]);
+                let l = chaine_de(&a[1]).parse::<i64>().unwrap_or(0);
+                let h = chaine_de(&a[2]).parse::<i64>().unwrap_or(0);
+                match crate::gui_native::fenetre_creer(&titre, l, h) {
+                    Ok(id) => Valeur::z(id as i64),
+                    Err(e) => { erreur_runtime(&e.to_string()); }
+                }
+            }
+            "fenetre_afficher" | "fenetre_attendre" | "fenetre_fermer" => {
+                let id = chaine_de(&a[0]).parse::<i64>().unwrap_or(0);
+                let r = match nom {
+                    "fenetre_afficher" => crate::gui_native::fenetre_afficher(id as u64),
+                    "fenetre_attendre" => crate::gui_native::fenetre_attendre(id as u64),
+                    _ => crate::gui_native::fenetre_fermer(id as u64),
+                };
+                if let Err(e) = r { erreur_runtime(&e.to_string()); }
+                Valeur::Vide
+            }
+            "message_native" => {
+                let titre = chaine_de(&a[0]);
+                let texte = chaine_de(&a[1]);
+                if let Err(e) = crate::gui_native::message(&titre, &texte) {
+                    erreur_runtime(&e.to_string());
+                }
+                Valeur::Vide
+            }
             "saisir_entier" => self.lire_selon(TyKind::Entier),
             "saisir_flottant" => self.lire_selon(TyKind::Flottant),
             "time" => {

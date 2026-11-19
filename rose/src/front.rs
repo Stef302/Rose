@@ -708,6 +708,12 @@ EntreeStd { nom: "bytes", args: &["chaine"], retour: "tampon" },
     EntreeStd { nom: "millisecondes", args: &[], retour: "entier" },
     EntreeStd { nom: "time", args: &[], retour: "chaine" },
 EntreeStd { nom: "ms", args: &[], retour: "entier" },
+    // GUI native : vraie fenêtre OS (Win32/user32 ou X11/dlopen), zéro dépendance.
+    EntreeStd { nom: "fenetre_native", args: &["chaine", "entier", "entier"], retour: "entier" },
+    EntreeStd { nom: "fenetre_afficher", args: &["entier"], retour: "vide" },
+    EntreeStd { nom: "fenetre_attendre", args: &["entier"], retour: "vide" },
+    EntreeStd { nom: "fenetre_fermer", args: &["entier"], retour: "vide" },
+    EntreeStd { nom: "message_native", args: &["chaine", "chaine"], retour: "vide" },
 ];
 
 pub fn chercher_std(nom: &str) -> Option<&'static EntreeStd> {

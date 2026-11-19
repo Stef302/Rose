@@ -1,0 +1,16 @@
+# Démo du jardin GUI natif — toute l'interface est en Rose.
+# Sans écran, `decrire(f)` prouve la logique des widgets/mises en page/événements.
+# Avec DISPLAY et ROSE_GUI_DEMO=1, on ouvre VRAIEMENT la fenêtre OS.
+
+importer "jardins/gui_native.rose"
+
+$f = fenetre("Bonjour Rose", 360, 180)
+ajouter($f, etiquette("Saisissez votre nom :"), 16, 20)
+ajouter($f, champ("Nom", "Rose"), 16, 48)
+ajouter($f, bouton("OK", 90), 16, 86)
+lier_evenement($f, "clic", "bouton", "b2", "dire bonjour")
+lier_evenement($f, "saisie", "champ", "c1", "mettre a jour")
+lier_evenement($f, "fermeture", "fenetre", "f0", "quitter")
+
+>> decrire($f)
+>> "resume|" + chaine(compter_widgets($f)) + "|" + chaine(compter_actions($f))

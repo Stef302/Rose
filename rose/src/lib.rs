@@ -79,6 +79,11 @@ pub mod console_win;
 /// Module autonome, testable depuis Linux ; voir docs/ASSOCIATION_WINDOWS.md.
 pub mod assoc_windows;
 
+/// GUI native : une VRAIE fenêtre du système d'exploitation, sans dépendance.
+/// Win32/user32.dll sur Windows, libX11 chargée au runtime sur UNIX.
+/// Voir docs/GUI_FENETRE_REELLE.md et docs/gui_native.patch.
+pub mod gui_native;
+
 /// Console interactive (REPL) — partagée par `rose console` et `rose-shell`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod repl;

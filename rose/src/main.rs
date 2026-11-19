@@ -190,6 +190,7 @@ mod wasm_runtime;
 mod paint;
 mod console_win;
 mod assoc_windows;
+mod gui_native;
 mod setup_gui;
 #[cfg(feature = "llvm")]
 mod aot_llvm_orc;

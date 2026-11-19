@@ -1,0 +1,16 @@
+# Démo GUI native : ouvre une VRAIE fenêtre du système d'exploitation.
+# Nécessite un affichage (DISPLAY sous UNIX, session Windows sinon).
+# Sous Xvfb pour les tests automatiques:
+#   DISPLAY=:99 ROSE_GUI_ATTENTE_MS=1200 ./rose/rose jardins/tests/gui_native_fenetre.rose
+
+importer "jardins/gui_native.rose"
+
+$f = fenetre("Fenetre native depuis un jardin Rose", 420, 180)
+ajouter($f, etiquette("Ceci est une vraie fenetre OS, pas du HTML."), 12, 20)
+ajouter($f, champ("Nom", "Rose"), 12, 48)
+ajouter($f, bouton("OK", 90), 12, 86)
+lier_evenement($f, "clic", "bouton", "b2", "dire bonjour")
+
+$p = ouvrir($f)
+>> "FENETRE_OS|" + chaine($p)
+attendre($f, $p)

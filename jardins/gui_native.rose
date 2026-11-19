@@ -1,0 +1,203 @@
+# jardins/gui_native.rose — interface graphique native, ÉCRITE EN ROSE PUR.
+#
+# ⚠ CE JARDIN EST LA SOURCE DE VÉRITÉ DE L'INTERFACE. Le moteur ne fournit
+# que 5 primitives d'appel système (fenetre_native, fenetre_afficher,
+# fenetre_attendre, fenetre_fermer, message_native) — exactement comme
+# `lire_texte`/`ecrire_texte` pour les fichiers. Aucun widget, aucune mise
+# en page, aucun événement n'est hors de ce jardin : tout est Rose.
+#
+# Pourquoi un pontier est inévitable: Rose n'a aucune primitive `system`/exec.
+# Créer une vraie fenêtre exige un appel à l'API du système d'exploitation.
+# Le jardin possède l'interface; le moteur ne fournit que l'appel OS.
+#
+# Aucun navigateur, aucun HTML, aucun interpreteur externe, aucune bibliothèque
+# supplémentaire. Sans affichage, le pontier renvoie une erreur explicite
+# (jamais une fenêtre simulée). `decrire(f)` permet de tester toute la logique
+# du jardin sans écran.
+
+# ── modèle de données ────────────────────────────────────────────────────────
+# Une fenêtre est une table Rose: titre, largeur, hauteur, widgets (sous une
+# clé numérique "0","1",...), actions (même principe), compteurs.
+# Chaque widget est une table de chaînes (contrainte du vérificateur Rose:
+# une valeur lue dans une table a le type `?`, on la convertit avec chaine()).
+
+fn _cle(n: entier) -> chaine {
+    retour chaine(n)
+}
+
+fn _widget(type: chaine, label: chaine, valeur: chaine,
+           x: entier, y: entier, largeur: entier) -> table {
+    $w = table()
+    inserer($w, "type", type)
+    inserer($w, "label", label)
+    inserer($w, "valeur", valeur)
+    inserer($w, "x", chaine(x))
+    inserer($w, "y", chaine(y))
+    inserer($w, "largeur", chaine(largeur))
+    retour $w
+}
+
+# ── construction ─────────────────────────────────────────────────────────────
+
+fn fenetre(titre: chaine, largeur: entier, hauteur: entier) -> table {
+    $f = table()
+    inserer($f, "titre", titre)
+    inserer($f, "largeur", chaine(largeur))
+    inserer($f, "hauteur", chaine(hauteur))
+    inserer($f, "widgets", table())
+    inserer($f, "actions", table())
+    inserer($f, "nwidgets", "0")
+    inserer($f, "nactions", "0")
+    retour $f
+}
+
+fn bouton(label: chaine, largeur: entier) -> table {
+    retour _widget("bouton", label, "", 0, 0, largeur)
+}
+
+fn champ(label: chaine, valeur: chaine) -> table {
+    retour _widget("champ", label, valeur, 0, 0, 160)
+}
+
+fn etiquette(texte: chaine) -> table {
+    retour _widget("etiquette", texte, "", 0, 0, 0)
+}
+
+fn case_a_cocher(coche: booleen, texte: chaine) -> table {
+    $v = "0"
+    si (coche) { $v = "1" }
+    retour _widget("case", texte, $v, 0, 0, 0)
+}
+
+fn liste_deroulante(choix: liste<chaine>, selection: entier) -> table {
+    $w = _widget("liste", "", "", 0, 0, 160)
+    inserer($w, "choix", choix)
+    inserer($w, "selection", chaine(selection))
+    retour $w
+}
+
+# ── placement et événements ──────────────────────────────────────────────────
+
+fn ajouter(f: table, w: table, x: entier, y: entier) -> table {
+    inserer($w, "x", chaine(x))
+    inserer($w, "y", chaine(y))
+    $n = entier(chaine(f["nwidgets"]))
+    inserer(f["widgets"], _cle($n), $w)
+    inserer($f, "nwidgets", chaine($n + 1))
+    retour $f
+}
+
+fn lier_evenement(f: table, nom: chaine, genre: chaine,
+                  cible: chaine, action: chaine) -> table {
+    $a = table()
+    inserer($a, "nom", nom)
+    inserer($a, "genre", genre)
+    inserer($a, "cible", cible)
+    inserer($a, "action", action)
+    $n = entier(chaine(f["nactions"]))
+    inserer(f["actions"], _cle($n), $a)
+    inserer($f, "nactions", chaine($n + 1))
+    retour $f
+}
+
+fn evenement(f: table, nom: chaine) -> table {
+    $r = table()
+    $n = entier(chaine(f["nactions"]))
+    $i = 0
+    tant_que ($i < $n) {
+        $a = f["actions"][_cle($i)]
+        si (chaine($a["nom"]) == nom) { inserer($r, _cle(longueur($r)), $a) }
+        $i = $i + 1
+    }
+    retour $r
+}
+
+fn compter_widgets(f: table) -> entier {
+    retour entier(chaine(f["nwidgets"]))
+}
+
+fn compter_actions(f: table) -> entier {
+    retour entier(chaine(f["nactions"]))
+}
+
+# ── mises en page (toute en Rose) ────────────────────────────────────
+
+fn grille(f: table, colonnes: entier, largeur_case: entier,
+          hauteur_case: entier) -> table {
+    $n = compter_widgets($f)
+    $i = 0
+    tant_que ($i < $n) {
+        $w = f["widgets"][_cle($i)]
+        inserer($w, "x", chaine(($i % $colonnes) * $largeur_case))
+        inserer($w, "y", chaine(($i div $colonnes) * $hauteur_case))
+        $i = $i + 1
+    }
+    retour $f
+}
+
+fn empiler(f: table, ecart: entier) -> table {
+    $n = compter_widgets($f)
+    $i = 0
+    $y = 0
+    tant_que ($i < $n) {
+        $w = f["widgets"][_cle($i)]
+        inserer($w, "x", "0")
+        inserer($w, "y", chaine($y))
+        $y = $y + $ecart
+        $i = $i + 1
+    }
+    retour $f
+}
+
+fn cadrer(f: table, marge: entier) -> table {
+    $n = compter_widgets($f)
+    $i = 0
+    tant_que ($i < $n) {
+        $w = f["widgets"][_cle($i)]
+        inserer($w, "x", chaine(entier(chaine($w["x"])) + $marge))
+        inserer($w, "y", chaine(entier(chaine($w["y"])) + $marge))
+        $i = $i + 1
+    }
+    retour $f
+}
+
+# ── description déterministe (testable sans écran) ───────────────────────────
+
+fn decrire(f: table) -> chaine {
+    $s = "FENETRE|" + chaine(f["titre"]) + "|" + chaine(f["largeur"])
+       + "|" + chaine(f["hauteur"]) + "|widgets="
+       + chaine(compter_widgets($f)) + "|actions="
+       + chaine(compter_actions($f)) + "\n"
+    $n = compter_widgets($f)
+    $i = 0
+    tant_que ($i < $n) {
+        $w = f["widgets"][_cle($i)]
+        $s = $s + "W|" + chaine($w["type"]) + "|" + chaine($w["label"])
+          + "|" + chaine($w["x"]) + "|" + chaine($w["y"]) + "\n"
+        $i = $i + 1
+    }
+    retour $s
+}
+
+# ── vraie fenêtre OS : on ne délègue QUE l'appel système ─────────────────────
+
+fn ouvrir(f: table) -> entier {
+    $p = fenetre_native(chaine(f["titre"]),
+                        entier(chaine(f["largeur"])),
+                        entier(chaine(f["hauteur"])))
+    fenetre_afficher($p)
+    retour $p
+}
+
+fn attendre(f: table, p: entier) {
+    fenetre_attendre($p)
+    fenetre_fermer($p)
+}
+
+fn fermer(p: entier) {
+    fenetre_fermer($p)
+}
+
+fn dire(titre: chaine, texte: chaine) {
+    message_native(titre, texte)
+}
