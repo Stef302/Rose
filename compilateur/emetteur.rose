@@ -102,6 +102,7 @@ fn car(c: entier) -> chaine {
 fn T0($g: liste<chaine>, $p: entier) -> chaine {
   $n = longueur($g)
   $q = $p
+  si ($q < 0) { $q = 0 }
   si ($q >= $n) { $q = $n - 1 }
   retour $g[$q]
 }
@@ -109,6 +110,7 @@ fn T0($g: liste<chaine>, $p: entier) -> chaine {
 fn VX0($x: liste<chaine>, $p: entier) -> chaine {
   $n = longueur($x)
   $q = $p
+  si ($q < 0) { $q = 0 }
   si ($q >= $n) { $q = $n - 1 }
   retour $x[$q]
 }
@@ -116,6 +118,7 @@ fn VX0($x: liste<chaine>, $p: entier) -> chaine {
 fn T1($g: liste<chaine>, $p: entier) -> chaine {
   $n = longueur($g)
   $q = $p + 1
+  si ($q < 0) { $q = 0 }
   si ($q >= $n) { $q = $n - 1 }
   retour $g[$q]
 }
@@ -123,6 +126,7 @@ fn T1($g: liste<chaine>, $p: entier) -> chaine {
 fn VX1($x: liste<chaine>, $p: entier) -> chaine {
   $n = longueur($x)
   $q = $p + 1
+  si ($q < 0) { $q = 0 }
   si ($q >= $n) { $q = $n - 1 }
   retour $x[$q]
 }
@@ -130,6 +134,7 @@ fn VX1($x: liste<chaine>, $p: entier) -> chaine {
 fn GL0($gl: liste<entier>, $p: entier) -> entier {
   $n = longueur($gl)
   $q = $p
+  si ($q < 0) { $q = 0 }
   si ($q >= $n) { $q = $n - 1 }
   retour $gl[$q]
 }
