@@ -95,6 +95,11 @@ unsafe extern "system" {
     fn GdipAddPathLine(chemin: *mut c_void, x1: f32, y1: f32, x2: f32, y2: f32) -> u32;
     fn GdipClosePathFigure(chemin: *mut c_void) -> u32;
     fn GdipFillPath(graphique: *mut c_void, pinceau: *mut c_void, chemin: *mut c_void) -> u32;
+    // Coche ANTIALIASÉE : stylo GDI+ sur un chemin (UnitPixel = 2, LineCapRound = 2).
+    fn GdipCreatePen1(couleur: u32, largeur: f32, unite: i32, stylo: *mut *mut c_void) -> u32;
+    fn GdipSetPenLineCap(stylo: *mut c_void, debut: i32, fin: i32, ancrage: i32) -> u32;
+    fn GdipDrawPath(graphique: *mut c_void, stylo: *mut c_void, chemin: *mut c_void) -> u32;
+    fn GdipDeletePen(stylo: *mut c_void) -> u32;
 }
 
 /// Convertit un COLORREF GDI (`0x00BBGGRR`) en ARGB GDI+ (`0xAARRGGBB`).
@@ -373,14 +378,13 @@ const QUALITE_POLICE: i32 = 4;
 const SRCCOPY: u32 = 0x00CC0020;
 // Mode d'étirement pour `AlphaBlend` et `BitBlt`.
 //
-// ⚠⚠ CAUSE DE LA FENÊTRE PIXÉLISÉE. Le mode par DÉFAUT d'un DC est
-// `COLORONCOLOR` (3) : il SUPPRIME des lignes/colonnes entières au lieu
-// d'interpoler. Tout dessin mis à l'échelle (logo 276×343 réduit à 141 px,
-// et surtout la double-bufferisation) sortait donc en escalier, avec des
-// traits irréguliers — « la fenêtre apparaît pixélisée et non nette ».
-// `HALFTONE` (4) fait une vraie moyenne de pixels. Il exige
-// `SetBrushOrgEx` après chaque changement de mode (exigence MSDN), sinon le
-// résultat est décalé.
+// ⚠ L'ancien commentaire accusait `COLORONCOLOR` et préconisait `HALFTONE`
+// pour le logo. C'était INEXACT pour `AlphaBlend` : MSDN documente que le
+// mode est automatiquement converti en COLORONCOLOR pour cette fonction.
+// La réduction du logo (276×343 → ~110×137) est donc faite en Rust par
+// moyenne de surface (`reduire_rgba`), puis collée à taille ÉGALE. Le
+// double-buffer, lui, copie à taille égale (`BitBlt`/`SRCCOPY`) : aucun
+// étirement n'intervient. Constante conservée pour compatibilité.
 const HALFTONE: i32 = 4;
 const TIMER_PROGRESSION: usize = 1;
 const ICON_BIG: usize = 1;
@@ -407,9 +411,12 @@ const LATERAL_FIN: u32 = couleur(0x1C1412);
 const LIGNE: u32 = couleur(0x2A1E1A);
 const LIGNE_FORTE: u32 = couleur(0x3A2824);
 const CARTE: u32 = couleur(0x1A1311);
-// ROUGE VIF : la marque Rose, l'action principale. `ROUGE_CLAIR` sert au
-// survol et aux accents ; `ROUGE_SOMBRE` au contour des étapes en cours.
-const ROUGE: u32 = couleur(0xFF2D1A);
+// ROUGE VIF : la marque Rose, l'action principale (bouton « Mettre à jour »).
+// `ROUGE_CLAIR` sert au survol et aux accents ; `ROUGE_SOMBRE` au contour des
+// étapes en cours. `ROUGE` reste l'alias historique, pour ne pas retoucher
+// les vues qui ne concernent pas la mise à jour.
+const ROUGE_VIF: u32 = couleur(0xFF2D1A);
+const ROUGE: u32 = ROUGE_VIF;
 const ROUGE_CLAIR: u32 = couleur(0xFF5A3C);
 const ROUGE_SOMBRE: u32 = couleur(0xA3220F);
 // VERT LIME : couleur d'état unique (succès, badges, boutons secondaires).
@@ -426,6 +433,11 @@ const BLANC: u32 = couleur(0xFFFFFF);
 // `VERT_LIME_CLAIR`, le repos reste `VERT_LIME`.
 const VERT_LIME: u32 = couleur(0x9ACD32);
 const VERT_LIME_CLAIR: u32 = couleur(0xB8E05A);
+// Thème « rose update » : le VERT LIME VIF (0x9CFF00) est la couleur de
+// PROGRESSION et de SUCCÈS de la fenêtre de mise à jour. Il reste local à
+// cette fenêtre : le vert lime historique des autres boutons n'est pas changé.
+const VERT_LIME_VIF: u32 = couleur(0x9CFF00);
+const VERT_LIME_VIF_CLAIR: u32 = couleur(0xC4FF6A);
 const NOIR_DOUX: u32 = couleur(0x14100F);
 const SURVOL_SOMBRE: u32 = couleur(0xB8E05A);
 const REPOS_SOMBRE: u32 = couleur(0x9ACD32);
@@ -658,7 +670,67 @@ fn bornes_opaques(largeur: usize, hauteur: usize, pixels: &[u8]) -> (usize, usiz
     (x0, y0, x1, y1)
 }
 
-/// Dessine la rose embarquée, mise à l'échelle, avec transparence.
+/// Réduction RGBA par MOYENNE DE SURFACE (area averaging), en pur Rust.
+///
+/// ⚠ Indispensable : `AlphaBlend` force le mode COLORONCOLOR quel que soit
+/// `SetStretchBltMode` (MSDN : « the iStretchMode value is automatically
+/// converted to COLORONCOLOR »). Un appel
+/// `AlphaBlend(… 276×343 → ~110×137 …)` SUPPRIME donc des lignes/colonnes
+/// entières : la tige du bas peut disparaître et le logo paraît pixélisé.
+/// On réduit nous-mêmes l'image (chaque pixel source contribue), puis on
+/// appelle `AlphaBlend` à taille ÉGALE : aucune interpolation matérielle.
+///
+/// `pixels` est du RGBA 8 bits NON prémultiplié ; la sortie est du RGBA
+/// PRÉMULTIPLIÉ, prêt pour `AC_SRC_ALPHA`.
+fn reduire_rgba(pixels: &[u8], largeur: usize, hauteur: usize,
+                sx0: usize, sy0: usize, sw: usize, sh: usize,
+                cible_l: usize, cible_h: usize) -> Option<Vec<u8>> {
+    if cible_l == 0 || cible_h == 0 || sw == 0 || sh == 0 {
+        return None;
+    }
+    if sx0.checked_add(sw)? > largeur || sy0.checked_add(sh)? > hauteur {
+        return None;
+    }
+    if pixels.len() < largeur * hauteur * 4 {
+        return None;
+    }
+    let mut sortie = vec![0u8; cible_l * cible_h * 4];
+    for oy in 0..cible_h {
+        let y0_abs = sy0 + oy * sh / cible_h;
+        let y1_abs = sy0 + ((oy + 1) * sh / cible_h).max(oy * sh / cible_h + 1);
+        for ox in 0..cible_l {
+            let x0_abs = sx0 + ox * sw / cible_l;
+            let x1_abs = sx0 + ((ox + 1) * sw / cible_l).max(ox * sw / cible_l + 1);
+            let mut sr = 0u64;
+            let mut sg = 0u64;
+            let mut sb = 0u64;
+            let mut sa = 0u64;
+            for py in y0_abs..y1_abs {
+                for px in x0_abs..x1_abs {
+                    let k = (py * largeur + px) * 4;
+                    let a = pixels[k + 3] as u64;
+                    sr += pixels[k] as u64 * a;
+                    sg += pixels[k + 1] as u64 * a;
+                    sb += pixels[k + 2] as u64 * a;
+                    sa += a;
+                }
+            }
+            let n = ((x1_abs - x0_abs) * (y1_abs - y0_abs)) as u64;
+            let div_premul = n * 255; // moyenne des canaux PRÉMULTIPLIÉS
+            let o = (oy * cible_l + ox) * 4;
+            sortie[o] = (sr / div_premul) as u8;     // R × alpha
+            sortie[o + 1] = (sg / div_premul) as u8; // G × alpha
+            sortie[o + 2] = (sb / div_premul) as u8; // B × alpha
+            sortie[o + 3] = (sa / n) as u8;          // alpha moyen
+        }
+    }
+    Some(sortie)
+}
+
+/// Dessine la rose embarquée, cadrée SANS COUPURE et avec transparence.
+///
+/// `largeur_max × hauteur_max` est la boîte disponible ; le ratio du contenu
+/// utile est conservé et le logo est centré dans cette boîte.
 ///
 /// Chemin GDI pur (`CreateDIBSection` + `AlphaBlend`), volontairement :
 /// la variante GDI+ (`GdipCreateBitmapFromScan0` avec un `scan0` pointant
@@ -667,65 +739,46 @@ fn bornes_opaques(largeur: usize, hauteur: usize, pixels: &[u8]) -> (usize, usiz
 /// CRASH de l'installeur. Symptôme mesuré : la fenêtre s'ouvrait avec ses
 /// seules BORDURES, sans intérieur (le processus mourait pendant le
 /// dessin). GDI+ n'est plus utilisé que pour les FORMES (cercles, coins
-/// arrondis), où aucun tampon n'est partagé.
-///
-/// On ne dessine que le CONTENU UTILE de l'image (pixels non
-/// transparents) : le PNG a sa tige qui descend jusqu'au dernier pixel de
-/// la bordure, et le bord inférieur était rogné (le pied de la fleur
-/// disparaissait).
-unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
+/// arrondis, coches), où aucun tampon n'est partagé.
+unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, largeur_max: i32, hauteur_max: i32) -> bool {
     let Some(png) = ressource(1, 10) else { return false };
     let Some((largeur, hauteur, pixels)) = crate::png::decoder_png(png) else { return false };
 
     let (sx0, sy0, sx1, sy1) = bornes_opaques(largeur, hauteur, &pixels);
     let sw = sx1.saturating_sub(sx0);
     let sh = sy1.saturating_sub(sy0);
-    if sw == 0 || sh == 0 {
+    if sw == 0 || sh == 0 || largeur_max <= 0 || hauteur_max <= 0 {
         return false;
     }
-    // ── Mise à l'échelle du logo ───────────────────────────────────────────
-    //
-    // ⚠⚠ CAUSE DU LOGO « COUPÉ EN BAS ». Le logo n'est PAS carré : le
-    // contenu utile fait 132 × 169 (la rose et sa tige). L'ancienne version
-    // recevait un `cote` (une boîte CARRÉE) et calculait :
-    //   dh = cote * 169 / 132 = cote * 1,28
-    // puis, comme `dh > cote`, elle forçait `dh = cote` et recalculait
-    // `dw = cote * 132 / 169`. Résultat : le logo n'occupait que 78 % de la
-    // largeur de la boîte et 100 % de sa hauteur — il paraissait ÉCRASÉ et
-    // sa tige touchait exactement le bord bas, donc le titre « ROSE » dessiné
-    // juste dessous le recouvrait. Mesuré sur une fenêtre 1120 × 780 : logo
-    // 97 × 124 dans une boîte de 124 × 124.
-    //
-    // Correction : on met à l'échelle pour que le logo tienne EN ENTIER dans
-    // la boîte, en conservant ses proportions, et on le CENTRE dans les deux
-    // dimensions. `dw` et `dh` sont donc tous deux ≤ `cote`.
-    let rapport = sh as f64 / sw as f64; // hauteur / largeur du contenu utile
-    // On part de la boîte pleine en HAUTEUR (le côté contraignant pour un
-    // logo plus haut que large), puis on réduit si la largeur dépasse.
-    let mut dh = cote;
-    let mut dw = ((cote as f64 / rapport).round() as i32).max(1);
-    if dw > cote {
-        // Logo plus LARGE que haut : c'est la largeur qui contraint.
-        dw = cote;
-        dh = ((cote as f64 * rapport).round() as i32).max(1);
-    }
-    if dw <= 0 || dh <= 0 {
+    // ── Cadrage SANS COUPURE ───────────────────────────────────────────────
+    // Le PNG embarqué fait 276 × 343 et son contenu utile 264 × 337 (mesuré
+    // sur l'alpha : bornes x 6..270, y 6..343 — la tige va au dernier pixel).
+    // On calcule l'échelle pour que CE CONTENU ENTIER tienne dans la boîte,
+    // puis on centre : aucune bordure n'est rognée, ratio conservé.
+    let facteur = (largeur_max as f64 / sw as f64).min(hauteur_max as f64 / sh as f64);
+    let dw = ((sw as f64 * facteur).round() as i32).max(1).min(largeur_max);
+    let dh = ((sh as f64 * facteur).round() as i32).max(1).min(hauteur_max);
+    let dx = x + (largeur_max - dw) / 2;
+    let dy = y + (hauteur_max - dh) / 2;
+    // Réduction par moyenne de surface AVANT AlphaBlend (voir `reduire_rgba`).
+    // Le rectangle SOURCE couvre tout le contenu utile, y compris le bas.
+    let Some(rgba) = reduire_rgba(&pixels, largeur, hauteur,
+                                  sx0, sy0, sw, sh, dw as usize, dh as usize) else {
         return false;
-    }
-    // Centrage HORIZONTAL et VERTICAL : la boîte `cote × cote` est plus
-    // large que haute pour ce logo, il doit être centré dedans.
-    let dx = x + (cote - dw) / 2;
-    let dy = y + (cote - dh) / 2;
+    };
 
+    // La DIB a EXACTEMENT la taille du logo réduit : AlphaBlend travaillera
+    // à 1:1 et ne supprimera aucune ligne (contrairement à une réduction
+    // matérielle en COLORONCOLOR).
     let info = BITMAPINFO {
         header: BITMAPINFOHEADER {
             bi_size: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            bi_width: largeur as i32,
-            bi_height: -(hauteur as i32),
+            bi_width: dw,
+            bi_height: -dh,
             bi_planes: 1,
             bi_bit_count: 32,
             bi_compression: 0,
-            bi_size_image: (largeur * hauteur * 4) as u32,
+            bi_size_image: (dw as usize * dh as usize * 4) as u32,
             bi_x_pels: 0,
             bi_y_pels: 0,
             bi_clr_used: 0,
@@ -738,41 +791,28 @@ unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, cote: i32) -> bool {
     if bitmap.is_null() || bits.is_null() {
         return false;
     }
-    // pixels PNG : RGBA → BGRA **prémultiplié**. `AlphaBlend` avec
-    // AC_SRC_ALPHA (alpha_format = 1) attend une source prémultipliée ;
-    // sans la multiplication, les bords transparents de la rose sortaient
-    // avec un halo clair.
-    //
-    // Le visuel embarqué a ses pixels NOIRS rendus transparents : le fond
-    // sombre du panneau dessine donc lui-même les contours.
-    let cible = std::slice::from_raw_parts_mut(bits as *mut u8, largeur * hauteur * 4);
-    for k in 0..largeur * hauteur {
-        let a = pixels[k * 4 + 3];
-        let r = pixels[k * 4];
-        let v = pixels[k * 4 + 1];
-        let b = pixels[k * 4 + 2];
-        cible[k * 4] = ((b as u32 * a as u32) / 255) as u8;
-        cible[k * 4 + 1] = ((v as u32 * a as u32) / 255) as u8;
-        cible[k * 4 + 2] = ((r as u32 * a as u32) / 255) as u8;
-        cible[k * 4 + 3] = a;
+    // `rgba` est déjà PRÉMULTIPLIÉ (voir `reduire_rgba`) : il ne reste qu'à
+    // passer de l'ordre RGBA au BGRA attendu par `AC_SRC_ALPHA` (alpha_format=1).
+    let cible = std::slice::from_raw_parts_mut(bits as *mut u8, dw as usize * dh as usize * 4);
+    for k in 0..dw as usize * dh as usize {
+        cible[k * 4] = rgba[k * 4 + 2];     // B
+        cible[k * 4 + 1] = rgba[k * 4 + 1]; // G
+        cible[k * 4 + 2] = rgba[k * 4];     // R
+        cible[k * 4 + 3] = rgba[k * 4 + 3]; // A
     }
     let memoire = CreateCompatibleDC(dc);
     let ancien = SelectObject(memoire, bitmap as *mut c_void);
-    // ⚠ `HALFTONE` : sans lui, la réduction du logo (276×343 → ~141 px)
-    // supprime des lignes entières et le dessin sort pixélisé. Il faut aussi
-    // `SetBrushOrgEx` après le changement de mode (exigence MSDN), sinon le
-    // résultat est décalé d'un pixel.
-    SetStretchBltMode(dc, HALFTONE);
-    SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());
+    // ⚠ Pas de `SetStretchBltMode(HALFTONE)` ici : MSDN documente qu'`AlphaBlend`
+    // convertit automatiquement le mode en COLORONCOLOR. La qualité vient de
+    // NOTRE réduction (moyenne de surface) et du 1:1 ci-dessous.
     let melange = BLENDFUNCTION {
         blend_op: 0,
         blend_flags: 0,
         source_constant_alpha: 255,
         alpha_format: 1,
     };
-    // Rectangle SOURCE = contenu utile ; rectangle DEST = la zone voulue.
-    AlphaBlend(dc, dx, dy, dw, dh, memoire,
-               sx0 as i32, sy0 as i32, sw as i32, sh as i32, melange);
+    // Rectangle SOURCE = l'image réduite entière ; rectangle DEST = même taille.
+    AlphaBlend(dc, dx, dy, dw, dh, memoire, 0, 0, dw, dh, melange);
     SelectObject(memoire, ancien);
     DeleteDC(memoire);
     DeleteObject(bitmap as *mut c_void);
@@ -1134,7 +1174,16 @@ unsafe fn cercle(dc: HDC, cx: i32, cy: i32, rayon: i32, couleur: u32) {
 /// demandée explicitement.
 unsafe fn coche(dc: HDC, cx: i32, cy: i32, demi: i32, couleur: u32) {
     let d = demi.max(2);
-    let epaisseur = ((d as f64 * 0.34).round() as i32).max(2);
+    // Épaisseur 2–3 px, proportionnée à la case (jamais déduite d'une coordonnée
+    // de mise en page comme dans l'ancienne version de la carte « Terminé »).
+    let epaisseur = ((d as f64 * 0.34).round() as i32).clamp(2, 3);
+    // GDI (`CreatePen`/`LineTo`) n'anticrénèle PAS : les deux traits de la coche
+    // sortaient en escalier, d'où « les checkmarks sont un poil pixelisés ».
+    // On trace donc d'abord un CHEMIN GDI+ avec un stylo antialiasé ; le tracé
+    // GDI d'origine reste comme repli si GDI+ n'est pas disponible.
+    if coche_lisse(dc, cx, cy, d, couleur, epaisseur) {
+        return;
+    }
     let stylo = CreatePen(0, epaisseur, couleur);
     let ancien = SelectObject(dc, stylo as *mut c_void);
     // Trace « ✓ » : bras court descendant, bras long remontant.
@@ -1147,6 +1196,41 @@ unsafe fn coche(dc: HDC, cx: i32, cy: i32, demi: i32, couleur: u32) {
     LineTo(dc, c.0, c.1);
     SelectObject(dc, ancien);
     DeleteObject(stylo as *mut c_void);
+}
+
+/// Coche antialiasée : deux segments GDI+ dans un chemin, avec un stylo rond.
+/// Rend `false` si GDI+ n'est pas disponible (l'appelant a le repli GDI).
+unsafe fn coche_lisse(dc: HDC, cx: i32, cy: i32, d: i32, couleur: u32, epaisseur: i32) -> bool {
+    demarrer_gdiplus();
+    if JETON_GDIPLUS == 0 {
+        return false;
+    }
+    let mut fait = false;
+    avec_gdiplus(dc, |g| {
+        let mut chemin: *mut c_void = std::ptr::null_mut();
+        if GdipCreatePath(FILL_MODE_ALTERNATE, &mut chemin) != 0 || chemin.is_null() {
+            return;
+        }
+        // Même géométrie que le repli GDI : bras court descendant, bras long
+        // remontant. Les coordonnées sont des f32 : GDI+ anticrénèle le tracé.
+        let a = ((cx - d) as f32, cy as f32);
+        let b = ((cx - d / 3) as f32, (cy + d / 2) as f32);
+        let c = ((cx + d) as f32, (cy - d / 2) as f32);
+        GdipAddPathLine(chemin, a.0, a.1, b.0, b.1);
+        GdipAddPathLine(chemin, b.0, b.1, c.0, c.1);
+        let mut stylo: *mut c_void = std::ptr::null_mut();
+        if GdipCreatePen1(argb_depuis_colorref(couleur), epaisseur as f32, 2, &mut stylo) == 0
+            && !stylo.is_null()
+        {
+            GdipSetPenLineCap(stylo, 2, 2, 0); // LineCapRound : extrémités nettes
+            if GdipDrawPath(g, stylo, chemin) == 0 {
+                fait = true;
+            }
+            GdipDeletePen(stylo);
+        }
+        GdipDeletePath(chemin);
+    });
+    fait
 }
 
 unsafe fn ligne(dc: HDC, x1: i32, y1: i32, x2: i32, y2: i32, couleur: u32, epaisseur: i32) {
@@ -1351,9 +1435,16 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // filet lumineux sous la barre : sépare visuellement l'en-tête
     let filet_barre = RECT { left: 0, top: s(55), right: w, bottom: s(56) };
     remplir(dc, &filet_barre, LIGNE_FORTE);
-    dessiner_rose(dc, s(18), s(16), s(24));
+    dessiner_rose(dc, s(18), s(16), s(24), s(24));
     // La marque « Rose » en Kare, comme sur le site et la maquette.
-    let mut rt = RECT { left: s(52), top: s(13), right: s(150), bottom: s(43) };
+    // Même correction que pour le grand titre : la hauteur du rectangle suit
+    // la cellule réelle de la police (DPI), pas seulement l'échelle de fenêtre.
+    let barre_marque_px = points_ecrits(dpi, 15, echelle);
+    let h_barre_marque = (s(30)).max(barre_marque_px + s(8));
+    let centre_barre_marque = s(28);
+    let haut_barre_marque = centre_barre_marque - h_barre_marque / 2;
+    let mut rt = RECT { left: s(52), top: haut_barre_marque, right: s(150),
+                        bottom: haut_barre_marque + h_barre_marque };
     texte_echelle(dc, dpi, "Kare", "Rose", &mut rt, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, TEXTE, 15, false, echelle);
     // ⚠ Le sous-titre s'arrête AVANT la pastille de version : à droite fixe
     // de 430 sur la grille, il chevauchait « v0.1.5 · x64 » dès que la fenêtre
@@ -1457,34 +1548,40 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // chevauchait la liste des étapes sur une fenêtre de 600 px de haut, et
     // le titre « Rose » se retrouvait par-dessus les pastilles.
     //
-    // ⚠⚠ Et la boîte n'est PAS carrée : le logo fait 132 × 169 (plus haut
-    // que large). On réserve donc `hauteur_logo` en HAUTEUR réelle, sinon le
-    // titre « ROSE » se posait sur la tige — le logo paraissait coupé en bas.
+    // ⚠ Le logo n'est PAS carré : le PNG natif fait 276 × 343 (contenu utile
+    // 264 × 337). La hauteur est donc CALCULÉE DEPUIS 343 avec le ratio réel
+    // du PNG — plus le « 141 px » hérité d'un ancien visuel 132 × 169 qui
+    // donnait un logo trop petit et un cadrage approximatif. On réserve cette
+    // hauteur en HAUTEUR, sinon le titre « ROSE » se posait sur la tige.
     // Place laissée au logo : du haut du panneau (78) jusqu'au titre.
     let place_logo = (plancher - s(78) - s(150)).max(0);
-    // ⚠⚠ Le logo paraissait « trop zoomé » : il occupait toute la hauteur
-    // disponible du panneau (159 px en 1120 × 780). La maquette réserve ~124
-    // px de LARGEUR à la rose, ce qui donne ~159 px de haut — trop. On vise
-    // 110 px de largeur, soit ~141 px de haut : le logo respire, et le titre
-    // « ROSE » remonte.
     let largeur_voulue = s(110);
-    let hauteur_voulue = ((largeur_voulue as f64 * 169.0 / 132.0).round() as i32).max(1);
-    // ⚠ JAMAIS d'AGRANDISSEMENT : le PNG embarqué fait 276 × 343. Au-delà,
-    // `AlphaBlend` interpole des pixels qui n'existent pas et le logo sort
-    // PIXÉLISÉ. On borne donc la hauteur à celle du PNG natif.
+    let hauteur_voulue = ((largeur_voulue as f64 * 343.0 / 276.0).round() as i32).max(1);
+    // Borne haute = hauteur NATIVE du PNG : jamais d'agrandissement (sinon
+    // interpolation de pixels inexistants et halo). `dessiner_rose` cadre le
+    // contenu entier dans cette boîte en conservant le ratio.
     let hauteur_logo = hauteur_voulue.min(place_logo).min(343);
     // Marge entre la tige et le titre « ROSE » : sans elle, la tige touchait
     // le titre au pixel près et donnait l'impression d'être rognée.
     let marge_marque = s(16);
     if hauteur_logo >= s(40) {
-        // `dessiner_rose` met à l'échelle pour tenir dans une boîte
-        // `cote × cote` et CENTRE le logo dedans. En donnant le côté de la
-        // hauteur, le logo occupe toute la hauteur disponible et se centre
-        // horizontalement tout seul : plus de tige sous le titre.
-        dessiner_rose(dc, lateral_w / 2 - hauteur_logo / 2, s(78), hauteur_logo);
+        dessiner_rose(dc, lateral_w / 2 - largeur_voulue / 2, s(78),
+                      largeur_voulue, hauteur_logo);
     }
     let y_marque = s(78) + hauteur_logo.max(0) + marge_marque;
-    let mut rl = RECT { left: 0, top: y_marque, right: lateral_w, bottom: y_marque + s(56) };
+    // ⚠ CAUSE DU TITRE « ROSE » COUPÉ EN BAS. L'ancien rectangle faisait
+    // `s(56)` de haut ALORS QUE la police suit le DPI : 36 pt → 48 px à 96 DPI
+    // mais 72 px à 144 DPI, soit une cellule plus haute que le rectangle, et
+    // `DrawText` rognait le bas des glyphes. De plus Kare a une montée de 979
+    // pour une hauteur de glyphe de 665/1000 : `DT_VCENTER` centre la CELLULE,
+    // donc le visible est poussé vers le bas. On dimensionne le rectangle sur
+    // la hauteur RÉELLE de la police, symétriquement autour du même centre.
+    let marque_px = points_ecrits(dpi, 36, echelle);
+    let h_marque = (s(56)).max(marque_px + s(12));
+    let centre_marque = y_marque + s(28);
+    let haut_marque = centre_marque - h_marque / 2;
+    let mut rl = RECT { left: 0, top: haut_marque, right: lateral_w,
+                        bottom: haut_marque + h_marque };
     // Marque en Kare, comme le site : c'est la signature visuelle de Rose.
     texte_echelle(dc, dpi, "Kare", "Rose", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 36, false, echelle);
     let mut rs = RECT { left: s(24), top: y_marque + s(56), right: lateral_w - s(24), bottom: y_marque + s(112) };
@@ -1702,10 +1799,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                 // qu'un filet d'accent à gauche. Un texte NOIR dessus était
                 // donc ILLISIBLE (mesuré : « l'installation détectée est
                 // affichée en noir »). Le texte reste clair.
-                carte(dc, &c3, VERT_LIME);
+                // Mise à jour : accent VERT LIME VIF (thème rose update).
+                carte(dc, &c3, VERT_LIME_VIF);
                 let mut r7 = RECT { left: g + s(20), top: y3 + s(14), right: d - s(20), bottom: y3 + s(34) };
                 texte_echelle(dc, dpi, "Segoe UI", "Installation détectée", &mut r7,
-                      DT_SINGLELINE | DT_VCENTER, TEXTE, 9, true, echelle);
+                      DT_SINGLELINE | DT_VCENTER, VERT_LIME_VIF, 9, true, echelle);
                 let mut r8 = RECT { left: g + s(20), top: y3 + s(38), right: d - s(20), bottom: y3 + s(62) };
                 texte_echelle(dc, dpi, "Segoe UI", &ligne_version,
                       &mut r8, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, TEXTE, 9, false, echelle);
@@ -1723,14 +1821,15 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             let h_statut = hauteur(&statut, 10, interligne);
             let h_carte = crate::paint::hauteur_carte(h_statut, s(18), s(72));
             let c = RECT { left: g, top: yc, right: d, bottom: yc + h_carte };
-            carte(dc, &c, ROUGE_CLAIR);
+            // Thème rose update : échec = ROUGE VIF, progression = VERT LIME VIF.
+            carte(dc, &c, if en_echec { ROUGE_VIF } else { VERT_LIME_VIF });
             let mut r = RECT { left: g + s(20), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(14) };
             texte_echelle(dc, dpi, "Segoe UI", &statut, &mut r, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE, 10, false, echelle);
             // barre de progression indéterminée — bornée par `paint::segment_progression`
             if en_echec {
                 // Bouton d'action : ouvre l'outil PATH.
                 let rb = RECT { left: g, top: c.bottom + s(20), right: g + s(280).min(d - g), bottom: c.bottom + s(64) };
-                let fond = if etat.survol == 2 { VERT_LIME_CLAIR } else { VERT_LIME };
+                let fond = if etat.survol == 2 { VERT_LIME_VIF_CLAIR } else { VERT_LIME_VIF };
                 arrondi(dc, &rb, 10, fond);
                 let mut rt = RECT { left: rb.left, top: rb.top, right: rb.right, bottom: rb.bottom };
                 texte_echelle(dc, dpi, "Kare", "OUVRIR L'OUTIL PATH", &mut rt,
@@ -1742,7 +1841,7 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                 let (a, b) = crate::paint::segment_progression(etat.phase, d - g);
                 if b > a {
                     let barre = RECT { left: g + a, top: piste.top, right: g + b, bottom: piste.bottom };
-                    remplir(dc, &barre, ROUGE_CLAIR);
+                    remplir(dc, &barre, VERT_LIME_VIF);
                 }
                 ZONES_ZONE_PATH = RECT { left: 0, top: 0, right: 0, bottom: 0 };
             }
@@ -1810,8 +1909,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             let h_corps = crate::paint::hauteur_texte(&corps, largeur_corps, &mesurer(10, false), interligne);
             let h_carte = crate::paint::hauteur_carte(h_corps, s(18), s(140)).min((bas_utile - yc).max(s(140)));
             let c = RECT { left: g, top: yc, right: d, bottom: yc + h_carte };
-            carte(dc, &c, VERT);
-            coche(dc, g + s(30), yc + s(30), s(11), VERT);
+            // Succès de la mise à jour : VERT LIME VIF, avec la coche antialiasée.
+            carte(dc, &c, VERT_LIME_VIF);
+            coche(dc, g + s(30), yc + s(30), s(11), VERT_LIME_VIF);
             let mut r = RECT { left: g + s(64), top: yc + s(16), right: d - s(20), bottom: c.bottom - s(14) };
             texte_echelle(dc, dpi, "Segoe UI", &corps, &mut r, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE, 10, false, echelle);
         }
@@ -1823,6 +1923,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let filet_pied = RECT { left: lateral_w + 1, top: pied.top, right: w, bottom: pied.top + 1 };
     remplir(dc, &filet_pied, LIGNE_FORTE);
     let (gauche, droite) = boutons(etat.vue, etat.existant);
+    // Thème « rose update » : ROUGE VIF pour l'action principale, VERT LIME VIF
+    // pour la progression/le succès. Limité à la fenêtre de mise à jour.
+    let theme_update = etat.existant || matches!(etat.vue, Vue::Installation | Vue::Termine);
     // ⚠ Largeur bornée par le pied de page : deux boutons de 190 px sur une
     // fenêtre étroite sortaient par la gauche. On garde au moins la place des
     // marges (28 px de chaque côté).
@@ -1834,8 +1937,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                      std::mem::zeroed::<RECT>()];
     if let Some((action, libelle)) = gauche {
         let r = RECT { left: lateral_w + s(28), top: by, right: lateral_w + s(28) + bw, bottom: by + bh };
-        // Bouton secondaire en VERT LIME ; le survol éclaircit.
-        let fond = if etat.survol == 0 { SURVOL_SOMBRE } else { REPOS_SOMBRE };
+        // Bouton secondaire : VERT LIME VIF dans la fenêtre d'update,
+        // VERT LIME historique ailleurs ; le survol éclaircit.
+        let fond = if theme_update {
+            if etat.survol == 0 { VERT_LIME_VIF_CLAIR } else { VERT_LIME_VIF }
+        } else if etat.survol == 0 { SURVOL_SOMBRE } else { REPOS_SOMBRE };
         arrondi(dc, &r, 10, fond);
         contour(dc, &r, 10, fond);
         let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
@@ -1856,7 +1962,7 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     }
     if let Some((_, libelle)) = droite {
         let r = RECT { left: w - s(28) - bw, top: by, right: w - s(28), bottom: by + bh };
-        let couleur = if etat.survol == 1 { ROUGE_CLAIR } else { ROUGE };
+        let couleur = if etat.survol == 1 { ROUGE_CLAIR } else { ROUGE_VIF };
         arrondi(dc, &r, 10, couleur);
         let mut rt = RECT { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
         texte_echelle(dc, dpi, "Kare", &libelle.to_uppercase(), &mut rt,
@@ -1873,8 +1979,17 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     }
     remplir(dc, &RECT { left: 0, top: etat_barre.top, right: w, bottom: etat_barre.top + 1 }, LIGNE_FORTE);
     cercle(dc, s(16), ht - etat_h / 2, s(5), if etat.empreinte.is_some() { VERT } else { TEXTE_FAIBLE });
+    // Statut de la mise à jour dans le thème : vert lime vif en succès,
+    // rouge vif en échec, gris sinon (les autres vues ne changent pas).
+    let couleur_statut = if theme_update && etat.vue == Vue::Termine {
+        VERT_LIME_VIF
+    } else if theme_update && etat.statut.starts_with("ÉCHEC") {
+        ROUGE_VIF
+    } else {
+        TEXTE_DOUX
+    };
     let mut rg = RECT { left: s(28), top: etat_barre.top, right: w / 2 - s(10), bottom: etat_barre.bottom };
-    texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut rg, DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 9, false, echelle);
+    texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut rg, DT_VCENTER | DT_SINGLELINE, couleur_statut, 9, false, echelle);
     let mut rd = RECT { left: w / 2 + s(10), top: etat_barre.top, right: w - s(110), bottom: etat_barre.bottom };
     texte_echelle(dc, dpi, "Segoe UI",
           &format!("Rose-win-Setup.exe · Windows x64 · © 2026 Stef302"),
