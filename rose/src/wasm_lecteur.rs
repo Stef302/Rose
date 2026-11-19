@@ -27,9 +27,15 @@
 //                  shifts, rotations, comparaisons, conversions, clz/ctz/popcnt ;
 //   globals : get/set (mutables inclus).
 //
-// ⚠ HORS SUPPORT (refusé PROPREMENT, avec message) : les sections de
-//    démarrage (`start`), les imports (le module doit être autonome pour
-//    être portable), les exceptions, les SIMD, les threads.
+// ⚠ HORS SUPPORT (refusé PROPREMENT, avec message) : la section de
+//    démarrage (`start`), `call_indirect`, les exceptions, les SIMD, les threads.
+//
+// ⚠⚠⚠ IMPORTS (M6.3) : la section d'import est désormais LUE. Les imports de
+//    fonction sont résolus vers un registre de FONCTIONS HÔTES Rose (voir
+//    `HOTES` / `enregistrer_hote` plus bas) ; un import non résolu est rejeté
+//    AU CHARGEMENT avec un message explicite, jamais un crash. Les imports de
+//    mémoire sont reliés à la mémoire linéaire que Rose alloue pour l'instance.
+//    Les modules 0-import existants gardent EXACTEMENT le même comportement.
 //
 // ⚠⚠ L'ABI C : un module compilé avec `--target=wasm32 -nostdlib` exporte ses
 // fonctions C avec la convention wasm32 (i32 = pointeur/entier 32 bits,
@@ -39,6 +45,9 @@
 // ⚠⚠⚠ `Arc` ET NON `Rc` : les instances sont rangées dans une table GLOBALE
 // (`interp::wasm_ffi`) partagée entre threads — un `Rc` y est interdit.
 use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::io::Write;
 
 /// ⚠ Une erreur de lecture/validation/execution du module.
 #[derive(Debug, Clone)]
@@ -51,6 +60,95 @@ impl std::fmt::Display for WasmErr {
 }
 
 fn err<T>(m: impl Into<String>) -> Result<T, WasmErr> { Err(WasmErr(m.into())) }
+
+// ═══════════════════════════════════════════════════════════════════════
+// REGISTRE DES FONCTIONS HÔTES (M6.3)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠ Une fonction hôte reçoit l'INSTANCE (pour accéder à sa mémoire linéaire)
+// et les arguments déjà convertis dans les types wasm déclarés. Elle rend les
+// valeurs de retour ; `appeler_hote` adapte leur nombre/type à la signature
+// déclarée dans la section `type` du module (comportement tolérant et prévisible).
+/// ⚠ Signature d'une fonction hôte Rose appelable depuis un module wasm.
+pub type HoteFonction = fn(&mut InstanceWasm, &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr>;
+
+/// ⚠ Enregistre (ou remplace) une fonction hôte `(module, nom)`.
+///
+/// Le registre est GLOBAL : il est partagé par toutes les instances. Un hôte
+/// enregistré APRÈS le chargement d'un module n'est PAS visible par ce module
+/// (la résolution a lieu dans `charger`). Enregistrer avant le chargement.
+pub fn enregistrer_hote(module: &str, nom: &str, f: HoteFonction) {
+    let mut g = match HOTES.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+    if g.is_none() { *g = Some(HashMap::new()); }
+    if let Some(table) = g.as_mut() {
+        table.insert((module.to_string(), nom.to_string()), f);
+    }
+}
+
+/// ⚠ Résout un import `(module, nom)` : d'abord le registre dynamique, puis
+/// la table des hôtes intégrés. `None` = import non résolu.
+pub fn resoudre_hote(module: &str, nom: &str) -> Option<HoteFonction> {
+    if let Ok(g) = HOTES.lock() {
+        if let Some(table) = g.as_ref() {
+            if let Some(f) = table.get(&(module.to_string(), nom.to_string())) {
+                return Some(*f);
+            }
+        }
+    }
+    HOTES_INTEGRES.iter()
+        .find(|(m, n, _)| *m == module && *n == nom)
+        .map(|(_, _, f)| *f)
+}
+
+static HOTES: Mutex<Option<HashMap<(String, String), HoteFonction>>> = Mutex::new(None);
+
+// ⚠ La table intégrée, par (module, nom). Les alias `wasi_unstable` couvrent
+// les anciens outils (clang wasi-sdk < 14) ; `env.ecrire` est l'équivalent
+// francophone de `env.log`.
+const HOTES_INTEGRES: &[(&str, &str, HoteFonction)] = &[
+    ("env", "log", hote_log),
+    ("env", "ecrire", hote_ecrire),
+    ("wasi_snapshot_preview1", "fd_write", hote_fd_write),
+    ("wasi_snapshot_preview1", "fd_read", hote_fd_read),
+    ("wasi_snapshot_preview1", "proc_exit", hote_proc_exit),
+    ("wasi_snapshot_preview1", "random_get", hote_random_get),
+    ("wasi_unstable", "fd_write", hote_fd_write),
+    ("wasi_unstable", "fd_read", hote_fd_read),
+    ("wasi_unstable", "proc_exit", hote_proc_exit),
+    ("wasi_unstable", "random_get", hote_random_get),
+];
+
+/// ⚠ La liste des hôtes intégrés (pour les messages d'erreur et les outils).
+pub fn hotes_integres() -> Vec<(String, String)> {
+    HOTES_INTEGRES.iter().map(|(m, n, _)| (m.to_string(), n.to_string())).collect()
+}
+
+/// ⚠ Le genre d'un import (ce que le module attend de l'hôte).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GenreImport {
+    /// ⚠ Import de fonction : porte l'index du type dans la section `type`.
+    Fonction(u32),
+    /// ⚠ Import de mémoire : limites en pages de 64 Kio.
+    Memoire { min: u32, max: Option<u32> },
+    /// ⚠ Import de table (déclaré pour garder le décodage aligné).
+    Table,
+    /// ⚠ Import de global (déclaré pour garder le décodage aligné).
+    Global(TyWasm, bool),
+}
+
+/// ⚠ Une entrée de la section d'import.
+#[derive(Clone, Debug)]
+pub struct ImportWasm {
+    pub module: String,
+    pub nom: String,
+    pub genre: GenreImport,
+    /// ⚠ Index dans l'espace des fonctions (Some seulement pour un import de
+    /// fonction) : les imports occupent les indices 0..N-1, AVANT les fonctions
+    /// définies. C'est la règle de la spécification wasm.
+    pub idx_fonction: Option<u32>,
+    /// ⚠ Fonction hôte résolue au chargement (`None` pour un import non-fonction).
+    pub hote: Option<HoteFonction>,
+}
 
 // ⚠ Trace d'exécution : lue UNE fois, pas à chaque instruction (mesuré :
 // `std::env::var` par instruction multipliait le coût par dix).
@@ -148,6 +246,12 @@ pub struct EntreeTable {
 /// ⚠ Un module WebAssembly chargé et validé.
 pub struct ModuleWasm {
     pub types: Vec<(Vec<TyWasm>, Vec<TyWasm>)>,
+    /// ⚠ Imports déclarés (section 2), résolus au chargement pour les fonctions.
+    pub imports: Vec<ImportWasm>,
+    /// ⚠ Nombre d'imports de fonction = décalage de l'espace des fonctions :
+    /// l'indice wasm `i` désigne un import si `i < nb_imports_fonction`, sinon
+    /// la fonction définie stockée à `i - nb_imports_fonction`.
+    pub nb_imports_fonction: u32,
     pub fonctions: Vec<Fonction>,
     /// ⚠ (min, max) en PAGES de 64 Kio.
     pub memoire: Option<(u32, Option<u32>)>,
@@ -157,6 +261,24 @@ pub struct ModuleWasm {
     pub exports: Vec<(String, u8, u32)>,
     pub data: Vec<(u32, Vec<u8>)>,
     pub elem: Vec<(u32, Vec<u32>)>,
+}
+
+impl ModuleWasm {
+    /// ⚠ La signature d'une fonction par son index dans l'espace wasm (imports
+    /// inclus). `None` si l'index ne désigne aucune fonction.
+    pub fn signature_de(&self, idx: u32) -> Option<(&[TyWasm], &[TyWasm])> {
+        if idx < self.nb_imports_fonction {
+            let imp = self.imports.iter().find(|i| i.idx_fonction == Some(idx))?;
+            match imp.genre {
+                GenreImport::Fonction(ti) => self.types.get(ti as usize)
+                    .map(|t| (t.0.as_slice(), t.1.as_slice())),
+                _ => None,
+            }
+        } else {
+            let f = self.fonctions.get((idx - self.nb_imports_fonction) as usize)?;
+            Some((f.params.as_slice(), f.resultats.as_slice()))
+        }
+    }
 }
 
 /// ⚠ Un état d'exécution (mémoire linéaire, globals) — réutilisable entre appels.
@@ -241,7 +363,8 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
     if version != 1 { return err(format!("version wasm non supportée : {version} (attendu 1)")); }
 
     let mut m = ModuleWasm {
-        types: Vec::new(), fonctions: Vec::new(), memoire: None, globals: Vec::new(),
+        types: Vec::new(), imports: Vec::new(), nb_imports_fonction: 0,
+        fonctions: Vec::new(), memoire: None, globals: Vec::new(),
         table: Vec::new(), exports: Vec::new(), data: Vec::new(), elem: Vec::new(),
     };
     // ⚠ La section `code` arrive APRÈS les types et les déclarations de
@@ -275,8 +398,46 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
                     m.types.push((ps, rs));
                 }
             }
-            2 => return err("section d'import : un module autonome est attendu \
-                             (compilez avec --target=wasm32 -nostdlib)"),
+            2 => {
+                // ⚠ M6.3 : la section d'import est LUE. Les imports de fonction
+                // occupent les premiers indices de l'espace des fonctions.
+                let n = s.uleb()? as usize;
+                for _ in 0..n {
+                    let module = s.nom()?;
+                    let nom = s.nom()?;
+                    let genre_octet = s.octet()?;
+                    let (genre, idx_fonction) = match genre_octet {
+                        0x00 => {
+                            let ti = s.uleb()? as u32;
+                            let i = m.nb_imports_fonction;
+                            m.nb_imports_fonction += 1;
+                            (GenreImport::Fonction(ti), Some(i))
+                        }
+                        0x01 => {
+                            let _elemtype = s.octet()?; // 0x70 = funcref
+                            let drapeaux = s.uleb()? as u32;
+                            let _min = s.uleb()? as u32;
+                            if drapeaux & 1 == 1 { let _max = s.uleb()?; }
+                            (GenreImport::Table, None)
+                        }
+                        0x02 => {
+                            let drapeaux = s.uleb()? as u32;
+                            let min = s.uleb()? as u32;
+                            let max = if drapeaux & 1 == 1 { Some(s.uleb()? as u32) } else { None };
+                            (GenreImport::Memoire { min, max }, None)
+                        }
+                        0x03 => {
+                            let t = TyWasm::de(s.octet()?)?;
+                            let mutable = s.octet()? != 0;
+                            (GenreImport::Global(t, mutable), None)
+                        }
+                        autre => return err(format!("genre d'import inconnu : 0x{autre:02X}")),
+                    };
+                    m.imports.push(ImportWasm {
+                        module, nom, genre, idx_fonction, hote: None,
+                    });
+                }
+            }
             3 => {
                 let n = s.uleb()? as usize;
                 for _ in 0..n { type_idx_fonctions.push(s.uleb()? as u32); }
@@ -325,15 +486,28 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
             9 => {
                 let n = s.uleb()? as usize;
                 for _ in 0..n {
-                    let idx = s.uleb()? as u32;
-                    let mut e = EntreeTable { type_idx: None, fonction: None };
-                    if idx != 0 { return err("table d'éléments non nulle : non supporté"); }
-                    let offset = lire_offset(&mut s)?;
+                    // ⚠ Ancien style (sans drapeau) : l'offset commence par
+                    // 0x41/0x23. Nouveau style (bulk memory) : drapeau 0/1/2/3.
+                    let drapeaux = match s.b.get(s.p).copied() {
+                        Some(0x41) | Some(0x23) => 0u32,
+                        _ => s.uleb()? as u32,
+                    };
+                    let (idx_table, offset) = match drapeaux {
+                        0 => (0u32, Some(lire_offset(&mut s, &m.globals)?)),
+                        1 | 3 => { let _genre = s.octet()?; (0u32, None) }
+                        2 => {
+                            let t = s.uleb()? as u32;
+                            let o = lire_offset(&mut s, &m.globals)?;
+                            let _genre = s.octet()?;
+                            (t, Some(o))
+                        }
+                        _ => return err(format!("drapeaux d'éléments {drapeaux} : non supportés")),
+                    };
+                    if idx_table != 0 { return err("table d'éléments non nulle : non supporté"); }
                     let nf = s.uleb()? as usize;
                     let mut fs = Vec::new();
                     for _ in 0..nf { fs.push(s.uleb()? as u32); }
-                    m.elem.push((offset, fs));
-                    let _ = &mut e;
+                    if let Some(offset) = offset { m.elem.push((offset, fs)); }
                 }
             }
             10 => {
@@ -347,10 +521,25 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
             11 => {
                 let n = s.uleb()? as usize;
                 for _ in 0..n {
-                    let adresse = lire_offset(&mut s)?;
+                    // ⚠ Même compatibilité que la section `elem` : old-style
+                    // sans drapeau, new-style 0 (actif), 1 (passif), 2 (actif
+                    // avec index de mémoire), 3 (déclaratif).
+                    let drapeaux = match s.b.get(s.p).copied() {
+                        Some(0x41) | Some(0x23) => 0u32,
+                        _ => s.uleb()? as u32,
+                    };
+                    let offset = match drapeaux {
+                        0 => Some(lire_offset(&mut s, &m.globals)?),
+                        1 | 3 => None,
+                        2 => {
+                            let _mem = s.uleb()?;
+                            Some(lire_offset(&mut s, &m.globals)?)
+                        }
+                        _ => return err(format!("drapeaux de données {drapeaux} : non supportés")),
+                    };
                     let taille = s.uleb()? as usize;
                     let octets = s.octets(taille)?.to_vec();
-                    m.data.push((adresse, octets));
+                    if let Some(adresse) = offset { m.data.push((adresse, octets)); }
                 }
             }
             12 => {
@@ -360,6 +549,50 @@ pub fn charger(binaire: &[u8]) -> Result<ModuleWasm, WasmErr> {
             _ => return err(format!("section wasm inconnue : {id}")),
         }
         l.p = fin;
+    }
+
+    // ⚠ M6.3 — finalisation des imports : résolution des fonctions hôtes,
+    // liaison de la mémoire importée, rejet PROPRE des genres non supportés.
+    let mut mem_importee: Option<(u32, Option<u32>)> = None;
+    for imp in m.imports.iter_mut() {
+        match imp.genre {
+            GenreImport::Fonction(ti) => {
+                if ti as usize >= m.types.len() {
+                    return err(format!("import {}.{} : type {ti} inconnu", imp.module, imp.nom));
+                }
+                match resoudre_hote(&imp.module, &imp.nom) {
+                    Some(f) => imp.hote = Some(f),
+                    None => {
+                        let disponibles = hotes_integres().iter()
+                            .map(|(a, b)| format!("{a}.{b}"))
+                            .collect::<Vec<_>>().join(", ");
+                        return err(format!(
+                            "import non résolu : {}.{} — hôtes disponibles : {disponibles}",
+                            imp.module, imp.nom));
+                    }
+                }
+            }
+            GenreImport::Memoire { min, max } => {
+                if mem_importee.is_some() {
+                    return err("plusieurs mémoires importées : non supporté");
+                }
+                mem_importee = Some((min, max));
+            }
+            GenreImport::Table => {
+                return err(format!("import de table {}.{} : non supporté", imp.module, imp.nom));
+            }
+            GenreImport::Global(_, _) => {
+                return err(format!("import de global {}.{} : non supporté", imp.module, imp.nom));
+            }
+        }
+    }
+    if let Some((min, max)) = mem_importee {
+        if m.memoire.is_some() {
+            return err("mémoire importée ET définie : non supporté (une seule mémoire)");
+        }
+        // ⚠ La mémoire importée est allouée par Rose dans `InstanceWasm::nouveau` :
+        // c'est la « mémoire du module hôte » à laquelle le wasm est relié.
+        m.memoire = Some((min, max));
     }
 
     // ⚠ Les corps doivent être associés aux déclarations de fonctions.
@@ -409,17 +642,25 @@ fn lire_valeur_constante(l: &mut Lecteur, t: TyWasm) -> Result<ValWasm, WasmErr>
     })
 }
 
-/// ⚠ Lit un offset (expression constante : `i32.const N`, puis `end`).
-fn lire_offset(l: &mut Lecteur) -> Result<u32, WasmErr> {
+/// ⚠ Lit un offset (expression constante : `i32.const N` OU `global.get N`,
+/// puis `end`). Le `global.get` est fréquent dans les modules WASI réels :
+/// `__data_end` sert d'offset aux segments de données. Les globals ayant été
+/// lus à la section 6 (avant les données), leur valeur est déjà connue ici.
+fn lire_offset(l: &mut Lecteur, globals: &[(TyWasm, bool, ValWasm)]) -> Result<u32, WasmErr> {
     let op = l.octet()?;
-    if op == 0x41 {
-        let v = l.sleb()? as u32;
-        let e = l.octet()?;
-        if e != 0x0B { return err("expression d'offset mal terminée"); }
-        return Ok(v);
-    }
-    // ⚠ `global.get` (0x23) puis end : non supporté pour un offset.
-    err(format!("offset non constant (op 0x{op:02X})"))
+    let v = match op {
+        0x41 => l.sleb()? as u32,
+        0x23 => {
+            let i = l.uleb()? as usize;
+            let g = globals.get(i)
+                .ok_or_else(|| WasmErr(format!("global {i} absent dans un offset")))?;
+            g.2.as_i32() as u32
+        }
+        _ => return err(format!("offset non constant (op 0x{op:02X})")),
+    };
+    let e = l.octet()?;
+    if e != 0x0B { return err("expression d'offset mal terminée"); }
+    Ok(v)
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -733,8 +974,8 @@ impl InstanceWasm {
         let mut v = Vec::new();
         for (nom, genre, idx) in self.module.exports.iter() {
             if *genre != 0 { continue; }
-            if let Some(f) = self.module.fonctions.get(*idx as usize) {
-                v.push((nom.clone(), f.params.clone(), f.resultats.clone()));
+            if let Some((ps, rs)) = self.module.signature_de(*idx) {
+                v.push((nom.clone(), ps.to_vec(), rs.to_vec()));
             }
         }
         v
@@ -759,14 +1000,26 @@ impl InstanceWasm {
         // pas de clone du corps). `f clone()` recopiait le `Vec<u8>` du corps
         // à chaque appel — 5 allocations par appel xxHash.
         let module = Arc::clone(&self.module);
-        let f = match module.fonctions.get(idx as usize) {
+        let (params, _resultats) = match module.signature_de(idx) {
+            Some(s) => s,
+            None => return err(format!("fonction {idx} inexistante")),
+        };
+        if args.len() != params.len() {
+            return err(format!("'{}' attend {} argument(s), {} reçu(s)",
+                nom_de_fonction(&module, idx), params.len(), args.len()));
+        }
+        // ⚠ M6.3 : les imports de fonction occupent les premiers indices.
+        // Un appel vers l'un d'eux est un appel DIRECT à la fonction hôte.
+        if idx < module.nb_imports_fonction {
+            let imp = module.imports.iter()
+                .find(|i| i.idx_fonction == Some(idx))
+                .ok_or_else(|| WasmErr(format!("import de fonction {idx} introuvable")))?;
+            return self.appeler_hote(imp, args);
+        }
+        let f = match module.fonctions.get((idx - module.nb_imports_fonction) as usize) {
             Some(f) => f,
             None => return err(format!("fonction {idx} inexistante")),
         };
-        if args.len() != f.params.len() {
-            return err(format!("'{}' attend {} argument(s), {} reçu(s)",
-                nom_de_fonction(&self.module, idx), f.params.len(), args.len()));
-        }
         let mut frame = Frame { locales: Vec::with_capacity(f.params.len() + f.locales_types.len()),
             blocs: Vec::new(), pile: Vec::new(), corps_len: f.code.len() };
         // ⚠ Locales : paramètres d'abord, puis les locales déclarées (zéro).
@@ -895,6 +1148,11 @@ impl InstanceWasm {
                     frame.pile.push(match op {
                         0x2A => ValWasm::F32(f32::from_bits(brut as u32)),
                         0x2B => ValWasm::F64(f64::from_bits(brut)),
+                        // ⚠ i64.load (0x29) et i64.load8/16/32 (0x30..=0x35)
+                        // doivent pousser un I64 : les pousser en I32 tronquait
+                        // les 32 bits de poids fort (mesuré : l'iovec WASI
+                        // `fd_write` perdait son `len` et écrivait 0 octet).
+                        0x29 | 0x30..=0x35 => ValWasm::I64(v),
                         _ => ValWasm::I32(v as i32),
                     });
                 }
@@ -1031,10 +1289,10 @@ impl InstanceWasm {
                     // ⚠ `call idx` : appel direct.
                     let idx = imm as u32;
                     let module = Arc::clone(&self.module);
-                    let f = module.fonctions.get(idx as usize)
+                    let (params, _) = module.signature_de(idx)
                         .ok_or_else(|| WasmErr(format!("fonction {idx} inexistante")))?;
                     let mut args = Vec::new();
-                    for t in f.params.iter().rev() {
+                    for t in params.iter().rev() {
                         let v = frame.pile.pop().ok_or_else(|| WasmErr("pile vide (call)".into()))?;
                         args.push(convertir(v, *t));
                     }
@@ -1429,5 +1687,159 @@ impl InstanceWasm {
         let c = if b.op == 0x03 { b.debut } else { b.fin };
         std::hint::black_box(c)
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// APPEL DES FONCTIONS HÔTES (M6.3)
+// ═══════════════════════════════════════════════════════════════════════
+
+impl InstanceWasm {
+    /// ⚠ Appelle une fonction hôte résolue au chargement, puis adapte le
+    /// nombre et le type de ses valeurs de retour à la signature wasm.
+    fn appeler_hote(&mut self, imp: &ImportWasm, args: &[ValWasm])
+        -> Result<Vec<ValWasm>, WasmErr>
+    {
+        let f = imp.hote.ok_or_else(|| WasmErr(format!(
+            "import non résolu : {}.{}", imp.module, imp.nom)))?;
+        let mut r = f(self, args).map_err(|e| WasmErr(format!(
+            "{}.{} : {}", imp.module, imp.nom, e)))?;
+        let resultats: Vec<TyWasm> = match imp.genre {
+            GenreImport::Fonction(ti) => self.module.types.get(ti as usize)
+                .map(|t| t.1.clone()),
+            _ => None,
+        }.ok_or_else(|| WasmErr(format!("import {}.{} sans type", imp.module, imp.nom)))?;
+        r.truncate(resultats.len());
+        while r.len() < resultats.len() {
+            let i = r.len();
+            r.push(zero(resultats[i]));
+        }
+        for (i, t) in resultats.iter().enumerate() {
+            r[i] = convertir(r[i], *t);
+        }
+        Ok(r)
+    }
+}
+
+/// ⚠ Lit un i32 little-endian dans la mémoire linéaire de l'instance.
+fn mem_lire_i32(inst: &InstanceWasm, adresse: usize) -> Result<i32, WasmErr> {
+    let octets = inst.memoire.get(adresse..adresse + 4)
+        .ok_or_else(|| WasmErr(format!("accès mémoire hors limites : {adresse}+4 > {}", inst.memoire.len())))?;
+    Ok(i32::from_le_bytes([octets[0], octets[1], octets[2], octets[3]]))
+}
+
+/// ⚠ Écrit un i32 little-endian dans la mémoire linéaire de l'instance.
+fn mem_ecrire_i32(inst: &mut InstanceWasm, adresse: usize, v: i32) -> Result<(), WasmErr> {
+    let taille_mem = inst.memoire.len();
+    let octets = inst.memoire.get_mut(adresse..adresse + 4)
+        .ok_or_else(|| WasmErr(format!("écriture mémoire hors limites : {adresse}+4 > {taille_mem}")))?;
+    octets.copy_from_slice(&v.to_le_bytes());
+    Ok(())
+}
+
+/// ⚠ `env.log` : affiche sa/les valeur(s) sur la sortie standard.
+/// Formes acceptées : `(i32)` → l'entier ; `(i32,i32)` → la chaîne mémoire
+/// `(ptr,len)` ; `(i32,i32,i32)` → `(fd,ptr,len)` (le fd est ignoré).
+fn hote_log(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    ecrire_hote(inst, args, true)
+}
+
+/// ⚠ `env.ecrire` : identique à `env.log`, sans retour à la ligne.
+fn hote_ecrire(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    ecrire_hote(inst, args, false)
+}
+
+fn ecrire_hote(inst: &mut InstanceWasm, args: &[ValWasm], newline: bool)
+    -> Result<Vec<ValWasm>, WasmErr>
+{
+    let mut out = std::io::stdout().lock();
+    match args {
+        [] => { if newline { let _ = writeln!(out); } }
+        [v] => {
+            let s = match v {
+                ValWasm::I32(x) => x.to_string(),
+                ValWasm::I64(x) => x.to_string(),
+                ValWasm::F32(x) => x.to_string(),
+                ValWasm::F64(x) => x.to_string(),
+            };
+            if newline { let _ = writeln!(out, "[wasm] {s}"); } else { let _ = write!(out, "{s}"); }
+        }
+        [ptr, len] | [_, ptr, len] => {
+            let a = ptr.as_i32() as u32 as usize;
+            let n = len.as_i32() as u32 as usize;
+            let octets = inst.memoire.get(a..a + n)
+                .ok_or_else(|| WasmErr(format!("accès mémoire hors limites : {a}+{n} > {}", inst.memoire.len())))?;
+            let _ = out.write_all(octets);
+            if newline { let _ = writeln!(out); }
+        }
+        _ => return err(format!("hôte log/ecrire : 0 à 3 arguments attendus, {} reçu(s)", args.len())),
+    }
+    let _ = out.flush();
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `wasi.fd_write(fd, iovs, iovs_len, nwritten)` : écrit les iovecs de la
+/// mémoire wasm sur stdout (fd 1) ou stderr (fd 2), rend `0` (errno WASI)
+/// et dépose le nombre d'octets écrits à `nwritten`.
+fn hote_fd_write(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 4 { return err(format!("fd_write : 4 arguments attendus, {} reçu(s)", args.len())); }
+    let fd = args[0].as_i32();
+    let iovs = args[1].as_i32() as u32 as usize;
+    let n = args[2].as_i32() as u32 as usize;
+    let nwritten = args[3].as_i32() as u32 as usize;
+    let mut octets = Vec::new();
+    for i in 0..n {
+        let base = iovs.saturating_add(i.saturating_mul(8));
+        let ptr = mem_lire_i32(inst, base)? as u32 as usize;
+        let len = mem_lire_i32(inst, base + 4)? as u32 as usize;
+        let fin = ptr.saturating_add(len);
+        let morceau = inst.memoire.get(ptr..fin)
+            .ok_or_else(|| WasmErr(format!("iovec hors limites : {ptr}+{len} > {}", inst.memoire.len())))?;
+        octets.extend_from_slice(morceau);
+    }
+    if fd == 1 {
+        let mut h = std::io::stdout().lock();
+        let _ = h.write_all(&octets); let _ = h.flush();
+    } else if fd == 2 {
+        let mut h = std::io::stderr().lock();
+        let _ = h.write_all(&octets); let _ = h.flush();
+    }
+    mem_ecrire_i32(inst, nwritten, octets.len() as i32)?;
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `wasi.fd_read` : SANDBOX — ne lit jamais stdin ( évite un blocage ),
+/// dépose `0` à `nread` et rend `0` (errno WASI, zéro octet disponible).
+fn hote_fd_read(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 4 { return err(format!("fd_read : 4 arguments attendus, {} reçu(s)", args.len())); }
+    let nread = args[3].as_i32() as u32 as usize;
+    mem_ecrire_i32(inst, nread, 0)?;
+    Ok(vec![ValWasm::I32(0)])
+}
+
+/// ⚠ `wasi.proc_exit(code)` : terminateur explicite. On ne fait PAS `exit()`
+/// dans un interpréteurs (ce qui tuerait le programme Rose appelant) : on rend
+/// une erreur PROPRE et datée, qui remonte jusqu'au `.rose`.
+fn hote_proc_exit(_inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    let code = args.first().map(|v| v.as_i32()).unwrap_or(0);
+    err(format!("proc_exit({code}) demandé par le module wasm"))
+}
+
+/// ⚠ `wasi.random_get(ptr,len)` : remplit la mémoire avec un PRNG xorshift64
+/// amorti (NON cryptographique) graine par l'horloge. Rend `0` (errno WASI).
+fn hote_random_get(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("random_get : 2 arguments attendus, {} reçu(s)", args.len())); }
+    let ptr = args[0].as_i32() as u32 as usize;
+    let len = args[1].as_i32() as u32 as usize;
+    if ptr.saturating_add(len) > inst.memoire.len() {
+        return err(format!("random_get hors limites : {ptr}+{len} > {}", inst.memoire.len()));
+    }
+    let mut etat = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default()
+        .as_nanos() as u64 | 1;
+    for i in 0..len {
+        etat ^= etat << 13; etat ^= etat >> 7; etat ^= etat << 17;
+        inst.memoire[ptr + i] = etat as u8;
+    }
+    Ok(vec![ValWasm::I32(0)])
 }
 
