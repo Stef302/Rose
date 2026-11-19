@@ -2053,7 +2053,11 @@ impl Table {
     pub fn neuf(items: Vec<(Valeur, Valeur)>) -> Table {
         let t = Table(Rc::new(RefCell::new(TableRep {
             items: { let mut v = items; v.reserve(4096); v },
-            index: { let mut m = HashMap::with_hasher(BuildHasherDefault::<HashU64>::default()); m.reserve(4096); m },
+            // `index` ne sert plus qu'aux clés NON denses (array_part est
+            // l'index primaire). D7 n'en a aucune : `HashMap::with_hasher`
+            // n'alloue RIEN avant la première insertion, ce qui économise
+            // une arène de ~64 Kio et son initialization sur le chemin chaud.
+            index: HashMap::with_hasher(BuildHasherDefault::<HashU64>::default()),
             fallback: Vec::new(),
             collisions: Vec::new(),
             array_part: vec![0u32; Self::N_ARRAY],
@@ -2069,19 +2073,42 @@ impl Table {
         index.clear();
         fallback.clear();
         collisions.clear();
-        for (i, (k, _)) in items.iter().enumerate() {
-            match Self::h(k) {
-                Some(h) => {
-                    if index.insert(h, i).is_some() { collisions.push((h, i)); }
-                }
-                None => fallback.push(i),
-            }
-        }
         array_part.fill(0);
         for (i, (k, _)) in items.iter().enumerate() {
-            if let Valeur::Entier(kk, None) = k {
-                Self::maj_array(array_part, *kk, i);
+            match Self::k_table(k) {
+                Some(ki) => array_part[ki] = (i + 1) as u32,
+                None => match Self::h(k) {
+                    Some(h) => {
+                        if index.insert(h, i).is_some() { collisions.push((h, i)); }
+                    }
+                    None => fallback.push(i),
+                },
             }
+        }
+    }
+
+    /// Clé numérique dont la valeur est un entier EXACT dans [0, N_ARRAY).
+    /// Ces clés sont indexées par `array_part` (index primaire, O(1) sans
+    /// hachage) et N'ONT PAS d'entrée dans `index`. Toutes les voies de
+    /// recherche (`trouver_h`, `contient_i64`) consultent `array_part` d'abord,
+    /// donc la sémantique `valeur_egale` (Entier ≡ Flottant ≡ Rationnel ≡
+    /// Booleen) est strictement préservée : chaque hit est validé par
+    /// `valeur_egale` contre l'item réellement stocké.
+    #[inline]
+    fn k_table(v: &Valeur) -> Option<usize> {
+        match v {
+            Valeur::Entier(k, None) if *k >= 0 && (*k as usize) < Self::N_ARRAY => Some(*k as usize),
+            Valeur::Flottant(d) if d.fract() == 0.0 && *d >= 0.0 && *d < Self::N_ARRAY as f64 => Some(*d as usize),
+            Valeur::Booleen(b) => Some(if *b { 1 } else { 0 }),
+            Valeur::Rationnel(q) if q.den_i128() == 1 => {
+                let n = q.num_i128();
+                if n >= 0 && (n as usize) < Self::N_ARRAY { Some(n as usize) } else { None }
+            }
+            Valeur::Entier(_, Some(z)) => {
+                let d = z.get_d();
+                if d.fract() == 0.0 && d >= 0.0 && d < Self::N_ARRAY as f64 { Some(d as usize) } else { None }
+            }
+            _ => None,
         }
     }
 
@@ -2147,6 +2174,15 @@ impl Table {
     #[inline]
     fn trouver_h(&self, cle: &Valeur, h: Option<u64>) -> Option<usize> {
         let rep = self.0.borrow();
+        // Index primaire pour les clés entières denses : `array_part`, sans
+        // hachage ni HashMap. Un hit est TOUJOURS validé par `valeur_egale`.
+        if let Some(k) = Self::k_table(cle) {
+            let p = rep.array_part[k];
+            if p != 0 {
+                let i = (p - 1) as usize;
+                if valeur_egale(&rep.items[i].0, cle) { return Some(i); }
+            }
+        }
         match h {
             Some(h) => {
                 if let Some(&i) = rep.index.get(&h) {
@@ -2181,15 +2217,22 @@ impl Table {
             self.0.borrow_mut().items[i].1 = val;
             return;
         }
+        // Une clé numérique entière dans [0, N_ARRAY) vit dans `array_part`
+        // (index primaire) : aucun HashMap à maintenir pour elle.
+        let k = Self::k_table(&cle);
         let mut rep = self.0.borrow_mut();
         let i = rep.items.len();
         rep.items.push((cle, val));
-        match h {
-            Some(h) => {
-                if rep.index.contains_key(&h) { rep.collisions.push((h, i)); }
-                else { rep.index.insert(h, i); }
+        if let Some(k) = k {
+            rep.array_part[k] = (i + 1) as u32;
+        } else {
+            match h {
+                Some(h) => {
+                    if rep.index.contains_key(&h) { rep.collisions.push((h, i)); }
+                    else { rep.index.insert(h, i); }
+                }
+                None => rep.fallback.push(i),
             }
-            None => rep.fallback.push(i),
         }
     }
 
@@ -2251,6 +2294,27 @@ impl Table {
     pub fn inserer_i64(&self, k: i64, v: i64) {
         if !Self::z_est_nu(k) {
             self.inserer(Valeur::z(k), Self::z_valeur_i64(v));
+            return;
+        }
+        // ── Index primaire `array_part` (clé i64 dense dans [0, N_ARRAY)) ──
+        // Aucun hachage, aucun HashMap, aucun `entry` : lecture/écriture
+        // directe d'un `u32`. D7 insère 3 000 clés 0..2999 : c'était 60–84 µs,
+        // dont la moitié dans `HashMap::entry`. Toutes les recherches
+        // (`contient_i64`, `trouver_h`) consultent `array_part` en premier,
+        // donc l'absence d'entrée dans `index` est sans effet sémantique.
+        if k >= 0 && (k as usize) < Self::N_ARRAY {
+            let rep = self.rep_mut_nv();
+            let p = rep.array_part[k as usize];
+            if p != 0 {
+                let i = (p - 1) as usize;
+                if Self::cle_i64_egale(&rep.items[i].0, k) {
+                    rep.items[i].1 = Self::z_valeur_i64(v);
+                    return;
+                }
+            }
+            let i = rep.items.len();
+            rep.items.push((Valeur::Entier(k, None), Self::z_valeur_i64(v)));
+            rep.array_part[k as usize] = (i + 1) as u32;
             return;
         }
         let h = Self::h_entier(k);
@@ -2320,9 +2384,7 @@ impl Table {
         let TableRep { items, array_part, .. } = &mut *rep;
         array_part.fill(0);
         for (j, (kk, _)) in items.iter().enumerate() {
-            if let Valeur::Entier(k, None) = kk {
-                Self::maj_array(array_part, *k, j);
-            }
+            if let Some(k) = Self::k_table(kk) { array_part[k] = (j + 1) as u32; }
         }
         true
     }
