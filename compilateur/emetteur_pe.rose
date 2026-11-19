@@ -1,0 +1,1257 @@
+# emetteur_pe.rose — Émetteur PE32+ aarch64 en Rose pur (G5 → Windows).
+#
+# Dérivé de compilateur/emetteur_elf.rose : le cœur G5 (analyse RIR, émission
+# aarch64, résolution de sauts) est repris à l'identique ; seul le writer final
+# diffère — `g5_pe()` écrit un PE32+ (IMAGE_FILE_MACHINE_ARM64) avec une table
+# d'imports minimale KERNEL32.DLL!ExitProcess, calquée sur rose/src/link_natif.rs.
+#
+# Chaîne :
+#   rose rir prog.rose > prog.rir
+#   rose compilateur/emetteur_pe.rose prog.rir > prog.exe
+#
+# ⚠ Le code machine émis par G5 utilise des syscalls Linux (svc #0) : le PE est
+#   structurellement valide et vérifiable sous Linux, mais son EXÉCUTION sous
+#   Windows n'a PAS été testée (et n'est pas possible sur cette machine).
+#   Aucune modification de emetteur_elf.rose / link_natif.rs n'est faite ici.
+
+# ── Utilitaires d'écriture little-endian ──
+
+fn u8le($v: entier) -> chaine {
+  retour caractere($v % 256)
+}
+
+fn u16le($v: entier) -> chaine {
+  $b0 = $v % 256
+  $b1 = partie_entiere($v / 256) % 256
+  retour caractere($b0) + caractere($b1)
+}
+
+fn u32le($v: entier) -> chaine {
+  $b0 = $v % 256
+  $v1 = partie_entiere($v / 256)
+  $b1 = $v1 % 256
+  $v2 = partie_entiere($v1 / 256)
+  $b2 = $v2 % 256
+  $v3 = partie_entiere($v2 / 256)
+  $b3 = $v3 % 256
+  retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3)
+}
+
+fn u64le($v: entier) -> chaine {
+  $b0 = $v % 256
+  $v1 = partie_entiere($v / 256)
+  $b1 = $v1 % 256
+  $v2 = partie_entiere($v1 / 256)
+  $b2 = $v2 % 256
+  $v3 = partie_entiere($v2 / 256)
+  $b3 = $v3 % 256
+  $v4 = partie_entiere($v3 / 256)
+  $b4 = $v4 % 256
+  $v5 = partie_entiere($v4 / 256)
+  $b5 = $v5 % 256
+  $v6 = partie_entiere($v5 / 256)
+  $b6 = $v6 % 256
+  $v7 = partie_entiere($v6 / 256)
+  $b7 = $v7 % 256
+  retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3) + caractere($b4) + caractere($b5) + caractere($b6) + caractere($b7)
+}
+
+
+fn g4_pos($s: chaine, $mot: chaine) -> entier {
+  $p = 0
+  $ln = longueur($s)
+  $lm = longueur($mot)
+  si ($lm == 0) { retour 0 }
+  tant_que ($p + $lm <= $ln et sous_chaine($s, $p, $p + $lm) != $mot) { $p = $p + 1 }
+  si ($p + $lm > $ln) { retour -1 }
+  retour $p
+}
+fn g4_entier_ou_zero($s: chaine) -> entier {
+  $t = g4_trim($s)
+  $n = longueur($t)
+  si ($n == 0) { retour 0 }
+  $neg = 0
+  $i = 0
+  si (sous_chaine($t, 0, 1) == "-") { $neg = 1; $i = 1 }
+  $ok = 1
+  tant_que ($i < $n) {
+    $c = sous_chaine($t, $i, $i + 1)
+    si ($c < "0" ou $c > "9") { $ok = 0 }
+    $i = $i + 1
+  }
+  si ($ok == 0) { retour 0 }
+  $deb = 0
+  si ($neg == 1) { $deb = 1 }
+  $v = entier(sous_chaine($t, $deb, $n))
+  si ($neg == 1) { retour -$v }
+  retour $v
+}
+fn g4_trim($s: chaine) -> chaine {
+  $r = $s
+  $n = longueur($r)
+  tant_que ($n > 0 et sous_chaine($r, 0, 1) == " ") { $r = sous_chaine($r, 1, $n); $n = longueur($r) }
+  tant_que ($n > 0 et sous_chaine($r, $n - 1, $n) == " ") { $r = sous_chaine($r, 0, $n - 1); $n = longueur($r) }
+  retour $r
+}
+fn g4_lignes($s: chaine) -> liste<chaine> {
+  $res = [""]
+  $i = 0
+  $n = longueur($s)
+  $deb = 0
+  tant_que ($i <= $n) {
+    si ($i == $n ou sous_chaine($s, $i, $i + 1) == "\n") {
+      $ligne = sous_chaine($s, $deb, $i)
+      $ln = longueur($ligne)
+      si ($ln > 0 et sous_chaine($ligne, $ln - 1, $ln) == "\r") { $ligne = sous_chaine($ligne, 0, $ln - 1) }
+      joindre($res, $ligne)
+      $deb = $i + 1
+    }
+    $i = $i + 1
+  }
+  retour $res
+}
+fn g4_operand($op: chaine, $mot: chaine) -> chaine {
+  $p = g4_pos($op, $mot)
+  si ($p < 0) { retour "" }
+  $i = $p + longueur($mot)
+  $n = longueur($op)
+  tant_que ($i < $n et sous_chaine($op, $i, $i + 1) == " ") { $i = $i + 1 }
+  retour g4_trim(sous_chaine($op, $i, $n))
+}
+fn g5_nu_op($ligne: chaine) -> chaine {
+  $n = longueur($ligne)
+  $i = 0
+  tant_que ($i < $n et sous_chaine($ligne, $i, $i + 1) == " ") { $i = $i + 1 }
+  $j = 0
+  tant_que ($i < $n et $j < 4 et sous_chaine($ligne, $i, $i + 1) >= "0" et sous_chaine($ligne, $i, $i + 1) <= "9") { $i = $i + 1; $j = $j + 1 }
+  tant_que ($i < $n et sous_chaine($ligne, $i, $i + 1) == " ") { $i = $i + 1 }
+  retour sous_chaine($ligne, $i, $n)
+}
+
+# ── État (listes append-only ; joindre mute l'objet partagé) ──
+$g5_code = [0 : entier]
+$g5_meta = [0 : chaine]
+$g5_lbldef = [0 : chaine]
+$g5_ctr = [0]
+$g5_fn = [0 : chaine]
+$g5_fnslot = [0 : entier]
+$g5_fnam = [0 : chaine]
+$g5_fop = [0 : entier]
+$g5_fnop = [0 : entier]
+$g5_flbl = [0 : entier]
+$g5_fparam = [0 : entier]
+$g5_ops = [0 : chaine]
+$g5_oplbl = [0 : entier]
+$g5_endlbl = [0 : entier]
+$g5_err = [0 : chaine]
+
+fn g5_sub($s: chaine, $a: entier, $b: entier) -> chaine {
+  si ($a < 0 ou $b < 0 ou $a > $b) {
+    joindre($g5_err, "sous_chaine invalide : " + chaine($a) + ".." + chaine($b) + " sur " + chaine(longueur($s)) + " octets")
+    retour ""
+  }
+  $n = longueur($s)
+  $fin = $b
+  si ($fin > $n) { $fin = $n }
+  $deb = $a
+  si ($deb > $n) { $deb = $n }
+  retour sous_chaine($s, $deb, $fin)
+}
+
+fn g5_next() -> entier { joindre($g5_ctr, 0); retour longueur($g5_ctr) - 1 }
+fn g5_wrap($v: entier, $m: entier) -> entier {
+  $r = $v % $m
+  si ($r < 0) { $r = $r + $m }
+  retour $r
+}
+fn g5_emit($w: entier) -> entier {
+  joindre($g5_code, g5_wrap($w, 4294967296))
+  joindre($g5_meta, "")
+  retour longueur($g5_code) - 1
+}
+fn g5_branch($kind: entier, $l: entier) -> entier {
+  joindre($g5_code, 0)
+  joindre($g5_meta, "F" + chaine($l) + "|" + chaine($kind))
+  retour longueur($g5_code) - 1
+}
+fn g5_mark($l: entier) -> entier {
+  joindre($g5_lbldef, chaine($l) + "|" + chaine(longueur($g5_code)))
+  retour longueur($g5_code) - 1
+}
+fn g5_labelidx($l: entier) -> entier {
+  $i = 0
+  tant_que ($i < longueur($g5_lbldef)) {
+    $s = $g5_lbldef[$i]
+    $bar = g4_pos($s, "|")
+    si (g4_entier_ou_zero(g5_sub($s, 0, $bar)) == $l) {
+      retour g4_entier_ou_zero(g5_sub($s, $bar + 1, longueur($s)))
+    }
+    $i = $i + 1
+  }
+  retour -1
+}
+fn g5_fail($msg: chaine) -> entier { joindre($g5_err, $msg); retour -1 }
+
+# ── Encodage AArch64 — bases vérifiées par objdump sur gx10-2 (aarch64) ──
+fn movz($rd: entier, $im: entier) -> entier { retour 3531603968 + $im * 32 + $rd }
+fn movk($rd: entier, $im: entier, $sh: entier) -> entier { retour 4068474880 + $sh * 2097152 + $im * 32 + $rd }
+fn addi($rd: entier, $rn: entier, $im: entier) -> entier { retour 2432696320 + $im * 1024 + $rn * 32 + $rd }
+fn subi($rd: entier, $rn: entier, $im: entier) -> entier { retour 3506438144 + $im * 1024 + $rn * 32 + $rd }
+fn addr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2332033024 + $rm * 65536 + $rn * 32 + $rd }
+fn subr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 3405774848 + $rm * 65536 + $rn * 32 + $rd }
+fn andr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2315255808 + $rm * 65536 + $rn * 32 + $rd }
+fn orrr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2852126720 + $rm * 65536 + $rn * 32 + $rd }
+fn eorr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 3388997632 + $rm * 65536 + $rn * 32 + $rd }
+fn mulr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2600500224 + $rm * 65536 + $rn * 32 + $rd }
+fn sdivr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2596276224 + $rm * 65536 + $rn * 32 + $rd }
+fn udivr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2596276224 + $rm * 65536 + $rn * 32 + $rd }
+fn msubr($rd: entier, $rn: entier, $rm: entier, $ra: entier) -> entier { retour 2600501248 + $rm * 65536 + $ra * 16 + $rn * 32 + $rd }
+fn cmpr($rn: entier, $rm: entier) -> entier { retour 3942645791 + $rm * 65536 + $rn * 32 }
+fn cmpi($rn: entier, $im: entier) -> entier { retour 4043309087 + $im * 1024 + $rn * 32 }
+fn ldroff($rt: entier, $rn: entier, $off: entier) -> entier { retour 4181721088 + partie_entiere($off / 8) * 1024 + $rn * 32 + $rt }
+fn stroff($rt: entier, $rn: entier, $off: entier) -> entier { retour 4177526784 + partie_entiere($off / 8) * 1024 + $rn * 32 + $rt }
+fn strboff($rt: entier, $rn: entier) -> entier { retour 941648864 + $rn * 65536 + $rt }
+fn ldrboff($rt: entier, $rn: entier) -> entier { retour 945843168 + $rn * 65536 + $rt }
+fn cset($rd: entier, $cond: entier) -> entier {
+  $inv = $cond + 1
+  si ($cond % 2 == 1) { $inv = $cond - 1 }
+  retour 2594113504 + $inv * 4096 + $rd
+}
+fn RET_I() -> entier { retour 3596551104 }
+fn SVC_I() -> entier { retour 3556769793 }
+
+# ── G5-R (réflexivité) : extensions chaînes/listes ──
+# Encodages vérifiés avec as/objdump sur aarch64 :
+#   strb wRt,[xRn,#off] = 0x39000000 + off*1024 + Rn*32 + Rt
+#   ldrb wRt,[xRn,#off] = 0x39400000 + off*1024 + Rn*32 + Rt
+#   strb wRt,[xRn,xRm]  = 0x38206800 + Rm*65536 + Rn*32 + Rt
+#   ldrb wRt,[xRn,xRm]  = 0x38606800 + Rm*65536 + Rn*32 + Rt
+fn movzs($rd: entier, $im: entier, $sh: entier) -> entier { retour 3531603968 + $sh * 2097152 + $im * 32 + $rd }
+fn strbio($rt: entier, $rn: entier, $off: entier) -> entier { retour 956301312 + $off * 1024 + $rn * 32 + $rt }
+fn ldrbio($rt: entier, $rn: entier, $off: entier) -> entier { retour 960495616 + $off * 1024 + $rn * 32 + $rt }
+fn strbr($rt: entier, $rn: entier, $rm: entier) -> entier { retour 941647872 + $rm * 65536 + $rn * 32 + $rt }
+fn ldrbr($rt: entier, $rn: entier, $rm: entier) -> entier { retour 945842176 + $rm * 65536 + $rn * 32 + $rt }
+
+$g5_allocl = 0
+$g5_lenl = 0
+$g5_ordl = 0
+$g5_sousl = 0
+$g5_idxl = 0
+$g5_chl = 0
+$g5_joindrel = 0
+$g5_inserrel = 0
+$g5_entierl = 0
+$g5_stub0l = 0
+$g5_stubsl = 0
+
+fn g5_load($rd: entier, $v: entier) -> entier {
+  $u = $v
+  si ($u < -9223372036854775808) { retour g5_fail("immédiat hors int64 : " + chaine($v)) }
+  si ($u >= 18446744073709551616) { $u = $u % 18446744073709551616 }
+  si ($u < 0) { $u = $u + 18446744073709551616 }
+  $c0 = $u % 65536
+  $c1 = partie_entiere($u / 65536) % 65536
+  $c2 = partie_entiere($u / 4294967296) % 65536
+  $c3 = partie_entiere($u / 281474976710656) % 65536
+  g5_emit(movz($rd, $c0))
+  si ($c1 != 0) { g5_emit(movk($rd, $c1, 1)) }
+  si ($c2 != 0) { g5_emit(movk($rd, $c2, 2)) }
+  si ($c3 != 0) { g5_emit(movk($rd, $c3, 3)) }
+  retour 0
+}
+
+fn g5_tokens($s: chaine) -> liste<chaine> {
+  $r = [0 : chaine]
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = g5_sub($s, $i, $i + 1)
+    si ($c == "(" ou $c == ")") { joindre($r, $c); $i = $i + 1 }
+    sinon si ($c == " " ou $c == "\t") { $i = $i + 1 }
+    sinon si ($c == "\"") {
+      # G5-R : un littéral de chaîne est UN seul jeton, y compris ses espaces,
+      # ses parenthèses et ses échappements.
+      $j = $i + 1
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = g5_sub($s, $j, $j + 1)
+        si ($d == "\\") { $j = $j + 2
+        } sinon si ($d == "\"") { $j = $j + 1; $fin = 1
+        } sinon { $j = $j + 1 }
+      }
+      si ($j > $n) { $j = $n }
+      joindre($r, g5_sub($s, $i, $j))
+      $i = $j
+    }
+    sinon {
+      $j = $i
+      tant_que ($j < $n et g5_sub($s, $j, $j + 1) != "(" et g5_sub($s, $j, $j + 1) != ")" et g5_sub($s, $j, $j + 1) != " " et g5_sub($s, $j, $j + 1) != "\t") { $j = $j + 1 }
+      joindre($r, g5_sub($s, $i, $j))
+      $i = $j
+    }
+  }
+  retour $r
+}
+
+# Décode un jeton "(s \"…\")" du RIR vers les octets Rose réels.
+fn g5_unescape($tok: chaine) -> chaine {
+  $n = longueur($tok)
+  $deb = 1
+  $fin = $n - 1
+  si ($fin < $deb) { $fin = $deb }
+  $r = ""
+  $i = $deb
+  tant_que ($i < $fin) {
+    $c = sous_chaine($tok, $i, $i + 1)
+    si ($c == "\\") {
+      $d = sous_chaine($tok, $i + 1, $i + 2)
+      si ($d == "n") { $r = $r + caractere(10); $i = $i + 2
+      } sinon si ($d == "r") { $r = $r + caractere(13); $i = $i + 2
+      } sinon si ($d == "t") { $r = $r + caractere(9); $i = $i + 2
+      } sinon si ($d == "\"") { $r = $r + caractere(34); $i = $i + 2
+      } sinon si ($d == "\\") { $r = $r + caractere(92); $i = $i + 2
+      } sinon { $r = $r + $c; $i = $i + 1 }
+    } sinon { $r = $r + $c; $i = $i + 1 }
+  }
+  retour $r
+}
+
+# Allocation EN LIGNE : évite de clobber x30 (BL écraserait le LR de la fonction).
+fn g5_alloc_inline() -> entier {
+  g5_load(9, 1610612736)
+  g5_emit(ldroff(2, 9, 0))
+  g5_emit(orrr(1, 31, 0))
+  g5_emit(orrr(0, 31, 2))
+  g5_emit(addr(2, 2, 1))
+  g5_emit(stroff(2, 9, 0))
+  retour 0
+}
+
+# Émet le code qui construit un descripteur [tag=1][len][octets…] dans x0.
+fn g5_make_str($s: chaine) -> entier {
+  $n = longueur($s)
+  $sz = 16 + 8 * partie_entiere(($n + 7) / 8)
+  g5_load(0, $sz)
+  g5_alloc_inline()
+  g5_load(1, 1)
+  g5_emit(stroff(1, 0, 0))
+  g5_load(1, $n)
+  g5_emit(stroff(1, 0, 8))
+  $i = 0
+  tant_que ($i < $n) {
+    g5_load(1, ordre(sous_chaine($s, $i, $i + 1)))
+    g5_emit(strbio(1, 0, 16 + $i))
+    $i = $i + 1
+  }
+  retour 0
+}
+
+fn g5_noms($s: chaine) -> chaine {
+  $n = longueur($s)
+  $p = 0
+  $res = ""
+  tant_que ($p < $n) {
+    si (g5_sub($s, $p, $p + 1) == "[") {
+      $q = $p + 1
+      tant_que ($q < $n et g5_sub($s, $q, $q + 1) != "]") { $q = $q + 1 }
+      $ix = g5_sub($s, $p + 1, $q)
+      $p = $q + 1
+      tant_que ($p < $n et g5_sub($s, $p, $p + 1) == " ") { $p = $p + 1 }
+      $q = $p
+      tant_que ($q < $n et g5_sub($s, $q, $q + 1) != " ") { $q = $q + 1 }
+      $nm = g5_sub($s, $p, $q)
+      si (longueur($res) > 0) { $res = $res + "|" }
+      $res = $res + $ix + ":" + $nm
+      $p = $q
+    } sinon { $p = $p + 1 }
+  }
+  retour $res
+}
+
+fn g5_slot_of($f: entier, $nom: chaine) -> entier {
+  $t = $g5_fnam[$f]
+  $n = longueur($t)
+  $i = 0
+  tant_que ($i < $n) {
+    $fin = g4_pos(g5_sub($t, $i, $n), "|")
+    si ($fin < 0) { $fin = $n - $i }
+    $ent = g5_sub($t, $i, $i + $fin)
+    $sep = g4_pos($ent, ":")
+    si ($sep >= 0) {
+      si (g5_sub($ent, $sep + 1, longueur($ent)) == $nom) { retour g4_entier_ou_zero(g5_sub($ent, 0, $sep)) }
+    }
+    $i = $i + $fin + 1
+  }
+  # G5-R : une variable non locale (globale Rust dans le source) est repliée
+  # à zéro plutôt que de bloquer l'émission. Ce n'est PAS une sémantiqueRose.
+  retour -1
+}
+fn g5_slotoff($s: entier) -> entier { retour 16 + 8 * $s }
+fn g5_tmpoff($d: entier) -> entier { retour 16 + 8 * (32 + $d) }
+fn g5_argoff($i: entier) -> entier { retour 16 + 8 * (64 + $i) }
+fn g5_listoff($i: entier) -> entier { retour 16 + 8 * (80 + $i) }
+fn g5_framesize($f: entier) -> entier {
+  $n = $g5_fnslot[$f] + 160
+  si ($n % 2 == 1) { $n = $n + 1 }
+  retour 8 * $n
+}
+fn g5_cond($op: chaine) -> entier {
+  si ($op == "==") { retour 0 }
+  si ($op == "!=") { retour 1 }
+  si ($op == "<") { retour 11 }
+  si ($op == ">=") { retour 10 }
+  si ($op == ">") { retour 12 }
+  si ($op == "<=") { retour 13 }
+  retour -1
+}
+fn g5_func_id($nom: chaine) -> entier {
+  $i = 0
+  tant_que ($i < longueur($g5_fn)) {
+    si ($g5_fn[$i] == $nom) { retour $g5_flbl[$i] }
+    $i = $i + 1
+  }
+  retour g5_fail("appel non résolu : " + $nom)
+}
+
+fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
+  si (longueur($g5_err) > 0) { retour -1 }
+  $n = longueur($t)
+  si ($pos >= $n) { retour g5_fail("expression vide") }
+  $tk = $t[$pos]
+  si ($tk == "(") {
+    $head = $t[$pos + 1]
+    si ($head == "n" ou $head == "entier") {
+      g5_load(0, g4_entier_ou_zero($t[$pos + 2]))
+      retour $pos + 4
+    }
+    si ($head == "v") {
+      $sl = g5_slot_of($f, $t[$pos + 2])
+      si ($sl < 0) { g5_load(0, 0)
+      } sinon { g5_emit(ldroff(0, 31, g5_slotoff($sl))) }
+      retour $pos + 4
+    }
+    si ($head == "s") {
+      g5_make_str(g5_unescape($t[$pos + 2]))
+      retour $pos + 4
+    }
+    si ($head == "f") {
+      # G5 n'a pas de flottants : les littéraux (f K.K) sont repliés en entier.
+      g5_load(0, g4_entier_ou_zero($t[$pos + 2]))
+      retour $pos + 4
+    }
+    si ($head == "lstvide") {
+      g5_load(0, 88)
+      g5_alloc_inline()
+      g5_load(1, 2)
+      g5_emit(stroff(1, 0, 0))
+      g5_emit(movz(1, 0))
+      g5_emit(stroff(1, 0, 8))
+      g5_load(1, 8)
+      g5_emit(stroff(1, 0, 16))
+      retour $pos + 4
+    }
+    si ($head == "lst") {
+      $p = $pos + 2
+      $k = 0
+      tant_que ($p < $n et $t[$p] != ")") {
+        $p = g5_eval($t, $p, $d + 1, $f)
+        si ($p < 0) { retour -1 }
+        g5_emit(stroff(0, 31, g5_listoff($k)))
+        $k = $k + 1
+      }
+      g5_load(0, 24 + 8 * $k)
+      g5_alloc_inline()
+      g5_load(1, 2)
+      g5_emit(stroff(1, 0, 0))
+      g5_load(1, $k)
+      g5_emit(stroff(1, 0, 8))
+      g5_load(1, $k)
+      g5_emit(stroff(1, 0, 16))
+      $j = 0
+      tant_que ($j < $k) {
+        g5_emit(ldroff(1, 31, g5_listoff($j)))
+        g5_emit(stroff(1, 0, 24 + 8 * $j))
+        $j = $j + 1
+      }
+      retour $p + 1
+    }
+    si ($head == "idx") {
+      $p = g5_eval($t, $pos + 2, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      g5_emit(stroff(0, 31, g5_tmpoff($d)))
+      $p = g5_eval($t, $p, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      g5_emit(orrr(1, 31, 0))
+      g5_emit(ldroff(0, 31, g5_tmpoff($d)))
+      g5_branch(1, $g5_idxl)
+      retour $p + 1
+    }
+    si ($head == "bin") {
+      $op = $t[$pos + 2]
+      $p = g5_eval($t, $pos + 3, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      g5_emit(stroff(0, 31, g5_tmpoff($d)))
+      $p = g5_eval($t, $p, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      g5_emit(ldroff(1, 31, g5_tmpoff($d)))
+      $c = g5_cond($op)
+      si ($c >= 0) {
+        g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c))
+      } sinon si ($op == "+") { g5_emit(addr(0, 1, 0))
+      } sinon si ($op == "-") { g5_emit(subr(0, 1, 0))
+      } sinon si ($op == "*") { g5_emit(mulr(0, 1, 0))
+      } sinon si ($op == "/" ou $op == "//" ou $op == "div") { g5_emit(sdivr(0, 1, 0))
+      } sinon si ($op == "%") {
+        g5_emit(udivr(2, 1, 0)); g5_emit(msubr(2, 2, 0, 1)); g5_emit(subr(0, 1, 2))
+      } sinon si ($op == "^") {
+        # x1 = base, x0 = exposant ; repli entier (G5 : pas de flottants)
+        $l1 = g5_next()
+        $l2 = g5_next()
+        g5_emit(orrr(2, 31, 1))
+        g5_emit(orrr(3, 31, 0))
+        g5_emit(movz(0, 1))
+        g5_mark($l1)
+        g5_emit(cmpi(3, 0))
+        g5_branch(100, $l2)
+        g5_emit(mulr(0, 0, 2))
+        g5_emit(subi(3, 3, 1))
+        g5_branch(0, $l1)
+        g5_mark($l2)
+      } sinon si ($op == "et") { g5_emit(andr(0, 1, 0))
+      } sinon si ($op == "ou") { g5_emit(orrr(0, 1, 0))
+      } sinon { retour g5_fail("op bin non couverte : " + $op) }
+      retour $p + 1
+    }
+    si ($head == "app" ou $head == "appel_rir" ou $head == "appel") {
+      $nom = $t[$pos + 2]
+      $p = $pos + 3
+      $k = 0
+      tant_que ($p < $n et $t[$p] != ")") {
+        $p = g5_eval($t, $p, $d + 1, $f)
+        si ($p < 0) { retour -1 }
+        g5_emit(stroff(0, 31, g5_argoff($k)))
+        $k = $k + 1
+      }
+      $i = 0
+      tant_que ($i < $k) { g5_emit(ldroff($i, 31, g5_argoff($i))); $i = $i + 1 }
+      $lbl = -1
+      si ($nom == "longueur") { $lbl = $g5_lenl }
+      si ($nom == "ordre") { $lbl = $g5_ordl }
+      si ($nom == "sous_chaine") { $lbl = $g5_sousl }
+      si ($nom == "chaine") { $lbl = $g5_chl }
+      si ($nom == "joindre") { $lbl = $g5_joindrel }
+      si ($nom == "inserer") { $lbl = $g5_inserrel }
+      si ($nom == "entier") { $lbl = $g5_entierl }
+      si ($nom == "nb_arguments" ou $nom == "flottant" ou $nom == "cle_existe") { $lbl = $g5_stub0l }
+      si ($nom == "argument" ou $nom == "lire_texte" ou $nom == "table") { $lbl = $g5_stubsl }
+      si ($lbl < 0) {
+        $trouve = 0
+        $fi = 0
+        tant_que ($fi < longueur($g5_fn)) {
+          si ($g5_fn[$fi] == $nom) { $trouve = 1; $lbl = $g5_flbl[$fi] }
+          $fi = $fi + 1
+        }
+        si ($trouve == 0) { $lbl = $g5_stub0l }
+      }
+      g5_branch(1, $lbl)
+      retour $p + 1
+    }
+    si ($head == "neg") {
+      $p = g5_eval($t, $pos + 2, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      g5_emit(subr(0, 31, 0))
+      retour $p + 1
+    }
+    si ($head == "b") {
+      $v = 0
+      si ($t[$pos + 2] == "vraie") { $v = 1 }
+      g5_load(0, $v)
+      retour $pos + 3
+    }
+    si ($head == "non") {
+      $p = g5_eval($t, $pos + 2, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      g5_emit(cmpi(0, 0)); g5_emit(cset(0, 0))
+      retour $p + 1
+    }
+    si ($head == "uni") {
+      $p = g5_eval($t, $pos + 3, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      si ($t[$pos + 2] == "non") { g5_emit(cmpi(0, 0)); g5_emit(cset(0, 0))
+      } sinon si ($t[$pos + 2] == "neg" ou $t[$pos + 2] == "-") { g5_emit(subr(0, 31, 0))
+      } sinon { retour g5_fail("unaire non couvert : " + $t[$pos + 2]) }
+      retour $p + 1
+    }
+    retour g5_fail("forme parenthésée non couverte : " + $head)
+  }
+  si ($tk == "slot") { g5_emit(ldroff(0, 31, g5_slotoff(g4_entier_ou_zero($t[$pos + 1])))); retour $pos + 2 }
+  si ($tk == "entier" ou $tk == "n") { g5_load(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
+  si ($tk == "flottant") { g5_load(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
+  si ($tk == "v") {
+    $sl = g5_slot_of($f, $t[$pos + 1])
+    si ($sl < 0) { g5_load(0, 0)
+    } sinon { g5_emit(ldroff(0, 31, g5_slotoff($sl))) }
+    retour $pos + 2
+  }
+  g5_load(0, g4_entier_ou_zero($tk))
+  retour $pos + 1
+}
+
+# Un saut dont la cible vaut le nombre d'ops signifie « fin de fonction ».
+fn g5_cible($f: entier, $tok: chaine) -> entier {
+  $c = g4_entier_ou_zero($tok)
+  si ($c >= $g5_fnop[$f]) { retour $g5_endlbl[$f] }
+  retour $g5_oplbl[$g5_fop[$f] + $c]
+}
+
+fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: entier) -> entier {
+  # G5-R : le préfixe doit être AU DÉBUT de l'op. g4_operand cherchait n'importe
+  # où et capturait à tort les littéraux (s "affect slot ") du propre RIR G5.
+  $a = ""
+  si (g5_sub($op, 0, 12) == "affect slot ") { $a = g4_trim(g5_sub($op, 12, longueur($op))) }
+  si (g5_sub($op, 0, 16) == "affect_ast slot ") { $a = g4_trim(g5_sub($op, 16, longueur($op))) }
+  si (longueur($a) > 0) {
+    $eq = g4_pos($a, "=")
+    $sl = g4_entier_ou_zero(g5_sub($a, 0, $eq))
+    $rhs = g4_trim(g5_sub($a, $eq + 1, longueur($a)))
+    g5_eval(g5_tokens($rhs), 0, 0, $f)
+    g5_emit(stroff(0, 31, g5_slotoff($sl)))
+    retour 0
+  }
+  $t = g5_tokens($op)
+  $head = $t[0]
+  si ($head == "expr") { g5_eval($t, 1, 0, $f); retour 0 }
+  si ($head == "saut") { g5_branch(0, g5_cible($f, $t[1])); retour 0 }
+  si ($head == "saut_si_faux" ou $head == "saut_si_faux_abstrait") {
+    g5_eval($t, 2, 0, $f)
+    g5_emit(cmpi(0, 0))
+    g5_branch(100, g5_cible($f, $t[1]))
+    retour 0
+  }
+  si ($head == "retour" ou $head == "retour_abstrait") {
+    g5_eval($t, 1, 0, $f)
+    si ($f == $principal) { g5_branch(1, $printl)
+    } sinon { g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, g5_framesize($f))); g5_emit(RET_I()) }
+    retour 0
+  }
+  si ($head == "afficher" ou $head == "afficher_abstrait") {
+    g5_eval($t, 1, 0, $f)
+    g5_branch(1, $printl)
+    retour 0
+  }
+  retour g5_fail("op non couverte : " + $op)
+}
+
+fn g5_parse($src: chaine) -> entier {
+  $ll = g4_lignes($src)
+  $i = 1
+  tant_que ($i < longueur($ll)) {
+    $t = g4_trim($ll[$i])
+    si (g5_sub($t, 0, 9) == "fonction ") {
+      $nm = g4_trim(g5_sub($t, 9, longueur($t)))
+      $slot = 0
+      $noms = ""
+      $nparam = 0
+      $ops = [0 : chaine]
+      $en_ops = 0
+      $i = $i + 1
+      tant_que ($i < longueur($ll) et g5_sub(g4_trim($ll[$i]), 0, 9) != "fonction ") {
+        $u = g4_trim($ll[$i])
+        si (g5_sub($u, 0, 6) == "param ") { $nparam = $nparam + 1
+        } sinon si (g5_sub($u, 0, 8) == "n_slots ") { $slot = g4_entier_ou_zero(g5_sub($u, 8, longueur($u)))
+        } sinon si (g5_sub($u, 0, 5) == "noms ") { $noms = g4_trim(g5_sub($u, 5, longueur($u)))
+        } sinon si ($u == "ops") { $en_ops = 1
+        } sinon si ($en_ops == 1 et longueur($u) > 0) { joindre($ops, g5_nu_op($u)) }
+        $i = $i + 1
+      }
+      joindre($g5_fn, $nm)
+      joindre($g5_fnslot, $slot)
+      joindre($g5_fnam, g5_noms($noms))
+      joindre($g5_fop, longueur($g5_ops))
+      joindre($g5_fnop, longueur($ops))
+      joindre($g5_flbl, g5_next())
+      joindre($g5_endlbl, g5_next())
+      joindre($g5_fparam, $nparam)
+      $j = 0
+      tant_que ($j < longueur($ops)) { joindre($g5_ops, $ops[$j]); joindre($g5_oplbl, g5_next()); $j = $j + 1 }
+    } sinon { $i = $i + 1 }
+  }
+  retour longueur($g5_fn)
+}
+
+fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: entier) -> entier {
+  g5_mark($g5_flbl[$f])
+  g5_emit(subi(31, 31, g5_framesize($f)))
+  g5_emit(stroff(30, 31, 0))
+  si ($f == $principal) {
+    g5_load(9, 1610612736)
+    g5_load(8, 1610612744)
+    g5_emit(stroff(8, 9, 0))
+  }
+  $p = 0
+  tant_que ($p < $g5_fparam[$f]) { g5_emit(stroff($p, 31, g5_slotoff($p))); $p = $p + 1 }
+  $i = 0
+  tant_que ($i < $g5_fnop[$f]) {
+    g5_mark($g5_oplbl[$g5_fop[$f] + $i])
+    g5_op($g5_ops[$g5_fop[$f] + $i], $f, $principal, $printl, $exitl)
+    si (longueur($g5_err) > 0) { retour -1 }
+    $i = $i + 1
+  }
+  g5_mark($g5_endlbl[$f])
+  si ($f == $principal) { g5_branch(1, $exitl)
+  } sinon { g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, g5_framesize($f))); g5_emit(RET_I()) }
+  retour 0
+}
+
+# Routine write(1,buf,len) — reçoit la valeur dans x0. $lbl est le premier de 7 labels réservés.
+fn g5_emit_print($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(stroff(0, 31, 8))
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lbl + 1)
+  g5_branch(110, $lbl + 2)
+  g5_emit(movz(7, 16))
+  g5_emit(movz(10, 1))
+  g5_emit(ldroff(0, 31, 8))
+  g5_emit(subr(0, 31, 0))
+  g5_emit(movz(2, 0))
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 1)
+  g5_emit(movz(7, 16))
+  g5_emit(movz(10, 0))
+  g5_emit(movz(1, 48))
+  g5_emit(strboff(1, 7))
+  g5_emit(addi(7, 7, 1))
+  g5_emit(movz(2, 1))
+  g5_branch(0, $lbl + 4)
+  g5_mark($lbl + 2)
+  g5_emit(movz(7, 16))
+  g5_emit(movz(10, 0))
+  g5_emit(movz(2, 0))
+  g5_mark($lbl + 3)
+  g5_emit(movz(1, 10))
+  g5_mark($lbl + 5)
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lbl + 4)
+  g5_emit(udivr(3, 0, 1))
+  g5_emit(msubr(4, 3, 1, 0))
+  g5_emit(addi(4, 4, 48))
+  g5_emit(strboff(4, 7))
+  g5_emit(addi(7, 7, 1))
+  g5_emit(addi(2, 2, 1))
+  g5_emit(orrr(0, 31, 3))
+  g5_branch(0, $lbl + 5)
+  g5_mark($lbl + 4)
+  g5_emit(cmpi(10, 0))
+  g5_branch(100, $lbl + 7)
+  g5_emit(movz(1, 45))
+  g5_emit(strboff(1, 7))
+  g5_emit(addi(7, 7, 1))
+  g5_emit(addi(2, 2, 1))
+  g5_mark($lbl + 7)
+  g5_emit(orrr(9, 31, 2))
+  g5_emit(movz(5, 64))
+  g5_emit(movz(6, 0))
+  g5_mark($lbl + 6)
+  g5_emit(subr(3, 7, 6))
+  g5_emit(subi(3, 3, 1))
+  g5_emit(ldrboff(4, 3))
+  g5_emit(strboff(4, 5))
+  g5_emit(addi(5, 5, 1))
+  g5_emit(addi(6, 6, 1))
+  g5_emit(cmpr(6, 9))
+  g5_branch(101, $lbl + 6)
+  g5_emit(movz(0, 1))
+  g5_emit(addi(1, 31, 64))
+  g5_emit(orrr(2, 31, 9))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  g5_emit(RET_I())
+  retour 0
+}
+
+# ── G5-R : runtime des valeurs chaîne/liste ──
+# Descripteur : [tag: 1=chaîne, 2=liste][longueur][données…].
+# Tas : page RW à 0x60000000 ; le mot [0x60000000] contient le pointeur libre.
+fn g5_emit_alloc($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_load(9, 1610612736)
+  g5_emit(ldroff(2, 9, 0))
+  g5_emit(orrr(1, 31, 0))
+  g5_emit(orrr(0, 31, 2))
+  g5_emit(addr(2, 2, 1))
+  g5_emit(stroff(2, 9, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+fn g5_emit_len($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(ldroff(1, 0, 0))
+  g5_emit(cmpi(1, 1))
+  g5_branch(100, $lbl + 1)
+  g5_emit(cmpi(1, 2))
+  g5_branch(101, $lbl + 2)
+  g5_emit(ldroff(0, 0, 8))
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)
+  g5_emit(ldroff(0, 0, 8))
+  g5_emit(RET_I())
+  g5_mark($lbl + 2)
+  g5_emit(movz(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+fn g5_emit_ordre($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(ldrbio(0, 0, 16))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# sous_chaine(s, a, b) — x0=s, x1=a, x2=b ; renvoie une NOUVELLE chaîne.
+fn g5_emit_sous($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(subr(3, 2, 1))
+  g5_emit(orrr(8, 31, 1))
+  g5_emit(orrr(10, 31, 0))
+  g5_emit(addr(4, 3, 3))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addi(4, 4, 24))
+  g5_emit(orrr(0, 31, 4))
+  g5_alloc_inline()
+  g5_emit(orrr(5, 31, 0))
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 5, 0))
+  g5_emit(orrr(1, 31, 3))
+  g5_emit(stroff(1, 5, 8))
+  g5_emit(movz(6, 0))
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(6, 3))
+  g5_branch(110, $lbl + 2)
+  g5_emit(addr(7, 8, 6))
+  g5_emit(ldrbr(7, 10, 7))
+  g5_emit(addi(4, 6, 16))
+  g5_emit(strbr(7, 5, 4))
+  g5_emit(addi(6, 6, 1))
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(orrr(0, 31, 5))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# idx(container, i) — chaîne : 1 caractère ; liste : élément.
+fn g5_emit_idx($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(ldroff(2, 0, 0))
+  g5_emit(cmpi(2, 2))
+  g5_branch(100, $lbl + 1)
+  g5_emit(orrr(6, 31, 0))
+  g5_emit(orrr(7, 31, 1))
+  g5_load(0, 24)
+  g5_alloc_inline()
+  g5_emit(orrr(3, 31, 0))
+  g5_emit(movz(4, 1))
+  g5_emit(stroff(4, 3, 0))
+  g5_emit(movz(4, 1))
+  g5_emit(stroff(4, 3, 8))
+  g5_emit(addi(5, 7, 16))
+  g5_emit(ldrbr(4, 6, 5))
+  g5_emit(strbio(4, 3, 16))
+  g5_emit(orrr(0, 31, 3))
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)
+  g5_emit(addr(2, 1, 1))
+  g5_emit(addr(2, 2, 2))
+  g5_emit(addr(2, 2, 2))
+  g5_emit(addi(2, 2, 24))
+  g5_emit(addr(2, 0, 2))
+  g5_emit(ldroff(0, 2, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# joindre(liste, valeur) — invite liste [tag=2][len][cap][valeurs…].
+fn g5_emit_join($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(ldroff(2, 0, 8))
+  g5_emit(ldroff(3, 0, 16))
+  g5_emit(cmpr(2, 3))
+  g5_branch(110, $lbl + 1)
+  g5_emit(addr(4, 2, 2))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addi(4, 4, 24))
+  g5_emit(addr(4, 0, 4))
+  g5_emit(stroff(1, 4, 0))
+  g5_emit(addi(2, 2, 1))
+  g5_emit(stroff(2, 0, 8))
+  g5_emit(orrr(0, 31, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)
+  g5_emit(orrr(5, 31, 0))
+  g5_emit(orrr(6, 31, 1))
+  g5_emit(orrr(8, 31, 2))
+  g5_emit(addi(3, 8, 1))
+  g5_emit(addr(4, 3, 3))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addi(4, 4, 24))
+  g5_emit(orrr(0, 31, 4))
+  g5_alloc_inline()
+  g5_emit(orrr(7, 31, 0))
+  g5_emit(movz(1, 2))
+  g5_emit(stroff(1, 7, 0))
+  g5_emit(addi(1, 8, 1))
+  g5_emit(stroff(1, 7, 8))
+  g5_emit(stroff(1, 7, 16))
+  g5_emit(movz(3, 0))
+  g5_mark($lbl + 2)
+  g5_emit(cmpr(3, 8))
+  g5_branch(110, $lbl + 3)
+  g5_emit(addr(4, 3, 3))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addi(4, 4, 24))
+  g5_emit(addr(4, 5, 4))
+  g5_emit(ldroff(1, 4, 0))
+  g5_emit(addr(4, 3, 3))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addi(4, 4, 24))
+  g5_emit(addr(4, 7, 4))
+  g5_emit(stroff(1, 4, 0))
+  g5_emit(addi(3, 3, 1))
+  g5_branch(0, $lbl + 2)
+  g5_mark($lbl + 3)
+  g5_emit(addr(4, 8, 8))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addr(4, 4, 4))
+  g5_emit(addi(4, 4, 24))
+  g5_emit(addr(4, 7, 4))
+  g5_emit(stroff(6, 4, 0))
+  g5_emit(orrr(0, 31, 7))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# inserer(liste, i, valeur) — STUB documenté : se comporte comme joindre.
+fn g5_emit_inser($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(RET_I())
+  retour 0
+}
+
+# entier(chaine) — conversion décimale signée.
+fn g5_emit_entier($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(ldroff(1, 0, 8))
+  g5_emit(movz(2, 0))
+  g5_emit(movz(3, 0))
+  g5_emit(movz(4, 1))
+  g5_emit(cmpi(1, 0))
+  g5_branch(100, $lbl + 1)
+  g5_emit(ldrbio(5, 0, 16))
+  g5_emit(cmpi(5, 45))
+  g5_branch(101, $lbl + 1)
+  g5_load(4, -1)
+  g5_emit(movz(2, 1))
+  g5_mark($lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(cmpr(2, 1))
+  g5_branch(110, $lbl + 3)
+  g5_emit(addi(6, 2, 16))
+  g5_emit(ldrbr(5, 0, 6))
+  g5_emit(subi(5, 5, 48))
+  g5_emit(movz(6, 10))
+  g5_emit(mulr(3, 3, 6))
+  g5_emit(addr(3, 3, 5))
+  g5_emit(addi(2, 2, 1))
+  g5_branch(0, $lbl + 2)
+  g5_mark($lbl + 3)
+  g5_emit(cmpi(4, 0))
+  g5_branch(110, $lbl + 4)
+  g5_emit(subr(3, 31, 3))
+  g5_mark($lbl + 4)
+  g5_emit(orrr(0, 31, 3))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# Primitives non implémentées : retour neutre (0 ou chaîne vide).
+fn g5_emit_stub0($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(movz(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+fn g5_emit_stubs($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_load(0, 24)
+  g5_alloc_inline()
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 0, 0))
+  g5_emit(movz(1, 0))
+  g5_emit(stroff(1, 0, 8))
+  g5_emit(RET_I())
+  retour 0
+}
+
+fn g5_patch() -> liste<entier> {
+  $out = [0 : entier]
+  $i = 0
+  tant_que ($i < longueur($g5_code)) {
+    $m = $g5_meta[$i]
+    si ($m == "") {
+      joindre($out, $g5_code[$i])
+    } sinon {
+      $bar = g4_pos($m, "|")
+      $l = g4_entier_ou_zero(g5_sub($m, 1, $bar))
+      $kind = g4_entier_ou_zero(g5_sub($m, $bar + 1, longueur($m)))
+      $t = g5_labelidx($l)
+      $off = $t - $i
+      si ($kind == 0) { joindre($out, 335544320 + g5_wrap($off, 67108864))
+      } sinon si ($kind == 1) { joindre($out, 2483027968 + g5_wrap($off, 67108864))
+      } sinon { joindre($out, 1409286144 + g5_wrap($off, 524288) * 32 + ($kind - 100)) }
+    }
+    $i = $i + 1
+  }
+  retour $out
+}
+
+# Writer ELF64 d'origine (repris tel quel de emetteur_elf.rose) — mode --elf.
+fn g5_elf() -> chaine {
+  $base = 4194304
+  $heap = 1610612736
+  $code_off = 176
+  $fsz = $code_off + 4 * longueur($g5_code)
+  $out = ""
+  $out = $out + caractere(127) + "ELF" + caractere(2) + caractere(1) + caractere(1) + caractere(0)
+  $z = 0
+  tant_que ($z < 8) { $out = $out + caractere(0); $z = $z + 1 }
+  $out = $out + u16le(2) + u16le(183) + u32le(1)
+  $out = $out + u64le($base + $code_off) + u64le(64) + u64le(0) + u32le(0)
+  $out = $out + u16le(64) + u16le(56) + u16le(2) + u16le(0) + u16le(0) + u16le(0)
+  $out = $out + u32le(1) + u32le(5)
+  $out = $out + u64le(0) + u64le($base) + u64le($base)
+  $out = $out + u64le($fsz) + u64le($fsz) + u64le(4096)
+  $out = $out + u32le(1) + u32le(6)
+  $out = $out + u64le(0) + u64le($heap) + u64le($heap)
+  $out = $out + u64le(0) + u64le(1048576) + u64le(4096)
+  $i = 0
+  tant_que ($i < longueur($g5_code)) { $out = $out + u32le($g5_code[$i]); $i = $i + 1 }
+  retour $out
+}
+
+# ── writer PE32+ aarch64 (Rose pur, modèle rose/src/link_natif.rs) ────
+# Aucune dépendance : on concatène des octets avec u8le/u16le/u32le/u64le.
+# `pe_z` = zéros ; `pe_c` = complète avec des zéros jusqu'à l'offset visé.
+fn pe_z($n: entier) -> chaine {
+  $r = ""
+  $i = 0
+  tant_que ($i < $n) { $r = $r + caractere(0); $i = $i + 1 }
+  retour $r
+}
+fn pe_c($s: chaine, $cible: entier) -> chaine {
+  $n = longueur($s)
+  si ($n >= $cible) { retour $s }
+  retour $s + pe_z($cible - $n)
+}
+
+fn g5_pe() -> chaine {
+  # Constantes PE (décimal : Rose n'a pas de littéral hexadécimal).
+  $rva_text = 4096            # 0x1000
+  $rva_data = 8192            # 0x2000
+  $image_base = 5368709120    # 0x0000000140000000
+  $import_desc_off = 32       # 0x20
+  $hint_name_off = 80         # 0x50
+  $ilt_off = 96               # 0x60
+  $iat_off = 112              # 0x70
+  $dll_name_off = 128         # 0x80
+
+  $n = longueur($g5_code)
+  $text_len = 4 * $n
+  $text_raw = partie_entiere(($text_len + 511) / 512) * 512
+  $off_text = 1024            # 0x400 = SizeOfHeaders
+  $off_data = $off_text + $text_raw
+
+  # ── DOS header + signature PE ──
+  $out = "MZ"
+  $out = pe_c($out, 60)                 # e_lfanew à 0x3C
+  $out = $out + u32le(128)              # 0x80
+  $out = $out + "Rose PE64" + caractere(0)  # 0x40..0x49 (10 octets)
+  $out = pe_c($out, 128)                # 0x80
+  $out = $out + "PE" + caractere(0) + caractere(0)
+
+  # ── COFF header (0x84, 20 octets) ──
+  $out = $out + u16le(43620)            # Machine = 0xAA64 IMAGE_FILE_MACHINE_ARM64
+  $out = $out + u16le(2)                # NumberOfSections
+  $out = $out + u32le(0)                # TimeDateStamp
+  $out = $out + u32le(0)                # PointerToSymbolTable
+  $out = $out + u32le(0)                # NumberOfSymbols
+  $out = $out + u16le(240)              # SizeOfOptionalHeader = 0xF0
+  $out = $out + u16le(34)               # Characteristics = 0x22
+
+  # ── Optional header PE32+ (0x98, 240 octets) ──
+  $out = $out + u16le(523)              # Magic = 0x20B
+  $out = $out + caractere(0) + caractere(0)  # LinkerVersion
+  $out = $out + u32le($text_raw)        # SizeOfCode
+  $out = $out + u32le(512)              # SizeOfInitializedData
+  $out = $out + u32le(0)                # SizeOfUninitializedData
+  $out = $out + u32le($rva_text)        # AddressOfEntryPoint = début de .text
+  $out = $out + u32le($rva_text)        # BaseOfCode
+  $out = $out + u64le($image_base)      # ImageBase
+  $out = $out + u32le(4096)             # SectionAlignment
+  $out = $out + u32le(512)              # FileAlignment
+  $out = $out + u16le(6) + u16le(0)     # Major/MinorOperatingSystemVersion
+  $out = $out + u16le(0) + u16le(0)     # Major/MinorImageVersion
+  $out = $out + u16le(6) + u16le(0)     # Major/MinorSubsystemVersion
+  $out = $out + u32le(0)                # Win32VersionValue
+  $out = $out + u32le(12288)            # SizeOfImage = 0x3000
+  $out = $out + u32le(1024)             # SizeOfHeaders = 0x400
+  $out = $out + u32le(0)                # CheckSum
+  $out = $out + u16le(3)                # Subsystem = IMAGE_SUBSYSTEM_WINDOWS_CUI
+  $out = $out + u16le(0)                # DllCharacteristics
+  $out = $out + u64le(1048576)          # SizeOfStackReserve
+  $out = $out + u64le(4096)             # SizeOfStackCommit
+  $out = $out + u64le(1048576)          # SizeOfHeapReserve
+  $out = $out + u64le(4096)             # SizeOfHeapCommit
+  $out = $out + u32le(0)                # LoaderFlags
+  $out = $out + u32le(16)               # NumberOfRvaAndSizes
+  $out = $out + pe_z(8)                 # [0] EXPORT (vide)
+  $out = $out + u32le($rva_data + $import_desc_off) + u32le(40)  # [1] IMPORT
+  $out = $out + pe_z(80)                # [2..11] vides
+  $out = $out + u32le($rva_data + $iat_off) + u32le(16)          # [12] IAT
+  $out = $out + pe_z(24)                # [13..15] vides
+
+  # ── Section headers (0x188, 2 × 40 octets) ──
+  $out = pe_c($out, 392)                # 0x188
+  $out = $out + ".text" + pe_z(3)
+  $out = $out + u32le($text_len)        # VirtualSize
+  $out = $out + u32le($rva_text)        # VirtualAddress
+  $out = $out + u32le($text_raw)        # SizeOfRawData
+  $out = $out + u32le($off_text)        # PointerToRawData
+  $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0)
+  $out = $out + u32le(1610612768)       # 0x60000020 CODE|EXECUTE|READ
+  $out = $out + ".data" + pe_z(3)
+  $out = $out + u32le(512)              # VirtualSize
+  $out = $out + u32le($rva_data)        # VirtualAddress
+  $out = $out + u32le(512)              # SizeOfRawData
+  $out = $out + u32le($off_data)        # PointerToRawData
+  $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0)
+  $out = $out + u32le(3221225536)       # 0xC0000040 INIT|READ|WRITE
+  $out = pe_c($out, 1024)               # 0x400
+
+  # ── .data : table d'imports minimale (KERNEL32.DLL!ExitProcess) ──
+  $dat = ""
+  $dat = $dat + u64le($image_base + $rva_text)   # trampoline [0] (réservé)
+  $dat = $dat + u64le($image_base + $rva_text)   # trampoline [1]
+  $dat = $dat + u64le(0)                         # trampoline [2]
+  $dat = pe_c($dat, 32)                          # 0x20 IMAGE_IMPORT_DESCRIPTOR
+  $dat = $dat + u32le($rva_data + $ilt_off)      # OriginalFirstThunk
+  $dat = $dat + u32le(0)                         # TimeDateStamp
+  $dat = $dat + u32le(0)                         # ForwarderChain
+  $dat = $dat + u32le($rva_data + $dll_name_off) # Name
+  $dat = $dat + u32le($rva_data + $iat_off)      # FirstThunk
+  # descripteur nul à 0x34 (déjà zéro)
+  $dat = pe_c($dat, 80)                          # 0x50 IMAGE_IMPORT_BY_NAME
+  $dat = $dat + u16le(0)                         # Hint
+  $dat = $dat + "ExitProcess" + caractere(0)
+  $dat = pe_c($dat, 96)                          # 0x60 ILT
+  $dat = $dat + u64le($rva_data + $hint_name_off)
+  $dat = $dat + u64le(0)
+  $dat = pe_c($dat, 112)                         # 0x70 IAT
+  $dat = $dat + u64le($rva_data + $hint_name_off)
+  $dat = $dat + u64le(0)
+  $dat = pe_c($dat, 128)                         # 0x80 nom de DLL
+  $dat = $dat + "KERNEL32.DLL" + caractere(0)
+  $dat = pe_c($dat, 512)
+
+  # ── .text : le code machine G5 (déjà résolu par g5_patch) ──
+  $i = 0
+  tant_que ($i < $n) { $out = $out + u32le($g5_code[$i]); $i = $i + 1 }
+  $out = pe_c($out, $off_data)
+  $out = $out + $dat
+  retour $out
+}
+
+# ── Point d'entrée ──
+# ── Dispatch G5 : RIR texte → ELF64 autonome ; sinon voie historique ──
+si (nb_arguments() >= 1) {
+$src = lire_texte(argument(0))
+si (longueur($src) >= 3 et sous_chaine($src, 0, 3) == "rir") {
+$nfn = g5_parse($src)
+$principal = 0
+$i = 0
+tant_que ($i < $nfn) {
+  si ($g5_fn[$i] == "$principal") { $principal = $i }
+  $i = $i + 1
+}
+$printl = g5_next()
+$k = 0
+tant_que ($k < 7) { g5_next(); $k = $k + 1 }
+$g5_allocl = g5_next()
+$g5_lenl = g5_next()
+$k = 0
+tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+$g5_ordl = g5_next()
+$g5_sousl = g5_next()
+$k = 0
+tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+$g5_idxl = g5_next()
+$k = 0
+tant_que ($k < 1) { g5_next(); $k = $k + 1 }
+$g5_chl = g5_next()
+$k = 0
+tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+$g5_joindrel = g5_next()
+$k = 0
+tant_que ($k < 3) { g5_next(); $k = $k + 1 }
+$g5_inserrel = g5_next()
+$g5_entierl = g5_next()
+$k = 0
+tant_que ($k < 4) { g5_next(); $k = $k + 1 }
+$g5_stub0l = g5_next()
+$g5_stubsl = g5_next()
+$exitl = g5_next()
+g5_compile_fonction($principal, $principal, $printl, $exitl)
+$i = 0
+tant_que ($i < $nfn) {
+  si ($i != $principal) { g5_compile_fonction($i, $principal, $printl, $exitl) }
+  $i = $i + 1
+}
+g5_emit_alloc($g5_allocl)
+g5_emit_len($g5_lenl)
+g5_emit_ordre($g5_ordl)
+g5_emit_sous($g5_sousl)
+g5_emit_idx($g5_idxl)
+g5_emit_join($g5_joindrel)
+g5_emit_inser($g5_inserrel)
+g5_emit_entier($g5_entierl)
+g5_emit_stub0($g5_stub0l)
+g5_emit_stubs($g5_stubsl)
+g5_emit_print($printl)
+g5_mark($exitl)
+g5_emit(movz(0, 0))
+g5_emit(movz(8, 93))
+g5_emit(SVC_I())
+si (longueur($g5_err) > 0) {
+  afficher_erreur("G5 : " + $g5_err[0])
+  quitter(2)
+}
+$g5_code = g5_patch()
+# Mode optionnel : `rose emetteur_pe.rose prog.rir --elf` redonne l'ELF64
+# d'origine (writer copié, aucun fichier du dépôt modifié). Défaut = PE32+.
+si (nb_arguments() >= 2) {
+  si (argument(1) == "--elf") {
+    ecrire_bytes("/dev/stdout", g5_elf())
+    quitter(0)
+  }
+}
+ecrire_bytes("/dev/stdout", g5_pe())
+quitter(0)
+}
+}
