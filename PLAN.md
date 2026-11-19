@@ -774,6 +774,6 @@ Consigne: « rose doit maîtriser parfaitement les racines (point fort de Rust),
 | RA | racines exactes + perf vs Rust | `rose/src/{interp,irrationnel}.rs`, `rose/docs/RACINES_VS_RUST.md` | 6 |
 | RB | convertisseur VRAIMENT universel (call_indirect/start/libc) | `scripts/rose-wasm-lib.sh`, `rose/src/wasm_lecteur.rs`, `rose/docs/WASM_UNIVERSEL.md` | 8 |
 | RC | full-hosted : solution G4 générale (émetteur RIR complet) | `compilateur/emetteur_elf.rose`, `rose/docs/FULL_HOSTED_SOLUTION.md` | 10 |
-| RD | vitesse générale : D5 chaîne (×63) | `rose/src/{run,jit}.rs`, `rose/docs/CH AINE_GENERAL.md`→`CHAINE_GENERAL.md` | 15 |
+| RD | vitesse générale : D5 chaîne (×63) | `rose/src/{run,jit}.rs`, `rose/docs/CHAINE_GENERAL.md` | 15 |
 
 ⚠ Chacun construit son binaire dans `/tmp/opencode/<agent>/`, ne remplace PAS `rose/rose`.
