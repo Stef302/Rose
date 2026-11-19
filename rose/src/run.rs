@@ -29,6 +29,59 @@ pub use crate::i128x::{Gq, Gz, Mpq, Mpz};
 
 #[derive(Clone)]
 pub struct Liste(pub Rc<RefCell<Vec<Valeur>>>);
+
+// ── Pool d'arènes de listes (19/11/2026) ─────────────────────────────────
+//
+// Une liste JIT est un `Vec<Valeur>` de 131072 × 24 = 3 Mio. Sur un processus
+// neuf, glibc le sert par `mmap` et les ~586 pages sont faultées à la première
+// écriture (288 µs mesurés = 90 % de D6). Le même programme exécuté une 2ᵉ fois
+// dans le MÊME processus réutilise naturellement les pages déjà résidentes
+// (~30 µs mesurés avec le harnais `/tmp/opencode/innov_agents/deux_exec.rs`).
+// Le pool explicite ci-dessous rend cette réutilisation déterministe dès la
+// 2ᵉ exécution, sans pré-touch : aucune page n'est écrite par le pool, seules
+// les écritures réelles du programme ont lieu, dans la même arène.
+//
+// ⚠ Le `Vec` est vidé (`clear`) mais son ALLOCATION est conservée : c'est elle
+// qui porte les pages chaudes. Les 3 mots de chaque `Valeur::Entier` sont
+// réécrits par l'émetteur (`ecrire_entier` dans jit.rs), donc aucun pointeur
+// périmé ne subsiste dans la zone réutilisée.
+/// Capacité minimale d'une arène éligible : exactement celle que `jit.rs`
+/// demande dans `rose_jit_liste_vide` (`Vec::with_capacity(131072)`). Les petites
+/// listes de l'interpréteur ne sont PAS mises en pool : les réutiliser pour la
+/// liste JIT écrirait 100 000 × 24 octets hors limites.
+const POOL_CAP_MIN: usize = 131072;
+
+thread_local! {
+    static POOL_LISTES: RefCell<Vec<Vec<Valeur>>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Drop for Liste {
+    fn drop(&mut self) {
+        // S'il reste des alias, l'arène reste possédée par eux : on ne la pool
+        // pas et on évite même l'allocation d'un Rc factice (chemin fréquent en
+        // self-hébergement).
+        if Rc::strong_count(&self.0) != 1 { return; }
+        // On remplace l'Rc par un Rc vide pour reprendre l'original sans
+        // déplacer hors de `&mut self`.
+        let rc = std::mem::replace(&mut self.0, Rc::new(RefCell::new(Vec::new())));
+        if let Ok(cell) = Rc::try_unwrap(rc) {
+            let mut v = cell.into_inner();
+            v.clear();                 // libère les Rc, GARDE la capacité
+            // `try_with` (pas `with`) : à la fermeture du processus les
+            // destructeurs TLS tournent dans un ordre arbitraire ; si le pool
+            // est déjà en destruction, on laisse simplement l'arène partir
+            // avec le tas au lieu de paniquer.
+            if v.capacity() >= POOL_CAP_MIN {
+                let _ = POOL_LISTES.try_with(|p| {
+                    if let Ok(mut p) = p.try_borrow_mut() {
+                        if p.len() < 2 { p.push(v); }   // au plus 2 arènes (6 Mio)
+                    }
+                });
+            }
+        }
+    }
+}
+
 // ── Table : ordre d'insertion + index de hachage auxiliaire ────────────────
 //
 // 18/11/26 — domaine 7 du bench multi : 3 000 insertions + 3 000 recherches
@@ -341,7 +394,17 @@ impl Valeur {
     pub fn s(v: impl Into<String>) -> Valeur { Valeur::Chaine(ChaineRep::plein(v.into())) }
     #[allow(dead_code)]
     pub fn liste() -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(Vec::new())))) }
-    pub fn liste_de(v: Vec<Valeur>) -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(v)))) }
+    pub fn liste_de(v: Vec<Valeur>) -> Valeur {
+        // Réutilise une arène déjà faûtée si le pool en a une ; sinon on garde
+        // le `Vec` neuf fourni par l'appelant (chemin d'origine, inchangé).
+        // `try_with`/`try_borrow_mut` : repli silencieux sur le `Vec` neuf si
+        // le pool est en destruction ou déjà emprunté (jamais de panic).
+        let v = match POOL_LISTES.try_with(|p| p.try_borrow_mut().ok().and_then(|mut q| q.pop())) {
+            Ok(Some(pooled)) if pooled.capacity() >= v.capacity() => pooled,
+            _ => v,
+        };
+        Valeur::Liste(Liste(Rc::new(RefCell::new(v))))
+    }
     pub fn table() -> Valeur { Valeur::Table(Table::neuf(Vec::new())) }
     pub fn tampon(n: usize) -> Valeur { Valeur::Tampon(Tampon(Rc::new(RefCell::new(vec![0u8; n])))) }
     pub fn tableau(n: usize) -> Valeur { Valeur::Tableau(Tableau(Rc::new(RefCell::new(vec![0i64; n])))) }
