@@ -821,13 +821,20 @@ pub fn valeur_egale(a: &Valeur, b: &Valeur) -> bool {
 // ── Rendus (miroir ecri / chaine_de / texte_flottant) ─────────────────────
 
 pub fn q_chaine(q: &Gq) -> String {
-    if q.den_i128() == 1 { q.num_i128().to_string() }
-    else { format!("{}/{}", q.num_i128(), q.den_i128()) }
+    // ⚠ num_i128()/den_i128() renvoient 0 quand le grand entier dépasse i128
+    // (unwrap_or(0)) : après ~100 sommes rationnelles on affichait « 0/0 ».
+    // Gq::chaine() formate depuis les BigInt eux-mêmes, sans cette troncature.
+    q.chaine()
 }
 
 /// ecri T_RATIONNEL : a/b, forme décimale périodique (1/3 → 0.[3]),
 /// seuil 500 chiffres → a/b brut.
 pub fn texte_rationnel(q: &Gq) -> String {
+    // Même piège que q_chaine : au-delà de i128, num_i128() vaut 0.
+    // On passe alors en forme a/b exacte calculée sur les BigInt.
+    if q.num_bigint().bits() > 126 || q.den_bigint().bits() > 126 {
+        return q.chaine();
+    }
     let nb = q.num_i128();
     let db = q.den_i128();
     if db == 1 { return nb.to_string(); }
