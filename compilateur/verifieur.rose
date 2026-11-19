@@ -1716,6 +1716,8 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "caractere") { retour "chaine|entier" }
   si ($nom == "sous_chaine") { retour "chaine|chaine,entier,entier" }
   si ($nom == "concatener") { retour "chaine|liste" }
+  si ($nom == "ecrire_bytes") { retour "vide|chaine,chaine" }
+  si ($nom == "ecrire_binaire") { retour "vide|chaine,liste" }
   si ($nom == "lire_texte") { retour "chaine|chaine" }
   si ($nom == "ecrire_texte") { retour "vide|chaine,chaine" }
   si ($nom == "nb_arguments") { retour "entier|" }
@@ -2266,7 +2268,8 @@ fn collecter_globaux($cs: chaine,
 # importées, puis vérifie UNE fois le programme complet. On recopie ici le
 # texte des jardins importés en fin de source pour que la descente les voie.
 
-fn fusionner_imports($src: chaine) -> chaine {
+fn fusionner_imports_prof($src: chaine, $prof: entier) -> chaine {
+  si ($prof > 8) { retour $src }
   $res = $src
   $ajout = ""
   $n = nb_pieces($src, 10)
@@ -2284,12 +2287,16 @@ fn fusionner_imports($src: chaine) -> chaine {
         $fin = $debut
         tant_que ($fin < $nl et ordre($l[$fin]) != 34) { $fin = $fin + 1 }
         $chemin = sous_chaine($l, $debut, $fin)
-        $ajout = $ajout + "\n" + lire_texte($chemin)
+        $ajout = $ajout + "\n" + fusionner_imports_prof(lire_texte($chemin), $prof + 1)
       }
     }
     $k = $k + 1
   }
   retour $res + $ajout
+}
+
+fn fusionner_imports($src: chaine) -> chaine {
+  retour fusionner_imports_prof($src, 0)
 }
 
 # ══════════════════ programme principal ══════════════════

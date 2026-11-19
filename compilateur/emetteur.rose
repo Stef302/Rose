@@ -1768,6 +1768,8 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "caractere") { retour "chaine|entier" }
   si ($nom == "sous_chaine") { retour "chaine|chaine,entier,entier" }
   si ($nom == "concatener") { retour "chaine|liste" }
+  si ($nom == "ecrire_bytes") { retour "vide|chaine,chaine" }
+  si ($nom == "ecrire_binaire") { retour "vide|chaine,liste" }
   si ($nom == "lire_texte") { retour "chaine|chaine" }
   si ($nom == "ecrire_texte") { retour "vide|chaine,chaine" }
   si ($nom == "nb_arguments") { retour "entier|" }
