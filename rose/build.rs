@@ -68,10 +68,12 @@ fn main() {
         // erreur — le moteur doit porter le LOGO DE BASE (`rose_base.ico`,
         // copie de `installateur/assets/rose.ico`), comme avant.
         // L'installeur reçoit `rose-setup.res` (icône de setup + ressources).
+        // ⚠ `rose-aot` n'est plus une cible [[bin]] du manifeste : émettre
+        // `cargo:rustc-link-arg-bin=rose-aot=…` fait échouer TOUT build
+        // Windows avec « does not have a bin target with the name rose-aot ».
         for (bin, rc_name, res_name) in [
             ("rose", "rose.rc", "rose.res"),
             ("rose-shell", "rose-shell.rc", "rose-shell.res"),
-            ("rose-aot", "rose-aot.rc", "rose-aot.res"),
         ] {
             let rc = std::path::Path::new(rc_name);
             if !rc.exists() {

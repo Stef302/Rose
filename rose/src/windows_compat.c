@@ -50,3 +50,26 @@ ssize_t getrandom(void *buf, size_t len, unsigned int flags) {
     }
     return -1;
 }
+
+
+/* ── mmap / mprotect / munmap ──────────────────────────────────────────────
+   Certains modules (JIT machine natif) appellent ces symboles POSIX même
+   quand le binaire Windows ne les utilise pas : fournir des équivalents
+   Win32 évite des symboles non résolus à l'édition de liens. */
+
+void *mmap(void *addr, size_t len, int prot, int flags, int fd, long long off) {
+    (void)addr; (void)flags; (void)fd; (void)off;
+    DWORD p = (prot & 2) ? PAGE_READWRITE : PAGE_EXECUTE_READ;
+    return VirtualAlloc(NULL, len, MEM_COMMIT | MEM_RESERVE, p);
+}
+
+int mprotect(void *addr, size_t len, int prot) {
+    DWORD old = 0;
+    DWORD p = (prot & 4) ? PAGE_EXECUTE_READ : PAGE_READWRITE;
+    return VirtualProtect(addr, len, p, &old) ? 0 : -1;
+}
+
+int munmap(void *addr, size_t len) {
+    (void)len;
+    return VirtualFree(addr, 0, MEM_RELEASE) ? 0 : -1;
+}

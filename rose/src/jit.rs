@@ -228,7 +228,6 @@ fn motif_constantes_imm12(d: &RecBoucle, borne: i64) -> bool {
 
 /// Émet le code machine aarch64 de la boucle à accumulateur pour `d`.
 /// Retourne les octets (code + littéral de l'adresse de repli + nom C).
-#[cfg(target_arch = "aarch64")]
 /// ── LISTE_INLINE : boucle machine aarch64 à registres fixés ───────────────
 ///
 /// Le codegen Cranelift laisse 4 `mov` de permutation par paire d'itérations
@@ -239,6 +238,8 @@ fn motif_constantes_imm12(d: &RecBoucle, borne: i64) -> bool {
 ///   x23 = zéro, x24 = $s, x25 = handle, x26 = $d, x27 = pointeur initial,
 ///   x28 = $f, x9 = adresse helper. Aucun `mov` de permutation dans les
 ///   boucles ; 15 instructions / 4 éléments (write) et 10 / 4 (read).
+#[cfg(not(all(unix, target_arch = "aarch64")))]
+fn emettre_liste_machine(_lig: i64, _mot0: i64) -> Vec<u8> { Vec::new() }
 #[cfg(all(unix, target_arch = "aarch64"))]
 fn emettre_liste_machine(lig: i64, mot0: i64) -> Vec<u8> {
     let mut ins: Vec<u32> = Vec::with_capacity(96);
@@ -543,6 +544,7 @@ struct CodeMachine {
 }
 #[allow(dead_code)]
 impl CodeMachine {
+    #[cfg(unix)]
     fn nouveau(code: &[u8]) -> std::io::Result<Self> {
         let p = unsafe {
             libc::mmap(std::ptr::null_mut(), code.len(),
@@ -558,12 +560,24 @@ impl CodeMachine {
         }
         Ok(CodeMachine { ptr: p as *mut u8, len: code.len() })
     }
+    // ⚠ Sur Windows (launcher), le code machine aarch64 n'a pas de sens :
+    // on refuse proprement au lieu de dépendre de mmap (absent de libc/Windows).
+    #[cfg(not(unix))]
+    fn nouveau(_code: &[u8]) -> std::io::Result<Self> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported,
+                                "code machine natif disponible uniquement sous Unix"))
+    }
     fn as_ptr(&self) -> *const u8 { self.ptr }
 }
 unsafe impl Send for CodeMachine {}
 unsafe impl Sync for CodeMachine {}
+#[cfg(unix)]
 impl Drop for CodeMachine {
     fn drop(&mut self) { unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len); } }
+}
+#[cfg(not(unix))]
+impl Drop for CodeMachine {
+    fn drop(&mut self) {}
 }
 
 /// Écrase les 16 premiers octets de la fonction compilée `fptr` par un
@@ -571,6 +585,8 @@ impl Drop for CodeMachine {
 /// (déjà résolus vers `fptr`) exécutent alors notre boucle. Les appels
 /// RÉCURSIFS de notre code sont des `bl` PC-relatifs vers son propre début :
 /// ils ne repassent PAS par ce trampoline (coût identique à LLVM).
+#[cfg(not(all(unix, target_arch = "aarch64")))]
+unsafe fn patcher_entree(_fptr: usize, _code: *const u8) {}
 #[cfg(all(unix, target_arch = "aarch64"))]
 unsafe fn patcher_entree(fptr: usize, code: *const u8) {
     const PAGE: usize = 4096;

@@ -97,7 +97,7 @@ unsafe extern "system" {
     fn GdipFillPath(graphique: *mut c_void, pinceau: *mut c_void, chemin: *mut c_void) -> u32;
     // Coche ANTIALIASÉE : stylo GDI+ sur un chemin (UnitPixel = 2, LineCapRound = 2).
     fn GdipCreatePen1(couleur: u32, largeur: f32, unite: i32, stylo: *mut *mut c_void) -> u32;
-    fn GdipSetPenLineCap(stylo: *mut c_void, debut: i32, fin: i32, ancrage: i32) -> u32;
+    fn GdipSetPenLineCap197819(stylo: *mut c_void, debut: i32, fin: i32, ancrage: i32) -> u32;
     fn GdipDrawPath(graphique: *mut c_void, stylo: *mut c_void, chemin: *mut c_void) -> u32;
     fn GdipDeletePen(stylo: *mut c_void) -> u32;
 }
@@ -1235,7 +1235,7 @@ unsafe fn coche_lisse(dc: HDC, cx: i32, cy: i32, d: i32, couleur: u32, epaisseur
         if GdipCreatePen1(argb_depuis_colorref(couleur), epaisseur as f32, 2, &mut stylo) == 0
             && !stylo.is_null()
         {
-            GdipSetPenLineCap(stylo, 2, 2, 0); // LineCapRound : extrémités nettes
+            GdipSetPenLineCap197819(stylo, 2, 2, 0); // LineCapRound : extrémités nettes
             if GdipDrawPath(g, stylo, chemin) == 0 {
                 fait = true;
             }
