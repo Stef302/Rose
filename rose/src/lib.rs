@@ -82,6 +82,10 @@ pub mod assoc_windows;
 /// GUI native : une VRAIE fenêtre du système d'exploitation, sans dépendance.
 /// Win32/user32.dll sur Windows, libX11 chargée au runtime sur UNIX.
 /// Voir docs/GUI_FENETRE_REELLE.md et docs/gui_native.patch.
+/// ⚠ `dlopen`/`dlsym` n'existent pas sur `wasm32-unknown-unknown` : ce module
+/// est exclu du module WebAssembly (le pontier OS Rose en `jardins/` reste,
+/// lui, disponible depuis le moteur wasm).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod gui_native;
 
 /// Console interactive (REPL) — partagée par `rose console` et `rose-shell`.

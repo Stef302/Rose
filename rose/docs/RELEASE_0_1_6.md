@@ -164,7 +164,7 @@ que comme repli explicitement signalé dans la console. Chargement différé par
 
 Les fichiers `docs/rose.wasm` et `docs/rose-wasm.js` sont servis à côté de la
 page ; le module est identique octet pour octet à `rose/web/rose.wasm`
-(md5 `89c6b117…`). Tests réels : `test-wasm.mjs` **15/15**, `test-site.mjs`
+(md5 `73050f2d…`, module rebuildé en 0.1.6). Tests réels : `test-wasm.mjs` **15/15**, `test-site.mjs`
 tous OK (HTTP 200, types MIME `application/wasm`, `Rose.execute(">> 47")` →
 `"47\n"`, trois exemples), `test-dom.mjs` **6/6** et **6/6** en mode fallback.
 

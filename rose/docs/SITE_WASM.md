@@ -15,7 +15,7 @@ Rust + JIT Cranelift (sémantique exacte)`. Si un rebuild 0.1.6 produit un nouve
 `rose/web/rose.wasm`, il faudra le recopier vers `docs/rose.wasm` (voir §6).
 
 Le moteur n'a pas été recompilé par mes soins : c'est une copie à l'octet près
-de `rose/web/rose.wasm` (md5 `89c6b117629679b008422767d1bf9aea`, 736 683 o) qui est servie.
+de `rose/web/rose.wasm` (md5 `73050f2db15506723cb28a55fa40fd5d`, 736 683 o) qui est servie.
 
 ## 1. Ce qui a été remplacé par du vrai WASM
 

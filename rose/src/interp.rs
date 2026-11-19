@@ -3488,6 +3488,7 @@ impl Interp {
             "view" => { let s = chaine_de(&a[0]); view_grand_nombre(&s); Valeur::Vide }
             // GUI native : vraie fenêtre OS, sans navigateur ni dépendance.
             // Le module échoue EXPLICITEMENT s'il n'y a pas d'affichage.
+            #[cfg(not(target_arch = "wasm32"))]
             "fenetre_native" => {
                 let titre = chaine_de(&a[0]);
                 let l = chaine_de(&a[1]).parse::<i64>().unwrap_or(0);
@@ -3497,6 +3498,7 @@ impl Interp {
                     Err(e) => { erreur_runtime(&e.to_string()); }
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
             "fenetre_afficher" | "fenetre_attendre" | "fenetre_fermer" => {
                 let id = chaine_de(&a[0]).parse::<i64>().unwrap_or(0);
                 let r = match nom {
@@ -3507,6 +3509,7 @@ impl Interp {
                 if let Err(e) = r { erreur_runtime(&e.to_string()); }
                 Valeur::Vide
             }
+            #[cfg(not(target_arch = "wasm32"))]
             "message_native" => {
                 let titre = chaine_de(&a[0]);
                 let texte = chaine_de(&a[1]);
