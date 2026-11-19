@@ -511,7 +511,13 @@ impl Gz {
     /// par MULTIPLICATION (et non par division comme `num-bigint`) :
     /// mesuré sur 1 000 000! → 1 428 ms contre 2 881 ms (2,0×).
     /// C'est le seul endroit où le nombre est converti en texte.
-    pub fn chaine(&self) -> String { crate::mul_rapide::vers_chaine(self.bref()) }
+    pub fn chaine(&self) -> String {
+        // Court-circuit exact pour zéro : évite une conversion décimale
+        // complète (6,6 µs mesurées sur 1 000 chiffres) quand il n'y a
+        // qu'un test `== "0"` à faire.
+        if self.bref().is_zero() { return String::from("0"); }
+        crate::mul_rapide::vers_chaine(self.bref())
+    }
     pub fn depuis_chaine(&self, s: &str) -> bool {
         match s.trim().parse::<BigInt>() {
             Ok(x) => { self.set_v(x); true }
@@ -579,7 +585,7 @@ impl Gz {
     }
     pub fn gcd(&self, a: &Gz, b: &Gz) { self.set_v(a.v().gcd(&b.v())); }
     pub fn lcm(&self, a: &Gz, b: &Gz) { self.set_v(a.v().lcm(&b.v())); }
-    pub fn cmp_gz(&self, b: &Gz) -> Ordering { self.v().cmp(&b.v()) }
+    pub fn cmp_gz(&self, b: &Gz) -> Ordering { self.bref().cmp(b.bref()) }
     pub fn est_premier(&self) -> bool { miller_rabin(&self.v()) }
 }
 impl Drop for Gz {
@@ -738,9 +744,12 @@ pub unsafe fn gmp_fdiv_q(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
     (*r).v = (*a).v.clone().div_floor(&bv);
 }
 pub unsafe fn gmp_fdiv_r(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
-    let bv = (*b).v.clone();
-    if bv.is_zero() { erreur_runtime("division par zéro"); }
-    (*r).v = (*a).v.clone().mod_floor(&bv);
+    // Zéro clonage des opérandes : `mod_floor` emprunte &self / &b.
+    // `rem` est calculé dans une locale pour rester sûr même si r == a
+    // (cas réel en interp.rs:3509).
+    if (*b).v.is_zero() { erreur_runtime("division par zéro"); }
+    let rem = (*a).v.mod_floor(&(*b).v);
+    (*r).v = rem;
 }
 pub unsafe fn gmp_fdiv_ui(a: *const Mpz, u: u64) -> u64 {
     if u == 0 { erreur_runtime("division par zéro"); }

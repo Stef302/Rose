@@ -615,6 +615,27 @@ pub fn cmp_vals(g: &Valeur, d: &Valeur) -> i32 {
             std::cmp::Ordering::Greater => 1,
         };
     }
+    // ⚠ Grand entier boxé vs petit entier i64 : le cas fréquent
+    // `$y != 0` sur une boucle Euclid. L'ancien chemin faisait deux
+    // `vers_z` (2 Gz + 2 clones BigInt) puis `cmp_gz` (2 clones de plus).
+    // Ici aucun boxage, aucun clone : `to_i64` échoue dès que le grand
+    // entier sort de l'intervalle et le signe suffit alors.
+    fn cmp_gz_i64(z: &crate::i128x::Gz, y: i64) -> i32 {
+        match z.bref().to_i64() {
+            Some(x) => match x.cmp(&y) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            },
+            None => if z.bref().sign() == num_bigint::Sign::Minus { -1 } else { 1 },
+        }
+    }
+    if let (Valeur::Entier(_, Some(z)), Valeur::Entier(y, None)) = (g, d) {
+        return cmp_gz_i64(z, *y);
+    }
+    if let (Valeur::Entier(y, None), Valeur::Entier(_, Some(z))) = (g, d) {
+        return -cmp_gz_i64(z, *y);
+    }
     if let (Valeur::Chaine(a), Valeur::Chaine(b)) = (g, d) {
         return match ChaineRep::cmp_rep(a, b) {
             std::cmp::Ordering::Equal => 0,
