@@ -2,6 +2,12 @@
 
 > **Constat daté au 19/11/2026.** Ces notes décrivent un état mesuré du dépôt
 > `Stef302/Rose` (branche `main`, HEAD poussé `5665bf7` au début de la rédaction).
+> **Assets Windows joints** : `rose-setup.exe` = LE LAUNCHER STABLE (9 582 592 o,
+> PE32+ GUI, ressources .rsrc avec 6 icônes + manifeste PerMonitorV2). Il contient
+> la gestion PATH, l’association `.rose`, le thème rouge/vert et le choix de mise
+> à jour au premier écran. `rose.exe` et `rose-shell.exe` sont les compagnons
+> 0.1.6 (icônes propres). L’utilisateur ne télécharge le setup QU’UNE FOIS : les
+> versions suivantes sont récupérées dynamiquement par le launcher.
 > Ce ne sont pas des promesses : chaque chiffre ci-dessous est adossé à un
 > document de chantier daté, listé en fin de section. Re-mesurer après tout
 > rebuild, tout changement de topologie ou tout changement d'état machine.
