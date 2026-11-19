@@ -1229,6 +1229,57 @@ fn corps_contient_lit_complexe(b: &[Instr]) -> bool {
     })
 }
 
+/// 19/11 — « accumulateur Flottant/Complexe » : une variable déjà typée
+/// Flottant/Complexe dans `env` qui est RÉAFFECTÉE dans le corps, ou toute
+/// affectation produisant un Complexe. C'est le signe que le littéral
+/// imaginaire du corps est un VRAI nombre complexe (le JIT sait l'émettre en
+/// deux registres f64 via `JitVal::Complexe`), et non le 0+1i issu du repli
+/// du compteur entier « i » que la porte d'origine empêchait d'écrire dans
+/// un slot i64. Les boucles purement entières gardent la porte.
+fn corps_a_accumulateur_flottant_ou_complexe(b: &[Instr], env: &HashMap<String, TyKind>,
+                                            nom_boucle: Option<&str>) -> bool {
+    // copie locale : on publie les types des variables au fur et à mesure, comme
+    // `bloc_compilable` le fera (variable de boucle comprise), pour que
+    // `ty_statique` puisse résoudre `k * 0.000001` puis `re(w)`.
+    let mut local = env.clone();
+    if let Some(n) = nom_boucle { local.insert(n.to_string(), TyKind::Entier); }
+    fn scan(b: &[Instr], env: &mut HashMap<String, TyKind>) -> bool {
+        for i in b {
+            match i {
+                Instr::Affect { nom, e, .. } => {
+                    if let Some(t) = ty_statique(e, env) {
+                        if t == TyKind::Complexe { return true; }
+                        if t == TyKind::Flottant
+                            && matches!(env.get(nom), Some(TyKind::Flottant) | Some(TyKind::Complexe))
+                        { return true; }
+                        env.insert(nom.clone(), t);
+                    }
+                }
+                Instr::Si { test, alors, sinon, .. } => {
+                    if ty_statique(test, env) == Some(TyKind::Complexe) { return true; }
+                    if scan(alors, env) { return true; }
+                    if let Some(s) = sinon { if scan(s, env) { return true; } }
+                }
+                Instr::TantQue { test, corps, .. } => {
+                    if ty_statique(test, env) == Some(TyKind::Complexe) { return true; }
+                    if scan(corps, env) { return true; }
+                }
+                Instr::Pour { nom, corps, .. } => {
+                    let save = env.get(nom).copied();
+                    env.insert(nom.clone(), TyKind::Entier);
+                    let r = scan(corps, env);
+                    if let Some(t) = save { env.insert(nom.clone(), t); } else { env.remove(nom); }
+                    if r { return true; }
+                }
+                Instr::Bloc(bb) => { if scan(bb, env) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    scan(b, &mut local)
+}
+
 pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                    prog: &HashMap<String, Signature>, attendu: Option<TyKind>) -> bool {
     // publication des types pour est_boucle_i (reconnaître 0+1i = variable i).
@@ -1334,7 +1385,11 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 // l'incrémentateur écrit un complexe dans le slot i64 du
                 // compteur et la boucle ne termine jamais.
                 if est_boucle_i(test) {
-                    if corps_contient_lit_complexe(corps) { return false; }
+                    if corps_contient_lit_complexe(corps)
+                        && (!corps_a_accumulateur_flottant_ou_complexe(corps, env, None)
+                            || crate::front::i_est_boucle()
+                            || crate::front::i_est_entier_verifie())
+                    { return false; }
                 }
                 if !bloc_compilable(corps, env, prog, attendu) { return false; }
             }
@@ -1346,7 +1401,24 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 // (les fonctions synthétiques de interp.rs écartent déjà « touche_i »
                 // pour la même raison). Sans cette porte, la boucle compilée lit
                 // l'imaginaire et rend un résultat faux.
-                if corps_contient_lit_complexe(corps) { return false; }
+                // 19/11 — porte levée pour les boucles à accumulateur
+                // Flottant/Complexe : le littéral imaginaire y est un VRAI
+                // complexe (JitVal::Complexe = deux registres f64), pas le
+                // compteur i64 corrompu que la porte d'origine empêchait
+                // d'écrire dans le slot du compteur.
+                if corps_contient_lit_complexe(corps) {
+                    // 20/11 — on ne lève la porte QUE si le 0+1i est la VRAIE
+                    // unité imaginaire. Quand `i` est le compteur entier d'une
+                    // boucle du programme (`i_est_boucle`/`i_est_entier_verifie`),
+                    // le 0+1i du corps EST ce compteur : lever la porte ferait
+                    // compiler un principal dont l'émission est incomplète
+                    // (mesuré : rose_boucles.rose rendait 0 pour $max au lieu
+                    // de 12). Les boucles à compteur `i` gardent la porte.
+                    let accumulateur = corps_a_accumulateur_flottant_ou_complexe(corps, env, Some(nom));
+                    let i_compteur = crate::front::i_est_boucle()
+                        || crate::front::i_est_entier_verifie();
+                    if !accumulateur || i_compteur { return false; }
+                }
                 env.insert(nom.clone(), TyKind::Entier);
                 if !bloc_compilable(corps, env, prog, attendu) { return false; }
             }
@@ -2280,6 +2352,67 @@ struct Emetteur<'a> {
     /// une émission a rencontré une borne de « pour » non entière : le bloc
     /// n'est pas compilable, l'appelant doit retomber sur l'interpréteur.
     refus_i: bool,
+    /// 19/11 — vrai si le corps de la fonction fait de l'arithmétique complexe
+    /// (une affectation produit un `Complexe`, ou un intrinsèque re/im/conj
+    /// est appelé). Dans ce cas le lexème `i` (LitComplexe 0+1i) est la VRAIE
+    /// unité imaginaire, et doit être émis en deux registres f64 — pas
+    /// l'entier 1 de l'ancienne heuristique « repli de 0 + variable ».
+    i_est_imaginaire: bool,
+}
+
+/// 19/11 — détecte l'arithmétique complexe dans le corps d'une signature.
+fn signature_avec_complexe(sig: &Signature) -> bool {
+    let mut env: HashMap<String, TyKind> = HashMap::new();
+    for (pn, pt) in &sig.params { env.insert(pn.clone(), pt.n); }
+    fn expr_complexe(e: &Expr, env: &HashMap<String, TyKind>) -> bool {
+        if ty_statique(e, env) == Some(TyKind::Complexe) { return true; }
+        match e {
+            Expr::LitComplexe { re, im, .. } => *im != 0.0 || *re != 0.0,
+            Expr::Appel { nom, args, .. } => {
+                matches!(nom.as_str(), "re" | "im" | "conj" | "modulus")
+                    || args.iter().any(|a| expr_complexe(a, env))
+            }
+            Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => {
+                expr_complexe(a, env) || expr_complexe(b, env)
+            }
+            Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+            | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+            | Expr::SuperFactorielle(a, _) => expr_complexe(a, env),
+            Expr::ListeLit(v, _) => v.iter().any(|x| expr_complexe(x, env)),
+            Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_complexe(x, env)),
+            _ => false,
+        }
+    }
+    fn scan(b: &[Instr], env: &mut HashMap<String, TyKind>) -> bool {
+        for i in b {
+            match i {
+                Instr::Affect { nom, e, .. } => {
+                    if expr_complexe(e, env) { return true; }
+                    if let Some(t) = ty_statique(e, env) { env.insert(nom.clone(), t); }
+                }
+                Instr::ExprStmt(e) | Instr::Lever(e, _) => { if expr_complexe(e, env) { return true; } }
+                Instr::Afficher(v, _) => { if v.iter().any(|e| expr_complexe(e, env)) { return true; } }
+                Instr::Retour(Some(e), _) => { if expr_complexe(e, env) { return true; } }
+                Instr::Si { test, alors, sinon, .. } => {
+                    if expr_complexe(test, env) { return true; }
+                    if scan(alors, env) { return true; }
+                    if let Some(s) = sinon { if scan(s, env) { return true; } }
+                }
+                Instr::TantQue { test, corps, .. } => {
+                    if expr_complexe(test, env) { return true; }
+                    if scan(corps, env) { return true; }
+                }
+                Instr::Pour { debut, fin, corps, .. } => {
+                    if expr_complexe(debut, env) || expr_complexe(fin, env) { return true; }
+                    if scan(corps, env) { return true; }
+                }
+                Instr::Bloc(bb) => { if scan(bb, env) { return true; } }
+                _ => {}
+            }
+        }
+        false
+    }
+    scan(sig.corps.as_deref().unwrap_or(&[]), &mut env)
 }
 
 
@@ -2572,6 +2705,7 @@ impl Jit {
             foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
                 runtime: &self.runtime_decls,
             builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, refus_i: false,
+            i_est_imaginaire: signature_avec_complexe(&sig),
         };
         if use_rir {
             if !e.emettre_fonction_rir(&sig) { return None; }
@@ -2793,6 +2927,7 @@ impl Jit {
                 foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
                 runtime: &self.runtime_decls,
                 builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, refus_i: false,
+                i_est_imaginaire: signature_avec_complexe(&sig),
             };
             let _te = std::time::Instant::now();
             let mut emitted_rir = false;
@@ -2836,6 +2971,7 @@ impl Jit {
                     builder: bf, returned: false, prochain_slot: 100,
                     refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(),
                     tag_tmp: tag_f, unboxed_tmp: None, refus_i: false,
+                    i_est_imaginaire: signature_avec_complexe(&sf),
                 };
                 let mut emitted_f = false;
                 if *eligible_rir.get(nom).unwrap_or(&false) {
@@ -5930,6 +6066,17 @@ impl Emetteur<'_> {
     }
 
     fn type_of(&self, e: &Expr, env: &HashMap<String, Variable>, types: &HashMap<String, TyKind>) -> TyKind {
+        // 20/11 — miroir de `expr()` juste dessous : quand le lexème `i`
+        // (LitComplexe 0+1i) est en réalité la VARIABLE ENTIÈRE du compteur
+        // (`types["i"] == Entier`), il doit être typé Entier ici AUSSI.
+        // Sinon `binaire` le prend pour un complexe et émet `$s + i` en
+        // f64 (binaire_cplx) : le compteur devient un complexe et
+        // `rose_boucles.rose` rend 99 au lieu de 4950 (mesuré le 20/11).
+        if matches!(e, Expr::LitComplexe { re, im, .. } if *re == 0.0 && *im == 1.0)
+            && types.get("i").copied() == Some(TyKind::Entier)
+        {
+            return TyKind::Entier;
+        }
         // MÊME table que « ty_statique(e, env) » — les variables qui ont un
         // slot ET un type — mais SANS la recopier à chaque appel.
         ty_statique_f(e, &|n: &str| {
@@ -5956,15 +6103,20 @@ impl Emetteur<'_> {
                 // ⚠⚠⚠ MESURÉ (16/11) : `fn f(n) { si (n < 2) { retour n } … }`
                 // était refusé par le sous-ensemble JIT parce que `replier`
                 // transforme « 0 + n » en `LitComplexe 0+1i`. Dans un corps
-                // qui ne déclare AUCUNE variable `i`, ce 0+1i ne peut pas être
+                // SANS arithmétique complexe, ce 0+1i ne peut pas être
                 // l'imaginaire : c'est la variable repliée par le repli de
-                // constantes. Le sous-ensemble JIT ne compile que des corps
-                // entiers/flottants/booléens (jamais des complexes), donc un
-                // 0+1i y est TOUJOURS cette variable repliée — on l'émet comme
-                // un entier 1 (la valeur que le repli a gardée), et la parité
-                // est assurée par `bloc_compilable` qui refuse les corps où
-                // `i` existe réellement (`i_est_compteur`).
-                if *re == 0.0 && *im == 1.0 && !crate::front::i_est_compteur() {
+                // constantes — on l'émet comme un entier 1 (la valeur que le
+                // repli a gardée).
+                // ⚠ 19/11 : cette heuristique est CONDITIONNÉE à
+                // `!i_est_imaginaire`. Dès que la fonction fait de l'arithmétique
+                // complexe (mesuré sur `calc`, bench/suite/complexe.rose), le
+                // 0+1i est la VRAIE unité imaginaire et DOIT être émis en deux
+                // f64 : l'ancienne heuristique produisait `z_im * 1` (réel),
+                // donc `total_re = n` au lieu de 0.9999999999860738.
+                if *re == 0.0 && *im == 1.0
+                    && !self.i_est_imaginaire
+                    && !crate::front::i_est_compteur()
+                {
                     let zt = self.builder.ins().iconst(types::I64, 0);
                     self.builder.def_var(self.tag_tmp, zt);
                     let un = self.builder.ins().iconst(types::I64, 1);
@@ -7595,21 +7747,18 @@ pub extern "C" fn rose_affiche_f64(v: f64) {
 /// fait exactement de même (run::afficher_formule) : les deux voies rendent
 /// la même sortie, caractère pour caractère.
 #[unsafe(no_mangle)]
-pub extern "C" fn rose_affiche_prefixe(ptr: i64, len: i64) {
-    if ptr == 0 || len <= 0 { return; }
-    let octets = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    let s = String::from_utf8_lossy(octets);
-    crate::run::ecrire_out(&s);
-    crate::run::ecrire_out("   ");
+pub extern "C" fn rose_affiche_prefixe(_ptr: i64, _len: i64) {
+    // 20/11 — miroir de `run::afficher_formule` (run.rs:1030) : la formule est
+    // TOUJOURS vide depuis le 16/11, la sortie d'exécution est la VALEULE
+    // SEULE. L'émetteur garde les appels (changer l'émission modifiait
+    // l'éligibilité du principal, mesuré sur rose_boucles.rose), mais les
+    // helpers sont désormais des no-ops : plus de ligne LaTeX parasite.
+    // Le LaTeX se lit par `rose latex`, pas par l'exécution.
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rose_affiche_formule(ptr: i64, len: i64) {
-    if ptr == 0 || len <= 0 { return; }
-    let octets = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
-    let s = String::from_utf8_lossy(octets);
-    crate::run::ecrire_out(&s);
-    crate::run::ecrire_out("\n");
+pub extern "C" fn rose_affiche_formule(_ptr: i64, _len: i64) {
+    // idem : voir `rose_affiche_prefixe`.
 }
 
 /// Internation d'une formule LaTeX : la chaîne est conservée dans un
