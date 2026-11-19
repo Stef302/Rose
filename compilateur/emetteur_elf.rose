@@ -273,6 +273,20 @@ $g5_streql = 0
 $g5_stub0l = 0
 $g5_stubsl = 0
 
+# ── G5-IO : primitives d'entrée/sortie par syscalls Linux aarch64 ──
+# Ces routines sont ÉMISES dans l'ELF (elles ne s'exécutent pas dans Rose) :
+#   nb_arguments()  -> argc de la pile initiale, moins 1 (arguments utilisateur)
+#   argument(i)     -> argv[i+1], copié en chaîne Rose taguée [tag=1][len][octets]
+#   lire_texte(p)   -> openat/read/close (svc #0), chaîne taguée
+#   ecrire_bytes(p,d), ecrire_texte(p,d) -> openat/write/close
+# Les variables globales sont logées dans la page RW à 0x60000000, AU-DESSOUS
+# du pointeur libre du tas (désormais initialisé à 0x60000300) pour ne jamais
+# être écrasées par g5_alloc_inline.
+$g5_nbargs_l = 0
+$g5_argument_l = 0
+$g5_lire_l = 0
+$g5_ecrire_l = 0
+
 fn g5_load($rd: entier, $v: entier) -> entier {
   $u = $v
   si ($u < -9223372036854775808) { retour g5_fail("immédiat hors int64 : " + chaine($v)) }
@@ -627,8 +641,13 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       si ($nom == "joindre") { $lbl = $g5_joindrel }
       si ($nom == "inserer") { $lbl = $g5_inserrel }
       si ($nom == "entier") { $lbl = $g5_entierl }
-      si ($nom == "nb_arguments" ou $nom == "flottant" ou $nom == "cle_existe") { $lbl = $g5_stub0l }
-      si ($nom == "argument" ou $nom == "lire_texte" ou $nom == "table") { $lbl = $g5_stubsl }
+      # G5-IO : ces primitives sont de vraies routines émises (syscalls), plus des stubs.
+      si ($nom == "nb_arguments") { $lbl = $g5_nbargs_l }
+      si ($nom == "argument") { $lbl = $g5_argument_l }
+      si ($nom == "lire_texte") { $lbl = $g5_lire_l }
+      si ($nom == "ecrire_bytes" ou $nom == "ecrire_texte") { $lbl = $g5_ecrire_l }
+      si ($nom == "flottant" ou $nom == "cle_existe") { $lbl = $g5_stub0l }
+      si ($nom == "table") { $lbl = $g5_stubsl }
       si ($lbl < 0) {
         $trouve = 0
         $fi = 0
@@ -766,11 +785,21 @@ fn g5_parse($src: chaine) -> entier {
 
 fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: entier) -> entier {
   g5_mark($g5_flbl[$f])
+  # G5-IO : AVANT de déplacer sp, mémoriser argc et l'adresse de argv[0]
+  # tels que le noyau les a posés sur la pile initiale. Ces cases sont sous
+  # le début du tas (0x60000300) et ne peuvent donc pas être écrasées.
+  si ($f == $principal) {
+    g5_emit(ldroff(10, 31, 0))
+    g5_emit(addi(11, 31, 8))
+    g5_load(9, 1610612752)
+    g5_emit(stroff(10, 9, 0))
+    g5_emit(stroff(11, 9, 8))
+  }
   g5_emit_subsp(g5_framesize($f))
   g5_emit(stroff(30, 31, 0))
   si ($f == $principal) {
     g5_load(9, 1610612736)
-    g5_load(8, 1610612744)
+    g5_load(8, 1610613504)
     g5_emit(stroff(8, 9, 0))
   }
   $p = 0
@@ -791,76 +820,99 @@ fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: 
 # Routine write(1,buf,len) — reçoit la valeur dans x0. $lbl est le premier de 7 labels réservés.
 fn g5_emit_print($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(stroff(0, 31, 8))
-  # ABI unique : une chaîne taguée s'imprime par ses octets, un entier par sa valeur.
+  # E/S réelles : write(1, sp+64, len) puis write(1, "\n", 1).
+  # Les buffers de conversion VIVENT DANS LE CADRE (sp+64 / sp+128) :
+  # la version historique écrivait aux adresses ABSOLUES 16 et 64 (SIGSEGV
+  # dès qu'une chaîne était affichée) — constat rejoué sur le binaire HEAD.
   $lstr = g5_next()
   $lcpy = g5_next()
-  $ldone = g5_next()
-  $lwrite = g5_next()
+  $lwrtstr = g5_next()
+  $lpos = g5_next()
+  $ldig = g5_next()
+  $ldloop = g5_next()
+  $lrev = g5_next()
+  $lrevloop = g5_next()
+  $lwrtint = g5_next()
+  $lfin = g5_next()
+  g5_emit(stroff(0, 31, 8))
   g5_emit(g5_tagbits(2, 0))
-  g5_emit(cmpi(2, 1)); g5_branch(100, $lstr)
+  g5_emit(cmpi(2, 1))
+  g5_branch(100, $lstr)
+  # ── entier : conversion décimale signée ──
   g5_emit(g5_asr3(0, 0))
+  g5_emit(addi(6, 31, 64))
+  g5_emit(orrr(7, 31, 6))
   g5_emit(cmpi(0, 0))
-  g5_branch(100, $lbl + 1)
-  g5_branch(110, $lbl + 2)
-  g5_emit(movz(7, 16))
-  g5_emit(movz(10, 1))
-  g5_emit(ldroff(0, 31, 8))
-  g5_emit(g5_asr3(0, 0))
-  g5_emit(subr(0, 31, 0))
-  g5_emit(movz(2, 0))
-  g5_branch(0, $lbl + 3)
-  g5_mark($lbl + 1)
-  g5_emit(movz(7, 16))
-  g5_emit(movz(10, 0))
-  g5_emit(movz(1, 48))
-  g5_emit(strboff(1, 7))
-  g5_emit(addi(7, 7, 1))
-  g5_emit(movz(2, 1))
-  g5_branch(0, $lbl + 4)
-  g5_mark($lbl + 2)
-  g5_emit(movz(7, 16))
-  g5_emit(movz(10, 0))
-  g5_emit(movz(2, 0))
-  g5_mark($lbl + 3)
-  g5_emit(movz(1, 10))
-  g5_mark($lbl + 5)
-  g5_emit(cmpi(0, 0))
-  g5_branch(100, $lbl + 4)
-  g5_emit(udivr(3, 0, 1))
-  g5_emit(msubr(4, 3, 1, 0))
-  g5_emit(addi(4, 4, 48))
-  g5_emit(strboff(4, 7))
-  g5_emit(addi(7, 7, 1))
-  g5_emit(addi(2, 2, 1))
-  g5_emit(orrr(0, 31, 3))
-  g5_branch(0, $lbl + 5)
-  g5_mark($lbl + 4)
-  g5_emit(cmpi(10, 0))
-  g5_branch(100, $lbl + 7)
+  g5_branch(110, $lpos)
   g5_emit(movz(1, 45))
-  g5_emit(strboff(1, 7))
+  g5_emit(strbio(1, 7, 0))
   g5_emit(addi(7, 7, 1))
+  g5_emit(subr(0, 31, 0))
+  g5_mark($lpos)
+  g5_emit(cmpi(0, 0))
+  g5_branch(101, $ldig)
+  g5_emit(movz(1, 48))
+  g5_emit(strbio(1, 7, 0))
+  g5_emit(addi(7, 7, 1))
+  g5_branch(0, $lwrtint)
+  g5_mark($ldig)
+  g5_emit(addi(3, 31, 128))
+  g5_emit(movz(2, 0))
+  g5_mark($ldloop)
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lrev)
+  g5_emit(movz(1, 10))
+  g5_emit(udivr(4, 0, 1))
+  g5_emit(msubr(5, 4, 1, 0))
+  g5_emit(addi(5, 5, 48))
+  g5_emit(strbio(5, 3, 0))
+  g5_emit(addi(3, 3, 1))
   g5_emit(addi(2, 2, 1))
-  g5_mark($lbl + 7)
-  g5_emit(orrr(9, 31, 2))
-  g5_emit(movz(5, 64))
-  g5_emit(movz(6, 0))
-  g5_mark($lbl + 6)
-  g5_emit(subr(3, 7, 6))
-  g5_emit(subi(3, 3, 1))
-  g5_emit(ldrboff(4, 3))
-  g5_emit(strboff(4, 5))
+  g5_emit(orrr(0, 31, 4))
+  g5_branch(0, $ldloop)
+  g5_mark($lrev)
+  g5_emit(subi(4, 3, 1))
+  g5_emit(movz(5, 0))
+  g5_mark($lrevloop)
+  g5_emit(cmpr(5, 2))
+  g5_branch(110, $lwrtint)
+  g5_emit(ldrbio(1, 4, 0))
+  g5_emit(strbio(1, 7, 0))
+  g5_emit(addi(7, 7, 1))
+  g5_emit(subi(4, 4, 1))
   g5_emit(addi(5, 5, 1))
-  g5_emit(addi(6, 6, 1))
-  g5_emit(cmpr(6, 9))
-  g5_branch(101, $lbl + 6)
-  g5_mark($lwrite)
+  g5_branch(0, $lrevloop)
+  g5_mark($lwrtint)
+  g5_emit(subr(2, 7, 6))
   g5_emit(movz(0, 1))
   g5_emit(addi(1, 31, 64))
-  g5_emit(orrr(2, 31, 9))
   g5_emit(movz(8, 64))
   g5_emit(SVC_I())
+  g5_branch(0, $lfin)
+  # ── chaîne : write(1, descripteur+16, len) par blocs, SANS tampon de pile ──
+  # (une copie dans sp+64 débordait le cadre de 9232 o dès ~9 Ko ; constat
+  # rejoué avec lire_texte sur le RIR de 263 065 octets.)
+  g5_mark($lstr)
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(10, 9, 8))
+  g5_emit(addi(1, 9, 16))
+  g5_emit(movz(5, 0))
+  g5_mark($lcpy)
+  g5_emit(cmpr(5, 10))
+  g5_branch(110, $lwrtstr)
+  g5_emit(movz(0, 1))
+  g5_emit(subr(2, 10, 5))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  g5_emit(cmpi(0, 0))
+  g5_branch(111, $lwrtstr)
+  g5_emit(orrr(4, 31, 0))
+  g5_emit(addr(1, 1, 4))
+  g5_emit(addr(5, 5, 4))
+  g5_branch(0, $lcpy)
+  g5_mark($lwrtstr)
+  g5_branch(0, $lfin)
+  g5_mark($lfin)
   # `>>` de Rose termine chaque affichage par un saut de ligne.
   g5_emit(movz(1, 10))
   g5_emit(strbio(1, 31, 64))
@@ -870,24 +922,6 @@ fn g5_emit_print($lbl: entier) -> entier {
   g5_emit(movz(8, 64))
   g5_emit(SVC_I())
   g5_emit(RET_I())
-  # Chemin chaîne : copie des octets du descripteur dans le tampon sp+64.
-  g5_mark($lstr)
-  g5_emit(g5_masktag(9, 0))
-  g5_emit(ldroff(10, 9, 8))
-  g5_emit(addi(1, 9, 16))
-  g5_emit(movz(5, 64))
-  g5_emit(movz(6, 0))
-  g5_mark($lcpy)
-  g5_emit(cmpr(6, 10))
-  g5_branch(110, $ldone)
-  g5_emit(ldrbr(4, 1, 6))
-  g5_emit(strbio(4, 5, 0))
-  g5_emit(addi(5, 5, 1))
-  g5_emit(addi(6, 6, 1))
-  g5_branch(0, $lcpy)
-  g5_mark($ldone)
-  g5_emit(orrr(9, 31, 10))
-  g5_branch(0, $lwrite)
   retour 0
 }
 
@@ -1238,6 +1272,213 @@ fn g5_emit_stubs($lbl: entier) -> entier {
   retour 0
 }
 
+# ── G5-IO : routines ÉMISES dans l'ELF (syscalls aarch64, svc #0) ──
+# Cartographie mémoire RW (page à 0x60000000) :
+#   0x60000000  pointeur libre du tas (démarre à 0x60000300)
+#   0x60000010  argc brut de la pile initiale
+#   0x60000018  adresse de argv[0] sur la pile initiale
+#   0x60000020  tampon de chemin (480 octets, NUL terminal)
+#   0x60000200  tampon struct stat (144 octets, st_size à +48)
+#   0x60000300  début du tas (allocations des descripteurs)
+# Couches syscalls vérifiées : openat=56, close=57, read=63, write=64, fstat=80.
+
+# nb_arguments() -> argc utilisateur (argc ELF - 1), entier tagué.
+fn g5_emit_nbargs($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_load(9, 1610612752)
+  g5_emit(ldroff(0, 9, 0))
+  g5_emit(subi(0, 0, 1))
+  g5_emit(cmpi(0, 0))
+  g5_branch(111, $lbl + 1)
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)
+  g5_emit(movz(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# argument(i) -> argv[i+1] copié en chaîne taguée [tag=1][len][octets].
+fn g5_emit_argument($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0))
+  g5_emit(addi(0, 0, 1))
+  g5_load(9, 1610612760)
+  g5_emit(ldroff(9, 9, 0))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(addr(6, 9, 0))
+  g5_emit(ldroff(6, 6, 0))
+  # strlen -> x7
+  g5_emit(movz(7, 0))
+  g5_mark($lbl + 1)
+  g5_emit(ldrbr(2, 6, 7))
+  g5_emit(cmpi(2, 0))
+  g5_branch(100, $lbl + 2)
+  g5_emit(addi(7, 7, 1))
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(addi(0, 7, 7))
+  g5_emit(g5_lsr3(0, 0))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(addi(0, 0, 16))
+  g5_alloc_inline()
+  g5_emit(orrr(10, 31, 0))
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 10, 0))
+  g5_emit(orrr(1, 31, 7))
+  g5_emit(stroff(1, 10, 8))
+  g5_emit(movz(2, 0))
+  g5_mark($lbl + 3)
+  g5_emit(cmpr(2, 7))
+  g5_branch(110, $lbl + 4)
+  g5_emit(ldrbr(4, 6, 2))
+  g5_emit(addi(3, 2, 16))
+  g5_emit(strbr(4, 10, 3))
+  g5_emit(addi(2, 2, 1))
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 4)
+  g5_emit(g5_tag1(0, 10))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# lire_texte(chemin) -> openat + fstat + read + close, chaîne taguée.
+fn g5_emit_lire($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(7, 9, 8))
+  g5_load(6, 1610612768)
+  g5_emit(movz(2, 0))
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(2, 7))
+  g5_branch(110, $lbl + 2)
+  g5_emit(addi(3, 2, 16))
+  g5_emit(ldrbr(4, 9, 3))
+  g5_emit(strbr(4, 6, 2))
+  g5_emit(addi(2, 2, 1))
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(movz(5, 0))
+  g5_emit(strbr(5, 6, 2))
+  # openat(AT_FDCWD=-100, chemin, O_RDONLY=0, 0) = 56
+  g5_load(0, -100)
+  g5_load(1, 1610612768)
+  g5_emit(movz(2, 0))
+  g5_emit(movz(3, 0))
+  g5_emit(movz(8, 56))
+  g5_emit(SVC_I())
+  g5_emit(orrr(10, 31, 0))
+  g5_emit(cmpi(0, 0))
+  g5_branch(111, $lbl + 9)
+  # fstat(fd, tampon) = 80 ; st_size à +48
+  g5_emit(orrr(0, 31, 10))
+  g5_load(1, 1610613248)
+  g5_emit(movz(8, 80))
+  g5_emit(SVC_I())
+  g5_emit(cmpi(0, 0))
+  g5_branch(111, $lbl + 9)
+  g5_load(11, 1610613248 + 48)
+  g5_emit(ldroff(7, 11, 0))
+  g5_emit(addi(0, 7, 7))
+  g5_emit(g5_lsr3(0, 0))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(addi(0, 0, 16))
+  g5_alloc_inline()
+  g5_emit(orrr(11, 31, 0))
+  g5_emit(movz(6, 0))
+  g5_mark($lbl + 3)
+  g5_emit(cmpr(6, 7))
+  g5_branch(110, $lbl + 4)
+  g5_emit(addi(1, 11, 16))
+  g5_emit(addr(1, 1, 6))
+  g5_emit(orrr(0, 31, 10))
+  g5_emit(movz(8, 63))
+  g5_emit(SVC_I())
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lbl + 4)
+  g5_branch(111, $lbl + 4)
+  g5_emit(addr(6, 6, 0))
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 4)
+  g5_emit(orrr(0, 31, 10))
+  g5_emit(movz(8, 57))
+  g5_emit(SVC_I())
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 11, 0))
+  g5_emit(orrr(1, 31, 6))
+  g5_emit(stroff(1, 11, 8))
+  g5_emit(g5_tag1(0, 11))
+  g5_emit(RET_I())
+  g5_mark($lbl + 9)
+  g5_load(0, 16)
+  g5_alloc_inline()
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 0, 0))
+  g5_emit(movz(1, 0))
+  g5_emit(stroff(1, 0, 8))
+  g5_emit(g5_tag1(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# ecrire_bytes / ecrire_texte(chemin, donnees) -> openat(O_WRONLY|O_CREAT|O_TRUNC)
+# + write + close. Renvoie `vide` (0 tagué), comme la primitive Rose.
+fn g5_emit_ecrire($lbl: entier) -> entier {
+  g5_mark($lbl)
+  # x1 = données ; openat utilisera x1 pour le chemin : le préserver dans x11.
+  g5_emit(orrr(11, 31, 1))
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(7, 9, 8))
+  g5_load(6, 1610612768)
+  g5_emit(movz(2, 0))
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(2, 7))
+  g5_branch(110, $lbl + 2)
+  g5_emit(addi(3, 2, 16))
+  g5_emit(ldrbr(4, 9, 3))
+  g5_emit(strbr(4, 6, 2))
+  g5_emit(addi(2, 2, 1))
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(movz(5, 0))
+  g5_emit(strbr(5, 6, 2))
+  # 577 = O_WRONLY(1)|O_CREAT(64)|O_TRUNC(512) ; 420 = 0644
+  g5_load(0, -100)
+  g5_load(1, 1610612768)
+  g5_load(2, 577)
+  g5_load(3, 420)
+  g5_emit(movz(8, 56))
+  g5_emit(SVC_I())
+  g5_emit(orrr(10, 31, 0))
+  g5_emit(cmpi(0, 0))
+  g5_branch(111, $lbl + 6)
+  g5_emit(g5_masktag(9, 11))
+  g5_emit(ldroff(7, 9, 8))
+  g5_emit(addi(1, 9, 16))
+  g5_emit(movz(6, 0))
+  g5_mark($lbl + 3)
+  g5_emit(cmpr(6, 7))
+  g5_branch(110, $lbl + 4)
+  g5_emit(orrr(0, 31, 10))
+  g5_emit(subr(2, 7, 6))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  g5_emit(cmpi(0, 0))
+  g5_branch(111, $lbl + 4)
+  g5_emit(orrr(4, 31, 0))
+  g5_emit(addr(1, 1, 4))
+  g5_emit(addr(6, 6, 4))
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 4)
+  g5_emit(orrr(0, 31, 10))
+  g5_emit(movz(8, 57))
+  g5_emit(SVC_I())
+  g5_mark($lbl + 6)
+  g5_emit(movz(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
 fn g5_patch() -> liste<entier> {
   $out = [0 : entier]
   $i = 0
@@ -1299,7 +1540,7 @@ tant_que ($i < $nfn) {
 }
 $printl = g5_next()
 $k = 0
-tant_que ($k < 7) { g5_next(); $k = $k + 1 }
+tant_que ($k < 14) { g5_next(); $k = $k + 1 }
 $g5_allocl = g5_next()
 $g5_lenl = g5_next()
 $k = 0
@@ -1329,6 +1570,19 @@ $k = 0
 tant_que ($k < 3) { g5_next(); $k = $k + 1 }
 $g5_stub0l = g5_next()
 $g5_stubsl = g5_next()
+# G5-IO : réservation des labels des routines syscalls (4 internes chacune).
+$g5_nbargs_l = g5_next()
+$k = 0
+tant_que ($k < 4) { g5_next(); $k = $k + 1 }
+$g5_argument_l = g5_next()
+$k = 0
+tant_que ($k < 6) { g5_next(); $k = $k + 1 }
+$g5_lire_l = g5_next()
+$k = 0
+tant_que ($k < 12) { g5_next(); $k = $k + 1 }
+$g5_ecrire_l = g5_next()
+$k = 0
+tant_que ($k < 8) { g5_next(); $k = $k + 1 }
 $exitl = g5_next()
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
@@ -1349,6 +1603,10 @@ g5_emit_cat($g5_catl)
 g5_emit_streq($g5_streql)
 g5_emit_stub0($g5_stub0l)
 g5_emit_stubs($g5_stubsl)
+g5_emit_nbargs($g5_nbargs_l)
+g5_emit_argument($g5_argument_l)
+g5_emit_lire($g5_lire_l)
+g5_emit_ecrire($g5_ecrire_l)
 g5_emit_print($printl)
 g5_mark($exitl)
 g5_emit(movz(0, 0))
