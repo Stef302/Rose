@@ -1570,7 +1570,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // donnait un logo trop petit et un cadrage approximatif. On réserve cette
     // hauteur en HAUTEUR, sinon le titre « ROSE » se posait sur la tige.
     // Place laissée au logo : du haut du panneau (78) jusqu'au titre.
-    let place_logo = (plancher - s(78) - s(150)).max(0);
+    // ⚠ On ne réserve QUE la place du titre (pas sa description) : réserver
+    // 150 px compressait la boîte du logo et la tige paraissait coupée.
+    let place_logo = (plancher - s(78) - s(120)).max(0);
     let largeur_voulue = s(110);
     let hauteur_voulue = ((largeur_voulue as f64 * 343.0 / 276.0).round() as i32).max(1);
     // Borne haute = hauteur NATIVE du PNG : jamais d'agrandissement (sinon
@@ -1579,7 +1581,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let hauteur_logo = hauteur_voulue.min(place_logo).min(343);
     // Marge entre la tige et le titre « ROSE » : sans elle, la tige touchait
     // le titre au pixel près et donnait l'impression d'être rognée.
-    let marge_marque = s(16);
+    // Marge augmentée : même avec la montée de Kare (979/1000), le haut du
+    // mot ne remonte pas sur la tige et le bas ne touchait pas le titre.
+    let marge_marque = s(26);
     if hauteur_logo >= s(40) {
         dessiner_rose(dc, lateral_w / 2 - largeur_voulue / 2, s(78),
                       largeur_voulue, hauteur_logo);
@@ -1593,8 +1597,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // donc le visible est poussé vers le bas. On dimensionne le rectangle sur
     // la hauteur RÉELLE de la police, symétriquement autour du même centre.
     let marque_px = points_ecrits(dpi, 36, echelle);
-    let h_marque = (s(56)).max(marque_px + s(12));
-    let centre_marque = y_marque + s(28);
+    // Kare a une cellule de police plus haute que l'encre visible : on ajoute
+    // une marge BAS explicite, sinon le bas des lettres était rogné (mesuré
+    // sur capture : « ROSE » amputé de sa partie inférieure).
+    let h_marque = (s(72)).max(marque_px + s(28));
+    let centre_marque = y_marque + s(34);
     let haut_marque = centre_marque - h_marque / 2;
     let mut rl = RECT { left: 0, top: haut_marque, right: lateral_w,
                         bottom: haut_marque + h_marque };
