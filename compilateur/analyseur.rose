@@ -766,10 +766,14 @@ fn def_fn($g: liste<chaine>, $x: liste<chaine>, $p: entier, $dll: chaine, $son: 
       $rp = nomid($g, $x, $q)
       $q = SEPR($rp)
       $pn = NOD($rp)
-      si (T0($g, $q) == ":") { $q = $q + 1 }
-      $rt = typex($g, $x, $q)
-      $q = SEPR($rt)
-      ligne($params, 0, "param " + $pn + " " + nomty(NOD($rt)))
+      si (T0($g, $q) == ":") {
+        $q = $q + 1
+        $rt = typex($g, $x, $q)
+        $q = SEPR($rt)
+        ligne($params, 0, "param " + $pn + " " + nomty(NOD($rt)))
+      } sinon {
+        ligne($params, 0, "param " + $pn + " ?")
+      }
       si (T0($g, $q) == ",") { $q = $q + 1 } sinon { $un = 0 }
     }
   }
