@@ -3618,6 +3618,168 @@ impl Emetteur<'_> {
         true
     }
 
+    /// SE1 — variante à A accumulateurs indépendants (A ≥ 2).
+    ///
+    /// Même source Rose, même garde `n ≤ 2^32`, même repli bigint vérifié :
+    /// seule l'évaluation de la somme change. Au lieu d'une seule chaîne
+    /// dépendante `s += k` (1 addition critique par itération = plancher
+    /// 0,2564 ms), on répartit les termes sur A accumulateurs :
+    ///
+    ///   acc[j] += k + j   pour j = 0..A-1, puis k += A
+    ///   s = Σ acc[j]      (+ les < A termes restants, ajoutés à acc[0])
+    ///
+    /// L'addition étant associative sur la plage prouvée, le résultat est
+    /// identique. Chaîne critique : 1 addition par GROUPE de A termes, soit
+    /// A fois moins d'additions dépendantes. Borne : chaque acc[j] ≤ n²/A
+    /// (≈ 2^62 pour A=2, n=2^32) < i64::MAX — pas de boxage sur le chemin rapide.
+    fn emettre_somme_acc(&mut self, nacc: usize, _sig: &Signature) -> bool {
+        const LIMITE: i64 = 4294967296;
+        debug_assert!(nacc >= 2);
+
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+        let n = self.builder.block_params(entry)[0];
+        let z = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let step = self.builder.ins().iconst(types::I64, nacc as i64);
+        let n_group = self.builder.ins().isub(n, step); // invariant, hoisté
+        let decal: Vec<Value> = (0..nacc)
+            .map(|j| self.builder.ins().iconst(types::I64, j as i64))
+            .collect();
+
+        let repli_entree = self.builder.create_block();
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64); // k
+        for _ in 0..nacc {
+            self.builder.append_block_param(header, types::I64); // acc[j]
+        }
+        let corps_b = self.builder.create_block();
+        let dernier_test = self.builder.create_block();
+        self.builder.append_block_param(dernier_test, types::I64); // k
+        for _ in 0..nacc {
+            self.builder.append_block_param(dernier_test, types::I64);
+        }
+        let tail_corps = self.builder.create_block();
+        let reduce = self.builder.create_block();
+        for _ in 0..nacc {
+            self.builder.append_block_param(reduce, types::I64); // acc[j] final
+        }
+        let fin = self.builder.create_block();
+        self.builder.append_block_param(fin, types::I64); // somme finale
+
+        let borne = self.builder.ins().iconst(types::I64, LIMITE);
+        let hors_borne = self.builder.ins().icmp(IntCC::SignedGreaterThan, n, borne);
+        let args_header: Vec<BlockArg> = std::iter::once(z)
+            .chain(std::iter::repeat(z).take(nacc))
+            .map(|v| v.into())
+            .collect();
+        self.builder.ins().brif(hors_borne, repli_entree, &[], header, &args_header);
+
+        // ── repli bigint (identique à emettre_somme_nu) ─────────────────
+        self.builder.switch_to_block(repli_entree);
+        self.builder.seal_block(repli_entree);
+        let gen_header = self.builder.create_block();
+        self.builder.append_block_param(gen_header, types::I64);
+        self.builder.append_block_param(gen_header, types::I64);
+        self.builder.append_block_param(gen_header, types::I64);
+        self.builder.append_block_param(gen_header, types::I64);
+        let gen_corps = self.builder.create_block();
+        let gen_fin = self.builder.create_block();
+        let a_gen: Vec<BlockArg> = [z, z, z, z].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().jump(gen_header, &a_gen);
+        self.builder.switch_to_block(gen_header);
+        let gk = self.builder.block_params(gen_header)[0];
+        let gkt = self.builder.block_params(gen_header)[1];
+        let gs = self.builder.block_params(gen_header)[2];
+        let gst = self.builder.block_params(gen_header)[3];
+        let gtest = self.builder.ins().icmp(IntCC::SignedLessThan, gk, n);
+        self.builder.ins().brif(gtest, gen_corps, &[], gen_fin, &[]);
+        self.builder.switch_to_block(gen_corps);
+        self.builder.seal_block(gen_corps);
+        let (ns, nst) = self.inline_add_tagge(gs, gst, gk, gkt);
+        let (nk, nkt) = self.inline_add_tagge(gk, gkt, un, z);
+        let a_back: Vec<BlockArg> = [nk, nkt, ns, nst].iter().map(|v| (*v).into()).collect();
+        self.builder.ins().jump(gen_header, &a_back);
+        self.builder.seal_block(gen_header);
+        self.builder.switch_to_block(gen_fin);
+        self.builder.seal_block(gen_fin);
+        let f_tag = self.import_runtime("rose_set_ret_tag");
+        let _ = self.builder.ins().call(f_tag, &[gst]);
+        self.builder.ins().return_(&[gs]);
+
+        // ── groupes de A termes, A chaînes indépendantes ────────────────
+        self.builder.switch_to_block(header);
+        let k = self.builder.block_params(header)[0];
+        let accs: Vec<Value> = (1..=nacc).map(|i| self.builder.block_params(header)[i]).collect();
+        let test = self.builder.ins().icmp(IntCC::SignedLessThan, k, n_group);
+        let mut args_tail: Vec<BlockArg> = std::iter::once(k)
+            .chain(accs.iter().copied())
+            .map(|v| v.into())
+            .collect();
+        self.builder.ins().brif(test, corps_b, &[], dernier_test, &args_tail);
+
+        self.builder.switch_to_block(corps_b);
+        self.builder.seal_block(corps_b);
+        let mut nouveaux: Vec<Value> = Vec::with_capacity(nacc);
+        for j in 0..nacc {
+            let kj = if j == 0 { k } else { self.builder.ins().iadd(k, decal[j]) };
+            nouveaux.push(self.builder.ins().iadd(accs[j], kj));
+        }
+        let k_next = self.builder.ins().iadd(k, step);
+        let mut args_back: Vec<BlockArg> = std::iter::once(k_next)
+            .chain(nouveaux.iter().copied())
+            .map(|v| v.into())
+            .collect();
+        self.builder.ins().jump(header, &args_back);
+        self.builder.seal_block(header);
+
+        // ── queue : < A termes, ajoutés à acc[0] ────────────────────────
+        self.builder.switch_to_block(dernier_test);
+        let kd = self.builder.block_params(dernier_test)[0];
+        let ad: Vec<Value> = (1..=nacc)
+            .map(|i| self.builder.block_params(dernier_test)[i])
+            .collect();
+        let encore = self.builder.ins().icmp(IntCC::SignedLessThan, kd, n);
+        args_tail.clear();
+        args_tail.extend(ad.iter().copied().map(|v| -> BlockArg { v.into() }));
+        self.builder.ins().brif(encore, tail_corps, &[], reduce, &args_tail);
+
+        self.builder.switch_to_block(tail_corps);
+        self.builder.seal_block(tail_corps);
+        let a0 = self.builder.block_params(dernier_test)[1];
+        let s0n = self.builder.ins().iadd(a0, kd);
+        let kdn = self.builder.ins().iadd(kd, un);
+        let mut args_q: Vec<BlockArg> = std::iter::once(kdn)
+            .chain(std::iter::once(s0n))
+            .chain(ad.iter().skip(1).copied())
+            .map(|v| v.into())
+            .collect();
+        self.builder.ins().jump(dernier_test, &args_q);
+        self.builder.seal_block(dernier_test);
+
+        // ── réduction des accumulateurs ─────────────────────────────────
+        self.builder.switch_to_block(reduce);
+        self.builder.seal_block(reduce);
+        let mut somme = self.builder.block_params(reduce)[0];
+        for j in 1..nacc {
+            let aj = self.builder.block_params(reduce)[j];
+            somme = self.builder.ins().iadd(somme, aj);
+        }
+        let args_fin: Vec<BlockArg> = [somme.into()].into();
+        self.builder.ins().jump(fin, &args_fin);
+
+        self.builder.switch_to_block(fin);
+        self.builder.seal_block(fin);
+        let sf = self.builder.block_params(fin)[0];
+        let f_tag = self.import_runtime("rose_set_ret_tag");
+        let ztag = self.builder.ins().iconst(types::I64, 0);
+        let _ = self.builder.ins().call(f_tag, &[ztag]);
+        self.builder.ins().return_(&[sf]);
+        true
+    }
+
     // ── Vague 22 (D3) : détecteur STRICT du corps de `est_premier` ───────
     //
     // ⚠ NE JAMAIS spécialiser sur le nom seul (mesuré : une redéfinition
@@ -4476,7 +4638,11 @@ impl Emetteur<'_> {
                                                     &init, &chunk, corps.n_slots);
         }
         if Self::detecter_somme_nu(corps, sig) {
-            return self.emettre_somme_nu(sig);
+            // SE1 : 8 accumulateurs indépendants ( voir `emettre_somme_acc` ).
+            // L'émetteur V21 à une seule chaîne (`emettre_somme_nu`) reste
+            // conservé comme référence historique, mais n'est plus utilisé :
+            // il plafonne au plancher 0,2564 ms (1 addition dépendante/itération).
+            return self.emettre_somme_acc(8, sig);
         }
         if self.detecter_compte_premiers(corps, sig) {
             return self.emettre_compte_premiers_nu();
