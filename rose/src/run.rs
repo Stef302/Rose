@@ -62,10 +62,36 @@ pub struct Tableau(pub Rc<RefCell<Vec<i64>>>);
 //
 // ⚠ Le `Drop` est ÉCRIT À LA MAIN et itératif : un arbre de 20 000 nœuds
 // détruit par le `drop` récursif par défaut déborderait la pile.
-#[derive(Debug)]
 pub enum NoeudChaine {
     Plein(String),
     Concat(Rc<ChaineRep>, Rc<ChaineRep>),
+    /// Feuille dont les octets vivent dans un mapping `mmap` possédé.
+    ///
+    /// 19/11/26 — domaine 8 du bench multi : `lire_texte` recopiait 10 Mo
+    /// depuis le noyau vers un `Vec` (`fs::read`) avant même de valider
+    /// l'UTF-8. Le microbench entrelacé (9 échantillons, c16) mesure
+    /// `mmap + validation + compte + write` à 2,70 ms contre 3,04–3,11 ms
+    /// pour `read + write` : le mapping évite une recopie de 10 Mo. Le
+    /// mapping est possédé par le nœud et libéré par `munmap` dans `Drop`.
+    FichierMmap {
+        ptr: *const u8,
+        len: usize,
+        /// longueur passée à `munmap` : exactement celle passée à `mmap`
+        /// (le noyau arrondit en interne aux pages, `munmap` accepte la même
+        /// valeur). Gardée séparément pour ne jamais désaligner la libération.
+        mapping_len: usize,
+    },
+}
+
+impl std::fmt::Debug for NoeudChaine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoeudChaine::Plein(s) => f.debug_tuple("Plein").field(s).finish(),
+            NoeudChaine::Concat(a, b) => f.debug_tuple("Concat").field(a).field(b).finish(),
+            NoeudChaine::FichierMmap { len, .. } =>
+                f.debug_struct("FichierMmap").field("len", len).finish(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -83,6 +109,69 @@ impl ChaineRep {
         let n = s.chars().count();
         let octets = s.len();
         Rc::new(ChaineRep { n, octets, noeud: NoeudChaine::Plein(s) })
+    }
+
+    /// Lecture d'un fichier en mappant ses pages en lecture seule : ZÉRO
+    /// recopie des octets vers un `Vec` utilisateur. Le contrôle d'UTF-8 et
+    /// le comptage des caractères restent identiques à `plein` (même
+    /// sémantique `longueur`). Repli explicite sur `from_utf8_lossy` + copie
+    /// quand les octets ne sont pas UTF-8 valides (comportement historique).
+    pub fn depuis_fichier(chemin: &str) -> Result<Rc<ChaineRep>, ()> {
+        use std::os::raw::{c_char, c_int, c_void};
+        unsafe extern "C" {
+            fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+            fn close(fd: c_int) -> c_int;
+            fn fstat(fd: c_int, buf: *mut libc::stat) -> c_int;
+            fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int,
+                    fd: c_int, offset: i64) -> *mut c_void;
+            fn munmap(addr: *mut c_void, len: usize) -> c_int;
+        }
+        let c = std::ffi::CString::new(chemin).map_err(|_| ())?;
+        let fd = unsafe { open(c.as_ptr(), libc::O_RDONLY) };
+        if fd < 0 { return Err(()); }
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { fstat(fd, &mut st) } != 0 { unsafe { close(fd); } return Err(()); }
+        if st.st_size < 0 || st.st_size > (1 << 28) { unsafe { close(fd); } return Err(()); }
+        let len = st.st_size as usize;
+        // `mmap` refuse une longueur nulle : un fichier vide est une feuille
+        // `Plein("")` (comportement historique de `String::from_utf8(vec![])`).
+        if len == 0 { unsafe { close(fd); } return Ok(ChaineRep::plein(String::new())); }
+        let ptr = unsafe {
+            mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, fd, 0)
+        };
+        unsafe { close(fd); }
+        if ptr == usize::MAX as *mut c_void { return Err(()); }
+        // Le fd peut être fermé aussitôt : le mapping conserve ses pages.
+        let tranche = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+        match std::str::from_utf8(tranche) {
+            Ok(s) => {
+                let n = s.chars().count();
+                Ok(Rc::new(ChaineRep {
+                    n,
+                    octets: len,
+                    noeud: NoeudChaine::FichierMmap { ptr: ptr as *const u8, len, mapping_len: len },
+                }))
+            }
+            Err(_) => {
+                // Repli historique : `from_utf8_lossy(...).into_owned()`.
+                let owned = String::from_utf8_lossy(tranche).into_owned();
+                unsafe { munmap(ptr, len); }
+                Ok(ChaineRep::plein(owned))
+            }
+        }
+    }
+
+    /// Emprunt des octets quand la feuille les expose déjà contiguëment
+    /// (`Plein` ou `FichierMmap`). `None` pour une rope concaténée, qui doit
+    /// être aplatie par l'appelant. Évite toute allocation à l'écriture.
+    #[inline]
+    pub fn octets_empruntes(&self) -> Option<&[u8]> {
+        match &self.noeud {
+            NoeudChaine::Plein(s) => Some(s.as_bytes()),
+            NoeudChaine::FichierMmap { ptr, len, .. } =>
+                Some(unsafe { std::slice::from_raw_parts(*ptr, *len) }),
+            NoeudChaine::Concat(..) => None,
+        }
     }
 
     /// Concaténation en O(1) : aucun octet n'est copié, seul l'arbre grandit.
@@ -104,6 +193,10 @@ impl ChaineRep {
         while let Some(r) = pile.pop() {
             match &r.noeud {
                 NoeudChaine::Plein(t) => s.push_str(t),
+                NoeudChaine::FichierMmap { ptr, len, .. } =>
+                    s.push_str(unsafe {
+                        std::str::from_utf8_unchecked(std::slice::from_raw_parts(*ptr, *len))
+                    }),
                 NoeudChaine::Concat(a, b) => { pile.push(b.as_ref()); pile.push(a.as_ref()); }
             }
         }
@@ -159,15 +252,28 @@ impl Drop for ChaineRep {
         // que si l'arbre a réellement des descendants (mesuré : `vec![noeud]`
         // coûtait une allocation par feuille, soit 20 000 de trop ici).
         let mut noeud = std::mem::replace(&mut self.noeud, NoeudChaine::Plein(String::new()));
-        if matches!(noeud, NoeudChaine::Plein(_)) { return; }
+        match &noeud {
+            NoeudChaine::Plein(_) => return,
+            NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
+                unsafe { libc::munmap(*ptr as *mut std::os::raw::c_void, *mapping_len); }
+                return;
+            }
+            NoeudChaine::Concat(..) => {}
+        }
         let mut pile: Vec<NoeudChaine> = Vec::new();
         loop {
-            if let NoeudChaine::Concat(mut a, mut b) = noeud {
-                if let Some(ra) = Rc::get_mut(&mut a) {
-                    pile.push(std::mem::replace(&mut ra.noeud, NoeudChaine::Plein(String::new())));
+            match noeud {
+                NoeudChaine::Plein(_) => {}
+                NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
+                    unsafe { libc::munmap(ptr as *mut std::os::raw::c_void, mapping_len); }
                 }
-                if let Some(rb) = Rc::get_mut(&mut b) {
-                    pile.push(std::mem::replace(&mut rb.noeud, NoeudChaine::Plein(String::new())));
+                NoeudChaine::Concat(mut a, mut b) => {
+                    if let Some(ra) = Rc::get_mut(&mut a) {
+                        pile.push(std::mem::replace(&mut ra.noeud, NoeudChaine::Plein(String::new())));
+                    }
+                    if let Some(rb) = Rc::get_mut(&mut b) {
+                        pile.push(std::mem::replace(&mut rb.noeud, NoeudChaine::Plein(String::new())));
+                    }
                 }
             }
             match pile.pop() { Some(n) => noeud = n, None => break }

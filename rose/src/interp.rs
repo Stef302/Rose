@@ -3797,17 +3797,22 @@ impl Interp {
             }
             "lire_texte" => {
                 let p = chaine_de(&a[0]);
-                match std::fs::read(&p) {
-                    // `String::from_utf8` reprend le tampon de `fs::read` sans
-                    // le recopier quand l'UTF-8 est valide (cas usuel). Repli
-                    // explicite sur `from_utf8_lossy` si les octets sont
-                    // invalides : comportement historique préservé.
-                    Ok(b) if b.len() <= (1 << 28) => match String::from_utf8(b) {
-                        Ok(s) => Valeur::s(s),
-                        Err(e) => Valeur::s(String::from_utf8_lossy(e.as_bytes()).into_owned()),
-                    },
-                    Ok(_) => erreur_runtime(&format!("fichier trop volumineux ({})", p)),
-                    Err(_) => erreur_runtime(&format!("lecture du fichier impossible ({})", p)),
+                // 19/11/26 — mmap en lecture seule : les pages du fichier
+                // deviennent les octets de la `Valeur::Chaine` sans aucune
+                // recopie vers un `Vec` utilisateur. Validation UTF-8 et
+                // comptage des caractères inchangés (voir `depuis_fichier`).
+                // `Err` couvre : ouverture impossible, stat impossible,
+                // fichier > 2^28, mmap impossible. On distingue a posteriori
+                // le dépassement de taille pour garder le message historique,
+                // sans coût sur le chemin nominal (un seul `stat` en erreur).
+                match ChaineRep::depuis_fichier(&p) {
+                    Ok(r) => Valeur::Chaine(r),
+                    Err(_) => {
+                        if std::fs::metadata(&p).map(|m| m.len() > (1 << 28)).unwrap_or(false) {
+                            erreur_runtime(&format!("fichier trop volumineux ({})", p));
+                        }
+                        erreur_runtime(&format!("lecture du fichier impossible ({})", p))
+                    }
                 }
             }
             "eval_expr" => {
@@ -4228,9 +4233,9 @@ impl Interp {
                 // et les valeurs non-chaine (conversion historique préservée).
                 let aplat: String;
                 let octets: &[u8] = match &a[1] {
-                    Valeur::Chaine(r) => match &r.noeud {
-                        NoeudChaine::Plein(s) => s.as_bytes(),
-                        _ => { aplat = r.aplatir(); aplat.as_bytes() },
+                    Valeur::Chaine(r) => match r.octets_empruntes() {
+                        Some(o) => o, // `Plein` OU `FichierMmap` : zéro recopie
+                        None => { aplat = r.aplatir(); aplat.as_bytes() },
                     },
                     v => { aplat = chaine_de(v); aplat.as_bytes() },
                 };
