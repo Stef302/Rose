@@ -873,3 +873,14 @@ Consigne utilisateur: continuer en priorité à dépasser Rust en cherchant des 
 |---|---|---|---|
 | INNOV | innovation vitesse : contourner le mur des 2,4 Mio d'écrits mémoire (liste ×1,72) | `rose/src/{run,jit}.rs`, `rose/docs/INNOVATION_VITESSE.md` | 6 |
 | SH2 | self-hosting : faire tourner le compilateur généré (borne basse faite, suite) | `compilateur/emetteur_elf.rose`, `rose/docs/SELF_HOST_SUITE.md` | 10 |
+
+## Vague 40 (19/11) — corriger les défaites du comparatif total
+
+Consigne: « corriger les défauts de rose du comparatif et perdre sur 10 domaines c'est inadmissible ». Défaut d'affichage rationnel déjà corrigé (`f9b0966`). Pool de pages livré (`38a8804`).
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| BIG1 | gros nombres : global ×413, englobant ×84, suite ×268 | `rose/src/{i128x,run}.rs`, `rose/docs/BIGINTS_RAPIDES.md` | 6 |
+| DISP1 | racines i64 ×85 et dispatch | `rose/src/{jit,front}.rs`, `rose/docs/DISPATCH_RAPIDE.md` | 16 |
+
+Rappel: SH1 travaille sur `compilateur/emetteur_elf.rose`, ne pas toucher.
