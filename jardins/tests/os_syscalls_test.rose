@@ -1,0 +1,24 @@
+# Test du pontier OS en Rose pur — génère deux ELF64 aarch64 exécutables.
+#
+#   ./rose/rose jardins/tests/os_syscalls_test.rose
+#
+# Les octets sont produits EXCLUSIVEMENT par des fonctions Rose du jardin
+# `os_syscalls.rose` (aucune édition d'assembleur, aucun compilateur externe).
+# Le lancement effectif des ELF se fait ensuite dans le shell, avec chmod +x.
+
+importer "jardins/os_syscalls.rose"
+
+$message = "Bonjour Rose OS\n"
+$elf1 = os_elf_ecrire_sortie($message)
+ecrire_bytes("/tmp/opencode/osrose_agents/bonjour_rose.elf", $elf1)
+
+$elf2 = os_elf_connect_x11()
+ecrire_bytes("/tmp/opencode/osrose_agents/x11_handshake.elf", $elf2)
+
+$elf3 = os_elf_fenetre_x11()
+ecrire_bytes("/tmp/opencode/osrose_agents/fenetre_x11.elf", $elf3)
+
+>> "poc|elf=" + chaine(longueur($elf1)) + "|attendu=" + chaine(120 + 32 + longueur($message))
+>> "x11|elf=" + chaine(longueur($elf2)) + "|attendu=" + chaine(120 + 116 + 24 + 12 + 4096)
+>> "fenetre|elf=" + chaine(longueur($elf3)) + "|attendu=" + chaine(120 + 132 + 24 + 12 + 4096 + 48 + 16)
+>> "magique|" + chaine(ordre(sous_chaine($elf1, 0, 1))) + "|" + sous_chaine($elf1, 1, 4)

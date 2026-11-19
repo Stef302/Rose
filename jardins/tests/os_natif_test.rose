@@ -1,0 +1,17 @@
+# Test du pontier OS Rose — génère les cinq ELF de remplacement.
+#
+#   ./rose/rose jardins/tests/os_natif_test.rose
+#   chmod +x /tmp/opencode/osrose_agents/natif_*.elf
+
+importer "jardins/os_natif.rose"
+
+$base = "/tmp/opencode/osrose_agents/natif_"
+
+ecrire_bytes($base + "ecran.elf", ecrire_ecran("Bonjour Rose OS\n"))
+ecrire_bytes($base + "fenetre.elf", ouvrir_fenetre("Fenetre Rose pure", 400, 220, 4000))
+ecrire_bytes($base + "evenements.elf", boucle_evenements(0, 128))
+ecrire_bytes($base + "fermer.elf", fermer_fenetre(9))
+ecrire_bytes($base + "message.elf", boite_message("Attention", "Message Rose natif"))
+
+>> decrire_pontier()
+>> "table|" + chaine(longueur(table_pontier()))

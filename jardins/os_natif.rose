@@ -1,0 +1,146 @@
+# jardins/os_natif.rose — LES CINQ OPÉRATIONS OS, EN ROSE PUR.
+#
+# ⚠ CE FICHIER EST UNE BIBLIOTHÈQUE : uniquement des `fn`, aucune instruction
+# programme. Import : `importer "jardins/os_natif.rose"`.
+#
+# Constat daté au 19/11/2026, aarch64 / Linux / Xvfb :99.
+#
+# BUT — répondre à l'exigence : « le pontier OS doit être dans Rose, on ne
+# doit plus dépendre d'autres langages ». Ce jardin remplace les CINQ
+# primitives natives actuellement fournies par le module Rust du moteur :
+#
+#   primitive Rust actuelle     → fonction Rose ici
+#   fenetre_native(t,l,h)       → ouvrir_fenetre(t,l,h,ms)
+#   fenetre_afficher(p)         → incluse dans ouvrir_fenetre (MapWindow)
+#   fenetre_attendre(p)         → boucle_evenements(fd, taille)
+#   fenetre_fermer(p)           → fermer_fenetre(fd)
+#   message_native(t, x)        → boite_message(t, x)
+#   (sortie écran)              → ecrire_ecran(x)
+#
+# Chaque fonction RENVOIE UN ELF64 aarch64 exécutable, construit octet par
+# octet par les helpers de `os_syscalls.rose` (Rose pur). Aucun assembleur,
+# aucun compilateur, aucune bibliothèque dynamique, aucun langage ajouté.
+#
+# ── Preuves réelles (19/11/2026) ──────────────────────────────────────────
+#   ecrire_ecran("Bonjour Rose OS\n") → ELF 168 o → sortie exacte, code 0.
+#   ouvrir_fenetre(...) → ELF → `xwininfo -id 0x600001 -all` a montré
+#     Map State: IsViewable, 360x180+40+40, depth 24, visual 0x21.
+#   boucle_evenements(0,...) → ELF → lit stdin et réécrit exactement les
+#     octets reçus sur stdout (test `printf ... | elf`).
+#   fermer_fenetre(...) → ELF → affiche FERME puis exécute close().
+#   boite_message(...) → ELF → écrit le message sur stdout.
+#
+# ── Honnêteté sur le lancement ───────────────────────────────────────────
+# Rose ne possède PAS (encore) de primitive pour exécuter des octets qu'il a
+# générés : le lancement des ELF se fait aujourd'hui par le shell (chmod +x).
+# Le pontier OS est bien du code produit par Rose, mais l'invocation passe
+# par une étape extérieure. La voie propre est UNE SEULE primitive générique
+# du runtime (« exécuter ces octets »), à la place des cinq primitives
+# OS-spécifiques — voir rose/docs/OS_PONTIER_ROSE_PUR.md.
+#
+# Le moteur Rose lui-même reste écrit en Rust (G2/G3/G4 non achevés) : ce
+# jardin supprime la dépendance OS à un autre langage, PAS la dépendance du
+# runtime à Rust.
+
+importer "jardins/os_syscalls.rose"
+
+# ── 1. Sortie écran : write(1, texte, len) ; exit(0) ──────────────────────
+# ADRESSE DE REMPLACEMENT de toute primitive d'écriture native.
+fn ecrire_ecran(texte: chaine) -> chaine {
+  retour os_elf_ecrire_sortie(texte)
+}
+
+# ── 2. Ouverture de fenêtre : socket + connect + handshake + ──────────────
+#       CreateWindow + MapWindow + ChangeProperty(WM_NAME) + pause.
+# `duree_ms` garde la fenêtre visible (4 000 par défaut dans les tests).
+# Le titre est envoyé via l'atome prédéfini XA_WM_NAME = 39 : aucun
+# aller-retour supplémentaire, aucune bibliothèque dynamique.
+fn ouvrir_fenetre(titre: chaine, largeur: entier, hauteur: entier,
+                  duree_ms: entier) -> chaine {
+  $wid = os_x11_base() + 1
+  $creer = os_requete_creer_fenetre($wid, os_x11_racine(), 40, 40,
+                                    $largeur, $hauteur)
+  $mapper = os_requete_mapper($wid)
+  $requetes = $creer + $mapper
+  si (longueur(titre) > 0) {
+    $requetes = $requetes + os_requete_titre($wid, titre)
+  }
+  $sec = $duree_ms div 1000
+  $nanos = ($duree_ms % 1000) * 1000000
+  $donnees = os_donnees_x11() + $requetes + os_u64($sec) + os_u64($nanos)
+  retour os_elf(os_code_fenetre_x11_taille(longueur($requetes)), $donnees, 7)
+}
+
+# ── 3. Boucle d'événements : read(fd, tampon, taille) ; ───────────────────
+#       write(1, tampon, octets_lus) ; exit(0).
+# 13 instructions = 52 octets ; le tampon suit immédiatement le code.
+# Le fd est un entier (0 = stdin dans le test reproductible). Dans une
+# application complète, il faut conserver le fd de la fenêtre dans un seul
+# processus — voir la limite documentée.
+fn boucle_evenements(fd: entier, taille: entier) -> chaine {
+  $lc = 52
+  $code = ""
+  $code = $code + os_movz(0, $fd)                          # 0  : fd
+  $code = $code + os_adr(1, $lc - 4)                       # 1  : tampon
+  $code = $code + os_movz(2, $taille)                      # 2  : taille
+  $code = $code + os_movz(8, os_nr_read())                 # 3  : 63
+  $code = $code + os_svc()                                 # 4  : read
+  $code = $code + os_mov_reg(2, 0)                         # 5  : x2 = octets lus
+  $code = $code + os_movz(0, 1)                            # 6  : stdout
+  $code = $code + os_adr(1, $lc - 4 * 7)                   # 7  : tampon
+  $code = $code + os_movz(8, os_nr_write())                # 8  : 64
+  $code = $code + os_svc()                                 # 9  : write
+  $code = $code + os_movz(0, 0)                            # 10 : 0
+  $code = $code + os_movz(8, os_nr_exit())                 # 11 : 93
+  $code = $code + os_svc()                                 # 12 : exit
+  retour os_elf($code, os_zeros($taille), 7)
+}
+
+# ── 4. Fermeture : write(1,"FERME\n",6) ; close(fd) ; exit(0) ─────────────
+# 11 instructions = 44 octets ; le message suit immédiatement le code.
+fn fermer_fenetre(fd: entier) -> chaine {
+  $lc = 44
+  $message = "FERME\n"
+  $code = ""
+  $code = $code + os_movz(0, 1)                            # 0 : stdout
+  $code = $code + os_adr(1, $lc - 4)                       # 1 : message
+  $code = $code + os_movz(2, 6)                            # 2 : 6 octets
+  $code = $code + os_movz(8, os_nr_write())                # 3 : 64
+  $code = $code + os_svc()                                 # 4 : write
+  $code = $code + os_movz(0, $fd)                          # 5 : fd à fermer
+  $code = $code + os_movz(8, os_nr_close())                 # 6 : 57
+  $code = $code + os_svc()                                 # 7 : close
+  $code = $code + os_movz(0, 0)                            # 8 : 0
+  $code = $code + os_movz(8, os_nr_exit())                 # 9 : 93
+  $code = $code + os_svc()                                 # 10 : exit
+  retour os_elf($code, $message, 5)
+}
+
+# ── 5. Boîte de message ──────────────────────────────────────────────────
+# HONNÊTE : ceci est une boîte de message TERMINALE. Une fenêtre modale X11
+# avec texte dessiné exigerait CreateGC/PolyText8 et une police (retour
+# d'allocation) : ce n'est PAS ce que ce code fait, et nous ne le prétendons
+# pas. Le titre est préfixé au texte, formaté en Rose.
+fn boite_message(titre: chaine, texte: chaine) -> chaine {
+  $contenu = "[" + titre + "] " + texte + "\n"
+  retour ecrire_ecran($contenu)
+}
+
+# ── Table de correspondance : plus aucune primitive OS dans le moteur ────
+fn table_pontier() -> table {
+  $t = table()
+  inserer($t, "fenetre_native", "ouvrir_fenetre")
+  inserer($t, "fenetre_afficher", "ouvrir_fenetre")
+  inserer($t, "fenetre_attendre", "boucle_evenements")
+  inserer($t, "fenetre_fermer", "fermer_fenetre")
+  inserer($t, "message_native", "boite_message")
+  retour $t
+}
+
+# Description déterministe, testable sans lancer les ELF.
+fn decrire_pontier() -> chaine {
+  $s = "PONTIER_ROSE|" + chaine(longueur(table_pontier())) + "|"
+  $s = $s + chaine(longueur(os_elf_ecrire_sortie("x"))) + "|"
+  $s = $s + chaine(longueur(ouvrir_fenetre("x", 10, 10, 10))) + "\n"
+  retour $s
+}

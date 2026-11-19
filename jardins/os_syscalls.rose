@@ -1,0 +1,380 @@
+# jardins/os_syscalls.rose — PONTIER OS ÉCRIT EN ROSE PUR.
+#
+# ⚠ CE JARDIN EST UNE BIBLIOTHÈQUE (un « jardin ») : il ne contient que des
+# fonctions Rose, aucune instruction programme. On le charge avec :
+#
+#     importer "jardins/os_syscalls.rose"
+#
+# Constat daté au 19/11/2026, machine aarch64 (Linux), noyau 6.x.
+#
+# BUT : déplacer le pontier système hors du moteur. Le moteur ne garde que
+# `ecrire_bytes` (déjà utilisé par l'émetteur ELF) pour déposer des octets dans
+# un fichier. TOUTE la connaissance OS — numéros de syscalls, encodage des
+# instructions, structure ELF64, requêtes protocolaires — est ici, en Rose.
+#
+# Aucun autre langage : ni Rust ajouté, ni C, ni wasm externe, ni FFI. Rose
+# calcule des entiers exacts et assemble des chaînes d'octets ; `ecrire_bytes`
+# convertit chaque caractère en un octet (c as u8) — vérifié dans le moteur.
+#
+# ── Ce que ce jardin PRODUIT ────────────────────────────────────────────────
+#   * os_movz / os_adr / os_svc : encodage AArch64 natif (32 bits each).
+#   * os_elf : un ET_EXEC aarch64 autonome (header 64 + phdr 56 + code + data).
+#   * os_code_ecrire_sortie : write(1, message, len) puis exit(0).
+#   * os_code_connect_x11 : socket(AF_UNIX) + connect(/tmp/.X11-unix/X99)
+#     + écriture du handshake X11 + lecture de la réponse + affichage de la
+#     réponse sur stdout + exit(0).
+#
+# ── Limite honnête ─────────────────────────────────────────────────────────
+# Rose ne sait pas (encore) exécuter un octet généré : le lancement de l'ELF
+# se fait, pour l'instant, par le système (shell) après création du fichier.
+# Ce jardin fournit le CODE MACHINE, pas un lanceur. Voir
+# rose/docs/OS_PONTIER_ROSE_PUR.md pour le bilan complet et la voie propre
+# (un seul primitive générique « exécuter ces octets » dans le runtime,
+# au lieu des cinq primitives OS spécifiques).
+
+# ── 1. Écriture little-endian (louée à l'émetteur ELF, réécrite ici) ──────
+
+fn os_octet(n: entier) -> chaine {
+  retour caractere(n % 256)
+}
+
+fn os_u16(n: entier) -> chaine {
+  $b0 = n % 256
+  $b1 = (n div 256) % 256
+  retour caractere($b0) + caractere($b1)
+}
+
+fn os_u32(n: entier) -> chaine {
+  $b0 = n % 256
+  $b1 = (n div 256) % 256
+  $b2 = (n div 65536) % 256
+  $b3 = (n div 16777216) % 256
+  retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3)
+}
+
+fn os_u64(n: entier) -> chaine {
+  retour os_u32(n % 4294967296) + os_u32(n div 4294967296)
+}
+
+fn os_zeros(n: entier) -> chaine {
+  $s = ""
+  $i = 0
+  tant_que ($i < n) {
+    $s = $s + caractere(0)
+    $i = $i + 1
+  }
+  retour $s
+}
+
+# ── 2. Encodage des instructions AArch64 ───────────────────────────────────
+
+# MOVZ Xd, #imm16 (hw = 0) : 0xD2800000 | (imm16 << 5) | d.
+fn os_movz(d: entier, imm16: entier) -> chaine {
+  retour os_u32(3531603968 + $d + $imm16 * 32)
+}
+
+# MOVZ avec décalage `hw` (blocs de 16 bits) : 0xD2800000 | (hw<<21) | ...
+fn os_movz_hw(d: entier, imm16: entier, hw: entier) -> chaine {
+  retour os_u32(3531603968 + $d + $imm16 * 32 + $hw * 2097152)
+}
+
+# MOV Xd, Xm = ORR Xd, XZR, Xm : 0xAA000000 | (m<<16) | (31<<5) | d.
+fn os_mov_reg(d: entier, m: entier) -> chaine {
+  retour os_u32(2852126720 + $m * 65536 + 992 + $d)
+}
+
+# ADR Xd, PC+deplacement : imm21 signé = immhi:immlo.
+# os_adr_vers(d, index, taille_code) calcule le déplacement depuis
+# l'instruction `index` (0-based) jusqu'aux données placées juste après
+# `taille_code` octets de code. Chaque instruction fait 4 octets.
+fn os_adr(d: entier, deplacement: entier) -> chaine {
+  $v = deplacement
+  si ($v < 0) { $v = $v + 2097152 }
+  $lo = $v % 4
+  $hi = ($v div 4) % 524288
+  retour os_u32(268435456 + $lo * 536870912 + $hi * 32 + $d)
+}
+
+fn os_adr_vers(d: entier, index: entier, taille_code: entier) -> chaine {
+  retour os_adr($d, $taille_code - 4 * $index)
+}
+
+# SVC #0 = 0xD4000001.
+fn os_svc() -> chaine {
+  retour os_u32(3556769793)
+}
+
+# ── 3. Numéros de syscalls Linux aarch64 (constat sur la machine) ─────────
+
+fn os_nr_read() -> entier { retour 63 }
+fn os_nr_write() -> entier { retour 64 }
+fn os_nr_close() -> entier { retour 57 }
+fn os_nr_socket() -> entier { retour 198 }
+fn os_nr_connect() -> entier { retour 203 }
+fn os_nr_exit() -> entier { retour 93 }
+
+# ── 4. ELF64 ET_EXEC aarch64, un seul PT_LOAD ─────────────────────────────
+
+# `code` et `donnees` sont des chaînes d'octets (construites via os_u32 /
+# caractere). `drapeaux` = 5 (R|X) ou 7 (R|W|X quand le code écrit en mémoire).
+# e_entry = base + 120 ; le code est à l'offset 120, les données juste après.
+fn os_elf(code: chaine, donnees: chaine, drapeaux: entier) -> chaine {
+  $base = 4194304
+  $lc = longueur(code)
+  $ld = longueur(donnees)
+  $taille = 120 + $lc + $ld
+  $out = ""
+  $out = $out + caractere(127) + "ELF" + caractere(2) + caractere(1) + caractere(1) + caractere(0)
+  $out = $out + os_zeros(8)                      # e_ident[EI_PAD]
+  $out = $out + os_u16(2)                        # e_type = ET_EXEC
+  $out = $out + os_u16(183)                      # e_machine = EM_AARCH64
+  $out = $out + os_u32(1)                        # e_version
+  $out = $out + os_u64($base + 120)              # e_entry
+  $out = $out + os_u64(64)                       # e_phoff
+  $out = $out + os_u64(0)                        # e_shoff
+  $out = $out + os_u32(0)                        # e_flags
+  $out = $out + os_u16(64)                       # e_ehsize
+  $out = $out + os_u16(56)                       # e_phentsize
+  $out = $out + os_u16(1)                        # e_phnum
+  $out = $out + os_u16(0)                        # e_shentsize
+  $out = $out + os_u16(0)                        # e_shnum
+  $out = $out + os_u16(0)                        # e_shstrndx
+  $out = $out + os_u32(1)                        # p_type = PT_LOAD
+  $out = $out + os_u32(drapeaux)                 # p_flags
+  $out = $out + os_u64(0)                        # p_offset
+  $out = $out + os_u64($base)                    # p_vaddr
+  $out = $out + os_u64($base)                    # p_paddr
+  $out = $out + os_u64($taille)                  # p_filesz
+  $out = $out + os_u64($taille)                  # p_memsz
+  $out = $out + os_u64(4096)                     # p_align
+  $out = $out + code
+  $out = $out + donnees
+  retour $out
+}
+
+# ── 5. Programme machine minimal : write(1, msg, len) ; exit(0) ───────────
+
+# Rend les 8 instructions (32 octets). Le message est ajouté par l'appelant
+# comme données, juste après le code : l'ADR de l'instruction 1 pointe dessus.
+fn os_code_ecrire_sortie(longueur_message: entier) -> chaine {
+  $lc = 32
+  $code = ""
+  $code = $code + os_movz(0, 1)                              # x0 = 1 (stdout)
+  $code = $code + os_adr_vers(1, 1, $lc)                     # x1 = message
+  $code = $code + os_movz(2, $longueur_message)              # x2 = longueur
+  $code = $code + os_movz(8, os_nr_write())                  # x8 = 64
+  $code = $code + os_svc()                                   # write
+  $code = $code + os_movz(0, 0)                              # x0 = 0
+  $code = $code + os_movz(8, os_nr_exit())                   # x8 = 93
+  $code = $code + os_svc()                                   # exit
+  retour $code
+}
+
+# ELF complet « Bonjour … » : prêt à écrire sur disque puis lancer.
+fn os_elf_ecrire_sortie(message: chaine) -> chaine {
+  $code = os_code_ecrire_sortie(longueur(message))
+  retour os_elf($code, message, 5)
+}
+
+# ── 6. Programme machine X11 : socket + connect + handshake + écho ────────
+
+# sockaddr_un pour /tmp/.X11-unix/X99 : famille AF_UNIX=1 (u16) + chemin +
+# NUL, bourré à 24 octets. addrlen = 2 + 18 + 1 = 21.
+fn os_sockaddr_x99() -> chaine {
+  $chemin = "/tmp/.X11-unix/X99"
+  $s = os_u16(1) + $chemin + caractere(0)
+  $pad = 24 - longueur($s)
+  $i = 0
+  tant_que ($i < $pad) {
+    $s = $s + caractere(0)
+    $i = $i + 1
+  }
+  retour $s
+}
+
+# Requête d'établissement X11, 12 octets, sans authentification :
+# 'l', 0, version majeure 11, mineure 0, 0, 0, 0, 0 (2+2+2+2+2+2).
+fn os_handshake_x11() -> chaine {
+  retour "l" + caractere(0) + os_u16(11) + os_u16(0) + os_u16(0) + os_u16(0) + os_u16(0)
+}
+
+# Données : sockaddr (24 o) + handshake (12 o) + tampon de lecture (4096 o).
+fn os_donnees_x11() -> chaine {
+  $d = os_sockaddr_x99() + os_handshake_x11()
+  retour $d + os_zeros(4096)
+}
+
+# 29 instructions = 116 octets. Les adresses des données relatives au code :
+#   sockaddr  -> +116  (ADR index 7,  PC = +28  -> imm = 88)
+#   handshake -> +140  (ADR index 12, PC = +48  -> imm = 92)
+#   tampon    -> +152  (ADR index 17, PC = +68  -> imm = 84)
+#                       (ADR index 23, PC = +92  -> imm = 60)
+fn os_code_connect_x11() -> chaine {
+  $lc = 116
+  $d_sockaddr = 0
+  $d_handshake = 24
+  $d_tampon = 36
+  $code = ""
+  $code = $code + os_movz(0, 1)                                   # 0 : AF_UNIX
+  $code = $code + os_movz(1, 1)                                   # 1 : SOCK_STREAM
+  $code = $code + os_movz(2, 0)                                   # 2 : protocole 0
+  $code = $code + os_movz(8, os_nr_socket())                      # 3 : socket = 198
+  $code = $code + os_svc()                                        # 4 : syscall
+  $code = $code + os_mov_reg(19, 0)                               # 5 : x19 = fd
+  $code = $code + os_mov_reg(0, 19)                               # 6 : x0 = fd
+  $code = $code + os_adr(1, $lc + $d_sockaddr - 4 * 7)          # 7 : x1 = sockaddr
+  $code = $code + os_movz(2, 21)                                  # 8 : addrlen
+  $code = $code + os_movz(8, os_nr_connect())                     # 9 : connect = 203
+  $code = $code + os_svc()                                        # 10 : syscall
+  $code = $code + os_mov_reg(0, 19)                               # 11 : x0 = fd
+  $code = $code + os_adr(1, $lc + $d_handshake - 4 * 12)         # 12 : x1 = handshake
+  $code = $code + os_movz(2, 12)                                  # 13 : 12 octets
+  $code = $code + os_movz(8, os_nr_write())                       # 14 : write = 64
+  $code = $code + os_svc()                                        # 15 : syscall
+  $code = $code + os_mov_reg(0, 19)                               # 16 : x0 = fd
+  $code = $code + os_adr(1, $lc + $d_tampon - 4 * 17)            # 17 : x1 = tampon
+  $code = $code + os_movz(2, 4096)                                # 18 : 4096 octets
+  $code = $code + os_movz(8, os_nr_read())                        # 19 : read = 63
+  $code = $code + os_svc()                                        # 20 : syscall
+  $code = $code + os_mov_reg(2, 0)                                # 21 : x2 = octets lus
+  $code = $code + os_movz(0, 1)                                   # 22 : stdout
+  $code = $code + os_adr(1, $lc + $d_tampon - 4 * 23)            # 23 : x1 = tampon
+  $code = $code + os_movz(8, os_nr_write())                       # 24 : write = 64
+  $code = $code + os_svc()                                        # 25 : syscall
+  $code = $code + os_movz(0, 0)                                   # 26 : x0 = 0
+  $code = $code + os_movz(8, os_nr_exit())                        # 27 : exit = 93
+  $code = $code + os_svc()                                        # 28 : syscall
+  retour $code
+}
+
+# ELF complet du test X11 : R|W|X car on écrit dans le tampon de réponse.
+fn os_elf_connect_x11() -> chaine {
+  retour os_elf(os_code_connect_x11(), os_donnees_x11(), 7)
+}
+
+# ── 7. Vraie fenêtre X11 : CreateWindow + MapWindow en code machine ───────
+
+# Identifiants OBSERVÉS dans la réponse Xvfb du 19/11/2026 (handshake ci-dessus)
+# et décodés en little-endian (le client demande 'l') :
+#   resource_id_base = 0x600000, resource_id_mask = 0x1fffff
+#   root = 0x1ff, root_visual = 0x21, profondeur = 24
+# Un identifiant client valide est donc base|1 = 0x600001.
+# ⚠ Ce sont des CONSTANTES de cette session Xvfb : pour un serveur quelconque,
+# il faut analyser la réponse d'établissement (travail restant, documenté).
+fn os_x11_base() -> entier { retour 6291456 }
+fn os_x11_racine() -> entier { retour 511 }
+fn os_x11_visuel() -> entier { retour 33 }
+fn os_x11_profondeur() -> entier { retour 24 }
+
+# Requête CreateWindow (opcode 1), 40 octets = 10 unités de 4 octets.
+# Les champs sont en little-endian ('l' demandé au handshake).
+fn os_requete_creer_fenetre(wid: entier, parent: entier,
+                            x: entier, y: entier, larg: entier,
+                            haut: entier) -> chaine {
+  $q = ""
+  $q = $q + caractere(1) + caractere(os_x11_profondeur()) + os_u16(10)  # opcode, profondeur, longueur
+  $q = $q + os_u32($wid)                                              # identifiant choisi
+  $q = $q + os_u32($parent)                                           # parent = racine
+  $q = $q + os_u16($x) + os_u16($y)                                   # position
+  $q = $q + os_u16($larg) + os_u16($haut)                             # taille
+  $q = $q + os_u16(2) + os_u16(1)                                     # bordure, classe InputOutput
+  $q = $q + os_u32(os_x11_visuel())                                   # visuel de la racine
+  $q = $q + os_u32(10)                                                # masque = BackPixel|BorderPixel
+  $q = $q + os_u32(16777215) + os_u32(0)                              # fond blanc, bordure noire
+  retour $q
+}
+
+# Requête MapWindow (opcode 8), 8 octets = 2 unités.
+fn os_requete_mapper(wid: entier) -> chaine {
+  retour caractere(8) + caractere(0) + os_u16(2) + os_u32($wid)
+}
+
+# Requête ChangeProperty (opcode 18) pour WM_NAME. Les atomes prédéfinis
+# XA_WM_NAME = 39 et XA_STRING = 31 ont des identifiants FIXES : aucun
+# aller-retour (InternAtom) n'est nécessaire. Format 8 bits, mode Replace.
+fn os_requete_titre(wid: entier, titre: chaine) -> chaine {
+  $n = longueur(titre)
+  $padded = $n
+  $r = $n % 4
+  si ($r != 0) { $padded = $n + 4 - $r }
+  $q = ""
+  $q = $q + caractere(18) + caractere(0) + os_u16((24 + $padded) div 4)
+  $q = $q + os_u32($wid) + os_u32(39) + os_u32(31)
+  $q = $q + caractere(8) + caractere(0) + caractere(0) + caractere(0)
+  $q = $q + os_u32($n)
+  $q = $q + titre
+  $i = 0
+  tant_que ($i < $padded - $n) {
+    $q = $q + caractere(0)
+    $i = $i + 1
+  }
+  retour $q
+}
+
+# Bloc envoyé d'un seul write : 40 + 8 = 48 octets.
+fn os_requetes_fenetre_x11() -> chaine {
+  $w = os_requete_creer_fenetre(os_x11_base() + 1, os_x11_racine(), 40, 40, 360, 180)
+  retour $w + os_requete_mapper(os_x11_base() + 1)
+}
+
+# Données : sockaddr(24) + handshake(12) + tampon(4096) + requêtes(48)
+# + timespec(16). `nanosleep` garde la fenêtre visible 4 secondes.
+fn os_donnees_fenetre_x11() -> chaine {
+  $d = os_donnees_x11() + os_requetes_fenetre_x11()
+  retour $d + os_u64(4) + os_u64(0)
+}
+
+# 33 instructions = 132 octets. Déplacements ADR calculés depuis les offsets.
+# `taille_requetes` = nombre d'octets du bloc CreateWindow/MapWindow/(titre).
+fn os_code_fenetre_x11_taille(taille_requetes: entier) -> chaine {
+  $lc = 132
+  $d_sockaddr = 0
+  $d_handshake = 24
+  $d_tampon = 36
+  $d_requetes = 4132
+  $d_timespec = 4132 + $taille_requetes
+  $code = ""
+  $code = $code + os_movz(0, 1)                                    # 0  : AF_UNIX
+  $code = $code + os_movz(1, 1)                                    # 1  : SOCK_STREAM
+  $code = $code + os_movz(2, 0)                                    # 2  : protocole
+  $code = $code + os_movz(8, os_nr_socket())                       # 3  : 198
+  $code = $code + os_svc()                                         # 4  : socket
+  $code = $code + os_mov_reg(19, 0)                                # 5  : x19 = fd
+  $code = $code + os_mov_reg(0, 19)                                # 6  : x0 = fd
+  $code = $code + os_adr(1, $lc + $d_sockaddr - 4 * 7)             # 7  : sockaddr
+  $code = $code + os_movz(2, 21)                                   # 8  : addrlen
+  $code = $code + os_movz(8, os_nr_connect())                      # 9  : 203
+  $code = $code + os_svc()                                         # 10 : connect
+  $code = $code + os_mov_reg(0, 19)                                # 11 : x0 = fd
+  $code = $code + os_adr(1, $lc + $d_handshake - 4 * 12)           # 12 : handshake
+  $code = $code + os_movz(2, 12)                                   # 13 : 12 octets
+  $code = $code + os_movz(8, os_nr_write())                        # 14 : 64
+  $code = $code + os_svc()                                         # 15 : write setup
+  $code = $code + os_mov_reg(0, 19)                                # 16 : x0 = fd
+  $code = $code + os_adr(1, $lc + $d_tampon - 4 * 17)              # 17 : tampon
+  $code = $code + os_movz(2, 4096)                                 # 18 : 4096
+  $code = $code + os_movz(8, os_nr_read())                         # 19 : 63
+  $code = $code + os_svc()                                         # 20 : read réponse
+  $code = $code + os_mov_reg(0, 19)                                # 21 : x0 = fd
+  $code = $code + os_adr(1, $lc + $d_requetes - 4 * 22)            # 22 : requêtes X11
+  $code = $code + os_movz(2, $taille_requetes)                     # 23 : taille du bloc
+  $code = $code + os_movz(8, os_nr_write())                        # 24 : 64
+  $code = $code + os_svc()                                         # 25 : CreateWindow+Map
+  $code = $code + os_adr(0, $lc + $d_timespec - 4 * 26)            # 26 : x0 = timespec
+  $code = $code + os_movz(1, 0)                                    # 27 : x1 = NULL
+  $code = $code + os_movz(8, 101)                                  # 28 : nanosleep = 101
+  $code = $code + os_svc()                                         # 29 : pause 4 s
+  $code = $code + os_movz(0, 0)                                    # 30 : x0 = 0
+  $code = $code + os_movz(8, os_nr_exit())                         # 31 : 93
+  $code = $code + os_svc()                                         # 32 : exit
+  retour $code
+}
+
+# Cas par défaut : 48 octets (CreateWindow 40 + MapWindow 8), sans titre.
+fn os_code_fenetre_x11() -> chaine {
+  retour os_code_fenetre_x11_taille(48)
+}
+
+fn os_elf_fenetre_x11() -> chaine {
+  retour os_elf(os_code_fenetre_x11(), os_donnees_fenetre_x11(), 7)
+}
