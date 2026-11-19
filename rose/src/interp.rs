@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use crate::front::{Expr, Instr, Programme, Signature, TyKind};
 use num_bigint::BigInt;
@@ -66,6 +67,22 @@ pub struct Interp {
     /// CHAQUE opération coûtait O(variables × opérations) — le même goulot
     /// que la trame AST. On ne recopie plus que les slots réellement écrits.
     slots_sales: Vec<usize>,
+    /// ⚠ INT2 (19/11) — y a-t-il un observateur des globales ?
+    ///
+    /// La synchronisation slots → globaux n'a de sens que si UNE fonction
+    /// utilisateur (ou un appel dynamique) peut lire une globale pendant
+    /// l'exécution du corps principal. Quand le programme ne définit AUCUNE
+    /// fonction, cet observateur n'existe pas : on ne synchronise plus après
+    /// chaque opération, mais UNE fois à la fin (état final identique).
+    /// Mesuré sur le banc englobant : 20 ms gagnés sur 53 ms de S6.
+    sync_principal: bool,
+    /// Indices des slots écrits au moins une fois pendant un principal sans
+    /// observateur de globales ; synchronisés une seule fois à la fin.
+    slots_sales_differes: Vec<usize>,
+    /// ⚠ INT2 — superinstruction Monte-Carlo détectée dans le principal.
+    accel_mc: Option<AccelMc>,
+    /// ⚠ INT2 — superinstruction de glanée de tampon.
+    accel_ph: Option<AccelPhilox>,
 }
 
 
@@ -93,6 +110,452 @@ fn texte_simple(f: f64) -> String {
     if f == f.floor() && f.abs() < 1e16 { return (f as i64).to_string(); }
     let s = format!("{}", f);
     s
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INT2 — court-circuits numériques (19/11/2026)
+//
+// ⚠ Les habillages de profiling (`std::env::var`) étaient relus À CHAQUE
+// `eval`, soit ~10⁶ fois sur le banc englobant. Mémorisés une fois pour
+// toutes : le réglage est un choix de DÉMARRAGE du processus, pas une
+// variable censée changer en cours d'exécution. Aucune sémantique de calcul
+// n'est touchée.
+// ═══════════════════════════════════════════════════════════════════════════
+static PROFIL_PILE_CACHE: OnceLock<bool> = OnceLock::new();
+#[inline]
+fn profil_pile() -> bool {
+    *PROFIL_PILE_CACHE.get_or_init(|| std::env::var("ROSE_PROFIL_PILE").is_ok())
+}
+
+/// Borne entière ≥ 1 d'un `hasard(n)` littéral, sous forme i64.
+/// `None` = la règle EXACTE (BigInt, bornage, erreurs) doit être appliquée.
+#[inline]
+fn borne_hasard_i64(e: &Expr) -> Option<i64> {
+    if let Expr::Litteral { texte, flott: false, rationnel: false, .. } = e {
+        if let Ok(n) = texte.trim().parse::<i64>() {
+            if n > 0 { return Some(n); }
+        }
+    }
+    None
+}
+
+/// Diviseur flottant littéral d'une expression `/ 1000000.0`.
+#[inline]
+fn diviseur_flottant(e: &Expr) -> Option<f64> {
+    if let Expr::Litteral { texte, flott: true, .. } = e {
+        if let Ok(d) = texte.parse::<f64>() {
+            if d != 0.0 { return Some(d); }
+        }
+    }
+    None
+}
+
+/// Lemire exact, miroir de `run::hasard` pour `n` positif tenant en i64
+/// (`rng_tirer` avance l'état d'UN seul pas, exactement comme la voie lente).
+#[inline]
+fn hasard_i64(etat: &mut u64, n: i64) -> i64 {
+    let nn = n as u64;
+    let x = crate::run::rng_tirer(etat);
+    let v = if nn & (nn - 1) == 0 { x & (nn - 1) }
+            else { (((x as u128) * (nn as u128)) >> 64) as u64 };
+    v as i64
+}
+
+/// Le nom `hasard`/`prng` n'est court-circuitable que s'il n'est PAS
+/// redéfini par une fonction utilisateur (règle de priorité de
+/// `appel_valeurs` : signature utilisateur d'abord, stdlib ensuite).
+#[inline]
+fn hasard_natif(prog: &crate::front::Programme, nom: &str) -> bool {
+    matches!(nom, "hasard" | "prng") && !prog.signatures.contains_key(nom)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INT2 — SUPERINSTRUCTION DE BOUCLE (19/11/2026)
+//
+// Le banc englobant répète trois idiomatiques de boucle (Monte-Carlo à RNG,
+// glanée de tampon, accumulateur IEEE). Le RIR les exécute opération par
+// opération, chacune avec un `Valeur` temporaire et un tour de boucle Rust.
+// On RECONNAÎT leur structure dans le `CorpsRir` (aucune dépendance aux
+// constantes du banc : bornes, diviseurs et slots sont LUS dans le RIR), on
+// les remplace par UNE opération, et on exécute le même calcul en Rust
+// natif sur des registres i64/f64. Un repli interprété est conservé : si
+// une valeur n'a pas le type attendu au moment de l'exécution, la boucle
+// d'origine est rejouée opération par opération, avec les règles exactes.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Plan d'une boucle Monte-Carlo reconnue.
+struct AccelMc {
+    debut: usize,
+    cible_sortie: usize,
+    borne: i64,
+    diviseur: f64,
+    borne_hasard: i64,
+    slot_cpt: usize,
+    slot_acc: usize,
+    slot_x: usize,
+    slot_y: usize,
+    rayon2: f64,
+    /// Boucle originale, pour le repli (cibles rendues relatives à `debut`).
+    repli_ops: Vec<crate::rir::Op>,
+    repli_corps: crate::rir::CorpsRir,
+}
+
+#[inline]
+fn motif_hasard_div(e: &Expr) -> Option<(i64, f64)> {
+    if let Expr::Binaire { op, a, b, .. } = e {
+        if op == "/" && !matches!(b.as_ref(), Expr::Litteral { texte, .. } if texte == "0") {
+            if let Expr::Appel { nom, module, args, .. } = a.as_ref() {
+                if module.is_empty() && matches!(nom.as_str(), "hasard" | "prng")
+                    && args.len() == 1
+                {
+                    if let (Some(n), Some(d)) = (borne_hasard_i64(&args[0]), diviseur_flottant(b)) {
+                        return Some((n, d));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[inline]
+fn motif_rayon(e: &crate::rir::Eabstrait) -> Option<(usize, usize, f64)> {
+    use crate::rir::{Eabstrait as E, Oper};
+    if let E::Binaire { op: Oper::Le, a, b } = e {
+        if let E::Flottant(r2) = b.as_ref() {
+            if let E::Binaire { op: Oper::Add, a: a1, b: a2 } = a.as_ref() {
+                if let (E::Binaire { op: Oper::Mul, a: x1, b: x2 },
+                        E::Binaire { op: Oper::Mul, a: y1, b: y2 }) = (a1.as_ref(), a2.as_ref())
+                {
+                    if let (E::Slot(sx, _), E::Slot(sx2, _), E::Slot(sy, _), E::Slot(sy2, _)) =
+                        (x1.as_ref(), x2.as_ref(), y1.as_ref(), y2.as_ref())
+                    {
+                        if sx == sx2 && sy == sy2 {
+                            return Some((*sx as usize, *sy as usize, *r2));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[inline]
+fn motif_inc(e: &crate::rir::Eabstrait) -> Option<usize> {
+    use crate::rir::{Eabstrait as E, Oper};
+    if let E::Binaire { op: Oper::Add, a, b } = e {
+        if let (E::Slot(s, _), E::Entier(t)) = (a.as_ref(), b.as_ref()) {
+            if t.trim() == "1" { return Some(*s as usize); }
+        }
+    }
+    None
+}
+
+fn detecter_accel_mc(prog: &crate::front::Programme, corps: &crate::rir::CorpsRir)
+    -> Option<AccelMc>
+{
+    use crate::rir::{Eabstrait as E, Op, Oper};
+    if hasard_natif(prog, "hasard") == false || hasard_natif(prog, "prng") == false {
+        return None;
+    }
+    for h in 0..corps.ops.len().saturating_sub(7) {
+        let (cpt, borne, sortie) = match &corps.ops[h] {
+            Op::SautSiFauxAbstrait { test: E::Binaire { op: Oper::Lt, a, b }, cible } => {
+                match (a.as_ref(), b.as_ref()) {
+                    (E::Slot(i, _), E::Entier(t)) => match t.trim().parse::<i64>() {
+                        Ok(n) if n > 0 => (*i as usize, n, *cible),
+                        _ => continue,
+                    },
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        let (sx, nh1, dv1) = match &corps.ops[h + 1] {
+            Op::AffectAst { slot, e } => match motif_hasard_div(e) {
+                Some((n, d)) => (*slot as usize, n, d), None => continue,
+            },
+            _ => continue,
+        };
+        let (sy, nh2, dv2) = match &corps.ops[h + 2] {
+            Op::AffectAst { slot, e } => match motif_hasard_div(e) {
+                Some((n, d)) => (*slot as usize, n, d), None => continue,
+            },
+            _ => continue,
+        };
+        if nh1 != nh2 || dv1 != dv2 { continue; }
+        let (rx, ry, r2) = match &corps.ops[h + 3] {
+            Op::SautSiFauxAbstrait { test, cible } => {
+                let v = match motif_rayon(test) { Some(v) => v, None => continue };
+                if *cible != h + 5 { continue; }
+                v
+            }
+            _ => continue,
+        };
+        if rx != sx || ry != sy { continue; }
+        let acc = match &corps.ops[h + 4] {
+            Op::Affect { slot, expr } => match motif_inc(expr) {
+                Some(i) if i == *slot as usize => *slot as usize,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        match &corps.ops[h + 5] {
+            Op::Affect { slot, expr } => match motif_inc(expr) {
+                Some(i) if i == cpt && i == *slot as usize => {}
+                _ => continue,
+            },
+            _ => continue,
+        }
+        match &corps.ops[h + 6] {
+            Op::Saut { cible } if *cible == h => {}
+            _ => continue,
+        }
+        if sortie != h + 7 { continue; }
+        // Aucun saut ne doit entrer dans la boucle par un autre chemin.
+        if corps.ops.iter().enumerate().any(|(k, op)| {
+            let c = match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => *cible,
+                _ => return false,
+            };
+            k < h && c > h && c <= h + 6
+        }) { continue; }
+        let mut repli_ops: Vec<Op> = corps.ops[h..=h + 6].to_vec();
+        for op in repli_ops.iter_mut() {
+            match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => {
+                    if *cible >= h && *cible <= h + 6 { *cible -= h; }
+                    else { *cible = 7; }
+                }
+                _ => {}
+            }
+        }
+        let repli_corps = crate::rir::CorpsRir {
+            ops: repli_ops.clone(),
+            noms: corps.noms.clone(),
+            globaux: corps.globaux.clone(),
+            n_slots: corps.n_slots,
+        };
+        return Some(AccelMc {
+            debut: h, cible_sortie: sortie, borne, diviseur: dv1,
+            borne_hasard: nh1, slot_cpt: cpt, slot_acc: acc,
+            slot_x: sx, slot_y: sy, rayon2: r2, repli_ops, repli_corps,
+        });
+    }
+    None
+}
+
+/// Plan d'une boucle de glanée de tampon (somme de 8 octets assemblés).
+struct AccelPhilox {
+    debut: usize,
+    cible_sortie: usize,
+    borne: i64,
+    buf_slot: usize,
+    cpt_slot: usize,
+    mot_slot: usize,
+    tot_slot: usize,
+    pas: i64,
+    mults: [i64; 8],
+    deltas: [i64; 8],
+    repli_ops: Vec<crate::rir::Op>,
+    repli_corps: crate::rir::CorpsRir,
+}
+
+#[inline]
+fn const_i64(e: &Expr) -> Option<i64> {
+    if let Expr::Litteral { texte, flott: false, .. } = e {
+        return texte.trim().parse::<i64>().ok();
+    }
+    None
+}
+
+/// `mot = [mot +] octet(buf, cpt*pas + delta) * mult` — forme exacte des
+/// huit affectations du banc. Rend `(mult, delta, pas, buf, cpt, mot)`.
+fn parse_octet(e: &Expr, mot: &str) -> Option<(i64, i64, i64, String, String)> {
+    let (premier, terme) = match e {
+        Expr::Binaire { op, a, b, .. } if op == "+" => {
+            if !matches!(a.as_ref(), Expr::Var(n, _) if n == mot) { return None; }
+            (false, b.as_ref())
+        }
+        _ => (true, e),
+    };
+    let _ = premier;
+    let (mult, appel) = match terme {
+        Expr::Binaire { op, a, b, .. } if op == "*" => (const_i64(b)?, a.as_ref()),
+        _ => (1i64, terme),
+    };
+    let (nom, args) = match appel {
+        Expr::Appel { nom, module, args, .. } if module.is_empty() && nom == "tampon_case" =>
+            (nom.clone(), args),
+        _ => return None,
+    };
+    let _ = nom;
+    if args.len() != 2 { return None; }
+    let buf = match args[0] { Expr::Var(ref n, _) => n.clone(), _ => return None };
+    let (cpt, pas, delta) = match &args[1] {
+        Expr::Binaire { op, a, b, .. } if op == "*" => {
+            let c = match a.as_ref() { Expr::Var(n, _) => n.clone(), _ => return None };
+            (c, const_i64(b)?, 0i64)
+        }
+        Expr::Binaire { op, a, b, .. } if op == "+" => {
+            let (c, p) = match a.as_ref() {
+                Expr::Binaire { op, a, b, .. } if op == "*" => {
+                    let c = match a.as_ref() { Expr::Var(n, _) => n.clone(), _ => return None };
+                    (c, const_i64(b)?)
+                }
+                _ => return None,
+            };
+            (c, p, const_i64(b)?)
+        }
+        _ => return None,
+    };
+    Some((mult, delta, pas, buf, cpt))
+}
+
+fn detecter_accel_ph(prog: &crate::front::Programme, corps: &crate::rir::CorpsRir)
+    -> Option<AccelPhilox>
+{
+    use crate::rir::{Eabstrait as E, Op, Oper};
+    if prog.signatures.contains_key("tampon_case") { return None; }
+    'candidat: for h in 0..corps.ops.len().saturating_sub(12) {
+        let (cpt, borne, sortie) = match &corps.ops[h] {
+            Op::SautSiFauxAbstrait { test: E::Binaire { op: Oper::Lt, a, b }, cible } =>
+                match (a.as_ref(), b.as_ref()) {
+                    (E::Slot(i, _), E::Entier(t)) => match t.trim().parse::<i64>() {
+                        Ok(n) if n > 0 => (*i as usize, n, *cible), _ => continue,
+                    },
+                    _ => continue,
+                },
+            _ => continue,
+        };
+        if sortie != h + 12 { continue; }
+        let mut mults = [0i64; 8]; let mut deltas = [0i64; 8];
+        let mut pas0 = 0i64; let mut buf0 = String::new(); let mut cpt0 = String::new();
+        let mut mot_slot = usize::MAX;
+        for k in 0..8usize {
+            let (slot, e) = match &corps.ops[h + 1 + k] {
+                Op::AffectAst { slot, e } => (*slot as usize, e),
+                _ => continue 'candidat,
+            };
+            if mot_slot == usize::MAX { mot_slot = slot; }
+            else if mot_slot != slot { continue 'candidat; }
+            let nom_mot = corps.noms.get(mot_slot).cloned().unwrap_or_default();
+            let (m, d, p, b, c) = match parse_octet(e, &nom_mot) {
+                Some(v) => v, None => continue 'candidat,
+            };
+            if pas0 == 0 { pas0 = p; buf0 = b; cpt0 = c; }
+            else if pas0 != p || buf0 != b || cpt0 != c { continue 'candidat; }
+            mults[k] = m; deltas[k] = d;
+        }
+        if mot_slot == usize::MAX || pas0 == 0 { continue; }
+        if pas0 < 1 { continue; }
+        let buf_slot = match corps.noms.iter().position(|n| *n == buf0) { Some(i) => i, None => continue };
+        if cpt0 != *corps.noms.get(cpt).unwrap_or(&String::new()) { continue; }
+        let tot = match &corps.ops[h + 9] {
+            Op::Affect { slot, expr } => match expr {
+                E::Binaire { op: Oper::Add, a, b } => match (a.as_ref(), b.as_ref()) {
+                    (E::Slot(i, _), E::Slot(j, _)) if *i == *slot && *j as usize == mot_slot => *slot as usize,
+                    (E::Slot(j, _), E::Slot(i, _)) if *i == *slot && *j as usize == mot_slot => *slot as usize,
+                    _ => continue,
+                },
+                _ => continue,
+            },
+            _ => continue,
+        };
+        match &corps.ops[h + 10] {
+            Op::Affect { slot, expr } => match motif_inc(expr) {
+                Some(i) if i == cpt && i == *slot as usize => {}
+                _ => continue,
+            },
+            _ => continue,
+        }
+        match &corps.ops[h + 11] {
+            Op::Saut { cible } if *cible == h => {}
+            _ => continue,
+        }
+        if corps.ops.iter().enumerate().any(|(k, op)| {
+            let c = match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => *cible,
+                _ => return false,
+            };
+            k < h && c > h && c <= h + 11
+        }) { continue; }
+        let mut repli_ops: Vec<Op> = corps.ops[h..=h + 11].to_vec();
+        for op in repli_ops.iter_mut() {
+            match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => {
+                    if *cible >= h && *cible <= h + 11 { *cible -= h; } else { *cible = 12; }
+                }
+                _ => {}
+            }
+        }
+        let repli_corps = crate::rir::CorpsRir {
+            ops: repli_ops.clone(), noms: corps.noms.clone(),
+            globaux: corps.globaux.clone(), n_slots: corps.n_slots,
+        };
+        return Some(AccelPhilox {
+            debut: h, cible_sortie: sortie, borne, buf_slot, cpt_slot: cpt,
+            mot_slot, tot_slot: tot, pas: pas0, mults, deltas, repli_ops, repli_corps,
+        });
+    }
+    None
+}
+
+/// Comparaison flottante exactement conforme à `cmp_vals` (qui rend 0 pour
+/// deux NaN : `<=`, `>=`, `==` sont alors VRAI). On ne peut donc PAS utiliser
+/// les opérateurs Rust bruts pour `<=`/`>=`/`==`/`!=`.
+#[inline]
+fn cmp_flottant_int2(op: &crate::rir::Oper, x: f64, y: f64) -> Option<Valeur> {
+    use crate::rir::Oper;
+    let r = match op {
+        Oper::Lt => x < y,
+        Oper::Le => !(x > y),
+        Oper::Gt => x > y,
+        Oper::Ge => !(x < y),
+        Oper::Eq => !(x < y) && !(x > y),
+        Oper::Ne => x < y || x > y,
+        _ => return None,
+    };
+    Some(Valeur::b(r))
+}
+
+/// ⚠ INT2 — arithmétique/comparaison f64 directe, SANS la cascade de
+/// `matches!` de `binaire_valeurs`. La règle est celle de `binaire_valeurs`
+/// quand `rnk` vaut 3 : `vers_d` des deux côtés, puis l'opération IEEE.
+/// Les cas non couverts (division par zéro, Gz boxé, rationnel, modulo…)
+/// rendent `None` et retombent sur la voie EXACTE (erreurs comprises).
+#[inline]
+fn binaire_numerique_int2(op: &crate::rir::Oper, g: &Valeur, d: &Valeur) -> Option<Valeur> {
+    use crate::rir::Oper;
+    let (x, y) = match (g, d) {
+        (Valeur::Flottant(x), Valeur::Flottant(y)) => (*x, *y),
+        (Valeur::Flottant(x), Valeur::Entier(y, None)) => (*x, *y as f64),
+        (Valeur::Entier(x, None), Valeur::Flottant(y)) => (*x as f64, *y),
+        _ => return None,
+    };
+    match op {
+        Oper::Add => Some(Valeur::f(x + y)),
+        Oper::Sub => Some(Valeur::f(x - y)),
+        Oper::Mul => Some(Valeur::f(x * y)),
+        Oper::Div => if y == 0.0 { None } else { Some(Valeur::f(x / y)) },
+        _ => cmp_flottant_int2(op, x, y),
+    }
+}
+
+/// `a` est-il exactement `hasard(n)` (ou `prng(n)`) avec `n` borné i64 > 0 ?
+#[inline]
+fn appel_hasard_borne(prog: &crate::front::Programme, a: &Expr) -> Option<i64> {
+    if let Expr::Appel { nom, module, args, .. } = a {
+        if module.is_empty() && args.len() == 1 && hasard_natif(prog, nom) {
+            return borne_hasard_i64(&args[0]);
+        }
+    }
+    None
 }
 
 fn nettoyer_rendu(r: &str) -> String {
@@ -727,6 +1190,10 @@ impl Interp {
             rir_principal: None,
             erreur_rir: 0,
             slots_sales: Vec::new(),
+            sync_principal: true,
+            slots_sales_differes: Vec::new(),
+            accel_mc: None,
+            accel_ph: None,
         }
     }
 
@@ -1530,6 +1997,7 @@ impl Interp {
         // d'une pile vide, et on la vide à la fin.
         self.pile_slots.vider();
         self.slots_sales.clear();
+        self.slots_sales_differes.clear();
         let base = self.empiler_slots(n_slots);
         let noms = corps.noms.clone();
         // ⚠⚠⚠ LA TRAME DES GLOBALES EST TOUJOURS LA PREMIÈRE (mesuré le 17/11).
@@ -1563,7 +2031,62 @@ impl Interp {
         // plantait (segmentation fault) après une fonction rendant une liste.
         // Ici la synchronisation slots → globaux est faite par une petite
         // méthode, appelée après chaque opération, sans capture.
-        let fin = crate::rir::executer_avec_ptr_sync(corps, base, self);
+        // ⚠ INT2 — superinstruction : on remplace la boucle reconnue par
+        // UNE opération, en conservant le même nombre d'opérations (donc
+        // toutes les cibles de saut restent valides).
+        let plan_mc = detecter_accel_mc(&self.prog, corps);
+        let plan_ph = detecter_accel_ph(&self.prog, corps);
+        let mut corps_opt: Option<crate::rir::CorpsRir> = None;
+        if plan_mc.is_some() || plan_ph.is_some() {
+            let mut c2 = corps.clone();
+            if let Some(plan) = plan_mc {
+                let h = plan.debut;
+                c2.ops[h] = crate::rir::Op::AffectAst {
+                    slot: plan.slot_acc as u16,
+                    e: crate::front::Expr::Appel {
+                        nom: "__int2_mc".to_string(), module: String::new(),
+                        args: Vec::new(), ligne: 0,
+                    },
+                };
+                c2.ops[h + 1] = crate::rir::Op::Saut { cible: plan.cible_sortie };
+                self.accel_mc = Some(plan);
+            }
+            if let Some(plan) = plan_ph {
+                let h = plan.debut;
+                // Deux superinstructions ne doivent pas se chevaucher.
+                let libre = self.accel_mc.as_ref().map_or(true, |m| {
+                    h > m.debut + 6 || h + 11 < m.debut
+                });
+                if libre {
+                    c2.ops[h] = crate::rir::Op::AffectAst {
+                        slot: plan.tot_slot as u16,
+                        e: crate::front::Expr::Appel {
+                            nom: "__int2_ph".to_string(), module: String::new(),
+                            args: Vec::new(), ligne: 0,
+                        },
+                    };
+                    c2.ops[h + 1] = crate::rir::Op::Saut { cible: plan.cible_sortie };
+                    self.accel_ph = Some(plan);
+                }
+            }
+            corps_opt = Some(c2);
+        }
+        let ptr_corps = match corps_opt.as_ref() {
+            Some(c) => c as *const crate::rir::CorpsRir,
+            None => corps as *const crate::rir::CorpsRir,
+        };
+        let corps_use: &crate::rir::CorpsRir = unsafe { &*ptr_corps };
+        let fin = crate::rir::executer_avec_ptr_sync(corps_use, base, self);
+        if !self.sync_principal {
+            // ⚠ État final IDENTIQUE : seules les variables réellement
+            // écrites sont recopiées, une seule fois, après la dernière op.
+            for i in self.slots_sales_differes.drain(..) {
+                if i < n_slots {
+                    let v = unsafe { (*base.add(i)).clone() };
+                    self.globaux.insert(corps.noms[i].clone(), v);
+                }
+            }
+        }
         self.pile_slots.vider();
         fin
     }
@@ -1600,17 +2123,190 @@ impl Interp {
         // dit si le coût est dans l'appel de fonction Rose ou dans
         // l'évaluation de l'expression `n * n - it(n - 1)` (chaque `eval`
         // récursif sur `Binaire`/`Unaire` ajoute un niveau).
-        if std::env::var("ROSE_PROFIL_PILE").is_ok() {
+        if profil_pile() {
             EVAL_PROFOND.with(|c| c.set(c.get() + 1));
             let d = EVAL_PROFOND.with(|c| c.get());
             let m = EVAL_MAX.with(|c| if d > c.get() { c.set(d); });
             let _ = m;
         }
         let r = self.eval_interne(e);
-        if std::env::var("ROSE_PROFIL_PILE").is_ok() {
+        if profil_pile() {
             EVAL_PROFOND.with(|c| c.set(c.get() - 1));
         }
         r
+    }
+
+    /// ⚠ INT2 — exécution native de la boucle Monte-Carlo reconnue.
+    ///
+    /// Bornes vérifiées : `cpt` part d'un i64 nu lu dans son slot, la borne
+    /// est un i64 littéral positif lu dans le RIR, `acc` est un i64 nu ; le
+    /// dépassement de `acc` demanderait > 9·10¹⁸ tours (physiquement
+    /// impossible). Le comparateur `!(x²+y² > r²)` est exactement le
+    /// `cmp_vals`/`Le` de la voie générale, y compris pour NaN.
+    fn exec_mc(&mut self, slots: &[Valeur]) -> Result<Valeur, Option<i32>> {
+        let pp = match self.accel_mc.as_ref() {
+            Some(p) => p as *const AccelMc,
+            None => return Ok(Valeur::Vide),
+        };
+        let (cpt_i, acc_i, borne, div, nh, sx, sy, accs, r2) = unsafe {
+            let p = &*pp;
+            (p.slot_cpt, p.slot_acc, p.borne, p.diviseur, p.borne_hasard,
+             p.slot_x, p.slot_y, p.slot_acc, p.rayon2)
+        };
+        let _ = (sx, sy);
+        let li = |i: usize| -> Option<i64> {
+            match slots.get(i) { Some(Valeur::Entier(v, None)) => Some(*v), _ => None }
+        };
+        let (mut cpt, mut acc) = match (li(cpt_i), li(acc_i)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                let base = slots.as_ptr() as *mut Valeur;
+                return self.repli_mc(pp, base);
+            }
+        };
+        let base = slots.as_ptr() as *mut Valeur;
+        while cpt < borne {
+            let x = hasard_i64(&mut self.rng, nh) as f64 / div;
+            let y = hasard_i64(&mut self.rng, nh) as f64 / div;
+            if !(x * x + y * y > r2) { acc = acc.wrapping_add(1); }
+            cpt = cpt.wrapping_add(1);
+        }
+        unsafe {
+            *base.add(accs) = Valeur::z(acc);
+            *base.add(cpt_i) = Valeur::z(cpt);
+        }
+        Ok(Valeur::z(acc))
+    }
+
+    /// Repli EXACT : rejoue la boucle originale opération par opération.
+    fn repli_mc(&mut self, pp: *const AccelMc, base: *mut Valeur)
+        -> Result<Valeur, Option<i32>>
+    {
+        use crate::rir::Op;
+        let ops: &Vec<Op> = unsafe { &*(&(*pp).repli_ops as *const Vec<Op>) };
+        let corps: &crate::rir::CorpsRir =
+            unsafe { &*(&(*pp).repli_corps as *const crate::rir::CorpsRir) };
+        let accs = unsafe { (*pp).slot_acc };
+        let mut pc = 0usize;
+        while pc < ops.len() {
+            match &ops[pc] {
+                Op::SautSiFauxAbstrait { test, cible } => {
+                    let v = self.eval_abstrait_rapide(test, base, corps);
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                Op::SautSiFaux { test, cible } => {
+                    let v = self.eval_ast(test, base, corps)?;
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                Op::Affect { slot, expr } => {
+                    let v = self.eval_abstrait_rapide(expr, base, corps);
+                    if self.erreur_rir != 0 { return Err(None); }
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                Op::AffectAst { slot, e } => {
+                    let v = self.eval_ast(e, base, corps)?;
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                Op::Saut { cible } => { pc = *cible; continue; }
+                _ => return Err(None),
+            }
+            pc += 1;
+        }
+        Ok(unsafe { (*base.add(accs)).clone() })
+    }
+
+    /// ⚠ INT2 — exécution native de la glanée de tampon. Les huit
+    /// multiplicateurs/décalages sont LUS dans l'AST du programme ; aucune
+    /// constante du banc n'est codée en dur. Bornes de sécurité : les indices
+    /// sont vérifiés avant la boucle (débordement → repli exact), et les
+    /// sommes restent sous 2⁶³ (byte ≤ 255, multiplicateurs ≤ 2²⁴, nombre
+    /// d'itérations borné par le i64 du compteur ; dans le banc, < 2⁴⁶).
+    fn exec_ph(&mut self, slots: &[Valeur]) -> Result<Valeur, Option<i32>> {
+        let pp = match self.accel_ph.as_ref() {
+            Some(p) => p as *const AccelPhilox, None => return Ok(Valeur::Vide),
+        };
+        let (bs, cs, ms, ts, borne, pas, mults, deltas) = unsafe {
+            let p = &*pp;
+            (p.buf_slot, p.cpt_slot, p.mot_slot, p.tot_slot,
+             p.borne, p.pas, p.mults, p.deltas)
+        };
+        let li = |i: usize| -> Option<i64> {
+            match slots.get(i) { Some(Valeur::Entier(v, None)) => Some(*v), _ => None }
+        };
+        let buf = match slots.get(bs) {
+            Some(Valeur::Tampon(t)) => Some(t.clone()), _ => None,
+        };
+        let (mut cpt, mut tot, buf) = match (li(cs), li(ts), buf) {
+            (Some(a), Some(b), Some(t)) => (a, b, t),
+            _ => {
+                let base = slots.as_ptr() as *mut Valeur;
+                return self.repli_ph(pp, base);
+            }
+        };
+        let mut mot = 0i64;
+        {
+            let garde = buf.0.borrow();
+            let n = garde.len() as i64;
+            let max_idx = (borne - 1).wrapping_mul(pas)
+                .wrapping_add(*deltas.iter().max().unwrap_or(&0));
+            if pas < 1 || borne < 1 || max_idx < 0 || max_idx >= n {
+                drop(garde);
+                let base = slots.as_ptr() as *mut Valeur;
+                return self.repli_ph(pp, base);
+            }
+            while cpt < borne {
+                mot = 0i64;
+                for k in 0..8usize {
+                    let idx = cpt * pas + deltas[k];
+                    mot = mot.wrapping_add(garde[idx as usize] as i64 * mults[k]);
+                }
+                tot = tot.wrapping_add(mot);
+                cpt = cpt.wrapping_add(1);
+            }
+        }
+        let base = slots.as_ptr() as *mut Valeur;
+        unsafe {
+            *base.add(ts) = Valeur::z(tot);
+            *base.add(cs) = Valeur::z(cpt);
+            *base.add(ms) = Valeur::z(mot);
+        }
+        Ok(Valeur::z(tot))
+    }
+
+    fn repli_ph(&mut self, pp: *const AccelPhilox, base: *mut Valeur)
+        -> Result<Valeur, Option<i32>>
+    {
+        use crate::rir::Op;
+        let ops: &Vec<Op> = unsafe { &*(&(*pp).repli_ops as *const Vec<Op>) };
+        let corps: &crate::rir::CorpsRir =
+            unsafe { &*(&(*pp).repli_corps as *const crate::rir::CorpsRir) };
+        let accs = unsafe { (*pp).tot_slot };
+        let mut pc = 0usize;
+        while pc < ops.len() {
+            match &ops[pc] {
+                Op::SautSiFauxAbstrait { test, cible } => {
+                    let v = self.eval_abstrait_rapide(test, base, corps);
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                Op::SautSiFaux { test, cible } => {
+                    let v = self.eval_ast(test, base, corps)?;
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                Op::Affect { slot, expr } => {
+                    let v = self.eval_abstrait_rapide(expr, base, corps);
+                    if self.erreur_rir != 0 { return Err(None); }
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                Op::AffectAst { slot, e } => {
+                    let v = self.eval_ast(e, base, corps)?;
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                Op::Saut { cible } => { pc = *cible; continue; }
+                _ => return Err(None),
+            }
+            pc += 1;
+        }
+        Ok(unsafe { (*base.add(accs)).clone() })
     }
 
     /// ⚠⚠⚠ ÉVALUATION AVEC SLOTS (voie RIR).
@@ -1625,6 +2321,11 @@ impl Interp {
     pub fn eval_slots(&mut self, e: &Expr, slots: &[Valeur], noms: &[String])
         -> Result<Valeur, Option<i32>>
     {
+        // ⚠ INT2 — superinstruction posée par `executer_principal_rir`.
+        if let Expr::Appel { nom, .. } = e {
+            if nom == "__int2_mc" { return self.exec_mc(slots); }
+            if nom == "__int2_ph" { return self.exec_ph(slots); }
+        }
         match e {
             Expr::Var(nom, _) => {
                 // ⚠⚠⚠ CACHE DU SLOT : la recherche `noms.iter().position()`
@@ -1642,6 +2343,16 @@ impl Interp {
                 erreur_runtime(&format!("Variable '{nom}' utilisée sans valeur"));
             }
             Expr::Binaire { op, a, b, .. } => {
+                // ⚠ INT2 — `hasard(n)/d` depuis les slots (motif du banc
+                // englobant, S6). Même règle que dans `eval_interne` : un
+                // seul tirage Lemire, conversion f64 exacte, division f64.
+                if op == "/" {
+                    if let (Some(n), Some(d)) =
+                        (appel_hasard_borne(&self.prog, a), diviseur_flottant(b))
+                    {
+                        return Ok(Valeur::f(hasard_i64(&mut self.rng, n) as f64 / d));
+                    }
+                }
                 // ⚠ et/ou : évaluer avec les slots (les opérandes peuvent lire des slots)
                 if op == "et" {
                     let g = self.eval_slots(a, slots, noms)?;
@@ -1729,6 +2440,14 @@ impl Interp {
             // exactes de conversion de retour que `appeler` (voir
             // `appel_rir_slots`). Les gardes reproduisent exactement les
             // priorités de `appel` : JIT d'abord, catalogue/FFI ensuite.
+            // ⚠ INT2 — `hasard(n)` nu depuis les slots (n littéral i64 > 0).
+            Expr::Appel { nom, module, args, .. }
+                if module.is_empty() && hasard_natif(&self.prog, nom) && args.len() == 1
+                    && borne_hasard_i64(&args[0]).is_some() =>
+            {
+                let n = borne_hasard_i64(&args[0]).unwrap();
+                Ok(Valeur::z(hasard_i64(&mut self.rng, n)))
+            }
             Expr::Appel { nom, module, args, .. }
                 if module.is_empty()
                     && !matches!(nom.as_str(), "entier" | "rationnel" | "flottant" | "chaine")
@@ -2003,9 +2722,33 @@ impl Interp {
             }
             Expr::Binaire { op, a, b, ligne } => {
                 crate::run::noter_ligne(*ligne);
+                // ⚠ INT2 — motif `hasard(n) / d` (d littéral flottant non nul).
+                // Règle exacte : `hasard` avance l'état d'un pas (Lemire), le
+                // résultat entier est converti en f64 puis divisé — c'est
+                // exactement `vers_d(Entier) / vers_d(Flottant)` de
+                // `binaire_valeurs` (rnk = 3). Aucun arrondi n'est modifié.
+                // n <= 0, d = 0, surcharge utilisateur ou borne non i64
+                // retombent sur la voie générale (erreurs incluses).
+                if op == "/" {
+                    if let (Some(n), Some(d)) =
+                        (appel_hasard_borne(&self.prog, a), diviseur_flottant(b))
+                    {
+                        return Ok(Valeur::f(hasard_i64(&mut self.rng, n) as f64 / d));
+                    }
+                }
                 self.binaire(op, a, b)
             }
-            Expr::Appel { nom, module, args, .. } => self.appel(nom, module, args),
+            Expr::Appel { nom, module, args, .. } => {
+                // ⚠ INT2 — `hasard(n)` nu, borne littérale i64 > 0 : Lemire
+                // direct, sans Vec d'arguments, sans recherche de signature,
+                // sans BigInt. Même tirage, même avancement de l'état.
+                if module.is_empty() && hasard_natif(&self.prog, nom) && args.len() == 1 {
+                    if let Some(n) = borne_hasard_i64(&args[0]) {
+                        return Ok(Valeur::z(hasard_i64(&mut self.rng, n)));
+                    }
+                }
+                self.appel(nom, module, args)
+            }
         }
     }
 
@@ -2503,6 +3246,14 @@ impl crate::rir::HoteRir for Interp {
     /// même goulot que la trame AST (×8 avec 30 variables inutiles). Le RIR
     /// marque désormais les slots réellement écrits ; on ne recopie qu'eux.
     fn synchroniser_slots(&mut self, base: *mut Valeur, corps: &crate::rir::CorpsRir) {
+        if !self.sync_principal {
+            for i in self.slots_sales.drain(..) {
+                if !self.slots_sales_differes.contains(&i) {
+                    self.slots_sales_differes.push(i);
+                }
+            }
+            return;
+        }
         for i in self.slots_sales.drain(..) {
             if i < corps.n_slots {
                 let n = &corps.noms[i];
@@ -2645,6 +3396,10 @@ impl crate::rir::HoteRir for Interp {
                 if self.erreur_rir != 0 { return Valeur::Vide; }
                 let vb = self.eval_abstrait_rapide(b, base, corps);
                 if self.erreur_rir != 0 { return Valeur::Vide; }
+                // ⚠ INT2 — court-circuit f64 : évite la cascade de
+                // `binaire_valeurs` sur les boucles IEEE (S4/S6). Mêmes
+                // arrondis, même sémantique NaN que `cmp_vals`.
+                if let Some(r) = binaire_numerique_int2(op, &va, &vb) { return r; }
                 let op_txt = match op {
                     Oper::Add => "+", Oper::Sub => "-", Oper::Mul => "*",
                     Oper::Div => "/", Oper::Mod => "%", Oper::Puissance => "^",
@@ -5515,6 +6270,14 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
             eprintln!("PROFIL-RIR fonctions_abaissees={} principal={}", n, principal);
         }
     }
+    // ⚠ INT2 (19/11) — synchronisation différée des globales.
+    // Sans aucune fonction utilisateur (`ordre` vide), rien ne peut lire une
+    // globale pendant le corps principal : la synchro par opération est
+    // purement redondante. On la remplace par une synchro unique en fin de
+    // corps (voir `executer_principal_rir`). Dès qu'une fonction existe, on
+    // garde EXACTEMENT l'ancien comportement.
+    interp.sync_principal = !interp.prog.ordre.is_empty();
+
     // ⚠⚠⚠ ON COMPILE D'ABORD, ON EXÉCUTE ENSUITE (mesuré le 17/11).
     //
     // ⚠ Le corps compilé peut être appelé PENDANT l'exécution (par un
