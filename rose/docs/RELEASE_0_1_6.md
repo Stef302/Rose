@@ -2,6 +2,13 @@
 
 > **Constat daté au 19/11/2026.** Ces notes décrivent un état mesuré du dépôt
 > `Stef302/Rose` (branche `main`, HEAD poussé `5665bf7` au début de la rédaction).
+> **Vérification des mises à jour** : le manifeste `releases.win.json` et le
+> paquet `Rose-0.1.6-full.nupkg` (2 988 307 o, SHA-256 `e194f979…117e9`) sont
+> publiés dans la release. Sans eux le launcher affichait « vérification
+> impossible ». URL `https://github.com/Stef302/Rose/releases/latest/download/releases.win.json`
+> rejouée en `200` (402 o), SHA du nupkg téléchargé identique au manifeste.
+> Le paquet contient `lib/net45/{rose.exe,rose-shell.exe,*.ico}` et **pas** de
+> `Rose-win-Setup.exe` redondant — c’est précisément l’objectif du launcher.
 > **Assets Windows joints** : `rose-setup.exe` = LE LAUNCHER STABLE (9 582 592 o,
 > PE32+ GUI, ressources .rsrc avec 6 icônes + manifeste PerMonitorV2). Il contient
 > la gestion PATH, l’association `.rose`, le thème rouge/vert et le choix de mise
