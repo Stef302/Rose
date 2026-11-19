@@ -764,3 +764,16 @@ Consigne: « réessaye de prendre une bibliothèque quelconque, utiliser l'utili
 | WD2 | D4b PGCD battre Rust (même méthode) | `rose/src/{run,i128x,interp}.rs`, `rose/docs/PGCD_BAT_RUST.md` | 19 |
 
 ⚠ Chacun construit son binaire dans `/tmp/opencode/<agent>/`, ne remplace PAS `rose/rose`.
+
+## Vague 31 (19/11) — racines, wasm universel, full-hosted, vitesse générale
+
+Consigne: « rose doit maîtriser parfaitement les racines (point fort de Rust), faire marcher n'importe quelle bibliothèque wasm, full hosted à tout prix, continuer à dépasser Rust sur le plan général ».
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| RA | racines exactes + perf vs Rust | `rose/src/{interp,irrationnel}.rs`, `rose/docs/RACINES_VS_RUST.md` | 6 |
+| RB | convertisseur VRAIMENT universel (call_indirect/start/libc) | `scripts/rose-wasm-lib.sh`, `rose/src/wasm_lecteur.rs`, `rose/docs/WASM_UNIVERSEL.md` | 8 |
+| RC | full-hosted : solution G4 générale (émetteur RIR complet) | `compilateur/emetteur_elf.rose`, `rose/docs/FULL_HOSTED_SOLUTION.md` | 10 |
+| RD | vitesse générale : D5 chaîne (×63) | `rose/src/{run,jit}.rs`, `rose/docs/CH AINE_GENERAL.md`→`CHAINE_GENERAL.md` | 15 |
+
+⚠ Chacun construit son binaire dans `/tmp/opencode/<agent>/`, ne remplace PAS `rose/rose`.
