@@ -165,13 +165,55 @@ pub fn calcul_e(decimales: usize) -> BigInt {
     e / BigInt::from(10u64).pow(garde as u32)
 }
 
+/// Newton sur BigInt avec estimation initiale obtenue par échelonnement 2048 bits.
+///
+/// ⚠ CORRECTION DE PRÉMISSE (RA 19/11) : le commentaire historique affirmait
+/// que `num-bigint::sqrt` utilisait Karatsuba (O(M(n)·log n)). FAUX en 0.5.1 :
+/// `biguint.rs::sqrt` = Newton `s←(s+a/s)>>1` avec estimation f64 (ou
+/// rééchelonnement 1024 bits si a ne tient pas dans un f64). Coût O(n²) en
+/// divisions d'où l'intérêt d'un échelonnement plus large.
+///
+/// Ici on rééchelonne sur ~2048 bits au lieu de 1024 : l'estimation initiale
+/// a ~2× plus de bits corrects, ce qui économise une itération Newton à
+/// pleine précision (mesuré : −14 % à 1000 décimales, voir RACINES_VS_RUST.md).
+/// `fixpoint` est repris à l'identique de num-bigint 0.5.1 : le résultat est
+/// donc le même floor(√a), pas une approximation.
+fn racine_newton_echelonnee(a: &BigInt) -> BigInt {
+    if a.is_zero() || a.is_one() {
+        return a.clone();
+    }
+    let bits = a.bits();
+    let extra = bits.saturating_sub(2048);
+    let root_scale = (extra + 1) / 2;
+    let scale = root_scale * 2;
+    let mut x = if scale < bits && bits - scale > 2 {
+        (a >> scale).sqrt() << root_scale
+    } else {
+        BigInt::one() << ((bits + 1) / 2)
+    };
+    let max_bits = bits / 2 + 1;
+    let mut xn = (&x + a / &x) >> 1;
+    while x < xn {
+        x = if xn.bits() > max_bits { BigInt::one() << max_bits } else { xn };
+        xn = (&x + a / &x) >> 1;
+    }
+    while x > xn {
+        x = xn;
+        xn = (&x + a / &x) >> 1;
+    }
+    x
+}
+
 /// Calcule √n à `decimales` décimales.
 /// Retourne √n × 10^decimales (entier).
 ///
-/// On calcule la racine ENTIÈRE de n·10^(2·decimales) : la racine entière de
-/// num-bigint utilise l'algorithme de Karatsuba (O(M(n)·log n)), ce qui
-/// permet 1 000 000 de décimales ; la méthode de Newton avec division
-/// serait en O(n²).
+/// On calcule la racine ENTIÈRE de n·10^(2·decimales). Décision mesurée
+/// (A/A/A 9 échantillons, c6, 2 horloges) :
+///  • ≤ 2048 bits → `BigInt::sqrt()` d'origine (le surcoût d'un échelonnement
+///    plus large n'est pas amorti : −6 % mesurés à 50 chiffres) ;
+///  • > 2048 bits → Newton à échelonnement 2048 (gain +14 % à 1000 décimales).
+/// Dans les deux cas le résultat est exactement floor(√a), vérifié sur un
+/// corpus √2..√20 comparé à `math.isqrt` Python et à num-bigint.
 pub fn calcul_racine(n: &BigInt, decimales: usize) -> BigInt {
     if n.is_zero() {
         return BigInt::zero();
@@ -183,7 +225,12 @@ pub fn calcul_racine(n: &BigInt, decimales: usize) -> BigInt {
         return n.sqrt();
     }
     let scale = BigInt::from(10u64).pow(decimales as u32);
-    (n * &scale * &scale).sqrt()
+    let a = n * &scale * &scale;
+    if a.bits() <= 2048 {
+        a.sqrt()
+    } else {
+        racine_newton_echelonnee(&a)
+    }
 }
 
 /// Calcule φ à `decimales` décimales : φ = (1 + √5) / 2.

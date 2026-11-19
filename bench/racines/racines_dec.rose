@@ -1,0 +1,15 @@
+# RA 19/11 — bench décimales : N × racine_decimales(2, D).
+# $1 = N (défaut 2000), $2 = D décimales (défaut 100).
+# Sortie : checksum (= N × (D+1) chiffres), puis millisecondes internes.
+$N = 2000
+$D = 100
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+si (nb_arguments() > 1) { $D = entier(argument(1)) }
+$m0 = millisecondes()
+$s = 0
+pour $i de 0 vers $N {
+    $s = $s + longueur(racine_decimales(2, $D))
+}
+$m1 = millisecondes()
+>> $s
+>> $m1 - $m0

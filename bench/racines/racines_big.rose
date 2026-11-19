@@ -1,0 +1,13 @@
+# RA 19/11 — racine entière exacte BigInt : N × racine_decimales(GRAND, 0).
+# `d=0` appelle exactement `n.sqrt()` de num-bigint (chemin original).
+$N = 20000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+$g = 12345678901234567890123456789012345678901234567890
+$m0 = millisecondes()
+$s = 0
+pour $i de 0 vers $N {
+    $s = $s + longueur(racine_decimales($g, 0))
+}
+$m1 = millisecondes()
+>> $s
+>> $m1 - $m0

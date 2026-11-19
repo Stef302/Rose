@@ -271,7 +271,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "hasard_systeme" | "hasard_vrai" | "trng" | "entier" | "rationnel" | "flottant"
         | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "tableau" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
-        | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow" | "racine"
+        | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow" | "racine" | "racine_decimales" | "sqrt_dec"
         | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi" | "i"
         | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "breakpoint_if" | "watch" | "unwatch" | "join"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
@@ -3672,6 +3672,31 @@ impl Interp {
                     }
                 }
                 Valeur::Irrationnel(Rc::new(n))
+            }
+            // RA 19/11 — √n en décimales (chaîne de chiffres, même convention
+            // que `nombre_pi`). Appelle directement le primitive Rose.
+            "racine_decimales" | "sqrt_dec" => {
+                // Accès DIRECT au BigInt de Gz (`bref()`) : évite l'aller-retour
+                // Gz → chaîne décimale → BigInt (mesuré : ~1,6 µs/appel économisés).
+                let nb: num_bigint::BigInt = match &a[0] {
+                    Valeur::Entier(i, None) => num_bigint::BigInt::from(*i),
+                    Valeur::Entier(_, Some(o)) => o.bref().clone(),
+                    v => {
+                        let n = vers_z(v);
+                        if n.sgn() < 0 { erreur_runtime("racine_decimales : entier négatif"); }
+                        n.bref().clone()
+                    }
+                };
+                if nb.sign() == num_bigint::Sign::Minus {
+                    erreur_runtime("racine_decimales : entier négatif");
+                }
+                let dd = match &a[1] {
+                    Valeur::Entier(i, None) if *i >= 0 => *i as u64,
+                    Valeur::Entier(_, Some(o)) if o.sgn() >= 0 && o.fits_u64() => o.get_u64(),
+                    _ => erreur_runtime("racine_decimales : décimales hors plage [0, 1e6]"),
+                };
+                if dd > 1_000_000 { erreur_runtime("racine_decimales : décimales hors plage [0, 1e6]"); }
+                Valeur::s(crate::irrationnel::calcul_racine(&nb, dd as usize).to_string())
             }
             "est_premier" | "is_prime" => { let z = vers_z(&a[0]); Valeur::b(est_premier(&z)) }
             "compter_premiers" => { let z = vers_z(&a[0]); Valeur::z(compter_premiers(&z) as i64) }

@@ -602,6 +602,11 @@ EntreeStd { nom: "lcm", args: &["entier", "entier"], retour: "entier" },
     EntreeStd { nom: "puissance", args: &["num", "entier"], retour: "entier" },
 EntreeStd { nom: "pow", args: &["num", "entier"], retour: "entier" },
     EntreeStd { nom: "racine", args: &["entier"], retour: "irrationnel" },
+    // RA 19/11 — décimales d'une racine carrée : `racine_decimales(2, 1000)`
+    // rend la chaîne des chiffres de √2 × 10^1000 (même convention que
+    // `nombre_pi`). Primitive ajoutée pour mesurer `calcul_racine` depuis Rose.
+    EntreeStd { nom: "racine_decimales", args: &["entier", "entier"], retour: "chaine" },
+    EntreeStd { nom: "sqrt_dec", args: &["entier", "entier"], retour: "chaine" },
     EntreeStd { nom: "est_premier", args: &["entier"], retour: "booleen" },
 EntreeStd { nom: "is_prime", args: &["entier"], retour: "booleen" },
     EntreeStd { nom: "compter_premiers", args: &["entier"], retour: "entier" },

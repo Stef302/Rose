@@ -1,0 +1,13 @@
+# RA 19/11 — bench racine i64 : N carrés parfaits via la primitive `racine`.
+# $1 = N (défaut 200000). Sortie : checksum, puis millisecondes internes.
+$N = 200000
+si (nb_arguments() > 0) { $N = entier(argument(0)) }
+$m0 = millisecondes()
+$s = 0
+pour $i de 0 vers $N {
+    $k = 1000003 + $i
+    $s = $s + racine($k * $k)
+}
+$m1 = millisecondes()
+>> $s
+>> $m1 - $m0
