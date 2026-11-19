@@ -804,3 +804,15 @@ Consigne: « en attendant l'interface, on continue faut dépasser rust, continue
 | SE3 | wasm universel : SIMD v128, malloc/libc, tables multiples, ABI | `rose/src/wasm_lecteur.rs`, `scripts/rose-wasm-lib.sh`, `rose/docs/WASM_FRONTIERE.md` | 8 |
 
 ⚠ LA possède `setup_gui.rs`. Chacun construit son binaire dans `/tmp/opencode/<agent>/`.
+
+## Vague 34 (19/11) — release 0.1.6, launcher, site wasm
+
+Consigne: créer la release 0.1.6 qui parle du launcher Rose; ajouter au DÉBUT le choix de configurer les mises à jour auto; comme Rose tourne en wasm, remplacer le JavaScript basique du site par le vrai rose.wasm.
+
+| Agent | Sujet | Fichiers possédés |
+|---|---|---|
+| RE1 | version 0.1.6 + notes de release | `rose/Cargo.toml`, `rose/docs/RELEASE_0_1_6.md` |
+| RE2 | premier écran : choix mises à jour auto | `rose/src/{setup_gui,setup_core,velopack}.rs`, `rose/docs/AUTO_UPDATE_CHOIX.md` |
+| RE3 | site : vrai rose.wasm au lieu du JS factice | `docs/index.html`, `rose/web/**`, `rose/docs/SITE_WASM.md` |
+
+⚠ Publication par l'orchestrateur avec le PAT Stef302 (vérifié `gh api user -q .login` = Stef302).
