@@ -15,8 +15,12 @@
 //   * une **sandbox** : nombre de slots borné, budget d'instructions borné,
 //     aucun accès fichier/réseau/clavier possible depuis le bytecode.
 //
-// Il n'y a **ni GC générationnel, ni chargeur de classes, ni compilation JIT
-// depuis `.rosebc`, ni chargement dynamique**. Voir `docs/ROSE_VM.md`.
+// ⚠ DEPUIS LA PARTIE 2 (voir plus bas) : un **chargeur de classes**, un pool
+// de constantes versionné, des méthodes avec pile d'opérandes, une table de
+// dispatch par héritage simple et des exceptions structurées ont été ajoutés
+// au format v2. Ce n'est toujours PAS une JVM Java complète (voir le doc
+// `docs/RVM_JVM_COMPLETE.md`, § limites honnêtes) : ni GC traçant, ni JIT
+// depuis `.rosebc`, ni threads, ni chargement dynamique de bibliothèques.
 //
 // ⚠ ZÉRO DÉPENDANCE AJOUTÉE : encodage écrit à la main, comme `natif_emetteur`.
 // Les entiers exacts restent du **texte décimal longueur-préfixée** — jamais
@@ -39,8 +43,21 @@
 // silencieusement. C'est une différence volontaire avec l'étude
 // `docs/BYTECODE_ROSE.md` (§3.3), qui proposait u16 et un conteneur multi-corps.
 //
+// ── Format v2 (fichier de classe « JVM Rose ») ─────────────────────────────
+//
+//   magic[6] | version u32 (= 2) | nom_classe (u32 len + UTF-8)
+//   version_classe u32 | super: u8 + (chaine si 1) | n_interfaces u32 + chaines
+//   pool: version u16 | n u32 | n × (tag u8 + payload)
+//   n_methodes u32 | n × methode :
+//       nom (chaine) | descripteur | drapeaux u16 | n_slots u16
+//       noms_slots | n_code u32 + instructions | n_exc u32 + entrées
+//
+// `lire_classe` accepte AUSSI le v1 (promotion en classe `<principal>`).
+// Spécification complète : `docs/RVM_JVM_COMPLETE.md`.
+//
 // Licence MIT.
 
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
 use crate::front::{Expr, Instr};
@@ -48,14 +65,23 @@ use crate::i128x::Gz;
 use crate::rir::{
     CacheSlot, CorpsRir, Eabstrait, FinRir, HoteRir, Op, Oper, executer_avec, poser_slot,
 };
-use crate::run::Valeur;
+/// Ré-export public : le câblage CLI (`rose rvm`) peut construire/lire des
+/// valeurs sans importer `crate::run` (voir `docs/RVM_JVM_COMPLETE.md` §5.2).
+pub use crate::run::Valeur;
+pub use crate::run::chaine_de as chaine_publique;
 
 // ── Constantes du format ──────────────────────────────────────────────────
 
 /// Magic ASCII, distinct de `ROSE_MAGIC` (queue des exécutables `rose comp`).
 pub const MAGIC: &[u8; 6] = b"ROSEBC";
-/// Version du format. Un changement incompatible doit l'incrémenter.
+/// Version du format snapshot v1 (`CorpsRir`). Conservée telle quelle pour
+/// rétrocompatibilité : `ecrire_bytecode` / `lire_bytecode` écrivent et lisent
+/// toujours ce format.
 pub const VERSION: u32 = 1;
+/// Version du format « fichier de classe » v2 (JVM Rose) : pool de constantes,
+/// classes, méthodes, table d'exceptions. `lire_classe` lit AUSSI le v1 en le
+/// promouvant en une classe à une seule méthode.
+pub const VERSION_JVM: u32 = 2;
 
 const OP_AFFECT: u8 = 0x01;
 const OP_AFFICHER_ABSTRAIT: u8 = 0x02;
@@ -133,6 +159,42 @@ pub enum Erreur {
     ExecutionEnErreur,
     /// Une panique interne a été interceptée et transformée en erreur propre.
     PaniqueInterne,
+
+    // ── Format de classe v2 (JVM Rose) ────────────────────────────────────
+    /// Index de pool de constantes hors bornes.
+    IndexConstantHorsBornes { index: u16, n: usize },
+    /// Entrée de pool du mauvais type (ex. `Appel` sur un entier).
+    TypeConstantInattendu { index: u16, attendu: &'static str, trouve: &'static str },
+    /// Pool de constantes plein (index > u16::MAX).
+    PoolPlein,
+    /// Tag de constante inconnu.
+    TagConstantInconnu(u8),
+    /// Tag d'instruction de méthode inconnu.
+    OpcodeMethodeInconnu(u8),
+    /// Classe introuvable dans le chargeur.
+    ClasseIntrouvable(String),
+    /// Méthode introuvable (après parcours de la chaîne d'héritage).
+    MethodeIntrouvable { classe: String, methode: String },
+    /// Arity d'appel différente de celle du descripteur.
+    AriteIncoherente { methode: String, attendus: usize, fournis: usize },
+    /// Profondeur d'appel maximale atteinte.
+    ProfondeurDepassee(usize),
+    /// Nombre maximal d'appels atteint.
+    AppelsEpuises(u64),
+    /// Pile d'opérandes sous-dimensionnée (vérificateur ou exécution).
+    PileSousDimensionnee { methode: String, pc: usize },
+    /// Profondeur de pile incohérente entre deux chemins de saut.
+    PileDesequilibree { methode: String, pc: usize },
+    /// Type de slot incompatible avec le descripteur / une affectation précédente.
+    TypeSlotInoherent { methode: String, slot: u16, attendu: String, trouve: String },
+    /// Plage d'exception invalide (debut >= fin, ou hors code).
+    PlageExceptionInvalide { methode: String, debut: u32, fin: u32, cible: u32, n_ops: usize },
+    /// Exception levée mais aucun gestionnaire (ni ici, ni dans un appelant).
+    ExceptionNonAttrapee(String),
+    /// Tag de type de descripteur inconnu.
+    TypeDescripteurInconnu(u8),
+    /// Incohérence de structure de méthode (slots / noms / paramètres).
+    StructureMethodeInvalide(String),
 }
 
 impl fmt::Display for Erreur {
@@ -162,6 +224,36 @@ impl fmt::Display for Erreur {
                 write!(f, "sandbox Rose : limite de {} entiers exacts simultanés atteinte", n),
             Erreur::ExecutionEnErreur => write!(f, "VM Rose : erreur d'exécution (voir l'évaluateur)"),
             Erreur::PaniqueInterne => write!(f, "VM Rose : erreur interne interceptée (sandbox)"),
+
+            Erreur::IndexConstantHorsBornes { index, n } =>
+                write!(f, "RVM v2 : index de constante {} hors bornes (pool de {})", index, n),
+            Erreur::TypeConstantInattendu { index, attendu, trouve } =>
+                write!(f, "RVM v2 : constante {} : {} attendu, {} trouvé", index, attendu, trouve),
+            Erreur::PoolPlein => write!(f, "RVM v2 : pool de constantes plein (max 65535)"),
+            Erreur::TagConstantInconnu(t) => write!(f, "RVM v2 : tag de constante inconnu 0x{:02X}", t),
+            Erreur::OpcodeMethodeInconnu(o) => write!(f, "RVM v2 : opcode de méthode inconnu 0x{:02X}", o),
+            Erreur::ClasseIntrouvable(c) => write!(f, "RVM v2 : classe `{}` introuvable", c),
+            Erreur::MethodeIntrouvable { classe, methode } =>
+                write!(f, "RVM v2 : méthode `{}.{}` introuvable", classe, methode),
+            Erreur::AriteIncoherente { methode, attendus, fournis } =>
+                write!(f, "RVM v2 : `{}` attend {} argument(s), {} fourni(s)", methode, attendus, fournis),
+            Erreur::ProfondeurDepassee(p) => write!(f, "sandbox RVM : profondeur d'appel {} atteinte", p),
+            Erreur::AppelsEpuises(n) => write!(f, "sandbox RVM : limite de {} appels atteinte", n),
+            Erreur::PileSousDimensionnee { methode, pc } =>
+                write!(f, "vérificateur RVM : `{}` pc {} : pile d'opérandes sous-dimensionnée", methode, pc),
+            Erreur::PileDesequilibree { methode, pc } =>
+                write!(f, "vérificateur RVM : `{}` pc {} : profondeur de pile incohérente", methode, pc),
+            Erreur::TypeSlotInoherent { methode, slot, attendu, trouve } =>
+                write!(f, "vérificateur RVM : `{}` slot {} : {} attendu, {} trouvé", methode, slot, attendu, trouve),
+            Erreur::PlageExceptionInvalide { methode, debut, fin, cible, n_ops } =>
+                write!(f, "vérificateur RVM : `{}` plage d'exception [{},{}) -> {} invalide (n_ops={})",
+                       methode, debut, fin, cible, n_ops),
+            Erreur::ExceptionNonAttrapee(t) =>
+                write!(f, "RVM v2 : exception `{}` non attrapée", t),
+            Erreur::TypeDescripteurInconnu(t) =>
+                write!(f, "RVM v2 : tag de type de descripteur inconnu 0x{:02X}", t),
+            Erreur::StructureMethodeInvalide(m) =>
+                write!(f, "RVM v2 : structure de méthode invalide : {}", m),
         }
     }
 }
@@ -407,6 +499,9 @@ struct Lecteur<'a> {
 }
 
 impl<'a> Lecteur<'a> {
+    /// Nombre d'octets non encore lus (garde-fou avant allocation).
+    fn reste(&self) -> usize { self.octets.len() - self.pos }
+
     fn prendre(&mut self, n: usize) -> Result<&'a [u8], Erreur> {
         let fin = self.pos.checked_add(n)
             .ok_or(Erreur::Tronque { attendu: n, present: self.octets.len() - self.pos })?;
@@ -886,6 +981,1334 @@ pub fn executer_sandbox(corps: &CorpsRir, arguments: &[Valeur], hote: &mut HoteB
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTIE 2 — « JVM Rose » : fichier de classe v2, pool de constantes,
+// classes / méthodes, invocation, exceptions structurées, vérification.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠ CE QU'EST (ET CE QUE N'EST PAS) CETTE COUCHE — honnêteté absolue :
+//
+// C'est une **machine virtuelle à cadre de méthode et pile d'opérandes**,
+// inspirée de la JVM (pool de constantes indexé, descripteurs, table de
+// méthodes, table d'exceptions par plage, déroulement de pile). Elle tourne
+// sur les mêmes `Valeur` que l'interpréteur Rose (arithmétique exacte incluse).
+//
+// Ce n'est **PAS** une JVM Java : pas de bytecode Java, pas de vérificateur de
+// types JVM au sens JVMS §4.10, pas de ramasse-miettes traçant, pas de threads,
+// pas de monitores, pas de charges dynamiques, pas de JIT depuis ce format.
+// Le « GC » reste le `GcPool` à comptage de prêt de la partie 1.
+//
+// Le format v2 est **auto-contained** : aucune dépendance, aucune modification
+// de `rir.rs` / `interp.rs` / `run.rs`. Le module n'est pas encore câblé dans
+// `lib.rs` / `main.rs` (voir `docs/RVM_JVM_COMPLETE.md`, § patch CLI proposé).
+
+// ── Pool de constantes ─────────────────────────────────────────────────────
+
+pub const CP_ENTIER: u8 = 1;
+pub const CP_BIGINT: u8 = 2;
+pub const CP_FLOTTANT: u8 = 3;
+pub const CP_CHAINE: u8 = 4;
+pub const CP_SYMBOLE: u8 = 5;
+pub const CP_METHODE: u8 = 6;
+
+/// Une entrée du pool de constantes. Les bigints sont du **texte décimal
+/// longueur-préfixé** (jamais de GMP, jamais de i64 tronqué).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Const {
+    Entier(i64),
+    BigInt(String),
+    Flottant(f64),
+    Chaine(String),
+    /// Nom de classe, de méthode ou de type d'exception.
+    Symbole(String),
+    /// Référence de méthode : trois index dans le pool (classe, nom, descripteur).
+    Methode { classe: u16, nom: u16, descr: u16 },
+}
+
+impl Const {
+    /// Fabrique une constante entière à partir d'un texte décimal exact.
+    pub fn depuis_entier_texte(t: &str) -> Const {
+        match t.trim().parse::<i64>() {
+            Ok(v) => Const::Entier(v),
+            Err(_) => Const::BigInt(t.trim().to_string()),
+        }
+    }
+
+    /// Tag binaire stable (voir `docs/RVM_JVM_COMPLETE.md`).
+    pub fn tag(&self) -> u8 {
+        match self {
+            Const::Entier(_) => CP_ENTIER,
+            Const::BigInt(_) => CP_BIGINT,
+            Const::Flottant(_) => CP_FLOTTANT,
+            Const::Chaine(_) => CP_CHAINE,
+            Const::Symbole(_) => CP_SYMBOLE,
+            Const::Methode { .. } => CP_METHODE,
+        }
+    }
+
+    /// Nom lisible du type (pour les messages d'erreur).
+    pub fn nom_type(&self) -> &'static str {
+        match self {
+            Const::Entier(_) => "entier",
+            Const::BigInt(_) => "bigint",
+            Const::Flottant(_) => "flottant",
+            Const::Chaine(_) => "chaîne",
+            Const::Symbole(_) => "symbole",
+            Const::Methode { .. } => "méthode",
+        }
+    }
+
+    /// Type abstrait utilisé par le vérificateur.
+    pub fn ty_abstrait(&self) -> TyDesc {
+        match self {
+            Const::Entier(_) | Const::BigInt(_) => TyDesc::Entier,
+            Const::Flottant(_) => TyDesc::Flottant,
+            Const::Chaine(_) | Const::Symbole(_) => TyDesc::Chaine,
+            Const::Methode { .. } => TyDesc::Inconnu,
+        }
+    }
+}
+
+/// Pool de constantes **versionné** (le champ `version` est sérialisé).
+#[derive(Clone, Debug, Default)]
+pub struct ConstantPool {
+    pub version: u16,
+    entrees: Vec<Const>,
+}
+
+impl ConstantPool {
+    /// Version du pool. Incrémenter quand le jeu de tags change.
+    pub const VERSION_CP: u16 = 1;
+
+    pub fn neuf() -> ConstantPool {
+        ConstantPool { version: Self::VERSION_CP, entrees: Vec::new() }
+    }
+
+    pub fn len(&self) -> usize { self.entrees.len() }
+    pub fn est_vide(&self) -> bool { self.entrees.is_empty() }
+    pub fn entrees(&self) -> &[Const] { &self.entrees }
+
+    /// Ajoute une entrée et rend son index stable (u16, comme la JVM).
+    pub fn ajouter(&mut self, c: Const) -> Result<u16, Erreur> {
+        if self.entrees.len() >= u16::MAX as usize { return Err(Erreur::PoolPlein); }
+        let i = self.entrees.len() as u16;
+        self.entrees.push(c);
+        Ok(i)
+    }
+
+    /// Ajoute une entrée, ou rend l'index d'une entrée déjà présente et égale
+    /// (déduplication — utile quand on compile plusieurs fois le même littéral).
+    pub fn ajouter_unique(&mut self, c: Const) -> Result<u16, Erreur> {
+        if let Some(i) = self.entrees.iter().position(|e| e == &c) { return Ok(i as u16); }
+        self.ajouter(c)
+    }
+
+    pub fn get(&self, index: u16) -> Result<&Const, Erreur> {
+        self.entrees.get(index as usize)
+            .ok_or(Erreur::IndexConstantHorsBornes { index, n: self.entrees.len() })
+    }
+
+    /// Récupère une constante en vérifiant son type.
+    pub fn get_comme(&self, index: u16, attendu: &'static str,
+                     est: fn(&Const) -> bool) -> Result<&Const, Erreur> {
+        let c = self.get(index)?;
+        if est(c) { Ok(c) }
+        else { Err(Erreur::TypeConstantInattendu {
+            index, attendu, trouve: c.nom_type(),
+        }) }
+    }
+
+    pub fn symbole(&self, index: u16) -> Result<&str, Erreur> {
+        match self.get_comme(index, "symbole", |c| matches!(c, Const::Symbole(_)))? {
+            Const::Symbole(s) => Ok(s),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn chaine(&self, index: u16) -> Result<&str, Erreur> {
+        match self.get_comme(index, "chaîne", |c| matches!(c, Const::Chaine(_)))? {
+            Const::Chaine(s) => Ok(s),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn methode(&self, index: u16)
+        -> Result<(u16, u16, u16), Erreur> {
+        match self.get_comme(index, "méthode", |c| matches!(c, Const::Methode { .. }))? {
+            Const::Methode { classe, nom, descr } => Ok((*classe, *nom, *descr)),
+            _ => unreachable!(),
+        }
+    }
+}
+
+fn ecrire_cp(dst: &mut Vec<u8>, cp: &ConstantPool) {
+    pusher_u16(dst, cp.version);
+    pusher_u32(dst, cp.entrees.len() as u32);
+    for e in &cp.entrees {
+        dst.push(e.tag());
+        match e {
+            Const::Entier(v) => dst.extend_from_slice(&v.to_le_bytes()),
+            Const::BigInt(t) => pusher_chaine(dst, t),
+            Const::Flottant(x) => dst.extend_from_slice(&x.to_le_bytes()),
+            Const::Chaine(s) | Const::Symbole(s) => pusher_chaine(dst, s),
+            Const::Methode { classe, nom, descr } => {
+                pusher_u16(dst, *classe); pusher_u16(dst, *nom); pusher_u16(dst, *descr);
+            }
+        }
+    }
+}
+
+fn lire_cp(l: &mut Lecteur<'_>) -> Result<ConstantPool, Erreur> {
+    let version = l.u16()?;
+    let n = l.u32()? as usize;
+    // Garde-fou avant allocation (un compteur hostile ne doit pas réserver 4 Go).
+    if n > l.reste() { return Err(Erreur::Tronque { attendu: n, present: l.reste() }); }
+    let mut entrees = Vec::with_capacity(n);
+    for _ in 0..n {
+        let tag = l.u8()?;
+        let e = match tag {
+            CP_ENTIER => {
+                let b = l.prendre(8)?;
+                Const::Entier(i64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]))
+            }
+            CP_BIGINT => Const::BigInt(l.chaine()?),
+            CP_FLOTTANT => Const::Flottant(l.f64()?),
+            CP_CHAINE => Const::Chaine(l.chaine()?),
+            CP_SYMBOLE => Const::Symbole(l.chaine()?),
+            CP_METHODE => Const::Methode {
+                classe: l.u16()?, nom: l.u16()?, descr: l.u16()?,
+            },
+            _ => return Err(Erreur::TagConstantInconnu(tag)),
+        };
+        entrees.push(e);
+    }
+    Ok(ConstantPool { version, entrees })
+}
+
+// ── Jeu d'instructions des méthodes (pile d'opérandes) ────────────────────
+
+pub const BC_POUSSER_CONST: u8 = 0x01;
+pub const BC_CHARGER_SLOT: u8 = 0x02;
+pub const BC_STOCKER_SLOT: u8 = 0x03;
+pub const BC_DUPLIQUER: u8 = 0x04;
+pub const BC_BINAIRE: u8 = 0x05;
+pub const BC_NEG: u8 = 0x06;
+pub const BC_NON: u8 = 0x07;
+pub const BC_SAUT: u8 = 0x08;
+pub const BC_SAUT_SI_FAUX: u8 = 0x09;
+pub const BC_APPEL: u8 = 0x0A;
+pub const BC_RETOUR_VIDE: u8 = 0x0B;
+pub const BC_RETOUR_VALEUR: u8 = 0x0C;
+pub const BC_LEVER: u8 = 0x0D;
+pub const BC_AFFICHER: u8 = 0x0E;
+
+/// Une instruction de méthode. Machine à pile : les opérandes sont dans la
+/// pile du cadre, les paramètres dans les premiers slots (comme la JVM).
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstrBc {
+    /// Empile une constante du pool (entier, bigint, flottant, chaîne).
+    PousserConst { index: u16 },
+    /// Empile la valeur d'un slot local.
+    ChargerSlot { slot: u16 },
+    /// Dépile dans un slot local.
+    StockerSlot { slot: u16 },
+    /// Duplique le sommet de pile.
+    Dupliquer,
+    /// Dépile b puis a, empile `a op b` (sémantique exacte de Rose).
+    Binaire { op: Oper },
+    Neg,
+    Non,
+    /// Saut inconditionnel (index d'instruction).
+    Saut { cible: u32 },
+    /// Dépile une condition, saut si fausse.
+    SautSiFaux { cible: u32 },
+    /// Appel de méthode : dépile `arite` arguments, empile le résultat
+    /// (`Valeur::Vide` pour un descripteur `Vide`). L'index pointe une
+    /// constante `CP_METHODE`.
+    Appel { methode: u16 },
+    /// Retour sans valeur (empile `Vide` chez l'appelant).
+    RetourVide,
+    /// Dépile et retourne une valeur.
+    RetourValeur,
+    /// Lève une exception typée : `type_index` est un `Symbole`,
+    /// `msg_index` une constante de valeur (souvent une `Chaine`).
+    Lever { type_index: u16, msg_index: u16 },
+    /// Dépile et affiche dans `HoteBc::sortie` (aucune E/S réelle).
+    Afficher,
+}
+
+fn ecrire_instr(dst: &mut Vec<u8>, i: &InstrBc) {
+    match i {
+        InstrBc::PousserConst { index } => { dst.push(BC_POUSSER_CONST); pusher_u16(dst, *index); }
+        InstrBc::ChargerSlot { slot } => { dst.push(BC_CHARGER_SLOT); pusher_u16(dst, *slot); }
+        InstrBc::StockerSlot { slot } => { dst.push(BC_STOCKER_SLOT); pusher_u16(dst, *slot); }
+        InstrBc::Dupliquer => dst.push(BC_DUPLIQUER),
+        InstrBc::Binaire { op } => { dst.push(BC_BINAIRE); dst.push(code_oper(*op)); }
+        InstrBc::Neg => dst.push(BC_NEG),
+        InstrBc::Non => dst.push(BC_NON),
+        InstrBc::Saut { cible } => { dst.push(BC_SAUT); pusher_u32(dst, *cible); }
+        InstrBc::SautSiFaux { cible } => { dst.push(BC_SAUT_SI_FAUX); pusher_u32(dst, *cible); }
+        InstrBc::Appel { methode } => { dst.push(BC_APPEL); pusher_u16(dst, *methode); }
+        InstrBc::RetourVide => dst.push(BC_RETOUR_VIDE),
+        InstrBc::RetourValeur => dst.push(BC_RETOUR_VALEUR),
+        InstrBc::Lever { type_index, msg_index } => {
+            dst.push(BC_LEVER); pusher_u16(dst, *type_index); pusher_u16(dst, *msg_index);
+        }
+        InstrBc::Afficher => dst.push(BC_AFFICHER),
+    }
+}
+
+fn lire_instr(l: &mut Lecteur<'_>) -> Result<InstrBc, Erreur> {
+    let tag = l.u8()?;
+    Ok(match tag {
+        BC_POUSSER_CONST => InstrBc::PousserConst { index: l.u16()? },
+        BC_CHARGER_SLOT => InstrBc::ChargerSlot { slot: l.u16()? },
+        BC_STOCKER_SLOT => InstrBc::StockerSlot { slot: l.u16()? },
+        BC_DUPLIQUER => InstrBc::Dupliquer,
+        BC_BINAIRE => InstrBc::Binaire { op: lire_oper(l.u8()?)? },
+        BC_NEG => InstrBc::Neg,
+        BC_NON => InstrBc::Non,
+        BC_SAUT => InstrBc::Saut { cible: l.u32()? },
+        BC_SAUT_SI_FAUX => InstrBc::SautSiFaux { cible: l.u32()? },
+        BC_APPEL => InstrBc::Appel { methode: l.u16()? },
+        BC_RETOUR_VIDE => InstrBc::RetourVide,
+        BC_RETOUR_VALEUR => InstrBc::RetourValeur,
+        BC_LEVER => InstrBc::Lever { type_index: l.u16()?, msg_index: l.u16()? },
+        BC_AFFICHER => InstrBc::Afficher,
+        _ => return Err(Erreur::OpcodeMethodeInconnu(tag)),
+    })
+}
+
+// ── Promotion v1 → classe v2 (compilateur CorpsRir → méthode) ─────────────
+
+fn compiler_expr(e: &Eabstrait, cp: &mut ConstantPool, out: &mut Vec<InstrBc>)
+    -> Result<(), Erreur>
+{
+    match e {
+        Eabstrait::Slot(s, _) => out.push(InstrBc::ChargerSlot { slot: *s }),
+        Eabstrait::Entier(t) => {
+            let index = cp.ajouter_unique(Const::depuis_entier_texte(t))?;
+            out.push(InstrBc::PousserConst { index });
+        }
+        Eabstrait::Flottant(x) => {
+            let index = cp.ajouter_unique(Const::Flottant(*x))?;
+            out.push(InstrBc::PousserConst { index });
+        }
+        Eabstrait::Binaire { op, a, b } => {
+            compiler_expr(a, cp, out)?;
+            compiler_expr(b, cp, out)?;
+            out.push(InstrBc::Binaire { op: *op });
+        }
+        Eabstrait::Neg(a) => { compiler_expr(a, cp, out)?; out.push(InstrBc::Neg); }
+        Eabstrait::Non(a) => { compiler_expr(a, cp, out)?; out.push(InstrBc::Non); }
+        Eabstrait::AppelRir { .. } => return Err(Erreur::OperationRefusee("AppelRir")),
+    }
+    Ok(())
+}
+
+fn compiler_op(op: &Op, cp: &mut ConstantPool, out: &mut Vec<InstrBc>) -> Result<(), Erreur> {
+    match op {
+        Op::Affect { slot, expr } => {
+            compiler_expr(expr, cp, out)?;
+            out.push(InstrBc::StockerSlot { slot: *slot });
+        }
+        Op::AfficherAbstrait(e) => { compiler_expr(e, cp, out)?; out.push(InstrBc::Afficher); }
+        Op::Saut { cible } => out.push(InstrBc::Saut { cible: *cible as u32 }),
+        Op::SautSiFauxAbstrait { test, cible } => {
+            compiler_expr(test, cp, out)?;
+            out.push(InstrBc::SautSiFaux { cible: *cible as u32 });
+        }
+        Op::RetourAbstrait(e) => { compiler_expr(e, cp, out)?; out.push(InstrBc::RetourValeur); }
+        Op::Retour(None) => out.push(InstrBc::RetourVide),
+        Op::Lire { .. } => return Err(Erreur::OperationRefusee("Lire")),
+        _ => return Err(Erreur::OperationRefusee("AST")),
+    }
+    Ok(())
+}
+
+// ── Descripteurs, classes, méthodes ───────────────────────────────────────
+
+pub const TD_ENTIER: u8 = 1;
+pub const TD_FLOTTANT: u8 = 2;
+pub const TD_BOOLEEN: u8 = 3;
+pub const TD_CHAINE: u8 = 4;
+pub const TD_VIDE: u8 = 5;
+pub const TD_OBJET: u8 = 6;
+pub const TD_INCONNU: u8 = 7; // usage interne du vérificateur uniquement
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TyDesc {
+    Entier,
+    Flottant,
+    Booleen,
+    Chaine,
+    Vide,
+    Objet(String),
+    /// « type non prouvé » : compatible avec tout, utilisé par le vérificateur.
+    Inconnu,
+}
+
+impl TyDesc {
+    fn tag(&self) -> u8 {
+        match self {
+            TyDesc::Entier => TD_ENTIER, TyDesc::Flottant => TD_FLOTTANT,
+            TyDesc::Booleen => TD_BOOLEEN, TyDesc::Chaine => TD_CHAINE,
+            TyDesc::Vide => TD_VIDE, TyDesc::Objet(_) => TD_OBJET,
+            TyDesc::Inconnu => TD_INCONNU,
+        }
+    }
+    fn ecrire(&self, dst: &mut Vec<u8>) {
+        dst.push(self.tag());
+        if let TyDesc::Objet(n) = self { pusher_chaine(dst, n); }
+    }
+    fn lire(l: &mut Lecteur<'_>) -> Result<TyDesc, Erreur> {
+        Ok(match l.u8()? {
+            TD_ENTIER => TyDesc::Entier,
+            TD_FLOTTANT => TyDesc::Flottant,
+            TD_BOOLEEN => TyDesc::Booleen,
+            TD_CHAINE => TyDesc::Chaine,
+            TD_VIDE => TyDesc::Vide,
+            TD_OBJET => TyDesc::Objet(l.chaine()?),
+            TD_INCONNU => TyDesc::Inconnu,
+            t => return Err(Erreur::TypeDescripteurInconnu(t)),
+        })
+    }
+    pub fn nom(&self) -> String {
+        match self {
+            TyDesc::Entier => "entier".to_string(),
+            TyDesc::Flottant => "flottant".to_string(),
+            TyDesc::Booleen => "booléen".to_string(),
+            TyDesc::Chaine => "chaîne".to_string(),
+            TyDesc::Vide => "vide".to_string(),
+            TyDesc::Objet(n) => format!("objet {}", n),
+            TyDesc::Inconnu => "inconnu".to_string(),
+        }
+    }
+    /// Un type inconnu est compatible avec tout ; sinon égalité stricte.
+    fn compatible(&self, autre: &TyDesc) -> bool {
+        matches!(self, TyDesc::Inconnu) || matches!(autre, TyDesc::Inconnu) || self == autre
+    }
+}
+
+/// Descripteur d'entrée/sortie d'une méthode (analogue d'un descripteur JVM).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Descripteur {
+    pub parametres: Vec<TyDesc>,
+    pub retour: TyDesc,
+}
+
+impl Descripteur {
+    pub fn neuf(parametres: Vec<TyDesc>, retour: TyDesc) -> Descripteur {
+        Descripteur { parametres, retour }
+    }
+    fn ecrire(&self, dst: &mut Vec<u8>) {
+        pusher_u32(dst, self.parametres.len() as u32);
+        for p in &self.parametres { p.ecrire(dst); }
+        self.retour.ecrire(dst);
+    }
+    fn lire(l: &mut Lecteur<'_>) -> Result<Descripteur, Erreur> {
+        let n = l.u32()? as usize;
+        if n > l.reste() { return Err(Erreur::Tronque { attendu: n, present: l.reste() }); }
+        let mut parametres = Vec::with_capacity(n);
+        for _ in 0..n { parametres.push(TyDesc::lire(l)?); }
+        Ok(Descripteur { parametres, retour: TyDesc::lire(l)? })
+    }
+}
+
+/// Une entrée de la table d'exceptions : si `pc ∈ [debut, fin)` et que le type
+/// levé correspond à `type_index` (0 = attrape tout), sauter à `cible`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntreeException {
+    pub debut: u32,
+    pub fin: u32,
+    pub cible: u32,
+    /// Index dans le pool : `Symbole` du type, ou 0 pour « attrape tout ».
+    pub type_index: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct MethodeRose {
+    pub nom: String,
+    pub descr: Descripteur,
+    /// Drapeaux (0 = méthode d'instance ; bit 0 = publique, bit 1 = statique).
+    pub drapeaux: u16,
+    pub n_slots: u16,
+    pub noms_slots: Vec<String>,
+    pub code: Vec<InstrBc>,
+    pub exceptions: Vec<EntreeException>,
+}
+
+impl MethodeRose {
+    pub fn neuf(nom: &str, descr: Descripteur, noms_slots: &[&str],
+                code: Vec<InstrBc>) -> Result<MethodeRose, Erreur> {
+        let noms = noms_slots.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let n_slots = u16::try_from(noms.len())
+            .map_err(|_| Erreur::StructureMethodeInvalide("trop de slots".to_string()))?;
+        Ok(MethodeRose {
+            nom: nom.to_string(), descr, drapeaux: 0, n_slots,
+            noms_slots: noms, code, exceptions: Vec::new(),
+        })
+    }
+}
+
+/// Une classe Rose chargée (pool + méthodes + table de dispatch).
+#[derive(Clone, Debug)]
+pub struct ClasseRose {
+    pub nom: String,
+    /// Version du fichier de classe (1 pour cette révision).
+    pub version: u32,
+    pub cp: ConstantPool,
+    pub super_classe: Option<String>,
+    pub interfaces: Vec<String>,
+    pub methodes: Vec<MethodeRose>,
+    /// Table de dispatch : nom de méthode -> index dans `methodes`.
+    /// Reconstruite par le chargeur (héritage simple, écrasement par la classe).
+    pub table_dispatch: HashMap<String, usize>,
+}
+
+impl ClasseRose {
+    /// Version courante d'une classe (distincte de la version du conteneur).
+    pub const VERSION_CLASSE: u32 = 1;
+
+    pub fn neuf(nom: &str) -> ClasseRose {
+        ClasseRose {
+            nom: nom.to_string(), version: Self::VERSION_CLASSE,
+            cp: ConstantPool::neuf(), super_classe: None, interfaces: Vec::new(),
+            methodes: Vec::new(), table_dispatch: HashMap::new(),
+        }
+    }
+
+    pub fn ajouter_methode(&mut self, m: MethodeRose) -> Result<usize, Erreur> {
+        if m.noms_slots.len() != m.n_slots as usize {
+            return Err(Erreur::StructureMethodeInvalide(format!(
+                "`{}` : noms_slots={} mais n_slots={}", m.nom, m.noms_slots.len(), m.n_slots)));
+        }
+        if m.descr.parametres.len() > m.n_slots as usize {
+            return Err(Erreur::StructureMethodeInvalide(format!(
+                "`{}` : plus de paramètres que de slots", m.nom)));
+        }
+        let i = self.methodes.len();
+        self.table_dispatch.insert(m.nom.clone(), i);
+        self.methodes.push(m);
+        Ok(i)
+    }
+
+    /// ⚠ Cherche PARMI LES MÉTHODES DÉFINIES localement. La table
+    /// `table_dispatch` peut contenir des indices hérités qui pointent dans le
+    /// tableau de la classe mère : ils ne sont valides que pour la classe
+    /// définissante, retrouvée par `ChargeurClasses::resoudre`.
+    pub fn index_methode(&self, nom: &str) -> Option<usize> {
+        self.methodes.iter().position(|m| m.nom == nom)
+    }
+    pub fn methodes(&self) -> &[MethodeRose] { &self.methodes }
+    pub fn methode(&self, nom: &str) -> Result<&MethodeRose, Erreur> {
+        self.index_methode(nom)
+            .map(|i| &self.methodes[i])
+            .ok_or_else(|| Erreur::MethodeIntrouvable {
+                classe: self.nom.clone(), methode: nom.to_string(),
+            })
+    }
+}
+
+/// Résout une référence `CP_METHODE` vers (classe, nom, texte du descripteur).
+fn ref_method_depuis_cp(cp: &ConstantPool, index: u16)
+    -> Result<(String, String, String), Erreur>
+{
+    let (ci, ni, di) = cp.methode(index)?;
+    Ok((cp.symbole(ci)?.to_string(), cp.symbole(ni)?.to_string(),
+        cp.chaine(di)?.to_string()))
+}
+
+/// Chargeur de classes : détient les classes et résout les appels en parcourant
+/// la chaîne d'héritage simple (une classe fille hérite de la table du parent).
+#[derive(Clone, Debug, Default)]
+pub struct ChargeurClasses {
+    pub classes: HashMap<String, ClasseRose>,
+}
+
+impl ChargeurClasses {
+    pub fn neuf() -> ChargeurClasses {
+        ChargeurClasses { classes: HashMap::new() }
+    }
+
+    fn ajouter_brut(&mut self, c: ClasseRose) { self.classes.insert(c.nom.clone(), c); }
+
+    pub fn ajouter(&mut self, c: ClasseRose) -> Result<(), Erreur> {
+        verifier_classe(&c)?;
+        self.ajouter_brut(c);
+        self.recalculer_dispatches();
+        self.verifier_lien()
+    }
+
+    /// Reconstruit toutes les tables de dispatch (héritage simple).
+    pub fn recalculer_dispatches(&mut self) {
+        let noms: Vec<String> = self.classes.keys().cloned().collect();
+        for nom in noms {
+            let mut table = HashMap::new();
+            if let Some(c) = self.classes.get(&nom) {
+                if let Some(sp) = &c.super_classe {
+                    if let Some(parent) = self.classes.get(sp) {
+                        table = parent.table_dispatch.clone();
+                    }
+                }
+                for (i, m) in c.methodes.iter().enumerate() {
+                    table.insert(m.nom.clone(), i);
+                }
+            }
+            if let Some(c) = self.classes.get_mut(&nom) { c.table_dispatch = table; }
+        }
+    }
+
+    /// Résout `methode` depuis `classe` en remontant la chaîne `super_classe`.
+    /// Rend le nom de la classe DÉFINISSANTE et l'index LOCAL de la méthode
+    /// (les indices hérités de `table_dispatch` ne sont pas utilisables ici).
+    pub fn resoudre(&self, classe: &str, methode: &str)
+        -> Result<(String, usize), Erreur>
+    {
+        let mut courant = Some(classe);
+        let mut sauts = 0usize;
+        while let Some(cn) = courant {
+            sauts += 1;
+            if sauts > 256 { break; } // cycle hostile : borne ferme
+            let c = self.classes.get(cn)
+                .ok_or_else(|| Erreur::ClasseIntrouvable(cn.to_string()))?;
+            if let Some(i) = c.index_methode(methode) {
+                return Ok((cn.to_string(), i));
+            }
+            courant = c.super_classe.as_deref();
+        }
+        Err(Erreur::MethodeIntrouvable {
+            classe: classe.to_string(), methode: methode.to_string(),
+        })
+    }
+
+    pub fn arite(&self, classe: &str, methode: &str) -> Result<usize, Erreur> {
+        let (def, i) = self.resoudre(classe, methode)?;
+        Ok(self.classes[&def].methodes[i].descr.parametres.len())
+    }
+
+    /// Vérifie toutes les classes (structure + flot + liens de méthodes/arité).
+    pub fn verifier_lien(&self) -> Result<(), Erreur> {
+        for c in self.classes.values() {
+            verifier_structure(c)?;
+            verifier_flot(c, self)?;
+        }
+        Ok(())
+    }
+}
+
+// ── Vérificateur strict ────────────────────────────────────────────────────
+
+/// Vérification structurelle d'une classe (indépendante du chargeur).
+pub fn verifier_classe(c: &ClasseRose) -> Result<(), Erreur> { verifier_structure(c) }
+
+fn verifier_structure(c: &ClasseRose) -> Result<(), Erreur> {
+    if c.nom.is_empty() {
+        return Err(Erreur::StructureMethodeInvalide("nom de classe vide".to_string()));
+    }
+    if c.version > ClasseRose::VERSION_CLASSE {
+        return Err(Erreur::VersionInsupportee(c.version));
+    }
+    let cp = &c.cp;
+    // Pool : toute référence de méthode doit pointer vers des symboles/chaînes.
+    for e in cp.entrees().iter() {
+        if let Const::Methode { classe, nom, descr } = e {
+            cp.get_comme(*classe, "symbole", |x| matches!(x, Const::Symbole(_)))?;
+            cp.get_comme(*nom, "symbole", |x| matches!(x, Const::Symbole(_)))?;
+            cp.get_comme(*descr, "chaîne", |x| matches!(x, Const::Chaine(_)))?;
+        }
+    }
+    for m in &c.methodes {
+        if m.noms_slots.len() != m.n_slots as usize {
+            return Err(Erreur::StructureMethodeInvalide(format!(
+                "`{}` : noms_slots={} != n_slots={}", m.nom, m.noms_slots.len(), m.n_slots)));
+        }
+        if m.descr.parametres.len() > m.n_slots as usize {
+            return Err(Erreur::StructureMethodeInvalide(format!(
+                "`{}` : arité > slots", m.nom)));
+        }
+        let n_ops = m.code.len();
+        for (pc, ins) in m.code.iter().enumerate() {
+            match ins {
+                InstrBc::ChargerSlot { slot } | InstrBc::StockerSlot { slot } => {
+                    if (*slot as usize) >= m.n_slots as usize {
+                        return Err(Erreur::SlotHorsBornes {
+                            slot: *slot as u32, n_slots: m.n_slots as u32 });
+                    }
+                }
+                InstrBc::PousserConst { index } => {
+                    match cp.get(*index)? {
+                        Const::Entier(_) | Const::BigInt(_) | Const::Flottant(_)
+                        | Const::Chaine(_) | Const::Symbole(_) => {}
+                        other => return Err(Erreur::TypeConstantInattendu {
+                            index: *index, attendu: "valeur", trouve: other.nom_type(),
+                        }),
+                    }
+                }
+                InstrBc::Appel { methode } => { cp.methode(*methode)?; }
+                InstrBc::Lever { type_index, msg_index } => {
+                    cp.get_comme(*type_index, "symbole",
+                                 |x| matches!(x, Const::Symbole(_)))?;
+                    cp.get(*msg_index)?;
+                }
+                InstrBc::Saut { cible } | InstrBc::SautSiFaux { cible } => {
+                    if (*cible as usize) >= n_ops {
+                        return Err(Erreur::SautHorsBornes {
+                            cible: *cible, n_ops: n_ops as u32 });
+                    }
+                }
+                _ => {}
+            }
+            let _ = pc;
+        }
+        for e in &m.exceptions {
+            if e.debut >= e.fin || (e.fin as usize) > n_ops || (e.cible as usize) >= n_ops {
+                return Err(Erreur::PlageExceptionInvalide {
+                    methode: m.nom.clone(), debut: e.debut, fin: e.fin,
+                    cible: e.cible, n_ops,
+                });
+            }
+            if e.type_index != 0 {
+                cp.get_comme(e.type_index, "symbole",
+                             |x| matches!(x, Const::Symbole(_)))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, PartialEq)]
+struct EtatBc {
+    pile: Vec<TyDesc>,
+    slots: Vec<TyDesc>,
+}
+
+fn fusionner_etats(a: &EtatBc, b: &EtatBc, methode: &str, pc: usize)
+    -> Result<EtatBc, Erreur>
+{
+    if a.pile.len() != b.pile.len() {
+        return Err(Erreur::PileDesequilibree { methode: methode.to_string(), pc });
+    }
+    let pile = a.pile.iter().zip(&b.pile)
+        .map(|(x, y)| if x == y { x.clone() } else { TyDesc::Inconnu }).collect();
+    let slots = a.slots.iter().zip(&b.slots)
+        .map(|(x, y)| if x == y { x.clone() } else { TyDesc::Inconnu }).collect();
+    Ok(EtatBc { pile, slots })
+}
+
+fn pop_type(pile: &mut Vec<TyDesc>, methode: &str, pc: usize) -> Result<TyDesc, Erreur> {
+    pile.pop().ok_or_else(||
+        Erreur::PileSousDimensionnee { methode: methode.to_string(), pc })
+}
+
+fn est_comparaison(op: Oper) -> bool {
+    matches!(op, Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne
+                | Oper::Et | Oper::Ou)
+}
+
+/// Vérification de flot (types de slots, profondeur de pile, arité des appels).
+/// Nécessite le chargeur pour résoudre les références de méthode.
+fn verifier_flot(c: &ClasseRose, chargeur: &ChargeurClasses) -> Result<(), Erreur> {
+    for m in &c.methodes {
+        let n = m.code.len();
+        if n == 0 { continue; }
+        let slots0: Vec<TyDesc> = (0..m.n_slots as usize).map(|i| {
+            m.descr.parametres.get(i).cloned().unwrap_or(TyDesc::Inconnu)
+        }).collect();
+        let mut etats: Vec<Option<EtatBc>> = vec![None; n];
+        etats[0] = Some(EtatBc { pile: Vec::new(), slots: slots0 });
+        let mut file = VecDeque::new();
+        file.push_back(0usize);
+        let max_pas = n.saturating_mul(n + 1).saturating_mul(8).max(64);
+        let mut pas = 0usize;
+        while let Some(pc) = file.pop_front() {
+            pas += 1;
+            if pas > max_pas {
+                return Err(Erreur::StructureMethodeInvalide(format!(
+                    "`{}` : vérificateur non convergent", m.nom)));
+            }
+            let mut e = match &etats[pc] { Some(s) => s.clone(), None => continue };
+            let mut succ: Vec<(usize, EtatBc)> = Vec::new();
+            match &m.code[pc] {
+                InstrBc::PousserConst { index } => {
+                    e.pile.push(c.cp.get(*index)?.ty_abstrait());
+                    succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::ChargerSlot { slot } => {
+                    e.pile.push(e.slots[*slot as usize].clone());
+                    succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::StockerSlot { slot } => {
+                    let t = pop_type(&mut e.pile, &m.nom, pc)?;
+                    let s = &mut e.slots[*slot as usize];
+                    if !t.compatible(s) {
+                        return Err(Erreur::TypeSlotInoherent {
+                            methode: m.nom.clone(), slot: *slot,
+                            attendu: s.nom(), trouve: t.nom(),
+                        });
+                    }
+                    if matches!(s, TyDesc::Inconnu) { *s = t; }
+                    succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::Dupliquer => {
+                    let t = pop_type(&mut e.pile, &m.nom, pc)?;
+                    e.pile.push(t.clone()); e.pile.push(t);
+                    succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::Binaire { op } => {
+                    let b = pop_type(&mut e.pile, &m.nom, pc)?;
+                    let a = pop_type(&mut e.pile, &m.nom, pc)?;
+                    let r = if est_comparaison(*op) { TyDesc::Booleen }
+                        else if a == TyDesc::Flottant || b == TyDesc::Flottant { TyDesc::Flottant }
+                        else if a == TyDesc::Entier && b == TyDesc::Entier { TyDesc::Entier }
+                        else { TyDesc::Inconnu };
+                    e.pile.push(r);
+                    succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::Neg => {
+                    let a = pop_type(&mut e.pile, &m.nom, pc)?;
+                    e.pile.push(a); succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::Non => {
+                    pop_type(&mut e.pile, &m.nom, pc)?;
+                    e.pile.push(TyDesc::Booleen); succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::Saut { cible } => succ.push((*cible as usize, e.clone())),
+                InstrBc::SautSiFaux { cible } => {
+                    let t = pop_type(&mut e.pile, &m.nom, pc)?;
+                    if !t.compatible(&TyDesc::Booleen) {
+                        return Err(Erreur::TypeSlotInoherent {
+                            methode: m.nom.clone(), slot: 0,
+                            attendu: TyDesc::Booleen.nom(), trouve: t.nom(),
+                        });
+                    }
+                    succ.push((*cible as usize, e.clone()));
+                    succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::Appel { methode } => {
+                    let (dc, dn, _) = ref_method_depuis_cp(&c.cp, *methode)?;
+                    let (def, _) = chargeur.resoudre(&dc, &dn)?;
+                    let cm = &chargeur.classes[&def];
+                    let mi = cm.index_methode(&dn).unwrap();
+                    let meth = &cm.methodes[mi];
+                    let arite = meth.descr.parametres.len();
+                    if e.pile.len() < arite {
+                        return Err(Erreur::PileSousDimensionnee {
+                            methode: m.nom.clone(), pc });
+                    }
+                    for k in 0..arite {
+                        let t = pop_type(&mut e.pile, &m.nom, pc)?;
+                        let attendu = &meth.descr.parametres[arite - 1 - k];
+                        if !t.compatible(attendu) {
+                            return Err(Erreur::AriteIncoherente {
+                                methode: dn.clone(), attendus: arite, fournis: arite,
+                            });
+                        }
+                    }
+                    e.pile.push(meth.descr.retour.clone());
+                    succ.push((pc + 1, e.clone()));
+                }
+                InstrBc::RetourVide => {}
+                InstrBc::RetourValeur => { pop_type(&mut e.pile, &m.nom, pc)?; }
+                InstrBc::Lever { .. } => {
+                    for ex in &m.exceptions {
+                        if pc >= ex.debut as usize && pc < ex.fin as usize {
+                            // Le gestionnaire reçoit la pile REMPLACÉE par la
+                            // valeur de l'exception, mais les slots du cadre.
+                            succ.push((ex.cible as usize, EtatBc {
+                                pile: vec![TyDesc::Chaine],
+                                slots: e.slots.clone(),
+                            }));
+                        }
+                    }
+                }
+                InstrBc::Afficher => {
+                    pop_type(&mut e.pile, &m.nom, pc)?;
+                    succ.push((pc + 1, e.clone()));
+                }
+            }
+            for (dst, ne) in succ {
+                if dst >= n { continue; } // retombée implicite hors code = retour vide
+                match &etats[dst] {
+                    None => { etats[dst] = Some(ne); file.push_back(dst); }
+                    Some(old) => {
+                        let f = fusionner_etats(old, &ne, &m.nom, dst)?;
+                        if &f != old { etats[dst] = Some(f); file.push_back(dst); }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── Machine JVM : cadres, invocation, exceptions ──────────────────────────
+
+/// Limites de la sandbox JVM (toutes bornées, aucune E/S).
+#[derive(Clone, Debug)]
+pub struct LimitesJvm {
+    pub budget_instructions: u64,
+    pub profondeur_max: usize,
+    pub max_appels: u64,
+    pub max_slots_par_cadre: usize,
+    pub max_constantes: usize,
+}
+
+impl Default for LimitesJvm {
+    fn default() -> LimitesJvm {
+        LimitesJvm {
+            budget_instructions: 10_000_000,
+            profondeur_max: 64,
+            max_appels: 1_000_000,
+            max_slots_par_cadre: u16::MAX as usize,
+            max_constantes: u16::MAX as usize,
+        }
+    }
+}
+
+/// Un cadre de méthode : slots locaux + pile d'opérandes + pointeur de code.
+/// ⚠ Pas de `Debug` : `Valeur` ne l'implémente pas (contrainte hors de ce module).
+#[derive(Clone)]
+pub struct CadreJvm {
+    pub classe: String,
+    pub methode: String,
+    pub slots: Vec<Valeur>,
+    pub pile: Vec<Valeur>,
+    pub pc: usize,
+}
+
+/// La machine. Elle EMPRUNTE le chargeur (immuable) et l'hôte (sortie capturée,
+/// GC). Aucun état global, aucun thread, aucun fichier.
+pub struct MachineJvm<'a> {
+    pub chargeur: &'a ChargeurClasses,
+    pub hote: &'a mut HoteBc,
+    pub limites: LimitesJvm,
+    pub instructions: u64,
+    pub appels: u64,
+}
+
+fn pop_pile(pile: &mut Vec<Valeur>, methode: &str, pc: usize) -> Result<Valeur, Erreur> {
+    pile.pop().ok_or_else(||
+        Erreur::PileSousDimensionnee { methode: methode.to_string(), pc })
+}
+
+impl<'a> MachineJvm<'a> {
+    pub fn neuf(chargeur: &'a ChargeurClasses, hote: &'a mut HoteBc,
+                limites: LimitesJvm) -> MachineJvm<'a> {
+        MachineJvm { chargeur, hote, limites, instructions: 0, appels: 0 }
+    }
+
+    fn cp_de(&self, classe: &str) -> Result<&ConstantPool, Erreur> {
+        self.chargeur.classes.get(classe)
+            .map(|c| &c.cp)
+            .ok_or_else(|| Erreur::ClasseIntrouvable(classe.to_string()))
+    }
+
+    fn symbole_de(&self, classe: &str, index: u16) -> Result<String, Erreur> {
+        Ok(self.cp_de(classe)?.symbole(index)?.to_string())
+    }
+
+    fn valeur_const(&mut self, classe: &str, index: u16) -> Result<Valeur, Erreur> {
+        let c = self.cp_de(classe)?.get(index)?.clone();
+        Ok(match c {
+            Const::Entier(v) => Valeur::z(v),
+            Const::BigInt(t) => self.hote.entier_texte(&t),
+            Const::Flottant(x) => Valeur::f(x),
+            Const::Chaine(s) | Const::Symbole(s) => Valeur::s(s),
+            Const::Methode { .. } => Valeur::Vide,
+        })
+    }
+
+    fn nouveau_cadre(&self, classe: &str, nom_meth: &str, m: &MethodeRose,
+                     args: &[Valeur]) -> Result<CadreJvm, Erreur> {
+        let attendus = m.descr.parametres.len();
+        if args.len() != attendus {
+            return Err(Erreur::AriteIncoherente {
+                methode: nom_meth.to_string(), attendus, fournis: args.len(),
+            });
+        }
+        if m.n_slots as usize > self.limites.max_slots_par_cadre {
+            return Err(Erreur::MemoireDepassee(m.n_slots as usize));
+        }
+        let mut slots = vec![Valeur::Vide; m.n_slots as usize];
+        for (i, v) in args.iter().enumerate() { slots[i] = v.clone(); }
+        Ok(CadreJvm {
+            classe: classe.to_string(), methode: nom_meth.to_string(),
+            slots, pile: Vec::new(), pc: 0,
+        })
+    }
+
+    /// Table d'exceptions « résolue » d'une méthode : types comparés par NOM
+    /// de symbole (donc valables même à travers un déroulement inter-classes).
+    fn gestionnaires(&self, classe: &str, methode: &str)
+        -> Result<Vec<(u32, u32, u32, Option<String>)>, Erreur>
+    {
+        let c = self.chargeur.classes.get(classe)
+            .ok_or_else(|| Erreur::ClasseIntrouvable(classe.to_string()))?;
+        let mi = c.index_methode(methode).ok_or_else(|| Erreur::MethodeIntrouvable {
+            classe: classe.to_string(), methode: methode.to_string(),
+        })?;
+        let mut out = Vec::new();
+        for e in &c.methodes[mi].exceptions {
+            let t = if e.type_index == 0 { None }
+                    else { Some(c.cp.symbole(e.type_index)?.to_string()) };
+            out.push((e.debut, e.fin, e.cible, t));
+        }
+        Ok(out)
+    }
+
+    /// Termine le cadre au sommet : dépile, remet la valeur à l'appelant.
+    fn terminer(&self, frames: &mut Vec<CadreJvm>, valeur: Valeur) -> Result<Option<Valeur>, Erreur> {
+        frames.pop();
+        if frames.is_empty() { return Ok(Some(valeur)); }
+        let appelant = frames.last_mut().unwrap();
+        appelant.pc += 1;
+        appelant.pile.push(valeur);
+        Ok(None)
+    }
+
+    /// Invoque une méthode et rend sa valeur (ou une erreur propre).
+    ///
+    /// Le `pc` de l'appelant reste sur l'instruction `Appel` pendant que le
+    /// callee tourne : c'est ce qui permet à la table d'exceptions de couvrir
+    /// l'appel exactement comme le fait la JVM.
+    pub fn invoquer(&mut self, classe: &str, methode: &str, args: &[Valeur])
+        -> Result<Valeur, Erreur>
+    {
+        let (def, idx) = self.chargeur.resoudre(classe, methode)?;
+        let m0 = &self.chargeur.classes[&def].methodes[idx];
+        let premier = self.nouveau_cadre(&def, methode, m0, args)?;
+        let mut frames = vec![premier];
+
+        while !frames.is_empty() {
+            let (nom_classe, nom_meth, pc) = {
+                let f = frames.last().unwrap();
+                (f.classe.clone(), f.methode.clone(), f.pc)
+            };
+            let instr_opt = {
+                let c = self.chargeur.classes.get(&nom_classe)
+                    .ok_or_else(|| Erreur::ClasseIntrouvable(nom_classe.clone()))?;
+                let mi = c.index_methode(&nom_meth).ok_or_else(|| Erreur::MethodeIntrouvable {
+                    classe: nom_classe.clone(), methode: nom_meth.clone(),
+                })?;
+                c.methodes[mi].code.get(pc).cloned()
+            };
+            // Fin implicite du code = retour (sommet de pile ou Vide).
+            let instr = match instr_opt {
+                Some(i) => i,
+                None => {
+                    let v = frames.last_mut().unwrap().pile.pop().unwrap_or(Valeur::Vide);
+                    if let Some(r) = self.terminer(&mut frames, v)? { return Ok(r); }
+                    continue;
+                }
+            };
+
+            self.instructions += 1;
+            if self.instructions > self.limites.budget_instructions {
+                return Err(Erreur::BudgetDepasse(self.limites.budget_instructions));
+            }
+
+            match instr {
+                InstrBc::PousserConst { index } => {
+                    let v = self.valeur_const(&nom_classe, index)?;
+                    let f = frames.last_mut().unwrap();
+                    f.pile.push(v); f.pc += 1;
+                }
+                InstrBc::ChargerSlot { slot } => {
+                    let f = frames.last_mut().unwrap();
+                    let v = f.slots.get(slot as usize).cloned()
+                        .ok_or(Erreur::SlotHorsBornes { slot: slot as u32, n_slots: f.slots.len() as u32 })?;
+                    f.pile.push(v); f.pc += 1;
+                }
+                InstrBc::StockerSlot { slot } => {
+                    let f = frames.last_mut().unwrap();
+                    let v = pop_pile(&mut f.pile, &nom_meth, pc)?;
+                    if (slot as usize) >= f.slots.len() {
+                        return Err(Erreur::SlotHorsBornes { slot: slot as u32, n_slots: f.slots.len() as u32 });
+                    }
+                    f.slots[slot as usize] = v; f.pc += 1;
+                }
+                InstrBc::Dupliquer => {
+                    let f = frames.last_mut().unwrap();
+                    let v = pop_pile(&mut f.pile, &nom_meth, pc)?;
+                    f.pile.push(v.clone()); f.pile.push(v); f.pc += 1;
+                }
+                InstrBc::Binaire { op } => {
+                    let b = { let f = frames.last_mut().unwrap(); pop_pile(&mut f.pile, &nom_meth, pc)? };
+                    let a = { let f = frames.last_mut().unwrap(); pop_pile(&mut f.pile, &nom_meth, pc)? };
+                    let txt = match op {
+                        Oper::Add => "+", Oper::Sub => "-", Oper::Mul => "*", Oper::Div => "/",
+                        Oper::Mod => "%", Oper::Puissance => "^", Oper::DivEntier => "div",
+                        Oper::Lt => "<", Oper::Le => "<=", Oper::Gt => ">", Oper::Ge => ">=",
+                        Oper::Eq => "==", Oper::Ne => "!=", Oper::Et => "et", Oper::Ou => "ou",
+                    };
+                    let r = crate::interp::binaire_valeurs(txt, &a, &b)
+                        .map_err(|_| Erreur::ExecutionEnErreur)?;
+                    let f = frames.last_mut().unwrap();
+                    f.pile.push(r); f.pc += 1;
+                }
+                InstrBc::Neg | InstrBc::Non => {
+                    let v = { let f = frames.last_mut().unwrap(); pop_pile(&mut f.pile, &nom_meth, pc)? };
+                    let txt = if matches!(instr, InstrBc::Neg) { "-" } else { "non" };
+                    let r = crate::interp::unaire_valeur(txt, &v)
+                        .map_err(|_| Erreur::ExecutionEnErreur)?;
+                    let f = frames.last_mut().unwrap();
+                    f.pile.push(r); f.pc += 1;
+                }
+                InstrBc::Saut { cible } => {
+                    let f = frames.last_mut().unwrap(); f.pc = cible as usize;
+                }
+                InstrBc::SautSiFaux { cible } => {
+                    let f = frames.last_mut().unwrap();
+                    let v = pop_pile(&mut f.pile, &nom_meth, pc)?;
+                    if !matches!(v, Valeur::Booleen(true)) { f.pc = cible as usize; }
+                    else { f.pc += 1; }
+                }
+                InstrBc::Appel { methode } => {
+                    self.appels += 1;
+                    if self.appels > self.limites.max_appels {
+                        return Err(Erreur::AppelsEpuises(self.limites.max_appels));
+                    }
+                    let (dc, dn, _) = {
+                        let cp = self.cp_de(&nom_classe)?;
+                        ref_method_depuis_cp(cp, methode)?
+                    };
+                    let (def, di) = self.chargeur.resoudre(&dc, &dn)?;
+                    let arite = self.chargeur.classes[&def].methodes[di].descr.parametres.len();
+                    let mut args_appel = Vec::with_capacity(arite);
+                    {
+                        let f = frames.last_mut().unwrap();
+                        for _ in 0..arite {
+                            args_appel.push(pop_pile(&mut f.pile, &nom_meth, pc)?);
+                        }
+                    }
+                    args_appel.reverse();
+                    if frames.len() >= self.limites.profondeur_max {
+                        return Err(Erreur::ProfondeurDepassee(self.limites.profondeur_max));
+                    }
+                    let nom_appel = dn.clone();
+                    let cadre = {
+                        let m = &self.chargeur.classes[&def].methodes[di];
+                        self.nouveau_cadre(&def, &nom_appel, m, &args_appel)?
+                    };
+                    frames.push(cadre);
+                }
+                InstrBc::RetourVide => {
+                    if let Some(r) = self.terminer(&mut frames, Valeur::Vide)? { return Ok(r); }
+                }
+                InstrBc::RetourValeur => {
+                    let v = { let f = frames.last_mut().unwrap(); pop_pile(&mut f.pile, &nom_meth, pc)? };
+                    if let Some(r) = self.terminer(&mut frames, v)? { return Ok(r); }
+                }
+                InstrBc::Afficher => {
+                    let v = { let f = frames.last_mut().unwrap(); pop_pile(&mut f.pile, &nom_meth, pc)? };
+                    self.hote.afficher_valeur(&v);
+                    let f = frames.last_mut().unwrap(); f.pc += 1;
+                }
+                InstrBc::Lever { type_index, msg_index } => {
+                    let typ = self.symbole_de(&nom_classe, type_index)?;
+                    let msg = crate::run::chaine_de(&self.valeur_const(&nom_classe, msg_index)?);
+                    let mut attrape = false;
+                    loop {
+                        let (fc, fm, fpc) = {
+                            let f = frames.last().unwrap();
+                            (f.classe.clone(), f.methode.clone(), f.pc)
+                        };
+                        let handlers = self.gestionnaires(&fc, &fm)?;
+                        let trouve = handlers.iter().find(|(d, fi, _, t)| {
+                            fpc >= *d as usize && fpc < *fi as usize
+                                && (t.is_none() || t.as_deref() == Some(typ.as_str()))
+                        }).map(|(_, _, c, _)| *c as usize);
+                        if let Some(cible) = trouve {
+                            let f = frames.last_mut().unwrap();
+                            f.pile.clear();
+                            f.pile.push(Valeur::s(&msg));
+                            f.pc = cible;
+                            attrape = true;
+                            break;
+                        }
+                        if frames.len() == 1 { break; }
+                        frames.pop();
+                    }
+                    if !attrape { return Err(Erreur::ExceptionNonAttrapee(typ)); }
+                }
+            }
+        }
+        Ok(Valeur::Vide)
+    }
+}
+
+/// Raccourci : vérifie, charge et exécute un fichier `.rosebc` v1 ou v2 dans
+/// une sandbox complète (instructions, profondeur, appels, mémoire, E/S).
+pub fn executer_fichier(octets: &[u8], classe: &str, methode: &str,
+                        arguments: &[Valeur], hote: &mut HoteBc,
+                        limites: &LimitesJvm) -> Result<Valeur, Erreur> {
+    let chargeur = charger_fichier(octets)?;
+    let mut machine = MachineJvm::neuf(&chargeur, hote, limites.clone());
+    machine.invoquer(classe, methode, arguments)
+}
+
+// ── Sérialisation du fichier de classe v2 ──────────────────────────────────
+
+/// Écrit une classe au format `.rosebc` v2 (little-endian, auto-contained).
+pub fn ecrire_classe(c: &ClasseRose) -> Vec<u8> {
+    let mut out = Vec::with_capacity(64 + c.methodes.len() * 32);
+    out.extend_from_slice(MAGIC);
+    pusher_u32(&mut out, VERSION_JVM);
+    pusher_chaine(&mut out, &c.nom);
+    pusher_u32(&mut out, c.version);
+    match &c.super_classe {
+        None => out.push(0),
+        Some(s) => { out.push(1); pusher_chaine(&mut out, s); }
+    }
+    pusher_u32(&mut out, c.interfaces.len() as u32);
+    for i in &c.interfaces { pusher_chaine(&mut out, i); }
+    ecrire_cp(&mut out, &c.cp);
+    pusher_u32(&mut out, c.methodes.len() as u32);
+    for m in &c.methodes {
+        pusher_chaine(&mut out, &m.nom);
+        m.descr.ecrire(&mut out);
+        pusher_u16(&mut out, m.drapeaux);
+        pusher_u16(&mut out, m.n_slots);
+        for nom in &m.noms_slots { pusher_chaine(&mut out, nom); }
+        pusher_u32(&mut out, m.code.len() as u32);
+        for i in &m.code { ecrire_instr(&mut out, i); }
+        pusher_u32(&mut out, m.exceptions.len() as u32);
+        for e in &m.exceptions {
+            pusher_u32(&mut out, e.debut); pusher_u32(&mut out, e.fin);
+            pusher_u32(&mut out, e.cible); pusher_u16(&mut out, e.type_index);
+        }
+    }
+    out
+}
+
+/// Lit un `.rosebc`. Accepte la **version 1** (snapshot `CorpsRir`, promu en
+/// une classe `<principal>`) et la **version 2** (fichier de classe complet).
+pub fn lire_classe(octets: &[u8]) -> Result<ClasseRose, Erreur> {
+    if octets.len() < 10 { return Err(Erreur::Tronque { attendu: 10, present: octets.len() }); }
+    if &octets[..6] != MAGIC { return Err(Erreur::MagicInvalide); }
+    let version = u32::from_le_bytes([octets[6], octets[7], octets[8], octets[9]]);
+    if version == VERSION {
+        // Rétrocompatibilité : rejouer le lecteur v1, puis promouvoir.
+        let corps = lire_bytecode(octets)?;
+        return promouvoir_corps(&corps, "<principal>");
+    }
+    if version != VERSION_JVM { return Err(Erreur::VersionInsupportee(version)); }
+
+    let mut l = Lecteur { octets, pos: 10 };
+    let nom = l.chaine()?;
+    let version_classe = l.u32()?;
+    let super_classe = if l.u8()? == 1 { Some(l.chaine()?) } else { None };
+    let n_int = l.u32()? as usize;
+    if n_int > l.reste() { return Err(Erreur::Tronque { attendu: n_int, present: l.reste() }); }
+    let mut interfaces = Vec::with_capacity(n_int);
+    for _ in 0..n_int { interfaces.push(l.chaine()?); }
+    let cp = lire_cp(&mut l)?;
+    if cp.entrees().len() > u16::MAX as usize { return Err(Erreur::PoolPlein); }
+    let n_m = l.u32()? as usize;
+    if n_m > l.reste() { return Err(Erreur::Tronque { attendu: n_m, present: l.reste() }); }
+    let mut methodes = Vec::with_capacity(n_m);
+    for _ in 0..n_m {
+        let m_nom = l.chaine()?;
+        let descr = Descripteur::lire(&mut l)?;
+        let drapeaux = l.u16()?;
+        let n_slots = l.u16()?;
+        let mut noms_slots = Vec::with_capacity(n_slots as usize);
+        for _ in 0..n_slots { noms_slots.push(l.chaine()?); }
+        let n_code = l.u32()? as usize;
+        if n_code > l.reste() { return Err(Erreur::Tronque { attendu: n_code, present: l.reste() }); }
+        let mut code = Vec::with_capacity(n_code);
+        for _ in 0..n_code { code.push(lire_instr(&mut l)?); }
+        let n_exc = l.u32()? as usize;
+        if n_exc > l.reste() { return Err(Erreur::Tronque { attendu: n_exc, present: l.reste() }); }
+        let mut exceptions = Vec::with_capacity(n_exc);
+        for _ in 0..n_exc {
+            exceptions.push(EntreeException {
+                debut: l.u32()?, fin: l.u32()?, cible: l.u32()?, type_index: l.u16()?,
+            });
+        }
+        methodes.push(MethodeRose {
+            nom: m_nom, descr, drapeaux, n_slots, noms_slots, code, exceptions,
+        });
+    }
+    if l.pos != octets.len() { return Err(Erreur::OctetsEnTrop(octets.len() - l.pos)); }
+    let c = ClasseRose {
+        nom, version: version_classe, cp, super_classe, interfaces, methodes,
+        table_dispatch: HashMap::new(),
+    };
+    verifier_classe(&c)?;
+    let mut chargeur = ChargeurClasses::neuf();
+    chargeur.ajouter_brut(c.clone());
+    chargeur.recalculer_dispatches();
+    chargeur.verifier_lien()?;
+    Ok(c)
+}
+
+/// Charge un fichier v1 ou v2 dans un `ChargeurClasses` prêt à exécuter.
+pub fn charger_fichier(octets: &[u8]) -> Result<ChargeurClasses, Erreur> {
+    let c = lire_classe(octets)?;
+    let mut ch = ChargeurClasses::neuf();
+    ch.ajouter_brut(c);
+    ch.recalculer_dispatches();
+    ch.verifier_lien()?;
+    Ok(ch)
+}
+
+/// Compile un `CorpsRir` v1 en classe v2 à une seule méthode. C'est le pont
+/// qui garantit que tout bytecode v1 reste exécutable par la machine v2.
+pub fn promouvoir_corps(corps: &CorpsRir, nom_methode: &str) -> Result<ClasseRose, Erreur> {
+    // Le RIR ne conserve pas l'arity : on expose TOUS les slots comme
+    // paramètres (le snapshot v1 les posait tous au démarrage). Un appelant
+    // qui connaît l'arity réelle peut utiliser `promouvoir_corps_avec_parametres`.
+    promouvoir_corps_avec_parametres(corps, nom_methode, corps.n_slots)
+}
+
+/// Comme `promouvoir_corps`, mais avec une arité explicite (connue de la
+/// signature Rose d'origine).
+pub fn promouvoir_corps_avec_parametres(corps: &CorpsRir, nom_methode: &str,
+                                        n_parametres: usize) -> Result<ClasseRose, Erreur> {
+    verifier_sous_ensemble(corps)?;
+    if n_parametres > corps.n_slots {
+        return Err(Erreur::AriteIncoherente {
+            methode: nom_methode.to_string(), attendus: n_parametres, fournis: corps.n_slots,
+        });
+    }
+    let n_slots = u16::try_from(corps.n_slots)
+        .map_err(|_| Erreur::MemoireDepassee(corps.n_slots))?;
+    let mut cp = ConstantPool::neuf();
+    let mut code: Vec<InstrBc> = Vec::with_capacity(corps.ops.len());
+    let mut frontieres: Vec<usize> = Vec::with_capacity(corps.ops.len());
+    for op in &corps.ops {
+        frontieres.push(code.len());
+        compiler_op(op, &mut cp, &mut code)?;
+    }
+    // Réécriture des cibles : indices d'opérations RIR -> indices d'instructions.
+    for ins in &mut code {
+        match ins {
+            InstrBc::Saut { cible } | InstrBc::SautSiFaux { cible } => {
+                let src = *cible as usize;
+                let dst = frontieres.get(src).copied().ok_or(Erreur::SautHorsBornes {
+                    cible: *cible, n_ops: frontieres.len() as u32,
+                })?;
+                *cible = dst as u32;
+            }
+            _ => {}
+        }
+    }
+    let descr = Descripteur {
+        parametres: vec![TyDesc::Inconnu; n_parametres],
+        retour: TyDesc::Inconnu,
+    };
+    let methode = MethodeRose {
+        nom: nom_methode.to_string(), descr, drapeaux: 0, n_slots,
+        noms_slots: corps.noms.clone(), code, exceptions: Vec::new(),
+    };
+    let mut classe = ClasseRose::neuf("Principal");
+    classe.cp = cp;
+    classe.ajouter_methode(methode)?;
+    Ok(classe)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1082,5 +2505,477 @@ mod tests {
         let limites = Limites { budget_instructions: 100, max_slots: 0, max_gz: 4 };
         assert!(matches!(executer_sandbox(&corps, &[], &mut hote, &limites),
                          Err(Erreur::MemoireDepassee(1))));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // JVM Rose — tests des briques v2
+    // ══════════════════════════════════════════════════════════════════════
+
+    fn sym(cp: &mut ConstantPool, s: &str) -> u16 {
+        cp.ajouter(Const::Symbole(s.to_string())).unwrap()
+    }
+    fn chn(cp: &mut ConstantPool, s: &str) -> u16 {
+        cp.ajouter(Const::Chaine(s.to_string())).unwrap()
+    }
+    fn ent(cp: &mut ConstantPool, v: i64) -> u16 {
+        cp.ajouter(Const::Entier(v)).unwrap()
+    }
+    fn mref(cp: &mut ConstantPool, c: u16, n: u16, d: u16) -> u16 {
+        cp.ajouter(Const::Methode { classe: c, nom: n, descr: d }).unwrap()
+    }
+    fn charge(c: ClasseRose) -> ChargeurClasses {
+        let mut ch = ChargeurClasses::neuf();
+        ch.ajouter(c).unwrap();
+        ch
+    }
+
+    #[test]
+    fn cp_tous_types_et_roundtrip_binaire() {
+        let mut cp = ConstantPool::neuf();
+        let cs = sym(&mut cp, "C");
+        let ns = sym(&mut cp, "m");
+        let ds = chn(&mut cp, "(I)I");
+        let i = ent(&mut cp, 42);
+        let big = cp.ajouter(Const::BigInt("123456789012345678901234567890".to_string())).unwrap();
+        let fl = cp.ajouter(Const::Flottant(1.5)).unwrap();
+        let ch = chn(&mut cp, "salut");
+        let sy = sym(&mut cp, "Erreur");
+        let mr = mref(&mut cp, cs, ns, ds);
+        assert_eq!(cp.len(), 9);
+        assert_eq!(cp.get(i).unwrap(), &Const::Entier(42));
+        assert_eq!(cp.chaine(ch).unwrap(), "salut");
+        assert_eq!(cp.symbole(sy).unwrap(), "Erreur");
+        assert_eq!(cp.methode(mr).unwrap(), (cs, ns, ds));
+        assert_eq!(cp.get(big).unwrap().ty_abstrait(), TyDesc::Entier);
+        assert_eq!(cp.get(fl).unwrap().ty_abstrait(), TyDesc::Flottant);
+        // Le bigint reste du TEXTE exact, jamais un i64 tronqué.
+        assert_eq!(cp.get(big).unwrap(),
+                   &Const::BigInt("123456789012345678901234567890".to_string()));
+
+        let mut oct = Vec::new();
+        ecrire_cp(&mut oct, &cp);
+        let mut l = Lecteur { octets: &oct, pos: 0 };
+        let cp2 = lire_cp(&mut l).unwrap();
+        assert_eq!(l.pos, oct.len());
+        assert_eq!(cp2.version, cp.version);
+        assert_eq!(cp2.entrees(), cp.entrees());
+        println!("[rvm] CP 6 tags sérialisés : {} entrées, {} octets", cp.len(), oct.len());
+    }
+
+    #[test]
+    fn cp_index_hors_bornes_et_type_inattendu() {
+        let mut cp = ConstantPool::neuf();
+        ent(&mut cp, 1);
+        assert!(matches!(cp.get(7), Err(Erreur::IndexConstantHorsBornes { index: 7, n: 1 })));
+        assert!(matches!(cp.symbole(0),
+            Err(Erreur::TypeConstantInattendu { index: 0, attendu: "symbole", .. })));
+        assert!(matches!(cp.methode(0),
+            Err(Erreur::TypeConstantInattendu { attendu: "méthode", .. })));
+    }
+
+    #[test]
+    fn promotion_v1_vers_classe_et_execution() {
+        let corps = corps_carre();
+        let c = promouvoir_corps(&corps, "carre").unwrap();
+        assert_eq!(c.nom, "Principal");
+        assert_eq!(c.methodes.len(), 1);
+        let m = &c.methodes[0];
+        assert_eq!(m.n_slots, 1);
+        assert_eq!(m.code.len(), 4);
+        assert_eq!(m.code[0], InstrBc::ChargerSlot { slot: 0 });
+        assert_eq!(m.code[1], InstrBc::ChargerSlot { slot: 0 });
+        assert_eq!(m.code[2], InstrBc::Binaire { op: Oper::Mul });
+        assert_eq!(m.code[3], InstrBc::RetourValeur);
+
+        let ch = charge(c);
+        let mut hote = HoteBc::neuf(8);
+        let mut vm = MachineJvm::neuf(&ch, &mut hote, LimitesJvm::default());
+        let v = vm.invoquer("Principal", "carre", &[Valeur::z(7)]).unwrap();
+        assert_eq!(cle(&v), "49");
+        println!("[rvm] CorpsRir promu -> carre(7) = {}", cle(&v));
+    }
+
+    #[test]
+    fn round_trip_classe_v2_et_parite_interpreteur() {
+        let c = promouvoir_corps(&corps_carre(), "carre").unwrap();
+        let octets = ecrire_classe(&c);
+        assert!(octets.starts_with(MAGIC));
+        assert!(octets[6..10] == VERSION_JVM.to_le_bytes());
+        let c2 = lire_classe(&octets).unwrap();
+        assert_eq!(c2.nom, c.nom);
+        assert_eq!(c2.cp.entrees(), c.cp.entrees());
+        assert_eq!(c2.methodes[0].code, c.methodes[0].code);
+
+        let mut hote = HoteBc::neuf(8);
+        let v = executer_fichier(&octets, "Principal", "carre", &[Valeur::z(7)],
+                                 &mut hote, &LimitesJvm::default()).unwrap();
+        assert_eq!(cle(&v), "49");
+        // Parité avec l'interpréteur COMPLET sur la même source Rose.
+        let source = format!("{}>> carre(7)\n", SOURCE_CARRE);
+        set_sink(true);
+        let rc = crate::interp::executer_source(&source, Vec::new());
+        let sortie = take_sink().unwrap_or_default();
+        assert_eq!(rc, 0);
+        assert_eq!(sortie.trim(), "49");
+        assert_eq!(cle(&v), sortie.trim());
+        println!("[rvm] .rosebc v2 carre(7)={} == interpréteur {}", cle(&v), sortie.trim());
+    }
+
+    #[test]
+    fn lecture_v1_promue_en_classe_executable() {
+        let octets = ecrire_bytecode(&corps_carre()); // v1 historique
+        let c = lire_classe(&octets).unwrap();
+        assert_eq!(c.nom, "Principal");
+        assert_eq!(c.methodes[0].nom, "<principal>");
+        let ch = charge(c);
+        let mut hote = HoteBc::neuf(8);
+        let mut vm = MachineJvm::neuf(&ch, &mut hote, LimitesJvm::default());
+        let v = vm.invoquer("Principal", "<principal>", &[Valeur::z(6)]).unwrap();
+        assert_eq!(cle(&v), "36");
+        println!("[rvm] rétrocompat v1 -> <principal>(6) = {}", cle(&v));
+    }
+
+    #[test]
+    fn invocation_carre_depuis_somme_compteurs() {
+        let mut c = ClasseRose::neuf("Maths");
+        let cs = sym(&mut c.cp, "Maths");
+        let cn = sym(&mut c.cp, "carre"); let cd = chn(&mut c.cp, "(I)I");
+        let r_carre = mref(&mut c.cp, cs, cn, cd);
+        let sn = sym(&mut c.cp, "somme"); let sd = chn(&mut c.cp, "(II)I");
+        let r_somme = mref(&mut c.cp, cs, sn, sd);
+
+        c.ajouter_methode(MethodeRose::neuf(
+            "carre", Descripteur::neuf(vec![TyDesc::Entier], TyDesc::Entier), &["n"],
+            vec![InstrBc::ChargerSlot { slot: 0 }, InstrBc::Dupliquer,
+                 InstrBc::Binaire { op: Oper::Mul }, InstrBc::RetourValeur],
+        ).unwrap()).unwrap();
+        c.ajouter_methode(MethodeRose::neuf(
+            "somme", Descripteur::neuf(
+                vec![TyDesc::Entier, TyDesc::Entier], TyDesc::Entier), &["a", "b"],
+            vec![InstrBc::ChargerSlot { slot: 0 }, InstrBc::Appel { methode: r_carre },
+                 InstrBc::ChargerSlot { slot: 1 }, InstrBc::Appel { methode: r_carre },
+                 InstrBc::Binaire { op: Oper::Add }, InstrBc::RetourValeur],
+        ).unwrap()).unwrap();
+        let _ = r_somme;
+
+        let octets = ecrire_classe(&c);
+        let mut hote = HoteBc::neuf(8);
+        let ch = charger_fichier(&octets).unwrap();
+        let mut vm = MachineJvm::neuf(&ch, &mut hote, LimitesJvm::default());
+        let v = vm.invoquer("Maths", "somme", &[Valeur::z(3), Valeur::z(4)]).unwrap();
+        assert_eq!(cle(&v), "25");
+        assert_eq!(vm.appels, 2, "deux appels de `carre` attendus");
+        assert!(vm.instructions > 0);
+        println!("[rvm] somme(3,4) = {} (appels={}, instructions={})",
+                 cle(&v), vm.appels, vm.instructions);
+    }
+
+    #[test]
+    fn dispatch_heritage_simple() {
+        let mut mere = ClasseRose::neuf("Mere");
+        let cm = sym(&mut mere.cp, "Mere");
+        let dm = sym(&mut mere.cp, "double");
+        let des = chn(&mut mere.cp, "(I)I");
+        let r = mref(&mut mere.cp, cm, dm, des);
+        let index_deux = ent(&mut mere.cp, 2);
+        mere.ajouter_methode(MethodeRose::neuf(
+            "double", Descripteur::neuf(vec![TyDesc::Entier], TyDesc::Entier), &["n"],
+            vec![InstrBc::ChargerSlot { slot: 0 },
+                 InstrBc::PousserConst { index: index_deux },
+                 InstrBc::Binaire { op: Oper::Mul }, InstrBc::RetourValeur],
+        ).unwrap()).unwrap();
+        let _ = r;
+
+        let mut fille = ClasseRose::neuf("Fille");
+        fille.super_classe = Some("Mere".to_string());
+        let cf = sym(&mut fille.cp, "Fille");
+        let df = sym(&mut fille.cp, "double");
+        let des2 = chn(&mut fille.cp, "(I)I");
+        let _ref_fille = mref(&mut fille.cp, cf, df, des2);
+
+        let mut ch = ChargeurClasses::neuf();
+        ch.ajouter(mere).unwrap();
+        ch.ajouter(fille).unwrap();
+        assert_eq!(ch.classes["Fille"].table_dispatch.get("double"), Some(&0));
+        let mut hote = HoteBc::neuf(8);
+        let mut vm = MachineJvm::neuf(&ch, &mut hote, LimitesJvm::default());
+        let v = vm.invoquer("Fille", "double", &[Valeur::z(21)]).unwrap();
+        assert_eq!(cle(&v), "42");
+        println!("[rvm] dispatch hérité Fille.double(21) = {}", cle(&v));
+    }
+
+    #[test]
+    fn exceptions_lever_et_attraper_dans_methode() {
+        let mut c = ClasseRose::neuf("Essais");
+        let type_e = sym(&mut c.cp, "E");
+        let msg = chn(&mut c.cp, "boom");
+        let mut m = MethodeRose::neuf(
+            "essayer", Descripteur::neuf(vec![], TyDesc::Vide), &[],
+            vec![InstrBc::PousserConst { index: msg },
+                 InstrBc::Lever { type_index: type_e, msg_index: msg },
+                 InstrBc::RetourVide,
+                 InstrBc::Afficher,
+                 InstrBc::RetourVide],
+        ).unwrap();
+        m.exceptions.push(EntreeException {
+            debut: 0, fin: 2, cible: 3, type_index: type_e,
+        });
+        c.ajouter_methode(m).unwrap();
+
+        let octets = ecrire_classe(&c);
+        let mut hote = HoteBc::neuf(8);
+        let v = executer_fichier(&octets, "Essais", "essayer", &[],
+                                 &mut hote, &LimitesJvm::default()).unwrap();
+        assert!(matches!(v, Valeur::Vide));
+        assert_eq!(hote.sortie, "boom");
+        println!("[rvm] try/catch : sortie capturée = {:?}", hote.sortie);
+    }
+
+    fn classe_propagation() -> Vec<u8> {
+        let mut c = ClasseRose::neuf("Prop");
+        let cp_cl = sym(&mut c.cp, "Prop");
+        let type_e = sym(&mut c.cp, "E");
+        let msg = chn(&mut c.cp, "propagé");
+        let n_int = sym(&mut c.cp, "interne");
+        let n_ext = sym(&mut c.cp, "externe");
+        let descr = chn(&mut c.cp, "()V");
+        let r_int = mref(&mut c.cp, cp_cl, n_int, descr);
+        let r_ext = mref(&mut c.cp, cp_cl, n_ext, descr);
+
+        c.ajouter_methode(MethodeRose::neuf(
+            "interne", Descripteur::neuf(vec![], TyDesc::Vide), &[],
+            vec![InstrBc::Lever { type_index: type_e, msg_index: msg },
+                 InstrBc::RetourVide],
+        ).unwrap()).unwrap();
+        let mut ext = MethodeRose::neuf(
+            "externe", Descripteur::neuf(vec![], TyDesc::Vide), &[],
+            vec![InstrBc::Appel { methode: r_int },
+                 InstrBc::RetourVide,
+                 InstrBc::Afficher,
+                 InstrBc::RetourVide],
+        ).unwrap();
+        ext.exceptions.push(EntreeException {
+            debut: 0, fin: 1, cible: 2, type_index: 0, // attrape-tout
+        });
+        c.ajouter_methode(ext).unwrap();
+        let _ = r_ext;
+        ecrire_classe(&c)
+    }
+
+    #[test]
+    fn exception_se_propage_au_cadre_appelant() {
+        let octets = classe_propagation();
+        let mut hote = HoteBc::neuf(8);
+        executer_fichier(&octets, "Prop", "externe", &[],
+                         &mut hote, &LimitesJvm::default()).unwrap();
+        assert_eq!(hote.sortie, "propagé");
+        println!("[rvm] déroulement inter-cadres : sortie = {:?}", hote.sortie);
+    }
+
+    #[test]
+    fn exception_non_attrapee_erreur_propre() {
+        let octets = classe_propagation();
+        let mut hote = HoteBc::neuf(8);
+        match executer_fichier(&octets, "Prop", "interne", &[],
+                               &mut hote, &LimitesJvm::default()) {
+            Err(Erreur::ExceptionNonAttrapee(t)) => {
+                assert_eq!(t, "E");
+                println!("[rvm] exception non attrapée : `{}`", t);
+            }
+            autre => panic!("ExceptionNonAttrapee attendue, obtenu {:?}", autre.map(|_| ())),
+        }
+    }
+
+    fn classe_recursive(nom: &str, code: Vec<InstrBc>) -> Vec<u8> {
+        let mut c = ClasseRose::neuf(nom);
+        let cn = sym(&mut c.cp, nom);
+        let cm = sym(&mut c.cp, "boucle");
+        let cd = chn(&mut c.cp, "()V");
+        let r = mref(&mut c.cp, cn, cm, cd);
+        let mut corps = code;
+        // Toute référence d'appel sera `r` (une seule méthode dans la classe).
+        for i in &mut corps {
+            if let InstrBc::Appel { methode } = i { *methode = r; }
+        }
+        c.ajouter_methode(MethodeRose::neuf(
+            "boucle", Descripteur::neuf(vec![], TyDesc::Vide), &[], corps,
+        ).unwrap()).unwrap();
+        ecrire_classe(&c)
+    }
+
+    #[test]
+    fn sandbox_profondeur_appels() {
+        let octets = classe_recursive("RecP", vec![
+            InstrBc::Appel { methode: 0 }, InstrBc::RetourVide,
+        ]);
+        let mut hote = HoteBc::neuf(8);
+        let lim = LimitesJvm { profondeur_max: 4, ..LimitesJvm::default() };
+        match executer_fichier(&octets, "RecP", "boucle", &[], &mut hote, &lim) {
+            Err(Erreur::ProfondeurDepassee(4)) =>
+                println!("[rvm] profondeur d'appel bornée à 4"),
+            autre => panic!("ProfondeurDepassee attendue, obtenu {:?}", autre.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn sandbox_budget_appels() {
+        let octets = classe_recursive("RecA", vec![
+            InstrBc::Appel { methode: 0 }, InstrBc::RetourVide,
+        ]);
+        let mut hote = HoteBc::neuf(8);
+        let lim = LimitesJvm { profondeur_max: 100, max_appels: 3, ..LimitesJvm::default() };
+        match executer_fichier(&octets, "RecA", "boucle", &[], &mut hote, &lim) {
+            Err(Erreur::AppelsEpuises(3)) => println!("[rvm] budget de 3 appels épuisé"),
+            autre => panic!("AppelsEpuises attendu, obtenu {:?}", autre.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn sandbox_budget_instructions_boucle_infinie() {
+        let mut c = ClasseRose::neuf("Tourne");
+        let cn = sym(&mut c.cp, "Tourne");
+        let cm = sym(&mut c.cp, "tourne");
+        let cd = chn(&mut c.cp, "()V");
+        let _r = mref(&mut c.cp, cn, cm, cd);
+        c.ajouter_methode(MethodeRose::neuf(
+            "tourne", Descripteur::neuf(vec![], TyDesc::Vide), &[],
+            vec![InstrBc::Saut { cible: 0 }],
+        ).unwrap()).unwrap();
+        let octets = ecrire_classe(&c);
+        let mut hote = HoteBc::neuf(8);
+        let lim = LimitesJvm { budget_instructions: 25, ..LimitesJvm::default() };
+        match executer_fichier(&octets, "Tourne", "tourne", &[], &mut hote, &lim) {
+            Err(Erreur::BudgetDepasse(25)) => println!("[rvm] budget 25 instructions épuisé"),
+            autre => panic!("BudgetDepasse attendu, obtenu {:?}", autre.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn verificateur_refuse_saut_et_slot_hors_bornes() {
+        let mut c = ClasseRose::neuf("Mauvais");
+        c.ajouter_methode(MethodeRose::neuf(
+            "m", Descripteur::neuf(vec![], TyDesc::Vide), &[],
+            vec![InstrBc::Saut { cible: 99 }],
+        ).unwrap()).unwrap();
+        assert!(matches!(verifier_classe(&c), Err(Erreur::SautHorsBornes { cible: 99, .. })));
+
+        let mut c2 = ClasseRose::neuf("Mauvais2");
+        c2.ajouter_methode(MethodeRose::neuf(
+            "m", Descripteur::neuf(vec![], TyDesc::Vide), &["x"],
+            vec![InstrBc::ChargerSlot { slot: 5 }, InstrBc::RetourVide],
+        ).unwrap()).unwrap();
+        assert!(matches!(verifier_classe(&c2), Err(Erreur::SlotHorsBornes { slot: 5, .. })));
+        println!("[rvm] vérificateur : saut et slot hors bornes refusés");
+    }
+
+    #[test]
+    fn verificateur_refuse_arite_d_appel() {
+        let mut c = ClasseRose::neuf("Ver");
+        let cv = sym(&mut c.cp, "Ver");
+        let cible = sym(&mut c.cp, "cible");
+        let des = chn(&mut c.cp, "(I)I");
+        let r = mref(&mut c.cp, cv, cible, des);
+        c.ajouter_methode(MethodeRose::neuf(
+            "cible", Descripteur::neuf(vec![TyDesc::Entier], TyDesc::Entier), &["x"],
+            vec![InstrBc::ChargerSlot { slot: 0 }, InstrBc::RetourValeur],
+        ).unwrap()).unwrap();
+        c.ajouter_methode(MethodeRose::neuf(
+            "appele", Descripteur::neuf(vec![], TyDesc::Vide), &[],
+            vec![InstrBc::Appel { methode: r }, InstrBc::RetourVide],
+        ).unwrap()).unwrap();
+        let mut ch = ChargeurClasses::neuf();
+        // `ajouter` enchaîne vérification structure + flot + liens/arité.
+        match ch.ajouter(c) {
+            Err(Erreur::PileSousDimensionnee { .. }) =>
+                println!("[rvm] vérificateur : arité d'appel incohérente refusée"),
+            autre => panic!("PileSousDimensionnee attendue, obtenu {:?}", autre.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn programme_reel_fib_recursif_par_methodes() {
+        // fib compilé en méthode JVM Rose, avec Appel récursif.
+        let mut c = ClasseRose::neuf("Fib");
+        let cf = sym(&mut c.cp, "Fib");
+        let nf = sym(&mut c.cp, "fib");
+        let df = chn(&mut c.cp, "(I)I");
+        let deux = ent(&mut c.cp, 2);
+        let un = ent(&mut c.cp, 1);
+        let r_fib = mref(&mut c.cp, cf, nf, df);
+
+        let code = vec![
+            InstrBc::ChargerSlot { slot: 0 },
+            InstrBc::PousserConst { index: deux },
+            InstrBc::Binaire { op: Oper::Lt },
+            InstrBc::SautSiFaux { cible: 6 },
+            InstrBc::ChargerSlot { slot: 0 },
+            InstrBc::RetourValeur,
+            InstrBc::ChargerSlot { slot: 0 },
+            InstrBc::PousserConst { index: un },
+            InstrBc::Binaire { op: Oper::Sub },
+            InstrBc::Appel { methode: r_fib },
+            InstrBc::StockerSlot { slot: 1 },
+            InstrBc::ChargerSlot { slot: 0 },
+            InstrBc::PousserConst { index: deux },
+            InstrBc::Binaire { op: Oper::Sub },
+            InstrBc::Appel { methode: r_fib },
+            InstrBc::StockerSlot { slot: 2 },
+            InstrBc::ChargerSlot { slot: 1 },
+            InstrBc::ChargerSlot { slot: 2 },
+            InstrBc::Binaire { op: Oper::Add },
+            InstrBc::RetourValeur,
+        ];
+        c.ajouter_methode(MethodeRose::neuf(
+            "fib", Descripteur::neuf(vec![TyDesc::Entier], TyDesc::Entier),
+            &["n", "a", "b"], code,
+        ).unwrap()).unwrap();
+        let octets = ecrire_classe(&c);
+
+        let mut hote = HoteBc::neuf(8);
+        let ch = charger_fichier(&octets).unwrap();
+        let mut vm = MachineJvm::neuf(&ch, &mut hote, LimitesJvm::default());
+        let v = vm.invoquer("Fib", "fib", &[Valeur::z(25)]).unwrap();
+        assert_eq!(cle(&v), "75025");
+        println!("[rvm] fib(25) = {} (appels={}, instructions={})",
+                 cle(&v), vm.appels, vm.instructions);
+
+        // Parité avec l'interpréteur Rose sur la même récursion source.
+        let source = "fn fib(n: entier) -> entier { si (n < 2) { retour n }; retour fib(n-1) + fib(n-2) }\n>> fib(25)\n";
+        set_sink(true);
+        let rc = crate::interp::executer_source(source, Vec::new());
+        let sortie = take_sink().unwrap_or_default();
+        assert_eq!(rc, 0);
+        assert_eq!(sortie.trim(), "75025");
+        println!("[rvm] fib25 interpréteur = {} (égal)", sortie.trim());
+    }
+
+    #[test]
+    fn affichage_capture_et_bigint_exact_via_pool() {
+        let mut c = ClasseRose::neuf("Donnees");
+        let msg = chn(&mut c.cp, "salut JVM");
+        c.ajouter_methode(MethodeRose::neuf(
+            "saluer", Descripteur::neuf(vec![], TyDesc::Vide), &[],
+            vec![InstrBc::PousserConst { index: msg },
+                 InstrBc::Afficher, InstrBc::RetourVide],
+        ).unwrap()).unwrap();
+        let big = c.cp.ajouter(Const::BigInt("123456789012345678901234567890".to_string())).unwrap();
+        c.ajouter_methode(MethodeRose::neuf(
+            "grand", Descripteur::neuf(vec![], TyDesc::Entier), &[],
+            vec![InstrBc::PousserConst { index: big }, InstrBc::RetourValeur],
+        ).unwrap()).unwrap();
+        let octets = ecrire_classe(&c);
+
+        let mut hote = HoteBc::neuf(8);
+        let g = {
+            let ch = charger_fichier(&octets).unwrap();
+            let mut vm = MachineJvm::neuf(&ch, &mut hote, LimitesJvm::default());
+            vm.invoquer("Donnees", "saluer", &[]).unwrap();
+            vm.invoquer("Donnees", "grand", &[]).unwrap()
+        };
+        let grand = cle(&g);
+        assert_eq!(grand, "123456789012345678901234567890");
+        let sortie = hote.sortie.clone();
+        assert_eq!(sortie, "salut JVM");
+        println!("[rvm] sortie={:?} bigint={}", sortie, grand);
     }
 }
