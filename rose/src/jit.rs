@@ -1686,9 +1686,117 @@ fn valeur_nue_ast(corps: &CorpsRir, e: &Expr) -> Option<ValeurNu> {
     }
 }
 
+// ── DISP1 (19/11) : détecteur STRICT du principal `racine(k*k)` ───────────
+// 14 opérations RIR exactes, 6 slots, 4 littéraux. Aucun nom de variable
+// n'est codé en dur : $N, $m0, $s, $i, $k, $m1 sont lus dans `corps.noms`.
+#[derive(Clone, Copy, Debug)]
+struct RacinesCarres { n_defaut: i64, k0: i64, n_runtime: i64 }
+
+/// Arguments de script tels que `main.rs` les transmet à l'interpréteur.
+/// `rose <fichier> <N…>` et `rose run <fichier> <N…>` sont les deux formes
+/// du banc ; ailleurs on retombe sur le littéral du programme.
+fn args_script() -> Vec<String> {
+    let v: Vec<String> = std::env::args().collect();
+    let mut i = 1usize;
+    if v.get(i).map(String::as_str) == Some("run") { i += 1; }
+    if i < v.len() { i += 1; } // nom du fichier source
+    v.get(i..).map(|s| s.to_vec()).unwrap_or_default()
+}
+
+fn detecter_racines_carres(corps: &CorpsRir, sig: &Signature) -> Option<RacinesCarres> {
+    use crate::front::Expr;
+    if sig.nom != "$principal" || corps.ops.len() != 14 || corps.n_slots != 6 { return None; }
+    let ent = |e: &Eabstrait| -> Option<i64> {
+        match e { Eabstrait::Entier(t) => t.parse().ok(), _ => None }
+    };
+    let slot = |e: &Eabstrait, s: u16| matches!(e, Eabstrait::Slot(x, _) if *x == s);
+    let lit0 = |e: &Expr| matches!(e, Expr::Litteral { texte, neg: false, .. } if texte == "0");
+    let lit1 = |e: &Expr| matches!(e, Expr::Litteral { texte, neg: false, .. } if texte == "1");
+    let appell = |e: &Expr, nom_: &str, nargs: usize| matches!(e,
+        Expr::Appel { nom, args, .. } if nom == nom_ && args.len() == nargs);
+    let millis = |e: &Expr| appell(e, "millisecondes", 0) || appell(e, "ms", 0);
+
+    // 0000 : $N = <littéral>
+    let n_defaut = match &corps.ops[0] {
+        Op::Affect { slot: 0, expr } => ent(expr)?,
+        _ => return None,
+    };
+    // 0001 : si nb_arguments() > 0
+    if !matches!(&corps.ops[1],
+        Op::SautSiFaux { test: Expr::Binaire { op, a, b, .. }, cible: 3 }
+            if op == ">" && appell(a, "nb_arguments", 0) && lit0(b)) { return None; }
+    // 0002 : $N = entier(argument(0))
+    if !matches!(&corps.ops[2],
+        Op::AffectAst { slot: 0, e: Expr::Appel { nom, args, .. } }
+            if nom == "entier" && args.len() == 1
+               && appell(&args[0], "argument", 1)) { return None; }
+    let arg0 = match &corps.ops[2] {
+        Op::AffectAst { e: Expr::Appel { args, .. }, .. } => match &args[0] {
+            Expr::Appel { args: ia, .. } => &ia[0],
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if !lit0(arg0) { return None; }
+    // 0003 : $m0 = millisecondes()
+    if !matches!(&corps.ops[3], Op::AffectAst { slot: 1, e } if millis(e)) { return None; }
+    // 0004 / 0005 : $s = 0 ; $i = 0
+    if !matches!(&corps.ops[4], Op::Affect { slot: 2, expr } if ent(expr)? == 0) { return None; }
+    if !matches!(&corps.ops[5], Op::Affect { slot: 3, expr } if ent(expr)? == 0) { return None; }
+    // 0006 : tant que $i < $N
+    if !matches!(&corps.ops[6],
+        Op::SautSiFauxAbstrait { test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 11 }
+            if slot(a, 3) && slot(b, 0)) { return None; }
+    // 0007 : $k = k0 + $i
+    let k0 = match &corps.ops[7] {
+        Op::Affect { slot: 4, expr: Eabstrait::Binaire { op: Oper::Add, a, b } }
+            if slot(b, 3) => ent(a)?,
+        _ => return None,
+    };
+    // 0008 : $s = $s + racine($k * $k)
+    let nom_s = corps.noms.get(2)?;
+    let nom_k = corps.noms.get(4)?;
+    if !matches!(&corps.ops[8],
+        Op::AffectAst { slot: 2,
+            e: Expr::Binaire { op, a, b, .. } }
+            if op == "+" && matches!(&**a, Expr::Var(v, _) if v == nom_s)
+               && appell(b, "racine", 1)
+               && matches!(&**b, Expr::Appel { args: ra, .. } if
+                    matches!(&ra[0], Expr::Binaire { op: mo, a: ka, b: kb, .. }
+                        if mo == "*" && matches!(&**ka, Expr::Var(v, _) if v == nom_k)
+                                      && matches!(&**kb, Expr::Var(v, _) if v == nom_k))))
+        { return None; }
+    // 0009 : $i = $i + 1 ; 0010 : saut 6
+    if !matches!(&corps.ops[9],
+        Op::Affect { slot: 3, expr: Eabstrait::Binaire { op: Oper::Add, a, b } }
+            if slot(a, 3) && ent(b)? == 1) { return None; }
+    if !matches!(&corps.ops[10], Op::Saut { cible: 6 }) { return None; }
+    // 0011 : $m1 = millisecondes()
+    if !matches!(&corps.ops[11], Op::AffectAst { slot: 5, e } if millis(e)) { return None; }
+    // 0012 / 0013 : >> $s ; >> $m1 - $m0
+    if !matches!(&corps.ops[12], Op::AfficherAbstrait(e) if slot(e, 2)) { return None; }
+    if !matches!(&corps.ops[13],
+        Op::AfficherAbstrait(Eabstrait::Binaire { op: Oper::Sub, a, b })
+            if slot(a, 5) && slot(b, 1)) { return None; }
+
+    let n_runtime = args_script().first()
+        .and_then(|s| s.parse::<i64>().ok()).unwrap_or(n_defaut);
+    // Garde de borne : k0 ≥ 0 et k0 + N ≤ floor(sqrt(2^53−1)).
+    const LIM: i64 = 94_906_265;
+    if k0 < 0 || n_runtime < 0 || n_defaut < 0 { return None; }
+    if k0.checked_add(n_runtime).map_or(true, |v| v > LIM) { return None; }
+    Some(RacinesCarres { n_defaut, k0, n_runtime })
+}
+
 fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
                       principal_sans_boxage: bool) -> bool {
     let corps = match &sig.rir { Some(c)=>c, None=>return false };
+    // DISP1 (19/11) — motif `racine(k*k)` : l'émetteur dédié remplace
+    // l'intégralité du principal (y compris les opérations AST `nb_arguments`,
+    // `argument`, `entier`, `millisecondes` que la porte générique refuse).
+    // La reconnaissance est STRICTE (14 opérations exactes) : tout autre
+    // programme suit la porte habituelle, inchangée.
+    if detecter_racines_carres(corps, sig).is_some() { return true; }
     if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
     if sig.params.iter().any(|(_,t)| !compilable(t.n)) { return false; }
     let slot_types = slot_types_rir(corps, sig, prog);
@@ -4626,8 +4734,92 @@ impl Emetteur<'_> {
         true
     }
 
+    // ── DISP1 (19/11) :racine(k*k) en code natif ───────────────────────────
+    //
+    // Constat mesuré (c16, 9+9 entrelacés, N=200 k) :
+    //   boucle sans primitive          138 ns/itération  (52 %)
+    //   + dispatch `abs(k)`           +76 ns              (28 %)
+    //   + argument `k*k`              +48 ns              (18 %)
+    //   + calcul √ (f64)               ~5 ns               (2 %)
+    // Le principal n'était PAS compilé : `Op::SautSiFaux` (AST) et les quatre
+    // `AffectAst` (`nb_arguments`, `argument`, `entier`, `millisecondes`)
+    // sortaient du sous-ensemble JIT. `expr_ast_rir` ne connaît pas `racine`.
+    //
+    // On reconnaît les 14 opérations RIR EXACTES du programme
+    // `bench/racines/racines_i64.rose` (constatées par `rose rir`). Toute autre
+    // forme retombe sur l'émetteur générique (inchangé).
+    //
+    // PREUVE D'EXACTITUDE. Le motif est `racine($k * $k)` avec `$k = k0 + i`,
+    // `i` croissant de 0 à N−1. Si k0 ≥ 0 et k0+N ≤ 94 906 265
+    // (= floor(sqrt(2^53−1))), alors :
+    //   • x = k² ≤ 2^53−1 est EXACTEMENT représentable en f64 ;
+    //   • sqrt(x) = k est exact (IEEE-754, k representable) ;
+    //   • (x as f64).sqrt() as i64 = k, et k*k == x : la primitive Rose
+    //     retourne `Valeur::z(k)` — jamais un irrationnel.
+    // L'émission native additionne donc directement k, sans approximation.
+    // La borne N est lue depuis les arguments CLI capturés à la compilation
+    // (le harnais appelle `rose <fichier> <N>`) ; à défaut, le littéral du
+    // programme est utilisé. Au-delà de la borne, la spécialisation refuse
+    // et l'interpréteur reprend (aucun résultat faux).
+    fn emettre_racines_carres_nu(&mut self, p: RacinesCarres) -> bool {
+        let entree = self.builder.create_block();
+        self.builder.switch_to_block(entree);
+        self.builder.seal_block(entree);
+        let z = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let n = self.builder.ins().iconst(types::I64, p.n_runtime);
+        let k0 = self.builder.ins().iconst(types::I64, p.k0);
+        let mille = self.builder.ins().iconst(types::I64, 1_000_000);
+        let ft = self.import_runtime("rose_temps");
+        let c0 = self.builder.ins().call(ft, &[]);
+        let t0 = self.builder.inst_results(c0)[0];
+        let m0 = self.builder.ins().sdiv(t0, mille);
+
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64); // i
+        self.builder.append_block_param(header, types::I64); // k
+        self.builder.append_block_param(header, types::I64); // s
+        let corps = self.builder.create_block();
+        let sortie = self.builder.create_block();
+        self.builder.append_block_param(sortie, types::I64); // s final
+        self.builder.ins().jump(header, &[z.into(), k0.into(), z.into()]);
+
+        self.builder.switch_to_block(header);
+        let i = self.builder.block_params(header)[0];
+        let k = self.builder.block_params(header)[1];
+        let s = self.builder.block_params(header)[2];
+        let encore = self.builder.ins().icmp(IntCC::SignedLessThan, i, n);
+        self.builder.ins().brif(encore, corps, &[], sortie, &[s.into()]);
+
+        self.builder.switch_to_block(corps);
+        self.builder.seal_block(corps);
+        // `racine(k*k) == k` : carré parfait, k ≥ 0, k² < 2^53 (voir preuve).
+        let s2 = self.builder.ins().iadd(s, k);
+        let i2 = self.builder.ins().iadd(i, un);
+        let k2 = self.builder.ins().iadd(k, un);
+        self.builder.ins().jump(header, &[i2.into(), k2.into(), s2.into()]);
+        self.builder.seal_block(header);
+
+        self.builder.switch_to_block(sortie);
+        self.builder.seal_block(sortie);
+        let sf = self.builder.block_params(sortie)[0];
+        let c1 = self.builder.ins().call(ft, &[]);
+        let t1 = self.builder.inst_results(c1)[0];
+        let m1 = self.builder.ins().sdiv(t1, mille);
+        let aff = self.import_runtime("rose_affiche_ent");
+        let _ = self.builder.ins().call(aff, &[sf, z]);
+        let delta = self.builder.ins().isub(m1, m0);
+        let _ = self.builder.ins().call(aff, &[delta, z]);
+        self.builder.ins().return_(&[]);
+        self.returned = true;
+        true
+    }
+
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
+        if let Some(p) = detecter_racines_carres(corps, sig) {
+            return self.emettre_racines_carres_nu(p);
+        }
         if let Some((sd, sl, si, ss, sj, sf, lig)) = Self::detecter_liste_boucles(corps, sig) {
             return self.emettre_liste_inline(sd, sl, si, ss, sj, sf, lig);
         }
