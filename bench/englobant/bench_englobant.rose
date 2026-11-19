@@ -51,7 +51,6 @@ pour $p5 de 0 vers $F {
 #  depend de l'ETAT SPLITMIX.
 
 $interieur6 = 0
-$i6 = 0
 $x6 = 0.0
 $y6 = 0.0
 pour $p6 de 0 vers $F {
@@ -81,7 +80,6 @@ pour $p6 de 0 vers $F {
 $philox7 = tampon(65536)
 $alpha7 = octets("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 $tot7 = 0
-$i7 = 0
 $mot7 = 0
 pour $p7 de 0 vers $F {
     $philox7 = tampon(65536)
