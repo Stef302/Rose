@@ -163,6 +163,16 @@ fn g5_branch($kind: entier, $l: entier) -> entier {
   joindre($g5_meta, "F" + chaine($l) + "|" + chaine($kind))
   retour longueur($g5_code) - 1
 }
+# Saut court à déplacement CONSTANT, résolu à l'émission (pas de label).
+# Évite de grossir g5_lbldef : g5_patch est une recherche linéaire, donc
+# 3000 labels supplémentaires rendaient l'émission du compilateur entier
+# plusieurs minutes. Utilisé uniquement dans les patrons de dispatch de tag.
+fn g5_branch_off($kind: entier, $off: entier) -> entier {
+  si ($kind == 0) { g5_emit(335544320 + g5_wrap($off, 67108864)); retour 0 }
+  si ($kind == 1) { g5_emit(2483027968 + g5_wrap($off, 67108864)); retour 0 }
+  g5_emit(1409286144 + g5_wrap($off, 524288) * 32 + ($kind - 100))
+  retour 0
+}
 fn g5_mark($l: entier) -> entier {
   joindre($g5_lbldef, chaine($l) + "|" + chaine(longueur($g5_code)))
   retour longueur($g5_code) - 1
@@ -194,7 +204,9 @@ fn eorr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 3388997632 + $
 fn mulr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2600500224 + $rm * 65536 + $rn * 32 + $rd }
 fn sdivr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2596276224 + $rm * 65536 + $rn * 32 + $rd }
 fn udivr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2596276224 + $rm * 65536 + $rn * 32 + $rd }
-fn msubr($rd: entier, $rn: entier, $rm: entier, $ra: entier) -> entier { retour 2600501248 + $rm * 65536 + $ra * 16 + $rn * 32 + $rd }
+# MSUB : Rd bits 0-4, Rn bits 5-9, Ra bits 10-14 (×1024), Rm bits 16-20.
+# Le facteur 16 historique était faux dès que Ra≠0 (il écrivait dans Rd).
+fn msubr($rd: entier, $rn: entier, $rm: entier, $ra: entier) -> entier { retour 2600501248 + $rm * 65536 + $ra * 1024 + $rn * 32 + $rd }
 fn cmpr($rn: entier, $rm: entier) -> entier { retour 3942645791 + $rm * 65536 + $rn * 32 }
 fn cmpi($rn: entier, $im: entier) -> entier { retour 4043309087 + $im * 1024 + $rn * 32 }
 fn ldroff($rt: entier, $rn: entier, $off: entier) -> entier { retour 4181721088 + partie_entiere($off / 8) * 1024 + $rn * 32 + $rt }
@@ -221,6 +233,32 @@ fn ldrbio($rt: entier, $rn: entier, $off: entier) -> entier { retour 960495616 +
 fn strbr($rt: entier, $rn: entier, $rm: entier) -> entier { retour 941647872 + $rm * 65536 + $rn * 32 + $rt }
 fn ldrbr($rt: entier, $rn: entier, $rm: entier) -> entier { retour 945842176 + $rm * 65536 + $rn * 32 + $rt }
 
+# ── ABI G5 : tag dans les 3 bits bas (décision AB1, 19/11) ──
+#UNE seule représentation pour TOUTES les valeurs G5 :
+#  entier / booléen : n<<3        (bits bas 000)
+#  chaîne           : pointeur|1   (descripteur [tag=1][len][octets…])
+#  liste            : pointeur|2   (descripteur [tag=2][len][cap][valeurs…])
+#Les descripteurs sont alignés sur 8 : les 3 bits bas sont libres.
+#Encodages vérifiés avec as/objdump sur aarch64 :
+#  and xRd,xRn,#0xfffffffffffffff8 = 0x927df000 + Rn*32 + Rd
+#  lsr xRd,xRn,#3                 = 0xd343fc00 + Rn*32 + Rd
+#  lsl xRd,xRn,#3                 = 0xd37df000 + Rn*32 + Rd
+#  orr xRd,xRn,#1                 = 0xb2400000 + Rn*32 + Rd
+#  orr xRd,xRn,#2                 = 0xb27f0000 + Rn*32 + Rd
+fn g5_masktag($rd: entier, $rn: entier) -> entier { retour 2457726976 + $rn * 32 + $rd }
+fn g5_tagbits($rd: entier, $rn: entier) -> entier { retour 2453669888 + $rn * 32 + $rd }
+fn g5_lsr3($rd: entier, $rn: entier) -> entier { retour 3544448000 + $rn * 32 + $rd }
+fn g5_asr3($rd: entier, $rn: entier) -> entier { retour 2470706176 + $rn * 32 + $rd }
+fn g5_lsl3($rd: entier, $rn: entier) -> entier { retour 3548246016 + $rn * 32 + $rd }
+fn g5_tag1($rd: entier, $rn: entier) -> entier { retour 2990538752 + $rn * 32 + $rd }
+fn g5_tag2($rd: entier, $rn: entier) -> entier { retour 2994667520 + $rn * 32 + $rd }
+# Charge un entier Rose (déjà tagué) dans $rd. g5_load reste brut ( adresses, tailles ).
+fn g5_load_val($rd: entier, $v: entier) -> entier {
+  g5_load($rd, $v)
+  g5_emit(g5_lsl3($rd, $rd))
+  retour 0
+}
+
 $g5_allocl = 0
 $g5_lenl = 0
 $g5_ordl = 0
@@ -230,6 +268,8 @@ $g5_chl = 0
 $g5_joindrel = 0
 $g5_inserrel = 0
 $g5_entierl = 0
+$g5_catl = 0
+$g5_streql = 0
 $g5_stub0l = 0
 $g5_stubsl = 0
 
@@ -432,7 +472,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
   si ($tk == "(") {
     $head = $t[$pos + 1]
     si ($head == "n" ou $head == "entier") {
-      g5_load(0, g4_entier_ou_zero($t[$pos + 2]))
+      g5_load_val(0, g4_entier_ou_zero($t[$pos + 2]))
       retour $pos + 4
     }
     si ($head == "v") {
@@ -443,11 +483,12 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     }
     si ($head == "s") {
       g5_make_str(g5_unescape($t[$pos + 2]))
+      g5_emit(g5_tag1(0, 0))
       retour $pos + 4
     }
     si ($head == "f") {
       # G5 n'a pas de flottants : les littéraux (f K.K) sont repliés en entier.
-      g5_load(0, g4_entier_ou_zero($t[$pos + 2]))
+      g5_load_val(0, g4_entier_ou_zero($t[$pos + 2]))
       retour $pos + 4
     }
     si ($head == "lstvide") {
@@ -459,6 +500,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       g5_emit(stroff(1, 0, 8))
       g5_load(1, 8)
       g5_emit(stroff(1, 0, 16))
+      g5_emit(g5_tag2(0, 0))
       retour $pos + 4
     }
     si ($head == "lst") {
@@ -484,6 +526,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(stroff(1, 0, 24 + 8 * $j))
         $j = $j + 1
       }
+      g5_emit(g5_tag2(0, 0))
       retour $p + 1
     }
     si ($head == "idx") {
@@ -505,21 +548,51 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       $p = g5_eval($t, $p, $d + 1, $f)
       si ($p < 0) { retour -1 }
       g5_emit(ldroff(1, 31, g5_tmpoff($d)))
+      # x1 = opérande gauche taguée, x0 = opérande droite taguée.
       $c = g5_cond($op)
-      si ($c >= 0) {
-        g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c))
-      } sinon si ($op == "+") { g5_emit(addr(0, 1, 0))
+      si ($op == "==" ou $op == "!=") {
+        # Égalité de chaînes : comparer le CONTENU, pas les pointeurs.
+        # Sauts courts à déplacement calculé : zéro label supplémentaire.
+        $npost = 0
+        si ($op == "!=") { $npost = 2 }
+        g5_emit(g5_tagbits(2, 1))
+        g5_emit(g5_tagbits(3, 0))
+        g5_emit(cmpi(2, 1)); g5_branch_off(101, 8 + $npost)
+        g5_emit(cmpi(3, 1)); g5_branch_off(101, 6 + $npost)
+        g5_emit(orrr(2, 31, 0)); g5_emit(orrr(0, 31, 1)); g5_emit(orrr(1, 31, 2))
+        g5_branch(1, $g5_streql)
+        si ($op == "!=") { g5_load(2, 8); g5_emit(eorr(0, 0, 2)) }
+        g5_branch_off(0, 4)
+        g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
+      } sinon si ($op == "+") {
+        # '+' sur chaînes = CONCATÉNATION (c'était la cause du SIGSEGV :
+        # deux descripteurs étaient additionnés comme des entiers brutaux).
+        g5_emit(g5_tagbits(2, 1))
+        g5_emit(cmpi(2, 0)); g5_branch_off(101, 6)
+        g5_emit(g5_tagbits(2, 0))
+        g5_emit(cmpi(2, 0)); g5_branch_off(101, 3)
+        g5_emit(addr(0, 1, 0)); g5_branch_off(0, 5)
+        g5_emit(orrr(2, 31, 0)); g5_emit(orrr(0, 31, 1)); g5_emit(orrr(1, 31, 2))
+        g5_branch(1, $g5_catl)
+      } sinon si ($c >= 0) {
+        g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
       } sinon si ($op == "-") { g5_emit(subr(0, 1, 0))
-      } sinon si ($op == "*") { g5_emit(mulr(0, 1, 0))
-      } sinon si ($op == "/" ou $op == "//" ou $op == "div") { g5_emit(sdivr(0, 1, 0))
+      } sinon si ($op == "*") { g5_emit(mulr(0, 1, 0)); g5_emit(g5_lsr3(0, 0))
+      } sinon si ($op == "/" ou $op == "//" ou $op == "div") {
+        g5_emit(g5_asr3(1, 1)); g5_emit(g5_asr3(0, 0))
+        g5_emit(sdivr(0, 1, 0)); g5_emit(g5_lsl3(0, 0))
       } sinon si ($op == "%") {
-        g5_emit(udivr(2, 1, 0)); g5_emit(msubr(2, 2, 0, 1)); g5_emit(subr(0, 1, 2))
+        g5_emit(g5_asr3(1, 1)); g5_emit(g5_asr3(0, 0))
+        g5_emit(sdivr(2, 1, 0))
+        g5_emit(msubr(3, 2, 0, 1))
+        g5_emit(orrr(0, 31, 3))
+        g5_emit(g5_lsl3(0, 0))
       } sinon si ($op == "^") {
-        # x1 = base, x0 = exposant ; repli entier (G5 : pas de flottants)
+        # x1 = base taguée, x0 = exposant tagué ; repli entier (pas de flottants).
         $l1 = g5_next()
         $l2 = g5_next()
-        g5_emit(orrr(2, 31, 1))
-        g5_emit(orrr(3, 31, 0))
+        g5_emit(g5_asr3(2, 1))
+        g5_emit(g5_asr3(3, 0))
         g5_emit(movz(0, 1))
         g5_mark($l1)
         g5_emit(cmpi(3, 0))
@@ -528,6 +601,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(subi(3, 3, 1))
         g5_branch(0, $l1)
         g5_mark($l2)
+        g5_emit(g5_lsl3(0, 0))
       } sinon si ($op == "et") { g5_emit(andr(0, 1, 0))
       } sinon si ($op == "ou") { g5_emit(orrr(0, 1, 0))
       } sinon { retour g5_fail("op bin non couverte : " + $op) }
@@ -576,19 +650,19 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     si ($head == "b") {
       $v = 0
       si ($t[$pos + 2] == "vraie") { $v = 1 }
-      g5_load(0, $v)
+      g5_load_val(0, $v)
       retour $pos + 3
     }
     si ($head == "non") {
       $p = g5_eval($t, $pos + 2, $d + 1, $f)
       si ($p < 0) { retour -1 }
-      g5_emit(cmpi(0, 0)); g5_emit(cset(0, 0))
+      g5_emit(cmpi(0, 0)); g5_emit(cset(0, 0)); g5_emit(g5_lsl3(0, 0))
       retour $p + 1
     }
     si ($head == "uni") {
       $p = g5_eval($t, $pos + 3, $d + 1, $f)
       si ($p < 0) { retour -1 }
-      si ($t[$pos + 2] == "non") { g5_emit(cmpi(0, 0)); g5_emit(cset(0, 0))
+      si ($t[$pos + 2] == "non") { g5_emit(cmpi(0, 0)); g5_emit(cset(0, 0)); g5_emit(g5_lsl3(0, 0))
       } sinon si ($t[$pos + 2] == "neg" ou $t[$pos + 2] == "-") { g5_emit(subr(0, 31, 0))
       } sinon { retour g5_fail("unaire non couvert : " + $t[$pos + 2]) }
       retour $p + 1
@@ -596,15 +670,15 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     retour g5_fail("forme parenthésée non couverte : " + $head)
   }
   si ($tk == "slot") { g5_emit(ldroff(0, 31, g5_slotoff(g4_entier_ou_zero($t[$pos + 1])))); retour $pos + 2 }
-  si ($tk == "entier" ou $tk == "n") { g5_load(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
-  si ($tk == "flottant") { g5_load(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
+  si ($tk == "entier" ou $tk == "n") { g5_load_val(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
+  si ($tk == "flottant") { g5_load_val(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
   si ($tk == "v") {
     $sl = g5_slot_of($f, $t[$pos + 1])
     si ($sl < 0) { g5_load(0, 0)
     } sinon { g5_emit(ldroff(0, 31, g5_slotoff($sl))) }
     retour $pos + 2
   }
-  g5_load(0, g4_entier_ou_zero($tk))
+  g5_load_val(0, g4_entier_ou_zero($tk))
   retour $pos + 1
 }
 
@@ -718,12 +792,21 @@ fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: 
 fn g5_emit_print($lbl: entier) -> entier {
   g5_mark($lbl)
   g5_emit(stroff(0, 31, 8))
+  # ABI unique : une chaîne taguée s'imprime par ses octets, un entier par sa valeur.
+  $lstr = g5_next()
+  $lcpy = g5_next()
+  $ldone = g5_next()
+  $lwrite = g5_next()
+  g5_emit(g5_tagbits(2, 0))
+  g5_emit(cmpi(2, 1)); g5_branch(100, $lstr)
+  g5_emit(g5_asr3(0, 0))
   g5_emit(cmpi(0, 0))
   g5_branch(100, $lbl + 1)
   g5_branch(110, $lbl + 2)
   g5_emit(movz(7, 16))
   g5_emit(movz(10, 1))
   g5_emit(ldroff(0, 31, 8))
+  g5_emit(g5_asr3(0, 0))
   g5_emit(subr(0, 31, 0))
   g5_emit(movz(2, 0))
   g5_branch(0, $lbl + 3)
@@ -772,12 +855,39 @@ fn g5_emit_print($lbl: entier) -> entier {
   g5_emit(addi(6, 6, 1))
   g5_emit(cmpr(6, 9))
   g5_branch(101, $lbl + 6)
+  g5_mark($lwrite)
   g5_emit(movz(0, 1))
   g5_emit(addi(1, 31, 64))
   g5_emit(orrr(2, 31, 9))
   g5_emit(movz(8, 64))
   g5_emit(SVC_I())
+  # `>>` de Rose termine chaque affichage par un saut de ligne.
+  g5_emit(movz(1, 10))
+  g5_emit(strbio(1, 31, 64))
+  g5_emit(movz(0, 1))
+  g5_emit(addi(1, 31, 64))
+  g5_emit(movz(2, 1))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
   g5_emit(RET_I())
+  # Chemin chaîne : copie des octets du descripteur dans le tampon sp+64.
+  g5_mark($lstr)
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(10, 9, 8))
+  g5_emit(addi(1, 9, 16))
+  g5_emit(movz(5, 64))
+  g5_emit(movz(6, 0))
+  g5_mark($lcpy)
+  g5_emit(cmpr(6, 10))
+  g5_branch(110, $ldone)
+  g5_emit(ldrbr(4, 1, 6))
+  g5_emit(strbio(4, 5, 0))
+  g5_emit(addi(5, 5, 1))
+  g5_emit(addi(6, 6, 1))
+  g5_branch(0, $lcpy)
+  g5_mark($ldone)
+  g5_emit(orrr(9, 31, 10))
+  g5_branch(0, $lwrite)
   retour 0
 }
 
@@ -798,15 +908,18 @@ fn g5_emit_alloc($lbl: entier) -> entier {
 
 fn g5_emit_len($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(ldroff(1, 0, 0))
-  g5_emit(cmpi(1, 1))
+  g5_emit(g5_masktag(1, 0))
+  g5_emit(ldroff(2, 1, 0))
+  g5_emit(cmpi(2, 1))
   g5_branch(100, $lbl + 1)
-  g5_emit(cmpi(1, 2))
+  g5_emit(cmpi(2, 2))
   g5_branch(101, $lbl + 2)
-  g5_emit(ldroff(0, 0, 8))
+  g5_emit(ldroff(0, 1, 8))
+  g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
   g5_mark($lbl + 1)
-  g5_emit(ldroff(0, 0, 8))
+  g5_emit(ldroff(0, 1, 8))
+  g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
   g5_mark($lbl + 2)
   g5_emit(movz(0, 0))
@@ -816,7 +929,9 @@ fn g5_emit_len($lbl: entier) -> entier {
 
 fn g5_emit_ordre($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(ldrbio(0, 0, 16))
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldrbio(0, 9, 16))
+  g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
   retour 0
 }
@@ -824,9 +939,11 @@ fn g5_emit_ordre($lbl: entier) -> entier {
 # sous_chaine(s, a, b) — x0=s, x1=a, x2=b ; renvoie une NOUVELLE chaîne.
 fn g5_emit_sous($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(subr(3, 2, 1))
+  g5_emit(g5_asr3(1, 1))
+  g5_emit(g5_asr3(2, 2))
   g5_emit(orrr(8, 31, 1))
-  g5_emit(orrr(10, 31, 0))
+  g5_emit(subr(3, 2, 1))
+  g5_emit(g5_masktag(10, 0))
   g5_emit(addr(4, 3, 3))
   g5_emit(addr(4, 4, 4))
   g5_emit(addr(4, 4, 4))
@@ -849,7 +966,7 @@ fn g5_emit_sous($lbl: entier) -> entier {
   g5_emit(addi(6, 6, 1))
   g5_branch(0, $lbl + 1)
   g5_mark($lbl + 2)
-  g5_emit(orrr(0, 31, 5))
+  g5_emit(g5_tag1(0, 5))
   g5_emit(RET_I())
   retour 0
 }
@@ -857,11 +974,11 @@ fn g5_emit_sous($lbl: entier) -> entier {
 # idx(container, i) — chaîne : 1 caractère ; liste : élément.
 fn g5_emit_idx($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(ldroff(2, 0, 0))
+  g5_emit(g5_masktag(6, 0))
+  g5_emit(ldroff(2, 6, 0))
   g5_emit(cmpi(2, 2))
   g5_branch(100, $lbl + 1)
-  g5_emit(orrr(6, 31, 0))
-  g5_emit(orrr(7, 31, 1))
+  g5_emit(g5_asr3(7, 1))
   g5_load(0, 24)
   g5_alloc_inline()
   g5_emit(orrr(3, 31, 0))
@@ -872,14 +989,15 @@ fn g5_emit_idx($lbl: entier) -> entier {
   g5_emit(addi(5, 7, 16))
   g5_emit(ldrbr(4, 6, 5))
   g5_emit(strbio(4, 3, 16))
-  g5_emit(orrr(0, 31, 3))
+  g5_emit(g5_tag1(0, 3))
   g5_emit(RET_I())
   g5_mark($lbl + 1)
+  g5_emit(g5_asr3(1, 1))
   g5_emit(addr(2, 1, 1))
   g5_emit(addr(2, 2, 2))
   g5_emit(addr(2, 2, 2))
   g5_emit(addi(2, 2, 24))
-  g5_emit(addr(2, 0, 2))
+  g5_emit(addr(2, 6, 2))
   g5_emit(ldroff(0, 2, 0))
   g5_emit(RET_I())
   retour 0
@@ -888,22 +1006,22 @@ fn g5_emit_idx($lbl: entier) -> entier {
 # joindre(liste, valeur) — invite liste [tag=2][len][cap][valeurs…].
 fn g5_emit_join($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(ldroff(2, 0, 8))
-  g5_emit(ldroff(3, 0, 16))
+  g5_emit(g5_masktag(5, 0))
+  g5_emit(ldroff(2, 5, 8))
+  g5_emit(ldroff(3, 5, 16))
   g5_emit(cmpr(2, 3))
   g5_branch(110, $lbl + 1)
   g5_emit(addr(4, 2, 2))
   g5_emit(addr(4, 4, 4))
   g5_emit(addr(4, 4, 4))
   g5_emit(addi(4, 4, 24))
-  g5_emit(addr(4, 0, 4))
+  g5_emit(addr(4, 5, 4))
   g5_emit(stroff(1, 4, 0))
   g5_emit(addi(2, 2, 1))
-  g5_emit(stroff(2, 0, 8))
-  g5_emit(orrr(0, 31, 0))
+  g5_emit(stroff(2, 5, 8))
+  g5_emit(g5_tag2(0, 5))
   g5_emit(RET_I())
   g5_mark($lbl + 1)
-  g5_emit(orrr(5, 31, 0))
   g5_emit(orrr(6, 31, 1))
   g5_emit(orrr(8, 31, 2))
   g5_emit(addi(3, 8, 1))
@@ -944,7 +1062,7 @@ fn g5_emit_join($lbl: entier) -> entier {
   g5_emit(addi(4, 4, 24))
   g5_emit(addr(4, 7, 4))
   g5_emit(stroff(6, 4, 0))
-  g5_emit(orrr(0, 31, 7))
+  g5_emit(g5_tag2(0, 7))
   g5_emit(RET_I())
   retour 0
 }
@@ -959,13 +1077,14 @@ fn g5_emit_inser($lbl: entier) -> entier {
 # entier(chaine) — conversion décimale signée.
 fn g5_emit_entier($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(ldroff(1, 0, 8))
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(1, 9, 8))
   g5_emit(movz(2, 0))
   g5_emit(movz(3, 0))
   g5_emit(movz(4, 1))
   g5_emit(cmpi(1, 0))
   g5_branch(100, $lbl + 1)
-  g5_emit(ldrbio(5, 0, 16))
+  g5_emit(ldrbio(5, 9, 16))
   g5_emit(cmpi(5, 45))
   g5_branch(101, $lbl + 1)
   g5_load(4, -1)
@@ -975,7 +1094,7 @@ fn g5_emit_entier($lbl: entier) -> entier {
   g5_emit(cmpr(2, 1))
   g5_branch(110, $lbl + 3)
   g5_emit(addi(6, 2, 16))
-  g5_emit(ldrbr(5, 0, 6))
+  g5_emit(ldrbr(5, 9, 6))
   g5_emit(subi(5, 5, 48))
   g5_emit(movz(6, 10))
   g5_emit(mulr(3, 3, 6))
@@ -987,28 +1106,21 @@ fn g5_emit_entier($lbl: entier) -> entier {
   g5_branch(110, $lbl + 4)
   g5_emit(subr(3, 31, 3))
   g5_mark($lbl + 4)
-  g5_emit(orrr(0, 31, 3))
+  g5_emit(g5_lsl3(0, 3))
   g5_emit(RET_I())
   retour 0
 }
 
-# `chaine(x)` : si x est déjà un descripteur chaîne (tag=1), identité ;
+# `chaine(x)` : si x est déjà une chaîne taguée (bits bas = 1), identité ;
 # sinon on fabrique une chaîne vide [tag=1][len=0]. La conversion décimale
 # d'un entier n'est PAS implémentée ici (elle n'est pas nécessaire au chemin
 # d'émission de l'émetteur lui-même) — constat documenté.
 fn g5_emit_ch($lbl: entier) -> entier {
   g5_mark($lbl)
-  # ⚠ Les entiers sont passés BRUTS (x0=2 par exemple), sans tag : un test
-  # de plage évite de déréférencer un petit entier comme un pointeur.
-  g5_load(9, 1610612736)
-  g5_emit(cmpr(0, 9))
-  g5_branch(103, $lbl + 1)
-  g5_load(9, 1610612736 + 33554432)
-  g5_emit(cmpr(0, 9))
-  g5_branch(108, $lbl + 1)
-  g5_emit(ldroff(1, 0, 0))
-  g5_emit(cmpi(1, 1))
-  g5_branch(100, $lbl + 1)
+  # ABI unique : test du TAG (bits bas), plus de test de plage ad hoc.
+  g5_emit(g5_tagbits(2, 0))
+  g5_emit(cmpi(2, 1))
+  g5_branch(101, $lbl + 1)
   g5_emit(RET_I())
   g5_mark($lbl + 1)
   g5_load(0, 16)
@@ -1018,8 +1130,91 @@ fn g5_emit_ch($lbl: entier) -> entier {
   g5_emit(stroff(1, 5, 0))
   g5_emit(movz(1, 0))
   g5_emit(stroff(1, 5, 8))
-  g5_emit(orrr(0, 31, 5))
+  g5_emit(g5_tag1(0, 5))
   g5_emit(RET_I())
+  retour 0
+}
+
+# concat(a,b) — '+' sur deux chaînes. x0=a taguée, x1=b taguée.
+# Renvoie une NOUVELLE chaîne taguée [tag=1][len][octets…].
+fn g5_emit_cat($lbl: entier) -> entier {
+  g5_mark($lbl)
+  $lna = g5_next()
+  $lga = g5_next()
+  $lnb = g5_next()
+  $lgb = g5_next()
+  $lla = g5_next()
+  $laa = g5_next()
+  $llb = g5_next()
+  $ldn = g5_next()
+  g5_emit(g5_tagbits(2, 0)); g5_emit(cmpi(2, 1))
+  g5_branch(101, $lna)
+  g5_emit(g5_masktag(6, 0)); g5_emit(ldroff(8, 6, 8))
+  g5_branch(0, $lga)
+  g5_mark($lna)
+  g5_emit(movz(6, 0)); g5_emit(movz(8, 0))
+  g5_mark($lga)
+  g5_emit(g5_tagbits(2, 1)); g5_emit(cmpi(2, 1))
+  g5_branch(101, $lnb)
+  g5_emit(g5_masktag(7, 1)); g5_emit(ldroff(11, 7, 8))
+  g5_branch(0, $lgb)
+  g5_mark($lnb)
+  g5_emit(movz(7, 0)); g5_emit(movz(11, 0))
+  g5_mark($lgb)
+  g5_emit(addr(10, 8, 11))
+  # Taille = 16 + 8*ceil(total/8) : l'alignement 8 est OBLIGATOIRE, sinon
+  # les bits bas du pointeur servent de tag et l'allocation suivante
+  # dérape hors du tas (constat : SIGSEGV sur str x1,[x4] dans joindre).
+  g5_emit(addi(2, 10, 7))
+  g5_emit(g5_lsr3(2, 2))
+  g5_emit(g5_lsl3(2, 2))
+  g5_emit(addi(2, 2, 16))
+  g5_emit(orrr(0, 31, 2))
+  g5_alloc_inline()
+  g5_emit(orrr(5, 31, 0))
+  g5_emit(movz(1, 1)); g5_emit(stroff(1, 5, 0))
+  g5_emit(orrr(1, 31, 10)); g5_emit(stroff(1, 5, 8))
+  g5_emit(movz(2, 0))
+  g5_mark($lla)
+  g5_emit(cmpr(2, 8)); g5_branch(110, $laa)
+  g5_emit(addi(3, 2, 16)); g5_emit(ldrbr(4, 6, 3))
+  g5_emit(strbr(4, 5, 3))
+  g5_emit(addi(2, 2, 1)); g5_branch(0, $lla)
+  g5_mark($laa)
+  g5_emit(addi(6, 8, 16))
+  g5_emit(movz(2, 0))
+  g5_mark($llb)
+  g5_emit(cmpr(2, 11)); g5_branch(110, $ldn)
+  g5_emit(addi(3, 2, 16)); g5_emit(ldrbr(4, 7, 3))
+  g5_emit(addr(3, 6, 2)); g5_emit(strbr(4, 5, 3))
+  g5_emit(addi(2, 2, 1)); g5_branch(0, $llb)
+  g5_mark($ldn)
+  g5_emit(g5_tag1(0, 5))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# streq(a,b) — égalité de CONTENU de deux chaînes taguées. Booléen tagué (0 ou 8).
+fn g5_emit_streq($lbl: entier) -> entier {
+  g5_mark($lbl)
+  $lf = g5_next()
+  $lt = g5_next()
+  $ll = g5_next()
+  g5_emit(g5_masktag(6, 0)); g5_emit(g5_masktag(7, 1))
+  g5_emit(ldroff(2, 6, 8)); g5_emit(ldroff(3, 7, 8))
+  g5_emit(cmpr(2, 3)); g5_branch(101, $lf)
+  g5_emit(orrr(10, 31, 2))
+  g5_emit(movz(2, 0))
+  g5_mark($ll)
+  g5_emit(cmpr(2, 10)); g5_branch(110, $lt)
+  g5_emit(addi(3, 2, 16))
+  g5_emit(ldrbr(4, 6, 3)); g5_emit(ldrbr(5, 7, 3))
+  g5_emit(cmpr(4, 5)); g5_branch(101, $lf)
+  g5_emit(addi(2, 2, 1)); g5_branch(0, $ll)
+  g5_mark($lf)
+  g5_emit(movz(0, 0)); g5_emit(RET_I())
+  g5_mark($lt)
+  g5_load(0, 8); g5_emit(RET_I())
   retour 0
 }
 
@@ -1038,6 +1233,7 @@ fn g5_emit_stubs($lbl: entier) -> entier {
   g5_emit(stroff(1, 0, 0))
   g5_emit(movz(1, 0))
   g5_emit(stroff(1, 0, 8))
+  g5_emit(g5_tag1(0, 0))
   g5_emit(RET_I())
   retour 0
 }
@@ -1081,7 +1277,9 @@ fn g5_elf() -> chaine {
   $out = $out + u64le($fsz) + u64le($fsz) + u64le(4096)
   $out = $out + u32le(1) + u32le(6)
   $out = $out + u64le(0) + u64le($heap) + u64le($heap)
-  $out = $out + u64le(0) + u64le(1048576) + u64le(4096)
+  # Tas de 64 Mio (1 Mio épuisé, 64 Mio épuisé aussi, 512 Mio épuisé en 1,3 s :
+  # boucle d'allocation sans fin, pas un simple manque de place — voir le doc).
+  $out = $out + u64le(0) + u64le(67108864) + u64le(4096)
   $i = 0
   tant_que ($i < longueur($g5_code)) { $out = $out + u32le($g5_code[$i]); $i = $i + 1 }
   retour $out
@@ -1123,6 +1321,12 @@ $g5_inserrel = g5_next()
 $g5_entierl = g5_next()
 $k = 0
 tant_que ($k < 4) { g5_next(); $k = $k + 1 }
+$g5_catl = g5_next()
+$k = 0
+tant_que ($k < 8) { g5_next(); $k = $k + 1 }
+$g5_streql = g5_next()
+$k = 0
+tant_que ($k < 3) { g5_next(); $k = $k + 1 }
 $g5_stub0l = g5_next()
 $g5_stubsl = g5_next()
 $exitl = g5_next()
@@ -1141,6 +1345,8 @@ g5_emit_ch($g5_chl)
 g5_emit_join($g5_joindrel)
 g5_emit_inser($g5_inserrel)
 g5_emit_entier($g5_entierl)
+g5_emit_cat($g5_catl)
+g5_emit_streq($g5_streql)
 g5_emit_stub0($g5_stub0l)
 g5_emit_stubs($g5_stubsl)
 g5_emit_print($printl)
