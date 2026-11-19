@@ -17,6 +17,38 @@
 
 use num_bigint::BigInt;
 use num_traits::{One, Zero};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+/// RA2 19/11 — cache du produit `n·10^(2d)` (PAS du résultat de la racine).
+///
+/// `n·10^(2d)` est une fonction PURE de `(n, d)` : à 1000 décimales sa
+/// construction coûte 2,94 ms / 500 appels, soit **14 % du temps total**,
+/// dont 2,14 ms pour le seul `10^d.pow()` (A/A/A 9 échantillons, c11 —
+/// voir `docs/RACINES_BAT_RUST.md`). Le reconstruire à chaque appel est donc
+/// du travail redondant. On ne met PAS en cache `floor(√a)` : ce serait de la
+/// mémoïsation du résultat, pas une optimisation de calcul.
+///
+/// `thread_local` + `Rc` : aucun verrou, aucun clone du gros BigInt (seul le
+/// compteur de référence est copié). La clé est `(n, d)` ; `Rc<BigInt>`
+/// partage le grand entier en lecture seule.
+thread_local! {
+    static CACHE_A: RefCell<HashMap<(BigInt, usize), Rc<BigInt>>> = RefCell::new(HashMap::new());
+}
+
+/// Construit (ou retrouve) `n·10^(2·decimales)` avec le cache.
+pub fn produit_a(n: &BigInt, decimales: usize) -> Rc<BigInt> {
+    CACHE_A.with(|cache| {
+        let mut c = cache.borrow_mut();
+        c.entry((n.clone(), decimales))
+            .or_insert_with(|| {
+                let scale = BigInt::from(10u64).pow(decimales as u32);
+                Rc::new(n * &scale * &scale)
+            })
+            .clone()
+    })
+}
 
 /// Constante irrationnelle symbolique : jamais une valeur finie figée.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,8 +256,7 @@ pub fn calcul_racine(n: &BigInt, decimales: usize) -> BigInt {
     if decimales == 0 {
         return n.sqrt();
     }
-    let scale = BigInt::from(10u64).pow(decimales as u32);
-    let a = n * &scale * &scale;
+    let a = produit_a(n, decimales);
     if a.bits() <= 2048 {
         a.sqrt()
     } else {
