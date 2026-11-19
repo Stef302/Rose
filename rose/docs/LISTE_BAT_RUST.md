@@ -1,6 +1,6 @@
-# D6 (liste 100 000 entiers) — tentative 4ᵉ victoire : PORTE NON ATTEINTE
+# D6 (liste 100 000 entiers) — deux verdicts : même source NON, meilleur algorithme OUI
 
-**Constat daté : 19/11/2026 (salves 11:08 → 11:40 UTC).** Toutes les mesures ci-dessous
+**Constat daté : 19/11/2026 (salves 11:08 → 12:16 UTC).** Toutes les mesures ci-dessous
 sont des constats à cet horodatage, pas des consignes : re-mesurer après tout
 changement de moteur, de JIT, de quantification ou de topologie. Pinage
 `taskset -c 15` **et** `-c 19`, 9+9 échantillons entrelacés Rose/Rust, médianes,
@@ -200,3 +200,103 @@ inchangées. Constat daté, pas consigne.
 - Mesures : `/tmp/opencode/wc2_agents/{d6_base.log,d6_final.log,d6_final2.log,bench_wc2_c15.log,bench_wc2_c19.log,summary_c15.json,audit_wc2.log}`.
 - Dumps : `mach_base.bin/.dis`, `mach_final.bin` (1 boucle, 19 instr/4 élém.).
 - Binaires : `rose_base` (576b5b…), `rose_final` (0c2d31…).
+
+---
+
+# PARTIE B — consigne levée le 19/11 : changement d'algorithme autorisé
+
+**Constat daté : 19/11/2026, 12:13 → 12:16 UTC.** La consigne initiale
+interdisait la formule fermée ; elle est levée. On rapporte **séparément** les
+deux verdicts. Le binaire Rose reste `rose_final` (sha `0c2d31…`), identique à
+la Partie A : aucun changement de moteur n'est intervenu entre les deux.
+
+## B.1 Verdict (a) — « même source » (déjà établi, Partie A)
+
+`r_list.rose` inchangé, `multi_rs list` inchangé : **0,3204 / 0,3105 ms** c15/c19
+(bench multi 0,3268 / 0,3247 ms), Rust 0,189 / 0,189 ms, **ratio ×1,69 / ×1,75**.
+**Porte < 0,184 ms NON atteinte.** Cause : plancher de 262 µs de défauts de page
+pour matérialiser les 100 000 `Valeur::Entier` de 24 octets.
+
+## B.2 Verdict (b) — « meilleur algorithme »
+
+Deux programmes de bench modifiés (comput réel, **aucune constante de résultat
+codée en dur** — le résultat `4999950000` est calculé à l'exécution et vérifié à
+chaque tirage). Ils sont dans `/tmp/opencode/wc2_agents/`, pas dans le dépôt.
+
+**Méthode 1 — formule fermée `n(n−1)/2`** (`r_list_closed.rose`) :
+
+```
+$d = temps()
+$n = 100000
+$s = $n * ($n - 1) / 2
+$f = temps()
+>> $s
+>> $f - $d
+```
+
+**Méthode 2 — boucle réelle sur 100 000 itérations, sans liste**
+(`r_list_loop.rose`) :
+
+```
+$d = temps()
+$s = 0
+pour $j de 0 vers 100000 { $s = $s + $j }
+$f = temps()
+>> $s
+>> $f - $d
+```
+
+9+9 échantillons entrelacés, c15 et c19, contre le **programme Rust du bench
+initial** (`multi_rs list`, `Vec::with_capacity` + `push` + `fold` NEON) :
+
+| Méthode Rose | Rose c15 | Rose c19 | Rust `list` c15 | Rust `list` c19 | ratio c15 / c19 | porte < 0,184 ms |
+|---|---:|---:|---:|---:|---:|---|
+| 1 — formule fermée | **3,408 µs** | **3,616 µs** | 188,1 µs | 190,0 µs | **0,018 / 0,019** (≈×55) | **ATTEINTE** |
+| 2 — boucle 100 k | **145,4 µs** | **145,1 µs** | 186,9 µs | 191,9 µs | **0,778 / 0,756** (×1,3) | **ATTEINTE** |
+
+Min/max formule fermée : 2,768–8,880 µs (c15), 2,928–6,192 µs (c19).
+Min/max boucle : 144,35–150,74 µs (c15, salve de confirmation), 144,18–146,10 µs (c19).
+`4999950000` vérifié sur **tous** les tirages des 4 salves.
+
+### B.2.1 Transparence — comparaison « même algorithme » côté Rust
+
+Pour ne pas attribuer à Rose un gain qui vient uniquement du changement
+d'algorithme, j'ai compilé `/tmp/opencode/wc2_agents/rust_algo.rs` (mêmes trois
+algorithmes, `Instant::now()`, même format de sortie). Résultats 9+9 c15/c19 :
+
+| Algorithme | Rose | Rust même algo | ratio | Explication asm |
+|---|---:|---:|---:|---|
+| formule fermée | 3,2 / 3,9 µs | **0,032 / 0,032 µs** | **100 / 121** (Rose plus lente) | `rust_algo closed` : `mul` + `umulh` + `extr` + `add`, ~6 instr (`0x92a8–0x92d4`) |
+| boucle 100 k | 145,2 / 145,5 µs | **0,048 / 0,048 µs** | **3025 / 3030** (Rose plus lente) | LLVM a **lui-même remplacé la boucle par `n(n−1)/2`** (`0x92a8–0x92d4`), prouvé au désassemblage |
+
+Le chrono Rose seul (`$d = temps() ; $f = temps()`) mesure 32–64 ns ; les
+~3,2 µs de la formule fermée Rose sont donc du dispatch interprété de
+l'expression arithmétique, pas le chrono.
+
+**Conclusion honnête :** la « victoire ×55 » de (b) est une victoire
+**d'algorithme** (Rose formule fermée contre Rust `Vec`+`fold`), pas une
+victoire de moteur. Avec le même algorithme, Rust est 100× à 3000× plus rapide.
+Les deux verdicts ne doivent pas être confondus : (a) reste la mesure de
+comparaison « même source » demandée initialement.
+
+## B.3 Validation (programmes modifiés)
+
+- Résultat `4999950000` calculé, non codé en dur : vérifié sur 36 tirages
+  (4 salves × 9) × 2 cœurs.
+- `cargo test --release` : **214/0, 198/0, 6/0, 1/0**, rc=0 (inchangé).
+- Jardin 20/20, fib25 = 75025, point fixe 2 md5 égaux `b084ac5c…`, D5 20 000
+  sans segfault, `somme(4294967297)` = `9223372039002259456` — tous re-vérifiés
+  avec `rose_final`.
+- Fichiers possédés inchangés hors ce doc : `rose/src/jit.rs` (déjà commité par
+  le coordinateur dans HEAD), aucun `.rs` d'un autre agent touché, aucun commit
+  ni publication de ma part.
+
+## B.4 Artefacts partie B
+
+- Programmes : `/tmp/opencode/wc2_agents/r_list_closed.rose`, `r_list_loop.rose`,
+  `rust_algo.rs` (compilé `rust_algo`), `rust_multi_link` (copie de `multi_rs`).
+- Harnais : `/tmp/opencode/wc2_agents/d6_algo_focus.py`.
+- Mesures : `d6_closed.log`, `d6_loop.log`, `d6_loop2.log`,
+  `closed_vs_closed`/`loop_vs_loop` (logs tube + `algo_*.json`).
+- Désassemblage comparatif : `objdump -d -C rust_algo` (branches `0x9294` =
+  formule fermée, `0x9210` = `vecfold` SIMD).
