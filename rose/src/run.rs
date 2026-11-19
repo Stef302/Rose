@@ -1949,6 +1949,7 @@ impl Table {
             index: { let mut m = HashMap::with_hasher(BuildHasherDefault::<HashU64>::default()); m.reserve(4096); m },
             fallback: Vec::new(),
             collisions: Vec::new(),
+            array_part: vec![0u32; Self::N_ARRAY],
         })));
         t.reindexer();
         t
@@ -1957,7 +1958,7 @@ impl Table {
     /// Reconstruit l'index depuis `items` (usage : construction littérale).
     pub fn reindexer(&self) {
         let mut rep = self.0.borrow_mut();
-        let TableRep { items, index, fallback, collisions } = &mut *rep;
+        let TableRep { items, index, fallback, collisions, array_part } = &mut *rep;
         index.clear();
         fallback.clear();
         collisions.clear();
@@ -1967,6 +1968,12 @@ impl Table {
                     if index.insert(h, i).is_some() { collisions.push((h, i)); }
                 }
                 None => fallback.push(i),
+            }
+        }
+        array_part.fill(0);
+        for (i, (k, _)) in items.iter().enumerate() {
+            if let Valeur::Entier(kk, None) = k {
+                Self::maj_array(array_part, *kk, i);
             }
         }
     }
@@ -2140,7 +2147,7 @@ impl Table {
             return;
         }
         let h = Self::h_entier(k);
-        let TableRep { items, index, collisions, .. } = self.rep_mut_nv();
+        let TableRep { items, index, collisions, array_part, .. } = self.rep_mut_nv();
         // UN seul hachage par insertion : `entry` sert à la fois à trouver
         // la position existante et à réserver la nouvelle (au lieu de
         // `get` puis `contains_key` puis `insert` = 3 hachages).
@@ -2150,22 +2157,26 @@ impl Table {
                 let i0 = *e.get();
                 if Self::cle_i64_egale(&items[i0].0, k) {
                     items[i0].1 = Self::z_valeur_i64(v);
+                    Self::maj_array(array_part, k, i0);
                     return;
                 }
                 if let Some(pos) = collisions.iter().position(|&(hh, ci)| {
                     hh == h && Self::cle_i64_egale(&items[ci].0, k)
                 }) {
                     items[collisions[pos].1].1 = Self::z_valeur_i64(v);
+                    Self::maj_array(array_part, k, collisions[pos].1);
                     return;
                 }
                 let i = items.len();
                 items.push((Valeur::Entier(k, None), Self::z_valeur_i64(v)));
                 collisions.push((h, i));
+                Self::maj_array(array_part, k, i);
             }
             Entry::Vacant(e) => {
                 let i = items.len();
                 items.push((Valeur::Entier(k, None), Self::z_valeur_i64(v)));
                 e.insert(i);
+                Self::maj_array(array_part, k, i);
             }
         }
     }
@@ -2176,8 +2187,15 @@ impl Table {
         if !Self::z_est_nu(k) {
             return self.trouver(&Valeur::z(k)).is_some();
         }
+        let rep = self.rep_nv();
+        if k >= 0 && (k as usize) < Self::N_ARRAY {
+            let p = rep.array_part[k as usize];
+            if p != 0 && Self::cle_i64_egale(&rep.items[(p - 1) as usize].0, k) {
+                return true;
+            }
+        }
         let h = Self::h_entier(k);
-        Self::trouve_i64(self.rep_nv(), k, h).is_some()
+        Self::trouve_i64(rep, k, h).is_some()
     }
 
     /// Supprime une clé ; `false` si absente. Décalage des positions.
@@ -2192,6 +2210,13 @@ impl Table {
         for x in rep.fallback.iter_mut() { if *x > i { *x -= 1; } }
         rep.collisions.retain(|(_, p)| *p != i);
         for (_, p) in rep.collisions.iter_mut() { if *p > i { *p -= 1; } }
+        let TableRep { items, array_part, .. } = &mut *rep;
+        array_part.fill(0);
+        for (j, (kk, _)) in items.iter().enumerate() {
+            if let Valeur::Entier(k, None) = kk {
+                Self::maj_array(array_part, *k, j);
+            }
+        }
         true
     }
 }
@@ -2212,6 +2237,27 @@ pub struct TableRep {
     fallback: Vec<usize>,
     /// collisions de hachage : (h, position), normalement vide.
     collisions: Vec<(u64, usize)>,
+    /// Partie « tableau » (Lua) : pour une clé i64 nue `k` dans
+    /// [0, N_ARRAY), `array_part[k] = position + 1` (0 = absent).
+    /// ACCÉLÉRATEUR PUR : `items` + `index` restent la source de vérité.
+    /// Aucun faux positif possible : chaque hit direct est validé par
+    /// `cle_i64_egale` contre l'item réellement stocké. Un absent dans
+    /// cette partie retombe sur la voie hachée, donc l'égalité sémantique
+    /// (Entier ≡ Rationnel ≡ Flottant) est préservée.
+    array_part: Vec<u32>,
+}
+
+impl Table {
+    /// Taille de la partie tableau : 4 096 entrées × 4 octets = 16 Kio.
+    /// Les clés hors [0, N_ARRAY) utilisent exclusivement l'index haché.
+    const N_ARRAY: usize = 4096;
+
+    #[inline]
+    fn maj_array(array_part: &mut [u32], k: i64, pos: usize) {
+        if k >= 0 && (k as usize) < Self::N_ARRAY {
+            array_part[k as usize] = (pos + 1) as u32;
+        }
+    }
 }
 
 /// Hacheur rapide pour les clés `u64` DÉJÀ mélangées de `TableRep.index`.
