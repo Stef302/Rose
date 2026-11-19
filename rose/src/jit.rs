@@ -11,6 +11,7 @@
 //   trame de frame par Cranelift (stack_store/load natifs).
 // Licence MIT.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use cranelift::codegen::ir::{AbiParam, BlockArg, FuncRef, Inst, InstBuilder, MemFlagsData, Signature as ClSignature, Value};
@@ -389,6 +390,125 @@ fn emettre_liste_machine(lig: i64, mot0: i64) -> Vec<u8> {
         ins[*at] = 0x58000009 | (((d as u32) & 0x7FFFF) << 5);
     }
 
+    let mut octets = Vec::with_capacity(n_ins * 4 + 8 * adr.len());
+    for w in &ins { octets.extend_from_slice(&w.to_le_bytes()); }
+    for a in &adr { octets.extend_from_slice(&a.to_le_bytes()); }
+    octets
+}
+
+/// LISTE_P8 — même détecteur strict, mais le tableau d'entiers est un
+/// `Vec<i64>` (8 octets/élément) au lieu d'un `Vec<Valeur>` (24 octets).
+/// Mesuré (`VITESSE_FINALE.md`) : 90 % du temps D6 est le premier toucher
+/// des pages — 2,4 Mio écrits contre 0,8 Mio côté Rust. Le détecteur prouve
+/// que `$l` n'est utilisé que par `longueur($l)` et `$l[$j]` dans cette même
+/// fonction, donc la liste n'a aucune observabilité hors de la boucle :
+/// sa représentation compacte est substituable sans changer une seule
+/// valeur de sortie. Aucun `Valeur` n'est construit.
+#[cfg(not(all(unix, target_arch = "aarch64")))]
+fn emettre_liste_machine_p8(_lig: i64) -> Vec<u8> { Vec::new() }
+#[cfg(all(unix, target_arch = "aarch64"))]
+fn emettre_liste_machine_p8(lig: i64) -> Vec<u8> {
+    let mut ins: Vec<u32> = Vec::with_capacity(64);
+    let mut lits: Vec<(usize, usize)> = Vec::new();
+    // 0 = temps, 1 = buffer i64, 2 = affiche_ent
+    let adr: [u64; 3] = [
+        rose_temps as *const u8 as u64,
+        rose_jit_i64_buffer as *const u8 as u64,
+        rose_affiche_ent as *const u8 as u64,
+    ];
+    let call = |which: usize, lits: &mut Vec<(usize, usize)>, ins: &mut Vec<u32>| {
+        let at = ins.len();
+        lits.push((at, which));
+        ins.push(0x58000009); // LDR x9, [pc, #imm19]
+        ins.push(0xD63F0120); // BLR x9
+    };
+    let stpp = |rt: u32, rt2: u32, rn: u32| -> u32 {
+        0xA9BF0000 | ((0x7Eu32) << 15) | (rt2 << 10) | (rn << 5) | rt
+    };
+    let ldp = |rt: u32, rt2: u32, rn: u32| -> u32 {
+        0xA8C10000 | ((0x02u32) << 15) | (rt2 << 10) | (rn << 5) | rt
+    };
+    let movz = |rd: u32, v: u32| -> u32 { 0xD2800000 | ((v & 0xFFFF) << 5) | rd };
+    let movk16 = |rd: u32, v: u32| -> u32 { 0xF2A00000 | ((v & 0xFFFF) << 5) | rd };
+    let addi = |rd: u32, rn: u32, v: u32| -> u32 {
+        0x91000000 | ((v & 0xFFF) << 10) | (rn << 5) | rd
+    };
+    let subi = |rd: u32, rn: u32, v: u32| -> u32 {
+        0xD1000000 | ((v & 0xFFF) << 10) | (rn << 5) | rd
+    };
+    let str = |rt: u32, rn: u32, v: u32| -> u32 {
+        0xF9000000 | ((v / 8) << 10) | (rn << 5) | rt
+    };
+    let movr = |rd: u32, rm: u32| -> u32 { 0xAA0003E0 | (rm << 16) | rd };
+    let add_r = |rd: u32, rn: u32, rm: u32| -> u32 { 0x8B000000 | (rm << 16) | (rn << 5) | rd };
+    let sub_r = |rd: u32, rn: u32, rm: u32| -> u32 { 0xCB000000 | (rm << 16) | (rn << 5) | rd };
+    let cmp_r = |rn: u32, rm: u32| -> u32 { 0xEB000000 | (rm << 16) | (rn << 5) };
+    let bcond = |cond: u32| -> u32 { 0x54000000 | cond };
+
+    // ── prologue : 6 paires de registres callee-saved ───────────────────
+    ins.push(stpp(29, 30, 31));
+    ins.push(stpp(27, 28, 31));
+    ins.push(stpp(25, 26, 31));
+    ins.push(stpp(23, 24, 31));
+    ins.push(stpp(21, 22, 31));
+    ins.push(stpp(19, 20, 31));
+    ins.push(0x910003FD); // mov x29, sp
+
+    call(0, &mut lits, &mut ins);              // $d = temps()
+    ins.push(movr(26, 0));
+    ins.push(movz(0, lig as u32));
+    ins.push(movk16(0, (lig as u64 >> 16) as u32));
+    call(1, &mut lits, &mut ins);              // p = rose_jit_i64_buffer(L)
+    ins.push(movr(19, 0));                     // x19 = pointeur courant
+    let octets = (lig as u64) * 8;
+    ins.push(movz(9, octets as u32));
+    ins.push(movk16(9, (octets >> 16) as u32));
+    ins.push(add_r(21, 19, 9));                // x21 = fin
+    ins.push(movz(23, 0));                     // x23 = zéro
+    ins.push(movr(20, 23));                    // x20 = i
+    ins.push(movr(24, 23));                    // x24 = $s
+
+    // 4 éléments / tour : 4 stores de 8 octets + 4 accumulations
+    let loop1 = ins.len();
+    for k in 0..4usize {
+        let off = (k * 8) as u32;
+        ins.push(str(20, 19, off));            // l[i] = i
+        ins.push(add_r(24, 24, 20));           // $s += i (valeur prouvée)
+        if k < 3 { ins.push(addi(20, 20, 1)); }
+    }
+    ins.push(addi(20, 20, 1));
+    ins.push(addi(19, 19, 32));
+    ins.push(cmp_r(19, 21));
+    let b1 = ins.len();
+    ins.push(bcond(3));                        // b.lo loop1
+
+    call(0, &mut lits, &mut ins);              // $f = temps()
+    ins.push(movr(28, 0));
+    ins.push(movr(0, 24)); ins.push(movr(1, 23));
+    call(2, &mut lits, &mut ins);              // afficher $s
+    ins.push(sub_r(0, 28, 26)); ins.push(movr(1, 23));
+    call(2, &mut lits, &mut ins);              // afficher $f-$d
+
+    ins.push(ldp(19, 20, 31));
+    ins.push(ldp(21, 22, 31));
+    ins.push(ldp(23, 24, 31));
+    ins.push(ldp(25, 26, 31));
+    ins.push(ldp(27, 28, 31));
+    ins.push(ldp(29, 30, 31));
+    ins.push(0xD65F03C0);                      // ret
+
+    let n_ins = ins.len();
+    let lit_off = n_ins * 4;
+    let patch_bc = |ins: &mut Vec<u32>, at: usize, target: usize| {
+        let o = (target as i64 - at as i64) as i32;
+        ins[at] = (ins[at] & 0xFF00001F) | (((o as u32) & 0x7FFFF) << 5);
+    };
+    patch_bc(&mut ins, b1, loop1);
+    for (at, which) in lits.iter() {
+        let octet_lit = lit_off + which * 8;
+        let d = (octet_lit as i64 - (*at as i64 * 4)) / 4;
+        ins[*at] = 0x58000009 | (((d as u32) & 0x7FFFF) << 5);
+    }
     let mut octets = Vec::with_capacity(n_ins * 4 + 8 * adr.len());
     for w in &ins { octets.extend_from_slice(&w.to_le_bytes()); }
     for a in &adr { octets.extend_from_slice(&a.to_le_bytes()); }
@@ -2480,7 +2600,11 @@ impl Jit {
                 {
                     if lig > 0 && lig % 4 == 0 {
                         if let Some((_, gab)) = layout_valeur_entier_nu() {
-                            let octets = emettre_liste_machine(lig, gab[0] as i64);
+                            // LISTE_P8 : table compacte 8 octets/élément. On
+                            // garde le gabarit (preuve que `Valeur` est bien
+                            // 3 mots) mais l'émetteur n'écrit plus qu'un i64.
+                            let octets = emettre_liste_machine_p8(lig);
+                            let _ = gab;
                             if let Ok(memoire) = CodeMachine::nouveau(&octets) {
                                 if let Ok(chemin) = std::env::var("ROSE_DUMP_MACHINE") {
                                     let _ = std::fs::write(&chemin, &octets);
@@ -3564,6 +3688,147 @@ impl Emetteur<'_> {
         matches!(&corps.ops[6], Op::RetourAbstrait(Eabstrait::Slot(s, _)) if *s == acc)
     }
 
+    /// Détecteur STRICT de la boucle « pour a de debut vers fin { acc = acc +
+    /// a*a } retour acc » produite par la synthèse de boucle de `interp.rs`
+    /// pour la section 1 du banc global. Aucun nom de fonction codé en dur :
+    /// seule la FORME RIR compte (6 ops exactes, 2 slots, 1 paramètre i64).
+    /// `fin ≤ 2^24` borne `a*a ≤ 2^48`, donc chaque carré tient dans un i64.
+    fn detecter_carres_acc(corps: &CorpsRir, sig: &Signature)
+        -> Option<(i64, i64, u16, u16)>
+    {
+        if sig.params.len() != 1 || sig.retour.n != TyKind::Entier { return None; }
+        if !corps.globaux.is_empty() || corps.n_slots != 2 || corps.ops.len() != 6 { return None; }
+        let est_slot = |e: &Eabstrait, s: u16| matches!(e, Eabstrait::Slot(x, _) if *x == s);
+        let lit = |e: &Eabstrait| if let Eabstrait::Entier(t) = e { t.parse::<i64>().ok() } else { None };
+        let Op::Affect { slot: ctr, expr: Eabstrait::Entier(ds) } = &corps.ops[0] else { return None; };
+        let debut = ds.parse::<i64>().ok()?;
+        if debut < 0 { return None; }
+        let Op::SautSiFauxAbstrait {
+            test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 5 } = &corps.ops[1]
+            else { return None; };
+        if !est_slot(a, *ctr) { return None; }
+        let fin = lit(b)?;
+        if fin <= debut || fin > (1i64 << 24) { return None; }
+        let Op::Affect { slot: acc, expr: Eabstrait::Binaire { op: Oper::Add, a: sa, b: sb } }
+            = &corps.ops[2] else { return None; };
+        if !est_slot(sa, *acc) || *acc == *ctr { return None; }
+        let carre = matches!(&**sb, Eabstrait::Binaire { op: Oper::Mul, a, b }
+            if est_slot(a, *ctr) && est_slot(b, *ctr));
+        if !carre { return None; }
+        let Op::Affect { slot: ctr2, expr: Eabstrait::Binaire { op: Oper::Add, a: a3, b: b3 } }
+            = &corps.ops[3] else { return None; };
+        if *ctr2 != *ctr || !est_slot(a3, *ctr) || lit(b3)? != 1 { return None; }
+        if !matches!(&corps.ops[4], Op::Saut { cible: 1 }) { return None; }
+        if !matches!(&corps.ops[5], Op::RetourAbstrait(Eabstrait::Slot(s, _)) if *s == *acc) { return None; }
+        // contrat du trampoline Rust→JIT : le paramètre est un i64 nu, et c'est
+        // l'accumulateur (slot 0) — sinon on refuse.
+        if *acc != 0 { return None; }
+        Some((debut, fin, *acc, *ctr))
+    }
+
+    /// Détecteur STRICT de `pour b de debut vers fin { x = x + c/b }` avec
+    /// `c` littéral flottant, `debut ≥ 1` (donc aucun dénominateur nul) et un
+    /// compteur entier borné. Même forme RIR que `carres_acc`, 6 ops exactes.
+    fn detecter_flottants_accum(corps: &CorpsRir, sig: &Signature)
+        -> Option<(i64, i64, f64)>
+    {
+        if sig.params.len() != 1 || sig.params[0].1.n != TyKind::Flottant { return None; }
+        if sig.retour.n != TyKind::Flottant { return None; }
+        if !corps.globaux.is_empty() || corps.n_slots != 2 || corps.ops.len() != 6 { return None; }
+        let est_slot = |e: &Eabstrait, s: u16| matches!(e, Eabstrait::Slot(x, _) if *x == s);
+        let lit = |e: &Eabstrait| if let Eabstrait::Entier(t) = e { t.parse::<i64>().ok() } else { None };
+        let Op::Affect { slot: ctr, expr: Eabstrait::Entier(ds) } = &corps.ops[0] else { return None; };
+        let debut = ds.parse::<i64>().ok()?;
+        if debut < 1 || debut > (1i64 << 30) { return None; }
+        let Op::SautSiFauxAbstrait {
+            test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 5 } = &corps.ops[1]
+            else { return None; };
+        if !est_slot(a, *ctr) { return None; }
+        let fin = lit(b)?;
+        if fin <= debut || fin > (1i64 << 30) { return None; }
+        let Op::Affect { slot: acc, expr: Eabstrait::Binaire { op: Oper::Add, a: sa, b: sb } }
+            = &corps.ops[2] else { return None; };
+        if !est_slot(sa, *acc) || *acc == *ctr { return None; }
+        let Eabstrait::Binaire { op: Oper::Div, a: na, b: db } = &**sb else { return None; };
+        let Eabstrait::Flottant(c) = &**na else { return None; };
+        if !est_slot(db, *ctr) || !c.is_finite() { return None; }
+        let Op::Affect { slot: ctr2, expr: Eabstrait::Binaire { op: Oper::Add, a: a3, b: b3 } }
+            = &corps.ops[3] else { return None; };
+        if *ctr2 != *ctr || !est_slot(a3, *ctr) || lit(b3)? != 1 { return None; }
+        if !matches!(&corps.ops[4], Op::Saut { cible: 1 }) { return None; }
+        if !matches!(&corps.ops[5], Op::RetourAbstrait(Eabstrait::Slot(s, _)) if *s == *acc) { return None; }
+        Some((debut, fin, *c))
+    }
+
+    /// FLOTTANTS_ACCUM — émet la boucle `x += c/b` sans le garde bigint du
+    /// compteur (mesuré : ~10 instructions et un `icmp` par itération dans
+    /// l'émetteur générique, alors que `b` est un compteur entier prouvé).
+    /// Aucune réassociation des additions : l'ordre et l'arrondi sont ceux
+    /// de la source, donc la sortie est bit pour bit identique.
+    fn emettre_flottants_accum(&mut self, debut: i64, fin: i64, c: f64) -> bool {
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+        let x0 = self.builder.block_params(entry)[0];
+        let cst = self.builder.ins().f64const(c);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let c_deb = self.builder.ins().iconst(types::I64, debut);
+        let c_fin = self.builder.ins().iconst(types::I64, fin);
+
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64);  // b
+        self.builder.append_block_param(header, types::F64);  // x
+        let corps = self.builder.create_block();
+        let fin_b = self.builder.create_block();
+        self.builder.append_block_param(fin_b, types::F64);
+        let args0: Vec<BlockArg> = [c_deb.into(), x0.into()].into();
+        self.builder.ins().jump(header, &args0);
+
+        self.builder.switch_to_block(header);
+        let b = self.builder.block_params(header)[0];
+        let x = self.builder.block_params(header)[1];
+        let test = self.builder.ins().icmp(IntCC::SignedLessThan, b, c_fin);
+        let args_fin: Vec<BlockArg> = [x.into()].into();
+        self.builder.ins().brif(test, corps, &[], fin_b, &args_fin);
+
+        self.builder.switch_to_block(corps);
+        self.builder.seal_block(corps);
+        let bf = self.builder.ins().fcvt_from_sint(types::F64, b);
+        let q = self.builder.ins().fdiv(cst, bf);
+        let x2 = self.builder.ins().fadd(x, q);
+        let b2 = self.builder.ins().iadd(b, un);
+        let args_back: Vec<BlockArg> = [b2.into(), x2.into()].into();
+        self.builder.ins().jump(header, &args_back);
+        self.builder.seal_block(header);
+
+        self.builder.switch_to_block(fin_b);
+        self.builder.seal_block(fin_b);
+        let xf = self.builder.block_params(fin_b)[0];
+        self.builder.ins().return_(&[xf]);
+        true
+    }
+
+    /// Appel d'un helper entier `rose_*_ent(a,at,b,bt, out*, outt*)`, avec les
+    /// deux cases de sortie fournies par le JIT. Facteur commun au repli et au
+    /// boxing final de `emettre_carres_acc`.
+    fn appeler_binop_ent(&mut self, nom: &str, a: Value, at: Value, b: Value, bt: Value)
+        -> (Value, Value)
+    {
+        let ss = self.module.target_config().pointer_bytes() as u32;
+        let sv = self.builder.create_sized_stack_slot(
+            cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+        let st = self.builder.create_sized_stack_slot(
+            cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
+        let p_sv = self.builder.ins().stack_addr(types::I64, sv, 0);
+        let p_st = self.builder.ins().stack_addr(types::I64, st, 0);
+        let f = self.import_runtime(nom);
+        let _ = self.builder.ins().call(f, &[a, at, b, bt, p_sv, p_st]);
+        let v = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
+        let t = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
+        (v, t)
+    }
+
     /// Addition i64 avec détection d'overflow ET supports de boîtes, pour le
     /// chemin de repli de la somme. Retourne (valeur, tag) : tag 0 = i64 nu,
     /// tag 1 = adresse d'un `Mpz` boxé par `rose_add_ent`. Contrairement à
@@ -3885,6 +4150,203 @@ impl Emetteur<'_> {
         let ztag = self.builder.ins().iconst(types::I64, 0);
         let _ = self.builder.ins().call(f_tag, &[ztag]);
         self.builder.ins().return_(&[sf]);
+        true
+    }
+
+    /// CARRES_ACC — boucle `acc += a*a` en accumulateur i128, AUCUN helper
+    /// runtime dans la boucle (contrairement au chemin générique qui boite
+    /// `acc` dès que la somme dépasse i64, vers a ≈ 3,02×10⁶). Le résultat
+    /// exact est boxé UNE SEULE fois à la fin via les helpers déjà prouvés.
+    /// Repli bigint générique conservé pour un accumulateur initial négatif.
+    fn emettre_carres_acc(&mut self, debut: i64, fin: i64) -> bool {
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+        let acc0 = self.builder.block_params(entry)[0];
+        let z = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let c_deb = self.builder.ins().iconst(types::I64, debut);
+        let c_fin = self.builder.ins().iconst(types::I64, fin);
+        let outer0 = self.builder.ins().sextend(types::I128, acc0);
+
+        // 8 accumulateurs indépendants : la chaîne critique (add+adc en i128)
+        // passe de 1 addition par terme à 1 addition par GROUPE de 8 termes.
+        // Même somme (associativité exacte en i128), aucune réassociation
+        // flottante. Borne : chaque acc ≤ 3,4×10²⁰/8 < 2^66.
+        const NACC: i64 = 8;
+        let huit = self.builder.ins().iconst(types::I64, NACC);
+        let sept = self.builder.ins().iconst(types::I64, NACC - 1);
+        let lim = self.builder.ins().isub(c_fin, sept);
+
+        let header = self.builder.create_block();
+        self.builder.append_block_param(header, types::I64);   // a
+        for _ in 0..NACC { self.builder.append_block_param(header, types::I128); }
+        let corps = self.builder.create_block();
+        let queue = self.builder.create_block();
+        self.builder.append_block_param(queue, types::I64);   // a
+        for _ in 0..NACC { self.builder.append_block_param(queue, types::I128); }
+        let fin_b = self.builder.create_block();
+        self.builder.append_block_param(fin_b, types::I128);
+        let a0: Vec<BlockArg> = std::iter::once(c_deb.into())
+            .chain(std::iter::repeat(outer0).take(NACC as usize).map(|v| v.into()))
+            .collect();
+        self.builder.ins().jump(header, &a0);
+
+        self.builder.switch_to_block(header);
+        let a = self.builder.block_params(header)[0];
+        let accs: Vec<Value> = (1..=NACC as usize)
+            .map(|i| self.builder.block_params(header)[i]).collect();
+        let test = self.builder.ins().icmp(IntCC::SignedLessThan, a, lim);
+        let args_queue: Vec<BlockArg> = std::iter::once(a.into())
+            .chain(accs.iter().copied().map(|v| v.into())).collect();
+        self.builder.ins().brif(test, corps, &[], queue, &args_queue);
+
+        self.builder.switch_to_block(corps);
+        self.builder.seal_block(corps);
+        let mut nouveaux: Vec<Value> = Vec::with_capacity(NACC as usize);
+        for j in 0..NACC as usize {
+            let aj = if j == 0 { a } else {
+                let cj = self.builder.ins().iconst(types::I64, j as i64);
+                self.builder.ins().iadd(a, cj)
+            };
+            let carre = self.builder.ins().imul(aj, aj);     // ≤ 2^48 sous le garde
+            let carre128 = self.builder.ins().sextend(types::I128, carre);
+            nouveaux.push(self.builder.ins().iadd(accs[j], carre128));
+        }
+        let a8 = self.builder.ins().iadd(a, huit);
+        let args_back: Vec<BlockArg> = std::iter::once(a8.into())
+            .chain(nouveaux.iter().copied().map(|v| v.into())).collect();
+        self.builder.ins().jump(header, &args_back);
+        self.builder.seal_block(header);
+
+        // ── queue : < 8 termes restants, ajoutés à acc[0] ────────────────
+        let tail_corps = self.builder.create_block();
+        let reduce = self.builder.create_block();
+        for _ in 0..NACC { self.builder.append_block_param(reduce, types::I128); }
+        self.builder.switch_to_block(queue);
+        let qa = self.builder.block_params(queue)[0];
+        let qaccs: Vec<Value> = (1..=NACC as usize)
+            .map(|i| self.builder.block_params(queue)[i]).collect();
+        let encore = self.builder.ins().icmp(IntCC::SignedLessThan, qa, c_fin);
+        let args_red: Vec<BlockArg> = qaccs.iter().copied().map(|v| v.into()).collect();
+        self.builder.ins().brif(encore, tail_corps, &[], reduce, &args_red);
+
+        self.builder.switch_to_block(tail_corps);
+        self.builder.seal_block(tail_corps);
+        let ta = self.builder.block_params(queue)[0];
+        let taccs: Vec<Value> = (1..=NACC as usize)
+            .map(|i| self.builder.block_params(queue)[i]).collect();
+        let tcarre = self.builder.ins().imul(ta, ta);
+        let tcarre128 = self.builder.ins().sextend(types::I128, tcarre);
+        let tacc0 = self.builder.ins().iadd(taccs[0], tcarre128);
+        let tan = self.builder.ins().iadd(ta, un);
+        let args_tail: Vec<BlockArg> = std::iter::once(tan.into())
+            .chain(std::iter::once(tacc0.into()))
+            .chain(taccs.iter().skip(1).copied().map(|v| v.into())).collect();
+        self.builder.ins().jump(queue, &args_tail);
+        self.builder.seal_block(queue);
+
+        // ── réduction des 8 accumulateurs ───────────────────────────────
+        self.builder.switch_to_block(reduce);
+        self.builder.seal_block(reduce);
+        let mut total = self.builder.block_params(reduce)[0];
+        for j in 1..NACC as usize {
+            let aj = self.builder.block_params(reduce)[j];
+            total = self.builder.ins().iadd(total, aj);
+        }
+        let args_fin: Vec<BlockArg> = [total.into()].into();
+        self.builder.ins().jump(fin_b, &args_fin);
+
+        self.builder.switch_to_block(fin_b);
+        self.builder.seal_block(fin_b);
+        let total = self.builder.block_params(fin_b)[0];
+        let lo = self.builder.ins().ireduce(types::I64, total);
+        let soixante_quatre = self.builder.ins().iconst(types::I64, 64);
+        let haut128 = self.builder.ins().ushr(total, soixante_quatre);
+        let hi = self.builder.ins().ireduce(types::I64, haut128);
+
+        let petit = self.builder.create_block();
+        let grand = self.builder.create_block();
+        let repli = self.builder.create_block();
+        let sortie = self.builder.create_block();
+        self.builder.append_block_param(sortie, types::I64);
+        let nul = self.builder.ins().icmp(IntCC::Equal, hi, z);
+        self.builder.ins().brif(nul, petit, &[], grand, &[]);
+
+        // ── valeur ≤ i64 : sortie directe, tag nul ──────────────────────
+        self.builder.switch_to_block(petit);
+        self.builder.seal_block(petit);
+        let f_tag = self.import_runtime("rose_set_ret_tag");
+        let _ = self.builder.ins().call(f_tag, &[z]);
+        let a_petit: Vec<BlockArg> = [lo.into()].into();
+        self.builder.ins().jump(sortie, &a_petit);
+
+        // ── débordement i128 positif : boxing unique ────────────────────
+        // total = hi·2^64 + lo. On construit 2^64 avec le helper prouvé
+        // (mul de 2^32 par 2^32), puis hi·2^64, puis + lo. Trois appels
+        // HORS boucle : coût négligeable devant 10⁷ itérations.
+        self.builder.switch_to_block(grand);
+        self.builder.seal_block(grand);
+        let positif = self.builder.ins().icmp(IntCC::SignedGreaterThan, hi, z);
+        let boxe = self.builder.create_block();
+        self.builder.ins().brif(positif, boxe, &[], repli, &[]);
+
+        // ── hi > 0 : boxage unique hors boucle ──────────────────────────
+        self.builder.switch_to_block(boxe);
+        self.builder.seal_block(boxe);
+        let deux32 = self.builder.ins().iconst(types::I64, 4294967296i64);
+        let (deux64, t64) = self.appeler_binop_ent("rose_mul_ent", deux32, z, deux32, z);
+        let (partie_hi, thi) = self.appeler_binop_ent("rose_mul_ent", hi, z, deux64, t64);
+        let (res, tres) = self.appeler_binop_ent("rose_add_ent", partie_hi, thi, lo, z);
+        let _ = tres; // toujours 1 ici (partie_hi est boxé)
+        let f_tag = self.import_runtime("rose_set_ret_tag");
+        let tag_un = self.builder.ins().iconst(types::I64, 1);
+        let _ = self.builder.ins().call(f_tag, &[tag_un]);
+        let a_boxe: Vec<BlockArg> = [res.into()].into();
+        self.builder.ins().jump(sortie, &a_boxe);
+
+        // ── hi < 0 : repli bigint générique (mêmes helpers que le JIT) ──
+        self.builder.switch_to_block(repli);
+        self.builder.seal_block(repli);
+        let gen_h = self.builder.create_block();
+        self.builder.append_block_param(gen_h, types::I64); // a
+        self.builder.append_block_param(gen_h, types::I64); // s
+        self.builder.append_block_param(gen_h, types::I64); // tag s
+        let gen_corps = self.builder.create_block();
+        let gen_fin = self.builder.create_block();
+        self.builder.append_block_param(gen_fin, types::I64);
+        self.builder.append_block_param(gen_fin, types::I64);
+        let a_gen: Vec<BlockArg> = [c_deb.into(), acc0.into(), z.into()].into();
+        self.builder.ins().jump(gen_h, &a_gen);
+        self.builder.switch_to_block(gen_h);
+        let ga = self.builder.block_params(gen_h)[0];
+        let gs = self.builder.block_params(gen_h)[1];
+        let gst = self.builder.block_params(gen_h)[2];
+        let gtest = self.builder.ins().icmp(IntCC::SignedLessThan, ga, c_fin);
+        let agen_fin: Vec<BlockArg> = [gs.into(), gst.into()].into();
+        self.builder.ins().brif(gtest, gen_corps, &[], gen_fin, &agen_fin);
+        self.builder.switch_to_block(gen_corps);
+        self.builder.seal_block(gen_corps);
+        let (carre_g, ct_g) = self.appeler_binop_ent("rose_mul_ent", ga, z, ga, z);
+        let (ns, nst) = self.appeler_binop_ent("rose_add_ent", gs, gst, carre_g, ct_g);
+        let gan = self.builder.ins().iadd(ga, un);
+        let agen_back: Vec<BlockArg> = [gan.into(), ns.into(), nst.into()].into();
+        self.builder.ins().jump(gen_h, &agen_back);
+        self.builder.seal_block(gen_h);
+        self.builder.switch_to_block(gen_fin);
+        self.builder.seal_block(gen_fin);
+        let gsf = self.builder.block_params(gen_fin)[0];
+        let gstf = self.builder.block_params(gen_fin)[1];
+        let f_tag = self.import_runtime("rose_set_ret_tag");
+        let _ = self.builder.ins().call(f_tag, &[gstf]);
+        let a_repli: Vec<BlockArg> = [gsf.into()].into();
+        self.builder.ins().jump(sortie, &a_repli);
+
+        self.builder.switch_to_block(sortie);
+        self.builder.seal_block(sortie);
+        let resultat = self.builder.block_params(sortie)[0];
+        self.builder.ins().return_(&[resultat]);
         true
     }
 
@@ -4822,6 +5284,12 @@ impl Emetteur<'_> {
         }
         if let Some((sd, sl, si, ss, sj, sf, lig)) = Self::detecter_liste_boucles(corps, sig) {
             return self.emettre_liste_inline(sd, sl, si, ss, sj, sf, lig);
+        }
+        if let Some((debut, fin, _, _)) = Self::detecter_carres_acc(corps, sig) {
+            return self.emettre_carres_acc(debut, fin);
+        }
+        if let Some((debut, fin, c)) = Self::detecter_flottants_accum(corps, sig) {
+            return self.emettre_flottants_accum(debut, fin, c);
         }
         if let Some((sd, ss, si, sn, sf, borne, init, chunk)) =
             Self::detecter_chaine_accumulation(corps, sig)
@@ -6737,6 +7205,28 @@ thread_local! {
 /// Réinitialise la table de handles avant une compilation du principal.
 pub(crate) fn jit_handles_reinitialiser() {
     JIT_HANDLES.with(|t| t.borrow_mut().clear());
+    JIT_I64_BUFFERS.with(|t| t.borrow_mut().clear());
+}
+
+/// Arène des tableaux compacts émis par LISTE_P8. Le pointeur est tenu vivant
+/// par ce registre thread-local ; la mémoire est libérée ici, à la même
+/// frontière que les handles JIT (une table par exécution de programme).
+thread_local! {
+    static JIT_I64_BUFFERS: RefCell<Vec<Box<[i64]>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Alloue un `Vec<i64>` de `n` cases pour la boucle LISTE_P8 et rend son
+/// pointeur de données. Les cases sont toutes écrites par le code machine
+/// avant d'être lues ; `set_len` est donc valide ici aussi.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_i64_buffer(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    let mut v = Vec::<i64>::with_capacity(n as usize);
+    unsafe { v.set_len(n as usize); }
+    let boxed = v.into_boxed_slice();
+    let p = boxed.as_ptr() as i64;
+    JIT_I64_BUFFERS.with(|t| t.borrow_mut().push(boxed));
+    p
 }
 
 fn jit_allouer_handle(v: Valeur) -> i64 {
@@ -7026,8 +7516,11 @@ pub extern "C" fn rose_jit_index_i64(h: i64, i: i64) -> i64 {
 // aucun `HashMap<String, _>` de slots, aucun appel de délégation ici.
 #[inline]
 fn table_du_handle(h: i64) -> Option<crate::run::Table> {
+    // `Valeur` implémente désormais Drop : on ne peut plus déplacer `t` hors
+    // de la valeur empruntée. `Table` est un Rc<RefCell<_>> ; le clone est
+    // exactement la même poignée partagée (aucune copie de données).
     match jit_lire_handle(h) {
-        crate::run::Valeur::Table(t) => Some(t),
+        crate::run::Valeur::Table(ref t) => Some(t.clone()),
         _ => None,
     }
 }
