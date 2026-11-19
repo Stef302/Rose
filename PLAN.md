@@ -840,3 +840,15 @@ Consigne: « un ELF c'est bien mais n'oublie pas le PE pour Windows, rose est pl
 | TA2 | table 3000 : battre Rust | `rose/src/run.rs`, `rose/docs/TABLE_BAT_RUST.md` | 6 |
 | RA2 | racines : battre Rust (même algo) | `rose/src/{interp,irrationnel}.rs`, `rose/docs/RACINES_BAT_RUST.md` | 11 |
 | AB1 | G5 : uniformiser le tag des valeurs (réflexivité) | `compilateur/emetteur_elf.rose`, `rose/docs/G5_ABI_VALEURS.md` | 10 |
+
+## Vague 37 (19/11) — PE exécutable, self-hosting tas, comparaison concrète
+
+Consigne: « tu parles beaucoup de ELF moi je veux que tu fasses PE aussi installé tout les outils que t'a besoin pour build pour windows, t'a carte blanche, continue self hosted et continue faut dépasser rust tient moi au courant concrètement la comparaison ».
+
+Outils disponibles vérifiés: cargo-xwin 0.23.1, lld-link, llvm-windres, llvm-readobj, qemu-aarch64-static (les G5 ELF tournent sous qemu: fib=55). **Wine absent et sudo demande un mot de passe** — installation impossible ici, à documenter.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| PE2 | backend Win32 dans le PE Rose (plus de syscalls Linux) | `compilateur/emetteur_pe.rose`, `rose/docs/PE_WIN32.md` | 7 |
+| TAS1 | self-hosting : supprimer les allocs 1-caractère de la tokenisation | `compilateur/emetteur_elf.rose`, `rose/docs/G5_TAS.md` | 10 |
+| CMP1 | comparaison de vitesse concrète et à jour (tous domaines + double verdict) | `bench/**`, `rose/docs/COMPARATIF_FINAL.md` | 16 |
