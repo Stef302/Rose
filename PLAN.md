@@ -896,3 +896,12 @@ Consigne: « on fait tout pour réduire l'écart de ×59, l'égalité et la déf
 | INT2 | englobant ×66 (interprétation) | `rose/src/interp.rs`, `rose/docs/INTERP_OFFENSIVE.md` | 19 |
 
 SH2 continue sur `compilateur/emetteur_elf.rose`. Chacun isole son binaire dans /tmp/opencode/<agent>/.
+
+## Vague 42 (19/11) — nombres complexes et finalisation
+
+Victoires acquises vague 41: liste 0,63× (JIT2), table 0,67× (RUN2), global ×59→×8,8.
+Reste: suite complexe ×189 (calc jamais JIT-compilé à cause de LitComplexe).
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| CPLX1 | lever le garde complexe dans le JIT | `rose/src/jit.rs`, `rose/docs/CPLX_OFFENSIVE.md` | 6 |
