@@ -1758,6 +1758,21 @@ pub extern "C" fn rose_affiche_packed(v: i128) {
 // pour l'incrément de boucle, juste après le débordement de `$total`).
 // Déréférencer cette valeur comme un pointeur fait SIGSEGV. On ne fait donc
 // confiance au tag que si l'adresse est bien une boîte que CETTE ABI a créée.
+// ⚠⚠ FILTRE DE PLAGE AVANT LE HASHSET (mesuré le 19/11/26, pin c6).
+// `mpz_ptr` est appellé ~4,1 fois PAR ITÉRATION du banc global (40,9 M appels
+// comptés sur 10⁷ tours) et faisait un `HashSet::contains` (SipHash + sonde)
+// à chaque fois. Or une vraie boîte est une adresse du tas : elle est
+// TOUJOURS dans [lo,hi], et il n'y a AUCUNE boîte tant que `nb == 0`.
+// Un i64 ordinaire (a*a, compteur, somme qui tient sur 64 bits) est très
+// rarement dans cette plage : 3 comparaisons suffisent alors, sans hachage.
+// Le HashSet reste la preuve FINALE : la sémantique est strictement la même.
+// Les bornes sont GLOBALES (atomiques) pour éviter même l'accès thread-local
+// sur le chemin chaud : une borne globale est un SUR-ENSEMBLE des boîtes
+// locales, donc un faux positif est toujours éliminé par le HashSet final.
+use std::sync::atomic::{AtomicUsize, Ordering as OrdAtom};
+static BOX_LO: AtomicUsize = AtomicUsize::new(usize::MAX);
+static BOX_HI: AtomicUsize = AtomicUsize::new(0);
+static BOX_NB: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     static MPZ_BOXES: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 }
@@ -1766,6 +1781,9 @@ thread_local! {
 fn mpz_box(r: Box<Mpz>) -> i64 {
     let p = Box::into_raw(r) as usize;
     MPZ_BOXES.with(|s| { s.borrow_mut().insert(p); });
+    BOX_LO.fetch_min(p, OrdAtom::Relaxed);
+    BOX_HI.fetch_max(p, OrdAtom::Relaxed);
+    BOX_NB.fetch_add(1, OrdAtom::Relaxed);
     p as i64
 }
 
@@ -1777,6 +1795,8 @@ fn mpz_box(r: Box<Mpz>) -> i64 {
 #[inline]
 fn mpz_ptr(v: i64, _t: i64) -> Option<*mut Mpz> {
     let p = v as usize;
+    if BOX_NB.load(OrdAtom::Relaxed) == 0 { return None; }
+    if p < BOX_LO.load(OrdAtom::Relaxed) || p > BOX_HI.load(OrdAtom::Relaxed) { return None; }
     if MPZ_BOXES.with(|s| s.borrow().contains(&p)) { Some(p as *mut Mpz) } else { None }
 }
 
