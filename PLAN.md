@@ -777,3 +777,7 @@ Consigne: « rose doit maîtriser parfaitement les racines (point fort de Rust),
 | RD | vitesse générale : D5 chaîne (×63) | `rose/src/{run,jit}.rs`, `rose/docs/CHAINE_GENERAL.md` | 15 |
 
 ⚠ Chacun construit son binaire dans `/tmp/opencode/<agent>/`, ne remplace PAS `rose/rose`.
+
+## RÈGLE NOUVELLE (19/11, utilisateur)
+
+« Si le changement d'algorithme peut être possible s'il y a mieux » → **les changements d'algorithme sont désormais AUTORISÉS** quand ils améliorent réellement la performance. Conséquence: ne plus écarter une optimisation au motif « même source ». ⚠ Obligation de transparence: rapporter **séparément** (a) le verdict « même source » et (b) le verdict « meilleur algorithme disponible dans Rose », en nommant l'algorithme utilisé (ex: Stein vs Euclid, formule fermée vs somme, crible vs division d'essai). Les porte-à-faux déjà documentés (Stein PGCD, crible premiers, fibonacci doublement rapide) deviennent des victoires légitimes **si clairement étiquetées**.
