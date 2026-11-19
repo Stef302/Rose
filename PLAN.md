@@ -792,3 +792,15 @@ Consigne: le setup devient le LAUNCHER Rose (un seul téléchargement), sélecti
 | LB | launcher : une seule fois + versions dynamiques depuis GitHub | `rose/src/{setup_core,velopack}.rs`, `rose/docs/LAUNCHER_VERSIONS.md`, patch CLI | — |
 
 ⚠ Aucun test Windows réel possible ici — distinguer prouvé statiquement / compilé / à tester.
+
+## Vague 33 (19/11) — continuation : battre Rust, self-hosted, wasm universel
+
+Consigne: « en attendant l'interface, on continue faut dépasser rust, continue le self hosted et rendre wasm universel ».
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| SE1 | D2 boucle : battre Rust (0,259 vs 0,259) | `rose/src/jit.rs`, `rose/docs/BOUCLE_BAT_RUST.md` | 6 |
+| SE2 | self-hosted : étendre G5, viser réflexivité | `compilateur/emetteur_elf.rose`, `rose/docs/G5_REFLEXIF.md` | 10 |
+| SE3 | wasm universel : SIMD v128, malloc/libc, tables multiples, ABI | `rose/src/wasm_lecteur.rs`, `scripts/rose-wasm-lib.sh`, `rose/docs/WASM_FRONTIERE.md` | 8 |
+
+⚠ LA possède `setup_gui.rs`. Chacun construit son binaire dans `/tmp/opencode/<agent>/`.
