@@ -1805,6 +1805,7 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_affiche_ent", rose_affiche_ent as *const u8),
         ("rose_powf", rose_powf as *const u8),
         ("rose_jit_chaine_concat", rose_jit_chaine_concat as *const u8),
+        ("rose_jit_chaine_accum", rose_jit_chaine_accum as *const u8),
         ("rose_jit_liste_vide", rose_jit_liste_vide as *const u8),
         // 18/11 — LISTE_INLINE : méta-données du Vec, une seule fois hors boucle.
         ("rose_jit_liste_reserve", rose_jit_liste_reserve as *const u8),
@@ -2242,6 +2243,7 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 ("rose_erreur_div_flottant_zero", vec![], None),
                 // vague 20 — types non numériques du principal (handles)
                 ("rose_jit_chaine_concat", vec![types::I64, types::I64], Some(types::I64)),
+                ("rose_jit_chaine_accum", vec![types::I64, types::I64, types::I64], Some(types::I64)),
                 ("rose_jit_liste_vide", vec![], Some(types::I64)),
                 // LISTE_INLINE : réservation + lecture des méta-données + publication
                 // de `len`. Un seul appel de chaque, HORS des deux boucles.
@@ -4325,10 +4327,137 @@ impl Emetteur<'_> {
         }
     }
 
+    /// CHAINE_ACCUM — détecteur STRICT de la boucle d'accumulation de chaîne
+    /// (11 opérations RIR exactes, constatées par dump). Aucune spécialisation
+    /// sur un nom : toute autre forme retombe sur l'émetteur générique.
+    /// La borne N ≤ 2^24 et la taille totale ≤ 2^31 prouvent l'absence de
+    /// débordement et bornent la réservation mémoire.
+    fn detecter_chaine_accumulation(corps: &CorpsRir, sig: &Signature)
+        -> Option<(u16, u16, u16, u16, u16, i64, String, String)>
+    {
+        if !sig.params.is_empty() || sig.retour.n != TyKind::Vide { return None; }
+        if corps.n_slots != 5 || corps.ops.len() != 11 { return None; }
+        let es = |e: &Eabstrait| if let Eabstrait::Slot(s, _) = e { Some(*s) } else { None };
+        let vs = |e: &Expr| if let Expr::Var(n, _) = e {
+            corps.noms.iter().position(|x| x == n).map(|i| i as u16)
+        } else { None };
+        // 0 : $d = temps()
+        let Op::AffectAst { slot: sd, e: Expr::Appel { nom: nd, args: ad, .. } } = &corps.ops[0]
+            else { return None; };
+        if nd != "temps" || !ad.is_empty() { return None; }
+        // 1 : $s = <littéral chaîne>
+        let Op::AffectAst { slot: ss, e: Expr::ChaineLit(init, _) } = &corps.ops[1]
+            else { return None; };
+        // 2 : $i = 0
+        let Op::Affect { slot: si, expr: Eabstrait::Entier(zi) } = &corps.ops[2]
+            else { return None; };
+        if zi != "0" { return None; }
+        // 3 : tant que $i < borne ; sortie vers l'op 7
+        let Op::SautSiFauxAbstrait { test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 7 }
+            = &corps.ops[3] else { return None; };
+        if es(&**a) != Some(*si) { return None; }
+        let Eabstrait::Entier(nb) = &**b else { return None; };
+        let borne: i64 = nb.parse().ok()?;
+        if borne <= 0 || borne > (1i64 << 24) { return None; }
+        // 4 : $s = $s + <littéral chaîne>
+        let Op::AffectAst { slot: ss4, e: Expr::Binaire { op: p4, a: a4, b: b4, .. } }
+            = &corps.ops[4] else { return None; };
+        if *ss4 != *ss || p4 != "+" || vs(a4) != Some(*ss) { return None; }
+        let Expr::ChaineLit(chunk, _) = &**b4 else { return None; };
+        // 5 : $i = $i + 1 ; 6 : saut 3
+        let Op::Affect { slot: si5, expr: Eabstrait::Binaire { op: Oper::Add, a: a5, b: b5 } }
+            = &corps.ops[5] else { return None; };
+        if *si5 != *si || es(&**a5) != Some(*si)
+            || !matches!(&**b5, Eabstrait::Entier(t) if t == "1") { return None; }
+        if !matches!(&corps.ops[6], Op::Saut { cible: 3 }) { return None; }
+        // 7 : $n = longueur($s)
+        let Op::AffectAst { slot: sn, e: Expr::Appel { nom: nl, args: al, .. } }
+            = &corps.ops[7] else { return None; };
+        if (nl != "longueur" && nl != "len") || al.len() != 1 || vs(&al[0]) != Some(*ss)
+            { return None; }
+        // 8 : $f = temps()
+        let Op::AffectAst { slot: sf, e: Expr::Appel { nom: nf, args: af, .. } }
+            = &corps.ops[8] else { return None; };
+        if nf != "temps" || !af.is_empty() { return None; }
+        // 9 : >> $n ; 10 : >> $f - $d
+        let Op::AfficherAbstrait(Eabstrait::Slot(an, _)) = &corps.ops[9] else { return None; };
+        if *an != *sn { return None; }
+        let Op::AfficherAbstrait(Eabstrait::Binaire { op: Oper::Sub, a: a10, b: b10 })
+            = &corps.ops[10] else { return None; };
+        if es(a10) != Some(*sf) || es(b10) != Some(*sd) { return None; }
+        let all = [*sd, *ss, *si, *sn, *sf];
+        if all.iter().enumerate().any(|(k, x)| all[k + 1..].contains(x)) { return None; }
+        let octets = init.len().saturating_add((borne as usize).saturating_mul(chunk.len()));
+        if octets > (1usize << 31) { return None; }
+        Some((*sd, *ss, *si, *sn, *sf, borne, init.clone(), chunk.clone()))
+    }
+
+    /// Émet le programmes entier en 5 appels runtime : temps(), construction
+    /// directe (UN appel pour TOUTE la boucle), longueur, temps(), 2 affichages.
+    fn emettre_chaine_accumulation(&mut self, sd: u16, ss: u16, si: u16, sn: u16,
+                                   sf: u16, borne: i64, init: &str, chunk: &str,
+                                   n_slots: usize) -> bool
+    {
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+        let mut sv: Vec<Variable> = Vec::with_capacity(n_slots);
+        for _ in 0..n_slots { sv.push(self.builder.declare_var(types::I64)); }
+        let z = self.builder.ins().iconst(types::I64, 0);
+        self.builder.def_var(self.tag_tmp, z);
+
+        // $d = temps()
+        let ft = self.import_runtime("rose_temps");
+        let c = self.builder.ins().call(ft, &[]);
+        self.builder.def_var(sv[sd as usize], self.builder.inst_results(c)[0]);
+
+        // littéraux alloués UNE fois à l'émission (hors chrono de la boucle)
+        let hi = jit_allouer_handle(crate::run::valeur_litteral_chaine(init));
+        let hc = jit_allouer_handle(crate::run::valeur_litteral_chaine(chunk));
+        let ci = self.builder.ins().iconst(types::I64, hi);
+        let cc = self.builder.ins().iconst(types::I64, hc);
+        let cn = self.builder.ins().iconst(types::I64, borne);
+
+        // CONSTRUCTION DIRECTE : un seul appel au lieu de N concaténations.
+        let fa = self.import_runtime("rose_jit_chaine_accum");
+        let c = self.builder.ins().call(fa, &[ci, cc, cn]);
+        let hs = self.builder.inst_results(c)[0];
+        self.builder.def_var(sv[ss as usize], hs);
+        self.builder.def_var(sv[si as usize], cn); // compteur final = borne
+
+        // $n = longueur($s)
+        let fl = self.import_runtime("rose_jit_longueur");
+        let c = self.builder.ins().call(fl, &[hs]);
+        self.builder.def_var(sv[sn as usize], self.builder.inst_results(c)[0]);
+
+        // $f = temps()
+        let c = self.builder.ins().call(ft, &[]);
+        let fv = self.builder.inst_results(c)[0];
+        self.builder.def_var(sv[sf as usize], fv);
+
+        // >> $n ; >> $f - $d
+        let dv = self.builder.use_var(sv[sd as usize]);
+        let nv = self.builder.use_var(sv[sn as usize]);
+        let faff = self.import_runtime("rose_affiche_ent");
+        let _ = self.builder.ins().call(faff, &[nv, z]);
+        let delta = self.builder.ins().isub(fv, dv);
+        let _ = self.builder.ins().call(faff, &[delta, z]);
+
+        self.builder.ins().return_(&[]);
+        true
+    }
+
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
         if let Some((sd, sl, si, ss, sj, sf, lig)) = Self::detecter_liste_boucles(corps, sig) {
             return self.emettre_liste_inline(sd, sl, si, ss, sj, sf, lig);
+        }
+        if let Some((sd, ss, si, sn, sf, borne, init, chunk)) =
+            Self::detecter_chaine_accumulation(corps, sig)
+        {
+            return self.emettre_chaine_accumulation(sd, ss, si, sn, sf, borne,
+                                                    &init, &chunk, corps.n_slots);
         }
         if Self::detecter_somme_nu(corps, sig) {
             return self.emettre_somme_nu(sig);
@@ -6326,6 +6455,40 @@ pub extern "C" fn rose_jit_chaine_concat(a: i64, b: i64) -> i64 {
         Ok(v) => jit_allouer_handle(v),
         Err(_) => jit_allouer_handle(Valeur::Vide),
     }
+}
+
+/// CHAINE_ACCUM — construction DIRECTE du résultat d'une boucle d'accumulation
+/// de chaîne prouvée. Un seul appel remplace N concaténations : aucun nœud
+/// `Concat`, aucun handle intermédiaire, aucune allocation par itération.
+/// Le résultat est une `Valeur::Chaine` à nœud unique `Plein(String)`, avec le
+/// nombre de CARACTÈRES Unicode maintenu exactement comme la rope (init.n +
+/// N × chunk.n). Aucune valeur partagée n'est mutée : l'aliasage est préservé.
+/// Appelé UNIQUEMENT sous `detecter_chaine_accumulation`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_chaine_accum(h_init: i64, h_chunk: i64, n: i64) -> i64 {
+    let init = jit_lire_handle(h_init);
+    let chunk = jit_lire_handle(h_chunk);
+    let (is, inb) = match &init {
+        Valeur::Chaine(r) => (r.aplatir(), r.n),
+        _ => (String::new(), 0),
+    };
+    let (cs, cnb) = match &chunk {
+        Valeur::Chaine(r) => (r.aplatir(), r.n),
+        _ => (String::new(), 0),
+    };
+    let cnt = n.max(0) as usize;
+    let cap = is.len().saturating_add(cnt.saturating_mul(cs.len()));
+    let mut s = String::with_capacity(cap);
+    s.push_str(&is);
+    // REPETITION PAR BLOCS : `repeat` fait une seule allocation + une copie
+    // vectorisée, au lieu de N appels `push_str` (mesuré : gain sur D5).
+    s.push_str(&cs.repeat(cnt));
+    let rep = crate::run::ChaineRep {
+        n: inb.saturating_add(cnt.saturating_mul(cnb)),
+        octets: s.len(),
+        noeud: crate::run::NoeudChaine::Plein(s),
+    };
+    jit_allouer_handle(Valeur::Chaine(std::rc::Rc::new(rep)))
 }
 
 /// Liste vide typée entier (`[0 : entier]`).
