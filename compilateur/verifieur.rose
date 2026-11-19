@@ -1617,6 +1617,10 @@ fn check_bin($i: entier,
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
     # front.rs:2044 — Dyn + X non numérique des deux côtés → Dyn.
     si (BASE($tg) == "?" ou BASE($td) == "?") { retour "?|vide" }
+    # miroir de front.rs : `racine(n)` est typée irrationnel mais rend un
+    # entier exact sur carré parfait ; l'addition est donc résolue à
+    # l'exécution (les benches racines l'utilisent).
+    si (BASE($tg) == "irrationnel" ou BASE($td) == "irrationnel") { retour "?|vide" }
     signaler($lg0, "Addition " + nomty($tg) + " + " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
@@ -1759,6 +1763,7 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "lcm") { retour "entier|entier,entier" }
   si ($nom == "pow") { retour "entier|num,entier" }
   si ($nom == "racine") { retour "irrationnel|entier" }
+  si ($nom == "racine_decimales") { retour "chaine|entier,entier" }
   si ($nom == "is_prime") { retour "booleen|entier" }
   si ($nom == "digits") { retour "entier|entier" }
   si ($nom == "pi" ou $nom == "nombre_e" ou $nom == "e" ou $nom == "phi") { retour "chaine|entier" }
