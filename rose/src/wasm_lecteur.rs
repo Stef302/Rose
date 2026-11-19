@@ -35,6 +35,12 @@
 //    réelles compilées avec optimisation : clang -O1/-O2 prend l'adresse de
 //    helpers `static` et émet des `call_indirect`.
 //
+// ⚠⚠⚠ VAGUE 33 (19/11/2026) : ALLOCATEUR SANDBOXÉ — `env.malloc`/`calloc`/
+//    `realloc`/`free` sont résolus par le pont (bump dans la mémoire exportée,
+//    plafond 32 Mio). Cela débloque les vraies bibliothèques C qui appellent
+//    malloc elles-mêmes (uthash, structures de données…) sans adaptateur
+//    d'allocation. `free` est un no-op documenté (voir § fin de fichier).
+//
 // ⚠⚠⚠ IMPORTS (M6.3) : la section d'import est désormais LUE. Les imports de
 //    fonction sont résolus vers un registre de FONCTIONS HÔTES Rose (voir
 //    `HOTES` / `enregistrer_hote` plus bas) ; un import non résolu est rejeté
@@ -128,6 +134,17 @@ static HOTES: Mutex<Option<HashMap<(String, String), HoteFonction>>> = Mutex::ne
 const HOTES_INTEGRES: &[(&str, &str, HoteFonction)] = &[
     ("env", "log", hote_log),
     ("env", "ecrire", hote_ecrire),
+    // ── VAGUE 33 : ALLOCATEUR SANDBOXÉ (débloque les vraies bibliothèques C) ──
+    // ⚠ `env.malloc`/`calloc`/`realloc`/`free` sont les symboles que `wasm-ld`
+    //    émet comme IMPORTS quand on compile avec `-nostdlib -Wl,--allow-undefined`.
+    //    L'allocation se fait dans la mémoire linéaire EXPORTÉE (voir `tas_allouer`).
+    //    `env.exit` est une assertion/abort de bibliothèque : on le refuse
+    //    PROPREMENT (jamais `std::process::exit`, qui tuerait le programme Rose).
+    ("env", "malloc", hote_malloc),
+    ("env", "calloc", hote_calloc),
+    ("env", "realloc", hote_realloc),
+    ("env", "free", hote_free),
+    ("env", "exit", hote_exit_sandbox),
     // ── WASI : E/S et divers (réels) ────────────────────────────────────
     ("wasi_snapshot_preview1", "fd_write", hote_fd_write),
     ("wasi_snapshot_preview1", "fd_read", hote_fd_read),
@@ -388,6 +405,12 @@ pub struct InstanceWasm {
     /// ⚠ Vague 32 : table d'appels indirects. `None` = funcref nul (piège
     /// explicite) ; `Some(idx)` = index de fonction dans l'espace wasm.
     pub table: Vec<Option<u32>>,
+    /// ⚠ VAGUE 33 — zone de tas pour `env.malloc`/`calloc`/`realloc`/`free` :
+    /// `(prochain_octet_libre, fin_de_zone, début_de_zone)`. `None` = pas encore
+    /// initialisée. La zone est créée AU-DELÀ de la mémoire que le module a
+    /// déclarée : aucun risque de chevaucher ses données ni sa pile, et elle
+    /// s'étend par pages entières avec `Vec::resize` (comme `memory.grow`).
+    pub tas: Option<(usize, usize, usize)>,
     /// ⚠ Budget d'instructions restant (garde-fou anti-boucle infinie).
     /// Réinitialisé à chaque appel public ; partagé par les appels imbriqués.
     budget_restant: u64,
@@ -1083,7 +1106,7 @@ impl InstanceWasm {
         let globals: Vec<ValWasm> = module.globals.iter().map(|(_, _, v)| *v).collect();
         let mut inst = InstanceWasm {
             module, memoire, globals,
-            table: Vec::new(), budget_restant: BUDGET_APPEL,
+            table: Vec::new(), tas: None, budget_restant: BUDGET_APPEL,
             start_erreur: None, profondeur_max: 256,
         };
         // ⚠ Les données initiales.
@@ -2186,5 +2209,117 @@ fn hote_fd_stub(_inst: &mut InstanceWasm, _args: &[ValWasm]) -> Result<Vec<ValWa
 /// fichiers. Un module qui ouvre un fichier échoue PROPREMENT, sans toucher au disque.
 fn hote_path_stub(_inst: &mut InstanceWasm, _args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
     Ok(vec![ValWasm::I32(76)])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ALLOCATEUR SANDBOXÉ (VAGUE 33, 19/11/2026) — env.malloc & cie
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ POURQUOI. Jusqu'ici les vraies bibliothèques C compilées `-nostdlib`
+//     devaient apporter leur propre allocateur bump dans l'adapteur (miniz).
+//     Une bibliothèque qui appelle `malloc` elle-même (uthash, nombreux
+//     parseurs, structures de données…) était INEXécutable : `wasm-ld`
+//     émet un import `env.malloc` non résolu. Le pont fournit maintenant un
+//     allocateur RÉEL, dans la mémoire linéaire exportée du module.
+//
+// ⚠ CONCEPTION HONNÊTE — Bump allocator, `free` sans réclamation :
+//   * la zone de tas est créée AU-DELÀ de la mémoire initiale du module
+//     (`memoire.len()`), donc elle ne peut pas écraser ses données ni sa pile
+//     (mesuré : uthash -O2 a `__stack_pointer = 66576` dans 2 pages = 131072) ;
+//   * elle grandit par pages de 64 Kio avec un amortissement d'1 Mio, EXACTEMENT
+//     comme `memory.grow` ; plafond SANDBOX de 32 Mio -> `malloc` rend NULL au
+//     lieu d'allouer sans limite ;
+//   * alignement 16 octets (suffisant pour i64/f64/v128 en wasm32) ;
+//   * `free` est un NO-OP et `realloc` COPIE sans libérer l'ancien bloc : les
+//     cycles allocation/libération FUITENT jusqu'au plafond. C'est une
+//     limitation documentée, pas une réussite simulée : les programmes à
+//     durée de vie bornée (une bibliothèque appelée quelques fois) fonctionnent,
+//     un serveur à cycles infinis finirait par rendre NULL.
+//
+// ⚠ SÉCURITÉ : aucun appel à `std::process::exit` — `env.exit` (assert C) rend
+//     une ERREUR propre qui remonte jusqu'au `.rose`.
+
+/// Marge ajoutée à chaque extension du tas (1 Mio), pour éviter un resize par
+/// petite allocation. Plafond dur : 32 Mio de tas par instance.
+const TAS_MARGE: usize = 16 * 65536;
+const TAS_PLAFOND: usize = 32 * 1024 * 1024;
+
+impl InstanceWasm {
+    /// ⚠ Réserve `besoin` octets alignés dans le tas sandboxé. Rend `None`
+    /// (-> NULL wasm) si le plafond est atteint. La zone est créée à la fin
+    /// de la mémoire existante ; c'est ce qui garantit l'absence de collision
+    /// avec les données et la pile du module.
+    fn tas_allouer(&mut self, besoin: usize) -> Option<usize> {
+        const PAGE: usize = 65536;
+        let aligne = besoin.saturating_add(15) & !15usize;
+        let (ptr, mut fin, debut) = match self.tas {
+            Some(t) => t,
+            None => {
+                let d = self.memoire.len();
+                (d, d, d)
+            }
+        };
+        let cible = ptr.saturating_add(aligne);
+        if cible > fin {
+            let mut nouvelle_fin = cible.saturating_add(PAGE - 1) / PAGE * PAGE;
+            if nouvelle_fin.saturating_sub(debut) < TAS_MARGE {
+                nouvelle_fin = debut.saturating_add(TAS_MARGE);
+            }
+            if nouvelle_fin.saturating_sub(debut) > TAS_PLAFOND { return None; }
+            self.memoire.resize(nouvelle_fin, 0);
+            fin = nouvelle_fin;
+        }
+        self.tas = Some((cible, fin, debut));
+        Some(ptr)
+    }
+}
+
+/// ⚠ `env.malloc(size_t)` -> void* : pointeur aligné dans le tas, ou NULL.
+fn hote_malloc(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 1 { return err(format!("malloc : 1 argument attendu, {} reçu(s)", args.len())); }
+    let n = args[0].as_i32() as u32 as usize;
+    let p = inst.tas_allouer(n).unwrap_or(0);
+    Ok(vec![ValWasm::I32(p as i32)])
+}
+
+/// ⚠ `env.calloc(n, taille)` -> void* : comme malloc + zéro explicite (même si
+/// la zone vient d'être étendue avec des zéros, on l'écrit pour être exact).
+fn hote_calloc(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("calloc : 2 arguments attendus, {} reçu(s)", args.len())); }
+    let n = (args[0].as_i32() as u32 as usize).saturating_mul(args[1].as_i32() as u32 as usize);
+    let p = match inst.tas_allouer(n) { Some(p) => p, None => return Ok(vec![ValWasm::I32(0)]) };
+    let fin = p.saturating_add(n);
+    if fin > inst.memoire.len() { return err("calloc hors limites"); }
+    for i in p..fin { inst.memoire[i] = 0; }
+    Ok(vec![ValWasm::I32(p as i32)])
+}
+
+/// ⚠ `env.realloc(ptr, taille)` -> void* : nouveau bloc copié depuis l'ancien.
+/// L'ancien bloc n'est PAS libéré (voir le commentaire du bump allocator).
+fn hote_realloc(inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    if args.len() != 2 { return err(format!("realloc : 2 arguments attendus, {} reçu(s)", args.len())); }
+    let old = args[0].as_i32() as u32 as usize;
+    let n = args[1].as_i32() as u32 as usize;
+    let p = match inst.tas_allouer(n) { Some(p) => p, None => return Ok(vec![ValWasm::I32(0)]) };
+    if old < inst.memoire.len() && n > 0 {
+        let dispo = inst.memoire.len() - old;
+        let a_copier = n.min(dispo);
+        let src = old..old + a_copier;
+        inst.memoire.copy_within(src, p);
+    }
+    Ok(vec![ValWasm::I32(p as i32)])
+}
+
+/// ⚠ `env.free(ptr)` : NO-OP honnête (bump allocator sans réclamation).
+fn hote_free(_inst: &mut InstanceWasm, _args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    Ok(Vec::new())
+}
+
+/// ⚠ `env.exit(code)` : une bibliothèque C appelle `exit` depuis un `assert`
+/// (mesuré : uthash -O2 l'importe). On ne tue PAS le programme Rose : on rend
+/// une erreur propre, exactement comme `proc_exit`.
+fn hote_exit_sandbox(_inst: &mut InstanceWasm, args: &[ValWasm]) -> Result<Vec<ValWasm>, WasmErr> {
+    let code = args.first().map(|v| v.as_i32()).unwrap_or(0);
+    err(format!("exit({code}) demandé par le module wasm (sandbox, assertion bibliothèque)"))
 }
 

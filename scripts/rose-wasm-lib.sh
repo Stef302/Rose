@@ -57,6 +57,11 @@ OPTIONS
   --buf N          Taille du tampon statique pour les chaines (defaut: 16384)
   --header H       Ajoute #include <H> / "H" au glue (rare; repeatable)
   --allow-imports  Autorise les imports de fonction (resolus par le pont Rose)
+  --malloc         Relaxe les symboles C non definis (-Wl,--allow-undefined) et
+                   les resout vers l'allocateur SANDBOXE du pont :
+                   env.malloc/calloc/realloc/free (tas incremental, plafond 32 Mio).
+                   Utile pour une vraie bibliotheque qui appelle malloc elle-meme
+                   (uthash, structures de donnees…). free est un no-op documente.
   --opt NIVEAU     Niveau d'optimisation C/C++/Rust : 0 (defaut historique),
                    1, 2, s (taille) ou z (taille agressive). Depuis la vague 32,
                    le pont Rose execute call_indirect ET la section start : -O1/-O2
@@ -91,6 +96,7 @@ OUT=""
 DIR="."
 BUF=16384
 ALLOW_IMPORTS=0
+MALLOC=0
 OPT_NIVEAU=0
 
 while (($#)); do
@@ -112,6 +118,8 @@ while (($#)); do
             HEADERS+=("$2"); shift 2 ;;
         --allow-imports)
             ALLOW_IMPORTS=1; shift ;;
+        --malloc)
+            MALLOC=1; ALLOW_IMPORTS=1; shift ;;
         --opt)
             [[ $# -ge 2 ]] || { echo "ERREUR: --opt attend un argument." >&2; exit 1; }
             OPT_NIVEAU="$2"; shift 2 ;;
@@ -323,8 +331,11 @@ fi
 if [[ "$FAMILLE" == c || "$FAMILLE" == cpp ]]; then
     CFLAGS=( --target=wasm32-wasi --sysroot="$SYSROOT" "$OPT_CFLAG" -nostdlib -Wl,--no-entry -Wl,--export-memory )
     # Crochet de test : RW_ALLOW_UNDEFINED=1 laisse wasm-ld produire un module
-    # avec des imports, afin de prouver que le detecteur de sections les refuse.
-    if [[ -n "${RW_ALLOW_UNDEFINED:-}" ]]; then CFLAGS+=( -Wl,--allow-undefined ); fi
+    # avec des imports. --malloc fait de meme et resout les symboles C vers
+    # l'allocateur sandboxe du pont (env.malloc/calloc/realloc/free).
+    if [[ -n "${RW_ALLOW_UNDEFINED:-}" || "$MALLOC" == 1 ]]; then
+        CFLAGS+=( -Wl,--allow-undefined )
+    fi
     for ((i=0; i<${#EXPORTS[@]}; i++)); do CFLAGS+=( "-Wl,--export=${EXP_NAME[$i]}" ); done
     for s in "${SOURCES[@]}"; do
         d="$(cd "$(dirname "$s")" && pwd)"
@@ -731,6 +742,8 @@ WASI_NOMS = ['fd_write', 'fd_read', 'proc_exit', 'random_get',
              'path_symlink', 'path_readlink', 'path_unlink_file',
              'path_remove_directory', 'path_create_directory']
 HOSTS = {'env.log', 'env.ecrire'}
+# ⚠ Miroir de l'allocateur sandboxé (VAGUE 33, wasm_lecteur.rs::HOTES_INTEGRES).
+HOSTS.update({'env.malloc', 'env.calloc', 'env.realloc', 'env.free', 'env.exit'})
 for ns in ('wasi_snapshot_preview1', 'wasi_unstable'):
     for n in WASI_NOMS:
         HOSTS.add(ns + '.' + n)
@@ -788,5 +801,8 @@ if (( ALLOW_IMPORTS )); then
     echo "==> --allow-imports: imports de fonction/MEMOIRE/TABLE/GLOBAL autorises et verifies."
 else
     echo "==> 0 import exige (comportement C historique)."
+fi
+if (( MALLOC )); then
+    echo "==> --malloc: allocateur sandboxe env.malloc/calloc/realloc/free (tas incremental, plafond 32 Mio, free=no-op)."
 fi
 echo "==> Optimisation: $OPT_CFLAG (pont: call_indirect + start + budget bornes)."
