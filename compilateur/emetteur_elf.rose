@@ -371,8 +371,30 @@ fn g5_alloc_inline() -> entier {
 }
 
 # Émet le code qui construit un descripteur [tag=1][len][octets…] dans x0.
+# G5-TAS : les chaînes Rose sont immuables, donc un littéral peut être
+# construit UNE fois et réutilisé. Table d'internement à 0x60000300 :
+# 512 entrées de 16 octets [clé 64 bits][pointeur], la clé est vérifiée
+# avant réutilisation (une collision d'index ne peut donc pas rendre une
+# mauvaise chaîne).
 fn g5_make_str($s: chaine) -> entier {
   $n = longueur($s)
+  $h = 0
+  $hi = 0
+  tant_que ($hi < $n) {
+    $h = ($h * 131 + ordre(sous_chaine($s, $hi, $hi + 1))) % 18446744073709551616
+    $hi = $hi + 1
+  }
+  $lbl_miss = g5_next()
+  $lbl_done = g5_next()
+  g5_load(12, 1610613504 + 16 * ($h % 512))
+  g5_emit(ldroff(13, 12, 0))
+  g5_load(14, $h)
+  g5_emit(cmpr(13, 14))
+  g5_branch(101, $lbl_miss)
+  g5_emit(ldroff(0, 12, 8))
+  g5_emit(cmpi(0, 0))
+  g5_branch(101, $lbl_done)
+  g5_mark($lbl_miss)
   $sz = 16 + 8 * partie_entiere(($n + 7) / 8)
   g5_load(0, $sz)
   g5_alloc_inline()
@@ -386,6 +408,10 @@ fn g5_make_str($s: chaine) -> entier {
     g5_emit(strbio(1, 0, 16 + $i))
     $i = $i + 1
   }
+  g5_emit(stroff(14, 12, 0))
+  g5_emit(stroff(0, 12, 8))
+  g5_mark($lbl_done)
+  g5_emit(g5_tag1(0, 0))
   retour 0
 }
 
@@ -478,6 +504,22 @@ fn g5_func_id($nom: chaine) -> entier {
   retour g5_fail("appel non résolu : " + $nom)
 }
 
+# Saute une expression RIR parenthésée (retourne la position suivant son ')' ).
+fn g5_skip_expr($t: liste<chaine>, $p0: entier) -> entier {
+  $p = $p0
+  $prof = 0
+  $n = longueur($t)
+  tant_que ($p < $n) {
+    si ($t[$p] == "(") { $prof = $prof + 1 }
+    si ($t[$p] == ")") {
+      $prof = $prof - 1
+      si ($prof == 0) { retour $p + 1 }
+    }
+    $p = $p + 1
+  }
+  retour $p
+}
+
 fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
   si (longueur($g5_err) > 0) { retour -1 }
   $n = longueur($t)
@@ -556,6 +598,64 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     }
     si ($head == "bin") {
       $op = $t[$pos + 2]
+      # G5-TAS : fusion sous_chaine(s,a,b) == "littéral" (et !=).
+      # Au lieu d'allouer un descripteur de sous-chaîne à chaque caractère
+      # balayé, on compare la LONGUEUR puis les OCTETS de la source avec le
+      # littéral connu à l'émission. C'est la représentation par tranche
+      # (pointeur,longueur), sans matérialisation du descripteur.
+      si (($op == "==" ou $op == "!=") et $pos + 5 < $n et
+          $t[$pos + 3] == "(" et $t[$pos + 4] == "app" et $t[$pos + 5] == "sous_chaine") {
+        $a0 = $pos + 6
+        $a1 = g5_skip_expr($t, $a0)
+        $a2 = g5_skip_expr($t, $a1)
+        $a3 = g5_skip_expr($t, $a2)
+        # $a3 pointe sur le ')' fermant l'appel sous_chaine ; l'opérande
+        # droite (le littéral) commence juste après.
+        $pr = $a3 + 1
+        si ($pr + 2 < $n et $t[$pr] == "(" et $t[$pr + 1] == "s") {
+          $lit = g5_unescape($t[$pr + 2])
+          $ll = longueur($lit)
+          $lfaux = g5_next()
+          $lfin = g5_next()
+          $p = g5_eval($t, $a0, $d + 1, $f)
+          si ($p < 0) { retour -1 }
+          g5_emit(stroff(0, 31, g5_tmpoff($d)))
+          $p = g5_eval($t, $a1, $d + 1, $f)
+          si ($p < 0) { retour -1 }
+          g5_emit(orrr(1, 31, 0))
+          $p = g5_eval($t, $a2, $d + 1, $f)
+          si ($p < 0) { retour -1 }
+          g5_emit(orrr(2, 31, 0))
+          g5_emit(ldroff(0, 31, g5_tmpoff($d)))
+          g5_emit(g5_asr3(1, 1))
+          g5_emit(g5_asr3(2, 2))
+          g5_emit(subr(3, 2, 1))
+          g5_load(4, $ll)
+          g5_emit(cmpr(3, 4))
+          g5_branch(101, $lfaux)
+          g5_emit(g5_masktag(6, 0))
+          g5_emit(addi(1, 1, 16))
+          g5_emit(addr(7, 6, 1))
+          $li = 0
+          tant_que ($li < $ll) {
+            g5_emit(ldrbio(8, 7, $li))
+            g5_load(9, ordre(sous_chaine($lit, $li, $li + 1)))
+            g5_emit(cmpr(8, 9))
+            g5_branch(101, $lfaux)
+            $li = $li + 1
+          }
+          g5_load(0, 8)
+          g5_branch(0, $lfin)
+          g5_mark($lfaux)
+          g5_emit(movz(0, 0))
+          g5_mark($lfin)
+          si ($op == "!=") {
+            g5_load(5, 8)
+            g5_emit(eorr(0, 0, 5))
+          }
+          retour g5_skip_expr($t, $pr) + 1
+        }
+      }
       $p = g5_eval($t, $pos + 3, $d + 1, $f)
       si ($p < 0) { retour -1 }
       g5_emit(stroff(0, 31, g5_tmpoff($d)))
@@ -799,7 +899,10 @@ fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: 
   g5_emit(stroff(30, 31, 0))
   si ($f == $principal) {
     g5_load(9, 1610612736)
-    g5_load(8, 1610613504)
+    # G5-TAS : le tas démarre désormais à 0x60002000. Les pages 0x60000300
+    # (512 entrées de chaînes littérales) et 0x60001300 (256 entrées de
+    # caractères) sont des tables d'internement, hors du tas.
+    g5_load(8, 1610629120)
     g5_emit(stroff(8, 9, 0))
   }
   $p = 0
@@ -1012,7 +1115,17 @@ fn g5_emit_idx($lbl: entier) -> entier {
   g5_emit(ldroff(2, 6, 0))
   g5_emit(cmpi(2, 2))
   g5_branch(100, $lbl + 1)
+  # G5-TAS : un caractère est un descripteur immuable de 24 octets ; on le
+  # construit au plus une fois par valeur d'octet (table @0x60001300).
   g5_emit(g5_asr3(7, 1))
+  g5_emit(addi(5, 7, 16))
+  g5_emit(ldrbr(4, 6, 5))
+  g5_load(12, 1610625024)
+  g5_emit(g5_lsl3(4, 4))
+  g5_emit(addr(12, 12, 4))
+  g5_emit(ldroff(0, 12, 0))
+  g5_emit(cmpi(0, 0))
+  g5_branch(101, $lbl + 2)
   g5_load(0, 24)
   g5_alloc_inline()
   g5_emit(orrr(3, 31, 0))
@@ -1023,7 +1136,9 @@ fn g5_emit_idx($lbl: entier) -> entier {
   g5_emit(addi(5, 7, 16))
   g5_emit(ldrbr(4, 6, 5))
   g5_emit(strbio(4, 3, 16))
-  g5_emit(g5_tag1(0, 3))
+  g5_emit(stroff(3, 12, 0))
+  g5_mark($lbl + 2)
+  g5_emit(g5_tag1(0, 0))
   g5_emit(RET_I())
   g5_mark($lbl + 1)
   g5_emit(g5_asr3(1, 1))
