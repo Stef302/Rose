@@ -538,13 +538,16 @@ fn atom($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
         si (T0($g, $q) == ",") { $q = $q + 1 } sinon { $ok = 0 }
       }
     }
-    # [0 : type] : liste vide typée (M2.4) — on fait un élément entier factice
-    # pour que le type inféré soit liste<entier> (identique à l'oracle).
+    # [0 : type] : liste vide typée (M2.4). front.rs:1904 type l'expression
+    # `Ty::liste(elt)` : le vérificateur doit en faire autant. Un élément
+    # factice de bon type porte l'inférence ; le défaut reste « 0 » entier.
     si ($nc == 1 et $col[1] >= 0 et $k[$col[1]] == "lit" et $tx[$col[1]] == "0" et T0($g, $q) == ":") {
+      $ty0 = VX0($x, $q + 1)
       $q = $q + 1
       $q = $q + 1
       si (T0($g, $q) == "]") { $q = $q + 1 }
       $z = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lit", "0", "", -1, -1, 0, 0, $l)
+      si ($ty0 == "chaine") { $z = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "ch", "", "", -1, -1, 0, 0, $l) }
       joindre($al, $z)
       $i = noeud8($k, $tx, $tf, $a, $b, $as, $ac, $lg, "lst", "", "", -1, -1, longueur($al) - 1, 1, $l)
       retour chaine($q) + "|" + chaine($i)
@@ -1083,11 +1086,18 @@ fn def_fn($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
       $rp = nomid($g, $x, $q)
       $q = SEPR($rp)
       $pn = NOD($rp)
-      si (T0($g, $q) == ":") { $q = $q + 1 }
-      $rt = typex($g, $x, $q)
-      $q = SEPR($rt)
+      si (T0($g, $q) == ":") {
+        $q = $q + 1
+        $rt = typex($g, $x, $q)
+        $q = SEPR($rt)
+        $tp = NOD($rt)
+      } sinon {
+        # paramètre sans annotation : type dynamique, encodé « ?|vide »
+        # (NOD exige un '|', sinon sous_chaine(q+1, n) a des bornes invalides).
+        $tp = "?|vide"
+      }
       si ($params != "") { $params = $params + ";" }
-      $params = $params + $pn + "|" + NOD($rt)
+      $params = $params + $pn + "|" + $tp
       si (T0($g, $q) == ",") { $q = $q + 1 } sinon { $un = 0 }
     }
   }
@@ -1489,10 +1499,13 @@ fn check_expr($i: entier,
                      $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err)
     $bb = BASE($tb)
     $bi = BASE($ti)
-    si ($bb != "liste" et $bb != "chaine" et $bb != "table" et $bb != "valeur") {
+    si ($bb != "liste" et $bb != "chaine" et $bb != "table" et $bb != "valeur" et $bb != "?") {
       signaler($lg0, "Index sur un " + nomty($tb) + ", une liste est attendue", $err)
       retour "vide|vide"
     }
+    # front.rs:1989 — Table OU Dyn : ni contrôle de clé, ni contrôle d'index,
+    # résultat dynamique (Ty { n: Dyn, elt: Dyn } → « ?|vide » ici).
+    si ($bb == "?") { retour "?|vide" }
     si ($bb == "table" ou $bb == "valeur") {
       $cle_ok = 0
       si ($bi == "entier") { $cle_ok = 1 }
@@ -1525,6 +1538,8 @@ fn check_expr($i: entier,
       }
       retour "booleen|vide"
     }
+    # front.rs:1917 — unaire (hors « non ») sur Dyn : laissé passer.
+    si (BASE($t) == "?") { retour "?|vide" }
     si (non estnum($t)) {
       signaler($lg0, "Unaire " + $tx[$i] + " sur un " + nomty($t), $err)
       retour "vide|vide"
@@ -1577,7 +1592,8 @@ fn check_bin($i: entier,
     retour "booleen|vide"
   }
   si ($op == "==" ou $op == "!=" ou $op == "≈" ou $op == "?=" ou $op == "=~") {
-    si ($tg != $td et non(estnum($tg) et estnum($td))) {
+    si ($tg != $td et non(estnum($tg) et estnum($td))
+        et BASE($tg) != "?" et BASE($td) != "?") {
       signaler($lg0, "Comparaison " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
       retour "vide|vide"
     }
@@ -1587,6 +1603,8 @@ fn check_bin($i: entier,
     $okordre = 0
     si (estnum($tg) et estnum($td)) { $okordre = 1 }
     si (BASE($tg) == "chaine" et BASE($td) == "chaine") { $okordre = 1 }
+    # front.rs:2035 — comparaison d'ordre avec un Dyn : résolue à l'exécution.
+    si (BASE($tg) == "?" ou BASE($td) == "?") { $okordre = 1 }
     si ($okordre == 0) {
       signaler($lg0, "Ordre " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
       retour "vide|vide"
@@ -1597,12 +1615,16 @@ fn check_bin($i: entier,
     si (BASE($tg) == "complexe" ou BASE($td) == "complexe") { retour "complexe|vide" }
     si (BASE($tg) == "chaine" et BASE($td) == "chaine") { retour "chaine|vide" }
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
+    # front.rs:2044 — Dyn + X non numérique des deux côtés → Dyn.
+    si (BASE($tg) == "?" ou BASE($td) == "?") { retour "?|vide" }
     signaler($lg0, "Addition " + nomty($tg) + " + " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
   si ($op == "-" ou $op == "*") {
     si (BASE($tg) == "complexe" ou BASE($td) == "complexe") { retour "complexe|vide" }
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
+    # front.rs:2058 — Dyn × X : type résolu à l'exécution.
+    si (BASE($tg) == "?" ou BASE($td) == "?") { retour "?|vide" }
     signaler($lg0, "Opération " + nomty($tg) + " " + $op + " " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
@@ -1613,6 +1635,8 @@ fn check_bin($i: entier,
       si (BASE($r) == "entier") { retour "rationnel|vide" }
       retour $r
     }
+    # front.rs:2070 — division avec Dyn non résolu → Dyn.
+    si (BASE($tg) == "?" ou BASE($td) == "?") { retour "?|vide" }
     signaler($lg0, "Division " + nomty($tg) + " / " + nomty($td) + " impossible", $err)
     retour "vide|vide"
   }
@@ -1678,6 +1702,9 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "nb_chiffres") { retour "entier|entier" }
   si ($nom == "nombre_pi") { retour "chaine|entier" }
   si ($nom == "longueur") { retour "entier|lct" }
+  # front.rs:650-651 — alias `len` et primitive `type_de` (arg « tout » non vérifié).
+  si ($nom == "len") { retour "entier|lct" }
+  si ($nom == "type_de") { retour "chaine|tout" }
   si ($nom == "table") { retour "table|" }
   si ($nom == "inserer") { retour "vide|table,tout,tout" }
   si ($nom == "cle_existe") { retour "booleen|table,tout" }
@@ -1714,6 +1741,15 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "conj") { retour "complexe|complexe" }
   si ($nom == "__i" ou $nom == "i") { retour "complexe|" }
   si ($nom == "millisecondes") { retour "entier|" }
+  # front.rs:709-716 — `time`/`ms` et les 5 primitives GUI native (ajoutées
+  # au STDLIB Rust) : signatures miroir, absentes des tables Rose jusqu'ici.
+  si ($nom == "time") { retour "chaine|" }
+  si ($nom == "ms") { retour "entier|" }
+  si ($nom == "fenetre_native") { retour "entier|chaine,entier,entier" }
+  si ($nom == "fenetre_afficher") { retour "vide|entier" }
+  si ($nom == "fenetre_attendre") { retour "vide|entier" }
+  si ($nom == "fenetre_fermer") { retour "vide|entier" }
+  si ($nom == "message_native") { retour "vide|chaine,chaine" }
   # alias de maths exactes (miroir STDLIB Rust)
   si ($nom == "fact") { retour "entier|entier" }
   si ($nom == "fib") { retour "entier|entier" }
@@ -1881,7 +1917,10 @@ fn check_appel($i: entier,
         $t_att = sous_chaine($ent, premier_pipe($ent) + 1, longueur($ent))
         $bad = 0
         si ($ta != $t_att) {
-          si (non(estnum($ta) et estnum($t_att) et promote($ta, $t_att) == $t_att)) { $bad = 1 }
+          # front.rs:2157 — un paramètre sans annotation (Dyn) accepte tout.
+          si (BASE($t_att) != "?") {
+            si (non(estnum($ta) et estnum($t_att) et promote($ta, $t_att) == $t_att)) { $bad = 1 }
+          }
         }
         si ($bad == 1) {
           signaler($lg0, "Argument de " + $nom + ": " + nomty($ta) + " reçu, " + nomty($t_att) + " attendu", $err)
@@ -1980,15 +2019,17 @@ fn check_instr($i: entier,
     $est_global = 0
     si ($nom == "i" ou $nom == "pi" ou $nom == "phi" ou $nom == "e") { $est_global = 1 }
     si ($est_global == 1) { $ex = "" }
-    si ($ex == "") { $ex = env_get($nom, $gn, $gt) }
+    # front.rs:1585-1587 — une globale est un SHADOW : aucun contrôle de type.
+    # L'émetteur n'a pas ce repli vers $gn ; le retirer ici aussi (il faisait
+    # rejeter `$c = sous_chaine(...)` dans echapper() face à la globale `c`:table).
     $cible = $t
-    si ($est_global == 1) { $ex = "" }
     si ($ex != "") {
       $cible = $ex
       $be = BASE($ex)
       $bt = BASE($t)
       $domaine_ok = 1
-      si ($be == "valeur" ou $bt == "valeur") { $domaine_ok = 1 }
+      # front.rs:1589 — Dyn de part ou d'autre : affectation laissée passer.
+      si ($be == "valeur" ou $bt == "valeur" ou $be == "?" ou $bt == "?") { $domaine_ok = 1 }
       sinon si ($bt == "entier" et $be == "rationnel") { $domaine_ok = 1 }
       sinon si ($t != $ex) {
         $domaine_ok = 0
@@ -2069,7 +2110,9 @@ fn check_instr($i: entier,
       $t = check_expr($e, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
                       $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err)
       $bad = 0
-      si ($t != $ra) {
+      # front.rs:1701 — retour sans annotation (Dyn) : accepte n'importe quel type.
+      si (BASE($ra) == "?") { $bad = 0 }
+      sinon si ($t != $ra) {
         si (non(estnum($t) et estnum($ra) et promote($t, $ra) == $ra)) { $bad = 1 }
       }
       si ($bad == 1) {
