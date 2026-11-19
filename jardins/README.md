@@ -50,6 +50,14 @@ taskset -c 10 ./rose/rose jardins/tests/listes.rose    # 19 tests hors STDLIB, 0
 taskset -c 10 ./rose/rose jardins/tests/premiers.rose  # 20 tests existants, 0 échec
 ```
 
+Performance (constat daté du 19/11/2026) : deux jardins ont été accélérés
+sans changer leur API ni leur sortie — `compter_premiers_jardin` (× 2,024)
+et `longueur_jardin` (× 2,364), médianes de 9 échantillons pinés c8. Les
+décomposition, variantes rejetées et garde-fous de délocalisation sont
+décrits dans [`rose/docs/JARDINS_RAPIDES.md`](../rose/docs/JARDINS_RAPIDES.md).
+Les jardins restent **plus lents que les primitives** sur ces deux fonctions :
+le gain visé est la réduction de la surface du noyau, pas la vitesse brute.
+
 ## 3. Comment importer un jardin
 
 ```rose

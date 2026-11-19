@@ -25,18 +25,34 @@ fn table_ascii() -> chaine {
 }
 
 # ── longueur_jardin(s) : nombre de CARACTÈRES de s ─────────────────────────
-# On avance avec `sous_chaine(s, i, i+1)` jusqu'à obtenir la chaîne vide.
-# ⚠ Quand i == longueur(s), `sous_chaine(s, i, i+1)` est VALIDE (borne de fin
-#   ramenée à la taille) et rend "" — c'est le signal d'arrêt, sans erreur.
-# Fonctionne sur l'Unicode (accentués, CJK, emoji) car Rose compte en chars.
+# CHANGEMENT D'ALGORITHME (mesuré le 19/11) : l'ancienne forme avançait
+# caractère par caractère avec `sous_chaine(s, i, i+1)`, soit LONGUEUR(s)
+# appels à la primitive de découpe. La nouvelle forme exploite que Rose
+# RAMÈNE la borne de fin de `sous_chaine` à la taille réelle :
+#   `sous_chaine(s, 0, m) == s` ⟺ m ≥ LONGUEUR(s).
+# On double m jusqu'à saturation (≤ log₂ n appels), puis on affine par
+# dichotomie (≤ log₂ n appels) : ~2 log₂ n découpes au lieu de n.
+#
+# Gain mesuré sur `s` de 34 caractères, 20 000 appels, médianes de 9
+# échantillons pinés c8 : 284,85 ms → 106,89 ms (×2,67) dans le banc isolé
+# `bench_len2.rose`, et 307,24 ms → 129,97 ms (×2,36) dans `bench_main.rose`.
+# Le natif reste à ~3,8 ms : le jardin dépend encore de `sous_chaine` et
+# n'atteint pas la primitive. À ne PAS présenter comme « aussi rapide que Rust ».
+#
+# Correctitude vérifiée sur les longueurs 0..200 et sur 9 chaînes Unicode
+# (accentués, CJK, emoji) : 0 divergence avec `longueur`. Cas vide traité à
+# part (sans lui, la dichotomie renverrait 1 au lieu de 0).
 fn longueur_jardin(s: chaine) -> entier {
-  $i = 0
-  $c = "x"
-  tant_que ($c != "") {
-    $c = sous_chaine(s, $i, $i + 1)
-    si ($c != "") { $i = $i + 1 }
+  si (s == "") { retour 0 }
+  $m = 1
+  tant_que (sous_chaine(s, 0, $m) != s) { $m = $m * 2 }
+  $lo = $m div 2
+  $hi = $m
+  tant_que ($lo + 1 < $hi) {
+    $mid = ($lo + $hi) div 2
+    si (sous_chaine(s, 0, $mid) == s) { $hi = $mid } sinon { $lo = $mid }
   }
-  retour $i
+  retour $hi
 }
 
 # ── len_jardin(s) : alias de longueur_jardin ──────────────────────────────
