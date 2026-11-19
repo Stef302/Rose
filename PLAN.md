@@ -864,3 +864,12 @@ Consigne: « Build pour x86 et en 64 bits surtout pas 32 et continue le chantier
 | X64 | émetteur PE **x86-64** en Rose (complément du PE aarch64) | `compilateur/emetteur_x64.rose`, `rose/docs/PE_X64.md` | 7 |
 | VIT | vitesse : liste ×2 et racines ×1,04 — battre Rust | `rose/src/{run,interp}.rs`, `rose/docs/VITESSE_FINALE.md` | 16 |
 | CMP2 | comparatif « en tout point » à jour (tous benchs + backends) | `bench/**`, `rose/docs/COMPARATIF_TOTAL.md` | 11 |
+
+## Vague 39 (19/11) — priorités : dépasser Rust (innovation) + self-hosting
+
+Consigne utilisateur: continuer en priorité à dépasser Rust en cherchant des solutions et en innovant, et continuer le self-hosting en trouvant des solutions. Réponses au utilisateur SANS jargon technique sauf demande.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| INNOV | innovation vitesse : contourner le mur des 2,4 Mio d'écrits mémoire (liste ×1,72) | `rose/src/{run,jit}.rs`, `rose/docs/INNOVATION_VITESSE.md` | 6 |
+| SH2 | self-hosting : faire tourner le compilateur généré (borne basse faite, suite) | `compilateur/emetteur_elf.rose`, `rose/docs/SELF_HOST_SUITE.md` | 10 |
