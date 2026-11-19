@@ -781,3 +781,14 @@ Consigne: « rose doit maîtriser parfaitement les racines (point fort de Rust),
 ## RÈGLE NOUVELLE (19/11, utilisateur)
 
 « Si le changement d'algorithme peut être possible s'il y a mieux » → **les changements d'algorithme sont désormais AUTORISÉS** quand ils améliorent réellement la performance. Conséquence: ne plus écarter une optimisation au motif « même source ». ⚠ Obligation de transparence: rapporter **séparément** (a) le verdict « même source » et (b) le verdict « meilleur algorithme disponible dans Rose », en nommant l'algorithme utilisé (ex: Stein vs Euclid, formule fermée vs somme, crible vs division d'essai). Les porte-à-faux déjà documentés (Stein PGCD, crible premiers, fibonacci doublement rapide) deviennent des victoires légitimes **si clairement étiquetées**.
+
+## Vague 32 (19/11) — launcher Rose, versions dynamiques, interface
+
+Consigne: le setup devient le LAUNCHER Rose (un seul téléchargement), sélection dynamique des versions depuis le repo (0.1.3 et futures), plus d'exe redondant par update; corriger les checkmarks pixelisés, le nom « rose » cropé vers le bas et le logo tronqué; `rose update` en thème Rose (rouge vif + vert lime).
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| LA | interface setup : checkmarks nets, nom/logo entiers, thème rouge vif/vert lime | `rose/src/setup_gui.rs`, `rose/docs/SETUP_INTERFACE_FIX.md` | — |
+| LB | launcher : une seule fois + versions dynamiques depuis GitHub | `rose/src/{setup_core,velopack}.rs`, `rose/docs/LAUNCHER_VERSIONS.md`, patch CLI | — |
+
+⚠ Aucun test Windows réel possible ici — distinguer prouvé statiquement / compilé / à tester.
