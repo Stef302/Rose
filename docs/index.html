@@ -202,6 +202,11 @@ body.light .term{background:#1a1a1a}
 .term-bar > span{margin-left:8px;color:#999}
 .copy{margin-left:auto;background:none;border:1px solid #262626;color:#999;font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.82rem;padding:6px 10px;cursor:pointer;letter-spacing:2px;transition:.2s}
 .copy:hover{color:var(--vert);border-color:var(--vert)}
+/* Terminal exécuté par le moteur Rose WebAssembly (chargé en différé) */
+.term-bar > .term-live{margin-left:auto;font-size:.66rem;letter-spacing:1px;color:#8ad0ff;text-transform:none}
+.term-bar > .term-live.ok{color:var(--vert)} .term-bar > .term-live.ko{color:var(--rouge-vif)}
+.term-bar > .term-run{margin-left:8px;background:none;border:1px solid #262626;color:#999;font-family:inherit;font-size:.8rem;line-height:1;padding:4px 8px;cursor:pointer}
+.term-bar > .term-run:hover{color:var(--vert);border-color:var(--vert)}
 /* Encadré installation */
 .install-card{
   border:1px solid var(--rouge);background:var(--card);padding:1.6rem 1.8rem;margin:2.5rem 0;
@@ -564,7 +569,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
       <div class="reveal">
         <div class="term">
           <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><img src="assets/img/petale.svg" alt="" style="width:15px;height:15px;flex:none;filter:drop-shadow(0 0 6px rgba(230,32,42,.5))"><span>bonjour.rose</span></div>
-<pre><span class="c">// bonjour.rose</span>
+<pre id="termSource"><span class="c">// bonjour.rose</span>
 <span class="k">fn</span> <span class="f">saluer</span>(<span class="t">$nom</span>: <span class="t">chaine</span>) -> <span class="t">chaine</span> {
   <span class="t">$msg</span> = <span class="s">"Salut, "</span> + <span class="t">$nom</span> + <span class="s">" !"</span>
   <span class="k">retour</span> <span class="t">$msg</span>
@@ -577,11 +582,9 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
 }</pre>
         </div>
         <div class="term" style="margin-top:1rem">
-          <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>terminal</span></div>
-<pre><span class="k">&gt;</span> rose bonjour.rose
-Salut, Ada !
-Salut, Grace !
-Salut, Alan !</pre>
+          <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>terminal</span><button class="term-run" id="termRun" type="button" title="Réexécuter avec le moteur WebAssembly">&#8635;</button><span class="term-live" id="termLive">WASM : chargement…</span></div>
+<pre id="termOutput" data-chargement="1"><span class="k">&gt;</span> rose bonjour.rose
+<span class="c">(le moteur WebAssembly démarre…)</span></pre>
         </div>
       </div>
     </div>
@@ -687,11 +690,12 @@ Salut, Alan !</pre>
     <div class="overline reveal">EXÉCUTER SANS RIEN INSTALLER</div>
     <h2 class="reveal">Playground</h2>
     <div class="honest reveal">
-      <b>Moteur navigateur.</b> Cette page exécute un <b>sous-ensemble</b> de Rose, écrit en JavaScript :
-      entiers exacts, rationnels, flottants, chaînes, listes, <code class="inline">si</code> /
-      <code class="inline">tant_que</code> / <code class="inline">pour</code>, fonctions et récursion,
-      bibliothèque standard de base. La console rend la sortie telle que l'écrirait le moteur.
-      Les tables, le hasard, les fichiers et le temps réel demandent le
+      <b>Moteur WebAssembly.</b> Ce playground exécute le <b>vrai moteur Rose</b> compilé en
+      WebAssembly (<code class="inline">rose.wasm</code>) : le même interpréteur, les mêmes
+      mathématiques exactes et la même bibliothèque que le binaire natif — fini le sous-ensemble
+      approximatif réécrit en JavaScript. Le module est chargé en différé, sans bloquer le rendu.
+      S'il est indisponible, la console le dit et retombe sur l'ancien moteur JavaScript
+      (un sous-ensemble) en l'identifiant. Les fichiers et le temps réel demandent le
       <a class="vert" onclick="go('home');setTimeout(()=>document.getElementById('installer').scrollIntoView({behavior:'smooth'}),150)">moteur installé</a> —
       le playground le dit au lieu de le simuler.
     </div>
@@ -2093,19 +2097,40 @@ function logL(classe, msg){
   out.scrollTop = out.scrollHeight;
 }
 function clearConsole(){ document.getElementById('consoleOut').innerHTML = ''; }
-function runRose(){
+async function runRose(){
   const out = document.getElementById('consoleOut');
   out.innerHTML = '';
   const src = document.getElementById('codeEditor').value;
-  SORTIE = []; FONCTIONS.clear(); steps = 0; profondeur = 0;
   const t0 = performance.now();
+  const duree = () => (performance.now() - t0).toFixed(1);
+
+  /* 1) Moteur réel : le binaire Rose compilé en WebAssembly, chargé en différé. */
+  if (window.__rose && window.__rose.pret) {
+    try {
+      const texte = await window.__rose.Rose.execute(src);
+      const lignes = texte.replace(/\n$/, '').split('\n').filter(l => l.length);
+      lignes.forEach(l => logL('', l));
+      if (!lignes.length) logL('log-info', '(aucune sortie)');
+      logL('log-ok', '— moteur WebAssembly · terminé en ' + duree() + ' ms —');
+      return;
+    } catch (e) {
+      logL('log-warn', 'Exécution WASM impossible : ' + e + ' — repli sur le moteur JavaScript.');
+    }
+  } else if (window.__rose && window.__rose.erreur) {
+    logL('log-warn', 'Module WebAssembly indisponible (' + window.__rose.erreur.message + ') — repli sur le moteur JavaScript (sous-ensemble).');
+  } else {
+    logL('log-info', 'Module WebAssembly en cours de chargement — repli temporaire sur le moteur JavaScript (sous-ensemble).');
+  }
+
+  /* 2) Repli honnête : l'ancien sous-ensemble écrit en JavaScript, clairement nommé. */
+  SORTIE = []; FONCTIONS.clear(); steps = 0; profondeur = 0;
   try {
     const prog = parse(lexer(src));
     const env = new Map();
     execList(prog, env);
     SORTIE.forEach(l => logL('', l));
     if (!SORTIE.length) logL('log-info', '(aucune sortie)');
-    logL('log-ok', '— terminé en ' + (performance.now() - t0).toFixed(1) + ' ms —');
+    logL('log-ok', '— moteur JavaScript (sous-ensemble) · terminé en ' + duree() + ' ms —');
   } catch (r) {
     if (r && r[FIN]) { logL('log-info', '— programme arrêté, code ' + r.code + ' —'); return; }
     SORTIE.forEach(l => logL('', l));
@@ -2121,6 +2146,91 @@ function switchTab(f){
 }
 function resetCode(){ const actif = document.querySelector('#page-play .editor-tabs .tab.active'); switchTab(actif ? actif.dataset.file : 'bonjour'); toast('Code réinitialisé'); }
 document.getElementById('codeEditor').value = EXEMPLES.bonjour;
+</script>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════
+   Moteur Rose RÉEL — module WebAssembly, chargé en DIFFÉRÉ.
+   Ce bloc ne fabrique aucune sortie : tout ce qu'affichent le terminal
+   d'accueil et le playground vient de Rose.execute() dans rose.wasm.
+   ══════════════════════════════════════════════════════════════════ */
+window.__rose = { Rose: null, pret: false, erreur: null, promesse: null };
+
+function majBadgeTerminal(texte, classe){
+  const b = document.getElementById('termLive');
+  if (!b) return;
+  b.textContent = texte;
+  b.className = 'term-live' + (classe ? ' ' + classe : '');
+}
+
+function chargerRose(){
+  const etat = window.__rose;
+  if (etat.promesse) return etat.promesse;
+  etat.promesse = (async () => {
+    try {
+      /* import() dynamique : ne bloque ni le parse HTML ni le premier rendu. */
+      const mod = await import('./rose-wasm.js');
+      const Rose = mod.default;
+      Rose.configure({ url: './rose.wasm' });
+      await Rose.ready();
+      etat.Rose = Rose; etat.pret = true;
+      executerTerminal();
+      return Rose;
+    } catch (e) {
+      etat.erreur = e;
+      majBadgeTerminal('WASM indisponible', 'ko');
+      const o = document.getElementById('termOutput');
+      if (o && o.dataset.chargement === '1') {
+        o.innerHTML = '<span class="k">&gt;</span> rose bonjour.rose\n' +
+          '<span class="c">(moteur WebAssembly indisponible : ' +
+          String((e && e.message) || e).replace(/[<>&]/g, '') + ')</span>';
+      }
+      throw e;
+    }
+  })();
+  return etat.promesse;
+}
+
+/* Le terminal d'accueil exécute VRAIMENT le programme affiché à gauche :
+   la source est lue dans la balise pre numérotée termSource (textContent
+   décode les entités HTML : &gt;&gt; devient >>), puis envoyée au moteur wasm.
+   Aucune ligne de sortie n'est codée en dur. */
+async function executerTerminal(){
+  const srcEl = document.getElementById('termSource');
+  const outEl = document.getElementById('termOutput');
+  if (!srcEl || !outEl || !window.__rose.pret) return;
+  outEl.dataset.chargement = '0';
+  majBadgeTerminal('WASM : exécution…', '');
+  try {
+    const texte = await window.__rose.Rose.execute(srcEl.textContent);
+    const lignes = texte.replace(/\n$/, '').split('\n');
+    outEl.textContent = '';
+    const invite = document.createElement('span');
+    invite.className = 'k';
+    invite.textContent = '> rose bonjour.rose\n';
+    outEl.appendChild(invite);
+    const resultat = document.createElement('span');
+    resultat.textContent = lignes.join('\n') + '\n';
+    outEl.appendChild(resultat);
+    majBadgeTerminal('WASM ' + window.__rose.Rose.version().split('—')[0].trim(), 'ok');
+  } catch (e) {
+    majBadgeTerminal('WASM : erreur', 'ko');
+    outEl.textContent = '> rose bonjour.rose\nRose : erreur — ' + ((e && e.message) || e);
+  }
+}
+
+document.getElementById('termRun')?.addEventListener('click', () => {
+  if (window.__rose.pret) executerTerminal();
+  else chargerRose().catch(() => {});
+});
+
+/* Départ différé : après le premier rendu, quand le navigateur est oisif. */
+function demarrerWasm(){
+  if ('requestIdleCallback' in window) requestIdleCallback(() => chargerRose().catch(() => {}), {timeout: 1500});
+  else setTimeout(() => chargerRose().catch(() => {}), 200);
+}
+if (document.readyState === 'complete') demarrerWasm();
+else window.addEventListener('load', demarrerWasm, {once: true});
 </script>
 </body>
 </html>
