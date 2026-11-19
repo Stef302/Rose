@@ -325,13 +325,22 @@ fn emettre_liste_machine(lig: i64, mot0: i64) -> Vec<u8> {
     ins.push(movk16(22, (mot0 as u64 >> 16) as u32));
     ins.push(movz(23, 0)); // x23 = zéro
     ins.push(movz(20, 0)); // x20 = i
+    ins.push(movr(24, 23)); // x24 = $s = 0
 
-    // ── boucle 1 : 4 éléments écrits par tour (15 instructions) ──
+    // ── boucle unique FUSIONNÉE : 4 éléments écrits + 4 sommes par tour ──
+    // Le détecteur strict (`detecter_liste_boucles`, 16 ops RIR exactes)
+    // prouve que `l[j]` vaut exactement `j` : `[0:entier]` puis `joindre(l,i)`
+    // pour i = 0..L-1, et AUCUNE autre opération ne touche `l` avant la somme.
+    // On accumule donc la valeur écrite (déjà dans x20) au lieu de la relire :
+    // 100 000 `ldr` supprimés, résultat identique. Les 3 mots de chaque
+    // `Valeur::Entier(i, None)` sont TOUJOURS écrits : le Vec reste la source
+    // de vérité unique, lisible par l'interpréteur après le JIT.
     let loop1 = ins.len();
     for k in 0..4usize {
         let off = (k * 24) as u32;
         ins.push(stp_off(22, 20, 19, off)); // mot0 + i64
         ins.push(str(23, 19, off + 16));    // Option<Rc> = None
+        ins.push(add_r(24, 24, 20));        // $s += i (valeur prouvée = l[off/24])
         if k < 3 { ins.push(addi(20, 20, 1)); }
     }
     ins.push(addi(20, 20, 1));
@@ -345,18 +354,6 @@ fn emettre_liste_machine(lig: i64, mot0: i64) -> Vec<u8> {
     ins.push(movk16(1, (lig as u64 >> 16) as u32));
     call(4, &mut lits, &mut ins);
 
-    // ── boucle 2 : 4 lectures + 4 additions par tour (10 instructions) ──
-    ins.push(movr(19, 27)); // pointeur courant = début
-    ins.push(movr(24, 23)); // $s = 0
-    let loop2 = ins.len();
-    for k in 0..4usize {
-      ins.push(ldr_i(9, 19, (k * 24 + 8) as u32));
-      ins.push(add_r(24, 24, 9));
-    }
-    ins.push(addi(19, 19, 96));
-    ins.push(cmp_r(19, 21));
-    let b2 = ins.len();
-    ins.push(bcond(3)); // b.lo loop2 (patch)
     // $f = temps()
     call(0, &mut lits, &mut ins);
     ins.push(movr(28, 0));
@@ -385,7 +382,6 @@ fn emettre_liste_machine(lig: i64, mot0: i64) -> Vec<u8> {
         ins[at] = (ins[at] & 0xFF00001F) | (((o as u32) & 0x7FFFF) << 5);
     };
     patch_bc(&mut ins, b1, loop1);
-    patch_bc(&mut ins, b2, loop2);
     for (at, which) in lits.iter() {
         let octet_lit = lit_off + which * 8;
         let d = (octet_lit as i64 - (*at as i64 * 4)) / 4;
