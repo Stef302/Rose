@@ -459,6 +459,38 @@ pub struct Gz(pub *mut Mpz);
 
 impl Gz {
     pub fn neuf() -> Gz { Gz(Box::into_raw(Box::new(Mpz { v: BigInt::zero() }))) }
+    /// Construit un `Gz` directement à partir d'un `BigInt` déjà calculé :
+    /// évite l'allocation + initialisation à zéro de `Gz::neuf()` suivie
+    /// d'une affectation (chemin chaud du modulo Euclid).
+    pub fn de_bigint(v: BigInt) -> Gz { Gz(Box::into_raw(Box::new(Mpz { v }))) }
+}
+
+/// WD2 — reste euclidien rapide pour a,b >= 0 quand le quotient tient sur
+/// un limb. Estime q depuis les 64 bits de tête, puis AJUSTE par
+/// soustractions jusqu'à 0 <= r < b : le résultat rendu est donc TOUJOURS le
+/// vrai `a mod b` (preuve : r = a - q*b et 0 <= r < b). Retourne `None`
+/// dès que l'ajustage ne converge pas en 4 pas, pour repli exact.
+pub fn mod_rapide(a: &BigInt, b: &BigInt) -> Option<BigInt> {
+    use num_bigint::Sign;
+    if a.sign() == Sign::Minus || b.sign() == Sign::Minus || b.is_zero() { return None; }
+    if a < b { return Some(a.clone()); }
+    let na = a.bits();
+    let nb = b.bits();
+    let d = na - nb;
+    if d > 62 || na < 64 || nb < 64 { return None; }
+    let ah = (a >> (na - 64)).to_u64()?;
+    let bh = (b >> (nb - 64)).to_u64()?;
+    let mut q = (((ah as u128) << d) / (bh as u128)) as u64;
+    let mut r = a - b * q;
+    for _ in 0..4 {
+        if r.sign() == Sign::Minus { r += b; q -= 1; }
+        else if &r >= b { r -= b; q += 1; }
+        else { return Some(r); }
+    }
+    None
+}
+
+impl Gz {
     pub fn p(&self) -> *mut Mpz { self.0 }
     pub fn de_i128(x: i128) -> Gz { Gz(Box::into_raw(Box::new(Mpz { v: BigInt::from(x) }))) }
     pub fn de_i64(x: i64) -> Gz { Self::de_i128(x as i128) }

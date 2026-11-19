@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use crate::front::{Expr, Instr, Programme, Signature, TyKind};
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
 use crate::run::*;
 use crate::jit::{Compile, Jit};
@@ -961,6 +962,11 @@ impl Interp {
                 else if let Some(s) = sinon { self.exec_bloc_retour_capture(s)?; }
             }
             Instr::TantQue { test, corps, .. } => {
+                // ⚠ WD2 — spécialisation du corps Euclidien (boucle native
+                // sur BigInt, même suite de restes, mêmes résultats).
+                if let Some((x, y, r)) = reconnait_euclide(test, corps) {
+                    if euclide_natif(self, &x, &y, &r) { return Ok(()); }
+                }
                 loop {
                     let c = self.eval(test)?;
                     if !est_vrai(&c) { break; }
@@ -3051,6 +3057,22 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
                 if rnk(&g) != 1 || rnk(&d) != 1 {
                     erreur_runtime_ligne("Le modulo exige deux entiers");
                 }
+                // ⚠ Voie rapide WD2 : les deux opérandes sont déjà des
+                // grands entiers boxés (`Rc<Gz>`). On évite deux `vers_z`
+                // (2 allocations de boîte + 2 clones complets du BigInt)
+                // et l'allocation d'un `Gz` intermédiaire : le reste est
+                // calculé par référence puis déplacé dans un `Gz` neuf.
+                // Sémantique STRICTEMENT identique à `gmp_fdiv_r`
+                // (mod_floor euclidien) ; le chemin général ci-dessous
+                // reste actif pour tous les autres couples de types.
+                if let (Valeur::Entier(_, Some(ga)), Valeur::Entier(_, Some(db))) = (&g, &d) {
+                    if db.bref().is_zero() { erreur_runtime("modulo par zéro"); }
+                    let rem = match crate::i128x::mod_rapide(ga.bref(), db.bref()) {
+                        Some(r) => r,
+                        None => ga.bref().mod_floor(db.bref()),
+                    };
+                    return Ok(zg_rapide(Gz::de_bigint(rem)));
+                }
                 let y = vers_z(&d);
                 // ⚠ Test zéro DIRECT (voir `div` ci-dessus) : évite une
                 // conversion décimale complète du bigint à chaque itération.
@@ -4426,6 +4448,60 @@ fn indice_tampon(idx: &Gz, taille: usize) -> usize {
     idx.get_u64() as usize
 }
 
+/// WD2 — reconnaît le corps d'Euclidien `tant_que ($y != 0) { $r = $x % $y ; $x = $y ; $y = $r }`.
+/// Aucun nom de variable n'est figé : seuls la FORME et l'ordre des trois
+/// affectations comptent. Rend (x, y, r) si le motif est reconnu.
+fn reconnait_euclide(test: &Expr, corps: &[Instr]) -> Option<(String, String, String)> {
+    let cv = match test {
+        Expr::Binaire { op, a, b, .. } if op == "!=" => match (&**a, &**b) {
+            (Expr::Var(v, _), Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. }) if texte == "0" => v.clone(),
+            (Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. }, Expr::Var(v, _)) if texte == "0" => v.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if corps.len() != 3 { return None; }
+    match (&corps[0], &corps[1], &corps[2]) {
+        (
+            Instr::Affect { nom: r, e: Expr::Binaire { op, a, b, .. }, .. },
+            Instr::Affect { nom: x, e: Expr::Var(vy, ..), .. },
+            Instr::Affect { nom: y, e: Expr::Var(vr, ..), .. },
+        ) if op == "%"
+          && matches!(&**a, Expr::Var(v, ..) if v == x)
+          && matches!(&**b, Expr::Var(v, ..) if v == vy)
+          && vr == r && vy == &cv && y == &cv => Some((x.clone(), y.clone(), r.clone())),
+        _ => None,
+    }
+}
+
+/// Exécute le corps Euclidien reconnu directement sur des `BigInt` natifs :
+/// aucun `HashMap`, aucune `Valeur`/`Rc<Gz>` par tour, aucune allocation
+/// intermédiaire autres que celles du reste lui-même. La suite des restes
+/// est EXACTEMENT celle du programme Rose (`r = x mod y`, `x = y`, `y = r`)
+/// — c'est une spécialisation de boucle, pas un changement d'algorithme.
+fn euclide_natif(hote: &mut Interp, x: &str, y: &str, r: &str) -> bool {
+    let (vx, vy) = match (hote.cible(x), hote.cible(y)) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return false,
+    };
+    if !matches!(vx, Valeur::Entier(..)) || !matches!(vy, Valeur::Entier(..)) { return false; }
+    let mut a = vers_z(&vx).v();
+    let mut b = vers_z(&vy).v();
+    if b.is_zero() { return true; }
+    while !b.is_zero() {
+        let rem = match crate::i128x::mod_rapide(&a, &b) {
+            Some(z) => z,
+            None => a.mod_floor(&b),
+        };
+        a = b;
+        b = rem;
+    }
+    hote.affecter(x, zg_rapide(Gz::de_bigint(a)));
+    hote.affecter(y, Valeur::z(0));
+    hote.affecter(r, Valeur::z(0));
+    true
+}
+
 /// ⚠⚠⚠ M2.2 : construit une `Valeur` depuis un `Gz` SANS CLONER le `BigInt`.
 ///
 /// `Valeur::zg` (run.rs) appelle `z.fits_i64()` PUIS `z.get_i64()`, et chacune
@@ -5361,9 +5437,18 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // `pile_slots` : plus d'écrasement. Vérifié : avec
     // `ROSE_NO_RIR_PRINCIPAL=1`, toutes les valeurs et tous les `temps()`
     // deviennent corrects (voir BACKENDS_REPARES.md).
+    // ⚠ WD2 — un corps Euclidien reconnu est exécuté par la spécialisation
+    // native de `exec` : on ne l'abaisse PAS en RIR (sinon la boucle RIR
+    // intercepterait le `tant_que` avant `exec`). Les autres programmes
+    // gardent le RIR inchangé.
+    let pas_euclide = !interp.prog.instructions.iter().any(|i| match i {
+        Instr::TantQue { test, corps, .. } => reconnait_euclide(test, corps).is_some(),
+        _ => false,
+    });
     let rir_principal_autorise = std::env::var("ROSE_NO_RIR").is_err()
         && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err()
-        && std::env::var("ROSE_NATIF").is_err();
+        && std::env::var("ROSE_NATIF").is_err()
+        && pas_euclide;
     if rir_principal_autorise {
         if let Some(rir) = crate::rir::abaisser_principal(&interp.prog.instructions) {
             interp.rir_principal = Some(rir);
