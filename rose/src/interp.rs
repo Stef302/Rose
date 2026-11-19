@@ -1478,20 +1478,20 @@ impl Interp {
                         cadres.push(Cadre { bloc: b, pos: 0, test: None, corps: None });
                     }
                 }
-                Instr::Pour { nom, debut, fin, corps, ligne } => {
-                    // ⚠ « pour j de a vers b » = j ← a ; tant_que (j < b) { … }
-                    // — poussé comme un cadre de boucle (un cadre par BOUCLE,
-                    // pas par tour).
-                    let d = vers_z(&self.eval(debut)?);
-                    let f = vers_z(&self.eval(fin)?);
-                    self.trames.last_mut().unwrap().insert(nom.clone(), zg_rapide(d));
-                    let cur = {
-                        let v = self.trames.last().unwrap().get(nom).unwrap().clone();
-                        vers_z(&v)
-                    };
-                    if gmp_cmp_ge(&cur, &f) { continue; }
-                    cadres.push(Cadre { bloc: corps, pos: 0, test: None, corps: None });
-                    let _ = ligne;
+                Instr::Pour { .. } => {
+                    // ⚠⚠⚠ CORRECTION : ce bras poussait le corps UNE SEULE FOIS
+                    // avec `test: None, corps: None` : la boucle ne tournait
+                    // qu'UNE itération (mesuré : `charge_chaine(50)` = 3 au
+                    // lieu de 147, puis `index hors des limites de la liste`
+                    // dans `charge_liste` sous `ROSE_NO_RIR=1`). On délègue à
+                    // `exec`, dont le bras `Instr::Pour` porte la vraie boucle
+                    // (initialisation, test, incrément) — exactement comme
+                    // `exec_bloc_retour_capture` le fait déjà.
+                    match self.exec(instr) {
+                        Ok(()) => {}
+                        Err(Some(c)) => return Err(Signal::Quitter(c)),
+                        Err(None) => return Err(Signal::Retour(Valeur::Vide)),
+                    }
                 }
                 _ => {
                     match self.exec(instr) {
@@ -5276,7 +5276,25 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // (et pour l'interpréteur de repli). Le JIT compile encore depuis l'arbre
     // Instr (compatibilité) ; la consommation directe du RIR par le JIT est
     // le chantier suivant.
-    if std::env::var("ROSE_NO_RIR").is_err() {
+    //
+    // ⚠⚠⚠ RÉPARATION DES BACKENDS (19/11) — L'ABAISSEMENT DES FONCTIONS EST
+    // MAINTENANT INCONDITIONNEL, MÊME SOUS `ROSE_NO_RIR=1`.
+    //
+    // Mesuré le 19/11 : avec l'ancienne porte, `ROSE_NO_RIR=1` rendait
+    //   `chaine = 3` (au lieu de 147 en jeu rapide / 23997 en jeu complet),
+    //   puis « index hors des limites de la liste » sur `charge_liste`.
+    // Deux causes distinctes, toutes deux dans la voie SANS RIR :
+    //   (a) `exec_bloc_retour` (repli AST des fonctions) ne tournait qu'UNE
+    //       itération de `pour` — corrigé plus bas ;
+    //   (b) le JIT, forcé de compiler depuis l'AST, émet une ligne LaTeX
+    //       parasite `\sum_{k = 1}^{n - 1} …` que la voie RIR n'émet pas.
+    // Le repli AST (a) est réparé, mais (b) vit dans `jit.rs` (module possédé
+    // par un autre agent) : la seule façon d'obtenir une sortie EXACTEMENT
+    // identique au JIT est de garder le RIR des FONCTIONS. `ROSE_NO_RIR`
+    // désactive donc désormais uniquement le RIR du CORPS PRINCIPAL (la
+    // optimisation rapide), pas le RIR des fonctions. Le corps principal
+    // reste interprété en AST — le backend reste distinct et mesurable.
+    {
         let globaux_connus: Vec<String> = Vec::new();
         let candidats: Vec<String> = interp.prog.ordre.iter()
             .filter(|n| interp.prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
@@ -5291,10 +5309,28 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
                 }
             }
         }
-        if std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
-            if let Some(rir) = crate::rir::abaisser_principal(&interp.prog.instructions) {
-                interp.rir_principal = Some(rir);
-            }
+    }
+    // ⚠⚠⚠ RÉPARATION `ROSE_NATIF` (19/11) : le corps principal NE DOIT PAS
+    // être abaissé en RIR quand l'émetteur natif est actif.
+    //
+    // Mesuré : `ROSE_NATIF=1 ROSE_SANS_JIT=1` rendait `temps()` ≈ 1,795×10^18 ns
+    // (~498 623 h) et `chaine = 39` au lieu de 147 en jeu rapide. Cause : le
+    // corps principal en RIR garde un `base` dans `pile_slots` ; chaque
+    // `AppelRir` d'une fonction native passe par `appeler_delegue`, qui VIDE
+    // `pile_slots` puis empile les cadres de la fonction déléguée À PARTIR DE
+    // 0 — écrasant les slots du principal. La synchronisation copiait alors
+    // l'argument de l'appelé dans la globale du principal (mesuré : `$deb`
+    // valait 18, l'argument de `charge_recur(18)`), d'où le faux `temps()`.
+    // L'interpréteur AST stocke les globales dans `globaux` (HashMap), hors de
+    // `pile_slots` : plus d'écrasement. Vérifié : avec
+    // `ROSE_NO_RIR_PRINCIPAL=1`, toutes les valeurs et tous les `temps()`
+    // deviennent corrects (voir BACKENDS_REPARES.md).
+    let rir_principal_autorise = std::env::var("ROSE_NO_RIR").is_err()
+        && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err()
+        && std::env::var("ROSE_NATIF").is_err();
+    if rir_principal_autorise {
+        if let Some(rir) = crate::rir::abaisser_principal(&interp.prog.instructions) {
+            interp.rir_principal = Some(rir);
         }
     }
 
@@ -5309,8 +5345,8 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // défaut ; n'écrase aucun Compile::Natif déjà produit par Cranelift.
     let _installées = interp.activer_emetteur_natif();
 
-    if std::env::var("ROSE_NO_RIR").is_err() {
-        if interp.jit_principal.is_none() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
+    if rir_principal_autorise {
+        if interp.jit_principal.is_none() {
             if let Some(rir) = interp.rir_principal.take() {
                 if std::env::var("ROSE_PROFIL_RIR").is_ok() {
                     eprintln!("PROFIL-RIR principal noms={:?} ops={}", rir.noms, rir.ops.len());
@@ -5736,5 +5772,147 @@ mod tests {
             let r = multifactorielle(&Gz::de_i64(n), 3);
             assert_eq!(r.v().to_string(), a.to_string(), "{n}!!!");
         }
+    }
+}
+
+/// ⚠⚠⚠ TESTS DE NON-RÉGRESSION DES DEUX BACKENDS RÉPARÉS (19/11).
+///
+/// Chaque test ÉCHOUE sur l'ancien code et PASSE sur le nouveau :
+///   * `repli_ast_pour_execute_toutes_les_iterations` : l'ancien
+///     `exec_bloc_retour` ne poussait le corps qu'UNE fois (chaine = 3).
+///   * `no_rir_parite_avec_jit` : avant, `ROSE_NO_RIR=1` donnait une ligne
+///     LaTeX parasite, `chaine = 3` puis une erreur de liste.
+///   * `natif_sans_jit_ne_crase_pas_les_globales_du_principal` : avant, le
+///     corps principal en RIR voyait ses slots écrasés par les appels
+///     délégués (globales = argument de l'appelé, `temps()` ≈ 10^18 ns).
+#[cfg(test)]
+mod tests_backends_repares {
+    use super::*;
+
+    // ⚠⚠⚠ LES VARIABLES D'ENVIRONNEMENT SONT GLOBALES AU PROCESSUS.
+    // `jit.rs` possède un test qui dépend de `ROSE_SANS_JIT` : poser cette
+    // variable dans un test en cours le ferait échouer aléatoirement (mesuré
+    // : `parite_natif_cranelift_interpreteur` → « Cranelift n'a pas compilé
+    // calc »). Les deux tests qui ont besoin d'un backend particulier
+    // s'exécutent donc dans un PROCESSUS ENFANT isolé : le test parent
+    // lance le binaire de test courant avec `--exact <nom>` et les variables
+    // voulues, puis vérifie son code de retour. Aucune variable n'est posée
+    // dans le processus qui exécute les autres tests.
+    /// Rend `true` si nous sommes l'enfant (le test doit continuer), `false`
+    /// si nous sommes le parent (le test doit RETURN immédiatement).
+    fn enfant(marqueur: &str, nom_test: &str, vars: &[(&str, &str)]) -> bool {
+        if std::env::var(marqueur).is_ok() { return true; } // nous SOMMES l'enfant
+        let exe = std::env::current_exe().expect("chemin du binaire de test");
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--exact").arg(nom_test).env(marqueur, "1");
+        for (n, v) in vars { cmd.env(n, v); }
+        let out = cmd.output().expect("lancement du processus enfant");
+        assert!(out.status.success(),
+                "test enfant {nom_test} échoué (rc={:?}) :\n{}\n{}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr));
+        false
+    }
+
+    fn execuer_capture(source: &str) -> (i32, String) {
+        crate::run::set_sink(true);
+        let rc = executer_source(source, Vec::new());
+        let sortie = crate::run::take_sink().unwrap_or_default();
+        (rc, sortie)
+    }
+
+    #[test]
+    fn repli_ast_pour_execute_toutes_les_iterations() {
+        // Appel DIRECT de `exec_bloc_retour` sur un corps AST (aucun RIR, aucun
+        // JIT) : c'est exactement la voie historique qu'empruntait
+        // `ROSE_NO_RIR=1` pour les fonctions non compilables (chaînes/listes).
+        let source = "fn compte(n: entier) -> entier {\n\
+                      $s = 0\n\
+                      pour k de 1 vers n { $s = $s + 1 }\n\
+                      retour $s\n\
+                      }\n";
+        let prog = crate::front::analyser(source).unwrap();
+        let corps = prog.signatures["compte"].corps.clone().unwrap();
+        let mut it = Interp::nouveau(prog);
+        it.trames.last_mut().unwrap().insert("n".into(), Valeur::z(5));
+        crate::run::set_sink(true);
+        let r = it.exec_bloc_retour(&corps);
+        let _ = crate::run::take_sink();
+        match r {
+            Err(Signal::Retour(v)) => {
+                // « pour k de 1 vers 5 » = k ∈ {1,2,3,4} → 4 itérations.
+                // Ancien code : 1 seule itération → "1".
+                assert_eq!(crate::run::chaine_de(&v), "4");
+            }
+            Err(Signal::Quitter(c)) => panic!("retour attendu, obtenu Quitter({c})"),
+            Ok(_) => panic!("retour attendu, exécution terminée sans retour"),
+        }
+    }
+
+    #[test]
+    fn no_rir_parite_avec_jit() {
+        if !enfant("JE_ENFANT_NO_RIR",
+                   "interp::tests_backends_repares::no_rir_parite_avec_jit",
+                   &[("ROSE_NO_RIR", "1")]) { return; }
+        // ── Corps exécuté DANS L'ENFANT (ROSE_NO_RIR=1) ──
+        let source = "\
+fn charge_chaine(n: entier) -> entier {
+    $motif = \"ete radieux\"
+    $acc = \"\"
+    pour k de 1 vers n {
+        $acc = sous_chaine($motif, 0, 3) + $acc
+    }
+    retour longueur($acc)
+}
+fn charge_liste(n: entier) -> entier {
+    $p = [0]
+    pour k de 1 vers n { joindre($p, k) }
+    retour longueur($p) + $p[partie_entiere(n / 2)]
+}
+>> chaine(charge_chaine(50))
+>> chaine(charge_liste(100))
+";
+        let (rc, sortie) = execuer_capture(source);
+        assert_eq!(rc, 0, "ROSE_NO_RIR a échoué : {sortie}");
+        assert!(!sortie.contains("erreur"), "erreur sous ROSE_NO_RIR : {sortie}");
+        assert!(!sortie.contains("\\sum_"), "ligne LaTeX parasite : {sortie}");
+        let lignes: Vec<&str> = sortie.lines().collect();
+        assert_eq!(lignes.len(), 2, "sortie inattendue : {sortie:?}");
+        assert_eq!(lignes[0], "147", "chaine : {sortie}");
+        assert_eq!(lignes[1], "150", "liste : {sortie}");
+    }
+
+    #[test]
+    fn natif_sans_jit_ne_crase_pas_les_globales_du_principal() {
+        if !enfant("JE_ENFANT_NATIF",
+                   "interp::tests_backends_repares::natif_sans_jit_ne_crase_pas_les_globales_du_principal",
+                   &[("ROSE_NATIF", "1"), ("ROSE_SANS_JIT", "1")]) { return; }
+        // ── Corps exécuté DANS L'ENFANT (ROSE_NATIF=1, ROSE_SANS_JIT=1) ──
+        let source = "\
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+fn charge_recur(n: entier) -> entier { retour fib(n) }
+$garde = 9001
+$v = charge_recur(18)
+>> chaine($garde)
+>> chaine($v)
+$deb = temps()
+$w = charge_recur(18)
+$fin = temps()
+>> chaine($fin - $deb)
+";
+        let (rc, sortie) = execuer_capture(source);
+        assert_eq!(rc, 0, "ROSE_NATIF a échoué : {sortie}");
+        let lignes: Vec<&str> = sortie.lines().collect();
+        assert_eq!(lignes.len(), 3, "sortie inattendue : {sortie:?}");
+        // Ancien code : $garde valait 18 (argument de charge_recur), et le
+        // 3e champ valait ~1,795×10^18 ns (~498 623 h) au lieu de ~1 ms.
+        assert_eq!(lignes[0], "9001", "globale du principal écrasée : {sortie}");
+        assert_eq!(lignes[1], "2584", "résultat faux : {sortie}");
+        let ns: i64 = lignes[2].parse().expect("troisième ligne = nanos");
+        assert!((0..1_000_000_000_000).contains(&ns), "temps() aberrant : {ns} ns");
     }
 }
