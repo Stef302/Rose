@@ -816,3 +816,5 @@ Consigne: créer la release 0.1.6 qui parle du launcher Rose; ajouter au DÉBUT 
 | RE3 | site : vrai rose.wasm au lieu du JS factice | `docs/index.html`, `rose/web/**`, `rose/docs/SITE_WASM.md` |
 
 ⚠ Publication par l'orchestrateur avec le PAT Stef302 (vérifié `gh api user -q .login` = Stef302).
+
+**Note (19/11, 15:xxZ)** : la vague 33 avait été consignée ci-dessus mais les 3 outils `subagent` n'avaient JAMAIS été appelés — SE1/SE2/SE3 n'ont donc jamais démarré. Ils sont **lancés pour de vrai** à cette date (sessions `ses_e0bdafb92ffeloVK3MNrcIOo4d`, `ses_e0bdaa8d7ffePQ8ECLMHwdfnq0`, `ses_e0bda2890ffeVl9IN4x3aSZQSv`) avec le contexte Rose 0.1.6 / HEAD `0f0f58d`. Aucun de leurs résultats n'est inclus dans la release 0.1.6.
