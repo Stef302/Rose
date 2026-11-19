@@ -1,0 +1,18 @@
+# GUI 100 % Rose : le jardin génère lui-même le code machine de la fenêtre.
+# Aucune primitive GUI du moteur n'est appelée.
+#
+#   ./rose/rose jardins/tests/gui_native_rose_pur.rose
+#   chmod +x /tmp/opencode/gui_rose_pur.elf
+#   DISPLAY=:99 /tmp/opencode/gui_rose_pur.elf &
+#   DISPLAY=:99 xwininfo -root -tree | grep "Fenetre 100% Rose"
+
+importer "jardins/gui_native.rose"
+
+$f = fenetre("Fenetre 100% Rose", 400, 220)
+ajouter($f, etiquette("Code machine generate par Rose."), 12, 20)
+ajouter($f, bouton("OK", 90), 12, 86)
+lier_evenement($f, "clic", "bouton", "b1", "dire bonjour")
+
+$chemin = generer_fenetre($f, "/tmp/opencode/gui_rose_pur.elf", 4000)
+>> "ELF_ROSE|" + $chemin
+>> decrire($f)

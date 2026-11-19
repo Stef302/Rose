@@ -14,6 +14,15 @@
 # supplémentaire. Sans affichage, le pontier renvoie une erreur explicite
 # (jamais une fenêtre simulée). `decrire(f)` permet de tester toute la logique
 # du jardin sans écran.
+#
+# ── DEUX CHEMINS, LE ROSE EN PRIORITÉ ───────────────────────────────────────
+# `generer_*` ci-dessous utilisent `jardins/os_natif.rose` : le code machine
+# des syscalls est produit par Rose, SANS primitive GUI dans le moteur.
+# `ouvrir`/`attendre`/`dire`/`fermer` sont les anciens raccourcis qui appellent
+# encore les primitives du moteur — conservés pour compatibilité, mais le
+# chemin Rose pur est désormais `generer_fenetre` + lancement de l'ELF.
+
+importer "jardins/os_natif.rose"
 
 # ── modèle de données ────────────────────────────────────────────────────────
 # Une fenêtre est une table Rose: titre, largeur, hauteur, widgets (sous une
@@ -200,4 +209,23 @@ fn fermer(p: entier) {
 
 fn dire(titre: chaine, texte: chaine) {
     message_native(titre, texte)
+}
+
+# ── chemin ROSE PUR : on génère l'ELF du syscall, aucune primitive GUI ──────
+
+fn generer_fenetre(f: table, chemin: chaine, attente_ms: entier) -> chaine {
+    $elf = ouvrir_fenetre(chaine(f["titre"]), entier(chaine(f["largeur"])),
+                          entier(chaine(f["hauteur"])), attente_ms)
+    ecrire_bytes($chemin, $elf)
+    retour $chemin
+}
+
+fn generer_message(titre: chaine, texte: chaine, chemin: chaine) -> chaine {
+    ecrire_bytes($chemin, boite_message(titre, texte))
+    retour $chemin
+}
+
+fn generer_ecran(texte: chaine, chemin: chaine) -> chaine {
+    ecrire_bytes($chemin, ecrire_ecran(texte))
+    retour $chemin
 }
