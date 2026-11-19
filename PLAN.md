@@ -852,3 +852,15 @@ Outils disponibles vérifiés: cargo-xwin 0.23.1, lld-link, llvm-windres, llvm-r
 | PE2 | backend Win32 dans le PE Rose (plus de syscalls Linux) | `compilateur/emetteur_pe.rose`, `rose/docs/PE_WIN32.md` | 7 |
 | TAS1 | self-hosting : supprimer les allocs 1-caractère de la tokenisation | `compilateur/emetteur_elf.rose`, `rose/docs/G5_TAS.md` | 10 |
 | CMP1 | comparaison de vitesse concrète et à jour (tous domaines + double verdict) | `bench/**`, `rose/docs/COMPARATIF_FINAL.md` | 16 |
+
+## Vague 38 (19/11) — x86_64 (jamais 32), vitesse intensive, comparatif total
+
+Consigne: « Build pour x86 et en 64 bits surtout pas 32 et continue le chantier massif et intensif pour dépasser rust, comparatif en tout point, self hosted aussi ».
+
+⚠ PAS de 32 bits : cible **x86_64-pc-windows-msvc / x86_64-pc-windows-gnu** uniquement. Les i686 installés plus tôt ne doivent PAS être utilisés.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| X64 | émetteur PE **x86-64** en Rose (complément du PE aarch64) | `compilateur/emetteur_x64.rose`, `rose/docs/PE_X64.md` | 7 |
+| VIT | vitesse : liste ×2 et racines ×1,04 — battre Rust | `rose/src/{run,interp}.rs`, `rose/docs/VITESSE_FINALE.md` | 16 |
+| CMP2 | comparatif « en tout point » à jour (tous benchs + backends) | `bench/**`, `rose/docs/COMPARATIF_TOTAL.md` | 11 |
