@@ -70,6 +70,9 @@ Le produit reste **partiellement self-hosted** : `rose/rose` exige toujours
 - Jardin `20/20`, `rose-jardin.sh verif-tous` : **8 jardins valides**.
 - fib(25) `75025`, oracles 165/0 ×4, point fixe ×2.
 - `rug` absent, version `0.1.5`, HEAD = distant.
+- **Audit final `audit-final.sh` (19/11 11:xxZ) : AUCUNE porte non atteinte.**
+  Un incident intermédiaire (`bench_global rc=1` dû au trampoline dual sur un
+  paramètre flottant déclaré) a été corrigé dans `5d7ae7a` puis re-audité vert.
 
 ## 6 — Limites documentées, pas masquées
 
