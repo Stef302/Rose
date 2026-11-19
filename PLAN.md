@@ -818,3 +818,15 @@ Consigne: créer la release 0.1.6 qui parle du launcher Rose; ajouter au DÉBUT 
 ⚠ Publication par l'orchestrateur avec le PAT Stef302 (vérifié `gh api user -q .login` = Stef302).
 
 **Note (19/11, 15:xxZ)** : la vague 33 avait été consignée ci-dessus mais les 3 outils `subagent` n'avaient JAMAIS été appelés — SE1/SE2/SE3 n'ont donc jamais démarré. Ils sont **lancés pour de vrai** à cette date (sessions `ses_e0bdafb92ffeloVK3MNrcIOo4d`, `ses_e0bdaa8d7ffePQ8ECLMHwdfnq0`, `ses_e0bda2890ffeVl9IN4x3aSZQSv`) avec le contexte Rose 0.1.6 / HEAD `0f0f58d`. Aucun de leurs résultats n'est inclus dans la release 0.1.6.
+
+## Vague 35 (19/11) — PE en Rose, vitesse totale, self-hosting
+
+Consigne: « un ELF c'est bien mais n'oublie pas le PE pour Windows, rose est plus rapide que rust ? Il doit l'être en tout point donc continue, pareil il est entièrement self host ? Si pas on continue, t'arrête pas tant qu'on a pas atteint l'objectif ».
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| PE1 | writer PE64 en Rose pur, intégré à G5 | `compilateur/emetteur_pe.rose`, `rose/docs/G5_PE.md` | 7 |
+| SP1 | vitesse : battre Rust sur les domaines restants | `rose/src/{run,interp}.rs`, `rose/docs/VITESSE_TOTALE.md` | 16 |
+| SH1 | self-hosting : réparer le segfault de l'ELF de emetteur.rose | `compilateur/emetteur_elf.rose`, `rose/docs/G5_SEGFAULT.md` | 11 |
+
+⚠ Chacun construit son binaire dans `/tmp/opencode/<agent>/`, ne remplace PAS `rose/rose`.
