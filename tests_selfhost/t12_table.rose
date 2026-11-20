@@ -1,0 +1,6 @@
+$t = table()
+inserer($t, "a", 1)
+inserer($t, "b", 2)
+>> cle_existe($t, "a")
+>> cle_existe($t, "c")
+>> longueur($t)

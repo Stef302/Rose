@@ -1,0 +1,3 @@
+$p = "/tmp/opencode/sh9_agents/battery/out2.txt"
+ecrire_bytes($p, "XYZ")
+>> longueur(lire_texte($p))

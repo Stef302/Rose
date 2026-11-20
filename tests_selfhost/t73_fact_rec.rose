@@ -1,0 +1,2 @@
+fn fact($n: entier) -> entier { si ($n <= 1) { retour 1 }; retour $n * fact($n-1) }
+>> fact(10)

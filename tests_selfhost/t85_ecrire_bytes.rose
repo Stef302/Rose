@@ -1,0 +1,1 @@
+ecrire_bytes("/dev/stdout", "ABC\n")

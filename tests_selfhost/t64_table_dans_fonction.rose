@@ -1,0 +1,8 @@
+fn cle_presente($cle: chaine) -> booleen {
+  $t = table()
+  inserer($t, "x", 1)
+  inserer($t, "y", 2)
+  retour cle_existe($t, $cle)
+}
+>> cle_presente("x")
+>> cle_presente("z")

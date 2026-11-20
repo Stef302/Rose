@@ -1,0 +1,3 @@
+$p = "/tmp/opencode/sh9_agents/battery/out.txt"
+ecrire_texte($p, "bonjour\n")
+>> lire_texte($p)

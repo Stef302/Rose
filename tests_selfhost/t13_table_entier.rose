@@ -1,0 +1,5 @@
+$t = table()
+inserer($t, 1, "un")
+inserer($t, 2, "deux")
+>> cle_existe($t, 1)
+>> cle_existe($t, 3)

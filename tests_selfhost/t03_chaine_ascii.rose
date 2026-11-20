@@ -1,0 +1,4 @@
+$s = "bonjour"
+>> $s
+>> longueur($s)
+>> "abc" + "def"

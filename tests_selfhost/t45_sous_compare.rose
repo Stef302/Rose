@@ -1,0 +1,3 @@
+$s = "abcdefghij"
+>> sous_chaine($s, 2, 5) == "cde"
+>> sous_chaine($s, 0, 3) != "abc"

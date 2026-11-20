@@ -1,0 +1,4 @@
+$l = ["un", "deux", "trois"]
+>> longueur($l)
+>> $l[1]
+>> $l[2] + "!"

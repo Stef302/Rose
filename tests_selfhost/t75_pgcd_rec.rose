@@ -1,0 +1,3 @@
+fn pgcd($a: entier, $b: entier) -> entier { si ($b == 0) { retour $a }; retour pgcd($b, $a % $b) }
+>> pgcd(48, 18)
+>> pgcd(1071, 462)

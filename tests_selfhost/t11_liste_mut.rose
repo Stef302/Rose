@@ -1,0 +1,4 @@
+$l = [1, 2]
+joindre($l, 3)
+>> longueur($l)
+>> $l[2]

@@ -1,0 +1,8 @@
+fn f($n: entier) -> entier {
+  si ($n < 0) { retour -1 }
+  si ($n == 0) { retour 0 }
+  retour 1
+}
+>> f(-5)
+>> f(0)
+>> f(9)

@@ -1,0 +1,4 @@
+fn pair($n: entier) -> booleen { si ($n == 0) { retour vrai }; retour impair($n-1) }
+fn impair($n: entier) -> booleen { si ($n == 0) { retour faux }; retour pair($n-1) }
+>> pair(10)
+>> impair(7)

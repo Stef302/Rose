@@ -1,0 +1,4 @@
+fn f($x: entier) -> entier { retour $x + 1 }
+fn f($a: entier, $b: entier) -> entier { retour $a + $b }
+>> f(2)
+>> f(2, 3)

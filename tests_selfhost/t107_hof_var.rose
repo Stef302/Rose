@@ -1,0 +1,3 @@
+fn carre($x: entier) -> entier { retour $x * $x }
+$f = carre
+>> $f(5)

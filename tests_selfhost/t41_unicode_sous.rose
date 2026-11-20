@@ -1,0 +1,4 @@
+$s = "été"
+>> longueur($s)
+>> sous_chaine($s, 0, 3)
+>> sous_chaine($s, 1, 2)

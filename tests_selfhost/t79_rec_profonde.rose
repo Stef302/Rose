@@ -1,0 +1,2 @@
+fn somme($n: entier) -> entier { si ($n == 0) { retour 0 }; retour $n + somme($n-1) }
+>> somme(100)

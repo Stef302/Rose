@@ -1,0 +1,39 @@
+# Signal rapide : le runtime G5 peut-il exécuter l'émetteur ?
+# Primitives utilisées par emetteur_elf.rose : lire_texte, nb_arguments,
+# argument, longueur, sous_chaine, ordre, caractere, chaine, entier, flottant,
+# partie_entiere, joindre, table, inserer, cle_existe, ecrire_bytes,
+# comparaisons, +,-,*,/,%,^, booléens, appels à 36 arguments, immédiats > 2^31.
+# Le runner passe en argument(0) le chemin de critique_entree.txt.
+>> nb_arguments()
+$src = lire_texte(argument(0))
+>> longueur($src)
+>> sous_chaine($src, 0, 9) == "fonction "
+>> sous_chaine($src, 9, longueur($src))
+>> ordre("f")
+>> caractere(102)
+>> chaine(entier("4096"))
+>> chaine(flottant("2"))
+>> chaine(partie_entiere(17))
+>> chaine(vrai)
+
+ecrire_bytes("/dev/null", "ok")
+
+$l = [0 : entier]
+pour $i de 0 vers 12 { joindre($l, $i) }
+>> longueur($l)
+>> $l[11]
+
+$m = table()
+inserer($m, "si", 1)
+inserer($m, "tant_que", 2)
+inserer($m, "pour", 3)
+>> cle_existe($m, "si")
+>> cle_existe($m, "rien")
+>> longueur($m)
+
+fn t36($a1: entier, $a2: entier, $a3: entier, $a4: entier, $a5: entier, $a6: entier, $a7: entier, $a8: entier, $a9: entier, $a10: entier, $a11: entier, $a12: entier, $a13: entier, $a14: entier, $a15: entier, $a16: entier, $a17: entier, $a18: entier, $a19: entier, $a20: entier, $a21: entier, $a22: entier, $a23: entier, $a24: entier, $a25: entier, $a26: entier, $a27: entier, $a28: entier, $a29: entier, $a30: entier, $a31: entier, $a32: entier, $a33: entier, $a34: entier, $a35: entier, $a36: entier) -> entier { retour $a1 + $a30 + $a36 }
+>> t36(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36)
+
+>> 4068474880 + 3531603968
+>> 18 * 131 + ordre("|")
+>> (17 % 5) + (2^10) - 3

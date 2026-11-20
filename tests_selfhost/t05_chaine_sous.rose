@@ -1,0 +1,5 @@
+$s = "abcdefgh"
+>> sous_chaine($s, 1, 4)
+>> ordre("A")
+>> ordre("a")
+>> caractere(66)

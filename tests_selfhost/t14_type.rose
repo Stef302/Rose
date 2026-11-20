@@ -1,0 +1,4 @@
+>> type(2)
+>> type("a")
+>> type([1])
+>> type(vrai)

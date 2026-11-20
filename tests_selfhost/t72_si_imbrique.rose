@@ -1,0 +1,9 @@
+fn klasse($n: entier) -> chaine {
+  si ($n < 0) { retour "neg" }
+  sinon si ($n == 0) { retour "zero" }
+  sinon { si ($n < 10) { retour "petit" } sinon { retour "grand" } }
+}
+>> klasse(-1)
+>> klasse(0)
+>> klasse(5)
+>> klasse(50)

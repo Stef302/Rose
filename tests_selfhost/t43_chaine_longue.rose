@@ -1,0 +1,4 @@
+$s = ""
+pour $i de 0 vers 20 { $s = $s + "ab" }
+>> longueur($s)
+>> sous_chaine($s, 0, 5)

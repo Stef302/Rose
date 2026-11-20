@@ -1,0 +1,5 @@
+$l = [0 : entier]
+pour $i de 0 vers 20 { joindre($l, $i) }
+>> longueur($l)
+>> $l[19]
+>> $l[0]

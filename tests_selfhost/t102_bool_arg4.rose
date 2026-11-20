@@ -1,0 +1,3 @@
+fn somme($a: entier, $b: booleen, $c: entier, $d: entier) -> entier { retour $a+$c+$d }
+>> somme(1, vrai, 2, 3)
+>> somme(10, faux, 20, 30)

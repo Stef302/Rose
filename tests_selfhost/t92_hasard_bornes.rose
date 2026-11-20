@@ -1,0 +1,2 @@
+graine(1234)
+pour $i de 0 vers 5 { >> hasard(3) }

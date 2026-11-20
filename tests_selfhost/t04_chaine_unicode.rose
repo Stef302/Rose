@@ -1,0 +1,4 @@
+$s = "été radieux"
+>> $s
+>> longueur($s)
+>> "🚀"

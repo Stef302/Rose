@@ -1,0 +1,4 @@
+$t = table()
+inserer($t, "abc", 7)
+>> cle_existe($t, "abc")
+>> cle_existe($t, 1)

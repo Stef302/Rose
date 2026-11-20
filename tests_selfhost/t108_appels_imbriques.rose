@@ -1,0 +1,4 @@
+fn add($a: entier, $b: entier) -> entier { retour $a + $b }
+fn triple($a: entier, $b: entier, $c: entier) -> entier { retour $a + $b + $c }
+>> add(add(1, 2), add(3, 4))
+>> triple(add(1,2), add(3,4), add(5,6))

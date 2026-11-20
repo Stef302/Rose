@@ -1,0 +1,3 @@
+fn applique($fn, $x: entier) -> entier { retour $fn($x) }
+fn carre($x: entier) -> entier { retour $x * $x }
+>> applique(carre, 5)
