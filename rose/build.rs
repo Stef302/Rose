@@ -39,14 +39,7 @@ fn main() {
             // émet cargo:rustc-link-lib=static=windows_compat), et le forcer
             // ici donnait « duplicate symbol: dlopen/dlsym/mmap/... » entre
             // windows_compat.lib et librose.rlib (mesuré: lien rc=101).
-            // Forcer le tirage des symboles POSIX depuis la lib statique
-            // SANS /WHOLEARCHIVE (qui duplique l'objet deja reference par
-            // librose.rlib). /INCLUDE: demande a lld-link de resolver chaque
-            // symbole, ce qui declenche l'extraction du bon .o une seule fois.
-            for sym in ["mmap", "mprotect", "munmap", "getrandom",
-                        "dlopen", "dlsym", "dlclose"] {
-                println!("cargo:rustc-link-arg=/INCLUDE:{sym}");
-            }
+            println!("cargo:rustc-link-arg=/WHOLEARCHIVE:windows_compat.lib");
         } else {
             println!("cargo:rustc-link-arg=-Wl,--whole-archive");
             println!("cargo:rustc-link-arg=-lwindows_compat");
