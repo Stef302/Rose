@@ -6855,25 +6855,57 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
         }
     }
 
-    // active le JIT sur les fonctions éligibles (après abaissement RIR)
-    let mut jit = Jit::nouveau(&interp.prog.signatures);
-    let _t_jitnew = _t0.elapsed();
-    // ⚠ ENG1 — aucun programme utilisateur : le JIT n'a aucune fonction à
-    // compiler. `compiler_tout` déclare pourtant ~50 imports runtime et
-    // finalise un module Cranelift vide (mesuré : 85 µs sur l'englobant).
-    // On ne l'appelle que s'il y a effectivement des fonctions. Le principal
-    // reste compilé : le choix JIT/RIR est fait juste après, à l'identique.
-    let a_des_fonctions = !interp.prog.ordre.is_empty();
-    if a_des_fonctions {
-        jit.declarer_delegues();
+    // CLOSE2 — décision de pré-exécution SANS construire de module Cranelift.
+    //
+    // `Jit::nouveau` (17–33 µs) construit un JITBuilder, enregistre ~38
+    // symboles runtime et crée le JITModule. Sur la suite complexe aucune
+    // fonction n'est confiée à Cranelift (superinstructions natives) et le
+    // principal n'est pas compilable : tout ce travail était payé pour rien,
+    // suivi de DEUX `finalize_definitions` sur un module vide.
+    //
+    // `jit_a_du_travail` reproduit exactement les portes de
+    // `compiler_principal` et de la passe 1 de `compiler_tout`. Quand il
+    // répond `false`, on ne construit PAS le Jit : on installe directement
+    // les superinstructions natives (Rust pur) et le principal tourne en RIR,
+    // exactement comme quand `compiler_principal` renvoyait `None`.
+    // Repli complet (Jit::nouveau + compiler_principal + compiler_tout) dès
+    // qu'une fonction est éligible ou que le principal est compilable.
+    // CLOSE2 — décision de pré-exécution SANS construire de module Cranelift.
+    // `Jit::nouveau` (17–33 µs) construit un JITBuilder, enregistre ~38
+    // symboles runtime et crée le JITModule. Sur la suite complexe aucune
+    // fonction n'est confiée à Cranelift (superinstructions natives) et le
+    // principal n'est pas compilable : tout ce travail était payé pour rien,
+    // suivi de DEUX `finalize_definitions` sur un module vide.
+    // Repli complet (Jit::nouveau + compiler_principal + compiler_tout) dès
+    // qu'une fonction est éligible ou que le principal est compilable.
+    // ⚠ CORRECTION RÉGRESSION 20/11 : ne PAS court-circuiter sur l'absence
+    // de fonction utilisateur. Les bancs D5 (chaîne), D6 (liste) et D7
+    // (table) n'ont AUCUNE fonction mais leur PRINCIPAL est JIT-compilable :
+    // ENG1 (`12c786c`) sautait `compiler_principal` dans ce cas, ce qui les
+    // faisait retomber en RIR interprété (×184 / ×112 / ×10 mesurés).
+    // `prepare_jit` teste déjà `principal_compilable` : lui laisser le soin
+    // de décider, quel que soit le nombre de fonctions utilisateur.
+    let (a_du_travail, natifs) = crate::jit::prepare_jit(
+        &prog_pour_jit, &interp.prog.signatures, interp.rir_principal.as_ref());
+    let _t_jitnew;
+    // ⚠⚠⚠ LE JIT DOIT VIVRE JUSQU'À LA FIN DE `executer_source_analyse` :
+    // il possède les pages de code exécutable (MemoireJit) que les
+    // trampolines appellent pendant `executer_principal()`. Le laisser tomber
+    // à la fin d'un bloc `if` unmappe ces pages = SIGSEGV (mesuré).
+    let _jit_garde: Option<Jit>;
+    if a_du_travail {
+        let mut jit = Jit::nouveau(&interp.prog.signatures);
+        _t_jitnew = _t0.elapsed();
         interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
         interp.jit = jit.compiler_tout();
+        _jit_garde = Some(jit);
     } else {
-        // Aucune fonction : le principal incompatible avec le JIT tourne en
-        // RIR (voir plus bas), inutile de finaliser un module vide.
+        _jit_garde = None;
+        _t_jitnew = _t0.elapsed();
         interp.jit_principal = None;
-        interp.jit = HashMap::new();
+        interp.jit = natifs;
     }
+    let _ = &_jit_garde;
     let _t_compiletout = _t0.elapsed();
     // M3.1 : active l'émetteur machine natif si ROSE_NATIF=1. Inerte par
     // défaut ; n'écrase aucun Compile::Natif déjà produit par Cranelift.

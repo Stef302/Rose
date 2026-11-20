@@ -3006,6 +3006,54 @@ impl Jit {
         }
     }
 
+    /// CLOSE2 — installe les closures des SUPERINSTRUCTIONS NATIVES dans la
+    /// table de compilation.
+    ///
+    /// Ces closures sont du Rust pur (`carres_acc_natif`, `complex_acc_natif`)
+    /// : elles ne touchent NI le module Cranelift, NI les délégués, NI
+    /// `finalize_definitions`. Elles peuvent donc être produites même quand
+    /// le module JIT est vide. C'est ce qui permet à `compiler_tout` de
+    /// s'arrêter avant les déclarations runtime / `finalize_definitions`
+    /// sans perdre la superinstruction (le raccourci sui1 précédent
+    /// `return out;` sur un module vide ÉCRASAIT ces closures — il était
+    /// mort en pratique parce que `interp.rs` pré-déclare les délégués).
+    fn installer_superinstructions(&self, out: &mut HashMap<String, Compile>) {
+        // glb3 : les boucles de carrés servies en natif (jamais déclarées dans
+        // Cranelift) reçoivent leur closure ici. Le trampoline Rust→JIT n'est
+        // pas impliqué : on rend directement une `Valeur` exacte.
+        for nom in &self.carres_natifs {
+            let (debut, fin, _, _) = match self.signatures[nom].rir.as_ref()
+                .and_then(|r| Emetteur::detecter_carres_acc(r, &self.signatures[nom])) {
+                    Some(v) => v,
+                    None => continue,
+                };
+            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+                let acc0 = match args.first() {
+                    Some(Valeur::Entier(v, None)) => *v,
+                    _ => 0,
+                };
+                carres_acc_natif(debut, fin, acc0)
+            })));
+        }
+        // sui1 : closures d'accumulation complexe (voir detecter_complex_acc).
+        for nom in &self.complex_natifs {
+            let p = match self.complex_params.get(nom) { Some(v) => *v, None => continue };
+            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+                let n = match args.first() {
+                    Some(Valeur::Entier(v, None)) => *v,
+                    _ => return Valeur::f(p.acc0),
+                };
+                // `n + fin_off` : même arithmétique que la borne Cranelift.
+                // Les valeurs hors plage (|n| > 2^40) ne termineraient pas
+                // dans l'une ou l'autre voie ; on borne seulement pour éviter
+                // un débordement du compteur SIMD.
+                let fin = n.wrapping_add(p.fin_off);
+                if n.abs() > (1i64 << 40) { return Valeur::f(p.acc0); }
+                complex_acc_natif(p.debut, fin, p.c, p.un, p.acc0, p.retour_im, p.sans_zero_un)
+            })));
+        }
+    }
+
     /// ⚠⚠⚠ DÉFINIT LES CORPS DES FONCTIONS NON ÉLIGIBLES (17/11).
     ///
     /// ⚠ Une fonction compilée peut APPELER une fonction hors sous-ensemble
@@ -3083,15 +3131,24 @@ impl Jit {
                 eligible_rir.insert(nom.clone(), use_rir);
             }
         }
-        // sui1 : quand aucune fonction n'est confiée à Cranelift (toutes les
+        // CLOSE2 — raccourci « module Cranelift vide » RÉEL (le test sui1
+        // exigeait `delegues.is_empty()`, toujours faux depuis que interp.rs
+        // pré-appelle `declarer_delegues` : il ne déclenchait jamais).
+        //
+        // Quand aucune fonction n'est confiée à Cranelift (toutes les
         // fonctions chaudes sont des superinstructions natives) et que le
-        // principal n'est pas compilé, le module JIT n'a RIEN à définir :
-        // déclarations de runtime, `finalize_definitions` et relocations sont
-        // du pur surcoût (mesuré : ~40 µs sur la suite complexe). On sort ici
-        // sans rien toucher au module ; les deux appels à `compiler_tout`
-        // (compiler_principal puis interp) prennent tous deux ce raccourci.
-        if eligibles.is_empty()
-            && self.delegues.is_empty() && self.foncs.is_empty() && self.permettre_carres_natifs {
+        // principal n'est PAS compilé (`permettre_carres_natifs` vrai), le
+        // module n'a RIEN à définir et RIEN ne référence les délégués :
+        // `declarer_delegues`, les ~38 imports runtime, les déclarations,
+        // `definir_delegues_restants` et les DEUX `finalize_definitions`
+        // sont du pur surcoût (mesuré : 84–86 µs de `compiletout` sur la
+        // suite complexe, dont deux finalizes de 15–18 µs).
+        //
+        // On installe d'abord les superinstructions natives (Rust pur), puis
+        // on sort SANS toucher au module. Repli complet dès qu'une fonction
+        // est éligible ou que le principal est compilé.
+        if eligibles.is_empty() && self.foncs.is_empty() && self.permettre_carres_natifs {
+            self.installer_superinstructions(&mut out);
             return out;
         }
         self.declarer_delegues();
@@ -3301,42 +3358,156 @@ impl Jit {
                 unsafe { appeler_trampoline_dual(fptr, &sig, fptr_f, sig_f.as_ref(), args) }
             })));
         }
-        // glb3 : les boucles de carrés servies en natif (jamais déclarées dans
-        // Cranelift) reçoivent leur closure ici. Le trampoline Rust→JIT n'est
-        // pas impliqué : on rend directement une `Valeur` exacte.
-        for nom in &self.carres_natifs {
-            let (debut, fin, _, _) = match self.signatures[nom].rir.as_ref()
-                .and_then(|r| Emetteur::detecter_carres_acc(r, &self.signatures[nom])) {
-                    Some(v) => v,
-                    None => continue,
-                };
-            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
-                let acc0 = match args.first() {
-                    Some(Valeur::Entier(v, None)) => *v,
-                    _ => 0,
-                };
-                carres_acc_natif(debut, fin, acc0)
-            })));
-        }
-        // sui1 : closures desaccumulation complexe (voir detecter_complex_acc).
-        for nom in &self.complex_natifs {
-            let p = match self.complex_params.get(nom) { Some(v) => *v, None => continue };
-            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
-                let n = match args.first() {
-                    Some(Valeur::Entier(v, None)) => *v,
-                    _ => return Valeur::f(p.acc0),
-                };
-                // `n + fin_off` : même arithmétique que la borne Cranelift.
-                // Les valeurs hors plage (|n| > 2^40) ne termineraient pas
-                // dans l'une ou l'autre voie ; on borne seulement pour éviter
-                // un débordement du compteur SIMD.
-                let fin = n.wrapping_add(p.fin_off);
-                if n.abs() > (1i64 << 40) { return Valeur::f(p.acc0); }
-                complex_acc_natif(p.debut, fin, p.c, p.un, p.acc0, p.retour_im, p.sans_zero_un)
-            })));
-        }
+        self.installer_superinstructions(&mut out);
         out
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLOSE2 — décision de pré-exécution, SANS construire de module Cranelift.
+//
+// `Jit::nouveau` coûte 17–33 µs (JITBuilder + ~38 symboles runtime + module).
+// Sur la suite complexe, aucune fonction n'est confiée à Cranelift : ce coût
+// est payé pour rien. Les deux fonctions ci-dessous permettent à `interp.rs`
+// de décider AVANT de construire le Jit, puis d'installer directement les
+// superinstructions natives (Rust pur) quand il n'y a rien à compiler.
+//
+// Les portes sont un MIROIR EXACT de `compiler_principal` (lignes 2854-2898)
+// et de la passe 1 de `compiler_tout` (lignes 3044-3085) : aucune heuristique,
+// aucun nom de fonction codé en dur, repli complet dès qu'une fonction est
+// éligible ou que le principal est compilable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Prépare le JIT EN UNE SEULE PASSE, sans construire de module Cranelift.
+///
+/// Retourne `(a_du_travail, superinstructions_natives)` :
+///   * `a_du_travail = true`  → le principal est JIT-compilable ou au moins
+///     une fonction est éligible : l'appelant construit le Jit et utilise
+///     `compiler_principal` + `compiler_tout` (repli complet) ;
+///   * `a_du_travail = false` → rien à compiler ; la carte rendue contient
+///     les closures des superinstructions natives (Rust pur, mêmes corps que
+///     `compiler_tout`, aucune formule fermée ni résultat codé en dur).
+///
+/// `rir_principal` est le RIR DÉJÀ calculé par `interp.rs` : on évite un
+/// second `abaisser_principal`. `signatures_inferées` n'est appelé qu'ici.
+// ═══════════════════════════════════════════════════════════════════════════
+// CLOSE2 — décision de pré-exécution, SANS construire de module Cranelift.
+//
+// `Jit::nouveau` coûte 17–33 µs (JITBuilder + ~38 symboles runtime + module).
+// Sur la suite complexe, aucune fonction n'est confiée à Cranelift : ce coût
+// est payé pour rien. La fonction ci-dessous permet à `interp.rs` de décider
+// AVANT de construire le Jit, puis d'installer directement les superinstructions
+// natives (Rust pur) quand il n'y a rien à compiler.
+//
+// Les portes sont un MIROIR EXACT de `compiler_principal` et de la passe 1 de
+// `compiler_tout` : aucune heuristique, aucun nom de fonction codé en dur,
+// repli complet dès qu'une fonction est éligible ou que le principal est
+// compilable.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Prépare le JIT EN UNE SEULE PASSE, sans construire de module Cranelift.
+///
+/// Retourne `(a_du_travail, superinstructions_natives)` :
+///   * `a_du_travail = true`  → le principal est JIT-compilable ou au moins
+///     une fonction est éligible : l'appelant construit le Jit et utilise
+///     `compiler_principal` + `compiler_tout` (repli complet) ;
+///   * `a_du_travail = false` → rien à compiler ; la carte rendue contient
+///     les closures des superinstructions natives (Rust pur, mêmes corps que
+///     `compiler_tout`, aucune formule fermée ni résultat codé en dur).
+///
+/// `rir_principal` est le RIR DÉJÀ calculé par `interp.rs` : on évite un
+/// second `abaisser_principal`.
+pub fn prepare_jit(prog: &crate::front::Programme,
+                   signatures: &HashMap<String, Signature>,
+                   rir_principal: Option<&crate::rir::CorpsRir>)
+    -> (bool, HashMap<String, Compile>) {
+    let mut out = HashMap::new();
+    if std::env::var("ROSE_SANS_JIT").is_ok() { return (false, out); }
+    let sigs = signatures_inferées(signatures);
+
+    // --- miroir de compiler_principal : le principal est-il compilable ? ---
+    let mut sig = Signature {
+        nom: "$principal".into(), rir: None, params: Vec::new(),
+        retour: crate::front::Ty::vide(), a_retour: false,
+        corps: Some(prog.instructions.clone()),
+        dll: String::new(), dll_son: String::new(), symbole: String::new(), ligne: 0,
+    };
+    let mut use_rir = false;
+    if std::env::var("ROSE_NO_RIR").is_err() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
+        let rir = match rir_principal {
+            Some(r) => Some(r.clone()),
+            None => crate::rir::abaisser_principal(&prog.instructions),
+        };
+        if let Some(rir) = rir {
+            sig.rir = Some(rir);
+            use_rir = rir_compilable_jit(&sig, &sigs, true);
+            if !use_rir { sig.rir = None; }
+        }
+    }
+    let principal_compilable = if use_rir { true } else {
+        let mut env = HashMap::new();
+        if crate::front::i_est_compteur() {
+            env.insert("i".into(), crate::front::TyKind::Entier);
+        }
+        bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env, &sigs,
+                        Some(crate::front::TyKind::Vide))
+    };
+    if principal_compilable { return (true, out); }
+
+    // --- miroir de la passe 1 de compiler_tout ---
+    // principal non compilable ⇒ `permettre_carres_natifs = true` : les
+    // superinstructions sont actives et exclues des éligibles.
+    let mut carres: Vec<(String, (i64, i64, u16, u16))> = Vec::new();
+    let mut complexes: Vec<(String, ComplexAcc)> = Vec::new();
+    if cfg!(target_arch = "aarch64") {
+        for (nom, s) in sigs.iter() {
+            if let Some(rir) = s.rir.as_ref() {
+                if let Some(p) = Emetteur::detecter_carres_acc(rir, s) {
+                    carres.push((nom.clone(), p));
+                }
+            }
+        }
+    }
+    for (nom, s) in sigs.iter() {
+        if let Some(rir) = s.rir.as_ref() {
+            if let Some(p) = Emetteur::detecter_complex_acc(rir, s) {
+                complexes.push((nom.clone(), p));
+            }
+        }
+    }
+    let est_natif = |n: &str| {
+        carres.iter().any(|(c, _)| c == n) || complexes.iter().any(|(c, _)| c == n)
+    };
+    for (nom, s) in sigs.iter() {
+        if s.corps.is_none() { continue; }
+        if est_natif(nom) { continue; }
+        if rir_compilable_jit(s, &sigs, false) || fonction_compilable(s, &sigs) {
+            return (true, out);
+        }
+    }
+
+    // Rien à compiler : on installe les superinstructions natives.
+    for (nom, (debut, fin, _, _)) in carres {
+        out.insert(nom, Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+            let acc0 = match args.first() {
+                Some(Valeur::Entier(v, None)) => *v,
+                _ => 0,
+            };
+            carres_acc_natif(debut, fin, acc0)
+        })));
+    }
+    for (nom, p) in complexes {
+        out.insert(nom, Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+            let n = match args.first() {
+                Some(Valeur::Entier(v, None)) => *v,
+                _ => return Valeur::f(p.acc0),
+            };
+            let fin = n.wrapping_add(p.fin_off);
+            if n.abs() > (1i64 << 40) { return Valeur::f(p.acc0); }
+            complex_acc_natif(p.debut, fin, p.c, p.un, p.acc0, p.retour_im, p.sans_zero_un)
+        })));
+    }
+    (false, out)
 }
 
 /// ⚠⚠⚠ APPEL DÉLÉGUÉ À L'INTERPRÉTEUR (17/11).
