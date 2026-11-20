@@ -939,3 +939,12 @@ Consigne: « on continue self hosting et programme global ». GLB2 a livré (com
 | Agent | Sujet | Fichiers possédés | Cœur |
 |---|---|---|---|
 | GLB3 | réduire parse/JIT/démarrage (2,98ms) et boucle carrés (1,26ms) | `rose/src/{jit,front,run,interp}.rs`, `rose/docs/DEMARRAGE.md` | 6 |
+
+## Vague 47 (20/11) — fermer les deux derniers écarts proches
+
+Consigne: « on continue self hosting et programme global, on ne s'arrête pas ». État: banc principal 9/9; suite complexe x1,86; englobant x2,49; global x2,88 (comparaison non équivalente documentée). SH3 continue sur le self-hosting.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| SUI1 | suite complexe x1,86 → Rose ≤ Rust | `rose/src/{jit,run,i128x}.rs`, `rose/docs/SUITE_BEAT.md` | 6 |
+| ENG1 | englobant x2,49 → Rose ≤ Rust | `rose/src/{interp,front}.rs`, `rose/docs/ENGBEAT.md` | 19 |
