@@ -45,7 +45,7 @@ waits for a key before closing, so it does not vanish.
 
 The installer also writes a **Windows Terminal profile fragment** to
 `%LOCALAPPDATA%\Microsoft\Windows Terminal\Fragments\Rose\rose.json`:
-"Rose" appears in the tab dropdown with its icon, the title "Rose 0.1.5" and
+"Rose" appears in the tab dropdown with its icon, the title "Rose 0.1.6" and
 `startingDirectory` set to the user's home. Windows Terminal merges these
 fragments automatically, so `settings.json` is never edited. The uninstaller
 removes the fragment.

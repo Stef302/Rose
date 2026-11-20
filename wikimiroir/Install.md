@@ -1,7 +1,7 @@
 # Install
 
-Rose is versioned **0.1.5** everywhere: engine, Windows installer, VS Code
-extension and WebAssembly module.
+Rose is versioned **0.1.6** everywhere: engine, Windows installer and
+WebAssembly module. The VS Code extension is still published as 0.1.5.
 
 ## Windows (Velopack)
 
