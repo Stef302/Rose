@@ -229,3 +229,119 @@ fn generer_ecran(texte: chaine, chemin: chaine) -> chaine {
     ecrire_bytes($chemin, ecrire_ecran(texte))
     retour $chemin
 }
+
+# ── GUI1 — fenêtre « grands nombres », logique 100 % Rose ────────────────────
+# Aucun navigateur, aucun langage externe, aucun libellé dans le moteur :
+# le jardin décide du texte du bouton, des pas proposés, de l'exclusivité
+# du groupe et du comptage. Le Rust (gui_native.rs) ne reçoit que des
+# identifiants et des géométries via `geometrie_boutons()`. La production
+# des chiffres eux-mêmes appartient à VAL1 (`Valeur::Symbolique` avec
+# `demander_plus`), pas à ce jardin.
+
+fn champ_lecture_seule(label: chaine, valeur: chaine) -> table {
+    $w = champ(label, valeur)
+    inserer($w, "lecture_seule", "1")
+    retour $w
+}
+
+fn _pas_depuis_chaine(s: chaine) -> entier {
+    si (s == "10") { retour 10 }
+    si (s == "30") { retour 30 }
+    si (s == "100") { retour 100 }
+    si (s == "1000") { retour 1000 }
+    retour 0
+}
+
+fn choisir_pas(f: table, n: entier) -> table {
+    $nw = compter_widgets($f)
+    $i = 0
+    $choisi = chaine(n)
+    tant_que ($i < $nw) {
+        $w = f["widgets"][_cle($i)]
+        si (chaine($w["type"]) == "case") {
+            $v = "0"
+            si (chaine($w["label"]) == $choisi) { $v = "1" }
+            inserer($w, "valeur", $v)
+        }
+        $i = $i + 1
+    }
+    inserer($f, "pas", $choisi)
+    retour $f
+}
+
+fn pas_selectionne(f: table) -> entier {
+    retour _pas_depuis_chaine(chaine(f["pas"]))
+}
+
+fn grand_nombre_fenetre(expression: chaine) -> table {
+    $f = fenetre("Grands nombres : " + expression, 520, 240)
+    inserer($f, "expression", expression)
+    inserer($f, "chiffres", "")
+    inserer($f, "pas", "30")
+    inserer($f, "clics", "0")
+
+    ajouter($f, champ_lecture_seule("chiffres", ""), 12, 16)
+    $btn = bouton("Plus de chiffres", 160)
+    inserer($btn, "hauteur", "28")
+    ajouter($f, $btn, 12, 56)
+    ajouter($f, case_a_cocher(vrai, "10"), 12, 96)
+    ajouter($f, case_a_cocher(faux, "30"), 72, 96)
+    ajouter($f, case_a_cocher(faux, "100"), 132, 96)
+    ajouter($f, case_a_cocher(faux, "1000"), 200, 96)
+
+    lier_evenement($f, "plus", "clic", "chiffres", "plus_de_chiffres")
+    retour choisir_pas($f, 30)
+}
+
+fn fixer_chiffres(f: table, nouveaux: chaine) -> table {
+    inserer($f, "chiffres", nouveaux)
+    $w = f["widgets"][_cle(0)]
+    inserer($w, "valeur", nouveaux)
+    retour $f
+}
+
+# `nouveaux` est la chaîne cumulée rendue par VAL1 (demander_plus). Le jardin
+# ne sait pas la calculer : il met à jour le champ et le compteur, c'est tout.
+fn clic_plus(f: table, nouveaux: chaine) -> table {
+    $n = entier(chaine(f["clics"])) + pas_selectionne($f)
+    inserer($f, "clics", chaine($n))
+    retour fixer_chiffres($f, nouveaux)
+}
+
+# Description déterministe, testable sans écran : elle étend `decrire` sans
+# modifier son format historique (les lignes FENETRE| et W| restent intactes).
+fn decrire_grand_nombre(f: table) -> chaine {
+    $a = evenement(f, "plus")
+    $na = longueur($a)
+    $action = ""
+    si ($na > 0) { $action = chaine($a[_cle(0)]["action"]) }
+    $w = f["widgets"][_cle(0)]
+    retour decrire(f)
+       + "EXPRESSION|" + chaine(f["expression"]) + "\n"
+       + "CHIFFRES|" + chaine(f["chiffres"]) + "\n"
+       + "PAS|" + chaine(f["pas"]) + "\n"
+       + "CLICS|" + chaine(f["clics"]) + "\n"
+       + "LECTURE_SEULE|" + chaine($w["lecture_seule"]) + "\n"
+       + "VALEUR_CHAMP|" + chaine($w["valeur"]) + "\n"
+       + "ACTION_PLUS|" + chaine($na) + "|" + $action + "\n"
+}
+
+# Ce que le pont OS doit recevoir : une ligne par bouton, avec un identifiant
+# numérique, un libellé et une géométrie. Aucun libellé n'est écrit en Rust.
+fn geometrie_boutons(f: table) -> chaine {
+    $s = ""
+    $nw = compter_widgets($f)
+    $i = 0
+    $bid = 1
+    tant_que ($i < $nw) {
+        $w = f["widgets"][_cle($i)]
+        si (chaine($w["type"]) == "bouton") {
+            $s = $s + "B|" + chaine($bid) + "|" + chaine($w["label"]) + "|"
+               + chaine($w["x"]) + "|" + chaine($w["y"]) + "|"
+               + chaine($w["largeur"]) + "|" + chaine($w["hauteur"]) + "\n"
+            $bid = $bid + 1
+        }
+        $i = $i + 1
+    }
+    retour $s
+}

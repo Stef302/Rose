@@ -21,8 +21,8 @@
 
 #![allow(dead_code, unused_imports)]
 
-use std::collections::HashMap;
-use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CString};
+use std::collections::{HashMap, VecDeque};
+use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void, CString};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -61,6 +61,41 @@ pub struct Fenetre {
     pub backend: Backend,
     pub natif: usize,
     pub display: usize,
+}
+
+/// Définition **générique** d'un bouton enfant. Aucun libellé métier, aucun
+/// pas de chiffres, aucune règle d'interface : le jardin Rose fournit le
+/// libellé et l'identifiant, le Rust ne fait que l'appel système.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bouton {
+    pub id: u64,
+    pub label: String,
+    pub x: i32,
+    pub y: i32,
+    pub largeur: i32,
+    pub hauteur: i32,
+}
+
+impl Bouton {
+    /// Construit un bouton en nettoyant le texte et en bornant la géométrie.
+    pub fn nouveau(id: u64, label: &str, x: i32, y: i32, largeur: i32, hauteur: i32) -> Bouton {
+        Bouton {
+            id,
+            label: nettoyer_texte(label),
+            x: x.clamp(0, LARGEUR_MAX as i32),
+            y: y.clamp(0, LARGEUR_MAX as i32),
+            largeur: borner_dimension(largeur as i64) as i32,
+            hauteur: borner_dimension(hauteur as i64) as i32,
+        }
+    }
+}
+
+/// État interne des boutons d'une fenêtre, gardé à côté du registre des
+/// fenêtres. `natifs` contient les `HWND` (Win32) ou les `Window` X11.
+#[derive(Debug, Clone)]
+struct BoutonsFenetre {
+    defs: Vec<Bouton>,
+    natifs: Vec<usize>,
 }
 
 /// Erreurs explicites : jamais de silence sur un backend indisponible.
@@ -105,6 +140,21 @@ fn registre() -> &'static Mutex<HashMap<u64, Fenetre>> {
 
 static SUIVANT: AtomicU64 = AtomicU64::new(1);
 
+fn boutons_registre() -> &'static Mutex<HashMap<u64, BoutonsFenetre>> {
+    static B: OnceLock<Mutex<HashMap<u64, BoutonsFenetre>>> = OnceLock::new();
+    B.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn clics_registre() -> &'static Mutex<HashMap<u64, VecDeque<u64>>> {
+    static C: OnceLock<Mutex<HashMap<u64, VecDeque<u64>>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// Win32 : le `WndProc` ne reçoit que le HWND, pas l'identifiant Rose. On y
+// pousse (HWND parent, id du contrôle) ; `attendre_clic` trie ensuite.
+#[cfg(windows)]
+static CLICS_WIN32: Mutex<VecDeque<(isize, u64)>> = Mutex::new(VecDeque::new());
+
 /// Borne une dimension demandée dans [1, 8192] — testable sans GUI.
 pub fn borner_dimension(v: i64) -> u32 {
     v.clamp(LARGEUR_MIN as i64, LARGEUR_MAX as i64) as u32
@@ -140,6 +190,8 @@ pub const SYMBOLES_X11: &[&str] = &[
     "XDrawString",
     "XFreeGC",
     "XFreeFont",
+    "XSelectInput",
+    "XSendEvent",
 ];
 
 /// Diagnostic honnête : disent ce qui est *réellement* disponible, sans ouvrir
@@ -304,6 +356,10 @@ pub fn fenetre_fermer(id: u64) -> Result<(), Erreur> {
         reg.remove(&id).ok_or(Erreur::PoigneeInconnue(id))?
     };
     if f.etat == Etat::Fermee { return Ok(()); }
+    if let Ok(mut b) = boutons_registre().lock() { b.remove(&id); }
+    if let Ok(mut c) = clics_registre().lock() { c.remove(&id); }
+    #[cfg(windows)]
+    if let Ok(mut q) = CLICS_WIN32.lock() { q.retain(|(w, _)| *w != f.natif as isize); }
     match f.backend {
         Backend::Simule => {}
         #[cfg(not(windows))]
@@ -387,6 +443,248 @@ pub fn compter_fenetres() -> usize {
     registre().lock().map(|r| r.len()).unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------
+// GUI1 — contrôles enfants (boutons) : aucun libellé métier dans ce module.
+// Le jardin Rose possède l'interface ; ici on ne fait que créer des contrôles
+// OS et rendre l'identifiant du bouton cliqué à l'appelant.
+// ---------------------------------------------------------------------------
+
+/// Hit-test purement géométrique, testable sans écran. Le premier bouton qui
+/// contient le point gagne (les boutons ne se chevauchent pas dans le jardin).
+pub fn bouton_sous(boutons: &[Bouton], x: i32, y: i32) -> Option<u64> {
+    boutons.iter().find_map(|b| {
+        (x >= b.x && x < b.x.saturating_add(b.largeur)
+         && y >= b.y && y < b.y.saturating_add(b.hauteur)).then_some(b.id)
+    })
+}
+
+fn pousser_clic(id: u64, bouton: u64) {
+    if let Ok(mut c) = clics_registre().lock() {
+        c.entry(id).or_default().push_back(bouton);
+    }
+}
+
+fn prendre_clic(id: u64) -> Option<u64> {
+    clics_registre().lock().ok()
+        .and_then(|mut c| c.get_mut(&id).and_then(|q| q.pop_front()))
+}
+
+/// Crée les boutons enfants d'une fenêtre déja ouverte via `fenetre_creer`.
+/// Remplace tout bouton précédemment déclaré pour cette fenêtre.
+pub fn boutons_creer(id: u64, boutons: &[Bouton]) -> Result<(), Erreur> {
+    let f = registre().lock().map_err(|_| Erreur::EtatInvalide(Etat::Creee))?
+        .get(&id).cloned().ok_or(Erreur::PoigneeInconnue(id))?;
+    if f.etat == Etat::Fermee { return Err(Erreur::EtatInvalide(Etat::Fermee)); }
+
+    let defs: Vec<Bouton> = boutons.iter().map(|b| Bouton::nouveau(
+        b.id, &b.label, b.x, b.y, b.largeur, b.hauteur)).collect();
+    let mut natifs: Vec<usize> = Vec::new();
+
+    match f.backend {
+        Backend::Simule => {
+            natifs.resize(defs.len(), 0);
+        }
+        #[cfg(not(windows))]
+        Backend::X11 => unsafe {
+            let x = X11::charger()?;
+            let dpy = f.display as *mut c_void;
+            // ButtonPressMask = 1<<2 = 4 ; ExposureMask = 1<<15 = 32768.
+            for b in &defs {
+                let w = (x.create_simple_window)(dpy, f.natif as c_ulong,
+                    b.x, b.y, b.largeur as c_uint, b.hauteur as c_uint,
+                    1, 0, 0xf0f0f0);
+                if w == 0 { return Err(Erreur::PasDeDisplay); }
+                (x.select_input)(dpy, w, 4 | 32768);
+                (x.map_window)(dpy, w);
+                natifs.push(w as usize);
+            }
+            (x.select_input)(dpy, f.natif as c_ulong, 4 | 2); // Button|Key
+            for (i, b) in defs.iter().enumerate() {
+                x11_dessiner_bouton(x, dpy, natifs[i] as c_ulong, b);
+            }
+            (x.flush)(dpy);
+        },
+        #[cfg(windows)]
+        Backend::Win32 => unsafe {
+            // "BUTTON\0" en UTF-16. WS_CHILD|WS_VISIBLE = 0x40000000|0x10000000.
+            const CLASSE: &[u16] = &[66, 85, 84, 84, 79, 78, 0];
+            let hinst = GetModuleHandleW(std::ptr::null());
+            for b in &defs {
+                let texte = utf16_avec_nul(&b.label);
+                let hwnd = CreateWindowExW(0, CLASSE.as_ptr(), texte.as_ptr(),
+                    0x40000000 | 0x10000000, b.x, b.y, b.largeur, b.hauteur,
+                    f.natif as isize, b.id as isize, hinst, std::ptr::null_mut());
+                if hwnd == 0 { return Err(Erreur::PasDeDisplay); }
+                natifs.push(hwnd as usize);
+            }
+        },
+        #[cfg(windows)]
+        Backend::X11 => return Err(Erreur::CommandeInconnue),
+        #[cfg(not(windows))]
+        Backend::Win32 => return Err(Erreur::CommandeInconnue),
+    }
+
+    boutons_registre().lock().map_err(|_| Erreur::EtatInvalide(f.etat))?
+        .insert(id, BoutonsFenetre { defs, natifs });
+    clics_registre().lock().map_err(|_| Erreur::EtatInvalide(f.etat))?
+        .insert(id, VecDeque::new());
+    Ok(())
+}
+
+/// Nombre de boutons enfants déclarés pour une fenêtre.
+pub fn compter_boutons(id: u64) -> usize {
+    boutons_registre().lock().ok()
+        .and_then(|r| r.get(&id).map(|b| b.defs.len())).unwrap_or(0)
+}
+
+/// Attend le clic sur un bouton enfant. `Some(id)` = identifiant Rose du
+/// bouton, `None` = fermeture ou expiration du délai. `timeout_ms = 0`
+/// signifie « sans limite » (comme `fenetre_attendre`).
+pub fn attendre_clic_limite(id: u64, timeout_ms: u64) -> Result<Option<u64>, Erreur> {
+    let f = registre().lock().map_err(|_| Erreur::EtatInvalide(Etat::Creee))?
+        .get(&id).cloned().ok_or(Erreur::PoigneeInconnue(id))?;
+    if f.etat == Etat::Fermee { return Err(Erreur::EtatInvalide(Etat::Fermee)); }
+    let limite = if timeout_ms > 0 {
+        Some(Instant::now() + Duration::from_millis(timeout_ms))
+    } else { None };
+    let expire = || limite.map(|l| Instant::now() >= l).unwrap_or(false);
+
+    match f.backend {
+        Backend::Simule => loop {
+            if let Some(b) = prendre_clic(id) { return Ok(Some(b)); }
+            if expire() { return Ok(None); }
+            std::thread::sleep(Duration::from_millis(2));
+        },
+        #[cfg(not(windows))]
+        Backend::X11 => unsafe {
+            let x = X11::charger()?;
+            let dpy = f.display as *mut c_void;
+            let mut evenement = [0u64; 32];
+            loop {
+                if let Some(b) = prendre_clic(id) { return Ok(Some(b)); }
+                if (x.pending)(dpy) > 0 {
+                    (x.next_event)(dpy, evenement.as_mut_ptr() as *mut c_void);
+                    let type_ = evenement[0] as c_int;
+                    let w = evenement[4] as c_ulong; // XEvent : window à l'octet 32
+                    if type_ == 12 { // Expose : redessiner le libellé du bouton
+                        let bf = boutons_registre().lock().ok();
+                        if let Some((defs, natifs)) = bf.as_ref().and_then(|r| r.get(&id))
+                            .map(|b| (&b.defs, &b.natifs)) {
+                            if let Some(i) = natifs.iter().position(|&n| n as c_ulong == w) {
+                                x11_dessiner_bouton(x, dpy, w, &defs[i]);
+                            }
+                        }
+                    } else if type_ == 4 { // ButtonPress
+                        let bf = boutons_registre().lock().ok();
+                        if let Some((defs, natifs)) = bf.as_ref().and_then(|r| r.get(&id))
+                            .map(|b| (&b.defs, &b.natifs)) {
+                            if let Some(i) = natifs.iter().position(|&n| n as c_ulong == w) {
+                                pousser_clic(id, defs[i].id);
+                            } else if w == f.natif as c_ulong {
+                                let px = evenement[8] as u32 as i32;
+                                let py = (evenement[8] >> 32) as u32 as i32;
+                                if let Some(b) = bouton_sous(defs, px, py) { pousser_clic(id, b); }
+                            }
+                        }
+                    } else if type_ == 2 || type_ == 33 { // Key / ClientMessage
+                        return Ok(None);
+                    }
+                } else {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                if expire() { return Ok(None); }
+            }
+        },
+        #[cfg(windows)]
+        Backend::Win32 => unsafe {
+            let mut msg = MsgW::default();
+            loop {
+                if let Some((_, b)) = CLICS_WIN32.lock().ok().and_then(|mut q| {
+                    let i = q.iter().position(|(w, _)| *w == f.natif as isize)?;
+                    q.remove(i)
+                }) { return Ok(Some(b)); }
+                // PeekMessageW : PM_NOREMOVE n'est pas utilisé, PM_REMOVE = 1.
+                let r = PeekMessageW(&mut msg, 0, 0, 0, 1);
+                if r != 0 {
+                    if msg.message == 0x0012 { return Ok(None); } // WM_QUIT
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                } else {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                if expire() { return Ok(None); }
+            }
+        },
+        #[cfg(windows)]
+        Backend::X11 => Err(Erreur::CommandeInconnue),
+        #[cfg(not(windows))]
+        Backend::Win32 => Err(Erreur::CommandeInconnue),
+    }
+}
+
+/// Comme `attendre_clic_limite`, mais lit `ROSE_GUI_ATTENTE_MS` (0 = infini),
+/// pour rester cohérent avec `fenetre_attendre`.
+pub fn attendre_clic(id: u64) -> Result<Option<u64>, Erreur> {
+    let ms = std::env::var("ROSE_GUI_ATTENTE_MS").ok()
+        .and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
+    attendre_clic_limite(id, ms)
+}
+
+/// IE de test : injecte un clic dans la file, SANS écran et SANS prétendre
+/// qu'un contrôle OS a été touché. Ne remplace pas `x11_envoyer_clic`.
+#[doc(hidden)]
+pub fn clic_simuler(id: u64, bouton: u64) -> Result<(), Erreur> {
+    let bf = boutons_registre().lock().map_err(|_| Erreur::EtatInvalide(Etat::Creee))?;
+    let b = bf.get(&id).ok_or(Erreur::PoigneeInconnue(id))?;
+    if !b.defs.iter().any(|d| d.id == bouton) {
+        return Err(Erreur::PoigneeInconnue(bouton));
+    }
+    drop(bf);
+    pousser_clic(id, bouton);
+    Ok(())
+}
+
+#[cfg(not(windows))]
+unsafe fn x11_dessiner_bouton(x: &X11, dpy: *mut c_void, w: c_ulong, b: &Bouton) {
+    let font = (x.load_query_font)(dpy, b"fixed\0".as_ptr() as *const c_char);
+    if font.is_null() { return; }
+    let gc = (x.create_gc)(dpy, w, 0, std::ptr::null_mut());
+    if !gc.is_null() {
+        let texte = CString::new(b.label.as_bytes()).unwrap_or_default();
+        let y = (b.hauteur - 6).clamp(6, 18);
+        (x.draw_string)(dpy, w, gc, 6, y, texte.as_ptr(),
+            texte.as_bytes().len().min(i32::MAX as usize) as c_int);
+        (x.free_gc)(dpy, gc);
+    }
+    (x.free_font)(dpy, font);
+}
+
+/// IE de test / automatisation : envoie un VRAI `ButtonPress` X11 au serveur
+/// (XSendEvent), qui revient ensuite par XNextEvent. Ce n'est PAS une simulation
+/// locale : l'événement fait un aller-retour dans le serveur X.
+#[cfg(not(windows))]
+#[doc(hidden)]
+pub fn x11_envoyer_clic(id: u64, bouton: u64) -> Result<(), Erreur> {
+    let f = registre().lock().map_err(|_| Erreur::EtatInvalide(Etat::Creee))?
+        .get(&id).cloned().ok_or(Erreur::PoigneeInconnue(id))?;
+    let bf = boutons_registre().lock().map_err(|_| Erreur::EtatInvalide(f.etat))?
+        .get(&id).cloned().ok_or(Erreur::PoigneeInconnue(id))?;
+    let i = bf.defs.iter().position(|d| d.id == bouton)
+        .ok_or(Erreur::PoigneeInconnue(bouton))?;
+    let x = X11::charger()?;
+    unsafe {
+        let mut evenement = [0u64; 32];
+        evenement[0] = 4;                       // ButtonPress
+        evenement[4] = bf.natifs[i] as u64;     // window (octet 32)
+        evenement[5] = f.natif as u64;          // root (octet 40)
+        evenement[8] = 1 | (1u64 << 32);        // x=1, y=1 (octet 64)
+        (x.send_event)(f.display as *mut c_void, bf.natifs[i] as c_ulong,
+                       0, 4, evenement.as_mut_ptr() as *mut c_void); // ButtonPressMask
+        (x.flush)(f.display as *mut c_void);
+    }
+    Ok(())
+}
+
 /// IE de test : crée une fenêtre SANS backend, pour vérifier la machine à
 /// états et le registre sur une machine qui n'a pas d'écran.
 #[doc(hidden)]
@@ -432,6 +730,8 @@ struct X11 {
     draw_string: unsafe extern "C" fn(*mut c_void, c_ulong, *mut c_void, c_int, c_int, *const c_char, c_int) -> c_int,
     free_gc: unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int,
     free_font: unsafe extern "C" fn(*mut c_void, *mut c_void) -> c_int,
+    select_input: unsafe extern "C" fn(*mut c_void, c_ulong, c_long) -> c_int,
+    send_event: unsafe extern "C" fn(*mut c_void, c_ulong, c_int, c_long, *mut c_void) -> c_int,
 }
 
 #[cfg(not(windows))]
@@ -480,6 +780,8 @@ impl X11 {
             draw_string: sym!("XDrawString"),
             free_gc: sym!("XFreeGC"),
             free_font: sym!("XFreeFont"),
+            select_input: sym!("XSelectInput"),
+            send_event: sym!("XSendEvent"),
         })
     }
 }
@@ -549,6 +851,7 @@ unsafe extern "system" {
     fn DestroyWindow(hwnd: isize) -> c_int;
     fn MessageBoxW(hwnd: isize, lp_text: *const u16, lp_caption: *const u16, u_type: u32) -> c_int;
     fn GetMessageW(lp_msg: *mut MsgW, hwnd: isize, min: u32, max: u32) -> c_int;
+    fn PeekMessageW(lp_msg: *mut MsgW, hwnd: isize, min: u32, max: u32, remove: u32) -> c_int;
     fn TranslateMessage(lp_msg: *const MsgW) -> c_int;
     fn DispatchMessageW(lp_msg: *const MsgW) -> isize;
     fn DefWindowProcW(hwnd: isize, msg: u32, wp: usize, lp: isize) -> isize;
@@ -566,6 +869,10 @@ unsafe extern "system" {
 unsafe extern "system" fn rose_wnd_proc(hwnd: isize, msg: u32, wp: usize, lp: isize) -> isize {
     // Édition 2024 : le corps d'une `unsafe fn` reste SAFE, d'où les blocs.
     unsafe {
+        if msg == 0x0111 { // WM_COMMAND : clic sur un bouton enfant
+            if let Ok(mut q) = CLICS_WIN32.lock() { q.push_back((hwnd, (wp & 0xffff) as u64)); }
+            return 0;
+        }
         if msg == 0x0002 { PostQuitMessage(0); return 0; } // WM_DESTROY
         DefWindowProcW(hwnd, msg, wp, lp)
     }
@@ -680,5 +987,85 @@ mod tests {
         assert!(!d.is_empty());
         #[cfg(not(windows))]
         assert!(d.contains("DISPLAY"));
+    }
+
+    // ── GUI1 : boutons enfants, tests PURS (aucun écran requis) ────────────
+
+    #[test]
+    fn gui1_hit_test_geometrique() {
+        let b = vec![
+            Bouton::nouveau(1, "A", 10, 10, 100, 30),
+            Bouton::nouveau(2, "B", 10, 50, 100, 30),
+        ];
+        assert_eq!(bouton_sous(&b, 12, 12), Some(1));
+        assert_eq!(bouton_sous(&b, 12, 52), Some(2));
+        assert_eq!(bouton_sous(&b, 10, 10), Some(1));   // bord inclus
+        assert_eq!(bouton_sous(&b, 110, 12), None);     // bord droit exclu
+        assert_eq!(bouton_sous(&b, 12, 40), None);      // entre les deux
+    }
+
+    #[test]
+    fn gui1_bouton_nettoie_et_borne() {
+        let b = Bouton::nouveau(9, "Plus\0 de chiffres", -5, 9000, 0, 99999);
+        assert_eq!(b.label, "Plus de chiffres");
+        assert_eq!((b.x, b.y), (0, LARGEUR_MAX as i32));
+        assert_eq!((b.largeur, b.hauteur), (LARGEUR_MIN as i32, LARGEUR_MAX as i32));
+    }
+
+    #[test]
+    fn gui1_machine_a_etats_boutons_simules() {
+        // Pas d'assertion sur `compter_fenetres()` : un autre test peut créer
+        // une fenêtre simulée en parallèle. On vérifie la poignée de CE test.
+        let id = creer_simulee("GUI1", 400, 200);
+        assert_eq!(boutons_creer(id, &[
+            Bouton::nouveau(7, "Plus de chiffres", 12, 56, 160, 30),
+            Bouton::nouveau(8, "10", 12, 96, 40, 24),
+        ]), Ok(()));
+        assert_eq!(compter_boutons(id), 2);
+        assert_eq!(clic_simuler(id, 7), Ok(()));
+        assert_eq!(attendre_clic_limite(id, 100), Ok(Some(7)));
+        assert_eq!(attendre_clic_limite(id, 20), Ok(None)); // file vidée, délai écoulé
+        assert_eq!(clic_simuler(id, 999), Err(Erreur::PoigneeInconnue(999)));
+        fenetre_fermer(id).unwrap();
+        assert_eq!(compter_boutons(id), 0);
+        assert_eq!(fenetre_afficher(id), Err(Erreur::PoigneeInconnue(id)));
+    }
+
+    #[test]
+    fn gui1_symboles_x11_pour_boutons() {
+        for requis in ["XSelectInput", "XSendEvent", "XDrawString", "XCreateSimpleWindow"] {
+            assert!(SYMBOLES_X11.contains(&requis), "symbole manquant : {}", requis);
+        }
+    }
+
+    /// VRAI clic : nécessite `xvfb-run` ET `ROSE_GUI1_TEST_X11=1`. Sauté par
+    /// défaut pour que `cargo test --release` reste parallèle et sans écran.
+    #[test]
+    fn gui1_x11_clic_reel_aller_retour_serveur() {
+        #[cfg(windows)]
+        { return; }
+        #[cfg(not(windows))]
+        {
+            if std::env::var("ROSE_GUI1_TEST_X11").as_deref() != Ok("1")
+                || std::env::var("DISPLAY").unwrap_or_default().is_empty() {
+                eprintln!("[GUI1] clic X11 reel SAUTE (ROSE_GUI1_TEST_X11!=1 ou DISPLAY vide)");
+                return;
+            }
+            eprintln!("[GUI1] test X11 reel demarre");
+            let id = fenetre_creer("GUI1 clic reel", 360, 200).unwrap();
+            fenetre_afficher(id).unwrap();
+            boutons_creer(id, &[
+                Bouton::nouveau(42, "Plus de chiffres", 12, 56, 180, 32),
+            ]).unwrap();
+            let emetteur = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                x11_envoyer_clic(id, 42).unwrap();
+            });
+            let recu = attendre_clic_limite(id, 4000).unwrap();
+            emetteur.join().unwrap();
+            eprintln!("[GUI1] clic X11 reel recu = {:?}", recu);
+            assert_eq!(recu, Some(42), "le clic XSendEvent doit revenir par XNextEvent");
+            fenetre_fermer(id).unwrap();
+        }
     }
 }
