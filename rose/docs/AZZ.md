@@ -119,7 +119,10 @@ Sortie de `t_var.rose` (identique des deux côtés) :
    au fort : `2^64 + (-2^63)` donnait `-999999990776627963145224192` au lieu
    de `9223372036854775808` (709551616 < 854775808 au limb 0, alors que
    c'est le limb 2 qui tranche : 18 > 9). Corrigé en comparant à partir du
-   limb de poids fort (labels +33/+34, réservation portée à 35).
+   limb de poids fort (labels +33/+34, réservation portée à 35). Deux pièges
+   supplémentaires dans cette boucle : le compteur de recherche (`x10`)
+   écrasait le signe de B, puis le limb de B (`x10`) l'écrasait aussi —
+   d'où `-2^63 + 2^64 = -2^63`. Le compteur utilise `x6`, le limb B `x7`.
 
 Preuves : `objdump -D -b binary -m aarch64 --adjust-vma=0x400000 <elf>` et
 points d'arrêt gdb sur l'entrée de `bigadd` (`x8/x10/x11/x12` = signes et
@@ -153,13 +156,14 @@ runner simplifié sans argument, mais rejoués correctement avec
 ### 4.1 Batterie AZ « nouveaux bigints » (31 programmes, fournie par l'orchestrateur)
 
 `./tests_selfhost/lancer_az.sh` (artefacts `/tmp/opencode/az_tests/battery/`),
-émetteur figé md5 `a515b962…` : **17 CONFORMES / 14 DIVERGENTS / 0 BLOQUÉS**
-(avant correction de l'ordre de comparaison : 16/15). RIR×2, ELF×2 et
-sorties×8 identiques dans 31/31 cas. Conformes : 6 comparaisons sur
-littéraux géants (repliées par le compilateur), 5 débordements de seuil,
-opérations mixtes dont l'addition signée (t212/t232 corrigés), etc.
-Divergences = précisément les limites de la §6 : soustraction, `*`/`/`/`%`,
-`-` unaire, puissance non repliée, rationnels calculés, Unicode.
+émetteur figé md5 `6c957b53…` : **18 CONFORMES / 13 DIVERGENTS / 0 BLOQUÉS**
+(16/15 avant correction de l'ordre de comparaison, 17/14 après première
+correction). RIR×2, ELF×2 et sorties×8 identiques dans 31/31 cas. Conformes :
+6 comparaisons sur littéraux géants (repliées par le compilateur), 5
+débordements de seuil, opérations mixtes dont **toutes les additions signées**
+(t212/t232 corrigés), etc. Divergences = précisément les limites de la §6 :
+soustraction, `*`/`/`/`%`, `-` unaire, puissance non repliée, rationnels
+calculés, Unicode.
 
 ---
 
@@ -172,8 +176,8 @@ Divergences = précisément les limites de la §6 : soustraction, `*`/`/`/`%`,
 | `./rose/rose verif compilateur/emetteur_elf.rose` | `vérifié`, rc=0 |
 | `./rose/rose rir compilateur/emetteur.rose \| md5sum` | `b3ed9262dd54776a6dbd07bc12368d0e` (identique au départ) |
 | `t999_critique_g5` (avec l'argument fourni) | **CONFORME**, 20/20 lignes, stdout+stderr octet pour octet, rc=0 des deux côtés |
-| md5 émetteur après (mapping 128 Gio + comparaison corrigée) | `a515b9626eaee92489639f8c72db7c20` (départ `7742556a…`) |
-| F1 vs F2 (auto-régénération, état final) | **IDENTIQUES** : 604 060 o, md5 `021bcdb0…`, `cmp`=0 (§7.3) |
+| md5 émetteur après (état livré) | `6c957b53e97f3ebca94a26c9a272cf54` (départ `7742556a…`) |
+| F1 vs F2 (auto-régénération, état livré) | **IDENTIQUES** : 674 672 o, md5 `cb6b049f…`, `cmp`=0 (§8.7) |
 
 Le point fixe documenté dans `G5_AZ.md` (dump de `emetteur.rose` par l'ELF
 auto-émis = RIR natif `b3ed9262…`) n'est **pas** garanti par ce chantier :
@@ -191,10 +195,11 @@ sur F1==F2, pas sur ce dump. À re-vérifier avant toute livraison.
   un programme auto-exécuté (F1) qui compilerait un texte contenant un
   géant devrait d'abord disposer d'un `entier()` multi-limbes. Non tenté.
 - `chaine(grand_entier)` n'est pas converti (seul `>>` l'est).
-- Comparaison, soustraction (`-`), multiplication (`*`), division (`/`),
-  modulo et puissance sur des grands entiers **variables** restent sur
-  l'ancien chemin 64 bits. L'addition signée est la seule opération
-  arithmétique nouvelle.
+- ~~Comparaison~~ **implémentée en §8** (les 6 opérateurs sur descripteurs tag
+  3). Restent sur l'ancien chemin 64 bits : soustraction (`-`), multiplication
+  (`*`), division (`/`), modulo et puissance sur des grands entiers
+  **variables**. L'addition signée et la négation copie sont les seules
+  opérations arithmétiques nouvelles.
 - Le scratch de promotion/conversion est une zone fixe (0x60005000 /
   0x60006000). Un nombre de limbs dépassant la place disponible écraserait
   une zone voisine ; les tests vont jusqu'à 10 limbs.
@@ -231,7 +236,7 @@ Conséquence : le mapping RW de `g5_elf()` passe de 32 Gio (`34359738368`) à
 **128 Gio** (`137438953472`), toujours virtuel/paresseux. Le pointeur à
 ~80 Gio reste sous les ~110 Gio disponibles mesurés par `free -h`.
 
-### 7.3 Salve finale (état livré) — RÉUSSIE
+### 7.3 Salve intermédiaire (mapping 128 Gio, avant comparaison des limbs) — RÉUSSIE
 
 ```
 ./rose/rose rir compilateur/emetteur_elf.rose > e_v2.rir        # 348 822 o, b776a875…
@@ -317,9 +322,48 @@ des deux côtés) : `vrai vrai vrai vrai faux vrai vrai vrai vrai vrai`.
 |---|---|
 | `./rose/rose verif compilateur/emetteur_elf.rose` | `vérifié`, rc=0 |
 | point fixe `b3ed9262` (RIR natif `emetteur.rose`, ×2) | identique, `b3ed9262dd54776a6dbd07bc12368d0e` |
-| F1 == F2 (auto-régénération, md5 identiques) | voir §8.6 |
-| md5 émetteur source | `b225747f8f779175ccd63b664b9b104f` (départ `4e6a1923…`) |
+| F1 == F2 (auto-régénération, md5 identiques) | **RÉUSSI** — 674 672 o, `cb6b049f…` (F2==F3 aussi), voir §8.6 |
+| md5 émetteur source | `6c957b53e97f3ebca94a26c9a272cf54` (départ `4e6a1923…`) |
 
-### 8.6 F1 / F2
+### 8.6 F1 / F2 — RÉUSSI (salve FINALE du 20/11, log `/tmp/opencode/bigint/f1f2_v2.log`)
 
-À compléter après la fin de la salve en cours (`/tmp/opencode/bigint/f1f2.log`).
+```
+./rose/rose rir compilateur/emetteur_elf.rose > e_cur.rir        # 357 567 o, 27518aa6…
+./rose/rose compilateur/emetteur_elf.rose e_cur.rir > F1_cur.elf # 17 min 01 s, rc=0
+./F1_cur.elf e_cur.rir > F2_cur.elf                              # 23 s, rc=0
+cmp F1_cur.elf F2_cur.elf                                        # rc=0
+./F2_cur.elf e_cur.rir > F3_cur.elf                              # 23 s, rc=0 (2e salve)
+cmp F2_cur.elf F3_cur.elf                                        # rc=0
+```
+
+F1 = F2 = F3 : **674 672 octets**, md5 `cb6b049fdf6e5183792a9e76267ac1ec`
+des trois côtés, stderr vides, mapping RW 128 Gio inchangé. La croissance de
+604 060 → 674 672 octets correspond aux ~16 400 instructions supplémentaires
+(14 au lieu de 3 par comparaison × 1491), exactement reproduites par
+l'auto-compilation : le point fixe est préservé.
+
+Note de chronologie : une première salve (md5 `db321542…`, 673 700 o) avait
+été jouée sur l'émetteur tel qu'au début du chantier. L'orchestrateur a
+ensuite corrigé `bigadd` dans le MÊME fichier possédé (comparaison par limb de
+poids fort, préservation du signe de B dans x10 — voir le diff `git diff` sur
+`g5_emit_bigadd`) ; la salve finale ci-dessus a été rejouée sur la version
+STABLE `6c957b53…` (md5 relevé au début ET à la fin de la salve, identique).
+Les 9 programmes de §8.4 ont tous été rejoués sur cette version finale :
+`cmp`=0 partout. Tous les jalons sont verts.
+
+### 8.7 Salve finale — état livré (source md5 `6c957b53…`)
+
+Les §7.3 et §8.6 ont été mesurés sur des états antérieurs (avant correction
+de l'ordre de comparaison des limbs et préservation du signe de B). L'état
+livré a été rejoué intégralement :
+```
+./rose/rose rir compilateur/emetteur_elf.rose > e_v4.rir          # 357 567 o, 27518aa6…
+./rose/rose compilateur/emetteur_elf.rose e_v4.rir > F1_v4.elf    # 17 min 02 s, rc=0
+./F1_v4.elf e_v4.rir > F2_v4.elf                                  # 23,3 s, rc=0
+cmp F1_v4.elf F2_v4.elf                                           # rc=0
+```
+F1 = F2 : **674 672 octets**, md5 `cb6b049fdf6e5183792a9e76267ac1ec`
+des deux côtés, stderr vides. C'est le point de contrôle de l'état livré.
+Jalons re-vérifiés sur cet état : `verif` = `vérifié`, RIR natif de
+`emetteur.rose` = `b3ed9262…`, t999 = 20/20 conforme, AZ = 18/31 conformes,
+`>> 18446744073709551616` natif = ELF.

@@ -2880,17 +2880,20 @@ fn g5_emit_bigadd($lbl: entier) -> entier {
   # Comparer par le limb DE POIDS FORT : le premier écart décroissant est
   # le bon. (Une comparaison du limb faible au fort donnait 2^64 < 2^63,
   # car 709551616 < 854775808 — mesuré sur t212/t232.)
-  g5_emit(addi(0, 6, 24)); g5_emit(addi(1, 7, 24)); g5_emit(movz(10, 1))
+  # x10 contient le signe de B : ne PAS l'écraser ici (x6 est libre, il est
+  # recalculé par masktag dans la soustraction). Le clobber rendait
+  # `-2^63 + 2^64` = -2^63 au lieu de +2^63 (t212).
+  g5_emit(addi(0, 6, 24)); g5_emit(addi(1, 7, 24)); g5_emit(movz(6, 1))
   g5_mark($lbl + 33)
-  g5_emit(cmpr(10, 11)); g5_branch(110, $lbl + 34)
-  g5_emit(addi(0, 0, 8)); g5_emit(addi(1, 1, 8)); g5_emit(addi(10, 10, 1))
+  g5_emit(cmpr(6, 11)); g5_branch(110, $lbl + 34)
+  g5_emit(addi(0, 0, 8)); g5_emit(addi(1, 1, 8)); g5_emit(addi(6, 6, 1))
   g5_branch(0, $lbl + 33)
   g5_mark($lbl + 34)
   g5_emit(orrr(3, 31, 11))
   g5_mark($lbl + 16)
   g5_emit(cmpi(3, 0)); g5_branch(100, $lbl + 20)   # tous égaux
-  g5_emit(ldroff(9, 0, 0)); g5_emit(ldroff(10, 1, 0))
-  g5_emit(cmpr(9, 10)); g5_branch(100, $lbl + 17)
+  g5_emit(ldroff(9, 0, 0)); g5_emit(ldroff(7, 1, 0))   # x7 = limb B ; x10 = signe B, préservé
+  g5_emit(cmpr(9, 7)); g5_branch(100, $lbl + 17)
   g5_branch(111, $lbl + 18)              # a < b -> B dominant
   g5_branch(0, $lbl + 19)                # a > b -> A dominant
   g5_mark($lbl + 17)
