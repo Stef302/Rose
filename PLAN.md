@@ -988,3 +988,12 @@ Phase 1 (parallele, fichiers disjoints):
 | SPEED1 | global : continuer a reduire l'ecart | `rose/src/jit.rs`, `rose/docs/SPEED1.md` |
 | SPEED2 | suite complexe + englobant : depasser Rust | `rose/src/interp.rs`, `rose/docs/SPEED2.md` |
 | UX1 | design UX REPL/CLI/GUI (sans source) | `rose/docs/DETAIL_UX.md` seul |
+
+## Vague 52 (21/11) — phase 2 : valeur paresseuse, REPL, GUI
+
+Noyau MATH1 commite (e34e0f9). Phase 2:
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| VAL1 | Valeur::Symbolique + affichage 30 digits dans chaine_de_p | `rose/src/run.rs`, `rose/src/lib.rs`, `rose/docs/SYMBOLIQUE.md` |
+| CLI1 | commande REPL :more + sortie detail() | `rose/src/repl.rs`, `rose/src/main.rs`, `rose/docs/CLI_MORE.md` |
+| GUI1 | fenêtre native avec bouton « Plus de chiffres » (logique dans jardin Rose) | `rose/src/gui_native.rs`, `jardins/gui_native.rose`, `rose/docs/GUI_MORE.md` |
