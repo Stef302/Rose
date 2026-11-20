@@ -1577,6 +1577,15 @@ mod tests {
     }
 
     #[test]
+    fn versions_intermediaires_0_1_7x() {
+        // Convention 21/11: 0.1.7N = N-ième mise à jour intermédiaire de 0.1.7.
+        // Le comparateur par segments numériques la gère déjà (72 > 7).
+        assert_eq!(comparer_versions("0.1.72", "0.1.7"), std::cmp::Ordering::Greater);
+        assert_eq!(comparer_versions("0.1.71", "0.1.72"), std::cmp::Ordering::Less);
+        assert_eq!(comparer_versions("v0.1.72", "0.1.7"), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
     fn manifeste_analyse() {
         let json = r#"[
           {"PackageId":"Rose-0.1.3-full.nupkg","Version":"0.1.3","SHA256":"aa","SHA1":"11","Size":"100","Type":"Full"},
