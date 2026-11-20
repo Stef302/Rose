@@ -56,6 +56,9 @@ cd "$RACINE/rose"
 
 # ── 4. Passe 1 : moteur + shell + setup ────────────────────────────────
 echo "=== PASSE 1 : build rose / rose-shell / rose-setup ==="
+# ⚠ CORRECTION 21/11: pack-res.py exige un rose.exe DEJA present. On construit
+# donc le moteur AVANT la premiere passe d'emballage (sinon "moteur absent").
+cargo build --release --target "$TARGET" --bin rose
 python3 "$V/embed-assets.py" >/dev/null
 python3 "$V/pack-res.py" >/dev/null
 cargo build --release --target "$TARGET" --bin rose --bin rose-shell --bin rose-setup
