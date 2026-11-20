@@ -270,6 +270,117 @@ impl Drop for MemoireExecutable {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ELF64 x86-64 AUTONOME — exécution CROSS-ARCH réelle (qemu-user / box64)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// L'émetteur PE32+ (`compilateur/emetteur_x64.rose`) produit un binaire
+// WINDOWS : qemu-x86_64-static et box64 ne chargent QUE des ELF (mesuré :
+// qemu lit l'en-tête `MZ` puis sort 1 ; box64 : « Reading elf header »).
+// Cette fonction enveloppe le code machine x86-64 émis par `emettre()` dans
+// un ELF64 ET_EXEC STATIQUE autonome, avec un `_start` écrit en dur :
+//
+//   _start :
+//     pour chaque (slot, valeur) : movabs rax,valeur ; mov [base+8*slot],rax
+//     mov rdi, base        ; rdi = pointeur des slots (signature machine)
+//     mov rsi, 0           ; rsi = trampoline (NUL : aucun AppelRir/fallback)
+//     call code_emis       ; i64 f(base, tramp)
+//     cmp rax, attendu
+//     je  ok
+//     mov edi, 255 ; mov eax,60 ; syscall     ← désaccord (255)
+//   ok : mov rdi, rax ; mov eax,60 ; syscall   ← exit(resultat)
+//
+// ⚠ Le sous-ensemble émettable ne contient PAS `afficher` : le résultat est
+//   observable par le CODE DE SORTIE du processus (42 / 55), lisible par
+//   `echo $?` après qemu. Aucun runtime, aucune libc, aucun linker externe.
+// ⚠ Le bit exécutable est posé explicitement : qemu-user refuse un ELF non
+//   exécutable (mesuré : exit 1 silencieux avant chmod +x).
+
+/// Adresse virtuelle de base de l'ELF autonome.
+pub const ELF_BASE: u64 = 0x40_0000;
+const ELF_OFF_START: usize = 0x100;
+const ELF_OFF_SLOTS: usize = 0x1000;
+const ELF_TAILLE: usize = 0x2000;
+
+/// Écrit un ELF64 x86-64 ET_EXEC statique qui appelle `code` (émis par
+/// `emettre(..., Architecture::X86_64)`) avec les slots initiaux donnés.
+///
+/// `slots_initiaux` : paires `(index_slot, valeur_i64)` à poser avant l'appel.
+/// `attendu` : valeur de retour attendue ; si `rax != attendu`, le programme
+/// sort avec 255 au lieu du résultat (détection d'un écart sans ambiguïté).
+#[cfg(unix)]
+pub fn ecrire_elf_x86_64_autonome(
+    code: &[u8],
+    slots_initiaux: &[(u16, i64)],
+    attendu: i64,
+    chemin: &str,
+) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut shim: Vec<u8> = Vec::with_capacity(128 + code.len());
+    // Initialisation des slots (adressage absolu : 48 A3 = mov [imm64], rax).
+    for &(idx, val) in slots_initiaux {
+        shim.extend_from_slice(&[0x48, 0xB8]);                 // movabs rax, val
+        shim.extend_from_slice(&val.to_le_bytes());
+        shim.extend_from_slice(&[0x48, 0xA3]);                 // mov [imm64], rax
+        let addr = ELF_BASE + ELF_OFF_SLOTS as u64 + 8 * idx as u64;
+        shim.extend_from_slice(&addr.to_le_bytes());
+    }
+    shim.extend_from_slice(&[0x48, 0xBF]);                     // mov rdi, &slots
+    shim.extend_from_slice(&(ELF_BASE + ELF_OFF_SLOTS as u64).to_le_bytes());
+    shim.extend_from_slice(&[0x48, 0xBE, 0, 0, 0, 0, 0, 0, 0, 0]); // mov rsi, 0
+    let call_pos = shim.len();
+    shim.extend_from_slice(&[0xE8, 0, 0, 0, 0]);               // call code (patché)
+    shim.extend_from_slice(&[0x48, 0x3D]);                     // cmp rax, attendu
+    shim.extend_from_slice(&(attendu as i32).to_le_bytes());
+    let je_pos = shim.len();
+    shim.extend_from_slice(&[0x74, 0]);                        // je ok (patché)
+    shim.extend_from_slice(&[0xBF, 255, 0, 0, 0]);             // mov edi, 255
+    shim.extend_from_slice(&[0xB8, 60, 0, 0, 0]);              // mov eax, 60
+    shim.extend_from_slice(&[0x0F, 0x05]);                     // syscall
+    let ok_pos = shim.len();
+    shim[je_pos + 1] = (ok_pos - je_pos - 2) as u8;
+    shim.extend_from_slice(&[0x48, 0x89, 0xC7]);               // mov rdi, rax
+    shim.extend_from_slice(&[0xB8, 60, 0, 0, 0]);              // mov eax, 60
+    shim.extend_from_slice(&[0x0F, 0x05]);                     // syscall
+
+    let user_off = ELF_OFF_START + shim.len();
+    let disp = (user_off - (ELF_OFF_START + call_pos + 5)) as i32;
+    shim[call_pos + 1..call_pos + 5].copy_from_slice(&disp.to_le_bytes());
+
+    let filesz = user_off + code.len();
+    let mut blob = vec![0u8; ELF_TAILLE];
+    // Elf64_Ehdr
+    blob[0..16].copy_from_slice(&[0x7F, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    fn w16(b: &mut [u8], o: usize, v: u16) { b[o..o + 2].copy_from_slice(&v.to_le_bytes()); }
+    fn w32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
+    fn w64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
+    w16(&mut blob, 16, 2);    // ET_EXEC
+    w16(&mut blob, 18, 62);   // EM_X86_64
+    w32(&mut blob, 20, 1);    // EV_CURRENT
+    w64(&mut blob, 24, ELF_BASE + ELF_OFF_START as u64); // e_entry
+    w64(&mut blob, 32, 64);   // e_phoff
+    w64(&mut blob, 40, 0);    // e_shoff
+    w32(&mut blob, 48, 0);    // e_flags
+    w16(&mut blob, 52, 64);   // e_ehsize
+    w16(&mut blob, 54, 56);   // e_phentsize
+    w16(&mut blob, 56, 1);    // e_phnum
+    // Elf64_Phdr : un seul PT_LOAD RWX couvrant tout le fichier.
+    w32(&mut blob, 64, 1);    // PT_LOAD
+    w32(&mut blob, 68, 7);    // PF_R|PF_W|PF_X
+    w64(&mut blob, 72, 0);    // p_offset
+    w64(&mut blob, 80, ELF_BASE); // p_vaddr
+    w64(&mut blob, 88, ELF_BASE); // p_paddr
+    w64(&mut blob, 96, filesz as u64); // p_filesz
+    w64(&mut blob, 104, ELF_TAILLE as u64); // p_memsz
+    w64(&mut blob, 112, 0x1000); // p_align
+    blob[ELF_OFF_START..user_off].copy_from_slice(&shim);
+    blob[user_off..filesz].copy_from_slice(code);
+    std::fs::write(chemin, &blob)?;
+    std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // CONSTRUCTEUR INTERNE
 // ═══════════════════════════════════════════════════════════════════════
 
