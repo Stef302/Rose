@@ -196,6 +196,9 @@ $g5_err = [0 : chaine]
 # SH4 : slots ayant recu une expression booleenne, indexes "fonction|slot".
 # Table Rose native (l'emetteur s'execute dans rose/rose, pas dans l'ELF emis).
 $g5_sbool = table()
+# SH6 : table d'émission associant f|slot au genre d'élément d'une liste
+# (0=entier, 1=chaîne, 2=booléen). Sert à afficher `>> $l` correctement.
+$g5_slist = table()
 
 fn g5_sub($s: chaine, $a: entier, $b: entier) -> chaine {
   si ($a < 0 ou $b < 0 ou $a > $b) {
@@ -349,6 +352,7 @@ $g5_clexl = 0
 # être écrasées par g5_alloc_inline.
 $g5_nbargs_l = 0
 $g5_argument_l = 0
+$g5_plist_l = 0
 $g5_lire_l = 0
 $g5_ecrire_l = 0
 
@@ -968,6 +972,17 @@ fn g5_cible($f: entier, $tok: chaine) -> entier {
   retour $g5_oplbl[$g5_fop[$f] + $c]
 }
 
+# SH6 : genre des éléments d'un littéral liste (0=entier,1=chaîne,2=booléen).
+fn g5_list_kind($t: liste<chaine>, $p: entier) -> entier {
+  $q = $p + 2
+  si ($q >= longueur($t) ou $t[$q] == ")") { retour 0 }
+  $e = $t[$q]
+  si ($e == "(" et $q + 1 < longueur($t)) { $e = $t[$q + 1] }
+  si ($e == "s" ou $e == "chaine") { retour 1 }
+  si ($e == "b" ou $e == "vrai" ou $e == "faux") { retour 2 }
+  retour 0
+}
+
 fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: entier) -> entier {
   # G5-R : le préfixe doit être AU DÉBUT de l'op. g4_operand cherchait n'importe
   # où et capturait à tort les littéraux (s "affect slot ") du propre RIR G5.
@@ -982,6 +997,10 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
     g5_eval($trhs, 0, 0, $f)
     si (g5_est_bool($trhs, 0, $f) == 1) {
       inserer($g5_sbool, chaine($f) + "|" + chaine($sl), 1)
+    }
+    # SH6 : mémorise le genre des éléments d'une liste affectée à un slot.
+    si (longueur($trhs) > 1 et $trhs[0] == "(" et $trhs[1] == "lst") {
+      inserer($g5_slist, chaine($f) + "|" + chaine($sl), g5_list_kind($trhs, 0))
     }
     g5_emit(stroff(0, 31, g5_slotoff($sl)))
     retour 0
@@ -1003,6 +1022,27 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
     retour 0
   }
   si ($head == "afficher" ou $head == "afficher_abstrait") {
+    # ── SH6 : affichage des listes `[a, b]` ──
+    # L'ABI G5 range une liste dans un descripteur [tag=2][len][cap][ptr].
+    # La routine dédiée g5_emit_plist écrit "[…]" sans toucher au flux de
+    # g5_emit_print (donc le dump réflexif reste inchangé).
+    $lkind = -1
+    si ($t[1] == "(" et $t[2] == "lst") { $lkind = g5_list_kind($t, 1) }
+    si ($t[1] == "slot") {
+      $lkl = cle_existe($g5_slist, chaine($f) + "|" + $t[2])
+      si ($lkl) { $lkind = $g5_slist[chaine($f) + "|" + $t[2]] }
+    }
+    si ($t[1] == "(" et $t[2] == "v" et $t[3] != ")") {
+      $lv = g5_slot_of($f, $t[3])
+      $lkk = chaine($f) + "|" + chaine($lv)
+      si ($lv >= 0 et cle_existe($g5_slist, $lkk)) { $lkind = $g5_slist[$lkk] }
+    }
+    si ($lkind >= 0) {
+      g5_eval($t, 1, 0, $f)
+      g5_load(22, $lkind)
+      g5_branch(1, $g5_plist_l)
+      retour 0
+    }
     # SH4 : `chaine($x)` ou `chaine(slot N)` avec $x un booléen doit rendre
     # "vrai"/"faux" (natif : >> chaine(3<5) -> vrai). L'ABI G5 confond le
     # booléen avec l'entier 0/1 ; on intercepte donc l'affichage direct.
@@ -1250,6 +1290,168 @@ fn g5_emit_print($lbl: entier) -> entier {
   g5_emit(movz(2, 1))
   g5_emit(movz(8, 64))
   g5_emit(SVC_I())
+  g5_emit(RET_I())
+  retour 0
+}
+
+# ── SH6 : écriture d'un littéral sur stdout, SANS saut de ligne ──
+# Clobber x0,x1,x2,x8. Le tampon sp+64 est sufficient pour les petits
+# séparateurs ("[", ", ", "]") utilisés par l'imprimeur de listes.
+fn g5_puts($s: chaine) -> entier {
+  $i = 0
+  tant_que ($i < longueur($s)) {
+    g5_load(1, ordre(sous_chaine($s, $i, $i + 1)))
+    g5_emit(strbio(1, 31, 64 + $i))
+    $i = $i + 1
+  }
+  g5_emit(movz(0, 1))
+  g5_emit(addi(1, 31, 64))
+  g5_load(2, longueur($s))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  retour 0
+}
+
+# ── SH6 : affichage des listes `[...]` ──
+# x0 = liste taguée (pointeur|2). x1 = genre des éléments :
+#   0 = entier, 1 = chaîne, 2 = booléen (vrai/faux).
+# Routine autonome : elle N'appelle PAS g5_emit_print, donc le dump réflexif
+# (qui affiche des chaînes ligne par ligne) reste octet pour octet identique.
+# Registres préservés par convention ici : x23 descripteur, x24 len,
+# x25 pointeur de données, x26 index, x27 compteur de chiffres, x11 LR.
+fn g5_emit_plist($lbl: entier) -> entier {
+  g5_mark($lbl)
+  $lloop = g5_next()
+  $lnd = g5_next()
+  $lcomma = g5_next()
+  $lnocomma = g5_next()
+  $lelem = g5_next()
+  $lbool = g5_next()
+  $lfaux = g5_next()
+  $lstrw = g5_next()
+  $lscpy = g5_next()
+  $lint = g5_next()
+  $lpos = g5_next()
+  $ldig = g5_next()
+  $ldloop = g5_next()
+  $lrev = g5_next()
+  $lrevloop = g5_next()
+  $llwrt = g5_next()
+  $lnext = g5_next()
+  $ldone = g5_next()
+  g5_emit(orrr(11, 31, 30))        # sauvegarde de LR (appelé par BL)
+  g5_emit(g5_masktag(23, 0))       # descripteur brut
+  g5_emit(ldroff(24, 23, 8))       # len
+  g5_emit(ldroff(25, 23, 24))      # ptr de données
+  g5_emit(movz(26, 0))             # i = 0
+  g5_puts("[")
+  g5_mark($lloop)
+  g5_emit(cmpr(26, 24))
+  g5_branch(110, $ldone)           # i >= len -> fin
+  g5_emit(cmpi(26, 0))
+  g5_branch(100, $lnocomma)
+  g5_puts(", ")
+  g5_mark($lnocomma)
+  # chargement de l'élément i
+  g5_emit(addr(2, 26, 26)); g5_emit(addr(2, 2, 2)); g5_emit(addr(2, 2, 2))
+  g5_emit(addr(2, 25, 2))
+  g5_emit(ldroff(0, 2, 0))
+  # dispatch sur le genre (x22, non clobberé par g5_puts / g5_make_str)
+  g5_emit(cmpi(22, 2))
+  g5_branch(100, $lbool)
+  g5_emit(cmpi(22, 1))
+  g5_branch(100, $lstrw)
+  g5_branch(0, $lint)
+  # ── booléen -> chaîne "vrai"/"faux" ──
+  g5_mark($lbool)
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lfaux)
+  g5_make_str("vrai")
+  g5_branch(0, $lstrw)
+  g5_mark($lfaux)
+  g5_make_str("faux")
+  # ── écriture d'une chaîne (déjà taguée dans x0) ──
+  g5_mark($lstrw)
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(10, 9, 8))
+  g5_emit(addi(1, 9, 16))
+  g5_emit(movz(5, 0))
+  g5_mark($lscpy)
+  g5_emit(cmpr(5, 10))
+  g5_branch(110, $lnext)           # i >= len -> élément suivant
+  g5_emit(movz(0, 1))
+  g5_emit(subr(2, 10, 5))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  g5_emit(orrr(4, 31, 0))
+  g5_emit(addr(1, 1, 4))
+  g5_emit(addr(5, 5, 4))
+  g5_branch(0, $lscpy)
+  # ── entier -> décimale signée ──
+  g5_mark($lint)
+  g5_emit(g5_asr3(0, 0))
+  g5_emit(addi(6, 31, 64))
+  g5_emit(orrr(7, 31, 6))
+  g5_emit(cmpi(0, 0))
+  g5_branch(110, $lpos)
+  g5_emit(movz(1, 45))
+  g5_emit(strbio(1, 7, 0))
+  g5_emit(addi(7, 7, 1))
+  g5_emit(subr(0, 31, 0))
+  g5_mark($lpos)
+  g5_emit(cmpi(0, 0))
+  g5_branch(101, $ldig)
+  g5_emit(movz(1, 48))
+  g5_emit(strbio(1, 7, 0))
+  g5_emit(addi(7, 7, 1))
+  g5_branch(0, $llwrt)
+  g5_mark($ldig)
+  g5_emit(addi(3, 31, 128))
+  g5_emit(movz(2, 0))
+  g5_mark($ldloop)
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lrev)
+  g5_emit(movz(1, 10))
+  g5_emit(udivr(4, 0, 1))
+  g5_emit(msubr(5, 4, 1, 0))
+  g5_emit(addi(5, 5, 48))
+  g5_emit(strbio(5, 3, 0))
+  g5_emit(addi(3, 3, 1))
+  g5_emit(addi(2, 2, 1))
+  g5_emit(orrr(0, 31, 4))
+  g5_branch(0, $ldloop)
+  g5_mark($lrev)
+  g5_emit(subi(4, 3, 1))
+  g5_emit(movz(5, 0))
+  g5_mark($lrevloop)
+  g5_emit(cmpr(5, 2))
+  g5_branch(110, $llwrt)
+  g5_emit(ldrbio(1, 4, 0))
+  g5_emit(strbio(1, 7, 0))
+  g5_emit(addi(7, 7, 1))
+  g5_emit(subi(4, 4, 1))
+  g5_emit(addi(5, 5, 1))
+  g5_branch(0, $lrevloop)
+  g5_mark($llwrt)
+  g5_emit(subr(2, 7, 6))
+  g5_emit(movz(0, 1))
+  g5_emit(addi(1, 31, 64))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  g5_mark($lnext)
+  g5_emit(addi(26, 26, 1))
+  g5_branch(0, $lloop)
+  g5_mark($ldone)
+  g5_puts("]")
+  # `>>` de Rose termine chaque affichage par un saut de ligne.
+  g5_emit(movz(1, 10))
+  g5_emit(strbio(1, 31, 64))
+  g5_emit(movz(0, 1))
+  g5_emit(addi(1, 31, 64))
+  g5_emit(movz(2, 1))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  g5_emit(orrr(30, 31, 11))        # restauration de LR
   g5_emit(RET_I())
   retour 0
 }
@@ -1817,6 +2019,18 @@ fn g5_emit_nbargs($lbl: entier) -> entier {
 # argument(i) -> argv[i+1] copié en chaîne taguée [tag=1][len][octets].
 fn g5_emit_argument($lbl: entier) -> entier {
   g5_mark($lbl)
+  # SH6 : garde de borne. Sans elle, argument(i) avec i >= nb_arguments()
+  # lisait argv[i+1] hors de la pile initiale (rc=139). Rose natif écrit
+  # « Rose : erreur — index hors des limites des arguments » sur stderr
+  # et quitting avec rc=1 (mesuré octet pour octet, em dash U+2014 + '\n').
+  g5_emit(g5_asr3(2, 0))           # x2 = i brut
+  g5_load(9, 1610612752)           # argc brut (avec argv[0]) à 0x60000010
+  g5_emit(ldroff(3, 9, 0))
+  g5_emit(subi(3, 3, 1))           # argc utilisateur = argc brut - 1
+  g5_emit(cmpi(2, 0))
+  g5_branch(111, $lbl + 5)         # i < 0 -> erreur
+  g5_emit(cmpr(2, 3))
+  g5_branch(110, $lbl + 5)         # i >= argc -> erreur
   g5_emit(g5_asr3(0, 0))
   g5_emit(addi(0, 0, 1))
   g5_load(9, 1610612760)
@@ -1854,6 +2068,19 @@ fn g5_emit_argument($lbl: entier) -> entier {
   g5_branch(0, $lbl + 3)
   g5_mark($lbl + 4)
   g5_emit(g5_tag1(0, 10))
+  g5_branch(0, $lbl + 6)           # saut par-dessus la voie d'erreur
+  g5_mark($lbl + 5)
+  g5_make_str("Rose : erreur — index hors des limites des arguments\n")
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(10, 9, 8))
+  g5_emit(addi(1, 9, 16))
+  g5_emit(movz(0, 2))              # fd 2 = stderr
+  g5_emit(movz(8, 64))             # write
+  g5_emit(SVC_I())
+  g5_emit(movz(0, 1))              # exit(1)
+  g5_emit(movz(8, 93))
+  g5_emit(SVC_I())
+  g5_mark($lbl + 6)
   g5_emit(RET_I())
   retour 0
 }
@@ -2059,6 +2286,7 @@ tant_que ($i < $nfn) {
 $printl = g5_next()
 $k = 0
 tant_que ($k < 14) { g5_next(); $k = $k + 1 }
+$g5_plist_l = g5_next()
 $g5_allocl = g5_next()
 $g5_lenl = g5_next()
 $k = 0
@@ -2139,6 +2367,7 @@ g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
 g5_emit_ecrire($g5_ecrire_l)
+g5_emit_plist($g5_plist_l)
 g5_emit_print($printl)
 g5_mark($exitl)
 g5_emit(movz(0, 0))
