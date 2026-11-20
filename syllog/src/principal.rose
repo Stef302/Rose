@@ -1,18 +1,18 @@
-importer "syllog/src/tactiques.rose"
-importer "syllog/src/analyse.rose"
 # ═══════════════════════════════════════════════════════════════════════════
 # syllog/src/principal.rose — PILOTE CLI DE SYLLOG (PROV4)
 # ═══════════════════════════════════════════════════════════════════════════
 # Consommateur des modules des autres agents (SPEC.md) :
-#   noyau.rose     : verifier, beta, convertible, bien_forme
+#   noyau.rose     : verifier, beta, convertible, bien_forme, noy_ctx_vide
 #   lexeur.rose    : lexer
 #   analyse.rose   : analyser
-#   tactiques.rose : reflexivite, symetrie, introduction, application, #                    induction, simplifier
-# Aucune logique de noyau / d'analyse / de tactique n'est réimplémentée ici.
+#   tactiques.rose : reflexivite, symetrie, introduction, application,
+#                    induction, simplifier
+# Aucune règle de typage, d'analyse ou de tactique n'est réimplémentée ici.
 # Vérifier : ./rose/rose verif syllog/src/principal.rose
 # ═══════════════════════════════════════════════════════════════════════════
 
-
+importer "syllog/src/tactiques.rose"
+importer "syllog/src/analyse.rose"
 importer "syllog/src/noyau.rose"
 importer "syllog/src/lexeur.rose"
 
@@ -162,7 +162,10 @@ fn p_declarations(j: liste<chaine>) -> table {
 
     $dc_preuve = [""]
     si ($dc_pp >= 0) {
-      $dc_preuve = p_tranche(j, $dc_pp + 1, $dc_fin_bloc)
+      $dc_fin_preuve = $dc_fin_bloc
+      $dc_fin_mot = p_cherche(j, "fin", $dc_pp + 1, $dc_fin_bloc)
+      si ($dc_fin_mot >= 0) { $dc_fin_preuve = $dc_fin_mot }
+      $dc_preuve = p_tranche(j, $dc_pp + 1, $dc_fin_preuve)
     }
 
     $dc_une = table()
@@ -535,6 +538,8 @@ fn pilote_demo(fichiers: liste<chaine>, trace: booleen) -> table {
 # Filtre les chemins du manifeste réellement lisibles.
 fn pilote_manifeste_present() -> liste<chaine> {
   $pm_l = [""]
+  $pm_vide = p_liste_vide_syllog()
+  $pm_l = $pm_vide
   $pm_m = pilote_manifeste()
   $pm_k = 0
   tant_que ($pm_k < longueur($pm_m)) {
@@ -546,7 +551,7 @@ fn pilote_manifeste_present() -> liste<chaine> {
     si ($pm_lu != "") { joindre($pm_l, $pm_mani_fichier) }
     $pm_k = $pm_k + 1
   }
-  retour p_tranche($pm_l, 1, longueur($pm_l))
+  retour $pm_l
 }
 
 # ── 8. Interface en ligne de commande ──────────────────────────────────────
@@ -584,7 +589,10 @@ fn pilote_main() {
   $mn_resultat = table()
   si ($mn_demo) {
     $mn_fichiers = pilote_manifeste_present()
-    si (longueur($mn_chemins) > 1) { $mn_fichiers = p_tranche($mn_chemins, 1, longueur($mn_chemins)) }
+    # p_tranche() remet un sentinelle vide en 0 : --demo lirait alors un
+    # chemin vide (« ===  === » + erreur de lecture). On veut une liste
+    # 0-indexee sans sentinelle.
+    si (longueur($mn_chemins) > 1) { $mn_fichiers = p_sans_sentinel($mn_chemins) }
     $mn_resultat = pilote_demo($mn_fichiers, $mn_trace)
   } sinon {
     si (longueur($mn_chemins) < 2) {

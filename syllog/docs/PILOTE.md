@@ -1,136 +1,192 @@
 # Syllog — pilote CLI (PROV4)
 
-Fichiers livrés : `syllog/src/principal.rose`, `syllog/docs/PILOTE.md`,
-`syllog/tests_pilote.rose`. Aucune modification de `rose/src/**`, du noyau,
-du lexeur, de l'analyseur ou des tactiques.
+Fichiers livrés par ce chantier : `syllog/src/principal.rose`,
+`syllog/tests_pilote.rose`, `syllog/docs/PILOTE.md`. Aucun autre fichier
+n'a été modifié par ce chantier ; aucune publication n'a été faite.
+Un commit local a été créé pendant le chantier (`8bc15ca`) ; il n'a pas été
+poussé (`git status` montre les corrections locales non commitées).
 
-## Commandes
+## Commandes implémentées
 
 ```
-rose syllog/src/principal.rose <fichier.slg> [--trace]
-rose syllog/src/principal.rose --demo [fichier.slg ...] [--trace]
-rose syllog/src/principal.rose --aide
+./rose/rose syllog/src/principal.rose <fichier.slg> [--trace]
+./rose/rose syllog/src/principal.rose --demo [fichiers.slg...] [--trace]
+./rose/rose syllog/src/principal.rose --aide     # aussi -h, --help
 ```
 
-Le pilote s'exécute dans la philosophie Rose : un seul fichier source, aucune
-dépendance externe, tous les messages en français.
+`/tmp` de vérification : utiliser `./rose/rose` (0.1.6, présent dans le
+dépôt) ; le `rose` installé dans le PATH (0.1.5) ne connaît pas `verif`.
 
-| Option | Effet |
+| Option | Effet réel |
 |---|---|
-| `<fichier.slg>` | vérifie chaque déclaration `théorème` du fichier |
-| `--demo` | joue les preuves du dossier `syllog/preuves/` |
-| `--aide` (`-h`, `--help`) | affiche l'aide en français |
-| `--trace` | affiche les termes construits (`[trace] ...`) à chaque étape |
+| `<fichier.slg>` | vérifie chaque `théorème`, affiche `OK <nom>` ou `ÉCHEC <nom> : <raison>`, puis `N théorème(s), M réussi(s)` |
+| `--demo` | joue les `.slg` connus de `syllog/preuves/` (ou les fichiers passés en argument) |
+| `--aide` | aide en français |
+| `--trace` | affiche `[trace] <nom> but = …` et `[trace] <nom> terme = …` |
 
-## Format `.slg` attendu
+Codes de sortie : **0** tout passe, **1** au moins un échec de preuve,
+**2** lecture/lexage/analyse impossible ou aucun théorème. Aucun `panic`
+n'est déclenché : les lectures et les appels au parseur sont protégés par
+`essayer … attraper`.
+
+## Format `.slg` accepté
 
 ```
+# commentaire
 théorème <nom> : <type du but>
-preuve <tactique | terme>
+preuve <tactique ou terme>
+fin
 ```
 
-Exemples réels dans `syllog/preuves/` :
+`théorème`/`theoreme`, `preuve`/`preuv`/`proof` sont acceptés. `fin` est
+le terminateur facultatif du bloc de preuve. Le PILOTE découpe le flux de
+jetons produit par `lexer` sur ces mots réservés ; le but est confié à
+`analyser`, la preuve est soit une tactique (`reflexivite`, `symetrie`,
+`introduction`, `application`, `induction`, `simplifier`, avec alias),
+soit un terme analysé par `analyser`.
+
+Pipeline par théorème : lecture → lexage (PROV2) → découpage → analyse du
+but (PROV2) → `verifier(but, ctx)` (PROV1) → tactique (PROV3) ou terme de
+preuve → `verifier(terme, ctx)` (PROV1) → `convertible(type, but)` (PROV1)
+→ verdict. Aucune étape n'est simulée.
+
+## Vérifications réellement exécutées (21/11/2026)
 
 ```
-théorème reflexivite : pour_tout A:type, pour_tout x:A, Eq A x x
-preuve reflexivite
+$ ./rose/rose verif syllog/src/principal.rose
+vérifié
+
+$ ./rose/rose verif syllog/tests_pilote.rose
+vérifié
+
+$ ./rose/rose syllog/tests_pilote.rose
+✓ aide : texte exact
+✓ fichier OK : sortie exacte
+✓ fichier OK : code 0
+✓ fichier ÉCHEC : préfixe
+✓ fichier ÉCHEC : bilan
+✓ fichier ÉCHEC : code 1
+✓ fichier absent : code 2
+✓ trace : étiquette
+✓ trace : terme
+✓ demo : en-tête
+✓ demo : bilan global
+✓ demo : code 0
+REUSSIS=12
+ECHOUES=0
+RESULTAT: OK
+(rc=0)
 ```
 
+Fichier OK utilisé par les tests (écrit dans `/tmp/opencode/` par le test) :
+
 ```
-théorème identite : pour_tout A:type, pour_tout x:A, A
-preuve fn A:type => fn x:A => x
+théorème t_ok : type 1
+preuve type 0
+fin
 ```
 
-Les lignes commençant par `#` sont des commentaires (le lexeur les ignore).
-Le mot `théorème` admet aussi l'écriture sans accent `theoreme` ; `preuve`
-admet `preuv` et `proof`.
+Sortie réelle :
 
-Tactiques reconnues (noms français, avec alias) : `reflexivite`
-(`réflexivité`, `refl`), `symetrie` (`symétrie`, `sym`), `introduction`
-(`intro`), `application` (`app`), `induction` (`ind`), `simplifier`.
-Si le jeton après `preuve` n'est pas une tactique, il est traité comme un
-TERME de preuve et confié à `analyser`.
+```
+OK t_ok
+1 théorème(s), 1 réussi(s)
+(rc=0)
+```
 
-## Pipeline exact, pour chaque théorème
+Aide réelle (`./rose/rose syllog/src/principal.rose --aide`, rc=0) :
 
-1. Lecture du fichier (`lire_texte`) ; échec ⇒ code 2, message français.
-2. Lexage (`lexer` du module PROV2) ; échec ⇒ code 2.
-3. Découpage du flux de jetons en déclarations (mot réservé `théorème`),
-   analyse du but (`analyser` du module PROV2).
-4. **Vérification du TYPE du théorème** par le noyau (`verifier`), avec le
-   contexte vide.
-5. **Exécution de la preuve** par les tactiques du module PROV3
-   (`reflexivite`, `symetrie`, `introduction`, `application`, `induction`,
-   `simplifier`). Chaque tactique construit un terme et le fait vérifier par
-   le noyau ; le pilote contrôle aussi qu'il ne reste aucun but ouvert.
-   Quand la preuve est un terme direct, il est analysé sans tactique.
-6. **Vérification du TERME de preuve final** par le noyau (`verifier`), puis
-   comparaison du type synthétisé au but avec `convertible`.
-7. Affichage de `OK <nom>` ou `ÉCHEC <nom> : <raison>`, puis du bilan
-   `N théorème(s), M réussi(s)`.
+```
+Syllog — pilote de démonstration (en Rose)
 
-Aucune étape n'est simulée : le pilote appelle les modules des autres agents
-par les signatures de `syllog/SPEC.md` et n'implémente aucune règle de
-typage, d'analyse ou de tactique lui-même.
+Usage :
+  rose syllog/src/principal.rose <fichier.slg>  vérifie chaque théorème
+  rose syllog/src/principal.rose --demo [fichiers.slg...]
+  rose syllog/src/principal.rose --aide
 
-## Codes de sortie
+Options :
+  --trace  affiche les termes construits
 
-| Code | Sens |
+Format d'un fichier .slg :
+  théorème <nom> : <type du but>
+  preuve <tactique>
+Tactiques : reflexivite, symetrie, introduction, application,
+induction, simplifier. La preuve peut aussi être un terme.
+
+Sortie : OK <nom> ou ÉCHEC <nom> : <raison>, puis
+« N théorème(s), M réussi(s) ».
+Codes : 0 tout passe, 1 échec de preuve, 2 lecture/parsing.
+```
+
+## `--demo` : sortie réelle et limite
+
+Rose n'a aucune primitive d'énumération de répertoire. `--demo` utilise
+donc un manifeste de noms (`pilote_manifeste()`), filtré par `lire_texte` ;
+les fichiers absents sont ignorés silencieusement, et si aucun n'est
+lisible le pilote affiche
+`Erreur : aucun fichier .slg jouable dans syllog/preuves/ (dossier absent ou vide)`
+et sort avec le code 2. Des chemins explicites peuvent être passés après
+`--demo`.
+
+Sortie réelle de `./rose/rose syllog/src/principal.rose --demo` (rc=1) :
+
+```
+=== syllog/preuves/identite.slg ===
+ÉCHEC identite : terme de preuve invalide — variable non liee: ?
+1 théorème(s), 0 réussi(s)
+
+=== syllog/preuves/reflexivite.slg ===
+ÉCHEC reflexivite : réflexivité : le but n'est pas une égalité
+1 théorème(s), 0 réussi(s)
+
+=== syllog/preuves/symetrie.slg ===
+ÉCHEC symetrie : symétrie : le but n'est pas une égalité
+1 théorème(s), 0 réussi(s)
+
+=== syllog/preuves/associativite.slg ===
+ÉCHEC associativite_plus : type invalide — variable non liee: Nat
+1 théorème(s), 0 réussi(s)
+
+=== syllog/preuves/commutativite.slg ===
+ÉCHEC commutativite_plus : type invalide — variable non liee: Nat
+1 théorème(s), 0 réussi(s)
+
+5 théorème(s), 0 réussi(s)
+```
+
+## Blocages réels entre modules (constats, pas des simulations)
+
+Ces échecs ne sont pas masqués : ils viennent d'écarts de représentation
+entre les modules livrés en parallèle.
+
+1. **Égalité** : `analyse.rose` traduit `a = b` en `ind("=", [a, b])`
+   (2 paramètres), alors que `tactiques.rose` cherche `ind("Eq", [A, a, b])`
+   (3 paramètres). D'où « le but n'est pas une égalité » pour
+   `reflexivite.slg` et `symetrie.slg`.
+2. **Signature** : `Nat` est analysé comme une variable libre ; le noyau
+   répond `variable non liee: Nat`. Les démos PROV3 construisent leurs
+   termes dans Rose avec une signature explicite, absente des `.slg`.
+3. **Scripts de tactiques** : `identite.slg` enchaîne `introduction A`,
+   `introduction x`, `application x`. Le pilote n'interprète que la
+   première tactique du bloc (les API SPEC ne permettent pas de composer
+   les buts résiduels sans utiliser des fonctions hors contrat), d'où
+   « variable non liee: ? ». Les preuves multi-lignes ne sont donc PAS jouées.
+4. **Ordre des imports** : Rose doit importer `tactiques`, `analyse`,
+   `noyau`, `lexeur` dans cet ordre ; avec `lexeur` avant `analyse`,
+   `analyser_source` échoue avec « Fonction 'lexer_table' inconnue ».
+
+Le pilote ne corrige aucun de ces écarts : il rapporte l'échec tel quel.
+Un `.slg` autonome (`type 1` / `type 0`) passe réellement, ce qui prouve
+que la chaîne lecture → lexage → analyse → noyau → bilan fonctionne.
+
+## Dépendances utilisées
+
+| Fonction | Module |
 |---|---|
-| 0 | tous les théorèmes passent |
-| 1 | au moins un échec de preuve |
-| 2 | lecture impossible, lexage/analyse impossible, ou aucun théorème |
+| `verifier`, `convertible`, `noy_ctx_vide`, `noy_type` | `syllog/src/noyau.rose` (PROV1) |
+| `lexer` | `syllog/src/lexeur.rose` (PROV2) |
+| `analyser` | `syllog/src/analyse.rose` (PROV2) |
+| `reflexivite`, `symetrie`, `introduction`, `application`, `induction`, `simplifier` | `syllog/src/tactiques.rose` (PROV3) |
 
-Les erreurs sont attrapées par `essayer ... attraper` : aucun message
-d'erreur Rust, aucun panic intentionnel.
-
-## Mode `--demo` — limite honnête
-
-Rose n'expose **aucune primitive pour énumérer un répertoire**. Le mode
-`--demo` ne peut donc pas « scanner » `syllog/preuves/` tout seul : il
-utilise un **manifeste** de noms connus, filtré par `lire_texte` (les noms
-absents sont silently ignorés). Le manifeste est maintenu dans
-`pilote_manifeste()` quand PROV3 ajoute des fichiers `.slg`. Deux
-échappatoires sont prévues :
-
-* `rose syllog/src/principal.rose --demo syllog/preuves/x.slg` joue
-  explicitement les fichiers passés en arguments ;
-* si aucun fichier du manifeste n'est lisible, le pilote affiche
-  `Erreur : aucun fichier .slg jouable dans syllog/preuves/ (dossier absent ou vide)`
-  et sort avec le code 2.
-
-Le bilan de `--demo` est la somme des bilans des fichiers joués, précédé
-d'un en-tête `=== <chemin> ===` par fichier.
-
-## Tests bout en bout
-
-```
-rose syllog/tests_pilote.rose
-```
-
-`syllog/tests_pilote.rose` importe le pilote et appelle directement
-`pilote_executer` / `pilote_demo` / `pilote_aide` sur des fichiers temporaires
-écrits dans `/tmp/opencode/`. Il compare les sorties **exactes** (fichier
-vide, théorème résolu par réflexivité), vérifie le code 2 d'une lecture
-impossible, la présence des lignes `[trace]`, le bilan de `--demo` et la
-présence de l'aide. Il affiche `TEST OK <nom>` / `TEST ÉCHEC <nom>` par test
-et finit par `N test(s) réussi(s) sur 6`, avec code 0 ou 1.
-
-## Dépendances sur les autres modules (PROV1–PROV3)
-
-| Fonction appelée | Module | Rôle |
-|---|---|---|
-| `verifier`, `convertible`, `noy_ctx_vide`, `noy_champ`, `noy_genre`, `noy_erreur`, … | `syllog/src/noyau.rose` (PROV1) | synthèse de types, conversions, constructeurs de termes |
-| `lexer` | `syllog/src/lexeur.rose` (PROV2) | jetons français/unicode |
-| `analyser` | `syllog/src/analyse.rose` (PROV2) | but et terme de preuve |
-| `reflexivite`, `symetrie`, `introduction`, `application`, `induction`, `simplifier` | `syllog/src/tactiques.rose` (PROV3) | construction des preuves |
-
-`rose verif syllog/src/principal.rose` doit répondre `vérifié` dès que
-`syllog/src/analyse.rose` est livré ; avant cela, l'import échoue avec
-`importer : fichier introuvable 'syllog/src/analyse.rose'`. C'est un blocage
-externe documenté, pas une simulation.
-
-## État des vérifications (à re-mesurer après tout changement de module)
-
-*Les sorties réelles obtenues sont consignées dans le rapport final du
-chantier ; ce fichier décrit le contrat, pas un état figé.*
+Les sorties ci-dessus sont des constats datés : à re-mesurer après tout
+changement de module.

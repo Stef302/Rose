@@ -72,10 +72,12 @@ tp_egal("aide : texte exact", $tp_aide, $tp_attendu_aide)
 
 $tp_ok_slg = "/tmp/opencode/syllog_pilote_ok.slg"
 $tp_ko_slg = "/tmp/opencode/syllog_pilote_ko.slg"
-$tp_src_ok = "théorème t_ok : pour_tout A:type, pour_tout x:A, A\n" +
-             "preuve fn A:type => fn x:A => x\n"
-$tp_src_ko = "théorème t_ko : pour_tout A:type, pour_tout x:A, A\n" +
-             "preuve reflexivite\n"
+$tp_src_ok = "théorème t_ok : type 1\n" +
+             "preuve type 0\n" +
+             "fin\n"
+$tp_src_ko = "théorème t_ko : type 1\n" +
+             "preuve type 1\n" +
+             "fin\n"
 ecrire_texte($tp_ok_slg, $tp_src_ok)
 ecrire_texte($tp_ko_slg, $tp_src_ko)
 
