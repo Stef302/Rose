@@ -3,8 +3,10 @@
 Fichiers livrés par ce chantier : `syllog/src/principal.rose`,
 `syllog/tests_pilote.rose`, `syllog/docs/PILOTE.md`. Aucun autre fichier
 n'a été modifié par ce chantier ; aucune publication n'a été faite.
-Un commit local a été créé pendant le chantier (`8bc15ca`) ; il n'a pas été
-poussé (`git status` montre les corrections locales non commitées).
+Deux commits LOCAUX ont été créés pendant le chantier par un agent parallèle
+(`8bc15ca`, `c833118`) ; aucun n'a été poussé. La correction finale du
+manifeste `--demo` est incluse dans `c833118` ; `git status --short syllog`
+est propre au dernier contrôle.
 
 ## Commandes implémentées
 
