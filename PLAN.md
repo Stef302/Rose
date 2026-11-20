@@ -915,3 +915,11 @@ Consigne: « on continue self hosting et programme global, on ne s'arrête pas �
 | Agent | Sujet | Fichiers possédés | Cœur |
 |---|---|---|---|
 | GLB1 | rationnels : 10,64 ms → < 1 ms | `rose/src/{run,i128x,interp}.rs`, `rose/docs/GLOBAL_FINAL.md` | 6 |
+
+## Vague 44 (20/11) — self-hosting : dernier défaut d'émission
+
+Consigne: « on continue self hosting et programme global ». SH2 a livré 4 défauts corrigés (commit ccb34a5). Dernier point de crash: pc=0x4818c4 (g5_emit_idx), x0=0x8effd620e83848cc, slots 10 et 11 identiques invalides, slot 12=0x60002420 (zone RW args>=31). Self-hosting réel: NON.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| SH3 | zone args>=31 vs slots (check_instr 35 params) | `compilateur/emetteur_elf.rose`, `rose/docs/SELF_HOST_SH3.md` | dédié |
