@@ -1909,32 +1909,70 @@ pub fn remplir_philox(buf: &mut [u8], ab: &[u8], graine: i64) {
     let mask = (s - 1) as u32;
     let n = buf.len();
     let nblk = (n + 3) / 4;
+    if pow2 {
+        // RUSTF — voie MASQUE (alphabet de taille puissance de 2) : blocs
+        // entiers, aucun test de borne ni test de voie dans la boucle, et un
+        // seul magasin de 4 octets par bloc. La queue (tampon non multiple
+        // de 4 — le banc ne la prend jamais) garde le MEME compteur et le
+        // MEME mot : sortie bit à bit identique à la boucle d'origine.
+        let pleins = n / 4;
+        for b in 0..pleins {
+            let r = philox4x32_10_pour(k0, k1,
+                [b as u32, ((b as u64) >> 32) as u32, 0, 0]);
+            let i = b * 4;
+            let oct = [
+                unsafe { *ab.get_unchecked((r[0] & mask) as usize) },
+                unsafe { *ab.get_unchecked((r[1] & mask) as usize) },
+                unsafe { *ab.get_unchecked((r[2] & mask) as usize) },
+                unsafe { *ab.get_unchecked((r[3] & mask) as usize) },
+            ];
+            buf[i..i + 4].copy_from_slice(&oct);
+        }
+        if pleins * 4 < n {
+            let b = pleins;
+            let r = philox4x32_10_pour(k0, k1,
+                [b as u32, ((b as u64) >> 32) as u32, 0, 0]);
+            for j in 0..(n - pleins * 4) {
+                unsafe { *buf.get_unchecked_mut(pleins * 4 + j) =
+                    *ab.get_unchecked((r[j] & mask) as usize); }
+            }
+        }
+        return;
+    }
     for b in 0..nblk {
         let ctr = [b as u32, ((b as u64) >> 32) as u32, 0, 0];
         let r = philox4x32_10_pour(k0, k1, ctr);
         let i = b * 4;
         for j in 0..4 {
             if i + j < n {
-                buf[i + j] = if pow2 {
-                    ab[(r[j] & mask) as usize]
-                } else {
-                    ab[(((r[j] as u64 as u128) * (s as u128)) >> 32) as usize]
-                };
+                buf[i + j] = ab[(((r[j] as u64 as u128) * (s as u128)) >> 32) as usize];
             }
         }
     }
 }
 
+#[inline(always)]
 fn philox4x32_10_pour(k0: u32, k1: u32, counter: [u32; 4]) -> [u32; 4] {
-    let mut cnt = counter;
-    let mut key = [k0, k1];
+    // RUSTF — noyau scalaire : les quatre mots et la clé vivent dans des
+    // registres (plus de tableau réassigné à chaque tour, plus d'appel à
+    // `mul_hi_lo`). Mêmes dix tours, mêmes constantes, mêmes XOR : sortie
+    // bit à bit identique à l'ancienne forme.
+    let (mut c0, mut c1, mut c2, mut c3) =
+        (counter[0], counter[1], counter[2], counter[3]);
+    let (mut k0, mut k1) = (k0, k1);
     for _ in 0..10 {
-        let (hi0, lo0) = mul_hi_lo(PHILOX_M0, cnt[0]);
-        let (hi1, lo1) = mul_hi_lo(PHILOX_M1, cnt[2]);
-        cnt = [hi1 ^ cnt[1] ^ key[0], lo1, hi0 ^ cnt[3] ^ key[1], lo0];
-        key = [key[0].wrapping_add(PHILOX_W0), key[1].wrapping_add(PHILOX_W1)];
+        let p0 = (PHILOX_M0 as u64).wrapping_mul(c0 as u64);
+        let p1 = (PHILOX_M1 as u64).wrapping_mul(c2 as u64);
+        let (hi0, lo0) = ((p0 >> 32) as u32, p0 as u32);
+        let (hi1, lo1) = ((p1 >> 32) as u32, p1 as u32);
+        c0 = hi1 ^ c1 ^ k0;
+        c1 = lo1;
+        c2 = hi0 ^ c3 ^ k1;
+        c3 = lo0;
+        k0 = k0.wrapping_add(PHILOX_W0);
+        k1 = k1.wrapping_add(PHILOX_W1);
     }
-    cnt
+    [c0, c1, c2, c3]
 }
 
 
