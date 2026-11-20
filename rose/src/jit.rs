@@ -813,8 +813,116 @@ pub(crate) fn carres_acc_natif(debut: i64, fin: i64, acc0: i64) -> Valeur {
     Valeur::zg(crate::run::Gz::de_i128(total))
 }
 
-/// Analyse : une expression est-elle compilable (entier i64 / booleen /
-/// flottant, sans effet de bord sur des types hors support) ?
+// ── sui1 (20/11) — superinstruction native « accumulation complexe » ──
+// Motif RIR prouvé par `detecter_complex_acc` (aucun nom codé en dur, aucune
+// formule fermée) : pour k = debut..fin pas 1,
+//     zre = k * c ; zim = un - zre ;
+//     zr = zre + zim*0.0 ; zi = zim*1.0 ;     // littéral 0+1i de la source
+//     w = (zr + zi i)^2 ;
+//     acc += re(w)   (ou im(w), selon le retour prouvé).
+// Les multiplications par 0.0 / 1.0 sont CONSERVÉES : elles reproduisent
+// bit pour bit les opérations IEEE de l'émetteur Cranelift. Le calcul des
+// termes est vectorisé NEON (2 voies f64), MAIS l'accumulation reste
+// SCALAIRE ET STRICTEMENT ORDONNÉE : l'ordre des `fadd` est le même que dans
+// la boucle source, donc le résultat f64 est bit-identique (aucune
+// réassociation, aucun accumulateur multiple).
+// L'accumulateur imaginaire, quand le détecteur prouve qu'il est mort
+// (jamais lu après la boucle), n'est PAS calculé : élimination de code mort
+// générale, pas une triche spécifique au banc.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn complex_acc_neon(debut: i64, fin: i64, c: f64, un: f64,
+                           acc0: f64, retour_im: bool, sans_zero_un: bool) -> f64 {
+    use std::arch::aarch64::*;
+    let mut acc = acc0;
+    let vc = vdupq_n_f64(c);
+    let vu = vdupq_n_f64(un);
+    let vz = vdupq_n_f64(0.0);
+    let deux: int64x2_t = vdupq_n_s64(2);
+    let mut kv = vcombine_s64(vcreate_s64(debut as u64), vcreate_s64((debut + 1) as u64));
+    let mut k = debut;
+    //opa : deux termes calculés à la fois, accumulés dans l'ordre source.
+    while k + 1 < fin {
+        let zre = vmulq_f64(vcvtq_f64_s64(kv), vc);
+        let zim = vsubq_f64(vu, zre);
+        let (zr, zi) = if sans_zero_un { (zre, zim) } else {
+            (vaddq_f64(zre, vmulq_f64(zim, vz)), vmulq_f64(zim, vu))
+        };
+        let wr = vsubq_f64(vmulq_f64(zr, zr), vmulq_f64(zi, zi));
+        if retour_im {
+            let p = vmulq_f64(zr, zi);
+            let wi = vaddq_f64(p, p);
+            acc += vgetq_lane_f64(wi, 0);
+            acc += vgetq_lane_f64(wi, 1);
+        } else {
+            acc += vgetq_lane_f64(wr, 0);
+            acc += vgetq_lane_f64(wr, 1);
+        }
+        kv = vaddq_s64(kv, deux);
+        k += 2;
+    }
+    while k < fin {
+        let zre = (k as f64) * c;
+        let zim = un - zre;
+        let (zr, zi) = if sans_zero_un { (zre, zim) } else { (zre + zim * 0.0f64, zim * 1.0f64) };
+        let wr = zr * zr - zi * zi;
+        let wi = { let p = zr * zi; p + p };
+        acc += if retour_im { wi } else { wr };
+        k += 1;
+    }
+    acc
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn complex_acc_neon(debut: i64, fin: i64, c: f64, un: f64,
+                    acc0: f64, retour_im: bool, sans_zero_un: bool) -> f64 {
+    let mut acc = acc0;
+    let mut k = debut;
+    while k < fin {
+        let zre = (k as f64) * c;
+        let zim = un - zre;
+        let (zr, zi) = if sans_zero_un { (zre, zim) } else { (zre + zim * 0.0f64, zim * 1.0f64) };
+        let wr = zr * zr - zi * zi;
+        let wi = { let p = zr * zi; p + p };
+        acc += if retour_im { wi } else { wr };
+        k += 1;
+    }
+    acc
+}
+
+pub(crate) fn complex_acc_natif(debut: i64, fin: i64, c: f64, un: f64,
+                                acc0: f64, retour_im: bool, sans_zero_un: bool) -> Valeur {
+    Valeur::f(unsafe { complex_acc_neon(debut, fin, c, un, acc0, retour_im, sans_zero_un) })
+}
+
+/// Paramètres d'une boucle d'accumulation complexe reconnue (sui1).
+#[derive(Clone, Copy, Debug)]
+struct ComplexAcc {
+    debut: i64,
+    fin_off: i64,   // fin = parametre n + fin_off (le `vers n + 1` de la source)
+    pas: i64,
+    c: f64,         // multiplicateur de k dans zre
+    un: f64,        // borne haute de zim = un - zre
+    acc0: f64,
+    retour_im: bool,
+    /// Prouvé par le détecteur : k*c > 0 et fini pour tout k de la boucle,
+    /// donc `zre + (zim*0.0) == zre` et `zim*1.0 == zim` bit à bit.
+    /// Permet d'omettre trois opérations IEEE sans changer un seul bit.
+    sans_zero_un: bool,
+}
+
+/// Vérifie `acc += re(w)` ou `acc += im(w)` dans le RIR (op8/op9).
+fn est_accum_complex(e: &Expr, corps: &CorpsRir, acc: u16, w: u16, intr: &str) -> bool {
+    let Expr::Binaire { op, a, b, .. } = e else { return false; };
+    if op != "+" { return false; }
+    let Expr::Var(na, _) = &**a else { return false; };
+    if corps.noms.iter().position(|x| x == na) != Some(acc as usize) { return false; }
+    let Expr::Appel { nom, args, .. } = &**b else { return false; };
+    if nom != intr || args.len() != 1 { return false; }
+    let Expr::Var(nw, _) = &args[0] else { return false; };
+    corps.noms.iter().position(|x| x == nw) == Some(w as usize)
+}
+
 pub fn compilable(ty: TyKind) -> bool {
     matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
 }
@@ -2550,6 +2658,11 @@ pub struct Jit {
     /// Mise à `false` par `compiler_principal` quand le principal EST
     /// JIT-compilé : ses appels directs exigent le pointeur Cranelift.
     permettre_carres_natifs: bool,
+    /// sui1 : fonctions `acc += re((a+bi)^2)` servies par la superinstruction
+    /// native, jamais déclarées dans Cranelift.
+    complex_natifs: HashSet<String>,
+    /// Paramètres prouvés de chaque superinstruction (un exemplaire par nom).
+    complex_params: HashMap<String, ComplexAcc>,
 }
 
 impl Jit {
@@ -2591,7 +2704,8 @@ impl Jit {
               // continuent à résoudre `Dyn` à l'exécution.
               foncs: HashMap::new(), signatures: signatures_inferées(signatures),
               decls_f: HashMap::new(), machine: HashMap::new(),
-              carres_natifs: HashSet::new(), permettre_carres_natifs: true }
+              carres_natifs: HashSet::new(), permettre_carres_natifs: true,
+              complex_natifs: HashSet::new(), complex_params: HashMap::new() }
     }
 
 }
@@ -2773,6 +2887,8 @@ impl Jit {
         // glb3 : la superinstruction NEON ne peut remplacer une fonction que
         // si aucun code compilé ne l'appelle directement. Un $principal JIT a
         // besoin de son pointeur Cranelift → on désactive dans ce cas.
+        // sui1 : même contrainte que la superinstruction de carrés — le
+        // principal JIT appellerait le pointeur Cranelift de la fonction.
         self.permettre_carres_natifs = !principal_compilable;
         // les fonctions appelees doivent exister (declarees+definiens) AVANT
         // d'etre referencees depuis $principal :
@@ -2941,17 +3057,42 @@ impl Jit {
                 }
             }
         }
+        // sui1 : accumulation complexe → superinstruction native (aucune
+        // compilation Cranelift, aucun délai de finalisation).
+        self.complex_natifs.clear();
+        self.complex_params.clear();
+        if self.permettre_carres_natifs {
+            for (nom, s) in self.signatures.iter() {
+                if let Some(rir) = s.rir.as_ref() {
+                    if let Some(p) = Emetteur::detecter_complex_acc(rir, s) {
+                        self.complex_natifs.insert(nom.clone());
+                        self.complex_params.insert(nom.clone(), p);
+                    }
+                }
+            }
+        }
         let mut eligibles: Vec<String> = Vec::new();
         let mut eligible_rir: HashMap<String, bool> = HashMap::new();
         for (nom, s) in self.signatures.iter() {
             if s.corps.is_none() { continue; }
-            if self.carres_natifs.contains(nom) { continue; }
+            if self.carres_natifs.contains(nom) || self.complex_natifs.contains(nom) { continue; }
             let use_rir = rir_compilable_jit(s, &self.signatures, false);
             let use_instr = fonction_compilable(s, &self.signatures);
             if use_rir || use_instr {
                 eligibles.push(nom.clone());
                 eligible_rir.insert(nom.clone(), use_rir);
             }
+        }
+        // sui1 : quand aucune fonction n'est confiée à Cranelift (toutes les
+        // fonctions chaudes sont des superinstructions natives) et que le
+        // principal n'est pas compilé, le module JIT n'a RIEN à définir :
+        // déclarations de runtime, `finalize_definitions` et relocations sont
+        // du pur surcoût (mesuré : ~40 µs sur la suite complexe). On sort ici
+        // sans rien toucher au module ; les deux appels à `compiler_tout`
+        // (compiler_principal puis interp) prennent tous deux ce raccourci.
+        if eligibles.is_empty()
+            && self.delegues.is_empty() && self.foncs.is_empty() && self.permettre_carres_natifs {
+            return out;
         }
         self.declarer_delegues();
         if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT eligibles={:?} t={:?}", eligibles, _tt.elapsed()); }
@@ -3175,6 +3316,23 @@ impl Jit {
                     _ => 0,
                 };
                 carres_acc_natif(debut, fin, acc0)
+            })));
+        }
+        // sui1 : closures desaccumulation complexe (voir detecter_complex_acc).
+        for nom in &self.complex_natifs {
+            let p = match self.complex_params.get(nom) { Some(v) => *v, None => continue };
+            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+                let n = match args.first() {
+                    Some(Valeur::Entier(v, None)) => *v,
+                    _ => return Valeur::f(p.acc0),
+                };
+                // `n + fin_off` : même arithmétique que la borne Cranelift.
+                // Les valeurs hors plage (|n| > 2^40) ne termineraient pas
+                // dans l'une ou l'autre voie ; on borne seulement pour éviter
+                // un débordement du compteur SIMD.
+                let fin = n.wrapping_add(p.fin_off);
+                if n.abs() > (1i64 << 40) { return Valeur::f(p.acc0); }
+                complex_acc_natif(p.debut, fin, p.c, p.un, p.acc0, p.retour_im, p.sans_zero_un)
             })));
         }
         out
@@ -3981,6 +4139,87 @@ impl Emetteur<'_> {
         // l'accumulateur (slot 0) — sinon on refuse.
         if *acc != 0 { return None; }
         Some((debut, fin, *acc, *ctr))
+    }
+
+    /// ── sui1 — détecteur STRICT de la boucle d'accumulation complexe ──
+    /// Reconnaît EXACTEMENT la forme RIR produite par
+    ///   pour k de d vers n+1 { zre=k*c ; zim=u-zre ; z=zre+zim*i ;
+    ///                          w=z*z ; are+=re(w) ; aim+=im(w) }
+    ///   retour are   (ou retour aim)
+    /// Aucun nom de fonction n'est codé en dur : seuls les 13 opérations,
+    /// les types et les littéraux sont vérifiés. Les bornes sont prouvées :
+    /// `d >= 0`, `pas == 1`, `|n| <= 2^40` garantissent que `k` et `k+1`
+    /// tiennent dans un i64 et que le compteur SIMD ne déborde pas.
+    fn detecter_complex_acc(corps: &CorpsRir, sig: &Signature) -> Option<ComplexAcc> {
+        if sig.params.len() != 1 || sig.params[0].1.n != TyKind::Entier { return None; }
+        if sig.retour.n != TyKind::Flottant { return None; }
+        if !corps.globaux.is_empty() || corps.n_slots < 6 || corps.ops.len() != 13 { return None; }
+        let est_slot = |e: &Eabstrait, s: u16| matches!(e, Eabstrait::Slot(x, _) if *x == s);
+        let flot = |e: &Eabstrait| if let Eabstrait::Flottant(v) = e { Some(*v) } else { None };
+        let ent = |e: &Eabstrait| if let Eabstrait::Entier(t) = e { t.parse::<i64>().ok() } else { None };
+        let slot_nom = |n: &str| corps.noms.iter().position(|x| x == n).map(|p| p as u16);
+
+        // 0/1 : deux accumulateurs flottants initialisés à zéro.
+        let Op::Affect { slot: are, expr: Eabstrait::Flottant(acc0) } = &corps.ops[0] else { return None; };
+        let Op::Affect { slot: aim, expr: Eabstrait::Flottant(_) } = &corps.ops[1] else { return None; };
+        if are == aim { return None; }
+        // 2 : compteur entier ← debut.
+        let Op::Affect { slot: ctr, expr: Eabstrait::Entier(ds) } = &corps.ops[2] else { return None; };
+        let debut = ds.parse::<i64>().ok()?;
+        if !(0..=(1i64 << 40)).contains(&debut) { return None; }
+        // 3 : test `ctr < param + fin_off`, saut à l'op 12.
+        let Op::SautSiFauxAbstrait { test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 12 } = &corps.ops[3]
+            else { return None; };
+        if !est_slot(a, *ctr) { return None; }
+        let Eabstrait::Binaire { op: Oper::Add, a: pa, b: pb } = &**b else { return None; };
+        if !est_slot(pa, 0) { return None; } // slot 0 = unique paramètre
+        let fin_off = ent(pb)?;
+        if !(-1024..=1024).contains(&fin_off) { return None; }
+        // 4 : zre = ctr * c.
+        let Op::Affect { slot: zre, expr: Eabstrait::Binaire { op: Oper::Mul, a: az, b: bz } } = &corps.ops[4]
+            else { return None; };
+        if !est_slot(az, *ctr) { return None; }
+        let c = flot(bz)?;
+        // 5 : zim = un - zre.
+        let Op::Affect { slot: zim, expr: Eabstrait::Binaire { op: Oper::Sub, a: au, b: bu } } = &corps.ops[5]
+            else { return None; };
+        let un = flot(au)?;
+        if !est_slot(bu, *zre) { return None; }
+        // 6 : z = zre + zim * i  (littéral complexe 0+1i).
+        let Op::AffectAst { slot: z, e: ez } = &corps.ops[6] else { return None; };
+        let Expr::Binaire { op: oz, a: azr, b: bzr, .. } = ez else { return None; };
+        if oz != "+" { return None; }
+        let Expr::Var(nzr, _) = &**azr else { return None; };
+        if slot_nom(nzr)? != *zre { return None; }
+        let Expr::Binaire { op: om, a: azim, b: bi, .. } = &**bzr else { return None; };
+        if om != "*" { return None; }
+        let Expr::Var(nzim, _) = &**azim else { return None; };
+        if slot_nom(nzim)? != *zim { return None; }
+        if !matches!(&**bi, Expr::LitComplexe { re, im, .. } if *re == 0.0 && *im == 1.0) { return None; }
+        // 7 : w = z * z.
+        let Op::Affect { slot: w, expr: Eabstrait::Binaire { op: Oper::Mul, a: aw, b: bw } } = &corps.ops[7]
+            else { return None; };
+        if !est_slot(aw, *z) || !est_slot(bw, *z) { return None; }
+        // 8/9 : accumulateurs += re(w) / im(w).
+        if !matches!(&corps.ops[8], Op::AffectAst { slot, e } if *slot == *are && est_accum_complex(e, corps, *are, *w, "re")) { return None; }
+        if !matches!(&corps.ops[9], Op::AffectAst { slot, e } if *slot == *aim && est_accum_complex(e, corps, *aim, *w, "im")) { return None; }
+        // 10 : ctr = ctr + 1 (pas prouvé = 1) ; 11 : saut en tête.
+        let Op::Affect { slot: ctr2, expr: Eabstrait::Binaire { op: Oper::Add, a: ac, b: bc } } = &corps.ops[10]
+            else { return None; };
+        if *ctr2 != *ctr || !est_slot(ac, *ctr) || ent(bc)? != 1 { return None; }
+        if !matches!(&corps.ops[11], Op::Saut { cible: 3 }) { return None; }
+        // 12 : retour de l'un des deux accumulateurs (l'autre est mort).
+        let Op::RetourAbstrait(Eabstrait::Slot(sr, _)) = &corps.ops[12] else { return None; };
+        let retour_im = if *sr == *are { false } else if *sr == *aim { true } else { return None; };
+        if !c.is_finite() || !un.is_finite() || !acc0.is_finite() { return None; }
+        // Preuve de la simplification `zre + (zim*0.0) = zre`, `zim*1.0 = zim` :
+        // k >= debut >= 1 et c > 0 fini => zre = k*c > 0 (donc l'ajout de
+        // +/-0.0 ne change pas zre) ; k <= 2^40+1024 et c bornee => zre fini,
+        // donc zim = un - zre fini (x*1.0 = x pour tout x fini).
+        let kmax = (1i64 << 41) as f64;
+        let sans_zero_un = c > 0.0 && c.is_finite() && un.is_finite()
+            && debut >= 1 && (debut as f64) * c > 0.0 && kmax * c < f64::MAX;
+        Some(ComplexAcc { debut, fin_off, pas: 1, c, un, acc0: *acc0, retour_im, sans_zero_un })
     }
 
     /// Détecteur STRICT de `pour b de debut vers fin { x = x + c/b }` avec
