@@ -975,3 +975,16 @@ Consigne: « ok continue, lance plein d'agent ». CLOSE2 continue sur le module 
 | SH4 | couverture du compilateur auto-hébergé (bugs restants) | `compilateur/emetteur_elf.rose`, `rose/docs/SELF_HOST_EXT.md` |
 | X64_1 | émetteur x86-64 exécutable sous qemu/box64 | `compilateur/emetteur_x64.rose`, `rose/src/{natif_emetteur,elf_linker}.rs`, `rose/docs/X64_EXEC.md` |
 | DOC1 | rafraîchir les comparatifs datés | `rose/docs/{COMPARATIF_TOTAL,VITESSE_FINALE,INNOVATION_VITESSE}.md` |
+
+## Vague 51 (21/11) — affichage Wolfram-like + poursuite vitesse
+
+Consigne: refonte de l'affichage des nombres geants (30 digits puis « more digits »), fonction `detail()` dynamique (puissance de 10, longueur, zeros finaux, derniers chiffres non nuls, etc. selon le type), et continuer a depasser Rust.
+
+Phase 1 (parallele, fichiers disjoints):
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| RECH1 | design Wolfram-like + etat de l'art code Rose | `rose/docs/DETAIL_CONCEPTION.md` seul |
+| MATH1 | primitives: log10(n!) precision arbitraire, zeros finaux, derniers non-nuls, premiers digits | `rose/src/i128x.rs`, `rose/docs/BIGSYM.md` |
+| SPEED1 | global : continuer a reduire l'ecart | `rose/src/jit.rs`, `rose/docs/SPEED1.md` |
+| SPEED2 | suite complexe + englobant : depasser Rust | `rose/src/interp.rs`, `rose/docs/SPEED2.md` |
+| UX1 | design UX REPL/CLI/GUI (sans source) | `rose/docs/DETAIL_UX.md` seul |
