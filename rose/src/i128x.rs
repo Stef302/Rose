@@ -869,6 +869,19 @@ pub unsafe fn gmpq_set_d(q: *mut Mpq, x: f64) {
 /// grands nombres. `n` doit être ≥ 0 ; le résultat est ≥ 1 si `c > 0`.
 #[inline]
 fn pgcd_grand_petit(n: &BigInt, c: u64) -> u64 {
+    // SP9 — voie scalaire exacte quand le numérateur tient dans u64.
+    // L'ancien corps calculait `(n % c)` sur BigInt, ce qui alloue un
+    // quotient à chaque appel, y compris pour n=1 (voie chaude de `1/c`).
+    // Ici `|n| mod c` est calculé sur des entiers natifs : même euclidienne,
+    // même résultat, zéro allocation. Le cas général BigInt est inchangé.
+    if c != 0 {
+        if let Some(nu) = n.to_u64() {
+            let mut a = c;
+            let mut b = nu % c;
+            while b != 0 { let t = a % b; a = b; b = t; }
+            return a;
+        }
+    }
     let mut a = c;
     let mut b = (n % c).abs().to_u64().unwrap_or(0);
     while b != 0 { let t = a % b; a = b; b = t; }
