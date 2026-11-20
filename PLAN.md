@@ -1118,3 +1118,14 @@ Objectif: outil professionnel dans un DOMAINE ÉTROIT (arithmétique de Peano + 
 | TH4 | noyau pro : ι-réduction Nat.rec, niveaux d'univers, erreurs structurées | `thorn/src/{noyau,tests_noyau}.rose`, `thorn/docs/NOYAU.md` |
 | TH5 | bibliothèque algèbre vérifiée (semiring/groupe) | `thorn/src/algebre.rose`, `thorn/tests_algebre.rose`, `thorn/docs/ALGEBRE.md` |
 | TH6 | qualité : CI, tests de non-régression, doc de périmètre | `.github/workflows/thorn.yml`, `thorn/tests_regression.sh`, `thorn/docs/QUALITE.md` |
+
+## Vague 65 — bannière de mise à jour + source site (plus GitHub)
+
+Demande: (1) le launcher doit afficher une banderole « nouvelle version disponible » des le 1er ecran;
+(2) pas de processus cache qui tourne en boucle, pas de dependance obligatoire a GitHub — le site Rose
+devient la source des releases; (3) ajouter une section RELEASES au site avec updates + binaires + changelog.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| L5 | bannière update 1er écran + lecture manifeste site, sans polling | `rose/src/{setup_gui,setup_core,velopack}.rs`, `rose/docs/UPDATE_BANNER.md` |
+| SITE1 | section RELEASES du site + manifeste releases.json | `docs/index.html`, `docs/telechargements/releases.json`, `rose/docs/SITE_RELEASES.md` |
