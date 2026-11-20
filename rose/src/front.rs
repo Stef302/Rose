@@ -87,6 +87,87 @@ pub enum Tk {
 /// un `Rc<str>` rend ce clone gratuit au lieu d'allouer une `String`.
 pub struct Token { pub tk: Tk, pub texte: std::rc::Rc<str>, pub ligne: usize, pub col: usize }
 
+/// ⚠ RC3 — FABRICATION DES TEXTES DE JETONS SANS ALLOCATION INTERMÉDIAIRE.
+///
+/// Avant : chaque jeton payait `String` + `Rc<str>` (DEUX allocations :
+/// `c.to_string().into()` pour les opérateurs, `cps[a..b].iter().collect::<
+/// String>()` puis `.into()` pour les identifiants et nombres), soit ~600
+/// appels à l'allocateur pour les 413 jetons de l'englobant.
+///
+/// Après :
+///   * `car()` sert les 128 caractères ASCII depuis un cache thread_local
+///     (un `Rc<str>` construit une seule fois) → ZÉRO allocation par
+///     opérateur, et le texte reste BIT-IDENTIQUE (même `&str`) ;
+///   * `de_chars()` encode les caractères d'un identifiant/nombre dans un
+///     tampon de pile de 128 octets puis construit l'`Rc<str>` DIRECTEMENT
+///     depuis le `&str` résultant → UNE allocation au lieu de deux ;
+///   * `statique()` sert les littéraux fixes (`">>"`, `"::"`, …) en une
+///     seule allocation `Rc::from(&str)`, et route les caractères ASCII
+///     simples vers le cache.
+///
+/// Aucune sémantique touchée : le `texte` de chaque jeton est exactement le
+/// même `&str` qu'auparavant (oracles `tokens`/`ast`/`rir` inchangés).
+mod texte_jeton {
+    use std::rc::Rc;
+
+    thread_local! {
+        /// Un `Rc<str>` par octet ASCII, construit à la première demande.
+        static ASCII: std::cell::RefCell<[Option<Rc<str>>; 128]> =
+            const { std::cell::RefCell::new([const { None }; 128]) };
+    }
+
+    /// Texte d'un jeton ponctuel : cache ASCII sans allocation.
+    pub fn car(c: char) -> Rc<str> {
+        let u = c as u32;
+        if u < 128 {
+            ASCII.with(|a| {
+                let mut a = a.borrow_mut();
+                a[u as usize].get_or_insert_with(|| Rc::from(c.to_string())).clone()
+            })
+        } else {
+            Rc::from(c.to_string())
+        }
+    }
+
+    /// Texte d'une chaîne littérale (échappements déjà appliqués dans `s`).
+    /// Cas rare : le texte produit est exactement celui de l'ancien
+    /// `buf.into()` ; on passe par un emprunt `&str` pour rester sur le même
+    /// chemin de construction `Rc<str>` que les autres jetons.
+    pub fn de_chaine(s: String) -> Rc<str> { Rc::from(s.as_str()) }
+
+    /// Texte d'un littéral fixe du lexeur (`"#"`, `"!="`, `">>"`, …).
+    pub fn statique(s: &'static str) -> Rc<str> {
+        if s.len() == 1 && s.is_ascii() {
+            car(s.as_bytes()[0] as char)
+        } else {
+            Rc::from(s)
+        }
+    }
+
+    /// Texte d'un identifiant / nombre / séquence de `!` : encodage UTF-8
+    /// dans un tampon de pile, puis UNE seule allocation `Rc<str>`.
+    /// Au-delà de 128 octets (identifiants pathologiques), repli sur un
+    /// `String` — sémantique identique, coût hors des bancs.
+    pub fn de_chars(cps: &[char]) -> Rc<str> {
+        let mut buf = [0u8; 128];
+        let mut len = 0usize;
+        for &c in cps {
+            let l = c.len_utf8();
+            if len + l > buf.len() {
+                let s: String = cps.iter().collect();
+                return Rc::from(s.as_str());
+            }
+            c.encode_utf8(&mut buf[len..]);
+            len += l;
+        }
+        // `cps` provient de `source.chars()` : la tranche encodée est du
+        // UTF-8 valide par construction (`from_utf8` ne peut pas échouer).
+        Rc::from(std::str::from_utf8(&buf[..len]).unwrap())
+    }
+}
+
+use texte_jeton as J;
+
 fn est_mot_cle(s: &str) -> bool {
     matches!(s,
         "fn" | "fonction" | "retour" | "si" | "sinon" | "tant_que" | "pour" | "de" | "vers"
@@ -153,7 +234,9 @@ fn car(c: char) -> Option<Tk> {
 pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
     let cps: Vec<char> = source.chars().collect();
     let n = cps.len();
-    let mut tk: Vec<Token> = Vec::new();
+    // ⚠ RC3 : réservation unique au lieu des ~10 reallocations successives
+    // du `Vec<Token>` pendant le scan (413 jetons sur l'englobant).
+    let mut tk: Vec<Token> = Vec::with_capacity(source.len() / 8 + 16);
     let (mut i, mut ligne, mut col): (usize, usize, usize) = (0, 1, 1);
 
     macro_rules! err {
@@ -170,7 +253,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             let p = cps[i - 1];
             let apres_expr = !(p == '\n' || p == ' ' || p == '\t' || p == '\r');
             if apres_expr {
-                tk.push(Token { tk: Tk::Diese, texte: "#".into(), ligne, col });
+                tk.push(Token { tk: Tk::Diese, texte: J::statique("#"), ligne, col });
                 i += 1; col += 1;
                 continue;
             }
@@ -210,7 +293,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 if d == quote { i += 1; col += 1; break; }
                 buf.push(d); i += 1; col += 1;
             }
-            tk.push(Token { tk: Tk::Chaine, texte: buf.into(), ligne: dl, col: dc });
+            tk.push(Token { tk: Tk::Chaine, texte: J::de_chaine(buf), ligne: dl, col: dc });
             continue;
         }
         if c.is_ascii_digit() {
@@ -223,8 +306,8 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 i += 1; col += 1;
                 while i < n && cps[i].is_ascii_digit() { i += 1; col += 1; }
             }
-            let texte: String = cps[debut..i].iter().collect();
-            tk.push(Token { tk: if flott { Tk::Flottant } else { Tk::Nombre }, texte: texte.into(), ligne: dl, col: dc });
+            let texte = J::de_chars(&cps[debut..i]);
+            tk.push(Token { tk: if flott { Tk::Flottant } else { Tk::Nombre }, texte, ligne: dl, col: dc });
             continue;
         }
         // '!' : plusieurs usages distincts.
@@ -258,7 +341,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 | Some(Tk::Terminal) | Some(Tk::SuperFacto) | Some(Tk::Chapeau)
                 | Some(Tk::DeuxPts));
             if !apres_expr {
-                tk.push(Token { tk: Tk::SousFacto, texte: "!".into(), ligne, col });
+                tk.push(Token { tk: Tk::SousFacto, texte: J::statique("!"), ligne, col });
                 i += 1; col += 1;
                 continue;
             }
@@ -272,7 +355,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             // reconnue — le lexeur produisait « $z ! » puis « = ».
             // Un « ! » suivi d'un « = » n'est JAMAIS une factorielle.
             if i + 1 < n && cps[i + 1] == '=' {
-                tk.push(Token { tk: Tk::Diff, texte: "!=".into(), ligne, col });
+                tk.push(Token { tk: Tk::Diff, texte: J::statique("!="), ligne, col });
                 i += 2; col += 2;
                 continue;
             }
@@ -280,8 +363,8 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             let debut = i;
             while i < n && cps[i] == '!' && !(i + 1 < n && cps[i + 1] == '=') { i += 1; col += 1; }
             let k = (i - debut).min(u8::MAX as usize) as u8;
-            let texte: String = cps[debut..i].iter().collect();
-            tk.push(Token { tk: Tk::MultiFacto(k), texte: texte.into(), ligne, col: col - (i - debut) });
+            let texte = J::de_chars(&cps[debut..i]);
+            tk.push(Token { tk: Tk::MultiFacto(k), texte, ligne, col: col - (i - debut) });
             continue;
         }
         // '?' postfixe : TERMIAL CLASSIQUE n(n+1)/2 (A000217), depuis le
@@ -306,24 +389,24 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             let suit_paren = j < n && cps[j] == '(';
             let ouvre_si = est_debut_instr && suit_paren;
             if !ouvre_si && u != '=' && u != '?' {
-                tk.push(Token { tk: Tk::Terminal, texte: "?".into(), ligne, col });
+                tk.push(Token { tk: Tk::Terminal, texte: J::statique("?"), ligne, col });
                 i += 1; col += 1;
                 continue;
             }
         }
         if c == 'π' {
-            tk.push(Token { tk: Tk::Mot, texte: "π".into(), ligne, col });
+            tk.push(Token { tk: Tk::Mot, texte: J::car(c), ligne, col });
             i += 1; col += 1; continue;
         }
         if c == 'φ' {
-            tk.push(Token { tk: Tk::Mot, texte: "φ".into(), ligne, col });
+            tk.push(Token { tk: Tk::Mot, texte: J::car(c), ligne, col });
             i += 1; col += 1; continue;
         }
         // '$' postfixe : super-factorielle. Un '$' suivi d'une lettre ouvre une
         // variable ($x) ; un '$' seul (fin, chiffre, opérateur, blanc…) ferme
         // l'expression précédente → opérateur.
         if c == '$' && !(i + 1 < n && cp_lettre(cps[i + 1])) {
-            tk.push(Token { tk: Tk::SuperFacto, texte: "$".into(), ligne, col });
+            tk.push(Token { tk: Tk::SuperFacto, texte: J::statique("$"), ligne, col });
             i += 1; col += 1;
             continue;
         }
@@ -336,60 +419,61 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 err!("Attente d'un nom de variable après '$'".to_string(), dl, dc);
             }
             while i < n && cp_ident_suite(cps[i]) { i += 1; col += 1; }
-            let texte: String = cps[debut..i].iter().collect();
             if dollar {
                 // les mots-clés après '$' sont permis ($de, $si sont des
                 // noms valides) — miroir strict, aucun controle ici.
-                let nu = texte[1..].to_string();
-                tk.push(Token { tk: Tk::Ident, texte: nu.into(), ligne: dl, col: dc });
+                // ⚠ RC3 : `$` est un caractère ASCII, donc `debut + 1` est
+                // la même frontière de caractère que `texte[1..]` (l'ancien
+                // `&str` après le `$`). Texte identique, une seule allocation.
+                tk.push(Token { tk: Tk::Ident, texte: J::de_chars(&cps[debut + 1..i]), ligne: dl, col: dc });
             } else {
-                tk.push(Token { tk: Tk::Mot, texte: texte.into(), ligne: dl, col: dc });
+                tk.push(Token { tk: Tk::Mot, texte: J::de_chars(&cps[debut..i]), ligne: dl, col: dc });
             }
             continue;
         }
         if i + 1 < n {
             if let Some(t) = paire(c, cps[i + 1]) {
-                let texte: String = cps[i..i + 2].iter().collect();
-                tk.push(Token { tk: t, texte: texte.into(), ligne, col });
+                let texte = J::de_chars(&cps[i..i + 2]);
+                tk.push(Token { tk: t, texte, ligne, col });
                 i += 2; col += 2; continue;
             }
         }
         if c == '>' && i + 1 < n && cps[i + 1] == '>' {
-            tk.push(Token { tk: Tk::FlecheD, texte: ">>".into(), ligne, col });
+            tk.push(Token { tk: Tk::FlecheD, texte: J::statique(">>"), ligne, col });
             i += 2; col += 2; continue;
         }
         if c == '<' && i + 1 < n && cps[i + 1] == '<' {
-            tk.push(Token { tk: Tk::FlecheG, texte: "<<".into(), ligne, col });
+            tk.push(Token { tk: Tk::FlecheG, texte: J::statique("<<"), ligne, col });
             i += 2; col += 2; continue;
         }
         if c == '-' && i + 1 < n && cps[i + 1] == '>' {
             // '->' de signature : émis comme deux tokens (le lexer a un
             // token PointDInterro ; on garde '-' puis '>' et le parser accepte)
-            tk.push(Token { tk: Tk::Moins, texte: "-".into(), ligne, col });
-            tk.push(Token { tk: Tk::Sup, texte: ">".into(), ligne, col: col + 1 });
+            tk.push(Token { tk: Tk::Moins, texte: J::statique("-"), ligne, col });
+            tk.push(Token { tk: Tk::Sup, texte: J::statique(">"), ligne, col: col + 1 });
             i += 2; col += 2; continue;
         }
-        if c == '=' { tk.push(Token { tk: Tk::Affect, texte: "=".into(), ligne, col }); i += 1; col += 1; continue; }
+        if c == '=' { tk.push(Token { tk: Tk::Affect, texte: J::statique("="), ligne, col }); i += 1; col += 1; continue; }
         if c == ':' && i + 1 < n && cps[i + 1] == ':' {
-            tk.push(Token { tk: Tk::DeuxPoints, texte: "::".into(), ligne, col });
+            tk.push(Token { tk: Tk::DeuxPoints, texte: J::statique("::"), ligne, col });
             i += 2; col += 2; continue;
         }
         if c == '²' || c == '³' {
-            tk.push(Token { tk: Tk::Chapeau, texte: "^".into(), ligne, col });
-            tk.push(Token { tk: Tk::Nombre, texte: if c == '²' { "2".into() } else { "3".into() }, ligne, col });
+            tk.push(Token { tk: Tk::Chapeau, texte: J::statique("^"), ligne, col });
+            tk.push(Token { tk: Tk::Nombre, texte: if c == '²' { J::statique("2") } else { J::statique("3") }, ligne, col });
             i += 1; col += 1; continue;
         }
         if let Some(t) = uni(c) {
-            tk.push(Token { tk: t, texte: c.to_string().into(), ligne, col });
+            tk.push(Token { tk: t, texte: J::car(c), ligne, col });
             i += 1; col += 1; continue;
         }
         if let Some(t) = car(c) {
-            tk.push(Token { tk: t, texte: c.to_string().into(), ligne, col });
+            tk.push(Token { tk: t, texte: J::car(c), ligne, col });
             i += 1; col += 1; continue;
         }
         err!(format!("Caractère inattendu '{}'", c), ligne, col);
     }
-    tk.push(Token { tk: Tk::Eof, texte: "".into(), ligne, col });
+    tk.push(Token { tk: Tk::Eof, texte: J::statique(""), ligne, col });
     crate::run::noter_ligne(ligne.max(1));
     Ok(tk)
 }
