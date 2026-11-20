@@ -931,3 +931,11 @@ Consigne: « on continue self hosting et programme global, on ne s'arrête pas �
 | Agent | Sujet | Fichiers possédés | Cœur |
 |---|---|---|---|
 | GLB2 | global : Rose ≤ Rust | `rose/src/{jit,run,interp}.rs`, `rose/docs/GLOBAL_BEAT.md` | 6 |
+
+## Vague 46 (20/11) — global : démarrage et compilation JIT
+
+Consigne: « on continue self hosting et programme global ». GLB2 a livré (commit 10b9df4): ratio x4,5→x2,85. Constat documenté (bbf1af0): le jumeau Rust deborde (i64) et utilise f64 —Rose calcule exact — donc la comparaison n'est pas semantiquement equivalente; battre Rust exigerait d'adopter ses erreurs, refuse. Reste legitime: 2,98ms de parse/JIT/demarrage + 1,26ms de carres.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| GLB3 | réduire parse/JIT/démarrage (2,98ms) et boucle carrés (1,26ms) | `rose/src/{jit,front,run,interp}.rs`, `rose/docs/DEMARRAGE.md` | 6 |
