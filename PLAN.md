@@ -948,3 +948,11 @@ Consigne: « on continue self hosting et programme global, on ne s'arrête pas �
 |---|---|---|---|
 | SUI1 | suite complexe x1,86 → Rose ≤ Rust | `rose/src/{jit,run,i128x}.rs`, `rose/docs/SUITE_BEAT.md` | 6 |
 | ENG1 | englobant x2,49 → Rose ≤ Rust | `rose/src/{interp,front}.rs`, `rose/docs/ENGBEAT.md` | 19 |
+
+## Vague 48 (20/11) — résidu commun de démarrage
+
+Consigne: « on ne s'arrête pas ». État: self-hosting atteint (0e2d844 + preuve e0f5744); banc principal 9/9; suite complexe x1,15; englobant x1,40-1,62; global x2,88 (comparaison non équivalente). ENG1 et SUI1 nomment le même residu: demarrage processus/parse/JIT hors leurs fichiers.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| CLOSE1 | réduire le démarrage commun (suite x1,15, englobant x1,4-1,6) | `rose/src/{main,front}.rs`, `rose/Cargo.toml`, `rose/docs/CLOSURE.md` | dédié |
