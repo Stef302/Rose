@@ -187,16 +187,38 @@ sur F1==F2, pas sur ce dump. À re-vérifier avant toute livraison.
 
 ## 7. F1 / F2
 
-Chaîne rejouée sur l'état final :
-```
-./rose/rose rir compilateur/emetteur_elf.rose > /tmp/opencode/bigint/f1f2/e_final.rir   # 348 821 o, 909c4d1b…
-./rose/rose compilateur/emetteur_elf.rose e_final.rir > F1_final.elf
-./F1_final.elf e_final.rir > F2_final.elf
-cmp F1_final.elf F2_final.elf
-```
-Première salve (`e.rir`, 349 001 o, généré AVANT l'optimisation des sauts) :
+### 7.1 Première salve (RIR `e.rir`, avant optimisation des sauts)
+
 `F1.elf` émis par le natif en **14 min 56 s**, rc=0, 604 092 o, md5
 `67283c07b3816de036705d7c8bc4b018`, stderr vide. Le RIR ayant changé
-ensuite (180 o de moins), cette salve ne valide que la cohérence interne de
-l'émetteur, pas l'état final du source. Résultat F2 et salve finale : à
-compléter après mesure.
+ensuite (180 o de moins), cette salve ne valide que la cohérence interne.
+
+### 7.2 Blocage trouvé : tas 32 Gio insuffisant
+
+`./F1.elf e.rir` (F1 s'auto-compilant) rendait **rc=139 SIGSEGV** en 15 s.
+Diagnostic gdb : pointeur libre à `0x860000000`, exactement la fin du
+mapping RW de 32 Gio (identifié dans le header ELF, `p_memsz=0x800000000`).
+Preuve que ce n'est pas un bug de sémantique mais une limite de taille :
+- le **F1 de référence** `/tmp/opencode/sh12_agents/F1_final.elf` (avant ce
+  chantier) réussit sur son propre RIR, avec pointeur final `0x715b1cf18`
+  = 28,34 Gio ;
+- un patch du seul champ `p_memsz` de F1.elf à 64 Gio repousse le SIGSEGV à
+  `0x105ffffff8`, puis à 128 Gio il **réussit** : pointeur final
+  `0x1296320880` ≈ 79,7 Gio, rc=0, 604 092 o ;
+- le ELF produit par F1 patché est **octet pour octet identique à F1.elf**
+  (`cmp`=0, md5 `67283c07…` des deux côtés) : F1==F2 est donc vrai dès que
+  le tas est assez grand.
+
+Conséquence : le mapping RW de `g5_elf()` passe de 32 Gio (`34359738368`) à
+**128 Gio** (`137438953472`), toujours virtuel/paresseux. Le pointeur à
+~80 Gio reste sous les ~110 Gio disponibles mesurés par `free -h`.
+
+### 7.3 Salve finale (état livré)
+
+À compléter après la régénération de F1 avec le mapping 128 Gio :
+```
+./rose/rose rir compilateur/emetteur_elf.rose > e_v2.rir
+./rose/rose compilateur/emetteur_elf.rose e_v2.rir > F1_v2.elf
+./F1_v2.elf e_v2.rir > F2_v2.elf
+cmp F1_v2.elf F2_v2.elf
+```
