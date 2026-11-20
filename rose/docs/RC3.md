@@ -33,7 +33,7 @@ modifié, aucun cache disque, mêmes valeurs de sortie vérifiées à chaque sal
 | HEAD aux mesures | `ff3c4a9` (inchangé) |
 | Arbre source isolé | `/tmp/opencode/rc3_agents/src_tree` (copie de `rose/` à l'arrivée : `Cargo.toml`, `Cargo.lock`, `build.rs`, `src/`), tous les binaires construits avec `CARGO_TARGET_DIR` dédié |
 | Binaire témoin | `/tmp/opencode/rc3_agents/rose_base`, SHA256 `cc18c281100f88f400210d6af546d72469195d35d13355f4952d0c85521bb784` |
-| Binaire final | `/tmp/opencode/rc3_agents/rose_mod`, SHA256 `9cf5d530b29201ce39321d1f2685d4a7c2fa8b5ce55218d2e381daf9ba2d7b5e` (avant deux corrections de commentaires, sans effet codegen) |
+| Binaire final | `/tmp/opencode/rc3_agents/rose_mod_final`, SHA256 `cd623df8ef587d89c5a624f2b007a31f2cb6d1c0712b79e45dca4be484b0840c` (rebuild après deux corrections de commentaires ; le hash diffère de `rose_mod` `9cf5d530…` par le BuildID, les sorties sont identiques) |
 | Pinage | `taskset -c 6` (Cortex-X925), `-c 16`, `-c 19` (Cortex-A725), capacités re-mesurées OK |
 | Échantillons | 2 salves A/A/A entrelacées de 9 tirs/cœur, rotation `A B B A` / `B A A B` ; contrôle A/A (même binaire des deux côtés) de 6 tirs/cœur |
 | Horloges | `ROSE_TIMING` (horloge interne ns, `eprintln` permanent) ; `cntvct`-free : chronomètres `std::time::Instant` insérés **temporairement** dans une copie `src_prof*` hors dépôt, retirés du livrable |
@@ -123,6 +123,14 @@ normalisation du sens.
 | global | c16 | +4,3 µs | +5,2 µs | +4,6 / +4,5 µs |
 | global | c19 | +6,6 µs | +8,1 µs | +6,8 / +8,4 µs |
 
+Une **troisième** salve de confirmation sur le binaire final reconstruit
+(6 tirs/cœur, A=base / B=final) donne, en médianes `parse` A−B :
+suite **+5,7 / +5,2 / +3,0 µs**, englobant **+13,1 / +11,1 / +10,7 µs**,
+global **+5,8 / +4,7 / +6,2 µs** (c6/c16/c19). Les 11 premières valeurs du
+global et les sorties complètes de la suite et de l'englobant sont
+octet-identiques à la base ; seule la 12e ligne du global (chrono
+`millisecondes`, 6 vs 2) diffère, comme attendu d'une mesure murale.
+
 Le contrôle A/A (même binaire des deux côtés, c16/c19, 6 tirs) donne un
 `parse` A−B médian de −3,1 à +2,3 µs : les gains de l'englobant et du global
 sont au-dessus du bruit ; ceux de la suite sont à la limite.
@@ -142,6 +150,13 @@ cargo test --release (arbre isolé, target dédié)               rc=0
    265 + 249 + 0 + 6 + 8 + 1 + 0 = 529 passed, 0 failed, 6 ignored
 oracle tokens (examples + jardins)        26/26
 oracle ast (examples jardins bench/dores rose-cpp/tests/roses) 64/64
+oracle verif (timeout 8s/fichier)         19/19 (60 jardins GUI font boucler
+                                          le vérificateur INTERPRÉTÉ en Rose,
+                                          y compris sur rose_base — préexistant)
+oracle rir (timeout 8s/fichier)           58/61 ; les 3 écarts
+                                          (bench/dores/{alias,t_flottant,
+                                          t_machine}.rose) sont IDENTIQUES sur
+                                          rose_base — préexistants
 point fixe (2 voies successives)          b3ed9262dd54776a6dbd07bc12368d0e ×2
                                           (stderr 0 octet des 2 côtés)
 9 domaines multi, c6 / c16 / c19          81/81 OK à chaque cœur
@@ -160,11 +175,11 @@ Note : la consigne annonçait « 517 tests ». Le harnais isolé en a exécuté
 **529** (0 échec) sur ce HEAD ; l'écart est un décalage de décompte entre
 consignes, pas un test manquant.
 
-⚠ Oracle `verif` / `rir` : le corpus complet est lancé en tâche de fond
-(`/tmp/opencode/rc3_agents/oracles_full.txt`) ; le vérificateur interprété en
-Rose s'attarde sur `jardins/tests/gui_native_demo.rose` (≈1 min sous la
-compilation concurrente). Résultat à lire dans ce fichier ; `tokens` et `ast`
-sont déjà 100 % verts et l'AST est la seule entrée du RIR.
+⚠ Oracles `verif` / `rir` : le vérificateur/émetteur interprété en Rose
+boucle sur plusieurs jardins GUI (mesuré `timeout 30` = rc=124 sur
+`jardins/tests/gui_native_demo.rose` **avec `rose_base` aussi**). Les oracles
+ont donc été re-joués avec un `timeout 8s` par fichier : 19/19 et 58/61 des
+deux côtés, avec les MÊMES 3 fichiers en écart RIR. Aucune régression.
 
 ---
 
