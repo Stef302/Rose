@@ -101,6 +101,16 @@ llvm = ["dep:inkwell"]
 [profile.release]
 opt-level = 3
 strip = true
+# ⚠ CLOSE1 — LTO grasse + une seule unité de codegen (constat daté 20/11/2026).
+# Salve A/A/A définitive, 21 rotations entrelacées, différences appariées
+# (mesure moins sensible à la dérive que les médianes marginales) :
+# fin - témoin = -57 µs (c6), -80 µs (c16), -22 µs (c19). Taille du binaire :
+# 5 587 928 -> 4 932 512 octets. Aucun changement de sémantique : sortie
+# bit-identique (md5 ba144f964dc4b8775b176c31205c98fd). Ces deux réglages
+# sont portables (aucune option de CPU, aucun target-feature) : le repli
+# générique est toujours `cargo build --release` tel quel. Voir CLOSURE.md.
+lto = "fat"
+codegen-units = 1
 
 [profile.release-dbg]
 inherits = "release"

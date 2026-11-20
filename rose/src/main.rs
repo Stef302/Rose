@@ -1254,9 +1254,18 @@ fn main() {
     if argv.iter().any(|a| a == "--step") || std::env::var("ROSE_STEP").is_ok() {
         crate::run::set_step_mode(true);
     }
-    let source_t = source.clone();
-    let args_t = args.clone();
-    let fichier_t = fichier.clone();
+    // ⚠ CLOSE1 — une seule lecture du source sur le chemin courant.
+    //
+    // `interp::executer_fichier` relit le fichier avec `read_to_string` avant
+    // de l'analyser. Quand le programme n'a AUCUN import, `origine` ne sert
+    // qu'à résoudre les imports (front::analyser_fichier_rec_source) : le
+    // chemin `interp::executer_source(source, args)` est donc exactement le
+    // même pipeline (analyser_sans_verifier + verifier), sans la seconde
+    // lecture disque. Le test `contains("importer")` est CONSERVATIF : un
+    // faux positif (mot dans un commentaire) garde l'ancien chemin, jamais
+    // l'inverse — une vraie directive `importer` est toujours écrite en
+    // toutes lettres dans le source.
+    let sans_imports = !source.contains("importer");
     let _t_pret = _t_start.elapsed();
     // ⚠⚠⚠ 512 Mo DE PILE, PAS 8 Mo (mesuré le 16/11).
     //
@@ -1271,9 +1280,21 @@ fn main() {
     // ⚠ Les 512 Mo sont RÉSERVÉS (mmap), pas engagés : aucune mémoire n'est
     // touchée tant que la récursion n'y descend pas.
     // ⚠⚠⚠ L'EXÉCUTION PASSE PAR LE FICHIER (imports résolus) (mesuré le 17/11).
+    enum Tache {
+        Source(String, Vec<String>),
+        Fichier(String, Vec<String>),
+    }
+    let tache = if sans_imports {
+        Tache::Source(source, args)
+    } else {
+        Tache::Fichier(fichier.clone(), args)
+    };
     let h = std::thread::Builder::new()
         .stack_size(512 * 1024 * 1024)
-        .spawn(move || interp::executer_fichier(&fichier_t, args_t));
+        .spawn(move || match tache {
+            Tache::Source(s, a) => interp::executer_source(&s, a),
+            Tache::Fichier(f, a) => interp::executer_fichier(&f, a),
+        });
     let _t_post = _t_start.elapsed();
     let rc = match h {
         Ok(j) => match j.join() {
@@ -1290,7 +1311,24 @@ fn main() {
                 1
             }
         },
-        Err(_) => interp::executer_fichier(&fichier, args),
+        Err(_) => {
+            // Repli (création de fil impossible) : les valeurs ont été
+            // déplacées dans `tache`, on relit le fichier et on reconstruit
+            // les arguments exactement comme l'ancien chemin.
+            let a: Vec<String> = if action == "run" {
+                std::env::args().skip(3).collect()
+            } else {
+                std::env::args().skip(2).collect()
+            };
+            if sans_imports {
+                match std::fs::read_to_string(&fichier) {
+                    Ok(s) => interp::executer_source(&s, a),
+                    Err(_) => 1,
+                }
+            } else {
+                interp::executer_fichier(&fichier, a)
+            }
+        }
     };
     if console_apres {
         repl::lancer(Some(&fichier), false);
