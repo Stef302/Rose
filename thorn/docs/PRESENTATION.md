@@ -20,9 +20,9 @@ Ce n'est **ni un compilateur, ni un calculateur**. C'est un **vérificateur de
 preuves** : on lui donne une affirmation et une preuve, et il répond si la
 preuve est valide d'après son noyau de types dépendants.
 
-Comparing with un compilateur : un compilateur produit du code exécutable ;
-Thorn produit un **terme de preuve** et contrôle son type. Comparing with une
-calculatrice : une calculatrice évalue `1 + 1` ; Thorn ne calcule pas `plus`,
+Par comparaison : un compilateur produit du code exécutable ; Thorn produit un
+**terme de preuve** et contrôle son type. Une calculatrice évalue `1 + 1` ;
+Thorn ne calcule pas `plus`,
 il vérifie qu'un terme de type `Eq Nat (plus 1 1) 2` est bien typé — et encore,
 seulement dans la mesure où les équations de `plus` lui sont données comme
 axiomes de signature (voir §4).
@@ -58,8 +58,8 @@ jamais une valeur `vrai` écrite en dur dans les démonstrations.
 - **Transparence** : chaque tactique rend une table qui contient le `terme`
   construit et la `regle` employée ; l'option `--trace` du pilote affiche ces
   termes. On peut toujours demander « quel terme as-tu fabriqué ? ».
-- **Zéro dépendance** : tout tient dans cinq fichiers Rose plus le binaire
-  `./rose/rose` du dépôt.
+- **Zéro dépendance** : tout tient dans les fichiers Rose de `thorn/src/`
+  plus le binaire `./rose/rose` du dépôt.
 
 ## 3. Syntaxe complète
 
@@ -83,7 +83,7 @@ Le lexeur accepte les accents (`théorème`) et aussi `theoreme` ; `preuve`
 admet les alias `preuv` et `proof`. Les tactiques ont des alias courts :
 `refl`, `sym`, `intro`, `app`, `ind`.
 
-Ànoter, mesuré le 21/11 : `fin` est un terminateur reconnu par le **pilote**
+À noter, mesuré le 21/11 : `fin` est un terminateur reconnu par le **pilote**
 (découpage des jetons), mais le **parseur** `analyser_fichier` le traite comme
 une tactique inattendue et affiche
 `Thorn — ligne N : tactique inattendue 'fin'` tout en rendant la déclaration
@@ -245,12 +245,15 @@ elles ne sont pas des défauts cachés.
    `application` essaie une ou deux applications, sans unification générale.
 6. **Preuves de démonstration partiellement cassées.** Le chantier TH1 corrige
    en parallèle les preuves de `thorn/preuves/` le 21/11 (les `.slg` y ont été
-   renommés en `.thn` pendant cette rédaction). Dernier constat mesuré :
-   `./rose/rose thorn/src/principal.rose --demo` rend
-   `5 théorème(s), 0 réussi(s)` avec, par exemple,
+   renommés en `.thn` pendant cette rédaction). Deux constats du même jour :
+   `./rose/rose thorn/src/principal.rose --demo` a rendu
+   `5 théorème(s), 0 réussi(s)` (avec par exemple
    `ÉCHEC identite : terme de preuve invalide — variable non liee: ?` et
-   `ÉCHEC reflexivite : tactique reflexivite : index hors des limites de la liste`.
-   État transitoire, à re-mesurer. **Ne pas prétendre que ces preuves passent.**
+   `ÉCHEC reflexivite : tactique reflexivite : index hors des limites de la liste`),
+   puis, au dernier contrôle, `Rose : erreur — [Ligne 319, Colonne 0] longueur:
+   une liste, une chaîne ou une table est attendue, reçu ?` — le pilote était de
+   nouveau en cours d'édition. État transitoire, à re-mesurer. **Ne pas prétendre
+   que ces preuves passent.**
    Ce qui passe réellement, ce sont les termes construits et vérifiés par
    `tests_noyau.rose`, `tests_syntaxe.rose`, `tests_tactiques.rose` et
    `bibliotheque.rose`.
@@ -315,8 +318,9 @@ cd /home/clausake/Stefan/ROSE
 ./rose/rose thorn/tests_syntaxe.rose      # → OK = 8   ECHEC = 0
 ./rose/rose thorn/tests_tactiques.rose    # → REUSSIS=19, ECHOUES=0, RESULTAT: OK
 
-# Pilote (en cours de correction — ne pas attendre que les .slg passent)
+# Pilote (en cours de correction — ne pas attendre que les .thn passent)
 ./rose/rose thorn/src/principal.rose --aide
+./rose/rose thorn/src/principal.rose --demo     # en correction : 5/0, puis erreur de compilation
 ```
 
 Utiliser `./rose/rose` (0.1.6, présent dans le dépôt) : le `rose` du PATH
