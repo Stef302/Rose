@@ -10,12 +10,13 @@ ce document. Aucun autre fichier n'a été modifié. Aucun commit, aucune public
 cd /home/clausake/Stefan/ROSE
 ./rose/rose verif thorn/src/noyau.rose        # → vérifié
 ./rose/rose verif thorn/tests_noyau.rose      # → vérifié
-./rose/rose thorn/tests_noyau.rose            # → REUSSIS=88, ECHOUES=0, RESULTAT: OK
+./rose/rose thorn/tests_noyau.rose            # → REUSSIS=126, ECHOUES=0, RESULTAT: OK
 ```
 
 Non-régression (rejoué après chaque bloc) : 5 preuves `.thn` (5/5), 10 lemmes de
-`bibliotheque.rose` (10/0), 8 tests syntaxe (8/0), 19 tests tactiques (19/0),
-12 tests pilote (12/0).
+`bibliotheque.rose` (10/0), 34 lemmes d'`algebre.rose` (34/0), 8 tests syntaxe
+(8/0), 19 tests tactiques (19/0), 12 tests pilote (12/0). Non-régression
+globale : `bash thorn/tests_regression.sh` → 17/17 cas, BILAN: OK.
 
 ## Interface publique
 
@@ -28,6 +29,7 @@ Non-régression (rejoué après chaque bloc) : 5 preuves `.thn` (5/5), 10 lemmes
 | `bien_forme(t, ctx)` | `-> bool` | vrai si `verifier` accepte (et genre connu) |
 | `cumulatif(a, b)` | extension | conversion stricte OU `Type(i) ≤ Type(j)` si `i ≤ j` |
 | `noy_code(r)`, `noy_contexte(r)`, `noy_ligne_res(r)`, `noy_pas_res(r)` | extension | accès défensifs au Resultat |
+| `noy_est_bool`, `noy_est_true`, `noy_est_false`, `noy_est_motive_bool`, `noy_bool_rec_valide`, `noy_not_valide` | extension | contrôle de structure du second inductif (Bool) |
 
 Les champs historiques `ok`, `type`, `erreur` sont inchangés : tous les
 consommateurs existants (tactiques, pilote, bibliothèque) fonctionnent sans
@@ -75,8 +77,9 @@ les programmes importateurs.
   des égalités** : `ind("=",[a,b])` exige que `a` et `b` aient des types
   convertibles ; `ind("Eq",[A,a,b])` exige `a : A` et `b : A`. Échec →
   `EQ_MAL_TYPE`. La sur-permissivité historique (« a et b non typés par A »)
-  est supprimée pour ces deux formes. Les autres inductifs restent
-  structurels (voir Limites).
+  est supprimée pour ces deux formes. `ind("Bool",[])` est reconnu comme
+  type de donnée (annotation des constructeurs `true` / `false`). Les autres
+  inductifs restent structurels (voir Limites).
 - `elim` : motif et branches synthétisés (`ELIM_*`), type rendu `Type(0)`.
 
 ### Cumulativité
@@ -98,9 +101,11 @@ forme normale en comptant ; à la limite il rend `{terme partiel, pas, erreur}`.
 `beta(t)` rend le terme (signature SPEC `-> Terme`) ; c'est `verifier` qui
 expose l'erreur de garde.
 
-Les deux primitives reconnues par l'ι sont désignées **par leur nom ET par la
-forme de leur annotation de type** (`noy_pi_domaine_ieme`) : un `const`
-arbitraire nommé `plus` mais mal typé n'est jamais réduit (test dédié).
+Les primitives reconnues par l'ι sont désignées **par leur nom ET par la
+forme de leur annotation de type** (`noy_pi_domaine_ieme`, et pour Bool les
+prédicats `noy_bool_rec_valide` / `noy_not_valide` /
+`noy_est_motive_bool`) : un `const` arbitraire nommé `plus`, `bool_rec` ou
+`not` mais mal typé n'est jamais réduit (tests dédiés).
 
 | Primitive | Motif | Réduction |
 |---|---|---|
@@ -108,6 +113,10 @@ arbitraire nommé `plus` mais mal typé n'est jamais réduit (test dédié).
 | `plus : Πm:Nat. Πn:Nat. Nat` | `plus (succ k) n` | `succ (plus k n)` |
 | `nat_rec : ΠP.Πbase.Πpas.Πm:Nat. P m` | `nat_rec P base pas zero` | `base` |
 | `nat_rec : ΠP.Πbase.Πpas.Πm:Nat. P m` | `nat_rec P base pas (succ k)` | `pas k (nat_rec P base pas k)` |
+| `not : Πb:Bool. Bool` | `not true` | `false` |
+| `not : Πb:Bool. Bool` | `not false` | `true` |
+| `bool_rec : ΠP:(Πb:Bool.Type).Πt:(P true).Πf:(P false).Πb:Bool. P b` | `bool_rec P t f true` | `t` |
+| `bool_rec : ΠP:(Πb:Bool.Type).Πt:(P true).Πf:(P false).Πb:Bool. P b` | `bool_rec P t f false` | `f` |
 
 Les pas d'ι sont comptés comme les pas de β (test : 2 pas pour
 `plus (succ zero) n`). `convertible` voit ces équations :
@@ -116,6 +125,28 @@ constantes `plus_0_l` / `plus_s_l` de la bibliothèque restent présentes (fichi
 hors périmètre TH4) mais leurs équations sont désormais **calculées** par le
 noyau : elles ne sont plus nécessaires à la réduction, seulement conservées
 pour les preuves existantes.
+
+### Second inductif : Bool
+
+`Bool` est le deuxième inductif à disposer d'une ι-réduction (après `Nat`).
+Ses constructeurs `true` / `false` sont des `const` dont l'annotation doit être
+`Ind(Bool)` ; un `true` annoté autrement n'est pas reconnu. L'éliminateur
+dépendant `bool_rec` porte une annotation à **quatre flèches**, contrôlée par
+`noy_bool_rec_valide` :
+
+1. un motif `P` bien formé (`Πb:Bool. Type(i)`, vérifié par
+   `noy_est_motive_bool`) ;
+2. une branche `t` pour `true` ;
+3. une branche `f` pour `false` ;
+4. un scrutinee `b` dont le domaine annoncé est `Ind(Bool)`.
+
+Le résultat de `bool_rec` est la branche choisie, **sans reconstruction de
+terme arbitraire**. La négation `not` reconstruit le constructeur opposé en
+réutilisant l'annotation `Ind(Bool)` du scrutinee. Un scrutinee variable reste
+bloqué (correct) tout en restant vérifiable. L'ι est aussi déclenchée sous un
+lieur et à travers une application imbriquée (`not (not true) → true`,
+`bool_rec … (not false) → t`). Les quatre équations Bool du tableau sont
+comptées comme un pas chacune et vues par `convertible`.
 
 ## Résultats structurés
 
@@ -152,10 +183,11 @@ part dans le terme ni dans les libres de `val`. `noy_alpha` porte deux
 environnements parallèles de lieurs : un `var` lié est comparé par indice de
 profondeur, un `var` libre par son nom. `convertible` βι-normalise puis compare.
 
-## Tests (88 assertions, toutes vertes)
+## Tests (126 assertions, toutes vertes)
 
 Le harnais `thorn/tests_noyau.rose` importe le noyau. Les 35 assertions
-d'origine sont conservées à l'identique ; 53 s'y ajoutent :
+d'origine sont conservées à l'identique ; 53 s'y ajoutent pour TH4, puis 38
+pour le second inductif :
 
 1–8. Tests d'origine : identité, application/dépendance, α, capture-évitation,
 erreurs, univers `Type(0):Type(1)` / `Type(2)`, garde sur Ω, contexte-table.
@@ -175,22 +207,36 @@ second membre hors de `X` (`ind(Eq)/b`).
 `nat_rec`), comptage des pas, garde-fous sur `const` mal typé (type et codomaine), préservation du
 type (`Ind(Nat)`), convertibilité des deux équations de `plus`, `nat_rec`
 vérifié avec type `P(zero) = Ind(Nat)`.
+14. Bool : les six équations ι (`bool_rec` sur true/false, `not` sur
+true/false), comptage des pas (1, 1, 1, 2), imbrication (`not (not true)`,
+`bool_rec … (not false)`), conversion, réduction sous λ, trois garde-fous
+(nom sans structure, constructeur mal annoté), scrutinee variable bloqué mais
+vérifiable, préservation du type (`Ind(Nat)` / `Ind(Bool)`), et les six
+prédicats de contrôle de structure testés directement.
 
 Une sonde complémentaire (hors fichiers livrés) vérifiait déjà que des termes
 délibérément mal formés (`genre` numérique, `domaine` chaîne, …) rendent
 `ok = faux` sans planter.
 
-## Limites honnêtes (état après TH4)
+## Limites honnêtes (état actuel — second inductif Bool)
 
 - **`ind` / `elim` restent approximatifs pour les autres inductifs.** Leurs
   sous-termes sont vérifiés, mais le type rendu reste `Type(0)` ; pas de motifs,
   d'indices, de positivité ni de vérification de terminaison structurelle.
-  Seules les deux formes d'égalité ont été durcies (contrôle des membres).
-- **ι étroite.** Les motifs zero/succ sont reconnus pour `plus` et `nat_rec` par
-  nom + forme du type. Ce n'est PAS un mécanisme d'éliminateur générique
-  (pas de motif utilisateur, pas d'indices, pas de récursion imbriquée, pas de
-  contrôle de terminaison). Un `nat_rec` appliqué à un motif non constructeur
-  reste bloqué, ce qui est correct.
+  Seules les deux formes d'égalité ont été durcies (contrôle des membres), et
+  `Bool` est reconnu comme type de donnée pour l'annotation de ses
+  constructeurs.
+- **ι toujours spécialisée, malgré le second inductif.** Les motifs sont
+  reconnus pour **deux** inductifs : `Nat` (`plus`, `nat_rec`) et `Bool`
+  (`not`, `bool_rec`). Les noms des constructeurs (`zero`/`succ`, `true`/
+  `false`) et des éliminateurs sont **câblés** dans `noy_iota` ; la structure de
+  l'annotation est contrôlée, mais ce n'est PAS un mécanisme d'éliminateur
+  utilisateur générique. Il n'y a toujours **ni motif utilisateur, ni indices,
+  ni récursion imbriquée sur plusieurs constructeurs récursifs, ni contrôle de
+  terminaison / positivité**. Un éliminateur appliqué à un scrutinee non
+  constructeur reste bloqué, ce qui est correct. Ajouter `List` exigerait
+  d'écrire une nouvelle branche dans `noy_iota` (ou de généraliser en registre
+  de descripteurs — non fait ici).
 - **`plus_0_l` / `plus_s_l` n'ont pas été supprimés** de `tactiques.rose` /
   `bibliotheque.rose` : ces fichiers sont hors périmètre. Leur contenu
   computationnel est désormais fait par le noyau ; les preuves qui les citent

@@ -292,6 +292,115 @@ $rrec = verifier(natrecT($Pnat, $base0, $pasS, zeroT()), $natctx)
 tester($cpt, "iota : nat_rec verifie", chaine(noy_est_ok($rrec)), "vrai")
 tester($cpt, "iota : nat_rec type P(zero)", montrer(noy_type_res($rrec)), "Ind(Nat)")
 
+# ── 14. Second inductif : Bool, not, bool_rec (contrôle de structure) ───────
+fn boolT() -> table { retour noy_ind("Bool", [table()]) }
+fn trueT() -> table { retour noy_const("true", boolT()) }
+fn falseT() -> table { retour noy_const("false", boolT()) }
+fn notSymb() -> table { retour noy_const("not", noy_pi("b", boolT(), boolT())) }
+fn notT(b: table) -> table { retour noy_app(notSymb(), b) }
+fn boolrecSymb() -> table {
+  $P = noy_pi("b", boolT(), noy_type(0))
+  $t = noy_app(noy_var("P"), trueT())
+  $f = noy_app(noy_var("P"), falseT())
+  $ty = noy_pi("P", $P, noy_pi("t", $t, noy_pi("f", $f,
+         noy_pi("b", boolT(), noy_app(noy_var("P"), noy_var("b"))))))
+  retour noy_const("bool_rec", $ty)
+}
+fn boolrecT(P: table, t: table, f: table, b: table) -> table {
+  retour noy_app(noy_app(noy_app(noy_app(boolrecSymb(), P), t), f), b)
+}
+$motiveB = noy_lam("b", boolT(), natT())
+$brVrai = zeroT()
+$brFaux = succT(zeroT())
+
+# ι de bool_rec : les deux branches.
+tester($cpt, "bool : rec true = branche vrai",
+       montrer(beta(boolrecT($motiveB, $brVrai, $brFaux, trueT()))), "Const(zero)")
+tester($cpt, "bool : rec false = branche faux",
+       montrer(beta(boolrecT($motiveB, $brVrai, $brFaux, falseT()))),
+       "App(Const(succ),Const(zero))")
+$br1 = noy_beta_lim(boolrecT($motiveB, $brVrai, $brFaux, trueT()), 100)
+tester($cpt, "bool : rec un pas", chaine(noy_pas_beta($br1)), "1")
+$br2 = noy_beta_lim(boolrecT($motiveB, $brVrai, $brFaux, falseT()), 100)
+tester($cpt, "bool : rec faux un pas", chaine(noy_pas_beta($br2)), "1")
+
+# ι de not, et imbrication.
+tester($cpt, "bool : not true = false", montrer(beta(notT(trueT()))), "Const(false)")
+tester($cpt, "bool : not false = true", montrer(beta(notT(falseT()))), "Const(true)")
+$bn1 = noy_beta_lim(notT(trueT()), 100)
+tester($cpt, "bool : not un pas", chaine(noy_pas_beta($bn1)), "1")
+tester($cpt, "bool : not imbrique", montrer(beta(notT(notT(trueT())))), "Const(true)")
+$bn2 = noy_beta_lim(notT(notT(trueT())), 100)
+tester($cpt, "bool : not imbrique deux pas", chaine(noy_pas_beta($bn2)), "2")
+
+# Conversion définitionnelle (βι + α) et réduction sous un lieur.
+tester($cpt, "bool : rec true convertible",
+       chaine(convertible(boolrecT($motiveB, $brVrai, $brFaux, trueT()), $brVrai)), "vrai")
+tester($cpt, "bool : rec false convertible",
+       chaine(convertible(boolrecT($motiveB, $brVrai, $brFaux, falseT()), $brFaux)), "vrai")
+tester($cpt, "bool : not convertible", chaine(convertible(notT(trueT()), falseT())), "vrai")
+$sousB = noy_lam("z", boolT(), boolrecT($motiveB, $brVrai, $brFaux, trueT()))
+tester($cpt, "bool : reduction sous lambda", montrer(noy_champ(beta($sousB), "corps")),
+       "Const(zero)")
+$melange = boolrecT($motiveB, $brVrai, $brFaux, notT(falseT()))
+tester($cpt, "bool : melange not/rec", montrer(beta($melange)), "Const(zero)")
+$bmel = noy_beta_lim($melange, 100)
+tester($cpt, "bool : melange deux pas", chaine(noy_pas_beta($bmel)), "2")
+
+# Garde-fous : nom seul ne suffit pas, l'annotation doit avoir la bonne structure.
+$fauxrec = noy_const("bool_rec", noy_type(0))
+$fauxrecapp = noy_app(noy_app(noy_app(noy_app($fauxrec, $motiveB), $brVrai), $brFaux), trueT())
+$grec = noy_beta_lim($fauxrecapp, 100)
+tester($cpt, "bool : garde rec mal type", chaine(noy_pas_beta($grec)), "0")
+$fauxnot = noy_const("not", noy_type(0))
+$gnot = noy_beta_lim(noy_app($fauxnot, trueT()), 100)
+tester($cpt, "bool : garde not mal type", chaine(noy_pas_beta($gnot)), "0")
+$fauxtrue = noy_const("true", natT())
+$gtrue = noy_beta_lim(boolrecT($motiveB, $brVrai, $brFaux, $fauxtrue), 100)
+tester($cpt, "bool : garde true mal note", chaine(noy_pas_beta($gtrue)), "0")
+
+# Scrutinee non constructeur : bloqué (correct), mais le terme reste vérifiable.
+$ctxb = noy_ctx_ajouter($ctx, "b", boolT())
+$bvar = boolrecT($motiveB, $brVrai, $brFaux, noy_var("b"))
+$gbv = noy_beta_lim($bvar, 100)
+tester($cpt, "bool : variable bloque", chaine(noy_pas_beta($gbv)), "0")
+$rvb = verifier($bvar, $ctxb)
+tester($cpt, "bool : variable verifiee", chaine(noy_est_ok($rvb)), "vrai")
+tester($cpt, "bool : variable type Nat", montrer(noy_type_res($rvb)), "Ind(Nat)")
+
+# Préservation du type par le noyau (le terme réduit et l'original ont le même type).
+$rv1 = verifier(boolrecT($motiveB, $brVrai, $brFaux, trueT()), $ctx)
+tester($cpt, "bool : rec true verifie", chaine(noy_est_ok($rv1)), "vrai")
+tester($cpt, "bool : rec true type Nat", montrer(noy_type_res($rv1)), "Ind(Nat)")
+$rv2 = verifier(boolrecT($motiveB, $brVrai, $brFaux, falseT()), $ctx)
+tester($cpt, "bool : rec false verifie", chaine(noy_est_ok($rv2)), "vrai")
+tester($cpt, "bool : rec false type Nat", montrer(noy_type_res($rv2)), "Ind(Nat)")
+$rv3 = verifier(notT(trueT()), $ctx)
+tester($cpt, "bool : not verifie", chaine(noy_est_ok($rv3)), "vrai")
+tester($cpt, "bool : not type Bool", montrer(noy_type_res($rv3)), "Ind(Bool)")
+$rv4 = verifier(boolrecSymb(), $ctx)
+tester($cpt, "bool : elimininateur bien forme", chaine(noy_est_ok($rv4)), "vrai")
+$rv5 = verifier(trueT(), $ctx)
+tester($cpt, "bool : true bien forme", chaine(noy_est_ok($rv5)), "vrai")
+tester($cpt, "bool : true type Bool", montrer(noy_type_res($rv5)), "Ind(Bool)")
+
+# Contrôle de structure : prédicats exposés, testés directement.
+tester($cpt, "bool : structure rec valide",
+       chaine(noy_bool_rec_valide(noy_champ(boolrecSymb(), "type"))), "vrai")
+tester($cpt, "bool : structure rec invalide",
+       chaine(noy_bool_rec_valide(noy_type(0))), "faux")
+tester($cpt, "bool : motif Bool valide",
+       chaine(noy_est_motive_bool(noy_pi("b", boolT(), noy_type(0)))), "vrai")
+tester($cpt, "bool : motif Nat refuse",
+       chaine(noy_est_motive_bool(noy_pi("b", natT(), noy_type(0)))), "faux")
+tester($cpt, "bool : structure not valide",
+       chaine(noy_not_valide(noy_champ(notSymb(), "type"))), "vrai")
+tester($cpt, "bool : structure not invalide",
+       chaine(noy_not_valide(noy_type(0))), "faux")
+tester($cpt, "bool : constructeur true reconnu", chaine(noy_est_true(trueT())), "vrai")
+tester($cpt, "bool : faux true rejete",
+       chaine(noy_est_true(noy_const("true", natT()))), "faux")
+
 >> "REUSSIS=" + chaine($cpt["r"])
 >> "ECHOUES=" + chaine($cpt["e"])
 si ($cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }

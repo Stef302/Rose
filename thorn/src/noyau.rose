@@ -569,6 +569,65 @@ fn noy_spine(t: table) -> table {
   retour $nx_r
 }
 
+# ───────── 5bis-B. Second inductif : Bool et son éliminateur ────────────────
+#
+# Bool est le DEUXIÈME inductif doté d'une ι-réduction dans le noyau (Nat est
+# le premier). Ses constructeurs true / false, la négation not et
+# l'éliminateur DÉPENDANT bool_rec sont reconnus par leur NOM **et** par la
+# STRUCTURE de leur annotation de type : un const quelconque portant ces noms
+# mais mal typé ne se réduit jamais (même discipline que plus / nat_rec).
+#
+#   bool_rec : ΠP:(Πb:Bool.Type). Πt:(P true). Πf:(P false). Πb:Bool. P b
+#     bool_rec P t f true   → t
+#     bool_rec P t f false  → f
+#   not : Πb:Bool. Bool
+#     not true   → false
+#     not false  → true
+
+fn noy_est_bool(t: table) -> booleen {
+  retour (noy_genre(t) == "ind" et noy_nom(t) == "Bool")
+}
+
+# Constructeur Bool : nom + annotation Ind(Bool). L'annotation fait partie du
+# contrôle de structure : un « true » annoté autrement n'est pas un constructeur.
+fn noy_est_constr_bool(t: table, nom: chaine) -> booleen {
+  si (noy_genre(t) != "const") { retour faux }
+  si (noy_nom(t) != nom) { retour faux }
+  retour noy_est_bool(noy_champ(t, "type"))
+}
+
+fn noy_est_true(t: table) -> booleen { retour noy_est_constr_bool(t, "true") }
+fn noy_est_false(t: table) -> booleen { retour noy_est_constr_bool(t, "false") }
+
+# Motif d'élimination dépendante : Πb:Bool. Type(i) (codomaine univers).
+fn noy_est_motive_bool(t: table) -> booleen {
+  si (noy_genre(t) != "pi") { retour faux }
+  si (non noy_est_bool(noy_pi_domaine_ieme(t, 1))) { retour faux }
+  retour (noy_genre(noy_pi_codomaine_ieme(t, 1)) == "type")
+}
+
+# Contrôle de structure complet de l'annotation de bool_rec. Exige quatre
+# flèches, un motif bien formé, deux branches présentes et un scrutinee Bool.
+# C'est ce garde-fou qui distingue un vrai éliminateur d'un const homonyme.
+fn noy_bool_rec_valide(ty: table) -> booleen {
+  $nx_d1 = noy_pi_domaine_ieme(ty, 1)
+  $nx_d2 = noy_pi_domaine_ieme(ty, 2)
+  $nx_d3 = noy_pi_domaine_ieme(ty, 3)
+  $nx_d4 = noy_pi_domaine_ieme(ty, 4)
+  $nx_c4 = noy_pi_codomaine_ieme(ty, 4)
+  si (non noy_est_motive_bool($nx_d1)) { retour faux }
+  si (noy_est_absent($nx_d2) ou noy_est_absent($nx_d3)) { retour faux }
+  si (non noy_est_bool($nx_d4)) { retour faux }
+  si (noy_est_absent($nx_c4)) { retour faux }
+  retour vrai
+}
+
+# Contrôle de structure de l'annotation de not : Πb:Bool. Bool.
+fn noy_not_valide(ty: table) -> booleen {
+  si (non noy_est_bool(noy_pi_domaine_ieme(ty, 1))) { retour faux }
+  retour noy_est_bool(noy_pi_codomaine_ieme(ty, 1))
+}
+
 fn noy_iota(t: table) -> table {
   $nx_sp = noy_spine(t)
   $nx_n = noy_entier_champ($nx_sp, "n")
@@ -605,6 +664,29 @@ fn noy_iota(t: table) -> table {
       $nx_rec = noy_app($nx_head4, $nx_k)
       retour noy_pas(noy_app(noy_app($nx_pas, $nx_k), $nx_rec))
     }
+  }
+
+  # ── Bool : éliminateur dépendant bool_rec (structure contrôlée) ──
+  # Spine : args[1]=b (scrutinee), args[2]=f (faux), args[3]=t (vrai),
+  #         args[4]=P (motif).
+  si ($nx_nom == "bool_rec" et $nx_n == 4) {
+    si (non noy_bool_rec_valide($nx_ty)) { retour noy_rien(t) }
+    $nx_b = $nx_args[1]
+    $nx_faux = $nx_args[2]
+    $nx_vrai = $nx_args[3]
+    si (noy_est_true($nx_b)) { retour noy_pas($nx_vrai) }
+    si (noy_est_false($nx_b)) { retour noy_pas($nx_faux) }
+  }
+
+  # ── Bool : négation not (structure contrôlée) ──
+  # L'annotation du scrutinee (déjà vérifiée Ind(Bool)) sert à construire le
+  # constructeur résultant : pas de fabrique de terme arbitraire.
+  si ($nx_nom == "not" et $nx_n == 1) {
+    si (non noy_not_valide($nx_ty)) { retour noy_rien(t) }
+    $nx_b = $nx_args[1]
+    $nx_tybool = noy_champ($nx_b, "type")
+    si (noy_est_true($nx_b)) { retour noy_pas(noy_const("false", $nx_tybool)) }
+    si (noy_est_false($nx_b)) { retour noy_pas(noy_const("true", $nx_tybool)) }
   }
   retour noy_rien(t)
 }
