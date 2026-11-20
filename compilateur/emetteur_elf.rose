@@ -77,7 +77,12 @@ fn g4_entier_ou_zero($s: chaine) -> entier {
   $ok = 1
   tant_que ($i < $n) {
     $c = sous_chaine($t, $i, $i + 1)
-    si ($c < "0" ou $c > "9") { $ok = 0 }
+    # SH10 : sous G5, `<`/`>` sur des chaînes comparent des POINTEURS tagués
+    # (g5_eval émet cmpr), pas des caractères : la validation échouait et
+    # TOUT entier textuel devenait 0 (mesuré : `mov x0,#0` au lieu de #3
+    # dans l'ELF auto-émis, et branch kind 0 au lieu de 1). Comparer les
+    # ORDINAUX, qui sont des entiers, fonctionne dans les deux mondes.
+    si (ordre($c) < 48 ou ordre($c) > 57) { $ok = 0 }
     $i = $i + 1
   }
   si ($ok == 0) { retour 0 }
@@ -163,13 +168,13 @@ fn g4_operand($op: chaine, $mot: chaine) -> chaine {
   retour g4_trim(sous_chaine($op, $i, $n))
 }
 fn g5_nu_op($ligne: chaine) -> chaine {
-  $n = longueur($ligne)
-  $i = 0
-  tant_que ($i < $n et sous_chaine($ligne, $i, $i + 1) == " ") { $i = $i + 1 }
-  $j = 0
-  tant_que ($i < $n et $j < 4 et sous_chaine($ligne, $i, $i + 1) >= "0" et sous_chaine($ligne, $i, $i + 1) <= "9") { $i = $i + 1; $j = $j + 1 }
-  tant_que ($i < $n et sous_chaine($ligne, $i, $i + 1) == " ") { $i = $i + 1 }
-  retour sous_chaine($ligne, $i, $n)
+  # SH10 : le format RIR est FIXE — main.rs::rir_op écrit `{:04} ` devant
+  # chaque op. L'ancien test `caractere >= "0" et <= "9"` comparait des
+  # POINTEURS tagués sous G5 (g5_eval émet cmpr sur les valeurs, pas un
+  # ordre lexicographique) : le préfixe "0000 " n'était donc pas retiré et
+  # la première op rendait `op non couverte : 0000 …`. Couper 5 octets
+  # fonctionne identiquement en natif et sous G5.
+  retour g5_sub($ligne, 5, longueur($ligne))
 }
 
 # ── État (listes append-only ; joindre mute l'objet partagé) ──
@@ -199,6 +204,14 @@ $g5_sbool = table()
 # SH6 : table d'émission associant f|slot au genre d'élément d'une liste
 # (0=entier, 1=chaîne, 2=booléen). Sert à afficher `>> $l` correctement.
 $g5_slist = table()
+# SH10 (C1) : table des GLOBALES du RIR. Le RIR déclare les variables du
+# niveau principal dans la ligne `globaux` (indices de slots). Sous G5, les
+# fonctions les voient par leur NOM, sans slot local : il faut donc une zone
+# RW à adresse fixe et une table nom -> index. Table = LISTE mutée en place
+# par joindre() : une fonction qui AFFECTE une globale créerait une LOCALE
+# (mesuré : `fn f(){$x="abc"}` laisse $x vide en natif). Entrée 0 = sentinelle,
+# puis une chaîne "ix:nom" par globale du $principal.
+$g5_gnams = [""]
 
 fn g5_sub($s: chaine, $a: entier, $b: entier) -> chaine {
   si ($a < 0 ou $b < 0 ou $a > $b) {
@@ -364,14 +377,29 @@ $g5_lire_l = 0
 $g5_ecrire_l = 0
 
 fn g5_load($rd: entier, $v: entier) -> entier {
+  # SH10 : les anciennes bornes ±2^63/2^64 ne sont PAS représentables dans
+  # l'ABI G5 (61 bits utiles) : sous l'émetteur auto-exécuté elles devenaient
+  # 0, rendant `-100 < 0` vrai => `immédiat hors int64 : -100` (mesuré, 3
+  # occurrences dans $g5_err du binaire auto-émis). On construit le
+  # complément à 2 sur 64 bits CHUNK PAR CHUNK, avec des valeurs <= 65536 :
+  # même résultat en natif et sous G5, sans constante > 2^60.
   $u = $v
-  si ($u < -9223372036854775808) { retour g5_fail("immédiat hors int64 : " + chaine($v)) }
-  si ($u >= 18446744073709551616) { $u = $u % 18446744073709551616 }
-  si ($u < 0) { $u = $u + 18446744073709551616 }
+  $neg = 0
+  si ($u < 0) { $neg = 1; $u = -$u }
   $c0 = $u % 65536
   $c1 = partie_entiere($u / 65536) % 65536
   $c2 = partie_entiere($u / 4294967296) % 65536
   $c3 = partie_entiere($u / 281474976710656) % 65536
+  si ($neg == 1) {
+    $c0 = 65536 - $c0
+    $c1 = 65535 - $c1
+    $c2 = 65535 - $c2
+    $c3 = 65535 - $c3
+    si ($c0 >= 65536) { $c0 = $c0 - 65536; $c1 = $c1 + 1 }
+    si ($c1 >= 65536) { $c1 = $c1 - 65536; $c2 = $c2 + 1 }
+    si ($c2 >= 65536) { $c2 = $c2 - 65536; $c3 = $c3 + 1 }
+    si ($c3 >= 65536) { $c3 = 0 }   # retenue sortant des 64 bits
+  }
   g5_emit(movz($rd, $c0))
   si ($c1 != 0) { g5_emit(movk($rd, $c1, 1)) }
   si ($c2 != 0) { g5_emit(movk($rd, $c2, 2)) }
@@ -457,7 +485,10 @@ fn g5_make_str($s: chaine) -> entier {
   $h = 0
   $hi = 0
   tant_que ($hi < $n) {
-    $h = ($h * 131 + ordre(sous_chaine($s, $hi, $hi + 1))) % 18446744073709551616
+    # SH10 : 2^64 n'est pas représentable sous G5 (-> modulo 0 -> hash 0
+    # pour TOUTES les chaînes -> réutilisation du mauvais littéral interné).
+    # Un hash 32 bits suffit : la clé est vérifiée avant réutilisation.
+    $h = ($h * 131 + ordre(sous_chaine($s, $hi, $hi + 1))) % 4294967296
     $hi = $hi + 1
   }
   $lbl_miss = g5_next()
@@ -527,9 +558,123 @@ fn g5_slot_of($f: entier, $nom: chaine) -> entier {
     }
     $i = $i + $fin + 1
   }
-  # G5-R : une variable non locale (globale Rust dans le source) est repliée
-  # à zéro plutôt que de bloquer l'émission. Ce n'est PAS une sémantiqueRose.
+  # G5-R (SH10) : une variable non locale est une GLOBALE du RIR. Elle est
+  # cherchée dans $g5_gnam par les helpers ci-dessous ; -1 = ni locale ni
+  # globale connue (on conserve alors le repli historique à zéro).
   retour -1
+}
+
+# ── SH10 : stockage des variables globales G5 ────────────────────────────
+# Cartographie RW (voir le bloc l.2100) :
+#   0x60003000..0x60003800  table des caractères (256 × 8)
+#   0x60003800..0x60004000  scratch décimal (écriture DÉCROISSANTE)
+#   0x60004000..0x60005000  GLOBALES G5 : 512 × 8 octets, index = slot du
+#                           $principal (0..511), valeur ROSE TAGUÉE (x0 ABI).
+#   0x60008000              début du tas (déplacé pour dégager les globales)
+# La zone est dans un mapping anonyme (p_filesz=0) : elle vaut 0 au départ,
+# ce qui correspond au tag 0 (entier Rose 0). Borne et garde : tout index
+# hors 0..511 est une erreur d'émission, jamais une écriture hors zone.
+fn g5_gaddr($ix: entier, $rd: entier) -> entier {
+  si ($ix < 0 ou $ix >= 512) { retour g5_fail("globale G5 hors borne : " + chaine($ix)) }
+  g5_load($rd, 1610629120 + 8 * $ix)
+  retour 0
+}
+fn g5_global_id($nom: chaine) -> entier {
+  $k = 1
+  tant_que ($k < longueur($g5_gnams)) {
+    $t = $g5_gnams[$k]
+    $n = longueur($t)
+    $i = 0
+    tant_que ($i < $n) {
+      $fin = g4_pos(g5_sub($t, $i, $n), "|")
+      si ($fin < 0) { $fin = $n - $i }
+      $ent = g5_sub($t, $i, $i + $fin)
+      $sep = g4_pos($ent, ":")
+      si ($sep >= 0) {
+        si (g5_sub($ent, $sep + 1, longueur($ent)) == $nom) { retour g4_entier_ou_zero(g5_sub($ent, 0, $sep)) }
+      }
+      $i = $i + $fin + 1
+    }
+    $k = $k + 1
+  }
+  retour -1
+}
+# Construit la table depuis les lignes `noms` et `globaux` du $principal.
+# $res est une LOCALE : on ne l'affecte jamais à la globale, on ajoute une
+# entrée à la liste globale avec joindre() (mutation en place, vu des deux
+# mondes natif et G5).
+fn g5_set_globaux($noms: chaine, $gl: chaine) -> entier {
+  $pad = " " + $gl + " "
+  $res = ""
+  $p = 0
+  $ln = longueur($noms)
+  tant_que ($p < $ln) {
+    si (sous_chaine($noms, $p, $p + 1) == "[") {
+      $q = $p + 1
+      tant_que ($q < $ln et sous_chaine($noms, $q, $q + 1) != "]") { $q = $q + 1 }
+      $ix = sous_chaine($noms, $p + 1, $q)
+      $p = $q + 1
+      tant_que ($p < $ln et sous_chaine($noms, $p, $p + 1) == " ") { $p = $p + 1 }
+      $q = $p
+      tant_que ($q < $ln et sous_chaine($noms, $q, $q + 1) != " ") { $q = $q + 1 }
+      $nm = sous_chaine($noms, $p, $q)
+      si (g4_pos($pad, " " + $ix + " ") >= 0) {
+        si (longueur($res) > 0) { $res = $res + "|" }
+        $res = $res + $ix + ":" + $nm
+      }
+      $p = $q
+    } sinon { $p = $p + 1 }
+  }
+  joindre($g5_gnams, $res)
+  retour 0
+}
+fn g5_is_principal($f: entier) -> entier {
+  si ($f >= 0 et $f < longueur($g5_fn)) {
+    si ($g5_fn[$f] == "$principal") { retour 1 }
+  }
+  retour 0
+}
+# Lecture de x0. Dans $principal, les slots SONT les globales : même quand
+# le nom figure dans $g5_fnam, il faut lire la zone RW, pas le cadre.
+# Dans une fonction, un slot local est prioritaire ; sinon on cherche le nom
+# dans la table des globales (les expressions AST `(v nom)` ne sont pas
+# abaissées en slots par rir.rs, mais résolues par nom à l'exécution).
+fn g5_read_var($f: entier, $nom: chaine) -> entier {
+  $sl = g5_slot_of($f, $nom)
+  si ($sl >= 0) {
+    si (g5_is_principal($f) == 1) { g5_gaddr($sl, 9); g5_emit(ldroff(0, 9, 0))
+    } sinon { g5_emit(ldroff(0, 31, g5_slotoff($sl))) }
+    retour 0
+  }
+  $gi = g5_global_id($nom)
+  si ($gi >= 0) { g5_gaddr($gi, 9); g5_emit(ldroff(0, 9, 0)); retour 0 }
+  g5_load(0, 0)
+  retour 0
+}
+# Écriture depuis x0 ; même priorité. Un nom inconnu reste perdu (comportement
+# historique), il n'y a pas d'adresse à inventer.
+fn g5_write_var($f: entier, $nom: chaine) -> entier {
+  $sl = g5_slot_of($f, $nom)
+  si ($sl >= 0) {
+    si (g5_is_principal($f) == 1) { g5_gaddr($sl, 9); g5_emit(stroff(0, 9, 0))
+    } sinon { g5_emit(stroff(0, 31, g5_slotoff($sl))) }
+    retour 0
+  }
+  $gi = g5_global_id($nom)
+  si ($gi >= 0) { g5_gaddr($gi, 9); g5_emit(stroff(0, 9, 0)); retour 0 }
+  retour 0
+}
+# `slot N` / `affect slot N` : dans $principal, TOUS les slots sont des
+# globales (rir.rs::abaisser_principal). Ailleurs ce sont des cases du cadre.
+fn g5_read_slot($f: entier, $sl: entier) -> entier {
+  si (g5_is_principal($f) == 1) { g5_gaddr($sl, 9); g5_emit(ldroff(0, 9, 0)); retour 0 }
+  g5_emit(ldroff(0, 31, g5_slotoff($sl)))
+  retour 0
+}
+fn g5_write_slot($f: entier, $sl: entier) -> entier {
+  si (g5_is_principal($f) == 1) { g5_gaddr($sl, 9); g5_emit(stroff(0, 9, 0)); retour 0 }
+  g5_emit(stroff(0, 31, g5_slotoff($sl)))
+  retour 0
 }
 # G5-FIX (19/11) : régions de gratte-papier SÉPARÉES PAR PROFONDEUR D'IMBRICATION.
 # Avant : tmp = mot 32+$d, args = mot 64+$i, listes = mot 80+$i (regions FIXES).
@@ -651,9 +796,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       retour $pos + 4
     }
     si ($head == "v") {
-      $sl = g5_slot_of($f, $t[$pos + 2])
-      si ($sl < 0) { g5_load(0, 0)
-      } sinon { g5_emit(ldroff(0, 31, g5_slotoff($sl))) }
+      g5_read_var($f, $t[$pos + 2])
       retour $pos + 4
     }
     si ($head == "s") {
@@ -943,8 +1086,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       # `T0($gen,$p) != "eof"` sans fin. On reecrit donc le slot de la
       # variable des que le premier argument est `(v nom)`.
       si ($nom == "joindre" et $pos + 5 < $n et $t[$pos + 3] == "(" et $t[$pos + 4] == "v") {
-        $jsl = g5_slot_of($f, $t[$pos + 5])
-        si ($jsl >= 0) { g5_emit(stroff(0, 31, g5_slotoff($jsl))) }
+        g5_write_var($f, $t[$pos + 5])
       }
       retour $p + 1
     }
@@ -983,13 +1125,11 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     }
     retour g5_fail("forme parenthésée non couverte : " + $head)
   }
-  si ($tk == "slot") { g5_emit(ldroff(0, 31, g5_slotoff(g4_entier_ou_zero($t[$pos + 1])))); retour $pos + 2 }
+  si ($tk == "slot") { g5_read_slot($f, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
   si ($tk == "entier" ou $tk == "n") { g5_load_val(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
   si ($tk == "flottant") { g5_load_val(0, g4_entier_ou_zero($t[$pos + 1])); retour $pos + 2 }
   si ($tk == "v") {
-    $sl = g5_slot_of($f, $t[$pos + 1])
-    si ($sl < 0) { g5_load(0, 0)
-    } sinon { g5_emit(ldroff(0, 31, g5_slotoff($sl))) }
+    g5_read_var($f, $t[$pos + 1])
     retour $pos + 2
   }
   g5_load_val(0, g4_entier_ou_zero($tk))
@@ -1033,7 +1173,7 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
     si (longueur($trhs) > 1 et $trhs[0] == "(" et $trhs[1] == "lst") {
       inserer($g5_slist, chaine($f) + "|" + chaine($sl), g5_list_kind($trhs, 0))
     }
-    g5_emit(stroff(0, 31, g5_slotoff($sl)))
+    g5_write_slot($f, $sl)
     retour 0
   }
   $t = g5_tokens($op)
@@ -1126,6 +1266,18 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
       g5_branch(1, $printl)
       retour 0
     }
+    # SH6 : flottant à valeur entière >= 1e16. Le natif Rose passe alors en
+    # notation exponentielle (1e+20) ; l'ABI G5 (entiers 64 bits) déborde.
+    # On sérialise le texte à l'émission avec le formateur natif de Rose,
+    # disponible ici (l'émetteur s'exécute sous l'interpréteur Rose).
+    si ($t[1] == "flottant" et longueur($t) > 2) {
+      $fl = $t[2]
+      si (longueur($fl) >= 17 et g4_pos($fl, ".") < 0 et g4_pos($fl, "/") < 0) {
+        g5_make_str(chaine(flottant($fl)))
+        g5_branch(1, $printl)
+        retour 0
+      }
+    }
     g5_eval($t, 1, 0, $f)
     si (g5_est_bool($t, 1, $f) == 1) {
       # SH4 : l'interpréteur Rose (ROSE_SANS_JIT=1, référence sémantique)
@@ -1159,6 +1311,7 @@ fn g5_parse($src: chaine) -> entier {
       $nm = g4_trim(g5_sub($t, 9, longueur($t)))
       $slot = 0
       $noms = ""
+      $globaux = ""
       $nparam = 0
       $ret = "vide"
       $ops = [0 : chaine]
@@ -1180,11 +1333,15 @@ fn g5_parse($src: chaine) -> entier {
           } sinon si (g5_sub($u, 0, 7) == "retour ") { $ret = g4_trim(g5_sub($u, 7, longueur($u)))
           } sinon si (g5_sub($u, 0, 8) == "n_slots ") { $slot = g4_entier_ou_zero(g5_sub($u, 8, longueur($u)))
           } sinon si (g5_sub($u, 0, 5) == "noms ") { $noms = g4_trim(g5_sub($u, 5, longueur($u)))
+          } sinon si (g5_sub($u, 0, 8) == "globaux ") { $globaux = g4_trim(g5_sub($u, 8, longueur($u)))
           } sinon si ($u == "ops") { $en_ops = 1
           } sinon si ($en_ops == 1 et longueur($u) > 0) { joindre($ops, g5_nu_op($u)) }
           $i = $i + 1
         }
       }
+      # SH10 : la table des globales est construite à la fin du $principal :
+      # les fonctions compilées ensuite résolvent leurs noms non locaux ici.
+      si ($nm == "$principal") { g5_set_globaux($noms, $globaux) }
       joindre($g5_fn, $nm)
       joindre($g5_fnslot, $slot)
       joindre($g5_fnam, g5_noms($noms))
@@ -1217,10 +1374,11 @@ fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: 
   g5_emit(stroff(30, 31, 0))
   si ($f == $principal) {
     g5_load(9, 1610612736)
-    # G5-TAS : le tas démarre désormais à 0x60002000. Les pages 0x60000300
-    # (512 entrées de chaînes littérales) et 0x60001300 (256 entrées de
-    # caractères) sont des tables d'internement, hors du tas.
-    g5_load(8, 1610629120)
+    # G5-TAS : le tas démarre à 0x60008000 (SH10). La plage 0x60004000..
+    # 0x60005000 est réservée aux 512 GLOBALES G5 ; le scratch décimal
+    # 0x60003800..0x60004000 reste inchangé. Les tables d'internement
+    # 0x60000300 (chaînes) et 0x60003000 (caractères) sont hors du tas.
+    g5_load(8, 1610645504)
     g5_emit(stroff(8, 9, 0))
   }
   $p = 0
@@ -1363,6 +1521,22 @@ fn g5_puts($s: chaine) -> entier {
     $i = $i + 1
   }
   g5_emit(movz(0, 1))
+  g5_emit(addi(1, 31, 64))
+  g5_load(2, longueur($s))
+  g5_emit(movz(8, 64))
+  g5_emit(SVC_I())
+  retour 0
+}
+
+# Variante stderr (fd 2) de g5_puts, pour les messages d'erreur Rose.
+fn g5_puts2($s: chaine) -> entier {
+  $i = 0
+  tant_que ($i < longueur($s)) {
+    g5_load(1, ordre(sous_chaine($s, $i, $i + 1)))
+    g5_emit(strbio(1, 31, 64 + $i))
+    $i = $i + 1
+  }
+  g5_emit(movz(0, 2))
   g5_emit(addi(1, 31, 64))
   g5_load(2, longueur($s))
   g5_emit(movz(8, 64))
@@ -2102,7 +2276,12 @@ fn g5_emit_stubs($lbl: entier) -> entier {
 #   0x60000018  adresse de argv[0] sur la pile initiale
 #   0x60000020  tampon de chemin (480 octets, NUL terminal)
 #   0x60000200  tampon struct stat (144 octets, st_size à +48)
-#   0x60000300  début du tas (allocations des descripteurs)
+#   0x60000300  table d'internement des chaînes (512 × 16 = 0x2000)
+#   0x60002400  arguments d'index >= 30 (zone SH2/SH3)
+#   0x60003000  table d'internement des caractères (256 × 8 = 0x800)
+#   0x60003800  scratch décimal (2 Kio, écriture décroissante)
+#   0x60004000  GLOBALES G5 : 512 × 8 octets, index = slot $principal
+#   0x60008000  début du tas (allocations des descripteurs)
 # Couches syscalls vérifiées : openat=56, close=57, read=63, write=64, fstat=80.
 
 # nb_arguments() -> argc utilisateur (argc ELF - 1), entier tagué.
@@ -2175,13 +2354,18 @@ fn g5_emit_argument($lbl: entier) -> entier {
   g5_emit(g5_tag1(0, 10))
   g5_branch(0, $lbl + 6)           # saut par-dessus la voie d'erreur
   g5_mark($lbl + 5)
-  g5_make_str("Rose : erreur — index hors des limites des arguments\n")
-  g5_emit(g5_masktag(9, 0))
-  g5_emit(ldroff(10, 9, 8))
-  g5_emit(addi(1, 9, 16))
-  g5_emit(movz(0, 2))              # fd 2 = stderr
-  g5_emit(movz(8, 64))             # write
+  g5_puts2("Rose : erreur ")
+  # Le tiret cadratin (U+2014) est écrit en trois octets UTF-8 explicites :
+  # g5_make_str le réduirait à 0x14 etbourrerait le descripteur de NUL.
+  g5_emit(movz(1, 226)); g5_emit(strbio(1, 31, 64))
+  g5_emit(movz(1, 128)); g5_emit(strbio(1, 31, 65))
+  g5_emit(movz(1, 148)); g5_emit(strbio(1, 31, 66))
+  g5_emit(movz(0, 2))
+  g5_emit(addi(1, 31, 64))
+  g5_emit(movz(2, 3))
+  g5_emit(movz(8, 64))
   g5_emit(SVC_I())
+  g5_puts2(" index hors des limites des arguments\n")
   g5_emit(movz(0, 1))              # exit(1)
   g5_emit(movz(8, 93))
   g5_emit(SVC_I())
