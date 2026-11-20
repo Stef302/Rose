@@ -92,6 +92,32 @@ pub mod gui_native;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod repl;
 
+/// WASM — shim minimal du REPL. Le module natif (`repl.rs`) dépend de
+/// `std::io`/`Arc<Mutex>` et d'une console interactive qui n'existent pas dans
+/// `wasm32-unknown-unknown`. `interp.rs` appelle deux points d'entrée du REPL
+/// (enregistrement du dernier objet pour `:more`, et gabarit d'affichage de
+/// `detail()`) : on fournit ici la même API pour que le moteur compile sans
+/// modifier les appelants.
+#[cfg(target_arch = "wasm32")]
+pub mod repl {
+    /// Pas de console interactive en WASM : `:more` n'a aucun sens ici, donc
+    /// l'enregistrement du dernier objet paresseux est un no-op. Le REPL natif
+    /// n'est pas touché (son `enregistrer_objet_val1` garde son Mutex).
+    pub fn enregistrer_objet_val1(
+        _o: std::rc::Rc<crate::run::ObjetParesseux>,
+    ) {
+    }
+
+    /// Gabarit d'affichage identique au REPL natif : deux espaces, libellé
+    /// paddé à 28, séparateur ` : `. Ainsi `afficher_detail(detail(x))` rend
+    /// la même chose dans le moteur WASM que sur le bureau.
+    pub fn format_table_detail(t: &crate::run::Table) -> Vec<String> {
+        t.0.borrow().items.iter().map(|(k, v)| {
+            format!("  {:<28} : {}", crate::run::chaine_de(k), crate::run::chaine_de(v))
+        }).collect()
+    }
+}
+
 /// JIT Cranelift — disponible uniquement sur les cibles natives AVEC la
 /// feature `jit` (activée par `native`, le défaut). Sans cette feature
 /// (`--no-default-features --features autonome`), le module `jit` est fourni
@@ -179,6 +205,18 @@ pub mod jit {
 
     /// Vide dediscussion sur le pipeline (aucun code machine émis).
     pub fn pipeline_flush_si_threads() {}
+
+    /// Préparation du JIT en une passe : en WASM rien n'est jamais compilable,
+    /// donc on répond « aucun travail » et une table vide. Même signature que
+    /// `jit::prepare_jit` natif, ajoutée après le shim : sans elle `interp.rs`
+    /// (appel `prepare_jit`) ne compile pas sur cette cible.
+    pub fn prepare_jit(
+        _prog: &Programme,
+        _signatures: &HashMap<String, Signature>,
+        _rir_principal: Option<&CorpsRir>,
+    ) -> (bool, HashMap<String, Compile>) {
+        (false, HashMap::new())
+    }
 
     /// Le « JIT » WASM : une coquille vide, toujours opérationnelle.
     pub struct Jit;
