@@ -34,7 +34,12 @@ fn main() {
         // ne comprend pas ce drapeau et cherche un fichier '/WHOLEARCHIVE:…'.
         let cible = std::env::var("TARGET").unwrap_or_default();
         if cible.ends_with("-windows-msvc") {
-            println!("cargo:rustc-link-arg=/WHOLEARCHIVE:windows_compat.lib");
+            // ⚠ CORRECTION 21/11: ne PAS ajouter /WHOLEARCHIVE ici. Le .o
+            // windows_compat est DEJA embarqué dans librose.rlib (cc::Build
+            // émet cargo:rustc-link-lib=static=windows_compat), et le forcer
+            // ici donnait « duplicate symbol: dlopen/dlsym/mmap/... » entre
+            // windows_compat.lib et librose.rlib (mesuré: lien rc=101).
+            // Le -lwindows_compat implicite suffit.
         } else {
             println!("cargo:rustc-link-arg=-Wl,--whole-archive");
             println!("cargo:rustc-link-arg=-lwindows_compat");
