@@ -1094,6 +1094,16 @@ pub fn depuis_arguments(argv: &[String]) -> i32 {
 mod tests {
     use super::*;
 
+    // ⚠ L'état de `:more` est global par construction (le REPL tourne dans un
+    // fil de 16 Mio et chaque ligne Rose en crée un nouveau). Les tests qui
+    // le manipulent doivent donc être sérialisés : mesuré, `more_sur_un_objet_val1_reel`
+    // échouait de façon intermittente en suite parallèle (un autre test appelait
+    // `oublier_plus_de_chiffres` entre ses `appliquer_more`).
+    static VERROU_MORE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn verrou_more() -> std::sync::MutexGuard<'static, ()> {
+        VERROU_MORE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn delimiteurs_equilibres() {
         assert!(braces_balanced("1 + 2"));
@@ -1168,6 +1178,7 @@ mod tests {
 
     #[test]
     fn more_sans_fournisseur_ne_panique_pas() {
+        let _g = verrou_more();
         oublier_plus_de_chiffres();
         let e = appliquer_more(30).unwrap_err();
         assert!(e.contains("detail(expr)"), "message réel : {e}");
@@ -1176,6 +1187,7 @@ mod tests {
 
     #[test]
     fn more_appelle_le_fournisseur_avec_le_bon_pas() {
+        let _g = verrou_more();
         struct Faux;
         impl PlusDeChiffres for Faux {
             fn demander_plus(&self, k: usize) -> Result<String, String> {
@@ -1196,6 +1208,7 @@ mod tests {
 
     #[test]
     fn more_sur_un_objet_val1_reel() {
+        let _g = verrou_more();
         use crate::run::ObjetParesseux;
         oublier_plus_de_chiffres();
         enregistrer_objet_val1(std::rc::Rc::new(ObjetParesseux::factorielle(100)));
