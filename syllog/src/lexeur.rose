@@ -1,0 +1,119 @@
+# ── Syllog — lexeur ─────────────────────────────────────────────────────────
+# Fichier autonome (aucun import). Vérifier : ./rose/rose verif syllog/src/lexeur.rose
+#
+# API publique :
+#   lexer(src)           -> liste<chaine>  : jetons nus
+#   lexer_detaille(src)  -> liste<chaine>  : jetons "<texte>~<ligne>"
+#   lexer_erreur()       -> chaine         : "" ou "ligne N : ..."
+#
+# Le suffixe "~N" est le numero de ligne. Le separateur "~" ne peut jamais
+# apparaitre dans un jeton Syllog (identifiants = lettres, accents, chiffres,
+# tiret bas). analyser() accepte les deux formes ( voir analyse.rose ).
+# Aucune exception n'est levee : un caractere inconnu produit le jeton "?".
+
+$X = table()
+inserer($X, "erreur", "")
+
+fn lex_init() {
+    inserer($X, "erreur", "")
+}
+
+fn lex_erreur(msg) {
+    si ($X["erreur"] == "") {
+        inserer($X, "erreur", msg)
+    }
+}
+
+fn lexer_erreur() {
+    retour $X["erreur"]
+}
+
+fn lex_est_lettre(c: chaine) -> booleen {
+    si (longueur(c) == 0) { retour faux }
+    $o = ordre(c)
+    retour ($o >= 97 et $o <= 122) ou ($o >= 65 et $o <= 90) ou
+           $o >= 128 ou c == "_"
+}
+
+fn lex_est_chiffre(c: chaine) -> booleen {
+    si (longueur(c) == 0) { retour faux }
+    $o = ordre(c)
+    retour $o >= 48 et $o <= 57
+}
+
+fn lex_est_id(c: chaine) -> booleen {
+    retour lex_est_lettre(c) ou lex_est_chiffre(c)
+}
+
+fn lex_est_simple(c: chaine) -> booleen {
+    retour c == "=" ou c == ":" ou c == "," ou c == ";" ou
+           c == "(" ou c == ")" ou c == "+" ou c == "-" ou
+           c == "*" ou c == "/" ou c == "[" ou c == "]" ou
+           c == "{" ou c == "}"
+}
+
+fn lex_emette(tab, k: entier, tok: chaine, ligne: entier, detaille: booleen) -> entier {
+    $t = tok
+    si (detaille) { $t = tok + "~" + chaine(ligne) }
+    inserer(tab, k, $t)
+    retour k + 1
+}
+
+fn syl_lexe(src: chaine, detaille: booleen) {
+    lex_init()
+    $tab = table()
+    $n = longueur(src)
+    $i = 0
+    $k = 0
+    $ligne = 1
+    tant_que ($i < $n) {
+        $c = sous_chaine(src, $i, $i + 1)
+        si ($c == "\n") {
+            $ligne = $ligne + 1
+            $i = $i + 1
+        } sinon si ($c == " " ou $c == "\t" ou $c == "\r") {
+            $i = $i + 1
+        } sinon si ($c == "#") {
+            # commentaire : jusqu'a la fin de ligne
+            tant_que ($i < $n et sous_chaine(src, $i, $i + 1) != "\n") {
+                $i = $i + 1
+            }
+        } sinon si (lex_est_lettre($c)) {
+            $deb = $i
+            $i = $i + 1
+            tant_que ($i < $n et lex_est_id(sous_chaine(src, $i, $i + 1))) {
+                $i = $i + 1
+            }
+            $k = lex_emette($tab, $k, sous_chaine(src, $deb, $i), $ligne, detaille)
+        } sinon si (lex_est_chiffre($c)) {
+            $deb = $i
+            $i = $i + 1
+            tant_que ($i < $n et lex_est_chiffre(sous_chaine(src, $i, $i + 1))) {
+                $i = $i + 1
+            }
+            $k = lex_emette($tab, $k, sous_chaine(src, $deb, $i), $ligne, detaille)
+        } sinon si ($c == "-" et $i + 1 < $n et sous_chaine(src, $i + 1, $i + 2) == ">") {
+            $k = lex_emette($tab, $k, "->", $ligne, detaille)
+            $i = $i + 2
+        } sinon si ($c == "=" et $i + 1 < $n et sous_chaine(src, $i + 1, $i + 2) == ">") {
+            $k = lex_emette($tab, $k, "=>", $ligne, detaille)
+            $i = $i + 2
+        } sinon si (lex_est_simple($c)) {
+            $k = lex_emette($tab, $k, $c, $ligne, detaille)
+            $i = $i + 1
+        } sinon {
+            lex_erreur("ligne " + chaine($ligne) + " : caractere inattendu '" + $c + "'")
+            $k = lex_emette($tab, $k, "?", $ligne, detaille)
+            $i = $i + 1
+        }
+    }
+    retour valeurs($tab)
+}
+
+fn lexer(src: chaine) {
+    retour syl_lexe(src, faux)
+}
+
+fn lexer_detaille(src: chaine) {
+    retour syl_lexe(src, vrai)
+}
