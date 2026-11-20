@@ -4306,36 +4306,65 @@ impl Emetteur<'_> {
         let c_fin = self.builder.ins().iconst(types::I64, fin);
         let outer0 = self.builder.ins().sextend(types::I128, acc0);
 
-        // 8 accumulateurs indépendants : la chaîne critique (add+adc en i128)
-        // passe de 1 addition par terme à 1 addition par GROUPE de 8 termes.
-        // Même somme (associativité exacte en i128), aucune réassociation
-        // flottante. Borne : chaque acc ≤ 3,4×10²⁰/8 < 2^66.
-        const NACC: i64 = 8;
+        // ── 16 accumulateurs i64 + vidage périodique vers un total i128 ──
+        // Borne PROUVÉE : le garde du détecteur donne fin ≤ 2^24, donc
+        // a² ≤ 2^48. Chaque accumulateur reçoit au plus FLUSH termes entre
+        // deux vidages : 2^48 · 2^13 = 2^61 < 2^63, jamais de débordement
+        // signé i64. Le vidage ajoute les 16 accumulateurs au total i128
+        // (extension de signe exacte) : la somme est la MÊME que l'ancien
+        // chemin à 8 accumulateurs i128, mais le corps ne coûte plus qu'un
+        // `imul` + un `iadd` i64 par terme (au lieu de `imul` + `sextend`
+        // + `iadd`/`adc` i128). Aucune réassociation flottante, aucune
+        // formule fermée : les 10^7 carrés sont toujours additionnés un à un.
+        const NACC: i64 = 16;
+        const FLUSH: i64 = 8192;
         let huit = self.builder.ins().iconst(types::I64, NACC);
         let sept = self.builder.ins().iconst(types::I64, NACC - 1);
         let lim = self.builder.ins().isub(c_fin, sept);
+        let c_flush = self.builder.ins().iconst(types::I64, FLUSH);
+        let zero64 = self.builder.ins().iconst(types::I64, 0);
+        let zéros: Vec<BlockArg> = std::iter::repeat(zero64.into()).take(NACC as usize).collect();
 
         let header = self.builder.create_block();
         self.builder.append_block_param(header, types::I64);   // a
-        for _ in 0..NACC { self.builder.append_block_param(header, types::I128); }
+        self.builder.append_block_param(header, types::I64);   // cnt
+        self.builder.append_block_param(header, types::I128);  // total
+        for _ in 0..NACC { self.builder.append_block_param(header, types::I64); }
         let corps = self.builder.create_block();
+        let apres = self.builder.create_block();
+        self.builder.append_block_param(apres, types::I64);
+        self.builder.append_block_param(apres, types::I64);
+        self.builder.append_block_param(apres, types::I128);
+        for _ in 0..NACC { self.builder.append_block_param(apres, types::I64); }
+        let vidange = self.builder.create_block();
+        self.builder.append_block_param(vidange, types::I64);
+        self.builder.append_block_param(vidange, types::I64);
+        self.builder.append_block_param(vidange, types::I128);
+        for _ in 0..NACC { self.builder.append_block_param(vidange, types::I64); }
+        let suite = self.builder.create_block();
+        self.builder.append_block_param(suite, types::I64);
+        self.builder.append_block_param(suite, types::I128);
+        for _ in 0..NACC { self.builder.append_block_param(suite, types::I64); }
         let queue = self.builder.create_block();
         self.builder.append_block_param(queue, types::I64);   // a
-        for _ in 0..NACC { self.builder.append_block_param(queue, types::I128); }
+        self.builder.append_block_param(queue, types::I128);  // total
+        for _ in 0..NACC { self.builder.append_block_param(queue, types::I64); }
         let fin_b = self.builder.create_block();
         self.builder.append_block_param(fin_b, types::I128);
-        let a0: Vec<BlockArg> = std::iter::once(c_deb.into())
-            .chain(std::iter::repeat(outer0).take(NACC as usize).map(|v| v.into()))
-            .collect();
+
+        let a0: Vec<BlockArg> = [c_deb.into(), zero64.into(), outer0.into()]
+            .into_iter().chain(zéros.iter().copied()).collect();
         self.builder.ins().jump(header, &a0);
 
         self.builder.switch_to_block(header);
         let a = self.builder.block_params(header)[0];
-        let accs: Vec<Value> = (1..=NACC as usize)
+        let cnt = self.builder.block_params(header)[1];
+        let total128 = self.builder.block_params(header)[2];
+        let accs: Vec<Value> = (3..3 + NACC as usize)
             .map(|i| self.builder.block_params(header)[i]).collect();
         let test = self.builder.ins().icmp(IntCC::SignedLessThan, a, lim);
-        let args_queue: Vec<BlockArg> = std::iter::once(a.into())
-            .chain(accs.iter().copied().map(|v| v.into())).collect();
+        let args_queue: Vec<BlockArg> = [a.into(), total128.into()]
+            .into_iter().chain(accs.iter().copied().map(|v| v.into())).collect();
         self.builder.ins().brif(test, corps, &[], queue, &args_queue);
 
         self.builder.switch_to_block(corps);
@@ -4347,49 +4376,91 @@ impl Emetteur<'_> {
                 self.builder.ins().iadd(a, cj)
             };
             let carre = self.builder.ins().imul(aj, aj);     // ≤ 2^48 sous le garde
-            let carre128 = self.builder.ins().sextend(types::I128, carre);
-            nouveaux.push(self.builder.ins().iadd(accs[j], carre128));
+            nouveaux.push(self.builder.ins().iadd(accs[j], carre)); // i64 NU
         }
         let a8 = self.builder.ins().iadd(a, huit);
-        let args_back: Vec<BlockArg> = std::iter::once(a8.into())
-            .chain(nouveaux.iter().copied().map(|v| v.into())).collect();
+        let cnt2 = self.builder.ins().iadd(cnt, un);
+        let args_apres: Vec<BlockArg> = [a8.into(), cnt2.into(), total128.into()]
+            .into_iter().chain(nouveaux.iter().copied().map(|v| v.into())).collect();
+        self.builder.ins().jump(apres, &args_apres);
+
+        self.builder.switch_to_block(apres);
+        self.builder.seal_block(apres);
+        let aa = self.builder.block_params(apres)[0];
+        let cc = self.builder.block_params(apres)[1];
+        let tt = self.builder.block_params(apres)[2];
+        let accs2: Vec<Value> = (3..3 + NACC as usize)
+            .map(|i| self.builder.block_params(apres)[i]).collect();
+        let plein = self.builder.ins().icmp(IntCC::Equal, cc, c_flush);
+        let args_suite: Vec<BlockArg> = [aa.into(), tt.into()]
+            .into_iter().chain(accs2.iter().copied().map(|v| v.into())).collect();
+        let args_vid: Vec<BlockArg> = [aa.into(), cc.into(), tt.into()]
+            .into_iter().chain(accs2.iter().copied().map(|v| v.into())).collect();
+        self.builder.ins().brif(plein, vidange, &args_vid, suite, &args_suite);
+
+        self.builder.switch_to_block(suite);
+        self.builder.seal_block(suite);
+        let sa = self.builder.block_params(suite)[0];
+        let st = self.builder.block_params(suite)[1];
+        let saccs: Vec<Value> = (2..2 + NACC as usize)
+            .map(|i| self.builder.block_params(suite)[i]).collect();
+        let args_back: Vec<BlockArg> = [sa.into(), cc.into(), st.into()]
+            .into_iter().chain(saccs.iter().copied().map(|v| v.into())).collect();
         self.builder.ins().jump(header, &args_back);
+
+        self.builder.switch_to_block(vidange);
+        self.builder.seal_block(vidange);
+        let va = self.builder.block_params(vidange)[0];
+        let mut vt = self.builder.block_params(vidange)[2];
+        for j in 0..NACC as usize {
+            let x = self.builder.block_params(vidange)[3 + j];
+            let x128 = self.builder.ins().sextend(types::I128, x);
+            vt = self.builder.ins().iadd(vt, x128);
+        }
+        let args_vid: Vec<BlockArg> = [va.into(), zero64.into(), vt.into()]
+            .into_iter().chain(zéros.iter().copied()).collect();
+        self.builder.ins().jump(header, &args_vid);
         self.builder.seal_block(header);
 
-        // ── queue : < 8 termes restants, ajoutés à acc[0] ────────────────
+        // ── queue : < NACC termes restants, ajoutés à acc[0] (i64) ───────────
         let tail_corps = self.builder.create_block();
         let reduce = self.builder.create_block();
-        for _ in 0..NACC { self.builder.append_block_param(reduce, types::I128); }
+        self.builder.append_block_param(reduce, types::I64);   // a (inutilisé)
+        self.builder.append_block_param(reduce, types::I128);  // total
+        for _ in 0..NACC { self.builder.append_block_param(reduce, types::I64); }
         self.builder.switch_to_block(queue);
         let qa = self.builder.block_params(queue)[0];
-        let qaccs: Vec<Value> = (1..=NACC as usize)
+        let qt = self.builder.block_params(queue)[1];
+        let qaccs: Vec<Value> = (2..2 + NACC as usize)
             .map(|i| self.builder.block_params(queue)[i]).collect();
         let encore = self.builder.ins().icmp(IntCC::SignedLessThan, qa, c_fin);
-        let args_red: Vec<BlockArg> = qaccs.iter().copied().map(|v| v.into()).collect();
+        let args_red: Vec<BlockArg> = [qa.into(), qt.into()]
+            .into_iter().chain(qaccs.iter().copied().map(|v| v.into())).collect();
         self.builder.ins().brif(encore, tail_corps, &[], reduce, &args_red);
 
         self.builder.switch_to_block(tail_corps);
         self.builder.seal_block(tail_corps);
         let ta = self.builder.block_params(queue)[0];
-        let taccs: Vec<Value> = (1..=NACC as usize)
+        let tt = self.builder.block_params(queue)[1];
+        let taccs: Vec<Value> = (2..2 + NACC as usize)
             .map(|i| self.builder.block_params(queue)[i]).collect();
         let tcarre = self.builder.ins().imul(ta, ta);
-        let tcarre128 = self.builder.ins().sextend(types::I128, tcarre);
-        let tacc0 = self.builder.ins().iadd(taccs[0], tcarre128);
+        let tacc0 = self.builder.ins().iadd(taccs[0], tcarre);
         let tan = self.builder.ins().iadd(ta, un);
-        let args_tail: Vec<BlockArg> = std::iter::once(tan.into())
-            .chain(std::iter::once(tacc0.into()))
+        let args_tail: Vec<BlockArg> = [tan.into(), tt.into()]
+            .into_iter().chain(std::iter::once(tacc0.into()))
             .chain(taccs.iter().skip(1).copied().map(|v| v.into())).collect();
         self.builder.ins().jump(queue, &args_tail);
         self.builder.seal_block(queue);
 
-        // ── réduction des 8 accumulateurs ───────────────────────────────
+        // ── réduction finale des NACC accumulateurs dans le total i128 ──────
         self.builder.switch_to_block(reduce);
         self.builder.seal_block(reduce);
-        let mut total = self.builder.block_params(reduce)[0];
-        for j in 1..NACC as usize {
-            let aj = self.builder.block_params(reduce)[j];
-            total = self.builder.ins().iadd(total, aj);
+        let mut total = self.builder.block_params(reduce)[1];
+        for j in 0..NACC as usize {
+            let aj = self.builder.block_params(reduce)[2 + j];
+            let aj128 = self.builder.ins().sextend(types::I128, aj);
+            total = self.builder.ins().iadd(total, aj128);
         }
         let args_fin: Vec<BlockArg> = [total.into()].into();
         self.builder.ins().jump(fin_b, &args_fin);

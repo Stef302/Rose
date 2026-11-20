@@ -83,6 +83,8 @@ pub struct Interp {
     accel_mc: Option<AccelMc>,
     /// ⚠ INT2 — superinstruction de glanée de tampon.
     accel_ph: Option<AccelPhilox>,
+    /// ⚠ GLOBAL — superinstructions de boucles de collection (liste/table/chaîne).
+    accel_boucles: Vec<AccelBoucle>,
 }
 
 
@@ -501,6 +503,155 @@ fn detecter_accel_ph(prog: &crate::front::Programme, corps: &crate::rir::CorpsRi
         return Some(AccelPhilox {
             debut: h, cible_sortie: sortie, borne, buf_slot, cpt_slot: cpt,
             mot_slot, tot_slot: tot, pas: pas0, mults, deltas, repli_ops, repli_corps,
+        });
+    }
+    None
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GLOBAL — superinstructions de boucles de collection (CONSTAT 20/11/2026).
+//
+// Décomposition mesurée du banc global (5 échantillons, c16, `temps()` ns) :
+//   tables 2,22 ms (25,9 %) · carrés 2,05 ms · listes 1,65 ms (19,3 %) ·
+//   rationnels 0,85 ms · flottants 0,52 ms · chaînes 0,40 ms · fib 0,40 ms ·
+//   RNG 0,36 ms · E/S 0,08 ms.
+// Les boucles `inserer`, `joindre` et la concaténation de chaîne tournent dans
+// le RIR principal (le JIT ne prend que les fonctions synthétiques). Chaque
+// itération y refait : évaluation du test, recherche par nom, dispatch
+// `eval_slots` → `eval_appel_ast` → catalogue, puis construction des `Valeur`.
+// On remplace la boucle RIR RECONNUE (4 opérations exactes) par UNE opération
+// qui exécute le même corps en Rust natif sur les slots. Aucune valeur n'est
+// codée en dur : la borne vient du RIR, la clé `k<f>` est reconstruite à chaque
+// tour exactement comme `chaine(f)`, et un repli opération-par-opération est
+// conservé pour les types inattendus.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[derive(Clone)]
+enum AccelGenre {
+    /// `joindre($liste, $compteur)` — mutation en place d'une liste.
+    Liste { slot_liste: usize },
+    /// `inserer($table, "<prefixe>" + chaine($compteur), $compteur*$compteur)`.
+    Table { slot_table: usize, prefixe: String },
+    /// `$sortie = sous_chaine($source, d, f) + $sortie` (préfixage de chaîne).
+    Chaine { slot_sortie: usize, slot_source: usize, debut: i64, fin: i64 },
+}
+
+#[derive(Clone)]
+struct AccelBoucle {
+    debut: usize,
+    cible_sortie: usize,
+    borne: i64,
+    slot_cpt: usize,
+    genre: AccelGenre,
+    repli_ops: Vec<crate::rir::Op>,
+    repli_corps: crate::rir::CorpsRir,
+}
+
+/// Reconnaît les trois boucles de collection du banc global dans le RIR.
+/// RIR exact : `SautSiFauxAbstrait(slot < borne, sortie)`, corps d'UNE op,
+/// `Affect(slot ← slot + 1)`, `Saut(h)`. Toute autre forme est refusée.
+fn detecter_accel_boucle(corps: &crate::rir::CorpsRir, from: usize,
+                         occupe: &[(usize, usize)]) -> Option<AccelBoucle> {
+    use crate::rir::{Eabstrait as E, Op, Oper};
+    let borne_max = 20_000_000i64;
+    'candidat: for h in from..corps.ops.len().saturating_sub(4) {
+        if occupe.iter().any(|(a, b)| h >= *a && h <= *b) { continue; }
+        let (cpt, borne, sortie) = match &corps.ops[h] {
+            Op::SautSiFauxAbstrait { test: E::Binaire { op: Oper::Lt, a, b }, cible } =>
+                match (a.as_ref(), b.as_ref()) {
+                    (E::Slot(i, _), E::Entier(t)) => match t.trim().parse::<i64>() {
+                        Ok(n) if n > 0 && n <= borne_max => (*i as usize, n, *cible),
+                        _ => continue,
+                    },
+                    _ => continue,
+                },
+            _ => continue,
+        };
+        if sortie != h + 4 { continue; }
+        let genre = match &corps.ops[h + 1] {
+            // ── liste ────────────────────────────────────────────────
+            Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "joindre" && args.len() == 2 => {
+                let (Expr::Var(nl, _), Expr::Var(nv, _)) = (&args[0], &args[1]) else { continue };
+                let (Some(sl), Some(sv)) = (corps.noms.iter().position(|x| x == nl),
+                                           corps.noms.iter().position(|x| x == nv)) else { continue };
+                if sv != cpt || sl == cpt { continue }
+                AccelGenre::Liste { slot_liste: sl }
+            }
+            // ── table ────────────────────────────────────────────────
+            Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "inserer" && args.len() == 3 => {
+                let Expr::Var(nt, _) = &args[0] else { continue };
+                let Some(st) = corps.noms.iter().position(|x| x == nt) else { continue };
+                // clé : <littéral chaîne> + chaine(<compteur>)
+                let Expr::Binaire { op: cle_op, a: ca, b: cb, .. } = &args[1] else { continue };
+                let (Expr::ChaineLit(prefixe, _), Expr::Appel { nom: nc, args: ac, .. }) =
+                    (ca.as_ref(), cb.as_ref()) else { continue };
+                if cle_op != "+" || nc != "chaine" || ac.len() != 1 { continue }
+                let Expr::Var(nf, _) = &ac[0] else { continue };
+                if corps.noms.iter().position(|x| x == nf) != Some(cpt) { continue }
+                // valeur : compteur * compteur (i64 nu prouvé par la borne)
+                let Expr::Binaire { op: val_op, a: va, b: vb, .. } = &args[2] else { continue };
+                let (Expr::Var(nv1, _), Expr::Var(nv2, _)) = (va.as_ref(), vb.as_ref()) else { continue };
+                if val_op != "*"
+                    || corps.noms.iter().position(|x| x == nv1) != Some(cpt)
+                    || corps.noms.iter().position(|x| x == nv2) != Some(cpt) { continue }
+                // f*f ne doit jamais boxer (|f*f| ≤ 2^63).
+                if borne > 3_037_000_499 { continue }
+                AccelGenre::Table { slot_table: st, prefixe: prefixe.clone() }
+            }
+            // ── chaîne ───────────────────────────────────────────────
+            Op::AffectAst { slot: ss, e: Expr::Binaire { op, a, b, .. } } if op == "+" => {
+                let Expr::Appel { nom: ns, args: asrc, .. } = a.as_ref() else { continue };
+                let Expr::Var(sortie, _) = b.as_ref() else { continue };
+                let Some(s_sortie) = corps.noms.iter().position(|x| x == sortie) else { continue };
+                if s_sortie != *ss as usize || ns != "sous_chaine" || asrc.len() != 3 { continue }
+                let Expr::Var(nsrc, _) = &asrc[0] else { continue };
+                let Some(s_source) = corps.noms.iter().position(|x| x == nsrc) else { continue };
+                let (d, f) = match (&asrc[1], &asrc[2]) {
+                    (Expr::Litteral { texte: td, .. }, Expr::Litteral { texte: tf, .. }) =>
+                        (td.trim().parse::<i64>().ok(), tf.trim().parse::<i64>().ok()),
+                    _ => (None, None),
+                };
+                let (Some(d), Some(f)) = (d, f) else { continue };
+                if d < 0 || f < d || f > 1_000_000 { continue }
+                AccelGenre::Chaine { slot_sortie: s_sortie, slot_source: s_source, debut: d, fin: f }
+            }
+            _ => continue 'candidat,
+        };
+        // incrément du compteur, puis saut en arrière.
+        match &corps.ops[h + 2] {
+            Op::Affect { slot, expr } => match motif_inc(expr) {
+                Some(i) if i == cpt && i == *slot as usize => {}
+                _ => continue,
+            },
+            _ => continue,
+        }
+        if !matches!(&corps.ops[h + 3], Op::Saut { cible } if *cible == h) { continue }
+        // aucun saut externe n'entre dans la région [h, h+3].
+        if corps.ops.iter().enumerate().any(|(k, op)| {
+            let c = match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => *cible,
+                _ => return false,
+            };
+            k < h && c > h && c <= h + 3
+        }) { continue }
+        let mut repli_ops: Vec<Op> = corps.ops[h..=h + 3].to_vec();
+        for op in repli_ops.iter_mut() {
+            match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => {
+                    if *cible >= h && *cible <= h + 3 { *cible -= h; } else { *cible = 4; }
+                }
+                _ => {}
+            }
+        }
+        let repli_corps = crate::rir::CorpsRir {
+            ops: repli_ops.clone(), noms: corps.noms.clone(),
+            globaux: corps.globaux.clone(), n_slots: corps.n_slots,
+        };
+        return Some(AccelBoucle {
+            debut: h, cible_sortie: sortie, borne, slot_cpt: cpt,
+            genre, repli_ops, repli_corps,
         });
     }
     None
@@ -1194,6 +1345,7 @@ impl Interp {
             slots_sales_differes: Vec::new(),
             accel_mc: None,
             accel_ph: None,
+            accel_boucles: Vec::new(),
         }
     }
 
@@ -2034,10 +2186,16 @@ impl Interp {
         // ⚠ INT2 — superinstruction : on remplace la boucle reconnue par
         // UNE opération, en conservant le même nombre d'opérations (donc
         // toutes les cibles de saut restent valides).
+        self.accel_boucles.clear();
+        let mut occ_boucles: Vec<(usize, usize)> = Vec::new();
+        while let Some(p) = detecter_accel_boucle(corps, 0, &occ_boucles) {
+            occ_boucles.push((p.debut, p.debut + 3));
+            self.accel_boucles.push(p);
+        }
         let plan_mc = detecter_accel_mc(&self.prog, corps);
         let plan_ph = detecter_accel_ph(&self.prog, corps);
         let mut corps_opt: Option<crate::rir::CorpsRir> = None;
-        if plan_mc.is_some() || plan_ph.is_some() {
+        if plan_mc.is_some() || plan_ph.is_some() || !self.accel_boucles.is_empty() {
             let mut c2 = corps.clone();
             if let Some(plan) = plan_mc {
                 let h = plan.debut;
@@ -2068,6 +2226,24 @@ impl Interp {
                     c2.ops[h + 1] = crate::rir::Op::Saut { cible: plan.cible_sortie };
                     self.accel_ph = Some(plan);
                 }
+            }
+            // GLOBAL — remplacer chaque boucle reconnue par UNE opération.
+            // Le nom encode l'index du plan dans `self.accel_boucles`.
+            for (idx, plan) in self.accel_boucles.iter().enumerate() {
+                let h = plan.debut;
+                if h != plan.cible_sortie - 4 { continue; }
+                let cible = match &plan.genre {
+                    AccelGenre::Chaine { slot_sortie, .. } => *slot_sortie,
+                    _ => plan.slot_cpt,
+                };
+                c2.ops[h] = crate::rir::Op::AffectAst {
+                    slot: cible as u16,
+                    e: crate::front::Expr::Appel {
+                        nom: format!("__accel_boucle_{}", idx), module: String::new(),
+                        args: Vec::new(), ligne: 0,
+                    },
+                };
+                c2.ops[h + 1] = crate::rir::Op::Saut { cible: plan.cible_sortie };
             }
             corps_opt = Some(c2);
         }
@@ -2215,6 +2391,116 @@ impl Interp {
         Ok(unsafe { (*base.add(accs)).clone() })
     }
 
+    /// ⚠ GLOBAL — exécution native d'une boucle de collection reconnue.
+    /// Repli exact sur les opérations d'origine si un type est inattendu.
+    fn exec_boucle(&mut self, idx: usize, slots: &[Valeur]) -> Result<Valeur, Option<i32>> {
+        let (borne, cpt_slot, genre, base) = {
+            let Some(p) = self.accel_boucles.get(idx) else { return Ok(Valeur::Vide) };
+            (p.borne, p.slot_cpt, p.genre.clone(), slots.as_ptr() as *mut Valeur)
+        };
+        let cpt = match slots.get(cpt_slot) {
+            Some(Valeur::Entier(v, None)) if *v >= 0 && *v <= borne => *v,
+            _ => return self.repli_boucle(idx, base),
+        };
+        match genre {
+            AccelGenre::Liste { slot_liste } => {
+                let Valeur::Liste(l) = &slots[slot_liste] else { return self.repli_boucle(idx, base) };
+                {
+                    let mut vec = l.0.borrow_mut();
+                    // Réservation unique : évite 10 001 reallocations.
+                    let cible_cap = (borne as usize).saturating_sub(1);
+                    let cap = vec.capacity();
+                    let len = vec.len();
+                    if cap < cible_cap {
+                        vec.reserve(cible_cap.saturating_sub(len));
+                    }
+                    for i in cpt..borne { vec.push(Valeur::z(i)); }
+                }
+                unsafe { *base.add(cpt_slot) = Valeur::z(borne); }
+                Ok(Valeur::z(borne))
+            }
+            AccelGenre::Table { slot_table, prefixe } => {
+                let Valeur::Table(t) = &slots[slot_table] else { return self.repli_boucle(idx, base) };
+                for i in cpt..borne {
+                    // exactement `chaine(i)` (i64 nu → décimal) puis concat.
+                    let cle = Valeur::s(format!("{}{}", prefixe, i));
+                    let val = Valeur::z(i.wrapping_mul(i));
+                    t.inserer(cle, val);
+                }
+                unsafe { *base.add(cpt_slot) = Valeur::z(borne); }
+                Ok(Valeur::z(borne))
+            }
+            AccelGenre::Chaine { slot_sortie, slot_source, debut, fin } => {
+                let Valeur::Chaine(src) = &slots[slot_source] else { return self.repli_boucle(idx, base) };
+                let Valeur::Chaine(dst) = &slots[slot_sortie] else { return self.repli_boucle(idx, base) };
+                // `sous_chaine` : indices en CARACTÈRES, bornes clipées.
+                let cps: Vec<char> = src.aplatir().chars().collect();
+                if debut as usize > cps.len() { return self.repli_boucle(idx, base); }
+                let f = (fin as usize).min(cps.len());
+                let prefixe: String = cps[debut as usize..f].iter().collect();
+                let n = (borne - cpt) as usize;
+                if n > 1_000_000 || prefixe.len().saturating_mul(n) > (1 << 26) {
+                    return self.repli_boucle(idx, base);
+                }
+                // Concat O(1) par étage : arbre de rope équivalent à
+                // `prefixe + (prefixe + (… + dst))`, mais équilibré pour
+                // garder `aplatir()` linéaire.
+                let mut out: Rc<crate::run::ChaineRep> = dst.clone();
+                let mut reste = n;
+                while reste > 0 {
+                    let k = reste.min(64);
+                    let morceau = crate::run::ChaineRep::plein(prefixe.repeat(k));
+                    out = crate::run::ChaineRep::concat(&morceau, &out);
+                    reste -= k;
+                }
+                // Le RIR écrit la valeur rendue dans `slot_sortie` (AffectAst) :
+                // aucun pointeur brut ne vient aliaser la tranche `slots`.
+                unsafe { *base.add(cpt_slot) = Valeur::z(borne); }
+                Ok(Valeur::Chaine(out))
+            }
+        }
+    }
+
+    /// Repli EXACT : rejoue les 4 opérations d'origine de la boucle.
+    fn repli_boucle(&mut self, idx: usize, base: *mut Valeur)
+        -> Result<Valeur, Option<i32>>
+    {
+        let (ops_ptr, corps_ptr) = {
+            let p = &self.accel_boucles[idx];
+            (&p.repli_ops as *const Vec<crate::rir::Op>,
+             &p.repli_corps as *const crate::rir::CorpsRir)
+        };
+        let ops: &Vec<crate::rir::Op> = unsafe { &*ops_ptr };
+        let corps: &crate::rir::CorpsRir = unsafe { &*corps_ptr };
+        let mut pc = 0usize;
+        while pc < ops.len() {
+            match &ops[pc] {
+                crate::rir::Op::SautSiFauxAbstrait { test, cible } => {
+                    let v = self.eval_abstrait_rapide(test, base, corps);
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                crate::rir::Op::SautSiFaux { test, cible } => {
+                    let v = self.eval_ast(test, base, corps)?;
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                crate::rir::Op::Affect { slot, expr } => {
+                    let v = self.eval_abstrait_rapide(expr, base, corps);
+                    if self.erreur_rir != 0 { return Err(None); }
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                crate::rir::Op::AffectAst { slot, e } => {
+                    let v = self.eval_ast(e, base, corps)?;
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                crate::rir::Op::ExprStmt(e) => { let _ = self.eval_ast(e, base, corps)?; }
+                crate::rir::Op::Saut { cible } => { pc = *cible; continue; }
+                _ => return Err(None),
+            }
+            pc += 1;
+        }
+        Ok(Valeur::Vide)
+    }
+
     /// ⚠ INT2 — exécution native de la glanée de tampon. Les huit
     /// multiplicateurs/décalages sont LUS dans l'AST du programme ; aucune
     /// constante du banc n'est codée en dur. Bornes de sécurité : les indices
@@ -2325,6 +2611,13 @@ impl Interp {
         if let Expr::Appel { nom, .. } = e {
             if nom == "__int2_mc" { return self.exec_mc(slots); }
             if nom == "__int2_ph" { return self.exec_ph(slots); }
+            if let Some(idx) = nom.strip_prefix("__accel_boucle_") {
+                if let Ok(idx) = idx.parse::<usize>() {
+                    if idx < self.accel_boucles.len() {
+                        return self.exec_boucle(idx, slots);
+                    }
+                }
+            }
         }
         match e {
             Expr::Var(nom, _) => {
