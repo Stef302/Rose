@@ -2059,9 +2059,140 @@ pub fn launcher_dry_run(tag: Option<&str>) -> Result<String, String> {
     crate::velopack::dry_run(tag)
 }
 
+/* ── Sélecteur de versions : API publique pour l'interface graphique ──────
+   Un seul point d'entrée pour l'UI : `launcher_catalogue()` ; deux actions
+   (`launcher_installer_version`, `launcher_selectionner_version`) qui
+   renvoient un `StatutVersion` directement affichable. Aucune version n'est
+   codée en dur : tout vient de l'API GitHub + de l'état disque local.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/// Assemble le catalogue à partir d'une réponse GitHub et de l'état disque.
+/// Fonction pure (hors lecture des listes passées en argument) pour pouvoir
+/// tester le mode hors ligne sans toucher à l'environnement ni au réseau.
+fn assembler_catalogue(
+    distant: Result<Vec<crate::velopack::VersionDistante>, String>,
+    installees: &[String],
+    cachees: &[String],
+) -> crate::velopack::CatalogueVersions {
+    use crate::velopack::{construire_catalogue, catalogue_local};
+    match distant {
+        Ok(versions) => {
+            let nb = versions.len();
+            construire_catalogue(
+                &versions,
+                installees,
+                cachees,
+                false,
+                format!("{nb} version(s) trouvée(s) sur GitHub."),
+            )
+        }
+        Err(cause) => catalogue_local(installees, cachees, &cause),
+    }
+}
+
+/// Catalogue TRIÉ par version décroissante, prêt à afficher.
+///
+/// Ne renvoie jamais d'erreur : si GitHub est inaccessible, le catalogue
+/// local est renvoyé avec `hors_ligne = true` et un message explicite —
+/// l'UI n'a donc jamais à gérer une liste vide inexpliquée.
+pub fn launcher_catalogue() -> crate::velopack::CatalogueVersions {
+    assembler_catalogue(
+        crate::velopack::lister_versions(),
+        &crate::velopack::versions_installees(),
+        &crate::velopack::versions_cachees(),
+    )
+}
+
+/// Télécharge la version choisie, VÉRIFIE son SHA-256 (dans
+/// `telecharger_version` : hash absent du manifeste ou différent = refus),
+/// extrait vers `app-<version>` et fait pointer `current`.
+///
+/// Refuse — avant tout téléchargement — un tag absent du catalogue ou dont
+/// le paquet complet n'est pas annoncé. Retourne un statut exploitable par
+/// l'UI (`etat`, `version`, `message`).
+pub fn launcher_installer_version(tag: &str) -> crate::velopack::StatutVersion {
+    use crate::velopack::{entree_pour_tag, valider_installation, StatutVersion, version_depuis_tag};
+    let catalogue = launcher_catalogue();
+    let version = version_depuis_tag(tag);
+    if entree_pour_tag(&catalogue, tag).is_none() {
+        return StatutVersion::refuse(
+            version,
+            format!("version '{tag}' absente du catalogue — installation refusée"),
+        );
+    }
+    if catalogue.hors_ligne {
+        return StatutVersion::echec(
+            version,
+            format!("installation impossible hors ligne : {}", catalogue.message),
+        );
+    }
+    let entree = match valider_installation(&catalogue, tag) {
+        Ok(e) => e,
+        Err(refus) => return refus,
+    };
+    match crate::velopack::telecharger_version(tag) {
+        Ok(v) => StatutVersion::reussi(
+            v.clone(),
+            format!("Version {v} installée et définie comme version courante."),
+        ),
+        Err(e) => StatutVersion::echec(entree.version.clone(), e),
+    }
+}
+
+/// Bascule `current` sur une version DÉJÀ en cache. Aucun appel réseau.
+pub fn launcher_selectionner_version(tag: &str) -> crate::velopack::StatutVersion {
+    use crate::velopack::StatutVersion;
+    if tag.trim().is_empty() {
+        return StatutVersion::refuse(tag, "tag vide — sélection refusée");
+    }
+    let version = crate::velopack::version_depuis_tag(tag);
+    match crate::velopack::selectionner_version(tag) {
+        Ok(v) => StatutVersion::reussi(v.clone(), format!("Version {v} sélectionnée (aucun téléchargement).")),
+        Err(e) => StatutVersion::echec(version, e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vdist_fixture(tag: &str, installable: bool) -> crate::velopack::VersionDistante {
+        let version = crate::velopack::version_depuis_tag(tag);
+        crate::velopack::VersionDistante {
+            tag: tag.to_string(),
+            version: version.clone(),
+            titre: format!("Titre {tag}"),
+            date: String::new(),
+            nupkg: if installable { format!("Rose-{version}-full.nupkg") } else { String::new() },
+            installable,
+            legacy: String::new(),
+        }
+    }
+
+    #[test]
+    fn catalogue_api_ko_retourne_catalogue_local() {
+        let distant: Result<Vec<crate::velopack::VersionDistante>, String> =
+            Err("HTTP 503".to_string());
+        let installees = ["0.1.4".to_string()];
+        let cachees = ["0.1.5".to_string()];
+        let cat = assembler_catalogue(distant, &installees, &cachees);
+        assert!(cat.hors_ligne);
+        assert!(cat.message.contains("HTTP 503"));
+        assert!(cat.message.contains("GitHub inaccessible"));
+        let versions: Vec<&str> = cat.versions.iter().map(|e| e.version.as_str()).collect();
+        assert_eq!(versions, ["0.1.5", "0.1.4"]);
+        assert!(cat.versions.iter().all(|e| !e.installable));
+    }
+
+    #[test]
+    fn installation_refuse_tag_absent_du_catalogue() {
+        let distant = Ok(vec![vdist_fixture("v0.1.6", true)]);
+        let cat = assembler_catalogue(distant, &[], &[]);
+        let refus = crate::velopack::valider_installation(&cat, "v9.9.9").unwrap_err();
+        assert_eq!(refus.etat, crate::velopack::EtatOperation::Refuse);
+        assert!(refus.message.contains("absente du catalogue"));
+        assert!(crate::velopack::valider_installation(&cat, "v0.1.6").is_ok());
+    }
 
     #[test]
     fn version_lue_depuis_bin_ou_racine() {

@@ -722,7 +722,7 @@ pub const NOM_CACHE: &str = "releases.win.json";
 
 /// `v0.1.5` → `0.1.5`. Le préfixe `v` n'est retiré que s'il est suivi d'un
 /// chiffre (un tag exotique comme `version-test` reste intact).
-fn version_depuis_tag(tag: &str) -> String {
+pub fn version_depuis_tag(tag: &str) -> String {
     let t = tag.trim();
     if let Some(reste) = t.strip_prefix('v') {
         if matches!(reste.as_bytes().first(), Some(b'0'..=b'9')) {
@@ -902,6 +902,9 @@ pub struct VersionDistante {
     pub tag: String,
     pub version: String,
     pub titre: String,
+    /// Date ISO-8601 de publication (`published_at` renvoyé par GitHub).
+    /// Vide si le champ est absent : l'UI affiche alors « date inconnue ».
+    pub date: String,
     /// `Rose-<v>-full.nupkg`, vide si la release n'en a pas.
     pub nupkg: String,
     /// Vrai si le launcher sait installer cette version (manifeste + nupkg).
@@ -931,6 +934,7 @@ fn analyser_releases(json: &str) -> Vec<VersionDistante> {
         }
         versions.push(VersionDistante {
             titre: champ_racine(&objet, "name").unwrap_or_else(|| tag.clone()),
+            date: champ_racine(&objet, "published_at").unwrap_or_default(),
             tag,
             version,
             nupkg: if a_nupkg { nupkg } else { String::new() },
@@ -957,6 +961,176 @@ pub fn lister_versions() -> Result<Vec<VersionDistante>, String> {
         return Err("aucune release Windows installable trouvée dans l'API GitHub".into());
     }
     Ok(versions)
+}
+
+/* ── Catalogue du sélecteur de versions ──────────────────────────────────
+   Une SEULE source de vérité : `lister_versions()` (API GitHub, lecture
+   seule) fusionnée avec l'état disque (`versions_installees`,
+   `versions_cachees`). Aucune version n'est écrite en dur ici : les seules
+   chaînes de version visibles se trouvent dans les FIXTURES des tests.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/// Une ligne du sélecteur affiché par l'interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntreeCatalogue {
+    /// Tag exact de la release (`v0.1.6`) ; `version` pour une entrée locale.
+    pub tag: String,
+    /// Version sans préfixe `v`, utilisée pour le tri et les dossiers `app-`.
+    pub version: String,
+    /// Titre de la release (ou titre généré pour une entrée uniquement locale).
+    pub titre: String,
+    /// Publication GitHub au format ISO-8601 ; vide si inconnue.
+    pub date: String,
+    /// Vrai si un paquet complet `Rose-<v>-full.nupkg` est annoncé en ligne.
+    /// Une entrée `false` peut être affichée, mais pas installée par le
+    /// sélecteur (ancien installeur legacy ou version uniquement locale).
+    pub installable: bool,
+    /// Vrai si le manifeste `releases.win.json` de cette version est sur disque.
+    /// Le paquet `.nupkg` est supprimé après extraction : `en_cache` ne veut
+    /// PAS dire « réinstallable hors ligne ».
+    pub en_cache: bool,
+    /// Vrai si `app-<version>` existe : bascule possible sans réseau.
+    pub deja_installee: bool,
+}
+
+/// Ce que l'UI reçoit. `hors_ligne = true` signifie que GitHub n'a PAS répondu
+/// et que `versions` ne contient QUE l'état local. `message` est TOUJOURS
+/// renseigné : une liste vide est donc toujours expliquée.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogueVersions {
+    pub versions: Vec<EntreeCatalogue>,
+    pub hors_ligne: bool,
+    pub message: String,
+}
+
+/// Résultat d'une installation ou d'une bascule, directement affichable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EtatOperation {
+    Reussi,
+    /// Refus de sécurité avant tout téléchargement (tag inconnu/non installable).
+    Refuse,
+    /// Tentative effectuée mais échec (réseau, SHA-256, écriture disque).
+    Echec,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatutVersion {
+    pub etat: EtatOperation,
+    pub version: String,
+    pub message: String,
+}
+
+impl StatutVersion {
+    pub fn reussi(version: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { etat: EtatOperation::Reussi, version: version.into(), message: message.into() }
+    }
+    pub fn refuse(version: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { etat: EtatOperation::Refuse, version: version.into(), message: message.into() }
+    }
+    pub fn echec(version: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { etat: EtatOperation::Echec, version: version.into(), message: message.into() }
+    }
+    pub fn ok(&self) -> bool { self.etat == EtatOperation::Reussi }
+}
+
+/// Construit le catalogue. Fonction PURE : aucun réseau, aucun disque, aucun
+/// accès à l'environnement — d'où des fixtures de test sans effet de bord.
+///
+/// Les entrées distantes passent en premier, les versions uniquement locales
+/// sont ajoutées ensuite ; le tri est stable et la dédup conserve l'entrée
+/// distante quand une version existe des deux côtés.
+pub fn construire_catalogue(
+    distant: &[VersionDistante],
+    installees: &[String],
+    cachees: &[String],
+    hors_ligne: bool,
+    message: impl Into<String>,
+) -> CatalogueVersions {
+    let mut versions: Vec<EntreeCatalogue> = distant
+        .iter()
+        .map(|v| EntreeCatalogue {
+            tag: v.tag.clone(),
+            version: v.version.clone(),
+            titre: v.titre.clone(),
+            date: v.date.clone(),
+            installable: v.installable,
+            en_cache: cachees.iter().any(|c| c == &v.version),
+            deja_installee: installees.iter().any(|i| i == &v.version),
+        })
+        .collect();
+
+    for version in installees.iter().chain(cachees.iter()) {
+        if versions.iter().any(|e| &e.version == version) {
+            continue;
+        }
+        versions.push(EntreeCatalogue {
+            tag: version.clone(),
+            version: version.clone(),
+            titre: format!("Version locale {version}"),
+            date: String::new(),
+            installable: false,
+            en_cache: cachees.iter().any(|c| c == version),
+            deja_installee: installees.iter().any(|i| i == version),
+        });
+    }
+
+    versions.sort_by(|a, b| comparer_versions(&b.version, &a.version));
+    versions.dedup_by(|a, b| a.version == b.version);
+
+    let message = message.into();
+    let message = if message.trim().is_empty() {
+        if versions.is_empty() {
+            "Aucune version disponible : API GitHub inaccessible et aucune version \
+             déjà téléchargée sur cet appareil."
+                .to_string()
+        } else {
+            format!("{} version(s) disponible(s).", versions.len())
+        }
+    } else {
+        message
+    };
+    CatalogueVersions { versions, hors_ligne, message }
+}
+
+/// Catalogue de repli : uniquement l'état disque, sans aucun appel réseau.
+pub fn catalogue_local(
+    installees: &[String],
+    cachees: &[String],
+    cause: &str,
+) -> CatalogueVersions {
+    construire_catalogue(
+        &[],
+        installees,
+        cachees,
+        true,
+        format!("GitHub inaccessible ({cause}) : voici les versions déjà présentes sur cet appareil. Le téléchargement sera impossible tant que l'API ne répond pas."),
+    )
+}
+
+/// Retrouve une entrée par tag (`v0.1.6` et `0.1.6` désignent la même version).
+pub fn entree_pour_tag<'a>(catalogue: &'a CatalogueVersions, tag: &str) -> Option<&'a EntreeCatalogue> {
+    let version = version_depuis_tag(tag);
+    catalogue.versions.iter().find(|e| e.version == version)
+}
+
+/// Refus de sécurité : on n'installe QUE ce qui figure au catalogue ET qui
+/// annonce un paquet complet. Aucune fabrication de tag, aucun téléchargement.
+pub fn valider_installation<'a>(
+    catalogue: &'a CatalogueVersions,
+    tag: &str,
+) -> Result<&'a EntreeCatalogue, StatutVersion> {
+    let version = version_depuis_tag(tag);
+    match entree_pour_tag(catalogue, tag) {
+        None => Err(StatutVersion::refuse(
+            version,
+            format!("version '{tag}' absente du catalogue — installation refusée"),
+        )),
+        Some(e) if !e.installable => Err(StatutVersion::refuse(
+            version,
+            format!("version '{tag}' non installable (ancien installeur ou version locale seulement) — utilisez la sélection si elle est déjà sur disque"),
+        )),
+        Some(e) => Ok(e),
+    }
 }
 
 /// Télécharge un fichier vers `cible` : copie locale pour `file://` (tests),
@@ -1259,13 +1433,16 @@ mod tests {
     /// `objets_racine` et le champ `author` porte un `name` piège.
     const API_FIXTURE: &str = r#"[
       {"author":{"login":"Stef302","name":"Piège"},"tag_name":"v0.1.5",
+       "published_at":"2026-11-14T15:39:30Z",
        "name":"Rose {v0.1.5} — installeur Windows refait",
        "assets":[{"name":"Rose-0.1.5-full.nupkg","size":8213857},
                  {"name":"releases.win.json","size":402}]},
       {"author":{"login":"Stef302","name":"Piège"},"tag_name":"v0.1.4",
+       "published_at":"2026-11-14T09:19:22Z",
        "name":"Rose v0.1.4",
        "assets":[{"name":"Rose-0.1.4-full.nupkg"},{"name":"releases.win.json"}]},
       {"author":{"login":"Stef302"},"tag_name":"v0.1.3","name":"Rose v0.1.3",
+       "published_at":"2026-11-13T21:04:04Z",
        "assets":[{"name":"Rose-Setup-0.1.3.exe"}]},
       {"author":{"login":"Stef302"},"tag_name":"v0.1.2","name":"Rose v0.1.2","assets":[]}
     ]"#;
@@ -1284,6 +1461,7 @@ mod tests {
         assert_eq!(versions[0].tag, "v0.1.5");
         assert_eq!(versions[0].version, "0.1.5");
         assert_eq!(versions[0].titre, "Rose {v0.1.5} — installeur Windows refait");
+        assert_eq!(versions[0].date, "2026-11-14T15:39:30Z");
         assert!(versions[0].installable);
         assert_eq!(versions[0].nupkg, "Rose-0.1.5-full.nupkg");
         assert_eq!(versions[1].tag, "v0.1.4");
@@ -1291,6 +1469,127 @@ mod tests {
         assert_eq!(versions[2].legacy, "Rose-Setup-0.1.3.exe");
         // v0.1.2 (sans artefact Windows) est écarté
         assert!(versions.iter().all(|v| v.tag != "v0.1.2"));
+    }
+
+    /// Version distante de test : aucune version n'est codée en dur dans le
+    /// code de production, uniquement dans ces fixtures.
+    fn vdist(tag: &str, installable: bool) -> VersionDistante {
+        let version = version_depuis_tag(tag);
+        VersionDistante {
+            tag: tag.to_string(),
+            version: version.clone(),
+            titre: format!("Titre {tag}"),
+            date: "2026-11-14T00:00:00Z".to_string(),
+            nupkg: if installable { format!("Rose-{version}-full.nupkg") } else { String::new() },
+            installable,
+            legacy: String::new(),
+        }
+    }
+    fn chaines(vals: &[&str]) -> Vec<String> { vals.iter().map(|v| v.to_string()).collect() }
+
+    #[test]
+    fn catalogue_tri_dedup_et_drapeaux() {
+        let distant = [
+            vdist("v0.1.4", true),
+            vdist("v0.1.6", true),
+            vdist("v0.1.5", true),
+            vdist("0.1.5", true), // doublon de la même version
+        ];
+        let cat = construire_catalogue(
+            &distant,
+            &chaines(&["0.1.5", "0.1.3"]),
+            &chaines(&["0.1.6", "0.1.3"]),
+            false,
+            "7 versions depuis GitHub",
+        );
+        let versions: Vec<&str> = cat.versions.iter().map(|e| e.version.as_str()).collect();
+        assert_eq!(versions, ["0.1.6", "0.1.5", "0.1.4", "0.1.3"], "tri décroissant + dédup");
+        assert!(!cat.hors_ligne);
+        let v6 = entree_pour_tag(&cat, "v0.1.6").unwrap();
+        assert!(v6.installable && v6.en_cache && !v6.deja_installee);
+        let v5 = entree_pour_tag(&cat, "v0.1.5").unwrap();
+        assert_eq!(v5.tag, "v0.1.5"); // l'entrée distante gagne sur le doublon
+        assert!(v5.deja_installee);
+        let v3 = entree_pour_tag(&cat, "v0.1.3").unwrap();
+        assert!(!v3.installable, "une version uniquement locale n'est pas installable");
+        assert!(v3.deja_installee && v3.en_cache && v3.date.is_empty());
+    }
+
+    #[test]
+    fn catalogue_filtre_installable() {
+        let distant = [vdist("v0.1.6", true), vdist("v0.1.3", false)];
+        let cat = construire_catalogue(
+            &distant,
+            &chaines(&["0.1.3"]),
+            &[],
+            false,
+            " distant ",
+        );
+        let installables: Vec<&str> = cat
+            .versions
+            .iter()
+            .filter(|e| e.installable)
+            .map(|e| e.tag.as_str())
+            .collect();
+        assert_eq!(installables, ["v0.1.6"]);
+        assert!(entree_pour_tag(&cat, "v0.1.3")
+            .map(|e| !e.installable && e.deja_installee)
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn catalogue_hors_ligne_depuis_disque() {
+        let cat = catalogue_local(
+            &chaines(&["0.1.4"]),
+            &chaines(&["0.1.5"]),
+            "HTTP 000",
+        );
+        assert!(cat.hors_ligne);
+        assert!(cat.message.contains("GitHub inaccessible"));
+        assert!(cat.message.contains("HTTP 000"));
+        let versions: Vec<&str> = cat.versions.iter().map(|e| e.version.as_str()).collect();
+        assert_eq!(versions, ["0.1.5", "0.1.4"]);
+        assert!(cat.versions.iter().all(|e| !e.installable && e.date.is_empty()));
+        assert!(entree_pour_tag(&cat, "0.1.4").unwrap().deja_installee);
+        assert!(entree_pour_tag(&cat, "0.1.5").unwrap().en_cache);
+    }
+
+    #[test]
+    fn catalogue_vide_toujours_explique() {
+        let cat = construire_catalogue(&[], &[], &[], true, "");
+        assert!(cat.versions.is_empty());
+        assert!(!cat.message.trim().is_empty(), "une liste vide doit toujours être expliquée");
+    }
+
+    #[test]
+    fn tag_inconnu_et_non_installable_refuses() {
+        let distant = analyser_releases(API_FIXTURE);
+        let cat = construire_catalogue(&distant, &[], &[], false, "");
+        assert!(entree_pour_tag(&cat, "v0.1.4").is_some());
+        assert!(entree_pour_tag(&cat, "0.1.4").is_some(), "préfixe v toléré");
+        assert!(entree_pour_tag(&cat, "v9.9.9").is_none());
+        assert_eq!(
+            valider_installation(&cat, "v9.9.9").unwrap_err().etat,
+            EtatOperation::Refuse
+        );
+        assert_eq!(
+            valider_installation(&cat, "v0.1.3").unwrap_err().etat,
+            EtatOperation::Refuse,
+            "legacy (sans nupkg) n'est pas installable par le sélecteur"
+        );
+        assert_eq!(valider_installation(&cat, "v0.1.4").unwrap().tag, "v0.1.4");
+    }
+
+    #[test]
+    fn catalogue_depuis_fixture_json_garde_date_et_titre() {
+        let distant = analyser_releases(API_FIXTURE);
+        let cat = construire_catalogue(&distant, &[], &chaines(&["0.1.4"]), false, "");
+        let v5 = entree_pour_tag(&cat, "v0.1.5").unwrap();
+        assert_eq!(v5.titre, "Rose {v0.1.5} — installeur Windows refait");
+        assert_eq!(v5.date, "2026-11-14T15:39:30Z");
+        assert_eq!(v5.tag, "v0.1.5");
+        assert!(v5.installable && !v5.en_cache && !v5.deja_installee);
+        assert!(entree_pour_tag(&cat, "0.1.4").unwrap().en_cache);
     }
 
     /// ZIP minimal en méthode « stored » (0) : `entrees_zip` lit les
@@ -1449,6 +1748,48 @@ mod tests {
         assert_eq!(
             fs::read_to_string(racine.join("current")).unwrap().trim(),
             "app-0.1.6"
+        );
+
+        // ── API du sélecteur via les ponts `setup_core` ─────────────────
+        // L'API factice (file://) annonce la release de test : le catalogue
+        // est construit UNIQUEMENT depuis elle + l'état disque.
+        let api_install = format!(
+            r#"[{{"tag_name":"v0.1.6","name":"Rose v0.1.6",
+                 "published_at":"2026-11-19T13:54:57Z",
+                 "assets":[{{"name":"Rose-0.1.6-full.nupkg"}},{{"name":"releases.win.json"}}]}}]"#
+        );
+        let _ = fs::write(racine.join("api.json"), &api_install);
+        let cat = crate::setup_core::launcher_catalogue();
+        assert!(!cat.hors_ligne);
+        // 3 entrées : la release distante v0.1.6 et les dossiers app-0.1.5 /
+        // app-0.1.4 créés plus haut dans ce test (l'état local est fusionné).
+        assert_eq!(cat.versions.len(), 3);
+        assert_eq!(cat.versions[0].version, "0.1.6");
+        assert_eq!(cat.versions[0].date, "2026-11-19T13:54:57Z");
+        assert!(cat.versions[0].deja_installee);
+
+        // Refus de sécurité : tag absent du catalogue, avant tout réseau.
+        let refus = crate::setup_core::launcher_installer_version("v9.9.9");
+        assert_eq!(refus.etat, EtatOperation::Refuse);
+        assert!(refus.message.contains("absente du catalogue"));
+
+        // Hash non vérifié : l'échec est remonté à l'UI avec un message.
+        let echec = crate::setup_core::launcher_installer_version("v0.1.6");
+        assert_eq!(echec.etat, EtatOperation::Echec);
+        assert!(echec.message.contains("SHA-256 invalide"), "{}", echec.message);
+
+        // Manifeste corrigé : installation réussie via le pont UI.
+        let _ = fs::write(artefacts.join("releases.win.json"), &manifeste);
+        let reussi = crate::setup_core::launcher_installer_version("v0.1.6");
+        assert!(reussi.ok(), "{}", reussi.message);
+        assert_eq!(reussi.version, "0.1.6");
+
+        // Bascule sans réseau vers une version déjà sur disque.
+        let selection = crate::setup_core::launcher_selectionner_version("v0.1.4");
+        assert!(selection.ok(), "{}", selection.message);
+        assert_eq!(
+            fs::read_to_string(racine.join("current")).unwrap().trim(),
+            "app-0.1.4"
         );
 
         unsafe {
