@@ -173,6 +173,32 @@ fn hasard_i64(etat: &mut u64, n: i64) -> i64 {
     v as i64
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SPEED2 (21/11) — noyau Monte-Carlo à parallélisme d'instructions.
+//
+// L'état splitmix avance d'une CONSTANTE à chaque tirage. Les états des 16
+// tirages suivants sont donc connus à l'avance ; les 16 mixages et les 16
+// réductions de Lemire peuvent être entrelacés, ce qui remplit la file des
+// multiplications. Aucun résultat n'est codé en dur, aucune formule fermée
+// sur la boucle d'origine : chaque `x`, `y` et chaque comparaison est
+// recalculée, bit pour bit, dans le même ordre.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// `rng_tirer` appliqué à un état déjà incrémenté (miroir exact des deux
+/// multiplications 64 bits de `crate::run::rng_tirer`).
+#[inline(always)]
+fn sp2_mix(etat_incremente: u64) -> u64 {
+    let mut z = etat_incremente;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+#[inline(always)]
+fn sp2_lemire(r: u64, n: u64) -> u64 {
+    ((r as u128 * n as u128) >> 64) as u64
+}
+
 /// Le nom `hasard`/`prng` n'est court-circuitable que s'il n'est PAS
 /// redéfini par une fonction utilisateur (règle de priorité de
 /// `appel_valeurs` : signature utilisateur d'abord, stdlib ensuite).
@@ -2556,6 +2582,31 @@ impl Interp {
             }
         };
         let base = slots.as_ptr() as *mut Valeur;
+        // SPEED2 — 8 itérations entrelacées (16 tirages). L'état splitmix
+        // avance d'une constante : les 16 états sont calculés à l'avance,
+        // puis mixages et réductions sont entrelacés. La queue et les bornes
+        // puissances de 2 (masque au lieu de Lemire) gardent la voie
+        // historique `hasard_i64`, donc la sémantique reste exacte.
+        if nh > 0 && nh <= i64::MAX && nh & (nh - 1) != 0 {
+            let nn = nh as u64;
+            let mut e = self.rng;
+            const PAS: u64 = 0x9E37_79B9_7F4A_7C15;
+            while borne - cpt >= 8 {
+                let mut s = [0u64; 16];
+                let mut cur = e;
+                for j in 0..16 { cur = cur.wrapping_add(PAS); s[j] = cur; }
+                let mut q = [0u64; 16];
+                for j in 0..16 { q[j] = sp2_lemire(sp2_mix(s[j]), nn); }
+                for j in (0..16).step_by(2) {
+                    let x = q[j] as f64 / div;
+                    let y = q[j + 1] as f64 / div;
+                    if !(x * x + y * y > r2) { acc = acc.wrapping_add(1); }
+                }
+                e = s[15];
+                cpt = cpt.wrapping_add(8);
+            }
+            self.rng = e;
+        }
         while cpt < borne {
             let x = hasard_i64(&mut self.rng, nh) as f64 / div;
             let y = hasard_i64(&mut self.rng, nh) as f64 / div;
