@@ -7,7 +7,7 @@
 // nette (« entier hors plage »), jamais un wrap silencieux.
 // Licence MIT.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::rc::Rc;
@@ -365,6 +365,186 @@ pub enum Valeur {
     Tableau(Tableau),
     Complexe { re: f64, im: f64 },
     Irrationnel(Rc<Gz>),
+    /// Entier géant décrit par sa définition, JAMAIS matérialisé (VAL1).
+    Symbolique(Rc<ObjetParesseux>),
+}
+
+// ── Valeurs symboliques paresseuses (VAL1) ────────────────────────────────
+//
+// Le but est d'afficher `entier_geant_factorielle(10^37)` en 30 chiffres
+// suivis de « … » SANS calculer le nombre. Le chemin exact (`n!`,
+// `factorielle(n)`, `factorielle_parallele`) reste INTACT : le mode paresseux
+// est opt-in, créé uniquement par `Valeur::symbolique_factorielle*`.
+//
+// ⚠ `n` est stocké en `BigInt`, pas en `u64` : `u64::MAX ≈ 1,8×10^19`, alors
+// que l'exemple produit `10^37` demande ~123 bits. Le constructeur `u64`
+// demandé par la mission est fourni, mais il délègue au constructeur général.
+// On ne stocke PAS de `Gz` : son `Clone` est un clonage de pointeur brut
+// (i128x.rs:458, Drop en 623) → double-free dès que la valeur est clonée.
+#[derive(Clone, Debug)]
+pub enum EntierSymbolique {
+    Factorielle(BigInt),                 // n! — n exact, aussi grand soit-il
+}
+
+/// Cache local à l'objet : croît en O(chiffres demandés), jamais en O(n!).
+#[derive(Clone, Debug, Default)]
+pub struct CacheParesseux {
+    pub log10_entier: Option<BigInt>,    // floor(log10 n!)
+    pub log10_fraction: Option<String>,  // 40 décimales de log10 n!
+    pub premiers: Option<String>,        // chiffres de tête, au moins `chiffres_calcules`
+    pub chiffres_calcules: usize,
+    pub precision_premiers: usize,       // décimales de travail utilisées
+}
+
+/// Descripteur partageable d'un entier géant. `Cell`/`RefCell` permettent
+/// `demander_plus(k)` sans `&mut Valeur` (le REPL garde des `Rc` partagés).
+#[derive(Clone, Debug)]
+pub struct ObjetParesseux {
+    pub kind: EntierSymbolique,
+    pub chiffres_demandes: Cell<usize>,
+    pub cache: RefCell<CacheParesseux>,
+}
+
+/// Propriétés dérivées SANS matérialiser le nombre. Câblage de `detail()`
+/// réservé à INT1 : cette structure est l'API publique fournie.
+#[derive(Clone, Debug)]
+pub struct ProprietesParesseux {
+    pub longueur: BigInt,          // nombre de chiffres décimaux de n!
+    pub zeros_finaux: BigInt,      // Σ floor(n/5^j)
+    pub derniers_non_nuls: String, // k derniers chiffres non nuls
+    pub log10_entier: BigInt,
+    pub log10_fraction: String,    // décimales de log10(n!)
+    pub log10_complet: String,     // « entier.fraction » (commode pour detail())
+}
+
+/// Décimales de log10 conservées dans le cache (suffisantes pour 30 chiffres
+/// de tête, et pour l'affichage de `detail()`).
+const LOG10_DIGITS: usize = 40;
+/// Garde de précision ajoutée au nombre de chiffres de tête demandés.
+const GARDE_PRECISION: usize = 10;
+/// Nombre de derniers chiffres non nuls renvoyés par `proprietes()`.
+/// 5^9 ≈ 2.10^6 : au-delà, MATH1 retombe sur le produit direct O(n),
+/// qui serait intraitable pour n = 10^37 (voir i128x.rs:1539-1548).
+const DERNIERS_K: usize = 9;
+
+/// Fraction décimale d'un `Gq` déjà à dénominateur `10^digits` (ou réduit),
+/// rendue avec exactement `digits` chiffres après la virgule.
+fn gq_fraction_digits(q: &Gq, digits: usize) -> String {
+    let num = q.num_bigint();
+    let den = q.den_bigint();
+    let ent = &num / &den;
+    let reste = &num - &ent * &den;
+    let echelle = BigInt::from(10u32).pow(digits as u32);
+    let frac = (&reste * &echelle) / &den;
+    let mut s = frac.to_string();
+    if s.len() < digits { s = "0".repeat(digits - s.len()) + &s; }
+    s
+}
+
+impl ObjetParesseux {
+    /// Constructeur « étroit » (n tient dans u64), tel que spécifié.
+    pub fn factorielle(n: u64) -> Self { Self::factorielle_big(BigInt::from(n)) }
+
+    /// Constructeur général : n peut dépasser u64 (10^37, 10^100…).
+    pub fn factorielle_big(n: BigInt) -> Self {
+        ObjetParesseux {
+            kind: EntierSymbolique::Factorielle(n),
+            chiffres_demandes: Cell::new(30),
+            cache: RefCell::new(CacheParesseux::default()),
+        }
+    }
+
+    /// Construit depuis un `Gz` sans cloner son pointeur (copie de la valeur).
+    pub fn factorielle_gz(n: &Gz) -> Self { Self::factorielle_big(n.v()) }
+
+    /// `Gz` éphémère pour les appels à l'API MATH1, qui prend `&Gz`.
+    fn n_gz(&self) -> Gz {
+        match &self.kind { EntierSymbolique::Factorielle(n) => Gz::de_bigint(n.clone()) }
+    }
+
+    /// Calcule (une seule fois) la partie entière et la fraction de log10(n!).
+    fn assure_log10(&self) {
+        if self.cache.borrow().log10_entier.is_some() { return; }
+        let n = self.n_gz();
+        let (q, _) = crate::i128x::log10_factorielle_precision(&n, LOG10_DIGITS);
+        let entier = q.num_bigint() / q.den_bigint();
+        let fraction = gq_fraction_digits(&q, LOG10_DIGITS);
+        let mut c = self.cache.borrow_mut();
+        c.log10_entier = Some(entier);
+        c.log10_fraction = Some(fraction);
+    }
+
+    /// Nombre de chiffres décimaux de n!, SANS matérialiser n!.
+    pub fn longueur(&self) -> BigInt {
+        self.assure_log10();
+        self.cache.borrow().log10_entier.as_ref().unwrap() + 1u32
+    }
+
+    /// Recalcule les chiffres de tête depuis n (jamais depuis le texte déjà
+    /// affiché) avec une précision accrue, puis met le cache à jour.
+    fn assure_premiers(&self, count: usize) {
+        if self.cache.borrow().chiffres_calcules >= count { return; }
+        let n = self.n_gz();
+        let precision = count + GARDE_PRECISION;
+        let premiers = crate::i128x::premiers_chiffres_factorielle(&n, count, precision);
+        let mut c = self.cache.borrow_mut();
+        c.premiers = Some(premiers);
+        c.chiffres_calcules = count;
+        c.precision_premiers = precision;
+    }
+
+    /// Rendu tronqué : `<chiffres_demandes chiffres>…`, ou le nombre complet
+    /// (sans « … ») s'il tient en moins de chiffres. C'est la SEULE branche
+    /// d'affichage : `chaine_de_p` l'appelle, et `afficher`,
+    /// `afficher_formule`, `chaine()` héritent du comportement.
+    pub fn premiers_tronques(&self) -> String {
+        let d = self.chiffres_demandes.get().max(1);
+        let longueur = self.longueur();
+        let complet = longueur <= BigInt::from(d);
+        let count = if complet { longueur.to_usize().unwrap_or(d).max(1) } else { d };
+        self.assure_premiers(count.max(d));
+        let cache = self.cache.borrow();
+        let p = cache.premiers.as_ref().expect("cache de chiffres de tête");
+        let tranche = &p[..count];
+        if complet { tranche.to_string() } else { format!("{tranche}…") }
+    }
+
+    /// « more digits » : augmente la demande et recalcule avec plus de
+    /// précision. Retourne le nouveau rendu tronqué. `plus == 0` = no-op.
+    pub fn demander_plus(&self, plus: usize) -> String {
+        if plus > 0 {
+            let nouveau = self.chiffres_demandes.get().saturating_add(plus);
+            self.chiffres_demandes.set(nouveau);
+            self.assure_premiers(nouveau);
+        }
+        self.premiers_tronques()
+    }
+
+    /// Propriétés typées, calculées sans matérialiser n!. API pour INT1.
+    pub fn proprietes(&self) -> ProprietesParesseux { self.proprietes_avec_k(DERNIERS_K) }
+
+    /// Variante de `proprietes()` avec un nombre de derniers chiffres choisi.
+    /// ⚠ k > 9 retombe sur le produit direct O(n) dans MATH1 : réservé aux
+    /// petits n.
+    pub fn proprietes_avec_k(&self, k: usize) -> ProprietesParesseux {
+        let n = self.n_gz();
+        self.assure_log10();
+        let (log10_entier, log10_fraction) = {
+            let c = self.cache.borrow();
+            (c.log10_entier.clone().unwrap(), c.log10_fraction.clone().unwrap())
+        };
+        let longueur = &log10_entier + 1u32;
+        let zeros_finaux = crate::i128x::zeros_finaux_factorielle(&n).v();
+        let derniers_non_nuls = crate::i128x::derniers_non_nuls(&n, k);
+        ProprietesParesseux {
+            longueur,
+            zeros_finaux,
+            derniers_non_nuls,
+            log10_complet: format!("{log10_entier}.{log10_fraction}"),
+            log10_entier,
+            log10_fraction,
+        }
+    }
 }
 
 impl Valeur {
@@ -410,6 +590,19 @@ impl Valeur {
     pub fn tableau(n: usize) -> Valeur { Valeur::Tableau(Tableau(Rc::new(RefCell::new(vec![0i64; n])))) }
     pub fn irrationnel(n: Gz) -> Valeur { Valeur::Irrationnel(Rc::new(n)) }
 
+    /// Constructeur public de factorielle paresseuse (n tient dans u64).
+    pub fn symbolique_factorielle(n: u64) -> Valeur {
+        Valeur::Symbolique(Rc::new(ObjetParesseux::factorielle(n)))
+    }
+    /// Pour n > u64::MAX (ex. 10^37) : l'argument reste un entier exact.
+    pub fn symbolique_factorielle_big(n: BigInt) -> Valeur {
+        Valeur::Symbolique(Rc::new(ObjetParesseux::factorielle_big(n)))
+    }
+    /// Variante pratique quand l'appelant tient déjà un `Gz` (primitive Rose).
+    pub fn symbolique_factorielle_gz(n: &Gz) -> Valeur {
+        Valeur::Symbolique(Rc::new(ObjetParesseux::factorielle_gz(n)))
+    }
+
     pub fn ty(&self) -> TyKind {
         match self {
             Valeur::Vide => TyKind::Vide,
@@ -424,6 +617,9 @@ impl Valeur {
             Valeur::Tableau(..) => TyKind::Tableau,
             Valeur::Irrationnel(..) => TyKind::Irrationnel,
             Valeur::Complexe { .. } => TyKind::Complexe,
+            // Un symbole est un entier du point de vue du langage : évite de
+            // toucher front.rs et tous les appels qui décident sur TyKind.
+            Valeur::Symbolique(..) => TyKind::Entier,
         }
     }
 }
@@ -1022,6 +1218,9 @@ pub fn chaine_de_p(v: &Valeur, peri: bool) -> String {
                 format!("√{}", z.chaine())
             }
         }
+        // SEUL branchement d'affichage ajouté. Ni `afficher`, ni
+        // `afficher_formule`, ni aucun autre match sur Valeur ne change.
+        Valeur::Symbolique(o) => o.premiers_tronques(),
     }
 }
 
@@ -2453,5 +2652,108 @@ impl std::hash::Hasher for HashU64 {
         // le même bucket. Simulation : max 5 clés/bucket de 4096 ici.
         let z = (i ^ (i >> 29)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
         self.0 = z ^ (z >> 32);
+    }
+}
+
+// ── Tests VAL1 (valeur paresseuse) ────────────────────────────────────────
+#[cfg(test)]
+mod tests_val1 {
+    use super::*;
+
+    fn gz(n: u64) -> Gz { Gz::de_u64(n) }
+    fn objet(v: &Valeur) -> &ObjetParesseux {
+        match v { Valeur::Symbolique(o) => o, _ => panic!("valeur non symbolique") }
+    }
+
+    #[test]
+    fn val1_100_fact_30_chiffres_et_zeros() {
+        let v = Valeur::symbolique_factorielle(100);
+        let s = chaine_de_p(&v, false);
+        assert_eq!(s.chars().count(), 31, "{s}");                     // 30 chiffres + « … »
+        assert!(s.ends_with('…'));
+        assert_eq!(&s[..30], "933262154439441526816992388562", "{s}");
+        let p = objet(&v).proprietes();
+        assert_eq!(p.longueur, BigInt::from(158u32));
+        assert_eq!(p.zeros_finaux, BigInt::from(24u32));
+        assert_eq!(p.log10_entier, BigInt::from(157u32));
+        assert!(p.log10_fraction.starts_with("9700036547157883739149248029"));
+    }
+
+    #[test]
+    fn val1_1000000_fact_longueur_et_zeros() {
+        let o = ObjetParesseux::factorielle(1_000_000);
+        assert_eq!(o.longueur(), BigInt::from(5_565_709u32));
+        assert_eq!(o.proprietes().zeros_finaux, BigInt::from(249_998u32));
+        let s = o.premiers_tronques();
+        assert_eq!(s.chars().count(), 31);
+        assert_eq!(&s[..30], "826393168833124006237664610317", "{s}");
+    }
+
+    #[test]
+    fn val1_10_puissance_37_sans_materialiser() {
+        let n: BigInt = "1".parse::<BigInt>().unwrap() * BigInt::from(10u32).pow(37);
+        let v = Valeur::symbolique_factorielle_big(n);
+        let s = chaine_de_p(&v, false);
+        assert_eq!(s.chars().count(), 31, "{s}");
+        assert_eq!(&s[..30], "901820028144300502340101362711", "{s}");
+        let p = objet(&v).proprietes();
+        assert_eq!(p.longueur,
+            "365657055180967481723488710810833949196".parse::<BigInt>().unwrap());
+        assert_eq!(p.zeros_finaux,
+            "2499999999999999999999999999999999990".parse::<BigInt>().unwrap());
+        assert_eq!(p.log10_entier,
+            "365657055180967481723488710810833949195".parse::<BigInt>().unwrap());
+    }
+
+    #[test]
+    fn val1_plus_de_chiffres_ajoute_30_et_reste_stable() {
+        let o = ObjetParesseux::factorielle(100);
+        let avant = o.premiers_tronques();
+        assert_eq!(avant.chars().count(), 31);
+        let apres = o.demander_plus(30);
+        assert_eq!(apres.chars().count(), 61, "{apres}");
+        assert!(apres.ends_with('…'));
+        assert_eq!(&apres[..30], &avant[..30], "préfixe instable");
+        assert_eq!(o.chiffres_demandes.get(), 60);
+        assert_eq!(o.cache.borrow().precision_premiers, 70);
+        // no-op documenté
+        assert_eq!(o.demander_plus(0), apres);
+
+        let n = BigInt::from(10u32).pow(37);
+        let g = ObjetParesseux::factorielle_big(n);
+        assert_eq!(g.demander_plus(30),
+            "901820028144300502340101362711510022742780300404027294022725…");
+    }
+
+    #[test]
+    fn val1_n_petit_affiche_le_nombre_complet() {
+        let v = Valeur::symbolique_factorielle(10);
+        assert_eq!(chaine_de_p(&v, false), "3628800");
+        assert_eq!(chaine_de(&v), "3628800");
+        assert_eq!(v.ty(), TyKind::Entier);
+        // n! = 1 (un seul chiffre)
+        assert_eq!(chaine_de(&Valeur::symbolique_factorielle(0)), "1");
+        assert_eq!(chaine_de(&Valeur::symbolique_factorielle(1)), "1");
+    }
+
+    #[test]
+    fn val1_chemin_exact_intact() {
+        let f = super::factorielle(&gz(100));
+        let exact = f.v().to_string();
+        assert_eq!(exact.len(), 158);
+        assert_eq!(&exact[..30], "933262154439441526816992388562");
+        assert_eq!(chaine_de(&Valeur::zg(f)), exact);
+        // La variante symbolique n'a rien changé au match `Entier`.
+        assert_eq!(chaine_de(&Valeur::z(75025)), "75025");
+    }
+
+    #[test]
+    fn val1_proprietes_derniers_non_nuls() {
+        // Oracle : 10! = 3628800 → derniers non nuls « 288 ».
+        let o = ObjetParesseux::factorielle(10);
+        let p = o.proprietes_avec_k(5);
+        assert_eq!(p.derniers_non_nuls, "36288");
+        let o = ObjetParesseux::factorielle(100);
+        assert_eq!(o.proprietes().derniers_non_nuls.len() <= DERNIERS_K, true);
     }
 }
