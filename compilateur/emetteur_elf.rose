@@ -2582,7 +2582,12 @@ fn g5_elf() -> chaine {
   # SH7 : la compilation de emetteur_elf.rose par le binaire GÉNÉRÉ épuisait
   # les 2 Gio ; le mapping est porté à 8 Gio et l'assemblage ci-dessus rend
   # cette réserve largement suffisante.
-  joindre($parts, u64le(0) + u64le(8589934592) + u64le(4096))
+  # C1.3 (orchestrateur 21/11): l'auto-compilation de e_final.rir (301903 o)
+  # deplace le pointeur de tas a ~0x260000008 (~10 Gio) sous le mapping de
+  # 8 Gio -> SIGSEGV dans g5_make_str (str x1,[x5] avec x5=0x260000008).
+  # Passe a 32 Gio de VIRTUEL (toujours paresseux, RSS inchangee ~120 Mio) :
+  # mesure avec E1_32g.elf patché: ./E1_32g.elf e_final.rir -> rc=0, ELF 428832 o.
+  joindre($parts, u64le(0) + u64le(34359738368) + u64le(4096))
   $i = 0
   tant_que ($i < longueur($g5_code)) { joindre($parts, u32le($g5_code[$i])); $i = $i + 1 }
   retour g5_assemble($parts)
