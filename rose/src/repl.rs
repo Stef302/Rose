@@ -8,7 +8,8 @@
 //!   restent en mémoire, les `>> expr` s'affichent ;
 //! - continuation `...>` tant que les accolades / parenthèses sont ouvertes ;
 //! - commandes `:help`, `:show`, `:reset`, `:load`, `:save`, `:type`,
-//!   `:latex`, `:quit` ;
+//!   `:latex`, `:quit`, et `:more` (alias `:plus`, `:digits`) qui demande
+//!   des chiffres supplémentaires sur le dernier résultat symbolique ;
 //! - **Windows Terminal / conhost** : sortie UTF-8, séquences ANSI VT
 //!   activées explicitement (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`), et
 //!   `SetConsoleOutputCP(65001)` pour que les accents et les symboles
@@ -21,6 +22,7 @@
 //!
 //! Licence MIT.
 
+use std::cell::{Cell, RefCell};
 use std::io::{self, BufRead, Write};
 
 // ── couleurs ──────────────────────────────────────────────────────────────
@@ -194,6 +196,7 @@ impl Historique {
 /// Mots-clés et commandes proposés par Tab.
 const COMPLETIONS: &[&str] = &[
     ":help", ":show", ":reset", ":load", ":save", ":type", ":latex", ":quit", ":q",
+    ":more", ":plus", ":digits",
     "afficher", "fn", "retour", "si", "sinon", "pour", "tant_que", "vrai", "faux",
     "factorielle", "primorielle", "terminal", "super_factorielle",
     // ⚠ Deux termials : `terminal`/`termial_kurepa` = Kurepa (A003422),
@@ -250,14 +253,16 @@ pub fn braces_balanced(s: &str) -> bool {
 fn aide(c: &Couleur) {
     let t = |s: &str| c.titre(s);
     println!("{}", t("Console Rose — commandes"));
-    let lignes: [(&str, &str); 8] = [
+    let lignes: [(&str, &str); 10] = [
         (":help", "cette aide"),
         (":show", "affiche le code accumulé"),
-        (":reset", "vide le buffer"),
+        (":reset", "vide le buffer et le compteur :more"),
         (":load <fichier>", "charge un fichier et l'exécute"),
         (":save <fichier>", "écrit le buffer dans un fichier"),
         (":type <expr>", "type d'une expression"),
         (":latex", "formule LaTeX du buffer"),
+        (":more [N]", "30 (ou N) chiffres de plus sur le dernier résultat symbolique"),
+        (":plus / :digits", "alias de :more"),
         (":quit", "quitter"),
     ];
     let largeur = lignes.iter().map(|(cmd, _)| cmd.len()).max().unwrap_or(0);
@@ -268,6 +273,110 @@ fn aide(c: &Couleur) {
     println!("Toute autre ligne est du code Rose, exécuté dans le contexte du buffer.");
     println!("Les définitions sont mémorisées ; les {} s'affichent.", c.doux(">> expr"));
     println!("{} et {} rappellent l'historique, {} complète.", c.doux("↑"), c.doux("↓"), c.doux("Tab"));
+}
+
+// ── « plus de chiffres » : état du REPL ───────────────────────────────────
+
+/// Fournisseur de chiffres supplémentaires pour le dernier résultat affiché.
+///
+/// Point de jonction avec VAL1 : `Valeur::Symbolique` et
+/// `ObjetParesseux::demander_plus(k)` sont présents dans `run.rs`. Le trait
+/// garde le REPL indépendant du type concret : l'adaptateur
+/// [`enregistrer_objet_val1`] branche l'objet paresseux, et sans
+/// fournisseur le REPL rend un message clair au lieu de paniquer.
+pub trait PlusDeChiffres {
+    /// Demande `k` chiffres de plus ; rend le texte à afficher, ou une
+    /// erreur déjà rédigée pour l'utilisateur.
+    fn demander_plus(&self, k: usize) -> Result<String, String>;
+}
+
+thread_local! {
+    /// Dernier résultat symbolique, fourni par VAL1/INT1.
+    static FOURNISSEUR_PLUS: RefCell<Option<Box<dyn PlusDeChiffres>>> = const { RefCell::new(None) };
+    /// Nombre cumulé de chiffres demandés depuis le dernier `:reset`.
+    static CHIFFRES_DEMANDES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Branche le fournisseur utilisé par `:more`.
+pub fn enregistrer_plus_de_chiffres(f: Box<dyn PlusDeChiffres>) {
+    FOURNISSEUR_PLUS.with(|p| *p.borrow_mut() = Some(f));
+}
+
+/// Oublie le dernier résultat symbolique et remet le compteur à zéro.
+///
+/// Appelé par `:reset` et avant toute nouvelle exécution : le résultat
+/// affiché change, donc le fournisseur précédent n'est plus valable.
+pub fn oublier_plus_de_chiffres() {
+    FOURNISSEUR_PLUS.with(|p| *p.borrow_mut() = None);
+    CHIFFRES_DEMANDES.set(0);
+}
+
+/// Nombre cumulé de chiffres demandés depuis le dernier `:reset`.
+pub fn chiffres_demandes() -> usize { CHIFFRES_DEMANDES.get() }
+
+/// Analyse l'argument de `:more` : vide → 30, sinon un entier décimal.
+pub fn analyser_argument_more(arg: &str) -> Result<usize, String> {
+    let a = arg.trim();
+    if a.is_empty() { return Ok(30); }
+    a.parse::<usize>()
+        .map_err(|_| format!("rose: :more attend un nombre de chiffres, reçu : {a}"))
+}
+
+/// Sépare une ligne de REPL en `(commande, argument)`.
+pub fn parse_commande(ligne: &str) -> (&str, &str) {
+    match ligne.split_once(char::is_whitespace) {
+        Some((c, a)) => (c, a.trim()),
+        None => (ligne, ""),
+    }
+}
+
+/// Demande `n` chiffres de plus au fournisseur courant.
+///
+/// Sans fournisseur enregistré, rend une erreur explicite : jamais de
+/// panique, jamais de chiffres inventés.
+pub fn appliquer_more(n: usize) -> Result<String, String> {
+    let (resultat, total) = FOURNISSEUR_PLUS.with(|p| {
+        let emprunt = p.borrow();
+        match emprunt.as_ref() {
+            Some(f) => (f.demander_plus(n), CHIFFRES_DEMANDES.get().saturating_add(n)),
+            None => (
+                Err("rose: :more nécessite d'abord detail(expr) (résultat non symbolique)".to_string()),
+                CHIFFRES_DEMANDES.get(),
+            ),
+        }
+    });
+    if resultat.is_ok() { CHIFFRES_DEMANDES.set(total); }
+    resultat
+}
+
+/// Rend le gabarit de la table retournée par `detail(expr)` (INT1).
+///
+/// `detail()` n'est PAS implémenté ici : INT1 l'ajoutera comme primitive
+/// Rose. Cette fonction est le contrat d'affichage du REPL : deux espaces,
+/// libellé paddé à 28, séparateur ` : ` — aucun code couleur ANSI.
+pub fn format_table_detail(t: &crate::run::Table) -> Vec<String> {
+    t.0.borrow().items.iter().map(|(k, v)| {
+        format!("  {:<28} : {}", crate::run::chaine_de(k), crate::run::chaine_de(v))
+    }).collect()
+}
+
+/// Adaptation directe à l'API VAL1 (`run.rs`), maintenant présente dans
+/// l'arbre : `Valeur::Symbolique(Rc<ObjetParesseux>)`,
+/// `demander_plus(k)` et `premiers_tronques()`.
+struct AdaptateurVal1(std::rc::Rc<crate::run::ObjetParesseux>);
+
+impl PlusDeChiffres for AdaptateurVal1 {
+    fn demander_plus(&self, k: usize) -> Result<String, String> {
+        Ok(self.0.demander_plus(k))
+    }
+}
+
+/// Enregistre directement un `ObjetParesseux` de VAL1 comme dernier résultat.
+///
+/// Point d'appel pour VAL1/INT1 : dès qu'une `Valeur::Symbolique(o)` est
+/// affichée, appeler cette fonction avec le `Rc` contenu dans la variante.
+pub fn enregistrer_objet_val1(o: std::rc::Rc<crate::run::ObjetParesseux>) {
+    enregistrer_plus_de_chiffres(Box::new(AdaptateurVal1(o)));
 }
 
 /// Bannière d'accueil : la marque Rose, la version, et l'essentiel.
@@ -439,10 +548,7 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
 
         // ── commandes ──
         if trimmed.starts_with(':') {
-            let (cmd, arg) = match trimmed.split_once(char::is_whitespace) {
-                Some((c, a)) => (c, a.trim()),
-                None => (trimmed.as_str(), ""),
-            };
+            let (cmd, arg) = parse_commande(&trimmed);
             match cmd {
                 ":quit" | ":q" | ":exit" => {
                     if fenetre_ephemere { attendre_fermeture(); }
@@ -450,6 +556,7 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
                 }
                 ":reset" => {
                     buffer.clear();
+                    oublier_plus_de_chiffres();
                     println!("{}", couleur.info("(buffer vidé)"));
                 }
                 ":show" | ":code" => {
@@ -469,6 +576,7 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
                     } else {
                         format!("{}\n>> type({arg})", buffer.join("\n"))
                     };
+                    oublier_plus_de_chiffres();
                     code_sortie = executer(&src);
                 }
                 ":latex" => {
@@ -488,6 +596,7 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
                     }
                     match std::fs::read_to_string(arg) {
                         Ok(source) => {
+                            oublier_plus_de_chiffres();
                             code_sortie = executer(&source);
                             for line in source.lines() {
                                 let t = line.trim();
@@ -513,6 +622,16 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
                         Err(e) => println!("{}", couleur.erreur(&format!("rose: {arg} : {e}"))),
                     }
                 }
+                ":more" | ":plus" | ":digits" => {
+                    let n = match analyser_argument_more(arg) {
+                        Ok(n) => n,
+                        Err(e) => { println!("{}", couleur.erreur(&e)); continue; }
+                    };
+                    match appliquer_more(n) {
+                        Ok(texte) => println!("{}", texte),
+                        Err(e) => println!("{}", couleur.erreur(&e)),
+                    }
+                }
                 ":help" | ":h" | ":?" => aide(&couleur),
                 _ => println!("{}", couleur.erreur(&format!("rose: commande inconnue : {cmd}"))),
             }
@@ -531,6 +650,9 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
         } else {
             format!("{}\n{}", buffer.join("\n"), ligne_exec)
         };
+        // Nouveau résultat : l'ancien objet paresseux n'est plus « le dernier ».
+        // VAL1/INT1 ré-enregistrent un fournisseur si ce résultat est symbolique.
+        oublier_plus_de_chiffres();
         code_sortie = executer(&src);
         let _ = io::stdout().flush();
 
@@ -942,7 +1064,7 @@ pub fn depuis_arguments(argv: &[String]) -> i32 {
                 println!("rose-shell — console interactive de Rose\n\
                           Usage : rose-shell [fichier.rose] [--sans-exec]\n\
                           \n\
-                          Commandes : :help, :show, :reset, :load, :save, :type, :latex, :quit\n\
+                          Commandes : :help, :show, :reset, :load, :save, :type, :latex, :more [N], :quit\n\
                           Variables : ROSE_NO_COLOR=1 (pas de couleur), ROSE_COLOR=1 (forcer)");
                 return 0;
             }
@@ -1017,6 +1139,81 @@ mod tests {
         assert!(a.prompt("rose> ").starts_with("\x1b["));
         assert!(a.prompt("rose> ").ends_with("\x1b[0m"));
     }
+
+    #[test]
+    fn parsing_de_more() {
+        assert_eq!(parse_commande(":more"), (":more", ""));
+        assert_eq!(parse_commande(":more 100"), (":more", "100"));
+        assert_eq!(parse_commande(":plus   7"), (":plus", "7"));
+        assert_eq!(parse_commande(":digits"), (":digits", ""));
+        assert_eq!(analyser_argument_more(""), Ok(30));
+        assert_eq!(analyser_argument_more("   "), Ok(30));
+        assert_eq!(analyser_argument_more("100"), Ok(100));
+        assert_eq!(analyser_argument_more(" 42 "), Ok(42));
+        assert!(analyser_argument_more("abc").is_err());
+        assert!(analyser_argument_more("-3").is_err());
+    }
+
+    #[test]
+    fn more_sans_fournisseur_ne_panique_pas() {
+        oublier_plus_de_chiffres();
+        let e = appliquer_more(30).unwrap_err();
+        assert!(e.contains("detail(expr)"), "message réel : {e}");
+        assert_eq!(chiffres_demandes(), 0);
+    }
+
+    #[test]
+    fn more_appelle_le_fournisseur_avec_le_bon_pas() {
+        struct Faux;
+        impl PlusDeChiffres for Faux {
+            fn demander_plus(&self, k: usize) -> Result<String, String> {
+                Ok(format!("+{k}"))
+            }
+        }
+        oublier_plus_de_chiffres();
+        enregistrer_plus_de_chiffres(Box::new(Faux));
+        assert_eq!(appliquer_more(30).as_deref(), Ok("+30"));
+        assert_eq!(chiffres_demandes(), 30);
+        assert_eq!(appliquer_more(100).as_deref(), Ok("+100"));
+        assert_eq!(chiffres_demandes(), 130);
+        // `:reset` (ou une nouvelle ligne) oublie le résultat et le compteur.
+        oublier_plus_de_chiffres();
+        assert_eq!(chiffres_demandes(), 0);
+        assert!(appliquer_more(30).is_err());
+    }
+
+    #[test]
+    fn more_sur_un_objet_val1_reel() {
+        use crate::run::ObjetParesseux;
+        oublier_plus_de_chiffres();
+        enregistrer_objet_val1(std::rc::Rc::new(ObjetParesseux::factorielle(100)));
+        let a = appliquer_more(30).expect("30 chiffres");
+        assert!(a.ends_with('…'), "rendu réel : {a}");
+        assert_eq!(&a[..30], "933262154439441526816992388562");
+        let b = appliquer_more(30).expect("60 chiffres");
+        assert!(b.ends_with('…'));
+        assert_eq!(&b[..60], "933262154439441526816992388562667004907159682643816214685929");
+        // 100! n'a que 158 chiffres : au-delà, VAL1 rend le nombre complet
+        // SANS « … » (comportement documenté de `premiers_tronques`).
+        let c = appliquer_more(100).expect("160 chiffres demandés");
+        assert_eq!(c.len(), 158);
+        assert!(!c.ends_with('…'));
+        assert_eq!(&c[..60], &b[..60], "le préfixe doit rester stable");
+        oublier_plus_de_chiffres();
+    }
+
+    #[test]
+    fn gabarit_de_la_table_detail() {
+        // `detail()` est une primitive Rose ajoutée par INT1 ; ici on vérifie
+        // uniquement le contrat d'affichage de la table qu'elle rend.
+        let t = crate::run::Table::neuf(Vec::new());
+        t.inserer(crate::run::Valeur::s("type"), crate::run::Valeur::s("entier"));
+        t.inserer(crate::run::Valeur::s("longueur"), crate::run::Valeur::z(7));
+        assert_eq!(format_table_detail(&t), vec![
+            "  type                         : entier",
+            "  longueur                     : 7",
+        ]);
+    }
 }
 
 #[cfg(test)]
@@ -1061,6 +1258,7 @@ mod tests_shell {
         // la position est remise à la fin après chaque ajout
         assert_eq!(h.position, 2);
     }
+
 }
 
 #[cfg(test)]

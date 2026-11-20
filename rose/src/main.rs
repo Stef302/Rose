@@ -244,7 +244,7 @@ Usage :
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
   rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
   rose info                état du moteur
-  rose console [fichier.rose]   console interactive (REPL) — tapez des commandes Rose
+  rose console [fichier.rose]   console interactive (REPL) — :help, :more [N] (30 chiffres de plus)
   rose repl [fichier.rose]      identique
   rose debug-lenteur [-n N] [prog.rose]   OÙ VA LE TEMPS ? lancement, analyse, exécution
   rose wasm lib.wasm       fonctions exportées d'un module WebAssembly (pont @dll(\"wasm\", …))
