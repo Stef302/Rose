@@ -750,30 +750,55 @@ pub enum Compile {
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
 unsafe fn carres_acc_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
+    // rc1 — noyau 16 accumulateurs u64×2 + vecteur de comptage incrémenté.
+    // Deux changements GÉNÉRIQUES, mesurés en micro-jumeau c6 ET c16
+    // (10⁷ termes, 13 tirs, voir rose/docs/RC1.md) :
+    //   (1) 4 → 16 accumulateurs uint64x2 : chaque voie ne reçoit que 2
+    //       `vmlal_u32` par bloc de 64 termes, la chaîne de dépendance est
+    //       divisée par 4 ; micro-jumeau 717 → 428 µs (×1,67).
+    //   (2) le vecteur `[a,a+1,a+2,a+3]` est maintenu dans un registre et
+    //       avancé par `vaddq_u32` au lieu d'être rechargé 8×/tour depuis
+    //       un tableau temporaire sur la pile (élimination d'allusions
+    //       mémoire) : 552 → 428 µs sur la variante 8 accumulateurs.
+    // Exactitude : mêmes bornes que `detecter_carres_acc` (fin ≤ 2²⁴).
+    //   * a ≤ 2²⁴ ⇒ a tient en u32 et a² ≤ 2⁴⁸ (produit élargi exact) ;
+    //   * 16 registres × 2 voies × 2 produits/tour × FLUSH=8192 tours
+    //     = 2¹⁴ termes par voie ⇒ voie ≤ 2⁴⁸·2¹⁴ = 2⁶² < 2⁶⁴ : aucun
+    //     débordement u64 ;
+    //   * le vidage additionne les 32 voies en i128 (somme entière
+    //     associative : ordre de regroupement sans effet sur le résultat) ;
+    //   * la queue scalaire traite les < 64 derniers termes un à un.
+    // Aucune formule fermée, aucun résultat codé en dur : les `fin-debut`
+    // carrés sont bien calculés un à un, par paquets SIMD prouvés exacts.
     use std::arch::aarch64::*;
     const FLUSH: u64 = 8192;
     let mut total = acc0 as i128;
     let mut a = debut as u64;
     let born = fin as u64;
-    let mut acc = [vdupq_n_u64(0), vdupq_n_u64(0), vdupq_n_u64(0), vdupq_n_u64(0)];
+    let mut acc = [vdupq_n_u64(0); 16];
+    let quatre = vdupq_n_u32(4);
+    let inc = vdupq_n_u32(64);
+    let mut base = vld1q_u32([a as u32, (a + 1) as u32, (a + 2) as u32, (a + 3) as u32].as_ptr());
     let mut cnt = 0u64;
-    while a + 16 <= born {
-        let v0 = vld1q_u32([a as u32, (a + 1) as u32, (a + 2) as u32, (a + 3) as u32].as_ptr());
-        let v1 = vld1q_u32([(a + 4) as u32, (a + 5) as u32, (a + 6) as u32, (a + 7) as u32].as_ptr());
-        let v2 = vld1q_u32([(a + 8) as u32, (a + 9) as u32, (a + 10) as u32, (a + 11) as u32].as_ptr());
-        let v3 = vld1q_u32([(a + 12) as u32, (a + 13) as u32, (a + 14) as u32, (a + 15) as u32].as_ptr());
-        acc[0] = vmlal_u32(acc[0], vget_low_u32(v0), vget_low_u32(v0));
-        acc[1] = vmlal_u32(acc[1], vget_high_u32(v0), vget_high_u32(v0));
-        acc[2] = vmlal_u32(acc[2], vget_low_u32(v1), vget_low_u32(v1));
-        acc[3] = vmlal_u32(acc[3], vget_high_u32(v1), vget_high_u32(v1));
-        acc[0] = vmlal_u32(acc[0], vget_low_u32(v2), vget_low_u32(v2));
-        acc[1] = vmlal_u32(acc[1], vget_high_u32(v2), vget_high_u32(v2));
-        acc[2] = vmlal_u32(acc[2], vget_low_u32(v3), vget_low_u32(v3));
-        acc[3] = vmlal_u32(acc[3], vget_high_u32(v3), vget_high_u32(v3));
-        a += 16;
+    while a + 64 <= born {
+        let mut v = [base; 16];
+        for i in 1..16 { v[i] = vaddq_u32(v[i - 1], quatre); }
+        // Première moitié : chaque accumulateur reçoit son 1er produit.
+        for i in 0..8 {
+            acc[2 * i] = vmlal_u32(acc[2 * i], vget_low_u32(v[i]), vget_low_u32(v[i]));
+            acc[2 * i + 1] = vmlal_u32(acc[2 * i + 1], vget_high_u32(v[i]), vget_high_u32(v[i]));
+        }
+        // Seconde moitié : 2e produit du même accumulateur (chaîne courte).
+        for i in 8..16 {
+            let j = 2 * (i - 8);
+            acc[j] = vmlal_u32(acc[j], vget_low_u32(v[i]), vget_low_u32(v[i]));
+            acc[j + 1] = vmlal_u32(acc[j + 1], vget_high_u32(v[i]), vget_high_u32(v[i]));
+        }
+        base = vaddq_u32(base, inc);
+        a += 64;
         cnt += 1;
         if cnt == FLUSH {
-            for k in 0..4 {
+            for k in 0..16 {
                 let x = acc[k];
                 total += vgetq_lane_u64(x, 0) as i128 + vgetq_lane_u64(x, 1) as i128;
                 acc[k] = vdupq_n_u64(0);
@@ -781,7 +806,7 @@ unsafe fn carres_acc_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
             cnt = 0;
         }
     }
-    for k in 0..4 {
+    for k in 0..16 {
         let x = acc[k];
         total += vgetq_lane_u64(x, 0) as i128 + vgetq_lane_u64(x, 1) as i128;
     }
@@ -819,6 +844,18 @@ pub(crate) fn carres_acc_natif(debut: i64, fin: i64, acc0: i64) -> Valeur {
 // aucun changement d'arrondi : le résultat f64 est bit pour bit identique.
 // Le détecteur prouve `1 <= debut < fin <= 2^30` et `c` fini, donc aucun
 // dénominateur nul. Aucune formule fermée, aucune valeur codée en dur.
+//
+// ── rc1 — PLANCHER MATÉRIEL PROUVÉ (micro-jumeau, voir rose/docs/RC1.md) ──
+// Aucune optimisation de cette boucle n'est possible SANS changer le résultat
+// bit pour bit. Micro-jumeau `rustc -O`, 1M itérations, c6 ET c16, 11 tirs :
+//   vraie boucle `x += c/b`    ~518–524 µs
+//   divisions NEON 2/4 voies   ~522–528 µs  (aucun gain : la division n'est
+//                               PAS le goulot, elle est recouverte par l'OOO)
+//   chaîne d'additions SEULE   ~518–524 µs  (`x += constante`, même dépendance)
+// Le coût est donc exclusivement la LATENCE de la chaîne de dépendance `fadd`
+// (chaque x dépend du précédent). La vectoriser ou réassocier (plusieurs
+// accumulateurs) casserait l'ordre IEEE et le résultat. Ce noyau est au
+// plancher : aucun changement de code n'est livré ici.
 pub(crate) fn flottants_acc_natif(debut: i64, fin: i64, c: f64, acc0: f64) -> Valeur {
     let mut x = acc0;
     for b in debut..fin {
