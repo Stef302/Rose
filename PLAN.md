@@ -1108,3 +1108,13 @@ bigints/ABI; Thorn .slg 0/5.
 | W1 | réparer le build wasm (repl absent de la cible) | `rose/src/{interp,lib}.rs`, `rose/docs/WASM_FIX.md` |
 | L4 | launcher neutre (aucune version écrite) + chargement rapide des versions | `rose/src/{setup_gui,setup_core,velopack}.rs`, `rose/docs/LAUNCHER_RAPIDE.md` |
 | TH3 | exemple concret Thorn compréhensible, avec preuve vraie/fausse | `thorn/docs/EXEMPLE_CONCRET.md` |
+
+## Vague 64 — Thorn : passage de expérimental à pro (phase 1, périmètre borné)
+
+Objectif: outil professionnel dans un DOMAINE ÉTROIT (arithmétique de Peano + algèbre élémentaire), pas un remplacement de Mathlib. Mathlib = Apache 2.0 (vérifié), mais code Lean inimportable dans Thorn sans dépendance.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| TH4 | noyau pro : ι-réduction Nat.rec, niveaux d'univers, erreurs structurées | `thorn/src/{noyau,tests_noyau}.rose`, `thorn/docs/NOYAU.md` |
+| TH5 | bibliothèque algèbre vérifiée (semiring/groupe) | `thorn/src/algebre.rose`, `thorn/tests_algebre.rose`, `thorn/docs/ALGEBRE.md` |
+| TH6 | qualité : CI, tests de non-régression, doc de périmètre | `.github/workflows/thorn.yml`, `thorn/tests_regression.sh`, `thorn/docs/QUALITE.md` |
