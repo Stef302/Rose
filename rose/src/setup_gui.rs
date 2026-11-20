@@ -310,6 +310,15 @@ const WM_LBUTTONUP: u32 = 0x0202;
 const WM_SETCURSOR: u32 = 0x0020;
 const WM_SETICON: u32 = 0x0080;
 const WM_NCHITTEST: u32 = 0x0084;
+const WM_KEYDOWN: u32 = 0x0100;
+const VK_UP: u32 = 0x26;
+const VK_DOWN: u32 = 0x28;
+const VK_PRIOR: u32 = 0x21;   // Page précédente
+const VK_NEXT: u32 = 0x22;    // Page suivante
+const VK_HOME: u32 = 0x24;
+const VK_END: u32 = 0x23;
+const VK_RETURN: u32 = 0x0D;
+const VK_ESCAPE: u32 = 0x1B;
 const WM_APP: u32 = 0x8000;
 const WM_APP_FIN: u32 = WM_APP + 1;
 /// Fin d'une vérification ou d'un téléchargement de mise à jour lancé en
@@ -465,6 +474,11 @@ enum Vue {
     /// pour ne pas décaler les valeurs numériques des cinq étapes (le
     /// panneau latéral compare `etat.vue as usize` à l'index d'étape).
     MisesAJour,
+    /// ⚠ SÉLECTEUR DE VERSIONS (LAUNCH2). Alimenté par
+    /// `setup_core::launcher_catalogue()`, aucune version en dur. Ajouté
+    /// EN FIN, après `MisesAJour`, pour la même raison : les cinq étapes
+    /// gardent leurs index 0..4 dans le panneau latéral.
+    Versions,
 }
 
 /// Action des deux boutons du pied de page.
@@ -484,6 +498,16 @@ enum Action {
     FermerOutil,
     /// Enregistre le mode de mise à jour choisi et quitte le premier écran.
     Continuer,
+    /// Ouvre le sélecteur de versions (bouton du premier écran / Options).
+    OuvrirVersions,
+    /// Quitte le sélecteur pour revenir à l'écran d'origine.
+    RetourVersions,
+    /// Recharge le catalogue (appel réseau, bouton « Rafraîchir »).
+    RafraichirVersions,
+    /// Installe/télécharge la version sélectionnée (index porté par l'état).
+    InstallerVersion,
+    /// Bascule sur une version déjà présente (aucun réseau).
+    UtiliserVersion,
 }
 
 struct Etat {
@@ -525,6 +549,19 @@ struct Etat {
     /// Mode de mise à jour choisi sur le premier écran (relu de la config
     /// au démarrage, écrit par « Continuer »).
     mode_maj: crate::velopack::ModeMiseAJour,
+    /// Catalogue du sélecteur de versions. `None` = jamais chargé ; il est
+    /// rempli à l'entrée de `Vue::Versions` par `launcher_catalogue()`.
+    catalogue: Option<crate::velopack::CatalogueVersions>,
+    /// Index de la version sélectionnée dans `catalogue.versions`.
+    version_selection: usize,
+    /// Première ligne visible (défilement de la liste).
+    version_depart: usize,
+    /// Nombre de lignes affichables, posé par le tracé et relu au clavier.
+    version_visible: usize,
+    /// Écran vers lequel « Retour » ramène depuis le sélecteur.
+    version_retour: Vue,
+    /// Couleur du message d'action : `true` = échec ((message du backend)).
+    version_statut_erreur: bool,
     dpi: i32,
     /// Icône de la fenêtre.
     icone: HICON,
@@ -848,6 +885,72 @@ fn points_ecrits(dpi: i32, points: i32, echelle: f64) -> i32 {
     let base = (points * dpi) / 72;
     let e = if echelle.is_finite() && echelle > 0.0 { echelle } else { 1.0 };
     ((base as f64 * e).round() as i32).max(13)
+}
+
+/// Géométrie verticale du bloc « logo / titre / sous-titre / étapes » du
+/// panneau latéral. Fonction PURE : aucun appel GDI, donc testable sur toutes
+/// les combinaisons DPI × taille de fenêtre (y compris sous Wine).
+///
+/// ⚠ CAUSE DU TEXTE SUPERPOSÉ (capture utilisateur). L'ancien code posait le
+/// sous-titre à `y_marque + s(56)`, un décalage FIXE, alors que le bas réel du
+/// titre est `y_marque + s(34) + h_marque / 2` et que `h_marque` suit le DPI
+/// (76 px à 96 DPI, 100 px à 144 DPI) : le sous-titre recouvrait « ROSE » de
+/// 8 à 55 px selon la fenêtre. On le positionne désormais DEPUIS LE BAS RÉEL
+/// DU TITRE, avec une marge explicite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GeometrieMarque {
+    plancher: i32,          // rien du panneau ne descend sous cette ligne
+    largeur_logo: i32,      // largeur de la boîte du logo
+    hauteur_logo: i32,      // hauteur de la boîte (jamais > 343 = hauteur PNG)
+    place_logo: i32,        // place réservée au logo ( borne haute )
+    haut_titre: i32,
+    bas_titre: i32,
+    haut_sous_titre: i32,
+    bas_sous_titre: i32,
+    y_etapes: i32,          // première étape, TOUJOURS sous le sous-titre
+}
+
+fn geometrie_marque(ht: i32, dpi: i32, echelle: f64) -> GeometrieMarque {
+    let e = if echelle.is_finite() && echelle > 0.0 { echelle } else { 1.0 };
+    let s = |v: i32| -> i32 { (v as f64 * e).round() as i32 };
+
+    // Cartes du bas : mêmes réservations que dans `dessiner_decore`.
+    let bas = ht - s(30) - s(18);
+    let carte2_top = bas - s(38);
+    let carte1_top = carte2_top - s(46);
+    let plancher = carte1_top - s(16);
+
+    // Hauteur RÉELLE de la cellule du titre : la police suit le DPI et
+    // l'échelle, `s(72)` seul rognait le bas des glyphes Kare.
+    let marque_px = points_ecrits(dpi, 36, e);
+    let h_marque = s(72).max(marque_px + s(28));
+    // Marge logo → titre : assez grande pour que le haut du titre (Kare a une
+    // montée de 979/1000) ne remonte jamais sur la tige de la rose.
+    let marge_marque = s(26).max(h_marque / 2 - s(34) + s(4));
+
+    // Le PNG natif fait 276 × 343 : la hauteur souhaitée suit ce ratio, jamais
+    // une constante. `dessiner_rose` recadre ensuite le contenu utile
+    // (`bornes_opaques`) SANS couper de pixel et en conservant le ratio.
+    let largeur_logo = s(110);
+    let hauteur_voulue = ((largeur_logo as f64 * 343.0 / 276.0).round() as i32).max(1);
+    // Place réservée au logo : tout ce qui suit `y_marque` est mesuré sur la
+    // hauteur RÉELLE du titre, plus le sous-titre et la marge avant les étapes.
+    // Réserver seulement `s(120)` compressait la boîte sur fenêtre basse.
+    let apres_marque = s(34) + h_marque / 2 + s(10) + s(56) + s(10);
+    let place_logo = (plancher - s(78) - marge_marque - apres_marque).max(0);
+    let hauteur_logo = hauteur_voulue.min(place_logo).min(343);
+
+    let y_marque = s(78) + hauteur_logo + marge_marque;
+    let haut_titre = y_marque + s(34) - h_marque / 2;
+    let bas_titre = haut_titre + h_marque;
+    let haut_sous_titre = bas_titre + s(10); // marge réelle, plus de s(56) fixe
+    let bas_sous_titre = haut_sous_titre + s(56);
+    let y_etapes = bas_sous_titre + s(10); // les étapes ne remontent PAS
+
+    GeometrieMarque {
+        plancher, largeur_logo, hauteur_logo, place_logo,
+        haut_titre, bas_titre, haut_sous_titre, bas_sous_titre, y_etapes,
+    }
 }
 
 /// Dessine un texte : `famille` = "Kare" (titre) ou "Segoe UI" (courant).
@@ -1280,6 +1383,9 @@ fn boutons(vue: Vue, existant: bool) -> (Option<(Action, &'static str)>, Option<
         // et « Fermer ». C'est là que l'utilisateur règle l'écriture du PATH
         // quand l'installation automatique a échoué.
         Vue::Path => (Some((Action::FermerOutil, "Fermer")), Some((Action::ReparerPath, "Réparer"))),
+        // Sélecteur : « Retour » ramène à l'écran d'origine ; « Rafraîchir »
+        // rappelle launcher_catalogue() (accès réseau, message affiché).
+        Vue::Versions => (Some((Action::RetourVersions, "Retour")), Some((Action::RafraichirVersions, "Rafraîchir"))),
     }
 }
 
@@ -1290,6 +1396,134 @@ fn boutons(vue: Vue, existant: bool) -> (Option<(Action, &'static str)>, Option<
 /// donc pas savoir s'il installait ou mettait à jour.
 fn libelle_principal(existant: bool) -> &'static str {
     if existant { "Mettre à jour" } else { "Installer" }
+}
+
+/* ── Sélecteur de versions : NOYAU PUR, SANS ÉCRAN ────────────────────────
+   Tout ce qui décide de ce qui est AFFICHÉ et de ce qui est CLIQUABLE est
+   isolé ici, sous forme de fonctions pures : aucun appel GDI, aucun état
+   global. Les tests à la fin de ce bloc les vérifient avec des FIXTURES
+   (les seules versions littérales autorisées). Les chaînes affichées
+   proviennent toujours du backend — jamais d'une constante de version.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/// Ligne de titre d'une entrée : version, titre, date.
+/// Une date vide est ANNONCÉE comme telle, jamais laissée blanche.
+fn format_ligne_version(e: &crate::velopack::EntreeCatalogue) -> String {
+    let date = if e.date.trim().is_empty() {
+        "date inconnue".to_string()
+    } else {
+        e.date.chars().take(10).collect::<String>()
+    };
+    format!("{}  {}  ({})", e.version, e.titre, date)
+}
+
+/// Badges d'état. `en_cache` est volontairement libellé « manifeste en
+/// cache » : le `.nupkg` est supprimé après extraction, ce drapeau ne
+/// garantit PAS une réinstallation hors ligne (contrat § 2.1).
+fn badges_version(e: &crate::velopack::EntreeCatalogue) -> String {
+    let mut badges: Vec<&str> = Vec::new();
+    if e.deja_installee { badges.push("Déjà installée"); }
+    if e.en_cache { badges.push("Manifeste en cache"); }
+    if e.installable { badges.push("Paquet disponible"); }
+    if badges.is_empty() {
+        "Aucun artefact installable — aucune action".to_string()
+    } else {
+        format!("[{}]", badges.join("]  ["))
+    }
+}
+
+/// Ce qui est RÉELLEMENT proposé pour une entrée (tableau du contrat § 2.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActionsVersion {
+    /// « Installer » / « Réinstaller » → `launcher_installer_version`.
+    installer: bool,
+    /// « Utiliser cette version » → `launcher_selectionner_version`.
+    utiliser: bool,
+}
+
+fn actions_version(e: &crate::velopack::EntreeCatalogue, hors_ligne: bool) -> ActionsVersion {
+    ActionsVersion {
+        // § 3 : hors ligne, le téléchargement est impossible même si le
+        // manifeste annonce un paquet. Seule la bascule reste possible.
+        installer: e.installable && !hors_ligne,
+        utiliser: e.deja_installee,
+    }
+}
+
+/// Libellé de l'action d'installation : on ne promet pas une réinstallation
+/// quand la version n'est pas déjà présente.
+fn libelle_installer(e: &crate::velopack::EntreeCatalogue) -> &'static str {
+    if e.deja_installee { "RÉINSTALLER" } else { "INSTALLER" }
+}
+
+/// Bandeau d'information. Le message vient TOUJOURS du backend ; la ligne
+/// n'est jamais vide, y compris si la liste de versions est vide.
+fn bandeau_versions(cat: &crate::velopack::CatalogueVersions) -> String {
+    let msg = cat.message.trim();
+    if cat.hors_ligne {
+        let cause = if msg.is_empty() {
+            "GitHub inaccessible : seules les versions déjà présentes sur cet appareil \
+             sont affichées. Le téléchargement est impossible."
+        } else { msg };
+        format!("HORS LIGNE — {cause}")
+    } else if msg.is_empty() {
+        "Catalogue chargé depuis l'API publique des releases GitHub.".to_string()
+    } else {
+        msg.to_string()
+    }
+}
+
+/// Hauteur d'une ligne et nombre de lignes réellement affichables.
+/// `nb` = nombre d'entrées du catalogue (0 = liste vide).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LayoutListeVersions {
+    pas: i32,
+    visible: usize,
+}
+
+fn layout_liste(hauteur: i32, nb: usize) -> LayoutListeVersions {
+    let h = hauteur.max(0);
+    let pas = (h / nb.max(1)).clamp(46, 76).max(1);
+    let visible = ((h / pas) as usize).min(nb);
+    LayoutListeVersions { pas, visible }
+}
+
+/// Rectangles (ligne, bouton installer, bouton utiliser) pour une entrée.
+/// PUR : mêmes nombres pour le tracé et pour le hit-test du clic.
+fn zones_ligne_version(liste: &RECT, pas: i32, index: usize, depart: usize) -> (RECT, RECT, RECT) {
+    let decalage = (index.saturating_sub(depart) as i32)
+        .saturating_mul(pas);
+    let ligne = RECT {
+        left: liste.left,
+        top: liste.top + decalage,
+        right: liste.right,
+        bottom: liste.top + decalage + pas,
+    };
+    let marge = ((pas / 6).max(2)).min(10);
+    let bh = (pas - 2 * marge).max(10);
+    let bw = ((liste.right - liste.left) / 5).clamp(74, 150).max(1);
+    let utiliser = RECT {
+        left: ligne.right - marge - bw,
+        top: ligne.top + marge,
+        right: ligne.right - marge,
+        bottom: ligne.top + marge + bh,
+    };
+    let installer = RECT {
+        left: utiliser.left - marge - bw,
+        top: utiliser.top,
+        right: utiliser.left - marge,
+        bottom: utiliser.bottom,
+    };
+    (ligne, installer, utiliser)
+}
+
+/// Petit bouton d'accès « VERSIONS », dessiné en haut à droite du contenu.
+/// Même style que les autres boutons secondaires (vert lime, texte sombre).
+unsafe fn dessiner_bouton_versions(dc: HDC, dpi: i32, echelle: f64, r: &RECT) {
+    arrondi(dc, r, 8, VERT_LIME_VIF);
+    let mut rt = *r;
+    texte_echelle(dc, dpi, "Kare", "VERSIONS", &mut rt,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 9, false, echelle);
 }
 
 /// Peint la fenêtre en entier, quoi qu'il arrive.
@@ -1425,6 +1659,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // entièrement dégénéré.
     let echelle = crate::paint::echelle_tracé(w, ht);
     let s = |v: i32| -> i32 { (v as f64 * echelle).round() as i32 };
+    // Une seule source de vérité pour la géométrie du panneau : le test
+    // unitaire ci-dessous vérifie exactement les mêmes nombres.
+    let geo = geometrie_marque(ht, dpi, echelle);
+    // Le bouton d'accès au sélecteur n'existe que sur les vues qui le dessinent.
+    *std::ptr::addr_of_mut!(ZONE_OUVRIR_VERSIONS) = std::mem::zeroed::<RECT>();
 
     // ── fond général, COINS ARRONDIS ──
     //
@@ -1555,64 +1794,29 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let bas = ht - etat_h - s(18);
     let carte2 = RECT { left: s(20), top: bas - s(38), right: lateral_w - s(20), bottom: bas };
     let carte1 = RECT { left: s(20), top: carte2.top - s(46), right: lateral_w - s(20), bottom: carte2.top - s(8) };
-    let plancher = carte1.top - s(16); // rien ne descend sous les cartes
+    let plancher = geo.plancher; // rien ne descend sous les cartes
 
-    // La rose de la maquette occupe ~110 px sur 320 de large, sous une barre
-    // de titre de 56 px : 124 px centrés, titre « ROSE » juste dessous.
-    //
-    // ⚠ Le logo est BORNÉ par la place disponible : à 124 px fixes, il
-    // chevauchait la liste des étapes sur une fenêtre de 600 px de haut, et
-    // le titre « Rose » se retrouvait par-dessus les pastilles.
-    //
-    // ⚠ Le logo n'est PAS carré : le PNG natif fait 276 × 343 (contenu utile
-    // 264 × 337). La hauteur est donc CALCULÉE DEPUIS 343 avec le ratio réel
-    // du PNG — plus le « 141 px » hérité d'un ancien visuel 132 × 169 qui
-    // donnait un logo trop petit et un cadrage approximatif. On réserve cette
-    // hauteur en HAUTEUR, sinon le titre « ROSE » se posait sur la tige.
-    // Place laissée au logo : du haut du panneau (78) jusqu'au titre.
-    // ⚠ On ne réserve QUE la place du titre (pas sa description) : réserver
-    // 150 px compressait la boîte du logo et la tige paraissait coupée.
-    let place_logo = (plancher - s(78) - s(120)).max(0);
-    let largeur_voulue = s(110);
-    let hauteur_voulue = ((largeur_voulue as f64 * 343.0 / 276.0).round() as i32).max(1);
-    // Borne haute = hauteur NATIVE du PNG : jamais d'agrandissement (sinon
-    // interpolation de pixels inexistants et halo). `dessiner_rose` cadre le
-    // contenu entier dans cette boîte en conservant le ratio.
-    let hauteur_logo = hauteur_voulue.min(place_logo).min(343);
-    // Marge entre la tige et le titre « ROSE » : sans elle, la tige touchait
-    // le titre au pixel près et donnait l'impression d'être rognée.
-    // Marge augmentée : même avec la montée de Kare (979/1000), le haut du
-    // mot ne remonte pas sur la tige et le bas ne touchait pas le titre.
-    let marge_marque = s(26);
-    if hauteur_logo >= s(40) {
-        dessiner_rose(dc, lateral_w / 2 - largeur_voulue / 2, s(78),
-                      largeur_voulue, hauteur_logo);
+    // Logo, titre, sous-titre et étapes : TOUTE la géométrie vient de
+    // `geometrie_marque` (calculée une seule fois au début du tracé, et
+    // vérifiée par les tests ci-dessous). Le rectangle du titre est
+    // dimensionné sur la hauteur RÉELLE de la police Kare — qui suit le DPI —
+    // et le sous-titre part de son bas réel : plus aucun chevauchement.
+    if geo.hauteur_logo >= s(40) {
+        dessiner_rose(dc, lateral_w / 2 - geo.largeur_logo / 2, s(78),
+                      geo.largeur_logo, geo.hauteur_logo);
     }
-    let y_marque = s(78) + hauteur_logo.max(0) + marge_marque;
-    // ⚠ CAUSE DU TITRE « ROSE » COUPÉ EN BAS. L'ancien rectangle faisait
-    // `s(56)` de haut ALORS QUE la police suit le DPI : 36 pt → 48 px à 96 DPI
-    // mais 72 px à 144 DPI, soit une cellule plus haute que le rectangle, et
-    // `DrawText` rognait le bas des glyphes. De plus Kare a une montée de 979
-    // pour une hauteur de glyphe de 665/1000 : `DT_VCENTER` centre la CELLULE,
-    // donc le visible est poussé vers le bas. On dimensionne le rectangle sur
-    // la hauteur RÉELLE de la police, symétriquement autour du même centre.
-    let marque_px = points_ecrits(dpi, 36, echelle);
-    // Kare a une cellule de police plus haute que l'encre visible : on ajoute
-    // une marge BAS explicite, sinon le bas des lettres était rogné (mesuré
-    // sur capture : « ROSE » amputé de sa partie inférieure).
-    let h_marque = (s(72)).max(marque_px + s(28));
-    let centre_marque = y_marque + s(34);
-    let haut_marque = centre_marque - h_marque / 2;
-    let mut rl = RECT { left: 0, top: haut_marque, right: lateral_w,
-                        bottom: haut_marque + h_marque };
+    let mut rl = RECT { left: 0, top: geo.haut_titre, right: lateral_w,
+                        bottom: geo.bas_titre };
     // Marque en Kare, comme le site : c'est la signature visuelle de Rose.
     texte_echelle(dc, dpi, "Kare", "Rose", &mut rl, DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 36, false, echelle);
-    let mut rs = RECT { left: s(24), top: y_marque + s(56), right: lateral_w - s(24), bottom: y_marque + s(112) };
+    let mut rs = RECT { left: s(24), top: geo.haut_sous_titre, right: lateral_w - s(24),
+                        bottom: geo.bas_sous_titre };
     texte_echelle(dc, dpi, "Segoe UI", "Le langage compilé en français qui se compile lui-même.",
           &mut rs, DT_CENTER | DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
 
-    // étapes : la liste ne descend JAMAIS sous les cartes du bas.
-    let mut y = y_marque + s(122);
+    // étapes : la liste ne descend JAMAIS sous les cartes du bas, et ne
+    // remonte PAS sur le sous-titre.
+    let mut y = geo.y_etapes;
     let pas = ((plancher - y) / 5).clamp(s(26), s(44));
     for (i, nom) in ETAPES.iter().enumerate() {
         if y + pas > plancher + s(4) {
@@ -1705,6 +1909,12 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             "Outil PATH".to_string(),
             "Diagnostic et réparation — plusieurs méthodes, dont un mode entreprise.".to_string(),
         ),
+        Vue::Versions => (
+            "Versions".to_string(),
+            "Versions annoncées par GitHub et état réel de cet appareil. Installez ou \
+             basculez sur une version déjà présente — aucun téléchargement hors ligne."
+                .to_string(),
+        ),
     };
     let mut rti = RECT { left: g, top: yc, right: d, bottom: yc + s(44) };
     // Titre de section en Kare — mais EN MAJUSCULES : Kare est une police
@@ -1730,6 +1940,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
         // est écrit par « Continuer » dans le pied de page.
         Vue::MisesAJour => {
             use crate::velopack::ModeMiseAJour;
+            // Accès DIRECT au sélecteur de versions, dès le premier écran.
+            let r_versions = RECT { left: d - s(126), top: contenu.top + s(6),
+                                    right: d, bottom: contenu.top + s(38) };
+            dessiner_bouton_versions(dc, dpi, echelle, &r_versions);
+            *std::ptr::addr_of_mut!(ZONE_OUVRIR_VERSIONS) = r_versions;
             let options: [(ModeMiseAJour, &str, &str); 3] = [
                 (ModeMiseAJour::Auto, "Auto au démarrage",
                  "Vérifie les versions à chaque lancement. Ne télécharge qu'après votre accord — recommandé."),
@@ -1864,6 +2079,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             texte_echelle(dc, dpi, "Segoe UI", &etat.licence, &mut r, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE, 9, false, echelle);
         }
         Vue::Options => {
+            // Second accès au sélecteur, cohérent avec le premier écran.
+            let r_versions = RECT { left: d - s(126), top: contenu.top + s(6),
+                                    right: d, bottom: contenu.top + s(38) };
+            dessiner_bouton_versions(dc, dpi, echelle, &r_versions);
+            *std::ptr::addr_of_mut!(ZONE_OUVRIR_VERSIONS) = r_versions;
             // ── carte 1 : dossier d'installation ──────────────────────────
             let libelle = "Dossier d'installation";
             let chemin = etat.prefixe.clone();
@@ -2025,6 +2245,115 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                               DT_WORDBREAK | DT_TOP | DT_END_ELLIPSIS, TEXTE, 9, false, echelle);
             }
         }
+        // ── SÉLECTEUR DE VERSIONS (backend dynamique, aucune version en dur) ──
+        Vue::Versions => {
+            let cat = etat.catalogue.as_ref();
+            let nb = cat.map(|c| c.versions.len()).unwrap_or(0);
+            let hors = cat.map(|c| c.hors_ligne).unwrap_or(false);
+
+            // 1. Bandeau : le message du backend, jamais vide, bien visible.
+            let message = cat.map(bandeau_versions)
+                .unwrap_or_else(|| "Chargement du catalogue des versions…".to_string());
+            let h_message = hauteur(&message, 9, interligne_petit);
+            let bandeau = RECT {
+                left: g, top: yc, right: d,
+                bottom: (yc + h_message + s(24)).min(bas_utile),
+            };
+            carte(dc, &bandeau, if hors { ROUGE_VIF } else { VERT_LIME_VIF });
+            let mut rm = RECT { left: g + s(18), top: bandeau.top + s(8),
+                                right: d - s(18), bottom: bandeau.bottom - s(6) };
+            texte_echelle(dc, dpi, "Segoe UI", &message, &mut rm,
+                          DT_WORDBREAK | DT_END_ELLIPSIS | DT_TOP,
+                          if hors { ROUGE_CLAIR } else { TEXTE }, 9, true, echelle);
+
+            // 2. En-tête de la liste + flèches de défilement pour la souris.
+            let y_tete = bandeau.bottom + s(12);
+            let mut rtete = RECT { left: g, top: y_tete, right: d - s(80),
+                                   bottom: y_tete + s(24) };
+            texte_echelle(dc, dpi, "Segoe UI",
+                          &format!("{nb} version(s) · flèches ↑/↓ ou clic pour naviguer"),
+                          &mut rtete, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                          TEXTE_DOUX, 9, false, echelle);
+            let fleche_haut = RECT { left: d - s(72), top: y_tete + s(2),
+                                     right: d - s(40), bottom: y_tete + s(22) };
+            let fleche_bas = RECT { left: d - s(34), top: y_tete + s(2),
+                                    right: d - s(2), bottom: y_tete + s(22) };
+            arrondi(dc, &fleche_haut, 6, LIGNE_FORTE);
+            arrondi(dc, &fleche_bas, 6, LIGNE_FORTE);
+            let mut rh = fleche_haut;
+            let mut rb = fleche_bas;
+            texte_echelle(dc, dpi, "Segoe UI", "▲", &mut rh,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 9, false, echelle);
+            texte_echelle(dc, dpi, "Segoe UI", "▼", &mut rb,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE, 9, false, echelle);
+            *std::ptr::addr_of_mut!(ZONE_VERSIONS_HAUT) = fleche_haut;
+            *std::ptr::addr_of_mut!(ZONE_VERSIONS_BAS) = fleche_bas;
+
+            // 3. Une LIGNE PAR VERSION, depuis le catalogue (jamais en dur).
+            let y_liste = y_tete + s(30);
+            let fin_liste = (bas_utile - s(64)).max(y_liste);
+            let layout = layout_liste(fin_liste - y_liste, nb);
+            let liste = RECT { left: g, top: y_liste, right: d,
+                               bottom: y_liste + layout.pas * layout.visible as i32 };
+            *std::ptr::addr_of_mut!(ZONE_LISTE_VERSIONS) = liste;
+            *std::ptr::addr_of_mut!(PAS_VERSIONS) = layout.pas;
+            let depart = etat.version_depart
+                .min(nb.saturating_sub(layout.visible));
+            if let Some(cat) = cat {
+                for i in depart..(depart + layout.visible).min(nb) {
+                    let e = &cat.versions[i];
+                    let (ligne, ib, ub) = zones_ligne_version(&liste, layout.pas, i, depart);
+                    let selectionne = i == etat.version_selection;
+                    carte(dc, &ligne, if selectionne { VERT_LIME_VIF } else { LIGNE_FORTE });
+                    let mut r1 = RECT { left: ligne.left + s(16), top: ligne.top + s(5),
+                                        right: ib.left - s(10), bottom: ligne.top + s(5) + s(22) };
+                    texte_echelle(dc, dpi, "Segoe UI", &format_ligne_version(e), &mut r1,
+                                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                                  if selectionne { TEXTE } else { TEXTE_DOUX },
+                                  10, selectionne, echelle);
+                    let mut r2 = RECT { left: ligne.left + s(16), top: ligne.top + s(5) + s(22),
+                                        right: ib.left - s(10), bottom: ligne.bottom - s(4) };
+                    texte_echelle(dc, dpi, "Segoe UI", &badges_version(e), &mut r2,
+                                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                                  TEXTE_DOUX, 8, false, echelle);
+
+                    let actions = actions_version(e, hors);
+                    // Bouton d'installation : grisé hors ligne / sans artefact.
+                    arrondi(dc, &ib, 8, if actions.installer { VERT_LIME_VIF } else { LIGNE });
+                    let mut rib = ib;
+                    let libelle_i = if e.installable && hors { "HORS LIGNE" }
+                                    else { libelle_installer(e) };
+                    texte_echelle(dc, dpi, "Kare", libelle_i, &mut rib,
+                                  DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                                  if actions.installer { NOIR_DOUX } else { TEXTE_FAIBLE },
+                                  9, false, echelle);
+                    // Bascule : uniquement si la version est déjà sur disque.
+                    arrondi(dc, &ub, 8, if actions.utiliser { VERT_LIME } else { LIGNE });
+                    let mut rub = ub;
+                    texte_echelle(dc, dpi, "Kare", "UTILISER", &mut rub,
+                                  DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                                  if actions.utiliser { NOIR_DOUX } else { TEXTE_FAIBLE },
+                                  9, false, echelle);
+                }
+            } else {
+                let mut rv = RECT { left: g, top: y_liste + s(20), right: d, bottom: fin_liste };
+                texte_echelle(dc, dpi, "Segoe UI", "Chargement du catalogue…", &mut rv,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE, TEXTE_DOUX, 10, false, echelle);
+            }
+
+            // 4. Message de la DERNIÈRE ACTION (succès ou échec), jamais muet.
+            let statut_rect = RECT { left: g, top: fin_liste + s(8), right: d, bottom: bas_utile };
+            if statut_rect.bottom > statut_rect.top {
+                carte(dc, &statut_rect,
+                      if etat.version_statut_erreur { ROUGE_VIF } else { VERT_LIME_VIF });
+                let mut rst = RECT { left: g + s(16), top: statut_rect.top + s(6),
+                                     right: d - s(16), bottom: statut_rect.bottom - s(4) };
+                texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut rst,
+                              DT_WORDBREAK | DT_END_ELLIPSIS | DT_TOP,
+                              if etat.version_statut_erreur { ROUGE_CLAIR } else { TEXTE },
+                              9, false, echelle);
+            }
+        }
         Vue::Termine => {
             // ⚠ La carte doit contenir TOUT le texte, mesuré : la dernière
             // ligne (« Ouvrez un nouveau terminal, puis tapez : rose
@@ -2174,6 +2503,21 @@ static mut ZONES_MAJ: [RECT; 3] = [
 /// Bouton unique de la ligne de statut du premier écran : « Vérifier les
 /// mises à jour » (mode manuel) puis « Télécharger » (consentement).
 static mut ZONE_MAJ_ACTION: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+
+/* ── Sélecteur de versions (LAUNCH2) : zones posées par le TRACÉ ────────
+   Une seule source de géométrie : `zones_ligne_version` (fonction pure).
+   Le tracé remplit ces zones, le hit-test de WM_LBUTTONUP les relit —
+   exactement comme `ZONES_MAJ` le fait pour le premier écran.
+   ───────────────────────────────────────────────────────────────────────── */
+/// Bouton « VERSIONS » du premier écran / des Options. Remis à zéro à chaque
+/// tracé : il n'est cliquable QUE sur les vues où il est réellement dessiné.
+static mut ZONE_OUVRIR_VERSIONS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+/// Rectangle de la liste et hauteur d'une ligne (recalcul pure).
+static mut ZONE_LISTE_VERSIONS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+static mut PAS_VERSIONS: i32 = 0;
+/// Flèches de défilement de la liste (souris ; le clavier utilise ↑/↓).
+static mut ZONE_VERSIONS_HAUT: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+static mut ZONE_VERSIONS_BAS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
 
 /// Suivi des opérations réseau du premier écran, rempli par les fils de
 /// travail et lu par `dessiner`. `None` = pas encore lancée / pas de résultat.
@@ -2652,10 +2996,56 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                 _ => {}
             }
             let zones = &*std::ptr::addr_of!(ZONES);
+            // Bouton « VERSIONS » (premier écran / Options). Sa zone est
+            // remise à zéro par le tracé sur toutes les autres vues.
+            let zo = &*std::ptr::addr_of!(ZONE_OUVRIR_VERSIONS);
+            if dans(zo, x, y) {
+                ouvrir_versions(h);
+                return 0;
+            }
             // ⚠ Sur la vue PATH, un clic dans la carte des méthodes CHOISIT
             // la méthode (pas de bouton par méthode : la carte est
             // cliquable ligne par ligne).
             let etat = &mut *ETAT;
+            // ── Sélecteur de versions : clic dans la liste / actions ──────
+            if etat.vue == Vue::Versions {
+                let zh = &*std::ptr::addr_of!(ZONE_VERSIONS_HAUT);
+                let zb = &*std::ptr::addr_of!(ZONE_VERSIONS_BAS);
+                if dans(zh, x, y) { defiler_versions(h, -1); return 0; }
+                if dans(zb, x, y) { defiler_versions(h, 1); return 0; }
+                let liste = *std::ptr::addr_of!(ZONE_LISTE_VERSIONS);
+                let pas = *std::ptr::addr_of!(PAS_VERSIONS);
+                let nb = etat.catalogue.as_ref().map(|c| c.versions.len()).unwrap_or(0);
+                if dans(&liste, x, y) && nb > 0 && pas > 0 {
+                    let nb_visible = etat.version_visible.max(1);
+                    let depart = etat.version_depart.min(nb.saturating_sub(nb_visible));
+                    let ligne_rel = ((y - liste.top) / pas) as usize;
+                    let i = (depart + ligne_rel).min(nb - 1);
+                    let (r_ligne, r_installer, r_utiliser) =
+                        zones_ligne_version(&liste, pas, i, depart);
+                    let (installer, utiliser) = {
+                        let cat = etat.catalogue.as_ref().unwrap();
+                        let a = actions_version(&cat.versions[i], cat.hors_ligne);
+                        (a.installer, a.utiliser)
+                    };
+                    if dans(&r_installer, x, y) && installer {
+                        etat.version_selection = i;
+                        action_version_installer(h);
+                        return 0;
+                    }
+                    if dans(&r_utiliser, x, y) && utiliser {
+                        etat.version_selection = i;
+                        action_version_utiliser(h);
+                        return 0;
+                    }
+                    if dans(&r_ligne, x, y) {
+                        etat.version_selection = i;
+                        rafraichir(h);
+                        return 0;
+                    }
+                }
+                // Sinon : laisser tomber sur les boutons du pied de page.
+            }
             // ── Premier écran : 3 cartes radio + bouton d'action ────────
             if etat.vue == Vue::MisesAJour {
                 let z_maj = &*std::ptr::addr_of!(ZONES_MAJ);
@@ -2713,6 +3103,42 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             else if dans(&zones[0], x, y) { action(h, 0); }
             else if dans(&zones[1], x, y) { action(h, 1); }
             0
+        }
+        // ── Clavier : navigation dans le sélecteur de versions ───────────
+        // Le gestionnaire de messages n'avait aucun WM_KEYDOWN : on l'ajoute
+        // SANS toucher au hit-test existant. ↑/↓ = ligne, PgUp/PgDn = page,
+        // Début/Fin = extrémités, Entrée = action autorisée, Échap = Retour.
+        WM_KEYDOWN => {
+            let cle = (w as u32) & 0xffff;
+            if (*ETAT).vue == Vue::Versions {
+                let nb = (*ETAT).catalogue.as_ref().map(|c| c.versions.len()).unwrap_or(0);
+                match cle {
+                    VK_UP => { deplacer_selection_versions(h, -1); return 0; }
+                    VK_DOWN => { deplacer_selection_versions(h, 1); return 0; }
+                    VK_PRIOR => {
+                        let page = (*ETAT).version_visible.max(1) as i32;
+                        deplacer_selection_versions(h, -page); return 0;
+                    }
+                    VK_NEXT => {
+                        let page = (*ETAT).version_visible.max(1) as i32;
+                        deplacer_selection_versions(h, page); return 0;
+                    }
+                    VK_HOME => { deplacer_selection_versions(h, -(nb as i32)); return 0; }
+                    VK_END => { deplacer_selection_versions(h, nb as i32); return 0; }
+                    VK_RETURN if nb > 0 => {
+                        // Bascule prioritaire : aucun réseau. Sinon installer.
+                        if tag_action_versions(false).is_some() {
+                            action_version_utiliser(h);
+                        } else {
+                            action_version_installer(h);
+                        }
+                        return 0;
+                    }
+                    VK_ESCAPE => { retour_versions(h); return 0; }
+                    _ => {}
+                }
+            }
+            DefWindowProcW(h, msg, w, l)
         }
         WM_APP_MAJ => {
             // Une vérification / un téléchargement du premier écran est
@@ -2914,6 +3340,143 @@ unsafe fn action_path(h: HWND) {
     etat.journal_path.clear();
     etat.vue = Vue::Path;
     rafraichir(h);
+}
+
+/* ── Sélecteur de versions : entrée, navigation, actions ───────────────── */
+
+/// Ouvre le sélecteur depuis le premier écran ou les Options, et charge le
+/// catalogue immédiatement (contrat LAUNCH1 § 6 : « à l'entrée de l'écran »).
+fn ouvrir_versions(h: HWND) {
+    {
+        let etat = unsafe { &mut *ETAT };
+        etat.version_retour = etat.vue;
+        etat.vue = Vue::Versions;
+    }
+    charger_catalogue_versions(h);
+}
+
+/// Appelle `setup_core::launcher_catalogue()` (jamais `Err`) et stocke le
+/// résultat. Le message du backend est affiché tel quel dans le bandeau ET
+/// dans la barre d'état : une liste vide n'est jamais silencieuse.
+fn charger_catalogue_versions(h: HWND) {
+    {
+        let etat = unsafe { &mut *ETAT };
+        etat.statut = "Chargement du catalogue des versions…".to_string();
+        etat.version_statut_erreur = false;
+    }
+    // L'appel peut interroger GitHub (gh/curl) : on laisse d'abord le tracé
+    // afficher « Chargement… » avant de bloquer le fil de messages.
+    unsafe { rafraichir(h) };
+
+    let catalogue = crate::setup_core::launcher_catalogue();
+    let nb = catalogue.versions.len();
+    let message = catalogue.message.clone();
+    let hors_ligne = catalogue.hors_ligne;
+    let etat = unsafe { &mut *ETAT };
+    let selection = etat.version_selection.min(nb.saturating_sub(1));
+    let depart = etat.version_depart.min(nb.saturating_sub(1));
+    etat.catalogue = Some(catalogue);
+    etat.version_selection = selection;
+    etat.version_depart = depart;
+    etat.statut = message;
+    etat.version_statut_erreur = hors_ligne;
+    unsafe { rafraichir(h) };
+}
+
+/// Déplace la sélection de `delta` lignes, en gardant la ligne visible.
+fn deplacer_selection_versions(h: HWND, delta: i32) {
+    let etat = unsafe { &mut *ETAT };
+    let nb = etat.catalogue.as_ref().map(|c| c.versions.len()).unwrap_or(0);
+    if nb == 0 { return; }
+    let visible = etat.version_visible.max(1);
+    let sel = (etat.version_selection as i64 + delta as i64)
+        .clamp(0, (nb - 1) as i64) as usize;
+    etat.version_selection = sel;
+    if sel < etat.version_depart {
+        etat.version_depart = sel;
+    } else if sel >= etat.version_depart + visible {
+        etat.version_depart = sel - visible + 1;
+    }
+    unsafe { rafraichir(h) };
+}
+
+/// Défilement (flèches souris), en gardant la sélection dans la fenêtre.
+fn defiler_versions(h: HWND, delta: i32) {
+    let etat = unsafe { &mut *ETAT };
+    let nb = etat.catalogue.as_ref().map(|c| c.versions.len()).unwrap_or(0);
+    if nb == 0 { return; }
+    let visible = etat.version_visible.max(1);
+    let max_depart = nb.saturating_sub(visible);
+    let depart = (etat.version_depart as i64 + delta as i64)
+        .clamp(0, max_depart as i64) as usize;
+    etat.version_depart = depart;
+    if etat.version_selection < depart {
+        etat.version_selection = depart;
+    } else if etat.version_selection >= depart + visible {
+        etat.version_selection = depart + visible - 1;
+    }
+    unsafe { rafraichir(h) };
+}
+
+/// Tag de la version sélectionnée, SI son action est autorisée par le contrat.
+fn tag_action_versions(installer: bool) -> Option<String> {
+    let etat = unsafe { &*ETAT };
+    let cat = etat.catalogue.as_ref()?;
+    let i = etat.version_selection.min(cat.versions.len().saturating_sub(1));
+    let e = &cat.versions[i];
+    let actions = actions_version(e, cat.hors_ligne);
+    if (installer && actions.installer) || (!installer && actions.utiliser) {
+        Some(e.tag.clone())
+    } else {
+        None
+    }
+}
+
+/// Remet la sélection sur la version fraîchement installée, puis garde le
+/// message d'action VISIBLE (le rechargement du catalogue ne doit pas l'écraser).
+fn apres_action_version(h: HWND, statut: &crate::velopack::StatutVersion) {
+    let ok = statut.ok();
+    let version = statut.version.clone();
+    charger_catalogue_versions(h);
+    let etat = unsafe { &mut *ETAT };
+    if ok {
+        etat.version_installee = version.clone();
+        if let Some(cat) = etat.catalogue.as_ref() {
+            if let Some(i) = cat.versions.iter().position(|e| e.version == version) {
+                etat.version_selection = i;
+            }
+        }
+    }
+    etat.statut = statut.message.clone();
+    etat.version_statut_erreur = !ok;
+    unsafe { rafraichir(h) };
+}
+
+/// « Installer / télécharger » : téléchargement + SHA-256 dans le backend.
+fn action_version_installer(h: HWND) {
+    let Some(tag) = tag_action_versions(true) else { return };
+    {
+        let etat = unsafe { &mut *ETAT };
+        etat.statut = "Téléchargement, vérification SHA-256 et installation en cours…".to_string();
+        etat.version_statut_erreur = false;
+    }
+    unsafe { rafraichir(h) };
+    let statut = crate::setup_core::launcher_installer_version(&tag);
+    apres_action_version(h, &statut);
+}
+
+/// « Utiliser cette version » : bascule locale, aucun réseau.
+fn action_version_utiliser(h: HWND) {
+    let Some(tag) = tag_action_versions(false) else { return };
+    let statut = crate::setup_core::launcher_selectionner_version(&tag);
+    apres_action_version(h, &statut);
+}
+
+/// « Retour » : revient à l'écran d'origine (premier écran ou Options).
+fn retour_versions(h: HWND) {
+    let etat = unsafe { &mut *ETAT };
+    etat.vue = etat.version_retour;
+    unsafe { rafraichir(h) };
 }
 
 /// Texte partagé entre le fil de travail et la fenêtre.
@@ -3311,4 +3874,247 @@ pub fn aide() -> String {
     "Rose update : installe ou met à jour Rose (64 bits natif).\n\
      Sur Windows, l'installeur graphique « Rose-win-Setup.exe » offre la même chose\n\
      avec une fenêtre dédiée.".to_string()
+}
+
+#[cfg(test)]
+mod tests_geometrie {
+    use super::*;
+
+    /// Vérifie l'absence de chevauchement sur une grille DPI × taille.
+    /// `_taille` est la hauteur client réelle : `echelle_tracé` tient compte
+    /// de la largeur ET de la hauteur, exactement comme dans le tracé.
+    fn sans_chevauchement(largeur: i32, hauteur: i32, dpi: i32) {
+        let e = crate::paint::echelle_tracé(largeur, hauteur);
+        let g = geometrie_marque(hauteur, dpi, e);
+        let s = |v: i32| -> i32 { (v as f64 * e).round() as i32 };
+        let contexte = format!("fenêtre {largeur}×{hauteur}, {dpi} DPI, échelle {e:.3}");
+
+        // La boîte du logo ne dépasse JAMAIS la place réservée, ni la hauteur
+        // native du PNG (276 × 343). `dessiner_rose` recadre ensuite le
+        // contenu utile (`bornes_opaques`) en conservant le ratio.
+        assert!(g.hauteur_logo <= g.place_logo, "logo trop haut : {contexte}");
+        assert!(g.hauteur_logo <= 343, "agrandissement du PNG : {contexte}");
+        let voulue = ((g.largeur_logo as f64 * 343.0 / 276.0).round() as i32).max(1);
+        assert_eq!(g.hauteur_logo, voulue.min(g.place_logo).min(343),
+                   "hauteur du logo incohérente : {contexte}");
+        // Le titre ne remonte pas sur la tige de la rose.
+        assert!(g.haut_titre >= s(78) + g.hauteur_logo,
+                "titre sur le logo : {contexte}");
+
+        // ⚠ L'assertion centrale : le sous-titre PART du bas réel du titre,
+        // avec une marge. L'ancien `y_marque + s(56)` recouvrait « ROSE ».
+        assert!(g.haut_sous_titre >= g.bas_titre,
+                "sous-titre AVANT la fin du titre : {contexte}");
+        assert!(g.haut_sous_titre - g.bas_titre >= s(10),
+                "marge titre/sous-titre trop faible : {contexte}");
+
+        // Les étapes ne remontent pas sur le sous-titre et ne descendent pas
+        // sous les cartes du bas.
+        assert!(g.y_etapes >= g.bas_sous_titre,
+                "étapes sur le sous-titre : {contexte}");
+        assert!(g.bas_sous_titre <= g.plancher,
+                "sous-titre sous les cartes : {contexte}");
+        assert!(g.y_etapes <= g.plancher,
+                "étapes sous les cartes : {contexte}");
+    }
+
+    #[test]
+    fn geometrie_sans_chevauchement_grille() {
+        // 564 × 600 = la fenêtre étroite de la capture utilisateur ;
+        // 806 × 562 = la taille minimale imposée par WM_GETMINMAXINFO à 96 DPI.
+        for (largeur, hauteur) in [
+            (1120, 780), (806, 562), (564, 600), (736, 512),
+            (1120, 600), (560, 360), (1920, 1080),
+        ] {
+            for dpi in [96, 120, 144, 192] {
+                sans_chevauchement(largeur, hauteur, dpi);
+            }
+        }
+    }
+
+    #[test]
+    fn sous_titre_suit_le_bas_reel_du_titre_quand_le_dpi_monte() {
+        // À 1920 × 1080 / 192 DPI, l'ancien décalage fixe `s(56)` recouvrait
+        // le titre de 55 px : c'est la régression exacte de la capture.
+        let g = geometrie_marque(1080, 192, crate::paint::echelle_tracé(1920, 1080));
+        let e = crate::paint::echelle_tracé(1920, 1080);
+        let s = |v: i32| -> i32 { (v as f64 * e).round() as i32 };
+        assert!(g.haut_sous_titre > g.bas_titre);
+        assert!(g.haut_sous_titre - g.bas_titre >= s(10));
+        // Le titre occupe bien plus que `s(56)` : la hauteur suit le DPI.
+        assert!(g.bas_titre - g.haut_titre > s(72));
+    }
+
+    #[test]
+    fn logo_reste_visible_sur_fenetre_basse_et_etroite() {
+        for (largeur, hauteur) in [(564, 600), (806, 562), (736, 512), (560, 360)] {
+            let e = crate::paint::echelle_tracé(largeur, hauteur);
+            let g = geometrie_marque(hauteur, 96, e);
+            let seuil = (40.0 * e).round() as i32;
+            assert!(g.hauteur_logo >= seuil,
+                    "logo non dessiné en {largeur}×{hauteur} : {} < {seuil}",
+                    g.hauteur_logo);
+            assert!(g.bas_sous_titre <= g.plancher);
+        }
+    }
+
+    #[test]
+    fn premier_paint_sans_dimension_ne_panique_pas() {
+        // `GetClientRect` peut rendre 0 × 0 avant `WM_SIZE` : `echelle_tracé`
+        // et la géométrie doivent rester finies (aucun débordement).
+        let g = geometrie_marque(0, 96, crate::paint::echelle_tracé(0, 0));
+        assert_eq!(g.hauteur_logo, 0);
+        assert_eq!(g.place_logo, 0);
+        assert!(g.bas_titre < g.haut_sous_titre);
+    }
+}
+
+#[cfg(test)]
+mod tests_versions {
+    use super::*;
+
+    // FIXTURES : seules versions littérales du module, interdites en production.
+    fn entree(tag: &str, titre: &str, date: &str, installable: bool,
+              en_cache: bool, deja_installee: bool) -> crate::velopack::EntreeCatalogue {
+        crate::velopack::EntreeCatalogue {
+            tag: tag.to_string(),
+            version: tag.trim_start_matches('v').to_string(),
+            titre: titre.to_string(),
+            date: date.to_string(),
+            installable,
+            en_cache,
+            deja_installee,
+        }
+    }
+
+    fn catalogue(versions: Vec<crate::velopack::EntreeCatalogue>, hors_ligne: bool,
+                 message: &str) -> crate::velopack::CatalogueVersions {
+        crate::velopack::CatalogueVersions {
+            versions,
+            hors_ligne,
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn ligne_affiche_version_titre_et_date() {
+        let e = entree("v0.1.6", "Rose — correctifs", "2026-11-19T13:54:57Z", true, false, false);
+        let ligne = format_ligne_version(&e);
+        assert!(ligne.contains("0.1.6"), "{ligne}");
+        assert!(ligne.contains("Rose — correctifs"), "{ligne}");
+        assert!(ligne.contains("2026-11-19"), "{ligne}");
+        // Aucune version en dur dans la fonction : une autre fixture donne une autre ligne.
+        let autre = entree("v9.8.7", "Titre quelconque", "", false, false, false);
+        assert!(format_ligne_version(&autre).contains("9.8.7"));
+    }
+
+    #[test]
+    fn date_vide_est_dite_inconnue_pas_laissee_blanche() {
+        let e = entree("v0.1.3", "Legacy", "", false, false, false);
+        assert!(format_ligne_version(&e).contains("date inconnue"));
+    }
+
+    #[test]
+    fn badges_refletent_exactement_les_trois_drapeaux() {
+        let e = entree("v1", "T", "2026-01-01", true, true, true);
+        let b = badges_version(&e);
+        assert!(b.contains("Déjà installée"), "{b}");
+        assert!(b.contains("Manifeste en cache"), "{b}");
+        assert!(b.contains("Paquet disponible"), "{b}");
+        // Le libellé ne promet PAS une réinstallation hors ligne.
+        assert!(!b.to_lowercase().contains("prêt à installer"), "{b}");
+
+        let rien = entree("v2", "T", "", false, false, false);
+        assert_eq!(badges_version(&rien), "Aucun artefact installable — aucune action");
+    }
+
+    #[test]
+    fn actions_respectent_le_tableau_du_contrat() {
+        // installable=true, deja=false → Installer uniquement.
+        assert_eq!(actions_version(&entree("v1", "T", "", true, false, false), false),
+                   ActionsVersion { installer: true, utiliser: false });
+        // installable=true, deja=true → Réinstaller OU Utiliser.
+        assert_eq!(actions_version(&entree("v2", "T", "", true, true, true), false),
+                   ActionsVersion { installer: true, utiliser: true });
+        // installable=false, deja=true → Utiliser uniquement.
+        assert_eq!(actions_version(&entree("v3", "T", "", false, false, true), false),
+                   ActionsVersion { installer: false, utiliser: true });
+        // installable=false, deja=false → rien.
+        assert_eq!(actions_version(&entree("v4", "T", "", false, false, false), false),
+                   ActionsVersion { installer: false, utiliser: false });
+    }
+
+    #[test]
+    fn hors_ligne_desactive_installer_mais_garde_utiliser() {
+        let e = entree("v1", "T", "2026-01-01", true, true, true);
+        let a = actions_version(&e, true);
+        assert!(!a.installer, "le téléchargement doit être désactivé hors ligne");
+        assert!(a.utiliser, "la bascule reste possible sans réseau");
+    }
+
+    #[test]
+    fn bandeau_est_explicite_et_jamais_vide() {
+        let msg = "GitHub inaccessible (HTTP 000) : voici les versions déjà présentes.";
+        let hors = catalogue(Vec::new(), true, msg);
+        let bandeau = bandeau_versions(&hors);
+        assert!(bandeau.contains("HORS LIGNE"), "{bandeau}");
+        assert!(bandeau.contains(msg), "{bandeau}");
+        assert!(bandeau.contains("téléchargement"), "{bandeau}");
+
+        let vide = catalogue(Vec::new(), true, "");
+        assert!(!bandeau_versions(&vide).is_empty());
+        let en_ligne = catalogue(Vec::new(), false, "");
+        assert!(!bandeau_versions(&en_ligne).is_empty());
+        let avec_msg = catalogue(Vec::new(), false, "7 versions disponibles");
+        assert!(bandeau_versions(&avec_msg).contains("7 versions disponibles"));
+    }
+
+    #[test]
+    fn layout_liste_borne_le_nombre_de_lignes_visibles() {
+        assert_eq!(layout_liste(400, 0), LayoutListeVersions { pas: 76, visible: 0 });
+        let quatre = layout_liste(400, 4);
+        assert_eq!(quatre.visible, 4);
+        assert!((46..=76).contains(&quatre.pas));
+        let beaucoup = layout_liste(400, 100);
+        assert!(beaucoup.visible > 0 && beaucoup.visible < 100);
+        assert_eq!(beaucoup.visible, (400 / beaucoup.pas) as usize);
+        assert_eq!(layout_liste(-5, 3).visible, 0);
+    }
+
+    #[test]
+    fn zones_ligne_sont_deterministes_et_ne_se_chevauchent_pas() {
+        let liste = RECT { left: 100, top: 200, right: 800, bottom: 600 };
+        let (l0, i0, u0) = zones_ligne_version(&liste, 60, 0, 0);
+        let (l1, _, _) = zones_ligne_version(&liste, 60, 1, 0);
+        assert_eq!(l1.top - l0.top, 60);
+        assert_eq!(l0.bottom - l0.top, 60);
+        assert!(i0.right < u0.left, "les deux boutons ne doivent pas se superposer");
+        assert!(i0.left >= l0.left && u0.right <= l0.right, "boutons hors de la ligne");
+        // Le défilement décale la même géométrie sans la modifier.
+        let (l0d, _, _) = zones_ligne_version(&liste, 60, 5, 5);
+        assert_eq!((l0.left, l0.top, l0.right, l0.bottom),
+                   (l0d.left, l0d.top, l0d.right, l0d.bottom));
+    }
+
+    #[test]
+    fn enumeration_vue_garde_les_index_des_cinq_etapes() {
+        // Non-régression : le panneau latéral compare `vue as usize` à 0..4.
+        assert_eq!(Vue::Bienvenue as usize, 0);
+        assert_eq!(Vue::Licence as usize, 1);
+        assert_eq!(Vue::Options as usize, 2);
+        assert_eq!(Vue::Installation as usize, 3);
+        assert_eq!(Vue::Termine as usize, 4);
+        assert_eq!(ETAPES.len(), 5);
+        for (i, _) in ETAPES.iter().enumerate() {
+            let vue = match i {
+                0 => Vue::Bienvenue, 1 => Vue::Licence, 2 => Vue::Options,
+                3 => Vue::Installation, _ => Vue::Termine,
+            };
+            assert_eq!(vue as usize, i);
+        }
+        // Les deux écrans ajoutés sont APRÈS les cinq étapes.
+        assert_eq!(Vue::MisesAJour as usize, 6);
+        assert_eq!(Vue::Versions as usize, 7);
+        assert!(Vue::Versions as usize >= ETAPES.len());
+    }
 }
