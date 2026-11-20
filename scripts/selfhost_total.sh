@@ -2,14 +2,20 @@
 # selfhost_total.sh — pipeline de BOOTSTRAP vérifiable pour le self-hosting total.
 #
 # Constat daté, jamais une promesse. Ce script N'écrase aucun fichier source :
-# il ne lit que compilateur/*.rose et le binaire Rose fourni, et n'écrit que
-# dans WORKDIR (par défaut /tmp/opencode/selfhost_total.$$).
+# il ne lit que compilateur/*.rose, tests_selfhost/*.rose et le binaire Rose
+# fourni, et n'écrit que dans WORKDIR (par défaut /tmp/opencode/selfhost_total.$$).
 #
 # Usage :
 #   scripts/selfhost_total.sh [CHEMIN_BINAIRE_ROSE] [--full|--quick] [options]
 #
-#   --full    pipeline complet (émission C0 ~374 s mesurée, timeout 900 s).
-#   --quick   contrôles rapides (a, b, fib natif) ; c/d/e/f sont IGNORÉS.
+#   --full        pipeline complet (émission C0 ~374 s mesurée, timeout 900 s).
+#   --quick       contrôles rapides (a, b, fib natif) ; c/d/e/f/g/h NON ÉVALUÉS.
+#   --with-c13    étape g = C1.3 : générer F1 depuis le source courant, exécuter
+#                 F1 sur son propre RIR -> F2, comparer md5. ~2×430 s en --quick ;
+#                 quasi-gratuit en --full (réutilise P0/P1 de l'étape e, même source).
+#                 F1 sert aussi de compilateur généré pour l'étape h.
+#   --inventaire  tableau lisible des primitives G5 (faits documentés SH5–SH11),
+#                 sans mesure et sans écriture hors WORKDIR. Sortie immédiate, rc=0.
 #
 # Variables d'environnement (toutes optionnelles) :
 #   SELFHOST_ROSE_BIN        binaire Rose à utiliser (sinon 1er argument positionnel)
@@ -22,26 +28,33 @@
 #   SELFHOST_C0_MIN_SIZE     taille minimale de C0 en octets (défaut 100000)
 #   SELFHOST_C0_PATH         C0 déjà émis à réutiliser (rejeu ; l'émission n'est PAS rejouée,
 #                            mais le fichier EST vérifié : ELF aarch64, taille, exécution en d)
+#   SELFHOST_C13_MD5         md5 attendu de F1=F2 (défaut 6f2715e5...)
+#   SELFHOST_C13_MIN_SIZE    taille minimale de F1/F2 en octets (défaut 400000)
 #
 # Verdicts et codes de sortie :
-#   0  TOTAL     toutes les étapes a..f sont PASS
-#   2  PARTIEL   a..e PASS, f BLOQUÉ
-#   3  BLOQUÉ    au moins une étape among a..e est BLOQUÉE (ou invocation invalide)
-#   1  ERREUR    binaire/source introuvable, environnement inutilisable
+#   0  A–Z ATTEINT   a..e PASS, g PASS, h PASS (F1 re produit chaque sortie native)
+#   2  A–Z PARTIEL   a..e PASS, g PASS, h PARTIEL (fib OK, bigints/tables bloqués)
+#   3  BLOQUÉ        au moins une étape a..e BLOQUÉE, portée --quick, ou g/h BLOQUÉS
+#   4  NON ÉVALUÉ    a..e PASS mais C1.3 non demandé (g IGNORÉ) : A–Z non mesuré
+#   1  ERREUR        binaire/source introuvable, environnement inutilisable
 
 set -uo pipefail
 # Volontairement PAS de `set -e` : chaque étape capture son rc et le rapporte.
 
 # ── Options ──────────────────────────────────────────────────────────────────
-usage() { sed -n '2,30p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,39p' "${BASH_SOURCE[0]}"; }
 
 MODE="full"
+C13_OPT=0
+INVENTAIRE=0
 ARG_ROSE_BIN=""
 WORKDIR_OPT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --quick)   MODE="quick"; shift ;;
     --full)    MODE="full";  shift ;;
+    --with-c13)  C13_OPT=1;  shift ;;
+    --inventaire) INVENTAIRE=1; shift ;;
     --rose-bin)   ARG_ROSE_BIN="${2:-}"; shift 2 ;;
     --workdir)    WORKDIR_OPT="${2:-}"; shift 2 ;;
     -h|--help)  usage; exit 0 ;;
@@ -53,6 +66,57 @@ done
 
 # ── Chemins ──────────────────────────────────────────────────────────────────
 ROSE_ROOT="${SELFHOST_ROSE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# ── --inventaire : faits DOCUMENTÉS, aucune mesure, aucune invention ─────────
+# Sources : SH5 = SELFHOST_TOTAL_PLAN.md, SH6 = G5_PRIMITIVES.md,
+# SH7 = G5_C0.md, SH10 = G5_C1.md, SH11 = C13_FIX.md (tous dans rose/docs/).
+if [[ $INVENTAIRE -eq 1 ]]; then
+  echo "============================================================"
+  echo " inventaire G5 — faits documentés SH5/SH6/SH7/SH10/SH11"
+  echo "============================================================"
+  echo "date : $(date -u +'%Y-%m-%dT%H:%M:%SZ')   (constat daté, aucune mesure ici)"
+  echo ""
+  echo "Légende : OK = conforme mesurée ; PARTIEL = cas limites connus divergents ;"
+  echo "          ABSENT = pas de routine, stub0, ou changement d'ABI nécessaire."
+  echo ""
+  cat <<'TAB'
+| Primitive / capacité                     | État    | Preuve documentée (doc, section)                         |
+|------------------------------------------|---------|-----------------------------------------------------------|
+| quitter (C0.1)                           | OK      | SH7 G5_C0.md §2 : natif=ELF, rc=7 octet pour octet        |
+| caractere (C0.2)                         | OK      | SH7 G5_C0.md §2/§3 : A/1/AX natif=ELF                     |
+| partie_entiere (C0.3)                    | OK      | SH7 G5_C0.md §2/§3 : 3/3 natif=ELF                        |
+| globales G5 en RW (C1)                   | OK      | SH10 G5_C1.md §2/§4 : 512×8 à 0x60004000, g1..g3 conformes|
+| auto-exécution de l'émetteur (C1)        | OK      | SH10 G5_C1.md §6 : e_self5.elf tiny.rir = référence native|
+| F1 == F2 (C1.3, auto-régénération)       | OK      | SH11 C13_FIX.md §5.2 : 432544 o, md5 6f2715e5… identiques|
+| point fixe b3ed9262 (dump emetteur.rose) | OK      | SH11 C13_FIX.md §6 : identique ×2 (dump ELF) + ×2 (natif) |
+| affichage des listes                     | OK      | SH6 G5_PRIMITIVES.md §3 : 7 tests natif=ELF octet pour octet|
+| argument(i) hors limites                 | OK      | SH6 G5_PRIMITIVES.md §4 : rc=1 + stderr identiques        |
+| flottants >= 1e16                        | OK      | SH6 G5_PRIMITIVES.md §5 : 1e+20 etc. natif=ELF            |
+| fib / arithmétique entière simple        | OK      | SH11 C13_FIX.md §7 : fib25 75025 / 75025                  |
+| longueur(0) (tag non chaîne)             | PARTIEL | SH5 SELFHOST_TOTAL_PLAN.md l.91 : natif erreur / ELF rc=139|
+| inserer(t,c,v) : valeur v ignorée        | PARTIEL | SH5 l.96 + SH6 G5_PRIMITIVES.md §7.2                      |
+| table() = liste de clés                  | PARTIEL | SH5 l.101 + SH6 §7.2 : t["a"] n'est pas une lecture       |
+| rationnels négatifs / calculés           | PARTIEL | SH7 G5_C0.md §4 + SH11 C13_FIX.md §8.2 (16 divergences)   |
+| Unicode des sources arbitraires          | PARTIEL | SH11 C13_FIX.md §3/§8 : g5_cps corrige l'émetteur, lecture|
+|                                          |         | G5 par octets vs natif par points de code subsiste        |
+| type / abs / min / max, graine / hasard  | PARTIEL | SH11 C13_FIX.md §8.2 : divergences documentées            |
+| grands entiers > 64 bits (ABI multi-limbes)| ABSENT | SH6 G5_PRIMITIVES.md §7.1 : 2^64 -> 0 ; SH5 l.116         |
+| valeurs de tables + supprimer()          | ABSENT  | SH6 G5_PRIMITIVES.md §7.2 : supprimer = stub               |
+| afficher_erreur (routine générique)      | ABSENT  | SH5 SELFHOST_TOTAL_PLAN.md l.114 : stub0                  |
+| eval_expr (ancien compilateur)           | ABSENT  | SH5 l.115 ; contourné par quitter (SH7 §2)               |
+| HOF / surcharge / listes de listes / fact| ABSENT  | SH7 G5_C0.md §4 + SH10 G5_C1.md §7.2 : 7 blocages SH9     |
+TAB
+  echo ""
+  echo "Batterie SH9 (80 programmes) — dernière mesure documentée (SH11 §7) :"
+  echo "  57 CONFORMES / 16 DIVERGENTS / 7 BLOQUÉS (aucune régression SH7→SH11)."
+  echo "Validation globale documentée (SH11 §7) : cargo 515 passés/0 échec ;"
+  echo "  jardins 9/10 (gui_native.rose : faux positif commentaire « Rust ») ; fib25 OK."
+  echo ""
+  echo "NOTE: SH12 (tables réelles + rationnels négatifs) est un chantier CONCURRENT."
+  echo "      Son résultat n'est PAS repris ici : seuls les faits SH5–SH11 sont affichés."
+  exit 0
+fi
+
 ROSE_BIN="${ARG_ROSE_BIN:-${SELFHOST_ROSE_BIN:-$ROSE_ROOT/rose/rose}}"
 EMETTEUR="${SELFHOST_EMETTEUR:-$ROSE_ROOT/compilateur/emetteur.rose}"
 EMETTEUR_ELF="${SELFHOST_EMETTEUR_ELF:-$ROSE_ROOT/compilateur/emetteur_elf.rose}"
@@ -61,6 +125,8 @@ EXPECTED_RIR_MD5="${SELFHOST_RIR_MD5:-b3ed9262dd54776a6dbd07bc12368d0e}"
 EMIT_TIMEOUT="${SELFHOST_EMIT_TIMEOUT:-900}"
 C0_MIN_SIZE="${SELFHOST_C0_MIN_SIZE:-100000}"
 C0_REUSE="${SELFHOST_C0_PATH:-}"
+C13_MD5="${SELFHOST_C13_MD5:-6f2715e5c5fe26c3e26f6ac404051bd2}"
+C13_MIN_SIZE="${SELFHOST_C13_MIN_SIZE:-400000}"
 
 if [[ ! -x "$ROSE_BIN" ]]; then
   echo "ERREUR : binaire Rose introuvable ou non exécutable : $ROSE_BIN" >&2
@@ -76,16 +142,19 @@ mkdir -p "$WORKDIR" || { echo "ERREUR : impossible de créer $WORKDIR" >&2; exit
 
 # ── Journal d'état ───────────────────────────────────────────────────────────
 declare -A STATE DETAIL label
-order=(a b c d e f)
+order=(a b c d e f g h)
 label[a]="verif(emetteur_elf.rose)"
 label[b]="self.rir + md5 b3ed9262"
 label[c]="émission C0 (timeout ${EMIT_TIMEOUT}s)"
 label[d]="C0(emetteur.rose) == self.rir"
-label[e]="point fixe compilateur C1 == C2"
-label[f]="C0 compile fib(25) == natif"
+label[e]="point fixe compilateur P0 == P1"
+label[f]="C0 compile fib(25) == natif (diagnostic)"
+label[g]="C1.3 : F1 == F2 (auto-régénération, --with-c13)"
+label[h]="A–Z : F1 compile des sources arbitraires == natif"
 
 pass() { STATE["$1"]="PASS"; DETAIL["$1"]="$2"; echo "[PASS]   $1 — ${label[$1]} : $2"; }
 block(){ STATE["$1"]="BLOQUÉ"; DETAIL["$1"]="$2"; echo "[BLOQUÉ] $1 — ${label[$1]} : $2"; }
+partiel(){ STATE["$1"]="PARTIEL"; DETAIL["$1"]="$2"; echo "[PARTIEL] $1 — ${label[$1]} : $2"; }
 skip() { STATE["$1"]="IGNORÉ"; DETAIL["$1"]="$2"; echo "[IGNORÉ] $1 — ${label[$1]} : $2"; }
 
 # Détecte un ELF (magic + machine AArch64 = 183) sans dépendre de readelf.
@@ -98,7 +167,7 @@ echo "============================================================"
 echo " selfhost_total — bootstrap vérifiable (constat daté)"
 echo "============================================================"
 echo "date        : $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-echo "mode        : $MODE"
+echo "mode        : $MODE   (--with-c13=$C13_OPT)"
 echo "binaire Rose: $ROSE_BIN"
 echo "md5 binaire : $(md5sum "$ROSE_BIN" | awk '{print $1}')"
 echo "uname -m    : $(uname -m)"
@@ -261,15 +330,164 @@ else
   fi
 fi
 
-# ── Verdict ──────────────────────────────────────────────────────────────────
-BAD_ABE=0
-for s in a b c d e; do [[ "${STATE[$s]:-BLOQUÉ}" != "PASS" ]] && BAD_ABE=1; done
-if [[ "${STATE[f]:-BLOQUÉ}" == "PASS" && $BAD_ABE -eq 0 ]]; then
-  VERDICT="TOTAL"; CODE=0
-elif [[ $BAD_ABE -eq 0 ]]; then
-  VERDICT="PARTIEL"; CODE=2
+# ── g. C1.3 : F1 == F2, auto-régénération du compilateur ─────────────────────
+# Chaîne exacte (SH11/C13_FIX.md §5.2) :
+#   rose rir emetteur_elf.rose -> e.rir
+#   rose emetteur_elf.rose e.rir -> F1        (compilateur généré par le natif)
+#   ./F1 e.rir -> F2                          (F1 s'auto-régénère, sans patch externe)
+#   cmp F1 F2 -> IDENTIQUE  (432544 o, md5 6f2715e5c5fe26c3e26f6ac404051bd2)
+# En --full, l'étape e a déjà produit P0/P1 avec la MÊME chaîne et la MÊME source :
+# on les réutilise (aucune émission rejouée, ~2×430 s économisés) et on le dit.
+G_RIR="$WORKDIR/C13.rir"; GRE="$WORKDIR/C13.rir.err"
+F1="$WORKDIR/F1.elf"; F1E="$WORKDIR/F1.emit.err"
+F2="$WORKDIR/F2.elf"; F2E="$WORKDIR/F2.emit.err"
+if [[ $C13_OPT -ne 1 ]]; then
+  skip g "C1.3 non demandé (--with-c13 ; ~2×430 s en --quick, réutilisation de e en --full)"
+elif [[ "${STATE[e]:-BLOQUÉ}" == "PASS" && -s "$P0" && -s "$P1" ]]; then
+  cp -f "$P0" "$F1"; cp -f "$P1" "$F2"
+  H1="$(md5sum "$F1" | awk '{print $1}')"; H2="$(md5sum "$F2" | awk '{print $1}')"
+  SZ1="$(stat -c%s "$F1")"; SZ2="$(stat -c%s "$F2")"
+  if [[ "$H1" != "$H2" ]]; then
+    block g "F1=$H1 ($SZ1 o) != F2=$H2 ($SZ2 o) — pas de point fixe C1.3"
+  elif [[ "$SZ1" -lt "$C13_MIN_SIZE" ]] || ! is_elf "$F1"; then
+    block g "F1=F2=$H1 mais $SZ1 o < $C13_MIN_SIZE o ou non-ELF"
+  else
+    NOTE=""; [[ "$H1" != "$C13_MD5" ]] && NOTE=" (réf. documentée $C13_MD5, source différente)"
+    pass g "F1==F2=$H1, $SZ1 o, cmp=0 — réutilisés de l'étape e (même source courant, 0 émission rejouée)$NOTE"
+  fi
+elif [[ "${STATE[b]:-BLOQUÉ}" != "PASS" ]]; then
+  block g "réflexivité non disponible : étape b (self.rir) BLOQUÉE"
 else
+  "$ROSE_BIN" rir "$EMETTEUR_ELF" >"$G_RIR" 2>"$GRE"; RC=$?
+  if [[ $RC -ne 0 || ! -s "$G_RIR" ]]; then
+    block g "rir(emetteur_elf.rose) rc=$RC, stderr='$(tail_stderr "$GRE")'"
+  else
+    T0=$SECONDS
+    timeout "${EMIT_TIMEOUT}s" "$ROSE_BIN" "$EMETTEUR_ELF" "$G_RIR" >"$F1" 2>"$F1E"; RC=$?
+    if [[ $RC -ne 0 ]] || ! is_elf "$F1"; then
+      block g "émission F1 rc=$RC, non-ELF ou échec en $((SECONDS-T0))s, stderr='$(tail_stderr "$F1E")'"
+    else
+      chmod 755 "$F1" 2>/dev/null || true
+      timeout "${EMIT_TIMEOUT}s" "$F1" "$G_RIR" >"$F2" 2>"$F2E"; RC2=$?
+      if [[ $RC2 -ne 0 ]] || ! is_elf "$F2"; then
+        block g "F1(e.rir) rc=$RC2, non-ELF ou échec en $((SECONDS-T0))s, stderr='$(tail_stderr "$F2E")'"
+      else
+        H1="$(md5sum "$F1" | awk '{print $1}')"; H2="$(md5sum "$F2" | awk '{print $1}')"
+        SZ1="$(stat -c%s "$F1")"; SZ2="$(stat -c%s "$F2")"
+        if [[ "$H1" != "$H2" ]] || ! cmp -s "$F1" "$F2"; then
+          block g "F1=$H1 ($SZ1 o) != F2=$H2 ($SZ2 o) — cmp non nul, pas de C1.3"
+        elif [[ "$SZ1" -lt "$C13_MIN_SIZE" ]]; then
+          block g "F1=F2=$H1 mais $SZ1 o < $C13_MIN_SIZE o"
+        else
+          NOTE=""; [[ "$H1" != "$C13_MD5" ]] && NOTE=" (réf. documentée $C13_MD5, source différente)"
+          pass g "F1==F2=$H1, $SZ1 o, cmp=0, en $((SECONDS-T0))s$NOTE"
+        fi
+      fi
+    fi
+  fi
+fi
+
+# ── h. A–Z : F1 compile une source arbitraire et reproduit le natif ──────────
+# Critère opérationnel : pour chaque source, rose rir -> RIR, F1(RIR) -> ELF,
+# ELF exécuté -> sortie. On compare stdout, stderr et rc au binaire natif.
+# Sources représentatives : fib récursif (marche), bigint 2^64 (bloqué ABI),
+# table avec lecture de valeur (bloqué SH6 §7.2). Le verdict distingue
+# MARCHE / BLOQUÉ par source : c'est une mesure, pas une affirmation.
+AZ_TAB="$WORKDIR/az_tabval.rose"
+cat >"$AZ_TAB" <<'ROSE'
+$t = table()
+inserer($t, "a", 10)
+>> cle_existe($t, "a")
+>> $t["a"]
+>> longueur($t)
+ROSE
+AZ_SRC=( "$ROSE_ROOT/tests_selfhost/t74_fib_rec.rose"
+         "$ROSE_ROOT/tests_selfhost/t33_big_2_64.rose"
+         "$AZ_TAB" )
+AZ_TAG=( fib bigint tables )
+AZ_EMITTER=""
+AZ_HOW=""
+if [[ "${STATE[g]:-BLOQUÉ}" == "PASS" && -s "$F1" ]]; then
+  AZ_EMITTER="$F1"; AZ_HOW="F1 (C1.3)"
+elif [[ "${STATE[e]:-BLOQUÉ}" == "PASS" && -s "$P0" ]]; then
+  AZ_EMITTER="$P0"; AZ_HOW="P0 (étape e, même compilateur généré, graine native)"
+fi
+
+if [[ -z "$AZ_EMITTER" ]]; then
+  if [[ "$MODE" == "quick" ]]; then
+    skip h "aucun compilateur généré disponible en --quick (utiliser --full ou --with-c13)"
+  else
+    block h "aucun compilateur généré (étapes e et g indisponibles) : A–Z non mesurable"
+  fi
+else
+  echo "   compilateur généré utilisé : $AZ_HOW"
+  AZ_OK=0; AZ_BAD=0; AZ_FIB_OK=0
+  for i in "${!AZ_SRC[@]}"; do
+    SRC="${AZ_SRC[$i]}"; TAG="${AZ_TAG[$i]}"
+    NO="$WORKDIR/az_${TAG}.native.out"; NE="$WORKDIR/az_${TAG}.native.err"
+    RR="$WORKDIR/az_${TAG}.rir"; RE="$WORKDIR/az_${TAG}.rir.err"
+    EF="$WORKDIR/az_${TAG}.elf"; EE="$WORKDIR/az_${TAG}.elf.err"
+    XO="$WORKDIR/az_${TAG}.elf.out"; XE="$WORKDIR/az_${TAG}.elf.err.out"
+    if [[ ! -r "$SRC" ]]; then
+      echo "    • $TAG : BLOQUÉ — source introuvable : $SRC"
+      AZ_BAD=$((AZ_BAD+1)); continue
+    fi
+    "$ROSE_BIN" "$SRC" >"$NO" 2>"$NE"; NR=$?
+    if [[ $NR -ne 0 ]]; then
+      echo "    • $TAG : BLOQUÉ — référence native rc=$NR, stderr='$(tail_stderr "$NE")'"
+      AZ_BAD=$((AZ_BAD+1)); continue
+    fi
+    "$ROSE_BIN" rir "$SRC" >"$RR" 2>"$RE"; RRc=$?
+    if [[ $RRc -ne 0 || ! -s "$RR" ]]; then
+      echo "    • $TAG : BLOQUÉ — rir rc=$RRc, stderr='$(tail_stderr "$RE")'"
+      AZ_BAD=$((AZ_BAD+1)); continue
+    fi
+    timeout "${EMIT_TIMEOUT}s" "$AZ_EMITTER" "$RR" >"$EF" 2>"$EE"; ER=$?
+    if [[ $ER -ne 0 ]] || ! is_elf "$EF"; then
+      echo "    • $TAG : BLOQUÉ — émission par $AZ_HOW rc=$ER, non-ELF, stderr='$(tail_stderr "$EE")'"
+      AZ_BAD=$((AZ_BAD+1)); continue
+    fi
+    chmod 755 "$EF" 2>/dev/null || true
+    "$EF" >"$XO" 2>"$XE"; XR=$?
+    if [[ $XR -eq $NR ]] && cmp -s "$NO" "$XO" && cmp -s "$NE" "$XE"; then
+      echo "    • $TAG ($(basename "$SRC")) : MARCHE — rc=$XR, stdout='$(head_line "$XO")', cmp=0 avec le natif"
+      AZ_OK=$((AZ_OK+1))
+      [[ "$TAG" == "fib" ]] && AZ_FIB_OK=1
+    else
+      echo "    • $TAG ($(basename "$SRC")) : BLOQUÉ — natif rc=$NR stdout='$(head_line "$NO")' | ELF rc=$XR stdout='$(head_line "$XO")'"
+      AZ_BAD=$((AZ_BAD+1))
+    fi
+  done
+  if [[ $AZ_FIB_OK -eq 0 ]]; then
+    block h "fib natif vs compilateur généré divergence ($AZ_OK MARCHE / $AZ_BAD BLOQUÉ)"
+  elif [[ $AZ_BAD -gt 0 ]]; then
+    partiel h "$AZ_OK MARCHE / $AZ_BAD BLOQUÉ (via $AZ_HOW) — voir lignes ci-dessus"
+  else
+    pass h "$AZ_OK/$AZ_OK sources reproduites octet pour octet via $AZ_HOW — A–Z atteint sur l'échantillon"
+  fi
+fi
+
+# ── Verdict ──────────────────────────────────────────────────────────────────
+# f est un DIAGNOSTIC : C0 = émetteur RIR, il ne compile pas une source en ELF ;
+# son BLOQUÉ est attendu et documenté, il ne détermine plus le verdict A–Z.
+# Le verdict porte sur a..e (chaîne de bootstrap), g (C1.3) et h (A–Z).
+BAD_ABE=0
+for s in a b c d e; do
+  st="${STATE[$s]:-BLOQUÉ}"
+  [[ "$st" == "BLOQUÉ" || "$st" == "IGNORÉ" ]] && BAD_ABE=1
+done
+if [[ $BAD_ABE -eq 1 ]]; then
   VERDICT="BLOQUÉ"; CODE=3
+elif [[ "${STATE[g]:-BLOQUÉ}" == "IGNORÉ" ]]; then
+  VERDICT="A–Z NON ÉVALUÉ"; CODE=4
+elif [[ "${STATE[g]:-BLOQUÉ}" != "PASS" || "${STATE[h]:-BLOQUÉ}" == "BLOQUÉ" ]]; then
+  VERDICT="BLOQUÉ"; CODE=3
+elif [[ "${STATE[h]:-BLOQUÉ}" == "PASS" ]]; then
+  VERDICT="A–Z ATTEINT"; CODE=0
+elif [[ "${STATE[h]:-BLOQUÉ}" == "PARTIEL" ]]; then
+  VERDICT="A–Z PARTIEL"; CODE=2
+else
+  VERDICT="A–Z NON ÉVALUÉ"; CODE=4
 fi
 
 echo ""
@@ -284,15 +502,22 @@ echo "VERDICT: $VERDICT   (code=$CODE)"
 if [[ "$MODE" == "quick" ]]; then
   echo "NOTE: mode --quick — portée réduite, ce verdict ne prouve PAS le self-hosting total."
 fi
-if [[ "$VERDICT" == "PARTIEL" ]]; then
-  echo "NOTE: le point fixe compilateur (e) a été démontré avec le binaire natif comme GRAINE,"
-  echo "      pas avec C0. C0 est un émetteur RIR : il ne compile pas une source en ELF (f)."
+if [[ "${STATE[f]:-BLOQUÉ}" == "BLOQUÉ" ]]; then
+  echo "NOTE: f est un diagnostic attendu — C0 est un émetteur RIR (émis depuis emetteur.rose) :"
+  echo "      il ne compile PAS une source en ELF. Le critère A–Z est l'étape h, avec F1/P0."
+fi
+if [[ "$VERDICT" == "A–Z PARTIEL" ]]; then
+  echo "NOTE: A–Z atteint exige h PASS sur TOUTES les sources (y compris bigints et tables),"
+  echo "      pas seulement fib. Les lignes • ci-dessus nomment précisément ce qui bloque."
+fi
+if [[ "$VERDICT" == "A–Z NON ÉVALUÉ" ]]; then
+  echo "NOTE: rejouer avec --with-c13 (et de préférence --full) pour mesurer A–Z."
 fi
 
 {
   echo "# Rapport selfhost_total — $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   echo ""
-  echo "- mode : $MODE"
+  echo "- mode : $MODE (--with-c13=$C13_OPT)"
   echo "- binaire Rose : $ROSE_BIN (md5 $(md5sum "$ROSE_BIN" | awk '{print $1}'))"
   echo "- verdict : **$VERDICT** (code $CODE)"
   echo ""
