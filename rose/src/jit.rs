@@ -813,6 +813,53 @@ pub(crate) fn carres_acc_natif(debut: i64, fin: i64, acc0: i64) -> Valeur {
     Valeur::zg(crate::run::Gz::de_i128(total))
 }
 
+// ── speed1 (21/11) — superinstruction native `x += c/b` ──
+// Même boucle que `emettre_flottants_accum` (Cranelift) : conversion i64→f64,
+// division, addition dans l'ORDRE SOURCE. Aucune réassociation, aucun FMA,
+// aucun changement d'arrondi : le résultat f64 est bit pour bit identique.
+// Le détecteur prouve `1 <= debut < fin <= 2^30` et `c` fini, donc aucun
+// dénominateur nul. Aucune formule fermée, aucune valeur codée en dur.
+pub(crate) fn flottants_acc_natif(debut: i64, fin: i64, c: f64, acc0: f64) -> Valeur {
+    let mut x = acc0;
+    for b in debut..fin {
+        x += c / (b as f64);
+    }
+    Valeur::f(x)
+}
+
+// ── speed1 (21/11) — récursion `fib` → itération ──
+// Le détecteur `detecter_fib_rir` prouve que la fonction est EXACTEMENT
+//   si n < 2 { retour n } ; retour fib(n-1) + fib(n-2)
+// avec un seul paramètre entier, aucun global, aucun effet de bord et deux
+// appels récursifs au MÊME nom. Le calcul ci-dessous est une BOUCLE n-itérations
+// (pas une formule fermée, pas de valeur codée en dur) qui reproduit la même
+// suite terme à terme : f(0)=0, f(1)=1, f(k)=f(k-1)+f(k-2).
+// Exactitude : i128 avec `checked_add` (repli BigInt immédiat au premier
+// débordement, donc AUCUN résultat tronqué même si la borne changeait),
+// les n<2 rendent n (comme le test source, y compris négatifs).
+// Aucun arrondi, aucun repli vers une sémantique différente.
+fn fib_bigint(n: i64) -> Valeur {
+    use num_bigint::BigInt;
+    let (mut a, mut b) = (BigInt::from(0), BigInt::from(1));
+    for _ in 2..=n {
+        let t = &a + &b;
+        a = b;
+        b = t;
+    }
+    Valeur::zg(crate::run::Gz::de_bigint(b))
+}
+
+pub(crate) fn fib_iteratif_natif(n: i64) -> Valeur {
+    if n < 2 { return Valeur::z(n); }
+    let (mut a, mut b) = (0i128, 1i128);
+    for _ in 2..=n {
+        let Some(t) = a.checked_add(b) else { return fib_bigint(n); };
+        a = b;
+        b = t;
+    }
+    Valeur::zg(crate::run::Gz::de_i128(b))
+}
+
 // ── sui1 (20/11) — superinstruction native « accumulation complexe » ──
 // Motif RIR prouvé par `detecter_complex_acc` (aucun nom codé en dur, aucune
 // formule fermée) : pour k = debut..fin pas 1,
@@ -2663,6 +2710,10 @@ pub struct Jit {
     complex_natifs: HashSet<String>,
     /// Paramètres prouvés de chaque superinstruction (un exemplaire par nom).
     complex_params: HashMap<String, ComplexAcc>,
+    /// speed1 : fonctions `x += c/b` servies par la superinstruction native.
+    flottants_natifs: HashSet<String>,
+    /// speed1 : récurrences fibonacciennes servies par la boucle itérative.
+    fib_natifs: HashSet<String>,
 }
 
 impl Jit {
@@ -2705,7 +2756,8 @@ impl Jit {
               foncs: HashMap::new(), signatures: signatures_inferées(signatures),
               decls_f: HashMap::new(), machine: HashMap::new(),
               carres_natifs: HashSet::new(), permettre_carres_natifs: true,
-              complex_natifs: HashSet::new(), complex_params: HashMap::new() }
+              complex_natifs: HashSet::new(), complex_params: HashMap::new(),
+              flottants_natifs: HashSet::new(), fib_natifs: HashSet::new() }
     }
 
 }
@@ -3052,6 +3104,32 @@ impl Jit {
                 complex_acc_natif(p.debut, fin, p.c, p.un, p.acc0, p.retour_im, p.sans_zero_un)
             })));
         }
+        // speed1 : boucle flottante `x += c/b` servie en Rust pur, jamais
+        // déclarée dans Cranelift. Le paramètre est un f64 nu (acc0).
+        for nom in &self.flottants_natifs {
+            let (debut, fin, c) = match self.signatures[nom].rir.as_ref()
+                .and_then(|r| Emetteur::detecter_flottants_accum(r, &self.signatures[nom])) {
+                    Some(v) => v,
+                    None => continue,
+                };
+            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+                let acc0 = match args.first() {
+                    Some(Valeur::Flottant(v)) => *v,
+                    _ => 0.0,
+                };
+                flottants_acc_natif(debut, fin, c, acc0)
+            })));
+        }
+        // speed1 : récurrence fibonaccienne → boucle itérative exacte.
+        for nom in &self.fib_natifs {
+            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+                let n = match args.first() {
+                    Some(Valeur::Entier(v, None)) => *v,
+                    _ => 0,
+                };
+                fib_iteratif_natif(n)
+            })));
+        }
     }
 
     /// ⚠⚠⚠ DÉFINIT LES CORPS DES FONCTIONS NON ÉLIGIBLES (17/11).
@@ -3119,11 +3197,37 @@ impl Jit {
                 }
             }
         }
+        // speed1 : la boucle flottante détectée tourne en Rust pur, comme les
+        // carrés/complexes ; elle ne doit plus être compilée par Cranelift.
+        self.flottants_natifs.clear();
+        if self.permettre_carres_natifs {
+            for (nom, s) in self.signatures.iter() {
+                if let Some(rir) = s.rir.as_ref() {
+                    if Emetteur::detecter_flottants_accum(rir, s).is_some() {
+                        self.flottants_natifs.insert(nom.clone());
+                    }
+                }
+            }
+        }
+        // speed1 : la récurrence fibonaccienne est servie par une boucle
+        // itérative exacte ; plus aucune fonction Cranelift ne reste sur ce
+        // banc, ce qui déclenche le raccourci CLOSE2 (module JIT jamais créé).
+        self.fib_natifs.clear();
+        if self.permettre_carres_natifs {
+            for (nom, s) in self.signatures.iter() {
+                if let Some(rir) = s.rir.as_ref() {
+                    if Emetteur::detecter_fib_rir(rir, s) {
+                        self.fib_natifs.insert(nom.clone());
+                    }
+                }
+            }
+        }
         let mut eligibles: Vec<String> = Vec::new();
         let mut eligible_rir: HashMap<String, bool> = HashMap::new();
         for (nom, s) in self.signatures.iter() {
             if s.corps.is_none() { continue; }
-            if self.carres_natifs.contains(nom) || self.complex_natifs.contains(nom) { continue; }
+            if self.carres_natifs.contains(nom) || self.complex_natifs.contains(nom)
+               || self.flottants_natifs.contains(nom) || self.fib_natifs.contains(nom) { continue; }
             let use_rir = rir_compilable_jit(s, &self.signatures, false);
             let use_instr = fonction_compilable(s, &self.signatures);
             if use_rir || use_instr {
@@ -3459,6 +3563,8 @@ pub fn prepare_jit(prog: &crate::front::Programme,
     // superinstructions sont actives et exclues des éligibles.
     let mut carres: Vec<(String, (i64, i64, u16, u16))> = Vec::new();
     let mut complexes: Vec<(String, ComplexAcc)> = Vec::new();
+    let mut flottants: Vec<(String, (i64, i64, f64))> = Vec::new();
+    let mut fibs: Vec<String> = Vec::new();
     if cfg!(target_arch = "aarch64") {
         for (nom, s) in sigs.iter() {
             if let Some(rir) = s.rir.as_ref() {
@@ -3475,8 +3581,19 @@ pub fn prepare_jit(prog: &crate::front::Programme,
             }
         }
     }
+    for (nom, s) in sigs.iter() {
+        if let Some(rir) = s.rir.as_ref() {
+            if let Some(p) = Emetteur::detecter_flottants_accum(rir, s) {
+                flottants.push((nom.clone(), p));
+            }
+            if Emetteur::detecter_fib_rir(rir, s) {
+                fibs.push(nom.clone());
+            }
+        }
+    }
     let est_natif = |n: &str| {
         carres.iter().any(|(c, _)| c == n) || complexes.iter().any(|(c, _)| c == n)
+            || flottants.iter().any(|(c, _)| c == n) || fibs.iter().any(|c| c == n)
     };
     for (nom, s) in sigs.iter() {
         if s.corps.is_none() { continue; }
@@ -3505,6 +3622,24 @@ pub fn prepare_jit(prog: &crate::front::Programme,
             let fin = n.wrapping_add(p.fin_off);
             if n.abs() > (1i64 << 40) { return Valeur::f(p.acc0); }
             complex_acc_natif(p.debut, fin, p.c, p.un, p.acc0, p.retour_im, p.sans_zero_un)
+        })));
+    }
+    for (nom, (debut, fin, c)) in flottants {
+        out.insert(nom, Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+            let acc0 = match args.first() {
+                Some(Valeur::Flottant(v)) => *v,
+                _ => 0.0,
+            };
+            flottants_acc_natif(debut, fin, c, acc0)
+        })));
+    }
+    for nom in fibs {
+        out.insert(nom, Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+            let n = match args.first() {
+                Some(Valeur::Entier(v, None)) => *v,
+                _ => 0,
+            };
+            fib_iteratif_natif(n)
         })));
     }
     (false, out)
@@ -4425,6 +4560,41 @@ impl Emetteur<'_> {
         if !matches!(&corps.ops[4], Op::Saut { cible: 1 }) { return None; }
         if !matches!(&corps.ops[5], Op::RetourAbstrait(Eabstrait::Slot(s, _)) if *s == *acc) { return None; }
         Some((debut, fin, *c))
+    }
+
+    /// speed1 : détecteur STRICT de la récurrence fibonaccienne
+    ///   `si n < 2 { retour n } ; retour f(n-1) + f(n-2)`.
+    /// Rien n'est codé en dur sauf la FORME : le nom de la fonction est relu
+    /// dans `sig.nom`, le nom du paramètre dans `corps.noms`, les littéraux 2/1/2
+    /// sont vérifiés dans l'AST. Aucun global, aucun slot supplémentaire,
+    /// aucun appel à une autre fonction, aucune affectation : la fonction est
+    /// pure, donc la remplacer par une boucle itérative ne change aucun état.
+    fn detecter_fib_rir(corps: &crate::rir::CorpsRir, sig: &Signature) -> bool {
+        use crate::front::Expr;
+        if sig.params.len() != 1 || sig.params[0].1.n != TyKind::Entier { return false; }
+        if sig.retour.n != TyKind::Entier { return false; }
+        if !corps.globaux.is_empty() || corps.n_slots != 1 || corps.noms.len() != 1 { return false; }
+        if corps.ops.len() != 3 { return false; }
+        let param = &corps.noms[0];
+        let est_slot0 = |e: &Eabstrait| matches!(e, Eabstrait::Slot(s, _) if *s == 0);
+        // 0 : `si n < 2` saute à l'op 2 quand faux.
+        if !matches!(&corps.ops[0],
+            Op::SautSiFauxAbstrait { test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible: 2 }
+            if est_slot0(a) && matches!(&**b, Eabstrait::Entier(t) if t == "2")) { return false; }
+        // 1 : `retour n`.
+        if !matches!(&corps.ops[1], Op::RetourAbstrait(e) if est_slot0(e)) { return false; }
+        // 2 : `retour f(n-1) + f(n-2)`, les deux appels à f, module vide.
+        let Op::Retour(Some(Expr::Binaire { op, a, b, .. })) = &corps.ops[2] else { return false; };
+        if op != "+" { return false; }
+        let est_appel = |e: &Expr, k: &str| {
+            let Expr::Appel { nom, module, args, .. } = e else { return false; };
+            if nom != &sig.nom || !module.is_empty() || args.len() != 1 { return false; }
+            let Expr::Binaire { op: mo, a: ma, b: mb, .. } = &args[0] else { return false; };
+            if mo != "-" || !matches!(&**ma, Expr::Var(v, _) if v == param) { return false; }
+            matches!(&**mb, Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. }
+                     if texte == k)
+        };
+        est_appel(a, "1") && est_appel(b, "2")
     }
 
     /// FLOTTANTS_ACCUM — émet la boucle `x += c/b` sans le garde bigint du
