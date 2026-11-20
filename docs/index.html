@@ -363,6 +363,12 @@ body.light .doc-content code.inline{background:#EFEAD9}
 .event li::before{content:"▸";position:absolute;left:0;color:var(--vert)}
 .event.old li::before{color:var(--rouge)}
 
+/* ========== RELEASES ========== */
+.rel-note{font-size:.95rem;color:var(--sub);line-height:2;margin:0 0 26px}
+.rel-assets{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+.rel-assets a.btn{font-size:.76rem;letter-spacing:1px;padding:10px 14px}
+.rel-sha{font-size:.78rem;color:var(--sub);line-height:1.8;margin-top:12px;word-break:break-all}
+
 /* ========== SEARCH OVERLAY ========== */
 .search-overlay{
   position:fixed;inset:0;background:rgba(0,0,0,.85);backdrop-filter:blur(10px);
@@ -466,6 +472,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
     <button data-page="projet" onclick="go('projet')">PROJET</button>
     <button data-page="createurs" onclick="go('createurs')">CRÉATEURS</button>
     <button data-page="changelog" onclick="go('changelog')">CHANGELOG</button>
+    <button data-page="releases" onclick="go('releases')">RELEASES</button>
   </nav>
   <div class="nav-right">
     <button class="ico-btn" title="Rechercher (Ctrl+K)" onclick="openSearch()">
@@ -1260,6 +1267,103 @@ Bonjour, monde !</pre>
   </div>
 </section>
 
+<!-- ══════════════════ RELEASES ══════════════════ -->
+<section class="page" id="page-releases">
+  <div class="wrap">
+    <div class="overline reveal">SOURCE OFFICIELLE · TÉLÉCHARGEMENTS</div>
+    <h2 class="reveal">Releases</h2>
+    <p class="rel-note reveal">
+      <b style="color:var(--vert)">Ce site est la source officielle des releases de Rose.</b>
+      Tous les fichiers ci-dessous sont servis depuis <code class="inline">stef302.github.io/Rose/telechargements/</code>
+      et leur SHA-256 est vérifié. <b>Le launcher lit le manifeste
+      <a class="vert" href="telechargements/releases.json">telechargements/releases.json</a></b> pour découvrir les
+      versions et contrôler les binaires avant installation. GitHub reste un miroir : aucun lien de cette page
+      ne renvoie vers GitHub pour le téléchargement.
+    </p>
+    <div class="timeline reveal">
+
+      <div class="event">
+        <div class="event-head">
+          <span class="event-ver">V0.1.7</span>
+          <span class="event-date">20 NOVEMBRE 2026</span>
+          <span class="event-date" style="color:var(--vert)">ACTUELLE</span>
+        </div>
+        <h4 class="event-title">Rose v0.1.7 — lanceur définitif</h4>
+        <ul>
+          <li>Lanceur version-neutre : plus aucun numéro de version codé dans l'interface, sélecteur de versions dynamique (API GitHub), badges d'état et statut visible.</li>
+          <li>Cache local des versions (TTL 300 s) : affichage en 0,4 ms contre 582 ms auparavant, rafraîchissement en arrière-plan, timeout réseau 3 s, mode hors ligne explicite.</li>
+          <li>Chaîne de build Windows réparée ; logo et texte sans chevauchement, géométrie calculée dynamiquement.</li>
+          <li>Moteur : banc principal 9/9 domaines gagnés face à Rust ; suite complexe ×1,036, englobant ×1,5, global ×1,9 (le jumeau Rust tronque ses calculs, Rose reste exact).</li>
+          <li>Nombres géants : 30 premiers chiffres puis « plus de chiffres », <code class="inline">detail()</code> dynamique.</li>
+          <li>Compilateur généré auto-régénérable (F1 == F2 octet pour octet) ; AOT explicite <code class="inline">rose aot prog.rose -o prog</code> (alias de <code class="inline">orc</code>).</li>
+          <li>WASM réparé et validé (V8, <code class="inline">rose_execute(fib25)</code> = 75025).</li>
+        </ul>
+        <div class="rel-assets">
+          <a class="btn btn-rouge" href="telechargements/rose-setup.exe" download title="SHA-256 e069eb095acfb568588a94156a06be851ab53eb0465f9e9a6c2aba3c14c244ba">ROSE-SETUP.EXE · 10,6 Mo</a>
+          <a class="btn btn-fantome" href="telechargements/rose.exe" download title="SHA-256 e9ca6c47a2077e5141d82907375513a9d1cd172ab218b3b07abd186f450b3566">ROSE.EXE · 8,8 Mo</a>
+          <a class="btn btn-fantome" href="telechargements/rose-shell.exe" download title="SHA-256 01b7b1ff8f02c8ae8122f3fbae169362ea3585f76ae6ef554a2abdb11ccac240">ROSE-SHELL.EXE · 452 Ko</a>
+          <a class="btn btn-fantome" href="telechargements/rose-aarch64-linux" download title="SHA-256 27e5fe53d26fdfb68c06e4773181023fbe4f523aacf45e7c471df414f910a69d">ROSE-AARCH64-LINUX · 4,8 Mo</a>
+          <a class="btn btn-fantome" href="telechargements/rose-wasm.wasm" download title="SHA-256 140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe">ROSE-WASM.WASM · 945 Ko</a>
+          <a class="btn btn-fantome" href="telechargements/Rose-0.1.7-full.nupkg" download title="SHA-256 e07200b4377cffc6909e50b821241c4c90f3c6ff9ae3c73562e683bbaba00870">ROSE-0.1.7-FULL.NUPKG · 9,8 Mo</a>
+          <a class="btn btn-fantome" href="telechargements/releases.win.json" download title="SHA-256 d643a1e88d1da6c5ae33d8696ed2d7ad3f8d452a0edc591bafa218e1abd1d5b1">RELEASES.WIN.JSON · 403 o</a>
+        </div>
+        <p class="rel-sha">7 artefacts · SHA-256 complets dans <a class="vert" href="telechargements/SHA256SUMS">SHA256SUMS</a> et dans le manifeste.</p>
+      </div>
+
+      <div class="event">
+        <div class="event-head">
+          <span class="event-ver">V0.1.6</span>
+          <span class="event-date">19 NOVEMBRE 2026</span>
+        </div>
+        <h4 class="event-title">Rose v0.1.6 — launcher Rose</h4>
+        <ul>
+          <li>Launcher Rose : binaire stable sans moteur embarqué, versions récupérées dynamiquement via l'API GitHub (aucune version codée en dur).</li>
+          <li>Un seul téléchargement (manifeste + <code class="inline">.nupkg</code>), vérification SHA-256 du paquet, extraction vers <code class="inline">%LOCALAPPDATA%\Rose\app-&lt;v&gt;\</code>, rollback sans téléchargement.</li>
+          <li>Interface : coches antialiasées (GDI+), titre « ROSE » et logo entiers (réduction RGBA corrigée), thème rouge/vert pour <code class="inline">rose update</code>.</li>
+          <li>Choix des mises à jour au premier écran (auto / manuel / désactivées), persisté dans <code class="inline">%APPDATA%\Rose\config.json</code> ; aucun service Windows ni tâche planifiée.</li>
+          <li>WASM universel : <code class="inline">call_indirect</code> avec vérification stricte de signature, section <code class="inline">start</code> budgétée, 27 hôtes WASI par namespace sandboxés, bibliothèques C/C++ <code class="inline">-O1/-O2</code> (miniz, LZ4, MurmurHash3).</li>
+          <li>Site : le vrai moteur Rose WASM remplace le JavaScript factice (glue C ABI, chargement différé, repli explicitement signalé).</li>
+          <li>Vitesse : 5 victoires nettes (fib(35) 0,91×, factorielle 5000 0,22×, premiers 50k 0,85×, PGCD 0,70×, chaîne ~0,70×), 3 domaines au niveau.</li>
+          <li>Invariants : <code class="inline">rug</code> absent, zéro dépendance GMP, audit entièrement vert, version du paquet portée à 0.1.6.</li>
+        </ul>
+        <div class="rel-assets">
+          <a class="btn btn-fantome" href="telechargements/Rose-0.1.6-full.nupkg" download title="SHA-256 e194f9793d20547844d51c5b221a5e6854cd8d3f83570730efb3682d625117e9">ROSE-0.1.6-FULL.NUPKG · 2,8 Mo</a>
+        </div>
+        <p class="rel-sha">1 artefact présent sur le site · SHA-256 complet dans le manifeste et dans <a class="vert" href="telechargements/SHA256SUMS">SHA256SUMS</a>.</p>
+      </div>
+
+      <div class="event old">
+        <div class="event-head">
+          <span class="event-ver">V0.1.5</span>
+          <span class="event-date">14 NOVEMBRE 2026</span>
+        </div>
+        <h4 class="event-title">Rose v0.1.5 — installeur Windows refait</h4>
+        <ul>
+          <li>Installeur Windows refait : interface suivant la maquette (barre de titre sombre, panneau latéral en Kare, cinq étapes, zone de contenu, pied et barre d'état).</li>
+          <li>Console interactive autonome <code class="inline">rose-shell.exe</code> : historique ↑/↓, complétion Tab, <code class="inline">:help</code> / <code class="inline">:show</code> / <code class="inline">:reset</code> / <code class="inline">:load</code> / <code class="inline">:save</code> / <code class="inline">:type</code> / <code class="inline">:latex</code> / <code class="inline">:quit</code>, UTF-8 et ANSI sur Windows Terminal, conhost, PowerShell, cmd, Git Bash et VS Code.</li>
+          <li>Fenêtre entièrement personnalisée : plus de barre Windows 11, plein écran corrigé, manifeste <code class="inline">PerMonitorV2</code>, double-bufferisation et anti-aliasing, branding Kare.</li>
+          <li>Corrections : couleurs GDI (COLORREF <code class="inline">0x00BBGGRR</code>), bouton « Mettre à jour » coupé, arbre <code class="inline">.rsrc</code> validé par <code class="inline">verifier-res.py</code>, manifeste invalide corrigé (langue 1033).</li>
+          <li>WebAssembly : <code class="inline">factorielle_parallele</code> ne lance plus de threads sans garde de cible ; chemin séquentiel ajouté (100000! en 335 ms).</li>
+          <li>Vérifié : 154 tests Rust verts, 12/12 contrôles Velopack, <code class="inline">.rsrc</code> valide (10 ressources + manifeste).</li>
+        </ul>
+        <div class="rel-assets">
+          <a class="btn btn-fantome" href="telechargements/Rose-win-Setup.exe" download title="SHA-256 fc623cc27b5df1f599d9f87010991e059470e8d42b9f723f3b703dc26fd8dd9e">ROSE-WIN-SETUP.EXE · 8,4 Mo</a>
+          <a class="btn btn-fantome" href="telechargements/Rose-0.1.5-full.nupkg" download title="SHA-256 99b0c22d29ff435f24cc83b3c93f0f7a012ee23ed4ba44dfbd4c6d96dbbaafdb">ROSE-0.1.5-FULL.NUPKG · 7,7 Mo</a>
+          <a class="btn btn-fantome" href="telechargements/rose-language-0.1.5.vsix" download title="SHA-256 3f17dd0d0a3c5e71fe1037e8f775d629181f863ceed127f031e37d47747b5e8c">ROSE-LANGUAGE-0.1.5.VSIX · 68 Ko</a>
+          <a class="btn btn-fantome" href="telechargements/rose-skill.zip" download title="SHA-256 ba36afa247911300eb4b5479bc0d17cedd07b750baa4bf4b07f528a5271948ec">ROSE-SKILL.ZIP · 23 Ko</a>
+        </div>
+        <p class="rel-sha">4 artefacts présents sur le site (sur les 11 de la release GitHub) · SHA-256 complets dans le manifeste.</p>
+      </div>
+
+    </div>
+    <p class="gris reveal" style="font-size:.82rem;line-height:2;margin-top:2rem;letter-spacing:1px">
+      Manifeste lisible par le launcher : <a class="vert" href="telechargements/releases.json">telechargements/releases.json</a>
+      · Empreintes : <a class="vert" href="telechargements/SHA256SUMS">telechargements/SHA256SUMS</a>
+      · Miroir : <a class="vert" href="https://github.com/Stef302/Rose/releases" target="_blank" rel="noopener">GitHub Releases ↗</a> (référence historique, non utilisée par les liens ci-dessus).
+    </p>
+  </div>
+</section>
+
 </main>
 
 <!-- ====== SEARCH OVERLAY ====== -->
@@ -1283,6 +1387,7 @@ Bonjour, monde !</pre>
         <li><button onclick="go('play')">Playground</button></li>
         <li><button onclick="go('home');setTimeout(()=>document.getElementById('installer').scrollIntoView({behavior:'smooth'}),150)">Télécharger</button></li>
         <li><button onclick="go('changelog')">Changelog</button></li>
+        <li><button onclick="go('releases')">Releases</button></li>
       </ul>
     </div>
     <div class="foot-col">
