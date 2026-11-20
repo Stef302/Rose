@@ -321,7 +321,7 @@ fn p_preuve_terme(preuve: liste<chaine>) -> table {
 
 # ── 6. Moteur du pilote ────────────────────────────────────────────────────
 
-# Exécute un fichier .slg. Rend {sortie, code, total, reussis, lecture}.
+# Exécute un fichier .thn. Rend {sortie, code, total, reussis, lecture}.
 fn pilote_executer(chemin: chaine, trace: booleen) -> table {
   $pe_res = table()
   inserer($pe_res, "sortie", "")
@@ -463,14 +463,14 @@ fn pilote_aide() -> chaine {
   $aid_a = $aid_a + "Thorn — pilote de démonstration (en Rose)" + p_saut()
   $aid_a = $aid_a + p_saut()
   $aid_a = $aid_a + "Usage :" + p_saut()
-  $aid_a = $aid_a + "  rose thorn/src/principal.rose <fichier.slg>  vérifie chaque théorème" + p_saut()
-  $aid_a = $aid_a + "  rose thorn/src/principal.rose --demo [fichiers.slg...]" + p_saut()
+  $aid_a = $aid_a + "  rose thorn/src/principal.rose <fichier.thn>  vérifie chaque théorème" + p_saut()
+  $aid_a = $aid_a + "  rose thorn/src/principal.rose --demo [fichiers.thn...]" + p_saut()
   $aid_a = $aid_a + "  rose thorn/src/principal.rose --aide" + p_saut()
   $aid_a = $aid_a + p_saut()
   $aid_a = $aid_a + "Options :" + p_saut()
   $aid_a = $aid_a + "  --trace  affiche les termes construits" + p_saut()
   $aid_a = $aid_a + p_saut()
-  $aid_a = $aid_a + "Format d'un fichier .slg :" + p_saut()
+  $aid_a = $aid_a + "Format d'un fichier .thn :" + p_saut()
   $aid_a = $aid_a + "  théorème <nom> : <type du but>" + p_saut()
   $aid_a = $aid_a + "  preuve <tactique>" + p_saut()
   $aid_a = $aid_a + "Tactiques : reflexivite, symetrie, introduction, application," + p_saut()
@@ -485,7 +485,7 @@ fn pilote_aide() -> chaine {
 # Rose n'a pas de primitive pour lister un répertoire : les noms connus sont
 # donc énumérés ici. --demo accepte aussi des chemins explicites en arguments.
 fn pilote_manifeste() -> liste<chaine> {
-  $man_l = ["thorn/preuves/base.slg", "thorn/preuves/exemple.slg", "thorn/preuves/identite.slg", "thorn/preuves/demo_identite.slg", "thorn/preuves/reflexivite.slg", "thorn/preuves/demo_reflexivite.slg", "thorn/preuves/symetrie.slg", "thorn/preuves/demo_symetrie.slg", "thorn/preuves/associativite.slg", "thorn/preuves/demo_associativite.slg", "thorn/preuves/commutativite.slg", "thorn/preuves/demo_commutativite.slg", "thorn/preuves/plus_zero.slg", "thorn/preuves/plus_succ.slg", "thorn/preuves/lemmes.slg", "thorn/preuves/demo_lemmes.slg"]
+  $man_l = ["thorn/preuves/base.thn", "thorn/preuves/exemple.thn", "thorn/preuves/identite.thn", "thorn/preuves/demo_identite.thn", "thorn/preuves/reflexivite.thn", "thorn/preuves/demo_reflexivite.thn", "thorn/preuves/symetrie.thn", "thorn/preuves/demo_symetrie.thn", "thorn/preuves/associativite.thn", "thorn/preuves/demo_associativite.thn", "thorn/preuves/commutativite.thn", "thorn/preuves/demo_commutativite.thn", "thorn/preuves/plus_zero.thn", "thorn/preuves/plus_succ.thn", "thorn/preuves/lemmes.thn", "thorn/preuves/demo_lemmes.thn"]
   retour $man_l
 }
 
@@ -523,7 +523,7 @@ fn pilote_demo(fichiers: liste<chaine>, trace: booleen) -> table {
     $pd_k = $pd_k + 1
   }
   si ($pd_nb == 0) {
-    $pd_sortie = "Erreur : aucun fichier .slg jouable dans thorn/preuves/ (dossier absent ou vide)"
+    $pd_sortie = "Erreur : aucun fichier .thn jouable dans thorn/preuves/ (dossier absent ou vide)"
     $pd_code = 2
   } sinon {
     $pd_sortie = p_sans_fin($pd_sortie) + p_saut() + chaine($pd_total) + " théorème(s), " + chaine($pd_reussis) + " réussi(s)"

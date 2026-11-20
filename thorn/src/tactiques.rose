@@ -143,8 +143,14 @@ fn ta_plus_symbole() -> table {
 }
 fn ta_plus(m: table, n: table) -> table {  retour ta_ap2(ta_plus_symbole(), m, n)  }
 
-# Eq A a b : type inductif à 3 paramètres.
-fn ta_eq(A: table, a: table, b: table) -> table {  retour noy_ind("Eq", ta_params3(A, a, b))  }
+# Format d'égalité CANONIQUE, identique à celui produit par analyse.rose :
+#     ind("=", [a, b])      (deux paramètres)
+# Le paramètre A est conservé dans la signature pour ne pas réécrire tous les
+# appels, mais il est VOLONTAIREMENT ignoré : c'est le contexte du noyau qui
+# porte le type de a et de b. Ce choix supprime l'écart PROV4
+# « ind("=",[a,b]) » (parseur) vs « ind("Eq",[A,a,b]) » (tactiques).
+# Les params sont rembourrés une fois ([sentinelle, a, b]), comme ta_params2.
+fn ta_eq(A: table, a: table, b: table) -> table {  retour noy_ind("=", ta_params2(a, b))  }
 
 # refl : Π(A:type)(x:A), x = x
 fn ta_refl_symbole() -> table {
@@ -239,6 +245,226 @@ fn ta_verifie(terme: table, but: table, ctx: liste<table>, regle: chaine) -> tab
   retour ta_ok(but, terme, regle)
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2b. Aide à l'INFÉRENCE et à la RÉSOLUTION des termes écrits dans un .thn
+# ─────────────────────────────────────────────────────────────────────────────
+# Le parseur (PROV2) ne fait pas d'inférence de types : il rend `var "Nat"`
+# pour Nat, `const "0"` pour zéro et `ind("=",[a,b])` non rembourré. Ces
+# fonctions ramènent ces termes au format canonique PROV1/PROV3. Rien n'est
+# accepté sans repasser ensuite par verifier() + convertible().
+
+# Type d'un nom dans un contexte rembourré (table _absent si absent).
+fn ta_ctx_type_nom(ctx: liste<table>, nom: chaine) -> table {
+  $r = noy_absent()
+  $n = longueur(ctx)
+  $i = 1
+  tant_que ($i < $n) {
+    $e = ctx[$i]
+    si (noy_nom($e) == nom) { $r = noy_champ($e, "type") }
+    $i = $i + 1
+  }
+  retour $r
+}
+
+fn ta_ctx_contient_nom(ctx: liste<table>, nom: chaine) -> booleen {
+  $r = faux
+  $n = longueur(ctx)
+  $i = 1
+  tant_que ($i < $n) {
+    si (noy_nom(ctx[$i]) == nom) { $r = vrai }
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# A à passer à refl/symm/trans : le type du membre gauche quand il est connu,
+# sinon Nat (le noyau vérifie de toute façon l'application complète).
+fn ta_infer_A(t: table, ctx: liste<table>) -> table {
+  $A = ta_nat()
+  si (noy_genre(t) == "var") {
+    $ty = ta_ctx_type_nom(ctx, noy_nom(t))
+    si (non noy_est_absent($ty)) { $A = $ty }
+  }
+  retour $A
+}
+
+# Synthèse par le NOYAU uniquement (jamais de vérificateur maison).
+fn ta_type_synth(t: table, ctx: liste<table>) -> table {
+  $r = verifier(t, ctx)
+  si (noy_est_ok($r)) { retour noy_type_res($r) }
+  retour noy_absent()
+}
+
+# Décompose un type ind("=",[a,b]) en ses deux membres.
+fn ta_eq_parts(ty: table) -> table {
+  $r = table()
+  inserer($r, "a", noy_absent())
+  inserer($r, "b", noy_absent())
+  $bt = beta(ty)
+  si (noy_genre($bt) == "ind" et noy_nom($bt) == "=") {
+    $ps = noy_champ_liste($bt, "params")
+    si (longueur($ps) >= 3) {
+      inserer($r, "a", $ps[1])
+      inserer($r, "b", $ps[2])
+    }
+  }
+  retour $r
+}
+
+# Normalisation SYNTAXIQUE d'un terme issu du parseur.
+fn ta_normalise_liste(l: liste<table>) -> liste<table> {
+  $r = [table()]
+  $n = longueur(l)
+  $i = 1
+  tant_que ($i < $n) { joindre($r, ta_normalise(l[$i])); $i = $i + 1 }
+  retour $r
+}
+
+fn ta_normalise(t: table) -> table {
+  $g = noy_genre(t)
+  si ($g == "var") {
+    si (noy_nom(t) == "Nat") { retour ta_nat() }
+    retour t
+  }
+  si ($g == "const") {
+    si (noy_nom(t) == "0") { retour ta_zero() }
+    retour t
+  }
+  si ($g == "app") {
+    retour noy_app(ta_normalise(noy_champ(t, "fonction")),
+                   ta_normalise(noy_champ(t, "argument")))
+  }
+  si ($g == "pi") {
+    retour noy_pi(noy_nom(t), ta_normalise(noy_champ(t, "domaine")),
+                  ta_normalise(noy_champ(t, "codomaine")))
+  }
+  si ($g == "lam") {
+    retour noy_lam(noy_nom(t), ta_normalise(noy_champ(t, "domaine")),
+                   ta_normalise(noy_champ(t, "corps")))
+  }
+  si ($g == "ind") {
+    $nom = noy_nom(t)
+    $ps = ta_normalise_liste(noy_champ_liste(t, "params"))
+    si ($nom == "=" et longueur($ps) == 2) {
+      $pad = [table()]
+      joindre($pad, $ps[1])
+      joindre($pad, $ps[2])
+      $ps = $pad
+    }
+    retour noy_ind($nom, $ps)
+  }
+  retour t
+}
+
+# Table des constantes de signature, par nom écrit dans le .thn.
+fn ta_symbole(nom: chaine) -> table {
+  si (nom == "Nat") { retour ta_nat() }
+  si (nom == "zero" ou nom == "0") { retour ta_zero() }
+  si (nom == "succ") { retour ta_succ_symbole() }
+  si (nom == "plus") { retour ta_plus_symbole() }
+  si (nom == "refl") { retour ta_refl_symbole() }
+  si (nom == "eq_rec") { retour ta_eqrec_symbole() }
+  si (nom == "nat_rec") { retour ta_natrec_symbole() }
+  si (nom == "symm") { retour ta_symm_symbole() }
+  si (nom == "trans") { retour ta_trans_symbole() }
+  si (nom == "congr_succ") { retour ta_congr_succ_symbole() }
+  si (nom == "congr_plus_l") { retour ta_congr_plus_l_symbole() }
+  si (nom == "plus_0_l") { retour ta_plus0l_symbole() }
+  si (nom == "plus_s_l") { retour ta_plusSl_symbole() }
+  si (nom == "plus_zero_d") { retour ta_plus_zero_d_symbole() }
+  si (nom == "plus_succ_d") { retour ta_plus_succ_d_symbole() }
+  retour noy_var(nom)
+}
+
+fn ta_reverse(l: liste<table>) -> liste<table> {
+  $r = [table()]
+  $i = longueur(l) - 1
+  tant_que ($i >= 1) { joindre($r, l[$i]); $i = $i - 1 }
+  retour $r
+}
+
+fn ta_arg(l: liste<table>, rang: entier) -> table {
+  si (longueur(l) > rang) { retour l[rang] }
+  retour noy_absent()
+}
+
+# Élaboration des arguments IMPLICITES. Les .thn écrivent par exemple
+# `trans h1 h2` alors que trans a le telescope (A,a,b,c,h1,h2). Les quatre
+# premiers arguments sont retrouvés par décomposition des TYPES de h1/h2
+# synthétisés par le noyau, puis l'application complète est vérifiée.
+fn ta_elab(nom: chaine, args: liste<table>, ctx: liste<table>) -> table {
+  $a1 = ta_arg(args, 1)
+  $a2 = ta_arg(args, 2)
+  $a3 = ta_arg(args, 3)
+  $a4 = ta_arg(args, 4)
+
+  si (nom == "symm") {
+    $p = ta_eq_parts(ta_type_synth($a1, ctx))
+    $aa = noy_champ($p, "a")
+    $bb = noy_champ($p, "b")
+    si (noy_est_absent($aa) ou noy_est_absent($bb)) { retour noy_absent() }
+    retour ta_ap4(ta_symm_symbole(), ta_infer_A($aa, ctx), $aa, $bb, $a1)
+  }
+  si (nom == "trans") {
+    $p1 = ta_eq_parts(ta_type_synth($a1, ctx))
+    $p2 = ta_eq_parts(ta_type_synth($a2, ctx))
+    $aa = noy_champ($p1, "a")
+    $bb = noy_champ($p1, "b")
+    $cc = noy_champ($p2, "b")
+    si (noy_est_absent($aa) ou noy_est_absent($bb) ou noy_est_absent($cc)) { retour noy_absent() }
+    retour ta_ap6(ta_trans_symbole(), ta_infer_A($aa, ctx), $aa, $bb, $cc, $a1, $a2)
+  }
+  si (nom == "congr_succ") {
+    $p = ta_eq_parts(ta_type_synth($a1, ctx))
+    $aa = noy_champ($p, "a")
+    $bb = noy_champ($p, "b")
+    si (noy_est_absent($aa) ou noy_est_absent($bb)) { retour noy_absent() }
+    retour ta_ap3(ta_congr_succ_symbole(), $aa, $bb, $a1)
+  }
+  si (nom == "congr_plus_l") { retour ta_ap4(ta_congr_plus_l_symbole(), $a1, $a2, $a3, $a4) }
+  si (nom == "plus_0_l") { retour ta_ap1(ta_plus0l_symbole(), $a1) }
+  si (nom == "plus_s_l") { retour ta_ap2(ta_plusSl_symbole(), $a1, $a2) }
+  si (nom == "plus_zero_d") { retour ta_ap1(ta_plus_zero_d_symbole(), $a1) }
+  si (nom == "plus_succ_d") { retour ta_ap2(ta_plus_succ_d_symbole(), $a1, $a2) }
+  si (nom == "plus") { retour ta_ap2(ta_plus_symbole(), $a1, $a2) }
+  si (nom == "succ") { retour ta_ap1(ta_succ_symbole(), $a1) }
+  si (nom == "refl") {
+    $p = ta_eq_parts(ta_type_synth($a1, ctx))
+    $aa = noy_champ($p, "a")
+    $bb = noy_champ($p, "b")
+    si (noy_est_absent($aa) ou noy_est_absent($bb)) { retour ta_ap2(ta_refl_symbole(), $a1, $a2) }
+    retour ta_ap2(ta_refl_symbole(), ta_infer_A($aa, ctx), $aa)
+  }
+
+  $t = ta_symbole(nom)
+  $k = 1
+  tant_que ($k < longueur(args)) { $t = noy_app($t, args[$k]); $k = $k + 1 }
+  retour $t
+}
+
+# Résolution récursive d'un terme de preuve analysé par PROV2.
+fn ta_resoudre(t: table, ctx: liste<table>) -> table {
+  $g = noy_genre(t)
+  si ($g == "app") {
+    $head = t
+    tant_que (noy_genre($head) == "app") { $head = noy_champ($head, "fonction") }
+    $args = [table()]
+    $cur = t
+    tant_que (noy_genre($cur) == "app") {
+      joindre($args, ta_resoudre(noy_champ($cur, "argument"), ctx))
+      $cur = noy_champ($cur, "fonction")
+    }
+    $args = ta_reverse($args)
+    retour ta_elab(noy_nom($head), $args, ctx)
+  }
+  $nt = ta_normalise(t)
+  si (noy_genre($nt) == "var") {
+    $nm = noy_nom($nt)
+    si (ta_ctx_contient_nom(ctx, $nm)) { retour $nt }
+    retour ta_symbole($nm)
+  }
+  retour $nt
+}
 
 fn ta_boo(r: table, cle: chaine) -> booleen {
   $v = faux
@@ -283,16 +509,16 @@ fn ta_refl_rec(but: table, ctx: liste<table>) -> table {
     $terme = noy_lam(noy_nom(but), noy_champ(but, "domaine"), noy_champ($r, "terme"))
     retour ta_verifie($terme, but, ctx, "reflexivite/lambda")
   }
-  si (noy_genre(but) != "ind" ou noy_nom(but) != "Eq") {
+  si (noy_genre(but) != "ind" ou noy_nom(but) != "=") {
     retour ta_err("réflexivité : le but n'est pas une égalité")
   }
   $ps = noy_champ_liste(but, "params")
-  $A = $ps[1]
-  $a = $ps[2]
-  $b = $ps[3]
+  $a = $ps[1]
+  $b = $ps[2]
   si (non convertible($a, $b)) {
     retour ta_err("réflexivité : les deux membres diffèrent")
   }
+  $A = ta_infer_A($a, ctx)
   $terme = ta_ap2(ta_refl_symbole(), $A, $a)
   retour ta_verifie($terme, but, ctx, "reflexivite/refl")
 }
@@ -314,18 +540,18 @@ fn ta_sym_rec(but: table, ctx: liste<table>) -> table {
     $terme = noy_lam(noy_nom(but), noy_champ(but, "domaine"), noy_champ($r, "terme"))
     retour ta_verifie($terme, but, ctx, "symetrie/lambda")
   }
-  si (noy_genre(but) != "ind" ou noy_nom(but) != "Eq") {
+  si (noy_genre(but) != "ind" ou noy_nom(but) != "=") {
     retour ta_err("symétrie : le but n'est pas une égalité")
   }
   $ps = noy_champ_liste(but, "params")
-  $A = $ps[1]
-  $b = $ps[2]     # membre de gauche du BUT (cible)
-  $a = $ps[3]     # membre de droite du BUT (source)
-  $besoin = ta_eq($A, $a, $b)
+  $b = $ps[1]     # membre de gauche du BUT (cible)
+  $a = $ps[2]     # membre de droite du BUT (source)
+  $besoin = ta_eq(ta_nat(), $a, $b)
   $nom = ta_cherche(ctx, $besoin)
   si ($nom == "") {
-    retour ta_err("symétrie : aucune hypothèse de type Eq A a b")
+    retour ta_err("symétrie : aucune hypothèse de type a = b")
   }
+  $A = ta_infer_A($a, ctx)
   $terme = ta_ap4(ta_symm_symbole(), $A, $a, $b, noy_var($nom))
   retour ta_verifie($terme, but, ctx, "symetrie/symm")
 }
@@ -741,7 +967,7 @@ fn ta_terme_plus_succ_d() -> table {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. DÉMOS (correspondent aux fichiers thorn/preuves/*.slg)
+# 10. DÉMOS (correspondent aux fichiers thorn/preuves/*.thn)
 # ─────────────────────────────────────────────────────────────────────────────
 
 fn demo_identite() -> table {

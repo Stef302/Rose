@@ -47,7 +47,7 @@ fn simplifier(t: Terme) -> Terme
 
 ### Pilote (`thorn/src/principal.rose`)
 ```
-thorn <fichier.slg>    -> verifie chaque théorème, affiche OK / ÉCHEC + raison
+thorn <fichier.thn>    -> verifie chaque théorème, affiche OK / ÉCHEC + raison
 thorn --demo           -> joue les preuves de thorn/preuves/
 ```
 

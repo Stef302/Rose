@@ -11,8 +11,8 @@ est propre au dernier contrôle.
 ## Commandes implémentées
 
 ```
-./rose/rose thorn/src/principal.rose <fichier.slg> [--trace]
-./rose/rose thorn/src/principal.rose --demo [fichiers.slg...] [--trace]
+./rose/rose thorn/src/principal.rose <fichier.thn> [--trace]
+./rose/rose thorn/src/principal.rose --demo [fichiers.thn...] [--trace]
 ./rose/rose thorn/src/principal.rose --aide     # aussi -h, --help
 ```
 
@@ -21,8 +21,8 @@ dépôt) ; le `rose` installé dans le PATH (0.1.5) ne connaît pas `verif`.
 
 | Option | Effet réel |
 |---|---|
-| `<fichier.slg>` | vérifie chaque `théorème`, affiche `OK <nom>` ou `ÉCHEC <nom> : <raison>`, puis `N théorème(s), M réussi(s)` |
-| `--demo` | joue les `.slg` connus de `thorn/preuves/` (ou les fichiers passés en argument) |
+| `<fichier.thn>` | vérifie chaque `théorème`, affiche `OK <nom>` ou `ÉCHEC <nom> : <raison>`, puis `N théorème(s), M réussi(s)` |
+| `--demo` | joue les `.thn` connus de `thorn/preuves/` (ou les fichiers passés en argument) |
 | `--aide` | aide en français |
 | `--trace` | affiche `[trace] <nom> but = …` et `[trace] <nom> terme = …` |
 
@@ -31,7 +31,7 @@ Codes de sortie : **0** tout passe, **1** au moins un échec de preuve,
 n'est déclenché : les lectures et les appels au parseur sont protégés par
 `essayer … attraper`.
 
-## Format `.slg` accepté
+## Format `.thn` accepté
 
 ```
 # commentaire
@@ -102,14 +102,14 @@ Aide réelle (`./rose/rose thorn/src/principal.rose --aide`, rc=0) :
 Thorn — pilote de démonstration (en Rose)
 
 Usage :
-  rose thorn/src/principal.rose <fichier.slg>  vérifie chaque théorème
-  rose thorn/src/principal.rose --demo [fichiers.slg...]
+  rose thorn/src/principal.rose <fichier.thn>  vérifie chaque théorème
+  rose thorn/src/principal.rose --demo [fichiers.thn...]
   rose thorn/src/principal.rose --aide
 
 Options :
   --trace  affiche les termes construits
 
-Format d'un fichier .slg :
+Format d'un fichier .thn :
   théorème <nom> : <type du but>
   preuve <tactique>
 Tactiques : reflexivite, symetrie, introduction, application,
@@ -126,30 +126,30 @@ Rose n'a aucune primitive d'énumération de répertoire. `--demo` utilise
 donc un manifeste de noms (`pilote_manifeste()`), filtré par `lire_texte` ;
 les fichiers absents sont ignorés silencieusement, et si aucun n'est
 lisible le pilote affiche
-`Erreur : aucun fichier .slg jouable dans thorn/preuves/ (dossier absent ou vide)`
+`Erreur : aucun fichier .thn jouable dans thorn/preuves/ (dossier absent ou vide)`
 et sort avec le code 2. Des chemins explicites peuvent être passés après
 `--demo`.
 
 Sortie réelle de `./rose/rose thorn/src/principal.rose --demo` (rc=1) :
 
 ```
-=== thorn/preuves/identite.slg ===
+=== thorn/preuves/identite.thn ===
 ÉCHEC identite : terme de preuve invalide — variable non liee: ?
 1 théorème(s), 0 réussi(s)
 
-=== thorn/preuves/reflexivite.slg ===
+=== thorn/preuves/reflexivite.thn ===
 ÉCHEC reflexivite : réflexivité : le but n'est pas une égalité
 1 théorème(s), 0 réussi(s)
 
-=== thorn/preuves/symetrie.slg ===
+=== thorn/preuves/symetrie.thn ===
 ÉCHEC symetrie : symétrie : le but n'est pas une égalité
 1 théorème(s), 0 réussi(s)
 
-=== thorn/preuves/associativite.slg ===
+=== thorn/preuves/associativite.thn ===
 ÉCHEC associativite_plus : type invalide — variable non liee: Nat
 1 théorème(s), 0 réussi(s)
 
-=== thorn/preuves/commutativite.slg ===
+=== thorn/preuves/commutativite.thn ===
 ÉCHEC commutativite_plus : type invalide — variable non liee: Nat
 1 théorème(s), 0 réussi(s)
 
@@ -164,11 +164,11 @@ entre les modules livrés en parallèle.
 1. **Égalité** : `analyse.rose` traduit `a = b` en `ind("=", [a, b])`
    (2 paramètres), alors que `tactiques.rose` cherche `ind("Eq", [A, a, b])`
    (3 paramètres). D'où « le but n'est pas une égalité » pour
-   `reflexivite.slg` et `symetrie.slg`.
+   `reflexivite.thn` et `symetrie.thn`.
 2. **Signature** : `Nat` est analysé comme une variable libre ; le noyau
    répond `variable non liee: Nat`. Les démos PROV3 construisent leurs
-   termes dans Rose avec une signature explicite, absente des `.slg`.
-3. **Scripts de tactiques** : `identite.slg` enchaîne `introduction A`,
+   termes dans Rose avec une signature explicite, absente des `.thn`.
+3. **Scripts de tactiques** : `identite.thn` enchaîne `introduction A`,
    `introduction x`, `application x`. Le pilote n'interprète que la
    première tactique du bloc (les API SPEC ne permettent pas de composer
    les buts résiduels sans utiliser des fonctions hors contrat), d'où
@@ -178,7 +178,7 @@ entre les modules livrés en parallèle.
    `analyser_source` échoue avec « Fonction 'lexer_table' inconnue ».
 
 Le pilote ne corrige aucun de ces écarts : il rapporte l'échec tel quel.
-Un `.slg` autonome (`type 1` / `type 0`) passe réellement, ce qui prouve
+Un `.thn` autonome (`type 1` / `type 0`) passe réellement, ce qui prouve
 que la chaîne lecture → lexage → analyse → noyau → bilan fonctionne.
 
 ## Dépendances utilisées

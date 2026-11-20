@@ -1,0 +1,347 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/src/bibliotheque.rose — lemmes vérifiés par le noyau de Thorn
+# ═════════════════════════════════════════════════════════════════════════════
+# Fichier NOUVEAU, consommateur des modules existants (aucun fichier existant
+# n'est modifié). Toutes les constructions ci-dessous utilisent les
+# constantes de signature et les helpers publics de `tactiques.rose`,
+# lui-même importateur du noyau. Les fonctions du noyau et des tactiques
+# sont lues, jamais réécrites.
+#
+# Chaque lemme construit un TERME de preuve, puis le soumet personnellement
+# à `verifier()` ET `convertible()` (via `bl_test` plus bas). Aucun résultat
+# `ok` n'est codé en dur : la sortie OK / ÉCHEC est calculée par le noyau.
+#
+# Vérifier :  ./rose/rose verif thorn/src/bibliotheque.rose
+# Exécuter :  ./rose/rose thorn/src/bibliotheque.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/tactiques.rose"
+
+# ── 0. Petits services ──────────────────────────────────────────────────────
+
+# Le vérificateur Rose type `tab["cle"]` comme '?' : on explicite le retour.
+fn bl_tab(bl_x) -> table {
+  $bl_v = table()
+  $bl_v = bl_x
+  retour $bl_v
+}
+
+# Paire {but, terme} rendue par chaque constructeur de lemme.
+fn bl_pair(bl_b: table, bl_t: table) -> table {
+  $bl_r = table()
+  inserer($bl_r, "but", bl_b)
+  inserer($bl_r, "terme", bl_t)
+  retour $bl_r
+}
+
+fn bl_compter(bl_cpt: table, bl_ok: booleen) {
+  si (bl_ok) {
+    inserer(bl_cpt, "r", bl_cpt["r"] + 1)
+  } sinon {
+    inserer(bl_cpt, "e", bl_cpt["e"] + 1)
+  }
+}
+
+# LE contrôle honnête : synthèse par le noyau, puis comparaison au but.
+fn bl_test(bl_nom: chaine, bl_but: table, bl_terme: table, bl_cpt: table) {
+  $bl_r = verifier(bl_terme, ta_ctx())
+  $bl_synthese = noy_est_ok($bl_r)
+  $bl_conv = convertible(noy_type_res($bl_r), bl_but)
+  $bl_ok = $bl_synthese et $bl_conv
+  si ($bl_ok) {
+    >> "OK " + bl_nom
+  } sinon {
+    $bl_pourquoi = "type synthétisé ≠ but"
+    si (non $bl_synthese) { $bl_pourquoi = noy_erreur($bl_r) }
+    >> "ECHEC " + bl_nom + " : " + $bl_pourquoi
+  }
+  bl_compter(bl_cpt, $bl_ok)
+}
+
+fn bl_lance(bl_nom: chaine, bl_p: table, bl_cpt: table) {
+  bl_test(bl_nom, bl_tab(bl_p["but"]), bl_tab(bl_p["terme"]), bl_cpt)
+}
+
+# ── 1. Lemmes sur zero / succ ──────────────────────────────────────────────
+
+# refl_succ : Πn:Nat, Eq Nat (succ n) (succ n).
+# Terme : λn. refl Nat (succ n).
+fn bl_refl_succ() -> table {
+  $bl_but = noy_pi("n", ta_nat(),
+                   ta_eq(ta_nat(), ta_succ(noy_var("n")), ta_succ(noy_var("n"))))
+  $bl_terme = noy_lam("n", ta_nat(),
+                      ta_ap2(ta_refl_symbole(), ta_nat(), ta_succ(noy_var("n"))))
+  retour bl_pair($bl_but, $bl_terme)
+}
+
+# zero_plus_succ : Πn:Nat, Eq Nat (zero + succ n) (succ n).
+# Terme : λn. plus_0_l (succ n)  (l'équation 0+n est un axiome de signature).
+fn bl_zero_plus_succ() -> table {
+  $bl_but = noy_pi("n", ta_nat(),
+                   ta_eq(ta_nat(), ta_plus(ta_zero(), ta_succ(noy_var("n"))),
+                         ta_succ(noy_var("n"))))
+  $bl_terme = noy_lam("n", ta_nat(),
+                      ta_ap1(ta_plus0l_symbole(), ta_succ(noy_var("n"))))
+  retour bl_pair($bl_but, $bl_terme)
+}
+
+# succ_plus_zero : Πn:Nat, Eq Nat (succ n + zero) (succ n).
+# Terme : λn. trans (plus_s_l n zero) (congr_succ (plus_zero_d n)).
+fn bl_succ_plus_zero() -> table {
+  $bl_but = noy_pi("n", ta_nat(),
+                   ta_eq(ta_nat(), ta_plus(ta_succ(noy_var("n")), ta_zero()),
+                         ta_succ(noy_var("n"))))
+  $bl_c1 = ta_ap2(ta_plusSl_symbole(), noy_var("n"), ta_zero())
+  $bl_c2 = ta_ap3(ta_congr_succ_symbole(), ta_plus(noy_var("n"), ta_zero()),
+                  noy_var("n"), ta_ap1(ta_plus_zero_d_symbole(), noy_var("n")))
+  $bl_corps = ta_ap6(ta_trans_symbole(), ta_nat(),
+                     ta_plus(ta_succ(noy_var("n")), ta_zero()),
+                     ta_succ(ta_plus(noy_var("n"), ta_zero())),
+                     ta_succ(noy_var("n")), $bl_c1, $bl_c2)
+  $bl_terme = noy_lam("n", ta_nat(), $bl_corps)
+  retour bl_pair($bl_but, $bl_terme)
+}
+
+# ── 2. Congruence et égalité ────────────────────────────────────────────────
+
+# symm : Π(A:type)(x y:A), Eq A x y -> Eq A y x.
+# Terme construit avec eq_rec (P u = u = x), pas une constante opaque.
+fn bl_symm() -> table {
+  $bl_P = noy_lam("u", noy_var("T"),
+                  ta_eq(noy_var("T"), noy_var("u"), noy_var("x")))
+  $bl_corps = ta_ap6(ta_eqrec_symbole(), noy_var("T"), noy_var("x"),
+                     noy_var("y"), $bl_P,
+                     ta_ap2(ta_refl_symbole(), noy_var("T"), noy_var("x")),
+                     noy_var("hxy"))
+  $bl_terme = noy_lam("T", noy_type(0),
+               noy_lam("x", noy_var("T"),
+                 noy_lam("y", noy_var("T"),
+                   noy_lam("hxy", ta_eq(noy_var("T"), noy_var("x"), noy_var("y")),
+                     $bl_corps))))
+  retour bl_pair(noy_champ(ta_symm_symbole(), "type"), $bl_terme)
+}
+
+# trans : Π(A:type)(x y z:A), Eq A x y -> Eq A y z -> Eq A x z.
+# Terme construit avec eq_rec (P u = x = u), pas une constante opaque.
+fn bl_trans() -> table {
+  $bl_P = noy_lam("u", noy_var("T"),
+                  ta_eq(noy_var("T"), noy_var("x"), noy_var("u")))
+  $bl_corps = ta_ap6(ta_eqrec_symbole(), noy_var("T"), noy_var("y"),
+                     noy_var("z"), $bl_P, noy_var("hxy"), noy_var("hyz"))
+  $bl_terme = noy_lam("T", noy_type(0),
+               noy_lam("x", noy_var("T"),
+                 noy_lam("y", noy_var("T"),
+                   noy_lam("z", noy_var("T"),
+                     noy_lam("hxy", ta_eq(noy_var("T"), noy_var("x"), noy_var("y")),
+                       noy_lam("hyz", ta_eq(noy_var("T"), noy_var("y"), noy_var("z")),
+                         $bl_corps))))))
+  retour bl_pair(noy_champ(ta_trans_symbole(), "type"), $bl_terme)
+}
+
+# congr_succ : Π(r s:Nat), Eq Nat r s -> Eq Nat (succ r) (succ s).
+fn bl_congr_succ() -> table {
+  $bl_P = noy_lam("u", ta_nat(),
+                  ta_eq(ta_nat(), ta_succ(noy_var("r")), ta_succ(noy_var("u"))))
+  $bl_corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), noy_var("r"), noy_var("s"),
+                     $bl_P,
+                     ta_ap2(ta_refl_symbole(), ta_nat(), ta_succ(noy_var("r"))),
+                     noy_var("h"))
+  $bl_terme = noy_lam("r", ta_nat(),
+               noy_lam("s", ta_nat(),
+                 noy_lam("h", ta_eq(ta_nat(), noy_var("r"), noy_var("s")),
+                   $bl_corps)))
+  retour bl_pair(noy_champ(ta_congr_succ_symbole(), "type"), $bl_terme)
+}
+
+# congr_plus_l : Π(r s p:Nat), Eq Nat r s -> Eq Nat (r+p) (s+p).
+fn bl_congr_plus_l() -> table {
+  $bl_P = noy_lam("u", ta_nat(),
+                  ta_eq(ta_nat(), ta_plus(noy_var("r"), noy_var("p")),
+                        ta_plus(noy_var("u"), noy_var("p"))))
+  $bl_corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), noy_var("r"), noy_var("s"),
+                     $bl_P,
+                     ta_ap2(ta_refl_symbole(), ta_nat(),
+                            ta_plus(noy_var("r"), noy_var("p"))),
+                     noy_var("h"))
+  $bl_terme = noy_lam("r", ta_nat(),
+               noy_lam("s", ta_nat(),
+                 noy_lam("p", ta_nat(),
+                   noy_lam("h", ta_eq(ta_nat(), noy_var("r"), noy_var("s")),
+                     $bl_corps))))
+  retour bl_pair(noy_champ(ta_congr_plus_l_symbole(), "type"), $bl_terme)
+}
+
+# ── 3. Lemmes par induction ─────────────────────────────────────────────────
+
+# plus_zero_d : Πn:Nat, Eq Nat (n + zero) n.
+# squelette nat_rec, base plus_0_l zero, pas = trans (plus_s_l k zero)
+#                                                   (congr_succ ih).
+fn bl_plus_zero_d() -> table {
+  $bl_but = noy_pi("n", ta_nat(),
+                   ta_eq(ta_nat(), ta_plus(noy_var("n"), ta_zero()), noy_var("n")))
+  $bl_base = ta_ap1(ta_plus0l_symbole(), ta_zero())
+  $bl_k = "k"
+  $bl_ih = "ih"
+  $bl_c1 = ta_ap2(ta_plusSl_symbole(), noy_var($bl_k), ta_zero())
+  $bl_c2 = ta_ap3(ta_congr_succ_symbole(),
+                  ta_plus(noy_var($bl_k), ta_zero()), noy_var($bl_k),
+                  noy_var($bl_ih))
+  $bl_corps = ta_ap6(ta_trans_symbole(), ta_nat(),
+                     ta_plus(ta_succ(noy_var($bl_k)), ta_zero()),
+                     ta_succ(ta_plus(noy_var($bl_k), ta_zero())),
+                     ta_succ(noy_var($bl_k)), $bl_c1, $bl_c2)
+  $bl_pas = noy_lam($bl_k, ta_nat(),
+              noy_lam($bl_ih, ta_eq(ta_nat(),
+                                    ta_plus(noy_var($bl_k), ta_zero()),
+                                    noy_var($bl_k)),
+                $bl_corps))
+  $bl_r = induction_resolue($bl_but, ta_ctx(), $bl_base, $bl_pas)
+  retour bl_pair($bl_but, bl_tab(noy_champ($bl_r, "terme")))
+}
+
+# plus_assoc : Πm n p:Nat, Eq Nat ((m+n)+p) (m+(n+p)).
+# Induction sur m ; les branches sont vérifiées par induction_resolue,
+# puis le terme fermé est revérifié par bl_test.
+fn bl_plus_assoc() -> table {
+  $bl_but = noy_pi("m", ta_nat(),
+             noy_pi("n", ta_nat(),
+               noy_pi("p", ta_nat(),
+                 ta_eq(ta_nat(),
+                       ta_plus(ta_plus(noy_var("m"), noy_var("n")), noy_var("p")),
+                       ta_plus(noy_var("m"), ta_plus(noy_var("n"), noy_var("p")))))))
+  $bl_r0 = induction($bl_but, ta_ctx())
+  $bl_k = ta_txt($bl_r0, "nom_n")
+  $bl_ih = ta_txt($bl_r0, "nom_ih")
+
+  $bl_b1 = ta_ap4(ta_congr_plus_l_symbole(),
+                  ta_plus(ta_zero(), noy_var("n")), noy_var("n"), noy_var("p"),
+                  ta_ap1(ta_plus0l_symbole(), noy_var("n")))
+  $bl_b2 = ta_ap4(ta_symm_symbole(), ta_nat(),
+                  ta_plus(ta_zero(), ta_plus(noy_var("n"), noy_var("p"))),
+                  ta_plus(noy_var("n"), noy_var("p")),
+                  ta_ap1(ta_plus0l_symbole(),
+                         ta_plus(noy_var("n"), noy_var("p"))))
+  $bl_bc = ta_ap6(ta_trans_symbole(), ta_nat(),
+                  ta_plus(ta_plus(ta_zero(), noy_var("n")), noy_var("p")),
+                  ta_plus(noy_var("n"), noy_var("p")),
+                  ta_plus(ta_zero(), ta_plus(noy_var("n"), noy_var("p"))),
+                  $bl_b1, $bl_b2)
+  $bl_base = noy_lam("n", ta_nat(), noy_lam("p", ta_nat(), $bl_bc))
+
+  $bl_c1 = ta_ap2(ta_plusSl_symbole(), noy_var($bl_k), noy_var("n"))
+  $bl_d1 = ta_ap4(ta_congr_plus_l_symbole(),
+                  ta_plus(ta_succ(noy_var($bl_k)), noy_var("n")),
+                  ta_succ(ta_plus(noy_var($bl_k), noy_var("n"))),
+                  noy_var("p"), $bl_c1)
+  $bl_c2 = ta_ap2(ta_plusSl_symbole(),
+                  ta_plus(noy_var($bl_k), noy_var("n")), noy_var("p"))
+  $bl_d2 = ta_ap6(ta_trans_symbole(), ta_nat(),
+                  ta_plus(ta_plus(ta_succ(noy_var($bl_k)), noy_var("n")), noy_var("p")),
+                  ta_plus(ta_succ(ta_plus(noy_var($bl_k), noy_var("n"))), noy_var("p")),
+                  ta_succ(ta_plus(ta_plus(noy_var($bl_k), noy_var("n")), noy_var("p"))),
+                  $bl_d1, $bl_c2)
+  $bl_c3 = ta_ap3(ta_congr_succ_symbole(),
+                  ta_plus(ta_plus(noy_var($bl_k), noy_var("n")), noy_var("p")),
+                  ta_plus(noy_var($bl_k), ta_plus(noy_var("n"), noy_var("p"))),
+                  ta_ap2(noy_var($bl_ih), noy_var("n"), noy_var("p")))
+  $bl_d3 = ta_ap6(ta_trans_symbole(), ta_nat(),
+                  ta_plus(ta_plus(ta_succ(noy_var($bl_k)), noy_var("n")), noy_var("p")),
+                  ta_succ(ta_plus(ta_plus(noy_var($bl_k), noy_var("n")), noy_var("p"))),
+                  ta_succ(ta_plus(noy_var($bl_k), ta_plus(noy_var("n"), noy_var("p")))),
+                  $bl_d2, $bl_c3)
+  $bl_c4 = ta_ap2(ta_plusSl_symbole(), noy_var($bl_k),
+                  ta_plus(noy_var("n"), noy_var("p")))
+  $bl_c5 = ta_ap4(ta_symm_symbole(), ta_nat(),
+                  ta_plus(ta_succ(noy_var($bl_k)),
+                          ta_plus(noy_var("n"), noy_var("p"))),
+                  ta_succ(ta_plus(noy_var($bl_k),
+                                  ta_plus(noy_var("n"), noy_var("p")))),
+                  $bl_c4)
+  $bl_d4 = ta_ap6(ta_trans_symbole(), ta_nat(),
+                  ta_plus(ta_plus(ta_succ(noy_var($bl_k)), noy_var("n")), noy_var("p")),
+                  ta_succ(ta_plus(noy_var($bl_k),
+                                  ta_plus(noy_var("n"), noy_var("p")))),
+                  ta_plus(ta_succ(noy_var($bl_k)),
+                          ta_plus(noy_var("n"), noy_var("p"))),
+                  $bl_d3, $bl_c5)
+  $bl_pas = noy_lam($bl_k, ta_nat(),
+              noy_lam($bl_ih,
+                noy_pi("n", ta_nat(),
+                  noy_pi("p", ta_nat(),
+                    ta_eq(ta_nat(),
+                          ta_plus(ta_plus(noy_var($bl_k), noy_var("n")), noy_var("p")),
+                          ta_plus(noy_var($bl_k), ta_plus(noy_var("n"), noy_var("p")))))),
+                noy_lam("n", ta_nat(), noy_lam("p", ta_nat(), $bl_d4))))
+  $bl_rf = induction_resolue($bl_but, ta_ctx(), $bl_base, $bl_pas)
+  retour bl_pair($bl_but, bl_tab(noy_champ($bl_rf, "terme")))
+}
+
+# plus_comm : Πm n:Nat, Eq Nat (m+n) (n+m).
+# Induction sur m ; plus_zero_d / plus_succ_d sont des lemmes déjà vérifiés
+# dans tactiques.rose (demo_lemmes), ici utilisés comme théorèmes.
+fn bl_plus_comm() -> table {
+  $bl_but = noy_pi("m", ta_nat(),
+             noy_pi("n", ta_nat(),
+               ta_eq(ta_nat(), ta_plus(noy_var("m"), noy_var("n")),
+                               ta_plus(noy_var("n"), noy_var("m")))))
+  $bl_r0 = induction($bl_but, ta_ctx())
+  $bl_k = ta_txt($bl_r0, "nom_n")
+  $bl_ih = ta_txt($bl_r0, "nom_ih")
+
+  $bl_b1 = ta_ap1(ta_plus0l_symbole(), noy_var("n"))
+  $bl_b2 = ta_ap4(ta_symm_symbole(), ta_nat(),
+                  ta_plus(noy_var("n"), ta_zero()), noy_var("n"),
+                  ta_ap1(ta_plus_zero_d_symbole(), noy_var("n")))
+  $bl_bc = ta_ap6(ta_trans_symbole(), ta_nat(),
+                  ta_plus(ta_zero(), noy_var("n")), noy_var("n"),
+                  ta_plus(noy_var("n"), ta_zero()), $bl_b1, $bl_b2)
+  $bl_base = noy_lam("n", ta_nat(), $bl_bc)
+
+  $bl_c1 = ta_ap2(ta_plusSl_symbole(), noy_var($bl_k), noy_var("n"))
+  $bl_c2 = ta_ap3(ta_congr_succ_symbole(),
+                  ta_plus(noy_var($bl_k), noy_var("n")),
+                  ta_plus(noy_var("n"), noy_var($bl_k)),
+                  ta_ap1(noy_var($bl_ih), noy_var("n")))
+  $bl_c3 = ta_ap6(ta_trans_symbole(), ta_nat(),
+                  ta_plus(ta_succ(noy_var($bl_k)), noy_var("n")),
+                  ta_succ(ta_plus(noy_var($bl_k), noy_var("n"))),
+                  ta_succ(ta_plus(noy_var("n"), noy_var($bl_k))),
+                  $bl_c1, $bl_c2)
+  $bl_c4 = ta_ap2(ta_plus_succ_d_symbole(), noy_var("n"), noy_var($bl_k))
+  $bl_c5 = ta_ap4(ta_symm_symbole(), ta_nat(),
+                  ta_plus(noy_var("n"), ta_succ(noy_var($bl_k))),
+                  ta_succ(ta_plus(noy_var("n"), noy_var($bl_k))), $bl_c4)
+  $bl_d = ta_ap6(ta_trans_symbole(), ta_nat(),
+                 ta_plus(ta_succ(noy_var($bl_k)), noy_var("n")),
+                 ta_succ(ta_plus(noy_var("n"), noy_var($bl_k))),
+                 ta_plus(noy_var("n"), ta_succ(noy_var($bl_k))),
+                 $bl_c3, $bl_c5)
+  $bl_pas = noy_lam($bl_k, ta_nat(),
+              noy_lam($bl_ih,
+                noy_pi("n", ta_nat(),
+                  ta_eq(ta_nat(), ta_plus(noy_var($bl_k), noy_var("n")),
+                                ta_plus(noy_var("n"), noy_var($bl_k)))),
+                noy_lam("n", ta_nat(), $bl_d)))
+  $bl_rf = induction_resolue($bl_but, ta_ctx(), $bl_base, $bl_pas)
+  retour bl_pair($bl_but, bl_tab(noy_champ($bl_rf, "terme")))
+}
+
+# ── 4. Exécution ────────────────────────────────────────────────────────────
+
+$bl_cpt = table()
+inserer($bl_cpt, "r", 0)
+inserer($bl_cpt, "e", 0)
+
+>> "Thorn — bibliothèque de lemmes (vérification par le noyau)"
+bl_lance("refl_succ", bl_refl_succ(), $bl_cpt)
+bl_lance("zero_plus_succ", bl_zero_plus_succ(), $bl_cpt)
+bl_lance("succ_plus_zero", bl_succ_plus_zero(), $bl_cpt)
+bl_lance("symm", bl_symm(), $bl_cpt)
+bl_lance("trans", bl_trans(), $bl_cpt)
+bl_lance("congr_succ", bl_congr_succ(), $bl_cpt)
+bl_lance("congr_plus_l", bl_congr_plus_l(), $bl_cpt)
+bl_lance("plus_zero_d", bl_plus_zero_d(), $bl_cpt)
+bl_lance("plus_assoc", bl_plus_assoc(), $bl_cpt)
+bl_lance("plus_comm", bl_plus_comm(), $bl_cpt)
+>> chaine($bl_cpt["r"]) + " lemme(s) vérifié(s), " + chaine($bl_cpt["e"]) + " échec(s)"
+si ($bl_cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }

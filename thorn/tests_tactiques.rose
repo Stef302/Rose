@@ -111,7 +111,7 @@ si (convertible(simplifier($terme_beta), ta_succ(ta_zero()))) {
   incrementer($cpt, "e")
 }
 
-# ── 7. démos (preuves .slg) ─────────────────────────────────────────────────
+# ── 7. démos (preuves .thn) ─────────────────────────────────────────────────
 tester($cpt, "demo/identite", demo_identite())
 tester($cpt, "demo/reflexivite", demo_reflexivite())
 tester($cpt, "demo/lemmes", demo_lemmes())

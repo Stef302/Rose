@@ -2,6 +2,6 @@
 # But : Π(A:type)(a:A)(b:A), a = b -> b = a
 # La tactique symetrie introduit les Π puis applique le terme de preuve
 # construit par eq_rec (vérifié dans demo_lemmes()).
-# Même réserve que reflexivite.slg sur la représentation de `=`.
+# Même réserve que reflexivite.thn sur la représentation de `=`.
 théorème symetrie : pour_tout A : type, pour_tout a : A, pour_tout b : A, a = b -> b = a
 preuve symetrie

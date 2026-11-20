@@ -1,7 +1,7 @@
 # Thorn — tactiques (PROV3) : ce qui est réel, ce qui est simplifié
 
 Fichiers livrés : `thorn/src/tactiques.rose`, `thorn/tests_tactiques.rose`,
-`thorn/preuves/{identite,reflexivite,associativite,commutativite}.slg`,
+`thorn/preuves/{identite,reflexivite,associativite,commutativite}.thn`,
 ce document. Aucun autre fichier du dépôt n'a été modifié. Aucun commit, aucune publication.
 
 ## 1. Comment un terme est déclaré « vérifié »
@@ -60,17 +60,17 @@ déjà vérifié, pas une preuve codée en dur).
 `tests_tactiques.rose` construit chaque terme, appelle le noyau et affiche OK/ÉCHEC.
 Sortie réelle (`./rose/rose thorn/tests_tactiques.rose`) : **19 réussis / 0 échec**.
 
-Les quatre preuves `.slg` correspondent à des termes effectivement vérifiés :
+Les quatre preuves `.thn` correspondent à des termes effectivement vérifiés :
 
-- `identite.slg` → `λA. λx. x` : `demo_identite()` — OK ;
-- `reflexivite.slg` → `λA. λx. refl A x` : `demo_reflexivite()` — OK ;
-- `associativite.slg` → `nat_rec P base pas` : `demo_associativite()` — OK ;
-- `commutativite.slg` → `nat_rec P base pas` : `demo_commutativite()` — OK.
+- `identite.thn` → `λA. λx. x` : `demo_identite()` — OK ;
+- `reflexivite.thn` → `λA. λx. refl A x` : `demo_reflexivite()` — OK ;
+- `associativite.thn` → `nat_rec P base pas` : `demo_associativite()` — OK ;
+- `commutativite.thn` → `nat_rec P base pas` : `demo_commutativite()` — OK.
 
 `rose verif thorn/src/tactiques.rose` → `vérifié` ; idem pour `tests_tactiques.rose`.
 
-**Les fichiers `.slg` ne sont pas encore analysés** : le lexeur est en PROV2 et le
-pilote `thorn <fichier.slg>` en PROV4, qui ne sont pas livrés ici. Ce sont des
+**Les fichiers `.thn` ne sont pas encore analysés** : le lexeur est en PROV2 et le
+pilote `thorn <fichier.thn>` en PROV4, qui ne sont pas livrés ici. Ce sont des
 spécifications déclarantives ; leur contenu est vérifié par les constructions Rose
 équivalentes de `tests_tactiques.rose`. Ne pas les considérer comme exécutables
 aujourd'hui.
