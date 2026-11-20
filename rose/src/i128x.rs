@@ -855,7 +855,63 @@ pub unsafe fn gmpq_set_d(q: *mut Mpq, x: f64) {
     (*q).num.v = BigInt::from(x as i64);
     (*q).den.v = BigInt::one();
 }
+/// PGCD d'un BigInt (positif) et d'un petit u64, par euclidienne sur le reste
+/// scalaire du grand nombre — aucun BigInt du petit côté, aucun PGCD de
+/// grands nombres. `n` doit être ≥ 0 ; le résultat est ≥ 1 si `c > 0`.
+#[inline]
+fn pgcd_grand_petit(n: &BigInt, c: u64) -> u64 {
+    let mut a = c;
+    let mut b = (n % c).to_u64().unwrap_or(0);
+    while b != 0 { let t = a % b; a = b; b = t; }
+    a
+}
+
+/// Addition exacte `na/da + signe/c` (signe = ±1, `c` tient dans u64,
+/// `da > 0` et `gcd(na,da)=1`). Retourne `false` si le cas n'est pas couvert.
+///
+/// Démonstration d'exactitude (voir docs/GLOBAL_FINAL.md) :
+///   g = PGCD(da,c), da = g·d1, c = g·c1, PGCD(d1,c1)=1.
+///   N = na·c1 ± d1, D = da·c1. Tout facteur premier commun à N et D
+///   divise c ; sa multiplicité dans D est au plus sa multiplicité dans c.
+///   Un seul PGCD(N, c), sur des nombres petits, suffit donc à réduire.
+#[inline]
+unsafe fn add_rat_inv_small(dst: *mut Mpq, na: &BigInt, da: &BigInt, c: u64, signe: i64) -> bool {
+    if c == 0 || da.is_zero() || !da.is_positive() { return false; }
+    // Tous les Gq produits par cette bibliothèque sont canoniques
+    // (gcd(na,da)=1, da>0) : aucune vérification supplémentaire n'est requise.
+    let g = pgcd_grand_petit(da, c);
+    let d1 = da.clone() / g;
+    let c1 = c / g;
+    let mut n2 = if signe > 0 { na * c1 + &d1 } else { na * c1 - &d1 };
+    let mut d2 = da * c1;
+    if n2.is_zero() {
+        (*dst).num.v = BigInt::zero();
+        (*dst).den.v = BigInt::one();
+        return true;
+    }
+    let g2 = pgcd_grand_petit(&n2.abs(), c);
+    if g2 > 1 {
+        n2 = n2 / g2;
+        d2 = d2 / g2;
+    }
+    (*dst).num.v = n2;
+    (*dst).den.v = d2;
+    true
+}
+
+/// `n/d + 1/c` (ou `n/d - 1/c`) : voie rapide quand l'inverse a un
+/// dénominateur qui tient dans u64. Le cas général garde le PGCD BigInt.
 pub unsafe fn gmpq_add(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
+    if let (Some(c), Some(s)) = ((*b).den.v.to_u64(), (*b).num.v.to_i64()) {
+        if s == 1 || s == -1 {
+            if add_rat_inv_small(r, &(*a).num.v, &(*a).den.v, c, s) { return; }
+        }
+    }
+    if let (Some(c), Some(s)) = ((*a).den.v.to_u64(), (*a).num.v.to_i64()) {
+        if s == 1 || s == -1 {
+            if add_rat_inv_small(r, &(*b).num.v, &(*b).den.v, c, s) { return; }
+        }
+    }
     let na = (*a).num.v.clone(); let da = (*a).den.v.clone();
     let nb = (*b).num.v.clone(); let db = (*b).den.v.clone();
     (*r).num.v = na * db.clone() + nb * da.clone();
