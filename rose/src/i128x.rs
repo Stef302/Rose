@@ -891,19 +891,25 @@ fn mod_petit(n: &BigInt, c: u64) -> u64 {
 /// Traite les digits 32 bits du plus significatif au moins significatif :
 /// chaque étape tient dans u64 (reste < d < 2^32), donc une seule division
 /// 64 bits au lieu de la division générique 128/64 de num-bigint.
+thread_local! {
+    static SCRATCH_DIV: std::cell::RefCell<Vec<u32>> = std::cell::RefCell::new(Vec::new());
+}
 #[inline]
 fn div_rem_petit(n: &BigInt, d: u32) -> (BigInt, u64) {
-    let d64 = d as u64;
-    let mut qd: Vec<u32> = Vec::with_capacity(n.bits() as usize / 32 + 1);
-    let mut rem: u64 = 0;
-    for chunk in n.iter_u32_digits().rev() {
-        let cur = (rem << 32) | (chunk as u64);
-        qd.push((cur / d64) as u32);
-        rem = cur % d64;
-    }
-    qd.reverse();
-    while qd.len() > 1 && *qd.last().unwrap() == 0 { qd.pop(); }
-    (BigInt::from_slice(Sign::Plus, &qd), rem)
+    SCRATCH_DIV.with(|cell| {
+        let mut qd = cell.borrow_mut();
+        qd.clear();
+        let d64 = d as u64;
+        let mut rem: u64 = 0;
+        for chunk in n.iter_u32_digits().rev() {
+            let cur = (rem << 32) | (chunk as u64);
+            qd.push((cur / d64) as u32);
+            rem = cur % d64;
+        }
+        qd.reverse();
+        while qd.len() > 1 && *qd.last().unwrap() == 0 { qd.pop(); }
+        (BigInt::from_slice(Sign::Plus, &qd), rem)
+    })
 }
 /// PGCD de deux petits entiers (déjà dans u64).
 #[inline]
