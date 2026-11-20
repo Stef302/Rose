@@ -74,6 +74,21 @@ fn noy_niveau(t: table) -> entier {
   retour $nx_v
 }
 
+# Numéro de ligne OPTIONNEL porté par un terme (0 = absent). Les termes
+# construits par les autres modules n'en ont pas : le champ reste facultatif
+# et n'est jamais exigé. Il permet à un outil d'atteindre une source de
+# remonter la position jusqu'au Resultat.
+fn noy_ligne(t: table) -> entier {
+  $nx_v = 0
+  si (type(t) == "table") {
+    si (cle_existe(t, "ligne")) {
+      $nx_x = t["ligne"]
+      si (type($nx_x) == "entier") { $nx_v = $nx_x }
+    }
+  }
+  retour $nx_v
+}
+
 # Lecture d'un champ-table : jamais d'erreur « clé absente ».
 fn noy_champ(t: table, cle: chaine) -> table {
   $nx_r = noy_absent()
@@ -81,6 +96,17 @@ fn noy_champ(t: table, cle: chaine) -> table {
     si (cle_existe(t, cle)) { $nx_r = t[cle] }
   }
   retour $nx_r
+}
+
+fn noy_entier_champ(t: table, cle: chaine) -> entier {
+  $nx_v = -1
+  si (type(t) == "table") {
+    si (cle_existe(t, cle)) {
+      $nx_x = t[cle]
+      si (type($nx_x) == "entier") { $nx_v = $nx_x }
+    }
+  }
+  retour $nx_v
 }
 
 fn noy_champ_liste(t: table, cle: chaine) -> liste<table> {
@@ -464,6 +490,125 @@ fn noy_resultat_l(r: table) -> liste<table> {
   retour $nx_v
 }
 
+# ───────────── 5bis. ι-réduction des motifs zero / succ ─────────────────────
+#
+# Le noyau calcule deux primitives désignées par leur nom ET par la forme de
+# leur annotation de type (jamais un const quelconque ne se réduit) :
+#   plus   : Πm:Nat. Πn:Nat. Nat
+#     plus zero n        → n
+#     plus (succ k) n    → succ (plus k n)
+#   nat_rec: ΠP.Πbase.Πpas.Πm:Nat. P m
+#     nat_rec P base pas zero        → base
+#     nat_rec P base pas (succ k)    → pas k (nat_rec P base pas k)
+# C'est une vraie ι-réduction dans noy_redex : beta() et convertible() la
+# voient. Les axiomes plus_0_l / plus_s_l deviennent calculatoirement
+# redondants (ils restent dans la bibliothèque, hors périmètre TH4).
+
+fn noy_est_nat(t: table) -> booleen {
+  retour (noy_genre(t) == "ind" et noy_nom(t) == "Nat")
+}
+
+fn noy_est_zero(t: table) -> booleen {
+  retour (noy_genre(t) == "const" et noy_nom(t) == "zero")
+}
+
+# Domaine de la i-ème flèche d'une chaîne de Pi (sentinelle si absent).
+fn noy_pi_domaine_ieme(t: table, i: entier) -> table {
+  $nx_cur = t
+  $nx_k = 1
+  tant_que ($nx_k <= i) {
+    si (noy_genre($nx_cur) != "pi") { retour noy_absent() }
+    $nx_dom = noy_champ($nx_cur, "domaine")
+    si ($nx_k == i) { retour $nx_dom }
+    $nx_cur = noy_champ($nx_cur, "codomaine")
+    $nx_k = $nx_k + 1
+  }
+  retour noy_absent()
+}
+
+# Codomaine de la i-ème flèche d'une chaîne de Pi (sentinelle si absent).
+fn noy_pi_codomaine_ieme(t: table, i: entier) -> table {
+  $nx_cur = t
+  $nx_k = 1
+  tant_que ($nx_k <= i) {
+    si (noy_genre($nx_cur) != "pi") { retour noy_absent() }
+    $nx_cod = noy_champ($nx_cur, "codomaine")
+    si ($nx_k == i) { retour $nx_cod }
+    $nx_cur = $nx_cod
+    $nx_k = $nx_k + 1
+  }
+  retour noy_absent()
+}
+
+# Argument k si t est succ k ; sentinelle sinon.
+fn noy_succ_arg(t: table) -> table {
+  $nx_r = noy_absent()
+  si (noy_genre(t) == "app") {
+    $nx_f = noy_champ(t, "fonction")
+    si (noy_genre($nx_f) == "const" et noy_nom($nx_f) == "succ") {
+      $nx_r = noy_champ(t, "argument")
+    }
+  }
+  retour $nx_r
+}
+
+# Épine d'application : {tete, args, n} avec args[1] = DERNIER argument.
+fn noy_spine(t: table) -> table {
+  $nx_args = [table()]
+  $nx_cur = t
+  $nx_n = 0
+  tant_que (noy_genre($nx_cur) == "app") {
+    joindre($nx_args, noy_champ($nx_cur, "argument"))
+    $nx_cur = noy_champ($nx_cur, "fonction")
+    $nx_n = $nx_n + 1
+  }
+  $nx_r = table()
+  inserer($nx_r, "tete", $nx_cur)
+  inserer($nx_r, "args", $nx_args)
+  inserer($nx_r, "n", $nx_n)
+  retour $nx_r
+}
+
+fn noy_iota(t: table) -> table {
+  $nx_sp = noy_spine(t)
+  $nx_n = noy_entier_champ($nx_sp, "n")
+  $nx_head = noy_champ($nx_sp, "tete")
+  $nx_args = noy_champ_liste($nx_sp, "args")
+  si (noy_genre($nx_head) != "const") { retour noy_rien(t) }
+  $nx_nom = noy_nom($nx_head)
+  $nx_ty = noy_champ($nx_head, "type")
+
+  si ($nx_nom == "plus" et $nx_n == 2) {
+    si (non noy_est_nat(noy_pi_domaine_ieme($nx_ty, 1))) { retour noy_rien(t) }
+    si (non noy_est_nat(noy_pi_domaine_ieme($nx_ty, 2))) { retour noy_rien(t) }
+    si (non noy_est_nat(noy_pi_codomaine_ieme($nx_ty, 2))) { retour noy_rien(t) }
+    $nx_m = $nx_args[2]
+    $nx_nn = $nx_args[1]
+    si (noy_est_zero($nx_m)) { retour noy_pas($nx_nn) }
+    $nx_k = noy_succ_arg($nx_m)
+    si (non noy_est_absent($nx_k)) {
+      $nx_reste = noy_app(noy_app($nx_head, $nx_k), $nx_nn)
+      retour noy_pas(noy_app(noy_champ($nx_m, "fonction"), $nx_reste))
+    }
+  }
+
+  si ($nx_nom == "nat_rec" et $nx_n == 4) {
+    si (non noy_est_nat(noy_pi_domaine_ieme($nx_ty, 4))) { retour noy_rien(t) }
+    $nx_m = $nx_args[1]
+    $nx_pas = $nx_args[2]
+    $nx_base = $nx_args[3]
+    $nx_P = $nx_args[4]
+    $nx_head4 = noy_app(noy_app(noy_app($nx_head, $nx_P), $nx_base), $nx_pas)
+    si (noy_est_zero($nx_m)) { retour noy_pas($nx_base) }
+    $nx_k = noy_succ_arg($nx_m)
+    si (non noy_est_absent($nx_k)) {
+      $nx_rec = noy_app($nx_head4, $nx_k)
+      retour noy_pas(noy_app(noy_app($nx_pas, $nx_k), $nx_rec))
+    }
+  }
+  retour noy_rien(t)
+}
+
 # Un pas de réduction en stratégie normale (le plus à gauche, dehors).
 fn noy_redex_liste(l: liste<table>) -> table {
   $nx_n = longueur(l)
@@ -491,6 +636,10 @@ fn noy_redex_liste(l: liste<table>) -> table {
 }
 
 fn noy_redex(t: table) -> table {
+  # ι d'abord (réduction de tête) : avant toute descente, comme en G5.
+  $nx_iota = noy_iota(t)
+  si (noy_change($nx_iota)) { retour $nx_iota }
+
   $nx_g = noy_genre(t)
 
   si ($nx_g == "app") {
@@ -698,12 +847,77 @@ fn noy_alpha(a: table, b: table,
   retour faux
 }
 
-fn convertible(a: table, b: table) -> booleen {
-  $nx_ra = noy_beta_lim(a, 10000)
-  $nx_rb = noy_beta_lim(b, 10000)
+# Conversion avec garde et pas remontés : {ok, erreur, pas, code, contexte}.
+fn noy_convertible_res(a: table, b: table, limite: entier) -> table {
+  $nx_ra = noy_beta_lim(a, limite)
+  $nx_rb = noy_beta_lim(b, limite)
+  $nx_pa = noy_pas_beta($nx_ra)
+  $nx_pb = noy_pas_beta($nx_rb)
+  $nx_pas = $nx_pa + $nx_pb
+  $nx_err = ""
+  si (noy_erreur_beta($nx_ra) != "") { $nx_err = noy_erreur_beta($nx_ra) }
+  si ($nx_err == "") { $nx_err = noy_erreur_beta($nx_rb) }
+  $nx_ok = faux
   $nx_ea = [""]
   $nx_eb = [""]
-  retour noy_alpha(noy_champ($nx_ra, "terme"), noy_champ($nx_rb, "terme"), $nx_ea, $nx_eb)
+  si ($nx_err == "") {
+    $nx_ok = noy_alpha(noy_champ($nx_ra, "terme"),
+                       noy_champ($nx_rb, "terme"), $nx_ea, $nx_eb)
+  }
+  $nx_res = table()
+  inserer($nx_res, "ok", $nx_ok)
+  inserer($nx_res, "erreur", $nx_err)
+  inserer($nx_res, "pas", $nx_pas)
+  inserer($nx_res, "code", "GARDE_PAS")
+  inserer($nx_res, "contexte", "conversion/beta")
+  retour $nx_res
+}
+
+# Interface publique historique : conversion stricte (beta + alpha), sans
+# cumulativité. La cumulativité est appliquée par verifier, pas ici.
+fn convertible(a: table, b: table) -> booleen {
+  $nx_r = noy_convertible_res(a, b, 10000)
+  retour (noy_est_ok($nx_r) et noy_erreur($nx_r) == "")
+}
+
+# Cumulativité contrôlée : a ≤ b si a ≡ b (beta+alpha) OU si les deux sont
+# des univers Type(i), Type(j) avec i ≤ j. Rien d'autre n'est sous-typé.
+# La garde et ses pas sont remontés exactement comme pour la conversion.
+fn noy_cumul_res(a: table, b: table, limite: entier) -> table {
+  $nx_ra = noy_beta_lim(a, limite)
+  $nx_pa = noy_pas_beta($nx_ra)
+  $nx_rb = noy_beta_lim(b, limite - $nx_pa)
+  $nx_pas = $nx_pa + noy_pas_beta($nx_rb)
+  $nx_err = noy_erreur_beta($nx_ra)
+  si ($nx_err == "") { $nx_err = noy_erreur_beta($nx_rb) }
+  $nx_ok = faux
+  si ($nx_err == "") {
+    $nx_ea = [""]
+    $nx_eb = [""]
+    $nx_ta = noy_champ($nx_ra, "terme")
+    $nx_tb = noy_champ($nx_rb, "terme")
+    $nx_ok = noy_alpha($nx_ta, $nx_tb, $nx_ea, $nx_eb)
+    si (non $nx_ok) {
+      si (noy_genre($nx_ta) == "type" et noy_genre($nx_tb) == "type") {
+        $nx_i = noy_niveau($nx_ta)
+        $nx_j = noy_niveau($nx_tb)
+        si ($nx_i >= 0 et $nx_j >= 0 et $nx_i <= $nx_j) { $nx_ok = vrai }
+      }
+    }
+  }
+  $nx_res = table()
+  inserer($nx_res, "ok", $nx_ok)
+  inserer($nx_res, "erreur", $nx_err)
+  inserer($nx_res, "pas", $nx_pas)
+  inserer($nx_res, "code", "GARDE_PAS")
+  inserer($nx_res, "contexte", "conversion/cumul")
+  retour $nx_res
+}
+
+# Helper public (non destructif) : cumulativité bornée, sans remontée d'erreur.
+fn cumulatif(a: table, b: table) -> booleen {
+  $nx_r = noy_cumul_res(a, b, 10000)
+  retour (noy_est_ok($nx_r) et noy_erreur($nx_r) == "")
 }
 
 # ─────────────────────── 7. Contextes ──────────────────────────────────────
@@ -774,22 +988,40 @@ fn noy_ctx_type(ctx: liste<table>, n: chaine) -> table {
 
 # ──────────────────── 8. Synthèse de type (le vérificateur) ────────────────
 
-fn noy_ok(ty: table, pas: entier) -> table {
+# ───────────────── 8bis. Résultats structurés (codes d'erreur) ──────────────
+#
+# Tout Resultat rendu par verifier porte désormais, en plus de {ok,type,erreur}
+# historique, les champs :
+#   code      : chaine  — identifiant stable (OK, VAR_NON_LIE, GARDE_PAS, …)
+#   contexte  : chaine  — règle du noyau qui a échoué (Var, Pi, App, Eq, …)
+#   ligne     : entier  — champOptionnel « ligne » du terme fautif, 0 si absent
+#   pas       : entier  — nombre de pas de réduction consommés
+# Aucun champ n'est exigé d'un terme entrant : tout est défensif, jamais de
+# panique, même sur une table vide ou un champ de mauvais type.
+
+fn noy_resultat_plein(ok: booleen, ty: table, msg: chaine, code: chaine,
+                      ctx: chaine, ligne: entier, pas: entier) -> table {
   $nx_r = table()
-  inserer($nx_r, "ok", vrai)
+  inserer($nx_r, "ok", ok)
   inserer($nx_r, "type", ty)
-  inserer($nx_r, "erreur", "")
+  inserer($nx_r, "erreur", msg)
+  inserer($nx_r, "code", code)
+  inserer($nx_r, "contexte", ctx)
+  inserer($nx_r, "ligne", ligne)
   inserer($nx_r, "pas", pas)
   retour $nx_r
 }
 
+fn noy_ok(ty: table, pas: entier) -> table {
+  retour noy_resultat_plein(vrai, ty, "", "OK", "", 0, pas)
+}
+
 fn noy_err(msg: chaine, pas: entier) -> table {
-  $nx_r = table()
-  inserer($nx_r, "ok", faux)
-  inserer($nx_r, "type", noy_absent())
-  inserer($nx_r, "erreur", msg)
-  inserer($nx_r, "pas", pas)
-  retour $nx_r
+  retour noy_err_c(msg, "ERREUR", "", pas)
+}
+
+fn noy_err_c(msg: chaine, code: chaine, ctx: chaine, pas: entier) -> table {
+  retour noy_resultat_plein(faux, noy_absent(), msg, code, ctx, 0, pas)
 }
 
 fn noy_est_ok(r: table) -> booleen {
@@ -823,18 +1055,66 @@ fn noy_pas_res(r: table) -> entier {
   retour $nx_v
 }
 
-# Niveau d'un univers, -1 si le terme n'est pas un Type après beta.
-fn noy_univers(t: table) -> entier {
-  $nx_r = noy_beta_lim(t, 1000)
-  $nx_u = noy_champ($nx_r, "terme")
-  $nx_v = -1
-  si (noy_genre($nx_u) == "type") { $nx_v = noy_niveau($nx_u) }
+fn noy_chaine_res(r: table, cle: chaine) -> chaine {
+  $nx_v = ""
+  si (cle_existe(r, cle)) {
+    $nx_x = r[cle]
+    si (type($nx_x) == "chaine") { $nx_v = $nx_x }
+  }
   retour $nx_v
 }
 
+fn noy_code(r: table) -> chaine { retour noy_chaine_res(r, "code") }
+fn noy_contexte(r: table) -> chaine { retour noy_chaine_res(r, "contexte") }
+
+fn noy_ligne_res(r: table) -> entier {
+  $nx_v = 0
+  si (cle_existe(r, "ligne")) {
+    $nx_x = r["ligne"]
+    si (type($nx_x) == "entier") { $nx_v = $nx_x }
+  }
+  retour $nx_v
+}
+
+# Détection d'univers AVEC garde remontée. Contrairement à l'ancienne version,
+# la limite est celle de la synthèse en cours (et non un plafond fixe de 1000),
+# l'erreur de beta n'est plus avalée et les pas consommés sont réinjectés.
+# Rend {niveau, erreur, code, contexte, pas}.
+fn noy_univers_res(t: table, limite: entier) -> table {
+  $nx_r = noy_beta_lim(t, limite)
+  $nx_u = noy_champ($nx_r, "terme")
+  $nx_v = -1
+  si (noy_genre($nx_u) == "type") { $nx_v = noy_niveau($nx_u) }
+  $nx_res = table()
+  inserer($nx_res, "niveau", $nx_v)
+  inserer($nx_res, "erreur", noy_erreur_beta($nx_r))
+  inserer($nx_res, "code", "GARDE_PAS")
+  inserer($nx_res, "contexte", "univers/beta")
+  inserer($nx_res, "pas", noy_pas_beta($nx_r))
+  retour $nx_res
+}
+
+# Wrapper historique (niveau seul, -1 si ce n'est pas un univers).
+fn noy_univers(t: table) -> entier {
+  retour noy_entier_champ(noy_univers_res(t, 1000), "niveau")
+}
+
+# Wrapper de synthèse : propage le numéro de ligne du terme fautif vers le
+# Resultat, sans jamais l'exiger (0 par défaut). Les appels récursifs de
+# noy_synth0 passent par ici pour que la ligne la plus interne soit conservée.
 fn noy_synth(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table {
+  $nx_r = noy_synth0(t, ctx, limite, pas0)
+  $nx_l = noy_ligne(t)
+  si ($nx_l != 0 et non noy_est_ok($nx_r) et noy_ligne_res($nx_r) == 0) {
+    inserer($nx_r, "ligne", $nx_l)
+  }
+  retour $nx_r
+}
+
+fn noy_synth0(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table {
   si (pas0 >= limite) {
-    retour noy_err("depassement de la garde de pas (" + chaine(limite) + ")", pas0)
+    retour noy_err_c("depassement de la garde de pas (" + chaine(limite) + ")",
+                     "GARDE_PAS", "synthese", pas0)
   }
 
   $nx_g = noy_genre(t)
@@ -842,7 +1122,7 @@ fn noy_synth(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table
   si ($nx_g == "var") {
     $nx_ty = noy_ctx_type(ctx, noy_nom(t))
     si (noy_est_absent($nx_ty)) {
-      retour noy_err("variable non liee: " + noy_nom(t), pas0)
+      retour noy_err_c("variable non liee: " + noy_nom(t), "VAR_NON_LIE", "Var", pas0)
     }
     retour noy_ok($nx_ty, pas0)
   }
@@ -850,32 +1130,59 @@ fn noy_synth(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table
   # Règle Type(n) : Type(n+1).
   si ($nx_g == "type") {
     $nx_n = noy_niveau(t)
-    si ($nx_n < 0) { retour noy_err("niveau de type negatif", pas0) }
+    si ($nx_n < 0) {
+      retour noy_err_c("niveau de type negatif", "NIVEAU_NEGATIF", "Type", pas0)
+    }
     retour noy_ok(noy_type($nx_n + 1), pas0)
   }
 
-  # Règle Π.
+  # Règle Π. Les niveaux sont contrôlés avec la garde de la synthèse en cours ;
+  # les pas de la détection d'univers sont réinjectés, plus avalés.
   si ($nx_g == "pi") {
     $nx_r1 = noy_synth(noy_champ(t, "domaine"), ctx, limite, pas0)
     si (non noy_est_ok($nx_r1)) { retour $nx_r1 }
-    $nx_i = noy_univers(noy_type_res($nx_r1))
-    si ($nx_i < 0) { retour noy_err("domaine de Pi non typé par un univers", noy_pas_res($nx_r1)) }
+    $nx_p1 = noy_pas_res($nx_r1)
+    $nx_u1 = noy_univers_res(noy_type_res($nx_r1), limite - $nx_p1)
+    $nx_pu1 = $nx_p1 + noy_pas_res($nx_u1)
+    si (noy_erreur($nx_u1) != "") {
+      retour noy_err_c(noy_erreur($nx_u1), "GARDE_PAS", "Pi/domaine/univers", $nx_pu1)
+    }
+    $nx_i = noy_entier_champ($nx_u1, "niveau")
+    si ($nx_i < 0) {
+      retour noy_err_c("domaine de Pi non typé par un univers", "UNIVERS", "Pi/domaine", $nx_pu1)
+    }
     $nx_ctx2 = noy_ctx_ajouter(ctx, noy_nom(t), noy_champ(t, "domaine"))
-    $nx_r2 = noy_synth(noy_champ(t, "codomaine"), $nx_ctx2, limite, noy_pas_res($nx_r1))
+    $nx_r2 = noy_synth(noy_champ(t, "codomaine"), $nx_ctx2, limite, $nx_pu1)
     si (non noy_est_ok($nx_r2)) { retour $nx_r2 }
-    $nx_j = noy_univers(noy_type_res($nx_r2))
-    si ($nx_j < 0) { retour noy_err("codomaine de Pi non typé par un univers", noy_pas_res($nx_r2)) }
-    retour noy_ok(noy_type(max($nx_i, $nx_j)), noy_pas_res($nx_r2))
+    $nx_p2 = noy_pas_res($nx_r2)
+    $nx_u2 = noy_univers_res(noy_type_res($nx_r2), limite - $nx_p2)
+    $nx_pu2 = $nx_p2 + noy_pas_res($nx_u2)
+    si (noy_erreur($nx_u2) != "") {
+      retour noy_err_c(noy_erreur($nx_u2), "GARDE_PAS", "Pi/codomaine/univers", $nx_pu2)
+    }
+    $nx_j = noy_entier_champ($nx_u2, "niveau")
+    si ($nx_j < 0) {
+      retour noy_err_c("codomaine de Pi non typé par un univers", "UNIVERS", "Pi/codomaine", $nx_pu2)
+    }
+    retour noy_ok(noy_type(max($nx_i, $nx_j)), $nx_pu2)
   }
 
   # Règle λ : type = Π(nom, domaine, type_du_corps).
   si ($nx_g == "lam") {
     $nx_r1 = noy_synth(noy_champ(t, "domaine"), ctx, limite, pas0)
     si (non noy_est_ok($nx_r1)) { retour $nx_r1 }
-    $nx_i = noy_univers(noy_type_res($nx_r1))
-    si ($nx_i < 0) { retour noy_err("domaine de Lambda non typé par un univers", noy_pas_res($nx_r1)) }
+    $nx_p1 = noy_pas_res($nx_r1)
+    $nx_u1 = noy_univers_res(noy_type_res($nx_r1), limite - $nx_p1)
+    $nx_pu1 = $nx_p1 + noy_pas_res($nx_u1)
+    si (noy_erreur($nx_u1) != "") {
+      retour noy_err_c(noy_erreur($nx_u1), "GARDE_PAS", "Lam/domaine/univers", $nx_pu1)
+    }
+    $nx_i = noy_entier_champ($nx_u1, "niveau")
+    si ($nx_i < 0) {
+      retour noy_err_c("domaine de Lambda non typé par un univers", "UNIVERS", "Lam/domaine", $nx_pu1)
+    }
     $nx_ctx2 = noy_ctx_ajouter(ctx, noy_nom(t), noy_champ(t, "domaine"))
-    $nx_r2 = noy_synth(noy_champ(t, "corps"), $nx_ctx2, limite, noy_pas_res($nx_r1))
+    $nx_r2 = noy_synth(noy_champ(t, "corps"), $nx_ctx2, limite, $nx_pu1)
     si (non noy_est_ok($nx_r2)) { retour $nx_r2 }
     $nx_ty = noy_pi(noy_nom(t), noy_champ(t, "domaine"), noy_type_res($nx_r2))
     retour noy_ok($nx_ty, noy_pas_res($nx_r2))
@@ -888,20 +1195,32 @@ fn noy_synth(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table
     $nx_pas1 = noy_pas_res($nx_rf)
     $nx_rb = noy_beta_lim(noy_type_res($nx_rf), limite - $nx_pas1)
     $nx_pas2 = $nx_pas1 + noy_pas_beta($nx_rb)
-    si (noy_erreur_beta($nx_rb) != "") { retour noy_err(noy_erreur_beta($nx_rb), $nx_pas2) }
+    si (noy_erreur_beta($nx_rb) != "") {
+      retour noy_err_c(noy_erreur_beta($nx_rb), "GARDE_PAS", "App/type-fonction", $nx_pas2)
+    }
     $nx_ft = noy_champ($nx_rb, "terme")
     si (noy_genre($nx_ft) != "pi") {
-      retour noy_err("application d'un terme dont le type n'est pas un Pi", $nx_pas2)
+      retour noy_err_c("application d'un terme dont le type n'est pas un Pi", "APP_PAS_PI", "App", $nx_pas2)
     }
     $nx_ra = noy_synth(noy_champ(t, "argument"), ctx, limite, $nx_pas2)
     si (non noy_est_ok($nx_ra)) { retour $nx_ra }
     $nx_pas3 = noy_pas_res($nx_ra)
     $nx_dom = noy_champ($nx_ft, "domaine")
-    si (non convertible(noy_type_res($nx_ra), $nx_dom)) {
-      retour noy_err("type de l'argument incompatible avec le domaine", $nx_pas3)
+    $nx_cv = noy_cumul_res(noy_type_res($nx_ra), $nx_dom, limite - $nx_pas3)
+    $nx_pas4 = $nx_pas3 + noy_pas_res($nx_cv)
+    si (noy_erreur($nx_cv) != "") {
+      retour noy_err_c(noy_erreur($nx_cv), "GARDE_PAS", "App/conversion", $nx_pas4)
+    }
+    si (non noy_est_ok($nx_cv)) {
+      $nx_code = "APP_ARG"
+      si (noy_univers(noy_type_res($nx_ra)) >= 0 et noy_univers($nx_dom) >= 0) {
+        $nx_code = "CUMUL"
+      }
+      retour noy_err_c("type de l'argument incompatible avec le domaine",
+                       $nx_code, "App", $nx_pas4)
     }
     $nx_res = noy_subst(noy_champ($nx_ft, "codomaine"), noy_nom($nx_ft), noy_champ(t, "argument"))
-    retour noy_ok($nx_res, $nx_pas3)
+    retour noy_ok($nx_res, $nx_pas4)
   }
 
   si ($nx_g == "const" ou $nx_g == "constructeur") {
@@ -909,57 +1228,118 @@ fn noy_synth(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table
     $nx_rt = noy_synth($nx_ann, ctx, limite, pas0)
     si (non noy_est_ok($nx_rt)) { retour $nx_rt }
     $nx_pas1 = noy_pas_res($nx_rt)
-    si (noy_univers(noy_type_res($nx_rt)) < 0) {
-      retour noy_err("annotation de type non bien formée", $nx_pas1)
+    $nx_ua = noy_univers_res(noy_type_res($nx_rt), limite - $nx_pas1)
+    $nx_pas2 = $nx_pas1 + noy_pas_res($nx_ua)
+    si (noy_erreur($nx_ua) != "") {
+      retour noy_err_c(noy_erreur($nx_ua), "GARDE_PAS", "const/annotation/univers", $nx_pas2)
     }
-    retour noy_ok($nx_ann, $nx_pas1)
+    $nx_lev = noy_entier_champ($nx_ua, "niveau")
+    si ($nx_lev < 0) {
+      retour noy_err_c("annotation de type non bien formée", "ANNOTATION", "const", $nx_pas2)
+    }
+    retour noy_ok($nx_ann, $nx_pas2)
   }
 
-  # ind / elim : validation structurelle ; le type rendu est une approximation
-  # documentée (Type(0)) —voir NOYAU.md, section « Limites ».
+  # ind : validation structurelle des paramètres PLUS contrôle de formation
+  # des égalités. Le type rendu reste une approximation documentée Type(0).
+  #   ind("=",[a,b])    → a et b doivent avoir des types convertibles
+  #   ind("Eq",[A,a,b]) → a et b doivent avoir le type A
+  # Les autres inductifs ne sont pas contrôlés au-delà de leurs paramètres.
   si ($nx_g == "ind") {
     $nx_pl = noy_champ_liste(t, "params")
     $nx_n = longueur($nx_pl)
     $nx_k = 1
     $nx_pas = pas0
+    $nx_tys = [table()]
     tant_que ($nx_k < $nx_n) {
       $nx_r = noy_synth($nx_pl[$nx_k], ctx, limite, $nx_pas)
-      si (non noy_est_ok($nx_r)) { retour $nx_r }
+      si (non noy_est_ok($nx_r)) {
+        $nx_code = "IND_PARAM"
+        si (noy_code($nx_r) == "GARDE_PAS") { $nx_code = "GARDE_PAS" }
+        retour noy_err_c(noy_erreur($nx_r), $nx_code, "ind/param" + chaine($nx_k), noy_pas_res($nx_r))
+      }
       $nx_pas = noy_pas_res($nx_r)
+      joindre($nx_tys, noy_type_res($nx_r))
       $nx_k = $nx_k + 1
+    }
+    # égalité à deux paramètres (format canonique produit par le parseur)
+    si (noy_nom(t) == "=" et $nx_n == 3) {
+      $nx_cv = noy_convertible_res($nx_tys[1], $nx_tys[2], limite - $nx_pas)
+      $nx_pas2 = $nx_pas + noy_pas_res($nx_cv)
+      si (noy_erreur($nx_cv) != "") {
+        retour noy_err_c(noy_erreur($nx_cv), "GARDE_PAS", "ind(=)/conversion", $nx_pas2)
+      }
+      si (non noy_est_ok($nx_cv)) {
+        retour noy_err_c("membres d'une egalite de types differents", "EQ_MAL_TYPE", "ind(=)", $nx_pas2)
+      }
+      retour noy_ok(noy_type(0), $nx_pas2)
+    }
+    # égalité à trois paramètres (format explicite Eq(A,a,b))
+    si (noy_nom(t) == "Eq" et $nx_n == 4) {
+      $nx_A = $nx_pl[1]
+      $nx_cv1 = noy_convertible_res($nx_tys[2], $nx_A, limite - $nx_pas)
+      $nx_pas2 = $nx_pas + noy_pas_res($nx_cv1)
+      si (noy_erreur($nx_cv1) != "") {
+        retour noy_err_c(noy_erreur($nx_cv1), "GARDE_PAS", "ind(Eq)/conversion", $nx_pas2)
+      }
+      si (non noy_est_ok($nx_cv1)) {
+        retour noy_err_c("premier membre de Eq hors de A", "EQ_MAL_TYPE", "ind(Eq)/a", $nx_pas2)
+      }
+      $nx_cv2 = noy_convertible_res($nx_tys[3], $nx_A, limite - $nx_pas2)
+      $nx_pas3 = $nx_pas2 + noy_pas_res($nx_cv2)
+      si (noy_erreur($nx_cv2) != "") {
+        retour noy_err_c(noy_erreur($nx_cv2), "GARDE_PAS", "ind(Eq)/conversion", $nx_pas3)
+      }
+      si (non noy_est_ok($nx_cv2)) {
+        retour noy_err_c("second membre de Eq hors de A", "EQ_MAL_TYPE", "ind(Eq)/b", $nx_pas3)
+      }
+      retour noy_ok(noy_type(0), $nx_pas3)
     }
     retour noy_ok(noy_type(0), $nx_pas)
   }
 
   si ($nx_g == "elim") {
     $nx_rm = noy_synth(noy_champ(t, "motif"), ctx, limite, pas0)
-    si (non noy_est_ok($nx_rm)) { retour $nx_rm }
+    si (non noy_est_ok($nx_rm)) {
+      retour noy_err_c(noy_erreur($nx_rm), noy_code($nx_rm), "elim/motif", noy_pas_res($nx_rm))
+    }
     $nx_pas = noy_pas_res($nx_rm)
     $nx_bl = noy_champ_liste(t, "branches")
     $nx_n = longueur($nx_bl)
     $nx_k = 1
     tant_que ($nx_k < $nx_n) {
       $nx_r = noy_synth($nx_bl[$nx_k], ctx, limite, $nx_pas)
-      si (non noy_est_ok($nx_r)) { retour $nx_r }
+      si (non noy_est_ok($nx_r)) {
+        retour noy_err_c(noy_erreur($nx_r), noy_code($nx_r), "elim/branche" + chaine($nx_k), noy_pas_res($nx_r))
+      }
       $nx_pas = noy_pas_res($nx_r)
       $nx_k = $nx_k + 1
     }
     retour noy_ok(noy_type(0), $nx_pas)
   }
 
-  retour noy_err("genre de terme inconnu ou mal formé: " + $nx_g, pas0)
+  retour noy_err_c("genre de terme inconnu ou mal formé: " + $nx_g,
+                   "GENRE_INCONNU", "synth", pas0)
 }
 
 # ────────────────────────── 9. Interface publique ──────────────────────────
 
-fn verifier(t: table, ctx) -> table {
+fn verifier_lim(t: table, ctx, limite: entier) -> table {
   $nx_c = noy_normaliser_ctx(ctx)
-  $nx_r = noy_synth(t, $nx_c, 10000, 0)
+  $nx_r = noy_synth(t, $nx_c, limite, 0)
   $nx_res = table()
   inserer($nx_res, "ok", noy_est_ok($nx_r))
   inserer($nx_res, "type", noy_type_res($nx_r))
   inserer($nx_res, "erreur", noy_erreur($nx_r))
+  inserer($nx_res, "code", noy_code($nx_r))
+  inserer($nx_res, "contexte", noy_contexte($nx_r))
+  inserer($nx_res, "ligne", noy_ligne_res($nx_r))
+  inserer($nx_res, "pas", noy_pas_res($nx_r))
   retour $nx_res
+}
+
+fn verifier(t: table, ctx) -> table {
+  retour verifier_lim(t, ctx, 10000)
 }
 
 fn bien_forme(t: table, ctx) -> booleen {

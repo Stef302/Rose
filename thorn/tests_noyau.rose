@@ -150,6 +150,148 @@ $rtab = verifier(noy_var("X"), $ctab)
 tester($cpt, "contexte table : accepte", chaine(noy_est_ok($rtab)), "vrai")
 tester($cpt, "contexte table : type", montrer(noy_type_res($rtab)), "Type(0)")
 
+# ── 9. Résultats structurés : codes, contexte, ligne ─────────────────────────
+tester($cpt, "resultat : code OK", noy_code($rid), "OK")
+tester($cpt, "resultat : champs presents",
+       chaine(cle_existe($rid, "code") et cle_existe($rid, "contexte") et
+              cle_existe($rid, "ligne") et cle_existe($rid, "pas")), "vrai")
+$rv = verifier(noy_var("inconnu"), $ctx)
+tester($cpt, "code : variable non liee", noy_code($rv), "VAR_NON_LIE")
+tester($cpt, "contexte : variable non liee", noy_contexte($rv), "Var")
+tester($cpt, "code : app d'un Type", noy_code($rm), "APP_PAS_PI")
+tester($cpt, "contexte : app d'un Type", noy_contexte($rm), "App")
+tester($cpt, "code : terme mal forme", noy_code($rmal), "GENRE_INCONNU")
+tester($cpt, "code : accesseur def sur table vide",
+       chaine(noy_code(table()) == "" et noy_contexte(table()) == ""), "vrai")
+
+# Position de ligne OPTIONNELLE portée par le terme fautif.
+$v_ligne = noy_var("inconnu")
+inserer($v_ligne, "ligne", 42)
+$rl = verifier($v_ligne, $ctx)
+tester($cpt, "ligne : remontee dans Resultat", chaine(noy_ligne_res($rl)), "42")
+tester($cpt, "ligne : absent = 0", chaine(noy_ligne_res($rv)), "0")
+
+# ── 10. Garde de pas remontée dans verifier ─────────────────────────────────
+$rlim = verifier_lim($id, $ctx, 0)
+tester($cpt, "garde verifier : code GARDE_PAS", noy_code($rlim), "GARDE_PAS")
+tester($cpt, "garde verifier : contexte", noy_contexte($rlim), "synthese")
+tester($cpt, "garde verifier : message", chaine(noy_erreur($rlim) != ""), "vrai")
+$ru = noy_univers_res($omega, 5)
+tester($cpt, "garde univers : erreur remontee", chaine(noy_erreur($ru) != ""), "vrai")
+tester($cpt, "garde univers : code", noy_code($ru), "GARDE_PAS")
+tester($cpt, "garde univers : pas bornes", chaine(noy_pas_res($ru) <= 5), "vrai")
+$rcv = noy_convertible_res($omega, $omega, 5)
+tester($cpt, "garde conversion : erreur remontee", chaine(noy_erreur($rcv) != ""), "vrai")
+tester($cpt, "garde conversion : code", noy_code($rcv), "GARDE_PAS")
+
+# ── 11. Cumulativité contrôlée Type(i) ≤ Type(j) si i ≤ j ───────────────────
+tester($cpt, "cumul : strict Type0 != Type1",
+       chaine(convertible(noy_type(0), noy_type(1))), "faux")
+tester($cpt, "cumul : Type0 <= Type1", chaine(cumulatif(noy_type(0), noy_type(1))), "vrai")
+tester($cpt, "cumul : Type1 <= Type0 refuse", chaine(cumulatif(noy_type(1), noy_type(0))), "faux")
+tester($cpt, "cumul : Type2 <= Type2", chaine(cumulatif(noy_type(2), noy_type(2))), "vrai")
+$appcum = noy_app(noy_lam("A", noy_type(1), noy_var("A")), noy_var("X"))
+$rcum = verifier($appcum, $ctx)
+tester($cpt, "cumul : application acceptee", chaine(noy_est_ok($rcum)), "vrai")
+tester($cpt, "cumul : type substitue", montrer(noy_type_res($rcum)), "Type(1)")
+tester($cpt, "cumul : code OK", noy_code($rcum), "OK")
+$big = noy_const("Big", noy_type(1))
+$appbad = noy_app(noy_lam("A", noy_type(0), noy_var("A")), $big)
+$rbad = verifier($appbad, $ctx)
+tester($cpt, "cumul : descente interdite", chaine(noy_est_ok($rbad)), "faux")
+tester($cpt, "cumul : code CUMUL", noy_code($rbad), "CUMUL")
+$dom_non = noy_const("n", noy_var("X"))
+$pi_bad = noy_pi("z", $dom_non, noy_type(0))
+$rpi_bad = verifier($pi_bad, $ctx)
+tester($cpt, "niveau Pi : domaine non univers refuse", chaine(noy_est_ok($rpi_bad)), "faux")
+tester($cpt, "niveau Pi : code UNIVERS", noy_code($rpi_bad), "UNIVERS")
+tester($cpt, "niveau Pi : contexte", noy_contexte($rpi_bad), "Pi/domaine")
+
+# ── 12. Eq typé : a et b doivent avoir le même type ─────────────────────────
+$ctxay = noy_ctx_ajouter($ctxa, "y", noy_var("X"))
+$eq_ok = noy_ind("=", [table(), noy_var("a"), noy_var("y")])
+$req = verifier($eq_ok, $ctxay)
+tester($cpt, "eq : meme type accepte", chaine(noy_est_ok($req)), "vrai")
+tester($cpt, "eq : type rendu", montrer(noy_type_res($req)), "Type(0)")
+$eq_bad = noy_ind("=", [table(), noy_var("a"), noy_type(0)])
+$reqb = verifier($eq_bad, $ctxay)
+tester($cpt, "eq : types differents refuses", chaine(noy_est_ok($reqb)), "faux")
+tester($cpt, "eq : code EQ_MAL_TYPE", noy_code($reqb), "EQ_MAL_TYPE")
+tester($cpt, "eq : contexte", noy_contexte($reqb), "ind(=)")
+$eq3_ok = noy_ind("Eq", [table(), noy_var("X"), noy_var("a"), noy_var("y")])
+$req3 = verifier($eq3_ok, $ctxay)
+tester($cpt, "eq3 : a,b : X accepte", chaine(noy_est_ok($req3)), "vrai")
+$eq3_bad = noy_ind("Eq", [table(), noy_var("X"), noy_var("a"), noy_type(0)])
+$req3b = verifier($eq3_bad, $ctxay)
+tester($cpt, "eq3 : second membre hors de X", chaine(noy_est_ok($req3b)), "faux")
+tester($cpt, "eq3 : code EQ_MAL_TYPE", noy_code($req3b), "EQ_MAL_TYPE")
+tester($cpt, "eq3 : contexte b", noy_contexte($req3b), "ind(Eq)/b")
+
+# ── 13. ι-réduction réelle : motifs zero / succ ─────────────────────────────
+fn natT() -> table { retour noy_ind("Nat", [table()]) }
+fn zeroT() -> table { retour noy_const("zero", natT()) }
+fn succSymb() -> table { retour noy_const("succ", noy_pi("n", natT(), natT())) }
+fn succT(n: table) -> table { retour noy_app(succSymb(), n) }
+fn plusSymb() -> table {
+  retour noy_const("plus", noy_pi("m", natT(), noy_pi("n", natT(), natT())))
+}
+fn plusT(m: table, n: table) -> table { retour noy_app(noy_app(plusSymb(), m), n) }
+fn natrecSymb() -> table {
+  $P = noy_pi("m", natT(), noy_type(0))
+  $base = noy_app(noy_var("P"), zeroT())
+  $pas = noy_pi("n", natT(), noy_pi("ih", noy_app(noy_var("P"), noy_var("n")),
+                                    noy_app(noy_var("P"), succT(noy_var("n")))))
+  $ty = noy_pi("P", $P, noy_pi("base", $base, noy_pi("pas", $pas,
+        noy_pi("m", natT(), noy_app(noy_var("P"), noy_var("m"))))))
+  retour noy_const("nat_rec", $ty)
+}
+fn natrecT(P: table, base: table, pas: table, m: table) -> table {
+  retour noy_app(noy_app(noy_app(noy_app(natrecSymb(), P), base), pas), m)
+}
+$natctx = noy_ctx_ajouter($ctx, "n", natT())
+
+tester($cpt, "iota : plus zero n = n",
+       montrer(beta(plusT(zeroT(), noy_var("n")))), "n")
+tester($cpt, "iota : plus (succ zero) n = succ n",
+       montrer(beta(plusT(succT(zeroT()), noy_var("n")))), "App(Const(succ),n)")
+tester($cpt, "iota : plus (succ (succ zero)) zero",
+       montrer(beta(plusT(succT(succT(zeroT())), zeroT()))),
+       "App(Const(succ),App(Const(succ),Const(zero)))")
+$bp = noy_beta_lim(plusT(succT(zeroT()), noy_var("n")), 100)
+tester($cpt, "iota : pas comptes", chaine(noy_pas_beta($bp)), "2")
+
+$Pnat = noy_lam("m", natT(), natT())
+$base0 = zeroT()
+$pasS = noy_lam("n", natT(), noy_lam("ih", natT(), succT(noy_var("ih"))))
+tester($cpt, "iota : nat_rec zero = base",
+       montrer(beta(natrecT($Pnat, $base0, $pasS, zeroT()))), "Const(zero)")
+tester($cpt, "iota : nat_rec (succ zero) = pas 0 base",
+       montrer(beta(natrecT($Pnat, $base0, $pasS, succT(zeroT())))),
+       "App(Const(succ),Const(zero))")
+
+# Un const quelconque nommé « plus » mais MAL typé ne doit jamais se réduire.
+$fauxplus = noy_const("plus", noy_type(0))
+$fauxapp = noy_app(noy_app($fauxplus, zeroT()), zeroT())
+tester($cpt, "iota : garde-fou type du const",
+       montrer(beta($fauxapp)), "App(App(Const(plus),Const(zero)),Const(zero))")
+$fauxplus2 = noy_const("plus", noy_pi("m", natT(), noy_pi("n", natT(), noy_type(0))))
+$fauxapp2 = noy_app(noy_app($fauxplus2, zeroT()), zeroT())
+tester($cpt, "iota : garde-fou codomaine",
+       montrer(beta($fauxapp2)), "App(App(Const(plus),Const(zero)),Const(zero))")
+
+# Préservation du type : les termes calculés restent vérifiés par le noyau.
+$rplus = verifier(plusT(zeroT(), noy_var("n")), $natctx)
+tester($cpt, "iota : plus zero n verifie", chaine(noy_est_ok($rplus)), "vrai")
+tester($cpt, "iota : type Nat", montrer(noy_type_res($rplus)), "Ind(Nat)")
+tester($cpt, "iota : convertible a n",
+       chaine(convertible(plusT(zeroT(), noy_var("n")), noy_var("n"))), "vrai")
+tester($cpt, "iota : equation succ convertible",
+       chaine(convertible(plusT(succT(noy_var("m")), noy_var("n")),
+                          succT(plusT(noy_var("m"), noy_var("n"))))), "vrai")
+$rrec = verifier(natrecT($Pnat, $base0, $pasS, zeroT()), $natctx)
+tester($cpt, "iota : nat_rec verifie", chaine(noy_est_ok($rrec)), "vrai")
+tester($cpt, "iota : nat_rec type P(zero)", montrer(noy_type_res($rrec)), "Ind(Nat)")
+
 >> "REUSSIS=" + chaine($cpt["r"])
 >> "ECHOUES=" + chaine($cpt["e"])
 si ($cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }
