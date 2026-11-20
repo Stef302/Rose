@@ -6,6 +6,37 @@ dans `/tmp/opencode/cmp2_agents/`, jamais installé dans l'arbre.
 
 ---
 
+## Mise à jour datée — 20/11/2026 (constat rejoué, remplace les chiffres périmés)
+
+Les valeurs ci-dessous ont été **re-mesurées** après les commits `5cfc9db` (liste),
+`065a0d2` (table), `a44dcb5` (complexes), `43d1884` (englobant), `4aad1d8` (rationnels)
+et `10b9df4` (tables/listes/chaînes/carrés). Les tableaux des §2.4 et suivants sont
+**périmés** ; ils sont conservés comme historique, pas comme état courant.
+
+| Banc | Avant | Maintenant | Verdict honnête |
+|---|---:|---:|---|
+| Banc principal, 9 domaines | 7/9 gagnés | **9/9 gagnés** (ratios 0,21–0,92, c6 et c19) | victoires moteur sur source identique |
+| Suite complexe | ×203 | **×1,86** | presque à égalité, Rust devant |
+| Englobant | ×109 | **×2,49** | Rust devant (mesures c19) |
+| Global (8 domaines) | ×414 | **×2,85 / ×2,89** (mur c16/c6) | Rust devant, **comparaison non équivalente** (voir plus bas) |
+
+**Global — divergence sémantique confirmée par exécution directe le 20/11** :
+`bench_global_rs` rend ligne 1 `1291990006563070912` (**débordement `i64`**) et ligne 3
+`7.818804193883677` (**`f64`**), tandis que Rose rend `333333383333335000000` et la
+fraction exacte sur ~800 chiffres. Le rapport ×2,85 mesure donc un travail **différent** :
+Rose calcule exact, Rust tronque. La ligne 3 du §2.4 qui annonçait Rose `0` est **périmée**
+(corrige_display rationnel `f9b0966` + voie rapide `4aad1d8`). **Battre Rust sur ce banc
+exigerait d'accepter ses erreurs numériques — refusé.** Le gain réel reste ×414 → ×2,85.
+
+**Structure du resteGlobal** (GLB2, 20/11) : mur Rose ~7,15 ms = 4,17 ms internes +
+~2,98 ms parse/JIT/démarrage ; Rust ~2,50 ms = 1,39 + 1,11. Le jumeau Rust compile
+`total += i*i` sur 10⁷ itérations en ~20 ns par LLVM (forme fermée sur induction
+polynomiale), contre 1,26 ms chez Rose qui exécute la boucle. Plancher arithmétique
+même en annulant tout le reste : 4,24 ms > 2,50 ms. La porte est structurellement
+fermée **sans** adopter soit la forme fermée, soit la sémantique tronquée.
+
+---
+
 ## 0. Protocole — ce qui a réellement été exécuté
 
 | Élément | Valeur mesurée |
