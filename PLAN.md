@@ -905,3 +905,13 @@ Reste: suite complexe ×189 (calc jamais JIT-compilé à cause de LitComplexe).
 | Agent | Sujet | Fichiers possédés | Cœur |
 |---|---|---|---|
 | CPLX1 | lever le garde complexe dans le JIT | `rose/src/jit.rs`, `rose/docs/CPLX_OFFENSIVE.md` | 6 |
+
+## Vague 43 (20/11) — programme global : dernière tranche
+
+Consigne: « on continue self hosting et programme global, on ne s'arrête pas ». SH2 continue sur le self-hosting (debug en cours, dernier log 00:34Z).
+
+État global: banc principal 9/9 gagné. Programme global encore ~×8,8 (JIT2) / 33ms interne mesuré 20/11. Blocage nommé par JIT2: 10,64 ms de boucle rationnelle interprétée (Gq::add_in + canonicalize à chaque itération) + ~5 ms sections table/listes/E/S.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| GLB1 | rationnels : 10,64 ms → < 1 ms | `rose/src/{run,i128x,interp}.rs`, `rose/docs/GLOBAL_FINAL.md` | 6 |
