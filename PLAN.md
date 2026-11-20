@@ -1027,3 +1027,16 @@ Backend LAUNCH1 commite (3dac39d): catalogue GitHub dynamique, zero version code
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | LAUNCH2 | écran de sélection des versions dans setup_gui.rs | `rose/src/setup_gui.rs`, `rose/docs/SELECTEUR_UI.md` |
+
+## Vague 56 (21/11) — self-hosting TOTAL (objectif second)
+
+Constate: le front-end Rose existe (lexeur/analyseur/verifieur/emetteur.rose) et le compilateur genere sait produire le RIR. Il lui manque les primitives G5 pour EXECUTER emetteur_elf.rose lui-meme — alors il pourra emettre un ELF depuis n'importe quelle source, sans Rust.
+
+Chemin: (1) cartographie des ecarts G5, (2) implementer les primitives manquantes dans l'emetteur, (3) bootstrap: rose/rose emet C0; C0 emet C1; C1 emet C2; C1==C2, (4) C0 compile n'importe quelle source.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| SH5 | cartographie precise des ecarts G5 vs emetteur_elf.rose | `rose/docs/SELFHOST_TOTAL_PLAN.md` seul |
+| SH6 | primitives manquantes dans le runtime G5 | `compilateur/emetteur_elf.rose`, `rose/docs/G5_PRIMITIVES.md` |
+| SH8 | pipeline de bootstrap + verification C0/C1/C2 | `scripts/selfhost_total.sh`, `rose/docs/BOOTSTRAP_TOTAL.md` |
+| SH9 | batterie de tests du compilateur genere | `tests_selfhost/`, `rose/docs/TESTS_SELFHOST.md` |
