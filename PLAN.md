@@ -956,3 +956,11 @@ Consigne: « on ne s'arrête pas ». État: self-hosting atteint (0e2d844 + preu
 | Agent | Sujet | Fichiers possédés | Cœur |
 |---|---|---|---|
 | CLOSE1 | réduire le démarrage commun (suite x1,15, englobant x1,4-1,6) | `rose/src/{main,front}.rs`, `rose/Cargo.toml`, `rose/docs/CLOSURE.md` | dédié |
+
+## Vague 49 (21/11) — module JIT vide (dernier surcoût commun)
+
+Consigne: « on ne s'arrête pas ». CLOSE1 (8c31a38) a réduit l'écart suite d'un tiers à la moitié sans l'annuler. Il nomme précisément le reste: module Cranelift vide 91-132us + Jit::nouveau 21-33us + parse 50-70us, tous dans jit.rs/interp.rs (desormais libres). declarer_delegues() appele depuis interp.rs:6867 declenche deux finalize_definitions meme quand eligibles=[].
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| CLOSE2 | supprimer le module JIT vide et Jit::nouveau sur programmes sans fonctions | `rose/src/{jit,interp}.rs`, `rose/docs/CLOSURE2.md` | 6 |
