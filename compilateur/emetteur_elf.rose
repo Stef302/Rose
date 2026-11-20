@@ -480,15 +480,67 @@ fn g5_alloc_inline() -> entier {
 # 512 entrées de 16 octets [clé 64 bits][pointeur], la clé est vérifiée
 # avant réutilisation (une collision d'index ne peut donc pas rendre une
 # mauvaise chaîne).
-fn g5_make_str($s: chaine) -> entier {
+# SH11 (C1.3) — l'emetteur NATIF voit une chaine comme une suite de POINTS
+# DE CODE Unicode (mesure : longueur("é≠→—")=4, ordre("é")=233,
+# ordre("≠")=8800), tandis que l'emetteur AUTO-EMIS (ELF G5) la voit comme
+# une suite d'OCTETS (c3 a9, e2 89 a0...). Sans normalisation, un meme RIR
+# produisait deux ELF differents : +24 octets sur e_final.rir, premiere
+# divergence a l'offset 0x608 (bl 0x4680ac vs bl 0x4680c4), causee par
+# "forme parenthésée..." (33 octets natif / 35 UTF-8) et "appel non résolu : "
+# (19 / 20). On decode ici l'UTF-8 en points de code AVANT emission :
+#   - sous G5, les suites valides c2..f4 + 80..bf sont recombinees ;
+#   - en natif, un point de code deja decode (233, 8800, 8212...) n'est jamais
+#     suivi du nombre requis de continuations 80..bf dans nos litteraux :
+#     la fonction est alors IDENTITE (verifie par le point fixe b3ed9262).
+# Le hash d'internement utilise le point de code ENTIER, comme en natif
+# (strbio ne stocke que l'octet de poids faible, ce qui est conforme).
+fn g5_cps($s: chaine) -> liste<entier> {
+  $r = [0 : entier]
   $n = longueur($s)
+  $i = 0
+  tant_que ($i < $n) {
+    $b0 = ordre(sous_chaine($s, $i, $i + 1))
+    $k = 1
+    si ($b0 >= 194 et $b0 <= 223) { $k = 2 }
+    si ($b0 >= 224 et $b0 <= 239) { $k = 3 }
+    si ($b0 >= 240 et $b0 <= 244) { $k = 4 }
+    $ok = 1
+    $j = 1
+    tant_que ($j < $k) {
+      si ($i + $j >= $n) { $ok = 0 }
+      sinon {
+        $bj = ordre(sous_chaine($s, $i + $j, $i + $j + 1))
+        si ($bj < 128 ou $bj > 191) { $ok = 0 }
+      }
+      $j = $j + 1
+    }
+    si ($ok == 1 et $k == 2) {
+      joindre($r, ($b0 - 192) * 64 + ordre(sous_chaine($s, $i + 1, $i + 2)) - 128)
+      $i = $i + 2
+    } sinon si ($ok == 1 et $k == 3) {
+      joindre($r, ($b0 - 224) * 4096 + (ordre(sous_chaine($s, $i + 1, $i + 2)) - 128) * 64 + ordre(sous_chaine($s, $i + 2, $i + 3)) - 128)
+      $i = $i + 3
+    } sinon si ($ok == 1 et $k == 4) {
+      joindre($r, ($b0 - 240) * 262144 + (ordre(sous_chaine($s, $i + 1, $i + 2)) - 128) * 4096 + (ordre(sous_chaine($s, $i + 2, $i + 3)) - 128) * 64 + ordre(sous_chaine($s, $i + 3, $i + 4)) - 128)
+      $i = $i + 4
+    } sinon {
+      joindre($r, $b0)
+      $i = $i + 1
+    }
+  }
+  retour $r
+}
+
+fn g5_make_str($s: chaine) -> entier {
+  $cps = g5_cps($s)
+  $n = longueur($cps)
   $h = 0
   $hi = 0
   tant_que ($hi < $n) {
     # SH10 : 2^64 n'est pas représentable sous G5 (-> modulo 0 -> hash 0
     # pour TOUTES les chaînes -> réutilisation du mauvais littéral interné).
     # Un hash 32 bits suffit : la clé est vérifiée avant réutilisation.
-    $h = ($h * 131 + ordre(sous_chaine($s, $hi, $hi + 1))) % 4294967296
+    $h = ($h * 131 + $cps[$hi]) % 4294967296
     $hi = $hi + 1
   }
   $lbl_miss = g5_next()
@@ -511,7 +563,7 @@ fn g5_make_str($s: chaine) -> entier {
   g5_emit(stroff(1, 0, 8))
   $i = 0
   tant_que ($i < $n) {
-    g5_load(1, ordre(sous_chaine($s, $i, $i + 1)))
+    g5_load(1, $cps[$i])
     g5_emit(strbio(1, 0, 16 + $i))
     $i = $i + 1
   }
