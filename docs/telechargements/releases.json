@@ -58,6 +58,12 @@
           "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
           "sha256": "e9ca6c47a2077e5141d82907375513a9d1cd172ab218b3b07abd186f450b3566",
           "taille": 9230848
+        },
+        {
+          "nom": "rose-language-0.1.7.vsix",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-language-0.1.7.vsix",
+          "sha256": "44848415bd5f7e99407a37936236cc8fcddc0870619e2cbf1ac53235105c83a2",
+          "taille": 72399
         }
       ]
     },
