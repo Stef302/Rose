@@ -1056,3 +1056,12 @@ SH7 a livré C0 (cdbe881): quitter/caractere/partie_entiere, test critique 20/20
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | SH10 | loger les globales G5 en RW (ldr/str) au lieu de 0 | `compilateur/emetteur_elf.rose`, `rose/docs/G5_C1.md` |
+
+## Vague 59 (21/11) — C1.3 point fixe du compilateur
+
+C1 atteint (06d6405): le compilateur genere compile. C1.3: avec mapping 32 Gio (75f21a6),
+l'auto-emis e_final.rir compile (rc=0) mais l'ELF differe de 24 octets de F1.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| SH11 | diagnostiquer et corriger l'écart F1 vs F2 (auto-régénération) | `compilateur/emetteur_elf.rose`, `rose/docs/C13_FIX.md` |
