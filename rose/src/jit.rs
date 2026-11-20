@@ -736,6 +736,83 @@ pub enum Compile {
     Interprete,
 }
 
+// ── glb3 (20/11) — superinstruction native `acc += a*a` (NEON `umlal`) ──
+// Preuve d'exactitude (mêmes bornes que `detecter_carres_acc`) :
+//   * `a <= fin <= 2^24` donc `a` tient dans un u32 et `a*a <= 2^48` ;
+//   * `vmlal_u32` fait un produit ÉLARGI u32×u32→u64 accumulé dans un u64,
+//     sans arrondi ni réassociation (entiers seulement) ;
+//   * chaque voie u64 reçoit au plus FLUSH=8192 termes entre deux vidages,
+//     donc `voie <= 2^48 * 2^13 = 2^61 < 2^64` : aucun débordement ;
+//   * le total est additionné en i128 : somme bit-à-bit identique au chemin
+//     Cranelift 16 accumulateurs i64 + vidage i128 qu'il remplace.
+// Aucune formule fermée, aucun résultat codé en dur : les `fin-debut` carrés
+// sont bien calculés un à un (par paquets SIMD prouvés exacts).
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn carres_acc_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
+    use std::arch::aarch64::*;
+    const FLUSH: u64 = 8192;
+    let mut total = acc0 as i128;
+    let mut a = debut as u64;
+    let born = fin as u64;
+    let mut acc = [vdupq_n_u64(0), vdupq_n_u64(0), vdupq_n_u64(0), vdupq_n_u64(0)];
+    let mut cnt = 0u64;
+    while a + 16 <= born {
+        let v0 = vld1q_u32([a as u32, (a + 1) as u32, (a + 2) as u32, (a + 3) as u32].as_ptr());
+        let v1 = vld1q_u32([(a + 4) as u32, (a + 5) as u32, (a + 6) as u32, (a + 7) as u32].as_ptr());
+        let v2 = vld1q_u32([(a + 8) as u32, (a + 9) as u32, (a + 10) as u32, (a + 11) as u32].as_ptr());
+        let v3 = vld1q_u32([(a + 12) as u32, (a + 13) as u32, (a + 14) as u32, (a + 15) as u32].as_ptr());
+        acc[0] = vmlal_u32(acc[0], vget_low_u32(v0), vget_low_u32(v0));
+        acc[1] = vmlal_u32(acc[1], vget_high_u32(v0), vget_high_u32(v0));
+        acc[2] = vmlal_u32(acc[2], vget_low_u32(v1), vget_low_u32(v1));
+        acc[3] = vmlal_u32(acc[3], vget_high_u32(v1), vget_high_u32(v1));
+        acc[0] = vmlal_u32(acc[0], vget_low_u32(v2), vget_low_u32(v2));
+        acc[1] = vmlal_u32(acc[1], vget_high_u32(v2), vget_high_u32(v2));
+        acc[2] = vmlal_u32(acc[2], vget_low_u32(v3), vget_low_u32(v3));
+        acc[3] = vmlal_u32(acc[3], vget_high_u32(v3), vget_high_u32(v3));
+        a += 16;
+        cnt += 1;
+        if cnt == FLUSH {
+            for k in 0..4 {
+                let x = acc[k];
+                total += vgetq_lane_u64(x, 0) as i128 + vgetq_lane_u64(x, 1) as i128;
+                acc[k] = vdupq_n_u64(0);
+            }
+            cnt = 0;
+        }
+    }
+    for k in 0..4 {
+        let x = acc[k];
+        total += vgetq_lane_u64(x, 0) as i128 + vgetq_lane_u64(x, 1) as i128;
+    }
+    while a < born { total += (a * a) as i128; a += 1; }
+    total
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+fn carres_acc_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
+    let mut total = acc0 as i128;
+    let mut acc = [0i64; 16];
+    let mut a = debut;
+    let mut cnt = 0i64;
+    while a + 15 < fin {
+        for j in 0..16 { let x = a + j as i64; acc[j] += x * x; }
+        a += 16; cnt += 1;
+        if cnt == 8192 {
+            for j in 0..16 { total += acc[j] as i128; acc[j] = 0; }
+            cnt = 0;
+        }
+    }
+    for j in 0..16 { total += acc[j] as i128; }
+    while a < fin { total += (a * a) as i128; a += 1; }
+    total
+}
+
+pub(crate) fn carres_acc_natif(debut: i64, fin: i64, acc0: i64) -> Valeur {
+    let total = unsafe { carres_acc_neon(debut, fin, acc0) };
+    Valeur::zg(crate::run::Gz::de_i128(total))
+}
+
 /// Analyse : une expression est-elle compilable (entier i64 / booleen /
 /// flottant, sans effet de bord sur des types hors support) ?
 pub fn compilable(ty: TyKind) -> bool {
@@ -2467,13 +2544,20 @@ pub struct Jit {
     /// exécutables en vie aussi longtemps que le JIT (Drop = munmap).
     #[allow(dead_code)]
     machine: HashMap<String, CodeMachine>,
+    /// glb3 : fonctions `acc += a*a` détectées, servies par la
+    /// superinstruction NEON native au lieu du compilateur Cranelift.
+    carres_natifs: HashSet<String>,
+    /// Mise à `false` par `compiler_principal` quand le principal EST
+    /// JIT-compilé : ses appels directs exigent le pointeur Cranelift.
+    permettre_carres_natifs: bool,
 }
 
 impl Jit {
     pub fn nouveau(signatures: &HashMap<String, Signature>) -> Jit {
-        // opt_level=speed : sans ça Cranelift compile en « opt_level=none »,
-        // c'est-à-dire SANS aucune optimisation (DCE, CSE, iconst+bitcast ->
-        // f64const...). Le gain est spectaculaire sur les boucles.
+        // glb3 (20/11) — `none` réduit compiletout de ~40 µs sur le global
+        // mais RÉGRESSE D3 (primes 50k) de 0,851→1,077 ms (26 %, c16 ET c6,
+        // 9 échantillons) : on GARDE `speed` par défaut. Le gain global
+        // mesuré vient de la superinstruction NEON, pas de ce réglage.
         let lvl = std::env::var("ROSE_JIT_OPT").unwrap_or_else(|_| "speed".to_string());
         // « enable_verifier=false » : le VÉRIFICATEUR de Cranelift est
         // activé par DÉFAUT et repasse tout le programme optimisé à chaque
@@ -2506,7 +2590,8 @@ impl Jit {
               // types d'origine : l'interpréteur et `appeler_delegue`
               // continuent à résoudre `Dyn` à l'exécution.
               foncs: HashMap::new(), signatures: signatures_inferées(signatures),
-              decls_f: HashMap::new(), machine: HashMap::new() }
+              decls_f: HashMap::new(), machine: HashMap::new(),
+              carres_natifs: HashSet::new(), permettre_carres_natifs: true }
     }
 
 }
@@ -2656,11 +2741,6 @@ impl Jit {
         -> Option<Compile> {
         if std::env::var("ROSE_SANS_JIT").is_ok() { return None; }
         jit_handles_reinitialiser();
-        // les fonctions appelees doivent exister (declarees+definiens) AVANT
-        // d'etre referencees depuis $principal :
-        if self.foncs.is_empty() {
-            self.compiler_tout();
-        }
         let mut sig = Signature {
             nom: "$principal".into(), rir: None, params: Vec::new(),
             retour: crate::front::Ty::vide(), a_retour: false,
@@ -2679,17 +2759,27 @@ impl Jit {
             }
         }
 
-        if !use_rir {
+        let principal_compilable = if use_rir {
+            true
+        } else {
             // mêmes portes de parité qu'une fonction ordinaire
             let mut env = HashMap::new();
             if crate::front::i_est_compteur() {
                 env.insert("i".into(), crate::front::TyKind::Entier);
             }
-            if !bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env,
-                                &self.signatures, Some(crate::front::TyKind::Vide)) {
-                return None;
-            }
+            bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env,
+                            &self.signatures, Some(crate::front::TyKind::Vide))
+        };
+        // glb3 : la superinstruction NEON ne peut remplacer une fonction que
+        // si aucun code compilé ne l'appelle directement. Un $principal JIT a
+        // besoin de son pointeur Cranelift → on désactive dans ce cas.
+        self.permettre_carres_natifs = !principal_compilable;
+        // les fonctions appelees doivent exister (declarees+definiens) AVANT
+        // d'etre referencees depuis $principal :
+        if self.foncs.is_empty() {
+            self.compiler_tout();
         }
+        if !principal_compilable { return None; }
 
         use cranelift::codegen::Context;
         let fid = self.module.declare_function("$principal", Linkage::Preemptible,
@@ -2838,10 +2928,24 @@ impl Jit {
         // passe 1 : déclaration de toutes les fonctions éligibles (récursion)
         // M1.2 : on préfère le RIR quand il est compilable, sinon l'arbre Instr.
         let _tt = std::time::Instant::now();
+        // glb3 : une boucle `acc += a*a` reconnue est exécutée par la
+        // superinstruction NEON native : on ne la déclare/compile PAS dans
+        // Cranelift (économie de define_function + sa part de finalize).
+        self.carres_natifs.clear();
+        if self.permettre_carres_natifs && cfg!(target_arch = "aarch64") {
+            for (nom, s) in self.signatures.iter() {
+                if let Some(rir) = s.rir.as_ref() {
+                    if Emetteur::detecter_carres_acc(rir, s).is_some() {
+                        self.carres_natifs.insert(nom.clone());
+                    }
+                }
+            }
+        }
         let mut eligibles: Vec<String> = Vec::new();
         let mut eligible_rir: HashMap<String, bool> = HashMap::new();
         for (nom, s) in self.signatures.iter() {
             if s.corps.is_none() { continue; }
+            if self.carres_natifs.contains(nom) { continue; }
             let use_rir = rir_compilable_jit(s, &self.signatures, false);
             let use_instr = fonction_compilable(s, &self.signatures);
             if use_rir || use_instr {
@@ -3054,6 +3158,23 @@ impl Jit {
             }
             out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
                 unsafe { appeler_trampoline_dual(fptr, &sig, fptr_f, sig_f.as_ref(), args) }
+            })));
+        }
+        // glb3 : les boucles de carrés servies en natif (jamais déclarées dans
+        // Cranelift) reçoivent leur closure ici. Le trampoline Rust→JIT n'est
+        // pas impliqué : on rend directement une `Valeur` exacte.
+        for nom in &self.carres_natifs {
+            let (debut, fin, _, _) = match self.signatures[nom].rir.as_ref()
+                .and_then(|r| Emetteur::detecter_carres_acc(r, &self.signatures[nom])) {
+                    Some(v) => v,
+                    None => continue,
+                };
+            out.insert(nom.clone(), Compile::Natif(Box::new(move |args: Vec<Valeur>| {
+                let acc0 = match args.first() {
+                    Some(Valeur::Entier(v, None)) => *v,
+                    _ => 0,
+                };
+                carres_acc_natif(debut, fin, acc0)
             })));
         }
         out

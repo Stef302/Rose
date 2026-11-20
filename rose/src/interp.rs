@@ -6064,7 +6064,9 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     }
     let _t0 = crate::run::chrono();
     let mut prog = match origine {
-        Some(f) => crate::front::analyser_fichier(f),
+        // glb3 : le source racine a DEJA été lu par `executer_fichier` — on
+        // évite une seconde lecture disque (imports résolus normalement).
+        Some(f) => crate::front::analyser_fichier_source(f, source),
         None => crate::front::analyser(source),
     };
     let mut prog = match prog {

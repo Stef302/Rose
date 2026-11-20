@@ -2518,7 +2518,23 @@ pub fn analyser_fichier(chemin: &str) -> Result<Programme, Err> {
     analyser_fichier_rec(chemin, &mut deja)
 }
 
+/// Variante de `analyser_fichier` quand le source du fichier racine est DEJA
+/// en mémoire : évite une seconde lecture disque (constat glb3, 20/11). Les
+/// imports, eux, sont toujours lus depuis le disque et résolus de la même
+/// façon ; la sémantique est identique à `analyser_fichier`.
+pub fn analyser_fichier_source(chemin: &str, source: &str) -> Result<Programme, Err> {
+    let mut deja: std::collections::HashSet<String> = std::collections::HashSet::new();
+    analyser_fichier_rec_source(chemin, Some(source), &mut deja)
+}
+
 fn analyser_fichier_rec(chemin: &str, deja: &mut std::collections::HashSet<String>)
+    -> Result<Programme, Err>
+{
+    analyser_fichier_rec_source(chemin, None, deja)
+}
+
+fn analyser_fichier_rec_source(chemin: &str, source_deja_lu: Option<&str>,
+                               deja: &mut std::collections::HashSet<String>)
     -> Result<Programme, Err>
 {
     let canonique = std::fs::canonicalize(chemin)
@@ -2528,9 +2544,16 @@ fn analyser_fichier_rec(chemin: &str, deja: &mut std::collections::HashSet<Strin
         // ⚠ Déjà chargé : un programme VIDE (ses fonctions sont déjà là).
         return Ok(Programme::default());
     }
-    let source = match std::fs::read_to_string(chemin) {
-        Ok(s) => s,
-        Err(e) => return Err(fmt_err(&format!("importer : impossible de lire '{}' ({})", chemin, e), 0, 0)),
+    let source_possedee: String;
+    let source: &str = match source_deja_lu {
+        Some(s) => s,
+        None => {
+            source_possedee = match std::fs::read_to_string(chemin) {
+                Ok(s) => s,
+                Err(e) => return Err(fmt_err(&format!("importer : impossible de lire '{}' ({})", chemin, e), 0, 0)),
+            };
+            &source_possedee
+        }
     };
     // ⚠⚠⚠ LES IMPORTS SONT FUSIONNÉS AVANT LA VÉRIFICATION (mesuré le 17/11).
     //
