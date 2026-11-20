@@ -923,3 +923,11 @@ Consigne: « on continue self hosting et programme global ». SH2 a livré 4 dé
 | Agent | Sujet | Fichiers possédés | Cœur |
 |---|---|---|---|
 | SH3 | zone args>=31 vs slots (check_instr 35 params) | `compilateur/emetteur_elf.rose`, `rose/docs/SELF_HOST_SH3.md` | dédié |
+
+## Vague 45 (20/11) — global : battre Rust
+
+Consigne: « on continue self hosting et programme global, on ne s'arrête pas ». GLB1 a livré (commit 4aad1d8): rationnels 10,75→0,79ms, ratio global ×8,5→×4,3. Reste ~7-8ms: carres ~2ms (jit.rs), tables ~2-3ms, flottants ~1ms, chaines/listes/RNG ~1ms, E/S bruitees.
+
+| Agent | Sujet | Fichiers possédés | Cœur |
+|---|---|---|---|
+| GLB2 | global : Rose ≤ Rust | `rose/src/{jit,run,interp}.rs`, `rose/docs/GLOBAL_BEAT.md` | 6 |
