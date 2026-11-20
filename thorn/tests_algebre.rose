@@ -19,7 +19,8 @@ inserer($al_cpt, "e", 0)
 
 >> "Thorn — algèbre élémentaire : rejeu des lemmes par le noyau"
 
-# Addition (10)
+# Addition (11)
+al_lance("plus_zero_l", al_lem_plus_zero_l(), $al_cpt)
 al_lance("plus_zero_d", al_lem_plus_zero_d(), $al_cpt)
 al_lance("plus_assoc", al_lem_plus_assoc(), $al_cpt)
 al_lance("succ_commute", al_lem_succ_commute(), $al_cpt)

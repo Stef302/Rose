@@ -22,7 +22,7 @@ qui typent réellement la base et le pas avant de soumettre le terme fermé.
 
 `./rose/rose verif thorn/src/algebre.rose` → `vérifié`
 `./rose/rose verif thorn/tests_algebre.rose` → `vérifié`
-`./rose/rose thorn/tests_algebre.rose` → **33 lemme(s) vérifié(s), 0 échec(s)**,
+`./rose/rose thorn/tests_algebre.rose` → **34 lemme(s) vérifié(s), 0 échec(s)**,
 `RESULTAT: OK` (exécution réelle, ~2 min 13 s sur cette machine : les termes
 de preuve de la distributivité et de l'associativité de × sont volumineux).
 
@@ -63,11 +63,12 @@ droite/gauche, associativité, absorption), les lois de `+` listées ci-dessous,
 `succ_commute`, les cancellations et `plus_assoc4`. Les congruuences de `×` et
 de `≤` sont des termes `eq_rec` vérifiés, pas des axiomes.
 
-## 4. Les 33 lemmes vérifiés
+## 4. Les 34 lemmes vérifiés
 
-### Addition (10)
+### Addition (11)
 | Lemme | Énoncé (notation lisible) | Nature |
 |---|---|---|
+| `plus_zero_l` | `Πn, 0 + n = n` | application de l'équation `plus_0_l` (déjà axiomatique, non dupliquée comme preuve) |
 | `plus_zero_d` | `Πn, n + 0 = n` | démontré par induction (terme propre, indépendant de `bibliotheque.rose`) |
 | `plus_assoc` | `Πm n p, (m+n)+p = m+(n+p)` | démontré par induction (terme propre) |
 | `succ_commute` | `Πn m, succ n + m = n + succ m` | démontré (`plus_s_l` + `plus_succ_d`) |
@@ -82,8 +83,8 @@ de `≤` sont des termes `eq_rec` vérifiés, pas des axiomes.
 La **commutativité** `plus_comm` existe déjà dans `bibliotheque.rose` : elle
 n'est PAS dupliquée dans la liste. Son terme est reconstruit en interne
 (`al_term_plus_comm_interne()`, lui aussi vérifié) uniquement comme outil de
-preuve de `mult_succ_g`. L'identité à gauche `0+n = n` est l'axiome `plus_0_l`
-déjà présent et n'est pas non plus comptée comme nouveau lemme.
+preuve de `mult_succ_g`. L'identité à gauche `0+n = n` est l'axiome `plus_0_l` déjà présent : le lemme
+`plus_zero_l` ci-dessus en est l'application vérifiée, pas une seconde preuve.
 
 ### Multiplication (12)
 | Lemme | Énoncé | Nature |

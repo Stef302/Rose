@@ -435,6 +435,11 @@ fn al_term_permute4() -> table {
 # 5. LEMMES — ADDITION
 # ═════════════════════════════════════════════════════════════════════════════
 
+fn al_lem_plus_zero_l() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(ta_plus(ta_zero(), noy_var("n")), noy_var("n")))
+  retour al_pair($al_but, noy_lam("n", ta_nat(), al_plus0l(noy_var("n"))))
+}
+
 fn al_lem_plus_zero_d() -> table {
   $al_but = noy_pi("n", ta_nat(), al_eq(ta_plus(noy_var("n"), ta_zero()), noy_var("n")))
   retour al_pair($al_but, al_term_plus_zero_d())
