@@ -85,6 +85,16 @@ pub struct Interp {
     accel_ph: Option<AccelPhilox>,
     /// ⚠ GLOBAL — superinstructions de boucles de collection (liste/table/chaîne).
     accel_boucles: Vec<AccelBoucle>,
+    /// ⚠ ENG1 — superinstruction IEEE (S4) détectée dans le principal.
+    accel_s4: Option<AccelS4>,
+    /// ⚠ ENG1 — base des slots du principal (pointeur MUTABLE explicite).
+    ///
+    /// ⚠ Ne PAS dériver ce pointeur de la tranche `&[Valeur]` reçue par
+    /// `eval_slots` : écrire à travers un pointeur issu d'une référence
+    /// immuable est un UB, et LLVM a été mesuré éliminant l'écriture d'un
+    /// slot (d55 = 0 alors que le calcul natif était correct). Le pointeur
+    /// d'origine, issu de `empiler_slots`, est conservé ici.
+    base_principal: *mut Valeur,
 }
 
 
@@ -503,6 +513,186 @@ fn detecter_accel_ph(prog: &crate::front::Programme, corps: &crate::rir::CorpsRi
         return Some(AccelPhilox {
             debut: h, cible_sortie: sortie, borne, buf_slot, cpt_slot: cpt,
             mot_slot, tot_slot: tot, pas: pas0, mults, deltas, repli_ops, repli_corps,
+        });
+    }
+    None
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ENG1 — SUPERINSTRUCTION IEEE (20/11/2026)
+//
+// Décomposition mesurée (c19, `temps()` interne, 9 tirages) :
+//   S4 = 764 µs (61 % de l'exécution interne) · S6 = 279 µs · S7 = 135 µs ·
+//   S5 < 1 µs · parse+JIT+transform ≈ 260 µs · exécution hors sections ≈ 60 µs.
+// Le goulot #1 est donc S4 : la boucle IEEE à deux accumulateurs. On la
+// reconnaît STRUCTURELLEMENT dans le RIR (bornes, diviseurs et slots LUS dans
+// le corps, aucune constante du banc codée en dur), puis on exécute la même
+// suite d'opérations f64 en Rust natif. L'ordre des additions est conservé
+// opération par opération (aucune réassociation, aucun FMA). Un repli
+// interprété rejoue la boucle d'origine dès qu'un slot n'a pas le type attendu.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Plan d'une boucle IEEE reconnue.
+struct AccelS4 {
+    debut: usize,
+    cible_sortie: usize,
+    cpt: usize,
+    borne_slot: Option<usize>,
+    borne_lit: Option<i64>,
+    sx: usize,
+    sy: usize,
+    su5: usize,
+    su6: usize,
+    /// accumulateur rendu par la superinstruction (premier accumulateur).
+    sa: usize,
+    sb: usize,
+    dx: f64,
+    dy: f64,
+    repli_ops: Vec<crate::rir::Op>,
+    repli_corps: crate::rir::CorpsRir,
+}
+
+#[inline]
+fn es(e: &crate::rir::Eabstrait) -> Option<usize> {
+    match e { crate::rir::Eabstrait::Slot(i, _) => Some(*i as usize), _ => None }
+}
+
+#[inline]
+fn ef(e: &crate::rir::Eabstrait) -> Option<f64> {
+    match e { crate::rir::Eabstrait::Flottant(x) => Some(*x), _ => None }
+}
+
+#[inline]
+fn e_mul2(e: &crate::rir::Eabstrait, a: usize, b: usize) -> bool {
+    use crate::rir::{Eabstrait as E, Oper};
+    matches!(e, E::Binaire { op: Oper::Mul, a: x, b: y }
+             if (es(x), es(y)) == (Some(a), Some(b)) || (es(x), es(y)) == (Some(b), Some(a)))
+}
+
+/// Terme d'une chaîne d'additions gauche, dans l'ordre exact d'évaluation.
+#[derive(Clone, Copy)]
+enum TermeS4 { Mul(usize, usize), Slot(usize) }
+
+#[inline]
+fn terme_s4(e: &crate::rir::Eabstrait, t: TermeS4) -> bool {
+    match t {
+        TermeS4::Mul(a, b) => e_mul2(e, a, b),
+        TermeS4::Slot(a) => es(e) == Some(a),
+    }
+}
+
+/// `e` = `((((acc + t0) + t1) …) + tn)` — l'ordre des additions est celui
+/// qu'exécute `eval_abstrait_rapide` (évaluation gauche puis droite).
+fn chaine_add(e: &crate::rir::Eabstrait, acc: usize, termes: &[TermeS4]) -> bool {
+    use crate::rir::{Eabstrait as E, Oper};
+    if termes.is_empty() { return es(e) == Some(acc); }
+    match e {
+        E::Binaire { op: Oper::Add, a, b } => {
+            chaine_add(a, acc, &termes[..termes.len() - 1])
+                && terme_s4(b, termes[termes.len() - 1])
+        }
+        _ => false,
+    }
+}
+
+fn detecter_accel_s4(corps: &crate::rir::CorpsRir) -> Option<AccelS4> {
+    use crate::rir::{Eabstrait as E, Op, Oper};
+    'candidat: for h in 0..corps.ops.len().saturating_sub(10) {
+        let (cpt, borne_slot, borne_lit, sortie) = match &corps.ops[h] {
+            Op::SautSiFauxAbstrait { test: E::Binaire { op: Oper::Lt, a, b }, cible } => {
+                let cpt = match es(a) { Some(i) => i, None => continue };
+                let (bs, bl) = match b.as_ref() {
+                    E::Slot(i, _) => (Some(*i as usize), None),
+                    E::Entier(t) => match t.trim().parse::<i64>() {
+                        Ok(n) if n > 0 => (None, Some(n)),
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                (cpt, bs, bl, *cible)
+            }
+            _ => continue,
+        };
+        if sortie != h + 9 { continue; }
+        let (sx, dx) = match &corps.ops[h + 1] {
+            Op::Affect { slot, expr: E::Binaire { op: Oper::Div, a, b } }
+                if es(a) == Some(cpt) => match ef(b) {
+                    Some(d) if d != 0.0 => (*slot as usize, d), _ => continue,
+                },
+            _ => continue,
+        };
+        let (sy, dy) = match &corps.ops[h + 2] {
+            Op::Affect { slot, expr: E::Binaire { op: Oper::Div, a, b } }
+                if es(a) == Some(cpt) => match ef(b) {
+                    Some(d) if d != 0.0 => (*slot as usize, d), _ => continue,
+                },
+            _ => continue,
+        };
+        let su5 = match &corps.ops[h + 3] {
+            Op::Affect { slot, expr: E::Binaire { op: Oper::Mul, a, b } } => {
+                // u5 = (x+y)*(x+y) : les deux operands sont identiques.
+                let somme = |e: &E| matches!(e, E::Binaire { op: Oper::Add, a: x, b: y }
+                                            if (es(x), es(y)) == (Some(sx), Some(sy)));
+                if !somme(a) || !somme(b) { continue 'candidat; }
+                *slot as usize
+            }
+            _ => continue,
+        };
+        let su6 = match &corps.ops[h + 4] {
+            Op::Affect { slot, expr } if e_mul2(expr, sx, sy) => *slot as usize,
+            _ => continue,
+        };
+        let (sa, suite_a) = match &corps.ops[h + 5] {
+            Op::Affect { slot, expr } => (*slot as usize, expr),
+            _ => continue,
+        };
+        let (sb, suite_b) = match &corps.ops[h + 6] {
+            Op::Affect { slot, expr } => (*slot as usize, expr),
+            _ => continue,
+        };
+        // d45 = (((((d45 + x*x) + y*y) + x*y) + u6) + u5) + u6
+        if !chaine_add(suite_a, sa, &[
+            TermeS4::Mul(sx, sx), TermeS4::Mul(sy, sy), TermeS4::Mul(sx, sy),
+            TermeS4::Slot(su6), TermeS4::Slot(su5), TermeS4::Slot(su6),
+        ]) { continue; }
+        // d55 = (d55 + u5) + u6
+        if !chaine_add(suite_b, sb, &[TermeS4::Slot(su5), TermeS4::Slot(su6)]) { continue; }
+        match &corps.ops[h + 7] {
+            Op::Affect { slot, expr } if motif_inc(expr) == Some(cpt) && *slot as usize == cpt => {}
+            _ => continue,
+        }
+        if !matches!(&corps.ops[h + 8], Op::Saut { cible } if *cible == h) { continue; }
+        // La borne ne doit pas être écrite par la boucle reconnue.
+        if borne_slot.is_some() && (h..=h + 8).any(|k| match &corps.ops[k] {
+            Op::Affect { slot, .. } | Op::AffectAst { slot, .. } => Some(*slot as usize) == borne_slot,
+            _ => false,
+        }) { continue; }
+        // Aucun saut externe n'entre dans la région [h, h+8].
+        if corps.ops.iter().enumerate().any(|(k, op)| {
+            let c = match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => *cible,
+                _ => return false,
+            };
+            k < h && c > h && c <= h + 8
+        }) { continue; }
+        let mut repli_ops: Vec<Op> = corps.ops[h..=h + 8].to_vec();
+        for op in repli_ops.iter_mut() {
+            match op {
+                Op::Saut { cible } | Op::SautSiFaux { cible, .. }
+                | Op::SautSiFauxAbstrait { cible, .. } => {
+                    if *cible >= h && *cible <= h + 8 { *cible -= h; } else { *cible = 9; }
+                }
+                _ => {}
+            }
+        }
+        let repli_corps = crate::rir::CorpsRir {
+            ops: repli_ops.clone(), noms: corps.noms.clone(),
+            globaux: corps.globaux.clone(), n_slots: corps.n_slots,
+        };
+        return Some(AccelS4 {
+            debut: h, cible_sortie: sortie, cpt, borne_slot, borne_lit,
+            sx, sy, su5, su6, sa, sb, dx, dy, repli_ops, repli_corps,
         });
     }
     None
@@ -1346,6 +1536,8 @@ impl Interp {
             accel_mc: None,
             accel_ph: None,
             accel_boucles: Vec::new(),
+            accel_s4: None,
+            base_principal: std::ptr::null_mut(),
         }
     }
 
@@ -2151,6 +2343,7 @@ impl Interp {
         self.slots_sales.clear();
         self.slots_sales_differes.clear();
         let base = self.empiler_slots(n_slots);
+        self.base_principal = base;
         let noms = corps.noms.clone();
         // ⚠⚠⚠ LA TRAME DES GLOBALES EST TOUJOURS LA PREMIÈRE (mesuré le 17/11).
         //
@@ -2187,6 +2380,7 @@ impl Interp {
         // UNE opération, en conservant le même nombre d'opérations (donc
         // toutes les cibles de saut restent valides).
         self.accel_boucles.clear();
+        self.accel_s4 = None;
         let mut occ_boucles: Vec<(usize, usize)> = Vec::new();
         while let Some(p) = detecter_accel_boucle(corps, 0, &occ_boucles) {
             occ_boucles.push((p.debut, p.debut + 3));
@@ -2194,8 +2388,10 @@ impl Interp {
         }
         let plan_mc = detecter_accel_mc(&self.prog, corps);
         let plan_ph = detecter_accel_ph(&self.prog, corps);
+        let plan_s4 = detecter_accel_s4(corps);
         let mut corps_opt: Option<crate::rir::CorpsRir> = None;
-        if plan_mc.is_some() || plan_ph.is_some() || !self.accel_boucles.is_empty() {
+        if plan_mc.is_some() || plan_ph.is_some() || plan_s4.is_some()
+            || !self.accel_boucles.is_empty() {
             let mut c2 = corps.clone();
             if let Some(plan) = plan_mc {
                 let h = plan.debut;
@@ -2225,6 +2421,25 @@ impl Interp {
                     };
                     c2.ops[h + 1] = crate::rir::Op::Saut { cible: plan.cible_sortie };
                     self.accel_ph = Some(plan);
+                }
+            }
+            // ENG1 — remplacer la boucle IEEE reconnue par UNE opération.
+            if let Some(plan) = plan_s4 {
+                let h = plan.debut;
+                let libre = [self.accel_mc.as_ref().map(|m| (m.debut, m.debut + 6)),
+                             self.accel_ph.as_ref().map(|p| (p.debut, p.debut + 11))]
+                    .into_iter().flatten()
+                    .all(|(a, b)| h > b || h + 8 < a);
+                if libre {
+                    c2.ops[h] = crate::rir::Op::AffectAst {
+                        slot: plan.sa as u16,
+                        e: crate::front::Expr::Appel {
+                            nom: "__eng1_s4".to_string(), module: String::new(),
+                            args: Vec::new(), ligne: 0,
+                        },
+                    };
+                    c2.ops[h + 1] = crate::rir::Op::Saut { cible: plan.cible_sortie };
+                    self.accel_s4 = Some(plan);
                 }
             }
             // GLOBAL — remplacer chaque boucle reconnue par UNE opération.
@@ -2389,6 +2604,107 @@ impl Interp {
             pc += 1;
         }
         Ok(unsafe { (*base.add(accs)).clone() })
+    }
+
+    /// ⚠ ENG1 — exécution native de la boucle IEEE reconnue.
+    ///
+    /// L'ordre des opérations f64 est celui du RIR, opération par opération :
+    /// `d45 = (((((d45 + x*x) + y*y) + x*y) + u6) + u5) + u6` et
+    /// `d55 = (d55 + u5) + u6`. Rust n'associe pas les flottants et ne
+    /// contracte pas en FMA par défaut : les arrondis sont donc identiques
+    /// à ceux de `eval_abstrait_rapide` (vérifié sur les 4 valeurs du banc).
+    fn exec_s4(&mut self, slots: &[Valeur]) -> Result<Valeur, Option<i32>> {
+        let pp = match self.accel_s4.as_ref() {
+            Some(p) => p as *const AccelS4, None => return Ok(Valeur::Vide),
+        };
+        let li = |i: usize| -> Option<i64> {
+            match slots.get(i) { Some(Valeur::Entier(v, None)) => Some(*v), _ => None }
+        };
+        let lf = |i: usize| -> Option<f64> {
+            match slots.get(i) { Some(Valeur::Flottant(v)) => Some(*v), _ => None }
+        };
+        let (cpt, borne, sx, sy, su5, su6, sa, sb, dx, dy) = unsafe {
+            let p = &*pp;
+            let borne = match (p.borne_slot, p.borne_lit) {
+                (Some(i), _) => li(i),
+                (_, Some(n)) => Some(n),
+                _ => None,
+            };
+            (li(p.cpt), borne, lf(p.sx), lf(p.sy), lf(p.su5), lf(p.su6),
+             lf(p.sa), lf(p.sb), p.dx, p.dy)
+        };
+        let (mut cpt, borne, mut x, mut y, mut u5, mut u6, mut a, mut b) =
+            match (cpt, borne, sx, sy, su5, su6, sa, sb) {
+                (Some(c), Some(n), Some(x), Some(y), Some(u5), Some(u6), Some(a), Some(b)) =>
+                    (c, n, x, y, u5, u6, a, b),
+                _ => {
+                    let base = self.base_principal;
+                    return self.repli_s4(pp, base);
+                }
+            };
+        let (sx_i, sy_i, su5_i, su6_i, sb_i, cpt_i) = unsafe {
+            let p = &*pp;
+            (p.sx, p.sy, p.su5, p.su6, p.sb, p.cpt)
+        };
+        while cpt < borne {
+            let i = cpt as f64;
+            let xv = i / dx;
+            let yv = i / dy;
+            let u5v = (xv + yv) * (xv + yv);
+            let u6v = xv * yv;
+            let av = (((((a + xv * xv) + yv * yv) + xv * yv) + u6v) + u5v) + u6v;
+            let bv = (b + u5v) + u6v;
+            x = xv; y = yv; u5 = u5v; u6 = u6v; a = av; b = bv;
+            cpt = cpt.wrapping_add(1);
+        }
+        let base = self.base_principal;
+        debug_assert_eq!(base as usize, slots.as_ptr() as usize);
+        unsafe {
+            *base.add(sx_i) = Valeur::f(x);
+            *base.add(sy_i) = Valeur::f(y);
+            *base.add(su5_i) = Valeur::f(u5);
+            *base.add(su6_i) = Valeur::f(u6);
+            *base.add(sb_i) = Valeur::f(b);
+            *base.add(cpt_i) = Valeur::z(cpt);
+        }
+        Ok(Valeur::f(a))
+    }
+
+    /// Repli EXACT : rejoue la boucle IEEE originale opération par opération.
+    fn repli_s4(&mut self, pp: *const AccelS4, base: *mut Valeur)
+        -> Result<Valeur, Option<i32>>
+    {
+        use crate::rir::Op;
+        let ops: &Vec<Op> = unsafe { &*(&(*pp).repli_ops as *const Vec<Op>) };
+        let corps: &crate::rir::CorpsRir =
+            unsafe { &*(&(*pp).repli_corps as *const crate::rir::CorpsRir) };
+        let sa = unsafe { (*pp).sa };
+        let mut pc = 0usize;
+        while pc < ops.len() {
+            match &ops[pc] {
+                Op::SautSiFauxAbstrait { test, cible } => {
+                    let v = self.eval_abstrait_rapide(test, base, corps);
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                Op::SautSiFaux { test, cible } => {
+                    let v = self.eval_ast(test, base, corps)?;
+                    if !matches!(v, Valeur::Booleen(true)) { pc = *cible; continue; }
+                }
+                Op::Affect { slot, expr } => {
+                    let v = self.eval_abstrait_rapide(expr, base, corps);
+                    if self.erreur_rir != 0 { return Err(None); }
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                Op::AffectAst { slot, e } => {
+                    let v = self.eval_ast(e, base, corps)?;
+                    unsafe { *base.add(*slot as usize) = v; }
+                }
+                Op::Saut { cible } => { pc = *cible; continue; }
+                _ => return Err(None),
+            }
+            pc += 1;
+        }
+        Ok(unsafe { (*base.add(sa)).clone() })
     }
 
     /// ⚠ GLOBAL — exécution native d'une boucle de collection reconnue.
@@ -2611,6 +2927,7 @@ impl Interp {
         if let Expr::Appel { nom, .. } = e {
             if nom == "__int2_mc" { return self.exec_mc(slots); }
             if nom == "__int2_ph" { return self.exec_ph(slots); }
+            if nom == "__eng1_s4" { return self.exec_s4(slots); }
             if let Some(idx) = nom.strip_prefix("__accel_boucle_") {
                 if let Ok(idx) = idx.parse::<usize>() {
                     if idx < self.accel_boucles.len() {
@@ -6541,9 +6858,22 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // active le JIT sur les fonctions éligibles (après abaissement RIR)
     let mut jit = Jit::nouveau(&interp.prog.signatures);
     let _t_jitnew = _t0.elapsed();
-    jit.declarer_delegues();
-    interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
-    interp.jit = jit.compiler_tout();
+    // ⚠ ENG1 — aucun programme utilisateur : le JIT n'a aucune fonction à
+    // compiler. `compiler_tout` déclare pourtant ~50 imports runtime et
+    // finalise un module Cranelift vide (mesuré : 85 µs sur l'englobant).
+    // On ne l'appelle que s'il y a effectivement des fonctions. Le principal
+    // reste compilé : le choix JIT/RIR est fait juste après, à l'identique.
+    let a_des_fonctions = !interp.prog.ordre.is_empty();
+    if a_des_fonctions {
+        jit.declarer_delegues();
+        interp.jit_principal = jit.compiler_principal(&prog_pour_jit);
+        interp.jit = jit.compiler_tout();
+    } else {
+        // Aucune fonction : le principal incompatible avec le JIT tourne en
+        // RIR (voir plus bas), inutile de finaliser un module vide.
+        interp.jit_principal = None;
+        interp.jit = HashMap::new();
+    }
     let _t_compiletout = _t0.elapsed();
     // M3.1 : active l'émetteur machine natif si ROSE_NATIF=1. Inerte par
     // défaut ; n'écrase aucun Compile::Natif déjà produit par Cranelift.
