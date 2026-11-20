@@ -1952,6 +1952,38 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
 
     // Hauteur utile restante : aucune carte ne doit déborder du pied de page.
     let bas_utile = contenu.bottom - s(20);
+
+    // ── BANDEAU DE MISE À JOUR — PREMIER ÉCRAN ─────────────────────────
+    // Une seule lecture du manifeste site (repli GitHub) a eu lieu à
+    // l'ouverture. Si elle annonce une version PLUS RÉCENTE que celle
+    // installée, la banderole est dessinée ici, avant toute carte. Si la
+    // source est injoignable ou si Rose est à jour, RIEN n'est affiché :
+    // jamais d'alerte ni de version inventée.
+    *std::ptr::addr_of_mut!(ZONE_BANDEAU_VERSIONS) = std::mem::zeroed::<RECT>();
+    if etat.vue == Vue::MisesAJour || etat.vue == Vue::Bienvenue {
+        let bandeau = SUIVI_MAJ.lock().unwrap_or_else(|e| e.into_inner()).bandeau.clone();
+        if let Some(b) = bandeau {
+            let texte = format!("{} —", b.texte());
+            let h_ban = s(58);
+            let r_ban = RECT { left: g, top: yc, right: d, bottom: yc + h_ban };
+            arrondi(dc, &r_ban, 8, CARTE);
+            contour(dc, &r_ban, 8, VERT_LIME_VIF);
+            let mut rt = RECT { left: g + s(16), top: yc + s(6),
+                                right: d - s(152), bottom: yc + h_ban - s(4) };
+            texte_echelle(dc, dpi, "Segoe UI", &texte, &mut rt,
+                          DT_WORDBREAK | DT_VCENTER, TEXTE, 11, true, echelle);
+            let bouton = RECT { left: d - s(142), top: yc + s(12),
+                                right: d - s(10), bottom: yc + s(46) };
+            arrondi(dc, &bouton, 8, VERT_LIME_VIF);
+            contour(dc, &bouton, 8, VERT_LIME_VIF);
+            let mut rb = bouton;
+            texte_echelle(dc, dpi, "Kare", "VOIR LES VERSIONS", &mut rb,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE, NOIR_DOUX, 9, false, echelle);
+            *std::ptr::addr_of_mut!(ZONE_BANDEAU_VERSIONS) = bouton;
+            yc += h_ban + s(16);
+        }
+    }
+
     match etat.vue {
         // ── PREMIER ÉCRAN : choix du mode de mise à jour ──────────────
         // Trois cartes radio, thème Rose (ROUGE_VIF / VERT_LIME_VIF),
@@ -2546,38 +2578,50 @@ static mut ZONE_VERSIONS_BAS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0
 struct SuiviMaj {
     verifie_en_cours: bool,
     verification: Option<Result<Option<String>, String>>,
+    /// Bandeau FACTUEL (« X → Y ») issu de la MÊME unique lecture du
+    /// manifeste site (ou de son repli GitHub). `None` = rien à annoncer.
+    bandeau: Option<crate::velopack::BandeauMiseAJour>,
     telecharge_en_cours: bool,
     telechargement: Option<Result<Option<String>, String>>,
 }
 static SUIVI_MAJ: std::sync::Mutex<SuiviMaj> = std::sync::Mutex::new(SuiviMaj {
     verifie_en_cours: false,
     verification: None,
+    bandeau: None,
     telecharge_en_cours: false,
     telechargement: None,
 });
 
+/// Rectangle du bouton « Voir les versions » de la banderole. Remis à zéro
+/// à chaque tracé : aucun clic fantôme quand la banderole n'est pas affichée.
+static mut ZONE_BANDEAU_VERSIONS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+
 /// Lance une vérification en tâche de fond.
 ///
-/// `explicite = false` : vérification AU DÉMARRAGE (mode « Auto » seulement,
-/// garde-fou dans `velopack::verifier_au_demarrage`) — ne télécharge RIEN.
-/// `explicite = true` : bouton « Vérifier les mises à jour » (mode manuel).
+/// UN SEUL thread, lancé une seule fois à l'ouverture (mode « Auto ») ou sur
+/// action explicite de l'utilisateur : il fait UNE lecture du manifeste du
+/// SITE Rose (repli GitHub), puis meurt. Aucune boucle, aucun timer, aucune
+/// icône cachée. Le fil de messages n'est jamais bloqué (timeout 3 s).
 fn lancer_verification_maj(h: HWND, explicite: bool) {
     {
         let mut g = match SUIVI_MAJ.lock() { Ok(g) => g, Err(_) => return };
         if g.verifie_en_cours || g.telecharge_en_cours { return; }
         g.verifie_en_cours = true;
         g.verification = None;
+        g.bandeau = None;
         g.telechargement = None;
     }
     let cible = h as isize;
     std::thread::spawn(move || {
-        let resultat = if explicite {
-            crate::velopack::verifier_manifeste()
-        } else {
-            crate::velopack::verifier_au_demarrage()
-        };
+        // Source de vérité : le site ; repli : l'API GitHub existante.
+        let resultat = crate::velopack::verifier_bandeau(explicite);
+        let bandeau = resultat.as_ref().ok().and_then(|b| b.clone());
+        // L'ancien champ reste pour la ligne de statut et le bouton
+        // « Télécharger », qui exigent un consentement explicite.
+        let verification = resultat.map(|b| b.map(|b| b.disponible));
         if let Ok(mut g) = SUIVI_MAJ.lock() {
-            g.verification = Some(resultat);
+            g.verification = Some(verification);
+            g.bandeau = bandeau;
             g.verifie_en_cours = false;
         }
         let h = cible as HWND;
@@ -3032,6 +3076,12 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                 ouvrir_versions(h);
                 return 0;
             }
+            // Bouton « VOIR LES VERSIONS » de la banderole du premier écran.
+            let zb = &*std::ptr::addr_of!(ZONE_BANDEAU_VERSIONS);
+            if dans(zb, x, y) {
+                ouvrir_versions(h);
+                return 0;
+            }
             // ⚠ Sur la vue PATH, un clic dans la carte des méthodes CHOISIT
             // la méthode (pas de bouton par méthode : la carte est
             // cliquable ligne par ligne).
@@ -3176,6 +3226,22 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             if let Some(catalogue) = nouveau {
                 let nb = catalogue.versions.len();
                 let hors_ligne = catalogue.hors_ligne;
+                // La banderole est recalculée depuis la MÊME liste qui vient
+                // d'être lue (site ou repli) — aucun second appel réseau.
+                let simples: Vec<String> = catalogue.versions.iter()
+                    .map(|e| e.version.clone()).collect();
+                let bandeau = crate::velopack::bandeau_depuis_chaines(
+                    &crate::velopack::version_installee().unwrap_or_default(),
+                    &simples,
+                );
+                if let Ok(mut g) = SUIVI_MAJ.lock() {
+                    g.bandeau = bandeau;
+                    if let Some(b) = &g.bandeau {
+                        g.verification = Some(Ok(Some(b.disponible.clone())));
+                    } else {
+                        g.verification = Some(Ok(None));
+                    }
+                }
                 let etat = &mut *ETAT;
                 etat.version_selection = etat.version_selection.min(nb.saturating_sub(1));
                 etat.version_depart = etat.version_depart.min(nb.saturating_sub(1));
@@ -3443,7 +3509,13 @@ fn charger_catalogue_versions(h: HWND, force: bool) {
     }
     let cible = h as isize;
     std::thread::spawn(move || {
-        let catalogue = crate::setup_core::launcher_catalogue();
+        // `force` = bouton « Rafraîchir » : le manifeste SITE est relu et son
+        // cache réécrit (repli GitHub si le site est injoignable).
+        let catalogue = if force {
+            crate::setup_core::launcher_catalogue_force()
+        } else {
+            crate::setup_core::launcher_catalogue()
+        };
         if let Ok(mut g) = CATALOGUE_ASYNC.lock() {
             *g = Some(catalogue);
         }

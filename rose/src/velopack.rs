@@ -740,6 +740,65 @@ pub const TTL_CACHE_VERSIONS: u64 = 300;
 /// Le téléchargement d'une version choisie garde son propre timeout curl.
 pub const DELAI_RESEAU_MS: u64 = 3000;
 
+/* ── SOURCE DE VÉRITÉ : LE SITE ROSE (repli : API GitHub) ──────────────────
+   L'UI ne dépend PAS de l'API GitHub : elle lit UN manifeste publié sur le
+   site, au même endroit que les humains. Une seule requête à l'ouverture du
+   launcher, bornée à 3 s, mise en cache avec le MÊME TTL (300 s) et le même
+   mécanisme de fichier horodaté que `versions-cache.json`. Aucun thread qui
+   boucle, aucun timer, aucune icône cachée : la vérification n'a lieu que
+   quand l'utilisateur ouvre le launcher (ou clique explicitement).
+   ───────────────────────────────────────────────────────────────────────── */
+
+/// Manifeste public des releases, publié sur le SITE (source de vérité).
+/// Format attendu : liste de releases `{version, tag, date, titre,
+/// assets:[{nom,url,sha256}], changelog}`, éventuellement enveloppée dans
+/// `{"releases":[…]}`. Aucune version n'est codée en dur ici.
+pub const URL_MANIFESTE_SITE: &str =
+    "https://stef302.github.io/Rose/telechargements/releases.json";
+
+/// Surcharge du manifeste site (diagnostic / tests, accepte `file://`).
+pub const VAR_MANIFESTE_SITE: &str = "ROSE_LAUNCHER_SITE_MANIFESTE";
+
+/// Cache local de la réponse BRUTE du manifeste site (horodatage inclus).
+/// Même format et même TTL que `NOM_CACHE_VERSIONS` : on ne réinvente aucune
+/// version, on relit exactement ce que le site a envoyé.
+pub const NOM_CACHE_SITE: &str = "site-releases-cache.json";
+
+/// D'où vient réellement la liste affichée (jamais deviné).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceVersions {
+    /// Manifeste site fraîchement lu sur le réseau.
+    Site,
+    /// Manifeste site déjà reçu, relu dans le cache local (TTL non dépassé).
+    CacheSite,
+    /// Repli : API GitHub publique, interrogée à l'ouverture.
+    GitHub,
+    /// Ni site ni GitHub : état local uniquement (liste en cache ou dossiers).
+    Local,
+    /// Source non précisée (comparaison pure à partir d'une liste déjà reçue).
+    Inconnu,
+}
+
+impl SourceVersions {
+    /// Libellé court, affichable sans alarmisme.
+    pub fn libelle(self) -> &'static str {
+        match self {
+            Self::Site => "site Rose",
+            Self::CacheSite => "site Rose (cache)",
+            Self::GitHub => "GitHub (repli)",
+            Self::Local => "appareil",
+            Self::Inconnu => "source non précisée",
+        }
+    }
+}
+
+/// Réponse exploitable : versions triées + source RÉELLE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultatVersions {
+    pub versions: Vec<VersionDistante>,
+    pub source: SourceVersions,
+}
+
 /// `v<version>` → `<version>`. Le préfixe `v` n'est retiré que s'il est suivi d'un
 /// chiffre (un tag exotique comme `version-test` reste intact).
 pub fn version_depuis_tag(tag: &str) -> String {
@@ -756,6 +815,22 @@ fn api_url() -> String {
     std::env::var("ROSE_LAUNCHER_API").unwrap_or_else(|_| {
         format!("https://api.github.com/repos/{}/releases?per_page=100", depot())
     })
+}
+
+/// URL du manifeste site, surchargeable pour tester hors ligne.
+fn url_manifeste_site() -> String {
+    std::env::var(VAR_MANIFESTE_SITE).unwrap_or_else(|_| URL_MANIFESTE_SITE.to_string())
+}
+
+/// Le site est la source par défaut. Les variables de diagnostic
+/// `ROSE_LAUNCHER_API` / `ROSE_VELOPACK_URL` demandent EXPLICITEMENT la voie
+/// GitHub / le manifeste Velopack : on les respecte (aucun appel au site
+/// dans ce cas), sinon ces tests feraient une vraie requête HTTP.
+/// `ROSE_LAUNCHER_SITE_MANIFESTE` force au contraire la voie site.
+fn site_source_ouverte() -> bool {
+    std::env::var_os(VAR_MANIFESTE_SITE).is_some()
+        || (std::env::var_os("ROSE_LAUNCHER_API").is_none()
+            && std::env::var_os("ROSE_VELOPACK_URL").is_none())
 }
 
 fn depot() -> String {
@@ -824,7 +899,7 @@ fn requeter_json(url: &str) -> Result<String, String> {
         "-sSL", "--fail",
         "--connect-timeout", "2",
         "--max-time", "3",
-        "-H", "Accept: application/vnd.github+json",
+        "-H", "Accept: application/json",
         url,
     ]);
     executer_json_avec_delai(commande)
@@ -1057,19 +1132,19 @@ fn dechapper_json(texte: &str) -> String {
     sortie
 }
 
-/// Écrit la réponse brute dans le cache local. Échec NON bloquant : le
-/// lanceur reste utilisable sans cache (il retentera à la prochaine ouverture).
-pub fn ecrire_cache_versions(json_brut: &str) -> bool {
-    let Some(racine) = dossier_racine() else { return false; };
+/// Mécanisme de cache COMMUN au site et à GitHub : réponse brute + horodatage.
+/// `racine` est passé explicitement pour que les tests puissent écrire dans un
+/// dossier temporaire SANS toucher aux variables d'environnement globales.
+fn ecrire_cache_brut_dans(racine: &Path, nom: &str, json_brut: &str) -> bool {
     let contenu = format!(
         "{{\"horodatage\":\"{}\",\"brut\":\"{}\"}}",
         maintenant_unix(),
         echapper_json(json_brut)
     );
-    let cible = racine.join(NOM_CACHE_VERSIONS);
-    let tmp = racine.join(format!("{NOM_CACHE_VERSIONS}.tmp"));
+    let cible = racine.join(nom);
+    let tmp = racine.join(format!("{nom}.tmp"));
     if let Err(e) = fs::write(&tmp, &contenu) {
-        eprintln!("Cache {NOM_CACHE_VERSIONS} non écrit : {e}");
+        eprintln!("Cache {nom} non écrit : {e}");
         return false;
     }
     // `rename` écrase sur Unix mais pas sur Windows : on retire d'abord.
@@ -1082,18 +1157,69 @@ pub fn ecrire_cache_versions(json_brut: &str) -> bool {
     fs::write(&cible, &contenu).is_ok()
 }
 
+/// Lecture inverse de `ecrire_cache_brut_dans` : `(horodatage, JSON brut)`.
+fn lire_cache_brut_dans(racine: &Path, nom: &str) -> Option<(u64, String)> {
+    let texte = fs::read_to_string(racine.join(nom)).ok()?;
+    let horodatage = champ_racine(&texte, "horodatage")?.parse::<u64>().ok()?;
+    let brut = dechapper_json(&champ_racine(&texte, "brut")?);
+    Some((horodatage, brut))
+}
+
+/// Vrai si le cache est encore frais (TTL de 300 s), faux si âgé ou si
+/// l'horloge système est en avance sur l'horodatage (cas toléré).
+fn cache_frais(horodatage: u64) -> bool {
+    maintenant_unix().saturating_sub(horodatage) < TTL_CACHE_VERSIONS
+}
+
+/// Vrai si un horodatage de cache est périmé (TTL de 300 s).
+pub fn cache_perime(horodatage: u64) -> bool {
+    !cache_frais(horodatage)
+}
+
+/// Horodatage du cache SITE, même périmé, quand la source site est active.
+/// `None` si le cache est absent/illisible ou si un diagnostic force GitHub.
+pub fn horodatage_cache_site() -> Option<u64> {
+    if !site_source_ouverte() {
+        return None;
+    }
+    let racine = dossier_racine()?;
+    let (horodatage, brut) = lire_cache_brut_dans(&racine, NOM_CACHE_SITE)?;
+    if analyser_manifeste_site(&brut).is_err() {
+        return None;
+    }
+    Some(horodatage)
+}
+
+/// Écrit la réponse brute dans le cache local. Échec NON bloquant : le
+/// lanceur reste utilisable sans cache (il retentera à la prochaine ouverture).
+pub fn ecrire_cache_versions(json_brut: &str) -> bool {
+    let Some(racine) = dossier_racine() else { return false; };
+    ecrire_cache_brut_dans(&racine, NOM_CACHE_VERSIONS, json_brut)
+}
+
 /// Lit le cache local. `None` si absent, illisible ou ne contenant aucune
 /// release installable : on ne présentera jamais une liste fabriquée.
 pub fn lire_cache_versions() -> Option<CacheVersions> {
     let racine = dossier_racine()?;
-    let texte = fs::read_to_string(racine.join(NOM_CACHE_VERSIONS)).ok()?;
-    let horodatage = champ_racine(&texte, "horodatage")?.parse::<u64>().ok()?;
-    let brut = dechapper_json(&champ_racine(&texte, "brut")?);
+    let (horodatage, brut) = lire_cache_brut_dans(&racine, NOM_CACHE_VERSIONS)?;
     let versions = analyser_releases(&brut);
     if versions.is_empty() {
         return None;
     }
     Some(CacheVersions { horodatage, versions })
+}
+
+/// Cache du manifeste SITE, lu SANS aucun appel réseau (affichage immédiat).
+fn lire_cache_site_brut() -> Option<(u64, String)> {
+    if !site_source_ouverte() {
+        return None;
+    }
+    let racine = dossier_racine()?;
+    let (horodatage, brut) = lire_cache_brut_dans(&racine, NOM_CACHE_SITE)?;
+    if !cache_frais(horodatage) {
+        return None;
+    }
+    Some((horodatage, brut))
 }
 
 /// Vrai quand le cache doit être actualisé (TTL dépassé). Une horloge
@@ -1137,11 +1263,315 @@ pub fn lister_versions() -> Result<Vec<VersionDistante>, String> {
     Ok(versions)
 }
 
+/* ── Manifeste du SITE : source de vérité, repli GitHub ──────────────────
+   Un SEUL appel au site par ouverture du launcher, borné à 3 s par
+   `requeter_json` (le même que GitHub). Cache local horodaté, TTL 300 s.
+   Si le manifeste est absent, illisible ou invalide, on retombe sur
+   `lister_versions()` (API GitHub existante) ; jamais une liste vide
+   silencieuse. Aucune version n'est codée en dur : tout vient du JSON.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/// Rend le tableau JSON associé à une clé, en respectant les chaînes
+/// (un changelog peut contenir `"assets" : [ … ]` sans que ce soit un champ).
+fn tableau_sous_cle<'a>(json: &'a str, cle: &str) -> Option<&'a str> {
+    let motif = format!("\"{cle}\"");
+    let octets = json.as_bytes();
+    let mut chaine = false;
+    let mut echap = false;
+    let mut i = 0usize;
+    while i < octets.len() {
+        let c = octets[i];
+        if chaine {
+            if echap { echap = false; }
+            else if c == b'\\' { echap = true; }
+            else if c == b'"' { chaine = false; }
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            if json[i..].starts_with(&motif) {
+                let mut j = i + motif.len();
+                while j < octets.len() && (octets[j] as char).is_ascii_whitespace() { j += 1; }
+                if j < octets.len() && octets[j] == b':' {
+                    j += 1;
+                    while j < octets.len() && (octets[j] as char).is_ascii_whitespace() { j += 1; }
+                    if j < octets.len() && octets[j] == b'[' {
+                        let debut = j;
+                        let (mut prof, mut ch, mut ech) = (0i32, false, false);
+                        let mut k = j;
+                        while k < octets.len() {
+                            let cc = octets[k];
+                            if ch {
+                                if ech { ech = false; }
+                                else if cc == b'\\' { ech = true; }
+                                else if cc == b'"' { ch = false; }
+                            } else {
+                                match cc {
+                                    b'"' => ch = true,
+                                    b'[' => prof += 1,
+                                    b']' => {
+                                        prof -= 1;
+                                        if prof == 0 { return Some(&json[debut..=k]); }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            k += 1;
+                        }
+                        return None;
+                    }
+                }
+            }
+            chaine = true;
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Une version n'est affichée QUE si elle ressemble réellement à une version
+/// (`0.1.72`, `1.2`, `2`) : pas de titre marketing ni de chaîne vide.
+fn version_site_valide(v: &str) -> bool {
+    let t = v.trim().trim_start_matches('v');
+    !t.is_empty()
+        && t.as_bytes().first().is_some_and(|c| c.is_ascii_digit())
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+')
+}
+
+fn est_nupkg(nom: &str) -> bool {
+    nom.to_ascii_lowercase().ends_with("-full.nupkg")
+}
+
+fn est_legacy(nom: &str) -> bool {
+    nom.to_ascii_lowercase().ends_with("setup.exe")
+}
+
+/// Analyse pure du manifeste site (aucun réseau, aucun disque).
+///
+/// Accepte une liste nue `[…]` ou l'enveloppe `{"releases":[…]}` ; les clés
+/// `titre`/`title`, `date`/`published_at`, `nom`/`name` sont tolérées pour
+/// rester compatible avec le format convenu avec l'agent SITE1. Un paquet
+/// n'est marqué installable QUE si son SHA-256 est annoncé — jamais de
+/// téléchargement sur une simple promesse de nom de fichier.
+pub fn analyser_manifeste_site(json: &str) -> Result<Vec<VersionDistante>, String> {
+    let brut = json.trim();
+    let tableau = if brut.starts_with('[') {
+        brut
+    } else {
+        tableau_sous_cle(brut, "releases")
+            .ok_or("manifeste site : clé 'releases' absente")?
+    };
+    let mut versions = Vec::new();
+    for objet in objets_racine(tableau) {
+        let tag_brut = champ_racine(&objet, "tag").unwrap_or_default();
+        let version_brute = champ_racine(&objet, "version").unwrap_or_default();
+        let version = if version_site_valide(&version_brute) {
+            version_brute.trim().trim_start_matches('v').to_string()
+        } else {
+            version_depuis_tag(&tag_brut)
+        };
+        if !version_site_valide(&version) {
+            continue;
+        }
+        let tag = if tag_brut.trim().is_empty() {
+            format!("v{version}")
+        } else {
+            tag_brut.trim().to_string()
+        };
+        let titre = champ_racine(&objet, "titre")
+            .or_else(|| champ_racine(&objet, "title"))
+            .unwrap_or_else(|| tag.clone());
+        let date = champ_racine(&objet, "date")
+            .or_else(|| champ_racine(&objet, "published_at"))
+            .unwrap_or_default();
+        let (mut nupkg, mut legacy, mut installable) = (String::new(), String::new(), false);
+        if let Some(assets) = tableau_sous_cle(&objet, "assets") {
+            for asset in objets_racine(assets) {
+                let nom = champ_racine(&asset, "nom")
+                    .or_else(|| champ_racine(&asset, "name"))
+                    .unwrap_or_default();
+                if nom.is_empty() {
+                    continue;
+                }
+                let sha = champ_racine(&asset, "sha256")
+                    .or_else(|| champ_racine(&asset, "SHA256"))
+                    .unwrap_or_default();
+                if est_nupkg(&nom) {
+                    nupkg = nom.clone();
+                    installable = !sha.is_empty();
+                } else if est_legacy(&nom) {
+                    legacy = nom.clone();
+                }
+            }
+        }
+        versions.push(VersionDistante { tag, version, titre, date, nupkg, installable, legacy });
+    }
+    if versions.is_empty() {
+        return Err("manifeste site : aucune release valide".into());
+    }
+    versions.sort_by(|a, b| comparer_versions(&b.version, &a.version));
+    versions.dedup_by(|a, b| a.version == b.version);
+    Ok(versions)
+}
+
+/// Lit le manifeste site : cache frais d'abord, UNE requête HTTP sinon.
+/// `force = true` (bouton « Rafraîchir ») ignore le TTL et réécrit le cache.
+pub fn lister_versions_site(force: bool) -> Result<ResultatVersions, String> {
+    if !site_source_ouverte() {
+        return Err("source site désactivée par une variable de diagnostic".into());
+    }
+    lister_versions_site_depuis(&url_manifeste_site(), dossier_racine().as_deref(), force)
+}
+
+/// Variante à dépendances explicites (URL + dossier de cache), sans variable
+/// d'environnement : c'est elle qui est mesurée dans les tests.
+fn lister_versions_site_depuis(
+    url: &str,
+    racine: Option<&Path>,
+    force: bool,
+) -> Result<ResultatVersions, String> {
+    if !force {
+        if let Some(racine) = racine {
+            if let Some((horodatage, brut)) = lire_cache_brut_dans(racine, NOM_CACHE_SITE) {
+                if cache_frais(horodatage) {
+                    if let Ok(versions) = analyser_manifeste_site(&brut) {
+                        return Ok(ResultatVersions { versions, source: SourceVersions::CacheSite });
+                    }
+                }
+            }
+        }
+    }
+    let brut = requeter_json(url).map_err(|e| format!("manifeste site : {e}"))?;
+    let versions = analyser_manifeste_site(&brut)?;
+    if let Some(racine) = racine {
+        let _ = ecrire_cache_brut_dans(racine, NOM_CACHE_SITE, &brut);
+    }
+    Ok(ResultatVersions { versions, source: SourceVersions::Site })
+}
+
+/// Source de vérité de toute l'UI : SITE d'abord, puis repli GitHub.
+///
+/// Ordre de priorité documenté dans `rose/docs/UPDATE_BANNER.md`. Le repli
+/// n'est PAS silencieux : l'erreur des deux sources est conservée dans le
+/// message renvoyé, et les ponts `setup_core` affichent l'état local.
+pub fn lister_versions_source(force: bool) -> Result<ResultatVersions, String> {
+    if site_source_ouverte() {
+        match lister_versions_site(force) {
+            Ok(r) => return Ok(r),
+            Err(site) => {
+                return lister_versions()
+                    .map(|versions| ResultatVersions { versions, source: SourceVersions::GitHub })
+                    .map_err(|github| format!("{site} ; repli GitHub impossible : {github}"));
+            }
+        }
+    }
+    lister_versions().map(|versions| ResultatVersions { versions, source: SourceVersions::GitHub })
+}
+
+/// Contenu FACTUEL de la banderole du premier écran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BandeauMiseAJour {
+    /// Version réellement installée (état local, pas `CARGO_PKG_VERSION`).
+    pub installee: String,
+    /// Version la plus récente annoncée par le site ou le repli GitHub.
+    pub disponible: String,
+    pub source: SourceVersions,
+}
+
+impl BandeauMiseAJour {
+    /// Texte exact attendu sur le premier écran.
+    pub fn texte(&self) -> String {
+        format!("Nouvelle version disponible : {} → {}", self.installee, self.disponible)
+    }
+}
+
+/// Bandeau « Nouvelle version disponible : X → Y ».
+///
+/// Fonction PURE à partir d'une liste déjà reçue : la version installée vient
+/// de l'état local (`current` / `app-<v>`), JAMAIS de `CARGO_PKG_VERSION`.
+/// Sans version installée connue, on ne prétend pas qu'il y a mise à jour.
+pub fn bandeau_depuis_versions(
+    installee: &str,
+    versions: &[VersionDistante],
+) -> Option<BandeauMiseAJour> {
+    let simples: Vec<String> = versions.iter().map(|v| v.version.clone()).collect();
+    bandeau_depuis_chaines(installee, &simples)
+}
+
+/// Même comparaison, à partir de simples chaînes de version (catalogue UI).
+pub fn bandeau_depuis_chaines(installee: &str, versions: &[String]) -> Option<BandeauMiseAJour> {
+    let installee = installee.trim().trim_start_matches('v');
+    if !version_site_valide(installee) {
+        return None;
+    }
+    let plus_recente = versions.iter().max_by(|a, b| comparer_versions(a, b))?;
+    if comparer_versions(plus_recente, installee) != std::cmp::Ordering::Greater {
+        return None;
+    }
+    Some(BandeauMiseAJour {
+        installee: installee.to_string(),
+        disponible: plus_recente.clone(),
+        source: SourceVersions::Inconnu,
+    })
+}
+
+/// Banderole complète : UNE lecture (site ou repli) puis comparaison.
+pub fn bandeau_mise_a_jour(force: bool) -> Result<Option<BandeauMiseAJour>, String> {
+    let installee = version_installee().unwrap_or_default();
+    let resultat = lister_versions_source(force)?;
+    Ok(bandeau_depuis_versions(&installee, &resultat.versions)
+        .map(|mut b| { b.source = resultat.source; b }))
+}
+
+/// Dernière liste RÉELLEMENT reçue, sans réseau : cache site d'abord, puis
+/// cache GitHub. Rend `(horodatage, versions)` pour le message de l'UI.
+pub fn cache_versions_site_ou_github() -> Option<(u64, Vec<VersionDistante>)> {
+    if let Some((horodatage, brut)) = lire_cache_site_brut() {
+        if let Ok(versions) = analyser_manifeste_site(&brut) {
+            return Some((horodatage, versions));
+        }
+    }
+    let cache = lire_cache_versions()?;
+    Some((cache.horodatage, cache.versions))
+}
+
+/// Banderole connue SANS réseau : utilisée en mode « Manuel » à l'ouverture
+/// et quand les deux sources sont injoignables. Ne peut rien afficher de
+/// faux : si le cache est absent/périmé, elle est simplement `None`.
+pub fn bandeau_depuis_cache() -> Option<BandeauMiseAJour> {
+    let installee = version_installee()?;
+    // 1) Cache du site (source prioritaire).
+    if let Some((_, brut)) = lire_cache_site_brut() {
+        if let Ok(versions) = analyser_manifeste_site(&brut) {
+            return bandeau_depuis_versions(&installee, &versions).map(|mut b| {
+                b.source = SourceVersions::CacheSite;
+                b
+            });
+        }
+    }
+    // 2) Cache GitHub (repli historique), sans aucun appel réseau.
+    let cache = lire_cache_versions()?;
+    bandeau_depuis_versions(&installee, &cache.versions).map(|mut b| {
+        b.source = SourceVersions::GitHub;
+        b
+    })
+}
+
+/// Vérification du premier écran : site (ou repli) en mode « Auto »,
+/// cache seul en mode « Manuel », refus explicite en mode « Désactivé ».
+pub fn verifier_bandeau(explicite: bool) -> Result<Option<BandeauMiseAJour>, String> {
+    match lire_config().mode {
+        ModeMiseAJour::Desactive => Err(message_desactive()),
+        ModeMiseAJour::Manuel if !explicite => Ok(bandeau_depuis_cache()),
+        _ => bandeau_mise_a_jour(false),
+    }
+}
+
 /* ── Catalogue du sélecteur de versions ──────────────────────────────────
-   Une SEULE source de vérité : `lister_versions()` (API GitHub, lecture
-   seule) fusionnée avec l'état disque (`versions_installees`,
-   `versions_cachees`). Aucune version n'est écrite en dur ici : les seules
-   chaînes de version visibles se trouvent dans les FIXTURES des tests.
+   Source de vérité : le manifeste du SITE, avec repli sur l'API GitHub,
+   fusionnés avec l'état disque (`versions_installees`, `versions_cachees`).
+   Aucune version n'est écrite en dur ici : les seules chaînes de version
+   visibles se trouvent dans les FIXTURES des tests.
    ───────────────────────────────────────────────────────────────────────── */
 
 /// Une ligne du sélecteur affiché par l'interface.
@@ -2139,4 +2569,154 @@ mod tests {
         let _ = fs::remove_dir_all(&racine);
     }
 
+    /* ── L5 : banderole + manifeste site, SANS polling ───────────────── */
+
+    /// Manifeste conforme au format annoncé par SITE1, avec un `changelog`
+    /// qui contient le texte `"assets"` : le parseur ne doit PAS le confondre
+    /// avec le vrai tableau d'assets.
+    const SITE_FIXTURE: &str = r#"{
+      "releases": [
+        {"version":"0.1.7","tag":"v0.1.7","date":"2026-11-20T20:00:00Z",
+         "titre":"Rose 0.1.7","changelog":"ajout de \"assets\" dans le texte",
+         "assets":[{"nom":"Rose-0.1.7-full.nupkg","url":"https://exemple/Rose-0.1.7-full.nupkg","sha256":"abc"}]},
+        {"version":"0.1.72","tag":"v0.1.72","date":"2026-11-21T09:00:00Z",
+         "titre":"Correctifs","changelog":"correctifs",
+         "assets":[{"nom":"Rose-0.1.72-full.nupkg","url":"https://exemple/Rose-0.1.72-full.nupkg","sha256":"def"}]},
+        {"version":"0.1.3","tag":"v0.1.3","date":"2026-09-01T00:00:00Z",
+         "titre":"Ancien","assets":[{"nom":"Rose-Setup-0.1.3.exe","url":"https://exemple/ancien.exe","sha256":"aaa"}]}
+      ]
+    }"#;
+
+    #[test]
+    fn manifeste_site_parse_liste_et_enveloppe() {
+        let enveloppe = analyser_manifeste_site(SITE_FIXTURE).expect("manifeste valide");
+        // Tri DÉCROISSANT : 0.1.72 > 0.1.7 > 0.1.3 (comparer_versions).
+        assert_eq!(
+            enveloppe.iter().map(|v| v.version.as_str()).collect::<Vec<_>>(),
+            vec!["0.1.72", "0.1.7", "0.1.3"]
+        );
+        assert_eq!(enveloppe[0].tag, "v0.1.72");
+        assert_eq!(enveloppe[0].date, "2026-11-21T09:00:00Z");
+        assert_eq!(enveloppe[0].titre, "Correctifs");
+        assert_eq!(enveloppe[0].nupkg, "Rose-0.1.72-full.nupkg");
+        assert!(enveloppe[0].installable, "SHA-256 annoncé");
+        assert!(!enveloppe[2].installable, "ancien installeur legacy");
+        assert_eq!(enveloppe[2].legacy, "Rose-Setup-0.1.3.exe");
+
+        // Liste nue + clés anglaises tolérées.
+        let nu = r#"[{"version":"0.2.0","title":"Deux","date":"2026-11-21",
+            "assets":[{"name":"Rose-0.2.0-full.nupkg","sha256":"11"}]},
+            {"version":"0.2.1","assets":[{"name":"Rose-0.2.1-full.nupkg"}]}]"#;
+        let versions = analyser_manifeste_site(nu).expect("liste nue valide");
+        assert_eq!(versions[0].version, "0.2.1");
+        assert!(!versions[0].installable, "SHA-256 absent = jamais installable");
+        assert_eq!(versions[1].titre, "Deux");
+    }
+
+    #[test]
+    fn manifeste_site_invalide_est_rejete_sans_inventer() {
+        for json in [
+            "",
+            "[]",
+            r#"{"autre":[]}"#,
+            r#"[{"version":" Rose nouvelle","assets":[]}]"#,
+            r#"{"releases":[{"version":""}]}"#,
+        ] {
+            assert!(analyser_manifeste_site(json).is_err(), "JSON invalide accepté : {json}");
+        }
+    }
+
+    #[test]
+    fn bandeau_ne_ment_jamais() {
+        let versions = analyser_manifeste_site(SITE_FIXTURE).unwrap();
+        let b = bandeau_depuis_versions("0.1.7", &versions).expect("0.1.72 plus récente");
+        assert_eq!(b.texte(), "Nouvelle version disponible : 0.1.7 → 0.1.72");
+        assert!(bandeau_depuis_versions("v0.1.7", &versions).is_some());
+        assert!(bandeau_depuis_versions("0.1.72", &versions).is_none(), "déjà à jour");
+        assert!(bandeau_depuis_versions("0.1.73", &versions).is_none(), "version inconnue plus haute");
+        assert!(bandeau_depuis_versions("", &versions).is_none(), "aucune version installée connue");
+        assert!(bandeau_depuis_versions("inconnue", &versions).is_none());
+        let simples = vec!["0.1.7".to_string(), "0.1.72".to_string()];
+        assert!(bandeau_depuis_chaines("0.1.7", &simples).is_some());
+    }
+
+    #[test]
+    fn cache_site_utilise_le_meme_mecanisme_et_le_meme_ttl() {
+        let racine = std::env::temp_dir().join(format!(
+            "rose_cache_site_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos()
+        ));
+        let _ = fs::create_dir_all(&racine);
+        assert!(ecrire_cache_brut_dans(&racine, NOM_CACHE_SITE, SITE_FIXTURE));
+        let (ts, brut) = lire_cache_brut_dans(&racine, NOM_CACHE_SITE).expect("cache lisible");
+        assert_eq!(brut, SITE_FIXTURE);
+        assert!(!cache_perime(ts), "cache frais");
+        assert!(cache_frais(ts));
+        assert!(cache_perime(ts.saturating_sub(TTL_CACHE_VERSIONS + 1)));
+        let versions = analyser_manifeste_site(&brut).unwrap();
+        assert_eq!(versions[0].version, "0.1.72");
+        // Forcer réécrit le même fichier (le bouton « Rafraîchir »).
+        assert!(ecrire_cache_brut_dans(&racine, NOM_CACHE_SITE, SITE_FIXTURE));
+        assert!(lire_cache_brut_dans(&racine, NOM_CACHE_SITE).is_some());
+        let _ = fs::remove_dir_all(&racine);
+    }
+
+    /// Preuve STRUCTURELLE d'absence de polling : la fonction lancée au
+    /// démarrage contient exactement UN `spawn`, aucune boucle, aucun sleep,
+    /// aucun timer Windows. Un thread unique qui meurt après une réponse.
+    #[test]
+    fn verification_au_demarrage_sans_polling() {
+        let src = include_str!("setup_gui.rs");
+        let debut = src.find("fn lancer_verification_maj").expect("fonction présente");
+        let fin = src.find("/// Consentement explicite").expect("fin de fonction");
+        let bloc = &src[debut..fin];
+        assert_eq!(bloc.matches("std::thread::spawn").count(), 1);
+        for interdit in ["loop {", "sleep(", "Sleep(", "SetTimer", "while true"] {
+            assert!(!bloc.contains(interdit), "mécanisme de polling détecté : {interdit}");
+        }
+        assert!(bloc.contains("verifier_bandeau(explicite)"), "source site obligatoire");
+    }
+
+    /// Mesure (« 5 tirs ») du temps jusqu'à la banderole, cache FROID puis
+    /// cache CHAUD. Le manifeste est lu depuis un `file://` local : la partie
+    /// réseau réelle est bornée à `DELAI_RESEAU_MS` (3 s) par `requeter_json`.
+    /// Aucune variable d'environnement n'est touchée (tests parallèles).
+    #[test]
+    fn mesure_bandeau_cache_froid_et_chaud() {
+        let racine = std::env::temp_dir().join(format!(
+            "rose_mesure_bandeau_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos()
+        ));
+        let _ = fs::create_dir_all(&racine);
+        let fixture = racine.join("releases.json");
+        fs::write(&fixture, SITE_FIXTURE).unwrap();
+        let url = format!("file://{}", fixture.display());
+        let mesurer = |froid: bool| -> Vec<u128> {
+            let mut tirs = Vec::new();
+            for _ in 0..5 {
+                if froid {
+                    let _ = fs::remove_file(racine.join(NOM_CACHE_SITE));
+                }
+                let debut = Instant::now();
+                let r = lister_versions_site_depuis(&url, Some(&racine), false)
+                    .expect("manifeste local lisible");
+                let bandeau = bandeau_depuis_versions("0.1.7", &r.versions);
+                tirs.push(debut.elapsed().as_micros());
+                assert!(bandeau.is_some());
+            }
+            tirs.sort_unstable();
+            tirs
+        };
+        let froid = mesurer(true);
+        let chaud = mesurer(false);
+        eprintln!("BANDEAU froid (5 tirs, µs) : {froid:?} — médiane {}", froid[2]);
+        eprintln!("BANDEAU chaud (5 tirs, µs) : {chaud:?} — médiane {}", chaud[2]);
+        assert_eq!(froid.len(), 5);
+        assert_eq!(chaud.len(), 5);
+        let _ = fs::remove_dir_all(&racine);
+    }
 }

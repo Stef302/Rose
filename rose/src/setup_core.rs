@@ -2072,38 +2072,43 @@ pub fn launcher_dry_run(tag: Option<&str>) -> Result<String, String> {
 /// Fonction pure (hors lecture des listes passées en argument) pour pouvoir
 /// tester le mode hors ligne sans toucher à l'environnement ni au réseau.
 fn assembler_catalogue(
-    distant: Result<Vec<crate::velopack::VersionDistante>, String>,
+    distant: Result<crate::velopack::ResultatVersions, String>,
     installees: &[String],
     cachees: &[String],
 ) -> crate::velopack::CatalogueVersions {
     use crate::velopack::{construire_catalogue, catalogue_local};
     match distant {
-        Ok(versions) => {
-            let nb = versions.len();
+        Ok(resultat) => {
+            let nb = resultat.versions.len();
+            let source = resultat.source.libelle();
             construire_catalogue(
-                &versions,
+                &resultat.versions,
                 installees,
                 cachees,
                 false,
-                format!("{nb} version(s) trouvée(s) sur GitHub."),
+                format!("{nb} version(s) trouvée(s) sur {source}."),
             )
         }
         Err(cause) => {
             // Hors ligne, on peut quand même montrer la DERNIÈRE liste réelle
-            // récupérée de GitHub : le cache n'invente rien. Elle reste non
-            // téléchargeable (`hors_ligne = true`).
-            match crate::velopack::lire_cache_versions() {
+            // récupérée (site ou GitHub) : le cache n'invente rien. Elle reste
+            // non téléchargeable (`hors_ligne = true`).
+            match crate::velopack::cache_versions_site_ou_github() {
                 Some(cache) => {
-                    let date = crate::velopack::formater_date_cache(cache.horodatage);
+                    let date = crate::velopack::formater_date_cache(cache.0);
                     construire_catalogue(
-                        &cache.versions,
+                        &cache.1,
                         installees,
                         cachees,
                         true,
-                        format!("GitHub inaccessible ({cause}) : liste du {date} déjà récupérée sur cet appareil. Le téléchargement est impossible tant que l'API ne répond pas."),
+                        format!("Sources injoignables ({cause}) : liste du {date} déjà récupérée sur cet appareil. Le téléchargement est impossible tant que le site et GitHub ne répondent pas."),
                     )
                 }
-                None => catalogue_local(installees, cachees, &cause),
+                None => catalogue_local(
+                    installees,
+                    cachees,
+                    &format!("site et GitHub injoignables ({cause})"),
+                ),
             }
         }
     }
@@ -2111,12 +2116,23 @@ fn assembler_catalogue(
 
 /// Catalogue TRIÉ par version décroissante, prêt à afficher.
 ///
-/// Ne renvoie jamais d'erreur : si GitHub est inaccessible, le catalogue
-/// local est renvoyé avec `hors_ligne = true` et un message explicite —
-/// l'UI n'a donc jamais à gérer une liste vide inexpliquée.
+/// Priorité : manifeste du SITE, puis repli API GitHub. Ne renvoie jamais
+/// d'erreur : si les deux sont inaccessibles, le catalogue local est renvoyé
+/// avec `hors_ligne = true` et un message explicite — l'UI n'a donc jamais à
+/// gérer une liste vide inexpliquée.
 pub fn launcher_catalogue() -> crate::velopack::CatalogueVersions {
     assembler_catalogue(
-        crate::velopack::lister_versions(),
+        crate::velopack::lister_versions_source(false),
+        &crate::velopack::versions_installees(),
+        &crate::velopack::versions_cachees(),
+    )
+}
+
+/// Même catalogue, mais le bouton « Rafraîchir » IGNORE le TTL : le manifeste
+/// site est relu et son cache réécrit, avant tout repli GitHub.
+pub fn launcher_catalogue_force() -> crate::velopack::CatalogueVersions {
+    assembler_catalogue(
+        crate::velopack::lister_versions_source(true),
         &crate::velopack::versions_installees(),
         &crate::velopack::versions_cachees(),
     )
@@ -2129,28 +2145,38 @@ pub fn launcher_catalogue() -> crate::velopack::CatalogueVersions {
 /// C'est cette fonction que l'UI appelle en premier à l'ouverture du
 /// sélecteur : l'affichage ne dépend plus de la latence de l'API GitHub.
 pub fn launcher_catalogue_cache() -> Option<crate::velopack::CatalogueVersions> {
-    let cache = crate::velopack::lire_cache_versions()?;
-    let date = crate::velopack::formater_date_cache(cache.horodatage);
-    let precision = if crate::velopack::cache_versions_perime(&cache) {
+    let (horodatage, versions, origine) = match crate::velopack::cache_versions_site_ou_github() {
+        Some((h, v)) => (h, v, "site Rose"),
+        None => {
+            let cache = crate::velopack::lire_cache_versions()?;
+            (cache.horodatage, cache.versions, "GitHub")
+        }
+    };
+    let date = crate::velopack::formater_date_cache(horodatage);
+    let precision = if crate::velopack::cache_perime(horodatage) {
         " — liste périmée, actualisation en cours"
     } else {
         ""
     };
     Some(crate::velopack::construire_catalogue(
-        &cache.versions,
+        &versions,
         &crate::velopack::versions_installees(),
         &crate::velopack::versions_cachees(),
         false,
-        format!("Liste du {date}{precision}."),
+        format!("Liste du {date} ({origine}){precision}."),
     ))
 }
 
-/// Vrai s'il faut relancer l'API GitHub en tâche de fond : cache absent ou
-/// plus vieux que `TTL_CACHE_VERSIONS` (5 minutes).
+/// Vrai s'il faut relancer la source en tâche de fond : cache absent ou plus
+/// vieux que `TTL_CACHE_VERSIONS` (5 minutes). Le cache SITE est prioritaire
+/// quand la source site est active ; sinon on garde le comportement GitHub.
 pub fn launcher_cache_a_actualiser() -> bool {
-    match crate::velopack::lire_cache_versions() {
-        None => true,
-        Some(cache) => crate::velopack::cache_versions_perime(&cache),
+    match crate::velopack::horodatage_cache_site() {
+        Some(horodatage) => crate::velopack::cache_perime(horodatage),
+        None => match crate::velopack::lire_cache_versions() {
+            None => true,
+            Some(cache) => crate::velopack::cache_versions_perime(&cache),
+        },
     }
 }
 
@@ -2222,7 +2248,7 @@ mod tests {
 
     #[test]
     fn catalogue_api_ko_retourne_catalogue_local() {
-        let distant: Result<Vec<crate::velopack::VersionDistante>, String> =
+        let distant: Result<crate::velopack::ResultatVersions, String> =
             Err("HTTP 503".to_string());
         let installees = ["0.1.4".to_string()];
         let cachees = ["0.1.5".to_string()];
@@ -2237,7 +2263,10 @@ mod tests {
 
     #[test]
     fn installation_refuse_tag_absent_du_catalogue() {
-        let distant = Ok(vec![vdist_fixture("v0.1.6", true)]);
+        let distant = Ok(crate::velopack::ResultatVersions {
+            versions: vec![vdist_fixture("v0.1.6", true)],
+            source: crate::velopack::SourceVersions::Site,
+        });
         let cat = assembler_catalogue(distant, &[], &[]);
         let refus = crate::velopack::valider_installation(&cat, "v9.9.9").unwrap_err();
         assert_eq!(refus.etat, crate::velopack::EtatOperation::Refuse);
