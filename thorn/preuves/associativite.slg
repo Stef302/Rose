@@ -1,4 +1,4 @@
-# Syllog — preuve de démonstration : associativité de l'addition
+# Thorn — preuve de démonstration : associativité de l'addition
 # Statut : VÉRIFIÉE PAR LE NOYAU PROV1.
 #   Terme produit : nat_rec P base pas avec
 #     P = λm, pour_tout n, pour_tout p, (m+n)+p = m+(n+p)
@@ -11,7 +11,7 @@
 #              (symm (plus_s_l k (plus n p)))
 #   Contrôle : demo_associativite() construit le terme, appele induction_resolue()
 #              puis verifier + convertible dans le contexte vide.
-#   Preuve de sortie : ./rose/rose syllog/tests_tactiques.rose -> OK demo/associativite
+#   Preuve de sortie : ./rose/rose thorn/tests_tactiques.rose -> OK demo/associativite
 #   Limite : plus_0_l et plus_s_l sont des axiomes de signature (equations de
 #            reduction), voir docs/TACTIQUES.md. Les lemmes symm/trans/congr_* sont
 #            des termes DERIVES et verifies, pas des axiomes.

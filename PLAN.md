@@ -1077,13 +1077,13 @@ C1.3 atteint (5afd0ae): F1==F2 octet pour octet, auto-régénération prouvée. 
 | SPEED5 | vitesse englobant/suite : dispatch interp, format! tables | `rose/src/interp.rs`, `rose/docs/SPEED5.md` |
 | SPEED6 | vitesse global : rétention Valeur::Chaine, table index | `rose/src/run.rs`, `rose/docs/SPEED6.md` |
 
-## Vague 61 (21/11) — Syllog : assistant de démonstration expérimental
+## Vague 61 (21/11) — Thorn : assistant de démonstration expérimental
 
-Projet supplementaire et experimental. Spec dans syllog/SPEC.md.
+Projet supplementaire et experimental. Spec dans thorn/SPEC.md.
 
 | Agent | Sujet | Fichiers |
 |---|---|---|
-| PROV1 | noyau: beta, conversion, verif de types | `syllog/src/noyau.rose`, `syllog/docs/NOYAU.md` |
-| PROV2 | lexeur + parseur pour la syntaxe française | `syllog/src/{lexeur,analyse}.rose`, `syllog/docs/SYNTAXE.md` |
-| PROV3 | tactiques et preuves de demo | `syllog/src/tactiques.rose`, `syllog/preuves/*.slg`, `syllog/docs/TACTIQUES.md` |
-| PROV4 | pilote CLI + tests bout en bout | `syllog/src/principal.rose`, `syllog/docs/PILOTE.md` |
+| PROV1 | noyau: beta, conversion, verif de types | `thorn/src/noyau.rose`, `thorn/docs/NOYAU.md` |
+| PROV2 | lexeur + parseur pour la syntaxe française | `thorn/src/{lexeur,analyse}.rose`, `thorn/docs/SYNTAXE.md` |
+| PROV3 | tactiques et preuves de demo | `thorn/src/tactiques.rose`, `thorn/preuves/*.slg`, `thorn/docs/TACTIQUES.md` |
+| PROV4 | pilote CLI + tests bout en bout | `thorn/src/principal.rose`, `thorn/docs/PILOTE.md` |

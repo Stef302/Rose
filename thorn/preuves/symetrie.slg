@@ -1,4 +1,4 @@
-# Syllog — démonstration : symétrie de l'égalité
+# Thorn — démonstration : symétrie de l'égalité
 # But : Π(A:type)(a:A)(b:A), a = b -> b = a
 # La tactique symetrie introduit les Π puis applique le terme de preuve
 # construit par eq_rec (vérifié dans demo_lemmes()).

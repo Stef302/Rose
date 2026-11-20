@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# syllog/tests_pilote.rose — tests bout en bout du pilote CLI de Syllog (PROV4)
-# Lancer depuis la racine : ./rose/rose syllog/tests_pilote.rose
-# Vérifier : ./rose/rose verif syllog/tests_pilote.rose
+# thorn/tests_pilote.rose — tests bout en bout du pilote CLI de Thorn (PROV4)
+# Lancer depuis la racine : ./rose/rose thorn/tests_pilote.rose
+# Vérifier : ./rose/rose verif thorn/tests_pilote.rose
 #
 # Le pilote est importé comme bibliothèque : ses fonctions pures sont
 # appelées directement. Le `quitter(...)` final empêche le CLI du module
@@ -9,7 +9,7 @@
 # principal). Aucun sous-processus n'est nécessaire.
 # ═══════════════════════════════════════════════════════════════════════════
 
-importer "syllog/src/principal.rose"
+importer "thorn/src/principal.rose"
 
 $tp_cpt = table()
 inserer($tp_cpt, "r", 0)
@@ -51,11 +51,11 @@ fn tp_contient(nom: chaine, texte: chaine, morceau: chaine) {
 # ── 1. --aide : texte exact ────────────────────────────────────────────────
 
 $tp_aide = pilote_aide()
-$tp_attendu_aide = "Syllog — pilote de démonstration (en Rose)\n\n" +
+$tp_attendu_aide = "Thorn — pilote de démonstration (en Rose)\n\n" +
   "Usage :\n" +
-  "  rose syllog/src/principal.rose <fichier.slg>  vérifie chaque théorème\n" +
-  "  rose syllog/src/principal.rose --demo [fichiers.slg...]\n" +
-  "  rose syllog/src/principal.rose --aide\n\n" +
+  "  rose thorn/src/principal.rose <fichier.slg>  vérifie chaque théorème\n" +
+  "  rose thorn/src/principal.rose --demo [fichiers.slg...]\n" +
+  "  rose thorn/src/principal.rose --aide\n\n" +
   "Options :\n" +
   "  --trace  affiche les termes construits\n\n" +
   "Format d'un fichier .slg :\n" +
@@ -70,8 +70,8 @@ tp_egal("aide : texte exact", $tp_aide, $tp_attendu_aide)
 
 # ── 2. lecture d'un fichier .slg écrit par le test ─────────────────────────
 
-$tp_ok_slg = "/tmp/opencode/syllog_pilote_ok.slg"
-$tp_ko_slg = "/tmp/opencode/syllog_pilote_ko.slg"
+$tp_ok_slg = "/tmp/opencode/thorn_pilote_ok.slg"
+$tp_ko_slg = "/tmp/opencode/thorn_pilote_ko.slg"
 $tp_src_ok = "théorème t_ok : type 1\n" +
              "preuve type 0\n" +
              "fin\n"
@@ -101,7 +101,7 @@ tp_code("fichier ÉCHEC : code 1", $tp_code_ko, 1)
 
 # ── 3. lecture impossible → code 2, sans panic ─────────────────────────────
 
-$tp_r_abs = pilote_executer("/tmp/opencode/syllog_pilote_inexistant.slg", faux)
+$tp_r_abs = pilote_executer("/tmp/opencode/thorn_pilote_inexistant.slg", faux)
 $tp_code_abs = 0
 $tp_code_abs = entier(chaine($tp_r_abs["code"]))
 tp_code("fichier absent : code 2", $tp_code_abs, 2)

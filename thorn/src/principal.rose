@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# syllog/src/principal.rose — PILOTE CLI DE SYLLOG (PROV4)
+# thorn/src/principal.rose — PILOTE CLI DE THORN (PROV4)
 # ═══════════════════════════════════════════════════════════════════════════
 # Consommateur des modules des autres agents (SPEC.md) :
 #   noyau.rose     : verifier, beta, convertible, bien_forme, noy_ctx_vide
@@ -8,13 +8,13 @@
 #   tactiques.rose : reflexivite, symetrie, introduction, application,
 #                    induction, simplifier
 # Aucune règle de typage, d'analyse ou de tactique n'est réimplémentée ici.
-# Vérifier : ./rose/rose verif syllog/src/principal.rose
+# Vérifier : ./rose/rose verif thorn/src/principal.rose
 # ═══════════════════════════════════════════════════════════════════════════
 
-importer "syllog/src/tactiques.rose"
-importer "syllog/src/analyse.rose"
-importer "syllog/src/noyau.rose"
-importer "syllog/src/lexeur.rose"
+importer "thorn/src/tactiques.rose"
+importer "thorn/src/analyse.rose"
+importer "thorn/src/noyau.rose"
+importer "thorn/src/lexeur.rose"
 
 # ── 1. Petits services sur chaînes et listes ───────────────────────────────
 
@@ -82,13 +82,13 @@ fn p_tranche(j: liste<chaine>, debut: entier, fin: entier) -> liste<chaine> {
 }
 
 # analyser() de PROV2 attend une liste 0-indexee (pas de sentinelle).
-fn p_liste_vide_syllog() {
+fn p_liste_vide_thorn() {
   retour valeurs(table())
 }
 
 fn p_sans_sentinel(j: liste<chaine>) -> liste<chaine> {
   $ss_r = [""]
-  $ss_vide = p_liste_vide_syllog()
+  $ss_vide = p_liste_vide_thorn()
   $ss_r = $ss_vide
   $ss_n = longueur(j)
   $ss_i = 1
@@ -460,12 +460,12 @@ fn pilote_executer(chemin: chaine, trace: booleen) -> table {
 
 fn pilote_aide() -> chaine {
   $aid_a = ""
-  $aid_a = $aid_a + "Syllog — pilote de démonstration (en Rose)" + p_saut()
+  $aid_a = $aid_a + "Thorn — pilote de démonstration (en Rose)" + p_saut()
   $aid_a = $aid_a + p_saut()
   $aid_a = $aid_a + "Usage :" + p_saut()
-  $aid_a = $aid_a + "  rose syllog/src/principal.rose <fichier.slg>  vérifie chaque théorème" + p_saut()
-  $aid_a = $aid_a + "  rose syllog/src/principal.rose --demo [fichiers.slg...]" + p_saut()
-  $aid_a = $aid_a + "  rose syllog/src/principal.rose --aide" + p_saut()
+  $aid_a = $aid_a + "  rose thorn/src/principal.rose <fichier.slg>  vérifie chaque théorème" + p_saut()
+  $aid_a = $aid_a + "  rose thorn/src/principal.rose --demo [fichiers.slg...]" + p_saut()
+  $aid_a = $aid_a + "  rose thorn/src/principal.rose --aide" + p_saut()
   $aid_a = $aid_a + p_saut()
   $aid_a = $aid_a + "Options :" + p_saut()
   $aid_a = $aid_a + "  --trace  affiche les termes construits" + p_saut()
@@ -485,7 +485,7 @@ fn pilote_aide() -> chaine {
 # Rose n'a pas de primitive pour lister un répertoire : les noms connus sont
 # donc énumérés ici. --demo accepte aussi des chemins explicites en arguments.
 fn pilote_manifeste() -> liste<chaine> {
-  $man_l = ["syllog/preuves/base.slg", "syllog/preuves/exemple.slg", "syllog/preuves/identite.slg", "syllog/preuves/demo_identite.slg", "syllog/preuves/reflexivite.slg", "syllog/preuves/demo_reflexivite.slg", "syllog/preuves/symetrie.slg", "syllog/preuves/demo_symetrie.slg", "syllog/preuves/associativite.slg", "syllog/preuves/demo_associativite.slg", "syllog/preuves/commutativite.slg", "syllog/preuves/demo_commutativite.slg", "syllog/preuves/plus_zero.slg", "syllog/preuves/plus_succ.slg", "syllog/preuves/lemmes.slg", "syllog/preuves/demo_lemmes.slg"]
+  $man_l = ["thorn/preuves/base.slg", "thorn/preuves/exemple.slg", "thorn/preuves/identite.slg", "thorn/preuves/demo_identite.slg", "thorn/preuves/reflexivite.slg", "thorn/preuves/demo_reflexivite.slg", "thorn/preuves/symetrie.slg", "thorn/preuves/demo_symetrie.slg", "thorn/preuves/associativite.slg", "thorn/preuves/demo_associativite.slg", "thorn/preuves/commutativite.slg", "thorn/preuves/demo_commutativite.slg", "thorn/preuves/plus_zero.slg", "thorn/preuves/plus_succ.slg", "thorn/preuves/lemmes.slg", "thorn/preuves/demo_lemmes.slg"]
   retour $man_l
 }
 
@@ -523,7 +523,7 @@ fn pilote_demo(fichiers: liste<chaine>, trace: booleen) -> table {
     $pd_k = $pd_k + 1
   }
   si ($pd_nb == 0) {
-    $pd_sortie = "Erreur : aucun fichier .slg jouable dans syllog/preuves/ (dossier absent ou vide)"
+    $pd_sortie = "Erreur : aucun fichier .slg jouable dans thorn/preuves/ (dossier absent ou vide)"
     $pd_code = 2
   } sinon {
     $pd_sortie = p_sans_fin($pd_sortie) + p_saut() + chaine($pd_total) + " théorème(s), " + chaine($pd_reussis) + " réussi(s)"
@@ -538,7 +538,7 @@ fn pilote_demo(fichiers: liste<chaine>, trace: booleen) -> table {
 # Filtre les chemins du manifeste réellement lisibles.
 fn pilote_manifeste_present() -> liste<chaine> {
   $pm_l = [""]
-  $pm_vide = p_liste_vide_syllog()
+  $pm_vide = p_liste_vide_thorn()
   $pm_l = $pm_vide
   $pm_m = pilote_manifeste()
   $pm_k = 0

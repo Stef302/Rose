@@ -1,14 +1,14 @@
-# Syllog — syntaxe couverte par le lexeur et le parseur (PROV2)
+# Thorn — syntaxe couverte par le lexeur et le parseur (PROV2)
 
 État réel, vérifié le 21/11/2026 avec `./rose/rose verif` et
-`./rose/rose syllog/tests_syntaxe.rose` (8 tests, 8 OK : les 5 programmes
+`./rose/rose thorn/tests_syntaxe.rose` (8 tests, 8 OK : les 5 programmes
 demandés plus 3 cas supplémentaires lambda / juxtaposition / erreur).
 
 ## Fichiers
 
-- `syllog/src/lexeur.rose` — lexeur autonome.
-- `syllog/src/analyse.rose` — parseur ; importe `lexeur.rose`.
-- `syllog/tests_syntaxe.rose` — 8 tests (5 programmes demandés + lambda
+- `thorn/src/lexeur.rose` — lexeur autonome.
+- `thorn/src/analyse.rose` — parseur ; importe `lexeur.rose`.
+- `thorn/tests_syntaxe.rose` — 8 tests (5 programmes demandés + lambda
   autonome, application par juxtaposition, erreur localisée), AST attendu
   affiché pour chacun.
 
@@ -106,7 +106,7 @@ Les constructeurs de termes `t_var`, `t_type`, `t_pi`, `t_lam`, `t_app`,
 ## Erreurs
 
 `analyser` et `analyser_fichier` n'échouent jamais par une exception Rose :
-ils écrivent `afficher_erreur("Syllog — ligne N : <message>")` et rendent un
+ils écrivent `afficher_erreur("Thorn — ligne N : <message>")` et rendent un
 terme/de une liste partiels. Exemples réels observés :
 
 - `ligne 3 : tactique inattendue '?'`
@@ -134,7 +134,7 @@ La numérotation vient du suffixe `~N` émis par `lexer_detaille`.
 
 ```
 cd /home/clausake/Stefan/ROSE
-./rose/rose verif syllog/src/lexeur.rose     # vérifié
-./rose/rose verif syllog/src/analyse.rose    # vérifié
-./rose/rose syllog/tests_syntaxe.rose        # OK = 8   ECHEC = 0
+./rose/rose verif thorn/src/lexeur.rose     # vérifié
+./rose/rose verif thorn/src/analyse.rose    # vérifié
+./rose/rose thorn/tests_syntaxe.rose        # OK = 8   ECHEC = 0
 ```

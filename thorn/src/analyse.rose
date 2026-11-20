@@ -1,5 +1,5 @@
-# ── Syllog — parseur (PROV2) ───────────────────────────────────────────────
-# Verifier : ./rose/rose verif syllog/src/analyse.rose
+# ── Thorn — parseur (PROV2) ───────────────────────────────────────────────
+# Verifier : ./rose/rose verif thorn/src/analyse.rose
 # API publique :
 #   analyser(jetons)          -> Terme   : un seul terme
 #   analyser_source(src)      -> Terme   : un seul terme, depuis une chaine
@@ -16,7 +16,7 @@
 # ⚠分析: les fonctions `lexer_table`/`lexer_detaille` sont définies dans le
 # lexeur; sans cet import, `analyser_source` échoue avec
 # « Fonction 'lexer_table' inconnue » (mesuré).
-importer "syllog/src/lexeur.rose"
+importer "thorn/src/lexeur.rose"
 
 
 # ── 1. Constructeurs de Termes (SPEC.md) ──────────────────────────────────
@@ -515,7 +515,7 @@ fn analyser_source(src: chaine) {
     si (S["e"] == "" et S["p"] < S["n"]) {
         syl_erreur(S, "jetons en trop : '" + syl_courant(S) + "'")
     }
-    si (S["e"] != "") { afficher_erreur("Syllog — " + S["e"]) }
+    si (S["e"] != "") { afficher_erreur("Thorn — " + S["e"]) }
     retour $t
 }
 
@@ -527,7 +527,7 @@ fn analyser(jetons: liste<chaine>) {
     si (S["e"] == "" et S["p"] < S["n"]) {
         syl_erreur(S, "jetons en trop : '" + syl_courant(S) + "'")
     }
-    si (S["e"] != "") { afficher_erreur("Syllog — " + S["e"]) }
+    si (S["e"] != "") { afficher_erreur("Thorn — " + S["e"]) }
     retour $t
 }
 
@@ -548,7 +548,7 @@ fn analyser_fichier(src: chaine) {
             syl_avance(S)
         }
     }
-    si (S["e"] != "") { afficher_erreur("Syllog — " + S["e"]) }
+    si (S["e"] != "") { afficher_erreur("Thorn — " + S["e"]) }
     retour valeurs($tab)
 }
 

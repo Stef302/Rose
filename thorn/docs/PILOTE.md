@@ -1,19 +1,19 @@
-# Syllog — pilote CLI (PROV4)
+# Thorn — pilote CLI (PROV4)
 
-Fichiers livrés par ce chantier : `syllog/src/principal.rose`,
-`syllog/tests_pilote.rose`, `syllog/docs/PILOTE.md`. Aucun autre fichier
+Fichiers livrés par ce chantier : `thorn/src/principal.rose`,
+`thorn/tests_pilote.rose`, `thorn/docs/PILOTE.md`. Aucun autre fichier
 n'a été modifié par ce chantier ; aucune publication n'a été faite.
 Deux commits LOCAUX ont été créés pendant le chantier par un agent parallèle
 (`8bc15ca`, `c833118`) ; aucun n'a été poussé. La correction finale du
-manifeste `--demo` est incluse dans `c833118` ; `git status --short syllog`
+manifeste `--demo` est incluse dans `c833118` ; `git status --short thorn`
 est propre au dernier contrôle.
 
 ## Commandes implémentées
 
 ```
-./rose/rose syllog/src/principal.rose <fichier.slg> [--trace]
-./rose/rose syllog/src/principal.rose --demo [fichiers.slg...] [--trace]
-./rose/rose syllog/src/principal.rose --aide     # aussi -h, --help
+./rose/rose thorn/src/principal.rose <fichier.slg> [--trace]
+./rose/rose thorn/src/principal.rose --demo [fichiers.slg...] [--trace]
+./rose/rose thorn/src/principal.rose --aide     # aussi -h, --help
 ```
 
 `/tmp` de vérification : utiliser `./rose/rose` (0.1.6, présent dans le
@@ -22,7 +22,7 @@ dépôt) ; le `rose` installé dans le PATH (0.1.5) ne connaît pas `verif`.
 | Option | Effet réel |
 |---|---|
 | `<fichier.slg>` | vérifie chaque `théorème`, affiche `OK <nom>` ou `ÉCHEC <nom> : <raison>`, puis `N théorème(s), M réussi(s)` |
-| `--demo` | joue les `.slg` connus de `syllog/preuves/` (ou les fichiers passés en argument) |
+| `--demo` | joue les `.slg` connus de `thorn/preuves/` (ou les fichiers passés en argument) |
 | `--aide` | aide en français |
 | `--trace` | affiche `[trace] <nom> but = …` et `[trace] <nom> terme = …` |
 
@@ -55,13 +55,13 @@ preuve → `verifier(terme, ctx)` (PROV1) → `convertible(type, but)` (PROV1)
 ## Vérifications réellement exécutées (21/11/2026)
 
 ```
-$ ./rose/rose verif syllog/src/principal.rose
+$ ./rose/rose verif thorn/src/principal.rose
 vérifié
 
-$ ./rose/rose verif syllog/tests_pilote.rose
+$ ./rose/rose verif thorn/tests_pilote.rose
 vérifié
 
-$ ./rose/rose syllog/tests_pilote.rose
+$ ./rose/rose thorn/tests_pilote.rose
 ✓ aide : texte exact
 ✓ fichier OK : sortie exacte
 ✓ fichier OK : code 0
@@ -96,15 +96,15 @@ OK t_ok
 (rc=0)
 ```
 
-Aide réelle (`./rose/rose syllog/src/principal.rose --aide`, rc=0) :
+Aide réelle (`./rose/rose thorn/src/principal.rose --aide`, rc=0) :
 
 ```
-Syllog — pilote de démonstration (en Rose)
+Thorn — pilote de démonstration (en Rose)
 
 Usage :
-  rose syllog/src/principal.rose <fichier.slg>  vérifie chaque théorème
-  rose syllog/src/principal.rose --demo [fichiers.slg...]
-  rose syllog/src/principal.rose --aide
+  rose thorn/src/principal.rose <fichier.slg>  vérifie chaque théorème
+  rose thorn/src/principal.rose --demo [fichiers.slg...]
+  rose thorn/src/principal.rose --aide
 
 Options :
   --trace  affiche les termes construits
@@ -126,30 +126,30 @@ Rose n'a aucune primitive d'énumération de répertoire. `--demo` utilise
 donc un manifeste de noms (`pilote_manifeste()`), filtré par `lire_texte` ;
 les fichiers absents sont ignorés silencieusement, et si aucun n'est
 lisible le pilote affiche
-`Erreur : aucun fichier .slg jouable dans syllog/preuves/ (dossier absent ou vide)`
+`Erreur : aucun fichier .slg jouable dans thorn/preuves/ (dossier absent ou vide)`
 et sort avec le code 2. Des chemins explicites peuvent être passés après
 `--demo`.
 
-Sortie réelle de `./rose/rose syllog/src/principal.rose --demo` (rc=1) :
+Sortie réelle de `./rose/rose thorn/src/principal.rose --demo` (rc=1) :
 
 ```
-=== syllog/preuves/identite.slg ===
+=== thorn/preuves/identite.slg ===
 ÉCHEC identite : terme de preuve invalide — variable non liee: ?
 1 théorème(s), 0 réussi(s)
 
-=== syllog/preuves/reflexivite.slg ===
+=== thorn/preuves/reflexivite.slg ===
 ÉCHEC reflexivite : réflexivité : le but n'est pas une égalité
 1 théorème(s), 0 réussi(s)
 
-=== syllog/preuves/symetrie.slg ===
+=== thorn/preuves/symetrie.slg ===
 ÉCHEC symetrie : symétrie : le but n'est pas une égalité
 1 théorème(s), 0 réussi(s)
 
-=== syllog/preuves/associativite.slg ===
+=== thorn/preuves/associativite.slg ===
 ÉCHEC associativite_plus : type invalide — variable non liee: Nat
 1 théorème(s), 0 réussi(s)
 
-=== syllog/preuves/commutativite.slg ===
+=== thorn/preuves/commutativite.slg ===
 ÉCHEC commutativite_plus : type invalide — variable non liee: Nat
 1 théorème(s), 0 réussi(s)
 
@@ -185,10 +185,10 @@ que la chaîne lecture → lexage → analyse → noyau → bilan fonctionne.
 
 | Fonction | Module |
 |---|---|
-| `verifier`, `convertible`, `noy_ctx_vide`, `noy_type` | `syllog/src/noyau.rose` (PROV1) |
-| `lexer` | `syllog/src/lexeur.rose` (PROV2) |
-| `analyser` | `syllog/src/analyse.rose` (PROV2) |
-| `reflexivite`, `symetrie`, `introduction`, `application`, `induction`, `simplifier` | `syllog/src/tactiques.rose` (PROV3) |
+| `verifier`, `convertible`, `noy_ctx_vide`, `noy_type` | `thorn/src/noyau.rose` (PROV1) |
+| `lexer` | `thorn/src/lexeur.rose` (PROV2) |
+| `analyser` | `thorn/src/analyse.rose` (PROV2) |
+| `reflexivite`, `symetrie`, `introduction`, `application`, `induction`, `simplifier` | `thorn/src/tactiques.rose` (PROV3) |
 
 Les sorties ci-dessus sont des constats datés : à re-mesurer après tout
 changement de module.

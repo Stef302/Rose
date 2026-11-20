@@ -1,11 +1,11 @@
 # ═════════════════════════════════════════════════════════════════════════════
-# syllog/tests_tactiques.rose — tests des tactiques Syllog (PROV3)
-# Lancer depuis la racine : ./rose/rose syllog/tests_tactiques.rose
+# thorn/tests_tactiques.rose — tests des tactiques Thorn (PROV3)
+# Lancer depuis la racine : ./rose/rose thorn/tests_tactiques.rose
 # Chaque cas construit un TERME, appelle le NOYAU (via les tactiques), puis
 # affiche OK / ÉCHEC avec la raison réelle.
 # ═════════════════════════════════════════════════════════════════════════════
 
-importer "syllog/src/tactiques.rose"
+importer "thorn/src/tactiques.rose"
 
 $cpt = table()
 inserer($cpt, "r", 0)

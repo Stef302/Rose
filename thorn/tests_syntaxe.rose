@@ -1,5 +1,5 @@
-# ── Syllog — tests du lexeur et du parseur (PROV2) ────────────────────────
-# Lancer : ./rose/rose syllog/tests_syntaxe.rose
+# ── Thorn — tests du lexeur et du parseur (PROV2) ────────────────────────
+# Lancer : ./rose/rose thorn/tests_syntaxe.rose
 # Cinq programmes de test, chacun avec son AST attendu (structure imprimee).
 # Les termes suivent la table `Terme` de SPEC.md.
 
@@ -151,7 +151,7 @@ $att7 = t_app(t_app(t_var("f"), t_var("x")), t_var("y"))
 test("P7 — application juxtaposee", $att7, $term7)
 
 # P8 : erreur de parsing localisée. analyser_fichier affiche lui-même
-# "Syllog — ligne 3 : ..." et rend une déclaration partielle.
+# "Thorn — ligne 3 : ..." et rend une déclaration partielle.
 afficher("=== diagnostic : erreur avec numero de ligne ===")
 $srcerr = "théorème t : X\npreuve\n  par nimportequoi @\n"
 $declserr = analyser_fichier($srcerr)

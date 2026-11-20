@@ -1,9 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# syllog/tests_noyau.rose — tests unitaires du noyau de Syllog.
-# Lancer depuis la racine du dépôt : ./rose/rose syllog/tests_noyau.rose
+# thorn/tests_noyau.rose — tests unitaires du noyau de Thorn.
+# Lancer depuis la racine du dépôt : ./rose/rose thorn/tests_noyau.rose
 # ═══════════════════════════════════════════════════════════════════════════
 
-importer "syllog/src/noyau.rose"
+importer "thorn/src/noyau.rose"
 
 # Les globals ne sont PAS visibles en écriture depuis une fonction Rose :
 # le bilan voyage donc dans une table partagée (passée par référence).

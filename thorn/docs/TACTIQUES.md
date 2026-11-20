@@ -1,12 +1,12 @@
-# Syllog — tactiques (PROV3) : ce qui est réel, ce qui est simplifié
+# Thorn — tactiques (PROV3) : ce qui est réel, ce qui est simplifié
 
-Fichiers livrés : `syllog/src/tactiques.rose`, `syllog/tests_tactiques.rose`,
-`syllog/preuves/{identite,reflexivite,associativite,commutativite}.slg`,
+Fichiers livrés : `thorn/src/tactiques.rose`, `thorn/tests_tactiques.rose`,
+`thorn/preuves/{identite,reflexivite,associativite,commutativite}.slg`,
 ce document. Aucun autre fichier du dépôt n'a été modifié. Aucun commit, aucune publication.
 
 ## 1. Comment un terme est déclaré « vérifié »
 
-Le noyau PROV1 (`syllog/src/noyau.rose`, importé par `tactiques.rose`) expose
+Le noyau PROV1 (`thorn/src/noyau.rose`, importé par `tactiques.rose`) expose
 `verifier(t, ctx)` qui fait une **synthèse de type** : il rend `{ok, type, erreur}`.
 Il ne compare pas `t` à un but. La vérification d'une tactique est donc :
 
@@ -58,7 +58,7 @@ déjà vérifié, pas une preuve codée en dur).
 ## 4. Démonstrations vérifiées
 
 `tests_tactiques.rose` construit chaque terme, appelle le noyau et affiche OK/ÉCHEC.
-Sortie réelle (`./rose/rose syllog/tests_tactiques.rose`) : **19 réussis / 0 échec**.
+Sortie réelle (`./rose/rose thorn/tests_tactiques.rose`) : **19 réussis / 0 échec**.
 
 Les quatre preuves `.slg` correspondent à des termes effectivement vérifiés :
 
@@ -67,10 +67,10 @@ Les quatre preuves `.slg` correspondent à des termes effectivement vérifiés :
 - `associativite.slg` → `nat_rec P base pas` : `demo_associativite()` — OK ;
 - `commutativite.slg` → `nat_rec P base pas` : `demo_commutativite()` — OK.
 
-`rose verif syllog/src/tactiques.rose` → `vérifié` ; idem pour `tests_tactiques.rose`.
+`rose verif thorn/src/tactiques.rose` → `vérifié` ; idem pour `tests_tactiques.rose`.
 
 **Les fichiers `.slg` ne sont pas encore analysés** : le lexeur est en PROV2 et le
-pilote `syllog <fichier.slg>` en PROV4, qui ne sont pas livrés ici. Ce sont des
+pilote `thorn <fichier.slg>` en PROV4, qui ne sont pas livrés ici. Ce sont des
 spécifications déclarantives ; leur contenu est vérifié par les constructions Rose
 équivalentes de `tests_tactiques.rose`. Ne pas les considérer comme exécutables
 aujourd'hui.

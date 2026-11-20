@@ -1,14 +1,14 @@
-# ── Syllog — lexeur (PROV2) ────────────────────────────────────────────────
+# ── Thorn — lexeur (PROV2) ────────────────────────────────────────────────
 # Fichier autonome : aucun import, aucune variable globale (importer n'execute
 # pas les instructions de tete du fichier importe).
-# Verifier : ./rose/rose verif syllog/src/lexeur.rose
+# Verifier : ./rose/rose verif thorn/src/lexeur.rose
 #
 # API publique :
 #   lexer(src)          -> liste<chaine> : jetons nus
 #   lexer_detaille(src) -> liste<chaine> : jetons "texte~ligne"
 #
 # Le suffixe "~N" porte le numero de ligne. "~" ne peut jamais apparaitre dans
-# un jeton Syllog (identifiants = lettres/accents/chiffres/tiret bas).
+# un jeton Thorn (identifiants = lettres/accents/chiffres/tiret bas).
 # analyser() accepte les deux formes. Aucune exception : un caractere inconnu
 # donne le jeton "?" que le parseur signale avec sa ligne.
 

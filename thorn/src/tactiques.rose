@@ -1,5 +1,5 @@
 # ═════════════════════════════════════════════════════════════════════════════
-# syllog/src/tactiques.rose — TACTIQUES DE SYLLOG (PROV3)
+# thorn/src/tactiques.rose — TACTIQUES DE THORN (PROV3)
 # ═════════════════════════════════════════════════════════════════════════════
 # Contrat : SPEC.md, section « Tactiques ».
 #
@@ -741,7 +741,7 @@ fn ta_terme_plus_succ_d() -> table {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 10. DÉMOS (correspondent aux fichiers syllog/preuves/*.slg)
+# 10. DÉMOS (correspondent aux fichiers thorn/preuves/*.slg)
 # ─────────────────────────────────────────────────────────────────────────────
 
 fn demo_identite() -> table {

@@ -1,16 +1,16 @@
-# Syllog — noyau de vérification de types
+# Thorn — noyau de vérification de types
 
-Implémentation en Rose du noyau décrit dans `syllog/SPEC.md`.
-Fichiers livrés : `syllog/src/noyau.rose`, `syllog/tests_noyau.rose`, ce document.
+Implémentation en Rose du noyau décrit dans `thorn/SPEC.md`.
+Fichiers livrés : `thorn/src/noyau.rose`, `thorn/tests_noyau.rose`, ce document.
 Aucun autre fichier n'a été modifié. Aucun commit, aucune publication.
 
 ## Vérification
 
 ```
 cd /home/clausake/Stefan/ROSE
-./rose/rose verif syllog/src/noyau.rose        # → vérifié
-./rose/rose verif syllog/tests_noyau.rose      # → vérifié
-./rose/rose syllog/tests_noyau.rose            # → REUSSIS=35, ECHOUES=0, RESULTAT: OK
+./rose/rose verif thorn/src/noyau.rose        # → vérifié
+./rose/rose verif thorn/tests_noyau.rose      # → vérifié
+./rose/rose thorn/tests_noyau.rose            # → REUSSIS=35, ECHOUES=0, RESULTAT: OK
 ```
 
 ## Interface publique
@@ -101,8 +101,8 @@ structurellement.
 
 ## Tests (35 assertions, toutes vertes)
 
-Le harnais est dans `syllog/tests_noyau.rose` ; il importe le noyau avec
-`importer "syllog/src/noyau.rose"`. Couverture réelle :
+Le harnais est dans `thorn/tests_noyau.rose` ; il importe le noyau avec
+`importer "thorn/src/noyau.rose"`. Couverture réelle :
 
 1. `λx:X. x` accepté, type `Πx:X. X`, sans erreur.
 2. Application à un argument ; application dépendante

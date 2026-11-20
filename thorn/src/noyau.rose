@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# syllog/src/noyau.rose — NOYAU DE VÉRIFICATION DE TYPES DE SYLLOG
+# thorn/src/noyau.rose — NOYAU DE VÉRIFICATION DE TYPES DE THORN
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # Interface publique (SPEC.md) :
@@ -26,7 +26,7 @@
 #   Sentinelle interne : {genre:"_absent"} = champ manquant / non lié.
 #
 # Aucune dépendance externe, aucun fichier modifié hors celui-ci.
-# Documentation : syllog/docs/NOYAU.md
+# Documentation : thorn/docs/NOYAU.md
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ─────────────────── 1. Constructeurs et accès défensif ───────────────────
