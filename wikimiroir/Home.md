@@ -5,7 +5,7 @@ arithmetic (unbounded integers, rationals, complex numbers, exact π / e / φ),
 automatic LaTeX rendering, and a native Rust engine: interpreter, Cranelift JIT,
 LLVM ORC AOT and a WebAssembly module.
 
-Rose is self-hosted and versioned as **0.1.6**.
+Rose is self-hosted and versioned as **0.1.7**.
 
 ## First program
 
