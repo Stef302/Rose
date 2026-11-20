@@ -2214,7 +2214,18 @@ fn detecter_racines_carres(corps: &CorpsRir, sig: &Signature) -> Option<RacinesC
 
 fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
                       principal_sans_boxage: bool) -> bool {
-    let corps = match &sig.rir { Some(c)=>c, None=>return false };
+    let Some(corps) = &sig.rir else { return false };
+    rir_compilable_corps(corps, sig, prog, principal_sans_boxage)
+}
+
+/// SP8 — la décision de compilabilité ne lit QUE le corps RIR et les types de
+/// la signature. La séparer de `Signature.rir` permet à `prepare_jit` d'inspecter
+/// le corps détenu par l'interpréteur SANS le recopier. Mesuré sur l'englobant
+/// (c16, cntvct) : `prog.instructions.clone()` ≈ 12 µs, `rir_principal.clone()`
+/// ≈ 20 µs, soit ≈ 33 µs cumulées supprimées (A/B entrelacé, 11 tirages/cœur).
+fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
+                        prog: &HashMap<String, Signature>,
+                        principal_sans_boxage: bool) -> bool {
     // DISP1 (19/11) — motif `racine(k*k)` : l'émetteur dédié remplace
     // l'intégralité du principal (y compris les opérations AST `nb_arguments`,
     // `argument`, `entier`, `millisecondes` que la porte générique refuse).
@@ -3530,22 +3541,23 @@ pub fn prepare_jit(prog: &crate::front::Programme,
     let sigs = signatures_inferées(signatures);
 
     // --- miroir de compiler_principal : le principal est-il compilable ? ---
+    // ⚠ SP8 — plus AUCUNE recopie de l'AST du principal ici : `bloc_compilable`
+    // ne fait que LIRE les instructions. Le clone `prog.instructions.clone()`
+    // coûte ~8–9 µs sur l'englobant (c16, cntvct) et n'apportait rien.
     let mut sig = Signature {
         nom: "$principal".into(), rir: None, params: Vec::new(),
         retour: crate::front::Ty::vide(), a_retour: false,
-        corps: Some(prog.instructions.clone()),
+        corps: None,
         dll: String::new(), dll_son: String::new(), symbole: String::new(), ligne: 0,
     };
     let mut use_rir = false;
     if std::env::var("ROSE_NO_RIR").is_err() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
-        let rir = match rir_principal {
-            Some(r) => Some(r.clone()),
-            None => crate::rir::abaisser_principal(&prog.instructions),
-        };
-        if let Some(rir) = rir {
-            sig.rir = Some(rir);
-            use_rir = rir_compilable_jit(&sig, &sigs, true);
-            if !use_rir { sig.rir = None; }
+        // ⚠ SP8 — le RIR principal est EMprunté quand l'interpréteur l'a déjà
+        // construit ; l'ancien `r.clone()` recopiait ~200 opérations (4–5 µs).
+        let propre = rir_principal.is_none()
+            .then(|| crate::rir::abaisser_principal(&prog.instructions)).flatten();
+        if let Some(rir) = rir_principal.or(propre.as_ref()) {
+            use_rir = rir_compilable_corps(rir, &sig, &sigs, true);
         }
     }
     let principal_compilable = if use_rir { true } else {
@@ -3553,7 +3565,7 @@ pub fn prepare_jit(prog: &crate::front::Programme,
         if crate::front::i_est_compteur() {
             env.insert("i".into(), crate::front::TyKind::Entier);
         }
-        bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env, &sigs,
+        bloc_compilable(&prog.instructions, &mut env, &sigs,
                         Some(crate::front::TyKind::Vide))
     };
     if principal_compilable { return (true, out); }
