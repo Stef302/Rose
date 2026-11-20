@@ -1148,3 +1148,9 @@ Les agents précédents ont prouvé des blocages dans leurs périmètres étroit
 |---|---|---|
 | RUSTX | dépasser Rust sur suite/englobant/global | `rose/src/{interp,run,jit,front,rir,main}.rs`, `rose/docs/RUSTX.md` |
 | AZZ | self-host A-Z : ABI bigints | `compilateur/emetteur_elf.rose`, `rose/docs/AZZ.md` |
+
+## Vague 68 — extension VS Code 0.1.7 + couleurs types
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| VSC1 | extension 0.1.7, vocabulaire nouveau, thème rouge pour les types, VSIX | `vscode-rose/**`, `rose/docs/EXTENSION.md` |
