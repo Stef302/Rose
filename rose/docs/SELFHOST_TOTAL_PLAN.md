@@ -15,12 +15,18 @@ Versions observées :
 | Version | md5 | Rôle |
 |---|---|---|
 | `e668fd426a65ebc1d66138020a01e21a` (SH4) | base avant SH6 | point fixe `b3ed9262…` vérifié |
-| **`aa0cf5898a5ccc26d70eed404f68f835`** | **version finale stable analysée** | + `g5_puts` (l.1300), `g5_emit_plist` (l.1322), `$g5_slist`, `g5_list_kind` |
+| **`aa0cf5898a5ccc26d70eed404f68f835`** | **version gelée analysée** | + `g5_puts` (l.1300), `g5_emit_plist` (l.1322), `$g5_slist`, `g5_list_kind` |
+| `cb11334222cbb494a7d6b6b8649b4992` | version courante en fin de mission | + garde de borne dans `g5_emit_argument` (diff lu, **non re-mesuré par SH5** : chaque émission coûte ~6 min) |
 | snapshot local | `/tmp/opencode/sh5_agents/emetteur_elf_snapshot.rose` | copie gelée de `aa0cf…` |
 
 **Tous les numéros de ligne ci-dessous se réfèrent à `aa0cf…`.**
 L'ELF de self-host final (`host2.elf`) a été émis depuis cette version.
-L'agent concurrent est arrêté : md5 relu trois fois identique.
+L'agent concurrent a continué après : le md5 final lu est `cb113…`. Le correctif
+`argument` est **présent dans le code** (lu dans le diff) mais je ne le re-mesure
+pas ici — une émission native coûte ~6 min et mon dernier lancement a dépassé le
+timeout. Aucun des autres correctifs bloquants (`caractere`, `partie_entiere`,
+`quitter`, `2^64`, `eval_expr`) n'a été ajouté entre `aa0cf…` et `cb113…` :
+le diff ne contient aucun nouveau `fn g5_emit_*`.
 
 ---
 
@@ -95,7 +101,7 @@ Légende état : **OK** = conforme mesurée ; **PARTIEL** = cas limites cassés 
 | `table` — `g5_emit_table` l.1905 | l.896 ; 1 appel | table associative | **PARTIEL** : liste de clés | faible si clés seules | `tabtest` natif=ELF=7 | non |
 | `cle_existe` — `g5_emit_clex` l.1923 | l.893 ; 3 appels | clé chaîne (contenu) ou entière (valeur) | **OK** (SH4) | — | `tab2` rc=0 | non |
 | `nb_arguments` — `g5_emit_nbargs` l.2004 | l.885 ; 2 appels | argc−1 | **OK** | — | `probe_io` natif=ELF=1 | non |
-| `argument` — `g5_emit_argument` l.2020 | l.886 ; 4 appels | argv[i+1] en chaîne, garde de borne | **PARTIEL** | faible (garde) | `p_arg` sans arg : natif rc=1 / ELF **rc=139** | secondaire |
+| `argument` — `g5_emit_argument` l.2020 | l.886 ; 4 appels | argv[i+1] en chaîne, garde de borne | **PARTIEL sur `aa0cf…`** (rc=139) ; **garde ajoutée par l'agent concurrent sur `cb113…`**, non re-mesurée par SH5 | faible | `p_arg` sans arg : natif rc=1 / ELF `aa0cf…` **rc=139** | secondaire |
 | `lire_texte` — `g5_emit_lire` l.2064 | l.887 ; 2 appels | openat+fstat+read+close | **OK** | — | `strace` : 3 syscalls OK, 99 o lus | non |
 | `ecrire_bytes` / `ecrire_texte` — `g5_emit_ecrire` l.2144 | l.888 ; 3 appels | openat(O_CREAT)+write+close | **OK** | — | point fixe écrit 263 520 o | non |
 | `afficher` — `g5_emit_print` l.1190 | l.1060… ; partout | entier, chaîne, `\n` final | **OK** | — | 39/43 tests SH4 | non |
