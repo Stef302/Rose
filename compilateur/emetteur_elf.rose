@@ -340,6 +340,13 @@ $g5_stub0l = 0
 $g5_stubsl = 0
 $g5_tablel = 0
 $g5_clexl = 0
+# SH7 (C0) : trois primitives absentes du dispatch G5, émises comme de vraies
+# routines. Sans elles, `app <nom>` retombait sur g5_emit_stub0 (x0=0), ce qui
+# détruisait la construction octet par octet de l'ELF et empêchait quitter()
+# d'arrêter le chemin G5 (retombée dans l'ancien compilateur).
+$g5_quitl = 0
+$g5_carl = 0
+$g5_parl = 0
 
 # ── G5-IO : primitives d'entrée/sortie par syscalls Linux aarch64 ──
 # Ces routines sont ÉMISES dans l'ELF (elles ne s'exécutent pas dans Rose) :
@@ -846,6 +853,26 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     }
     si ($head == "app" ou $head == "appel_rir" ou $head == "appel") {
       $nom = $t[$pos + 2]
+      # SH7 (C0.3) : `partie_entiere(17/3)` arrive sous la forme RIR
+      # `(app partie_entiere (f 17/3))`. L'ABI G5 n'a pas de rationnels :
+      # g5_eval replierait `(f 17/3)` sur 0 avant même d'appeler la routine.
+      # On replie donc le quotient à l'émission, comme le fait déjà g5_op
+      # pour l'affichage direct d'un littéral rationnel. La routine G5
+      # g5_emit_par couvre le cas général (argument déjà entier, ex. les
+      # 18 appels de g5_load/ldroff/stroff de l'émetteur lui-même).
+      si ($nom == "partie_entiere" et $pos + 6 < $n et
+          $t[$pos + 3] == "(" et $t[$pos + 4] == "f") {
+        $rat = $t[$pos + 5]
+        $bar = g4_pos($rat, "/")
+        si ($bar >= 0) {
+          $ra = g4_entier_ou_zero(g5_sub($rat, 0, $bar))
+          $rb = g4_entier_ou_zero(g5_sub($rat, $bar + 1, longueur($rat)))
+          si ($rb != 0) {
+            g5_load_val(0, partie_entiere($ra / $rb))
+            retour $pos + 7
+          }
+        }
+      }
       $p = $pos + 3
       $k = 0
       tant_que ($p < $n et $t[$p] != ")") {
@@ -891,6 +918,10 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       # flottants du dump de emetteur.rose sont a valeur entiere).
       si ($nom == "flottant") { $lbl = $g5_entierl }
       si ($nom == "cle_existe") { $lbl = $g5_clexl }
+      # SH7 (C0.1/C0.2/C0.3) : primitives réellement émises, plus des stubs.
+      si ($nom == "quitter") { $lbl = $g5_quitl }
+      si ($nom == "caractere") { $lbl = $g5_carl }
+      si ($nom == "partie_entiere") { $lbl = $g5_parl }
       # inserer(t,c,v) a la meme signature utile que joindre(t,c) : la
       # valeur v est ignoree par les tables de mots-cles de Rose.
       si ($nom == "table") { $lbl = $g5_tablel }
@@ -1043,6 +1074,22 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
       g5_branch(1, $g5_plist_l)
       retour 0
     }
+    # SH9/SH7 : `chaine(b vraie)` / `chaine(b faux)` — un LITTÉRAL booléen
+    # n'a pas de slot à interroger dans $g5_sbool. Sans ce repli, g5_emit_ch
+    # voit un entier tagué 0/8 et rend "1"/"0" au lieu de "vrai"/"faux"
+    # (mesuré dans t999 : ligne 11 natif=vrai, ELF=1).
+    si ($t[1] == "(" et $t[2] == "app" et $t[3] == "chaine" et
+        $t[4] == "(" et $t[5] == "b" et $t[6] == "vraie") {
+      g5_make_str("vrai")
+      g5_branch(1, $printl)
+      retour 0
+    }
+    si ($t[1] == "(" et $t[2] == "app" et $t[3] == "chaine" et
+        $t[4] == "(" et $t[5] == "b" et $t[6] == "faux") {
+      g5_make_str("faux")
+      g5_branch(1, $printl)
+      retour 0
+    }
     # SH4 : `chaine($x)` ou `chaine(slot N)` avec $x un booléen doit rendre
     # "vrai"/"faux" (natif : >> chaine(3<5) -> vrai). L'ABI G5 confond le
     # booléen avec l'entier 0/1 ; on intercepte donc l'affichage direct.
@@ -1117,15 +1164,26 @@ fn g5_parse($src: chaine) -> entier {
       $ops = [0 : chaine]
       $en_ops = 0
       $i = $i + 1
-      tant_que ($i < longueur($ll) et g5_sub(g4_trim($ll[$i]), 0, 9) != "fonction ") {
+      # SH7 : sous G5, `et` est un AND BIT À BIT non court-circuitant
+      # (g5_eval émet `andr`). L'ancienne condition évaluait donc `$ll[$i]`
+      # MÊME quand $i avait atteint longueur($ll) : index hors bornes -> 0,
+      # puis g4_trim(0) -> longueur(0) -> SIGSEGV (mesuré sur e_self.elf
+      # tiny.rir : pc 0x45ec1c, x0=0). On garde l'accès dans le corps,
+      # protégé par la seule borne, exactement comme le ferait un `et`
+      # court-circuitant. Le comportement natif est inchangé.
+      $fin_bloc = 0
+      tant_que ($fin_bloc == 0 et $i < longueur($ll)) {
         $u = g4_trim($ll[$i])
-        si (g5_sub($u, 0, 6) == "param ") { $nparam = $nparam + 1
-        } sinon si (g5_sub($u, 0, 7) == "retour ") { $ret = g4_trim(g5_sub($u, 7, longueur($u)))
-        } sinon si (g5_sub($u, 0, 8) == "n_slots ") { $slot = g4_entier_ou_zero(g5_sub($u, 8, longueur($u)))
-        } sinon si (g5_sub($u, 0, 5) == "noms ") { $noms = g4_trim(g5_sub($u, 5, longueur($u)))
-        } sinon si ($u == "ops") { $en_ops = 1
-        } sinon si ($en_ops == 1 et longueur($u) > 0) { joindre($ops, g5_nu_op($u)) }
-        $i = $i + 1
+        si (g5_sub($u, 0, 9) == "fonction ") { $fin_bloc = 1
+        } sinon {
+          si (g5_sub($u, 0, 6) == "param ") { $nparam = $nparam + 1
+          } sinon si (g5_sub($u, 0, 7) == "retour ") { $ret = g4_trim(g5_sub($u, 7, longueur($u)))
+          } sinon si (g5_sub($u, 0, 8) == "n_slots ") { $slot = g4_entier_ou_zero(g5_sub($u, 8, longueur($u)))
+          } sinon si (g5_sub($u, 0, 5) == "noms ") { $noms = g4_trim(g5_sub($u, 5, longueur($u)))
+          } sinon si ($u == "ops") { $en_ops = 1
+          } sinon si ($en_ops == 1 et longueur($u) > 0) { joindre($ops, g5_nu_op($u)) }
+          $i = $i + 1
+        }
       }
       joindre($g5_fn, $nm)
       joindre($g5_fnslot, $slot)
@@ -1971,6 +2029,53 @@ fn g5_emit_clex($lbl: entier) -> entier {
 }
 
 # Primitives non implémentées : retour neutre (0 ou chaîne vide).
+# ── SH7 : primitives C0 émises dans l'ELF ──
+
+# C0.1 — quitter(code) : exit_group(code). x0 contient le code Rose tagué
+# (n<<3) ; on le désétiquette avant le syscall. Ne revient jamais : c'est
+# précisément ce qui empêche le chemin G5 de retomber dans l'ancien
+# compilateur source→ELF de $principal.
+fn g5_emit_quit($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0))
+  g5_emit(movz(8, 93))
+  g5_emit(SVC_I())
+  g5_emit(RET_I())             # jamais atteint, garde-fou
+  retour 0
+}
+
+# C0.2 — caractere(n) -> descripteur de chaîne [tag=1][len=1][n%256].
+# n est un entier Rose tagué dans x0. x10/x11 conservent l'octet pendant
+# l'allocation (g5_alloc_inline détruit x0,x1,x2,x9).
+fn g5_emit_car($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(10, 0))      # n brut
+  g5_emit(movz(11, 255))
+  g5_emit(andr(10, 10, 11))    # octet = n mod 256
+  g5_load(0, 24)               # 16 octets d'en-tête + 8 de données
+  g5_alloc_inline()            # x0 = pointeur brut aligné
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 0, 0))     # tag = 1 (chaîne)
+  g5_emit(stroff(1, 0, 8))     # longueur = 1
+  g5_emit(strbio(10, 0, 16))   # l'unique octet
+  g5_emit(g5_tag1(0, 0))       # x0 = pointeur|1
+  g5_emit(RET_I())
+  retour 0
+}
+
+# C0.3 — partie_entiere(n) : sous l'ABI G5 l'argument est déjà un entier
+# tronqué (le `/` de `(app partie_entiere (bin / ...))` émet un sdiv).
+# On désétiquette puis on réétiquette, exactement comme le ferait un asr
+# des deux opérandes suivants d'un sdiv. Le cas littéral `(f a/b)` est
+# replié à l'émission dans g5_eval (voir ci-dessus).
+fn g5_emit_par($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
 fn g5_emit_stub0($lbl: entier) -> entier {
   g5_mark($lbl)
   g5_emit(movz(0, 0))
@@ -2244,31 +2349,59 @@ fn g5_patch() -> liste<entier> {
   retour $out
 }
 
+# SH7 : assemblage par paires. Rose natif a une concaténation structurelle
+# O(1), mais le runtime G5 de l'ELF généré COPIE à chaque `+` (g5_emit_cat).
+# 134 000 appels à `$out = $out + u32le(...)` étaient donc O(n²) : mesuré
+# épuisement du tas (8 Gio) avant le moindre octet sur /dev/stdout. On
+# fusionne les morceaux deux par deux : O(n log n) copies, mémoire ~2× la
+# taille finale. Les octets produits sont strictement identiques.
+fn g5_assemble($parts: liste<chaine>) -> chaine {
+  # Rose n'a pas de littéral de liste vide typée : l'index 0 est un
+  # SENTINELLE (chaîne vide) qui doit être sauté à chaque passe, sinon
+  # la réduction n=3 tourne en boucle (mesuré : timeout sur 4 morceaux).
+  $n = longueur($parts)
+  si ($n < 2) { retour "" }
+  tant_que ($n > 2) {
+    $next = [""]
+    $i = 1
+    tant_que ($i + 1 < $n) {
+      joindre($next, $parts[$i] + $parts[$i + 1])
+      $i = $i + 2
+    }
+    si ($i < $n) { joindre($next, $parts[$i]) }
+    $parts = $next
+    $n = longueur($parts)
+  }
+  retour $parts[1]
+}
+
 fn g5_elf() -> chaine {
   $base = 4194304
   $heap = 1610612736
   $code_off = 176
   $fsz = $code_off + 4 * longueur($g5_code)
-  $out = ""
-  $out = $out + caractere(127) + "ELF" + caractere(2) + caractere(1) + caractere(1) + caractere(0)
+  $parts = [""]
+  joindre($parts, caractere(127) + "ELF" + caractere(2) + caractere(1) + caractere(1) + caractere(0))
   $z = 0
-  tant_que ($z < 8) { $out = $out + caractere(0); $z = $z + 1 }
-  $out = $out + u16le(2) + u16le(183) + u32le(1)
-  $out = $out + u64le($base + $code_off) + u64le(64) + u64le(0) + u32le(0)
-  $out = $out + u16le(64) + u16le(56) + u16le(2) + u16le(0) + u16le(0) + u16le(0)
-  $out = $out + u32le(1) + u32le(5)
-  $out = $out + u64le(0) + u64le($base) + u64le($base)
-  $out = $out + u64le($fsz) + u64le($fsz) + u64le(4096)
-  $out = $out + u32le(1) + u32le(6)
-  $out = $out + u64le(0) + u64le($heap) + u64le($heap)
+  tant_que ($z < 8) { joindre($parts, caractere(0)); $z = $z + 1 }
+  joindre($parts, u16le(2) + u16le(183) + u32le(1))
+  joindre($parts, u64le($base + $code_off) + u64le(64) + u64le(0) + u32le(0))
+  joindre($parts, u16le(64) + u16le(56) + u16le(2) + u16le(0) + u16le(0) + u16le(0))
+  joindre($parts, u32le(1) + u32le(5))
+  joindre($parts, u64le(0) + u64le($base) + u64le($base))
+  joindre($parts, u64le($fsz) + u64le($fsz) + u64le(4096))
+  joindre($parts, u32le(1) + u32le(6))
+  joindre($parts, u64le(0) + u64le($heap) + u64le($heap))
   # SH3 : la compilation réflexive de emetteur.rose (155 Kio de source)
   # consomme plus de 1 Gio de descripteurs (concaténations O(n²) du writer
   # RIR). Mesuré : 512 Mio et 1 Gio -> SIGSEGV, 2 Gio -> rc=0.
-  # mapping anonyme paresseux : aucun coût réel au démarrage.
-  $out = $out + u64le(0) + u64le(2147483648) + u64le(4096)
+  # SH7 : la compilation de emetteur_elf.rose par le binaire GÉNÉRÉ épuisait
+  # les 2 Gio ; le mapping est porté à 8 Gio et l'assemblage ci-dessus rend
+  # cette réserve largement suffisante.
+  joindre($parts, u64le(0) + u64le(8589934592) + u64le(4096))
   $i = 0
-  tant_que ($i < longueur($g5_code)) { $out = $out + u32le($g5_code[$i]); $i = $i + 1 }
-  retour $out
+  tant_que ($i < longueur($g5_code)) { joindre($parts, u32le($g5_code[$i])); $i = $i + 1 }
+  retour g5_assemble($parts)
 }
 
 # ── Point d'entrée ──
@@ -2342,6 +2475,11 @@ $g5_ecrire_l = g5_next()
 $k = 0
 tant_que ($k < 8) { g5_next(); $k = $k + 1 }
 $exitl = g5_next()
+# SH7 : une étiquette par routine C0 ; aucune n'utilise de label interne
+# ($lbl+N), donc aucune réservation supplémentaire n'est nécessaire.
+$g5_quitl = g5_next()
+$g5_carl = g5_next()
+$g5_parl = g5_next()
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
 tant_que ($i < $nfn) {
@@ -2363,6 +2501,9 @@ g5_emit_stub0($g5_stub0l)
 g5_emit_stubs($g5_stubsl)
 g5_emit_table($g5_tablel)
 g5_emit_clex($g5_clexl)
+g5_emit_quit($g5_quitl)
+g5_emit_car($g5_carl)
+g5_emit_par($g5_parl)
 g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
