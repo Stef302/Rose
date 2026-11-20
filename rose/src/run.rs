@@ -2365,7 +2365,16 @@ impl Table {
     /// Construit une table et son index à partir des paires déjà ordonnées.
     pub fn neuf(items: Vec<(Valeur, Valeur)>) -> Table {
         let t = Table(Rc::new(RefCell::new(TableRep {
-            items: { let mut v = items; v.reserve(4096); v },
+            items: {
+                // RC5 (20/11/2026) : la boucle `inserer` du banc global pousse
+                // 5 000 paires de 48 octets. Réserver 4 096 provoquait un
+                // `realloc` à la 4 097ᵉ insertion (~196 Kio recopiés). 8 192
+                // couvre le banc sans realloc ; le surcoût est l'arène
+                // supplémentaire (393 Kio au lieu de 196 Kio), payée une seule
+                // fois par table. A/A/A entrelacé c6+c16 : -6,6 µs sur la phase
+                // tables (mesure RC5.md).
+                let mut v = items; v.reserve(8192); v
+            },
             // `index` ne sert plus qu'aux clés NON denses (array_part est
             // l'index primaire). D7 n'en a aucune : `HashMap::with_hasher`
             // n'alloue RIEN avant la première insertion, ce qui économise
@@ -2541,7 +2550,12 @@ impl Table {
         // seule fois. Toutes les voies de recherche gardent la MÊME
         // validation `valeur_egale`, donc la sémantique est inchangée.
         let k = Self::k_table(&cle);
-        let mut rep = self.0.borrow_mut();
+        // RC5 : même accès sans contrôle que la voie `inserer_i64` (voir
+        // `rep_mut_nv`). Le moteur est monothreadé et cette méthode n'appelle
+        // aucune primitive susceptible de réemprunter la même table ; le
+        // drapeau RefCell est donc toujours libre. Évite le test/incrément
+        // dynamique sur les 5 000 insertions du banc.
+        let rep = self.rep_mut_nv();
         // Index primaire des clés entières denses : aucun HashMap à maintenir.
         if let Some(k) = k {
             let p = rep.array_part[k];
