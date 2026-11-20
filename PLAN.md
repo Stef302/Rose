@@ -1019,3 +1019,11 @@ Cause ROI trouvée (setup_gui.rs ~1591-1610): titre Kare rectangle h_marque=max(
 | VER1 | refs 0.1.5 → 0.1.6 là où c'est l'état courant (historique conservé) | `README.md`, `docs/`, `wikimiroir/`, `vscode-rose/`, `rose/docs/VERSION_016.md` |
 | SPEED3 | parse/RIR/démarrage (190µs englobant, 1,1ms global) | `rose/src/{front,rir,main}.rs`, `rose/docs/SPEED3.md` |
 | SPEED4 | tables/RNG/restes runtime | `rose/src/run.rs`, `rose/docs/SPEED4.md` |
+
+## Vague 55 (21/11) — sélecteur de versions dans l'UI launcher
+
+Backend LAUNCH1 commite (3dac39d): catalogue GitHub dynamique, zero version codee. Reste l'ecran.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| LAUNCH2 | écran de sélection des versions dans setup_gui.rs | `rose/src/setup_gui.rs`, `rose/docs/SELECTEUR_UI.md` |
