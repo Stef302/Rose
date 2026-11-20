@@ -1129,3 +1129,13 @@ devient la source des releases; (3) ajouter une section RELEASES au site avec up
 |---|---|---|
 | L5 | bannière update 1er écran + lecture manifeste site, sans polling | `rose/src/{setup_gui,setup_core,velopack}.rs`, `rose/docs/UPDATE_BANNER.md` |
 | SITE1 | section RELEASES du site + manifeste releases.json | `docs/index.html`, `docs/telechargements/releases.json`, `rose/docs/SITE_RELEASES.md` |
+
+## Vague 66 — publication d'une release en une commande
+
+Objectif: `scripts/publier-release.py <version> <titre> <notes>` fait TOUT dynamiquement:
+bump version, artefacts Windows+wasm, manifeste site, article changelog, section RELEASES,
+release GitHub avec assets, vérification SHA-256. Aucune réécriture manuelle du site.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| REL1 | outil de publication automatisé | `scripts/publier-release.py`, `rose/docs/PUBLICATION.md` |
