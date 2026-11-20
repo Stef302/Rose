@@ -789,6 +789,68 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
     0
 }
 
+/// ✔ DECISION STRUCTURALE (21/11) — le programme a-t-il un cycle d'appels ?
+/// Un cycle = recursion possible = besoin de la pile de 512 Mo. Sans cycle,
+/// l'execution dans le main thread (avec `catch_unwind`) evite un
+/// `pthread_create` + `join` de ~25 us mesures. Conservatif : toute ambiguite
+/// (accolades dans une chaine, graphe non resolu) rend `true` = thread garde.
+fn programme_a_cycle_appel(source: &str) -> bool {
+    let mut noms: Vec<String> = Vec::new();
+    for lig in source.lines() {
+        let t = lig.trim_start();
+        if let Some(r) = t.strip_prefix("fn ") {
+            let n: String = r.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            if !n.is_empty() { noms.push(n); }
+        }
+    }
+    if noms.is_empty() { return false; }
+    // corps de chaque fonction : entre le '{' suivant la signature et son '}' correspondant.
+    let mut graphe: Vec<Vec<usize>> = vec![Vec::new(); noms.len()];
+    for (i, nom) in noms.iter().enumerate() {
+        let motif = format!("fn {}(", nom);
+        let mut pos = 0usize;
+        let mut trouve = false;
+        while let Some(k) = source[pos..].find(&motif) {
+            let debut = pos + k;
+            if let Some(rel) = source[debut..].find('{') {
+                let od = debut + rel;
+                let mut prof = 0i32;
+                let mut fin = source.len();
+                for (j, c) in source[od..].char_indices() {
+                    match c {
+                        '{' => prof += 1,
+                        '}' => { prof -= 1; if prof == 0 { fin = od + j + 1; break; } }
+                        _ => {}
+                    }
+                }
+                if prof != 0 { return true; } // ambiguite -> thread
+                trouve = true;
+                let corps = &source[od..fin];
+                for (j, m) in noms.iter().enumerate() {
+                    if corps.contains(&format!("{}(", m)) { graphe[i].push(j); }
+                }
+            }
+            pos = debut + motif.len();
+        }
+        if !trouve { return true; } // signature non resolute -> thread
+    }
+    // DFS cycle
+    let mut couleur = vec![0u8; noms.len()];
+    fn dfs(u: usize, g: &[Vec<usize>], c: &mut [u8]) -> bool {
+        c[u] = 1;
+        for &v in &g[u] {
+            if c[v] == 1 { return true; }
+            if c[v] == 0 && dfs(v, g, c) { return true; }
+        }
+        c[u] = 2;
+        false
+    }
+    for i in 0..noms.len() {
+        if couleur[i] == 0 && dfs(i, &graphe, &mut couleur) { return true; }
+    }
+    false
+}
+
 fn main() {
     let _t_start = std::time::Instant::now();
     // ⚠⚠ MESURE : le temps passé dans la préparation de la console
@@ -1288,19 +1350,48 @@ fn main() {
         Source(String, Vec<String>),
         Fichier(String, Vec<String>),
     }
+    // DECISION STRUCTURALE (21/11) : pas de cycle d'appels et pas d'imports
+    // => execution DIRECTE dans le main thread. Le `pthread_create`+`join`
+    // (25 us mesures) est supprime ; `catch_unwind` garde la gestion de panic.
+    let exec_direct = sans_imports && !programme_a_cycle_appel(&source)
+        && std::env::var("ROSE_FORCE_THREAD").is_err();
     let tache = if sans_imports {
         Tache::Source(source, args)
     } else {
         Tache::Fichier(fichier.clone(), args)
     };
-    let h = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
-        .spawn(move || match tache {
-            Tache::Source(s, a) => interp::executer_source(&s, a),
-            Tache::Fichier(f, a) => interp::executer_fichier(&f, a),
-        });
+    let mut rc_direct = None;
+    let h = if exec_direct {
+        rc_direct = Some(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &tache {
+            Tache::Source(s, a) => interp::executer_source(s, a.clone()),
+            Tache::Fichier(f, a) => interp::executer_fichier(f, a.clone()),
+        })));
+        None
+    } else {
+        Some(std::thread::Builder::new()
+            .stack_size(512 * 1024 * 1024)
+            .spawn(move || match tache {
+                Tache::Source(s, a) => interp::executer_source(&s, a),
+                Tache::Fichier(f, a) => interp::executer_fichier(&f, a),
+            }))
+    };
     let _t_post = _t_start.elapsed();
-    let rc = match h {
+    let rc = if exec_direct {
+        match rc_direct.expect("catch_unwind direct") {
+            Ok(r) => r,
+            Err(payload) => {
+                let msg = if let Some(s) = payload.downcast_ref::<String>() { s.clone() }
+                          else if let Some(s) = payload.downcast_ref::<&str>() { s.to_string() }
+                          else { "erreur inconnue".to_string() };
+                if let Some(m) = msg.strip_prefix("ROSE_ERR:") {
+                    eprintln!("Rose : erreur — {}", m);
+                } else {
+                    eprintln!("Rose : panic — {}", msg);
+                }
+                1
+            }
+        }
+    } else { match h.expect("thread") {
         Ok(j) => match j.join() {
             Ok(r) => r,
             Err(payload) => {
@@ -1333,7 +1424,7 @@ fn main() {
                 interp::executer_fichier(&fichier, a)
             }
         }
-    };
+    } };
     if console_apres {
         repl::lancer(Some(&fichier), false);
     }
