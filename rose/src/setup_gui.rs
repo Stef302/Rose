@@ -1462,10 +1462,17 @@ fn bandeau_versions(cat: &crate::velopack::CatalogueVersions) -> String {
     let msg = cat.message.trim();
     if cat.hors_ligne {
         let cause = if msg.is_empty() {
-            "GitHub inaccessible : seules les versions déjà présentes sur cet appareil \
-             sont affichées. Le téléchargement est impossible."
+            "GitHub inaccessible : seules les versions déjà présentes sur cet appareil sont affichées."
         } else { msg };
-        format!("HORS LIGNE — {cause}")
+        // Le message du backend peut varier : on GARANTIT toujours la précision
+        // « téléchargement impossible », sans la répéter s'il l'a déjà dite.
+        let bas = cause.to_lowercase();
+        let precision = if bas.contains("téléchargement") || bas.contains("telechargement") {
+            ""
+        } else {
+            " Le téléchargement est impossible tant que l'API ne répond pas."
+        };
+        format!("HORS LIGNE — {cause}{precision}")
     } else if msg.is_empty() {
         "Catalogue chargé depuis l'API publique des releases GitHub.".to_string()
     } else {
@@ -1483,7 +1490,7 @@ struct LayoutListeVersions {
 
 fn layout_liste(hauteur: i32, nb: usize) -> LayoutListeVersions {
     let h = hauteur.max(0);
-    let pas = (h / nb.max(1)).clamp(46, 76).max(1);
+    let pas = (h / nb.max(1) as i32).clamp(46, 76).max(1);
     let visible = ((h / pas) as usize).min(nb);
     LayoutListeVersions { pas, visible }
 }
@@ -2247,12 +2254,11 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
         }
         // ── SÉLECTEUR DE VERSIONS (backend dynamique, aucune version en dur) ──
         Vue::Versions => {
-            let cat = etat.catalogue.as_ref();
-            let nb = cat.map(|c| c.versions.len()).unwrap_or(0);
-            let hors = cat.map(|c| c.hors_ligne).unwrap_or(false);
+            let nb = etat.catalogue.as_ref().map(|c| c.versions.len()).unwrap_or(0);
+            let hors = etat.catalogue.as_ref().map(|c| c.hors_ligne).unwrap_or(false);
 
             // 1. Bandeau : le message du backend, jamais vide, bien visible.
-            let message = cat.map(bandeau_versions)
+            let message = etat.catalogue.as_ref().map(bandeau_versions)
                 .unwrap_or_else(|| "Chargement du catalogue des versions…".to_string());
             let h_message = hauteur(&message, 9, interligne_petit);
             let bandeau = RECT {
@@ -2299,7 +2305,13 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             *std::ptr::addr_of_mut!(PAS_VERSIONS) = layout.pas;
             let depart = etat.version_depart
                 .min(nb.saturating_sub(layout.visible));
-            if let Some(cat) = cat {
+            // Le clavier lit ces valeurs : elles doivent refléter EXACTEMENT
+            // ce que le tracé vient de dessiner. On écrit AVANT d'emprunter
+            // `etat.catalogue` pour la boucle, pour rester dans les règles
+            // d'emprunt Rust (un seul `&mut Etat` visitable à la fois).
+            etat.version_visible = layout.visible;
+            etat.version_depart = depart;
+            if let Some(cat) = etat.catalogue.as_ref() {
                 for i in depart..(depart + layout.visible).min(nb) {
                     let e = &cat.versions[i];
                     let (ligne, ib, ub) = zones_ligne_version(&liste, layout.pas, i, depart);
@@ -2764,8 +2776,15 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             let mut pos = POINT { x: 0, y: 0 };
             GetCursorPos(&mut pos);
             ScreenToClient(h, &mut pos);
+            let zo = &*std::ptr::addr_of!(ZONE_OUVRIR_VERSIONS);
+            let zl = &*std::ptr::addr_of!(ZONE_LISTE_VERSIONS);
+            let zh = &*std::ptr::addr_of!(ZONE_VERSIONS_HAUT);
+            let zb = &*std::ptr::addr_of!(ZONE_VERSIONS_BAS);
             let survol = dans(&zones[0], pos.x, pos.y)
                 || dans(&zones[1], pos.x, pos.y)
+                || dans(zo, pos.x, pos.y)
+                || ((*ETAT).vue == Vue::Versions
+                    && (dans(zl, pos.x, pos.y) || dans(zh, pos.x, pos.y) || dans(zb, pos.x, pos.y)))
                 || zone_titre(rc.right, rc.bottom, pos.x, pos.y) > 0;
             SetCursor(if survol { curseur_main() } else { curseur_fleche() });
             1 // traité : ne pas laisser DefWindowProc recharger le curseur
@@ -3304,6 +3323,11 @@ fn action(h: HWND, bouton: usize) {
                 if !h.is_null() { unsafe { SendMessageW(h, WM_APP_FIN, 2, 0); } }
             });
         }
+        Action::OuvrirVersions => { ouvrir_versions(h); }
+        Action::RetourVersions => { retour_versions(h); }
+        Action::RafraichirVersions => { charger_catalogue_versions(h); }
+        Action::InstallerVersion => { action_version_installer(h); }
+        Action::UtiliserVersion => { action_version_utiliser(h); }
         Action::Desinstaller => {
             etat.vue = Vue::Installation;
             etat.occupe = true;
@@ -3650,6 +3674,13 @@ pub fn lancer() {
             // Le mode affiché est CELUI DÉJÀ ENREGISTRÉ : relu au démarrage,
             // il peut être changé sur le premier écran puis « Continuer ».
             mode_maj: crate::velopack::lire_config().mode,
+            // Sélecteur : catalogue chargé à l'entrée de `Vue::Versions`.
+            catalogue: None,
+            version_selection: 0,
+            version_depart: 0,
+            version_visible: 0,
+            version_retour: Vue::MisesAJour,
+            version_statut_erreur: false,
             vue: Vue::MisesAJour,
             atteintes: [false; 5],
             licence: lire_licence(),
