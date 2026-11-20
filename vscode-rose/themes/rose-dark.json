@@ -1,0 +1,65 @@
+{
+  "name": "Rose Dark — types rouges",
+  "type": "dark",
+  "colors": {
+    "editor.background": "#14141A",
+    "editor.foreground": "#E6E6E6",
+    "editorCursor.foreground": "#FF4D4D",
+    "editorLineNumber.foreground": "#6E6E80",
+    "editor.selectionBackground": "#FF4D4D33"
+  },
+  "tokenColors": [
+    {
+      "name": "Types Rose — rouge vif",
+      "scope": [
+        "storage.type.rose",
+        "entity.name.type.rose"
+      ],
+      "settings": {
+        "foreground": "#FF4D4D"
+      }
+    },
+    {
+      "name": "Mots-clés Rose",
+      "scope": [
+        "keyword.control.rose",
+        "keyword.operator.word.rose",
+        "keyword.other.rose"
+      ],
+      "settings": {
+        "foreground": "#C792EA"
+      }
+    },
+    {
+      "name": "Fonctions standard Rose",
+      "scope": [
+        "support.function.rose",
+        "entity.name.function.rose"
+      ],
+      "settings": {
+        "foreground": "#82AAFF"
+      }
+    },
+    {
+      "name": "Nombres et constantes Rose",
+      "scope": [
+        "constant.numeric",
+        "constant.language.rose"
+      ],
+      "settings": {
+        "foreground": "#F78C6C"
+      }
+    },
+    {
+      "name": "Commentaires Rose",
+      "scope": [
+        "comment.line.number-sign.rose",
+        "comment.line.latex.rose"
+      ],
+      "settings": {
+        "foreground": "#6A9955",
+        "fontStyle": "italic"
+      }
+    }
+  ]
+}

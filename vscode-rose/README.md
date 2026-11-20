@@ -1,9 +1,13 @@
 # Rose Language Support for VS Code
 
-Prise en charge du langage **Rose** (v0.1.5) dans Visual Studio Code :
+Prise en charge du langage **Rose** (v0.1.7) dans Visual Studio Code :
 
 - coloration syntaxique complète (mots-clés, types, fonctions standard,
   opérateurs, chaînes, nombres, commentaires) ;
+- thème sombre intégré **Rose Dark — types rouges** : les types Rose restent
+  en rouge vif `#FF4D4D` au lieu de bleu marine (voir § « Thème rouge ») ;
+- primitives récentes reconnues : `entier_geant_factorielle`, `detail`,
+  `chiffres`, `plus_de_chiffres`, `afficher_detail` ;
 - notations factorielles étendues colorées : `n!!`, `n!!!`, `!n` (préfixe),
   `n#`, `n?`, `n$`, ainsi que les fonctions `multifactorielle`,
   `sous_factorielle`, `derangement`, `factorial_approx` ;
@@ -46,6 +50,19 @@ Le programme reste exécutable tel quel. Deux commandes :
   (tout le programme) ;
 - **Rose : générer le LaTeX des lignes marquées %%** →
   `rose latex fichier.rose --lignes` (seulement les lignes `%%`).
+
+## Thème rouge
+
+Le scope des types Rose est `storage.type.rose` (et `entity.name.type.rose`
+pour les types nommés). Aucun thème n'était fourni : le rendu dépendait du
+thème VS Code de l'utilisateur, et beaucoup affichaient les types en bleu
+marine. L'extension fournit désormais le thème **Rose Dark — types rouges**
+(`themes/rose-dark.json`) : les types y sont colorés en rouge vif `#FF4D4D`
+sur fond sombre `#14141A` (contraste WCAG 5,61:1).
+
+Activation : `Ctrl+K Ctrl+T` (Palette de commandes → *Preferences: Color
+Theme*), puis choisir **Rose Dark — types rouges**. Le thème ne s'applique
+que s'il est sélectionné : l'extension ne force pas le thème de l'utilisateur.
 
 ## Configuration
 
