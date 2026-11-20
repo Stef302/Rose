@@ -1154,3 +1154,24 @@ Les agents précédents ont prouvé des blocages dans leurs périmètres étroit
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | VSC1 | extension 0.1.7, vocabulaire nouveau, thème rouge pour les types, VSIX | `vscode-rose/**`, `rose/docs/EXTENSION.md` |
+
+## Vague 69 — offensive massive : A-Z, Rust, Thorn pro
+
+ Trois fronts, fichiers disjoints. Chaque agent doit mesurer, prouver, ne pas simuler.
+
+A-Z:
+- AZC: comparaison bigint G5 (`compilateur/emetteur_elf.rose`)
+- AZT: batterie G5 étendue (`tests_selfhost/`, `rose/docs/AZ_TESTS.md`)
+- AZR: recherche chemins restants (`rose/docs/AZ_ROADMAP.md`)
+
+Rust:
+- RC1: `rose/src/jit.rs` (carrés/flottants)
+- RC2: `rose/src/interp.rs` (exec MC/Philox/dispatch)
+- RC3: `rose/src/front.rs` + `rose/src/rir.rs` (parse/RIR)
+- RC4: `rose/src/main.rs` (démarrage)
+- RC5: `rose/src/run.rs` (valeurs/tables)
+
+Thorn pro:
+- TP1: `thorn/src/noyau.rose` (inductifs généraux, terminaison)
+- TP2: `thorn/src/tactiques.rose` (unification, tactiques avancées)
+- TP3: `thorn/docs/` + exemples (`thorn/docs/PRO_*`)
