@@ -1,0 +1,64 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/tests_algebre.rose — REJEU DES 33 LEMMES DE thorn/src/algebre.rose
+# ═════════════════════════════════════════════════════════════════════════════
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié.
+#
+# Chaque ligne al_lance construit le terme de preuve, appelle verifier() du
+# noyau, puis exige convertible(type synthétisé, but) (voir al_test dans
+# algebre.rose). Le bilan est CALCULÉ par le compteur : aucun « OK » codé en dur.
+#
+# Vérifier :  ./rose/rose verif thorn/tests_algebre.rose
+# Exécuter :  ./rose/rose thorn/tests_algebre.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/algebre.rose"
+
+$al_cpt = table()
+inserer($al_cpt, "r", 0)
+inserer($al_cpt, "e", 0)
+
+>> "Thorn — algèbre élémentaire : rejeu des lemmes par le noyau"
+
+# Addition (10)
+al_lance("plus_zero_d", al_lem_plus_zero_d(), $al_cpt)
+al_lance("plus_assoc", al_lem_plus_assoc(), $al_cpt)
+al_lance("succ_commute", al_lem_succ_commute(), $al_cpt)
+al_lance("plus_un_d", al_lem_plus_un_d(), $al_cpt)
+al_lance("plus_un_g", al_lem_plus_un_g(), $al_cpt)
+al_lance("plus_deux_d", al_lem_plus_deux_d(), $al_cpt)
+al_lance("plus_congr_d", al_lem_plus_congr_d(), $al_cpt)
+al_lance("plus_cancel_d", al_lem_plus_cancel_d(), $al_cpt)
+al_lance("plus_cancel_g", al_lem_plus_cancel_g(), $al_cpt)
+al_lance("plus_assoc4", al_lem_plus_assoc4(), $al_cpt)
+
+# Multiplication (12)
+al_lance("mult_zero_d", al_lem_mult_zero_d(), $al_cpt)
+al_lance("mult_succ_d", al_lem_mult_succ_d(), $al_cpt)
+al_lance("mult_zero_g", al_lem_mult_zero_g(), $al_cpt)
+al_lance("mult_succ_g", al_lem_mult_succ_g(), $al_cpt)
+al_lance("mult_congr_g", al_lem_mult_congr_g(), $al_cpt)
+al_lance("mult_congr_d", al_lem_mult_congr_d(), $al_cpt)
+al_lance("mult_un_d", al_lem_mult_un_d(), $al_cpt)
+al_lance("mult_un_g", al_lem_mult_un_g(), $al_cpt)
+al_lance("mult_distrib_g", al_lem_mult_distrib_g(), $al_cpt)
+al_lance("mult_distrib_d", al_lem_mult_distrib_d(), $al_cpt)
+al_lance("mult_assoc", al_lem_mult_assoc(), $al_cpt)
+al_lance("mult_zero_absorb", al_lem_mult_zero_absorb(), $al_cpt)
+
+# Ordre (8)
+al_lance("le_refl", al_lem_le_refl(), $al_cpt)
+al_lance("le_trans", al_lem_le_trans(), $al_cpt)
+al_lance("le_antisymm", al_lem_le_antisymm(), $al_cpt)
+al_lance("le_zero_min", al_lem_le_zero_min(), $al_cpt)
+al_lance("le_plus_compatible_d", al_lem_le_plus_compatible_d(), $al_cpt)
+al_lance("le_plus_compatible_g", al_lem_le_plus_compatible_g(), $al_cpt)
+al_lance("le_succ_mono", al_lem_le_succ_mono(), $al_cpt)
+al_lance("le_add_droite", al_lem_le_add_droite(), $al_cpt)
+
+# Succ (3)
+al_lance("succ_inj", al_lem_succ_inj(), $al_cpt)
+al_lance("succ_ne_zero", al_lem_succ_ne_zero(), $al_cpt)
+al_lance("zero_ne_succ", al_lem_zero_ne_succ(), $al_cpt)
+
+>> chaine($al_cpt["r"]) + " lemme(s) vérifié(s), " + chaine($al_cpt["e"]) + " échec(s)"
+si ($al_cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }

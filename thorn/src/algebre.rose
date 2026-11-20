@@ -1,0 +1,1196 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/src/algebre.rose — ALGÈBRE ÉLÉMENTAIRE VÉRIFIÉE POUR THORN (TH5)
+# ═════════════════════════════════════════════════════════════════════════════
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié.
+#
+# Chaque lemme construit un TERME de preuve, appelle verifier() du noyau, puis
+# exige convertible(type_synthétisé, but). Aucun résultat `ok = vrai` n'est
+# codé en dur : le OK / ÉCHEC est calculé par le noyau (voir al_test).
+#
+# AXIOMES DE SIGNATURE (supposés, NON démontrés — voir docs/ALGEBRE.md) :
+#   ×, ses deux équations computationnelles (mult_0_r, mult_s_r) ;
+#   ≤, sa réflexivité, transitivité, antisymétrie, minimalité de 0,
+#     compatibilité avec + ;
+#   injectivité de succ, succ ≠ 0, et Faux.
+# Les équations de + (plus_0_l, plus_s_l), les lemmes symm/trans/congr_succ/
+# congr_plus_l/plus_zero_d/plus_succ_d viennent de tactiques.rose (déjà
+# vérifiés par le noyau et utilisés ici comme théorèmes).
+#
+# Vérifier :  ./rose/rose verif thorn/src/algebre.rose
+# Exécuter :  ./rose/rose thorn/src/algebre.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/tactiques.rose"
+
+# ── 0. Services minimaux ─────────────────────────────────────────────────────
+
+fn al_tab(al_x) -> table {
+  $al_v = table()
+  $al_v = al_x
+  retour $al_v
+}
+
+fn al_pair(al_b: table, al_t: table) -> table {
+  $al_r = table()
+  inserer($al_r, "but", al_b)
+  inserer($al_r, "terme", al_t)
+  retour $al_r
+}
+
+fn al_terme(al_p: table) -> table {
+  retour al_tab(al_p["terme"])
+}
+
+fn al_compter(al_cpt: table, al_ok: booleen) {
+  si (al_ok) {
+    inserer(al_cpt, "r", al_cpt["r"] + 1)
+  } sinon {
+    inserer(al_cpt, "e", al_cpt["e"] + 1)
+  }
+}
+
+# LE contrôle honnête : synthèse par le noyau, puis comparaison au but.
+fn al_test(al_nom: chaine, al_but: table, al_terme: table, al_cpt: table) {
+  $al_r = verifier(al_terme, ta_ctx())
+  $al_synthese = noy_est_ok($al_r)
+  $al_conv = convertible(noy_type_res($al_r), al_but)
+  $al_ok = $al_synthese et $al_conv
+  si ($al_ok) {
+    >> "OK " + al_nom
+  } sinon {
+    $al_pourquoi = "type synthétisé ≠ but"
+    si (non $al_synthese) { $al_pourquoi = noy_erreur($al_r) }
+    >> "ECHEC " + al_nom + " : " + $al_pourquoi
+  }
+  al_compter(al_cpt, $al_ok)
+}
+
+fn al_lance(al_nom: chaine, al_p: table, al_cpt: table) {
+  al_test(al_nom, al_tab(al_p["but"]), al_tab(al_p["terme"]), al_cpt)
+}
+
+# ── 1. Raccourcis sur l'égalité et les applications ──────────────────────────
+
+fn al_eq(al_a: table, al_b: table) -> table {
+  retour ta_eq(ta_nat(), al_a, al_b)
+}
+
+fn al_refl(al_a: table) -> table {
+  retour ta_ap2(ta_refl_symbole(), ta_nat(), al_a)
+}
+
+fn al_symm(al_a: table, al_b: table, al_h: table) -> table {
+  retour ta_ap4(ta_symm_symbole(), ta_nat(), al_a, al_b, al_h)
+}
+
+fn al_trans(al_a: table, al_b: table, al_c: table, al_h1: table, al_h2: table) -> table {
+  retour ta_ap6(ta_trans_symbole(), ta_nat(), al_a, al_b, al_c, al_h1, al_h2)
+}
+
+fn al_congr_succ(al_a: table, al_b: table, al_h: table) -> table {
+  retour ta_ap3(ta_congr_succ_symbole(), al_a, al_b, al_h)
+}
+
+fn al_congr_plus(al_a: table, al_b: table, al_p: table, al_h: table) -> table {
+  retour ta_ap4(ta_congr_plus_l_symbole(), al_a, al_b, al_p, al_h)
+}
+
+# Congruence à GAUCHE de + (eq_rec), absente de tactiques.rose.
+fn al_congr_plus_g(al_p: table, al_a: table, al_b: table, al_h: table) -> table {
+  $al_P = noy_lam("u", ta_nat(),
+                  al_eq(ta_plus(al_p, al_a), ta_plus(al_p, noy_var("u"))))
+  $al_corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), al_a, al_b, $al_P,
+                     al_refl(ta_plus(al_p, al_a)), al_h)
+  retour $al_corps
+}
+
+fn al_plus0l(al_n: table) -> table { retour ta_ap1(ta_plus0l_symbole(), al_n) }
+fn al_plusSl(al_m: table, al_n: table) -> table { retour ta_ap2(ta_plusSl_symbole(), al_m, al_n) }
+fn al_plus0d(al_n: table) -> table { retour ta_ap1(ta_plus_zero_d_symbole(), al_n) }
+fn al_plusSd(al_n: table, al_m: table) -> table { retour ta_ap2(ta_plus_succ_d_symbole(), al_n, al_m) }
+
+fn al_un() -> table { retour ta_succ(ta_zero()) }
+fn al_deux() -> table { retour ta_succ(al_un()) }
+
+# ── 2. Signature de la multiplication (axiome de signature) ──────────────────
+
+fn al_mult_symbole() -> table {
+  retour noy_const("mult", noy_pi("m", ta_nat(), noy_pi("n", ta_nat(), ta_nat())))
+}
+
+fn al_mult(al_m: table, al_n: table) -> table {
+  retour ta_ap2(al_mult_symbole(), al_m, al_n)
+}
+
+# Équations computationnelles de × (récursion sur le SECOND argument).
+fn al_mult0r_symbole() -> table {
+  $al_ty = noy_pi("n", ta_nat(),
+                  al_eq(al_mult(noy_var("n"), ta_zero()), ta_zero()))
+  retour noy_const("mult_0_r", $al_ty)
+}
+fn al_multsr_symbole() -> table {
+  $al_ty = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+                  al_eq(al_mult(noy_var("n"), ta_succ(noy_var("m"))),
+                        ta_plus(al_mult(noy_var("n"), noy_var("m")), noy_var("n")))))
+  retour noy_const("mult_s_r", $al_ty)
+}
+
+fn al_mult0r(al_n: table) -> table { retour ta_ap1(al_mult0r_symbole(), al_n) }
+fn al_multsr(al_n: table, al_m: table) -> table {
+  retour ta_ap2(al_multsr_symbole(), al_n, al_m)
+}
+
+# Congruence de × par eq_rec (TERMES vérifiés, pas des axiomes).
+fn al_congr_mult_g(al_a: table, al_b: table, al_p: table, al_h: table) -> table {
+  $al_P = noy_lam("u", ta_nat(),
+                  al_eq(al_mult(al_a, al_p), al_mult(noy_var("u"), al_p)))
+  $al_corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), al_a, al_b, $al_P,
+                     al_refl(al_mult(al_a, al_p)), al_h)
+  retour $al_corps
+}
+fn al_congr_mult_d(al_a: table, al_b: table, al_p: table, al_h: table) -> table {
+  $al_P = noy_lam("u", ta_nat(),
+                  al_eq(al_mult(al_p, al_a), al_mult(al_p, noy_var("u"))))
+  $al_corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), al_a, al_b, $al_P,
+                     al_refl(al_mult(al_p, al_a)), al_h)
+  retour $al_corps
+}
+
+# ── 3. Signature de l'ordre et des constructeurs de succ ─────────────────────
+
+fn al_le_symbole() -> table {
+  retour noy_const("le", noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), noy_type(0))))
+}
+fn al_le(al_n: table, al_m: table) -> table {
+  retour ta_ap2(al_le_symbole(), al_n, al_m)
+}
+
+fn al_faux() -> table { retour noy_const("Faux", noy_type(0)) }
+
+fn al_le_refl_ax() -> table {
+  retour noy_const("le_refl_ax",
+                   noy_pi("n", ta_nat(), al_le(noy_var("n"), noy_var("n"))))
+}
+fn al_le_trans_ax() -> table {
+  $al_ty = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), noy_pi("p", ta_nat(),
+             noy_pi("h1", al_le(noy_var("n"), noy_var("m")),
+               noy_pi("h2", al_le(noy_var("m"), noy_var("p")),
+                      al_le(noy_var("n"), noy_var("p")))))))
+  retour noy_const("le_trans_ax", $al_ty)
+}
+fn al_le_antisymm_ax() -> table {
+  $al_ty = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+             noy_pi("h1", al_le(noy_var("n"), noy_var("m")),
+               noy_pi("h2", al_le(noy_var("m"), noy_var("n")),
+                      al_eq(noy_var("n"), noy_var("m"))))))
+  retour noy_const("le_antisymm_ax", $al_ty)
+}
+fn al_le_zero_ax() -> table {
+  retour noy_const("le_zero_ax",
+                   noy_pi("n", ta_nat(), al_le(ta_zero(), noy_var("n"))))
+}
+fn al_le_plus_ax() -> table {
+  $al_ty = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), noy_pi("p", ta_nat(),
+             noy_pi("h", al_le(noy_var("n"), noy_var("m")),
+                    al_le(ta_plus(noy_var("n"), noy_var("p")),
+                          ta_plus(noy_var("m"), noy_var("p")))))))
+  retour noy_const("le_plus_ax", $al_ty)
+}
+fn al_succ_inj_ax() -> table {
+  $al_ty = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+             noy_pi("h", al_eq(ta_succ(noy_var("a")), ta_succ(noy_var("b"))),
+                    al_eq(noy_var("a"), noy_var("b")))))
+  retour noy_const("succ_inj_ax", $al_ty)
+}
+fn al_succ_ne_zero_ax() -> table {
+  $al_ty = noy_pi("n", ta_nat(),
+                  noy_pi("h", al_eq(ta_succ(noy_var("n")), ta_zero()), al_faux()))
+  retour noy_const("succ_ne_zero_ax", $al_ty)
+}
+
+fn al_le_refl(al_n: table) -> table { retour ta_ap1(al_le_refl_ax(), al_n) }
+fn al_le_trans(al_n: table, al_m: table, al_p: table, al_h1: table, al_h2: table) -> table {
+  retour ta_ap5(al_le_trans_ax(), al_n, al_m, al_p, al_h1, al_h2)
+}
+fn al_le_antisymm(al_n: table, al_m: table, al_h1: table, al_h2: table) -> table {
+  retour ta_ap4(al_le_antisymm_ax(), al_n, al_m, al_h1, al_h2)
+}
+fn al_le_zero(al_n: table) -> table { retour ta_ap1(al_le_zero_ax(), al_n) }
+fn al_le_plus(al_n: table, al_m: table, al_p: table, al_h: table) -> table {
+  retour ta_ap4(al_le_plus_ax(), al_n, al_m, al_p, al_h)
+}
+fn al_succ_inj(al_a: table, al_b: table, al_h: table) -> table {
+  retour ta_ap3(al_succ_inj_ax(), al_a, al_b, al_h)
+}
+fn al_succ_ne_zero(al_n: table, al_h: table) -> table {
+  retour ta_ap2(al_succ_ne_zero_ax(), al_n, al_h)
+}
+
+# Congruence de ≤ par eq_rec (termes dérivés).
+fn al_congr_le_g(al_a: table, al_b: table, al_p: table) -> table {
+  $al_P = noy_lam("u", ta_nat(), al_le(al_p, noy_var("u")))
+  $al_corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), al_a, al_b, $al_P,
+                     noy_var("H"), noy_var("h"))
+  retour noy_lam("H", al_le(al_p, al_a),
+           noy_lam("h", al_eq(al_a, al_b), $al_corps))
+}
+fn al_congr_le_d(al_a: table, al_b: table, al_p: table) -> table {
+  $al_P = noy_lam("u", ta_nat(), al_le(noy_var("u"), al_p))
+  $al_corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), al_a, al_b, $al_P,
+                     noy_var("H"), noy_var("h"))
+  retour noy_lam("H", al_le(al_a, al_p),
+           noy_lam("h", al_eq(al_a, al_b), $al_corps))
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 4. TERMES DE BASE RÉUTILISÉS (addition)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# plus_zero_d, refait ici par induction (terme indépendant de bibliotheque.rose).
+fn al_term_plus_zero_d() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(ta_plus(noy_var("n"), ta_zero()), noy_var("n")))
+  $al_r0 = induction($al_but, ta_ctx())
+  $al_base = al_plus0l(ta_zero())
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+  $al_c1 = al_plusSl(noy_var($al_k), ta_zero())
+  $al_c2 = al_congr_succ(ta_plus(noy_var($al_k), ta_zero()), noy_var($al_k), noy_var($al_ih))
+  $al_corps = al_trans(ta_plus(ta_succ(noy_var($al_k)), ta_zero()),
+                       ta_succ(ta_plus(noy_var($al_k), ta_zero())),
+                       ta_succ(noy_var($al_k)), $al_c1, $al_c2)
+  $al_pas = noy_lam($al_k, ta_nat(),
+              noy_lam($al_ih, al_eq(ta_plus(noy_var($al_k), ta_zero()), noy_var($al_k)),
+                $al_corps))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+# plus_assoc, refait ici par induction (terme indépendant de bibliotheque.rose).
+fn al_term_plus_assoc() -> table {
+  $al_but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(), noy_pi("p", ta_nat(),
+               al_eq(ta_plus(ta_plus(noy_var("m"), noy_var("n")), noy_var("p")),
+                     ta_plus(noy_var("m"), ta_plus(noy_var("n"), noy_var("p")))))))
+  $al_r0 = induction($al_but, ta_ctx())
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+
+  $al_b1 = al_congr_plus(ta_plus(ta_zero(), noy_var("n")), noy_var("n"), noy_var("p"),
+                         al_plus0l(noy_var("n")))
+  $al_b2 = al_symm(ta_plus(ta_zero(), ta_plus(noy_var("n"), noy_var("p"))),
+                   ta_plus(noy_var("n"), noy_var("p")),
+                   al_plus0l(ta_plus(noy_var("n"), noy_var("p"))))
+  $al_bc = al_trans(ta_plus(ta_plus(ta_zero(), noy_var("n")), noy_var("p")),
+                    ta_plus(noy_var("n"), noy_var("p")),
+                    ta_plus(ta_zero(), ta_plus(noy_var("n"), noy_var("p"))),
+                    $al_b1, $al_b2)
+  $al_base = noy_lam("n", ta_nat(), noy_lam("p", ta_nat(), $al_bc))
+
+  $al_c1 = al_plusSl(noy_var($al_k), noy_var("n"))
+  $al_d1 = al_congr_plus(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")),
+                         ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                         noy_var("p"), $al_c1)
+  $al_c2 = al_plusSl(ta_plus(noy_var($al_k), noy_var("n")), noy_var("p"))
+  $al_d2 = al_trans(ta_plus(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")), noy_var("p")),
+                    ta_plus(ta_succ(ta_plus(noy_var($al_k), noy_var("n"))), noy_var("p")),
+                    ta_succ(ta_plus(ta_plus(noy_var($al_k), noy_var("n")), noy_var("p"))),
+                    $al_d1, $al_c2)
+  $al_c3 = al_congr_succ(ta_plus(ta_plus(noy_var($al_k), noy_var("n")), noy_var("p")),
+                         ta_plus(noy_var($al_k), ta_plus(noy_var("n"), noy_var("p"))),
+                         ta_ap2(noy_var($al_ih), noy_var("n"), noy_var("p")))
+  $al_d3 = al_trans(ta_plus(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")), noy_var("p")),
+                    ta_succ(ta_plus(ta_plus(noy_var($al_k), noy_var("n")), noy_var("p"))),
+                    ta_succ(ta_plus(noy_var($al_k), ta_plus(noy_var("n"), noy_var("p")))),
+                    $al_d2, $al_c3)
+  $al_c4 = al_plusSl(noy_var($al_k), ta_plus(noy_var("n"), noy_var("p")))
+  $al_c5 = al_symm(ta_plus(ta_succ(noy_var($al_k)), ta_plus(noy_var("n"), noy_var("p"))),
+                   ta_succ(ta_plus(noy_var($al_k), ta_plus(noy_var("n"), noy_var("p")))),
+                   $al_c4)
+  $al_d4 = al_trans(ta_plus(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")), noy_var("p")),
+                    ta_succ(ta_plus(noy_var($al_k), ta_plus(noy_var("n"), noy_var("p")))),
+                    ta_plus(ta_succ(noy_var($al_k)), ta_plus(noy_var("n"), noy_var("p"))),
+                    $al_d3, $al_c5)
+  $al_pas = noy_lam($al_k, ta_nat(),
+              noy_lam($al_ih,
+                noy_pi("n", ta_nat(), noy_pi("p", ta_nat(),
+                  al_eq(ta_plus(ta_plus(noy_var($al_k), noy_var("n")), noy_var("p")),
+                        ta_plus(noy_var($al_k), ta_plus(noy_var("n"), noy_var("p")))))),
+                noy_lam("n", ta_nat(), noy_lam("p", ta_nat(), $al_d4))))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+# plus_comm : terme dérivé utilisé en INTERNE (non listé comme nouveau lemme :
+# la commutativité est déjà présente dans bibliotheque.rose).
+fn al_term_plus_comm_interne() -> table {
+  $al_but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(),
+               al_eq(ta_plus(noy_var("m"), noy_var("n")),
+                     ta_plus(noy_var("n"), noy_var("m")))))
+  $al_r0 = induction($al_but, ta_ctx())
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+
+  $al_b1 = al_plus0l(noy_var("n"))
+  $al_b2 = al_symm(ta_plus(noy_var("n"), ta_zero()), noy_var("n"), al_plus0d(noy_var("n")))
+  $al_bc = al_trans(ta_plus(ta_zero(), noy_var("n")), noy_var("n"),
+                    ta_plus(noy_var("n"), ta_zero()), $al_b1, $al_b2)
+  $al_base = noy_lam("n", ta_nat(), $al_bc)
+
+  $al_c1 = al_plusSl(noy_var($al_k), noy_var("n"))
+  $al_c2 = al_congr_succ(ta_plus(noy_var($al_k), noy_var("n")),
+                         ta_plus(noy_var("n"), noy_var($al_k)),
+                         ta_ap1(noy_var($al_ih), noy_var("n")))
+  $al_c3 = al_trans(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")),
+                    ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                    ta_succ(ta_plus(noy_var("n"), noy_var($al_k))), $al_c1, $al_c2)
+  $al_c4 = al_plusSd(noy_var("n"), noy_var($al_k))
+  $al_c5 = al_symm(ta_plus(noy_var("n"), ta_succ(noy_var($al_k))),
+                   ta_succ(ta_plus(noy_var("n"), noy_var($al_k))), $al_c4)
+  $al_d = al_trans(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")),
+                   ta_succ(ta_plus(noy_var("n"), noy_var($al_k))),
+                   ta_plus(noy_var("n"), ta_succ(noy_var($al_k))), $al_c3, $al_c5)
+  $al_pas = noy_lam($al_k, ta_nat(),
+              noy_lam($al_ih,
+                noy_pi("n", ta_nat(),
+                  al_eq(ta_plus(noy_var($al_k), noy_var("n")),
+                        ta_plus(noy_var("n"), noy_var($al_k)))),
+                noy_lam("n", ta_nat(), $al_d)))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+fn al_plus_comm(al_a: table, al_b: table) -> table {
+  retour ta_ap2(al_term_plus_comm_interne(), al_a, al_b)
+}
+fn al_plus_assoc(al_a: table, al_b: table, al_c: table) -> table {
+  retour ta_ap3(al_term_plus_assoc(), al_a, al_b, al_c)
+}
+
+# succ_commute : succ n + m = n + succ m (dérivé, utilisé plus bas).
+fn al_term_succ_commute() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+               al_eq(ta_plus(ta_succ(noy_var("n")), noy_var("m")),
+                     ta_plus(noy_var("n"), ta_succ(noy_var("m"))))))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+    al_trans(ta_plus(ta_succ(noy_var("n")), noy_var("m")),
+             ta_succ(ta_plus(noy_var("n"), noy_var("m"))),
+             ta_plus(noy_var("n"), ta_succ(noy_var("m"))),
+             al_plusSl(noy_var("n"), noy_var("m")),
+             al_symm(ta_plus(noy_var("n"), ta_succ(noy_var("m"))),
+                     ta_succ(ta_plus(noy_var("n"), noy_var("m"))),
+                     al_plusSd(noy_var("n"), noy_var("m"))))))
+  retour $al_terme
+}
+fn al_succ_commute(al_n: table, al_m: table) -> table {
+  retour ta_ap2(al_term_succ_commute(), al_n, al_m)
+}
+
+# Permutation à quatre termes : (x+y)+(z+t) = (x+z)+(y+t).
+fn al_term_permute4() -> table {
+  $al_but = noy_pi("x", ta_nat(), noy_pi("y", ta_nat(),
+             noy_pi("z", ta_nat(), noy_pi("t", ta_nat(),
+               al_eq(ta_plus(ta_plus(noy_var("x"), noy_var("y")),
+                             ta_plus(noy_var("z"), noy_var("t"))),
+                     ta_plus(ta_plus(noy_var("x"), noy_var("z")),
+                             ta_plus(noy_var("y"), noy_var("t"))))))))
+  $al_x = noy_var("x")
+  $al_y = noy_var("y")
+  $al_z = noy_var("z")
+  $al_t = noy_var("t")
+  $al_s0 = ta_plus(ta_plus($al_x, $al_y), ta_plus($al_z, $al_t))
+  $al_s1 = ta_plus($al_x, ta_plus($al_y, ta_plus($al_z, $al_t)))
+  $al_s2 = ta_plus($al_x, ta_plus(ta_plus($al_y, $al_z), $al_t))
+  $al_s3 = ta_plus($al_x, ta_plus(ta_plus($al_z, $al_y), $al_t))
+  $al_s4 = ta_plus(ta_plus($al_x, ta_plus($al_z, $al_y)), $al_t)
+  $al_s5 = ta_plus(ta_plus(ta_plus($al_x, $al_z), $al_y), $al_t)
+  $al_s6 = ta_plus(ta_plus($al_x, $al_z), ta_plus($al_y, $al_t))
+
+  $al_e1 = al_plus_assoc($al_x, $al_y, ta_plus($al_z, $al_t))
+  $al_e2a = al_symm(ta_plus(ta_plus($al_y, $al_z), $al_t),
+                    ta_plus($al_y, ta_plus($al_z, $al_t)),
+                    al_plus_assoc($al_y, $al_z, $al_t))
+  $al_e2 = al_congr_plus_g($al_x, ta_plus($al_y, ta_plus($al_z, $al_t)),
+                           ta_plus(ta_plus($al_y, $al_z), $al_t), $al_e2a)
+  $al_e3a = al_plus_comm($al_y, $al_z)
+  $al_e3b = al_congr_plus(ta_plus($al_y, $al_z), ta_plus($al_z, $al_y), $al_t, $al_e3a)
+  $al_e3 = al_congr_plus_g($al_x, ta_plus(ta_plus($al_y, $al_z), $al_t),
+                           ta_plus(ta_plus($al_z, $al_y), $al_t), $al_e3b)
+  $al_e4 = al_symm(ta_plus(ta_plus($al_x, ta_plus($al_z, $al_y)), $al_t),
+                   ta_plus($al_x, ta_plus(ta_plus($al_z, $al_y), $al_t)),
+                   al_plus_assoc($al_x, ta_plus($al_z, $al_y), $al_t))
+  $al_e5 = al_congr_plus(ta_plus($al_x, ta_plus($al_z, $al_y)),
+                         ta_plus(ta_plus($al_x, $al_z), $al_y), $al_t,
+                         al_symm(ta_plus(ta_plus($al_x, $al_z), $al_y),
+                                 ta_plus($al_x, ta_plus($al_z, $al_y)),
+                                 al_plus_assoc($al_x, $al_z, $al_y)))
+  $al_e6 = al_plus_assoc(ta_plus($al_x, $al_z), $al_y, $al_t)
+  $al_h1 = al_trans($al_s0, $al_s1, $al_s2, $al_e1, $al_e2)
+  $al_h2 = al_trans($al_s0, $al_s2, $al_s3, $al_h1, $al_e3)
+  $al_h3 = al_trans($al_s0, $al_s3, $al_s4, $al_h2, $al_e4)
+  $al_h4 = al_trans($al_s0, $al_s4, $al_s5, $al_h3, $al_e5)
+  $al_corps = al_trans($al_s0, $al_s5, $al_s6, $al_h4, $al_e6)
+  retour noy_lam("x", ta_nat(), noy_lam("y", ta_nat(), noy_lam("z", ta_nat(), noy_lam("t", ta_nat(), $al_corps))))
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 5. LEMMES — ADDITION
+# ═════════════════════════════════════════════════════════════════════════════
+
+fn al_lem_plus_zero_d() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(ta_plus(noy_var("n"), ta_zero()), noy_var("n")))
+  retour al_pair($al_but, al_term_plus_zero_d())
+}
+
+fn al_lem_plus_assoc() -> table {
+  $al_but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(), noy_pi("p", ta_nat(),
+               al_eq(ta_plus(ta_plus(noy_var("m"), noy_var("n")), noy_var("p")),
+                     ta_plus(noy_var("m"), ta_plus(noy_var("n"), noy_var("p")))))))
+  retour al_pair($al_but, al_term_plus_assoc())
+}
+
+fn al_lem_succ_commute() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+               al_eq(ta_plus(ta_succ(noy_var("n")), noy_var("m")),
+                     ta_plus(noy_var("n"), ta_succ(noy_var("m"))))))
+  retour al_pair($al_but, al_term_succ_commute())
+}
+
+fn al_term_plus_un_d() -> table {
+  retour noy_lam("n", ta_nat(),
+    al_trans(ta_plus(noy_var("n"), al_un()),
+             ta_succ(ta_plus(noy_var("n"), ta_zero())),
+             ta_succ(noy_var("n")),
+             al_plusSd(noy_var("n"), ta_zero()),
+             al_congr_succ(ta_plus(noy_var("n"), ta_zero()), noy_var("n"),
+                           al_plus0d(noy_var("n")))))
+}
+
+fn al_lem_plus_un_d() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(ta_plus(noy_var("n"), al_un()), ta_succ(noy_var("n"))))
+  retour al_pair($al_but, al_term_plus_un_d())
+}
+
+fn al_lem_plus_un_g() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(ta_plus(al_un(), noy_var("n")), ta_succ(noy_var("n"))))
+  $al_terme = noy_lam("n", ta_nat(),
+    al_trans(ta_plus(al_un(), noy_var("n")),
+             ta_succ(ta_plus(ta_zero(), noy_var("n"))),
+             ta_succ(noy_var("n")),
+             al_plusSl(ta_zero(), noy_var("n")),
+             al_congr_succ(ta_plus(ta_zero(), noy_var("n")), noy_var("n"),
+                           al_plus0l(noy_var("n")))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_plus_deux_d() -> table {
+  $al_but = noy_pi("n", ta_nat(),
+                   al_eq(ta_plus(noy_var("n"), al_deux()), ta_succ(ta_succ(noy_var("n")))))
+  $al_terme = noy_lam("n", ta_nat(),
+    al_trans(ta_plus(noy_var("n"), al_deux()),
+             ta_succ(ta_plus(noy_var("n"), al_un())),
+             ta_succ(ta_succ(noy_var("n"))),
+             al_plusSd(noy_var("n"), al_un()),
+             al_congr_succ(ta_plus(noy_var("n"), al_un()), ta_succ(noy_var("n")),
+                           ta_ap1(al_term_plus_un_d(), noy_var("n")))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_plus_congr_d() -> table {
+  $al_but = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(), noy_pi("p", ta_nat(),
+              noy_pi("h", al_eq(noy_var("a"), noy_var("b")),
+                     al_eq(ta_plus(noy_var("a"), noy_var("p")),
+                           ta_plus(noy_var("b"), noy_var("p")))))))
+  $al_terme = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("p", ta_nat(),
+                noy_lam("h", al_eq(noy_var("a"), noy_var("b")),
+                  al_congr_plus(noy_var("a"), noy_var("b"), noy_var("p"), noy_var("h"))))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_plus_cancel_d() -> table {
+  $al_but = noy_pi("p", ta_nat(), noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+              noy_pi("h", al_eq(ta_plus(noy_var("n"), noy_var("p")),
+                                ta_plus(noy_var("m"), noy_var("p"))),
+                     al_eq(noy_var("n"), noy_var("m"))))))
+  $al_r0 = induction($al_but, ta_ctx())
+  $al_base = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+               noy_lam("h", al_eq(ta_plus(noy_var("n"), ta_zero()),
+                                  ta_plus(noy_var("m"), ta_zero())),
+                 al_trans(noy_var("n"), ta_plus(noy_var("n"), ta_zero()), noy_var("m"),
+                          al_symm(ta_plus(noy_var("n"), ta_zero()), noy_var("n"),
+                                  al_plus0d(noy_var("n"))),
+                          al_trans(ta_plus(noy_var("n"), ta_zero()),
+                                   ta_plus(noy_var("m"), ta_zero()), noy_var("m"),
+                                   noy_var("h"), al_plus0d(noy_var("m")))))))
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+  $al_c1 = ta_ap2(noy_var($al_ih), noy_var("n"), noy_var("m"))
+  $al_d1 = al_symm(ta_plus(noy_var("n"), ta_succ(noy_var($al_k))),
+                   ta_succ(ta_plus(noy_var("n"), noy_var($al_k))),
+                   al_plusSd(noy_var("n"), noy_var($al_k)))
+  $al_d2 = al_trans(ta_succ(ta_plus(noy_var("n"), noy_var($al_k))),
+                    ta_plus(noy_var("n"), ta_succ(noy_var($al_k))),
+                    ta_plus(noy_var("m"), ta_succ(noy_var($al_k))),
+                    $al_d1, noy_var("h"))
+  $al_d3 = al_plusSd(noy_var("m"), noy_var($al_k))
+  $al_d4 = al_trans(ta_succ(ta_plus(noy_var("n"), noy_var($al_k))),
+                    ta_plus(noy_var("m"), ta_succ(noy_var($al_k))),
+                    ta_succ(ta_plus(noy_var("m"), noy_var($al_k))), $al_d2, $al_d3)
+  $al_d5 = al_succ_inj(ta_plus(noy_var("n"), noy_var($al_k)),
+                       ta_plus(noy_var("m"), noy_var($al_k)), $al_d4)
+  $al_corps = ta_ap3(noy_var($al_ih), noy_var("n"), noy_var("m"), $al_d5)
+  $al_pas = noy_lam($al_k, ta_nat(),
+              noy_lam($al_ih,
+                noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+                  noy_pi("h", al_eq(ta_plus(noy_var("n"), noy_var($al_k)),
+                                    ta_plus(noy_var("m"), noy_var($al_k))),
+                         al_eq(noy_var("n"), noy_var("m"))))),
+                noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+                  noy_lam("h", al_eq(ta_plus(noy_var("n"), ta_succ(noy_var($al_k))),
+                                     ta_plus(noy_var("m"), ta_succ(noy_var($al_k)))),
+                    $al_corps)))))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_pair($al_but, al_tab(noy_champ($al_rf, "terme")))
+}
+
+fn al_lem_plus_cancel_g() -> table {
+  $al_but = noy_pi("p", ta_nat(), noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+              noy_pi("h", al_eq(ta_plus(noy_var("p"), noy_var("n")),
+                                ta_plus(noy_var("p"), noy_var("m"))),
+                     al_eq(noy_var("n"), noy_var("m"))))))
+  $al_r0 = induction($al_but, ta_ctx())
+  $al_base = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+               noy_lam("h", al_eq(ta_plus(ta_zero(), noy_var("n")),
+                                  ta_plus(ta_zero(), noy_var("m"))),
+                 al_trans(noy_var("n"), ta_plus(ta_zero(), noy_var("n")), noy_var("m"),
+                          al_symm(ta_plus(ta_zero(), noy_var("n")), noy_var("n"),
+                                  al_plus0l(noy_var("n"))),
+                          al_trans(ta_plus(ta_zero(), noy_var("n")),
+                                   ta_plus(ta_zero(), noy_var("m")), noy_var("m"),
+                                   noy_var("h"), al_plus0l(noy_var("m")))))))
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+  $al_d1 = al_symm(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")),
+                   ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                   al_plusSl(noy_var($al_k), noy_var("n")))
+  $al_d2 = al_trans(ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                    ta_plus(ta_succ(noy_var($al_k)), noy_var("n")),
+                    ta_plus(ta_succ(noy_var($al_k)), noy_var("m")), $al_d1, noy_var("h"))
+  $al_d3 = al_plusSl(noy_var($al_k), noy_var("m"))
+  $al_d4 = al_trans(ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                    ta_plus(ta_succ(noy_var($al_k)), noy_var("m")),
+                    ta_succ(ta_plus(noy_var($al_k), noy_var("m"))), $al_d2, $al_d3)
+  $al_d5 = al_succ_inj(ta_plus(noy_var($al_k), noy_var("n")),
+                       ta_plus(noy_var($al_k), noy_var("m")), $al_d4)
+  $al_corps = ta_ap3(noy_var($al_ih), noy_var("n"), noy_var("m"), $al_d5)
+  $al_pas = noy_lam($al_k, ta_nat(),
+              noy_lam($al_ih,
+                noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+                  noy_pi("h", al_eq(ta_plus(noy_var($al_k), noy_var("n")),
+                                    ta_plus(noy_var($al_k), noy_var("m"))),
+                         al_eq(noy_var("n"), noy_var("m"))))),
+                noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+                  noy_lam("h", al_eq(ta_plus(ta_succ(noy_var($al_k)), noy_var("n")),
+                                     ta_plus(ta_succ(noy_var($al_k)), noy_var("m"))),
+                    $al_corps)))))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_pair($al_but, al_tab(noy_champ($al_rf, "terme")))
+}
+
+fn al_lem_plus_assoc4() -> table {
+  $al_but = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(), noy_pi("c", ta_nat(),
+             noy_pi("d", ta_nat(),
+               al_eq(ta_plus(ta_plus(ta_plus(noy_var("a"), noy_var("b")), noy_var("c")),
+                             noy_var("d")),
+                     ta_plus(noy_var("a"),
+                             ta_plus(noy_var("b"), ta_plus(noy_var("c"), noy_var("d")))))))))
+  $al_a = noy_var("a")
+  $al_b = noy_var("b")
+  $al_c = noy_var("c")
+  $al_d = noy_var("d")
+  $al_e1 = al_congr_plus(ta_plus(ta_plus($al_a, $al_b), $al_c),
+                         ta_plus($al_a, ta_plus($al_b, $al_c)), $al_d,
+                         al_plus_assoc($al_a, $al_b, $al_c))
+  $al_e2 = al_plus_assoc($al_a, ta_plus($al_b, $al_c), $al_d)
+  $al_e3 = al_congr_plus_g($al_a, ta_plus(ta_plus($al_b, $al_c), $al_d),
+                           ta_plus($al_b, ta_plus($al_c, $al_d)),
+                           al_plus_assoc($al_b, $al_c, $al_d))
+  $al_s0 = ta_plus(ta_plus(ta_plus($al_a, $al_b), $al_c), $al_d)
+  $al_s1 = ta_plus(ta_plus($al_a, ta_plus($al_b, $al_c)), $al_d)
+  $al_s2 = ta_plus($al_a, ta_plus(ta_plus($al_b, $al_c), $al_d))
+  $al_s3 = ta_plus($al_a, ta_plus($al_b, ta_plus($al_c, $al_d)))
+  $al_h1 = al_trans($al_s0, $al_s1, $al_s2, $al_e1, $al_e2)
+  $al_corps = al_trans($al_s0, $al_s2, $al_s3, $al_h1, $al_e3)
+  $al_terme = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("c", ta_nat(),
+                noy_lam("d", ta_nat(), $al_corps))))
+  retour al_pair($al_but, $al_terme)
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 6. LEMMES — MULTIPLICATION
+# ═════════════════════════════════════════════════════════════════════════════
+
+fn al_lem_mult_zero_d() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(al_mult(noy_var("n"), ta_zero()), ta_zero()))
+  retour al_pair($al_but, noy_lam("n", ta_nat(), al_mult0r(noy_var("n"))))
+}
+
+fn al_lem_mult_succ_d() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+               al_eq(al_mult(noy_var("n"), ta_succ(noy_var("m"))),
+                     ta_plus(al_mult(noy_var("n"), noy_var("m")), noy_var("n")))))
+  retour al_pair($al_but, noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+                          al_multsr(noy_var("n"), noy_var("m")))))
+}
+
+fn al_term_mult_zero_g() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(al_mult(ta_zero(), noy_var("n")), ta_zero()))
+  $al_r0 = induction($al_but, ta_ctx())
+  $al_base = al_mult0r(ta_zero())
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+  $al_c1 = al_multsr(ta_zero(), noy_var($al_k))
+  $al_c2 = al_congr_plus(al_mult(ta_zero(), noy_var($al_k)), ta_zero(), ta_zero(), noy_var($al_ih))
+  $al_corps = al_trans(al_mult(ta_zero(), ta_succ(noy_var($al_k))),
+                       ta_plus(al_mult(ta_zero(), noy_var($al_k)), ta_zero()),
+                       ta_zero(), $al_c1, al_trans(ta_plus(al_mult(ta_zero(), noy_var($al_k)), ta_zero()),
+                                                 ta_plus(ta_zero(), ta_zero()), ta_zero(),
+                                                 $al_c2, al_plus0l(ta_zero())))
+  $al_pas = noy_lam($al_k, ta_nat(),
+              noy_lam($al_ih, al_eq(al_mult(ta_zero(), noy_var($al_k)), ta_zero()), $al_corps))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+fn al_lem_mult_zero_g() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(al_mult(ta_zero(), noy_var("n")), ta_zero()))
+  retour al_pair($al_but, al_term_mult_zero_g())
+}
+
+fn al_term_mult_succ_g() -> table {
+  $al_but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(),
+               al_eq(al_mult(ta_succ(noy_var("n")), noy_var("m")),
+                     ta_plus(al_mult(noy_var("n"), noy_var("m")), noy_var("m")))))
+  $al_r0 = induction($al_but, ta_ctx())
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+
+  # base : succ n × 0 = (n × 0) + 0 = 0
+  $al_b1 = al_symm(ta_plus(al_mult(noy_var("n"), ta_zero()), ta_zero()),
+                   ta_zero(),
+                   al_trans(ta_plus(al_mult(noy_var("n"), ta_zero()), ta_zero()),
+                            ta_plus(ta_zero(), ta_zero()), ta_zero(),
+                            al_congr_plus(al_mult(noy_var("n"), ta_zero()), ta_zero(),
+                                          ta_zero(), al_mult0r(noy_var("n"))),
+                            al_plus0l(ta_zero())))
+  $al_base = noy_lam("n", ta_nat(),
+               al_trans(al_mult(ta_succ(noy_var("n")), ta_zero()), ta_zero(),
+                        ta_plus(al_mult(noy_var("n"), ta_zero()), ta_zero()),
+                        al_mult0r(ta_succ(noy_var("n"))), $al_b1))
+
+  # pas : succ n × succ k = (n × succ k) + succ k
+  $al_c1 = al_multsr(ta_succ(noy_var("n")), noy_var($al_k))
+  $al_c2 = al_congr_plus(al_mult(ta_succ(noy_var("n")), noy_var($al_k)),
+                         ta_plus(al_mult(noy_var("n"), noy_var($al_k)), noy_var($al_k)),
+                         ta_succ(noy_var("n")),
+                         ta_ap1(noy_var($al_ih), noy_var("n")))
+  $al_c3 = al_plus_assoc(al_mult(noy_var("n"), noy_var($al_k)), noy_var($al_k),
+                         ta_succ(noy_var("n")))
+
+  # k + succ n = n + succ k
+  $al_p1 = al_plusSd(noy_var($al_k), noy_var("n"))
+  $al_p2 = al_congr_succ(ta_plus(noy_var($al_k), noy_var("n")),
+                         ta_plus(noy_var("n"), noy_var($al_k)),
+                         al_plus_comm(noy_var($al_k), noy_var("n")))
+  $al_p3 = al_symm(ta_plus(noy_var("n"), ta_succ(noy_var($al_k))),
+                   ta_succ(ta_plus(noy_var("n"), noy_var($al_k))),
+                   al_plusSd(noy_var("n"), noy_var($al_k)))
+  $al_pcorps = al_trans(noy_var($al_k), ta_plus(noy_var($al_k), ta_succ(noy_var("n"))),
+                        ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                        al_refl(noy_var($al_k)),
+                        al_trans(ta_plus(noy_var($al_k), ta_succ(noy_var("n"))),
+                                 ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                                 ta_succ(ta_plus(noy_var("n"), noy_var($al_k))),
+                                 $al_p1, $al_p2))
+  $al_p4 = al_trans(ta_plus(noy_var($al_k), ta_succ(noy_var("n"))),
+                    ta_succ(ta_plus(noy_var("n"), noy_var($al_k))),
+                    ta_plus(noy_var("n"), ta_succ(noy_var($al_k))),
+                    al_trans(ta_plus(noy_var($al_k), ta_succ(noy_var("n"))),
+                             ta_succ(ta_plus(noy_var($al_k), noy_var("n"))),
+                             ta_succ(ta_plus(noy_var("n"), noy_var($al_k))), $al_p1, $al_p2),
+                    $al_p3)
+  $al_c4 = al_congr_plus_g(al_mult(noy_var("n"), noy_var($al_k)),
+                           ta_plus(noy_var($al_k), ta_succ(noy_var("n"))),
+                           ta_plus(noy_var("n"), ta_succ(noy_var($al_k))), $al_p4)
+  # On extrait l'égalité utile de x+0 = y+0 (congruence inverse).
+  $al_c4bis = al_trans(ta_plus(al_mult(noy_var("n"), noy_var($al_k)),
+                               ta_plus(noy_var($al_k), ta_succ(noy_var("n")))),
+                       ta_plus(al_mult(noy_var("n"), noy_var($al_k)),
+                               ta_plus(noy_var("n"), ta_succ(noy_var($al_k)))),
+                       ta_zero(), $al_c4, ta_zero())
+  $al_c5 = al_symm(ta_plus(ta_plus(al_mult(noy_var("n"), noy_var($al_k)), noy_var("n")),
+                           ta_succ(noy_var($al_k))),
+                   ta_plus(al_mult(noy_var("n"), noy_var($al_k)),
+                           ta_plus(noy_var("n"), ta_succ(noy_var($al_k)))),
+                   al_plus_assoc(al_mult(noy_var("n"), noy_var($al_k)), noy_var("n"),
+                                 ta_succ(noy_var($al_k))))
+  $al_c6 = al_symm(ta_plus(al_mult(noy_var("n"), ta_succ(noy_var($al_k))),
+                           ta_succ(noy_var($al_k))),
+                   ta_plus(ta_plus(al_mult(noy_var("n"), noy_var($al_k)), noy_var("n")),
+                           ta_succ(noy_var($al_k))),
+                   al_congr_plus(al_mult(noy_var("n"), ta_succ(noy_var($al_k))),
+                                 ta_plus(al_mult(noy_var("n"), noy_var($al_k)), noy_var("n")),
+                                 ta_succ(noy_var($al_k)),
+                                 al_multsr(noy_var("n"), noy_var($al_k))))
+  $al_t0 = al_mult(ta_succ(noy_var("n")), ta_succ(noy_var($al_k)))
+  $al_t1 = ta_plus(al_mult(ta_succ(noy_var("n")), noy_var($al_k)), ta_succ(noy_var("n")))
+  $al_t2 = ta_plus(ta_plus(al_mult(noy_var("n"), noy_var($al_k)), noy_var($al_k)),
+                   ta_succ(noy_var("n")))
+  $al_t3 = ta_plus(al_mult(noy_var("n"), noy_var($al_k)),
+                   ta_plus(noy_var($al_k), ta_succ(noy_var("n"))))
+  $al_t4 = ta_plus(al_mult(noy_var("n"), noy_var($al_k)),
+                   ta_plus(noy_var("n"), ta_succ(noy_var($al_k))))
+  $al_t5 = ta_plus(ta_plus(al_mult(noy_var("n"), noy_var($al_k)), noy_var("n")),
+                   ta_succ(noy_var($al_k)))
+  $al_t6 = ta_plus(al_mult(noy_var("n"), ta_succ(noy_var($al_k))), ta_succ(noy_var($al_k)))
+  $al_h1 = al_trans($al_t0, $al_t1, $al_t2, $al_c1, $al_c2)
+  $al_h2 = al_trans($al_t0, $al_t2, $al_t3, $al_h1, $al_c3)
+  $al_h3 = al_trans($al_t0, $al_t3, $al_t4, $al_h2, $al_c4)
+  $al_h4 = al_trans($al_t0, $al_t4, $al_t5, $al_h3, $al_c5)
+  $al_corps = al_trans($al_t0, $al_t5, $al_t6, $al_h4, $al_c6)
+  $al_pas = noy_lam($al_k, ta_nat(), noy_lam($al_ih,
+              noy_pi("n", ta_nat(),
+                al_eq(al_mult(ta_succ(noy_var("n")), noy_var($al_k)),
+                      ta_plus(al_mult(noy_var("n"), noy_var($al_k)), noy_var($al_k)))),
+              noy_lam("n", ta_nat(), $al_corps)))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+fn al_lem_mult_succ_g() -> table {
+  $al_but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(),
+               al_eq(al_mult(ta_succ(noy_var("n")), noy_var("m")),
+                     ta_plus(al_mult(noy_var("n"), noy_var("m")), noy_var("m")))))
+  retour al_pair($al_but, al_term_mult_succ_g())
+}
+
+fn al_lem_mult_congr_g() -> table {
+  $al_but = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(), noy_pi("p", ta_nat(),
+              noy_pi("h", al_eq(noy_var("a"), noy_var("b")),
+                     al_eq(al_mult(noy_var("a"), noy_var("p")),
+                           al_mult(noy_var("b"), noy_var("p")))))))
+  $al_terme = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("p", ta_nat(),
+                noy_lam("h", al_eq(noy_var("a"), noy_var("b")),
+                  al_congr_mult_g(noy_var("a"), noy_var("b"), noy_var("p"), noy_var("h"))))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_mult_congr_d() -> table {
+  $al_but = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(), noy_pi("p", ta_nat(),
+              noy_pi("h", al_eq(noy_var("a"), noy_var("b")),
+                     al_eq(al_mult(noy_var("p"), noy_var("a")),
+                           al_mult(noy_var("p"), noy_var("b")))))))
+  $al_terme = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("p", ta_nat(),
+                noy_lam("h", al_eq(noy_var("a"), noy_var("b")),
+                  al_congr_mult_d(noy_var("a"), noy_var("b"), noy_var("p"), noy_var("h"))))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_mult_un_d() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(al_mult(noy_var("n"), al_un()), noy_var("n")))
+  $al_terme = noy_lam("n", ta_nat(),
+    al_trans(al_mult(noy_var("n"), al_un()),
+             ta_plus(al_mult(noy_var("n"), ta_zero()), noy_var("n")),
+             noy_var("n"), al_multsr(noy_var("n"), ta_zero()),
+             al_trans(ta_plus(al_mult(noy_var("n"), ta_zero()), noy_var("n")),
+                      ta_plus(ta_zero(), noy_var("n")), noy_var("n"),
+                      al_congr_plus(al_mult(noy_var("n"), ta_zero()), ta_zero(),
+                                    noy_var("n"), al_mult0r(noy_var("n"))),
+                      al_plus0l(noy_var("n")))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_mult_un_g() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_eq(al_mult(al_un(), noy_var("n")), noy_var("n")))
+  $al_terme = noy_lam("n", ta_nat(),
+    al_trans(al_mult(al_un(), noy_var("n")),
+             ta_plus(al_mult(ta_zero(), noy_var("n")), noy_var("n")),
+             noy_var("n"),
+             ta_ap2(al_term_mult_succ_g(), noy_var("n"), ta_zero()),
+             al_trans(ta_plus(al_mult(ta_zero(), noy_var("n")), noy_var("n")),
+                      ta_plus(ta_zero(), noy_var("n")), noy_var("n"),
+                      al_congr_plus(al_mult(ta_zero(), noy_var("n")), ta_zero(),
+                                    noy_var("n"), ta_ap1(al_term_mult_zero_g(), noy_var("n"))),
+                      al_plus0l(noy_var("n")))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_term_mult_distrib_g() -> table {
+  $al_but = noy_pi("c", ta_nat(), noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+               al_eq(al_mult(noy_var("a"), ta_plus(noy_var("b"), noy_var("c"))),
+                     ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                             al_mult(noy_var("a"), noy_var("c")))))))
+  $al_r0 = induction($al_but, ta_ctx())
+
+  # base c = 0
+  $al_b1 = al_congr_mult_d(ta_plus(noy_var("b"), ta_zero()), noy_var("b"),
+                           noy_var("a"), al_plus0d(noy_var("b")))
+  $al_b2 = al_symm(ta_plus(al_mult(noy_var("a"), noy_var("b")), ta_zero()),
+                   al_mult(noy_var("a"), noy_var("b")),
+                   al_plus0d(al_mult(noy_var("a"), noy_var("b"))))
+  $al_b3 = al_symm(ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                           al_mult(noy_var("a"), ta_zero())),
+                   ta_plus(al_mult(noy_var("a"), noy_var("b")), ta_zero()),
+                   al_congr_plus_g(al_mult(noy_var("a"), noy_var("b")),
+                                   al_mult(noy_var("a"), ta_zero()), ta_zero(),
+                                   al_mult0r(noy_var("a"))))
+  $al_base = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(),
+    al_trans(al_mult(noy_var("a"), ta_plus(noy_var("b"), ta_zero())),
+             al_mult(noy_var("a"), noy_var("b")),
+             ta_plus(al_mult(noy_var("a"), noy_var("b")), al_mult(noy_var("a"), ta_zero())),
+             $al_b1, al_trans(al_mult(noy_var("a"), noy_var("b")),
+                              ta_plus(al_mult(noy_var("a"), noy_var("b")), ta_zero()),
+                              ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                                      al_mult(noy_var("a"), ta_zero())),
+                              $al_b2, $al_b3))))
+
+  # pas c = succ k
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+  $al_c1 = al_congr_mult_d(ta_plus(noy_var("b"), ta_succ(noy_var($al_k))),
+                           ta_succ(ta_plus(noy_var("b"), noy_var($al_k))),
+                           noy_var("a"), al_plusSd(noy_var("b"), noy_var($al_k)))
+  $al_c2 = al_multsr(noy_var("a"), ta_plus(noy_var("b"), noy_var($al_k)))
+  $al_c3 = al_congr_plus(al_mult(noy_var("a"), ta_plus(noy_var("b"), noy_var($al_k))),
+                         ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                                 al_mult(noy_var("a"), noy_var($al_k))),
+                         noy_var("a"),
+                         ta_ap2(noy_var($al_ih), noy_var("a"), noy_var("b")))
+  $al_c4 = al_plus_assoc(al_mult(noy_var("a"), noy_var("b")),
+                         al_mult(noy_var("a"), noy_var($al_k)), noy_var("a"))
+  $al_c5 = al_congr_plus_g(al_mult(noy_var("a"), noy_var("b")),
+                           ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")),
+                           al_mult(noy_var("a"), ta_succ(noy_var($al_k))),
+                           al_symm(al_mult(noy_var("a"), ta_succ(noy_var($al_k))),
+                                   ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")),
+                                   al_multsr(noy_var("a"), noy_var($al_k))))
+  $al_s0 = al_mult(noy_var("a"), ta_plus(noy_var("b"), ta_succ(noy_var($al_k))))
+  $al_s1 = al_mult(noy_var("a"), ta_succ(ta_plus(noy_var("b"), noy_var($al_k))))
+  $al_s2 = ta_plus(al_mult(noy_var("a"), ta_plus(noy_var("b"), noy_var($al_k))), noy_var("a"))
+  $al_s3 = ta_plus(ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                           al_mult(noy_var("a"), noy_var($al_k))), noy_var("a"))
+  $al_s4 = ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                   ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")))
+  $al_s5 = ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                   al_mult(noy_var("a"), ta_succ(noy_var($al_k))))
+  $al_h1 = al_trans($al_s0, $al_s1, $al_s2, $al_c1, $al_c2)
+  $al_h2 = al_trans($al_s0, $al_s2, $al_s3, $al_h1, $al_c3)
+  $al_h3 = al_trans($al_s0, $al_s3, $al_s4, $al_h2, $al_c4)
+  $al_corps = al_trans($al_s0, $al_s4, $al_s5, $al_h3, $al_c5)
+  $al_pas = noy_lam($al_k, ta_nat(), noy_lam($al_ih,
+              noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+                al_eq(al_mult(noy_var("a"), ta_plus(noy_var("b"), noy_var($al_k))),
+                      ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                              al_mult(noy_var("a"), noy_var($al_k)))))),
+              noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), $al_corps))))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+fn al_lem_mult_distrib_g() -> table {
+  $al_but = noy_pi("c", ta_nat(), noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+               al_eq(al_mult(noy_var("a"), ta_plus(noy_var("b"), noy_var("c"))),
+                     ta_plus(al_mult(noy_var("a"), noy_var("b")),
+                             al_mult(noy_var("a"), noy_var("c")))))))
+  retour al_pair($al_but, al_term_mult_distrib_g())
+}
+
+fn al_term_mult_distrib_d() -> table {
+  $al_but = noy_pi("c", ta_nat(), noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+               al_eq(al_mult(ta_plus(noy_var("a"), noy_var("b")), noy_var("c")),
+                     ta_plus(al_mult(noy_var("a"), noy_var("c")),
+                             al_mult(noy_var("b"), noy_var("c")))))))
+  $al_r0 = induction($al_but, ta_ctx())
+
+  $al_b1 = al_congr_plus(al_mult(noy_var("a"), ta_zero()), ta_zero(),
+                         al_mult(noy_var("b"), ta_zero()), al_mult0r(noy_var("a")))
+  $al_b2 = al_congr_plus_g(ta_zero(), al_mult(noy_var("b"), ta_zero()), ta_zero(),
+                           al_mult0r(noy_var("b")))
+  $al_b3 = al_plus0l(ta_zero())
+  $al_droite = al_trans(ta_plus(al_mult(noy_var("a"), ta_zero()),
+                                al_mult(noy_var("b"), ta_zero())),
+                        ta_plus(ta_zero(), al_mult(noy_var("b"), ta_zero())),
+                        ta_zero(), $al_b1,
+                        al_trans(ta_plus(ta_zero(), al_mult(noy_var("b"), ta_zero())),
+                                 ta_plus(ta_zero(), ta_zero()), ta_zero(), $al_b2, $al_b3))
+  $al_base = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(),
+    al_trans(al_mult(ta_plus(noy_var("a"), noy_var("b")), ta_zero()), ta_zero(),
+             ta_plus(al_mult(noy_var("a"), ta_zero()), al_mult(noy_var("b"), ta_zero())),
+             al_mult0r(ta_plus(noy_var("a"), noy_var("b"))),
+             al_symm(ta_plus(al_mult(noy_var("a"), ta_zero()),
+                             al_mult(noy_var("b"), ta_zero())),
+                     ta_zero(), $al_droite))))
+
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+  $al_c1 = al_multsr(ta_plus(noy_var("a"), noy_var("b")), noy_var($al_k))
+  $al_c2 = al_congr_plus(al_mult(ta_plus(noy_var("a"), noy_var("b")), noy_var($al_k)),
+                         ta_plus(al_mult(noy_var("a"), noy_var($al_k)),
+                                 al_mult(noy_var("b"), noy_var($al_k))),
+                         ta_plus(noy_var("a"), noy_var("b")),
+                         ta_ap2(noy_var($al_ih), noy_var("a"), noy_var("b")))
+  $al_c3 = ta_ap4(al_term_permute4(), al_mult(noy_var("a"), noy_var($al_k)),
+                  al_mult(noy_var("b"), noy_var($al_k)), noy_var("a"), noy_var("b"))
+  $al_d1 = al_congr_plus_g(ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")),
+                           ta_plus(al_mult(noy_var("b"), noy_var($al_k)), noy_var("b")),
+                           al_mult(noy_var("b"), ta_succ(noy_var($al_k))),
+                           al_symm(al_mult(noy_var("b"), ta_succ(noy_var($al_k))),
+                                   ta_plus(al_mult(noy_var("b"), noy_var($al_k)), noy_var("b")),
+                                   al_multsr(noy_var("b"), noy_var($al_k))))
+  $al_d2 = al_congr_plus(ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")),
+                         al_mult(noy_var("a"), ta_succ(noy_var($al_k))),
+                         al_mult(noy_var("b"), ta_succ(noy_var($al_k))),
+                         al_symm(al_mult(noy_var("a"), ta_succ(noy_var($al_k))),
+                                 ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")),
+                                 al_multsr(noy_var("a"), noy_var($al_k))))
+  $al_s0 = al_mult(ta_plus(noy_var("a"), noy_var("b")), ta_succ(noy_var($al_k)))
+  $al_s1 = ta_plus(al_mult(ta_plus(noy_var("a"), noy_var("b")), noy_var($al_k)),
+                   ta_plus(noy_var("a"), noy_var("b")))
+  $al_s2 = ta_plus(ta_plus(al_mult(noy_var("a"), noy_var($al_k)),
+                           al_mult(noy_var("b"), noy_var($al_k))),
+                   ta_plus(noy_var("a"), noy_var("b")))
+  $al_s3 = ta_plus(ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")),
+                   ta_plus(al_mult(noy_var("b"), noy_var($al_k)), noy_var("b")))
+  $al_s4 = ta_plus(ta_plus(al_mult(noy_var("a"), noy_var($al_k)), noy_var("a")),
+                   al_mult(noy_var("b"), ta_succ(noy_var($al_k))))
+  $al_s5 = ta_plus(al_mult(noy_var("a"), ta_succ(noy_var($al_k))),
+                   al_mult(noy_var("b"), ta_succ(noy_var($al_k))))
+  $al_h1 = al_trans($al_s0, $al_s1, $al_s2, $al_c1, $al_c2)
+  $al_h2 = al_trans($al_s0, $al_s2, $al_s3, $al_h1, $al_c3)
+  $al_h3 = al_trans($al_s0, $al_s3, $al_s4, $al_h2, $al_d1)
+  $al_corps = al_trans($al_s0, $al_s4, $al_s5, $al_h3, $al_d2)
+  $al_pas = noy_lam($al_k, ta_nat(), noy_lam($al_ih,
+              noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+                al_eq(al_mult(ta_plus(noy_var("a"), noy_var("b")), noy_var($al_k)),
+                      ta_plus(al_mult(noy_var("a"), noy_var($al_k)),
+                              al_mult(noy_var("b"), noy_var($al_k)))))),
+              noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), $al_corps))))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+fn al_lem_mult_distrib_d() -> table {
+  $al_but = noy_pi("c", ta_nat(), noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+               al_eq(al_mult(ta_plus(noy_var("a"), noy_var("b")), noy_var("c")),
+                     ta_plus(al_mult(noy_var("a"), noy_var("c")),
+                             al_mult(noy_var("b"), noy_var("c")))))))
+  retour al_pair($al_but, al_term_mult_distrib_d())
+}
+
+fn al_term_mult_assoc() -> table {
+  $al_but = noy_pi("c", ta_nat(), noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+               al_eq(al_mult(al_mult(noy_var("a"), noy_var("b")), noy_var("c")),
+                     al_mult(noy_var("a"), al_mult(noy_var("b"), noy_var("c")))))))
+  $al_r0 = induction($al_but, ta_ctx())
+
+  $al_b1 = al_congr_mult_d(al_mult(noy_var("b"), ta_zero()), ta_zero(),
+                           noy_var("a"), al_mult0r(noy_var("b")))
+  $al_b2 = al_mult0r(noy_var("a"))
+  $al_base = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(),
+    al_trans(al_mult(al_mult(noy_var("a"), noy_var("b")), ta_zero()), ta_zero(),
+             al_mult(noy_var("a"), al_mult(noy_var("b"), ta_zero())),
+             al_mult0r(al_mult(noy_var("a"), noy_var("b"))),
+             al_symm(al_mult(noy_var("a"), al_mult(noy_var("b"), ta_zero())),
+                     ta_zero(),
+                     al_trans(al_mult(noy_var("a"), al_mult(noy_var("b"), ta_zero())),
+                              al_mult(noy_var("a"), ta_zero()), ta_zero(), $al_b1, $al_b2)))))
+
+  $al_k = ta_txt($al_r0, "nom_n")
+  $al_ih = ta_txt($al_r0, "nom_ih")
+  $al_c1 = al_multsr(al_mult(noy_var("a"), noy_var("b")), noy_var($al_k))
+  $al_c2 = al_congr_plus(al_mult(al_mult(noy_var("a"), noy_var("b")), noy_var($al_k)),
+                         al_mult(noy_var("a"), al_mult(noy_var("b"), noy_var($al_k))),
+                         al_mult(noy_var("a"), noy_var("b")),
+                         ta_ap2(noy_var($al_ih), noy_var("a"), noy_var("b")))
+  $al_c3 = al_symm(al_mult(noy_var("a"), ta_plus(al_mult(noy_var("b"), noy_var($al_k)),
+                                                noy_var("b"))),
+                   ta_plus(al_mult(noy_var("a"), al_mult(noy_var("b"), noy_var($al_k))),
+                           al_mult(noy_var("a"), noy_var("b"))),
+                   ta_ap3(al_term_mult_distrib_g(), noy_var("b"), noy_var("a"),
+                          al_mult(noy_var("b"), noy_var($al_k))))
+  $al_c4 = al_symm(al_mult(noy_var("a"), al_mult(noy_var("b"), ta_succ(noy_var($al_k)))),
+                   al_mult(noy_var("a"), ta_plus(al_mult(noy_var("b"), noy_var($al_k)),
+                                                 noy_var("b"))),
+                   al_congr_mult_d(al_mult(noy_var("b"), ta_succ(noy_var($al_k))),
+                                   ta_plus(al_mult(noy_var("b"), noy_var($al_k)), noy_var("b")),
+                                   noy_var("a"), al_multsr(noy_var("b"), noy_var($al_k))))
+  $al_s0 = al_mult(al_mult(noy_var("a"), noy_var("b")), ta_succ(noy_var($al_k)))
+  $al_s1 = ta_plus(al_mult(al_mult(noy_var("a"), noy_var("b")), noy_var($al_k)),
+                   al_mult(noy_var("a"), noy_var("b")))
+  $al_s2 = ta_plus(al_mult(noy_var("a"), al_mult(noy_var("b"), noy_var($al_k))),
+                   al_mult(noy_var("a"), noy_var("b")))
+  $al_s3 = al_mult(noy_var("a"), ta_plus(al_mult(noy_var("b"), noy_var($al_k)), noy_var("b")))
+  $al_s4 = al_mult(noy_var("a"), al_mult(noy_var("b"), ta_succ(noy_var($al_k))))
+  $al_h1 = al_trans($al_s0, $al_s1, $al_s2, $al_c1, $al_c2)
+  $al_h2 = al_trans($al_s0, $al_s2, $al_s3, $al_h1, $al_c3)
+  $al_corps = al_trans($al_s0, $al_s3, $al_s4, $al_h2, $al_c4)
+  $al_pas = noy_lam($al_k, ta_nat(), noy_lam($al_ih,
+              noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+                al_eq(al_mult(al_mult(noy_var("a"), noy_var("b")), noy_var($al_k)),
+                      al_mult(noy_var("a"), al_mult(noy_var("b"), noy_var($al_k)))))),
+              noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), $al_corps))))
+  $al_rf = induction_resolue($al_but, ta_ctx(), $al_base, $al_pas)
+  retour al_tab(noy_champ($al_rf, "terme"))
+}
+
+fn al_lem_mult_assoc() -> table {
+  $al_but = noy_pi("c", ta_nat(), noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+               al_eq(al_mult(al_mult(noy_var("a"), noy_var("b")), noy_var("c")),
+                     al_mult(noy_var("a"), al_mult(noy_var("b"), noy_var("c")))))))
+  retour al_pair($al_but, al_term_mult_assoc())
+}
+
+fn al_lem_mult_zero_absorb() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+               al_eq(al_mult(al_mult(noy_var("n"), ta_zero()), noy_var("m")), ta_zero())))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+    al_trans(al_mult(al_mult(noy_var("n"), ta_zero()), noy_var("m")),
+             al_mult(ta_zero(), noy_var("m")), ta_zero(),
+             al_congr_mult_g(al_mult(noy_var("n"), ta_zero()), ta_zero(), noy_var("m"),
+                             al_mult0r(noy_var("n"))),
+             ta_ap1(al_term_mult_zero_g(), noy_var("m")))))
+  retour al_pair($al_but, $al_terme)
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 7. LEMMES — ORDRE
+# ═════════════════════════════════════════════════════════════════════════════
+
+fn al_lem_le_refl() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_le(noy_var("n"), noy_var("n")))
+  retour al_pair($al_but, noy_lam("n", ta_nat(), al_le_refl(noy_var("n"))))
+}
+
+fn al_lem_le_trans() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), noy_pi("p", ta_nat(),
+              noy_pi("h1", al_le(noy_var("n"), noy_var("m")),
+                noy_pi("h2", al_le(noy_var("m"), noy_var("p")),
+                       al_le(noy_var("n"), noy_var("p")))))))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(), noy_lam("p", ta_nat(),
+                noy_lam("h1", al_le(noy_var("n"), noy_var("m")),
+                  noy_lam("h2", al_le(noy_var("m"), noy_var("p")),
+                    al_le_trans(noy_var("n"), noy_var("m"), noy_var("p"),
+                                noy_var("h1"), noy_var("h2")))))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_le_antisymm() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+              noy_pi("h1", al_le(noy_var("n"), noy_var("m")),
+                noy_pi("h2", al_le(noy_var("m"), noy_var("n")),
+                       al_eq(noy_var("n"), noy_var("m"))))))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+                noy_lam("h1", al_le(noy_var("n"), noy_var("m")),
+                  noy_lam("h2", al_le(noy_var("m"), noy_var("n")),
+                    al_le_antisymm(noy_var("n"), noy_var("m"), noy_var("h1"), noy_var("h2"))))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_le_zero_min() -> table {
+  $al_but = noy_pi("n", ta_nat(), al_le(ta_zero(), noy_var("n")))
+  retour al_pair($al_but, noy_lam("n", ta_nat(), al_le_zero(noy_var("n"))))
+}
+
+fn al_lem_le_plus_compatible_d() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), noy_pi("p", ta_nat(),
+              noy_pi("h", al_le(noy_var("n"), noy_var("m")),
+                     al_le(ta_plus(noy_var("n"), noy_var("p")),
+                           ta_plus(noy_var("m"), noy_var("p")))))))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(), noy_lam("p", ta_nat(),
+                noy_lam("h", al_le(noy_var("n"), noy_var("m")),
+                  al_le_plus(noy_var("n"), noy_var("m"), noy_var("p"), noy_var("h"))))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_le_plus_compatible_g() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), noy_pi("p", ta_nat(),
+              noy_pi("h", al_le(noy_var("n"), noy_var("m")),
+                     al_le(ta_plus(noy_var("p"), noy_var("n")),
+                           ta_plus(noy_var("p"), noy_var("m")))))))
+  $al_np = ta_plus(noy_var("n"), noy_var("p"))
+  $al_mp = ta_plus(noy_var("m"), noy_var("p"))
+  $al_pn = ta_plus(noy_var("p"), noy_var("n"))
+  $al_pm = ta_plus(noy_var("p"), noy_var("m"))
+  $al_h0 = al_le_plus(noy_var("n"), noy_var("m"), noy_var("p"), noy_var("h"))
+  $al_c1 = ta_ap2(al_congr_le_d($al_np, $al_pn, $al_mp), $al_h0,
+                  al_plus_comm(noy_var("n"), noy_var("p")))
+  $al_corps = ta_ap2(al_congr_le_g($al_mp, $al_pm, $al_pn), $al_c1,
+                     al_plus_comm(noy_var("m"), noy_var("p")))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(), noy_lam("p", ta_nat(),
+                noy_lam("h", al_le(noy_var("n"), noy_var("m")), $al_corps))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_le_succ_mono() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(),
+              noy_pi("h", al_le(noy_var("n"), noy_var("m")),
+                     al_le(ta_succ(noy_var("n")), ta_succ(noy_var("m"))))))
+  $al_n1 = ta_plus(noy_var("n"), al_un())
+  $al_m1 = ta_plus(noy_var("m"), al_un())
+  $al_h0 = al_le_plus(noy_var("n"), noy_var("m"), al_un(), noy_var("h"))
+  $al_c1 = ta_ap2(al_congr_le_d($al_n1, ta_succ(noy_var("n")), $al_m1), $al_h0,
+                  ta_ap1(al_term_plus_un_d(), noy_var("n")))
+  $al_corps = ta_ap2(al_congr_le_g($al_m1, ta_succ(noy_var("m")),
+                                   ta_succ(noy_var("n"))), $al_c1,
+                     ta_ap1(al_term_plus_un_d(), noy_var("m")))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("m", ta_nat(),
+                noy_lam("h", al_le(noy_var("n"), noy_var("m")), $al_corps)))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_le_add_droite() -> table {
+  $al_but = noy_pi("n", ta_nat(), noy_pi("p", ta_nat(),
+                   al_le(noy_var("n"), ta_plus(noy_var("n"), noy_var("p")))))
+  $al_np = ta_plus(noy_var("n"), noy_var("p"))
+  $al_pn = ta_plus(noy_var("p"), noy_var("n"))
+  $al_h0 = al_le_plus(ta_zero(), noy_var("p"), noy_var("n"),
+                      al_le_zero(noy_var("p")))
+  $al_h1 = ta_ap2(al_congr_le_d(ta_plus(ta_zero(), noy_var("n")), noy_var("n"),
+                                $al_pn), $al_h0, al_plus0l(noy_var("n")))
+  $al_corps = ta_ap2(al_congr_le_g($al_pn, $al_np, noy_var("n")), $al_h1,
+                     al_plus_comm(noy_var("p"), noy_var("n")))
+  $al_terme = noy_lam("n", ta_nat(), noy_lam("p", ta_nat(), $al_corps))
+  retour al_pair($al_but, $al_terme)
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 8. LEMMES — SUCC
+# ═════════════════════════════════════════════════════════════════════════════
+
+fn al_lem_succ_inj() -> table {
+  $al_but = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+              noy_pi("h", al_eq(ta_succ(noy_var("a")), ta_succ(noy_var("b"))),
+                     al_eq(noy_var("a"), noy_var("b")))))
+  $al_terme = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(),
+                noy_lam("h", al_eq(ta_succ(noy_var("a")), ta_succ(noy_var("b"))),
+                  al_succ_inj(noy_var("a"), noy_var("b"), noy_var("h")))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_succ_ne_zero() -> table {
+  $al_but = noy_pi("n", ta_nat(),
+                   noy_pi("h", al_eq(ta_succ(noy_var("n")), ta_zero()), al_faux()))
+  $al_terme = noy_lam("n", ta_nat(),
+                noy_lam("h", al_eq(ta_succ(noy_var("n")), ta_zero()),
+                  al_succ_ne_zero(noy_var("n"), noy_var("h"))))
+  retour al_pair($al_but, $al_terme)
+}
+
+fn al_lem_zero_ne_succ() -> table {
+  $al_but = noy_pi("n", ta_nat(),
+                   noy_pi("h", al_eq(ta_zero(), ta_succ(noy_var("n"))), al_faux()))
+  $al_terme = noy_lam("n", ta_nat(),
+                noy_lam("h", al_eq(ta_zero(), ta_succ(noy_var("n"))),
+                  al_succ_ne_zero(noy_var("n"),
+                    al_symm(ta_zero(), ta_succ(noy_var("n")), noy_var("h")))))
+  retour al_pair($al_but, $al_terme)
+}
+
