@@ -323,9 +323,9 @@ def main():
             "WM_SETCURSOR traité": "WM_SETCURSOR =>",
             "coordonnées client lues dans lParam": "let x = (l as i32) << 16 >> 16;",
             # ⚠ LOGO : proportions conservées et centrage vertical.
-            "logo borné dans sa boîte (hauteur <= cote)": "let mut dh = cote;",
-            "logo centré verticalement": "let dy = y + (cote - dh) / 2;",
-            "marge entre logo et titre": "let marge_marque = s(16);",
+            "géométrie pure du logo (LOGO1)": "fn geometrie_marque(",
+            "logo centré horizontalement": "lateral_w / 2 - geo.largeur_logo / 2",
+            "marge dynamique logo/titre (LOGO1)": "let marge_marque = s(26)",
             # ⚠ CLIGNOTEMENT AU SURVOL DES BOUTONS : `dessiner` doit copier
             # SEULEMENT `ps.rcPaint`, pas tout le tampon.
             "repeint limité à ps.rcPaint": "let mut zone = ps.rcPaint;",
@@ -334,8 +334,8 @@ def main():
             "pas de CS_HREDRAW/CS_VREDRAW": "style: 0,",
             # ⚠ Netteté : sans HALFTONE, tout dessin mis à l'échelle est
             # pixélisé (le mode par défaut COLORONCOLOR supprime des lignes).
-            "étirement HALFTONE (netteté)": "SetStretchBltMode(dc, HALFTONE);",
-            "SetBrushOrgEx après HALFTONE": "SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());",
+            "AlphaBlend sans HALFTONE (documenté MSDN)": "Pas de `SetStretchBltMode(HALFTONE)` ici",
+            "aucun SetBrushOrgEx réel": "fn SetBrushOrgEx(dc: HDC, x: i32, y: i32, precedent: *mut POINT) -> i32;",
             # ⚠ Animation : le timer ne doit pas repeindre toute la fenêtre.
             "timer de progression ciblé": "InvalidateRect(h, &piste, 0);",
             "timer à 30 i/s (pas 62)": "SetTimer(h, TIMER_PROGRESSION, 33,",
