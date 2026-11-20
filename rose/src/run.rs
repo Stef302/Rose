@@ -117,6 +117,9 @@ pub struct Tableau(pub Rc<RefCell<Vec<i64>>>);
 // détruit par le `drop` récursif par défaut déborderait la pile.
 pub enum NoeudChaine {
     Plein(String),
+    /// Chaîne ASCII courte (≤ 16 octets) stockée DANS le nœud : un seul
+    /// bloc heap vivant par valeur (le `Rc`) au lieu de deux (`Rc` + `String`).
+    PleinCourt { buf: [u8; 16], len: u8 },
     Concat(Rc<ChaineRep>, Rc<ChaineRep>),
     /// Feuille dont les octets vivent dans un mapping `mmap` possédé.
     ///
@@ -140,6 +143,8 @@ impl std::fmt::Debug for NoeudChaine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NoeudChaine::Plein(s) => f.debug_tuple("Plein").field(s).finish(),
+            NoeudChaine::PleinCourt { buf, len } => f.debug_tuple("PleinCourt")
+                .field(&String::from_utf8_lossy(&buf[..*len as usize])).finish(),
             NoeudChaine::Concat(a, b) => f.debug_tuple("Concat").field(a).field(b).finish(),
             NoeudChaine::FichierMmap { len, .. } =>
                 f.debug_struct("FichierMmap").field("len", len).finish(),
@@ -162,7 +167,14 @@ impl ChaineRep {
         // SPEED4 : sur une chaîne ASCII chaque octet est un caractère ;
         // `len()` suffit, sans itération UTF-8 (clés de table du banc global).
         let octets = s.len();
-        let n = if s.is_ascii() { octets } else { s.chars().count() };
+        let ascii = s.is_ascii();
+        let n = if ascii { octets } else { s.chars().count() };
+        if ascii && octets <= 16 {
+            let mut buf = [0u8; 16];
+            buf[..octets].copy_from_slice(s.as_bytes());
+            return Rc::new(ChaineRep { n, octets,
+                noeud: NoeudChaine::PleinCourt { buf, len: octets as u8 } });
+        }
         Rc::new(ChaineRep { n, octets, noeud: NoeudChaine::Plein(s) })
     }
 
@@ -233,6 +245,7 @@ impl ChaineRep {
     pub fn octets_empruntes(&self) -> Option<&[u8]> {
         match &self.noeud {
             NoeudChaine::Plein(s) => Some(s.as_bytes()),
+            NoeudChaine::PleinCourt { buf, len } => Some(&buf[..*len as usize]),
             NoeudChaine::FichierMmap { ptr, len, .. } =>
                 Some(unsafe { std::slice::from_raw_parts(*ptr, *len) }),
             NoeudChaine::Concat(..) => None,
@@ -258,6 +271,8 @@ impl ChaineRep {
         while let Some(r) = pile.pop() {
             match &r.noeud {
                 NoeudChaine::Plein(t) => s.push_str(t),
+                NoeudChaine::PleinCourt { buf, len } =>
+                    s.push_str(unsafe { std::str::from_utf8_unchecked(&buf[..*len as usize]) }),
                 NoeudChaine::FichierMmap { ptr, len, .. } =>
                     s.push_str(unsafe {
                         std::str::from_utf8_unchecked(std::slice::from_raw_parts(*ptr, *len))
@@ -271,7 +286,7 @@ impl ChaineRep {
     /// Comparaison lexicographique sans aplatir quand les deux feuilles sont
     /// pleines (cas des clés de table : aucun regain d'allocation).
     pub fn cmp_rep(a: &Rc<ChaineRep>, b: &Rc<ChaineRep>) -> std::cmp::Ordering {
-        if let (NoeudChaine::Plein(x), NoeudChaine::Plein(y)) = (&a.noeud, &b.noeud) {
+        if let (Some(x), Some(y)) = (a.octets_empruntes(), b.octets_empruntes()) {
             return x.cmp(y);
         }
         a.aplatir().cmp(&b.aplatir())
@@ -279,7 +294,7 @@ impl ChaineRep {
 
     pub fn egale_rep(a: &Rc<ChaineRep>, b: &Rc<ChaineRep>) -> bool {
         if a.n != b.n { return false; }
-        if let (NoeudChaine::Plein(x), NoeudChaine::Plein(y)) = (&a.noeud, &b.noeud) {
+        if let (Some(x), Some(y)) = (a.octets_empruntes(), b.octets_empruntes()) {
             return x == y;
         }
         a.aplatir() == b.aplatir()
@@ -325,7 +340,7 @@ impl Drop for ChaineRep {
         // coûtait une allocation par feuille, soit 20 000 de trop ici).
         let mut noeud = std::mem::replace(&mut self.noeud, NoeudChaine::Plein(String::new()));
         match &noeud {
-            NoeudChaine::Plein(_) => return,
+            NoeudChaine::Plein(_) | NoeudChaine::PleinCourt { .. } => return,
             NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
                 liberer_mmap_ptr(*ptr, *mapping_len);
                 return;
@@ -335,7 +350,7 @@ impl Drop for ChaineRep {
         let mut pile: Vec<NoeudChaine> = Vec::new();
         loop {
             match noeud {
-                NoeudChaine::Plein(_) => {}
+                NoeudChaine::Plein(_) | NoeudChaine::PleinCourt { .. } => {}
                 NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
                     liberer_mmap_ptr(ptr, mapping_len);
                 }
@@ -2317,10 +2332,7 @@ impl Table {
             // l'index primaire). D7 n'en a aucune : `HashMap::with_hasher`
             // n'alloue RIEN avant la première insertion, ce qui économise
             // une arène de ~64 Kio et son initialization sur le chemin chaud.
-            index: { let mut m = HashMap::with_hasher(BuildHasherDefault::<HashU64>::default());
-                     // SPEED4 : réserver toute la table d'avance évite ~13
-                     // rehashes et autant d'allocations sur le chemin chaud.
-                     m.reserve(8192); m },
+            index: IndexRapide::neuf(8192),
             fallback: Vec::new(),
             collisions: Vec::new(),
             array_part: vec![0u32; Self::N_ARRAY],
@@ -2342,7 +2354,8 @@ impl Table {
                 Some(ki) => array_part[ki] = (i + 1) as u32,
                 None => match Self::h(k) {
                     Some(h) => {
-                        if index.insert(h, i).is_some() { collisions.push((h, i)); }
+                        if index.occupe(h) { collisions.push((h, i)); }
+                        else { index.inserer(h, i); }
                     }
                     None => fallback.push(i),
                 },
@@ -2456,7 +2469,7 @@ impl Table {
         }
         match h {
             Some(h) => {
-                if let Some(&i) = rep.index.get(&h) {
+                if let Some(i) = rep.index.get(h) {
                     if valeur_egale(&rep.items[i].0, cle) { return Some(i); }
                 }
                 for (hh, i) in rep.collisions.iter() {
@@ -2516,32 +2529,27 @@ impl Table {
             return;
         };
         let TableRep { items, index, collisions, array_part, .. } = &mut *rep;
-        use std::collections::hash_map::Entry;
-        let i = match index.entry(h) {
-            Entry::Occupied(e) => {
-                let i0 = *e.get();
-                if valeur_egale(&items[i0].0, &cle) {
-                    items[i0].1 = val;
-                    return;
-                }
-                if let Some(pos) = collisions.iter().position(|&(hh, ci)| {
-                    hh == h && valeur_egale(&items[ci].0, &cle)
-                }) {
-                    let i = collisions[pos].1;
-                    items[i].1 = val;
-                    return;
-                }
-                let i = items.len();
-                items.push((cle, val));
-                collisions.push((h, i));
-                i
+        let i = if let Some(i0) = index.get(h) {
+            if valeur_egale(&items[i0].0, &cle) {
+                items[i0].1 = val;
+                return;
             }
-            Entry::Vacant(e) => {
-                let i = items.len();
-                items.push((cle, val));
-                e.insert(i);
-                i
+            if let Some(pos) = collisions.iter().position(|&(hh, ci)| {
+                hh == h && valeur_egale(&items[ci].0, &cle)
+            }) {
+                let i = collisions[pos].1;
+                items[i].1 = val;
+                return;
             }
+            let i = items.len();
+            items.push((cle, val));
+            collisions.push((h, i));
+            i
+        } else {
+            let i = items.len();
+            items.push((cle, val));
+            index.inserer(h, i);
+            i
         };
         if let Some(k) = k { array_part[k] = (i + 1) as u32; }
     }
@@ -2588,7 +2596,7 @@ impl Table {
     /// Position d'un i64 nu dans un `TableRep` déjà emprunté.
     #[inline]
     fn trouve_i64(rep: &TableRep, k: i64, h: u64) -> Option<usize> {
-        if let Some(&i) = rep.index.get(&h) {
+        if let Some(i) = rep.index.get(h) {
             if Self::cle_i64_egale(&rep.items[i].0, k) { return Some(i); }
         }
         for &(hh, i) in rep.collisions.iter() {
@@ -2632,10 +2640,8 @@ impl Table {
         // UN seul hachage par insertion : `entry` sert à la fois à trouver
         // la position existante et à réserver la nouvelle (au lieu de
         // `get` puis `contains_key` puis `insert` = 3 hachages).
-        use std::collections::hash_map::Entry;
-        match index.entry(h) {
-            Entry::Occupied(e) => {
-                let i0 = *e.get();
+        if let Some(i0) = index.get(h) {
+                {
                 if Self::cle_i64_egale(&items[i0].0, k) {
                     items[i0].1 = Self::z_valeur_i64(v);
                     Self::maj_array(array_part, k, i0);
@@ -2653,12 +2659,11 @@ impl Table {
                 collisions.push((h, i));
                 Self::maj_array(array_part, k, i);
             }
-            Entry::Vacant(e) => {
+        } else {
                 let i = items.len();
                 items.push((Valeur::Entier(k, None), Self::z_valeur_i64(v)));
-                e.insert(i);
+                index.inserer(h, i);
                 Self::maj_array(array_part, k, i);
-            }
         }
     }
 
@@ -2684,20 +2689,78 @@ impl Table {
         let Some(i) = self.trouver(cle) else { return false; };
         let mut rep = self.0.borrow_mut();
         rep.items.remove(i);
-        let a_retirer = rep.index.iter().find(|(_, p)| **p == i).map(|(h, _)| *h);
-        if let Some(h) = a_retirer { rep.index.remove(&h); }
-        for p in rep.index.values_mut() { if *p > i { *p -= 1; } }
-        rep.fallback.retain(|&x| x != i);
-        for x in rep.fallback.iter_mut() { if *x > i { *x -= 1; } }
-        rep.collisions.retain(|(_, p)| *p != i);
-        for (_, p) in rep.collisions.iter_mut() { if *p > i { *p -= 1; } }
-        let TableRep { items, array_part, .. } = &mut *rep;
+        rep.index.clear();
+        rep.collisions.clear();
+        rep.fallback.clear();
+        let TableRep { items, index, array_part, collisions, fallback } = &mut *rep;
         array_part.fill(0);
         for (j, (kk, _)) in items.iter().enumerate() {
-            if let Some(k) = Self::k_table(kk) { array_part[k] = (j + 1) as u32; }
+            if let Some(k) = Self::k_table(kk) {
+                array_part[k] = (j + 1) as u32;
+            } else if let Some(hh) = Self::h(kk) {
+                if index.occupe(hh) { collisions.push((hh, j)); }
+                else { index.inserer(hh, j); }
+            } else { fallback.push(j); }
         }
         true
     }
+}
+
+// ── Index plat à adressage ouvert (SPEED6) ──────────────────────────────
+// Un `HashMap<u64,usize>` occupe ~136 Kio pour 8192 buckets (octet de
+// contrôle + 16 octets d'entrée), avec des accès dispersés. Deux tableaux
+// contigus (h, pos+1) font 96 Kio et une seule sonde en moyenne. Le hachage
+// du hachage (`HashU64::write_u64`) disparaît ; les collisions de h restent
+// résolues par `valeur_egale` et la liste `collisions` inchangée.
+#[derive(Clone)]
+struct IndexRapide {
+    hs: Vec<u64>,
+    ps: Vec<u32>,
+    n: usize,
+}
+impl IndexRapide {
+    #[inline]
+    fn neuf(cap: usize) -> Self {
+        let cap = cap.max(16).next_power_of_two();
+        IndexRapide { hs: vec![0u64; cap], ps: vec![0u32; cap], n: 0 }
+    }
+    #[inline]
+    fn get(&self, h: u64) -> Option<usize> {
+        let m = self.hs.len() - 1;
+        let mut i = (h as usize) & m;
+        loop {
+            let p = self.ps[i];
+            if p == 0 { return None; }
+            if self.hs[i] == h { return Some((p - 1) as usize); }
+            i = (i + 1) & m;
+        }
+    }
+    #[inline]
+    fn occupe(&self, h: u64) -> bool { self.get(h).is_some() }
+    #[inline]
+    fn inserer(&mut self, h: u64, pos: usize) {
+        if (self.n + 1) * 10 >= self.hs.len() * 7 { self.grandir(); }
+        let m = self.hs.len() - 1;
+        let mut i = (h as usize) & m;
+        loop {
+            if self.ps[i] == 0 {
+                self.hs[i] = h; self.ps[i] = (pos + 1) as u32; self.n += 1; return;
+            }
+            i = (i + 1) & m;
+        }
+    }
+    fn grandir(&mut self) {
+        let old_h = std::mem::take(&mut self.hs);
+        let old_p = std::mem::take(&mut self.ps);
+        self.hs = vec![0u64; old_h.len() * 2];
+        self.ps = vec![0u32; old_h.len() * 2];
+        self.n = 0;
+        for j in 0..old_h.len() {
+            if old_p[j] != 0 { self.inserer(old_h[j], (old_p[j] - 1) as usize); }
+        }
+    }
+    #[inline]
+    fn clear(&mut self) { if self.n > 0 { self.ps.fill(0); self.n = 0; } }
 }
 
 // TableRep déplacé ici (layout des fonctions chaudes préservé).
@@ -2711,7 +2774,7 @@ pub struct TableRep {
     /// ne change RIEN à la sémantique (les collisions u64 sont résolues par
     /// égalité de clé) — seulement le coût du hacheur. `items`, `fallback` et
     /// `collisions` restent la source de vérité (T1 préservé).
-    index: HashMap<u64, usize, BuildHasherDefault<HashU64>>,
+    index: IndexRapide,
     /// positions des clés sans hachage canonique (repli linéaire).
     fallback: Vec<usize>,
     /// collisions de hachage : (h, position), normalement vide.
@@ -2743,6 +2806,7 @@ impl Table {
 /// `write_u64` est le seul chemin utilisé par `HashMap<u64, _>`. Le repli
 /// `write` (FNV-1a) couvre tout autre usage, sans jamais paniquer.
 #[derive(Default)]
+#[allow(dead_code)]
 struct HashU64(u64);
 impl std::hash::Hasher for HashU64 {
     #[inline]
