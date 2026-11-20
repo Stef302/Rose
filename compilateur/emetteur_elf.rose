@@ -85,6 +85,51 @@ fn g4_entier_ou_zero($s: chaine) -> entier {
   si ($neg == 1) { retour -$v }
   retour $v
 }
+
+# SH4 : formatage ROSE d'un rationnel RIR "a/b" au moment de l'émission.
+# Miroir de rose/src/run.rs::texte_rationnel (7/3 -> 2.[3], 5/2 -> 2.5,
+# 1/3 -> 0.[3], 22/7 -> 3.[142857]). L'ABI G5 n'a pas de rationnels : sans
+# ceci, `>> 7/3` (RIR `(f 7/3)`) donnait 0 au lieu de 2.[3] (mesuré).
+fn g4_ratio_texte($tok: chaine) -> chaine {
+  $p = g4_pos($tok, "/")
+  si ($p < 0) { retour $tok }
+  $a = entier(sous_chaine($tok, 0, $p))
+  $b = entier(sous_chaine($tok, $p + 1, longueur($tok)))
+  si ($b == 0) { retour "0" }
+  $neg = 0
+  si ($a < 0) { $neg = 1; $a = -$a }
+  $ent = $a div $b
+  $reste = $a - $ent * $b
+  $digits = ""
+  $restes = [0 : entier]
+  $positions = [0 : entier]
+  $peri = -1
+  tant_que ($reste != 0 et longueur($digits) < 200 et $peri < 0) {
+    $i = 0
+    tant_que ($i < longueur($restes) et $peri < 0) {
+      si ($restes[$i] == $reste) { $peri = $positions[$i] }
+      $i = $i + 1
+    }
+    si ($peri < 0) {
+      joindre($restes, $reste)
+      joindre($positions, longueur($digits))
+      $reste = $reste * 10
+      $chiffre = $reste div $b
+      $reste = $reste - $chiffre * $b
+      $digits = $digits + chaine($chiffre)
+    }
+  }
+  $out = chaine($ent)
+  si (longueur($digits) > 0) {
+    $out = $out + "."
+    $fin = longueur($digits)
+    si ($peri >= 0) { $fin = $peri }
+    $out = $out + sous_chaine($digits, 0, $fin)
+    si ($peri >= 0) { $out = $out + "[" + sous_chaine($digits, $peri, longueur($digits)) + "]" }
+  }
+  si ($neg == 1) { $out = "-" + $out }
+  retour $out
+}
 fn g4_trim($s: chaine) -> chaine {
   $r = $s
   $n = longueur($r)
@@ -139,10 +184,18 @@ $g5_fop = [0 : entier]
 $g5_fnop = [0 : entier]
 $g5_flbl = [0 : entier]
 $g5_fparam = [0 : entier]
+# SH4 : type de retour déclaré ("entier", "booleen", "vide", …), utilisé par
+# g5_est_bool pour afficher "vrai"/"faux" comme le fait l'interpréteur Rose
+# sans JIT (mesuré : ROSE_SANS_JIT=1 donne toujours vrai/faux, le JIT courant
+# affiche parfois 1/0 — bug de l'interpréteur, hors de ce fichier).
+$g5_fret = [0 : chaine]
 $g5_ops = [0 : chaine]
 $g5_oplbl = [0 : entier]
 $g5_endlbl = [0 : entier]
 $g5_err = [0 : chaine]
+# SH4 : slots ayant recu une expression booleenne, indexes "fonction|slot".
+# Table Rose native (l'emetteur s'execute dans rose/rose, pas dans l'ELF emis).
+$g5_sbool = table()
 
 fn g5_sub($s: chaine, $a: entier, $b: entier) -> chaine {
   si ($a < 0 ou $b < 0 ou $a > $b) {
@@ -532,6 +585,49 @@ fn g5_skip_expr($t: liste<chaine>, $p0: entier) -> entier {
   retour $p
 }
 
+# SH4 : une expression RIR produit-elle un BOOLÉEN Rose ?
+# L'ABI G5 represente les booleens comme des entiers tagues 0/8 ; le format
+# d'affichage ne peut donc pas etre choisi a l'execution. On le determine ici,
+# a l'emission, d'apres la FORME de l'expression (le compilateur Rose connait
+# le type statique des comparaisons, des litteraux `b` et des appels dont le
+# type de retour est `booleen`).
+fn g5_est_bool($t: liste<chaine>, $p: entier, $f: entier) -> entier {
+  si ($p < 0 ou $p + 1 >= longueur($t)) { retour 0 }
+  $clef = chaine($f) + "|"
+  # `slot N` : type memorise au moment de l'affectation.
+  si ($t[$p] == "slot") {
+    si (cle_existe($g5_sbool, $clef + $t[$p + 1])) { retour 1 }
+    retour 0
+  }
+  si ($t[$p] != "(") { retour 0 }
+  si ($p + 2 >= longueur($t)) { retour 0 }
+  $h = $t[$p + 1]
+  # `(v nom)` : resolu en slot puis memorise.
+  si ($h == "v") {
+    $sl = g5_slot_of($f, $t[$p + 2])
+    si ($sl >= 0 et cle_existe($g5_sbool, $clef + chaine($sl))) { retour 1 }
+    retour 0
+  }
+  si ($h == "b") { retour 1 }
+  si ($h == "non" ou $h == "uni") { retour 1 }
+  si ($h == "bin") {
+    $op = $t[$p + 2]
+    si ($op == "<" ou $op == "<=" ou $op == ">" ou $op == ">=" ou
+        $op == "==" ou $op == "!=" ou $op == "et" ou $op == "ou") { retour 1 }
+    retour 0
+  }
+  si ($h == "app") {
+    $nom = $t[$p + 2]
+    si ($nom == "cle_existe") { retour 1 }
+    $i = 0
+    tant_que ($i < longueur($g5_fn)) {
+      si ($g5_fn[$i] == $nom et $g5_fret[$i] == "booleen") { retour 1 }
+      $i = $i + 1
+    }
+  }
+  retour 0
+}
+
 fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
   si (longueur($g5_err) > 0) { retour -1 }
   $n = longueur($t)
@@ -882,7 +978,11 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
     $eq = g4_pos($a, "=")
     $sl = g4_entier_ou_zero(g5_sub($a, 0, $eq))
     $rhs = g4_trim(g5_sub($a, $eq + 1, longueur($a)))
-    g5_eval(g5_tokens($rhs), 0, 0, $f)
+    $trhs = g5_tokens($rhs)
+    g5_eval($trhs, 0, 0, $f)
+    si (g5_est_bool($trhs, 0, $f) == 1) {
+      inserer($g5_sbool, chaine($f) + "|" + chaine($sl), 1)
+    }
     g5_emit(stroff(0, 31, g5_slotoff($sl)))
     retour 0
   }
@@ -903,7 +1003,60 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
     retour 0
   }
   si ($head == "afficher" ou $head == "afficher_abstrait") {
+    # SH4 : `chaine($x)` ou `chaine(slot N)` avec $x un booléen doit rendre
+    # "vrai"/"faux" (natif : >> chaine(3<5) -> vrai). L'ABI G5 confond le
+    # booléen avec l'entier 0/1 ; on intercepte donc l'affichage direct.
+    si ($t[1] == "(" et $t[2] == "app" et $t[3] == "chaine" et
+        $t[4] == "(" et ($t[5] == "v" ou $t[5] == "slot")) {
+      $csl = -1
+      si ($t[5] == "slot") { $csl = g4_entier_ou_zero($t[6])
+      } sinon { $csl = g5_slot_of($f, $t[6]) }
+      si ($csl >= 0 et cle_existe($g5_sbool, chaine($f) + "|" + chaine($csl))) {
+        $lvrai = g5_next()
+        $lfaux2 = g5_next()
+        g5_emit(ldroff(0, 31, g5_slotoff($csl)))
+        g5_emit(cmpi(0, 0))
+        g5_branch(100, $lfaux2)
+        g5_make_str("vrai")
+        g5_branch(0, $lvrai)
+        g5_mark($lfaux2)
+        g5_make_str("faux")
+        g5_mark($lvrai)
+        g5_branch(1, $printl)
+        retour 0
+      }
+    }
+    # SH4 : un littéral flottant/rationnel affiché directement est sérialisé
+    # sous sa forme Rose exacte. g5_eval le tronquerait à 0 (ABI G5 = entiers
+    # seulement). Les flottants à valeur entière sont déjà sérialisés par le
+    # compilateur Rose comme `flottant 2` (sans point) et gardent leur voie.
+    $litt = ""
+    si ($t[1] == "flottant") { $litt = $t[2] }
+    si ($t[1] == "(" et $t[2] == "f") { $litt = $t[3] }
+    si (longueur($litt) > 0 et
+        (g4_pos($litt, ".") >= 0 ou g4_pos($litt, "/") >= 0)) {
+      g5_make_str(g4_ratio_texte($litt))
+      g5_branch(1, $printl)
+      retour 0
+    }
     g5_eval($t, 1, 0, $f)
+    si (g5_est_bool($t, 1, $f) == 1) {
+      # SH4 : l'interpréteur Rose (ROSE_SANS_JIT=1, référence sémantique)
+      # affiche "vrai"/"faux" pour TOUT booléen, y compris un littéral `b`.
+      # Le JIT courant affiche parfois 1/0 (bug hors de ce fichier) ; l'ELF
+      # n'a pas de JIT et doit suivre la sémantique, pas le bug.
+      # On convertit ici x0 en chaîne "vrai"/"faux" avant d'entrer dans
+      # g5_emit_print, qui reconnaît le tag 1 et écrit les octets.
+      $lfaux = g5_next()
+      $lfin = g5_next()
+      g5_emit(cmpi(0, 0))
+      g5_branch(100, $lfaux)
+      g5_make_str("vrai")
+      g5_branch(0, $lfin)
+      g5_mark($lfaux)
+      g5_make_str("faux")
+      g5_mark($lfin)
+    }
     g5_branch(1, $printl)
     retour 0
   }
@@ -920,12 +1073,14 @@ fn g5_parse($src: chaine) -> entier {
       $slot = 0
       $noms = ""
       $nparam = 0
+      $ret = "vide"
       $ops = [0 : chaine]
       $en_ops = 0
       $i = $i + 1
       tant_que ($i < longueur($ll) et g5_sub(g4_trim($ll[$i]), 0, 9) != "fonction ") {
         $u = g4_trim($ll[$i])
         si (g5_sub($u, 0, 6) == "param ") { $nparam = $nparam + 1
+        } sinon si (g5_sub($u, 0, 7) == "retour ") { $ret = g4_trim(g5_sub($u, 7, longueur($u)))
         } sinon si (g5_sub($u, 0, 8) == "n_slots ") { $slot = g4_entier_ou_zero(g5_sub($u, 8, longueur($u)))
         } sinon si (g5_sub($u, 0, 5) == "noms ") { $noms = g4_trim(g5_sub($u, 5, longueur($u)))
         } sinon si ($u == "ops") { $en_ops = 1
@@ -940,6 +1095,7 @@ fn g5_parse($src: chaine) -> entier {
       joindre($g5_flbl, g5_next())
       joindre($g5_endlbl, g5_next())
       joindre($g5_fparam, $nparam)
+      joindre($g5_fret, $ret)
       $j = 0
       tant_que ($j < longueur($ops)) { joindre($g5_ops, $ops[$j]); joindre($g5_oplbl, g5_next()); $j = $j + 1 }
     } sinon { $i = $i + 1 }
@@ -1557,10 +1713,18 @@ fn g5_emit_table($lbl: entier) -> entier {
   retour 0
 }
 
-# cle_existe(table, cle) -> booleen tague. Compare le CONTENU des chaines.
+# cle_existe(table, cle) -> booleen tague.
+# SH4 : une cle entiere (tag 0) faisait masquer x1 en pointeur NUL puis
+# appeler streq -> SIGSEGV (mesure : `inserer(t,1,10); cle_existe(t,1)`).
+# On dispatchte desormais sur le tag : chaine -> comparaison de CONTENU,
+# entier/booleen -> comparaison des VALEURS TAGUEES.
 fn g5_emit_clex($lbl: entier) -> entier {
   g5_mark($lbl)
   g5_emit(orrr(11, 31, 30))       # x11 = LR (streq ecrase x30)
+  g5_emit(g5_tagbits(2, 1))       # x2 = tag de la cle
+  g5_emit(cmpi(2, 1))
+  g5_branch(101, $lbl + 4)        # b.ne : pas une chaine -> comparaison de valeur
+  # ── cle chaine : comparaison de contenu (chemin historique) ──
   g5_emit(g5_masktag(12, 0))      # x12 = table (liste de cles)
   g5_emit(g5_masktag(13, 1))      # x13 = cle (chaine)
   g5_emit(ldroff(14, 12, 8))      # x14 = len
@@ -1581,6 +1745,22 @@ fn g5_emit_clex($lbl: entier) -> entier {
   g5_load(0, 8)                   # vrai
   g5_emit(orrr(30, 31, 11))
   g5_emit(RET_I())
+  # ── cle entiere/booleenne : comparaison des valeurs taguees ──
+  g5_mark($lbl + 4)
+  g5_emit(orrr(3, 31, 1))         # x3 = cle taguee (entier : n<<3)
+  g5_emit(g5_masktag(12, 0))
+  g5_emit(ldroff(14, 12, 8))
+  g5_emit(ldroff(8, 12, 24))
+  g5_emit(movz(15, 0))
+  g5_mark($lbl + 5)
+  g5_emit(cmpr(15, 14))
+  g5_branch(110, $lbl + 2)        # absent
+  g5_emit(addr(9, 15, 15)); g5_emit(addr(9, 9, 9)); g5_emit(addr(9, 9, 9))
+  g5_emit(addr(1, 8, 9)); g5_emit(ldroff(0, 1, 0))
+  g5_emit(cmpr(0, 3))
+  g5_branch(100, $lbl + 3)        # trouve -> vrai
+  g5_emit(addi(15, 15, 1))
+  g5_branch(0, $lbl + 5)
   g5_mark($lbl + 2)
   g5_emit(movz(0, 0))             # faux
   g5_emit(orrr(30, 31, 11))
@@ -1915,10 +2095,11 @@ tant_que ($k < 3) { g5_next(); $k = $k + 1 }
 $g5_stub0l = g5_next()
 $g5_stubsl = g5_next()
 # SH3 : table() / cle_existe() — vraies routines (plus des stubs).
+# SH4 : cle_existe utilise desormais les labels +4 et +5 (cles entieres).
 $g5_tablel = g5_next()
 $g5_clexl = g5_next()
 $k = 0
-tant_que ($k < 4) { g5_next(); $k = $k + 1 }
+tant_que ($k < 7) { g5_next(); $k = $k + 1 }
 # G5-IO : réservation des labels des routines syscalls (4 internes chacune).
 $g5_nbargs_l = g5_next()
 $k = 0
