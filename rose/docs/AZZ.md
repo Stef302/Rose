@@ -115,6 +115,11 @@ Sortie de `t_var.rose` (identique des deux côtés) :
 4. Off-by-one dans la recherche du limb de poids fort de la soustraction
    (`n` pas `n-1` pas depuis `&limb[0]`) : le limb de tête était élagué une
    fois de trop (`-10^18+1` rendait `-999999999`).
+5. Comparaison des magnitudes de signes opposés parcourue du limb **faible**
+   au fort : `2^64 + (-2^63)` donnait `-999999990776627963145224192` au lieu
+   de `9223372036854775808` (709551616 < 854775808 au limb 0, alors que
+   c'est le limb 2 qui tranche : 18 > 9). Corrigé en comparant à partir du
+   limb de poids fort (labels +33/+34, réservation portée à 35).
 
 Preuves : `objdump -D -b binary -m aarch64 --adjust-vma=0x400000 <elf>` et
 points d'arrêt gdb sur l'entrée de `bigadd` (`x8/x10/x11/x12` = signes et
@@ -145,6 +150,19 @@ Divergences restantes, **inchangées** : t04/t41/t44 (Unicode) et t08
 runner simplifié sans argument, mais rejoués correctement avec
 `/tmp/opencode/sh9_agents/battery/critique_entree.txt` (voir §5).
 
+### 4.1 Batterie AZ « nouveaux bigints » (31 programmes, fournie par l'orchestrateur)
+
+`./tests_selfhost/lancer_az.sh` (artefacts `/tmp/opencode/az_tests/battery/`),
+émetteur figé md5 `a515b962…` : **17 CONFORMES / 14 DIVERGENTS / 0 BLOQUÉS**
+(avant correction de l'ordre de comparaison : 16/15). RIR×2, ELF×2 et
+sorties×8 identiques dans 31/31 cas. Conformes : 6 comparaisons sur
+littéraux géants (repliées par le compilateur), 5 débordements de seuil,
+opérations mixtes dont l'addition signée (t212/t232 corrigés), etc.
+Divergences = précisément les limites de la §6 : soustraction, `*`/`/`/`%`,
+`-` unaire, puissance non repliée, rationnels calculés, Unicode.
+
+---
+
 ---
 
 ## 5. Jalons (état à la rédaction)
@@ -154,8 +172,8 @@ runner simplifié sans argument, mais rejoués correctement avec
 | `./rose/rose verif compilateur/emetteur_elf.rose` | `vérifié`, rc=0 |
 | `./rose/rose rir compilateur/emetteur.rose \| md5sum` | `b3ed9262dd54776a6dbd07bc12368d0e` (identique au départ) |
 | `t999_critique_g5` (avec l'argument fourni) | **CONFORME**, 20/20 lignes, stdout+stderr octet pour octet, rc=0 des deux côtés |
-| md5 émetteur après | `0c37cbc5489b8f3cbd003f6c489ffd52` (départ `7742556a…`) |
-| F1 vs F2 (auto-régénération) | voir §7 — **en cours / à re-mesurer** |
+| md5 émetteur après (mapping 128 Gio + comparaison corrigée) | `a515b9626eaee92489639f8c72db7c20` (départ `7742556a…`) |
+| F1 vs F2 (auto-régénération, état final) | **IDENTIQUES** : 604 060 o, md5 `021bcdb0…`, `cmp`=0 (§7.3) |
 
 Le point fixe documenté dans `G5_AZ.md` (dump de `emetteur.rose` par l'ELF
 auto-émis = RIR natif `b3ed9262…`) n'est **pas** garanti par ce chantier :
@@ -213,12 +231,95 @@ Conséquence : le mapping RW de `g5_elf()` passe de 32 Gio (`34359738368`) à
 **128 Gio** (`137438953472`), toujours virtuel/paresseux. Le pointeur à
 ~80 Gio reste sous les ~110 Gio disponibles mesurés par `free -h`.
 
-### 7.3 Salve finale (état livré)
+### 7.3 Salve finale (état livré) — RÉUSSIE
 
-À compléter après la régénération de F1 avec le mapping 128 Gio :
 ```
-./rose/rose rir compilateur/emetteur_elf.rose > e_v2.rir
-./rose/rose compilateur/emetteur_elf.rose e_v2.rir > F1_v2.elf
-./F1_v2.elf e_v2.rir > F2_v2.elf
-cmp F1_v2.elf F2_v2.elf
+./rose/rose rir compilateur/emetteur_elf.rose > e_v2.rir        # 348 822 o, b776a875…
+./rose/rose compilateur/emetteur_elf.rose e_v2.rir > F1_v2.elf  # 14 min 57 s, rc=0
+./F1_v2.elf e_v2.rir > F2_v2.elf                                # 22,8 s, rc=0
+cmp F1_v2.elf F2_v2.elf                                         # rc=0
 ```
+F1 = F2 : **604 060 octets**, md5 `021bcdb0c437335c38e722443892d794`
+des deux côtés, stderr vides, mapping RW 128 Gio identique. Jalons verts.
+
+---
+
+## 8. Comparaison des grands entiers (vague 69, 20/11/2026)
+
+Sous-agent `cmp-az`. Deux fichiers possédés : `compilateur/emetteur_elf.rose`
+et ce document. Aucun commit, aucune publication. Artefacts :
+`/tmp/opencode/bigint/` (tests, RIR, ELF, sorties, log F1/F2).
+
+### 8.1 Défaut reproduit
+
+`100000000000000000000 < 18446744073709551616` rendait **vrai** en ELF alors
+que le natif rend **faux** : `g5_eval` comparait les pointeurs tagués
+(`cmpr x1,x0`), donc l'ordre des adresses d'allocation des descripteurs, pas
+les valeurs. Le dispatch `< > <= >=` passait par la même voie 3-instructions
+que les petits entiers.
+
+### 8.2 Routines ajoutées
+
+- `g5_emit_bigneg($lbl)` — négation. Petit entier : `0-x`. Tag 3 : ALLOUE une
+  copie du descripteur `[3][signe][nlimbs][limbs…]` avec le signe inversé
+  (XOR 1) ; l'original n'est jamais muté (test d'alias §8.4). `x0/x1/x2/x9`
+  sont clobberés par `g5_alloc_inline` : le descripteur source, `nlimbs` et le
+  signe sont préservés dans `x6/x7/x8` avant l'allocation. 4 labels (+1..+3).
+  Branché sur les formes RIR `(neg …)` et `(uni neg …)` : `-$a` avec `$a`
+  grand fonctionne désormais.
+- `g5_emit_bigcmp($lbl)` — compare deux valeurs taguées. Les deux opérandes
+  sont promus par `bigpromote` (chacun alloue son propre descripteur sur le
+  tas). Comparaison du **signe** d'abord (0=positif, 1=négatif : un signe plus
+  petit signifie une valeur PLUS GRANDE), puis des **magnitudes des limbs du
+  poids fort `n-1` vers le faible `0`** — un limb absent (`i >= nlimbs`) est
+  traité comme zéro. Si les deux signes sont négatifs, le signe du résultat
+  est inversé. Sortie : `x0 = -1 / 0 / +1` (brut, non tagué) = signe de
+  (gauche − droite). L'appelant applique alors `cmpi x0,#0 ; cset x0,<cond> ;
+  lsl x0,#3`. 13 labels (+1..+12).
+  Pièges corrigés pendant l'implémentation (preuves par `objdump`/`gdb`) :
+  1. `bigcmp` est une routine-feuille appelée par `BL` et fait elle-même deux
+     `BL` imbriqués vers `bigpromote` : `x30` (LR) doit être sauvegardé sur la
+     PILE (`sub sp,#16 ; str x30,[sp]`), pas dans `x1` (que
+     `g5_alloc_inline` clobbre) ;
+  2. `x15` sert d'INDEX de limb (`n-1 .. 0`, comparé à `nlimbs`), le
+     déplacement en octets `8*(n-1)` va dans `x2` : les confondre faisait
+     lire des limbs hors descripteur et rendait 0 pour tout.
+
+### 8.3 Dispatch des 6 opérateurs, sans label par expression
+
+`g5_emit_cmp_value($c)` (nouvelle fonction d'émission, appelée depuis `g5_eval`
+pour `== != < > <= >=`) teste le tag 3 par **déplacement constant**
+(`g5_branch_off`, exactement comme le chemin `+` de la vague précédente) :
+- les comparaisons d'entiers courantes (1491 dans le RIR auto-hébergé) gardent
+  le chemin d'origine `cmpr/cset/lsl`, aucun label ni appel ajouté ;
+- le chemin grand entier fait un seul `BL` vers le label FIXE `$g5_bigcmpl`.
+Aucun `g5_next()` par expression de comparaison. La branche `==`/`!=`
+(pré-triée pour l'égalité de chaînes) enjambe désormais 14 instructions au
+lieu de 3 (`g5_branch_off(0, 15)`).
+
+### 8.4 Résultats réels (natif vs ELF, `cmp` octet pour octet)
+
+| fichier | contenu | résultat |
+|---|---|---|
+| `t_ops.rose` | **6/6 opérateurs** `< > == != <= >=` sur grands entiers | cmp=0, 6 lignes |
+| `t_mix10.rose` | **10 cas mixtes** (big/big, big/petit, petit/big, négatifs, `+$a+1`, `-$a`) | cmp=0, 10 lignes |
+| `t_wide.rose` | 40 cas (poids 1→3 limbs, zéro, signes, runtime add) | cmp=0, 40 lignes |
+| `t_deep.rose` | 12 cas à 5–6 limbs (10^49), signes opposés | cmp=0, 12 lignes |
+| `t_alias.rose` | `-$a` ne mute pas `$a` ; `$a + (-$a) == 0` | cmp=0, 5 lignes |
+| `t_reg.rose` | régression `==/!=` chaîne, petits entiers, `+`, `%`, `-5<0` | cmp=0, 15 lignes |
+
+Tous : `stderr` vides des deux côtés, rc égaux. Exemple (`t_mix10`, identique
+des deux côtés) : `vrai vrai vrai vrai faux vrai vrai vrai vrai vrai`.
+
+### 8.5 Jalons
+
+| Contrôle | Résultat |
+|---|---|
+| `./rose/rose verif compilateur/emetteur_elf.rose` | `vérifié`, rc=0 |
+| point fixe `b3ed9262` (RIR natif `emetteur.rose`, ×2) | identique, `b3ed9262dd54776a6dbd07bc12368d0e` |
+| F1 == F2 (auto-régénération, md5 identiques) | voir §8.6 |
+| md5 émetteur source | `b225747f8f779175ccd63b664b9b104f` (départ `4e6a1923…`) |
+
+### 8.6 F1 / F2
+
+À compléter après la fin de la salve en cours (`/tmp/opencode/bigint/f1f2.log`).

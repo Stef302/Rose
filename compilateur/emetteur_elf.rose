@@ -416,6 +416,8 @@ $g5_grainel = 0
 # (descripteurs [3][signe][nlimbs][limbs base 10^9]).
 $g5_bigprol = 0
 $g5_bigaddl = 0
+$g5_bignegl = 0
+$g5_bigcmpl = 0
 
 # ── G5-IO : primitives d'entrée/sortie par syscalls Linux aarch64 ──
 # Ces routines sont ÉMISES dans l'ELF (elles ne s'exécutent pas dans Rose) :
@@ -824,6 +826,24 @@ fn g5_cond($op: chaine) -> entier {
   si ($op == "<=") { retour 13 }
   retour -1
 }
+# Comparaison de VALEUR (après l'éventuel test de chaîne pour ==/!=).
+# x1 = gauche taguée, x0 = droite taguée ; x0 = booléen tagué (0/8) en sortie.
+# Un saut à déplacement CONSTANT teste le tag 3 : les comparaisons d'entiers
+# courants (1491 dans le RIR auto-hébergé) gardent le chemin 3-instructions
+# d'origine, sans label ni appel supplémentaire. Le chemin grand entier
+# appelle la routine g5_emit_bigcmp une seule fois (label fixe, pas par expr.).
+fn g5_emit_cmp_value($c: entier) -> entier {
+  g5_emit(g5_tagbits(2, 1))
+  g5_emit(cmpi(2, 3)); g5_branch_off(100, 8)
+  g5_emit(g5_tagbits(2, 0))
+  g5_emit(cmpi(2, 3)); g5_branch_off(100, 5)
+  g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
+  g5_branch_off(0, 5)
+  g5_branch(1, $g5_bigcmpl)
+  g5_emit(cmpi(0, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
+  retour 0
+}
+
 fn g5_func_id($nom: chaine) -> entier {
   $i = 0
   tant_que ($i < longueur($g5_fn)) {
@@ -1057,8 +1077,11 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(orrr(2, 31, 0)); g5_emit(orrr(0, 31, 1)); g5_emit(orrr(1, 31, 2))
         g5_branch(1, $g5_streql)
         si ($op == "!=") { g5_load(2, 8); g5_emit(eorr(0, 0, 2)) }
-        g5_branch_off(0, 4)
-        g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
+        # Le bloc de comparaison de valeur passe de 3 à 14 instructions
+        # (test de tag + chemin big) : le saut de retour de l'égalité de
+        # chaînes doit donc l'enjamber (4 + 11 = 15).
+        g5_branch_off(0, 15)
+        g5_emit_cmp_value($c)
       } sinon si ($op == "+") {
         # G5-BIG : si l'un des opérandes porte le tag 3, on promeut l'autre
         # et on dispatch vers l'addition multi-limbes. Les deux opérandes
@@ -1087,7 +1110,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(orrr(1, 31, 4)); g5_emit(orrr(0, 31, 5))
         g5_branch(1, $g5_bigaddl)
       } sinon si ($c >= 0) {
-        g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
+        g5_emit_cmp_value($c)
       } sinon si ($op == "-") { g5_emit(subr(0, 1, 0))
       } sinon si ($op == "*") { g5_emit(mulr(0, 1, 0)); g5_emit(g5_lsr3(0, 0))
       } sinon si ($op == "/" ou $op == "//" ou $op == "div") {
@@ -1233,7 +1256,9 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     si ($head == "neg") {
       $p = g5_eval($t, $pos + 2, $d + 1, $f)
       si ($p < 0) { retour -1 }
-      g5_emit(subr(0, 31, 0))
+      # G5-BIG : 0-x pour un petit entier, copie à signe inversé pour un
+      # descripteur tag 3 (nécessaire pour -$a où $a est un grand entier).
+      g5_branch(1, $g5_bignegl)
       retour $p + 1
     }
     si ($head == "b") {
@@ -1259,7 +1284,7 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       $p = g5_eval($t, $pos + 3, $d + 1, $f)
       si ($p < 0) { retour -1 }
       si ($t[$pos + 2] == "non") { g5_emit(cmpi(0, 0)); g5_emit(cset(0, 0)); g5_emit(g5_lsl3(0, 0))
-      } sinon si ($t[$pos + 2] == "neg" ou $t[$pos + 2] == "-") { g5_emit(subr(0, 31, 0))
+      } sinon si ($t[$pos + 2] == "neg" ou $t[$pos + 2] == "-") { g5_branch(1, $g5_bignegl)
       } sinon { retour g5_fail("unaire non couvert : " + $t[$pos + 2]) }
       retour $p + 1
     }
@@ -2852,15 +2877,24 @@ fn g5_emit_bigadd($lbl: entier) -> entier {
   g5_emit(orrr(0, 31, 4)); g5_emit(orrr(1, 31, 5))
   g5_branch(0, $lbl + 21)
   g5_mark($lbl + 15)
-  g5_emit(addi(0, 6, 24)); g5_emit(addi(1, 7, 24)); g5_emit(movz(3, 0))
+  # Comparer par le limb DE POIDS FORT : le premier écart décroissant est
+  # le bon. (Une comparaison du limb faible au fort donnait 2^64 < 2^63,
+  # car 709551616 < 854775808 — mesuré sur t212/t232.)
+  g5_emit(addi(0, 6, 24)); g5_emit(addi(1, 7, 24)); g5_emit(movz(10, 1))
+  g5_mark($lbl + 33)
+  g5_emit(cmpr(10, 11)); g5_branch(110, $lbl + 34)
+  g5_emit(addi(0, 0, 8)); g5_emit(addi(1, 1, 8)); g5_emit(addi(10, 10, 1))
+  g5_branch(0, $lbl + 33)
+  g5_mark($lbl + 34)
+  g5_emit(orrr(3, 31, 11))
   g5_mark($lbl + 16)
-  g5_emit(cmpr(3, 11)); g5_branch(110, $lbl + 20)
+  g5_emit(cmpi(3, 0)); g5_branch(100, $lbl + 20)   # tous égaux
   g5_emit(ldroff(9, 0, 0)); g5_emit(ldroff(10, 1, 0))
   g5_emit(cmpr(9, 10)); g5_branch(100, $lbl + 17)
   g5_branch(111, $lbl + 18)              # a < b -> B dominant
   g5_branch(0, $lbl + 19)                # a > b -> A dominant
   g5_mark($lbl + 17)
-  g5_emit(addi(0, 0, 8)); g5_emit(addi(1, 1, 8)); g5_emit(addi(3, 3, 1))
+  g5_emit(subi(0, 0, 8)); g5_emit(subi(1, 1, 8)); g5_emit(subi(3, 3, 1))
   g5_branch(0, $lbl + 16)
   g5_mark($lbl + 18); g5_branch(0, $lbl + 13)
   g5_mark($lbl + 19); g5_branch(0, $lbl + 14)
@@ -2907,6 +2941,106 @@ fn g5_emit_bigadd($lbl: entier) -> entier {
   g5_mark($lbl + 32)
   g5_emit(stroff(13, 14, 16))
   g5_emit(g5_tag1(0, 14)); g5_emit(g5_tag2(0, 0)); g5_emit(RET_I())
+  retour 0
+}
+
+# ── G5-BIG : négation d'un grand entier ──
+# x0 = valeur taguée en entrée et sortie. Petit entier : 0-x suffit (n<<3).
+# Grand : on ALLOUE une copie du descripteur [3][signe][nlimbs][limbs…] avec
+# le signe inversé (0<->1) — jamais de mutation de l'original (alias).
+# x0/x1/x2/x9 sont clobberés par g5_alloc_inline : on préserve dans x6/x7/x8.
+# Labels internes : +1 (copie des limbs), +2 (fin), +3 (voie petit entier).
+fn g5_emit_bigneg($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_tagbits(2, 0))
+  g5_emit(cmpi(2, 3)); g5_branch(101, $lbl + 3)    # pas tag 3 -> 0-x
+  g5_emit(g5_masktag(6, 0))                       # x6 = descripteur source
+  g5_emit(ldroff(7, 6, 16))                       # x7 = nlimbs
+  g5_emit(ldroff(8, 6, 8))                        # x8 = signe
+  g5_emit(addi(4, 7, 1)); g5_emit(movz(2, 8)); g5_emit(mulr(4, 4, 2))
+  g5_emit(addi(0, 4, 24))
+  g5_alloc_inline()                               # x0 = nouveau descripteur
+  g5_emit(orrr(10, 31, 0))                        # x10 = destination
+  g5_emit(movz(1, 3)); g5_emit(stroff(1, 10, 0))
+  g5_emit(movz(11, 1)); g5_emit(eorr(1, 8, 11)); g5_emit(stroff(1, 10, 8))
+  g5_emit(stroff(7, 10, 16))
+  g5_emit(addi(3, 6, 24)); g5_emit(addi(4, 10, 24)); g5_emit(movz(5, 0))
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(5, 7)); g5_branch(110, $lbl + 2)
+  g5_emit(ldroff(1, 3, 0)); g5_emit(stroff(1, 4, 0))
+  g5_emit(addi(3, 3, 8)); g5_emit(addi(4, 4, 8)); g5_emit(addi(5, 5, 1))
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(g5_tag1(0, 10)); g5_emit(g5_tag2(0, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 3)
+  g5_emit(subr(0, 31, 0)); g5_emit(RET_I())
+  retour 0
+}
+
+# ── G5-BIG : comparaison signée de deux grands entiers ──
+# x1 = gauche, x0 = droite (tagués en entrée). Les deux sont promus :
+# bigpromote alloue un descripteur sur le tas pour chacun (le scratch à
+# 0x60005000 n'est utilisé que transitoirement), x4/x5 préservés.
+# Sortie : x0 = signe de (gauche - droite), VALEUR BRUTE -1/0/+1 (non taguée).
+# L'appelant applique ensuite `cmpi x0,#0 ; cset x0,<cond> ; lsl x0,#3`.
+# Comparaison : signe d'abord (0=positif,1=négatif : signe$A<signe$B => A>B),
+# puis magnitudes des limbs du POIDS FORT (n-1) vers le faible (0), en
+# traitant les limbs absents (i>=nlimbs) comme zéro.
+# Labels internes : +1 magnitudes, +2/+3 signes divergents, +4 boucle,
+# +5/+6 limb A nul/pas nul, +7/+8 limb B, +9 limb égal, +10 a<b, +11 fin,
+# +12 signes négatifs (inversion du résultat).
+fn g5_emit_bigcmp($lbl: entier) -> entier {
+  g5_mark($lbl)
+  # Routine-feuille appelée par BL : x30 doit survivre aux DEUX appels BL
+  # imbriqués vers bigpromote. bigpromote écrase x0/x1/x2/x3/x6..x10 (son
+  # g5_alloc_inline clobbre x1), donc on pose LR sur la PILE, pas en registre.
+  g5_emit(subi(31, 31, 16)); g5_emit(stroff(30, 31, 0))
+  g5_emit(orrr(4, 31, 1)); g5_emit(orrr(5, 31, 0))
+  g5_emit(orrr(0, 31, 5)); g5_branch(1, $g5_bigprol); g5_emit(orrr(5, 31, 0))
+  g5_emit(orrr(0, 31, 4)); g5_branch(1, $g5_bigprol); g5_emit(orrr(4, 31, 0))
+  g5_emit(g5_masktag(6, 4)); g5_emit(g5_masktag(7, 5))
+  g5_emit(ldroff(8, 6, 8)); g5_emit(ldroff(9, 7, 8))       # signes
+  g5_emit(ldroff(10, 6, 16)); g5_emit(ldroff(11, 7, 16))   # effectifs
+  g5_emit(cmpr(8, 9))
+  g5_branch(100, $lbl + 1)               # même signe -> magnitudes
+  g5_branch(111, $lbl + 2)               # signeA < signeB -> A > B -> +1
+  g5_load(0, -1); g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, 16)); g5_emit(RET_I())  # signeA > signeB -> -1
+  g5_mark($lbl + 2)
+  g5_emit(movz(0, 1)); g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, 16)); g5_emit(RET_I())
+  g5_mark($lbl + 1)
+  g5_emit(orrr(12, 31, 10))
+  g5_emit(cmpr(10, 11)); g5_branch(110, $lbl + 3)
+  g5_emit(orrr(12, 31, 11))
+  g5_mark($lbl + 3)
+  # x13/x14 = &limb[n-1] (base + 24 + 8*(n-1)), x15 = INDEX i (n-1..0).
+  # Ne PAS confondre l'index (comparé à nlimbs) et le déplacement en octets !
+  g5_emit(subi(15, 12, 1))                       # x15 = n-1 (index)
+  g5_emit(movz(2, 8)); g5_emit(mulr(2, 15, 2))   # x2 = 8*(n-1) (octets)
+  g5_emit(addi(13, 6, 24)); g5_emit(addr(13, 13, 2))
+  g5_emit(addi(14, 7, 24)); g5_emit(addr(14, 14, 2))
+  g5_emit(movz(0, 0))
+  g5_mark($lbl + 4)
+  g5_emit(cmpi(15, 0)); g5_branch(111, $lbl + 11)          # i < 0 -> fin
+  g5_emit(cmpr(15, 10)); g5_branch(110, $lbl + 5)
+  g5_emit(ldroff(2, 13, 0)); g5_branch(0, $lbl + 6)
+  g5_mark($lbl + 5); g5_emit(movz(2, 0))
+  g5_mark($lbl + 6)
+  g5_emit(cmpr(15, 11)); g5_branch(110, $lbl + 7)
+  g5_emit(ldroff(3, 14, 0)); g5_branch(0, $lbl + 8)
+  g5_mark($lbl + 7); g5_emit(movz(3, 0))
+  g5_mark($lbl + 8)
+  g5_emit(cmpr(2, 3)); g5_branch(100, $lbl + 9)            # limbs égaux
+  g5_branch(111, $lbl + 10)                               # a < b -> -1
+  g5_emit(movz(0, 1)); g5_branch(0, $lbl + 11)             # a > b -> +1
+  g5_mark($lbl + 10); g5_load(0, -1); g5_branch(0, $lbl + 11)
+  g5_mark($lbl + 9)
+  g5_emit(subi(13, 13, 8)); g5_emit(subi(14, 14, 8)); g5_emit(subi(15, 15, 1))
+  g5_branch(0, $lbl + 4)
+  g5_mark($lbl + 11)
+  g5_emit(cmpi(8, 0)); g5_branch(101, $lbl + 12)          # négatifs -> inverser
+  g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, 16)); g5_emit(RET_I())
+  g5_mark($lbl + 12)
+  g5_emit(subr(0, 31, 0)); g5_emit(ldroff(30, 31, 0)); g5_emit(addi(31, 31, 16)); g5_emit(RET_I())
   retour 0
 }
 
@@ -3349,11 +3483,16 @@ $k = 0; tant_que ($k < 2) { g5_next(); $k = $k + 1 }
 $g5_hasardl = g5_next()
 $k = 0; tant_que ($k < 2) { g5_next(); $k = $k + 1 }
 $g5_grainel = g5_next()
-# G5-BIG : 6 labels internes pour la promotion, 33 pour l'addition signée.
+# G5-BIG : 6 labels internes pour la promotion, 33 pour l'addition signée,
+# 3 pour la négation, 12 pour la comparaison.
 $g5_bigprol = g5_next()
 $k = 0; tant_que ($k < 6) { g5_next(); $k = $k + 1 }
 $g5_bigaddl = g5_next()
-$k = 0; tant_que ($k < 33) { g5_next(); $k = $k + 1 }
+$k = 0; tant_que ($k < 35) { g5_next(); $k = $k + 1 }
+$g5_bignegl = g5_next()
+$k = 0; tant_que ($k < 3) { g5_next(); $k = $k + 1 }
+$g5_bigcmpl = g5_next()
+$k = 0; tant_que ($k < 12) { g5_next(); $k = $k + 1 }
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
 tant_que ($i < $nfn) {
@@ -3388,6 +3527,8 @@ g5_emit_hasard($g5_hasardl)
 g5_emit_graine($g5_grainel)
 g5_emit_bigpromote($g5_bigprol)
 g5_emit_bigadd($g5_bigaddl)
+g5_emit_bigneg($g5_bignegl)
+g5_emit_bigcmp($g5_bigcmpl)
 g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
