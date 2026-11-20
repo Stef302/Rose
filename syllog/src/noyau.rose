@@ -32,20 +32,20 @@
 # ─────────────────── 1. Constructeurs et accès défensif ───────────────────
 
 fn noy_absent() -> table {
-  $t = table()
-  inserer($t, "genre", "_absent")
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "_absent")
+  retour $nx_t
 }
 
 fn noy_genre(t: table) -> chaine {
-  $g = ""
+  $nx_g = ""
   si (type(t) == "table") {
     si (cle_existe(t, "genre")) {
-      $x = t["genre"]
-      si (type($x) == "chaine") { $g = $x }
+      $nx_x = t["genre"]
+      si (type($nx_x) == "chaine") { $nx_g = $nx_x }
     }
   }
-  retour $g
+  retour $nx_g
 }
 
 fn noy_est_absent(t: table) -> booleen {
@@ -53,360 +53,360 @@ fn noy_est_absent(t: table) -> booleen {
 }
 
 fn noy_nom(t: table) -> chaine {
-  $v = ""
+  $nx_v = ""
   si (type(t) == "table") {
     si (cle_existe(t, "nom")) {
-      $x = t["nom"]
-      si (type($x) == "chaine") { $v = $x }
+      $nx_x = t["nom"]
+      si (type($nx_x) == "chaine") { $nx_v = $nx_x }
     }
   }
-  retour $v
+  retour $nx_v
 }
 
 fn noy_niveau(t: table) -> entier {
-  $v = -1
+  $nx_v = -1
   si (type(t) == "table") {
     si (cle_existe(t, "niveau")) {
-      $x = t["niveau"]
-      si (type($x) == "entier") { $v = $x }
+      $nx_x = t["niveau"]
+      si (type($nx_x) == "entier") { $nx_v = $nx_x }
     }
   }
-  retour $v
+  retour $nx_v
 }
 
 # Lecture d'un champ-table : jamais d'erreur « clé absente ».
 fn noy_champ(t: table, cle: chaine) -> table {
-  $r = noy_absent()
+  $nx_r = noy_absent()
   si (type(t) == "table") {
-    si (cle_existe(t, cle)) { $r = t[cle] }
+    si (cle_existe(t, cle)) { $nx_r = t[cle] }
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_champ_liste(t: table, cle: chaine) -> liste<table> {
-  $r = [table()]
+  $nx_r = [table()]
   si (type(t) == "table") {
     si (cle_existe(t, cle)) {
-      $x = t[cle]
-      si (type($x) == "liste") { $r = $x }
+      $nx_x = t[cle]
+      si (type($nx_x) == "liste") { $nx_r = $nx_x }
     }
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_corps(t: table) -> table {
-  $g = noy_genre(t)
-  si ($g == "pi") { retour noy_champ(t, "codomaine") }
-  si ($g == "lam") { retour noy_champ(t, "corps") }
+  $nx_g = noy_genre(t)
+  si ($nx_g == "pi") { retour noy_champ(t, "codomaine") }
+  si ($nx_g == "lam") { retour noy_champ(t, "corps") }
   retour noy_absent()
 }
 
 fn noy_var(n: chaine) -> table {
-  $t = table()
-  inserer($t, "genre", "var")
-  inserer($t, "nom", n)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "var")
+  inserer($nx_t, "nom", n)
+  retour $nx_t
 }
 
 fn noy_type(n: entier) -> table {
-  $t = table()
-  inserer($t, "genre", "type")
-  inserer($t, "niveau", n)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "type")
+  inserer($nx_t, "niveau", n)
+  retour $nx_t
 }
 
 fn noy_pi(n: chaine, d: table, c: table) -> table {
-  $t = table()
-  inserer($t, "genre", "pi")
-  inserer($t, "nom", n)
-  inserer($t, "domaine", d)
-  inserer($t, "codomaine", c)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "pi")
+  inserer($nx_t, "nom", n)
+  inserer($nx_t, "domaine", d)
+  inserer($nx_t, "codomaine", c)
+  retour $nx_t
 }
 
 fn noy_lam(n: chaine, d: table, c: table) -> table {
-  $t = table()
-  inserer($t, "genre", "lam")
-  inserer($t, "nom", n)
-  inserer($t, "domaine", d)
-  inserer($t, "corps", c)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "lam")
+  inserer($nx_t, "nom", n)
+  inserer($nx_t, "domaine", d)
+  inserer($nx_t, "corps", c)
+  retour $nx_t
 }
 
 fn noy_app(f: table, a: table) -> table {
-  $t = table()
-  inserer($t, "genre", "app")
-  inserer($t, "fonction", f)
-  inserer($t, "argument", a)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "app")
+  inserer($nx_t, "fonction", f)
+  inserer($nx_t, "argument", a)
+  retour $nx_t
 }
 
 fn noy_const(n: chaine, ty: table) -> table {
-  $t = table()
-  inserer($t, "genre", "const")
-  inserer($t, "nom", n)
-  inserer($t, "type", ty)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "const")
+  inserer($nx_t, "nom", n)
+  inserer($nx_t, "type", ty)
+  retour $nx_t
 }
 
 fn noy_constructeur(n: chaine, ty: table) -> table {
-  $t = table()
-  inserer($t, "genre", "constructeur")
-  inserer($t, "nom", n)
-  inserer($t, "type", ty)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "constructeur")
+  inserer($nx_t, "nom", n)
+  inserer($nx_t, "type", ty)
+  retour $nx_t
 }
 
 fn noy_ind(n: chaine, p: liste<table>) -> table {
-  $t = table()
-  inserer($t, "genre", "ind")
-  inserer($t, "nom", n)
-  inserer($t, "params", p)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "ind")
+  inserer($nx_t, "nom", n)
+  inserer($nx_t, "params", p)
+  retour $nx_t
 }
 
 fn noy_elim(n: chaine, m: table, b: liste<table>) -> table {
-  $t = table()
-  inserer($t, "genre", "elim")
-  inserer($t, "nom", n)
-  inserer($t, "motif", m)
-  inserer($t, "branches", b)
-  retour $t
+  $nx_t = table()
+  inserer($nx_t, "genre", "elim")
+  inserer($nx_t, "nom", n)
+  inserer($nx_t, "motif", m)
+  inserer($nx_t, "branches", b)
+  retour $nx_t
 }
 
 # ───────────────────────── 2. Listes de noms ───────────────────────────────
 
 fn noy_contient(l: liste<chaine>, s: chaine) -> booleen {
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    si (l[$k] == s) { retour vrai }
-    $k = $k + 1
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    si (l[$nx_k] == s) { retour vrai }
+    $nx_k = $nx_k + 1
   }
   retour faux
 }
 
 fn noy_copie_ch(l: liste<chaine>) -> liste<chaine> {
-  $r = [""]
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    joindre($r, l[$k])
-    $k = $k + 1
+  $nx_r = [""]
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    joindre($nx_r, l[$nx_k])
+    $nx_k = $nx_k + 1
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_ajoute_unique(l: liste<chaine>, s: chaine) -> liste<chaine> {
-  $r = noy_copie_ch(l)
-  si (non noy_contient($r, s)) { joindre($r, s) }
-  retour $r
+  $nx_r = noy_copie_ch(l)
+  si (non noy_contient($nx_r, s)) { joindre($nx_r, s) }
+  retour $nx_r
 }
 
 fn noy_sans_ch(l: liste<chaine>, s: chaine) -> liste<chaine> {
-  $r = [""]
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    si (l[$k] != s) { joindre($r, l[$k]) }
-    $k = $k + 1
+  $nx_r = [""]
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    si (l[$nx_k] != s) { joindre($nx_r, l[$nx_k]) }
+    $nx_k = $nx_k + 1
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_union_ch(a: liste<chaine>, b: liste<chaine>) -> liste<chaine> {
-  $r = noy_copie_ch(a)
-  $n = longueur(b)
-  $k = 1
-  tant_que ($k < $n) {
-    si (non noy_contient($r, b[$k])) { joindre($r, b[$k]) }
-    $k = $k + 1
+  $nx_r = noy_copie_ch(a)
+  $nx_n = longueur(b)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    si (non noy_contient($nx_r, b[$nx_k])) { joindre($nx_r, b[$nx_k]) }
+    $nx_k = $nx_k + 1
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_copie_tab(l: liste<table>) -> liste<table> {
-  $r = [table()]
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    joindre($r, l[$k])
-    $k = $k + 1
+  $nx_r = [table()]
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    joindre($nx_r, l[$nx_k])
+    $nx_k = $nx_k + 1
   }
-  retour $r
+  retour $nx_r
 }
 
 # ───────────────── 3. Variables libres / noms / fraîcheur ──────────────────
 
 fn noy_libres_liste(l: liste<table>) -> liste<chaine> {
-  $r = [""]
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    $r = noy_union_ch($r, noy_libres(l[$k]))
-    $k = $k + 1
+  $nx_r = [""]
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    $nx_r = noy_union_ch($nx_r, noy_libres(l[$nx_k]))
+    $nx_k = $nx_k + 1
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_libres(t: table) -> liste<chaine> {
-  $g = noy_genre(t)
-  $r = [""]
-  si ($g == "var") {
-    retour noy_ajoute_unique($r, noy_nom(t))
+  $nx_g = noy_genre(t)
+  $nx_r = [""]
+  si ($nx_g == "var") {
+    retour noy_ajoute_unique($nx_r, noy_nom(t))
   }
-  si ($g == "app") {
-    $r = noy_union_ch(noy_libres(noy_champ(t, "fonction")),
+  si ($nx_g == "app") {
+    $nx_r = noy_union_ch(noy_libres(noy_champ(t, "fonction")),
                       noy_libres(noy_champ(t, "argument")))
-    retour $r
+    retour $nx_r
   }
-  si ($g == "pi" ou $g == "lam") {
-    $r = noy_union_ch(noy_libres(noy_champ(t, "domaine")),
+  si ($nx_g == "pi" ou $nx_g == "lam") {
+    $nx_r = noy_union_ch(noy_libres(noy_champ(t, "domaine")),
                       noy_libres(noy_corps(t)))
-    $r = noy_sans_ch($r, noy_nom(t))
-    retour $r
+    $nx_r = noy_sans_ch($nx_r, noy_nom(t))
+    retour $nx_r
   }
-  si ($g == "const" ou $g == "constructeur") {
+  si ($nx_g == "const" ou $nx_g == "constructeur") {
     retour noy_libres(noy_champ(t, "type"))
   }
-  si ($g == "ind") {
+  si ($nx_g == "ind") {
     retour noy_libres_liste(noy_champ_liste(t, "params"))
   }
-  si ($g == "elim") {
-    $r = noy_union_ch(noy_libres(noy_champ(t, "motif")),
+  si ($nx_g == "elim") {
+    $nx_r = noy_union_ch(noy_libres(noy_champ(t, "motif")),
                       noy_libres_liste(noy_champ_liste(t, "branches")))
-    retour $r
+    retour $nx_r
   }
-  retour $r
+  retour $nx_r
 }
 
 # TOUS les noms présents dans un terme (libres ET lieurs) : sert à garantir
 # qu'un nom frais ne capturera rien, même sous un lieur intérieur.
 fn noy_noms_liste(l: liste<table>) -> liste<chaine> {
-  $r = [""]
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    $r = noy_union_ch($r, noy_noms(l[$k]))
-    $k = $k + 1
+  $nx_r = [""]
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    $nx_r = noy_union_ch($nx_r, noy_noms(l[$nx_k]))
+    $nx_k = $nx_k + 1
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_noms(t: table) -> liste<chaine> {
-  $g = noy_genre(t)
-  $r = [""]
-  si ($g == "var" ou $g == "const" ou $g == "constructeur" ou
-      $g == "ind" ou $g == "elim") {
-    $r = noy_ajoute_unique($r, noy_nom(t))
+  $nx_g = noy_genre(t)
+  $nx_r = [""]
+  si ($nx_g == "var" ou $nx_g == "const" ou $nx_g == "constructeur" ou
+      $nx_g == "ind" ou $nx_g == "elim") {
+    $nx_r = noy_ajoute_unique($nx_r, noy_nom(t))
   }
-  si ($g == "app") {
-    $r = noy_union_ch(noy_noms(noy_champ(t, "fonction")),
+  si ($nx_g == "app") {
+    $nx_r = noy_union_ch(noy_noms(noy_champ(t, "fonction")),
                       noy_noms(noy_champ(t, "argument")))
-    retour $r
+    retour $nx_r
   }
-  si ($g == "pi" ou $g == "lam") {
-    $r = noy_ajoute_unique($r, noy_nom(t))
-    $r = noy_union_ch($r, noy_noms(noy_champ(t, "domaine")))
-    $r = noy_union_ch($r, noy_noms(noy_corps(t)))
-    retour $r
+  si ($nx_g == "pi" ou $nx_g == "lam") {
+    $nx_r = noy_ajoute_unique($nx_r, noy_nom(t))
+    $nx_r = noy_union_ch($nx_r, noy_noms(noy_champ(t, "domaine")))
+    $nx_r = noy_union_ch($nx_r, noy_noms(noy_corps(t)))
+    retour $nx_r
   }
-  si ($g == "ind") {
-    $r = noy_union_ch($r, noy_noms_liste(noy_champ_liste(t, "params")))
-    retour $r
+  si ($nx_g == "ind") {
+    $nx_r = noy_union_ch($nx_r, noy_noms_liste(noy_champ_liste(t, "params")))
+    retour $nx_r
   }
-  si ($g == "elim") {
-    $r = noy_union_ch($r, noy_noms(noy_champ(t, "motif")))
-    $r = noy_union_ch($r, noy_noms_liste(noy_champ_liste(t, "branches")))
-    retour $r
+  si ($nx_g == "elim") {
+    $nx_r = noy_union_ch($nx_r, noy_noms(noy_champ(t, "motif")))
+    $nx_r = noy_union_ch($nx_r, noy_noms_liste(noy_champ_liste(t, "branches")))
+    retour $nx_r
   }
-  si ($g == "const" ou $g == "constructeur") {
-    $r = noy_union_ch($r, noy_noms(noy_champ(t, "type")))
+  si ($nx_g == "const" ou $nx_g == "constructeur") {
+    $nx_r = noy_union_ch($nx_r, noy_noms(noy_champ(t, "type")))
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_frais(base: chaine, ev: liste<chaine>) -> chaine {
-  $cand = base
-  $suf = ""
-  tant_que (noy_contient(ev, $cand)) {
-    $suf = $suf + "'"
-    $cand = base + $suf
+  $nx_cand = base
+  $nx_suf = ""
+  tant_que (noy_contient(ev, $nx_cand)) {
+    $nx_suf = $nx_suf + "'"
+    $nx_cand = base + $nx_suf
   }
-  retour $cand
+  retour $nx_cand
 }
 
 # ───────────── 4. Substitution capture-évitante (le cœur) ──────────────────
 
 fn noy_subst_liste(l: liste<table>, nom: chaine, val: table) -> liste<table> {
-  $r = [table()]
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    joindre($r, noy_subst(l[$k], nom, val))
-    $k = $k + 1
+  $nx_r = [table()]
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    joindre($nx_r, noy_subst(l[$nx_k], nom, val))
+    $nx_k = $nx_k + 1
   }
-  retour $r
+  retour $nx_r
 }
 
 fn noy_subst(t: table, nom: chaine, val: table) -> table {
-  $g = noy_genre(t)
+  $nx_g = noy_genre(t)
 
-  si ($g == "var") {
+  si ($nx_g == "var") {
     si (noy_nom(t) == nom) { retour val }
     retour t
   }
-  si ($g == "type" ou $g == "_absent") { retour t }
+  si ($nx_g == "type" ou $nx_g == "_absent") { retour t }
 
-  si ($g == "app") {
+  si ($nx_g == "app") {
     retour noy_app(noy_subst(noy_champ(t, "fonction"), nom, val),
                    noy_subst(noy_champ(t, "argument"), nom, val))
   }
 
-  si ($g == "pi" ou $g == "lam") {
-    $b = noy_nom(t)
-    $dom = noy_subst(noy_champ(t, "domaine"), nom, val)
-    $c = noy_corps(t)
+  si ($nx_g == "pi" ou $nx_g == "lam") {
+    $nx_b = noy_nom(t)
+    $nx_dom = noy_subst(noy_champ(t, "domaine"), nom, val)
+    $nx_c = noy_corps(t)
 
     # Le lieur « b » masque « nom » dans le corps ; le domaine, lui, est
     # hors de sa portée et doit être substitué.
-    si ($b == nom) {
-      si ($g == "pi") { retour noy_pi($b, $dom, $c) }
-      retour noy_lam($b, $dom, $c)
+    si ($nx_b == nom) {
+      si ($nx_g == "pi") { retour noy_pi($nx_b, $nx_dom, $nx_c) }
+      retour noy_lam($nx_b, $nx_dom, $nx_c)
     }
 
     # Évitation de capture : on ne renomme le lieur QUE si la substitution
     # a réellement lieu dans le corps (nom libre dans c) ET que « b » est
     # libre dans « val ». Renommer sans nécessité est correct à alpha près,
     # mais rendrait les types affichés instables.
-    $a_substituer = noy_contient(noy_libres($c), nom)
-    $capture = noy_contient(noy_libres(val), $b)
-    $ev = noy_union_ch(noy_noms(t), noy_libres(val))
-    $ev = noy_ajoute_unique($ev, nom)
-    $nb = $b
-    $c2 = $c
-    si ($a_substituer et $capture) {
-      $nb = noy_frais($b, $ev)
-      $c2 = noy_subst($c, $b, noy_var($nb))
+    $nx_a_substituer = noy_contient(noy_libres($nx_c), nom)
+    $nx_capture = noy_contient(noy_libres(val), $nx_b)
+    $nx_ev = noy_union_ch(noy_noms(t), noy_libres(val))
+    $nx_ev = noy_ajoute_unique($nx_ev, nom)
+    $nx_nb = $nx_b
+    $nx_c2 = $nx_c
+    si ($nx_a_substituer et $nx_capture) {
+      $nx_nb = noy_frais($nx_b, $nx_ev)
+      $nx_c2 = noy_subst($nx_c, $nx_b, noy_var($nx_nb))
     }
-    $c3 = noy_subst($c2, nom, val)
-    si ($g == "pi") { retour noy_pi($nb, $dom, $c3) }
-    retour noy_lam($nb, $dom, $c3)
+    $nx_c3 = noy_subst($nx_c2, nom, val)
+    si ($nx_g == "pi") { retour noy_pi($nx_nb, $nx_dom, $nx_c3) }
+    retour noy_lam($nx_nb, $nx_dom, $nx_c3)
   }
 
-  si ($g == "const" ou $g == "constructeur") {
-    $ty = noy_subst(noy_champ(t, "type"), nom, val)
-    si ($g == "const") { retour noy_const(noy_nom(t), $ty) }
-    retour noy_constructeur(noy_nom(t), $ty)
+  si ($nx_g == "const" ou $nx_g == "constructeur") {
+    $nx_ty = noy_subst(noy_champ(t, "type"), nom, val)
+    si ($nx_g == "const") { retour noy_const(noy_nom(t), $nx_ty) }
+    retour noy_constructeur(noy_nom(t), $nx_ty)
   }
 
-  si ($g == "ind") {
+  si ($nx_g == "ind") {
     retour noy_ind(noy_nom(t), noy_subst_liste(noy_champ_liste(t, "params"), nom, val))
   }
 
-  si ($g == "elim") {
-    $br = noy_subst_liste(noy_champ_liste(t, "branches"), nom, val)
-    retour noy_elim(noy_nom(t), noy_subst(noy_champ(t, "motif"), nom, val), $br)
+  si ($nx_g == "elim") {
+    $nx_br = noy_subst_liste(noy_champ_liste(t, "branches"), nom, val)
+    retour noy_elim(noy_nom(t), noy_subst(noy_champ(t, "motif"), nom, val), $nx_br)
   }
 
   retour t
@@ -415,40 +415,40 @@ fn noy_subst(t: table, nom: chaine, val: table) -> table {
 # ────────────────────── 5. Beta-réduction complète ─────────────────────────
 
 fn noy_pas(t: table) -> table {
-  $r = table()
-  inserer($r, "change", vrai)
-  inserer($r, "terme", t)
-  retour $r
+  $nx_r = table()
+  inserer($nx_r, "change", vrai)
+  inserer($nx_r, "terme", t)
+  retour $nx_r
 }
 
 fn noy_rien(t: table) -> table {
-  $r = table()
-  inserer($r, "change", faux)
-  inserer($r, "terme", t)
-  retour $r
+  $nx_r = table()
+  inserer($nx_r, "change", faux)
+  inserer($nx_r, "terme", t)
+  retour $nx_r
 }
 
 fn noy_pas_l(l: liste<table>) -> table {
-  $r = table()
-  inserer($r, "change", vrai)
-  inserer($r, "liste", l)
-  retour $r
+  $nx_r = table()
+  inserer($nx_r, "change", vrai)
+  inserer($nx_r, "liste", l)
+  retour $nx_r
 }
 
 fn noy_rien_l(l: liste<table>) -> table {
-  $r = table()
-  inserer($r, "change", faux)
-  inserer($r, "liste", l)
-  retour $r
+  $nx_r = table()
+  inserer($nx_r, "change", faux)
+  inserer($nx_r, "liste", l)
+  retour $nx_r
 }
 
 fn noy_change(r: table) -> booleen {
-  $v = faux
+  $nx_v = faux
   si (cle_existe(r, "change")) {
-    $x = r["change"]
-    si (type($x) == "booleen") { $v = $x }
+    $nx_x = r["change"]
+    si (type($nx_x) == "booleen") { $nx_v = $nx_x }
   }
-  retour $v
+  retour $nx_v
 }
 
 fn noy_resultat(r: table) -> table {
@@ -456,109 +456,109 @@ fn noy_resultat(r: table) -> table {
 }
 
 fn noy_resultat_l(r: table) -> liste<table> {
-  $v = [table()]
+  $nx_v = [table()]
   si (cle_existe(r, "liste")) {
-    $x = r["liste"]
-    si (type($x) == "liste") { $v = $x }
+    $nx_x = r["liste"]
+    si (type($nx_x) == "liste") { $nx_v = $nx_x }
   }
-  retour $v
+  retour $nx_v
 }
 
 # Un pas de réduction en stratégie normale (le plus à gauche, dehors).
 fn noy_redex_liste(l: liste<table>) -> table {
-  $n = longueur(l)
-  $k = 1
-  tant_que ($k < $n) {
-    $r = noy_redex(l[$k])
-    si (noy_change($r)) {
-      $out = [table()]
-      $j = 1
-      tant_que ($j < $k) {
-        joindre($out, l[$j])
-        $j = $j + 1
+  $nx_n = longueur(l)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    $nx_r = noy_redex(l[$nx_k])
+    si (noy_change($nx_r)) {
+      $nx_out = [table()]
+      $nx_j = 1
+      tant_que ($nx_j < $nx_k) {
+        joindre($nx_out, l[$nx_j])
+        $nx_j = $nx_j + 1
       }
-      joindre($out, noy_resultat($r))
-      $j = $k + 1
-      tant_que ($j < $n) {
-        joindre($out, l[$j])
-        $j = $j + 1
+      joindre($nx_out, noy_resultat($nx_r))
+      $nx_j = $nx_k + 1
+      tant_que ($nx_j < $nx_n) {
+        joindre($nx_out, l[$nx_j])
+        $nx_j = $nx_j + 1
       }
-      retour noy_pas_l($out)
+      retour noy_pas_l($nx_out)
     }
-    $k = $k + 1
+    $nx_k = $nx_k + 1
   }
   retour noy_rien_l(l)
 }
 
 fn noy_redex(t: table) -> table {
-  $g = noy_genre(t)
+  $nx_g = noy_genre(t)
 
-  si ($g == "app") {
-    $f = noy_champ(t, "fonction")
-    $a = noy_champ(t, "argument")
-    $rf = noy_redex($f)
-    si (noy_change($rf)) {
-      retour noy_pas(noy_app(noy_resultat($rf), $a))
+  si ($nx_g == "app") {
+    $nx_f = noy_champ(t, "fonction")
+    $nx_a = noy_champ(t, "argument")
+    $nx_rf = noy_redex($nx_f)
+    si (noy_change($nx_rf)) {
+      retour noy_pas(noy_app(noy_resultat($nx_rf), $nx_a))
     }
-    si (noy_genre($f) == "lam") {
-      retour noy_pas(noy_subst(noy_champ($f, "corps"), noy_nom($f), $a))
+    si (noy_genre($nx_f) == "lam") {
+      retour noy_pas(noy_subst(noy_champ($nx_f, "corps"), noy_nom($nx_f), $nx_a))
     }
-    $ra = noy_redex($a)
-    si (noy_change($ra)) {
-      retour noy_pas(noy_app($f, noy_resultat($ra)))
+    $nx_ra = noy_redex($nx_a)
+    si (noy_change($nx_ra)) {
+      retour noy_pas(noy_app($nx_f, noy_resultat($nx_ra)))
     }
     retour noy_rien(t)
   }
 
-  si ($g == "pi") {
-    $rd = noy_redex(noy_champ(t, "domaine"))
-    si (noy_change($rd)) {
-      retour noy_pas(noy_pi(noy_nom(t), noy_resultat($rd), noy_champ(t, "codomaine")))
+  si ($nx_g == "pi") {
+    $nx_rd = noy_redex(noy_champ(t, "domaine"))
+    si (noy_change($nx_rd)) {
+      retour noy_pas(noy_pi(noy_nom(t), noy_resultat($nx_rd), noy_champ(t, "codomaine")))
     }
-    $rc = noy_redex(noy_champ(t, "codomaine"))
-    si (noy_change($rc)) {
-      retour noy_pas(noy_pi(noy_nom(t), noy_champ(t, "domaine"), noy_resultat($rc)))
-    }
-    retour noy_rien(t)
-  }
-
-  si ($g == "lam") {
-    $rd = noy_redex(noy_champ(t, "domaine"))
-    si (noy_change($rd)) {
-      retour noy_pas(noy_lam(noy_nom(t), noy_resultat($rd), noy_champ(t, "corps")))
-    }
-    $rc = noy_redex(noy_champ(t, "corps"))
-    si (noy_change($rc)) {
-      retour noy_pas(noy_lam(noy_nom(t), noy_champ(t, "domaine"), noy_resultat($rc)))
+    $nx_rc = noy_redex(noy_champ(t, "codomaine"))
+    si (noy_change($nx_rc)) {
+      retour noy_pas(noy_pi(noy_nom(t), noy_champ(t, "domaine"), noy_resultat($nx_rc)))
     }
     retour noy_rien(t)
   }
 
-  si ($g == "const" ou $g == "constructeur") {
-    $rt = noy_redex(noy_champ(t, "type"))
-    si (noy_change($rt)) {
-      si ($g == "const") { retour noy_pas(noy_const(noy_nom(t), noy_resultat($rt))) }
-      retour noy_pas(noy_constructeur(noy_nom(t), noy_resultat($rt)))
+  si ($nx_g == "lam") {
+    $nx_rd = noy_redex(noy_champ(t, "domaine"))
+    si (noy_change($nx_rd)) {
+      retour noy_pas(noy_lam(noy_nom(t), noy_resultat($nx_rd), noy_champ(t, "corps")))
+    }
+    $nx_rc = noy_redex(noy_champ(t, "corps"))
+    si (noy_change($nx_rc)) {
+      retour noy_pas(noy_lam(noy_nom(t), noy_champ(t, "domaine"), noy_resultat($nx_rc)))
     }
     retour noy_rien(t)
   }
 
-  si ($g == "ind") {
-    $rl = noy_redex_liste(noy_champ_liste(t, "params"))
-    si (noy_change($rl)) {
-      retour noy_pas(noy_ind(noy_nom(t), noy_resultat_l($rl)))
+  si ($nx_g == "const" ou $nx_g == "constructeur") {
+    $nx_rt = noy_redex(noy_champ(t, "type"))
+    si (noy_change($nx_rt)) {
+      si ($nx_g == "const") { retour noy_pas(noy_const(noy_nom(t), noy_resultat($nx_rt))) }
+      retour noy_pas(noy_constructeur(noy_nom(t), noy_resultat($nx_rt)))
     }
     retour noy_rien(t)
   }
 
-  si ($g == "elim") {
-    $rm = noy_redex(noy_champ(t, "motif"))
-    si (noy_change($rm)) {
-      retour noy_pas(noy_elim(noy_nom(t), noy_resultat($rm), noy_champ_liste(t, "branches")))
+  si ($nx_g == "ind") {
+    $nx_rl = noy_redex_liste(noy_champ_liste(t, "params"))
+    si (noy_change($nx_rl)) {
+      retour noy_pas(noy_ind(noy_nom(t), noy_resultat_l($nx_rl)))
     }
-    $rb = noy_redex_liste(noy_champ_liste(t, "branches"))
-    si (noy_change($rb)) {
-      retour noy_pas(noy_elim(noy_nom(t), noy_champ(t, "motif"), noy_resultat_l($rb)))
+    retour noy_rien(t)
+  }
+
+  si ($nx_g == "elim") {
+    $nx_rm = noy_redex(noy_champ(t, "motif"))
+    si (noy_change($nx_rm)) {
+      retour noy_pas(noy_elim(noy_nom(t), noy_resultat($nx_rm), noy_champ_liste(t, "branches")))
+    }
+    $nx_rb = noy_redex_liste(noy_champ_liste(t, "branches"))
+    si (noy_change($nx_rb)) {
+      retour noy_pas(noy_elim(noy_nom(t), noy_champ(t, "motif"), noy_resultat_l($nx_rb)))
     }
     retour noy_rien(t)
   }
@@ -567,82 +567,82 @@ fn noy_redex(t: table) -> table {
 }
 
 fn noy_pas_beta(r: table) -> entier {
-  $v = 0
+  $nx_v = 0
   si (cle_existe(r, "pas")) {
-    $x = r["pas"]
-    si (type($x) == "entier") { $v = $x }
+    $nx_x = r["pas"]
+    si (type($nx_x) == "entier") { $nx_v = $nx_x }
   }
-  retour $v
+  retour $nx_v
 }
 
 fn noy_erreur_beta(r: table) -> chaine {
-  $v = ""
+  $nx_v = ""
   si (cle_existe(r, "erreur")) {
-    $x = r["erreur"]
-    si (type($x) == "chaine") { $v = $x }
+    $nx_x = r["erreur"]
+    si (type($nx_x) == "chaine") { $nx_v = $nx_x }
   }
-  retour $v
+  retour $nx_v
 }
 
 # Réduction complète bornée. Rend {terme, pas, erreur}. En cas de dépassement,
 # on rend le terme PARTIELLEMENT réduit et une erreur explicite : jamais de
 # boucle infinie, jamais de plantage.
 fn noy_beta_lim(t: table, limite: entier) -> table {
-  $cur = t
-  $pas = 0
-  $err = ""
-  $cont = vrai
-  tant_que ($cont) {
-    si ($pas >= limite) {
-      $test = noy_redex($cur)
-      si (noy_change($test)) {
-        $err = "depassement de la garde de pas (" + chaine(limite) + ")"
+  $nx_cur = t
+  $nx_pas = 0
+  $nx_err = ""
+  $nx_cont = vrai
+  tant_que ($nx_cont) {
+    si ($nx_pas >= limite) {
+      $nx_test = noy_redex($nx_cur)
+      si (noy_change($nx_test)) {
+        $nx_err = "depassement de la garde de pas (" + chaine(limite) + ")"
       }
-      $cont = faux
+      $nx_cont = faux
     } sinon {
-      $r = noy_redex($cur)
-      si (noy_change($r)) {
-        $cur = noy_resultat($r)
-        $pas = $pas + 1
+      $nx_r = noy_redex($nx_cur)
+      si (noy_change($nx_r)) {
+        $nx_cur = noy_resultat($nx_r)
+        $nx_pas = $nx_pas + 1
       } sinon {
-        $cont = faux
+        $nx_cont = faux
       }
     }
   }
-  $res = table()
-  inserer($res, "terme", $cur)
-  inserer($res, "pas", $pas)
-  inserer($res, "erreur", $err)
-  retour $res
+  $nx_res = table()
+  inserer($nx_res, "terme", $nx_cur)
+  inserer($nx_res, "pas", $nx_pas)
+  inserer($nx_res, "erreur", $nx_err)
+  retour $nx_res
 }
 
 fn beta(t: table) -> table {
-  $r = noy_beta_lim(t, 10000)
-  retour noy_champ($r, "terme")
+  $nx_r = noy_beta_lim(t, 10000)
+  retour noy_champ($nx_r, "terme")
 }
 
 # ────────────── 6. Alpha-équivalence (environnement de noms) ───────────────
 
 # Indice (de Bruijn) du nom dans l'environnement, 0 = nom libre.
 fn noy_index_env(env: liste<chaine>, s: chaine) -> entier {
-  $n = longueur(env)
-  $k = $n - 1
-  tant_que ($k >= 1) {
-    si (env[$k] == s) { retour $n - $k }
-    $k = $k - 1
+  $nx_n = longueur(env)
+  $nx_k = $nx_n - 1
+  tant_que ($nx_k >= 1) {
+    si (env[$nx_k] == s) { retour $nx_n - $nx_k }
+    $nx_k = $nx_k - 1
   }
   retour 0
 }
 
 fn noy_alpha_liste(a: liste<table>, b: liste<table>,
                    ea: liste<chaine>, eb: liste<chaine>) -> booleen {
-  $na = longueur(a)
-  $nb = longueur(b)
-  si ($na != $nb) { retour faux }
-  $k = 1
-  tant_que ($k < $na) {
-    si (non noy_alpha(a[$k], b[$k], $ea, $eb)) { retour faux }
-    $k = $k + 1
+  $nx_na = longueur(a)
+  $nx_nb = longueur(b)
+  si ($nx_na != $nx_nb) { retour faux }
+  $nx_k = 1
+  tant_que ($nx_k < $nx_na) {
+    si (non noy_alpha(a[$nx_k], b[$nx_k], ea, eb)) { retour faux }
+    $nx_k = $nx_k + 1
   }
   retour vrai
 }
@@ -650,164 +650,164 @@ fn noy_alpha_liste(a: liste<table>, b: liste<table>,
 # ea / eb : environnements de correspondance (listes de lieurs empilés).
 fn noy_alpha(a: table, b: table,
              ea: liste<chaine>, eb: liste<chaine>) -> booleen {
-  $ga = noy_genre(a)
-  $gb = noy_genre(b)
-  si ($ga != $gb) { retour faux }
+  $nx_ga = noy_genre(a)
+  $nx_gb = noy_genre(b)
+  si ($nx_ga != $nx_gb) { retour faux }
 
-  si ($ga == "var") {
-    $ia = noy_index_env($ea, noy_nom(a))
-    $ib = noy_index_env($eb, noy_nom(b))
-    si ($ia > 0 ou $ib > 0) { retour $ia == $ib }
+  si ($nx_ga == "var") {
+    $nx_ia = noy_index_env(ea, noy_nom(a))
+    $nx_ib = noy_index_env(eb, noy_nom(b))
+    si ($nx_ia > 0 ou $nx_ib > 0) { retour $nx_ia == $nx_ib }
     retour noy_nom(a) == noy_nom(b)
   }
-  si ($ga == "type") { retour noy_niveau(a) == noy_niveau(b) }
-  si ($ga == "app") {
-    si (non noy_alpha(noy_champ(a, "fonction"), noy_champ(b, "fonction"), $ea, $eb)) {
+  si ($nx_ga == "type") { retour noy_niveau(a) == noy_niveau(b) }
+  si ($nx_ga == "app") {
+    si (non noy_alpha(noy_champ(a, "fonction"), noy_champ(b, "fonction"), ea, eb)) {
       retour faux
     }
-    retour noy_alpha(noy_champ(a, "argument"), noy_champ(b, "argument"), $ea, $eb)
+    retour noy_alpha(noy_champ(a, "argument"), noy_champ(b, "argument"), ea, eb)
   }
-  si ($ga == "pi" ou $ga == "lam") {
-    si (non noy_alpha(noy_champ(a, "domaine"), noy_champ(b, "domaine"), $ea, $eb)) {
+  si ($nx_ga == "pi" ou $nx_ga == "lam") {
+    si (non noy_alpha(noy_champ(a, "domaine"), noy_champ(b, "domaine"), ea, eb)) {
       retour faux
     }
-    $nea = noy_copie_ch($ea)
-    joindre($nea, noy_nom(a))
-    $neb = noy_copie_ch($eb)
-    joindre($neb, noy_nom(b))
-    retour noy_alpha(noy_corps(a), noy_corps(b), $nea, $neb)
+    $nx_nea = noy_copie_ch(ea)
+    joindre($nx_nea, noy_nom(a))
+    $nx_neb = noy_copie_ch(eb)
+    joindre($nx_neb, noy_nom(b))
+    retour noy_alpha(noy_corps(a), noy_corps(b), $nx_nea, $nx_neb)
   }
-  si ($ga == "const" ou $ga == "constructeur") {
+  si ($nx_ga == "const" ou $nx_ga == "constructeur") {
     si (noy_nom(a) != noy_nom(b)) { retour faux }
-    retour noy_alpha(noy_champ(a, "type"), noy_champ(b, "type"), $ea, $eb)
+    retour noy_alpha(noy_champ(a, "type"), noy_champ(b, "type"), ea, eb)
   }
-  si ($ga == "ind") {
+  si ($nx_ga == "ind") {
     si (noy_nom(a) != noy_nom(b)) { retour faux }
     retour noy_alpha_liste(noy_champ_liste(a, "params"),
-                           noy_champ_liste(b, "params"), $ea, $eb)
+                           noy_champ_liste(b, "params"), ea, eb)
   }
-  si ($ga == "elim") {
+  si ($nx_ga == "elim") {
     si (noy_nom(a) != noy_nom(b)) { retour faux }
-    si (non noy_alpha(noy_champ(a, "motif"), noy_champ(b, "motif"), $ea, $eb)) {
+    si (non noy_alpha(noy_champ(a, "motif"), noy_champ(b, "motif"), ea, eb)) {
       retour faux
     }
     retour noy_alpha_liste(noy_champ_liste(a, "branches"),
-                           noy_champ_liste(b, "branches"), $ea, $eb)
+                           noy_champ_liste(b, "branches"), ea, eb)
   }
-  si ($ga == "_absent") { retour vrai }
+  si ($nx_ga == "_absent") { retour vrai }
   retour faux
 }
 
 fn convertible(a: table, b: table) -> booleen {
-  $ra = noy_beta_lim(a, 10000)
-  $rb = noy_beta_lim(b, 10000)
-  $ea = [""]
-  $eb = [""]
-  retour noy_alpha(noy_champ($ra, "terme"), noy_champ($rb, "terme"), $ea, $eb)
+  $nx_ra = noy_beta_lim(a, 10000)
+  $nx_rb = noy_beta_lim(b, 10000)
+  $nx_ea = [""]
+  $nx_eb = [""]
+  retour noy_alpha(noy_champ($nx_ra, "terme"), noy_champ($nx_rb, "terme"), $nx_ea, $nx_eb)
 }
 
 # ─────────────────────── 7. Contextes ──────────────────────────────────────
 
 fn noy_ctx_vide() -> liste<table> {
-  $c = [table()]
-  retour $c
+  $nx_c = [table()]
+  retour $nx_c
 }
 
 # Accepte liste<table> REMBOURRÉE ou table {nom: Terme}.
 fn noy_normaliser_ctx(ctx) -> liste<table> {
-  $r = [table()]
+  $nx_r = [table()]
   si (type(ctx) == "liste") {
-    $c = [table()]
-    $c = ctx
-    retour $c
+    $nx_c = [table()]
+    $nx_c = ctx
+    retour $nx_c
   }
   si (type(ctx) == "table") {
-    $tb = table()
-    $tb = ctx
-    $ks = cles($tb)
-    $n = longueur($ks)
-    $k = 0
-    tant_que ($k < $n) {
-      $key = ""
-      $key = $ks[$k]
-      $e = table()
-      inserer($e, "nom", $key)
-      $v = $tb[$key]
-      inserer($e, "type", $v)
-      joindre($r, $e)
-      $k = $k + 1
+    $nx_tb = table()
+    $nx_tb = ctx
+    $nx_ks = cles($nx_tb)
+    $nx_n = longueur($nx_ks)
+    $nx_k = 0
+    tant_que ($nx_k < $nx_n) {
+      $nx_key = ""
+      $nx_key = $nx_ks[$nx_k]
+      $nx_e = table()
+      inserer($nx_e, "nom", $nx_key)
+      $nx_v = $nx_tb[$nx_key]
+      inserer($nx_e, "type", $nx_v)
+      joindre($nx_r, $nx_e)
+      $nx_k = $nx_k + 1
     }
   }
-  retour $r
+  retour $nx_r
 }
 
 # Nouveau contexte (non destructif) : la liaison ajoutée masque les précédentes.
 fn noy_ctx_ajouter(ctx: liste<table>, n: chaine, ty: table) -> liste<table> {
-  $r = [table()]
-  $cnt = longueur(ctx)
-  $k = 1
-  tant_que ($k < $cnt) {
-    joindre($r, ctx[$k])
-    $k = $k + 1
+  $nx_r = [table()]
+  $nx_cnt = longueur(ctx)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_cnt) {
+    joindre($nx_r, ctx[$nx_k])
+    $nx_k = $nx_k + 1
   }
-  $e = table()
-  inserer($e, "nom", n)
-  inserer($e, "type", ty)
-  joindre($r, $e)
-  retour $r
+  $nx_e = table()
+  inserer($nx_e, "nom", n)
+  inserer($nx_e, "type", ty)
+  joindre($nx_r, $nx_e)
+  retour $nx_r
 }
 
 fn noy_ctx_type(ctx: liste<table>, n: chaine) -> table {
-  $r = noy_absent()
-  $cnt = longueur(ctx)
-  $k = $cnt - 1
-  tant_que ($k >= 1) {
-    $e = ctx[$k]
-    si (noy_nom($e) == n) {
-      $r = noy_champ($e, "type")
-      retour $r
+  $nx_r = noy_absent()
+  $nx_cnt = longueur(ctx)
+  $nx_k = $nx_cnt - 1
+  tant_que ($nx_k >= 1) {
+    $nx_e = ctx[$nx_k]
+    si (noy_nom($nx_e) == n) {
+      $nx_r = noy_champ($nx_e, "type")
+      retour $nx_r
     }
-    $k = $k - 1
+    $nx_k = $nx_k - 1
   }
-  retour $r
+  retour $nx_r
 }
 
 # ──────────────────── 8. Synthèse de type (le vérificateur) ────────────────
 
 fn noy_ok(ty: table, pas: entier) -> table {
-  $r = table()
-  inserer($r, "ok", vrai)
-  inserer($r, "type", ty)
-  inserer($r, "erreur", "")
-  inserer($r, "pas", pas)
-  retour $r
+  $nx_r = table()
+  inserer($nx_r, "ok", vrai)
+  inserer($nx_r, "type", ty)
+  inserer($nx_r, "erreur", "")
+  inserer($nx_r, "pas", pas)
+  retour $nx_r
 }
 
 fn noy_err(msg: chaine, pas: entier) -> table {
-  $r = table()
-  inserer($r, "ok", faux)
-  inserer($r, "type", noy_absent())
-  inserer($r, "erreur", msg)
-  inserer($r, "pas", pas)
-  retour $r
+  $nx_r = table()
+  inserer($nx_r, "ok", faux)
+  inserer($nx_r, "type", noy_absent())
+  inserer($nx_r, "erreur", msg)
+  inserer($nx_r, "pas", pas)
+  retour $nx_r
 }
 
 fn noy_est_ok(r: table) -> booleen {
-  $v = faux
+  $nx_v = faux
   si (cle_existe(r, "ok")) {
-    $x = r["ok"]
-    si (type($x) == "booleen") { $v = $x }
+    $nx_x = r["ok"]
+    si (type($nx_x) == "booleen") { $nx_v = $nx_x }
   }
-  retour $v
+  retour $nx_v
 }
 
 fn noy_erreur(r: table) -> chaine {
-  $v = ""
+  $nx_v = ""
   si (cle_existe(r, "erreur")) {
-    $x = r["erreur"]
-    si (type($x) == "chaine") { $v = $x }
+    $nx_x = r["erreur"]
+    si (type($nx_x) == "chaine") { $nx_v = $nx_x }
   }
-  retour $v
+  retour $nx_v
 }
 
 fn noy_type_res(r: table) -> table {
@@ -815,21 +815,21 @@ fn noy_type_res(r: table) -> table {
 }
 
 fn noy_pas_res(r: table) -> entier {
-  $v = 0
+  $nx_v = 0
   si (cle_existe(r, "pas")) {
-    $x = r["pas"]
-    si (type($x) == "entier") { $v = $x }
+    $nx_x = r["pas"]
+    si (type($nx_x) == "entier") { $nx_v = $nx_x }
   }
-  retour $v
+  retour $nx_v
 }
 
 # Niveau d'un univers, -1 si le terme n'est pas un Type après beta.
 fn noy_univers(t: table) -> entier {
-  $r = noy_beta_lim(t, 1000)
-  $u = noy_champ($r, "terme")
-  $v = -1
-  si (noy_genre($u) == "type") { $v = noy_niveau($u) }
-  retour $v
+  $nx_r = noy_beta_lim(t, 1000)
+  $nx_u = noy_champ($nx_r, "terme")
+  $nx_v = -1
+  si (noy_genre($nx_u) == "type") { $nx_v = noy_niveau($nx_u) }
+  retour $nx_v
 }
 
 fn noy_synth(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table {
@@ -837,138 +837,138 @@ fn noy_synth(t: table, ctx: liste<table>, limite: entier, pas0: entier) -> table
     retour noy_err("depassement de la garde de pas (" + chaine(limite) + ")", pas0)
   }
 
-  $g = noy_genre(t)
+  $nx_g = noy_genre(t)
 
-  si ($g == "var") {
-    $ty = noy_ctx_type(ctx, noy_nom(t))
-    si (noy_est_absent($ty)) {
+  si ($nx_g == "var") {
+    $nx_ty = noy_ctx_type(ctx, noy_nom(t))
+    si (noy_est_absent($nx_ty)) {
       retour noy_err("variable non liee: " + noy_nom(t), pas0)
     }
-    retour noy_ok($ty, pas0)
+    retour noy_ok($nx_ty, pas0)
   }
 
   # Règle Type(n) : Type(n+1).
-  si ($g == "type") {
-    $n = noy_niveau(t)
-    si ($n < 0) { retour noy_err("niveau de type negatif", pas0) }
-    retour noy_ok(noy_type($n + 1), pas0)
+  si ($nx_g == "type") {
+    $nx_n = noy_niveau(t)
+    si ($nx_n < 0) { retour noy_err("niveau de type negatif", pas0) }
+    retour noy_ok(noy_type($nx_n + 1), pas0)
   }
 
   # Règle Π.
-  si ($g == "pi") {
-    $r1 = noy_synth(noy_champ(t, "domaine"), ctx, limite, pas0)
-    si (non noy_est_ok($r1)) { retour $r1 }
-    $i = noy_univers(noy_type_res($r1))
-    si ($i < 0) { retour noy_err("domaine de Pi non typé par un univers", noy_pas_res($r1)) }
-    $ctx2 = noy_ctx_ajouter(ctx, noy_nom(t), noy_champ(t, "domaine"))
-    $r2 = noy_synth(noy_champ(t, "codomaine"), $ctx2, limite, noy_pas_res($r1))
-    si (non noy_est_ok($r2)) { retour $r2 }
-    $j = noy_univers(noy_type_res($r2))
-    si ($j < 0) { retour noy_err("codomaine de Pi non typé par un univers", noy_pas_res($r2)) }
-    retour noy_ok(noy_type(max($i, $j)), noy_pas_res($r2))
+  si ($nx_g == "pi") {
+    $nx_r1 = noy_synth(noy_champ(t, "domaine"), ctx, limite, pas0)
+    si (non noy_est_ok($nx_r1)) { retour $nx_r1 }
+    $nx_i = noy_univers(noy_type_res($nx_r1))
+    si ($nx_i < 0) { retour noy_err("domaine de Pi non typé par un univers", noy_pas_res($nx_r1)) }
+    $nx_ctx2 = noy_ctx_ajouter(ctx, noy_nom(t), noy_champ(t, "domaine"))
+    $nx_r2 = noy_synth(noy_champ(t, "codomaine"), $nx_ctx2, limite, noy_pas_res($nx_r1))
+    si (non noy_est_ok($nx_r2)) { retour $nx_r2 }
+    $nx_j = noy_univers(noy_type_res($nx_r2))
+    si ($nx_j < 0) { retour noy_err("codomaine de Pi non typé par un univers", noy_pas_res($nx_r2)) }
+    retour noy_ok(noy_type(max($nx_i, $nx_j)), noy_pas_res($nx_r2))
   }
 
   # Règle λ : type = Π(nom, domaine, type_du_corps).
-  si ($g == "lam") {
-    $r1 = noy_synth(noy_champ(t, "domaine"), ctx, limite, pas0)
-    si (non noy_est_ok($r1)) { retour $r1 }
-    $i = noy_univers(noy_type_res($r1))
-    si ($i < 0) { retour noy_err("domaine de Lambda non typé par un univers", noy_pas_res($r1)) }
-    $ctx2 = noy_ctx_ajouter(ctx, noy_nom(t), noy_champ(t, "domaine"))
-    $r2 = noy_synth(noy_champ(t, "corps"), $ctx2, limite, noy_pas_res($r1))
-    si (non noy_est_ok($r2)) { retour $r2 }
-    $ty = noy_pi(noy_nom(t), noy_champ(t, "domaine"), noy_type_res($r2))
-    retour noy_ok($ty, noy_pas_res($r2))
+  si ($nx_g == "lam") {
+    $nx_r1 = noy_synth(noy_champ(t, "domaine"), ctx, limite, pas0)
+    si (non noy_est_ok($nx_r1)) { retour $nx_r1 }
+    $nx_i = noy_univers(noy_type_res($nx_r1))
+    si ($nx_i < 0) { retour noy_err("domaine de Lambda non typé par un univers", noy_pas_res($nx_r1)) }
+    $nx_ctx2 = noy_ctx_ajouter(ctx, noy_nom(t), noy_champ(t, "domaine"))
+    $nx_r2 = noy_synth(noy_champ(t, "corps"), $nx_ctx2, limite, noy_pas_res($nx_r1))
+    si (non noy_est_ok($nx_r2)) { retour $nx_r2 }
+    $nx_ty = noy_pi(noy_nom(t), noy_champ(t, "domaine"), noy_type_res($nx_r2))
+    retour noy_ok($nx_ty, noy_pas_res($nx_r2))
   }
 
   # Règle App : fonction : Πx:A.B, argument : A  =>  B[argument/x].
-  si ($g == "app") {
-    $rf = noy_synth(noy_champ(t, "fonction"), ctx, limite, pas0)
-    si (non noy_est_ok($rf)) { retour $rf }
-    $pas1 = noy_pas_res($rf)
-    $rb = noy_beta_lim(noy_type_res($rf), limite - $pas1)
-    $pas2 = $pas1 + noy_pas_beta($rb)
-    si (noy_erreur_beta($rb) != "") { retour noy_err(noy_erreur_beta($rb), $pas2) }
-    $ft = noy_champ($rb, "terme")
-    si (noy_genre($ft) != "pi") {
-      retour noy_err("application d'un terme dont le type n'est pas un Pi", $pas2)
+  si ($nx_g == "app") {
+    $nx_rf = noy_synth(noy_champ(t, "fonction"), ctx, limite, pas0)
+    si (non noy_est_ok($nx_rf)) { retour $nx_rf }
+    $nx_pas1 = noy_pas_res($nx_rf)
+    $nx_rb = noy_beta_lim(noy_type_res($nx_rf), limite - $nx_pas1)
+    $nx_pas2 = $nx_pas1 + noy_pas_beta($nx_rb)
+    si (noy_erreur_beta($nx_rb) != "") { retour noy_err(noy_erreur_beta($nx_rb), $nx_pas2) }
+    $nx_ft = noy_champ($nx_rb, "terme")
+    si (noy_genre($nx_ft) != "pi") {
+      retour noy_err("application d'un terme dont le type n'est pas un Pi", $nx_pas2)
     }
-    $ra = noy_synth(noy_champ(t, "argument"), ctx, limite, $pas2)
-    si (non noy_est_ok($ra)) { retour $ra }
-    $pas3 = noy_pas_res($ra)
-    $dom = noy_champ($ft, "domaine")
-    si (non convertible(noy_type_res($ra), $dom)) {
-      retour noy_err("type de l'argument incompatible avec le domaine", $pas3)
+    $nx_ra = noy_synth(noy_champ(t, "argument"), ctx, limite, $nx_pas2)
+    si (non noy_est_ok($nx_ra)) { retour $nx_ra }
+    $nx_pas3 = noy_pas_res($nx_ra)
+    $nx_dom = noy_champ($nx_ft, "domaine")
+    si (non convertible(noy_type_res($nx_ra), $nx_dom)) {
+      retour noy_err("type de l'argument incompatible avec le domaine", $nx_pas3)
     }
-    $res = noy_subst(noy_champ($ft, "codomaine"), noy_nom($ft), noy_champ(t, "argument"))
-    retour noy_ok($res, $pas3)
+    $nx_res = noy_subst(noy_champ($nx_ft, "codomaine"), noy_nom($nx_ft), noy_champ(t, "argument"))
+    retour noy_ok($nx_res, $nx_pas3)
   }
 
-  si ($g == "const" ou $g == "constructeur") {
-    $ann = noy_champ(t, "type")
-    $rt = noy_synth($ann, ctx, limite, pas0)
-    si (non noy_est_ok($rt)) { retour $rt }
-    $pas1 = noy_pas_res($rt)
-    si (noy_univers(noy_type_res($rt)) < 0) {
-      retour noy_err("annotation de type non bien formée", $pas1)
+  si ($nx_g == "const" ou $nx_g == "constructeur") {
+    $nx_ann = noy_champ(t, "type")
+    $nx_rt = noy_synth($nx_ann, ctx, limite, pas0)
+    si (non noy_est_ok($nx_rt)) { retour $nx_rt }
+    $nx_pas1 = noy_pas_res($nx_rt)
+    si (noy_univers(noy_type_res($nx_rt)) < 0) {
+      retour noy_err("annotation de type non bien formée", $nx_pas1)
     }
-    retour noy_ok($ann, $pas1)
+    retour noy_ok($nx_ann, $nx_pas1)
   }
 
   # ind / elim : validation structurelle ; le type rendu est une approximation
   # documentée (Type(0)) —voir NOYAU.md, section « Limites ».
-  si ($g == "ind") {
-    $pl = noy_champ_liste(t, "params")
-    $n = longueur($pl)
-    $k = 1
-    $pas = pas0
-    tant_que ($k < $n) {
-      $r = noy_synth($pl[$k], ctx, limite, $pas)
-      si (non noy_est_ok($r)) { retour $r }
-      $pas = noy_pas_res($r)
-      $k = $k + 1
+  si ($nx_g == "ind") {
+    $nx_pl = noy_champ_liste(t, "params")
+    $nx_n = longueur($nx_pl)
+    $nx_k = 1
+    $nx_pas = pas0
+    tant_que ($nx_k < $nx_n) {
+      $nx_r = noy_synth($nx_pl[$nx_k], ctx, limite, $nx_pas)
+      si (non noy_est_ok($nx_r)) { retour $nx_r }
+      $nx_pas = noy_pas_res($nx_r)
+      $nx_k = $nx_k + 1
     }
-    retour noy_ok(noy_type(0), $pas)
+    retour noy_ok(noy_type(0), $nx_pas)
   }
 
-  si ($g == "elim") {
-    $rm = noy_synth(noy_champ(t, "motif"), ctx, limite, pas0)
-    si (non noy_est_ok($rm)) { retour $rm }
-    $pas = noy_pas_res($rm)
-    $bl = noy_champ_liste(t, "branches")
-    $n = longueur($bl)
-    $k = 1
-    tant_que ($k < $n) {
-      $r = noy_synth($bl[$k], ctx, limite, $pas)
-      si (non noy_est_ok($r)) { retour $r }
-      $pas = noy_pas_res($r)
-      $k = $k + 1
+  si ($nx_g == "elim") {
+    $nx_rm = noy_synth(noy_champ(t, "motif"), ctx, limite, pas0)
+    si (non noy_est_ok($nx_rm)) { retour $nx_rm }
+    $nx_pas = noy_pas_res($nx_rm)
+    $nx_bl = noy_champ_liste(t, "branches")
+    $nx_n = longueur($nx_bl)
+    $nx_k = 1
+    tant_que ($nx_k < $nx_n) {
+      $nx_r = noy_synth($nx_bl[$nx_k], ctx, limite, $nx_pas)
+      si (non noy_est_ok($nx_r)) { retour $nx_r }
+      $nx_pas = noy_pas_res($nx_r)
+      $nx_k = $nx_k + 1
     }
-    retour noy_ok(noy_type(0), $pas)
+    retour noy_ok(noy_type(0), $nx_pas)
   }
 
-  retour noy_err("genre de terme inconnu ou mal formé: " + $g, pas0)
+  retour noy_err("genre de terme inconnu ou mal formé: " + $nx_g, pas0)
 }
 
 # ────────────────────────── 9. Interface publique ──────────────────────────
 
 fn verifier(t: table, ctx) -> table {
-  $c = noy_normaliser_ctx(ctx)
-  $r = noy_synth(t, $c, 10000, 0)
-  $res = table()
-  inserer($res, "ok", noy_est_ok($r))
-  inserer($res, "type", noy_type_res($r))
-  inserer($res, "erreur", noy_erreur($r))
-  retour $res
+  $nx_c = noy_normaliser_ctx(ctx)
+  $nx_r = noy_synth(t, $nx_c, 10000, 0)
+  $nx_res = table()
+  inserer($nx_res, "ok", noy_est_ok($nx_r))
+  inserer($nx_res, "type", noy_type_res($nx_r))
+  inserer($nx_res, "erreur", noy_erreur($nx_r))
+  retour $nx_res
 }
 
 fn bien_forme(t: table, ctx) -> booleen {
-  $g = noy_genre(t)
-  $connu = faux
-  si ($g == "var" ou $g == "type" ou $g == "pi" ou $g == "lam" ou
-      $g == "app" ou $g == "const" ou $g == "ind" ou
-      $g == "constructeur" ou $g == "elim") { $connu = vrai }
-  si (non $connu) { retour faux }
-  $r = verifier(t, ctx)
-  retour noy_est_ok($r)
+  $nx_g = noy_genre(t)
+  $nx_connu = faux
+  si ($nx_g == "var" ou $nx_g == "type" ou $nx_g == "pi" ou $nx_g == "lam" ou
+      $nx_g == "app" ou $nx_g == "const" ou $nx_g == "ind" ou
+      $nx_g == "constructeur" ou $nx_g == "elim") { $nx_connu = vrai }
+  si (non $nx_connu) { retour faux }
+  $nx_r = verifier(t, ctx)
+  retour noy_est_ok($nx_r)
 }
