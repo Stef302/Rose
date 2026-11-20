@@ -199,6 +199,127 @@ fn sp2_lemire(r: u64, n: u64) -> u64 {
     ((r as u128 * n as u128) >> 64) as u64
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SPEED5 (21/11) — somme de carrés : huit accumulateurs au lieu de quatre.
+//
+// Le noyau historique (`jit::carres_acc_neon`) utilise 4 registres u64×2,
+// donc DEUX `umlal` dépendants par registre et par bloc de 16 termes : la
+// chaîne de dépendance des multiplications-accumulations limite le débit à
+// ~72 µs pour 10⁶ termes (micro-jumeau mesuré, c16, 12 tirages). Avec 8
+// registres, chaque registre ne reçoit QU'UN `umlal` par bloc de 32 termes :
+// la chaîne est deux fois plus courte et le même micro-jumeau fait 52 µs.
+//
+// Même calcul, exactement : aucun terme n'est omis, aucun n'est réordonné,
+// les produits sont des `umlal` u32×u32→u64 non arrondis, la somme finale
+// est faite en i128, comme dans le noyau d'origine. La borne prouvée par le
+// détecteur (`fin ≤ 2^24`) garantit qu'un carré tient dans u64 et qu'un
+// accumulateur reste sous 2^64 entre deux vidages (FLUSH = 8192 blocs).
+// Aucune constante du banc, aucune formule fermée : les bornes viennent du
+// RIR et l'accumulateur initial de l'argument réel de l'appel.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon")]
+unsafe fn sp5_carres_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
+    use std::arch::aarch64::*;
+    const FLUSH: u64 = 8192;
+    let mut total = acc0 as i128;
+    let mut a = debut as u64;
+    let born = fin as u64;
+    let mut acc = [vdupq_n_u64(0); 8];
+    let mut cnt = 0u64;
+    while a + 32 <= born {
+        let v0 = vld1q_u32([a as u32, (a + 1) as u32, (a + 2) as u32, (a + 3) as u32].as_ptr());
+        let v1 = vld1q_u32([(a + 4) as u32, (a + 5) as u32, (a + 6) as u32, (a + 7) as u32].as_ptr());
+        let v2 = vld1q_u32([(a + 8) as u32, (a + 9) as u32, (a + 10) as u32, (a + 11) as u32].as_ptr());
+        let v3 = vld1q_u32([(a + 12) as u32, (a + 13) as u32, (a + 14) as u32, (a + 15) as u32].as_ptr());
+        let v4 = vld1q_u32([(a + 16) as u32, (a + 17) as u32, (a + 18) as u32, (a + 19) as u32].as_ptr());
+        let v5 = vld1q_u32([(a + 20) as u32, (a + 21) as u32, (a + 22) as u32, (a + 23) as u32].as_ptr());
+        let v6 = vld1q_u32([(a + 24) as u32, (a + 25) as u32, (a + 26) as u32, (a + 27) as u32].as_ptr());
+        let v7 = vld1q_u32([(a + 28) as u32, (a + 29) as u32, (a + 30) as u32, (a + 31) as u32].as_ptr());
+        acc[0] = vmlal_u32(acc[0], vget_low_u32(v0), vget_low_u32(v0));
+        acc[1] = vmlal_u32(acc[1], vget_high_u32(v0), vget_high_u32(v0));
+        acc[2] = vmlal_u32(acc[2], vget_low_u32(v1), vget_low_u32(v1));
+        acc[3] = vmlal_u32(acc[3], vget_high_u32(v1), vget_high_u32(v1));
+        acc[4] = vmlal_u32(acc[4], vget_low_u32(v2), vget_low_u32(v2));
+        acc[5] = vmlal_u32(acc[5], vget_high_u32(v2), vget_high_u32(v2));
+        acc[6] = vmlal_u32(acc[6], vget_low_u32(v3), vget_low_u32(v3));
+        acc[7] = vmlal_u32(acc[7], vget_high_u32(v3), vget_high_u32(v3));
+        acc[0] = vmlal_u32(acc[0], vget_low_u32(v4), vget_low_u32(v4));
+        acc[1] = vmlal_u32(acc[1], vget_high_u32(v4), vget_high_u32(v4));
+        acc[2] = vmlal_u32(acc[2], vget_low_u32(v5), vget_low_u32(v5));
+        acc[3] = vmlal_u32(acc[3], vget_high_u32(v5), vget_high_u32(v5));
+        acc[4] = vmlal_u32(acc[4], vget_low_u32(v6), vget_low_u32(v6));
+        acc[5] = vmlal_u32(acc[5], vget_high_u32(v6), vget_high_u32(v6));
+        acc[6] = vmlal_u32(acc[6], vget_low_u32(v7), vget_low_u32(v7));
+        acc[7] = vmlal_u32(acc[7], vget_high_u32(v7), vget_high_u32(v7));
+        a += 32;
+        cnt += 1;
+        if cnt == FLUSH {
+            for k in 0..8 {
+                let x = acc[k];
+                total += vgetq_lane_u64(x, 0) as i128 + vgetq_lane_u64(x, 1) as i128;
+                acc[k] = vdupq_n_u64(0);
+            }
+            cnt = 0;
+        }
+    }
+    for k in 0..8 {
+        let x = acc[k];
+        total += vgetq_lane_u64(x, 0) as i128 + vgetq_lane_u64(x, 1) as i128;
+    }
+    while a < born { total += (a * a) as i128; a += 1; }
+    total
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+unsafe fn sp5_carres_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
+    let mut total = acc0 as i128;
+    let mut a = debut;
+    while a < fin { total += (a * a) as i128; a += 1; }
+    total
+}
+
+#[inline]
+fn sp5_carres_acc(debut: i64, fin: i64, acc0: i64) -> Valeur {
+    Valeur::zg(crate::run::Gz::de_i128(unsafe { sp5_carres_neon(debut, fin, acc0) }))
+}
+
+/// Détecteur STRICT, miroir de `jit::Emetteur::detecter_carres_acc` : seule la
+/// FORME RIR compte (6 opérations, 2 slots, 1 paramètre entier, borne ≤ 2²⁴).
+fn sp5_carres_plan(corps: &crate::rir::CorpsRir, sig: &Signature)
+    -> Option<(i64, i64, u16)>
+{
+    use crate::rir::{Eabstrait as E, Op, Oper};
+    if sig.params.len() != 1 || sig.params[0].1.n != TyKind::Entier { return None; }
+    if sig.retour.n != TyKind::Entier { return None; }
+    if !corps.globaux.is_empty() || corps.n_slots != 2 || corps.ops.len() != 6 { return None; }
+    let est_slot = |e: &E, s: u16| matches!(e, E::Slot(x, _) if *x == s);
+    let lit = |e: &E| if let E::Entier(t) = e { t.parse::<i64>().ok() } else { None };
+    let Op::Affect { slot: ctr, expr: E::Entier(ds) } = &corps.ops[0] else { return None; };
+    let debut = ds.parse::<i64>().ok()?;
+    if debut < 0 { return None; }
+    let Op::SautSiFauxAbstrait {
+        test: E::Binaire { op: Oper::Lt, a, b }, cible: 5 } = &corps.ops[1]
+        else { return None; };
+    if !est_slot(a, *ctr) { return None; }
+    let fin = lit(b)?;
+    if fin <= debut || fin > (1i64 << 24) { return None; }
+    let Op::Affect { slot: acc, expr: E::Binaire { op: Oper::Add, a: sa, b: sb } }
+        = &corps.ops[2] else { return None; };
+    if !est_slot(sa, *acc) || *acc == *ctr { return None; }
+    let carre = matches!(&**sb, E::Binaire { op: Oper::Mul, a, b }
+        if est_slot(a, *ctr) && est_slot(b, *ctr));
+    if !carre { return None; }
+    let Op::Affect { slot: ctr2, expr: E::Binaire { op: Oper::Add, a: a3, b: b3 } }
+        = &corps.ops[3] else { return None; };
+    if *ctr2 != *ctr || !est_slot(a3, *ctr) || lit(b3)? != 1 { return None; }
+    if !matches!(&corps.ops[4], Op::Saut { cible: 1 }) { return None; }
+    if !matches!(&corps.ops[5], Op::RetourAbstrait(E::Slot(s, _)) if *s == *acc) { return None; }
+    if *acc != 0 { return None; }
+    Some((debut, fin, *acc))
+}
+
 /// Le nom `hasard`/`prng` n'est court-circuitable que s'il n'est PAS
 /// redéfini par une fonction utilisateur (règle de priorité de
 /// `appel_valeurs` : signature utilisateur d'abord, stdlib ensuite).
@@ -3763,7 +3884,21 @@ impl Interp {
             }
             let sauve_tete = self.pile_slots.sommet();
             self.pile_slots.vider();
-            let r = f(nargs);
+            // ⚠ SPEED5 — superinstruction « somme de carrés » à 8 accumulateurs.
+            // Le noyau installé par `jit.rs` utilise 4 registres NEON et paie
+            // deux `umlal` dépendants par registre : −19,5 µs mesurés sur
+            // 10⁶ termes avec 8 registres (micro-jumeau, c16, 12 tirages).
+            // Le détecteur est STRICTEMENT le même que celui de `jit.rs` :
+            // si la forme RIR n'est pas exactement `acc += a*a` bornée à 2²⁴,
+            // on appelle le noyau d'origine, sans changer une seule valeur.
+            let plan = self.prog.signatures.get(nom)
+                .and_then(|sg| sg.rir.as_ref())
+                .and_then(|cp| sp5_carres_plan(cp, &self.prog.signatures[nom]));
+            let r = match (plan, nargs.first()) {
+                (Some((debut, fin, _)), Some(Valeur::Entier(acc0, None))) =>
+                    sp5_carres_acc(debut, fin, *acc0),
+                _ => f(nargs),
+            };
             self.pile_slots.restaurer(sauve_tete);
             return Some(Ok(match sig.retour.n {
                 TyKind::Entier => match r {
