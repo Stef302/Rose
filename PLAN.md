@@ -1006,3 +1006,16 @@ Toutes les briques sont livrées: MATH1 (primitives), VAL1 (Valeur::Symbolique),
 |---|---|---|
 | INT1 | primitives Rose: entier_geant_factorielle, detail, chiffres, plus_de_chiffres; enregistrement REPL; pont boutons GUI | `rose/src/interp.rs`, `rose/docs/DETAIL_INT.md` |
 | QAA | tests de bout en bout + doc utilisateur | `rose/tests/`, `rose/docs/GUIDE_GEANTS.md` |
+
+## Vague 54 (21/11) — logo, version 0.1.6, vitesse totale
+
+Points utilisateur: (1) factorielle 57897654765869708! — DEJA FONCTIONNEL (testé: prefixe 135270068481625538577602484489…, 945374125952365370 digits, zeros 14474413691467415); (2) refs 0.1.5 restantes; (3) dépasser Rust en tout point; (4) logo crop + texte superposé.
+
+Cause ROI trouvée (setup_gui.rs ~1591-1610): titre Kare rectangle h_marque=max(72, marque_px+28), centre y_marque+34 => bas ≈ y_marque+70; sous-titre fixé à y_marque+56 => chevauchement ~14px. place_logo = plancher - 78 - 120 insuffisant.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| LOGO1 | corriger cadrage logo + chevauchement texte, régénérer aperçus | `rose/src/setup_gui.rs`, `installateur/velopack/apercu-*.png`, `rose/docs/LOGO_FIX.md` |
+| VER1 | refs 0.1.5 → 0.1.6 là où c'est l'état courant (historique conservé) | `README.md`, `docs/`, `wikimiroir/`, `vscode-rose/`, `rose/docs/VERSION_016.md` |
+| SPEED3 | parse/RIR/démarrage (190µs englobant, 1,1ms global) | `rose/src/{front,rir,main}.rs`, `rose/docs/SPEED3.md` |
+| SPEED4 | tables/RNG/restes runtime | `rose/src/run.rs`, `rose/docs/SPEED4.md` |
