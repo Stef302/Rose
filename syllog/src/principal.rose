@@ -1,0 +1,604 @@
+importer "syllog/src/tactiques.rose"
+importer "syllog/src/analyse.rose"
+# ═══════════════════════════════════════════════════════════════════════════
+# syllog/src/principal.rose — PILOTE CLI DE SYLLOG (PROV4)
+# ═══════════════════════════════════════════════════════════════════════════
+# Consommateur des modules des autres agents (SPEC.md) :
+#   noyau.rose     : verifier, beta, convertible, bien_forme
+#   lexeur.rose    : lexer
+#   analyse.rose   : analyser
+#   tactiques.rose : reflexivite, symetrie, introduction, application, #                    induction, simplifier
+# Aucune logique de noyau / d'analyse / de tactique n'est réimplémentée ici.
+# Vérifier : ./rose/rose verif syllog/src/principal.rose
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+importer "syllog/src/noyau.rose"
+importer "syllog/src/lexeur.rose"
+
+# ── 1. Petits services sur chaînes et listes ───────────────────────────────
+
+fn p_saut() -> chaine { retour caractere(10) }
+
+fn p_sans_fin(s: chaine) -> chaine {
+  $sf_n = longueur(s)
+  si ($sf_n > 0 et sous_chaine(s, $sf_n - 1, $sf_n) == p_saut()) {
+    retour sous_chaine(s, 0, $sf_n - 1)
+  }
+  retour s
+}
+
+fn p_est_blanc(c: chaine) -> booleen {
+  retour c == " " ou c == "\t" ou c == "\n" ou c == "\r"
+}
+
+fn p_trim(s: chaine) -> chaine {
+  $tm_a = 0
+  $tm_b = longueur(s)
+  tant_que ($tm_a < $tm_b et p_est_blanc(sous_chaine(s, $tm_a, $tm_a + 1))) {
+    $tm_a = $tm_a + 1
+  }
+  tant_que ($tm_b > $tm_a et p_est_blanc(sous_chaine(s, $tm_b - 1, $tm_b))) {
+    $tm_b = $tm_b - 1
+  }
+  retour sous_chaine(s, $tm_a, $tm_b)
+}
+
+fn p_theoreme_mot(s: chaine) -> booleen {
+  retour s == "théorème" ou s == "theoreme"
+}
+
+fn p_preuve_mot(s: chaine) -> booleen {
+  retour s == "preuve" ou s == "preuv" ou s == "proof"
+}
+
+# Les jetons produits par lexer() peuvent être 0-indexés ou comporter un
+# sentinelle vide en 0 selon les versions du lexeur. On normalise TOUJOURS
+# en [sentinelle, jeton_0, jeton_1, ...] pour rendre les découpages sûrs.
+fn p_norm(j: liste<chaine>) -> liste<chaine> {
+  $nm_r = [""]
+  $nm_n = longueur(j)
+  $nm_deb = 0
+  si ($nm_n > 1 et j[0] == "") { $nm_deb = 1 }
+  $nm_i = $nm_deb
+  tant_que ($nm_i < $nm_n) {
+    joindre($nm_r, j[$nm_i])
+    $nm_i = $nm_i + 1
+  }
+  retour $nm_r
+}
+
+# Tranche [debut, fin[ d'une liste normalisée (1 = premier jeton).
+fn p_tranche(j: liste<chaine>, debut: entier, fin: entier) -> liste<chaine> {
+  $tr_r = [""]
+  $tr_i = debut
+  $tr_lim = longueur(j)
+  si (fin < $tr_lim) { $tr_lim = fin }
+  tant_que ($tr_i < $tr_lim) {
+    joindre($tr_r, j[$tr_i])
+    $tr_i = $tr_i + 1
+  }
+  retour $tr_r
+}
+
+# analyser() de PROV2 attend une liste 0-indexee (pas de sentinelle).
+fn p_liste_vide_syllog() {
+  retour valeurs(table())
+}
+
+fn p_sans_sentinel(j: liste<chaine>) -> liste<chaine> {
+  $ss_r = [""]
+  $ss_vide = p_liste_vide_syllog()
+  $ss_r = $ss_vide
+  $ss_n = longueur(j)
+  $ss_i = 1
+  tant_que ($ss_i < $ss_n) {
+    joindre($ss_r, j[$ss_i])
+    $ss_i = $ss_i + 1
+  }
+  retour $ss_r
+}
+
+fn p_cherche(j: liste<chaine>, mot: chaine, debut: entier, fin: entier) -> entier {
+  $ch_i = debut
+  $ch_lim = longueur(j)
+  si (fin < $ch_lim) { $ch_lim = fin }
+  tant_que ($ch_i < $ch_lim) {
+    si (j[$ch_i] == mot) { retour $ch_i }
+    $ch_i = $ch_i + 1
+  }
+  retour -1
+}
+
+fn p_cherche_theoreme(j: liste<chaine>, debut: entier) -> entier {
+  $ct_i = debut
+  $ct_n = longueur(j)
+  tant_que ($ct_i < $ct_n) {
+    si (p_theoreme_mot(j[$ct_i])) { retour $ct_i }
+    $ct_i = $ct_i + 1
+  }
+  retour -1
+}
+
+fn p_cherche_preuve(j: liste<chaine>, debut: entier, fin: entier) -> entier {
+  $cp_i = debut
+  $cp_lim = longueur(j)
+  si (fin < $cp_lim) { $cp_lim = fin }
+  tant_que ($cp_i < $cp_lim) {
+    si (p_preuve_mot(j[$cp_i])) { retour $cp_i }
+    $cp_i = $cp_i + 1
+  }
+  retour -1
+}
+
+# ── 2. Découpage d'un flux de jetons en déclarations ───────────────────────
+
+# Chaque déclaration : {nom, but (liste<chaine>), preuve (liste<chaine>)}.
+fn p_declarations(j: liste<chaine>) -> table {
+  $dc_decls = table()
+  inserer($dc_decls, "n", 0)
+  $dc_c = 0
+  $dc_pos = p_cherche_theoreme(j, 1)
+  tant_que ($dc_pos > 0) {
+    $dc_suiv = p_cherche_theoreme(j, $dc_pos + 1)
+    $dc_fin_bloc = $dc_suiv
+    si ($dc_fin_bloc < 0) { $dc_fin_bloc = longueur(j) }
+
+    $dc_nom = "sans_nom"
+    si ($dc_pos + 1 < $dc_fin_bloc) {
+      $dc_cand = j[$dc_pos + 1]
+      si ($dc_cand != ":" et non p_theoreme_mot($dc_cand) et non p_preuve_mot($dc_cand)) {
+        $dc_nom = $dc_cand
+      }
+    }
+
+    $dc_pp = p_cherche_preuve(j, $dc_pos + 1, $dc_fin_bloc)
+    $dc_deux = p_cherche(j, ":", $dc_pos + 1, $dc_fin_bloc)
+    $dc_deb_but = $dc_pos + 2
+    si ($dc_deux >= 0) { $dc_deb_but = $dc_deux + 1 }
+    $dc_fin_but = $dc_fin_bloc
+    si ($dc_pp >= 0 et $dc_pp < $dc_fin_but) { $dc_fin_but = $dc_pp }
+    si ($dc_deb_but > $dc_fin_but) { $dc_deb_but = $dc_fin_but }
+
+    $dc_preuve = [""]
+    si ($dc_pp >= 0) {
+      $dc_preuve = p_tranche(j, $dc_pp + 1, $dc_fin_bloc)
+    }
+
+    $dc_une = table()
+    inserer($dc_une, "nom", $dc_nom)
+    inserer($dc_une, "but", p_tranche(j, $dc_deb_but, $dc_fin_but))
+    inserer($dc_une, "preuve", $dc_preuve)
+    inserer($dc_decls, chaine($dc_c), $dc_une)
+    $dc_c = $dc_c + 1
+    si ($dc_suiv < 0) { $dc_pos = -1 } sinon { $dc_pos = $dc_suiv }
+  }
+  inserer($dc_decls, "n", $dc_c)
+  retour $dc_decls
+}
+
+# ── 3. Analyse d'un but (module PROV2) ─────────────────────────────────────
+
+fn p_est_terme(t) -> booleen {
+  si (type(t) != "table") { retour faux }
+  retour cle_existe(t, "genre")
+}
+
+fn p_analyser_but(j: liste<chaine>) -> table {
+  $ab_r = table()
+  $ab_e = ""
+  essayer {
+    $ab_r = analyser(p_sans_sentinel(j))
+  } attraper($ab_e) {
+    $ab_r = table()
+  }
+  # Certains parseurs rendent un nœud théorème : on accepte ses champs
+  # « type » / « but » / « terme » s'ils sont présents.
+  si (type($ab_r) == "table" et non p_est_terme($ab_r)) {
+    si (cle_existe($ab_r, "type") et p_est_terme($ab_r["type"])) {
+      $ab_r = $ab_r["type"]
+    } sinon {
+      si (cle_existe($ab_r, "but") et p_est_terme($ab_r["but"])) {
+        $ab_r = $ab_r["but"]
+      }
+    }
+  }
+  retour $ab_r
+}
+
+# ── 4. Trace lisible ───────────────────────────────────────────────────────
+
+fn p_montrer(t, prof: entier) -> chaine {
+  si (type(t) != "table") { retour chaine(t) }
+  si (prof > 4) { retour "…" }
+  $mt_g = "?"
+  si (cle_existe(t, "genre")) { $mt_g = chaine(t["genre"]) }
+  $mt_s = $mt_g
+  si (cle_existe(t, "nom")) { $mt_s = $mt_s + "(" + chaine(t["nom"]) + ")" }
+  si (cle_existe(t, "niveau")) { $mt_s = $mt_s + "[" + chaine(t["niveau"]) + "]" }
+  $mt_p = prof + 1
+  si (cle_existe(t, "domaine")) {
+    $mt_s = $mt_s + "(" + p_montrer(t["domaine"], $mt_p) + " -> " + p_montrer(t["codomaine"], $mt_p) + ")"
+  }
+  si (cle_existe(t, "corps")) {
+    $mt_s = $mt_s + "(corps " + p_montrer(t["corps"], $mt_p) + ")"
+  }
+  si (cle_existe(t, "fonction")) {
+    $mt_s = $mt_s + "(" + p_montrer(t["fonction"], $mt_p) + " " + p_montrer(t["argument"], $mt_p) + ")"
+  }
+  si (cle_existe(t, "type")) {
+    $mt_s = $mt_s + " : " + p_montrer(t["type"], $mt_p)
+  }
+  retour $mt_s
+}
+
+fn p_ajoute_trace(sortie: table, nom: chaine, etiquette: chaine, t) {
+  $at_s0 = sortie["s"]
+  inserer(sortie, "s", $at_s0 + "  [trace] " + nom + " " + etiquette + " = " + p_montrer(t, 0) + p_saut())
+}
+
+# ── 5. Résultats de tactiques (module PROV3) ───────────────────────────────
+
+fn p_ok(r) -> booleen {
+  si (type(r) != "table") { retour faux }
+  si (non cle_existe(r, "ok")) { retour faux }
+  retour r["ok"] == vrai
+}
+
+fn p_raison(r) -> chaine {
+  si (type(r) != "table") { retour "résultat inattendu" }
+  si (cle_existe(r, "erreur") et chaine(r["erreur"]) != "") {
+    retour chaine(r["erreur"])
+  }
+  si (cle_existe(r, "raison") et chaine(r["raison"]) != "") {
+    retour chaine(r["raison"])
+  }
+  retour "raison inconnue"
+}
+
+fn p_buts_restants(r) -> entier {
+  $br_n = 0
+  si (type(r) == "table" et cle_existe(r, "buts")) {
+    $br_b = r["buts"]
+    si (type($br_b) == "table" et cle_existe($br_b, "n")) {
+      $br_n = $br_b["n"]
+    }
+  }
+  retour $br_n
+}
+
+# Une tactique est appelée UNIQUEMENT via les signatures de SPEC.md.
+fn p_tactique(nom: chaine, but: table, ctx: liste<table>, preuve: liste<chaine>, sortie: table, trace: booleen, theoreme: chaine) -> table {
+  $ta_r = table()
+  $ta_e = ""
+  essayer {
+    si (nom == "reflexivite" ou nom == "réflexivité" ou nom == "refl") {
+      $ta_r = reflexivite(but)
+    } sinon {
+      si (nom == "symetrie" ou nom == "symétrie" ou nom == "sym") {
+        $ta_r = symetrie(but)
+      } sinon {
+        si (nom == "introduction" ou nom == "intro") {
+          $ta_r = introduction(but, ctx)
+        } sinon {
+          si (nom == "application" ou nom == "app") {
+            $ta_r = application(but, ctx)
+          } sinon {
+            si (nom == "induction" ou nom == "ind") {
+              $ta_r = induction(but, ctx)
+            } sinon {
+              $ta_r = simplifier(but)
+            }
+          }
+        }
+      }
+    }
+  } attraper($ta_e) {
+    inserer($ta_r, "ok", faux)
+    inserer($ta_r, "erreur", "tactique " + nom + " : " + $ta_e)
+  }
+  retour $ta_r
+}
+
+fn p_est_tactique(s: chaine) -> booleen {
+  retour s == "reflexivite" ou s == "réflexivité" ou s == "refl" ou s == "symetrie" ou s == "symétrie" ou s == "sym" ou s == "introduction" ou s == "intro" ou s == "application" ou s == "app" ou s == "induction" ou s == "ind" ou s == "simplifier" ou s == "simplification"
+}
+
+# Preuve directe : la ligne « preuve » est un terme, pas une tactique.
+fn p_preuve_terme(preuve: liste<chaine>) -> table {
+  $pt_t = table()
+  $pt_e = ""
+  essayer {
+    $pt_t = analyser(p_sans_sentinel(preuve))
+  } attraper($pt_e) {
+    $pt_t = table()
+  }
+  retour $pt_t
+}
+
+# ── 6. Moteur du pilote ────────────────────────────────────────────────────
+
+# Exécute un fichier .slg. Rend {sortie, code, total, reussis, lecture}.
+fn pilote_executer(chemin: chaine, trace: booleen) -> table {
+  $pe_res = table()
+  inserer($pe_res, "sortie", "")
+  inserer($pe_res, "code", 2)
+  inserer($pe_res, "total", 0)
+  inserer($pe_res, "reussis", 0)
+  inserer($pe_res, "lecture", faux)
+
+  $pe_src = ""
+  $pe_e = ""
+  $pe_lu = faux
+  essayer {
+    $pe_src = lire_texte(chemin)
+    $pe_lu = vrai
+    inserer($pe_res, "lecture", vrai)
+  } attraper($pe_e) {
+    $pe_e = $pe_e
+  }
+  si (non $pe_lu) {
+    inserer($pe_res, "sortie", $pe_e)
+    retour $pe_res
+  }
+
+  $pe_j = [""]
+  $pe_brut = [""]
+  essayer {
+    $pe_brut = lexer($pe_src)
+    $pe_j = p_norm($pe_brut)
+  } attraper($pe_e) {
+    inserer($pe_res, "sortie", "lexage impossible (" + chemin + ") : " + $pe_e)
+    retour $pe_res
+  }
+
+  $pe_decls = p_declarations($pe_j)
+  $pe_total = $pe_decls["n"]
+  $pe_reussis = 0
+  $pe_sortie = table()
+  inserer($pe_sortie, "s", "")
+  $pe_ctx = noy_ctx_vide()
+  $pe_parse = faux
+  $pe_i = 0
+
+  tant_que ($pe_i < $pe_total) {
+    $pe_d = $pe_decls[chaine($pe_i)]
+    $pe_nom = chaine($pe_d["nom"])
+    $pe_but_j = [""]
+    $pe_but_j = $pe_d["but"]
+    $pe_but = p_analyser_but($pe_but_j)
+    $pe_ligne = ""
+    $pe_erreur_parse = ""
+
+    si (non p_est_terme($pe_but)) {
+      $pe_parse = vrai
+      $pe_ligne = "ÉCHEC " + $pe_nom + " : analyse du but impossible"
+    } sinon {
+      si (trace) { p_ajoute_trace($pe_sortie, $pe_nom, "but", $pe_but) }
+      $pe_vbut = verifier($pe_but, $pe_ctx)
+      si (non p_ok($pe_vbut)) {
+        $pe_ligne = "ÉCHEC " + $pe_nom + " : type invalide — " + p_raison($pe_vbut)
+      } sinon {
+        $pe_preuve = [""]
+        $pe_preuve = $pe_d["preuve"]
+        $pe_tac = ""
+        si (longueur($pe_preuve) > 1) { $pe_tac = $pe_preuve[1] }
+        $pe_terme = table()
+        $pe_r = table()
+
+        si ($pe_tac == "") {
+          $pe_ligne = "ÉCHEC " + $pe_nom + " : aucune preuve fournie"
+        } sinon {
+          si (p_est_tactique($pe_tac)) {
+            $pe_r = p_tactique($pe_tac, $pe_but, $pe_ctx, $pe_preuve, $pe_sortie, trace, $pe_nom)
+            si (trace et cle_existe($pe_r, "terme")) {
+              p_ajoute_trace($pe_sortie, $pe_nom, "terme", $pe_r["terme"])
+            }
+            $pe_nb_buts = p_buts_restants($pe_r)
+            si (non p_ok($pe_r)) {
+              $pe_ligne = "ÉCHEC " + $pe_nom + " : " + p_raison($pe_r)
+            } sinon {
+              si ($pe_nb_buts > 0) {
+                $pe_ligne = "ÉCHEC " + $pe_nom + " : tactique incomplète (" + chaine($pe_nb_buts) + " but(s) restant(s))"
+              } sinon {
+                $pe_terme = $pe_r["terme"]
+              }
+            }
+          } sinon {
+            $pe_terme = p_preuve_terme($pe_preuve)
+            si (non p_est_terme($pe_terme)) {
+              $pe_parse = vrai
+              $pe_ligne = "ÉCHEC " + $pe_nom + " : analyse de la preuve impossible"
+            } sinon {
+              si (trace) { p_ajoute_trace($pe_sortie, $pe_nom, "terme", $pe_terme) }
+            }
+          }
+
+          si ($pe_ligne == "") {
+            $pe_vf = verifier($pe_terme, $pe_ctx)
+            si (non p_ok($pe_vf)) {
+              $pe_ligne = "ÉCHEC " + $pe_nom + " : terme de preuve invalide — " + p_raison($pe_vf)
+            } sinon {
+              $pe_type_final = table()
+              $pe_type_final = $pe_vf["type"]
+              si (non convertible($pe_type_final, $pe_but)) {
+                $pe_ligne = "ÉCHEC " + $pe_nom + " : type de la preuve ≠ but"
+              } sinon {
+                $pe_ligne = "OK " + $pe_nom
+                $pe_reussis = $pe_reussis + 1
+              }
+            }
+          }
+        }
+      }
+    }
+
+    $pe_s0 = $pe_sortie["s"]
+    inserer($pe_sortie, "s", $pe_s0 + $pe_ligne + p_saut())
+    $pe_i = $pe_i + 1
+  }
+
+  $pe_s_str = ""
+  $pe_s_str = $pe_sortie["s"]
+  $pe_s1 = $pe_s_str + chaine($pe_total) + " théorème(s), " + chaine($pe_reussis) + " réussi(s)" + p_saut()
+  inserer($pe_res, "sortie", p_sans_fin($pe_s1))
+  inserer($pe_res, "total", $pe_total)
+  inserer($pe_res, "reussis", $pe_reussis)
+  si ($pe_total == 0 ou $pe_parse) {
+    inserer($pe_res, "code", 2)
+  } sinon {
+    si ($pe_reussis == $pe_total) { inserer($pe_res, "code", 0) }
+    sinon { inserer($pe_res, "code", 1) }
+  }
+  retour $pe_res
+}
+
+# ── 7. Aide et mode démo ───────────────────────────────────────────────────
+
+fn pilote_aide() -> chaine {
+  $aid_a = ""
+  $aid_a = $aid_a + "Syllog — pilote de démonstration (en Rose)" + p_saut()
+  $aid_a = $aid_a + p_saut()
+  $aid_a = $aid_a + "Usage :" + p_saut()
+  $aid_a = $aid_a + "  rose syllog/src/principal.rose <fichier.slg>  vérifie chaque théorème" + p_saut()
+  $aid_a = $aid_a + "  rose syllog/src/principal.rose --demo [fichiers.slg...]" + p_saut()
+  $aid_a = $aid_a + "  rose syllog/src/principal.rose --aide" + p_saut()
+  $aid_a = $aid_a + p_saut()
+  $aid_a = $aid_a + "Options :" + p_saut()
+  $aid_a = $aid_a + "  --trace  affiche les termes construits" + p_saut()
+  $aid_a = $aid_a + p_saut()
+  $aid_a = $aid_a + "Format d'un fichier .slg :" + p_saut()
+  $aid_a = $aid_a + "  théorème <nom> : <type du but>" + p_saut()
+  $aid_a = $aid_a + "  preuve <tactique>" + p_saut()
+  $aid_a = $aid_a + "Tactiques : reflexivite, symetrie, introduction, application," + p_saut()
+  $aid_a = $aid_a + "induction, simplifier. La preuve peut aussi être un terme." + p_saut()
+  $aid_a = $aid_a + p_saut()
+  $aid_a = $aid_a + "Sortie : OK <nom> ou ÉCHEC <nom> : <raison>, puis" + p_saut()
+  $aid_a = $aid_a + "« N théorème(s), M réussi(s) »." + p_saut()
+  $aid_a = $aid_a + "Codes : 0 tout passe, 1 échec de preuve, 2 lecture/parsing." + p_saut()
+  retour p_sans_fin($aid_a)
+}
+
+# Rose n'a pas de primitive pour lister un répertoire : les noms connus sont
+# donc énumérés ici. --demo accepte aussi des chemins explicites en arguments.
+fn pilote_manifeste() -> liste<chaine> {
+  $man_l = ["syllog/preuves/base.slg", "syllog/preuves/exemple.slg", "syllog/preuves/identite.slg", "syllog/preuves/demo_identite.slg", "syllog/preuves/reflexivite.slg", "syllog/preuves/demo_reflexivite.slg", "syllog/preuves/symetrie.slg", "syllog/preuves/demo_symetrie.slg", "syllog/preuves/associativite.slg", "syllog/preuves/demo_associativite.slg", "syllog/preuves/commutativite.slg", "syllog/preuves/demo_commutativite.slg", "syllog/preuves/plus_zero.slg", "syllog/preuves/plus_succ.slg", "syllog/preuves/lemmes.slg", "syllog/preuves/demo_lemmes.slg"]
+  retour $man_l
+}
+
+fn pilote_demo(fichiers: liste<chaine>, trace: booleen) -> table {
+  $pd_res = table()
+  inserer($pd_res, "sortie", "")
+  inserer($pd_res, "code", 2)
+  inserer($pd_res, "total", 0)
+  inserer($pd_res, "reussis", 0)
+  $pd_sortie = ""
+  $pd_total = 0
+  $pd_reussis = 0
+  $pd_code = 0
+  $pd_nb = 0
+  $pd_k = 0
+  $pd_n = longueur(fichiers)
+  $pd_demo_fichier = ""
+  tant_que ($pd_k < $pd_n) {
+    $pd_demo_fichier = fichiers[$pd_k]
+    $pd_un = pilote_executer(fichiers[$pd_k], trace)
+    $pd_sortie_un = ""
+    $pd_total_un = 0
+    $pd_reussis_un = 0
+    $pd_code_un = 0
+    $pd_sortie_un = $pd_un["sortie"]
+    $pd_total_un = $pd_un["total"]
+    $pd_reussis_un = $pd_un["reussis"]
+    $pd_code_un = $pd_un["code"]
+    $pd_sortie = $pd_sortie + "=== " + $pd_demo_fichier + " ===" + p_saut() + p_sans_fin($pd_sortie_un) + p_saut() + p_saut()
+    $pd_total = $pd_total + $pd_total_un
+    $pd_reussis = $pd_reussis + $pd_reussis_un
+    $pd_nb = $pd_nb + 1
+    si ($pd_code_un == 2) { $pd_code = 2 }
+    si ($pd_code_un == 1 et $pd_code == 0) { $pd_code = 1 }
+    $pd_k = $pd_k + 1
+  }
+  si ($pd_nb == 0) {
+    $pd_sortie = "Erreur : aucun fichier .slg jouable dans syllog/preuves/ (dossier absent ou vide)"
+    $pd_code = 2
+  } sinon {
+    $pd_sortie = p_sans_fin($pd_sortie) + p_saut() + chaine($pd_total) + " théorème(s), " + chaine($pd_reussis) + " réussi(s)"
+  }
+  inserer($pd_res, "sortie", p_sans_fin($pd_sortie))
+  inserer($pd_res, "total", $pd_total)
+  inserer($pd_res, "reussis", $pd_reussis)
+  inserer($pd_res, "code", $pd_code)
+  retour $pd_res
+}
+
+# Filtre les chemins du manifeste réellement lisibles.
+fn pilote_manifeste_present() -> liste<chaine> {
+  $pm_l = [""]
+  $pm_m = pilote_manifeste()
+  $pm_k = 0
+  tant_que ($pm_k < longueur($pm_m)) {
+    $pm_mani_fichier = $pm_m[$pm_k]
+    $pm_lu = ""
+    essayer {
+      $pm_lu = lire_texte($pm_mani_fichier)
+    } attraper($pm_e) { }
+    si ($pm_lu != "") { joindre($pm_l, $pm_mani_fichier) }
+    $pm_k = $pm_k + 1
+  }
+  retour p_tranche($pm_l, 1, longueur($pm_l))
+}
+
+# ── 8. Interface en ligne de commande ──────────────────────────────────────
+
+fn pilote_main() {
+  $mn_n = nb_arguments()
+  si ($mn_n == 0) {
+    >> pilote_aide()
+    quitter(2)
+  }
+
+  $mn_trace = faux
+  $mn_demo = faux
+  $mn_chemins = [""]
+  $mn_k = 0
+  tant_que ($mn_k < $mn_n) {
+    $mn_a = argument($mn_k)
+    si ($mn_a == "--trace") {
+      $mn_trace = vrai
+    } sinon {
+      si ($mn_a == "--demo") {
+        $mn_demo = vrai
+      } sinon {
+        si ($mn_a == "--aide" ou $mn_a == "-h" ou $mn_a == "--help") {
+          >> pilote_aide()
+          quitter(0)
+        } sinon {
+          joindre($mn_chemins, $mn_a)
+        }
+      }
+    }
+    $mn_k = $mn_k + 1
+  }
+
+  $mn_resultat = table()
+  si ($mn_demo) {
+    $mn_fichiers = pilote_manifeste_present()
+    si (longueur($mn_chemins) > 1) { $mn_fichiers = p_tranche($mn_chemins, 1, longueur($mn_chemins)) }
+    $mn_resultat = pilote_demo($mn_fichiers, $mn_trace)
+  } sinon {
+    si (longueur($mn_chemins) < 2) {
+      >> pilote_aide()
+      quitter(2)
+    }
+    $mn_resultat = pilote_executer($mn_chemins[1], $mn_trace)
+  }
+  $mn_sortie_finale = ""
+  $mn_code_final = 0
+  $mn_sortie_finale = $mn_resultat["sortie"]
+  $mn_code_final = $mn_resultat["code"]
+  >> $mn_sortie_finale
+  quitter($mn_code_final)
+}
+
+pilote_main()

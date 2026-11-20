@@ -1,0 +1,554 @@
+# ── Syllog — parseur (PROV2) ───────────────────────────────────────────────
+# Verifier : ./rose/rose verif syllog/src/analyse.rose
+# API publique :
+#   analyser(jetons)          -> Terme   : un seul terme
+#   analyser_source(src)      -> Terme   : un seul terme, depuis une chaine
+#   analyser_fichier(src)     -> liste de declarations {nom, type, preuve}
+#   derniere_erreur()         -> chaine  : "" ou "ligne N : ..."
+#   formater_terme(t)         -> chaine  : AST lisible
+#   formater_declaration(d)   -> chaine
+#
+# Etat explicite : une table {j, p, l, e} passee a toutes les fonctions.
+# Rose n'execute pas les initialisations globales d'un fichier importe, donc
+# aucun etat global n'est utilise. Les tables etant des references, les
+# modifications de l'etat par inserer() sont visibles par l'appelant.
+#
+# ⚠分析: les fonctions `lexer_table`/`lexer_detaille` sont définies dans le
+# lexeur; sans cet import, `analyser_source` échoue avec
+# « Fonction 'lexer_table' inconnue » (mesuré).
+importer "syllog/src/lexeur.rose"
+
+
+# ── 1. Constructeurs de Termes (SPEC.md) ──────────────────────────────────
+
+fn t_var(nom) {
+    $t = table()
+    inserer($t, "genre", "var")
+    inserer($t, "nom", nom)
+    retour $t
+}
+
+fn t_type(niveau) {
+    $t = table()
+    inserer($t, "genre", "type")
+    inserer($t, "niveau", niveau)
+    retour $t
+}
+
+fn t_pi(nom, domaine, codomaine) {
+    $t = table()
+    inserer($t, "genre", "pi")
+    inserer($t, "nom", nom)
+    inserer($t, "domaine", domaine)
+    inserer($t, "codomaine", codomaine)
+    retour $t
+}
+
+fn t_lam(nom, domaine, corps) {
+    $t = table()
+    inserer($t, "genre", "lam")
+    inserer($t, "nom", nom)
+    inserer($t, "domaine", domaine)
+    inserer($t, "corps", corps)
+    retour $t
+}
+
+fn t_app(fonction, argument) {
+    $t = table()
+    inserer($t, "genre", "app")
+    inserer($t, "fonction", fonction)
+    inserer($t, "argument", argument)
+    retour $t
+}
+
+fn t_const(nom, type) {
+    $t = table()
+    inserer($t, "genre", "const")
+    inserer($t, "nom", nom)
+    inserer($t, "type", type)
+    retour $t
+}
+
+fn t_ind(nom, params) {
+    $t = table()
+    inserer($t, "genre", "ind")
+    inserer($t, "nom", nom)
+    inserer($t, "params", params)
+    retour $t
+}
+
+fn t_constructeur(nom, type) {
+    $t = table()
+    inserer($t, "genre", "constructeur")
+    inserer($t, "nom", nom)
+    inserer($t, "type", type)
+    retour $t
+}
+
+fn t_elim(nom, motif, branches) {
+    $t = table()
+    inserer($t, "genre", "elim")
+    inserer($t, "nom", nom)
+    inserer($t, "motif", motif)
+    inserer($t, "branches", branches)
+    retour $t
+}
+
+fn liste_vide() {
+    retour valeurs(table())
+}
+
+# ── 2. Etat du parseur ────────────────────────────────────────────────────
+
+fn syl_etat(j, n: entier) {
+    $S = table()
+    inserer($S, "j", j)
+    inserer($S, "n", n)
+    inserer($S, "p", 0)
+    inserer($S, "l", 1)
+    inserer($S, "e", "")
+    syl_maj_ligne($S)
+    retour $S
+}
+
+fn syl_erreur(S, msg) {
+    si (S["e"] == "") {
+        inserer(S, "e", "ligne " + chaine(S["l"]) + " : " + msg)
+    }
+}
+
+fn syl_sep(t: chaine) -> entier {
+    $n = longueur(t)
+    $i = 0
+    tant_que ($i < $n) {
+        si (sous_chaine(t, $i, $i + 1) == "~") { retour $i }
+        $i = $i + 1
+    }
+    retour -1
+}
+
+fn syl_texte(t: chaine) -> chaine {
+    $k = syl_sep(t)
+    si ($k < 0) { retour t }
+    retour sous_chaine(t, 0, $k)
+}
+
+fn syl_num_ligne(t: chaine) -> entier {
+    $k = syl_sep(t)
+    si ($k < 0) { retour 0 }
+    retour entier(sous_chaine(t, $k + 1, longueur(t)))
+}
+
+fn syl_brut(S) -> chaine {
+    $p = S["p"]
+    si ($p < S["n"]) { retour chaine(S["j"][$p]) }
+    retour ""
+}
+
+fn syl_maj_ligne(S) {
+    $b = syl_brut(S)
+    $k = syl_sep($b)
+    si ($k >= 0) { inserer(S, "l", syl_num_ligne($b)) }
+}
+
+fn syl_courant(S) -> chaine {
+    retour syl_texte(syl_brut(S))
+}
+
+fn syl_avance(S) {
+    inserer(S, "p", S["p"] + 1)
+    syl_maj_ligne(S)
+}
+
+fn syl_est(S, t: chaine) -> booleen {
+    retour syl_courant(S) == t
+}
+
+fn syl_attend(S, t: chaine) {
+    $c = syl_courant(S)
+    si ($c == t) {
+        syl_avance(S)
+    } sinon {
+        syl_erreur(S, "attendu '" + t + "', trouve '" + $c + "'")
+    }
+}
+
+fn syl_est_nombre(t: chaine) -> booleen {
+    si (longueur(t) == 0) { retour faux }
+    $i = 0
+    tant_que ($i < longueur(t)) {
+        $c = sous_chaine(t, $i, $i + 1)
+        $o = ordre($c)
+        si ($o < 48 ou $o > 57) { retour faux }
+        $i = $i + 1
+    }
+    retour vrai
+}
+
+fn syl_est_ident(t: chaine) -> booleen {
+    si (longueur(t) == 0) { retour faux }
+    $c = sous_chaine(t, 0, 1)
+    $o = ordre($c)
+    retour ($o >= 97 et $o <= 122) ou ($o >= 65 et $o <= 90) ou
+           $o >= 128 ou $c == "_"
+}
+
+fn syl_est_reserve(t: chaine) -> booleen {
+    retour t == "théorème" ou t == "preuve" ou t == "soit" ou
+           t == "montrer" ou t == "par" ou t == "cas" ou
+           t == "induction" ou t == "sur" ou t == "et" ou
+           t == "ou" ou t == "implique"
+}
+
+fn syl_debut_atom(t: chaine) -> booleen {
+    si (longueur(t) == 0) { retour faux }
+    si (t == "(" ou t == "type" ou t == "fn" ou t == "pour_tout" ou
+        t == "existe" ou t == "vrai" ou t == "faux" ou t == "non") {
+        retour vrai
+    }
+    si (syl_est_nombre(t)) { retour vrai }
+    si (non syl_est_ident(t)) { retour faux }
+    retour non syl_est_reserve(t)
+}
+
+# ── 3. Precedence ─────────────────────────────────────────────────────────
+# 1 implique/->   2 ou   3 et   4 =   5 +,-   6 non   7 application   8 atome
+
+fn syl_prec(op: chaine) -> entier {
+    si (op == "->" ou op == "implique") { retour 1 }
+    si (op == "ou") { retour 2 }
+    si (op == "et") { retour 3 }
+    si (op == "=") { retour 4 }
+    si (op == "+" ou op == "-") { retour 5 }
+    retour 0
+}
+
+fn syl_combine(S, op: chaine, g, d) {
+    si (op == "->" ou op == "implique") { retour t_pi("_", g, d) }
+    si (op == "ou") { retour t_ind("ou", [g, d]) }
+    si (op == "et") { retour t_ind("et", [g, d]) }
+    si (op == "=") { retour t_ind("=", [g, d]) }
+    si (op == "+") { retour t_app(t_app(t_const("+", t_type(0)), g), d) }
+    si (op == "-") { retour t_app(t_app(t_const("-", t_type(0)), g), d) }
+    retour g
+}
+
+fn syl_expr(S, prec: entier) {
+    $t = syl_courant(S)
+    si ($t == "non" et prec <= 6) {
+        syl_avance(S)
+        $a = syl_expr(S, 6)
+        retour syl_expr_suite(S, prec, t_ind("non", [$a]))
+    }
+    $g = syl_app(S)
+    retour syl_expr_suite(S, prec, $g)
+}
+
+fn syl_expr_suite(S, prec: entier, g) {
+    $op = syl_courant(S)
+    $pr = syl_prec($op)
+    si ($pr == 0 ou $pr < prec ou S["e"] != "") { retour g }
+    syl_avance(S)
+    $dp = $pr + 1
+    si ($op == "->" ou $op == "implique") { $dp = $pr }
+    $d = syl_expr(S, $dp)
+    si (S["e"] != "") { retour g }
+    retour syl_expr_suite(S, prec, syl_combine(S, $op, $g, $d))
+}
+
+fn syl_app(S) {
+    $f = syl_atom(S)
+    retour syl_app_suite(S, $f)
+}
+
+fn syl_app_suite(S, f) {
+    $t = syl_courant(S)
+    si (S["e"] == "" et syl_debut_atom($t)) {
+        $a = syl_atom(S)
+        retour syl_app_suite(S, t_app($f, $a))
+    }
+    retour $f
+}
+
+fn syl_atom(S) {
+    $t = syl_courant(S)
+    si (longueur($t) == 0) {
+        syl_erreur(S, "attente d'un terme (fin de flux)")
+        retour t_var("?")
+    }
+    si ($t == "(") {
+        syl_avance(S)
+        $e = syl_expr(S, 0)
+        syl_attend(S, ")")
+        retour $e
+    }
+    si ($t == "type") {
+        syl_avance(S)
+        $n = 0
+        $suiv = syl_courant(S)
+        si (syl_est_nombre($suiv)) {
+            $n = entier($suiv)
+            syl_avance(S)
+        }
+        retour t_type($n)
+    }
+    si ($t == "fn") { retour syl_lambda(S) }
+    si ($t == "pour_tout") { retour syl_pi(S) }
+    si ($t == "existe") { retour syl_existe(S) }
+    si ($t == "vrai" ou $t == "faux") {
+        syl_avance(S)
+        retour t_ind($t, liste_vide())
+    }
+    si ($t == "non") {
+        syl_avance(S)
+        $a = syl_expr(S, 6)
+        retour t_ind("non", [$a])
+    }
+    si (syl_est_nombre($t)) {
+        syl_avance(S)
+        retour t_const($t, t_type(0))
+    }
+    si (syl_est_ident($t) et non syl_est_reserve($t)) {
+        syl_avance(S)
+        retour t_var($t)
+    }
+    syl_erreur(S, "terme inattendu '" + $t + "'")
+    syl_avance(S)
+    retour t_var("?")
+}
+
+fn syl_lieurs(S, tab) -> entier {
+    $k = 0
+    $t = syl_courant(S)
+    tant_que (syl_est_ident($t) et non syl_est_reserve($t) et S["e"] == "") {
+        inserer(tab, $k, $t)
+        $k = $k + 1
+        syl_avance(S)
+        $t = syl_courant(S)
+    }
+    si ($k == 0) { syl_erreur(S, "nom de liant attendu") }
+    retour $k
+}
+
+fn syl_lambda(S) {
+    syl_avance(S)
+    $noms = table()
+    $nb = syl_lieurs(S, $noms)
+    syl_attend(S, ":")
+    $dom = syl_expr(S, 0)
+    syl_attend(S, "=>")
+    $corps = syl_expr(S, 0)
+    $res = $corps
+    $i = $nb - 1
+    tant_que ($i >= 0 et S["e"] == "") {
+        $res = t_lam($noms[$i], $dom, $res)
+        $i = $i - 1
+    }
+    retour $res
+}
+
+fn syl_pi(S) {
+    syl_avance(S)
+    $noms = table()
+    $nb = syl_lieurs(S, $noms)
+    syl_attend(S, ":")
+    $dom = syl_expr(S, 0)
+    syl_attend(S, ",")
+    $corps = syl_expr(S, 0)
+    $res = $corps
+    $i = $nb - 1
+    tant_que ($i >= 0 et S["e"] == "") {
+        $res = t_pi($noms[$i], $dom, $res)
+        $i = $i - 1
+    }
+    retour $res
+}
+
+fn syl_existe(S) {
+    syl_avance(S)
+    $noms = table()
+    $nb = syl_lieurs(S, $noms)
+    syl_attend(S, ":")
+    $dom = syl_expr(S, 0)
+    syl_attend(S, ",")
+    $corps = syl_expr(S, 0)
+    $res = $corps
+    $i = $nb - 1
+    tant_que ($i >= 0 et S["e"] == "") {
+        $res = t_ind("existe", [t_var($noms[$i]), $dom, $res])
+        $i = $i - 1
+    }
+    retour $res
+}
+
+# ── 4. Tactiques ──────────────────────────────────────────────────────────
+
+fn syl_tactique_soit(S) {
+    syl_avance(S)
+    $noms = table()
+    $nb = syl_lieurs(S, $noms)
+    syl_attend(S, ":")
+    $typ = syl_expr(S, 0)
+    $a = table()
+    inserer($a, "genre", "soit")
+    inserer($a, "noms", valeurs($noms))
+    inserer($a, "type", $typ)
+    retour $a
+}
+
+fn syl_tactique_par(S) {
+    syl_avance(S)
+    $nom = syl_courant(S)
+    si (longueur($nom) == 0) {
+        syl_erreur(S, "par : nom de tactique attendu")
+    }
+    syl_avance(S)
+    $a = table()
+    inserer($a, "genre", "par")
+    inserer($a, "nom", $nom)
+    si ($nom == "induction" et syl_est(S, "sur")) {
+        syl_avance(S)
+        $cibles = table()
+        $k = 0
+        $t = syl_courant(S)
+        tant_que (syl_est_ident($t) et non syl_est_reserve($t) et S["e"] == "") {
+            inserer($cibles, $k, $t)
+            $k = $k + 1
+            syl_avance(S)
+            $t = syl_courant(S)
+        }
+        inserer($a, "sur", valeurs($cibles))
+    }
+    retour $a
+}
+
+fn syl_tactique_cas(S) {
+    syl_avance(S)
+    $motif = syl_courant(S)
+    si (longueur($motif) == 0) { syl_erreur(S, "cas : motif attendu") }
+    syl_avance(S)
+    $params = table()
+    $k = 0
+    $t = syl_courant(S)
+    tant_que (syl_est_ident($t) et non syl_est_reserve($t) et $t != ":" et S["e"] == "") {
+        inserer($params, $k, $t)
+        $k = $k + 1
+        syl_avance(S)
+        $t = syl_courant(S)
+    }
+    syl_attend(S, ":")
+    $suite = syl_tactiques(S, vrai)
+    $a = table()
+    inserer($a, "genre", "cas")
+    inserer($a, "motif", $motif)
+    inserer($a, "params", valeurs($params))
+    inserer($a, "preuve", $suite)
+    retour $a
+}
+
+fn syl_tactiques(S, dans_cas: booleen) {
+    $tab = table()
+    $k = 0
+    $continuer = vrai
+    tant_que (S["p"] < S["n"] et S["e"] == "" et $continuer) {
+        $t = syl_courant(S)
+        si ($t == ";") {
+            syl_avance(S)
+        } sinon si ($t == "théorème") {
+            $continuer = faux
+        } sinon si ($t == "cas" et dans_cas) {
+            $continuer = faux
+        } sinon si ($t == "soit") {
+            inserer($tab, $k, syl_tactique_soit(S))
+            $k = $k + 1
+        } sinon si ($t == "montrer") {
+            syl_avance(S)
+            $but = syl_expr(S, 0)
+            $a = table()
+            inserer($a, "genre", "montrer")
+            inserer($a, "but", $but)
+            inserer($tab, $k, $a)
+            $k = $k + 1
+        } sinon si ($t == "par") {
+            inserer($tab, $k, syl_tactique_par(S))
+            $k = $k + 1
+        } sinon si ($t == "cas") {
+            inserer($tab, $k, syl_tactique_cas(S))
+            $k = $k + 1
+        } sinon {
+            syl_erreur(S, "tactique inattendue '" + $t + "'")
+            syl_avance(S)
+        }
+    }
+    retour valeurs($tab)
+}
+
+fn syl_preuve(S) {
+    retour syl_tactiques(S, faux)
+}
+
+fn syl_declaration(S) {
+    syl_attend(S, "théorème")
+    $nom = syl_courant(S)
+    syl_avance(S)
+    syl_attend(S, ":")
+    $typ = syl_expr(S, 0)
+    syl_attend(S, "preuve")
+    $preuve = syl_preuve(S)
+    $d = table()
+    inserer($d, "genre", "declaration")
+    inserer($d, "nom", $nom)
+    inserer($d, "type", $typ)
+    inserer($d, "preuve", $preuve)
+    retour $d
+}
+
+# ── 5. API publique ───────────────────────────────────────────────────────
+
+# Analyse un terme directement depuis une chaine source. Necessaire car le
+# resultat de lexer() a un type Rose '?' et ne peut pas etre passe a analyser
+# qui exige une liste<chaine> typedee.
+fn analyser_source(src: chaine) {
+    $T = lexer_table(src)
+    $S = syl_etat($T["j"], entier(chaine($T["n"])))
+    $t = syl_expr(S, 0)
+    si (S["e"] == "" et S["p"] < S["n"]) {
+        syl_erreur(S, "jetons en trop : '" + syl_courant(S) + "'")
+    }
+    si (S["e"] != "") { afficher_erreur("Syllog — " + S["e"]) }
+    retour $t
+}
+
+# SPEC.md : analyser(jetons: liste<chaine>). Pour analyser une chaine source,
+# utiliser analyser_source(src) : le resultat de lexer() est type '?' en Rose.
+fn analyser(jetons: liste<chaine>) {
+    $S = syl_etat(jetons, longueur(jetons))
+    $t = syl_expr(S, 0)
+    si (S["e"] == "" et S["p"] < S["n"]) {
+        syl_erreur(S, "jetons en trop : '" + syl_courant(S) + "'")
+    }
+    si (S["e"] != "") { afficher_erreur("Syllog — " + S["e"]) }
+    retour $t
+}
+
+fn analyser_fichier(src: chaine) {
+    $T = lexer_table(src)
+    $S = syl_etat($T["j"], entier(chaine($T["n"])))
+    $tab = table()
+    $k = 0
+    tant_que (S["p"] < S["n"] et S["e"] == "") {
+        $t = syl_courant(S)
+        si ($t == "théorème") {
+            inserer($tab, $k, syl_declaration(S))
+            $k = $k + 1
+        } sinon si (longueur($t) == 0) {
+            syl_avance(S)
+        } sinon {
+            syl_erreur(S, "attendu 'théorème', trouve '" + $t + "'")
+            syl_avance(S)
+        }
+    }
+    si (S["e"] != "") { afficher_erreur("Syllog — " + S["e"]) }
+    retour valeurs($tab)
+}
+

@@ -1,0 +1,12 @@
+# Syllog — preuve de démonstration : réflexivité de l'égalité
+# Statut : VÉRIFIÉE PAR LE NOYAU PROV1.
+#   Terme produit : λA:Type(0). λx:A. refl A x
+#   Signature : refl : pour_tout A : type, pour_tout x : A, x = x
+#   Contrôle : demo_reflexivite() -> reflexivite(but) -> verifier + convertible.
+#   Preuve de sortie : ./rose/rose syllog/tests_tactiques.rose -> OK demo/reflexivite
+
+théorème reflexivite :
+  pour_tout A : type, pour_tout x : A, x = x
+preuve
+  reflexivite
+fin

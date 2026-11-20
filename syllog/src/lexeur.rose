@@ -1,32 +1,16 @@
-# ── Syllog — lexeur ─────────────────────────────────────────────────────────
-# Fichier autonome (aucun import). Vérifier : ./rose/rose verif syllog/src/lexeur.rose
+# ── Syllog — lexeur (PROV2) ────────────────────────────────────────────────
+# Fichier autonome : aucun import, aucune variable globale (importer n'execute
+# pas les instructions de tete du fichier importe).
+# Verifier : ./rose/rose verif syllog/src/lexeur.rose
 #
 # API publique :
-#   lexer(src)           -> liste<chaine>  : jetons nus
-#   lexer_detaille(src)  -> liste<chaine>  : jetons "<texte>~<ligne>"
-#   lexer_erreur()       -> chaine         : "" ou "ligne N : ..."
+#   lexer(src)          -> liste<chaine> : jetons nus
+#   lexer_detaille(src) -> liste<chaine> : jetons "texte~ligne"
 #
-# Le suffixe "~N" est le numero de ligne. Le separateur "~" ne peut jamais
-# apparaitre dans un jeton Syllog (identifiants = lettres, accents, chiffres,
-# tiret bas). analyser() accepte les deux formes ( voir analyse.rose ).
-# Aucune exception n'est levee : un caractere inconnu produit le jeton "?".
-
-$X = table()
-inserer($X, "erreur", "")
-
-fn lex_init() {
-    inserer($X, "erreur", "")
-}
-
-fn lex_erreur(msg) {
-    si ($X["erreur"] == "") {
-        inserer($X, "erreur", msg)
-    }
-}
-
-fn lexer_erreur() {
-    retour $X["erreur"]
-}
+# Le suffixe "~N" porte le numero de ligne. "~" ne peut jamais apparaitre dans
+# un jeton Syllog (identifiants = lettres/accents/chiffres/tiret bas).
+# analyser() accepte les deux formes. Aucune exception : un caractere inconnu
+# donne le jeton "?" que le parseur signale avec sa ligne.
 
 fn lex_est_lettre(c: chaine) -> booleen {
     si (longueur(c) == 0) { retour faux }
@@ -60,7 +44,6 @@ fn lex_emette(tab, k: entier, tok: chaine, ligne: entier, detaille: booleen) -> 
 }
 
 fn syl_lexe(src: chaine, detaille: booleen) {
-    lex_init()
     $tab = table()
     $n = longueur(src)
     $i = 0
@@ -74,7 +57,6 @@ fn syl_lexe(src: chaine, detaille: booleen) {
         } sinon si ($c == " " ou $c == "\t" ou $c == "\r") {
             $i = $i + 1
         } sinon si ($c == "#") {
-            # commentaire : jusqu'a la fin de ligne
             tant_que ($i < $n et sous_chaine(src, $i, $i + 1) != "\n") {
                 $i = $i + 1
             }
@@ -102,18 +84,27 @@ fn syl_lexe(src: chaine, detaille: booleen) {
             $k = lex_emette($tab, $k, $c, $ligne, detaille)
             $i = $i + 1
         } sinon {
-            lex_erreur("ligne " + chaine($ligne) + " : caractere inattendu '" + $c + "'")
             $k = lex_emette($tab, $k, "?", $ligne, detaille)
             $i = $i + 1
         }
     }
-    retour valeurs($tab)
+    $res = table()
+    inserer($res, "n", $k)
+    inserer($res, "j", valeurs($tab))
+    retour $res
 }
 
 fn lexer(src: chaine) {
-    retour syl_lexe(src, faux)
+    $r = syl_lexe(src, faux)
+    retour $r["j"]
 }
 
 fn lexer_detaille(src: chaine) {
+    $r = syl_lexe(src, vrai)
+    retour $r["j"]
+}
+
+# Variante interne : rend {n: nombre de jetons, j: jetons detailles}.
+fn lexer_table(src: chaine) {
     retour syl_lexe(src, vrai)
 }

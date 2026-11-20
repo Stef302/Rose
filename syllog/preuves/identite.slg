@@ -1,0 +1,14 @@
+# Syllog — preuve de démonstration : identité
+# Statut : VÉRIFIÉE PAR LE NOYAU PROV1.
+#   Terme produit : λA:Type(0). λx:A. x
+#   Contrôle : demo_identite() dans syllog/src/tactiques.rose appelle
+#              verifier(terme, ctx) puis convertible(type_synthétisé, but).
+#   Preuve de sortie : ./rose/rose syllog/tests_tactiques.rose -> OK demo/identite
+
+théorème identite :
+  pour_tout A : type, pour_tout x : A, A
+preuve
+  introduction A
+  introduction x
+  application x
+fin

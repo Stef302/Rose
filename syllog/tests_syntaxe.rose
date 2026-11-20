@@ -1,0 +1,163 @@
+# ── Syllog — tests du lexeur et du parseur (PROV2) ────────────────────────
+# Lancer : ./rose/rose syllog/tests_syntaxe.rose
+# Cinq programmes de test, chacun avec son AST attendu (structure imprimee).
+# Les termes suivent la table `Terme` de SPEC.md.
+
+importer "src/analyse.rose"
+
+$RESULTATS = table()
+inserer($RESULTATS, "ok", 0)
+inserer($RESULTATS, "echec", 0)
+
+fn test(nom, attendu, obtenu) {
+    afficher("=== " + nom + " ===")
+    afficher("attendu : " + chaine(attendu))
+    afficher("obtenu  : " + chaine(obtenu))
+    si (attendu == obtenu) {
+        afficher("OK")
+        inserer($RESULTATS, "ok", $RESULTATS["ok"] + 1)
+    } sinon {
+        afficher("ECHEC")
+        inserer($RESULTATS, "echec", $RESULTATS["echec"] + 1)
+    }
+}
+
+fn liste_de(tab, n) {
+    retour valeurs(tab)
+}
+
+fn mk_soit(noms, typ) {
+    $a = table()
+    inserer($a, "genre", "soit")
+    inserer($a, "noms", noms)
+    inserer($a, "type", typ)
+    retour $a
+}
+
+fn mk_par(nom) {
+    $a = table()
+    inserer($a, "genre", "par")
+    inserer($a, "nom", nom)
+    retour $a
+}
+
+fn mk_par_sur(nom, cibles) {
+    $a = table()
+    inserer($a, "genre", "par")
+    inserer($a, "nom", nom)
+    inserer($a, "sur", cibles)
+    retour $a
+}
+
+fn mk_montrer(but) {
+    $a = table()
+    inserer($a, "genre", "montrer")
+    inserer($a, "but", but)
+    retour $a
+}
+
+fn mk_cas(motif, params, preuve) {
+    $a = table()
+    inserer($a, "genre", "cas")
+    inserer($a, "motif", motif)
+    inserer($a, "params", params)
+    inserer($a, "preuve", preuve)
+    retour $a
+}
+
+fn mk_decl(nom, typ, preuve) {
+    $d = table()
+    inserer($d, "genre", "declaration")
+    inserer($d, "nom", nom)
+    inserer($d, "type", typ)
+    inserer($d, "preuve", preuve)
+    retour $d
+}
+
+# ── Programme 1 : le type Pi(X -> X) ─────────────────────────────────────
+$src1 = "théorème identite : pour_tout X : type, X -> X\npreuve\n  par reflexivite\n"
+$decls1 = analyser_fichier($src1)
+$pr1 = table()
+inserer($pr1, 0, mk_par("reflexivite"))
+$att1 = [mk_decl("identite",
+                 t_pi("X", t_type(0), t_pi("_", t_var("X"), t_var("X"))),
+                 valeurs($pr1))]
+test("P1 — type Pi(X -> X)", $att1, $decls1)
+
+# ── Programme 2 : theoreme identite complet ──────────────────────────────
+$src2 = "théorème identite : pour_tout X : type, X -> X\npreuve\n  soit X : type\n  montrer X -> X\n  par introduction\n  soit x : X\n  par reflexivite\n"
+$decls2 = analyser_fichier($src2)
+$pr2 = table()
+inserer($pr2, 0, mk_soit(["X"], t_type(0)))
+inserer($pr2, 1, mk_montrer(t_pi("_", t_var("X"), t_var("X"))))
+inserer($pr2, 2, mk_par("introduction"))
+inserer($pr2, 3, mk_soit(["x"], t_var("X")))
+inserer($pr2, 4, mk_par("reflexivite"))
+$att2 = [mk_decl("identite",
+                 t_pi("X", t_type(0), t_pi("_", t_var("X"), t_var("X"))),
+                 valeurs($pr2))]
+test("P2 — theoreme identite + preuve", $att2, $decls2)
+
+# ── Programme 3 : symetrie_add, induction et cas ─────────────────────────
+$src3 = "théorème symetrie_add : pour_tout a b : Nat, a + b = b + a\npreuve\n  soit a b : Nat\n  par induction sur a\n  cas zero : par reflexivite\n  cas succ n : par simplifier; par symetrie\n"
+$decls3 = analyser_fichier($src3)
+$nat = t_var("Nat")
+$add_ab = t_app(t_app(t_const("+", t_type(0)), t_var("a")), t_var("b"))
+$add_ba = t_app(t_app(t_const("+", t_type(0)), t_var("b")), t_var("a"))
+$typ3 = t_pi("a", $nat, t_pi("b", $nat, t_ind("=", [$add_ab, $add_ba])))
+$pr_zero = table()
+inserer($pr_zero, 0, mk_par("reflexivite"))
+$pr_succ = table()
+inserer($pr_succ, 0, mk_par("simplifier"))
+inserer($pr_succ, 1, mk_par("symetrie"))
+$pr3 = table()
+inserer($pr3, 0, mk_soit(["a", "b"], $nat))
+inserer($pr3, 1, mk_par_sur("induction", ["a"]))
+inserer($pr3, 2, mk_cas("zero", liste_vide(), valeurs($pr_zero)))
+inserer($pr3, 3, mk_cas("succ", ["n"], valeurs($pr_succ)))
+$att3 = [mk_decl("symetrie_add", $typ3, valeurs($pr3))]
+test("P3 — symetrie_add (induction, cas)", $att3, $decls3)
+
+# ── Programme 4 : precedences, negation, connectives ─────────────────────
+$src4 = "théorème pr : a ou b et c implique d\npreuve\n  par reflexivite\n"
+$decls4 = analyser_fichier($src4)
+$typ4 = t_pi("_", t_ind("ou", [t_var("a"), t_ind("et", [t_var("b"), t_var("c")])]), t_var("d"))
+$pr4 = table()
+inserer($pr4, 0, mk_par("reflexivite"))
+$att4 = [mk_decl("pr", $typ4, valeurs($pr4))]
+test("P4 — precedence implique < ou < et", $att4, $decls4)
+
+# ── Programme 5 : fn, existe,= et application ────────────────────────────
+$src5 = "théorème ex : fn x : T => existe y : T, x = y\npreuve\n  par introduction\n"
+$decls5 = analyser_fichier($src5)
+$corps5 = t_ind("existe", [t_var("y"), t_var("T"), t_ind("=", [t_var("x"), t_var("y")])])
+$typ5 = t_lam("x", t_var("T"), $corps5)
+$pr5 = table()
+inserer($pr5, 0, mk_par("introduction"))
+$att5 = [mk_decl("ex", $typ5, valeurs($pr5))]
+test("P5 — fn / existe / =", $att5, $decls5)
+
+# ── Cas supplementaires explicites (lambda, juxtaposition, erreur) ────────
+# P6 : `fn x : Nat => x` analyse directement (hors déclaration).
+$src6 = "fn x : Nat => x"
+$term6 = analyser_source($src6)
+$att6 = t_lam("x", t_var("Nat"), t_var("x"))
+test("P6 — fn autonome", $att6, $term6)
+
+# P7 : application par juxtaposition `f x y` = App(App(f,x),y).
+$src7 = "f x y"
+$term7 = analyser_source($src7)
+$att7 = t_app(t_app(t_var("f"), t_var("x")), t_var("y"))
+test("P7 — application juxtaposee", $att7, $term7)
+
+# P8 : erreur de parsing localisée. analyser_fichier affiche lui-même
+# "Syllog — ligne 3 : ..." et rend une déclaration partielle.
+afficher("=== diagnostic : erreur avec numero de ligne ===")
+$srcerr = "théorème t : X\npreuve\n  par nimportequoi @\n"
+$declserr = analyser_fichier($srcerr)
+afficher(chaine($declserr))
+test("P8 — erreur ligne 3 (partiel)", "vrai", chaine(longueur(chaine($declserr)) > 0))
+
+afficher("=== bilan ===")
+afficher("OK = " + chaine($RESULTATS["ok"]) + "   ECHEC = " + chaine($RESULTATS["echec"]))
+si ($RESULTATS["echec"] > 0) { quitter(1) }

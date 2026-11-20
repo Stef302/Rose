@@ -1,0 +1,851 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# syllog/src/tactiques.rose — TACTIQUES DE SYLLOG (PROV3)
+# ═════════════════════════════════════════════════════════════════════════════
+# Contrat : SPEC.md, section « Tactiques ».
+#
+#   reflexivite(but)              -> Resultat
+#   symetrie(but)                 -> Resultat      (variante _ctx avec contexte)
+#   introduction(but, ctx)        -> Resultat
+#   application(but, ctx)         -> Resultat
+#   induction(but, ctx)           -> Resultat
+#   simplifier(t)                 -> Terme
+#
+# DIFFÉRENCE FONDAMENTALE AVEC L'ANCIEN FICHIER
+# ---------------------------------------------
+# L'ancien `tactiques.rose` était AUTONOME : il portait son propre vérificateur
+# `sl_verif` avec ι-réduction, sans appeler le noyau. Ce fichier-ci IMPORTE le
+# noyau PROV1 et utilise RÉELLEMENT `verifier`, `beta` et `convertible` pour
+# contrôler chaque terme de preuve produit (aucun vérificateur maison).
+#
+# MÉTHODE DE VÉRIFICATION (importante pour l'honnêteté)
+# -----------------------------------------------------
+# `verifier(t, ctx)` du noyau fait de la SYNTHÈSE : il rend le type inféré de t.
+# Pour affirmer « t est une preuve du but B », on fait donc :
+#       r = verifier(t, ctx)
+#       ok = noy_est_ok(r) ET convertible(noy_type_res(r), B)
+# C'est `ta_verifie()` ci-dessous. Toutes les tactiques passent par là.
+#
+# AXIOMES DE SIGNATURE (explicites, documentés dans docs/TACTIQUES.md)
+# --------------------------------------------------------------------
+# Le noyau n'a ni ι-réduction pour les types inductifs, ni règle de récursion.
+# Nous représentons donc les données et leurs équations computationnelles par
+# des CONSTANTES de signature dont le TYPE est déclaré :
+#   Nat, Eq                (types inductifs, `ind` — contrôle structurel seul)
+#   zero, succ, plus       (constructeurs / opération)
+#   refl, eq_rec, nat_rec  (principes de réflexivité et d'élimination)
+#   plus_0_l, plus_s_l     (équations de réduction de plus, NON dérivables ici)
+# Les lemmes dérivés (symm, trans, congr_succ, congr_plus_l, plus_zero_d,
+# plus_succ_d) sont construits comme TERMES et vérifiés par le noyau dans
+# `demo_lemmes()` ; leurs constantes opaques ne sont utilisées qu'ensuite,
+# comme des théorèmes déjà vérifiés.
+#
+# `simplifier()` applique `beta` du noyau PUIS les règles de constructeurs
+# 0+n -> n et succ m + n -> succ(m+n) localement. Ces règles ne sont PAS dans
+# `convertible` du noyau : le résultat de simplifier n'est donc pas garanti
+# convertible au terme initial pour le noyau. Ceci est documenté, pas masqué.
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "noyau.rose"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 0. Utilitaires de listes rembourrées et d'applications
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_params0() -> liste<table> {
+  $l = [table()]
+  retour $l
+}
+
+fn ta_params1(a: table) -> liste<table> {
+  $l = [table()]
+  joindre($l, a)
+  retour $l
+}
+
+fn ta_params2(a: table, b: table) -> liste<table> {
+  $l = [table()]
+  joindre($l, a)
+  joindre($l, b)
+  retour $l
+}
+
+fn ta_params3(a: table, b: table, c: table) -> liste<table> {
+  $l = [table()]
+  joindre($l, a)
+  joindre($l, b)
+  joindre($l, c)
+  retour $l
+}
+
+fn ta_liste1(a: table) -> liste<table> {  retour ta_params1(a)  }
+
+fn ta_ctxs1(c: liste<table>) -> table {
+  $t = table()
+  inserer($t, 0, c)
+  retour $t
+}
+
+fn ta_ctxs2(c1: liste<table>, c2: liste<table>) -> table {
+  $t = table()
+  inserer($t, 0, c1)
+  inserer($t, 1, c2)
+  retour $t
+}
+
+fn ta_ap1(f: table, a: table) -> table {  retour noy_app(f, a)  }
+fn ta_ap2(f: table, a: table, b: table) -> table {  retour noy_app(noy_app(f, a), b)  }
+fn ta_ap3(f: table, a: table, b: table, c: table) -> table {  retour noy_app(ta_ap2(f, a, b), c)  }
+fn ta_ap4(f: table, a: table, b: table, c: table, d: table) -> table {  retour noy_app(ta_ap3(f, a, b, c), d)  }
+fn ta_ap5(f: table, a: table, b: table, c: table, d: table, e: table) -> table {  retour noy_app(ta_ap4(f, a, b, c, d), e)  }
+fn ta_ap6(f: table, a: table, b: table, c: table, d: table, e: table, g: table) -> table {  retour noy_app(ta_ap5(f, a, b, c, d, e), g)  }
+
+# Contexte = liste<table> rembourrée (même convention que le noyau).
+fn ta_ctx() -> liste<table> {  retour noy_ctx_vide()  }
+
+fn ta_noms_ctx(ctx: liste<table>) -> liste<chaine> {
+  $r = [""]
+  $n = longueur(ctx)
+  $i = 1
+  tant_que ($i < $n) {
+    joindre($r, noy_nom(ctx[$i]))
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# Cherche le premier nom de contexte dont le type est convertible à ty.
+fn ta_cherche(ctx: liste<table>, ty: table) -> chaine {
+  $n = longueur(ctx)
+  $i = 1
+  tant_que ($i < $n) {
+    $e = ctx[$i]
+    si (convertible(noy_champ($e, "type"), ty)) { retour noy_nom($e) }
+    $i = $i + 1
+  }
+  retour ""
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Signature : types, opérations, principes, équations
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_nat() -> table {  retour noy_ind("Nat", ta_params0())  }
+
+fn ta_zero() -> table {  retour noy_const("zero", ta_nat())  }
+
+fn ta_succ_symbole() -> table {
+  retour noy_const("succ", noy_pi("n", ta_nat(), ta_nat()))
+}
+fn ta_succ(n: table) -> table {  retour noy_app(ta_succ_symbole(), n)  }
+
+fn ta_plus_symbole() -> table {
+  retour noy_const("plus", noy_pi("m", ta_nat(), noy_pi("n", ta_nat(), ta_nat())))
+}
+fn ta_plus(m: table, n: table) -> table {  retour ta_ap2(ta_plus_symbole(), m, n)  }
+
+# Eq A a b : type inductif à 3 paramètres.
+fn ta_eq(A: table, a: table, b: table) -> table {  retour noy_ind("Eq", ta_params3(A, a, b))  }
+
+# refl : Π(A:type)(x:A), x = x
+fn ta_refl_symbole() -> table {
+  $ty = noy_pi("A", noy_type(0), noy_pi("x", noy_var("A"), ta_eq(noy_var("A"), noy_var("x"), noy_var("x"))))
+  retour noy_const("refl", $ty)
+}
+
+# eq_rec : Π(A)(a)(b)(P:Πz:A,type), P a -> Eq A a b -> P b
+fn ta_eqrec_symbole() -> table {
+  $P = noy_pi("z", noy_var("A"), noy_type(0))
+  $ty = noy_pi("A", noy_type(0), noy_pi("a", noy_var("A"), noy_pi("b", noy_var("A"), noy_pi("P", $P, noy_pi("p", noy_app(noy_var("P"), noy_var("a")), noy_pi("h", ta_eq(noy_var("A"), noy_var("a"), noy_var("b")), noy_app(noy_var("P"), noy_var("b"))))))))
+  retour noy_const("eq_rec", $ty)
+}
+
+# nat_rec : Π(P:Πm:Nat,type), P zero -> (Πn, P n -> P (succ n)) -> Πm, P m
+# Le TYPE de cette constante encode la règle d'élimination ; le noyau vérifie
+# réellement (règle App + convertible) que base et pas ont les bons types.
+fn ta_natrec_symbole() -> table {
+  $P = noy_pi("m", ta_nat(), noy_type(0))
+  $step = noy_pi("n", ta_nat(), noy_pi("ih", noy_app(noy_var("P"), noy_var("n")), noy_app(noy_var("P"), ta_succ(noy_var("n")))))
+  $ty = noy_pi("P", $P, noy_pi("base", noy_app(noy_var("P"), ta_zero()), noy_pi("pas", $step, noy_pi("m", ta_nat(), noy_app(noy_var("P"), noy_var("m"))))))
+  retour noy_const("nat_rec", $ty)
+}
+
+# Équations computationnelles de plus (axiomes de signature, voir en-tête).
+fn ta_plus0l_symbole() -> table {
+  $ty = noy_pi("n", ta_nat(), ta_eq(ta_nat(), ta_plus(ta_zero(), noy_var("n")), noy_var("n")))
+  retour noy_const("plus_0_l", $ty)
+}
+fn ta_plusSl_symbole() -> table {
+  $ty = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(), ta_eq(ta_nat(), ta_plus(ta_succ(noy_var("m")), noy_var("n")), ta_succ(ta_plus(noy_var("m"), noy_var("n"))))))
+  retour noy_const("plus_s_l", $ty)
+}
+
+# Constantes opaques des lemmes dérivés (leurs TERMES sont vérifiés plus bas).
+fn ta_symm_symbole() -> table {
+  $ty = noy_pi("A", noy_type(0), noy_pi("a", noy_var("A"), noy_pi("b", noy_var("A"), noy_pi("h", ta_eq(noy_var("A"), noy_var("a"), noy_var("b")), ta_eq(noy_var("A"), noy_var("b"), noy_var("a"))))))
+  retour noy_const("symm", $ty)
+}
+fn ta_trans_symbole() -> table {
+  $ty = noy_pi("A", noy_type(0), noy_pi("a", noy_var("A"), noy_pi("b", noy_var("A"), noy_pi("c", noy_var("A"), noy_pi("h1", ta_eq(noy_var("A"), noy_var("a"), noy_var("b")), noy_pi("h2", ta_eq(noy_var("A"), noy_var("b"), noy_var("c")), ta_eq(noy_var("A"), noy_var("a"), noy_var("c"))))))))
+  retour noy_const("trans", $ty)
+}
+fn ta_congr_succ_symbole() -> table {
+  $ty = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(), noy_pi("h", ta_eq(ta_nat(), noy_var("a"), noy_var("b")), ta_eq(ta_nat(), ta_succ(noy_var("a")), ta_succ(noy_var("b"))))))
+  retour noy_const("congr_succ", $ty)
+}
+fn ta_congr_plus_l_symbole() -> table {
+  $ty = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(), noy_pi("p", ta_nat(), noy_pi("h", ta_eq(ta_nat(), noy_var("a"), noy_var("b")), ta_eq(ta_nat(), ta_plus(noy_var("a"), noy_var("p")), ta_plus(noy_var("b"), noy_var("p")))))))
+  retour noy_const("congr_plus_l", $ty)
+}
+fn ta_plus_zero_d_symbole() -> table {
+  $ty = noy_pi("n", ta_nat(), ta_eq(ta_nat(), ta_plus(noy_var("n"), ta_zero()), noy_var("n")))
+  retour noy_const("plus_zero_d", $ty)
+}
+fn ta_plus_succ_d_symbole() -> table {
+  $ty = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), ta_eq(ta_nat(), ta_plus(noy_var("n"), ta_succ(noy_var("m"))), ta_succ(ta_plus(noy_var("n"), noy_var("m"))))))
+  retour noy_const("plus_succ_d", $ty)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Résultat et contrôle par le NOYAU
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_resultat(ok: booleen, ty: table, err: chaine, terme: table, buts: liste<table>, ctxs: table, regle: chaine) -> table {
+  $r = table()
+  inserer($r, "ok", ok)
+  inserer($r, "type", ty)
+  inserer($r, "erreur", err)
+  inserer($r, "terme", terme)
+  inserer($r, "buts", buts)
+  inserer($r, "ctxs", ctxs)
+  inserer($r, "regle", regle)
+  retour $r
+}
+fn ta_ok(ty: table, terme: table, regle: chaine) -> table {
+  retour ta_resultat(vrai, ty, "", terme, ta_params0(), table(), regle)
+}
+fn ta_err(msg: chaine) -> table {
+  retour ta_resultat(faux, noy_absent(), msg, noy_var("?"), ta_params0(), table(), "echec")
+}
+
+# LA fonction d'honnêteté : synthèse par le noyau + comparaison au but.
+fn ta_verifie(terme: table, but: table, ctx: liste<table>, regle: chaine) -> table {
+  $r = verifier(terme, ctx)
+  si (non noy_est_ok($r)) {
+    retour ta_err(regle + " : noyau refuse : " + noy_erreur($r))
+  }
+  si (non convertible(noy_type_res($r), but)) {
+    retour ta_err(regle + " : type synthétisé ≠ but")
+  }
+  retour ta_ok(but, terme, regle)
+}
+
+
+fn ta_boo(r: table, cle: chaine) -> booleen {
+  $v = faux
+  si (cle_existe(r, cle)) {
+    $x = r[cle]
+    si (type($x) == "booleen") { $v = $x }
+  }
+  retour $v
+}
+
+fn ta_txt(r: table, cle: chaine) -> chaine {
+  $v = ""
+  si (cle_existe(r, cle)) {
+    $x = r[cle]
+    si (type($x) == "chaine") { $v = $x }
+  }
+  retour $v
+}
+
+
+fn ta_coerce_table(x) -> table {
+  $v = table()
+  $v = x
+  retour $v
+}
+
+fn ta_coerce_ctx(x) -> liste<table> {
+  $v = [table()]
+  $v = x
+  retour $v
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. TACTIQUE — réflexivité
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_refl_rec(but: table, ctx: liste<table>) -> table {
+  si (noy_genre(but) == "pi") {
+    $nx_c2 = noy_ctx_ajouter(ctx, noy_nom(but), noy_champ(but, "domaine"))
+    $r = ta_refl_rec(noy_champ(but, "codomaine"), $nx_c2)
+    si (non ta_boo($r, "ok")) { retour $r }
+    $terme = noy_lam(noy_nom(but), noy_champ(but, "domaine"), noy_champ($r, "terme"))
+    retour ta_verifie($terme, but, ctx, "reflexivite/lambda")
+  }
+  si (noy_genre(but) != "ind" ou noy_nom(but) != "Eq") {
+    retour ta_err("réflexivité : le but n'est pas une égalité")
+  }
+  $ps = noy_champ_liste(but, "params")
+  $A = $ps[1]
+  $a = $ps[2]
+  $b = $ps[3]
+  si (non convertible($a, $b)) {
+    retour ta_err("réflexivité : les deux membres diffèrent")
+  }
+  $terme = ta_ap2(ta_refl_symbole(), $A, $a)
+  retour ta_verifie($terme, but, ctx, "reflexivite/refl")
+}
+
+fn reflexivite(but: table) -> table {  retour ta_refl_rec(but, ta_ctx())  }
+fn reflexivite_ctx(but: table, ctx: liste<table>) -> table {
+  retour ta_refl_rec(but, ctx)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. TACTIQUE — symétrie  (x = y  ->  y = x)
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_sym_rec(but: table, ctx: liste<table>) -> table {
+  si (noy_genre(but) == "pi") {
+    $nx_c2 = noy_ctx_ajouter(ctx, noy_nom(but), noy_champ(but, "domaine"))
+    $r = ta_sym_rec(noy_champ(but, "codomaine"), $nx_c2)
+    si (non ta_boo($r, "ok")) { retour $r }
+    $terme = noy_lam(noy_nom(but), noy_champ(but, "domaine"), noy_champ($r, "terme"))
+    retour ta_verifie($terme, but, ctx, "symetrie/lambda")
+  }
+  si (noy_genre(but) != "ind" ou noy_nom(but) != "Eq") {
+    retour ta_err("symétrie : le but n'est pas une égalité")
+  }
+  $ps = noy_champ_liste(but, "params")
+  $A = $ps[1]
+  $b = $ps[2]     # membre de gauche du BUT (cible)
+  $a = $ps[3]     # membre de droite du BUT (source)
+  $besoin = ta_eq($A, $a, $b)
+  $nom = ta_cherche(ctx, $besoin)
+  si ($nom == "") {
+    retour ta_err("symétrie : aucune hypothèse de type Eq A a b")
+  }
+  $terme = ta_ap4(ta_symm_symbole(), $A, $a, $b, noy_var($nom))
+  retour ta_verifie($terme, but, ctx, "symetrie/symm")
+}
+
+fn symetrie(but: table) -> table {  retour ta_sym_rec(but, ta_ctx())  }
+fn symetrie_ctx(but: table, ctx: liste<table>) -> table {
+  retour ta_sym_rec(but, ctx)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. TACTIQUE — introduction  (Πx:A.B  ->  λx:A.?B + contexte mis à jour)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Le « trou » est représenté par une variable du type du but résiduel, dans un
+# contexte étendu. Le squelette λx:A.?x est alors RÉELLEMENT typé par le noyau.
+fn ta_intro_impl(but: table, ctx: liste<table>) -> table {
+  si (noy_genre(but) != "pi") {
+    retour ta_err("introduction : le but n'est pas un Π")
+  }
+  $d = noy_champ(but, "domaine")
+  $rd = verifier($d, ctx)
+  si (non noy_est_ok($rd) ou noy_univers(noy_type_res($rd)) < 0) {
+    retour ta_err("introduction : domaine non-type")
+  }
+  $nom = noy_nom(but)
+  $B = noy_champ(but, "codomaine")
+  $nx_c2 = noy_ctx_ajouter(ctx, $nom, $d)
+
+  $ev = noy_union_ch(ta_noms_ctx($nx_c2), noy_libres($B))
+  $trou = noy_frais("?", $ev)
+  $squelette = noy_lam($nom, $d, noy_var($trou))
+  $c_meta = noy_ctx_ajouter($nx_c2, $trou, $B)
+  $v = verifier($squelette, $c_meta)
+  $ok = noy_est_ok($v) et convertible(noy_type_res($v), but)
+  $err = ""
+  si (non $ok) { $err = "introduction : squelette non typé : " + noy_erreur($v) }
+
+  $r = ta_resultat($ok, but, $err, $squelette, ta_liste1($B), ta_ctxs1($nx_c2), "introduction/pi")
+  inserer($r, "squelette", $squelette)
+  inserer($r, "trou", $trou)
+  inserer($r, "nom", $nom)
+  retour $r
+}
+
+# Referme un trou d'introduction avec un terme déjà vérifié, puis contrôle.
+fn introduction_resolue(intro: table, corps: table, ctx: liste<table>) -> table {
+  $terme = noy_subst(noy_champ($intro, "terme"), ta_txt($intro, "trou"), $corps)
+  $but = noy_champ($intro, "type")
+  retour ta_verifie($terme, $but, ctx, "introduction/résolue")
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. TACTIQUE — application
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_appl_impl(but: table, ctx: liste<table>) -> table {
+  # (a) hypothèse exacte (modulo β/α du noyau)
+  $n = longueur(ctx)
+  $i = 1
+  tant_que ($i < $n) {
+    $e = ctx[$i]
+    si (convertible(noy_champ($e, "type"), but)) {
+      $r = ta_verifie(noy_var(noy_nom($e)), but, ctx, "application/exact")
+      si (ta_boo($r, "ok")) { retour $r }
+    }
+    $i = $i + 1
+  }
+
+  # (b) une ou deux applications d'hypothèses Π à des arguments du contexte.
+  $j = 1
+  tant_que ($j < $n) {
+    $h = ctx[$j]
+    $th = beta(noy_champ($h, "type"))
+    si (noy_genre($th) == "pi") {
+      $k = 1
+      tant_que ($k < $n) {
+        $g = ctx[$k]
+        si (convertible(noy_champ($g, "type"), noy_champ($th, "domaine"))) {
+          $nx_t1 = noy_app(noy_var(noy_nom($h)), noy_var(noy_nom($g)))
+          $nx_r1 = ta_verifie($nx_t1, but, ctx, "application/1-pas")
+          si (ta_boo($nx_r1, "ok")) { retour $nx_r1 }
+          $nx_r2 = verifier($nx_t1, ctx)
+          si (noy_est_ok($nx_r2)) {
+            $th2 = beta(noy_type_res($nx_r2))
+            si (noy_genre($th2) == "pi") {
+              $l = 1
+              tant_que ($l < $n) {
+                $q = ctx[$l]
+                si (convertible(noy_champ($q, "type"), noy_champ($th2, "domaine"))) {
+                  $nx_t2 = noy_app($nx_t1, noy_var(noy_nom($q)))
+                  $r2b = ta_verifie($nx_t2, but, ctx, "application/2-pas")
+                  si (ta_boo($r2b, "ok")) { retour $r2b }
+                }
+                $l = $l + 1
+              }
+            }
+          }
+        }
+        $k = $k + 1
+      }
+    }
+    $j = $j + 1
+  }
+  retour ta_err("application : aucune hypothèse ne produit le but")
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. TACTIQUE — induction sur Nat  (partie expérimentale, voir TACTIQUES.md)
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_ind_impl(but: table, ctx: liste<table>) -> table {
+  si (noy_genre(but) != "pi") {
+    retour ta_err("induction : le but doit être Π(m:Nat), P m")
+  }
+  $m = noy_nom(but)
+  $Nat = ta_nat()
+  si (non convertible(noy_champ(but, "domaine"), $Nat)) {
+    retour ta_err("induction : le scrutiné n'est pas Nat")
+  }
+  $Pcorps = noy_champ(but, "codomaine")
+  $P = noy_lam($m, $Nat, $Pcorps)
+
+  # Buts résiduels : base = P zero, pas = Π n ih, P (succ n).
+  $Pz = beta(noy_subst($Pcorps, $m, ta_zero()))
+  $ev = noy_union_ch(noy_libres($Pcorps), ta_noms_ctx(ctx))
+  $n = noy_frais("k", $ev)
+  $ev = noy_ajoute_unique($ev, $n)
+  $ih = noy_frais("ih", $ev)
+  $Pn = beta(noy_subst($Pcorps, $m, noy_var($n)))
+  $Ps = beta(noy_subst($Pcorps, $m, ta_succ(noy_var($n))))
+  $but_pas = noy_pi($n, $Nat, noy_pi($ih, $Pn, $Ps))
+  $c_base = ctx
+  $c_pas = noy_ctx_ajouter(noy_ctx_ajouter(ctx, $n, $Nat), $ih, $Pn)
+
+  $ev2 = noy_union_ch($ev, noy_ajoute_unique(noy_libres($but_pas), $ih))
+  $tb = noy_frais("?base", $ev2)
+  $tp = noy_frais("?pas", $ev2)
+  $terme = ta_ap3(ta_natrec_symbole(), $P, noy_var($tb), noy_var($tp))
+
+  # Le squelette est typé dans un contexte où les trous ont leur type attendu :
+  # c'est le noyau qui vérifie que base et pas ont bien les types des branches.
+  $c_meta = noy_ctx_ajouter(noy_ctx_ajouter(ctx, $tb, $Pz), $tp, $but_pas)
+  $v = verifier($terme, $c_meta)
+  $ok = noy_est_ok($v) et convertible(noy_type_res($v), but)
+  $err = ""
+  si (non $ok) { $err = "induction : squelette non typé : " + noy_erreur($v) }
+
+  $r = ta_resultat($ok, but, $err, $terme, ta_params2($Pz, $but_pas), ta_ctxs2($c_base, $c_pas), "induction/Nat")
+  inserer($r, "trou_base", $tb)
+  inserer($r, "trou_pas", $tp)
+  inserer($r, "nom_n", $n)
+  inserer($r, "nom_ih", $ih)
+  inserer($r, "motif", $P)
+  retour $r
+}
+
+# Résolution : on remplace les trous par les branches, puis le noyau contrôle
+# le terme FERMÉ (ici, les types des branches sont réellement vérifiés).
+fn induction_resolue(but: table, ctx: liste<table>, base: table, pas: table) -> table {
+  $r = induction(but, ctx)
+  si (non ta_boo($r, "ok")) { retour $r }
+  $nx_t1 = noy_subst(noy_champ($r, "terme"), ta_txt($r, "trou_base"), base)
+  $nx_t2 = noy_subst($nx_t1, ta_txt($r, "trou_pas"), pas)
+  retour ta_verifie($nx_t2, but, ctx, "induction/Nat+résolue")
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. TACTIQUE — simplifier  (beta du noyau + réduction des constructeurs)
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_modif(t: table) -> table {
+  $r = table()
+  inserer($r, "change", vrai)
+  inserer($r, "terme", t)
+  retour $r
+}
+fn ta_inchange(t: table) -> table {
+  $r = table()
+  inserer($r, "change", faux)
+  inserer($r, "terme", t)
+  retour $r
+}
+fn ta_change(r: table) -> booleen {
+  $v = faux
+  si (cle_existe(r, "change")) {
+    $x = r["change"]
+    si (type($x) == "booleen") { $v = $x }
+  }
+  retour $v
+}
+fn ta_term(r: table) -> table {  retour noy_champ(r, "terme")  }
+
+fn ta_modif_l(l: liste<table>) -> table {
+  $r = table()
+  inserer($r, "change", vrai)
+  inserer($r, "liste", l)
+  retour $r
+}
+fn ta_inchange_l(l: liste<table>) -> table {
+  $r = table()
+  inserer($r, "change", faux)
+  inserer($r, "liste", l)
+  retour $r
+}
+fn ta_liste_res(r: table) -> liste<table> {
+  $v = [table()]
+  si (cle_existe(r, "liste")) {
+    $x = r["liste"]
+    si (type($x) == "liste") { $v = $x }
+  }
+  retour $v
+}
+
+# Un pas de réduction des constructeurs (plus uniquement), avec descente.
+fn ta_step(t: table) -> table {
+  $g = noy_genre(t)
+
+  si ($g == "app") {
+    # Construction de la spine : tête + arguments (du plus proche au plus loin).
+    $head = noy_champ(t, "fonction")
+    $args = [table()]
+    joindre($args, noy_champ(t, "argument"))
+    tant_que (noy_genre($head) == "app") {
+      joindre($args, noy_champ($head, "argument"))
+      $head = noy_champ($head, "fonction")
+    }
+    $na = longueur($args) - 1
+    si ($na >= 2 et noy_genre($head) == "const" et noy_nom($head) == "plus") {
+      $m = $args[$na]
+      $nn = $args[$na - 1]
+      # 0 + n -> n
+      si (noy_genre($m) == "const" et noy_nom($m) == "zero") {
+        retour ta_modif($nn)
+      }
+      # succ k + n -> succ (k + n)
+      si (noy_genre($m) == "app" et noy_genre(noy_champ($m, "fonction")) == "const" et noy_nom(noy_champ($m, "fonction")) == "succ") {
+        $k = noy_champ($m, "argument")
+        retour ta_modif(ta_ap1(ta_succ_symbole(), ta_plus($k, $nn)))
+      }
+    }
+    $rf = ta_step(noy_champ(t, "fonction"))
+    $ra = ta_step(noy_champ(t, "argument"))
+    si (ta_change($rf) ou ta_change($ra)) {
+      retour ta_modif(noy_app(ta_term($rf), ta_term($ra)))
+    }
+    retour ta_inchange(t)
+  }
+
+  si ($g == "pi") {
+    $rd = ta_step(noy_champ(t, "domaine"))
+    $rc = ta_step(noy_champ(t, "codomaine"))
+    si (ta_change($rd) ou ta_change($rc)) {
+      retour ta_modif(noy_pi(noy_nom(t), ta_term($rd), ta_term($rc)))
+    }
+    retour ta_inchange(t)
+  }
+  si ($g == "lam") {
+    $rd = ta_step(noy_champ(t, "domaine"))
+    $rc = ta_step(noy_champ(t, "corps"))
+    si (ta_change($rd) ou ta_change($rc)) {
+      retour ta_modif(noy_lam(noy_nom(t), ta_term($rd), ta_term($rc)))
+    }
+    retour ta_inchange(t)
+  }
+  si ($g == "const" ou $g == "constructeur") {
+    $rt = ta_step(noy_champ(t, "type"))
+    si (ta_change($rt)) {
+      si ($g == "const") {
+        retour ta_modif(noy_const(noy_nom(t), ta_term($rt)))
+      }
+      retour ta_modif(noy_constructeur(noy_nom(t), ta_term($rt)))
+    }
+    retour ta_inchange(t)
+  }
+  si ($g == "ind") {
+    $rl = ta_step_liste(noy_champ_liste(t, "params"))
+    si (ta_change($rl)) {
+      retour ta_modif(noy_ind(noy_nom(t), ta_liste_res($rl)))
+    }
+    retour ta_inchange(t)
+  }
+  si ($g == "elim") {
+    $rm = ta_step(noy_champ(t, "motif"))
+    $rb = ta_step_liste(noy_champ_liste(t, "branches"))
+    si (ta_change($rm) ou ta_change($rb)) {
+      retour ta_modif(noy_elim(noy_nom(t), ta_term($rm), ta_liste_res($rb)))
+    }
+    retour ta_inchange(t)
+  }
+  retour ta_inchange(t)
+}
+
+fn ta_step_liste(l: liste<table>) -> table {
+  $r = [table()]
+  $changed = faux
+  $n = longueur(l)
+  $i = 1
+  tant_que ($i < $n) {
+    $e = ta_step(l[$i])
+    joindre($r, ta_term($e))
+    si (ta_change($e)) { $changed = vrai }
+    $i = $i + 1
+  }
+  si ($changed) { retour ta_modif_l($r) }
+  retour ta_inchange_l(l)
+}
+
+fn ta_simp_impl(t: table) -> table {
+  $cur = beta(t)
+  $fuel = 200
+  tant_que ($fuel > 0) {
+    $r = ta_step($cur)
+    si (non ta_change($r)) { retour $cur }
+    $cur = beta(ta_term($r))
+    $fuel = $fuel - 1
+  }
+  retour $cur
+}
+
+
+fn introduction(but, ctx) -> table {
+  $b = ta_coerce_table(but)
+  $c = ta_coerce_ctx(ctx)
+  retour ta_intro_impl($b, $c)
+}
+
+fn application(but, ctx) -> table {
+  $b = ta_coerce_table(but)
+  $c = ta_coerce_ctx(ctx)
+  retour ta_appl_impl($b, $c)
+}
+
+fn induction(but, ctx) -> table {
+  $b = ta_coerce_table(but)
+  $c = ta_coerce_ctx(ctx)
+  retour ta_ind_impl($b, $c)
+}
+
+fn simplifier(t) -> table {
+  $x = ta_coerce_table(t)
+  retour ta_simp_impl($x)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. TERMES DES LEMMES DÉRIVÉS — tous contrôlés par le noyau
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn ta_terme_symm() -> table {
+  $P = noy_lam("z", noy_var("A"), ta_eq(noy_var("A"), noy_var("z"), noy_var("a")))
+  $corps = ta_ap6(ta_eqrec_symbole(), noy_var("A"), noy_var("a"), noy_var("b"), $P, ta_ap2(ta_refl_symbole(), noy_var("A"), noy_var("a")), noy_var("h"))
+  retour noy_lam("A", noy_type(0), noy_lam("a", noy_var("A"), noy_lam("b", noy_var("A"), noy_lam("h", ta_eq(noy_var("A"), noy_var("a"), noy_var("b")), $corps))))
+}
+
+fn ta_terme_trans() -> table {
+  $P = noy_lam("z", noy_var("A"), ta_eq(noy_var("A"), noy_var("a"), noy_var("z")))
+  $corps = ta_ap6(ta_eqrec_symbole(), noy_var("A"), noy_var("b"), noy_var("c"), $P, noy_var("h1"), noy_var("h2"))
+  retour noy_lam("A", noy_type(0), noy_lam("a", noy_var("A"), noy_lam("b", noy_var("A"), noy_lam("c", noy_var("A"), noy_lam("h1", ta_eq(noy_var("A"), noy_var("a"), noy_var("b")), noy_lam("h2", ta_eq(noy_var("A"), noy_var("b"), noy_var("c")), $corps))))))
+}
+
+fn ta_terme_congr_succ() -> table {
+  $P = noy_lam("z", ta_nat(), ta_eq(ta_nat(), ta_succ(noy_var("a")), ta_succ(noy_var("z"))))
+  $corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), noy_var("a"), noy_var("b"), $P, ta_ap2(ta_refl_symbole(), ta_nat(), ta_succ(noy_var("a"))), noy_var("h"))
+  retour noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("h", ta_eq(ta_nat(), noy_var("a"), noy_var("b")), $corps)))
+}
+
+fn ta_terme_congr_plus_l() -> table {
+  $P = noy_lam("z", ta_nat(), ta_eq(ta_nat(), ta_plus(noy_var("a"), noy_var("p")), ta_plus(noy_var("z"), noy_var("p"))))
+  $corps = ta_ap6(ta_eqrec_symbole(), ta_nat(), noy_var("a"), noy_var("b"), $P, ta_ap2(ta_refl_symbole(), ta_nat(), ta_plus(noy_var("a"), noy_var("p"))), noy_var("h"))
+  retour noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("p", ta_nat(), noy_lam("h", ta_eq(ta_nat(), noy_var("a"), noy_var("b")), $corps))))
+}
+
+# plus_zero_d : Πn, Eq (plus n zero) n — par induction sur n.
+fn ta_terme_plus_zero_d() -> table {
+  $but = noy_pi("n", ta_nat(), ta_eq(ta_nat(), ta_plus(noy_var("n"), ta_zero()), noy_var("n")))
+  $nx_r0 = induction($but, ta_ctx())
+  si (non ta_boo($nx_r0, "ok")) { retour $nx_r0 }
+  $base = ta_ap1(ta_plus0l_symbole(), ta_zero())
+
+  $n = ta_txt($nx_r0, "nom_n")
+  $ih = ta_txt($nx_r0, "nom_ih")
+  $nx_c1 = ta_ap2(ta_plusSl_symbole(), noy_var($n), ta_zero())
+  $nx_c2 = ta_ap3(ta_congr_succ_symbole(), ta_plus(noy_var($n), ta_zero()), noy_var($n), noy_var($ih))
+  $corps = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_succ(noy_var($n)), ta_zero()), ta_succ(ta_plus(noy_var($n), ta_zero())), ta_succ(noy_var($n)), $nx_c1, $nx_c2)
+  $pas = noy_lam($n, ta_nat(), noy_lam($ih, ta_eq(ta_nat(), ta_plus(noy_var($n), ta_zero()), noy_var($n)), $corps))
+  retour induction_resolue($but, ta_ctx(), $base, $pas)
+}
+
+# plus_succ_d : Πn m, Eq (plus n (succ m)) (succ (plus n m)).
+fn ta_terme_plus_succ_d() -> table {
+  $but = noy_pi("n", ta_nat(), noy_pi("m", ta_nat(), ta_eq(ta_nat(), ta_plus(noy_var("n"), ta_succ(noy_var("m"))), ta_succ(ta_plus(noy_var("n"), noy_var("m"))))))
+  $nx_r0 = induction($but, ta_ctx())
+  si (non ta_boo($nx_r0, "ok")) { retour $nx_r0 }
+
+  $mb = "m"
+  $b1 = ta_ap1(ta_plus0l_symbole(), ta_succ(noy_var($mb)))
+  $b2 = ta_ap3(ta_congr_succ_symbole(), ta_plus(ta_zero(), noy_var($mb)), noy_var($mb), ta_ap1(ta_plus0l_symbole(), noy_var($mb)))
+  $b3 = ta_ap4(ta_symm_symbole(), ta_nat(), ta_succ(ta_plus(ta_zero(), noy_var($mb))), ta_succ(noy_var($mb)), $b2)
+  $bcorps = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_zero(), ta_succ(noy_var($mb))), ta_succ(noy_var($mb)), ta_succ(ta_plus(ta_zero(), noy_var($mb))), $b1, $b3)
+  $base = noy_lam($mb, ta_nat(), $bcorps)
+
+  $n = ta_txt($nx_r0, "nom_n")
+  $ih = ta_txt($nx_r0, "nom_ih")
+  $m = "m"
+  $nx_c1 = ta_ap2(ta_plusSl_symbole(), noy_var($n), ta_succ(noy_var($m)))
+  $nx_c2 = ta_ap3(ta_congr_succ_symbole(), ta_plus(noy_var($n), ta_succ(noy_var($m))), ta_succ(ta_plus(noy_var($n), noy_var($m))), ta_ap1(noy_var($ih), noy_var($m)))
+  $nx_c3 = ta_ap2(ta_plusSl_symbole(), noy_var($n), noy_var($m))
+  $nx_c4 = ta_ap3(ta_congr_succ_symbole(), ta_plus(ta_succ(noy_var($n)), noy_var($m)), ta_succ(ta_plus(noy_var($n), noy_var($m))), $nx_c3)
+  $nx_c5 = ta_ap4(ta_symm_symbole(), ta_nat(), ta_succ(ta_plus(ta_succ(noy_var($n)), noy_var($m))), ta_succ(ta_succ(ta_plus(noy_var($n), noy_var($m)))), $nx_c4)
+  $d1 = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_succ(noy_var($n)), ta_succ(noy_var($m))), ta_succ(ta_plus(noy_var($n), ta_succ(noy_var($m)))), ta_succ(ta_succ(ta_plus(noy_var($n), noy_var($m)))), $nx_c1, $nx_c2)
+  $d2 = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_succ(noy_var($n)), ta_succ(noy_var($m))), ta_succ(ta_succ(ta_plus(noy_var($n), noy_var($m)))), ta_succ(ta_plus(ta_succ(noy_var($n)), noy_var($m))), $d1, $nx_c5)
+  $pas = noy_lam($n, ta_nat(), noy_lam($ih, noy_pi("m", ta_nat(), ta_eq(ta_nat(), ta_plus(noy_var($n), ta_succ(noy_var("m"))), ta_succ(ta_plus(noy_var($n), noy_var("m"))))), noy_lam($m, ta_nat(), $d2)))
+  retour induction_resolue($but, ta_ctx(), $base, $pas)
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. DÉMOS (correspondent aux fichiers syllog/preuves/*.slg)
+# ─────────────────────────────────────────────────────────────────────────────
+
+fn demo_identite() -> table {
+  $but = noy_pi("A", noy_type(0), noy_pi("x", noy_var("A"), noy_var("A")))
+  $terme = noy_lam("A", noy_type(0), noy_lam("x", noy_var("A"), noy_var("x")))
+  retour ta_verifie($terme, $but, ta_ctx(), "démo/identité")
+}
+
+fn demo_reflexivite() -> table {
+  $A = noy_var("A")
+  $x = noy_var("x")
+  $but = noy_pi("A", noy_type(0), noy_pi("x", $A, ta_eq($A, $x, $x)))
+  $r = reflexivite($but)
+  si (non ta_boo($r, "ok")) { retour $r }
+  retour ta_verifie(noy_champ($r, "terme"), $but, ta_ctx(), "démo/réflexivité")
+}
+
+fn demo_symetrie() -> table {
+  $but = noy_champ(ta_symm_symbole(), "type")
+  $r = symetrie($but)
+  si (non ta_boo($r, "ok")) { retour $r }
+  # contrôle croisé avec le terme dérivé de eq_rec (pas une constante opaque).
+  $v = ta_verifie(ta_terme_symm(), $but, ta_ctx(), "démo/symétrie/terme")
+  si (non ta_boo($v, "ok")) { retour $v }
+  retour ta_verifie(noy_champ($r, "terme"), $but, ta_ctx(), "démo/symétrie")
+}
+
+fn demo_associativite() -> table {
+  $m = noy_var("m")
+  $n = noy_var("n")
+  $p = noy_var("p")
+  $but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(), noy_pi("p", ta_nat(), ta_eq(ta_nat(), ta_plus(ta_plus($m, $n), $p), ta_plus($m, ta_plus($n, $p))))))
+  $nx_r0 = induction($but, ta_ctx())
+  si (non ta_boo($nx_r0, "ok")) { retour $nx_r0 }
+  $nm = ta_txt($nx_r0, "nom_n")     # nom du m du pas
+  $nn = "n"
+  $np = "p"
+  $ih = ta_txt($nx_r0, "nom_ih")
+
+  # Base : congr_plus_l (plus zero n) n p (plus_0_l n), puis symm de plus_0_l.
+  $b1 = ta_ap4(ta_congr_plus_l_symbole(), ta_plus(ta_zero(), noy_var($nn)), noy_var($nn), noy_var($np), ta_ap1(ta_plus0l_symbole(), noy_var($nn)))
+  $b2 = ta_ap4(ta_symm_symbole(), ta_nat(), ta_plus(ta_zero(), ta_plus(noy_var($nn), noy_var($np))), ta_plus(noy_var($nn), noy_var($np)), ta_ap1(ta_plus0l_symbole(), ta_plus(noy_var($nn), noy_var($np))))
+  $bcorps = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_plus(ta_zero(), noy_var($nn)), noy_var($np)), ta_plus(noy_var($nn), noy_var($np)), ta_plus(ta_zero(), ta_plus(noy_var($nn), noy_var($np))), $b1, $b2)
+  $base = noy_lam($nn, ta_nat(), noy_lam($np, ta_nat(), $bcorps))
+
+  # Pas : on utilise congr_plus_l, plus_s_l, congr_succ, IH et symm(plus_s_l).
+  $nx_c1 = ta_ap2(ta_plusSl_symbole(), noy_var($nm), noy_var($nn))
+  $d1 = ta_ap4(ta_congr_plus_l_symbole(), ta_plus(ta_succ(noy_var($nm)), noy_var($nn)), ta_succ(ta_plus(noy_var($nm), noy_var($nn))), noy_var($np), $nx_c1)
+  $nx_c2 = ta_ap2(ta_plusSl_symbole(), ta_plus(noy_var($nm), noy_var($nn)), noy_var($np))
+  $d2 = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_plus(ta_succ(noy_var($nm)), noy_var($nn)), noy_var($np)), ta_plus(ta_succ(ta_plus(noy_var($nm), noy_var($nn))), noy_var($np)), ta_succ(ta_plus(ta_plus(noy_var($nm), noy_var($nn)), noy_var($np))), $d1, $nx_c2)
+  $nx_c3 = ta_ap3(ta_congr_succ_symbole(), ta_plus(ta_plus(noy_var($nm), noy_var($nn)), noy_var($np)), ta_plus(noy_var($nm), ta_plus(noy_var($nn), noy_var($np))), ta_ap2(noy_var($ih), noy_var($nn), noy_var($np)))
+  $d3 = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_plus(ta_succ(noy_var($nm)), noy_var($nn)), noy_var($np)), ta_succ(ta_plus(ta_plus(noy_var($nm), noy_var($nn)), noy_var($np))), ta_succ(ta_plus(noy_var($nm), ta_plus(noy_var($nn), noy_var($np)))), $d2, $nx_c3)
+  $nx_c4 = ta_ap2(ta_plusSl_symbole(), noy_var($nm), ta_plus(noy_var($nn), noy_var($np)))
+  $nx_c5 = ta_ap4(ta_symm_symbole(), ta_nat(), ta_plus(ta_succ(noy_var($nm)), ta_plus(noy_var($nn), noy_var($np))), ta_succ(ta_plus(noy_var($nm), ta_plus(noy_var($nn), noy_var($np)))), $nx_c4)
+  $d4 = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_plus(ta_succ(noy_var($nm)), noy_var($nn)), noy_var($np)), ta_succ(ta_plus(noy_var($nm), ta_plus(noy_var($nn), noy_var($np)))), ta_plus(ta_succ(noy_var($nm)), ta_plus(noy_var($nn), noy_var($np))), $d3, $nx_c5)
+  $pas = noy_lam($nm, ta_nat(), noy_lam($ih, noy_pi("n", ta_nat(), noy_pi("p", ta_nat(), ta_eq(ta_nat(), ta_plus(ta_plus(noy_var($nm), noy_var("n")), noy_var("p")), ta_plus(noy_var($nm), ta_plus(noy_var("n"), noy_var("p")))))), noy_lam($nn, ta_nat(), noy_lam($np, ta_nat(), $d4))))
+
+  $rf = induction_resolue($but, ta_ctx(), $base, $pas)
+  si (non ta_boo($rf, "ok")) { retour $rf }
+  retour ta_verifie(noy_champ($rf, "terme"), $but, ta_ctx(), "démo/associativité")
+}
+
+fn demo_commutativite() -> table {
+  $m = noy_var("m")
+  $n = noy_var("n")
+  $but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(), ta_eq(ta_nat(), ta_plus($m, $n), ta_plus($n, $m))))
+  $nx_r0 = induction($but, ta_ctx())
+  si (non ta_boo($nx_r0, "ok")) { retour $nx_r0 }
+  $nn = "n"
+  $b1 = ta_ap1(ta_plus0l_symbole(), noy_var($nn))
+  $b2 = ta_ap4(ta_symm_symbole(), ta_nat(), ta_plus(noy_var($nn), ta_zero()), noy_var($nn), ta_ap1(ta_plus_zero_d_symbole(), noy_var($nn)))
+  $bcorps = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_zero(), noy_var($nn)), noy_var($nn), ta_plus(noy_var($nn), ta_zero()), $b1, $b2)
+  $base = noy_lam($nn, ta_nat(), $bcorps)
+
+  $nm = ta_txt($nx_r0, "nom_n")
+  $ih = ta_txt($nx_r0, "nom_ih")
+  $nx_c1 = ta_ap2(ta_plusSl_symbole(), noy_var($nm), noy_var($nn))
+  $nx_c2 = ta_ap3(ta_congr_succ_symbole(), ta_plus(noy_var($nm), noy_var($nn)), ta_plus(noy_var($nn), noy_var($nm)), ta_ap1(noy_var($ih), noy_var($nn)))
+  $nx_c3 = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_succ(noy_var($nm)), noy_var($nn)), ta_succ(ta_plus(noy_var($nm), noy_var($nn))), ta_succ(ta_plus(noy_var($nn), noy_var($nm))), $nx_c1, $nx_c2)
+  $nx_c4 = ta_ap2(ta_plus_succ_d_symbole(), noy_var($nn), noy_var($nm))
+  $nx_c5 = ta_ap4(ta_symm_symbole(), ta_nat(), ta_plus(noy_var($nn), ta_succ(noy_var($nm))), ta_succ(ta_plus(noy_var($nn), noy_var($nm))), $nx_c4)
+  $d = ta_ap6(ta_trans_symbole(), ta_nat(), ta_plus(ta_succ(noy_var($nm)), noy_var($nn)), ta_succ(ta_plus(noy_var($nn), noy_var($nm))), ta_plus(noy_var($nn), ta_succ(noy_var($nm))), $nx_c3, $nx_c5)
+  $pas = noy_lam($nm, ta_nat(), noy_lam($ih, noy_pi("n", ta_nat(), ta_eq(ta_nat(), ta_plus(noy_var($nm), noy_var("n")), ta_plus(noy_var("n"), noy_var($nm)))), noy_lam($nn, ta_nat(), $d)))
+
+  $rf = induction_resolue($but, ta_ctx(), $base, $pas)
+  si (non ta_boo($rf, "ok")) { retour $rf }
+  retour ta_verifie(noy_champ($rf, "terme"), $but, ta_ctx(), "démo/commutativité")
+}
+
+# Vérification de TOUS les lemmes dérivés par le noyau (Ctrl-C des constantes).
+fn demo_lemmes() -> table {
+  $nx_r1 = ta_verifie(ta_terme_symm(), noy_champ(ta_symm_symbole(), "type"), ta_ctx(), "lemme/symm")
+  $nx_r2 = ta_verifie(ta_terme_trans(), noy_champ(ta_trans_symbole(), "type"), ta_ctx(), "lemme/trans")
+  $nx_r3 = ta_verifie(ta_terme_congr_succ(), noy_champ(ta_congr_succ_symbole(), "type"), ta_ctx(), "lemme/congr_succ")
+  $nx_r4 = ta_verifie(ta_terme_congr_plus_l(), noy_champ(ta_congr_plus_l_symbole(), "type"), ta_ctx(), "lemme/congr_plus_l")
+  $nx_r5 = ta_terme_plus_zero_d()
+  $nx_r6 = ta_terme_plus_succ_d()
+  $ok = ta_boo($nx_r1, "ok") et ta_boo($nx_r2, "ok") et ta_boo($nx_r3, "ok") et ta_boo($nx_r4, "ok") et ta_boo($nx_r5, "ok") et ta_boo($nx_r6, "ok")
+  $msg = ""
+  si (non ta_boo($nx_r1, "ok")) { $msg = $msg + " symm:" + ta_txt($nx_r1, "erreur") }
+  si (non ta_boo($nx_r2, "ok")) { $msg = $msg + " trans:" + ta_txt($nx_r2, "erreur") }
+  si (non ta_boo($nx_r3, "ok")) { $msg = $msg + " congr_succ:" + ta_txt($nx_r3, "erreur") }
+  si (non ta_boo($nx_r4, "ok")) { $msg = $msg + " congr_plus_l:" + ta_txt($nx_r4, "erreur") }
+  si (non ta_boo($nx_r5, "ok")) { $msg = $msg + " plus_zero_d:" + ta_txt($nx_r5, "erreur") }
+  si (non ta_boo($nx_r6, "ok")) { $msg = $msg + " plus_succ_d:" + ta_txt($nx_r6, "erreur") }
+  retour ta_resultat($ok, noy_type(0), $msg, noy_var("?"), ta_params0(), table(), "démo/lemmes")
+}

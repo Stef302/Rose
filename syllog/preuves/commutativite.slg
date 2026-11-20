@@ -1,0 +1,26 @@
+# Syllog — preuve de démonstration : commutativité de l'addition
+# Statut : VÉRIFIÉE PAR LE NOYAU PROV1.
+#   Terme produit : nat_rec P base pas avec
+#     P = λm, pour_tout n, m + n = n + m
+#     base = λn. trans (plus_0_l n) (symm (plus_zero_d n))
+#     pas  = λk. λih. λn. trans
+#              (trans (plus_s_l k n) (congr_succ (ih n)))
+#              (symm (plus_succ_d n k))
+#   Contrôle : demo_commutativite() -> induction_resolue() -> verifier + convertible.
+#   Preuve de sortie : ./rose/rose syllog/tests_tactiques.rose -> OK demo/commutativite
+#   Limite : plus_zero_d et plus_succ_d sont des lemmes DÉRIVÉS (termes verifies
+#            dans demo_lemmes) ; plus_0_l / plus_s_l sont des axiomes de signature.
+
+théorème commutativite_plus :
+  pour_tout m : Nat, pour_tout n : Nat, m + n = n + m
+preuve
+  induction m
+  cas zero :
+    introduction n
+    appliquer trans (plus_0_l n) (symm (plus_zero_d n))
+  cas succ k ih :
+    introduction n
+    appliquer trans
+      (trans (plus_s_l k n) (congr_succ (ih n)))
+      (symm (plus_succ_d n k))
+fin
