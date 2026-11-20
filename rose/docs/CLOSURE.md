@@ -265,3 +265,13 @@ python3 bench_close1.py 19 21 definitive_c19 ...   # idem
 ```
 
 Tous harnais, CSV, journaux et binaires sont dans `/tmp/opencode/close1_agents/`.
+
+---
+
+## Rectification de titre (21/11, orchestrateur)
+
+Le titre du commit `8c31a38` dit « écart suite ×1,19→×0,9 sur une partie ». **Il est imprécis** :
+aucune salve n'a montré Rose ≤ Rust. Les ratios finaux de la salve définitive sont
+**×1,40 c6 / ×1,39 c16 / ×1,39 c19** pour la recette PGO (tableau § titre du rapport),
+soit un écart **réduit mais toujours positif**. La branche `main` étant protégée, le titre
+n'a pas pu être amendé ; ce paragraphe fait foi. Aucune victoire n'est revendiquée ici.
