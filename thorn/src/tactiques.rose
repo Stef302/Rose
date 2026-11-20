@@ -315,7 +315,12 @@ fn ta_eq_parts(ty: table) -> table {
 fn ta_normalise_liste(l: liste<table>) -> liste<table> {
   $r = [table()]
   $n = longueur(l)
-  $i = 1
+  # Le parseur PROV2 rend des listes 0-indexees NON rembourrees, alors que
+  # le noyau et les tactiques utilisent [sentinelle, ...]. On detecte le cas
+  # en inspectant l'element 0 : un vrai terme a un genre, la sentinelle non.
+  $deb = 1
+  si ($n > 0 et noy_genre(l[0]) != "") { $deb = 0 }
+  $i = $deb
   tant_que ($i < $n) { joindre($r, ta_normalise(l[$i])); $i = $i + 1 }
   retour $r
 }
@@ -327,7 +332,12 @@ fn ta_normalise(t: table) -> table {
     retour t
   }
   si ($g == "const") {
-    si (noy_nom(t) == "0") { retour ta_zero() }
+    $nm = noy_nom(t)
+    si ($nm == "0") { retour ta_zero() }
+    # Le parseur type les operateurs comme des constantes de Type(0) : on
+    # les remplace par leurs symboles de signature (verifies par le noyau).
+    si ($nm == "+") { retour ta_plus_symbole() }
+    si ($nm == "-") { retour t }
     retour t
   }
   si ($g == "app") {
@@ -344,14 +354,9 @@ fn ta_normalise(t: table) -> table {
   }
   si ($g == "ind") {
     $nom = noy_nom(t)
-    $ps = ta_normalise_liste(noy_champ_liste(t, "params"))
-    si ($nom == "=" et longueur($ps) == 2) {
-      $pad = [table()]
-      joindre($pad, $ps[1])
-      joindre($pad, $ps[2])
-      $ps = $pad
-    }
-    retour noy_ind($nom, $ps)
+    # ta_normalise_liste produit TOUJOURS une liste rembourree, y compris
+    # pour les ind("=",[a,b]) du parseur (desormais [sentinelle,a,b]).
+    retour noy_ind($nom, ta_normalise_liste(noy_champ_liste(t, "params")))
   }
   retour t
 }

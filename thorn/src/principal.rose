@@ -304,7 +304,353 @@ fn p_tactique(nom: chaine, but: table, ctx: liste<table>, preuve: liste<chaine>,
 }
 
 fn p_est_tactique(s: chaine) -> booleen {
-  retour s == "reflexivite" ou s == "réflexivité" ou s == "refl" ou s == "symetrie" ou s == "symétrie" ou s == "sym" ou s == "introduction" ou s == "intro" ou s == "application" ou s == "app" ou s == "induction" ou s == "ind" ou s == "simplifier" ou s == "simplification"
+  retour s == "reflexivite" ou s == "réflexivité" ou s == "refl" ou s == "symetrie" ou s == "symétrie" ou s == "sym" ou s == "introduction" ou s == "intro" ou s == "application" ou s == "app" ou s == "appliquer" ou s == "induction" ou s == "ind" ou s == "simplifier" ou s == "simplification"
+}
+
+fn p_debut_commande(s: chaine) -> booleen {
+  retour p_est_tactique(s) ou s == "cas" ou s == "fin"
+}
+
+# Nombre de buts residuels d'un Resultat PROV3 (liste rembourree).
+fn p_nb_buts(r) -> entier {
+  $n = 0
+  si (type(r) == "table" et cle_existe(r, "buts")) {
+    $b = [table()]
+    $b = r["buts"]
+    si (type($b) == "liste") { $n = longueur($b) - 1 }
+  }
+  si ($n < 0) { $n = 0 }
+  retour $n
+}
+
+# ── 5b. Sequenceur de tactiques (scripts multi-lignes des preuves) ─────────
+
+fn p_cmds_vides() -> table {
+  $r = table()
+  inserer($r, "n", 0)
+  retour $r
+}
+
+fn p_cmds_ajoute(cmds: table, c: table) {
+  $n = cmds["n"]
+  inserer(cmds, chaine($n + 1), c)
+  inserer(cmds, "n", $n + 1)
+}
+
+fn p_liste_depuis(j: liste<chaine>, debut: entier, fin: entier) -> liste<chaine> {
+  $r = [""]
+  $r = p_liste_vide_thorn()
+  $i = debut
+  tant_que ($i < fin et $i < longueur(j)) {
+    joindre($r, j[$i])
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# Decoupe le flux de jetons en commandes. Une commande `cas` porte ses
+# propres sous-commandes ; `appliquer` porte les jetons du terme a elaborer.
+fn p_parse_cmds(j: liste<chaine>, debut: entier, fin: entier) -> table {
+  $cmds = p_cmds_vides()
+  $i = debut
+  tant_que ($i < fin et $i < longueur(j)) {
+    $mot = j[$i]
+    $c = table()
+    si ($mot == "reflexivite" ou $mot == "réflexivité" ou $mot == "refl") {
+      inserer($c, "genre", "t")
+      inserer($c, "nom", "reflexivite")
+      inserer($c, "arg", "")
+      p_cmds_ajoute($cmds, $c)
+      $i = $i + 1
+    } sinon si ($mot == "symetrie" ou $mot == "symétrie" ou $mot == "sym") {
+      inserer($c, "genre", "t")
+      inserer($c, "nom", "symetrie")
+      inserer($c, "arg", "")
+      p_cmds_ajoute($cmds, $c)
+      $i = $i + 1
+    } sinon si ($mot == "introduction" ou $mot == "intro") {
+      $arg = ""
+      si ($i + 1 < fin) { $arg = j[$i + 1] }
+      inserer($c, "genre", "t")
+      inserer($c, "nom", "introduction")
+      inserer($c, "arg", $arg)
+      p_cmds_ajoute($cmds, $c)
+      $i = $i + 2
+    } sinon si ($mot == "induction" ou $mot == "ind") {
+      $arg = ""
+      si ($i + 1 < fin) { $arg = j[$i + 1] }
+      inserer($c, "genre", "t")
+      inserer($c, "nom", "induction")
+      inserer($c, "arg", $arg)
+      p_cmds_ajoute($cmds, $c)
+      $i = $i + 2
+    } sinon si ($mot == "application" ou $mot == "app" ou $mot == "appliquer") {
+      $dt = $i + 1
+      $ft = $dt
+      tant_que ($ft < fin et non p_debut_commande(j[$ft])) { $ft = $ft + 1 }
+      inserer($c, "genre", "t")
+      inserer($c, "nom", "appliquer")
+      inserer($c, "arg", "")
+      inserer($c, "tokens", p_liste_depuis(j, $dt, $ft))
+      p_cmds_ajoute($cmds, $c)
+      $i = $ft
+    } sinon si ($mot == "cas") {
+      $motif = ""
+      si ($i + 1 < fin) { $motif = j[$i + 1] }
+      $k = $i + 2
+      $params = [""]
+      $params = p_liste_vide_thorn()
+      tant_que ($k < fin et j[$k] != ":") {
+        joindre($params, j[$k])
+        $k = $k + 1
+      }
+      si ($k < fin et j[$k] == ":") { $k = $k + 1 }
+      $fs = $k
+      tant_que ($fs < fin et j[$fs] != "cas") { $fs = $fs + 1 }
+      inserer($c, "genre", "cas")
+      inserer($c, "motif", $motif)
+      inserer($c, "params", $params)
+      inserer($c, "cmds", p_parse_cmds(j, $k, $fs))
+      p_cmds_ajoute($cmds, $c)
+      $i = $fs
+    } sinon {
+      $i = $i + 1
+    }
+  }
+  retour $cmds
+}
+
+fn p_etat(but, ctx: liste<table>, terme, trou: chaine) -> table {
+  $s = table()
+  inserer($s, "ok", vrai)
+  inserer($s, "err", "")
+  inserer($s, "but", but)
+  inserer($s, "ctx", ctx)
+  inserer($s, "terme", terme)
+  inserer($s, "trou", trou)
+  inserer($s, "ind", table())
+  inserer($s, "nb_cas", 0)
+  retour $s
+}
+
+fn p_echoue(st: table, msg: chaine) {
+  inserer(st, "ok", faux)
+  inserer(st, "err", msg)
+}
+
+fn p_st_ok(st: table) -> booleen {
+  $v = faux
+  $v = st["ok"]
+  retour $v
+}
+
+fn p_comme_table(x) -> table {
+  $v = table()
+  $v = x
+  retour $v
+}
+
+# Remplissage de trou SANS evitement de capture. Les noms de troux sont
+# generes frais ("?_", "?0", "?base", ...) et ne peuvent donc pas etre
+# confondus avec un lieur du terme. noy_subst(), lui, renomme les lieurs
+# des que la valeur inseree contient un nom libre commun : applique a un
+# remplissage de trou, il casserait les references (mesure : identite
+# donnait lambda A'. lambda x'. ... avec un `A` libre dans le domaine).
+fn p_subst_brut_liste(l: liste<table>, nom: chaine, val: table) -> liste<table> {
+  $r = [table()]
+  $n = longueur(l)
+  $i = 1
+  tant_que ($i < $n) { joindre($r, p_subst_brut(l[$i], nom, val)); $i = $i + 1 }
+  retour $r
+}
+
+fn p_subst_brut(t: table, nom: chaine, val: table) -> table {
+  $g = noy_genre(t)
+  si ($g == "var") {
+    si (noy_nom(t) == nom) { retour val }
+    retour t
+  }
+  si ($g == "app") {
+    retour noy_app(p_subst_brut(noy_champ(t, "fonction"), nom, val),
+                   p_subst_brut(noy_champ(t, "argument"), nom, val))
+  }
+  si ($g == "pi") {
+    retour noy_pi(noy_nom(t),
+                  p_subst_brut(noy_champ(t, "domaine"), nom, val),
+                  p_subst_brut(noy_champ(t, "codomaine"), nom, val))
+  }
+  si ($g == "lam") {
+    retour noy_lam(noy_nom(t),
+                   p_subst_brut(noy_champ(t, "domaine"), nom, val),
+                   p_subst_brut(noy_champ(t, "corps"), nom, val))
+  }
+  si ($g == "const" ou $g == "constructeur") {
+    $ty = p_subst_brut(noy_champ(t, "type"), nom, val)
+    si ($g == "const") { retour noy_const(noy_nom(t), $ty) }
+    retour noy_constructeur(noy_nom(t), $ty)
+  }
+  si ($g == "ind") {
+    retour noy_ind(noy_nom(t), p_subst_brut_liste(noy_champ_liste(t, "params"), nom, val))
+  }
+  si ($g == "elim") {
+    retour noy_elim(noy_nom(t),
+                    p_subst_brut(noy_champ(t, "motif"), nom, val),
+                    p_subst_brut_liste(noy_champ_liste(t, "branches"), nom, val))
+  }
+  retour t
+}
+
+fn p_exec_cas(c: table, st: table, sortie: table, trace: booleen, theoreme: chaine) {
+  $r = st["ind"]
+  si (type($r) != "table" ou non cle_existe($r, "trou_base")) {
+    p_echoue(st, "cas : aucune induction en cours")
+    retour table()
+  }
+  $num = st["nb_cas"] + 1
+  inserer(st, "nb_cas", $num)
+  $buts = $r["buts"]
+  $ctxs = $r["ctxs"]
+  $but0 = table()
+  $ctx0 = [table()]
+  $ctx0 = st["ctx"]
+  $trou = ""
+  si ($num == 1) {
+    $but0 = $buts[1]
+    $ctx0 = [table()]
+    $ctx0 = $ctxs[0]
+    $trou = chaine($r["trou_base"])
+  } sinon {
+    $but0 = $buts[2]
+    $ctx0 = [table()]
+    $ctx0 = $ctxs[1]
+    $trou = chaine($r["trou_pas"])
+  }
+
+  # `cas zero :` n'a pas de parametres ; `cas succ k ih :` en a deux. On
+  # depouille les Pi correspondants du but residuel et on pre-construit les
+  # lambda qui fermeront le terme de preuve de cette branche.
+  $squelette = noy_var("?_")
+  $butc = $but0
+  $params = [""]
+  $params = $c["params"]
+  $nbp = longueur($params)
+  # p_parse_cmds produit une liste de NOMS 0-indexee non rembourree.
+  # Une eventuelle sentinelle est une chaine vide.
+  si ($nbp > 0 et $params[0] == "") { $nbp = $nbp - 1 }
+  $ns = [""]
+  $ds = [table()]
+  $k = 1
+  tant_que ($k <= $nbp) {
+    si (noy_genre($butc) != "pi") {
+      p_echoue(st, "cas : but residuel inattendu")
+      retour table()
+    }
+    joindre($ns, noy_nom($butc))
+    joindre($ds, noy_champ($butc, "domaine"))
+    $butc = noy_champ($butc, "codomaine")
+    $k = $k + 1
+  }
+  # On enveloppe de la fin vers le debut : le premier PI devient le
+  # lambda EXTERIEUR (sinon `cas succ k ih` donnerait lambda ih. lambda k,
+  # et le type de ih, qui contient k, aurait un k libre).
+  $j = $nbp
+  tant_que ($j >= 1) {
+    $squelette = noy_lam($ns[$j], $ds[$j], $squelette)
+    $j = $j - 1
+  }
+
+  $etat = p_etat($butc, $ctx0, $squelette, "?_")
+  $sous = table()
+  $sous = $c["cmds"]
+  p_exec_cmds($sous, $etat, sortie, trace, theoreme)
+  si (non p_st_ok($etat)) {
+    p_echoue(st, chaine($etat["err"]))
+    retour table()
+  }
+  si (chaine($etat["trou"]) != "?_ferme") {
+    p_echoue(st, "cas " + chaine($c["motif"]) + " : preuve incomplete")
+    retour table()
+  }
+  inserer(st, "terme", p_subst_brut(p_comme_table(st["terme"]), $trou, p_comme_table($etat["terme"])))
+  si ($num >= 2) { inserer(st, "trou", "?_ferme") }
+}
+
+# Execute une liste de commandes ; l'etat porte le but courant, le contexte,
+# le squelette de terme et le nom du trou encore ouvert.
+fn p_exec_cmds(cmds: table, st: table, sortie: table, trace: booleen, theoreme: chaine) {
+  $n = cmds["n"]
+  $i = 1
+  tant_que ($i <= $n et p_st_ok(st)) {
+    $c = table()
+    $c = cmds[chaine($i)]
+    si (chaine($c["genre"]) == "cas") {
+      p_exec_cas($c, st, sortie, trace, theoreme)
+    } sinon {
+      $nom = chaine($c["nom"])
+      $but = p_comme_table(st["but"])
+      $ctx = [table()]
+      $ctx = st["ctx"]
+      $r = table()
+      $e = ""
+      essayer {
+        si ($nom == "appliquer") {
+          $jets = [""]
+          $jets = $c["tokens"]
+          $tm = p_comme_table(analyser($jets))
+          $tm = ta_resoudre($tm, $ctx)
+          $v = verifier($tm, $ctx)
+          si (non p_ok($v)) {
+            inserer($r, "ok", faux)
+            inserer($r, "erreur", "appliquer : noyau refuse : " + p_raison($v))
+          } sinon {
+            si (non convertible(p_comme_table($v["type"]), $but)) {
+              inserer($r, "ok", faux)
+              inserer($r, "erreur", "appliquer : type de la preuve ≠ but")
+            } sinon {
+              inserer($r, "ok", vrai)
+              inserer($r, "terme", $tm)
+              si (trace) { p_ajoute_trace(sortie, theoreme, "appliquer", $tm) }
+            }
+          }
+        } sinon {
+          $vides = [""]
+          $r = p_tactique($nom, $but, $ctx, $vides, sortie, trace, theoreme)
+        }
+      } attraper($e) {
+        inserer($r, "ok", faux)
+        inserer($r, "erreur", $nom + " : " + $e)
+      }
+      si (non p_ok($r)) {
+        p_echoue(st, p_raison($r))
+      } sinon {
+        $nb = p_nb_buts($r)
+        si ($nom == "introduction" et $nb < 1) {
+          p_echoue(st, "introduction : aucun but residuel")
+        } sinon {
+          si ($nom == "induction" et $nb < 2) {
+            p_echoue(st, "induction : branches manquantes")
+          } sinon {
+            $terme = p_subst_brut(p_comme_table(st["terme"]), chaine(st["trou"]), p_comme_table($r["terme"]))
+            inserer(st, "terme", $terme)
+            si (trace) { p_ajoute_trace(sortie, theoreme, "terme", $terme) }
+            si ($nom == "introduction") {
+              inserer(st, "trou", chaine($r["trou"]))
+              inserer(st, "but", $r["buts"][1])
+              inserer(st, "ctx", $r["ctxs"][0])
+            } sinon {
+              si ($nom == "induction") {
+                inserer(st, "ind", $r)
+                inserer(st, "nb_cas", 0)
+              } sinon {
+                inserer(st, "trou", "?_ferme")
+              }
+            }
+          }
+        }
+      }
+    }
+    $i = $i + 1
+  }
 }
 
 # Preuve directe : la ligne « preuve » est un terme, pas une tactique.
@@ -370,6 +716,8 @@ fn pilote_executer(chemin: chaine, trace: booleen) -> table {
     $pe_but_j = [""]
     $pe_but_j = $pe_d["but"]
     $pe_but = p_analyser_but($pe_but_j)
+    # Normalisation syntaxique vers le format canonique PROV1/PROV3.
+    si (p_est_terme($pe_but)) { $pe_but = ta_normalise($pe_but) }
     $pe_ligne = ""
     $pe_erreur_parse = ""
 
@@ -384,27 +732,21 @@ fn pilote_executer(chemin: chaine, trace: booleen) -> table {
       } sinon {
         $pe_preuve = [""]
         $pe_preuve = $pe_d["preuve"]
-        $pe_tac = ""
-        si (longueur($pe_preuve) > 1) { $pe_tac = $pe_preuve[1] }
         $pe_terme = table()
-        $pe_r = table()
 
-        si ($pe_tac == "") {
+        si (longueur($pe_preuve) <= 1) {
           $pe_ligne = "ÉCHEC " + $pe_nom + " : aucune preuve fournie"
         } sinon {
-          si (p_est_tactique($pe_tac)) {
-            $pe_r = p_tactique($pe_tac, $pe_but, $pe_ctx, $pe_preuve, $pe_sortie, trace, $pe_nom)
-            si (trace et cle_existe($pe_r, "terme")) {
-              p_ajoute_trace($pe_sortie, $pe_nom, "terme", $pe_r["terme"])
-            }
-            $pe_nb_buts = p_buts_restants($pe_r)
-            si (non p_ok($pe_r)) {
-              $pe_ligne = "ÉCHEC " + $pe_nom + " : " + p_raison($pe_r)
+          si (p_debut_commande($pe_preuve[1])) {
+            $pe_cmds = p_parse_cmds($pe_preuve, 1, longueur($pe_preuve))
+            $pe_etat = p_etat($pe_but, $pe_ctx, noy_var("?_"), "?_")
+            p_exec_cmds($pe_cmds, $pe_etat, $pe_sortie, trace, $pe_nom)
+            si (non p_st_ok($pe_etat)) {
+              $pe_ligne = "ÉCHEC " + $pe_nom + " : " + chaine($pe_etat["err"])
             } sinon {
-              si ($pe_nb_buts > 0) {
-                $pe_ligne = "ÉCHEC " + $pe_nom + " : tactique incomplète (" + chaine($pe_nb_buts) + " but(s) restant(s))"
-              } sinon {
-                $pe_terme = $pe_r["terme"]
+              $pe_terme = $pe_etat["terme"]
+              si (chaine($pe_etat["trou"]) != "?_ferme") {
+                $pe_ligne = "ÉCHEC " + $pe_nom + " : preuve incomplete"
               }
             }
           } sinon {
