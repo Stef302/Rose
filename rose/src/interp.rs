@@ -1107,7 +1107,218 @@ fn nom_std_connu(nom: &str) -> bool {
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
         | "fraction"
         | "fenetre_native" | "fenetre_afficher" | "fenetre_attendre"
-        | "fenetre_fermer" | "message_native")
+        | "fenetre_fermer" | "message_native"
+        // INT1 — grands nombres paresseux et détail typé.
+        | "entier_geant_factorielle" | "detail" | "afficher_detail"
+        | "chiffres" | "plus_de_chiffres"
+        // INT1 — pont GUI1 : primitives natives déjà écrites dans gui_native.rs.
+        | "fenetre_compter" | "fenetre_creer_simulee" | "fenetre_boutons_creer"
+        | "bouton_compter" | "bouton_sous" | "bouton_attendre_clic"
+        | "bouton_attendre_clic_limite" | "bouton_clic_simuler"
+        | "bouton_x11_envoyer_clic")
+}
+
+/// INT1 — enregistre l'objet paresseux d'une valeur symbolique comme « dernier
+/// résultat » du REPL, dès qu'il est affiché. C'est le branchement attendu par
+/// CLI1 (`repl::enregistrer_objet_val1`) pour que `:more` retrouve l'objet.
+/// Aucune autre valeur n'est touchée : pas d'état global implicite.
+fn enregistrer_symbolique_affiche(v: &Valeur) {
+    if let Valeur::Symbolique(o) = v {
+        crate::repl::enregistrer_objet_val1(o.clone());
+    }
+}
+
+/// INT1 — propriétés PERTINENTES pour le type de `v`, calculées, jamais
+/// inventées. Un `match` exhaustif sur les 13 variantes garantit qu'aucune
+/// propriété d'un type ne déborde sur un autre (pas de dispatch sur chaîne).
+fn proprietes_detail(v: &Valeur) -> Vec<(String, String)> {
+    match v {
+        Valeur::Symbolique(o) => {
+            let p = o.proprietes();
+            vec![
+                ("Puissance de 10".into(), format!("10^{}", p.log10_complet)),
+                ("Premiers chiffres".into(), o.premiers_tronques()),
+                ("Longueur".into(), format!("{} decimal digits", p.longueur)),
+                ("Zeros finaux".into(), p.zeros_finaux.to_string()),
+                ("Derniers non nuls".into(), p.derniers_non_nuls),
+            ]
+        }
+        Valeur::Entier(..) => {
+            let z = vers_z(v);
+            let premier = crate::run::est_premier(&z);
+            let s = chaine_de(v);
+            let digits = s.trim_start_matches('-').len();
+            let pair = (&z.v() % 2u32).is_zero();
+            vec![
+                ("Type".into(), if premier { "entier premier".into() }
+                                else { "entier".into() }),
+                ("Representation".into(), s),
+                ("Longueur".into(), format!("{digits} decimal digits")),
+                ("Parite".into(), if pair { "pair".into() } else { "impair".into() }),
+            ]
+        }
+        Valeur::Rationnel(q) => {
+            let periode = {
+                let s = texte_rationnel(q);
+                match (s.find('['), s.find(']')) {
+                    (Some(a), Some(b)) if b > a + 1 => s[a + 1..b].chars().count(),
+                    _ => 0,
+                }
+            };
+            vec![
+                ("Type".into(), "rationnel".into()),
+                ("Representation".into(), texte_rationnel(q)),
+                ("Numerateur".into(), q.num_bigint().to_string()),
+                ("Denominateur".into(), q.den_bigint().to_string()),
+                ("Periode".into(), format!("{periode} chiffre(s)")),
+            ]
+        }
+        Valeur::Flottant(d) => {
+            let classe = if d.is_nan() { "non_nombre" }
+                         else if d.is_infinite() { if *d > 0.0 { "+infini" } else { "-infini" } }
+                         else { "fini" };
+            let exposant = if d.is_nan() || d.is_infinite() || *d == 0.0 {
+                "non applicable".to_string()
+            } else {
+                let bits = d.to_bits();
+                (((bits >> 52) & 0x7ff) as i32 - 1023).to_string()
+            };
+            vec![
+                ("Type".into(), "flottant".into()),
+                ("Classe".into(), classe.into()),
+                ("Representation".into(), chaine_de(v)),
+                ("Exposant binaire".into(), exposant),
+            ]
+        }
+        Valeur::Booleen(b) => vec![
+            ("Type".into(), "booleen".into()),
+            ("Valeur".into(), if *b { "vrai".into() } else { "faux".into() }),
+        ],
+        Valeur::Chaine(s) => {
+            let t = s.aplatir();
+            let mut props = vec![
+                ("Type".into(), "chaine".into()),
+                ("Representation".into(), t.clone()),
+                ("Longueur".into(), format!("{} caracteres", t.chars().count())),
+            ];
+            if t.chars().count() > 80 {
+                let court: String = t.chars().take(77).collect();
+                props.push(("Apercu".into(), format!("{court}…")));
+            }
+            props
+        }
+        Valeur::Liste(l) => {
+            let items = l.0.borrow();
+            let mut props = vec![
+                ("Type".into(), "liste".into()),
+                ("Representation".into(), chaine_de(v)),
+                ("Elements".into(), items.len().to_string()),
+            ];
+            if let Some(x) = items.first() {
+                props.push(("Premier element".into(), chaine_de(x)));
+            }
+            if let Some(x) = items.last() {
+                props.push(("Dernier element".into(), chaine_de(x)));
+            }
+            props
+        }
+        Valeur::Table(t) => {
+            let items = t.0.borrow();
+            let mut props = vec![
+                ("Type".into(), "table".into()),
+                ("Representation".into(), chaine_de(v)),
+                ("Entrees".into(), items.items.len().to_string()),
+            ];
+            if let Some((k, _)) = items.items.first() {
+                props.push(("Premiere cle".into(), chaine_de(k)));
+            }
+            props
+        }
+        Valeur::Tampon(t) => vec![
+            ("Type".into(), "tampon".into()),
+            ("Octets".into(), t.0.borrow().len().to_string()),
+        ],
+        Valeur::Tableau(t) => vec![
+            ("Type".into(), "tableau".into()),
+            ("Cases".into(), t.0.borrow().len().to_string()),
+        ],
+        Valeur::Complexe { re, im } => {
+            let module = (re * re + im * im).sqrt();
+            vec![
+                ("Type".into(), "complexe".into()),
+                ("Partie reelle".into(), re.to_string()),
+                ("Partie imaginaire".into(), im.to_string()),
+                ("Module".into(), module.to_string()),
+            ]
+        }
+        Valeur::Irrationnel(z) => {
+            let dec = crate::run::chaine_de(v);
+            vec![
+                ("Type".into(), "irrationnel".into()),
+                ("Representation".into(), dec),
+                ("Valeur sous-jacente".into(), z.chaine()),
+            ]
+        }
+        Valeur::Vide => vec![("Type".into(), "vide".into())],
+    }
+}
+
+/// INT1 — `chiffres(expr, n)` : exactement les `n` premiers chiffres décimaux.
+/// Pour un symbole on augmente la demande au besoin ; pour les autres types on
+/// part de la chaîne Rose et on ne garde que les chiffres (pas de signe, pas de
+/// séparateur, pas d'ellipse), sans padding.
+fn chiffres_int1(v: &Valeur, n: i64) -> Valeur {
+    if n < 0 { erreur_runtime("chiffres : un nombre de chiffres positif est attendu"); }
+    if n == 0 { return Valeur::s(""); }
+    let n = n as usize;
+    match v {
+        Valeur::Symbolique(o) => {
+            let courant = o.chiffres_demandes.get();
+            if n > courant { let _ = o.demander_plus(n - courant); }
+            let brut = o.premiers_tronques();
+            let sans_ellipse = brut.trim_end_matches('…');
+            let s: String = sans_ellipse.chars().take(n).collect();
+            Valeur::s(s)
+        }
+        _ => {
+            let brut = chaine_de(v);
+            let s: String = brut.chars().filter(|c| c.is_ascii_digit()).take(n).collect();
+            Valeur::s(s)
+        }
+    }
+}
+
+/// INT1 — `plus_de_chiffres(expr, n)` : n'est défini QUE pour une valeur
+/// symbolique ; les autres types donnent une erreur explicite, jamais une
+/// chaîne inventée. Enregistre aussi l'objet pour la commande REPL `:more`.
+fn plus_de_chiffres_int1(v: &Valeur, n: i64) -> Valeur {
+    if n < 0 { erreur_runtime("plus_de_chiffres : un pas positif est attendu"); }
+    match v {
+        Valeur::Symbolique(o) => {
+            let s = o.demander_plus(n as usize);
+            crate::repl::enregistrer_objet_val1(o.clone());
+            Valeur::s(s)
+        }
+        _ => erreur_runtime("plus_de_chiffres : attend un entier geant symbolique (entier_geant_factorielle)"),
+    }
+}
+
+/// INT1 — convertit le format produit par `geometrie_boutons()` du jardin :
+/// `B|id|libelle|x|y|largeur|hauteur`, une ligne par bouton.
+#[cfg(not(target_arch = "wasm32"))]
+fn boutons_depuis_geometrie(texte: &str) -> Vec<crate::gui_native::Bouton> {
+    texte.lines().filter_map(|ligne| {
+        let p: Vec<&str> = ligne.trim().split('|').collect();
+        if p.len() != 7 || p[0] != "B" { return None; }
+        Some(crate::gui_native::Bouton::nouveau(
+            p[1].parse::<u64>().unwrap_or(0),
+            p[2],
+            p[3].parse::<i32>().unwrap_or(0),
+            p[4].parse::<i32>().unwrap_or(0),
+            p[5].parse::<i32>().unwrap_or(0),
+            p[6].parse::<i32>().unwrap_or(0),
+        ))
+    }).collect()
 }
 
 fn fonction_atomique(nom: &str, args: &[Valeur]) -> Option<Valeur> {
@@ -1771,6 +1982,7 @@ impl Interp {
                     } else {
                         String::new()
                     };
+                    enregistrer_symbolique_affiche(&v);
                     afficher_formule(&v, &formule);
                 }
             }
@@ -3845,6 +4057,7 @@ impl crate::rir::HoteRir for Interp {
     }
 
     fn afficher_valeur(&mut self, v: &Valeur) {
+        enregistrer_symbolique_affiche(v);
         crate::run::afficher(v);
     }
 
@@ -3860,6 +4073,7 @@ impl crate::rir::HoteRir for Interp {
         } else {
             String::new()
         };
+        enregistrer_symbolique_affiche(&v);
         crate::run::afficher_formule(&v, &formule);
         Ok(())
     }
@@ -4147,6 +4361,7 @@ impl crate::rir::HoteRir for Interp {
         -> Result<(), Option<i32>>
     {
         let v = self.eval_abstrait(e, slots)?;
+        enregistrer_symbolique_affiche(&v);
         crate::run::afficher(&v);
         Ok(())
     }
@@ -4900,8 +5115,108 @@ impl Interp {
 
     fn stdlib_valeur(&mut self, nom: &str, a: &[Valeur]) -> Valeur {
         match nom {
-            "afficher" => { afficher(&a[0]); Valeur::Vide }
+            "afficher" => { enregistrer_symbolique_affiche(&a[0]); afficher(&a[0]); Valeur::Vide }
             "view" => { let s = chaine_de(&a[0]); view_grand_nombre(&s); Valeur::Vide }
+            // ── INT1 : valeurs paresseuses et détail typé ──────────────────
+            "entier_geant_factorielle" => {
+                let z = vers_z(&a[0]);
+                if z.sgn() < 0 { erreur_runtime("entier_geant_factorielle : n negatif"); }
+                // `vers_z` donne un `Gz` éphémère : le constructeur en copie la
+                // valeur ( jamais le pointeur ), ce qui accepte n > u64::MAX.
+                Valeur::symbolique_factorielle_gz(&z)
+            }
+            "detail" => {
+                let t = Valeur::table();
+                if let Valeur::Table(tt) = &t {
+                    for (cle, val) in proprietes_detail(&a[0]) {
+                        tt.inserer(Valeur::s(cle), Valeur::s(val));
+                    }
+                }
+                t
+            }
+            // Rendu multi-lignes avec le gabarit exact de CLI1
+            // (`repl::format_table_detail`) : deux espaces, libellé paddé à 28,
+            // séparateur ` : `. `>> detail(x)` rend la table compacte Rose ;
+            // `afficher_detail(detail(x))` rend le bloc lisible.
+            "afficher_detail" => {
+                match &a[0] {
+                    Valeur::Table(t) => {
+                        for ligne in crate::repl::format_table_detail(t) {
+                            crate::run::ecrire_out(&ligne);
+                            crate::run::ecrire_out("\n");
+                        }
+                    }
+                    _ => erreur_runtime("afficher_detail : attend une table (detail(expr))"),
+                }
+                Valeur::Vide
+            }
+            "chiffres" => chiffres_int1(&a[0], if a.len() > 1 { vers_z(&a[1]).get_i64() } else { 30 }),
+            "plus_de_chiffres" => plus_de_chiffres_int1(
+                &a[0], if a.len() > 1 { vers_z(&a[1]).get_i64() } else { 30 }),
+            // ── INT1 : pont vers les primitives GUI1 déjà écrites ─────────
+            #[cfg(not(target_arch = "wasm32"))]
+            "fenetre_compter" => Valeur::z(crate::gui_native::compter_fenetres() as i64),
+            #[cfg(not(target_arch = "wasm32"))]
+            "fenetre_creer_simulee" => {
+                let titre = chaine_de(&a[0]);
+                let l = vers_z(&a[1]).get_i64();
+                let h = vers_z(&a[2]).get_i64();
+                Valeur::z(crate::gui_native::creer_simulee(&titre, l, h) as i64)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "fenetre_boutons_creer" => {
+                let id = vers_z(&a[0]).get_i64() as u64;
+                let defs = boutons_depuis_geometrie(&chaine_de(&a[1]));
+                if let Err(e) = crate::gui_native::boutons_creer(id, &defs) {
+                    erreur_runtime(&e.to_string());
+                }
+                Valeur::z(defs.len() as i64)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "bouton_compter" => {
+                let id = vers_z(&a[0]).get_i64() as u64;
+                Valeur::z(crate::gui_native::compter_boutons(id) as i64)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "bouton_sous" => {
+                let defs = boutons_depuis_geometrie(&chaine_de(&a[0]));
+                let x = vers_z(&a[1]).get_i64() as i32;
+                let y = vers_z(&a[2]).get_i64() as i32;
+                Valeur::z(crate::gui_native::bouton_sous(&defs, x, y).unwrap_or(0) as i64)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "bouton_attendre_clic" | "bouton_attendre_clic_limite" => {
+                let id = vers_z(&a[0]).get_i64() as u64;
+                let r = if nom == "bouton_attendre_clic" {
+                    crate::gui_native::attendre_clic(id)
+                } else {
+                    crate::gui_native::attendre_clic_limite(id, vers_z(&a[1]).get_i64().max(0) as u64)
+                };
+                match r {
+                    Ok(Some(b)) => Valeur::z(b as i64),
+                    Ok(None) => Valeur::z(0),
+                    Err(e) => { erreur_runtime(&e.to_string()); }
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            "bouton_clic_simuler" => {
+                let id = vers_z(&a[0]).get_i64() as u64;
+                let b = vers_z(&a[1]).get_i64() as u64;
+                if let Err(e) = crate::gui_native::clic_simuler(id, b) {
+                    erreur_runtime(&e.to_string());
+                }
+                Valeur::Vide
+            }
+            // `x11_envoyer_clic` n'existe que sur UNIX (gui_native.rs:665).
+            #[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+            "bouton_x11_envoyer_clic" => {
+                let id = vers_z(&a[0]).get_i64() as u64;
+                let b = vers_z(&a[1]).get_i64() as u64;
+                if let Err(e) = crate::gui_native::x11_envoyer_clic(id, b) {
+                    erreur_runtime(&e.to_string());
+                }
+                Valeur::Vide
+            }
             // GUI native : vraie fenêtre OS, sans navigateur ni dépendance.
             // Le module échoue EXPLICITEMENT s'il n'y a pas d'affichage.
             #[cfg(not(target_arch = "wasm32"))]
@@ -7539,5 +7854,120 @@ $fin = temps()
         assert_eq!(lignes[1], "2584", "résultat faux : {sortie}");
         let ns: i64 = lignes[2].parse().expect("troisième ligne = nanos");
         assert!((0..1_000_000_000_000).contains(&ns), "temps() aberrant : {ns} ns");
+    }
+}
+
+// ── INT1 (21/11/2026) : tests des primitives de détail ─────────────────────
+#[cfg(test)]
+mod tests_int1 {
+    use super::*;
+
+    fn it() -> Interp { Interp::nouveau(crate::front::Programme::default()) }
+
+    fn paires(v: &Valeur) -> Vec<(String, String)> {
+        match v {
+            Valeur::Table(t) => t.0.borrow().items.iter()
+                .map(|(k, x)| (chaine_de(k), chaine_de(x))).collect(),
+            _ => panic!("une table était attendue, reçu {}", chaine_de(v)),
+        }
+    }
+
+    fn valeur(p: &[(String, String)], cle: &str) -> String {
+        p.iter().find(|(k, _)| k == cle).unwrap_or_else(|| panic!("clé absente : {cle}")).1.clone()
+    }
+
+    #[test]
+    fn detail_entier_geant_10_37_oracles_ecran() {
+        let mut inter = it();
+        // 10^37 ne tient PAS dans un u64 : on passe bien par vers_z + Gz.
+        let n = Valeur::zg(Gz::de_bigint(BigInt::from(10u32).pow(37)));
+        let sym = inter.stdlib_valeur("entier_geant_factorielle", &[n]);
+        assert!(matches!(sym, Valeur::Symbolique(..)));
+        let table = inter.stdlib_valeur("detail", &[sym]);
+        let p = paires(&table);
+        assert_eq!(p.len(), 5, "propriétés réelles : {p:?}");
+        assert!(valeur(&p, "Puissance de 10")
+            .starts_with("10^365657055180967481723488710810833949195."));
+        assert_eq!(valeur(&p, "Premiers chiffres"), "901820028144300502340101362711…");
+        assert_eq!(valeur(&p, "Longueur"),
+                   "365657055180967481723488710810833949196 decimal digits");
+        assert_eq!(valeur(&p, "Zeros finaux"), "2499999999999999999999999999999999990");
+        assert_eq!(valeur(&p, "Derniers non nuls"), "467172352");
+        // Gabarit exact de CLI1, sans couleur ANSI.
+        if let Valeur::Table(t) = &table {
+            let lignes = crate::repl::format_table_detail(t);
+            assert_eq!(lignes[1], "  Premiers chiffres            : 901820028144300502340101362711…");
+            assert!(lignes.iter().all(|l| l.starts_with("  ") && l.contains(" : ")));
+        } else { unreachable!(); }
+    }
+
+    #[test]
+    fn detail_par_type_sans_chevauchement() {
+        let mut inter = it();
+        let p = paires(&inter.stdlib_valeur("detail", &[Valeur::qq(Gq::de(7, 12))]));
+        assert_eq!(valeur(&p, "Representation"), "0.58[3]");
+        assert_eq!(valeur(&p, "Numerateur"), "7");
+        assert_eq!(valeur(&p, "Denominateur"), "12");
+        assert_eq!(valeur(&p, "Periode"), "1 chiffre(s)");
+        assert!(!p.iter().any(|(k, _)| k == "Zeros finaux" || k == "Longueur"));
+
+        let p = paires(&inter.stdlib_valeur("detail", &[Valeur::liste_de(vec![
+            Valeur::z(1), Valeur::z(2), Valeur::z(3)])]));
+        assert_eq!(valeur(&p, "Elements"), "3");
+        assert_eq!(valeur(&p, "Premier element"), "1");
+        assert_eq!(valeur(&p, "Dernier element"), "3");
+        assert!(!p.iter().any(|(k, _)| k.contains("decimal") || k == "Numerateur"));
+
+        let p = paires(&inter.stdlib_valeur("detail", &[Valeur::s("bonjour")]));
+        assert_eq!(valeur(&p, "Longueur"), "7 caracteres");
+        assert!(!p.iter().any(|(k, _)| k == "Elements" || k == "Numerateur"));
+
+        let p = paires(&inter.stdlib_valeur("detail", &[Valeur::f(2.5)]));
+        assert_eq!(valeur(&p, "Classe"), "fini");
+        assert_eq!(valeur(&p, "Exposant binaire"), "1");
+
+        let p = paires(&inter.stdlib_valeur("detail", &[Valeur::z(1000003)]));
+        assert_eq!(valeur(&p, "Type"), "entier premier");
+        assert_eq!(valeur(&p, "Longueur"), "7 decimal digits");
+        assert!(!p.iter().any(|(k, _)| k == "Zeros finaux"));
+    }
+
+    #[test]
+    fn chiffres_et_plus_de_chiffres_stables() {
+        let mut inter = it();
+        let sym = inter.stdlib_valeur("entier_geant_factorielle", &[Valeur::z(100)]);
+        let c30 = inter.stdlib_valeur("chiffres", &[sym.clone(), Valeur::z(30)]);
+        assert_eq!(chaine_de(&c30), "933262154439441526816992388562");
+        let plus = inter.stdlib_valeur("plus_de_chiffres", &[sym.clone(), Valeur::z(30)]);
+        assert_eq!(chaine_de(&plus),
+            "933262154439441526816992388562667004907159682643816214685929…");
+        let c60 = inter.stdlib_valeur("chiffres", &[sym, Valeur::z(60)]);
+        assert_eq!(chaine_de(&c60), &chaine_de(&plus)[..60]);
+        assert_eq!(chaine_de(&inter.stdlib_valeur("chiffres", &[Valeur::z(-12345), Valeur::z(3)])), "123");
+    }
+
+    #[test]
+    fn noms_rose_enregistres_et_arite_optionnelle() {
+        let src = "\
+>> detail(1)
+afficher_detail(detail(1))
+>> chiffres(100, 5)
+>> plus_de_chiffres(1)
+>> plus_de_chiffres(1, 10)
+>> entier_geant_factorielle(100)
+>> fenetre_boutons_creer(1, \"B|1|x|0|0|10|10\")
+>> bouton_attendre_clic_limite(1, 5)
+";
+        if let Err(e) = crate::front::analyser(src) { panic!("vérification Rose : {e}"); }
+    }
+
+    #[test]
+    fn geometrie_boutons_du_jardin_est_convertie() {
+        let defs = boutons_depuis_geometrie("B|1|Plus de chiffres|12|56|160|28\n");
+        assert_eq!(defs.len(), 1);
+        assert_eq!(defs[0].id, 1);
+        assert_eq!(defs[0].label, "Plus de chiffres");
+        assert_eq!((defs[0].x, defs[0].y, defs[0].largeur, defs[0].hauteur), (12, 56, 160, 28));
+        assert!(boutons_depuis_geometrie("W|bouton|autre|1|2\n").is_empty());
     }
 }

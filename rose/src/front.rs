@@ -719,6 +719,25 @@ EntreeStd { nom: "ms", args: &[], retour: "entier" },
     EntreeStd { nom: "fenetre_attendre", args: &["entier"], retour: "vide" },
     EntreeStd { nom: "fenetre_fermer", args: &["entier"], retour: "vide" },
     EntreeStd { nom: "message_native", args: &["chaine", "chaine"], retour: "vide" },
+    // INT1 — grands nombres paresseux et détail typé (interp.rs).
+    // `MIXTE` rend le type du premier argument (ici un entier), ce qui est
+    // exact : `Valeur::ty()` d'un symbole est `TyKind::Entier`.
+    EntreeStd { nom: "entier_geant_factorielle", args: &["entier"], retour: "MIXTE" },
+    EntreeStd { nom: "detail", args: &["tout"], retour: "table" },
+    EntreeStd { nom: "afficher_detail", args: &["table"], retour: "vide" },
+    EntreeStd { nom: "chiffres", args: &["tout", "entier"], retour: "chaine" },
+    // Deux arités acceptées (n = 30 par défaut) : see verifier special case.
+    EntreeStd { nom: "plus_de_chiffres", args: &["tout", "entier"], retour: "chaine" },
+    // INT1 — pont vers les primitives GUI1 déjà écrites dans gui_native.rs.
+    EntreeStd { nom: "fenetre_compter", args: &[], retour: "entier" },
+    EntreeStd { nom: "fenetre_creer_simulee", args: &["chaine", "entier", "entier"], retour: "entier" },
+    EntreeStd { nom: "fenetre_boutons_creer", args: &["entier", "chaine"], retour: "entier" },
+    EntreeStd { nom: "bouton_compter", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "bouton_sous", args: &["chaine", "entier", "entier"], retour: "entier" },
+    EntreeStd { nom: "bouton_attendre_clic", args: &["entier"], retour: "entier" },
+    EntreeStd { nom: "bouton_attendre_clic_limite", args: &["entier", "entier"], retour: "entier" },
+    EntreeStd { nom: "bouton_clic_simuler", args: &["entier", "entier"], retour: "vide" },
+    EntreeStd { nom: "bouton_x11_envoyer_clic", args: &["entier", "entier"], retour: "vide" },
 ];
 
 pub fn chercher_std(nom: &str) -> Option<&'static EntreeStd> {
@@ -2190,12 +2209,20 @@ fn expr_type(prog: &Programme, e: &Expr, env: &mut HashMap<String, Ty>) -> Resul
                 return Ok(ret);
             }
             let sd = chercher_std(nom).unwrap();
-            if args.len() != sd.args.len() {
-                return Err(fmt_err(&format!("{} attend {} argument(s), reçu {}", nom, sd.args.len(), args.len()), ligne, 0));
+            // INT1 : `plus_de_chiffres(expr, n = 30)` admet 1 ou 2 arguments.
+            // La table STDLIB porte l'arité complète (2) ; on réduit les
+            // les types attendus pour la forme courte, sans toucher aux autres noms.
+            let attendus: &[&str] = if nom == "plus_de_chiffres" && args.len() == 1 {
+                &["tout"]
+            } else {
+                sd.args
+            };
+            if args.len() != attendus.len() {
+                return Err(fmt_err(&format!("{} attend {} argument(s), reçu {}", nom, attendus.len(), args.len()), ligne, 0));
             }
             // miroir la vérification des arguments : le TYPE de chaque argument est
             // vérifié contre la table STDLIB (messages du vérificateur)
-            verifier_type_std(nom, sd.args, args, env, prog, ligne)?;
+            verifier_type_std(nom, attendus, args, env, prog, ligne)?;
             match sd.retour {
                 "MIXTE" => {
                     let t = expr_type(prog, &args[0], env)?;

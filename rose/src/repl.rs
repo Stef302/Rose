@@ -22,8 +22,9 @@
 //!
 //! Licence MIT.
 
-use std::cell::{Cell, RefCell};
 use std::io::{self, BufRead, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 // ── couleurs ──────────────────────────────────────────────────────────────
 
@@ -284,22 +285,26 @@ fn aide(c: &Couleur) {
 /// garde le REPL indépendant du type concret : l'adaptateur
 /// [`enregistrer_objet_val1`] branche l'objet paresseux, et sans
 /// fournisseur le REPL rend un message clair au lieu de paniquer.
-pub trait PlusDeChiffres {
+pub trait PlusDeChiffres: Send {
     /// Demande `k` chiffres de plus ; rend le texte à afficher, ou une
     /// erreur déjà rédigée pour l'utilisateur.
     fn demander_plus(&self, k: usize) -> Result<String, String>;
 }
 
-thread_local! {
-    /// Dernier résultat symbolique, fourni par VAL1/INT1.
-    static FOURNISSEUR_PLUS: RefCell<Option<Box<dyn PlusDeChiffres>>> = const { RefCell::new(None) };
-    /// Nombre cumulé de chiffres demandés depuis le dernier `:reset`.
-    static CHIFFRES_DEMANDES: Cell<usize> = const { Cell::new(0) };
-}
+// ⚠ INT1 (21/11) : ces états ÉTAIENT des `thread_local!`. Or `lancer()`
+// exécute chaque ligne Rose dans un fil de 16 Mio (repl.rs:424) : le
+// fournisseur enregistré par INT1 depuis l'interpéteur mourait avec ce fil et
+// `:more` rendait toujours « nécessite d'abord detail(expr) ». Mesuré en
+// console : `>> entier_geant_factorielle(100)` puis `:more 30` échouait.
+// Un état global de processus est donc nécessaire ; il n'y a qu'une console
+// par processus Rose.
+static FOURNISSEUR_PLUS: Mutex<Option<Box<dyn PlusDeChiffres>>> = Mutex::new(None);
+/// Nombre cumulé de chiffres demandés depuis le dernier `:reset`.
+static CHIFFRES_DEMANDES: AtomicUsize = AtomicUsize::new(0);
 
 /// Branche le fournisseur utilisé par `:more`.
 pub fn enregistrer_plus_de_chiffres(f: Box<dyn PlusDeChiffres>) {
-    FOURNISSEUR_PLUS.with(|p| *p.borrow_mut() = Some(f));
+    if let Ok(mut p) = FOURNISSEUR_PLUS.lock() { *p = Some(f); }
 }
 
 /// Oublie le dernier résultat symbolique et remet le compteur à zéro.
@@ -307,12 +312,12 @@ pub fn enregistrer_plus_de_chiffres(f: Box<dyn PlusDeChiffres>) {
 /// Appelé par `:reset` et avant toute nouvelle exécution : le résultat
 /// affiché change, donc le fournisseur précédent n'est plus valable.
 pub fn oublier_plus_de_chiffres() {
-    FOURNISSEUR_PLUS.with(|p| *p.borrow_mut() = None);
-    CHIFFRES_DEMANDES.set(0);
+    if let Ok(mut p) = FOURNISSEUR_PLUS.lock() { *p = None; }
+    CHIFFRES_DEMANDES.store(0, Ordering::SeqCst);
 }
 
 /// Nombre cumulé de chiffres demandés depuis le dernier `:reset`.
-pub fn chiffres_demandes() -> usize { CHIFFRES_DEMANDES.get() }
+pub fn chiffres_demandes() -> usize { CHIFFRES_DEMANDES.load(Ordering::SeqCst) }
 
 /// Analyse l'argument de `:more` : vide → 30, sinon un entier décimal.
 pub fn analyser_argument_more(arg: &str) -> Result<usize, String> {
@@ -335,17 +340,18 @@ pub fn parse_commande(ligne: &str) -> (&str, &str) {
 /// Sans fournisseur enregistré, rend une erreur explicite : jamais de
 /// panique, jamais de chiffres inventés.
 pub fn appliquer_more(n: usize) -> Result<String, String> {
-    let (resultat, total) = FOURNISSEUR_PLUS.with(|p| {
-        let emprunt = p.borrow();
-        match emprunt.as_ref() {
-            Some(f) => (f.demander_plus(n), CHIFFRES_DEMANDES.get().saturating_add(n)),
+    let (resultat, total) = {
+        let emprunt = FOURNISSEUR_PLUS.lock().ok();
+        let courant = CHIFFRES_DEMANDES.load(Ordering::SeqCst);
+        match emprunt.as_ref().and_then(|p| p.as_ref()) {
+            Some(f) => (f.demander_plus(n), courant.saturating_add(n)),
             None => (
                 Err("rose: :more nécessite d'abord detail(expr) (résultat non symbolique)".to_string()),
-                CHIFFRES_DEMANDES.get(),
+                courant,
             ),
         }
-    });
-    if resultat.is_ok() { CHIFFRES_DEMANDES.set(total); }
+    };
+    if resultat.is_ok() { CHIFFRES_DEMANDES.store(total, Ordering::SeqCst); }
     resultat
 }
 
@@ -363,20 +369,26 @@ pub fn format_table_detail(t: &crate::run::Table) -> Vec<String> {
 /// Adaptation directe à l'API VAL1 (`run.rs`), maintenant présente dans
 /// l'arbre : `Valeur::Symbolique(Rc<ObjetParesseux>)`,
 /// `demander_plus(k)` et `premiers_tronques()`.
-struct AdaptateurVal1(std::rc::Rc<crate::run::ObjetParesseux>);
+struct AdaptateurVal1(Arc<Mutex<crate::run::ObjetParesseux>>);
 
 impl PlusDeChiffres for AdaptateurVal1 {
     fn demander_plus(&self, k: usize) -> Result<String, String> {
-        Ok(self.0.demander_plus(k))
+        match self.0.lock() {
+            Ok(mut o) => Ok(o.demander_plus(k)),
+            Err(_) => Err("rose: :more : verrou de l'objet indisponible".into()),
+        }
     }
 }
 
 /// Enregistre directement un `ObjetParesseux` de VAL1 comme dernier résultat.
 ///
-/// Point d'appel pour VAL1/INT1 : dès qu'une `Valeur::Symbolique(o)` est
-/// affichée, appeler cette fonction avec le `Rc` contenu dans la variante.
+/// Point d'appel pour INT1 : dès qu'une `Valeur::Symbolique(o)` est affichée,
+/// appeler cette fonction avec le `Rc` contenu dans la variante. Le `Rc` est
+/// copié dans un `Arc<Mutex<_>>` : c'est `Send`, donc l'état survit au fil
+/// de 16 Mio de `lancer()` (voir le commentaire sur `FOURNISSEUR_PLUS`).
 pub fn enregistrer_objet_val1(o: std::rc::Rc<crate::run::ObjetParesseux>) {
-    enregistrer_plus_de_chiffres(Box::new(AdaptateurVal1(o)));
+    let partage = Arc::new(Mutex::new((*o).clone()));
+    enregistrer_plus_de_chiffres(Box::new(AdaptateurVal1(partage)));
 }
 
 /// Bannière d'accueil : la marque Rose, la version, et l'essentiel.
