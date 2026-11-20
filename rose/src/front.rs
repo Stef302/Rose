@@ -83,7 +83,9 @@ pub enum Tk {
 }
 
 #[derive(Clone, Debug)]
-pub struct Token { pub tk: Tk, pub texte: String, pub ligne: usize, pub col: usize }
+/// ⚠ SP3 — texte partagé : `suivant()` clone le jeton à chaque consommation ;
+/// un `Rc<str>` rend ce clone gratuit au lieu d'allouer une `String`.
+pub struct Token { pub tk: Tk, pub texte: std::rc::Rc<str>, pub ligne: usize, pub col: usize }
 
 fn est_mot_cle(s: &str) -> bool {
     matches!(s,
@@ -208,7 +210,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 if d == quote { i += 1; col += 1; break; }
                 buf.push(d); i += 1; col += 1;
             }
-            tk.push(Token { tk: Tk::Chaine, texte: buf, ligne: dl, col: dc });
+            tk.push(Token { tk: Tk::Chaine, texte: buf.into(), ligne: dl, col: dc });
             continue;
         }
         if c.is_ascii_digit() {
@@ -222,7 +224,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 while i < n && cps[i].is_ascii_digit() { i += 1; col += 1; }
             }
             let texte: String = cps[debut..i].iter().collect();
-            tk.push(Token { tk: if flott { Tk::Flottant } else { Tk::Nombre }, texte, ligne: dl, col: dc });
+            tk.push(Token { tk: if flott { Tk::Flottant } else { Tk::Nombre }, texte: texte.into(), ligne: dl, col: dc });
             continue;
         }
         // '!' : plusieurs usages distincts.
@@ -279,7 +281,7 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             while i < n && cps[i] == '!' && !(i + 1 < n && cps[i + 1] == '=') { i += 1; col += 1; }
             let k = (i - debut).min(u8::MAX as usize) as u8;
             let texte: String = cps[debut..i].iter().collect();
-            tk.push(Token { tk: Tk::MultiFacto(k), texte, ligne, col: col - (i - debut) });
+            tk.push(Token { tk: Tk::MultiFacto(k), texte: texte.into(), ligne, col: col - (i - debut) });
             continue;
         }
         // '?' postfixe : TERMIAL CLASSIQUE n(n+1)/2 (A000217), depuis le
@@ -339,16 +341,16 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
                 // les mots-clés après '$' sont permis ($de, $si sont des
                 // noms valides) — miroir strict, aucun controle ici.
                 let nu = texte[1..].to_string();
-                tk.push(Token { tk: Tk::Ident, texte: nu, ligne: dl, col: dc });
+                tk.push(Token { tk: Tk::Ident, texte: nu.into(), ligne: dl, col: dc });
             } else {
-                tk.push(Token { tk: Tk::Mot, texte, ligne: dl, col: dc });
+                tk.push(Token { tk: Tk::Mot, texte: texte.into(), ligne: dl, col: dc });
             }
             continue;
         }
         if i + 1 < n {
             if let Some(t) = paire(c, cps[i + 1]) {
                 let texte: String = cps[i..i + 2].iter().collect();
-                tk.push(Token { tk: t, texte, ligne, col });
+                tk.push(Token { tk: t, texte: texte.into(), ligne, col });
                 i += 2; col += 2; continue;
             }
         }
@@ -378,16 +380,16 @@ pub fn tokeniser(source: &str) -> Result<Vec<Token>, Err> {
             i += 1; col += 1; continue;
         }
         if let Some(t) = uni(c) {
-            tk.push(Token { tk: t, texte: c.to_string(), ligne, col });
+            tk.push(Token { tk: t, texte: c.to_string().into(), ligne, col });
             i += 1; col += 1; continue;
         }
         if let Some(t) = car(c) {
-            tk.push(Token { tk: t, texte: c.to_string(), ligne, col });
+            tk.push(Token { tk: t, texte: c.to_string().into(), ligne, col });
             i += 1; col += 1; continue;
         }
         err!(format!("Caractère inattendu '{}'", c), ligne, col);
     }
-    tk.push(Token { tk: Tk::Eof, texte: String::new(), ligne, col });
+    tk.push(Token { tk: Tk::Eof, texte: "".into(), ligne, col });
     crate::run::noter_ligne(ligne.max(1));
     Ok(tk)
 }
@@ -785,7 +787,7 @@ impl Parser {
     fn est(&self, tt: &[Tk]) -> bool { tt.contains(&self.voir(0).tk) }
     fn est_mot(&self, texte: &str) -> bool {
         let t = self.voir(0);
-        (t.tk == Tk::Ident || t.tk == Tk::Mot) && t.texte == texte
+        (t.tk == Tk::Ident || t.tk == Tk::Mot) && t.texte.as_ref() == texte
     }
     fn accepter(&mut self, tt: &[Tk]) -> bool {
         if self.est(tt) { self.suivant(); true } else { false }
@@ -805,7 +807,7 @@ impl Parser {
         if t.tk != Tk::Ident && t.tk != Tk::Mot {
             return Err(fmt_err(&format!("Attendu un identifiant, trouvé '{}'", t.texte), t.ligne, t.col));
         }
-        Ok(t.texte)
+        Ok(t.texte.to_string())
     }
 
     pub fn programmer(&mut self) -> Result<Programme, Err> {
@@ -823,17 +825,17 @@ impl Parser {
                 let t0 = self.voir(0);
                 let t1 = self.voir(1);
                 if t0.tk == Tk::Arobase && (t1.tk == Tk::Ident || t1.tk == Tk::Mot)
-                    && (t1.texte == "dll" || t1.texte == "sym") {
+                    && (t1.texte.as_ref() == "dll" || t1.texte.as_ref() == "sym") {
                     self.suivant();
                     let genre = self.nom_ident()?;
                     self.exiger(Tk::LParen, "'(' après @dll/@sym")?;
                     if genre == "dll" {
-                        ann_dll = self.exiger(Tk::Chaine, "nom de bibliothèque")?.texte;
+                        ann_dll = self.exiger(Tk::Chaine, "nom de bibliothèque")?.texte.to_string();
                         if self.accepter(&[Tk::Virgule]) {
-                            ann_dll_son = self.exiger(Tk::Chaine, "nom de fichier")?.texte;
+                            ann_dll_son = self.exiger(Tk::Chaine, "nom de fichier")?.texte.to_string();
                         }
                     } else {
-                        ann_sym = self.exiger(Tk::Chaine, "nom de symbole")?.texte;
+                        ann_sym = self.exiger(Tk::Chaine, "nom de symbole")?.texte.to_string();
                     }
                     self.exiger(Tk::RParen, "')'")?;
                     ann_actif = true;
@@ -847,7 +849,7 @@ impl Parser {
             // les imports récursivement puis fusionne les programmes.
             if self.est_mot("importer") {
                 let t = self.suivant();
-                let nom = self.exiger(Tk::Chaine, "nom de fichier après 'importer'")?.texte;
+                let nom = self.exiger(Tk::Chaine, "nom de fichier après 'importer'")?.texte.to_string();
                 prog.imports.push(nom);
                 let _ = t;
                 continue;
@@ -946,7 +948,7 @@ impl Parser {
         if t.tk != Tk::Ident && t.tk != Tk::Mot {
             return Err(fmt_err(&format!("Attendu un type, trouvé '{}'", t.texte), t.ligne, t.col));
         }
-        match t.texte.as_str() {
+        match t.texte.as_ref() {
             "liste" => {
                 self.exiger(Tk::Inf, "'<' de liste<T>")?;
                 let elt = self.type_rose()?;
@@ -1018,7 +1020,7 @@ impl Parser {
                 let e = self.expression()?;
                 return Ok(Instr::Affect { nom, e, ligne: t.ligne });
             }
-            match t.texte.as_str() {
+            match t.texte.as_ref() {
                 "si" => {
                     self.suivant();
                     let test = self.parentheser()?;
@@ -1377,15 +1379,15 @@ impl Parser {
             Tk::Nombre => {
                 self.suivant();
                 // suffixe imaginaire : « 4i » ou « 4.5i » (pas d'opérateur entre)
-                if self.voir(0).tk == Tk::Mot && self.voir(0).texte == "i" {
+                if self.voir(0).tk == Tk::Mot && self.voir(0).texte.as_ref() == "i" {
                     self.suivant();
                     let im: f64 = t.texte.parse().unwrap_or(0.0);
                     return Ok(Expr::LitComplexe { re: 0.0, im, ligne: t.ligne });
                 }
-                Ok(Expr::Litteral { ligne: t.ligne, texte: t.texte, flott: false, rationnel: false, neg: false, ty: TyKind::Dyn })
+                Ok(Expr::Litteral { ligne: t.ligne, texte: t.texte.to_string(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn })
             }
-            Tk::Flottant => { self.suivant(); Ok(Expr::Litteral { ligne: t.ligne, texte: t.texte, flott: true, rationnel: false, neg: false, ty: TyKind::Dyn }) }
-            Tk::Chaine => { self.suivant(); Ok(Expr::ChaineLit(t.texte, t.ligne)) }
+            Tk::Flottant => { self.suivant(); Ok(Expr::Litteral { ligne: t.ligne, texte: t.texte.to_string(), flott: true, rationnel: false, neg: false, ty: TyKind::Dyn }) }
+            Tk::Chaine => { self.suivant(); Ok(Expr::ChaineLit(t.texte.to_string(), t.ligne)) }
             Tk::LBracket => {
                 self.suivant();
                 let mut elems = Vec::new();
@@ -1401,7 +1403,7 @@ impl Parser {
                         if !*flott && !*rationnel && !*neg && texte == "0" {
                             self.suivant(); // ':'
                             let ty_tok = self.suivant();
-                            let ty_elem = match ty_tok.texte.as_str() {
+                            let ty_elem = match ty_tok.texte.as_ref() {
                                 "entier" => TyKind::Entier,
                                 "rationnel" => TyKind::Rationnel,
                                 "flottant" => TyKind::Flottant,
@@ -1444,20 +1446,20 @@ impl Parser {
                 Ok(e)
             }
             Tk::Ident | Tk::Mot => {
-                if t.texte == "vrai" { self.suivant(); return Ok(Expr::BooleenLit(true, t.ligne)); }
-                if t.texte == "faux" { self.suivant(); return Ok(Expr::BooleenLit(false, t.ligne)); }
-                if t.tk == Tk::Mot && t.texte == "i" { self.suivant(); return Ok(Expr::LitComplexe { re: 0.0, im: 1.0, ligne: t.ligne }); }
-                if t.texte == "π" {
+                if t.texte.as_ref() == "vrai" { self.suivant(); return Ok(Expr::BooleenLit(true, t.ligne)); }
+                if t.texte.as_ref() == "faux" { self.suivant(); return Ok(Expr::BooleenLit(false, t.ligne)); }
+                if t.tk == Tk::Mot && t.texte.as_ref() == "i" { self.suivant(); return Ok(Expr::LitComplexe { re: 0.0, im: 1.0, ligne: t.ligne }); }
+                if t.texte.as_ref() == "π" {
                     self.suivant();
                     return Ok(Expr::Appel { nom: "pi".into(), module: String::new(), args: vec![Expr::Litteral { ligne: t.ligne, texte: "50".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }], ligne: t.ligne });
                 }
-                if t.texte == "φ" {
+                if t.texte.as_ref() == "φ" {
                     self.suivant();
                     return Ok(Expr::Appel { nom: "phi".into(), module: String::new(), args: vec![Expr::Litteral { ligne: t.ligne, texte: "50".into(), flott: false, rationnel: false, neg: false, ty: TyKind::Dyn }], ligne: t.ligne });
                 }
                 let mut module = String::new();
                 if self.voir(1).tk == Tk::DeuxPoints {
-                    module = t.texte.clone();
+                    module = t.texte.to_string();
                     self.suivant(); self.suivant();
                 }
                 let nom = self.nom_ident()?;
@@ -1520,8 +1522,10 @@ pub fn verifier(prog: &mut Programme) -> Result<(), Err> {
     }
 
     GLOBALS.with(|g| *g.borrow_mut() = globals.clone());
-    for (nom, sig) in &prog.signatures {
-        let sig = prog.signatures.get(nom).unwrap().clone();
+    // ⚠ SP3 — plus de clone de `Signature` : `verifier_bloc` ne prend
+    // qu'un `&Programme`, donc l'emprunt immutable de `prog.signatures`
+    // et l'appel coexistent sans allocation (mesuré ~8 µs sur l'englobant).
+    for (_nom, sig) in &prog.signatures {
         if sig.corps.is_none() {
             let frontieres: Vec<&Ty> = sig.params.iter().map(|(_, t)| t)
                 .chain(std::iter::once(&sig.retour)).collect();
@@ -1541,7 +1545,9 @@ pub fn verifier(prog: &mut Programme) -> Result<(), Err> {
         }
     }
     let mut env: HashMap<String, Ty> = HashMap::new();
-    verifier_bloc(prog, &prog.instructions.clone(), &mut env, &Ty::vide(), false)?;
+    // ⚠ SP3 — plus de clone de `prog.instructions` : double emprunt
+    // immutable, sans recopie de l'AST principal (~8 µs mesurés).
+    verifier_bloc(prog, &prog.instructions, &mut env, &Ty::vide(), false)?;
     GLOBALS.with(|g| g.borrow_mut().clear());
     Ok(())
 }
@@ -2417,6 +2423,160 @@ pub fn replier(e: &Expr) -> Expr {
     }
 }
 
+/// ⚠ SP3 — repli EN PLACE : même décision que `replier`, mais on ne
+/// reconstruit un nœud que lorsqu'un repli réussit réellement. Le programme
+/// n'est plus recopié intégralement deux fois (avant et après la détection du
+/// compteur « i »).
+fn replier_ip(e: &mut Expr) {
+    let remplacement = match e {
+        Expr::Binaire { op, a, b, ligne } => {
+            replier_ip(a);
+            replier_ip(b);
+            let ligne_fold = *ligne;
+            let mut r: Option<Expr> = None;
+            if let (Expr::Litteral { texte: ta, flott: fa, .. },
+                    Expr::Litteral { texte: tb, flott: fb, .. }) = (&**a, &**b)
+            {
+                let les_deux_ents = !ta.contains('.') && !ta.contains('e') && !ta.contains('E')
+                    && !tb.contains('.') && !tb.contains('e') && !tb.contains('E');
+                if (*fa || *fb) && !les_deux_ents {
+                    let va = lit_d(ta, *fa);
+                    let vb = lit_d(tb, *fb);
+                    let rf = match op.as_str() {
+                        "+" => Some(va + vb), "-" => Some(va - vb), "*" => Some(va * vb),
+                        "/" => { if vb == 0.0 { None } else { Some(va / vb) } }
+                        "^" => Some(va.powf(vb)),
+                        _ => None,
+                    };
+                    if let Some(rf) = rf {
+                        if !rf.is_nan() && !rf.is_infinite() {
+                            r = Some(Expr::Litteral { texte: texte_flottant(rf), flott: true,
+                                rationnel: false, neg: false, ty: TyKind::Flottant, ligne: ligne_fold });
+                        }
+                    }
+                }
+                if r.is_none() && !matches!(op.as_str(), "==" | "!=" | "%" | "<" | "<=" | ">" | ">=") {
+                    if let (Some(qa), Some(qb)) = (lit_q(ta), lit_q(tb)) {
+                        use num_bigint::BigInt;
+                        let zero = BigInt::from(0);
+                        let un = BigInt::from(1);
+                        let rr: Option<(BigInt, BigInt)> = match op.as_str() {
+                            "+" => Some(((&qa.0 * &qb.1) + (&qb.0 * &qa.1), &qa.1 * &qb.1)),
+                            "-" => Some(((&qa.0 * &qb.1) - (&qb.0 * &qa.1), &qa.1 * &qb.1)),
+                            "*" => Some((&qa.0 * &qb.0, &qa.1 * &qb.1)),
+                            "/" => {
+                                if qb.0 == zero { crate::run::erreur_front("Division par zéro dans une constante", ligne_fold, 0); }
+                                else { Some((&qa.0 * &qb.1, &qa.1 * &qb.0)) }
+                            }
+                            "div" => {
+                                if qb.0 == zero { crate::run::erreur_front("division par zéro dans une constante", ligne_fold, 0); }
+                                else {
+                                    let n = &qa.0 * &qb.1;
+                                    let d = &qa.1 * &qb.0;
+                                    let mut q = &n / &d;
+                                    if (&n % &d) != zero && (n.sign() != d.sign()) { q = q - BigInt::from(1); }
+                                    Some((q, un.clone()))
+                                }
+                            }
+                            "^" => {
+                                if qb.1 != un { None }
+                                else {
+                                    let e_i = qb.0.to_string().parse::<i64>().ok();
+                                    match e_i {
+                                        Some(e) if e >= 0 && e <= 64 => {
+                                            let mut acc = BigInt::from(1);
+                                            for _ in 0..e { acc = acc * &qa.0; }
+                                            Some((acc, un.clone()))
+                                        }
+                                        Some(e) if e < 0 && qa.0 == zero => {
+                                            crate::run::erreur_front("0^négatif dans une constante", ligne_fold, 0);
+                                            None
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some((mut n, mut d)) = rr {
+                            if d < zero { n = -n; d = -d; }
+                            let g = {
+                                let an = if n < zero { -n.clone() } else { n.clone() };
+                                let ad = if d < zero { -d.clone() } else { d.clone() };
+                                pgcd128(an, ad)
+                            };
+                            let g = if g == zero { un.clone() } else { g };
+                            n = &n / &g; d = &d / &g;
+                            let texte = if d == un { n.to_string() } else { format!("{}/{}", n, d) };
+                            r = Some(Expr::Litteral { texte, flott: false, rationnel: d != un,
+                                neg: false, ty: if d == un { TyKind::Entier } else { TyKind::Rationnel },
+                                ligne: ligne_fold });
+                        }
+                    }
+                }
+            }
+            if r.is_none() { r = replier_binaire_complexe(op, a, b, ligne_fold); }
+            r
+        }
+        Expr::Unaire { op, a, ligne } => {
+            replier_ip(a);
+            let ligne_u = *ligne;
+            if op == "-" {
+                if let Expr::Litteral { texte, flott, rationnel, neg, ty, .. } = &**a {
+                    let t = if texte.starts_with('-') { texte[1..].to_string() } else { format!("-{}", texte) };
+                    Some(Expr::Litteral { texte: t, flott: *flott, rationnel: *rationnel,
+                        neg: !*neg, ty: *ty, ligne: ligne_u })
+                } else { None }
+            } else { None }
+        }
+        Expr::Index { a, b, .. } => { replier_ip(a); replier_ip(b); None }
+        Expr::Appel { nom, module, args, ligne }
+            if module.is_empty() && (nom == "i" || nom == "__i") && args.is_empty() =>
+        {
+            Some(Expr::LitComplexe { re: 0.0, im: 1.0, ligne: *ligne })
+        }
+        Expr::Appel { args, .. } => { for a in args { replier_ip(a); } None }
+        Expr::ListeLit(l, ..) => { for x in l { replier_ip(x); } None }
+        Expr::TableLit(el, ..) => { for (_, v) in el { replier_ip(v); } None }
+        _ => None,
+    };
+    if let Some(x) = remplacement { *e = x; }
+}
+
+fn replier_instr_ip(i: &mut Instr) {
+    match i {
+        Instr::Rir(_) => {}
+        Instr::Afficher(exprs, _) => for e in exprs { replier_ip(e); },
+        Instr::Lire { .. } => {}
+        Instr::Affect { e, .. } => replier_ip(e),
+        Instr::AffectIndex { index, valeur, .. } => { replier_ip(index); replier_ip(valeur); }
+        Instr::Si { test, alors, sinon, .. } => {
+            replier_ip(test);
+            for x in alors { replier_instr_ip(x); }
+            if let Some(s) = sinon { for x in s { replier_instr_ip(x); } }
+        }
+        Instr::TantQue { test, corps, .. } => {
+            replier_ip(test);
+            for x in corps { replier_instr_ip(x); }
+        }
+        Instr::Pour { debut, fin, corps, .. } => {
+            replier_ip(debut); replier_ip(fin);
+            for x in corps { replier_instr_ip(x); }
+        }
+        Instr::Essayer { corps, attraper, finalment, .. } => {
+            for x in corps { replier_instr_ip(x); }
+            if let Some((_, c)) = attraper { for x in c { replier_instr_ip(x); } }
+            if let Some(f) = finalment { for x in f { replier_instr_ip(x); } }
+        }
+        Instr::Lever(e, _) => replier_ip(e),
+        Instr::Retour(Some(e), _) => replier_ip(e),
+        Instr::Retour(None, _) => {}
+        Instr::ExprStmt(e) => replier_ip(e),
+        Instr::Bloc(b) => for x in b { replier_instr_ip(x); },
+        Instr::Spawn(b, _) => for x in b { replier_instr_ip(x); },
+    }
+}
+
 fn a_or(e: Expr, _a: &Expr, _b: &Expr, _op: &str) -> Expr {
     // flottant infini/nan : pas de repli, on garde l'opération
     e
@@ -2652,11 +2812,11 @@ pub fn analyser_sans_verifier(source: &str) -> Result<Programme, Err> {
     // decision aux voies « comp », JIT et interpreteur (parité entre voies,
     // qui suit « i » par un etat de l'interpreteur).
     // repli de constantes sur les instructions
-    prog.instructions = prog.instructions.iter().map(|i| replier_instr(i)).collect();
+    for i in &mut prog.instructions { replier_instr_ip(i); }
     for nom in prog.ordre.clone() {
         let sig = prog.signatures.get_mut(&nom).unwrap();
-        if let Some(c) = &sig.corps {
-            sig.corps = Some(c.iter().map(|i| replier_instr(i)).collect());
+        if let Some(c) = sig.corps.as_mut() {
+            for i in c.iter_mut() { replier_instr_ip(i); }
         }
     }
     // Le repli de constantes a pu FUSIONNER des litteraux en 0+1i / k+ki alors
@@ -2835,6 +2995,75 @@ pub fn analyser_sans_verifier(source: &str) -> Result<Programme, Err> {
                 other => other.clone(),
             }
         }
+        fn rep_ip(i: &mut Instr, i_entier: bool) {
+            match i {
+                Instr::Affect { nom, e, ligne } if nom == "i"
+                    && matches!(&*e, Expr::LitComplexe { re, im, .. } if *re == *im && *re != 0.0) =>
+                {
+                    let ligne_i = *ligne;
+                    let re = match &*e {
+                        Expr::LitComplexe { re, .. } => *re,
+                        _ => unreachable!(),
+                    };
+                    *e = Expr::Binaire { op: "+".into(),
+                        a: Box::new(Expr::Var("i".into(), ligne_i)),
+                        b: Box::new(Expr::Litteral { texte: re.to_string(), flott: false,
+                            rationnel: false, neg: false, ty: TyKind::Dyn, ligne: ligne_i }),
+                        ligne: ligne_i };
+                }
+                Instr::Affect { nom, e, ligne } if nom == "i" && i_entier => {
+                    let ligne_i = *ligne;
+                    let nouveau = match &*e {
+                        Expr::LitComplexe { re, im, ligne: l } if *im == *re && *re != 0.0 =>
+                            Some(Expr::Binaire { op: "+".into(),
+                                a: Box::new(Expr::Var("i".into(), *l)),
+                                b: Box::new(Expr::Litteral { texte: re.to_string(), flott: false,
+                                    rationnel: false, neg: false, ty: TyKind::Dyn, ligne: *l }),
+                                ligne: *l }),
+                        Expr::LitComplexe { re: 0.0, im: 1.0, ligne: l } =>
+                            Some(Expr::Var("i".into(), *l)),
+                        _ => None,
+                    };
+                    if let Some(x) = nouveau { *e = x; }
+                    let _ = ligne_i;
+                }
+                Instr::Si { test, alors, sinon, .. } => {
+                    let t2 = reparer_test_i(test, i_entier);
+                    *test = t2;
+                    for x in alors { rep_ip(x, i_entier); }
+                    if let Some(s) = sinon { for x in s { rep_ip(x, i_entier); } }
+                }
+                Instr::TantQue { test, corps, .. } => {
+                    if est_boucle_i_repar_test(test) {
+                        deplier_i_rec(test);
+                        for x in corps.iter_mut() {
+                            rep_ip(x, true);
+                            let y = deplier_corps_i(x);
+                            *x = y;
+                        }
+                    } else {
+                        let t2 = reparer_test_i(test, i_entier);
+                        *test = t2;
+                        for x in corps { rep_ip(x, i_entier); }
+                    }
+                }
+                Instr::Pour { nom, debut, fin, corps, .. } => {
+                    if nom == "i" {
+                        deplier_i_rec(debut);
+                        deplier_i_rec(fin);
+                        for x in corps.iter_mut() {
+                            rep_ip(x, true);
+                            let y = deplier_corps_i(x);
+                            *x = y;
+                        }
+                    } else {
+                        for x in corps { rep_ip(x, i_entier); }
+                    }
+                }
+                Instr::Bloc(b) => for x in b { rep_ip(x, i_entier); },
+                _ => {}
+            }
+        }
         fn est_boucle_i_repar_test(test: &Expr) -> bool {
             if let Expr::Binaire { op, a, b, .. } = test {
                 if matches!(op.as_str(), "<" | "<=" | ">" | ">=") {
@@ -2860,12 +3089,11 @@ pub fn analyser_sans_verifier(source: &str) -> Result<Programme, Err> {
             }
             test.clone()
         }
-        prog.instructions = prog.instructions.iter().map(|x| rep(x, i_compteur)).collect();
+        for x in &mut prog.instructions { rep_ip(x, i_compteur); }
         for nom in prog.ordre.clone() {
             let sig = prog.signatures.get_mut(&nom).unwrap();
-            if let Some(c) = &sig.corps {
-                let cc = c.clone();
-                sig.corps = Some(cc.iter().map(|x| rep(x, i_compteur)).collect());
+            if let Some(c) = sig.corps.as_mut() {
+                for x in c.iter_mut() { rep_ip(x, i_compteur); }
             }
         }
         // ⚠ La vérification est faite par `analyser` (ou après la fusion des
