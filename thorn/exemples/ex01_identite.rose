@@ -1,0 +1,29 @@
+# Exemple 1 — le terme d'identité, vérifié par le noyau.
+#   λA:Type(0). λx:A. x   :   Π(A:Type(0))(x:A), A
+# Lancez : ./rose/rose thorn/exemples/ex01_identite.rose
+importer "thorn/src/noyau.rose"
+
+fn m(t: table) -> chaine {
+  $g = noy_genre(t)
+  si ($g == "var") { retour noy_nom(t) }
+  si ($g == "type") { retour "Type(" + chaine(noy_niveau(t)) + ")" }
+  si ($g == "pi") {
+    retour "Pi(" + noy_nom(t) + ":" + m(noy_champ(t, "domaine")) + ", " +
+           m(noy_champ(t, "codomaine")) + ")"
+  }
+  si ($g == "lam") {
+    retour "Lam(" + noy_nom(t) + ":" + m(noy_champ(t, "domaine")) + ", " +
+           m(noy_champ(t, "corps")) + ")"
+  }
+  retour $g
+}
+
+$e1_but  = noy_pi("A", noy_type(0), noy_pi("x", noy_var("A"), noy_var("A")))
+$e1_term = noy_lam("A", noy_type(0), noy_lam("x", noy_var("A"), noy_var("x")))
+$e1_r    = verifier($e1_term, noy_ctx_vide())
+
+>> "terme   = " + m($e1_term)
+>> "ok      = " + chaine(noy_est_ok($e1_r))
+>> "type    = " + m(noy_type_res($e1_r))
+>> "code    = " + noy_code($e1_r)
+>> "convert = " + chaine(convertible(noy_type_res($e1_r), $e1_but))

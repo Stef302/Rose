@@ -1,0 +1,6 @@
+# Exemple 10b — fichier .thn REFUSÉ.
+# Le but est bien typé (A et B sont deux types), mais A ≠ B : la réflexivité
+# ne peut pas produire de preuve. C'est un test anti-preuve-du-faux.
+théorème ex10_faux : pour_tout A : type, pour_tout B : type, A = B
+preuve reflexivite
+fin

@@ -1,0 +1,19 @@
+# Exemple 5 — cumulativité MINIMALE : Type(i) ≤ Type(j) si i ≤ j, rien de plus.
+# Lancez : ./rose/rose thorn/exemples/ex05_cumul.rose
+importer "thorn/src/noyau.rose"
+
+>> "convertible(Type0, Type1) = " + chaine(convertible(noy_type(0), noy_type(1)))
+>> "cumulatif(Type0, Type1)   = " + chaine(cumulatif(noy_type(0), noy_type(1)))
+>> "cumulatif(Type1, Type0)   = " + chaine(cumulatif(noy_type(1), noy_type(0)))
+>> "cumulatif(Type0, Type0)   = " + chaine(cumulatif(noy_type(0), noy_type(0)))
+
+# Application : (λX:Type(1). X) Type(0) — l'argument Type(0) est admis
+# là où Type(1) était attendu, par cumulativité dans la règle App.
+$e5_app = noy_app(noy_lam("X", noy_type(1), noy_var("X")), noy_type(0))
+$e5_r = verifier($e5_app, noy_ctx_vide())
+>> "verifier((λX:Type1. X) Type0) ok = " + chaine(noy_est_ok($e5_r))
+>> "type synthétisé                = " + chaine(noy_genre(noy_type_res($e5_r)))
+
+# Mais la cumulativité n'est PAS utilisée par convertible public.
+$e5_but = noy_lam("X", noy_type(1), noy_var("X"))
+>> "convertible(terme, but strict)  = " + chaine(convertible(noy_type_res($e5_r), $e5_but))

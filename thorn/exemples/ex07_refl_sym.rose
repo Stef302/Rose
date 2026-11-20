@@ -1,0 +1,22 @@
+# Exemple 7 — tactiques reflexivite et symetrie.
+# Lancez : ./rose/rose thorn/exemples/ex07_refl_sym.rose
+importer "thorn/src/tactiques.rose"
+
+# réflexivité sous deux Π : fabrique λA. λx. refl A x
+$e7_but = noy_pi("A", noy_type(0),
+          noy_pi("x", noy_var("A"), ta_eq(noy_var("A"), noy_var("x"), noy_var("x"))))
+$e7_r = reflexivite($e7_but)
+>> "reflexivite : ok    = " + chaine(ta_boo($e7_r, "ok"))
+>> "reflexivite : regle = " + ta_txt($e7_r, "regle")
+
+# symétrie avec h : 0 = succ 0 dans le contexte : fabrique symm Nat 0 1 h
+$e7_ctx = noy_ctx_ajouter(ta_ctx(), "h", ta_eq(ta_nat(), ta_zero(), ta_succ(ta_zero())))
+$e7_but2 = ta_eq(ta_nat(), ta_succ(ta_zero()), ta_zero())
+$e7_r2 = symetrie_ctx($e7_but2, $e7_ctx)
+>> "symetrie : ok          = " + chaine(ta_boo($e7_r2, "ok"))
+>> "symetrie : regle       = " + ta_txt($e7_r2, "regle")
+
+# échec honnête : sans hypothèse, symetrie ne peut rien construire.
+$e7_r3 = symetrie($e7_but2)
+>> "symetrie sans hypothese = " + chaine(ta_boo($e7_r3, "ok"))
+>> "raison                  = " + ta_txt($e7_r3, "erreur")

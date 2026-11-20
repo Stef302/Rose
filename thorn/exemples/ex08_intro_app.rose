@@ -1,0 +1,33 @@
+# Exemple 8 — tactiques introduction, application, simplifier.
+# Lancez : ./rose/rose thorn/exemples/ex08_intro_app.rose
+importer "thorn/src/tactiques.rose"
+
+fn m(t: table) -> chaine {
+  $g = noy_genre(t)
+  si ($g == "var") { retour noy_nom(t) }
+  si ($g == "const") { retour noy_nom(t) }
+  si ($g == "type") { retour "Type(" + chaine(noy_niveau(t)) + ")" }
+  si ($g == "pi") { retour "Pi(" + noy_nom(t) + ":" + m(noy_champ(t, "domaine")) + ", ...)" }
+  si ($g == "lam") { retour "Lam(" + noy_nom(t) + ":" + m(noy_champ(t, "domaine")) + ", ...)" }
+  si ($g == "app") { retour "App(" + m(noy_champ(t, "fonction")) + ", " + m(noy_champ(t, "argument")) + ")" }
+  retour $g
+}
+
+# introduction : ouvre un but residuel et met a jour le contexte.
+$e8_but  = noy_pi("X", noy_type(0), noy_pi("x", noy_var("X"), noy_var("X")))
+$e8_intro = introduction($e8_but, ta_ctx())
+>> "introduction : ok        = " + chaine(ta_boo($e8_intro, "ok"))
+>> "introduction : regle     = " + ta_txt($e8_intro, "regle")
+>> "introduction : buts      = " + chaine(longueur(noy_champ_liste($e8_intro, "buts")) - 1)
+
+# application : trouve exactement x : X dans le contexte.
+$e8_ctx = noy_ctx_ajouter(noy_ctx_ajouter(ta_ctx(), "X", noy_type(0)), "x", noy_var("X"))
+$e8_ap = application(noy_var("X"), $e8_ctx)
+>> "application : ok         = " + chaine(ta_boo($e8_ap, "ok"))
+>> "application : regle      = " + ta_txt($e8_ap, "regle")
+>> "application : terme      = " + m(ta_term($e8_ap))
+
+# simplifier : passe locale (beta + equations de plus) — hors du noyau.
+$e8_simp = simplifier(ta_plus(ta_zero(), noy_var("n")))
+>> "simplifier(0 + n)        = " + m($e8_simp)
+>> "convertible(0+n, n)      = " + chaine(convertible(ta_plus(ta_zero(), noy_var("n")), noy_var("n")))

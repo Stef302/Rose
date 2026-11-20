@@ -1,0 +1,26 @@
+# Exemple 4 — ce que le noyau REFUSE, et les codes d'erreur stables.
+# Lancez : ./rose/rose thorn/exemples/ex04_refus.rose
+importer "thorn/src/tactiques.rose"
+
+# 0 et succ 0 ne sont pas convertibles : aucune preuve de 0 = 1 par refl.
+>> "convertible(0, succ 0)   = " + chaine(convertible(ta_zero(), ta_succ(ta_zero())))
+
+# Égalité mal typée : ind("=", [0, Type(0)]) — les membres n'ont pas le même type.
+$e4_mal = ta_eq(noy_type(0), ta_zero(), noy_type(0))
+$e4_r1 = verifier($e4_mal, ta_ctx())
+>> "code(0 = Type(0))        = " + noy_code($e4_r1)
+>> "contexte                 = " + noy_contexte($e4_r1)
+
+# Variable libre.
+$e4_r2 = verifier(noy_var("inconnu"), ta_ctx())
+>> "code(var inconnu)        = " + noy_code($e4_r2)
+
+# Application d'un univers (un Type n'est pas une fonction Pi).
+$e4_r3 = verifier(noy_app(noy_type(0), noy_type(0)), ta_ctx())
+>> "code(Type 0 appliqué)    = " + noy_code($e4_r3)
+
+# Garde de pas : Ω = (λx:X. x x)(λx:X. x x) boucle ; verifier_lim la borne.
+$e4_omega = noy_lam("x", noy_type(0), noy_app(noy_var("x"), noy_var("x")))
+$e4_r4 = verifier_lim(noy_app($e4_omega, $e4_omega), ta_ctx(), 0)
+>> "code(Ω avec limite 0)    = " + noy_code($e4_r4)
+>> "message                  = " + noy_erreur($e4_r4)

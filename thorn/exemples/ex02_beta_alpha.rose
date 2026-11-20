@@ -1,0 +1,39 @@
+# Exemple 2 — β-réduction et α-équivalence dans le noyau.
+# Lancez : ./rose/rose thorn/exemples/ex02_beta_alpha.rose
+importer "thorn/src/noyau.rose"
+
+fn m(t: table) -> chaine {
+  $g = noy_genre(t)
+  si ($g == "var") { retour noy_nom(t) }
+  si ($g == "type") { retour "Type(" + chaine(noy_niveau(t)) + ")" }
+  si ($g == "pi") {
+    retour "Pi(" + noy_nom(t) + ":" + m(noy_champ(t, "domaine")) + ", " + m(noy_champ(t, "codomaine")) + ")"
+  }
+  si ($g == "lam") {
+    retour "Lam(" + noy_nom(t) + ":" + m(noy_champ(t, "domaine")) + ", " + m(noy_champ(t, "corps")) + ")"
+  }
+  si ($g == "app") {
+    retour "App(" + m(noy_champ(t, "fonction")) + ", " + m(noy_champ(t, "argument")) + ")"
+  }
+  retour $g
+}
+
+# Contexte X : Type(0), a : X, y : X.
+$e2_ctx = noy_ctx_vide()
+$e2_ctx = noy_ctx_ajouter($e2_ctx, "X", noy_type(0))
+$e2_ctx = noy_ctx_ajouter($e2_ctx, "a", noy_var("X"))
+$e2_ctx = noy_ctx_ajouter($e2_ctx, "y", noy_var("X"))
+
+# (λx:X. x) a   ─β─▶  a
+$e2_app = noy_app(noy_lam("x", noy_var("X"), noy_var("x")), noy_var("a"))
+>> "beta(App(Lam(x:X,x), a)) = " + m(beta($e2_app))
+>> "convertible(app, a)       = " + chaine(convertible($e2_app, noy_var("a")))
+
+# α-équivalence : deux noms de lieurs différents, même terme.
+$e2_l1 = noy_lam("x", noy_var("X"), noy_var("x"))
+$e2_l2 = noy_lam("y", noy_var("X"), noy_var("y"))
+>> "alpha(Lam(x:X,x), Lam(y:X,y)) = " + chaine(convertible($e2_l1, $e2_l2))
+
+# Piège : un variable libre n'est PAS alpha-convertible en un lieur.
+$e2_l3 = noy_lam("y", noy_var("X"), noy_var("x"))
+>> "alpha(Lam(x:X,x), Lam(y:X,x)) = " + chaine(convertible($e2_l1, $e2_l3))

@@ -1,0 +1,31 @@
+# Exemple 3 — ι-réduction : les équations de plus et de nat_rec sont CALCULÉES.
+# Lancez : ./rose/rose thorn/exemples/ex03_iota.rose
+importer "thorn/src/tactiques.rose"
+
+fn m(t: table) -> chaine {
+  $g = noy_genre(t)
+  si ($g == "var") { retour noy_nom(t) }
+  si ($g == "const") { retour noy_nom(t) }
+  si ($g == "ind") { retour noy_nom(t) }
+  si ($g == "type") { retour "Type(" + chaine(noy_niveau(t)) + ")" }
+  si ($g == "app") { retour "App(" + m(noy_champ(t, "fonction")) + ", " + m(noy_champ(t, "argument")) + ")" }
+  retour $g
+}
+
+$e3_ctx = noy_ctx_ajouter(ta_ctx(), "n", ta_nat())
+
+>> "beta(plus zero n)         = " + m(beta(ta_plus(ta_zero(), noy_var("n"))))
+>> "beta(plus (succ zero) n)  = " + m(beta(ta_plus(ta_succ(ta_zero()), noy_var("n"))))
+>> "convertible(0+n, n)       = " + chaine(convertible(ta_plus(ta_zero(), noy_var("n")), noy_var("n")))
+>> "convertible(succ 0+n, succ n) = " +
+   chaine(convertible(ta_plus(ta_succ(ta_zero()), noy_var("n")), ta_succ(noy_var("n"))))
+
+# P = λm:Nat. Nat ; base = zero ; pas = λn. λih. succ ih
+$e3_p = noy_lam("m", ta_nat(), ta_nat())
+$e3_base = ta_zero()
+$e3_pas = noy_lam("n", ta_nat(), noy_lam("ih", ta_nat(), ta_succ(noy_var("ih"))))
+$e3_rec = ta_ap4(ta_natrec_symbole(), $e3_p, $e3_base, $e3_pas, ta_zero())
+$e3_r = verifier($e3_rec, ta_ctx())
+>> "beta(nat_rec P base pas zero) = " + m(beta($e3_rec))
+>> "verifier(nat_rec ... zero) ok = " + chaine(noy_est_ok($e3_r))
+>> "son type                      = " + m(noy_type_res($e3_r))

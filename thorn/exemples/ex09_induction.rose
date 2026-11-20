@@ -1,0 +1,25 @@
+# Exemple 9 — induction vérifiée : Hi : ∀m, m = m par nat_rec.
+# Lancez : ./rose/rose thorn/exemples/ex09_induction.rose
+importer "thorn/src/tactiques.rose"
+
+# Squelette : induction(but, ctx) ouvre deux buts (base, pas).
+$e9_but = noy_pi("m", ta_nat(), ta_eq(ta_nat(), noy_var("m"), noy_var("m")))
+$e9_sk = induction($e9_but, ta_ctx())
+>> "induction : ok           = " + chaine(ta_boo($e9_sk, "ok"))
+>> "induction : regle        = " + ta_txt($e9_sk, "regle")
+>> "induction : nb buts      = " + chaine(longueur(noy_champ_liste($e9_sk, "buts")) - 1)
+
+# Terme fermé : base = refl Nat 0 ; pas = λk. λih. refl Nat (succ k)
+$e9_base = ta_ap2(ta_refl_symbole(), ta_nat(), ta_zero())
+$e9_pas  = noy_lam("k", ta_nat(),
+            noy_lam("ih", ta_eq(ta_nat(), noy_var("k"), noy_var("k")),
+              ta_ap2(ta_refl_symbole(), ta_nat(), ta_succ(noy_var("k")))))
+$e9_res = induction_resolue($e9_but, ta_ctx(), $e9_base, $e9_pas)
+>> "induction_resolue : ok   = " + chaine(ta_boo($e9_res, "ok"))
+>> "induction_resolue : regle = " + ta_txt($e9_res, "regle")
+
+# Le terme final est soumis au noyau + convertible au but.
+$e9_term = ta_term($e9_res)
+$e9_v = verifier($e9_term, ta_ctx())
+>> "verifier(terme) : ok     = " + chaine(noy_est_ok($e9_v))
+>> "convertible(type, but)  = " + chaine(convertible(noy_type_res($e9_v), $e9_but))

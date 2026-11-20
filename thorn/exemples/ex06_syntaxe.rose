@@ -1,0 +1,14 @@
+# Exemple 6 — syntaxe et précédence : le parseur seul (aucun noyau).
+# Lancez : ./rose/rose thorn/exemples/ex06_syntaxe.rose
+importer "thorn/src/analyse.rose"
+
+>> "1) a ou b et c implique d"
+>> chaine(analyser_source("a ou b et c implique d"))
+>> "2) a + b = c"
+>> chaine(analyser_source("a + b = c"))
+>> "3) fn x : Nat => x"
+>> chaine(analyser_source("fn x : Nat => x"))
+>> "4) pour_tout x : Nat, x = x"
+>> chaine(analyser_source("pour_tout x : Nat, x = x"))
+>> "5) existe x : Nat, x = zero"
+>> chaine(analyser_source("existe x : Nat, x = zero"))

@@ -1,0 +1,4 @@
+# Exemple 10a — fichier .thn accepté par le pilote.
+théorème ex10_refl_zero : 0 = 0
+preuve reflexivite
+fin
