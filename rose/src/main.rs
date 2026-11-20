@@ -241,6 +241,7 @@ Usage :
   rose transpile prog.rose --cible js|py|c [-o sortie]   transpilation lisible (JS/Python/C)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
   rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
+  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   AOT (alias de orc) — binaire natif, aucun JIT au runtime
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
   rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
   rose info                état du moteur
@@ -850,6 +851,9 @@ fn main() {
     // IMPORTANT : lancer le helper AVANT le message d'absence — l'ancien
     // code imprimait « non embarquee » puis sortait, ce qui rendait le
     // telechargement a la demande inatteignable dans le binaire leger.
+    // `aot` est l'alias EXPLICITE de `orc` (AOT LLVM ORC) demandé par
+    // l'utilisateur : la mention « AOT » doit apparaître comme pour « JIT ».
+    let action = if action == "aot" { "orc" } else { action };
     if matches!(action, "orc" | "link") {
         #[cfg(feature = "llvm")]
         cmd_llvm::execute(action, argv.as_slice());
