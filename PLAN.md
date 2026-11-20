@@ -1087,3 +1087,16 @@ Projet supplementaire et experimental. Spec dans thorn/SPEC.md.
 | PROV2 | lexeur + parseur pour la syntaxe française | `thorn/src/{lexeur,analyse}.rose`, `thorn/docs/SYNTAXE.md` |
 | PROV3 | tactiques et preuves de demo | `thorn/src/tactiques.rose`, `thorn/preuves/*.slg`, `thorn/docs/TACTIQUES.md` |
 | PROV4 | pilote CLI + tests bout en bout | `thorn/src/principal.rose`, `thorn/docs/PILOTE.md` |
+
+## Vague 62 (21/11) — Thorn complet + offensive Rust finale
+
+Renommage Syllog -> Thorn fait (7557d05). Etat: banc 9/9 gagne; suite x1,036;
+englobant x1,5; global x1,9 (non equivalent); self-host emetteur F1==F2; A-Z bloque
+bigints/ABI; Thorn .slg 0/5.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| TH1 | réparer l'intégration des preuves .slg de Thorn (0/5 -> 5/5) | `thorn/src/{analyse,tactiques,principal}.rose`, `thorn/docs/PILOTE.md` |
+| TH2 | présentation claire de Thorn + bibliothèque de lemmes | `thorn/docs/PRESENTATION.md`, `thorn/src/bibliotheque.rose` |
+| SP8 | englobant : battre Rust | `rose/src/{jit,front,rir}.rs`, `rose/docs/SP8.md` |
+| SP9 | global : battre Rust | `rose/src/{run,i128x}.rs`, `rose/docs/SP9.md` |
