@@ -964,3 +964,14 @@ Consigne: « on ne s'arrête pas ». CLOSE1 (8c31a38) a réduit l'écart suite d
 | Agent | Sujet | Fichiers possédés | Cœur |
 |---|---|---|---|
 | CLOSE2 | supprimer le module JIT vide et Jit::nouveau sur programmes sans fonctions | `rose/src/{jit,interp}.rs`, `rose/docs/CLOSURE2.md` | 6 |
+
+## Vague 50 (21/11) — offensive multi-fronts
+
+Consigne: « ok continue, lance plein d'agent ». CLOSE2 continue sur le module JIT vide (jit.rs/interp.rs). Quatre chantiers distincts en parallele:
+
+| Agent | Sujet | Fichiers possédés |
+|---|---|---|
+| GLB4 | rationnels du global (850us, 23,4% du interne) | `rose/src/i128x.rs`, `rose/docs/RAT_FINAL.md` |
+| SH4 | couverture du compilateur auto-hébergé (bugs restants) | `compilateur/emetteur_elf.rose`, `rose/docs/SELF_HOST_EXT.md` |
+| X64_1 | émetteur x86-64 exécutable sous qemu/box64 | `compilateur/emetteur_x64.rose`, `rose/src/{natif_emetteur,elf_linker}.rs`, `rose/docs/X64_EXEC.md` |
+| DOC1 | rafraîchir les comparatifs datés | `rose/docs/{COMPARATIF_TOTAL,VITESSE_FINALE,INNOVATION_VITESSE}.md` |
