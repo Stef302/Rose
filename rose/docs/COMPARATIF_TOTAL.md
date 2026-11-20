@@ -6,6 +6,117 @@ dans `/tmp/opencode/cmp2_agents/`, jamais installé dans l'arbre.
 
 ---
 
+## Mise à jour datée — 21/11/2026 (HEAD poussé `902fbbf`)
+
+Les paragraphes datés 19/11 (§0–§9) et la mise à jour 20/11 juste dessous sont
+**conservés comme historique**, pas effacés. Les chiffres ci-dessous sont des
+**constats datés**, cités avec leur source (commit ou doc d'agent) et leur date :
+aucun n'est une règle permanente, et aucun n'autorise à écrire « Rose bat partout ».
+
+### Self-hosting — passage majeur : PARTIEL → ATTENT (émetteur)
+
+Le verdict « PARTIEL, émetteur ELF en échec fonctionnel » du §6 (19/11) est **périmé**.
+
+- `0e2d844` « Self-hosting atteint : le compilateur généré reproduit le RIR exact »
+  (20/11) : l'émetteur auto-hébergé produit un ELF de **534 780 octets**, md5
+  `ed699457a9b8cd0ea69a53bbae78fd39`.
+- `e0f5744` « Preuve : self-hosting reproductible depuis l'arbre commité » (20/11) :
+  chaîne complète rejouée depuis le fichier commité, md5 `ed699457…` reproduit à
+  l'identique. L'ELF émis lit une **source `.rose`** et rend le dump RIR
+  `b3ed9262dd54776a6dbd07bc12368d0e` (263 520 octets) **octet pour octet identique**
+  à la référence.
+- Source détaillée : `rose/docs/SELF_HOST_SH3.md`, §1 et « Réémission indépendante
+  (vérification orchestrateur, 20/11/2026) ».
+
+**Précision obligatoire** : c'est **l'émetteur** qui est auto-hébergé, et reproductible
+depuis l'arbre commité. Le **binaire `rose/rose` complet — interpréteur, JIT, runtime —
+exige toujours `cargo build`** et n'est pas auto-hébergé. L'entrée de l'ELF émis est une
+source `.rose` ; lui passer un dump RIR donne `rc=139` (comportement attendu, déjà noté
+par SH2, pas une régression). Le §6 ci-dessous reste vrai pour le 19/11.
+
+### Banc principal 9 domaines — 9/9 gagné (constat 20/11, réétiqueté daté)
+
+Source : `rose/docs/ETAT_VICTOIRE_9_DOMAINES.md` (20/11, commit `dee9378`), binaire
+SHA256 `a2f98fe93799e2faa69a21a486bcd4b7bc7def976d7b62181c0c6c95ca04ff3c`,
+banc `bench_now.py`, `taskset -c 19` puis `-c 6`, 9 échantillons entrelacés, deux
+horloges, sortie vérifiée à chaque tirage. Ratios Rose/Rust (calcul seul, médianes ;
+**< 1 = Rose plus rapide**) :
+
+| Domaine | c19 | c6 |
+|---|---:|---:|
+| `fib(35)` | 0,92 | 0,91 |
+| Boucle 1..10⁶ | 0,39 | 0,39 |
+| Premiers < 50 000 | 0,85 | 0,85 |
+| Factorielle 5000 | 0,21 | 0,21 |
+| PGCD 1000 chiffres | 0,66 | 0,69 |
+| Chaîne 20 000 | 0,61 | 0,78 |
+| Liste 100 000 | 0,64 | 0,72 |
+| Table 3000 | 0,69 | 0,65 |
+| E/S 10 Mo | 0,63 | 0,61 |
+
+Ces ratios **contredisent le tableau §1 et la §4 du 19/11** (D6 liste à 1,698 ; D7
+table à 0,988 ≈) : sur le binaire du 20/11, liste et table sont gagnées. Les ratios
+c11 du §1 ne sont pas l'état courant. Les 9 ratios **ne couvrent pas** les autres bancs
+(global, englobant, racines spécialisées, langages) : ne pas en déduire une victoire
+universelle.
+
+### Global — ×414 → ×2,85 → ×2,88 / ×2,57 (final GLB3, 20/11)
+
+- ×414 : §1 ligne 15 (constat 19/11, c11).
+- ×2,85 : `10b9df4` + doc `bbf1af0` (20/11) ; le tableau §2.4 ci-dessous reste celui du 19/11.
+- **×2,88 (c16) / ×2,57 (c6)** : état final du programme global, `DEMARRAGE.md` §3.4
+  (sous-agent `glb3`, 20/11, commit `951bb12`). **Rust reste devant.**
+
+Détails glb3 (`DEMARRAGE.md`, 20/11) : carrés **1,26 → 0,76 ms** (superinstruction NEON
+`umlal`, ÷1,66) ; compilation Cranelift `compiletout` **777 → 337 µs** sur c16 (÷2,30),
+841 → 357 µs sur c6 (÷2,36) ; pré-exécution ÷1,98 (c16) / ÷2,04 (c6). Le poste complet
+« mur − interne » n'est **pas** divisé par 2 (×1,41 c16 / ×1,22 c6).
+Détail glb1 (`GLOBAL_FINAL.md`, 20/11, `4aad1d8`) : section rationnelle **10,75 → 0,79 ms**
+(÷13,6) ; à ce stade le global complet restait 4,25–4,41× Rust au mur.
+
+**Réserve sémantique majeure, maintenue** (`bbf1af0`, mise à jour 20/11 de ce doc,
+réjouée) : `bench_global_rs` rend ligne 1 `1291990006563070912` (**débordement `i64`**)
+et ligne 3 `7.818804193883677` (**`f64`**), tandis que Rose rend
+`333333383333335000000` et la fraction exacte. La comparaison est **non équivalente** :
+battre Rust exigerait d'adopter ses erreurs numériques — **refusé**. Le gain réel
+×414 → ×2,88/×2,57 porte sur un travail qui n'est pas le même. La ligne 3 du §2.4
+(« Rose `0` ») est elle-même périmée (`f9b0966` + `4aad1d8`).
+
+### Suite complexe — ×203 → ×1,86 → ×1,15 → écart réduit, porte NON atteinte
+
+- ×203 : §1 ligne 18 (constat 19/11).
+- ×1,86 : CPLX1 (déjà consigné dans la mise à jour 20/11 ci-dessous).
+- **×1,15 (c6) / ×1,13 (c16)** : `SUITE_BEAT.md` (sous-agent `sui1`, 20/11, `745bb9c`),
+  base 2,166 → v3 1,598 ms sur c6 contre Rust 1,388 ms, 60 échantillons A/A/A ;
+  **Rose ≤ Rust NON atteint**.
+- **CLOSE1** (`8c31a38`, `CLOSURE.md`, 20/11) : LTO + lecture source unique réduisent
+  l'écart résiduel de ~57 à 80 µs ; la meilleure recette (PGO) reste à **+131 à +146 µs**
+  CPU sur les trois cœurs. **Porte NON atteinte.**
+- Le titre du commit `8c31a38` (« écart suite ×1,19→×0,9 sur une partie ») est
+  **imprécis** : aucune salve n'a montré Rose ≤ Rust. Rectifié par `ef7464e` et en tête
+  de `CLOSURE.md`.
+
+### Englobant — ×109 → ×2,49 → ×1,40–1,62, porte NON atteinte
+
+- ×109 : §1 ligne 16 (constat 19/11).
+- ×2,49 : mise à jour 20/11 de ce doc (constat INT2).
+- **×1,40 (c19) / fourchette ×1,40–1,62 sur 4 salves** : `ENGBEAT.md` (sous-agent `eng1`,
+  20/11). Rose final 1,381 ms c19 / 1,676 ms c6 contre Rust 0,990 / 1,036 ms.
+  Superinstruction IEEE S4 : 764 → 14,4 µs. **Porte Rose ≤ Rust NON atteinte.**
+
+### Ce qui reste valide et ce qui est périmé ici
+
+- **Défaites documentées maintenues** : global, suite complexe et englobant
+  (**Rust devant dans les trois cas**), racines spécialisées, langages, D1 fib35 au
+  binaire 19/11, D6/D7 au binaire c11 du 19/11. Aucune réécriture en « Rose bat partout ».
+- **Périmés comme état courant** : le §1 (pinage c11, ratios 19/11), le §2.4 (global,
+  ligne 3 à `0`), le §6 (self-hosting PARTIEL / émetteur en échec), le §3 et la §4
+  (D6 perte), et la ligne « ×2,85 / ×2,89 » de la mise à jour 20/11 pour le global final.
+- Le binaire du 20/11 (`a2f98fe9…`) diffère du binaire c11 (`f4b4f729…`) de la salve
+  19/11 : ne pas mélanger les époques ni les cœurs.
+
+---
+
 ## Mise à jour datée — 20/11/2026 (constat rejoué, remplace les chiffres périmés)
 
 Les valeurs ci-dessous ont été **re-mesurées** après les commits `5cfc9db` (liste),

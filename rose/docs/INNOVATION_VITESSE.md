@@ -11,6 +11,70 @@ n'a jamais été recopiée par-dessus.
 
 ---
 
+## Mise à jour datée — 21/11/2026 (constats 20/11 ; historique 19/11 conservé)
+
+Le corps (§0–§4) est un **constat du 19/11**, binaire de base `04f7f2d1…` et pool
+construit localement, pinage c6/c16. Les chiffres ci-dessous sont des **constats datés**
+du 20/11 (binaire
+`a2f98fe93799e2faa69a21a486bcd4b7bc7def976d7b62181c0c6c95ca04ff3c`,
+`rose/docs/ETAT_VICTOIRE_9_DOMAINES.md`, commit `dee9378`, 9 échantillons
+entrelacés, horloge « calcul seul »). L'historique est conservé ; aucune phrase
+n'implique « Rose bat partout ».
+
+### D6 — le verdict « non gagné » est daté du binaire 19/11
+
+| Domaine | c19 | c6 |
+|---|---:|---:|
+| `fib(35)` | 0,92 | 0,91 |
+| Boucle 1..10⁶ | 0,39 | 0,39 |
+| Premiers < 50 000 | 0,85 | 0,85 |
+| Factorielle 5000 | 0,21 | 0,21 |
+| PGCD 1000 chiffres | 0,66 | 0,69 |
+| Chaîne 20 000 | 0,61 | 0,78 |
+| Liste 100 000 | 0,64 | 0,72 |
+| Table 3000 | 0,69 | 0,65 |
+| E/S 10 Mo | 0,63 | 0,61 |
+
+Sur le binaire du 20/11, **D6 est gagné** : 0,64 (c19) / 0,72 (c6), contre 2,076 (c6)
+au §3 de ce document et 1,79 (c6) au §1.3/§4. Le §1.3 (« harnais officiel à processus
+frais, pool/base = 1,006/1,018 = bruit ») et le §4 (« échec assumé sur l'objectif
+principal ») décrivent le binaire du 19/11 et restent vrais **pour lui** ; ils ne sont
+pas transférables au binaire du 20/11 sans re-mesure.
+
+**Non-attribution** : le 9/9 du 20/11 n'est **pas** attribuable au pool de pages de ce
+chantier. Le pool a été mesuré ici sur un binaire différent, son gain réel est limité
+à la 2ᵉ exécution dans un même processus (≈ 40 µs, ×7,6) et il est « dans le bruit »
+sur le harnais à processus frais. Aucun code de ce chantier n'est revendiqué comme
+cause du résultat 9/9.
+
+### Cohérence avec les autres docs (constats 20/11)
+
+- **Global** : ×414 → ×2,85 → **×2,88 (c16) / ×2,57 (c6)** (GLB3, `DEMARRAGE.md`,
+  `951bb12`) ; carrés 1,26 → 0,76 ms (NEON), compilation Cranelift 777 → 337 µs (÷2,3),
+  rationnels 10,75 → 0,79 ms (GLB1, `4aad1d8`). Réserve sémantique : `bench_global_rs`
+  rend `1291990006563070912` (débordement `i64`) et `7.818804193883677` (`f64`) quand
+  Rose rend `333333383333335000000` et la fraction exacte — comparaison **non
+  équivalente**, adopter ces erreurs est **refusé**. **Rust devant.**
+- **Suite complexe** : ×203 → ×1,86 → **×1,15** (`SUITE_BEAT.md`, `745bb9c`) → écart
+  réduit par CLOSE1 (`8c31a38`, LTO + lecture source unique, `CLOSURE.md`) ; porte
+  Rose ≤ Rust **NON atteinte**, titre de `8c31a38` rectifié par `ef7464e`.
+- **Englobant** : ×109 → ×2,49 → **×1,40–1,62** (`ENGBEAT.md`, 20/11, `12c786c`). Porte
+  **NON atteinte**.
+- **Self-hosting** : **ATTENT pour l'émetteur** (`0e2d844`, `e0f5744`, `SELF_HOST_SH3.md`,
+  20/11) : ELF 534 780 o, md5 `ed699457…`, lit un `.rose`, reproduit le RIR `b3ed9262…`
+  octet pour octet. Le **binaire `rose/rose` complet exige toujours `cargo build`**.
+
+### Réserves maintenues
+
+Restent vrais ici : huge pages mortes (mode `never`), amorçage mmap faux positif
+corrigé, compactage 8 octets bloqué par `jit.rs` (interdit). Restent vrais ailleurs :
+global, suite complexe et englobant **perdus face à Rust** ; la réserve sémantique du
+global interdit d'y compter une victoire de moteur. Le gain de pool en processus
+persistant est réel mais limité ; il ne doit être lu ni comme une victoire sur le
+banc officiel à processus frais du 19/11, ni comme la cause du 9/9 du 20/11.
+
+---
+
 ## 0. Protocole réellement exécuté
 
 | Élément | Mesure |

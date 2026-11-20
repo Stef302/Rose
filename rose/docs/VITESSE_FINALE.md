@@ -8,6 +8,75 @@ variantes testées ont été soit rejetées à la mesure, soit restaurées.
 
 ---
 
+## Mise à jour datée — 21/11/2026 (constats 20/11 ; historique 19/11 conservé)
+
+Le corps de ce document (§0–§5) est un **constat du 19/11**, binaire
+`f4b4f729e2f267f9d9c79a0e1a40c7154c3bde43201ddc7648cd16bef9a5ec65`, pinage c16/c6.
+Le binaire mesuré depuis est
+`a2f98fe93799e2faa69a21a486bcd4b7bc7def976d7b62181c0c6c95ca04ff3c`
+(constat 20/11, `rose/docs/ETAT_VICTOIRE_9_DOMAINES.md`, commit `dee9378`,
+9 échantillons entrelacés, horloge « calcul seul »). Tout ce qui suit est **daté** ;
+aucune conclusion d'époque n'est présentée comme définitive, et « Rose bat partout »
+n'est pas écrit.
+
+### Banc principal 9 domaines — 9/9 gagné (20/11)
+
+| Domaine | c19 | c6 |
+|---|---:|---:|
+| `fib(35)` | 0,92 | 0,91 |
+| Boucle 1..10⁶ | 0,39 | 0,39 |
+| Premiers < 50 000 | 0,85 | 0,85 |
+| Factorielle 5000 | 0,21 | 0,21 |
+| PGCD 1000 chiffres | 0,66 | 0,69 |
+| Chaîne 20 000 | 0,61 | 0,78 |
+| Liste 100 000 | 0,64 | 0,72 |
+| Table 3000 | 0,69 | 0,65 |
+| E/S 10 Mo | 0,63 | 0,61 |
+
+**Conséquence directe sur ce document** : le §1 (D6 ≈ 288 µs de page faults sur
+319 µs, « porte D6 < 0,186 ms non atteinte »), le §3 (D6 1,841 c16 / 2,039 c6,
+D7 1,043 c6 ❌) et le §5 (« ce qu'il faudrait pour battre Rust sur D6 ») décrivent
+le **binaire du 19/11**. Sur le binaire du 20/11, **D6 est gagné** (0,64 c19 / 0,72 c6)
+et D7 aussi (0,69 c19 / 0,65 c6). Ce sont des constats de catégories différentes
+(binaire et pinage changés), pas une réfutation de la décomposition page-fault
+mesurée ici : celle-ci reste valable **pour le binaire `f4b4f729…` et le chemin D6
+d'alors**, et doit être re-mesurée avant d'expliquer le D6 actuel.
+
+Les deux variantes testées puis rejetées (§2.3 : `plein_ascii`, `longueur` → `z`) ont
+été restaurées : aucun changement de `run.rs`/`interp.rs` de ce chantier n'est
+revendiqué comme cause du 9/9 du 20/11. Le gain de pool de `INNOVATION_VITESSE.md`
+(2ᵉ exécution en processus persistant) n'est pas non plus la cause de ce 9/9.
+
+### Autres bancs — cohérence avec COMPARATIF_TOTAL et INNOVATION_VITESSE
+
+- **Global** : ×414 → ×2,85 → **×2,88 (c16) / ×2,57 (c6)** final GLB3 (`DEMARRAGE.md`,
+  20/11, `951bb12`) ; carrés 1,26 → 0,76 ms (NEON), compilation Cranelift 777 → 337 µs
+  (÷2,3) ; rationnels 10,75 → 0,79 ms (GLB1, `4aad1d8`). Réserve sémantique maintenue :
+  `bench_global_rs` rend `1291990006563070912` (débordement `i64`) et
+  `7.818804193883677` (`f64`) quand Rose rend `333333383333335000000` et la fraction
+  exacte — comparaison **non équivalente** ; battre Rust exigerait d'adopter ces
+  erreurs, **refusé**. **Rust reste devant.**
+- **Suite complexe** : ×203 → ×1,86 → **×1,15** (SUI1, `SUITE_BEAT.md`, `745bb9c`) →
+  écart réduit par CLOSE1 (`8c31a38`, LTO + lecture source unique, `CLOSURE.md`).
+  **Porte Rose ≤ Rust NON atteinte** ; titre de `8c31a38` rectifié par `ef7464e`.
+- **Englobant** : ×109 → ×2,49 → **×1,40–1,62** (ENG1, `ENGBEAT.md`, 20/11, `12c786c`).
+  **Porte NON atteinte.**
+- **Self-hosting** : **ATTENT pour l'émetteur** (`0e2d844`, reproductibilité `e0f5744`,
+  `SELF_HOST_SH3.md`, 20/11) : ELF 534 780 o, md5 `ed699457…`, lit un `.rose`, reproduit
+  le RIR `b3ed9262…` octet pour octet. Le **binaire `rose/rose` complet (interpréteur,
+  JIT, runtime) exige toujours `cargo build`** : pas d'auto-hébergement du produit livré.
+
+### Ce qui reste une défaite documentée
+
+Global, suite complexe et englobant restent **perdus face à Rust** (Rust devant dans
+les trois cas) ; la réserve sémantique du global interdit de compter son gain apparent
+comme une victoire de moteur. Le point fixe `b3ed9262…` listé en §4 reste le bon,
+mais cette entrée de validation doit être lue avec la précision ci-dessus : point
+fixe de l'émetteur ≠ auto-hébergement du binaire complet. Aucun
+« Rose bat partout ».
+
+---
+
 ## 0. Protocole réellement exécuté
 
 | Élément | Mesure |
