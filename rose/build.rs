@@ -14,10 +14,27 @@ fn main() {
         }
         let src = std::path::Path::new("src/windows_compat.c");
         if src.exists() {
-            cc::Build::new()
-                .file(src)
-                .flag_if_supported("-static")
-                .compile("windows_compat");
+            // ⚠ CORRECTION 21/11: cc::Build émet cargo:rustc-link-lib=static=
+            // windows_compat, ce qui embarque l'objet DANS librose.rlib. Avec
+            // le /WHOLEARCHIVE ci-dessous, le même .o arrive deux fois au lien
+            // ("duplicate symbol: mmap/mprotect/...", mesuré rc=101). On compile
+            // donc la lib nous-mêmes: un seul .lib, injecté une seule fois.
+            let out = std::env::var("OUT_DIR").unwrap_or_else(|_| "target".into());
+            let obj = std::path::Path::new(&out).join("windows_compat.o");
+            let lib = std::path::Path::new(&out).join("windows_compat.lib");
+            let cflags = std::env::var("CFLAGS_x86_64_pc_windows_msvc").unwrap_or_default();
+            let target = std::env::var("TARGET").unwrap_or_default();
+            let mut cmd = std::process::Command::new("clang");
+            cmd.arg(format!("--target={target}")).arg("-O2").arg("-c").arg(src)
+               .arg("-o").arg(&obj);
+            for f in cflags.split_whitespace() { cmd.arg(f); }
+            let st = cmd.status().expect("clang introuvable");
+            assert!(st.success(), "compilation windows_compat.c échouée");
+            let st2 = std::process::Command::new("llvm-lib")
+                .arg(format!("/OUT:{}", lib.display())).arg(&obj)
+                .status().expect("llvm-lib introuvable");
+            assert!(st2.success(), "création windows_compat.lib échouée");
+            println!("cargo:rustc-link-search=native={out}");
         }
         // Forcer le lien du windows_compat.lib (cargo-xwin/lld-link ne le
         // tire pas toujours via -lwindows_compat).
