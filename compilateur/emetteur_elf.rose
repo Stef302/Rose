@@ -741,8 +741,21 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(stroff(0, 31, g5_argoff($k, $d)))
         $k = $k + 1
       }
+      # SH2 : au-dela de x30 l'encodage 5 bits du registre deborde (x31=xzr,
+      # x32=x0...). Les appels a 35 arguments (check_instr) ecrasaient x30/x0.
+      # Les arguments 31+ passent par une zone RW fixe, lue immediatement
+      # par le prologue de l'appel. IMPORTANT : cette boucle doit venir AVANT
+      # le chargement de x0..x30, car elle utilise x14/x15 comme scratch et
+      # ecraserait sinon les arguments 14 et 15 deja charges.
+      $i = 31
+      tant_que ($i < $k) {
+        g5_emit(ldroff(14, 31, g5_argoff($i, $d)))
+        g5_load(15, 1610621952 + 8 * ($i - 31))
+        g5_emit(stroff(14, 15, 0))
+        $i = $i + 1
+      }
       $i = 0
-      tant_que ($i < $k) { g5_emit(ldroff($i, 31, g5_argoff($i, $d))); $i = $i + 1 }
+      tant_que ($i < $k et $i < 31) { g5_emit(ldroff($i, 31, g5_argoff($i, $d))); $i = $i + 1 }
       $lbl = -1
       si ($nom == "longueur") { $lbl = $g5_lenl }
       si ($nom == "ordre") { $lbl = $g5_ordl }
@@ -768,6 +781,16 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         si ($trouve == 0) { $lbl = $g5_stub0l }
       }
       g5_branch(1, $lbl)
+      # SH2 : Rose fait `joindre($liste, v)` SANS reaffecter : joindre mute
+      # la liste en place. Le runtime G5 realloue des que la capacite est
+      # atteinte et renvoie un NOUVEAU pointeur ; l'appelant gardait l'ancien
+      # descripteur (cap=8), d'ou $gen qui restait a 1 element et la boucle
+      # `T0($gen,$p) != "eof"` sans fin. On reecrit donc le slot de la
+      # variable des que le premier argument est `(v nom)`.
+      si ($nom == "joindre" et $pos + 5 < $n et $t[$pos + 3] == "(" et $t[$pos + 4] == "v") {
+        $jsl = g5_slot_of($f, $t[$pos + 5])
+        si ($jsl >= 0) { g5_emit(stroff(0, 31, g5_slotoff($jsl))) }
+      }
       retour $p + 1
     }
     si ($head == "neg") {
@@ -916,7 +939,13 @@ fn g5_compile_fonction($f: entier, $principal: entier, $printl: entier, $exitl: 
     g5_emit(stroff(8, 9, 0))
   }
   $p = 0
-  tant_que ($p < $g5_fparam[$f]) { g5_emit(stroff($p, 31, g5_slotoff($p))); $p = $p + 1 }
+  tant_que ($p < $g5_fparam[$f] et $p < 31) { g5_emit(stroff($p, 31, g5_slotoff($p))); $p = $p + 1 }
+  tant_que ($p < $g5_fparam[$f]) {
+    g5_load(15, 1610621952 + 8 * ($p - 31))
+    g5_emit(ldroff(1, 15, 0))
+    g5_emit(stroff(1, 31, g5_slotoff($p)))
+    $p = $p + 1
+  }
   $i = 0
   tant_que ($i < $g5_fnop[$f]) {
     g5_mark($g5_oplbl[$g5_fop[$f] + $i])
@@ -1085,11 +1114,22 @@ fn g5_emit_ordre($lbl: entier) -> entier {
 
 # sous_chaine(s, a, b) — x0=s, x1=a, x2=b ; renvoie une NOUVELLE chaîne.
 fn g5_emit_sous($lbl: entier) -> entier {
+  $lneg = g5_next()
+  $lok = g5_next()
   g5_mark($lbl)
   g5_emit(g5_asr3(1, 1))
   g5_emit(g5_asr3(2, 2))
   g5_emit(orrr(8, 31, 1))
   g5_emit(subr(3, 2, 1))
+  # SH2 : sous_chaine(a,b) avec a>b doit rendre une chaîne VIDE (len=0).
+  # Sans cette borne, le descripteur porte len=-1 et entier()/idx() lisent
+  # l'octet suivant le descripteur (mesuré : e=-48=-('\0'-48) dans can_nud).
+  g5_emit(cmpi(3, 0))
+  g5_branch(111, $lneg)
+  g5_branch(0, $lok)
+  g5_mark($lneg)
+  g5_emit(movz(3, 0))
+  g5_mark($lok)
   g5_emit(g5_masktag(10, 0))
   g5_emit(addr(4, 3, 3))
   g5_emit(addr(4, 4, 4))
@@ -1106,7 +1146,14 @@ fn g5_emit_sous($lbl: entier) -> entier {
   g5_mark($lbl + 1)
   g5_emit(cmpr(6, 3))
   g5_branch(110, $lbl + 2)
-  g5_emit(addr(7, 8, 6))
+  # SH2 : x8 = a (debut, copie de x1 par orrr(8,31,1) = mov) et x10 =
+  # pointeur MASQUE du descripteur. Les donnees commencent a +16 :
+  # l'adresse correcte est x10 + 16 + a + i. L'ancien code lisait
+  # x10 + a + i (16 octets trop tot, dans l'en-tete du descripteur),
+  # rendant NUL a la place des octets : sous_chaine("0|1",2,3) -> "\0",
+  # entier() -> -48, can_nud(e=-48) -> idx hors bornes -> SIGSEGV.
+  g5_emit(addi(7, 6, 16))
+  g5_emit(addr(7, 8, 7))
   g5_emit(ldrbr(7, 10, 7))
   g5_emit(addi(4, 6, 16))
   g5_emit(strbr(7, 5, 4))
@@ -1241,7 +1288,11 @@ fn g5_emit_entier($lbl: entier) -> entier {
   g5_emit(movz(2, 0))
   g5_emit(movz(3, 0))
   g5_emit(movz(4, 1))
+  # SH2 : une chaîne vide n'a AUCUN octet de données ; la boucle décimale
+  # lirait l'octet suivant le descripteur (mesuré : entier("") -> -48 quand
+  # cet octet vaut 0). Retour direct de 0 (x3 deja initialise a 0).
   g5_emit(cmpi(1, 0))
+  g5_branch(100, $lbl + 4)
   g5_branch(100, $lbl + 1)
   g5_emit(ldrbio(5, 9, 16))
   g5_emit(cmpi(5, 45))
