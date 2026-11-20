@@ -1,0 +1,155 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# syllog/tests_noyau.rose — tests unitaires du noyau de Syllog.
+# Lancer depuis la racine du dépôt : ./rose/rose syllog/tests_noyau.rose
+# ═══════════════════════════════════════════════════════════════════════════
+
+importer "syllog/src/noyau.rose"
+
+# Les globals ne sont PAS visibles en écriture depuis une fonction Rose :
+# le bilan voyage donc dans une table partagée (passée par référence).
+$cpt = table()
+inserer($cpt, "r", 0)
+inserer($cpt, "e", 0)
+
+fn incrementer(cpt: table, cle: chaine) {
+  $v = 0
+  $x = cpt[cle]
+  $v = $x
+  inserer(cpt, cle, $v + 1)
+}
+
+fn tester(cpt: table, nom: chaine, obtenu: chaine, attendu: chaine) {
+  si (obtenu == attendu) {
+    >> "✓ " + nom
+    incrementer(cpt, "r")
+  } sinon {
+    >> "✗ " + nom + " : obtenu " + obtenu + ", attendu " + attendu
+    incrementer(cpt, "e")
+  }
+}
+
+fn montrer(t: table) -> chaine {
+  $g = noy_genre(t)
+  si ($g == "var") { retour noy_nom(t) }
+  si ($g == "type") { retour "Type(" + chaine(noy_niveau(t)) + ")" }
+  si ($g == "pi") {
+    retour "Pi(" + noy_nom(t) + ":" + montrer(noy_champ(t, "domaine")) + "," +
+           montrer(noy_champ(t, "codomaine")) + ")"
+  }
+  si ($g == "lam") {
+    retour "Lam(" + noy_nom(t) + ":" + montrer(noy_champ(t, "domaine")) + "," +
+           montrer(noy_champ(t, "corps")) + ")"
+  }
+  si ($g == "app") {
+    retour "App(" + montrer(noy_champ(t, "fonction")) + "," +
+           montrer(noy_champ(t, "argument")) + ")"
+  }
+  si ($g == "const") { retour "Const(" + noy_nom(t) + ")" }
+  si ($g == "ind") { retour "Ind(" + noy_nom(t) + ")" }
+  si ($g == "constructeur") { retour "Constr(" + noy_nom(t) + ")" }
+  si ($g == "elim") { retour "Elim(" + noy_nom(t) + ")" }
+  retour "?"
+}
+
+# Contexte : X : Type(0), a : X, y : X.
+$ctx = noy_ctx_vide()
+$ctx = noy_ctx_ajouter($ctx, "X", noy_type(0))
+$ctxa = noy_ctx_ajouter($ctx, "a", noy_var("X"))
+$ctxy = noy_ctx_ajouter($ctx, "y", noy_var("X"))
+
+# ── 1. Identité λx:X. x : Πx:X. X ─────────────────────────────────────────
+$id = noy_lam("x", noy_var("X"), noy_var("x"))
+$rid = verifier($id, $ctx)
+tester($cpt, "identite : acceptee", chaine(noy_est_ok($rid)), "vrai")
+tester($cpt, "identite : type", montrer(noy_type_res($rid)), "Pi(x:X,X)")
+tester($cpt, "identite : sans erreur", chaine(noy_erreur($rid) == ""), "vrai")
+tester($cpt, "bien_forme identite", chaine(bien_forme($id, $ctx)), "vrai")
+
+# ── 2. Application à un argument ────────────────────────────────────────────
+$app = noy_app($id, noy_var("a"))
+$rap = verifier($app, $ctxa)
+tester($cpt, "app : acceptee", chaine(noy_est_ok($rap)), "vrai")
+tester($cpt, "app : type", montrer(noy_type_res($rap)), "X")
+
+# Application VÉRITABLEMENT dépendante :
+# (λA:Type(0). λx:A. x) X  :  Πx:X. X
+$dep = noy_app(noy_lam("A", noy_type(0),
+                       noy_lam("x", noy_var("A"), noy_var("x"))),
+               noy_var("X"))
+$rdep = verifier($dep, $ctx)
+tester($cpt, "app dependante : acceptee", chaine(noy_est_ok($rdep)), "vrai")
+tester($cpt, "app dependante : type substitue", montrer(noy_type_res($rdep)), "Pi(x:X,X)")
+
+# ── 3. Alpha-équivalence ───────────────────────────────────────────────────
+$id_y = noy_lam("y", noy_var("X"), noy_var("y"))
+$id_z = noy_lam("z", noy_var("X"), noy_var("z"))
+$id_libre = noy_lam("y", noy_var("X"), noy_var("z"))
+tester($cpt, "alpha : x == y", chaine(convertible($id, $id_y)), "vrai")
+tester($cpt, "alpha : y == z", chaine(convertible($id_y, $id_z)), "vrai")
+tester($cpt, "alpha : lieur != libre", chaine(convertible($id, $id_libre)), "faux")
+
+$nest1 = noy_lam("x", noy_var("X"), noy_lam("y", noy_var("X"), noy_var("x")))
+$nest2 = noy_lam("u", noy_var("X"), noy_lam("v", noy_var("X"), noy_var("u")))
+$nest3 = noy_lam("u", noy_var("X"), noy_lam("v", noy_var("X"), noy_var("v")))
+tester($cpt, "alpha imbrique : vrai", chaine(convertible($nest1, $nest2)), "vrai")
+tester($cpt, "alpha imbrique : faux", chaine(convertible($nest1, $nest3)), "faux")
+
+# ── 4. Capture-évitation ───────────────────────────────────────────────────
+# Piège classique : (λx. λy. x) y  doit donner  λy'. y  et NON  λy. y.
+$capt = noy_app($nest1, noy_var("y"))
+$normal = beta($capt)
+tester($cpt, "capture : resultat lam", noy_genre($normal), "lam")
+tester($cpt, "capture : lieur renomme", chaine(noy_nom($normal) != "y"), "vrai")
+tester($cpt, "capture : corps = y libre", montrer(noy_champ($normal, "corps")), "y")
+$attendu = noy_lam("z", noy_var("X"), noy_var("y"))
+tester($cpt, "capture : alpha attendu", chaine(convertible($normal, $attendu)), "vrai")
+$piege = noy_lam("y", noy_var("X"), noy_var("y"))
+tester($cpt, "capture : pas de capture", chaine(convertible($normal, $piege)), "faux")
+$rcap = verifier($capt, $ctxy)
+tester($cpt, "capture : verification ok", chaine(noy_est_ok($rcap)), "vrai")
+tester($cpt, "capture : type", montrer(noy_type_res($rcap)), "Pi(y:X,X)")
+
+# Substitution directe : shadowing et renommage.
+$shadow = noy_subst($id, "x", noy_var("y"))
+tester($cpt, "subst : lieur masque", montrer($shadow), "Lam(x:X,x)")
+$renom = noy_subst(noy_lam("y", noy_var("X"), noy_var("x")), "x", noy_var("y"))
+tester($cpt, "subst : renommage lieur", chaine(noy_nom($renom) != "y"), "vrai")
+tester($cpt, "subst : renommage corps", montrer(noy_champ($renom, "corps")), "y")
+
+# ── 5. Détection d'erreur ──────────────────────────────────────────────────
+$mauvais = noy_app(noy_type(0), noy_var("X"))
+$rm = verifier($mauvais, $ctx)
+tester($cpt, "erreur : app d'un Type", chaine(noy_est_ok($rm)), "faux")
+tester($cpt, "erreur : message present", chaine(noy_erreur($rm) != ""), "vrai")
+$rvar = verifier(noy_var("inconnu"), $ctx)
+tester($cpt, "erreur : variable non liee", chaine(noy_est_ok($rvar)), "faux")
+$rmal = verifier(table(), $ctx)
+tester($cpt, "erreur : terme mal forme", chaine(noy_est_ok($rmal)), "faux")
+tester($cpt, "bien_forme : mal forme", chaine(bien_forme(table(), $ctx)), "faux")
+$stuck = noy_app(noy_var("f"), noy_var("a"))
+tester($cpt, "beta : terme bloque stable", montrer(beta($stuck)), "App(f,a)")
+
+# ── 6. Univers et règle Pi ─────────────────────────────────────────────────
+$rty = verifier(noy_type(0), $ctx)
+tester($cpt, "Type(0) : Type(1)", montrer(noy_type_res($rty)), "Type(1)")
+$pi2 = noy_pi("A", noy_type(0), noy_type(1))
+$rpi = verifier($pi2, $ctx)
+tester($cpt, "Pi(Type0,Type1) : Type(2)", montrer(noy_type_res($rpi)), "Type(2)")
+
+# ── 7. Garde de pas (pas de boucle infinie) ────────────────────────────────
+$omega = noy_app(noy_lam("x", noy_var("X"), noy_app(noy_var("x"), noy_var("x"))),
+                 noy_lam("x", noy_var("X"), noy_app(noy_var("x"), noy_var("x"))))
+$rom = noy_beta_lim($omega, 50)
+tester($cpt, "garde : erreur explicite", chaine(noy_erreur_beta($rom) != ""), "vrai")
+tester($cpt, "garde : borne respectee", chaine(noy_pas_beta($rom) <= 50), "vrai")
+
+# ── 8. Contexte sous forme de table (interopérabilité) ─────────────────────
+$ctab = table()
+inserer($ctab, "X", noy_type(0))
+$rtab = verifier(noy_var("X"), $ctab)
+tester($cpt, "contexte table : accepte", chaine(noy_est_ok($rtab)), "vrai")
+tester($cpt, "contexte table : type", montrer(noy_type_res($rtab)), "Type(0)")
+
+>> "REUSSIS=" + chaine($cpt["r"])
+>> "ECHOUES=" + chaine($cpt["e"])
+si ($cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }
