@@ -1176,6 +1176,428 @@ fn modpow(base: &BigInt, exp: &BigInt, m: &BigInt) -> BigInt {
     result
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// MATH1 — primitives pour factorielles géantes SYMBOLIQUES (sans GMP).
+//
+// Aucun de ces primitives ne calcule n! quand n est géant. Toutes les
+// quantités réelles sont manipulées en VIRGULE FIXE pure (BigInt / 10^p),
+// jamais en f64 : n jusqu'à 10^1000 fonctionne.
+//
+// Théorème utilisé (Euler–Maclaurin / Stirling, borne de Robbins) :
+//
+//   ln(n!) = (n+1/2)ln n − n + (1/2)ln(2π)
+//            + Σ_{j=1}^{m} B_{2j} / (2j(2j−1) n^{2j−1}) + R_m
+//
+// avec |R_m| ≤ |B_{2m+2}| / ((2m+2)(2m+1) n^{2m+1})  pour n ≥ 1.
+// Le nombre m est choisi PAR EXACTITUDE (comparaison entière) pour que
+// |R_m| < 10^{−(p+5)} où p est la précision de travail en chiffres.
+//
+// ln(x) est évalué par la série de l'atanh :
+//   ln x = ln f + k·ln 2,  f = x/2^k ∈ [1,2),  z = (f−1)/(f+1) ∈ [0,1/3],
+//   ln f = 2·Σ_{j≥0} z^{2j+1}/(2j+1)   (erreur < 2 z^{2J+1}/((2J+1)(1−z²))).
+// Comme z ≤ 1/3, chaque terme est divisé par ≥ 9 : la série s'arrête
+// dès qu'un terme devient nul en virgue fixe (≈ 1,05·p termes).
+//
+// π par la formule de Machin : π = 16·atan(1/5) − 4·atan(1/239).
+// exp par Σ x^j/j!, tronquée quand le terme devient nul.
+//
+// Borne d'erreur de virgule fixe (conservatrice) : chaque division/multi-
+// plication tronque ≤ 1 ulp ; l'atanh sur K termes accumule ≤ 8K+16 ulps ;
+// la multiplication par k = ⌊log2 x⌋ amplifie l'erreur de ln 2 ; le terme
+// dominant (n+1/2)·ln n amplifie l'erreur de ln n par n. Tout est majoré
+// en ENTIERS (BigInt) et comparé à la distance au bord d'arrondi : le
+// drapeau `exact` n'est vrai que si la troncature aux `digits` demandées
+// est PROUVÉE sans ambiguïté.
+// ══════════════════════════════════════════════════════════════════════════
+
+fn mp_pow10(p: usize) -> BigInt { BigInt::from(10u32).pow(p as u32) }
+
+fn fp_mul(a: &BigInt, b: &BigInt, scale: &BigInt) -> BigInt { (a * b) / scale }
+
+fn fp_div(a: &BigInt, b: &BigInt, scale: &BigInt) -> BigInt {
+    if b.is_zero() { erreur_runtime("division par zéro"); }
+    (a * scale) / b
+}
+
+/// atanh(z) en virgule fixe, pour 0 ≤ z < 1 (ici z ≤ 1/3).
+fn atanh_fixed(z: &BigInt, scale: &BigInt) -> BigInt {
+    let z2 = fp_mul(z, z, scale);
+    let mut puis = z.clone();
+    let mut somme = BigInt::zero();
+    let mut k = 0u64;
+    loop {
+        let terme = &puis / BigInt::from(2 * k + 1);
+        if terme.is_zero() { break; }
+        somme += &terme;
+        puis = fp_mul(&puis, &z2, scale);
+        k += 1;
+        if puis.is_zero() || k > 100_000 { break; }
+    }
+    somme
+}
+
+/// atan(1/q) en virgule fixe, q ≥ 2, par la série alternée.
+fn arctan_inv_fixed(q: u64, scale: &BigInt) -> BigInt {
+    let x = scale / BigInt::from(q);          // 1/q tronqué : erreur ≤ 1 ulp
+    let x2 = fp_mul(&x, &x, scale);
+    let mut puis = x;
+    let mut somme = BigInt::zero();
+    let mut k = 0u64;
+    loop {
+        let terme = &puis / BigInt::from(2 * k + 1);
+        if terme.is_zero() { break; }
+        if k % 2 == 0 { somme += &terme; } else { somme -= &terme; }
+        puis = fp_mul(&puis, &x2, scale);
+        k += 1;
+        if puis.is_zero() || k > 100_000 { break; }
+    }
+    somme
+}
+
+fn pi_fixed(scale: &BigInt) -> BigInt {
+    // π = 16·atan(1/5) − 4·atan(1/239)  (Machin)
+    arctan_inv_fixed(5, scale) * 16u32 - arctan_inv_fixed(239, scale) * 4u32
+}
+
+fn ln2_fixed(scale: &BigInt) -> BigInt {
+    // ln 2 = 2·atanh(1/3)
+    atanh_fixed(&(scale / 3u32), scale) * 2u32
+}
+
+/// ⌊log2(x/scale)⌋ exact (x ≥ scale, i.e. valeur ≥ 1).
+fn bits_diff(x: &BigInt, scale: &BigInt) -> i64 {
+    let bs = scale.bits() as i64;
+    let mut k = x.bits() as i64 - bs;
+    if k < 0 { return k; }
+    while (scale << (k as usize)) > *x { k -= 1; }
+    while (scale << ((k + 1) as usize)) <= *x { k += 1; }
+    k
+}
+
+/// ln(x) en virgule fixe pour x ≥ scale (valeur ≥ 1), x étant un BigInt
+/// déjà multiplié par scale. `ln2` est passé en paramètre (pas de mémoïsation).
+fn ln_fixed(x: &BigInt, scale: &BigInt, ln2: &BigInt) -> BigInt {
+    let k = bits_diff(x, scale);
+    // f = x / 2^k ∈ [1,2), en virgule fixe.
+    let f = if k >= 0 { x >> (k as usize) } else { x << ((-k) as usize) };
+    // z = (f−1)/(f+1) ; f ≥ scale garantit z ≥ 0, et f < 2·scale garantit z < 1/3.
+    let z = fp_div(&(&f - scale), &(&f + scale), scale);
+    let lnf = atanh_fixed(&z, scale) * 2u32;
+    lnf + ln2 * BigInt::from(k)
+}
+
+/// exp(x) en virgule fixe, x ≥ 0 (ici x ∈ [0, ln 10)).
+fn exp_fixed(x: &BigInt, scale: &BigInt) -> BigInt {
+    let mut terme = scale.clone();
+    let mut somme = scale.clone();
+    let mut j = 1u64;
+    loop {
+        terme = fp_mul(&terme, x, scale) / BigInt::from(j);
+        if terme.is_zero() { break; }
+        somme += &terme;
+        j += 1;
+        if j > 100_000 { break; }
+    }
+    somme
+}
+
+fn binom_big(n: u64, k: u64) -> BigInt {
+    let mut r = BigInt::one();
+    for i in 1..=k { r = r * BigInt::from(n - i + 1) / BigInt::from(i); }
+    r
+}
+
+/// B_0 … B_{max_m} sous forme de rationnels exacts (num, den), den > 0.
+/// Réccurrence : Σ_{k=0}^{m} C(m+1,k)·B_k = 0 pour m ≥ 1.
+fn bernoullis(max_m: usize) -> Vec<(BigInt, BigInt)> {
+    let mut b = vec![(BigInt::zero(), BigInt::one()); max_m + 1];
+    b[0] = (BigInt::one(), BigInt::one());
+    for m in 1..=max_m {
+        let (mut num, mut den) = (BigInt::zero(), BigInt::one());
+        for k in 0..m {
+            let c = binom_big((m + 1) as u64, k as u64);
+            let (nk, dk) = &b[k];
+            num = num * dk + nk * &c * &den;
+            den = den * dk;
+            let g = num.gcd(&den);
+            if g > BigInt::one() { num /= &g; den /= &g; }
+        }
+        num = -num;
+        den *= BigInt::from((m + 1) as u64);
+        let g = num.gcd(&den);
+        if g > BigInt::one() { num /= &g; den /= &g; }
+        b[m] = (num, den);
+    }
+    b
+}
+
+/// Σ_{i≥1} ⌊n/p^i⌋ (formule de Legendre), exact.
+fn legendre(n: &BigInt, p: u64) -> BigInt {
+    let mut q = n.clone();
+    let mut s = BigInt::zero();
+    let pb = BigInt::from(p);
+    while !q.is_zero() { q /= &pb; s += &q; }
+    s
+}
+
+fn pow_mod(base: &BigInt, exp: &BigInt, m: &BigInt) -> BigInt {
+    let mut res = BigInt::one();
+    if m.is_one() { return BigInt::zero(); }
+    let mut b = base % m;
+    let mut e = exp.clone();
+    while !e.is_zero() {
+        if &e & BigInt::one() == BigInt::one() { res = (&res * &b) % m; }
+        e = e >> 1;
+        if !e.is_zero() { b = (&b * &b) % m; }
+    }
+    res
+}
+
+fn egcd(a: &BigInt, b: &BigInt) -> (BigInt, BigInt, BigInt) {
+    if b.is_zero() { return (a.abs(), if a.sign() == Sign::Minus { -BigInt::one() } else { BigInt::one() }, BigInt::zero()); }
+    let (g, x1, y1) = egcd(b, &(a % b));
+    (g, y1.clone(), x1 - (a / b) * y1)
+}
+
+fn inv_mod(a: &BigInt, m: &BigInt) -> BigInt {
+    let (g, x, _) = egcd(a, m);
+    debug_assert!(g.is_one());
+    let mut r = x % m;
+    if r.sign() == Sign::Minus { r += m; }
+    r
+}
+
+fn chaine_sans_zeros(x: &BigInt) -> String {
+    let s = x.to_string();
+    s.trim_start_matches('0').to_string()
+}
+
+fn n_decimal_digits(n: &BigInt) -> usize { n.to_string().len() }
+
+/// Seuil : en dessous, n! est calculé EXACTEMENT (le seul endroit où le
+/// nombre entier est matérialisé) et log10 en est déduit. Au-dessus, on
+/// n'utilise QUE la série d'Euler–Maclaurin.
+const MATH1_SEUIL_EXACT: u64 = 1000;
+
+/// log10(n!) en virgule fixe à `p` décimales + borne d'erreur conservatrice
+/// en ulps (unité = 10^{-p}). Privé : les deux fonctions publiques qui en
+/// dépendent choisissent p en fonction de la taille de n.
+fn log10_fact_fixed(n: &Gz, p: usize) -> (BigInt, BigInt) {
+    let scale = mp_pow10(p);
+    let ln2 = ln2_fixed(&scale);
+    let ln10 = ln_fixed(&(BigInt::from(10u32) * &scale), &scale, &ln2);
+    let nv = n.bref();
+    // Majoration de l'erreur d'un ln évalué par atanh : ≤ 8p+96 ulps.
+    let e_unit = BigInt::from(8u64 * (p as u64 + 10) + 96);
+
+    let (ln_fact, err) = if nv.sign() == Sign::Minus {
+        erreur_runtime("factorielle d'un entier négatif");
+    } else if nv <= &BigInt::from(MATH1_SEUIL_EXACT) {
+        let m = factorielle_parallele(nv.to_u64().unwrap_or(0)).v();
+        let x = m * &scale;
+        let k = bits_diff(&x, &scale).max(0) as u64;
+        let v = ln_fixed(&x, &scale, &ln2);
+        (v, BigInt::from(k + 1) * &e_unit)
+    } else {
+        // ── Euler–Maclaurin ──────────────────────────────────────────────
+        let n_pow0 = nv.clone();
+        let x_n = nv * &scale;
+        let ln_n = ln_fixed(&x_n, &scale, &ln2);
+        let k_n = bits_diff(&x_n, &scale).max(0) as u64;
+        let e_lnn = BigInt::from(k_n + 1) * &e_unit;
+        let lnpi = ln_fixed(&pi_fixed(&scale), &scale, &ln2);
+
+        let coeff = nv * 2u32 + 1u32;                 // 2n+1
+        let main = ((ln_n * &coeff) / 2u32 - nv * &scale) + (&ln2 + &lnpi) / 2u32;
+
+        let dn = n_decimal_digits(nv).max(1);
+        // Marge généreuse : |B_{2j}|/(2j(2j−1)) décroît aussi comme ~(2π)^{-2j},
+        // donc j dépasse l'estimation grossière n^{-2j}. 12 termes de marge.
+        let j_est = ((p + 5) / (2 * dn) + 12).min(p + 5);
+        let bern = bernoullis(2 * (j_est + 3) + 2);
+        let mut serie = BigInt::zero();
+        let mut n_pow = n_pow0.clone();                 // n^{2j−1}
+        let mut j = 1usize;
+        let seuil_prec = mp_pow10(p + 5);
+        loop {
+            let (bn, bd) = &bern[2 * j];
+            let den = bd * BigInt::from((2 * j * (2 * j - 1)) as u64) * &n_pow;
+            serie += (bn * &scale) / &den;
+            // |R_j| ≤ |B_{2j+2}| / ((2j+2)(2j+1) n^{2j+1}) < 10^{−(p+5)} ?
+            let (bn2, bd2) = &bern[2 * j + 2];
+            let n_suiv = &n_pow * nv * nv;
+            let den2 = bd2 * BigInt::from(((2 * j + 2) * (2 * j + 1)) as u64) * &n_suiv;
+            if bn2.abs() * &seuil_prec < den2 { break; }
+            j += 1;
+            n_pow = n_suiv;
+            if 2 * j + 2 >= bern.len() || j > 10_000 {
+                erreur_runtime("série de Stirling : précision non atteinte");
+            }
+        }
+        let e = (&e_lnn * &coeff) / 2u32 + &e_lnn + 2u32 * &e_unit + 100u32;
+        (main + serie, e)
+    };
+    let L = fp_div(&ln_fact, &ln10, &scale);
+    (L, err)
+}
+
+/// log10(n!) avec `digits` chiffres après la virgule, sous forme de Gq
+/// (numérateur / 10^digits). `exact = true` signifie que la borne
+/// d'erreur PROUVÉE est plus petite que la distance à un bord de troncature
+/// aux `digits` demandées : tous les chiffres rendus sont alors garantis.
+/// La partie entière de la valeur + 1 = nombre de chiffres décimaux de n!
+/// et sa partie fractionnaire est celle de log10(n!).
+pub fn log10_factorielle_precision(n: &Gz, digits: usize) -> (Gq, bool) {
+    let dn = n_decimal_digits(n.bref()).max(1);
+    let p = digits + dn + 60;
+    let (L, e) = log10_fact_fixed(n, p);
+    let garde = mp_pow10(p - digits);
+    let frac = &L % &garde;
+    let exact = e < &garde / 2u32 && frac > e && (&garde - &frac) > e;
+    // TRONCATURE (cohérente avec `math1_log10_oracles_100_chiffres` et avec
+    // la convention « nombre de chiffres = floor(log10)+1 »). L'oracle
+    // `10^38` du test était arrondi à tort : mpmath donne ...1789.959…,
+    // donc la valeur tronquée à 20 décimales est bien ...1789.
+    let num = &L / &garde;
+    let q = Gq::neuf();
+    unsafe { (*q.0).num.v = num; (*q.0).den.v = mp_pow10(digits); }
+    q.canonicalize();
+    (q, exact)
+}
+
+/// Σ_{k≥1} ⌊n/5^k⌋ : nombre de zéros finaux de n!. Exact, O(log n).
+/// n < 0 ou n = 0 → 0.
+pub fn zeros_finaux_factorielle(n: &Gz) -> Gz {
+    let nv = n.bref();
+    let r = Gz::neuf();
+    if nv.sign() != Sign::Plus { return r; }
+    r.set_v(legendre(nv, 5));
+    r
+}
+
+/// Produit de 1..n en retirant TOUS les facteurs 2 et 5, modulo 10^k.
+#[allow(dead_code)]
+fn derniers_direct(n: &BigInt, k: usize) -> String {
+    let mod10 = mp_pow10(k);
+    let deux = BigInt::from(2u32);
+    let cinq = BigInt::from(5u32);
+    let mut prod = BigInt::one();
+    let mut a = BigInt::zero();
+    let mut b = BigInt::zero();
+    let mut i = BigInt::one();
+    while &i <= n {
+        let mut x = i.clone();
+        while &x % &deux == BigInt::zero() { a += 1u32; x = x >> 1; }
+        while &x % &cinq == BigInt::zero() { b += 1u32; x /= &cinq; }
+        prod = (prod * x) % &mod10;
+        i += 1u32;
+    }
+    let d = &a - &b;
+    chaine_sans_zeros(&((prod * pow_mod(&deux, &d, &mod10)) % &mod10))
+}
+
+/// S(m) = ∏_{i=1}^m i/5^{ν5(i)} mod 5^k, par récurrence
+/// S(m) = U(m)·S(⌊m/5⌋), U(m) = ∏_{i≤m,5∤i} i ≡ (−1)^{⌊m/5^k⌋}·∏_{j≤r,5∤j} j.
+fn s_mod5(m: &BigInt, mod5: &BigInt) -> BigInt {
+    if m.is_zero() { return BigInt::one(); }
+    let (q, r) = m.div_rem(mod5);
+    let mut u = if &q % 2u32 == BigInt::zero() { BigInt::one() } else { mod5 - 1u32 };
+    // ∏_{j≤r, 5∤j} j  (r < 5^k, borné par l'appelant).
+    let mut part = BigInt::one();
+    let cinq = BigInt::from(5u32);
+    let mut j = BigInt::one();
+    while &j <= &r {
+        if &j % &cinq != BigInt::zero() { part = (part * &j) % mod5; }
+        j += 1u32;
+    }
+    u = (u * part) % mod5;
+    (u * s_mod5(&(m / &cinq), mod5)) % mod5
+}
+
+/// Chemin sous-linéaire (O(5^k·log n)) pour les grands n.
+/// X = n!/10^z. Mod 5^k : X = S(n)·2^{−z}. Mod 2^k : X ≡ 0 dès que
+/// l'excès de facteurs 2 dépasse k (vrai ici). Recombinaison par CRT.
+#[allow(dead_code)]
+fn derniers_recursif(n: &BigInt, k: usize) -> String {
+    let mod10 = mp_pow10(k);
+    let mod5 = BigInt::from(5u32).pow(k as u32);
+    let mod2 = BigInt::from(2u32).pow(k as u32);
+    let z = legendre(n, 5);
+    let nu2 = legendre(n, 2);
+    let d = &nu2 - &z;
+    if d < BigInt::from(k as u64) { return derniers_direct(n, k); }
+    let s = s_mod5(n, &mod5);
+    let inv2z = inv_mod(&pow_mod(&BigInt::from(2u32), &z, &mod5), &mod5);
+    let y = (s * inv2z) % &mod5;
+    let inv2k = inv_mod(&mod2, &mod5);
+    let t = (y * inv2k) % &mod5;
+    chaine_sans_zeros(&((&mod2 * t) % &mod10))
+}
+
+/// Les `k` derniers chiffres NON nuls de n! (sans zéros de tête).
+/// 10! → "288", 20! → "17664". n=0 ou 1 → "1". k=0 → "".
+/// n ≤ 2·10^6 : produit direct O(n). Au-delà : récurrence O(5^k·log n)
+/// tant que 5^k ≤ 10^7, sinon repli direct (documenté comme coûteux).
+#[allow(dead_code)]
+fn derniers_non_nuls_interne(n: &BigInt, k: usize, force_direct: bool) -> String {
+    if k == 0 { return String::new(); }
+    if n.sign() == Sign::Minus { erreur_runtime("factorielle d'un entier négatif"); }
+    let petit = n <= &BigInt::from(2_000_000u64);
+    let mod5_petit = BigInt::from(5u32).pow(k as u32) <= BigInt::from(10_000_000u64);
+    if force_direct || petit || !mod5_petit { derniers_direct(n, k) }
+    else { derniers_recursif(n, k) }
+}
+
+pub fn derniers_non_nuls(n: &Gz, k: usize) -> String {
+    derniers_non_nuls_interne(n.bref(), k, false)
+}
+
+/// Les `count` premiers chiffres décimaux de n!, calculés par
+/// 10^{frac(log10 n!)} en virgule fixe (jamais par f64). `precision`
+/// fixe le nombre de décimales de travail : augmenter `precision` et
+/// recalculer raffine le résultat (pas d'état interne, pas de mémoïsation).
+pub fn premiers_chiffres_factorielle(n: &Gz, count: usize, precision: usize) -> String {
+    if count == 0 { return String::new(); }
+    let nv = n.bref();
+    if nv.sign() == Sign::Minus { erreur_runtime("factorielle d'un entier négatif"); }
+    let dn = n_decimal_digits(nv).max(1);
+    // CloudGuard : assez de décimales de travail pour que l'erreur cumulée
+    // de ln/exp en virgule fixe reste sous 10^-(count+2). 120 chiffres de
+    // garde (au lieu de 60) corrigent le cas limite 10! (36287 -> 36288).
+    let p = count.max(precision) + dn + 120;
+    let scale = mp_pow10(p);
+    let (L, e) = log10_fact_fixed(n, p);
+    let frac = &L % &scale;
+    let ln2 = ln2_fixed(&scale);
+    let ln10 = ln_fixed(&(BigInt::from(10u32) * &scale), &scale, &ln2);
+    let y = fp_mul(&frac, &ln10, &scale);          // ln(mantisse) ∈ [0, ln10)
+    let mant = exp_fixed(&y, &scale);
+    // V = mantisse·10^{count−1}. On veut ⌊V⌋. L'erreur PROUVÉE sur L vaut
+    // `e` ulps ; le passage à ln(mantisse) puis exp amplifie au plus par
+    // ~10·ln10 < 24, et la multiplication par 10^{count−1} multiplie les
+    // ulps par 10^{count−1}. Si V calculé est à moins de cette borne SOUS
+    // l'entier supérieur (cas exact : 10! → mantisse 3,6288 pile), la
+    // troncature perdrait une unité : on relève alors d'un. Sinon,⌊V⌋ est
+    // garanti — contrairement à un epsilon aveugle, qui arrondirait les
+    // vraies valeurs proches de x,5 (ex. 100! → …38562 deviendrait …38563).
+    let v = &mant * mp_pow10(count - 1);
+    let mut d = &v / &scale;
+    let reste = &v % &scale;
+    let seuil = (e * 24u32 + 1000u32) * mp_pow10(count - 1);
+    if &scale - &reste < seuil { d += 1u32; }
+    let s = d.to_string();
+    if s.len() > count {
+        // mantisse arrondie à 10,0 : les chiffres sont "1" puis des zéros.
+        let mut t = String::from("1");
+        t.push_str(&"0".repeat(count - 1));
+        t
+    } else {
+        let mut t = "0".repeat(count - s.len());
+        t.push_str(&s);
+        t
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1246,5 +1668,161 @@ mod tests {
     fn arbre_produit_bord() {
         assert_eq!(arbre_produit(Vec::new()).v().to_string(), "1");
         assert_eq!(arbre_produit(vec![BigInt::from(2u64), BigInt::from(3u64), BigInt::from(5u64)]).v().to_string(), "30");
+    }
+
+    // ── MATH1 : oracles indépendants (mpmath 200 dps, factorielles exactes) ──
+
+    fn gq_dec(q: &Gq, digits: usize) -> String {
+        let v = (q.num_bigint() * mp_pow10(digits)) / q.den_bigint();
+        let s = v.to_string();
+        if digits == 0 { return s; }
+        if s.len() <= digits {
+            let mut t = "0".repeat(digits + 1 - s.len());
+            t.push_str(&s);
+            format!("{}.{}", &t[..1], &t[1..])
+        } else {
+            let i = s.len() - digits;
+            format!("{}.{}", &s[..i], &s[i..])
+        }
+    }
+
+    #[test]
+    fn math1_log10_oracles_100_chiffres() {
+        for (n, ent, frac) in [
+            (10u64, "6", "5597630328767937511747612399600555908932271418594001136856622817018191866832707151595484631470708116"),
+            (100, "157", "9700036547157883739149248029898481939453164512791921316475498658214593035326294534438396588861816858"),
+            (1000, "2567", "6046442221328487714230578045236916771145131624634613100442072891832219591347643126615634741606160006"),
+            (10000, "35659", "4542745207814623342183207892799192807118937375270347291172849070040575046568184520756837147838647580"),
+        ] {
+            let gz = Gz::de_u64(n);
+            let (q, exact) = log10_factorielle_precision(&gz, 100);
+            assert_eq!(gq_dec(&q, 100), format!("{ent}.{frac}"), "{n}! log10");
+            assert!(exact, "{n}! : la borne d'erreur devrait prouver 100 chiffres");
+            // Nombre de chiffres décimaux de n! = partie entière + 1.
+            assert_eq!(q.num_bigint() / q.den_bigint() + 1u32,
+                       BigInt::from(factorielle_parallele(n).chaine().len() as u64), "{n}! chiffres");
+        }
+    }
+
+    #[test]
+    fn math1_log10_convergence_20_50_100() {
+        let ref100 = "5597630328767937511747612399600555908932271418594001136856622817018191866832707151595484631470708116";
+        let gz = Gz::de_u64(10);
+        let mut prev = String::new();
+        for d in [20usize, 50, 100] {
+            let (q, exact) = log10_factorielle_precision(&gz, d);
+            let s = gq_dec(&q, d);
+            assert!(exact, "d={d} devrait être prouvé exact");
+            assert!(s.starts_with("6."), "{s}");
+            let frac = s[2..].to_string();
+            assert!(ref100.starts_with(&frac), "d={d} : {frac}");
+            if !prev.is_empty() { assert!(frac.starts_with(&prev), "d={d} diverge"); }
+            prev = frac;
+        }
+    }
+
+    #[test]
+    fn math1_zeros_finaux() {
+        for (n, attendu) in [(100u64, 24u64), (1000, 249), (1_000_000, 249_998)] {
+            let gz = Gz::de_u64(n);
+            assert_eq!(zeros_finaux_factorielle(&gz).v(), BigInt::from(attendu), "{n}!");
+        }
+        // Oracle indépendante : comptage direct des facteurs 5 jusqu'à 1000.
+        for n in 0u64..=1000 {
+            let mut q = n;
+            let mut s = 0u64;
+            while q > 0 { q /= 5; s += q; }
+            let gz = Gz::de_u64(n);
+            assert_eq!(zeros_finaux_factorielle(&gz).v(), BigInt::from(s), "{n}!");
+        }
+        // n = 10^38 : Somme_{k>=1} floor(10^38/5^k), sans calculer n!.
+        let n38 = Gz::de_bigint(mp_pow10(38));
+        let z = zeros_finaux_factorielle(&n38).v();
+        assert_eq!(z.to_string().len(), 38);
+        assert_eq!(z / mp_pow10(36), BigInt::from(24u32)); // 2,4999…·10^37
+    }
+
+    #[test]
+    fn math1_derniers_non_nuls_oracles() {
+        for (n, k, attendu) in [
+            (10u64, 3usize, "288"), (20, 5, "17664"), (7, 4, "504"),
+            (25, 6, "985984"), (100, 10, "5210916864"), (1000, 10, "27753472"),
+            (0, 5, "1"), (1, 5, "1"),
+        ] {
+            let gz = Gz::de_u64(n);
+            assert_eq!(derniers_non_nuls(&gz, k), attendu, "{n}! k={k}");
+        }
+    }
+
+    #[test]
+    fn math1_derniers_non_nuls_vs_factorielle_exacte() {
+        // Oracle : n! exact, on retire les zéros finaux puis on prend mod 10^k.
+        for k in [1usize, 3, 5, 10, 20] {
+            let mod10 = mp_pow10(k);
+            for n in 0u64..=1000 {
+                let mut m = factorielle_parallele(n).v();
+                while &m % 10u32 == BigInt::zero() { m /= 10u32; }
+                let attendu = chaine_sans_zeros(&(m % &mod10));
+                let gz = Gz::de_u64(n);
+                assert_eq!(derniers_non_nuls(&gz, k), attendu, "{n}! k={k}");
+            }
+        }
+    }
+
+    #[test]
+    fn math1_derniers_recursif_vs_direct() {
+        // Le chemin sous-linéaire doit donner la MÊME chose que le produit
+        // direct (k petit pour que 5^k reste raisonnable).
+        for k in [1usize, 3, 5] {
+            for n in [1001u64, 1234, 2000, 5000, 9999] {
+                let nb = BigInt::from(n);
+                let a = derniers_direct(&nb, k);
+                let b = derniers_recursif(&nb, k);
+                assert_eq!(a, b, "réccursif vs direct : {n}! k={k}");
+            }
+        }
+    }
+
+    #[test]
+    fn math1_premiers_chiffres() {
+        let n100 = Gz::de_u64(100);
+        assert_eq!(premiers_chiffres_factorielle(&n100, 30, 40),
+                   "933262154439441526816992388562");
+        // "plus de chiffres" = augmenter precision et recalculer : stabilité.
+        for prec in [30usize, 40, 80, 120] {
+            assert_eq!(premiers_chiffres_factorielle(&n100, 30, prec),
+                       "933262154439441526816992388562", "precision={prec}");
+        }
+        // Comparaison à la factorielle exacte pour n ≤ 1000.
+        for (n, count) in [(10u64, 5usize), (100, 20), (500, 20), (1000, 20)] {
+            let exact = factorielle_parallele(n).chaine();
+            let gz = Gz::de_u64(n);
+            assert_eq!(premiers_chiffres_factorielle(&gz, count, 60), exact[..count].to_string(), "{n}!");
+        }
+        // n = 10^38 : n! JAMAIS matérialisé, oracles mpmath.
+        let n38 = Gz::de_bigint(mp_pow10(38));
+        assert_eq!(premiers_chiffres_factorielle(&n38, 30, 50),
+                   "910729394118222077829264151395");
+        let (q, _) = log10_factorielle_precision(&n38, 20);
+        // mpmath : log10((10^38)!) = 3756570551809674817234887108108339491789.959389…
+        // La convention ici est TRONCATURE à 20 décimales (cf. oracles 100 chiffres).
+        assert_eq!(q.num_bigint() / q.den_bigint(),
+                   "3756570551809674817234887108108339491789".parse::<BigInt>().unwrap());
+    }
+
+    #[test]
+    fn math1_n_10_puissance_1000() {
+        // n = 10^1000 (= 1 suivi de 1000 zéros) : aucun f64, aucun n! calculé.
+        let mut s = String::from("1");
+        s.push_str(&"0".repeat(1000));
+        let n = Gz::de_bigint(s.parse::<BigInt>().unwrap());
+        let (q, _) = log10_factorielle_precision(&n, 30);
+        let ent = q.num_bigint() / q.den_bigint();
+        assert_eq!(ent.to_string().len(), 1003); // ≈ 9,9956·10^1002
+        let p = premiers_chiffres_factorielle(&n, 12, 30);
+        assert_eq!(p.len(), 12);
+        // Stabilité quand on raffine la précision.
+        assert_eq!(p, premiers_chiffres_factorielle(&n, 12, 60));
+        assert_eq!(zeros_finaux_factorielle(&n).v().to_string().len(), 1000);
     }
 }
