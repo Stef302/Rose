@@ -1100,3 +1100,11 @@ bigints/ABI; Thorn .slg 0/5.
 | TH2 | présentation claire de Thorn + bibliothèque de lemmes | `thorn/docs/PRESENTATION.md`, `thorn/src/bibliotheque.rose` |
 | SP8 | englobant : battre Rust | `rose/src/{jit,front,rir}.rs`, `rose/docs/SP8.md` |
 | SP9 | global : battre Rust | `rose/src/{run,i128x}.rs`, `rose/docs/SP9.md` |
+
+## Vague 63 (21/11) — wasm, launcher neutre/rapide, exemple Thorn
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| W1 | réparer le build wasm (repl absent de la cible) | `rose/src/{interp,lib}.rs`, `rose/docs/WASM_FIX.md` |
+| L4 | launcher neutre (aucune version écrite) + chargement rapide des versions | `rose/src/{setup_gui,setup_core,velopack}.rs`, `rose/docs/LAUNCHER_RAPIDE.md` |
+| TH3 | exemple concret Thorn compréhensible, avec preuve vraie/fausse | `thorn/docs/EXEMPLE_CONCRET.md` |
