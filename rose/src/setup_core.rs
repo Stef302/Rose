@@ -658,7 +658,7 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
         // dossier d'installation, pas dans `bin\`. Sans ce nettoyage, ce
         // binaire obsolète reste à côté de la nouvelle installation, le
         // PATH peut le trouver avant `bin\`, et `rose --version` annonce une
-        // version périmée (mesuré : « 5.12.0 » après une installation neuve).
+        // version périmée (mesuré sur une installation neuve).
         let _ = std::fs::remove_file(PathBuf::from(prefixe).join(nom));
     }
     let source = match source_exe {
@@ -869,8 +869,8 @@ fn verifier_path(bindir: &std::path::Path) -> Result<bool, String> {
 ///
 /// ⚠ Sans ce nettoyage, le dossier obsolète reste dans le `PATH` (il y est
 /// même inséré AVANT la nouvelle installation par certaines versions) et
-/// `rose --version` annonce une version périmée — mesuré : « 5.12.0 » après
-/// avoir installé 0.1.5. On ne touche JAMAIS au dossier courant.
+/// `rose --version` peut annoncer une version périmée après une
+/// réinstallation. On ne touche JAMAIS au dossier courant.
 #[cfg(windows)]
 fn nettoyer_anciennes_installations(prefixe: &str) -> String {
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
@@ -920,9 +920,12 @@ fn enregistrer(prefixe: &str, bindir: &std::path::Path) -> String {
         // aucune politique ne peut l'empêcher.
         let bin_win = bindir.display().to_string().replace('/', "\\");
         let mut j: Journal = Vec::new();
-        let cles: [(&str, &str, &str); 2] = [
+        // ⚠ Une SEULE valeur : le lanceur est NEUTRE et peut installer
+        // n'importe quelle version. Aucune « version courante » n'est écrite
+        // dans le registre au nom du lanceur (aucune lecture de cette clé
+        // n'existe par ailleurs dans le code).
+        let cles: [(&str, &str, &str); 1] = [
             ("Software\\Rose", "InstallDir", prefixe),
-            ("Software\\Rose", "Version", env!("CARGO_PKG_VERSION")),
         ];
         for (cle, nom, valeur) in cles {
             let rc = api::ecrire(api::HKEY_CURRENT_USER, cle, nom, api::REG_SZ, valeur);
@@ -1092,13 +1095,12 @@ fn ecrire_profil_terminal(bindir: &std::path::Path) -> String {
       "historySize": 9001,
       "snapOnInput": true,
       "closeOnExit": "graceful",
-      "tabTitle": "Rose {version}",
+      "tabTitle": "Rose",
       "suppressApplicationTitle": true
     }}
   ]
 }}
-"#,
-        version = env!("CARGO_PKG_VERSION")
+"#
     );
 
     match std::fs::write(dossier.join("rose.json"), json) {
@@ -1305,7 +1307,7 @@ pub fn url_base_pages() -> &'static str {
 }
 
 /// Cherche la dernière version publiée sur le SITE de Rose (pas GitHub).
-/// Lit le fichier VERSION (un tag « v5.12.0 ») et construit l'URL de chaque
+/// Lit le fichier VERSION (un tag « v<version> ») et construit l'URL de chaque
 /// artefact à partir de l'URL de base du site.
 pub fn chercher_version_site() -> Option<Release> {
     let url = format!("{}/VERSION", url_base_site());
@@ -1372,7 +1374,7 @@ pub fn version_installee(prefixe: &str) -> Option<String> {
             continue;
         };
         let txt = String::from_utf8_lossy(&out.stdout);
-        // « Rose 0.1.5 — … » ou « Rose 5.12.0 — … »
+        // « Rose <version> — … » (titre lu dans le fichier VERSION)
         if let Some(apres) = txt.strip_prefix("Rose ") {
             let v: String = apres.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
             if !v.is_empty() {
@@ -2086,7 +2088,24 @@ fn assembler_catalogue(
                 format!("{nb} version(s) trouvée(s) sur GitHub."),
             )
         }
-        Err(cause) => catalogue_local(installees, cachees, &cause),
+        Err(cause) => {
+            // Hors ligne, on peut quand même montrer la DERNIÈRE liste réelle
+            // récupérée de GitHub : le cache n'invente rien. Elle reste non
+            // téléchargeable (`hors_ligne = true`).
+            match crate::velopack::lire_cache_versions() {
+                Some(cache) => {
+                    let date = crate::velopack::formater_date_cache(cache.horodatage);
+                    construire_catalogue(
+                        &cache.versions,
+                        installees,
+                        cachees,
+                        true,
+                        format!("GitHub inaccessible ({cause}) : liste du {date} déjà récupérée sur cet appareil. Le téléchargement est impossible tant que l'API ne répond pas."),
+                    )
+                }
+                None => catalogue_local(installees, cachees, &cause),
+            }
+        }
     }
 }
 
@@ -2101,6 +2120,38 @@ pub fn launcher_catalogue() -> crate::velopack::CatalogueVersions {
         &crate::velopack::versions_installees(),
         &crate::velopack::versions_cachees(),
     )
+}
+
+/// Catalogue IMMÉDIAT, sans aucun appel réseau : lu dans `versions-cache.json`.
+/// `None` si aucune réponse GitHub n'a encore été mise en cache. Le message
+/// porte TOUJOURS la date de la liste, et signale une liste périmée.
+///
+/// C'est cette fonction que l'UI appelle en premier à l'ouverture du
+/// sélecteur : l'affichage ne dépend plus de la latence de l'API GitHub.
+pub fn launcher_catalogue_cache() -> Option<crate::velopack::CatalogueVersions> {
+    let cache = crate::velopack::lire_cache_versions()?;
+    let date = crate::velopack::formater_date_cache(cache.horodatage);
+    let precision = if crate::velopack::cache_versions_perime(&cache) {
+        " — liste périmée, actualisation en cours"
+    } else {
+        ""
+    };
+    Some(crate::velopack::construire_catalogue(
+        &cache.versions,
+        &crate::velopack::versions_installees(),
+        &crate::velopack::versions_cachees(),
+        false,
+        format!("Liste du {date}{precision}."),
+    ))
+}
+
+/// Vrai s'il faut relancer l'API GitHub en tâche de fond : cache absent ou
+/// plus vieux que `TTL_CACHE_VERSIONS` (5 minutes).
+pub fn launcher_cache_a_actualiser() -> bool {
+    match crate::velopack::lire_cache_versions() {
+        None => true,
+        Some(cache) => crate::velopack::cache_versions_perime(&cache),
+    }
 }
 
 /// Télécharge la version choisie, VÉRIFIE son SHA-256 (dans

@@ -260,6 +260,7 @@ unsafe extern "system" {
     fn KillTimer(h: HWND, id: usize) -> i32;
     fn SetWindowTextW(h: HWND, t: *const u16) -> i32;
     fn SendMessageW(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT;
+    fn PostMessageW(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> i32;
     // ressources
     fn FindResourceW(h: HINSTANCE, nom: *const u16, type_: *const u16) -> HRSRC;
     fn LoadResource(h: HINSTANCE, r: HRSRC) -> HGLOBAL;
@@ -324,6 +325,8 @@ const WM_APP_FIN: u32 = WM_APP + 1;
 /// Fin d'une vérification ou d'un téléchargement de mise à jour lancé en
 /// tâche de fond depuis le premier écran (ne fige pas l'interface).
 const WM_APP_MAJ: u32 = WM_APP + 2;
+/// Fin du rafraîchissement de la liste des versions lancé en tâche de fond.
+const WM_APP_VERSIONS: u32 = WM_APP + 3;
 const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SIZING: u32 = 0x0214;
 
@@ -568,6 +571,16 @@ struct Etat {
 }
 
 static mut ETAT: *mut Etat = std::ptr::null_mut();
+
+/// Résultat d'un rafraîchissement de la liste lancé en tâche de fond.
+/// Le fil de travail n'écrit JAMAIS dans `ETAT` (pointeur brut, fil unique) :
+/// il dépose son résultat ici et poste `WM_APP_VERSIONS` ; la boucle de
+/// messages de la fenêtre l'intègre ensuite.
+static CATALOGUE_ASYNC: std::sync::Mutex<Option<crate::velopack::CatalogueVersions>> =
+    std::sync::Mutex::new(None);
+/// Évite deux appels réseau concurrents (ouverture + bouton « Rafraîchir »).
+static RAFFRAICHISSEMENT_EN_COURS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn hex_w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -1708,22 +1721,21 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let mut rt = RECT { left: s(52), top: haut_barre_marque, right: s(150),
                         bottom: haut_barre_marque + h_barre_marque };
     texte_echelle(dc, dpi, "Kare", "Rose", &mut rt, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, TEXTE, 15, false, echelle);
-    // ⚠ Le sous-titre s'arrête AVANT la pastille de version : à droite fixe
-    // de 430 sur la grille, il chevauchait « v0.1.5 · x64 » dès que la fenêtre
-    // était étroite (mesuré : « Programme d'install v0.1.5 » illisible).
+    // ⚠ Le sous-titre s'arrête AVANT la pastille : à droite fixe de 430 sur
+    // la grille, il chevauchait la pastille dès que la fenêtre était étroite.
     // On lui donne tout l'espace qui reste jusqu'à la pastille, et on ellipse.
     let mut rt2 = RECT { left: s(150), top: s(16), right: (s(438) - s(8)).max(s(170)), bottom: s(40) };
-    texte_echelle(dc, dpi, "Segoe UI", "— Programme d'installation", &mut rt2,
+    texte_echelle(dc, dpi, "Segoe UI", "— Lanceur", &mut rt2,
           DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS, TEXTE_DOUX, 10, false, echelle);
-    // pastille de version — elle se décale à gauche quand la fenêtre est
-    // étroite, pour ne jamais passer sous les boutons réduire/agrandir/fermer.
+    // Pastille NEUTRE : aucune version courante n'est inscrite dans le
+    // lanceur — il installe n'importe quelle version choisie dans la liste.
     let largeur_pastille = s(128);
     let boutons_l = w - 3 * s(46);
     let droite_pastille = (s(438) + largeur_pastille).min(boutons_l - s(8));
     let pastille = RECT { left: droite_pastille - largeur_pastille, top: s(16), right: droite_pastille, bottom: s(40) };
     contour(dc, &pastille, 8, LIGNE_FORTE);
     let mut rv = RECT { left: pastille.left, top: pastille.top, right: pastille.right, bottom: pastille.bottom };
-    texte_echelle(dc, dpi, "Segoe UI", &format!("v{}  ·  x64", env!("CARGO_PKG_VERSION")), &mut rv,
+    texte_echelle(dc, dpi, "Segoe UI", "LANCEUR  ·  x64", &mut rv,
           DT_CENTER | DT_VCENTER | DT_SINGLELINE, VERT, 9, true, echelle);
 
     // ── trois boutons de fenêtre, dessinés à la main ──
@@ -1917,7 +1929,7 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             "Diagnostic et réparation — plusieurs méthodes, dont un mode entreprise.".to_string(),
         ),
         Vue::Versions => (
-            "Versions".to_string(),
+            "Sélecteur de versions".to_string(),
             "Versions annoncées par GitHub et état réel de cet appareil. Installez ou \
              basculez sur une version déjà présente — aucun téléchargement hors ligne."
                 .to_string(),
@@ -2050,10 +2062,10 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                          administrateur n'est demandé.";
             let note = if etat.existant {
                 format!(
-                    "Une installation existante a été détectée : version {} dans {}\n\n\
+                    "Une installation existante a été détectée dans {}\n\n\
                      La suite de l'assistant propose de la mettre à jour \
                      (elle sera réinstallée proprement) ou de la désinstaller.",
-                    etat.version_installee, etat.prefixe)
+                    etat.prefixe)
             } else {
                 "Aucune installation détectée : l'assistant proposera le dossier par défaut.".to_string()
             };
@@ -2135,14 +2147,12 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             // ⚠ L'assistant doit DIRE ce qu'il a trouvé et ce qu'il fera.
             // Sans ce bloc, l'utilisateur ne savait pas s'il réinstallait,
             // mettait à jour ou installait à côté d'une installation
-            // existante (mesuré : « version 0.1.5 détectée » invisible).
+            // existante. Aucun numéro n'est affiché ici : le lanceur est
+            // neutre, les versions ne vivent que dans le sélecteur.
             if etat.existant {
                 let y3 = c2.bottom + s(16);
-                let meme = crate::setup_core::comparer_versions(
-                    &etat.version_installee, env!("CARGO_PKG_VERSION")) == 0;
-                let ligne_version = format!("Version {} — {}", etat.version_installee,
-                    if meme { "identique au paquet : réinstallation (repair)" }
-                    else { "remplacée par la version du paquet" });
+                let ligne_version =
+                    "Une installation existe déjà — choisissez une version dans le sélecteur.";
                 let note = "« Mettre à jour » réinstalle proprement ; « Désinstaller » retire tout.";
                 let h3 = s(14) + s(20) + s(24) + hauteur(note, 9, interligne_petit) + s(12);
                 let h3 = crate::paint::hauteur_carte(h3 - s(14), s(12), s(96))
@@ -2370,8 +2380,8 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             // ⚠ La carte doit contenir TOUT le texte, mesuré : la dernière
             // ligne (« Ouvrez un nouveau terminal, puis tapez : rose
             // --version ») était COUPÉE en bas (mesuré sur la capture).
-            let corps = format!("Rose {} est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
-                                etat.version_installee, etat.prefixe);
+            let corps = format!("Rose est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
+                                etat.prefixe);
             let largeur_corps = (largeur_texte - s(44)).max(s(80));
             let h_corps = crate::paint::hauteur_texte(&corps, largeur_corps, &mesurer(10, false), interligne);
             let h_carte = crate::paint::hauteur_carte(h_corps, s(18), s(140)).min((bas_utile - yc).max(s(140)));
@@ -3159,6 +3169,25 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             }
             DefWindowProcW(h, msg, w, l)
         }
+        WM_APP_VERSIONS => {
+            // Le rafraîchissement de la liste (tâche de fond) est terminé.
+            RAFFRAICHISSEMENT_EN_COURS.store(false, std::sync::atomic::Ordering::SeqCst);
+            let nouveau = CATALOGUE_ASYNC.lock().ok().and_then(|mut g| g.take());
+            if let Some(catalogue) = nouveau {
+                let nb = catalogue.versions.len();
+                let hors_ligne = catalogue.hors_ligne;
+                let etat = &mut *ETAT;
+                etat.version_selection = etat.version_selection.min(nb.saturating_sub(1));
+                etat.version_depart = etat.version_depart.min(nb.saturating_sub(1));
+                etat.catalogue = Some(catalogue);
+                etat.version_statut_erreur = hors_ligne;
+                // `etat.statut` est VOLONTAIREMENT conservé : il peut porter
+                // le résultat d'une installation ou d'une sélection qui ne
+                // doit pas être écrasé par un rafraîchissement différé.
+            }
+            rafraichir(h);
+            0
+        }
         WM_APP_MAJ => {
             // Une vérification / un téléchargement du premier écran est
             // terminé (tâche de fond) : on repeint pour afficher le statut.
@@ -3219,14 +3248,13 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                     etat.statut = dernier;
                 } else {
                     etat.existant = true;
-                    // ⚠ RELIRE la version installée APRÈS l'opération.
-                    // `version_installee` est figé au démarrage : il
-                    // contenait la version de l'ANCIENNE installation
-                    // (mesuré : « Rose 5.12.0 est installé » alors que le
-                    // setup venait d'installer 0.1.5).
+                    // ⚠ RELIRE la version installée APRÈS l'opération : le
+                    // champ figé au démarrage décrivait l'ANCIENNE
+                    // installation. S'il n'est pas détecté, on ne fabrique
+                    // rien : une chaîne vide vaut « version inconnue ».
                     etat.version_installee =
                         crate::setup_core::version_installee(&etat.prefixe)
-                            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+                            .unwrap_or_default();
                     etat.statut = dernier;
                 }
             }
@@ -3325,7 +3353,7 @@ fn action(h: HWND, bouton: usize) {
         }
         Action::OuvrirVersions => { ouvrir_versions(h); }
         Action::RetourVersions => { retour_versions(h); }
-        Action::RafraichirVersions => { charger_catalogue_versions(h); }
+        Action::RafraichirVersions => { charger_catalogue_versions(h, true); }
         Action::InstallerVersion => { action_version_installer(h); }
         Action::UtiliserVersion => { action_version_utiliser(h); }
         Action::Desinstaller => {
@@ -3376,35 +3404,54 @@ fn ouvrir_versions(h: HWND) {
         etat.version_retour = etat.vue;
         etat.vue = Vue::Versions;
     }
-    charger_catalogue_versions(h);
+    charger_catalogue_versions(h, false);
 }
 
-/// Appelle `setup_core::launcher_catalogue()` (jamais `Err`) et stocke le
-/// résultat. Le message du backend est affiché tel quel dans le bandeau ET
-/// dans la barre d'état : une liste vide n'est jamais silencieuse.
-fn charger_catalogue_versions(h: HWND) {
-    {
+/// Affiche le cache IMMÉDIATEMENT puis rafraîchit la liste en tâche de fond.
+/// `force = true` (bouton « Rafraîchir ») ignore le TTL du cache. Le message
+/// du backend est affiché tel quel dans le bandeau ET dans la barre d'état :
+/// une liste vide n'est jamais silencieuse.
+fn charger_catalogue_versions(h: HWND, force: bool) {
+    // 1) CACHE : la liste RÉELLEMENT récupérée la dernière fois est affichée
+    //    avant tout appel réseau. Aucune attente, aucune version inventée ;
+    //    le message porte la date de la liste quand elle vient du cache.
+    if let Some(catalogue) = crate::setup_core::launcher_catalogue_cache() {
+        let message = catalogue.message.clone();
+        let nb = catalogue.versions.len();
         let etat = unsafe { &mut *ETAT };
-        etat.statut = "Chargement du catalogue des versions…".to_string();
+        etat.version_selection = etat.version_selection.min(nb.saturating_sub(1));
+        etat.version_depart = etat.version_depart.min(nb.saturating_sub(1));
+        etat.catalogue = Some(catalogue);
+        etat.statut = message;
+        etat.version_statut_erreur = false;
+    } else {
+        let etat = unsafe { &mut *ETAT };
+        etat.statut = "Chargement de la liste des versions…".to_string();
         etat.version_statut_erreur = false;
     }
-    // L'appel peut interroger GitHub (gh/curl) : on laisse d'abord le tracé
-    // afficher « Chargement… » avant de bloquer le fil de messages.
+    // PREMIER AFFICHAGE IMMÉDIAT : c'est ce que l'utilisateur attend.
     unsafe { rafraichir(h) };
 
-    let catalogue = crate::setup_core::launcher_catalogue();
-    let nb = catalogue.versions.len();
-    let message = catalogue.message.clone();
-    let hors_ligne = catalogue.hors_ligne;
-    let etat = unsafe { &mut *ETAT };
-    let selection = etat.version_selection.min(nb.saturating_sub(1));
-    let depart = etat.version_depart.min(nb.saturating_sub(1));
-    etat.catalogue = Some(catalogue);
-    etat.version_selection = selection;
-    etat.version_depart = depart;
-    etat.statut = message;
-    etat.version_statut_erreur = hors_ligne;
-    unsafe { rafraichir(h) };
+    // 2) RAFRAÎCHISSEMENT en tâche de fond SEULEMENT si le cache est périmé
+    //    (ou absent), ou si l'utilisateur a cliqué « Rafraîchir » (`force`).
+    //    Le fil de messages n'est jamais bloqué, même hors ligne.
+    if !force && !crate::setup_core::launcher_cache_a_actualiser() {
+        return;
+    }
+    if RAFFRAICHISSEMENT_EN_COURS.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return; // un rafraîchissement est déjà en vol
+    }
+    let cible = h as isize;
+    std::thread::spawn(move || {
+        let catalogue = crate::setup_core::launcher_catalogue();
+        if let Ok(mut g) = CATALOGUE_ASYNC.lock() {
+            *g = Some(catalogue);
+        }
+        let h = cible as HWND;
+        if !h.is_null() {
+            unsafe { PostMessageW(h, WM_APP_VERSIONS, 0, 0); }
+        }
+    });
 }
 
 /// Déplace la sélection de `delta` lignes, en gardant la ligne visible.
@@ -3461,7 +3508,7 @@ fn tag_action_versions(installer: bool) -> Option<String> {
 fn apres_action_version(h: HWND, statut: &crate::velopack::StatutVersion) {
     let ok = statut.ok();
     let version = statut.version.clone();
-    charger_catalogue_versions(h);
+    charger_catalogue_versions(h, true);
     let etat = unsafe { &mut *ETAT };
     if ok {
         etat.version_installee = version.clone();
@@ -3563,7 +3610,7 @@ unsafe fn rafraichir(h: HWND) {
     InvalidateRect(h, std::ptr::null(), 0);
     UpdateWindow(h);
     let etat = &*ETAT;
-    let titre = hex_w(&format!("Rose {} — Programme d'installation", env!("CARGO_PKG_VERSION")));
+    let titre = hex_w(&"Rose — Lanceur".to_string());
     SetWindowTextW(h, titre.as_ptr());
     if etat.occupe {
         // ⚠ 33 ms (≈30 images/s) et non 16 ms : à 62 Hz, le fil de messages
@@ -3696,7 +3743,7 @@ pub fn lancer() {
             survol_titre: -1,
             version_installee: crate::setup_core::installation_existante()
                 .and_then(|p| crate::setup_core::version_installee(&p))
-                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()),
+                .unwrap_or_default(),
             dpi: 0,
             icone: std::ptr::null_mut(),
         });
@@ -3751,7 +3798,7 @@ pub fn lancer() {
             hIconSm: if petite.is_null() { std::ptr::null_mut() } else { petite },
         };
         RegisterClassExW(&wc);
-        let titre_w = hex_w(&format!("Rose {} — Programme d'installation", env!("CARGO_PKG_VERSION")));
+        let titre_w = hex_w(&"Rose — Lanceur".to_string());
         // Fenêtre entièrement personnalisée : AUCUN cadre Windows. On dessine
         // nous-mêmes la barre de titre, les boutons réduire / agrandir /
         // fermer et les bords. `WS_CAPTION` ou `WS_OVERLAPPEDWINDOW`

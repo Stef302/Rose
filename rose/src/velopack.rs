@@ -1,7 +1,7 @@
 //! Mise à jour Windows par Velopack (deltas binaires + rollback).
 //!
 //! Velopack REMPLACE l'installeur WiX / NSIS : il installe l'application dans
-//! un dossier versionné (`current\` désigne `app-0.1.4\`) et laisse un
+//! un dossier versionné (`current\` désigne un dossier `app-<version>\`) et laisse un
 //! launcher (`Update.exe`) rejouer la mise à jour et revenir à la version
 //! précédente si la nouvelle ne démarre pas.
 //!
@@ -34,6 +34,9 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Lance `curl` SANS fenêtre de console.
 ///
@@ -98,7 +101,7 @@ pub fn est_velopack() -> bool {
     std::env::var_os(VAR_LAUNCHER).is_some() || std::env::var_os("ROSE_VELOPACK").is_some()
 }
 
-/// Version installée : contenu du fichier `current` (`app-0.1.4`), sinon le
+/// Version installée : contenu du fichier `current` (`app-<version>`), sinon le
 /// dossier `app-*` le plus récent. `None` hors d'une installation Velopack.
 pub fn version_installee() -> Option<String> {
     let racine = dossier_racine()?;
@@ -137,7 +140,7 @@ pub fn dossier_courant() -> Option<PathBuf> {
 ///
 /// Chaque segment est lu chiffre par chiffre : un suffixe non numérique
 /// (« 4-beta ») ne peut PAS s'effondrer sur 0, ce qui ferait croire que
-/// « 0.1.4 » est inférieure à « 0.1.3 ».
+/// un suffixe non numérique ne peut pas s'effondrer sur 0.
 pub fn comparer_versions(a: &str, b: &str) -> std::cmp::Ordering {
     let seg = |s: &str| -> Vec<u64> {
         s.split(['.', '-', '+'])
@@ -434,7 +437,9 @@ pub fn verifier_manifeste() -> Result<Option<String>, String> {
     if lire_config().mode == ModeMiseAJour::Desactive {
         return Err(message_desactive());
     }
-    let installee = version_installee().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    // Lanceur NEUTRE : jamais sa propre version comme « version installée ».
+    // Sans version détectée, on ne prétend PAS être à jour.
+    let installee = version_installee().unwrap_or_default();
     let manifeste = Manifeste::analyser(&lire_source(&url_manifeste())?)?;
     Ok(manifeste.paquet_a_jour(&installee).map(|p| p.version.clone()))
 }
@@ -470,7 +475,9 @@ pub fn check_and_update(silencieux: bool) -> Result<Option<String>, String> {
 /// déjà obtenu par l'appelant). Ne jamais appeler directement sans passer
 /// par le garde-fou de mode ci-dessus.
 fn verifier_et_telecharger(_silencieux: bool) -> Result<Option<String>, String> {
-    let installee = version_installee().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    // Lanceur NEUTRE : jamais sa propre version comme « version installée ».
+    // Sans version détectée, on ne prétend PAS être à jour.
+    let installee = version_installee().unwrap_or_default();
     let manifeste = Manifeste::analyser(&lire_source(&url_manifeste())?)?;
     let paquet = match manifeste.paquet_a_jour(&installee) {
         Some(p) => p.clone(),
@@ -689,7 +696,7 @@ fn taille_centrale(octets: &[u8], nom: &str) -> Option<usize> {
    1. `lister_versions()` interroge l'API PUBLIQUE des releases GitHub
       (`GET /repos/Stef302/Rose/releases`). Aucune version n'est codée en
       dur : une release future apparaît dès qu'elle est publiée.
-   2. L'utilisateur choisit un tag (0.1.3, 0.1.5, …).
+   2. L'utilisateur choisit un tag parmi ceux renvoyés par l'API.
    3. `telecharger_version(tag)` ne télécharge QUE le paquet complet
       (`Rose-<v>-full.nupkg`) de CE tag, vérifie son SHA-256, l'extrait dans
       `app-<v>\` et fait pointer `current\`. Le moteur Rose n'est PAS
@@ -699,8 +706,9 @@ fn taille_centrale(octets: &[u8], nom: &str) -> Option<usize> {
       présente sur disque (changement de version sans rien retélécharger).
    5. Le binaire launcher reste IDENTIQUE d'une release à l'autre.
 
-   Accès réseau : `gh api` si l'outil est présent, sinon `curl` (présent sur
-   Windows 10/11). Aucun crate externe. `file://` + variables
+   Accès réseau : `curl` uniquement (présent sur Windows 10/11), borné à
+   3 secondes, avec cache local `versions-cache.json` lu immédiatement par
+   l'UI et rafraîchi en tâche de fond après 5 minutes. Aucun crate externe.
    `ROSE_LAUNCHER_API`, `ROSE_LAUNCHER_BASE`, `ROSE_LAUNCHER_REPO` permettent
    de tout tester hors ligne (voir les tests en fin de module).
    ═══════════════════════════════════════════════════════════════════════ */
@@ -720,7 +728,19 @@ pub const BASE_ARTIFACTS: &str = "https://github.com/Stef302/Rose/releases/downl
 /// Nom du cache local du manifeste (dernière version consultée).
 pub const NOM_CACHE: &str = "releases.win.json";
 
-/// `v0.1.5` → `0.1.5`. Le préfixe `v` n'est retiré que s'il est suivi d'un
+/// Cache local de la LISTE des versions : réponse brute de l'API GitHub
+/// déjà récupérée, avec son horodatage. Aucune version n'y est inventée.
+pub const NOM_CACHE_VERSIONS: &str = "versions-cache.json";
+
+/// Durée de fraîcheur du cache de la liste (secondes). Au-delà, l'UI affiche
+/// la liste du cache IMMÉDIATEMENT puis la rafraîchit en tâche de fond.
+pub const TTL_CACHE_VERSIONS: u64 = 300;
+
+/// Timeout maximum d'un appel réseau pour la liste des versions (ms).
+/// Le téléchargement d'une version choisie garde son propre timeout curl.
+pub const DELAI_RESEAU_MS: u64 = 3000;
+
+/// `v<version>` → `<version>`. Le préfixe `v` n'est retiré que s'il est suivi d'un
 /// chiffre (un tag exotique comme `version-test` reste intact).
 pub fn version_depuis_tag(tag: &str) -> String {
     let t = tag.trim();
@@ -733,7 +753,9 @@ pub fn version_depuis_tag(tag: &str) -> String {
 }
 
 fn api_url() -> String {
-    std::env::var("ROSE_LAUNCHER_API").unwrap_or_else(|_| API_RELEASES.to_string())
+    std::env::var("ROSE_LAUNCHER_API").unwrap_or_else(|_| {
+        format!("https://api.github.com/repos/{}/releases?per_page=100", depot())
+    })
 }
 
 fn depot() -> String {
@@ -748,44 +770,64 @@ fn url_asset(tag: &str, fichier: &str) -> String {
     format!("{}/{}/{}", base_artifacts(), tag, fichier)
 }
 
-/// `gh api` si l'outil est présent ET répond du JSON ; `None` sinon. `gh`
-/// n'est pas obligatoire : c'est une optimisation (déjà authentifié, quota
-/// API plus large). Le CLI de cette machine est connecté comme `clausake`,
-/// mais l'API est PUBLIQUE : aucune publication n'est faite ici.
-fn essayer_gh(endpoint: &str) -> Option<String> {
-    let sortie = std::process::Command::new("gh")
-        .args(["api", endpoint])
-        .output()
-        .ok()?;
-    if !sortie.status.success() {
-        return None;
+/// Exécute une commande dont la sortie est du JSON, avec un délai maximum.
+///
+/// ⚠ `Command::output()` peut attendre indéfiniment (réseau bloqué) et ses
+/// tuyaux de 64 Kio se remplissent — la réponse GitHub fait plus de 100 Kio.
+/// On redirige donc stdout vers un fichier temporaire, on surveille
+/// `try_wait()` et on `kill` au-delà de `DELAI_RESEAU_MS`. Aucun fil
+/// supplémentaire, aucun crate externe ; la valeur de retour est lue même
+/// quand la commande a échoué (utile pour le diagnostic).
+fn executer_json_avec_delai(mut commande: std::process::Command) -> Result<String, String> {
+    static COMPTEUR: AtomicU64 = AtomicU64::new(0);
+    let tmp = std::env::temp_dir().join(format!(
+        "rose-versions-{}-{}.json",
+        std::process::id(),
+        COMPTEUR.fetch_add(1, Ordering::Relaxed)
+    ));
+    let sortie = fs::File::create(&tmp).map_err(|e| format!("fichier temporaire : {e}"))?;
+    commande.stdout(sortie).stderr(Stdio::null());
+    let mut enfant = commande.spawn().map_err(|e| format!("curl indisponible : {e}"))?;
+    let debut = Instant::now();
+    let statut = loop {
+        match enfant.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if debut.elapsed() >= Duration::from_millis(DELAI_RESEAU_MS) => {
+                let _ = enfant.kill();
+                let _ = enfant.wait();
+                break None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return Err(format!("attente de la réponse GitHub : {e}")),
+        }
+    };
+    let texte = fs::read_to_string(&tmp).unwrap_or_default();
+    let _ = fs::remove_file(&tmp);
+    match statut {
+        None => Err(format!("API GitHub : délai de {DELAI_RESEAU_MS} ms dépassé")),
+        Some(s) if !s.success() => Err(format!("API GitHub inaccessible (curl code {s})")),
+        Some(_) => Ok(texte),
     }
-    let texte = String::from_utf8(sortie.stdout).ok()?;
-    let t = texte.trim_start();
-    if !(t.starts_with('[') || t.starts_with('{')) {
-        return None;
-    }
-    Some(texte)
 }
 
-/// Lit du JSON depuis `file://` (tests), `gh` (si disponible) ou `curl`.
-fn requeter_json(url: &str, endpoint: &str) -> Result<String, String> {
+/// Lit du JSON depuis `file://` (tests) ou depuis l'API publique via curl.
+///
+/// `gh` n'est plus employé pour la LISTE : il n'expose pas de timeout propre
+/// (section `gh api --help` vérifiée) et l'API est publique — aucun jeton ni
+/// quota authentifié n'est nécessaire. Un seul appel, borné à 3 secondes.
+fn requeter_json(url: &str) -> Result<String, String> {
     if let Some(chemin) = url.strip_prefix("file://") {
         return fs::read_to_string(chemin).map_err(|e| format!("lecture {chemin} : {e}"));
     }
-    if url == API_RELEASES {
-        if let Some(texte) = essayer_gh(endpoint) {
-            return Ok(texte);
-        }
-    }
-    let sortie = curl_sans_fenetre()
-        .args(["-sSL", "--fail", "-H", "Accept: application/vnd.github+json", url])
-        .output()
-        .map_err(|e| format!("curl indisponible : {e}"))?;
-    if !sortie.status.success() {
-        return Err(format!("API GitHub inaccessible ({url}) : code {}", sortie.status));
-    }
-    String::from_utf8(sortie.stdout).map_err(|e| format!("réponse non UTF-8 : {e}"))
+    let mut commande = curl_sans_fenetre();
+    commande.args([
+        "-sSL", "--fail",
+        "--connect-timeout", "2",
+        "--max-time", "3",
+        "-H", "Accept: application/vnd.github+json",
+        url,
+    ]);
+    executer_json_avec_delai(commande)
 }
 
 /// Découpe un tableau JSON en objets de PREMIER NIVEAU, en ignorant les
@@ -947,19 +989,151 @@ fn analyser_releases(json: &str) -> Vec<VersionDistante> {
     versions
 }
 
+/* ── Cache LOCAL de la liste des versions ──────────────────────────────────
+   Le fichier `versions-cache.json` contient la réponse BRUTE de l'API telle
+   qu'elle a été reçue, avec son horodatage. On ne réinvente donc aucune
+   version : ce qui est affiché vient toujours de GitHub, directement ou
+   d'une réponse déjà récupérée. Le cache est écrit APRÈS une réussite et lu
+   AVANT tout appel réseau par l'interface.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/// Réponse GitHub déjà reçue, avec la date de sa récupération.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheVersions {
+    /// Secondes Unix (UTC) de la récupération.
+    pub horodatage: u64,
+    pub versions: Vec<VersionDistante>,
+}
+
+fn maintenant_unix() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Échappement JSON minimal (chaînes, guillemets, contrôles) — aucun crate.
+fn echapper_json(texte: &str) -> String {
+    let mut sortie = String::with_capacity(texte.len() + 16);
+    for c in texte.chars() {
+        match c {
+            '\\' => sortie.push_str("\\\\"),
+            '"' => sortie.push_str("\\\""),
+            '\n' => sortie.push_str("\\n"),
+            '\r' => sortie.push_str("\\r"),
+            '\t' => sortie.push_str("\\t"),
+            c if (c as u32) < 0x20 => sortie.push_str(&format!("\\u{:04x}", c as u32)),
+            c => sortie.push(c),
+        }
+    }
+    sortie
+}
+
+/// Lecture inverse de `echapper_json` (`champ_racine` laisse les échappements).
+fn dechapper_json(texte: &str) -> String {
+    let mut sortie = String::with_capacity(texte.len());
+    let mut it = texte.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            sortie.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => sortie.push('\n'),
+            Some('r') => sortie.push('\r'),
+            Some('t') => sortie.push('\t'),
+            Some('b') => sortie.push('\u{0008}'),
+            Some('f') => sortie.push('\u{000C}'),
+            Some('"') => sortie.push('"'),
+            Some('\\') => sortie.push('\\'),
+            Some('/') => sortie.push('/'),
+            Some('u') => {
+                let hex: String = it.by_ref().take(4).collect();
+                if let Ok(v) = u32::from_str_radix(&hex, 16) {
+                    if let Some(ch) = char::from_u32(v) { sortie.push(ch); }
+                }
+            }
+            Some(autre) => sortie.push(autre),
+            None => {}
+        }
+    }
+    sortie
+}
+
+/// Écrit la réponse brute dans le cache local. Échec NON bloquant : le
+/// lanceur reste utilisable sans cache (il retentera à la prochaine ouverture).
+pub fn ecrire_cache_versions(json_brut: &str) -> bool {
+    let Some(racine) = dossier_racine() else { return false; };
+    let contenu = format!(
+        "{{\"horodatage\":\"{}\",\"brut\":\"{}\"}}",
+        maintenant_unix(),
+        echapper_json(json_brut)
+    );
+    let cible = racine.join(NOM_CACHE_VERSIONS);
+    let tmp = racine.join(format!("{NOM_CACHE_VERSIONS}.tmp"));
+    if let Err(e) = fs::write(&tmp, &contenu) {
+        eprintln!("Cache {NOM_CACHE_VERSIONS} non écrit : {e}");
+        return false;
+    }
+    // `rename` écrase sur Unix mais pas sur Windows : on retire d'abord.
+    if cible.exists() {
+        let _ = fs::remove_file(&cible);
+    }
+    if fs::rename(&tmp, &cible).is_ok() {
+        return true;
+    }
+    fs::write(&cible, &contenu).is_ok()
+}
+
+/// Lit le cache local. `None` si absent, illisible ou ne contenant aucune
+/// release installable : on ne présentera jamais une liste fabriquée.
+pub fn lire_cache_versions() -> Option<CacheVersions> {
+    let racine = dossier_racine()?;
+    let texte = fs::read_to_string(racine.join(NOM_CACHE_VERSIONS)).ok()?;
+    let horodatage = champ_racine(&texte, "horodatage")?.parse::<u64>().ok()?;
+    let brut = dechapper_json(&champ_racine(&texte, "brut")?);
+    let versions = analyser_releases(&brut);
+    if versions.is_empty() {
+        return None;
+    }
+    Some(CacheVersions { horodatage, versions })
+}
+
+/// Vrai quand le cache doit être actualisé (TTL dépassé). Une horloge
+/// système en retard sur l'horodatage ne rend PAS le cache « périmé ».
+pub fn cache_versions_perime(cache: &CacheVersions) -> bool {
+    maintenant_unix().saturating_sub(cache.horodatage) >= TTL_CACHE_VERSIONS
+}
+
+/// Date UTC lisible du cache, pour l'UI (« liste du 2026-11-21 14:02 UTC »).
+pub fn formater_date_cache(horodatage: u64) -> String {
+    let jours = (horodatage / 86_400) as i64;
+    let secs = horodatage % 86_400;
+    // Algorithme civil_from_days (Hinnant), sans crate de dates.
+    let z = jours + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let annee = if m <= 2 { y + 1 } else { y };
+    format!("{annee:04}-{:02}-{:02} {:02}:{:02} UTC",
+            m, d, secs / 3600, (secs % 3600) / 60)
+}
+
 /// Liste DYNAMIQUEMENT les versions disponibles (lecture seule).
 ///
 /// `Ok(vec)` même si certaines releases n'ont pas de paquet Velopack : elles
 /// sont marquées `installable: false` avec un `legacy` renseigné. `Err` only
-/// si l'API est inaccessible ou ne renvoie aucune release Windows.
+/// si l'API est inaccessible ou ne renvoie aucune release Windows. En cas de
+/// réussite, la réponse est mise en cache pour l'ouverture suivante.
 pub fn lister_versions() -> Result<Vec<VersionDistante>, String> {
-    let url = api_url();
-    let endpoint = format!("repos/{}/releases?per_page=100", depot());
-    let json = requeter_json(&url, &endpoint)?;
+    let json = requeter_json(&api_url())?;
     let versions = analyser_releases(&json);
     if versions.is_empty() {
         return Err("aucune release Windows installable trouvée dans l'API GitHub".into());
     }
+    let _ = ecrire_cache_versions(&json);
     Ok(versions)
 }
 
@@ -973,7 +1147,7 @@ pub fn lister_versions() -> Result<Vec<VersionDistante>, String> {
 /// Une ligne du sélecteur affiché par l'interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntreeCatalogue {
-    /// Tag exact de la release (`v0.1.6`) ; `version` pour une entrée locale.
+    /// Tag exact de la release (`v<version>`) ; `version` pour une entrée locale.
     pub tag: String,
     /// Version sans préfixe `v`, utilisée pour le tri et les dossiers `app-`.
     pub version: String,
@@ -1107,7 +1281,7 @@ pub fn catalogue_local(
     )
 }
 
-/// Retrouve une entrée par tag (`v0.1.6` et `0.1.6` désignent la même version).
+/// Retrouve une entrée par tag (`v<version>` et `<version>` désignent la même version).
 pub fn entree_pour_tag<'a>(catalogue: &'a CatalogueVersions, tag: &str) -> Option<&'a EntreeCatalogue> {
     let version = version_depuis_tag(tag);
     catalogue.versions.iter().find(|e| e.version == version)
@@ -1276,7 +1450,7 @@ pub fn telecharger_version(tag: &str) -> Result<String, String> {
     selectionner_version(&paquet.version)
 }
 
-/// Anciennes releases (ex. v0.1.3) : pas de manifeste Velopack, mais un
+/// Anciennes releases : pas de manifeste Velopack, mais un
 /// installeur autonome `Rose-Setup-<v>.exe` ET un `SHA256SUMS`. On télécharge
 /// et VÉRIFIE l'exe ; son EXÉCUTION (silencieuse) dépend du format de cet
 /// installeur et reste à valider sur Windows — rien n'est lancé ici.
@@ -1791,6 +1965,41 @@ mod tests {
             fs::read_to_string(racine.join("current")).unwrap().trim(),
             "app-0.1.4"
         );
+
+        // ── CACHE de la LISTE : données GitHub déjà reçues, avec date ──
+        assert_eq!(dechapper_json(&echapper_json("a\"b\\c\nd\t")), "a\"b\\c\nd\t");
+        assert_eq!(formater_date_cache(0), "1970-01-01 00:00 UTC");
+        assert!(ecrire_cache_versions(API_FIXTURE));
+        let cache = lire_cache_versions().expect("cache valide");
+        assert_eq!(cache.versions, analyser_releases(API_FIXTURE));
+        assert!(!cache_versions_perime(&cache), "cache frais");
+        assert!(!crate::setup_core::launcher_cache_a_actualiser());
+        let cat_cache = crate::setup_core::launcher_catalogue_cache().expect("catalogue cache");
+        assert!(cat_cache.message.contains("Liste du"));
+        assert!(!cat_cache.hors_ligne);
+        // 3 versions distantes + la version 0.1.6 installée plus haut.
+        assert_eq!(cat_cache.versions.len(), analyser_releases(API_FIXTURE).len() + 1);
+
+        // Un cache vieux de plus du TTL est affiché MAIS signalé périmé.
+        let vieux = format!(
+            "{{\"horodatage\":\"{}\",\"brut\":\"{}\"}}",
+            maintenant_unix().saturating_sub(TTL_CACHE_VERSIONS + 60),
+            echapper_json(API_FIXTURE)
+        );
+        let _ = fs::write(racine.join(NOM_CACHE_VERSIONS), vieux);
+        let cache_vieux = lire_cache_versions().expect("cache périmé lisible");
+        assert!(cache_versions_perime(&cache_vieux));
+        assert!(crate::setup_core::launcher_cache_a_actualiser());
+        assert!(crate::setup_core::launcher_catalogue_cache()
+            .expect("catalogue périmé").message.contains("périmée"));
+
+        // Un cache corrompu n'invente RIEN : on repasse en mode sans cache.
+        let _ = fs::write(
+            racine.join(NOM_CACHE_VERSIONS),
+            r#"{"horodatage":"1","brut":""}"#,
+        );
+        assert!(lire_cache_versions().is_none());
+        assert!(crate::setup_core::launcher_catalogue_cache().is_none());
 
         unsafe {
             std::env::remove_var("ROSE_LAUNCHER_BASE");
