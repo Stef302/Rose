@@ -159,8 +159,10 @@ pub struct ChaineRep {
 impl ChaineRep {
     #[inline]
     pub fn plein(s: String) -> Rc<ChaineRep> {
-        let n = s.chars().count();
+        // SPEED4 : sur une chaîne ASCII chaque octet est un caractère ;
+        // `len()` suffit, sans itération UTF-8 (clés de table du banc global).
         let octets = s.len();
+        let n = if s.is_ascii() { octets } else { s.chars().count() };
         Rc::new(ChaineRep { n, octets, noeud: NoeudChaine::Plein(s) })
     }
 
@@ -1281,6 +1283,27 @@ pub fn rng_tirer(etat: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// Quatre tirages consécutifs, EXACTEMENT la même suite que quatre appels à
+/// `rng_tirer`. Les quatre états `s+C, s+2C, s+3C, s+4C` sont calculés d'abord
+/// (une chaîne d'additions), puis les quatre mixages indépendants sont
+/// entrelacés : les huit multiplications peuvent se pipeliner au lieu d'être
+/// une chaîne dépendante. L'état final est identique.
+#[inline(always)]
+fn rng_tirer_x4(etat: &mut u64) -> [u64; 4] {
+    const C: u64 = 0x9E37_79B9_7F4A_7C15;
+    let s0 = etat.wrapping_add(C);
+    let s1 = s0.wrapping_add(C);
+    let s2 = s1.wrapping_add(C);
+    let s3 = s2.wrapping_add(C);
+    *etat = s3;
+    let mix = |z: u64| -> u64 {
+        let mut z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    [mix(s0), mix(s1), mix(s2), mix(s3)]
+}
+
 pub fn graine_de(etat: &mut u64, n: &Gz) {
     *etat = if n.fits_i64() {
         n.get_i64() as u64
@@ -1788,11 +1811,49 @@ pub fn remplir_hasard(etat: &mut u64, buf: &mut [u8], ab: &[u8]) {
         let m = (s - 1) as u8;
         let mut i = 0usize;
         let n = buf.len();
+        #[cfg(target_arch = "aarch64")]
+        {
+            use std::arch::aarch64::*;
+            // Table de 64 octets préchargée une fois : t[j] = ab[j & (s-1)].
+            // `vqtbl4q_u8` indexe 64 octets sans boucle, `vst1q_u8` écrit 16
+            // octets d'un coup. Les 8 tirages d'un bloc de 64 octets sont
+            // calculés avec l'ILP de `rng_tirer_x4` (deux fois), la suite
+            // RNG est STRICTEMENT identique à la voie scalaire.
+            if s <= 64 {
+              unsafe {
+                let mut tbl = [ab[0]; 64];
+                for j in 0..64 { tbl[j] = ab[j & (s - 1)]; }
+                let table = uint8x16x4_t(
+                    vld1q_u8(tbl.as_ptr()),
+                    vld1q_u8(tbl.as_ptr().add(16)),
+                    vld1q_u8(tbl.as_ptr().add(32)),
+                    vld1q_u8(tbl.as_ptr().add(48)),
+                );
+                let masque = vdupq_n_u8(m);
+                while i + 64 <= n {
+                    let [a0, a1, a2, a3] = rng_tirer_x4(etat);
+                    let [a4, a5, a6, a7] = rng_tirer_x4(etat);
+                    let v0 = vcombine_u8(vreinterpret_u8_u64(vcreate_u64(a0)),
+                                         vreinterpret_u8_u64(vcreate_u64(a1)));
+                    let v1 = vcombine_u8(vreinterpret_u8_u64(vcreate_u64(a2)),
+                                         vreinterpret_u8_u64(vcreate_u64(a3)));
+                    let v2 = vcombine_u8(vreinterpret_u8_u64(vcreate_u64(a4)),
+                                         vreinterpret_u8_u64(vcreate_u64(a5)));
+                    let v3 = vcombine_u8(vreinterpret_u8_u64(vcreate_u64(a6)),
+                                         vreinterpret_u8_u64(vcreate_u64(a7)));
+                    unsafe {
+                        vst1q_u8(buf.as_mut_ptr().add(i), vqtbl4q_u8(table, vandq_u8(v0, masque)));
+                        vst1q_u8(buf.as_mut_ptr().add(i + 16), vqtbl4q_u8(table, vandq_u8(v1, masque)));
+                        vst1q_u8(buf.as_mut_ptr().add(i + 32), vqtbl4q_u8(table, vandq_u8(v2, masque)));
+                        vst1q_u8(buf.as_mut_ptr().add(i + 48), vqtbl4q_u8(table, vandq_u8(v3, masque)));
+                    }
+                    i += 64;
+                }
+              }
+            }
+        }
         while i + 32 <= n {
-            let r0 = rng_tirer(etat);
-            let r1 = rng_tirer(etat);
-            let r2 = rng_tirer(etat);
-            let r3 = rng_tirer(etat);
+            let [r0, r1, r2, r3] = rng_tirer_x4(etat);
             for k in 0..8 {
                 buf[i + k] = ab[(((r0 >> (8 * k)) as u8) & m) as usize];
                 buf[i + 8 + k] = ab[(((r1 >> (8 * k)) as u8) & m) as usize];
@@ -2256,7 +2317,10 @@ impl Table {
             // l'index primaire). D7 n'en a aucune : `HashMap::with_hasher`
             // n'alloue RIEN avant la première insertion, ce qui économise
             // une arène de ~64 Kio et son initialization sur le chemin chaud.
-            index: HashMap::with_hasher(BuildHasherDefault::<HashU64>::default()),
+            index: { let mut m = HashMap::with_hasher(BuildHasherDefault::<HashU64>::default());
+                     // SPEED4 : réserver toute la table d'avance évite ~13
+                     // rehashes et autant d'allocations sur le chemin chaud.
+                     m.reserve(8192); m },
             fallback: Vec::new(),
             collisions: Vec::new(),
             array_part: vec![0u32; Self::N_ARRAY],
@@ -2359,9 +2423,17 @@ impl Table {
             }
             Valeur::Booleen(b) => Some(0xCBF2_9CE4_8422_2325 ^ (*b as u64)),
             Valeur::Chaine(s) => {
-                let t = s.aplatir();
+                // SPEED4 : hachage direct sur les octets EMPRUNTÉS quand la
+                // chaîne est une feuille (cas des clés de table), sans
+                // aplatissement ni allocation. Le h doit rester EXACTEMENT
+                // celui de l'ancien `aplatir()` : mêmes octets, même FNV-1a.
                 let mut h = 0xCBF2_9CE4_8422_2325u64;
-                for &o in t.as_bytes() { h = (h ^ o as u64).wrapping_mul(0x100_0000_01B3); }
+                if let Some(t) = s.octets_empruntes() {
+                    for &o in t { h = (h ^ o as u64).wrapping_mul(0x100_0000_01B3); }
+                } else {
+                    let t = s.aplatir();
+                    for &o in t.as_bytes() { h = (h ^ o as u64).wrapping_mul(0x100_0000_01B3); }
+                }
                 Some(h)
             }
             // Liste, Table, Tampon, Tableau, Complexe, Irrationnel :
@@ -2412,27 +2484,66 @@ impl Table {
     #[inline]
     pub fn inserer(&self, cle: Valeur, val: Valeur) {
         let h = Self::h(&cle);
-        if let Some(i) = self.trouver_h(&cle, h) {
-            self.0.borrow_mut().items[i].1 = val;
-            return;
-        }
-        // Une clé numérique entière dans [0, N_ARRAY) vit dans `array_part`
-        // (index primaire) : aucun HashMap à maintenir pour elle.
+        // SPEED4 : un SEUL emprunt du `TableRep` et un SEUL hachage de `h`
+        // dans le HashMap (`entry`), au lieu de `borrow`+`get` puis
+        // `borrow_mut`+`contains_key`+`insert`. `k_table` est calculé une
+        // seule fois. Toutes les voies de recherche gardent la MÊME
+        // validation `valeur_egale`, donc la sémantique est inchangée.
         let k = Self::k_table(&cle);
         let mut rep = self.0.borrow_mut();
-        let i = rep.items.len();
-        rep.items.push((cle, val));
+        // Index primaire des clés entières denses : aucun HashMap à maintenir.
         if let Some(k) = k {
-            rep.array_part[k] = (i + 1) as u32;
-        } else {
-            match h {
-                Some(h) => {
-                    if rep.index.contains_key(&h) { rep.collisions.push((h, i)); }
-                    else { rep.index.insert(h, i); }
+            let p = rep.array_part[k];
+            if p != 0 {
+                let i = (p - 1) as usize;
+                if valeur_egale(&rep.items[i].0, &cle) {
+                    rep.items[i].1 = val;
+                    return;
                 }
-                None => rep.fallback.push(i),
             }
         }
+        let Some(h) = h else {
+            // Clé sans hachage canonique : repli linéaire, puis insertion.
+            for &i in &rep.fallback {
+                if valeur_egale(&rep.items[i].0, &cle) {
+                    rep.items[i].1 = val;
+                    return;
+                }
+            }
+            let i = rep.items.len();
+            rep.items.push((cle, val));
+            rep.fallback.push(i);
+            return;
+        };
+        let TableRep { items, index, collisions, array_part, .. } = &mut *rep;
+        use std::collections::hash_map::Entry;
+        let i = match index.entry(h) {
+            Entry::Occupied(e) => {
+                let i0 = *e.get();
+                if valeur_egale(&items[i0].0, &cle) {
+                    items[i0].1 = val;
+                    return;
+                }
+                if let Some(pos) = collisions.iter().position(|&(hh, ci)| {
+                    hh == h && valeur_egale(&items[ci].0, &cle)
+                }) {
+                    let i = collisions[pos].1;
+                    items[i].1 = val;
+                    return;
+                }
+                let i = items.len();
+                items.push((cle, val));
+                collisions.push((h, i));
+                i
+            }
+            Entry::Vacant(e) => {
+                let i = items.len();
+                items.push((cle, val));
+                e.insert(i);
+                i
+            }
+        };
+        if let Some(k) = k { array_part[k] = (i + 1) as u32; }
     }
 
     // ── Voie rapide i64 (domaine 7) ──────────────────────────────────────
