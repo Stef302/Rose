@@ -997,3 +997,12 @@ Noyau MATH1 commite (e34e0f9). Phase 2:
 | VAL1 | Valeur::Symbolique + affichage 30 digits dans chaine_de_p | `rose/src/run.rs`, `rose/src/lib.rs`, `rose/docs/SYMBOLIQUE.md` |
 | CLI1 | commande REPL :more + sortie detail() | `rose/src/repl.rs`, `rose/src/main.rs`, `rose/docs/CLI_MORE.md` |
 | GUI1 | fenêtre native avec bouton « Plus de chiffres » (logique dans jardin Rose) | `rose/src/gui_native.rs`, `jardins/gui_native.rose`, `rose/docs/GUI_MORE.md` |
+
+## Vague 53 (21/11) — câblage detail() et pont GUI
+
+Toutes les briques sont livrées: MATH1 (primitives), VAL1 (Valeur::Symbolique), CLI1 (:more), GUI1 (bouton X11), RECH1/UX1 (design). Reste: câbler dans interp.rs.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| INT1 | primitives Rose: entier_geant_factorielle, detail, chiffres, plus_de_chiffres; enregistrement REPL; pont boutons GUI | `rose/src/interp.rs`, `rose/docs/DETAIL_INT.md` |
+| QAA | tests de bout en bout + doc utilisateur | `rose/tests/`, `rose/docs/GUIDE_GEANTS.md` |
