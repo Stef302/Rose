@@ -1139,3 +1139,12 @@ release GitHub avec assets, vérification SHA-256. Aucune réécriture manuelle 
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | REL1 | outil de publication automatisé | `scripts/publier-release.py`, `rose/docs/PUBLICATION.md` |
+
+## Vague 67 — relance Rust total et self-host A-Z (périmètres élargis)
+
+Les agents précédents ont prouvé des blocages dans leurs périmètres étroits. On leur ouvre les fichiers interdits.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| RUSTX | dépasser Rust sur suite/englobant/global | `rose/src/{interp,run,jit,front,rir,main}.rs`, `rose/docs/RUSTX.md` |
+| AZZ | self-host A-Z : ABI bigints | `compilateur/emetteur_elf.rose`, `rose/docs/AZZ.md` |
