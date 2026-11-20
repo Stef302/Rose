@@ -144,3 +144,23 @@ seuil ≥31 a été déplacé à ≥30 (§3.4).
   possible (capacity doubling déjà fait pour les listes, reste les
   concaténations O(n²) du writer).
 - Entrée RIR non acceptée (attendu : source `.rose`).
+
+---
+
+## Réémission indépendante (vérification orchestrateur, 20/11/2026)
+
+Après le commit `0e2d844`, une chaîne complète neuve a été rejouée depuis le fichier
+commité, sans réutiliser aucun artefact de SH3 :
+
+| Étape | Résultat |
+|---|---|
+| `rose rir compilateur/emetteur.rose` | 263 520 o, `b3ed9262dd54776a6dbd07bc12368d0e` |
+| `rose compilateur/emetteur_elf.rose reemit_ref.rir > reemit_final.elf` | 534 780 o, `ed699457a9b8cd0ea69a53bbae78fd39` (md5 **identique** à l'ELF de SH3) |
+| `./reemit_final.elf compilateur/emetteur.rose` | **rc=0**, 263 520 o, `b3ed9262dd54776a6dbd07bc12368d0e` |
+| `cmp reemit_ref.rir reemit_dump.out` | **identique octet pour octet** |
+
+Le self-hosting est donc reproductible depuis l'arbre commité, pas seulement depuis
+les artefacts temporaires de `/tmp/opencode/sh3_agents/`.
+
+Rappel : l'entrée du binaire émis est une **source `.rose`**. Lui passer un dump RIR
+donne rc=139 ; ce n'est pas une régression mais un comportement attendu.
