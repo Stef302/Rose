@@ -1,0 +1,56 @@
+name: Thorn — non-régression
+
+# Pourquoi ce workflow : Thorn est un consommateur de Rose écrit entièrement
+# en Rose. Ses suites (noyau, syntaxe, tactiques, pilote, bibliothèque,
+# --demo, --aide, contre-exemple) vivaient jusqu'ici seulement en local.
+# Ce workflow les joue depuis un CLONE NEUF, à chaque push et chaque PR,
+# pour qu'une régression soit signalée avant fusion — pas sur la-machine-de-
+# quelqu'un. Le script thorn/tests_regression.sh est la SEULE source de
+# vérité : ce job ne fait que l'appeler et propague son code de sortie.
+#
+# Aucun filtre `paths` : on ne veut PAS qu'un push soit silencieusement
+# ignoré parce qu'il ne touche « que » docs ou thorn/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: thorn-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression-thorn:
+    name: Suites Thorn (Linux x86_64)
+    runs-on: ubuntu-latest
+    env:
+      # rose/.cargo/config.toml force `-C target-feature=+crt-static` sur
+      # x86_64, ce qui produit un static-pie que le chargeur du runner ne
+      # sait pas démarrer (SIGSEGV avant le premier test — même constat que
+      # dans ci.yml). On désactive le lien statique pour CE job : c'est le
+      # binaire dynamically-lié qui est joué par tests_regression.sh.
+      # Le binaire distribué, lui, reste statique (ci.yml le vérifie).
+      RUSTFLAGS: ""
+    steps:
+      - name: Checkout d'un clone neuf
+        uses: actions/checkout@v7
+
+      - name: Installer la chaîne Rust minimale
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Compiler le binaire Rose (--bin rose)
+        working-directory: rose
+        run: cargo build --release --bin rose
+
+      - name: Jouer toutes les suites Thorn
+        # Le script se place lui-même à la racine du dépôt, vérifie les
+        # codes de sortie ET les chaînes de sortie, et rend un code non nul
+        # dès qu'un seul cas régresse. Aucun cas n'est sauté en silence.
+        run: bash thorn/tests_regression.sh
