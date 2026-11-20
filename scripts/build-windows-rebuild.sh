@@ -36,13 +36,12 @@ done
 [ -d "$X/sdk/lib/um/x86_64" ] || { echo "SDK xwin introuvable dans $X" >&2; exit 1; }
 
 # ── 1. Shim mmap (symboles POSIX → Win32) ──────────────────────────────
-OBJ="$LOGDIR/mmap_win.obj"
-clang --target="$TARGET" -O2 -c "$RACINE/installateur/windows-compat/mmap_win.c" -o "$OBJ"
-echo "shim mmap compilé : $OBJ"
-
-# ── 2. Wrapper du lieur : injecte le .obj du shim dans chaque lien ─────
+# ⚠ CORRECTION 21/11 (constat de build): windows_compat.lib fournit DEJA
+# mmap/mprotect/munmap (le code a évolué depuis M3.1). Injecter mmap_win.obj
+# en plus donne "duplicate symbol: mmap/mprotect/munmap" au lien -> rc=101.
+# On utilise donc lld-link directement, sans shim externe.
 WRAP="$LOGDIR/link-cl-shim"
-printf '#!/bin/sh\nexec lld-link '\''%s'\'' "$@"\n' "$OBJ" > "$WRAP"
+printf '#!/bin/sh\nexec lld-link "$@"\n' > "$WRAP"
 chmod +x "$WRAP"
 
 # ── 3. Environnement de build (identique à build-linux.sh) ─────────────
