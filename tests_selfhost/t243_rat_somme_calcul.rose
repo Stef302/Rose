@@ -1,0 +1,9 @@
+# Somme de rationnels calculés et quotient d'un grand calculé
+$a = 1
+$b = 3
+$c = 2
+$d = 3
+>> $a/$b + $c/$d
+$x = 100000000000000000000 + 1
+$y = 3
+>> $x / $y

@@ -1,0 +1,7 @@
+# Produit, quotient, modulo sur un grand entier variable
+$a = 18446744073709551616
+$b = 2
+>> $a * $b
+>> $a / $b
+>> $a % $b
+>> $a * 0

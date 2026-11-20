@@ -1,0 +1,5 @@
+# Égalité, ordre et concaténation de chaînes Unicode
+>> "é" == "é"
+>> "é" < "è"
+>> "été" + "🚀"
+>> "中" != "文"

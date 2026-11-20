@@ -1,0 +1,7 @@
+# Soustraction sur des grands entiers variables (hors addition G5-BIG)
+$a = 18446744073709551617
+$b = 1
+>> $a - $b
+>> $b - $a
+>> $a - $a
+>> $a - 18446744073709551616

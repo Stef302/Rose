@@ -1,0 +1,7 @@
+# abs/min/max sur des grands entiers négatifs
+$a = -18446744073709551616
+$b = 18446744073709551616
+>> abs($a)
+>> min($a, $b)
+>> max($a, $b)
+>> abs($a + 1)

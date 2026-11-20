@@ -1,0 +1,8 @@
+# Signes opposés, emprunt multi-limbes et somme nulle
+$a = -18446744073709551616
+$b = 9223372036854775808
+>> $a + $b
+>> $b + $a
+>> $a + 9223372036854775809
+>> $a + $a
+>> -$a + $b

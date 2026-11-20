@@ -1,0 +1,6 @@
+# Littéraux Unicode : accentués, CJK, astraux
+>> "été"
+>> "中文"
+>> "🚀🌕"
+>> longueur("été")
+>> longueur("🚀")

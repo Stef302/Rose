@@ -1,0 +1,7 @@
+# Rationnels et modulo négatifs calculés (modulo plancher Rose)
+$a = -7
+$b = 3
+>> $a / $b
+>> $b / $a
+>> $a % $b
+>> $b % $a

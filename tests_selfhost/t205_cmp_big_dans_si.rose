@@ -1,0 +1,7 @@
+# Comparaisons de grands entiers dans des tests et des booléens
+$a = 100000000000000000000
+si ($a > 2^64) { >> "grand" } sinon { >> "petit" }
+si ($a == 100000000000000000000) { >> "egal" } sinon { >> "differ" }
+>> ($a > 0 et $a < 10^30)
+>> ($a < 0 ou $a > 10^19)
+>> non ($a == 0)

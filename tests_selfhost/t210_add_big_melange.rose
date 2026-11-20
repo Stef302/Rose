@@ -1,0 +1,10 @@
+# Addition mixte grand/petit, ordre des opérandes, chaînage
+$a = 18446744073709551616
+$b = 1
+>> $a + $b
+>> $b + $a
+>> $a + 0
+>> 0 + $a
+>> $a + $a
+>> ($a + $b) + $b
+>> $b + ($a + $a)

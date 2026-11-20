@@ -1,0 +1,5 @@
+# Rationnel calculé avec un grand numérateur variable
+$a = 100000000000000000000
+$b = 7
+>> $a / $b
+>> $a % $b

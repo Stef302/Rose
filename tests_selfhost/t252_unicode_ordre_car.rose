@@ -1,0 +1,7 @@
+# ordre/caractere au-delà de l'ASCII
+>> ordre("é")
+>> ordre("中")
+>> ordre("🚀")
+>> caractere(233)
+>> caractere(20013)
+>> caractere(128640)

@@ -1,0 +1,6 @@
+# sous_chaine sur une chaîne Unicode (points de code natifs)
+$s = "été radieux"
+>> longueur($s)
+>> sous_chaine($s, 0, 3)
+>> sous_chaine($s, 4, 6)
+>> sous_chaine($s, 0, 1)

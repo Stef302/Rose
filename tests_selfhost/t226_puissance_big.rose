@@ -1,0 +1,6 @@
+# Puissances dont le résultat dépasse 2^64 : repli natif absent du RIR
+>> 2^65
+>> 2^100
+>> (2^64)^2
+>> (10^20)^2
+>> 18446744073709551616^2

@@ -1,0 +1,6 @@
+# Promotion d'un petit entier en grand pendant l'exécution (boucle)
+$a = 2^59 - 3
+pour $i de 0 vers 6 { $a = $a + 1 }
+>> $a
+>> $a > 2^59
+>> $a == 576460752303423491

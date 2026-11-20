@@ -1,0 +1,6 @@
+# Accumulation en boucle franchissant 2^64
+$s = 0
+pour $i de 0 vers 30 { $s = $s + 1000000000000000000 }
+>> $s
+>> $s > 2^64
+>> $s == 30000000000000000000

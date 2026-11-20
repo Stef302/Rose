@@ -1,0 +1,6 @@
+# Franchissement du seuil de promotion 2^59 par des littéraux
+>> 2^59 - 1
+>> 2^59
+>> 2^59 + 1
+>> (2^59 - 1) + 1
+>> (2^59) + 1

@@ -1,0 +1,6 @@
+# Négation unaire sur un grand entier variable
+$a = 18446744073709551616
+>> -$a
+>> -(-$a)
+>> 0 - $a
+>> $a + (-$a)

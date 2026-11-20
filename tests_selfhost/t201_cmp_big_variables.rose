@@ -1,0 +1,11 @@
+# Comparaisons de grands entiers stockés dans des variables
+$a = 18446744073709551616
+$b = 9223372036854775808
+$c = 1
+>> $a > $b
+>> $b < $a
+>> $a >= $b
+>> $b <= $a
+>> $a != $b
+>> $a > $c
+>> $c < $a
