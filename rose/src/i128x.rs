@@ -3,7 +3,7 @@
 // Surface (Gz/Gq + gmp_*/gmpq_*) inchangée pour interp.rs / run.rs / jit.rs.
 // Licence MIT.
 
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
@@ -626,9 +626,16 @@ impl Drop for Gz {
 
 pub struct Gq(pub *mut Mpq);
 
+thread_local! {
+    static POOL_Q: std::cell::RefCell<Vec<*mut Mpq>> = std::cell::RefCell::new(Vec::new());
+}
+
 impl Gq {
     pub fn neuf() -> Gq {
-        Gq(Box::into_raw(Box::new(Mpq { num: Mpz { v: BigInt::zero() }, den: Mpz { v: BigInt::one() } })))
+        let p = POOL_Q.with(|pool| pool.borrow_mut().pop())
+            .unwrap_or_else(|| Box::into_raw(Box::new(Mpq { num: Mpz { v: BigInt::zero() }, den: Mpz { v: BigInt::one() } })));
+        unsafe { (*p).num.v = BigInt::zero(); (*p).den.v = BigInt::one(); }
+        Gq(p)
     }
     pub fn set_ui(&self, n: u64, d: u64) {
         unsafe {
@@ -738,7 +745,9 @@ impl Gq {
     }
 }
 impl Drop for Gq {
-    fn drop(&mut self) { unsafe { let _ = Box::from_raw(self.0); } }
+    fn drop(&mut self) {
+        POOL_Q.with(|pool| pool.borrow_mut().push(self.0));
+    }
 }
 
 // ── façade gmp_* ────────────────────────────────────────────────────────────
@@ -861,7 +870,44 @@ pub unsafe fn gmpq_set_d(q: *mut Mpq, x: f64) {
 #[inline]
 fn pgcd_grand_petit(n: &BigInt, c: u64) -> u64 {
     let mut a = c;
-    let mut b = (n % c).to_u64().unwrap_or(0);
+    let mut b = (n % c).abs().to_u64().unwrap_or(0);
+    while b != 0 { let t = a % b; a = b; b = t; }
+    a
+}
+/// Reste d'un BigInt modulo un petit u64, SANS allouer de quotient.
+/// Les digits sont lus du plus significatif au moins significatif.
+#[inline]
+fn mod_petit(n: &BigInt, c: u64) -> u64 {
+    // 2^64 mod c une seule fois, puis une recurrence a divisions 64 bits
+    // (au lieu d'une division u128 % u64 par limb, ~3x plus chere en aarch64).
+    let pow = ((1u128 << 64) % (c as u128)) as u64;
+    let mut r: u64 = 0;
+    for d in n.iter_u64_digits().rev() {
+        r = (r * pow + d % c) % c;
+    }
+    r
+}
+/// Division d'un BigInt positif par un petit u32, avec reste scalaire.
+/// Traite les digits 32 bits du plus significatif au moins significatif :
+/// chaque étape tient dans u64 (reste < d < 2^32), donc une seule division
+/// 64 bits au lieu de la division générique 128/64 de num-bigint.
+#[inline]
+fn div_rem_petit(n: &BigInt, d: u32) -> (BigInt, u64) {
+    let d64 = d as u64;
+    let mut qd: Vec<u32> = Vec::with_capacity(n.bits() as usize / 32 + 1);
+    let mut rem: u64 = 0;
+    for chunk in n.iter_u32_digits().rev() {
+        let cur = (rem << 32) | (chunk as u64);
+        qd.push((cur / d64) as u32);
+        rem = cur % d64;
+    }
+    qd.reverse();
+    while qd.len() > 1 && *qd.last().unwrap() == 0 { qd.pop(); }
+    (BigInt::from_slice(Sign::Plus, &qd), rem)
+}
+/// PGCD de deux petits entiers (déjà dans u64).
+#[inline]
+fn pgcd_scalar(mut a: u64, mut b: u64) -> u64 {
     while b != 0 { let t = a % b; a = b; b = t; }
     a
 }
@@ -875,27 +921,60 @@ fn pgcd_grand_petit(n: &BigInt, c: u64) -> u64 {
 ///   divise c ; sa multiplicité dans D est au plus sa multiplicité dans c.
 ///   Un seul PGCD(N, c), sur des nombres petits, suffit donc à réduire.
 #[inline]
-unsafe fn add_rat_inv_small(dst: *mut Mpq, na: &BigInt, da: &BigInt, c: u64, signe: i64) -> bool {
+unsafe fn add_rat_inv_small(dst: *mut Mpq, src: *const Mpq, c: u64, signe: i64) -> bool {
+    let na = &(*src).num.v;
+    let da = &(*src).den.v;
     if c == 0 || da.is_zero() || !da.is_positive() { return false; }
-    // Tous les Gq produits par cette bibliothèque sont canoniques
-    // (gcd(na,da)=1, da>0) : aucune vérification supplémentaire n'est requise.
-    let g = pgcd_grand_petit(da, c);
-    let d1 = da.clone() / g;
-    let c1 = c / g;
-    let mut n2 = if signe > 0 { na * c1 + &d1 } else { na * c1 - &d1 };
-    let mut d2 = da * c1;
-    if n2.is_zero() {
+    // Tout Gq produit ici est canonique (gcd(na,da)=1, da>0) : pas de
+    // vérification supplémentaire. On divise le grand dénominateur par c²
+    // (un seul passage) : q2 = da/c², r2 = da%c². De ce seul reste on tire
+    //   r = da%c = r2%c        → g = gcd(da,c) = gcd(r,c) (-scalaire),
+    //   da/c = q2*c + r2/c    → d1 = da/g = q2*(c*c/g) + r2/g,
+    //   g²|da ⟺ r2%g²=0       → preuve que gcd(N,c)=1 (théorème ci-dessous).
+    // Quand cette preuve vaut, on SAUTE le second PGCD sur le grand nombre.
+    let (c1, d1, g2) = if c <= u32::MAX as u64 {
+        let (q2, r2u) = div_rem_petit(da, (c * c) as u32);
+        let r = r2u % c;
+        let g = if r == 0 { c } else { pgcd_scalar(r, c) };
+        let c1 = c / g;
+        let mut d1 = q2;
+        d1 *= c * c1;
+        d1 += r2u / g;
+        // Théorème : si g²|da alors pour tout p|c, ou bien p|c1 et alors
+        // p∤d1 (pgcd(d1,c1)=1) donc p∤N, ou bien p|g et alors p|d1 donc
+        // N≡na*c1 (mod p) avec p∤na (pgcd(na,da)=1) et p∤c1 : p∤N. Donc
+        // gcd(N,c)=1. La réciproque est fausse, mais on ne l'utilise pas.
+        let g2 = if ((r2u as u128) % ((g as u128) * (g as u128))) == 0 { 1 } else { 0 };
+        (c1, d1, g2)
+    } else {
+        // repli : dénominateur trop grand pour c² dans u64
+        let (q, r) = da.div_rem(&BigInt::from(c));
+        let g = if r.is_zero() { c } else { pgcd_scalar(r.to_u64().unwrap_or(0), c) };
+        let c1 = c / g;
+        let d1 = if g == 1 { da.clone() } else { q * c1 + r.to_u64().unwrap_or(0) / g };
+        (c1, d1, 0)
+    };
+    // Opérations EN PLACE : `src` est un Gq temporaire (voir unique appelant
+    // dans interp.rs, il est détruit juste après) ; on lui vole ses deux
+    // buffers BigInt plutôt que de cloner na et da. zéro allocation pour n2/d2.
+    let sp = src as *mut Mpq;
+    std::mem::swap(&mut (*dst).num.v, &mut (*sp).num.v);
+    std::mem::swap(&mut (*dst).den.v, &mut (*sp).den.v);
+    if c1 != 1 {
+        (*dst).num.v *= c1;
+        (*dst).den.v *= c1;
+    }
+    if signe > 0 { (*dst).num.v += &d1; } else { (*dst).num.v -= &d1; }
+    if (*dst).num.v.is_zero() {
         (*dst).num.v = BigInt::zero();
         (*dst).den.v = BigInt::one();
         return true;
     }
-    let g2 = pgcd_grand_petit(&n2.abs(), c);
+    let g2 = if g2 == 1 { 1 } else { pgcd_scalar(mod_petit(&(*dst).num.v, c), c) };
     if g2 > 1 {
-        n2 = n2 / g2;
-        d2 = d2 / g2;
+        (*dst).num.v /= g2;
+        (*dst).den.v /= g2;
     }
-    (*dst).num.v = n2;
-    (*dst).den.v = d2;
     true
 }
 
@@ -904,12 +983,12 @@ unsafe fn add_rat_inv_small(dst: *mut Mpq, na: &BigInt, da: &BigInt, c: u64, sig
 pub unsafe fn gmpq_add(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
     if let (Some(c), Some(s)) = ((*b).den.v.to_u64(), (*b).num.v.to_i64()) {
         if s == 1 || s == -1 {
-            if add_rat_inv_small(r, &(*a).num.v, &(*a).den.v, c, s) { return; }
+            if add_rat_inv_small(r, a, c, s) { return; }
         }
     }
     if let (Some(c), Some(s)) = ((*a).den.v.to_u64(), (*a).num.v.to_i64()) {
         if s == 1 || s == -1 {
-            if add_rat_inv_small(r, &(*b).num.v, &(*b).den.v, c, s) { return; }
+            if add_rat_inv_small(r, b, c, s) { return; }
         }
     }
     let na = (*a).num.v.clone(); let da = (*a).den.v.clone();
@@ -949,6 +1028,25 @@ pub unsafe fn gmpq_mul(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
     (*r).den.v = d / g;
 }
 pub unsafe fn gmpq_div(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
+    // Voie rapide (a/1)/(b/1) = a/b : evite deux multiplications BigInt par 1,
+    // deux clones et un PGCD BigInt. b tient dans u64 dans le cas courant.
+    if (*a).den.v.is_one() && (*b).den.v.is_one() && !(*b).num.v.is_zero() {
+        let neg = (*b).num.v.is_negative();
+        let dabs = if neg { -(*b).num.v.clone() } else { (*b).num.v.clone() };
+        if let Some(duc) = dabs.to_u64() {
+            let mut n = (*a).num.v.clone();
+            if neg { n = -n; }
+            let g = pgcd_grand_petit(&n, duc);
+            if g > 1 {
+                (*r).num.v = n / g;
+                (*r).den.v = dabs / g;
+            } else {
+                (*r).num.v = n;
+                (*r).den.v = dabs;
+            }
+            return;
+        }
+    }
     (*r).num.v = (*a).num.v.clone() * (*b).den.v.clone();
     (*r).den.v = (*a).den.v.clone() * (*b).num.v.clone();
     let n = (*r).num.v.clone(); let d = (*r).den.v.clone();
