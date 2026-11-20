@@ -1040,3 +1040,11 @@ Chemin: (1) cartographie des ecarts G5, (2) implementer les primitives manquante
 | SH6 | primitives manquantes dans le runtime G5 | `compilateur/emetteur_elf.rose`, `rose/docs/G5_PRIMITIVES.md` |
 | SH8 | pipeline de bootstrap + verification C0/C1/C2 | `scripts/selfhost_total.sh`, `rose/docs/BOOTSTRAP_TOTAL.md` |
 | SH9 | batterie de tests du compilateur genere | `tests_selfhost/`, `rose/docs/TESTS_SELFHOST.md` |
+
+## Vague 57 (21/11) — C0 : quitter, caractere, partie_entiere
+
+SH5 a nomme les 3 blocants; reflexivite verte apres SH6 (b4b8ea7). Objectif: faire executer emetteur_elf.rose par le binaire genere.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| SH7 | implementer quitter + caractere + partie_entiere dans le runtime G5 | `compilateur/emetteur_elf.rose`, `rose/docs/G5_C0.md` |
