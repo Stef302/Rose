@@ -1065,3 +1065,14 @@ l'auto-emis e_final.rir compile (rc=0) mais l'ELF differe de 24 octets de F1.
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | SH11 | diagnostiquer et corriger l'écart F1 vs F2 (auto-régénération) | `compilateur/emetteur_elf.rose`, `rose/docs/C13_FIX.md` |
+
+## Vague 60 (21/11) — A–Z et dernière offensive vitesse
+
+C1.3 atteint (5afd0ae): F1==F2 octet pour octet, auto-régénération prouvée. Objectifs: (1) A–Z = éliminer les divergences G5 restantes; (2) dépasser Rust sur suite/englobant/global.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| SH12 | tables réelles + rationnels négatifs dans le runtime G5 | `compilateur/emetteur_elf.rose`, `rose/docs/G5_AZ.md` |
+| SH13 | pipeline/bootstrap A–Z avec preuve C1.3 intégrée | `scripts/selfhost_total.sh`, `rose/docs/BOOTSTRAP_AZ.md` |
+| SPEED5 | vitesse englobant/suite : dispatch interp, format! tables | `rose/src/interp.rs`, `rose/docs/SPEED5.md` |
+| SPEED6 | vitesse global : rétention Valeur::Chaine, table index | `rose/src/run.rs`, `rose/docs/SPEED6.md` |
