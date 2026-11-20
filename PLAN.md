@@ -1048,3 +1048,11 @@ SH5 a nomme les 3 blocants; reflexivite verte apres SH6 (b4b8ea7). Objectif: fai
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | SH7 | implementer quitter + caractere + partie_entiere dans le runtime G5 | `compilateur/emetteur_elf.rose`, `rose/docs/G5_C0.md` |
+
+## Vague 58 (21/11) — C1 : variables globales G5
+
+SH7 a livré C0 (cdbe881): quitter/caractere/partie_entiere, test critique 20/20, point fixe intact. Auto-execution de l'emetteur toujours rc=139: g5_eval replie les variables non locales a 0 alors que le RIR de l'emetteur declare 386 GLOBALES.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| SH10 | loger les globales G5 en RW (ldr/str) au lieu de 0 | `compilateur/emetteur_elf.rose`, `rose/docs/G5_C1.md` |
