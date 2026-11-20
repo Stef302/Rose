@@ -5,7 +5,12 @@
 20–21/11/2026. Binaire Rose mesuré `rose/rose` md5
 `12eac46007cf0fe9e1aec2dff6fbf665`, machine `aarch64`.
 Aucun commit, aucune publication, aucun fichier `rose/src/**`, `compilateur/**`,
-`Cargo.toml` ou `PLAN.md` modifié par ce chantier.
+`Cargo.toml` ou `PLAN.md` modifié par ce chantier. Note : le commit `d91e7ac`
+intitulé « Bootstrap self-host vérifiable : C0→C1→C2 avec verdict honnête (SH8) »,
+qui contient une version antérieure de ces deux fichiers, a été créé par un
+agent concurrent pendant le chantier ; les modifications postérieures de ce
+sous-agent restent non commitées. HEAD a continué de bouger (`b8875b6` →
+`0d817d0` → … → `7ae7cf2` relevés pendant la mesure).
 
 Script : `scripts/selfhost_total.sh`. Ce document décrit le protocole, pas un
 résultat garanti : la sortie réellement obtenue est recopiée en §6.
@@ -180,6 +185,103 @@ comparaison du résultat au natif.
 
 ---
 
-## 6. Résultat réel de l'exécution
+## 6. Résultat réel de l'exécution — 20/11/2026
 
-_(complété après le jet réel — voir ci-dessous)_
+### 6.1 Commande jouée
+
+C0 a d'abord été émis une fois, fraîchement, avec le timeout obligatoire :
+
+```bash
+cd /home/clausake/Stefan/ROSE
+START=$(date +%s)
+timeout 900 ./rose/rose compilateur/emetteur_elf.rose \
+  /tmp/opencode/sh8_boot/self.rir > /tmp/opencode/sh8_boot/C0.elf \
+  2>/tmp/opencode/sh8_boot/C0.emit.err
+# rc=0, 380 s, 534 856 octets, md5 041edb582795e968a3fdebc5345dab4f, stderr vide
+```
+
+Le script a ensuite été joué en réutilisant ce C0 (option `SELFHOST_C0_PATH`,
+annotée `RÉUTILISÉ` dans le rapport ; l'émission n'est donc pas rejouée, mais
+le fichier est vérifié en c puis exécuté en d et f) :
+
+```bash
+SELFHOST_WORKDIR=/tmp/opencode/sh8_final \
+SELFHOST_C0_PATH=/tmp/opencode/sh8_final/C0_seed.elf \
+  bash scripts/selfhost_total.sh --full
+```
+
+`emetteur_elf.rose` md5 `34323147b3714b57e83481a3f8e1e258` au début du jet,
+`cb11334222cbb494a7d6b6b8649b4992` à la fin : **un autre agent modifiait
+cette source pendant la mesure** (cible mouvante). `emetteur.rose`
+(`390335d2…`) et `rose/rose` (`12eac460…`) sont restés inchangés. Le verdict
+ci-dessous est donc un constat sur l'état courant, pas une garantie de
+reproductibilité tant que la source bouge.
+
+### 6.2 Sortie exacte
+
+```
+============================================================
+ selfhost_total — bootstrap vérifiable (constat daté)
+============================================================
+date        : 2026-11-20T12:59:43Z
+mode        : full
+binaire Rose: /home/clausake/Stefan/ROSE/rose/rose
+md5 binaire : 12eac46007cf0fe9e1aec2dff6fbf665
+uname -m    : aarch64
+workdir     : /tmp/opencode/sh8_final
+timeout émis: 900s
+
+[PASS]   a — verif(emetteur_elf.rose) : rc=0, sortie=vérifié
+[PASS]   b — self.rir + md5 b3ed9262 : 263520 o, md5=b3ed9262dd54776a6dbd07bc12368d0e
+[PASS]   c — émission C0 (timeout 900s) : RÉUTILISÉ (SELFHOST_C0_PATH), émission non rejouée — 534856 o, ELF aarch64, md5=041edb582795e968a3fdebc5345dab4f, 0s, rc=0
+[PASS]   d — C0(emetteur.rose) == self.rir : rc=0, 263520 o, cmp octet-pour-octet == self.rir (b3ed9262)
+scripts/selfhost_total.sh: line 228: 2827737 Segmentation fault      (core dumped) "$P0" "$ERIR" > "$P1" 2> "$P1E"
+[BLOQUÉ] e — point fixe compilateur C1 == C2 : P0(emetteur_elf.rir) rc=139, stderr=''
+[BLOQUÉ] f — C0 compile fib(25) == natif : natif=75025, C0 rc=0 mais sortie NON-ELF (entête 'rir') : C0 = émetteur RIR ($principal de emetteur.rose), pas compilateur source→ELF
+
+============================================================
+ RAPPORT — BLOQUÉ
+============================================================
+  a       PASS    rc=0, sortie=vérifié
+  b       PASS    263520 o, md5=b3ed9262dd54776a6dbd07bc12368d0e
+  c       PASS    RÉUTILISÉ (SELFHOST_C0_PATH), émission non rejouée — 534856 o, ELF aarch64, md5=041edb582795e968a3fdebc5345dab4f, 0s, rc=0
+  d       PASS    rc=0, 263520 o, cmp octet-pour-octet == self.rir (b3ed9262)
+  e       BLOQUÉ P0(emetteur_elf.rir) rc=139, stderr=''
+  f       BLOQUÉ natif=75025, C0 rc=0 mais sortie NON-ELF (entête 'rir') : C0 = émetteur RIR ($principal de emetteur.rose), pas compilateur source→ELF
+
+VERDICT: BLOQUÉ   (code=3)
+```
+
+Le rapport machine est aussi écrit dans `/tmp/opencode/sh8_final/RAPPORT.md`.
+
+### 6.3 Interprétation — pourquoi ce n'est PAS `PARTIEL`
+
+Le verdict attendu « PARTIEL » supposait a→e `PASS` et f seul `BLOQUÉ`. La
+mesure réelle donne **e `BLOQUÉ` également** : l'ELF `P0` émis depuis le RIR
+de `emetteur_elf.rose` (382 388 o, md5 `f11006ea…` pour le jet précédent)
+**segmente (rc=139) dès l'appel, même sans argument et même sur un micro-RIR**
+`p47.rir`. Le point fixe compilateur `sha256(P0)==sha256(P1)` n'a donc jamais
+pu être calculé : `P1` reste un fichier de 0 octet. Le script le rapporte
+`BLOQUÉ` avec le rc, conformément à la règle d'honnêteté ; il n'invente pas un
+`PARTIEL`.
+
+Blocages nommés :
+
+1. **e — `rc=139` (SIGSEGV)** sur l'ELF auto-émis de l'émetteur ELF. Cause non
+   diagnostiquée ici (hors périmètre : aucun fichier `compilateur/**` modifié).
+   Pistes observées : source en modification concurrente, ELF émis qui ne
+   démarre même pas sans argument, réservation RW de 2 Gio. À re-mesurer quand
+   la source sera stabilisée.
+2. **f — sortie non-ELF**. `C0` rend `rir…` sur `stdout` pour `fib(25).rose`
+   (comportement attendu : c'est un émetteur RIR). Le résultat natif `75025`
+   est bien reproduit, mais aucun binaire exécutable n'est produit : le seuil
+   « self-hosting total » n'est pas franchi.
+
+**Ce qui est prouvé malgré tout** : a, b, c, d. En particulier d reproduit le
+point fixe M4.5 (`b3ed9262`, 263 520 o) octet pour octet, et c confirme
+l'émission d'un ELF aarch64 de 534 856 o en 380 s sous le timeout de 900 s.
+
+**Validation du script lui-même** : `bash -n` OK ; mode `--quick` joué
+séparément, sortie cohérente (`a`/`b` PASS, `c`/`d`/`e` IGNORÉ, `f` BLOQUÉ,
+code 3) ; mode `--full` joué deux fois (la première a révélé et fait corriger
+un `$principal` non échappé dans un message, sans impact sur les mesures a–e).

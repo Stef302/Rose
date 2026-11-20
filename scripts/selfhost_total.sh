@@ -257,7 +257,7 @@ else
       block f "ELF C0 rc=$RC, sortie='$(head_line "$WORKDIR/fib.C0.run.out")' != 75025"
     fi
   else
-    block f "natif=75025, C0 rc=0 mais sortie NON-ELF (entête '$(head_line "$FC0")') : C0 = émetteur RIR ($principal de emetteur.rose), pas compilateur source→ELF"
+    block f "natif=75025, C0 rc=0 mais sortie NON-ELF (entête '$(head_line "$FC0")') : C0 = émetteur RIR (\$principal de emetteur.rose), pas compilateur source→ELF"
   fi
 fi
 
