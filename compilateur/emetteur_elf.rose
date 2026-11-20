@@ -124,7 +124,13 @@ fn g4_ratio_texte($tok: chaine) -> chaine {
       $digits = $digits + chaine($chiffre)
     }
   }
-  $out = chaine($ent)
+  # SH12 : convention Rose pour un rationnel négatif -a/b : la partie
+  # entière est $ent+1 (plancher de -a/b) quand il reste des décimales,
+  # mais les CHIFFRES restent ceux de la valeur absolue a/b.
+  # Mesure : -7/3 -> -3.[3] (pas -2.[3]) ; -7/2 -> -4.5 ; -1/2 -> -1.5.
+  $part = $ent
+  si ($neg == 1 et longueur($digits) > 0) { $part = $ent + 1 }
+  $out = chaine($part)
   si (longueur($digits) > 0) {
     $out = $out + "."
     $fin = longueur($digits)
@@ -280,8 +286,10 @@ fn subr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 3405774848 + $
 fn andr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2315255808 + $rm * 65536 + $rn * 32 + $rd }
 fn orrr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2852126720 + $rm * 65536 + $rn * 32 + $rd }
 fn eorr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 3388997632 + $rm * 65536 + $rn * 32 + $rd }
+fn umulh($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2613083136 + $rm * 65536 + $rn * 32 + $rd }  # 0x9BC07C00
+fn lsri($rd: entier, $rn: entier, $im: entier) -> entier { retour 3544251392 + $im * 65536 + $rn * 32 + $rd }   # 0xD340FC00 + immr<<16
 fn mulr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2600500224 + $rm * 65536 + $rn * 32 + $rd }
-fn sdivr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2596276224 + $rm * 65536 + $rn * 32 + $rd }
+fn sdivr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2596277248 + $rm * 65536 + $rn * 32 + $rd }  # 0x9AC00C00 (SDIV ; 0x9AC00800 = UDIV)
 fn udivr($rd: entier, $rn: entier, $rm: entier) -> entier { retour 2596276224 + $rm * 65536 + $rn * 32 + $rd }
 # MSUB : Rd bits 0-4, Rn bits 5-9, Ra bits 10-14 (×1024), Rm bits 16-20.
 # Le facteur 16 historique était faux dès que Ra≠0 (il écrivait dans Rd).
@@ -346,6 +354,7 @@ $g5_idxl = 0
 $g5_chl = 0
 $g5_joindrel = 0
 $g5_inserrel = 0
+$g5_supprl = 0
 $g5_entierl = 0
 $g5_catl = 0
 $g5_streql = 0
@@ -360,6 +369,13 @@ $g5_clexl = 0
 $g5_quitl = 0
 $g5_carl = 0
 $g5_parl = 0
+$g5_absl = 0
+$g5_minl = 0
+$g5_maxl = 0
+$g5_typel = 0
+$g5_chbooll = 0
+$g5_hasardl = 0
+$g5_grainel = 0
 
 # ── G5-IO : primitives d'entrée/sortie par syscalls Linux aarch64 ──
 # Ces routines sont ÉMISES dans l'ELF (elles ne s'exécutent pas dans Rose) :
@@ -1021,9 +1037,18 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(g5_asr3(1, 1)); g5_emit(g5_asr3(0, 0))
         g5_emit(sdivr(0, 1, 0)); g5_emit(g5_lsl3(0, 0))
       } sinon si ($op == "%") {
+        # SH12 : Rose utilise le MODULO PLANCHER (mesure : -7 % 3 = 2),
+        # pas le reste C (-1). SDIV+MSUB donne le reste ; on ajoute le
+        # diviseur quand le signe du reste diffère du sien (r!=0).
+        $lmodok = g5_next()
         g5_emit(g5_asr3(1, 1)); g5_emit(g5_asr3(0, 0))
         g5_emit(sdivr(2, 1, 0))
         g5_emit(msubr(3, 2, 0, 1))
+        g5_emit(cmpi(3, 0)); g5_branch(100, $lmodok)   # r == 0
+        g5_emit(eorr(4, 3, 0)); g5_emit(cmpi(4, 0))
+        g5_branch(110, $lmodok)                        # meme signe
+        g5_emit(addr(3, 3, 0))                         # r += b
+        g5_mark($lmodok)
         g5_emit(orrr(0, 31, 3))
         g5_emit(g5_lsl3(0, 0))
       } sinon si ($op == "^") {
@@ -1117,10 +1142,16 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       si ($nom == "quitter") { $lbl = $g5_quitl }
       si ($nom == "caractere") { $lbl = $g5_carl }
       si ($nom == "partie_entiere") { $lbl = $g5_parl }
-      # inserer(t,c,v) a la meme signature utile que joindre(t,c) : la
-      # valeur v est ignoree par les tables de mots-cles de Rose.
+      si ($nom == "abs") { $lbl = $g5_absl }
+      si ($nom == "min") { $lbl = $g5_minl }
+      si ($nom == "max") { $lbl = $g5_maxl }
+      si ($nom == "type") { $lbl = $g5_typel }
+      si ($nom == "hasard" ou $nom == "prng") { $lbl = $g5_hasardl }
+      si ($nom == "graine") { $lbl = $g5_grainel }
+      # SH12 : inserer et supprimer sont de vraies routines de table
+      # (cles ET valeurs) ; plus de repli sur joindre pour inserer.
       si ($nom == "table") { $lbl = $g5_tablel }
-      si ($nom == "inserer") { $lbl = $g5_joindrel }
+      si ($nom == "supprimer") { $lbl = $g5_supprl }
       si ($lbl < 0) {
         $trouve = 0
         $fi = 0
@@ -1264,6 +1295,37 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
       g5_eval($t, 1, 0, $f)
       g5_load(22, $lkind)
       g5_branch(1, $g5_plist_l)
+      retour 0
+    }
+    # ── SH12 : type(littéral) — l'ABI G5 confond booléen/entier et
+    # rationnel/flottant avec des entiers. Le littéral est connu à
+    # l'émission : on sérialise directement le bon mot. ──
+    si ($t[1] == "(" et $t[2] == "app" et $t[3] == "type" et $t[4] == "(") {
+      $h = $t[5]
+      $ty = ""
+      si ($h == "b") { $ty = "booleen" }
+      si ($h == "f") {
+        $ty = "flottant"
+        si ($t[6] != ")" et g4_pos($t[6], "/") >= 0) { $ty = "rationnel" }
+      }
+      si ($h == "flottant") { $ty = "flottant" }
+      si ($h == "s") { $ty = "chaine" }
+      si ($h == "lst") { $ty = "liste" }
+      si ($h == "app" et $t[6] == "table") { $ty = "table" }
+      si ($h == "v" ou $h == "slot") {
+        si (g5_est_bool($t, 4, $f) == 1) { $ty = "booleen" }
+      }
+      si ($ty != "") { g5_make_str($ty); g5_branch(1, $printl); retour 0 }
+    }
+    # ── SH12 : chaine(expression booléenne) — comparaison `bin`, `non`,
+    # variable booléenne ou appel retournant booleen. La valeur est
+    # calculée puis convertie par la routine dédiée (g5_emit_ch rendrait
+    # "1"/"0"). g5_est_bool($t,4,$f) inspecte le jeton à la position 4. ──
+    si ($t[1] == "(" et $t[2] == "app" et $t[3] == "chaine" et
+        $t[4] == "(" et g5_est_bool($t, 4, $f) == 1) {
+      g5_eval($t, 4, 0, $f)
+      g5_branch(1, $g5_chbooll)
+      g5_branch(1, $printl)
       retour 0
     }
     # SH9/SH7 : `chaine(b vraie)` / `chaine(b faux)` — un LITTÉRAL booléen
@@ -1871,6 +1933,11 @@ fn g5_emit_idx($lbl: entier) -> entier {
   g5_emit(g5_tag1(0, 0))
   g5_emit(RET_I())
   g5_mark($lbl + 1)
+  # SH12 : cap < 0 => TABLE (lecture de la valeur associee a la cle x1).
+  # Une liste a cap > 0 et suit le chemin d'indexation numerique ci-dessous.
+  g5_emit(ldroff(3, 6, 16))
+  g5_emit(cmpi(3, 0))
+  g5_branch(111, $lbl + 3)
   g5_emit(g5_asr3(1, 1))
   g5_emit(addr(2, 1, 1))
   g5_emit(addr(2, 2, 2))
@@ -1879,6 +1946,36 @@ fn g5_emit_idx($lbl: entier) -> entier {
   g5_emit(addr(2, 3, 2))          # x2 = ptr + 8*index
   g5_emit(ldroff(0, 2, 0))
   g5_emit(RET_I())
+  # ── SH12 : lecture par cle dans une table ──
+  g5_mark($lbl + 3)
+  g5_emit(orrr(11, 31, 30))       # x11 = LR (streq ecrase x30)
+  g5_emit(ldroff(12, 6, 8))       # x12 = len
+  g5_emit(orrr(13, 31, 1))        # x13 = cle cherchee
+  g5_emit(ldroff(14, 6, 24))      # x14 = key_ptr
+  g5_emit(ldroff(15, 6, 32))      # x15 = value_ptr
+  g5_emit(movz(9, 0))             # x9 = i
+  g5_mark($lbl + 4)
+  g5_emit(cmpr(9, 12))
+  g5_branch(110, $lbl + 7)        # absent -> 0
+  g5_emit(addr(8, 9, 9)); g5_emit(addr(8, 8, 8)); g5_emit(addr(8, 8, 8))
+  g5_emit(addr(16, 14, 8)); g5_emit(ldroff(16, 16, 0))  # x16 = cle[i]
+  g5_emit(g5_tagbits(2, 13)); g5_emit(cmpi(2, 1))
+  g5_branch(101, $lbl + 6)        # cle cherchee non-chaine
+  g5_emit(g5_tagbits(2, 16)); g5_emit(cmpi(2, 1))
+  g5_branch(101, $lbl + 6)        # cle[i] non-chaine
+  g5_emit(orrr(0, 31, 16)); g5_emit(orrr(1, 31, 13))
+  g5_branch(1, $g5_streql)
+  g5_emit(cmpi(0, 0)); g5_branch(101, $lbl + 5)  # contenu egal -> trouve
+  g5_mark($lbl + 6)
+  g5_emit(addr(16, 14, 8)); g5_emit(ldroff(0, 16, 0))
+  g5_emit(cmpr(0, 13)); g5_branch(100, $lbl + 5)
+  g5_emit(addi(9, 9, 1)); g5_branch(0, $lbl + 4)
+  g5_mark($lbl + 5)
+  g5_emit(addr(8, 9, 9)); g5_emit(addr(8, 8, 8)); g5_emit(addr(8, 8, 8))
+  g5_emit(addr(0, 15, 8)); g5_emit(ldroff(0, 0, 0))  # valeur[i]
+  g5_emit(orrr(30, 31, 11)); g5_emit(RET_I())
+  g5_mark($lbl + 7)
+  g5_emit(movz(0, 0)); g5_emit(orrr(30, 31, 11)); g5_emit(RET_I())
   retour 0
 }
 
@@ -1937,10 +2034,103 @@ fn g5_emit_join($lbl: entier) -> entier {
   retour 0
 }
 
-# inserer(liste, i, valeur) — STUB documenté : se comporte comme joindre.
+# SH12 — inserer(table, cle, valeur) : stocke la PAIRE (cle, valeur) dans
+# les deux tableaux paralleles du descripteur. Mutation EN PLACE (le
+# pointeur du descripteur ne change jamais, comme pour joindre), donc tous
+# les alias voient l'insertion. x0=table taguee, x1=cle, x2=valeur.
 fn g5_emit_inser($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(RET_I())
+  g5_emit(g5_masktag(5, 0))        # x5 = descripteur
+  g5_emit(orrr(6, 31, 1))          # x6 = cle
+  g5_emit(orrr(7, 31, 2))          # x7 = valeur
+  g5_emit(ldroff(8, 5, 8))         # x8 = len
+  g5_emit(ldroff(13, 5, 16))       # x13 = cap (negatif)
+  g5_emit(ldroff(10, 5, 24))       # x10 = key_ptr
+  g5_emit(ldroff(11, 5, 32))       # x11 = value_ptr
+  g5_emit(subr(14, 31, 13))        # x14 = -cap = capacite
+  g5_emit(cmpr(8, 14))
+  g5_branch(110, $lbl + 1)         # len >= cap -> croissance
+  # --- voie rapide : place dans les blocs existants ---
+  g5_emit(addr(12, 8, 8)); g5_emit(addr(12, 12, 12)); g5_emit(addr(12, 12, 12))
+  g5_emit(addr(14, 10, 12)); g5_emit(stroff(6, 14, 0))
+  g5_emit(addr(14, 11, 12)); g5_emit(stroff(7, 14, 0))
+  g5_emit(addi(8, 8, 1)); g5_emit(stroff(8, 5, 8))
+  g5_branch(0, $lbl + 4)
+  # --- croissance : doublement, un seul bloc pour les deux tableaux ---
+  g5_mark($lbl + 1)
+  g5_emit(addr(13, 14, 14))        # x13 = 2*capacite = newcap
+  g5_emit(addr(14, 13, 13)); g5_emit(addr(14, 14, 14)); g5_emit(addr(14, 14, 14))
+  g5_emit(addr(0, 14, 14))         # x14 = 8*newcap (3 doublements), total = 16*newcap
+  g5_alloc_inline()                # x0 = nouveau bloc (clobber x0,x1,x2,x9)
+  g5_emit(orrr(15, 31, 0))         # x15 = nouveau key_ptr
+  g5_emit(addr(16, 0, 14))         # x16 = nouveau value_ptr
+  g5_emit(movz(12, 0))             # i = 0
+  g5_mark($lbl + 2)
+  g5_emit(cmpr(12, 8))
+  g5_branch(110, $lbl + 3)         # copie terminee
+  g5_emit(addr(9, 12, 12)); g5_emit(addr(9, 9, 9)); g5_emit(addr(9, 9, 9))
+  g5_emit(addr(17, 10, 9)); g5_emit(ldroff(17, 17, 0))
+  g5_emit(addr(18, 15, 9)); g5_emit(stroff(17, 18, 0))
+  g5_emit(addr(17, 11, 9)); g5_emit(ldroff(17, 17, 0))
+  g5_emit(addr(18, 16, 9)); g5_emit(stroff(17, 18, 0))
+  g5_emit(addi(12, 12, 1))
+  g5_branch(0, $lbl + 2)
+  g5_mark($lbl + 3)
+  g5_emit(addr(12, 8, 8)); g5_emit(addr(12, 12, 12)); g5_emit(addr(12, 12, 12))
+  g5_emit(addr(18, 15, 12)); g5_emit(stroff(6, 18, 0))
+  g5_emit(addr(18, 16, 12)); g5_emit(stroff(7, 18, 0))
+  g5_emit(addi(8, 8, 1)); g5_emit(stroff(8, 5, 8))
+  g5_emit(subr(9, 31, 13)); g5_emit(stroff(9, 5, 16))  # nouveau cap (negatif)
+  g5_emit(stroff(15, 5, 24)); g5_emit(stroff(16, 5, 32))
+  g5_mark($lbl + 4)
+  g5_emit(RET_I())                 # x0 = table taguee, inchangee
+  retour 0
+}
+
+# SH12 — supprimer(table, cle) : retire la PAIRE dont la cle correspond.
+# Recherche identique a celle de g5_emit_idx, puis decalage des entrees
+# suivantes dans les deux tableaux. Cle absente : aucun effet.
+fn g5_emit_suppr($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(orrr(11, 31, 30))        # x11 = LR (streq ecrase x30)
+  g5_emit(g5_masktag(12, 0))       # x12 = descripteur
+  g5_emit(orrr(13, 31, 1))         # x13 = cle cherchee
+  g5_emit(ldroff(16, 12, 8))       # x16 = len
+  g5_emit(ldroff(14, 12, 24))      # x14 = key_ptr
+  g5_emit(ldroff(15, 12, 32))      # x15 = value_ptr
+  g5_emit(movz(9, 0))              # x9 = i
+  g5_mark($lbl + 1)                # boucle de recherche
+  g5_emit(cmpr(9, 16))
+  g5_branch(110, $lbl + 6)         # absent -> retour
+  g5_emit(addr(8, 9, 9)); g5_emit(addr(8, 8, 8)); g5_emit(addr(8, 8, 8))
+  g5_emit(addr(17, 14, 8)); g5_emit(ldroff(0, 17, 0))  # x0 = cle[i]
+  g5_emit(g5_tagbits(2, 13)); g5_emit(cmpi(2, 1))
+  g5_branch(101, $lbl + 3)         # cle cherchee non-chaine -> valeur
+  g5_emit(g5_tagbits(2, 0)); g5_emit(cmpi(2, 1))
+  g5_branch(101, $lbl + 3)         # cle[i] non-chaine -> valeur
+  g5_emit(orrr(1, 31, 13)); g5_branch(1, $g5_streql)
+  g5_emit(cmpi(0, 0)); g5_branch(101, $lbl + 2)  # trouve
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 3)                # comparaison de valeurs
+  g5_emit(addr(17, 14, 8)); g5_emit(ldroff(0, 17, 0))
+  g5_emit(cmpr(0, 13)); g5_branch(100, $lbl + 2)
+  g5_emit(addi(9, 9, 1)); g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)                # decalage a partir de i+1
+  g5_emit(addi(10, 9, 1))
+  g5_mark($lbl + 4)
+  g5_emit(cmpr(10, 16))
+  g5_branch(110, $lbl + 5)
+  g5_emit(addr(8, 10, 10)); g5_emit(addr(8, 8, 8)); g5_emit(addr(8, 8, 8))
+  g5_emit(subi(18, 8, 8))          # dest = 8*(j-1)
+  g5_emit(addr(17, 14, 8)); g5_emit(ldroff(17, 17, 0))
+  g5_emit(addr(19, 14, 18)); g5_emit(stroff(17, 19, 0))
+  g5_emit(addr(17, 15, 8)); g5_emit(ldroff(17, 17, 0))
+  g5_emit(addr(19, 15, 18)); g5_emit(stroff(17, 19, 0))
+  g5_emit(addi(10, 10, 1)); g5_branch(0, $lbl + 4)
+  g5_mark($lbl + 5)
+  g5_emit(subi(16, 16, 1)); g5_emit(stroff(16, 12, 8))  # len--
+  g5_mark($lbl + 6)
+  g5_emit(g5_tag2(0, 12)); g5_emit(orrr(30, 31, 11)); g5_emit(RET_I())
   retour 0
 }
 
@@ -2184,16 +2374,26 @@ fn g5_emit_streq($lbl: entier) -> entier {
   retour 0
 }
 
-# table() -> table vide. Representee comme une LISTE Rose vide : les
-# entrees sont les cles, ajoutees par inserer() (= joindre sur la liste).
+# SH12 — tables REELLES (cles + valeurs).
+# Descripteur : [tag=2][len][cap NEGATIF][key_ptr][value_ptr][pad]
+#   +0  tag 2 (identique a une liste : cle_existe/longueur lisent +8/+24)
+#   +8  len = nombre d'entrees
+#   +16 cap < 0 : MARQUEUR DE TABLE. Une liste a cap > 0. g5_emit_idx
+#       teste ce seul signe pour choisir "lecture par cle" ou "index".
+#       La valeur absolue de cap est la capacite (8, 16, ...).
+#   +24 key_ptr   : tableau de 8*x octets, cle i a 8*i
+#   +32 value_ptr : tableau de 8*x octets, valeur i a 8*i
+# Les deux blocs de 8 entrees sont contigus dans l'allocation initiale
+# (48..111 pour les cles, 112..175 pour les valeurs = 176 octets).
 fn g5_emit_table($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_load(0, 32 + 8 * 8)
+  g5_load(0, 176)
   g5_alloc_inline()
   g5_load(1, 2); g5_emit(stroff(1, 0, 0))
   g5_emit(movz(1, 0)); g5_emit(stroff(1, 0, 8))
-  g5_load(1, 8); g5_emit(stroff(1, 0, 16))
-  g5_emit(addi(1, 0, 32)); g5_emit(stroff(1, 0, 24))
+  g5_load(1, -8); g5_emit(stroff(1, 0, 16))          # cap = -8 (marqueur)
+  g5_emit(addi(1, 0, 48)); g5_emit(stroff(1, 0, 24)) # key_ptr
+  g5_emit(addi(1, 0, 112)); g5_emit(stroff(1, 0, 32)) # value_ptr
   g5_emit(g5_tag2(0, 0))
   g5_emit(RET_I())
   retour 0
@@ -2221,10 +2421,16 @@ fn g5_emit_clex($lbl: entier) -> entier {
   g5_branch(110, $lbl + 2)        # i >= len : absent
   g5_emit(addr(9, 15, 15)); g5_emit(addr(9, 9, 9)); g5_emit(addr(9, 9, 9))
   g5_emit(addr(1, 8, 9)); g5_emit(ldroff(0, 1, 0))
+  # SH12 : une table peut melanger les types de cles. Appeler streq sur
+  # une cle ENTiere stockee masquerait x0 en pointeur NUL -> SIGSEGV
+  # (mesure : inserer(t,"a",1); inserer(t,1,2); cle_existe(t,"a")).
+  g5_emit(g5_tagbits(2, 0)); g5_emit(cmpi(2, 1))
+  g5_branch(101, $lbl + 8)        # cle stockee non-chaine -> element suivant
   g5_emit(orrr(1, 31, 13))        # x1 = cle
   g5_branch(1, $g5_streql)        # streq(element, cle)
   g5_emit(cmpi(0, 8))
   g5_branch(100, $lbl + 3)
+  g5_mark($lbl + 8)
   g5_emit(addi(15, 15, 1))
   g5_branch(0, $lbl + 1)
   g5_mark($lbl + 3)
@@ -2299,6 +2505,124 @@ fn g5_emit_par($lbl: entier) -> entier {
   g5_emit(g5_asr3(0, 0))
   g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
+  retour 0
+}
+
+# ── SH12 : primitives C0 supplementaires (plus de stubs) ──
+fn g5_emit_abs($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0))          # x0 = n brut
+  g5_emit(cmpi(0, 0))
+  g5_branch(110, $lbl + 1)        # n >= 0 : identite
+  g5_emit(subr(0, 31, 0))         # negatif : -n
+  g5_mark($lbl + 1)
+  g5_emit(g5_lsl3(0, 0)); g5_emit(RET_I())
+  retour 0
+}
+
+fn g5_emit_min($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0)); g5_emit(g5_asr3(1, 1))
+  g5_emit(cmpr(0, 1))
+  g5_branch(111, $lbl + 1)        # a < b ->garder a
+  g5_emit(orrr(0, 31, 1))         # sinon prendre b
+  g5_mark($lbl + 1)
+  g5_emit(g5_lsl3(0, 0)); g5_emit(RET_I())
+  retour 0
+}
+
+fn g5_emit_max($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0)); g5_emit(g5_asr3(1, 1))
+  g5_emit(cmpr(0, 1))
+  g5_branch(110, $lbl + 1)        # a >= b ->garder a
+  g5_emit(orrr(0, 31, 1))         # sinon prendre b
+  g5_mark($lbl + 1)
+  g5_emit(g5_lsl3(0, 0)); g5_emit(RET_I())
+  retour 0
+}
+
+# type(x) -> chaîne. Dispatch runtime sur le tag ABI ; les littéraux
+# booléens/flottants sont traités à l'émission (ils n'ont pas de tag distinct).
+fn g5_emit_type($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_tagbits(10, 0))      # x10 = tag (non clobberé par g5_make_str)
+  g5_emit(cmpi(10, 1))
+  g5_branch(100, $lbl + 1)
+  g5_emit(cmpi(10, 2))
+  g5_branch(101, $lbl + 2)
+  g5_emit(g5_masktag(11, 0)); g5_emit(ldroff(11, 11, 16))  # cap
+  g5_emit(cmpi(11, 0))
+  g5_branch(111, $lbl + 3)        # cap < 0 -> table
+  g5_make_str("liste"); g5_branch(0, $lbl + 4)
+  g5_mark($lbl + 1); g5_make_str("chaine"); g5_branch(0, $lbl + 4)
+  g5_mark($lbl + 2); g5_make_str("entier"); g5_branch(0, $lbl + 4)
+  g5_mark($lbl + 3); g5_make_str("table")
+  g5_mark($lbl + 4); g5_emit(RET_I())
+  retour 0
+}
+
+# chaine(booleen) -> "vrai"/"faux". x0 = booléen tagué (0 ou 8).
+fn g5_emit_chbool($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(cmpi(0, 0))
+  g5_branch(100, $lbl + 1)
+  g5_make_str("vrai"); g5_branch(0, $lbl + 2)
+  g5_mark($lbl + 1); g5_make_str("faux")
+  g5_mark($lbl + 2); g5_emit(RET_I())
+  retour 0
+}
+
+# ── SH12 : RNG splitmix64 (miroir exact de rose/src/run.rs) ──
+# Émet le mixage de z=x[$z] (déjà incrémenté) avec x[$a] scratch.
+fn g5_emit_rng_core($z: entier, $a: entier) -> entier {
+  g5_emit(lsri($a, $z, 30)); g5_emit(eorr($z, $z, $a))
+  g5_emit(movz($a, 58809)); g5_emit(movk($a, 7396, 1))
+  g5_emit(movk($a, 18285, 2)); g5_emit(movk($a, 48984, 3))
+  g5_emit(mulr($z, $z, $a))
+  g5_emit(lsri($a, $z, 27)); g5_emit(eorr($z, $z, $a))
+  g5_emit(movz($a, 4587)); g5_emit(movk($a, 4913, 1))
+  g5_emit(movk($a, 18875, 2)); g5_emit(movk($a, 38096, 3))
+  g5_emit(mulr($z, $z, $a))
+  g5_emit(lsri($a, $z, 31)); g5_emit(eorr($z, $z, $a))
+  retour 0
+}
+
+# Émet un tirage : état global 0x60007000 (raw u64), résultat brut dans x0.
+fn g5_emit_rng_step() -> entier {
+  g5_load(9, 1610641408)          # @état
+  g5_emit(ldroff(10, 9, 0))       # x10 = état
+  g5_emit(movz(11, 31765)); g5_emit(movk(11, 32586, 1))
+  g5_emit(movk(11, 31161, 2)); g5_emit(movk(11, 40503, 3))  # C
+  g5_emit(addr(10, 10, 11))       # état += C (wrapping 64 bits)
+  g5_emit(stroff(10, 9, 0))       # sauvegarde
+  g5_emit(orrr(0, 31, 10))        # z = état
+  g5_emit_rng_core(0, 11)
+  retour 0
+}
+
+fn g5_emit_graine($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(10, 0))         # n brut
+  g5_load(9, 1610641408); g5_emit(stroff(10, 9, 0))
+  g5_emit_rng_step()              # graine_de() tire une fois
+  g5_emit(movz(0, 0)); g5_emit(RET_I())
+  retour 0
+}
+
+fn g5_emit_hasard($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(12, 0))         # x12 = n brut (bornage)
+  g5_emit_rng_step()              # x0 = tirage
+  g5_emit(subi(9, 12, 1)); g5_emit(andr(10, 12, 9))
+  g5_emit(cmpi(10, 0))
+  g5_branch(100, $lbl + 1)        # n puissance de 2 -> masque
+  g5_emit(umulh(0, 0, 12))        # sinon (x*n)>>64
+  g5_branch(0, $lbl + 2)
+  g5_mark($lbl + 1)
+  g5_emit(subi(10, 12, 1)); g5_emit(andr(0, 0, 10))
+  g5_mark($lbl + 2)
+  g5_emit(g5_lsl3(0, 0)); g5_emit(RET_I())
   retour 0
 }
 
@@ -2671,13 +2995,12 @@ $k = 0
 tant_que ($k < 2) { g5_next(); $k = $k + 1 }
 $g5_idxl = g5_next()
 $k = 0
-# G5-TYPE : g5_emit_idx utilise TROIS labels ($lbl, $lbl+1, $lbl+2 :
-# le +2 est le tag final `orr x0,x0,#1` de la branche chaîne). Réserver
-# seulement UN label supplémentaire faisait de $g5_chl (= idx+2) un
-# DOUBLON de $lbl+2 : chaque appel à `chaine()` atterrissait sur la queue
-# de idx (`orr #1`) au lieu de g5_emit_ch, taguant un entier comme chaîne
-# (0x10 -> 0x11) avant concaténation. Deux labels supplémentaires requis.
-tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+# G5-TYPE : g5_emit_idx utilise $lbl, +1 (liste), +2 (fin chaîne) et,
+# depuis SH12, +3..+7 (recherche par cle dans une table). Réserver trop
+# peu de labels faisait de $g5_chl un DOUBLON d'un label interne de idx :
+# chaque appel à `chaine()` atterrissait sur la queue de idx (`orr #1`),
+# taguant un entier comme chaîne avant concaténation. Sept labels requis.
+tant_que ($k < 7) { g5_next(); $k = $k + 1 }
 $g5_chl = g5_next()
 $k = 0
 tant_que ($k < 2) { g5_next(); $k = $k + 1 }
@@ -2685,6 +3008,11 @@ $g5_joindrel = g5_next()
 $k = 0
 tant_que ($k < 7) { g5_next(); $k = $k + 1 }   # SH3 : 5 labels internes + marge
 $g5_inserrel = g5_next()
+$k = 0
+tant_que ($k < 5) { g5_next(); $k = $k + 1 }   # SH12 : inserer utilise +1..+4
+$g5_supprl = g5_next()
+$k = 0
+tant_que ($k < 7) { g5_next(); $k = $k + 1 }   # SH12 : supprimer utilise +1..+6
 $g5_entierl = g5_next()
 $k = 0
 tant_que ($k < 4) { g5_next(); $k = $k + 1 }
@@ -2701,7 +3029,7 @@ $g5_stubsl = g5_next()
 $g5_tablel = g5_next()
 $g5_clexl = g5_next()
 $k = 0
-tant_que ($k < 7) { g5_next(); $k = $k + 1 }
+tant_que ($k < 8) { g5_next(); $k = $k + 1 }   # SH12 : +8 (cle stockee non-chaine)
 # G5-IO : réservation des labels des routines syscalls (4 internes chacune).
 $g5_nbargs_l = g5_next()
 $k = 0
@@ -2721,6 +3049,19 @@ $exitl = g5_next()
 $g5_quitl = g5_next()
 $g5_carl = g5_next()
 $g5_parl = g5_next()
+$g5_absl = g5_next()
+$k = 0; tant_que ($k < 1) { g5_next(); $k = $k + 1 }
+$g5_minl = g5_next()
+$k = 0; tant_que ($k < 1) { g5_next(); $k = $k + 1 }
+$g5_maxl = g5_next()
+$k = 0; tant_que ($k < 1) { g5_next(); $k = $k + 1 }
+$g5_typel = g5_next()
+$k = 0; tant_que ($k < 4) { g5_next(); $k = $k + 1 }
+$g5_chbooll = g5_next()
+$k = 0; tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+$g5_hasardl = g5_next()
+$k = 0; tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+$g5_grainel = g5_next()
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
 tant_que ($i < $nfn) {
@@ -2735,6 +3076,7 @@ g5_emit_idx($g5_idxl)
 g5_emit_ch($g5_chl)
 g5_emit_join($g5_joindrel)
 g5_emit_inser($g5_inserrel)
+g5_emit_suppr($g5_supprl)
 g5_emit_entier($g5_entierl)
 g5_emit_cat($g5_catl)
 g5_emit_streq($g5_streql)
@@ -2745,6 +3087,13 @@ g5_emit_clex($g5_clexl)
 g5_emit_quit($g5_quitl)
 g5_emit_car($g5_carl)
 g5_emit_par($g5_parl)
+g5_emit_abs($g5_absl)
+g5_emit_min($g5_minl)
+g5_emit_max($g5_maxl)
+g5_emit_type($g5_typel)
+g5_emit_chbool($g5_chbooll)
+g5_emit_hasard($g5_hasardl)
+g5_emit_graine($g5_grainel)
 g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
