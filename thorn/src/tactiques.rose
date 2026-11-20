@@ -664,6 +664,321 @@ fn ta_appl_impl(but: table, ctx: liste<table>) -> table {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 6b. CAPACITÉ RÉELLE — exact / apply : recherche TRANSITIVE avec unification
+#     LÉGÈRE (variables méta). Tout terme produit repasse par ta_verifie().
+#
+# Principe (déduction ARRIÈRE, pas de recherche en avant bornée à 1–2 pas) :
+#   pour produire un but B, on considère chaque « tête » (hypothèse du contexte
+#   ou lemme vérifié) dont le type est une chaîne de Π. On remplace ses lieurs
+#   par des méta-variables fraîches, on UNIFIE sa conclusion avec B (matching
+#   du premier ordre : un méta se lie à un sous-terme entier), puis on résout
+#   RÉCURSIVEMENT les prémisses encore ouvertes. Le terme final est soumis au
+#   noyau. La profondeur est bornée (3) et le nombre de Π par tête est borné (6).
+#
+# LIMITES EXPLICITES (aucune complaisance) :
+#   - ce n'est PAS une unification générale : pas d'équations, pas de types
+#     dépendants résolus, pas d'occurrence de méta dans la cible (contrôle
+#     d'occurrence) ; les méta ne se lient qu'à des sous-termes du but ;
+#   - un méta qui reste non lié rend le terme rejeté par le noyau (jamais de
+#     « ok » codé en dur pour masquer un trou) ;
+#   - les prémisses contenant encore des méta-libres ne sont pas résolues :
+#     on exige que les méta aient été fixés par la conclusion ou par le type
+#     d'un argument déjà connu (propagation). C'est documenté dans TACTIQUES.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Copie non destructive d'une table de liaisons : empêche qu'un échec
+# d'unification au milieu d'un `ind` corrompe les liaisons déjà acquises.
+fn ta_copie_bind(b: table) -> table {
+  $r = table()
+  $ks = cles(b)
+  $n = longueur($ks)
+  $k = 0
+  tant_que ($k < $n) {
+    $key = ""
+    $key = $ks[$k]
+    inserer($r, $key, b[$key])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn ta_lie_bind(bind: table, nom: chaine) -> table {
+  $r = noy_absent()
+  si (cle_existe(bind, nom)) {
+    $x = bind[nom]
+    si (type($x) == "table") { $r = $x }
+  }
+  retour $r
+}
+fn ta_lien_bind(bind: table, nom: chaine) -> booleen {
+  retour non noy_est_absent(ta_lie_bind(bind, nom))
+}
+
+# Unification légère : `metas` est la liste des NOMS considerés comme des
+# variables ; tout le reste est comparé structurellement. β est appliqué aux
+# deux côtés. Échec = noy_absent().
+fn ta_unifie(motif: table, cible: table, metas: liste<chaine>, bind: table) -> table {
+  $b = ta_copie_bind(bind)
+  $m = beta(motif)
+  $c = beta(cible)
+  $gm = noy_genre($m)
+  $gc = noy_genre($c)
+
+  # (1) une variable méta se lie à un sous-terme ENTIER de la cible.
+  si ($gm == "var" et noy_contient(metas, noy_nom($m))) {
+    $nm = noy_nom($m)
+    si (ta_lien_bind($b, $nm)) {
+      si (convertible(ta_lie_bind($b, $nm), $c)) { retour $b }
+      retour noy_absent()
+    }
+    si (noy_contient(noy_libres($c), $nm)) { retour noy_absent() }
+    inserer($b, $nm, $c)
+    retour $b
+  }
+
+  si ($gm != $gc) { retour noy_absent() }
+
+  si ($gm == "var") {
+    si (noy_nom($m) == noy_nom($c)) { retour $b }
+    retour noy_absent()
+  }
+  si ($gm == "type") {
+    si (noy_niveau($m) == noy_niveau($c)) { retour $b }
+    retour noy_absent()
+  }
+  si ($gm == "const" ou $gm == "constructeur") {
+    # On compare le NOM, pas l'annotation de type (déjà contrôlée par le noyau).
+    si (noy_nom($m) == noy_nom($c)) { retour $b }
+    retour noy_absent()
+  }
+  si ($gm == "ind") {
+    si (noy_nom($m) != noy_nom($c)) { retour noy_absent() }
+    $pm = noy_champ_liste($m, "params")
+    $pc = noy_champ_liste($c, "params")
+    si (longueur($pm) != longueur($pc)) { retour noy_absent() }
+    $k = 1
+    tant_que ($k < longueur($pm)) {
+      $b = ta_unifie($pm[$k], $pc[$k], metas, $b)
+      si (noy_est_absent($b)) { retour noy_absent() }
+      $k = $k + 1
+    }
+    retour $b
+  }
+  si ($gm == "app") {
+    $b = ta_unifie(noy_champ($m, "fonction"), noy_champ($c, "fonction"), metas, $b)
+    si (noy_est_absent($b)) { retour noy_absent() }
+    $b = ta_unifie(noy_champ($m, "argument"), noy_champ($c, "argument"), metas, $b)
+    retour $b
+  }
+  si ($gm == "pi" ou $gm == "lam") {
+    # α-équivalence : le nom du lieur est ignoré, on compare domaine puis corps.
+    $b = ta_unifie(noy_champ($m, "domaine"), noy_champ($c, "domaine"), metas, $b)
+    si (noy_est_absent($b)) { retour noy_absent() }
+    $b = ta_unifie(noy_corps($m), noy_corps($c), metas, $b)
+    retour $b
+  }
+  retour noy_absent()
+}
+
+# Remplace dans t tous les méta déjà liés par leur valeur (propagation).
+fn ta_subst_liaisons(t: table, metas: liste<chaine>, bind: table) -> table {
+  $r = t
+  $k = 1
+  tant_que ($k < longueur(metas)) {
+    $nm = metas[$k]
+    si (ta_lien_bind(bind, $nm)) {
+      $r = noy_subst($r, $nm, ta_lie_bind(bind, $nm))
+    }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Décompose une chaîne de Π (au plus 6) en {n, noms, doms, concl}, en
+# remplaçant les lieurs par les méta frais dans les domaines et la conclusion.
+fn ta_decompose_pi(ty: table, metas: liste<chaine>) -> table {
+  $noms = [""]
+  $doms = [table()]
+  $n = 0
+  $cur = beta(ty)
+  $k = 1
+  tant_que (noy_genre($cur) == "pi" et $k <= 6) {
+    $nom = noy_nom($cur)
+    $dom = noy_champ($cur, "domaine")
+    $j = 1
+    tant_que ($j < $k) {
+      $dom = noy_subst($dom, $noms[$j], noy_var(metas[$j]))
+      $j = $j + 1
+    }
+    joindre($noms, $nom)
+    joindre($doms, $dom)
+    $n = $n + 1
+    $cur = noy_champ($cur, "codomaine")
+    $k = $k + 1
+  }
+  $concl = $cur
+  $j = 1
+  tant_que ($j <= $n) {
+    $concl = noy_subst($concl, $noms[$j], noy_var(metas[$j]))
+    $j = $j + 1
+  }
+  $r = table()
+  inserer($r, "n", $n)
+  inserer($r, "noms", $noms)
+  inserer($r, "doms", $doms)
+  inserer($r, "concl", $concl)
+  retour $r
+}
+
+# exact : une hypothèse dont le type est convertible au but. Le terme est
+# TOUJOURS soumis au noyau avant d'être déclaré ok.
+fn ta_exact_but(but: table, ctx: liste<table>, regle: chaine) -> table {
+  $n = longueur(ctx)
+  $i = 1
+  tant_que ($i < $n) {
+    $e = ctx[$i]
+    si (convertible(noy_champ($e, "type"), but)) {
+      $r = ta_verifie(noy_var(noy_nom($e)), but, ctx, regle)
+      si (ta_boo($r, "ok")) { retour $r }
+    }
+    $i = $i + 1
+  }
+  retour ta_err(regle + " : aucune hypothèse n'a le type du but")
+}
+
+fn ta_cand_const(t: table) -> table {
+  $r = table()
+  inserer($r, "terme", $t)
+  inserer($r, "type", noy_champ($t, "type"))
+  retour $r
+}
+
+# Têtes candidates = hypothèses du contexte + lemmes dont le TERME a été
+# vérifié plus haut (demo_lemmes). Aucune constante opaque n'est acceptée sur
+# la foi : c'est le noyau qui vérifie l'application complète à la fin.
+fn ta_candidats(ctx: liste<table>) -> liste<table> {
+  $r = [table()]
+  $n = longueur(ctx)
+  $k = 1
+  tant_que ($k < $n) {
+    $e = ctx[$k]
+    $c = table()
+    inserer($c, "terme", noy_var(noy_nom($e)))
+    inserer($c, "type", noy_champ($e, "type"))
+    joindre($r, $c)
+    $k = $k + 1
+  }
+  joindre($r, ta_cand_const(ta_symm_symbole()))
+  joindre($r, ta_cand_const(ta_trans_symbole()))
+  joindre($r, ta_cand_const(ta_congr_succ_symbole()))
+  joindre($r, ta_cand_const(ta_congr_plus_l_symbole()))
+  joindre($r, ta_cand_const(ta_refl_symbole()))
+  joindre($r, ta_cand_const(ta_plus0l_symbole()))
+  joindre($r, ta_cand_const(ta_plusSl_symbole()))
+  joindre($r, ta_cand_const(ta_plus_zero_d_symbole()))
+  joindre($r, ta_cand_const(ta_plus_succ_d_symbole()))
+  retour $r
+}
+
+# Une tête avec ses méta-frais, un but, un contexte : construit l'application
+# complète si la conclusion s'unifie au but et si toutes les prémisses sont
+# résolues, puis LA FAIT VÉRIFIER PAR LE NOYAU.
+fn ta_apply_head(tete: table, ty: table, but: table, ctx: liste<table>, prof: entier, regle: chaine) -> table {
+  $th = beta(ty)
+  si (noy_genre($th) != "pi") { retour ta_err(regle + " : tête non-Π") }
+
+  $ev = noy_union_ch(noy_union_ch(noy_libres(but), noy_libres(ty)), ta_noms_ctx(ctx))
+  $metas = [""]
+  $k = 1
+  tant_que ($k <= 6) {
+    $mfra = noy_frais("?a" + chaine($k), $ev)
+    joindre($metas, $mfra)
+    $ev = noy_ajoute_unique($ev, $mfra)
+    $k = $k + 1
+  }
+
+  $d = ta_decompose_pi($th, $metas)
+  $n = 0
+  $n = d["n"]
+  $noms = [""]
+  $noms = d["noms"]
+  $doms = [table()]
+  $doms = d["doms"]
+  $concl = noy_champ($d, "concl")
+
+  $bind = ta_unifie($concl, but, $metas, table())
+  si (noy_est_absent($bind)) { retour ta_err(regle + " : conclusion non unifiable") }
+
+  # Propagation : un méta lié à un terme reçoit le TYPE synthétisé par le
+  # noyau pour ce terme. C'est ce qui infère les arguments implicites
+  # (par exemple le `A` de symm) sans unification générale.
+  $k = 1
+  tant_que ($k <= $n) {
+    $nm = metas[$k]
+    si (ta_lien_bind($bind, $nm)) {
+      $tys = verifier(ta_lie_bind($bind, $nm), ctx)
+      si (noy_est_ok($tys)) {
+        $dom = ta_subst_liaisons($doms[$k], $metas, $bind)
+        $b2 = ta_unifie($dom, noy_type_res($tys), $metas, $bind)
+        si (non noy_est_absent($b2)) { $bind = $b2 }
+      }
+    }
+    $k = $k + 1
+  }
+
+  $terme = $tete
+  $k = 1
+  tant_que ($k <= $n) {
+    $nm = metas[$k]
+    $dom = ta_subst_liaisons($doms[$k], $metas, $bind)
+    si (ta_lien_bind($bind, $nm)) {
+      $arg = ta_lie_bind($bind, $nm)
+    } sinon {
+      $sous = ta_cherche_but($dom, ctx, $prof - 1, regle)
+      si (non ta_boo($sous, "ok")) {
+        retour ta_err(regle + " : prémisse non résolue : " + ta_txt($sous, "erreur"))
+      }
+      $arg = noy_champ($sous, "terme")
+      inserer($bind, $nm, $arg)
+    }
+    $terme = noy_app($terme, $arg)
+    $k = $k + 1
+  }
+  retour ta_verifie($terme, but, ctx, regle)
+}
+
+# Recherche arrière : exact d'abord, puis apply sur chaque tête, en
+# diminuant la profondeur. Le but résiduel est résolu récursivement.
+fn ta_cherche_but(but: table, ctx: liste<table>, prof: entier, regle: chaine) -> table {
+  $r = ta_exact_but(but, ctx, regle + "/exact")
+  si (ta_boo($r, "ok")) { retour $r }
+  si ($prof <= 0) { retour ta_err(regle + " : profondeur épuisée") }
+
+  $cands = ta_candidats(ctx)
+  $k = 1
+  $n = longueur($cands)
+  tant_que ($k < $n) {
+    $c = $cands[$k]
+    $r2 = ta_apply_head(noy_champ($c, "terme"), noy_champ($c, "type"), but, ctx, $prof, regle)
+    si (ta_boo($r2, "ok")) { retour $r2 }
+    $k = $k + 1
+  }
+  retour ta_err(regle + " : aucun terme ne produit le but")
+}
+
+fn exact(but, ctx) -> table {
+  $b = ta_coerce_table(but)
+  $c = ta_coerce_ctx(ctx)
+  retour ta_exact_but($b, $c, "exact")
+}
+
+fn apply(but, ctx) -> table {
+  $b = ta_coerce_table(but)
+  $c = ta_coerce_ctx(ctx)
+  retour ta_cherche_but($b, $c, 3, "apply/transitif")
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 7. TACTIQUE — induction sur Nat  (partie expérimentale, voir TACTIQUES.md)
 # ─────────────────────────────────────────────────────────────────────────────
 

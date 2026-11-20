@@ -118,6 +118,143 @@ tester($cpt, "demo/lemmes", demo_lemmes())
 tester($cpt, "demo/associativite", demo_associativite())
 tester($cpt, "demo/commutativite", demo_commutativite())
 
+# ═════════════════════════════════════════════════════════════════════════════
+# 8. NOUVELLE CAPACITÉ — exact / apply : recherche transitive + unification
+#    légère. Suite SUPPLÉMENTAIRE (compteur séparé) : les 19 cas historiques
+#    ci-dessus restent inchangés et sont toujours comptés par $cpt.
+#    Chaque cas construit un TERME et appelle le noyau (verifier + convertible)
+#    via ta_verifie() ; aucun « ok » n'est codé en dur.
+# ═════════════════════════════════════════════════════════════════════════════
+$cpt2 = table()
+inserer($cpt2, "r", 0)
+inserer($cpt2, "e", 0)
+
+fn tester_supp(cpt: table, nom: chaine, r: table) {
+  si (ta_boo(r, "ok")) {
+    >> "OK " + nom + " [" + ta_txt(r, "regle") + "]"
+    incrementer(cpt, "r")
+  } sinon {
+    >> "ECHEC " + nom + " : " + ta_txt(r, "erreur")
+    incrementer(cpt, "e")
+  }
+}
+
+# Refus ATTENDU : on vérifie que la tactique ne fabrique pas de preuve fausse.
+fn tester_refus(cpt: table, nom: chaine, r: table) {
+  si (non ta_boo(r, "ok")) {
+    >> "OK " + nom + " (refus attendu) [" + ta_txt(r, "regle") + "]"
+    incrementer(cpt, "r")
+  } sinon {
+    >> "ECHEC " + nom + " : une preuve fausse a été acceptée"
+    incrementer(cpt, "e")
+  }
+}
+
+# Contrôle indépendant : le terme rendu par apply est RE-SOUMIS au noyau.
+fn tester_contre_verif(cpt: table, nom: chaine, r: table, but: table, ctx: liste<table>) {
+  $v = ta_verifie(noy_champ(r, "terme"), but, ctx, "contre-controle")
+  tester_supp(cpt, nom, $v)
+}
+
+# Compte les occurrences d'une variable en TÊTE d'application : sert à
+# prouver que le terme de « apply/2-pas » applique BIEN f deux fois.
+fn ta_compte_tete_liste(l: liste<table>, nom: chaine) -> entier {
+  $c = 0
+  $n = longueur(l)
+  $k = 1
+  tant_que ($k < $n) {
+    $c = $c + ta_compte_tete(l[$k], nom)
+    $k = $k + 1
+  }
+  retour $c
+}
+fn ta_compte_tete(t: table, nom: chaine) -> entier {
+  $g = noy_genre(t)
+  $c = 0
+  si ($g == "var") {
+    si (noy_nom(t) == nom) { $c = 1 }
+  }
+  si ($g == "app") {
+    $c = ta_compte_tete(noy_champ(t, "fonction"), nom) + ta_compte_tete(noy_champ(t, "argument"), nom)
+  }
+  si ($g == "pi" ou $g == "lam") {
+    $c = ta_compte_tete(noy_champ(t, "domaine"), nom) + ta_compte_tete(noy_corps(t), nom)
+  }
+  si ($g == "const" ou $g == "constructeur") {
+    $c = ta_compte_tete(noy_champ(t, "type"), nom)
+  }
+  si ($g == "ind") {
+    $c = ta_compte_tete_liste(noy_champ_liste(t, "params"), nom)
+  }
+  si ($g == "elim") {
+    $c = ta_compte_tete(noy_champ(t, "motif"), nom) + ta_compte_tete_liste(noy_champ_liste(t, "branches"), nom)
+  }
+  retour $c
+}
+
+$sz = ta_zero()
+$s1 = ta_succ($sz)
+$s2 = ta_succ($s1)
+
+# (1) exact : hypothèse exacte, et refus quand le but n'y est pas.
+$ctx_e = noy_ctx_ajouter(ta_ctx(), "h0", ta_eq(ta_nat(), $sz, $sz))
+$but_e = ta_eq(ta_nat(), $sz, $sz)
+$r_e = exact($but_e, $ctx_e)
+tester_supp($cpt2, "exact/hypothese", $r_e)
+tester_contre_verif($cpt2, "exact/terme-reverifie", $r_e, $but_e, $ctx_e)
+tester_refus($cpt2, "exact/refus-but-absent", exact(ta_eq(ta_nat(), $sz, $s1), $ctx_e))
+
+# (2) apply : f : Πx, (0=x) -> (0=succ x), avec h0 : 0=0.
+$ty_f = noy_pi("x", ta_nat(), noy_pi("hf", ta_eq(ta_nat(), $sz, noy_var("x")),
+                                      ta_eq(ta_nat(), $sz, ta_succ(noy_var("x")))))
+$ctx_f = noy_ctx_ajouter(noy_ctx_ajouter(ta_ctx(), "h0", ta_eq(ta_nat(), $sz, $sz)), "f", $ty_f)
+
+$but_1 = ta_eq(ta_nat(), $sz, $s1)
+$r_1 = apply($but_1, $ctx_f)
+tester_supp($cpt2, "apply/1-pas", $r_1)
+tester_contre_verif($cpt2, "apply/1-pas-terme-reverifie", $r_1, $but_1, $ctx_f)
+
+$but_2 = ta_eq(ta_nat(), $sz, $s2)
+$r_2 = apply($but_2, $ctx_f)
+tester_supp($cpt2, "apply/2-pas-transitif", $r_2)
+tester_contre_verif($cpt2, "apply/2-pas-terme-reverifie", $r_2, $but_2, $ctx_f)
+si (ta_compte_tete(noy_champ($r_2, "terme"), "f") >= 2) {
+  >> "OK apply/2-pas-applique-f-deux-fois"
+  incrementer($cpt2, "r")
+} sinon {
+  >> "ECHEC apply/2-pas-applique-f-deux-fois"
+  incrementer($cpt2, "e")
+}
+
+# (3) apply avec argument IMPLICITE inféré : symm A a b : a=b -> b=a.
+$ctx_s = noy_ctx_ajouter(ta_ctx(), "h", ta_eq(ta_nat(), $sz, $s1))
+$but_s = ta_eq(ta_nat(), $s1, $sz)
+$r_s = apply($but_s, $ctx_s)
+tester_supp($cpt2, "apply/symm-argument-implicite", $r_s)
+tester_contre_verif($cpt2, "apply/symm-terme-reverifie", $r_s, $but_s, $ctx_s)
+
+# (4) apply sur un lemme vérifié (terme construit, pas une valeur codée en dur).
+$but_p = ta_eq(ta_nat(), ta_plus($sz, $s1), $s1)
+$r_p = apply($but_p, ta_ctx())
+tester_supp($cpt2, "apply/plus_0_l", $r_p)
+tester_contre_verif($cpt2, "apply/plus_0_l-terme-reverifie", $r_p, $but_p, ta_ctx())
+
+$but_c = ta_eq(ta_nat(), $s1, $s2)
+$r_c = apply($but_c, $ctx_s)
+tester_supp($cpt2, "apply/congr_succ", $r_c)
+
+# (5) Refus global : aucun terme du contexte ne peut produire le but.
+tester_refus($cpt2, "apply/refus-sans-preuve", apply(ta_eq(ta_nat(), $sz, $s2), ta_ctx()))
+
+# ── Bilan ───────────────────────────────────────────────────────────────────
 >> "REUSSIS=" + chaine($cpt["r"])
 >> "ECHOUES=" + chaine($cpt["e"])
-si ($cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }
+>> "REUSSIS_SUP=" + chaine($cpt2["r"])
+>> "ECHOUES_SUP=" + chaine($cpt2["e"])
+>> "TOTAL_REUSSIS=" + chaine($cpt["r"] + $cpt2["r"])
+>> "TOTAL_ECHOUES=" + chaine($cpt["e"] + $cpt2["e"])
+si ($cpt["e"] == 0 et $cpt2["e"] == 0) {
+  >> "RESULTAT: OK"
+} sinon {
+  >> "RESULTAT: ECHEC"
+}
