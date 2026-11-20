@@ -1,578 +1,301 @@
-# =============================================================================
-# publier-release.rose — automatisateur de release Rose, écrit en ROSE
-# =============================================================================
+# publier-release.rose — automatisateur de release Rose, ÉCRIT EN ROSE.
 #
-# Usage :
-#   ./rose/rose scripts/publier-release.rose <version> "<titre>" <fichier_notes> [--dry-run]
+# Équivalent Rose de scripts/publier-release.py (REL1) : les dix étapes sont
+# pilotées depuis Rose via la FFI vers libc system(). Auto-hébergement jusqu'à
+# l'outil de publication.
 #
-# Équivalent Rose de scripts/publier-release.py. Les 10 étapes sont
-# orchestrées ici, en Rose. Les commandes système (sed, cp, sha256sum, git,
-# gh, date) sont lancées par la FFI `@dll`/`@sym` vers libc `system()`.
+# LIMITE FFI MESURÉE (détails : rose/docs/PUBLICATION_ROSE.md) :
+#   system(char*) rend un int. Le moteur Rose n'accepte PAS un argument
+#   chaîne pour une fonction FFI à retour entier (il tente une conversion
+#   chaîne→entier et échoue). La seule déclaration qui transmet correctement
+#   la chaîne est un retour « flottant ». La valeur flottante rendue n'est
+#   PAS utilisée : le vrai code de retour et la sortie sont capturés par le
+#   shell dans deux fichiers, puis lus avec lire_texte().
+#   `@dll("c")` est requis (lib<c>.so, c.so, libc.so.6…).
 #
-# LIMITES FFI (détails dans rose/docs/PUBLICATION_ROSE.md) :
-#   * le pont FFI Rose ne sait PAS appeler une fonction `entier` avec un
-#     argument `chaine` : il convertit alors la chaîne en entier et échoue.
-#     On déclare donc `system` avec un retour `flottant` (argument chaine
-#     correctement passé en char*), on IGNORE ce retour, et on récupère le
-#     vrai code de retour ainsi que la sortie par redirection shell dans
-#     deux fichiers temporaires lus avec `lire_texte`.
-#   * `@dll("c")` est requis : le chargeur essaie lib<c>.so, c.so, …,
-#     libc.so.6. `@dll("libc")` chercherait liblibc.so* et échouerait.
-#   * Aucun jeton n'est jamais affiché : les commandes distantes lisent le
-#     PAT dans le fichier via `$(cat …)` et ne contiennent jamais sa valeur.
+# SÉCURITÉ : le jeton n'est JAMAIS interpolé dans une chaîne affichée ni
+# transmis en argument : les commandes distantes le relisent dans le fichier
+# au moment de l'exécution via $(cat …).
 #
-# --dry-run : aucune commande distante, aucun fichier du dépôt modifié.
-# =============================================================================
+# Usage (depuis la racine du dépôt) :
+#   ./rose/rose scripts/publier-release.rose <version> "<titre>" <notes> \
+#       [--dry-run] [--no-build] [--force]
+# --dry-run : aucun appel réseau, aucune écriture, aucun build, aucun commit.
 
+# ── Pont FFI ─────────────────────────────────────────────────────────────
 @dll("c")
 @sym("system")
-fn appeler_sh(cmd: chaine) -> flottant
+fn sh(cmd: chaine) -> flottant
 
-# ---- Chemins et constantes -------------------------------------------------
-$RACINE = "/home/clausake/Stefan/ROSE"
-$ROSE_DIR = $RACINE + "/rose"
-$TELECHARGEMENTS = $RACINE + "/docs/telechargements"
-$RELEASES_VEL = $RACINE + "/installateur/velopack/Releases"
-$STAGE = $RACINE + "/installateur/velopack/stage"
-$WASM_TARGET = $ROSE_DIR + "/target/wasm32-unknown-unknown/release"
-$TOKEN_PATH = "/home/clausake/.config/opencode/.gh_token"
+@dll("c")
+@sym("getenv")
+fn env(nom: chaine) -> chaine
+
+# ── Constantes ───────────────────────────────────────────────────────────
+$TMP = "/tmp/opencode/rose-release-ffi"
+$LOGPLEIN = $TMP + "/journal-complet.txt"
+$LOG = $TMP + "/journal.txt"
+$RC = $TMP + "/rc.txt"
+$DRAPEAU = $TMP + "/drapeau.txt"
+$USERJSON = $TMP + "/user.json"
+
+$HOME = env("HOME")
+$TOKEN_PATH = $HOME + "/.config/opencode/.gh_token"
 $LOGIN_ATTENDU = "Stef302"
 $DEPOT = "Stef302/Rose"
-$SITE_BASE = "https://stef302.github.io/Rose/telechargements/"
-$TMP = "/tmp/opencode/rose_release"
-$RC_FICHIER = $TMP + "/rc"
-$LOG_FICHIER = $TMP + "/log"
-$SH_FICHIER = $TMP + "/cmd.sh"
-$AIDE_PY = $TMP + "/pont.py"
-$TITRE_FICHIER = $TMP + "/titre.txt"
-$CONF = table()
-inserer($CONF, "dry", faux)
-$RAPPORT = table()
 
-fn est_dry() -> booleen { retour ($CONF["dry"] == vrai) }
-inserer($RAPPORT, "changements", 0)
-inserer($RAPPORT, "commandes", 0)
-
-# ---- Utilitaires de texte --------------------------------------------------
-
-fn nettoyer(s: chaine) -> chaine {
-    $n = longueur(s)
-    $continue = vrai
-    tant_que ($continue et $n > 0) {
-        $c = sous_chaine(s, $n - 1, $n)
-        si ($c == "\n" ou $c == "\r") { $n = $n - 1 } sinon { $continue = faux }
-    }
-    retour sous_chaine(s, 0, $n)
-}
-
-fn trouver(texte: chaine, motif: chaine, depart: entier) -> entier {
-    $n = longueur(texte)
-    $m = longueur(motif)
-    si ($m == 0) { retour depart }
-    $i = depart
-    tant_que ($i + $m <= $n) {
-        si (sous_chaine(texte, $i, $i + $m) == motif) { retour $i }
-        $i = $i + 1
-    }
-    retour -1
-}
-
-fn remplacer(texte: chaine, ancien: chaine, nouveau: chaine) -> chaine {
-    $r = ""
-    $pos = 0
-    $p = trouver(texte, ancien, 0)
-    tant_que ($p >= 0) {
-        $r = $r + sous_chaine(texte, $pos, $p) + nouveau
-        $pos = $p + longueur(ancien)
-        $p = trouver(texte, ancien, $pos)
-    }
-    retour $r + sous_chaine(texte, $pos, longueur(texte))
-}
-
-fn regex_version(v: chaine) -> chaine {
-    retour remplacer(v, ".", "[.]")
-}
-
-fn est_chiffre(c: chaine) -> booleen {
-    $o = ordre(c)
-    retour ($o >= 48 et $o <= 57)
-}
-
-fn valider_version(v: chaine) -> booleen {
-    $s = v
-    si (longueur($s) > 0 et sous_chaine($s, 0, 1) == "v") {
-        $s = sous_chaine($s, 1, longueur($s))
-    }
-    $n = longueur($s)
-    $points = 0
-    $groupe = 0
-    $i = 0
-    $ok = vrai
-    tant_que ($i < $n) {
-        $c = sous_chaine($s, $i, $i + 1)
-        si ($c == ".") {
-            si ($groupe == 0) { $ok = faux }
-            $points = $points + 1
-            $groupe = 0
-        } sinon {
-            si (non est_chiffre($c)) { $ok = faux }
-            $groupe = $groupe + 1
-        }
-        $i = $i + 1
-    }
-    retour ($ok et $points == 2 et $groupe >= 1 et $groupe <= 2)
-}
-
-fn sans_prefixe_v(v: chaine) -> chaine {
-    si (longueur(v) > 0 et sous_chaine(v, 0, 1) == "v") {
-        retour sous_chaine(v, 1, longueur(v))
-    }
-    retour v
-}
-
-fn version_courante() -> chaine {
-    $txt = lire_texte($ROSE_DIR + "/Cargo.toml")
-    $p = trouver($txt, "[package]", 0)
-    si ($p < 0) { echouer("section [package] introuvable dans rose/Cargo.toml") }
-    $q = trouver($txt, "version = \"", $p)
-    si ($q < 0) { echouer("version introuvable dans rose/Cargo.toml") }
-    $debut = $q + longueur("version = \"")
-    $fin = trouver($txt, "\"", $debut)
-    si ($fin < 0) { echouer("fin de version introuvable dans rose/Cargo.toml") }
-    retour sous_chaine($txt, $debut, $fin)
-}
-
-fn compter_puces(chemin: chaine) -> entier {
-    $txt = lire_texte(chemin)
-    $n = longueur($txt)
-    $nb = 0
-    $i = 0
-    $debut_ligne = vrai
-    tant_que ($i < $n) {
-        $c = sous_chaine($txt, $i, $i + 1)
-        si ($debut_ligne) {
-            si ($c == "-" ou $c == "*" ou $c == "•") {
-                $nb = $nb + 1
-            } sinon {
-                si (est_chiffre($c)) {
-                    $j = $i
-                    $nums = vrai
-                    tant_que ($j < $n et $nums) {
-                        $cc = sous_chaine($txt, $j, $j + 1)
-                        si (non est_chiffre($cc)) { $nums = faux }
-                        $j = $j + 1
-                    }
-                    $sep = sous_chaine($txt, $j, $j + 1)
-                    si ($sep == "." ou $sep == ")") { $nb = $nb + 1 }
-                }
-            }
-            $debut_ligne = faux
-        }
-        si ($c == "\n") { $debut_ligne = vrai }
-        $i = $i + 1
-    }
-    retour $nb
-}
-
-# ---- Rapport ---------------------------------------------------------------
-
-fn echouer(msg: chaine) {
-    afficher_erreur("ÉCHEC : " + msg)
-    afficher_erreur("Aucune publication n'a été effectuée par cette étape.")
-    quitter(1)
-}
-
-fn etape(titre: chaine) {
+# ── Affichage ────────────────────────────────────────────────────────────
+fn etape(num: entier, texte: chaine) {
     afficher("")
-    afficher("=== " + titre + " ===")
+    afficher("=== Étape " + chaine(num) + "/10 : " + texte + " ===")
 }
 
-fn ok(msg: chaine) { afficher("  ✓ " + msg) }
-fn info(msg: chaine) { afficher("    " + msg) }
-fn avert(msg: chaine) { afficher("  ! " + msg) }
-
-fn change(msg: chaine) {
-    inserer($RAPPORT, "changements", $RAPPORT["changements"] + 1)
-    afficher("    CHANGEMENT : " + msg)
+fn ok(msg: chaine) {
+    afficher("  ✓ " + msg)
 }
 
-fn simule(cmd: chaine) {
-    inserer($RAPPORT, "commandes", $RAPPORT["commandes"] + 1)
+fn info(msg: chaine) {
+    afficher("    " + msg)
+}
+
+fn simuler(cmd: chaine) {
     afficher("    [SIMULÉ] " + cmd)
 }
 
-fn commande(cmd: chaine) { afficher("    $ " + cmd) }
+fn abort(msg: chaine) {
+    afficher("")
+    afficher("ÉCHEC : " + msg)
+    afficher("Aucune publication n'a été effectuée par cette étape.")
+    quitter(1)
+}
 
-# ---- Exécution via FFI -----------------------------------------------------
-
-fn executer_reel(cmd: chaine) -> chaine {
-    commande(cmd)
-    $script = "#!/bin/sh\n( " + cmd + " ) > " + $LOG_FICHIER + " 2>&1\nprintf %s $? > " + $RC_FICHIER + "\n"
-    ecrire_texte($SH_FICHIER, $script)
-    afficher("    [FFI] appeler_sh(\"sh " + $SH_FICHIER + "\")")
-    appeler_sh("sh " + $SH_FICHIER)
-    $rc = nettoyer(lire_texte($RC_FICHIER))
-    si ($rc == "0") {
-        ok("rc=0 : " + cmd)
-    } sinon {
-        afficher_erreur("  ✗ rc=" + $rc + " : " + cmd)
-        $log = lire_texte($LOG_FICHIER)
-        afficher_erreur("    " + $log)
-        echouer("commande shell en échec (rc=" + $rc + ")")
+# Exécuter une commande via system(). Le shell capture le code de retour
+# dans $RC et les 25 dernières lignes de sortie dans $LOG ; le journal complet
+# reste dans $LOGPLEIN. Retourne vrai si rc==0.
+fn executer(cmd: chaine, dry: booleen) -> booleen {
+    si (dry == vrai) {
+        simuler(cmd)
+        retour vrai
     }
-    retour $rc
-}
-
-fn executer(cmd: chaine) -> chaine {
-    si (est_dry()) {
-        simule(cmd)
-        retour "0"
+    afficher("    $ " + cmd)
+    $ignore = sh("{ " + cmd + " ; } > " + $LOGPLEIN + " 2>&1 ; printf %s $? > " + $RC + " ; tail -n 25 " + $LOGPLEIN + " > " + $LOG)
+    $rc = lire_texte($RC)
+    $sortie = lire_texte($LOG)
+    si (longueur($sortie) > 0) { afficher($sortie) }
+    si ($rc != "0") {
+        afficher("  ✗ échec (rc=" + $rc + ") — journal complet : " + $LOGPLEIN)
+        retour faux
     }
-    retour executer_reel(cmd)
+    ok("rc=0 : " + cmd)
+    retour vrai
 }
 
-fn lire_sortie() -> chaine {
-    si (est_dry()) { retour "" }
-    retour nettoyer(lire_texte($LOG_FICHIER))
+# Exécuter sans afficher, retourner la sortie capturée (ou "ERREUR rc=…").
+fn capter(cmd: chaine) -> chaine {
+    $ignore = sh("{ " + cmd + " ; } > " + $LOG + " 2>&1 ; printf %s $? > " + $RC)
+    $rc = lire_texte($RC)
+    si ($rc != "0") { retour "ERREUR_rc_" + $rc }
+    retour lire_texte($LOG)
 }
 
-# ---- Pont Python pour JSON / HTML (primitives absentes de Rose) ------------
+# ── Étape 1 : compte GitHub ──────────────────────────────────────────────
+fn verifier_compte(dry: booleen) -> booleen {
+    etape(1, "vérification du compte GitHub")
+    $jeton = lire_texte($TOKEN_PATH)
+    si (longueur($jeton) == 0) { abort("jeton vide : " + $TOKEN_PATH) }
+    ok("jeton lu dans " + $TOKEN_PATH + " (jamais affiché)")
 
-fn ecrire_pont() {
-    $c = ""
-    $c = $c + "import sys, datetime as dt\n"
-    $c = $c + "from pathlib import Path\n"
-    $c = $c + "sys.path.insert(0, \"" + $RACINE + "/scripts\")\n"
-    $c = $c + "import publier_release as p\n"
-    $c = $c + "mode, v, tfile, notes = sys.argv[1:5]\n"
-    $c = $c + "titre = Path(tfile).read_text(encoding='utf-8')\n"
-    $c = $c + "rap = p.Rapport(False)\n"
-    $c = $c + "puces = p.lire_notes(Path(notes))\n"
-    $c = $c + "jour = dt.date.today()\n"
-    $c = $c + "m = p.regenerer_manifeste(v, titre, puces, jour, rap, False)\n"
-    $c = $c + "if mode == 'html':\n"
-    $c = $c + "    p.maj_html(v, titre, puces, jour, m, rap, False)\n"
-    $c = $c + "print('PONT-OK')\n"
-    ecrire_texte($AIDE_PY, $c)
-}
-
-# =============================================================================
-# ÉTAPES 1 À 10
-# =============================================================================
-
-fn etape1_compte() -> chaine {
-    etape("Étape 1/10 : vérification du compte GitHub")
-    $token = lire_texte($TOKEN_PATH)
-    si (longueur(nettoyer($token)) == 0) { echouer("jeton vide : " + $TOKEN_PATH) }
-    si (est_dry()) {
-        info("jeton lu dans " + $TOKEN_PATH + " (jamais affiché)")
-        simule("GH_TOKEN=$(cat <jeton>) gh api user -q .login")
-        info("compte attendu : " + $LOGIN_ATTENDU + " (appel API non effectué en --dry-run)")
+    $curl = "curl -sS --max-time 20 -H \"Authorization: Bearer $(cat " + $TOKEN_PATH + ")\" -H \"Accept: application/vnd.github+json\" -H \"User-Agent: rose-publier-release\" https://api.github.com/user"
+    si (dry == vrai) {
+        simuler($curl + " > <capture> ; grep login == " + $LOGIN_ATTENDU)
+        info("dry-run : aucun appel réseau (contrairement au dry-run Python)")
     } sinon {
-        $cmd = "GH_TOKEN=\"$(cat " + $TOKEN_PATH + ")\" gh api user -q .login 2>/dev/null"
-        executer($cmd)
-        $login = lire_sortie()
-        si ($login != $LOGIN_ATTENDU) {
-            echouer("compte GitHub " + $login + " refusé : seul " + $LOGIN_ATTENDU + " est autorisé")
+        $ignore = sh("{ " + $curl + " ; } > " + $USERJSON + " 2>&1 ; printf %s $? > " + $RC + " ; grep -q '\"login\"[[:space:]]*:[[:space:]]*\"" + $LOGIN_ATTENDU + "\"' " + $USERJSON + " && printf %s OK > " + $DRAPEAU + " || printf %s REFUSE > " + $DRAPEAU)
+        si (lire_texte($DRAPEAU) != "OK") {
+            abort("compte GitHub refusé ou appel /user impossible : seul " + $LOGIN_ATTENDU + " est autorisé (jeton non affiché)")
         }
-        ok("compte vérifié : " + $login + " (jeton lu, jamais affiché)")
+        ok("compte vérifié : " + $LOGIN_ATTENDU + " (sortie curl capturée, jeton non affiché)")
     }
-    retour $token
+    retour vrai
 }
 
-fn etape2_version(brut: chaine) -> chaine {
-    etape("Étape 2/10 : validation du format de version")
-    si (non valider_version(brut)) {
-        echouer("version " + brut + " invalide : attendu x.y.z ou x.y.zz")
+# ── Étape 2 : validation de version ──────────────────────────────────────
+fn valider_version(brut: chaine) -> booleen {
+    $n = longueur(brut)
+    si ($n < 5 ou $n > 9) { retour faux }
+    $points = 0
+    $bon = vrai
+    pour k de 0 vers $n {
+        $c = sous_chaine(brut, k, k + 1)
+        si ($c == ".") {
+            $points = $points + 1
+        } sinon {
+            $o = ordre($c)
+            si ($o < 48 ou $o > 57) { $bon = faux }
+        }
     }
-    $v = sans_prefixe_v(brut)
-    ok("version validée : " + $v)
-    retour $v
+    si ($points != 2) { $bon = faux }
+    retour $bon
 }
 
-fn etape3_cargo(ancienne: chaine, version: chaine) {
-    etape("Étape 3/10 : mise à jour de rose/Cargo.toml et rose/Cargo.lock")
-    $v = version_courante()
-    info("version courante dans rose/Cargo.toml : " + $v)
-    $anc = regex_version($v)
-    $c1 = "sed -i '0,/^version = \"" + $anc + "\"/s//version = \"" + version + "\"/' " + $ROSE_DIR + "/Cargo.toml"
-    $c2 = "sed -i '/^name = \"rose\"$/,+1 s/^version = \"" + $anc + "\"/version = \"" + version + "\"/' " + $ROSE_DIR + "/Cargo.lock"
-    si (est_dry()) {
-        change("rose/Cargo.toml : " + $v + " → " + version + " (simulé)")
-        simule($c1)
-        change("rose/Cargo.lock : " + $v + " → " + version + " (simulé)")
-        simule($c2)
+# ── Commandes construites ────────────────────────────────────────────────
+# Préfixe Python : importe le module REL1 existant (non modifié) et réutilise
+# sa logique de fichiers au lieu de la recopier en Rose.
+$PY = "import sys,datetime as dt,importlib.util; s=importlib.util.spec_from_file_location(\"pub\",\"scripts/publier-release.py\"); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); r=m.Rapport(False); "
+
+fn cmd_version(version: chaine, notes: chaine) -> chaine {
+    retour "python3 -c '" + $PY + "v=m.valider_version(sys.argv[1],r); a=m.version_courante(); n=m.lire_notes(sys.argv[2]); m.maj_cargo(a,v,r,False); m.maj_marqueurs(a,v,r,False)' \"" + version + "\" \"" + notes + "\""
+}
+
+fn cmd_site(version: chaine, titre: chaine, notes: chaine) -> chaine {
+    retour "python3 -c '" + $PY + "v=m.valider_version(sys.argv[1],r); m.copier_artefacts(v,r,False); n=m.lire_notes(sys.argv[2]); man=m.regenerer_manifeste(v,sys.argv[3],n,dt.date.today(),r,False); m.maj_html(v,sys.argv[3],n,dt.date.today(),man,r,False)' \"" + version + "\" \"" + notes + "\" \"" + titre + "\""
+}
+
+fn liste_assets(version: chaine) -> chaine {
+    retour "docs/telechargements/Rose-" + version + "-full.nupkg docs/telechargements/releases.win.json docs/telechargements/Rose-win-Setup.exe docs/telechargements/rose.exe docs/telechargements/rose-shell.exe docs/telechargements/rose-wasm.wasm"
+}
+
+# ── Analyse des arguments ────────────────────────────────────────────────
+$dry = faux
+$no_build = faux
+$force = faux
+$version = ""
+$titre = ""
+$notes = ""
+$nbpos = 0
+
+pour k de 0 vers nb_arguments() {
+    $a = argument(k)
+    si ($a == "--dry-run") {
+        $dry = vrai
     } sinon {
-        executer($c1)
-        change("rose/Cargo.toml : " + $v + " → " + version)
-        executer($c2)
-        change("rose/Cargo.lock : " + $v + " → " + version)
+        si ($a == "--no-build") {
+            $no_build = vrai
+        } sinon {
+            si ($a == "--force") {
+                $force = vrai
+            } sinon {
+                si ($nbpos == 0) { $version = $a }
+                sinon {
+                    si ($nbpos == 1) { $titre = $a } sinon { $notes = $a }
+                }
+                $nbpos = $nbpos + 1
+            }
+        }
     }
 }
 
-fn etape4_marqueurs(ancienne: chaine, version: chaine) {
-    etape("Étape 4/10 : mise à jour des marqueurs de version courante")
-    $anc = regex_version(ancienne)
-    $c1 = "sed -i 's|badge/version-" + $anc + "-|badge/version-" + version + "-|g' " + $RACINE + "/README.md"
-    $c2 = "sed -i '1,/id=\"page-changelog\"/ s/" + $anc + "/" + version + "/g' " + $RACINE + "/docs/index.html"
-    $c3 = "sed -i 's/versioned as \\*\\*" + $anc + "\\*\\*/versioned as **" + version + "**/g' " + $RACINE + "/wikimiroir/Home.md"
-    $c4 = "sed -i 's/\"Rose " + $anc + "\"/\"Rose " + version + "\"/g' " + $RACINE + "/wikimiroir/CLI.md"
-    si (est_dry()) {
-        change("README.md : badge shields.io → " + version + " (simulé)")
-        simule($c1)
-        change("docs/index.html : marqueurs avant CHANGELOG → " + version + " (simulé)")
-        simule($c2)
-        change("wikimiroir/Home.md · CLI.md → " + version + " (simulé)")
-        simule($c3)
-        simule($c4)
-    } sinon {
-        executer($c1)
-        change("README.md : badge shields.io → " + version)
-        executer($c2)
-        change("docs/index.html : marqueurs d'état courant → " + version)
-        executer($c3)
-        executer($c4)
-        change("wikimiroir/Home.md · CLI.md → " + version)
-    }
-}
-
-fn etape5_builds(version: chaine) {
-    etape("Étape 5/10 : construction des artefacts")
-    $c1 = "(cd " + $RACINE + " && sh scripts/build-windows-rebuild.sh)"
-    $c2 = "(cd " + $RACINE + " && sh installateur/velopack/pack-linux.sh " + version + ")"
-    $c3 = "(cd " + $ROSE_DIR + " && CARGO_TARGET_DIR=" + $ROSE_DIR + "/target cargo build --release --target wasm32-unknown-unknown --lib)"
-    si (est_dry()) {
-        simule($c1)
-        simule($c2)
-        simule($c3)
-        info("builds non exécutés en --dry-run (aucune écriture)")
-        info("artefacts attendus (contrôle au moment de l'exécution réelle) :")
-        info("  " + $RELEASES_VEL + "/Rose-" + version + "-full.nupkg")
-        info("  " + $RELEASES_VEL + "/releases.win.json")
-        info("  " + $STAGE + "/Rose-win-Setup.exe")
-        info("  " + $STAGE + "/rose.exe")
-        info("  " + $STAGE + "/rose-shell.exe")
-        info("  " + $WASM_TARGET + "/rose.wasm")
-    } sinon {
-        executer($c1)
-        executer($c2)
-        executer($c3)
-        ok("artefacts construits")
-    }
-}
-
-fn etape6_artefacts(version: chaine) {
-    etape("Étape 6/10 : copie des artefacts et SHA256SUMS")
-    $src1 = $RELEASES_VEL + "/Rose-" + version + "-full.nupkg"
-    $src2 = $RELEASES_VEL + "/releases.win.json"
-    $src3 = $STAGE + "/Rose-win-Setup.exe"
-    $src4 = $STAGE + "/rose.exe"
-    $src5 = $STAGE + "/rose-shell.exe"
-    $src6 = $WASM_TARGET + "/rose.wasm"
-    $cp = "cp -f " + $src1 + " " + $src2 + " " + $src3 + " " + $src4 + " " + $src5 + " " + $src6 + " " + $TELECHARGEMENTS + "/"
-    $version_cmd = "printf %s '" + version + "' > " + $TELECHARGEMENTS + "/VERSION"
-    $sommes = "(cd " + $TELECHARGEMENTS + " && find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name releases.json -printf '%f\\n' | sort | xargs -r sha256sum > SHA256SUMS)"
-    si (est_dry()) {
-        simule("mkdir -p " + $TELECHARGEMENTS)
-        simule($cp)
-        simule($version_cmd)
-        simule($sommes)
-        change("telechargements/VERSION → " + version + " (simulé)")
-        change("telechargements/SHA256SUMS (simulé, empreintes calculées à l'exécution réelle)")
-        info("aucune empreinte n'est inventée")
-    } sinon {
-        $mk = "mkdir -p " + $TELECHARGEMENTS
-        executer($mk)
-        executer($cp)
-        executer($version_cmd)
-        executer($sommes)
-        change("telechargements/VERSION → " + version)
-        change("telechargements/SHA256SUMS calculé")
-        ok("SHA-256 calculés sur les fichiers réellement présents")
-    }
-}
-
-fn etape7_manifeste(version: chaine, titre: chaine, notes: chaine) {
-    etape("Étape 7/10 : génération de releases.json")
-    si (est_dry()) {
-        simule("python3 <pont.py> manifeste " + version + " \"$(cat " + $TITRE_FICHIER + ")\" " + notes)
-        change("telechargements/releases.json (simulé)")
-        info("le manifeste réel est construit à partir des fichiers présents")
-    } sinon {
-        ecrire_pont()
-        ecrire_texte($TITRE_FICHIER, titre)
-        $cmd = "python3 " + $AIDE_PY + " manifeste " + version + " \"$(cat " + $TITRE_FICHIER + ")\" " + notes
-        executer($cmd)
-        $s = lire_sortie()
-        si (trouver($s, "PONT-OK", 0) < 0) { echouer("pont manifeste : sortie inattendue") }
-        change("telechargements/releases.json régénéré")
-    }
-}
-
-fn etape8_changelog(version: chaine, titre: chaine, notes: chaine) {
-    etape("Étape 8/10 : article CHANGELOG et événement RELEASES")
-    si (est_dry()) {
-        simule("python3 <pont.py> html " + version + " \"$(cat " + $TITRE_FICHIER + ")\" " + notes)
-        change("docs/index.html : article CHANGELOG V" + version + " (simulé)")
-        change("docs/index.html : événement RELEASES V" + version + " (simulé)")
-        info("idempotence : une version déjà présente n'est jamais dupliquée")
-    } sinon {
-        ecrire_pont()
-        ecrire_texte($TITRE_FICHIER, titre)
-        $cmd = "python3 " + $AIDE_PY + " html " + version + " \"$(cat " + $TITRE_FICHIER + ")\" " + notes
-        executer($cmd)
-        $s = lire_sortie()
-        si (trouver($s, "PONT-OK", 0) < 0) { echouer("pont html : sortie inattendue") }
-        change("docs/index.html : article CHANGELOG V" + version)
-        change("docs/index.html : événement RELEASES V" + version)
-    }
-}
-
-fn etape9_git(version: chaine) {
-    etape("Étape 9/10 : commit et push sur main")
-    $branche_cmd = "git -C " + $RACINE + " rev-parse --abbrev-ref HEAD"
-    $add = "git -C " + $RACINE + " add -- rose/Cargo.toml rose/Cargo.lock README.md docs/index.html wikimiroir/Home.md wikimiroir/CLI.md docs/telechargements"
-    $cm = "git -C " + $RACINE + " commit -m 'chore(release): publier v" + version + "'"
-    $push = "git -C " + $RACINE + " push origin main"
-    si (est_dry()) {
-        simule($branche_cmd)
-        info("branche : main attendue (contrôle à l'exécution réelle)")
-        simule($add)
-        simule($cm)
-        simule($push)
-        info("les modifications d'autres agents ne sont pas ajoutées")
-    } sinon {
-        executer($branche_cmd)
-        $branche = lire_sortie()
-        si ($branche != "main") { echouer("branche " + $branche + " : la publication exige 'main'") }
-        ok("branche : " + $branche)
-        executer($add)
-        executer($cm)
-        executer($push)
-        change("commit et push de la release v" + version)
-    }
-}
-
-fn etape10_gh(version: chaine, titre: chaine, notes: chaine) {
-    etape("Étape 10/10 : création et vérification de la release GitHub")
-    $tag = "v" + version
-    $token_cmd = "GH_TOKEN=\"$(cat " + $TOKEN_PATH + ")\""
-    $view = $token_cmd + " gh release view " + $tag + " --repo " + $DEPOT + " >/dev/null 2>&1"
-    $create = $token_cmd + " gh release create " + $tag + " --repo " + $DEPOT + " --title \"$(cat " + $TITRE_FICHIER + ")\" --notes-file " + notes + " " + $TELECHARGEMENTS + "/Rose-" + version + "-full.nupkg"
-    $verif_tag = $token_cmd + " gh release view " + $tag + " --repo " + $DEPOT + " --json tagName --jq .tagName"
-    $verif_nb = $token_cmd + " gh release view " + $tag + " --repo " + $DEPOT + " --json assets --jq '.assets|length'"
-    $download = $token_cmd + " gh release download " + $tag + " --repo " + $DEPOT + " --pattern 'Rose-" + version + "-full.nupkg' --dir " + $TMP + " --clobber"
-    $hash_local = "sha256sum " + $TELECHARGEMENTS + "/Rose-" + version + "-full.nupkg"
-    $hash_dist = "sha256sum " + $TMP + "/Rose-" + version + "-full.nupkg"
-    si (est_dry()) {
-        simule($view)
-        simule("si " + $tag + " existe : échec (aucun --force dans cette interface)")
-        simule($create)
-        simule($verif_tag)
-        simule($verif_nb)
-        simule($download)
-        simule($hash_local)
-        simule($hash_dist)
-        info("vérification : tag présent, nombre d'assets, SHA-256 du nupkg téléchargé")
-    } sinon {
-        ecrire_texte($TITRE_FICHIER, titre)
-        $existe = executer_sans_echec($view)
-        si ($existe == "0") { echouer("la release " + $tag + " existe déjà") }
-        ok("release " + $tag + " inexistante : création autorisée")
-        executer($create)
-        change("release GitHub " + $tag + " créée")
-        executer($verif_tag)
-        $t = lire_sortie()
-        si ($t != $tag) { echouer("vérification API : tag " + $tag + " introuvable") }
-        executer($verif_nb)
-        info("assets distants : " + lire_sortie())
-        executer($download)
-        executer($hash_local)
-        $hl = lire_sortie()
-        executer($hash_dist)
-        $hd = lire_sortie()
-        $lh = trouver($hl, "  ", 0)
-        $dh = trouver($hd, "  ", 0)
-        si ($lh < 0 ou $dh < 0) { echouer("hash SHA-256 illisible") }
-        $hl2 = sous_chaine($hl, 0, $lh)
-        $hd2 = sous_chaine($hd, 0, $dh)
-        si ($hl2 != $hd2) { echouer("SHA-256 du nupkg téléchargé != local") }
-        ok("SHA-256 du nupkg téléchargé == local")
-    }
-}
-
-fn executer_sans_echec(cmd: chaine) -> chaine {
-    commande(cmd)
-    $script = "#!/bin/sh\n( " + cmd + " ) > " + $LOG_FICHIER + " 2>&1\nprintf %s $? > " + $RC_FICHIER + "\n"
-    ecrire_texte($SH_FICHIER, $script)
-    appeler_sh("sh " + $SH_FICHIER)
-    retour nettoyer(lire_texte($RC_FICHIER))
-}
-
-# =============================================================================
-# ORCHESTRATION
-# =============================================================================
-
-fn usage() {
-    afficher_erreur("Usage : ./rose/rose scripts/publier-release.rose <version> \"<titre>\" <fichier_notes> [--dry-run]")
+si ($nbpos < 3) {
+    afficher("Usage : ./rose/rose scripts/publier-release.rose <version> \"<titre>\" <notes> [--dry-run] [--no-build] [--force]")
     quitter(2)
 }
 
-fn main() {
-    $n = nb_arguments()
-    si ($n < 3) { usage() }
-    $version_brut = argument(0)
-    $titre = argument(1)
-    $notes = argument(2)
-    $i = 3
-    tant_que ($i < $n) {
-        $a = argument($i)
-        si ($a == "--dry-run") { $CONF["dry"] = vrai } sinon {
-            afficher_erreur("argument inconnu : " + $a)
-            usage()
-        }
-        $i = $i + 1
+si ($dry == vrai) {
+    afficher("╔═══════════════════════════════════════════════════════════╗")
+    afficher("║  DRY-RUN — aucune écriture, aucun build, aucune publication ║")
+    afficher("╚═══════════════════════════════════════════════════════════╝")
+}
+
+# Dossier de travail FFI (écriture locale, uniquement en mode réel).
+si ($dry == faux) {
+    $ignore = sh("mkdir -p " + $TMP + " > /dev/null 2>&1 ; printf %s 0 > " + $RC)
+}
+
+# ── Étape 1 ──────────────────────────────────────────────────────────────
+verifier_compte($dry)
+
+# ── Étape 2 ──────────────────────────────────────────────────────────────
+etape(2, "validation du format de version")
+si (valider_version($version) == faux) {
+    abort("version " + $version + " invalide : attendu x.y.z ou x.y.zz")
+}
+ok("version validée : " + $version)
+$contenu_notes = lire_texte($notes)
+si (longueur($contenu_notes) == 0) { abort("fichier de notes vide : " + $notes) }
+ok("notes lues : " + $notes)
+
+# ── Étapes 3-4 ───────────────────────────────────────────────────────────
+etape(3, "mise à jour de Cargo.toml / Cargo.lock + marqueurs")
+si (executer(cmd_version($version, $notes), $dry) == faux) {
+    abort("échec de la mise à jour des versions (étapes 3-4)")
+}
+
+# ── Étape 5 ──────────────────────────────────────────────────────────────
+etape(5, "construction des artefacts")
+si ($no_build == vrai) {
+    info("--no-build : construction sautée")
+} sinon {
+    si (executer("sh scripts/build-windows-rebuild.sh", $dry) == faux) {
+        abort("échec du build Windows")
     }
-
-    si (non est_dry()) {
-        # Le dossier scratch doit exister AVANT le premier appel FFI :
-        # executer_reel() y écrit le script et les fichiers de statut.
-        appeler_sh("mkdir -p " + $TMP)
+    si (executer("sh installateur/velopack/pack-linux.sh " + $version, $dry) == faux) {
+        abort("échec du paquet Velopack Linux")
     }
-
-    si (est_dry()) {
-        afficher("╔═══════════════════════════════════════════════════════════╗")
-        afficher("║  DRY-RUN — aucune écriture, aucun build, aucune publication ║")
-        afficher("╚═══════════════════════════════════════════════════════════╝")
-    }
-
-    $token = etape1_compte()
-    $version = etape2_version($version_brut)
-    $ancienne = version_courante()
-    $nb_puces = compter_puces($notes)
-    ok(chaine($nb_puces) + " puce(s) lue(s) dans " + $notes)
-
-    etape3_cargo($ancienne, $version)
-    etape4_marqueurs($ancienne, $version)
-    etape5_builds($version)
-    etape6_artefacts($version)
-    etape7_manifeste($version, $titre, $notes)
-    etape8_changelog($version, $titre, $notes)
-    etape9_git($version)
-    etape10_gh($version, $titre, $notes)
-
-    afficher("")
-    si (est_dry()) {
-        afficher("╔═══════════════════════════════════════════════════════════╗")
-        afficher("║  RAPPORT DRY-RUN — simulation terminée (10 étapes)        ║")
-        afficher("╚═══════════════════════════════════════════════════════════╝")
-        afficher("Changements simulés : " + chaine($RAPPORT["changements"]))
-        afficher("Commandes simulées : " + chaine($RAPPORT["commandes"]))
-        afficher("Aucun fichier du dépôt modifié, aucun commit, aucune release créée.")
-    } sinon {
-        afficher("║  PUBLICATION TERMINÉE — v" + version + "                       ║")
-        afficher("Changements appliqués : " + chaine($RAPPORT["changements"]))
+    si (executer("CARGO_TARGET_DIR=rose/target cargo build --release --target wasm32-unknown-unknown --lib --manifest-path rose/Cargo.toml", $dry) == faux) {
+        abort("échec du build wasm")
     }
 }
 
-main()
+# ── Étapes 6-8 ───────────────────────────────────────────────────────────
+etape(6, "copie des artefacts, SHA256SUMS, manifeste, CHANGELOG/RELEASES")
+si (executer(cmd_site($version, $titre, $notes), $dry) == faux) {
+    abort("échec de la génération du site (étapes 6-8)")
+}
+
+# ── Étape 9 ──────────────────────────────────────────────────────────────
+etape(9, "commit et push sur main")
+$cmdbranche = "git rev-parse --abbrev-ref HEAD | tr -d '\\n'"
+si ($dry == vrai) {
+    simuler($cmdbranche + " ; vérification branche == main")
+    simuler("git add -- <fichiers de la release>")
+    simuler("git commit -m \"chore(release): publier v" + $version + "\"")
+    simuler("git push origin main")
+} sinon {
+    $branche = capter($cmdbranche)
+    si ($branche != "main") { abort("branche " + $branche + " : la publication exige 'main'") }
+    ok("branche : main")
+    $fichiers = "rose/Cargo.toml rose/Cargo.lock README.md docs/index.html wikimiroir/Home.md wikimiroir/CLI.md docs/telechargements/VERSION docs/telechargements/SHA256SUMS docs/telechargements/releases.json " + liste_assets($version)
+    si (executer("git add -- " + $fichiers, $dry) == faux) { abort("échec git add") }
+    si (executer("git commit -m \"chore(release): publier v" + $version + "\"", $dry) == faux) { abort("échec git commit") }
+    si (executer("git push origin main", $dry) == faux) { abort("échec git push") }
+}
+
+# ── Étape 10 ─────────────────────────────────────────────────────────────
+etape(10, "création et vérification de la release GitHub")
+$pre = "GH_TOKEN=$(cat " + $TOKEN_PATH + ")"
+$gh_create = $pre + " gh release create v" + $version + " --title \"" + $titre + "\" --notes-file \"" + $notes + "\" " + liste_assets($version)
+$gh_delete = $pre + " gh release delete v" + $version + " --yes"
+$gh_view = $pre + " gh release view v" + $version + " --json assets --jq '.assets|length' | tr -d '\\n'"
+$gh_down = $pre + " gh release download v" + $version + " --pattern 'Rose-" + $version + "-full.nupkg' --dir " + $TMP + " --clobber && sha256sum docs/telechargements/Rose-" + $version + "-full.nupkg " + $TMP + "/Rose-" + $version + "-full.nupkg | awk '{print $1}' | sort -u | wc -l | tr -d ' '"
+
+si ($dry == vrai) {
+    si ($force == vrai) { simuler($gh_delete + "  (--force)") }
+    simuler($gh_create)
+    simuler($gh_view)
+    simuler($gh_down + "  (doit rendre 1)")
+    info("vérification API : tag présent, nombre d'assets, SHA-256 du nupkg téléchargé")
+} sinon {
+    si ($force == vrai) {
+        si (executer($gh_delete, $dry) == faux) { info("--force : release absente ou suppression impossible, création tentée") }
+    }
+    si (executer($gh_create, $dry) == faux) { abort("échec gh release create") }
+    $nbassets = capter($gh_view)
+    si ($nbassets != "6") { abort("vérification API : " + $nbassets + " assets au lieu de 6") }
+    ok("API : tag v" + $version + " présent, 6 assets")
+    $unicite = capter($gh_down)
+    si ($unicite != "1") { abort("SHA-256 du nupkg téléchargé différent du local") }
+    ok("SHA-256 du nupkg téléchargé == local")
+}
+
+# ── Rapport final ────────────────────────────────────────────────────────
+afficher("")
+si ($dry == vrai) {
+    afficher("╔═══════════════════════════════════════════════════════════╗")
+    afficher("║  RAPPORT DRY-RUN — simulation terminée (10 étapes)        ║")
+    afficher("╚═══════════════════════════════════════════════════════════╝")
+    afficher("Aucun fichier du dépôt modifié, aucun build, aucun commit, aucune release.")
+} sinon {
+    afficher("╔═══════════════════════════════════════════════════════════╗")
+    afficher("║  PUBLICATION TERMINÉE — v" + $version + "                       ║")
+    afficher("╚═══════════════════════════════════════════════════════════╝")
+}
