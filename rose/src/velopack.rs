@@ -1343,7 +1343,9 @@ fn est_nupkg(nom: &str) -> bool {
 }
 
 fn est_legacy(nom: &str) -> bool {
-    nom.to_ascii_lowercase().ends_with("setup.exe")
+    let n = nom.to_ascii_lowercase();
+    // `Rose-Setup-0.1.3.exe`, `Rose-win-Setup.exe`, `Rose-Installer.exe`.
+    n.ends_with(".exe") && (n.contains("setup") || n.contains("install"))
 }
 
 /// Analyse pure du manifeste site (aucun réseau, aucun disque).
@@ -1684,8 +1686,8 @@ pub fn construire_catalogue(
     let message = message.into();
     let message = if message.trim().is_empty() {
         if versions.is_empty() {
-            "Aucune version disponible : API GitHub inaccessible et aucune version \
-             déjà téléchargée sur cet appareil."
+            "Aucune version disponible : site Rose et API GitHub injoignables, \
+             et aucune version déjà téléchargée sur cet appareil."
                 .to_string()
         } else {
             format!("{} version(s) disponible(s).", versions.len())
