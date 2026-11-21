@@ -342,7 +342,7 @@ def main():
             "timer de progression ciblé": "InvalidateRect(h, &piste, 0);",
             "timer à 30 i/s (pas 62)": "SetTimer(h, TIMER_PROGRESSION, 33,",
             # ⚠ Logo jamais agrandi au-delà du PNG natif.
-            "ratio rose centralisé (LOGO3)": "pub const RATIO_ROSE: f64 = 337.0 / 264.0",
+            "ratio rose dérivé des octets (LOGO4)": "pub const RATIO_ROSE: f64 = ROSE_H as f64 / ROSE_L as f64",
             "hauteur rose = contenu + marges (LOGO3)": "pub fn hauteur_rose_requise(",
             "boîte rose sans clamp hauteur seule (LOGO3)": "pub fn boite_rose(",
             "marges 4/8 réservées (LOGO3)": "MARGE_TOTALE_ROSE",
