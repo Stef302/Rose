@@ -1210,3 +1210,9 @@ L'utilisateur autorise explicitement les algorithmes ou formules plus efficaces 
 | EX1 | titre neutre (pas 0.1.7), description générale, thème noir lime rouge | vscode-rose/**, rose/docs/EXTENSION2.md |
 | EX2 | page promotionnelle après téléchargement + lien site | docs/index.html, installateur/velopack/**, rose/docs/PROMO.md |
 | L6 | mise à jour auto optionnelle, non gourmande, via site Rose, sans polling infini | rose/src/{setup_core,setup_gui,velopack}.rs, rose/docs/UPDATE_OPT.md |
+
+## Vague 73 — clarification CLI : comp / aot / llvm, extension, bannière neutre
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| CLI1 | extension .exe pour comp, aide claire comp vs aot vs llvm, helper AOT local, bannière sans Rust | rose/src/{main,interp,auto_llvm,cmd_llvm}.rs, rose/docs/CLI_CLAIR.md |
