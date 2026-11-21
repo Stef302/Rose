@@ -1237,3 +1237,10 @@ L'utilisateur autorise explicitement les algorithmes ou formules plus efficaces 
 ## Vague 76 — AOT via l'émetteur machine intégré (sans LLVM)
 
 rose/src/{cmd_llvm,link_natif,natif_emetteur,rir}.rs + rose/docs/AOT_NATIF.md
+
+## Vague 77 — AOT avec appels de fonction (fib récursif) + UI tray/setup
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| AOT2 | faire fonctionner `rose aot fib.rose` (appels RIR récursifs) | rose/src/{natif_emetteur,link_natif,cmd_llvm,rir}.rs, rose/docs/AOT2.md |
+| UITRAY | icône tray visible + pas de doublon options + tige non crop | rose/src/{bin/rose-tray,setup_gui}.rs, rose/docs/UI_TRAY.md |
