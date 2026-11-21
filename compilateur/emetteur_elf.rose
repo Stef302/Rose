@@ -1111,7 +1111,24 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_branch(1, $g5_bigaddl)
       } sinon si ($c >= 0) {
         g5_emit_cmp_value($c)
-      } sinon si ($op == "-") { g5_emit(subr(0, 1, 0))
+      } sinon si ($op == "-") {
+        # G5-BIG : A - B = A + (-B) dès qu'un opérande porte le tag 3.
+        # x1 = gauche taguée, x0 = droite taguée. Les deux sont promus
+        # (bigpromote préserve x12/x13), la droite est inversée (bigneg),
+        # puis bigadd effectue l'addition signée. Sauts à déplacement
+        # constant : aucun label par nœud '-' (g5_patch reste linéaire).
+        g5_emit(g5_tagbits(2, 1))
+        g5_emit(cmpi(2, 3)); g5_branch_off(100, 4)   # gauche tag3 -> bloc big (idx6)
+        g5_emit(g5_tagbits(2, 0))
+        g5_emit(cmpi(2, 3)); g5_branch_off(101, 16)  # droite pas tag3 -> 64 bits (idx21)
+        g5_emit(orrr(12, 31, 1)); g5_emit(orrr(13, 31, 0))
+        g5_emit(orrr(0, 31, 13)); g5_branch(1, $g5_bigprol); g5_emit(orrr(13, 31, 0))
+        g5_emit(orrr(0, 31, 12)); g5_branch(1, $g5_bigprol); g5_emit(orrr(12, 31, 0))
+        g5_emit(orrr(0, 31, 13)); g5_branch(1, $g5_bignegl); g5_emit(orrr(13, 31, 0))
+        g5_emit(orrr(1, 31, 12)); g5_emit(orrr(0, 31, 13))
+        g5_branch(1, $g5_bigaddl)
+        g5_branch_off(0, 2)                         # retour bigadd : enjamber la voie 64 bits
+        g5_emit(subr(0, 1, 0))                      # voie 64 bits (petits entiers)
       } sinon si ($op == "*") { g5_emit(mulr(0, 1, 0)); g5_emit(g5_lsr3(0, 0))
       } sinon si ($op == "/" ou $op == "//" ou $op == "div") {
         g5_emit(g5_asr3(1, 1)); g5_emit(g5_asr3(0, 0))
@@ -1132,6 +1149,19 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(orrr(0, 31, 3))
         g5_emit(g5_lsl3(0, 0))
       } sinon si ($op == "^") {
+        # G5-BIG : `(bin ^ entier A entier B)` dont le résultat dépasse 2^64
+        # est replié à l'émission en descripteur tag 3 via g5_load_val —
+        # exactement comme le compilateur natif replie déjà (2^64)^2 avant
+        # le dump RIR. Borne prouvée : B <= 512 couvre 2^100 et 10^40 sans
+        # risquer un décompte pathologique sur un RIR hostile.
+        si ($pos + 7 < $n et $t[$pos + 3] == "entier" et $t[$pos + 5] == "entier") {
+          $ba = g4_entier_ou_zero($t[$pos + 4])
+          $be = g4_entier_ou_zero($t[$pos + 6])
+          si ($be >= 0 et $be <= 512) {
+            g5_load_val(0, $ba ^ $be)
+            retour $pos + 8
+          }
+        }
         # x1 = base taguée, x0 = exposant tagué ; repli entier (pas de flottants).
         $l1 = g5_next()
         $l2 = g5_next()
