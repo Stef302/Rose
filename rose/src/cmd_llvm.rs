@@ -418,6 +418,14 @@ fn orc(argv: &[String]) -> ! {
     // Toutes les fonctions sont compilées dans le même segment. Une fonction
     // non émettable est écartée ; elle ne bloque la compilation QUE si elle
     // est effectivement appelée depuis le programme principal.
+    // Une fonction qui lit/écrit une globale du principal ne peut pas être
+    // émise avec un simple pointeur de trame local : on la refuse proprement
+    // plutôt que de produire un binaire qui lirait un slot non initialisé.
+    let mut noms_principaux: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    Lineariseur::collecter_bloc(&prog.instructions, &mut noms_principaux);
+    let globaux_principaux: Vec<String> = noms_principaux.into_iter().collect();
+
     let mut fonctions: Vec<(String, crate::rir::CorpsRir)> =
         vec![("$principal".to_string(), principal)];
     let mut refusees: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -426,8 +434,10 @@ fn orc(argv: &[String]) -> ! {
         let Some(corps) = sig.corps.as_ref() else { continue };
         let corps_lineaire = lin.bloc(corps);
         let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
-        match crate::rir::abaisser(&corps_lineaire, &params, &[]) {
-            Some(rir) if corps_emettable_aot(&rir) => fonctions.push((nom.clone(), rir)),
+        match crate::rir::abaisser(&corps_lineaire, &params, &globaux_principaux) {
+            Some(rir) if corps_emettable_aot(&rir) && rir.globaux.is_empty() => {
+                fonctions.push((nom.clone(), rir))
+            }
             _ => { refusees.insert(nom.clone()); }
         }
     }
