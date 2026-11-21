@@ -833,9 +833,37 @@ fn carres_acc_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
     total
 }
 
+// ── R6 — noyau de carrés CALLABLE ───────────────────────────────────────────
+// Point d'entrée public du noyau NEON 16 accumulateurs. Il calcule la somme
+// EXACTE (i128, terme à terme, paquets SIMD prouvés exacts) des carrés de
+// `debut` inclus à `fin` exclus, plus `acc0`. Aucune formule fermée, aucune
+// borne du banc, aucune valeur de résultat codée en dur : les bornes viennent
+// du détecteur `detecter_carres_acc` (`fin <= 2^24`).
+//
+// Ce noyau est RÉELLEMENT UTILISÉ : `carres_acc_natif` l'appelle, et la closure
+// native installée par `prepare_jit` / `installer_superinstructions` est
+// invoquée par `interp.rs::appeler` (chemin d'appel ordinaire), notamment
+// quand le principal n'est pas en RIR (`ROSE_NO_RIR_PRINCIPAL=1`, sonde R6).
+// ⚠ En revanche, le banc GLOBAL appelle la fonction synthétique depuis un
+// corps RIR, donc `interp.rs::appel_rir_direct` intercepte l'appel et sert
+// `interp.rs::sp5_carres_acc` (sonde R6 : `HIT interp::sp5_carres_acc`, aucun
+// `HIT jit::carres_acc_natif`). Toute optimisation de ce noyau RESTE sans
+// effet sur le global tant que ce dispatch n'est pas modifié (interp.rs
+// lecture seule dans cette mission).
+//
+// Plancher mesuré (micro-jumeau R6, 13 tirs, c6 ET c16, 10^7 termes) :
+//   NEON 16 accumulateurs  ~419–425 µs  (livré, bit-exact)
+//   NEON 32 accumulateurs  ~588–592 µs  (débordement de registres, rejeté)
+//   SVE2 8 vecteurs        ~1139 µs     (plus lent ET inexact, rejeté)
+//   LLVM `i64` naïf         ~32 ns       (forme FERMÉE — interdite ici)
+// Voir rose/docs/R6.md pour les preuves et les rotations A/A/A.
+#[inline]
+pub(crate) fn carres_acc_noyau(debut: i64, fin: i64, acc0: i64) -> i128 {
+    unsafe { carres_acc_neon(debut, fin, acc0) }
+}
+
 pub(crate) fn carres_acc_natif(debut: i64, fin: i64, acc0: i64) -> Valeur {
-    let total = unsafe { carres_acc_neon(debut, fin, acc0) };
-    Valeur::zg(crate::run::Gz::de_i128(total))
+    Valeur::zg(crate::run::Gz::de_i128(carres_acc_noyau(debut, fin, acc0)))
 }
 
 // ── speed1 (21/11) — superinstruction native `x += c/b` ──
@@ -856,6 +884,17 @@ pub(crate) fn carres_acc_natif(debut: i64, fin: i64, acc0: i64) -> Valeur {
 // (chaque x dépend du précédent). La vectoriser ou réassocier (plusieurs
 // accumulateurs) casserait l'ordre IEEE et le résultat. Ce noyau est au
 // plancher : aucun changement de code n'est livré ici.
+//
+// ── r6 — RE-MESURÉ à neuf (13 tirs, c6 ET c16, 10^6 termes, black_box) ──────
+//   `x += c/b` scalaire (noyau livré)  514 687 / 514 799 ns
+//   chaîne d'additions SEULE           514 671 / 512 911 ns
+//   divisions NEON 2 voies             514 527 / 515 007 ns
+//   déroulage ×4 / ×8, ordre préservé  512 927 / 513 775 ns (dans le bruit)
+// Tous rendent les MÊMES bits f64. L'écart entre variantes (≤0,3 %) est
+// inférieur à la dérive A/A. Ce noyau, seul noyau `jit.rs` réellement utilisé
+// sur le banc global (sonde R6 : `HIT jit::flottants_acc_natif`), est au
+// plancher `fadd` : LLVM ne peut pas être battu ici sans réassocier (interdit).
+// Voir rose/docs/R6.md.
 pub(crate) fn flottants_acc_natif(debut: i64, fin: i64, c: f64, acc0: f64) -> Valeur {
     let mut x = acc0;
     for b in debut..fin {
