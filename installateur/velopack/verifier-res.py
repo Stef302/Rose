@@ -322,10 +322,6 @@ def main():
             "curseurs mis en cache": "fn curseur_fleche()",
             "WM_SETCURSOR traité": "WM_SETCURSOR =>",
             "coordonnées client lues dans lParam": "let x = (l as i32) << 16 >> 16;",
-            # ⚠ LOGO : proportions conservées et centrage vertical.
-            "géométrie pure du logo (LOGO1)": "fn geometrie_marque(",
-            "logo centré horizontalement": "lateral_w / 2 - geo.largeur_logo / 2",
-            "marge dynamique logo/titre (LOGO1)": "let marge_marque = s(26)",
             # ⚠ CLIGNOTEMENT AU SURVOL DES BOUTONS : `dessiner` doit copier
             # SEULEMENT `ps.rcPaint`, pas tout le tampon.
             "repeint limité à ps.rcPaint": "let mut zone = ps.rcPaint;",
@@ -340,8 +336,10 @@ def main():
             "timer de progression ciblé": "InvalidateRect(h, &piste, 0);",
             "timer à 30 i/s (pas 62)": "SetTimer(h, TIMER_PROGRESSION, 33,",
             # ⚠ Logo jamais agrandi au-delà du PNG natif.
-            "ratio du contenu opaque rose (UITRAY2)": "RATIO_CONTENU_ROSE: f64 = 337.0 / 264.0",
-            "marge basse tige jamais rognée": "fn marge_basse_logo(",
+            "ratio rose centralisé (LOGO3)": "pub const RATIO_ROSE: f64 = 337.0 / 264.0",
+            "hauteur rose = contenu + marges (LOGO3)": "pub fn hauteur_rose_requise(",
+            "boîte rose sans clamp hauteur seule (LOGO3)": "pub fn boite_rose(",
+            "marges 4/8 réservées (LOGO3)": "MARGE_HAUTE_ROSE",
             # ⚠⚠ « SEULEMENT LES BORDURES / EFFET TRANSPARENT ». Le fond doit
             # être peint AVANT toute décoration (la double-bufferisation ne
             # copie qu'à la fin : un plantage du tracé détaillé laissait la
