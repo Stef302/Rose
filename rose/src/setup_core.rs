@@ -29,6 +29,98 @@ fn commande_sans_fenetre(programme: &str) -> std::process::Command {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// HELPER DE NOTIFICATION — JOURNAL ET RECHERCHE DU BINAIRE
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Le setup et le helper écrivent dans le MÊME fichier que `rose-tray.rs` :
+// `%TEMP%\rose-tray.log` sous Windows. Sans ce journal partagé, le message
+// « introuvable » du bouton Continuer était impossible à diagnostiquer : on
+// ne savait PAS quel chemin avait été testé, ni si le binaire y était.
+
+/// Nom Windows EXACT du helper. Jamais `rose-tray` (nom Linux), jamais un
+/// nom d'artefact d'architecture (`rose-tray-aarch64-linux`).
+pub const NOM_HELPER_TRAY: &str = "rose-tray.exe";
+
+/// Message à afficher quand le helper n'est pas encore sur le disque.
+///
+/// ⚠ Il NE FAUT PAS dire « introuvable » à l'utilisateur : il a bien vu le
+/// binaire livré, et la configuration est ENREGISTRÉE. Le helper n'entre en
+/// activité qu'au prochain lancement / après réouverture de session (le
+/// helper relit la config au démarrage). Ce message est donc un état DATÉ,
+/// pas un échec d'installation.
+pub const MESSAGE_HELPER_PROCHAIN_DEMARRAGE: &str =
+    "Le helper sera actif au prochain démarrage / après réouverture de session.";
+
+/// Ajoute une ligne au journal PARTAGÉ du tray (`%TEMP%\rose-tray.log` sur
+/// Windows). Aucune dépendance, aucune console : un échec d'écriture du
+/// journal ne doit jamais empêcher le lancement du helper.
+pub fn journal_helper(evenement: &str) {
+    let chemin = std::env::temp_dir().join("rose-tray.log");
+    let Ok(mut fichier) = std::fs::OpenOptions::new()
+        .create(true).append(true).open(chemin) else { return };
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    use std::io::Write;
+    let _ = writeln!(fichier, "{secs} — {}", evenement.replace('\n', " "));
+}
+
+/// Chemins candidats, dans l'ORDRE de recherche, pour un ensemble de
+/// dossiers racines. Fonction PURE (pas de disque, pas de journal) donc
+/// testable sur Linux : c'est elle qui garantit le nom exact et les
+/// variantes « à côté de rose.exe » / `bin\` / `payload\`.
+pub fn candidats_helper_tray(dossiers: &[PathBuf]) -> Vec<PathBuf> {
+    let relatifs = [
+        NOM_HELPER_TRAY.to_string(),
+        format!("bin/{NOM_HELPER_TRAY}"),
+        format!("payload/{NOM_HELPER_TRAY}"),
+    ];
+    let mut sortie: Vec<PathBuf> = Vec::new();
+    for dossier in dossiers {
+        for relatif in &relatifs {
+            let candidat = dossier.join(relatif);
+            if !sortie.contains(&candidat) {
+                sortie.push(candidat);
+            }
+        }
+    }
+    sortie
+}
+
+/// Cherche `rose-tray.exe` dans les emplacements réels d'une installation :
+/// à côté du binaire courant, dans le répertoire de travail, et dans la
+/// racine Velopack (`current` est un FICHIER de version, pas un dossier —
+/// la vraie version est `app-<version>\`, d'où la lecture explicite).
+///
+/// CHAQUE chemin testé est journalisé, présent ou absent.
+pub fn trouver_helper_tray() -> Option<PathBuf> {
+    let mut dossiers: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(p) = exe.parent() { dossiers.push(p.to_path_buf()); }
+    }
+    if let Ok(d) = std::env::current_dir() { dossiers.push(d); }
+    if let Some(racine) = crate::velopack::dossier_racine() {
+        if let Some(version) = crate::velopack::version_installee() {
+            let app = racine.join(format!("app-{version}"));
+            dossiers.push(app.clone());
+            dossiers.push(app.join("bin"));
+        }
+        dossiers.push(racine.clone());
+        dossiers.push(racine.join("bin"));
+    }
+    for candidat in candidats_helper_tray(&dossiers) {
+        let present = candidat.is_file();
+        journal_helper(&format!("helper : chemin testé {} — {}",
+                                candidat.display(), if present { "présent" } else { "absent" }));
+        if present {
+            journal_helper(&format!("helper : binaire retenu {}", candidat.display()));
+            return Some(candidat);
+        }
+    }
+    journal_helper("helper : aucun binaire présent — configuration enregistrée, effet au prochain démarrage");
+    None
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // REGISTRE — ACCÈS DIRECT PAR L'API WIN32
 // ═══════════════════════════════════════════════════════════════════════
 //
@@ -2237,6 +2329,26 @@ pub fn launcher_selectionner_version(tag: &str) -> crate::velopack::StatutVersio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_message_prochain_demarrage_sans_introuvable() {
+        assert!(MESSAGE_HELPER_PROCHAIN_DEMARRAGE.contains("prochain démarrage"));
+        assert!(MESSAGE_HELPER_PROCHAIN_DEMARRAGE.contains("réouverture de session"));
+        assert!(!MESSAGE_HELPER_PROCHAIN_DEMARRAGE.to_lowercase().contains("introuvable"));
+        assert_eq!(NOM_HELPER_TRAY, "rose-tray.exe");
+    }
+
+    #[test]
+    fn helper_candidats_nom_exact_et_variantes() {
+        let racine = PathBuf::from("C:/Users/x/AppData/Local/Programs/Rose");
+        let c = candidats_helper_tray(&[racine.clone()]);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0], racine.join("rose-tray.exe"));
+        assert_eq!(c[1], racine.join("bin").join("rose-tray.exe"));
+        assert_eq!(c[2], racine.join("payload").join("rose-tray.exe"));
+        // Aucun nom d'artefact Linux ne doit jamais être testé.
+        assert!(c.iter().all(|p| !p.to_string_lossy().contains("aarch64-linux")));
+    }
 
     fn vdist_fixture(tag: &str, installable: bool) -> crate::velopack::VersionDistante {
         let version = crate::velopack::version_depuis_tag(tag);

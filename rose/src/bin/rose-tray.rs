@@ -43,6 +43,30 @@ fn doit_demarrer(mode: rose::velopack::ModeMiseAJour) -> bool {
     mode.doit_demarrer_timer_discret()
 }
 
+/// L'icône Rose est cherchée dans cet ORDRE exact : à côté de l'exe
+/// (`CurrentExe`, donc le vrai dossier de `rose-tray.exe`), puis `bin\`
+/// de ce dossier, puis le répertoire COURANT (où l'utilisateur a lancé
+/// le setup), puis `bin\` du répertoire courant. En dernier recours,
+/// `IDI_APPLICATION` garantit un `HICON` non nul à `Shell_NotifyIconW`.
+/// Fonction PURE, déclarée HORS du module Win32 : testable sur Linux.
+#[cfg(any(windows, test))]
+fn candidats_icone(exe: Option<std::path::PathBuf>,
+                   cwd: Option<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+    let mut dossiers: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(p) = exe.and_then(|p| p.parent().map(|p| p.to_path_buf())) {
+        dossiers.push(p);
+    }
+    if let Some(p) = cwd { dossiers.push(p); }
+    let mut sortie: Vec<std::path::PathBuf> = Vec::new();
+    for dossier in dossiers {
+        for relatif in ["rose.ico", "bin/rose.ico"] {
+            let candidat = dossier.join(relatif);
+            if !sortie.contains(&candidat) { sortie.push(candidat); }
+        }
+    }
+    sortie
+}
+
 #[cfg(not(windows))]
 fn main() {
     println!(
@@ -209,33 +233,36 @@ mod win {
         }
     }
 
-    /// L'icône Rose est cherchée à côté du binaire (ou dans `bin\`), sinon on
-    /// retombe sur l'icône système. `LR_SHARED` évite tout `DestroyIcon`.
-    /// Chaque échec est journalisé : « rose.ico absent » était l'une des
-    /// causes possibles de l'absence d'icône sur la capture utilisateur.
+    /// Charge l'icône avec `LoadImageW(..., LR_SHARED)` ; chaque chemin testé
+    /// est journalisé. « rose.ico absent » était l'une des causes possibles
+    /// de l'absence d'icône sur la capture utilisateur — désormais prouvée.
     fn charger_icone() -> HICON {
         unsafe {
-            if let Some(dossier) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
-                for relatif in ["rose.ico", "bin/rose.ico"] {
-                    let chemin = dossier.join(relatif);
-                    if !chemin.is_file() {
-                        journal(&format!("icône absente : {}", chemin.display()));
-                        continue;
-                    }
-                    let nom = utf16(&chemin.to_string_lossy());
-                    let h = LoadImageW(std::ptr::null_mut(), nom.as_ptr(), IMAGE_ICON, 16, 16,
-                                       LR_LOADFROMFILE | LR_SHARED);
-                    let h = if h.is_null() {
-                        LoadImageW(std::ptr::null_mut(), nom.as_ptr(), IMAGE_ICON, 0, 0,
-                                   LR_LOADFROMFILE | LR_DEFAULTSIZE | LR_SHARED)
-                    } else { h };
-                    if !h.is_null() {
-                        journal(&format!("icône chargée depuis {}", chemin.display()));
-                        return h as HICON;
-                    }
-                    journal(&format!("LoadImageW a échoué pour {} (GetLastError={})",
-                                     chemin.display(), GetLastError()));
+            let candidats = candidats_icone(std::env::current_exe().ok(),
+                                            std::env::current_dir().ok());
+            journal(&format!("icône : {} chemin(s) à tester", candidats.len()));
+            for chemin in candidats {
+                if !chemin.is_file() {
+                    journal(&format!("icône absente : {}", chemin.display()));
+                    continue;
                 }
+                let nom = utf16(&chemin.to_string_lossy());
+                // 16×16 = icône de la zone de notification (petite icône).
+                // LR_SHARED évite tout DestroyIcon et garantit la durée de vie
+                // du HICON pendant toute la boucle GetMessageW.
+                let h = LoadImageW(std::ptr::null_mut(), nom.as_ptr(), IMAGE_ICON, 16, 16,
+                                   LR_LOADFROMFILE | LR_SHARED);
+                let h = if h.is_null() {
+                    LoadImageW(std::ptr::null_mut(), nom.as_ptr(), IMAGE_ICON, 0, 0,
+                               LR_LOADFROMFILE | LR_DEFAULTSIZE | LR_SHARED)
+                } else { h };
+                if !h.is_null() {
+                    journal(&format!("icône chargée depuis {} (LR_SHARED, GetLastError={})",
+                                     chemin.display(), GetLastError()));
+                    return h as HICON;
+                }
+                journal(&format!("LoadImageW a échoué pour {} (GetLastError={})",
+                                 chemin.display(), GetLastError()));
             }
             // Repli obligatoire : une icône système vaut mieux qu'un NIM_ADD
             // avec HICON=null, que shell32 refuse silencieusement.
@@ -456,6 +483,18 @@ fn main() { win::demarrer(); }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icone_cherchee_dans_l_exe_puis_le_cwd() {
+        let exe = Some(std::path::PathBuf::from("C:/Programs/Rose/rose-tray.exe"));
+        let cwd = Some(std::path::PathBuf::from("C:/Downloads"));
+        let c = candidats_icone(exe, cwd);
+        assert_eq!(c.len(), 4);
+        assert_eq!(c[0], std::path::PathBuf::from("C:/Programs/Rose/rose.ico"));
+        assert_eq!(c[1], std::path::PathBuf::from("C:/Programs/Rose/bin/rose.ico"));
+        assert_eq!(c[2], std::path::PathBuf::from("C:/Downloads/rose.ico"));
+        assert_eq!(c[3], std::path::PathBuf::from("C:/Downloads/bin/rose.ico"));
+    }
 
     #[test]
     fn texte_ballon_exact() {

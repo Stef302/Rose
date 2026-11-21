@@ -127,6 +127,20 @@ mod tests {
     }
 
     #[test]
+    fn cartes_options_mesurees_sur_la_vraie_description() {
+        // Régression de la capture Windows : « Un seul timer Windows toutes
+        // les 6 heures… » coupée en bas de carte because `h_opt = 84` était
+        // constant. La bonne hauteur se MESURE avec `hauteur_texte`.
+        let (_, titre, desc) = crate::velopack::ModeMiseAJour::options_ui()[2];
+        let largeur = 320; // fenêtre étroite
+        let h_titre = hauteur_texte(titre, largeur, &mesurer, 19);
+        let h_desc = hauteur_texte(desc, largeur, &mesurer, 17);
+        let h_opt = 10 + h_titre + 4 + h_desc + 10;
+        assert!(h_desc >= 3 * 17, "description sous-estimée : {h_desc} px");
+        assert!(h_opt > 84, "carte trop courte pour la description : {h_opt} px");
+    }
+
+    #[test]
     fn respecte_les_sauts_de_ligne() {
         let l = lignes_ajustees("a\n\nb", 1000, &mesurer);
         assert_eq!(l, vec!["a".to_string(), String::new(), "b".to_string()]);

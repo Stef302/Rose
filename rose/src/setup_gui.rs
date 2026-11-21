@@ -690,7 +690,8 @@ pub const COMPAGNONS: [(u16, &str); 5] = [
     // Windows Terminal. Sans lui, le profil affichait la rose de l'app.
     (8, "rose_shell.ico"),
     // ⚠ ID 9 (vague 77) : helper de la zone de notification. Sans lui le
-    // bouton « Continuer » ne peut que répondre « rose-tray.exe introuvable ».
+    // bouton « Continuer » ne peut qu'annoncer un binaire absent et différer
+    // son activation au prochain démarrage.
     (9, "rose-tray.exe"),
 ];
 
@@ -755,11 +756,14 @@ const RATIO_CONTENU_ROSE: f64 = 337.0 / 264.0;
 
 /// Marge basse réservée SOUS la tige, dans le rectangle de destination.
 /// Le dernier pixel du PNG est anti-aliasé (alpha 127) : posé sur le bord
-/// exact de `AlphaBlend`, il disparaît et la tige paraît coupée. Quelques
-/// pixels vides garantissent que la pointe entière est visible, sans
-/// agrandir le logo ni toucher au titre.
+/// exact de `AlphaBlend`, il disparaît et la tige paraît coupée. ⚠ L'ancienne
+/// marge (1 à 3 px) était INSUFFISANTE sur la capture utilisateur : on
+/// réserve désormais AU MOINS 4 px, et jusqu'à 8 px sur grande fenêtre.
+/// La hauteur du contenu est réduite d'autant, jamais la tige : le ratio
+/// `RATIO_CONTENU_ROSE` est conservé et `bornes_opaques` inclut le dernier
+/// pixel de la pointe.
 fn marge_basse_logo(hauteur_max: i32) -> i32 {
-    if hauteur_max <= 1 { 0 } else { (hauteur_max / 32).clamp(1, 3) }
+    if hauteur_max <= 1 { 0 } else { (hauteur_max / 24).clamp(4, 8).min(hauteur_max - 1) }
 }
 
 /// Réduction RGBA par MOYENNE DE SURFACE (area averaging), en pur Rust.
@@ -947,7 +951,7 @@ fn points_ecrits(dpi: i32, points: i32, echelle: f64) -> i32 {
 struct GeometrieMarque {
     plancher: i32,          // rien du panneau ne descend sous cette ligne
     largeur_logo: i32,      // largeur de la boîte du logo
-    hauteur_logo: i32,      // hauteur de la boîte (jamais > 343 = hauteur PNG)
+    hauteur_logo: i32,      // hauteur de la boîte (jamais upscalée au-delà du contenu PNG : ≤ 337)
     place_logo: i32,        // place réservée au logo ( borne haute )
     haut_titre: i32,
     bas_titre: i32,
@@ -978,14 +982,21 @@ fn geometrie_marque(ht: i32, dpi: i32, echelle: f64) -> GeometrieMarque {
     // ratio (pas celui du PNG natif 276 × 343), sinon la boîte est trop courte
     // et la pointe de la tige frôle le bord. `dessiner_rose` recadre ensuite
     // le contenu (`bornes_opaques`) SANS couper de pixel, avec une marge basse.
-    let largeur_logo = s(110);
+    // On ne dépasse JAMAIS la largeur du CONTENU opaque (264 px) : au-delà,
+    // on upscalerait la rose et sa tige anti-aliasée. Surtout, on ne clamp
+    // plus la hauteur sur 343 (hauteur du PNG natif, qui contient du vide) :
+    // c'est `RATIO_CONTENU_ROSE` qui donne la hauteur du contenu réel (337).
+    // ⚠ `place_logo` peut réduire la BOÎTE sur fenêtre basse, mais
+    // `dessiner_rose` recadre alors le contenu en conservant le ratio ET en
+    // réservant `marge_basse_logo()` : la pointe n'est jamais rognée.
+    let largeur_logo = s(110).min(264);
     let hauteur_voulue = ((largeur_logo as f64 * RATIO_CONTENU_ROSE).round() as i32).max(1);
     // Place réservée au logo : tout ce qui suit `y_marque` est mesuré sur la
     // hauteur RÉELLE du titre, plus le sous-titre et la marge avant les étapes.
     // Réserver seulement `s(120)` compressait la boîte sur fenêtre basse.
     let apres_marque = s(34) + h_marque / 2 + s(10) + s(56) + s(10);
     let place_logo = (plancher - s(78) - marge_marque - apres_marque).max(0);
-    let hauteur_logo = hauteur_voulue.min(place_logo).min(343);
+    let hauteur_logo = hauteur_voulue.min(place_logo);
 
     let y_marque = s(78) + hauteur_logo + marge_marque;
     let haut_titre = y_marque + s(34) - h_marque / 2;
@@ -2034,7 +2045,26 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             // Source UNIQUE des 3 libellés : `velopack::ModeMiseAJour::options_ui`.
             // Le mode discret est NOUVEAU et n'est PAS le défaut.
             let options = ModeMiseAJour::options_ui();
-            let h_opt = s(84);
+            // ⚠ CAUSE DU TEXTE COUPÉ (capture utilisateur) : `h_opt = s(84)`
+            // était écrit en dur. Sur une fenêtre étroite, la description de
+            // « Automatique (discret) » passe sur TROIS lignes et débordait du
+            // bas de la carte — `DrawText` n'affichait que les deux premières.
+            // On MESURE chaque titre/description avec la police réelle via
+            // `hauteur_texte`, puis on dimensionne TOUTES les cartes sur le
+            // plus grand bloc (hauteur commune = grille régulière).
+            let largeur_opt = (d - s(20) - (g + s(58))).max(s(80));
+            let mut h_titres = [0i32; 3];
+            let mut h_descs = [0i32; 3];
+            for (i, (_, titre_opt, desc)) in options.iter().enumerate() {
+                h_titres[i] = crate::paint::hauteur_texte(
+                    titre_opt, largeur_opt, &mesurer(11, true), interligne);
+                h_descs[i] = crate::paint::hauteur_texte(
+                    desc, largeur_opt, &mesurer(9, false), interligne_petit);
+            }
+            // Marge haute 10 + titre + écart 4 + description + marge basse 10.
+            let h_opt = (0..3).fold(s(84), |acc, i| {
+                acc.max(s(10) + h_titres[i] + s(4) + h_descs[i] + s(10))
+            });
             let ecart = s(12);
             let mut zm = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
             for (i, (mode, titre_opt, desc)) in options.iter().enumerate() {
@@ -2048,11 +2078,18 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                 cercle(dc, cx, cy, s(13), if selectionne { VERT_LIME_VIF } else { LIGNE_FORTE });
                 cercle(dc, cx, cy, s(10), CARTE);
                 if selectionne { coche(dc, cx, cy, s(6), VERT_LIME_VIF); }
-                let mut rt = RECT { left: g + s(58), top: haut + s(12), right: d - s(20), bottom: haut + s(38) };
+                let haut_titre_opt = haut + s(10);
+                let mut rt = RECT { left: g + s(58), top: haut_titre_opt, right: d - s(20),
+                                    bottom: haut_titre_opt + h_titres[i] };
                 texte_echelle(dc, dpi, "Segoe UI", titre_opt, &mut rt,
                               DT_SINGLELINE | DT_VCENTER, if selectionne { TEXTE } else { TEXTE_DOUX },
                               11, selectionne, echelle);
-                let mut rd = RECT { left: g + s(58), top: haut + s(40), right: d - s(20), bottom: c.bottom - s(10) };
+                // La description commence SOUS le titre mesuré (plus de
+                // décalage fixe `s(40)`) et dispose de TOUTE sa hauteur
+                // mesurée : aucune ligne n'est tronquée en bas de carte.
+                let haut_desc = haut_titre_opt + h_titres[i] + s(4);
+                let mut rd = RECT { left: g + s(58), top: haut_desc, right: d - s(20),
+                                    bottom: (c.bottom - s(10)).max(haut_desc + h_descs[i]) };
                 texte_echelle(dc, dpi, "Segoe UI", desc, &mut rd,
                               DT_WORDBREAK | DT_TOP | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
             }
@@ -2845,24 +2882,16 @@ fn pastille_discrete() -> Option<String> {
 }
 
 /// Où l'orchestrateur de release doit copier `rose-tray.exe` (voir TRAY.md) :
-/// à côté du launcher, dans `bin\`, ou dans l'installation Velopack courante.
-/// Aucun chemin n'est inventé : le fichier doit RÉELLEMENT exister.
+/// à côté de `rose.exe`/du launcher, dans `bin\`, ou dans l'installation
+/// Velopack courante. Aucun chemin n'est inventé : le fichier doit RÉELLEMENT
+/// exister, et CHAQUE chemin testé est journalisé dans `%TEMP%\rose-tray.log`.
+///
+/// ⚠ Le nom Windows exact est `rose-tray.exe` (pas `rose-tray`, pas un
+/// artefact d'architecture) : la liste des candidats et le journal vivent
+/// dans `setup_core` pour être testables sur Linux.
 pub fn chemin_helper_tray() -> Option<PathBuf> {
-    let mut dossiers: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(p) = exe.parent() { dossiers.push(p.to_path_buf()); }
-    }
-    if let Some(racine) = crate::velopack::dossier_racine() {
-        dossiers.push(racine.join("current"));
-        dossiers.push(racine);
-    }
-    for dossier in dossiers {
-        for relatif in ["rose-tray.exe", "bin/rose-tray.exe", "payload/rose-tray.exe"] {
-            let candidat = dossier.join(relatif);
-            if candidat.is_file() { return Some(candidat); }
-        }
-    }
-    None
+    const _NOM_WINDOWS_EXACT: &str = "rose-tray.exe";
+    crate::setup_core::trouver_helper_tray()
 }
 
 /// Petit retour d'action sous le bouton du helper : aucune fenêtre modale.
@@ -2888,18 +2917,32 @@ fn lancer_helper_tray(h: HWND) {
     demarrer_timer_maj_discret(h);
 
     let Some(chemin) = chemin_helper_tray() else {
-        statut_tray(h, "ÉCHEC helper : impossible de démarrer — rose-tray.exe introuvable à côté du launcher.".to_string());
+        // ⚠ L'utilisateur VOIT le binaire dans la livraison : lui annoncer
+        // un binaire absent est faux et incompréhensible. La configuration
+        // est déjà écrite (plus haut) : le helper la relira au prochain départ.
+        crate::setup_core::journal_helper(
+            "helper : lancement différé — config enregistrée, effet au prochain démarrage");
+        statut_tray(h, format!("Mode discret enregistré. {}",
+                               crate::setup_core::MESSAGE_HELPER_PROCHAIN_DEMARRAGE));
         return;
     };
     let mut commande = std::process::Command::new(&chemin);
     // DETACHED_PROCESS | CREATE_NO_WINDOW : aucun parent, aucune console.
-    // ⚠ Le nom Windows est bien `rose-tray.exe` (pas `rose-tray`, pas le
-    // binaire Linux `rose-tray-aarch64-linux`) : `chemin_helper_tray()` ne
-    // retient que ce nom, avec les variantes `bin\` et `payload\`.
+    // ⚠ Le nom Windows est bien `rose-tray.exe` (pas `rose-tray`, pas un
+    // artefact d'architecture) : `chemin_helper_tray()` ne retient que ce
+    // nom, avec les variantes `bin\` et `payload\`.
     commande.creation_flags(0x0000_0008 | 0x0800_0000);
+    crate::setup_core::journal_helper(format!(
+        "helper : lancement DETACHED_PROCESS|CREATE_NO_WINDOW de {}", chemin.display()).as_str());
     match commande.spawn() {
-        Ok(_) => statut_tray(h, "Helper démarré : icône Rose dans les icônes cachées.".to_string()),
-        Err(e) => statut_tray(h, format!("ÉCHEC helper : impossible de démarrer — {e}")),
+        Ok(_) => {
+            crate::setup_core::journal_helper("helper : spawn OK (processus détaché)");
+            statut_tray(h, "Helper démarré : icône Rose dans les icônes cachées.".to_string())
+        }
+        Err(e) => {
+            crate::setup_core::journal_helper(&format!("helper : spawn ÉCHEC — {e}"));
+            statut_tray(h, format!("ÉCHEC helper : lancement impossible — {e}"))
+        }
     }
 }
 
@@ -4365,17 +4408,21 @@ mod tests_geometrie {
         let s = |v: i32| -> i32 { (v as f64 * e).round() as i32 };
         let contexte = format!("fenêtre {largeur}×{hauteur}, {dpi} DPI, échelle {e:.3}");
 
-        // La boîte du logo ne dépasse JAMAIS la place réservée, ni la hauteur
-        // native du PNG (276 × 343). `dessiner_rose` recadre ensuite le
-        // contenu utile (`bornes_opaques`) en conservant le ratio.
+        // La boîte du logo ne dépasse JAMAIS la place réservée, ni la taille
+        // du CONTENU OPAQUE (264 × 337 — voir `bornes_opaques`). On ne clamp
+        // plus sur 343 (hauteur du PNG natif) : ce clamp pouvait raccourcir
+        // la boîte et faire paraître la tige coupée.
         assert!(g.hauteur_logo <= g.place_logo, "logo trop haut : {contexte}");
-        assert!(g.hauteur_logo <= 343, "agrandissement du PNG : {contexte}");
+        assert!(g.largeur_logo <= 264, "upscaling du contenu : {contexte}");
         let voulue = ((g.largeur_logo as f64 * RATIO_CONTENU_ROSE).round() as i32).max(1);
-        assert_eq!(g.hauteur_logo, voulue.min(g.place_logo).min(343),
+        assert!(voulue <= 337, "hauteur de contenu incohérente : {contexte}");
+        assert_eq!(g.hauteur_logo, voulue.min(g.place_logo),
                    "hauteur du logo incohérente : {contexte}");
         // ⚠ La tige doit rester VISIBLE : le contenu est dessiné dans la boîte
-        // moins la marge basse, et le titre ne doit pas remonter dessus.
+        // moins la marge basse (≥ 4 px), et le titre ne doit pas remonter dessus.
         let bas_logo = s(78) + g.hauteur_logo;
+        assert!(marge_basse_logo(g.hauteur_logo) >= 4.min(g.hauteur_logo.saturating_sub(1)),
+                "marge basse insuffisante : {contexte}");
         assert!(g.haut_titre >= bas_logo + marge_basse_logo(g.hauteur_logo),
                 "tige coupée par le titre : {contexte}");
         // Le titre ne remonte pas sur la tige de la rose.
@@ -4473,14 +4520,22 @@ mod tests_geometrie {
         assert!(derniers.iter().any(|a| *a > 4),
                 "la pointe de la tige a disparu de la dernière ligne réduite");
 
-        // Et la marge basse réservée à l'affichage ne peut pas manger la tige.
+        // Et la marge basse réservée à l'affichage ne peut pas manger la tige :
+        // au moins 4 px, sans jamais dépasser la boîte elle-même.
         let marge = marge_basse_logo(dh as i32);
-        assert!(marge >= 1 && marge <= 3);
+        assert!((4..=8).contains(&marge), "marge basse {marge} hors bornes 4..8");
         let utile = dh as i32 - marge;
         let facteur = (dw as f64 / sw as f64).min(utile as f64 / sh as f64);
         let dessine_h = ((sh as f64 * facteur).round() as i32).max(1).min(utile);
         assert!(dessine_h + marge <= dh as i32,
                 "la tige dépasserait le rectangle de destination");
+        // Bornes aux petites tailles : la marge reste ≥ 4 dès que c'est
+        // possible, et ne rend jamais la hauteur utile négative.
+        for h in [0, 1, 2, 4, 8, 16, 32, 64, 140, 337] {
+            let m = marge_basse_logo(h);
+            assert!(m >= 0 && m <= h.saturating_sub(1).max(0));
+            if h >= 5 { assert!(m >= 4, "marge {m} < 4 pour hauteur {h}"); }
+        }
     }
 }
 
@@ -4661,7 +4716,29 @@ mod tests_ui_tray {
         assert!(helper.contains("0x0000_0008 | 0x0800_0000"));
         assert!(helper.contains("rose-tray.exe"));
         assert!(helper.contains("Helper démarré"));
-        assert!(helper.contains("impossible de démarrer"));
+        // Plus jamais de message « introuvable » : le binaire est livré,
+        // l'effet est différé au prochain démarrage / après réouverture.
+        assert!(!code.contains("introuvable"),
+                "message « introuvable » réintroduit dans le setup");
+        assert!(helper.contains("MESSAGE_HELPER_PROCHAIN_DEMARRAGE"));
+        assert!(helper.contains("journal_helper"));
+        // Chaque chemin testé est journalisé (côté setup ET côté helper).
+        assert!(code.contains("crate::setup_core::trouver_helper_tray()"));
+    }
+
+    #[test]
+    fn cartes_mises_a_jour_mesurent_le_texte() {
+        let code = code_production();
+        // La hauteur des cartes n'est plus une constante : elle est mesurée
+        // avec `hauteur_texte` (description comprise), sinon la 3ᵉ ligne
+        // « Automatique (discret) » est coupée en bas de carte.
+        let debut = code.find("let options = ModeMiseAJour::options_ui();").unwrap();
+        let fin = code.find("*std::ptr::addr_of_mut!(ZONES_MAJ)").unwrap();
+        let cartes = &code[debut..fin];
+        assert!(cartes.contains("hauteur_texte(titre_opt"));
+        assert!(cartes.contains("hauteur_texte(desc"));
+        assert!(!cartes.contains("let h_opt = s(84)"));
+        assert!(cartes.contains("h_descs[i] + s(10)"));
     }
 
     #[test]
