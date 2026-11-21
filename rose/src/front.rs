@@ -1687,17 +1687,21 @@ fn verifier_bloc(prog: &Programme, instrs: &[Instr], env: &mut HashMap<String, T
                 // tout littéral imaginaire pur de l'expression est en réalité
                 // cette variable : le lexeur replie « i » en 0+1i avant que
                 // le contexte soit connu.
-                let e = {
-                    let i_est_entier = nom == "i"
-                        && (env.get(nom).map(|t| t.n == TyKind::Entier).unwrap_or(false)
-                            || (nom == "i" && !env.contains_key(nom)));
-                    if i_est_entier && porte_boucle_i(instrs, position) {
-                        let mut e2 = (*e).clone();
-                        deplier_i_rec(&mut e2);
-                        e2
-                    } else { (*e).clone() }
+                // ⚠ R9 — `expr_type` ne lit l'expression qu'en `&Expr` : le
+                // clone profond du RHS (String/Box/Vec) était inutile dans le
+                // cas courant. On ne duplique plus que dans le cas rare où « i »
+                // doit être dé-replié en variable de boucle ; la décision et
+                // l'expression typée restent exactement les mêmes.
+                let i_est_entier = nom == "i"
+                    && (env.get(nom).map(|t| t.n == TyKind::Entier).unwrap_or(false)
+                        || (nom == "i" && !env.contains_key(nom)));
+                let t = if i_est_entier && porte_boucle_i(instrs, position) {
+                    let mut e2 = (*e).clone();
+                    deplier_i_rec(&mut e2);
+                    expr_type(prog, &e2, env)?
+                } else {
+                    expr_type(prog, e, env)?
                 };
-                let t = expr_type(prog, &e, env)?;
                 if t.n == TyKind::Vide {
                     return Err(fmt_err("Impossible d'affecter une valeur sans type", *ligne, 0));
                 }
