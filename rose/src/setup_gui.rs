@@ -2412,7 +2412,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             // ⚠ La carte doit contenir TOUT le texte, mesuré : la dernière
             // ligne (« Ouvrez un nouveau terminal, puis tapez : rose
             // --version ») était COUPÉE en bas (mesuré sur la capture).
-            let corps = format!("Rose est installé.\n\nDossier : {}\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
+            // Message post-install non intrusif: l'extension VS Code est un
+            // complément, pas une obligation (titre neutre, aucune version).
+            let corps = format!("Rose est installé.\n\nDossier : {}\n\nAstuce : installez l'extension Rose pour VS Code\nmarketplace.visualstudio.com/items?itemName=stef302.rose-langage\n\nOuvrez un nouveau terminal, puis tapez : rose --version",
                                 etat.prefixe);
             let largeur_corps = (largeur_texte - s(44)).max(s(80));
             let h_corps = crate::paint::hauteur_texte(&corps, largeur_corps, &mesurer(10, false), interligne);
