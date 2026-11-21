@@ -2098,7 +2098,7 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
         }
         Vue::Bienvenue => {
             let corps = "Rose est un langage de programmation en français, auto-hébergé : \
-                         interprète exact, JIT Cranelift, AOT LLVM et module WASM.\n\n\
+                         maths exactes, JIT, AOT optionnel et module WASM.\n\n\
                          L'installation se fait dans votre profil utilisateur — aucun droit \
                          administrateur n'est demandé.";
             let note = if etat.existant {
