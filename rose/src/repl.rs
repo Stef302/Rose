@@ -8,8 +8,10 @@
 //!   restent en mémoire, les `>> expr` s'affichent ;
 //! - continuation `...>` tant que les accolades / parenthèses sont ouvertes ;
 //! - commandes `:help`, `:show`, `:reset`, `:load`, `:save`, `:type`,
-//!   `:latex`, `:quit`, et `:more` (alias `:plus`, `:digits`) qui demande
-//!   des chiffres supplémentaires sur le dernier résultat symbolique ;
+//!   `:latex`, `:quit`, `:methode jit|aot|interprete` (choix de la méthode
+//!   d'exécution, affichée dans l'invite `rose[jit]> `), et `:more`
+//!   (alias `:plus`, `:digits`) qui demande des chiffres supplémentaires sur
+//!   le dernier résultat symbolique ;
 //! - **Windows Terminal / conhost** : sortie UTF-8, séquences ANSI VT
 //!   activées explicitement (`ENABLE_VIRTUAL_TERMINAL_PROCESSING`), et
 //!   `SetConsoleOutputCP(65001)` pour que les accents et les symboles
@@ -197,7 +199,7 @@ impl Historique {
 /// Mots-clés et commandes proposés par Tab.
 const COMPLETIONS: &[&str] = &[
     ":help", ":show", ":reset", ":load", ":save", ":type", ":latex", ":quit", ":q",
-    ":more", ":plus", ":digits",
+    ":methode", ":more", ":plus", ":digits",
     "afficher", "fn", "retour", "si", "sinon", "pour", "tant_que", "vrai", "faux",
     "factorielle", "primorielle", "terminal", "super_factorielle",
     // ⚠ Deux termials : `terminal`/`termial_kurepa` = Kurepa (A003422),
@@ -212,6 +214,65 @@ const COMPLETIONS: &[&str] = &[
 fn completer(prefixe: &str) -> Option<String> {
     if prefixe.is_empty() { return None; }
     COMPLETIONS.iter().find(|c| c.starts_with(prefixe)).map(|c| c.to_string())
+}
+
+// ── méthode d'exécution courante (visible dans l'invite) ──────────────────
+
+/// Les trois méthodes que l'utilisateur peut choisir dans la console.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MethodeRepl {
+    Interprete,
+    Jit,
+    Aot,
+}
+
+impl MethodeRepl {
+    /// Nom court affiché entre crochets dans l'invite.
+    pub fn nom(self) -> &'static str {
+        match self {
+            Self::Interprete => "interprete",
+            Self::Jit => "jit",
+            Self::Aot => "aot",
+        }
+    }
+
+    /// Analyse l'argument de `:methode`. Les accents et les raccourcis sont
+    /// acceptés : `:methode interprété` == `:methode interprete`.
+    pub fn depuis_arg(arg: &str) -> Option<Self> {
+        match arg.trim().to_ascii_lowercase().as_str() {
+            "jit" | "j" => Some(Self::Jit),
+            "aot" | "natif" => Some(Self::Aot),
+            "interprete" | "interprété" | "interpréteur" | "i" => Some(Self::Interprete),
+            _ => None,
+        }
+    }
+
+    /// Applique le réglage au moteur. `interp.rs` et `jit.rs` lisent ces
+    /// variables à chaque exécution : le changement prend effet tout de
+    /// suite, sans redémarrer la console.
+    pub fn appliquer(self) {
+        unsafe {
+            match self {
+                Self::Interprete => {
+                    std::env::set_var("ROSE_SANS_JIT", "1");
+                    std::env::remove_var("ROSE_AOT");
+                }
+                Self::Jit => {
+                    std::env::remove_var("ROSE_SANS_JIT");
+                    std::env::remove_var("ROSE_AOT");
+                }
+                Self::Aot => {
+                    std::env::remove_var("ROSE_SANS_JIT");
+                    std::env::set_var("ROSE_AOT", "1");
+                }
+            }
+        }
+    }
+}
+
+/// Invite principale, avec la méthode courante : `rose[jit]> `.
+pub fn invite_principale(m: MethodeRepl) -> String {
+    format!("rose[{}]> ", m.nom())
 }
 
 // ── équilibrage des délimiteurs ───────────────────────────────────────────
@@ -254,8 +315,9 @@ pub fn braces_balanced(s: &str) -> bool {
 fn aide(c: &Couleur) {
     let t = |s: &str| c.titre(s);
     println!("{}", t("Console Rose — commandes"));
-    let lignes: [(&str, &str); 10] = [
+    let lignes: [(&str, &str); 11] = [
         (":help", "cette aide"),
+        (":methode <jit|aot|interprete>", "choisit la méthode, affichée dans l'invite"),
         (":show", "affiche le code accumulé"),
         (":reset", "vide le buffer et le compteur :more"),
         (":load <fichier>", "charge un fichier et l'exécute"),
@@ -425,6 +487,7 @@ fn banniere(c: &Couleur) {
     println!("{}", ligne("console interactive"));
     println!("{}", c.titre(&format!("╰{}╯", "─".repeat(interieur))));
     println!("{}", c.doux("Tapez du code Rose. :help pour l'aide, :quit pour sortir."));
+    println!("{}", c.doux("Méthode courante : jit — changez avec :methode aot | interprete."));
     println!("{}", c.doux("↑/↓ historique · Tab complète · Ctrl-C annule · Ctrl-L efface"));
 }
 
@@ -502,6 +565,10 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
     }
 
     let mut historique = Historique::default();
+    // La méthode choisie s'affiche dans l'invite et pilote le moteur via
+    // `MethodeRepl::appliquer` (variables lues à chaque exécution).
+    let mut methode = MethodeRepl::Jit;
+    methode.appliquer();
     let mut code_sortie = 0;
     // Un double-clic sur `rose-shell.exe` ouvre une console Windows qui se
     // ferme aussitôt le programme terminé : on retient la fenêtre à la fin
@@ -517,7 +584,11 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
         let mut entree = String::new();
         let mut premiere = true;
         loop {
-            let invite = if premiere { couleur.prompt("rose> ") } else { couleur.continuation("...> ") };
+            let invite = if premiere {
+                couleur.prompt(&invite_principale(methode))
+            } else {
+                couleur.continuation("...> ")
+            };
             match lire_ligne(&invite, &historique, premiere) {
                 Entree::Fin => {
                     if entree.trim().is_empty() {
@@ -642,6 +713,23 @@ pub fn lancer(fichier: Option<&str>, exec_initial: bool) -> i32 {
                     match appliquer_more(n) {
                         Ok(texte) => println!("{}", texte),
                         Err(e) => println!("{}", couleur.erreur(&e)),
+                    }
+                }
+                ":methode" | ":method" => {
+                    if arg.is_empty() {
+                        println!("{}", couleur.info(&format!("(méthode courante : {})", methode.nom())));
+                        println!("{}", couleur.doux("Choix : :methode jit | aot | interprete"));
+                        continue;
+                    }
+                    match MethodeRepl::depuis_arg(arg) {
+                        Some(m) => {
+                            methode = m;
+                            methode.appliquer();
+                            println!("{}", couleur.info(&format!(
+                                "(méthode : {} — invitation mise à jour)", m.nom())));
+                        }
+                        None => println!("{}", couleur.erreur(&format!(
+                            "rose: :methode attend jit, aot ou interprete (reçu : {arg})"))),
                     }
                 }
                 ":help" | ":h" | ":?" => aide(&couleur),
@@ -1127,9 +1215,23 @@ mod tests {
     #[test]
     fn completions() {
         assert_eq!(completer(":he").as_deref(), Some(":help"));
+        assert_eq!(completer(":me").as_deref(), Some(":methode"));
         assert_eq!(completer("primo").as_deref(), Some("primorielle"));
         assert_eq!(completer("zzz"), None);
         assert_eq!(completer(""), None);
+    }
+
+    #[test]
+    fn methode_repl_parse_et_invite() {
+        assert_eq!(MethodeRepl::depuis_arg("jit"), Some(MethodeRepl::Jit));
+        assert_eq!(MethodeRepl::depuis_arg(" AOT "), Some(MethodeRepl::Aot));
+        assert_eq!(MethodeRepl::depuis_arg("interprete"), Some(MethodeRepl::Interprete));
+        assert_eq!(MethodeRepl::depuis_arg("interprété"), Some(MethodeRepl::Interprete));
+        assert_eq!(MethodeRepl::depuis_arg("natif"), Some(MethodeRepl::Aot));
+        assert_eq!(MethodeRepl::depuis_arg("autre"), None);
+        assert_eq!(invite_principale(MethodeRepl::Jit), "rose[jit]> ");
+        assert_eq!(invite_principale(MethodeRepl::Aot), "rose[aot]> ");
+        assert_eq!(invite_principale(MethodeRepl::Interprete), "rose[interprete]> ");
     }
 
     #[test]

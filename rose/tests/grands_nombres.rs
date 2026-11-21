@@ -297,7 +297,15 @@ fn repl_more_ajoute_30_chiffres_et_reste_stable() {
     let court = "933262154439441526816992388562";
     let l: Vec<String> = t
         .lines()
-        .map(|s| s.trim().trim_start_matches("rose> ").to_string())
+        // L'invite affiche la méthode courante (`rose[jit]> ` depuis la
+        // commande :methode). On accepte les deux formes, avec ou sans
+        // crochets, pour que le test reste valable dans les deux cas.
+        .map(|s| s.trim()
+            .trim_start_matches("rose[jit]> ")
+            .trim_start_matches("rose[aot]> ")
+            .trim_start_matches("rose[interprete]> ")
+            .trim_start_matches("rose> ")
+            .to_string())
         .filter(|s| s.starts_with(court))
         .collect();
     assert_eq!(l.len(), 4, "4 affichages attendus (30/60/90/100 chiffres) : {l:?}");

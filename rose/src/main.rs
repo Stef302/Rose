@@ -237,37 +237,432 @@ fn usage() -> String {
     format!(
         "Rose {} — langage de programmation en français (maths exactes, JIT, AOT, compilation autonome)\n\
 Usage :
-  rose prog.rose [args…]   exécuter un programme Rose (interpréteur + JIT)
-  rose run prog.rose       identique
-  rose comp prog.rose [-o sortie]   exécutable autonome prêt à l'emploi (ajoute .exe sur Windows)
+  rose methode [prog.rose]       menu en français : choisissez COMMENT exécuter votre programme
+  rose help <commande>           explication détaillée et un exemple pour une commande
+
+  rose prog.rose [args…]         exécute votre programme (mode accéléré habituel)
+  rose run prog.rose [args…]     idem, avec le mot « run » ; interpréteur et accélération
+  rose jit prog.rose [args…]     Choix explicite : accélère les boucles après un court échauffement
+  rose interprete prog.rose      Choix explicite : démarre tout de suite, sans accélération
+  rose comp prog.rose [-o sortie]   exécutable autonome prêt à l'emploi (moteur et source réunis) ; suffixe .exe ajouté sur Windows
+  rose aot prog.rose [-o sortie] binaire natif le plus rapide, compilé à l'avance ; refuse les programmes trop complexes
+  rose transpile prog.rose --cible js|py|c [-o sortie]   traduit en JavaScript, Python ou C lisible ; produit du texte, ne lance rien
+  rose bc prog.rose [-o sortie]   écrit un fichier de bytecode .rosebc ; ne l'exécute pas
+  rose rvm fichier.rosebc [classe] [methode] [args…]   exécute un .rosebc dans la machine virtuelle Rose
+
+Autres commandes :
   rose latex prog.rose              formule LaTeX du programme entier
   rose latex prog.rose --apercu     idem, rendu VISIBLE (Unicode, sans LaTeX)
-  rose latex prog.rose --lignes     seulement les lignes marquees %% (LaTeX brut)
+  rose latex prog.rose --lignes     seulement les lignes marquées %% (LaTeX brut)
   rose latex prog.rose --lignes --apercu   les lignes %% en rendu visible
   rose tokens prog.rose             liste les jetons (oracle : ligne:colonne type texte)
   rose ast prog.rose                arbre syntaxique (oracle, S-expressions)
   rose rir prog.rose                représentation intermédiaire (RIR)
-  rose bc prog.rose [-o sortie]     bytecode JVM Rose .rosebc (classe v2)
-  rose rvm fichier.rosebc [classe] [methode] [args...]   exécuter dans la JVM Rose sandboxée
-  rose transpile prog.rose --cible js|py|c [-o sortie]   traduction lisible (JavaScript, Python, C)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
-  rose llvm prog.rose [-o sortie] [--exe]   génère un fichier C (--exe : exécutable si possible)
-  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   exécutable AOT NATIF (jamais le moteur collé) ; refuse explicitement si impossible. Alias de orc.
-  rose orc prog.rose [-o sortie] [-O1|-O2|-O3]   idem, compilation en mémoire (optionnelle)
-  rose link objet.o [-o sortie]   lie un objet natif en exécutable
-  rose info                état du moteur
-  rose console [fichier.rose]   console interactive (REPL) — :help, :more [N] (30 chiffres de plus)
-  rose repl [fichier.rose]      identique
+  rose llvm prog.rose [-o sortie]   génère du code C ; ne lance pas le programme
+  rose link objet.o [-o sortie]     lie un objet natif en exécutable
+  rose info                         état du moteur
+  rose console [fichier.rose]       console interactive (REPL) — :help, :methode, :more [N] (30 chiffres de plus)
+  rose repl [fichier.rose]          identique
   rose debug-lenteur [-n N] [prog.rose]   OÙ VA LE TEMPS ? lancement, analyse, exécution
-  rose wasm lib.wasm       fonctions exportées d'un module WebAssembly (pont @dll(\"wasm\", …))
-  rose update              installe/met a jour Rose (64 bits, interface console)
+  rose wasm lib.wasm                fonctions exportées d'un module WebAssembly
+  rose update                       installe/met à jour Rose (64 bits, interface console)
   rose assoc [--user|--system] [--lang fr|en]   associer .rose à rose.exe (Windows)
   rose assoc --remove [--user|--system]         retirer l'association .rose
   rose assoc --dry-run                          afficher les commandes d'association sans les appliquer
-Note : `rose comp` suffit pour 99 % des usages (exécutable autonome). `aot`, `orc`, `link` et `llvm` sont des commandes avancées.
+Note : `rose comp prog.rose` suffit pour 99 % des usages (exécutable autonome). Les autres commandes sont des options avancées.
 ",
         env!("CARGO_PKG_VERSION")
     )
+}
+
+/// Explication détaillée d'UNE commande — `rose help <commande>`.
+/// Chaque texte dit ce que la commande fait, sa limite, et donne un exemple.
+/// Aucun jargon de construction, aucun nom d'outil externe.
+fn aide_detaillee(cmd: &str) -> Option<String> {
+    let t = match cmd {
+        "methode" | "--methode" => "\
+rose methode [prog.rose]
+
+Ce que ça fait : ouvre un menu en français avec les six façons d'exécuter
+votre programme. Vous tapez un numéro de 1 à 6. Si vous n'avez pas déjà
+donné le fichier, le menu vous le demande ensuite. Rose lance alors la
+méthode choisie.
+
+Limite : c'est un choix pour CETTE exécution. Pour changer dans la console,
+utilisez la commande :methode jit|aot|interprete.
+
+Exemple :
+  rose methode prog.rose
+  (puis tapez 2 et Entrée pour choisir le mode JIT)",
+        "run" => "\
+rose run prog.rose [args…]
+
+Ce que ça fait : exécute votre programme tout de suite. C'est la façon
+la plus simple de voir le résultat à l'écran.
+
+Limite : le programme n'est pas enregistré sur le disque ; il faut le
+fichier .rose à chaque fois. C'est aussi la méthode par défaut quand vous
+tapez seulement « rose prog.rose ».
+
+Exemple :
+  rose run exemples/bonjour.rose",
+        "jit" => "\
+rose jit prog.rose [args…]
+
+Ce que ça fait : exécute votre programme en accélérant les boucles pendant
+le déroulement. Les premières fois sont un peu lentes (échauffement), puis
+ça va très vite. C'est identique au défaut de « rose prog.rose », mais vous
+le choisissez explicitement.
+
+Limite : l'accélération n'a pas le temps d'agir sur un programme très court
+; dans ce cas « rose interprete » démarre plus vite. Aucun fichier n'est
+produit.
+
+Exemple :
+  rose jit exemples/fibonacci.rose",
+        "interprete" | "interprété" => "\
+rose interprete prog.rose [args…]
+
+Ce que ça fait : exécute votre programme sans accélération. Le démarrage
+est immédiat, et la forme interne du programme (le RIR) est gardée en
+mémoire pour les exécutions suivantes.
+
+Limite : sur un long calcul répétitif, c'est plus lent que « rose jit ».
+Aucun fichier n'est produit.
+
+Exemple :
+  rose interprete exemples/bonjour.rose",
+        "comp" => "\
+rose comp prog.rose [-o sortie]
+
+Ce que ça fait : fabrique un exécutable autonome : le moteur et votre
+source sont réunis dans un seul fichier. Vous pouvez le copier et le lancer
+sur un autre ordinateur sans installer Rose. Sur Windows, le suffixe .exe
+est ajouté automatiquement.
+
+Limite : le programme est figé au moment de la compilation ; pour le
+modifier, il faut refabriquer l'exécutable. Ce n'est PAS un binaire natif
+optimisé (voir « rose aot »).
+
+Exemple :
+  rose comp exemples/bonjour.rose -o bonjour",
+        "aot" | "orc" => "\
+rose aot prog.rose [-o sortie]
+
+Ce que ça fait : fabrique un binaire natif compilé à l'avance. C'est le
+plus rapide au lancement : rien n'est traduit au moment de l'exécution.
+
+Limite : Rose refuse explicitement si votre programme ne peut pas être
+traduit en natif, et ne produit alors aucun fichier. Dans ce cas, utilisez
+« rose comp » (exécutable autonome). « orc » est un autre nom pour la même
+chose.
+
+Exemple :
+  rose aot exemples/bonjour.rose -o bonjour-rapide",
+        "transpile" => "\
+rose transpile prog.rose --cible js|py|c [-o sortie]
+
+Ce que ça fait : traduit votre programme en JavaScript, Python ou C lisible.
+Le résultat est du texte que vous pouvez lire, modifier ou intégrer ailleurs.
+
+Limite : ça ne lance PAS votre programme. La sortie dépend de la langue
+choisie après --cible : js, py ou c. Sans -o, le texte s'affiche à l'écran.
+
+Exemple :
+  rose transpile exemples/bonjour.rose --cible js -o bonjour.js",
+        "bc" => "\
+rose bc prog.rose [-o sortie]
+
+Ce que ça fait : écrit un fichier de bytecode .rosebc (un programme déjà
+préparé, prêt à être chargé). C'est la première des deux étapes pour la
+machine virtuelle Rose.
+
+Limite : ça ne lance PAS le programme.
+Utilisez ensuite « rose rvm » pour l'exécuter.
+
+Exemple :
+  rose bc exemples/bonjour.rose -o bonjour.rosebc",
+        "rvm" => "\
+rose rvm fichier.rosebc [classe] [methode] [args…]
+
+Ce que ça fait : exécute un fichier .rosebc dans la machine virtuelle Rose,
+qui travaille dans un espace fermé. C'est la deuxième étape, après « rose bc ».
+
+Limite : il faut d'abord avoir produit le .rosebc. Les noms de classe et de
+méthode sont facultatifs (par défaut : Principal et <principal>). Les
+arguments doivent être des nombres entiers.
+
+Exemple :
+  rose bc exemples/bonjour.rose -o bonjour.rosebc
+  rose rvm bonjour.rosebc",
+        "latex" => "\
+rose latex prog.rose [--apercu] [--lignes]
+
+Ce que ça fait : donne la formule mathématique de votre programme, prête à
+coller dans un document. --apercu l'affiche en caractères lisibles sans
+LaTeX installé ; --lignes ne garde que les lignes marquées %%.
+
+Limite : c'est une représentation, pas une exécution.
+
+Exemple :
+  rose latex exemples/fibonacci.rose --apercu",
+        "llvm" => "\
+rose llvm prog.rose [-o sortie]
+
+Ce que ça fait : génère un fichier de code C à partir de votre programme,
+sans rien lancer.
+
+Limite : ce n'est ni un exécutable ni une exécution ; pour un exécutable
+autonome, utilisez « rose comp ».
+
+Exemple :
+  rose llvm exemples/bonjour.rose -o bonjour.c",
+        "console" | "repl" => "\
+rose console [fichier.rose]
+
+Ce que ça fait : ouvre la console interactive. Vous tapez du code Rose, il
+est exécuté tout de suite, et les définitions restent en mémoire. La
+commande :methode jit|aot|interprete change la méthode courante, affichée
+dans l'invite.
+
+Limite : tout est perdu à la fermeture, sauf si vous utilisez :save.
+
+Exemple :
+  rose console
+  rose> :methode jit",
+        _ => return None,
+    };
+    Some(t.to_string())
+}
+
+// ── Choix interactif de la méthode d'exécution ─────────────────────────────
+//
+// L'utilisateur ne comprend pas la différence entre `run`, `comp`, `aot`…
+// On lui pose la question en français, une seule fois, puis on lance la
+// méthode choisie. Les six réponses correspondent aux six commandes déjà
+// présentes dans le moteur : rien n'est réimplémenté ici, on rend juste le
+// choix EXPLICITE.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Methode {
+    Interprete,
+    Jit,
+    Aot,
+    Autonome,
+    Transpiler,
+    Bytecode,
+}
+
+impl Methode {
+    /// Nom court affiché dans les messages de confirmation.
+    fn nom(self) -> &'static str {
+        match self {
+            Methode::Interprete => "interprété",
+            Methode::Jit => "JIT",
+            Methode::Aot => "AOT natif",
+            Methode::Autonome => "exécutable autonome",
+            Methode::Transpiler => "transpilation",
+            Methode::Bytecode => "bytecode RVM",
+        }
+    }
+
+    /// Traduit le numéro tapé dans le menu.
+    fn depuis_choix(s: &str) -> Option<Self> {
+        match s.trim() {
+            "1" => Some(Methode::Interprete),
+            "2" => Some(Methode::Jit),
+            "3" => Some(Methode::Aot),
+            "4" => Some(Methode::Autonome),
+            "5" => Some(Methode::Transpiler),
+            "6" => Some(Methode::Bytecode),
+            _ => None,
+        }
+    }
+}
+
+/// Lit une ligne sur l'entrée standard. Fin de flux (pipe épuisé) = chaîne
+/// vide : on ne boucle jamais à l'infini sur un `echo` sans second choix.
+fn lire_ligne_stdin() -> String {
+    let mut buf = String::new();
+    match std::io::stdin().read_line(&mut buf) {
+        Ok(0) => String::new(),
+        Ok(_) => buf.trim().to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Le menu exact demandé, affiché en français, puis lecture du choix.
+fn menu_methode() -> Methode {
+    use std::io::Write;
+    println!("Comment voulez-vous exécuter votre programme ?");
+    println!("  1) Interprété       — démarrage immédiat, RIR mis en cache");
+    println!("  2) JIT              — compile à chaud les boucles (rapide après warmup)");
+    println!("  3) AOT natif        — binaire natif compilé à l'avance (le plus rapide)");
+    println!("  4) Exécutable autonome — moteur+source dans un .exe (universel, ~5 Mo)");
+    println!("  5) Transpiler       — générer du JS / Python / C lisible");
+    println!("  6) Bytecode RVM     — .rosebc exécuté dans la JVM Rose");
+    loop {
+        print!("Votre choix [1-6] : ");
+        let _ = std::io::stdout().flush();
+        let reponse = lire_ligne_stdin();
+        if let Some(m) = Methode::depuis_choix(&reponse) { return m; }
+        if reponse.is_empty() {
+            // Entrée vide / fin de flux : choix honnête et documenté,
+            // jamais une boucle sans fin sur un pipe.
+            println!("(aucun choix reçu — je prends le défaut : JIT)");
+            return Methode::Jit;
+        }
+        println!("Choix invalide : « {reponse} ». Tapez un numéro de 1 à 6.");
+    }
+}
+
+/// Demande le fichier si `rose methode` a été lancé sans argument.
+fn demander_fichier() -> String {
+    use std::io::Write;
+    print!("Quel fichier Rose voulez-vous exécuter ? ");
+    let _ = std::io::stdout().flush();
+    lire_ligne_stdin()
+}
+
+/// Lance une des quatre méthodes qui ne passent PAS par l'exécution directe.
+/// Ne rend jamais : chaque voie se termine par son propre code de sortie.
+fn lancer_methode_speciale(m: Methode, fichier: &str, args: &[String]) -> ! {
+    match m {
+        Methode::Interprete | Methode::Jit => {
+            // Jamais appelé : ces deux modes repassent par le bloc
+            // d'exécution normal de `main` (voir la normalisation plus bas).
+            unreachable!()
+        }
+        Methode::Aot => {
+            let mut nv = vec![String::new(), "aot".to_string(), fichier.to_string()];
+            nv.extend_from_slice(args);
+            cmd_llvm::execute("aot", &nv);
+        }
+        Methode::Autonome => {
+            let mut sortie = String::new();
+            let mut i = 0;
+            while i < args.len() {
+                if (args[i] == "-o" || args[i] == "--sortie") && i + 1 < args.len() {
+                    sortie = args[i + 1].clone();
+                    i += 2;
+                } else { i += 1; }
+            }
+            if sortie.is_empty() {
+                sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string())
+                    .unwrap_or_else(|| fichier.to_string());
+                if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
+                if sortie.is_empty() { sortie = "programme".into(); }
+            }
+            sortie = nom_sortie_comp(&sortie, cfg!(windows));
+            std::process::exit(comp_programme(fichier, &sortie));
+        }
+        Methode::Transpiler => {
+            let mut cible = String::new();
+            let mut sortie = String::new();
+            let mut i = 0;
+            while i < args.len() {
+                if (args[i] == "--cible" || args[i] == "-t") && i + 1 < args.len() {
+                    cible = args[i + 1].clone(); i += 2;
+                } else if (args[i] == "-o" || args[i] == "--sortie") && i + 1 < args.len() {
+                    sortie = args[i + 1].clone(); i += 2;
+                } else { i += 1; }
+            }
+            if cible.is_empty() {
+                use std::io::Write;
+                print!("Quelle langue voulez-vous lire ? (js/py/c) [js] : ");
+                let _ = std::io::stdout().flush();
+                cible = lire_ligne_stdin();
+                if cible.is_empty() { cible = "js".to_string(); }
+            }
+            let cible = match transpile::Cible::parser(&cible) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+            };
+            let code = match transpile::transpiler_fichier(fichier, cible) {
+                Ok(c) => c,
+                Err(e) => { eprintln!("{e}"); std::process::exit(1); }
+            };
+            if sortie.is_empty() {
+                let ext = cible.extension();
+                let base = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f).unwrap_or(fichier);
+                let base = base.strip_suffix(".rose").unwrap_or(base);
+                sortie = format!("{base}.{ext}");
+            }
+            match std::fs::write(&sortie, code.as_bytes()) {
+                Ok(()) => {
+                    println!("rose : {sortie} produit (transpilation {})", cible.nom());
+                    std::process::exit(0);
+                }
+                Err(e) => { eprintln!("rose : ne peut écrire {sortie} ({e})"); std::process::exit(1); }
+            }
+        }
+        Methode::Bytecode => {
+            // Deux étapes, comme les commandes `rose bc` puis `rose rvm`.
+            let chemin = match cmd_bc(fichier, None) {
+                Ok(p) => p,
+                Err(rc) => std::process::exit(rc),
+            };
+            std::process::exit(cmd_rvm(&chemin, "Principal", "<principal>", args));
+        }
+    }
+}
+
+/// Producteur de `.rosebc` partagé par `rose bc` et par le menu « bytecode ».
+/// Rend le chemin écrit, ou le code de sortie en cas d'échec.
+fn cmd_bc(fichier: &str, sortie: Option<&str>) -> Result<String, i32> {
+    let prog = match front::analyser_fichier(fichier) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("{e}"); return Err(1); }
+    };
+    let corps = match rir::abaisser_principal(&prog.instructions) {
+        Some(c) => c,
+        None => { eprintln!("rose bc : corps principal non abaissable"); return Err(1); }
+    };
+    if let Err(e) = rosevm::verifier_sous_ensemble(&corps) {
+        eprintln!("rose bc : {}", e);
+        return Err(1);
+    }
+    // Le principal n'a pas de paramètres : arité 0 pour que `rose rvm` marche
+    // sans argument.
+    let classe = match rosevm::promouvoir_corps_avec_parametres(&corps, "<principal>", 0) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("rose bc : {}", e); return Err(1); }
+    };
+    let octets = rosevm::ecrire_classe(&classe);
+    let chemin = match sortie {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            let base = fichier.strip_suffix(".rose").unwrap_or(fichier);
+            format!("{base}.rosebc")
+        }
+    };
+    if let Err(e) = std::fs::write(&chemin, &octets) {
+        eprintln!("rose bc : écriture impossible : {}", e);
+        return Err(1);
+    }
+    println!("rose bc : {} octets -> {}", octets.len(), chemin);
+    Ok(chemin)
+}
+
+/// Exécutant de `.rosebc` partagé par `rose rvm` et par le menu « bytecode ».
+fn cmd_rvm(chemin: &str, classe: &str, methode: &str, args: &[String]) -> i32 {
+    let octets = match std::fs::read(chemin) {
+        Ok(o) => o,
+        Err(e) => { eprintln!("rose rvm : lecture impossible : {}", e); return 1; }
+    };
+    let arguments: Vec<rosevm::Valeur> = args.iter()
+        .filter_map(|s| s.parse::<i64>().ok()).map(rosevm::Valeur::z).collect();
+    let mut hote = rosevm::HoteBc::neuf(rosevm::GcPool::LIMITE_DEFAUT);
+    let limites = rosevm::LimitesJvm::default();
+    match rosevm::executer_fichier(&octets, classe, methode, &arguments, &mut hote, &limites) {
+        Ok(v) => {
+            print!("{}", hote.sortie);
+            println!("{}", rosevm::chaine_publique(&v));
+            0
+        }
+        Err(e) => { eprintln!("rose rvm : {}", e); 1 }
+    }
 }
 
 // ── Oracle RIR (M4.4) ─────────────────────────────────────────────────────
@@ -927,7 +1322,71 @@ fn main() {
         eprint!("{}", usage());
         std::process::exit(1);
     }
-    let action = argv[1].as_str();
+    // ── Normalisation des choix explicites de méthode ──────────────────────
+    // `rose methode` ouvre le menu ; `rose jit` / `rose interprete` sont des
+    // alias explicites qui repassent par le chemin d'exécution habituel :
+    // argv devient exactement « rose run fichier args… » et tout le bloc
+    // d'exécution ci-dessous reste inchangé.
+    let action_init = argv[1].clone();
+    let exe = argv[0].clone();
+    let action_exec: String;
+    match action_init.as_str() {
+        "methode" | "--methode" => {
+            let choix = menu_methode();
+            let fichier = match argv.get(2) {
+                Some(f) => f.clone(),
+                None => demander_fichier(),
+            };
+            if fichier.is_empty() {
+                eprintln!("rose methode : aucun fichier indiqué.");
+                std::process::exit(1);
+            }
+            let suite: Vec<String> = argv.iter().skip(3).cloned().collect();
+            argv = std::iter::once(exe)
+                .chain(std::iter::once("run".to_string()))
+                .chain(std::iter::once(fichier.clone()))
+                .chain(suite.iter().cloned())
+                .collect();
+            match choix {
+                Methode::Interprete => {
+                    println!("(méthode choisie : interprété)");
+                    unsafe { std::env::set_var("ROSE_SANS_JIT", "1"); }
+                    unsafe { std::env::remove_var("ROSE_AOT"); }
+                }
+                Methode::Jit => {
+                    println!("(méthode choisie : JIT)");
+                    unsafe { std::env::remove_var("ROSE_SANS_JIT"); }
+                    unsafe { std::env::remove_var("ROSE_AOT"); }
+                }
+                autre => {
+                    println!("(méthode choisie : {})", autre.nom());
+                    lancer_methode_speciale(autre, &fichier, suite.as_slice());
+                }
+            }
+            action_exec = "run".to_string();
+        }
+        "jit" | "interprete" | "interprété" | "interpreté" => {
+            if argv.len() < 3 {
+                eprintln!("rose {action_init} : quel programme ?");
+                std::process::exit(1);
+            }
+            let est_interprete = action_init != "jit";
+            let suite: Vec<String> = argv.iter().skip(2).cloned().collect();
+            argv = std::iter::once(exe)
+                .chain(std::iter::once("run".to_string()))
+                .chain(suite)
+                .collect();
+            if est_interprete {
+                unsafe { std::env::set_var("ROSE_SANS_JIT", "1"); }
+            } else {
+                unsafe { std::env::remove_var("ROSE_SANS_JIT"); }
+            }
+            unsafe { std::env::remove_var("ROSE_AOT"); }
+            action_exec = "run".to_string();
+        }
+        _ => { action_exec = action_init; }
+    }
+    let action = action_exec.as_str();
     // ⚠ `debug-lenteur` : diagnostic du temps de lancement / analyse /
     // exécution. Il ne dépend de RIEN (std seul) et se place AVANT toute
     // initialisation lourde.
@@ -944,6 +1403,20 @@ fn main() {
         "version" | "--version" => { println!("{}", interp::version()); return; }
         "info" => { print!("{}", interp::info()); return; }
         "--help" | "-h" | "aide" => { print!("{}", usage()); return; }
+        "help" => {
+            match argv.get(2) {
+                None => print!("{}", usage()),
+                Some(cmd) => match aide_detaillee(cmd) {
+                    Some(texte) => print!("{}", texte),
+                    None => {
+                        eprintln!("rose help : commande inconnue : {cmd}");
+                        eprintln!("Essayez : rose help methode | run | jit | interprete | comp | aot | transpile | bc | rvm");
+                        std::process::exit(1);
+                    }
+                },
+            }
+            return;
+        }
         "latex" => {
             // RENDU LaTeX DU PROGRAMME ENTIER : c'est la synthèse de ce
             // qu'on a programmé. La commande `run` montre, instruction par
@@ -1086,59 +1559,20 @@ fn main() {
         }
         "bc" => {
             if argv.len() < 3 { eprintln!("rose bc : quel programme ?"); std::process::exit(1); }
-            match front::analyser_fichier(&argv[2]) {
-                Ok(prog) => match rir::abaisser_principal(&prog.instructions) {
-                    Some(corps) => {
-                        if let Err(e) = rosevm::verifier_sous_ensemble(&corps) {
-                            eprintln!("rose bc : {}", e); std::process::exit(1);
-                        }
-                        // Le programme principal n'a pas de paramètres : on
-                        // déclare arité 0 (plutôt que tous les slots) pour que
-                        // `rose rvm fichier.rosebc` marche sans argument.
-                        let classe = match rosevm::promouvoir_corps_avec_parametres(
-                            &corps, "<principal>", 0) {
-                            Ok(c) => c,
-                            Err(e) => { eprintln!("rose bc : {}", e); std::process::exit(1); }
-                        };
-                        let octets = rosevm::ecrire_classe(&classe);
-                        let chemin = if argv.get(3).map(String::as_str) == Some("-o") {
-                            argv.get(4).map(String::as_str).unwrap_or(&argv[2]).to_string()
-                        } else if argv.len() >= 4 && !argv[3].starts_with('-') {
-                            argv[3].clone()
-                        } else {
-                            format!("{}.rosebc", argv[2])
-                        };
-                        if let Err(e) = std::fs::write(&chemin, &octets) {
-                            eprintln!("rose bc : écriture impossible : {}", e); std::process::exit(1);
-                        }
-                        println!("rose bc : {} octets -> {}", octets.len(), chemin);
-                        std::process::exit(0);
-                    }
-                    None => { eprintln!("rose bc : corps principal non abaissable"); std::process::exit(1); }
-                },
-                Err(e) => { eprintln!("{}", e); std::process::exit(1); }
-            }
+            let sortie = if argv.get(3).map(String::as_str) == Some("-o") {
+                Some(argv.get(4).map(String::as_str).unwrap_or(&argv[2]))
+            } else if argv.len() >= 4 && !argv[3].starts_with('-') {
+                Some(argv[3].as_str())
+            } else {
+                None
+            };
+            std::process::exit(match cmd_bc(&argv[2], sortie) { Ok(_) => 0, Err(rc) => rc });
         }
         "rvm" => {
             if argv.len() < 3 { eprintln!("rose rvm : quel fichier .rosebc ?"); std::process::exit(2); }
-            let octets = match std::fs::read(&argv[2]) {
-                Ok(o) => o,
-                Err(e) => { eprintln!("rose rvm : lecture impossible : {}", e); std::process::exit(1); }
-            };
             let classe = argv.get(3).map(String::as_str).unwrap_or("Principal");
             let methode = argv.get(4).map(String::as_str).unwrap_or("<principal>");
-            let arguments: Vec<rosevm::Valeur> = argv.iter().skip(5)
-                .filter_map(|s| s.parse::<i64>().ok()).map(rosevm::Valeur::z).collect();
-            let mut hote = rosevm::HoteBc::neuf(rosevm::GcPool::LIMITE_DEFAUT);
-            let limites = rosevm::LimitesJvm::default();
-            match rosevm::executer_fichier(&octets, classe, methode, &arguments, &mut hote, &limites) {
-                Ok(v) => {
-                    print!("{}", hote.sortie);
-                    println!("{}", rosevm::chaine_publique(&v));
-                    std::process::exit(0);
-                }
-                Err(e) => { eprintln!("rose rvm : {}", e); std::process::exit(1); }
-            }
+            std::process::exit(cmd_rvm(&argv[2], classe, methode, &argv[5..]));
         }
         "verif" => {
             if argv.len() < 3 { eprintln!("rose verif : quel programme ?"); std::process::exit(1); }
@@ -1606,6 +2040,42 @@ mod tests_cli_clair {
         ] {
             assert!(!u.contains(interdit), "mention interdite dans l'aide : {}", interdit);
         }
+    }
+
+    #[test]
+    fn menu_methode_reconnait_les_six_choix() {
+        assert_eq!(Methode::depuis_choix("1"), Some(Methode::Interprete));
+        assert_eq!(Methode::depuis_choix("2"), Some(Methode::Jit));
+        assert_eq!(Methode::depuis_choix("3"), Some(Methode::Aot));
+        assert_eq!(Methode::depuis_choix("4"), Some(Methode::Autonome));
+        assert_eq!(Methode::depuis_choix("5"), Some(Methode::Transpiler));
+        assert_eq!(Methode::depuis_choix(" 6 "), Some(Methode::Bytecode));
+        assert_eq!(Methode::depuis_choix("9"), None);
+        assert_eq!(Methode::depuis_choix(""), None);
+    }
+
+    #[test]
+    fn aide_detaillee_des_methodes() {
+        for cmd in ["methode", "run", "jit", "interprete", "comp", "aot", "transpile", "bc", "rvm"] {
+            let t = aide_detaillee(cmd).unwrap_or_else(|| panic!("aide manquante : {cmd}"));
+            assert!(t.contains("Ce que ça fait"), "{cmd}");
+            assert!(t.contains("Limite"), "{cmd}");
+            assert!(t.contains("Exemple"), "{cmd}");
+            let bas = t.to_ascii_lowercase();
+            for interdit in ["rust", "cargo", "cranelift", "clang", "gcc"] {
+                assert!(!bas.contains(interdit), "{interdit} dans l'aide de {cmd}");
+            }
+        }
+        assert!(aide_detaillee("inexistant").is_none());
+    }
+
+    #[test]
+    fn usage_annonce_le_choix_interactif() {
+        let u = usage();
+        assert!(u.contains("rose methode [prog.rose]"));
+        assert!(u.contains("rose help <commande>"));
+        assert!(u.contains("rose jit prog.rose"));
+        assert!(u.contains("rose interprete prog.rose"));
     }
 
     #[test]
