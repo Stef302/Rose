@@ -17,25 +17,25 @@
         {
           "nom": "Rose-0.1.73-full.nupkg",
           "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.73-full.nupkg",
-          "sha256": "7c5180c1d360cc2a30b6e824607edcd5b823d73cd2efed4b1237c6bc3166202c",
-          "taille": 11170003
+          "sha256": "08c61bdae4090d9aac77491c14c5cd6d1dbe9e4adbd94be2c8858e180bb5b434",
+          "taille": 11218818
         },
         {
           "nom": "rose-setup.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "2a87c38ccccf86a0d45a8f621d1d3449cef13d3f121ddce3574dd845f21e2bf2",
-          "taille": 11985920
+          "sha256": "7123f2c43f09dc7851a02413d70bc96a1e4710648332179653fb7092e4d2076d",
+          "taille": 12025856
         },
         {
           "nom": "rose.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "9add8cb5c993fbec0ff12ae64e5a55e95b929d4d79d7349cd192fce46d5204f5",
-          "taille": 9563136
+          "sha256": "bd439abbadac9aad0b8b099ad52aff4666bedcd2de7a2a39a9b2e7876ca51dab",
+          "taille": 9603072
         },
         {
           "nom": "rose-shell.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "6ea472deeb896d6db910eb8c2c9a7476c5e77ad717f35e4c2a9645b6db34a258",
+          "sha256": "9cbb6a42b539d175d38bdc4aef9ed2649932d81f28623dc9209a4bc1f9ed4d26",
           "taille": 463360
         },
         {
@@ -47,7 +47,7 @@
         {
           "nom": "rose-aarch64-linux",
           "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "3d3463e6f64595147b2239e5319e50baeb5b797d2c24996d5bef46cd6d4bcec8",
+          "sha256": "174ec9811d58cc46b29e68340513da4fe59be529fce8d47268d7f73e13a47f1c",
           "taille": 5325872
         },
         {
@@ -59,7 +59,7 @@
         {
           "nom": "releases.win.json",
           "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "691ba3d4addf7564b90af6c442c580893a75d3682cfae88b67b647dd549213e5",
+          "sha256": "231861ec2cd04d4443808e0400f8473a0bf030e5c1652a6983e7a2c423b70ec4",
           "taille": 406
         }
       ]
@@ -85,19 +85,19 @@
         {
           "nom": "rose-setup.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "2a87c38ccccf86a0d45a8f621d1d3449cef13d3f121ddce3574dd845f21e2bf2",
-          "taille": 11985920
+          "sha256": "7123f2c43f09dc7851a02413d70bc96a1e4710648332179653fb7092e4d2076d",
+          "taille": 12025856
         },
         {
           "nom": "rose.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "9add8cb5c993fbec0ff12ae64e5a55e95b929d4d79d7349cd192fce46d5204f5",
-          "taille": 9563136
+          "sha256": "bd439abbadac9aad0b8b099ad52aff4666bedcd2de7a2a39a9b2e7876ca51dab",
+          "taille": 9603072
         },
         {
           "nom": "rose-shell.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "6ea472deeb896d6db910eb8c2c9a7476c5e77ad717f35e4c2a9645b6db34a258",
+          "sha256": "9cbb6a42b539d175d38bdc4aef9ed2649932d81f28623dc9209a4bc1f9ed4d26",
           "taille": 463360
         },
         {
@@ -109,7 +109,7 @@
         {
           "nom": "rose-aarch64-linux",
           "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "3d3463e6f64595147b2239e5319e50baeb5b797d2c24996d5bef46cd6d4bcec8",
+          "sha256": "174ec9811d58cc46b29e68340513da4fe59be529fce8d47268d7f73e13a47f1c",
           "taille": 5325872
         },
         {
@@ -121,7 +121,7 @@
         {
           "nom": "releases.win.json",
           "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "691ba3d4addf7564b90af6c442c580893a75d3682cfae88b67b647dd549213e5",
+          "sha256": "231861ec2cd04d4443808e0400f8473a0bf030e5c1652a6983e7a2c423b70ec4",
           "taille": 406
         }
       ]
@@ -144,7 +144,7 @@
         {
           "nom": "releases.win.json",
           "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "691ba3d4addf7564b90af6c442c580893a75d3682cfae88b67b647dd549213e5",
+          "sha256": "231861ec2cd04d4443808e0400f8473a0bf030e5c1652a6983e7a2c423b70ec4",
           "taille": 406
         },
         {
@@ -156,19 +156,19 @@
         {
           "nom": "rose-aarch64-linux",
           "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "3d3463e6f64595147b2239e5319e50baeb5b797d2c24996d5bef46cd6d4bcec8",
+          "sha256": "174ec9811d58cc46b29e68340513da4fe59be529fce8d47268d7f73e13a47f1c",
           "taille": 5325872
         },
         {
           "nom": "rose-setup.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "2a87c38ccccf86a0d45a8f621d1d3449cef13d3f121ddce3574dd845f21e2bf2",
-          "taille": 11985920
+          "sha256": "7123f2c43f09dc7851a02413d70bc96a1e4710648332179653fb7092e4d2076d",
+          "taille": 12025856
         },
         {
           "nom": "rose-shell.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "6ea472deeb896d6db910eb8c2c9a7476c5e77ad717f35e4c2a9645b6db34a258",
+          "sha256": "9cbb6a42b539d175d38bdc4aef9ed2649932d81f28623dc9209a4bc1f9ed4d26",
           "taille": 463360
         },
         {
@@ -180,8 +180,8 @@
         {
           "nom": "rose.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "9add8cb5c993fbec0ff12ae64e5a55e95b929d4d79d7349cd192fce46d5204f5",
-          "taille": 9563136
+          "sha256": "bd439abbadac9aad0b8b099ad52aff4666bedcd2de7a2a39a9b2e7876ca51dab",
+          "taille": 9603072
         },
         {
           "nom": "rose-language-0.1.7.vsix",
