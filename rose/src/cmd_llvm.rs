@@ -336,6 +336,52 @@ fn appels_du_corps(corps: &crate::rir::CorpsRir, sortie: &mut Vec<String>) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// AOT « VALEURS EXACTES » (vague 78, AOT3)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// `>> 565#` fait 228 chiffres : le RIR historique ne sait représenter qu'un
+// i64 et refuse le programme. Or l'expression est un TERME CONSTANT : sa
+// valeur est entièrement déterminée à la compilation. On la calcule donc
+// UNE fois avec l'interpréteur Rose (le même `eval` que `rose comp` / `rose
+// prog.rose`), puis on mémorise son texte décimal dans le binaire natif ; le
+// stub l'écrit sur stdout par un `write` syscall.
+//
+// Cela couvre aussi `>> 100!`, `>> 20?`, `>> 30$`, `>> !10`, `>> 7!!`…
+// Aucun changement au RIR pour les autres programmes : la voie historique
+// est inchangée, octet pour octet.
+
+/// Calcule la valeur d'un programme réduit à `>> <terme constant>`.
+///
+/// Rend `(texte_avec_nouvelle_ligne, parties_basses_i64)` ou `None` dès que
+/// le programme n'est pas exactement ce cas (l'appelant retombe alors sur le
+/// chemin RIR historique). Le texte est construit exactement comme
+/// `run::afficher` le ferait, pour garantir l'égalité octet pour octet avec
+/// l'interpréteur.
+fn valeur_constante_aot(prog: &crate::front::Programme) -> Option<(String, i64)> {
+    if prog.instructions.len() != 1 { return None; }
+    let expr = match &prog.instructions[0] {
+        Instr::Afficher(es, _) if es.len() == 1 && crate::rir::est_constant(&es[0]) => &es[0],
+        _ => return None,
+    };
+    let valeur = crate::interp::Interp::nouveau(prog.clone()).eval(expr).ok()?;
+    let (texte, bas) = match &valeur {
+        crate::run::Valeur::Entier(n, None) => (n.to_string(), *n),
+        crate::run::Valeur::Entier(_, Some(z)) => {
+            use num_traits::ToPrimitive;
+            // Les 64 bits bas donnent le code de retour du processus. Il est
+            // tronqué pour les grands entiers (comme le faisait déjà le stub
+            // i64), mais le texte complet, lui, est exact.
+            let bas = (&z.v() & num_bigint::BigInt::from(u64::MAX))
+                .to_u64().unwrap_or(0) as i64;
+            (z.chaine(), bas)
+        }
+        // Seuls les entiers sont des « valeurs exactes » au sens AOT3.
+        _ => return None,
+    };
+    Some((format!("{}\n", texte), bas))
+}
+
 /// `rose orc prog.rose [-o sortie]` — alias : `rose aot`.
 ///
 /// Analyse, abaisse en RIR, émet les octets machine puis écrit DIRECTEMENT
@@ -379,6 +425,37 @@ fn orc(argv: &[String]) -> ! {
     if let Err(e) = crate::front::verifier(&mut prog) {
         eprintln!("rose: programme invalide : {}", e);
         std::process::exit(1);
+    }
+
+    // ── AOT « valeurs exactes » (vague 78) ──────────────────────────────
+    // `>> 565#` est un terme constant : l'interpréteur le calcule ici, une
+    // seule fois, et le binaire natif mémorise son texte décimal. On tente
+    // cette voie AVANT tout abaissement RIR, afin que `rose rir` et le
+    // point fixe b3ed9262 restent strictement inchangés.
+    if let Some((texte, bas)) = valeur_constante_aot(&prog) {
+        if windows {
+            refuser("l'écriture d'une valeur exacte n'est pas disponible sur PE ; utilisez `rose comp` sur Windows");
+        }
+        let Some(corps) = crate::rir::abaisser_principal_valeur_exacte(&prog.instructions, bas)
+        else { refuser("la valeur finale du programme ne peut pas être calculée directement") };
+        let programme = match crate::natif_emetteur::emettre_valeur_exacte(
+            &corps, arch, texte.as_bytes())
+        {
+            Ok(p) => p,
+            Err(e) => refuser(&format!("traduction en code machine impossible : {}", e)),
+        };
+        debug_assert!(programme.fallbacks.is_empty() && programme.appels.is_empty());
+        let mut options = crate::link_natif::Options::nouveau(arch);
+        options.n_slots_total = programme.n_slots_total;
+        options.sortie_exacte = Some(texte.into_bytes());
+        let chemin = Path::new(&sortie);
+        if let Err(e) = crate::link_natif::ecrire_elf(&programme.code, &options, chemin) {
+            eprintln!("rose: écriture de {} impossible : {}", sortie, e);
+            std::process::exit(1);
+        }
+        println!("rose: {} produit (exécutable natif {}, valeur exacte mémorisée)",
+                 sortie, arch.nom());
+        std::process::exit(0);
     }
 
     // Fonctions Rose qui auront un corps machine. `declarer_rir` doit être

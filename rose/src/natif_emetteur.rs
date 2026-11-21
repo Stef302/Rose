@@ -147,6 +147,12 @@ pub struct ProgrammeEmis {
     /// Doit rester vide : le mode « lié » refuse toute expression qui
     /// demanderait la trampoline (elle rendrait une valeur fausse).
     pub fallbacks: Vec<u32>,
+    /// ⚠⚠⚠ AOT « valeurs exactes » (vague 78) : octets à écrire sur stdout
+    /// par le stub d'entrée (texte décimal + `'\n'`, déjà calculé par
+    /// l'interpréteur Rose à la compilation). `None` dans le chemin RIR
+    /// historique : le stub continue d'imprimer la valeur i64 rendue par le
+    /// code machine, sans aucun changement de comportement.
+    pub sortie: Option<Vec<u8>>,
 }
 
 /// Erreurs d'émission.
@@ -350,7 +356,21 @@ pub fn emettre_programme(fonctions: &[(String, CorpsRir)], arch: Architecture)
         n_slots_total: frame_bytes / 8,
         appels,
         fallbacks,
+        sortie: None,
     })
+}
+
+/// ⚠ Émet un programme AOT « valeur exacte » : le code machine est le
+/// plus petit possible (`retour <partie i64>`), et la valeur décimale
+/// complète est mémorisée dans `sortie` pour être écrite par le stub
+/// (`link_natif::elf_bytes`). Le texte fourni DOIT être exactement celui que
+/// l'interpréteur afficherait (y compris son `'\n'` final).
+pub fn emettre_valeur_exacte(corps: &CorpsRir, arch: Architecture, texte: &[u8])
+    -> Result<ProgrammeEmis, EmitError>
+{
+    let mut p = emettre_programme(&[("$principal".to_string(), corps.clone())], arch)?;
+    p.sortie = Some(texte.to_vec());
+    Ok(p)
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -80,6 +80,12 @@ pub struct Options {
     /// sans cela une valeur comme 317811 serait tronquée à 115.
     /// `false` par défaut : tous les appels existants gardent leur stub.
     pub afficher_valeur: bool,
+    /// ⚠ AOT « valeurs exactes » (vague 78) : texte décimal complet (avec
+    /// `'\n'`) calculé par l'interpréteur Rose à la compilation. Le stub ELF
+    /// l'écrit sur stdout au lieu de convertir la valeur i64 rendue par le
+    /// code machine. `None` par défaut : tous les appels existants gardent
+    /// leur stub (et leurs octets) exactement comme avant.
+    pub sortie_exacte: Option<Vec<u8>>,
 }
 
 impl Options {
@@ -91,6 +97,7 @@ impl Options {
             n_slots_total: SCRATCH_SLOTS as usize,
             nom_code: "rose_code".to_string(),
             afficher_valeur: false,
+            sortie_exacte: None,
         }
     }
 
@@ -169,13 +176,22 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     // Un ELF est un format Unix : le stub utilise toujours SysV/AAPCS64 et
     // termine par le syscall exit (aucune table d'imports n'existe en ELF).
     let abi = Abi::SysV;
-    let stub_len = taille_stub(options.architecture, abi, frame, options.afficher_valeur);
+    // ⚠ AOT valeurs exactes : le texte décimal (calculé par l'interpréteur à
+    // la compilation) est stocké dans .rodata et écrit par le stub. L'adresse
+    // n'est connue qu'après le placement des sections : on génère d'abord le
+    // stub avec une adresse factice (la suite d'instructions a une LONGUEUR
+    // FIXE), puis on le régénère avec la vraie adresse plus bas.
+    let donnees = options.sortie_exacte.clone();
+    let stub_len = taille_stub(options.architecture, abi, frame,
+                               options.afficher_valeur,
+                               donnees.as_ref().map(|d| d.len()));
     let vaddr_code = vaddr_text + stub_len as u64;
     let off_tramp_stub = stub_len + code.len();
     let vaddr_tramp_stub = vaddr_text + off_tramp_stub as u64;
 
     let stub = stub_depart(options.architecture, abi, vaddr_text, vaddr_code,
-                           vaddr_tramp_stub, 0, frame, options.afficher_valeur);
+                           vaddr_tramp_stub, 0, frame, options.afficher_valeur,
+                           donnees.as_ref().map(|d| (0u64, d.len())));
     debug_assert_eq!(stub.len(), stub_len);
     let tramp_stub = stub_trampoline(options.architecture);
 
@@ -184,8 +200,10 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     text.extend_from_slice(code);
     text.extend_from_slice(&tramp_stub);
 
-    // .rodata : une chaîne innocente, suffit à matérialiser la section.
-    let rodata: &[u8] = b"ROSE-LINK-NATIF\0";
+    // .rodata : le texte exact quand il y en a ; sinon la chaîne innocente
+    // historique, suffisante à matérialiser la section.
+    let rodata: Vec<u8> = donnees.clone()
+        .unwrap_or_else(|| b"ROSE-LINK-NATIF\0".to_vec());
     // .data : la table de trampoline (3 pointeurs) lue par le code émis.
     let mut data = Vec::with_capacity(24);
     p_u64(&mut data, vaddr_tramp_stub); // appel_rir
@@ -216,6 +234,16 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
 
     // ── placement des sections dans le fichier ─────────────────────────
     let off_rodata = aligner(off_text + text.len(), 16);
+    if let Some(d) = &donnees {
+        // On connaît maintenant l'adresse réelle du texte : on réécrit le
+        // stub (même longueur, seuls les immédiats changent).
+        let vaddr_donnees = base + off_rodata as u64;
+        let stub = stub_depart(options.architecture, abi, vaddr_text, vaddr_code,
+                               vaddr_tramp_stub, 0, frame, options.afficher_valeur,
+                               Some((vaddr_donnees, d.len())));
+        debug_assert_eq!(stub.len(), stub_len);
+        text[0..stub_len].copy_from_slice(&stub);
+    }
     let off_data = aligner(off_rodata + rodata.len(), 8);
     let off_symtab = aligner(off_data + data.len(), 8);
     let off_strtab = off_symtab + symtab.len();
@@ -257,7 +285,7 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     ecrire_u64(&mut f, 112, 0x1000); // p_align
 
     f[off_text..off_text + text.len()].copy_from_slice(&text);
-    f[off_rodata..off_rodata + rodata.len()].copy_from_slice(rodata);
+    f[off_rodata..off_rodata + rodata.len()].copy_from_slice(&rodata);
     f[off_data..off_data + data.len()].copy_from_slice(&data);
     f[off_symtab..off_symtab + symtab.len()].copy_from_slice(&symtab);
     f[off_strtab..off_strtab + strtab.octets.len()].copy_from_slice(&strtab.octets);
@@ -317,7 +345,7 @@ pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
     let abi = Abi::Win64;
     // Le stub Win64 n'a pas de sortie décimale (pas de syscall Unix) : on
     // garde exactement le même octet pour les tests / produits PE existants.
-    let stub_len = taille_stub(options.architecture, abi, frame, false);
+    let stub_len = taille_stub(options.architecture, abi, frame, false, None);
     let rva_text = PE_RVA_TEXT;
     let rva_data = PE_RVA_DATA;
     let rva_code = rva_text + stub_len as u32;
@@ -330,7 +358,7 @@ pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
                            image_base + rva_text as u64,
                            image_base + rva_code as u64,
                            image_base + rva_tramp_stub as u64,
-                           iat_abs, frame, false);
+                           iat_abs, frame, false, None);
     debug_assert_eq!(stub.len(), stub_len);
     let tramp = stub_trampoline(options.architecture);
     let mut text = Vec::with_capacity(stub_len + code.len() + tramp.len());
@@ -464,8 +492,10 @@ fn rendre_executable(_chemin: &Path) -> Result<(), ErreurLien> { Ok(()) }
 
 /// Longueur du stub : on le génère une fois avec des adresses factices (les
 /// déplacements ne changent pas la taille des instructions).
-fn taille_stub(arch: Architecture, abi: Abi, frame: usize, afficher: bool) -> usize {
-    stub_depart(arch, abi, 0, 0, 0, 0, frame, afficher).len()
+fn taille_stub(arch: Architecture, abi: Abi, frame: usize, afficher: bool,
+               donnees: Option<usize>) -> usize {
+    stub_depart(arch, abi, 0, 0, 0, 0, frame, afficher,
+                donnees.map(|n| (0u64, n))).len()
 }
 
 /// Séquence « écrire la valeur en décimal sur stdout » (SysV / Linux).
@@ -543,9 +573,67 @@ fn sequence_affichage_x86() -> Vec<u8> {
     v
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// AOT « VALEURS EXACTES » — écrire une chaîne de digits mémorisée
+// ═══════════════════════════════════════════════════════════════════════
+//
+// `sequence_affichage_*` sait écrire un i64 en le divisant par 10. Une
+// primorielle comme `565#` a 228 chiffres : la division i64 ne suffit plus.
+// On mémorise donc le TEXTE DÉCIMAL complet dans `.rodata` (calculé par
+// l'interpréteur Rose à la compilation) et le stub fait un unique
+// `write(1, adresse, longueur)`. La suite d'instructions a une LONGUEUR FIXE,
+// indépendante de l'adresse et de la longueur : c'est ce qui permet de
+// calculer `stub_len` avant de connaître l'emplacement de `.rodata`.
+
+/// Suite SysV AMD64 : `write(1, addr, len)`, puis restauration de la valeur
+/// rendue par le code machine pour le `exit` (r8 ← rax au début).
+fn sequence_ecrire_donnees_x86(addr: u64, len: usize) -> Vec<u8> {
+    let mut v = vec![
+        0x49, 0x89, 0xC0,                   // mov r8, rax (valeur sauvegardée)
+        0xB8, 1, 0, 0, 0,                   // mov eax, 1 (__NR_write)
+        0xBF, 1, 0, 0, 0,                   // mov edi, 1 (stdout)
+        0x48, 0xBE,                         // movabs rsi, addr
+    ];
+    v.extend_from_slice(&addr.to_le_bytes());
+    v.extend_from_slice(&[0x48, 0xBA]);     // movabs rdx, len
+    v.extend_from_slice(&(len as u64).to_le_bytes());
+    v.extend_from_slice(&[
+        0x0F, 0x05,                         // syscall
+        0x4C, 0x89, 0xC0,                   // mov rax, r8 (REX.R : source = r8)
+    ]);
+    v
+}
+
+/// Suite AAPCS64 : `write(1, addr, len)`. Les immédiats sont émis en quatre
+/// `movz`/`movk` (16 bits chacun), donc FIXES en longueur, quelle que soit
+/// l'adresse de `.rodata` (0x0040_0000 + décalage).
+fn sequence_ecrire_donnees_a64(addr: u64, len: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(44);
+    let mut p = |w: u32| v.extend_from_slice(&w.to_le_bytes());
+    p(0xAA00_03EE); // mov x14, x0 (valeur sauvegardée)
+    p(0xD280_0020); // mov x0, #1 (stdout)
+    for i in 0..4 {
+        let imm = ((addr >> (16 * i)) & 0xFFFF) as u32;
+        // movz x1, #imm (i=0) ; movk x1, #imm, lsl #16/32/48 (i>0)
+        // ⚠ 0xD280_0000 = movz SUR 64 BITS (x1), 0xF280_0000 = movk x1 ;
+        //   0x5280_0000 / 0x7280_0000 seraient les formes 32 bits (w1).
+        p((if i == 0 { 0xD280_0000 } else { 0xF280_0000 | ((i as u32) << 21) })
+          | (imm << 5) | 1);
+    }
+    for i in 0..2 {
+        let imm = ((len >> (16 * i)) & 0xFFFF) as u64 as u32;
+        p((if i == 0 { 0xD280_0000 } else { 0xF280_0000 | ((i as u32) << 21) })
+          | (imm << 5) | 2);
+    }
+    p(0xD280_0808); // mov x8, #64 (__NR_write)
+    p(0xD400_0001); // svc #0
+    p(0xAA0E_03E0); // mov x0, x14 (restitue la valeur pour `exit`)
+    v
+}
+
 fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
                tramp_vaddr: u64, iat_vaddr: u64, frame: usize,
-               afficher: bool) -> Vec<u8> {
+               afficher: bool, donnees: Option<(u64, usize)>) -> Vec<u8> {
     let mut s = Vec::new();
     match (abi, arch) {
         // ── SysV / AAPCS64 (ELF) : terminer par le syscall exit ─────────
@@ -557,7 +645,9 @@ fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
             p_u32(&mut s, a64_adr(1, tramp_vaddr as i64 - ici as i64)); // adr x1, tramp
             let ici = text_vaddr + 12;
             p_u32(&mut s, a64_bl(code_vaddr as i64 - ici as i64));      // bl rose_code
-            if afficher { s.extend_from_slice(&sequence_affichage_a64()); }
+            if let Some((addr, len)) = donnees {
+                s.extend_from_slice(&sequence_ecrire_donnees_a64(addr, len));
+            } else if afficher { s.extend_from_slice(&sequence_affichage_a64()); }
             p_u32(&mut s, 0xD280_0BA8); // mov x8, #93 (__NR_exit)
             p_u32(&mut s, 0xD400_0001); // svc #0
         }
@@ -577,7 +667,9 @@ fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
             s.push(0xE8); // call rose_code
             let d = code_vaddr as i64 - (text_vaddr + off as u64 + 5) as i64;
             s.extend_from_slice(&(d as i32).to_le_bytes());
-            if afficher { s.extend_from_slice(&sequence_affichage_x86()); }
+            if let Some((addr, len)) = donnees {
+                s.extend_from_slice(&sequence_ecrire_donnees_x86(addr, len));
+            } else if afficher { s.extend_from_slice(&sequence_affichage_x86()); }
             s.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax → code de sortie
             s.extend_from_slice(&[0xB8, 0x3C, 0x00, 0x00, 0x00]); // mov eax, 60 (__NR_exit)
             s.extend_from_slice(&[0x0F, 0x05]); // syscall

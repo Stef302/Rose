@@ -363,6 +363,56 @@ pub fn abaisser_principal_sortie(corps: &[Instr]) -> Option<CorpsRir> {
     Some(rir)
 }
 
+/// ⚠⚠⚠ TERME CONSTANT (vague 78, AOT3) — une expression dont la valeur est
+/// ENTIÈREMENT déterminée par son AST : aucun appel, aucune variable, aucune
+/// lecture clavier, aucun état global (hasard, graine…).
+///
+/// Les opérateurs postfixes/préfixes exacts (`n!`, `n#`, `n?`, `n$`, `!n`,
+/// `n!!`…) sont AUTORISÉS : ce sont des pures fonctions de leur opérande,
+/// évaluables une fois pour toutes par l'interpréteur au moment de la
+/// compilation native. C'est ce qui permet à `>> 565#` (228 chiffres) de
+/// devenir un exécutable sans moteur embarqué.
+pub fn est_constant(e: &Expr) -> bool {
+    match e {
+        Expr::Litteral { .. } | Expr::LitComplexe { .. }
+        | Expr::ChaineLit(..) | Expr::BooleenLit(..) => true,
+        Expr::Binaire { a, b, .. } => est_constant(a) && est_constant(b),
+        Expr::Unaire { a, .. } => est_constant(a),
+        Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+        | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _)
+        | Expr::Terminal(a, _) | Expr::SuperFactorielle(a, _) => est_constant(a),
+        // Appel, variable, index, liste, table : repli sur l'interpréteur.
+        _ => false,
+    }
+}
+
+/// ⚠ ABAISSEMENT AOT « VALEURS EXACTES » (vague 78).
+///
+/// Un programme réduit à un unique `>> <terme constant>` n'a RIEN à exécuter
+/// dans le binaire natif : sa valeur est calculée par l'interpréteur Rose AU
+/// MOMENT DE LA COMPILATION et mémorisée en données (`link_natif`). Le corps
+/// RIR rendu ici ne sert qu'à produire le code de retour du processus : on
+/// y met la partie i64 de la valeur (les valeurs ≤ i64 gardent donc leur
+/// code de retour historique, les grandes valeurs en gardent les 64 bits
+/// bas — leur texte exact, lui, est écrit sur stdout par le stub).
+///
+/// Rend `None` pour tout autre programme : l'orchestrateur retombe alors sur
+/// le chemin RIR historique, inchangé.
+pub fn abaisser_principal_valeur_exacte(corps: &[Instr], retour_i64: i64) -> Option<CorpsRir> {
+    if corps.len() != 1 { return None; }
+    let constant = match &corps[0] {
+        Instr::Afficher(es, _) if es.len() == 1 => est_constant(&es[0]),
+        _ => false,
+    };
+    if !constant { return None; }
+    Some(CorpsRir {
+        ops: vec![Op::RetourAbstrait(Eabstrait::Entier(retour_i64.to_string()))],
+        noms: Vec::new(),
+        globaux: Vec::new(),
+        n_slots: 0,
+    })
+}
+
 pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -> Option<CorpsRir> {
     // ── Table de noms → slot ────────────────────────────────────────────
     let mut noms: Vec<String> = Vec::new();
