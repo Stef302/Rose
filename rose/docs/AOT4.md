@@ -48,11 +48,11 @@ modifiés : le point fixe `b3ed9262` et la sortie de `rose rir` restent intacts.
 ### 4.1 Build et tests
 
 ```
-cargo build --release --bin rose              → rc 0
-cargo test --release                          → 0 échec
+cargo build --release --bin rose              → rc 0 (arbre courant, 2m57)
+cargo test --release                          → 0 échec (arbre courant)
   292 passed / 0 failed / 3 ignored  (lib)
-  294 passed / 0 failed / 3 ignored  (bin rose)
-  6 + 8 + 8 + 1 passed                (bins/tests annexes) → 609 tests passes
+  299 passed / 0 failed / 3 ignored  (bin rose)
+  6 + 8 + 8 + 1 passed                (bins/tests annexes) → 614 tests passes
 ```
 
 ### 4.2 `rose aot` sur des programmes NON émettables (le cas qui échouait)
