@@ -1216,3 +1216,14 @@ L'utilisateur autorise explicitement les algorithmes ou formules plus efficaces 
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | CLI1 | extension .exe pour comp, aide claire comp vs aot vs llvm, helper AOT local, bannière sans Rust | rose/src/{main,interp,auto_llvm,cmd_llvm}.rs, rose/docs/CLI_CLAIR.md |
+
+## Vague 74 — version 0.1.72 + helper tray autonome
+
+1. Rose passe en 0.1.72 (version intermédiaire réelle, release dédiée).
+2. Helper ARRIÈRE-PLAN: exécutable léger, démarré une fois, tourne sans launcher ouvert, vérifie le manifeste du site toutes les 6h, notification discrète.
+3. Icône dans la zone des icônes cachées de Windows + menu contextuel « Désactiver / Vérifier maintenant / Quitter ».
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| VER2 | bump 0.1.7 → 0.1.72 partout + release GitHub dédiée | `rose/Cargo.toml`, `README.md`, `docs/`, `wikimiroir/`, scripts publication |
+| TRAY | helper tray avec icône + menu désactiver | `rose/src/bin/rose-tray.rs`, `rose/src/setup_gui.rs`, `rose/src/velopack.rs`, `rose/docs/TRAY.md` |
