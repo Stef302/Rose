@@ -1,0 +1,4 @@
+a = 0
+b = 1
+pour i de 1 vers 20 { t = a + b; a = b; b = t }
+>> a

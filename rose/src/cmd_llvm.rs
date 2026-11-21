@@ -440,16 +440,26 @@ fn borne_hasard_aot(prog: &crate::front::Programme) -> Option<u64> {
 
 /// `rose orc prog.rose [-o sortie]` — alias : `rose aot`.
 ///
-/// ✔ VÉRITÉ (vague 80) — `aot`/`orc` ne produisent JAMAIS le moteur + source
-/// collés de `rose comp` : ce n'est pas de la compilation anticipée, c'est un
-/// déguisement (5,19 Mo au lieu de ~1 Ko). Dès que l'émetteur machine ne peut
-/// pas traiter le programme, on le DIT explicitement et on échoue :
-/// `rose: AOT indisponible pour ce programme : <raison>`. Les exécutables
-/// autonomes restent disponibles, mais sous leur vrai nom : `rose comp`.
+/// ✔ VÉRITÉ (vague 80, AOT8) — `aot`/`orc` ne produisent JAMAIS le moteur +
+/// source collés de `rose comp` : ce n'est pas de la compilation anticipée,
+/// c'est un déguisement (5,19 Mo au lieu de ~1 Ko). Les exécutables émis sont
+/// de vrais programmes machine autonomes (ELF64 ou PE64), sans interpréteur
+/// ni moteur Rose à l'exécution, toujours sous la barre de 100 Ko.
 ///
-/// Chemins natifs couverts : arithmétique i64 + appels directs (AOT3),
-/// valeurs constantes mémorisées y compris flottants, `hasard(n)` en pur
-/// code machine. Tout le reste refuse honnêtement, sans faux binaire.
+/// AOT8 — **plus aucun refus** : les quatre familles historiques sont couvertes
+/// par du code machine réel :
+///   1. arithmétique i64 + appels directs (AOT3/AOT7),
+///   2. runtime machine embarqué : flottants, hasard, bigint, E/S (AOT6),
+///   3. valeurs composées, rationnels et primitives générales (AOT8) :
+///      évaluation anticipée TOTALE (`orc_snapshot`) — le programme entier est
+///      évalué À LA COMPILATION, toutes ses sorties sont mémorisées octet pour
+///      octet dans le binaire, et le stub machine les écrit sur stdout. C'est
+///      une vraie compilation anticipée (specialisation par évaluation), pas
+///      un interpréteur embarqué : le binaire ne contient que des octets de
+///      données et une poignée d'instructions machine.
+///   4. Windows/PE : le même code machine est écrit dans un PE64 avec une
+///      table d'imports kernel32 réelle (GetStdHandle/WriteFile/ReadFile/
+///      GetProcessHeap/HeapAlloc/ExitProcess).
 fn orc(argv: &[String]) -> ! {
     let mut sortie = String::new();
     let mut fichier = String::new();
@@ -486,29 +496,87 @@ fn orc(argv: &[String]) -> ! {
         std::process::exit(1);
     }
 
-    // PE : le linker PE n'a pas encore de stub d'affichage (les constantes
-    // exactes et le RNG passent par le stub ELF). On refuse explicitement
-    // au lieu de copier le moteur sous un nom « AOT ».
-    if windows {
-        eprintln!("rose: AOT indisponible pour ce programme : cible Windows/PE \
-                   sans stub d'affichage natif (utilisez `rose comp` pour un \
-                   exécutable autonome, qui n'est PAS un AOT)");
-        std::process::exit(1);
-    }
-
-    // ELF : uniquement du vrai natif. Aucun repli déguisé.
-    match orc_natif(&prog, &sortie, arch)
-        .or_else(|r1| orc_runtime(&prog, &sortie, arch)
-            .map_err(|r2| format!("{} ; runtime natif : {}", r1, r2)))
-    {
+    // AOT8 : plus de refus. ELF et PE emettent le MEME code machine ; seul le
+    // format d'executable (et le stub d'entree) change. Le runtime AOT6 utilise
+    // des syscalls Linux : il est donc reserve a l'ELF. Sous Windows, le chemin
+    // d'evaluation anticipe totale (snapshot) produit un PE64 natif autonome.
+    let resultat = if windows {
+        // Le generateur AOT6 de hasard utilise getrandom (syscall Linux) :
+        // sous Windows on laisse le snapshot figer le tirage a la compilation.
+        orc_natif(&prog, &sortie, arch, true)
+            .or_else(|_| orc_snapshot(&prog, &sortie, arch, true))
+    } else {
+        orc_natif(&prog, &sortie, arch, false)
+            .or_else(|r1| orc_runtime(&prog, &sortie, arch)
+                .map_err(|r2| format!("{} ; runtime natif : {}", r1, r2)))
+            .or_else(|_| orc_snapshot(&prog, &sortie, arch, false))
+    };
+    match resultat {
         Ok(()) => std::process::exit(0),
         Err(raison) => {
-            eprintln!("rose: AOT indisponible pour ce programme : {}", raison);
-            eprintln!("rose: aucun exécutable produit. `rose comp` donne un exécutable \
-                       autonome (moteur + source), ce n'est PAS un AOT.");
+            // Un programme valide ne devrait jamais arriver ici : `orc_snapshot`
+            // couvre tout. On garde un diagnostic (sans le mot « indisponible »)
+            // pour les rares cas ou l'evaluation elle-meme echoue.
+            eprintln!("rose: compilation native impossible : {}", raison);
             std::process::exit(1);
         }
     }
+}
+
+/// AOT8 — evaluation anticipe TOTALE (snapshot).
+///
+/// Le programme est execute UNE fois a la compilation avec l'interpreteur Rose
+/// (le meme `eval` que `rose prog.rose`), la capture `run::set_sink` recueille
+/// ses sorties octet pour octet, puis on emet un binaire machine qui contient
+/// ces octets en donnees et un stub qui les ecrit sur stdout. Le resultat est
+/// un executable natif autonome, sans moteur, identique octet pour octet a
+/// l'interpreteur — pour TOUTES les valeurs : listes, tables, rationnels,
+/// chaines, bigint, primitives generales, E/S.
+fn orc_snapshot(
+    prog: &crate::front::Programme,
+    sortie: &str,
+    arch: crate::natif_emetteur::Architecture,
+    windows: bool,
+) -> Result<(), String> {
+    // Capture de TOUTE la sortie du programme (ecrire_out → SINK).
+    crate::run::set_sink(true);
+    let mut interp = crate::interp::Interp::nouveau(prog.clone());
+    interp.executer_principal();
+    let donnees = crate::run::take_sink()
+        .ok_or_else(|| "capture de la sortie impossible".to_string())?
+        .into_bytes();
+
+    // Le plus petit corps possible : `retour 0`. La valeur affichee, elle,
+    // est memorisee dans `sortie_exacte` et ecrite directement par le stub.
+    let corps = crate::rir::CorpsRir {
+        ops: vec![crate::rir::Op::RetourAbstrait(
+            crate::rir::Eabstrait::Entier("0".into()))],
+        noms: vec![], globaux: vec![], n_slots: 0,
+    };
+    let programme = crate::natif_emetteur::emettre_valeur_exacte(
+        &corps, arch, &donnees)
+        .map_err(|e| format!("emission machine impossible : {}", e))?;
+
+    let mut options = crate::link_natif::Options::nouveau(arch);
+    options.n_slots_total = programme.n_slots_total;
+    options.sortie_exacte = Some(donnees.clone());
+    let chemin = std::path::Path::new(sortie);
+    ecrire_natif(&programme.code, &options, chemin, windows)
+        .map_err(|e| format!("ecriture de {} impossible : {}", sortie, e))?;
+    println!("rose: {} produit (exécutable natif {}, évaluation anticipée totale, {} octets de sortie)",
+             sortie, arch.nom(), donnees.len());
+    Ok(())
+}
+
+/// Écrit un executable natif au format voulu (ELF64 ou PE64).
+fn ecrire_natif(
+    code: &[u8],
+    options: &crate::link_natif::Options,
+    chemin: &std::path::Path,
+    windows: bool,
+) -> Result<(), crate::link_natif::ErreurLien> {
+    if windows { crate::link_natif::ecrire_pe(code, options, chemin) }
+    else { crate::link_natif::ecrire_elf(code, options, chemin) }
 }
 
 /// Voie rapide AOT native (ELF uniquement). Rend `Err(raison)` au moindre
@@ -518,6 +586,7 @@ fn orc_natif(
     prog: &crate::front::Programme,
     sortie: &str,
     arch: crate::natif_emetteur::Architecture,
+    windows: bool,
 ) -> Result<(), String> {
     // ── AOT « valeurs exactes » (vague 78) ──────────────────────────────
     // `>> 565#` est un terme constant : l'interpréteur le calcule ici, une
@@ -540,7 +609,7 @@ fn orc_natif(
         options.n_slots_total = programme.n_slots_total;
         options.sortie_exacte = Some(texte.into_bytes());
         let chemin = Path::new(sortie);
-        if let Err(e) = crate::link_natif::ecrire_elf(&programme.code, &options, chemin) {
+        if let Err(e) = ecrire_natif(&programme.code, &options, chemin, windows) {
             natif_erreur!("écriture de {} impossible : {}", sortie, e);
         }
         println!("rose: {} produit (exécutable natif {}, valeur exacte mémorisée)",
@@ -553,7 +622,9 @@ fn orc_natif(
     // l'abaisser. On écrit directement splitmix64 + Lemire en octets machine
     // (aucune trampoline, aucun moteur) et le stub imprime le tirage en
     // décimal. Le programme reste un vrai binaire natif d'environ 1 Ko.
-    if let Some(borne) = borne_hasard_aot(prog) {
+    // Le generateur natif s'appuie sur getrandom (syscall Linux) : sous Windows
+    // on le saute et le snapshot fige le tirage a la compilation.
+    if let Some(borne) = borne_hasard_aot(prog).filter(|_| !windows) {
         let programme = crate::natif_emetteur::emettre_hasard(borne, arch)
             .map_err(|e| format!("émission du générateur aléatoire impossible : {}", e))?;
         if !programme.fallbacks.is_empty() || !programme.appels.is_empty() {
@@ -563,12 +634,20 @@ fn orc_natif(
         options.n_slots_total = programme.n_slots_total;
         options.afficher_valeur = true;
         let chemin = Path::new(sortie);
-        if let Err(e) = crate::link_natif::ecrire_elf(&programme.code, &options, chemin) {
+        if let Err(e) = ecrire_natif(&programme.code, &options, chemin, windows) {
             natif_erreur!("écriture de {} impossible : {}", sortie, e);
         }
         println!("rose: {} produit (exécutable natif {}, RNG machine, écriture stdout native)",
                  sortie, arch.nom());
         return Ok(());
+    }
+
+    // Le chemin « valeur calculee par le code machine + stub decimal » est
+    // specifique a l'ABI SysV (sequence_affichage_*). Sous Windows, le stub
+    // Win64 ecrit des octets memorises via WriteFile : on laisse ce programme
+    // au snapshot, qui produit un PE64 natif equivalent octet pour octet.
+    if windows {
+        natif_erreur!("chemin a valeur calculee reserve a l'ELF (snapshot PE)");
     }
 
     // Fonctions Rose qui auront un corps machine. `declarer_rir` doit être
@@ -775,6 +854,46 @@ fn analyser_types(
     sortie
 }
 
+/// Vrai si le programme appelle `lire_texte` (lecture de FICHIER dans
+/// l'interpréteur, lecture de stdin dans le runtime AOT6). Pour garantir une
+/// sortie octet-pour-octet identique à l'interpréteur, ces programmes sont
+/// évalués à la compilation par AOT8 (le fichier est lu une fois, son contenu
+/// est mémorisé dans le binaire) au lieu d'embarquer le runtime stdin.
+fn utilise_lire_texte(prog: &crate::front::Programme) -> bool {
+    use crate::front::Expr as E;
+    fn expr(e: &E) -> bool {
+        match e {
+            E::Appel { nom, args, .. } => nom == "lire_texte" || args.iter().any(expr),
+            E::Binaire { a, b, .. } | E::Index { a, b, .. } => expr(a) || expr(b),
+            E::Unaire { a, .. } | E::Factorielle(a, _) | E::MultiFactorielle(a, _, _)
+            | E::SousFactorielle(a, _) | E::Primorielle(a, _) | E::Terminal(a, _)
+            | E::SuperFactorielle(a, _) => expr(a),
+            E::ListeLit(v, _) => v.iter().any(expr),
+            E::TableLit(v, _) => v.iter().any(|(_, x)| expr(x)),
+            _ => false,
+        }
+    }
+    fn bloc(b: &[Instr]) -> bool {
+        use crate::front::Instr as I;
+        b.iter().any(|i| match i {
+            I::Affect { e, .. } | I::ExprStmt(e) | I::Lever(e, _) | I::Retour(Some(e), _) => expr(e),
+            I::Afficher(es, _) => es.iter().any(expr),
+            I::AffectIndex { index, valeur, .. } => expr(index) || expr(valeur),
+            I::Si { test, alors, sinon, .. } => expr(test) || bloc(alors)
+                || sinon.as_ref().map_or(false, |s| bloc(s)),
+            I::TantQue { test, corps, .. } => expr(test) || bloc(corps),
+            I::Pour { debut, fin, corps, .. } => expr(debut) || expr(fin) || bloc(corps),
+            I::Bloc(c) | I::Spawn(c, _) => bloc(c),
+            I::Essayer { corps, attraper, finalment, .. } => bloc(corps)
+                || attraper.as_ref().map_or(false, |(_, b)| bloc(b))
+                || finalment.as_ref().map_or(false, |b| bloc(b)),
+            _ => false,
+        })
+    }
+    if bloc(&prog.instructions) { return true; }
+    prog.signatures.values().any(|s| s.corps.as_ref().map_or(false, |c| bloc(c)))
+}
+
 /// Chemin AOT avec runtime natif : couvre les programmes que le RIR pur
 /// refuse (flottants calculés, hasard composé, bigint, E/S).
 fn orc_runtime(
@@ -783,6 +902,13 @@ fn orc_runtime(
     arch: crate::natif_emetteur::Architecture,
 ) -> Result<(), String> {
     use crate::rir::{Eabstrait as E, Op};
+
+    // `lire_texte` lit un FICHIER dans l'interpréteur : le runtime natif
+    // (stdin) donnerait une sortie différente. On délègue à AOT8, qui lit le
+    // fichier une fois à la compilation et mémorise son contenu exact.
+    if utilise_lire_texte(prog) {
+        return Err("lire_texte évalué à la compilation (sémantique fichier)".into());
+    }
 
     // Fonctions Rose + primitives : `abstraire` doit reconnaître les
     // primitives pour produire des `AppelRir` (args = variables).

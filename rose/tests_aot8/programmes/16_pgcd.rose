@@ -1,0 +1,6 @@
+fn pgcd(a: entier, b: entier) -> entier {
+    tant_que (b != 0) { t = b; b = a % b; a = t }
+    retour a
+}
+>> pgcd(48, 18)
+>> pgcd(1071, 462)

@@ -1,0 +1,5 @@
+fn f(n: entier) -> entier {
+    si (n <= 1) { retour 1 }
+    retour n * f(n - 1)
+}
+>> f(12)

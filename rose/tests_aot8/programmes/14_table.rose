@@ -1,0 +1,5 @@
+t = table()
+inserer(t, "a", 1)
+inserer(t, "b", 2)
+>> t["a"]
+>> t["b"]

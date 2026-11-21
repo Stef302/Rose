@@ -1,0 +1,6 @@
+t = table()
+inserer(t, "x", 10)
+inserer(t, "y", 20)
+>> cle_existe(t, "x")
+>> longueur(t)
+>> t["y"]

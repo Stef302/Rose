@@ -1,0 +1,3 @@
+a = "salut"
+b = "monde"
+>> a + " " + b

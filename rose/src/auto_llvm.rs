@@ -30,7 +30,7 @@ pub const VERSION_HELPER: &str = env!("CARGO_PKG_VERSION");
 
 /// Message unique affiché quand la version en cours n'intègre pas l'AOT et
 /// qu'aucun helper local n'est présent. Aucun nom d'outil de compilation.
-pub const MESSAGE_AOT_INDISPONIBLE: &str = "AOT non disponible dans cette version — utilisez `rose comp`, qui produit un exécutable autonome";
+pub const MESSAGE_AOT_LEGER: &str = "cette build légère n'embarque pas la chaîne AOT — reconstruisez Rose avec `--features llvm` (aucun téléchargement)";
 
 /// Nom du binaire helper sur cette plateforme.
 pub fn nom_helper() -> &'static str {
@@ -118,7 +118,7 @@ pub fn lance(action: &str, argv: &[String]) -> ! {
     match trouver_helper() {
         Some(helper) => lance_depuis(&helper, action, argv),
         None => {
-            eprintln!("rose: {}", MESSAGE_AOT_INDISPONIBLE);
+            eprintln!("rose: {}", MESSAGE_AOT_LEGER);
             std::process::exit(1);
         }
     }

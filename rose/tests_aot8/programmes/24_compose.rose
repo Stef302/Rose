@@ -1,0 +1,6 @@
+l = ["rose", "aot"]
+t = table()
+inserer(t, "langage", l[0])
+inserer(t, "backend", l[1])
+>> t["langage"] + "-" + t["backend"]
+>> longueur(l)

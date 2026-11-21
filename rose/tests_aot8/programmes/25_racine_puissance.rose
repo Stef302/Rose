@@ -1,0 +1,5 @@
+fn puissance(a: entier, b: entier) -> entier {
+    si (b == 0) { retour 1 }
+    retour a * puissance(a, b - 1)
+}
+>> puissance(3, 8)
