@@ -660,6 +660,40 @@ mod tests {
     }
 
     #[test]
+    fn aot3_primorielle_565_est_une_valeur_exacte() {
+        use num_traits::ToPrimitive;
+        // ⚠ Vague 78 : `>> 565#` refuse le chemin RIR (228 chiffres), mais
+        // c'est un terme constant : l'interpréteur le calcule à la compilation.
+        let prog = crate::front::analyser(">> 565#\n").unwrap();
+        let (texte, bas) = valeur_constante_aot(&prog).expect("terme constant attendu");
+        let attendu = format!("{}\n",
+            crate::interp::primorielle(&crate::i128x::Gz::de_i64(565)).chaine());
+        assert_eq!(texte, attendu);
+        assert_eq!(texte.trim_end().len(), 228);
+        // Le code de retour ne porte que 64 bits ; le texte, lui, est exact.
+        let produit = crate::interp::primorielle(&crate::i128x::Gz::de_i64(565));
+        assert_eq!(bas as u64,
+            (&produit.v() & num_bigint::BigInt::from(u64::MAX)).to_u64().unwrap());
+
+        let corps = crate::rir::abaisser_principal_valeur_exacte(&prog.instructions, bas)
+            .expect("abaissement exact attendu");
+        assert!(corps_emettable_aot(&corps));
+        let programme = crate::natif_emetteur::emettre_valeur_exacte(
+            &corps, crate::natif_emetteur::Architecture::native(), texte.as_bytes()).unwrap();
+        assert_eq!(programme.sortie.as_deref(), Some(texte.as_bytes()));
+        assert!(programme.fallbacks.is_empty());
+        assert!(programme.appels.is_empty());
+    }
+
+    #[test]
+    fn aot3_refuse_une_expression_avec_variable_ou_appel() {
+        for source in ["$n = 565\n>> $n#\n", ">> primorielle(565)\n"] {
+            let prog = crate::front::analyser(source).unwrap();
+            assert!(valeur_constante_aot(&prog).is_none(), "source : {}", source);
+        }
+    }
+
+    #[test]
     fn appel_de_fonction_est_refuse_sans_faux_executable() {
         let prog = crate::front::analyser(
             "fn f(n: entier) -> entier { retour n * 6 }\n>> f(7)\n").unwrap();

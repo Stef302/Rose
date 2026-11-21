@@ -1012,6 +1012,31 @@ mod tests {
         assert!(!nu.windows(3).any(|w| w == [0x4C, 0x89, 0xC0]));
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elf_avec_valeur_exacte_ecrit_le_texte_memorise() {
+        let e = programme_49();
+        if Architecture::native() != Architecture::Aarch64 { return; }
+        let nu = elf_bytes(&e.code, &Options::depuis_emitted(&e)).unwrap();
+        let mut o = Options::depuis_emitted(&e);
+        let texte = b"808257643035939103769006214256896739823014172881267515160156\n";
+        o.sortie_exacte = Some(texte.to_vec());
+        let octets = elf_bytes(&e.code, &o).unwrap();
+        assert!(octets.len() > nu.len(), "la séquence write doit être émise");
+        assert!(octets.windows(texte.len()).any(|w| w == texte),
+                "le texte exact doit être mémorisé dans .rodata");
+
+        let chemin = std::env::temp_dir().join("rose_aot3_valeur_exacte.elf");
+        std::fs::write(&chemin, &octets).unwrap();
+        rendre_executable(&chemin).unwrap();
+        let sortie = std::process::Command::new(&chemin).output()
+            .expect("impossible de lancer l'ELF AOT3");
+        assert!(sortie.status.success() || sortie.status.code() == Some(49),
+                "status inattendu : {:?}", sortie.status);
+        assert_eq!(sortie.stdout, texte);
+        eprintln!("AOT3 : {} → {} octets sur stdout", chemin.display(), sortie.stdout.len());
+    }
+
     #[test]
     fn runtime_requis_est_refuse() {
         let e = programme_49();
