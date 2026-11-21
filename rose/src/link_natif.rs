@@ -1026,7 +1026,10 @@ mod tests {
         assert!(octets.windows(texte.len()).any(|w| w == texte),
                 "le texte exact doit être mémorisé dans .rodata");
 
-        let chemin = std::env::temp_dir().join("rose_aot3_valeur_exacte.elf");
+        let chemin = std::env::temp_dir().join(format!(
+            "rose_aot3_valeur_exacte_{}_{}.elf", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos()));
         std::fs::write(&chemin, &octets).unwrap();
         rendre_executable(&chemin).unwrap();
         let sortie = std::process::Command::new(&chemin).output()

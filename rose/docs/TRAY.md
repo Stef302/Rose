@@ -47,8 +47,10 @@ Le helper ne fait quelque chose **que** si le mode configuré est
 
 Le défaut reste **`desactive`** : le helper n'est jamais actif sans action de
 l'utilisateur. Il n'y a **ni service Windows, ni tâche planifiée, ni clé HKLM,
-ni élévation de privilège** : le lancement est laissé à l'utilisateur (par
-exemple un raccourci dans `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`).
+ni élévation de privilège** : depuis la vague 78, le setup dépose un petit
+`rose-tray.cmd` dans `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`
+(`shell:startup`) dès que le mode discret est choisi, et le supprime à la
+désactivation. Détails, chemins exacts et vérification : **`docs/TRAY3.md`**.
 
 ---
 
@@ -144,16 +146,21 @@ launcher (`setup_gui.rs`, `lancer_helper_tray`). Ce bouton :
 Le chemin est cherché à côté de l'exe courant, dans `bin\`, `payload\` ou dans
 l'installation Velopack (`current\`). S'il est absent, aucune fenêtre
 d'erreur : une simple ligne sous le bouton indique qu'il faut copier le
-binaire. **Aucun auto-démarrage forcé** (pas de service, pas de tâche
-planifiée, pas de clé de registre).
+binaire. Depuis la vague 78, un lanceur `rose-tray.cmd` est aussi créé dans
+le dossier Démarrage de l'utilisateur (`shell:startup`) et retiré par
+`rose-tray --disable` ou le menu « Désactiver » — toujours **sans service,
+sans tâche planifiée, sans clé de registre et sans droits admin**. Voir
+`docs/TRAY3.md`.
 
 ---
 
 ## 8. Artefacts de release — À FAIRE PAR L'ORCHESTRATEUR
 
-Ce chantier **ne modifie aucun script de build** (`build-windows-rebuild.sh`
-et consorts sont hors périmètre). Pour que le bouton et le lancement manuel
-fonctionnent, l'orchestrateur doit, pour chaque release Windows :
+Ce chantier historique **ne modifiait aucun script de build**. Depuis lors,
+`scripts/build-windows-rebuild.sh` copie bien `rose-tray.exe` et les icônes
+dans le stage ; `rose-tray.exe` porte désormais son icône dans son PE (voir
+`docs/TRAY3.md`). La liste ci-dessous reste la checklist à re-vérifier pour
+chaque release Windows :
 
 1. copier **`rose-tray.exe`** (produit par `cargo build --release --bin
    rose-tray`, présent dans `rose/target/release/`) à côté de `rose.exe`

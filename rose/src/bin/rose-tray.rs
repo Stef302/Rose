@@ -10,8 +10,13 @@
 //! boucle active, aucun service, aucune tâche planifiée, aucun lien avec GitHub.
 //!
 //! L'icône disparaît et le processus sort sur « Désactiver le helper » (le mode
-//! `desactive` est écrit dans la config utilisateur, relue au prochain départ)
-//! ou sur « Quitter » (la config reste intacte).
+//! `desactive` est écrit dans la config utilisateur, relue au prochain départ,
+//! ET l'entrée `shell:startup` est retirée) ou sur « Quitter » (la config reste
+//! intacte). `rose-tray --disable` fait la même chose sans clic.
+//!
+//! L'exe porte SON ICONE dans ses ressources PE (`rose-tray.rc` → RT_ICON +
+//! RT_GROUP_ICON), chargée en premier par `LoadIconW` avant les `.ico`
+//! externes. Voir `docs/TRAY3.md`.
 //!
 //! Sous Linux/macOS : no-op explicite, aucun tray n'existe. Voir `docs/TRAY.md`.
 //!
@@ -69,6 +74,10 @@ fn candidats_icone(exe: Option<std::path::PathBuf>,
 
 #[cfg(not(windows))]
 fn main() {
+    if std::env::args().skip(1).any(|a| a == "--disable") {
+        println!("rose-tray : aucun dossier shell:startup hors Windows — rien à désactiver.");
+        return;
+    }
     println!(
         "rose-tray : la zone des icônes cachées n'existe que sur Windows. \
          Aucun timer, aucune requête réseau, aucun processus lancé (mode no-op)."
@@ -238,6 +247,22 @@ mod win {
     /// de l'absence d'icône sur la capture utilisateur — désormais prouvée.
     fn charger_icone() -> HICON {
         unsafe {
+            // ── 1. ICÔNE EMBARQUÉE DANS LE PE (rose-tray.rc → .res) ────────
+            // `rose-tray.exe` porte RT_GROUP_ICON 1 (LA ROSE). C'est la
+            // source FIRST : elle ne dépend d'aucun fichier externe, donc
+            // l'icône du tray reste la nôtre même si `rose.ico` n'a pas été
+            // copié dans `bin\` (cause de la capture utilisateur). Le repli
+            // sur les fichiers ci-dessous ne sert qu'aux anciens exe sans
+            // ressources.
+            let embedded = LoadIconW(GetModuleHandleW(std::ptr::null()),
+                                     ID_ICONE as *const u16);
+            if !embedded.is_null() {
+                journal("icône : RT_GROUP_ICON 1 embarquée dans le PE (rose-tray.rc) chargée");
+                return embedded;
+            }
+            journal("icône : aucune ressource PE exploitable — repli sur les fichiers .ico");
+
+            // ── 2. FICHIERS .ICO À CÔTÉ DE L'EXE (anciens builds) ─────────
             let candidats = candidats_icone(std::env::current_exe().ok(),
                                             std::env::current_dir().ok());
             journal(&format!("icône : {} chemin(s) à tester", candidats.len()));
@@ -392,7 +417,10 @@ mod win {
                     ID_DESACTIVER => {
                         // Persistance : le prochain lancement verra `desactive`
                         // et ne posera NI icône, NI timer, NI requête.
-                        let _ = rose::velopack::ecrire_config(rose::velopack::ModeMiseAJour::Desactive);
+                        // ⚠ On retire AUSSI l'entrée `shell:startup` : sinon
+                        // le helper se relancerait à chaque logon (il sortirait
+                        // tout seul, mais l'utilisateur verrait un .cmd clignoter).
+                        desactiver();
                         retirer_icone(h);
                         PostQuitMessage(0);
                     }
@@ -424,6 +452,21 @@ mod win {
             }
             _ => DefWindowProcW(h, msg, w, l),
         }
+    }
+
+    /// DÉSACTIVATION SYSTÉMIQUE — même chemin pour le menu contextuel et pour
+    /// `rose-tray --disable` : écrire `desactive` dans la config ET retirer
+    /// l'entrée du dossier Démarrage. Aucun droit admin (tout est sous le
+    /// profil utilisateur). Chaque étape est journalisée et vérifiée.
+    pub fn desactiver() {
+        match rose::velopack::ecrire_config(rose::velopack::ModeMiseAJour::Desactive) {
+            Ok(chemin) => journal(&format!("désactivation : config {} écrite", chemin.display())),
+            Err(e) => journal(&format!("désactivation : écriture config ÉCHOUÉE — {e}")),
+        }
+        let retrait = rose::demarrage::desactiver();
+        for ligne in &retrait.journal { journal(ligne); }
+        journal(&format!("désactivation : entrée Démarrage {}",
+                         if retrait.reussi { "RETIRÉE (vérifié)" } else { "NON RETIRÉE" }));
     }
 
     /// Point d'entrée Windows : zéro fenêtre visible, zéro thread dormant,
@@ -478,7 +521,16 @@ mod win {
 }
 
 #[cfg(windows)]
-fn main() { win::demarrer(); }
+fn main() {
+    // `rose-tray --disable` : désactive le mode discret ET supprime le
+    // lanceur du dossier Démarrage, sans passer par le clic sur l'icône.
+    // Le helper sort tout de suite : aucun tray, aucun timer, aucun réseau.
+    if std::env::args().skip(1).any(|a| a == "--disable") {
+        win::desactiver();
+        return;
+    }
+    win::demarrer();
+}
 
 #[cfg(test)]
 mod tests {
@@ -540,5 +592,52 @@ mod tests {
         assert_eq!(rose::velopack::INTERVALLE_TIMER_DISCRET_MS, 21_600_000);
         assert!(rose::velopack::intervalle_timer_discret_valide(
             rose::velopack::INTERVALLE_TIMER_DISCRET_MS));
+    }
+
+    /// Le code de production, tranché AVANT les tests pour ne pas compter nos
+    /// propres chaînes littérales (même technique que le test structurel).
+    fn code_production() -> &'static str {
+        include_str!("rose-tray.rs").split("#[cfg(test)]").next().unwrap()
+    }
+
+    #[test]
+    fn option_disable_sans_clic_retire_le_mode_et_le_demarrage() {
+        let code = code_production();
+        assert!(code.contains("a == \"--disable\""),
+                "`rose-tray --disable` n'est pas reconnu");
+        assert!(code.contains("win::desactiver()"),
+                "--disable ne passe pas par la désactivation systémique");
+        // La fonction partagée écrit le mode ET retire l'entrée shell:startup.
+        let debut = code.find("pub fn desactiver()").expect("désactivation absente");
+        let fonction = &code[debut..code.find("pub fn demarrer()").unwrap()];
+        assert!(fonction.contains("ModeMiseAJour::Desactive"));
+        assert!(fonction.contains("rose::demarrage::desactiver()"));
+        assert!(fonction.contains("journal("), "désactivation silencieuse");
+    }
+
+    #[test]
+    fn menu_desactiver_retire_aussi_l_entree_shell_startup() {
+        let code = code_production();
+        let debut = code.find("ID_DESACTIVER =>").expect("menu Désactiver absent");
+        let fin = code.find("ID_QUITTER =>").unwrap();
+        let bras = &code[debut..fin];
+        assert!(bras.contains("desactiver()"),
+                "le menu ne retire pas l'entrée Démarrage : le helper reviendrait au logon");
+        assert!(bras.contains("retirer_icone(h)"));
+        assert!(bras.contains("PostQuitMessage(0)"));
+    }
+
+    #[test]
+    fn icone_embarquee_dans_le_pe_est_la_premiere_source() {
+        let code = code_production();
+        let debut = code.find("fn charger_icone()").unwrap();
+        let fonction = &code[debut..code.find("static ICONE").unwrap()];
+        assert!(fonction.contains("LoadIconW(GetModuleHandleW(std::ptr::null())"),
+                "l'icône RT_GROUP_ICON 1 du PE n'est pas chargée en premier");
+        assert!(fonction.contains("ID_ICONE as *const u16"));
+        // Les fichiers externes restent en repli, mais ne sont plus la source
+        // unique (c'était la cause de l'icône manquante).
+        assert!(fonction.contains("LR_LOADFROMFILE"));
+        assert!(fonction.contains("IDI_APPLICATION as *const u16"));
     }
 }

@@ -87,6 +87,9 @@ rose/src/bin/rose-embedded.exe
 # Le générateur est versionné, pas le binaire.
 rose/rose-setup.res
 rose/rose.res
+# rose-tray.res : généré par build.rs depuis rose-tray.rc + rose.ico.
+# Le .rc est versionné, le binaire .res ne l'est pas.
+rose/rose-tray.res
 rose/kare.ttf
 
 # Ressources générées du paquet Tauri (icônes + schémas) : régénérées par

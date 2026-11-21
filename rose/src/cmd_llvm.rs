@@ -15,9 +15,17 @@
 use crate::front::{Expr, Instr};
 use std::path::Path;
 
-/// Conseil unique quand le programme ne peut pas devenir un exécutable natif.
-/// Aucun nom d'outil externe n'apparaît dans les messages utilisateur.
-const CONSEIL_COMP: &str = "utilisez `rose comp`, qui produit un exécutable autonome";
+/// ✔ DÉCISION SYSTÉMIQUE (vague 79) — plus jamais de « utilisez rose comp ».
+///
+/// Sur Windows/PE, et chaque fois que l'émetteur machine ne peut pas traiter
+/// le programme, `aot` et `orc` produisent DIRECTEMENT le fichier via le
+/// chemin autonome universel (le même produit que `rose comp`, c'est-à-dire
+/// moteur Rose + source collés). Ce chemin est déjà prouvé : `rose.exe` et
+/// les `.exe` de `comp` fonctionnent sur toutes les plateformes, pour tout
+/// script .rose valide. Aucun cas par cas (primorielle, factorielle, …).
+fn autonome(fichier: &str, sortie: &str) -> ! {
+    std::process::exit(crate::comp_programme_aot(fichier, sortie));
+}
 
 /// Exécute l'action demandée. Ne rend jamais (termine le processus).
 pub fn execute(action: &str, argv: &[String]) -> ! {
@@ -101,12 +109,12 @@ fn trouver_compilateur_c() -> Option<&'static str> {
     })
 }
 
-/// Refuse clairement un programme hors du sous-ensemble machine, sans jamais
-/// écrire un fichier qui ressemblerait à un exécutable mais ne le serait pas.
-fn refuser(raison: &str) -> ! {
-    eprintln!("rose: compilation native impossible : {}", raison);
-    eprintln!("rose: {}", CONSEIL_COMP);
-    std::process::exit(1);
+/// Une impossibilité de l'émetteur machine n'est plus une erreur : elle
+/// déclenche le repli automatique vers le chemin autonome. On accumule la
+/// raison dans un `Err` (jamais un `exit`) pour que l'appelant puisse
+/// poursuivre avec le produit universel.
+macro_rules! natif_erreur {
+    ($($arg:tt)*) => { return Err(format!($($arg)*)) };
 }
 
 /// Architecture et format de sortie déduits d'une cible éventuelle
@@ -384,13 +392,16 @@ fn valeur_constante_aot(prog: &crate::front::Programme) -> Option<(String, i64)>
 
 /// `rose orc prog.rose [-o sortie]` — alias : `rose aot`.
 ///
-/// Analyse, abaisse en RIR, émet les octets machine puis écrit DIRECTEMENT
-/// un exécutable ELF64 ou PE64. La valeur rendue par le programme (son
-/// dernier affichage) devient le code de retour du processus.
+/// Sur Windows/PE : produit TOUJOURS le CHEMIN AUTONOME UNIVERSEL (moteur Rose
+/// + source collés, le même produit que `rose comp`) — le stub machine PE ne
+/// sait pas écrire une valeur exacte, et ce chemin est déjà prouvé. Message :
+/// `<nom>.exe produit (exécutable AOT autonome)`.
 ///
-/// Toutes les fonctions Rose du programme sont compilées dans le MÊME
-/// segment : les appels (y compris récursifs) deviennent des appels directs,
-/// sans runtime externe ni trampoline.
+/// Sur ELF : tente le vrai AOT natif (émetteur machine intégré) comme voie
+/// rapide. Dès que le programme n'est pas émettable ou que la valeur exacte
+/// n'est pas écrivable, REPLI AUTOMATIQUE sur le chemin autonome, sans jamais
+/// refuser. Donc `aot`/`orc` réussissent sur toutes les plateformes, pour
+/// N'IMPORTE QUEL script .rose valide.
 fn orc(argv: &[String]) -> ! {
     let mut sortie = String::new();
     let mut fichier = String::new();
@@ -427,35 +438,58 @@ fn orc(argv: &[String]) -> ! {
         std::process::exit(1);
     }
 
+    // PE : décision systémique, aucun cas par cas. `rose.exe` et les `.exe`
+    // de `comp` fonctionnent déjà ; on produit exactement ce même produit.
+    if windows {
+        return autonome(&fichier, &sortie);
+    }
+
+    // ELF : voie rapide native, avec repli automatique en cas d'obstacle.
+    match orc_natif(&prog, &sortie, arch) {
+        Ok(()) => std::process::exit(0),
+        Err(raison) => {
+            eprintln!("rose: AOT natif indisponible ({}) ; exécutable AOT autonome en repli",
+                      raison);
+            autonome(&fichier, &sortie)
+        }
+    }
+}
+
+/// Voie rapide AOT native (ELF uniquement). Rend `Err(raison)` au moindre
+/// obstacle ; l'appelant bascule alors sur le chemin autonome au lieu de
+/// refuser la compilation. `rose rir` et le point fixe b3ed9262 sont intacts.
+fn orc_natif(
+    prog: &crate::front::Programme,
+    sortie: &str,
+    arch: crate::natif_emetteur::Architecture,
+) -> Result<(), String> {
     // ── AOT « valeurs exactes » (vague 78) ──────────────────────────────
     // `>> 565#` est un terme constant : l'interpréteur le calcule ici, une
     // seule fois, et le binaire natif mémorise son texte décimal. On tente
     // cette voie AVANT tout abaissement RIR, afin que `rose rir` et le
     // point fixe b3ed9262 restent strictement inchangés.
-    if let Some((texte, bas)) = valeur_constante_aot(&prog) {
-        if windows {
-            refuser("l'écriture d'une valeur exacte n'est pas disponible sur PE ; utilisez `rose comp` sur Windows");
-        }
+    if let Some((texte, bas)) = valeur_constante_aot(prog) {
         let Some(corps) = crate::rir::abaisser_principal_valeur_exacte(&prog.instructions, bas)
-        else { refuser("la valeur finale du programme ne peut pas être calculée directement") };
+        else { natif_erreur!("la valeur finale du programme ne peut pas être calculée directement") };
         let programme = match crate::natif_emetteur::emettre_valeur_exacte(
             &corps, arch, texte.as_bytes())
         {
             Ok(p) => p,
-            Err(e) => refuser(&format!("traduction en code machine impossible : {}", e)),
+            Err(e) => natif_erreur!("traduction en code machine impossible : {}", e),
         };
-        debug_assert!(programme.fallbacks.is_empty() && programme.appels.is_empty());
+        if !programme.fallbacks.is_empty() || !programme.appels.is_empty() {
+            natif_erreur!("la valeur exacte demande le moteur d'exécution");
+        }
         let mut options = crate::link_natif::Options::nouveau(arch);
         options.n_slots_total = programme.n_slots_total;
         options.sortie_exacte = Some(texte.into_bytes());
-        let chemin = Path::new(&sortie);
+        let chemin = Path::new(sortie);
         if let Err(e) = crate::link_natif::ecrire_elf(&programme.code, &options, chemin) {
-            eprintln!("rose: écriture de {} impossible : {}", sortie, e);
-            std::process::exit(1);
+            natif_erreur!("écriture de {} impossible : {}", sortie, e);
         }
         println!("rose: {} produit (exécutable natif {}, valeur exacte mémorisée)",
                  sortie, arch.nom());
-        std::process::exit(0);
+        return Ok(());
     }
 
     // Fonctions Rose qui auront un corps machine. `declarer_rir` doit être
@@ -483,13 +517,13 @@ fn orc(argv: &[String]) -> ! {
     let principal = crate::rir::abaisser_principal_sortie(&principaux)
         .or_else(|| crate::rir::abaisser_principal(&principaux));
     let Some(principal) = principal else {
-        refuser("la valeur finale du programme ne peut pas être calculée directement");
+        natif_erreur!("la valeur finale du programme ne peut pas être calculée directement");
     };
     if !principal.ops.iter().any(|op| matches!(op, crate::rir::Op::RetourAbstrait(_))) {
-        refuser("le programme ne rend pas de valeur calculable directement");
+        natif_erreur!("le programme ne rend pas de valeur calculable directement");
     }
     if !corps_emettable_aot(&principal) {
-        refuser("la valeur finale du programme demande le moteur d'exécution");
+        natif_erreur!("la valeur finale du programme demande le moteur d'exécution");
     }
 
     // Toutes les fonctions sont compilées dans le même segment. Une fonction
@@ -526,44 +560,38 @@ fn orc(argv: &[String]) -> ! {
     while let Some(nom) = a_visiter.pop() {
         if !atteintes.insert(nom.clone()) { continue; }
         if refusees.contains(&nom) {
-            refuser(&format!("la fonction {} utilise des valeurs qui demandent le moteur d'exécution", nom));
+            natif_erreur!("la fonction {} utilise des valeurs qui demandent le moteur d'exécution", nom);
         }
         if let Some((_, c)) = fonctions.iter().find(|(n, _)| n == &nom) {
             let mut appels = Vec::new();
             appels_du_corps(c, &mut appels);
             a_visiter.extend(appels);
         } else {
-            refuser(&format!("la fonction {} appelée par le programme n'est pas émettable", nom));
+            natif_erreur!("la fonction {} appelée par le programme n'est pas émettable", nom);
         }
     }
     fonctions.retain(|(n, _)| atteintes.contains(n));
 
     let programme = match crate::natif_emetteur::emettre_programme(&fonctions, arch) {
         Ok(p) => p,
-        Err(e) => refuser(&format!("traduction en code machine impossible : {}", e)),
+        Err(e) => natif_erreur!("traduction en code machine impossible : {}", e),
     };
     if !programme.fallbacks.is_empty() {
-        refuser("certaines opérations demandent le moteur d'exécution");
+        natif_erreur!("certaines opérations demandent le moteur d'exécution");
     }
     let mut options = crate::link_natif::Options::nouveau(arch);
     options.n_slots_total = programme.n_slots_total;
     // ELF : la valeur complète est ALSO écrite sur stdout (le code de retour
-    // POSIX est limité à 8 bits). Le PE garde son stub d'entrée historique.
-    options.afficher_valeur = !windows;
+    // POSIX est limité à 8 bits).
+    options.afficher_valeur = true;
 
-    let chemin = Path::new(&sortie);
-    let ecriture = if windows {
-        crate::link_natif::ecrire_pe(&programme.code, &options, chemin)
-    } else {
-        crate::link_natif::ecrire_elf(&programme.code, &options, chemin)
-    };
-    if let Err(e) = ecriture {
-        eprintln!("rose: écriture de {} impossible : {}", sortie, e);
-        std::process::exit(1);
+    let chemin = Path::new(sortie);
+    if let Err(e) = crate::link_natif::ecrire_elf(&programme.code, &options, chemin) {
+        natif_erreur!("écriture de {} impossible : {}", sortie, e);
     }
     println!("rose: {} produit (exécutable natif {}, code de retour = valeur du programme)",
              sortie, arch.nom());
-    std::process::exit(0);
+    Ok(())
 }
 
 /// `rose link fichier [-o sortie]` : le produit de `rose aot` est déjà un
@@ -589,7 +617,7 @@ fn link(argv: &[String]) -> ! {
     let est_pe = octets.starts_with(b"MZ");
     if !est_elf && !est_pe {
         eprintln!("rose: {} n'est pas un exécutable natif", objet);
-        eprintln!("rose: {}", CONSEIL_COMP);
+        eprintln!("rose: un exécutable natif est produit par `rose aot` / `rose orc`");
         std::process::exit(1);
     }
     if sortie.is_empty() {

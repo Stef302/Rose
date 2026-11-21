@@ -151,6 +151,11 @@ pub mod velopack;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod setup_core;
 
+/// Auto-démarrage discret via le dossier « Démarrage » (shell:startup).
+/// Sans droit admin, sans service, sans tâche planifiée. Voir TRAY3.md.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod demarrage;
+
 /// Interface graphique Win32 de l'installeur (Windows uniquement).
 #[cfg(all(windows, not(target_arch = "wasm32")))]
 pub mod setup_gui;

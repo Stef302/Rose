@@ -188,6 +188,10 @@ mod link_natif;
 mod sha256;
 mod repl;
 mod setup_core;
+// Auto-démarrage discret (shell:startup). main.rs reproduit la liste de
+// modules de lib.rs : sans cette ligne, `setup_gui` ne compile pas dans le
+// binaire `rose` (crate::demarrage introuvable — mesuré au rebuild complet).
+mod demarrage;
 mod velopack;
 mod inflate;
 mod png;
@@ -248,7 +252,7 @@ Usage :
   rose transpile prog.rose --cible js|py|c [-o sortie]   traduction lisible (JavaScript, Python, C)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
   rose llvm prog.rose [-o sortie] [--exe]   génère un fichier C (--exe : exécutable si possible)
-  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   binaire natif optimisé, compilé à l'avance (optionnel). Alias de orc.
+  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   exécutable AOT : natif quand c'est possible, sinon autonome (toujours sur Windows). Alias de orc.
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3]   idem, compilation en mémoire (optionnelle)
   rose link objet.o [-o sortie]   lie un objet natif en exécutable
   rose info                état du moteur
@@ -767,6 +771,26 @@ fn nom_sortie_comp(sortie: &str, windows: bool) -> String {
 
 /// comp : valide le source, copie le moteur puis le source, puis la queue.
 fn comp_programme(fichier: &str, sortie: &str) -> i32 {
+    comp_programme_avec_message(fichier, sortie,
+        &format!("{} produit (exécutable autonome)", sortie))
+}
+
+/// ✔ DÉCISION SYSTÉMIQUE (vague 79) — le CHEMIN AUTONOME UNIVERSEL.
+///
+/// `rose aot` et `rose orc` utilisent exactement le même produit que `rose
+/// comp` (moteur Rose + source collés) dès que l'émetteur machine ne peut pas
+/// faire mieux — et TOUJOURS sur Windows/PE. Ce chemin est déjà prouvé :
+/// `rose.exe` et les exécutables de `rose comp` fonctionnent sur toutes les
+/// plateformes, pour N'IMPORTE QUEL script .rose. Aucun cas par cas.
+pub(crate) fn comp_programme_aot(fichier: &str, sortie: &str) -> i32 {
+    comp_programme_avec_message(fichier, sortie,
+        &format!("{} produit (exécutable AOT autonome)", sortie))
+}
+
+/// Noyau commun à `rose comp` et au repli AOT. `message` est le texte complet
+/// affiché après le préfixe `rose: ` (le nom de sortie est déjà formaté,
+/// suffixe `.exe` compris, par l'appelant).
+fn comp_programme_avec_message(fichier: &str, sortie: &str, message: &str) -> i32 {
     let mut source = String::new();
     if !lire(&mut source, fichier) {
         eprintln!("rose: fichier introuvable : {}", fichier);
@@ -804,7 +828,7 @@ fn comp_programme(fichier: &str, sortie: &str) -> i32 {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(sortie, std::fs::Permissions::from_mode(0o755));
     }
-    println!("rose: {} produit (exécutable autonome)", sortie);
+    println!("rose: {}", message);
     0
 }
 

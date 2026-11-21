@@ -97,6 +97,13 @@ fn main() {
         //   rose.rc       → rose.exe       (LOGO DE BASE, la rose)
         //   rose-shell.rc → rose-shell.exe (console : terminal + invite)
         //   rose-aot.rc   → rose-aot.exe   (console : terminal + invite)
+        //   rose-tray.rc  → rose-tray.exe  (LA ROSE, embarquée dans le PE)
+        //
+        // ⚠ Le helper avait une section `.rsrc` VIDE : aucune icône dans
+        // l'exe, seulement un `LoadImageW` d'un `rose.ico` externe au
+        // runtime. `rose-tray.rc` corrige cela en liant RT_ICON +
+        // RT_GROUP_ICON dans le PE (même mécanisme que `pack-res.py` pour
+        // rose-setup, vérifié avec `llvm-readobj --coff-resources`).
         //
         // ⚠⚠ CORRECTION : `rose.exe` portait `rose_shell.ico`. C'était une
         // erreur — le moteur doit porter le LOGO DE BASE (`rose_base.ico`,
@@ -108,6 +115,7 @@ fn main() {
         for (bin, rc_name, res_name) in [
             ("rose", "rose.rc", "rose.res"),
             ("rose-shell", "rose-shell.rc", "rose-shell.res"),
+            ("rose-tray", "rose-tray.rc", "rose-tray.res"),
         ] {
             let rc = std::path::Path::new(rc_name);
             if !rc.exists() {

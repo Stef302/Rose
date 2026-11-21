@@ -1,0 +1,26 @@
+// Ressources de l'exécutable `rose-tray.exe` (helper de la zone de notification).
+//
+// ⚠ AVANT CE FICHIER, `rose-tray.exe` AVAIT UNE SECTION .rsrc VIDE : aucune
+// icône dans le fichier PE, seulement un `LoadImageW` au runtime d'un
+// `rose.ico` externe (souvent absent de `bin\` selon le chemin de recherche).
+// Résultat mesuré : l'icône du tray était celle générique de Windows, et
+// l'Explorateur affichait une icône vierge pour `rose-tray.exe`.
+//
+// On embarque LA ROSE (`rose/rose.ico`, le logo de base), pas :
+//   `installateur/assets/rose.ico` = document « .ROSE » (type de fichier) ;
+//   `rose_shell.ico` = console (terminal + invite) ;
+//   `installateur/assets/rose_setup.ico` = boîte d'installation.
+//
+// Ce `.rc` est compilé par `build.rs` exactement comme `rose.rc` et
+// `rose-shell.rc` (llvm-windres/windres → COFF `.res`, lié par
+// `cargo:rustc-link-arg-bin=rose-tray=rose-tray.res`). Il produit les mêmes
+// types de ressources que `installateur/velopack/pack-res.py` pour le setup :
+// RT_ICON (3) + RT_GROUP_ICON (14), vérifiables avec
+// `llvm-readobj --coff-resources rose-tray.exe`.
+//
+// L'icône embarquée sert AUSSI au runtime : `charger_icone()` essaie
+// d'abord `LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCE(1))` avant
+// les fichiers externes, donc le helper reste icôné même si `rose.ico`
+// n'a pas été copié à côté de lui.
+
+1 ICON "rose.ico"
