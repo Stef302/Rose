@@ -345,7 +345,7 @@ def main():
             "ratio rose centralisé (LOGO3)": "pub const RATIO_ROSE: f64 = 337.0 / 264.0",
             "hauteur rose = contenu + marges (LOGO3)": "pub fn hauteur_rose_requise(",
             "boîte rose sans clamp hauteur seule (LOGO3)": "pub fn boite_rose(",
-            "marges 4/8 réservées (LOGO3)": "MARGE_HAUTE_ROSE",
+            "marges 4/8 réservées (LOGO3)": "MARGE_TOTALE_ROSE",
             # ⚠⚠ « SEULEMENT LES BORDURES / EFFET TRANSPARENT ». Le fond doit
             # être peint AVANT toute décoration (la double-bufferisation ne
             # copie qu'à la fin : un plantage du tracé détaillé laissait la
