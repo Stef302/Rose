@@ -1,0 +1,8 @@
+# Divergence quotient/modulo bigint : grands numerateurs variables
+$a = 100000000000000000007
+$b = 7
+$c = 18446744073709551616
+>> $a / $b
+>> $a % $b
+>> $c / 3
+>> $c % 3

@@ -1,0 +1,7 @@
+# Divergence unicode : plan astral (U+10000 et au-dela), emoji et lettres mathematiques
+>> "🎯🏁"
+>> "𝔘𝄞"
+>> longueur("🎯🏁")
+>> ordre("🎯")
+>> caractere(127919)
+>> sous_chaine("🎯🏁", 0, 1)

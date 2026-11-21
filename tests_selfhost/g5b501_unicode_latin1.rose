@@ -1,0 +1,7 @@
+# Divergence unicode : accents Latin-1, majuscules, longueur, sous-chaine, ordre/caractere
+>> "café"
+>> "naïve élève"
+>> longueur("naïve élève")
+>> sous_chaine("café", 0, 2)
+>> ordre("à")
+>> caractere(224)

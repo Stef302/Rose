@@ -1,0 +1,6 @@
+# Non-regression : negation unaire et grands litteraux negatifs
+$a = 18446744073709551616
+>> -$a
+>> -(-$a)
+>> -9223372036854775808
+>> -100000000000000000000

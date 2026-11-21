@@ -1,0 +1,8 @@
+# Divergence produit bigint : produits de grands entiers variables au-dela de 2^64
+$a = 100000000000000000000
+$b = 3
+$c = 18446744073709551616
+>> $a * $b
+>> $c * $c
+>> $a * $a
+>> $b * $c

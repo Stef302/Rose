@@ -1,0 +1,7 @@
+# Divergence rationnel calcule : somme de quotients, denominateur commun
+$a = 100000000000000000001
+$b = 6
+$c = 100000000000000000003
+$d = 6
+>> $a / $b + $c / $d
+>> ($a + $c) / $b

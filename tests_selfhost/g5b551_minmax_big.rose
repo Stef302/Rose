@@ -1,0 +1,8 @@
+# Divergence abs/min/max bigint : min/max sur grands signes
+$a = -18446744073709551616
+$b = 18446744073709551616
+$c = 100000000000000000000
+>> min($a, $b)
+>> max($a, $b)
+>> min($b, $c)
+>> max($a, -$c)

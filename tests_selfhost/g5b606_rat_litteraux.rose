@@ -1,0 +1,5 @@
+# Non-regression : rationnels littéraux replies par le compilateur
+>> 100000000000000000000/7
+>> 18446744073709551616/3
+>> -100000000000000000000/7
+>> (10^20)/(10^19)

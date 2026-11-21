@@ -1,0 +1,8 @@
+# Non-regression : operations sur chaines ASCII
+>> "hello"
+>> "abc" + "def"
+>> "abc" == "abc"
+>> "abc" < "abd"
+>> sous_chaine("abcdef", 2, 5)
+>> caractere(65)
+>> ordre("A")

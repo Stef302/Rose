@@ -1,0 +1,10 @@
+# Divergence rationnel calcule : numerateur negatif et signes melanges
+# (denominateur petit : un grand denominateur variable casse l'interprete NAT)
+$a = -100000000000000000000
+$b = 3
+$c = -7
+>> $a / $b
+>> $a / 11
+>> $a % $b
+>> $c / $b
+>> $b % $c

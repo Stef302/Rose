@@ -1,0 +1,5 @@
+# Non-regression : accumulation en boucle au-dela de 2^64
+$s = 0
+pour $i de 0 vers 25 { $s = $s + 1000000000000000000 }
+>> $s
+>> $s > 2^64

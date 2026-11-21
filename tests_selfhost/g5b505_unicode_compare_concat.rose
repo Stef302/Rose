@@ -1,0 +1,6 @@
+# Divergence unicode : comparaison et concatenation de chaines non ASCII
+>> "à" < "é"
+>> "é" < "è"
+>> "café" + " 🎯"
+>> "α" != "β"
+>> "日本語" == "日本語"

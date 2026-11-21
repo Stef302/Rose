@@ -1,0 +1,7 @@
+# Non-regression : additions multi-limbes avec retenue
+$a = 99999999999999999999
+$b = 1
+>> $a + $b
+>> 18446744073709551616 + 18446744073709551616
+>> $a + $a
+>> $a + 2

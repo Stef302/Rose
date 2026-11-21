@@ -1,0 +1,9 @@
+# Divergence addition bigadd : grands entiers de signes opposes, meme effectif
+$p = 100000000000000000000
+$n = -100000000000000000000
+$q = 18446744073709551616
+>> $p + $n
+>> $n + $p
+>> $q + (-$q)
+>> $p + (-99999999999999999999)
+>> (-99999999999999999999) + $p

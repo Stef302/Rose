@@ -1,0 +1,7 @@
+# Divergence unicode : ideogrammes CJK et hangul (hors ASCII/Latin-1)
+>> "日本語"
+>> "한국어"
+>> longueur("日本語")
+>> ordre("日")
+>> caractere(26085)
+>> sous_chaine("日本語", 1, 3)

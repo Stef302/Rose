@@ -1,0 +1,6 @@
+# Divergence puissance bigint : puissances de 2 non repliees au-dela de 2^64
+>> 2^66
+>> 2^70
+>> 2^80
+>> 2^65 + 1
+>> 2^65 - 1

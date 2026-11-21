@@ -1,0 +1,6 @@
+# Non-regression : seuils 2^59, 2^63, 2^64 et grands litteraux
+>> 2^59
+>> 2^63
+>> 2^64
+>> 10^29
+>> 10^39

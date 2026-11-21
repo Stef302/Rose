@@ -1,0 +1,7 @@
+# Divergence soustraction bigint : valeurs differentes de la batterie AZ
+$a = 100000000000000000000
+$b = 7
+>> $a - $b
+>> $b - $a
+>> $a - 99999999999999999999
+>> 99999999999999999999 - $a

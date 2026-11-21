@@ -1,0 +1,7 @@
+# Divergence soustraction bigint : depuis zero et avec grands negatifs
+$a = 18446744073709551616
+$n = -$a
+>> 0 - $a
+>> 0 - $n
+>> $n - $a
+>> $a - $n

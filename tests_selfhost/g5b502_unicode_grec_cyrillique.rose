@@ -1,0 +1,7 @@
+# Divergence unicode : grec et cyrillique, points de code > 255
+>> "αβγ"
+>> "Привет"
+>> longueur("Привет")
+>> ordre("Ω")
+>> caractere(937)
+>> sous_chaine("Привет", 0, 3)

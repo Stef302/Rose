@@ -1,0 +1,4 @@
+# Divergence rationnel calcule : divisions a l'execution dans une boucle
+$s = 0
+pour $i de 0 vers 3 { $s = $s + (100000000000000000000 + $i) / 7 }
+>> $s

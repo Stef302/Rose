@@ -1,0 +1,9 @@
+# Non-regression : arithmetique entiere de base
+>> 2 + 3 * 4
+>> (2 + 3) * 4
+>> 7 / 2
+>> 7 % 2
+>> 2^10
+>> abs(-42)
+>> min(7, -3)
+>> max(7, -3)

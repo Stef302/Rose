@@ -1,0 +1,6 @@
+# Divergence rationnel calcule : grand numerateur positif, denominateur premier
+$a = 100000000000000000003
+$b = 11
+>> $a / $b
+>> $a % $b
+>> $b / 7

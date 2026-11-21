@@ -1,0 +1,8 @@
+# Non-regression : booleens, comparaisons et branches
+>> vrai et faux
+>> faux ou vrai
+>> non faux
+>> 3 < 5
+>> 3 == 3
+si (3 < 5) { >> "petit" } sinon { >> "grand" }
+>> 1 + 1 == 2

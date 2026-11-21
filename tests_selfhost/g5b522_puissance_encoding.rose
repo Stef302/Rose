@@ -1,0 +1,5 @@
+# Divergence puissance bigint : resultat non replie utilise dans expressions
+>> 2^66 + 1
+>> 2^66 - 1
+>> 2^66 > 2^65
+>> 2^66 == 73786976294838206464

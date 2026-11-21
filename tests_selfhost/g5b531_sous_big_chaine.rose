@@ -1,0 +1,7 @@
+# Divergence soustraction bigint : chaines de soustractions et parenthésage
+$a = 18446744073709551617
+$b = 18446744073709551616
+$c = 3
+>> $a - $b - $c
+>> $a - ($b - $c)
+>> ($a - $b) - ($b - $a)

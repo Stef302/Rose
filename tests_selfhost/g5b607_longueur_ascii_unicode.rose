@@ -1,0 +1,6 @@
+# Non-regression : longueur() sur ASCII et chaines Unicode
+>> longueur("abc")
+>> longueur("été")
+>> longueur("🚀")
+>> longueur("Привет")
+>> longueur("")
