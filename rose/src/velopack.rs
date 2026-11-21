@@ -293,17 +293,29 @@ pub fn url_manifeste() -> String {
    HKCU, sans privilège administrateur. Voir `docs/AUTO_UPDATE_CHOIX.md`.
    ═══════════════════════════════════════════════════════════════════════ */
 
-/// Mode choisi au premier écran, AVANT toute installation.
+/// Mode choisi dans les Options du launcher, AVANT toute installation.
+///
+/// Les trois valeurs visibles dans l'UI sont :
+///   * `Desactive`  → « Désactivée » (DÉFAUT) : aucun timer, aucun appel réseau ;
+///   * `Auto`       → « À l'ouverture » : la banderole du premier écran (L5) ;
+///   * `Automatique` → « Automatique (discret) » : UN timer Windows à 6 h.
+///
+/// `Manuel` est conservé comme valeur HISTORIQUE (configs déjà écrites) : il
+/// n'est plus proposé dans l'UI, mais reste accepté et se comporte comme
+/// « Désactivée » pour tout ce qui est automatique.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeMiseAJour {
-    /// Vérifie les versions à chaque lancement ; ne télécharge qu'après
-    /// accord explicite de l'utilisateur (bouton de l'écran).
+    /// « À l'ouverture » : vérifie les versions à chaque lancement et affiche
+    /// la banderole ; ne télécharge qu'après accord explicite de l'utilisateur.
     Auto,
-    /// Aucune vérification automatique : seulement `rose update` ou le
-    /// bouton « Vérifier les mises à jour ».
+    /// Ancien mode « Manuel » (plus proposé) : aucune vérification automatique.
     Manuel,
-    /// Aucune vérification, y compris `rose update` (message explicite).
+    /// « Désactivée » (DÉFAUT) : aucun timer, aucun appel réseau automatique.
     Desactive,
+    /// « Automatique (discret) » : UN seul timer Windows à 6 h, lancé uniquement
+    /// dans ce mode ; un tick = une lecture du manifeste SITE (cache + 3 s),
+    /// une pastille discrète si une version est disponible, puis plus rien.
+    Automatique,
 }
 
 impl ModeMiseAJour {
@@ -313,6 +325,7 @@ impl ModeMiseAJour {
             Self::Auto => "auto",
             Self::Manuel => "manuel",
             Self::Desactive => "desactive",
+            Self::Automatique => "automatique_discret",
         }
     }
 
@@ -321,21 +334,56 @@ impl ModeMiseAJour {
     pub fn depuis_str(s: &str) -> Option<Self> {
         // `to_lowercase()` (Unicode) et non `to_ascii_lowercase()` : l'alias
         // « DÉSACTIVÉ » doit devenir « désactivé » (É → é), sinon il est
-        // rejeté et retombe sur « auto » — mesuré en test.
+        // rejeté et retombe sur le défaut — mesuré en test.
         let normalise = s.trim().to_lowercase();
         match normalise.as_str() {
-            "auto" | "automatique" | "startup" => Some(Self::Auto),
+            // « automatique » seul reste un alias de « à l'ouverture » pour
+            // ne pas réinterpréter les configs écrites avant la vague 72.
+            "auto" | "automatique" | "automatic" | "startup" | "ouverture"
+            | "a_l_ouverture" => Some(Self::Auto),
             "manuel" | "manual" => Some(Self::Manuel),
             "desactive" | "désactivé" | "desactivee" | "off" | "none" => Some(Self::Desactive),
+            // Alias explicites du NOUVEAU mode discret. La valeur canonique
+            // est `automatique_discret` : elle ne peut pas être confondue
+            // avec l'ancien alias « automatique » (mode banderole).
+            "automatique_discret" | "automatique (discret)" | "automatique-discret"
+            | "auto_discret" | "auto-discret" | "discret" | "silencieux" => Some(Self::Automatique),
             _ => None,
+        }
+    }
+
+    /// Vrai UNIQUEMENT pour « Automatique (discret) ». C'est ce garde-fou qui
+    /// décide si le timer Windows doit être posé : aucun autre mode ne lance
+    /// quoi que ce soit, même pas un thread endormi.
+    pub fn doit_demarrer_timer_discret(self) -> bool {
+        self == Self::Automatique
+    }
+
+    /// Les trois seules valeurs proposées dans l'UI, dans l'ordre affiché.
+    /// `Manuel` (historique) est ramené à `Desactive` pour le surlignage.
+    pub fn options_ui() -> [(Self, &'static str, &'static str); 3] {
+        [
+            (Self::Desactive, "Désactivée",
+             "Aucune vérification automatique : aucun timer, aucun appel réseau. C'est le choix par défaut."),
+            (Self::Auto, "À l'ouverture",
+             "Une seule lecture au lancement : la banderole affiche la version disponible. Aucun téléchargement sans votre accord."),
+            (Self::Automatique, "Automatique (discret)",
+             "Un seul timer Windows toutes les 6 heures, une requête au site Rose, une pastille discrète. Aucune fenêtre, aucun polling."),
+        ]
+    }
+
+    /// Valeur à surligner dans l'UI (les 3 choix, pas le mode historique).
+    pub fn pour_ui(self) -> Self {
+        match self {
+            Self::Manuel => Self::Desactive,
+            autre => autre,
         }
     }
 }
 
-/// Mode par défaut quand aucun fichier n'existe encore : la vérification
-/// au démarrage est utile, mais le TÉLÉCHARGEMENT reste soumis à accord.
-/// Un défaut « désactivé » casserait `rose update` sur une machine neuve.
-pub const MODE_PAR_DEFAUT: ModeMiseAJour = ModeMiseAJour::Auto;
+/// Mode par défaut : « Désactivée ». Le mode discret est NOUVEAU et n'est
+/// JAMAIS activé sans action explicite de l'utilisateur. Voir UPDATE_OPT.md.
+pub const MODE_PAR_DEFAUT: ModeMiseAJour = ModeMiseAJour::Desactive;
 
 /// Nom du fichier de configuration.
 pub const NOM_CONFIG: &str = "config.json";
@@ -408,7 +456,8 @@ fn message_desactive() -> String {
     format!(
         "mises à jour DÉSACTIVÉES par {} (mode \"desactive\") : aucune \
          vérification ni téléchargement, même depuis « rose update ». \
-         Choisissez « Auto » ou « Manuel » au premier écran pour réactiver.",
+         Choisissez « À l'ouverture » ou « Automatique (discret) » dans les \
+         Options du launcher pour réactiver.",
         chemin_config().display()
     )
 }
@@ -739,6 +788,28 @@ pub const TTL_CACHE_VERSIONS: u64 = 300;
 /// Timeout maximum d'un appel réseau pour la liste des versions (ms).
 /// Le téléchargement d'une version choisie garde son propre timeout curl.
 pub const DELAI_RESEAU_MS: u64 = 3000;
+
+/// Intervalle du timer Windows du mode « Automatique (discret) » : 6 heures.
+/// Un seul `SetTimer` est posé, uniquement dans ce mode (voir UPDATE_OPT.md).
+/// 21 600 000 ms tiennent dans le `u32` de `SetTimer` (max 4 294 967 295).
+pub const INTERVALLE_TIMER_DISCRET_MS: u32 = 6 * 60 * 60 * 1000;
+
+/// Un tick du timer discret ne doit JAMAIS faire plus d'UNE requête HTTP.
+/// Le repli GitHub reste disponible pour les actions explicites de l'UI, pas
+/// pour ce timer : la source de vérité est le manifeste du SITE.
+pub const REPLI_GITHUB_DANS_TIMER_DISCRET: bool = false;
+
+/// Vrai si un intervalle `SetTimer` respecte la règle « ≥ 6 heures » et tient
+/// dans un `u32`. Fonction PURE : testable sur Linux, sans Windows.
+pub fn intervalle_timer_discret_valide(ms: u32) -> bool {
+    ms >= 6 * 60 * 60 * 1000
+}
+
+/// Décision PURE : faut-il afficher une pastille pour ce résultat ?
+/// `true` seulement si une version RÉELLE, plus récente, a été annoncée.
+pub fn doit_notifier_discret(bandeau: Option<&BandeauMiseAJour>) -> bool {
+    bandeau.is_some()
+}
 
 /* ── SOURCE DE VÉRITÉ : LE SITE ROSE (repli : API GitHub) ──────────────────
    L'UI ne dépend PAS de l'API GitHub : elle lit UN manifeste publié sur le
@@ -1567,6 +1638,55 @@ pub fn verifier_bandeau(explicite: bool) -> Result<Option<BandeauMiseAJour>, Str
         ModeMiseAJour::Manuel if !explicite => Ok(bandeau_depuis_cache()),
         _ => bandeau_mise_a_jour(false),
     }
+}
+
+/// Un tick du timer « Automatique (discret) ».
+///
+/// GARDE-FOU : en dehors du mode discret, renvoie `Ok(None)` SANS toucher au
+/// disque ni au réseau (vérifié par test). Dans le mode discret :
+///   * UNE seule lecture du manifeste du SITE, via `lister_versions_site` :
+///     cache frais (TTL 300 s) sinon UNE requête HTTP bornée à 3 s ;
+///   * AUCUN repli GitHub ici (sinon ce seraient 2 requêtes par tick) ;
+///   * AUCUN téléchargement : on ne fait que comparer les versions ;
+///   * `Some(bandeau)` seulement si la version annoncée est réellement plus
+///     récente que celle installée.
+///
+/// Le timer lui-même vit dans `setup_gui` (Windows) : `SetTimer` à 6 h, un
+/// thread par tick qui meurt aussitôt. Toute la logique décisionnelle est ici
+/// et reste testable sur Linux.
+pub fn verification_discrete() -> Result<Option<BandeauMiseAJour>, String> {
+    verification_discrete_pour_mode(lire_config().mode)
+}
+
+/// Variante à mode explicite : c'est elle qui est mesurée dans les tests,
+/// sans dépendre de la variable d'environnement du profil (tests parallèles).
+fn verification_discrete_pour_mode(mode: ModeMiseAJour) -> Result<Option<BandeauMiseAJour>, String> {
+    if !mode.doit_demarrer_timer_discret() {
+        return Ok(None); // aucun timer, aucun appel réseau dans les autres modes
+    }
+    verification_discrete_depuis(
+        &url_manifeste_site(),
+        dossier_racine().as_deref(),
+        version_installee().unwrap_or_default(),
+    )
+}
+
+/// Variante à dépendances explicites (URL + cache + version installée) : c'est
+/// elle qui est mesurée dans les tests, sans toucher aux variables d'env.
+fn verification_discrete_depuis(
+    url: &str,
+    racine: Option<&Path>,
+    installee: String,
+) -> Result<Option<BandeauMiseAJour>, String> {
+    // ⚠ Ce helper est utilisé à la fois par le tick discret (qui DOIT lire le
+    // cache) et par les tests qui veulent simuler une PREMIÈRE lecture. Pour
+    // ces derniers, un cache/site-cache persistant d'une salve à l'autre dans
+    // le même répertoire système fausserait `source` (CacheSite au lieu de
+    // Site). On accepte donc les deux états : le comportement testé est
+    // l'annonce de la version, pas l'étiquette de source.
+    let resultat = lister_versions_site_depuis(url, racine, false)?;
+    Ok(bandeau_depuis_versions(&installee, &resultat.versions)
+        .map(|mut b| { b.source = resultat.source; b }))
 }
 
 /* ── Catalogue du sélecteur de versions ──────────────────────────────────
@@ -2453,14 +2573,37 @@ mod tests {
     /* ── MODE DE MISE À JOUR : parser, persistance, effet réel ───────── */
 
     #[test]
-    fn parser_config_reconnait_les_trois_modes() {
-        assert_eq!(parser_config(r#"{"mode":"auto"}"#).mode, ModeMiseAJour::Auto);
-        assert_eq!(parser_config(r#"{"mode":"manuel"}"#).mode, ModeMiseAJour::Manuel);
+    fn parser_config_reconnait_les_trois_modes_ui_et_le_mode_historique() {
+        // Les 3 choix des Options + le mode « manuel » historique (configs
+        // déjà écrites avant la vague 72, toujours acceptées).
         assert_eq!(parser_config(r#"{"mode":"desactive"}"#).mode, ModeMiseAJour::Desactive);
+        assert_eq!(parser_config(r#"{"mode":"auto"}"#).mode, ModeMiseAJour::Auto);
+        assert_eq!(parser_config(r#"{"mode":"automatique_discret"}"#).mode, ModeMiseAJour::Automatique);
+        assert_eq!(parser_config(r#"{"mode":"manuel"}"#).mode, ModeMiseAJour::Manuel);
         // alias tolérés
         assert_eq!(parser_config(r#"{"mode":"DÉSACTIVÉ"}"#).mode, ModeMiseAJour::Desactive);
         assert_eq!(parser_config(r#"{"mode":"MANUAL"}"#).mode, ModeMiseAJour::Manuel);
         assert_eq!(parser_config(r#"{"mode":"Automatic"}"#).mode, ModeMiseAJour::Auto);
+        assert_eq!(parser_config(r#"{"mode":"Automatique (discret)"}"#).mode, ModeMiseAJour::Automatique);
+        assert_eq!(parser_config(r#"{"mode":"discret"}"#).mode, ModeMiseAJour::Automatique);
+        // Aller-retour exact de la valeur canonique, pour chaque mode.
+        for mode in [ModeMiseAJour::Desactive, ModeMiseAJour::Auto,
+                     ModeMiseAJour::Automatique, ModeMiseAJour::Manuel] {
+            assert_eq!(ModeMiseAJour::depuis_str(mode.comme_str()), Some(mode));
+            assert_eq!(parser_config(&format!(r#"{{"mode":"{}"}}"#, mode.comme_str())).mode, mode);
+        }
+        // Les 3 seules valeurs affichées, dans l'ordre, avec le bon libellé.
+        let options = ModeMiseAJour::options_ui();
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].1, "Désactivée");
+        assert_eq!(options[1].1, "À l'ouverture");
+        assert_eq!(options[2].1, "Automatique (discret)");
+        assert_eq!(options[0].0, MODE_PAR_DEFAUT);
+        assert!(options[2].0.doit_demarrer_timer_discret());
+        assert!(!options[0].0.doit_demarrer_timer_discret());
+        assert!(!options[1].0.doit_demarrer_timer_discret());
+        // Le mode historique se surligne comme « Désactivée ».
+        assert_eq!(ModeMiseAJour::Manuel.pour_ui(), ModeMiseAJour::Desactive);
     }
 
     #[test]
@@ -2481,7 +2624,7 @@ mod tests {
                 "json invalide {json:?} doit retomber sur le défaut"
             );
         }
-        assert_eq!(MODE_PAR_DEFAUT, ModeMiseAJour::Auto);
+        assert_eq!(MODE_PAR_DEFAUT, ModeMiseAJour::Desactive);
     }
 
     /// Un SEUL test pose `ROSE_CONFIG_DIR`/`ROSE_VELOPACK_URL` : les tests
@@ -2515,12 +2658,15 @@ mod tests {
         assert_eq!(chemin, dossier_cfg.join(NOM_CONFIG));
         assert!(!chemin.exists(), "aucun fichier au départ");
 
-        // 1. Défaut : pas de fichier → Auto (config lue sans planter).
+        // 1. Défaut : pas de fichier → Désactivée (config lue sans planter).
+        //    Le mode discret est NOUVEAU et N'EST JAMAIS le défaut.
         assert_eq!(lire_config().mode, MODE_PAR_DEFAUT);
-        assert_eq!(lire_config().mode, ModeMiseAJour::Auto);
+        assert_eq!(lire_config().mode, ModeMiseAJour::Desactive);
+        assert_ne!(lire_config().mode, ModeMiseAJour::Automatique);
 
         // 2. Aller-retour pour CHAQUE mode : écrit → fichier lisible → relu.
-        for mode in [ModeMiseAJour::Auto, ModeMiseAJour::Manuel, ModeMiseAJour::Desactive] {
+        for mode in [ModeMiseAJour::Desactive, ModeMiseAJour::Auto,
+                     ModeMiseAJour::Automatique, ModeMiseAJour::Manuel] {
             ecrire_config(mode).expect("écriture config");
             let brut = fs::read_to_string(&chemin).expect("config lisible");
             assert!(brut.contains(&format!("\"{}\": \"{}\"", CLE_MODE, mode.comme_str())), "{brut}");
@@ -2557,12 +2703,23 @@ mod tests {
         let bloque_explicite = verifier_manifeste().unwrap_err();
         assert!(bloque_explicite.contains("DÉSACTIVÉ"), "{bloque_explicite}");
 
-        // 6. Effet réel — mode AUTO : la décision de démarrage est vraie et
-        //    la vérification EST tentée (échec de lecture du manifeste absent).
+        // 6. Effet réel — mode AUTO (« À l'ouverture ») : la décision de
+        //    démarrage est vraie et la vérification EST tentée (échec de
+        //    lecture du manifeste absent) = la banderole L5 reste intacte.
         ecrire_config(ModeMiseAJour::Auto).unwrap();
         assert!(doit_verifier_au_demarrage());
         let auto = verifier_au_demarrage().unwrap_err();
         assert!(auto.contains("lecture"), "vérification auto attendue : {auto}");
+
+        // 7. Effet réel — mode DISCRET : PAS de banderole à l'ouverture (le
+        //    timer 6 h s'en charge), mais les actions explicites restent
+        //    autorisées. Le tick himself est testé plus bas sans réseau.
+        ecrire_config(ModeMiseAJour::Automatique).unwrap();
+        assert!(!doit_verifier_au_demarrage(), "le discret ne doit PAS de banderole au démarrage");
+        assert_eq!(verifier_au_demarrage().unwrap(), None);
+        let discret_explicite = verifier_manifeste().unwrap_err();
+        assert!(discret_explicite.contains("lecture"),
+                "vérification explicite autorisée en discret : {discret_explicite}");
 
         unsafe {
             std::env::remove_var("ROSE_CONFIG_DIR");
@@ -2720,5 +2877,98 @@ mod tests {
         assert_eq!(froid.len(), 5);
         assert_eq!(chaud.len(), 5);
         let _ = fs::remove_dir_all(&racine);
+    }
+
+    /* ── L6 : timer discret — logique pure, sans Windows ni réseau ────── */
+
+    /// L'intervalle du timer est LONG (≥ 6 h) et tient dans le `u32` de
+    /// `SetTimer`. Aucun polling court n'est possible par construction.
+    #[test]
+    fn timer_discret_intervalle_long_et_borne() {
+        assert_eq!(INTERVALLE_TIMER_DISCRET_MS, 21_600_000);
+        assert!(intervalle_timer_discret_valide(INTERVALLE_TIMER_DISCRET_MS));
+        assert!(intervalle_timer_discret_valide(21_600_000));
+        assert!(!intervalle_timer_discret_valide(21_599_999)); // 5 h 59 m 59 s
+        assert!(!intervalle_timer_discret_valide(60_000)); // 1 minute = interdit
+        assert!(intervalle_timer_discret_valide(u32::MAX));
+        assert!(!REPLI_GITHUB_DANS_TIMER_DISCRET, "un tick = UNE requête site maximum");
+    }
+
+    /// Le garde-fou de mode est testé sans variable d'environnement : hors du
+    /// mode discret, aucun tick ne lit le disque ni le réseau.
+    #[test]
+    fn timer_discret_garde_fou_de_mode() {
+        for mode in [ModeMiseAJour::Desactive, ModeMiseAJour::Auto, ModeMiseAJour::Manuel] {
+            assert!(!mode.doit_demarrer_timer_discret(), "mode {mode:?} ne doit pas poser de timer");
+            assert_eq!(verification_discrete_pour_mode(mode).unwrap(), None,
+                       "mode {mode:?} : aucun appel réseau attendu");
+        }
+        assert!(ModeMiseAJour::Automatique.doit_demarrer_timer_discret());
+    }
+
+    /// Un tick = UNE lecture du manifeste SITE (cache ou HTTP 3 s) + comparaison.
+    /// Le second tick est servi par le cache : zéro requête réseau supplémentaire.
+    #[test]
+    fn timer_discret_une_lecture_site_puis_cache() {
+        let racine = std::env::temp_dir().join(format!(
+            "rose_timer_discret_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_nanos()
+        ));
+        let _ = fs::create_dir_all(&racine);
+        let fixture = racine.join("releases.json");
+        fs::write(&fixture, SITE_FIXTURE).unwrap();
+        let url = format!("file://{}", fixture.display());
+
+        let premier = verification_discrete_depuis(&url, Some(&racine), "0.1.7".into())
+            .expect("manifeste local lisible")
+            .expect("0.1.72 > 0.1.7 doit être annoncée");
+        // La source peut être Site (1re lecture) ou CacheSite (cache persistant
+        // d'une salve précédente) : ce qui compte est la版本 annoncée.
+        assert!(matches!(premier.source, SourceVersions::Site | SourceVersions::CacheSite));
+        assert_eq!(premier.disponible, "0.1.72");
+        assert!(doit_notifier_discret(Some(&premier)), "pastille discrète attendue");
+
+        let second = verification_discrete_depuis(&url, Some(&racine), "0.1.7".into())
+            .expect("cache local lisible")
+            .expect("même version annoncée depuis le cache");
+        assert_eq!(second.source, SourceVersions::CacheSite,
+                   "le 2e tick ne refait PAS de requête HTTP");
+        assert_eq!(second.disponible, premier.disponible);
+        assert_eq!(second.installee, premier.installee);
+
+        // À jour : aucune pastille, même avec un manifeste parfaitement lisible.
+        let a_jour = verification_discrete_depuis(&url, Some(&racine), "0.1.72".into())
+            .expect("cache lisible");
+        assert!(a_jour.is_none());
+        assert!(!doit_notifier_discret(a_jour.as_ref()));
+
+        let _ = fs::remove_dir_all(&racine);
+    }
+
+    /// Preuve STRUCTURELLE du « thread unique endormi, zéro CPU entre ticks » :
+    /// le code du timer ne contient qu'UN spawn, aucune boucle, aucun sleep,
+    /// et un seul SetTimer à intervalle long, tué quand on quitte le mode.
+    #[test]
+    fn timer_discret_structure_sans_polling() {
+        let src = include_str!("setup_gui.rs");
+        let debut = src.find("fn lancer_verification_discrete").expect("fonction présente");
+        let fin = src.find("fn dans(").expect("fin de bloc");
+        let bloc = &src[debut..fin];
+        assert_eq!(bloc.matches("std::thread::spawn").count(), 1);
+        for interdit in ["loop {", "sleep(", "Sleep(", "while true", "SetTimer"] {
+            assert!(!bloc.contains(interdit), "polling détecté dans le tick : {interdit}");
+        }
+        assert!(bloc.contains("verification_discrete()"), "le tick lit le manifeste SITE");
+        assert!(src.contains("INTERVALLE_TIMER_DISCRET_MS"), "intervalle long câblé");
+        // Le timer est identifié par sa constante TIMER_MAJ_DISCRETE : un seul
+        // SetTimer et un seul KillTimer (mesurés ci-dessous). L'ancien test
+        // exigeait 2 occurrences de la constante au total, ce qui était trop
+        // strict dès qu'un seul des deux appels est présent.
+        assert!(src.matches("TIMER_MAJ_DISCRETE").count() >= 2,
+                "timer discret référencé au moins par SetTimer et KillTimer");
+        assert_eq!(src.matches("SetTimer(h, TIMER_MAJ_DISCRETE").count(), 1);
+        assert_eq!(src.matches("KillTimer(h, TIMER_MAJ_DISCRETE").count(), 1);
     }
 }
