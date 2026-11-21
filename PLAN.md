@@ -1294,3 +1294,19 @@ L'utilisateur exige le VRAI, sans closures Rust natives ni replis:
 | JIT3 | vrai JIT Cranelift pour TOUT | rose/src/{jit,rir}.rs |
 | WASM | transpilation WASM | rose/src/{transpile,wasm_runtime}.rs |
 | RVM2 | RVM complète (appels de fonction, toutes opérations) | rose/src/{rosevm,rir}.rs |
+
+## Vague 84 — OBJECTIF FINAL : zéro refus, zéro dépendance
+
+Consigne: « ça ne marche pas comme ça, c'est ton devoir de faire en sorte que ça marche.
+Pas de summaries 'limite honnête pas atteint'. Tout faire dans une passe.»
+
+3 chantiers de fond, aucun droit de refuser:
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| AOT7 | AOT Universel TOTAL: PE/Windows + valeurs composées + primitives. Runtime machine complet. | rose/src/{cmd_llvm,natif_emetteur,link_natif,runtime_natif,run}.rs + runtime/* |
+| JIT4 | JIT Cranelift TOTAL: toutes les valeurs passent par du code généré + helpers natifs (pas de repli interpréteur, pas de closure Rust déguisée). | rose/src/{jit,rir}.rs |
+| HOST | Self-hosting A-Z: compilateur Rose produit rose.exe natif sans cargo | compilateur/*.rose, rose/src/* |
+
+Règle: si un agent bloque, il doit livrer le code partiel avec la preuve exacte de la
+cause technique (opcode manquant, syscall absent), PAS un message 'limite honnête'.
