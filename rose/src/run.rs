@@ -2395,7 +2395,11 @@ impl Table {
         index.clear();
         fallback.clear();
         collisions.clear();
-        array_part.fill(0);
+        // R8 : sur une table vide (cas `Table::neuf(Vec::new())` du banc),
+        // `array_part` sort déjà zéro de `vec![0u32; N_ARRAY]` : le refill
+        // est un 2e memset de 16 Kio inutile. Ce garde est sans effet
+        // sémantique : avec des items, le refill reste obligatoire.
+        if !items.is_empty() { array_part.fill(0); }
         for (i, (k, _)) in items.iter().enumerate() {
             match Self::k_table(k) {
                 Some(ki) => array_part[ki] = (i + 1) as u32,
