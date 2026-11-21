@@ -1156,6 +1156,30 @@ pub fn compilable(ty: TyKind) -> bool {
     matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
 }
 
+/// ═══════════════════════════════════════════════════════════════════════
+/// JIT RÉEL PAR DÉFAUT (vague 83 — `JIT_REEL.md`)
+/// ═══════════════════════════════════════════════════════════════════════
+///
+/// Historiquement, les motifs chauds (`fib`, somme de carrés, accumulation
+/// complexe/flottante) était court-circuités vers des superinstructions
+/// écrites à la main en Rust (voire en assembleur aarch64 brut). Le
+/// `define_function`/`finalize_definitions` n'avait donc lieu QUE pour les
+/// fonctions restantes — et, sur ces bancs, il n'en restait aucune.
+///
+/// Le JIT est désormais **réel par défaut** : les motifs chauds passent par
+/// le compilateur Cranelift comme n'importe quelle autre fonction. Le repli
+/// interpréteur reste disponible pour les VALEURS non représentables
+/// (BigInt, rationnels) via les helpers runtime déjà prouvés.
+///
+/// `ROSE_SUPERINST=1` réactive les superinstructions natives historiques
+/// (utile pour rejouer les bancs de performance antérieurs). C'est un
+/// réglage explicite, jamais le défaut : sans lui, aucun chemin Rust écrit
+/// à la main ne remplace une fonction Rose dans le JIT.
+#[inline]
+pub fn superinstructions_autorisees() -> bool {
+    std::env::var("ROSE_SUPERINST").map(|v| v == "1").unwrap_or(false)
+}
+
 /// Un argument de type `at` peut-il alimenter un paramètre de type `pt` dans
 /// le sous-ensemble JIT ? (le tramoline passe la valeur « telle quelle » :
 /// un entier vers un paramètre flottant est converti par l'appelant, mais un
@@ -1972,24 +1996,72 @@ fn slot_types_rir(corps: &CorpsRir, sig: &Signature, prog: &HashMap<String, Sign
     slot_types
 }
 
-fn eabstrait_rir_compilable(e: &Eabstrait, slot_types: &[TyKind], corps_noms: &[String], prog: &HashMap<String, Signature>) -> bool {
+/// Exposant d'une puissance RIR : littéral entier borné. Au-delà de 64 on
+/// garde le repli interpréteur (le code émis déroule une multiplication par
+/// degré : 64 appels runtime au plus, au-delà le coût de compilation explose).
+fn exposant_rir_const(e: &Eabstrait) -> Option<i64> {
+    if let Eabstrait::Entier(t) = e {
+        if let Ok(k) = t.parse::<i64>() {
+            if (0..=64).contains(&k) { return Some(k); }
+        }
+    }
+    None
+}
+
+/// `div_entiere_autorisee` : une division `entier / entier` produit un
+/// RATIONNEL en Rose. On ne peut l'émettre en f64 que dans le contexte où le
+/// vérificateur a PROUVÉ une conversion finale vers `flottant` (retour d'une
+/// fonction `-> flottant`). Partout ailleurs, repli interpréteur (exactitude
+/// des rationnels préservée).
+fn eabstrait_rir_compilable(e: &Eabstrait, slot_types: &[TyKind], corps_noms: &[String],
+                            prog: &HashMap<String, Signature>) -> bool {
+    eabstrait_rir_compilable_ctx(e, slot_types, corps_noms, prog, false)
+}
+
+fn eabstrait_rir_compilable_ctx(e: &Eabstrait, slot_types: &[TyKind], corps_noms: &[String],
+                                prog: &HashMap<String, Signature>,
+                                div_entiere_autorisee: bool) -> bool {
     match e {
-        Eabstrait::Slot(s, _) => slot_types.get(*s as usize).map(|t| matches!(t, TyKind::Entier|TyKind::Booleen|TyKind::Flottant)).unwrap_or(false),
+        // Un slot CHAINE porte un handle i64. Il est refusé par les portes
+        // arithmétiques ci-dessous (types non numériques), mais autorisé dans
+        // les comparaisons `==`, `<`, … émises via `rose_jit_chaine_compare`.
+        Eabstrait::Slot(s, _) => slot_types.get(*s as usize)
+            .map(|t| matches!(t, TyKind::Entier|TyKind::Booleen|TyKind::Flottant|TyKind::Chaine))
+            .unwrap_or(false),
         Eabstrait::Entier(t) => t.parse::<i64>().is_ok(),
         Eabstrait::Flottant(_) => true,
-        Eabstrait::Neg(a) => eabstrait_rir_compilable(a, slot_types, corps_noms, prog) && matches!(ty_eabstrait_rir(a, slot_types, prog), Some(TyKind::Entier)|Some(TyKind::Flottant)),
-        Eabstrait::Non(a) => eabstrait_rir_compilable(a, slot_types, corps_noms, prog) && ty_eabstrait_rir(a, slot_types, prog) == Some(TyKind::Booleen),
+        Eabstrait::Neg(a) => eabstrait_rir_compilable_ctx(a, slot_types, corps_noms, prog, div_entiere_autorisee)
+            && matches!(ty_eabstrait_rir(a, slot_types, prog), Some(TyKind::Entier)|Some(TyKind::Flottant)),
+        Eabstrait::Non(a) => eabstrait_rir_compilable_ctx(a, slot_types, corps_noms, prog, div_entiere_autorisee)
+            && ty_eabstrait_rir(a, slot_types, prog) == Some(TyKind::Booleen),
         Eabstrait::Binaire { op, a, b } => {
-            if !eabstrait_rir_compilable(a, slot_types, corps_noms, prog) || !eabstrait_rir_compilable(b, slot_types, corps_noms, prog) { return false; }
+            if !eabstrait_rir_compilable_ctx(a, slot_types, corps_noms, prog, div_entiere_autorisee)
+               || !eabstrait_rir_compilable_ctx(b, slot_types, corps_noms, prog, div_entiere_autorisee) { return false; }
             let ta = match ty_eabstrait_rir(a, slot_types, prog) { Some(t)=>t, None=>return false };
             let tb = match ty_eabstrait_rir(b, slot_types, prog) { Some(t)=>t, None=>return false };
             match op {
-                Oper::Add|Oper::Sub => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)|(TyKind::Flottant,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)),
-                Oper::Mul => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)|(TyKind::Flottant,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)),
-                Oper::Mod => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)),
-                Oper::Div => matches!((ta,tb),(TyKind::Flottant,TyKind::Flottant)|(TyKind::Flottant,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)),
-                Oper::Puissance|Oper::DivEntier => false, // pas encore
-                Oper::Lt|Oper::Le|Oper::Gt|Oper::Ge|Oper::Eq|Oper::Ne => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)|(TyKind::Booleen,TyKind::Booleen)),
+                Oper::Add|Oper::Sub|Oper::Mul => matches!((ta,tb),
+                    (TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)
+                    |(TyKind::Flottant,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)),
+                // `%` et `div` Linux : l'émetteur RIR applique désormais la
+                // correction euclidienne (signe du diviseur), exacte pour les
+                // opérandes négatifs — miroir de `correction_rem`/`floor_div`
+                // de l'émetteur AST, déjà prouvés sur le banc suite.
+                Oper::Mod|Oper::DivEntier => matches!((ta,tb),(TyKind::Entier,TyKind::Entier)),
+                Oper::Div => matches!((ta,tb),
+                    (TyKind::Flottant,TyKind::Flottant)|(TyKind::Flottant,TyKind::Entier)
+                    |(TyKind::Entier,TyKind::Flottant))
+                    || (div_entiere_autorisee && ta==TyKind::Entier && tb==TyKind::Entier),
+                Oper::Puissance => {
+                    // déroulable seulement pour un degré littéral borné ; les
+                    // bases flottantes passent par `rose_powf`.
+                    exposant_rir_const(b).is_some() && matches!((ta,tb),
+                        (TyKind::Entier,TyKind::Entier)|(TyKind::Entier,TyKind::Flottant)
+                        |(TyKind::Flottant,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant))
+                }
+                Oper::Lt|Oper::Le|Oper::Gt|Oper::Ge|Oper::Eq|Oper::Ne => matches!((ta,tb),
+                    (TyKind::Entier,TyKind::Entier)|(TyKind::Flottant,TyKind::Flottant)
+                    |(TyKind::Booleen,TyKind::Booleen)|(TyKind::Chaine,TyKind::Chaine)),
                 Oper::Et|Oper::Ou => ta==TyKind::Booleen && tb==TyKind::Booleen,
             }
         }
@@ -2418,7 +2490,11 @@ fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
     if sig.params.iter().any(|(_,t)| !compilable(t.n)) { return false; }
     let slot_types = slot_types_rir(corps, sig, prog);
     // vague 20 — natures des slots (handles chaîne/liste) pour les ops AST.
-    let natures = if principal_sans_boxage { naturesDuCorps(corps) } else { Vec::new() };
+    // JIT_REEL : calculées AUSSI pour les fonctions. Une fonction peut créer
+    // une chaîne locale et en appeler `longueur` : son squelette est compilé
+    // par Cranelift, la valeur restant un handle i64 (aucun Rust écrit à la
+    // main ne remplace le code généré).
+    let natures = naturesDuCorps(corps);
     for op in &corps.ops {
         match op {
             Op::Affect { expr, .. } => {
@@ -2426,7 +2502,20 @@ fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
                 if principal_sans_boxage && expr_peut_boxer(expr) { return false; }
             }
             Op::RetourAbstrait(e) => {
-                if !eabstrait_rir_compilable(e, &slot_types, &corps.noms, prog) { return false; }
+                // Une division d'entiers est émissible en f64 UNIQUEMENT si
+                // la signature prouve une conversion finale vers flottant.
+                let div_ok = sig.retour.n == TyKind::Flottant;
+                if !eabstrait_rir_compilable_ctx(e, &slot_types, &corps.noms, prog, div_ok) { return false; }
+            }
+            // JIT_REEL — un retour AST (appel primitif, concaténation, …) est
+            // émissible dès que l'émetteur AST du RIR le couvre. C'est le cas,
+            // entre autres, de `retour longueur($s)` où `$s` est une chaîne
+            // locale : la fonction entière passe par Cranelift.
+            Op::Retour(Some(e)) => {
+                let Some(nat) = expr_ast_jit(e, &natures, &corps.noms).flatten() else { return false; };
+                if !matches!(nat, NatureSlot::Entier | NatureSlot::Chaine
+                            | NatureSlot::ListeEntiers | NatureSlot::Table) { return false; }
+                if sig.retour.n == TyKind::Entier && nat != NatureSlot::Entier { return false; }
             }
             Op::Retour(None) => {}
             Op::Saut { .. } => {}
@@ -2486,7 +2575,6 @@ fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
             // exactement comme `HoteRir::afficher_valeur` du RIR).
             Op::AffectAst { e, .. } => {
                 if !est_affect_ast_natif(e) {
-                    if !principal_sans_boxage { return false; }
                     match expr_ast_jit(e, &natures, &corps.noms) {
                         Some(Some(NatureSlot::Chaine)) | Some(Some(NatureSlot::ListeEntiers))
                         | Some(Some(NatureSlot::Entier)) | Some(Some(NatureSlot::Table)) => {}
@@ -2546,6 +2634,7 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_affiche_ent", rose_affiche_ent as *const u8),
         ("rose_powf", rose_powf as *const u8),
         ("rose_jit_chaine_concat", rose_jit_chaine_concat as *const u8),
+        ("rose_jit_chaine_compare", rose_jit_chaine_compare as *const u8),
         ("rose_jit_chaine_accum", rose_jit_chaine_accum as *const u8),
         ("rose_jit_liste_vide", rose_jit_liste_vide as *const u8),
         // 18/11 — LISTE_INLINE : méta-données du Vec, une seule fois hors boucle.
@@ -3064,6 +3153,7 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 ("rose_erreur_div_flottant_zero", vec![], None),
                 // vague 20 — types non numériques du principal (handles)
                 ("rose_jit_chaine_concat", vec![types::I64, types::I64], Some(types::I64)),
+                ("rose_jit_chaine_compare", vec![types::I64, types::I64, types::I64], Some(types::I64)),
                 ("rose_jit_chaine_accum", vec![types::I64, types::I64, types::I64], Some(types::I64)),
                 ("rose_jit_liste_vide", vec![], Some(types::I64)),
                 // LISTE_INLINE : réservation + lecture des méta-données + publication
@@ -3367,7 +3457,8 @@ impl Jit {
         // superinstruction NEON native : on ne la déclare/compile PAS dans
         // Cranelift (économie de define_function + sa part de finalize).
         self.carres_natifs.clear();
-        if self.permettre_carres_natifs && cfg!(target_arch = "aarch64") {
+        if self.permettre_carres_natifs && cfg!(target_arch = "aarch64")
+           && superinstructions_autorisees() {
             for (nom, s) in self.signatures.iter() {
                 if let Some(rir) = s.rir.as_ref() {
                     if Emetteur::detecter_carres_acc(rir, s).is_some() {
@@ -3380,7 +3471,7 @@ impl Jit {
         // compilation Cranelift, aucun délai de finalisation).
         self.complex_natifs.clear();
         self.complex_params.clear();
-        if self.permettre_carres_natifs {
+        if self.permettre_carres_natifs && superinstructions_autorisees() {
             for (nom, s) in self.signatures.iter() {
                 if let Some(rir) = s.rir.as_ref() {
                     if let Some(p) = Emetteur::detecter_complex_acc(rir, s) {
@@ -3393,7 +3484,7 @@ impl Jit {
         // speed1 : la boucle flottante détectée tourne en Rust pur, comme les
         // carrés/complexes ; elle ne doit plus être compilée par Cranelift.
         self.flottants_natifs.clear();
-        if self.permettre_carres_natifs {
+        if self.permettre_carres_natifs && superinstructions_autorisees() {
             for (nom, s) in self.signatures.iter() {
                 if let Some(rir) = s.rir.as_ref() {
                     if Emetteur::detecter_flottants_accum(rir, s).is_some() {
@@ -3406,7 +3497,7 @@ impl Jit {
         // itérative exacte ; plus aucune fonction Cranelift ne reste sur ce
         // banc, ce qui déclenche le raccourci CLOSE2 (module JIT jamais créé).
         self.fib_natifs.clear();
-        if self.permettre_carres_natifs {
+        if self.permettre_carres_natifs && superinstructions_autorisees() {
             for (nom, s) in self.signatures.iter() {
                 if let Some(rir) = s.rir.as_ref() {
                     if Emetteur::detecter_fib_rir(rir, s) {
@@ -3444,12 +3535,17 @@ impl Jit {
         // On installe d'abord les superinstructions natives (Rust pur), puis
         // on sort SANS toucher au module. Repli complet dès qu'une fonction
         // est éligible ou que le principal est compilé.
+        // Diagnostic HONNÊTE : toujours publier la décision, y compris quand
+        // le raccourci CLOSE2 évite de créer un module Cranelift vide.
+        if std::env::var("ROSE_TIMING").is_ok() {
+            eprintln!("TIMING-JIT eligibles={:?} rir={:?} natifs={} t={:?}",
+                eligibles, eligible_rir, superinstructions_autorisees(), _tt.elapsed());
+        }
         if eligibles.is_empty() && self.foncs.is_empty() && self.permettre_carres_natifs {
             self.installer_superinstructions(&mut out);
             return out;
         }
         self.declarer_delegues();
-        if std::env::var("ROSE_TIMING").is_ok() { eprintln!("TIMING-JIT eligibles={:?} t={:?}", eligibles, _tt.elapsed()); }
         let _tt2 = std::time::Instant::now();
         for nom in &eligibles {
             let sig = &self.signatures[nom];
@@ -3759,7 +3855,10 @@ pub fn prepare_jit(prog: &crate::front::Programme,
     let mut complexes: Vec<(String, ComplexAcc)> = Vec::new();
     let mut flottants: Vec<(String, (i64, i64, f64))> = Vec::new();
     let mut fibs: Vec<String> = Vec::new();
-    if cfg!(target_arch = "aarch64") {
+    // JIT réel par défaut : aucune superinstruction n'est installée sauf
+    // demande explicite (ROSE_SUPERINST=1). Voir `superinstructions_autorisees`.
+    let superinst = superinstructions_autorisees();
+    if superinst && cfg!(target_arch = "aarch64") {
         for (nom, s) in sigs.iter() {
             if let Some(rir) = s.rir.as_ref() {
                 if let Some(p) = Emetteur::detecter_carres_acc(rir, s) {
@@ -3768,20 +3867,24 @@ pub fn prepare_jit(prog: &crate::front::Programme,
             }
         }
     }
-    for (nom, s) in sigs.iter() {
-        if let Some(rir) = s.rir.as_ref() {
-            if let Some(p) = Emetteur::detecter_complex_acc(rir, s) {
-                complexes.push((nom.clone(), p));
+    if superinst {
+        for (nom, s) in sigs.iter() {
+            if let Some(rir) = s.rir.as_ref() {
+                if let Some(p) = Emetteur::detecter_complex_acc(rir, s) {
+                    complexes.push((nom.clone(), p));
+                }
             }
         }
     }
-    for (nom, s) in sigs.iter() {
-        if let Some(rir) = s.rir.as_ref() {
-            if let Some(p) = Emetteur::detecter_flottants_accum(rir, s) {
-                flottants.push((nom.clone(), p));
-            }
-            if Emetteur::detecter_fib_rir(rir, s) {
-                fibs.push(nom.clone());
+    if superinst {
+        for (nom, s) in sigs.iter() {
+            if let Some(rir) = s.rir.as_ref() {
+                if let Some(p) = Emetteur::detecter_flottants_accum(rir, s) {
+                    flottants.push((nom.clone(), p));
+                }
+                if Emetteur::detecter_fib_rir(rir, s) {
+                    fibs.push(nom.clone());
+                }
             }
         }
     }
@@ -4308,6 +4411,21 @@ impl Emetteur<'_> {
                         let va = self.simple(va_j);
                         let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
                         let vb = self.simple(vb_j);
+                        // Deux slots CHAINE : handles i64. Le contenu n'est
+                        // accessible qu'au runtime ; on lui délègue la
+                        // comparaison, avec la sémantique EXACTE de Rose.
+                        if ta == TyKind::Chaine && tb == TyKind::Chaine {
+                            let code = match op {
+                                Oper::Eq => 0, Oper::Ne => 1, Oper::Lt => 2,
+                                Oper::Le => 3, Oper::Gt => 4, Oper::Ge => 5, _ => 0,
+                            };
+                            let codev = self.builder.ins().iconst(types::I64, code);
+                            let f = self.import_runtime("rose_jit_chaine_compare");
+                            let c = self.builder.ins().call(f, &[va, vb, codev]);
+                            let zt = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.def_var(self.tag_tmp, zt);
+                            return JitVal::Simple(self.builder.inst_results(c)[0]);
+                        }
                         let (va,vb,floating) = if ta==TyKind::Flottant || tb==TyKind::Flottant {
                             let va = if ta==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, va) } else { va };
                             let vb = if tb==TyKind::Entier { self.builder.ins().fcvt_from_sint(types::F64, vb) } else { vb };
@@ -4471,9 +4589,13 @@ impl Emetteur<'_> {
                         let va = self.simple(va_j);
                         let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
                         let vb = self.simple(vb_j);
+                        self.guarder_diviseur_nul(vb, "rose_erreur_mod_zero");
+                        let r = self.builder.ins().srem(va, vb);
                         let zt = self.builder.ins().iconst(types::I64, 0);
                         self.builder.def_var(self.tag_tmp, zt);
-                        JitVal::Simple(self.builder.ins().srem(va, vb))
+                        // Rose = GMP `mod` : le RESTE a le signe du DIVISEUR.
+                        // `srem` seul est faux pour -7 % 2 (-1 au lieu de 1).
+                        JitVal::Simple(self.correction_rem(r, vb))
                     }
                     Oper::Div => {
                         let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
@@ -4486,10 +4608,39 @@ impl Emetteur<'_> {
                         self.builder.def_var(self.tag_tmp, zt);
                         JitVal::Simple(self.builder.ins().fdiv(va, vb))
                     }
-                    Oper::Puissance|Oper::DivEntier => {
+                    Oper::DivEntier => {
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
+                        let va = self.simple(va_j);
+                        let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
+                        let vb = self.simple(vb_j);
+                        self.guarder_diviseur_nul(vb, "rose_erreur_div_zero");
+                        let q = self.builder.ins().sdiv(va, vb);
                         let zt = self.builder.ins().iconst(types::I64, 0);
                         self.builder.def_var(self.tag_tmp, zt);
-                        JitVal::Simple(self.builder.ins().iconst(types::I64, 0))
+                        // `div` Rose = division euclidienne plancher.
+                        JitVal::Simple(self.floor_div(q, va, vb))
+                    }
+                    Oper::Puissance => {
+                        let k = exposant_rir_const(b).unwrap_or(0);
+                        let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
+                        let va = self.simple(va_j);
+                        let tag_a = self.builder.use_var(self.tag_tmp);
+                        if ta == TyKind::Flottant || tb == TyKind::Flottant {
+                            let vf = if ta == TyKind::Entier {
+                                self.builder.ins().fcvt_from_sint(types::F64, va)
+                            } else { va };
+                            let kk = self.builder.ins().iconst(types::I64, k);
+                            let kf = self.builder.ins().fcvt_from_sint(types::F64, kk);
+                            let f = self.powf();
+                            let c = self.builder.ins().call(f, &[vf, kf]);
+                            let zt = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.def_var(self.tag_tmp, zt);
+                            JitVal::Simple(self.builder.inst_results(c)[0])
+                        } else {
+                            let (r, rt) = self.emettre_puissance_ent_rir(va, tag_a, k);
+                            self.builder.def_var(self.tag_tmp, rt);
+                            JitVal::Simple(r)
+                        }
                     }
                 }
             }
@@ -6379,6 +6530,39 @@ impl Emetteur<'_> {
         true
     }
 
+    /// Émet le `return` d'un corps RIR. Factorisé entre `RetourAbstrait`
+    /// (expression compacte) et `Retour(Some(Expr))` (AST couvert par
+    /// `expr_ast_rir`), pour garantir une ABI de retour identique.
+    fn emettre_retour_rir(&mut self, v: Value, sig: &Signature) {
+        match sig.retour.n {
+            TyKind::Vide => { self.builder.ins().return_(&[]); }
+            TyKind::Flottant => {
+                let v = if self.builder.func.dfg.value_type(v) == types::I64 {
+                    self.builder.ins().fcvt_from_sint(types::F64, v)
+                } else { v };
+                self.builder.ins().return_(&[v]);
+            }
+            TyKind::Booleen => {
+                let v = if self.builder.func.dfg.value_type(v) == types::F64 {
+                    self.builder.ins().fcvt_to_sint_sat(types::I64, v)
+                } else { v };
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                let f = self.import_runtime("rose_set_ret_tag");
+                let _ = self.builder.ins().call(f, &[zt]);
+                self.builder.ins().return_(&[v]);
+            }
+            _ => {
+                let tag = self.builder.use_var(self.tag_tmp);
+                let f = self.import_runtime("rose_set_ret_tag");
+                let _ = self.builder.ins().call(f, &[tag]);
+                let v = if self.builder.func.dfg.value_type(v) == types::F64 {
+                    self.builder.ins().fcvt_to_sint_sat(types::I64, v)
+                } else { v };
+                self.builder.ins().return_(&[v]);
+            }
+        }
+    }
+
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
         if let Some(p) = detecter_racines_carres(corps, sig) {
@@ -6650,33 +6834,15 @@ impl Emetteur<'_> {
                 Op::RetourAbstrait(e) => {
                     let val_j = self.expr_eabstrait_rir(e, &slot_vars, &slot_types, corps, &slot_unboxed);
                     let v = self.simple(val_j);
-                    match sig.retour.n {
-                        TyKind::Vide => { self.builder.ins().return_(&[]); }
-                        TyKind::Flottant => {
-                            let v = if self.builder.func.dfg.value_type(v) == types::I64 {
-                                self.builder.ins().fcvt_from_sint(types::F64, v)
-                            } else { v };
-                            self.builder.ins().return_(&[v]);
-                        }
-                        TyKind::Booleen => {
-                            let v = if self.builder.func.dfg.value_type(v) == types::F64 {
-                                self.builder.ins().fcvt_to_sint_sat(types::I64, v)
-                            } else { v };
-                            let zt = self.builder.ins().iconst(types::I64, 0);
-                            let f = self.import_runtime("rose_set_ret_tag");
-                            let _ = self.builder.ins().call(f, &[zt]);
-                            self.builder.ins().return_(&[v]);
-                        }
-                        _ => {
-                            let tag = self.builder.use_var(self.tag_tmp);
-                            let f = self.import_runtime("rose_set_ret_tag");
-                            let _ = self.builder.ins().call(f, &[tag]);
-                            let v = if self.builder.func.dfg.value_type(v) == types::F64 {
-                                self.builder.ins().fcvt_to_sint_sat(types::I64, v)
-                            } else { v };
-                            self.builder.ins().return_(&[v]);
-                        }
-                    }
+                    self.emettre_retour_rir(v, sig);
+                }
+                // JIT_REEL — retour AST couvert par `expr_ast_rir`
+                // (`longueur($s)`, concaténation, index de liste…).
+                Op::Retour(Some(e)) => {
+                    let Some(vj) = self.expr_ast_rir(e, &slot_vars, &natures, corps, &slot_unboxed)
+                    else { return false; };
+                    let v = self.simple(vj);
+                    self.emettre_retour_rir(v, sig);
                 }
                 Op::Retour(None) => {
                     match sig.retour.n {
@@ -7925,6 +8091,53 @@ fn powf(&mut self) -> FuncRef {
         })
     }
 
+    /// Garde de division par zéro pour les opérateurs entiers du RIR.
+    /// `rose_erreur_*` affiche et quitte comme l'interpréteur ; le `trap`
+    /// suivant n'est atteint que si (contre toute attente) le helper rend.
+    fn guarder_diviseur_nul(&mut self, d: Value, helper: &str) {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let est_nul = self.builder.ins().icmp(IntCC::Equal, d, zero);
+        let err_b = self.builder.create_block();
+        let suite_b = self.builder.create_block();
+        self.builder.ins().brif(est_nul, err_b, &[], suite_b, &[]);
+        self.builder.switch_to_block(err_b);
+        self.builder.seal_block(err_b);
+        let f = self.import_runtime(helper);
+        let _ = self.builder.ins().call(f, &[]);
+        self.builder.ins().trap(cranelift::codegen::ir::TrapCode::INTEGER_DIVISION_BY_ZERO);
+        self.builder.switch_to_block(suite_b);
+        self.builder.seal_block(suite_b);
+    }
+
+    /// `base ^ exposant` sur des entiers exacts. Le degré est un littéral
+    /// borné (porte `exposant_rir_const`) : on déroule `exposant` appels à
+    /// `rose_mul_ent`, seul helper qui sait promouvoir en BigInt. Le tag
+    /// résultant est publié dans `tag_tmp`, exactement comme `rose_mul_ent`.
+    fn emettre_puissance_ent_rir(&mut self, base: Value, base_tag: Value, exposant: i64)
+        -> (Value, Value)
+    {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let bv = self.builder.declare_var(types::I64);
+        let bt = self.builder.declare_var(types::I64);
+        self.builder.def_var(bv, base);
+        self.builder.def_var(bt, base_tag);
+        let av = self.builder.declare_var(types::I64);
+        let at = self.builder.declare_var(types::I64);
+        self.builder.def_var(av, un);
+        self.builder.def_var(at, zero);
+        for _ in 0..exposant {
+            let a = self.builder.use_var(av);
+            let atg = self.builder.use_var(at);
+            let b = self.builder.use_var(bv);
+            let btg = self.builder.use_var(bt);
+            let (r, rt) = self.appeler_binop_ent("rose_mul_ent", a, atg, b, btg);
+            self.builder.def_var(av, r);
+            self.builder.def_var(at, rt);
+        }
+        (self.builder.use_var(av), self.builder.use_var(at))
+    }
+
     fn correction_rem(&mut self, r: Value, d: Value) -> Value {
         let zero = self.builder.ins().iconst(types::I64, 0);
         let rneg = self.builder.ins().icmp(IntCC::SignedLessThan, r, zero);
@@ -8430,6 +8643,24 @@ fn liste_mut_depuis_handle(h: i64) -> Option<&'static mut Vec<Valeur>> {
 
 /// Concaténation `+` de deux chaînes : la RÈGLE EXACTE (`binaire_valeurs`).
 #[unsafe(no_mangle)]
+/// Comparaison de deux chaînes JIT (handles). Le code Cranelift n'a aucun
+/// accès au contenu : il passe les deux handles et le code de l'opérateur.
+/// L'exactitude est celle de `interp::binaire_valeurs`, la MÊME que celle de
+/// l'interpréteur — aucun Rust « réimplémenté à la main » côté JIT.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_chaine_compare(a: i64, b: i64, op: i64) -> i64 {
+    let x = jit_lire_handle(a);
+    let y = jit_lire_handle(b);
+    let nom = match op {
+        0 => "==", 1 => "!=", 2 => "<", 3 => "<=", 4 => ">", 5 => ">=",
+        _ => "==",
+    };
+    match crate::interp::binaire_valeurs(nom, &x, &y) {
+        Ok(Valeur::Booleen(v)) => if v { 1 } else { 0 },
+        _ => 0,
+    }
+}
+
 pub extern "C" fn rose_jit_chaine_concat(a: i64, b: i64) -> i64 {
     let x = jit_lire_handle(a);
     let y = jit_lire_handle(b);

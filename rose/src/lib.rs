@@ -139,6 +139,11 @@ pub mod natif_emetteur;
 #[path = "natif_emetteur.rs"]
 mod jit_ne;
 
+/// AOT6 — runtime natif (octets machine assemblés une fois, embarqués dans
+/// chaque exécutable AOT pour exécuter les opérations non-émettables).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod runtime_natif;
+
 /// M3.2 — écrivains ELF64/PE64 sans gcc, clang ni linker externe.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod link_natif;

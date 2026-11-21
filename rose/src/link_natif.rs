@@ -86,6 +86,9 @@ pub struct Options {
     /// code machine. `None` par défaut : tous les appels existants gardent
     /// leur stub (et leurs octets) exactement comme avant.
     pub sortie_exacte: Option<Vec<u8>>,
+    /// AOT6 : le runtime natif est présent dans `code`. Le stub appelle
+    /// ces routines avant de sortir pour formater/écrire le résultat.
+    pub runtime: Option<crate::natif_emetteur::RuntimeLiens>,
 }
 
 impl Options {
@@ -98,6 +101,7 @@ impl Options {
             nom_code: "rose_code".to_string(),
             afficher_valeur: false,
             sortie_exacte: None,
+            runtime: None,
         }
     }
 
@@ -184,14 +188,16 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     let donnees = options.sortie_exacte.clone();
     let stub_len = taille_stub(options.architecture, abi, frame,
                                options.afficher_valeur,
-                               donnees.as_ref().map(|d| d.len()));
+                               donnees.as_ref().map(|d| d.len()),
+                               options.runtime.as_ref());
     let vaddr_code = vaddr_text + stub_len as u64;
     let off_tramp_stub = stub_len + code.len();
     let vaddr_tramp_stub = vaddr_text + off_tramp_stub as u64;
 
     let stub = stub_depart(options.architecture, abi, vaddr_text, vaddr_code,
                            vaddr_tramp_stub, 0, frame, options.afficher_valeur,
-                           donnees.as_ref().map(|d| (0u64, d.len())));
+                           donnees.as_ref().map(|d| (0u64, d.len())),
+                           options.runtime.as_ref());
     debug_assert_eq!(stub.len(), stub_len);
     let tramp_stub = stub_trampoline(options.architecture);
 
@@ -240,7 +246,8 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
         let vaddr_donnees = base + off_rodata as u64;
         let stub = stub_depart(options.architecture, abi, vaddr_text, vaddr_code,
                                vaddr_tramp_stub, 0, frame, options.afficher_valeur,
-                               Some((vaddr_donnees, d.len())));
+                               Some((vaddr_donnees, d.len())),
+                               options.runtime.as_ref());
         debug_assert_eq!(stub.len(), stub_len);
         text[0..stub_len].copy_from_slice(&stub);
     }
@@ -249,7 +256,21 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     let off_strtab = off_symtab + symtab.len();
     let off_shstrtab = off_strtab + strtab.octets.len();
     let off_shdr = aligner(off_shstrtab + shstrtab.octets.len(), 8);
-    let taille_fichier = off_shdr + 7 * 64;
+    // AOT6 : le runtime utilise des zones absolues (SORTIE/TMP/digits).
+    // Le PT_LOAD couvre tout le fichier : on le remplit de zéros jusqu'à
+    // ZONE_FIN pour que ces adresses soient mappées et écrivables.
+    let zone_fin = (crate::runtime_natif::ZONE_FIN - base) as usize;
+    if options.runtime.is_some() {
+        if off_text + text.len() > 0x2000 {
+            return Err(ErreurLien::Depassement(
+                "code machine trop long : chevauche la zone de données du runtime".into()));
+        }
+    }
+    let taille_fichier = if options.runtime.is_some() {
+        (off_shdr + 7 * 64).max(zone_fin)
+    } else {
+        off_shdr + 7 * 64
+    };
 
     // rose_tramp est dans .data : on connaît maintenant son adresse.
     let vaddr_data = base + off_data as u64;
@@ -345,7 +366,7 @@ pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
     let abi = Abi::Win64;
     // Le stub Win64 n'a pas de sortie décimale (pas de syscall Unix) : on
     // garde exactement le même octet pour les tests / produits PE existants.
-    let stub_len = taille_stub(options.architecture, abi, frame, false, None);
+    let stub_len = taille_stub(options.architecture, abi, frame, false, None, None);
     let rva_text = PE_RVA_TEXT;
     let rva_data = PE_RVA_DATA;
     let rva_code = rva_text + stub_len as u32;
@@ -358,7 +379,7 @@ pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
                            image_base + rva_text as u64,
                            image_base + rva_code as u64,
                            image_base + rva_tramp_stub as u64,
-                           iat_abs, frame, false, None);
+                           iat_abs, frame, false, None, None);
     debug_assert_eq!(stub.len(), stub_len);
     let tramp = stub_trampoline(options.architecture);
     let mut text = Vec::with_capacity(stub_len + code.len() + tramp.len());
@@ -493,9 +514,10 @@ fn rendre_executable(_chemin: &Path) -> Result<(), ErreurLien> { Ok(()) }
 /// Longueur du stub : on le génère une fois avec des adresses factices (les
 /// déplacements ne changent pas la taille des instructions).
 fn taille_stub(arch: Architecture, abi: Abi, frame: usize, afficher: bool,
-               donnees: Option<usize>) -> usize {
+               donnees: Option<usize>,
+               runtime: Option<&crate::natif_emetteur::RuntimeLiens>) -> usize {
     stub_depart(arch, abi, 0, 0, 0, 0, frame, afficher,
-                donnees.map(|n| (0u64, n))).len()
+                donnees.map(|n| (0u64, n)), runtime).len()
 }
 
 /// Séquence « écrire la valeur en décimal sur stdout » (SysV / Linux).
@@ -633,7 +655,8 @@ fn sequence_ecrire_donnees_a64(addr: u64, len: usize) -> Vec<u8> {
 
 fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
                tramp_vaddr: u64, iat_vaddr: u64, frame: usize,
-               afficher: bool, donnees: Option<(u64, usize)>) -> Vec<u8> {
+               afficher: bool, donnees: Option<(u64, usize)>,
+               runtime: Option<&crate::natif_emetteur::RuntimeLiens>) -> Vec<u8> {
     let mut s = Vec::new();
     match (abi, arch) {
         // ── SysV / AAPCS64 (ELF) : terminer par le syscall exit ─────────
@@ -645,6 +668,15 @@ fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
             p_u32(&mut s, a64_adr(1, tramp_vaddr as i64 - ici as i64)); // adr x1, tramp
             let ici = text_vaddr + 12;
             p_u32(&mut s, a64_bl(code_vaddr as i64 - ici as i64));      // bl rose_code
+            // AOT6 : le runtime natif formate puis écrit SORTIE sur stdout.
+            if let Some(rt) = runtime.filter(|r| r.tag != 0) {
+                if let Some(off) = rt.formater {
+                    let ici = text_vaddr + s.len() as u64;
+                    p_u32(&mut s, a64_bl(code_vaddr as i64 + off as i64 - ici as i64));
+                }
+                let ici = text_vaddr + s.len() as u64;
+                p_u32(&mut s, a64_bl(code_vaddr as i64 + rt.sortir as i64 - ici as i64));
+            }
             if let Some((addr, len)) = donnees {
                 s.extend_from_slice(&sequence_ecrire_donnees_a64(addr, len));
             } else if afficher { s.extend_from_slice(&sequence_affichage_a64()); }
@@ -667,6 +699,21 @@ fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
             s.push(0xE8); // call rose_code
             let d = code_vaddr as i64 - (text_vaddr + off as u64 + 5) as i64;
             s.extend_from_slice(&(d as i32).to_le_bytes());
+            // AOT6 : appels aux routines natives de formatage / sortie.
+            if let Some(rt) = runtime.filter(|r| r.tag != 0) {
+                if let Some(off) = rt.formater {
+                    let ici = s.len();
+                    s.push(0xE8);
+                    let d = (code_vaddr + off as u64) as i64
+                        - (text_vaddr + ici as u64 + 5) as i64;
+                    s.extend_from_slice(&(d as i32).to_le_bytes());
+                }
+                let ici = s.len();
+                s.push(0xE8);
+                let d = (code_vaddr + rt.sortir as u64) as i64
+                    - (text_vaddr + ici as u64 + 5) as i64;
+                s.extend_from_slice(&(d as i32).to_le_bytes());
+            }
             if let Some((addr, len)) = donnees {
                 s.extend_from_slice(&sequence_ecrire_donnees_x86(addr, len));
             } else if afficher { s.extend_from_slice(&sequence_affichage_x86()); }

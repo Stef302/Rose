@@ -199,6 +199,24 @@ impl<'a> Lineariseur<'a> {
     fn expr(&mut self, e: &Expr, pre: &mut Vec<Instr>) -> Expr {
         use crate::front::Expr as E;
         match e {
+            // AOT6 : `lire_texte` lit sur stdin dans le runtime natif. On
+            // remplace son argument chaîne par un littéral entier (le slot
+            // résultant est ignoré par la routine native) pour que
+            // `abstraire` produise bien un `AppelRir`.
+            E::Appel { nom, module, ligne, .. }
+                if nom == "lire_texte" && module.is_empty() =>
+            {
+                let z = E::Litteral {
+                    texte: "0".into(), flott: false, rationnel: false,
+                    neg: false, ty: crate::front::TyKind::Dyn, ligne: *ligne,
+                };
+                let t = self.temporaire();
+                pre.push(Instr::Affect { nom: t.clone(), e: z, ligne: *ligne });
+                E::Appel {
+                    nom: nom.clone(), module: module.clone(),
+                    args: vec![E::Var(t, *ligne)], ligne: *ligne,
+                }
+            }
             E::Appel { nom, module, args, ligne } => {
                 let args: Vec<Expr> = args.iter().map(|a| self.expr(a, pre)).collect();
                 let directs = module.is_empty() && self.connus.contains(nom.as_str());
@@ -479,7 +497,10 @@ fn orc(argv: &[String]) -> ! {
     }
 
     // ELF : uniquement du vrai natif. Aucun repli déguisé.
-    match orc_natif(&prog, &sortie, arch) {
+    match orc_natif(&prog, &sortie, arch)
+        .or_else(|r1| orc_runtime(&prog, &sortie, arch)
+            .map_err(|r2| format!("{} ; runtime natif : {}", r1, r2)))
+    {
         Ok(()) => std::process::exit(0),
         Err(raison) => {
             eprintln!("rose: AOT indisponible pour ce programme : {}", raison);
@@ -649,6 +670,223 @@ fn orc_natif(
     }
     println!("rose: {} produit (exécutable natif {}, code de retour = valeur du programme)",
              sortie, arch.nom());
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// AOT6 — CHEMIN AVEC RUNTIME NATIF EMBARQUÉ
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Quand l'abaissement RIR historique ne suffit pas (flottants, puissances
+// exactes, primitives non déclarées), on abaisse le programme en RIR en
+// déclarant les primitives comme fonctions connues, puis on remplace leurs
+// appels par des appels directs aux routines du runtime natif. Le binaire
+// émis contient les octets machine de ces routines : aucun interpréteur
+// Rust, aucun repli de 5 Mo.
+
+/// Noms RIR des primitives du runtime.
+const PRIMITIVES_RIR: &[(&str, &str)] = &[
+    ("hasard", "$rt_hasard"),
+    ("prng", "$rt_hasard"),
+    ("lire_texte", "$rt_lire_texte"),
+];
+
+/// Renomme les appels de primitives dans un `Eabstrait` : `hasard` devient
+/// `$rt_hasard`, qui sera résolu dans la table du runtime natif.
+fn renommer_primitifs(e: &mut crate::rir::Eabstrait) {
+    use crate::rir::Eabstrait as E;
+    match e {
+        E::Binaire { a, b, .. } => { renommer_primitifs(a); renommer_primitifs(b); }
+        E::Neg(a) | E::Non(a) => renommer_primitifs(a),
+        E::AppelRir { nom, .. } => {
+            if let Some((_, cible)) = PRIMITIVES_RIR.iter().find(|(src, _)| *src == nom.as_str()) {
+                *nom = cible.to_string();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Déduit les types de slots et la liste des primitives nécessaires en
+/// parcourant les opérations RIR (qui viennent d'être renommées).
+fn analyser_types(
+    ops: &[crate::rir::Op],
+    types: &mut Vec<u8>,
+    prims: &mut Vec<crate::runtime_natif::Primitif>,
+) -> u8 {
+    use crate::rir::{Eabstrait as E, Op, Oper};
+    fn typ(e: &E, types: &[u8]) -> u8 {
+        match e {
+            E::Slot(s, _) => types.get(*s as usize).copied().unwrap_or(0),
+            E::Flottant(_) => 1,
+            E::Entier(_) => 0,
+            E::Binaire { op, a, b } => {
+                if matches!(op, Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) { 4 }
+                else if matches!(op, Oper::Puissance) && typ(a, types) == 0 && typ(b, types) == 0 { 2 }
+                else { let x = typ(a, types); let y = typ(b, types); if x == 1 || y == 1 { 1 } else { 0 } }
+            }
+            E::Neg(a) => typ(a, types),
+            E::Non(_) => 4,
+            E::AppelRir { nom, .. } if nom == "$rt_lire_texte" => 3,
+            E::AppelRir { .. } => 0,
+        }
+    }
+    fn scan(e: &E, types: &[u8], prims: &mut Vec<crate::runtime_natif::Primitif>) {
+        use crate::runtime_natif::Primitif as P;
+        match e {
+            E::Binaire { op, a, b } => {
+                if matches!(op, Oper::Puissance) && typ(a, types) == 0 && typ(b, types) == 0
+                    && !prims.contains(&P::BigintPuissance) { prims.push(P::BigintPuissance); }
+                scan(a, types, prims); scan(b, types, prims);
+            }
+            E::Neg(a) | E::Non(a) => scan(a, types, prims),
+            E::AppelRir { nom, .. } => {
+                let p = match nom.as_str() {
+                    "$rt_hasard" => Some(crate::runtime_natif::Primitif::Hasard),
+                    "$rt_lire_texte" => Some(crate::runtime_natif::Primitif::LireTexte),
+                    _ => None,
+                };
+                if let Some(p) = p { if !prims.contains(&p) { prims.push(p); } }
+            }
+            _ => {}
+        }
+    }
+    fn set(types: &mut Vec<u8>, slot: u16, t: u8) {
+        let i = slot as usize;
+        if types.len() <= i { types.resize(i + 1, 0); }
+        types[i] = t;
+    }
+    let mut sortie = 0;
+    for op in ops {
+        match op {
+            Op::Affect { slot, expr } => {
+                let t = typ(expr, types);
+                scan(expr, types, prims);
+                set(types, *slot, t);
+            }
+            Op::RetourAbstrait(e) => {
+                sortie = typ(e, types);
+                scan(e, types, prims);
+            }
+            Op::SautSiFauxAbstrait { test, .. } => scan(test, types, prims),
+            _ => {}
+        }
+    }
+    sortie
+}
+
+/// Chemin AOT avec runtime natif : couvre les programmes que le RIR pur
+/// refuse (flottants calculés, hasard composé, bigint, E/S).
+fn orc_runtime(
+    prog: &crate::front::Programme,
+    sortie: &str,
+    arch: crate::natif_emetteur::Architecture,
+) -> Result<(), String> {
+    use crate::rir::{Eabstrait as E, Op};
+
+    // Fonctions Rose + primitives : `abstraire` doit reconnaître les
+    // primitives pour produire des `AppelRir` (args = variables).
+    let mut connus: Vec<String> = prog.ordre.iter()
+        .filter(|n| prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
+        .cloned().collect();
+    for (src, _) in PRIMITIVES_RIR { connus.push(src.to_string()); }
+    let connus_set: std::collections::HashSet<String> = connus.iter().cloned().collect();
+
+    let mut lin = Lineariseur::nouveau(&connus_set);
+    for sig in prog.signatures.values() {
+        for (p, _) in &sig.params { lin.utilises.insert(p.clone()); }
+        if let Some(corps) = sig.corps.as_ref() {
+            Lineariseur::collecter_bloc(corps, &mut lin.utilises);
+        }
+    }
+    Lineariseur::collecter_bloc(&prog.instructions, &mut lin.utilises);
+    crate::rir::declarer_rir(&connus);
+
+    let principaux = lin.bloc(&prog.instructions);
+    let mut principal = crate::rir::abaisser_principal_sortie(&principaux)
+        .or_else(|| crate::rir::abaisser_principal(&principaux))
+        .ok_or_else(|| "le programme ne rend pas de valeur calculable".to_string())?;
+    if !principal.ops.iter().any(|op| matches!(op, Op::RetourAbstrait(_))) {
+        return Err("le programme ne rend pas de valeur".into());
+    }
+
+    // Toutes les fonctions appelées doivent être émettables.
+    let mut fonctions: Vec<(String, crate::rir::CorpsRir)> =
+        vec![("$principal".to_string(), principal.clone())];
+    for nom in &prog.ordre {
+        let Some(sig) = prog.signatures.get(nom) else { continue };
+        let Some(corps) = sig.corps.as_ref() else { continue };
+        let corps_lineaire = lin.bloc(corps);
+        let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
+        let rir = crate::rir::abaisser(&corps_lineaire, &params, &[])
+            .ok_or_else(|| format!("fonction {} non abaisse en RIR", nom))?;
+        fonctions.push((nom.clone(), rir));
+    }
+
+    // Renommage des primitives + analyse des types.
+    let mut types: Vec<u8> = Vec::new();
+    let mut prims: Vec<crate::runtime_natif::Primitif> = Vec::new();
+    for (_, corps) in &mut fonctions {
+        for op in &mut corps.ops {
+            match op {
+                Op::Affect { expr, .. } | Op::RetourAbstrait(expr)
+                | Op::SautSiFauxAbstrait { test: expr, .. } => renommer_primitifs(expr),
+                _ => {}
+            }
+        }
+        analyser_types(&corps.ops, &mut types, &mut prims);
+    }
+    // Le tag de sortie est le type du retour du principal.
+    let mut types_tag = types.clone();
+    let tag = analyser_types(&fonctions[0].1.ops, &mut types_tag, &mut Vec::new());
+    if prims.is_empty() && tag != 1 {
+        return Err("aucune opération necessitant le runtime".into());
+    }
+
+    // `lire_texte` ne reçoit plus son argument chaîne (lecture sur stdin).
+    for (_, corps) in &mut fonctions {
+        for op in &mut corps.ops {
+            if let Op::Affect { expr, .. } | Op::RetourAbstrait(expr)
+                 | Op::SautSiFauxAbstrait { test: expr, .. } = op {
+                fn strip(e: &mut E) {
+                    match e {
+                        E::Binaire { a, b, .. } => { strip(a); strip(b); }
+                        E::Neg(a) | E::Non(a) => strip(a),
+                        E::AppelRir { nom, args } if nom == "$rt_lire_texte" => { args.clear(); }
+                        _ => {}
+                    }
+                }
+                strip(expr);
+            }
+        }
+    }
+
+    // Le formateur flottant doit être présent quand la sortie est un flottant.
+    let formater_sortie = tag == 1;
+    if formater_sortie && !prims.contains(&crate::runtime_natif::Primitif::FormaterFlottant) {
+        prims.push(crate::runtime_natif::Primitif::FormaterFlottant);
+    }
+    let cfg = crate::natif_emetteur::ConfigAot {
+        primitifs: prims.clone(),
+        types_slots: types,
+        formater_sortie,
+        tag_sortie: tag,
+    };
+    let programme = crate::natif_emetteur::emettre_programme_aot(&fonctions, arch, &cfg)
+        .map_err(|e| format!("émission machine impossible : {}", e))?;
+
+    let mut options = crate::link_natif::Options::nouveau(arch);
+    options.n_slots_total = programme.n_slots_total;
+    options.runtime = programme.runtime.clone();
+    // Le runtime écrit la sortie lui-même : le stub historique ne la
+    // réimprime pas (il n'exécute qu'un `exit`).
+    options.afficher_valeur = tag == 0;
+    let chemin = Path::new(sortie);
+    if let Err(e) = crate::link_natif::ecrire_elf(&programme.code, &options, chemin) {
+        return Err(format!("écriture de {} impossible : {}", sortie, e));
+    }
+    println!("rose: {} produit (exécutable natif {}, runtime machine embarqué, {} routines)",
+             sortie, arch.nom(), prims.len() + 1);
     Ok(())
 }
 

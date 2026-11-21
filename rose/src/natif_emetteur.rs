@@ -126,6 +126,19 @@ pub struct AppelLie {
     pub correctif: usize,
 }
 
+/// Informations de liaison du runtime natif AOT6 : décalages des routines
+/// dans le blob `code`, utilisés par le stub du linker pour formater la
+/// valeur finale.
+#[derive(Clone, Debug)]
+pub struct RuntimeLiens {
+    /// Décalage de `$rt_sortir` (écrit SORTIE sur stdout).
+    pub sortir: usize,
+    /// Décalage de `$rt_formater_flottant`, si le programme affiche un flottant.
+    pub formater: Option<usize>,
+    /// Tag de la valeur finale (0 = entier → stub décimal historique).
+    pub tag: u8,
+}
+
 /// Résultat d'une émission de TOUTES les fonctions d'un programme, avec
 /// appels inter-fonctions résolus par des adresses relatives internes.
 ///
@@ -153,6 +166,8 @@ pub struct ProgrammeEmis {
     /// historique : le stub continue d'imprimer la valeur i64 rendue par le
     /// code machine, sans aucun changement de comportement.
     pub sortie: Option<Vec<u8>>,
+    /// AOT6 : routines du runtime natif présentes dans `code`.
+    pub runtime: Option<RuntimeLiens>,
 }
 
 /// Erreurs d'émission.
@@ -357,6 +372,132 @@ pub fn emettre_programme(fonctions: &[(String, CorpsRir)], arch: Architecture)
         appels,
         fallbacks,
         sortie: None,
+        runtime: None,
+    })
+}
+
+/// Configuration AOT6 : runtime natif et types des slots.
+#[derive(Clone, Debug)]
+pub struct ConfigAot {
+    pub primitifs: Vec<crate::runtime_natif::Primitif>,
+    /// Types des slots (0 = entier, 1 = flottant, 2 = bigint, 3 = chaîne).
+    pub types_slots: Vec<u8>,
+    /// Routine de formatage à appeler sur la valeur rendue (flottant).
+    pub formater_sortie: bool,
+    /// Tag de la valeur finale.
+    pub tag_sortie: u8,
+}
+
+/// Émet un programme AOT6 : les fonctions Rose, puis le runtime natif
+/// demandé, dans un seul segment avec appels relatifs résolus. Les routines
+/// du runtime suivent la même signature machine, elles sont donc dans la
+/// table d'appels comme n'importe quelle fonction Rose.
+pub fn emettre_programme_aot(
+    fonctions: &[(String, CorpsRir)],
+    arch: Architecture,
+    cfg: &ConfigAot,
+) -> Result<ProgrammeEmis, EmitError> {
+    // `natif_emetteur` est compilé deux fois (module `jit::ne_local` en
+    // configuration autonome) : on convertit explicitement l'architecture.
+    let runtime_arch = match arch {
+        Architecture::Aarch64 => crate::natif_emetteur::Architecture::Aarch64,
+        Architecture::X86_64 => crate::natif_emetteur::Architecture::X86_64,
+    };
+    let runtime = crate::runtime_natif::emettre_runtime(runtime_arch, &cfg.primitifs);
+    let mut noms: Vec<String> = fonctions.iter().map(|(n, _)| n.clone()).collect();
+    for (n, _) in &runtime.routines { noms.push(n.clone()); }
+    let mut types = cfg.types_slots.clone();
+
+    let max_slots = fonctions.iter()
+        .map(|(_, c)| c.n_slots + SCRATCH_SLOTS as usize)
+        .max().unwrap_or(0);
+    let frame_bytes = aligner16(max_slots.checked_mul(8)
+        .ok_or_else(|| EmitError::TrameTropGrande(max_slots))?);
+    if frame_bytes > 0x10_0000 { return Err(EmitError::TrameTropGrande(frame_bytes)); }
+
+    let mut code: Vec<u8> = Vec::new();
+    let mut offsets = Vec::with_capacity(fonctions.len());
+    let mut appels: Vec<AppelLie> = Vec::new();
+
+    for (_, corps) in fonctions {
+        let mut b = Builder::new_lie(arch, corps, &noms, frame_bytes);
+        b.types = types.clone();
+        b.avec_runtime = true;
+        b.prologue();
+        let mut op_offsets = Vec::with_capacity(corps.ops.len() + 1);
+        for op in &corps.ops {
+            op_offsets.push(b.code.len());
+            b.operation(op)?;
+        }
+        op_offsets.push(b.code.len());
+        b.epilogue();
+        b.corriger_sauts(&op_offsets);
+        let debut = code.len();
+        offsets.push(debut);
+        for a in b.appels_lies {
+            appels.push(AppelLie { nom: a.nom, cible: a.cible, correctif: debut + a.correctif });
+        }
+        // On propage les types appris (les affectations du principal).
+        if types.len() < b.types.len() { types = b.types.clone(); }
+        code.extend_from_slice(&b.code);
+    }
+
+    // Le runtime est concaténé après les fonctions Rose.
+    let mut runtime_offsets = Vec::new();
+    for (nom, off) in runtime.routines {
+        runtime_offsets.push((nom, code.len() + off));
+    }
+    code.extend_from_slice(&runtime.code);
+
+    for a in &appels {
+        let cible = if let Some(i) = noms.iter().position(|n| n == &a.nom) {
+            if i < offsets.len() { offsets[i] } else {
+                runtime_offsets.iter().find(|(n, _)| n == &a.nom).map(|(_, o)| *o)
+                    .ok_or_else(|| EmitError::FonctionInconnue(a.nom.clone()))?
+            }
+        } else {
+            return Err(EmitError::FonctionInconnue(a.nom.clone()));
+        };
+        match arch {
+            Architecture::Aarch64 => {
+                let disp = (cible as i64 - a.correctif as i64) / 4;
+                if disp < -(1 << 25) || disp >= (1 << 25) {
+                    return Err(EmitError::DepassementAppel(a.nom.clone()));
+                }
+                let insn = 0x9400_0000u32 | ((disp as u32) & 0x03FF_FFFF);
+                code[a.correctif..a.correctif + 4].copy_from_slice(&insn.to_le_bytes());
+            }
+            Architecture::X86_64 => {
+                let fin = a.correctif + 4;
+                let disp = cible as i64 - fin as i64;
+                if disp < i32::MIN as i64 || disp > i32::MAX as i64 {
+                    return Err(EmitError::DepassementAppel(a.nom.clone()));
+                }
+                code[a.correctif..fin].copy_from_slice(&(disp as i32).to_le_bytes());
+            }
+        }
+    }
+
+    let sortir = runtime_offsets.iter()
+        .find(|(n, _)| n == "$rt_sortir").map(|(_, o)| *o)
+        .ok_or_else(|| EmitError::FonctionInconnue("$rt_sortir".into()))?;
+    let formater = if cfg.formater_sortie {
+        Some(runtime_offsets.iter()
+            .find(|(n, _)| n == "$rt_formater_flottant").map(|(_, o)| *o)
+            .ok_or_else(|| EmitError::FonctionInconnue("$rt_formater_flottant".into()))?)
+    } else { None };
+
+    Ok(ProgrammeEmis {
+        code,
+        architecture: arch,
+        noms,
+        offsets,
+        frame_bytes,
+        n_slots_total: frame_bytes / 8,
+        appels,
+        fallbacks: Vec::new(),
+        sortie: None,
+        runtime: Some(RuntimeLiens { sortir, formater, tag: cfg.tag_sortie }),
     })
 }
 
@@ -589,6 +730,7 @@ pub fn emettre_hasard(borne: u64, arch: Architecture) -> Result<ProgrammeEmis, E
         appels: Vec::new(),
         fallbacks: Vec::new(),
         sortie: None,
+        runtime: None,
     })
 }
 
@@ -808,6 +950,11 @@ struct Builder<'a> {
     frame_bytes: usize,
     /// Appels directs émis, avec la position de leur champ à corriger.
     appels_lies: Vec<AppelLie>,
+    /// AOT6 : types des slots (0 = entier, 1 = flottant, 2 = bigint,
+    /// 3 = chaîne, 4 = booléen). Utilisé pour choisir les instructions IEEE.
+    types: Vec<u8>,
+    /// AOT6 : le runtime natif est disponible dans le segment.
+    avec_runtime: bool,
 }
 
 // Registres aarch64.
@@ -830,7 +977,7 @@ impl<'a> Builder<'a> {
             sauts: Vec::new(), chaines_ref: Vec::new(), noms: Vec::new(),
             appels: Vec::new(), fallbacks: Vec::new(), scratch: 0,
             mode: ModeAppel::Trampoline, table: &[], frame_bytes: 0,
-            appels_lies: Vec::new(),
+            appels_lies: Vec::new(), types: Vec::new(), avec_runtime: false,
         }
     }
 
@@ -855,6 +1002,36 @@ impl<'a> Builder<'a> {
         let s = self.corps.n_slots as u16 + self.scratch;
         self.scratch += 1;
         Ok(s)
+    }
+
+    /// AOT6 : note le type d'un slot (pour les opérations flottantes).
+    fn set_type(&mut self, slot: u16, t: u8) {
+        let i = slot as usize;
+        if self.types.len() <= i { self.types.resize(i + 1, 0); }
+        self.types[i] = t;
+    }
+
+    /// AOT6 : appel direct à une routine du runtime natif. Le registre de
+    /// base (x0 / rdi) doit déjà pointer vers ses arguments ; aucune trame
+    /// supplémentaire n'est nécessaire (la routine gère la sienne).
+    fn appel_runtime_par_nom(&mut self, nom: &str) -> Result<(), EmitError> {
+        let cible = self.table.iter().position(|n| n == nom)
+            .ok_or_else(|| EmitError::FonctionInconnue(nom.to_string()))?;
+        match self.arch {
+            Architecture::Aarch64 => {
+                let correctif = self.code.len();
+                self.u32(0x9400_0000); // bl (patché)
+                self.appels_lies.push(AppelLie { nom: nom.to_string(), cible, correctif });
+            }
+            Architecture::X86_64 => {
+                let insn = self.code.len();
+                self.octets(&[0xE8, 0, 0, 0, 0]); // call rel32 (patché)
+                self.appels_lies.push(AppelLie {
+                    nom: nom.to_string(), cible, correctif: insn + 1,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn u32(&mut self, v: u32) { self.code.extend_from_slice(&v.to_le_bytes()); }
@@ -1034,6 +1211,117 @@ impl<'a> Builder<'a> {
                 self.octets(&[0x48, 0x85, 0xC0]); // test rax, rax
                 self.octets(&[0x0F, 0x94, 0xC0]); // sete al
                 self.octets(&[0x0F, 0xB6, 0xC0]); // movzx eax, al
+            }
+        }
+    }
+
+    // ── AOT6 : virgule flottante (bits IEEE dans les slots i64) ────────
+
+    /// Type AOT6 d'une expression : 1 = flottant, 2 = bigint,
+    /// 3 = chaîne, 4 = booléen, 0 = entier/inconnu.
+    fn type_of(&self, e: &Eabstrait) -> u8 {
+        match e {
+            Eabstrait::Flottant(_) => 1,
+            Eabstrait::Entier(_) => 0,
+            Eabstrait::Slot(s, _) => self.types.get(*s as usize).copied().unwrap_or(0),
+            Eabstrait::Binaire { op, a, b } => {
+                if matches!(op, Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) {
+                    4
+                } else if matches!(op, Oper::Puissance) && self.type_of(a) == 0 && self.type_of(b) == 0 {
+                    2
+                } else {
+                    let ta = self.type_of(a); let tb = self.type_of(b);
+                    if ta == 1 || tb == 1 { 1 } else { 0 }
+                }
+            }
+            Eabstrait::Neg(a) => self.type_of(a),
+            Eabstrait::Non(_) => 4,
+            Eabstrait::AppelRir { nom, .. } if nom.starts_with("$rt_") => {
+                if nom == "$rt_lire_texte" { 3 } else { 0 }
+            }
+            Eabstrait::AppelRir { .. } => 0,
+        }
+    }
+
+    /// Charge un f64 du slot dans un registre FP (idx 0 → d0/xmm0, 1 → d9/xmm1).
+    fn float_load(&mut self, idx: u32, slot: u16) {
+        let off = slot as u32 * 8; // octets (x86)
+        match self.arch {
+            Architecture::Aarch64 => {
+                let r = if idx == 0 { 0u32 } else { 9u32 };
+                // aarch64 : imm12 est en unités de 8 octets.
+                self.u32(0xFD400000 | ((slot as u32) << 10) | (A64_BASE << 5) | r);
+            }
+            Architecture::X86_64 => {
+                let reg = if idx == 0 { 0u8 } else { 1u8 };
+                if off <= 127 {
+                    self.octets(&[0xF2, 0x0F, 0x10, 0x43 | (reg << 3), off as u8]);
+                } else {
+                    self.octets(&[0xF2, 0x0F, 0x10, 0x83 | (reg << 3)]);
+                    self.octets(&off.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// Stocke le f64 du registre FP (idx 0 → d0/xmm0) dans un slot.
+    fn float_store(&mut self, idx: u32, slot: u16) {
+        let off = slot as u32 * 8; // octets (x86)
+        match self.arch {
+            Architecture::Aarch64 => {
+                let r = if idx == 0 { 0u32 } else { 9u32 };
+                self.u32(0xFD000000 | ((slot as u32) << 10) | (A64_BASE << 5) | r);
+            }
+            Architecture::X86_64 => {
+                let reg = if idx == 0 { 0u8 } else { 1u8 };
+                if off <= 127 {
+                    self.octets(&[0xF2, 0x0F, 0x11, 0x43 | (reg << 3), off as u8]);
+                } else {
+                    self.octets(&[0xF2, 0x0F, 0x11, 0x83 | (reg << 3)]);
+                    self.octets(&off.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// `d0 ← d0 OP d9` (aarch64) / `xmm0 ← xmm0 OP xmm1` (x86-64).
+    fn float_alu(&mut self, op: Oper) {
+        match self.arch {
+            Architecture::Aarch64 => {
+                match op {
+                    Oper::Add => self.u32(0x1E602800 | (9 << 16)),
+                    Oper::Sub => self.u32(0x1E603800 | (9 << 16)),
+                    Oper::Mul => self.u32(0x1E600800 | (9 << 16)),
+                    Oper::Div => self.u32(0x1E601800 | (9 << 16)),
+                    Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne => {
+                        self.u32(0x1E602000 | (9 << 16)); // fcmp d0, d9
+                        let cond = match op {
+                            Oper::Lt => 11, Oper::Le => 13, Oper::Gt => 12,
+                            Oper::Ge => 10, Oper::Eq => 0, Oper::Ne => 1, _ => unreachable!(),
+                        };
+                        self.u32(0x9A9F07E0 | (((cond ^ 1) as u32) << 12) | A64_VAL);
+                    }
+                    _ => unreachable!("float_alu: op non flottant"),
+                }
+            }
+            Architecture::X86_64 => {
+                match op {
+                    Oper::Add => self.octets(&[0xF2, 0x0F, 0x58, 0xC1]),
+                    Oper::Sub => self.octets(&[0xF2, 0x0F, 0x5C, 0xC1]),
+                    Oper::Mul => self.octets(&[0xF2, 0x0F, 0x59, 0xC1]),
+                    Oper::Div => self.octets(&[0xF2, 0x0F, 0x5E, 0xC1]),
+                    Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne => {
+                        self.octets(&[0xF2, 0x0F, 0x2E, 0xC1]); // ucomisd xmm0,xmm1
+                        let setcc: u8 = match op {
+                            Oper::Lt => 0x92, Oper::Le => 0x96, Oper::Gt => 0x97,
+                            Oper::Ge => 0x93, Oper::Eq => 0x94, Oper::Ne => 0x95,
+                            _ => unreachable!(),
+                        };
+                        self.octets(&[0x0F, setcc, 0xC0]);
+                        self.octets(&[0x0F, 0xB6, 0xC0]);
+                    }
+                    _ => unreachable!("float_alu: op non flottant"),
+                }
             }
         }
     }
@@ -1270,12 +1558,67 @@ impl<'a> Builder<'a> {
                 let v = t.parse::<i64>().map_err(|_| EmitError::EntierHorsPlage(t.clone()))?;
                 self.mov_imm(self.val_reg(), v);
                 self.store_slot(self.val_reg(), out);
+                self.set_type(out, 0);
+            }
+            Eabstrait::Flottant(f) => {
+                if !self.avec_runtime {
+                    self.verifier_sans_fallback(e)?;
+                    self.fallback_runtime(e)?;
+                    self.store_slot(self.val_reg(), out);
+                    return Ok(());
+                }
+                self.mov_imm(self.val_reg(), f.to_bits() as i64);
+                self.store_slot(self.val_reg(), out);
+                self.set_type(out, 1);
             }
             Eabstrait::Binaire { op, a, b } => {
+                let ta_type = self.type_of(a);
+                let tb_type = self.type_of(b);
+                // ── AOT6 : puissance entière → runtime bigint natif ──
+                if self.avec_runtime && matches!(op, Oper::Puissance)
+                    && ta_type == 0 && tb_type == 0 {
+                    let ta = self.fresh()?;
+                    let tb = self.fresh()?;
+                    self.evaluer(a, ta)?;
+                    self.evaluer(b, tb)?;
+                    // La routine lit base[0] et base[1] : on lui passe
+                    // directement l'adresse des deux slots temporaires.
+                    match self.arch {
+                        Architecture::Aarch64 => {
+                            // add x0, x19, #ta*8 (imm12 non mis à l'échelle)
+                            let imm = ta as u32 * 8;
+                            self.u32(0x91000000 | (imm << 10) | (A64_BASE << 5) | 0);
+                            self.u32(0xAA1F03E1); // x1 = 0 (trampoline)
+                        }
+                        Architecture::X86_64 => {
+                            self.octets(&[0x48, 0x8D, 0x43, (ta as u8) * 8]); // lea rax,[rbx+ta*8]
+                            self.octets(&[0x48, 0x89, 0xC7]); // mov rdi,rax
+                            self.octets(&[0x31, 0xF6]);       // xor esi,esi
+                        }
+                    }
+                    self.appel_runtime_par_nom("$rt_bigint_puissance")?;
+                    self.store_slot(self.val_reg(), out);
+                    self.set_type(out, 2);
+                    return Ok(());
+                }
+                // ── AOT6 : arithmétique IEEE-754 native ──
+                if self.avec_runtime && (ta_type == 1 || tb_type == 1)
+                    && matches!(op, Oper::Add | Oper::Sub | Oper::Mul | Oper::Div
+                                | Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) {
+                    let ta = self.fresh()?;
+                    let tb = self.fresh()?;
+                    self.evaluer(a, ta)?;
+                    self.evaluer(b, tb)?;
+                    self.float_load(0, ta);
+                    self.float_load(1, tb);
+                    self.float_alu(*op);
+                    self.float_store(0, out);
+                    self.set_type(out, if matches!(op, Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) { 4 } else { 1 });
+                    return Ok(());
+                }
                 if !matches!(op, Oper::Add | Oper::Sub | Oper::Mul | Oper::Lt
                               | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) {
-                    // Div, Mod, Puissance, DivEntier, Et, Ou → trampoline
-                    // (refusé en mode AOT : aucun runtime dans le binaire).
+                    // Sans runtime : trampoline (refusé en mode AOT).
                     self.verifier_sans_fallback(e)?;
                     self.fallback_runtime(e)?;
                     self.store_slot(self.val_reg(), out);
@@ -1289,6 +1632,7 @@ impl<'a> Builder<'a> {
                 self.load_slot(self.sec_reg(), tb);
                 self.alu(*op);
                 self.store_slot(self.val_reg(), out);
+                self.set_type(out, 0);
             }
             Eabstrait::Neg(x) => {
                 let t = self.fresh()?;
