@@ -405,6 +405,7 @@ $g5_supprl = 0
 $g5_entierl = 0
 $g5_catl = 0
 $g5_streql = 0
+$g5_strcmpl = 0
 $g5_stub0l = 0
 $g5_stubsl = 0
 $g5_tablel = 0
@@ -600,9 +601,47 @@ fn g5_cps($s: chaine) -> liste<entier> {
   retour $r
 }
 
+# G5-UTF8 : encode un point de code en 1..4 octets UTF-8. Le descripteur G5
+# stocke des OCTETS UTF-8 (et non un octet par point de code) : `>>` écrit
+# alors directement les octets du descripteur, et l'ordre lexicographique
+# octet par octet coïncide avec l'ordre des points de code.
+fn g5_utf8($cp: entier) -> liste<entier> {
+  $r = [0 : entier]
+  si ($cp < 128) {
+    joindre($r, $cp)
+  } sinon si ($cp < 2048) {
+    joindre($r, 192 + partie_entiere($cp / 64))
+    joindre($r, 128 + ($cp % 64))
+  } sinon si ($cp < 65536) {
+    joindre($r, 224 + partie_entiere($cp / 4096))
+    joindre($r, 128 + (partie_entiere($cp / 64) % 64))
+    joindre($r, 128 + ($cp % 64))
+  } sinon {
+    joindre($r, 240 + partie_entiere($cp / 262144))
+    joindre($r, 128 + (partie_entiere($cp / 4096) % 64))
+    joindre($r, 128 + (partie_entiere($cp / 64) % 64))
+    joindre($r, 128 + ($cp % 64))
+  }
+  retour $r
+}
+
 fn g5_make_str($s: chaine) -> entier {
   $cps = g5_cps($s)
   $n = longueur($cps)
+  $oct = [0 : entier]
+  $j = 0
+  tant_que ($j < $n) {
+    $bj = g5_utf8($cps[$j])
+    $k = 0
+    tant_que ($k < longueur($bj)) {
+      joindre($oct, $bj[$k])
+      $k = $k + 1
+    }
+    $j = $j + 1
+  }
+  # $nb = nombre d'OCTETS UTF-8 ; le hash reste calculé sur les POINTS DE CODE
+  # (identiques en natif et sous l'émetteur auto-exécuté, donc internement stable).
+  $nb = longueur($oct)
   $h = 0
   $hi = 0
   tant_que ($hi < $n) {
@@ -623,16 +662,16 @@ fn g5_make_str($s: chaine) -> entier {
   g5_emit(cmpi(0, 0))
   g5_branch(101, $lbl_done)
   g5_mark($lbl_miss)
-  $sz = 16 + 8 * partie_entiere(($n + 7) / 8)
+  $sz = 16 + 8 * partie_entiere(($nb + 7) / 8)
   g5_load(0, $sz)
   g5_alloc_inline()
   g5_load(1, 1)
   g5_emit(stroff(1, 0, 0))
-  g5_load(1, $n)
+  g5_load(1, $nb)
   g5_emit(stroff(1, 0, 8))
   $i = 0
-  tant_que ($i < $n) {
-    g5_load(1, $cps[$i])
+  tant_que ($i < $nb) {
+    g5_load(1, $oct[$i])
     g5_emit(strbio(1, 0, 16 + $i))
     $i = $i + 1
   }
@@ -843,15 +882,65 @@ fn g5_cond($op: chaine) -> entier {
 # courants (1491 dans le RIR auto-hébergé) gardent le chemin 3-instructions
 # d'origine, sans label ni appel supplémentaire. Le chemin grand entier
 # appelle la routine g5_emit_bigcmp une seule fois (label fixe, pas par expr.).
+# Comparaison lexicographique de deux chaînes taguées (x1=gauche, x0=droite).
+# Renvoie un ENTIER BRUT : -1 si gauche < droite, 0 si égales, 1 si >.
+# Les octets UTF-8 se comparent comme des non signés : l'ordre obtenu est
+# exactement l'ordre lexicographique des points de code (par exemple
+# "é" > "è" car c3 a9 > c3 a8). L'appelant applique ensuite son `cset`.
+fn g5_emit_strcmp($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_masktag(6, 1))
+  g5_emit(g5_masktag(7, 0))
+  g5_emit(ldroff(2, 6, 8))        # x2 = longueur octets gauche
+  g5_emit(ldroff(3, 7, 8))        # x3 = longueur octets droite
+  g5_emit(movz(4, 0))             # x4 = i
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(4, 2)); g5_branch(110, $lbl + 3)  # gauche épuisée
+  g5_emit(cmpr(4, 3)); g5_branch(110, $lbl + 4)  # droite épuisée
+  g5_emit(addi(9, 4, 16))           # les données commencent à +16
+  g5_emit(ldrbr(5, 6, 9)); g5_emit(ldrbr(8, 7, 9))
+  g5_emit(cmpr(5, 8)); g5_branch(100, $lbl + 2)
+  g5_emit(cmpr(5, 8)); g5_branch(111, $lbl + 5)  # gauche < droite
+  g5_emit(movz(0, 1)); g5_emit(RET_I())
+  g5_mark($lbl + 5)
+  g5_emit(movz(0, 1)); g5_emit(subr(0, 31, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 2)
+  g5_emit(addi(4, 4, 1)); g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 3)               # gauche plus courte
+  g5_emit(cmpr(4, 3)); g5_branch(110, $lbl + 7)
+  g5_emit(movz(0, 1)); g5_emit(subr(0, 31, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 4)               # droite plus courte
+  g5_emit(movz(0, 1)); g5_emit(RET_I())
+  g5_mark($lbl + 7)               # longueurs égales
+  g5_emit(movz(0, 0)); g5_emit(RET_I())
+  retour 0
+}
+
 fn g5_emit_cmp_value($c: entier) -> entier {
+  # Détection des deux chaînes : chemin lexicographique dédié. Sauts à
+  # déplacement CONSTANT (aucun label par comparaison, comme le chemin big).
   g5_emit(g5_tagbits(2, 1))
-  g5_emit(cmpi(2, 3)); g5_branch_off(100, 8)
+  g5_emit(cmpi(2, 1))
+  g5_branch_off(100, 2)            # gauche chaîne -> +4
+  g5_branch_off(0, 8)              # sinon -> +11 (chemin entier/big)
   g5_emit(g5_tagbits(2, 0))
-  g5_emit(cmpi(2, 3)); g5_branch_off(100, 5)
-  g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
-  g5_branch_off(0, 5)
+  g5_emit(cmpi(2, 1))
+  g5_branch_off(101, 5)            # droite non-chaîne -> +11
+  g5_branch(1, $g5_strcmpl)        # x0 = -1/0/1 brut
+  g5_emit(cmpi(0, 0))
+  g5_emit(cset(0, $c))
+  g5_branch_off(0, 13)             # -> +23 (lsl3 final)
+  g5_emit(g5_tagbits(2, 1))
+  g5_emit(cmpi(2, 3))
+  g5_branch_off(100, 7)            # -> +20 (grand entier)
+  g5_emit(g5_tagbits(2, 0))
+  g5_emit(cmpi(2, 3))
+  g5_branch_off(100, 4)            # -> +20
+  g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c))
+  g5_branch_off(0, 4)              # -> +23
   g5_branch(1, $g5_bigcmpl)
-  g5_emit(cmpi(0, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
+  g5_emit(cmpi(0, 0)); g5_emit(cset(0, $c))
+  g5_emit(g5_lsl3(0, 0))
   retour 0
 }
 
@@ -1283,10 +1372,10 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(orrr(2, 31, 0)); g5_emit(orrr(0, 31, 1)); g5_emit(orrr(1, 31, 2))
         g5_branch(1, $g5_streql)
         si ($op == "!=") { g5_load(2, 8); g5_emit(eorr(0, 0, 2)) }
-        # Le bloc de comparaison de valeur passe de 3 à 14 instructions
-        # (test de tag + chemin big) : le saut de retour de l'égalité de
-        # chaînes doit donc l'enjamber (4 + 11 = 15).
-        g5_branch_off(0, 15)
+        # Le bloc g5_emit_cmp_value fait 24 instructions (test de tag,
+        # chemin chaîne UTF-8 et chemin big) : le saut de retour de
+        # l'égalité de chaînes doit l'enjamber (1 + 24 = 25).
+        g5_branch_off(0, 25)
         g5_emit_cmp_value($c)
       } sinon si ($op == "+") {
         # G5-BIG : si l'un des opérandes porte le tag 3, on promeut l'autre
@@ -2234,8 +2323,31 @@ fn g5_emit_len($lbl: entier) -> entier {
   g5_emit(ldroff(0, 1, 8))
   g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
+  # G5-UTF8 : `longueur(chaine)` compte les POINTS DE CODE. Le descripteur
+  # porte le nombre d'OCTETS : on dénombre les octets qui ne sont PAS des
+  # continuations (0b10xxxxxx), c.-à-d. les têtes de séquence UTF-8.
   g5_mark($lbl + 1)
-  g5_emit(ldroff(0, 1, 8))
+  g5_emit(g5_masktag(9, 1))
+  g5_emit(ldroff(10, 9, 8))       # x10 = nombre d'octets
+  g5_emit(movz(0, 0))             # x0 = nombre de points de code
+  g5_emit(movz(11, 0))            # x11 = i (octet courant)
+  g5_mark($lbl + 3)
+  g5_emit(cmpr(11, 10))
+  g5_branch(110, $lbl + 4)  # b.ge : i >= len -> terminé
+  g5_emit(addi(7, 11, 16))          # les données commencent à +16
+  g5_emit(ldrbr(12, 9, 7))
+  g5_emit(cmpi(12, 128))
+  g5_branch(111, $lbl + 6)          # ASCII -> tête de séquence
+  g5_emit(movz(13, 128))
+  g5_emit(subr(13, 12, 13))
+  g5_emit(cmpi(13, 64))
+  g5_branch(111, $lbl + 5)  # octet de continuation -> pas d'incrément
+  g5_mark($lbl + 6)
+  g5_emit(addi(0, 0, 1))
+  g5_mark($lbl + 5)
+  g5_emit(addi(11, 11, 1))
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 4)
   g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
   g5_mark($lbl + 2)
@@ -2247,31 +2359,112 @@ fn g5_emit_len($lbl: entier) -> entier {
 fn g5_emit_ordre($lbl: entier) -> entier {
   g5_mark($lbl)
   g5_emit(g5_masktag(9, 0))
-  g5_emit(ldrbio(0, 9, 16))
+  g5_emit(ldrbio(0, 9, 16))       # x0 = premier octet
+  g5_emit(cmpi(0, 128))
+  g5_branch(111, $lbl + 3)  # b.hs non pris : b0 < 128 -> 1 octet
+  g5_emit(cmpi(0, 224))
+  g5_branch(111, $lbl + 1)  # 128..223 -> 2 octets
+  g5_emit(cmpi(0, 240))
+  g5_branch(111, $lbl + 2)  # 224..239 -> 3 octets
+  # 4 octets : cp = (b0-240)*262144 + (b1-128)*4096 + (b2-128)*64 + (b3-128)
+  g5_emit(ldrbio(1, 9, 17)); g5_emit(subi(1, 1, 128))
+  g5_emit(ldrbio(2, 9, 18)); g5_emit(subi(2, 2, 128))
+  g5_emit(ldrbio(3, 9, 19)); g5_emit(subi(3, 3, 128))
+  g5_load(4, 240); g5_emit(subr(0, 0, 4))
+  g5_load(4, 262144); g5_emit(mulr(0, 0, 4))
+  g5_load(4, 4096); g5_emit(mulr(1, 1, 4))
+  g5_emit(addr(0, 0, 1))
+  g5_emit(movz(4, 64)); g5_emit(mulr(2, 2, 4))
+  g5_emit(addr(0, 0, 2))
+  g5_emit(addr(0, 0, 3))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)               # 2 octets
+  g5_emit(ldrbio(1, 9, 17)); g5_emit(subi(1, 1, 128))
+  g5_emit(movz(4, 192)); g5_emit(subr(0, 0, 4))
+  g5_emit(movz(4, 64)); g5_emit(mulr(0, 0, 4))
+  g5_emit(addr(0, 0, 1))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 2)               # 3 octets
+  g5_emit(ldrbio(1, 9, 17)); g5_emit(subi(1, 1, 128))
+  g5_emit(ldrbio(2, 9, 18)); g5_emit(subi(2, 2, 128))
+  g5_emit(movz(4, 224)); g5_emit(subr(0, 0, 4))
+  g5_emit(movz(4, 4096)); g5_emit(mulr(0, 0, 4))
+  g5_emit(movz(4, 64)); g5_emit(mulr(1, 1, 4))
+  g5_emit(addr(0, 0, 1))
+  g5_emit(addr(0, 0, 2))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 3)               # 1 octet (ASCII)
   g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
   retour 0
 }
 
-# sous_chaine(s, a, b) — x0=s, x1=a, x2=b ; renvoie une NOUVELLE chaîne.
+# sous_chaine(s, a, b) — x0=s, x1=a, x2=b ; a et b sont des indices en
+# POINTS DE CODE (sémantique Rose). Les octets du descripteur étant UTF-8,
+# on convertit d'abord a et b en décalages OCTET en parcourant le descripteur.
 fn g5_emit_sous($lbl: entier) -> entier {
   $lneg = g5_next()
   $lok = g5_next()
   g5_mark($lbl)
   g5_emit(g5_asr3(1, 1))
   g5_emit(g5_asr3(2, 2))
-  g5_emit(orrr(8, 31, 1))
   g5_emit(subr(3, 2, 1))
   # SH2 : sous_chaine(a,b) avec a>b doit rendre une chaîne VIDE (len=0).
-  # Sans cette borne, le descripteur porte len=-1 et entier()/idx() lisent
-  # l'octet suivant le descripteur (mesuré : e=-48=-('\0'-48) dans can_nud).
   g5_emit(cmpi(3, 0))
   g5_branch(111, $lneg)
   g5_branch(0, $lok)
+  g5_emit(movz(3, 0))
+  g5_branch(0, $lbl + 10)
   g5_mark($lneg)
   g5_emit(movz(3, 0))
+  g5_branch(0, $lbl + 10)
   g5_mark($lok)
-  g5_emit(g5_masktag(10, 0))
+  g5_emit(g5_masktag(10, 0))       # x10 = pointeur source (masqué)
+  g5_emit(ldroff(11, 10, 8))       # x11 = nombre d'octets
+  g5_emit(orrr(12, 31, 1))         # x12 = a (indice point de code)
+  g5_emit(orrr(13, 31, 2))         # x13 = b
+  g5_emit(movz(14, 0))             # x14 = ci (point de code courant)
+  g5_emit(movz(15, 0))             # x15 = bo (décalage octet courant)
+  g5_emit(movz(16, 0))             # x16 = bo_a (décalage de a)
+  g5_emit(movz(20, 0))             # x20 = drapeau « a atteint »
+  g5_mark($lbl + 1)                # boucle de balayage
+  g5_emit(cmpr(14, 13))
+  g5_branch(110, $lbl + 2)  # ci >= b -> fin
+  g5_emit(cmpr(15, 11))
+  g5_branch(110, $lbl + 2)  # bo >= len -> fin (borne)
+  g5_emit(cmpr(14, 12))
+  g5_branch(101, $lbl + 3)  # ci != a
+  g5_emit(orrr(16, 31, 15))         # bo_a = bo
+  g5_emit(movz(20, 1))
+  g5_mark($lbl + 3)
+  g5_emit(addi(19, 15, 16))         # les données commencent à +16
+  g5_emit(ldrbr(17, 10, 19))        # octet de tête
+  g5_emit(cmpi(17, 128))
+  g5_branch(111, $lbl + 4)  # < 128 -> 1 octet
+  g5_emit(cmpi(17, 224))
+  g5_branch(111, $lbl + 5)  # < 224 -> 2 octets
+  g5_emit(cmpi(17, 240))
+  g5_branch(111, $lbl + 6)  # < 240 -> 3 octets
+  g5_emit(movz(18, 4))
+  g5_branch(0, $lbl + 7)
+  g5_mark($lbl + 4); g5_emit(movz(18, 1)); g5_branch(0, $lbl + 7)
+  g5_mark($lbl + 5); g5_emit(movz(18, 2)); g5_branch(0, $lbl + 7)
+  g5_mark($lbl + 6); g5_emit(movz(18, 3))
+  g5_mark($lbl + 7)
+  g5_emit(addr(15, 15, 18))         # bo += k
+  g5_emit(addi(14, 14, 1))          # ci += 1
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(cmpi(20, 0))
+  g5_branch(100, $lneg)             # a jamais atteint -> chaîne vide
+  g5_emit(subr(3, 15, 16))          # x3 = bo - bo_a = nombre d'octets
+  g5_emit(cmpi(3, 0))
+  g5_branch(111, $lneg)
+  g5_mark($lbl + 10)                # entrée commune d'allocation (x3 = nb octets)
+  # Allocation du descripteur de la sous-chaîne (1..8 octets de données).
   g5_emit(addr(4, 3, 3))
   g5_emit(addr(4, 4, 4))
   g5_emit(addr(4, 4, 4))
@@ -2284,23 +2477,17 @@ fn g5_emit_sous($lbl: entier) -> entier {
   g5_emit(orrr(1, 31, 3))
   g5_emit(stroff(1, 5, 8))
   g5_emit(movz(6, 0))
-  g5_mark($lbl + 1)
+  g5_mark($lbl + 8)
   g5_emit(cmpr(6, 3))
-  g5_branch(110, $lbl + 2)
-  # SH2 : x8 = a (debut, copie de x1 par orrr(8,31,1) = mov) et x10 =
-  # pointeur MASQUE du descripteur. Les donnees commencent a +16 :
-  # l'adresse correcte est x10 + 16 + a + i. L'ancien code lisait
-  # x10 + a + i (16 octets trop tot, dans l'en-tete du descripteur),
-  # rendant NUL a la place des octets : sous_chaine("0|1",2,3) -> "\0",
-  # entier() -> -48, can_nud(e=-48) -> idx hors bornes -> SIGSEGV.
-  g5_emit(addi(7, 6, 16))
-  g5_emit(addr(7, 8, 7))
+  g5_branch(110, $lbl + 9)
+  g5_emit(addr(7, 16, 6))
+  g5_emit(addi(7, 7, 16))
   g5_emit(ldrbr(7, 10, 7))
   g5_emit(addi(4, 6, 16))
   g5_emit(strbr(7, 5, 4))
   g5_emit(addi(6, 6, 1))
-  g5_branch(0, $lbl + 1)
-  g5_mark($lbl + 2)
+  g5_branch(0, $lbl + 8)
+  g5_mark($lbl + 9)
   g5_emit(g5_tag1(0, 5))
   g5_emit(RET_I())
   retour 0
@@ -2882,22 +3069,64 @@ fn g5_emit_quit($lbl: entier) -> entier {
   retour 0
 }
 
-# C0.2 — caractere(n) -> descripteur de chaîne [tag=1][len=1][n%256].
-# n est un entier Rose tagué dans x0. x10/x11 conservent l'octet pendant
-# l'allocation (g5_alloc_inline détruit x0,x1,x2,x9).
+# C0.2 — caractere(n) -> descripteur de chaîne [tag=1][len][UTF-8 de n].
+# n est un entier Rose tagué dans x0. x10/x11 conservent le point de code et
+# le nombre d'octets pendant l'allocation (g5_alloc_inline détruit x0,1,2,9).
+# 1 à 4 octets tiennent dans 8 octets de données : taille fixe 24 octets.
 fn g5_emit_car($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(g5_asr3(10, 0))      # n brut
-  g5_emit(movz(11, 255))
-  g5_emit(andr(10, 10, 11))    # octet = n mod 256
+  g5_emit(g5_asr3(10, 0))      # x10 = point de code brut
+  g5_emit(movz(11, 1))         # x11 = nombre d'octets
+  g5_emit(cmpi(10, 128))
+  g5_branch(111, $lbl + 4)  # cp < 128 -> 1 octet
+  g5_emit(movz(11, 2))
+  g5_emit(cmpi(10, 2048))
+  g5_branch(111, $lbl + 4)  # cp < 2048 -> 2 octets
+  g5_emit(movz(11, 3))
+  g5_load(12, 65536)
+  g5_emit(cmpr(10, 12))
+  g5_branch(111, $lbl + 4)  # cp < 65536 -> 3 octets
+  g5_emit(movz(11, 4))
+  g5_mark($lbl + 4)
   g5_load(0, 24)               # 16 octets d'en-tête + 8 de données
   g5_alloc_inline()            # x0 = pointeur brut aligné
   g5_emit(movz(1, 1))
   g5_emit(stroff(1, 0, 0))     # tag = 1 (chaîne)
-  g5_emit(stroff(1, 0, 8))     # longueur = 1
-  g5_emit(strbio(10, 0, 16))   # l'unique octet
-  g5_emit(g5_tag1(0, 0))       # x0 = pointeur|1
+  g5_emit(orrr(1, 31, 11))
+  g5_emit(stroff(1, 0, 8))     # longueur = nombre d'octets UTF-8
+  g5_emit(cmpi(11, 2))
+  g5_branch(100, $lbl + 1)
+  g5_emit(cmpi(11, 3))
+  g5_branch(100, $lbl + 2)
+  g5_emit(cmpi(11, 4))
+  g5_branch(100, $lbl + 3)
+  g5_emit(orrr(1, 31, 10))     # ASCII : l'octet est le point de code
+  g5_emit(strbio(1, 0, 16))
+  g5_emit(g5_tag1(0, 0))
   g5_emit(RET_I())
+  g5_mark($lbl + 1)            # 2 octets : 110xxxxx 10xxxxxx
+  g5_emit(movz(2, 64)); g5_emit(udivr(3, 10, 2)); g5_emit(msubr(4, 3, 2, 10))
+  g5_emit(addi(3, 3, 192)); g5_emit(addi(4, 4, 128))
+  g5_emit(strbio(3, 0, 16)); g5_emit(strbio(4, 0, 17))
+  g5_emit(g5_tag1(0, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 2)            # 3 octets
+  g5_emit(movz(2, 4096)); g5_emit(udivr(3, 10, 2))
+  g5_emit(movz(2, 64)); g5_emit(udivr(4, 10, 2))
+  g5_emit(msubr(5, 4, 2, 10)); g5_emit(msubr(6, 3, 2, 4))
+  g5_emit(addi(3, 3, 224)); g5_emit(addi(5, 5, 128)); g5_emit(addi(6, 6, 128))
+  g5_emit(strbio(3, 0, 16)); g5_emit(strbio(6, 0, 17)); g5_emit(strbio(5, 0, 18))
+  g5_emit(g5_tag1(0, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 3)            # 4 octets
+  g5_load(2, 262144); g5_emit(udivr(3, 10, 2))
+  g5_load(2, 4096); g5_emit(udivr(4, 10, 2))
+  g5_emit(movz(2, 64)); g5_emit(udivr(5, 10, 2))
+  g5_emit(msubr(6, 5, 2, 10)); g5_emit(msubr(7, 4, 2, 5))
+  g5_load(2, 64); g5_emit(msubr(8, 3, 2, 4))
+  g5_emit(addi(3, 3, 240)); g5_emit(addi(6, 6, 128))
+  g5_emit(addi(7, 7, 128)); g5_emit(addi(8, 8, 128))
+  g5_emit(strbio(3, 0, 16)); g5_emit(strbio(8, 0, 17))
+  g5_emit(strbio(7, 0, 18)); g5_emit(strbio(6, 0, 19))
+  g5_emit(g5_tag1(0, 0)); g5_emit(RET_I())
   retour 0
 }
 
@@ -3683,11 +3912,16 @@ $g5_plist_l = g5_next()
 $g5_allocl = g5_next()
 $g5_lenl = g5_next()
 $k = 0
-tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+# G5-UTF8 : comptage des points de code (+1..+6).
+tant_que ($k < 6) { g5_next(); $k = $k + 1 }
 $g5_ordl = g5_next()
+$k = 0
+# G5-UTF8 : décodage UTF-8 de 1..4 octets (+1..+3).
+tant_que ($k < 3) { g5_next(); $k = $k + 1 }
 $g5_sousl = g5_next()
 $k = 0
-tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+# G5-UTF8 : conversion des indices de points de code en octets (+1..+10).
+tant_que ($k < 10) { g5_next(); $k = $k + 1 }
 $g5_idxl = g5_next()
 $k = 0
 # G5-TYPE : g5_emit_idx utilise $lbl, +1 (liste), +2 (fin chaîne) et,
@@ -3743,6 +3977,9 @@ $exitl = g5_next()
 # ($lbl+N), donc aucune réservation supplémentaire n'est nécessaire.
 $g5_quitl = g5_next()
 $g5_carl = g5_next()
+$k = 0
+# G5-UTF8 : encodage UTF-8 de 1..4 octets (+1..+4).
+tant_que ($k < 4) { g5_next(); $k = $k + 1 }
 $g5_parl = g5_next()
 $g5_absl = g5_next()
 $k = 0; tant_que ($k < 1) { g5_next(); $k = $k + 1 }
@@ -3767,6 +4004,9 @@ $g5_bignegl = g5_next()
 $k = 0; tant_que ($k < 3) { g5_next(); $k = $k + 1 }
 $g5_bigcmpl = g5_next()
 $k = 0; tant_que ($k < 12) { g5_next(); $k = $k + 1 }
+# G5-UTF8 : routine de comparaison lexicographique des chaînes (+1..+7).
+$g5_strcmpl = g5_next()
+$k = 0; tant_que ($k < 7) { g5_next(); $k = $k + 1 }
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
 tant_que ($i < $nfn) {
@@ -3803,6 +4043,7 @@ g5_emit_bigpromote($g5_bigprol)
 g5_emit_bigadd($g5_bigaddl)
 g5_emit_bigneg($g5_bignegl)
 g5_emit_bigcmp($g5_bigcmpl)
+g5_emit_strcmp($g5_strcmpl)
 g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
