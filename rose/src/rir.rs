@@ -333,6 +333,36 @@ pub fn abaisser_principal(corps: &[Instr]) -> Option<CorpsRir> {
     abaisser(corps, &[], &noms)
 }
 
+/// Abaissement du programme principal **pour la compilation native AOT**.
+///
+/// Un programme Rose rend sa valeur avec `>> expression` (le `retour` est
+/// réservé aux fonctions). L'exécutable natif, lui, transforme la valeur
+/// rendue par le code machine en code de sortie du processus. On réutilise
+/// donc l'abaissement habituel, puis on remplace le DERNIER affichage — et
+/// seulement lui — par un retour abstrait : la valeur affichée devient la
+/// valeur de l'exécutable, sans changer le comportement de `rose run`,
+/// `rose rir` ou `rose bc` (ils continuent d'utiliser `abaisser_principal`).
+///
+/// Si le dernier affichage n'est pas une expression du sous-ensemble, on rend
+/// `None` : l'appelant refuse alors proprement au lieu d'écrire un exécutable
+/// qui rendrait une valeur fausse.
+pub fn abaisser_principal_sortie(corps: &[Instr]) -> Option<CorpsRir> {
+    let mut rir = abaisser_principal(corps)?;
+    let valeur = match rir.ops.last()? {
+        Op::AfficherAbstrait(e) => Some(e.clone()),
+        Op::Afficher(exprs) if exprs.len() == 1 => {
+            let index: std::collections::HashMap<String, u16> = rir.noms.iter()
+                .enumerate()
+                .map(|(i, n)| (n.clone(), i as u16))
+                .collect();
+            abstraire(&exprs[0], &index)
+        }
+        _ => None,
+    }?;
+    *rir.ops.last_mut()? = Op::RetourAbstrait(valeur);
+    Some(rir)
+}
+
 pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -> Option<CorpsRir> {
     // ── Table de noms → slot ────────────────────────────────────────────
     let mut noms: Vec<String> = Vec::new();

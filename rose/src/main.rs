@@ -172,8 +172,19 @@ mod run;
 mod latex;
 mod debug_lenteur;
 mod apercu_latex;
+#[allow(dead_code)]
 mod auto_llvm;
 mod cmd_llvm;
+/// AOT natif intégré : le binaire compile ses propres modules sources (il ne
+/// passe pas par la bibliothèque `rose`). Sans JIT Cranelift, l'émetteur est
+/// déjà déclaré plus bas sous le nom `jit_ne` : on le réutilise tel quel.
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "jit")))]
+use crate::jit_ne as natif_emetteur;
+#[cfg(all(not(target_arch = "wasm32"), feature = "jit"))]
+#[path = "natif_emetteur.rs"]
+mod natif_emetteur;
+#[cfg(not(target_arch = "wasm32"))]
+mod link_natif;
 mod sha256;
 mod repl;
 mod setup_core;
@@ -911,23 +922,11 @@ fn main() {
     if action == "debug-lenteur" || action == "lenteur" {
         std::process::exit(debug_lenteur::execute(&argv));
     }
-    // La commande « llvm » (transpilation vers C) n'a pas besoin de LLVM :
-    // elle est disponible meme dans le binaire leger.
-    if action == "llvm" {
-        cmd_llvm::execute("llvm", argv.as_slice());
-    }
-    // « orc » et « link » exigent une chaîne AOT locale : soit elle est
-    // embarquée dans ce binaire, soit un helper est présent à côté de
-    // rose.exe (ou dans le cache/PATH). AUCUN téléchargement, AUCUNE
-    // compilation à la demande : si rien n'est installé, le message
-    // oriente vers `rose comp` (autonome) ou vers une installation locale.
-    // `aot` est l'alias EXPLICITE de `orc` demandé par l'utilisateur.
-    let action = if action == "aot" { "orc" } else { action };
-    if matches!(action, "orc" | "link") {
-        #[cfg(feature = "llvm")]
+    // Transpilation vers C : le transpileur intégré suffit, dans TOUS les
+    // binaires. AOT natif : l'émetteur machine et l'écrivain ELF/PE sont
+    // intégrés, aucune dépendance extérieure. `aot` est l'alias de `orc`.
+    if matches!(action, "llvm" | "orc" | "aot" | "link") {
         cmd_llvm::execute(action, argv.as_slice());
-        #[cfg(not(feature = "llvm"))]
-        auto_llvm::lance(action, argv.as_slice());
     }
     match action {
         "version" | "--version" => { println!("{}", interp::version()); return; }
