@@ -739,9 +739,14 @@ pub fn installer(prefixe: &str, source_exe: Option<&std::path::Path>) -> Journal
     // `%LOCALAPPDATA%\rose\` quand la chaîne n'est pas embarquée.
     // Le livrer laissait croire qu'il fonctionnait, et alourdissait
     // l'installation d'un binaire mort.
-    let compagnons: [(Option<&str>, &str, u16); 4] = [
+    let compagnons: [(Option<&str>, &str, u16); 5] = [
         (Some(if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }),
          if cfg!(windows) { "rose-shell.exe" } else { "rose-shell" }, 5),
+        // ⚠ Vague 77 : le helper tray doit être installé dans `bin\` pour
+        // que « Continuer » puisse le lancer en DETACHED_PROCESS. Sans lui,
+        // `chemin_helper_tray()` ne trouve rien et l'icône n'apparaît jamais.
+        (Some(if cfg!(windows) { "rose-tray.exe" } else { "rose-tray" }),
+         if cfg!(windows) { "rose-tray.exe" } else { "rose-tray" }, 9),
         (Some("rose.ico"), "rose.ico", 6),
         // ⚠⚠ CORRECTION DU 16/11 : `rose_app.ico` (icône des raccourcis et de
         // l'application) recevait `rose_shell.ico` (fenêtre de terminal).

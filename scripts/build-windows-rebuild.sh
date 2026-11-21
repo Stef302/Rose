@@ -55,13 +55,13 @@ export RUSTFLAGS="-L $X/crt/lib/x86_64 -L $X/sdk/lib/ucrt/x86_64 -L $X/sdk/lib/u
 cd "$RACINE/rose"
 
 # ── 4. Passe 1 : moteur + shell + setup ────────────────────────────────
-echo "=== PASSE 1 : build rose / rose-shell / rose-setup ==="
+echo "=== PASSE 1 : build rose / rose-shell / rose-tray / rose-setup ==="
 # ⚠ CORRECTION 21/11: pack-res.py exige un rose.exe DEJA present. On construit
 # donc le moteur AVANT la premiere passe d'emballage (sinon "moteur absent").
 cargo build --release --target "$TARGET" --bin rose
 python3 "$V/embed-assets.py" >/dev/null
 python3 "$V/pack-res.py" >/dev/null
-cargo build --release --target "$TARGET" --bin rose --bin rose-shell --bin rose-setup
+cargo build --release --target "$TARGET" --bin rose --bin rose-shell --bin rose-tray --bin rose-setup
 
 # ── 5. Passe 2 : .res avec le moteur FRAIS, puis relink du setup ───────
 echo "=== PASSE 2 : .res avec moteur frais + relink rose-setup ==="
@@ -75,6 +75,9 @@ mkdir -p "$STAGE/payload"
 cp "$R/rose-setup.exe" "$STAGE/Rose-win-Setup.exe"
 cp "$R/rose.exe" "$STAGE/rose.exe"
 cp "$R/rose-shell.exe" "$STAGE/rose-shell.exe"
+# Helper tray : sans lui, l'icône Rose ne peut pas apparaître dans la zone
+# des icônes cachées (vague 77). pack-res.py l'embarque comme RCDATA 9.
+cp "$R/rose-tray.exe" "$STAGE/rose-tray.exe"
 cp "$R/rose.exe" "$STAGE/payload/rose.exe"
 # Trois icônes DISTINCTES (voir build-linux.sh / pack-res.py) :
 #   installateur/assets/rose.ico = DOCUMENT .rose (type de fichier)
@@ -90,8 +93,8 @@ cp "$RACINE/LICENSE" "$STAGE/LICENSE"
 echo "=== VÉRIFICATION RESSOURCES (rose-setup.exe lié) ==="
 python3 "$V/verifier-res.py" "$R/rose-setup.exe"
 echo "=== FICHIERS PRODUITS ==="
-for f in rose.exe rose-shell.exe rose-setup.exe; do
+for f in rose.exe rose-shell.exe rose-tray.exe rose-setup.exe; do
   printf '  %-16s %10s o  %s\n' "$f" "$(stat -c%s "$R/$f")" "$(file -b "$R/$f" | cut -d, -f1-2)"
 done
 echo "=== HASHES DU STAGE ==="
-md5sum "$STAGE/Rose-win-Setup.exe" "$STAGE/rose.exe" "$STAGE/rose-shell.exe" "$STAGE/payload/rose.exe"
+md5sum "$STAGE/Rose-win-Setup.exe" "$STAGE/rose.exe" "$STAGE/rose-shell.exe" "$STAGE/rose-tray.exe" "$STAGE/payload/rose.exe"

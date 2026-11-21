@@ -72,6 +72,11 @@ MOTEUR = _REL / "rose.exe"
 # feature `llvm`, il ne peut donc rien compiler. `rose.exe` gère déjà `orc`
 # et `link` et télécharge à la demande le vrai helper LLVM.
 SHELL = _REL / "rose-shell.exe"
+# ⚠ Helper ARRIÈRE-PLAN (vague 74/77) : sans lui, le setup affichait
+# « rose-tray.exe introuvable » et AUCUNE icône n'apparaissait dans la zone
+# de notification (constat capture Windows). Il doit être embarqué puis
+# installé dans `bin\` à côté de `rose.exe`.
+TRAY = _REL / "rose-tray.exe"
 # Icônes à poser dans `bin\` : `installateur/assets/rose.ico` (le DOCUMENT)
 # sert au TYPE DE FICHIER `.rose` ; `rose/rose.ico` (LA ROSE) devient
 # `rose_app.ico` (icône de l'APPLICATION : raccourcis, profil Windows
@@ -105,6 +110,8 @@ RCDATA_ICO_APP = 7      # rose/rose.ico (la rose : logo de base)
 # le profil retombait sur `rose_app.ico` (la rose seule) — mesuré chez
 # l'utilisateur. L'id 4 reste LIBRE (ancien rose-aot.exe).
 RCDATA_ICO_SHELL = 8    # rose/rose_shell.ico (terminal + rose)
+# id 9 : helper de la zone de notification (rose-tray.exe), copié dans `bin\`.
+RCDATA_TRAY = 9
 
 # Langue des ressources : 1033 = en-US, la valeur qu'émet `llvm-rc`/`rc.exe`.
 LANGUE = 1033
@@ -304,6 +311,7 @@ def main():
             (RCDATA_ICO_FICHIER, ICONE_FICHIER, "rose.ico"),
             (RCDATA_ICO_APP, ICONE_APP, "rose_app.ico"),
             (RCDATA_ICO_SHELL, ICONE_SHELL, "rose_shell.ico"),
+            (RCDATA_TRAY, TRAY, "rose-tray.exe"),
         ]:
             if chemin.exists():
                 copie = tmp / nom

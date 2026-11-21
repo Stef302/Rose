@@ -52,6 +52,7 @@ MOIS_FR = {
 # version historique (voir rose/docs/SITE_RELEASES.md, règle d'attribution).
 GENERIQUES = {
     "releases.win.json", "Rose-win-Setup.exe", "rose.exe", "rose-shell.exe",
+    "rose-tray.exe",
     "rose-aarch64-linux", "rose-aot-aarch64-linux", "rose-wasm.wasm",
     "rose-skill.zip",
 }
@@ -373,6 +374,7 @@ def sources_artefacts(version: str) -> list[tuple[Path, str]]:
         (STAGE / "Rose-win-Setup.exe", "Rose-win-Setup.exe"),
         (STAGE / "rose.exe", "rose.exe"),
         (STAGE / "rose-shell.exe", "rose-shell.exe"),
+        (STAGE / "rose-tray.exe", "rose-tray.exe"),
         (WASM_TARGET / "rose.wasm", "rose-wasm.wasm"),
     ]
 

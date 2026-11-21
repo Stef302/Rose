@@ -177,6 +177,26 @@ mod win {
         fn Shell_NotifyIconW(action: u32, donnees: *const NotifyIconDataW) -> i32;
     }
 
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLastError() -> u32;
+    }
+
+    /// Journal SANS dépendance : `%TEMP%\rose-tray.log`, en ajout. Le helper
+    /// n'a pas de console (`windows_subsystem = "windows"`), donc sans ce
+    /// fichier un échec `Shell_NotifyIconW` était TOTALEMENT silencieux —
+    /// c'est précisément pour cela que l'icône pouvait manquer sans trace.
+    /// Un échec d'écriture du journal ne doit JAMAIS empêcher le tray.
+    fn journal(evenement: &str) {
+        let chemin = std::env::temp_dir().join("rose-tray.log");
+        let Ok(mut fichier) = std::fs::OpenOptions::new()
+            .create(true).append(true).open(chemin) else { return };
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        use std::io::Write;
+        let _ = writeln!(fichier, "{secs} — {evenement}");
+    }
+
     fn utf16(texte: &str) -> Vec<u16> {
         texte.encode_utf16().chain(std::iter::once(0)).collect()
     }
@@ -191,12 +211,17 @@ mod win {
 
     /// L'icône Rose est cherchée à côté du binaire (ou dans `bin\`), sinon on
     /// retombe sur l'icône système. `LR_SHARED` évite tout `DestroyIcon`.
+    /// Chaque échec est journalisé : « rose.ico absent » était l'une des
+    /// causes possibles de l'absence d'icône sur la capture utilisateur.
     fn charger_icone() -> HICON {
         unsafe {
             if let Some(dossier) = std::env::current_exe().ok().and_then(|p| p.parent().map(|p| p.to_path_buf())) {
                 for relatif in ["rose.ico", "bin/rose.ico"] {
                     let chemin = dossier.join(relatif);
-                    if !chemin.is_file() { continue; }
+                    if !chemin.is_file() {
+                        journal(&format!("icône absente : {}", chemin.display()));
+                        continue;
+                    }
                     let nom = utf16(&chemin.to_string_lossy());
                     let h = LoadImageW(std::ptr::null_mut(), nom.as_ptr(), IMAGE_ICON, 16, 16,
                                        LR_LOADFROMFILE | LR_SHARED);
@@ -204,10 +229,20 @@ mod win {
                         LoadImageW(std::ptr::null_mut(), nom.as_ptr(), IMAGE_ICON, 0, 0,
                                    LR_LOADFROMFILE | LR_DEFAULTSIZE | LR_SHARED)
                     } else { h };
-                    if !h.is_null() { return h as HICON; }
+                    if !h.is_null() {
+                        journal(&format!("icône chargée depuis {}", chemin.display()));
+                        return h as HICON;
+                    }
+                    journal(&format!("LoadImageW a échoué pour {} (GetLastError={})",
+                                     chemin.display(), GetLastError()));
                 }
             }
-            LoadIconW(std::ptr::null_mut(), IDI_APPLICATION as *const u16)
+            // Repli obligatoire : une icône système vaut mieux qu'un NIM_ADD
+            // avec HICON=null, que shell32 refuse silencieusement.
+            let repli = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION as *const u16);
+            journal(&format!("repli IDI_APPLICATION : {} (GetLastError={})",
+                             if repli.is_null() { "ÉCHEC" } else { "OK" }, GetLastError()));
+            repli
         }
     }
 
@@ -230,15 +265,31 @@ mod win {
     }
 
     /// Un SEUL point d'appel Win32 pour ajouter, modifier ou retirer l'icône.
+    /// Le retour est VÉRIFIÉ et l'échec journalisé (code GetLastError) : sans
+    /// cela, l'absence d'icône dans la zone de notification était invisible.
     fn notifier(action: u32, d: &NotifyIconDataW) -> bool {
-        unsafe { Shell_NotifyIconW(action, d) != 0 }
+        unsafe {
+            let ok = Shell_NotifyIconW(action, d) != 0;
+            if !ok {
+                let nom = match action {
+                    NIM_ADD => "NIM_ADD",
+                    NIM_MODIFY => "NIM_MODIFY",
+                    NIM_DELETE => "NIM_DELETE",
+                    _ => "action inconnue",
+                };
+                journal(&format!("Shell_NotifyIconW {nom} a échoué : GetLastError={}", GetLastError()));
+            }
+            ok
+        }
     }
 
     fn ajouter_icone(hwnd: HWND) -> bool {
         let mut d = donnees(hwnd, NIF_MESSAGE | NIF_ICON | NIF_TIP);
         d.h_icon = icone();
         copier(&mut d.sz_tip, "Rose — vérification des mises à jour");
-        notifier(NIM_ADD, &d)
+        let ok = notifier(NIM_ADD, &d);
+        journal(&format!("NIM_ADD : {}", if ok { "OK — icône posée" } else { "ÉCHEC" }));
+        ok
     }
 
     fn retirer_icone(hwnd: HWND) {
@@ -352,7 +403,12 @@ mod win {
     /// zéro boucle active. `GetMessageW` bloque le fil jusqu'à un message
     /// (consommation CPU nulle entre les ticks).
     pub fn demarrer() {
-        if !doit_demarrer(rose::velopack::lire_config().mode) { return; }
+        let mode = rose::velopack::lire_config().mode;
+        journal(&format!("démarrage — mode configuré : {}", mode.comme_str()));
+        if !doit_demarrer(mode) {
+            journal("mode non discret : aucun tray, aucun timer (arrêt immédiat)");
+            return;
+        }
         unsafe {
             let instance = GetModuleHandleW(std::ptr::null());
             let classe = utf16("RoseTrayMessageWindow");
@@ -361,18 +417,26 @@ mod win {
             wc.lpfn_wnd_proc = Some(wnd_proc);
             wc.h_instance = instance;
             wc.lpsz_class_name = classe.as_ptr();
-            if RegisterClassExW(&wc) == 0 { return; }
+            if RegisterClassExW(&wc) == 0 {
+                journal(&format!("RegisterClassExW a échoué : GetLastError={}", GetLastError()));
+                return;
+            }
 
             let hwnd = CreateWindowExW(0, classe.as_ptr(), std::ptr::null(), 0,
                                        0, 0, 0, 0, HWND_MESSAGE, 0, instance, std::ptr::null_mut());
-            if hwnd.is_null() { return; }
+            if hwnd.is_null() {
+                journal(&format!("CreateWindowExW a échoué : GetLastError={}", GetLastError()));
+                return;
+            }
             if !ajouter_icone(hwnd) { DestroyWindow(hwnd); return; }
             if SetTimer(hwnd, ID_TIMER,
                         rose::velopack::INTERVALLE_TIMER_DISCRET_MS, std::ptr::null()) == 0 {
+                journal(&format!("SetTimer a échoué : GetLastError={}", GetLastError()));
                 retirer_icone(hwnd);
                 DestroyWindow(hwnd);
                 return;
             }
+            journal("tray actif : icône + timer 6 h posés, entrée dans GetMessageW");
 
             // UNE lecture au démarrage, puis plus rien avant 6 heures.
             lancer_verification(hwnd);
@@ -424,8 +488,13 @@ mod tests {
         // Un seul timer posé, un seul point d'appel Shell_NotifyIcon, un seul
         // thread lancé (le tick). Le fil principal dort dans GetMessageW.
         assert_eq!(code.matches("SetTimer(hwnd").count(), 1);
-        assert_eq!(code.matches("unsafe { Shell_NotifyIconW(action, d)").count(), 1);
+        assert_eq!(code.matches("Shell_NotifyIconW(action, d) != 0").count(), 1);
         assert_eq!(code.matches("std::thread::spawn(").count(), 1);
+        // Le retour Win32 est vérifié et journalisé : aucune erreur silencieuse.
+        assert!(code.contains("GetLastError()"));
+        assert!(code.contains("rose-tray.log"));
+        // Repli sur l'icône système si rose.ico est absent/illisible.
+        assert!(code.contains("IDI_APPLICATION as *const u16"));
         assert!(!code.contains("loop {"));
         assert!(!code.contains("thread::sleep"));
         assert!(!code.contains("lister_versions_source"));
