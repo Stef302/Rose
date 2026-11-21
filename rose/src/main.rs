@@ -213,22 +213,18 @@ fn lire(source: &mut String, chemin: &str) -> bool {
     }
 }
 
-/// Nom du moteur affiché dans l'aide : dépend de la feature `jit`.
-#[cfg(feature = "jit")]
-const MOTEUR: &str = "JIT Cranelift";
-#[cfg(not(feature = "jit"))]
-const MOTEUR: &str = "émetteur machine natif autonome";
-
 /// Aide du programme. La version vient du `Cargo.toml` — elle était en
 /// dur (« Rose 2.0 »), d'où un `rose` installé en 0.1.5 qui s'annonçait
 /// « Rose 2.0 » (mesuré par l'utilisateur).
+/// Présentation NEUTRE : le nom de l'outil ayant construit Rose n'apparaît
+/// jamais dans l'interface. `JIT`/`AOT` sont des concepts du produit.
 fn usage() -> String {
     format!(
-        "Rose {} — compilateur Rust + {} + LLVM ORC AOT (maths exactes BigInt natif, zéro GMP)\n\
+        "Rose {} — langage de programmation en français (maths exactes, JIT, AOT, compilation autonome)\n\
 Usage :
-  rose prog.rose [args…]   interpréter / JIT un programme Rose
+  rose prog.rose [args…]   exécuter un programme Rose (interpréteur + JIT)
   rose run prog.rose       identique
-  rose comp prog.rose [-o sortie]   exécutable autonome (moteur + source collé)
+  rose comp prog.rose [-o sortie]   exécutable autonome : moteur + source collés, démarre immédiatement, aucun outil externe (~8,8 Mo) ; .exe ajouté automatiquement sur Windows
   rose latex prog.rose              formule LaTeX du programme entier
   rose latex prog.rose --apercu     idem, rendu VISIBLE (Unicode, sans LaTeX)
   rose latex prog.rose --lignes     seulement les lignes marquees %% (LaTeX brut)
@@ -240,10 +236,10 @@ Usage :
   rose rvm fichier.rosebc [classe] [methode] [args...]   exécuter dans la JVM Rose sandboxée
   rose transpile prog.rose --cible js|py|c [-o sortie]   transpilation lisible (JS/Python/C)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
-  rose llvm prog.rose [-o sortie]   AOT LLVM classique (transpilation C + clang/gcc)
-  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   AOT (alias de orc) — binaire natif, aucun JIT au runtime
-  rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   AOT LLVM ORC (in-process, inkwell)
-  rose link objet.o [-o sortie]                                               Lier un objet ELF en binaire exécutable
+  rose llvm prog.rose [-o sortie]   transpilation C puis clang/gcc (optionnel)
+  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   binaire natif optimisé par compilation AOT LLVM ORC, sans JIT au runtime (optionnel) ; nécessite la chaîne LLVM (helper à côté de rose.exe ou installé). Alias de orc.
+  rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   idem (compilation AOT LLVM ORC en interne, optionnelle) ; nécessite la chaîne LLVM
+  rose link objet.o [-o sortie]   lier un objet natif en exécutable (nécessite la chaîne LLVM)
   rose info                état du moteur
   rose console [fichier.rose]   console interactive (REPL) — :help, :more [N] (30 chiffres de plus)
   rose repl [fichier.rose]      identique
@@ -253,9 +249,9 @@ Usage :
   rose assoc [--user|--system] [--lang fr|en]   associer .rose à rose.exe (Windows)
   rose assoc --remove [--user|--system]         retirer l'association .rose
   rose assoc --dry-run                          afficher les reg add (marche sous Linux)
+Note : `rose comp` suffit pour 99 % des usages (exécutable autonome). `aot`/`orc` et `llvm` sont optionnels et nécessitent des outils externes.
 ",
-        env!("CARGO_PKG_VERSION"),
-        MOTEUR
+        env!("CARGO_PKG_VERSION")
     )
 }
 
@@ -746,6 +742,18 @@ fn lire_bundle() -> Option<String> {
     Some(s)
 }
 
+/// Nom de sortie de `rose comp` : `.exe` est ajouté sur Windows quand il
+/// manque. Le drapeau `windows` est passé en argument (au lieu de lire
+/// `cfg!(windows)` ici) pour que la règle soit testable sous Linux.
+/// Un `-o sortie` explicite est honoré : seul le suffixe manquant est ajouté.
+fn nom_sortie_comp(sortie: &str, windows: bool) -> String {
+    if windows && !sortie.to_ascii_lowercase().ends_with(".exe") {
+        format!("{}.exe", sortie)
+    } else {
+        sortie.to_string()
+    }
+}
+
 /// comp : valide le source, copie le moteur puis le source, puis la queue.
 fn comp_programme(fichier: &str, sortie: &str) -> i32 {
     let mut source = String::new();
@@ -908,34 +916,18 @@ fn main() {
     if action == "llvm" {
         cmd_llvm::execute("llvm", argv.as_slice());
     }
-    // « orc » et « link » exigent LLVM : soit il est embarque, soit le
-    // binaire le cherche tout seul (telechargement du helper AOT).
-    // IMPORTANT : lancer le helper AVANT le message d'absence — l'ancien
-    // code imprimait « non embarquee » puis sortait, ce qui rendait le
-    // telechargement a la demande inatteignable dans le binaire leger.
-    // `aot` est l'alias EXPLICITE de `orc` (AOT LLVM ORC) demandé par
-    // l'utilisateur : la mention « AOT » doit apparaître comme pour « JIT ».
+    // « orc » et « link » exigent une chaîne AOT locale : soit elle est
+    // embarquée dans ce binaire, soit un helper est présent à côté de
+    // rose.exe (ou dans le cache/PATH). AUCUN téléchargement, AUCUNE
+    // compilation à la demande : si rien n'est installé, le message
+    // oriente vers `rose comp` (autonome) ou vers une installation locale.
+    // `aot` est l'alias EXPLICITE de `orc` demandé par l'utilisateur.
     let action = if action == "aot" { "orc" } else { action };
     if matches!(action, "orc" | "link") {
         #[cfg(feature = "llvm")]
         cmd_llvm::execute(action, argv.as_slice());
         #[cfg(not(feature = "llvm"))]
-        {
-            // 1. helper déjà présent (cache ou à côté de l'exécutable) ?
-            if let Some(helper) = auto_llvm::trouver_helper() {
-                auto_llvm::lance_depuis(&helper, action, argv.as_slice());
-            }
-            // 2. sinon : téléchargement depuis la release GitHub (ou miroir)
-            match auto_llvm::installer_helper() {
-                Ok(helper) => auto_llvm::lance_depuis(&helper, action, argv.as_slice()),
-                Err(e) => {
-                    eprintln!("rose: la chaîne AOT LLVM n'est pas disponible.");
-                    eprintln!("      {}", e);
-                    eprintln!("      autre solution : cargo build --release --features llvm");
-                    std::process::exit(1);
-                }
-            }
-        }
+        auto_llvm::lance(action, argv.as_slice());
     }
     match action {
         "version" | "--version" => { println!("{}", interp::version()); return; }
@@ -1282,6 +1274,7 @@ fn main() {
                 if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
                 if sortie.is_empty() { sortie = "programme".into(); }
             }
+            sortie = nom_sortie_comp(&sortie, cfg!(windows));
             std::process::exit(comp_programme(&fichier, &sortie));
         }
         "assoc" => {
@@ -1560,4 +1553,53 @@ fn install_rose() {
 
 fn couleur(s: &str, code: &str) -> String {
     format!("\x1b[{}m{}\x1b[0m", code, s)
+}
+
+#[cfg(test)]
+mod tests_cli_clair {
+    use super::*;
+
+    #[test]
+    fn comp_extension_exe_windows_seulement() {
+        // Linux : le nom explicite est conservé tel quel.
+        assert_eq!(nom_sortie_comp("main", false), "main");
+        assert_eq!(nom_sortie_comp("sortie.exe", false), "sortie.exe");
+        // Windows : .exe ajouté s'il manque, jamais doublé.
+        assert_eq!(nom_sortie_comp("main", true), "main.exe");
+        assert_eq!(nom_sortie_comp("main.exe", true), "main.exe");
+        assert_eq!(nom_sortie_comp("MAIN.EXE", true), "MAIN.EXE");
+        // -o explicite : honoré, avec ajout du suffixe manquant sous Windows.
+        assert_eq!(nom_sortie_comp("sortie", true), "sortie.exe");
+        assert_eq!(nom_sortie_comp("sortie.bin", true), "sortie.bin.exe");
+    }
+
+    #[test]
+    fn interface_neutre_sans_outil_de_construction() {
+        let textes = [usage(), crate::interp::version(), crate::interp::info()];
+        for t in &textes {
+            let bas = t.to_ascii_lowercase();
+            assert!(!bas.contains("rust"), "mention interdite dans : {}", t.lines().next().unwrap_or(""));
+            assert!(!bas.contains("cargo"), "mention interdite dans : {}", t.lines().next().unwrap_or(""));
+            assert!(!bas.contains("cranelift"), "mention interdite dans : {}", t.lines().next().unwrap_or(""));
+        }
+    }
+
+    #[test]
+    fn banniere_et_aide_presentent_le_langage() {
+        let u = usage();
+        assert!(u.starts_with(&format!(
+            "Rose {} — langage de programmation en français (maths exactes, JIT, AOT, compilation autonome)",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(u.contains("99 % des usages"));
+        assert!(u.contains("rose comp prog.rose"));
+        assert!(u.contains("rose aot prog.rose"));
+        assert!(u.contains("rose llvm prog.rose"));
+        let v = crate::interp::version();
+        assert!(v.starts_with(&format!(
+            "Rose {} — langage de programmation en français",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(crate::interp::info().contains("langage de programmation en français"));
+    }
 }

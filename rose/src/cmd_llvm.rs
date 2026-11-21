@@ -1,13 +1,13 @@
 //! Commandes LLVM de la ligne de commande (`rose llvm`, `rose orc`,
 //! `rose link`).
 //!
-//! Ce module est partagé par le binaire principal et par le helper AOT
-//! (`rose-aot`) que le binaire principal télécharge à la demande quand la
-//! chaîne LLVM n'y est pas embarquée.
+//! Ce module est partagé par le binaire principal et par un helper AOT
+//! éventuellement installé localement (aucun téléchargement automatique).
 //!
-//! Note : la commande `llvm` (transpilation vers C via le codeur Python)
-//! n'a PAS besoin de LLVM — elle est donc disponible même dans le binaire
-//! léger. Seules `orc` et `link` exigent LLVM.
+//! Note : la commande `llvm` (transpilation vers C) n'a PAS besoin de
+//! chaîne LLVM — elle est donc disponible même dans le binaire léger.
+//! Seules `orc` et `link` exigent une chaîne AOT locale.
+//! Aucun message utilisateur ne mentionne d'outil de compilation.
 //!
 //! Licence MIT.
 
@@ -48,9 +48,9 @@ fn llvm_codegen(argv: &[String]) -> ! {
         .env("PYTHONPATH", srcdir)
         .status();
     if !st.map(|s| s.success()).unwrap_or(false) {
-        eprintln!("rose: échec de l'AOT LLVM (python3/codegen_c)"); std::process::exit(1);
+        eprintln!("rose: échec de la transpilation C"); std::process::exit(1);
     }
-    println!("rose: {} produit (AOT LLVM)", sortie);
+    println!("rose: {} produit (transpilation C)", sortie);
     std::process::exit(0);
 }
 
@@ -59,9 +59,7 @@ fn orc(argv: &[String]) -> ! {
     #[cfg(not(feature = "llvm"))]
     {
         let _ = argv;
-        eprintln!("rose: la chaîne AOT LLVM n'est pas embarquée dans ce binaire.");
-        eprintln!("      le binaire peut télécharger le helper tout seul (commande 'rose orc')");
-        eprintln!("      ou : cargo build --release --features llvm");
+        eprintln!("rose: chaîne AOT LLVM non disponible — utilisez `rose comp` (autonome) ou installez LLVM localement");
         std::process::exit(1);
     }
     #[cfg(feature = "llvm")]
@@ -126,9 +124,7 @@ fn link(argv: &[String]) -> ! {
     #[cfg(not(feature = "llvm"))]
     {
         let _ = argv;
-        eprintln!("rose: le lieur ELF n'est pas embarqué dans ce binaire.");
-        eprintln!("      le binaire peut télécharger le helper tout seul (commande 'rose link')");
-        eprintln!("      ou : cargo build --release --features llvm");
+        eprintln!("rose: chaîne AOT LLVM non disponible — utilisez `rose comp` (autonome) ou installez LLVM localement");
         std::process::exit(1);
     }
     #[cfg(feature = "llvm")]

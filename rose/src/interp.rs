@@ -7504,18 +7504,21 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     0
 }
 
+/// Présentation NEUTRE du langage : aucune mention de l'outil ayant construit
+/// Rose ni de technologie de compilation externe dans l'interface utilisateur.
+/// `JIT`/`AOT` sont des concepts du produit et sont conservés.
 pub fn version() -> String {
-    format!("Rose {} — compilateur Rust + JIT Cranelift (sémantique exacte)", env!("CARGO_PKG_VERSION"))
+    format!("Rose {} — langage de programmation en français (maths exactes, JIT, AOT, compilation autonome)", env!("CARGO_PKG_VERSION"))
 }
 
 pub fn info() -> String {
     let arch = if cfg!(target_arch = "aarch64") { "ARM 64 bits" } else { "x86-64" };
     format!("rose {}\n  \
-             moteur            : Rust natif {} — JIT Cranelift + interpréteur exact\n  \
-             maths exactes     : BigInt natif (num-bigint, illimité, zéro GMP)\n  \
-             nombres           : entiers, rationnels, flottants, irrationnels (√n), complexes (a+bi)\n  \
-             interpréteur      : intégré (repli du JIT, mêmes sorties)\n  \
-             compilation       : JIT à chaud des fonctions entiers/flottants/booléens\n",
+             langage           : Rose — langage de programmation en français\n  \
+             architecture      : {}\n  \
+             maths exactes     : entiers illimités, rationnels, flottants, irrationnels (√n), complexes (a+bi)\n  \
+             exécution         : JIT à chaud + interpréteur intégré (résultats identiques)\n  \
+             compilation       : exécutable autonome (`rose comp`), JIT et AOT optionnels\n",
              env!("CARGO_PKG_VERSION"), arch)
 }
 
