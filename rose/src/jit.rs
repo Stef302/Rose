@@ -1156,6 +1156,23 @@ pub fn compilable(ty: TyKind) -> bool {
     matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
 }
 
+/// Décision de compilabilité du PROGRAMME PRINCIPAL. `ty_statique` résout
+/// les appels via `PROG_AVEC` : sans cette table, `>> fib(12)` était refusé
+/// (type de l'appel inconnu) et le principal retombait à l'interpréteur. La
+/// table est posée LE TEMPS de la décision, puis effacée — exactement comme
+/// `fonction_compilable` le fait pour les corps de fonction.
+fn principal_compilable_prouve(instrs: &[crate::front::Instr],
+                               sigs: &HashMap<String, Signature>) -> bool {
+    let mut env = HashMap::new();
+    if crate::front::i_est_compteur() {
+        env.insert("i".into(), crate::front::TyKind::Entier);
+    }
+    PROG_AVEC.with(|p| { *p.borrow_mut() = sigs.clone(); });
+    let r = bloc_compilable(instrs, &mut env, sigs, Some(crate::front::TyKind::Vide));
+    PROG_AVEC.with(|p| { p.borrow_mut().clear(); });
+    r
+}
+
 /// ═══════════════════════════════════════════════════════════════════════
 /// JIT RÉEL PAR DÉFAUT (vague 83 — `JIT_REEL.md`)
 /// ═══════════════════════════════════════════════════════════════════════
@@ -1718,6 +1735,21 @@ fn corps_a_accumulateur_flottant_ou_complexe(b: &[Instr], env: &HashMap<String, 
     scan(b, &mut local)
 }
 
+/// Exposant entier LITTÉRAL borné d'une puissance AST (miroir de
+/// `exposant_rir_const`). Au-delà de 64 on refuse la compilation : l'émetteur
+/// déroule autant d'appels à `rose_mul_ent`, et un exposant variable n'est pas
+/// émissible (le degré doit être connu à la compilation).
+fn exposant_ast_const(e: &Expr) -> Option<i64> {
+    if let Expr::Litteral { texte, flott: false, .. } = e {
+        if !texte.contains('/') {
+            if let Ok(k) = texte.parse::<i64>() {
+                if (0..=64).contains(&k) { return Some(k); }
+            }
+        }
+    }
+    None
+}
+
 pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                    prog: &HashMap<String, Signature>, attendu: Option<TyKind>) -> bool {
     // publication des types pour est_boucle_i (reconnaître 0+1i = variable i).
@@ -1756,7 +1788,13 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 if matches!(op.as_str(), "*" | "^") {
                     if matches!(op.as_str(), "^") {
                         if f(a) || f(b) { return sur_i64(a, env) && sur_i64(b, env); }
-                        return false; // ^ entier reste interprete (degre inconnu)
+                        // Puissance ENTIÈRE : émissible dès que le degré est
+                        // un littéral borné. L'émetteur déroule `rose_mul_ent`
+                        // (promotion BigInt exacte au dépassement), jamais un
+                        // `imul` qui wrapperait. Un exposant variable reste
+                        // interprété (degré inconnu à la compilation).
+                        return exposant_ast_const(b).is_some()
+                            && sur_i64(a, env) && sur_i64(b, env);
                     }
                     // * entier : voie taggee (promotion BigInt au depassement)
                     return sur_i64(a, env) && sur_i64(b, env);
@@ -1883,19 +1921,28 @@ pub fn bloc_compilable(instrs: &[Instr], env: &mut HashMap<String, TyKind>,
                 }
                 if let Some(e) = e {
                     let t = match ty_statique(e, env) { Some(t) => t, None => return false };
-                    // un entier issu de * ou ^ peut promouvoir en GMP ; la trame
-                    // i64 du JIT ne sait pas le representer (imul wrapp en
-                    // silence). Refuser la compilation -> repli interprete exact.
-                    fn multiplicatif(e: &Expr) -> bool {
+                    // Un entier issu de * ou ^ peut promouvoir en GMP. Le
+                    // compilable doit rester conservateur, MAIS l'émetteur
+                    // AST dispose désormais de deux voies EXACTES :
+                    //   * `+`/`-`/`*`/`/`/`%` : overflow i64 détecté + repli
+                    //     `rose_*_ent` (promotion BigInt) ;
+                    //   * `^` à exposant littéral borné : `emettre_puissance_ent_rir`
+                    //     déroule `rose_mul_ent`, donc aucune perte en i64.
+                    // On refuse donc encore `*` (le tag de retour n'est pas
+                    // fiable dans `Instr::Retour`), mais on ACCEPTE `^` borné :
+                    // le tag y est écrit par `emettre_puissance_ent_rir`.
+                    fn multiplicatif_non_borne(e: &Expr) -> bool {
                         match e {
                             Expr::Binaire { op, a, b, .. } => {
-                                matches!(op.as_str(), "*" | "^") || multiplicatif(a) || multiplicatif(b)
+                                if op == "*" { return true; }
+                                if op == "^" { return exposant_ast_const(b).is_none(); }
+                                multiplicatif_non_borne(a) || multiplicatif_non_borne(b)
                             }
-                            Expr::Unaire { a, .. } => multiplicatif(a),
+                            Expr::Unaire { a, .. } => multiplicatif_non_borne(a),
                             _ => false,
                         }
                     }
-                    if t == TyKind::Entier && multiplicatif(e) { return false; }
+                    if t == TyKind::Entier && multiplicatif_non_borne(e) { return false; }
                     // le type doit correspondre au déclaré, SAUF entier vers
                     // flottant : l'émetteur insère fcvt_from_sint (miroir de la
                     // conversion d'arguments, « demi(7) »).
@@ -2071,10 +2118,31 @@ fn eabstrait_rir_compilable_ctx(e: &Eabstrait, slot_types: &[TyKind], corps_noms
             for (i,a) in args.iter().enumerate() {
                 let pt = sig.params[i].1.n;
                 if !compilable(pt) { return false; }
-                let vn = match a { Expr::Var(v,_)=>v, _=>return false };
-                let sl = match corps_noms.iter().position(|n| n==vn) { Some(i)=>i, None=>return false };
-                let at = slot_types.get(sl).copied().unwrap_or(TyKind::Entier);
-                if !compatible_jit(pt, at) { return false; }
+                match a {
+                    // Un argument VARIABLE est transmis depuis son slot.
+                    Expr::Var(vn,_) => {
+                        let sl = match corps_noms.iter().position(|n| n==vn) { Some(i)=>i, None=>return false };
+                        let at = slot_types.get(sl).copied().unwrap_or(TyKind::Entier);
+                        if !compatible_jit(pt, at) { return false; }
+                    }
+                    // JIT3 — un argument LITTÉRAL est désormais émis en
+                    // constante par `expr_eabstrait_rir` (plus de repli AST).
+                    // La porte recopie EXACTEMENT les types que l'émetteur sait
+                    // construire : entier i64, booléen, flottant. Un littéral
+                    // rationnel / complexe / chaîne reste refusé.
+                    Expr::Litteral { texte, flott, rationnel, .. } => {
+                        if *flott || *rationnel || texte.contains('/') {
+                            if pt != TyKind::Flottant { return false; }
+                            if texte.parse::<f64>().is_err() { return false; }
+                        } else if texte.parse::<i64>().is_err() {
+                            return false;
+                        }
+                    }
+                    Expr::BooleenLit(_, _) => {
+                        if !matches!(pt, TyKind::Booleen | TyKind::Entier) { return false; }
+                    }
+                    _ => return false,
+                }
             }
             compilable(sig.retour.n) || sig.retour.n == TyKind::Vide
         }
@@ -3211,13 +3279,10 @@ impl Jit {
         let principal_compilable = if use_rir {
             true
         } else {
-            // mêmes portes de parité qu'une fonction ordinaire
-            let mut env = HashMap::new();
-            if crate::front::i_est_compteur() {
-                env.insert("i".into(), crate::front::TyKind::Entier);
-            }
-            bloc_compilable(sig.corps.as_deref().unwrap_or(&[]), &mut env,
-                            &self.signatures, Some(crate::front::TyKind::Vide))
+            // mêmes portes de parité qu'une fonction ordinaire, avec la
+            // table des signatures ouverte pour résoudre les appels (`>> f(…)`)
+            principal_compilable_prouve(sig.corps.as_deref().unwrap_or(&[]),
+                                        &self.signatures)
         };
         // glb3 : la superinstruction NEON ne peut remplacer une fonction que
         // si aucun code compilé ne l'appelle directement. Un $principal JIT a
@@ -3230,7 +3295,12 @@ impl Jit {
         if self.foncs.is_empty() {
             self.compiler_tout();
         }
-        if !principal_compilable { return None; }
+        if !principal_compilable {
+            if std::env::var("ROSE_TIMING").is_ok() {
+                eprintln!("TIMING-JIT principal=repli-interpreteur (squelette non prouve compilable)");
+            }
+            return None;
+        }
 
         use cranelift::codegen::Context;
         let fid = self.module.declare_function("$principal", Linkage::Preemptible,
@@ -3262,6 +3332,10 @@ impl Jit {
         b.finalize(cible);
         if let Err(_e) = self.module.define_function(fid, &mut fcx) { return None; }
         if let Err(e) = self.module.finalize_definitions() { if std::env::var("ROSE_TIMING").is_ok() { eprintln!("finalize_definitions err: {}", e); } return None; }
+        if std::env::var("ROSE_TIMING").is_ok() {
+            eprintln!("TIMING-JIT principal=cranelift voie={} define_function+finalize_definitions OK",
+                      if use_rir { "rir" } else { "ast" });
+        }
         let code = self.module.get_finalized_function(fid);
         let fptr: usize = code as usize;
         // LISTE_INLINE : remplacer le code Cranelift du principal par une
@@ -3839,12 +3913,7 @@ pub fn prepare_jit(prog: &crate::front::Programme,
         }
     }
     let principal_compilable = if use_rir { true } else {
-        let mut env = HashMap::new();
-        if crate::front::i_est_compteur() {
-            env.insert("i".into(), crate::front::TyKind::Entier);
-        }
-        bloc_compilable(&prog.instructions, &mut env, &sigs,
-                        Some(crate::front::TyKind::Vide))
+        principal_compilable_prouve(&prog.instructions, &sigs)
     };
     if principal_compilable { return (true, out); }
 
@@ -4645,23 +4714,49 @@ impl Emetteur<'_> {
                 }
             }
             Eabstrait::AppelRir { nom, args } => {
-                // args sont des Expr::Var
+                // JIT3 — un argument est soit un slot (Expr::Var), soit un
+                // littéral prouvé par `eabstrait_rir_compilable`. L'ancien code
+                // ignorait silencieusement tout littéral, émettant un appel
+                // d'arity réduite (valeur fausse) : la porte refusait donc ces
+                // corps. Les deux formes sont maintenant émises explicitement.
                 let mut call_args: Vec<Value> = Vec::new();
                 let mut arg_slot: Option<usize> = None;
                 let sig_callee = self.signatures.get(nom).cloned();
                 if let Some(cs) = sig_callee {
                     for (i,a) in args.iter().enumerate() {
-                        if let Expr::Var(vn, _) = a {
-                            let sl = corps.noms.iter().position(|n| n==vn).unwrap_or(0);
-                            if i == 0 { arg_slot = Some(sl); }
-                            let v = self.builder.use_var(slot_vars[sl]);
-                            let pt = cs.params[i].1.n;
-                            let at = slot_types.get(sl).copied().unwrap_or(TyKind::Entier);
-                            if pt==TyKind::Flottant && at!=TyKind::Flottant {
-                                call_args.push(self.builder.ins().fcvt_from_sint(types::F64, v));
-                            } else {
-                                call_args.push(v);
+                        if i >= cs.params.len() { break; }
+                        let pt = cs.params[i].1.n;
+                        match a {
+                            Expr::Var(vn, _) => {
+                                let sl = corps.noms.iter().position(|n| n==vn).unwrap_or(0);
+                                if i == 0 { arg_slot = Some(sl); }
+                                let v = self.builder.use_var(slot_vars[sl]);
+                                let at = slot_types.get(sl).copied().unwrap_or(TyKind::Entier);
+                                if pt==TyKind::Flottant && at!=TyKind::Flottant {
+                                    call_args.push(self.builder.ins().fcvt_from_sint(types::F64, v));
+                                } else {
+                                    call_args.push(v);
+                                }
                             }
+                            Expr::BooleenLit(b, _) => {
+                                call_args.push(self.builder.ins().iconst(types::I64, if *b {1} else {0}));
+                            }
+                            Expr::Litteral { texte, flott, .. } => {
+                                if *flott || texte.contains('/') {
+                                    let d = texte.parse::<f64>().unwrap_or(0.0);
+                                    let bits = self.builder.ins().iconst(types::I64, d.to_bits() as i64);
+                                    call_args.push(self.builder.ins().bitcast(types::F64, MemFlagsData::new(), bits));
+                                } else {
+                                    let v = texte.parse::<i64>().unwrap_or(0);
+                                    let ci = self.builder.ins().iconst(types::I64, v);
+                                    if pt == TyKind::Flottant {
+                                        call_args.push(self.builder.ins().fcvt_from_sint(types::F64, ci));
+                                    } else {
+                                        call_args.push(ci);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     // ── Vague 22 (D3) : spécialisation `est_premier` au point
@@ -7759,7 +7854,7 @@ impl Emetteur<'_> {
                             let inst = self.builder.ins().call(f, &[g, d]);
                             JitVal::Simple(self.builder.inst_results(inst)[0])
                         } else {
-                            JitVal::Simple(self.i64_pow(g, d))
+                            self.i64_pow(g, tag_g, b)
                         }
                     }
                     _ => {
@@ -8168,11 +8263,27 @@ fn powf(&mut self) -> FuncRef {
         self.builder.ins().select(doit, q2, q)
     }
 
-    fn i64_pow(&mut self, g: Value, d: Value) -> Value {
-        // ^ entier : refuse en amont (sur_i64 retourne false), ce code n'est
-        // jamais atteint. Stub pour satisfaire le compilateur.
-        let _ = (g, d);
-        self.builder.ins().iconst(types::I64, 0)
+    /// `base ^ exposant` sur des entiers EXACTS (chemin AST).
+    ///
+    /// L'exposant est un littéral borné prouvé par `exposant_ast_const` : on
+    /// déroule `k` appels à `rose_mul_ent`, le MÊME helper que la voie RIR.
+    /// Le tag résultant est publié dans `tag_tmp` (le trampoline le relit),
+    /// donc un dépassement i64 est boxé exactement comme dans l'interpréteur.
+    /// Aucun `imul` wrapping n'est émis.
+    fn i64_pow(&mut self, g: Value, tag_g: Value, exposant: &Expr) -> JitVal {
+        let Some(k) = exposant_ast_const(exposant) else {
+            // porte en amont : exposant variable ou > 64, jamais atteint.
+            let z = self.builder.ins().iconst(types::I64, 0);
+            return JitVal::Simple(z);
+        };
+        if k == 0 {
+            let zt = self.builder.ins().iconst(types::I64, 0);
+            self.builder.def_var(self.tag_tmp, zt);
+            return JitVal::Simple(self.builder.ins().iconst(types::I64, 1));
+        }
+        let (r, rt) = self.emettre_puissance_ent_rir(g, tag_g, k);
+        self.builder.def_var(self.tag_tmp, rt);
+        JitVal::Simple(r)
     }
 
     fn emettre_bloc(&mut self, instrs: &[Instr], env: &mut HashMap<String, Variable>,
