@@ -3596,24 +3596,34 @@ fn g5_patch() -> liste<entier> {
 # épuisement du tas (8 Gio) avant le moindre octet sur /dev/stdout. On
 # fusionne les morceaux deux par deux : O(n log n) copies, mémoire ~2× la
 # taille finale. Les octets produits sont strictement identiques.
-fn g5_assemble($parts: liste<chaine>) -> chaine {
-  # Rose n'a pas de littéral de liste vide typée : l'index 0 est un
-  # SENTINELLE (chaîne vide) qui doit être sauté à chaque passe, sinon
-  # la réduction n=3 tourne en boucle (mesuré : timeout sur 4 morceaux).
+# HOST-2 — base de la liste DEDUITE DU NOMBRE DE MORCEAUX.
+# Mesure (em_diag5 sur verif.rir, 180 574 o) : `ELF0 n=0` — apres un gros
+# travail, le litteral `[""]` de g5_elf() donne une liste VIDE (pas de
+# sentinelle). L'ancien g5_assemble sautait systematiquement l'index 0 :
+# il ecartait donc exactement le magic de 8 octets (455 368 au lieu de
+# 455 376). Inversement, forcer la base a 0 fait tourner la reduction en
+# boucle quand le sentinelle EST present (n=3 a chaque passe).
+# On ne devine plus : $attendu est le nombre de joindre reels effectues par
+# g5_elf(), donc base = longueur($parts) - $attendu (0 ou 1), et on
+# reclacule cette base a chaque passe avec le nombre de morceaux restants.
+fn g5_assemble($parts: liste<chaine>, $attendu: entier) -> chaine {
   $n = longueur($parts)
-  si ($n < 2) { retour "" }
-  tant_que ($n > 2) {
+  $base = $n - $attendu
+  si ($attendu < 1) { retour "" }
+  tant_que ($attendu > 1) {
     $next = [""]
-    $i = 1
+    $i = $base
     tant_que ($i + 1 < $n) {
       joindre($next, $parts[$i] + $parts[$i + 1])
       $i = $i + 2
     }
     si ($i < $n) { joindre($next, $parts[$i]) }
     $parts = $next
+    $attendu = partie_entiere(($attendu + 1) / 2)
     $n = longueur($parts)
+    $base = $n - $attendu
   }
-  retour $parts[1]
+  retour $parts[$base]
 }
 
 fn g5_elf() -> chaine {
@@ -3650,7 +3660,8 @@ fn g5_elf() -> chaine {
   joindre($parts, u64le(0) + u64le(137438953472) + u64le(4096))
   $i = 0
   tant_que ($i < longueur($g5_code)) { joindre($parts, u32le($g5_code[$i])); $i = $i + 1 }
-  retour g5_assemble($parts)
+  # 1 magic + 8 NUL + 9 en-tetes = 18 morceaux fixes, puis un par mot de code.
+  retour g5_assemble($parts, 18 + longueur($g5_code))
 }
 
 # ── Point d'entrée ──
