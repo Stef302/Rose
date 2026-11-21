@@ -82,3 +82,30 @@ Le jalon complet sur `rnat.rir` (636 570 o) n'a PAS pu être rejoué dans le
 temps imparti à ce sous-agent : l'émission de ce RIR prend ~3 973 s (66 min)
 sur cette machine, contre ~312 s pour le cas 180 Ko rejoué ci-dessus. Aucun
 résultat n'est inventé pour ce jalon.
+
+## 5. Jalon C0 rejoué sur `rnat.rir` (21/11/2026, 20:41 UTC) — SUCCÈS
+
+Après le correctif `g5_assemble`, l'émission complète a été rejouée :
+
+```
+./rose/rose compilateur/emetteur_elf.rose /tmp/opencode/rnat.rir > /tmp/opencode/C0.elf
+```
+
+Résultat mesuré : `rc=0`, **1 365 964 octets**, magic `7f454c4602010100`,
+`file` = `ELF 64-bit LSB executable, ARM aarch64, statically linked`.
+Avant correctif : code machine brut, aucun `\x7fELF`. Le jalon HOST-2 est franchi.
+
+Test fonctionnel de `C0` (compilateur natif, sans Rust) :
+
+```
+C0 fib28.rose > C0_smoke.elf      → rc=0, 8 448 o, magic 7f454c46
+./C0_smoke.elf                     → 317811, rc=0
+rose rose_natif.rose fib28.rose > ref_fib.elf
+cmp C0_smoke.elf ref_fib.elf       → cmp=0
+md5 des deux                       → d1a7c71b207f692b429e559a22661f5d
+```
+
+Le compilateur **émis** produit donc un binaire **octet pour octet identique** à celui
+du compilateur source. La chaîne `C1 = C0(rose_natif.rose)`,
+`C2 = C1(rose_natif.rose)`, `cmp C1 C2` est lancée séparément
+(`tests_selfhost/verifier_point_fixe_C.sh`, journal `/tmp/opencode/point_fixe_C.log`).
