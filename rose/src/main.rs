@@ -224,7 +224,7 @@ fn usage() -> String {
 Usage :
   rose prog.rose [args…]   exécuter un programme Rose (interpréteur + JIT)
   rose run prog.rose       identique
-  rose comp prog.rose [-o sortie]   exécutable autonome : moteur + source collés, démarre immédiatement, aucun outil externe (~8,8 Mo) ; .exe ajouté automatiquement sur Windows
+  rose comp prog.rose [-o sortie]   exécutable autonome prêt à l'emploi (ajoute .exe sur Windows)
   rose latex prog.rose              formule LaTeX du programme entier
   rose latex prog.rose --apercu     idem, rendu VISIBLE (Unicode, sans LaTeX)
   rose latex prog.rose --lignes     seulement les lignes marquees %% (LaTeX brut)
@@ -236,10 +236,10 @@ Usage :
   rose rvm fichier.rosebc [classe] [methode] [args...]   exécuter dans la JVM Rose sandboxée
   rose transpile prog.rose --cible js|py|c [-o sortie]   transpilation lisible (JS/Python/C)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
-  rose llvm prog.rose [-o sortie]   transpilation C puis clang/gcc (optionnel)
-  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   binaire natif optimisé par compilation AOT LLVM ORC, sans JIT au runtime (optionnel) ; nécessite la chaîne LLVM (helper à côté de rose.exe ou installé). Alias de orc.
-  rose orc prog.rose [-o sortie] [-O1|-O2|-O3] [--pgo-generate|--pgo-use] [--link]   idem (compilation AOT LLVM ORC en interne, optionnelle) ; nécessite la chaîne LLVM
-  rose link objet.o [-o sortie]   lier un objet natif en exécutable (nécessite la chaîne LLVM)
+  rose llvm prog.rose [-o sortie]   génère un fichier C à partir du programme
+  rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   binaire natif optimisé, compilé à l'avance (optionnel). Alias de orc.
+  rose orc prog.rose [-o sortie] [-O1|-O2|-O3]   idem, compilation en mémoire (optionnelle)
+  rose link objet.o [-o sortie]   lie un objet natif en exécutable
   rose info                état du moteur
   rose console [fichier.rose]   console interactive (REPL) — :help, :more [N] (30 chiffres de plus)
   rose repl [fichier.rose]      identique

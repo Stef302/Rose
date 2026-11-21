@@ -42,15 +42,17 @@ fn llvm_codegen(argv: &[String]) -> ! {
         if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
         if sortie.is_empty() { sortie = "programme".into(); }
     }
-    let srcdir = "archive/rose2_old_python/src";
-    let st = std::process::Command::new("python3")
-        .args(["-m", "rose2.driver", "build", &fichier, "--cible", "c", "-o", &sortie])
-        .env("PYTHONPATH", srcdir)
-        .status();
-    if !st.map(|s| s.success()).unwrap_or(false) {
-        eprintln!("rose: échec de la transpilation C"); std::process::exit(1);
+    // Le transpileur C est intégré à Rose (rose/src/transpile.rs) : aucun
+    // processus externe, aucun Python, aucune dépendance. On utilise la même
+    // API que `rose transpile --cible c`.
+    let code = match crate::transpile::transpiler_fichier(&fichier, crate::transpile::Cible::C) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("rose: transpilation impossible : {e}"); std::process::exit(1); }
+    };
+    if let Err(e) = std::fs::write(&sortie, code.as_bytes()) {
+        eprintln!("rose: impossible d'écrire {sortie} : {e}"); std::process::exit(1);
     }
-    println!("rose: {} produit (transpilation C)", sortie);
+    println!("rose: {sortie} produit (code C)");
     std::process::exit(0);
 }
 
