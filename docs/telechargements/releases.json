@@ -20,31 +20,31 @@
         {
           "nom": "releases.win.json",
           "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "d643a1e88d1da6c5ae33d8696ed2d7ad3f8d452a0edc591bafa218e1abd1d5b1",
+          "sha256": "e695a7147f79b5262795901a67d2e5930da6e00c024932fc56eccbe883b2b344",
           "taille": 403
         },
         {
           "nom": "Rose-0.1.7-full.nupkg",
           "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.7-full.nupkg",
-          "sha256": "e07200b4377cffc6909e50b821241c4c90f3c6ff9ae3c73562e683bbaba00870",
+          "sha256": "f962094963d5903642f50b493b62223ba6382f4873eda8c9804a18938a148781",
           "taille": 10227816
         },
         {
           "nom": "rose-aarch64-linux",
           "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "27e5fe53d26fdfb68c06e4773181023fbe4f523aacf45e7c471df414f910a69d",
+          "sha256": "082deb2a3f929ed5442fe443a02f87807e62ff8ef300e03beed8f6e5c357b699",
           "taille": 5063728
         },
         {
           "nom": "rose-setup.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "e069eb095acfb568588a94156a06be851ab53eb0465f9e9a6c2aba3c14c244ba",
+          "sha256": "e99dfe5666fc6ffb69aaa2c627b26aa017abe1e413548618d15686932a826a3a",
           "taille": 11082240
         },
         {
           "nom": "rose-shell.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "01b7b1ff8f02c8ae8122f3fbae169362ea3585f76ae6ef554a2abdb11ccac240",
+          "sha256": "d9804c3f0c5046f0491124093bcdd6d8376b407ab9d79ed197c8e07355c3990d",
           "taille": 463360
         },
         {
@@ -56,7 +56,7 @@
         {
           "nom": "rose.exe",
           "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "e9ca6c47a2077e5141d82907375513a9d1cd172ab218b3b07abd186f450b3566",
+          "sha256": "058d778b59ade76bc6d560cf7c621d58f7a4abf06d518af0eeba3fc4677b6da3",
           "taille": 9230848
         },
         {
