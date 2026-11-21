@@ -1244,3 +1244,10 @@ rose/src/{cmd_llvm,link_natif,natif_emetteur,rir}.rs + rose/docs/AOT_NATIF.md
 |---|---|---|
 | AOT2 | faire fonctionner `rose aot fib.rose` (appels RIR récursifs) | rose/src/{natif_emetteur,link_natif,cmd_llvm,rir}.rs, rose/docs/AOT2.md |
 | UITRAY | icône tray visible + pas de doublon options + tige non crop | rose/src/{bin/rose-tray,setup_gui}.rs, rose/docs/UI_TRAY.md |
+
+## Vague 78 — AOT primorielle + tray icône + textes crop
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| AOT3 | AOT gère `>> 565#` (primorielle) | rose/src/{rir,natif_emetteur,cmd_llvm}.rs, docs/AOT3.md |
+| UITRAY2 | tray icône/actif, message "prend effet après", tige et texte crop | rose/src/{bin/rose-tray,setup_gui,setup_core}.rs, docs/UI_TRAY2.md |
