@@ -1786,6 +1786,7 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "ecrire_bytes") { retour "vide|chaine,chaine" }
   si ($nom == "ecrire_binaire") { retour "vide|chaine,liste" }
   si ($nom == "lire_texte") { retour "chaine|chaine" }
+  si ($nom == "eval_expr") { retour "chaine|chaine" }
   si ($nom == "ecrire_texte") { retour "vide|chaine,chaine" }
   si ($nom == "nb_arguments") { retour "entier|" }
   si ($nom == "argument") { retour "chaine|entier" }
@@ -3482,8 +3483,8 @@ fn em_fonction($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
 }
 
 # ══════════════════ jonction des deux étages (généré) ══════════════════
-# Le front-end est une fonction : ses variables deviennent des slots locaux,
-# ce qui garde la table des globales G5 sous la borne des 512 entrées.
+# Le front-end est une fonction : ses variables deviennent LOCALES, ce qui
+# garde la table des globales G5 sous la borne des 512 entrées.
 # Le backend, lui, DOIT rester au niveau supérieur : ses $g5_* sont des
 # globales lues par les routines g5_emit_* émises en code machine.
 fn em_source_rir() -> chaine {

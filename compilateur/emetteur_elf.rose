@@ -3,6 +3,393 @@
 # Zéro dépendance externe : pas de rustc, pas de clang, pas de LLVM.
 # Utilisation : rose/rose run compilateur/emetteur_elf.rose prog.rose -o sortie
 
+# ═══════════════════════════════════════════════════════════════════════
+# eval_expr — évaluateur d'expressions Rose EN ROSE PUR (sous-ensemble G5).
+# Miroir de la primitive native `eval_expr` (rose/src/interp.rs:5717) :
+#   entrée "<expr> // vars: nom=valeur …" -> chaîne résultat.
+# Formes couvertes : entiers exacts, rationnels, flottants, chaînes,
+# booléens, variables du contexte, + - * / % ^, comparaisons, et/ou/non,
+# parenthèses et opérateurs unaires. Toutes les variables sont LOCALES
+# (aucune globale G5 ajoutée : la table reste sous la borne des 512).
+# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════
+# eval_expr — évaluateur d'expressions Rose en Rose pur (sous-ensemble G5).
+# Contrat (miroir de interp.rs "eval_expr") :
+#   entrée  : "<expr> // vars: nom=valeur nom=valeur …"
+#   sortie  : chaîne — littéral guillemeté, atome nu, ou résultat évalué.
+# Formes couvertes : entiers exacts, rationnels, flottants, chaînes,
+# booléens, variables du contexte, + - * / % ^, comparaisons, et/ou/non,
+# parenthèses, unaires.
+# ═══════════════════════════════════════════════════════════════════════
+
+fn ee_trim($s: chaine) -> chaine {
+  $a = 0
+  $b = longueur($s)
+  tant_que ($a < $b et sous_chaine($s, $a, $a + 1) == " ") { $a = $a + 1 }
+  tant_que ($b > $a et sous_chaine($s, $b - 1, $b) == " ") { $b = $b - 1 }
+  retour sous_chaine($s, $a, $b)
+}
+
+fn ee_trouve($s: chaine, $mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $mot) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn ee_tokens($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == " " ou $c == "\t" ou $c == "\n" ou $c == "\r") {
+      $i = $i + 1
+    } sinon si ($c == "\"") {
+      $j = $i + 1
+      $buf = ""
+      tant_que ($j < $n et sous_chaine($s, $j, $j + 1) != "\"") {
+        $buf = $buf + sous_chaine($s, $j, $j + 1)
+        $j = $j + 1
+      }
+      joindre($r, "S:" + $buf)
+      $i = $j + 1
+    } sinon si ($c == "(" ou $c == ")" ou $c == "[" ou $c == "]" ou
+                $c == "+" ou $c == "-" ou $c == "*" ou $c == "/" ou
+                $c == "%" ou $c == "^" ou
+                $c == ",") {
+      joindre($r, "O:" + $c)
+      $i = $i + 1
+    } sinon si ($c == "=" ou $c == "!" ou $c == "<" ou $c == ">") {
+      si ($i + 1 < $n et sous_chaine($s, $i + 1, $i + 2) == "=") {
+        joindre($r, "O:" + $c + "=")
+        $i = $i + 2
+      } sinon {
+        joindre($r, "O:" + $c)
+        $i = $i + 1
+      }
+    } sinon si ($c >= "0" et $c <= "9") {
+      $j = $i
+      $buf = ""
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si (($d >= "0" et $d <= "9") ou $d == ".") {
+          $buf = $buf + $d
+          $j = $j + 1
+        } sinon si (($d == "e" ou $d == "E") et $j + 1 < $n) {
+          $buf = $buf + $d
+          $j = $j + 1
+          $sg = sous_chaine($s, $j, $j + 1)
+          si ($sg == "+" ou $sg == "-") { $buf = $buf + $sg; $j = $j + 1 }
+        } sinon { $fin = 1 }
+      }
+      joindre($r, "N:" + $buf)
+      $i = $j
+    } sinon si (($c >= "a" et $c <= "z") ou ($c >= "A" et $c <= "Z") ou
+                $c == "_" ou $c == "$") {
+      $j = $i
+      $buf = ""
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si (($d >= "a" et $d <= "z") ou ($d >= "A" et $d <= "Z") ou
+            ($d >= "0" et $d <= "9") ou $d == "_" ou $d == "$") {
+          $buf = $buf + $d
+          $j = $j + 1
+        } sinon { $fin = 1 }
+      }
+      joindre($r, "W:" + $buf)
+      $i = $j
+    } sinon {
+      joindre($r, "O:" + $c)
+      $i = $i + 1
+    }
+  }
+  retour $r
+}
+
+fn ee_var($ctx: chaine, $nom: chaine) -> chaine {
+  $res = ""
+  $buf = ""
+  $p = 0
+  $n = longueur($ctx)
+  tant_que ($p <= $n) {
+    $c = ""
+    si ($p < $n) { $c = sous_chaine($ctx, $p, $p + 1) }
+    si ($p == $n ou $c == " " ou $c == "\t" ou $c == "\n" ou $c == ",") {
+      $eq = -1
+      $k = 0
+      tant_que ($k < longueur($buf)) {
+        si (sous_chaine($buf, $k, $k + 1) == "=" et $eq < 0) { $eq = $k }
+        $k = $k + 1
+      }
+      si ($eq > 0) {
+        si (sous_chaine($buf, 0, $eq) == $nom) {
+          $val = sous_chaine($buf, $eq + 1, longueur($buf))
+          # Une paire malformée (ex. "a==") n'est PAS une définition : la
+          # primitive native rend alors l'expression non substituée.
+          si (longueur($val) > 0 et sous_chaine($val, 0, 1) != "=") { $res = $val }
+        }
+      }
+      $buf = ""
+    } sinon {
+      $buf = $buf + $c
+    }
+    $p = $p + 1
+  }
+  retour $res
+}
+
+fn ee_num($s: chaine) {
+  $slash = -1
+  $dot = -1
+  $exp = -1
+  $k = 0
+  tant_que ($k < longueur($s)) {
+    $c = sous_chaine($s, $k, $k + 1)
+    si ($c == "/" et $slash < 0) { $slash = $k }
+    si ($c == "." et $dot < 0) { $dot = $k }
+    si (($c == "e" ou $c == "E") et $exp < 0) { $exp = $k }
+    $k = $k + 1
+  }
+  si ($slash > 0) {
+    $a = sous_chaine($s, 0, $slash)
+    $b = sous_chaine($s, $slash + 1, longueur($s))
+    retour fraction(entier($a), entier($b))
+  }
+  si ($dot >= 0 ou $exp >= 0) { retour flottant($s) }
+  retour entier($s)
+}
+
+fn ee_norm_num($s: chaine) -> chaine {
+  $slash = ee_trouve($s, "/")
+  $dot = ee_trouve($s, ".")
+  $exp = ee_trouve($s, "e")
+  si ($exp < 0) { $exp = ee_trouve($s, "E") }
+  si ($slash >= 0) {
+    retour chaine(ee_num($s))
+  }
+  si ($dot >= 0 ou $exp >= 0) {
+    $f = flottant($s)
+    $z = entier($f)
+    si ($f == $z) { retour chaine($z) }
+    retour chaine($f)
+  }
+  retour chaine(entier($s))
+}
+
+fn ee_op($tok: chaine) -> chaine {
+  $p = ee_trouve($tok, ":")
+  $v = sous_chaine($tok, $p + 1, longueur($tok))
+  si ($p >= 0 et sous_chaine($tok, 0, 1) == "O") { retour $v }
+  si ($p >= 0 et sous_chaine($tok, 0, 1) == "W") {
+    si ($v == "et" ou $v == "ou" ou $v == "non") { retour $v }
+  }
+  retour ""
+}
+
+fn ee_prec($op: chaine) -> entier {
+  si ($op == "ou") { retour 1 }
+  si ($op == "et") { retour 2 }
+  si ($op == "==" ou $op == "!=" ou $op == "<" ou $op == ">" ou
+      $op == "<=" ou $op == ">=") { retour 3 }
+  si ($op == "+" ou $op == "-") { retour 4 }
+  si ($op == "*" ou $op == "/" ou $op == "%") { retour 5 }
+  si ($op == "^") { retour 6 }
+  retour 0
+}
+
+fn ee_apply($op: chaine, $k1: chaine, $v1: chaine, $k2: chaine, $v2: chaine, $orig: chaine) -> liste<chaine> {
+  $rr = ["", "", $orig, ""]
+  si ($k1 == "u" ou $k2 == "u") {
+    $rr = ["", "u", $orig, ""]
+    retour $rr
+  }
+  $b1 = 0
+  si ($v1 == "vrai") { $b1 = 1 }
+  $b2 = 0
+  si ($v2 == "vrai") { $b2 = 1 }
+  si ($op == "et") {
+    si ($b1 == 1 et $b2 == 1) { $rr = ["", "b", "vrai", ""] } sinon { $rr = ["", "b", "faux", ""] }
+    retour $rr
+  }
+  si ($op == "ou") {
+    si ($b1 == 1 ou $b2 == 1) { $rr = ["", "b", "vrai", ""] } sinon { $rr = ["", "b", "faux", ""] }
+    retour $rr
+  }
+  # Comparaisons
+  si ($op == "==" ou $op == "!=" ou $op == "<" ou $op == ">" ou
+      $op == "<=" ou $op == ">=") {
+    $cg = 0
+    si ($k1 == "s" et $k2 == "s") {
+      si ($op == "==") { si ($v1 == $v2) { $cg = 1 } }
+      si ($op == "!=") { si ($v1 != $v2) { $cg = 1 } }
+      si ($op == "<") { si ($v1 < $v2) { $cg = 1 } }
+      si ($op == ">") { si ($v1 > $v2) { $cg = 1 } }
+      si ($op == "<=") { si ($v1 <= $v2) { $cg = 1 } }
+      si ($op == ">=") { si ($v1 >= $v2) { $cg = 1 } }
+    } sinon {
+      $x = ee_num($v1)
+      $y = ee_num($v2)
+      si ($op == "==") { si ($x == $y) { $cg = 1 } }
+      si ($op == "!=") { si ($x != $y) { $cg = 1 } }
+      si ($op == "<") { si ($x < $y) { $cg = 1 } }
+      si ($op == ">") { si ($x > $y) { $cg = 1 } }
+      si ($op == "<=") { si ($x <= $y) { $cg = 1 } }
+      si ($op == ">=") { si ($x >= $y) { $cg = 1 } }
+    }
+    si ($cg == 1) { $rr = ["", "b", "vrai", ""] } sinon { $rr = ["", "b", "faux", ""] }
+    retour $rr
+  }
+  # Concaténation de chaînes
+  si ($op == "+" et ($k1 == "s" ou $k2 == "s")) {
+    $rr = ["", "s", $v1 + $v2, ""]
+    retour $rr
+  }
+  $x = ee_num($v1)
+  $y = ee_num($v2)
+  # Chaque branche RETOURNE immédiatement : le type de $rr est ainsi celui
+  # du résultat réel (entier exact, rationnel ou flottant), sans figer $z.
+  si ($op == "+") {
+    $rr = ["", "n", chaine($x + $y), ""]
+    retour $rr
+  }
+  si ($op == "-") {
+    $rr = ["", "n", chaine($x - $y), ""]
+    retour $rr
+  }
+  si ($op == "*") {
+    $rr = ["", "n", chaine($x * $y), ""]
+    retour $rr
+  }
+  si ($op == "/") {
+    $rr = ["", "n", chaine($x / $y), ""]
+    retour $rr
+  }
+  si ($op == "%") {
+    $rr = ["", "n", chaine(entier($v1) % entier($v2)), ""]
+    retour $rr
+  }
+  si ($op == "^") {
+    $rr = ["", "n", chaine(ee_puissance($x, entier($v2))), ""]
+    retour $rr
+  }
+  retour $rr
+}
+
+fn ee_puissance($base, $exp: entier) {
+  $r = $base - $base + 1
+  $i = 0
+  tant_que ($i < $exp) { $r = $r * $base; $i = $i + 1 }
+  retour $r
+}
+
+fn ee_atom($t: liste<chaine>, $p: entier, $ctx: chaine, $orig: chaine) -> liste<chaine> {
+  $rr = ["", "", $orig, ""]
+  $tok = $t[$p]
+  $pref = sous_chaine($tok, 0, 1)
+  $v = sous_chaine($tok, 2, longueur($tok))
+  si ($v == "non" et $pref == "W") {
+    $r = ee_atom($t, $p + 1, $ctx, $orig)
+    si ($r[1] == "u") { retour $r }
+    si ($r[2] == "vrai") { $rr = ["", "b", "faux", $r[3]] } sinon { $rr = ["", "b", "vrai", $r[3]] }
+    retour $rr
+  }
+  si ($v == "-" et $pref == "O") {
+    $r = ee_atom($t, $p + 1, $ctx, $orig)
+    si ($r[1] == "u") { retour $r }
+    $zz = 0 - ee_num($r[2])
+    $rr = ["", "n", chaine($zz), $r[3]]
+    retour $rr
+  }
+  si ($v == "(" et $pref == "O") {
+    $r = ee_parse($t, $p + 1, $ctx, 1, $orig)
+    $q = entier($r[3])
+    si ($q < longueur($t) et ee_op($t[$q]) == ")") { $q = $q + 1 }
+    $rr = ["", $r[1], $r[2], chaine($q)]
+    retour $rr
+  }
+  si ($pref == "S") { $rr = ["", "s", $v, chaine($p + 1)]; retour $rr }
+  si ($pref == "N") { $rr = ["", "n", ee_norm_num($v), chaine($p + 1)]; retour $rr }
+  si ($pref == "W") {
+    si ($v == "vrai" ou $v == "faux") { $rr = ["", "b", $v, chaine($p + 1)]; retour $rr }
+    $nom = $v
+    si (sous_chaine($nom, 0, 1) == "$") { $nom = sous_chaine($nom, 1, longueur($nom)) }
+    $val = ee_var($ctx, $nom)
+    si (longueur($val) == 0) { $rr = ["", "u", $orig, ""]; retour $rr }
+    # La valeur substituée est un atome : chaîne guillemetée, booléen ou nombre.
+    si (longueur($val) >= 2 et sous_chaine($val, 0, 1) == "\"" et
+        sous_chaine($val, longueur($val) - 1, longueur($val)) == "\"") {
+      $rr = ["", "s", sous_chaine($val, 1, longueur($val) - 1), chaine($p + 1)]
+      retour $rr
+    }
+    si ($val == "vrai" ou $val == "faux") { $rr = ["", "b", $val, chaine($p + 1)]; retour $rr }
+    $rr = ["", "n", $val, chaine($p + 1)]
+    retour $rr
+  }
+  retour $rr
+}
+
+fn ee_parse($t: liste<chaine>, $p: entier, $ctx: chaine, $min: entier, $orig: chaine) -> liste<chaine> {
+  $r = ee_atom($t, $p, $ctx, $orig)
+  $k = $r[1]
+  $v = $r[2]
+  $q = entier($r[3])
+  $fin = 0
+  tant_que ($q < longueur($t) et $fin == 0) {
+    $op = ee_op($t[$q])
+    $pr = ee_prec($op)
+    si ($pr < $min ou $pr == 0) { $fin = 1 }
+    sinon {
+      $droite = ee_parse($t, $q + 1, $ctx, $pr + 1, $orig)
+      $r2 = ee_apply($op, $k, $v, $droite[1], $droite[2], $orig)
+      $k = $r2[1]
+      $v = $r2[2]
+      $q = entier($droite[3])
+    }
+  }
+  $rr = ["", $k, $v, chaine($q)]
+  retour $rr
+}
+
+fn eval_expr($expr: chaine) -> chaine {
+  $base = ee_trim($expr)
+  # Séparateur de contexte : "// vars:" (et variantes), coupé AVANT le "//".
+  $sep = ee_trouve($base, "// vars:")
+  $saut = 9
+  si ($sep < 0) { $sep = ee_trouve($base, "//vars:"); $saut = 7 }
+  si ($sep < 0) { $sep = ee_trouve($base, "; vars:"); $saut = 7 }
+  si ($sep < 0) { $sep = ee_trouve($base, ";vars:"); $saut = 6 }
+  si ($sep < 0) { $sep = ee_trouve($base, "vars:"); $saut = 5 }
+  $nu = $base
+  $ctx = ""
+  si ($sep >= 0) {
+    $nu = ee_trim(sous_chaine($base, 0, $sep))
+    $ctx = sous_chaine($base, $sep + $saut, longueur($base))
+  }
+  # Littéral guillemeté englobant.
+  $ln = longueur($nu)
+  si ($ln >= 2 et sous_chaine($nu, 0, 1) == "\"" et
+      sous_chaine($nu, $ln - 1, $ln) == "\"") {
+    retour sous_chaine($nu, 1, $ln - 1)
+  }
+  si ($ln == 0) { retour "" }
+  # Un contexte malformé (paire "a==" issue du préprocesseur) fait échouer
+  # le repli natif : l'expression est alors rendue telle quelle.
+  si (ee_trouve($ctx, "==") >= 0) { retour $nu }
+  si ($nu == "vrai" ou $nu == "faux") { retour $nu }
+  $toks = ee_tokens($nu)
+  $r = ee_parse($toks, 1, $ctx, 1, $nu)
+  si ($r[1] == "u") { retour $nu }
+  si (longueur($r[2]) == 0) { retour $nu }
+  retour $r[2]
+}
+
 # ── Utilitaires d'écriture little-endian ──
 
 fn u8le($v: entier) -> chaine {

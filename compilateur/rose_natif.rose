@@ -1786,6 +1786,7 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "ecrire_bytes") { retour "vide|chaine,chaine" }
   si ($nom == "ecrire_binaire") { retour "vide|chaine,liste" }
   si ($nom == "lire_texte") { retour "chaine|chaine" }
+  si ($nom == "eval_expr") { retour "chaine|chaine" }
   si ($nom == "ecrire_texte") { retour "vide|chaine,chaine" }
   si ($nom == "nb_arguments") { retour "entier|" }
   si ($nom == "argument") { retour "chaine|entier" }
@@ -3482,8 +3483,8 @@ fn em_fonction($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
 }
 
 # ══════════════════ jonction des deux étages (généré) ══════════════════
-# Le front-end est une fonction : ses variables deviennent des slots locaux,
-# ce qui garde la table des globales G5 sous la borne des 512 entrées.
+# Le front-end est une fonction : ses variables deviennent LOCALES, ce qui
+# garde la table des globales G5 sous la borne des 512 entrées.
 # Le backend, lui, DOIT rester au niveau supérieur : ses $g5_* sont des
 # globales lues par les routines g5_emit_* émises en code machine.
 fn em_source_rir() -> chaine {
@@ -4091,6 +4092,393 @@ retour $rnat_dump
 # Zéro dépendance externe : pas de rustc, pas de clang, pas de LLVM.
 # Utilisation : rose/rose run compilateur/emetteur_elf.rose prog.rose -o sortie
 
+# ═══════════════════════════════════════════════════════════════════════
+# eval_expr — évaluateur d'expressions Rose EN ROSE PUR (sous-ensemble G5).
+# Miroir de la primitive native `eval_expr` (rose/src/interp.rs:5717) :
+#   entrée "<expr> // vars: nom=valeur …" -> chaîne résultat.
+# Formes couvertes : entiers exacts, rationnels, flottants, chaînes,
+# booléens, variables du contexte, + - * / % ^, comparaisons, et/ou/non,
+# parenthèses et opérateurs unaires. Toutes les variables sont LOCALES
+# (aucune globale G5 ajoutée : la table reste sous la borne des 512).
+# ═══════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════
+# eval_expr — évaluateur d'expressions Rose en Rose pur (sous-ensemble G5).
+# Contrat (miroir de interp.rs "eval_expr") :
+#   entrée  : "<expr> // vars: nom=valeur nom=valeur …"
+#   sortie  : chaîne — littéral guillemeté, atome nu, ou résultat évalué.
+# Formes couvertes : entiers exacts, rationnels, flottants, chaînes,
+# booléens, variables du contexte, + - * / % ^, comparaisons, et/ou/non,
+# parenthèses, unaires.
+# ═══════════════════════════════════════════════════════════════════════
+
+fn ee_trim($s: chaine) -> chaine {
+  $a = 0
+  $b = longueur($s)
+  tant_que ($a < $b et sous_chaine($s, $a, $a + 1) == " ") { $a = $a + 1 }
+  tant_que ($b > $a et sous_chaine($s, $b - 1, $b) == " ") { $b = $b - 1 }
+  retour sous_chaine($s, $a, $b)
+}
+
+fn ee_trouve($s: chaine, $mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $mot) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn ee_tokens($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == " " ou $c == "\t" ou $c == "\n" ou $c == "\r") {
+      $i = $i + 1
+    } sinon si ($c == "\"") {
+      $j = $i + 1
+      $buf = ""
+      tant_que ($j < $n et sous_chaine($s, $j, $j + 1) != "\"") {
+        $buf = $buf + sous_chaine($s, $j, $j + 1)
+        $j = $j + 1
+      }
+      joindre($r, "S:" + $buf)
+      $i = $j + 1
+    } sinon si ($c == "(" ou $c == ")" ou $c == "[" ou $c == "]" ou
+                $c == "+" ou $c == "-" ou $c == "*" ou $c == "/" ou
+                $c == "%" ou $c == "^" ou
+                $c == ",") {
+      joindre($r, "O:" + $c)
+      $i = $i + 1
+    } sinon si ($c == "=" ou $c == "!" ou $c == "<" ou $c == ">") {
+      si ($i + 1 < $n et sous_chaine($s, $i + 1, $i + 2) == "=") {
+        joindre($r, "O:" + $c + "=")
+        $i = $i + 2
+      } sinon {
+        joindre($r, "O:" + $c)
+        $i = $i + 1
+      }
+    } sinon si ($c >= "0" et $c <= "9") {
+      $j = $i
+      $buf = ""
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si (($d >= "0" et $d <= "9") ou $d == ".") {
+          $buf = $buf + $d
+          $j = $j + 1
+        } sinon si (($d == "e" ou $d == "E") et $j + 1 < $n) {
+          $buf = $buf + $d
+          $j = $j + 1
+          $sg = sous_chaine($s, $j, $j + 1)
+          si ($sg == "+" ou $sg == "-") { $buf = $buf + $sg; $j = $j + 1 }
+        } sinon { $fin = 1 }
+      }
+      joindre($r, "N:" + $buf)
+      $i = $j
+    } sinon si (($c >= "a" et $c <= "z") ou ($c >= "A" et $c <= "Z") ou
+                $c == "_" ou $c == "$") {
+      $j = $i
+      $buf = ""
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si (($d >= "a" et $d <= "z") ou ($d >= "A" et $d <= "Z") ou
+            ($d >= "0" et $d <= "9") ou $d == "_" ou $d == "$") {
+          $buf = $buf + $d
+          $j = $j + 1
+        } sinon { $fin = 1 }
+      }
+      joindre($r, "W:" + $buf)
+      $i = $j
+    } sinon {
+      joindre($r, "O:" + $c)
+      $i = $i + 1
+    }
+  }
+  retour $r
+}
+
+fn ee_var($ctx: chaine, $nom: chaine) -> chaine {
+  $res = ""
+  $buf = ""
+  $p = 0
+  $n = longueur($ctx)
+  tant_que ($p <= $n) {
+    $c = ""
+    si ($p < $n) { $c = sous_chaine($ctx, $p, $p + 1) }
+    si ($p == $n ou $c == " " ou $c == "\t" ou $c == "\n" ou $c == ",") {
+      $eq = -1
+      $k = 0
+      tant_que ($k < longueur($buf)) {
+        si (sous_chaine($buf, $k, $k + 1) == "=" et $eq < 0) { $eq = $k }
+        $k = $k + 1
+      }
+      si ($eq > 0) {
+        si (sous_chaine($buf, 0, $eq) == $nom) {
+          $val = sous_chaine($buf, $eq + 1, longueur($buf))
+          # Une paire malformée (ex. "a==") n'est PAS une définition : la
+          # primitive native rend alors l'expression non substituée.
+          si (longueur($val) > 0 et sous_chaine($val, 0, 1) != "=") { $res = $val }
+        }
+      }
+      $buf = ""
+    } sinon {
+      $buf = $buf + $c
+    }
+    $p = $p + 1
+  }
+  retour $res
+}
+
+fn ee_num($s: chaine) {
+  $slash = -1
+  $dot = -1
+  $exp = -1
+  $k = 0
+  tant_que ($k < longueur($s)) {
+    $c = sous_chaine($s, $k, $k + 1)
+    si ($c == "/" et $slash < 0) { $slash = $k }
+    si ($c == "." et $dot < 0) { $dot = $k }
+    si (($c == "e" ou $c == "E") et $exp < 0) { $exp = $k }
+    $k = $k + 1
+  }
+  si ($slash > 0) {
+    $a = sous_chaine($s, 0, $slash)
+    $b = sous_chaine($s, $slash + 1, longueur($s))
+    retour fraction(entier($a), entier($b))
+  }
+  si ($dot >= 0 ou $exp >= 0) { retour flottant($s) }
+  retour entier($s)
+}
+
+fn ee_norm_num($s: chaine) -> chaine {
+  $slash = ee_trouve($s, "/")
+  $dot = ee_trouve($s, ".")
+  $exp = ee_trouve($s, "e")
+  si ($exp < 0) { $exp = ee_trouve($s, "E") }
+  si ($slash >= 0) {
+    retour chaine(ee_num($s))
+  }
+  si ($dot >= 0 ou $exp >= 0) {
+    $f = flottant($s)
+    $z = entier($f)
+    si ($f == $z) { retour chaine($z) }
+    retour chaine($f)
+  }
+  retour chaine(entier($s))
+}
+
+fn ee_op($tok: chaine) -> chaine {
+  $p = ee_trouve($tok, ":")
+  $v = sous_chaine($tok, $p + 1, longueur($tok))
+  si ($p >= 0 et sous_chaine($tok, 0, 1) == "O") { retour $v }
+  si ($p >= 0 et sous_chaine($tok, 0, 1) == "W") {
+    si ($v == "et" ou $v == "ou" ou $v == "non") { retour $v }
+  }
+  retour ""
+}
+
+fn ee_prec($op: chaine) -> entier {
+  si ($op == "ou") { retour 1 }
+  si ($op == "et") { retour 2 }
+  si ($op == "==" ou $op == "!=" ou $op == "<" ou $op == ">" ou
+      $op == "<=" ou $op == ">=") { retour 3 }
+  si ($op == "+" ou $op == "-") { retour 4 }
+  si ($op == "*" ou $op == "/" ou $op == "%") { retour 5 }
+  si ($op == "^") { retour 6 }
+  retour 0
+}
+
+fn ee_apply($op: chaine, $k1: chaine, $v1: chaine, $k2: chaine, $v2: chaine, $orig: chaine) -> liste<chaine> {
+  $rr = ["", "", $orig, ""]
+  si ($k1 == "u" ou $k2 == "u") {
+    $rr = ["", "u", $orig, ""]
+    retour $rr
+  }
+  $b1 = 0
+  si ($v1 == "vrai") { $b1 = 1 }
+  $b2 = 0
+  si ($v2 == "vrai") { $b2 = 1 }
+  si ($op == "et") {
+    si ($b1 == 1 et $b2 == 1) { $rr = ["", "b", "vrai", ""] } sinon { $rr = ["", "b", "faux", ""] }
+    retour $rr
+  }
+  si ($op == "ou") {
+    si ($b1 == 1 ou $b2 == 1) { $rr = ["", "b", "vrai", ""] } sinon { $rr = ["", "b", "faux", ""] }
+    retour $rr
+  }
+  # Comparaisons
+  si ($op == "==" ou $op == "!=" ou $op == "<" ou $op == ">" ou
+      $op == "<=" ou $op == ">=") {
+    $cg = 0
+    si ($k1 == "s" et $k2 == "s") {
+      si ($op == "==") { si ($v1 == $v2) { $cg = 1 } }
+      si ($op == "!=") { si ($v1 != $v2) { $cg = 1 } }
+      si ($op == "<") { si ($v1 < $v2) { $cg = 1 } }
+      si ($op == ">") { si ($v1 > $v2) { $cg = 1 } }
+      si ($op == "<=") { si ($v1 <= $v2) { $cg = 1 } }
+      si ($op == ">=") { si ($v1 >= $v2) { $cg = 1 } }
+    } sinon {
+      $x = ee_num($v1)
+      $y = ee_num($v2)
+      si ($op == "==") { si ($x == $y) { $cg = 1 } }
+      si ($op == "!=") { si ($x != $y) { $cg = 1 } }
+      si ($op == "<") { si ($x < $y) { $cg = 1 } }
+      si ($op == ">") { si ($x > $y) { $cg = 1 } }
+      si ($op == "<=") { si ($x <= $y) { $cg = 1 } }
+      si ($op == ">=") { si ($x >= $y) { $cg = 1 } }
+    }
+    si ($cg == 1) { $rr = ["", "b", "vrai", ""] } sinon { $rr = ["", "b", "faux", ""] }
+    retour $rr
+  }
+  # Concaténation de chaînes
+  si ($op == "+" et ($k1 == "s" ou $k2 == "s")) {
+    $rr = ["", "s", $v1 + $v2, ""]
+    retour $rr
+  }
+  $x = ee_num($v1)
+  $y = ee_num($v2)
+  # Chaque branche RETOURNE immédiatement : le type de $rr est ainsi celui
+  # du résultat réel (entier exact, rationnel ou flottant), sans figer $z.
+  si ($op == "+") {
+    $rr = ["", "n", chaine($x + $y), ""]
+    retour $rr
+  }
+  si ($op == "-") {
+    $rr = ["", "n", chaine($x - $y), ""]
+    retour $rr
+  }
+  si ($op == "*") {
+    $rr = ["", "n", chaine($x * $y), ""]
+    retour $rr
+  }
+  si ($op == "/") {
+    $rr = ["", "n", chaine($x / $y), ""]
+    retour $rr
+  }
+  si ($op == "%") {
+    $rr = ["", "n", chaine(entier($v1) % entier($v2)), ""]
+    retour $rr
+  }
+  si ($op == "^") {
+    $rr = ["", "n", chaine(ee_puissance($x, entier($v2))), ""]
+    retour $rr
+  }
+  retour $rr
+}
+
+fn ee_puissance($base, $exp: entier) {
+  $r = $base - $base + 1
+  $i = 0
+  tant_que ($i < $exp) { $r = $r * $base; $i = $i + 1 }
+  retour $r
+}
+
+fn ee_atom($t: liste<chaine>, $p: entier, $ctx: chaine, $orig: chaine) -> liste<chaine> {
+  $rr = ["", "", $orig, ""]
+  $tok = $t[$p]
+  $pref = sous_chaine($tok, 0, 1)
+  $v = sous_chaine($tok, 2, longueur($tok))
+  si ($v == "non" et $pref == "W") {
+    $r = ee_atom($t, $p + 1, $ctx, $orig)
+    si ($r[1] == "u") { retour $r }
+    si ($r[2] == "vrai") { $rr = ["", "b", "faux", $r[3]] } sinon { $rr = ["", "b", "vrai", $r[3]] }
+    retour $rr
+  }
+  si ($v == "-" et $pref == "O") {
+    $r = ee_atom($t, $p + 1, $ctx, $orig)
+    si ($r[1] == "u") { retour $r }
+    $zz = 0 - ee_num($r[2])
+    $rr = ["", "n", chaine($zz), $r[3]]
+    retour $rr
+  }
+  si ($v == "(" et $pref == "O") {
+    $r = ee_parse($t, $p + 1, $ctx, 1, $orig)
+    $q = entier($r[3])
+    si ($q < longueur($t) et ee_op($t[$q]) == ")") { $q = $q + 1 }
+    $rr = ["", $r[1], $r[2], chaine($q)]
+    retour $rr
+  }
+  si ($pref == "S") { $rr = ["", "s", $v, chaine($p + 1)]; retour $rr }
+  si ($pref == "N") { $rr = ["", "n", ee_norm_num($v), chaine($p + 1)]; retour $rr }
+  si ($pref == "W") {
+    si ($v == "vrai" ou $v == "faux") { $rr = ["", "b", $v, chaine($p + 1)]; retour $rr }
+    $nom = $v
+    si (sous_chaine($nom, 0, 1) == "$") { $nom = sous_chaine($nom, 1, longueur($nom)) }
+    $val = ee_var($ctx, $nom)
+    si (longueur($val) == 0) { $rr = ["", "u", $orig, ""]; retour $rr }
+    # La valeur substituée est un atome : chaîne guillemetée, booléen ou nombre.
+    si (longueur($val) >= 2 et sous_chaine($val, 0, 1) == "\"" et
+        sous_chaine($val, longueur($val) - 1, longueur($val)) == "\"") {
+      $rr = ["", "s", sous_chaine($val, 1, longueur($val) - 1), chaine($p + 1)]
+      retour $rr
+    }
+    si ($val == "vrai" ou $val == "faux") { $rr = ["", "b", $val, chaine($p + 1)]; retour $rr }
+    $rr = ["", "n", $val, chaine($p + 1)]
+    retour $rr
+  }
+  retour $rr
+}
+
+fn ee_parse($t: liste<chaine>, $p: entier, $ctx: chaine, $min: entier, $orig: chaine) -> liste<chaine> {
+  $r = ee_atom($t, $p, $ctx, $orig)
+  $k = $r[1]
+  $v = $r[2]
+  $q = entier($r[3])
+  $fin = 0
+  tant_que ($q < longueur($t) et $fin == 0) {
+    $op = ee_op($t[$q])
+    $pr = ee_prec($op)
+    si ($pr < $min ou $pr == 0) { $fin = 1 }
+    sinon {
+      $droite = ee_parse($t, $q + 1, $ctx, $pr + 1, $orig)
+      $r2 = ee_apply($op, $k, $v, $droite[1], $droite[2], $orig)
+      $k = $r2[1]
+      $v = $r2[2]
+      $q = entier($droite[3])
+    }
+  }
+  $rr = ["", $k, $v, chaine($q)]
+  retour $rr
+}
+
+fn eval_expr($expr: chaine) -> chaine {
+  $base = ee_trim($expr)
+  # Séparateur de contexte : "// vars:" (et variantes), coupé AVANT le "//".
+  $sep = ee_trouve($base, "// vars:")
+  $saut = 9
+  si ($sep < 0) { $sep = ee_trouve($base, "//vars:"); $saut = 7 }
+  si ($sep < 0) { $sep = ee_trouve($base, "; vars:"); $saut = 7 }
+  si ($sep < 0) { $sep = ee_trouve($base, ";vars:"); $saut = 6 }
+  si ($sep < 0) { $sep = ee_trouve($base, "vars:"); $saut = 5 }
+  $nu = $base
+  $ctx = ""
+  si ($sep >= 0) {
+    $nu = ee_trim(sous_chaine($base, 0, $sep))
+    $ctx = sous_chaine($base, $sep + $saut, longueur($base))
+  }
+  # Littéral guillemeté englobant.
+  $ln = longueur($nu)
+  si ($ln >= 2 et sous_chaine($nu, 0, 1) == "\"" et
+      sous_chaine($nu, $ln - 1, $ln) == "\"") {
+    retour sous_chaine($nu, 1, $ln - 1)
+  }
+  si ($ln == 0) { retour "" }
+  # Un contexte malformé (paire "a==" issue du préprocesseur) fait échouer
+  # le repli natif : l'expression est alors rendue telle quelle.
+  si (ee_trouve($ctx, "==") >= 0) { retour $nu }
+  si ($nu == "vrai" ou $nu == "faux") { retour $nu }
+  $toks = ee_tokens($nu)
+  $r = ee_parse($toks, 1, $ctx, 1, $nu)
+  si ($r[1] == "u") { retour $nu }
+  si (longueur($r[2]) == 0) { retour $nu }
+  retour $r[2]
+}
+
 # ── Utilitaires d'écriture little-endian ──
 
 fn u8le($v: entier) -> chaine {
@@ -4493,6 +4881,7 @@ $g5_supprl = 0
 $g5_entierl = 0
 $g5_catl = 0
 $g5_streql = 0
+$g5_strcmpl = 0
 $g5_stub0l = 0
 $g5_stubsl = 0
 $g5_tablel = 0
@@ -4688,9 +5077,47 @@ fn g5_cps($s: chaine) -> liste<entier> {
   retour $r
 }
 
+# G5-UTF8 : encode un point de code en 1..4 octets UTF-8. Le descripteur G5
+# stocke des OCTETS UTF-8 (et non un octet par point de code) : `>>` écrit
+# alors directement les octets du descripteur, et l'ordre lexicographique
+# octet par octet coïncide avec l'ordre des points de code.
+fn g5_utf8($cp: entier) -> liste<entier> {
+  $r = [0 : entier]
+  si ($cp < 128) {
+    joindre($r, $cp)
+  } sinon si ($cp < 2048) {
+    joindre($r, 192 + partie_entiere($cp / 64))
+    joindre($r, 128 + ($cp % 64))
+  } sinon si ($cp < 65536) {
+    joindre($r, 224 + partie_entiere($cp / 4096))
+    joindre($r, 128 + (partie_entiere($cp / 64) % 64))
+    joindre($r, 128 + ($cp % 64))
+  } sinon {
+    joindre($r, 240 + partie_entiere($cp / 262144))
+    joindre($r, 128 + (partie_entiere($cp / 4096) % 64))
+    joindre($r, 128 + (partie_entiere($cp / 64) % 64))
+    joindre($r, 128 + ($cp % 64))
+  }
+  retour $r
+}
+
 fn g5_make_str($s: chaine) -> entier {
   $cps = g5_cps($s)
   $n = longueur($cps)
+  $oct = [0 : entier]
+  $j = 0
+  tant_que ($j < $n) {
+    $bj = g5_utf8($cps[$j])
+    $k = 0
+    tant_que ($k < longueur($bj)) {
+      joindre($oct, $bj[$k])
+      $k = $k + 1
+    }
+    $j = $j + 1
+  }
+  # $nb = nombre d'OCTETS UTF-8 ; le hash reste calculé sur les POINTS DE CODE
+  # (identiques en natif et sous l'émetteur auto-exécuté, donc internement stable).
+  $nb = longueur($oct)
   $h = 0
   $hi = 0
   tant_que ($hi < $n) {
@@ -4711,16 +5138,16 @@ fn g5_make_str($s: chaine) -> entier {
   g5_emit(cmpi(0, 0))
   g5_branch(101, $lbl_done)
   g5_mark($lbl_miss)
-  $sz = 16 + 8 * partie_entiere(($n + 7) / 8)
+  $sz = 16 + 8 * partie_entiere(($nb + 7) / 8)
   g5_load(0, $sz)
   g5_alloc_inline()
   g5_load(1, 1)
   g5_emit(stroff(1, 0, 0))
-  g5_load(1, $n)
+  g5_load(1, $nb)
   g5_emit(stroff(1, 0, 8))
   $i = 0
-  tant_que ($i < $n) {
-    g5_load(1, $cps[$i])
+  tant_que ($i < $nb) {
+    g5_load(1, $oct[$i])
     g5_emit(strbio(1, 0, 16 + $i))
     $i = $i + 1
   }
@@ -4931,15 +5358,65 @@ fn g5_cond($op: chaine) -> entier {
 # courants (1491 dans le RIR auto-hébergé) gardent le chemin 3-instructions
 # d'origine, sans label ni appel supplémentaire. Le chemin grand entier
 # appelle la routine g5_emit_bigcmp une seule fois (label fixe, pas par expr.).
+# Comparaison lexicographique de deux chaînes taguées (x1=gauche, x0=droite).
+# Renvoie un ENTIER BRUT : -1 si gauche < droite, 0 si égales, 1 si >.
+# Les octets UTF-8 se comparent comme des non signés : l'ordre obtenu est
+# exactement l'ordre lexicographique des points de code (par exemple
+# "é" > "è" car c3 a9 > c3 a8). L'appelant applique ensuite son `cset`.
+fn g5_emit_strcmp($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_masktag(6, 1))
+  g5_emit(g5_masktag(7, 0))
+  g5_emit(ldroff(2, 6, 8))        # x2 = longueur octets gauche
+  g5_emit(ldroff(3, 7, 8))        # x3 = longueur octets droite
+  g5_emit(movz(4, 0))             # x4 = i
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(4, 2)); g5_branch(110, $lbl + 3)  # gauche épuisée
+  g5_emit(cmpr(4, 3)); g5_branch(110, $lbl + 4)  # droite épuisée
+  g5_emit(addi(9, 4, 16))           # les données commencent à +16
+  g5_emit(ldrbr(5, 6, 9)); g5_emit(ldrbr(8, 7, 9))
+  g5_emit(cmpr(5, 8)); g5_branch(100, $lbl + 2)
+  g5_emit(cmpr(5, 8)); g5_branch(111, $lbl + 5)  # gauche < droite
+  g5_emit(movz(0, 1)); g5_emit(RET_I())
+  g5_mark($lbl + 5)
+  g5_emit(movz(0, 1)); g5_emit(subr(0, 31, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 2)
+  g5_emit(addi(4, 4, 1)); g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 3)               # gauche plus courte
+  g5_emit(cmpr(4, 3)); g5_branch(110, $lbl + 7)
+  g5_emit(movz(0, 1)); g5_emit(subr(0, 31, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 4)               # droite plus courte
+  g5_emit(movz(0, 1)); g5_emit(RET_I())
+  g5_mark($lbl + 7)               # longueurs égales
+  g5_emit(movz(0, 0)); g5_emit(RET_I())
+  retour 0
+}
+
 fn g5_emit_cmp_value($c: entier) -> entier {
+  # Détection des deux chaînes : chemin lexicographique dédié. Sauts à
+  # déplacement CONSTANT (aucun label par comparaison, comme le chemin big).
   g5_emit(g5_tagbits(2, 1))
-  g5_emit(cmpi(2, 3)); g5_branch_off(100, 8)
+  g5_emit(cmpi(2, 1))
+  g5_branch_off(100, 2)            # gauche chaîne -> +4
+  g5_branch_off(0, 8)              # sinon -> +11 (chemin entier/big)
   g5_emit(g5_tagbits(2, 0))
-  g5_emit(cmpi(2, 3)); g5_branch_off(100, 5)
-  g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
-  g5_branch_off(0, 5)
+  g5_emit(cmpi(2, 1))
+  g5_branch_off(101, 5)            # droite non-chaîne -> +11
+  g5_branch(1, $g5_strcmpl)        # x0 = -1/0/1 brut
+  g5_emit(cmpi(0, 0))
+  g5_emit(cset(0, $c))
+  g5_branch_off(0, 13)             # -> +23 (lsl3 final)
+  g5_emit(g5_tagbits(2, 1))
+  g5_emit(cmpi(2, 3))
+  g5_branch_off(100, 7)            # -> +20 (grand entier)
+  g5_emit(g5_tagbits(2, 0))
+  g5_emit(cmpi(2, 3))
+  g5_branch_off(100, 4)            # -> +20
+  g5_emit(cmpr(1, 0)); g5_emit(cset(0, $c))
+  g5_branch_off(0, 4)              # -> +23
   g5_branch(1, $g5_bigcmpl)
-  g5_emit(cmpi(0, 0)); g5_emit(cset(0, $c)); g5_emit(g5_lsl3(0, 0))
+  g5_emit(cmpi(0, 0)); g5_emit(cset(0, $c))
+  g5_emit(g5_lsl3(0, 0))
   retour 0
 }
 
@@ -5371,10 +5848,10 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         g5_emit(orrr(2, 31, 0)); g5_emit(orrr(0, 31, 1)); g5_emit(orrr(1, 31, 2))
         g5_branch(1, $g5_streql)
         si ($op == "!=") { g5_load(2, 8); g5_emit(eorr(0, 0, 2)) }
-        # Le bloc de comparaison de valeur passe de 3 à 14 instructions
-        # (test de tag + chemin big) : le saut de retour de l'égalité de
-        # chaînes doit donc l'enjamber (4 + 11 = 15).
-        g5_branch_off(0, 15)
+        # Le bloc g5_emit_cmp_value fait 24 instructions (test de tag,
+        # chemin chaîne UTF-8 et chemin big) : le saut de retour de
+        # l'égalité de chaînes doit l'enjamber (1 + 24 = 25).
+        g5_branch_off(0, 25)
         g5_emit_cmp_value($c)
       } sinon si ($op == "+") {
         # G5-BIG : si l'un des opérandes porte le tag 3, on promeut l'autre
@@ -6322,8 +6799,31 @@ fn g5_emit_len($lbl: entier) -> entier {
   g5_emit(ldroff(0, 1, 8))
   g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
+  # G5-UTF8 : `longueur(chaine)` compte les POINTS DE CODE. Le descripteur
+  # porte le nombre d'OCTETS : on dénombre les octets qui ne sont PAS des
+  # continuations (0b10xxxxxx), c.-à-d. les têtes de séquence UTF-8.
   g5_mark($lbl + 1)
-  g5_emit(ldroff(0, 1, 8))
+  g5_emit(g5_masktag(9, 1))
+  g5_emit(ldroff(10, 9, 8))       # x10 = nombre d'octets
+  g5_emit(movz(0, 0))             # x0 = nombre de points de code
+  g5_emit(movz(11, 0))            # x11 = i (octet courant)
+  g5_mark($lbl + 3)
+  g5_emit(cmpr(11, 10))
+  g5_branch(110, $lbl + 4)  # b.ge : i >= len -> terminé
+  g5_emit(addi(7, 11, 16))          # les données commencent à +16
+  g5_emit(ldrbr(12, 9, 7))
+  g5_emit(cmpi(12, 128))
+  g5_branch(111, $lbl + 6)          # ASCII -> tête de séquence
+  g5_emit(movz(13, 128))
+  g5_emit(subr(13, 12, 13))
+  g5_emit(cmpi(13, 64))
+  g5_branch(111, $lbl + 5)  # octet de continuation -> pas d'incrément
+  g5_mark($lbl + 6)
+  g5_emit(addi(0, 0, 1))
+  g5_mark($lbl + 5)
+  g5_emit(addi(11, 11, 1))
+  g5_branch(0, $lbl + 3)
+  g5_mark($lbl + 4)
   g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
   g5_mark($lbl + 2)
@@ -6335,31 +6835,112 @@ fn g5_emit_len($lbl: entier) -> entier {
 fn g5_emit_ordre($lbl: entier) -> entier {
   g5_mark($lbl)
   g5_emit(g5_masktag(9, 0))
-  g5_emit(ldrbio(0, 9, 16))
+  g5_emit(ldrbio(0, 9, 16))       # x0 = premier octet
+  g5_emit(cmpi(0, 128))
+  g5_branch(111, $lbl + 3)  # b.hs non pris : b0 < 128 -> 1 octet
+  g5_emit(cmpi(0, 224))
+  g5_branch(111, $lbl + 1)  # 128..223 -> 2 octets
+  g5_emit(cmpi(0, 240))
+  g5_branch(111, $lbl + 2)  # 224..239 -> 3 octets
+  # 4 octets : cp = (b0-240)*262144 + (b1-128)*4096 + (b2-128)*64 + (b3-128)
+  g5_emit(ldrbio(1, 9, 17)); g5_emit(subi(1, 1, 128))
+  g5_emit(ldrbio(2, 9, 18)); g5_emit(subi(2, 2, 128))
+  g5_emit(ldrbio(3, 9, 19)); g5_emit(subi(3, 3, 128))
+  g5_load(4, 240); g5_emit(subr(0, 0, 4))
+  g5_load(4, 262144); g5_emit(mulr(0, 0, 4))
+  g5_load(4, 4096); g5_emit(mulr(1, 1, 4))
+  g5_emit(addr(0, 0, 1))
+  g5_emit(movz(4, 64)); g5_emit(mulr(2, 2, 4))
+  g5_emit(addr(0, 0, 2))
+  g5_emit(addr(0, 0, 3))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)               # 2 octets
+  g5_emit(ldrbio(1, 9, 17)); g5_emit(subi(1, 1, 128))
+  g5_emit(movz(4, 192)); g5_emit(subr(0, 0, 4))
+  g5_emit(movz(4, 64)); g5_emit(mulr(0, 0, 4))
+  g5_emit(addr(0, 0, 1))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 2)               # 3 octets
+  g5_emit(ldrbio(1, 9, 17)); g5_emit(subi(1, 1, 128))
+  g5_emit(ldrbio(2, 9, 18)); g5_emit(subi(2, 2, 128))
+  g5_emit(movz(4, 224)); g5_emit(subr(0, 0, 4))
+  g5_emit(movz(4, 4096)); g5_emit(mulr(0, 0, 4))
+  g5_emit(movz(4, 64)); g5_emit(mulr(1, 1, 4))
+  g5_emit(addr(0, 0, 1))
+  g5_emit(addr(0, 0, 2))
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 3)               # 1 octet (ASCII)
   g5_emit(g5_lsl3(0, 0))
   g5_emit(RET_I())
   retour 0
 }
 
-# sous_chaine(s, a, b) — x0=s, x1=a, x2=b ; renvoie une NOUVELLE chaîne.
+# sous_chaine(s, a, b) — x0=s, x1=a, x2=b ; a et b sont des indices en
+# POINTS DE CODE (sémantique Rose). Les octets du descripteur étant UTF-8,
+# on convertit d'abord a et b en décalages OCTET en parcourant le descripteur.
 fn g5_emit_sous($lbl: entier) -> entier {
   $lneg = g5_next()
   $lok = g5_next()
   g5_mark($lbl)
   g5_emit(g5_asr3(1, 1))
   g5_emit(g5_asr3(2, 2))
-  g5_emit(orrr(8, 31, 1))
   g5_emit(subr(3, 2, 1))
   # SH2 : sous_chaine(a,b) avec a>b doit rendre une chaîne VIDE (len=0).
-  # Sans cette borne, le descripteur porte len=-1 et entier()/idx() lisent
-  # l'octet suivant le descripteur (mesuré : e=-48=-('\0'-48) dans can_nud).
   g5_emit(cmpi(3, 0))
   g5_branch(111, $lneg)
   g5_branch(0, $lok)
+  g5_emit(movz(3, 0))
+  g5_branch(0, $lbl + 10)
   g5_mark($lneg)
   g5_emit(movz(3, 0))
+  g5_branch(0, $lbl + 10)
   g5_mark($lok)
-  g5_emit(g5_masktag(10, 0))
+  g5_emit(g5_masktag(10, 0))       # x10 = pointeur source (masqué)
+  g5_emit(ldroff(11, 10, 8))       # x11 = nombre d'octets
+  g5_emit(orrr(12, 31, 1))         # x12 = a (indice point de code)
+  g5_emit(orrr(13, 31, 2))         # x13 = b
+  g5_emit(movz(14, 0))             # x14 = ci (point de code courant)
+  g5_emit(movz(15, 0))             # x15 = bo (décalage octet courant)
+  g5_emit(movz(16, 0))             # x16 = bo_a (décalage de a)
+  g5_emit(movz(20, 0))             # x20 = drapeau « a atteint »
+  g5_mark($lbl + 1)                # boucle de balayage
+  g5_emit(cmpr(14, 13))
+  g5_branch(110, $lbl + 2)  # ci >= b -> fin
+  g5_emit(cmpr(15, 11))
+  g5_branch(110, $lbl + 2)  # bo >= len -> fin (borne)
+  g5_emit(cmpr(14, 12))
+  g5_branch(101, $lbl + 3)  # ci != a
+  g5_emit(orrr(16, 31, 15))         # bo_a = bo
+  g5_emit(movz(20, 1))
+  g5_mark($lbl + 3)
+  g5_emit(addi(19, 15, 16))         # les données commencent à +16
+  g5_emit(ldrbr(17, 10, 19))        # octet de tête
+  g5_emit(cmpi(17, 128))
+  g5_branch(111, $lbl + 4)  # < 128 -> 1 octet
+  g5_emit(cmpi(17, 224))
+  g5_branch(111, $lbl + 5)  # < 224 -> 2 octets
+  g5_emit(cmpi(17, 240))
+  g5_branch(111, $lbl + 6)  # < 240 -> 3 octets
+  g5_emit(movz(18, 4))
+  g5_branch(0, $lbl + 7)
+  g5_mark($lbl + 4); g5_emit(movz(18, 1)); g5_branch(0, $lbl + 7)
+  g5_mark($lbl + 5); g5_emit(movz(18, 2)); g5_branch(0, $lbl + 7)
+  g5_mark($lbl + 6); g5_emit(movz(18, 3))
+  g5_mark($lbl + 7)
+  g5_emit(addr(15, 15, 18))         # bo += k
+  g5_emit(addi(14, 14, 1))          # ci += 1
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(cmpi(20, 0))
+  g5_branch(100, $lneg)             # a jamais atteint -> chaîne vide
+  g5_emit(subr(3, 15, 16))          # x3 = bo - bo_a = nombre d'octets
+  g5_emit(cmpi(3, 0))
+  g5_branch(111, $lneg)
+  g5_mark($lbl + 10)                # entrée commune d'allocation (x3 = nb octets)
+  # Allocation du descripteur de la sous-chaîne (1..8 octets de données).
   g5_emit(addr(4, 3, 3))
   g5_emit(addr(4, 4, 4))
   g5_emit(addr(4, 4, 4))
@@ -6372,23 +6953,17 @@ fn g5_emit_sous($lbl: entier) -> entier {
   g5_emit(orrr(1, 31, 3))
   g5_emit(stroff(1, 5, 8))
   g5_emit(movz(6, 0))
-  g5_mark($lbl + 1)
+  g5_mark($lbl + 8)
   g5_emit(cmpr(6, 3))
-  g5_branch(110, $lbl + 2)
-  # SH2 : x8 = a (debut, copie de x1 par orrr(8,31,1) = mov) et x10 =
-  # pointeur MASQUE du descripteur. Les donnees commencent a +16 :
-  # l'adresse correcte est x10 + 16 + a + i. L'ancien code lisait
-  # x10 + a + i (16 octets trop tot, dans l'en-tete du descripteur),
-  # rendant NUL a la place des octets : sous_chaine("0|1",2,3) -> "\0",
-  # entier() -> -48, can_nud(e=-48) -> idx hors bornes -> SIGSEGV.
-  g5_emit(addi(7, 6, 16))
-  g5_emit(addr(7, 8, 7))
+  g5_branch(110, $lbl + 9)
+  g5_emit(addr(7, 16, 6))
+  g5_emit(addi(7, 7, 16))
   g5_emit(ldrbr(7, 10, 7))
   g5_emit(addi(4, 6, 16))
   g5_emit(strbr(7, 5, 4))
   g5_emit(addi(6, 6, 1))
-  g5_branch(0, $lbl + 1)
-  g5_mark($lbl + 2)
+  g5_branch(0, $lbl + 8)
+  g5_mark($lbl + 9)
   g5_emit(g5_tag1(0, 5))
   g5_emit(RET_I())
   retour 0
@@ -6970,22 +7545,64 @@ fn g5_emit_quit($lbl: entier) -> entier {
   retour 0
 }
 
-# C0.2 — caractere(n) -> descripteur de chaîne [tag=1][len=1][n%256].
-# n est un entier Rose tagué dans x0. x10/x11 conservent l'octet pendant
-# l'allocation (g5_alloc_inline détruit x0,x1,x2,x9).
+# C0.2 — caractere(n) -> descripteur de chaîne [tag=1][len][UTF-8 de n].
+# n est un entier Rose tagué dans x0. x10/x11 conservent le point de code et
+# le nombre d'octets pendant l'allocation (g5_alloc_inline détruit x0,1,2,9).
+# 1 à 4 octets tiennent dans 8 octets de données : taille fixe 24 octets.
 fn g5_emit_car($lbl: entier) -> entier {
   g5_mark($lbl)
-  g5_emit(g5_asr3(10, 0))      # n brut
-  g5_emit(movz(11, 255))
-  g5_emit(andr(10, 10, 11))    # octet = n mod 256
+  g5_emit(g5_asr3(10, 0))      # x10 = point de code brut
+  g5_emit(movz(11, 1))         # x11 = nombre d'octets
+  g5_emit(cmpi(10, 128))
+  g5_branch(111, $lbl + 4)  # cp < 128 -> 1 octet
+  g5_emit(movz(11, 2))
+  g5_emit(cmpi(10, 2048))
+  g5_branch(111, $lbl + 4)  # cp < 2048 -> 2 octets
+  g5_emit(movz(11, 3))
+  g5_load(12, 65536)
+  g5_emit(cmpr(10, 12))
+  g5_branch(111, $lbl + 4)  # cp < 65536 -> 3 octets
+  g5_emit(movz(11, 4))
+  g5_mark($lbl + 4)
   g5_load(0, 24)               # 16 octets d'en-tête + 8 de données
   g5_alloc_inline()            # x0 = pointeur brut aligné
   g5_emit(movz(1, 1))
   g5_emit(stroff(1, 0, 0))     # tag = 1 (chaîne)
-  g5_emit(stroff(1, 0, 8))     # longueur = 1
-  g5_emit(strbio(10, 0, 16))   # l'unique octet
-  g5_emit(g5_tag1(0, 0))       # x0 = pointeur|1
+  g5_emit(orrr(1, 31, 11))
+  g5_emit(stroff(1, 0, 8))     # longueur = nombre d'octets UTF-8
+  g5_emit(cmpi(11, 2))
+  g5_branch(100, $lbl + 1)
+  g5_emit(cmpi(11, 3))
+  g5_branch(100, $lbl + 2)
+  g5_emit(cmpi(11, 4))
+  g5_branch(100, $lbl + 3)
+  g5_emit(orrr(1, 31, 10))     # ASCII : l'octet est le point de code
+  g5_emit(strbio(1, 0, 16))
+  g5_emit(g5_tag1(0, 0))
   g5_emit(RET_I())
+  g5_mark($lbl + 1)            # 2 octets : 110xxxxx 10xxxxxx
+  g5_emit(movz(2, 64)); g5_emit(udivr(3, 10, 2)); g5_emit(msubr(4, 3, 2, 10))
+  g5_emit(addi(3, 3, 192)); g5_emit(addi(4, 4, 128))
+  g5_emit(strbio(3, 0, 16)); g5_emit(strbio(4, 0, 17))
+  g5_emit(g5_tag1(0, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 2)            # 3 octets
+  g5_emit(movz(2, 4096)); g5_emit(udivr(3, 10, 2))
+  g5_emit(movz(2, 64)); g5_emit(udivr(4, 10, 2))
+  g5_emit(msubr(5, 4, 2, 10)); g5_emit(msubr(6, 3, 2, 4))
+  g5_emit(addi(3, 3, 224)); g5_emit(addi(5, 5, 128)); g5_emit(addi(6, 6, 128))
+  g5_emit(strbio(3, 0, 16)); g5_emit(strbio(6, 0, 17)); g5_emit(strbio(5, 0, 18))
+  g5_emit(g5_tag1(0, 0)); g5_emit(RET_I())
+  g5_mark($lbl + 3)            # 4 octets
+  g5_load(2, 262144); g5_emit(udivr(3, 10, 2))
+  g5_load(2, 4096); g5_emit(udivr(4, 10, 2))
+  g5_emit(movz(2, 64)); g5_emit(udivr(5, 10, 2))
+  g5_emit(msubr(6, 5, 2, 10)); g5_emit(msubr(7, 4, 2, 5))
+  g5_load(2, 64); g5_emit(msubr(8, 3, 2, 4))
+  g5_emit(addi(3, 3, 240)); g5_emit(addi(6, 6, 128))
+  g5_emit(addi(7, 7, 128)); g5_emit(addi(8, 8, 128))
+  g5_emit(strbio(3, 0, 16)); g5_emit(strbio(8, 0, 17))
+  g5_emit(strbio(7, 0, 18)); g5_emit(strbio(6, 0, 19))
+  g5_emit(g5_tag1(0, 0)); g5_emit(RET_I())
   retour 0
 }
 
@@ -7684,24 +8301,34 @@ fn g5_patch() -> liste<entier> {
 # épuisement du tas (8 Gio) avant le moindre octet sur /dev/stdout. On
 # fusionne les morceaux deux par deux : O(n log n) copies, mémoire ~2× la
 # taille finale. Les octets produits sont strictement identiques.
-fn g5_assemble($parts: liste<chaine>) -> chaine {
-  # Rose n'a pas de littéral de liste vide typée : l'index 0 est un
-  # SENTINELLE (chaîne vide) qui doit être sauté à chaque passe, sinon
-  # la réduction n=3 tourne en boucle (mesuré : timeout sur 4 morceaux).
+# HOST-2 — base de la liste DEDUITE DU NOMBRE DE MORCEAUX.
+# Mesure (em_diag5 sur verif.rir, 180 574 o) : `ELF0 n=0` — apres un gros
+# travail, le litteral `[""]` de g5_elf() donne une liste VIDE (pas de
+# sentinelle). L'ancien g5_assemble sautait systematiquement l'index 0 :
+# il ecartait donc exactement le magic de 8 octets (455 368 au lieu de
+# 455 376). Inversement, forcer la base a 0 fait tourner la reduction en
+# boucle quand le sentinelle EST present (n=3 a chaque passe).
+# On ne devine plus : $attendu est le nombre de joindre reels effectues par
+# g5_elf(), donc base = longueur($parts) - $attendu (0 ou 1), et on
+# reclacule cette base a chaque passe avec le nombre de morceaux restants.
+fn g5_assemble($parts: liste<chaine>, $attendu: entier) -> chaine {
   $n = longueur($parts)
-  si ($n < 2) { retour "" }
-  tant_que ($n > 2) {
+  $base = $n - $attendu
+  si ($attendu < 1) { retour "" }
+  tant_que ($attendu > 1) {
     $next = [""]
-    $i = 1
+    $i = $base
     tant_que ($i + 1 < $n) {
       joindre($next, $parts[$i] + $parts[$i + 1])
       $i = $i + 2
     }
     si ($i < $n) { joindre($next, $parts[$i]) }
     $parts = $next
+    $attendu = partie_entiere(($attendu + 1) / 2)
     $n = longueur($parts)
+    $base = $n - $attendu
   }
-  retour $parts[1]
+  retour $parts[$base]
 }
 
 fn g5_elf() -> chaine {
@@ -7738,7 +8365,8 @@ fn g5_elf() -> chaine {
   joindre($parts, u64le(0) + u64le(137438953472) + u64le(4096))
   $i = 0
   tant_que ($i < longueur($g5_code)) { joindre($parts, u32le($g5_code[$i])); $i = $i + 1 }
-  retour g5_assemble($parts)
+  # 1 magic + 8 NUL + 9 en-tetes = 18 morceaux fixes, puis un par mot de code.
+  retour g5_assemble($parts, 18 + longueur($g5_code))
 }
 si (nb_arguments() >= 1) {
 $src = em_source_rir()
@@ -7757,11 +8385,16 @@ $g5_plist_l = g5_next()
 $g5_allocl = g5_next()
 $g5_lenl = g5_next()
 $k = 0
-tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+# G5-UTF8 : comptage des points de code (+1..+6).
+tant_que ($k < 6) { g5_next(); $k = $k + 1 }
 $g5_ordl = g5_next()
+$k = 0
+# G5-UTF8 : décodage UTF-8 de 1..4 octets (+1..+3).
+tant_que ($k < 3) { g5_next(); $k = $k + 1 }
 $g5_sousl = g5_next()
 $k = 0
-tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+# G5-UTF8 : conversion des indices de points de code en octets (+1..+10).
+tant_que ($k < 10) { g5_next(); $k = $k + 1 }
 $g5_idxl = g5_next()
 $k = 0
 # G5-TYPE : g5_emit_idx utilise $lbl, +1 (liste), +2 (fin chaîne) et,
@@ -7817,6 +8450,9 @@ $exitl = g5_next()
 # ($lbl+N), donc aucune réservation supplémentaire n'est nécessaire.
 $g5_quitl = g5_next()
 $g5_carl = g5_next()
+$k = 0
+# G5-UTF8 : encodage UTF-8 de 1..4 octets (+1..+4).
+tant_que ($k < 4) { g5_next(); $k = $k + 1 }
 $g5_parl = g5_next()
 $g5_absl = g5_next()
 $k = 0; tant_que ($k < 1) { g5_next(); $k = $k + 1 }
@@ -7841,6 +8477,9 @@ $g5_bignegl = g5_next()
 $k = 0; tant_que ($k < 3) { g5_next(); $k = $k + 1 }
 $g5_bigcmpl = g5_next()
 $k = 0; tant_que ($k < 12) { g5_next(); $k = $k + 1 }
+# G5-UTF8 : routine de comparaison lexicographique des chaînes (+1..+7).
+$g5_strcmpl = g5_next()
+$k = 0; tant_que ($k < 7) { g5_next(); $k = $k + 1 }
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
 tant_que ($i < $nfn) {
@@ -7877,6 +8516,7 @@ g5_emit_bigpromote($g5_bigprol)
 g5_emit_bigadd($g5_bigaddl)
 g5_emit_bigneg($g5_bignegl)
 g5_emit_bigcmp($g5_bigcmpl)
+g5_emit_strcmp($g5_strcmpl)
 g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
