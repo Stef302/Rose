@@ -6,7 +6,7 @@
 ![Rose banner](docs/assets/img/og-rose.png)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.72-E6202A?style=for-the-badge" alt="version">
+  <img src="https://img.shields.io/badge/version-0.1.73-E6202A?style=for-the-badge" alt="version">
   <img src="https://img.shields.io/badge/moteur-Rust%20%2B%20Cranelift%20%2B%20LLVM-000000?style=for-the-badge" alt="moteur">
   <img src="https://img.shields.io/badge/licence-MIT-8CE026?style=for-the-badge" alt="licence">
   <img src="https://img.shields.io/badge/parité%20interpr%C3%A9teur%20%C2%B7%20JIT%20%C2%B7%20AOT-identique-8CE026?style=for-the-badge" alt="parité">

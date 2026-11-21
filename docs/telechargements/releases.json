@@ -3,6 +3,68 @@
   "genere": "2026-11-21",
   "versions": [
     {
+      "version": "0.1.73",
+      "tag": "v0.1.73",
+      "titre": "Rose v0.1.73 — AOT universel PE, tray autonome, logo droit",
+      "date": "2026-11-21",
+      "changelog": [
+        "AOT / ORC universel sur PE (alias comp)",
+        "Helper tray autonome avec icône et activation sans clic",
+        "Logo : tige entière et marge garantie",
+        "Bump de version 0.1.72 → 0.1.73 partout (état courant)"
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.73-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.73-full.nupkg",
+          "sha256": "ad7ce6e936307bbe17ebd9e6b975c9b6d6d85b2423fb9850c5ebef93c447569b",
+          "taille": 10829433
+        },
+        {
+          "nom": "rose-setup.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
+          "sha256": "855b2cfcbc552395ca81764fb7f6505b80c0ef728cb7518c1ab26be9ba267a51",
+          "taille": 11705344
+        },
+        {
+          "nom": "rose.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
+          "sha256": "3f4875176bc1b102fa72b69a0bc60996ea45b6d22607a426a757840f93664f10",
+          "taille": 9347584
+        },
+        {
+          "nom": "rose-shell.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
+          "sha256": "4d04d7c400c01c0a6ca2af7896ebd9ec8dfcd767f691cc8a3037f6848b864aed",
+          "taille": 463360
+        },
+        {
+          "nom": "rose-tray-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
+          "sha256": "10afda7892dc85ba24e39931de2745a03f780e686d09ff9adfa4a429990fa256",
+          "taille": 933816
+        },
+        {
+          "nom": "rose-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
+          "sha256": "9c12b2777bc2293d02bfd534422ccc43c74e2cfcf53ff678768e28629dd5b51c",
+          "taille": 5194800
+        },
+        {
+          "nom": "rose-wasm.wasm",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
+          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
+          "taille": 967750
+        },
+        {
+          "nom": "releases.win.json",
+          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
+          "sha256": "e07aa44e14fd94d59860ab7ea3ee79a74b51624df6a16ac79720eda49c458484",
+          "taille": 406
+        }
+      ]
+    },
+    {
       "version": "0.1.72",
       "tag": "v0.1.72",
       "titre": "Rose v0.1.72 — JIT + AOT, helper de mise a jour",

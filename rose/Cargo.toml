@@ -1,6 +1,6 @@
 [package]
 name = "rose"
-version = "0.1.72"
+version = "0.1.73"
 edition = "2024"
 # ⚠ Les binaires sont déclarés explicitement ci-dessous. `autobins = false`
 # empêche Cargo d'auto-découvrir `src/bin/rose_nostd.rs` (démo M5.3 no_std,
