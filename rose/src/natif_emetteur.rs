@@ -111,6 +111,44 @@ pub struct Emitted {
     pub fallbacks: Vec<u32>,
 }
 
+/// Un appel résolu directement vers une autre fonction du MÊME programme.
+///
+/// ⚠ Aucun pointeur de fonction n'est stocké ici : seulement l'INDEX de la
+/// fonction cible dans `ProgrammeEmis::noms`. La correction de l'instruction
+/// de saut se fait une fois que toutes les fonctions ont été émises et
+/// concaténées (les déplacements sont donc purement internes au segment).
+#[derive(Clone, Debug)]
+pub struct AppelLie {
+    pub nom: String,
+    pub cible: usize,
+    /// Décalage, dans le code de la fonction émettrice, du champ à corriger :
+    /// début de l'instruction `bl` (aarch64) ou des 4 octets `rel32` (x86-64).
+    pub correctif: usize,
+}
+
+/// Résultat d'une émission de TOUTES les fonctions d'un programme, avec
+/// appels inter-fonctions résolus par des adresses relatives internes.
+///
+/// Le code est la concaténation des corps dans l'ordre de `noms` ; `offsets[i]`
+/// donne le début du corps `i`. Le stub d'entrée du linker appelle `offsets[0]`.
+#[derive(Clone, Debug)]
+pub struct ProgrammeEmis {
+    pub code: Vec<u8>,
+    pub architecture: Architecture,
+    /// Noms des fonctions, dans l'ordre (index 0 = fonction d'entrée).
+    pub noms: Vec<String>,
+    pub offsets: Vec<usize>,
+    /// Taille d'une trame de slots, IDENTIQUE pour toutes les fonctions.
+    /// C'est elle que le stub d'entrée doit réserver pour le premier appel.
+    pub frame_bytes: usize,
+    pub n_slots_total: usize,
+    /// Appels directs (inclus pour introspection / vérification).
+    pub appels: Vec<AppelLie>,
+    /// Doit rester vide : le mode « lié » refuse toute expression qui
+    /// demanderait la trampoline (elle rendrait une valeur fausse).
+    pub fallbacks: Vec<u32>,
+}
+
 /// Erreurs d'émission.
 #[derive(Debug)]
 pub enum EmitError {
@@ -126,6 +164,12 @@ pub enum EmitError {
     SautHorsPlage(usize),
     /// Appel RIR avec plus de 4 arguments (limite de l'ABI trampoline).
     TropArguments,
+    /// Appel à une fonction absente du programme compilé.
+    FonctionInconnue(String),
+    /// Trame de slots trop grande pour un encodage d'immédiat machine.
+    TrameTropGrande(usize),
+    /// Appel trop éloigné pour l'encodage relatif de la cible.
+    DepassementAppel(String),
 }
 impl fmt::Display for EmitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -136,6 +180,9 @@ impl fmt::Display for EmitError {
             EmitError::SlotInconnu(s) => write!(f, "argument '{}' n'est pas un slot", s),
             EmitError::SautHorsPlage(i) => write!(f, "saut vers op {} hors plage", i),
             EmitError::TropArguments => write!(f, "AppelRir: plus de 4 arguments (ABI)"),
+            EmitError::FonctionInconnue(n) => write!(f, "appel à une fonction non compilée: {}", n),
+            EmitError::TrameTropGrande(n) => write!(f, "trame de {} octets trop grande", n),
+            EmitError::DepassementAppel(n) => write!(f, "appel vers {} trop éloigné", n),
         }
     }
 }
@@ -205,6 +252,104 @@ pub fn emettre(corps: &CorpsRir, arch: Architecture) -> Result<Emitted, EmitErro
         op_offsets,
         appels: b.appels,
         fallbacks: b.fallbacks,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// AOT — TOUTES LES FONCTIONS DANS UN SEUL SEGMENT, APPELS DIRECTS
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Ici, plus de trampoline : chaque `AppelRir` devient un `bl`/`call` vers
+// l'adresse de la fonction émise. La trame de l'appelé est allouée SOUS le
+// pointeur de trame courant (`sp` / `rsp`), donc la récursion est naturelle
+// et aucun espace fixe n'est à réserver. Le registre de base (x19 / rbx) est
+// callee-saved : l'appelé le préserve, l'appelant le relit après le retour.
+
+/// Arrondit à 16 octets (alignement des piles SysV / AAPCS64).
+fn aligner16(v: usize) -> usize { (v + 15) & !15 }
+
+/// Émet toutes les fonctions et résout les appels entre elles.
+///
+/// `fonctions[0]` est la fonction d'entrée (le `$principal` AOT). Toutes les
+/// trames ont la MÊME taille `frame_bytes`, calculée comme le maximum des
+/// besoins des fonctions : un appel n'a donc pas besoin de connaître la
+/// taille de la trame de l'appelé, seulement son adresse.
+pub fn emettre_programme(fonctions: &[(String, CorpsRir)], arch: Architecture)
+    -> Result<ProgrammeEmis, EmitError>
+{
+    if fonctions.is_empty() {
+        return Err(EmitError::OperationNonSupportee("programme sans fonction".into()));
+    }
+    let noms: Vec<String> = fonctions.iter().map(|(n, _)| n.clone()).collect();
+    let max_slots = fonctions.iter()
+        .map(|(_, c)| c.n_slots + SCRATCH_SLOTS as usize)
+        .max().unwrap_or(0);
+    let frame_bytes = aligner16(max_slots.checked_mul(8)
+        .ok_or_else(|| EmitError::TrameTropGrande(max_slots))?);
+    if frame_bytes > 0x10_0000 {
+        return Err(EmitError::TrameTropGrande(frame_bytes));
+    }
+
+    let mut code: Vec<u8> = Vec::new();
+    let mut offsets = Vec::with_capacity(fonctions.len());
+    let mut appels: Vec<AppelLie> = Vec::new();
+    let mut fallbacks: Vec<u32> = Vec::new();
+
+    for (_, corps) in fonctions {
+        let mut b = Builder::new_lie(arch, corps, &noms, frame_bytes);
+        b.prologue();
+        let mut op_offsets = Vec::with_capacity(corps.ops.len() + 1);
+        for op in &corps.ops {
+            op_offsets.push(b.code.len());
+            b.operation(op)?;
+        }
+        op_offsets.push(b.code.len()); // épilogue (cible des `retour`)
+        b.epilogue();
+        // ⚠ Indispensable : sans cela, les `si` et les `retour` sautent à
+        // l'offset 0 (boucle infinie). Même correction que `emettre`.
+        b.corriger_sauts(&op_offsets);
+        let debut = code.len();
+        offsets.push(debut);
+        for a in b.appels_lies {
+            appels.push(AppelLie { nom: a.nom, cible: a.cible, correctif: debut + a.correctif });
+        }
+        fallbacks.extend(b.fallbacks);
+        code.extend_from_slice(&b.code);
+    }
+
+    // Les functions sont contiguës : la correction est indépendante de
+    // l'adresse de chargement (même segment PT_LOAD / section .text).
+    for a in &appels {
+        let cible = *offsets.get(a.cible).ok_or_else(|| EmitError::FonctionInconnue(a.nom.clone()))?;
+        match arch {
+            Architecture::Aarch64 => {
+                let disp = (cible as i64 - a.correctif as i64) / 4;
+                if disp < -(1 << 25) || disp >= (1 << 25) {
+                    return Err(EmitError::DepassementAppel(a.nom.clone()));
+                }
+                let insn = 0x9400_0000u32 | ((disp as u32) & 0x03FF_FFFF);
+                code[a.correctif..a.correctif + 4].copy_from_slice(&insn.to_le_bytes());
+            }
+            Architecture::X86_64 => {
+                let fin = a.correctif + 4;
+                let disp = cible as i64 - fin as i64;
+                if disp < i32::MIN as i64 || disp > i32::MAX as i64 {
+                    return Err(EmitError::DepassementAppel(a.nom.clone()));
+                }
+                code[a.correctif..fin].copy_from_slice(&(disp as i32).to_le_bytes());
+            }
+        }
+    }
+
+    Ok(ProgrammeEmis {
+        code,
+        architecture: arch,
+        noms,
+        offsets,
+        frame_bytes,
+        n_slots_total: frame_bytes / 8,
+        appels,
+        fallbacks,
     })
 }
 
@@ -402,6 +547,11 @@ enum CorrectifChaine {
     X86 { insn: usize, chaine: usize },
 }
 
+/// Mode de résolution des `AppelRir` : trampoline (JIT / `emettre`) ou
+/// appel direct vers une fonction du même segment (AOT / `emettre_programme`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModeAppel { Trampoline, Direct }
+
 struct Builder<'a> {
     arch: Architecture,
     corps: &'a CorpsRir,
@@ -412,6 +562,13 @@ struct Builder<'a> {
     appels: Vec<Appel>,
     fallbacks: Vec<u32>,
     scratch: u16,
+    mode: ModeAppel,
+    /// Table des fonctions du programme (pour résoudre les appels directs).
+    table: &'a [String],
+    /// Taille d'une trame de slots, identique pour toutes les fonctions.
+    frame_bytes: usize,
+    /// Appels directs émis, avec la position de leur champ à corriger.
+    appels_lies: Vec<AppelLie>,
 }
 
 // Registres aarch64.
@@ -433,7 +590,20 @@ impl<'a> Builder<'a> {
             code: Vec::with_capacity(256),
             sauts: Vec::new(), chaines_ref: Vec::new(), noms: Vec::new(),
             appels: Vec::new(), fallbacks: Vec::new(), scratch: 0,
+            mode: ModeAppel::Trampoline, table: &[], frame_bytes: 0,
+            appels_lies: Vec::new(),
         }
+    }
+
+    /// Constructeur pour l'AOT : appels directs, aucune chaîne de nom, aucun
+    /// fallback (une expression qui demanderait la trampoline est refusée).
+    fn new_lie(arch: Architecture, corps: &'a CorpsRir, table: &'a [String],
+               frame_bytes: usize) -> Self {
+        let mut b = Self::new(arch, corps);
+        b.mode = ModeAppel::Direct;
+        b.table = table;
+        b.frame_bytes = frame_bytes;
+        b
     }
 
     /// Registre de valeur de l'architecture (x8 sur aarch64, rax sur x86-64).
@@ -731,6 +901,78 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// `mov [rsp + off], rax` (SIB avec base rsp).
+    fn x86_store_rsp(&mut self, reg: u8, off: usize) {
+        if off <= 127 {
+            self.octets(&[0x48, 0x89, 0x44 | (reg << 3), 0x24, off as u8]);
+        } else {
+            self.octets(&[0x48, 0x89, 0x84 | (reg << 3), 0x24]);
+            self.octets(&(off as u32).to_le_bytes());
+        }
+    }
+
+    /// Appel DIRECT à une autre fonction du même segment (mode AOT).
+    ///
+    /// La trame de l'appelé est allouée SOUS `rsp`/`sp`. La valeur de retour
+    /// reste dans x0/rax, exactement comme pour un appel via trampoline.
+    fn appel_direct(&mut self, args: &[u16; 4], n_args: usize, nom: &str) -> Result<(), EmitError> {
+        let cible = self.table.iter().position(|n| n == nom)
+            .ok_or_else(|| EmitError::FonctionInconnue(nom.to_string()))?;
+        let f = self.frame_bytes;
+        match self.arch {
+            Architecture::Aarch64 => {
+                // ⚠ On charge les arguments AVANT de bouger sp (x0..x3), puis
+                // on réserve la trame et on les écrit dans la trame enfant.
+                for (i, &s) in args.iter().enumerate().take(n_args) {
+                    self.load_slot(i as u32, s);
+                }
+                // ⚠ Forme « extended register » (bit 21 + option=3) :
+                // c'est la seule qui puisse encoder SP comme Rn/Rd.
+                // x9 est caller-saved : on le RECHARGE après le `bl`.
+                self.mov_imm(9, f as i64);
+                self.u32(0xCB000000 | (1 << 21) | (9 << 16) | (3 << 13)
+                         | (31 << 5) | 31); // sub sp, sp, x9
+                for i in 0..n_args {
+                    // str x{i}, [sp, #8*i]  (imm12 = déplacement / 8 = i)
+                    self.u32(0xF9000000 | ((i as u32) << 10) | (31 << 5) | i as u32);
+                }
+                self.u32(0x910003E0); // mov x0, sp  (base de l'appelé)
+                self.u32(0xAA1F03E1); // mov x1, xzr (trampoline inutilisée)
+                let correctif = self.code.len();
+                self.u32(0x9400_0000); // bl (patché par emettre_programme)
+                self.mov_imm(9, f as i64); // ⚠ rechargé : l'appelé a clobber x9
+                self.u32(0x8B000000 | (1 << 21) | (9 << 16) | (3 << 13)
+                         | (31 << 5) | 31); // add sp, sp, x9
+                self.appels_lies.push(AppelLie { nom: nom.to_string(), cible, correctif });
+            }
+            Architecture::X86_64 => {
+                self.octets(&[0x48, 0x81, 0xEC]); // sub rsp, imm32
+                self.octets(&(f as u32).to_le_bytes());
+                for (i, &s) in args.iter().enumerate().take(n_args) {
+                    self.x86_mem(0x8B, X86_VAL, s as usize * 8); // mov rax,[rbx+slot]
+                    self.x86_store_rsp(X86_VAL, i * 8);          // mov [rsp+i*8],rax
+                }
+                self.octets(&[0x48, 0x8D, 0x3C, 0x24]); // lea rdi,[rsp] = base
+                self.octets(&[0x31, 0xF6]);             // xor esi,esi = tramp
+                let insn = self.code.len();
+                self.octets(&[0xE8, 0, 0, 0, 0]);       // call rel32 (patché)
+                self.octets(&[0x48, 0x81, 0xC4]);       // add rsp, imm32
+                self.octets(&(f as u32).to_le_bytes());
+                self.appels_lies.push(AppelLie {
+                    nom: nom.to_string(), cible, correctif: insn + 1,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse (en mode AOT) une expression qui demanderait la trampoline.
+    fn verifier_sans_fallback(&self, e: &Eabstrait) -> Result<(), EmitError> {
+        if self.mode == ModeAppel::Trampoline { return Ok(()); }
+        Err(EmitError::OperationNonSupportee(format!(
+            "expression non-native dans un appel lié : {:?}", e)))
+    }
+
     /// `call tramp.eval_fallback(ctx, expr_id, base)`.
     fn fallback_runtime(&mut self, expr: &Eabstrait) -> Result<(), EmitError> {
         let id = self.fallbacks.len() as u32;
@@ -793,7 +1035,9 @@ impl<'a> Builder<'a> {
             Eabstrait::Binaire { op, a, b } => {
                 if !matches!(op, Oper::Add | Oper::Sub | Oper::Mul | Oper::Lt
                               | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) {
-                    // Div, Mod, Puissance, DivEntier, Et, Ou → trampoline.
+                    // Div, Mod, Puissance, DivEntier, Et, Ou → trampoline
+                    // (refusé en mode AOT : aucun runtime dans le binaire).
+                    self.verifier_sans_fallback(e)?;
                     self.fallback_runtime(e)?;
                     self.store_slot(self.val_reg(), out);
                     return Ok(());
@@ -837,11 +1081,17 @@ impl<'a> Builder<'a> {
                     }
                 }
                 self.appels.push(appel);
-                self.appel_runtime(&slots, nom);
+                if self.mode == ModeAppel::Direct {
+                    self.appel_direct(&slots, args.len(), nom)?;
+                } else {
+                    self.appel_runtime(&slots, nom);
+                }
                 self.store_slot(self.val_reg(), out);
             }
             _ => {
-                // Flottant, et autres variantes → trampoline générique.
+                // Flottant, et autres variantes → trampoline générique
+                // (refusé en mode AOT).
+                self.verifier_sans_fallback(e)?;
                 self.fallback_runtime(e)?;
                 self.store_slot(self.val_reg(), out);
             }
@@ -965,6 +1215,45 @@ mod tests {
         slots[0] = 7; slots[1] = 5;
         let r = unsafe { mem.appeler(slots.as_mut_ptr(), &tramp) };
         assert_eq!(r, 44, "résultat faux sur {}", arch.nom());
+    }
+
+    // ── AOT : appels directs, SANS trampoline ──────────────────────────
+    #[test]
+    fn programme_emetteur_appel_direct_sans_trampoline() {
+        let arch = Architecture::native();
+        let g = corps(vec![Op::RetourAbstrait(
+            bin(Oper::Mul, slot(0), Eabstrait::Entier("6".into())))], 1);
+        let var = |i: u16| Expr::Var(format!("s{}", i), 0);
+        let principal = corps(vec![Op::RetourAbstrait(Eabstrait::AppelRir {
+            nom: "g".into(), args: vec![var(0)],
+        })], 1);
+        let prog = emettre_programme(&[
+            ("$principal".to_string(), principal),
+            ("g".to_string(), g),
+        ], arch).unwrap();
+        assert_eq!(prog.appels.len(), 1);
+        assert_eq!(prog.appels[0].nom, "g");
+        assert_eq!(prog.appels[0].cible, 1);
+        assert!(prog.fallbacks.is_empty());
+        let mem = MemoireExecutable::nouveau(&prog.code).unwrap();
+        let tramp = Trampoline { appel_rir: pas_de_tramp,
+                                 eval_fallback: pas_de_fallback,
+                                 ctx: std::ptr::null_mut() };
+        let mut slots = vec![0i64; prog.n_slots_total];
+        slots[0] = 7;
+        assert_eq!(unsafe { mem.appeler(slots.as_mut_ptr(), &tramp) }, 42,
+                   "appel direct faux sur {}", arch.nom());
+    }
+
+    #[test]
+    fn programme_emetteur_refuse_fonction_inconnue_et_fallback() {
+        let c = corps(vec![Op::RetourAbstrait(Eabstrait::AppelRir {
+            nom: "absente".into(), args: vec![],
+        })], 0);
+        assert!(matches!(emettre_programme(&[("$principal".into(), c)], Architecture::native()),
+                         Err(EmitError::FonctionInconnue(_))));
+        let f = corps(vec![Op::RetourAbstrait(Eabstrait::Flottant(1.5))], 0);
+        assert!(emettre_programme(&[("$principal".into(), f)], Architecture::native()).is_err());
     }
 
     // ── fib(25) : émission + récursion native via la trampoline ────────

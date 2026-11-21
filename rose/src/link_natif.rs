@@ -75,6 +75,11 @@ pub struct Options {
     pub n_slots_total: usize,
     /// Nom du symbole machine dans la table des symboles.
     pub nom_code: String,
+    /// ⚠ AOT uniquement : écrire la valeur entière en décimal sur stdout
+    /// avant de sortir. Le code de retour POSIX ne porte que 8 bits, donc
+    /// sans cela une valeur comme 317811 serait tronquée à 115.
+    /// `false` par défaut : tous les appels existants gardent leur stub.
+    pub afficher_valeur: bool,
 }
 
 impl Options {
@@ -85,6 +90,7 @@ impl Options {
             adresse_base: ADRESSE_BASE,
             n_slots_total: SCRATCH_SLOTS as usize,
             nom_code: "rose_code".to_string(),
+            afficher_valeur: false,
         }
     }
 
@@ -163,13 +169,13 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     // Un ELF est un format Unix : le stub utilise toujours SysV/AAPCS64 et
     // termine par le syscall exit (aucune table d'imports n'existe en ELF).
     let abi = Abi::SysV;
-    let stub_len = taille_stub(options.architecture, abi, frame);
+    let stub_len = taille_stub(options.architecture, abi, frame, options.afficher_valeur);
     let vaddr_code = vaddr_text + stub_len as u64;
     let off_tramp_stub = stub_len + code.len();
     let vaddr_tramp_stub = vaddr_text + off_tramp_stub as u64;
 
     let stub = stub_depart(options.architecture, abi, vaddr_text, vaddr_code,
-                           vaddr_tramp_stub, 0, frame);
+                           vaddr_tramp_stub, 0, frame, options.afficher_valeur);
     debug_assert_eq!(stub.len(), stub_len);
     let tramp_stub = stub_trampoline(options.architecture);
 
@@ -309,7 +315,9 @@ pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
     // Un PE ne tourne que sous Windows : l'ABI Win64 est imposée ici, quel
     // que soit l'hôte qui produit le fichier (vérifiable sous Linux).
     let abi = Abi::Win64;
-    let stub_len = taille_stub(options.architecture, abi, frame);
+    // Le stub Win64 n'a pas de sortie décimale (pas de syscall Unix) : on
+    // garde exactement le même octet pour les tests / produits PE existants.
+    let stub_len = taille_stub(options.architecture, abi, frame, false);
     let rva_text = PE_RVA_TEXT;
     let rva_data = PE_RVA_DATA;
     let rva_code = rva_text + stub_len as u32;
@@ -322,7 +330,7 @@ pub fn pe_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> {
                            image_base + rva_text as u64,
                            image_base + rva_code as u64,
                            image_base + rva_tramp_stub as u64,
-                           iat_abs, frame);
+                           iat_abs, frame, false);
     debug_assert_eq!(stub.len(), stub_len);
     let tramp = stub_trampoline(options.architecture);
     let mut text = Vec::with_capacity(stub_len + code.len() + tramp.len());
@@ -456,12 +464,88 @@ fn rendre_executable(_chemin: &Path) -> Result<(), ErreurLien> { Ok(()) }
 
 /// Longueur du stub : on le génère une fois avec des adresses factices (les
 /// déplacements ne changent pas la taille des instructions).
-fn taille_stub(arch: Architecture, abi: Abi, frame: usize) -> usize {
-    stub_depart(arch, abi, 0, 0, 0, 0, frame).len()
+fn taille_stub(arch: Architecture, abi: Abi, frame: usize, afficher: bool) -> usize {
+    stub_depart(arch, abi, 0, 0, 0, 0, frame, afficher).len()
+}
+
+/// Séquence « écrire la valeur en décimal sur stdout » (SysV / Linux).
+///
+/// ⚠ Le code de retour d'un processus POSIX est un OCTET : sans cette
+/// séquence, 317811 sortirait 115. On garde le code de retour (utile pour
+/// les valeurs ≤ 255) ET on rend la valeur complète visible sur stdout.
+/// Les octets ont été validés par assemblage croisé (`aarch64-linux-gnu-as`)
+/// pour AArch64 ; la suite x86-64 est encodée à la main (REX/SIB explicites).
+fn sequence_affichage_a64() -> Vec<u8> {
+    let mut v = Vec::new();
+    for w in [
+        0xAA00_03EEu32, // mov x14, x0   (sauvegarde de la valeur)
+        0xAA0E_03E9,    // mov x9, x14   (dividende = la valeur)
+        0x9100_43EA,    // add x10, sp, #16  (fin du tampon, dans la trame)
+        0xD280_014B,    // mov x11, #10
+        0xD100_054A,    // sub x10, x10, #1  (place du '\n')
+        0x5280_014D,    // mov w13, #10
+        0x3900_014D,    // strb w13, [x10]
+    ] { p_u32(&mut v, w); }
+    let debut_boucle = v.len();
+    for w in [
+        0x9ACB_092C,    // udiv x12, x9, x11
+        0x9B0B_A58D,    // msub x13, x12, x11, x9
+        0x9100_C1AD,    // add x13, x13, #'0'
+        0xD100_054A,    // sub x10, x10, #1
+        0x3900_014D,    // strb w13, [x10]
+        0xAA0C_03E9,    // mov x9, x12
+    ] { p_u32(&mut v, w); }
+    let insn = v.len();
+    let disp = (debut_boucle as i64 - insn as i64) / 4;
+    p_u32(&mut v, 0xB500_0000 | (((disp as u32) & 0x7_FFFF) << 5) | 9); // cbnz x9
+    for w in [
+        0xD280_0020,    // mov x0, #1  (fd 1 = stdout)
+        0xAA0A_03E1,    // mov x1, x10
+        0x9100_43EF,    // add x15, sp, #16
+        0xCB0A_01E2,    // sub x2, x15, x10  (longueur)
+        0xD280_0808,    // mov x8, #64 (__NR_write)
+        0xD400_0001,    // svc #0
+        0xAA0E_03E0,    // mov x0, x14 (restitue la valeur pour `exit`)
+    ] { p_u32(&mut v, w); }
+    v
+}
+
+fn sequence_affichage_x86() -> Vec<u8> {
+    let mut v = vec![
+        0x49, 0x89, 0xC0,                   // mov r8, rax (valeur)
+        0x4C, 0x8D, 0x4C, 0x24, 0x10,       // lea r9, [rsp+16]
+        0x49, 0xFF, 0xC9,                   // dec r9  (place du '\n')
+        0x41, 0xC6, 0x01, 0x0A,             // mov byte [r9], 10
+        0x49, 0xBA, 10, 0, 0, 0, 0, 0, 0, 0,// movabs r10, 10
+    ];
+    let debut_boucle = v.len();
+    v.extend_from_slice(&[
+        0x48, 0x31, 0xD2,                   // xor rdx, rdx
+        0x49, 0xF7, 0xF2,                   // div r10
+        0x80, 0xC2, 0x30,                   // add dl, '0'
+        0x49, 0xFF, 0xC9,                   // dec r9
+        0x41, 0x88, 0x11,                   // mov [r9], dl
+        0x48, 0x85, 0xC0,                   // test rax, rax
+    ]);
+    let insn = v.len();
+    let disp = debut_boucle as i64 - (insn as i64 + 2);
+    v.extend_from_slice(&[0x75, disp as u8]); // jnz boucle
+    v.extend_from_slice(&[
+        0xB8, 1, 0, 0, 0,                   // mov eax, 1 (__NR_write)
+        0xBF, 1, 0, 0, 0,                   // mov edi, 1 (stdout)
+        0x4C, 0x89, 0xCE,                   // mov rsi, r9
+        0x48, 0x89, 0xE2,                   // mov rdx, rsp
+        0x48, 0x83, 0xC2, 0x10,             // add rdx, 16
+        0x4C, 0x29, 0xCA,                   // sub rdx, r9 (longueur)
+        0x0F, 0x05,                         // syscall
+        0x4C, 0x89, 0xC0,                   // mov rax, r8 (REX.R : source = r8)
+    ]);
+    v
 }
 
 fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
-               tramp_vaddr: u64, iat_vaddr: u64, frame: usize) -> Vec<u8> {
+               tramp_vaddr: u64, iat_vaddr: u64, frame: usize,
+               afficher: bool) -> Vec<u8> {
     let mut s = Vec::new();
     match (abi, arch) {
         // ── SysV / AAPCS64 (ELF) : terminer par le syscall exit ─────────
@@ -473,6 +557,7 @@ fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
             p_u32(&mut s, a64_adr(1, tramp_vaddr as i64 - ici as i64)); // adr x1, tramp
             let ici = text_vaddr + 12;
             p_u32(&mut s, a64_bl(code_vaddr as i64 - ici as i64));      // bl rose_code
+            if afficher { s.extend_from_slice(&sequence_affichage_a64()); }
             p_u32(&mut s, 0xD280_0BA8); // mov x8, #93 (__NR_exit)
             p_u32(&mut s, 0xD400_0001); // svc #0
         }
@@ -492,6 +577,7 @@ fn stub_depart(arch: Architecture, abi: Abi, text_vaddr: u64, code_vaddr: u64,
             s.push(0xE8); // call rose_code
             let d = code_vaddr as i64 - (text_vaddr + off as u64 + 5) as i64;
             s.extend_from_slice(&(d as i32).to_le_bytes());
+            if afficher { s.extend_from_slice(&sequence_affichage_x86()); }
             s.extend_from_slice(&[0x48, 0x89, 0xC7]); // mov rdi, rax → code de sortie
             s.extend_from_slice(&[0xB8, 0x3C, 0x00, 0x00, 0x00]); // mov eax, 60 (__NR_exit)
             s.extend_from_slice(&[0x0F, 0x05]); // syscall
@@ -818,6 +904,20 @@ mod tests {
             std::fs::write(&chemin, &octets).unwrap();
             eprintln!("PE écrit : {} ({} octets)", chemin.display(), octets.len());
         }
+    }
+
+    #[test]
+    fn stub_avec_affichage_est_plus_long_et_contient_write() {
+        let e = programme_49_x86();
+        let nu = elf_bytes(&e.code, &Options::depuis_emitted(&e)).unwrap();
+        let mut o = Options::depuis_emitted(&e);
+        o.afficher_valeur = true;
+        let avec = elf_bytes(&e.code, &o).unwrap();
+        assert!(avec.len() > nu.len(), "le stub d'affichage doit être émis");
+        // `mov rax,r8` (REX.R) : restaure la valeur après le syscall write.
+        assert!(avec.windows(3).any(|w| w == [0x4C, 0x89, 0xC0]));
+        // Le stub sans affichage reste octet pour octet conforme aux tests M3.2.
+        assert!(!nu.windows(3).any(|w| w == [0x4C, 0x89, 0xC0]));
     }
 
     #[test]

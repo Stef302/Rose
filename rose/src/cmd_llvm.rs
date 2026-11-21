@@ -12,6 +12,7 @@
 //!
 //! Licence MIT.
 
+use crate::front::{Expr, Instr};
 use std::path::Path;
 
 /// Conseil unique quand le programme ne peut pas devenir un exécutable natif.
@@ -139,11 +140,211 @@ fn nom_executable(sortie: &str, windows: bool) -> String {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ABAISSEMENT SPÉCIFIQUE AOT — linéarisation des appels
+// ═══════════════════════════════════════════════════════════════════════
+//
+// ⚠ `rir.rs` N'EST PAS MODIFIÉ : `rose rir` (et le point fixe b3ed9262)
+// garde exactement sa sortie. Cette passe ne sert qu'à `rose aot`.
+//
+// `Eabstrait::AppelRir` n'accepte que des arguments qui sont des VARIABLES.
+// Or `f(n-1)` passe un calcul, et `f(n-1) + f(n-2)` n'est donc pas abstractible.
+// On insuffle ici des temporaires AVANT l'abaissement :
+//
+//   retour f(n-1) + f(n-2)
+//   → t0 = n-1 ; t1 = f(t0) ; t2 = n-2 ; t3 = f(t2) ; retour t1 + t3
+//
+// Tout devient alors abstractible, donc émettable en code machine.
+
+struct Lineariseur<'a> {
+    /// Fonctions Rose qui auront un corps RIR (et donc un corps machine).
+    connus: &'a std::collections::HashSet<String>,
+    /// Tous les noms de variables déjà présents (évite toute collision).
+    utilises: std::collections::HashSet<String>,
+    compteur: usize,
+}
+
+impl<'a> Lineariseur<'a> {
+    fn nouveau(connus: &'a std::collections::HashSet<String>) -> Self {
+        Lineariseur { connus, utilises: std::collections::HashSet::new(), compteur: 0 }
+    }
+
+    fn collecter_bloc(bloc: &[Instr], noms: &mut std::collections::HashSet<String>) {
+        for i in bloc {
+            match i {
+                Instr::Affect { nom, .. } | Instr::AffectIndex { nom, .. }
+                | Instr::Lire { nom, .. } | Instr::Pour { nom, .. } => { noms.insert(nom.clone()); }
+                Instr::Si { alors, sinon, .. } => {
+                    Self::collecter_bloc(alors, noms);
+                    if let Some(s) = sinon { Self::collecter_bloc(s, noms); }
+                }
+                Instr::TantQue { corps, .. } | Instr::Pour { corps, .. } | Instr::Bloc(corps)
+                | Instr::Spawn(corps, _) => Self::collecter_bloc(corps, noms),
+                Instr::Essayer { corps, attraper, finalment, .. } => {
+                    Self::collecter_bloc(corps, noms);
+                    if let Some((_, b)) = attraper { Self::collecter_bloc(b, noms); }
+                    if let Some(b) = finalment { Self::collecter_bloc(b, noms); }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn temporaire(&mut self) -> String {
+        loop {
+            let n = format!("aotv{}", self.compteur);
+            self.compteur += 1;
+            if self.utilises.insert(n.clone()) { return n; }
+        }
+    }
+
+    /// Réécrit une expression ; les temporaires nécessaires sont ajoutés à
+    /// `pre` (à insérer AVANT l'instruction courante).
+    fn expr(&mut self, e: &Expr, pre: &mut Vec<Instr>) -> Expr {
+        use crate::front::Expr as E;
+        match e {
+            E::Appel { nom, module, args, ligne } => {
+                let args: Vec<Expr> = args.iter().map(|a| self.expr(a, pre)).collect();
+                let directs = module.is_empty() && self.connus.contains(nom.as_str());
+                let mut fin = Vec::with_capacity(args.len());
+                for a in args {
+                    if directs && !matches!(a, E::Var(..)) {
+                        let t = self.temporaire();
+                        pre.push(Instr::Affect { nom: t.clone(), e: a, ligne: *ligne });
+                        fin.push(E::Var(t, *ligne));
+                    } else {
+                        fin.push(a);
+                    }
+                }
+                E::Appel { nom: nom.clone(), module: module.clone(), args: fin, ligne: *ligne }
+            }
+            E::Binaire { op, a, b, ligne } => E::Binaire {
+                op: op.clone(), a: Box::new(self.expr(a, pre)),
+                b: Box::new(self.expr(b, pre)), ligne: *ligne,
+            },
+            E::Unaire { op, a, ligne } => E::Unaire {
+                op: op.clone(), a: Box::new(self.expr(a, pre)), ligne: *ligne,
+            },
+            E::Index { a, b, ligne } => E::Index {
+                a: Box::new(self.expr(a, pre)), b: Box::new(self.expr(b, pre)), ligne: *ligne,
+            },
+            E::ListeLit(v, ligne) => E::ListeLit(
+                v.iter().map(|x| self.expr(x, pre)).collect(), *ligne),
+            E::TableLit(v, ligne) => E::TableLit(
+                v.iter().map(|(k, x)| (k.clone(), self.expr(x, pre))).collect(), *ligne),
+            E::Factorielle(a, l) => E::Factorielle(Box::new(self.expr(a, pre)), *l),
+            E::MultiFactorielle(a, k, l) => E::MultiFactorielle(Box::new(self.expr(a, pre)), *k, *l),
+            E::SousFactorielle(a, l) => E::SousFactorielle(Box::new(self.expr(a, pre)), *l),
+            E::Primorielle(a, l) => E::Primorielle(Box::new(self.expr(a, pre)), *l),
+            E::Terminal(a, l) => E::Terminal(Box::new(self.expr(a, pre)), *l),
+            E::SuperFactorielle(a, l) => E::SuperFactorielle(Box::new(self.expr(a, pre)), *l),
+            autre => autre.clone(),
+        }
+    }
+
+    fn bloc(&mut self, bloc: &[Instr]) -> Vec<Instr> {
+        use crate::front::Instr as I;
+        let mut out = Vec::with_capacity(bloc.len());
+        for i in bloc {
+            let mut pre: Vec<Instr> = Vec::new();
+            let ni = match i {
+                I::Affect { nom, e, ligne } => I::Affect {
+                    nom: nom.clone(), e: self.expr(e, &mut pre), ligne: *ligne,
+                },
+                I::AffectIndex { nom, index, valeur, ligne } => {
+                    let index = self.expr(index, &mut pre);
+                    let valeur = self.expr(valeur, &mut pre);
+                    I::AffectIndex { nom: nom.clone(), index, valeur, ligne: *ligne }
+                }
+                I::Afficher(es, ligne) => I::Afficher(
+                    es.iter().map(|e| self.expr(e, &mut pre)).collect(), *ligne),
+                I::Si { test, alors, sinon, ligne } => {
+                    let alors = self.bloc(alors);
+                    let sinon = sinon.as_ref().map(|s| self.bloc(s));
+                    let test = self.expr(test, &mut pre);
+                    I::Si { test, alors, sinon, ligne: *ligne }
+                }
+                I::TantQue { test, corps, ligne } => {
+                    let corps = self.bloc(corps);
+                    let test = self.expr(test, &mut pre);
+                    I::TantQue { test, corps, ligne: *ligne }
+                }
+                I::Pour { nom, debut, fin, corps, ligne } => {
+                    let corps = self.bloc(corps);
+                    let debut = self.expr(debut, &mut pre);
+                    let fin = self.expr(fin, &mut pre);
+                    I::Pour { nom: nom.clone(), debut, fin, corps, ligne: *ligne }
+                }
+                I::Retour(e, ligne) => I::Retour(e.as_ref().map(|x| self.expr(x, &mut pre)), *ligne),
+                I::ExprStmt(e) => I::ExprStmt(self.expr(e, &mut pre)),
+                I::Lever(e, ligne) => I::Lever(self.expr(e, &mut pre), *ligne),
+                I::Bloc(b) => I::Bloc(self.bloc(b)),
+                autre => autre.clone(),
+            };
+            out.extend(pre);
+            out.push(ni);
+        }
+        out
+    }
+}
+
+/// Vrai si un corps RIR est émettable SANS la moindre trampoline (mode AOT).
+fn corps_emettable_aot(corps: &crate::rir::CorpsRir) -> bool {
+    use crate::rir::{Eabstrait, Oper};
+    fn expr(e: &Eabstrait) -> bool {
+        match e {
+            Eabstrait::Slot(..) | Eabstrait::Entier(_) => true,
+            Eabstrait::Binaire { op, a, b } => {
+                matches!(op, Oper::Add | Oper::Sub | Oper::Mul | Oper::Lt
+                          | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne)
+                    && expr(a) && expr(b)
+            }
+            Eabstrait::Neg(a) | Eabstrait::Non(a) => expr(a),
+            Eabstrait::AppelRir { args, .. } => {
+                args.iter().all(|a| matches!(a, Expr::Var(..)))
+            }
+            _ => false,
+        }
+    }
+    use crate::rir::Op;
+    corps.ops.iter().all(|op| match op {
+        Op::Affect { expr: e, .. } | Op::RetourAbstrait(e)
+        | Op::SautSiFauxAbstrait { test: e, .. } => expr(e),
+        Op::Saut { .. } => true,
+        _ => false,
+    })
+}
+
+/// Noms des fonctions appelées par un corps RIR (appels directs uniquement).
+fn appels_du_corps(corps: &crate::rir::CorpsRir, sortie: &mut Vec<String>) {
+    use crate::rir::Eabstrait;
+    fn visite(e: &Eabstrait, sortie: &mut Vec<String>) {
+        match e {
+            Eabstrait::Binaire { a, b, .. } => { visite(a, sortie); visite(b, sortie); }
+            Eabstrait::Neg(a) | Eabstrait::Non(a) => visite(a, sortie),
+            Eabstrait::AppelRir { nom, .. } => sortie.push(nom.clone()),
+            _ => {}
+        }
+    }
+    use crate::rir::Op;
+    for op in &corps.ops {
+        match op {
+            Op::Affect { expr, .. } | Op::RetourAbstrait(expr)
+            | Op::SautSiFauxAbstrait { test: expr, .. } => visite(expr, sortie),
+            _ => {}
+        }
+    }
+}
+
 /// `rose orc prog.rose [-o sortie]` — alias : `rose aot`.
 ///
 /// Analyse, abaisse en RIR, émet les octets machine puis écrit DIRECTEMENT
 /// un exécutable ELF64 ou PE64. La valeur rendue par le programme (son
 /// dernier affichage) devient le code de retour du processus.
+///
+/// Toutes les fonctions Rose du programme sont compilées dans le MÊME
+/// segment : les appels (y compris récursifs) deviennent des appels directs,
+/// sans runtime externe ni trampoline.
 fn orc(argv: &[String]) -> ! {
     let mut sortie = String::new();
     let mut fichier = String::new();
@@ -180,35 +381,94 @@ fn orc(argv: &[String]) -> ! {
         std::process::exit(1);
     }
 
-    // Le dernier `>> expression` du programme devient la valeur de retour
-    // du code machine (le `retour` n'existe qu'à l'intérieur des fonctions).
-    let corps = crate::rir::abaisser_principal_sortie(&prog.instructions)
-        .or_else(|| crate::rir::abaisser_principal(&prog.instructions));
-    let Some(corps) = corps else {
+    // Fonctions Rose qui auront un corps machine. `declarer_rir` doit être
+    // appelé AVANT l'abaissement pour que `abstraire` produise des AppelRir.
+    let candidats: Vec<String> = prog.ordre.iter()
+        .filter(|n| prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
+        .cloned().collect();
+    let connus: std::collections::HashSet<String> = candidats.iter().cloned().collect();
+    let mut lin = Lineariseur::nouveau(&connus);
+    for sig in prog.signatures.values() {
+        for (p, _) in &sig.params { lin.utilises.insert(p.clone()); }
+    }
+    for nom in &prog.ordre {
+        if let Some(sig) = prog.signatures.get(nom) {
+            if let Some(corps) = sig.corps.as_ref() {
+                Lineariseur::collecter_bloc(corps, &mut lin.utilises);
+            }
+        }
+    }
+    Lineariseur::collecter_bloc(&prog.instructions, &mut lin.utilises);
+    crate::rir::declarer_rir(&candidats);
+
+    // Le dernier `>> expression` devient la valeur de retour du code machine.
+    let principaux = lin.bloc(&prog.instructions);
+    let principal = crate::rir::abaisser_principal_sortie(&principaux)
+        .or_else(|| crate::rir::abaisser_principal(&principaux));
+    let Some(principal) = principal else {
         refuser("la valeur finale du programme ne peut pas être calculée directement");
     };
-    let rend_valeur = corps.ops.iter()
-        .any(|op| matches!(op, crate::rir::Op::RetourAbstrait(_)));
-    if !rend_valeur {
+    if !principal.ops.iter().any(|op| matches!(op, crate::rir::Op::RetourAbstrait(_))) {
         refuser("le programme ne rend pas de valeur calculable directement");
     }
-    if !crate::natif_emetteur::peut_emettre(&corps) {
+    if !corps_emettable_aot(&principal) {
+        refuser("la valeur finale du programme demande le moteur d'exécution");
+    }
+
+    // Toutes les fonctions sont compilées dans le même segment. Une fonction
+    // non émettable est écartée ; elle ne bloque la compilation QUE si elle
+    // est effectivement appelée depuis le programme principal.
+    let mut fonctions: Vec<(String, crate::rir::CorpsRir)> =
+        vec![("$principal".to_string(), principal)];
+    let mut refusees: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for nom in &prog.ordre {
+        let Some(sig) = prog.signatures.get(nom) else { continue };
+        let Some(corps) = sig.corps.as_ref() else { continue };
+        let corps_lineaire = lin.bloc(corps);
+        let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
+        match crate::rir::abaisser(&corps_lineaire, &params, &[]) {
+            Some(rir) if corps_emettable_aot(&rir) => fonctions.push((nom.clone(), rir)),
+            _ => { refusees.insert(nom.clone()); }
+        }
+    }
+
+    // Fermeture transitive des appels : les fonctions inatteignables sont
+    // simplement omises du binaire (elles ne coûtent rien à personne).
+    let mut a_visiter: Vec<String> = vec!["$principal".to_string()];
+    let mut atteintes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    while let Some(nom) = a_visiter.pop() {
+        if !atteintes.insert(nom.clone()) { continue; }
+        if refusees.contains(&nom) {
+            refuser(&format!("la fonction {} utilise des valeurs qui demandent le moteur d'exécution", nom));
+        }
+        if let Some((_, c)) = fonctions.iter().find(|(n, _)| n == &nom) {
+            let mut appels = Vec::new();
+            appels_du_corps(c, &mut appels);
+            a_visiter.extend(appels);
+        } else {
+            refuser(&format!("la fonction {} appelée par le programme n'est pas émettable", nom));
+        }
+    }
+    fonctions.retain(|(n, _)| atteintes.contains(n));
+
+    let programme = match crate::natif_emetteur::emettre_programme(&fonctions, arch) {
+        Ok(p) => p,
+        Err(e) => refuser(&format!("traduction en code machine impossible : {}", e)),
+    };
+    if !programme.fallbacks.is_empty() {
         refuser("certaines opérations demandent le moteur d'exécution");
     }
-    let emis = match crate::natif_emetteur::emettre(&corps, arch) {
-        Ok(e) => e,
-        Err(_) => refuser("certaines opérations ne peuvent pas être traduites en code machine"),
-    };
-    // Sans moteur embarqué, un appel ou un repli rendrait un résultat faux.
-    if !emis.appels.is_empty() || !emis.fallbacks.is_empty() {
-        refuser("ce programme fait appel à des fonctions ou à des valeurs qui demandent le moteur d'exécution");
-    }
+    let mut options = crate::link_natif::Options::nouveau(arch);
+    options.n_slots_total = programme.n_slots_total;
+    // ELF : la valeur complète est ALSO écrite sur stdout (le code de retour
+    // POSIX est limité à 8 bits). Le PE garde son stub d'entrée historique.
+    options.afficher_valeur = !windows;
 
     let chemin = Path::new(&sortie);
     let ecriture = if windows {
-        crate::link_natif::ecrire_pe_depuis_emitted(&emis, chemin)
+        crate::link_natif::ecrire_pe(&programme.code, &options, chemin)
     } else {
-        crate::link_natif::ecrire_elf_depuis_emitted(&emis, chemin)
+        crate::link_natif::ecrire_elf(&programme.code, &options, chemin)
     };
     if let Err(e) = ecriture {
         eprintln!("rose: écriture de {} impossible : {}", sortie, e);
@@ -290,6 +550,26 @@ mod tests {
         let octets = crate::link_natif::elf_bytes(
             &emis.code, &crate::link_natif::Options::depuis_emitted(&emis)).unwrap();
         assert!(octets.starts_with(b"\x7fELF"));
+    }
+
+    #[test]
+    fn linearisation_aot_rend_les_appels_emettables() {
+        let prog = crate::front::analyser(
+            "fn f(n: entier) -> entier {\n  si (n < 2) { retour n }\n  retour f(n-1) + f(n-2)\n}\n>> f(4)\n"
+        ).unwrap();
+        let connus: std::collections::HashSet<String> =
+            ["f".to_string()].into_iter().collect();
+        let mut lin = Lineariseur::nouveau(&connus);
+        Lineariseur::collecter_bloc(&prog.instructions, &mut lin.utilises);
+        let principal = lin.bloc(&prog.instructions);
+        // ⚠ Le principal linéarisé contient maintenant un `AppelRir` avec un
+        // argument VARIABLE (le temporaire), donc émettable sans runtime.
+        crate::rir::declarer_rir(&["f".to_string()]);
+        let rir = crate::rir::abaisser_principal_sortie(&principal).unwrap();
+        assert!(matches!(rir.ops.last(),
+            Some(crate::rir::Op::RetourAbstrait(crate::rir::Eabstrait::AppelRir { nom, .. }))
+            if nom == "f"));
+        assert!(corps_emettable_aot(&rir));
     }
 
     #[test]
