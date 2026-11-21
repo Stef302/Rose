@@ -2,9 +2,11 @@
 //! session utilisateur (`shell:startup`).
 //!
 //! Le helper `rose-tray.exe` n'est ni un service Windows, ni une tâche
-//! planifiée, ni une clé `HKLM`. Quand l'utilisateur choisit
-//! « Automatique (discret) », le setup dépose un tout petit lanceur `.cmd`
-//! dans le dossier Démarrage de SON profil :
+//! planifiée, ni une clé `HKLM`. Dès qu'un mode AUTOMATIQUE est choisi —
+//! « À l'ouverture » (`ModeMiseAJour::Auto`, banderole L5) **ou**
+//! « Automatique (discret) » (`ModeMiseAJour::Automatique`, timer 6 h) —
+//! le setup dépose un tout petit lanceur `.cmd` dans le dossier Démarrage
+//! de SON profil :
 //!
 //! - Windows : `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\rose-tray.cmd`
 //! - équivalent : `shell:startup` ( touche Windows + R → `shell:startup` )
@@ -16,9 +18,15 @@
 //!
 //! Le lanceur est **passif** : il teste `if exist` puis `start /B` le helper.
 //! Si le binaire a été désinstallé, ou si la config est repassée en
-//! `desactive`, le helper se relance mais sort immédiatement (garde-fou
-//! `ModeMiseAJour::doit_demarrer_timer_discret()` dans `rose-tray.rs`).
+//! `desactive` / `manuel`, le helper se relance mais sort immédiatement
+//! (garde-fou `ModeMiseAJour::doit_lancer_helper()` dans `rose-tray.rs`).
 //! Une entrée oubliée est donc inoffensive.
+//!
+//! ⚠ En mode « À l'ouverture », le helper est lancé et enregistré mais reste
+//! PASSIF : aucune icône obligatoire, aucun timer 6 h, aucune requête
+//! automatique. La vérification au démarrage et la banderole restent au
+//! launcher (`doit_verifier_au_demarrage()`). L'icône peut apparaître sans
+//! timer ; ce choix est documenté dans `docs/TRAY4.md`.
 //!
 //! `rose-tray --disable` et le menu « Désactiver le helper » appellent
 //! `desactiver()` : le fichier est supprimé et sa disparition est RELUE.

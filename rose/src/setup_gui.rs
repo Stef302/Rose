@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 // clamp de hauteur, plus de rustine.
 use crate::paint::{
     MARGE_BAS_ROSE, MARGE_HAUT_ROSE, MARGE_TOTALE_ROSE,
-    boite_rose, bornes_opaques, geometrie_marque, points_ecrits, reduire_rgba,
+    boite_rose, boite_source_rose, geometrie_marque, points_ecrits, reduire_rgba,
 };
 
 // ── FFI Win32 ─────────────────────────────────────────────────────────
@@ -408,8 +408,8 @@ const SRCCOPY: u32 = 0x00CC0020;
 // ⚠ L'ancien commentaire accusait `COLORONCOLOR` et préconisait `HALFTONE`
 // pour le logo. C'était INEXACT pour `AlphaBlend` : MSDN documente que le
 // mode est automatiquement converti en COLORONCOLOR pour cette fonction.
-// La réduction du logo (276×343 → ~110×137) est donc faite en Rust par
-// moyenne de surface (`reduire_rgba`), puis collée à taille ÉGALE. Le
+// La réduction du logo (contenu opaque 176×229 → ~110×143) est donc faite en
+// Rust par moyenne de surface (`reduire_rgba`), puis collée à taille ÉGALE. Le
 // double-buffer, lui, copie à taille égale (`BitBlt`/`SRCCOPY`) : aucun
 // étirement n'intervient. Constante conservée pour compatibilité.
 const HALFTONE: i32 = 4;
@@ -728,7 +728,7 @@ unsafe fn charger_police() {
     }
 }
 
-// `bornes_opaques`, `RATIO_ROSE` et les marges sont définis UNE FOIS dans
+// `boite_source_rose`, `RATIO_ROSE` et les marges sont définis UNE FOIS dans
 // `paint` (voir l'import en tête de fichier) : plus de constante dupliquée
 // entre le calcul de la boîte et le dessin.
 
@@ -753,17 +753,17 @@ unsafe fn dessiner_rose(dc: HDC, x: i32, y: i32, largeur_max: i32, hauteur_max: 
     let Some(png) = ressource(1, 10) else { return false };
     let Some((largeur, hauteur, pixels)) = crate::png::decoder_png(png) else { return false };
 
-    let (sx0, sy0, sx1, sy1) = bornes_opaques(largeur, hauteur, &pixels);
-    let sw = sx1.saturating_sub(sx0);
-    let sh = sy1.saturating_sub(sy0);
+    // Une seule fonction pour la boîte SOURCE : le test LOGO4 l'appelle aussi
+    // et prouve que le dernier pixel opaque (le PIED) est bien dedans.
+    let (sx0, sy0, sw, sh) = boite_source_rose(largeur, hauteur, &pixels);
     if sw == 0 || sh == 0 || largeur_max <= 0 || hauteur_max <= 0 {
         return false;
     }
-    // ── BOÎTE DE DESTINATION : contenu OPAQUE ENTIER + 4 px haut + 8 px bas ──
-    // La boîte fournie par `paint::geometrie_marque` contient DÉJÀ les 12 px
-    // de marge : le contenu occupe `hauteur_max - 12`. La boîte SOURCE est le
-    // contenu opaque entier (264 × 337) ; la boîte DESTINATION a le MÊME
-    // ratio. Aucun clamp de la hauteur seule, aucune ligne de tige perdue.
+    // ── BOÎTE DE DESTINATION : contenu OPAQUE ENTIER + 4 px haut + 10 px bas ──
+    // La boîte fournie par `paint::geometrie_marque` contient DÉJÀ les 14 px
+    // de marge : le contenu occupe `hauteur_max - 14`. La boîte SOURCE est le
+    // contenu opaque entier (176 × 229, PIED INCLUS) ; la boîte DESTINATION a
+    // le MÊME ratio. Aucun clamp de la hauteur seule, aucune ligne perdue.
     if hauteur_max <= MARGE_TOTALE_ROSE {
         return false;
     }
@@ -1591,7 +1591,7 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let filet_barre = RECT { left: 0, top: s(55), right: w, bottom: s(56) };
     remplir(dc, &filet_barre, LIGNE_FORTE);
     // Même boîte systémique que le grand logo : hauteur réservée AVANT le
-    // dessin, 4 px en haut / 8 px en bas, ratio source = ratio destination.
+    // dessin, 4 px en haut / 10 px en bas, ratio source = ratio destination.
     let (logo_barre_l, logo_barre_h) = boite_rose(s(24), s(40));
     dessiner_rose(dc, s(18), s(16), logo_barre_l, logo_barre_h);
     // La marque « Rose » en Kare, comme sur le site et la maquette.
@@ -2170,7 +2170,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             let rb_tray = RECT { left: g, top: y5,
                                  right: (g + s(430)).min(d), bottom: y5 + s(38) };
             if rb_tray.bottom <= bas_utile {
-                let deja_actif = etat.mode_maj == crate::velopack::ModeMiseAJour::Automatique;
+                // « À l'ouverture » lance aussi le helper : le bouton est
+                // déjà actif dans les deux modes automatiques.
+                let deja_actif = etat.mode_maj.doit_lancer_helper();
                 let libelle = if deja_actif { "LANCER LE HELPER (DÉJÀ ACTIVÉ)" }
                               else { "ACTIVER LA VÉRIFICATION EN ARRIÈRE-PLAN" };
                 arrondi(dc, &rb_tray, 8, VERT_LIME_VIF);
@@ -2739,18 +2741,31 @@ fn statut_tray(h: HWND, texte: String) {
     }
 }
 
-/// Bouton des Options « Activer la vérification en arrière-plan » : écrit le
-/// mode discret (le helper le relit), pose l'entrée `shell:startup` SANS
-/// droits admin, puis lance `rose-tray.exe` en processus DÉTACHÉ — il survit
-/// à la fermeture du launcher, sans console, sans service.
-fn lancer_helper_tray(h: HWND) {
-    if let Err(e) = crate::velopack::ecrire_config(crate::velopack::ModeMiseAJour::Automatique) {
+/// Premier écran (« Continuer ») ET bouton des Options « Activer la
+/// vérification en arrière-plan » : persiste le mode CHOISI (le helper le
+/// relit), pose l'entrée `shell:startup` SANS droits admin, puis lance
+/// `rose-tray.exe` en processus DÉTACHÉ — il survit à la fermeture du
+/// launcher, sans console, sans service.
+///
+/// Le `mode` est écrit TEL QUEL : « À l'ouverture » reste `auto` (banderole
+/// L5 intacte) et « Automatique (discret) » reste `automatique_discret`.
+/// Les deux modes automatiques partagent le lancement et l'enregistrement
+/// `shell:startup` ; SEUL le mode discret pose le timer 6 h
+/// (`doit_demarrer_timer_discret`). En mode « À l'ouverture », le helper
+/// garde son icône mais reste passif (aucune requête automatique).
+fn lancer_helper_tray(h: HWND, mode: crate::velopack::ModeMiseAJour) {
+    if let Err(e) = crate::velopack::ecrire_config(mode) {
         statut_tray(h, format!("ÉCHEC helper : configuration non enregistrée — {e}"));
         return;
     }
-    unsafe { (*ETAT).mode_maj = crate::velopack::ModeMiseAJour::Automatique; }
-    // L6 reste cohérent : le timer du launcher suit le même mode.
-    demarrer_timer_maj_discret(h);
+    unsafe { (*ETAT).mode_maj = mode; }
+    // Le timer 6 h est RÉSERVÉ au mode discret : « À l'ouverture » garde sa
+    // banderole (L5) et ne force aucun timer.
+    if mode.doit_demarrer_timer_discret() {
+        demarrer_timer_maj_discret(h);
+    } else {
+        arreter_timer_maj_discret(h);
+    }
 
     let Some(chemin) = chemin_helper_tray() else {
         // ⚠ L'utilisateur VOIT le binaire dans la livraison : lui annoncer
@@ -2758,7 +2773,8 @@ fn lancer_helper_tray(h: HWND) {
         // est déjà écrite (plus haut) : le helper la relira au prochain départ.
         crate::setup_core::journal_helper(
             "helper : lancement différé — config enregistrée, effet au prochain démarrage");
-        statut_tray(h, format!("Mode discret enregistré. {}",
+        statut_tray(h, format!("Mode « {} » enregistré. {}",
+                               mode.comme_str(),
                                crate::setup_core::MESSAGE_HELPER_PROCHAIN_DEMARRAGE));
         return;
     };
@@ -2840,9 +2856,20 @@ fn appliquer_mode_maj(h: HWND, mode: crate::velopack::ModeMiseAJour) {
     if mode.doit_demarrer_timer_discret() {
         demarrer_timer_maj_discret(h);
     } else {
+        // « À l'ouverture » garde sa banderole L5 mais PAS le timer 6 h.
         arreter_timer_maj_discret(h);
-        // Le mode discret est quitté : le lanceur shell:startup doit partir
-        // avec lui, sinon le helper reviendrait à chaque ouverture de session.
+    }
+    if mode.doit_lancer_helper() {
+        // Les DEUX modes automatiques gardent (ou posent) l'entrée
+        // shell:startup. `activer_session_tray` est idempotent et ne lance
+        // jamais deux helpers dans le même processus (TRAY_DEJA_LANCE).
+        if let Some(chemin) = chemin_helper_tray() {
+            let _ = activer_session_tray(&chemin);
+        }
+    } else {
+        // « Désactivée » / « Manuel » : le lanceur shell:startup doit partir
+        // avec le mode, sinon le helper reviendrait à chaque ouverture de
+        // session.
         retirer_demarrage_tray();
     }
     {
@@ -3376,7 +3403,8 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                 // le helper AVANT de tester les cartes (zones disjointes).
                 let zt = &*std::ptr::addr_of!(ZONE_TRAY_ACTIVER);
                 if dans(zt, x, y) {
-                    lancer_helper_tray(h);
+                    // Bouton explicite : on force le mode discret (timer 6 h).
+                    lancer_helper_tray(h, crate::velopack::ModeMiseAJour::Automatique);
                     return 0;
                 }
                 let zo = &*std::ptr::addr_of!(ZONES_MAJ_OPTIONS);
@@ -3554,7 +3582,10 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                     // « Continuer » : le binaire n'arrive dans `bin\` qu'ICI.
                     // On pose donc l'entrée `shell:startup` et on lance le
                     // helper maintenant, sans attendre un clic ni un logon.
-                    if crate::velopack::lire_config().mode.doit_demarrer_timer_discret() {
+                    // Régression corrigée : « À l'ouverture » (mode proposé
+                    // par défaut) est AUSSI un mode automatique — il lance le
+                    // helper ici, mais sans timer 6 h (banderole L5 intacte).
+                    if crate::velopack::lire_config().mode.doit_lancer_helper() {
                         if let Some(chemin) = chemin_helper_tray() {
                             let _ = activer_session_tray(&chemin);
                         } else {
@@ -3610,13 +3641,17 @@ fn action(h: HWND, bouton: usize) {
             // apparaissait dans la zone de notification. On lance donc
             // `rose-tray.exe` ICI, en DETACHED_PROCESS (voir
             // `lancer_helper_tray`), avec un message visible de succès/échec.
-            let lancer_helper = mode.doit_demarrer_timer_discret();
+            // Régression corrigée : « À l'ouverture », bien que surtout
+            // connu pour sa banderole (L5), est AUSSI un mode automatique :
+            // il lance le helper et s'enregistre dans shell:startup, sans
+            // timer 6 h. Seuls « Désactivée » / « Manuel » ne lancent rien.
+            let lancer_helper = mode.doit_lancer_helper();
             unsafe { rafraichir(h); }
             if lancer_helper {
-                lancer_helper_tray(h);
+                lancer_helper_tray(h, mode);
             } else {
-                // Choix « Désactivée » / « À l'ouverture » : efface une
-                // éventuelle entrée laissée par une configuration précédente.
+                // Choix « Désactivée » / « Manuel » : efface une éventuelle
+                // entrée laissée par une configuration précédente.
                 retirer_demarrage_tray();
             }
         }
@@ -4507,9 +4542,10 @@ mod tests_ui_tray {
         let debut = code.find("Action::Continuer =>").expect("bras Continuer absent");
         let fin = code.find("Action::Annuler =>").expect("bras Annuler absent");
         let bras = &code[debut..fin];
-        assert!(bras.contains("lancer_helper_tray(h)"),
+        assert!(bras.contains("lancer_helper_tray(h, mode)"),
                 "Continuer ne lance pas le helper — icône absente du tray");
-        assert!(bras.contains("doit_demarrer_timer_discret()"));
+        assert!(bras.contains("doit_lancer_helper()"),
+                "Continuer n'utilise pas le prédicat des deux modes automatiques");
         // Le lancement passe bien par DETACHED_PROCESS | CREATE_NO_WINDOW.
         let helper = &code[code.find("fn lancer_helper_tray").unwrap()
                           ..code.find("fn appliquer_mode_maj").unwrap()];
@@ -4586,7 +4622,8 @@ mod tests_ui_tray {
         let debut = code.find("WM_APP_FIN =>").unwrap();
         let fin = code.find("WM_CLOSE | WM_DESTROY =>").unwrap();
         let bras = &code[debut..fin];
-        assert!(bras.contains("doit_demarrer_timer_discret()"));
+        assert!(bras.contains("doit_lancer_helper()"),
+                "la fin d'installation ignore « À l'ouverture »");
         assert!(bras.contains("activer_session_tray(&chemin)"),
                 "le helper installé n'est pas activé à la fin de l'installation");
         // L'opération réussie ne doit jamais être masquée par un statut « helper ».

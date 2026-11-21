@@ -40,12 +40,19 @@ fn texte_notification(version: &str) -> String {
     format!("Nouvelle version Rose disponible : {version}")
 }
 
-/// Le helper ne démarre QUE dans le mode discret explicitement choisi.
-/// Les trois autres modes (désactivée, à l'ouverture, manuel) ne posent
-/// ni icône, ni timer, ni requête.
+/// Le helper démarre pour les DEUX modes automatiques : « À l'ouverture »
+/// (banderole L5 au lancement du launcher) et « Automatique (discret) »
+/// (timer 6 h). Seuls « Désactivée » et le mode historique « Manuel » ne
+/// posent ni icône, ni timer, ni requête.
+///
+/// ⚠ Le timer 6 h et la lecture immédiate restent RÉSERVÉS au mode discret
+/// (`doit_demarrer_timer_discret`) : en mode « À l'ouverture », l'icône peut
+/// apparaître (et offrir le menu), mais aucun timer n'est posé et aucune
+/// requête n'est faite au lancement — c'est le launcher qui a déjà lu le
+/// manifeste pour la banderole. Voir `docs/TRAY4.md`.
 #[cfg(any(windows, test))]
 fn doit_demarrer(mode: rose::velopack::ModeMiseAJour) -> bool {
-    mode.doit_demarrer_timer_discret()
+    mode.doit_lancer_helper()
 }
 
 /// L'icône Rose est cherchée dans cet ORDRE exact : à côté de l'exe
@@ -499,17 +506,24 @@ mod win {
                 return;
             }
             if !ajouter_icone(hwnd) { DestroyWindow(hwnd); return; }
-            if SetTimer(hwnd, ID_TIMER,
-                        rose::velopack::INTERVALLE_TIMER_DISCRET_MS, std::ptr::null()) == 0 {
-                journal(&format!("SetTimer a échoué : GetLastError={}", GetLastError()));
-                retirer_icone(hwnd);
-                DestroyWindow(hwnd);
-                return;
+            // ⚠ « À l'ouverture » garde son icône mais AUCUN timer 6 h et
+            // AUCUNE requête au lancement : la lecture a déjà été faite par
+            // le launcher pour la banderole (L5). Seul le mode discret pose
+            // le timer et fait une lecture immédiate.
+            if mode.doit_demarrer_timer_discret() {
+                if SetTimer(hwnd, ID_TIMER,
+                            rose::velopack::INTERVALLE_TIMER_DISCRET_MS, std::ptr::null()) == 0 {
+                    journal(&format!("SetTimer a échoué : GetLastError={}", GetLastError()));
+                    retirer_icone(hwnd);
+                    DestroyWindow(hwnd);
+                    return;
+                }
+                journal("tray actif : icône + timer 6 h posés, entrée dans GetMessageW");
+                // UNE lecture au démarrage, puis plus rien avant 6 heures.
+                lancer_verification(hwnd);
+            } else {
+                journal("tray actif : icône SANS timer (mode À l'ouverture), entrée dans GetMessageW");
             }
-            journal("tray actif : icône + timer 6 h posés, entrée dans GetMessageW");
-
-            // UNE lecture au démarrage, puis plus rien avant 6 heures.
-            lancer_verification(hwnd);
 
             let mut msg: Msg = std::mem::zeroed();
             while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
@@ -564,10 +578,23 @@ mod tests {
     #[test]
     fn garde_fou_de_mode() {
         use rose::velopack::ModeMiseAJour;
+        // Les deux modes automatiques lancent le helper (icône éventuelle).
         assert!(!doit_demarrer(ModeMiseAJour::Desactive));
-        assert!(!doit_demarrer(ModeMiseAJour::Auto));
+        assert!(doit_demarrer(ModeMiseAJour::Auto));
         assert!(!doit_demarrer(ModeMiseAJour::Manuel));
         assert!(doit_demarrer(ModeMiseAJour::Automatique));
+    }
+
+    #[test]
+    fn timer_6h_reserve_au_mode_discret() {
+        let code = code_production();
+        // Le SetTimer unique est sous la garde du prédicat « discret » :
+        // « À l'ouverture » ne pose AUCUN timer, mais garde son icône.
+        assert!(code.contains("if mode.doit_demarrer_timer_discret() {"),
+                "le timer 6 h n'est pas conditionné au mode discret");
+        assert!(code.contains("icône SANS timer"));
+        assert_eq!(rose::velopack::ModeMiseAJour::Auto.doit_demarrer_timer_discret(), false);
+        assert_eq!(rose::velopack::ModeMiseAJour::Automatique.doit_demarrer_timer_discret(), true);
     }
 
     #[test]

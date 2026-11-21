@@ -353,10 +353,31 @@ impl ModeMiseAJour {
     }
 
     /// Vrai UNIQUEMENT pour « Automatique (discret) ». C'est ce garde-fou qui
-    /// décide si le timer Windows doit être posé : aucun autre mode ne lance
-    /// quoi que ce soit, même pas un thread endormi.
+    /// décide si le timer Windows (6 h) doit être posé : aucun autre mode ne
+    /// lance quoi que ce soit, même pas un thread endormi.
+    ///
+    /// ⚠ Ce prédicat NE décide PAS de lancer le helper : « À l'ouverture »
+    /// doit AUSSI lancer le helper et s'enregistrer dans `shell:startup`,
+    /// mais SANS timer 6 h. Voir [`Self::doit_lancer_helper`].
     pub fn doit_demarrer_timer_discret(self) -> bool {
         self == Self::Automatique
+    }
+
+    /// Vrai pour les DEUX modes automatiques : « À l'ouverture » (`Auto`) et
+    /// « Automatique (discret) » (`Automatique`). C'est ce garde-fou qui
+    /// décide si le helper `rose-tray.exe` doit être lancé immédiatement
+    /// (fin d'installation / « Continuer ») ET enregistré dans `shell:startup`
+    /// pour le prochain logon.
+    ///
+    /// Seuls `Desactive` et le mode historique `Manuel` ne lancent RIEN.
+    ///
+    /// Différence avec [`Self::doit_demarrer_timer_discret`] : le timer 6 h
+    /// reste réservé au mode discret. En mode `Auto`, le helper peut afficher
+    /// son icône mais ne pose AUCUN timer et ne fait AUCUNE requête
+    /// automatique — la vérification au démarrage et la banderole (L5)
+    /// appartiennent au launcher (`doit_verifier_au_demarrage`).
+    pub fn doit_lancer_helper(self) -> bool {
+        matches!(self, Self::Auto | Self::Automatique)
     }
 
     /// Les trois seules valeurs proposées dans l'UI, dans l'ordre affiché.
@@ -2604,6 +2625,19 @@ mod tests {
         assert!(!options[1].0.doit_demarrer_timer_discret());
         // Le mode historique se surligne comme « Désactivée ».
         assert_eq!(ModeMiseAJour::Manuel.pour_ui(), ModeMiseAJour::Desactive);
+    }
+
+    /// Régression : « À l'ouverture » (mode proposé par défaut) DOIT lancer le
+    /// helper et s'enregistrer dans shell:startup, mais SANS timer 6 h.
+    #[test]
+    fn helper_lance_pour_les_deux_modes_automatiques_pas_pour_les_autres() {
+        assert!(!ModeMiseAJour::Desactive.doit_lancer_helper());
+        assert!(!ModeMiseAJour::Manuel.doit_lancer_helper());
+        assert!(ModeMiseAJour::Auto.doit_lancer_helper());
+        assert!(ModeMiseAJour::Automatique.doit_lancer_helper());
+        // Le timer 6 h reste, lui, réservé au seul mode discret.
+        assert!(!ModeMiseAJour::Auto.doit_demarrer_timer_discret());
+        assert!(ModeMiseAJour::Automatique.doit_demarrer_timer_discret());
     }
 
     #[test]
