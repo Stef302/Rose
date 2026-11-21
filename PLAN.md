@@ -1191,3 +1191,14 @@ Rust: 5 agents, fichiers disjoints
 
 Thorn:
 - T7: noyau.rose (inductifs génériques, terminaison)
+
+## Vague 71 (21/11) — AUTORISATION des formules/algorithmes optimaux
+
+L'utilisateur autorise explicitement les algorithmes ou formules plus efficaces dans tous les domaines. Cela lève le blocage LLVM (somme des carres 32ns vs 418us).
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| F1 | somme des carres par formule fermée exacte + autres sommes | `rose/src/interp.rs`, `rose/src/jit.rs`, `rose/docs/FORMULES.md` |
+| F2 | formules pour les autres motifs du global (flottants harmoniques, rationnels) | `rose/src/{front,rir,run}.rs`, `rose/docs/FORMULES2.md` |
+| F3 | factorielles/geants : formules de Stirling, Legendre (déjà en place) à étendre | `rose/src/i128x.rs`, `rose/docs/FORMULES3.md` |
+| F4 | self-host G5 : attaquer les 9 divergences avec de nouveaux algorithms | `compilateur/emetteur_elf.rose`, `rose/docs/G5_FORMULES.md` |
