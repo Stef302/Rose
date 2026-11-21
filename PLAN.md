@@ -1202,3 +1202,11 @@ L'utilisateur autorise explicitement les algorithmes ou formules plus efficaces 
 | F2 | formules pour les autres motifs du global (flottants harmoniques, rationnels) | `rose/src/{front,rir,run}.rs`, `rose/docs/FORMULES2.md` |
 | F3 | factorielles/geants : formules de Stirling, Legendre (déjà en place) à étendre | `rose/src/i128x.rs`, `rose/docs/FORMULES3.md` |
 | F4 | self-host G5 : attaquer les 9 divergences avec de nouveaux algorithms | `compilateur/emetteur_elf.rose`, `rose/docs/G5_FORMULES.md` |
+
+## Vague 72 — extension neutre, thème noir/lime/rouge, page promo, update optionnelle
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| EX1 | titre neutre (pas 0.1.7), description générale, thème noir lime rouge | vscode-rose/**, rose/docs/EXTENSION2.md |
+| EX2 | page promotionnelle après téléchargement + lien site | docs/index.html, installateur/velopack/**, rose/docs/PROMO.md |
+| L6 | mise à jour auto optionnelle, non gourmande, via site Rose, sans polling infini | rose/src/{setup_core,setup_gui,velopack}.rs, rose/docs/UPDATE_OPT.md |
