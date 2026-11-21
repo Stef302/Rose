@@ -340,7 +340,8 @@ def main():
             "timer de progression ciblé": "InvalidateRect(h, &piste, 0);",
             "timer à 30 i/s (pas 62)": "SetTimer(h, TIMER_PROGRESSION, 33,",
             # ⚠ Logo jamais agrandi au-delà du PNG natif.
-            "logo jamais agrandi (borne 343)": ".min(343);",
+            "ratio du contenu opaque rose (UITRAY2)": "RATIO_CONTENU_ROSE: f64 = 337.0 / 264.0",
+            "marge basse tige jamais rognée": "fn marge_basse_logo(",
             # ⚠⚠ « SEULEMENT LES BORDURES / EFFET TRANSPARENT ». Le fond doit
             # être peint AVANT toute décoration (la double-bufferisation ne
             # copie qu'à la fin : un plantage du tracé détaillé laissait la
