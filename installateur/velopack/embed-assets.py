@@ -22,11 +22,15 @@ from pathlib import Path
 RACINE = Path(__file__).resolve().parents[2]
 SORTIE = RACINE / "rose" / "src" / "assets_installeur.rs"
 
-# zone du logo à garder (fraction de la largeur/hauteur) : la rose seule,
-# sans le mot « ROSE » gravé en bas du visuel d'origine. Mesuré sur
-# `logo-rose.png` : la tige s'arrête à la ligne 903/1400, le mot « ROSE »
-# commence à la ligne 904 → 0.645 coupe exactement entre les deux.
-FRACTION_BAS = 0.645
+# Bas du recadrage DÉDUIT des octets, et non plus d'une fraction écrite à la main.
+# Sur `logo-rose.png` le PIED de la tige (base horizontale en T) occupe les
+# lignes 904..916 ; le mot « ROSE » gravé ne commence qu'en 1040. L'ancien
+# `FRACTION_BAS = 0.645` (bas = 903) coupait juste AVANT le pied : le launcher
+# affichait une tige à bout net au lieu de la base en T de la référence.
+# On cherche donc le premier grand trou vertical sous la fleur : le pied est
+# inclus, le mot « ROSE » reste exclu, et tout changement du visuel source est
+# suivi automatiquement.
+TROU_MIN = 12  # lignes vides consécutives = séparation fleur / mot « ROSE »
 
 
 def lire_png(chemin: Path):
@@ -125,6 +129,30 @@ def reduire(lignes, w, h, facteur):
     return sortie
 
 
+def bord_bas(lignes):
+    """Première ligne du grand trou vertical sous la rose (borne EXCLUSIVE).
+
+    Lecture directe des octets déjà rendus transparents par `est_fond` : on
+    descend depuis la première ligne non vide, on mémorise la dernière ligne
+    non vide, et on s'arrête dès qu'un trou d'au moins `TROU_MIN` lignes vides
+    apparaît. Sur `logo-rose.png` : pied 904..916, trou 917..1039 ⇒ 917.
+    """
+    w = len(lignes[0]) // 4
+    premiere = next((y for y, ligne in enumerate(lignes)
+                     if any(ligne[x * 4 + 3] > 8 for x in range(w))), None)
+    if premiere is None:
+        return len(lignes)
+    vide = 0
+    for y in range(premiere, len(lignes)):
+        if any(lignes[y][x * 4 + 3] > 8 for x in range(w)):
+            vide = 0
+        else:
+            vide += 1
+            if vide >= TROU_MIN:
+                return y - vide + 1
+    return len(lignes)
+
+
 def rust_bytes(nom, donnees: bytes) -> str:
     lignes = []
     courant = ""
@@ -167,11 +195,12 @@ def main():
             if est_fond((ligne[o], ligne[o + 1], ligne[o + 2], ligne[o + 3])):
                 ligne[o:o + 4] = b"\0\0\0\0"
 
-    # recadrage : la rose seule (haut du visuel), sans le mot ROSE gravé.
+    # recadrage : la rose seule, PIED DE LA TIGE INCLUS, sans le mot ROSE.
     # La boîte englobante se calcule sur les pixels NON-FOND (le fond a
     # déjà été rendu transparent), sinon elle englobait tout le visuel et
-    # ramenait le mot « ROSE » dans le cadre.
-    bas = int(h * FRACTION_BAS)
+    # ramenait le mot « ROSE » dans le cadre. Le bas vient des octets
+    # (`bord_bas`) : le pied est dedans, le mot gravé est dehors.
+    bas = bord_bas(lignes)
     minx, maxx, miny, maxy = w, 0, bas, 0
     for y in range(bas):
         ligne = lignes[y]
@@ -186,9 +215,8 @@ def main():
     x1 = min(w, maxx + marge)
     y0 = max(0, miny - marge)
     y1 = min(bas, maxy + marge)
-    # Le bord bas ne doit pas déborder sur le mot « ROSE » : on rogne juste
-    # sous le dernier pixel de la tige (plus de marge en bas).
-    y1 = min(y1, maxy + 1)
+    # Le bord bas est `bas` (premier trou après le PIED) : on ne rogne plus
+    # `maxy + 1`, c'était exactement la ligne qui coupait la base en T.
     largeur = x1 - x0
     hauteur = y1 - y0
 

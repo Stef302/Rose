@@ -15,18 +15,6 @@
 use crate::front::{Expr, Instr};
 use std::path::Path;
 
-/// ✔ DÉCISION SYSTÉMIQUE (vague 79) — plus jamais de « utilisez rose comp ».
-///
-/// Sur Windows/PE, et chaque fois que l'émetteur machine ne peut pas traiter
-/// le programme, `aot` et `orc` produisent DIRECTEMENT le fichier via le
-/// chemin autonome universel (le même produit que `rose comp`, c'est-à-dire
-/// moteur Rose + source collés). Ce chemin est déjà prouvé : `rose.exe` et
-/// les `.exe` de `comp` fonctionnent sur toutes les plateformes, pour tout
-/// script .rose valide. Aucun cas par cas (primorielle, factorielle, …).
-fn autonome(fichier: &str, sortie: &str) -> ! {
-    std::process::exit(crate::comp_programme_aot(fichier, sortie));
-}
-
 /// Exécute l'action demandée. Ne rend jamais (termine le processus).
 pub fn execute(action: &str, argv: &[String]) -> ! {
     match action {
@@ -359,13 +347,33 @@ fn appels_du_corps(corps: &crate::rir::CorpsRir, sortie: &mut Vec<String>) {
 // Aucun changement au RIR pour les autres programmes : la voie historique
 // est inchangée, octet pour octet.
 
+/// Texte qu'`afficher` produirait pour une valeur CONSTANTE, calculé une fois
+/// pour toutes à la compilation (AOT).
+///
+/// ⚠ On ne réinvente PAS le formatage : on appelle exactement les mêmes
+/// fonctions que `run::afficher` (voir `run::chaine_de_p`). Ainsi `>> 2.5`
+/// donne octet pour octet le même texte que `rose prog.rose`, y compris le
+/// `'\n'` final. Seul `Valeur::Tampon` est refusé : `afficher` lève une
+/// erreur à l'exécution, il ne peut donc pas être mémorisé comme « produit ».
+fn texte_affichable(v: &crate::run::Valeur) -> Option<String> {
+    use crate::run::Valeur;
+    let corps = match v {
+        Valeur::Rationnel(q) => crate::run::texte_rationnel(q),
+        Valeur::Liste(..) => crate::run::chaine_de_p(v, true),
+        Valeur::Tampon(..) => return None,
+        _ => crate::run::chaine_de(v),
+    };
+    Some(format!("{}\n", corps))
+}
+
 /// Calcule la valeur d'un programme réduit à `>> <terme constant>`.
 ///
-/// Rend `(texte_avec_nouvelle_ligne, parties_basses_i64)` ou `None` dès que
-/// le programme n'est pas exactement ce cas (l'appelant retombe alors sur le
-/// chemin RIR historique). Le texte est construit exactement comme
-/// `run::afficher` le ferait, pour garantir l'égalité octet pour octet avec
-/// l'interpréteur.
+/// Rend `(texte_avec_nouvelle_ligne, code_de_retour_i64)` ou `None` dès que
+/// le programme n'est pas exactement ce cas. Le texte est construit exactement
+/// comme `run::afficher` le ferait, pour garantir l'égalité octet pour octet
+/// avec l'interpréteur. Vague 80 : les flottants constants (`>> 2.5`) et les
+/// autres littéraux affichables rejoignent les entiers (`>> 565#`) dans ce
+/// chemin — ils sont évalués UNE fois ici, puis mémorisés dans le binaire.
 fn valeur_constante_aot(prog: &crate::front::Programme) -> Option<(String, i64)> {
     if prog.instructions.len() != 1 { return None; }
     let expr = match &prog.instructions[0] {
@@ -373,35 +381,57 @@ fn valeur_constante_aot(prog: &crate::front::Programme) -> Option<(String, i64)>
         _ => return None,
     };
     let valeur = crate::interp::Interp::nouveau(prog.clone()).eval(expr).ok()?;
-    let (texte, bas) = match &valeur {
-        crate::run::Valeur::Entier(n, None) => (n.to_string(), *n),
+    let texte = texte_affichable(&valeur)?;
+    let bas = match &valeur {
+        crate::run::Valeur::Entier(n, None) => *n,
         crate::run::Valeur::Entier(_, Some(z)) => {
             use num_traits::ToPrimitive;
             // Les 64 bits bas donnent le code de retour du processus. Il est
             // tronqué pour les grands entiers (comme le faisait déjà le stub
             // i64), mais le texte complet, lui, est exact.
-            let bas = (&z.v() & num_bigint::BigInt::from(u64::MAX))
-                .to_u64().unwrap_or(0) as i64;
-            (z.chaine(), bas)
+            (&z.v() & num_bigint::BigInt::from(u64::MAX))
+                .to_u64().unwrap_or(0) as i64
         }
-        // Seuls les entiers sont des « valeurs exactes » au sens AOT3.
-        _ => return None,
+        // Un flottant fini rend sa troncature i64 comme code de retour ;
+        // c'est un détail POSIX (le texte affiché est la valeur exacte).
+        crate::run::Valeur::Flottant(d) if d.is_finite() => *d as i64,
+        _ => 0,
     };
-    Some((format!("{}\n", texte), bas))
+    Some((texte, bas))
+}
+
+/// Reconnaît le programme `>> hasard(n)` (ou `prng(n)`) avec `n` littéral
+/// entier positif, et rend `n`. C'est la seule forme de RNG que l'émetteur
+/// natif sait produire sans moteur (voir `natif_emetteur::emettre_hasard`).
+///
+/// ⚠ Aucune autre forme n'est acceptée : une borne variable ou un appel
+/// imbriqué demanderait l'évaluateur d'expressions du moteur. On refuse
+/// alors explicitement plus haut, au lieu de produire un faux binaire.
+fn borne_hasard_aot(prog: &crate::front::Programme) -> Option<u64> {
+    use crate::front::Expr;
+    if prog.instructions.len() != 1 { return None; }
+    let es = match &prog.instructions[0] { Instr::Afficher(es, _) => es, _ => return None };
+    if es.len() != 1 { return None; }
+    let Expr::Appel { nom, module, args, .. } = &es[0] else { return None };
+    if !module.is_empty() || (nom != "hasard" && nom != "prng") || args.len() != 1 {
+        return None;
+    }
+    let Expr::Litteral { texte, flott: false, .. } = &args[0] else { return None };
+    texte.parse::<u64>().ok().filter(|&n| n > 0)
 }
 
 /// `rose orc prog.rose [-o sortie]` — alias : `rose aot`.
 ///
-/// Sur Windows/PE : produit TOUJOURS le CHEMIN AUTONOME UNIVERSEL (moteur Rose
-/// + source collés, le même produit que `rose comp`) — le stub machine PE ne
-/// sait pas écrire une valeur exacte, et ce chemin est déjà prouvé. Message :
-/// `<nom>.exe produit (exécutable AOT autonome)`.
+/// ✔ VÉRITÉ (vague 80) — `aot`/`orc` ne produisent JAMAIS le moteur + source
+/// collés de `rose comp` : ce n'est pas de la compilation anticipée, c'est un
+/// déguisement (5,19 Mo au lieu de ~1 Ko). Dès que l'émetteur machine ne peut
+/// pas traiter le programme, on le DIT explicitement et on échoue :
+/// `rose: AOT indisponible pour ce programme : <raison>`. Les exécutables
+/// autonomes restent disponibles, mais sous leur vrai nom : `rose comp`.
 ///
-/// Sur ELF : tente le vrai AOT natif (émetteur machine intégré) comme voie
-/// rapide. Dès que le programme n'est pas émettable ou que la valeur exacte
-/// n'est pas écrivable, REPLI AUTOMATIQUE sur le chemin autonome, sans jamais
-/// refuser. Donc `aot`/`orc` réussissent sur toutes les plateformes, pour
-/// N'IMPORTE QUEL script .rose valide.
+/// Chemins natifs couverts : arithmétique i64 + appels directs (AOT3),
+/// valeurs constantes mémorisées y compris flottants, `hasard(n)` en pur
+/// code machine. Tout le reste refuse honnêtement, sans faux binaire.
 fn orc(argv: &[String]) -> ! {
     let mut sortie = String::new();
     let mut fichier = String::new();
@@ -438,19 +468,24 @@ fn orc(argv: &[String]) -> ! {
         std::process::exit(1);
     }
 
-    // PE : décision systémique, aucun cas par cas. `rose.exe` et les `.exe`
-    // de `comp` fonctionnent déjà ; on produit exactement ce même produit.
+    // PE : le linker PE n'a pas encore de stub d'affichage (les constantes
+    // exactes et le RNG passent par le stub ELF). On refuse explicitement
+    // au lieu de copier le moteur sous un nom « AOT ».
     if windows {
-        return autonome(&fichier, &sortie);
+        eprintln!("rose: AOT indisponible pour ce programme : cible Windows/PE \
+                   sans stub d'affichage natif (utilisez `rose comp` pour un \
+                   exécutable autonome, qui n'est PAS un AOT)");
+        std::process::exit(1);
     }
 
-    // ELF : voie rapide native, avec repli automatique en cas d'obstacle.
+    // ELF : uniquement du vrai natif. Aucun repli déguisé.
     match orc_natif(&prog, &sortie, arch) {
         Ok(()) => std::process::exit(0),
         Err(raison) => {
-            eprintln!("rose: AOT natif indisponible ({}) ; exécutable AOT autonome en repli",
-                      raison);
-            autonome(&fichier, &sortie)
+            eprintln!("rose: AOT indisponible pour ce programme : {}", raison);
+            eprintln!("rose: aucun exécutable produit. `rose comp` donne un exécutable \
+                       autonome (moteur + source), ce n'est PAS un AOT.");
+            std::process::exit(1);
         }
     }
 }
@@ -488,6 +523,29 @@ fn orc_natif(
             natif_erreur!("écriture de {} impossible : {}", sortie, e);
         }
         println!("rose: {} produit (exécutable natif {}, valeur exacte mémorisée)",
+                 sortie, arch.nom());
+        return Ok(());
+    }
+
+    // ── AOT « RNG natif » (vague 80) ────────────────────────────────────
+    // `>> hasard(10)` est une primitive du catalogue : le RIR ne sait pas
+    // l'abaisser. On écrit directement splitmix64 + Lemire en octets machine
+    // (aucune trampoline, aucun moteur) et le stub imprime le tirage en
+    // décimal. Le programme reste un vrai binaire natif d'environ 1 Ko.
+    if let Some(borne) = borne_hasard_aot(prog) {
+        let programme = crate::natif_emetteur::emettre_hasard(borne, arch)
+            .map_err(|e| format!("émission du générateur aléatoire impossible : {}", e))?;
+        if !programme.fallbacks.is_empty() || !programme.appels.is_empty() {
+            natif_erreur!("le générateur aléatoire demanderait le moteur d'exécution");
+        }
+        let mut options = crate::link_natif::Options::nouveau(arch);
+        options.n_slots_total = programme.n_slots_total;
+        options.afficher_valeur = true;
+        let chemin = Path::new(sortie);
+        if let Err(e) = crate::link_natif::ecrire_elf(&programme.code, &options, chemin) {
+            natif_erreur!("écriture de {} impossible : {}", sortie, e);
+        }
+        println!("rose: {} produit (exécutable natif {}, RNG machine, écriture stdout native)",
                  sortie, arch.nom());
         return Ok(());
     }
@@ -711,6 +769,46 @@ mod tests {
         assert_eq!(programme.sortie.as_deref(), Some(texte.as_bytes()));
         assert!(programme.fallbacks.is_empty());
         assert!(programme.appels.is_empty());
+    }
+
+    #[test]
+    fn aot5_flottant_constant_est_une_valeur_exacte() {
+        // `>> 2.5` : 1040 octets mesurés, pas 5,19 Mo de moteur collé.
+        let prog = crate::front::analyser(">> 2.5\n").unwrap();
+        let (texte, bas) = valeur_constante_aot(&prog).expect("constante flottante");
+        assert_eq!(texte, "2.5\n");
+        assert_eq!(bas, 2); // code de retour POSIX = troncature
+        let corps = crate::rir::abaisser_principal_valeur_exacte(&prog.instructions, bas).unwrap();
+        let p = crate::natif_emetteur::emettre_valeur_exacte(
+            &corps, crate::natif_emetteur::Architecture::native(), texte.as_bytes()).unwrap();
+        assert!(p.appels.is_empty() && p.fallbacks.is_empty());
+        assert_eq!(p.sortie.as_deref(), Some(&b"2.5\n"[..]));
+        // Le texte doit rester octet-identique à `chaine_de` de l'interpréteur.
+        let v = crate::run::Valeur::Flottant(2.5);
+        assert_eq!(crate::run::chaine_de(&v), "2.5");
+    }
+
+    #[test]
+    fn aot5_hasard_reconnait_la_forme_native_et_refuse_le_reste() {
+        let p = crate::front::analyser(">> hasard(10)\n").unwrap();
+        assert_eq!(borne_hasard_aot(&p), Some(10));
+        let p = crate::front::analyser(">> prng(2)\n").unwrap();
+        assert_eq!(borne_hasard_aot(&p), Some(2));
+        for src in [">> hasard(0)\n", ">> hasard(-1)\n", ">> hasard(3) + 1\n",
+                    "n = 10\n>> hasard(n)\n", ">> 2.5\n"] {
+            let p = crate::front::analyser(src).unwrap();
+            assert_eq!(borne_hasard_aot(&p), None, "source : {}", src);
+        }
+    }
+
+    #[test]
+    fn aot5_refuse_un_flottant_non_constant_sans_produire_de_faux_binaire() {
+        // Une variable flottante demanderait un formateur IEEE→décimal en code
+        // machine, inexistant dans `link_natif` (preuve : AOT5.md). Le refus
+        // doit être explicite, jamais un repli de 5,19 Mo.
+        let prog = crate::front::analyser("x = 2.5\n>> x * 2.0\n").unwrap();
+        assert!(valeur_constante_aot(&prog).is_none());
+        assert_eq!(borne_hasard_aot(&prog), None);
     }
 
     #[test]

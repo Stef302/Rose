@@ -111,29 +111,44 @@ pub fn echelle_tracé(w: i32, h: i32) -> f64 {
 // donc testable sous Linux avec `cargo test`. `setup_gui` ne fait plus que
 // traduire ces valeurs en appels `AlphaBlend`.
 
-/// Ratio du CONTENU OPAQUE du PNG embarqué, mesuré UNE FOIS :
-/// `installateur/velopack/rose-installeur.png` = 276 × 343, bornes alpha
-/// x 6..270, y 6..343 ⇒ contenu utile 264 × 337 (la tige va au dernier pixel).
+/// Bornes du CONTENU OPAQUE du PNG embarqué, relues sur les OCTETS de
+/// `installateur/velopack/rose-installeur.png` (184 × 233, alpha > 4) :
+/// x 4..180, y 4..233 ⇒ contenu utile 176 × 229, PIED DE LA TIGE INCLUS
+/// (dernière ligne opaque y=232 : base en T large de 38–39 px, contre 12 px
+/// pour la tige seule en y=224).
 ///
-/// ⚠ Ce n'est PAS le ratio du PNG natif (343/276) : utiliser ce dernier
-/// raccourcit la boîte de quelques pixels. La boîte SOURCE et la boîte
-/// DESTINATION utilisent exactement le même ratio, sans aucun clamp
-/// indépendant de la hauteur.
-pub const RATIO_ROSE: f64 = 337.0 / 264.0;
+/// AVANT LOGO4 : le PNG était 276 × 343, bornes (6, 6, 270, 343) = 264 × 337
+/// et la dernière ligne (y=342) ne mesurait que 17 px : le PIED avait été
+/// rogné à la génération (`embed-assets.py`, coupe à la ligne 903 du visuel
+/// source au lieu de 917). Le ratio est donc recalculé depuis ces octets,
+/// jamais écrit à la main.
+pub const ROSE_X0: usize = 4;
+pub const ROSE_Y0: usize = 4;
+pub const ROSE_X1: usize = 180;
+pub const ROSE_Y1: usize = 233;
+pub const ROSE_L: usize = ROSE_X1 - ROSE_X0; // 176
+pub const ROSE_H: usize = ROSE_Y1 - ROSE_Y0; // 229 (pied compris)
+
+pub const RATIO_ROSE: f64 = ROSE_H as f64 / ROSE_L as f64;
+
+/// Test de non-régression des bornes ci-dessus : `bornes_opaques` relues sur
+/// les octets doivent TOUJOURS les redonner (voir `paint::tests`).
+pub const ROSE_BORNES: (usize, usize, usize, usize) = (ROSE_X0, ROSE_Y0, ROSE_X1, ROSE_Y1);
 
 /// Marge HAUTE fixe, en pixels de destination, au-dessus du contenu opaque.
 pub const MARGE_HAUT_ROSE: i32 = 4;
-/// Marge BASSE fixe, en pixels de destination, SOUS la pointe de la tige.
-/// La pointe anti-aliasée posée sur le bord exact d'`AlphaBlend` disparaît :
-/// 8 px sont réservés, quelle que soit la taille de la fenêtre ou le DPI.
-pub const MARGE_BAS_ROSE: i32 = 8;
+/// Marge BASSE fixe, en pixels de destination, SOUS le PIED de la tige.
+/// La base anti-aliasée posée sur le bord exact d'`AlphaBlend` disparaît :
+/// 10 px sont réservés (8 en LOGO3 + 2 ajoutés en LOGO4 quand le pied a été
+/// réintégré au PNG), quelle que soit la taille de la fenêtre ou le DPI.
+pub const MARGE_BAS_ROSE: i32 = 10;
 /// Total des marges inclus dans toute hauteur réservée à la rose.
-pub const MARGE_TOTALE_ROSE: i32 = MARGE_HAUT_ROSE + MARGE_BAS_ROSE; // 12
+pub const MARGE_TOTALE_ROSE: i32 = MARGE_HAUT_ROSE + MARGE_BAS_ROSE; // 14
 
 /// Hauteur TOTALE à réserver pour une rose dont le contenu opaque mesure
-/// `largeur` pixels de large : `round(largeur * 337/264) + 12`.
+/// `largeur` pixels de large : `round(largeur * 229/176) + 14`.
 ///
-/// Les 12 px (4 haut + 8 bas) sont DÉJÀ inclus : c'est cette hauteur qu'on
+/// Les 14 px (4 haut + 10 bas) sont DÉJÀ inclus : c'est cette hauteur qu'on
 /// retranche des cartes AVANT de poser le titre. On ne la clamped jamais
 /// seule (voir `boite_rose` : c'est la LARGEUR qui diminue).
 pub fn hauteur_rose_requise(largeur: i32) -> i32 {
@@ -146,8 +161,9 @@ pub fn hauteur_rose_requise(largeur: i32) -> i32 {
 ///
 /// Si la hauteur manque, on réduit la LARGEUR (donc la hauteur requise) par
 /// recherche binaire sur `hauteur_rose_requise`, fonction monotone. Le
-/// rectangle obtenu contient toujours le contenu opaque ENTIER plus les
-/// 4 + 8 px de marge, et son ratio est exactement 264:337 pour le contenu.
+/// rectangle obtenu contient toujours le contenu opaque ENTIER (pied compris)
+/// plus les 4 + 10 px de marge, et son ratio est exactement 176:229 pour le
+/// contenu.
 pub fn boite_rose(largeur_souhaitee: i32, hauteur_disponible: i32) -> (i32, i32) {
     if largeur_souhaitee <= 0 || hauteur_disponible < MARGE_TOTALE_ROSE + 1 {
         return (0, 0);
@@ -180,12 +196,12 @@ pub fn points_ecrits(dpi: i32, points: i32, echelle: f64) -> i32 {
 ///
 /// La hauteur du logo est RÉSERVÉE avant tout (via `boite_rose`) : la rose
 /// n'est jamais réduite en hauteur seule, et le titre ne peut pas monter sur
-/// la marge basse de 8 px.
+/// la marge basse de 10 px.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GeometrieMarque {
     pub plancher: i32,      // rien du panneau ne descend sous cette ligne
     pub largeur_logo: i32,  // largeur du contenu opaque (= largeur de la boîte)
-    pub hauteur_logo: i32,  // HAUTEUR TOTALE réservée = contenu + 12 px de marge
+    pub hauteur_logo: i32,  // HAUTEUR TOTALE réservée = contenu + 14 px de marge
     pub place_logo: i32,    // place disponible (hauteur_logo <= place_logo)
     pub haut_titre: i32,
     pub bas_titre: i32,
@@ -211,13 +227,13 @@ pub fn geometrie_marque(ht: i32, dpi: i32, echelle: f64) -> GeometrieMarque {
     let marge_marque = s(26).max(h_marque / 2 - s(34) + s(4));
 
     // Place disponible pour la rose, calculée AVANT de poser le titre :
-    // `hauteur_logo` inclut déjà les 4 + 8 px de marge.
+    // `hauteur_logo` inclut déjà les 4 + 10 px de marge.
     let apres_marque = s(34) + h_marque / 2 + s(10) + s(56) + s(10);
     let place_logo = (plancher - s(78) - marge_marque - apres_marque).max(0);
     // ⚠ Plus de `hauteur_logo = min(hauteur_voulue, place_logo)` : ce clamp
     // sur la hauteur seule changeait le ratio et rapprochait la tige du bord.
     // Ici c'est `boite_rose` qui réduit la largeur si la place manque.
-    let (largeur_logo, hauteur_logo) = boite_rose(s(110).min(264), place_logo);
+    let (largeur_logo, hauteur_logo) = boite_rose(s(110).min(ROSE_L as i32), place_logo);
 
     let y_marque = s(78) + hauteur_logo + marge_marque;
     let haut_titre = y_marque + s(34) - h_marque / 2;
@@ -253,12 +269,23 @@ pub fn bornes_opaques(largeur: usize, hauteur: usize, pixels: &[u8]) -> (usize, 
     if x1 <= x0 || y1 <= y0 { (0, 0, 0, 0) } else { (x0, y0, x1, y1) }
 }
 
+/// Rectangle SOURCE passé à `reduire_rgba` par `dessiner_rose`, sous la forme
+/// `(sx0, sy0, sw, sh)`. Fonction PURE : `dessiner_rose` et les tests lisent
+/// exactement la même boîte, donc le dernier pixel opaque — le PIED — ne peut
+/// pas être exclu par une formule parallèle.
+pub fn boite_source_rose(largeur: usize, hauteur: usize,
+                         pixels: &[u8]) -> (usize, usize, usize, usize) {
+    let (x0, y0, x1, y1) = bornes_opaques(largeur, hauteur, pixels);
+    (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
+}
+
 /// Réduction RGBA par MOYENNE DE SURFACE, en pur Rust.
 ///
 /// `AlphaBlend` force COLORONCOLOR et supprimerait des lignes entières : on
 /// réduit nous-mêmes le contenu opaque (chaque pixel source contribue), puis
 /// on appelle `AlphaBlend` à taille ÉGALE. La boîte source est le contenu
-/// opaque entier (264 × 337), la boîte destination a le MÊME ratio.
+/// opaque entier (176 × 229, pied compris), la boîte destination a le MÊME
+/// ratio.
 ///
 /// `pixels` est du RGBA 8 bits NON prémultiplié ; la sortie est du RGBA
 /// PRÉMULTIPLIÉ, prêt pour `AC_SRC_ALPHA`.
@@ -393,7 +420,8 @@ mod tests {
     /// Grille exhaustive demandée : 6 largeurs × 8 hauteurs (600 → 1080) ×
     /// 3 DPI (96 / 120 / 144) = 144 combinaisons. Pour CHACUNE, on recalcule
     /// le rectangle de destination exact de `dessiner_rose` et on vérifie
-    /// qu'il contient le contenu opaque ENTIER + 4 px en haut + 8 px en bas.
+    /// qu'il contient le contenu opaque ENTIER (pied compris) + 4 px en haut
+    /// + 10 px en bas.
     #[test]
     fn boite_destination_contient_tout_le_contenu_opaque_et_les_marges() {
         let largeurs = [560, 564, 736, 806, 1120, 1920];
@@ -418,29 +446,29 @@ mod tests {
                             "rose plus haute que sa place : {ctx}");
                     assert!(g.largeur_logo > 0, "rose absente : {ctx}");
 
-                    // Même ratio pour la boîte SOURCE (264 × 337) et la boîte
+                    // Même ratio pour la boîte SOURCE (176 × 229) et la boîte
                     // DESTINATION du contenu : largeur_logo × contenu_h.
                     let contenu_h = g.hauteur_logo - MARGE_TOTALE_ROSE;
                     assert_eq!(contenu_h, (g.largeur_logo as f64 * RATIO_ROSE).round() as i32,
                                "ratio source/destination différent : {ctx}");
                     // C'est exactement ce que `dessiner_rose` calcule :
-                    // facteur = min(largeur/264, contenu_h/337) ⇒ dw, dh.
-                    let facteur = (g.largeur_logo as f64 / 264.0)
-                        .min(contenu_h as f64 / 337.0);
-                    let dw = (264.0 * facteur).round() as i32;
-                    let dh = (337.0 * facteur).round() as i32;
+                    // facteur = min(largeur/176, contenu_h/229) ⇒ dw, dh.
+                    let facteur = (g.largeur_logo as f64 / ROSE_L as f64)
+                        .min(contenu_h as f64 / ROSE_H as f64);
+                    let dw = (ROSE_L as f64 * facteur).round() as i32;
+                    let dh = (ROSE_H as f64 * facteur).round() as i32;
                     assert_eq!((dw, dh), (g.largeur_logo, contenu_h),
                                "contenu réduit plus petit que la boîte : {ctx}");
 
-                    // Rectangle réel : 4 px en haut, 8 px en bas, contenu entier.
+                    // Rectangle réel : 4 px en haut, 10 px en bas, contenu entier.
                     let dy = y_boite + MARGE_HAUT_ROSE + (contenu_h - dh) / 2;
                     assert_eq!(dy, y_boite + MARGE_HAUT_ROSE, "marge haute : {ctx}");
                     assert_eq!(y_boite + g.hauteur_logo - (dy + dh), MARGE_BAS_ROSE,
-                               "marge basse absente sous la tige : {ctx}");
+                               "marge basse absente sous le pied : {ctx}");
                     assert!(dy >= y_boite && dy + dh <= y_boite + g.hauteur_logo,
                             "contenu hors de la boîte : {ctx}");
                     // Le titre commence AU PLUS TÔT au bas de la boîte : il
-                    // laisse donc les 8 px de marge au-dessus de la tige.
+                    // laisse donc les 10 px de marge au-dessus du pied.
                     assert!(g.haut_titre >= y_boite + g.hauteur_logo,
                             "titre sur la marge/tige : {ctx}");
                     assert!(g.haut_sous_titre >= g.bas_titre, "titre recouvert : {ctx}");
@@ -452,57 +480,118 @@ mod tests {
     }
 
     /// Quand la hauteur manque, c'est la LARGEUR qui baisse (donc la hauteur
-    /// requise), jamais la hauteur seule : le ratio reste 264:337 et les 12 px
+    /// requise), jamais la hauteur seule : le ratio reste 176:229 et les 14 px
     /// de marge restent présents.
     #[test]
     fn place_insuffisante_reduit_la_largeur_pas_la_hauteur() {
-        assert_eq!(boite_rose(110, 152), (110, 152)); // ajuste juste
-        assert_eq!(boite_rose(110, 151), (109, 151)); // 110 demanderait 152
-        assert_eq!(boite_rose(110, 13), (1, 13));     // plus petit cas valide
-        assert_eq!(boite_rose(110, 12), (0, 0));      // pas de place pour la marge
+        assert_eq!(boite_rose(110, 157), (110, 157)); // ajuste juste
+        assert_eq!(boite_rose(110, 156), (109, 156)); // 110 demanderait 157
+        assert_eq!(boite_rose(110, 15), (1, 15));     // plus petit cas valide
+        assert_eq!(boite_rose(110, 14), (0, 0));      // pas de place pour la marge
         assert_eq!(boite_rose(0, 500), (0, 0));
-        for dispo in 13..400 {
-            let (l, h) = boite_rose(264, dispo);
+        for dispo in 15..400 {
+            let (l, h) = boite_rose(ROSE_L as i32, dispo);
             if l > 0 {
                 assert_eq!(h, hauteur_rose_requise(l));
                 assert!(h <= dispo, "boîte trop haute pour {dispo}");
-                assert_eq!(l, 264.min(l));
+                assert!(l <= ROSE_L as i32, "largeur au-dessus du maximum : {l}");
                 // Une largeur de plus ne tiendrait pas : c'est bien la
                 // largeur qui a été réduite, pas la hauteur clampée.
-                if l < 264 {
+                if l < ROSE_L as i32 {
                     assert!(hauteur_rose_requise(l + 1) > dispo);
                 }
             }
         }
     }
 
-    /// Preuve sur les OCTETS du PNG réellement embarqué : la tige va jusqu'au
-    /// dernier pixel, le ratio 264:337 est exact, et la réduction par moyenne
-    /// de surface garde sa pointe dans la dernière ligne — même boîte source,
-    /// même boîte destination, aucune ligne supprimée.
+    /// Preuve sur les OCTETS du PNG réellement embarqué : bornes relues, ratio
+    /// recalculé, et réduction par moyenne de surface qui garde le PIED dans
+    /// la dernière ligne — même boîte source, même boîte destination.
     #[test]
-    fn png_opaque_264x337_et_reduction_garde_la_pointe() {
+    fn png_opaque_176x229_et_reduction_garde_le_pied() {
         let octets = include_bytes!("../../installateur/velopack/rose-installeur.png");
         let Some((l, h, pixels)) = crate::png::decoder_png(octets) else {
             panic!("PNG de la rose illisible");
         };
-        assert_eq!((l, h), (276, 343));
-        let (x0, y0, x1, y1) = bornes_opaques(l, h, &pixels);
-        assert_eq!((x0, y0, x1, y1), (6, 6, 270, 343),
-                   "bornes_opaques doit inclure la tige jusqu'au dernier pixel");
-        let (sw, sh) = (x1 - x0, y1 - y0);
-        assert_eq!((sw, sh), (264, 337));
+        assert_eq!((l, h), (184, 233));
+        let bornes = bornes_opaques(l, h, &pixels);
+        assert_eq!(bornes, ROSE_BORNES,
+                   "les bornes constants doivent venir des octets du PNG");
+        let (sx0, sy0, sw, sh) = boite_source_rose(l, h, &pixels);
+        assert_eq!((sx0, sy0, sw, sh), (ROSE_X0, ROSE_Y0, ROSE_L, ROSE_H));
+        assert_eq!((sw, sh), (176, 229));
         assert!(((sh as f64 / sw as f64) - RATIO_ROSE).abs() < 1e-9);
 
-        // Destination réelle pour une rose de 107 px : 107 × round(107*337/264).
+        // Destination réelle pour une rose de 107 px : 107 × round(107*229/176).
         let dw = 107usize;
         let dh = (dw as f64 * RATIO_ROSE).round() as usize;
-        let réduit = reduire_rgba(&pixels, l, h, x0, y0, sw, sh, dw, dh)
+        let réduit = reduire_rgba(&pixels, l, h, sx0, sy0, sw, sh, dw, dh)
             .expect("réduction impossible");
         let derniers: Vec<u8> = (0..dw).map(|x| réduit[((dh - 1) * dw + x) * 4 + 3]).collect();
         assert!(derniers.iter().any(|a| *a > 4),
-                "la pointe de la tige a disparu de la dernière ligne réduite");
-        // Hauteur totale réservée = contenu + 12, quelle que soit la largeur.
+                "le pied a disparu de la dernière ligne réduite");
+        // Hauteur totale réservée = contenu + 14, quelle que soit la largeur.
         assert_eq!(hauteur_rose_requise(dw as i32), dh as i32 + MARGE_TOTALE_ROSE);
+    }
+
+    /// Mission LOGO4 : vérifier que le DERNIER PIXEL OPAQUE (le pied de la
+    /// tige) est inclus dans la boîte SOURCE utilisée par `dessiner_rose` —
+    /// pas seulement que la marge basse de destination est assez grande.
+    /// Le dernier pixel est cherché DIRECTEMENT dans les octets, sans passer
+    /// par `bornes_opaques`, pour que l'affirmation soit indépendante.
+    #[test]
+    fn dernier_pixel_opaque_le_pied_est_dans_la_boite_source() {
+        let octets = include_bytes!("../../installateur/velopack/rose-installeur.png");
+        let Some((l, h, pixels)) = crate::png::decoder_png(octets) else {
+            panic!("PNG de la rose illisible");
+        };
+        let alpha = |x: usize, y: usize| pixels[(y * l + x) * 4 + 3];
+
+        // 1. Dernier pixel opaque de l'IMAGE, calculé à part.
+        let mut dernier_y = None;
+        let mut dernier_x = 0usize;
+        for y in 0..h {
+            for x in 0..l {
+                if alpha(x, y) > 4 {
+                    dernier_y = Some(y);
+                    dernier_x = x;
+                }
+            }
+        }
+        let dernier_y = dernier_y.expect("PNG entièrement transparent");
+
+        // 2. C'est bien le PIED (base en T) : sa ligne est nettement plus
+        // large que la tige 12 lignes plus haut.
+        let largeur_ligne = |y: usize| -> usize {
+            (0..l).filter(|&x| alpha(x, y) > 4).count()
+        };
+        let largeur_pied = largeur_ligne(dernier_y);
+        let largeur_tige = largeur_ligne(dernier_y - 12);
+        assert!(largeur_pied >= largeur_tige * 2,
+                "pas de base en T sur la dernière ligne : pied {largeur_pied} px, tige {largeur_tige} px");
+        assert!(dernier_x >= ROSE_X0 && dernier_x < ROSE_X1);
+
+        // 3. La boîte SOURCE de `dessiner_rose` (fonction partagée) contient
+        // ce pixel. C'est la propriété que le mauvais recadrage LOGO3 rompait.
+        let (sx0, sy0, sw, sh) = boite_source_rose(l, h, &pixels);
+        assert!(sy0 <= dernier_y && dernier_y < sy0 + sh,
+                "le pied (y={dernier_y}) est HORS de la boîte source {sy0}..{}",
+                sy0 + sh);
+        assert!(sx0 <= dernier_x && dernier_x < sx0 + sw,
+                "le pied (x={dernier_x}) est HORS de la boîte source");
+        assert_eq!(sy0 + sh, dernier_y + 1,
+                   "la boîte source doit se terminer JUSTE APRÈS le pied");
+
+        // 4. Le pied survit à la réduction COPIÉE EXACTE de `dessiner_rose` :
+        // la dernière ligne réduite porte encore une base large, pas 1 pixel.
+        let dw = 107usize;
+        let dh = (dw as f64 * RATIO_ROSE).round() as usize;
+        let réduit = reduire_rgba(&pixels, l, h, sx0, sy0, sw, sh, dw, dh)
+            .expect("réduction impossible");
+        let pied_final = (0..dw)
+            .filter(|&x| réduit[((dh - 1) * dw + x) * 4 + 3] > 4)
+            .count();
+        assert!(pied_final >= 8,
+                "le pied réduit n'a plus que {pied_final} px sur la dernière ligne");
     }
 }

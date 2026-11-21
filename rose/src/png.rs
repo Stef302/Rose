@@ -109,16 +109,16 @@ mod tests {
         let brut = crate::inflate::decompresser_zlib(&comp);
         assert!(brut.is_some(), "le DEFLATE maison echoue sur le PNG");
         let brut = brut.unwrap();
-        assert!(brut.len() >= 138 * (172 * 4 + 1));
+        assert!(brut.len() >= 184 * (233 * 4 + 1));
     }
 
     #[test]
     fn decode_le_png_de_la_rose() {
         let (w, h, px) = decoder_png(PNG_ROSE).expect("le PNG embarqué doit se décoder");
-        // ⚠ Le logo n'est PAS carré : la rose et sa tige font 276 × 343.
-        // Le PNG est maintenant rendu en 2× (l'ancien 138 × 172 était AGRANDI
-        // à l'écran sur les grands écrans, d'où la pixelisation mesurée).
-        assert_eq!((w, h), (276, 343));
+        // ⚠ Le logo n'est PAS carré : la rose, sa tige ET SON PIED font
+        // 184 × 233. LOGO4 : le visuel source est rendu en 3× (avant :
+        // 276 × 343 en 2×, mais le pied de la tige avait été rogné).
+        assert_eq!((w, h), (184, 233));
         assert_eq!(px.len(), w * h * 4);
     }
 

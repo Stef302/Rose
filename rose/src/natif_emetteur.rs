@@ -374,6 +374,225 @@ pub fn emettre_valeur_exacte(corps: &CorpsRir, arch: Architecture, texte: &[u8])
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// AOT — BUILTIN RNG : `hasard(n)` EN PUR CODE MACHINE
+// ═══════════════════════════════════════════════════════════════════════
+//
+// `hasard` est une primitive du catalogue (pas une fonction Rose) : le RIR
+// historique ne peut donc pas l'abaisser (`abstraire` rend `None`). Plutôt que
+// de recopier le moteur dans le binaire, on écrit ici directement les octets
+// de splitmix64 + réduction de Lemire — les mêmes constantes et la même
+// formule que `run::rng_tirer` / `run::hasard` (voir run.rs). Aucun appel à
+// une fonction du moteur : la graine vient du syscall `getrandom` (mélangé à
+// l'adresse ASLR de la pile), et le résultat est rendu dans x0/rax pour que
+// le stub du linker l'imprime en décimal.
+//
+// ⚠ `n <= 0` est refusé AVANT émission : le moteur lèverait
+// « hasard : bornage positif attendu ». On ne produit jamais de binaire qui
+// afficherait une valeur fausse.
+
+const SM_C: u64 = 0x9E37_79B9_7F4A_7C15;
+const SM_M1: u64 = 0xBF58_476D_1CE4_E5B9;
+const SM_M2: u64 = 0x94D0_49BB_1331_11EB;
+
+/// Petit assembleur local : les opcodes sont calculés (pas écrits en dur)
+/// pour que l'encodage des registres reste lisible et vérifiable.
+struct Asm { v: Vec<u8> }
+impl Asm {
+    fn new() -> Self { Asm { v: Vec::with_capacity(256) } }
+    fn u32(&mut self, w: u32) { self.v.extend_from_slice(&w.to_le_bytes()); }
+    fn oct(&mut self, xs: &[u8]) { self.v.extend_from_slice(xs); }
+    fn b(&mut self, x: u8) { self.v.push(x); }
+
+    // ── aarch64 (AAPCS64) ──────────────────────────────────────────────
+    fn a64_mov_imm(&mut self, r: u32, v: u64) {
+        let bits = v;
+        self.u32(0xD280_0000 | (((bits & 0xFFFF) as u32) << 5) | r);
+        for hw in 1..4u32 {
+            let chunk = ((bits >> (16 * hw)) & 0xFFFF) as u32;
+            if chunk != 0 {
+                self.u32(0xF280_0000 | (hw << 21) | (chunk << 5) | r);
+            }
+        }
+    }
+    fn a64_orr(&mut self, rd: u32, rn: u32, rm: u32) {
+        self.u32(0xAA00_0000 | (rm << 16) | (rn << 5) | rd);
+    }
+    fn a64_add(&mut self, rd: u32, rn: u32, rm: u32) {
+        self.u32(0x8B00_0000 | (rm << 16) | (rn << 5) | rd);
+    }
+    fn a64_mul(&mut self, rd: u32, rn: u32, rm: u32) {
+        self.u32(0x9B00_7C00 | (rm << 16) | (rn << 5) | rd);
+    }
+    fn a64_umulh(&mut self, rd: u32, rn: u32, rm: u32) {
+        self.u32(0x9BC0_7C00 | (rm << 16) | (rn << 5) | rd);
+    }
+    fn a64_and(&mut self, rd: u32, rn: u32, rm: u32) {
+        self.u32(0x8A00_0000 | (rm << 16) | (rn << 5) | rd);
+    }
+    /// `eor rd, rn, rm` (LSL #0).
+    fn a64_eor(&mut self, rd: u32, rn: u32, rm: u32) {
+        self.u32(0xCA00_0000 | (rm << 16) | (rn << 5) | rd);
+    }
+    /// `eor rd, rn, rm, lsr #sh` (shift code 01 = LSR).
+    fn a64_eor_lsr(&mut self, rd: u32, rn: u32, rm: u32, sh: u32) {
+        self.u32(0xCA00_0000 | (1u32 << 22) | (sh << 10) | (rm << 16) | (rn << 5) | rd);
+    }
+    fn a64_ldr(&mut self, rt: u32, rn: u32) { self.u32(0xF940_0000 | (rn << 5) | rt); }
+    fn a64_str(&mut self, rt: u32, rn: u32) { self.u32(0xF900_0000 | (rn << 5) | rt); }
+
+    // ── x86-64 (SysV) ──────────────────────────────────────────────────
+    /// REX.W + opcode(s) + ModRM(mod=11) : `opcode reg, rm`.
+    fn x86_rr(&mut self, opcode: &[u8], reg: u8, rm: u8) {
+        let rex = 0x48 | if reg >= 8 { 0x04 } else { 0 } | if rm >= 8 { 0x01 } else { 0 };
+        self.b(rex);
+        self.oct(opcode);
+        self.b(0xC0 | ((reg & 7) << 3) | (rm & 7));
+    }
+    fn x86_mov_imm(&mut self, r: u8, v: u64) {
+        self.b(0x48 | if r >= 8 { 0x01 } else { 0 });
+        self.b(0xB8 | (r & 7));
+        self.oct(&v.to_le_bytes());
+    }
+    fn x86_shr(&mut self, r: u8, sh: u8) {
+        self.b(0x48 | if r >= 8 { 0x01 } else { 0 });
+        self.b(0xC1);
+        self.b(0xC8 | (5u8 << 3) | (r & 7)); // reg=5 = SHR
+        self.b(sh);
+    }
+    fn x86_load_base(&mut self, r: u8) {
+        // mov r, [rbx]  (rbx = base, jamais >= 8 → pas de REX.B)
+        let rex = 0x48 | if r >= 8 { 0x04 } else { 0 };
+        self.b(rex); self.b(0x8B); self.b(0x03 | ((r & 7) << 3));
+    }
+    fn x86_store_base(&mut self, r: u8) {
+        // mov [rbx], r : opcode 89, ModRM mod=00 reg=r rm=rbx(011).
+        // ⚠ PAS `x86_rr` (mod=11) : cela produirait `mov rbx, r` et détruirait
+        // la base au lieu d'écrire le slot (vérifié par désassemblage croisé).
+        let rex = 0x48 | if r >= 8 { 0x04 } else { 0 };
+        self.b(rex); self.b(0x89); self.b(0x03 | ((r & 7) << 3));
+    }
+}
+
+/// Émet `hasard(n)` en code machine autonome. `n` doit être un entier > 0 ;
+/// sa valeur est intégrée comme immédiat dans le code émis.
+///
+/// Le binaire résultant ne contient AUCUNE référence au moteur Rose : le
+/// résultat est rendu dans le registre de retour (x0 / rax) et le stub
+/// d'entrée du linker l'imprime en décimal (`afficher_valeur = true`).
+pub fn emettre_hasard(borne: u64, arch: Architecture) -> Result<ProgrammeEmis, EmitError> {
+    if borne == 0 {
+        return Err(EmitError::OperationNonSupportee(
+            "hasard : bornage positif attendu".to_string()));
+    }
+    let mut a = Asm::new();
+    match arch {
+        Architecture::Aarch64 => {
+            // prologue : stp x29,x30,[sp,#-16]! ; mov x29,sp ; mov x19,x0 (base)
+            a.u32(0xA9BF_7BFD); a.u32(0x9100_03FD); a.a64_orr(19, 31, 0);
+            // slot 0 = état RNG, remis à zéro avant d'appeler getrandom.
+            a.a64_str(31, 19);
+            // getrandom(base, 8, 0) — syscall 278 sur aarch64.
+            a.a64_orr(0, 31, 19);       // x0 = base (tampon)
+            a.u32(0xD280_0101);         // mov x1, #8
+            a.a64_orr(2, 31, 31);       // x2 = 0 (flags)
+            a.a64_mov_imm(8, 278);      // x8 = __NR_getrandom
+            a.u32(0xD400_0001);         // svc #0
+            // état = graine XOR adresse ASLR de la pile (robuste si getrandom échoue)
+            a.a64_ldr(9, 19);
+            a.u32(0x9100_03EA);         // mov x10, sp
+            a.a64_eor(9, 9, 10);        // eor x9, x9, x10
+            // splitmix64 : état += C ; z = état
+            a.a64_mov_imm(11, SM_C);
+            a.a64_add(9, 9, 11);
+            a.a64_str(9, 19);           // état persisté dans le slot 0
+            a.a64_orr(12, 31, 9);       // x12 = z
+            a.a64_eor_lsr(12, 12, 12, 30);
+            a.a64_mov_imm(13, SM_M1);
+            a.a64_mul(12, 12, 13);
+            a.a64_eor_lsr(12, 12, 12, 27);
+            a.a64_mov_imm(14, SM_M2);
+            a.a64_mul(12, 12, 14);
+            a.a64_eor_lsr(12, 12, 12, 31); // x12 = tirage u64
+            // réduction de Lemire (miroir de run::hasard)
+            if borne.is_power_of_two() {
+                a.a64_mov_imm(15, borne - 1);
+                a.a64_and(0, 12, 15);   // x0 = tirage & (borne-1)
+            } else {
+                a.a64_mov_imm(15, borne);
+                a.a64_umulh(0, 12, 15); // x0 = (tirage * borne) >> 64
+            }
+            // épilogue
+            a.u32(0xA8C1_7BFD); a.u32(0xD65F_03C0);
+        }
+        Architecture::X86_64 => {
+            a.oct(&[0x55]);                 // push rbp
+            a.oct(&[0x48, 0x89, 0xE5]);     // mov rbp, rsp
+            a.oct(&[0x53]);                 // push rbx
+            a.oct(&[0x41, 0x54]);           // push r12
+            a.oct(&[0x48, 0x89, 0xFB]);     // mov rbx, rdi (base)
+            a.oct(&[0x48, 0xC7, 0x03, 0, 0, 0, 0]); // mov qword [rbx], 0
+            // getrandom(base, 8, 0) — syscall 318 sur x86-64.
+            let rdi: u8 = 7; let rbx: u8 = 3;
+            a.x86_rr(&[0x89], rbx, rdi);    // mov rdi, rbx
+            a.oct(&[0x48, 0xC7, 0xC6, 8, 0, 0, 0]); // mov rsi, 8
+            a.oct(&[0x31, 0xD2]);           // xor edx, edx
+            a.oct(&[0xB8, 0x3E, 0x01, 0, 0]); // mov eax, 318
+            a.oct(&[0x0F, 0x05]);           // syscall
+            // état = graine XOR rsp
+            a.x86_load_base(9);             // mov r9, [rbx]
+            a.x86_rr(&[0x89], 4, 10);       // mov r10, rsp
+            a.x86_rr(&[0x31], 10, 9);       // xor r9, r10
+            // splitmix64
+            a.x86_mov_imm(11, SM_C);
+            a.x86_rr(&[0x01], 11, 9);       // add r9, r11
+            a.x86_store_base(9);            // état persisté
+            let r12: u8 = 12; let r13: u8 = 13;
+            a.x86_rr(&[0x89], 9, r12);      // mov r12, r9
+            a.x86_rr(&[0x89], r12, r13);    // copie pour le décalage
+            a.x86_shr(r13, 30);
+            a.x86_rr(&[0x31], r13, r12);    // xor r12, r13
+            a.x86_mov_imm(14, SM_M1);
+            a.x86_rr(&[0x0F, 0xAF], 14, r12); // imul r12, r14
+            a.x86_rr(&[0x89], r12, r13);
+            a.x86_shr(r13, 27);
+            a.x86_rr(&[0x31], r13, r12);
+            a.x86_mov_imm(14, SM_M2);
+            a.x86_rr(&[0x0F, 0xAF], 14, r12);
+            a.x86_rr(&[0x89], r12, r13);
+            a.x86_shr(r13, 31);
+            a.x86_rr(&[0x31], r13, r12);   // r12 = tirage
+            // rax = tirage
+            a.x86_rr(&[0x89], r12, 0);
+            // réduction de Lemire
+            a.x86_mov_imm(15, borne);
+            if borne.is_power_of_two() {
+                a.x86_mov_imm(15, borne - 1);
+                a.x86_rr(&[0x21], 15, 0);  // and rax, r15
+            } else {
+                // mul r15 : rdx:rax = rax * r15 ; on rend la partie haute.
+                a.b(0x49); a.b(0xF7); a.b(0xC0 | (4u8 << 3) | (15 & 7)); // mul r15
+                a.x86_rr(&[0x89], 2, 0);   // mov rax, rdx
+            }
+            a.oct(&[0x41, 0x5C]);           // pop r12
+            a.oct(&[0x5B]);                 // pop rbx
+            a.oct(&[0x5D]);                 // pop rbp
+            a.oct(&[0xC3]);                 // ret
+        }
+    }
+    Ok(ProgrammeEmis {
+        code: a.v,
+        architecture: arch,
+        noms: vec!["$principal".to_string()],
+        offsets: vec![0],
+        frame_bytes: 16,
+        n_slots_total: 2,
+        appels: Vec::new(),
+        fallbacks: Vec::new(),
+        sortie: None,
+    })
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // MÉMOIRE EXÉCUTABLE (mmap + mprotect) — aucun `libc` requis
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1206,6 +1425,29 @@ mod tests {
         let e = emettre(&c, Architecture::X86_64).unwrap();
         assert_eq!(e.op_offsets.len(), 4);
         assert_eq!(e.op_offsets[2], e.op_offsets[1] + 5); // jmp rel32 = 5 octets
+    }
+
+    #[test]
+    fn aot5_hasard_est_du_pur_code_machine() {
+        for arch in [Architecture::Aarch64, Architecture::X86_64] {
+            let p = emettre_hasard(10, arch).unwrap();
+            assert!(p.appels.is_empty(), "appel runtime dans le RNG {:?}", arch);
+            assert!(p.fallbacks.is_empty(), "fallback dans le RNG {:?}", arch);
+            assert_eq!(p.noms, vec!["$principal"]);
+            assert_eq!(p.offsets, vec![0]);
+            assert!(p.code.len() < 200, "code RNG trop long: {}", p.code.len());
+            // Constante splitmix64 présente : movabs contigu sur x86-64,
+            // movz + 3×movk (16 bits par instruction) sur aarch64.
+            let sm = match arch {
+                Architecture::X86_64 => SM_C.to_le_bytes().to_vec(),
+                Architecture::Aarch64 =>
+                    (0xD280_0000u32 | (((SM_C & 0xFFFF) as u32) << 5) | 11).to_le_bytes().to_vec(),
+            };
+            assert!(p.code.windows(sm.len()).any(|w| w == sm),
+                    "constante splitmix absente sur {:?}", arch);
+        }
+        // bornage non positif : refus explicite, aucun binaire.
+        assert!(emettre_hasard(0, Architecture::Aarch64).is_err());
     }
 
     #[test]
