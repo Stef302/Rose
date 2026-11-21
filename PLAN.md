@@ -1271,3 +1271,11 @@ sans clic et avec icône, logo tige entière. Arreter le cas-par-cas.
 | AOT5 | VRAI AOT universel : embarquer le runtime dans le binaire émis (flottants/RNG/E/S) | rose/src/{cmd_llvm,natif_emetteur,link_natif,run}.rs |
 | TRAY4 | helper lancé au logon pour TOUS les modes automatiques (Auto inclus) | rose/src/{demarrage,setup_gui,bin/rose-tray}.rs |
 | LOGO4 | bornes_opaques complètes : inclure le PIED de la tige | rose/src/paint.rs |
+
+## Vague 81 — vérité des méthodes + AOT universel + CLI interactive
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| AUDIT | auditer ce qui est VRAIMENT JIT Cranelift / natif Rust / AOT / transpile / RVM | rose/docs/VERITE_METHODES.md (doc seul) |
+| AOT6 | VRAI AOT universel : runtime machine intégré, tous programmes | rose/src/{cmd_llvm,natif_emetteur,link_natif,run}.rs |
+| CLI2 | interface interactive : choisir la méthode (run/jit/aot/comp/transpile/rvm) | rose/src/{main,repl}.rs, rose/docs/CLI_INTERACTIVE.md |
