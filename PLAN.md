@@ -1233,3 +1233,7 @@ L'utilisateur autorise explicitement les algorithmes ou formules plus efficaces 
 | Agent | Sujet | Fichiers |
 |---|---|---|
 | AOT1 | intégrer AOT LLVM dans rose.exe + aider utilisateur sans détails techniques | rose/src/{main,cmd_llvm,auto_llvm,interp}.rs, rose/Cargo.toml (features), rose/docs/AOT_EMBARQUE.md |
+
+## Vague 76 — AOT via l'émetteur machine intégré (sans LLVM)
+
+rose/src/{cmd_llvm,link_natif,natif_emetteur,rir}.rs + rose/docs/AOT_NATIF.md
