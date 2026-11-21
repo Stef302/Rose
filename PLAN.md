@@ -1251,3 +1251,15 @@ rose/src/{cmd_llvm,link_natif,natif_emetteur,rir}.rs + rose/docs/AOT_NATIF.md
 |---|---|---|
 | AOT3 | AOT gère `>> 565#` (primorielle) | rose/src/{rir,natif_emetteur,cmd_llvm}.rs, docs/AOT3.md |
 | UITRAY2 | tray icône/actif, message "prend effet après", tige et texte crop | rose/src/{bin/rose-tray,setup_gui,setup_core}.rs, docs/UI_TRAY2.md |
+
+## Vague 79 (21/11) — 0.1.73 : AOT universel PE, tray autonome, logo droit
+
+L'utilisateur exige: AOT/orc marchent pour TOUS les .rose sur Windows (PE), tray actif
+sans clic et avec icône, logo tige entière. Arreter le cas-par-cas.
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| AOT4 | AOT/orc = chemin autonome universel sur PE (alias comp) | rose/src/{cmd_llvm,main}.rs, docs/AOT4.md |
+| TRAY3 | icône ressource dans rose-tray.exe + activation auto | rose/src/bin/rose-tray.rs, scripts/build-windows-rebuild.sh, docs/TRAY3.md |
+| LOGO3 | tige jamais coupée, marge garantie | rose/src/{setup_gui,paint}.rs, docs/LOGO3.md |
+| VER3 | bump 0.1.72 → 0.1.73 partout | Cargo.toml/lock, README, docs, wikimiroir |
