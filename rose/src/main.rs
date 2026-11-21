@@ -185,6 +185,8 @@ use crate::jit_ne as natif_emetteur;
 mod natif_emetteur;
 #[cfg(not(target_arch = "wasm32"))]
 mod link_natif;
+#[cfg(not(target_arch = "wasm32"))]
+mod runtime_natif;
 mod sha256;
 mod repl;
 mod setup_core;
@@ -246,7 +248,7 @@ Usage :
   rose interprete prog.rose      Choix explicite : démarre tout de suite, sans accélération
   rose comp prog.rose [-o sortie]   exécutable autonome prêt à l'emploi (moteur et source réunis) ; suffixe .exe ajouté sur Windows
   rose aot prog.rose [-o sortie] binaire natif le plus rapide, compilé à l'avance ; refuse les programmes trop complexes
-  rose transpile prog.rose --cible js|py|c [-o sortie]   traduit en JavaScript, Python ou C lisible ; produit du texte, ne lance rien
+  rose transpile prog.rose --cible js|py|c|wasm [-o sortie]   traduit en JavaScript, Python, C ou WASM ; ne lance rien
   rose bc prog.rose [-o sortie]   écrit un fichier de bytecode .rosebc ; ne l'exécute pas
   rose rvm fichier.rosebc [classe] [methode] [args…]   exécute un .rosebc dans la machine virtuelle Rose
 
@@ -361,22 +363,30 @@ chose.
 Exemple :
   rose aot exemples/bonjour.rose -o bonjour-rapide",
         "transpile" => "\
-rose transpile prog.rose --cible js|py|c [-o sortie]
+rose transpile prog.rose --cible js|py|c|wasm [-o sortie]
 
-Ce que ça fait : traduit votre programme en JavaScript, Python ou C lisible.
-Le résultat est du texte que vous pouvez lire, modifier ou intégrer ailleurs.
+Ce que ça fait : traduit votre programme en JavaScript, Python, C lisible
+ou en module WebAssembly binaire.
 
-Limite : ça ne lance PAS votre programme. La sortie dépend de la langue
-choisie après --cible : js, py ou c. Sans -o, le texte s'affiche à l'écran.
+js / py / c : le résultat est du TEXTE que vous pouvez lire, modifier ou
+intégrer ailleurs. Sans -o, le texte s'affiche à l'écran.
+
+wasm : le résultat est un MODULE BINAIRE .wasm exportant rose_main() -> i64
+(sous-ensemble entiers i64 : voir rose/docs/TRANSPILE_WASM.md). Sans -o, le
+fichier .wasm est tout de même écrit à côté du programme.
+
+Limite : ça ne lance PAS votre programme.
 
 Exemple :
-  rose transpile exemples/bonjour.rose --cible js -o bonjour.js",
+  rose transpile exemples/bonjour.rose --cible js -o bonjour.js
+  rose transpile prog.rose --cible wasm -o prog.wasm",
         "bc" => "\
 rose bc prog.rose [-o sortie]
 
-Ce que ça fait : écrit un fichier de bytecode .rosebc (un programme déjà
-préparé, prêt à être chargé). C'est la première des deux étapes pour la
-machine virtuelle Rose.
+Ce que ça fait : écrit un fichier de bytecode .rosebc (ROSEBC v3) qui est le
+SNAPSHOT COMPLET du programme : toutes les fonctions, les récursions, les
+chaînes, les tables, les rationnels et les E/S. C'est la première des deux
+étapes pour la machine virtuelle Rose.
 
 Limite : ça ne lance PAS le programme.
 Utilisez ensuite « rose rvm » pour l'exécuter.
@@ -388,6 +398,9 @@ rose rvm fichier.rosebc [classe] [methode] [args…]
 
 Ce que ça fait : exécute un fichier .rosebc dans la machine virtuelle Rose,
 qui travaille dans un espace fermé. C'est la deuxième étape, après « rose bc ».
+Un snapshot v3 exécute TOUT le langage (appels, récursion, chaînes, tables,
+rationnels, E/S) avec la même mécanique que l'interpréteur (slots + trames).
+Les anciens .rosebc v1/v2 restent exécutables par la machine à méthodes.
 
 Limite : il faut d'abord avoir produit le .rosebc. Les noms de classe et de
 méthode sont facultatifs (par défaut : Principal et <principal>). Les
@@ -570,7 +583,7 @@ fn lancer_methode_speciale(m: Methode, fichier: &str, args: &[String]) -> ! {
             }
             if cible.is_empty() {
                 use std::io::Write;
-                print!("Quelle langue voulez-vous lire ? (js/py/c) [js] : ");
+                print!("Quelle langue voulez-vous lire ? (js/py/c/wasm) [js] : ");
                 let _ = std::io::stdout().flush();
                 cible = lire_ligne_stdin();
                 if cible.is_empty() { cible = "js".to_string(); }
@@ -579,7 +592,7 @@ fn lancer_methode_speciale(m: Methode, fichier: &str, args: &[String]) -> ! {
                 Ok(c) => c,
                 Err(e) => { eprintln!("{e}"); std::process::exit(1); }
             };
-            let code = match transpile::transpiler_fichier(fichier, cible) {
+            let code = match transpile::transpiler_fichier_octets(fichier, cible) {
                 Ok(c) => c,
                 Err(e) => { eprintln!("{e}"); std::process::exit(1); }
             };
@@ -589,7 +602,7 @@ fn lancer_methode_speciale(m: Methode, fichier: &str, args: &[String]) -> ! {
                 let base = base.strip_suffix(".rose").unwrap_or(base);
                 sortie = format!("{base}.{ext}");
             }
-            match std::fs::write(&sortie, code.as_bytes()) {
+            match std::fs::write(&sortie, &code) {
                 Ok(()) => {
                     println!("rose : {sortie} produit (transpilation {})", cible.nom());
                     std::process::exit(0);
@@ -615,21 +628,11 @@ fn cmd_bc(fichier: &str, sortie: Option<&str>) -> Result<String, i32> {
         Ok(p) => p,
         Err(e) => { eprintln!("{e}"); return Err(1); }
     };
-    let corps = match rir::abaisser_principal(&prog.instructions) {
-        Some(c) => c,
-        None => { eprintln!("rose bc : corps principal non abaissable"); return Err(1); }
-    };
-    if let Err(e) = rosevm::verifier_sous_ensemble(&corps) {
-        eprintln!("rose bc : {}", e);
-        return Err(1);
-    }
-    // Le principal n'a pas de paramètres : arité 0 pour que `rose rvm` marche
-    // sans argument.
-    let classe = match rosevm::promouvoir_corps_avec_parametres(&corps, "<principal>", 0) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("rose bc : {}", e); return Err(1); }
-    };
-    let octets = rosevm::ecrire_classe(&classe);
+    // ⚠ SNAPSHOT AST COMPLET (ROSEBC v3) : on sérialise TOUT le programme —
+    // toutes les fonctions, le principal, les chaînes, les tables, les
+    // rationnels et les E/S. Plus aucun refus « AST refusée par la sandbox » :
+    // la RVM exécute tous les programmes que Rose peut exécuter.
+    let octets = rosevm::ecrire_snapshot(&prog);
     let chemin = match sortie {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => {
@@ -651,6 +654,21 @@ fn cmd_rvm(chemin: &str, classe: &str, methode: &str, args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => { eprintln!("rose rvm : lecture impossible : {}", e); return 1; }
     };
+    let version = match rosevm::version_fichier(&octets) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("rose rvm : {}", e); return 1; }
+    };
+    if version == rosevm::VERSION_AST {
+        // RVM complète : snapshot de tout le programme, exécuté par la
+        // mécanique Rose (slots + pile d'appels). La sortie est EXACTEMENT
+        // celle de `rose run` (formules comprises) — on ne la duplique pas.
+        return match rosevm::executer_snapshot(&octets, args) {
+            Ok(sortie) => { print!("{}", sortie); 0 }
+            Err(e) => { eprintln!("rose rvm : {}", e); 1 }
+        };
+    }
+    // Rétrocompatibilité : les anciens .rosebc v1/v2 restent exécutables par
+    // la machine à classes / méthodes (PARTIE 2).
     let arguments: Vec<rosevm::Valeur> = args.iter()
         .filter_map(|s| s.parse::<i64>().ok()).map(rosevm::Valeur::z).collect();
     let mut hote = rosevm::HoteBc::neuf(rosevm::GcPool::LIMITE_DEFAUT);
@@ -1572,7 +1590,8 @@ fn main() {
             if argv.len() < 3 { eprintln!("rose rvm : quel fichier .rosebc ?"); std::process::exit(2); }
             let classe = argv.get(3).map(String::as_str).unwrap_or("Principal");
             let methode = argv.get(4).map(String::as_str).unwrap_or("<principal>");
-            std::process::exit(cmd_rvm(&argv[2], classe, methode, &argv[5..]));
+            let reste = if argv.len() > 5 { &argv[5..] } else { &[] };
+            std::process::exit(cmd_rvm(&argv[2], classe, methode, reste));
         }
         "verif" => {
             if argv.len() < 3 { eprintln!("rose verif : quel programme ?"); std::process::exit(1); }
@@ -1605,13 +1624,24 @@ fn main() {
                 Ok(c) => c,
                 Err(e) => { eprintln!("{}", e); std::process::exit(1); }
             };
-            match transpile::transpiler_fichier(&fichier, cible) {
+            match transpile::transpiler_fichier_octets(&fichier, cible) {
                 Ok(code) => match sortie {
-                    Some(p) => match std::fs::write(&p, code.as_bytes()) {
+                    Some(p) => match std::fs::write(&p, &code) {
                         Ok(()) => println!("rose: {} produit (transpilation {})", p, cible.nom()),
                         Err(e) => { eprintln!("rose: ne peut écrire {} ({})", p, e); std::process::exit(1); }
                     },
-                    None => print!("{}", code),
+                    None if cible == transpile::Cible::Wasm => {
+                        // Un module binaire ne s'affiche pas : on le dépose
+                        // sous le nom par défaut et on l'annonce.
+                        let base = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f).unwrap_or(&fichier);
+                        let base = base.strip_suffix(".rose").unwrap_or(base);
+                        let p = format!("{base}.wasm");
+                        match std::fs::write(&p, &code) {
+                            Ok(()) => println!("rose: {} produit (transpilation wasm)", p),
+                            Err(e) => { eprintln!("rose: ne peut écrire {} ({})", p, e); std::process::exit(1); }
+                        }
+                    }
+                    None => print!("{}", String::from_utf8_lossy(&code)),
                 },
                 Err(e) => { eprintln!("{}", e); std::process::exit(1); }
             }

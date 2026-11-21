@@ -1,11 +1,18 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// TRANSPILATION Rose → JavaScript (ES2020) / Python 3 / C99
+// TRANSPILATION Rose → JavaScript (ES2020) / Python 3 / C99 / WebAssembly
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // ⚠ CE MODULE EST UN PRODUIT DE SORTIE, PAS UNE DÉPENDANCE DU MOTEUR.
 // Node.js et python3 ne sont jamais appelés ici : ils servent UNIQUEMENT à
-// valider le code émis (voir docs/TRANSPILATION.md). Le moteur Rose reste
-// autonome, sans GMP externe, sans Python embarqué et sans Node embarqué.
+// valider le code émis (voir docs/TRANSPILATION.md et docs/TRANSPILE_WASM.md).
+// Le moteur Rose reste autonome, sans GMP externe, sans Python embarqué et
+// sans Node embarqué.
+//
+// ⚠ `js` / `py` / `c` produisent du TEXTE (le marcheur `Emetteur<S: Syntaxe>`
+// partagé). `wasm` produit des OCTETS : un module binaire `.wasm` écrit à la
+// main (magic, sections, LEB128, opcodes), sans dépendance externe — voir la
+// section « CIBLE WEBASSEMBLY » plus bas. Les deux voies partagent l'AST et
+// `front::analyser`, mais pas le backend.
 //
 // ARCHITECTURE COMMUNE
 //   `transpiler_source` / `transpiler_fichier` → `front::analyser` (AST) →
@@ -49,22 +56,32 @@ pub enum Cible {
     Py,
     /// C99 — noyau numérique (entiers 64 bits), sortie lisible.
     C,
+    /// WebAssembly — module BINAIRE `.wasm`, exportant `rose_main() -> i64`.
+    /// Sous-ensemble i64 : voir docs/TRANSPILE_WASM.md.
+    Wasm,
 }
 
 impl Cible {
     pub fn nom(self) -> &'static str {
-        match self { Cible::Js => "js", Cible::Py => "py", Cible::C => "c" }
+        match self {
+            Cible::Js => "js", Cible::Py => "py", Cible::C => "c",
+            Cible::Wasm => "wasm",
+        }
     }
     pub fn extension(self) -> &'static str {
-        match self { Cible::Js => "js", Cible::Py => "py", Cible::C => "c" }
+        match self {
+            Cible::Js => "js", Cible::Py => "py", Cible::C => "c",
+            Cible::Wasm => "wasm",
+        }
     }
     pub fn parser(s: &str) -> Result<Cible, String> {
         match s.to_ascii_lowercase().as_str() {
             "js" | "javascript" | "node" => Ok(Cible::Js),
             "py" | "python" | "python3" => Ok(Cible::Py),
             "c" | "c99" => Ok(Cible::C),
+            "wasm" | "wasm32" | "webassembly" => Ok(Cible::Wasm),
             _ => Err(format!(
-                "rose: cible de transpilation inconnue '{}' (attendu js|py|c)", s)),
+                "rose: cible de transpilation inconnue '{}' (attendu js|py|c|wasm)", s)),
         }
     }
 }
@@ -81,12 +98,38 @@ pub fn transpiler_fichier(chemin: &str, cible: Cible) -> Result<String, String> 
     transpiler_programme(&prog, cible)
 }
 
-/// Transpile un AST Rose déjà analysé.
+/// Transpile un AST Rose déjà analysé vers du TEXTE.
+///
+/// ⚠ `Cible::Wasm` est BINAIRE : cette fonction refuse cette cible et renvoie
+/// une erreur explicite. Utiliser `transpiler_programme_wasm` / `transpiler_fichier_octets`.
 pub fn transpiler_programme(prog: &Programme, cible: Cible) -> Result<String, String> {
     match cible {
         Cible::Js => Emetteur::nouveau(Js).programme(prog),
         Cible::Py => Emetteur::nouveau(Py).programme(prog),
         Cible::C => Emetteur::nouveau(C).programme(prog),
+        Cible::Wasm => Err(
+            "rose: transpile — wasm est un module binaire : utiliser transpiler_programme_wasm ou `rose transpile --cible wasm -o sortie.wasm`".into()),
+    }
+}
+
+/// Transpile un SOURCE Rose vers un module WebAssembly binaire.
+pub fn transpiler_source_wasm(source: &str) -> Result<Vec<u8>, String> {
+    let prog = crate::front::analyser(source)?;
+    transpiler_programme_wasm(&prog)
+}
+
+/// Transpile un FICHIER Rose (et ses `importer`) vers un module WebAssembly binaire.
+pub fn transpiler_fichier_wasm(chemin: &str) -> Result<Vec<u8>, String> {
+    let prog = crate::front::analyser_fichier(chemin)?;
+    transpiler_programme_wasm(&prog)
+}
+
+/// Point d'entrée UNIQUE utilisé par la CLI : renvoie toujours des octets.
+/// JS / Python / C sont du texte (`String::into_bytes`), WASM est binaire.
+pub fn transpiler_fichier_octets(chemin: &str, cible: Cible) -> Result<Vec<u8>, String> {
+    match cible {
+        Cible::Wasm => transpiler_fichier_wasm(chemin),
+        _ => transpiler_fichier(chemin, cible).map(|s| s.into_bytes()),
     }
 }
 
@@ -1403,6 +1446,491 @@ impl Syntaxe for C {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// CIBLE WEBASSEMBLY — émetteur binaire, ZÉRO dépendance externe
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Écrit exactement comme `natif_emetteur` écrit ELF/PE : octets, LEB128,
+// sections et opcodes à la main. Aucune crate wasm, aucun `.wat`, aucun
+// runtime : le module produit est directement chargeable par
+// `WebAssembly.Module` (Node) ou wasmtime.
+//
+// ABI : `rose_main() -> i64`, exportée (index 0). Les fonctions Rose deviennent
+// des fonctions WASM `(i64…) -> i64` appelables par index. `>> expr` mémorise
+// sa valeur dans un local `__result` ; c'est cette valeur que `rose_main`
+// rend. Tout ce qui n'est pas couvert renvoie `Err` (jamais de silence). Le
+// détail du sous-ensemble est dans `docs/TRANSPILE_WASM.md`.
+
+// Opcodes WASM utilisés (core spec 1.0).
+const OP_BLOCK: u8 = 0x02;
+const OP_LOOP: u8 = 0x03;
+const OP_IF: u8 = 0x04;
+const OP_ELSE: u8 = 0x05;
+const OP_END: u8 = 0x0B;
+const OP_BR: u8 = 0x0C;
+const OP_BR_IF: u8 = 0x0D;
+const OP_RETURN: u8 = 0x0F;
+const OP_CALL: u8 = 0x10;
+const OP_DROP: u8 = 0x1A;
+const OP_LOCAL_GET: u8 = 0x20;
+const OP_LOCAL_SET: u8 = 0x21;
+const OP_I64_CONST: u8 = 0x42;
+const TY_I64: u8 = 0x7E;
+const TY_VOID: u8 = 0x40;
+const OP_I32_EQZ: u8 = 0x45;
+const OP_I32_AND: u8 = 0x71;
+const OP_I32_OR: u8 = 0x72;
+const OP_I32_XOR: u8 = 0x73;
+const OP_I64_EQZ: u8 = 0x50;
+const OP_I64_EQ: u8 = 0x51;
+const OP_I64_NE: u8 = 0x52;
+const OP_I64_LT_S: u8 = 0x53;
+const OP_I64_LE_S: u8 = 0x57;
+const OP_I64_GT_S: u8 = 0x55;
+const OP_I64_GE_S: u8 = 0x59;
+const OP_I64_ADD: u8 = 0x7C;
+const OP_I64_SUB: u8 = 0x7D;
+const OP_I64_MUL: u8 = 0x7E;
+const OP_I64_DIV_S: u8 = 0x7F;
+const OP_I64_REM_S: u8 = 0x81;
+const OP_I32_WRAP_I64: u8 = 0xA7;
+const OP_I64_EXTEND_I32_U: u8 = 0xAD;
+
+/// Entier non signé en LEB128 (longueurs, index, counts).
+fn uleb(mut v: u64, out: &mut Vec<u8>) {
+    loop {
+        let mut b = (v & 0x7F) as u8;
+        v >>= 7;
+        if v != 0 { b |= 0x80; }
+        out.push(b);
+        if v == 0 { break; }
+    }
+}
+
+/// Entier signé en LEB128 (constantes i64).
+fn sleb(mut v: i64, out: &mut Vec<u8>) {
+    loop {
+        let mut b = (v as u8) & 0x7F;
+        v >>= 7;
+        let fini = (v == 0 && (b & 0x40) == 0) || (v == -1 && (b & 0x40) != 0);
+        if !fini { b |= 0x80; }
+        out.push(b);
+        if fini { break; }
+    }
+}
+
+/// Une section WASM : id, taille (LEB128), contenu.
+fn section_wasm(id: u8, contenu: &[u8], out: &mut Vec<u8>) {
+    out.push(id);
+    uleb(contenu.len() as u64, out);
+    out.extend_from_slice(contenu);
+}
+
+/// Chaîne WASM : taille en octets (LEB128) puis UTF-8 brut.
+fn chaine_wasm(s: &str, out: &mut Vec<u8>) {
+    uleb(s.len() as u64, out);
+    out.extend_from_slice(s.as_bytes());
+}
+
+/// Type de fonction : `(param i64…) -> i64`.
+fn type_fonction_wasm(params: usize, out: &mut Vec<u8>) {
+    out.push(0x60); // functype
+    uleb(params as u64, out);
+    for _ in 0..params { out.push(TY_I64); }
+    uleb(1, out);
+    out.push(TY_I64);
+}
+
+struct WasmEmetteur<'a> {
+    prog: &'a Programme,
+    /// Noms Rose des fonctions, dans l'ordre ; leur index WASM est `i + 1`
+    /// (l'index 0 étant réservé à `rose_main`).
+    ordre: Vec<String>,
+    index: HashMap<String, u32>,
+    /// État de la fonction en cours de compilation.
+    /// ⚠ En WASM les PARAMÈTRES occupent les premiers index de locaux (0..k-1)
+    /// et les locaux déclarés viennent ENSUITE : `base` = nombre de paramètres.
+    locals: Vec<String>,
+    local_idx: HashMap<String, u32>,
+    base: u32,
+    result_idx: u32,
+    hidden: u32,
+}
+
+impl<'a> WasmEmetteur<'a> {
+    fn nouveau(prog: &'a Programme) -> Result<Self, String> {
+        let mut index = HashMap::new();
+        for (i, nom) in prog.ordre.iter().enumerate() {
+            let sig = prog.signatures.get(nom)
+                .ok_or_else(|| format!("rose: transpile wasm — fonction '{}' introuvable", nom))?;
+            if sig.corps.is_none() {
+                return Err(format!("rose: transpile wasm — fonction externe '{}' non transpilable", nom));
+            }
+            index.insert(nom.clone(), (i as u32) + 1);
+        }
+        Ok(WasmEmetteur {
+            prog, ordre: prog.ordre.clone(), index,
+            locals: Vec::new(), local_idx: HashMap::new(),
+            base: 0, result_idx: 0, hidden: 0,
+        })
+    }
+
+    /// Un local i64 supplémentaire (les variables Rose sont toutes des i64).
+    /// Les paramètres sont déjà mappés sur 0..base et ne sont PAS redéclarés.
+    fn local(&mut self, nom: &str) -> u32 {
+        if let Some(i) = self.local_idx.get(nom) { return *i; }
+        let i = self.base + self.locals.len() as u32;
+        self.locals.push(nom.to_string());
+        self.local_idx.insert(nom.to_string(), i);
+        i
+    }
+
+    /// Local temporaire dont le nom ne peut PAS apparaître dans un programme
+    /// Rose (caractère de contrôle en tête) : zéro collision garantie.
+    fn hidden(&mut self) -> u32 {
+        self.hidden += 1;
+        let nom = format!("\u{1}w{}", self.hidden);
+        self.local(&nom)
+    }
+
+    fn local_get(&self, i: u32, out: &mut Vec<u8>) {
+        out.push(OP_LOCAL_GET);
+        uleb(i as u64, out);
+    }
+
+    fn local_set(&mut self, nom: &str, out: &mut Vec<u8>) {
+        let i = self.local(nom);
+        out.push(OP_LOCAL_SET);
+        uleb(i as u64, out);
+    }
+
+    fn const_i64(v: i64, out: &mut Vec<u8>) {
+        out.push(OP_I64_CONST);
+        sleb(v, out);
+    }
+
+    /// Corps d'une fonction : déclaration des locaux, instructions, valeur
+    /// de retour (le local `__result`, ou 0), puis `end`.
+    fn compiler_fonction(&mut self, params: &[String], instrs: &[Instr]) -> Result<Vec<u8>, String> {
+        self.locals.clear();
+        self.local_idx.clear();
+        self.hidden = 0;
+        self.base = params.len() as u32;
+        // Les paramètres SONT les locaux 0..base (règle WASM), pas des locaux
+        // déclarés : ne pas les ajouter à `self.locals`.
+        for (i, p) in params.iter().enumerate() {
+            self.local_idx.insert(p.clone(), i as u32);
+        }
+        self.result_idx = self.local("__result");
+
+        let mut code = Vec::new();
+        self.instrs(instrs, &mut code)?;
+        self.local_get(self.result_idx, &mut code); // laisse exactement un i64
+
+        // Un corps WASM = [taille du corps][vec des groupes de locaux][code][end].
+        let mut contenu = Vec::new();
+        uleb(1, &mut contenu); // UN groupe de locaux…
+        uleb(self.locals.len() as u64, &mut contenu); // …de N i64
+        contenu.push(TY_I64);
+        contenu.extend_from_slice(&code);
+        contenu.push(OP_END);
+
+        let mut corps = Vec::new();
+        uleb(contenu.len() as u64, &mut corps);
+        corps.extend_from_slice(&contenu);
+        Ok(corps)
+    }
+
+    fn instrs(&mut self, instrs: &[Instr], out: &mut Vec<u8>) -> Result<(), String> {
+        for i in instrs { self.instr(i, out)?; }
+        Ok(())
+    }
+
+    fn instr(&mut self, i: &Instr, out: &mut Vec<u8>) -> Result<(), String> {
+        match i {
+            Instr::Afficher(es, _) => {
+                // `>>` ne produit PAS de sortie dans un module WASM : il
+                // mémorise la valeur, qui devient le résultat de rose_main.
+                for e in es {
+                    self.expr(e, out)?;
+                    let r = self.result_idx;
+                    out.push(OP_LOCAL_SET);
+                    uleb(r as u64, out);
+                }
+                Ok(())
+            }
+            Instr::Affect { nom, e, .. } => {
+                self.expr(e, out)?;
+                self.local_set(nom, out);
+                Ok(())
+            }
+            Instr::ExprStmt(e) => { self.expr(e, out)?; out.push(OP_DROP); Ok(()) }
+            Instr::Retour(e, _) => {
+                match e {
+                    Some(x) => self.expr(x, out)?,
+                    None => Self::const_i64(0, out),
+                }
+                out.push(OP_RETURN);
+                Ok(())
+            }
+            Instr::Bloc(b) => self.instrs(b, out),
+            Instr::Si { test, alors, sinon, .. } => {
+                self.expr(test, out)?;          // i64
+                out.push(OP_I32_WRAP_I64);      // `if` veut un i32
+                out.push(OP_IF);
+                out.push(TY_VOID);
+                self.instrs(alors, out)?;
+                if let Some(s) = sinon {
+                    out.push(OP_ELSE);
+                    self.instrs(s, out)?;
+                }
+                out.push(OP_END);
+                Ok(())
+            }
+            Instr::TantQue { test, corps, .. } => {
+                out.push(OP_BLOCK); out.push(TY_VOID);
+                out.push(OP_LOOP); out.push(TY_VOID);
+                self.expr(test, out)?;
+                out.push(OP_I32_WRAP_I64);
+                out.push(OP_I32_EQZ);           // 1 si la condition est fausse
+                out.push(OP_BR_IF);
+                uleb(1, out);                   // sortir du BLOCK
+                self.instrs(corps, out)?;
+                out.push(OP_BR);
+                uleb(0, out);                   // reboucler
+                out.push(OP_END);               // loop
+                out.push(OP_END);               // block
+                Ok(())
+            }
+            Instr::Pour { nom, debut, fin, corps, .. } => {
+                // Borne finale EXCLUSIVE, exactement comme l'interpréteur.
+                self.expr(debut, out)?;
+                self.local_set(nom, out);
+                self.expr(fin, out)?;
+                let borne = self.hidden();
+                out.push(OP_LOCAL_SET);
+                uleb(borne as u64, out);
+                out.push(OP_BLOCK); out.push(TY_VOID);
+                out.push(OP_LOOP); out.push(TY_VOID);
+                out.push(OP_LOCAL_GET); uleb(self.local(nom) as u64, out);
+                out.push(OP_LOCAL_GET); uleb(borne as u64, out);
+                out.push(OP_I64_GE_S);          // i>=borne ? (i32)
+                out.push(OP_BR_IF);
+                uleb(1, out);
+                self.instrs(corps, out)?;
+                out.push(OP_LOCAL_GET); uleb(self.local(nom) as u64, out);
+                Self::const_i64(1, out);
+                out.push(OP_I64_ADD);
+                out.push(OP_LOCAL_SET); uleb(self.local(nom) as u64, out);
+                out.push(OP_BR);
+                uleb(0, out);
+                out.push(OP_END);
+                out.push(OP_END);
+                Ok(())
+            }
+            Instr::AffectIndex { .. } => Err("rose: transpile wasm — affectation par index non couverte".into()),
+            Instr::Lire { .. } => Err("rose: transpile wasm — lecture clavier (`<<`) non couverte".into()),
+            Instr::Spawn(..) => Err("rose: transpile wasm — `spawn` non couvert".into()),
+            Instr::Essayer { .. } => Err("rose: transpile wasm — `essayer`/`attraper` non couvert".into()),
+            Instr::Lever(..) => Err("rose: transpile wasm — `lever` non couvert".into()),
+            Instr::Rir(..) => Err("rose: transpile wasm — corps RIR déjà abaissé non couvert".into()),
+        }
+    }
+
+    fn expr(&mut self, e: &Expr, out: &mut Vec<u8>) -> Result<(), String> {
+        match e {
+            Expr::Litteral { texte, flott, rationnel, neg, ligne, .. } => {
+                if *flott || *rationnel || texte.contains('/') || texte.contains('.') {
+                    return Err(format!(
+                        "rose: transpile wasm — '{}' n'est pas un entier i64 (ligne {})", texte, ligne));
+                }
+                let t = texte.replace('_', "");
+                let mut v: i128 = t.parse::<i128>().map_err(|_| format!(
+                    "rose: transpile wasm — littéral '{}' illisible (ligne {})", texte, ligne))?;
+                // Le front-end met SOUVENT le signe DANS `texte` et pose aussi
+                // `neg = true` après repli d'un unaire : ne pas négatif deux fois.
+                if *neg && v >= 0 { v = -v; }
+                let v = i64::try_from(v).map_err(|_| format!(
+                    "rose: transpile wasm — '{}' hors de l'intervalle i64 (ligne {})", texte, ligne))?;
+                Self::const_i64(v, out);
+                Ok(())
+            }
+            Expr::BooleenLit(b, _) => {
+                Self::const_i64(if *b { 1 } else { 0 }, out);
+                Ok(())
+            }
+            Expr::Var(n, _) => { let i = self.local(n); self.local_get(i, out); Ok(()) }
+            Expr::Binaire { op, a, b, .. } => self.binaire(op, a, b, out),
+            Expr::Unaire { op, a, .. } => match op.as_str() {
+                "-" => { Self::const_i64(0, out); self.expr(a, out)?; out.push(OP_I64_SUB); Ok(()) }
+                "+" => self.expr(a, out),
+                "non" => {
+                    self.expr(a, out)?;
+                    out.push(OP_I64_EQZ);
+                    out.push(OP_I64_EXTEND_I32_U);
+                    Ok(())
+                }
+                _ => Err(format!("rose: transpile wasm — opérateur unaire '{}' non couvert", op)),
+            },
+            Expr::Appel { nom, module, args, ligne } => {
+                if !module.is_empty() {
+                    return Err(format!("rose: transpile wasm — appel de module '{}' non couvert (ligne {})", module, ligne));
+                }
+                let idx = match self.index.get(nom) {
+                    Some(i) => *i,
+                    None => return Err(format!(
+                        "rose: transpile wasm — fonction/primitive '{}' non couverte (ligne {})", nom, ligne)),
+                };
+                for x in args { self.expr(x, out)?; }
+                out.push(OP_CALL);
+                uleb(idx as u64, out);
+                Ok(())
+            }
+            Expr::LitComplexe { .. } => Err("rose: transpile wasm — complexes non couverts".into()),
+            Expr::ChaineLit(..) => Err("rose: transpile wasm — chaînes non couvertes".into()),
+            Expr::Index { .. } | Expr::ListeLit(..) | Expr::ListeVideTypee(..) | Expr::TableLit(..) => {
+                Err("rose: transpile wasm — listes/tables non couvertes".into())
+            }
+            Expr::Factorielle(..) | Expr::MultiFactorielle(..) | Expr::SousFactorielle(..)
+            | Expr::Primorielle(..) | Expr::Terminal(..) | Expr::SuperFactorielle(..) => {
+                Err("rose: transpile wasm — notations factorielles non couvertes".into())
+            }
+        }
+    }
+
+    fn binaire(&mut self, op: &str, a: &Expr, b: &Expr, out: &mut Vec<u8>) -> Result<(), String> {
+        match op {
+            "+" | "-" | "*" | "div" | "÷" => {
+                self.expr(a, out)?;
+                self.expr(b, out)?;
+                out.push(match op {
+                    "+" => OP_I64_ADD,
+                    "-" => OP_I64_SUB,
+                    "*" => OP_I64_MUL,
+                    _ => OP_I64_DIV_S,
+                });
+                Ok(())
+            }
+            "%" => self.modulo(a, b, out),
+            "<" | "<=" | ">" | ">=" | "==" | "!=" => {
+                self.expr(a, out)?;
+                self.expr(b, out)?;
+                out.push(match op {
+                    "<" => OP_I64_LT_S,
+                    "<=" => OP_I64_LE_S,
+                    ">" => OP_I64_GT_S,
+                    ">=" => OP_I64_GE_S,
+                    "==" => OP_I64_EQ,
+                    _ => OP_I64_NE,
+                });
+                // Les comparaisons WASM rendent un i32 ; Rose veut un i64.
+                out.push(OP_I64_EXTEND_I32_U);
+                Ok(())
+            }
+            "et" | "ou" => {
+                // Normalisation en booléen : (x != 0) ; puis i32.and / i32.or.
+                self.expr(a, out)?;
+                out.push(OP_I64_EQZ); out.push(OP_I32_EQZ);
+                self.expr(b, out)?;
+                out.push(OP_I64_EQZ); out.push(OP_I32_EQZ);
+                out.push(if op == "et" { OP_I32_AND } else { OP_I32_OR });
+                out.push(OP_I64_EXTEND_I32_U);
+                Ok(())
+            }
+            _ => Err(format!("rose: transpile wasm — opérateur '{}' non couvert", op)),
+        }
+    }
+
+    /// Modulo EUCLIDIEN de Rose : le résultat a le signe du DIVISEUR, comme
+    /// dans le préambule JS (`rMod`). `i64.rem_s` seul a le signe du dividende.
+    fn modulo(&mut self, a: &Expr, b: &Expr, out: &mut Vec<u8>) -> Result<(), String> {
+        let ha = self.hidden();
+        let hb = self.hidden();
+        let hr = self.hidden();
+        self.expr(a, out)?;
+        out.push(OP_LOCAL_SET); uleb(ha as u64, out);
+        self.expr(b, out)?;
+        out.push(OP_LOCAL_SET); uleb(hb as u64, out);
+        out.push(OP_LOCAL_GET); uleb(ha as u64, out);
+        out.push(OP_LOCAL_GET); uleb(hb as u64, out);
+        out.push(OP_I64_REM_S);
+        out.push(OP_LOCAL_SET); uleb(hr as u64, out);
+
+        // condition = (r != 0) && ((r < 0) XOR (b < 0))
+        out.push(OP_LOCAL_GET); uleb(hr as u64, out);
+        out.push(OP_I64_EQZ); out.push(OP_I32_EQZ);
+        out.push(OP_LOCAL_GET); uleb(hr as u64, out);
+        Self::const_i64(0, out);
+        out.push(OP_I64_LT_S);
+        out.push(OP_LOCAL_GET); uleb(hb as u64, out);
+        Self::const_i64(0, out);
+        out.push(OP_I64_LT_S);
+        out.push(OP_I32_XOR);
+        out.push(OP_I32_AND);
+        out.push(OP_IF); out.push(TY_I64);
+        out.push(OP_LOCAL_GET); uleb(hr as u64, out);
+        out.push(OP_LOCAL_GET); uleb(hb as u64, out);
+        out.push(OP_I64_ADD);
+        out.push(OP_ELSE);
+        out.push(OP_LOCAL_GET); uleb(hr as u64, out);
+        out.push(OP_END);
+        Ok(())
+    }
+
+    /// Assemble le module : header, types, functions, exports, code.
+    fn module(&mut self) -> Result<Vec<u8>, String> {
+        // Cloner les corps avant de compiler évite d'emprunter `self` deux fois.
+        let main_instrs = self.prog.instructions.clone();
+        let mut specs: Vec<(Vec<String>, Vec<Instr>)> = Vec::new();
+        for nom in &self.ordre {
+            let sig = self.prog.signatures.get(nom)
+                .ok_or_else(|| format!("rose: transpile wasm — fonction '{}' introuvable", nom))?;
+            let corps = sig.corps.as_ref()
+                .ok_or_else(|| format!("rose: transpile wasm — fonction '{}' sans corps", nom))?;
+            specs.push((sig.params.iter().map(|(n, _)| n.clone()).collect(), corps.clone()));
+        }
+
+        let mut corps_fonctions = Vec::new();
+        corps_fonctions.push(self.compiler_fonction(&[], &main_instrs)?); // index 0
+        for (params, corps) in &specs {
+            corps_fonctions.push(self.compiler_fonction(params, corps)?);
+        }
+
+        let nb = specs.len() + 1;
+        let mut types = Vec::new();
+        uleb(nb as u64, &mut types);
+        type_fonction_wasm(0, &mut types);
+        for (p, _) in &specs { type_fonction_wasm(p.len(), &mut types); }
+
+        let mut fonctions = Vec::new();
+        uleb(nb as u64, &mut fonctions);
+        for i in 0..nb { uleb(i as u64, &mut fonctions); }
+
+        let mut exports = Vec::new();
+        uleb(1, &mut exports);
+        chaine_wasm("rose_main", &mut exports);
+        exports.push(0x00); // kind = func
+        uleb(0, &mut exports); // index 0
+
+        let mut code = Vec::new();
+        uleb(corps_fonctions.len() as u64, &mut code);
+        for c in &corps_fonctions { code.extend_from_slice(c); }
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00]);
+        section_wasm(1, &types, &mut out);
+        section_wasm(3, &fonctions, &mut out);
+        section_wasm(7, &exports, &mut out);
+        section_wasm(10, &code, &mut out);
+        Ok(out)
+    }
+}
+
+/// Transpile un AST Rose déjà analysé vers un module WebAssembly binaire.
+pub fn transpiler_programme_wasm(prog: &Programme) -> Result<Vec<u8>, String> {
+    WasmEmetteur::nouveau(prog)?.module()
+}
+
 // ── Tests unitaires (sans node/python : ils ne sont pas des dépendances) ───
 
 #[cfg(test)]
@@ -1507,5 +2035,66 @@ inserer($t, "a", 1)
         assert_eq!(ident("s"), "v_s");
         assert_eq!(ident("π"), "v__u3c0_");
         assert_eq!(ident("x2"), "v_x2");
+    }
+
+    // ── WASM ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cible_wasm_parsee() {
+        assert_eq!(Cible::parser("wasm").unwrap(), Cible::Wasm);
+        assert_eq!(Cible::parser("WASM32").unwrap(), Cible::Wasm);
+        assert_eq!(Cible::parser("webassembly").unwrap(), Cible::Wasm);
+        assert_eq!(Cible::Wasm.nom(), "wasm");
+        assert_eq!(Cible::Wasm.extension(), "wasm");
+        // La voie texte refuse explicitement la cible binaire.
+        assert!(transpiler_source(">> 42\n", Cible::Wasm).is_err());
+    }
+
+    #[test]
+    fn module_wasm_header_et_sections() {
+        let octets = transpiler_source_wasm(">> 7 * 6\n").unwrap();
+        assert_eq!(&octets[..8], &[0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00]);
+        // Après le header : type (1), function (3), export (7), code (10).
+        let mut ids = Vec::new();
+        let mut p = 8;
+        while p < octets.len() {
+            ids.push(octets[p]);
+            p += 1;
+            let (_n, q) = lire_uleb(&octets, p);
+            p = q + _n as usize;
+        }
+        assert_eq!(ids, vec![1, 3, 7, 10]);
+        assert!(p == octets.len(), "section qui déborde du module");
+    }
+
+    #[test]
+    fn module_wasm_exporte_rose_main() {
+        let octets = transpiler_source_wasm(">> 42\n").unwrap();
+        let chaine = b"rose_main";
+        assert!(octets.windows(chaine.len()).any(|w| w == chaine));
+    }
+
+    #[test]
+    fn wasm_refuse_hors_sous_ensemble() {
+        assert!(transpiler_source_wasm(">> 1 / 2\n").is_err());     // rationnel
+        assert!(transpiler_source_wasm(">> 2 * i\n").is_err());     // complexe
+        assert!(transpiler_source_wasm(">> \"abc\"\n").is_err());   // chaîne
+        assert!(transpiler_source_wasm("<< x\n").is_err());        // clavier
+        assert!(transpiler_source_wasm(">> [1, 2]\n").is_err());   // liste
+        assert!(transpiler_source_wasm(">> factorielle(5)\n").is_err());
+    }
+
+    /// Petit lecteur de test : lit un ULEB128 et rend (valeur, index suivant).
+    fn lire_uleb(o: &[u8], mut p: usize) -> (u64, usize) {
+        let mut v = 0u64;
+        let mut dec = 0;
+        loop {
+            let b = o[p];
+            p += 1;
+            v |= ((b & 0x7F) as u64) << dec;
+            dec += 7;
+            if b & 0x80 == 0 { break; }
+        }
+        (v, p)
     }
 }
