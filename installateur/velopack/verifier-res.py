@@ -305,6 +305,12 @@ def main():
     # rendent ce symptôme impossible.
     if cible.name.lower().startswith(("rose-setup", "setup-")):
         source = (RACINE / "rose" / "src" / "setup_gui.rs").read_text(encoding="utf-8")
+        # LOGO3 a centralisé toute la géométrie de la rose dans paint.rs :
+        # inclure ce module dans la source analysée (sinon les garde-fous du
+        # logo sont introuvables et le vérificateur échoue à tort).
+        _paint = RACINE / "rose" / "src" / "paint.rs"
+        if _paint.exists():
+            source += "\n" + _paint.read_text(encoding="utf-8")
         garde_fous = {
             "tracé isolé dans catch_unwind": "std::panic::catch_unwind",
             "fond peint sur l'écran AVANT la décoration": "remplir(dc_ecran",
