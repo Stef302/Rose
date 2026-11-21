@@ -1,8 +1,8 @@
 {
-  "name": "rose-language",
-  "displayName": "Rose — langage de programmation en français",
-  "description": "Prise en charge complète du langage Rose (v0.1.7) : coloration syntaxique, thème sombre à types rouges, snippets, icônes, ligatures, diagnostics, auto-complétion, navigation, formatage, exécution, rendu LaTeX complet ou par lignes marquées %%.",
-  "version": "0.1.7",
+  "name": "rose-langage",
+  "displayName": "Rose — langage de programmation",
+  "description": "Langage en français : syntaxe française, types exacts (BigInt, rationnels), compilation JIT/AOT, auto-hébergement, GUI native, WASM, outils VS Code (coloration, diagnostics, exécution, LaTeX).",
+  "version": "0.1.72",
   "publisher": "stef302",
   "author": "Stef_302",
   "license": "MIT",
@@ -87,6 +87,12 @@
         "id": "rose-dark",
         "label": "Rose Dark — types rouges",
         "path": "./themes/rose-dark.json",
+        "uiTheme": "vs-dark"
+      },
+      {
+        "id": "rose-noir",
+        "label": "Rose Noir — Lime & Rouge",
+        "path": "./themes/rose-noir.json",
         "uiTheme": "vs-dark"
       }
     ],

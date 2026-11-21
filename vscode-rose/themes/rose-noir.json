@@ -1,0 +1,113 @@
+{
+  "name": "Rose Noir — Lime & Rouge",
+  "type": "dark",
+  "colors": {
+    "editor.background": "#0A0A0F",
+    "editor.foreground": "#E8E8F0",
+    "editorCursor.foreground": "#BFFF00",
+    "editorLineNumber.foreground": "#5A5A70",
+    "editorLineNumber.activeForeground": "#BFFF00",
+    "editor.selectionBackground": "#BFFF0033",
+    "editor.inactiveSelectionBackground": "#BFFF001A",
+    "editor.lineHighlightBackground": "#14141F",
+    "editorGutter.background": "#0A0A0F",
+    "editorWidget.background": "#101018",
+    "editorWidget.border": "#BFFF0055",
+    "editorSuggestWidget.background": "#101018",
+    "editorSuggestWidget.selectedBackground": "#BFFF0022",
+    "editorHoverWidget.background": "#101018",
+    "editorHoverWidget.border": "#BFFF0055",
+    "sideBar.background": "#0D0D14",
+    "sideBar.foreground": "#E8E8F0",
+    "activityBar.background": "#08080D",
+    "activityBar.foreground": "#BFFF00",
+    "activityBar.activeBorder": "#FF3B3B",
+    "titleBar.activeBackground": "#0D0D14",
+    "statusBar.background": "#0D0D14",
+    "statusBar.foreground": "#BFFF00",
+    "statusBar.border": "#FF3B3B",
+    "tab.activeForeground": "#FFFFFF",
+    "tab.activeBorderTop": "#BFFF00",
+    "tab.inactiveBackground": "#0D0D14",
+    "focusBorder": "#BFFF00",
+    "scrollbarSlider.background": "#BFFF0033",
+    "input.border": "#BFFF0055",
+    "button.background": "#BFFF00",
+    "button.foreground": "#0A0A0F",
+    "textLink.foreground": "#BFFF00"
+  },
+  "tokenColors": [
+    {
+      "name": "Types Rose — rouge vif",
+      "scope": [
+        "storage.type.rose",
+        "entity.name.type.rose"
+      ],
+      "settings": {
+        "foreground": "#FF3B3B",
+        "fontStyle": "bold"
+      }
+    },
+    {
+      "name": "Mots-clés Rose — lime",
+      "scope": [
+        "keyword.control.rose",
+        "keyword.operator.word.rose",
+        "keyword.other.rose"
+      ],
+      "settings": {
+        "foreground": "#BFFF00"
+      }
+    },
+    {
+      "name": "Fonctions standard Rose",
+      "scope": [
+        "support.function.rose",
+        "entity.name.function.rose"
+      ],
+      "settings": {
+        "foreground": "#7FE7FF"
+      }
+    },
+    {
+      "name": "Nombres et constantes Rose",
+      "scope": [
+        "constant.numeric",
+        "constant.language.rose"
+      ],
+      "settings": {
+        "foreground": "#FF8A65"
+      }
+    },
+    {
+      "name": "Chaînes Rose",
+      "scope": [
+        "string.quoted.double.rose",
+        "string.quoted.single.rose"
+      ],
+      "settings": {
+        "foreground": "#C6FF73"
+      }
+    },
+    {
+      "name": "Opérateurs Rose",
+      "scope": [
+        "keyword.operator.rose"
+      ],
+      "settings": {
+        "foreground": "#FF3B3B"
+      }
+    },
+    {
+      "name": "Commentaires Rose",
+      "scope": [
+        "comment.line.number-sign.rose",
+        "comment.line.latex.rose"
+      ],
+      "settings": {
+        "foreground": "#6A9955",
+        "fontStyle": "italic"
+      }
+    }
+  ]
+}

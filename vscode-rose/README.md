@@ -1,27 +1,45 @@
-# Rose Language Support for VS Code
+# Rose — prise en charge du langage dans VS Code
 
-Prise en charge du langage **Rose** (v0.1.7) dans Visual Studio Code :
+Extension Visual Studio Code pour **Rose**, un langage de programmation en
+français. Rose mise sur une syntaxe lisible en français, des types exacts
+(entiers géants `BigInt`, rationnels, nombres complexes, constantes
+irrationnelles), une compilation JIT (Cranelift) et AOT (LLVM ORC), une sortie
+LaTeX automatique, l'auto-hébergement, une interface graphique native
+(GUI native), une cible WASM et des outils VS Code complets.
 
-- coloration syntaxique complète (mots-clés, types, fonctions standard,
-  opérateurs, chaînes, nombres, commentaires) ;
-- thème sombre intégré **Rose Dark — types rouges** : les types Rose restent
-  en rouge vif `#FF4D4D` au lieu de bleu marine (voir § « Thème rouge ») ;
-- primitives récentes reconnues : `entier_geant_factorielle`, `detail`,
-  `chiffres`, `plus_de_chiffres`, `afficher_detail` ;
-- notations factorielles étendues colorées : `n!!`, `n!!!`, `!n` (préfixe),
-  `n#`, `n?`, `n$`, ainsi que les fonctions `multifactorielle`,
-  `sous_factorielle`, `derangement`, `factorial_approx` ;
-- les lignes commençant par `%%` sont colorées comme annotations LaTeX
-  (commentaires TeX, ignorés par le lexer) ;
-- snippets pour les structures de contrôle, fonctions, tables, listes, FFI,
-  et les factorielles étendues ;
-- thème d'icônes Rose ;
-- ligatures automatiques (optionnelles) : `<=` `>=` `!=` `=~` `_^` ;
-- survol et complétion pour les mots-clés, types et fonctions standard ;
-- commandes : exécuter le fichier, générer le LaTeX **complet**, générer le
-  LaTeX des **lignes marquées `%%`**, ouvrir un terminal Rose.
+## Ce que l'extension apporte
 
-## Les factorielles en Rose
+- **Coloration syntaxique** complète : mots-clés, types, fonctions standard,
+  opérateurs, chaînes, nombres et commentaires.
+- **Deux thèmes sombres** intégrés :
+  - **Rose Dark — types rouges** : types Rose en rouge vif `#FF4D4D` sur fond
+    `#14141A` ;
+  - **Rose Noir — Lime & Rouge** : fond noir profond `#0A0A0F`, accents lime
+    `#BFFF00` et rouge vif `#FF3B3B`.
+- **Snippets** pour les structures de contrôle, fonctions, tables, listes, FFI
+  et les notations numériques étendues.
+- **Thème d'icônes** Rose.
+- **Ligatures automatiques** (optionnelles) : `<=` `>=` `!=` `=~` `_^`.
+- **Survol et complétion** pour les mots-clés, types et fonctions standard.
+- **Diagnostics en temps réel**, navigation et formatage.
+- **Exécution** du fichier actif dans un terminal intégré.
+- **Rendu LaTeX** : du programme entier ou des seules lignes marquées `%%`.
+- **Commandes** : exécuter le fichier, générer le LaTeX complet, générer le
+  LaTeX des lignes marquées `%%`, ouvrir un terminal Rose, valider le fichier.
+
+## Le langage en un exemple
+
+```rose
+$N = 100
+>> $N
+```
+
+Rose reconnaît aussi bien les entiers géants que les rationnels, les complexes
+ou les constantes symboliques ; le même programme peut être interprété, compilé
+à la volée (JIT), compilé en natif (AOT), exporté en WASM ou rendu en LaTeX.
+
+Les factorielles ne sont qu'un exemple parmi d'autres notations prises en
+charge :
 
 | Écriture | Sens | Exactitude |
 |---|---|---|
@@ -51,18 +69,21 @@ Le programme reste exécutable tel quel. Deux commandes :
 - **Rose : générer le LaTeX des lignes marquées %%** →
   `rose latex fichier.rose --lignes` (seulement les lignes `%%`).
 
-## Thème rouge
+## Thèmes
 
 Le scope des types Rose est `storage.type.rose` (et `entity.name.type.rose`
-pour les types nommés). Aucun thème n'était fourni : le rendu dépendait du
-thème VS Code de l'utilisateur, et beaucoup affichaient les types en bleu
-marine. L'extension fournit désormais le thème **Rose Dark — types rouges**
-(`themes/rose-dark.json`) : les types y sont colorés en rouge vif `#FF4D4D`
-sur fond sombre `#14141A` (contraste WCAG 5,61:1).
+pour les types nommés), ce qui permet aux thèmes de les colorer
+spécifiquement. L'extension fournit deux thèmes :
+
+- **Rose Dark — types rouges** (`themes/rose-dark.json`) : types `#FF4D4D`,
+  mots-clés violets, fond `#14141A` (contraste WCAG 5,61:1).
+- **Rose Noir — Lime & Rouge** (`themes/rose-noir.json`) : fond noir profond
+  `#0A0A0F`, types et opérateurs rouge vif `#FF3B3B`, mots-clés et accents
+  lime `#BFFF00`.
 
 Activation : `Ctrl+K Ctrl+T` (Palette de commandes → *Preferences: Color
-Theme*), puis choisir **Rose Dark — types rouges**. Le thème ne s'applique
-que s'il est sélectionné : l'extension ne force pas le thème de l'utilisateur.
+Theme*), puis choisir l'un des deux thèmes. L'extension ne force pas le thème
+de l'utilisateur.
 
 ## Configuration
 
@@ -81,4 +102,6 @@ que s'il est sélectionné : l'extension ne force pas le thème de l'utilisateur
 
 ## Installation
 
-Voir `GUIDE_STORE.md` pour la publication sur le Marketplace.
+Depuis le marketplace : `stef302.rose-langage`. Sinon, installer le `.vsix`
+depuis le site Rose ou la release GitHub. Voir `GUIDE_STORE.md` pour la
+publication sur le Marketplace.
