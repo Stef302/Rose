@@ -1227,3 +1227,9 @@ L'utilisateur autorise explicitement les algorithmes ou formules plus efficaces 
 |---|---|---|
 | VER2 | bump 0.1.7 → 0.1.72 partout + release GitHub dédiée | `rose/Cargo.toml`, `README.md`, `docs/`, `wikimiroir/`, scripts publication |
 | TRAY | helper tray avec icône + menu désactiver | `rose/src/bin/rose-tray.rs`, `rose/src/setup_gui.rs`, `rose/src/velopack.rs`, `rose/docs/TRAY.md` |
+
+## Vague 75 — AOT embarqué, aide épurée, transpilation C fixée
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| AOT1 | intégrer AOT LLVM dans rose.exe + aider utilisateur sans détails techniques | rose/src/{main,cmd_llvm,auto_llvm,interp}.rs, rose/Cargo.toml (features), rose/docs/AOT_EMBARQUE.md |
