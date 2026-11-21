@@ -401,6 +401,149 @@ tester($cpt, "bool : constructeur true reconnu", chaine(noy_est_true(trueT())), 
 tester($cpt, "bool : faux true rejete",
        chaine(noy_est_true(noy_const("true", natT()))), "faux")
 
+# ── 15. Registre de descripteurs + troisième inductif List ──────────────────
+# Les trois éliminateurs (nat_rec, bool_rec, list_rec) sont désormais pilotés
+# par le même registre. List(A) a deux constructeurs : nil et cons (tête,
+# queue récursive). A : Type(0), a b : A, l : List(A) sont dans le contexte.
+$A = noy_var("A")
+fn listT(A: table) -> table { retour noy_ind("List", [table(), A]) }
+fn nilT(A: table) -> table { retour noy_const("nil", listT(A)) }
+fn consSymb(A: table) -> table {
+  retour noy_const("cons", noy_pi("a", A, noy_pi("l", listT(A), listT(A))))
+}
+fn consT(A: table, a: table, l: table) -> table {
+  retour noy_app(noy_app(consSymb(A), a), l)
+}
+fn listrecSymb(A: table) -> table {
+  $P = noy_pi("l", listT(A), noy_type(0))
+  $base = noy_app(noy_var("P"), nilT(A))
+  $step = noy_pi("a", A, noy_pi("l", listT(A),
+            noy_pi("ih", noy_app(noy_var("P"), noy_var("l")),
+                   noy_app(noy_var("P"), consT(A, noy_var("a"), noy_var("l"))))))
+  $ty = noy_pi("P", $P, noy_pi("base", $base, noy_pi("step", $step,
+        noy_pi("l", listT(A), noy_app(noy_var("P"), noy_var("l"))))))
+  retour noy_const("list_rec", $ty)
+}
+fn listrecT(A: table, P: table, base: table, step: table, l: table) -> table {
+  retour noy_app(noy_app(noy_app(noy_app(listrecSymb(A), P), base), step), l)
+}
+$ctxList = noy_ctx_ajouter($ctx, "A", noy_type(0))
+$ctxList = noy_ctx_ajouter($ctxList, "a", noy_var("A"))
+$ctxList = noy_ctx_ajouter($ctxList, "b", noy_var("A"))
+$ctxList = noy_ctx_ajouter($ctxList, "l", listT(noy_var("A")))
+
+# Motif constant vers Nat : P(l) = Nat, base = zero, step = λa.λl.λih. succ ih.
+$PnatL = noy_lam("l", listT($A), natT())
+$baseL = zeroT()
+$stepL = noy_lam("a", $A, noy_lam("l", listT($A),
+                 noy_lam("ih", natT(), succT(noy_var("ih")))))
+
+# Le registre expose les TROIS inductifs de la même manière.
+$reg = noy_registre()
+$dn = noy_registre_trouver_elim($reg, "nat_rec")
+$db = noy_registre_trouver_elim($reg, "bool_rec")
+$dl = noy_registre_trouver_elim($reg, "list_rec")
+$dx = noy_registre_trouver_elim($reg, "inconnu")
+tester($cpt, "registre : nat_rec -> Nat", noy_chaine_res($dn, "ind"), "Nat")
+tester($cpt, "registre : bool_rec -> Bool", noy_chaine_res($db, "ind"), "Bool")
+tester($cpt, "registre : list_rec -> List", noy_chaine_res($dl, "ind"), "List")
+tester($cpt, "registre : nom inconnu absent", chaine(noy_est_absent($dx)), "vrai")
+$cnil = noy_registre_trouver_constr($dl, "nil")
+$ccons = noy_registre_trouver_constr($dl, "cons")
+tester($cpt, "registre : nil arite 0", chaine(noy_entier_champ($cnil, "nargs")), "0")
+tester($cpt, "registre : nil branche 3", chaine(noy_entier_champ($cnil, "branche")), "3")
+tester($cpt, "registre : nil non recursif",
+       chaine(noy_entier_champ($cnil, "recindex")), "0")
+tester($cpt, "registre : cons arite 2", chaine(noy_entier_champ($ccons, "nargs")), "2")
+tester($cpt, "registre : cons branche 2",
+       chaine(noy_entier_champ($ccons, "branche")), "2")
+tester($cpt, "registre : cons recursif sur spine 1",
+       chaine(noy_entier_champ($ccons, "recindex")), "1")
+
+# Contrôle de structure générique.
+tester($cpt, "registre : elim List valide",
+       chaine(noy_registre_elim_valide(noy_champ(listrecSymb($A), "type"), "List")), "vrai")
+tester($cpt, "registre : elim List refuse Nat",
+       chaine(noy_registre_elim_valide(noy_champ(listrecSymb($A), "type"), "Nat")), "faux")
+tester($cpt, "registre : elim List refuse Type0",
+       chaine(noy_registre_elim_valide(noy_type(0), "List")), "faux")
+tester($cpt, "registre : resultat cons = List",
+       chaine(noy_resultat_est_ind(noy_champ(consSymb($A), "type"), "List", 0)), "vrai")
+tester($cpt, "registre : resultat nil = List",
+       chaine(noy_resultat_est_ind(noy_champ(nilT($A), "type"), "List", 0)), "vrai")
+tester($cpt, "registre : resultat Type0 pas List",
+       chaine(noy_resultat_est_ind(noy_type(0), "List", 0)), "faux")
+
+# ι-réduction de list_rec : nil rend la branche de base.
+tester($cpt, "list : rec nil = base",
+       montrer(beta(listrecT($A, $PnatL, $baseL, $stepL, nilT($A)))), "Const(zero)")
+$bln = noy_beta_lim(listrecT($A, $PnatL, $baseL, $stepL, nilT($A)), 100)
+tester($cpt, "list : rec nil un pas", chaine(noy_pas_beta($bln)), "1")
+
+# cons a l rend step a l (rec l) ; l variable reste bloqué (correct).
+$un = consT($A, noy_var("a"), noy_var("l"))
+$attenduUn = succT(listrecT($A, $PnatL, $baseL, $stepL, noy_var("l")))
+tester($cpt, "list : rec (cons a l) = succ (rec l)",
+       chaine(convertible(listrecT($A, $PnatL, $baseL, $stepL, $un), $attenduUn)), "vrai")
+$blc = noy_beta_lim(listrecT($A, $PnatL, $baseL, $stepL, $un), 100)
+tester($cpt, "list : rec (cons a l) borné", chaine(noy_pas_beta($blc) > 0), "vrai")
+
+# Deux cons puis nil : succ (succ base), entièrement calculé.
+$deux = consT($A, noy_var("a"), consT($A, noy_var("b"), nilT($A)))
+$attenduDeux = succT(succT($baseL))
+tester($cpt, "list : rec (cons a (cons b nil)) = succ (succ zero)",
+       chaine(convertible(listrecT($A, $PnatL, $baseL, $stepL, $deux), $attenduDeux)), "vrai")
+$bld = noy_beta_lim(listrecT($A, $PnatL, $baseL, $stepL, $deux), 200)
+tester($cpt, "list : reduction deux cons termine",
+       chaine(noy_erreur_beta($bld) == ""), "vrai")
+
+# Conversion définitionnelle (βι + α).
+tester($cpt, "list : rec nil convertible a base",
+       chaine(convertible(listrecT($A, $PnatL, $baseL, $stepL, nilT($A)), $baseL)), "vrai")
+tester($cpt, "list : rec deux convertible",
+       chaine(convertible(listrecT($A, $PnatL, $baseL, $stepL, $deux), $attenduDeux)), "vrai")
+
+# Garde-fous : nom seul ne suffit pas, l'annotation doit avoir la structure.
+$fauxrec = noy_const("list_rec", noy_type(0))
+$fauxapp = noy_app(noy_app(noy_app(noy_app($fauxrec, $PnatL), $baseL), $stepL), nilT($A))
+tester($cpt, "list : garde rec mal type",
+       chaine(noy_pas_beta(noy_beta_lim($fauxapp, 100))), "0")
+$fauxcons = noy_const("cons", noy_type(0))
+$fauxscrut = noy_app(noy_app($fauxcons, noy_var("a")), noy_var("l"))
+$fauxapp2 = listrecT($A, $PnatL, $baseL, $stepL, $fauxscrut)
+tester($cpt, "list : garde constructeur mal note",
+       chaine(noy_pas_beta(noy_beta_lim($fauxapp2, 100))), "0")
+$fauxTy = noy_pi("P", noy_pi("l", listT($A), noy_type(0)),
+          noy_pi("base", natT(), noy_pi("step", natT(),
+          noy_pi("l", natT(), natT()))))
+$fauxrec2 = noy_const("list_rec", $fauxTy)
+$fauxapp3 = noy_app(noy_app(noy_app(noy_app($fauxrec2, $PnatL), $baseL), $stepL), nilT($A))
+tester($cpt, "list : garde scrutinee Nat refuse",
+       chaine(noy_pas_beta(noy_beta_lim($fauxapp3, 100))), "0")
+
+# Préservation du type par le noyau : le terme calculé garde son type Nat.
+$rlv = verifier(listrecT($A, $PnatL, $baseL, $stepL, nilT($A)), $ctxList)
+tester($cpt, "list : rec nil verifie", chaine(noy_est_ok($rlv)), "vrai")
+tester($cpt, "list : rec nil type Nat", montrer(noy_type_res($rlv)), "Ind(Nat)")
+$rlc = verifier(listrecT($A, $PnatL, $baseL, $stepL, $un), $ctxList)
+tester($cpt, "list : rec cons verifie", chaine(noy_est_ok($rlc)), "vrai")
+tester($cpt, "list : rec cons type Nat", montrer(noy_type_res($rlc)), "Ind(Nat)")
+$rl2 = verifier(listrecT($A, $PnatL, $baseL, $stepL, $deux), $ctxList)
+tester($cpt, "list : rec deux verifie", chaine(noy_est_ok($rl2)), "vrai")
+tester($cpt, "list : rec deux type Nat", montrer(noy_type_res($rl2)), "Ind(Nat)")
+
+# Bien-formations : le type inductif, ses constructeurs et l'éliminateur.
+$rlt = verifier(listT($A), $ctxList)
+tester($cpt, "list : type List bien forme", chaine(noy_est_ok($rlt)), "vrai")
+tester($cpt, "list : type List : Type0", montrer(noy_type_res($rlt)), "Type(0)")
+$rnil = verifier(nilT($A), $ctxList)
+tester($cpt, "list : nil bien forme", chaine(noy_est_ok($rnil)), "vrai")
+tester($cpt, "list : nil type List", montrer(noy_type_res($rnil)), "Ind(List)")
+$rcons = verifier(consSymb($A), $ctxList)
+tester($cpt, "list : cons bien forme", chaine(noy_est_ok($rcons)), "vrai")
+$rlsym = verifier(listrecSymb($A), $ctxList)
+tester($cpt, "list : elimininateur bien forme", chaine(noy_est_ok($rlsym)), "vrai")
+
 >> "REUSSIS=" + chaine($cpt["r"])
 >> "ECHOUES=" + chaine($cpt["e"])
 si ($cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }

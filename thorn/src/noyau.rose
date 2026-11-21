@@ -628,6 +628,141 @@ fn noy_not_valide(ty: table) -> booleen {
   retour noy_est_bool(noy_pi_codomaine_ieme(ty, 1))
 }
 
+# ───────── 5bis-C. Registre de descripteurs d'inductifs ─────────────────────
+#
+# Les deux premiers inductifs (Nat, Bool) avaient leurs éliminateurs CÂBLÉS
+# dans noy_iota. Ce registre les décrit désormais DE LA MÊME MANIÈRE qu'un
+# troisième inductif, List, et pilote leur ι-réduction par les données :
+#
+#   descripteur d'inductif = table {
+#     "ind"    : chaine            — nom du type (Nat / Bool / List)
+#     "elim"   : chaine            — nom de l'éliminateur dépendant
+#     "constructeurs" : liste<table> de descripteurs de constructeurs :
+#        { "nom" : chaine,            — nom du constructeur
+#          "branche" : entier,        — index (spine) de la branche à rendre
+#          "nargs"   : entier,        — arité du constructeur
+#          "recindex": entier }       — 0 = pas de récursion, sinon index
+#                                       (spine) de l'argument récursif
+#   }
+#
+# Conventions vérifiées par noy_registre_elim_valide (communes aux trois) :
+#   éliminateur : ΠP.Πbase.Πstep.Πx:T. P x   (spine : args[4]=P, args[3]=base,
+#   args[2]=step, args[1]=scrutinee). Pour un constructeur récursif, le pas
+#   d'ι est  step <args du constr> (elim P base step <arg récursif>).
+#
+# CECI N'EST PAS un mécanisme d'inductifs utilisateurs : le registre est
+# interne, fermé (trois entrées), sans motif utilisateur, sans indices, sans
+# positivité ni contrôle de terminaison. Il factorise les trois éliminateurs
+# déjà présents dans le noyau et y ajoute List.
+
+# Type inductif déclaré : nom + annotation Ind(...) (paramètres ignorés).
+fn noy_est_ind_nom(t: table, nom: chaine) -> booleen {
+  retour (noy_genre(t) == "ind" et noy_nom(t) == nom)
+}
+
+# Résultat d'un type de constructeur : Ind(nom) direct (constructeur nulaires
+# true/false/zero/nil) ou codomaine final d'une chaîne de Π (succ, cons).
+# Borne de profondeur : garde contre une annotation pathologique.
+fn noy_resultat_est_ind(t: table, nom: chaine, prof: entier) -> booleen {
+  si (noy_est_ind_nom(t, nom)) { retour vrai }
+  si (prof >= 8) { retour faux }
+  si (noy_genre(t) == "pi") {
+    retour noy_resultat_est_ind(noy_champ(t, "codomaine"), nom, prof + 1)
+  }
+  retour faux
+}
+
+fn noy_desc_constr(nom: chaine, branche: entier, nargs: entier,
+                   recindex: entier) -> table {
+  $nx_r = table()
+  inserer($nx_r, "nom", nom)
+  inserer($nx_r, "branche", branche)
+  inserer($nx_r, "nargs", nargs)
+  inserer($nx_r, "recindex", recindex)
+  retour $nx_r
+}
+
+fn noy_desc_ind(ind: chaine, elim: chaine, cs: liste<table>) -> table {
+  $nx_r = table()
+  inserer($nx_r, "ind", ind)
+  inserer($nx_r, "elim", elim)
+  inserer($nx_r, "constructeurs", cs)
+  retour $nx_r
+}
+
+# Le registre est construit localement à chaque appel : Rose ne permet pas
+# d'indexer une globale par une variable dans une fonction (constat vérifié),
+# et les trois descripteurs sont de toute façon minuscules.
+fn noy_registre() -> liste<table> {
+  $nx_r = [table()]
+
+  # Nat : zero -> base (branche 3), succ k -> pas k (rec k).
+  $nx_nat = [table()]
+  joindre($nx_nat, noy_desc_constr("zero", 3, 0, 0))
+  joindre($nx_nat, noy_desc_constr("succ", 2, 1, 1))
+  joindre($nx_r, noy_desc_ind("Nat", "nat_rec", $nx_nat))
+
+  # Bool : true -> t (branche 3), false -> f (branche 2), tous deux nulaires.
+  $nx_bool = [table()]
+  joindre($nx_bool, noy_desc_constr("true", 3, 0, 0))
+  joindre($nx_bool, noy_desc_constr("false", 2, 0, 0))
+  joindre($nx_r, noy_desc_ind("Bool", "bool_rec", $nx_bool))
+
+  # List : nil -> base (branche 3), cons a l -> cons a l (rec l).
+  # L'argument récursif est le DERNIER argument du constructeur (spine 1).
+  $nx_list = [table()]
+  joindre($nx_list, noy_desc_constr("nil", 3, 0, 0))
+  joindre($nx_list, noy_desc_constr("cons", 2, 2, 1))
+  joindre($nx_r, noy_desc_ind("List", "list_rec", $nx_list))
+
+  retour $nx_r
+}
+
+fn noy_registre_trouver_elim(reg: liste<table>, elim: chaine) -> table {
+  $nx_n = longueur(reg)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    $nx_d = reg[$nx_k]
+    si (noy_chaine_res($nx_d, "elim") == elim) { retour $nx_d }
+    $nx_k = $nx_k + 1
+  }
+  retour noy_absent()
+}
+
+fn noy_registre_trouver_constr(desc: table, nom: chaine) -> table {
+  $nx_cs = noy_champ_liste(desc, "constructeurs")
+  $nx_n = longueur($nx_cs)
+  $nx_k = 1
+  tant_que ($nx_k < $nx_n) {
+    $nx_c = $nx_cs[$nx_k]
+    si (noy_chaine_res($nx_c, "nom") == nom) { retour $nx_c }
+    $nx_k = $nx_k + 1
+  }
+  retour noy_absent()
+}
+
+# Motif générique : Πx:Ind(nom). Type(i) (codomaine univers).
+fn noy_registre_motive(t: table, nom: chaine) -> booleen {
+  si (noy_genre(t) != "pi") { retour faux }
+  si (non noy_est_ind_nom(noy_pi_domaine_ieme(t, 1), nom)) { retour faux }
+  retour (noy_genre(noy_pi_codomaine_ieme(t, 1)) == "type")
+}
+
+# Contrôle de structure générique de l'éliminateur : quatre flèches, motif
+# bien formé, deux branches présentes, scrutinee Ind(nom), résultat présent.
+fn noy_registre_elim_valide(ty: table, nom: chaine) -> booleen {
+  $nx_d1 = noy_pi_domaine_ieme(ty, 1)
+  $nx_d2 = noy_pi_domaine_ieme(ty, 2)
+  $nx_d3 = noy_pi_domaine_ieme(ty, 3)
+  $nx_d4 = noy_pi_domaine_ieme(ty, 4)
+  $nx_c4 = noy_pi_codomaine_ieme(ty, 4)
+  si (non noy_registre_motive($nx_d1, nom)) { retour faux }
+  si (noy_est_absent($nx_d2) ou noy_est_absent($nx_d3)) { retour faux }
+  si (non noy_est_ind_nom($nx_d4, nom)) { retour faux }
+  si (noy_est_absent($nx_c4)) { retour faux }
+  retour vrai
+}
+
 fn noy_iota(t: table) -> table {
   $nx_sp = noy_spine(t)
   $nx_n = noy_entier_champ($nx_sp, "n")
@@ -651,33 +786,6 @@ fn noy_iota(t: table) -> table {
     }
   }
 
-  si ($nx_nom == "nat_rec" et $nx_n == 4) {
-    si (non noy_est_nat(noy_pi_domaine_ieme($nx_ty, 4))) { retour noy_rien(t) }
-    $nx_m = $nx_args[1]
-    $nx_pas = $nx_args[2]
-    $nx_base = $nx_args[3]
-    $nx_P = $nx_args[4]
-    $nx_head4 = noy_app(noy_app(noy_app($nx_head, $nx_P), $nx_base), $nx_pas)
-    si (noy_est_zero($nx_m)) { retour noy_pas($nx_base) }
-    $nx_k = noy_succ_arg($nx_m)
-    si (non noy_est_absent($nx_k)) {
-      $nx_rec = noy_app($nx_head4, $nx_k)
-      retour noy_pas(noy_app(noy_app($nx_pas, $nx_k), $nx_rec))
-    }
-  }
-
-  # ── Bool : éliminateur dépendant bool_rec (structure contrôlée) ──
-  # Spine : args[1]=b (scrutinee), args[2]=f (faux), args[3]=t (vrai),
-  #         args[4]=P (motif).
-  si ($nx_nom == "bool_rec" et $nx_n == 4) {
-    si (non noy_bool_rec_valide($nx_ty)) { retour noy_rien(t) }
-    $nx_b = $nx_args[1]
-    $nx_faux = $nx_args[2]
-    $nx_vrai = $nx_args[3]
-    si (noy_est_true($nx_b)) { retour noy_pas($nx_vrai) }
-    si (noy_est_false($nx_b)) { retour noy_pas($nx_faux) }
-  }
-
   # ── Bool : négation not (structure contrôlée) ──
   # L'annotation du scrutinee (déjà vérifiée Ind(Bool)) sert à construire le
   # constructeur résultant : pas de fabrique de terme arbitraire.
@@ -687,6 +795,48 @@ fn noy_iota(t: table) -> table {
     $nx_tybool = noy_champ($nx_b, "type")
     si (noy_est_true($nx_b)) { retour noy_pas(noy_const("false", $nx_tybool)) }
     si (noy_est_false($nx_b)) { retour noy_pas(noy_const("true", $nx_tybool)) }
+  }
+
+  # ── Éliminateurs pilotés par le registre : nat_rec, bool_rec, list_rec ──
+  # Un seul mécanisme pour les trois inductifs. Les noms ne sont pas câblés
+  # ici : c'est le registre qui associe nom → inductif → constructeurs.
+  $nx_reg = noy_registre()
+  $nx_desc = noy_registre_trouver_elim($nx_reg, $nx_nom)
+  si (non noy_est_absent($nx_desc) et $nx_n == 4) {
+    $nx_ind = noy_chaine_res($nx_desc, "ind")
+    si (non noy_registre_elim_valide($nx_ty, $nx_ind)) { retour noy_rien(t) }
+    $nx_scrut = $nx_args[1]
+    $nx_sp2 = noy_spine($nx_scrut)
+    $nx_shead = noy_champ($nx_sp2, "tete")
+    $nx_sargs = noy_champ_liste($nx_sp2, "args")
+    si (noy_genre($nx_shead) != "const") { retour noy_rien(t) }
+    # Le RESULTAT du type du constructeur doit être Ind(ind) : couvre les
+    # constructeurs nulaires (Ind direct) et les fonctions (succ, cons).
+    si (non noy_resultat_est_ind(noy_champ($nx_shead, "type"), $nx_ind, 0)) {
+      retour noy_rien(t)
+    }
+    $nx_cd = noy_registre_trouver_constr($nx_desc, noy_nom($nx_shead))
+    si (noy_est_absent($nx_cd)) { retour noy_rien(t) }
+    $nx_nargs = noy_entier_champ($nx_cd, "nargs")
+    $nx_sna = longueur($nx_sargs) - 1
+    si ($nx_sna != $nx_nargs) { retour noy_rien(t) }
+    $nx_branche = $nx_args[noy_entier_champ($nx_cd, "branche")]
+    $nx_recindex = noy_entier_champ($nx_cd, "recindex")
+    si ($nx_recindex == 0) { retour noy_pas($nx_branche) }
+    # Appel récursif : (elim P base step) <argument récursif>.
+    $nx_head3 = noy_app(noy_app(noy_app($nx_head, $nx_args[4]), $nx_args[3]),
+                        $nx_args[2])
+    $nx_rec = noy_app($nx_head3, $nx_sargs[$nx_recindex])
+    # Branche appliquée aux arguments du constructeur (ordre naturel),
+    # puis à l'hypothèse de récursivité.
+    $nx_out = $nx_branche
+    $nx_j = $nx_nargs
+    tant_que ($nx_j >= 1) {
+      $nx_out = noy_app($nx_out, $nx_sargs[$nx_j])
+      $nx_j = $nx_j - 1
+    }
+    $nx_out = noy_app($nx_out, $nx_rec)
+    retour noy_pas($nx_out)
   }
   retour noy_rien(t)
 }
