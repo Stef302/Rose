@@ -234,9 +234,9 @@ Usage :
   rose rir prog.rose                représentation intermédiaire (RIR)
   rose bc prog.rose [-o sortie]     bytecode JVM Rose .rosebc (classe v2)
   rose rvm fichier.rosebc [classe] [methode] [args...]   exécuter dans la JVM Rose sandboxée
-  rose transpile prog.rose --cible js|py|c [-o sortie]   transpilation lisible (JS/Python/C)
+  rose transpile prog.rose --cible js|py|c [-o sortie]   traduction lisible (JavaScript, Python, C)
   rose verif prog.rose              vérifie le programme (oracle : « vérifié » ou message)
-  rose llvm prog.rose [-o sortie]   génère un fichier C à partir du programme
+  rose llvm prog.rose [-o sortie] [--exe]   génère un fichier C (--exe : exécutable si possible)
   rose aot prog.rose [-o sortie] [-O1|-O2|-O3]   binaire natif optimisé, compilé à l'avance (optionnel). Alias de orc.
   rose orc prog.rose [-o sortie] [-O1|-O2|-O3]   idem, compilation en mémoire (optionnelle)
   rose link objet.o [-o sortie]   lie un objet natif en exécutable
@@ -248,8 +248,8 @@ Usage :
   rose update              installe/met a jour Rose (64 bits, interface console)
   rose assoc [--user|--system] [--lang fr|en]   associer .rose à rose.exe (Windows)
   rose assoc --remove [--user|--system]         retirer l'association .rose
-  rose assoc --dry-run                          afficher les reg add (marche sous Linux)
-Note : `rose comp` suffit pour 99 % des usages (exécutable autonome). `aot`/`orc` et `llvm` sont optionnels et nécessitent des outils externes.
+  rose assoc --dry-run                          afficher les commandes d'association sans les appliquer
+Note : `rose comp` suffit pour 99 % des usages (exécutable autonome). `aot`, `orc`, `link` et `llvm` sont des commandes avancées.
 ",
         env!("CARGO_PKG_VERSION")
     )
@@ -1581,6 +1581,19 @@ mod tests_cli_clair {
             assert!(!bas.contains("rust"), "mention interdite dans : {}", t.lines().next().unwrap_or(""));
             assert!(!bas.contains("cargo"), "mention interdite dans : {}", t.lines().next().unwrap_or(""));
             assert!(!bas.contains("cranelift"), "mention interdite dans : {}", t.lines().next().unwrap_or(""));
+        }
+    }
+
+    #[test]
+    fn aide_sans_chiffres_de_taille_ni_noms_d_outils() {
+        let u = usage().to_ascii_lowercase();
+        // L'aide décrit des USAGES, jamais l'implémentation ni les outils
+        // employés pour construire ou compiler Rose.
+        for interdit in [
+            "8,8 mo", "8.8 mo", "mo)", "octets", "clang", "gcc",
+            "cranelift", "reg add", "outil externe", "outils externes",
+        ] {
+            assert!(!u.contains(interdit), "mention interdite dans l'aide : {}", interdit);
         }
     }
 
