@@ -1310,3 +1310,10 @@ Pas de summaries 'limite honnête pas atteint'. Tout faire dans une passe.»
 
 Règle: si un agent bloque, il doit livrer le code partiel avec la preuve exacte de la
 cause technique (opcode manquant, syscall absent), PAS un message 'limite honnête'.
+
+## Vague 85 — HOST-2 : corriger l'accumulateur de liste G5
+
+Diagnostic HOST: dans g5_elf(), $parts=[""] puis longueur($parts) passe de 1 (petit
+RIR, ELF valide) a 0 (RIR>180Ko) — le magic ELF (8 octets) est perdu, emission =
+code brut sans \x7fELF. RIR correct: 'affect_ast slot 4 = (lst (s ""))'.
+Le defaut est dans le runtime G5 emis (compilateur/emetteur_elf.rose), pas dans le RIR.
