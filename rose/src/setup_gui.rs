@@ -1689,8 +1689,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     // Une seule source de vérité pour la géométrie du panneau : le test
     // unitaire ci-dessous vérifie exactement les mêmes nombres.
     let geo = geometrie_marque(ht, dpi, echelle);
-    // Le bouton d'accès au sélecteur n'existe que sur les vues qui le dessinent.
+    // Les boutons d'accès n'existent que sur les vues qui les dessinent.
     *std::ptr::addr_of_mut!(ZONE_OUVRIR_VERSIONS) = std::mem::zeroed::<RECT>();
+    *std::ptr::addr_of_mut!(ZONE_TRAY_ACTIVER) = std::mem::zeroed::<RECT>();
 
     // ── fond général, COINS ARRONDIS ──
     //
@@ -2255,6 +2256,36 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                 }
                 *std::ptr::addr_of_mut!(ZONES_MAJ_OPTIONS) = zo;
             }
+
+            // ── bouton : HELPER ARRIÈRE-PLAN (vague 74) ─────────────────────
+            // Lance `rose-tray.exe` en processus détaché : l'icône reste dans
+            // la zone des icônes cachées APRÈS la fermeture du launcher. Le
+            // mode discret est écrit dans la config avant le lancement : le
+            // helper le relit au démarrage et refuse de tourner sinon.
+            let y5 = y4 + h4 + s(14);
+            let rb_tray = RECT { left: g, top: y5,
+                                 right: (g + s(430)).min(d), bottom: y5 + s(38) };
+            if rb_tray.bottom <= bas_utile {
+                let deja_actif = etat.mode_maj == crate::velopack::ModeMiseAJour::Automatique;
+                let libelle = if deja_actif { "LANCER LE HELPER (DÉJÀ ACTIVÉ)" }
+                              else { "ACTIVER LA VÉRIFICATION EN ARRIÈRE-PLAN" };
+                arrondi(dc, &rb_tray, 8, VERT_LIME_VIF);
+                contour(dc, &rb_tray, 8, VERT_LIME_VIF);
+                let mut rt_tray = rb_tray;
+                texte_echelle(dc, dpi, "Kare", libelle, &mut rt_tray,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                              NOIR_DOUX, 9, false, echelle);
+                *std::ptr::addr_of_mut!(ZONE_TRAY_ACTIVER) = rb_tray;
+                // Retour d'action SANS fenêtre modale : une ligne sous le bouton.
+                if !etat.statut.is_empty() {
+                    let mut rs_tray = RECT { left: g, top: rb_tray.bottom + s(6), right: d,
+                                             bottom: (rb_tray.bottom + s(26)).min(bas_utile) };
+                    texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut rs_tray,
+                                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+                                  if etat.statut.starts_with("ÉCHEC") { ROUGE_CLAIR } else { VERT },
+                                  9, false, echelle);
+                }
+            }
         }
         Vue::Installation => {
             let statut = etat.statut.clone();
@@ -2631,6 +2662,10 @@ static mut ZONE_MAJ_ACTION: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 }
 /// Bouton « VERSIONS » du premier écran / des Options. Remis à zéro à chaque
 /// tracé : il n'est cliquable QUE sur les vues où il est réellement dessiné.
 static mut ZONE_OUVRIR_VERSIONS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+/// Bouton des Options « Activer la vérification en arrière-plan » : lance le
+/// binaire `rose-tray.exe` en processus détaché. Remis à zéro à chaque tracé,
+/// donc cliquable UNIQUEMENT sur la vue Options.
+static mut ZONE_TRAY_ACTIVER: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
 /// Rectangle de la liste et hauteur d'une ligne (recalcul pure).
 static mut ZONE_LISTE_VERSIONS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
 static mut PAS_VERSIONS: i32 = 0;
@@ -2777,6 +2812,62 @@ fn lancer_verification_discrete(h: HWND) {
 /// Texte de la pastille discrète, lu au tracé (jamais de fenêtre modale).
 fn pastille_discrete() -> Option<String> {
     NOTIFICATION_DISCRETE.lock().ok().and_then(|g| g.clone())
+}
+
+/// Où l'orchestrateur de release doit copier `rose-tray.exe` (voir TRAY.md) :
+/// à côté du launcher, dans `bin\`, ou dans l'installation Velopack courante.
+/// Aucun chemin n'est inventé : le fichier doit RÉELLEMENT exister.
+pub fn chemin_helper_tray() -> Option<PathBuf> {
+    let mut dossiers: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(p) = exe.parent() { dossiers.push(p.to_path_buf()); }
+    }
+    if let Some(racine) = crate::velopack::dossier_racine() {
+        dossiers.push(racine.join("current"));
+        dossiers.push(racine);
+    }
+    for dossier in dossiers {
+        for relatif in ["rose-tray.exe", "bin/rose-tray.exe", "payload/rose-tray.exe"] {
+            let candidat = dossier.join(relatif);
+            if candidat.is_file() { return Some(candidat); }
+        }
+    }
+    None
+}
+
+/// Petit retour d'action sous le bouton du helper : aucune fenêtre modale.
+fn statut_tray(h: HWND, texte: String) {
+    unsafe {
+        (*ETAT).statut = texte;
+        rafraichir(h);
+    }
+}
+
+/// Bouton des Options « Activer la vérification en arrière-plan » : écrit le
+/// mode discret (le helper le relit), puis lance `rose-tray.exe` en processus
+/// DÉTACHÉ — il survit à la fermeture du launcher, sans console, sans service.
+fn lancer_helper_tray(h: HWND) {
+    use std::os::windows::process::CommandExt;
+
+    if let Err(e) = crate::velopack::ecrire_config(crate::velopack::ModeMiseAJour::Automatique) {
+        statut_tray(h, format!("ÉCHEC helper : configuration non enregistrée — {e}"));
+        return;
+    }
+    unsafe { (*ETAT).mode_maj = crate::velopack::ModeMiseAJour::Automatique; }
+    // L6 reste cohérent : le timer du launcher suit le même mode.
+    demarrer_timer_maj_discret(h);
+
+    let Some(chemin) = chemin_helper_tray() else {
+        statut_tray(h, "ÉCHEC helper : rose-tray.exe introuvable (copier le binaire à côté du launcher)".to_string());
+        return;
+    };
+    let mut commande = std::process::Command::new(&chemin);
+    // DETACHED_PROCESS | CREATE_NO_WINDOW : aucun parent, aucune console.
+    commande.creation_flags(0x0000_0008 | 0x0800_0000);
+    match commande.spawn() {
+        Ok(_) => statut_tray(h, "Helper lancé : icône Rose dans les icônes cachées.".to_string()),
+        Err(e) => statut_tray(h, format!("ÉCHEC helper : lancement impossible — {e}")),
+    }
 }
 
 /// Applique un choix de « Vérification des mises à jour » depuis le premier
@@ -3323,6 +3414,13 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             // Mêmes cartes que le premier écran ; un clic applique le choix
             // (config + timer) immédiatement, sans attendre « Continuer ».
             if etat.vue == Vue::Options {
+                // Bouton « Activer la vérification en arrière-plan » : lancer
+                // le helper AVANT de tester les cartes (zones disjointes).
+                let zt = &*std::ptr::addr_of!(ZONE_TRAY_ACTIVER);
+                if dans(zt, x, y) {
+                    lancer_helper_tray(h);
+                    return 0;
+                }
                 let zo = &*std::ptr::addr_of!(ZONES_MAJ_OPTIONS);
                 for (i, z) in zo.iter().enumerate() {
                     if dans(z, x, y) {
