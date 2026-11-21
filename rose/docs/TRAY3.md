@@ -223,12 +223,28 @@ console, aucune icône.
 |---|---|
 | `cargo build --release --bin rose-tray` | ✅ `Finished release profile` |
 | `cargo test --release --bin rose-tray` | ✅ **8 passés / 0 échec** (4 historiques + 4 nouveaux) |
-| `cargo t --release` (= `cargo test --bins`, alias du dépôt) | ✅ **294 passés / 0 échec / 3 ignorés** dans le binaire `rose`, 0 / 6 / 8 pour les autres binaires |
-| Cross-compile `cargo build --release --target x86_64-pc-windows-msvc --bin rose-tray` | ✅ RC=0, `rose-tray.exe` 529 920 octets |
+| `cargo t --release` (= `cargo test --bins`, alias du dépôt) | ✅ **299 passés / 0 échec / 3 ignorés** dans le binaire `rose`, 0 / 6 / 8 pour les autres binaires (mesure finale, 3 salves consécutives vertes) |
+| Cross-compile `cargo build --release --target x86_64-pc-windows-msvc --bin rose-tray` | ✅ RC=0, `rose-tray.exe` 529 408 octets (mesure finale ; la taille bouge de quelques centaines d'octets avec le code) |
 | Ressources PE | ✅ `.rsrc` présent ; `llvm-readobj --coff-resources` : `Type: ICON (ID 3)` 6 entrées + `Type: GROUP_ICON (ID 14)` 1 entrée, langue 1033 |
 | `.res` généré | ✅ `rose/rose-tray.res` 65 508 octets, avec les mêmes types `3, 14` que le test de `pack-res.py` |
 | Point fixe ×2 | ✅ voir §6 |
 | Exécution réelle sur Windows | ❌ **non mesurable ici** (aucun Windows sur cette machine). Le comportement du tray, l'affichage réel de l'icône dans la zone de notification et le clignotement du `.cmd` au logon restent à constater chez l'utilisateur. |
+
+Notes sur deux signaux rouges **hors périmètre tray**, constatés pendant la
+vérification finale du 21/11 :
+
+- `sh scripts/build-windows-rebuild.sh` a **réussi toutes ses étapes de
+  compilation/lien/emballage** (le listing `rose-setup.exe` montre bien
+  `type 10 nom 9` à la taille du NOUVEAU `rose-tray.exe` avec son icône).
+  La **dernière** étape, `verifier-res.py`, échoue sur des
+  garde-fous de tracé (`RATIO_CONTENU_ROSE`, `fn marge_basse_logo`, …) que la
+  refonte concurrent du logo (vague LOGO3) a retirés de `setup_gui.rs`. Rien à
+  voir avec le tray : les ressources, elles, sont bien présentes et listées.
+- Deux exécutions de `cargo t --release` ont montré des échecs intermittents
+  dans `setup_core::tests::installation_pose_le_moteur_dans_bin` et
+  `..._les_compagnons` (dossiers temporaires à nom FIXE, concurrents entre
+  sessions). Isolés, ces tests passent ; **3 salves complètes consécutives
+  ensuite : 299 passés / 0 échec**.
 
 ---
 

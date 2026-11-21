@@ -63,20 +63,29 @@ impl ResultatSession {
 /// profils nomades ou verrouillés peuvent ne pas l'avoir encore.
 /// Hors Windows : `None` (il n'existe pas de `shell:startup` Linux/macOS).
 pub fn dossier_demarrage() -> Option<PathBuf> {
+    let dossier = chemin_dossier_startup()?;
+    if dossier.is_dir() || std::fs::create_dir_all(&dossier).is_ok() {
+        Some(dossier)
+    } else {
+        None
+    }
+}
+
+/// Chemin CANDIDAT du dossier Démarrage, SANS rien créer. Utilisé par la
+/// désactivation : retirer une entrée ne doit jamais recréer un dossier vide.
+fn chemin_dossier_startup() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let racine = std::env::var_os("APPDATA")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("USERPROFILE")
                 .map(|u| PathBuf::from(u).join("AppData").join("Roaming")))?;
-        let dossier = racine.join(SOUS_CHEMIN_STARTUP);
-        if dossier.is_dir() || std::fs::create_dir_all(&dossier).is_ok() {
-            return Some(dossier);
-        }
+        Some(racine.join(SOUS_CHEMIN_STARTUP))
     }
     #[cfg(not(windows))]
-    let _ = SOUS_CHEMIN_STARTUP;
-    None
+    {
+        None
+    }
 }
 
 /// Chemin complet du lanceur dans le dossier Démarrage courant.
@@ -171,7 +180,7 @@ pub fn activer(exe: &Path) -> ResultatSession {
 /// Retire l'auto-démarrage. Appelé par `rose-tray --disable`, par le menu
 /// « Désactiver le helper » et quand le setup repasse en « Désactivée ».
 pub fn desactiver() -> ResultatSession {
-    match dossier_demarrage() {
+    match chemin_dossier_startup() {
         Some(dossier) => desactiver_dans(&dossier),
         None => {
             let mut r = ResultatSession::new(None);
