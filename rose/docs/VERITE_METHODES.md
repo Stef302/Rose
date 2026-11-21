@@ -4,7 +4,33 @@
 **code** (`src/*.rs`) et vérifié par exécution. Aucune affirmation tirée des documents
 marketing du dépôt.
 
-## Conditions de l'audit (importantes pour reproducibility)
+---
+
+## ÉTAT ACTUEL (21/11/2026, fin de journée) — remplace le tableau historique ci-dessous
+
+Les sections qui suivent sont un **audit daté** réalisé avant JIT4/AOT7/HOST2. Le tableau
+« honnête » du 26/§ historique décrit l'état d'avant ces chantiers et **n'est plus la vérité
+d'aujourd'hui**. Voici l'état re-vérifié par exécution sur `rose/target/release/rose` :
+
+| Méthode | État réellement vérifié le 21/11 | Preuve |
+|---|---|---|
+| **`rose jit` / JIT par défaut** | Vrai Cranelift, **25/25** programmes compilés | `ROSE_TIMING=1 …` → `principal=…` + `define_function`+`finalize_definitions OK` sur les 25 programmes de `tests_aot8/programmes/` ; 0 repli interpréteur. 8 helpers natifs (ABI handle i64) pour rationnels, BigInt, chaînes, listes, tables |
+| **`rose aot` / `rose orc`** | **Zéro refus**, 25 programmes × 3 cibles | `tests_aot8/verifier.sh` = **75 OK / 0 échec** : ELF aarch64 natif, ELF x86-64 sous qemu, **PE Windows** (6 imports kernel32 via IAT : ExitProcess/GetStdHandle/WriteFile/ReadFile/GetProcessHeap/HeapAlloc). Binaires 1 040 à 20 480 o. `grep 'AOT indisponible\|utilisez rose comp' src/` → aucun résultat |
+| **`rose transpile --cible wasm`** | Vrai module WebAssembly | 48 o pour `>> 7*6`, `rose_main()` = 42 via Node ; cibles JS/Python/C aussi |
+| **`bc` / `rose rvm`** | Bytecode maison `ROSEBC` **v3**, VM complète | `fib(28)` → 317811 ; fonctions, récursion, chaînes, tables, rationnels, E/S. Aucun lien Java/JVM |
+| **`rose comp`** | Exécutable autonome — **explicitement pas un AOT** | Le message le dit ; moteur intégré, pas de runtime machine natif |
+| **`rose methode`** | Sélecteur interactif des 6 méthodes | `interprété / JIT / AOT natif / exécutable autonome / transpiler / bytecode RVM` |
+| **Self-hosting** | **HOST-1 réussi**, HOST-2 correctif livré et en validation | `rose_natif.rose` compile `fib.rose` → ELF 8 448 o → 317811 sans cargo. Correctif `g5_assemble` (sentinel déduit) : magic ELF `7f454c46` restauré sur un RIR de 180 Ko (455 376 o au lieu de 455 368). Jalon C0/C1/C2 sur `rnat.rir` (636 Ko) en cours de mesure |
+| **LLVM ORC/inkwell** | Toujours **absent du binaire livré** | `orc` = alias de `aot` (runtime machine maison), pas d'LLVM |
+
+Validations globales au 21/11 : **635 tests / 0 échec** (311 lib + 324 bin)+6+9+8+1,
+point fixe `b3ed9262dd54776a6dbd07bc12368d0e` ×2, banc principal 9/9 (dernière mesure
+disponible). Banc 9 domaines × 9 non re-mesuré (harnais `/tmp/opencode/benchmulti/`
+disparu) — non revendiqué.
+
+---
+
+## Conditions de l'audit HISTORIQUE (avant JIT4/AOT7/HOST2)
 
 - Binaire utilisé : `rose/target/release/rose`, **v0.1.73**, déjà compilé à 15:40 et plus
   récent que toutes les sources au moment de l'audit
