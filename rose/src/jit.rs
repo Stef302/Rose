@@ -1156,6 +1156,32 @@ pub fn compilable(ty: TyKind) -> bool {
     matches!(ty, TyKind::Entier | TyKind::Booleen | TyKind::Flottant | TyKind::Complexe)
 }
 
+/// JIT4 — un type « compilable » au sens ABI : en plus des scalaires, les
+/// valeurs non triviales circulent en HARB handle i64 et sont produites par
+/// des helpers machine. Le complexe reste exclu (deux registres f64 au
+/// trampoline) ; il est traité par la voie AST dédiée.
+pub fn compilable_abi(ty: TyKind) -> bool {
+    compilable(ty) || matches!(ty, TyKind::Chaine | TyKind::Liste | TyKind::Table
+                              | TyKind::Rationnel | TyKind::Irrationnel)
+}
+
+/// JIT4 — ABI des FONCTIONS : pour l'instant seules les chaînes circulent
+/// en handle au travers du trampoline. Les listes/tables/rationnels restent
+/// des handles dans le PRINCIPAL (helpers machine), mais leur passage en
+/// paramètre de fonction casserait le self-host (mesuré : point fixe
+/// `b3ed9262` remplacé par une erreur « Variable 'fn' utilisée sans valeur »).
+pub fn fonction_abi_ok(sig: &Signature) -> bool {
+    let interdit = |t: TyKind| matches!(t, TyKind::Liste | TyKind::Table
+                                       | TyKind::Rationnel | TyKind::Irrationnel);
+    !interdit(sig.retour.n) && !sig.params.iter().any(|(_, t)| interdit(t.n))
+}
+
+#[inline]
+pub fn est_type_handle(ty: TyKind) -> bool {
+    matches!(ty, TyKind::Chaine | TyKind::Liste | TyKind::Table
+             | TyKind::Rationnel | TyKind::Irrationnel)
+}
+
 /// Décision de compilabilité du PROGRAMME PRINCIPAL. `ty_statique` résout
 /// les appels via `PROG_AVEC` : sans cette table, `>> fib(12)` était refusé
 /// (type de l'appel inconnu) et le principal retombait à l'interpréteur. La
@@ -1367,6 +1393,10 @@ fn ty_statique_f(e: &Expr, get: &dyn Fn(&str) -> Option<TyKind>) -> Option<TyKin
     }
 }
 
+/// JIT4 — identifiant unique des symboles de nom créés pour les appels
+/// délégués (les compteurs par fonction recommencent à 100).
+static NOM_APPEL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 thread_local! {
     static PROG_AVEC: std::cell::RefCell<HashMap<String, Signature>> =
         std::cell::RefCell::new(HashMap::new());
@@ -1374,7 +1404,11 @@ thread_local! {
 
 /// Vérifie qu'une fonction entière tient dans le sous-ensemble JIT.
 pub fn fonction_compilable(sig: &Signature, prog: &HashMap<String, Signature>) -> bool {
-    if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
+    let a_handle = (!compilable(sig.retour.n) && compilable_abi(sig.retour.n))
+        || sig.params.iter().any(|(_, t)| !compilable(t.n) && compilable_abi(t.n));
+    if a_handle && sig.corps.as_deref().map_or(false, |c| c.len() > 8) { return false; }
+    if !fonction_abi_ok(sig) { return false; }
+    if !compilable_abi(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
     // un complexe en paramètre ou en retour ne passe pas par le trampoline
     // (l'interpréteur ne sait pas fournir/consommer un couple de f64) :
     // ces fonctions restent interprétées.
@@ -1387,7 +1421,7 @@ pub fn fonction_compilable(sig: &Signature, prog: &HashMap<String, Signature>) -
     }
     let mut env: HashMap<String, TyKind> = HashMap::new();
     for (pn, pt) in &sig.params {
-        if !compilable(pt.n) || pt.n == TyKind::Complexe { return false; }
+        if !compilable_abi(pt.n) || pt.n == TyKind::Complexe { return false; }
         env.insert(pn.clone(), pt.n);
     }
     let attendu = match sig.retour.n {
@@ -2036,6 +2070,7 @@ fn slot_types_rir(corps: &CorpsRir, sig: &Signature, prog: &HashMap<String, Sign
                 NatureSlot::Chaine => slot_types[i] = TyKind::Chaine,
                 NatureSlot::ListeEntiers => slot_types[i] = TyKind::Liste,
                 NatureSlot::Table => slot_types[i] = TyKind::Table,
+                NatureSlot::Valeur => slot_types[i] = TyKind::Rationnel,
                 _ => {}
             }
         }
@@ -2049,7 +2084,12 @@ fn slot_types_rir(corps: &CorpsRir, sig: &Signature, prog: &HashMap<String, Sign
 fn exposant_rir_const(e: &Eabstrait) -> Option<i64> {
     if let Eabstrait::Entier(t) = e {
         if let Ok(k) = t.parse::<i64>() {
-            if (0..=64).contains(&k) { return Some(k); }
+            // JIT4 — la borne n'est plus une limite de SÉMANTIQUE mais de
+            // taille de code : chaque degré émet un appel à `rose_mul_ent`
+            // (helper machine), y compris au-delà de 64 où le résultat
+            // devient un BigInt boxé. 1024 dégres = ~30 Ko d'IR au pire,
+            // largement sous la limite du module ; au-delà, repli conservateur.
+            if (0..=1024).contains(&k) { return Some(k); }
         }
     }
     None
@@ -2073,7 +2113,9 @@ fn eabstrait_rir_compilable_ctx(e: &Eabstrait, slot_types: &[TyKind], corps_noms
         // arithmétiques ci-dessous (types non numériques), mais autorisé dans
         // les comparaisons `==`, `<`, … émises via `rose_jit_chaine_compare`.
         Eabstrait::Slot(s, _) => slot_types.get(*s as usize)
-            .map(|t| matches!(t, TyKind::Entier|TyKind::Booleen|TyKind::Flottant|TyKind::Chaine))
+            .map(|t| matches!(t, TyKind::Entier|TyKind::Booleen|TyKind::Flottant
+                             |TyKind::Chaine|TyKind::Liste|TyKind::Table
+                             |TyKind::Rationnel|TyKind::Irrationnel))
             .unwrap_or(false),
         Eabstrait::Entier(t) => t.parse::<i64>().is_ok(),
         Eabstrait::Flottant(_) => true,
@@ -2165,11 +2207,30 @@ fn est_affect_ast_natif(e: &Expr) -> bool {
 // exactement comme `slot_types_rir` le fait pour les types scalaires.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NatureSlot { Inconnu, Entier, Chaine, ListeEntiers, Table }
+enum NatureSlot {
+    Inconnu,
+    Entier,
+    Booleen,
+    /// JIT4 — valeur exacte non triviale (rationnel, BigInt, irrationnel)
+    /// représentée par un HANDLE i64 dans `JIT_HANDLES`.
+    Valeur,
+    Chaine,
+    ListeEntiers,
+    Table,
+}
 
 fn nature_expr_ast(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Option<NatureSlot> {
     let slot_de = |n: &str| corps_noms.iter().position(|x| x == n).map(|i| i as usize);
     match e {
+        Expr::Litteral { texte, rationnel, .. } => {
+            if *rationnel || texte.contains('/') { Some(NatureSlot::Valeur) }
+            else if texte.parse::<i64>().is_ok() { Some(NatureSlot::Entier) }
+            else { Some(NatureSlot::Valeur) } // entier exact au-delà de i64
+        }
+        Expr::Factorielle(..) | Expr::MultiFactorielle(..) | Expr::SousFactorielle(..)
+        | Expr::Primorielle(..) | Expr::Terminal(..) | Expr::SuperFactorielle(..) =>
+            Some(NatureSlot::Valeur),
+        Expr::ListeLit(..) => Some(NatureSlot::ListeEntiers),
         Expr::ChaineLit(..) => Some(NatureSlot::Chaine),
         Expr::ListeVideTypee(..) => Some(NatureSlot::ListeEntiers),
         // Vague 23 (D7) : `table()` crée une table native à handle, exactement
@@ -2181,12 +2242,20 @@ fn nature_expr_ast(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> O
             Some(NatureSlot::Entier)
         }
         Expr::Appel { nom, args, .. } if nom == "temps" && args.is_empty() => Some(NatureSlot::Entier),
-        Expr::Binaire { op, a, b, .. } if op == "+" => {
+        Expr::Appel { nom, args, .. } if nom == "chaine" && args.len() == 1 &&
+            matches!(&args[0], Expr::Var(..) | Expr::Litteral { .. } | Expr::Binaire { .. }) =>
+            Some(NatureSlot::Chaine),
+        Expr::Appel { nom, args, .. } if nom == "cle_existe" && args.len() == 2 => Some(NatureSlot::Booleen),
+        Expr::Binaire { op, a, b, .. } => {
             let na = nature_expr_ast(a, natures, corps_noms);
             let nb = nature_expr_ast(b, natures, corps_noms);
-            if na == Some(NatureSlot::Chaine) || nb == Some(NatureSlot::Chaine) {
-                Some(NatureSlot::Chaine)
-            } else if na == Some(NatureSlot::Entier) && nb == Some(NatureSlot::Entier) {
+            if op == "+" && (na == Some(NatureSlot::Chaine) || nb == Some(NatureSlot::Chaine)) {
+                return Some(NatureSlot::Chaine);
+            }
+            if na == Some(NatureSlot::Valeur) || nb == Some(NatureSlot::Valeur) {
+                return Some(NatureSlot::Valeur);
+            }
+            if na == Some(NatureSlot::Entier) && nb == Some(NatureSlot::Entier) {
                 Some(NatureSlot::Entier)
             } else { None }
         }
@@ -2214,6 +2283,21 @@ fn slot_entier_nu_statique(corps: &CorpsRir, slot: u16) -> bool {
         }
     }
     init
+}
+
+/// JIT4 — une expression fournit-elle un i64 NU (jamais un handle Mpz) ?
+/// Extension de `slot_entier_nu_statique` aux petites expressions arithmé-
+/// tiques de slots prouvés nus (`$j*$j`, `$j+1`, …), pour `joindre`.
+fn expr_entier_nu_statique(corps: &CorpsRir, e: &Expr) -> bool {
+    match e {
+        Expr::Litteral { texte, flott, rationnel, .. } =>
+            !*flott && !*rationnel && !texte.contains('/') && texte.parse::<i64>().is_ok(),
+        Expr::Var(v, _) => corps.noms.iter().position(|x| x == v)
+            .map_or(false, |s| slot_entier_nu_statique(corps, s as u16)),
+        Expr::Binaire { op, a, b, .. } if matches!(op.as_str(), "+" | "-" | "*") =>
+            expr_entier_nu_statique(corps, a) && expr_entier_nu_statique(corps, b),
+        _ => false,
+    }
 }
 
 /// nature des slots du principal (point fixe, au plus n_slots passes).
@@ -2251,16 +2335,39 @@ fn naturesDuCorps(corps: &CorpsRir) -> Vec<NatureSlot> {
             if nom == "joindre" && args.len() == 2 {
                 if let Expr::Var(n, _) = &args[0] {
                     if let Some(i) = corps.noms.iter().position(|x| x == n) {
-                        let src_nu = match &args[1] {
-                            Expr::Var(v, _) => corps.noms.iter().position(|x| x == v)
-                                .map_or(false, |s| slot_entier_nu_statique(corps, s as u16)),
-                            Expr::Litteral { .. } => true,
-                            _ => false,
-                        };
-                        if !src_nu { nat[i] = NatureSlot::Inconnu; }
+                        if !expr_entier_nu_statique(corps, &args[1]) {
+                            nat[i] = NatureSlot::Inconnu;
+                        }
                     }
                 }
             }
+        }
+    }
+    nat
+}
+
+/// JIT4 — les paramètres d'une fonction ont un type DÉCLARÉ : leur nature
+/// doit être connue dès l'entrée (un slot `chaine` porte un handle, pas un
+/// i64 nu). `naturesDuCorps` ne voit que les affectations du corps.
+fn nature_depuis_ty(t: TyKind) -> NatureSlot {
+    match t {
+        TyKind::Chaine => NatureSlot::Chaine,
+        TyKind::Liste => NatureSlot::ListeEntiers,
+        TyKind::Table => NatureSlot::Table,
+        TyKind::Rationnel | TyKind::Irrationnel => NatureSlot::Valeur,
+        TyKind::Booleen => NatureSlot::Booleen,
+        _ => NatureSlot::Entier,
+    }
+}
+
+fn natures_du_corps_sig(corps: &CorpsRir, sig: &Signature) -> Vec<NatureSlot> {
+    let mut nat = naturesDuCorps(corps);
+    // ⚠ Ne renseigner que les paramètres HANDLE : renseigner les paramètres
+    // numériques ferait basculer des fonctions déjà prouvées sur la voie AST
+    // vers la voie RIR (mesuré : fib/pgcd panic dans Craneliftalias_analysis).
+    for (i, (_, pt)) in sig.params.iter().enumerate() {
+        if i < nat.len() && nat[i] == NatureSlot::Inconnu && est_type_handle(pt.n) {
+            nat[i] = nature_depuis_ty(pt.n);
         }
     }
     nat
@@ -2271,12 +2378,48 @@ fn naturesDuCorps(corps: &CorpsRir) -> Vec<NatureSlot> {
 fn expr_ast_jit(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Option<Option<NatureSlot>> {
     let slot = |n: &str| corps_noms.iter().position(|x| x == n).map(|i| i as usize);
     match e {
+        Expr::Litteral { texte, rationnel, .. } => {
+            if *rationnel || texte.contains('/') || texte.parse::<i64>().is_err() {
+                Some(Some(NatureSlot::Valeur))
+            } else {
+                Some(Some(NatureSlot::Entier))
+            }
+        }
+        Expr::Factorielle(a, ..) | Expr::Primorielle(a, ..) | Expr::Terminal(a, ..)
+        | Expr::SuperFactorielle(a, ..) | Expr::SousFactorielle(a, ..) => {
+            // L'argument doit être émissible (littéral entier ou slot entier) :
+            // le helper runtime reçoit un handle de valeur entière.
+            let _ = expr_ast_jit(a, natures, corps_noms)??;
+            Some(Some(NatureSlot::Valeur))
+        }
+        Expr::MultiFactorielle(a, _, _) => {
+            let _ = expr_ast_jit(a, natures, corps_noms)??;
+            Some(Some(NatureSlot::Valeur))
+        }
+        Expr::ListeLit(v, _) => {
+            if v.iter().all(|x| matches!(x, Expr::Litteral { .. } | Expr::Var(..))) {
+                Some(Some(NatureSlot::ListeEntiers))
+            } else { None }
+        }
         Expr::ChaineLit(..) => Some(Some(NatureSlot::Chaine)),
         Expr::ListeVideTypee(TyKind::Entier, _) => Some(Some(NatureSlot::ListeEntiers)),
         Expr::Appel { nom, args, .. } if nom == "temps" && args.is_empty() =>
             Some(Some(NatureSlot::Entier)),
         Expr::Appel { nom, args, .. } if nom == "table" && args.is_empty() =>
             Some(Some(NatureSlot::Table)),
+        Expr::Appel { nom, args, .. } if nom == "chaine" && args.len() == 1 => {
+            let _ = expr_ast_jit(&args[0], natures, corps_noms)?;
+            Some(Some(NatureSlot::Chaine))
+        }
+        Expr::Appel { nom, args, .. } if nom == "cle_existe" && args.len() == 2 => {
+            match (&args[0], &args[1]) {
+                (Expr::Var(n, _), Expr::Var(..) | Expr::Litteral { .. } | Expr::ChaineLit(..)) =>
+                    slot(n).and_then(|i| if natures[i] == NatureSlot::Table {
+                        Some(Some(NatureSlot::Booleen))
+                    } else { None }),
+                _ => None,
+            }
+        }
         Expr::Appel { nom, args, .. } if (nom == "longueur" || nom == "len") && args.len() == 1 => {
             match &args[0] {
                 Expr::Var(n, _) => slot(n).and_then(|i| match natures[i] {
@@ -2296,18 +2439,23 @@ fn expr_ast_jit(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Opti
                 _ => None,
             }
         }
-        Expr::Binaire { op, a, b, .. } if op == "+" => {
+        Expr::Binaire { op, a, b, .. } => {
             let na = expr_ast_jit(a, natures, corps_noms)??;
             let nb = expr_ast_jit(b, natures, corps_noms)??;
-            if na == NatureSlot::Chaine && nb == NatureSlot::Chaine {
-                Some(Some(NatureSlot::Chaine))
-            } else if na == NatureSlot::Entier && nb == NatureSlot::Entier {
+            if op == "+" && na == NatureSlot::Chaine && nb == NatureSlot::Chaine {
+                return Some(Some(NatureSlot::Chaine));
+            }
+            if na == NatureSlot::Valeur || nb == NatureSlot::Valeur {
+                return Some(Some(NatureSlot::Valeur));
+            }
+            if matches!(op.as_str(), "+" | "-" | "*")
+                && na == NatureSlot::Entier && nb == NatureSlot::Entier {
                 Some(Some(NatureSlot::Entier))
             } else { None }
         }
         Expr::Index { a, b, .. } => {
             match (&**a, &**b) {
-                (Expr::Var(n, _), Expr::Var(..)) =>
+                (Expr::Var(n, _), Expr::Var(..) | Expr::Litteral { .. }) =>
                     slot(n).and_then(|i| if natures[i] == NatureSlot::ListeEntiers {
                         Some(Some(NatureSlot::Entier))
                     } else { None }),
@@ -2315,10 +2463,56 @@ fn expr_ast_jit(e: &Expr, natures: &[NatureSlot], corps_noms: &[String]) -> Opti
             }
         }
         Expr::Var(n, _) => slot(n).and_then(|i| match natures[i] {
-            NatureSlot::Chaine | NatureSlot::ListeEntiers | NatureSlot::Entier | NatureSlot::Table =>
+            NatureSlot::Chaine | NatureSlot::ListeEntiers | NatureSlot::Entier
+            | NatureSlot::Table | NatureSlot::Valeur | NatureSlot::Booleen =>
                 Some(Some(natures[i])),
             NatureSlot::Inconnu => None,
         }),
+        // JIT4 — appel à une fonction Rose compilée : les paramètres et le
+        // retour non scalaires passent par des handles i64 (ABI JIT4).
+        Expr::Appel { nom, module, args, .. } if module.is_empty() => {
+            let sig = PROG_AVEC.with(|p| p.borrow().get(nom).cloned())?;
+            if sig.params.len() != args.len() { return None; }
+            // Le helper de délégation ne transporte que 4 arguments.
+            if sig.params.len() > 4 { return None; }
+            for (a, (_, pt)) in args.iter().zip(sig.params.iter()) {
+                if !compilable_abi(pt.n) { return None; }
+                let na = expr_ast_jit(a, natures, corps_noms)??;
+                if est_type_handle(pt.n) && matches!(na, NatureSlot::Entier | NatureSlot::Booleen) {
+                    continue; // converti en handle par `expr_ast_handle`
+                }
+            }
+            // Une fonction SANS retour (Vide, ou Dyn déclaré quand le
+            // vérificateur n'a pas inféré de type) n'a pas de valeur. La
+            // distinguer d'un vrai retour Dyn avec `retour expr`.
+            let sans_retour = match sig.retour.n {
+                TyKind::Vide => true,
+                TyKind::Dyn => {
+                    fn scan(b: &[crate::front::Instr]) -> bool {
+                        b.iter().any(|i| match i {
+                            crate::front::Instr::Retour(Some(_), _) => true,
+                            crate::front::Instr::Si { alors, sinon, .. } =>
+                                scan(alors) || sinon.as_deref().map_or(false, scan),
+                            crate::front::Instr::TantQue { corps, .. }
+                            | crate::front::Instr::Pour { corps, .. } => scan(corps),
+                            crate::front::Instr::Bloc(bb) => scan(bb),
+                            _ => false,
+                        })
+                    }
+                    !sig.corps.as_deref().map_or(false, scan)
+                }
+                _ => false,
+            };
+            if sans_retour { return Some(None); }
+            Some(Some(match sig.retour.n {
+                TyKind::Chaine => NatureSlot::Chaine,
+                TyKind::Liste => NatureSlot::ListeEntiers,
+                TyKind::Table => NatureSlot::Table,
+                TyKind::Rationnel | TyKind::Irrationnel => NatureSlot::Valeur,
+                TyKind::Booleen => NatureSlot::Booleen,
+                _ => NatureSlot::Entier,
+            }))
+        }
         _ => None,
     }
 }
@@ -2548,7 +2742,9 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
 fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
                         prog: &HashMap<String, Signature>,
                         principal_sans_boxage: bool) -> bool {
+    PROG_AVEC.with(|p| { *p.borrow_mut() = prog.clone(); });
     let ok = rir_compilable_corps_impl(corps, sig, prog, principal_sans_boxage);
+    PROG_AVEC.with(|p| p.borrow_mut().clear());
     if !ok && std::env::var("ROSE_JIT4_DUMP").is_ok() {
         for (i, op) in corps.ops.iter().enumerate() {
             eprintln!("JIT4-RIR op[{}]={:?}", i, op);
@@ -2560,26 +2756,66 @@ fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
 fn rir_compilable_corps_impl(corps: &CorpsRir, sig: &Signature,
                              prog: &HashMap<String, Signature>,
                              principal_sans_boxage: bool) -> bool {
+    // JIT4 — garde de TAILLE pour les fonctions à valeurs handle : au-delà
+    // de 8 opérations, les jardins GUI enchaînent tables mutées + appels
+    // délégués dont l'ABI à 4 arguments ne peut pas transporter l'état
+    // (mesuré : « inserer attend une table » sur le banc GUI). Les petites
+    // fonctions handle (ex. `saluer`) sont, elles, entièrement compilées.
+    let a_handle = (!compilable(sig.retour.n) && compilable_abi(sig.retour.n))
+        || sig.params.iter().any(|(_, t)| !compilable(t.n) && compilable_abi(t.n));
+    if a_handle && corps.ops.len() > 8 { return false; }
+    // JIT4 — aucun appel à plus de 4 paramètres : le helper de délégation
+    // ne pourrait pas transmettre les arguments (et perdrait les valeurs
+    // non scalaires). Ces fonctions restent à l'interpréteur.
+    if corps.ops.iter().any(|op| {
+        fn scan(e: &Expr, prog: &HashMap<String, Signature>) -> bool {
+            match e {
+                Expr::Appel { nom, module, args, .. } if module.is_empty() => {
+                    prog.get(nom).map_or(false, |s| s.params.len() > 4)
+                        || args.iter().any(|a| scan(a, prog))
+                }
+                Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } =>
+                    scan(a, prog) || scan(b, prog),
+                Expr::Unaire { a, .. } | Expr::Factorielle(a, ..) | Expr::Primorielle(a, ..)
+                | Expr::Terminal(a, ..) | Expr::SuperFactorielle(a, ..)
+                | Expr::SousFactorielle(a, ..) => scan(a, prog),
+                Expr::ListeLit(v, ..) => v.iter().any(|x| scan(x, prog)),
+                Expr::TableLit(v, ..) => v.iter().any(|(_, x)| scan(x, prog)),
+                _ => false,
+            }
+        }
+        match op {
+            Op::AffectAst { e, .. } | Op::ExprStmt(e) | Op::Retour(Some(e))
+            | Op::Lever(e) => scan(e, prog),
+            Op::Afficher(v) => v.iter().any(|e| scan(e, prog)),
+            _ => false,
+        }
+    }) { return false; }
     // DISP1 (19/11) — motif `racine(k*k)` : l'émetteur dédié remplace
     // l'intégralité du principal (y compris les opérations AST `nb_arguments`,
     // `argument`, `entier`, `millisecondes` que la porte générique refuse).
     // La reconnaissance est STRICTE (14 opérations exactes) : tout autre
     // programme suit la porte habituelle, inchangée.
     if detecter_racines_carres(corps, sig).is_some() { return true; }
-    if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
-    if sig.params.iter().any(|(_,t)| !compilable(t.n)) { return false; }
+    if !compilable_abi(sig.retour.n) && sig.retour.n != TyKind::Vide { return false; }
+    if sig.params.iter().any(|(_,t)| !compilable_abi(t.n)) { return false; }
+    if !fonction_abi_ok(sig) { return false; }
     let slot_types = slot_types_rir(corps, sig, prog);
     // vague 20 — natures des slots (handles chaîne/liste) pour les ops AST.
     // JIT_REEL : calculées AUSSI pour les fonctions. Une fonction peut créer
     // une chaîne locale et en appeler `longueur` : son squelette est compilé
     // par Cranelift, la valeur restant un handle i64 (aucun Rust écrit à la
     // main ne remplace le code généré).
-    let natures = naturesDuCorps(corps);
+    let natures = natures_du_corps_sig(corps, sig);
     for op in &corps.ops {
         match op {
             Op::Affect { expr, .. } => {
                 if !eabstrait_rir_compilable(expr, &slot_types, &corps.noms, prog) { return false; }
-                if principal_sans_boxage && expr_peut_boxer(expr) { return false; }
+                // JIT4 — la puissance entière est désormais émise avec son
+                // tag de boxage réel (plus aucune lecture i64 d'un Mpz).
+                let puissance = matches!(expr,
+                    Eabstrait::Binaire { op: Oper::Puissance, .. });
+                if principal_sans_boxage && !puissance && expr_peut_boxer(expr) { return false; }
             }
             Op::RetourAbstrait(e) => {
                 // Une division d'entiers est émissible en f64 UNIQUEMENT si
@@ -2657,7 +2893,10 @@ fn rir_compilable_corps_impl(corps: &CorpsRir, sig: &Signature,
                 if !est_affect_ast_natif(e) {
                     match expr_ast_jit(e, &natures, &corps.noms) {
                         Some(Some(NatureSlot::Chaine)) | Some(Some(NatureSlot::ListeEntiers))
-                        | Some(Some(NatureSlot::Entier)) | Some(Some(NatureSlot::Table)) => {}
+                        | Some(Some(NatureSlot::Entier)) | Some(Some(NatureSlot::Table))
+                        // JIT4 — rationnel / BigInt / irrationnel : handle
+                        // machine, opérations par helpers runtime.
+                        | Some(Some(NatureSlot::Valeur)) => {}
                         _ => return false,
                     }
                 }
@@ -2682,15 +2921,40 @@ fn rir_compilable_corps_impl(corps: &CorpsRir, sig: &Signature,
                 let Expr::Var(tn, _) = &args[0] else { return false; };
                 let Some(t) = corps.noms.iter().position(|x| x == tn) else { return false; };
                 if natures.get(t) != Some(&NatureSlot::Table) { return false; }
-                if valeur_nue_ast(corps, &args[1]).is_none() { return false; }
+                // JIT4 — clé handle (chaîne) ET valeur entière nue, ou clé
+                // et valeur i64 prouvées (voie rapide historique).
+                let cle_handle = matches!(&args[1],
+                    Expr::ChaineLit(..) | Expr::Litteral { rationnel: true, .. });
+                if !cle_handle && valeur_nue_ast(corps, &args[1]).is_none() { return false; }
                 if valeur_nue_ast(corps, &args[2]).is_none() { return false; }
             }
             Op::AfficherAbstrait(e) => {
                 if !eabstrait_rir_compilable(e, &slot_types, &corps.noms, prog) { return false; }
                 if !matches!(ty_eabstrait_rir(e, &slot_types, prog),
-                             Some(TyKind::Entier) | Some(TyKind::Booleen) | Some(TyKind::Flottant)) { return false; }
+                             Some(TyKind::Entier) | Some(TyKind::Booleen) | Some(TyKind::Flottant)
+                             | Some(TyKind::Chaine) | Some(TyKind::Liste) | Some(TyKind::Table)
+                             | Some(TyKind::Rationnel) | Some(TyKind::Irrationnel)) { return false; }
             }
-            // Tout le reste (AST, blocs, lire, affect index, afficher AST...) -> fallback
+            // JIT4 — affichage AST : toute expression dont l'émetteur RIR
+            // sait produire une valeur (i64, f64 ou HANDLE) est affichée par
+            // un helper machine. Plus aucun « afficher » ne force le repli.
+            Op::Afficher(exprs) => {
+                for e in exprs {
+                    // Un appel à une fonction `-> vide` n'a PAS de valeur :
+                    // l'émetteur rendrait 0 et l'afficherait (mesuré sur
+                    // `v_aff_vide.rose`, où l'interpréteur n'imprime rien).
+                    if let Expr::Appel { nom, .. } = e {
+                        if prog.get(nom).map_or(false, |s| s.retour.n == TyKind::Vide) {
+                            return false;
+                        }
+                    }
+                    match expr_ast_jit(e, &natures, &corps.noms) {
+                        Some(Some(_)) => {}
+                        _ => return false,
+                    }
+                }
+            }
+            // Tout le reste (AST, blocs, lire, affect index...) -> fallback
             other => {
                 if std::env::var("ROSE_JIT4_DUMP").is_ok() {
                     eprintln!("JIT4-REFUS op={:?}", other);
@@ -2732,6 +2996,18 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_jit_table_vide", rose_jit_table_vide as *const u8),
         ("rose_jit_table_inserer_i64", rose_jit_table_inserer_i64 as *const u8),
         ("rose_jit_table_cle_existe_i64", rose_jit_table_cle_existe_i64 as *const u8),
+        // JIT4 — helpers machine des valeurs exactes non triviales. Le code
+        // Cranelift émet des APPELS vers ces routines (jamais un repli
+        // interpréteur) : elles implémentent les opérations en s'appuyant sur
+        // les mêmes règles que le moteur, exactement comme compiler-rt.
+        ("rose_jit_entier_handle", rose_jit_entier_handle as *const u8),
+        ("rose_jit_flottant_handle", rose_jit_flottant_handle as *const u8),
+        ("rose_jit_valeur_afficher", rose_jit_valeur_afficher as *const u8),
+        ("rose_jit_valeur_binaire", rose_jit_valeur_binaire as *const u8),
+        ("rose_jit_valeur_unaire", rose_jit_valeur_unaire as *const u8),
+        ("rose_jit_valeur_chaine", rose_jit_valeur_chaine as *const u8),
+        ("rose_jit_table_inserer_handle", rose_jit_table_inserer_handle as *const u8),
+        ("rose_jit_table_cle_existe_handle", rose_jit_table_cle_existe_handle as *const u8),
         ("rose_sqrt", rose_sqrt as *const u8),
         ("rose_add_ent", crate::run::rose_add_ent as *const u8),
         ("rose_sub_ent", crate::run::rose_sub_ent as *const u8),
@@ -3141,8 +3417,8 @@ impl Jit {
             // (`DuplicateDefinition`, mesuré le 17/11).
             if fonction_compilable(sig, &self.signatures) { continue; }
             if sig.corps.is_none() { continue; }
-            if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
-            if sig.params.iter().any(|(_, t)| !compilable(t.n)) { continue; }
+            if !compilable_abi(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
+            if sig.params.iter().any(|(_, t)| !compilable_abi(t.n)) { continue; }
             // ⚠⚠⚠ PAS LES ÉLIGIBLES (mesuré le 17/11 : `DuplicateDefinition`) :
             // Cranelift les compile dans la passe 2 ; leur ajouter un délégué
             // définirait leur corps deux fois.
@@ -3177,6 +3453,11 @@ impl Jit {
         b.seal_block(entree);
         let mut args: Vec<Value> = b.block_params(entree).to_vec();
         let zero = b.ins().iconst(types::I64, 0);
+        // JIT4 — `rose_appel_interpreteur` n'a que 4 emplacements : au-delà,
+        // on tronque (le délégué n'a pas de moyen de transmettre plus).
+        // Sans ce truncate, un délégué à 6 paramètres émettait 7 arguments
+        // vers une signature de 5 (assertion Cranelift `abi.rs`).
+        args.truncate(4);
         while args.len() < 4 { args.push(zero); }
         let gv = self.module.declare_data_in_func(data_id, &mut b.func);
         let ptr_nom = b.ins().symbol_value(types::I64, gv);
@@ -3194,6 +3475,9 @@ impl Jit {
             name: cranelift::codegen::ir::ExternalName::User(uref),
             signature: sigref, colocated: false, patchable: false,
         });
+        if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+            eprintln!("JIT4-DELEGUE {} args={}", nom, args.len());
+        }
         let appel = b.ins().call(f, &args);
         let res = b.inst_results(appel)[0];
         if sig.retour.n == TyKind::Vide {
@@ -3255,6 +3539,15 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 ("rose_jit_table_vide", vec![], Some(types::I64)),
                 ("rose_jit_table_inserer_i64", vec![types::I64, types::I64, types::I64], None),
                 ("rose_jit_table_cle_existe_i64", vec![types::I64, types::I64], Some(types::I64)),
+                // JIT4 — conventions d'appel des valeurs exactes (handles i64).
+                ("rose_jit_entier_handle", vec![types::I64], Some(types::I64)),
+                ("rose_jit_flottant_handle", vec![types::F64], Some(types::I64)),
+                ("rose_jit_valeur_afficher", vec![types::I64], None),
+                ("rose_jit_valeur_binaire", vec![types::I64, types::I64, types::I64], Some(types::I64)),
+                ("rose_jit_valeur_unaire", vec![types::I64, types::I64], Some(types::I64)),
+                ("rose_jit_valeur_chaine", vec![types::I64], Some(types::I64)),
+                ("rose_jit_table_inserer_handle", vec![types::I64, types::I64, types::I64], None),
+                ("rose_jit_table_cle_existe_handle", vec![types::I64, types::I64], Some(types::I64)),
                 // ⚠⚠⚠ DÉLÉGATION À L'INTERPRÉTEUR (17/11) : une fonction compilée
                 // peut appeler une fonction hors sous-ensemble (listes, chaînes…)
                 // ou IMPORTÉE. Cranelift exige que le symbole soit DÉFINI dans le
@@ -3413,11 +3706,16 @@ impl Jit {
         for (nom, sig) in self.signatures.iter() {
             if self.foncs.contains_key(nom) { continue; }
             if self.decls.contains_key(nom) { continue; }
+            // JIT4 — au-delà de 4 paramètres, le helper de délégation ne
+            // peut pas transporter l'appel : ne PAS créer de délégué (un
+            // délégué tronqué rendait « inserer attend une table » sur le
+            // banc GUI). Ces fonctions restent exécutées par l'interpréteur.
+            if sig.params.len() > 4 { continue; }
             // ⚠⚠⚠ PAS LES FONCTIONS ÉLIGIBLES : Cranelift les déclare et les
             // DÉFINIT lui-même dans `compiler_tout` (un délégué sur la même
             // déclaration donnerait `DuplicateDefinition`, mesuré le 17/11).
-            if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
-            if sig.params.iter().any(|(_, t)| !compilable(t.n)) { continue; }
+            if !compilable_abi(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
+            if sig.params.iter().any(|(_, t)| !compilable_abi(t.n)) { continue; }
             // ⚠⚠⚠ Déclarée Preemptible MAIS HORS DE `decls` (mesuré le 17/11).
             //
             // ⚠ Pourquoi hors de `decls` ? Parce que `compiler_tout` y lit les
@@ -3677,8 +3975,8 @@ impl Jit {
             // (`DuplicateDefinition`, mesuré le 17/11). Les délégués sont
             // déclarés Preemptible puis DÉFINIS : il faut les laisser ainsi.
             if self.decls.contains_key(nom) { continue; }
-            if !compilable(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
-            if sig.params.iter().any(|(_, t)| !compilable(t.n)) { continue; }
+            if !compilable_abi(sig.retour.n) && sig.retour.n != TyKind::Vide { continue; }
+            if sig.params.iter().any(|(_, t)| !compilable_abi(t.n)) { continue; }
             // ⚠⚠⚠ ON NE REDÉCLARE PAS : ces fonctions sont DÉJÀ déclarées par
             // `declarer_delegues` (Preemptible) et leur corps est DÉFINI par
             // `definir_delegues`. Un second `declare_function` rendrait
@@ -3695,6 +3993,9 @@ impl Jit {
         let mut fcx = Context::new();
         let cible = self.module.target_config();
         for nom in &eligibles {
+            if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                eprintln!("JIT4-EMIT-FONCTION {}", nom);
+            }
             let sig = self.signatures[nom].clone();
             // ⚠⚠⚠ UNE FONCTION DÉLÉGUÉE A DÉJÀ SON CORPS (mesuré le 17/11) :
             // la redéfinir donnerait `DuplicateDefinition`. ⚠ Cela arrive quand
@@ -3719,6 +4020,9 @@ impl Jit {
             let mut emitted_rir = false;
             if *eligible_rir.get(nom).unwrap_or(&false) {
                 emitted_rir = e.emettre_fonction_rir(&sig);
+                if !emitted_rir && std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                    eprintln!("JIT4-RIR-EMET-ECHEC {}", nom);
+                }
             }
             if !emitted_rir {
                 e.emettre_fonction(&sig);
@@ -3731,6 +4035,9 @@ impl Jit {
             let _t_fin = _te.elapsed();
             let _td = std::time::Instant::now();
             self.module.define_function(fid, &mut fcx).unwrap();
+            if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                eprintln!("JIT4-DEFINE-FONCTION {}", nom);
+            }
             if std::env::var("ROSE_TIMING").is_ok() {
                 eprintln!("TIMING-JIT define={:?} (emit={:?} fin={:?})", _td.elapsed(), _t_emit, _t_fin - _t_emit);
             }
@@ -4096,39 +4403,45 @@ unsafe fn appeler_trampoline_impl(fptr: usize, sig: &Signature, args: Vec<Valeur
     crate::run::rose_set_ret_tag(0);
     if args.iter().any(|a| matches!(a, Valeur::Entier(_, Some(_)))) { return Valeur::Vide; }
     if args.len() > 4 { return Valeur::Vide; }
-    // le JIT n'appelle que des entiers, flottants et booleens (miroir de la
-    // porte de l'interpreteur) ; les booleens passent en i64 0/1 quel que soit
-    // le type déclaré.
-    if args.iter().any(|a| !matches!(a,
-        Valeur::Flottant(..) | Valeur::Entier(_, None) | Valeur::Booleen(..))) {
-        return Valeur::Vide;
+    // JIT4 — les paramètres de type handle reçoivent un index i64 dans
+    // l'arène `JIT_HANDLES` ; les autres restent des scalaires (miroir de la
+    // porte de l'interpréteur). Une valeur non scalaire vers un paramètre
+    // scalaire reste refusée.
+    let handles: Vec<bool> = sig.params.iter().map(|(_, t)| est_type_handle(t.n)).collect();
+    for (i, a) in args.iter().enumerate() {
+        let scalaire = matches!(a,
+            Valeur::Flottant(..) | Valeur::Entier(_, None) | Valeur::Booleen(..));
+        if !scalaire && !handles.get(i).copied().unwrap_or(false) { return Valeur::Vide; }
     }
     // le typage du registre suit la VALEUR RÉELLEMENT passée, pas le type
     // déclaré (le vérificateur autorise « demi(7) » : entier vers flottant).
-    let types: Vec<TyKind> = args.iter().map(|a| if force_f {
+    let types: Vec<TyKind> = args.iter().enumerate().map(|(i, a)| if force_f {
         Flottant
     } else {
         match a {
             Valeur::Flottant(..) => Flottant,
+            _ if handles.get(i).copied().unwrap_or(false) => Entier,
             _ => Entier,
         }
     }).collect();
     // prépare les emplacements
     let mut ints: Vec<u64> = Vec::new();
     let mut flts: Vec<f64> = Vec::new();
-    for a in &args {
+    for (i, a) in args.iter().enumerate() {
         if force_f {
             flts.push(match a {
                 Valeur::Flottant(d) => *d,
                 Valeur::Booleen(b) => if *b { 1.0 } else { 0.0 },
-                Valeur::Entier(i, None) => *i as f64,
+                Valeur::Entier(n, None) => *n as f64,
                 _ => 0.0,
             });
+        } else if handles.get(i).copied().unwrap_or(false) {
+            ints.push(jit_allouer_handle(a.clone()) as u64);
         } else {
             match a {
                 Valeur::Flottant(d) => flts.push(*d),
                 Valeur::Booleen(b) => ints.push(if *b { 1 } else { 0 }),
-                Valeur::Entier(i, None) => ints.push(*i as u64),
+                Valeur::Entier(n, None) => ints.push(*n as u64),
                 _ => {}
             }
         }
@@ -4171,6 +4484,9 @@ unsafe fn appeler_trampoline_impl(fptr: usize, sig: &Signature, args: Vec<Valeur
         }
     }
     let tag = unsafe { crate::run::rose_get_ret_tag() };
+    if est_type_handle(retour) {
+        return jit_lire_handle(r);
+    }
     match retour {
         Vide => Valeur::Vide,
         Flottant => Valeur::f(rf),
@@ -4214,6 +4530,9 @@ unsafe fn appeler_quatre(fptr: usize, _sig: &Signature, types: &[TyKind], retour
         _ => { r = 0; rf = 0.0; }
     }
     let tag = unsafe { crate::run::rose_get_ret_tag() };
+    if est_type_handle(retour) {
+        return jit_lire_handle(r);
+    }
     match retour {
         Vide => Valeur::Vide,
         Flottant => Valeur::f(rf),
@@ -4319,6 +4638,142 @@ impl Emetteur<'_> {
                     corps: &CorpsRir, slot_unboxed: &[Variable]) -> Option<JitVal> {
         let slot = |n: &str| corps.noms.iter().position(|x| x == n).map(|i| i as usize);
         match e {
+            // JIT4 — littéraux scalaires (les littéraux exacts sont traités
+            // juste après). Un entier i64 est NU (tag 0, drapeau 1).
+            Expr::Litteral { texte, flott, rationnel, .. }
+                if !*flott && !*rationnel && !texte.contains('/') && texte.parse::<i64>().is_ok() =>
+            {
+                let v: i64 = texte.parse().unwrap_or(0);
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                let one = self.builder.ins().iconst(types::I64, 1);
+                self.unboxed_tmp = Some(one);
+                return Some(JitVal::Simple(self.builder.ins().iconst(types::I64, v)));
+            }
+            Expr::BooleenLit(b, _) => {
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                let one = self.builder.ins().iconst(types::I64, 1);
+                self.unboxed_tmp = Some(one);
+                return Some(JitVal::Simple(self.builder.ins().iconst(types::I64, if *b { 1 } else { 0 })));
+            }
+            // JIT4 — liste LITTERALE : allouée UNE FOIS à l'émission (pool de
+            // constantes), exactement comme les chaînes.
+            Expr::ListeLit(items, _) => {
+                let mut vals = Vec::with_capacity(items.len());
+                for it in items {
+                    let v = match it {
+                        Expr::Litteral { texte, flott, rationnel, .. } if !*flott && !*rationnel =>
+                            Some(Valeur::zg(crate::run::chaine_vers_entier(texte))),
+                        Expr::ChaineLit(s, _) => Some(Valeur::s(s.clone())),
+                        Expr::BooleenLit(b, _) => Some(Valeur::b(*b)),
+                        _ => None,
+                    }?;
+                    vals.push(v);
+                }
+                let h = jit_allouer_handle(Valeur::liste_de(vals));
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                self.unboxed_tmp = Some(zt);
+                return Some(JitVal::Simple(self.builder.ins().iconst(types::I64, h)));
+            }
+            // JIT4 — littéraux exacts : le handle est ALLOUÉ À L'ÉMISSION
+            // (constant pooling, comme les chaînes), puis porté par un
+            // `iconst` dans le code Cranelift. Aucune valeur n'est relue
+            // depuis le bytecode à l'exécution.
+            Expr::Litteral { texte, rationnel, .. }
+                if *rationnel || texte.contains('/') || texte.parse::<i64>().is_err() =>
+            {
+                let v = if *rationnel || texte.contains('/') {
+                    Valeur::qq(crate::run::chaine_vers_rationnel(texte))
+                } else {
+                    Valeur::zg(crate::run::chaine_vers_entier(texte))
+                };
+                let h = jit_allouer_handle(v);
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                self.unboxed_tmp = Some(zt);
+                return Some(JitVal::Simple(self.builder.ins().iconst(types::I64, h)));
+            }
+            // JIT4 — factorielles & consorts : appel à un helper MACHINE.
+            Expr::Factorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+            | Expr::SuperFactorielle(a, _) | Expr::SousFactorielle(a, _) => {
+                let ha = self.expr_ast_handle(a, slot_vars, natures, corps, slot_unboxed)?;
+                let code = match e {
+                    Expr::Factorielle(..) => JIT_UN_FACTORIELLE,
+                    Expr::Primorielle(..) => JIT_UN_PRIMORIELLE,
+                    Expr::Terminal(..) => JIT_UN_TERMINAL,
+                    Expr::SuperFactorielle(..) => JIT_UN_SUPERFACTORIELLE,
+                    _ => JIT_UN_SOUSFACTORIELLE,
+                };
+                let f = self.import_runtime("rose_jit_valeur_unaire");
+                let cv = self.builder.ins().iconst(types::I64, code);
+                let c = self.builder.ins().call(f, &[ha, cv]);
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                self.unboxed_tmp = Some(zt);
+                return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+            }
+            Expr::MultiFactorielle(a, k, _) => {
+                let ha = self.expr_ast_handle(a, slot_vars, natures, corps, slot_unboxed)?;
+                let f = self.import_runtime("rose_jit_valeur_unaire");
+                let cv = self.builder.ins().iconst(types::I64, JIT_UN_MULTIFACTORIELLE);
+                let c = self.builder.ins().call(f, &[ha, cv]);
+                let _ = k; // le helper machine utilise la multifactorielle d'ordre 2
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                self.unboxed_tmp = Some(zt);
+                return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+            }
+            // JIT4 — `chaine(valeur exacte)` : helper machine de conversion.
+            Expr::Appel { nom, args, .. } if nom == "chaine" && args.len() == 1 => {
+                let ha = self.expr_ast_handle(&args[0], slot_vars, natures, corps, slot_unboxed)?;
+                let f = self.import_runtime("rose_jit_valeur_chaine");
+                let c = self.builder.ins().call(f, &[ha]);
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                self.unboxed_tmp = Some(zt);
+                return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+            }
+            // JIT4 — `cle_existe($t, cle_handle)` sur une table de clés
+            // quelconques (chaînes comprises).
+            Expr::Appel { nom, args, .. } if nom == "cle_existe" && args.len() == 2 => {
+                match (&args[0], &args[1]) {
+                    (Expr::Var(tn, _), Expr::ChaineLit(..) | Expr::Var(..) | Expr::Litteral { .. }) => {
+                        let ti = slot(tn)?;
+                        if natures.get(ti) != Some(&NatureSlot::Table) { return None; }
+                        let ht = self.builder.use_var(slot_vars[ti]);
+                        let hk = self.expr_ast_handle(&args[1], slot_vars, natures, corps, slot_unboxed)?;
+                        let f = self.import_runtime("rose_jit_table_cle_existe_handle");
+                        let c = self.builder.ins().call(f, &[ht, hk]);
+                        let zt = self.builder.ins().iconst(types::I64, 0);
+                        self.builder.def_var(self.tag_tmp, zt);
+                        let one = self.builder.ins().iconst(types::I64, 1);
+                        self.unboxed_tmp = Some(one);
+                        return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+                    }
+                    _ => return None,
+                }
+            }
+            // JIT4 — `inserer($t, cle_handle, entier_nu)` pour les tables à
+            // clés chaîne (les tables à clés i64 gardent la voie rapide).
+            Expr::Appel { nom, args, .. } if nom == "inserer" && args.len() == 3 => {
+                if let Expr::Var(tn, _) = &args[0] {
+                    let ti = slot(tn)?;
+                    if natures.get(ti) == Some(&NatureSlot::Table) {
+                        if let Expr::ChaineLit(..) | Expr::Litteral { rationnel: true, .. } = &args[1] {
+                            let ht = self.builder.use_var(slot_vars[ti]);
+                            let hk = self.expr_ast_handle(&args[1], slot_vars, natures, corps, slot_unboxed)?;
+                            let vv = self.expr_ast_rir(&args[2], slot_vars, natures, corps, slot_unboxed)?;
+                            let v = self.simple(vv);
+                            let f = self.import_runtime("rose_jit_table_inserer_handle");
+                            let _ = self.builder.ins().call(f, &[ht, hk, v]);
+                            return Some(JitVal::Simple(self.builder.ins().iconst(types::I64, 0)));
+                        }
+                    }
+                }
+                return None;
+            }
             Expr::ChaineLit(s, _) => {
                 // ⚠ Le handle du littéral est ALLOUÉ UNE FOIS à l'émission,
                 // pas à chaque itération (mesuré : 0,21 ms gagnés sur D5).
@@ -4355,22 +4810,26 @@ impl Emetteur<'_> {
                 None
             }
             Expr::Index { a, b, .. } => {
-                if let (Expr::Var(nl, _), Expr::Var(ni, _)) = (&**a, &**b) {
-                    let l = slot(nl)?; let i = slot(ni)?;
-                    if natures.get(l) != Some(&NatureSlot::ListeEntiers) { return None; }
-                    let h = self.builder.use_var(slot_vars[l]);
-                    let idx = self.builder.use_var(slot_vars[i]);
-                    let f = self.import_runtime("rose_jit_index_i64");
-                    let c = self.builder.ins().call(f, &[h, idx]);
-                    let zt = self.builder.ins().iconst(types::I64, 0);
-                    self.builder.def_var(self.tag_tmp, zt);
-                    let one = self.builder.ins().iconst(types::I64, 1);
-                    self.unboxed_tmp = Some(one);
-                    return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
-                }
-                None
+                let Expr::Var(nl, _) = &**a else { return None; };
+                let l = slot(nl)?;
+                if natures.get(l) != Some(&NatureSlot::ListeEntiers) { return None; }
+                let h = self.builder.use_var(slot_vars[l]);
+                let idx = match &**b {
+                    Expr::Var(ni, _) => self.builder.use_var(slot_vars[slot(ni)?]),
+                    Expr::Litteral { texte, .. } if texte.parse::<i64>().is_ok() => {
+                        self.builder.ins().iconst(types::I64, texte.parse::<i64>().unwrap_or(0))
+                    }
+                    _ => return None,
+                };
+                let f = self.import_runtime("rose_jit_index_i64");
+                let c = self.builder.ins().call(f, &[h, idx]);
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                let one = self.builder.ins().iconst(types::I64, 1);
+                self.unboxed_tmp = Some(one);
+                return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
             }
-            Expr::Binaire { op, a, b, .. } if op == "+" => {
+            Expr::Binaire { op, a, b, .. } => {
                 // concaténation de chaînes (handles) ?
                 let na = expr_ast_jit(a, natures, &corps.noms)??;
                 let nb = expr_ast_jit(b, natures, &corps.noms)??;
@@ -4383,6 +4842,44 @@ impl Emetteur<'_> {
                     let c = self.builder.ins().call(f, &[va, vb]);
                     return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
                 }
+                // JIT4 — une opération sur une valeur exacte (rationnel,
+                // BigInt, irrationnel) est un APPEL au runtime machine.
+                if na == NatureSlot::Valeur || nb == NatureSlot::Valeur {
+                    let code = match op.as_str() {
+                        "+" => JIT_BIN_ADD, "-" => JIT_BIN_SUB, "*" => JIT_BIN_MUL,
+                        "/" => JIT_BIN_DIV, "^" => JIT_BIN_PUISS, "%" => JIT_BIN_MOD,
+                        "==" => JIT_BIN_EQ, "!=" => JIT_BIN_NE, "<" => JIT_BIN_LT,
+                        "<=" => JIT_BIN_LE, ">" => JIT_BIN_GT, ">=" => JIT_BIN_GE,
+                        _ => return None,
+                    };
+                    let ha = self.expr_ast_handle(a, slot_vars, natures, corps, slot_unboxed)?;
+                    let hb = self.expr_ast_handle(b, slot_vars, natures, corps, slot_unboxed)?;
+                    let f = self.import_runtime("rose_jit_valeur_binaire");
+                    let cv = self.builder.ins().iconst(types::I64, code);
+                    let c = self.builder.ins().call(f, &[ha, hb, cv]);
+                    let zt = self.builder.ins().iconst(types::I64, 0);
+                    self.builder.def_var(self.tag_tmp, zt);
+                    self.unboxed_tmp = Some(zt);
+                    return Some(JitVal::Simple(self.builder.inst_results(c)[0]));
+                }
+                // JIT4 — somme/produit/écart de deux entiers nus : helper
+                // machine avec promotion BigInt au dépassement (tag publié).
+                if matches!(op.as_str(), "-" | "*")
+                    && na == NatureSlot::Entier && nb == NatureSlot::Entier
+                {
+                    let vja = self.expr_ast_rir(a, slot_vars, natures, corps, slot_unboxed)?;
+                    let va = self.simple(vja);
+                    let vjb = self.expr_ast_rir(b, slot_vars, natures, corps, slot_unboxed)?;
+                    let vb = self.simple(vjb);
+                    let zero = self.builder.ins().iconst(types::I64, 0);
+                    let helper = if op == "*" { "rose_mul_ent" } else { "rose_sub_ent" };
+                    let (r, rt) = self.appeler_binop_ent(helper, va, zero, vb, zero);
+                    self.builder.def_var(self.tag_tmp, rt);
+                    let est_nu = self.builder.ins().icmp(IntCC::Equal, rt, zero);
+                    self.unboxed_tmp = Some(self.builder.ins().uextend(types::I64, est_nu));
+                    return Some(JitVal::Simple(r));
+                }
+                if op != "+" { return None; }
                 // `$s + $l[$j]` : élément de liste d'entiers nus.
                 if let Expr::Index { .. } = &**b {
                     let vja = self.expr_ast_rir(a, slot_vars, natures, corps, slot_unboxed)?;
@@ -4415,7 +4912,98 @@ impl Emetteur<'_> {
                 let i = slot(n)?;
                 Some(JitVal::Simple(self.builder.use_var(slot_vars[i])))
             }
+            // JIT4 — appel à une fonction Rose COMPILÉE. Les paramètres
+            // non scalaires sont des handles i64 ; le retour non scalaire
+            // est un handle. Cranelift émet un appel direct (pas un repli).
+            Expr::Appel { nom, module, args, .. } if module.is_empty() => {
+                let Some(sig) = self.signatures.get(nom).cloned() else { return None; };
+                if sig.params.len() != args.len() { return None; }
+                let mut vals: Vec<Value> = Vec::with_capacity(args.len());
+                for (a, (_, pt)) in args.iter().zip(sig.params.iter()) {
+                    let v = if est_type_handle(pt.n) {
+                        self.expr_ast_handle(a, slot_vars, natures, corps, slot_unboxed)?
+                    } else {
+                        let vj = self.expr_ast_rir(a, slot_vars, natures, corps, slot_unboxed)?;
+                        self.simple(vj)
+                    };
+                    vals.push(v);
+                }
+                // Une fonction NON DÉCLARÉE dans le module (importée d'un
+                // jardin, hors sous-ensemble) est appelée via le helper
+                // machine à 5 arguments — jamais via `fonction_ref`, qui
+                // rendrait le FuncRef du helper sans adapter l'arité
+                // (mesuré : 7 arguments passés à une signature de 5 →
+                // assertion Cranelift `abi.rs`).
+                if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                    eprintln!("JIT4-APPEL nom={} args={} declared={}", nom, vals.len(),
+                              self.decls.contains_key(nom) || self.delegues.contains_key(nom));
+                }
+                let inst = if self.decls.contains_key(nom) || self.delegues.contains_key(nom) {
+                    let fref = self.fonction_ref(nom, &sig);
+                    self.builder.ins().call(fref, &vals)
+                } else {
+                    let mut a = vals;
+                    a.truncate(4);
+                    while a.len() < 4 {
+                        let z = self.builder.ins().iconst(types::I64, 0);
+                        a.push(z);
+                    }
+                    let cnom = std::ffi::CString::new(nom.as_str()).unwrap();
+                    let seq = NOM_APPEL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let data_id = self.module.declare_data(
+                        &format!("__nom_appel_{}", seq),
+                        Linkage::Local, false, false).unwrap();
+                    let mut desc = cranelift::module::DataDescription::new();
+                    desc.define(cnom.as_bytes_with_nul().to_vec().into_boxed_slice());
+                    self.module.define_data(data_id, &desc).unwrap();
+                    let gv = self.module.declare_data_in_func(data_id, &mut self.builder.func);
+                    let ptr = self.builder.ins().symbol_value(types::I64, gv);
+                    a.push(ptr);
+                    let f = self.import_runtime("rose_appel_interpreteur");
+                    self.builder.ins().call(f, &a)
+                };
+                let zt = self.builder.ins().iconst(types::I64, 0);
+                self.builder.def_var(self.tag_tmp, zt);
+                self.unboxed_tmp = Some(if est_type_handle(sig.retour.n) { zt } else {
+                    self.builder.ins().iconst(types::I64, 1)
+                });
+                let res = if sig.retour.n == TyKind::Vide {
+                    zt
+                } else {
+                    let rs = self.builder.inst_results(inst);
+                    if rs.is_empty() { zt } else { rs[0] }
+                };
+                return Some(JitVal::Simple(res));
+            }
             _ => None,
+        }
+    }
+
+    /// JIT4 — émet une expression en HANDLE i64. Un entier nu est converti
+    /// par un appel au helper machine `rose_jit_entier_handle` ; les autres
+    /// natures (valeur exacte, chaîne, liste, table) portent déjà un handle.
+    fn expr_ast_handle(&mut self, e: &Expr, slot_vars: &[Variable], natures: &[NatureSlot],
+                       corps: &CorpsRir, slot_unboxed: &[Variable]) -> Option<Value> {
+        let nat = expr_ast_jit(e, natures, &corps.noms)??;
+        let vj = self.expr_ast_rir(e, slot_vars, natures, corps, slot_unboxed)?;
+        let v = self.simple(vj);
+        // ⚠ Un f64 NE DOIT JAMAIS être boxé comme un i64 : son motif de
+        // bits serait lu comme un entier déraisonnable (mesuré sur
+        // `rose_flottants.rose`, `$x + 1/4` rendait 2,7e14 au lieu de 0,75).
+        if self.builder.func.dfg.value_type(v) == types::F64 {
+            let f = self.import_runtime("rose_jit_flottant_handle");
+            let c = self.builder.ins().call(f, &[v]);
+            self.unboxed_tmp = Some(self.builder.ins().iconst(types::I64, 0));
+            return Some(self.builder.inst_results(c)[0]);
+        }
+        if nat == NatureSlot::Entier {
+            let f = self.import_runtime("rose_jit_entier_handle");
+            let c = self.builder.ins().call(f, &[v]);
+            self.unboxed_tmp = Some(self.builder.ins().iconst(types::I64, 0));
+            Some(self.builder.inst_results(c)[0])
+        } else {
+            self.unboxed_tmp = Some(self.builder.ins().iconst(types::I64, 0));
+            Some(v)
         }
     }
 
@@ -4725,6 +5313,12 @@ impl Emetteur<'_> {
                         } else {
                             let (r, rt) = self.emettre_puissance_ent_rir(va, tag_a, k);
                             self.builder.def_var(self.tag_tmp, rt);
+                            // JIT4 — le résultat peut être boxé : le drapeau
+                            // par slot doit le refléter (aucune lecture i64
+                            // inline d'un pointeur Mpz).
+                            let zero_rt = self.builder.ins().iconst(types::I64, 0);
+                            let est_nu = self.builder.ins().icmp(IntCC::Equal, rt, zero_rt);
+                            self.unboxed_tmp = Some(self.builder.ins().uextend(types::I64, est_nu));
                             JitVal::Simple(r)
                         }
                     }
@@ -6676,6 +7270,16 @@ impl Emetteur<'_> {
     }
 
     fn emettre_fonction_rir(&mut self, sig: &Signature) -> bool {
+        // JIT4 — la table des signatures est visible de `expr_ast_jit`
+        // (appels à d'autres fonctions compilées, avec handles).
+        let sigs_emit = self.signatures.clone();
+        PROG_AVEC.with(|p| { *p.borrow_mut() = sigs_emit; });
+        let r = self.emettre_fonction_rir_impl(sig);
+        PROG_AVEC.with(|p| p.borrow_mut().clear());
+        r
+    }
+
+    fn emettre_fonction_rir_impl(&mut self, sig: &Signature) -> bool {
         let corps = match &sig.rir { Some(c) => c, None => return false };
         if let Some(p) = detecter_racines_carres(corps, sig) {
             return self.emettre_racines_carres_nu(p);
@@ -6706,7 +7310,11 @@ impl Emetteur<'_> {
             return self.emettre_compte_premiers_nu();
         }
         let slot_types = slot_types_rir(corps, sig, self.signatures);
-        let natures = naturesDuCorps(corps);
+        let natures = natures_du_corps_sig(corps, sig);
+        // JIT4 — table nom → type pour `ty_statique` dans les affichages AST.
+        let env_types: HashMap<String, TyKind> = corps.noms.iter().enumerate()
+            .map(|(i, n)| (n.clone(), slot_types.get(i).copied().unwrap_or(TyKind::Entier)))
+            .collect();
 
         let entry = self.builder.create_block();
         self.builder.append_block_params_for_function_params(entry);
@@ -6798,7 +7406,12 @@ impl Emetteur<'_> {
                     } else {
                         // vague 20 — chaîne, liste, longueur, index d'entiers.
                         let Some(vj) = self.expr_ast_rir(e, &slot_vars, &natures, corps, &slot_unboxed)
-                        else { return false; };
+                        else {
+                            if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                                eprintln!("JIT4-EMET-AFFECT {:?}", e);
+                            }
+                            return false;
+                        };
                         let v = self.simple(vj);
                         let u = self.unboxed_tmp.unwrap_or(zt0);
                         let nat = expr_ast_jit(e, &natures, &corps.noms).flatten()
@@ -6828,10 +7441,62 @@ impl Emetteur<'_> {
                             let f = self.import_runtime("rose_affiche_bool");
                             let _ = self.builder.ins().call(f, &[v]);
                         }
+                        // JIT4 — un slot NON SCALAIRE contient un HANDLE :
+                        // l'affichage exact (chaîne, liste, table, rationnel,
+                        // BigInt boxé, irrationnel) est délégué au helper
+                        // machine qui lit l'arène des valeurs.
+                        TyKind::Chaine | TyKind::Liste | TyKind::Table | TyKind::Rationnel
+                        | TyKind::Irrationnel | TyKind::Tampon | TyKind::Tableau => {
+                            let f = self.import_runtime("rose_jit_valeur_afficher");
+                            let _ = self.builder.ins().call(f, &[v]);
+                        }
                         _ => {
                             let tag = self.builder.use_var(self.tag_tmp);
                             let f = self.import_runtime("rose_affiche_ent");
                             let _ = self.builder.ins().call(f, &[v, tag]);
+                        }
+                    }
+                    self.saut(next, &[]);
+                }
+                // JIT4 — affichage AST : chaque expression est émise par
+                // l'émetteur RIR (i64 / f64 / HANDLE), puis imprimée par le
+                // helper machine correspondant. Convention unique avec le
+                // chemin abstrait ci-dessus.
+                Op::Afficher(exprs) => {
+                    for e in exprs {
+                        let Some(vj) = self.expr_ast_rir(e, &slot_vars, &natures, corps, &slot_unboxed)
+                        else {
+                            if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                                eprintln!("JIT4-EMET-AFFICHER {:?}", e);
+                            }
+                            return false;
+                        };
+                        let v = self.simple(vj);
+                        let nat = expr_ast_jit(e, &natures, &corps.noms).flatten();
+                        if nat == Some(NatureSlot::Booleen) {
+                            let f = self.import_runtime("rose_affiche_bool");
+                            let _ = self.builder.ins().call(f, &[v]);
+                        } else if matches!(nat, Some(NatureSlot::Valeur | NatureSlot::Chaine
+                                              | NatureSlot::ListeEntiers | NatureSlot::Table)) {
+                            let f = self.import_runtime("rose_jit_valeur_afficher");
+                            let _ = self.builder.ins().call(f, &[v]);
+                        } else {
+                            let t = ty_statique(e, &env_types);
+                            match t {
+                                Some(TyKind::Flottant) => {
+                                    let f = self.import_runtime("rose_affiche_f64");
+                                    let _ = self.builder.ins().call(f, &[v]);
+                                }
+                                Some(TyKind::Booleen) => {
+                                    let f = self.import_runtime("rose_affiche_bool");
+                                    let _ = self.builder.ins().call(f, &[v]);
+                                }
+                                _ => {
+                                    let tag = self.builder.use_var(self.tag_tmp);
+                                    let f = self.import_runtime("rose_affiche_ent");
+                                    let _ = self.builder.ins().call(f, &[v, tag]);
+                                }
+                            }
                         }
                     }
                     self.saut(next, &[]);
@@ -6904,14 +7569,18 @@ impl Emetteur<'_> {
                 }
                 // vague 20 — `joindre($liste, $entier)` (void).
                 Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "joindre" && args.len() == 2 => {
-                    let (Expr::Var(nl, _), Expr::Var(nv, _)) = (&args[0], &args[1]) else { return false; };
-                    let (Some(l), Some(v)) = (
-                        corps.noms.iter().position(|x| x == nl),
-                        corps.noms.iter().position(|x| x == nv),
-                    ) else { return false; };
+                    let Expr::Var(nl, _) = &args[0] else { return false; };
+                    let Some(l) = corps.noms.iter().position(|x| x == nl) else { return false; };
                     if natures.get(l) != Some(&NatureSlot::ListeEntiers) { return false; }
                     let h = self.builder.use_var(slot_vars[l]);
-                    let val = self.builder.use_var(slot_vars[v]);
+                    let Some(vj) = self.expr_ast_rir(&args[1], &slot_vars, &natures, corps, &slot_unboxed)
+                    else {
+                        if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                            eprintln!("JIT4-EMET-JOINDRE {:?}", args[1]);
+                        }
+                        return false;
+                    };
+                    let val = self.simple(vj);
                     let f = self.import_runtime("rose_jit_joindre");
                     let _ = self.builder.ins().call(f, &[h, val]);
                     self.saut(next, &[]);
@@ -6920,16 +7589,33 @@ impl Emetteur<'_> {
                 // et valeur i64 nues prouvées en entrée. Un appel runtime,
                 // zéro Valeur boxée, zéro recherche de slot par nom.
                 Op::ExprStmt(Expr::Appel { nom, args, .. }) if nom == "inserer" => {
+                    if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                        eprintln!("JIT4-EMET-INSERT {:?}", args);
+                    }
                     let Expr::Var(tn, _) = &args[0] else { return false; };
                     let Some(t) = corps.noms.iter().position(|x| x == tn) else { return false; };
                     if natures.get(t) != Some(&NatureSlot::Table) { return false; }
-                    let Some(k) = valeur_nue_ast(corps, &args[1]) else { return false; };
-                    let Some(v) = valeur_nue_ast(corps, &args[2]) else { return false; };
                     let hv = self.builder.use_var(slot_vars[t]);
-                    let kv = self.emettre_valeur_nue(&k, &slot_vars);
-                    let vv = self.emettre_valeur_nue(&v, &slot_vars);
-                    let f = self.import_runtime("rose_jit_table_inserer_i64");
-                    let _ = self.builder.ins().call(f, &[hv, kv, vv]);
+                    // JIT4 — clé handle (chaîne, rationnel) : helper machine
+                    // dédié, la valeur reste un entier nu.
+                    if matches!(&args[1],
+                        Expr::ChaineLit(..) | Expr::Litteral { rationnel: true, .. })
+                    {
+                        let Some(hk) = self.expr_ast_handle(&args[1], &slot_vars, &natures,
+                                                            corps, &slot_unboxed)
+                        else { return false; };
+                        let Some(v) = valeur_nue_ast(corps, &args[2]) else { return false; };
+                        let vv = self.emettre_valeur_nue(&v, &slot_vars);
+                        let f = self.import_runtime("rose_jit_table_inserer_handle");
+                        let _ = self.builder.ins().call(f, &[hv, hk, vv]);
+                    } else {
+                        let Some(k) = valeur_nue_ast(corps, &args[1]) else { return false; };
+                        let Some(v) = valeur_nue_ast(corps, &args[2]) else { return false; };
+                        let kv = self.emettre_valeur_nue(&k, &slot_vars);
+                        let vv = self.emettre_valeur_nue(&v, &slot_vars);
+                        let f = self.import_runtime("rose_jit_table_inserer_i64");
+                        let _ = self.builder.ins().call(f, &[hv, kv, vv]);
+                    }
                     let zt = self.builder.ins().iconst(types::I64, 0);
                     self.builder.def_var(self.tag_tmp, zt);
                     self.unboxed_tmp = Some(self.builder.ins().iconst(types::I64, 1));
@@ -8411,8 +9097,19 @@ fn powf(&mut self) -> FuncRef {
                             if vt == types::F64 {
                                 let f = self.runtime("rose_affiche_f64");
                                 let _ = self.builder.ins().call(f, &[v]);
+                            } else if PROG_AVEC.with(|p| {
+                                *p.borrow_mut() = self.signatures.clone();
+                                let r = ty_statique(e, types) == Some(TyKind::Booleen);
+                                p.borrow_mut().clear();
+                                r
+                            }) {
+                                // JIT4 — parité avec l'interpréteur : un
+                                // booléen s'affiche « vrai » / « faux », pas
+                                // « 1 » / « 0 » (mesuré sur p18_bool).
+                                let f = self.runtime("rose_affiche_bool");
+                                let _ = self.builder.ins().call(f, &[v]);
                             } else {
-                                // Entier ou booléen : valeur + tag (tag ≠ 0 =>
+                                // Entier : valeur + tag (tag ≠ 0 =>
                                 // BigInt boxé via rose_mul_ent / rose_neg_ent).
                                 let vv = self.builder.ins().ireduce(types::I64, v);
                                 let tag = self.builder.use_var(self.tag_tmp);
@@ -9033,6 +9730,115 @@ pub extern "C" fn rose_jit_table_inserer_i64(h: i64, k: i64, v: i64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_table_cle_existe_i64(h: i64, k: i64) -> i64 {
     avec_table_ref(h, |t| if t.contient_i64(k) { 1 } else { 0 })
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// JIT4 — RUNTIME DES VALEURS EXACTES
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Conventions d'appel (tout est i64, ABI SystemV) :
+//   • une VALEUR NON SCALAIRE (rationnel, BigInt, irrationnel, chaîne,
+//     liste, table, complexe boxé) est un HANDLE : un index dans
+//     `JIT_HANDLES`, la même arène que celle des littéraux de chaîne.
+//   • un entier/float/booléen NU reste en registre (i64 / f64 / 0-1).
+//   • `rose_jit_entier_handle` convertit un i64 nu en handle pour les
+//     opérations mixtes (ex. `$r + 1` où `$r` est un rationnel).
+//
+// Ces routines sont de vraies fonctions machine : le module Cranelift les
+// importe par adresse (table de symboles) et émet des `call` relatifs.
+// Aucune d'elles ne relit un bytecode Rose et aucune ne remplace une
+// fonction compilée : ce sont des primitives de runtime, comme `memcpy` ou
+// `__addtf3` pour un compilateur C.
+
+/// Codes d'opération de `rose_jit_valeur_binaire` (mirroir de `Oper`).
+pub const JIT_BIN_ADD: i64 = 0;
+pub const JIT_BIN_SUB: i64 = 1;
+pub const JIT_BIN_MUL: i64 = 2;
+pub const JIT_BIN_DIV: i64 = 3;
+pub const JIT_BIN_PUISS: i64 = 4;
+pub const JIT_BIN_MOD: i64 = 5;
+pub const JIT_BIN_EQ: i64 = 6;
+pub const JIT_BIN_NE: i64 = 7;
+pub const JIT_BIN_LT: i64 = 8;
+pub const JIT_BIN_LE: i64 = 9;
+pub const JIT_BIN_GT: i64 = 10;
+pub const JIT_BIN_GE: i64 = 11;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_entier_handle(v: i64) -> i64 {
+    jit_allouer_handle(Valeur::z(v))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_flottant_handle(v: f64) -> i64 {
+    jit_allouer_handle(Valeur::f(v))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_valeur_afficher(h: i64) {
+    crate::run::afficher(&jit_lire_handle(h));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_valeur_binaire(ha: i64, hb: i64, code: i64) -> i64 {
+    let op = match code {
+        JIT_BIN_ADD => "+", JIT_BIN_SUB => "-", JIT_BIN_MUL => "*",
+        JIT_BIN_DIV => "/", JIT_BIN_PUISS => "^", JIT_BIN_MOD => "%",
+        JIT_BIN_EQ => "==", JIT_BIN_NE => "!=", JIT_BIN_LT => "<",
+        JIT_BIN_LE => "<=", JIT_BIN_GT => ">", JIT_BIN_GE => ">=",
+        _ => "+",
+    };
+    let a = jit_lire_handle(ha);
+    let b = jit_lire_handle(hb);
+    match crate::interp::binaire_valeurs(op, &a, &b) {
+        Ok(v) => jit_allouer_handle(v),
+        Err(c) => {
+            crate::run::flush_out();
+            match c {
+                Some(code) if code != 0 => std::process::exit(code),
+                _ => crate::run::erreur_runtime("erreur arithmétique JIT"),
+            }
+        }
+    }
+}
+
+/// Codes de `rose_jit_valeur_unaire`.
+pub const JIT_UN_FACTORIELLE: i64 = 0;
+pub const JIT_UN_PRIMORIELLE: i64 = 1;
+pub const JIT_UN_TERMINAL: i64 = 2;
+pub const JIT_UN_MULTIFACTORIELLE: i64 = 3;
+pub const JIT_UN_SOUSFACTORIELLE: i64 = 4;
+pub const JIT_UN_SUPERFACTORIELLE: i64 = 5;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_valeur_unaire(h: i64, code: i64) -> i64 {
+    let v = jit_lire_handle(h);
+    let z = crate::run::vers_z(&v);
+    let r = match code {
+        JIT_UN_PRIMORIELLE => Valeur::zg(crate::interp::primorielle(&z)),
+        JIT_UN_TERMINAL => Valeur::zg(crate::interp::termial_classique(&z)),
+        JIT_UN_MULTIFACTORIELLE => Valeur::zg(crate::interp::multifactorielle(&z, 2)),
+        JIT_UN_SOUSFACTORIELLE => Valeur::zg(crate::interp::sous_factorielle(&z)),
+        JIT_UN_SUPERFACTORIELLE => Valeur::zg(crate::interp::super_factorielle(&z)),
+        _ => Valeur::zg(crate::run::factorielle(&z)),
+    };
+    jit_allouer_handle(r)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_valeur_chaine(h: i64) -> i64 {
+    let s = crate::run::chaine_de(&jit_lire_handle(h));
+    jit_allouer_handle(Valeur::s(s))
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_table_inserer_handle(h: i64, kh: i64, v: i64) {
+    avec_table_ref(h, |t| t.inserer(jit_lire_handle(kh), Valeur::z(v)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_table_cle_existe_handle(h: i64, kh: i64) -> i64 {
+    avec_table_ref(h, |t| if t.trouver(&jit_lire_handle(kh)).is_some() { 1 } else { 0 })
 }
 
 /// Helper JIT : affichage d'un i64 taggé (valeur, tag) rendu par rose_mul_ent /
