@@ -127,15 +127,79 @@ console noire.
 
 ---
 
-## 7. Vérifications (21/11/2026, CONSTATS DATÉS)
+## 7. Activation depuis le launcher (bouton des Options)
+
+L'utilisateur lance `rose-tray.exe` une fois — raccourci, ou **bouton
+« Activer la vérification en arrière-plan » ajouté dans les Options** du
+launcher (`setup_gui.rs`, `lancer_helper_tray`). Ce bouton :
+
+1. écrit le mode `automatique_discret` via `velopack::ecrire_config` (le helper
+   le relit au démarrage — c'est ce garde-fou qui rend la désactivation
+   persistante) ;
+2. garde le timer L6 du launcher cohérent avec le même mode ;
+3. lance `rose-tray.exe` en **`DETACHED_PROCESS | CREATE_NO_WINDOW`** : aucun
+   parent, aucune console, aucune fenêtre, et le helper survit à la fermeture
+   du launcher.
+
+Le chemin est cherché à côté de l'exe courant, dans `bin\`, `payload\` ou dans
+l'installation Velopack (`current\`). S'il est absent, aucune fenêtre
+d'erreur : une simple ligne sous le bouton indique qu'il faut copier le
+binaire. **Aucun auto-démarrage forcé** (pas de service, pas de tâche
+planifiée, pas de clé de registre).
+
+---
+
+## 8. Artefacts de release — À FAIRE PAR L'ORCHESTRATEUR
+
+Ce chantier **ne modifie aucun script de build** (`build-windows-rebuild.sh`
+et consorts sont hors périmètre). Pour que le bouton et le lancement manuel
+fonctionnent, l'orchestrateur doit, pour chaque release Windows :
+
+1. copier **`rose-tray.exe`** (produit par `cargo build --release --bin
+   rose-tray`, présent dans `rose/target/release/`) à côté de `rose.exe`
+   **et/ou** dans le sous-dossier `bin\` du stage Velopack ;
+2. copier **`rose.ico`** au même endroit (ou dans `bin\`) : c'est l'icône
+   affichée dans la zone des icônes cachées ; sans elle, le helper retombe sur
+   l'icône système, mais continue à tourner ;
+3. ajouter ces deux fichiers au manifeste de release / aux checksums SHA-256
+   au même titre que `rose.exe` et `rose-shell.exe` ;
+4. vérifier après installation que `chemin_helper_tray()` trouve bien le
+   binaire (bouton des Options → ligne « Helper lancé : icône Rose dans les
+   icônes cachées. »).
+
+Sans ces copies, le helper compile et se lance à la main depuis leur dossier,
+mais le bouton affiche « `rose-tray.exe` introuvable » : c'est un choix
+délibéré — aucun script de publication n'a été touché ici.
+
+---
+
+## 9. Vérifications (21/11/2026, CONSTATS DATÉS)
 
 | Contrôle | Résultat |
 |---|---|
-| `cargo build --release --bin rose-tray` | ✅ `Finished release profile` |
-| `cargo test --release` | ✅ **0 échec** (tous les targets : 275 / 262 / 6 / 4 / 8 / 1 tests OK, 3 ignorés) |
+| `cargo build --release --bin rose-tray` | ✅ `Finished release profile` (binaire 332 520 octets) |
+| `cargo t --release` (alias du dépôt = `cargo test --release --bins` ; le `cargo test` nu charge le cdylib comme harnais et n'est pas la voie du projet) | ✅ salle propre : **0 échec** — 275 (lib) / 262 (binaire `rose`) / 0 (`rose-setup`) / 6 (`rose-shell`) / 4 (`rose-tray`) / 8 / 1, **3 ignorés**, RC=0. ⚠ Re-mesuré ensuite **pendant qu'un agent concurrent modifiait `main.rs`** : 1 échec **hors périmètre tray**, `tests_cli_clair::aide_sans_chiffres_de_taille_ni_noms_d_outils` (« mention interdite dans l'aide : python », `src/main.rs:1596`). Vérifications ciblées rejouées à la fin, **toutes vertes** : `cargo test --release --lib` → 275/0, `--bin rose-tray` → 4/0, `--lib velopack::tests::timer_discret` → 5/0. |
+| `cargo check --release --bin rose-tray --target x86_64-pc-windows-msvc` | ✅ RC=0 (avec le stub `windows.h` de `/tmp/opencode/winstub` pour `build.rs`) |
+| `cargo check --release --bin rose-setup --target x86_64-pc-windows-msvc` | ✅ RC=0 (le bouton des Options se compile bien sur Windows) |
+| Cross-lien complet Windows | ❌ non obtenu ici, pour une raison **préexistante hors périmètre** : cible GNU → `mprotect` défini deux fois (`windows_compat.o` vs `libgcc.a`) ; `cargo xwin` → `build.rs` transmet des `-I/imsvc` que `clang --target` rejette. Le typage Windows est en revanche intégralement vérifié par les deux `cargo check` ci-dessus. |
 | Point fixe `b3ed9262` ×2 | ✅ `rose rir compilateur/emetteur.rose` **et** `rose compilateur/emetteur.rose compilateur/emetteur.rose` → `b3ed9262dd54776a6dbd07bc12368d0e`, **263 520 octets**, stderr 0 octet, `cmp` identique (source `390335d29fb9cee368b3456dd892e377`) |
-| Version du paquet | `0.1.72` inchangée |
-| Commit | aucun (modifications laissées dans l'arbre de travail) |
+| L6 (3 modes) | ✅ inchangé : les tests `parser_config_reconnait_les_trois_modes_ui_et_le_mode_historique`, `timer_discret_garde_fou_de_mode`, `timer_discret_intervalle_long_et_borne`, `timer_discret_structure_sans_polling`, `timer_discret_structure_une_seule_requete` passent ; `velopack.rs` n'a pas été modifié. |
+| Version du paquet | `0.1.72` inchangée (seule la section `[[bin]]` de `Cargo.toml` a été ajoutée par ce chantier) |
+| Commit | aucun de la part de ce sous-agent (l'orchestrateur a intégré les fichiers dans l'arbre) |
+
+### Nuance de mesure — où passe le CPU
+
+Le helper n'a **ni boucle active ni attente active** : son unique boucle est
+`GetMessageW`, qui met le fil au repos jusqu'à un message. Le tick est un
+thread unique qui meurt après **une** requête. En revanche, la fonction
+`velopack` réutilisée pour borner `curl` à 3 s contient, **en elle**, une
+attente `try_wait` avec un `sleep` de 20 ms — elle ne tourne que pendant ces
+3 s, une fois par tick, et n'existe pas entre les ticks. C'est une propriété
+du code existant, pas une boucle du helper ; le test structurel porte bien sur
+`rose-tray.rs` uniquement. Aucun instrument Windows n'étant disponible sur
+cette machine Linux, « 0 % CPU sur 60 s » n'a **pas** été mesuré au
+Gestionnaire des tâches : c'est une garantie structurelle, pas une mesure
+d'horloge (voir UPDATE_OPT.md pour la procédure Windows).
 
 ⚠ Ces mesures sont des constats datés : à re-mesurer après tout changement de
 code, de quantification ou de topologie.

@@ -4,8 +4,10 @@
 //! Ce module est partagé par le binaire principal et par un helper AOT
 //! éventuellement installé localement (aucun téléchargement automatique).
 //!
-//! Note : la commande `llvm` (transpilation vers C) n'a PAS besoin de
-//! chaîne LLVM — elle est donc disponible même dans le binaire léger.
+//! Note : la commande `llvm` (transpilation vers C) utilise le transpileur
+//! intégré (`src/transpile.rs`) : aucun processus externe, donc disponible
+//! même dans le binaire léger. L'option `--exe` peut, si un compilateur C est
+//! présent, produire un exécutable ; sinon le fichier C est rendu tel quel.
 //! Seules `orc` et `link` exigent une chaîne AOT locale.
 //! Aucun message utilisateur ne mentionne d'outil de compilation.
 //!
@@ -24,14 +26,19 @@ pub fn execute(action: &str, argv: &[String]) -> ! {
     }
 }
 
-/// `rose llvm prog.rose -o sortie` : transpilation vers C (codeur Python),
-/// sans dépendance LLVM.
+/// `rose llvm prog.rose [-o sortie.c] [--exe]` : transpilation vers C par le
+/// transpileur intégré (`rose/src/transpile.rs`), sans dépendance LLVM ni
+/// Python. Avec `--exe`, un compilateur C local est utilisé si disponible ;
+/// sinon le fichier C est rendu et l'absence est expliquée.
 fn llvm_codegen(argv: &[String]) -> ! {
     let mut sortie = String::new();
     let mut fichier = String::new();
+    let mut veut_exe = false;
     let mut i = 2;
     while i < argv.len() {
-        if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
+        if argv[i] == "--exe" || argv[i] == "--compil" {
+            veut_exe = true; i += 1;
+        } else if (argv[i] == "-o" || argv[i] == "--sortie") && i + 1 < argv.len() {
             sortie = argv[i + 1].clone(); i += 2;
         } else if !argv[i].starts_with('-') { fichier = argv[i].clone(); i += 1; }
         else { i += 1; }
@@ -41,10 +48,9 @@ fn llvm_codegen(argv: &[String]) -> ! {
         sortie = fichier.rsplit_once(['/', '\\']).map(|(_, f)| f.to_string()).unwrap_or(fichier.clone());
         if let Some(p) = sortie.rfind(".rose") { sortie.truncate(p); }
         if sortie.is_empty() { sortie = "programme".into(); }
+        sortie.push_str(".c");
     }
-    // Le transpileur C est intégré à Rose (rose/src/transpile.rs) : aucun
-    // processus externe, aucun Python, aucune dépendance. On utilise la même
-    // API que `rose transpile --cible c`.
+    // Même API que `rose transpile --cible c` : un seul transpileur, en Rust.
     let code = match crate::transpile::transpiler_fichier(&fichier, crate::transpile::Cible::C) {
         Ok(c) => c,
         Err(e) => { eprintln!("rose: transpilation impossible : {e}"); std::process::exit(1); }
@@ -52,8 +58,41 @@ fn llvm_codegen(argv: &[String]) -> ! {
     if let Err(e) = std::fs::write(&sortie, code.as_bytes()) {
         eprintln!("rose: impossible d'écrire {sortie} : {e}"); std::process::exit(1);
     }
-    println!("rose: {sortie} produit (code C)");
+    if !veut_exe {
+        println!("rose: {} produit (code C)", sortie);
+        std::process::exit(0);
+    }
+    let exe = match sortie.strip_suffix(".c") {
+        Some(p) => p.to_string(),
+        None => format!("{}.exe", sortie),
+    };
+    match trouver_compilateur_c() {
+        Some(compilateur) => {
+            let statut = std::process::Command::new(compilateur)
+                .arg("-O2").arg(&sortie).arg("-o").arg(&exe).arg("-lm").status();
+            match statut {
+                Ok(s) if s.success() => println!("rose: {} produit (exécutable)", exe),
+                Ok(s) => {
+                    eprintln!("rose: compilation C impossible (code {}) ; {} reste disponible", s, sortie);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("rose: compilation C impossible ({e}) ; {} reste disponible", sortie);
+                    std::process::exit(1);
+                }
+            }
+        }
+        None => println!("rose: aucun compilateur C disponible ; {} produit (code C)", sortie),
+    }
     std::process::exit(0);
+}
+
+/// Cherche un compilateur C déjà installé (aucun téléchargement).
+fn trouver_compilateur_c() -> Option<&'static str> {
+    ["cc", "gcc", "clang"].into_iter().find(|nom| {
+        std::process::Command::new(nom).arg("--version").output()
+            .map(|s| s.status.success()).unwrap_or(false)
+    })
 }
 
 /// `rose orc prog.rose -o sortie.ll` : compilation AOT par LLVM ORC.
@@ -61,7 +100,7 @@ fn orc(argv: &[String]) -> ! {
     #[cfg(not(feature = "llvm"))]
     {
         let _ = argv;
-        eprintln!("rose: chaîne AOT LLVM non disponible — utilisez `rose comp` (autonome) ou installez LLVM localement");
+        eprintln!("rose: {}", crate::auto_llvm::MESSAGE_AOT_INDISPONIBLE);
         std::process::exit(1);
     }
     #[cfg(feature = "llvm")]
@@ -126,7 +165,7 @@ fn link(argv: &[String]) -> ! {
     #[cfg(not(feature = "llvm"))]
     {
         let _ = argv;
-        eprintln!("rose: chaîne AOT LLVM non disponible — utilisez `rose comp` (autonome) ou installez LLVM localement");
+        eprintln!("rose: {}", crate::auto_llvm::MESSAGE_AOT_INDISPONIBLE);
         std::process::exit(1);
     }
     #[cfg(feature = "llvm")]

@@ -1,9 +1,10 @@
 //! Recherche LOCALE du helper AOT — zéro réseau, zéro compilation.
 //!
-//! Le binaire principal de Rose est léger : la chaîne AOT (`rose orc`,
-//! `rose aot`, `rose link`) n'y est pas embarquée. Elle n'est disponible
-//! que si un helper (ou un binaire Rose complet avec la chaîne AOT) est
-//! déjà installé sur la machine.
+//! Le binaire PAR DÉFAUT de Rose est léger : la chaîne AOT (`rose orc`,
+//! `rose aot`, `rose link`) n'y est pas embarquée. Elle est intégrée quand
+//! Rose est construit avec la fonctionnalité `llvm` (voir AOT_EMBARQUE.md).
+//! En version légère, un helper déjà présent sur la machine peut prendre le
+//! relais ; aucun téléchargement ni compilation à la demande.
 //!
 //! Ordre de recherche — TOUJOURS avant toute autre action :
 //!   1. à côté de l'exécutable courant (`rose.exe` sur Windows) ;
@@ -27,9 +28,9 @@ use std::process::Command;
 /// présent dans le cache. Correspond au tag de release `v0.1.7`.
 pub const VERSION_HELPER: &str = env!("CARGO_PKG_VERSION");
 
-/// Message unique affiché quand aucune chaîne AOT locale n'est disponible.
-/// Aucune mention d'outil de compilation : `rose comp` est la solution.
-pub const MESSAGE_AOT_INDISPONIBLE: &str = "chaîne AOT LLVM non disponible — utilisez `rose comp` (autonome) ou installez LLVM localement";
+/// Message unique affiché quand la version en cours n'intègre pas l'AOT et
+/// qu'aucun helper local n'est présent. Aucun nom d'outil de compilation.
+pub const MESSAGE_AOT_INDISPONIBLE: &str = "AOT non disponible dans cette version — utilisez `rose comp`, qui produit un exécutable autonome";
 
 /// Nom du binaire helper sur cette plateforme.
 pub fn nom_helper() -> &'static str {

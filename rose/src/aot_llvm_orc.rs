@@ -1020,6 +1020,9 @@ pub fn run_orc(fichier: &str, sortie: &str, opt_level: OrcOptLevel, pgo_mode: Pg
                 Ok(())
             }
             Instr::Lire { .. } => Err("lecture clavier non supportée en ORC".to_string()),
+            // Le front-end peut produire un corps déjà abaissé en RIR : en
+            // ORC on ne sait pas le compiler, on refuse proprement (repli).
+            Instr::Rir(_) => Err("corps RIR déjà abaissé non supporté en ORC".to_string()),
         }
     }
 
