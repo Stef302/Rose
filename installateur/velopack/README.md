@@ -118,3 +118,11 @@ python3 installateur/velopack/verifier-res.py rose-setup.exe        # lié dans 
   la seule voie Windows.
 - Sous Linux et macOS, `rose update` reste sur la voie artefacts GitHub
   (`docs/telechargements/` + SHA-256) : Velopack n'a pas d'installeur natif Linux.
+
+## Message post-install — extension VS Code
+
+`PROMO_EXTENSION.md` contient le message « Astuce : installez l'extension Rose pour
+VS Code » avec le lien Marketplace `stef302.rose-langage`, à afficher sur l'écran
+final de l'installation. Le texte des écrans étant codé dans `rose/src/setup_gui.rs`
+(hors périmètre), l'intégration UI reste à faire par l'orchestrateur ; voir ce
+fichier pour le libellé exact et la vérification du lien.

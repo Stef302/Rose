@@ -650,6 +650,38 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
       <p class="small gris" style="line-height:2">SHA-256 de chaque artefact : voir <a class="vert" href="telechargements/SHA256SUMS">telechargements/SHA256SUMS</a> et les assets de la release GitHub.</p>
       <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : binaire autonome — <code class="inline">curl -LO https://raw.githubusercontent.com/Stef302/Rose/main/docs/telechargements/rose-aarch64-linux && chmod +x rose-aarch64-linux</code>. Ou depuis les sources : <code class="inline">cd rose && cargo build --release</code>. Aucun runtime, aucune dépendance GMP.</p>
       <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Shell Rose</b> : <code class="inline">rose-shell.exe</code> est installé à côté du moteur — une console interactive complète (historique ↑ ↓, complétion Tab, <code class="inline">:help</code>, <code class="inline">:load</code>, <code class="inline">:save</code>, <code class="inline">:type</code>, <code class="inline">:latex</code>). Elle fonctionne dans <b>Windows Terminal</b>, conhost, PowerShell, cmd, Git Bash et VS Code : sortie UTF-8 et couleurs ANSI activées au démarrage, donc accents et symboles mathématiques s'affichent correctement. <code class="inline">rose-shell prog.rose</code> charge un programme puis ouvre la console.</p>    </div>
+
+  <!-- EXTENSION VS CODE — carte ajoutée après le lien de téléchargement ; le reste du site est intact. -->
+  <div class="install-card reveal" id="extension-vscode">
+    <span class="install-tag" style="background:var(--vert);color:var(--noir)">EXTENSION VS CODE</span>
+    <h3>Rose dans Visual Studio Code</h3>
+    <p style="font-size:.9rem;line-height:2;color:var(--sub)">
+      Une fois Rose installé, ajoutez <b>Rose Language Support</b> (v0.1.7) à VS Code :
+      <b>coloration syntaxique</b> complète, <b>complétion</b> et survol des mots-clés, types et
+      primitives, <b>diagnostics</b> en temps réel, <b>exécution</b> du fichier
+      (<code class="inline">Ctrl+Alt+R</code>) et <b>génération LaTeX</b> — du programme entier ou
+      des seules lignes marquées <code class="inline">%%</code>. S'y ajoutent snippets, formatage,
+      navigation, thème d'icônes et ligatures optionnelles.
+    </p>
+    <p class="small gris" style="line-height:2">
+      <b style="color:var(--vert)">Thème intégré « Rose Dark — types rouges »</b> : les types Rose
+      restent en rouge vif <code class="inline">#FF4D4D</code> sur fond <code class="inline">#14141A</code>
+      (contraste WCAG 5,61:1, au-dessus du seuil AA) au lieu du bleu marine des thèmes par défaut.
+      Activez-le avec <code class="inline">Ctrl+K Ctrl+T</code> → « Rose Dark — types rouges ».
+      Le thème ne s'applique que si vous le sélectionnez.
+    </p>
+    <div class="term">
+      <div class="term-bar"><i class="dot rouge"></i><i class="dot vert"></i><i class="dot blanc"></i><span>bonjour.rose — Rose Dark — types rouges</span></div>
+<pre><span class="c">%% $N!$ : la factorielle</span>
+<span style="color:#FF4D4D">entier</span> N = <span class="n">100</span>
+<span class="k">afficher</span>(N<span style="color:#FF4D4D">!</span>)   <span class="c"># 9,33 × 10^157</span></pre>
+    </div>
+    <div style="display:flex;gap:1rem;flex-wrap:wrap">
+      <a class="btn btn-rouge" href="https://marketplace.visualstudio.com/items?itemName=stef302.rose-langage" target="_blank" rel="noopener">INSTALLER DEPUIS LE MARKETPLACE ↗</a>
+      <a class="btn btn-fantome" href="telechargements/rose-language-0.1.7.vsix" download title="SHA-256 44848415bd5f7e99407a37936236cc8fcddc0870619e2cbf1ac53235105c83a2">TÉLÉCHARGER LE .VSIX · 72 Ko</a>
+    </div>
+    <p class="small gris" style="line-height:2">Astuce : après l'installation de Rose, installez l'extension VS Code pour écrire vos fichiers <code class="inline">.rose</code> avec coloration et diagnostics. Le Marketplace publie l'édition 0.1.7 ; le VSIX ci-dessus permet une installation manuelle sans compte.</p>
+  </div>
   </div>
 
   <div class="wrap">
