@@ -210,6 +210,17 @@ $g5_sbool = table()
 # SH6 : table d'émission associant f|slot au genre d'élément d'une liste
 # (0=entier, 1=chaîne, 2=booléen). Sert à afficher `>> $l` correctement.
 $g5_slist = table()
+# G5-FORMULES (vague 71) : table des slots dont la valeur est un entier/rationnel
+# EXACT connu à l'émission (clé "fonction|slot", valeur "num/den", "" = inconnu).
+# Le compilateur natif Rose calcule les grands entiers et rationnels sans émettre
+# de routine multi-limbes : on replie les expressions arithmétiques dont toutes
+# les feuilles sont des constantes connues, puis on sérialise le résultat. Ceci
+# est une FORMULE d'émission, pas un changement d'ABI, donc F1 == F2 est préservé.
+$g5_sconst = table()
+# Une fonction contenant un saut a ses constantes invalidées (clair SET de
+# drapeau, sans `cles()` : primitive NON émise en G5 -> stub0 -> longueur(0)
+# ferait segfaulter F1 sur sa propre RIR, mesuré/anticipé en vague 71).
+$g5_snostore = table()
 # SH10 (C1) : table des GLOBALES du RIR. Le RIR déclare les variables du
 # niveau principal dans la ligne `globaux` (indices de slots). Sous G5, les
 # fonctions les voient par leur NOM, sans slot local : il faut donc une zone
@@ -912,6 +923,201 @@ fn g5_est_bool($t: liste<chaine>, $p: entier, $f: entier) -> entier {
   retour 0
 }
 
+# ── G5-FORMULES : arithmétique exacte à l'émission (vague 71) ──
+# Un rationnel est represente par la chaine "numerateur/denominateur" avec
+# denominateur > 0 et pgcd(num,den) = 1. Un entier est "n/1".
+fn g5_rnum($s: chaine) -> entier {
+  $p = g4_pos($s, "/")
+  si ($p < 0) { retour g4_entier_ou_zero($s) }
+  retour g4_entier_ou_zero(g5_sub($s, 0, $p))
+}
+fn g5_rden($s: chaine) -> entier {
+  $p = g4_pos($s, "/")
+  si ($p < 0) { retour 1 }
+  retour g4_entier_ou_zero(g5_sub($s, $p + 1, longueur($s)))
+}
+fn g5_pgcd($a0: entier, $b0: entier) -> entier {
+  $x = $a0
+  $y = $b0
+  si ($x < 0) { $x = -$x }
+  si ($y < 0) { $y = -$y }
+  tant_que ($y != 0) { $r = $x % $y; $x = $y; $y = $r }
+  retour $x
+}
+fn g5_rnorm($a0: entier, $b0: entier) -> chaine {
+  $a = $a0
+  $b = $b0
+  si ($b == 0) { retour "" }
+  si ($b < 0) { $a = -$a; $b = -$b }
+  # JIT (rose/rose sans ROSE_SANS_JIT) : stocker le resultat d'un appel de
+  # fonction renvoyant un GRAND entier dans une locale donne Vide (mesure :
+  # `chaine(pgcd(2^64+1,1))` -> erreur de conversion). Le pgcd est donc CALCULE
+  # EN LIGNE ici : c'est aussi la formule la plus courte.
+  $x = $a
+  $y = $b
+  si ($x < 0) { $x = -$x }
+  tant_que ($y != 0) { $r = $x % $y; $x = $y; $y = $r }
+  si ($x > 1) { $a = partie_entiere($a / $x); $b = partie_entiere($b / $x) }
+  retour chaine($a) + "/" + chaine($b)
+}
+# Longueur (en jetons) d'un opérande RIR atomique ou(parenthesé).
+fn g5_atom_len($t: liste<chaine>, $p: entier) -> entier {
+  si ($p < 0 ou $p >= longueur($t)) { retour 0 }
+  si ($t[$p] == "(") { retour g5_skip_expr($t, $p) - $p }
+  si ($t[$p] == "slot" ou $t[$p] == "entier" ou $t[$p] == "n" ou
+      $t[$p] == "flottant" ou $t[$p] == "chaine" ou $t[$p] == "s" ou $t[$p] == "b") { retour 2 }
+  retour 1
+}
+# Invalidation des constantes aux frontières de contrôle de flot : le RIR est
+# parcouru LINÉAIREMENT à l'émission, donc une constante mémorisée avant un
+# saut ne peut pas être supposée valable après (boucle `pour` = somme fausse).
+fn g5_const_clear($f: entier) -> entier {
+  inserer($g5_snostore, chaine($f), 1)
+  retour 0
+}
+
+# L'expression contient-elle un GRAND entier littéral (ou un slot dont la
+# constante est grande) ? Sert à replier même quand le RÉSULTAT est petit :
+# `$a % 7` avec $a = 10^20 donne 2 côté natif mais 6 côté ELF 64 bits.
+fn g5_hasbig($t: liste<chaine>, $p: entier, $f: entier) -> entier {
+  si ($p < 0 ou $p >= longueur($t)) { retour 0 }
+  $fin = g5_skip_expr($t, $p)
+  si ($t[$p] != "(") { $fin = $p + g5_atom_len($t, $p) }
+  $lim = 576460752303423488
+  $i = $p
+  tant_que ($i < $fin et $i < longueur($t)) {
+    $tk = $t[$i]
+    si (($tk == "entier" ou $tk == "n") et $i + 1 < longueur($t)) {
+      $v = g4_entier_ou_zero($t[$i + 1])
+      si ($v > $lim ou $v < -$lim) { retour 1 }
+    }
+    si (($tk == "slot" ou $tk == "v") et $i + 1 < longueur($t)) {
+      $sl = -1
+      si ($tk == "slot") { $sl = g4_entier_ou_zero($t[$i + 1])
+      } sinon { $sl = g5_slot_of($f, $t[$i + 1]) }
+      si ($sl >= 0) {
+        $cle = chaine($f) + "|" + chaine($sl)
+        si (cle_existe($g5_sconst, $cle)) {
+          $cv = chaine($g5_sconst[$cle])
+          $cn = g5_rnum($cv); $cd = g5_rden($cv)
+          si ($cn > $lim ou $cn < -$lim ou $cd > $lim) { retour 1 }
+        }
+      }
+    }
+    $i = $i + 1
+  }
+  retour 0
+}
+# Division/modulo : la voie 64 bits de l'ELF ne respecte pas l'arrondi plancher
+# de Rose sur les négatifs. On replie donc TOUTE expression contenant `/` ou
+# `%` dont les feuilles sont constantes, quelle que soit leur taille.
+fn g5_hasdiv($t: liste<chaine>, $p: entier) -> entier {
+  si ($p < 0 ou $p >= longueur($t)) { retour 0 }
+  $fin = g5_skip_expr($t, $p)
+  si ($t[$p] != "(") { $fin = $p + g5_atom_len($t, $p) }
+  $i = $p
+  tant_que ($i < $fin et $i < longueur($t)) {
+    si ($t[$i] == "/" ou $t[$i] == "%") { retour 1 }
+    $i = $i + 1
+  }
+  retour 0
+}
+
+# Repli exact d'une expression RIR. "" = feuille non constante (on retombe
+# alors sur l'émission machine historique). "@F|texte" = résultat à sérialiser
+# tel quel (utilisé pour abs(grand) qui est un FLOTTANT côté natif).
+fn g5_fold($t: liste<chaine>, $p: entier, $f: entier) -> chaine {
+  si (cle_existe($g5_snostore, chaine($f))) { retour "" }
+  si ($p < 0 ou $p >= longueur($t)) { retour "" }
+  $tok = $t[$p]
+  si ($tok == "entier" ou $tok == "n") {
+    si ($p + 1 >= longueur($t)) { retour "" }
+    retour chaine(g4_entier_ou_zero($t[$p + 1])) + "/1"
+  }
+  si ($tok == "slot") {
+    si ($p + 1 >= longueur($t)) { retour "" }
+    $cle = chaine($f) + "|" + $t[$p + 1]
+    si (cle_existe($g5_sconst, $cle)) { retour chaine($g5_sconst[$cle]) }
+    retour ""
+  }
+  si ($tok != "(" ou $p + 2 >= longueur($t)) { retour "" }
+  $h = $t[$p + 1]
+  si ($h == "n" ou $h == "entier") {
+    si ($p + 2 >= longueur($t)) { retour "" }
+    retour chaine(g4_entier_ou_zero($t[$p + 2])) + "/1"
+  }
+  si ($h == "v") {
+    $sl = g5_slot_of($f, $t[$p + 2])
+    si ($sl < 0) { retour "" }
+    $cle = chaine($f) + "|" + chaine($sl)
+    si (cle_existe($g5_sconst, $cle)) { retour chaine($g5_sconst[$cle]) }
+    retour ""
+  }
+  si ($h == "f" ou $h == "flottant") {
+    $v = $t[$p + 2]
+    si (g4_pos($v, "/") >= 0) { retour $v }
+    retour ""
+  }
+  si ($h == "uni" et $p + 2 < longueur($t) et $t[$p + 2] == "-") {
+    $u = g5_fold($t, $p + 3, $f)
+    si (longueur($u) == 0) { retour "" }
+    retour g5_rnorm(-g5_rnum($u), g5_rden($u))
+  }
+  si ($h == "app") {
+    $nom = $t[$p + 2]
+    $q = $p + 3
+    $a = g5_fold($t, $q, $f)
+    si (longueur($a) == 0) { retour "" }
+    $q = $q + g5_atom_len($t, $q)
+    $b = g5_fold($t, $q, $f)
+    $an = g5_rnum($a); $ad = g5_rden($a)
+    $bn = g5_rnum($b); $bd = g5_rden($b)
+    si ($nom == "abs" et longueur($b) == 0) {
+      $lim = 576460752303423488
+      $av = $an
+      si ($av < 0) { $av = -$av }
+      si ($ad == 1 et ($av > $lim ou $av < -$lim)) {
+        retour "@F|" + chaine(flottant(chaine($av)))
+      }
+      retour g5_rnorm($av, $ad)
+    }
+    si (($nom == "min" ou $nom == "max") et longueur($b) > 0) {
+      $cmp = $an * $bd - $bn * $ad
+      $choix = $a
+      si (($nom == "min" et $cmp > 0) ou ($nom == "max" et $cmp < 0)) { $choix = $b }
+      retour $choix
+    }
+    retour ""
+  }
+  si ($h == "bin" et $p + 3 < longueur($t)) {
+    $op = $t[$p + 2]
+    $q = $p + 3
+    $a = g5_fold($t, $q, $f)
+    si (longueur($a) == 0) { retour "" }
+    $q = $q + g5_atom_len($t, $q)
+    $b = g5_fold($t, $q, $f)
+    si (longueur($b) == 0) { retour "" }
+    $an = g5_rnum($a); $ad = g5_rden($a)
+    $bn = g5_rnum($b); $bd = g5_rden($b)
+    si ($op == "+") { retour g5_rnorm($an * $bd + $bn * $ad, $ad * $bd) }
+    si ($op == "-") { retour g5_rnorm($an * $bd - $bn * $ad, $ad * $bd) }
+    si ($op == "*") { retour g5_rnorm($an * $bn, $ad * $bd) }
+    si ($op == "/") {
+      si ($bn == 0) { retour "" }
+      retour g5_rnorm($an * $bd, $ad * $bn)
+    }
+    si ($op == "%") {
+      si ($ad != 1 ou $bd != 1 ou $bn == 0) { retour "" }
+      retour g5_rnorm($an % $bn, 1)
+    }
+    si ($op == "^") {
+      si ($ad != 1 ou $bd != 1 ou $bn < 0 ou $bn > 512) { retour "" }
+      retour g5_rnorm($an ^ $bn, 1)
+    }
+  }
+  retour ""
+}
+
 fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
   si (longueur($g5_err) > 0) { retour -1 }
   $n = longueur($t)
@@ -1360,6 +1566,9 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
     $sl = g4_entier_ou_zero(g5_sub($a, 0, $eq))
     $rhs = g4_trim(g5_sub($a, $eq + 1, longueur($a)))
     $trhs = g5_tokens($rhs)
+    # G5-FORMULES : mémorise la valeur exacte du slot quand elle est repliable.
+    # Une affectation non repliable invalide l'entrée (valeur "").
+    inserer($g5_sconst, chaine($f) + "|" + chaine($sl), g5_fold($trhs, 0, $f))
     g5_eval($trhs, 0, 0, $f)
     si (g5_est_bool($trhs, 0, $f) == 1) {
       inserer($g5_sbool, chaine($f) + "|" + chaine($sl), 1)
@@ -1374,8 +1583,9 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
   $t = g5_tokens($op)
   $head = $t[0]
   si ($head == "expr") { g5_eval($t, 1, 0, $f); retour 0 }
-  si ($head == "saut") { g5_branch(0, g5_cible($f, $t[1])); retour 0 }
+  si ($head == "saut") { g5_const_clear($f); g5_branch(0, g5_cible($f, $t[1])); retour 0 }
   si ($head == "saut_si_faux" ou $head == "saut_si_faux_abstrait") {
+    g5_const_clear($f)
     g5_eval($t, 2, 0, $f)
     g5_emit(cmpi(0, 0))
     g5_branch(100, g5_cible($f, $t[1]))
@@ -1500,6 +1710,26 @@ fn g5_op($op: chaine, $f: entier, $principal: entier, $printl: entier, $exitl: e
       $fl = $t[2]
       si (longueur($fl) >= 17 et g4_pos($fl, ".") < 0 et g4_pos($fl, "/") < 0) {
         g5_make_str(chaine(flottant($fl)))
+        g5_branch(1, $printl)
+        retour 0
+      }
+    }
+    # G5-FORMULES : un résultat arithmétique EXACT connu à l'émission est
+    # sérialisé directement (g4_ratio_texte produit la décimale périodique
+    # entre crochets comme l'interpréteur Rose). On ne replie que les valeurs
+    # hors de la plage 64 bits : les petites gardent la voie machine d'origine.
+    $g5fr = g5_fold($t, 1, $f)
+    $g5fbig = g5_hasbig($t, 1, $f)
+    $g5fdiv = g5_hasdiv($t, 1)
+    si (longueur($g5fr) > 0 et ($g5fbig == 1 ou $g5fdiv == 1 ou g5_sub($g5fr, 0, 3) == "@F|")) {
+      $g5ftxt = ""
+      si (g5_sub($g5fr, 0, 3) == "@F|") {
+        $g5ftxt = g5_sub($g5fr, 3, longueur($g5fr))
+      } sinon {
+        $g5ftxt = g4_ratio_texte($g5fr)
+      }
+      si (longueur($g5ftxt) > 0) {
+        g5_make_str($g5ftxt)
         g5_branch(1, $printl)
         retour 0
       }
