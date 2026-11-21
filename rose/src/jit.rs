@@ -2548,6 +2548,18 @@ fn rir_compilable_jit(sig: &Signature, prog: &HashMap<String, Signature>,
 fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
                         prog: &HashMap<String, Signature>,
                         principal_sans_boxage: bool) -> bool {
+    let ok = rir_compilable_corps_impl(corps, sig, prog, principal_sans_boxage);
+    if !ok && std::env::var("ROSE_JIT4_DUMP").is_ok() {
+        for (i, op) in corps.ops.iter().enumerate() {
+            eprintln!("JIT4-RIR op[{}]={:?}", i, op);
+        }
+    }
+    ok
+}
+
+fn rir_compilable_corps_impl(corps: &CorpsRir, sig: &Signature,
+                             prog: &HashMap<String, Signature>,
+                             principal_sans_boxage: bool) -> bool {
     // DISP1 (19/11) — motif `racine(k*k)` : l'émetteur dédié remplace
     // l'intégralité du principal (y compris les opérations AST `nb_arguments`,
     // `argument`, `entier`, `millisecondes` que la porte générique refuse).
@@ -2679,7 +2691,12 @@ fn rir_compilable_corps(corps: &CorpsRir, sig: &Signature,
                              Some(TyKind::Entier) | Some(TyKind::Booleen) | Some(TyKind::Flottant)) { return false; }
             }
             // Tout le reste (AST, blocs, lire, affect index, afficher AST...) -> fallback
-            _ => return false,
+            other => {
+                if std::env::var("ROSE_JIT4_DUMP").is_ok() {
+                    eprintln!("JIT4-REFUS op={:?}", other);
+                }
+                return false;
+            }
         }
     }
     true
