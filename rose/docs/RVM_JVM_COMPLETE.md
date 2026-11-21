@@ -1,5 +1,14 @@
 # RVM — vers une « JVM Rose » complète (format de classe v2)
 
+> ## ⚠ MISE À JOUR 21/11/2026 — LA RVM EST MAINTENANT COMPLÈTE (v3)
+>
+> Le corps de ce document décrit l'état du **19/11** (format v2, module non
+> câblé). Depuis, la RVM a été complétée et câblée. **Lire en priorité
+> `rose/docs/RVM_COMPLETE.md`** (format v3, snapshot AST, exécution de TOUS
+> les programmes Rose, parité vérifiée avec l'interpréteur). Le §6 ci-dessous
+> reste vrai pour la machine à classes v2 seule ; le point 9 est désormais
+> **périmé** (voir le nouveau doc).
+
 **Constat daté : 19/11/2026, 00:45 +01:00.** Dépôt `Stef302/Rose`, version 0.1.5.
 Fichier possédé : `rose/src/rosevm.rs` (seul fichier source modifié par cette mission).
 Aucun commit, aucune publication, aucune dépendance ajoutée, aucun autre fichier touché.
@@ -291,9 +300,9 @@ patch soit directement applicable sans retoucher au module.
    nombre de paramètres ; la promotion expose tous les slots (`n_slots`). Un
    appelant connaissant la vraie arité doit utiliser
    `promouvoir_corps_avec_parametres`.
-9. **Le module n'est pas câblé** (§5.1) : sans le patch §5.2, la JVM Rose est
-   une bibliothèque utilisable depuis Rust, pas une fonctionnalité du binaire
-   `rose`.
+9. ~~**Le module n'est pas câblé** (§5.1).~~ ⚠ **PÉRIMÉ le 21/11/2026** :
+   `rose bc` / `rose rvm` sont câblés dans `main.rs` et le format v3 exécute
+   tout le langage. Voir `rose/docs/RVM_COMPLETE.md`.
 10. **Copie des instructions** : le vérificateur et l'exécuteur lisent la
     méthode via le chargeur ; la table d'exceptions est relue à chaque `Lever`.
     Correct mais non optimisé — aucune revendication de vitesse.

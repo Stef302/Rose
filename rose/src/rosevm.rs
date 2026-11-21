@@ -60,7 +60,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 
-use crate::front::{Expr, Instr};
+use crate::front::{Expr, Instr, Programme, Signature, Ty, TyKind};
 use crate::i128x::Gz;
 use crate::rir::{
     CacheSlot, CorpsRir, Eabstrait, FinRir, HoteRir, Op, Oper, executer_avec, poser_slot,
@@ -82,6 +82,12 @@ pub const VERSION: u32 = 1;
 /// classes, méthodes, table d'exceptions. `lire_classe` lit AUSSI le v1 en le
 /// promouvant en une classe à une seule méthode.
 pub const VERSION_JVM: u32 = 2;
+/// Version du format « snapshot AST complet » (RVM complète). Ce format
+/// sérialise le programme Rose ENTIER ( toutes les fonctions + le principal )
+/// sous forme d'opcodes tagués ; c'est un snapshot du RIR/AST, pas du bytecode
+/// Java, et il n'a aucune dépendance à une JVM. Exécuté par la RVM à travers
+/// la mécanique Rose (slots + pile d'appels), il couvre 100 % du langage.
+pub const VERSION_AST: u32 = 3;
 
 const OP_AFFECT: u8 = 0x01;
 const OP_AFFICHER_ABSTRAIT: u8 = 0x02;
@@ -195,6 +201,12 @@ pub enum Erreur {
     TypeDescripteurInconnu(u8),
     /// Incohérence de structure de méthode (slots / noms / paramètres).
     StructureMethodeInvalide(String),
+
+    // ── Format v3 (snapshot AST complet) ───────────────────────────────────
+    /// Snapshot AST mal formé (tag inconnu, booléen invalide, compteur hostile).
+    SnapshotInvalide(&'static str),
+    /// Erreur de runtime Rose (`erreur_runtime`) interceptée proprement.
+    ExecutionRose(String),
 }
 
 impl fmt::Display for Erreur {
@@ -254,6 +266,9 @@ impl fmt::Display for Erreur {
                 write!(f, "RVM v2 : tag de type de descripteur inconnu 0x{:02X}", t),
             Erreur::StructureMethodeInvalide(m) =>
                 write!(f, "RVM v2 : structure de méthode invalide : {}", m),
+            Erreur::SnapshotInvalide(m) =>
+                write!(f, "RVM v3 : snapshot AST invalide : {}", m),
+            Erreur::ExecutionRose(m) => write!(f, "{}", m),
         }
     }
 }
@@ -2309,6 +2324,767 @@ pub fn promouvoir_corps_avec_parametres(corps: &CorpsRir, nom_methode: &str,
     Ok(classe)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTIE 3 — SNAPSHOT AST COMPLET (ROSEBC v3) : UNE RVM COMPLÈTE
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠⚠⚠ POURQUOI CETTE COUCHE. Le snapshot v1 (PARTIE 1) ne capture que le
+// corps principal ABAISSE en RIR : les appels de fonction, les chaînes, les
+// tables, les rationnels, les E/S et les expressions hors sous-ensemble y
+// sont marqués `OP_REFUSE` (0x80) et rejetés au chargement. La classe v2
+// (PARTIE 2) sait exécuter des METHODES avec une vraie pile d'appels — mais
+// son compilateur n'accepte, lui aussi, que les expressions abstraites.
+//
+// Le format v3 comble le vide SANS inventer une dépendance et SANS réécrire
+// le langage : il sérialise le **programme Rose entier** (toutes les
+// signatures + le principal) en une suite d'opcodes tagués. C'est un
+// SNAPSHOT DU RIR/AST — le même arbre que l'analyseur a produit — avec :
+//
+//   * un conteneur versionné (magic `ROSEBC`, version u32 = 3) ;
+//   * des longueurs u32 préfixées (les textes exacts, les big signs, etc.) ;
+//   * un vérificateur qui ne panique jamais sur un fichier hostile ;
+//   * une exécution par la RVM à travers **la mécanique Rose** : `Interp`,
+//     ses slots et sa pile de trames. C'est exactement le mécanisme de
+//     l'interpréteur, demandé par la mission — et c'est ce qui garantit une
+//     parité TOTALE (appels, récursion, chaînes, tables, rationnels, E/S,
+//     exceptions, hasard…) au lieu d'une parité de sous-ensemble.
+//
+// ⚠ CE N'EST PAS UNE JVM JAVA : aucun bytecode Java, aucun démarrage de JVM,
+// aucune classe `.class`, aucun JVMS §4.10. Les « opcodes » ci-dessous sont
+// les nôtres, et le moteur d'exécution est celui de Rose. On a seulement
+// emprunté à Java l'IDEE d'un format de fichier exécutable indépendant.
+//
+// ── Format v3 (little-endian) ─────────────────────────────────────────────
+//
+//   magic[6] | version u32 (= 3)
+//   n_imports u32 | n_imports × chaine
+//   n_signatures u32 | n_signatures × signature
+//       signature = nom chaine | n_params u32 | n × (nom chaine, type Ty)
+//                   | retour Ty | a_retour u8 | present_corps u8
+//                   | [n_instr u32 + n_instr × instruction]
+//                   | dll chaine | dll_son chaine | symbole chaine | ligne u32
+//   n_instructions u32 | n_instructions × instruction
+//
+//   type Ty = tag TyKind u8 | tag elt TyKind u8
+//   expression = tag u8 | charges (voir `ecrire_expr3`)
+//   instruction = tag u8 | charges (voir `ecrire_instr3`)
+//   chaine = u32 len | UTF-8
+//
+// ⚠ Le champ `Signature::rir` n'est PAS sérialisé : c'est un cache de
+// l'interpréteur (avec des pointeurs/caches de slots), reconstruit à la
+// demande. Le snapshot contient les CORPS SOURCE, qui sont la vérité.
+
+// ── Tags du snapshot v3 ────────────────────────────────────────────────────
+
+// TyKind
+const TK3_VIDE: u8 = 0;
+const TK3_ENTIER: u8 = 1;
+const TK3_RATIONNEL: u8 = 2;
+const TK3_FLOTTANT: u8 = 3;
+const TK3_BOOLEEN: u8 = 4;
+const TK3_CHAINE: u8 = 5;
+const TK3_LISTE: u8 = 6;
+const TK3_TABLE: u8 = 7;
+const TK3_TAMPON: u8 = 8;
+const TK3_TABLEAU: u8 = 9;
+const TK3_COMPLEXE: u8 = 10;
+const TK3_IRRATIONNEL: u8 = 11;
+const TK3_DYN: u8 = 12;
+
+// Expr
+const EX3_LITTERAL: u8 = 0x01;
+const EX3_LITCOMPLEXE: u8 = 0x02;
+const EX3_CHAINE: u8 = 0x03;
+const EX3_BOOLEEN: u8 = 0x04;
+const EX3_VAR: u8 = 0x05;
+const EX3_APPEL: u8 = 0x06; // Appel de fonction OU de primitive std (nom + module)
+const EX3_BINAIRE: u8 = 0x07;
+const EX3_UNAIRE: u8 = 0x08;
+const EX3_FACTORIELLE: u8 = 0x09;
+const EX3_MULTIFACTORIELLE: u8 = 0x0A;
+const EX3_SOUSFACTORIELLE: u8 = 0x0B;
+const EX3_PRIMORIELLE: u8 = 0x0C;
+const EX3_TERMINAL: u8 = 0x0D;
+const EX3_SUPERFACTORIELLE: u8 = 0x0E;
+const EX3_INDEX: u8 = 0x0F;
+const EX3_LISTE: u8 = 0x10; // table/liste littérale
+const EX3_LISTEVIDETYPEE: u8 = 0x11;
+const EX3_TABLE: u8 = 0x12; // table associative (clé → valeur)
+
+// Instr
+const IN3_AFFICHER: u8 = 0x01; // E/S sortie
+const IN3_LIRE: u8 = 0x02; // E/S entrée
+const IN3_AFFECT: u8 = 0x03;
+const IN3_AFFECTINDEX: u8 = 0x04;
+const IN3_SI: u8 = 0x05;
+const IN3_TANTQUE: u8 = 0x06;
+const IN3_POUR: u8 = 0x07;
+const IN3_RETOUR: u8 = 0x08;
+const IN3_EXPRSTMT: u8 = 0x09;
+const IN3_BLOC: u8 = 0x0A;
+const IN3_SPAWN: u8 = 0x0B;
+const IN3_ESSAYER: u8 = 0x0C;
+const IN3_LEVER: u8 = 0x0D;
+
+/// Profondeur maximale d'imbrication des INSTRUCTIONS du snapshot (anti-DoS).
+/// les expressions utilisent `PROFONDEUR_MAX` (déjà défini, 64).
+const PROFONDEUR_INSTR_MAX: usize = 256;
+
+fn pusher_bool(dst: &mut Vec<u8>, b: bool) { dst.push(if b { 1 } else { 0 }); }
+fn lire_bool(l: &mut Lecteur<'_>) -> Result<bool, Erreur> {
+    match l.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(Erreur::SnapshotInvalide("booléen autre que 0/1")),
+    }
+}
+
+fn code_tykind(t: TyKind) -> u8 {
+    match t {
+        TyKind::Vide => TK3_VIDE, TyKind::Entier => TK3_ENTIER,
+        TyKind::Rationnel => TK3_RATIONNEL, TyKind::Flottant => TK3_FLOTTANT,
+        TyKind::Booleen => TK3_BOOLEEN, TyKind::Chaine => TK3_CHAINE,
+        TyKind::Liste => TK3_LISTE, TyKind::Table => TK3_TABLE,
+        TyKind::Tampon => TK3_TAMPON, TyKind::Tableau => TK3_TABLEAU,
+        TyKind::Complexe => TK3_COMPLEXE, TyKind::Irrationnel => TK3_IRRATIONNEL,
+        TyKind::Dyn => TK3_DYN,
+    }
+}
+fn lire_tykind(l: &mut Lecteur<'_>) -> Result<TyKind, Erreur> {
+    Ok(match l.u8()? {
+        TK3_VIDE => TyKind::Vide, TK3_ENTIER => TyKind::Entier,
+        TK3_RATIONNEL => TyKind::Rationnel, TK3_FLOTTANT => TyKind::Flottant,
+        TK3_BOOLEEN => TyKind::Booleen, TK3_CHAINE => TyKind::Chaine,
+        TK3_LISTE => TyKind::Liste, TK3_TABLE => TyKind::Table,
+        TK3_TAMPON => TyKind::Tampon, TK3_TABLEAU => TyKind::Tableau,
+        TK3_COMPLEXE => TyKind::Complexe, TK3_IRRATIONNEL => TyKind::Irrationnel,
+        TK3_DYN => TyKind::Dyn,
+        _ => return Err(Erreur::SnapshotInvalide("tag de type inconnu")),
+    })
+}
+fn ecrire_ty(dst: &mut Vec<u8>, t: &Ty) {
+    dst.push(code_tykind(t.n));
+    dst.push(code_tykind(t.elt));
+}
+fn lire_ty(l: &mut Lecteur<'_>) -> Result<Ty, Erreur> {
+    Ok(Ty { n: lire_tykind(l)?, elt: lire_tykind(l)? })
+}
+
+fn ecrire_expr3(dst: &mut Vec<u8>, e: &Expr) {
+    match e {
+        Expr::Litteral { texte, flott, rationnel, neg, ty, ligne } => {
+            dst.push(EX3_LITTERAL);
+            pusher_chaine(dst, texte);
+            pusher_bool(dst, *flott); pusher_bool(dst, *rationnel); pusher_bool(dst, *neg);
+            dst.push(code_tykind(*ty)); // Expr::Litteral porte un TyKind (pas un Ty)
+            pusher_u32(dst, *ligne as u32);
+        }
+        Expr::LitComplexe { re, im, ligne } => {
+            dst.push(EX3_LITCOMPLEXE);
+            dst.extend_from_slice(&re.to_le_bytes());
+            dst.extend_from_slice(&im.to_le_bytes());
+            pusher_u32(dst, *ligne as u32);
+        }
+        Expr::ChaineLit(s, ligne) => {
+            dst.push(EX3_CHAINE); pusher_chaine(dst, s); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::BooleenLit(b, ligne) => {
+            dst.push(EX3_BOOLEEN); pusher_bool(dst, *b); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Var(n, ligne) => {
+            dst.push(EX3_VAR); pusher_chaine(dst, n); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Appel { nom, module, args, ligne } => {
+            dst.push(EX3_APPEL);
+            pusher_chaine(dst, nom); pusher_chaine(dst, module);
+            pusher_u32(dst, args.len() as u32);
+            for a in args { ecrire_expr3(dst, a); }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Binaire { op, a, b, ligne } => {
+            dst.push(EX3_BINAIRE); pusher_chaine(dst, op);
+            ecrire_expr3(dst, a); ecrire_expr3(dst, b);
+            pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Unaire { op, a, ligne } => {
+            dst.push(EX3_UNAIRE); pusher_chaine(dst, op);
+            ecrire_expr3(dst, a); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Factorielle(a, ligne) => {
+            dst.push(EX3_FACTORIELLE); ecrire_expr3(dst, a); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::MultiFactorielle(a, k, ligne) => {
+            dst.push(EX3_MULTIFACTORIELLE); ecrire_expr3(dst, a);
+            dst.push(*k); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::SousFactorielle(a, ligne) => {
+            dst.push(EX3_SOUSFACTORIELLE); ecrire_expr3(dst, a); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Primorielle(a, ligne) => {
+            dst.push(EX3_PRIMORIELLE); ecrire_expr3(dst, a); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Terminal(a, ligne) => {
+            dst.push(EX3_TERMINAL); ecrire_expr3(dst, a); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::SuperFactorielle(a, ligne) => {
+            dst.push(EX3_SUPERFACTORIELLE); ecrire_expr3(dst, a); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::Index { a, b, ligne } => {
+            dst.push(EX3_INDEX); ecrire_expr3(dst, a); ecrire_expr3(dst, b);
+            pusher_u32(dst, *ligne as u32);
+        }
+        Expr::ListeLit(v, ligne) => {
+            dst.push(EX3_LISTE); pusher_u32(dst, v.len() as u32);
+            for x in v { ecrire_expr3(dst, x); }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Expr::ListeVideTypee(t, ligne) => {
+            dst.push(EX3_LISTEVIDETYPEE); dst.push(code_tykind(*t)); pusher_u32(dst, *ligne as u32);
+        }
+        Expr::TableLit(v, ligne) => {
+            dst.push(EX3_TABLE); pusher_u32(dst, v.len() as u32);
+            for (k, x) in v { pusher_chaine(dst, k); ecrire_expr3(dst, x); }
+            pusher_u32(dst, *ligne as u32);
+        }
+    }
+}
+
+fn lire_expr3(l: &mut Lecteur<'_>, prof: usize) -> Result<Expr, Erreur> {
+    if prof > PROFONDEUR_MAX { return Err(Erreur::ExpressionTropProfonde); }
+    let tag = l.u8()?;
+    Ok(match tag {
+        EX3_LITTERAL => {
+            let texte = l.chaine()?;
+            let flott = lire_bool(l)?;
+            let rationnel = lire_bool(l)?;
+            let neg = lire_bool(l)?;
+            let ty = lire_tykind(l)?;
+            let ligne = l.u32()? as usize;
+            Expr::Litteral { texte, flott, rationnel, neg, ty, ligne }
+        }
+        EX3_LITCOMPLEXE => {
+            let b = l.prendre(16)?;
+            let re = f64::from_le_bytes([b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7]]);
+            let im = f64::from_le_bytes([b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]]);
+            let ligne = l.u32()? as usize;
+            Expr::LitComplexe { re, im, ligne }
+        }
+        EX3_CHAINE => { let s = l.chaine()?; let ligne = l.u32()? as usize; Expr::ChaineLit(s, ligne) }
+        EX3_BOOLEEN => { let b = lire_bool(l)?; let ligne = l.u32()? as usize; Expr::BooleenLit(b, ligne) }
+        EX3_VAR => { let n = l.chaine()?; let ligne = l.u32()? as usize; Expr::Var(n, ligne) }
+        EX3_APPEL => {
+            let nom = l.chaine()?;
+            let module = l.chaine()?;
+            let n = l.u32()? as usize;
+            if n > l.reste() { return Err(Erreur::SnapshotInvalide("trop d'arguments d'appel")); }
+            let mut args = Vec::with_capacity(n);
+            for _ in 0..n { args.push(lire_expr3(l, prof + 1)?); }
+            let ligne = l.u32()? as usize;
+            Expr::Appel { nom, module, args, ligne }
+        }
+        EX3_BINAIRE => {
+            let op = l.chaine()?;
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let b = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::Binaire { op, a, b, ligne }
+        }
+        EX3_UNAIRE => {
+            let op = l.chaine()?;
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::Unaire { op, a, ligne }
+        }
+        EX3_FACTORIELLE => {
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::Factorielle(a, ligne)
+        }
+        EX3_MULTIFACTORIELLE => {
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let k = l.u8()?;
+            let ligne = l.u32()? as usize;
+            Expr::MultiFactorielle(a, k, ligne)
+        }
+        EX3_SOUSFACTORIELLE => {
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::SousFactorielle(a, ligne)
+        }
+        EX3_PRIMORIELLE => {
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::Primorielle(a, ligne)
+        }
+        EX3_TERMINAL => {
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::Terminal(a, ligne)
+        }
+        EX3_SUPERFACTORIELLE => {
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::SuperFactorielle(a, ligne)
+        }
+        EX3_INDEX => {
+            let a = Box::new(lire_expr3(l, prof + 1)?);
+            let b = Box::new(lire_expr3(l, prof + 1)?);
+            let ligne = l.u32()? as usize;
+            Expr::Index { a, b, ligne }
+        }
+        EX3_LISTE => {
+            let n = l.u32()? as usize;
+            if n > l.reste() { return Err(Erreur::SnapshotInvalide("trop d'éléments de liste")); }
+            let mut v = Vec::with_capacity(n);
+            for _ in 0..n { v.push(lire_expr3(l, prof + 1)?); }
+            let ligne = l.u32()? as usize;
+            Expr::ListeLit(v, ligne)
+        }
+        EX3_LISTEVIDETYPEE => {
+            let t = lire_tykind(l)?;
+            let ligne = l.u32()? as usize;
+            Expr::ListeVideTypee(t, ligne)
+        }
+        EX3_TABLE => {
+            let n = l.u32()? as usize;
+            if n > l.reste() { return Err(Erreur::SnapshotInvalide("trop d'entrées de table")); }
+            let mut v = Vec::with_capacity(n);
+            for _ in 0..n {
+                let k = l.chaine()?;
+                let x = lire_expr3(l, prof + 1)?;
+                v.push((k, x));
+            }
+            let ligne = l.u32()? as usize;
+            Expr::TableLit(v, ligne)
+        }
+        _ => return Err(Erreur::SnapshotInvalide("tag d'expression inconnu")),
+    })
+}
+
+fn ecrire_instr3(dst: &mut Vec<u8>, i: &Instr) {
+    match i {
+        Instr::Rir(_) => {
+            // Ne JAMAIS sérialiser un cache RIR : c'est un dérivé du corps
+            // source, reconstruit par l'interpréteur. Un snapshot incomplet
+            // serait une erreur de notre compilateur, on le signale.
+            dst.push(0xFF);
+        }
+        Instr::Afficher(es, ligne) => {
+            dst.push(IN3_AFFICHER); pusher_u32(dst, es.len() as u32);
+            for e in es { ecrire_expr3(dst, e); }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::Lire { nom, ty, ligne } => {
+            dst.push(IN3_LIRE); pusher_chaine(dst, nom); dst.push(code_tykind(*ty));
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::Affect { nom, e, ligne } => {
+            dst.push(IN3_AFFECT); pusher_chaine(dst, nom); ecrire_expr3(dst, e);
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::AffectIndex { nom, index, valeur, ligne } => {
+            dst.push(IN3_AFFECTINDEX); pusher_chaine(dst, nom);
+            ecrire_expr3(dst, index); ecrire_expr3(dst, valeur);
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::Si { test, alors, sinon, ligne } => {
+            dst.push(IN3_SI); ecrire_expr3(dst, test);
+            pusher_u32(dst, alors.len() as u32);
+            for x in alors { ecrire_instr3(dst, x); }
+            pusher_bool(dst, sinon.is_some());
+            if let Some(s) = sinon {
+                pusher_u32(dst, s.len() as u32);
+                for x in s { ecrire_instr3(dst, x); }
+            }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::TantQue { test, corps, ligne } => {
+            dst.push(IN3_TANTQUE); ecrire_expr3(dst, test);
+            pusher_u32(dst, corps.len() as u32);
+            for x in corps { ecrire_instr3(dst, x); }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::Pour { nom, debut, fin, corps, ligne } => {
+            dst.push(IN3_POUR); pusher_chaine(dst, nom);
+            ecrire_expr3(dst, debut); ecrire_expr3(dst, fin);
+            pusher_u32(dst, corps.len() as u32);
+            for x in corps { ecrire_instr3(dst, x); }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::Retour(e, ligne) => {
+            dst.push(IN3_RETOUR); pusher_bool(dst, e.is_some());
+            if let Some(x) = e { ecrire_expr3(dst, x); }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::ExprStmt(e) => { dst.push(IN3_EXPRSTMT); ecrire_expr3(dst, e); }
+        Instr::Bloc(b) => {
+            dst.push(IN3_BLOC); pusher_u32(dst, b.len() as u32);
+            for x in b { ecrire_instr3(dst, x); }
+        }
+        Instr::Spawn(b, ligne) => {
+            dst.push(IN3_SPAWN); pusher_u32(dst, b.len() as u32);
+            for x in b { ecrire_instr3(dst, x); }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::Essayer { corps, attraper, finalment, ligne } => {
+            dst.push(IN3_ESSAYER);
+            pusher_u32(dst, corps.len() as u32);
+            for x in corps { ecrire_instr3(dst, x); }
+            pusher_bool(dst, attraper.is_some());
+            if let Some((nom, b)) = attraper {
+                pusher_chaine(dst, nom);
+                pusher_u32(dst, b.len() as u32);
+                for x in b { ecrire_instr3(dst, x); }
+            }
+            pusher_bool(dst, finalment.is_some());
+            if let Some(b) = finalment {
+                pusher_u32(dst, b.len() as u32);
+                for x in b { ecrire_instr3(dst, x); }
+            }
+            pusher_u32(dst, *ligne as u32);
+        }
+        Instr::Lever(e, ligne) => {
+            dst.push(IN3_LEVER); ecrire_expr3(dst, e); pusher_u32(dst, *ligne as u32);
+        }
+    }
+}
+
+fn lire_instrs3(l: &mut Lecteur<'_>, prof: usize) -> Result<Vec<Instr>, Erreur> {
+    if prof > PROFONDEUR_INSTR_MAX { return Err(Erreur::ExpressionTropProfonde); }
+    let n = l.u32()? as usize;
+    if n > l.reste() { return Err(Erreur::SnapshotInvalide("trop d'instructions")); }
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n { out.push(lire_instr3(l, prof)?); }
+    Ok(out)
+}
+
+fn lire_instr3(l: &mut Lecteur<'_>, prof: usize) -> Result<Instr, Erreur> {
+    if prof > PROFONDEUR_INSTR_MAX { return Err(Erreur::ExpressionTropProfonde); }
+    let tag = l.u8()?;
+    Ok(match tag {
+        IN3_AFFICHER => {
+            let n = l.u32()? as usize;
+            if n > l.reste() { return Err(Erreur::SnapshotInvalide("trop d'expressions affichées")); }
+            let mut es = Vec::with_capacity(n);
+            for _ in 0..n { es.push(lire_expr3(l, 0)?); }
+            let ligne = l.u32()? as usize;
+            Instr::Afficher(es, ligne)
+        }
+        IN3_LIRE => {
+            let nom = l.chaine()?; let ty = lire_tykind(l)?; let ligne = l.u32()? as usize;
+            Instr::Lire { nom, ty, ligne }
+        }
+        IN3_AFFECT => {
+            let nom = l.chaine()?; let e = lire_expr3(l, 0)?; let ligne = l.u32()? as usize;
+            Instr::Affect { nom, e, ligne }
+        }
+        IN3_AFFECTINDEX => {
+            let nom = l.chaine()?;
+            let index = lire_expr3(l, 0)?;
+            let valeur = lire_expr3(l, 0)?;
+            let ligne = l.u32()? as usize;
+            Instr::AffectIndex { nom, index, valeur, ligne }
+        }
+        IN3_SI => {
+            let test = lire_expr3(l, 0)?;
+            let alors = lire_instrs3(l, prof + 1)?;
+            let a_sinon = lire_bool(l)?;
+            let sinon = if a_sinon { Some(lire_instrs3(l, prof + 1)?) } else { None };
+            let ligne = l.u32()? as usize;
+            Instr::Si { test, alors, sinon, ligne }
+        }
+        IN3_TANTQUE => {
+            let test = lire_expr3(l, 0)?;
+            let corps = lire_instrs3(l, prof + 1)?;
+            let ligne = l.u32()? as usize;
+            Instr::TantQue { test, corps, ligne }
+        }
+        IN3_POUR => {
+            let nom = l.chaine()?;
+            let debut = lire_expr3(l, 0)?;
+            let fin = lire_expr3(l, 0)?;
+            let corps = lire_instrs3(l, prof + 1)?;
+            let ligne = l.u32()? as usize;
+            Instr::Pour { nom, debut, fin, corps, ligne }
+        }
+        IN3_RETOUR => {
+            let present = lire_bool(l)?;
+            let e = if present { Some(lire_expr3(l, 0)?) } else { None };
+            let ligne = l.u32()? as usize;
+            Instr::Retour(e, ligne)
+        }
+        IN3_EXPRSTMT => Instr::ExprStmt(lire_expr3(l, 0)?),
+        IN3_BLOC => Instr::Bloc(lire_instrs3(l, prof + 1)?),
+        IN3_SPAWN => {
+            let b = lire_instrs3(l, prof + 1)?;
+            let ligne = l.u32()? as usize;
+            Instr::Spawn(b, ligne)
+        }
+        IN3_ESSAYER => {
+            let corps = lire_instrs3(l, prof + 1)?;
+            let a_attraper = lire_bool(l)?;
+            let attraper = if a_attraper {
+                let nom = l.chaine()?;
+                let b = lire_instrs3(l, prof + 1)?;
+                Some((nom, b))
+            } else { None };
+            let a_finalment = lire_bool(l)?;
+            let finalment = if a_finalment { Some(lire_instrs3(l, prof + 1)?) } else { None };
+            let ligne = l.u32()? as usize;
+            Instr::Essayer { corps, attraper, finalment, ligne }
+        }
+        IN3_LEVER => {
+            let e = lire_expr3(l, 0)?;
+            let ligne = l.u32()? as usize;
+            Instr::Lever(e, ligne)
+        }
+        0xFF => return Err(Erreur::SnapshotInvalide(
+            "un corps RIR (cache) ne doit jamais être sérialisé")),
+        _ => return Err(Erreur::SnapshotInvalide("tag d'instruction inconnu")),
+    })
+}
+
+fn ecrire_signature3(dst: &mut Vec<u8>, s: &Signature) {
+    pusher_chaine(dst, &s.nom);
+    pusher_u32(dst, s.params.len() as u32);
+    for (n, t) in &s.params { pusher_chaine(dst, n); ecrire_ty(dst, t); }
+    ecrire_ty(dst, &s.retour);
+    pusher_bool(dst, s.a_retour);
+    pusher_bool(dst, s.corps.is_some());
+    if let Some(c) = &s.corps {
+        pusher_u32(dst, c.len() as u32);
+        for i in c { ecrire_instr3(dst, i); }
+    }
+    pusher_chaine(dst, &s.dll);
+    pusher_chaine(dst, &s.dll_son);
+    pusher_chaine(dst, &s.symbole);
+    pusher_u32(dst, s.ligne as u32);
+}
+
+fn lire_signature3(l: &mut Lecteur<'_>) -> Result<Signature, Erreur> {
+    let nom = l.chaine()?;
+    let n = l.u32()? as usize;
+    if n > l.reste() { return Err(Erreur::SnapshotInvalide("trop de paramètres")); }
+    let mut params = Vec::with_capacity(n);
+    for _ in 0..n { params.push((l.chaine()?, lire_ty(l)?)); }
+    let retour = lire_ty(l)?;
+    let a_retour = lire_bool(l)?;
+    let present = lire_bool(l)?;
+    let corps = if present { Some(lire_instrs3(l, 0)?) } else { None };
+    let dll = l.chaine()?;
+    let dll_son = l.chaine()?;
+    let symbole = l.chaine()?;
+    let ligne = l.u32()? as usize;
+    Ok(Signature {
+        nom, params, retour, a_retour, corps,
+        // ⚠ Le cache RIR n'est PAS sérialisé : reconstruit par l'interpréteur.
+        rir: None, dll, dll_son, symbole, ligne,
+    })
+}
+
+/// Écrit un snapshot AST complet (`ROSEBC` v3) : TOUTES les fonctions et le
+/// programme principal. Aucune opération n'est refusée — contrairement aux
+/// formats v1/v2, `rose bc` ne peut plus produire un fichier inutilisable.
+pub fn ecrire_snapshot(prog: &Programme) -> Vec<u8> {
+    let mut out = Vec::with_capacity(256 + prog.instructions.len() * 16);
+    out.extend_from_slice(MAGIC);
+    pusher_u32(&mut out, VERSION_AST);
+
+    pusher_u32(&mut out, prog.imports.len() as u32);
+    for i in &prog.imports { pusher_chaine(&mut out, i); }
+
+    // `ordre` fait autorité : il donne l'ordre de déclaration des signatures.
+    // Les signatures absentes de `ordre` (ne devrait pas arriver) sont ajoutées
+    // en fin pour ne rien perdre.
+    let mut noms: Vec<String> = prog.ordre.clone();
+    for nom in prog.signatures.keys() {
+        if !noms.contains(nom) { noms.push(nom.clone()); }
+    }
+    pusher_u32(&mut out, noms.len() as u32);
+    for nom in &noms {
+        if let Some(s) = prog.signatures.get(nom) { ecrire_signature3(&mut out, s); }
+    }
+
+    pusher_u32(&mut out, prog.instructions.len() as u32);
+    for i in &prog.instructions { ecrire_instr3(&mut out, i); }
+    out
+}
+
+/// Lit et **vérifie** un snapshot AST v3. Tous les contrôles sont propres
+/// (aucune panique sur fichier hostile) : magic, version, troncature,
+/// compteurs, UTF-8, tags, booléens et profondeurs d'imbrication.
+pub fn lire_snapshot(octets: &[u8]) -> Result<Programme, Erreur> {
+    let mut l = Lecteur { octets, pos: 0 };
+    if l.prendre(6)? != MAGIC { return Err(Erreur::MagicInvalide); }
+    let version = l.u32()?;
+    if version != VERSION_AST { return Err(Erreur::VersionInsupportee(version)); }
+
+    let n_imp = l.u32()? as usize;
+    if n_imp > l.reste() { return Err(Erreur::SnapshotInvalide("trop d'imports")); }
+    let mut imports = Vec::with_capacity(n_imp);
+    for _ in 0..n_imp { imports.push(l.chaine()?); }
+
+    let n_sig = l.u32()? as usize;
+    if n_sig > l.reste() { return Err(Erreur::SnapshotInvalide("trop de signatures")); }
+    let mut ordre = Vec::with_capacity(n_sig);
+    let mut signatures = HashMap::with_capacity(n_sig);
+    for _ in 0..n_sig {
+        let s = lire_signature3(&mut l)?;
+        ordre.push(s.nom.clone());
+        signatures.insert(s.nom.clone(), s);
+    }
+
+    let n_ins = l.u32()? as usize;
+    if n_ins > l.reste() { return Err(Erreur::SnapshotInvalide("trop d'instructions")); }
+    let mut instructions = Vec::with_capacity(n_ins);
+    for _ in 0..n_ins { instructions.push(lire_instr3(&mut l, 0)?); }
+
+    if l.pos != octets.len() { return Err(Erreur::OctetsEnTrop(octets.len() - l.pos)); }
+    Ok(Programme { signatures, ordre, instructions, imports })
+}
+
+/// Exécute un snapshot v3 dans la RVM : reconstruit le programme puis le fait
+/// tourner par la mécanique Rose (slots + pile d'appels de l'interpréteur).
+/// Rend TOUTE la sortie du programme (exactement ce que `rose run` écrirait).
+///
+/// ⚠ Aucun fichier, aucun réseau : les seules E/S sont celles du langage
+/// (Afficher / Lire), capturées dans le tampon de sortie de `run`.
+pub fn executer_snapshot(octets: &[u8], arguments: &[String]) -> Result<String, Erreur> {
+    let mut prog = lire_snapshot(octets)?;
+
+    // ⚠⚠ MIROIR DU PIPELINE DE `executer_source_analyse` (interp.rs).
+    // Sans cette étape, le corps principal serait interprété en AST pur et
+    // afficherait les formules LaTeX des boucles `pour`, alors que `rose run`
+    // les exécute en RIR (sans formule). On abaisse donc les fonctions ET le
+    // principal exactement comme l'interpréteur le fait, pour une parité
+    // OCTET POUR OCTET avec `rose run`. L'AST source reste la vérité du
+    // snapshot : le RIR n'est qu'un cache reconstruit ici, jamais sérialisé.
+    //
+    // ⚠ EXCEPTION : le RIR ne sait pas résoudre les constantes irrationnelles
+    // `pi`/`phi`/`e` en variable (mesuré : `>> pi` échoue en RIR alors que
+    // l'AST pur les connaît). Un programme qui les utilise tourne donc en AST
+    // pur, plus complet — c'est la règle « exécuter TOUT ce que Rose sait
+    // faire » qui prime sur l'égalité de formatage des formules.
+    fn expr_irrationnel(e: &Expr) -> bool {
+        match e {
+            Expr::Var(n, _) => matches!(n.as_str(), "pi" | "phi" | "e"),
+            Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } =>
+                expr_irrationnel(a) || expr_irrationnel(b),
+            Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+            | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+            | Expr::SuperFactorielle(a, _) => expr_irrationnel(a),
+            Expr::Appel { args, .. } | Expr::ListeLit(args, _) => args.iter().any(expr_irrationnel),
+            Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_irrationnel(x)),
+            _ => false,
+        }
+    }
+    fn instrs_irrationnel(b: &[Instr]) -> bool {
+        b.iter().any(|i| match i {
+            Instr::Afficher(es, _) => es.iter().any(expr_irrationnel),
+            Instr::Affect { e, .. } | Instr::ExprStmt(e) | Instr::Lever(e, _) => expr_irrationnel(e),
+            Instr::AffectIndex { index, valeur, .. } =>
+                expr_irrationnel(index) || expr_irrationnel(valeur),
+            Instr::Si { test, alors, sinon, .. } => expr_irrationnel(test)
+                || instrs_irrationnel(alors)
+                || sinon.as_ref().map_or(false, |s| instrs_irrationnel(s)),
+            Instr::TantQue { test, corps, .. } => expr_irrationnel(test) || instrs_irrationnel(corps),
+            Instr::Pour { debut, fin, corps, .. } => expr_irrationnel(debut)
+                || expr_irrationnel(fin) || instrs_irrationnel(corps),
+            Instr::Retour(Some(e), _) => expr_irrationnel(e),
+            Instr::Bloc(b) | Instr::Spawn(b, _) => instrs_irrationnel(b),
+            Instr::Essayer { corps, attraper, finalment, .. } => instrs_irrationnel(corps)
+                || attraper.as_ref().map_or(false, |(_, x)| instrs_irrationnel(x))
+                || finalment.as_ref().map_or(false, |x| instrs_irrationnel(x)),
+            _ => false,
+        })
+    }
+    let utilise_irrationnel = instrs_irrationnel(&prog.instructions)
+        || prog.ordre.iter().any(|n| prog.signatures.get(n)
+            .and_then(|s| s.corps.as_deref()).map_or(false, instrs_irrationnel));
+    if !utilise_irrationnel {
+        let candidats: Vec<String> = prog.ordre.iter()
+            .filter(|n| prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
+            .cloned()
+            .collect();
+        crate::rir::declarer_rir(&candidats);
+        for nom in prog.ordre.clone() {
+            if let Some(sig) = prog.signatures.get(&nom) {
+                let Some(corps) = sig.corps.as_ref() else { continue };
+                let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
+                if let Some(rir) = crate::rir::abaisser(corps, &params, &[]) {
+                    prog.signatures.get_mut(&nom).unwrap().rir = Some(rir);
+                }
+            }
+        }
+        // Une boucle euclidienne reconnue reste en AST (spécialisation native),
+        // comme dans l'interpréteur. ⚠ Miroir de `interp::reconnait_euclide`
+        // (privé) : on reproduit exactement son motif pour les mêmes valeurs.
+        fn est_euclide(test: &Expr, corps: &[Instr]) -> bool {
+            let cv = match test {
+                Expr::Binaire { op, a, b, .. } if op == "!=" => match (&**a, &**b) {
+                    (Expr::Var(v, _), Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. })
+                        if texte == "0" => v.clone(),
+                    (Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. }, Expr::Var(v, _))
+                        if texte == "0" => v.clone(),
+                    _ => return false,
+                },
+                _ => return false,
+            };
+            if corps.len() != 3 { return false; }
+            matches!(
+                (&corps[0], &corps[1], &corps[2]),
+                (
+                    Instr::Affect { nom: r, e: Expr::Binaire { op, a, b, .. }, .. },
+                    Instr::Affect { nom: x, e: Expr::Var(vy, ..), .. },
+                    Instr::Affect { nom: y, e: Expr::Var(vr, ..), .. },
+                ) if op == "%"
+                    && matches!(&**a, Expr::Var(v, ..) if v == x)
+                    && matches!(&**b, Expr::Var(v, ..) if v == vy)
+                    && vr == r && vy == &cv && y == &cv
+            )
+        }
+        let pas_euclide = !prog.instructions.iter().any(|i| match i {
+            Instr::TantQue { test, corps, .. } => est_euclide(test, corps),
+            _ => false,
+        });
+        if pas_euclide {
+            if let Some(rir) = crate::rir::abaisser_principal(&prog.instructions) {
+                prog.instructions = vec![Instr::Rir(rir)];
+            }
+        }
+    }
+
+    crate::run::set_sink(true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut interp = crate::interp::Interp::nouveau(prog)
+            .avec_arguments(arguments.to_vec());
+        interp.executer_principal();
+    }));
+    let sortie = crate::run::take_sink().unwrap_or_default();
+    match result {
+        Ok(()) => Ok(sortie),
+        Err(payload) => {
+            // `erreur_runtime` panique avec `ROSE_ERR:<message>` : on rend le
+            // VRAI message Rose au lieu d'un « erreur interne » opaque.
+            let brut = if let Some(s) = payload.downcast_ref::<String>() { s.clone() }
+                       else if let Some(s) = payload.downcast_ref::<&str>() { (*s).to_string() }
+                       else { String::new() };
+            let message = match brut.strip_prefix("ROSE_ERR:") {
+                Some(m) if !m.is_empty() => format!("Rose : erreur — {}", m),
+                _ => "Rose : erreur — erreur interne d'exécution".to_string(),
+            };
+            Err(Erreur::ExecutionRose(message))
+        }
+    }
+}
+
+/// Discriminateur CLI : version d'un `.rosebc`, sans rien exécuter ni décoder.
+pub fn version_fichier(octets: &[u8]) -> Result<u32, Erreur> {
+    if octets.len() < 10 { return Err(Erreur::Tronque { attendu: 10, present: octets.len() }); }
+    if &octets[..6] != MAGIC { return Err(Erreur::MagicInvalide); }
+    Ok(u32::from_le_bytes([octets[6], octets[7], octets[8], octets[9]]))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -2992,5 +3768,115 @@ mod tests {
         let sortie = hote.sortie.clone();
         assert_eq!(sortie, "salut JVM");
         println!("[rvm] sortie={:?} bigint={}", sortie, grand);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Snapshot AST complet (v3) — la RVM exécute TOUT le langage.
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// Compare la sortie de la RVM (snapshot v3) à celle de l'interpréteur,
+    /// sur la MÊME source, sous le verrou du tampon de sortie global.
+    fn parite_snapshot(src: &str) -> (String, String) {
+        let _g = sink_guard();
+        let prog = crate::front::analyser(src).expect("analyse snapshot");
+        let octets = ecrire_snapshot(&prog);
+        let rvm = executer_snapshot(&octets, &[]).expect("exécution snapshot");
+        crate::run::set_sink(true);
+        let rc = crate::interp::executer_source(src, Vec::new());
+        let interp = crate::run::take_sink().unwrap_or_default();
+        assert_eq!(rc, 0, "interpréteur en échec sur : {}", src);
+        (rvm, interp)
+    }
+
+    #[test]
+    fn snapshot_v3_round_trip_structure() {
+        let src = "fn f(n: entier) -> entier { si (n < 2) { retour n }; retour f(n-1) + f(n-2) }\n>> f(10)\n";
+        let prog = crate::front::analyser(src).unwrap();
+        let octets = ecrire_snapshot(&prog);
+        assert!(octets.starts_with(MAGIC));
+        assert_eq!(version_fichier(&octets).unwrap(), VERSION_AST);
+        let prog2 = lire_snapshot(&octets).expect("relecture snapshot");
+        assert_eq!(prog2.ordre, prog.ordre);
+        assert_eq!(prog2.instructions.len(), prog.instructions.len());
+        assert_eq!(prog2.imports, prog.imports);
+        for nom in &prog.ordre {
+            let a = prog.signatures[nom].corps.as_ref().unwrap().len();
+            let b = prog2.signatures[nom].corps.as_ref().unwrap().len();
+            assert_eq!(a, b, "corps de `{}` tronqué", nom);
+            assert!(prog2.signatures[nom].rir.is_none(), "cache RIR ne doit pas être sérialisé");
+        }
+        println!("[rvm v3] snapshot {} octets, {} fonction(s)",
+                 octets.len(), prog.ordre.len());
+    }
+
+    #[test]
+    fn snapshot_v3_fib_recursif_parite_interpreteur() {
+        let src = "fn fib(n: entier) -> entier { si (n < 2) { retour n }; retour fib(n-1) + fib(n-2) }\n>> fib(25)\n";
+        let (rvm, interp) = parite_snapshot(src);
+        assert_eq!(rvm.trim(), "75025", "sortie RVM : {:?}", rvm);
+        assert_eq!(rvm, interp);
+        let src28 = "fn fib(n: entier) -> entier { si (n < 2) { retour n }; retour fib(n-1) + fib(n-2) }\n>> fib(28)\n";
+        let (rvm28, interp28) = parite_snapshot(src28);
+        assert_eq!(rvm28.trim(), "317811", "sortie RVM : {:?}", rvm28);
+        assert_eq!(rvm28, interp28);
+        println!("[rvm v3] fib(25)=75025, fib(28)=317811 (parité interpréteur)");
+    }
+
+    #[test]
+    fn snapshot_v3_chaines_tables_rationnels_et_appels() {
+        let src = concat!(
+            "fn double(n: entier) -> entier { retour n * 2 }\n",
+            ">> double(21)\n",
+            ">> \"bonjour\"\n",
+            ">> [1, 2, 3]\n",
+            ">> 1/3 + 1/6\n",
+            "$t = table()\n",
+            "$t[\"a\"] = 1\n",
+            "$t[\"b\"] = 2\n",
+            ">> $t\n",
+        );
+        let (rvm, interp) = parite_snapshot(src);
+        assert_eq!(rvm, interp);
+        assert!(rvm.contains("42"), "appel de fonction : {:?}", rvm);
+        assert!(rvm.contains("bonjour"), "chaîne : {:?}", rvm);
+        assert!(rvm.contains("[1, 2, 3]"), "liste : {:?}", rvm);
+        assert!(rvm.contains("0.5"), "rationnel : {:?}", rvm);
+        assert!(rvm.contains("a => 1"), "table : {:?}", rvm);
+        println!("[rvm v3] chaînes/tables/rationnels/appels : {:?}", rvm);
+    }
+
+    #[test]
+    fn snapshot_v3_parite_boucles_et_irrationnelles() {
+        // Une boucle `pour` ne doit PAS afficher la formule LaTeX que l'AST
+        // pur émet : la RVM abaisse le principal en RIR, comme `rose run`.
+        let src = "$s = 0\npour j de 0 vers 10 { $s = $s + j }\n>> $s\n";
+        let (rvm, interp) = parite_snapshot(src);
+        assert_eq!(rvm, interp);
+        assert_eq!(rvm.trim(), "45");
+        assert!(!rvm.contains("\\sum"), "formule LaTeX parasite : {:?}", rvm);
+
+        // ⚠ `pi` est une constante du langage, mais le RIR ne la résout pas.
+        // La RVM doit détecter ce cas et rester en AST pur (plus complet).
+        let src_pi = ">> pi\n";
+        let _g = sink_guard();
+        let prog = crate::front::analyser(src_pi).unwrap();
+        let sortie = executer_snapshot(&ecrire_snapshot(&prog), &[]).unwrap();
+        assert!(sortie.contains("π"), "sortie π : {:?}", sortie);
+        println!("[rvm v3] boucles (sans formule) et π OK");
+    }
+
+    #[test]
+    fn snapshot_v3_refuse_fichier_hostile() {
+        let src = ">> 1 + 1\n";
+        let mut octets = ecrire_snapshot(&crate::front::analyser(src).unwrap());
+        let mut mauvais = octets.clone();
+        mauvais[0] = b'X';
+        assert!(matches!(lire_snapshot(&mauvais), Err(Erreur::MagicInvalide)));
+        let mut mauvais = octets.clone();
+        mauvais[6..10].copy_from_slice(&99u32.to_le_bytes());
+        assert!(matches!(lire_snapshot(&mauvais), Err(Erreur::VersionInsupportee(99))));
+        assert!(matches!(lire_snapshot(&octets[..octets.len() - 1]), Err(Erreur::Tronque { .. })));
+        octets.push(0);
+        assert!(matches!(lire_snapshot(&octets), Err(Erreur::OctetsEnTrop(1))));
     }
 }
