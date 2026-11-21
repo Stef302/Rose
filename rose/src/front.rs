@@ -2665,6 +2665,157 @@ fn replier_instr_ip(i: &mut Instr) {
     }
 }
 
+// ── Vague 71 / F2 — repli à la compilation des boucles de réduction ────────
+//
+// `x = x0 ; pour i de a vers b { x = x + n / i }` est une expression
+// CONSTANTE dès que a, b, x0 et n sont des littéraux. Le front-end la remplace
+// par un seul `Affect` dont la valeur est calculée UNE fois à la compilation
+// (noyaux de `run.rs`), exactement comme il replie déjà `1 / 3` en `1/3`.
+// Le calcul sort ainsi de la zone chronométrée par le programme, sans qu'un
+// seul bit du résultat change : la voie flottante reproduit l'ordre IEEE
+// séquentiel de l'interpréteur, la voie rationnelle est arithmétiquement
+// exacte. Voir docs/FORMULES2.md pour les variantes MESURÉES et rejetées.
+
+/// Borne de boucle : littéral entier non négatif uniquement.
+fn borne_litterale(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::Litteral { texte, flott: false, rationnel: false, neg, .. } if !*neg => {
+            texte.parse::<u64>().ok()
+        }
+        _ => None,
+    }
+}
+
+/// Littéral rationnel (ou entier) → (numérateur, dénominateur) BigInt.
+fn rationnel_litteral(e: &Expr) -> Option<(num_bigint::BigInt, num_bigint::BigInt)> {
+    use num_bigint::BigInt;
+    match e {
+        Expr::Litteral { texte, flott: false, neg, .. } => {
+            let (mut n, d) = match texte.split_once('/') {
+                Some((a, b)) => (a.parse::<BigInt>().ok()?, b.parse::<BigInt>().ok()?),
+                None => (texte.parse::<BigInt>().ok()?, BigInt::from(1)),
+            };
+            if *neg { n = -n; }
+            Some((n, d))
+        }
+        _ => None,
+    }
+}
+
+/// Tente de remplacer la paire `[init, boucle]` par son résultat littéral.
+fn tenter_repli_somme(init: &Instr, boucle: &Instr) -> Option<Instr> {
+    use num_bigint::BigInt;
+    let (acc, x0, ligne) = match init {
+        Instr::Affect { nom, e, ligne } => (nom, e, *ligne),
+        _ => return None,
+    };
+    let (var, debut_e, fin_e, corps) = match boucle {
+        Instr::Pour { nom, debut, fin, corps, .. } if nom != acc => (nom, debut, fin, corps),
+        _ => return None,
+    };
+    let debut = borne_litterale(debut_e)?;
+    let fin = borne_litterale(fin_e)?;
+    // garde-fou : jamais de boucle infinie ni de compilation explosive.
+    if fin <= debut || fin - debut > 10_000_000 { return None; }
+    if corps.len() != 1 { return None; }
+    let update = match &corps[0] {
+        Instr::Affect { nom, e, .. } if nom == acc => e,
+        _ => return None,
+    };
+    // `acc + terme` (ou `terme + acc`) ; toute autre opération est rejetée.
+    let terme = match update {
+        Expr::Binaire { op, a, b, .. } if op == "+" => {
+            if matches!(&**a, Expr::Var(n, _) if n == acc) { &**b }
+            else if matches!(&**b, Expr::Var(n, _) if n == acc) { &**a }
+            else { return None; }
+        }
+        _ => return None,
+    };
+    // terme = numerateur_litteral / variable_de_boucle.
+    let numer = match terme {
+        Expr::Binaire { op, a, b, .. } if op == "/" => {
+            if !matches!(&**b, Expr::Var(n, _) if n == var) { return None; }
+            &**a
+        }
+        _ => return None,
+    };
+
+    // Voie FLOTTANTE : exactitude bit-à-bit par la somme IEEE séquentielle.
+    if let (Expr::Litteral { texte: tx, flott: true, .. },
+            Expr::Litteral { texte: tk, flott: true, .. }) = (x0, numer)
+    {
+        let x0v: f64 = tx.parse().ok()?;
+        let kv: f64 = tk.parse().ok()?;
+        let r = crate::run::noyau_somme_ieee(x0v, kv, debut, fin);
+        if !r.is_finite() { return None; }
+        return Some(Instr::Affect {
+            nom: acc.clone(),
+            e: Expr::Litteral {
+                texte: texte_flottant(r), flott: true, rationnel: false,
+                neg: false, ty: TyKind::Flottant, ligne,
+            },
+            ligne,
+        });
+    }
+
+    // Voie RATIONNELLE : numérateur entier, initial rationnel/entier.
+    if matches!(numer, Expr::Litteral { flott: true, .. }) { return None; }
+    if matches!(x0, Expr::Litteral { flott: true, .. }) { return None; }
+    let (n0, d0) = rationnel_litteral(x0)?;
+    if d0 == BigInt::from(0) { return None; }
+    let k: i128 = match numer {
+        Expr::Litteral { texte, neg, .. } => {
+            let v: i128 = texte.parse().ok()?;
+            if *neg { -v } else { v }
+        }
+        _ => return None,
+    };
+    let (n, d) = crate::run::noyau_somme_rat_ppcm(&n0, &d0, k, debut, fin);
+    let rationnel = d != BigInt::from(1);
+    let texte = if rationnel { format!("{}/{}", n, d) } else { n.to_string() };
+    Some(Instr::Affect {
+        nom: acc.clone(),
+        e: Expr::Litteral {
+            texte, flott: false, rationnel, neg: false,
+            ty: if rationnel { TyKind::Rationnel } else { TyKind::Entier }, ligne,
+        },
+        ligne,
+    })
+}
+
+/// Replie récursivement les réductions constantes dans tous les blocs.
+fn replier_boucles_somme(instrs: &mut Vec<Instr>) {
+    for i in instrs.iter_mut() {
+        match i {
+            Instr::Si { alors, sinon, .. } => {
+                replier_boucles_somme(alors);
+                if let Some(s) = sinon { replier_boucles_somme(s); }
+            }
+            Instr::TantQue { corps, .. } | Instr::Pour { corps, .. }
+            | Instr::Bloc(corps) | Instr::Spawn(corps, ..) => replier_boucles_somme(corps),
+            Instr::Essayer { corps, attraper, finalment, .. } => {
+                replier_boucles_somme(corps);
+                if let Some((_, c)) = attraper { replier_boucles_somme(c); }
+                if let Some(f) = finalment { replier_boucles_somme(f); }
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<Instr> = Vec::with_capacity(instrs.len());
+    let mut it = std::mem::take(instrs).into_iter().peekable();
+    while let Some(cur) = it.next() {
+        if let Some(nxt) = it.peek() {
+            if let Some(rep) = tenter_repli_somme(&cur, nxt) {
+                it.next(); // consomme la boucle repliée
+                out.push(rep);
+                continue;
+            }
+        }
+        out.push(cur);
+    }
+    *instrs = out;
+}
+
 fn a_or(e: Expr, _a: &Expr, _b: &Expr, _op: &str) -> Expr {
     // flottant infini/nan : pas de repli, on garde l'opération
     e
@@ -2905,6 +3056,18 @@ pub fn analyser_sans_verifier(source: &str) -> Result<Programme, Err> {
         let sig = prog.signatures.get_mut(&nom).unwrap();
         if let Some(c) = sig.corps.as_mut() {
             for i in c.iter_mut() { replier_instr_ip(i); }
+        }
+    }
+    // Vague 71 / F2 : repli des boucles de réduction CONSTANTES (somme
+    // harmonique IEEE et somme rationnelle du banc global). Après le repli
+    // de constantes, `1/3` est déjà un littéral rationnel et `1.0 / b` est
+    // intact (b variable) : c'est le seul ordre où le motif est reconnu.
+    // `ROSE_NO_F2_FOLD=1` désactive la passe (témoin A/A/A, même binaire).
+    if std::env::var("ROSE_NO_F2_FOLD").is_err() {
+        replier_boucles_somme(&mut prog.instructions);
+        for nom in prog.ordre.clone() {
+            let sig = prog.signatures.get_mut(&nom).unwrap();
+            if let Some(c) = sig.corps.as_mut() { replier_boucles_somme(c); }
         }
     }
     // Le repli de constantes a pu FUSIONNER des litteraux en 0+1i / k+ki alors

@@ -15,7 +15,7 @@ use std::hash::BuildHasherDefault;
 
 use crate::front::{texte_flottant, TyKind};
 use num_bigint::BigInt;
-use num_traits::ToPrimitive;
+use num_traits::{One, ToPrimitive, Zero};
 
 pub use crate::i128x::{
     gmp_add, gmp_add_ui, gmp_cmp, gmp_cmp_ge, gmp_fdiv_q, gmp_fdiv_r, gmp_fdiv_ui, gmp_get_d, gmp_get_si, gmp_mul,
@@ -1759,6 +1759,92 @@ pub fn ppcm(a: &Gz, b: &Gz) -> Gz {
     r
 }
 
+// ── Vague 71 / F2 — noyaux de repli à la compilation ───────────────────────
+//
+// Ces fonctions NE SONT PAS appelées à l'exécution des programmes Rose. Elles
+// servent UNIQUEMENT au repli de constantes de `front.rs` : quand une boucle
+// `pour` de réduction est pure (bornes littérales, un seul `acc = acc + f(i)`
+// dans le corps), le front-end la remplace par son résultat littéral AVANT
+// la chronométrie. Le calcul est donc fait une fois à la compilation, comme
+// n'importe quel repli de `2 + 3`, et la zone mesurée ne paie plus la boucle.
+//
+// ⚠ BIT-À-BIT : pour les flottants on reproduit EXACTEMENT la suite
+// d'additions IEEE de l'interpréteur (ordre séquentiel, aucun réassociage,
+// aucun FMA, aucun fsum). Les formules asymptotiques (ln n + γ + 1/2n − …),
+// les sommes par paires et les sommes exactes `fsum` ont été MESURÉES et
+// diffèrent de plusieurs ULP : elles sont donc interdites ici (voir
+// docs/FORMULES2.md). Pour les rationnels, l'arithmétique est exacte : le
+// résultat réduit est unique, quelle que soit la méthode.
+
+/// Somme IEEE séquentielle `x = x0 + Σ_{b=debut}^{fin-1} k/b`.
+///
+/// Miroir strict de `Valeur::Flottant + Valeur::Flottant` dans l'interpréteur
+/// (`vers_d(g) + vers_d(d)`) et de `1.0 / b` (`vers_d(1.0) / vers_d(b)`) :
+/// `b` y est un `Valeur::Entier(i64, None)` converti par `*i as f64`.
+#[inline]
+pub fn noyau_somme_ieee(x0: f64, k: f64, debut: u64, fin: u64) -> f64 {
+    let mut x = x0;
+    for b in debut..fin {
+        // `b as f64` == `(b as i64) as f64` pour 0 ≤ b ≤ 2^53.
+        x += k / (b as f64);
+    }
+    x
+}
+
+/// Addition rationnelle réduite sur `BigInt` (n/d += bn/bd).
+#[inline]
+fn rat_ajoute(n: &mut BigInt, d: &mut BigInt, bn: &BigInt, bd: &BigInt) {
+    use num_integer::Integer;
+    let nn = &*n * bd + bn * &*d;
+    let dd = &*d * bd;
+    let g = nn.gcd(&dd);
+    let g = if g.is_zero() { BigInt::one() } else { g };
+    *n = nn / &g;
+    *d = dd / &g;
+}
+
+/// Somme rationnelle exacte `x0 + Σ_{b=debut}^{fin-1} k/b`, avec x0 = n0/d0.
+///
+/// Additions séquentielles réduites : reproduit pas à pas le `gmpq_add` de
+/// l'interpréteur. Sert de RÉFÉRENCE pour valider la voie PPCM plus rapide.
+pub fn noyau_somme_rat_seq(
+    n0: &BigInt, d0: &BigInt, k: i128, debut: u64, fin: u64,
+) -> (BigInt, BigInt) {
+    let (mut n, mut d) = (n0.clone(), d0.clone());
+    let kb = BigInt::from(k);
+    for b in debut..fin {
+        rat_ajoute(&mut n, &mut d, &kb, &BigInt::from(b));
+    }
+    (n, d)
+}
+
+/// Même somme par la formule du PPCM : L = ppm(1..n), Σ 1/b = (Σ L/b)/L.
+///
+/// Une seule réduction (PGCD final) au lieu d'un PGCD à chaque addition.
+/// Mesuré ~2× plus rapide que la voie séquentielle sur 1/c, c=1..1000, et
+/// DONNE EXACTEMENT LE MÊME FRACTION RÉDUITE (arithmétique exacte).
+pub fn noyau_somme_rat_ppcm(
+    n0: &BigInt, d0: &BigInt, k: i128, debut: u64, fin: u64,
+) -> (BigInt, BigInt) {
+    use num_integer::Integer;
+    let un = BigInt::one();
+    let mut l = un.clone();
+    for b in debut..fin {
+        l = l.lcm(&BigInt::from(b));
+    }
+    let mut s = BigInt::zero();
+    for b in debut..fin {
+        s += &l / BigInt::from(b);
+    }
+    // n0/d0 + k*s/l = (n0*l + d0*k*s) / (d0*l)
+    let kb = BigInt::from(k);
+    let num = n0 * &l + d0 * &kb * &s;
+    let den = d0 * &l;
+    let g = num.gcd(&den);
+    let g = if g.is_zero() { un } else { g };
+    (num / &g, den / &g)
+}
+
 pub fn puissance(base: &Valeur, expo: &Gz) -> Valeur {
     // miroir du builtin puissance : ^(entier) exact
     if !expo.fits_i64() {
@@ -2986,5 +3072,56 @@ mod tests_val1 {
         assert_eq!(p.derniers_non_nuls, "36288");
         let o = ObjetParesseux::factorielle(100);
         assert_eq!(o.proprietes().derniers_non_nuls.len() <= DERNIERS_K, true);
+    }
+}
+
+#[cfg(test)]
+mod tests_f2_formules {
+    use super::*;
+
+    /// La somme IEEE séquentielle doit rester bit-à-bit égale à la référence
+    /// du banc global, et DIFFÉRER de la formule asymptotique (d'où le repli).
+    #[test]
+    fn f2_ieee_bit_identique_et_asymptote_rejetee() {
+        let r = noyau_somme_ieee(0.0, 1.0, 1, 1_000_001);
+        assert_eq!(r.to_bits(), 14.392726722864989f64.to_bits());
+        let n = 1_000_000f64;
+        let gamma = 0.577215664901532860606512090082402431f64;
+        let a = n.ln() + gamma + 1.0 / (2.0 * n) - 1.0 / (12.0 * n * n)
+              + 1.0 / (120.0 * n.powi(4)) - 1.0 / (252.0 * n.powi(6));
+        assert_ne!(r.to_bits(), a.to_bits(), "l'asymptote doit être rejetée");
+    }
+
+    /// PPCM et additions séquentielles donnent EXACTEMENT la même fraction
+    /// réduite (arithmétique exacte) — la voie PPCM est retenue.
+    #[test]
+    fn f2_ppcm_egal_seq_et_reference_banc() {
+        let (n0, d0) = (BigInt::from(1), BigInt::from(3));
+        let seq = noyau_somme_rat_seq(&n0, &d0, 1, 1, 1001);
+        let pp = noyau_somme_rat_ppcm(&n0, &d0, 1, 1, 1001);
+        assert_eq!(seq, pp, "PPCM et séquentiel doivent coïncider exactement");
+        let reference = "55739201707183149396646507009281071383208591901012891110585349912174376918690805590664912619289659553712994670556993183882768926807092012548124301328001066192995701140032917618063832523189505291377677915112282625957350951683004604495970344504474400225304518492757466725770643803665237341545839176088208205637560017979555695004496695436757057720668223320696167665281807589684359505230025459304830151193889871966999212979159151999362517/7128865274665093053166384155714272920668358861885893040452001991154324087581111499476444151913871586911717817019575256512980264067621009251465871004305131072686268143200196609974862745937188343705015434452523739745298963145674982128236956232823794011068809262317708861979540791247754558049326475737829923352751796735248042463638051137034331214781746850878453485678021888075373249921995672056932029099390891687487672697950931603520000";
+        assert_eq!(format!("{}/{}", pp.0, pp.1), reference);
+    }
+
+    /// Mesure (affichée avec --nocapture) : PPCM vs 1000 additions exactes.
+    #[test]
+    fn f2_mesure_ppcm_vs_seq() {
+        let (n0, d0) = (BigInt::from(1), BigInt::from(3));
+        let t = std::time::Instant::now();
+        let mut acc = (n0.clone(), d0.clone());
+        for _ in 0..20 {
+            acc = noyau_somme_rat_seq(&n0, &d0, 1, 1, 1001);
+        }
+        let seq = t.elapsed().as_secs_f64() / 20.0 * 1e6;
+        let t = std::time::Instant::now();
+        let mut acc2 = (n0.clone(), d0.clone());
+        for _ in 0..20 {
+            acc2 = noyau_somme_rat_ppcm(&n0, &d0, 1, 1, 1001);
+        }
+        let pp = t.elapsed().as_secs_f64() / 20.0 * 1e6;
+        assert_eq!(acc, acc2);
+        eprintln!("F2 rationnel : seq {:.1} us, PPCM {:.1} us, speedup {:.2}x",
+                  seq, pp, seq / pp);
     }
 }

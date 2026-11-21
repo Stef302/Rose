@@ -847,9 +847,9 @@ fn carres_acc_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
 // ⚠ En revanche, le banc GLOBAL appelle la fonction synthétique depuis un
 // corps RIR, donc `interp.rs::appel_rir_direct` intercepte l'appel et sert
 // `interp.rs::sp5_carres_acc` (sonde R6 : `HIT interp::sp5_carres_acc`, aucun
-// `HIT jit::carres_acc_natif`). Toute optimisation de ce noyau RESTE sans
-// effet sur le global tant que ce dispatch n'est pas modifié (interp.rs
-// lecture seule dans cette mission).
+// `HIT jit::carres_acc_natif`). Depuis F1 (vague 71), ce point d'entrée
+// sert la FORME FERMÉE EXACTE `carres_formule_exacte` dès que le motif RIR
+// est prouvé, avec repli intégral sur le noyau NEON ci-dessus sinon.
 //
 // Plancher mesuré (micro-jumeau R6, 13 tirs, c6 ET c16, 10^7 termes) :
 //   NEON 16 accumulateurs  ~419–425 µs  (livré, bit-exact)
@@ -864,6 +864,112 @@ pub(crate) fn carres_acc_noyau(debut: i64, fin: i64, acc0: i64) -> i128 {
 
 pub(crate) fn carres_acc_natif(debut: i64, fin: i64, acc0: i64) -> Valeur {
     Valeur::zg(crate::run::Gz::de_i128(carres_acc_noyau(debut, fin, acc0)))
+}
+
+// ── F1 (21/11/2026) — forme FERMÉE EXACTE de la somme des carrés ──────────
+//
+// Autorisation explicite de l'utilisateur (PLAN vague 71) : les formules plus
+// efficaces que l'algorithmique de base sont permises. LLVM Rust reconnaît
+// `for i in 1..=N { t += i*i }` et le remplace par ~32 ns de calcul polynômial ;
+// le noyau NEON terme à terme coûte ~419 µs (micro-jumeau R6, 10⁷ termes).
+//
+// Identité utilisée (exacte sur ℤ, pas une approximation flottante) :
+//
+//     S(k) = Σ_{a=1}^{k} a² = k(k+1)(2k+1)/6
+//     Σ_{a=d}^{f-1} a²    = S(f-1) − S(d-1)          (S(-1) = S(0) = 0)
+//     résultat            = acc0 + S(f-1) − S(d-1)
+//
+// ⚠ PRÉCISION : tout se calcule avec les primitives BigInt de `i128x`
+// (`gmp_set_ui`, `gmp_add_ui`, `gmp_mul_ui`, `gmp_mul`, `gmp_sub`,
+// `gmp_fdiv_q`), en lecture seule : aucun appel à un noyau flottant, aucun
+// débordement i128 possible, quel que soit `fin`. Le résultat est donc exact
+// au-delà de i128 (la division par 6 est EXACTE : k(k+1)(2k+1) est toujours
+// divisible par 6, `gmp_fdiv_q` n'introduit aucun arrondi ici).
+//
+// ⚠ GARDES (prouvés par `detecter_carres_acc` / `sp5_carres_plan`) :
+//   * 0 <= debut < fin <= 2^24  (N = fin-1 entier positif, borne prouvable) ;
+//   * le motif RIR est EXACTEMENT `ctr ← d ; tant que ctr < f :
+//     acc ← acc + ctr*ctr ; ctr ← ctr+1` (6 opérations, 2 slots, 0 global,
+//     aucun autre effet dans la boucle) ;
+//   * acc0 est un entier quelconque (i64 nu OU BigInt `Rc<Gz>`).
+// Si une garde échoue, l'appelant retombe INTÉGRALEMENT sur le noyau NEON
+// (`carres_acc_noyau` / `sp5_carres_neon`) : aucun programme arbitraire n'est
+// transformé.
+#[inline]
+unsafe fn somme_carres_s(r: *mut crate::i128x::Mpz, k: u64) {
+    use crate::i128x as ix;
+    let tmp = ix::Gz::neuf();
+    ix::gmp_set_ui(r, k);                // r = k
+    ix::gmp_add_ui(tmp.p(), r, 1);       // tmp = k+1
+    ix::gmp_mul(r, r, tmp.p());          // r = k(k+1)
+    ix::gmp_set_ui(tmp.p(), k);          // tmp = k
+    ix::gmp_mul_ui(tmp.p(), tmp.p(), 2); // tmp = 2k
+    ix::gmp_add_ui(tmp.p(), tmp.p(), 1); // tmp = 2k+1
+    ix::gmp_mul(r, r, tmp.p());          // r = k(k+1)(2k+1)
+    ix::gmp_set_ui(tmp.p(), 6);          // tmp = 6
+    ix::gmp_fdiv_q(r, r, tmp.p());       // r = S(k) = k(k+1)(2k+1)/6
+}
+
+/// Somme exacte des carrés de `debut` inclus à `fin` exclus, plus `acc0`.
+/// Voir le commentaire ci-dessus pour les gardes et la preuve d'exactitude.
+#[inline]
+pub(crate) fn carres_formule_exacte(debut: i64, fin: i64, acc0: &Valeur) -> Valeur {
+    use crate::i128x as ix;
+    debug_assert!(debut >= 0 && fin > debut && fin <= (1i64 << 24));
+    debug_assert!(matches!(acc0, Valeur::Entier(..)));
+    unsafe {
+        let somme = ix::Gz::neuf();
+        somme_carres_s(somme.p(), (fin - 1) as u64);          // S(fin-1)
+        if debut > 1 {
+            let retr = ix::Gz::neuf();
+            somme_carres_s(retr.p(), (debut - 1) as u64);     // S(debut-1)
+            ix::gmp_sub(somme.p(), somme.p(), retr.p());      // somme −= retr
+        }
+        match acc0 {
+            Valeur::Entier(v, None) => {
+                let a = ix::Gz::de_i64(*v);
+                ix::gmp_add(somme.p(), somme.p(), a.p());     // + acc0 (i64)
+            }
+            Valeur::Entier(_, Some(z)) => {
+                ix::gmp_add(somme.p(), somme.p(), z.p());     // + acc0 (BigInt)
+            }
+            _ => {}
+        }
+        Valeur::zg(somme)
+    }
+}
+
+#[cfg(test)]
+mod tests_f1_formule {
+    use super::{carres_formule_exacte, somme_carres_s};
+    use crate::i128x::Gz;
+    use crate::run::Valeur;
+    use num_bigint::BigInt;
+
+    /// Preuve d'exactitude au-delà de i128 : S(10^15) ≈ 3,3×10^44, soit
+    /// ~149 bits. Le helper est appelé DIRECTEMENT (sans les gardes du
+    /// détecteur) pour montrer que l'arithmétique BigInt ne déborde pas.
+    #[test]
+    fn somme_carres_au_dela_i128() {
+        let k = 1_000_000_000_000_000u64;
+        let r = Gz::neuf();
+        unsafe { somme_carres_s(r.p(), k) };
+        let b = BigInt::from(k);
+        let attendu = (&b * (&b + 1u32) * (2u32 * &b + 1u32)) / 6u32;
+        assert!(attendu.bits() > 128, "le test doit dépasser i128");
+        assert_eq!(r.bref(), &attendu);
+    }
+
+    /// acc0 quelconque (ici un grand entier) est ajouté sans perte.
+    #[test]
+    fn acc0_bigint_exact() {
+        let acc0_gz = Gz::de_bigint(BigInt::from(1u8) << 200u32);
+        let acc0 = Valeur::zg(acc0_gz);
+        let r = carres_formule_exacte(1, 11, &acc0); // Σ_{1..10} a² = 385
+        let z = match r { Valeur::Entier(_, Some(z)) => z, _ => panic!("grand entier attendu") };
+        let attendu = (BigInt::from(1u8) << 200u32) + 385u32;
+        assert_eq!(z.bref(), &attendu);
+    }
 }
 
 // ── speed1 (21/11) — superinstruction native `x += c/b` ──

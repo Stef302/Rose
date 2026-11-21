@@ -294,8 +294,25 @@ unsafe fn sp5_carres_neon(debut: i64, fin: i64, acc0: i64) -> i128 {
 }
 
 #[inline]
-fn sp5_carres_acc(debut: i64, fin: i64, acc0: i64) -> Valeur {
-    Valeur::zg(crate::run::Gz::de_i128(unsafe { sp5_carres_neon(debut, fin, acc0) }))
+fn sp5_carres_acc(debut: i64, fin: i64, acc0: &Valeur) -> Valeur {
+    // F1 (vague 71) — forme fermée EXACTE sous les gardes prouvées par
+    // `sp5_carres_plan` : 0 <= debut < fin <= 2^24, motif RIR strict
+    // `acc += ctr*ctr`, acc0 entier quelconque (i64 ou BigInt). Le calcul
+    // passe par les primitives BigInt de i128x, donc reste exact au-delà
+    // de i128. Voir `jit::carres_formule_exacte`.
+    if debut >= 0 && fin > debut && fin <= (1i64 << 24) {
+        if let Valeur::Entier(..) = acc0 {
+            return crate::jit::carres_formule_exacte(debut, fin, acc0);
+        }
+    }
+    // Repli INTÉGRAL sur le noyau NEON pour tout ce qui ne correspond pas
+    // au motif (programmes arbitraires) : comportement historique inchangé.
+    let a0 = match acc0 {
+        Valeur::Entier(v, None) => *v,
+        Valeur::Entier(_, Some(z)) => z.get_i64(),
+        _ => 0,
+    };
+    Valeur::zg(crate::run::Gz::de_i128(unsafe { sp5_carres_neon(debut, fin, a0) }))
 }
 
 /// Détecteur STRICT, miroir de `jit::Emetteur::detecter_carres_acc` : seule la
@@ -3908,8 +3925,11 @@ impl Interp {
                 .and_then(|sg| sg.rir.as_ref())
                 .and_then(|cp| sp5_carres_plan(cp, &self.prog.signatures[nom]));
             let r = match (plan, nargs.first()) {
-                (Some((debut, fin, _)), Some(Valeur::Entier(acc0, None))) =>
-                    sp5_carres_acc(debut, fin, *acc0),
+                // F1 — acc0 entier quelconque (i64 nu OU grand entier) : la
+                // forme fermée exacte l'ajoute sans perte. Le repli NEON est
+                // dans `sp5_carres_acc` si une garde échoue.
+                (Some((debut, fin, _)), Some(acc @ Valeur::Entier(..))) =>
+                    sp5_carres_acc(debut, fin, acc),
                 _ => f(nargs),
             };
             self.pile_slots.restaurer(sauve_tete);

@@ -929,11 +929,25 @@ fn div_rem_petit(n: &BigInt, d: u32) -> (BigInt, u64) {
         let mut qd = cell.borrow_mut();
         qd.clear();
         let d64 = d as u64;
+        // FORMULES3 — division par réciproque (`umulh`) au lieu de `udiv`.
+        // m = ceil(2^64/d) ; pour cur < 2^64, q0 = (cur·m)>>64 vaut
+        // floor(cur/d) ou floor(cur/d)+1 (preuve : m·d = 2^64+t, 0≤t<d,
+        // donc cur/d + cur·t/(d·2^64) < cur/d + 1 ; l'écart à l'entier
+        // supérieur est < 1, donc au plus un dépassement). Une seule
+        // correction suffit. Mesuré : 238 → 158 ns sur un dénominateur
+        // de 1440 bits (1,51×) ; voir docs/FORMULES3.md.
+        // d=1 est exceptionnel : m=2^64 ne tient pas dans u64 (et le
+        // quotient vaut n, reste 0) — traité à part, sans réciproque.
+        if d64 == 1 { return (n.clone(), 0); }
+        let m = (((1u128 << 64) + (d64 as u128) - 1) / (d64 as u128)) as u64;
         let mut rem: u64 = 0;
         for chunk in n.iter_u32_digits().rev() {
             let cur = (rem << 32) | (chunk as u64);
-            qd.push((cur / d64) as u32);
-            rem = cur % d64;
+            let mut q = ((cur as u128 * m as u128) >> 64) as u64;
+            let mut r = cur - q.wrapping_mul(d64);
+            if r >= d64 { r = r.wrapping_add(d64); q -= 1; }
+            qd.push(q as u32);
+            rem = r;
         }
         qd.reverse();
         while qd.len() > 1 && *qd.last().unwrap() == 0 { qd.pop(); }
@@ -941,10 +955,24 @@ fn div_rem_petit(n: &BigInt, d: u32) -> (BigInt, u64) {
     })
 }
 /// PGCD de deux petits entiers (déjà dans u64).
+///
+/// FORMULES3 — algorithme de Stein (binaire) au lieu de l'Euclide à `%`.
+/// Mesuré : 115 → 63 ns sur des paires u64 aléatoires (1,83×), et
+/// 6 → 3 ns sur les paires réelles de `add_rat_inv_small` (c ≤ 1000).
+/// Même résultat bit-à-bit sur ~200 000 paires. Voir docs/FORMULES3.md.
 #[inline]
 fn pgcd_scalar(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 { let t = a % b; a = b; b = t; }
-    a
+    if a == 0 { return b; }
+    if b == 0 { return a; }
+    let sh = (a | b).trailing_zeros();
+    a >>= a.trailing_zeros();
+    loop {
+        b >>= b.trailing_zeros();
+        if a > b { std::mem::swap(&mut a, &mut b); }
+        b -= a;
+        if b == 0 { break; }
+    }
+    a << sh
 }
 
 /// Addition exacte `na/da + signe/c` (signe = ±1, `c` tient dans u64,
