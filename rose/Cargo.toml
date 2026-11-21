@@ -1,6 +1,6 @@
 [package]
 name = "rose"
-version = "0.1.7"
+version = "0.1.72"
 edition = "2024"
 # ⚠ Les binaires sont déclarés explicitement ci-dessous. `autobins = false`
 # empêche Cargo d'auto-découvrir `src/bin/rose_nostd.rs` (démo M5.3 no_std,
@@ -55,6 +55,17 @@ required-features = ["native"]
 [[bin]]
 name = "rose-shell"
 path = "src/bin/rose-shell.rs"
+
+# Helper ARRIÈRE-PLAN (vague 74) : icône dans la zone des icônes cachées de
+# Windows, UN timer à 6 h, UNE lecture du manifeste du SITE par tick. Il tourne
+# en processus séparé, SANS launcher ouvert, et ne démarre que si l'utilisateur
+# a explicitement choisi « Automatique (discret) » (ou appuyé sur le bouton des
+# Options). Sous Linux c'est un no-op explicite : il n'existe pas de tray.
+# `required-features = ["native"]` garde le helper hors des builds wasm/autonome.
+[[bin]]
+name = "rose-tray"
+path = "src/bin/rose-tray.rs"
+required-features = ["native"]
 
 # ⚠ M5.3 / G3 — src/bin/rose_nostd.rs n'est PAS câblé ici : il exige
 # `panic = "abort"` alors que le profil release du moteur DOIT rester

@@ -3,7 +3,7 @@
 //! Le binaire principal de Rose est léger : la chaîne AOT (`rose orc`,
 //! `rose aot`, `rose link`) n'y est pas embarquée. Elle n'est disponible
 //! que si un helper (ou un binaire Rose complet avec la chaîne AOT) est
-//! déjà installée sur la machine.
+//! déjà installé sur la machine.
 //!
 //! Ordre de recherche — TOUJOURS avant toute autre action :
 //!   1. à côté de l'exécutable courant (`rose.exe` sur Windows) ;
