@@ -1279,3 +1279,18 @@ sans clic et avec icône, logo tige entière. Arreter le cas-par-cas.
 | AUDIT | auditer ce qui est VRAIMENT JIT Cranelift / natif Rust / AOT / transpile / RVM | rose/docs/VERITE_METHODES.md (doc seul) |
 | AOT6 | VRAI AOT universel : runtime machine intégré, tous programmes | rose/src/{cmd_llvm,natif_emetteur,link_natif,run}.rs |
 | CLI2 | interface interactive : choisir la méthode (run/jit/aot/comp/transpile/rvm) | rose/src/{main,repl}.rs, rose/docs/CLI_INTERACTIVE.md |
+
+## Vague 82 — vrai JIT / vrai AOT / WASM / RVM complète
+
+L'utilisateur exige le VRAI, sans closures Rust natives ni replis:
+1. VRAI JIT Cranelift qui couvre tout (pas des superinstructions Rust)
+2. VRAI AOT universel (runtime machine intégré)
+3. Transpilation WASM en plus de JS/Python/C
+4. RVM complète (méthode inspirée JVM, PAS Java)
+5. Self-host total (compilateur Rose → rose natif)
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| JIT3 | vrai JIT Cranelift pour TOUT | rose/src/{jit,rir}.rs |
+| WASM | transpilation WASM | rose/src/{transpile,wasm_runtime}.rs |
+| RVM2 | RVM complète (appels de fonction, toutes opérations) | rose/src/{rosevm,rir}.rs |
