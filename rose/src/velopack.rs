@@ -2947,6 +2947,29 @@ mod tests {
         let _ = fs::remove_dir_all(&racine);
     }
 
+    /// Preuve STRUCTURELLE du « UNE requête HTTP par tick » : le chemin du
+    /// tick contient UN seul appel `requeter_json` et aucun repli GitHub.
+    #[test]
+    fn timer_discret_structure_une_seule_requete() {
+        let src = include_str!("velopack.rs");
+        let debut = src.find("fn lister_versions_site_depuis(").expect("lecture site présente");
+        let fin = src.find("/// Source de vérité de toute l'UI").expect("fin lecture site");
+        let bloc = &src[debut..fin];
+        assert_eq!(bloc.matches("requeter_json(").count(), 1,
+                   "UNE seule requête HTTP pour lire le manifeste site");
+        assert!(!bloc.contains("check_and_update"), "le tick ne télécharge jamais");
+
+        let debut2 = src.find("fn verification_discrete_depuis(").expect("tick présent");
+        let fin2 = src.find("/* ── Catalogue du sélecteur").expect("fin tick");
+        let tick = &src[debut2..fin2];
+        assert!(!tick.contains("lister_versions_source"),
+                "aucun repli GitHub dans le tick (sinon 2 requêtes)");
+        assert!(!tick.contains("lister_versions()"), "aucun appel GitHub dans le tick");
+        assert!(tick.contains("lister_versions_site_depuis"), "source = site Rose");
+        assert_eq!(tick.matches("requeter_json(").count(), 0,
+                   "le tick délègue l'unique requête à la lecture site");
+    }
+
     /// Preuve STRUCTURELLE du « thread unique endormi, zéro CPU entre ticks » :
     /// le code du timer ne contient qu'UN spawn, aucune boucle, aucun sleep,
     /// et un seul SetTimer à intervalle long, tué quand on quitte le mode.

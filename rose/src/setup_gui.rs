@@ -327,6 +327,9 @@ const WM_APP_FIN: u32 = WM_APP + 1;
 const WM_APP_MAJ: u32 = WM_APP + 2;
 /// Fin du rafraîchissement de la liste des versions lancé en tâche de fond.
 const WM_APP_VERSIONS: u32 = WM_APP + 3;
+/// Fin du tick du timer discret (mode « Automatique (discret) ») : on repeint
+/// pour afficher la pastille. Aucune fenêtre n'est créée.
+const WM_APP_MAJ_DISCRETE: u32 = WM_APP + 4;
 const WM_GETMINMAXINFO: u32 = 0x0024;
 const WM_SIZING: u32 = 0x0214;
 
@@ -402,6 +405,10 @@ const SRCCOPY: u32 = 0x00CC0020;
 // étirement n'intervient. Constante conservée pour compatibilité.
 const HALFTONE: i32 = 4;
 const TIMER_PROGRESSION: usize = 1;
+/// ⚠ Timer UNIQUE du mode « Automatique (discret) ». Il n'est posé QUE si
+/// l'utilisateur a choisi ce mode, à 6 heures (voir `velopack::
+/// INTERVALLE_TIMER_DISCRET_MS`). Aucun polling court, aucun thread qui boucle.
+const TIMER_MAJ_DISCRETE: usize = 2;
 const ICON_BIG: usize = 1;
 const ICON_SMALL: usize = 0;
 const LR_SHARED: u32 = 0x8000;
@@ -1996,21 +2003,16 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                                     right: d, bottom: contenu.top + s(38) };
             dessiner_bouton_versions(dc, dpi, echelle, &r_versions);
             *std::ptr::addr_of_mut!(ZONE_OUVRIR_VERSIONS) = r_versions;
-            let options: [(ModeMiseAJour, &str, &str); 3] = [
-                (ModeMiseAJour::Auto, "Auto au démarrage",
-                 "Vérifie les versions à chaque lancement. Ne télécharge qu'après votre accord — recommandé."),
-                (ModeMiseAJour::Manuel, "Manuel",
-                 "Aucune vérification automatique : « rose update » ou le bouton « Vérifier les mises à jour »."),
-                (ModeMiseAJour::Desactive, "Désactivées",
-                 "Aucune vérification, même « rose update » est ignoré (message explicite)."),
-            ];
+            // Source UNIQUE des 3 libellés : `velopack::ModeMiseAJour::options_ui`.
+            // Le mode discret est NOUVEAU et n'est PAS le défaut.
+            let options = ModeMiseAJour::options_ui();
             let h_opt = s(84);
             let ecart = s(12);
             let mut zm = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
             for (i, (mode, titre_opt, desc)) in options.iter().enumerate() {
                 let haut = yc + i as i32 * (h_opt + ecart);
                 let c = RECT { left: g, top: haut, right: d, bottom: haut + h_opt };
-                let selectionne = *mode == etat.mode_maj;
+                let selectionne = *mode == etat.mode_maj.pour_ui();
                 carte(dc, &c, if selectionne { VERT_LIME_VIF } else { LIGNE_FORTE });
                 zm[i] = c;
                 let cx = g + s(30);
@@ -2032,9 +2034,9 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             let ys = yc + 3 * (h_opt + ecart) + s(4);
             let suiv = SUIVI_MAJ.lock().unwrap_or_else(|e| e.into_inner());
             let mut libelle_action: Option<&str> = None;
-            let (statut, couleur_statut): (String, u32) = match etat.mode_maj {
+            let (statut, couleur_statut): (String, u32) = match etat.mode_maj.pour_ui() {
                 ModeMiseAJour::Desactive => (
-                    "Mises à jour DÉSACTIVÉES : aucune vérification, même « rose update ».".to_string(),
+                    "Mises à jour DÉSACTIVÉES : aucun timer, aucun appel réseau.".to_string(),
                     ROUGE_VIF,
                 ),
                 _ if suiv.telecharge_en_cours => (
@@ -2064,11 +2066,18 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                     }
                     _ => unreachable!(),
                 },
+                // Le mode discret reste passif, mais une action EXPLICITE
+                // (« Vérifier les mises à jour ») continue d'afficher son
+                // résultat — c'est pour cela que ce bras est APRÈS les suiv.*.
+                ModeMiseAJour::Automatique => (
+                    "Automatique (discret) : un timer toutes les 6 h, une pastille si une version est disponible.".to_string(),
+                    VERT_LIME_VIF,
+                ),
                 _ if etat.mode_maj == ModeMiseAJour::Manuel => {
                     libelle_action = Some("Vérifier les mises à jour");
                     ("Mode manuel : aucune vérification automatique.".to_string(), TEXTE_DOUX)
                 }
-                _ => ("Vérification au démarrage…".to_string(), TEXTE_DOUX),
+                _ => ("À l'ouverture : vérification au démarrage…".to_string(), TEXTE_DOUX),
             };
             drop(suiv);
             let mut rs = RECT { left: g, top: ys, right: d - s(218), bottom: (ys + s(46)).min(bas_utile) };
@@ -2181,6 +2190,7 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
             // mettait à jour ou installait à côté d'une installation
             // existante. Aucun numéro n'est affiché ici : le lanceur est
             // neutre, les versions ne vivent que dans le sélecteur.
+            let mut bas_cartes = c2.bottom;
             if etat.existant {
                 let y3 = c2.bottom + s(16);
                 let ligne_version =
@@ -2190,6 +2200,7 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                 let h3 = crate::paint::hauteur_carte(h3 - s(14), s(12), s(96))
                     .min((bas_utile - y3).max(s(96)));
                 let c3 = RECT { left: g, top: y3, right: d, bottom: y3 + h3 };
+                bas_cartes = c3.bottom;
                 // ⚠ `carte()` remplit avec `CARTE` (FONDOIR) et n'ajoute
                 // qu'un filet d'accent à gauche. Un texte NOIR dessus était
                 // donc ILLISIBLE (mesuré : « l'installation détectée est
@@ -2204,6 +2215,45 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
                       &mut r8, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS, TEXTE, 9, false, echelle);
                 let mut r9 = RECT { left: g + s(20), top: y3 + s(66), right: d - s(20), bottom: c3.bottom - s(10) };
                 texte_echelle(dc, dpi, "Segoe UI", note, &mut r9, DT_WORDBREAK | DT_END_ELLIPSIS, TEXTE_DOUX, 9, false, echelle);
+            }
+
+            // ── carte 4 : VÉRIFICATION DES MISES À JOUR (3 choix) ────────
+            // Le réglage demandé, accessible depuis les Options. Les 3 choix
+            // viennent de la MÊME source que le premier écran (`options_ui`)
+            // et un clic passe par `appliquer_mode_maj` (persistance + timer).
+            *std::ptr::addr_of_mut!(ZONES_MAJ_OPTIONS) =
+                [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>()];
+            let y4 = bas_cartes + s(16);
+            let h4 = s(80);
+            if y4 + h4 <= bas_utile {
+                use crate::velopack::ModeMiseAJour;
+                let c4 = RECT { left: g, top: y4, right: d, bottom: y4 + h4 };
+                carte(dc, &c4, ROUGE);
+                let mut rt4 = RECT { left: g + s(20), top: y4 + s(10),
+                                     right: d - s(20), bottom: y4 + s(32) };
+                texte_echelle(dc, dpi, "Segoe UI", "Vérification des mises à jour",
+                              &mut rt4, DT_SINGLELINE | DT_VCENTER, TEXTE_DOUX, 9, true, echelle);
+                let options = ModeMiseAJour::options_ui();
+                let marge = s(20);
+                let ecart_b = s(10);
+                let largeur_b = (d - g - 2 * marge - 2 * ecart_b) / 3;
+                let mut zo = [std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>(),
+                              std::mem::zeroed::<RECT>()];
+                for (i, (mode, titre_opt, _desc)) in options.iter().enumerate() {
+                    let left = g + marge + i as i32 * (largeur_b + ecart_b);
+                    let rb = RECT { left, top: y4 + s(38), right: left + largeur_b,
+                                    bottom: c4.bottom - s(10) };
+                    let selectionne = *mode == etat.mode_maj.pour_ui();
+                    arrondi(dc, &rb, 8, if selectionne { VERT_LIME_VIF } else { CARTE });
+                    contour(dc, &rb, 8, if selectionne { VERT_LIME_VIF } else { LIGNE_FORTE });
+                    let mut rb_txt = rb;
+                    texte_echelle(dc, dpi, "Segoe UI", titre_opt, &mut rb_txt,
+                                  DT_CENTER | DT_VCENTER | DT_WORDBREAK,
+                                  if selectionne { NOIR_DOUX } else { TEXTE_DOUX },
+                                  9, selectionne, echelle);
+                    zo[i] = rb;
+                }
+                *std::ptr::addr_of_mut!(ZONES_MAJ_OPTIONS) = zo;
             }
         }
         Vue::Installation => {
@@ -2489,7 +2539,12 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
         remplir(dc, &etat_barre, BARRE);
     }
     remplir(dc, &RECT { left: 0, top: etat_barre.top, right: w, bottom: etat_barre.top + 1 }, LIGNE_FORTE);
-    cercle(dc, s(16), ht - etat_h / 2, s(5), if etat.empreinte.is_some() { VERT } else { TEXTE_FAIBLE });
+    // Pastille discrète du timer : un simple point lime dans la barre, aucune
+    // fenêtre, aucune icône cachée qui tourne en continu.
+    let notification_discrete = pastille_discrete();
+    cercle(dc, s(16), ht - etat_h / 2, s(5),
+           if notification_discrete.is_some() { VERT_LIME_VIF }
+           else if etat.empreinte.is_some() { VERT } else { TEXTE_FAIBLE });
     // Statut de la mise à jour dans le thème : vert lime vif en succès,
     // rouge vif en échec, gris sinon (les autres vues ne changent pas).
     let couleur_statut = if theme_update && etat.vue == Vue::Termine {
@@ -2502,9 +2557,17 @@ unsafe fn dessiner_decore(h: HWND, dc_ecran: HDC, rc: &RECT, zone: &RECT) {
     let mut rg = RECT { left: s(28), top: etat_barre.top, right: w / 2 - s(10), bottom: etat_barre.bottom };
     texte_echelle(dc, dpi, "Segoe UI", &etat.statut, &mut rg, DT_VCENTER | DT_SINGLELINE, couleur_statut, 9, false, echelle);
     let mut rd = RECT { left: w / 2 + s(10), top: etat_barre.top, right: w - s(110), bottom: etat_barre.bottom };
-    texte_echelle(dc, dpi, "Segoe UI",
-          &format!("Rose-win-Setup.exe · Windows x64 · © 2026 Stef302"),
-          &mut rd, DT_VCENTER | DT_SINGLELINE | DT_RIGHT, TEXTE_FAIBLE, 9, false, echelle);
+    if let Some(texte) = &notification_discrete {
+        // Notification DISCRÈTE : une ligne dans la barre d'état, jamais de
+        // fenêtre modale ni de balloon qui interrompt l'utilisateur.
+        texte_echelle(dc, dpi, "Segoe UI", &format!("● {texte}"), &mut rd,
+                      DT_VCENTER | DT_SINGLELINE | DT_RIGHT | DT_END_ELLIPSIS,
+                      VERT_LIME_VIF, 9, true, echelle);
+    } else {
+        texte_echelle(dc, dpi, "Segoe UI",
+              &format!("Rose-win-Setup.exe · Windows x64 · © 2026 Stef302"),
+              &mut rd, DT_VCENTER | DT_SINGLELINE | DT_RIGHT, TEXTE_FAIBLE, 9, false, echelle);
+    }
     // ⚠ Bouton « PATH » dans la barre d'état : ouvre l'outil de diagnostic.
     // Il est TOUJOURS là, y compris sur l'écran d'échec — c'est le seul
     // moyen pour l'utilisateur de régler un PATH verrouillé.
@@ -2594,6 +2657,21 @@ static SUIVI_MAJ: std::sync::Mutex<SuiviMaj> = std::sync::Mutex::new(SuiviMaj {
     telechargement: None,
 });
 
+/// Vrai si le timer discret est posé. `swap` garantit un SEUL `SetTimer`,
+/// même si le mode est reappliqué plusieurs fois depuis les Options.
+static TIMER_MAJ_DISCRETE_ACTIF: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Texte de la pastille discrète de la barre d'état (`None` = rien à annoncer).
+/// Rempli par le thread d'UN tick, lu au tracé : jamais de fenêtre intrusive.
+static NOTIFICATION_DISCRETE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Zones cliquables des 3 choix « Vérification des mises à jour » de la vue
+/// Options (mêmes cartes que le premier écran, accessibles depuis les Options).
+static mut ZONES_MAJ_OPTIONS: [RECT; 3] = [RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                                           RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                                           RECT { left: 0, top: 0, right: 0, bottom: 0 }];
+
 /// Rectangle du bouton « Voir les versions » de la banderole. Remis à zéro
 /// à chaque tracé : aucun clic fantôme quand la banderole n'est pas affichée.
 static mut ZONE_BANDEAU_VERSIONS: RECT = RECT { left: 0, top: 0, right: 0, bottom: 0 };
@@ -2650,6 +2728,84 @@ fn lancer_telechargement_maj(h: HWND) {
         let h = cible as HWND;
         if !h.is_null() { unsafe { SendMessageW(h, WM_APP_MAJ, 0, 0); } }
     });
+}
+
+/// Pose le timer UNIQUE du mode « Automatique (discret) » : UN `SetTimer`
+/// à 6 heures, uniquement si l'utilisateur a choisi ce mode. `swap` garantit
+/// qu'il n'y en a jamais deux, même si le choix est reappliqué.
+/// Dans tous les autres modes : aucun timer, aucun thread, zéro CPU.
+fn demarrer_timer_maj_discret(h: HWND) {
+    if !crate::velopack::lire_config().mode.doit_demarrer_timer_discret() { return; }
+    if h.is_null() { return; }
+    if TIMER_MAJ_DISCRETE_ACTIF.swap(true, std::sync::atomic::Ordering::SeqCst) { return; }
+    unsafe {
+        SetTimer(h, TIMER_MAJ_DISCRETE,
+                 crate::velopack::INTERVALLE_TIMER_DISCRET_MS, std::ptr::null());
+    }
+}
+
+/// Retire le timer et efface la pastille. Appelé dès que l'utilisateur quitte
+/// le mode discret et à la fermeture : « désactiver » = plus aucun timer.
+fn arreter_timer_maj_discret(h: HWND) {
+    if !TIMER_MAJ_DISCRETE_ACTIF.swap(false, std::sync::atomic::Ordering::SeqCst) { return; }
+    if !h.is_null() { unsafe { KillTimer(h, TIMER_MAJ_DISCRETE); } }
+    if let Ok(mut n) = NOTIFICATION_DISCRETE.lock() { *n = None; }
+}
+
+/// UN tick du timer : UN seul thread, UNE lecture du manifeste du SITE
+/// (cache frais ou UNE requête HTTP bornée à 3 s), puis le thread meurt.
+/// Aucune boucle, aucun polling, aucune icône cachée, aucune fenêtre.
+fn lancer_verification_discrete(h: HWND) {
+    // Garde-fou : si le mode a été désactivé entre deux ticks, on retire le
+    // timer et on ne fait AUCUNE requête.
+    if crate::velopack::lire_config().mode != crate::velopack::ModeMiseAJour::Automatique {
+        arreter_timer_maj_discret(h);
+        return;
+    }
+    let cible = h as isize;
+    std::thread::spawn(move || {
+        if let Ok(Some(b)) = crate::velopack::verification_discrete() {
+            if let Ok(mut n) = NOTIFICATION_DISCRETE.lock() {
+                *n = Some(b.texte());
+            }
+        }
+        let h = cible as HWND;
+        if !h.is_null() { unsafe { SendMessageW(h, WM_APP_MAJ_DISCRETE, 0, 0); } }
+    });
+}
+
+/// Texte de la pastille discrète, lu au tracé (jamais de fenêtre modale).
+fn pastille_discrete() -> Option<String> {
+    NOTIFICATION_DISCRETE.lock().ok().and_then(|g| g.clone())
+}
+
+/// Applique un choix de « Vérification des mises à jour » depuis le premier
+/// écran OU les Options : persistance immédiate, timer posé/retiré en direct,
+/// vérification au démarrage relancée pour « À l'ouverture » (L5 intact).
+fn appliquer_mode_maj(h: HWND, mode: crate::velopack::ModeMiseAJour) {
+    {
+        let etat = unsafe { &mut *ETAT };
+        if etat.mode_maj == mode { return; }
+        etat.mode_maj = mode;
+    }
+    if let Err(e) = crate::velopack::ecrire_config(mode) {
+        unsafe { (*ETAT).statut = format!("Configuration non enregistrée : {e}"); }
+    }
+    if mode.doit_demarrer_timer_discret() {
+        demarrer_timer_maj_discret(h);
+    } else {
+        arreter_timer_maj_discret(h);
+    }
+    {
+        let mut g = match SUIVI_MAJ.lock() { Ok(g) => g, Err(_) => return };
+        g.verification = None;
+        g.telechargement = None;
+        g.bandeau = None;
+    }
+    if mode == crate::velopack::ModeMiseAJour::Auto {
+        lancer_verification_maj(h, false);
+    }
+    unsafe { rafraichir(h); }
 }
 
 fn dans(r: &RECT, x: i32, y: i32) -> bool {
@@ -2846,6 +3002,12 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             1 // traité : ne pas laisser DefWindowProc recharger le curseur
         }
         WM_TIMER => {
+            // Timer discret : UN tick = UN thread qui fait UNE requête puis
+            // meurt. Aucune boucle, aucun polling, zéro CPU entre les ticks.
+            if w == TIMER_MAJ_DISCRETE {
+                lancer_verification_discrete(h);
+                return 0;
+            }
             let etat = &mut *ETAT;
             if w == TIMER_PROGRESSION && etat.occupe {
                 etat.phase += 20;
@@ -3132,22 +3294,11 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                 let z_maj = &*std::ptr::addr_of!(ZONES_MAJ);
                 for (i, z) in z_maj.iter().enumerate() {
                     if dans(z, x, y) {
-                        etat.mode_maj = match i {
-                            0 => crate::velopack::ModeMiseAJour::Auto,
-                            1 => crate::velopack::ModeMiseAJour::Manuel,
-                            _ => crate::velopack::ModeMiseAJour::Desactive,
-                        };
-                        {
-                            let mut g = SUIVI_MAJ.lock().unwrap_or_else(|e| e.into_inner());
-                            g.verification = None;
-                            g.telechargement = None;
-                        }
-                        // Rejoindre le mode « Auto » relance la vérification
-                        // au démarrage ; les deux autres n'appellent RIEN.
-                        if etat.mode_maj == crate::velopack::ModeMiseAJour::Auto {
-                            lancer_verification_maj(h, false);
-                        }
-                        rafraichir(h);
+                        // Même ordre que `options_ui()` : Désactivée (défaut),
+                        // À l'ouverture, Automatique (discret). Un seul point
+                        // d'application (persistance + timer) pour les 2 vues.
+                        let mode = crate::velopack::ModeMiseAJour::options_ui()[i].0;
+                        appliquer_mode_maj(h, mode);
                         return 0;
                     }
                 }
@@ -3167,6 +3318,19 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
                 }
                 // Sinon : laisser tomber sur les boutons du pied de page
                 // (« Annuler » / « Continuer »).
+            }
+            // ── Options : 3 choix « Vérification des mises à jour » ──────
+            // Mêmes cartes que le premier écran ; un clic applique le choix
+            // (config + timer) immédiatement, sans attendre « Continuer ».
+            if etat.vue == Vue::Options {
+                let zo = &*std::ptr::addr_of!(ZONES_MAJ_OPTIONS);
+                for (i, z) in zo.iter().enumerate() {
+                    if dans(z, x, y) {
+                        let mode = crate::velopack::ModeMiseAJour::options_ui()[i].0;
+                        appliquer_mode_maj(h, mode);
+                        return 0;
+                    }
+                }
             }
             // ⚠ Rust 2024 interdit `&STATIC_MUT` : on passe par `addr_of!`.
             let zm = &*std::ptr::addr_of!(ZONES_METHODES);
@@ -3262,6 +3426,12 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             rafraichir(h);
             0
         }
+        WM_APP_MAJ_DISCRETE => {
+            // Un tick du timer discret est terminé : on repeint pour afficher
+            // la pastille, sans créer la moindre fenêtre.
+            rafraichir(h);
+            0
+        }
         WM_APP_FIN => {
             let etat = &mut *ETAT;
             etat.occupe = false;
@@ -3329,7 +3499,14 @@ unsafe extern "system" fn wnd_proc(h: HWND, msg: u32, w: WPARAM, l: LPARAM) -> L
             rafraichir(h);
             0
         }
-        WM_CLOSE | WM_DESTROY => { PostQuitMessage(0); 0 }
+        WM_CLOSE | WM_DESTROY => {
+            // ⚠ Sans ce KillTimer, le timer discret survivrait à la fenêtre :
+            // le message arriverait sur un HWND invalide. Un seul timer posé,
+            // une seule destruction, zéro tâche résiduelle.
+            arreter_timer_maj_discret(h);
+            PostQuitMessage(0);
+            0
+        }
         _ => DefWindowProcW(h, msg, w, l),
     }
 }
@@ -3943,6 +4120,11 @@ pub fn lancer() {
         if crate::velopack::doit_verifier_au_demarrage() {
             lancer_verification_maj(hwnd, false);
         }
+        // ── Timer du mode « Automatique (discret) » ─────────────────────
+        // Posé UNIQUEMENT si l'utilisateur a choisi ce mode (config relue au
+        // démarrage). Aucun timer dans les modes Désactivée / À l'ouverture.
+        // UN seul SetTimer à 6 h, puis zéro CPU jusqu'au tick suivant.
+        demarrer_timer_maj_discret(hwnd);
         // L'icône est déjà posée sur la CLASSE (voir plus haut). On la
         // ré-applique sur la FENÊTRE par WM_SETICON : certaines versions de
         // Windows n'honorent l'icône de classe qu'après création, et cela ne
