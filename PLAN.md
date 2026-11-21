@@ -1263,3 +1263,11 @@ sans clic et avec icône, logo tige entière. Arreter le cas-par-cas.
 | TRAY3 | icône ressource dans rose-tray.exe + activation auto | rose/src/bin/rose-tray.rs, scripts/build-windows-rebuild.sh, docs/TRAY3.md |
 | LOGO3 | tige jamais coupée, marge garantie | rose/src/{setup_gui,paint}.rs, docs/LOGO3.md |
 | VER3 | bump 0.1.72 → 0.1.73 partout | Cargo.toml/lock, README, docs, wikimiroir |
+
+## Vague 80 (21/11) — vérité AOT, tray tout mode, logo pied entier
+
+| Agent | Sujet | Fichiers |
+|---|---|---|
+| AOT5 | VRAI AOT universel : embarquer le runtime dans le binaire émis (flottants/RNG/E/S) | rose/src/{cmd_llvm,natif_emetteur,link_natif,run}.rs |
+| TRAY4 | helper lancé au logon pour TOUS les modes automatiques (Auto inclus) | rose/src/{demarrage,setup_gui,bin/rose-tray}.rs |
+| LOGO4 | bornes_opaques complètes : inclure le PIED de la tige | rose/src/paint.rs |
