@@ -1175,3 +1175,19 @@ Thorn pro:
 - TP1: `thorn/src/noyau.rose` (inductifs généraux, terminaison)
 - TP2: `thorn/src/tactiques.rose` (unification, tactiques avancées)
 - TP3: `thorn/docs/` + exemples (`thorn/docs/PRO_*`)
+
+## Vague 70 (21/11) — offensive finale : 14 divergences A-Z + Rust
+
+A-Z: un seul agent possède l'émetteur (G5), les autres travaillent en lecture/doc/tests.
+- G5A: toutes les divergences G5 dans emetteur_elf.rose (Unicode, arith bigint, rationnels, ^)
+- G5B: tests de non-régression étendus (tests_selfhost/ uniquement)
+
+Rust: 5 agents, fichiers disjoints
+- R6: jit.rs (flottants/carrés)
+- R7: interp.rs (exec, dispatch)
+- R8: run.rs (tables, RNG, valeurs)
+- R9: front.rs + rir.rs (parse)
+- R10: i128x.rs (rationnels BigInt)
+
+Thorn:
+- T7: noyau.rose (inductifs génériques, terminaison)
