@@ -1377,3 +1377,10 @@ qui contient `retour "≈"`) déclenche l'échec. Le RIR est correct et l'émett
 hébergé réussit. Émission DIAGNOSTIQUE de C0 en cours avec le chemin d'erreur
 réécrit vers `ecrire_bytes("/dev/stdout", "G5ERR:" + $g5_err[0])`, composite
 restauré juste après. Objectif: lire enfin le message exact.
+
+## Vague 91 — C1 : limite mémoire matérielle, pas un bug de logique
+
+C0_final2 (1 598 944 o) valide: sonde p3 (retour "≈") compile et produit e2 89 88;
+fib -> ELF 9496 o. Mais C0(rose_natif.rose) a monte a 84 Gio RSS, epuise le swap
+16 Gio et passe en etat D -> arrete. Cause: runtime G5 = allocateur tas montant
+sans GC. Prochain chantier: recuperation memoire / emission par morceaux.
