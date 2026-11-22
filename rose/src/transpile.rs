@@ -1611,7 +1611,7 @@ impl<'a> WasmEmetteur<'a> {
 
     /// Corps d'une fonction : déclaration des locaux, instructions, valeur
     /// de retour (le local `__result`, ou 0), puis `end`.
-    fn compiler_fonction(&mut self, params: &[String], instrs: &[Instr]) -> Result<Vec<u8>, String> {
+    fn compiler_fonction(&mut self, params: &[String], instrs: &'a [Instr]) -> Result<Vec<u8>, String> {
         self.locals.clear();
         self.local_idx.clear();
         self.hidden = 0;
@@ -1879,19 +1879,22 @@ impl<'a> WasmEmetteur<'a> {
 
     /// Assemble le module : header, types, functions, exports, code.
     fn module(&mut self) -> Result<Vec<u8>, String> {
-        // Cloner les corps avant de compiler évite d'emprunter `self` deux fois.
-        let main_instrs = self.prog.instructions.clone();
-        let mut specs: Vec<(Vec<String>, Vec<Instr>)> = Vec::new();
+        // OPT_VM — zéro copie des corps : `self.prog` vit `'a`, donc les
+        // tranches d'instructions restent valides pendant que `self` est
+        // emprunté de façon mutable pour compiler. L'ancien code clonait TOUT l'AST
+        // (principal + chaque fonction) avant d'émettre le moindre octet.
+        let main_instrs: &'a [Instr] = &self.prog.instructions;
+        let mut specs: Vec<(Vec<String>, &'a [Instr])> = Vec::with_capacity(self.ordre.len());
         for nom in &self.ordre {
             let sig = self.prog.signatures.get(nom)
                 .ok_or_else(|| format!("rose: transpile wasm — fonction '{}' introuvable", nom))?;
             let corps = sig.corps.as_ref()
                 .ok_or_else(|| format!("rose: transpile wasm — fonction '{}' sans corps", nom))?;
-            specs.push((sig.params.iter().map(|(n, _)| n.clone()).collect(), corps.clone()));
+            specs.push((sig.params.iter().map(|(n, _)| n.clone()).collect(), corps.as_slice()));
         }
 
-        let mut corps_fonctions = Vec::new();
-        corps_fonctions.push(self.compiler_fonction(&[], &main_instrs)?); // index 0
+        let mut corps_fonctions = Vec::with_capacity(specs.len() + 1);
+        corps_fonctions.push(self.compiler_fonction(&[], main_instrs)?); // index 0
         for (params, corps) in &specs {
             corps_fonctions.push(self.compiler_fonction(params, corps)?);
         }

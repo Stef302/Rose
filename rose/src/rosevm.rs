@@ -57,7 +57,7 @@
 //
 // Licence MIT.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
 use crate::front::{Expr, Instr, Programme, Signature, Ty, TyKind};
@@ -2896,10 +2896,22 @@ pub fn ecrire_snapshot(prog: &Programme) -> Vec<u8> {
     // `ordre` fait autorité : il donne l'ordre de déclaration des signatures.
     // Les signatures absentes de `ordre` (ne devrait pas arriver) sont ajoutées
     // en fin pour ne rien perdre.
-    let mut noms: Vec<String> = prog.ordre.clone();
-    for nom in prog.signatures.keys() {
-        if !noms.contains(nom) { noms.push(nom.clone()); }
-    }
+    // Cas normal : `ordre` et `signatures` décrivent exactement les mêmes
+    // fonctions → une seule copie, ZÉRO allocation de table de hachage
+    // (un HashSet coûte ~100 ns sur un programme d'une fonction).
+    let noms = if prog.ordre.len() == prog.signatures.len() {
+        prog.ordre.clone()
+    } else {
+        let mut presents: HashSet<&str> = HashSet::with_capacity(prog.ordre.len() + prog.signatures.len());
+        let mut noms: Vec<String> = Vec::with_capacity(prog.ordre.len() + prog.signatures.len());
+        for nom in &prog.ordre {
+            if presents.insert(nom.as_str()) { noms.push(nom.clone()); }
+        }
+        for nom in prog.signatures.keys() {
+            if presents.insert(nom.as_str()) { noms.push(nom.clone()); }
+        }
+        noms
+    };
     pusher_u32(&mut out, noms.len() as u32);
     for nom in &noms {
         if let Some(s) = prog.signatures.get(nom) { ecrire_signature3(&mut out, s); }
@@ -3001,18 +3013,23 @@ pub fn executer_snapshot(octets: &[u8], arguments: &[String]) -> Result<String, 
     let utilise_irrationnel = instrs_irrationnel(&prog.instructions)
         || prog.ordre.iter().any(|n| prog.signatures.get(n)
             .and_then(|s| s.corps.as_deref()).map_or(false, instrs_irrationnel));
+
+    // OPT_VM — le JIT doit vivre jusqu'à la fin de l'exécution : il possède
+    // les pages de code exécutable appelées par le principal compilé.
+    let mut _jit_garde: Option<crate::jit::Jit> = None;
+    let mut jit_principal: Option<crate::jit::Compile> = None;
     if !utilise_irrationnel {
         let candidats: Vec<String> = prog.ordre.iter()
             .filter(|n| prog.signatures.get(*n).map_or(false, |s| s.corps.is_some()))
             .cloned()
             .collect();
         crate::rir::declarer_rir(&candidats);
-        for nom in prog.ordre.clone() {
-            if let Some(sig) = prog.signatures.get(&nom) {
+        for nom in &prog.ordre {
+            if let Some(sig) = prog.signatures.get(nom) {
                 let Some(corps) = sig.corps.as_ref() else { continue };
                 let params: Vec<String> = sig.params.iter().map(|(n, _)| n.clone()).collect();
                 if let Some(rir) = crate::rir::abaisser(corps, &params, &[]) {
-                    prog.signatures.get_mut(&nom).unwrap().rir = Some(rir);
+                    prog.signatures.get_mut(nom).unwrap().rir = Some(rir);
                 }
             }
         }
@@ -3047,8 +3064,79 @@ pub fn executer_snapshot(octets: &[u8], arguments: &[String]) -> Result<String, 
             Instr::TantQue { test, corps, .. } => est_euclide(test, corps),
             _ => false,
         });
-        if pas_euclide {
-            if let Some(rir) = crate::rir::abaisser_principal(&prog.instructions) {
+        let rir_principal = if pas_euclide {
+            crate::rir::abaisser_principal(&prog.instructions)
+        } else { None };
+
+        // OPT_VM — compiler coûte ~0,5 ms ; sur un programme sans récursion
+        // (boucle courte, table) ce coût DÉPASSE l'exécution interprétée.
+        // On ne déclenche donc le JIT que si une fonction s'appelle elle-même
+        // (cas typique : fib, factorielle récursive), où le gain est massif.
+        fn expr_recursive(nom: &str, e: &Expr) -> bool {
+            match e {
+                Expr::Appel { nom: n, args, .. } =>
+                    n == nom || args.iter().any(|a| expr_recursive(nom, a)),
+                Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } =>
+                    expr_recursive(nom, a) || expr_recursive(nom, b),
+                Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+                | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+                | Expr::SuperFactorielle(a, _) => expr_recursive(nom, a),
+                Expr::ListeLit(v, _) => v.iter().any(|x| expr_recursive(nom, x)),
+                Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_recursive(nom, x)),
+                _ => false,
+            }
+        }
+        fn instrs_recursives(nom: &str, b: &[Instr]) -> bool {
+            b.iter().any(|i| match i {
+                Instr::Afficher(es, _) => es.iter().any(|e| expr_recursive(nom, e)),
+                Instr::Affect { e, .. } | Instr::ExprStmt(e) | Instr::Lever(e, _)
+                | Instr::Retour(Some(e), _) => expr_recursive(nom, e),
+                Instr::AffectIndex { index, valeur, .. } =>
+                    expr_recursive(nom, index) || expr_recursive(nom, valeur),
+                Instr::Si { test, alors, sinon, .. } => expr_recursive(nom, test)
+                    || instrs_recursives(nom, alors)
+                    || sinon.as_ref().map_or(false, |s| instrs_recursives(nom, s)),
+                Instr::TantQue { test, corps, .. } =>
+                    expr_recursive(nom, test) || instrs_recursives(nom, corps),
+                Instr::Pour { debut, fin, corps, .. } => expr_recursive(nom, debut)
+                    || expr_recursive(nom, fin) || instrs_recursives(nom, corps),
+                Instr::Bloc(b) | Instr::Spawn(b, _) => instrs_recursives(nom, b),
+                Instr::Essayer { corps, attraper, finalment, .. } => instrs_recursives(nom, corps)
+                    || attraper.as_ref().map_or(false, |(_, x)| instrs_recursives(nom, x))
+                    || finalment.as_ref().map_or(false, |x| instrs_recursives(nom, x)),
+                _ => false,
+            })
+        }
+        let recursif = prog.ordre.iter().any(|nom| prog.signatures.get(nom)
+            .and_then(|s| s.corps.as_deref())
+            .map_or(false, |c| instrs_recursives(nom, c)));
+
+        // OPT_VM — la RVM exécutait TOUT en interpréteur (fib(28) : 123 ms)
+        // alors que `rose run` compile le principal ET les fonctions avec
+        // Cranelift. On applique le MÊME pipeline ici. ⚠ On ne prend la voie
+        // JIT que si TOUTES les fonctions ont été réellement compilées :
+        // sinon le code compilé déléguerait à un interpréteur sans table JIT
+        // installée (changements de sémantique observés sur les appels RIR).
+        if recursif {
+            let prog_pour_jit = prog.clone();
+            let (a_du_travail, _natifs) = crate::jit::prepare_jit(
+                &prog_pour_jit, &prog.signatures, rir_principal.as_ref());
+            if a_du_travail {
+                let mut jit = crate::jit::Jit::nouveau(&prog.signatures);
+                let principal = jit.compiler_principal(&prog_pour_jit);
+                let fonctions = jit.compiler_tout();
+                let tout_natif = fonctions.values().all(|c| matches!(
+                    c, crate::jit::Compile::Natif(_) | crate::jit::Compile::Principal(_)));
+                if tout_natif {
+                    jit_principal = principal;
+                    _jit_garde = Some(jit);
+                }
+            }
+        }
+        // Sans principal JIT, on garde le corps RIR linéaire (bien plus rapide
+        // que l'AST), exactement comme avant optimisation.
+        if jit_principal.is_none() {
+            if let Some(rir) = rir_principal {
                 prog.instructions = vec![Instr::Rir(rir)];
             }
         }
@@ -3058,8 +3146,20 @@ pub fn executer_snapshot(octets: &[u8], arguments: &[String]) -> Result<String, 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut interp = crate::interp::Interp::nouveau(prog)
             .avec_arguments(arguments.to_vec());
-        interp.executer_principal();
+        if let Some(crate::jit::Compile::Principal(f)) = jit_principal {
+            // Le code compilé peut déléguer à l'interpréteur via
+            // `rose_appel_interpreteur` : l'interpréteur doit rester vivant
+            // (et publié) pendant TOUT l'appel au principal.
+            crate::interp::poser_interp_courant(&mut interp);
+            f();
+            crate::interp::poser_interp_courant(std::ptr::null_mut());
+        } else {
+            interp.executer_principal();
+        }
     }));
+    // Même en cas de panique, ne jamais laisser un pointeur pendant vers un
+    // interpréteur détruit (les helpers JIT le liraient).
+    crate::interp::poser_interp_courant(std::ptr::null_mut());
     let sortie = crate::run::take_sink().unwrap_or_default();
     match result {
         Ok(()) => Ok(sortie),

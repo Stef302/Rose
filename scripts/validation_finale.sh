@@ -54,7 +54,10 @@ log "=== 6. batterie AZ (Unicode) ==="
 bash tests_selfhost/lancer_az.sh > /tmp/opencode/vf_az.log 2>&1
 awk -F'\t' 'NR>1{c[$4]++} END{for(k in c) print k, c[k]}' /tmp/opencode/az_tests/battery/resultats.tsv | tee -a "$LOG"
 nok=$(awk -F'\t' 'NR>1 && $4=="CONFORME"{c++} END{print c+0}' /tmp/opencode/az_tests/battery/resultats.tsv)
-[ "$nok" -eq 31 ] && ok "AZ 31/31" || bad "AZ $nok/31"
+nbad=$(awk -F'\t' 'NR>1 && $4!="CONFORME"{c++} END{print c+0}' /tmp/opencode/az_tests/battery/resultats.tsv)
+# La batterie AZ est passée de 31 à 47 programmes (vague QAA) : le contrôle
+# porte sur ZÉRO non-conforme, avec un plancher de 31, pas sur un cardinal figé.
+[ "$nok" -ge 31 ] && [ "$nbad" -eq 0 ] && ok "AZ $nok CONFORME, 0 non-conforme" || bad "AZ $nok CONFORME, $nbad non-conforme"
 
 log "=== 7. self-host HOST-1 ==="
 "$B" compilateur/rose_natif.rose /tmp/opencode/fib28.rose > /tmp/opencode/vf_host.elf 2>/dev/null
