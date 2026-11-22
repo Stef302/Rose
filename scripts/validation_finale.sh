@@ -51,10 +51,14 @@ r=$("$B" rvm /tmp/opencode/vf.bc 2>&1 | tail -1)
 [ "$r" = "317811" ] && ok "RVM 317811" || bad "RVM: $r"
 
 log "=== 6. batterie AZ (Unicode) ==="
-bash tests_selfhost/lancer_az.sh > /tmp/opencode/vf_az.log 2>&1
-awk -F'\t' 'NR>1{c[$4]++} END{for(k in c) print k, c[k]}' /tmp/opencode/az_tests/battery/resultats.tsv | tee -a "$LOG"
-nok=$(awk -F'\t' 'NR>1 && $4=="CONFORME"{c++} END{print c+0}' /tmp/opencode/az_tests/battery/resultats.tsv)
-nbad=$(awk -F'\t' 'NR>1 && $4!="CONFORME"{c++} END{print c+0}' /tmp/opencode/az_tests/battery/resultats.tsv)
+# Dossier PRIVÉ : plusieurs agents peuvent lancer la batterie AZ en parallèle
+# dans leurs worktrees. Partager /tmp/opencode/az_tests/battery donnait des
+# rc=127 et de faux BLOQUES (mesuré le 22/11 pendant la vague OPT).
+AZDIR=/tmp/opencode/vf_az_$$
+AZ_OUT="$AZDIR" bash tests_selfhost/lancer_az.sh > /tmp/opencode/vf_az.log 2>&1
+awk -F'\t' 'NR>1{c[$4]++} END{for(k in c) print k, c[k]}' "$AZDIR/resultats.tsv" | tee -a "$LOG"
+nok=$(awk -F'\t' 'NR>1 && $4=="CONFORME"{c++} END{print c+0}' "$AZDIR/resultats.tsv")
+nbad=$(awk -F'\t' 'NR>1 && $4!="CONFORME"{c++} END{print c+0}' "$AZDIR/resultats.tsv")
 # La batterie AZ est passée de 31 à 47 programmes (vague QAA) : le contrôle
 # porte sur ZÉRO non-conforme, avec un plancher de 31, pas sur un cardinal figé.
 [ "$nok" -ge 31 ] && [ "$nbad" -eq 0 ] && ok "AZ $nok CONFORME, 0 non-conforme" || bad "AZ $nok CONFORME, $nbad non-conforme"

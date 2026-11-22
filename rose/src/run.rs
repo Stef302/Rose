@@ -3014,12 +3014,70 @@ impl Table {
     }
 }
 
+/// Finaliseur à une multiplication pour un hachage u64 DÉJÀ mélangé.
+/// Source unique partagée par `IndexRapide` (adressage ouvert) et
+/// `HashU64::write_u64` (tables de hachage std) : les deux doivent envoyer
+/// la même clé dans le même bucket, sinon une clé insérée par une voie ne
+/// serait pas retrouvée par l'autre.
+#[inline]
+fn melange_u64(h: u64) -> u64 {
+    let z = (h ^ (h >> 29)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z ^ (z >> 32)
+}
+
+#[cfg(test)]
+mod tests_opt_tables {
+    use super::*;
+
+    /// Garde-fou de la régression OPT_TABLES : sans `melange_u64`, les
+    /// 3 000 premières clés entières tombaient dans UN SEUL bucket de
+    /// l'`IndexRapide` (occupance 3000 sur 8192) → insertion quadratique.
+    #[test]
+    fn melange_u64_repartit_les_petits_entiers() {
+        let masque = 8192usize - 1;
+        let mut buckets = std::collections::HashSet::new();
+        for k in 0..3000i64 {
+            buckets.insert((melange_u64(Table::h_entier(k)) as usize) & masque);
+        }
+        assert!(buckets.len() > 1500,
+                "buckets distincts pour 3000 clés : {}", buckets.len());
+    }
+
+    /// Cohérence des deux voies : `inserer_i64` (JIT) et `inserer` (général)
+    /// doivent retrouver les mêmes clés via le même index avalanché.
+    #[test]
+    fn coherence_index_entier_et_general() {
+        let t = Table::neuf(Vec::new());
+        for k in 0..3000i64 { t.inserer_i64(k, k * k); }
+        for k in 0..3000i64 {
+            assert!(t.contient_i64(k));
+            assert!(t.trouver(&Valeur::Entier(k, None)).is_some());
+        }
+        // Même table, clés hors array_part (≥ N_ARRAY) via la voie générale.
+        for k in (Table::N_ARRAY as i64)..(Table::N_ARRAY as i64 + 2000) {
+            t.inserer(Valeur::Entier(k, None), Valeur::Entier(k, None));
+        }
+        for k in (Table::N_ARRAY as i64)..(Table::N_ARRAY as i64 + 2000) {
+            assert!(t.trouver(&Valeur::Entier(k, None)).is_some());
+            assert!(t.contient_i64(k));
+        }
+    }
+}
+
 // ── Index plat à adressage ouvert (SPEED6) ──────────────────────────────
 // Un `HashMap<u64,usize>` occupe ~136 Kio pour 8192 buckets (octet de
 // contrôle + 16 octets d'entrée), avec des accès dispersés. Deux tableaux
-// contigus (h, pos+1) font 96 Kio et une seule sonde en moyenne. Le hachage
-// du hachage (`HashU64::write_u64`) disparaît ; les collisions de h restent
-// résolues par `valeur_egale` et la liste `collisions` inchangée.
+// contigus (h, pos+1) font 96 Kio et une seule sonde en moyenne.
+//
+// ⚠ OPT_TABLES (22/11/2026) : le hachage du hachage NE disparaît PAS.
+// `h_entier(k) = bits(f64(k)) * C ^ X` a ses ~50 bits de poids FAIBLE
+// constants pour tout petit entier (la mantisse de `k as f64` est alignée à
+// droite). Indexer par `h & (cap-1)` envoyait donc LES 3 000 CLÉS 0..2999
+// DANS LE MÊME BUCKET (vérifié : 1 bucket distinct sur 8192, occupance 3000)
+// → insertion quadratique (0,54 ms à 1k, 4,70 ms à 3k, 60,4 ms à 10k).
+// On réutilise le finaliseur à une multiplication DÉJÀ présent dans
+// `HashU64::write_u64` : une avalanche sur les bits bas, sans allocation.
+// Les collisions de h restent résolues par `valeur_egale` et `collisions`.
 #[derive(Clone)]
 struct IndexRapide {
     hs: Vec<u64>,
@@ -3035,7 +3093,9 @@ impl IndexRapide {
     #[inline]
     fn get(&self, h: u64) -> Option<usize> {
         let m = self.hs.len() - 1;
-        let mut i = (h as usize) & m;
+        // OPT_TABLES : avalancher AVANT de masquer — sinon les hachages
+        // canoniques des petits entiers partagent tous le même bucket.
+        let mut i = (melange_u64(h) as usize) & m;
         loop {
             let p = self.ps[i];
             if p == 0 { return None; }
@@ -3049,7 +3109,7 @@ impl IndexRapide {
     fn inserer(&mut self, h: u64, pos: usize) {
         if (self.n + 1) * 10 >= self.hs.len() * 7 { self.grandir(); }
         let m = self.hs.len() - 1;
-        let mut i = (h as usize) & m;
+        let mut i = (melange_u64(h) as usize) & m;
         loop {
             if self.ps[i] == 0 {
                 self.hs[i] = h; self.ps[i] = (pos + 1) as u32; self.n += 1; return;
@@ -3133,8 +3193,8 @@ impl std::hash::Hasher for HashU64 {
         // ⚠ Un hachage IDENTITÉ dégénère à 2,44 ms : pour k ∈ [1024,2048),
         // `(k as f64).to_bits() & 0xfff == 0` → les 3 000 clés tombent dans
         // le même bucket. Simulation : max 5 clés/bucket de 4096 ici.
-        let z = (i ^ (i >> 29)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        self.0 = z ^ (z >> 32);
+        // Source unique avec `IndexRapide` (voir `melange_u64`).
+        self.0 = melange_u64(i);
     }
 }
 
