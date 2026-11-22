@@ -1,18 +1,20 @@
 # Thorn — MATHLIB_ROADMAP : vers un équivalent de mathlib adapté à Thorn
 
-**Constat daté : 22/11/2026.** Tous les chiffres de ce document ont été
-re-mesurés ce jour avec `./rose/rose` **0.1.73** depuis
+**Constat daté : 22/11/2026 (M0 + M1).** Tous les chiffres de ce document ont
+été re-mesurés ce jour avec `./rose/rose` **0.1.73** depuis
 `/home/clausake/Stefan/ROSE`. Ce sont des constats, pas des promesses.
 Fichiers livrés par ce chantier (tous NOUVEAUX, aucun fichier existant modifié,
 aucun commit, aucune publication) :
 
 | Fichier | Rôle |
 |---|---|
-| `thorn/src/hierarchie.rose` | Jalon 1 : Magma → Semigroupe → Monoid → Groupe, lois, registre, lemmes génériques, réécriture |
-| `thorn/tests_hierarchie.rose` | Rejeu du jalon 1 (19 contrôles) |
-| `thorn/src/instances.rose` | Prototype : synthèse d'instances par pré-élaboration (zéro changement du noyau) |
+| `thorn/src/hierarchie.rose` | Jalon M0 : Magma → Semigroupe → Monoid → Groupe, lois, registre, lemmes génériques, réécriture |
+| `thorn/tests_hierarchie.rose` | Rejeu du jalon M0 (19 contrôles) |
+| `thorn/src/instances.rose` | Prototype M0 : synthèse d'instances par pré-élaboration (zéro changement du noyau) |
 | `thorn/tests_instances.rose` | Rejeu du prototype (10 contrôles) |
-| `thorn/docs/MATHLIB_ROADMAP.md` | Ce document |
+| `thorn/src/ordres.rose` | Jalon M1 : Preorder / PartialOrder / LinearOrder / Lattice, 35 lemmes génériques, décidabilité calculée |
+| `thorn/tests_ordres.rose` | Rejeu du jalon M1 (50 contrôles) |
+| `thorn/docs/MATHLIB_ROADMAP.md` | Ce document (M0 + M1) |
 
 ---
 
@@ -67,7 +69,8 @@ lois, injectivité de `succ`, `succ ≠ 0`, `Faux`.
    générique réutilisable : les 34 lemmes d'algèbre sont spécialisés à `Nat`.
 2. Aucune synthèse d'instance, aucun argument implicite au niveau noyau.
 3. Ordres/topologie/analyse absents en tant que structures (seules 8 lois sur
-   `≤` postulées dans `algebre.rose`).
+   `≤` postulées dans `algebre.rose`). **M1 comble la partie « ordres »** :
+   §4bis ; topologie et analyse restent absentes.
 4. Pas de groupes, d'entiers relatifs, de soustraction, de division.
 5. Unification générale absente ; pas de `simp`, pas de réécriture par lemmes.
 6. Inductifs utilisateurs, positivité, terminaison : absents (registre fermé).
@@ -151,11 +154,12 @@ paramétrée par cet enregistrement *est* un lemme générique.
 ```
 M0  FONDATIONS  (LIVRÉ)  structures + registre + lemmes génériques + réécriture
  │                       + prototype de synthèse d'instances
- ├──> M1  ORDRES ET DÉCIDABILITÉ
+ ├──> M1  ORDRES ET DÉCIDABILITÉ  (LIVRÉ — voir §4bis)
  │       Preorder / PartialOrder / LinearOrder en enregistrements ; lemmes
  │       génériques (trans, antisymm, monotonicité) ; `décider (a ≤ b)` ;
  │       recycler les 8 lemmas de `≤` de algebre.rose comme lois certifiées.
  │       Cible mesurable : ≥ 25 lemmes génériques vérifiés, 3 instances.
+ │       RÉSULTAT : 35 lemmes génériques, 4 instances, 50/50 contrôles.
  ├──> M2  SEMI-ANNEAUX ET ANNEAUX
  │       AddMonoid/MulMonoid/Distrib/Semiring/Ring ; instances Nat, puis
  │       entiers relatifs comme paire (Nat, Nat) quotientée par une relation
@@ -271,6 +275,135 @@ Non-régression re-mesurée **après** ajout : `bash thorn/tests_regression.sh`
 
 ---
 
+## 4bis. Jalon M1 livré — ORDRES ET DÉCIDABILITÉ
+
+### 4bis.1 Contenu réel
+
+`thorn/src/ordres.rose` (importe `instances.rose`, donc toute la chaîne M0) fournit :
+
+- **4 constructeurs de structures** : `ord_preorder`, `ord_partial`, `ord_linear`,
+  `ord_lattice`, avec prédicats (`ord_est_preorder`/`ord_est_partial`/
+  `ord_est_linear`/`ord_est_lattice`) et accesseurs défensifs. Une `LinearOrder`
+  a une loi `total : Πa b, Dec (a ≤ b)` — la totalité est **decidable**, pas un
+  drapeau.
+- **Champs de loi = termes vérifiés** : les instances Nat utilisent
+  `al_lem_le_refl`, `al_lem_le_trans`, `al_lem_le_antisymm` (termes déjà passés
+  par `verifier`/`convertible` dans `tests_algebre.rose`). Les structures
+  `OrdreAbstrait` et `LatticeAbstrait` sont des sections : lois = constantes de
+  signature dans un contexte de noyau de 6 puis 14 entrées, exactement comme
+  `GroupeAbstrait` en M0.
+- **4 instances publiques** dans `ord_registre()` :
+  `Nat/≤/Preorder`, `Nat/≤/PartialOrder`, `Nat/≤/LinearOrder`, et
+  `Nat/≥/PartialOrder` (ordre dual, lois dérivées des lemmes vérifiés, sans
+  axiome nouveau). `ord_registre_complet()` = registre M0 (3 instances) + registre
+  M1 (4 instances) = **7 instances**, sans modifier `hierarchie.rose`.
+- **35 lemmes génériques** (`grep -c '^fn ord_lem_' thorn/src/ordres.rose` = 35),
+  répartis : ordre (réflexivité, transitivité, chaînes de 4 et 5, antisymétrie,
+  symétrie de l'antisymétrie, transport par égalité, trans avec égalité à
+  gauche/droite, réflexivité d'égalité, décidabilité) ; treillis (idempotence,
+  commutativité, associativité de `min`/`max`, absorption, `min ≤ max`,
+  `min_eq_left`, `max_eq_right`, monotonie de `min`/`max`, bornes inférieure et
+  supérieure).
+- **Décidabilité calculée** : `ord_decide_nat(a, b)` calcule la comparaison de
+  deux numéraux Nat fermés (Rose), puis construit un **terme de noyau vérifié**
+  de type `Dec (a ≤ b)` : `oui` + preuve vérifiée si vrai, `non` + fonction de
+  réfutation vérifiée si faux. Famille de signature : `Dec : ΠP:Type(0), Type(0)`,
+  `oui : ΠP, P → Dec P`, `non : ΠP, (P → Faux) → Dec P`. **Deux équations de
+  signature sont ajoutées, toutes deux documentées** :
+  `le_succ_pas_ax : Πn, succ n ≤ n → Faux` (nécessaire parce que `le` est une
+  constante opaque dans `algebre.rose` : les 5 lois de l'ordre ne contredisent
+  pas `succ n ≤ n`) ;
+  `le_total_ax : Πa b, Dec (a ≤ b)` (champ `total` de l'instance
+  `Nat/≤/LinearOrder`). Cause technique de ce second axiome : produire un TERME
+  de noyau de type `Πa b, Dec (a ≤ b)` pour des variables `a b` exigerait une
+  induction dans le terme avec réfutation de `succ n ≤ n` pour tout `n`, alors
+  que `ord_decide_nat` ne calcule que sur des numéraux **fermés** (le noyau a
+  l'ι pour `nat_rec`/`plus`, mais la bibliothèque n'a pas de lemme de décidabilité
+  inductif réutilisable). Le protocole livré est le même que M0 pour
+  `GroupeAbstrait` : axiome de signature explicite + lemmes dérivés vérifiés.
+  Aucun changement de noyau.
+
+### 4bis.2 Preuves d'exécution (commandes réellement lancées le 22/11/2026)
+
+```
+$ ./rose/rose verif thorn/src/ordres.rose            → vérifié
+$ ./rose/rose verif thorn/tests_ordres.rose          → vérifié
+$ ./rose/rose thorn/tests_ordres.rose
+Thorn — jalon M1 : ordres et décidabilité vérifiés par le noyau
+registre d'ordres : 4 instance(s)
+registre complet M0+M1 : 7 instance(s)
+OK [structure] ... (9 contrôles de structure)
+OK loi/refl[Nat] / loi/trans[Nat] / loi/antisymm[Nat] / loi/total[Nat]
+OK gen/* (17 contrôles, contexte abstrait d'ordre)
+OK lat/* (15 contrôles, contexte abstrait de treillis)
+OK [décision] decider/1 ≤ 2 (vrai)
+OK [décision] decider/2 ≤ 2 (vrai)
+OK [décision] decider/3 ≤ 1 (faux)
+OK [décision] decider/0 ≤ 3 (vrai)
+OK [refus] refus/0≤0 n'est pas 0≤1
+50 contrôle(s) réussi(s), 0 échec(s)
+RESULTAT: OK                                    (rc=0, 49,30 s mesurées)
+```
+
+Le contrôle `[refus]` est une preuve fausse (`le_refl 0` présentée pour
+`0 ≤ 1`) rejetée par `convertible` : le bilan n'est donc pas codé en dur. Si un
+lemme est rejeté par le noyau, `ord_test` affiche le message d'erreur du noyau,
+incrémente le compteur d'échecs, et `thorn/tests_ordres.rose` lève une erreur
+réelle via `quitter(1)` (code de sortie 1) — vérifié après ajout : 50/50, rc=0.
+Le rejeu précédent, avant `quitter`, donnait 49,10 s ; le rejeu final, après
+relecture des commentaires, a donné **47,84 s**, 50/50, rc=0.
+
+### 4bis.3 Avant / après
+
+| Indicateur | Avant M1 (M0 livré) | Après M1 |
+|---|---|---|
+| Structures d'ordre | 0 | 4 niveaux, 2 sections abstraites |
+| Instances d'ordre publiques | 0 | 4 (dont 1 duale), registre complet 7 |
+| Lemmes génériques vérifiés | 6 (algèbre) | 6 + **35 = 41** |
+| `Dec (a ≤ b)` calculé et vérifié | 0 | 4 décisions fermées + 1 refus |
+| Contrôles verts Thorn (hors porte) | 296 | **346** (296 + 50) |
+| Porte de non-régression | 17/17, REUSSIS=165 | **17/17, REUSSIS=165 inchangé** |
+| Changements du noyau | 0 | **0** (2 équations de signature documentées) |
+
+Porte re-mesurée **après** ajout : `bash thorn/tests_regression.sh` →
+`cas exécutés : 17 / 17 attendus`, `réussis : 17`, `échoués : 0`,
+`compteurs observés : REUSSIS=165`, `BILAN: OK — aucune régression`
+(rc=0, 19,31 s, 19,90 s puis 19,31 s mesurées, la dernière fois **après** toutes
+les modifications, y compris `quitter`). La mesure de la même porte **avant** ajout,
+au début de la session et sur une machine chargée, donnait 570,58 s ; les deux
+mesures ne sont pas comparables (les fichiers joués par la porte sont
+identiques, seules la charge et les caches ont changé) — ce sont les
+**compteurs** qui font foi.
+
+Suites M0 rejouées **après** ajout (aucune régression) :
+`./rose/rose thorn/tests_hierarchie.rose` → `19 contrôle(s) réussi(s), 0 échec(s)`,
+`RESULTAT: OK` (rc=0, 137,07 s) ; `./rose/rose thorn/tests_instances.rose` →
+`10 contrôle(s) réussi(s), 0 échec(s)`, `RESULTAT: OK` (rc=0, 34,27 s) ;
+`./rose/rose thorn/tests_algebre.rose` → `34 lemme(s) vérifié(s), 0 échec(s)`,
+`RESULTAT: OK` (rc=0, 155,61 s). Soit **63 contrôles M0 verts** rejoués après M1.
+Les six `./rose/rose verif` des modules M0/M1 (hierarchie, instances, ordres,
+tests_hierarchie, tests_instances, tests_ordres) rendent tous `vérifié`.
+
+### 4bis.4 Cause technique des 6 échecs initiaux (tous corrigés)
+
+Le premier rejeu donnait 44 réussis / 6 échecs ; chaque échec avait une cause
+précise, aucune n'a été masquée :
+
+1. `LatticeAbstrait est un treillis` — `ord_lattice` étend `PartialOrder`, pas
+   `LinearOrder` : le prédicat `ord_est_linear` était donc faux. Corrigé en
+   vérifiant `ord_niveau == "Lattice"`.
+2. `gen/le_of_eq_symm` — motif `eq_rec` inversé : pour `h : b = a`, le motif
+   doit être `λz. le z b` avec prémisse `refl b`, pas `λz. le a z`.
+3. `gen/antisymm[Nat/dual]` — les domaines des λ de l'instance duale utilisaient
+   `le a b` au lieu de la relation duale `le b a`.
+4. `lat/max_comm` — `max_le(a, b, max b a)` réclame `le a (max b a)` et
+   `le b (max b a)` : ce sont `le_max_r(b,a)` et `le_max_l(b,a)`, pas les
+   deux `le_max_*` de `(a,b)`.
+5. `lat/max_assoc` — la borne `le a (max (max a b) c)` exigeait une transitivité
+   `a → max a b → max (max a b) c`.
+6. `lat/max_monotone` — la prémisse `h : a ≤ b` n'était pas utilisée ; le
+   terme passé à `max_le` avait le mauvais domaine.
+
 ## 5. Limites techniques FRANCHES et changements de noyau minimaux
 
 ### 5.A Ce qui est impossible avec le noyau actuel, et pourquoi
@@ -285,6 +418,7 @@ Non-régression re-mesurée **après** ajout : `bash thorn/tests_regression.sh`
 | Polymorphisme d'univers réel | `ind` rend `Type(0)` ; cumulativité bornée à `App` | Les structures sont limitées à des porteurs de `Type(0)` |
 | η, `let`, conversion par hypothèses | `noy_alpha`/`noy_beta_lim` ne les implémentent pas | Certaines preuves naturelles exigent des détours (`eq_rec`) |
 | Cohérence des instances | Deux instances `Monoid Nat` peuvent coexister dans le registre | Aucune garantie qu'elles donnent la même opération ni les mêmes lois |
+| Décidabilité d'une relation opaque (`M1`) | `le` est une constante de signature ; aucune ι-réduction ne calcule `succ n ≤ n`, et aucun lemme inductif ne donne `Dec (a ≤ b)` pour des variables | 2 équations de signature documentées §4bis.1 : `le_succ_pas_ax` (cas faux fermé) et `le_total_ax` (champ `total`) ; le calcul effectif reste vérifié pour les numéraux fermés |
 
 ### 5.B Changement minimal proposé — ET PROTOTYPÉ
 
@@ -322,8 +456,8 @@ implémenté dans ce jalon, et non prétendu.
 
 ### 5.C Ce que ce jalon ne livre PAS
 
-- Pas d'ordres typeclassés (M1), pas d'anneaux au sens `Ring` (M2), pas de
-  topologie ni d'analyse (M3).
+- **Les ordres typeclassés sont désormais livrés (M1, §4bis)** ; il reste :
+  pas d'anneaux au sens `Ring` (M2), pas de topologie ni d'analyse (M3).
 - Pas de `simp`/`omega` : `mg_rewriter` est une assistance contrôlée, pas une
   boucle d'automatisation.
 - `GroupeAbstrait` a des **lois supposées** : ses lemmes sont vérifiés, mais
@@ -352,21 +486,53 @@ document.
 
 ---
 
-## 7. Prochaine action : M1 — ORDRES ET DÉCIDABILITÉ
+## 7. Prochaine action : M2 — SEMI-ANNEAUX ET ANNEAUX
 
-Le jalon suivant est déjà cadré et peut être attaqué sans attendre :
+M1 est livré et vérifié (§4bis) : 35 lemmes génériques, 4 instances d'ordre,
+50/50 contrôles, 346 contrôles verts cumulés, porte 17/17 inchangée. Le jalon
+suivant est **M2**, cadré avec les dépendances exactes ci-dessous.
 
-1. `thorn/src/ordre.rose` : enregistrements `Preorder`, `PartialOrder`,
-   `LinearOrder` (champs de lois = termes vérifiés), avec une instance
-   certifiée réutilisant les 8 lemmes de `≤` de `algebre.rose`.
-2. Corpus générique : `le_trans`, `le_antisymm`, monotonie de `+` et de `×`,
-   `le_succ_mono`, `le_add_droite` — écrits une fois sur l'enregistrement,
-   puis instanciés sur `Nat` et sur le produit `Nat × Nat`.
-3. `décider (a ≤ b)` : relation décidable construite par récursion sur `Nat`
-   via `nat_rec` (le noyau a déjà l'ι pour `nat_rec` et `plus`), avec preuve
-   vérifiée de l'équivalence « le booléen est vrai ↔ a ≤ b ».
-4. `thorn/tests_ordre.rose` : objectif ≥ 25 contrôles verts, porte 17/17
-   inchangée, intégration au registre `mg_registre()` sans modifier le noyau.
+### 7.1 Dépendances exactes (toutes disponibles à ce jour)
 
-Ce jalon ne demande **aucun** changement de noyau : il réutilise le schéma
-M0 (enregistrement + lois-certificats + lemmes génériques + pré-élaboration).
+| Dépendance | Fournie par | Emploi précis dans M2 |
+|---|---|---|
+| `mg_magma`, `mg_semigroupe`, `mg_monoid`, accesseurs `mg_*_de`, `mg_registre_trouver` | `thorn/src/hierarchie.rose` (M0) | Base des structures `AddMonoid`, `MulMonoid` ; `Semiring = AddMonoid + MulMonoid + Distrib` |
+| Lois certifiées `al_lem_plus_assoc`, `al_lem_plus_zero_[ld]`, `al_lem_mult_assoc`, `al_lem_mult_un_[gd]` | `thorn/src/algebre.rose` (termes vérifiés) | Champs de loi des instances `Nat/+/0` et `Nat/*/1`, sans axiome nouveau |
+| Distributivités vérifiées `al_lem_mult_distrib_g`, `al_lem_mult_distrib_d` | `thorn/src/algebre.rose` | Champ `distrib` de l'instance `Semiring Nat` |
+| `al_lem_mult_zero_d`, `al_lem_mult_zero_g`, `al_lem_mult_zero_absorb` | `thorn/src/algebre.rose` | Lois `zero_mul` / `mul_zero` du semi-anneau |
+| `mg_rewriter` / `mg_rewriter_droite` (eq_rec, re-vérifiés) | M0 | Normaliseur de polynômes par réécriture à carburant |
+| `mg_champ`, `mg_loi`, `mg_coerce_tab`, `mg_compter`, `mg_lance` | M0 | Schéma de construction des instances et du rejeu |
+| `ord_partial`, `ord_linear`, `ord_lem_trans`, `ord_lem_antisymm`, `ord_lem_total_dec` | `thorn/src/ordres.rose` (M1) | `OrderedRing` / `LinearOrderedRing` : compatibilité `≤` avec `+` et `×` |
+| `ord_registre_complet()` (7 instances) | M1 | Registre unique anneaux + ordres, sans doublon de nom |
+| ι de `plus` et `nat_rec`, `Bool`, `eq_rec`, `convertible` βι+α | `thorn/src/noyau.rose` | Calcul des polynômes et des décisions sur les coefficients Nat |
+
+### 7.2 Livrables visés et cible mesurable
+
+1. `thorn/src/anneaux.rose` : `AddMonoid`, `MulMonoid`, `Distrib`, `Semiring`,
+   `Ring` (champs de loi = termes vérifiés) ; instance `Nat` sans axiome nouveau.
+2. `thorn/src/entiers.rose` : `ℤ` comme paire `(Nat, Nat)` quotientée par
+   `a - b ~ c - d ↔ a + d = c + b` ; `neg`, `add`, `mul`, et les lois de
+   `Ring`. Le noyau ne connaît que `Nat`, `Bool`, `List` (registre ι fermé) :
+   **aucun nouvel inductif n'est nécessaire**, la paire est un terme `Nat × Nat`
+   encodé, et le quotient est une relation de signature (à documenter comme
+   axiome explicite, au même titre que `le_succ_pas_ax` en M1).
+3. Normaliseur de polynômes : `mg_rewriter` avec carburant décroissant, chaque
+   réécriture re-vérifiée par `verifier` + `convertible`.
+4. `thorn/tests_anneaux.rose` : cible ≥ 60 lemmes génériques, ≥ 4 instances,
+   0 axiome nouveau pour Nat ; porte 17/17 et `REUSSIS=165` inchangées ;
+   les suites M0 (19/0, 10/0) et M1 (50/0) doivent rester vertes.
+
+### 7.3 Ce que M2 ne demandera PAS
+
+Aucun changement de `noyau.rose` : comme en M0 et M1, une classe est une table
+Rose, une loi est un terme de preuve, et la synthèse est une pré-élaboration.
+Le passage à des ℤ « natifs » (inductif utilisateur, récursivité vérifiée,
+univers `Type(1)`) reste repoussé à M3/M5 et exigerait un changement de noyau
+décrit en §5.B — il n'est pas présupposé ici.
+
+### 7.4 Règle de passage
+
+Chaque lemme est soumis à `verifier` puis `convertible` ; aucun compteur n'est
+écrit en dur ; `bash thorn/tests_regression.sh` reste à 17/17 avec
+`REUSSIS=165`. Après toute modification de `thorn/src/**`, re-mesurer les
+chiffres de ce document : ils sont des constats datés, pas des consignes.

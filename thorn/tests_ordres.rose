@@ -1,0 +1,161 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/tests_ordres.rose — REJEU DU JALON M1 (ordres et décidabilité)
+# ═════════════════════════════════════════════════════════════════════════════
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié. Aucun commit.
+#
+# Natures de contrôles :
+#   [structure]  prédicats Rose sur les enregistrements d'ordre ;
+#   [noyau]      verifier() + convertible() sur un terme de preuve construit ;
+#   [décision]   terme Dec(a ≤ b) construit pour des numéraux fermés, RE-VÉRIFIÉ ;
+#   [refus]      une preuve fausse est refusée par convertible().
+#
+# Vérifier :  ./rose/rose verif thorn/tests_ordres.rose
+# Exécuter :  ./rose/rose thorn/tests_ordres.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/ordres.rose"
+
+$ord_cpt = table()
+inserer($ord_cpt, "r", 0)
+inserer($ord_cpt, "e", 0)
+
+fn ord_test_dec(ord_nom: chaine, ord_r: table, ord_attendu: booleen, ord_cpt: table) {
+  $ord_t = ord_tab(ord_r["terme"])
+  $ord_b = ord_tab(ord_r["but"])
+  $ord_vr = verifier($ord_t, ta_ctx())
+  $ord_ok = (ord_r["ok"] == vrai) et noy_est_ok($ord_vr) et
+            convertible(noy_type_res($ord_vr), $ord_b) et
+            ((ord_r["vrai"] == vrai) == ord_attendu)
+  si ($ord_ok) { >> "OK [décision] " + ord_nom }
+  sinon { >> "ECHEC [décision] " + ord_nom + " : " + chaine(ord_r["erreur"]) }
+  ord_compter(ord_cpt, $ord_ok)
+}
+
+fn ord_test_refus(ord_nom: chaine, ord_but: table, ord_terme: table, ord_cpt: table) {
+  $ord_vr = verifier(ord_terme, ta_ctx())
+  $ord_refuse = (non noy_est_ok($ord_vr)) ou
+                (non convertible(noy_type_res($ord_vr), ord_but))
+  si ($ord_refuse) { >> "OK [refus] " + ord_nom }
+  sinon { >> "ECHEC [refus] " + ord_nom + " (preuve fausse acceptée)" }
+  ord_compter(ord_cpt, $ord_refuse)
+}
+
+>> "Thorn — jalon M1 : ordres et décidabilité vérifiés par le noyau"
+
+$ord_reg = ord_registre()
+$ord_complet = ord_registre_complet()
+>> "registre d'ordres : " + chaine(longueur($ord_reg) - 1) + " instance(s)"
+>> "registre complet M0+M1 : " + chaine(longueur($ord_complet) - 1) + " instance(s)"
+
+# ── 1. Structures et registre ───────────────────────────────────────────────
+
+$ord_pre = ord_trouver($ord_reg, "Nat/≤/Preorder")
+$ord_par = ord_trouver($ord_reg, "Nat/≤/PartialOrder")
+$ord_lin = ord_trouver($ord_reg, "Nat/≤/LinearOrder")
+$ord_dual = ord_trouver($ord_reg, "Nat/≥/PartialOrder")
+$ord_abs = ord_inst_abstrait()
+$ord_lat = ord_lattice_abstrait()
+$ord_inconnu = ord_trouver($ord_reg, "Inexistant")
+
+ord_test_bool("registre/Nat/≤/Preorder retrouve", mg_nom_champ($ord_pre) == "Nat/≤/Preorder", $ord_cpt)
+ord_test_bool("structure/Nat/≤/Preorder est Preorder",
+              ord_est_preorder($ord_pre) et non ord_est_partial($ord_pre), $ord_cpt)
+ord_test_bool("structure/Nat/≤/PartialOrder est PartialOrder",
+              ord_est_partial($ord_par) et non ord_est_linear($ord_par), $ord_cpt)
+ord_test_bool("structure/Nat/≤/LinearOrder est LinearOrder",
+              ord_est_linear($ord_lin), $ord_cpt)
+ord_test_bool("structure/Nat/≥/PartialOrder (dual) est PartialOrder",
+              ord_est_partial($ord_dual), $ord_cpt)
+ord_test_bool("niveau des structures",
+              (ord_niveau($ord_pre) == "Preorder") et
+              (ord_niveau($ord_par) == "PartialOrder") et
+              (ord_niveau($ord_lin) == "LinearOrder"), $ord_cpt)
+ord_test_bool("LatticeAbstrait est un treillis",
+              ord_est_lattice($ord_lat) et (ord_niveau($ord_lat) == "Lattice"), $ord_cpt)
+ord_test_bool("registre/nom inconnu -> absent", noy_est_absent($ord_inconnu), $ord_cpt)
+ord_test_bool("registre complet contient M0 et M1",
+              (longueur($ord_complet) - 1 == 7) et
+              (mg_nom_champ(mg_registre_trouver($ord_complet, "Nat/+/0")) == "Nat/+/0") et
+              (mg_nom_champ(ord_trouver($ord_complet, "Nat/≤/LinearOrder")) == "Nat/≤/LinearOrder"),
+              $ord_cpt)
+
+# ── 2. Lois certifiées des instances NAT ────────────────────────────────────
+
+$ord_ctx_abs = ord_ctx_de($ord_abs)
+$ord_ctx_lat = ord_ctx_de($ord_lat)
+>> "contexte abstrait : " + chaine(longueur($ord_ctx_abs) - 1) + " declaration(s) (ordre)"
+>> "contexte abstrait : " + chaine(longueur($ord_ctx_lat) - 1) + " declaration(s) (treillis)"
+
+ord_lance("loi/refl[Nat]", ord_lem_refl($ord_par), ta_ctx(), $ord_cpt)
+ord_lance("loi/trans[Nat]", ord_lem_trans($ord_par), ta_ctx(), $ord_cpt)
+ord_lance("loi/antisymm[Nat]", ord_lem_antisymm($ord_par), ta_ctx(), $ord_cpt)
+ord_lance("loi/total[Nat]", ord_lem_total_dec($ord_lin), ta_ctx(), $ord_cpt)
+
+# ── 3. Corpus générique d'ordre (contexte abstrait) ─────────────────────────
+
+ord_lance("gen/trans4", ord_lem_trans4($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/trans5", ord_lem_trans5($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/antisymm_symm", ord_lem_antisymm_symm($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/le_of_eq", ord_lem_le_of_eq($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/ge_of_eq", ord_lem_ge_of_eq($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/le_of_eq_symm", ord_lem_le_of_eq_symm($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/trans_eq_l", ord_lem_trans_eq_l($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/trans_eq_r", ord_lem_trans_eq_r($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/eq_trans_le", ord_lem_eq_trans_le($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/le_of_eq_eq", ord_lem_le_of_eq_eq($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/antisymm_refl", ord_lem_antisymm_refl($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/dec_intro", ord_lem_dec_intro($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/dec_intro_antisymm", ord_lem_dec_intro_antisymm($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/eq_of_dec_oui", ord_lem_eq_of_dec_oui($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/dec_refl", ord_lem_dec_refl($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/dec_of_le", ord_lem_dec_of_le($ord_abs), $ord_ctx_abs, $ord_cpt)
+ord_lance("gen/antisymm[Nat/dual]", ord_lem_antisymm_symm($ord_dual), ta_ctx(), $ord_cpt)
+
+# ── 4. Corpus générique de treillis : min / max / bornes ────────────────────
+
+ord_lance("lat/min_idem", ord_lem_min_idem($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/max_idem", ord_lem_max_idem($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/min_comm", ord_lem_min_comm($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/max_comm", ord_lem_max_comm($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/min_assoc", ord_lem_min_assoc($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/max_assoc", ord_lem_max_assoc($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/min_absorb_max", ord_lem_min_absorb_max($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/max_absorb_min", ord_lem_max_absorb_min($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/min_le_max", ord_lem_min_le_max($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/min_eq_left", ord_lem_min_eq_left($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/max_eq_right", ord_lem_max_eq_right($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/min_monotone", ord_lem_min_monotone($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/max_monotone", ord_lem_max_monotone($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/borne_min", ord_lem_borne_min($ord_lat), $ord_ctx_lat, $ord_cpt)
+ord_lance("lat/borne_max", ord_lem_borne_max($ord_lat), $ord_ctx_lat, $ord_cpt)
+
+# ── 5. Décidabilité calculée : décider (a ≤ b) ──────────────────────────────
+
+$ord_0 = ta_zero()
+$ord_1 = ta_succ($ord_0)
+$ord_2 = ta_succ($ord_1)
+$ord_3 = ta_succ($ord_2)
+
+$ord_d1 = ord_decide_nat($ord_1, $ord_2)
+ord_test_dec("decider/1 ≤ 2 (vrai)", $ord_d1, vrai, $ord_cpt)
+$ord_d2 = ord_decide_nat($ord_2, $ord_2)
+ord_test_dec("decider/2 ≤ 2 (vrai)", $ord_d2, vrai, $ord_cpt)
+$ord_d3 = ord_decide_nat($ord_3, $ord_1)
+ord_test_dec("decider/3 ≤ 1 (faux)", $ord_d3, faux, $ord_cpt)
+$ord_d4 = ord_decide_nat($ord_0, $ord_3)
+ord_test_dec("decider/0 ≤ 3 (vrai)", $ord_d4, vrai, $ord_cpt)
+
+# Refus honnête : une preuve de 0 ≤ 0 ne peut pas prouver 0 ≤ 1.
+$ord_faux_but = al_le($ord_0, $ord_1)
+$ord_faux_preuve = al_le_refl($ord_0)
+ord_test_refus("refus/0≤0 n'est pas 0≤1", $ord_faux_but, $ord_faux_preuve, $ord_cpt)
+
+>> chaine($ord_cpt["r"]) + " contrôle(s) réussi(s), " + chaine($ord_cpt["e"]) + " échec(s)"
+si ($ord_cpt["e"] == 0) {
+  >> "RESULTAT: OK"
+} sinon {
+  >> "RESULTAT: ECHEC"
+  # Un lemme rejeté par le noyau n'est PAS silencieux : le bilan lève une
+  # erreur (code de sortie 1), en plus du message ECHEC et du code noyau.
+  quitter(1)
+}

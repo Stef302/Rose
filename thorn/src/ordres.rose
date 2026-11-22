@@ -1,0 +1,1136 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/src/ordres.rose — JALON M1 : ORDRES ET DÉCIDABILITÉ
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Fichier NOUVEAU du chantier M1. Aucun fichier hors périmètre n'est modifié.
+# Aucun commit, aucune publication.
+#
+# Ce module étend le schéma M0 (thorn/src/hierarchie.rose) aux ordres :
+#
+#   Preorder      = { nom, car, rel, refl, trans, ctx }
+#   PartialOrder  = Preorder + { antisymm }
+#   LinearOrder   = PartialOrder + { total }        (totalité DÉCIDABLE)
+#   Lattice       = PartialOrder + { min, max, 6 lois }
+#
+# Comme en M0, une « classe » est un enregistrement Rose, et un champ de loi
+# contient un TERME DE PREUVE : pour Nat ce sont les termes DÉJÀ VÉRIFIÉS
+# al_lem_le_refl / al_lem_le_trans / al_lem_le_antisymm de algebre.rose ;
+# pour la structure abstraite ce sont des constantes de signature déclarées
+# dans un contexte de noyau (exactement le pendant de `GroupeAbstrait` en M0).
+# Aucun drapeau booléen non prouvé n'est utilisé comme loi.
+#
+# Les lemmes génériques sont des fonctions Rose paramétrées par l'enregistrement
+# : un terme construit une fois, valable pour toute instance. Chaque terme est
+# soumis à `verifier` ET `convertible` par le rejeu (cf. tests_ordres.rose).
+#
+# DÉCIDABILITÉ. `Dec P` est une famille de types de signature :
+#   Dec   : ΠP:Type(0), Type(0)
+#   oui   : ΠP:Type(0), Πp:P, Dec P
+#   non   : ΠP:Type(0), Πf:(Πp:P, Faux), Dec P
+# `décider (a ≤ b)` calcule (côté Rose) la comparaison de deux numéraux Nat
+# fermés, puis CONSTRUIT un terme de type `Dec (a ≤ b)` : cas vrai, `oui`
+# appliqué à une preuve vérifiée de `a ≤ b` ; cas faux, `non` appliqué à une
+# fonction de réfutation vérifiée. Deux équations de signature sont ajoutées,
+# explicitement documentées : `le_succ_pas_ax : Πn, succ n ≤ n → Faux` (nécessaire
+# car `le` est une constante opaque dans algebre.rose) et `le_total_ax :
+# Πa b, Dec (a ≤ b)` (champ `total` de l'instance Nat/≤/LinearOrder : produire
+# un terme de noyau pour des variables a b exigerait une induction avec
+# réfutation, absente de la bibliothèque). Tout le reste est vérifié par le
+# noyau ; `ord_decide_nat` calcule effectivement sur les numéraux fermés.
+#
+# Vérifier :  ./rose/rose verif thorn/src/ordres.rose
+# Rejeu    :  ./rose/rose thorn/tests_ordres.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/instances.rose"
+
+# ── 0. Services minimaux ────────────────────────────────────────────────────
+
+fn ord_tab(ord_x) -> table {
+  $ord_v = table()
+  $ord_v = ord_x
+  retour $ord_v
+}
+
+fn ord_ctx(ord_x) -> liste<table> {
+  $ord_v = [table()]
+  $ord_v = ord_x
+  retour $ord_v
+}
+
+fn ord_champ(ord_t: table, ord_c: chaine) -> table {
+  $ord_r = table()
+  si (cle_existe(ord_t, ord_c)) { $ord_r = ord_tab(ord_t[ord_c]) }
+  retour $ord_r
+}
+
+fn ord_nom_champ(ord_t: table) -> chaine {
+  $ord_s = ""
+  si (cle_existe(ord_t, "nom")) {
+    $ord_x = ord_t["nom"]
+    si (type($ord_x) == "chaine") { $ord_s = $ord_x }
+  }
+  retour $ord_s
+}
+
+fn ord_pair(ord_but: table, ord_terme: table) -> table {
+  $ord_r = table()
+  inserer($ord_r, "but", ord_but)
+  inserer($ord_r, "terme", ord_terme)
+  retour $ord_r
+}
+
+fn ord_loi(ord_p: table) -> table { retour ord_tab(ord_p["terme"]) }
+
+fn ord_compter(ord_cpt: table, ord_ok: booleen) {
+  si (ord_ok) {
+    inserer(ord_cpt, "r", ord_cpt["r"] + 1)
+  } sinon {
+    inserer(ord_cpt, "e", ord_cpt["e"] + 1)
+  }
+}
+
+fn ord_test(ord_nom: chaine, ord_but: table, ord_terme: table,
+            ord_ctx_local: liste<table>, ord_cpt: table) {
+  $ord_r = verifier(ord_terme, ord_ctx_local)
+  $ord_synthese = noy_est_ok($ord_r)
+  $ord_conv = convertible(noy_type_res($ord_r), ord_but)
+  $ord_ok = $ord_synthese et $ord_conv
+  si ($ord_ok) {
+    >> "OK " + ord_nom
+  } sinon {
+    $ord_pq = "type synthétisé ≠ but"
+    si (non $ord_synthese) { $ord_pq = noy_erreur($ord_r) }
+    >> "ECHEC " + ord_nom + " : " + $ord_pq
+  }
+  ord_compter(ord_cpt, $ord_ok)
+}
+
+fn ord_lance(ord_nom: chaine, ord_p: table, ord_ctx_local: liste<table>,
+             ord_cpt: table) {
+  ord_test(ord_nom, ord_tab(ord_p["but"]), ord_tab(ord_p["terme"]),
+           ord_ctx_local, ord_cpt)
+}
+
+fn ord_test_bool(ord_nom: chaine, ord_ok: booleen, ord_cpt: table) {
+  si (ord_ok) { >> "OK [structure] " + ord_nom }
+  sinon { >> "ECHEC [structure] " + ord_nom }
+  ord_compter(ord_cpt, ord_ok)
+}
+
+# ── 1. Famille Dec et signature de la décidabilité ─────────────────────────
+
+fn ord_faux() -> table { retour noy_const("Faux", noy_type(0)) }
+
+fn ord_dec_symbole() -> table {
+  retour noy_const("Dec", noy_pi("P", noy_type(0), noy_type(0)))
+}
+
+fn ord_dec(ord_P: table) -> table { retour ta_ap1(ord_dec_symbole(), ord_P) }
+
+fn ord_oui_symbole() -> table {
+  retour noy_const("oui", noy_pi("P", noy_type(0),
+           noy_pi("p", noy_var("P"), ord_dec(noy_var("P")))))
+}
+fn ord_non_symbole() -> table {
+  retour noy_const("non", noy_pi("P", noy_type(0),
+           noy_pi("f", noy_pi("p", noy_var("P"), ord_faux()), ord_dec(noy_var("P")))))
+}
+fn ord_oui(ord_P: table, ord_p: table) -> table {
+  retour ta_ap2(ord_oui_symbole(), ord_P, ord_p)
+}
+fn ord_non(ord_P: table, ord_f: table) -> table {
+  retour ta_ap2(ord_non_symbole(), ord_P, ord_f)
+}
+
+# Seule équation de signature de ce jalon : `le` est opaque dans algebre.rose,
+# donc `¬ succ n ≤ n` ne se démontre pas à partir des 5 lois de l'ordre.
+fn ord_le_succ_pas_ax() -> table {
+  $ord_ty = noy_pi("n", ta_nat(),
+             noy_pi("h", al_le(ta_succ(noy_var("n")), noy_var("n")), ord_faux()))
+  retour noy_const("le_succ_pas_ax", $ord_ty)
+}
+fn ord_le_succ_pas(ord_n: table, ord_h: table) -> table {
+  retour ta_ap2(ord_le_succ_pas_ax(), ord_n, ord_h)
+}
+
+# ── 2. Structures : Preorder → PartialOrder → LinearOrder (+ Lattice) ───────
+
+fn ord_preorder(ord_nom: chaine, ord_car: table, ord_rel: table,
+                ord_refl: table, ord_trans: table,
+                ord_ctx_local: liste<table>) -> table {
+  $ord_r = table()
+  inserer($ord_r, "structure", "Preorder")
+  inserer($ord_r, "classe", "Preorder")
+  inserer($ord_r, "nom", ord_nom)
+  inserer($ord_r, "car", ord_car)
+  inserer($ord_r, "rel", ord_rel)
+  inserer($ord_r, "refl", ord_refl)
+  inserer($ord_r, "trans", ord_trans)
+  inserer($ord_r, "ctx", ord_ctx_local)
+  retour $ord_r
+}
+
+fn ord_partial(ord_nom: chaine, ord_car: table, ord_rel: table,
+               ord_refl: table, ord_trans: table, ord_antisymm: table,
+               ord_ctx_local: liste<table>) -> table {
+  $ord_r = ord_preorder(ord_nom, ord_car, ord_rel, ord_refl, ord_trans, ord_ctx_local)
+  inserer($ord_r, "structure", "PartialOrder")
+  inserer($ord_r, "classe", "PartialOrder")
+  inserer($ord_r, "antisymm", ord_antisymm)
+  retour $ord_r
+}
+
+fn ord_linear(ord_nom: chaine, ord_car: table, ord_rel: table,
+              ord_refl: table, ord_trans: table, ord_antisymm: table,
+              ord_total: table, ord_ctx_local: liste<table>) -> table {
+  $ord_r = ord_partial(ord_nom, ord_car, ord_rel, ord_refl, ord_trans,
+                       ord_antisymm, ord_ctx_local)
+  inserer($ord_r, "structure", "LinearOrder")
+  inserer($ord_r, "classe", "LinearOrder")
+  inserer($ord_r, "total", ord_total)
+  retour $ord_r
+}
+
+fn ord_lattice(ord_nom: chaine, ord_car: table, ord_rel: table,
+               ord_refl: table, ord_trans: table, ord_antisymm: table,
+               ord_min: table, ord_max: table,
+               ord_min_l: table, ord_min_r: table, ord_le_min: table,
+               ord_le_max_l: table, ord_le_max_r: table, ord_max_le: table,
+               ord_ctx_local: liste<table>) -> table {
+  $ord_r = ord_partial(ord_nom, ord_car, ord_rel, ord_refl, ord_trans,
+                       ord_antisymm, ord_ctx_local)
+  inserer($ord_r, "structure", "Lattice")
+  inserer($ord_r, "classe", "Lattice")
+  inserer($ord_r, "min", ord_min)
+  inserer($ord_r, "max", ord_max)
+  inserer($ord_r, "min_l", ord_min_l)
+  inserer($ord_r, "min_r", ord_min_r)
+  inserer($ord_r, "le_min", ord_le_min)
+  inserer($ord_r, "le_max_l", ord_le_max_l)
+  inserer($ord_r, "le_max_r", ord_le_max_r)
+  inserer($ord_r, "max_le", ord_max_le)
+  retour $ord_r
+}
+
+fn ord_est_preorder(ord_i: table) -> booleen {
+  retour (cle_existe(ord_i, "car") et cle_existe(ord_i, "rel") et
+          cle_existe(ord_i, "refl") et cle_existe(ord_i, "trans"))
+}
+fn ord_est_partial(ord_i: table) -> booleen {
+  retour (ord_est_preorder(ord_i) et cle_existe(ord_i, "antisymm"))
+}
+fn ord_est_linear(ord_i: table) -> booleen {
+  retour (ord_est_partial(ord_i) et cle_existe(ord_i, "total"))
+}
+fn ord_est_lattice(ord_i: table) -> booleen {
+  retour (ord_est_partial(ord_i) et cle_existe(ord_i, "min") et
+          cle_existe(ord_i, "max") et cle_existe(ord_i, "le_min") et
+          cle_existe(ord_i, "max_le"))
+}
+# Accès générique aux champs de type chaîne (évite de dépendre de mg_niveau).
+fn mg_chaine_champ(ord_t: table, ord_c: chaine) -> chaine {
+  $ord_s = ""
+  si (cle_existe(ord_t, ord_c)) {
+    $ord_x = ord_t[ord_c]
+    si (type($ord_x) == "chaine") { $ord_s = $ord_x }
+  }
+  retour $ord_s
+}
+
+fn ord_niveau(ord_i: table) -> chaine { retour mg_chaine_champ(ord_i, "structure") }
+fn ord_ctx_de(ord_i: table) -> liste<table> { retour ord_ctx(ord_champ(ord_i, "ctx")) }
+fn ord_car_de(ord_i: table) -> table { retour ord_champ(ord_i, "car") }
+fn ord_rel_de(ord_i: table) -> table { retour ord_champ(ord_i, "rel") }
+fn ord_refl_de(ord_i: table) -> table { retour ord_champ(ord_i, "refl") }
+fn ord_trans_de(ord_i: table) -> table { retour ord_champ(ord_i, "trans") }
+fn ord_antisymm_de(ord_i: table) -> table { retour ord_champ(ord_i, "antisymm") }
+fn ord_total_de(ord_i: table) -> table { retour ord_champ(ord_i, "total") }
+fn ord_min_de(ord_i: table) -> table { retour ord_champ(ord_i, "min") }
+fn ord_max_de(ord_i: table) -> table { retour ord_champ(ord_i, "max") }
+
+# ── 3. Termes de base paramétrés par l'instance ─────────────────────────────
+
+fn ord_le(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_rel_de(ord_i), ord_a, ord_b)
+}
+fn ord_eq(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour noy_ind("=", ta_params2(ord_a, ord_b))
+}
+fn ord_refl(ord_i: table, ord_a: table) -> table {
+  retour ta_ap1(ord_refl_de(ord_i), ord_a)
+}
+fn ord_trans(ord_i: table, ord_a: table, ord_b: table, ord_c: table,
+             ord_h1: table, ord_h2: table) -> table {
+  retour ta_ap5(ord_trans_de(ord_i), ord_a, ord_b, ord_c, ord_h1, ord_h2)
+}
+fn ord_antisymm(ord_i: table, ord_a: table, ord_b: table,
+                ord_h1: table, ord_h2: table) -> table {
+  retour ta_ap4(ord_antisymm_de(ord_i), ord_a, ord_b, ord_h1, ord_h2)
+}
+fn ord_total(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_total_de(ord_i), ord_a, ord_b)
+}
+fn ord_min(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_min_de(ord_i), ord_a, ord_b)
+}
+fn ord_max(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_max_de(ord_i), ord_a, ord_b)
+}
+fn ord_eq_refl(ord_i: table, ord_a: table) -> table {
+  retour ta_ap2(ta_refl_symbole(), ord_car_de(ord_i), ord_a)
+}
+fn ord_eq_symm(ord_i: table, ord_a: table, ord_b: table, ord_h: table) -> table {
+  retour ta_ap4(ta_symm_symbole(), ord_car_de(ord_i), ord_a, ord_b, ord_h)
+}
+fn ord_eq_trans(ord_i: table, ord_a: table, ord_b: table, ord_c: table,
+                ord_h1: table, ord_h2: table) -> table {
+  retour ta_ap6(ta_trans_symbole(), ord_car_de(ord_i), ord_a, ord_b, ord_c,
+                ord_h1, ord_h2)
+}
+fn ord_eqrec(ord_i: table, ord_a: table, ord_b: table, ord_P: table,
+             ord_p: table, ord_h: table) -> table {
+  retour ta_ap6(ta_eqrec_symbole(), ord_car_de(ord_i), ord_a, ord_b, ord_P,
+                ord_p, ord_h)
+}
+
+# ── 4. Corpus GÉNÉRIQUE — parties d'ordre (lemmes 1..16) ───────────────────
+
+fn ord_lem_refl(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_x = noy_var("x")
+  $ord_but = noy_pi("x", $ord_A, ord_le(ord_i, $ord_x, $ord_x))
+  retour ord_pair($ord_but, noy_lam("x", $ord_A, ord_refl(ord_i, $ord_x)))
+}
+
+fn ord_lem_trans(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_ty1 = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_ty2 = ord_le(ord_i, $ord_b, $ord_c)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h1", $ord_ty1, noy_pi("h2", $ord_ty2,
+                    ord_le(ord_i, $ord_a, $ord_c))))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h1", $ord_ty1, noy_lam("h2", $ord_ty2,
+                    ord_trans(ord_i, $ord_a, $ord_b, $ord_c, $ord_h1, $ord_h2))))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_trans4(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_c = noy_var("c"); $ord_d = noy_var("d")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2"); $ord_h3 = noy_var("h3")
+  $ord_t1 = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_t2 = ord_le(ord_i, $ord_b, $ord_c)
+  $ord_t3 = ord_le(ord_i, $ord_c, $ord_d)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("d", $ord_A, noy_pi("h1", $ord_t1, noy_pi("h2", $ord_t2,
+             noy_pi("h3", $ord_t3, ord_le(ord_i, $ord_a, $ord_d))))))))
+  $ord_corps = ord_trans(ord_i, $ord_a, $ord_b, $ord_d, $ord_h1,
+                 ord_trans(ord_i, $ord_b, $ord_c, $ord_d, $ord_h2, $ord_h3))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("d", $ord_A, noy_lam("h1", $ord_t1, noy_lam("h2", $ord_t2,
+             noy_lam("h3", $ord_t3, $ord_corps)))))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_trans5(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_d = noy_var("d"); $ord_e = noy_var("e")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_h3 = noy_var("h3"); $ord_h4 = noy_var("h4")
+  $ord_t1 = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_t2 = ord_le(ord_i, $ord_b, $ord_c)
+  $ord_t3 = ord_le(ord_i, $ord_c, $ord_d)
+  $ord_t4 = ord_le(ord_i, $ord_d, $ord_e)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("d", $ord_A, noy_pi("e", $ord_A,
+             noy_pi("h1", $ord_t1, noy_pi("h2", $ord_t2,
+             noy_pi("h3", $ord_t3, noy_pi("h4", $ord_t4,
+                    ord_le(ord_i, $ord_a, $ord_e))))))))))
+  $ord_corps = ord_trans(ord_i, $ord_a, $ord_b, $ord_e, $ord_h1,
+                 ord_trans(ord_i, $ord_b, $ord_c, $ord_e, $ord_h2,
+                   ord_trans(ord_i, $ord_c, $ord_d, $ord_e, $ord_h3, $ord_h4)))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("d", $ord_A, noy_lam("e", $ord_A,
+             noy_lam("h1", $ord_t1, noy_lam("h2", $ord_t2,
+             noy_lam("h3", $ord_t3, noy_lam("h4", $ord_t4, $ord_corps)))))))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_antisymm(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_t1 = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_t2 = ord_le(ord_i, $ord_b, $ord_a)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h1", $ord_t1, noy_pi("h2", $ord_t2,
+                    ord_eq(ord_i, $ord_a, $ord_b)))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h1", $ord_t1, noy_lam("h2", $ord_t2,
+                    ord_antisymm(ord_i, $ord_a, $ord_b, $ord_h1, $ord_h2)))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_antisymm_symm(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_t1 = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_t2 = ord_le(ord_i, $ord_b, $ord_a)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h1", $ord_t1, noy_pi("h2", $ord_t2,
+                    ord_eq(ord_i, $ord_b, $ord_a)))))
+  $ord_corps = ord_eq_symm(ord_i, $ord_a, $ord_b,
+                 ord_antisymm(ord_i, $ord_a, $ord_b, $ord_h1, $ord_h2))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h1", $ord_t1, noy_lam("h2", $ord_t2, $ord_corps))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_le_of_eq(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_h = noy_var("h")
+  $ord_ty = ord_eq(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h", $ord_ty, ord_le(ord_i, $ord_a, $ord_b))))
+  $ord_P = noy_lam("z", $ord_A, ord_le(ord_i, $ord_a, noy_var("z")))
+  $ord_corps = ord_eqrec(ord_i, $ord_a, $ord_b, $ord_P,
+                 ord_refl(ord_i, $ord_a), $ord_h)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h", $ord_ty, $ord_corps)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_ge_of_eq(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_h = noy_var("h")
+  $ord_ty = ord_eq(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h", $ord_ty, ord_le(ord_i, $ord_b, $ord_a))))
+  $ord_P = noy_lam("z", $ord_A, ord_le(ord_i, noy_var("z"), $ord_a))
+  $ord_corps = ord_eqrec(ord_i, $ord_a, $ord_b, $ord_P,
+                 ord_refl(ord_i, $ord_a), $ord_h)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h", $ord_ty, $ord_corps)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_le_of_eq_symm(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_h = noy_var("h")
+  $ord_ty = ord_eq(ord_i, $ord_b, $ord_a)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h", $ord_ty, ord_le(ord_i, $ord_a, $ord_b))))
+  $ord_P = noy_lam("z", $ord_A, ord_le(ord_i, noy_var("z"), $ord_b))
+  $ord_corps = ord_eqrec(ord_i, $ord_b, $ord_a, $ord_P,
+                 ord_refl(ord_i, $ord_b), $ord_h)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h", $ord_ty, $ord_corps)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_trans_eq_l(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_he = noy_var("he"); $ord_h = noy_var("h")
+  $ord_te = ord_eq(ord_i, $ord_a, $ord_b)
+  $ord_tl = ord_le(ord_i, $ord_b, $ord_c)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("he", $ord_te, noy_pi("h", $ord_tl,
+                    ord_le(ord_i, $ord_a, $ord_c))))))
+  $ord_leab = ta_ap2(ord_loi(ord_lem_le_of_eq(ord_i)), $ord_a, $ord_b)
+  $ord_corps = ord_trans(ord_i, $ord_a, $ord_b, $ord_c,
+                 ta_ap1($ord_leab, $ord_he), $ord_h)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("he", $ord_te, noy_lam("h", $ord_tl, $ord_corps)))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_trans_eq_r(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h = noy_var("h"); $ord_he = noy_var("he")
+  $ord_tl = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_te = ord_eq(ord_i, $ord_b, $ord_c)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h", $ord_tl, noy_pi("he", $ord_te,
+                    ord_le(ord_i, $ord_a, $ord_c))))))
+  $ord_lebc = ta_ap2(ord_loi(ord_lem_le_of_eq(ord_i)), $ord_b, $ord_c)
+  $ord_corps = ord_trans(ord_i, $ord_a, $ord_b, $ord_c,
+                 $ord_h, ta_ap1($ord_lebc, $ord_he))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h", $ord_tl, noy_lam("he", $ord_te, $ord_corps)))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_eq_trans_le(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_e1 = ord_eq(ord_i, $ord_a, $ord_b)
+  $ord_e2 = ord_eq(ord_i, $ord_b, $ord_c)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h1", $ord_e1, noy_pi("h2", $ord_e2,
+                    ord_eq(ord_i, $ord_a, $ord_c))))))
+  $ord_corps = ord_eq_trans(ord_i, $ord_a, $ord_b, $ord_c, $ord_h1, $ord_h2)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h1", $ord_e1, noy_lam("h2", $ord_e2, $ord_corps)))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_le_of_eq_eq(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_e1 = ord_eq(ord_i, $ord_a, $ord_b)
+  $ord_e2 = ord_eq(ord_i, $ord_a, $ord_c)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h1", $ord_e1, noy_pi("h2", $ord_e2,
+                    ord_le(ord_i, $ord_b, $ord_c))))))
+  $ord_ba = ord_eq_symm(ord_i, $ord_a, $ord_b, $ord_h1)
+  $ord_bc = ord_eq_trans(ord_i, $ord_b, $ord_a, $ord_c, $ord_ba, $ord_h2)
+  $ord_leb = ta_ap2(ord_loi(ord_lem_le_of_eq(ord_i)), $ord_b, $ord_c)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h1", $ord_e1, noy_lam("h2", $ord_e2,
+                    ta_ap1($ord_leb, $ord_bc))))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_antisymm_refl(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_h = noy_var("h")
+  $ord_but = noy_pi("a", $ord_A, noy_pi("h", ord_le(ord_i, $ord_a, $ord_a),
+                    ord_eq(ord_i, $ord_a, $ord_a)))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("h", ord_le(ord_i, $ord_a, $ord_a),
+                    ord_eq_refl(ord_i, $ord_a)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_total_dec(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+                    ord_dec(ord_le(ord_i, $ord_a, $ord_b))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+                    ord_total(ord_i, $ord_a, $ord_b)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_dec_intro(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_h = noy_var("h")
+  $ord_ty = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h", $ord_ty, ord_dec(ord_le(ord_i, $ord_a, $ord_b)))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h", $ord_ty, ord_oui($ord_ty, $ord_h))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_dec_intro_antisymm(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_t1 = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_t2 = ord_le(ord_i, $ord_b, $ord_a)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h1", $ord_t1, noy_pi("h2", $ord_t2,
+                    ord_dec(ord_le(ord_i, $ord_a, $ord_b))))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h1", $ord_t1, noy_lam("h2", $ord_t2,
+                    ord_oui($ord_t1, $ord_h1)))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_eq_of_dec_oui(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_t1 = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_t2 = ord_le(ord_i, $ord_b, $ord_a)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("p", $ord_t1, noy_pi("q", $ord_t2,
+                    ord_eq(ord_i, $ord_a, $ord_b)))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("p", $ord_t1, noy_lam("q", $ord_t2,
+                    ord_antisymm(ord_i, $ord_a, $ord_b,
+                                 noy_var("p"), noy_var("q"))))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+# ── 5. Corpus GÉNÉRIQUE — treillis, min / max / bornes (17..28) ────────────
+
+fn ord_law_min_l(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_champ(ord_i, "min_l"), ord_a, ord_b)
+}
+fn ord_law_min_r(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_champ(ord_i, "min_r"), ord_a, ord_b)
+}
+fn ord_law_le_min(ord_i: table, ord_c: table, ord_a: table, ord_b: table,
+                  ord_h1: table, ord_h2: table) -> table {
+  retour ta_ap5(ord_champ(ord_i, "le_min"), ord_c, ord_a, ord_b, ord_h1, ord_h2)
+}
+fn ord_law_le_max_l(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_champ(ord_i, "le_max_l"), ord_a, ord_b)
+}
+fn ord_law_le_max_r(ord_i: table, ord_a: table, ord_b: table) -> table {
+  retour ta_ap2(ord_champ(ord_i, "le_max_r"), ord_a, ord_b)
+}
+fn ord_law_max_le(ord_i: table, ord_a: table, ord_b: table, ord_c: table,
+                  ord_h1: table, ord_h2: table) -> table {
+  retour ta_ap5(ord_champ(ord_i, "max_le"), ord_a, ord_b, ord_c, ord_h1, ord_h2)
+}
+
+fn ord_eq_pi(ord_A: table, ord_n1: chaine, ord_n2: chaine,
+             ord_t1: table, ord_t2: table, ord_cod: table) -> table {
+  retour noy_pi(ord_n1, ord_t1, noy_pi(ord_n2, ord_t2, ord_cod))
+}
+fn ord_eq_lam(ord_A: table, ord_n1: chaine, ord_n2: chaine,
+              ord_t1: table, ord_t2: table, ord_corps: table) -> table {
+  retour noy_lam(ord_n1, ord_t1, noy_lam(ord_n2, ord_t2, ord_corps))
+}
+
+fn ord_lem_min_idem(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a")
+  $ord_but = noy_pi("a", $ord_A, ord_eq(ord_i, ord_min(ord_i, $ord_a, $ord_a), $ord_a))
+  $ord_corps = ord_antisymm(ord_i, ord_min(ord_i, $ord_a, $ord_a), $ord_a,
+                 ord_law_min_l(ord_i, $ord_a, $ord_a),
+                 ord_law_le_min(ord_i, $ord_a, $ord_a, $ord_a,
+                                ord_refl(ord_i, $ord_a), ord_refl(ord_i, $ord_a)))
+  retour ord_pair($ord_but, noy_lam("a", $ord_A, $ord_corps))
+}
+
+fn ord_lem_max_idem(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a")
+  $ord_but = noy_pi("a", $ord_A, ord_eq(ord_i, ord_max(ord_i, $ord_a, $ord_a), $ord_a))
+  $ord_corps = ord_antisymm(ord_i, ord_max(ord_i, $ord_a, $ord_a), $ord_a,
+                 ord_law_max_le(ord_i, $ord_a, $ord_a, $ord_a,
+                                ord_refl(ord_i, $ord_a), ord_refl(ord_i, $ord_a)),
+                 ord_law_le_max_l(ord_i, $ord_a, $ord_a))
+  retour ord_pair($ord_but, noy_lam("a", $ord_A, $ord_corps))
+}
+
+fn ord_lem_min_comm(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_but = ord_eq_pi($ord_A, "a", "b", $ord_A, $ord_A,
+             ord_eq(ord_i, ord_min(ord_i, $ord_a, $ord_b),
+                             ord_min(ord_i, $ord_b, $ord_a)))
+  $ord_corps = ord_antisymm(ord_i, ord_min(ord_i, $ord_a, $ord_b),
+                 ord_min(ord_i, $ord_b, $ord_a),
+                 ord_law_le_min(ord_i, ord_min(ord_i, $ord_a, $ord_b),
+                                $ord_b, $ord_a,
+                                ord_law_min_r(ord_i, $ord_a, $ord_b),
+                                ord_law_min_l(ord_i, $ord_a, $ord_b)),
+                 ord_law_le_min(ord_i, ord_min(ord_i, $ord_b, $ord_a),
+                                $ord_a, $ord_b,
+                                ord_law_min_r(ord_i, $ord_b, $ord_a),
+                                ord_law_min_l(ord_i, $ord_b, $ord_a)))
+  retour ord_pair($ord_but, ord_eq_lam($ord_A, "a", "b", $ord_A, $ord_A, $ord_corps))
+}
+
+fn ord_lem_max_comm(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_but = ord_eq_pi($ord_A, "a", "b", $ord_A, $ord_A,
+             ord_eq(ord_i, ord_max(ord_i, $ord_a, $ord_b),
+                             ord_max(ord_i, $ord_b, $ord_a)))
+  $ord_h1 = ord_law_max_le(ord_i, $ord_a, $ord_b,
+                 ord_max(ord_i, $ord_b, $ord_a),
+                 ord_law_le_max_r(ord_i, $ord_b, $ord_a),
+                 ord_law_le_max_l(ord_i, $ord_b, $ord_a))
+  $ord_h2 = ord_law_max_le(ord_i, $ord_b, $ord_a,
+                 ord_max(ord_i, $ord_a, $ord_b),
+                 ord_law_le_max_r(ord_i, $ord_a, $ord_b),
+                 ord_law_le_max_l(ord_i, $ord_a, $ord_b))
+  $ord_corps = ord_antisymm(ord_i, ord_max(ord_i, $ord_a, $ord_b),
+                 ord_max(ord_i, $ord_b, $ord_a), $ord_h1, $ord_h2)
+  retour ord_pair($ord_but, ord_eq_lam($ord_A, "a", "b", $ord_A, $ord_A, $ord_corps))
+}
+
+fn ord_lem_min_assoc(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_ab = ord_min(ord_i, $ord_a, $ord_b)
+  $ord_bc = ord_min(ord_i, $ord_b, $ord_c)
+  $ord_l = ord_min(ord_i, $ord_ab, $ord_c)
+  $ord_r = ord_min(ord_i, $ord_a, $ord_bc)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             ord_eq(ord_i, $ord_l, $ord_r))))
+  $ord_gauche = ord_law_le_min(ord_i, $ord_l, $ord_a, $ord_bc,
+                  ord_trans(ord_i, $ord_l, $ord_ab, $ord_a,
+                            ord_law_min_l(ord_i, $ord_ab, $ord_c),
+                            ord_law_min_l(ord_i, $ord_a, $ord_b)),
+                  ord_law_le_min(ord_i, $ord_l, $ord_b, $ord_c,
+                    ord_trans(ord_i, $ord_l, $ord_ab, $ord_b,
+                              ord_law_min_l(ord_i, $ord_ab, $ord_c),
+                              ord_law_min_r(ord_i, $ord_a, $ord_b)),
+                    ord_law_min_r(ord_i, $ord_ab, $ord_c)))
+  $ord_droite = ord_law_le_min(ord_i, $ord_r, $ord_ab, $ord_c,
+                  ord_law_le_min(ord_i, $ord_r, $ord_a, $ord_b,
+                    ord_law_min_l(ord_i, $ord_a, $ord_bc),
+                    ord_trans(ord_i, $ord_r, $ord_bc, $ord_b,
+                              ord_law_min_r(ord_i, $ord_a, $ord_bc),
+                              ord_law_min_l(ord_i, $ord_b, $ord_c))),
+                  ord_trans(ord_i, $ord_r, $ord_bc, $ord_c,
+                            ord_law_min_r(ord_i, $ord_a, $ord_bc),
+                            ord_law_min_r(ord_i, $ord_b, $ord_c)))
+  $ord_corps = ord_antisymm(ord_i, $ord_l, $ord_r, $ord_gauche, $ord_droite)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             $ord_corps)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_max_assoc(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_ab = ord_max(ord_i, $ord_a, $ord_b)
+  $ord_bc = ord_max(ord_i, $ord_b, $ord_c)
+  $ord_l = ord_max(ord_i, $ord_ab, $ord_c)
+  $ord_r = ord_max(ord_i, $ord_a, $ord_bc)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             ord_eq(ord_i, $ord_l, $ord_r))))
+  $ord_gauche = ord_law_max_le(ord_i, $ord_ab, $ord_c, $ord_r,
+                  ord_law_max_le(ord_i, $ord_a, $ord_b, $ord_r,
+                    ord_law_le_max_l(ord_i, $ord_a, $ord_bc),
+                    ord_trans(ord_i, $ord_b, $ord_bc, $ord_r,
+                              ord_law_le_max_l(ord_i, $ord_b, $ord_c),
+                              ord_law_le_max_r(ord_i, $ord_a, $ord_bc))),
+                  ord_trans(ord_i, $ord_c, $ord_bc, $ord_r,
+                            ord_law_le_max_r(ord_i, $ord_b, $ord_c),
+                            ord_law_le_max_r(ord_i, $ord_a, $ord_bc)))
+  $ord_droite = ord_law_max_le(ord_i, $ord_a, $ord_bc, $ord_l,
+                  ord_trans(ord_i, $ord_a, $ord_ab, $ord_l,
+                            ord_law_le_max_l(ord_i, $ord_a, $ord_b),
+                            ord_law_le_max_l(ord_i, $ord_ab, $ord_c)),
+                  ord_law_max_le(ord_i, $ord_b, $ord_c, $ord_l,
+                    ord_trans(ord_i, $ord_b, $ord_ab, $ord_l,
+                              ord_law_le_max_r(ord_i, $ord_a, $ord_b),
+                              ord_law_le_max_l(ord_i, $ord_ab, $ord_c)),
+                    ord_law_le_max_r(ord_i, $ord_ab, $ord_c)))
+  $ord_corps = ord_antisymm(ord_i, $ord_l, $ord_r, $ord_gauche, $ord_droite)
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             $ord_corps)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_min_absorb_max(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_but = ord_eq_pi($ord_A, "a", "b", $ord_A, $ord_A,
+             ord_eq(ord_i, ord_min(ord_i, $ord_a, ord_max(ord_i, $ord_a, $ord_b)),
+                             $ord_a))
+  $ord_corps = ord_antisymm(ord_i,
+                 ord_min(ord_i, $ord_a, ord_max(ord_i, $ord_a, $ord_b)), $ord_a,
+                 ord_law_min_l(ord_i, $ord_a, ord_max(ord_i, $ord_a, $ord_b)),
+                 ord_law_le_min(ord_i, $ord_a, $ord_a,
+                                ord_max(ord_i, $ord_a, $ord_b),
+                                ord_refl(ord_i, $ord_a),
+                                ord_law_le_max_l(ord_i, $ord_a, $ord_b)))
+  retour ord_pair($ord_but, ord_eq_lam($ord_A, "a", "b", $ord_A, $ord_A, $ord_corps))
+}
+
+fn ord_lem_max_absorb_min(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_but = ord_eq_pi($ord_A, "a", "b", $ord_A, $ord_A,
+             ord_eq(ord_i, ord_max(ord_i, $ord_a, ord_min(ord_i, $ord_a, $ord_b)),
+                             $ord_a))
+  $ord_corps = ord_antisymm(ord_i,
+                 ord_max(ord_i, $ord_a, ord_min(ord_i, $ord_a, $ord_b)), $ord_a,
+                 ord_law_max_le(ord_i, $ord_a, ord_min(ord_i, $ord_a, $ord_b),
+                                $ord_a, ord_refl(ord_i, $ord_a),
+                                ord_law_min_l(ord_i, $ord_a, $ord_b)),
+                 ord_law_le_max_l(ord_i, $ord_a, ord_min(ord_i, $ord_a, $ord_b)))
+  retour ord_pair($ord_but, ord_eq_lam($ord_A, "a", "b", $ord_A, $ord_A, $ord_corps))
+}
+
+fn ord_lem_min_le_max(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b")
+  $ord_but = ord_eq_pi($ord_A, "a", "b", $ord_A, $ord_A,
+             ord_le(ord_i, ord_min(ord_i, $ord_a, $ord_b),
+                           ord_max(ord_i, $ord_a, $ord_b)))
+  $ord_corps = ord_trans(ord_i, ord_min(ord_i, $ord_a, $ord_b), $ord_a,
+                 ord_max(ord_i, $ord_a, $ord_b),
+                 ord_law_min_l(ord_i, $ord_a, $ord_b),
+                 ord_law_le_max_l(ord_i, $ord_a, $ord_b))
+  retour ord_pair($ord_but, ord_eq_lam($ord_A, "a", "b", $ord_A, $ord_A, $ord_corps))
+}
+
+fn ord_lem_min_eq_left(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_h = noy_var("h")
+  $ord_ty = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h", $ord_ty,
+                    ord_eq(ord_i, ord_min(ord_i, $ord_a, $ord_b), $ord_a))))
+  $ord_corps = ord_antisymm(ord_i, ord_min(ord_i, $ord_a, $ord_b), $ord_a,
+                 ord_law_min_l(ord_i, $ord_a, $ord_b),
+                 ord_law_le_min(ord_i, $ord_a, $ord_a, $ord_b,
+                                ord_refl(ord_i, $ord_a), $ord_h))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h", $ord_ty, $ord_corps)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_max_eq_right(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_h = noy_var("h")
+  $ord_ty = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h", $ord_ty,
+                    ord_eq(ord_i, ord_max(ord_i, $ord_a, $ord_b), $ord_b))))
+  $ord_corps = ord_antisymm(ord_i, ord_max(ord_i, $ord_a, $ord_b), $ord_b,
+                 ord_law_max_le(ord_i, $ord_a, $ord_b, $ord_b,
+                                $ord_h, ord_refl(ord_i, $ord_b)),
+                 ord_law_le_max_r(ord_i, $ord_a, $ord_b))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h", $ord_ty, $ord_corps)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_min_monotone(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h = noy_var("h")
+  $ord_ty = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h", $ord_ty,
+                    ord_le(ord_i, ord_min(ord_i, $ord_a, $ord_c),
+                                   ord_min(ord_i, $ord_b, $ord_c))))))
+  $ord_corps = ord_law_le_min(ord_i, ord_min(ord_i, $ord_a, $ord_c),
+                 ord_b, $ord_c,
+                 ord_trans(ord_i, ord_min(ord_i, $ord_a, $ord_c), $ord_a, $ord_b,
+                           ord_law_min_l(ord_i, $ord_a, $ord_c), $ord_h),
+                 ord_trans(ord_i, ord_min(ord_i, $ord_a, $ord_c), $ord_c, $ord_c,
+                           ord_law_min_r(ord_i, $ord_a, $ord_c),
+                           ord_refl(ord_i, $ord_c)))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h", $ord_ty, $ord_corps))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_max_monotone(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h = noy_var("h")
+  $ord_ty = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h", $ord_ty,
+                    ord_le(ord_i, ord_max(ord_i, $ord_a, $ord_c),
+                                   ord_max(ord_i, $ord_b, $ord_c))))))
+  $ord_corps = ord_law_max_le(ord_i, $ord_a, $ord_c,
+                 ord_max(ord_i, $ord_b, $ord_c),
+                 ord_trans(ord_i, $ord_a, $ord_b, ord_max(ord_i, $ord_b, $ord_c),
+                           $ord_h, ord_law_le_max_l(ord_i, $ord_b, $ord_c)),
+                 ord_law_le_max_r(ord_i, $ord_b, $ord_c))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h", $ord_ty, $ord_corps))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_borne_min(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_t1 = ord_le(ord_i, $ord_c, $ord_a)
+  $ord_t2 = ord_le(ord_i, $ord_c, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h1", $ord_t1, noy_pi("h2", $ord_t2,
+                    ord_le(ord_i, $ord_c, ord_min(ord_i, $ord_a, $ord_b)))))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h1", $ord_t1, noy_lam("h2", $ord_t2,
+                    ord_law_le_min(ord_i, $ord_c, $ord_a, $ord_b,
+                                   $ord_h1, $ord_h2))))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_borne_max(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_c = noy_var("c")
+  $ord_h1 = noy_var("h1"); $ord_h2 = noy_var("h2")
+  $ord_t1 = ord_le(ord_i, $ord_a, $ord_c)
+  $ord_t2 = ord_le(ord_i, $ord_b, $ord_c)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A, noy_pi("c", $ord_A,
+             noy_pi("h1", $ord_t1, noy_pi("h2", $ord_t2,
+                    ord_le(ord_i, ord_max(ord_i, $ord_a, $ord_b), $ord_c))))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A, noy_lam("c", $ord_A,
+             noy_lam("h1", $ord_t1, noy_lam("h2", $ord_t2,
+                    ord_law_max_le(ord_i, $ord_a, $ord_b, $ord_c,
+                                   $ord_h1, $ord_h2))))))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+# ── 6. Structures abstraites (sections) ────────────────────────────────────
+
+fn ord_ctx_debut() -> liste<table> {
+  $ord_c = ta_ctx()
+  $ord_A = noy_var("A")
+  $ord_rel = noy_const("le", noy_pi("x", $ord_A, noy_pi("y", $ord_A, noy_type(0))))
+  $ord_c = noy_ctx_ajouter($ord_c, "A", noy_type(0))
+  $ord_c = noy_ctx_ajouter($ord_c, "le", mg_coerce_tab($ord_rel["type"]))
+  retour $ord_c
+}
+
+fn ord_inst_abstrait() -> table {
+  $ord_c = ord_ctx_debut()
+  $ord_A = noy_var("A")
+  $ord_rel = noy_const("le", noy_pi("x", $ord_A, noy_pi("y", $ord_A, noy_type(0))))
+  $ord_refl = noy_const("refl", noy_pi("x", $ord_A,
+                 ta_ap2($ord_rel, noy_var("x"), noy_var("x"))))
+  $ord_trans = noy_const("trans", noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                 noy_pi("z", $ord_A,
+                   noy_pi("h1", ta_ap2($ord_rel, noy_var("x"), noy_var("y")),
+                     noy_pi("h2", ta_ap2($ord_rel, noy_var("y"), noy_var("z")),
+                            ta_ap2($ord_rel, noy_var("x"), noy_var("z"))))))))
+  $ord_antisymm = noy_const("antisymm", noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                 noy_pi("h1", ta_ap2($ord_rel, noy_var("x"), noy_var("y")),
+                   noy_pi("h2", ta_ap2($ord_rel, noy_var("y"), noy_var("x")),
+                          noy_ind("=", ta_params2(noy_var("x"), noy_var("y"))))))))
+  $ord_total = noy_const("total", noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                 ord_dec(ta_ap2($ord_rel, noy_var("x"), noy_var("y"))))))
+  $ord_c = noy_ctx_ajouter($ord_c, "refl", mg_coerce_tab($ord_refl["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "trans", mg_coerce_tab($ord_trans["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "antisymm", mg_coerce_tab($ord_antisymm["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "total", mg_coerce_tab($ord_total["type"]))
+  retour ord_linear("OrdreAbstrait", $ord_A, $ord_rel, $ord_refl, $ord_trans,
+                    $ord_antisymm, $ord_total, $ord_c)
+}
+
+fn ord_lattice_abstrait() -> table {
+  $ord_i = ord_inst_abstrait()
+  $ord_c = ord_ctx_de($ord_i)
+  $ord_A = noy_var("A")
+  $ord_min = noy_const("min", noy_pi("x", $ord_A, noy_pi("y", $ord_A, $ord_A)))
+  $ord_max = noy_const("max", noy_pi("x", $ord_A, noy_pi("y", $ord_A, $ord_A)))
+  $ord_m = noy_lam("x", $ord_A, noy_lam("y", $ord_A, ta_ap2($ord_min, noy_var("x"), noy_var("y"))))
+  $ord_M = noy_lam("x", $ord_A, noy_lam("y", $ord_A, ta_ap2($ord_max, noy_var("x"), noy_var("y"))))
+  $ord_rel = ord_rel_de($ord_i)
+  $ord_R = noy_lam("x", $ord_A, noy_lam("y", $ord_A, ta_ap2($ord_rel, noy_var("x"), noy_var("y"))))
+  $ord_min_l = noy_const("min_l", noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                   ta_ap2($ord_R, ta_ap2($ord_m, noy_var("x"), noy_var("y")), noy_var("x")))))
+  $ord_min_r = noy_const("min_r", noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                   ta_ap2($ord_R, ta_ap2($ord_m, noy_var("x"), noy_var("y")), noy_var("y")))))
+  $ord_le_min = noy_const("le_min", noy_pi("c", $ord_A, noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                   noy_pi("h1", ta_ap2($ord_R, noy_var("c"), noy_var("x")),
+                     noy_pi("h2", ta_ap2($ord_R, noy_var("c"), noy_var("y")),
+                            ta_ap2($ord_R, noy_var("c"), ta_ap2($ord_m, noy_var("x"), noy_var("y")))))))))
+  $ord_le_max_l = noy_const("le_max_l", noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                   ta_ap2($ord_R, noy_var("x"), ta_ap2($ord_M, noy_var("x"), noy_var("y"))))))
+  $ord_le_max_r = noy_const("le_max_r", noy_pi("x", $ord_A, noy_pi("y", $ord_A,
+                   ta_ap2($ord_R, noy_var("y"), ta_ap2($ord_M, noy_var("x"), noy_var("y"))))))
+  $ord_max_le = noy_const("max_le", noy_pi("x", $ord_A, noy_pi("y", $ord_A, noy_pi("c", $ord_A,
+                   noy_pi("h1", ta_ap2($ord_R, noy_var("x"), noy_var("c")),
+                     noy_pi("h2", ta_ap2($ord_R, noy_var("y"), noy_var("c")),
+                            ta_ap2($ord_R, ta_ap2($ord_M, noy_var("x"), noy_var("y")), noy_var("c"))))))))
+  $ord_c = noy_ctx_ajouter($ord_c, "min", mg_coerce_tab($ord_min["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "max", mg_coerce_tab($ord_max["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "min_l", mg_coerce_tab($ord_min_l["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "min_r", mg_coerce_tab($ord_min_r["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "le_min", mg_coerce_tab($ord_le_min["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "le_max_l", mg_coerce_tab($ord_le_max_l["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "le_max_r", mg_coerce_tab($ord_le_max_r["type"]))
+  $ord_c = noy_ctx_ajouter($ord_c, "max_le", mg_coerce_tab($ord_max_le["type"]))
+  retour ord_lattice("LatticeAbstrait", $ord_A, $ord_rel,
+                     ord_refl_de($ord_i), ord_trans_de($ord_i),
+                     ord_antisymm_de($ord_i), $ord_min, $ord_max,
+                     $ord_min_l, $ord_min_r, $ord_le_min,
+                     $ord_le_max_l, $ord_le_max_r, $ord_max_le, $ord_c)
+}
+
+# ── 7. Instances NAT (lois certifiées) et registre ──────────────────────────
+
+fn ord_inst_nat_preorder() -> table {
+  $ord_r = ord_preorder("Nat/≤/Preorder", ta_nat(), al_le_symbole(),
+                        ord_loi(al_lem_le_refl()), ord_loi(al_lem_le_trans()), ta_ctx())
+  retour $ord_r
+}
+
+fn ord_inst_nat_partial() -> table {
+  $ord_r = ord_partial("Nat/≤/PartialOrder", ta_nat(), al_le_symbole(),
+                       ord_loi(al_lem_le_refl()), ord_loi(al_lem_le_trans()),
+                       ord_loi(al_lem_le_antisymm()), ta_ctx())
+  retour $ord_r
+}
+
+fn ord_inst_nat_linear() -> table {
+  $ord_ty = noy_pi("a", ta_nat(), noy_pi("b", ta_nat(),
+                   ord_dec(al_le(noy_var("a"), noy_var("b")))))
+  $ord_total_ax = noy_const("le_total_ax", $ord_ty)
+  $ord_r = ord_linear("Nat/≤/LinearOrder", ta_nat(), al_le_symbole(),
+                      ord_loi(al_lem_le_refl()), ord_loi(al_lem_le_trans()),
+                      ord_loi(al_lem_le_antisymm()), $ord_total_ax, ta_ctx())
+  retour $ord_r
+}
+
+# Ordre DUAL : même porteur, relation λa b. b ≤ a. Toutes les lois sont
+# dérivées des lemmes vérifiés de algebre.rose (aucun axiome nouveau).
+fn ord_inst_nat_dual() -> table {
+  $ord_nat = ta_nat()
+  $ord_rel = noy_lam("x", $ord_nat, noy_lam("y", $ord_nat,
+               al_le(noy_var("y"), noy_var("x"))))
+  $ord_refl = ord_loi(al_lem_le_refl())
+  $ord_as = ord_loi(al_lem_le_trans())
+  $ord_aa = ord_loi(al_lem_le_antisymm())
+  $ord_trans = noy_lam("a", $ord_nat, noy_lam("b", $ord_nat,
+                 noy_lam("c", $ord_nat,
+                   noy_lam("h1", al_le(noy_var("b"), noy_var("a")),
+                     noy_lam("h2", al_le(noy_var("c"), noy_var("b")),
+                       ta_ap5($ord_as, noy_var("c"), noy_var("b"), noy_var("a"),
+                              noy_var("h2"), noy_var("h1")))))))
+  $ord_antisymm = noy_lam("a", $ord_nat, noy_lam("b", $ord_nat,
+                    noy_lam("h1", al_le(noy_var("b"), noy_var("a")),
+                      noy_lam("h2", al_le(noy_var("a"), noy_var("b")),
+                        ta_ap4(ta_symm_symbole(), $ord_nat, noy_var("b"), noy_var("a"),
+                               ta_ap4($ord_aa, noy_var("b"), noy_var("a"),
+                                       noy_var("h1"), noy_var("h2")))))))
+  $ord_r = ord_partial("Nat/≥/PartialOrder", $ord_nat, $ord_rel, $ord_refl,
+                       $ord_trans, $ord_antisymm, ta_ctx())
+  retour $ord_r
+}
+
+fn ord_registre() -> liste<table> {
+  $ord_r = [table()]
+  joindre($ord_r, ord_inst_nat_preorder())
+  joindre($ord_r, ord_inst_nat_partial())
+  joindre($ord_r, ord_inst_nat_linear())
+  joindre($ord_r, ord_inst_nat_dual())
+  retour $ord_r
+}
+
+# Réutilisation EXPLICITE du registre M0 : le registre complet est le registre
+# algébrique de hierarchie.rose augmenté des instances d'ordre.
+fn ord_registre_complet() -> liste<table> {
+  $ord_r = mg_registre()
+  $ord_o = ord_registre()
+  $ord_n = longueur($ord_o)
+  $ord_k = 1
+  tant_que ($ord_k < $ord_n) {
+    joindre($ord_r, $ord_o[$ord_k])
+    $ord_k = $ord_k + 1
+  }
+  retour $ord_r
+}
+
+fn ord_trouver(ord_reg: liste<table>, ord_nom: chaine) -> table {
+  retour mg_registre_trouver(ord_reg, ord_nom)
+}
+
+# ── 8. Décidabilité calculée pour les numéraux Nat fermés ───────────────────
+
+fn ord_nat_valeur(ord_t: table) -> entier {
+  $ord_g = mg_genre(ord_t)
+  si ($ord_g == "const" et noy_nom(ord_t) == "zero") { retour 0 }
+  si ($ord_g == "app") {
+    $ord_f = ord_champ(ord_t, "fonction")
+    si (mg_genre($ord_f) == "const" et noy_nom($ord_f) == "succ") {
+      retour 1 + ord_nat_valeur(ord_champ(ord_t, "argument"))
+    }
+  }
+  retour -1
+}
+
+fn ord_nat_de_valeur(ord_n: entier) -> table {
+  $ord_r = ta_zero()
+  $ord_k = 0
+  tant_que ($ord_k < ord_n) {
+    $ord_r = ta_succ($ord_r)
+    $ord_k = $ord_k + 1
+  }
+  retour $ord_r
+}
+
+# Preuve vérifiée de `a ≤ a + p` (lemme vérifié de algebre.rose), ramenée à
+# `a ≤ b` par ι-réduction de `plus` sur un numéral fermé.
+fn ord_preuve_le(ord_a: table, ord_b: table) -> table {
+  $ord_va = ord_nat_valeur(ord_a)
+  $ord_vb = ord_nat_valeur(ord_b)
+  $ord_p = ord_nat_de_valeur($ord_vb - $ord_va)
+  $ord_add_droite = ord_loi(al_lem_le_add_droite())
+  $ord_h = ta_ap2($ord_add_droite, ord_a, $ord_p)
+  $ord_but = al_le(ord_a, ord_b)
+  $ord_vr = verifier($ord_h, ta_ctx())
+  si (noy_est_ok($ord_vr) et convertible(noy_type_res($ord_vr), $ord_but)) {
+    retour $ord_h
+  }
+  retour noy_absent()
+}
+
+# `décider (a ≤ b)` : résultat Rose { ok, but, terme, vrai } dont le TERME est
+# un terme de noyau vérifié de type Dec(a ≤ b).
+fn ord_decide_nat(ord_a: table, ord_b: table) -> table {
+  $ord_r = table()
+  inserer($ord_r, "ok", faux)
+  inserer($ord_r, "vrai", faux)
+  inserer($ord_r, "but", noy_absent())
+  inserer($ord_r, "terme", noy_absent())
+  inserer($ord_r, "erreur", "numéral Nat non reconnu")
+  $ord_va = ord_nat_valeur(ord_a)
+  $ord_vb = ord_nat_valeur(ord_b)
+  si ($ord_va < 0 ou $ord_vb < 0) { retour $ord_r }
+  $ord_P = al_le(ord_a, ord_b)
+  $ord_but = ord_dec($ord_P)
+  $ord_term = noy_absent()
+  $ord_vrai = faux
+  si ($ord_va <= $ord_vb) {
+    $ord_preuve = ord_preuve_le(ord_a, ord_b)
+    si (noy_est_absent($ord_preuve)) {
+      inserer($ord_r, "erreur", "preuve de le a b refusée par le noyau")
+      retour $ord_r
+    }
+    $ord_term = ord_oui($ord_P, $ord_preuve)
+    $ord_vrai = vrai
+  } sinon {
+    $ord_sb = ta_succ(ord_b)
+    $ord_preuve_sb_a = ord_preuve_le($ord_sb, ord_a)
+    si (noy_est_absent($ord_preuve_sb_a)) {
+      inserer($ord_r, "erreur", "preuve de le (succ b) a refusée par le noyau")
+      retour $ord_r
+    }
+    $ord_refut = noy_lam("h", $ord_P,
+                   ord_le_succ_pas(ord_b,
+                     al_le_trans($ord_sb, ord_a, ord_b,
+                                 $ord_preuve_sb_a, noy_var("h"))))
+    $ord_term = ord_non($ord_P, $ord_refut)
+  }
+  $ord_vr = verifier($ord_term, ta_ctx())
+  $ord_ok = noy_est_ok($ord_vr) et convertible(noy_type_res($ord_vr), $ord_but)
+  inserer($ord_r, "ok", $ord_ok)
+  inserer($ord_r, "vrai", $ord_vrai)
+  inserer($ord_r, "but", $ord_but)
+  inserer($ord_r, "terme", $ord_term)
+  $ord_err = ""
+  si (non $ord_ok) { $ord_err = noy_erreur($ord_vr) }
+  inserer($ord_r, "erreur", $ord_err)
+  retour $ord_r
+}
+
+# Lemmes de décidabilité GÉNÉRIQUES supplémentaires (contexte abstrait) :
+# réflexivité décidable et compatibilité de Dec avec l'égalité.
+fn ord_lem_dec_refl(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a")
+  $ord_but = noy_pi("a", $ord_A, ord_dec(ord_le(ord_i, $ord_a, $ord_a)))
+  $ord_t = noy_lam("a", $ord_A, ord_oui(ord_le(ord_i, $ord_a, $ord_a),
+                                        ord_refl(ord_i, $ord_a)))
+  retour ord_pair($ord_but, $ord_t)
+}
+
+fn ord_lem_dec_of_le(ord_i: table) -> table {
+  $ord_A = ord_car_de(ord_i)
+  $ord_a = noy_var("a"); $ord_b = noy_var("b"); $ord_h = noy_var("h")
+  $ord_ty = ord_le(ord_i, $ord_a, $ord_b)
+  $ord_but = noy_pi("a", $ord_A, noy_pi("b", $ord_A,
+             noy_pi("h", $ord_ty, ord_dec(ord_le(ord_i, $ord_a, $ord_b)))))
+  $ord_t = noy_lam("a", $ord_A, noy_lam("b", $ord_A,
+             noy_lam("h", $ord_ty, ord_oui($ord_ty, $ord_h))))
+  retour ord_pair($ord_but, $ord_t)
+}
