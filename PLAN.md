@@ -1365,3 +1365,15 @@ l'émetteur hébergé puis exécuter l'ELF. Puis régénérer composite + C0 + C
 Composite régénéré (437 459 o) et vérifié. Chaîne finale relancée:
 C0 (≈80 min) → test fib (header 0200b700 + 317811 + cmp hébergé) → C1 → C2 → cmp.
 Journal /tmp/opencode/selfhost_final.log.
+
+## Vague 90 — diagnostic G5 silencieux
+
+C0 (idx corrigé) valide `>> "≈"` (e2 89 88) mais échoue encore rc=2, stderr vide,
+sur un littéral non-ASCII dans un CORPS DE FONCTION (`fn p(){retour "≈"}`).
+Le rc=2 vient du chemin `$g5_err` (emetteur_elf.rose l.4562), mais
+`afficher_erreur` est un stub dans l'ELF émis → aucun message.
+Bissection par fonctions complètes: la 4e fonction de emetteur.rose (`paire`,
+qui contient `retour "≈"`) déclenche l'échec. Le RIR est correct et l'émetteur
+hébergé réussit. Émission DIAGNOSTIQUE de C0 en cours avec le chemin d'erreur
+réécrit vers `ecrire_bytes("/dev/stdout", "G5ERR:" + $g5_err[0])`, composite
+restauré juste après. Objectif: lire enfin le message exact.
