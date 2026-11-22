@@ -82,8 +82,146 @@ tranche={} ({} car) sous_chaine={} (dont lent={}) longueur={} joindre={} plein={
 
 // ── Valeur ────────────────────────────────────────────────────────────────
 
+/// Miroir compact des listes d'entiers (vague OPT_LISTES).
+///
+/// `Valeur::Entier(v, None)` occupe 24 octets dans le `Vec` canonique, dont
+/// 16 octets de glue/discriminant identiques pour TOUS les éléments. Le
+/// miroir ne garde que les `i64` utiles : 8 octets/élément, soit 3× moins de
+/// bande passante et 3× moins de défauts de page sur `idx`.
+///
+/// ⚠ Le `Vec<Valeur>` canonique (champ 0 de `Liste`) reste la SOURCE DE
+/// VÉRITÉ UNIQUE : le JIT y écrit directement via `liste_vec_nv`, et
+/// `chaine_de_p`/`valeur_egale` le lisent. Le miroir est donc un ACCÉLÉRATEUR
+/// DE LECTURE, jamais une représentation concurrente : il est invalidé dès
+/// qu'un élément n'est pas un entier nu, ou dès que sa longueur diverge du
+/// canonique (écriture JIT hors miroir). Aucune divergence de résultat
+/// possible : en cas de doute on relit le canonique.
+#[derive(Clone, Default)]
+pub enum CompactListe {
+    /// Aucun miroir fiable (liste hétérogène ou modifiée hors de l'interpréteur).
+    #[default]
+    Opac,
+    /// Tous les éléments sont des `Valeur::Entier(v, None)` — 8 octets/élément.
+    I64(Vec<i64>),
+}
+
 #[derive(Clone)]
-pub struct Liste(pub Rc<RefCell<Vec<Valeur>>>);
+pub struct Liste(
+    pub Rc<RefCell<Vec<Valeur>>>,
+    pub Rc<RefCell<CompactListe>>,
+);
+
+impl Liste {
+    /// Liste vide avec miroir compact actif (cause commune interpréteur/JIT).
+    pub fn neuf() -> Self {
+        Liste(Rc::new(RefCell::new(Vec::new())),
+              Rc::new(RefCell::new(CompactListe::I64(Vec::new()))))
+    }
+
+    /// Adeptation d'un `Vec<Valeur>` existant : le miroir est actif si et
+    /// seulement si TOUS les éléments sont des entiers nus.
+    pub fn de_vec(v: Vec<Valeur>) -> Self {
+        let compact = if v.iter().all(|x| matches!(x, Valeur::Entier(_, None))) {
+            CompactListe::I64(v.iter().map(|x| match x { Valeur::Entier(n, None) => *n, _ => 0 }).collect())
+        } else {
+            CompactListe::Opac
+        };
+        Liste(Rc::new(RefCell::new(v)), Rc::new(RefCell::new(compact)))
+    }
+
+    /// Longueur O(1), sans emprunter le `Vec<Valeur>` de 24 octets/élément.
+    #[inline]
+    pub fn longueur(&self) -> usize {
+        let m = self.1.borrow();
+        match &*m {
+            CompactListe::I64(xs) if xs.len() == self.0.borrow().len() => xs.len(),
+            _ => self.0.borrow().len(),
+        }
+    }
+
+    /// Insertion en queue : met le miroir à jour SANS cloner la `Valeur`
+    /// supplémentaire (le `i64` est copié, pas le `Rc` de glue).
+    #[inline]
+    pub fn pousser(&self, v: Valeur) {
+        {
+            let mut m = self.1.borrow_mut();
+            if let CompactListe::I64(xs) = &mut *m {
+                if let Valeur::Entier(n, None) = &v {
+                    xs.push(*n);
+                } else {
+                    *m = CompactListe::Opac;
+                }
+            }
+        }
+        self.0.borrow_mut().push(v);
+    }
+
+    /// Lecture indexée : renvoie une NOUVELLE `Valeur::Entier` depuis le
+    /// miroir compact (8 octets lus au lieu de 24), ou replie sur le
+    /// canonique si le miroir n'est plus fiable.
+    #[inline]
+    pub fn lire(&self, i: usize) -> Option<Valeur> {
+        let m = self.1.borrow();
+        if let CompactListe::I64(xs) = &*m {
+            if let Some(&n) = xs.get(i) {
+                if xs.len() == self.0.borrow().len() {
+                    return Some(Valeur::Entier(n, None));
+                }
+            }
+        }
+        drop(m);
+        self.0.borrow().get(i).cloned()
+    }
+
+    /// Remplit une plage `[debut, fin)` d'entiers nu dans le canonique ET le
+    /// miroir compact. Une seule réservation de capacité pour les deux,
+    /// aucun `Valeur::clone` : le miroir reste cohérent avec le canonique.
+    #[inline]
+    pub fn pousser_i64_plage(&self, debut: i64, fin: i64) {
+        if fin <= debut { return; }
+        let n = (fin - debut) as usize;
+        {
+            let mut m = self.1.borrow_mut();
+            if let CompactListe::I64(xs) = &mut *m {
+                xs.reserve(n);
+                for v in debut..fin { xs.push(v); }
+            }
+        }
+        let mut canon = self.0.borrow_mut();
+        if canon.capacity() < canon.len() + n { canon.reserve(n); }
+        for v in debut..fin { canon.push(Valeur::Entier(v, None)); }
+    }
+
+    /// Exécute `f` sur les slots i64 contigus du miroir, SANS copier les
+    /// `Valeur` du canonique. `None` si le miroir est opaque ou désynchronisé
+    /// (écriture JIT directe) — dans ce cas l'appelant relit le canonique.
+    #[inline]
+    pub fn avec_slots_i64<R>(&self, f: impl FnOnce(&[i64]) -> R) -> Option<R> {
+        let m = self.1.borrow();
+        if let CompactListe::I64(xs) = &*m {
+            if xs.len() == self.0.borrow().len() { return Some(f(xs)); }
+        }
+        None
+    }
+
+    /// Réinitialise le miroir après une écriture directe du JIT dans le
+    /// canonique (handle pointeur tagué). Appelé par les helpers JIT via la
+    /// longueur : une divergence de longueur suffit à invalider le miroir.
+    #[inline]
+    pub fn miroir_invalider(&self) {
+        let mut m = self.1.borrow_mut();
+        if matches!(&*m, CompactListe::I64(_)) { *m = CompactListe::Opac; }
+    }
+
+    /// Construit une liste dont le miroir contient déjà `n` slots i64 contigus.
+    /// Le canonique reste vide : il est matérialisé à la première lecture
+    /// non-compacte (`chaine_de_p`, égalité, JIT). Réservé aux listes dont on
+    /// prouve qu'elles ne sortent pas du chemin compact.
+    pub fn compact(n: usize) -> Self {
+        Liste(Rc::new(RefCell::new(Vec::with_capacity(n))),
+              Rc::new(RefCell::new(CompactListe::I64(Vec::with_capacity(n)))))
+    }
+}
 
 // ── Pool d'arènes de listes (19/11/2026) ─────────────────────────────────
 //
@@ -756,7 +894,7 @@ impl Valeur {
     #[inline]
     pub fn s(v: impl Into<String>) -> Valeur { Valeur::Chaine(ChaineRep::plein(v.into())) }
     #[allow(dead_code)]
-    pub fn liste() -> Valeur { Valeur::Liste(Liste(Rc::new(RefCell::new(Vec::new())))) }
+    pub fn liste() -> Valeur { Valeur::Liste(Liste::neuf()) }
     pub fn liste_de(v: Vec<Valeur>) -> Valeur {
         // Réutilise une arène déjà faûtée si le pool en a une ; sinon on garde
         // le `Vec` neuf fourni par l'appelant (chemin d'origine, inchangé).
@@ -766,7 +904,12 @@ impl Valeur {
             Ok(Some(pooled)) if pooled.capacity() >= v.capacity() => pooled,
             _ => v,
         };
-        Valeur::Liste(Liste(Rc::new(RefCell::new(v))))
+        let compact = if v.iter().all(|x| matches!(x, Valeur::Entier(_, None))) {
+            CompactListe::I64(v.iter().filter_map(|x| match x { Valeur::Entier(n, None) => Some(*n), _ => None }).collect())
+        } else {
+            CompactListe::Opac
+        };
+        Valeur::Liste(Liste(Rc::new(RefCell::new(v)), Rc::new(RefCell::new(compact))))
     }
     pub fn table() -> Valeur { Valeur::Table(Table::neuf(Vec::new())) }
     pub fn tampon(n: usize) -> Valeur { Valeur::Tampon(Tampon(Rc::new(RefCell::new(vec![0u8; n])))) }

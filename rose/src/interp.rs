@@ -897,6 +897,8 @@ fn detecter_accel_s4(corps: &crate::rir::CorpsRir) -> Option<AccelS4> {
 enum AccelGenre {
     /// `joindre($liste, $compteur)` — mutation en place d'une liste.
     Liste { slot_liste: usize },
+    /// `$s = $s + $liste[$compteur]` — somme indexée sur une liste d'entiers.
+    ListeSomme { slot_liste: usize, slot_acc: usize },
     /// `inserer($table, "<prefixe>" + chaine($compteur), $compteur*$compteur)`.
     Table { slot_table: usize, prefixe: String },
     /// `$sortie = sous_chaine($source, d, f) + $sortie` (préfixage de chaîne).
@@ -914,7 +916,7 @@ struct AccelBoucle {
     repli_corps: crate::rir::CorpsRir,
 }
 
-/// Reconnaît les trois boucles de collection du banc global dans le RIR.
+/// Reconnaît les quatre boucles de collection du banc global dans le RIR.
 /// RIR exact : `SautSiFauxAbstrait(slot < borne, sortie)`, corps d'UNE op,
 /// `Affect(slot ← slot + 1)`, `Saut(h)`. Toute autre forme est refusée.
 fn detecter_accel_boucle(corps: &crate::rir::CorpsRir, from: usize,
@@ -964,6 +966,22 @@ fn detecter_accel_boucle(corps: &crate::rir::CorpsRir, from: usize,
                 // f*f ne doit jamais boxer (|f*f| ≤ 2^63).
                 if borne > 3_037_000_499 { continue }
                 AccelGenre::Table { slot_table: st, prefixe: prefixe.clone() }
+            }
+            // ── somme indexée d'une liste ────────────────────────────
+            // `$s = $s + $liste[$j]` : le miroir compact (`slots i64`) permet
+            // de faire la somme en 8 octets/élément, sans `Valeur::clone`
+            // ni recherche thread-local. Repli opération-par-opération si
+            // la liste est hétérogène, le miroir invalidé ou la somme déborde.
+            Op::AffectAst { slot: sa, e: Expr::Binaire { op, a, b, .. } } if op == "+" => {
+                let Expr::Var(n_acc, _) = a.as_ref() else { continue };
+                let Expr::Index { a: ai, b: bi, .. } = b.as_ref() else { continue };
+                let (Expr::Var(n_liste, _), Expr::Var(n_idx, _)) = (ai.as_ref(), bi.as_ref())
+                    else { continue };
+                let Some(s_acc) = corps.noms.iter().position(|x| x == n_acc) else { continue };
+                let Some(s_liste) = corps.noms.iter().position(|x| x == n_liste) else { continue };
+                if corps.noms.iter().position(|x| x == n_idx) != Some(cpt) { continue }
+                if s_acc != *sa as usize || s_liste == cpt || s_acc == cpt { continue }
+                AccelGenre::ListeSomme { slot_liste: s_liste, slot_acc: s_acc }
             }
             // ── chaîne ───────────────────────────────────────────────
             Op::AffectAst { slot: ss, e: Expr::Binaire { op, a, b, .. } } if op == "+" => {
@@ -2838,6 +2856,7 @@ impl Interp {
                 if h != plan.cible_sortie - 4 { continue; }
                 let cible = match &plan.genre {
                     AccelGenre::Chaine { slot_sortie, .. } => *slot_sortie,
+                    AccelGenre::ListeSomme { slot_acc, .. } => *slot_acc,
                     _ => plan.slot_cpt,
                 };
                 c2.ops[h] = crate::rir::Op::AffectAst {
@@ -3135,19 +3154,36 @@ impl Interp {
         match genre {
             AccelGenre::Liste { slot_liste } => {
                 let Valeur::Liste(l) = &slots[slot_liste] else { return self.repli_boucle(idx, base) };
-                {
-                    let mut vec = l.0.borrow_mut();
-                    // Réservation unique : évite 10 001 reallocations.
-                    let cible_cap = (borne as usize).saturating_sub(1);
-                    let cap = vec.capacity();
-                    let len = vec.len();
-                    if cap < cible_cap {
-                        vec.reserve(cible_cap.saturating_sub(len));
-                    }
-                    for i in cpt..borne { vec.push(Valeur::z(i)); }
-                }
+                // Miroir compact tenu à jour : la somme indexée qui suit
+                // peut ainsi lire 8 octets/élément au lieu de 24.
+                l.pousser_i64_plage(cpt, borne);
                 unsafe { *base.add(cpt_slot) = Valeur::z(borne); }
                 Ok(Valeur::z(borne))
+            }
+            AccelGenre::ListeSomme { slot_liste, slot_acc } => {
+                let Valeur::Liste(l) = &slots[slot_liste] else { return self.repli_boucle(idx, base) };
+                let Valeur::Entier(acc, None) = slots[slot_acc] else { return self.repli_boucle(idx, base) };
+                if cpt < 0 || borne < cpt { return self.repli_boucle(idx, base); }
+                let somme = l.avec_slots_i64(|xs| {
+                    if borne as usize > xs.len() { return None; }
+                    let mut s = acc;
+                    for &v in &xs[cpt as usize..borne as usize] {
+                        s = s.checked_add(v)?;
+                    }
+                    Some(s)
+                });
+                let Some(s) = somme.flatten() else {
+                    // Le repli réécrit le slot accumulateur ; le renvoyer
+                    // ensuite évite que l'AffectAst appelant n'écrase $s
+                    // avec `Valeur::Vide` (valeur de retour du repli).
+                    self.repli_boucle(idx, base)?;
+                    return Ok(unsafe { (*base.add(slot_acc)).clone() });
+                };
+                unsafe {
+                    *base.add(slot_acc) = Valeur::z(s);
+                    *base.add(cpt_slot) = Valeur::z(borne);
+                }
+                Ok(Valeur::z(s))
             }
             AccelGenre::Table { slot_table, prefixe } => {
                 let Valeur::Table(t) = &slots[slot_table] else { return self.repli_boucle(idx, base) };
@@ -5614,7 +5650,7 @@ impl Interp {
                     // à chaque concaténation (avant : `chars().count()` sur
                     // toute la chaîne, à chaque appel de `longueur`).
                     Valeur::Chaine(s) => s.n as u64,
-                    Valeur::Liste(l) => l.0.borrow().len() as u64,
+                    Valeur::Liste(_) => longueur_valeur(&a[0]),
                     Valeur::Table(t) => t.0.borrow().items.len() as u64,
                     Valeur::Tampon(t) => t.0.borrow().len() as u64,
                     Valeur::Tableau(t) => t.0.borrow().len() as u64,
@@ -5650,12 +5686,7 @@ impl Interp {
                 let Valeur::Table(t) = &a[0] else { erreur_runtime("valeurs attend une table") };
                 Valeur::liste_de(t.0.borrow().items.iter().map(|(_, v)| v.clone()).collect())
             }
-            "joindre" => {
-                crate::run::prof::add(&crate::run::prof::JOINDRE_NB, 1);
-                let Valeur::Liste(l) = &a[0] else { erreur_runtime("joindre attend une liste") };
-                l.0.borrow_mut().push(a[1].clone());
-                Valeur::Vide
-            }
+            "joindre" => joindre_liste(&a[0], a[1].clone()),
             "ordre" => {
                 let s = chaine_de(&a[0]);
                 let cps: Vec<char> = s.chars().collect();
@@ -6607,6 +6638,26 @@ thread_local! {
 
 /// Trouve l'indice du slot pour un nom, avec un cache par corps.
 ///
+/// Primitive `joindre(liste, valeur)` — unique point d'entrée pour
+/// l'interpréteur ET le harnais `opt_listes`. Le miroir compact est tenu à
+/// jour dans `run::Liste::pousser` sans clone de `Valeur` supplémentaire.
+#[inline]
+pub fn joindre_liste(liste: &Valeur, valeur: Valeur) -> Valeur {
+    crate::run::prof::add(&crate::run::prof::JOINDRE_NB, 1);
+    let Valeur::Liste(l) = liste else { erreur_runtime("joindre attend une liste") };
+    l.pousser(valeur);
+    Valeur::Vide
+}
+
+/// Primitive `longueur(valeur)` — O(1) sur le miroir compact des listes.
+#[inline]
+pub fn longueur_valeur(v: &Valeur) -> u64 {
+    match v {
+        Valeur::Liste(l) => l.longueur() as u64,
+        _ => chaine_de(v).chars().count() as u64,
+    }
+}
+
 /// ⚠⚠ La version sans cache faisait `noms.iter().position(|n| n == nom)` à
 /// chaque évaluation : une comparaison de chaînes par variable et par accès.
 /// Mesuré : le jardin des premiers prenait 262 ms au lieu de 47 ms.
@@ -6614,7 +6665,7 @@ thread_local! {
 ///
 /// Logique EXACTE de `Expr::Index`, extraite de `eval_interne` pour être
 /// appelée aussi depuis les slots (aucun `HashMap<String, Valeur>` construit).
-fn indexer_valeur(base: &Valeur, cle: &Valeur) -> Result<Valeur, Option<i32>> {
+pub fn indexer_valeur(base: &Valeur, cle: &Valeur) -> Result<Valeur, Option<i32>> {
     match base {
         Valeur::Table(t) => {
             if let Some(i) = t.trouver(cle) {
@@ -6623,13 +6674,25 @@ fn indexer_valeur(base: &Valeur, cle: &Valeur) -> Result<Valeur, Option<i32>> {
             erreur_runtime("clé absente de la table");
         }
         Valeur::Liste(l) => {
-            let idx = vers_z(cle);
-            let taille = l.0.borrow().len();
-            if !idx.fits_u64_lt(taille as u64) {
+            let taille = l.longueur();
+            // VOIE RAPIDE : l'index est déjà un `i64` nu — aucun `Gz`
+            // n'est alloué (l'ancien `vers_z` coûtait plus que la lecture).
+            let i = match cle {
+                Valeur::Entier(n, None) if *n >= 0 => *n as u64,
+                _ => {
+                    let idx = vers_z(cle);
+                    if !idx.fits_u64_lt(taille as u64) {
+                        erreur_runtime("index hors des limites de la liste");
+                    }
+                    idx.get_u64()
+                }
+            };
+            if i >= taille as u64 {
                 erreur_runtime("index hors des limites de la liste");
             }
-            let i = idx.get_u64();
-            Ok(l.0.borrow()[i as usize].clone())
+            // Miroir compact : 8 octets lus au lieu de 24, aucun clone de Rc.
+            if let Some(v) = l.lire(i as usize) { return Ok(v); }
+            erreur_runtime("index hors des limites de la liste");
         }
         Valeur::Chaine(s) => {
             let idx = vers_z(cle);
