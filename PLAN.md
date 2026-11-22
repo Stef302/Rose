@@ -1317,3 +1317,19 @@ Diagnostic HOST: dans g5_elf(), $parts=[""] puis longueur($parts) passe de 1 (pe
 RIR, ELF valide) a 0 (RIR>180Ko) — le magic ELF (8 octets) est perdu, emission =
 code brut sans \x7fELF. RIR correct: 'affect_ast slot 4 = (lst (s ""))'.
 Le defaut est dans le runtime G5 emis (compilateur/emetteur_elf.rose), pas dans le RIR.
+
+## Vague 86 — self-hosting A–Z : cause racine et jalons (22/11)
+
+| Blocage | Cause mesurée | Correctif vérifié |
+|---|---|---|
+| C0 = code brut sans magic | `g5_assemble` supposait un sentinel de liste absent | base déduite du nombre réel de `joindre` — C0 ELF 1,36 Mio |
+| Front-end refuse la source du backend | `eval_expr` primaire native absente de `std_sig` | injection signature dans le COMPOSITE + `eval_expr` Rose pur (10 helpers) |
+| En-tête ELF corrompu (`0xb7c2`) | UTF-8: `caractere(183)`=`c2 b7` dans `u16le` | `octet_brut` + routine G5 dédiée, sonde `c2 b7`→`b7` |
+| C1 rc=1 `index hors des limites des arguments` | `$sortie = argument(1)` sans garde | garde `nb_arguments()>1` injectée dans le composite |
+
+Contraintes préservées à chaque étape: `emetteur.rose` intact (point fixe
+`b3ed9262`), AZ 31/31, `rose verif` OK, aucun binaire Rust modifié.
+
+Dernier jalon en cours: `tests_selfhost/verifier_selfhost_final.sh` —
+C0 (≈80 min) → test fib en-tête `0200b700`/317811 → C1 → C2 → `cmp C1 C2`.
+Journal `/tmp/opencode/selfhost_final.log`. Rien n'est revendiqué avant lecture du cmp.
