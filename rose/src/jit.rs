@@ -3224,6 +3224,14 @@ struct Emetteur<'a> {
     /// prouve l'absence de boxe pour Rust→JIT, mais pas pour les appels
     /// JIT→JIT `AppelRir`, qui transmettent des i64 de slot bruts.
     unboxed_tmp: Option<Value>,
+    /// VAGUE 2 — vrai pendant l'émission du corps d'une boucle dont le garde
+    /// a prouvé que les opérandes sont des i64 nus et que le résultat ne
+    /// peut pas déborder. `expr_eabstrait_rir` émet alors un `iadd`/`isub`
+    /// nu, sans drapeau ni test d'overflow ni helper GMP.
+    sans_checks: bool,
+    /// VAGUE 2 — littéraux du corps de boucle nu matérialisés dans le
+    /// préheader (Cranelift ne fait pas de LICM sur les `iconst` 64 bits).
+    lits_hoistes: Option<HashMap<String, Value>>,
     /// une émission a rencontré une borne de « pour » non entière : le bloc
     /// n'est pas compilable, l'appelant doit retomber sur l'interpréteur.
     refus_i: bool,
@@ -3580,6 +3588,13 @@ impl Jit {
         let mut use_rir = false;
         if std::env::var("ROSE_NO_RIR").is_err() && std::env::var("ROSE_NO_RIR_PRINCIPAL").is_err() {
             if let Some(rir) = crate::rir::abaisser_principal(&prog.instructions) {
+                if std::env::var("ROSE_DUMP_RIR").is_ok() {
+                    eprintln!("=== RIR $principal === noms={:?} globaux={:?} n={}",
+                              rir.noms, rir.globaux, rir.ops.len());
+                    for (i, op) in rir.ops.iter().enumerate() {
+                        eprintln!("  {:>3}: {:?}", i, op);
+                    }
+                }
                 sig.rir = Some(rir);
                 use_rir = rir_compilable_jit(&sig, &self.signatures, true);
                 if !use_rir { sig.rir = None; }
@@ -3625,7 +3640,7 @@ impl Jit {
             module: &mut self.module, signatures: &self.signatures,
             foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
                 runtime: &self.runtime_decls,
-            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, refus_i: false,
+            builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, sans_checks: false, lits_hoistes: None, refus_i: false,
             i_est_imaginaire: signature_avec_complexe(&sig),
         };
         if use_rir {
@@ -3640,6 +3655,12 @@ impl Jit {
         let mut b = e.builder;
         b.seal_all_blocks();
         b.finalize(cible);
+        // Instrumentation (VAGUE 2) : dump du CLIF du principal, y compris
+        // quand la voie RIR est utilisée (le dump générique de `compiler_tout`
+        // ne couvre que les fonctions).
+        if std::env::var("ROSE_DUMP_IR").is_ok() {
+            eprintln!("=== CLIF $principal ===\n{}", fcx.func);
+        }
         if let Err(_e) = self.module.define_function(fid, &mut fcx) { return None; }
         if let Err(e) = self.module.finalize_definitions() { if std::env::var("ROSE_TIMING").is_ok() { eprintln!("finalize_definitions err: {}", e); } return None; }
         if std::env::var("ROSE_TIMING").is_ok() {
@@ -4013,7 +4034,7 @@ impl Jit {
                 module: &mut self.module, signatures: &self.signatures,
                 foncs: &self.foncs, decls: &self.decls, delegues: &self.delegues,
                 runtime: &self.runtime_decls,
-                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, refus_i: false,
+                builder: b, returned: false, prochain_slot: 100, refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(), tag_tmp: tag_tmp_var, unboxed_tmp: None, sans_checks: false, lits_hoistes: None, refus_i: false,
                 i_est_imaginaire: signature_avec_complexe(&sig),
             };
             let _te = std::time::Instant::now();
@@ -4063,7 +4084,7 @@ impl Jit {
                     runtime: &self.runtime_decls,
                     builder: bf, returned: false, prochain_slot: 100,
                     refs: HashMap::new(), tags: HashMap::new(), complex_im: HashMap::new(),
-                    tag_tmp: tag_f, unboxed_tmp: None, refus_i: false,
+                    tag_tmp: tag_f, unboxed_tmp: None, sans_checks: false, lits_hoistes: None, refus_i: false,
                     i_est_imaginaire: signature_avec_complexe(&sf),
                 };
                 let mut emitted_f = false;
@@ -4545,7 +4566,114 @@ unsafe fn appeler_quatre(fptr: usize, _sig: &Signature, types: &[TyKind], retour
     }
 }
 
+/// VAGUE 2 — collecte les littéraux d'une expression RIR, pour les
+/// matérialiser une fois dans le préheader de la boucle nu.
+fn litteraux_expr(e: &Eabstrait, out: &mut HashSet<String>) {
+    match e {
+        Eabstrait::Entier(t) => { out.insert(t.clone()); }
+        Eabstrait::Binaire { a, b, .. } => {
+            litteraux_expr(a, out);
+            litteraux_expr(b, out);
+        }
+        Eabstrait::Neg(a) | Eabstrait::Non(a) => litteraux_expr(a, out),
+        _ => {}
+    }
+}
+
 impl Emetteur<'_> {
+    /// VAGUE 2 — boucle entière nue, émise DERRIÈRE UN GARDE.
+    ///
+    /// Le garde (exécuté une seule fois) prouve que les slots lus sont des
+    /// i64 non boxés et |v| ≤ 2^40, la borne littérale ≤ 2^20. La boucle
+    /// rapide n'émet alors ni drapeau, ni test d'overflow, ni helper par
+    /// addition. Si le garde échoue, on saute sur la boucle générique
+    /// vérifiée (`generic`) : exactitude conservée pour tout programme.
+    fn emettre_boucle_nu(&mut self, b: &crate::rir::BoucleNu,
+                         corps: &crate::rir::CorpsRir,
+                         slot_vars: &[Variable], slot_types: &[TyKind],
+                         slot_unboxed: &[Variable], sortie: Block,
+                         generic: Block) {
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        let lim = self.builder.ins().iconst(types::I64, crate::rir::BOUCLE_NU_VALEUR_MAX);
+        let neg_lim = self.builder.ins().iconst(types::I64, -crate::rir::BOUCLE_NU_VALEUR_MAX);
+        let mut ok = self.builder.ins().icmp(IntCC::Equal, un, un);
+        for &s in &b.garder {
+            let i = s as usize;
+            let v = self.builder.use_var(slot_vars[i]);
+            let u = self.builder.use_var(slot_unboxed[i]);
+            let nu = self.builder.ins().icmp(IntCC::NotEqual, u, zero);
+            let lo = self.builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, v, neg_lim);
+            let hi = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, v, lim);
+            let born = self.builder.ins().band(lo, hi);
+            let sur = self.builder.ins().band(nu, born);
+            ok = self.builder.ins().band(ok, sur);
+        }
+
+        // Littéraux du corps matérialisés dans le préheader : Cranelift ne
+        // remonte pas un `iconst` 64 bits hors d'une boucle (4 `movk` par
+        // tour mesurés sur le diviseur 1_000_000_007 de fib_iter).
+        let mut lits = HashSet::new();
+        for op in &corps.ops[b.test + 1..b.back] {
+            if let crate::rir::Op::Affect { expr, .. } = op { litteraux_expr(expr, &mut lits); }
+        }
+        let mut hoistes: HashMap<String, Value> = HashMap::new();
+        for t in lits {
+            if let Ok(v) = t.parse::<i64>() {
+                hoistes.insert(t, self.builder.ins().iconst(types::I64, v));
+            }
+        }
+        self.lits_hoistes = Some(hoistes);
+
+        let header = self.builder.create_block();
+        let corps_b = self.builder.create_block();
+        self.builder.ins().brif(ok, header, &[], generic, &[]);
+
+        self.builder.switch_to_block(header);
+        // ⚠ Ne PAS sceller `header` avant d'avoir émis le saut arrière :
+        // `use_var` doit pouvoir y voir le prédécesseur de la boucle, sinon
+        // le compteur est résolu une fois pour toutes et la boucle ne
+        // termine pas (mesuré : ROSE_DUMP_RIR + timeout 5 s).
+        let ctr = self.builder.use_var(slot_vars[b.ctr as usize]);
+        let borne = self.builder.ins().iconst(types::I64, b.borne);
+        let cond = self.builder.ins().icmp(IntCC::SignedLessThan, ctr, borne);
+        self.builder.ins().brif(cond, corps_b, &[], sortie, &[]);
+
+        self.builder.switch_to_block(corps_b);
+        self.builder.seal_block(corps_b);
+        self.sans_checks = true;
+        for op in &corps.ops[b.test + 1..b.back] {
+            if let crate::rir::Op::Affect { slot, expr } = op {
+                // `% m` prouvé : x,y ∈ [0,m) => x+y < 2m, une seule
+                // soustraction suffit (au lieu de ~12 instr de division).
+                if let Some(mr) = &b.mod_rapide {
+                    if *slot == mr.cible {
+                        let x = self.builder.use_var(slot_vars[mr.a as usize]);
+                        let y = self.builder.use_var(slot_vars[mr.b as usize]);
+                        let somme = self.builder.ins().iadd(x, y);
+                        let m = self.lits_hoistes.as_ref()
+                            .and_then(|h| h.get(&mr.m.to_string()).copied())
+                            .unwrap_or_else(|| self.builder.ins().iconst(types::I64, mr.m));
+                        let soust = self.builder.ins().isub(somme, m);
+                        let trop = self.builder.ins().icmp(IntCC::SignedLessThan, soust, zero);
+                        let r = self.builder.ins().select(trop, somme, soust);
+                        self.builder.def_var(slot_vars[*slot as usize], r);
+                        self.builder.def_var(slot_unboxed[*slot as usize], un);
+                        continue;
+                    }
+                }
+                let vj = self.expr_eabstrait_rir(expr, slot_vars, slot_types, corps, slot_unboxed);
+                let v = self.simple(vj);
+                self.builder.def_var(slot_vars[*slot as usize], v);
+                self.builder.def_var(slot_unboxed[*slot as usize], un);
+            }
+        }
+        self.sans_checks = false;
+        self.lits_hoistes = None;
+        self.saut(header, &[]);
+        self.builder.seal_block(header);
+    }
+
     fn saut(&mut self, bloc: Block, args: &[Value]) -> Inst {
         let args: Vec<BlockArg> = args.iter().map(|v| (*v).into()).collect();
         self.builder.ins().jump(bloc, &args)
@@ -5035,7 +5163,13 @@ impl Emetteur<'_> {
                 let one = self.builder.ins().iconst(types::I64, 1);
                 self.unboxed_tmp = Some(one);
                 let v: i64 = t.parse().unwrap_or(0);
-                JitVal::Simple(self.builder.ins().iconst(types::I64, v))
+                // VAGUE 2 — dans une boucle nu, les littéraux ont été
+                // matérialisés dans le préheader : 4 `movk` économisés par
+                // tour sur le diviseur du `%` (fib_iter).
+                let cst = if self.sans_checks {
+                    self.lits_hoistes.as_ref().and_then(|m| m.get(t).copied())
+                } else { None };
+                JitVal::Simple(cst.unwrap_or_else(|| self.builder.ins().iconst(types::I64, v)))
             }
             Eabstrait::Flottant(d) => {
                 let zt = self.builder.ins().iconst(types::I64, 0);
@@ -5148,6 +5282,28 @@ impl Emetteur<'_> {
                             self.builder.def_var(self.tag_tmp, zt);
                             JitVal::Simple(r)
                         } else if matches!(op, Oper::Add | Oper::Sub) {
+                            // ═══════════════════════════════════════════════════
+                            // VAGUE 2 — CHEMIN NU (boucle prouvée).
+                            // Le garde de `rir::boucle_nu` a prouvé que les
+                            // deux opérandes sont des i64 nus et que le
+                            // résultat tient dans un i64 : ni drapeau, ni
+                            // test d'overflow, ni helper `rose_add_ent`.
+                            if self.sans_checks {
+                                let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
+                                let va = self.simple(va_j);
+                                let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
+                                let vb = self.simple(vb_j);
+                                let r = if *op == Oper::Add {
+                                    self.builder.ins().iadd(va, vb)
+                                } else {
+                                    self.builder.ins().isub(va, vb)
+                                };
+                                let zt = self.builder.ins().iconst(types::I64, 0);
+                                self.builder.def_var(self.tag_tmp, zt);
+                                let un = self.builder.ins().iconst(types::I64, 1);
+                                self.unboxed_tmp = Some(un);
+                                return JitVal::Simple(r);
+                            }
                             // ═══════════════════════════════════════════════════
                             // 18/11 — CHEMIN RAPIDE ENTIER (domaine 2, ×35,8)
                             // ═══════════════════════════════════════════════════
@@ -7402,6 +7558,19 @@ impl Emetteur<'_> {
         }
 
         let n = corps.ops.len();
+        // VAGUE 2 — boucle entière nue : un garde unique à l'entrée permet
+        // d'émettre le corps sans les checks par itération. Uniquement dans
+        // le principal (sans paramètres), où les slots sont prouvés nus par
+        // des littéraux ; les fonctions gardent l'émetteur vérifié.
+        let bnu = if sig.params.is_empty() {
+            crate::rir::boucle_nu(corps)
+        } else { None };
+        if let Some(bn) = &bnu {
+            if std::env::var("ROSE_DUMP_RIR").is_ok() {
+                eprintln!("VAGUE2 boucle-nu test={} back={} ctr={} borne={} garder={:?}",
+                          bn.test, bn.back, bn.ctr, bn.borne, bn.garder);
+            }
+        }
         let mut blocks: Vec<Block> = Vec::with_capacity(n + 1);
         for _ in 0..n { blocks.push(self.builder.create_block()); }
         let end_block = self.builder.create_block();
@@ -7659,6 +7828,14 @@ impl Emetteur<'_> {
                     self.saut(next, &[]);
                 }
                 Op::SautSiFauxAbstrait { test, cible } => {
+                    if let Some(bn) = &bnu {
+                        if bn.test == pc {
+                            let tgt_false = if *cible < n { blocks[*cible] } else { end_block };
+                            self.emettre_boucle_nu(bn, corps, &slot_vars, &slot_types,
+                                                   &slot_unboxed, tgt_false, next);
+                            continue;
+                        }
+                    }
                     let tv_j = self.expr_eabstrait_rir(test, &slot_vars, &slot_types, corps, &slot_unboxed);
                     let tv = self.simple(tv_j);
                     let zero = self.builder.ins().iconst(types::I64, 0);

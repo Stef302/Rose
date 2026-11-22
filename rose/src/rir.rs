@@ -1262,6 +1262,237 @@ pub fn executer_avec_ptr<H: HoteRir>(corps: &CorpsRir, base: *mut Valeur, hote: 
     FinRir::Vide
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// VAGUE 2 — boucle entière « nue » éligible au codegen sans checks
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Le chemin JIT générique émet, pour CHAQUE addition entière, un test de
+// drapeau « non boxé » et un test de débordement signé (avec repli GMP).
+// Ces tests sont indispensables en général, mais coûtent ~30 instructions
+// par tour sur `pour i de 1 vers 1_000_001 { $s = $s + i }`.
+//
+// `boucle_nu` reconnaissance UNE boucle dont on peut PROUVER, par un garde
+// exécuté une seule fois à l'entrée, que toutes ces vérifications sont
+// inutiles. Le garde exige :
+//   * borne littérale 0 < B ≤ 2^20 ;
+//   * compteur initialisé par un littéral, incrémenté de +1 une fois ;
+//   * tous les slots LUS par le corps soit initialisés par un littéral
+//     (donc i64 nus), soit écrits plus tôt dans le corps ;
+//   * au garde, chaque slot lu est nu (`unboxed`) et |v| ≤ 2^40.
+//
+// Preuve d'absence de débordement sur les B tours au plus :
+//   * `acc = acc ± (compteur | littéral ≤ 2^20)` : |acc| ≤ 2^40 + B·B ≤ 2^41 ;
+//   * un `+` alimentant un `% m` (0 < m ≤ 2^30) a deux opérandes ≤ 2^40,
+//     donc une somme ≤ 2^41, puis un reste ≤ m ≤ 2^30 ;
+//   * le compteur reste ≤ B ≤ 2^20.
+// Aucun `Mul`, `Div`, appel, négation ni boxage n'est autorisé dans le corps.
+// Si le garde échoue, l'émetteur JIT garde LA BOUCLE GÉNÉRIQUE VÉRIFIÉE :
+// la sémantique (y compris le repli GMP) est donc inchangée pour tout programme.
+
+/// Borne haute de la borne d'une boucle nu (2^20).
+pub const BOUCLE_NU_BORNE_MAX: i64 = 1 << 20;
+/// Garde de valeur : |v| ≤ 2^40 à l'entrée de la boucle.
+pub const BOUCLE_NU_VALEUR_MAX: i64 = 1i64 << 40;
+
+/// `% m` prouvé sur des opérandes dans [0, m) : une soustraction
+/// conditionnelle remplace la division magique (7 instructions de moins).
+#[derive(Clone, Debug)]
+pub struct ModRapide {
+    /// Slot résultat.
+    pub cible: u16,
+    /// Opérandes (slots), chacun dans [0, m) à chaque tour.
+    pub a: u16,
+    pub b: u16,
+    /// Diviseur positif littéral.
+    pub m: i64,
+}
+
+/// Description d'une boucle éligible au codegen sans checks.
+#[derive(Clone, Debug)]
+pub struct BoucleNu {
+    /// Index de l'opération de test (`SautSiFauxAbstrait`).
+    pub test: usize,
+    /// Index du saut arrière (`Saut { cible: test }`).
+    pub back: usize,
+    /// Slot du compteur.
+    pub ctr: u16,
+    /// Borne exclusive (littéral du test).
+    pub borne: i64,
+    /// Slots à vérifier au garde (nus et bornés). Triés, sans doublon.
+    pub garder: Vec<u16>,
+    /// `% m` réductible par soustraction conditionnelle, si prouvé.
+    pub mod_rapide: Option<ModRapide>,
+}
+
+/// Collecte les slots lus par une expression et refuse toute forme non i64.
+fn lire_expr_nu(e: &Eabstrait, lus: &mut Vec<u16>) -> bool {
+    match e {
+        Eabstrait::Slot(s, _) => { lus.push(*s); true }
+        Eabstrait::Entier(t) => t.parse::<i64>()
+            .map_or(false, |v| v.abs() <= BOUCLE_NU_VALEUR_MAX),
+        Eabstrait::Binaire { op, a, b } => {
+            matches!(op, Oper::Add | Oper::Sub | Oper::Mod)
+                && lire_expr_nu(a, lus) && lire_expr_nu(b, lus)
+        }
+        // Mul / Div / Puissance / négation / appel : hors preuve.
+        Eabstrait::Flottant(_) | Eabstrait::Neg(_) | Eabstrait::Non(_)
+        | Eabstrait::AppelRir { .. } => false,
+    }
+}
+
+fn entier_lit(e: &Eabstrait) -> Option<i64> {
+    if let Eabstrait::Entier(t) = e { t.parse::<i64>().ok() } else { None }
+}
+
+fn slot_lit(e: &Eabstrait) -> Option<u16> {
+    if let Eabstrait::Slot(s, _) = e { Some(*s) } else { None }
+}
+
+/// `z = (x + y) % m` avec `m` littéral positif (forme exacte du fib itératif).
+fn forme_mod_rapide(slot: u16, expr: &Eabstrait) -> Option<ModRapide> {
+    let Eabstrait::Binaire { op: Oper::Mod, a, b } = expr else { return None; };
+    let m = entier_lit(b)?;
+    if m <= 0 || m > (1i64 << 30) { return None; }
+    let Eabstrait::Binaire { op: Oper::Add, a: x, b: y } = &**a else { return None; };
+    let (x, y) = (slot_lit(x)?, slot_lit(y)?);
+    if x == y || slot == x || slot == y { return None; }
+    Some(ModRapide { cible: slot, a: x, b: y, m })
+}
+
+/// Vérifie une affectation du corps : forme i64 bornée, ou `% m` borné.
+fn affect_nu_ok(slot: u16, expr: &Eabstrait, ctr: u16, lus: &mut Vec<u16>) -> bool {
+    match expr {
+        Eabstrait::Slot(..) | Eabstrait::Entier(_) => lire_expr_nu(expr, lus),
+        Eabstrait::Binaire { op: Oper::Mod, a, b } => {
+            let m = entier_lit(b);
+            if !matches!(m, Some(m) if m > 0 && m <= (1i64 << 30)) { return false; }
+            // Le numérateur doit être une addition/soustraction de slots
+            // (le cas fib) ou un slot / littéral : jamais un `%` imbriqué.
+            lire_expr_nu(a, lus) && lire_expr_nu(b, lus)
+                && !matches!(&**a, Eabstrait::Binaire { op: Oper::Mod, .. })
+        }
+        Eabstrait::Binaire { op: Oper::Add | Oper::Sub, a, b } => {
+            if !lire_expr_nu(expr, lus) { return false; }
+            let a_s = slot_lit(a);
+            let b_s = slot_lit(b);
+            let a_l = entier_lit(a);
+            let b_l = entier_lit(b);
+            // accumulateur : `acc = acc ± (compteur | petit littéral)`
+            if a_s == Some(slot) && (b_s == Some(ctr) || matches!(b_l, Some(v) if v.abs() <= BOUCLE_NU_BORNE_MAX)) {
+                return true;
+            }
+            if b_s == Some(slot) && (a_s == Some(ctr) || matches!(a_l, Some(v) if v.abs() <= BOUCLE_NU_BORNE_MAX)) {
+                return true;
+            }
+            // L'addition peut aussi alimenter directement un `% m` : ce cas
+            // est reconnu par la branche Mod ci-dessus (appel imbriqué).
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Détecte (au plus) une boucle entière nue dans un corps SANS paramètre.
+/// Aucune transformation n'est appliquée ici : l'émetteur JIT décide
+/// ensuite d'émettre la boucle rapide derrière le garde.
+pub fn boucle_nu(corps: &CorpsRir) -> Option<BoucleNu> {
+    for back in (1..corps.ops.len()).rev() {
+        let t = match &corps.ops[back] { Op::Saut { cible } => *cible, _ => continue };
+        if t >= back { continue; }
+        let (ctr, borne, sortie) = match &corps.ops[t] {
+            Op::SautSiFauxAbstrait {
+                test: Eabstrait::Binaire { op: Oper::Lt, a, b }, cible,
+            } => {
+                let s = slot_lit(a);
+                let v = entier_lit(b);
+                match (s, v) {
+                    (Some(s), Some(v)) => (s, v, *cible),
+                    _ => continue,
+                }
+            }
+            _ => continue,
+        };
+        if sortie <= back || borne <= 0 || borne > BOUCLE_NU_BORNE_MAX { continue; }
+
+        // Valeurs littérales connues avant le test.
+        let mut init: std::collections::HashMap<u16, i64> = std::collections::HashMap::new();
+        for op in &corps.ops[..t] {
+            if let Op::Affect { slot, expr } = op {
+                if let Some(v) = entier_lit(expr) { init.insert(*slot, v); }
+                else { init.remove(slot); }
+            }
+        }
+        if !init.contains_key(&ctr) || init[&ctr] >= borne { continue; }
+
+        // Le compteur doit être incrémenté de +1 exactement une fois.
+        let mut inc = 0usize;
+        let mut ecrit_ctr = 0usize;
+        let mut lus: Vec<u16> = Vec::new();
+        let mut ecrits_avant: Vec<u16> = Vec::new();
+        let mut mod_rapide: Option<ModRapide> = None;
+        let mut ok = true;
+        for (k, op) in corps.ops[t + 1..back].iter().enumerate() {
+            match op {
+                Op::Affect { slot, expr } => {
+                    if let Some(mr) = forme_mod_rapide(*slot, expr) { mod_rapide = Some(mr); }
+                    let mut ict: Vec<u16> = Vec::new();
+                    if !affect_nu_ok(*slot, expr, ctr, &mut ict) { ok = false; break; }
+                    if *slot == ctr {
+                        ecrit_ctr += 1;
+                        if matches!(expr, Eabstrait::Binaire { op: Oper::Add, a, b }
+                            if slot_lit(a) == Some(ctr) && entier_lit(b) == Some(1))
+                        { inc += 1; }
+                    }
+                    // Tout slot lu doit être soit initialisé par un littéral
+                    // avant la boucle, soit déjà écrit dans le corps.
+                    if ict.iter().any(|s| !init.contains_key(s) && !ecrits_avant.contains(s)) {
+                        ok = false; break;
+                    }
+                    lus.extend(ict);
+                    ecrits_avant.push(*slot);
+                    let _ = k;
+                }
+                _ => { ok = false; break; }
+            }
+        }
+        // Le compteur ne doit avoir qu'UNE écriture dans le corps (son
+        // incrément de +1) : sinon la borne `borne` ne prouve plus rien.
+        if !ok || inc != 1 || ecrit_ctr != 1 { continue; }
+
+        // `% m` par soustraction conditionnelle : seulement si les deux
+        // opérandes sont, à l'entrée, dans [0, m) (littéraux connus) et si
+        // chaque réécriture d'un opérande est une copie depuis un slot lui
+        // même dans [0, m) (ou le résultat du `%`). L'invariant est alors
+        // préservé à chaque tour : x+y < 2m, donc une seule soustraction
+        // conditionnelle suffit, exactement comme le reste GMP.
+        if let Some(mr) = &mod_rapide {
+            let dans = |s: u16| init.get(&s).copied()
+                .map_or(false, |v| v >= 0 && v < mr.m);
+            if !dans(mr.a) || !dans(mr.b) || mr.a == ctr || mr.b == ctr {
+                mod_rapide = None;
+            } else {
+                let ensemble = [mr.a, mr.b, mr.cible];
+                for op in &corps.ops[t + 1..back] {
+                    let Op::Affect { slot, expr } = op else { mod_rapide = None; break; };
+                    if !ensemble.contains(slot) || *slot == ctr { continue; }
+                    // Le résultat du `%` est borné ; les autres écritures
+                    // doivent être des copies d'un slot de l'ensemble.
+                    let copie = slot_lit(expr).map_or(false, |s| ensemble.contains(&s));
+                    let est_mod = forme_mod_rapide(*slot, expr).is_some();
+                    if !copie && !est_mod { mod_rapide = None; break; }
+                }
+            }
+        }
+
+        // Le compteur est lu par le test, donc gardé.
+        lus.push(ctr);
+        lus.sort_unstable(); lus.dedup();
+        let garder: Vec<u16> = lus.into_iter().filter(|s| init.contains_key(s)).collect();
+        return Some(BoucleNu { test: t, back, ctr, borne, garder, mod_rapide });
+    }
+    None
+}
+
 thread_local! {
     /// Profil RIR actif (ROSE_PROFIL_RIR=1).
     static PROFIL_RIR: std::cell::Cell<bool> = std::cell::Cell::new(false);
