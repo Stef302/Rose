@@ -604,7 +604,21 @@ fn g5_nu_op($ligne: chaine) -> chaine {
 # ── État (listes append-only ; joindre mute l'objet partagé) ──
 $g5_code = [0 : entier]
 $g5_meta = [0 : chaine]
-$g5_lbldef = [0 : chaine]
+# G5-LABEL — résolution des étiquettes en O(1) amorti par bucket.
+# AVANT : $g5_lbldef était une liste de chaînes "label|position" et
+# g5_labelidx() faisait une recherche LINÉAIRE qui construisait 2 sous-chaînes
+# + 1 chaîne() + 1 parsing d'entier À CHAQUE COMPARAISON. Or g5_patch() appelle
+# g5_labelidx() pour CHAQUE saut : le coût était O(sauts × étiquettes) en
+# DESCRIPTEURS ALLOUÉS sur le tas montant (jamais libérés). Mesuré en émetteur
+# hébergé sur noyau.rir : 46,27 s avant / 4,60 s après, ELF byte-identique.
+# (Le pic de 84 Gio de C1 venait surtout de g5_assemble, voir plus bas.)
+# MAINTENANT : 256 tables à clés ENTIÈRES (déjà émises en G5 : g5_emit_table /
+# g5_emit_inser / g5_emit_clex), indexées par `étiquette % 256`. Aucune chaîne
+# intermédiaire, aucune allocation par lookup. Le descripteur de table est
+# partagé via la liste ($t[$bucket] mutation en place, vérifié natif et ELF).
+$g5_lbtabs = [table()]
+$g5_lbti = 1
+tant_que ($g5_lbti < 256) { joindre($g5_lbtabs, table()); $g5_lbti = $g5_lbti + 1 }
 $g5_ctr = [0]
 $g5_fn = [0 : chaine]
 $g5_fnslot = [0 : entier]
@@ -678,29 +692,23 @@ fn g5_branch($kind: entier, $l: entier) -> entier {
   retour longueur($g5_code) - 1
 }
 # Saut court à déplacement CONSTANT, résolu à l'émission (pas de label).
-# Évite de grossir g5_lbldef : g5_patch est une recherche linéaire, donc
-# 3000 labels supplémentaires rendaient l'émission du compilateur entier
-# plusieurs minutes. Utilisé uniquement dans les patrons de dispatch de tag.
+# Utilisé uniquement dans les patrons de dispatch de tag.
 fn g5_branch_off($kind: entier, $off: entier) -> entier {
   si ($kind == 0) { g5_emit(335544320 + g5_wrap($off, 67108864)); retour 0 }
   si ($kind == 1) { g5_emit(2483027968 + g5_wrap($off, 67108864)); retour 0 }
   g5_emit(1409286144 + g5_wrap($off, 524288) * 32 + ($kind - 100))
   retour 0
 }
+# G5-LABEL : une seule insertion par étiquette, clé = entier, valeur = position.
 fn g5_mark($l: entier) -> entier {
-  joindre($g5_lbldef, chaine($l) + "|" + chaine(longueur($g5_code)))
-  retour longueur($g5_code) - 1
+  $p = longueur($g5_code)
+  si ($l >= 0) { inserer($g5_lbtabs[$l % 256], $l, $p) }
+  retour $p - 1
 }
 fn g5_labelidx($l: entier) -> entier {
-  $i = 0
-  tant_que ($i < longueur($g5_lbldef)) {
-    $s = $g5_lbldef[$i]
-    $bar = g4_pos($s, "|")
-    si (g4_entier_ou_zero(g5_sub($s, 0, $bar)) == $l) {
-      retour g4_entier_ou_zero(g5_sub($s, $bar + 1, longueur($s)))
-    }
-    $i = $i + 1
-  }
+  si ($l < 0) { retour -1 }
+  $t = $g5_lbtabs[$l % 256]
+  si (cle_existe($t, $l)) { retour g4_entier_ou_zero(chaine($t[$l])) }
   retour -1
 }
 fn g5_fail($msg: chaine) -> entier { joindre($g5_err, $msg); retour -1 }
@@ -1730,9 +1738,39 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         $pr = $a3 + 1
         si ($pr + 2 < $n et $t[$pr] == "(" et $t[$pr + 1] == "s") {
           $lit = g5_unescape($t[$pr + 2])
-          $ll = longueur($lit)
+          $ll = longueur($lit)          # POINTS DE CODE (largeur b-a du RIR)
+          # G5-UTF8 : le descripteur stocke des OCTETS. L'ancienne fusion
+          # lisait l'octet à l'adresse `descr+16+a` : correct pour l'ASCII,
+          # mais décalé de k-1 octets dès qu'un caractère de k octets précède
+          # la position a (mesuré : `sous_chaine("≈\nx\n",i,i+1) == "\n"`
+          # rendait NNNY au lieu de NYNY). Cela désynchronisait g4_lignes()
+          # sur un RIR contenant un littéral non-ASCII : la ligne `ops`
+          # devenait `ops\n`, puis g5_nu_op(5,4) échouait en silence (rc=2).
+          # On convertit MAINTENANT l'indice de point de code `a` en décalage
+          # octet en balayant la tête du descripteur (même motif que
+          # g5_emit_sous / g5_emit_idx), puis on compare TOUS les octets
+          # UTF-8 du littéral (et non un octet par point de code).
+          $cpslit = g5_cps($lit)
+          $boct = [0 : entier]
+          $kj = 0
+          tant_que ($kj < longueur($cpslit)) {
+            $part = g5_utf8($cpslit[$kj])
+            $ki = 0
+            tant_que ($ki < longueur($part)) {
+              joindre($boct, $part[$ki])
+              $ki = $ki + 1
+            }
+            $kj = $kj + 1
+          }
+          $nb = longueur($boct)
           $lfaux = g5_next()
           $lfin = g5_next()
+          $lscan = g5_next()
+          $lfound = g5_next()
+          $ld1 = g5_next()
+          $ld2 = g5_next()
+          $ld3 = g5_next()
+          $ldone = g5_next()
           $p = g5_eval($t, $a0, $d + 1, $f)
           si ($p < 0) { retour -1 }
           g5_emit(stroff(0, 31, g5_tmpoff($d)))
@@ -1749,13 +1787,39 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
           g5_load(4, $ll)
           g5_emit(cmpr(3, 4))
           g5_branch(101, $lfaux)
-          g5_emit(g5_masktag(6, 0))
-          g5_emit(addi(1, 1, 16))
-          g5_emit(addr(7, 6, 1))
+          g5_emit(g5_masktag(6, 0))       # x6 = pointeur source brut
+          g5_emit(movz(14, 0))            # x14 = ci (point de code courant)
+          g5_emit(movz(15, 0))            # x15 = bo (décalage octet)
+          g5_mark($lscan)
+          g5_emit(cmpr(14, 1))            # ci == a ?
+          g5_branch(100, $lfound)
+          g5_emit(ldroff(11, 6, 8))       # x11 = nombre d'octets
+          g5_emit(cmpr(15, 11))
+          g5_branch(110, $lfound)         # bo >= len -> borne
+          g5_emit(addi(19, 15, 16))
+          g5_emit(ldrbr(17, 6, 19))       # octet de tête
+          g5_emit(cmpi(17, 128))
+          g5_branch(111, $ld1)
+          g5_emit(cmpi(17, 224))
+          g5_branch(111, $ld2)
+          g5_emit(cmpi(17, 240))
+          g5_branch(111, $ld3)
+          g5_emit(movz(18, 4))
+          g5_branch(0, $ldone)
+          g5_mark($ld1); g5_emit(movz(18, 1)); g5_branch(0, $ldone)
+          g5_mark($ld2); g5_emit(movz(18, 2)); g5_branch(0, $ldone)
+          g5_mark($ld3); g5_emit(movz(18, 3))
+          g5_mark($ldone)
+          g5_emit(addr(15, 15, 18))
+          g5_emit(addi(14, 14, 1))
+          g5_branch(0, $lscan)
+          g5_mark($lfound)
+          g5_emit(addr(7, 6, 15))         # x7 = source + bo (x15)
+          g5_emit(addi(7, 7, 16))
           $li = 0
-          tant_que ($li < $ll) {
+          tant_que ($li < $nb) {
             g5_emit(ldrbio(8, 7, $li))
-            g5_load(9, ordre(sous_chaine($lit, $li, $li + 1)))
+            g5_load(9, $boct[$li])
             g5_emit(cmpr(8, 9))
             g5_branch(101, $lfaux)
             $li = $li + 1
@@ -4387,10 +4451,28 @@ fn g5_elf() -> chaine {
   # de tas (pointeur 0x1296320880 mesuré en fin de compilation). 32 Gio puis
   # 64 Gio insuffisants (SIGSEGV rejoué aux deux bornes) : 128 Gio VIRTUEL.
   joindre($parts, u64le(0) + u64le(137438953472) + u64le(4096))
+  # G5-ASM : on ne donne PAS un morceau par mot de code a g5_assemble.
+  # Sous le runtime G5, `+` COPIE (contrairement au Rust heberge), et la
+  # reduction par paires alloue ~2x le nombre de morceaux x la taille finale
+  # par passe. Avec ~178 000 mots de code, cela montait a 32,8 Gio de RSS
+  # mesures (415 Mio juste avant g5_elf, 32 807 Mio apres). On pre-assemble
+  # donc 32 mots par morceau : ~5 600 morceaux seulement, soit ~32x moins de
+  # copies dans la reduction. Les octets emis sont strictement identiques.
+  $nchunks = 0
   $i = 0
-  tant_que ($i < longueur($g5_code)) { joindre($parts, u32le($g5_code[$i])); $i = $i + 1 }
-  # 1 magic + 8 NUL + 9 en-tetes = 18 morceaux fixes, puis un par mot de code.
-  retour g5_assemble($parts, 18 + longueur($g5_code))
+  tant_que ($i < longueur($g5_code)) {
+    $chunk = ""
+    $j = 0
+    tant_que ($j < 32 et $i + $j < longueur($g5_code)) {
+      $chunk = $chunk + u32le($g5_code[$i + $j])
+      $j = $j + 1
+    }
+    joindre($parts, $chunk)
+    $nchunks = $nchunks + 1
+    $i = $i + 32
+  }
+  # 1 magic + 8 NUL + 9 en-tetes = 18 morceaux fixes, puis un par bloc de 32 mots.
+  retour g5_assemble($parts, 18 + $nchunks)
 }
 
 # ── Point d'entrée ──
