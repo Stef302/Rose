@@ -5233,15 +5233,48 @@ impl Emetteur<'_> {
                             self.unboxed_tmp = Some(mf);
                             JitVal::Simple(mv)
                         } else {
-                            // '*' entier : conservé sur le helper runtime
-                            // (promotion bigint au dépassement, non prouvable
-                            // ici sans test i128 coûteux). Aucune régression.
+                            // OPT-JIT — CHEMIN RAPIDE ENTIER POUR `*`.
+                            //
+                            // `smulhi(a,b)` donne les 64 bits HAUT du produit
+                            // 128 bits signé ; le produit tient dans un i64
+                            // exactement quand ce haut vaut l'extension de
+                            // signe du bas (`sshr(p, 63)`). Aucune division,
+                            // aucun test de cas limite (MIN × −1 compris).
+                            // Si l'un des opérandes est BOXÉ, ou si le
+                            // produit déborde, on bascule sur `rose_mul_ent`
+                            // (promotion GMP) : exactitude inchangée.
+                            let zero64 = self.builder.ins().iconst(types::I64, 0);
+                            let one = self.builder.ins().iconst(types::I64, 1);
                             let va_j = self.expr_eabstrait_rir(a, slot_vars, slot_types, corps, slot_unboxed);
+                            let fa = self.unboxed_tmp.unwrap_or(zero64);
                             let va = self.simple(va_j);
                             let tag_a = self.builder.use_var(self.tag_tmp);
                             let vb_j = self.expr_eabstrait_rir(b, slot_vars, slot_types, corps, slot_unboxed);
+                            let fb = self.unboxed_tmp.unwrap_or(zero64);
                             let vb = self.simple(vb_j);
                             let tag_b = self.builder.use_var(self.tag_tmp);
+                            let p = self.builder.ins().imul(va, vb);
+                            let hi = self.builder.ins().smulhi(va, vb);
+                            const SOIXANTE_TROIS: i64 = 63;
+                            let soixante_trois = self.builder.ins().iconst(types::I64, SOIXANTE_TROIS);
+                            let signe = self.builder.ins().sshr(p, soixante_trois);
+                            let pas_debord = self.builder.ins().icmp(IntCC::Equal, hi, signe);
+                            let flags = self.builder.ins().band(fa, fb);
+                            let deux_nus = self.builder.ins().icmp(IntCC::NotEqual, flags, zero64);
+                            let ok = self.builder.ins().band(deux_nus, pas_debord);
+                            let rapide = self.builder.create_block();
+                            let lent = self.builder.create_block();
+                            let fusion = self.builder.create_block();
+                            self.builder.append_block_param(fusion, types::I64);
+                            self.builder.append_block_param(fusion, types::I64);
+                            self.builder.ins().brif(ok, rapide, &[], lent, &[]);
+                            self.builder.switch_to_block(rapide);
+                            self.builder.seal_block(rapide);
+                            let ztag = self.builder.ins().iconst(types::I64, 0);
+                            self.builder.def_var(self.tag_tmp, ztag);
+                            self.saut(fusion, &[p, one]);
+                            self.builder.switch_to_block(lent);
+                            self.builder.seal_block(lent);
                             let ss = self.module.target_config().pointer_bytes() as u32;
                             let sv = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
                             let st = self.builder.create_sized_stack_slot(cranelift::prelude::StackSlotData::new(cranelift::prelude::StackSlotKind::ExplicitSlot, ss, 0));
@@ -5252,10 +5285,14 @@ impl Emetteur<'_> {
                             let rv = self.builder.ins().stack_load(types::I64, types::I64, sv, 0);
                             let rt = self.builder.ins().stack_load(types::I64, types::I64, st, 0);
                             self.builder.def_var(self.tag_tmp, rt);
-                            let zero = self.builder.ins().iconst(types::I64, 0);
-                            let inline = self.builder.ins().icmp(IntCC::Equal, rt, zero);
-                            self.unboxed_tmp = Some(self.builder.ins().uextend(types::I64, inline));
-                            JitVal::Simple(rv)
+                            let inline = self.builder.ins().icmp(IntCC::Equal, rt, zero64);
+                            self.saut(fusion, &[rv, inline]);
+                            self.builder.switch_to_block(fusion);
+                            self.builder.seal_block(fusion);
+                            let mv = self.builder.block_params(fusion)[0];
+                            let mf = self.builder.block_params(fusion)[1];
+                            self.unboxed_tmp = Some(mf);
+                            JitVal::Simple(mv)
                         }
                     }
                     Oper::Mod => {

@@ -413,6 +413,63 @@ pub fn abaisser_principal_valeur_exacte(corps: &[Instr], retour_i64: i64) -> Opt
     })
 }
 
+
+/// OPT-JIT — réparation du repli lexical du COMPTEUR `i` dans un `pour i`.
+/// Le lexeur replie `i` en `0+1i` avant de savoir qu'il s'agit d'une variable ;
+/// `front::deplier_i_rec` répare `0+1i`, mais `i*2` devient
+/// `LitComplexe { re: 0, im: 2 }` et échappe à la réparation. Mesuré : un
+/// `inserer(t, i, i*2)` restait interprété (≈260 µs/500 insertions) alors que
+/// la même boucle avec `k` passait par Cranelift (≈37 µs).
+/// ⚠ Réécriture LIMITÉE au corps d'un `Pour { nom: "i" }` : un imaginaire
+/// légitime hors boucle `i` n'est jamais touché ; `im` doit être entier exact.
+fn reparer_compteur_i_expr(e: &mut Expr) {
+    match e {
+        Expr::LitComplexe { re, im, ligne } => {
+            if *re == 0.0 && *im != 0.0 && im.fract() == 0.0 && im.abs() < i64::MAX as f64 {
+                let ligne = *ligne;
+                let k = *im as i64;
+                *e = if k == 1 {
+                    Expr::Var("i".into(), ligne)
+                } else {
+                    Expr::Binaire {
+                        op: "*".into(),
+                        a: Box::new(Expr::Var("i".into(), ligne)),
+                        b: Box::new(Expr::Litteral {
+                            texte: k.unsigned_abs().to_string(),
+                            flott: false, rationnel: false, neg: k < 0,
+                            ty: TyKind::Dyn, ligne,
+                        }),
+                        ligne,
+                    }
+                };
+            }
+        }
+        Expr::Appel { args, .. } => { for a in args { reparer_compteur_i_expr(a); } }
+        Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => {
+            reparer_compteur_i_expr(a); reparer_compteur_i_expr(b);
+        }
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+        | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+        | Expr::SuperFactorielle(a, _) => reparer_compteur_i_expr(a),
+        Expr::ListeLit(v, _) => { for x in v { reparer_compteur_i_expr(x); } }
+        Expr::TableLit(v, _) => { for (_, x) in v { reparer_compteur_i_expr(x); } }
+        _ => {}
+    }
+}
+
+/// Répare les expressions AST portées par une opération RIR.
+fn reparer_compteur_i_op(op: &mut Op) {
+    match op {
+        Op::AffectAst { e, .. } | Op::ExprStmt(e) | Op::Lever(e) | Op::Retour(Some(e))
+        | Op::SautSiFaux { test: e, .. } => reparer_compteur_i_expr(e),
+        Op::Afficher(v) => { for e in v { reparer_compteur_i_expr(e); } }
+        Op::AffectIndex { index, valeur, .. } => {
+            reparer_compteur_i_expr(index); reparer_compteur_i_expr(valeur);
+        }
+        _ => {}
+    }
+}
+
 pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -> Option<CorpsRir> {
     // ── Table de noms → slot ────────────────────────────────────────────
     let mut noms: Vec<String> = Vec::new();
@@ -450,11 +507,19 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
         index: &mut std::collections::HashMap<String, u16>,
         globaux: &mut Vec<u16>,
         globaux_connus: &[String],
+        dans_boucle_i: bool,
     ) -> Option<()> {
+        // p! = pousser une opération en réparant son AST si on est dans `pour i`.
+        macro_rules! p { ($e:expr) => {{
+            ops.push($e);
+            if dans_boucle_i { reparer_compteur_i_op(ops.last_mut().unwrap()); }
+        }}; }
         fn marquer_global(slot: u16, globaux: &mut Vec<u16>) {
             if !globaux.contains(&slot) { globaux.push(slot); }
         }
         for i in bloc {
+            let dans_ici = dans_boucle_i
+                || matches!(i, Instr::Pour { nom, .. } if nom == "i");
             match i {
                 Instr::Affect { nom, e, .. } => {
                     let s = slot_de(noms, index, nom);
@@ -465,14 +530,14 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                     // ⚠ Le slot de la variable affectée doit exister AVANT
                     // l'abstraction (une affectation « x = x + 1 » lit x).
                     match abstraire(e, index) {
-                        Some(ab) => ops.push(Op::Affect { slot: s, expr: ab }),
-                        None => ops.push(Op::AffectAst { slot: s, e: e.clone() }),
+                        Some(ab) => p!(Op::Affect { slot: s, expr: ab }),
+                        None => p!(Op::AffectAst { slot: s, e: e.clone() }),
                     }
                 }
                 Instr::AffectIndex { nom, index: idx, valeur, .. } => {
                     let s = slot_de(noms, index, nom);
                     if globaux_connus.iter().any(|g| g == nom) { marquer_global(s, globaux); }
-                    ops.push(Op::AffectIndex { slot: s, nom: nom.clone(),
+                    p!(Op::AffectIndex { slot: s, nom: nom.clone(),
                                                index: idx.clone(), valeur: valeur.clone() });
                 }
                 Instr::Afficher(es, _) => {
@@ -481,46 +546,46 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                     // aucun AST). Les autres gardent l'AST.
                     if es.len() == 1 {
                         if let Some(ab) = abstraire(&es[0], index) {
-                            ops.push(Op::AfficherAbstrait(ab));
+                            p!(Op::AfficherAbstrait(ab));
                             continue;
                         }
                     }
-                    ops.push(Op::Afficher(es.clone()));
+                    p!(Op::Afficher(es.clone()));
                 }
                 Instr::Lire { nom, ty, .. } => {
                     let s = slot_de(noms, index, nom);
                     if globaux_connus.iter().any(|g| g == nom) { marquer_global(s, globaux); }
-                    ops.push(Op::Lire { slot: s, ty: *ty });
+                    p!(Op::Lire { slot: s, ty: *ty });
                 }
-                Instr::ExprStmt(e) => ops.push(Op::ExprStmt(e.clone())),
+                Instr::ExprStmt(e) => p!(Op::ExprStmt(e.clone())),
                 Instr::Retour(e, _) => {
                     // ⚠⚠ CAS CHAUD : `retour <expr>` dans le sous-ensemble devient
                     // un retour ABSTRAIT (aucune recherche de nom, aucun AST).
                     match e {
                         Some(x) => match abstraire(x, index) {
-                            Some(ab) => ops.push(Op::RetourAbstrait(ab)),
-                            None => ops.push(Op::Retour(e.clone())),
+                            Some(ab) => p!(Op::RetourAbstrait(ab)),
+                            None => p!(Op::Retour(e.clone())),
                         },
-                        None => ops.push(Op::Retour(None)),
+                        None => p!(Op::Retour(None)),
                     }
                 }
-                Instr::Lever(e, _) => ops.push(Op::Lever(e.clone())),
+                Instr::Lever(e, _) => p!(Op::Lever(e.clone())),
                 Instr::Si { test, alors, sinon, .. } => {
                     // saut-si-faux → sinon (ou après) ; le bloc « alors » est
                     // inline puis un saut vers après.
                     let pos_saut = ops.len();
                     match abstraire(test, index) {
-                        Some(ab) => ops.push(Op::SautSiFauxAbstrait { test: ab, cible: 0 }),
-                        None => ops.push(Op::SautSiFaux { test: test.clone(), cible: 0 }),
+                        Some(ab) => p!(Op::SautSiFauxAbstrait { test: ab, cible: 0 }),
+                        None => p!(Op::SautSiFaux { test: test.clone(), cible: 0 }),
                     }
-                    abaisser_bloc(alors, ops, noms, index, globaux, globaux_connus)?;
+                    abaisser_bloc(alors, ops, noms, index, globaux, globaux_connus, dans_ici)?;
                     match sinon {
                         Some(sin) if !sin.is_empty() => {
                             let pos_saut2 = ops.len();
-                            ops.push(Op::Saut { cible: 0 });
+                            p!(Op::Saut { cible: 0 });
                             // cible du saut-si-faux : début du « sinon »
                             let cible_sinon = ops.len();
-                            abaisser_bloc(sin, ops, noms, index, globaux, globaux_connus)?;
+                            abaisser_bloc(sin, ops, noms, index, globaux, globaux_connus, dans_ici)?;
                             // cible du saut final : après le « sinon »
                             let apres = ops.len();
                             if let Op::SautSiFaux { cible, .. } = &mut ops[pos_saut] {
@@ -548,11 +613,11 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                     let debut = ops.len();
                     let pos_saut = ops.len();
                     match abstraire(test, index) {
-                        Some(ab) => ops.push(Op::SautSiFauxAbstrait { test: ab, cible: 0 }),
-                        None => ops.push(Op::SautSiFaux { test: test.clone(), cible: 0 }),
+                        Some(ab) => p!(Op::SautSiFauxAbstrait { test: ab, cible: 0 }),
+                        None => p!(Op::SautSiFaux { test: test.clone(), cible: 0 }),
                     }
-                    abaisser_bloc(corps, ops, noms, index, globaux, globaux_connus)?;
-                    ops.push(Op::Saut { cible: debut });
+                    abaisser_bloc(corps, ops, noms, index, globaux, globaux_connus, dans_ici)?;
+                    p!(Op::Saut { cible: debut });
                     let apres = ops.len();
                     if let Op::SautSiFaux { cible, .. } = &mut ops[pos_saut] {
                         *cible = apres;
@@ -566,8 +631,8 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                     let s = slot_de(noms, index, nom);
                     if globaux_connus.iter().any(|g| g == nom) { marquer_global(s, globaux); }
                     match abstraire(debut, index) {
-                        Some(ab) => ops.push(Op::Affect { slot: s, expr: ab }),
-                        None => ops.push(Op::AffectAst { slot: s, e: debut.clone() }),
+                        Some(ab) => p!(Op::Affect { slot: s, expr: ab }),
+                        None => p!(Op::AffectAst { slot: s, e: debut.clone() }),
                     }
                     let debut_boucle = ops.len();
                     let test = Expr::Binaire {
@@ -578,10 +643,10 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                     };
                     let pos_saut = ops.len();
                     match abstraire(&test, index) {
-                        Some(ab) => ops.push(Op::SautSiFauxAbstrait { test: ab, cible: 0 }),
-                        None => ops.push(Op::SautSiFaux { test, cible: 0 }),
+                        Some(ab) => p!(Op::SautSiFauxAbstrait { test: ab, cible: 0 }),
+                        None => p!(Op::SautSiFaux { test, cible: 0 }),
                     }
-                    abaisser_bloc(corps, ops, noms, index, globaux, globaux_connus)?;
+                    abaisser_bloc(corps, ops, noms, index, globaux, globaux_connus, dans_ici)?;
                     // j ← j + 1
                     let inc = Expr::Binaire {
                         op: "+".into(),
@@ -591,10 +656,10 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                         ligne: *ligne,
                     };
                     match abstraire(&inc, index) {
-                        Some(ab) => ops.push(Op::Affect { slot: s, expr: ab }),
-                        None => ops.push(Op::AffectAst { slot: s, e: inc }),
+                        Some(ab) => p!(Op::Affect { slot: s, expr: ab }),
+                        None => p!(Op::AffectAst { slot: s, e: inc }),
                     }
-                    ops.push(Op::Saut { cible: debut_boucle });
+                    p!(Op::Saut { cible: debut_boucle });
                     let apres = ops.len();
                     if let Op::SautSiFaux { cible, .. } = &mut ops[pos_saut] {
                         *cible = apres;
@@ -613,7 +678,7 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
                     // donc à l'interpréteur : le RIR gère les AFFECTATIONS,
                     // AFFICHAGES, SAUTS, RETOURS et BOUCLES, c'est-à-dire le
                     // cas chaud ; un bloc imbriqué est rare.
-                    ops.push(Op::Bloc(b.clone()));
+                    p!(Op::Bloc(b.clone()));
                 }
                 // ⚠ Hors sous-ensemble : spawn, essayer, Rir (déjà abaissé).
                 Instr::Spawn(..) | Instr::Essayer { .. } | Instr::Rir(..) => return None,
@@ -622,7 +687,7 @@ pub fn abaisser(corps: &[Instr], params: &[String], globaux_connus: &[String]) -
         Some(())
     }
 
-    abaisser_bloc(corps, &mut ops, &mut noms, &mut index, &mut globaux, globaux_connus)?;
+    abaisser_bloc(corps, &mut ops, &mut noms, &mut index, &mut globaux, globaux_connus, false)?;
 
     Some(CorpsRir {
         n_slots: noms.len(),
