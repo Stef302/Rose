@@ -110,3 +110,21 @@ cmp C1_nat.elf C2_nat.elf                            # point fixe étendu
 
 Journal : `/tmp/opencode/point_fixe_C2.log`. Le résultat n'est PAS revendiqué
 avant lecture du `cmp`.
+
+### Résultat mesuré de la tentative 2 (22/11, 02:00 UTC) — ÉCHEC
+
+- `C0_new.elf` a bien été émis : 1 573 232 o, magic `7f454c4602010100`.
+- MAIS `C0_new.elf fib.rose` produit un ELF **corrompu** (12 944 o) :
+  `file` → `*unknown arch 0xffffb7c2*, corrupted program header size`,
+  exécution → `Exec format error`. Les 16 premiers octets montrent un `c2`
+  inséré avant `b7` : `0200 c2b7 0001 0000 00c2 b000…` au lieu de
+  `0200 b700 0100 0000 b000 4000…`. Cause : `caractere(183)` encode désormais
+  en UTF-8 (`c2 b7`) alors que `u16le/u32le/u64le` l'utilisent pour écrire des
+  octets bruts.
+- `C0_new.elf rose_natif.rose > C1` → `rc=1`, `index hors des limites des
+  arguments` : le `$sortie = argument(1)` non gardé du composite.
+
+Ces deux régressions sont propres au **chemin natif G5** ; le composite hébergé
+par Rust reste valide (fib → ELF 9 284 o → 317811, AZ 31/31). Correctif en cours
+dans `emetteur_elf.rose` + générateur (primitive `octet_brut`, garde `argument(1)`).
+Aucun point fixe C1/C2 n'est revendiqué à ce stade.
