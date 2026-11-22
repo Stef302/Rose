@@ -1297,6 +1297,10 @@ fn programme_a_cycle_appel(source: &str) -> bool {
 
 fn main() {
     let _t_start = std::time::Instant::now();
+    // VAGUE 4 — trace OPTIONNELLE du chemin d'amorçage (std seul, inerte
+    // sans `ROSE_STARTUP_TRACE`). Aucune écriture sur stdout, aucun
+    // changement de résultat : voir docs/OPT_STARTUP.md.
+    let mut trace = demarrage::trace::Trace::nouveau();
     // ⚠⚠ MESURE : le temps passé dans la préparation de la console
     // (`SetConsoleTitleW` + fil d'icône) est ventilé à part quand
     // `ROSE_TIMING` est posé. C'est le suspect n°2 de la « lenteur avant
@@ -1307,6 +1311,42 @@ fn main() {
     // fenêtre, et elle doit porter la rose de marque.
     console_win::preparer();
     let _t_console = _t_start.elapsed();
+    trace.marquer("console");
+    // ── VAGUE 4 : court-circuit des commandes purement informationnelles ──
+    //
+    // `version`, `info` et l'aide n'ont besoin NI du hook de panic, NI de
+    // la collecte complète de `argv`, NI du contrôle Velopack, NI de la
+    // normalisation `jit`/`interprete`/`methode`. On les sert directement
+    // depuis `args_os()`, sans allocation de `Vec<String>`.
+    //
+    // ⚠ Le court-circuit est LIMITÉ à exactement 2 arguments : avec un
+    // argument supplémentaire (par.ex. `--veloapp-updated`), l'ancien
+    // chemin continue de s'appliquer — aucun comportement observable
+    // n'est modifié.
+    let mut args_os = std::env::args_os();
+    let _ = args_os.next(); // argv[0]
+    if let Some(arg) = args_os.next() {
+        if args_os.next().is_none() { // exactement 2 arguments
+            match arg.to_str() {
+                Some("version") | Some("--version") => {
+                    println!("{}", interp::version());
+                    trace.rapport();
+                    return;
+                }
+                Some("info") => {
+                    print!("{}", interp::info());
+                    trace.rapport();
+                    return;
+                }
+                Some("--help") | Some("-h") | Some("aide") => {
+                    print!("{}", usage());
+                    trace.rapport();
+                    return;
+                }
+                _ => {}
+            }
+        }
+    }
     // Hook de panic silencieux pour les erreurs Rose récupérables (ROSE_ERR:),
     // afin d'éviter le bruit « thread panicked » sur stderr. Les vrais bugs
     // (panics non ROSE_ERR) sont toujours affichés.
@@ -1405,6 +1445,7 @@ fn main() {
         _ => { action_exec = action_init; }
     }
     let action = action_exec.as_str();
+    trace.marquer("argv");
     // ⚠ `debug-lenteur` : diagnostic du temps de lancement / analyse /
     // exécution. Il ne dépend de RIEN (std seul) et se place AVANT toute
     // initialisation lourde.
@@ -1768,6 +1809,7 @@ fn main() {
 
 
 
+    trace.marquer("dispatch");
     let (fichier, args) = if action == "run" {
         if argv.len() < 3 { eprintln!("rose: quel programme interpréter ?"); std::process::exit(1); }
         (argv[2].clone(), argv[3..].to_vec())
@@ -1800,6 +1842,7 @@ fn main() {
     // l'inverse — une vraie directive `importer` est toujours écrite en
     // toutes lettres dans le source.
     let sans_imports = !source.contains("importer");
+    trace.marquer("avant_execution");
     let _t_pret = _t_start.elapsed();
     // ⚠⚠⚠ 512 Mo DE PILE, PAS 8 Mo (mesuré le 16/11).
     //
@@ -1911,6 +1954,7 @@ fn main() {
     if !console_apres {
         console_win::attendre_fermeture();
     }
+    trace.rapport();
     std::process::exit(rc);
 }
 

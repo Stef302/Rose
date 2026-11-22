@@ -267,3 +267,89 @@ mod tests {
         assert!(d.journal.iter().any(|l| l.contains("aucune entrée")));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// VAGUE 4 — chronométrage du chemin d'amorçage (`ROSE_STARTUP_TRACE`).
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Ce module n'a RIEN à voir avec `shell:startup` ci-dessus : il porte le
+// même nom parce qu'il mesure le DÉMARRAGE DU PROCESSUS, pas son
+// auto-enregistrement. Il est volontairement sans dépendance (std seul),
+// inerte sans la variable d'environnement, et n'écrit jamais sur stdout :
+// les oracles du banc et des tests restent bit-identiques.
+//
+// Il répond à une question que `rose debug-lenteur` ne peut pas trancher :
+// combien de temps se passe AVANT le premier `Instant` de `main`, et
+// combien dans chaque phase du chemin d'amorçage (console, argv,
+// normalisation, préparation de l'exécution). Voir docs/OPT_STARTUP.md.
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod trace {
+    use std::time::Instant;
+
+    /// Trace des phases, inactive par défaut.
+    ///
+    /// Quand `ROSE_STARTUP_TRACE` est posé, chaque `marquer` accumulate le
+    /// temps écoulé depuis la marque précédente, et `rapport` (ou le `Drop`)
+    /// écrit une ligne `TRACE-STARTUP …` sur STDERR. Aucune écriture sur
+    /// stdout, aucun changement de code de sortie.
+    pub struct Trace {
+        debut: Instant,
+        dernier: Instant,
+        actif: bool,
+        phases: Vec<(&'static str, u128)>,
+        publie: bool,
+    }
+
+    impl Trace {
+        /// Capture l'entrée dans `main`. Un seul `var_os` : le coût est nul
+        /// sur le chemin courant (pas de variable → aucun timer supplémentaire).
+        pub fn nouveau() -> Self {
+            let actif = std::env::var_os("ROSE_STARTUP_TRACE").is_some();
+            let maintenant = Instant::now();
+            Self { debut: maintenant, dernier: maintenant, actif,
+                   phases: Vec::new(), publie: false }
+        }
+
+        /// Marque une phase du chemin d'amorçage. Sans effet si la trace
+        /// n'est pas demandée.
+        pub fn marquer(&mut self, nom: &'static str) {
+            if !self.actif { return; }
+            let maintenant = Instant::now();
+            self.phases.push((nom, maintenant.duration_since(self.dernier).as_nanos()));
+            self.dernier = maintenant;
+        }
+
+        /// Écrit le rapport, une seule fois, sur stderr.
+        pub fn rapport(&mut self) {
+            if !self.actif || self.publie { return; }
+            self.publie = true;
+            eprintln!("TRACE-STARTUP depuis_entree_main={}us",
+                      self.debut.elapsed().as_micros());
+            for (nom, ns) in &self.phases {
+                eprintln!("TRACE-STARTUP {nom}={ns}ns");
+            }
+        }
+    }
+
+    impl Drop for Trace {
+        fn drop(&mut self) { self.rapport(); }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Trace;
+
+        #[test]
+        fn trace_inerte_sans_variable() {
+            // La variable n'est pas posée par `cargo test` ; aucun rapport,
+            // aucune allocation de phases.
+            if std::env::var_os("ROSE_STARTUP_TRACE").is_some() { return; }
+            let mut t = Trace::nouveau();
+            t.marquer("console");
+            assert!(t.phases.is_empty());
+            t.rapport();
+            assert!(!t.publie);
+        }
+    }
+}
