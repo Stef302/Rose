@@ -1,0 +1,112 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/tests_hierarchie.rose — REJEU DU JALON 1 (hiérarchie algébrique)
+# ═════════════════════════════════════════════════════════════════════════════
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié.
+#
+# Trois natures de contrôles, toutes affichées et comptées :
+#   [structure]  prédicats Rose sur les enregistrements (pas de terme de preuve) ;
+#   [noyau]      verifier() + convertible() : le juge réel de Thorn ;
+#   [rw]         réécriture : le terme produit est RE-VÉRIFIÉ contre son but.
+#
+# Vérifier :  ./rose/rose verif thorn/tests_hierarchie.rose
+# Exécuter :  ./rose/rose thorn/tests_hierarchie.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/hierarchie.rose"
+
+$mg_cpt = table()
+inserer($mg_cpt, "r", 0)
+inserer($mg_cpt, "e", 0)
+
+fn mg_test_bool(mg_nom: chaine, mg_v: booleen, mg_cpt: table) {
+  si (mg_v) {
+    >> "OK [structure] " + mg_nom
+  } sinon {
+    >> "ECHEC [structure] " + mg_nom
+  }
+  mg_compter(mg_cpt, mg_v)
+}
+
+fn mg_test_rw(mg_nom: chaine, mg_r: table, mg_ctx: liste<table>, mg_cpt: table) {
+  $mg_t = mg_coerce_tab(mg_r["terme"])
+  $mg_b = mg_coerce_tab(mg_r["but"])
+  $mg_vr = verifier($mg_t, mg_ctx)
+  $mg_ok = (mg_r["ok"] == vrai) et noy_est_ok($mg_vr) et
+           convertible(noy_type_res($mg_vr), $mg_b)
+  si ($mg_ok) {
+    >> "OK [rw] " + mg_nom
+  } sinon {
+    >> "ECHEC [rw] " + mg_nom + " : " + chaine(mg_r["erreur"])
+  }
+  mg_compter(mg_cpt, $mg_ok)
+}
+
+>> "Thorn — jalon 1 : hiérarchie algébrique vérifiée par le noyau"
+
+$mg_reg = mg_registre()
+>> "registre : " + chaine(longueur($mg_reg) - 1) + " instance(s) publique(s)"
+
+# ── 1. Structures et registre ───────────────────────────────────────────────
+
+$mg_add = mg_registre_trouver($mg_reg, "Nat/+/0")
+$mg_mul = mg_registre_trouver($mg_reg, "Nat/*/1")
+$mg_grp = mg_registre_trouver($mg_reg, "GroupeAbstrait")
+$mg_inconnu = mg_registre_trouver($mg_reg, "Inexistant")
+
+mg_test_bool("registre/Nat/+/0 retrouve", mg_nom_champ($mg_add) == "Nat/+/0", $mg_cpt)
+mg_test_bool("structure/Nat/+/0 est Magma+Semigroupe+Monoid",
+             mg_est_magma($mg_add) et mg_est_semigroupe($mg_add) et
+             mg_est_monoid($mg_add) et non mg_est_groupe($mg_add), $mg_cpt)
+mg_test_bool("structure/Nat/*/1 est Monoid", mg_est_monoid($mg_mul), $mg_cpt)
+mg_test_bool("structure/GroupeAbstrait est Groupe", mg_est_groupe($mg_grp), $mg_cpt)
+mg_test_bool("structure/niveau Monoid pour Nat/+/0", mg_niveau($mg_add) == "Monoid", $mg_cpt)
+mg_test_bool("structure/niveau Groupe pour GroupeAbstrait",
+             mg_niveau($mg_grp) == "Groupe", $mg_cpt)
+mg_test_bool("registre/nom inconnu -> absent", noy_est_absent($mg_inconnu), $mg_cpt)
+
+# ── 2. Lois génériques sur les deux monoïdes concrets ───────────────────────
+
+mg_lance("assoc4[Nat/+/0]", mg_lem_assoc4($mg_add), ta_ctx(), $mg_cpt)
+mg_lance("assoc4[Nat/*/1]", mg_lem_assoc4($mg_mul), ta_ctx(), $mg_cpt)
+mg_lance("id_unique_d[Nat/+/0]", mg_lem_id_unique_d($mg_add), ta_ctx(), $mg_cpt)
+mg_lance("id_unique_g[Nat/+/0]", mg_lem_id_unique_g($mg_add), ta_ctx(), $mg_cpt)
+mg_lance("id_unique_d[Nat/*/1]", mg_lem_id_unique_d($mg_mul), ta_ctx(), $mg_cpt)
+mg_lance("id_unique_g[Nat/*/1]", mg_lem_id_unique_g($mg_mul), ta_ctx(), $mg_cpt)
+
+# ── 3. Lemmes génériques de groupe (contexte abstrait déclaré) ──────────────
+
+$mg_gctx = mg_ctx_de($mg_grp)
+>> "contexte abstrait : " + chaine(longueur($mg_gctx) - 1) + " declaration(s)"
+mg_lance("inv_unique[GroupeAbstrait]", mg_lem_inv_unique($mg_grp), $mg_gctx, $mg_cpt)
+mg_lance("inv_inv[GroupeAbstrait]", mg_lem_inv_inv($mg_grp), $mg_gctx, $mg_cpt)
+mg_lance("cancel_g[GroupeAbstrait]", mg_lem_cancel_g($mg_grp), $mg_gctx, $mg_cpt)
+
+# ── 4. Tactique de réécriture ───────────────────────────────────────────────
+
+$mg_pu = al_lem_mult_un_g()
+$mg_lem = mg_loi($mg_pu)
+$mg_n = ta_succ(ta_zero())
+$mg_un = al_un()
+$mg_un_n = al_mult($mg_un, $mg_n)
+$mg_eq_un = noy_ind("=", ta_params2($mg_un_n, $mg_n))
+$mg_preuve = ta_ap1($mg_lem, $mg_n)
+
+# Réécriture du membre GAUCHE : (1 * n) = n  ==>  n = n
+$mg_rw1 = mg_rewriter($mg_eq_un, $mg_eq_un, $mg_preuve, $mg_preuve, ta_ctx())
+mg_test_rw("rw/gauche 1*n -> n", $mg_rw1, ta_ctx(), $mg_cpt)
+
+# Réécriture du membre DROIT : n = (1 * n)  ==>  n = n
+$mg_eq_nun = noy_ind("=", ta_params2($mg_n, $mg_un_n))
+$mg_preuve_sym = ta_ap4(ta_symm_symbole(), ta_nat(), $mg_un_n, $mg_n, $mg_preuve)
+$mg_rw2 = mg_rewriter_droite($mg_eq_nun, $mg_eq_un, $mg_preuve,
+                             $mg_preuve_sym, ta_ctx())
+mg_test_rw("rw/droite 1*n -> n", $mg_rw2, ta_ctx(), $mg_cpt)
+
+# Refus attendu : le membre gauche de h n'apparaît pas dans le but.
+$mg_eq_absent = noy_ind("=", ta_params2(ta_succ(ta_succ(ta_zero())), ta_zero()))
+$mg_rw3 = mg_rewriter($mg_eq_un, $mg_eq_absent, noy_var("?"), $mg_preuve, ta_ctx())
+$mg_refus = (mg_rw3["ok"] == faux)
+mg_test_bool("rw/refus u absent (attendu)", $mg_refus, $mg_cpt)
+
+>> chaine($mg_cpt["r"]) + " contrôle(s) réussi(s), " + chaine($mg_cpt["e"]) + " échec(s)"
+si ($mg_cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }

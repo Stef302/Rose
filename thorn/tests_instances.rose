@@ -1,0 +1,52 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/tests_instances.rose — PROTOTYPE : synthèse d'instances (pré-élaboration)
+# ═════════════════════════════════════════════════════════════════════════════
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié.
+# Vérifier : ./rose/rose verif thorn/tests_instances.rose
+# Exécuter : ./rose/rose thorn/tests_instances.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/instances.rose"
+
+$th_cpt = table()
+inserer($th_cpt, "r", 0)
+inserer($th_cpt, "e", 0)
+
+fn th_test(th_nom: chaine, th_v: booleen, th_cpt: table) {
+  si (th_v) { >> "OK " + th_nom } sinon { >> "ECHEC " + th_nom }
+  mg_compter(th_cpt, th_v)
+}
+
+>> "Thorn — prototype : synthèse d'instances avant vérification"
+
+$th_reg = mg_registre()
+$th_add = th_marqueur("Add", ta_nat())
+$th_mul = th_marqueur("Mul", ta_nat())
+$th_grp_nat = th_marqueur("Groupe", ta_nat())
+$th_inconnu = th_marqueur("Inconnu", ta_nat())
+
+th_test("marqueur/structure", th_est_marqueur($th_add), $th_cpt)
+th_test("marqueur/classe lue", th_classe_de($th_add) == "Add", $th_cpt)
+th_test("marqueur/porteur lu", convertible(th_car_de($th_add), ta_nat()), $th_cpt)
+
+$th_r_add = th_resoudre($th_add, $th_reg)
+$th_r_mul = th_resoudre($th_mul, $th_reg)
+th_test("resoudre/Add(Nat) -> Nat/+/0", mg_nom_champ($th_r_add) == "Nat/+/0", $th_cpt)
+th_test("resoudre/Mul(Nat) -> Nat/*/1", mg_nom_champ($th_r_mul) == "Nat/*/1", $th_cpt)
+th_test("resoudre/Groupe(Nat) -> absent",
+        noy_est_absent(th_resoudre($th_grp_nat, $th_reg)), $th_cpt)
+th_test("resoudre/classe inconnue -> absent",
+        noy_est_absent(th_resoudre($th_inconnu, $th_reg)), $th_cpt)
+
+# L'élaboration remplace le marqueur par l'opération : le noyau vérifie.
+$th_ap = th_applique($th_add, ta_zero(), ta_succ(ta_zero()), $th_reg, ta_ctx())
+th_test("elaboration/Add(Nat) 0 1 typé Nat",
+        ($th_ap["ok"] == vrai) et convertible(th_coerce_tab($th_ap["type"]), ta_nat()), $th_cpt)
+th_ap = th_applique($th_mul, al_un(), ta_succ(ta_zero()), $th_reg, ta_ctx())
+th_test("elaboration/Mul(Nat) 1 1 typé Nat",
+        ($th_ap["ok"] == vrai) et convertible(th_coerce_tab($th_ap["type"]), ta_nat()), $th_cpt)
+th_ap = th_applique($th_inconnu, ta_zero(), ta_zero(), $th_reg, ta_ctx())
+th_test("elaboration/refus instance absente (attendu)", ($th_ap["ok"] == faux), $th_cpt)
+
+>> chaine($th_cpt["r"]) + " contrôle(s) réussi(s), " + chaine($th_cpt["e"]) + " échec(s)"
+si ($th_cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }

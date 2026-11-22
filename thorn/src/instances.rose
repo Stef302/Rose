@@ -1,0 +1,110 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/src/instances.rose — PROTOTYPE : synthèse d'instances par PRÉ-ÉLABORATION
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié. Aucun commit.
+#
+# Objet : montrer que le principal obstacle « pas de typeclasses » ne demande
+# PAS de changer le noyau. Une classe est encodée comme un TERME bien formé
+#   Classe(C, A)  =  ind("Classe", [const(C, Type(0)), A])
+# et un passage d'élaboration remplace ce marqueur par l'opération de
+# l'instance enregistrée, avant de soumettre le terme à `verifier`.
+# Le noyau ne voit donc que des termes ordinaires : zéro nouvelle règle,
+# zéro risque de corruption de la décision de typage. C'est le changement
+# MINIMAL concevable : une passe devant le noyau, pas dans le noyau.
+#
+# Ce que ce prototype ne fait PAS (limites franches dans MATHLIB_ROADMAP.md) :
+# synthèse récursive, instances locales, surcharge résolue par priorité,
+# contraintes, implicites au niveau du noyau, cohérence entre deux instances
+# d'une même classe sur un même porteur.
+#
+# Vérifier :  ./rose/rose verif thorn/src/instances.rose
+# Rejeu    :  ./rose/rose thorn/tests_instances.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/hierarchie.rose"
+
+fn th_coerce_tab(th_x) -> table {
+  $th_v = table()
+  $th_v = th_x
+  retour $th_v
+}
+
+fn th_marqueur(th_classe: chaine, th_car: table) -> table {
+  retour noy_ind("Classe", ta_params2(noy_const(th_classe, noy_type(0)), th_car))
+}
+
+fn th_classe_de(th_m: table) -> chaine {
+  $th_p = mg_champ(th_m, "params")
+  $th_s = ""
+  si (longueur($th_p) >= 3) {
+    $th_c = mg_coerce_tab($th_p[1])
+    $th_s = mg_nom_champ($th_c)
+  }
+  retour $th_s
+}
+
+fn th_car_de(th_m: table) -> table {
+  $th_p = mg_champ(th_m, "params")
+  $th_r = noy_absent()
+  si (longueur($th_p) >= 3) { $th_r = mg_coerce_tab($th_p[2]) }
+  retour $th_r
+}
+
+fn th_est_marqueur(th_m: table) -> booleen {
+  retour (mg_genre(th_m) == "ind" et noy_nom(th_m) == "Classe")
+}
+
+# Recherche de l'instance : classe ET porteur convertible. Le registre est
+# parcouru dans l'ordre : c'est une priorité déterministe, pas une résolution
+# de contraintes (voir les limites).
+fn th_resoudre(th_m: table, th_reg: liste<table>) -> table {
+  $th_c = th_classe_de(th_m)
+  $th_a = th_car_de(th_m)
+  $th_n = longueur(th_reg)
+  $th_k = 1
+  tant_que ($th_k < $th_n) {
+    $th_i = th_reg[$th_k]
+    $th_ic = ""
+    si (cle_existe($th_i, "classe")) {
+      $th_x = $th_i["classe"]
+      si (type($th_x) == "chaine") { $th_ic = $th_x }
+    }
+    si ($th_ic == $th_c et convertible(mg_car_de($th_i), $th_a)) { retour $th_i }
+    $th_k = $th_k + 1
+  }
+  retour noy_absent()
+}
+
+# champ(th_m, reg, "op") : résout l'instance puis lit son champ. C'est la
+# passe d'élaboration : le terme rendu est un terme ORDINAIRE du noyau.
+fn th_champ(th_m: table, th_reg: liste<table>, th_cle: chaine) -> table {
+  $th_i = th_resoudre(th_m, th_reg)
+  si (noy_est_absent($th_i)) { retour noy_absent() }
+  retour mg_champ($th_i, th_cle)
+}
+
+# Application « implicite » : Classe(C,A) joue le rôle de l'argument
+# d'instance que l'utilisateur n'écrit pas. On le remplace par op, puis on
+# applique ; le résultat est envoyé à verifier.
+fn th_applique(th_m: table, th_x: table, th_y: table,
+               th_reg: liste<table>, th_ctx: liste<table>) -> table {
+  $th_r = table()
+  inserer($th_r, "ok", faux)
+  inserer($th_r, "terme", th_m)
+  inserer($th_r, "erreur", "instance non resolue")
+  si (non th_est_marqueur(th_m)) {
+    inserer($th_r, "erreur", "marqueur de classe attendu")
+    retour $th_r
+  }
+  $th_op = th_champ(th_m, th_reg, "op")
+  si (noy_est_absent($th_op)) { retour $th_r }
+  $th_t = ta_ap2($th_op, th_x, th_y)
+  $th_v = verifier($th_t, th_ctx)
+  inserer($th_r, "ok", noy_est_ok($th_v))
+  inserer($th_r, "terme", $th_t)
+  inserer($th_r, "type", noy_type_res($th_v))
+  si (non noy_est_ok($th_v)) { inserer($th_r, "erreur", noy_erreur($th_v)) }
+  sinon { inserer($th_r, "erreur", "") }
+  retour $th_r
+}

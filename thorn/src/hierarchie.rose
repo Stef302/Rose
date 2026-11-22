@@ -1,0 +1,615 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/src/hierarchie.rose — JALON 1 : hiérarchie algébrique pour Thorn
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié. Aucun commit.
+#
+# Ce module REALISE un équivalent de mathlib *adapté à Thorn* : Thorn n'a pas
+# de typeclasses dans son noyau (SPEC.md), mais il a des tables Rose et des
+#_termes_ vérifiables. Une « classe » est donc un ENREGISTREMENT Rose :
+#
+#   Magma      = { nom, car, op, ctx }
+#   Semigroupe = Magma + { assoc }        : preuve de assoc(op)
+#   Monoid     = Semigroupe + { e, idl, idr }
+#   Groupe     = Monoid + { inv, invl, invr }
+#
+# Chaque champ de loi contient un TERME de preuve (pas un nom opaque) : les
+# lemmes génériques appliquent directement ce terme. Les instances publiques
+# `Nat/+/0` et `Nat/*/1` utilisent les lois DÉJÀ VÉRIFIÉES de algebre.rose ;
+# l'instance `GroupeAbstrait` est un descripteur à axiomes explicites (c'est
+# le pendant de `Group` en Lean : les champs sont supposés, les lemmes qui en
+# dérivent sont, eux, vérifiés par le noyau).
+#
+# Les lemmes génériques sont des FONCTIONS ROSE paramétrées par l'enregistrement
+# : un seul terme de preuve sert à toutes les instances. Le contrôle est toujours
+# `verifier(terme, ctx)` ET `convertible(type synthétisé, but)` — jamais un
+# `ok = vrai` codé en dur.
+#
+# Vérifier :  ./rose/rose verif thorn/src/hierarchie.rose
+# Rejeu    :  ./rose/rose thorn/tests_hierarchie.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/algebre.rose"
+
+# ── 0. Service最小 : coercitions et contrôle honnête ────────────────────────
+
+fn mg_coerce_tab(mg_x) -> table {
+  $mg_v = table()
+  $mg_v = mg_x
+  retour $mg_v
+}
+
+fn mg_coerce_ctx(mg_x) -> liste<table> {
+  $mg_v = [table()]
+  $mg_v = mg_x
+  retour $mg_v
+}
+
+fn mg_champ(mg_t: table, mg_c: chaine) -> table {
+  $mg_r = table()
+  si (cle_existe(mg_t, mg_c)) { $mg_r = mg_coerce_tab(mg_t[mg_c]) }
+  retour $mg_r
+}
+
+fn mg_genre(mg_t: table) -> chaine {
+  $mg_g = ""
+  si (cle_existe(mg_t, "genre")) {
+    $mg_x = mg_t["genre"]
+    si (type($mg_x) == "chaine") { $mg_g = $mg_x }
+  }
+  retour $mg_g
+}
+
+fn mg_nom_champ(mg_t: table) -> chaine {
+  $mg_s = ""
+  si (cle_existe(mg_t, "nom")) {
+    $mg_x = mg_t["nom"]
+    si (type($mg_x) == "chaine") { $mg_s = $mg_x }
+  }
+  retour $mg_s
+}
+
+fn mg_pair(mg_but: table, mg_terme: table) -> table {
+  $mg_r = table()
+  inserer($mg_r, "but", mg_but)
+  inserer($mg_r, "terme", mg_terme)
+  retour $mg_r
+}
+
+fn mg_compter(mg_cpt: table, mg_ok: booleen) {
+  si (mg_ok) {
+    inserer(mg_cpt, "r", mg_cpt["r"] + 1)
+  } sinon {
+    inserer(mg_cpt, "e", mg_cpt["e"] + 1)
+  }
+}
+
+# LE contrôle : le noyau synthétise, puis on compare au but annoncé.
+fn mg_test(mg_nom: chaine, mg_but: table, mg_terme: table,
+           mg_ctx: liste<table>, mg_cpt: table) {
+  $mg_r = verifier(mg_terme, mg_ctx)
+  $mg_synthese = noy_est_ok($mg_r)
+  $mg_conv = convertible(noy_type_res($mg_r), mg_but)
+  $mg_ok = $mg_synthese et $mg_conv
+  si ($mg_ok) {
+    >> "OK " + mg_nom
+  } sinon {
+    $mg_pq = "type synthétisé ≠ but"
+    si (non $mg_synthese) { $mg_pq = noy_erreur($mg_r) }
+    >> "ECHEC " + mg_nom + " : " + $mg_pq
+  }
+  mg_compter(mg_cpt, $mg_ok)
+}
+
+fn mg_lance(mg_nom: chaine, mg_p: table, mg_ctx: liste<table>, mg_cpt: table) {
+  mg_test(mg_nom, mg_coerce_tab(mg_p["but"]), mg_coerce_tab(mg_p["terme"]),
+          mg_ctx, mg_cpt)
+}
+
+# ── 1. Structures : Magma → Semigroupe → Monoid → Groupe ────────────────────
+
+fn mg_magma(mg_nom: chaine, mg_car: table, mg_op: table,
+            mg_ctx: liste<table>) -> table {
+  $mg_r = table()
+  inserer($mg_r, "structure", "Magma")
+  inserer($mg_r, "nom", mg_nom)
+  inserer($mg_r, "car", mg_car)
+  inserer($mg_r, "op", mg_op)
+  inserer($mg_r, "ctx", mg_ctx)
+  retour $mg_r
+}
+
+fn mg_semigroupe(mg_nom: chaine, mg_car: table, mg_op: table,
+                 mg_assoc: table, mg_ctx: liste<table>) -> table {
+  $mg_r = mg_magma(mg_nom, mg_car, mg_op, mg_ctx)
+  inserer($mg_r, "structure", "Semigroupe")
+  inserer($mg_r, "assoc", mg_assoc)
+  retour $mg_r
+}
+
+fn mg_monoid(mg_nom: chaine, mg_car: table, mg_op: table, mg_e: table,
+             mg_assoc: table, mg_idl: table, mg_idr: table,
+             mg_ctx: liste<table>) -> table {
+  $mg_r = mg_semigroupe(mg_nom, mg_car, mg_op, mg_assoc, mg_ctx)
+  inserer($mg_r, "structure", "Monoid")
+  inserer($mg_r, "e", mg_e)
+  inserer($mg_r, "idl", mg_idl)
+  inserer($mg_r, "idr", mg_idr)
+  retour $mg_r
+}
+
+fn mg_groupe(mg_nom: chaine, mg_car: table, mg_op: table, mg_e: table,
+             mg_inv: table, mg_assoc: table, mg_idl: table, mg_idr: table,
+             mg_invl: table, mg_invr: table, mg_ctx: liste<table>) -> table {
+  $mg_r = mg_monoid(mg_nom, mg_car, mg_op, mg_e, mg_assoc, mg_idl, mg_idr, mg_ctx)
+  inserer($mg_r, "structure", "Groupe")
+  inserer($mg_r, "inv", mg_inv)
+  inserer($mg_r, "invl", mg_invl)
+  inserer($mg_r, "invr", mg_invr)
+  retour $mg_r
+}
+
+fn mg_est_magma(mg_i: table) -> booleen {
+  retour (cle_existe(mg_i, "car") et cle_existe(mg_i, "op"))
+}
+fn mg_est_semigroupe(mg_i: table) -> booleen {
+  retour (mg_est_magma(mg_i) et cle_existe(mg_i, "assoc"))
+}
+fn mg_est_monoid(mg_i: table) -> booleen {
+  retour (mg_est_semigroupe(mg_i) et cle_existe(mg_i, "e") et
+          cle_existe(mg_i, "idl") et cle_existe(mg_i, "idr"))
+}
+fn mg_est_groupe(mg_i: table) -> booleen {
+  retour (mg_est_monoid(mg_i) et cle_existe(mg_i, "inv") et
+          cle_existe(mg_i, "invl") et cle_existe(mg_i, "invr"))
+}
+fn mg_niveau(mg_i: table) -> chaine {
+  $mg_s = ""
+  si (cle_existe(mg_i, "structure")) {
+    $mg_x = mg_i["structure"]
+    si (type($mg_x) == "chaine") { $mg_s = $mg_x }
+  }
+  retour $mg_s
+}
+fn mg_ctx_de(mg_i: table) -> liste<table> { retour mg_coerce_ctx(mg_champ(mg_i, "ctx")) }
+fn mg_car_de(mg_i: table) -> table { retour mg_champ(mg_i, "car") }
+fn mg_op_de(mg_i: table) -> table { retour mg_champ(mg_i, "op") }
+fn mg_e_de(mg_i: table) -> table { retour mg_champ(mg_i, "e") }
+fn mg_inv_de(mg_i: table) -> table { retour mg_champ(mg_i, "inv") }
+fn mg_assoc_de(mg_i: table) -> table { retour mg_champ(mg_i, "assoc") }
+fn mg_idl_de(mg_i: table) -> table { retour mg_champ(mg_i, "idl") }
+fn mg_idr_de(mg_i: table) -> table { retour mg_champ(mg_i, "idr") }
+fn mg_invl_de(mg_i: table) -> table { retour mg_champ(mg_i, "invl") }
+fn mg_invr_de(mg_i: table) -> table { retour mg_champ(mg_i, "invr") }
+
+# ── 2. Égalité générique (polymorphe en le type A) ──────────────────────────
+
+fn mg_eq(mg_A: table, mg_a: table, mg_b: table) -> table {
+  retour noy_ind("=", ta_params2(mg_a, mg_b))
+}
+fn mg_refl(mg_A: table, mg_a: table) -> table {
+  retour ta_ap2(ta_refl_symbole(), mg_A, mg_a)
+}
+fn mg_symm(mg_A: table, mg_a: table, mg_b: table, mg_h: table) -> table {
+  retour ta_ap4(ta_symm_symbole(), mg_A, mg_a, mg_b, mg_h)
+}
+fn mg_trans(mg_A: table, mg_a: table, mg_b: table, mg_c: table,
+            mg_h1: table, mg_h2: table) -> table {
+  retour ta_ap6(ta_trans_symbole(), mg_A, mg_a, mg_b, mg_c, mg_h1, mg_h2)
+}
+fn mg_ap1(mg_f: table, mg_x: table) -> table { retour ta_ap1(mg_f, mg_x) }
+fn mg_ap2(mg_f: table, mg_x: table, mg_y: table) -> table { retour ta_ap2(mg_f, mg_x, mg_y) }
+fn mg_ap3(mg_f: table, mg_x: table, mg_y: table, mg_z: table) -> table {
+  retour ta_ap3(mg_f, mg_x, mg_y, mg_z)
+}
+
+# Congruence générique par eq_rec : de h : a = b, construit
+#   op(u,a) = op(u,b)  (congr_g)  ou  op(a,u) = op(b,u)  (congr_d).
+fn mg_congr_g(mg_A: table, mg_op: table, mg_u: table,
+              mg_a: table, mg_b: table, mg_h: table) -> table {
+  $mg_P = noy_lam("z", mg_A,
+    mg_eq(mg_A, mg_ap2(mg_op, mg_u, mg_a), mg_ap2(mg_op, mg_u, noy_var("z"))))
+  retour ta_ap6(ta_eqrec_symbole(), mg_A, mg_a, mg_b, $mg_P,
+                mg_refl(mg_A, mg_ap2(mg_op, mg_u, mg_a)), mg_h)
+}
+
+fn mg_congr_d(mg_A: table, mg_op: table, mg_u: table,
+              mg_a: table, mg_b: table, mg_h: table) -> table {
+  $mg_P = noy_lam("z", mg_A,
+    mg_eq(mg_A, mg_ap2(mg_op, mg_a, mg_u), mg_ap2(mg_op, noy_var("z"), mg_u)))
+  retour ta_ap6(ta_eqrec_symbole(), mg_A, mg_a, mg_b, $mg_P,
+                mg_refl(mg_A, mg_ap2(mg_op, mg_a, mg_u)), mg_h)
+}
+
+# ── 3. Corpus de lemmes GÉNÉRIQUES (un terme pour toutes les instances) ────
+
+# 3.1 Associativité à quatre termes : ((a*b)*c)*d = a*(b*(c*d)).
+fn mg_lem_assoc4(mg_i: table) -> table {
+  $mg_A = mg_car_de(mg_i)
+  $mg_op = mg_op_de(mg_i)
+  $mg_as = mg_assoc_de(mg_i)
+  $mg_a = noy_var("a")
+  $mg_b = noy_var("b")
+  $mg_c = noy_var("c")
+  $mg_d = noy_var("d")
+  $mg_ab = mg_ap2($mg_op, $mg_a, $mg_b)
+  $mg_cd = mg_ap2($mg_op, $mg_c, $mg_d)
+  $mg_h1 = mg_ap3($mg_as, $mg_ab, $mg_c, $mg_d)
+  $mg_h2 = mg_ap3($mg_as, $mg_a, $mg_b, $mg_cd)
+  $mg_l = mg_ap2($mg_op, mg_ap2($mg_op, $mg_ab, $mg_c), $mg_d)
+  $mg_m = mg_ap2($mg_op, $mg_ab, $mg_cd)
+  $mg_r = mg_ap2($mg_op, $mg_a, mg_ap2($mg_op, $mg_b, $mg_cd))
+  $mg_corps = mg_trans($mg_A, $mg_l, $mg_m, $mg_r, $mg_h1, $mg_h2)
+  $mg_but = noy_pi("a", $mg_A, noy_pi("b", $mg_A, noy_pi("c", $mg_A,
+            noy_pi("d", $mg_A, mg_eq($mg_A, $mg_l, $mg_r)))))
+  $mg_t = noy_lam("a", $mg_A, noy_lam("b", $mg_A, noy_lam("c", $mg_A,
+          noy_lam("d", $mg_A, $mg_corps))))
+  retour mg_pair($mg_but, $mg_t)
+}
+
+# 3.2 Unicité de l'identité DROITE : si e' est identité à gauche,
+#     alors e = e'.  (théorème générique de Monoid, sans associativité requise.)
+fn mg_lem_id_unique_d(mg_i: table) -> table {
+  $mg_A = mg_car_de(mg_i)
+  $mg_op = mg_op_de(mg_i)
+  $mg_e = mg_e_de(mg_i)
+  $mg_idr = mg_idr_de(mg_i)
+  $mg_ep = noy_var("e'")
+  $mg_hL = noy_var("hL")
+  $mg_ep_e = mg_ap2($mg_op, $mg_ep, $mg_e)
+  $mg_h1 = mg_ap1($mg_idr, $mg_ep)                 # op(e', e) = e'
+  $mg_h2 = mg_ap1($mg_hL, $mg_e)                  # op(e', e) = e
+  $mg_corps = mg_symm($mg_A, $mg_ep, $mg_e,
+              mg_trans($mg_A, $mg_ep, $mg_ep_e, $mg_e,
+                       mg_symm($mg_A, $mg_ep_e, $mg_ep, $mg_h1), $mg_h2))
+  $mg_but = noy_pi("e'", $mg_A, noy_pi("hL", noy_pi("x", $mg_A,
+            mg_eq($mg_A, mg_ap2($mg_op, $mg_ep, noy_var("x")), noy_var("x"))),
+            mg_eq($mg_A, $mg_e, $mg_ep)))
+  $mg_t = noy_lam("e'", $mg_A, noy_lam("hL", noy_pi("x", $mg_A,
+          mg_eq($mg_A, mg_ap2($mg_op, $mg_ep, noy_var("x")), noy_var("x"))),
+          $mg_corps))
+  retour mg_pair($mg_but, $mg_t)
+}
+
+# 3.3 Unicité de l'identité GAUCHE : si e' est identité à droite, e = e'.
+fn mg_lem_id_unique_g(mg_i: table) -> table {
+  $mg_A = mg_car_de(mg_i)
+  $mg_op = mg_op_de(mg_i)
+  $mg_e = mg_e_de(mg_i)
+  $mg_idl = mg_idl_de(mg_i)
+  $mg_ep = noy_var("e'")
+  $mg_hR = noy_var("hR")
+  $mg_e_ep = mg_ap2($mg_op, $mg_e, $mg_ep)
+  $mg_h1 = mg_ap1($mg_idl, $mg_ep)                 # op(e, e') = e'
+  $mg_h2 = mg_ap1($mg_hR, $mg_e)                  # op(e, e') = e
+  $mg_corps = mg_symm($mg_A, $mg_ep, $mg_e,
+              mg_trans($mg_A, $mg_ep, $mg_e_ep, $mg_e,
+                       mg_symm($mg_A, $mg_e_ep, $mg_ep, $mg_h1), $mg_h2))
+  $mg_but = noy_pi("e'", $mg_A, noy_pi("hR", noy_pi("x", $mg_A,
+            mg_eq($mg_A, mg_ap2($mg_op, noy_var("x"), $mg_ep), noy_var("x"))),
+            mg_eq($mg_A, $mg_e, $mg_ep)))
+  $mg_t = noy_lam("e'", $mg_A, noy_lam("hR", noy_pi("x", $mg_A,
+          mg_eq($mg_A, mg_ap2($mg_op, noy_var("x"), $mg_ep), noy_var("x"))),
+          $mg_corps))
+  retour mg_pair($mg_but, $mg_t)
+}
+
+# 3.4 Unicité de l'inverse dans un groupe :
+#     op(b,a) = e -> op(a,b) = e -> b = inv(a).
+fn mg_lem_inv_unique(mg_i: table) -> table {
+  $mg_A = mg_car_de(mg_i)
+  $mg_op = mg_op_de(mg_i)
+  $mg_e = mg_e_de(mg_i)
+  $mg_inv = mg_inv_de(mg_i)
+  $mg_as = mg_assoc_de(mg_i)
+  $mg_idl = mg_idl_de(mg_i)
+  $mg_idr = mg_idr_de(mg_i)
+  $mg_invr = mg_invr_de(mg_i)
+  $mg_a = noy_var("a")
+  $mg_b = noy_var("b")
+  $mg_h1 = noy_var("h1")
+  $mg_h2 = noy_var("h2")
+  $mg_ia = mg_ap1($mg_inv, $mg_a)
+  $mg_ba = mg_ap2($mg_op, $mg_b, $mg_a)
+  $mg_eia = mg_ap2($mg_op, $mg_e, $mg_ia)
+  $mg_baia = mg_ap2($mg_op, $mg_ba, $mg_ia)
+  $mg_b_op_ai = mg_ap2($mg_op, $mg_b, mg_ap2($mg_op, $mg_a, $mg_ia))
+  $mg_c1 = mg_congr_d($mg_A, $mg_op, $mg_ia, $mg_ba, $mg_e, $mg_h1)
+  $mg_c2 = mg_ap1($mg_idl, $mg_ia)
+  $mg_c3 = mg_trans($mg_A, $mg_baia, $mg_eia, $mg_ia, $mg_c1, $mg_c2)
+  $mg_c4 = mg_symm($mg_A, $mg_baia, $mg_b_op_ai,
+                  mg_ap3($mg_as, $mg_b, $mg_a, $mg_ia))
+  $mg_c5 = mg_trans($mg_A, $mg_b_op_ai, $mg_baia, $mg_ia, $mg_c4, $mg_c3)
+  $mg_d1 = mg_congr_g($mg_A, $mg_op, $mg_b, mg_ap2($mg_op, $mg_a, $mg_ia),
+                      $mg_e, mg_ap1($mg_invr, $mg_a))
+  $mg_be = mg_ap2($mg_op, $mg_b, $mg_e)
+  $mg_d2 = mg_trans($mg_A, $mg_b_op_ai, $mg_be, $mg_b, $mg_d1,
+                    mg_ap1($mg_idr, $mg_b))
+  $mg_corps = mg_trans($mg_A, $mg_b, $mg_b_op_ai, $mg_ia,
+              mg_symm($mg_A, $mg_b_op_ai, $mg_b, $mg_d2), $mg_c5)
+  $mg_h1ty = mg_eq($mg_A, $mg_ba, $mg_e)
+  $mg_h2ty = mg_eq($mg_A, mg_ap2($mg_op, $mg_a, $mg_b), $mg_e)
+  $mg_but = noy_pi("a", $mg_A, noy_pi("b", $mg_A,
+            noy_pi("h1", $mg_h1ty, noy_pi("h2", $mg_h2ty,
+            mg_eq($mg_A, $mg_b, $mg_ia)))))
+  $mg_t = noy_lam("a", $mg_A, noy_lam("b", $mg_A,
+          noy_lam("h1", $mg_h1ty, noy_lam("h2", $mg_h2ty, $mg_corps))))
+  retour mg_pair($mg_but, $mg_t)
+}
+
+# 3.5 inv(inv a) = a, dérivé de l'unicité de l'inverse (un seul terme générique).
+fn mg_lem_inv_inv(mg_i: table) -> table {
+  $mg_A = mg_car_de(mg_i)
+  $mg_op = mg_op_de(mg_i)
+  $mg_inv = mg_inv_de(mg_i)
+  $mg_unique = mg_coerce_tab(mg_lem_inv_unique(mg_i)["terme"])
+  $mg_a = noy_var("a")
+  $mg_ia = mg_ap1($mg_inv, $mg_a)
+  $mg_iia = mg_ap1($mg_inv, $mg_ia)
+  $mg_h = mg_ap2(mg_unique, $mg_ia, $mg_a)
+  $mg_corps = mg_symm($mg_A, $mg_a, $mg_iia,
+              mg_ap2($mg_h, mg_ap1(mg_invr_de(mg_i), $mg_a),
+                            mg_ap1(mg_invl_de(mg_i), $mg_a)))
+  $mg_but = noy_pi("a", $mg_A, mg_eq($mg_A, $mg_iia, $mg_a))
+  $mg_t = noy_lam("a", $mg_A, $mg_corps)
+  retour mg_pair($mg_but, $mg_t)
+}
+
+# 3.6 Annulation à gauche dans un groupe : op(a,b) = op(a,c) -> b = c.
+fn mg_lem_cancel_g(mg_i: table) -> table {
+  $mg_A = mg_car_de(mg_i)
+  $mg_op = mg_op_de(mg_i)
+  $mg_inv = mg_inv_de(mg_i)
+  $mg_as = mg_assoc_de(mg_i)
+  $mg_idl = mg_idl_de(mg_i)
+  $mg_invl = mg_invl_de(mg_i)
+  $mg_a = noy_var("a")
+  $mg_b = noy_var("b")
+  $mg_c = noy_var("c")
+  $mg_h = noy_var("h")
+  $mg_ia = mg_ap1($mg_inv, $mg_a)
+  $mg_ab = mg_ap2($mg_op, $mg_a, $mg_b)
+  $mg_ac = mg_ap2($mg_op, $mg_a, $mg_c)
+  $mg_h1 = mg_congr_g($mg_A, $mg_op, $mg_ia, $mg_ab, $mg_ac, $mg_h)
+  $mg_lb = mg_ap2($mg_op, $mg_ia, $mg_ab)
+  $mg_lc = mg_ap2($mg_op, $mg_ia, $mg_ac)
+  $mg_bb = mg_ap2($mg_op, mg_ap2($mg_op, $mg_ia, $mg_a), $mg_b)
+  $mg_cc = mg_ap2($mg_op, mg_ap2($mg_op, $mg_ia, $mg_a), $mg_c)
+  $mg_eb = mg_ap2($mg_op, $mg_e_de(mg_i), $mg_b)
+  $mg_ec = mg_ap2($mg_op, $mg_e_de(mg_i), $mg_c)
+  $mg_pb = mg_trans($mg_A, $mg_lb, $mg_bb, $mg_b,
+            mg_symm($mg_A, $mg_bb, $mg_lb, mg_ap3($mg_as, $mg_ia, $mg_a, $mg_b)),
+            mg_trans($mg_A, $mg_bb, $mg_eb, $mg_b,
+              mg_congr_d($mg_A, $mg_op, $mg_b, mg_ap2($mg_op, $mg_ia, $mg_a),
+                         $mg_e_de(mg_i), mg_ap1($mg_invl, $mg_a)),
+              mg_ap1($mg_idl, $mg_b)))
+  $mg_pc = mg_trans($mg_A, $mg_lc, $mg_cc, $mg_c,
+            mg_symm($mg_A, $mg_cc, $mg_lc, mg_ap3($mg_as, $mg_ia, $mg_a, $mg_c)),
+            mg_trans($mg_A, $mg_cc, $mg_ec, $mg_c,
+              mg_congr_d($mg_A, $mg_op, $mg_c, mg_ap2($mg_op, $mg_ia, $mg_a),
+                         $mg_e_de(mg_i), mg_ap1($mg_invl, $mg_a)),
+              mg_ap1($mg_idl, $mg_c)))
+  $mg_corps = mg_trans($mg_A, $mg_b, $mg_lb, $mg_c,
+              mg_symm($mg_A, $mg_lb, $mg_b, $mg_pb),
+              mg_trans($mg_A, $mg_lb, $mg_lc, $mg_c, $mg_h1, $mg_pc))
+  $mg_hty = mg_eq($mg_A, $mg_ab, $mg_ac)
+  $mg_but = noy_pi("a", $mg_A, noy_pi("b", $mg_A, noy_pi("c", $mg_A,
+            noy_pi("h", $mg_hty, mg_eq($mg_A, $mg_b, $mg_c)))))
+  $mg_t = noy_lam("a", $mg_A, noy_lam("b", $mg_A, noy_lam("c", $mg_A,
+          noy_lam("h", $mg_hty, $mg_corps))))
+  retour mg_pair($mg_but, $mg_t)
+}
+
+# ── 4. Instances publiques ──────────────────────────────────────────────────
+
+fn mg_loi(mg_p: table) -> table { retour mg_coerce_tab(mg_p["terme"]) }
+
+# Nat, +, 0 : toutes les lois sont des TERMES DÉJÀ VÉRIFIÉS par algebre.rose.
+fn mg_inst_nat_plus() -> table {
+  $mg_pa = al_lem_plus_assoc()
+  $mg_pl = al_lem_plus_zero_l()
+  $mg_pr = al_lem_plus_zero_d()
+  $mg_r = mg_monoid("Nat/+/0", ta_nat(), ta_plus_symbole(), ta_zero(),
+                    mg_loi($mg_pa), mg_loi($mg_pl), mg_loi($mg_pr), ta_ctx())
+  inserer($mg_r, "classe", "Add")
+  retour $mg_r
+}
+
+# Nat, ×, 1 : idem (les lois de × sont vérifiées dans algebre.rose).
+fn mg_inst_nat_mult() -> table {
+  $mg_pa = mg_loi(al_lem_mult_assoc())
+  $mg_pl = mg_loi(al_lem_mult_un_g())
+  $mg_pr = mg_loi(al_lem_mult_un_d())
+  # al_lem_mult_assoc a pour type Πc a b, (a×b)×c = a×(b×c) : on réordonne
+  # les lieurs pour obtenir la signature canonique Πx y z, (x×y)×z = x×(y×z).
+  $mg_assoc_std = noy_lam("x", ta_nat(), noy_lam("y", ta_nat(),
+                    noy_lam("z", ta_nat(),
+                      mg_ap3($mg_pa, noy_var("z"), noy_var("x"), noy_var("y")))))
+  $mg_r = mg_monoid("Nat/*/1", ta_nat(), al_mult_symbole(), al_un(),
+                    $mg_assoc_std, $mg_pl, $mg_pr, ta_ctx())
+  inserer($mg_r, "classe", "Mul")
+  retour $mg_r
+}
+
+# GroupeABSTRAIT : description de signature sur un type A arbitraire. Les cinq
+# lois sont des CONSTANTES de signature (champs supposés, comme les champs
+# d'une classe en Lean) ; les lemmes génériques qui en dérivent sont vérifiés.
+fn mg_inst_groupe_abstrait() -> table {
+  $mg_A = noy_var("A")
+  $mg_op = noy_const("op", noy_pi("x", $mg_A, noy_pi("y", $mg_A, $mg_A)))
+  $mg_e = noy_const("e", $mg_A)
+  $mg_inv = noy_const("inv", noy_pi("x", $mg_A, $mg_A))
+  $mg_ctx = ta_ctx()
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "A", noy_type(0))
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "op", mg_coerce_tab($mg_op["type"]))
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "e", $mg_A)
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "inv", mg_coerce_tab($mg_inv["type"]))
+  $mg_assoc = noy_const("assoc",
+    noy_pi("x", $mg_A, noy_pi("y", $mg_A, noy_pi("z", $mg_A,
+      mg_eq($mg_A, mg_ap2($mg_op, mg_ap2($mg_op, noy_var("x"), noy_var("y")),
+                          noy_var("z")),
+                  mg_ap2($mg_op, noy_var("x"),
+                         mg_ap2($mg_op, noy_var("y"), noy_var("z"))))))))
+  $mg_idl = noy_const("idl", noy_pi("x", $mg_A,
+    mg_eq($mg_A, mg_ap2($mg_op, $mg_e, noy_var("x")), noy_var("x"))))
+  $mg_idr = noy_const("idr", noy_pi("x", $mg_A,
+    mg_eq($mg_A, mg_ap2($mg_op, noy_var("x"), $mg_e), noy_var("x"))))
+  $mg_invl = noy_const("invl", noy_pi("x", $mg_A,
+    mg_eq($mg_A, mg_ap2($mg_op, mg_ap1($mg_inv, noy_var("x")), noy_var("x")),
+                  $mg_e)))
+  $mg_invr = noy_const("invr", noy_pi("x", $mg_A,
+    mg_eq($mg_A, mg_ap2($mg_op, noy_var("x"), mg_ap1($mg_inv, noy_var("x"))),
+                  $mg_e)))
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "assoc", mg_coerce_tab($mg_assoc["type"]))
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "idl", mg_coerce_tab($mg_idl["type"]))
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "idr", mg_coerce_tab($mg_idr["type"]))
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "invl", mg_coerce_tab($mg_invl["type"]))
+  $mg_ctx = noy_ctx_ajouter($mg_ctx, "invr", mg_coerce_tab($mg_invr["type"]))
+  $mg_r = mg_groupe("GroupeAbstrait", $mg_A, $mg_op, $mg_e, $mg_inv,
+                    $mg_assoc, $mg_idl, $mg_idr, $mg_invl, $mg_invr, $mg_ctx)
+  inserer($mg_r, "classe", "Groupe")
+  retour $mg_r
+}
+
+# ── 5. Registre public ──────────────────────────────────────────────────────
+
+fn mg_registre() -> liste<table> {
+  $mg_r = [table()]
+  joindre($mg_r, mg_inst_nat_plus())
+  joindre($mg_r, mg_inst_nat_mult())
+  joindre($mg_r, mg_inst_groupe_abstrait())
+  retour $mg_r
+}
+
+fn mg_registre_trouver(mg_reg: liste<table>, mg_nom: chaine) -> table {
+  $mg_n = longueur(mg_reg)
+  $mg_k = 1
+  tant_que ($mg_k < $mg_n) {
+    $mg_i = mg_reg[$mg_k]
+    si (mg_nom_champ($mg_i) == mg_nom) { retour $mg_i }
+    $mg_k = $mg_k + 1
+  }
+  retour noy_absent()
+}
+
+# ── 6. Tactique d'assistance : réécriture par égalité (eq_rec) ──────────────
+
+# Remplace la première occurrence (modulo convertible) de mg_u par mg_z.
+fn mg_remplace(mg_t: table, mg_u: table, mg_z: table) -> table {
+  $mg_g = mg_genre(mg_t)
+  si (convertible(mg_t, mg_u)) { retour mg_z }
+  si ($mg_g == "app") {
+    $mg_f = mg_champ(mg_t, "fonction")
+    $mg_f2 = mg_remplace($mg_f, mg_u, mg_z)
+    si (non convertible($mg_f2, $mg_f)) {
+      retour noy_app($mg_f2, mg_champ(mg_t, "argument"))
+    }
+    $mg_a = mg_champ(mg_t, "argument")
+    $mg_a2 = mg_remplace($mg_a, mg_u, mg_z)
+    si (non convertible($mg_a2, $mg_a)) {
+      retour noy_app($mg_f, $mg_a2)
+    }
+  }
+  si ($mg_g == "pi" ou $mg_g == "lam") {
+    $mg_d = mg_champ(mg_t, "domaine")
+    $mg_d2 = mg_remplace($mg_d, mg_u, mg_z)
+    si (non convertible($mg_d2, $mg_d)) {
+      si ($mg_g == "pi") { retour noy_pi(noy_nom(mg_t), $mg_d2, mg_champ(mg_t, "codomaine")) }
+      retour noy_lam(noy_nom(mg_t), $mg_d2, mg_champ(mg_t, "corps"))
+    }
+    $mg_c = mg_champ(mg_t, "codomaine")
+    si ($mg_g == "lam") { $mg_c = mg_champ(mg_t, "corps") }
+    $mg_c2 = mg_remplace($mg_c, mg_u, mg_z)
+    si (non convertible($mg_c2, $mg_c)) {
+      si ($mg_g == "pi") { retour noy_pi(noy_nom(mg_t), $mg_d, $mg_c2) }
+      retour noy_lam(noy_nom(mg_t), $mg_d, $mg_c2)
+    }
+  }
+  retour mg_t
+}
+
+fn mg_resultat_rw(mg_ok: booleen, mg_but: table, mg_terme: table,
+                  mg_err: chaine) -> table {
+  $mg_r = table()
+  inserer($mg_r, "ok", mg_ok)
+  inserer($mg_r, "but", mg_but)
+  inserer($mg_r, "terme", mg_terme)
+  inserer($mg_r, "erreur", mg_err)
+  inserer($mg_r, "regle", "mg/rewriter-eq_rec")
+  retour $mg_r
+}
+
+# mg_rewriter(but, h_eq, h_preuve, but_preuve, ctx) :
+#   but      = égalité But = Eq(A, a, b), déjà prouvée par but_preuve ;
+#   h_eq     = égalité H   = Eq(A, u, v), déjà prouvée par h_preuve ;
+#   rend une preuve VÉRIFIÉE de Eq(A, a[u:=v], b). Le terme est construit par
+#   eq_rec avec le motif λz. Eq(A, C[z], b) (réécriture du membre GAUCHE).
+fn mg_rewriter(mg_but: table, mg_h_eq: table, mg_h_preuve: table,
+               mg_but_preuve: table, mg_ctx: liste<table>) -> table {
+  $mg_r = mg_resultat_rw(faux, mg_but, mg_but_preuve, "")
+  $mg_p = mg_champ(mg_but, "params")
+  $mg_n = longueur($mg_p)
+  si ($mg_n < 3) {
+    retour mg_resultat_rw(faux, mg_but, mg_but_preuve, "but n'est pas une egalite")
+  }
+  $mg_a = mg_coerce_tab($mg_p[1])
+  $mg_b = mg_coerce_tab($mg_p[2])
+  $mg_ra = verifier($mg_a, mg_ctx)
+  $mg_A = noy_type_res($mg_ra)
+  $mg_hp = mg_champ(mg_h_eq, "params")
+  si (longueur($mg_hp) < 3) {
+    retour mg_resultat_rw(faux, mg_but, mg_but_preuve, "h n'est pas une egalite")
+  }
+  $mg_u = mg_coerce_tab($mg_hp[1])
+  $mg_v = mg_coerce_tab($mg_hp[2])
+  $mg_z = noy_var("$mg_rw_z")
+  $mg_a3 = mg_remplace($mg_a, $mg_u, $mg_z)
+  si (convertible($mg_a3, $mg_a)) {
+    retour mg_resultat_rw(faux, mg_but, mg_but_preuve, "u absent du membre gauche")
+  }
+  $mg_motif = noy_lam("$mg_rw_z", $mg_A,
+              noy_ind("=", ta_params2($mg_a3, $mg_b)))
+  $mg_term = ta_ap6(ta_eqrec_symbole(), $mg_A, $mg_u, $mg_v, $mg_motif,
+                    mg_but_preuve, mg_h_preuve)
+  $mg_but2 = noy_ind("=", ta_params2(mg_remplace($mg_a, $mg_u, $mg_v), $mg_b))
+  $mg_vr = verifier($mg_term, mg_ctx)
+  $mg_ok = noy_est_ok($mg_vr) et convertible(noy_type_res($mg_vr), $mg_but2)
+  $mg_err = ""
+  si (non $mg_ok) { $mg_err = noy_erreur($mg_vr) }
+  retour mg_resultat_rw($mg_ok, $mg_but2, $mg_term, $mg_err)
+}
+
+# Variante : réécriture du membre DROIT (motif λz. Eq(A, a, C[z])).
+fn mg_rewriter_droite(mg_but: table, mg_h_eq: table, mg_h_preuve: table,
+                      mg_but_preuve: table, mg_ctx: liste<table>) -> table {
+  $mg_p = mg_champ(mg_but, "params")
+  $mg_n = longueur($mg_p)
+  si ($mg_n < 3) {
+    retour mg_resultat_rw(faux, mg_but, mg_but_preuve, "but n'est pas une egalite")
+  }
+  $mg_a = mg_coerce_tab($mg_p[1])
+  $mg_b = mg_coerce_tab($mg_p[2])
+  $mg_ra = verifier($mg_a, mg_ctx)
+  $mg_A = noy_type_res($mg_ra)
+  $mg_hp = mg_champ(mg_h_eq, "params")
+  si (longueur($mg_hp) < 3) {
+    retour mg_resultat_rw(faux, mg_but, mg_but_preuve, "h n'est pas une egalite")
+  }
+  $mg_u = mg_coerce_tab($mg_hp[1])
+  $mg_v = mg_coerce_tab($mg_hp[2])
+  $mg_z = noy_var("$mg_rw_z")
+  $mg_b3 = mg_remplace($mg_b, $mg_u, $mg_z)
+  si (convertible($mg_b3, $mg_b)) {
+    retour mg_resultat_rw(faux, mg_but, mg_but_preuve, "u absent du membre droit")
+  }
+  $mg_motif = noy_lam("$mg_rw_z", $mg_A,
+              noy_ind("=", ta_params2($mg_a, $mg_b3)))
+  $mg_term = ta_ap6(ta_eqrec_symbole(), $mg_A, $mg_u, $mg_v, $mg_motif,
+                    mg_but_preuve, mg_h_preuve)
+  $mg_but2 = noy_ind("=", ta_params2($mg_a, mg_remplace($mg_b, $mg_u, $mg_v)))
+  $mg_vr = verifier($mg_term, mg_ctx)
+  $mg_ok = noy_est_ok($mg_vr) et convertible(noy_type_res($mg_vr), $mg_but2)
+  $mg_err = ""
+  si (non $mg_ok) { $mg_err = noy_erreur($mg_vr) }
+  retour mg_resultat_rw($mg_ok, $mg_but2, $mg_term, $mg_err)
+}
