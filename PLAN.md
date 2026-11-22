@@ -1357,3 +1357,11 @@ sous_chaine d'un littéral non-ASCII, timeout sur `retour "≈"` en fonction.
 Agent dédié: scanner UTF-8 comme g5_emit_sous (l.2849-2883), fabriquer un
 descripteur de k octets. Test sans réémettre C0: compiler une sonde avec
 l'émetteur hébergé puis exécuter l'ELF. Puis régénérer composite + C0 + C1/C2.
+
+## Vague 89 — idx corrigé, chaîne finale relancée
+
+`g5_emit_idx` indexe désormais par point de code (scan UTF-8 motif de sous_chaine).
+12/12 sondes G5 = natif octet pour octet; AZ 31/31; point fixe b3ed9262; u16le b7 00.
+Composite régénéré (437 459 o) et vérifié. Chaîne finale relancée:
+C0 (≈80 min) → test fib (header 0200b700 + 317811 + cmp hébergé) → C1 → C2 → cmp.
+Journal /tmp/opencode/selfhost_final.log.
