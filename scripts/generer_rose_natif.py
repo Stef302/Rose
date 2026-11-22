@@ -60,6 +60,23 @@ BACKENDS = {
 STD_SIG_ANCRE = '  si ($nom == "lire_texte") { retour "chaine|chaine" }\n'
 STD_SIG_EVAL_EXPR = STD_SIG_ANCRE + \
     '  si ($nom == "eval_expr") { retour "chaine|chaine" }\n'
+# OCTET_BRUT : `octet_brut` est définie comme `fn` Rose dans le backend ELF
+# (voie Rust = 1 code point -> 1 octet) mais interceptée par le dispatch G5
+# ($g5_octetll) pour écrire un octet BRUT sans UTF-8. Le front-end du
+# composite doit connaître sa signature pour accepter sa propre source,
+# exactement comme pour eval_expr (HOST-2). Injecté uniquement dans la copie
+# générée : emetteur.rose reste intact (point fixe b3ed9262).
+STD_SIG_INJECT = STD_SIG_EVAL_EXPR + \
+    '  si ($nom == "octet_brut") { retour "chaine|entier" }\n'
+
+# Garde de borne pour la queue « vieux compilateur » du backend : avec un
+# seul argument (C0 rose_natif.rose), `$sortie = argument(1)` lève
+# « Rose : erreur — index hors des limites des arguments » avant même
+# d'atteindre le chemin G5. On ne modifie PAS emetteur_elf.rose (identité),
+# seulement la copie concaténée dans le composite généré.
+SORTIE_SANS_GARDE = '$sortie = argument(1)'
+SORTIE_AVEC_GARDE = ('$sortie = ""\n'
+                     'si (nb_arguments() > 1) { $sortie = argument(1) }')
 
 
 def lines(p: Path):
@@ -129,15 +146,21 @@ tant_que ($u < longueur($outl)) {
 }
 retour $rnat_dump"""
     em_main = replace_once(em_main, old_tail, new_tail, "em sortie RIR")
-    # HOST-2 : injection dans la copie du front-end, avant concaténation.
-    em_head = replace_once(em_head, STD_SIG_ANCRE, STD_SIG_EVAL_EXPR,
-                           "std_sig eval_expr")
+    # HOST-2 + OCTET_BRUT : injections dans la copie du front-end,
+    # avant concaténation (une seule opération, ancre partagée).
+    em_head = replace_once(em_head, STD_SIG_ANCRE, STD_SIG_INJECT,
+                           "std_sig eval_expr + octet_brut")
 
     # ── backend : garder globales + fonctions, câbler le RIR ──────────────
     be_head = "\n".join(be[:cfg["head_end"]])
     be_g5 = "\n".join(be[cfg["dispatch_start"] - 1:cfg["quit_line"]])
     be_g5 = replace_once(be_g5, cfg["src_line"], "$src = em_source_rir()", f"{backend} entrée G5")
     be_tail = "\n".join(be[cfg["quit_line"]:])
+    # Garde de borne (un seul argument) : absente du PE, présente dans l'ELF.
+    # Appliquée à la copie concaténée, jamais à la source possédée.
+    if SORTIE_SANS_GARDE in be_tail:
+        be_tail = replace_once(be_tail, SORTIE_SANS_GARDE, SORTIE_AVEC_GARDE,
+                               f"{backend} garde argument(1)")
 
     cible = "ELF64 aarch64 (Linux)" if backend == "elf" else "PE32+ aarch64 (Windows)"
     header = "\n".join([

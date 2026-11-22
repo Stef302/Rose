@@ -1787,6 +1787,7 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "ecrire_binaire") { retour "vide|chaine,liste" }
   si ($nom == "lire_texte") { retour "chaine|chaine" }
   si ($nom == "eval_expr") { retour "chaine|chaine" }
+  si ($nom == "octet_brut") { retour "chaine|entier" }
   si ($nom == "ecrire_texte") { retour "vide|chaine,chaine" }
   si ($nom == "nb_arguments") { retour "entier|" }
   si ($nom == "argument") { retour "chaine|entier" }

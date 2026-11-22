@@ -391,15 +391,26 @@ fn eval_expr($expr: chaine) -> chaine {
 }
 
 # ── Utilitaires d'écriture little-endian ──
+# OCTET_BRUT : `caractere(n)` encode un POINT DE CODE en UTF-8. Sous le moteur
+# Rust, ecrire_bytes ecrit `c as u8` par caractere (1 octet), mais des que
+# l'emetteur est auto-exécute (chemin G5) la chaine est deja UTF-8 : un octet
+# >= 128 devient 2 octets (ex. 0xb7 -> c2 b7) et l'en-tete ELF est corrompu.
+# `octet_brut` est intercepte par le dispatch G5 ($g5_octetll) et y fabrique
+# un descripteur [tag=1][len=1][1 octet] SANS encodage UTF-8. Cote Rust sa
+# definition reste identique a l'ancien `caractere($v % 256)` : 1 code point
+# -> 1 octet ecrit. Les signatures/ids ne changent pas (point fixe b3ed9262).
+fn octet_brut($v: entier) -> chaine {
+  retour caractere($v % 256)
+}
 
 fn u8le($v: entier) -> chaine {
-  retour caractere($v % 256)
+  retour octet_brut($v)
 }
 
 fn u16le($v: entier) -> chaine {
   $b0 = $v % 256
   $b1 = partie_entiere($v / 256) % 256
-  retour caractere($b0) + caractere($b1)
+  retour octet_brut($b0) + octet_brut($b1)
 }
 
 fn u32le($v: entier) -> chaine {
@@ -410,7 +421,7 @@ fn u32le($v: entier) -> chaine {
   $b2 = $v2 % 256
   $v3 = partie_entiere($v2 / 256)
   $b3 = $v3 % 256
-  retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3)
+  retour octet_brut($b0) + octet_brut($b1) + octet_brut($b2) + octet_brut($b3)
 }
 
 fn u64le($v: entier) -> chaine {
@@ -429,7 +440,7 @@ fn u64le($v: entier) -> chaine {
   $b6 = $v6 % 256
   $v7 = partie_entiere($v6 / 256)
   $b7 = $v7 % 256
-  retour caractere($b0) + caractere($b1) + caractere($b2) + caractere($b3) + caractere($b4) + caractere($b5) + caractere($b6) + caractere($b7)
+  retour octet_brut($b0) + octet_brut($b1) + octet_brut($b2) + octet_brut($b3) + octet_brut($b4) + octet_brut($b5) + octet_brut($b6) + octet_brut($b7)
 }
 
 
@@ -803,6 +814,8 @@ $g5_clexl = 0
 # d'arrêter le chemin G5 (retombée dans l'ancien compilateur).
 $g5_quitl = 0
 $g5_carl = 0
+# OCTET_BRUT : routine G5 dédiée aux octets bruts (pas d'UTF-8).
+$g5_octetll = 0
 $g5_parl = 0
 $g5_absl = 0
 $g5_minl = 0
@@ -1933,6 +1946,10 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       # SH7 (C0.1/C0.2/C0.3) : primitives réellement émises, plus des stubs.
       si ($nom == "quitter") { $lbl = $g5_quitl }
       si ($nom == "caractere") { $lbl = $g5_carl }
+      # OCTET_BRUT : intercepté AVANT la recherche de fonction utilisateur :
+      # `octet_brut` existe bien comme fn Rose (voie Rust), mais sous G5 un
+      # appel doit aboutir à la routine à 1 octet, pas à $g5_carl (UTF-8).
+      si ($nom == "octet_brut") { $lbl = $g5_octetll }
       si ($nom == "partie_entiere") { $lbl = $g5_parl }
       si ($nom == "abs") { $lbl = $g5_absl }
       si ($nom == "min") { $lbl = $g5_minl }
@@ -3517,6 +3534,26 @@ fn g5_emit_car($lbl: entier) -> entier {
   retour 0
 }
 
+# OCTET_BRUT — octet_brut(n) -> descripteur [tag=1][len=1][1 OCTET BRUT].
+# Contrairement à g5_emit_car, AUCUN encodage UTF-8 : le poids faible de n
+# est écrit tel quel (strbio ne stocke que l'octet de poids faible).
+# x10 conserve l'entier désétiquetté pendant g5_alloc_inline (qui détruit
+# x0,x1,x2,x9). Taille fixe 24 octets, un seul label ($g5_octetll).
+fn g5_emit_octetl($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(10, 0))      # x10 = entier Rose désétiquetté
+  g5_load(0, 24)               # 16 octets d'en-tête + 8 de données
+  g5_alloc_inline()            # x0 = pointeur brut aligné
+  g5_emit(movz(1, 1))
+  g5_emit(stroff(1, 0, 0))     # tag = 1 (chaîne)
+  g5_emit(stroff(1, 0, 8))     # longueur = 1 octet (PAS de UTF-8)
+  g5_emit(orrr(1, 31, 10))     # x1 = octet brut = n % 256
+  g5_emit(strbio(1, 0, 16))    # données[0] = octet
+  g5_emit(g5_tag1(0, 0))       # pointeur tagué chaîne Rose
+  g5_emit(RET_I())
+  retour 0
+}
+
 # C0.3 — partie_entiere(n) : sous l'ABI G5 l'argument est déjà un entier
 # tronqué (le `/` de `(app partie_entiere (bin / ...))` émet un sdiv).
 # On désétiquette puis on réétiquette, exactement comme le ferait un asr
@@ -4367,6 +4404,8 @@ $g5_carl = g5_next()
 $k = 0
 # G5-UTF8 : encodage UTF-8 de 1..4 octets (+1..+4).
 tant_que ($k < 4) { g5_next(); $k = $k + 1 }
+# OCTET_BRUT : une seule étiquette (aucun label interne).
+$g5_octetll = g5_next()
 $g5_parl = g5_next()
 $g5_absl = g5_next()
 $k = 0; tant_que ($k < 1) { g5_next(); $k = $k + 1 }
@@ -4418,6 +4457,7 @@ g5_emit_table($g5_tablel)
 g5_emit_clex($g5_clexl)
 g5_emit_quit($g5_quitl)
 g5_emit_car($g5_carl)
+g5_emit_octetl($g5_octetll)
 g5_emit_par($g5_parl)
 g5_emit_abs($g5_absl)
 g5_emit_min($g5_minl)
