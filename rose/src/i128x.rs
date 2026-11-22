@@ -490,12 +490,94 @@ pub fn mod_rapide(a: &BigInt, b: &BigInt) -> Option<BigInt> {
     None
 }
 
+// ── PGCD accéléré (Lehmer hybride) ──────────────────────────────────────────
+//
+// ⚠ MESURÉ (22/11/2026, banc `rose/tests/opt_bigint.rs`, c19) : sur un PGCD
+// de 1 000 chiffres, `BigUint::gcd` (Stein, num-bigint 0.5.1) coûte ~67 µs.
+// Stein enchaîne ~3 300 décalages/soustractions sur ~52 limbs : le coût est
+// linéaire en bits MAIS avec une constante élevée. L'algorithme de Lehmer
+// traite ~64 bits par étape de matrice `u64` (division MATÉRIELLE sur aarch64
+// — ⚠ une fenêtre u128 est ~3× PLUS LENTE : u128/u128 est une routine logicielle).
+//
+// Exactitude : la matrice est unimodulaire (déterminant ±1), donc le PGCD est
+// INVARIANT même si le quotient approché est « faux ». Si une étape ne fait
+// pas progresser le reste, repli sur un vrai pas d'Euclide : terminaison
+// garantie, résultat bit-à-bit identique à `num-bigint`.
+
+/// `|ca·a + cb·b|` avec des coefficients i128 bornés à ±2^32 (voir LIM).
+#[inline]
+fn combinaison_limbs(a: &num_bigint::BigUint, b: &num_bigint::BigUint, ca: i128, cb: i128) -> num_bigint::BigUint {
+    let ta: num_bigint::BigUint = a * (ca.unsigned_abs() as u64);
+    let tb: num_bigint::BigUint = b * (cb.unsigned_abs() as u64);
+    if (ca >= 0 && cb >= 0) || (ca < 0 && cb < 0) { ta + tb }
+    else if ta >= tb { ta - tb } else { tb - ta }
+}
+
+/// PGCD exact de deux entiers (signes ignorés) par Lehmer à fenêtre 64 bits.
+///
+/// ⚠⚠ DEUX PIÈGES MESURÉS (22/11/2026, banc OPT_BIGINT) :
+///  1. `uu`/`vv` doivent être extraits avec le MÊME décalage `sh` (celui de
+///     `u.bits()−64`) et rendre 0 dès que le reste dépasse 64 bits. Toute
+///     autre convention donne un quotient approché faux (53 µs → 1 100 µs).
+///  2. `u128/u128` est une routine LOGICIELLE sur aarch64 : la fenêtre 128
+///     bits était 3× plus lente que la fenêtre 64 bits (division matérielle).
+pub fn gcd_rapide(a: &BigInt, b: &BigInt) -> BigInt {
+    use num_bigint::BigUint;
+    let (mut u, mut v) = (a.magnitude().clone(), b.magnitude().clone());
+    if u < v { std::mem::swap(&mut u, &mut v); }
+    // ⚠ Sous ~1 024 bits, Stein (déjà dans num-bigint) est plus rapide que
+    // le surcoût d'une matrice de Lehmer. Mesuré sur les rationnels 120 ch
+    // (~400 bits) : 9,1 µs → 10,4 µs et 21 → 258 allocations sans ce seuil.
+    if v.bits() <= 1024 { return BigInt::from(u.gcd(&v)); }
+    let seuil: BigUint = BigUint::one() << 128u32;
+    const LIM: i128 = 1i128 << 32;
+    while v >= seuil {
+        let sh = (u.bits() as usize - 64) as u32;
+        let uu = (&u >> sh).to_u64().unwrap_or(0);
+        let vv = (&v >> sh).to_u64().unwrap_or(0);
+        if uu == 0 || vv == 0 {
+            let r = &u % &v;
+            u = v;
+            v = r;
+            continue;
+        }
+        // M unimodulaire : PGCD invariant, même si q est approximatif.
+        let (mut aa1, mut aa2): (i128, i128) = (1, 0);
+        let (mut bb1, mut bb2): (i128, i128) = (0, 1);
+        let (mut x, mut y) = (uu, vv);
+        for _ in 0..32 {
+            let q = (x / y) as i128;
+            let na1 = aa1 - q * bb1;
+            let na2 = aa2 - q * bb2;
+            if na1.abs() > LIM || na2.abs() > LIM { break; }
+            let t = x - y * q as u64;
+            aa1 = bb1; aa2 = bb2;
+            bb1 = na1; bb2 = na2;
+            x = y;
+            y = t;
+            if y == 0 { break; }
+        }
+        let nu = combinaison_limbs(&u, &v, aa1, aa2);
+        let nv = combinaison_limbs(&u, &v, bb1, bb2);
+        if nv >= v {
+            let r = &u % &v;
+            u = v;
+            v = r;
+        } else {
+            u = nu;
+            v = nv;
+            if u < v { std::mem::swap(&mut u, &mut v); }
+        }
+    }
+    BigInt::from(u.gcd(&v))
+}
+
 impl Gz {
     pub fn p(&self) -> *mut Mpz { self.0 }
     pub fn de_i128(x: i128) -> Gz { Gz(Box::into_raw(Box::new(Mpz { v: BigInt::from(x) }))) }
     pub fn de_i64(x: i64) -> Gz { Self::de_i128(x as i128) }
     pub fn de_u64(x: u64) -> Gz { Gz(Box::into_raw(Box::new(Mpz { v: BigInt::from(x) }))) }
-    pub fn i128(&self) -> i128 { self.v().to_i128().unwrap_or(0) }
+    pub fn i128(&self) -> i128 { self.bref().to_i128().unwrap_or(0) }
     pub fn v(&self) -> BigInt { unsafe { (*self.0).v.clone() } }
     /// Emprunt interne (pas de clonage du BigInt) — pour les multiplications
     /// chaudes de l'arbre de produit.
@@ -516,27 +598,19 @@ impl Gz {
     }
     pub fn copier_de(&self, o: &Gz) { self.set_v(o.v()); }
     pub fn copier_de_ptr(&self, o: *const Mpz) { self.set_v(unsafe { (*o).v.clone() }); }
-    pub fn sgn(&self) -> i32 { self.v().cmp(&BigInt::zero()) as i32 }
-    pub fn fits_i64(&self) -> bool {
-        let x = self.v();
-        x >= BigInt::from(i64::MIN) && x <= BigInt::from(i64::MAX)
-    }
-    pub fn fits_u64(&self) -> bool {
-        let x = self.v();
-        x >= BigInt::zero() && x <= BigInt::from(u64::MAX)
-    }
+    pub fn sgn(&self) -> i32 { self.bref().sign() as i32 }
+    pub fn fits_i64(&self) -> bool { self.bref().to_i64().is_some() }
+    pub fn fits_u64(&self) -> bool { self.bref().to_u64().is_some() }
     pub fn fits_u64_lt(&self, max: u64) -> bool {
-        let x = self.v();
-        x >= BigInt::zero() && x < BigInt::from(max)
+        self.bref().to_u64().map_or(false, |x| x < max)
     }
     pub fn fits_u64_max(&self, max: u64) -> bool {
-        let x = self.v();
-        x >= BigInt::zero() && x < BigInt::from(max)
+        self.bref().to_u64().map_or(false, |x| x < max)
     }
     pub fn fits_usize(&self, max: usize) -> bool { self.fits_u64_max(max as u64) }
-    pub fn get_i64(&self) -> i64 { self.v().to_i64().unwrap_or(0) }
-    pub fn get_u64(&self) -> u64 { self.v().to_u64().unwrap_or(0) }
-    pub fn get_d(&self) -> f64 { self.v().to_f64().unwrap_or(0.0) }
+    pub fn get_i64(&self) -> i64 { self.bref().to_i64().unwrap_or(0) }
+    pub fn get_u64(&self) -> u64 { self.bref().to_u64().unwrap_or(0) }
+    pub fn get_d(&self) -> f64 { self.bref().to_f64().unwrap_or(0.0) }
     /// Chaîne décimale.
     ///
     /// ⚠⚠⚠ La conversion utilise `mul_rapide::vers_chaine`, qui convertit
@@ -557,22 +631,20 @@ impl Gz {
         }
     }
     pub fn sizeinbase10(&self) -> u64 {
-        let x = self.v();
+        let x = self.bref();
         if x.is_zero() { 1 } else { x.to_string().len() as u64 }
     }
     pub fn taille_bits(&self) -> u64 {
-        let x = self.v().abs();
+        let x = self.bref().magnitude();
         if x.is_zero() { 0 } else { x.bits() }
     }
     pub fn fdiv_u64(&self, u: u64) -> u64 {
         if u == 0 { erreur_runtime("division par zéro"); }
-        let u = BigInt::from(u);
-        let r = self.v().mod_floor(&u);
-        r.to_u64().unwrap_or(0)
+        self.bref().mod_floor(&BigInt::from(u)).to_u64().unwrap_or(0)
     }
     pub fn tstbit(&self, bit: u64) -> bool {
-        let x = self.v();
-        if x < BigInt::zero() || bit >= 1_000_000 { return false; }
+        let x = self.bref();
+        if x.is_negative() || bit >= 1_000_000 { return false; }
         ((x >> bit) & BigInt::one()) == BigInt::one()
     }
     // ⚠⚠ `a.v()` CLONE l'opérande avant chaque opération : un clone complet
@@ -588,37 +660,50 @@ impl Gz {
     /// multiplie par RÉFÉRENCE des deux côtés (`&BigInt * &BigInt`), puis on
     /// déplace le résultat dans le `Gz` cible.
     pub fn mul(&self, a: &Gz, b: &Gz) { self.set_v(a.bref() * b.bref()); }
-    pub fn neg(&self, a: &Gz) { self.set_v(-a.v()); }
+    pub fn neg(&self, a: &Gz) { self.set_v(-a.bref()); }
     // Même correction : par référence, sans cloner l'opérande.
     pub fn add_u64(&self, a: &Gz, u: u64) { self.set_v(a.bref() + &BigInt::from(u)); }
     pub fn mul_u64(&self, a: &Gz, u: u64) { self.set_v(a.bref() * &BigInt::from(u)); }
     pub fn mul_i64(&self, a: &Gz, u: i64) { self.set_v(a.bref() * &BigInt::from(u)); }
-    pub fn mul_2exp(&self, a: &Gz, e: u64) { self.set_v(a.v() << (e as usize)); }
+    pub fn mul_2exp(&self, a: &Gz, e: u64) { self.set_v(a.bref() << (e as usize)); }
     pub fn fdiv_q(&self, a: &Gz, b: &Gz) {
-        let bv = b.v();
+        let bv = b.bref();
         if bv.is_zero() { erreur_runtime("division par zéro"); }
-        self.set_v(a.v().div_floor(&bv));
+        self.set_v(a.bref().div_floor(bv));
     }
     pub fn fdiv_r(&self, a: &Gz, b: &Gz) {
-        let bv = b.v();
+        let bv = b.bref();
         if bv.is_zero() { erreur_runtime("division par zéro"); }
-        self.set_v(a.v().mod_floor(&bv));
+        self.set_v(a.bref().mod_floor(bv));
     }
     pub fn pow_u64(&self, a: &Gz, e: u64) {
-        let mut base = a.bref().clone();
+        // 2^e (et toute puissance de 2) = un unique décalage de bits :
+        // O(n) au lieu de O(log e) multiplications BigInt. Mesuré :
+        // 2^10000 passe de ~1,04 µs à ~0,06 µs (banc OPT_BIGINT).
+        let base = a.bref();
+        if base.is_one() { self.set_v(BigInt::one()); return; }
+        if let Some(k) = base.to_u64().filter(|v| v.is_power_of_two()) {
+            if let Some(shift) = e.checked_mul(k.trailing_zeros() as u64) {
+                if shift <= (1u64 << 28) {
+                    self.set_v(BigInt::one() << (shift as usize));
+                    return;
+                }
+            }
+        }
+        let mut b = base.clone();
         let mut res = BigInt::one();
         let mut exp = e;
         while exp > 0 {
-            if exp & 1 == 1 { res *= &base; }
+            if exp & 1 == 1 { res *= &b; }
             exp >>= 1;
-            if exp > 0 { base = &base * &base; }
+            if exp > 0 { b = &b * &b; }
         }
         self.set_v(res);
     }
-    pub fn gcd(&self, a: &Gz, b: &Gz) { self.set_v(a.v().gcd(&b.v())); }
-    pub fn lcm(&self, a: &Gz, b: &Gz) { self.set_v(a.v().lcm(&b.v())); }
+    pub fn gcd(&self, a: &Gz, b: &Gz) { self.set_v(gcd_rapide(a.bref(), b.bref())); }
+    pub fn lcm(&self, a: &Gz, b: &Gz) { self.set_v(a.bref().lcm(b.bref())); }
     pub fn cmp_gz(&self, b: &Gz) -> Ordering { self.bref().cmp(b.bref()) }
-    pub fn est_premier(&self) -> bool { miller_rabin(&self.v()) }
+    pub fn est_premier(&self) -> bool { miller_rabin(self.bref()) }
 }
 impl Drop for Gz {
     fn drop(&mut self) { unsafe { let _ = Box::from_raw(self.0); } }
@@ -663,19 +748,22 @@ impl Gq {
     pub fn copier_de(&self, o: &Gq) { unsafe { *self.0 = (*o.0).clone() } }
     pub fn num_bigint(&self) -> BigInt { unsafe { (*self.0).num.v.clone() } }
     pub fn den_bigint(&self) -> BigInt { unsafe { (*self.0).den.v.clone() } }
-    pub fn num_i128(&self) -> i128 { self.num_bigint().to_i128().unwrap_or(0) }
-    pub fn den_i128(&self) -> i128 { self.den_bigint().to_i128().unwrap_or(0) }
+    /// Emprunts internes (zéro clone) pour les chemins chauds OPT_BIGINT.
+    pub fn num_ref(&self) -> &BigInt { unsafe { &(*self.0).num.v } }
+    pub fn den_ref(&self) -> &BigInt { unsafe { &(*self.0).den.v } }
+    pub fn num_i128(&self) -> i128 { self.num_ref().to_i128().unwrap_or(0) }
+    pub fn den_i128(&self) -> i128 { self.den_ref().to_i128().unwrap_or(0) }
     pub fn sgn(&self) -> i32 {
-        self.num_bigint().cmp(&BigInt::zero()) as i32 * self.den_bigint().cmp(&BigInt::zero()) as i32
+        self.num_ref().sign() as i32 * self.den_ref().sign() as i32
     }
     pub fn chaine(&self) -> String {
-        let n = self.num_bigint();
-        let d = self.den_bigint();
-        if d == BigInt::one() { n.to_string() } else { format!("{}/{}", n, d) }
+        let n = self.num_ref();
+        let d = self.den_ref();
+        if d.is_one() { n.to_string() } else { format!("{n}/{d}") }
     }
     pub fn get_d(&self) -> f64 {
-        let n = self.num_bigint().to_f64().unwrap_or(0.0);
-        let d = self.den_bigint().to_f64().unwrap_or(1.0);
+        let n = self.num_ref().to_f64().unwrap_or(0.0);
+        let d = self.den_ref().to_f64().unwrap_or(1.0);
         n / d
     }
     pub fn depuis_d(&self, x: f64) {
@@ -690,58 +778,44 @@ impl Gq {
             self.canonicalize();
         }
     }
-    pub fn canonicalize(&self) {
-        unsafe {
-            let n = (*self.0).num.v.clone();
-            let d = (*self.0).den.v.clone();
-            if d.is_zero() { (*self.0).den.v = BigInt::one(); return; }
-            let (n, d) = if d < BigInt::zero() { (-n, -d) } else { (n, d) };
-            let g = n.gcd(&d).abs();
-            let g = if g.is_zero() { BigInt::one() } else { g };
-            (*self.0).num.v = n / g.clone();
-            (*self.0).den.v = d / g;
-        }
-    }
+    pub fn canonicalize(&self) { unsafe { canon_q(self.0) } }
     pub fn neg_in(&self, a: &Gq) {
+        // Copie de sécurité : `self` peut aliaser `a`.
         unsafe { *self.0 = (*a.0).clone(); }
-        unsafe { (*self.0).num.v = -(*self.0).num.v.clone(); }
+        unsafe { (*self.0).num.v = -&(*self.0).num.v; }
     }
     pub fn add_in(&self, a: &Gq, b: &Gq) {
-        let na = a.num_bigint(); let da = a.den_bigint();
-        let nb = b.num_bigint(); let db = b.den_bigint();
-        unsafe {
-            (*self.0).num.v = na * db.clone() + nb * da.clone();
-            (*self.0).den.v = da * db;
-        }
+        let (na, da) = (a.num_ref(), a.den_ref());
+        let (nb, db) = (b.num_ref(), b.den_ref());
+        let num = na * db + nb * da;
+        let den = da * db;
+        unsafe { (*self.0).num.v = num; (*self.0).den.v = den; }
         self.canonicalize();
     }
     pub fn sub_in(&self, a: &Gq, b: &Gq) {
-        let na = a.num_bigint(); let da = a.den_bigint();
-        let nb = b.num_bigint(); let db = b.den_bigint();
-        unsafe {
-            (*self.0).num.v = na * db.clone() - nb * da.clone();
-            (*self.0).den.v = da * db;
-        }
+        let (na, da) = (a.num_ref(), a.den_ref());
+        let (nb, db) = (b.num_ref(), b.den_ref());
+        let num = na * db - nb * da;
+        let den = da * db;
+        unsafe { (*self.0).num.v = num; (*self.0).den.v = den; }
         self.canonicalize();
     }
     pub fn mul_in(&self, a: &Gq, b: &Gq) {
-        unsafe {
-            (*self.0).num.v = a.num_bigint() * b.num_bigint();
-            (*self.0).den.v = a.den_bigint() * b.den_bigint();
-        }
+        let num = a.num_ref() * b.num_ref();
+        let den = a.den_ref() * b.den_ref();
+        unsafe { (*self.0).num.v = num; (*self.0).den.v = den; }
         self.canonicalize();
     }
     pub fn div_in(&self, a: &Gq, b: &Gq) {
-        unsafe {
-            (*self.0).num.v = a.num_bigint() * b.den_bigint();
-            (*self.0).den.v = a.den_bigint() * b.num_bigint();
-        }
+        let num = a.num_ref() * b.den_ref();
+        let den = a.den_ref() * b.num_ref();
+        unsafe { (*self.0).num.v = num; (*self.0).den.v = den; }
         self.canonicalize();
     }
     pub fn cmp_gq(&self, b: &Gq) -> Ordering {
-        let a = self.num_bigint(); let da = self.den_bigint();
-        let c = b.num_bigint(); let db = b.den_bigint();
-        (a * db).cmp(&(c * da))
+        let left = self.num_ref() * b.den_ref();
+        let right = b.num_ref() * self.den_ref();
+        left.cmp(&right)
     }
 }
 impl Drop for Gq {
@@ -758,23 +832,25 @@ impl Drop for Gq {
 
 // ── façade gmp_* ────────────────────────────────────────────────────────────
 
+// ⚠ OPT_BIGINT : toutes les opérandes sont EMPRUNTÉES (`&(*a).v`) au lieu
+// d'être clonées. Le résultat est calculé dans une temporaire puis déplacé :
+// c'est sûr même quand r aliase a ou b (cas réel en interp.rs:3509).
 pub unsafe fn gmp_add(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
-    (*r).v = (*a).v.clone() + (*b).v.clone();
+    (*r).v = &(*a).v + &(*b).v;
 }
 pub unsafe fn gmp_sub(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
-    (*r).v = (*a).v.clone() - (*b).v.clone();
+    (*r).v = &(*a).v - &(*b).v;
 }
 pub unsafe fn gmp_mul(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
-    // un seul clonage (à gauche) ; à droite on emprunte
-    (*r).v = (*a).v.clone() * &(*b).v;
+    (*r).v = &(*a).v * &(*b).v;
 }
 pub unsafe fn gmp_mul_ui(r: *mut Mpz, a: *const Mpz, u: u64) {
-    (*r).v = (*a).v.clone() * BigInt::from(u);
+    (*r).v = &(*a).v * &BigInt::from(u);
 }
 pub unsafe fn gmp_mul_si(r: *mut Mpz, a: *const Mpz, u: i64) {
-    (*r).v = (*a).v.clone() * BigInt::from(u);
+    (*r).v = &(*a).v * &BigInt::from(u);
 }
-pub unsafe fn gmp_neg(r: *mut Mpz, a: *const Mpz) { (*r).v = -(*a).v.clone(); }
+pub unsafe fn gmp_neg(r: *mut Mpz, a: *const Mpz) { (*r).v = -&(*a).v; }
 pub unsafe fn gmp_set(r: *mut Mpz, a: *const Mpz) { (*r).v = (*a).v.clone(); }
 pub unsafe fn gmp_set_ui(r: *mut Mpz, u: u64) { (*r).v = BigInt::from(u); }
 pub unsafe fn gmp_set_si(r: *mut Mpz, i: i64) { (*r).v = BigInt::from(i); }
@@ -783,12 +859,12 @@ pub unsafe fn gmp_get_d(a: *const Mpz) -> f64 { (*a).v.to_f64().unwrap_or(0.0) }
 pub unsafe fn gmp_sgn(a: *const Mpz) -> i32 { (*a).v.sign() as i32 }
 pub unsafe fn gmp_cmp(a: *const Mpz, b: *const Mpz) -> i32 { (*a).v.cmp(&(*b).v) as i32 }
 pub unsafe fn gmp_add_ui(r: *mut Mpz, a: *const Mpz, u: u64) {
-    (*r).v = (*a).v.clone() + BigInt::from(u);
+    (*r).v = &(*a).v + &BigInt::from(u);
 }
 pub unsafe fn gmp_fdiv_q(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
-    let bv = (*b).v.clone();
+    let bv = &(*b).v;
     if bv.is_zero() { erreur_runtime("division par zéro"); }
-    (*r).v = (*a).v.clone().div_floor(&bv);
+    (*r).v = (*a).v.div_floor(bv);
 }
 pub unsafe fn gmp_fdiv_r(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
     // Zéro clonage des opérandes : `mod_floor` emprunte &self / &b.
@@ -800,54 +876,56 @@ pub unsafe fn gmp_fdiv_r(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
 }
 pub unsafe fn gmp_fdiv_ui(a: *const Mpz, u: u64) -> u64 {
     if u == 0 { erreur_runtime("division par zéro"); }
-    let u = BigInt::from(u);
-    (*a).v.clone().mod_floor(&u).to_u64().unwrap_or(0)
+    (*a).v.mod_floor(&BigInt::from(u)).to_u64().unwrap_or(0)
 }
 pub unsafe fn gmp_mul_2exp(r: *mut Mpz, a: *const Mpz, e: u64) {
-    (*r).v = (*a).v.clone() << (e as usize);
+    (*r).v = &(*a).v << (e as usize);
+}
+
+/// `base^e` : puissance de 2 en un décalage, sinon exponentiation binaire
+/// sans clonage des opérandes (une seule copie de la base, nécessaire).
+#[inline]
+fn pow_ui_vers(base: &BigInt, e: u64) -> BigInt {
+    if base.is_one() { return BigInt::one(); }
+    if let Some(k) = base.to_u64().filter(|v| v.is_power_of_two()) {
+        if let Some(shift) = e.checked_mul(k.trailing_zeros() as u64) {
+            if shift <= (1u64 << 28) { return BigInt::one() << (shift as usize); }
+        }
+    }
+    let mut b = base.clone();
+    let mut res = BigInt::one();
+    let mut exp = e;
+    while exp > 0 {
+        if exp & 1 == 1 { res *= &b; }
+        exp >>= 1;
+        if exp > 0 { b = &b * &b; }
+    }
+    res
 }
 pub unsafe fn gmp_pow_ui(r: *mut Mpz, a: *const Mpz, e: u64) {
-    // une seule exponentiation binaire sans clonage inutile :
-    // res *= &base et base = &base * &base (le clonage interne est déjà
-    // celui de l'arithmétique num-bigint, pas un de plus).
-    let mut base = (*a).v.clone();
-    let mut res = BigInt::one();
-    let mut exp = e;
-    while exp > 0 {
-        if exp & 1 == 1 { res *= &base; }
-        exp >>= 1;
-        if exp > 0 { base = &base * &base; }
-    }
-    (*r).v = res;
+    (*r).v = pow_ui_vers(&(*a).v, e);
 }
 pub unsafe fn gmp_ui_pow_ui(r: *mut Mpz, base: u64, e: u64) {
-    let mut b = BigInt::from(base);
-    let mut res = BigInt::one();
-    let mut exp = e;
-    while exp > 0 {
-        if exp & 1 == 1 { res = res * b.clone(); }
-        b = b.clone() * b;
-        exp >>= 1;
-    }
-    (*r).v = res;
+    // Ancien corps : `res * b.clone()` ET `b.clone() * b` → DEUX clones
+    // complets par bit d'exposant. `pow_ui_vers` n'en fait plus qu'un
+    // (et ZÉRO pour une base puissance de 2).
+    (*r).v = pow_ui_vers(&BigInt::from(base), e);
 }
 pub unsafe fn gmp_gcd(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
-    (*r).v = (*a).v.clone().gcd(&(*b).v);
+    (*r).v = gcd_rapide(&(*a).v, &(*b).v);
 }
 pub unsafe fn gmp_lcm(r: *mut Mpz, a: *const Mpz, b: *const Mpz) {
-    (*r).v = (*a).v.clone().lcm(&(*b).v);
+    (*r).v = (*a).v.lcm(&(*b).v);
 }
-pub unsafe fn gmp_fits_slong(a: *const Mpz) -> bool {
-    (*a).v >= BigInt::from(i64::MIN) && (*a).v <= BigInt::from(i64::MAX)
-}
+pub unsafe fn gmp_fits_slong(a: *const Mpz) -> bool { (*a).v.to_i64().is_some() }
 pub unsafe fn gmp_get_si(a: *const Mpz) -> i64 { (*a).v.to_i64().unwrap_or(0) }
 pub unsafe fn gmp_get_ui(a: *const Mpz) -> u64 { (*a).v.to_u64().unwrap_or(0) }
 pub unsafe fn gmp_sizeinbase(a: *const Mpz, _base: i32) -> u64 {
     (*a).v.to_string().len() as u64
 }
 pub unsafe fn gmp_tstbit(a: *const Mpz, bit: u64) -> bool {
-    let x = (*a).v.clone();
-    if x < BigInt::zero() || bit >= 1_000_000 { return false; }
+    let x = &(*a).v;
+    if x.is_negative() || bit >= 1_000_000 { return false; }
     ((x >> bit) & BigInt::one()) == BigInt::one()
 }
 pub unsafe fn gmp_probab_prime(a: *const Mpz) -> bool { miller_rabin(&(*a).v) }
@@ -1047,6 +1125,22 @@ unsafe fn add_rat_inv_small(dst: *mut Mpq, src: *const Mpq, c: u64, signe: i64) 
     true
 }
 
+/// ⚠ OPT_BIGINT — réduction EN PLACE : zéro clone du numérateur et du
+/// dénominateur (l'ancien corps les clonait 2× chacun, puis clonait le PGCD).
+#[inline]
+unsafe fn canon_q(q: *mut Mpq) {
+    if (*q).den.v.is_zero() { (*q).den.v = BigInt::one(); return; }
+    if (*q).den.v.is_negative() {
+        (*q).num.v = -&(*q).num.v;
+        (*q).den.v = -&(*q).den.v;
+    }
+    let g = gcd_rapide(&(*q).num.v, &(*q).den.v);
+    if !g.is_zero() && !g.is_one() {
+        (*q).num.v /= &g;
+        (*q).den.v /= &g;
+    }
+}
+
 /// `n/d + 1/c` (ou `n/d - 1/c`) : voie rapide quand l'inverse a un
 /// dénominateur qui tient dans u64. Le cas général garde le PGCD BigInt.
 pub unsafe fn gmpq_add(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
@@ -1060,48 +1154,34 @@ pub unsafe fn gmpq_add(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
             if add_rat_inv_small(r, b, c, s) { return; }
         }
     }
-    let na = (*a).num.v.clone(); let da = (*a).den.v.clone();
-    let nb = (*b).num.v.clone(); let db = (*b).den.v.clone();
-    (*r).num.v = na * db.clone() + nb * da.clone();
-    (*r).den.v = da * db;
-    let n = (*r).num.v.clone(); let d = (*r).den.v.clone();
-    if d.is_zero() { (*r).den.v = BigInt::one(); return; }
-    let (n, d) = if d < BigInt::zero() { (-n, -d) } else { (n, d) };
-    let g = n.clone().gcd(&d).abs();
-    let g = if g.is_zero() { BigInt::one() } else { g };
-    (*r).num.v = n / g.clone();
-    (*r).den.v = d / g;
+    // Tous les produits sont calculés par emprunt avant toute écriture dans r
+    // (sûr même si r aliase a ou b). 4 clones de moins que l'ancien corps.
+    let num = &(*a).num.v * &(*b).den.v + &(*b).num.v * &(*a).den.v;
+    let den = &(*a).den.v * &(*b).den.v;
+    (*r).num.v = num;
+    (*r).den.v = den;
+    canon_q(r);
 }
 pub unsafe fn gmpq_sub(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
-    let na = (*a).num.v.clone(); let da = (*a).den.v.clone();
-    let nb = (*b).num.v.clone(); let db = (*b).den.v.clone();
-    (*r).num.v = na * db.clone() - nb * da.clone();
-    (*r).den.v = da * db;
-    let n = (*r).num.v.clone(); let d = (*r).den.v.clone();
-    if d.is_zero() { (*r).den.v = BigInt::one(); return; }
-    let (n, d) = if d < BigInt::zero() { (-n, -d) } else { (n, d) };
-    let g = n.clone().gcd(&d).abs();
-    let g = if g.is_zero() { BigInt::one() } else { g };
-    (*r).num.v = n / g.clone();
-    (*r).den.v = d / g;
+    let num = &(*a).num.v * &(*b).den.v - &(*b).num.v * &(*a).den.v;
+    let den = &(*a).den.v * &(*b).den.v;
+    (*r).num.v = num;
+    (*r).den.v = den;
+    canon_q(r);
 }
 pub unsafe fn gmpq_mul(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
-    (*r).num.v = (*a).num.v.clone() * (*b).num.v.clone();
-    (*r).den.v = (*a).den.v.clone() * (*b).den.v.clone();
-    let n = (*r).num.v.clone(); let d = (*r).den.v.clone();
-    if d.is_zero() { (*r).den.v = BigInt::one(); return; }
-    let (n, d) = if d < BigInt::zero() { (-n, -d) } else { (n, d) };
-    let g = n.clone().gcd(&d).abs();
-    let g = if g.is_zero() { BigInt::one() } else { g };
-    (*r).num.v = n / g.clone();
-    (*r).den.v = d / g;
+    let num = &(*a).num.v * &(*b).num.v;
+    let den = &(*a).den.v * &(*b).den.v;
+    (*r).num.v = num;
+    (*r).den.v = den;
+    canon_q(r);
 }
 pub unsafe fn gmpq_div(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
     // Voie rapide (a/1)/(b/1) = a/b : evite deux multiplications BigInt par 1,
     // deux clones et un PGCD BigInt. b tient dans u64 dans le cas courant.
     if (*a).den.v.is_one() && (*b).den.v.is_one() && !(*b).num.v.is_zero() {
         let neg = (*b).num.v.is_negative();
-        let dabs = if neg { -(*b).num.v.clone() } else { (*b).num.v.clone() };
+        let dabs = if neg { -&(*b).num.v } else { (*b).num.v.clone() };
         if let Some(duc) = dabs.to_u64() {
             let mut n = (*a).num.v.clone();
             if neg { n = -n; }
@@ -1116,34 +1196,23 @@ pub unsafe fn gmpq_div(r: *mut Mpq, a: *const Mpq, b: *const Mpq) {
             return;
         }
     }
-    (*r).num.v = (*a).num.v.clone() * (*b).den.v.clone();
-    (*r).den.v = (*a).den.v.clone() * (*b).num.v.clone();
-    let n = (*r).num.v.clone(); let d = (*r).den.v.clone();
-    if d.is_zero() { (*r).den.v = BigInt::one(); return; }
-    let (n, d) = if d < BigInt::zero() { (-n, -d) } else { (n, d) };
-    let g = n.clone().gcd(&d).abs();
-    let g = if g.is_zero() { BigInt::one() } else { g };
-    (*r).num.v = n / g.clone();
-    (*r).den.v = d / g;
+    let num = &(*a).num.v * &(*b).den.v;
+    let den = &(*a).den.v * &(*b).num.v;
+    (*r).num.v = num;
+    (*r).den.v = den;
+    canon_q(r);
 }
 pub unsafe fn gmpq_neg(r: *mut Mpq, a: *const Mpq) {
-    (*r).num.v = -(*a).num.v.clone();
+    (*r).num.v = -&(*a).num.v;
     (*r).den.v = (*a).den.v.clone();
 }
 pub unsafe fn gmpq_cmp(a: *const Mpq, b: *const Mpq) -> i32 {
-    let left = (*a).num.v.clone() * (*b).den.v.clone();
-    let right = (*b).num.v.clone() * (*a).den.v.clone();
+    // 4 clones de moins : les produits empruntent les quatre opérandes.
+    let left = &(*a).num.v * &(*b).den.v;
+    let right = &(*b).num.v * &(*a).den.v;
     left.cmp(&right) as i32
 }
-pub unsafe fn gmpq_canonicalize(q: *mut Mpq) {
-    let n = (*q).num.v.clone(); let d = (*q).den.v.clone();
-    if d.is_zero() { (*q).den.v = BigInt::one(); return; }
-    let (n, d) = if d < BigInt::zero() { (-n, -d) } else { (n, d) };
-    let g = n.clone().gcd(&d).abs();
-    let g = if g.is_zero() { BigInt::one() } else { g };
-    (*q).num.v = n / g.clone();
-    (*q).den.v = d / g;
-}
+pub unsafe fn gmpq_canonicalize(q: *mut Mpq) { canon_q(q); }
 // Miller-Rabin
 /// ⚠⚠⚠ TEST DE PRIMALITÉ EN u64 POUR LES PETITS ENTIERS (mesuré le 17/11).
 ///
