@@ -903,6 +903,11 @@ enum AccelGenre {
     Table { slot_table: usize, prefixe: String },
     /// `$sortie = sous_chaine($source, d, f) + $sortie` (préfixage de chaîne).
     Chaine { slot_sortie: usize, slot_source: usize, debut: i64, fin: i64 },
+    /// `$s = $s + "morceau"` (ajout en fin de chaîne). 22/11/26 : la forme
+    /// du banc `chaine` (20 000 concaténations), où le coût n'était pas la
+    /// concaténation O(1) mais l'allocation d'un `Rc` par tour. On garde
+    /// une feuille `String` possédée et on appelle `push_str` dedans.
+    AppendChaine { slot_sortie: usize, morceau: String },
 }
 
 #[derive(Clone)]
@@ -985,20 +990,30 @@ fn detecter_accel_boucle(corps: &crate::rir::CorpsRir, from: usize,
             }
             // ── chaîne ───────────────────────────────────────────────
             Op::AffectAst { slot: ss, e: Expr::Binaire { op, a, b, .. } } if op == "+" => {
-                let Expr::Appel { nom: ns, args: asrc, .. } = a.as_ref() else { continue };
-                let Expr::Var(sortie, _) = b.as_ref() else { continue };
-                let Some(s_sortie) = corps.noms.iter().position(|x| x == sortie) else { continue };
-                if s_sortie != *ss as usize || ns != "sous_chaine" || asrc.len() != 3 { continue }
-                let Expr::Var(nsrc, _) = &asrc[0] else { continue };
-                let Some(s_source) = corps.noms.iter().position(|x| x == nsrc) else { continue };
-                let (d, f) = match (&asrc[1], &asrc[2]) {
-                    (Expr::Litteral { texte: td, .. }, Expr::Litteral { texte: tf, .. }) =>
-                        (td.trim().parse::<i64>().ok(), tf.trim().parse::<i64>().ok()),
-                    _ => (None, None),
-                };
-                let (Some(d), Some(f)) = (d, f) else { continue };
-                if d < 0 || f < d || f > 1_000_000 { continue }
-                AccelGenre::Chaine { slot_sortie: s_sortie, slot_source: s_source, debut: d, fin: f }
+                // AJOUT EN FIN : `$s = $s + "morceau"`. Le slot lu et le
+                // slot écrit DOIVENT être le même (sinon l'aliasage interdit
+                // la mutation en place).
+                if let (Expr::Var(ns, _), Expr::ChaineLit(morceau, _)) = (a.as_ref(), b.as_ref()) {
+                    let Some(s_sortie) = corps.noms.iter().position(|x| x == ns) else { continue };
+                    if s_sortie != *ss as usize || s_sortie == cpt { continue }
+                    AccelGenre::AppendChaine { slot_sortie: s_sortie, morceau: morceau.clone() }
+                } else {
+                    // PRÉFIXAGE : `sous_chaine(...) + $sortie`.
+                    let Expr::Appel { nom: ns, args: asrc, .. } = a.as_ref() else { continue };
+                    let Expr::Var(sortie, _) = b.as_ref() else { continue };
+                    let Some(s_sortie) = corps.noms.iter().position(|x| x == sortie) else { continue };
+                    if s_sortie != *ss as usize || ns != "sous_chaine" || asrc.len() != 3 { continue }
+                    let Expr::Var(nsrc, _) = &asrc[0] else { continue };
+                    let Some(s_source) = corps.noms.iter().position(|x| x == nsrc) else { continue };
+                    let (d, f) = match (&asrc[1], &asrc[2]) {
+                        (Expr::Litteral { texte: td, .. }, Expr::Litteral { texte: tf, .. }) =>
+                            (td.trim().parse::<i64>().ok(), tf.trim().parse::<i64>().ok()),
+                        _ => (None, None),
+                    };
+                    let (Some(d), Some(f)) = (d, f) else { continue };
+                    if d < 0 || f < d || f > 1_000_000 { continue }
+                    AccelGenre::Chaine { slot_sortie: s_sortie, slot_source: s_source, debut: d, fin: f }
+                }
             }
             _ => continue 'candidat,
         };
@@ -2855,7 +2870,8 @@ impl Interp {
                 let h = plan.debut;
                 if h != plan.cible_sortie - 4 { continue; }
                 let cible = match &plan.genre {
-                    AccelGenre::Chaine { slot_sortie, .. } => *slot_sortie,
+                    AccelGenre::Chaine { slot_sortie, .. }
+                    | AccelGenre::AppendChaine { slot_sortie, .. } => *slot_sortie,
                     AccelGenre::ListeSomme { slot_acc, .. } => *slot_acc,
                     _ => plan.slot_cpt,
                 };
@@ -3195,6 +3211,32 @@ impl Interp {
                 }
                 unsafe { *base.add(cpt_slot) = Valeur::z(borne); }
                 Ok(Valeur::z(borne))
+            }
+            AccelGenre::AppendChaine { slot_sortie, morceau } => {
+                let Valeur::Chaine(rc) = &slots[slot_sortie] else { return self.repli_boucle(idx, base) };
+                // Seule une feuille contiguë peut grandir en place. Une rope
+                // déjà concaténée retombe sur le chemin général (O(1)/tour).
+                let Some(prefixe) = rc.octets_empruntes() else { return self.repli_boucle(idx, base) };
+                let Ok(prefixe) = std::str::from_utf8(prefixe) else { return self.repli_boucle(idx, base) };
+                let n = (borne - cpt) as usize;
+                if n > 20_000_000 || morceau.len().saturating_mul(n) > (1 << 28) {
+                    return self.repli_boucle(idx, base);
+                }
+                // `out` est possédé en exclusivité : `pousser` fait exactement
+                // le travail de `String::push_str`, sans Rc ni nœud par tour.
+                let mut out = crate::run::ChaineRep::plein(prefixe.to_string());
+                {
+                    let rep = Rc::get_mut(&mut out).unwrap();
+                    if !matches!(rep.noeud,
+                        crate::run::NoeudChaine::Plein(_)
+                        | crate::run::NoeudChaine::PleinCourt { .. })
+                    {
+                        return self.repli_boucle(idx, base);
+                    }
+                    for _ in cpt..borne { let _ = rep.pousser(&morceau); }
+                }
+                unsafe { *base.add(cpt_slot) = Valeur::z(borne); }
+                Ok(Valeur::Chaine(out))
             }
             AccelGenre::Chaine { slot_sortie, slot_source, debut, fin } => {
                 let Valeur::Chaine(src) = &slots[slot_source] else { return self.repli_boucle(idx, base) };
@@ -4653,6 +4695,16 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
         // exigent un court-circuit sur les EXPRESSIONS, pas sur les valeurs).
         let _ = (op, g, d);
 
+        // ⚠ VOIE RAPIDE CHAÎNE '+' (22/11) : placée avant la cascade de
+        // comparaisons et de types, elle évite ~5 ns par concaténation sur
+        // le chemin JIT (`rose_jit_chaine_concat` appelle exactement cette
+        // fonction). Même règle exacte que le chemin historique ci-dessous.
+        if op == "+" {
+            if let (Valeur::Chaine(x), Valeur::Chaine(y)) = (g, d) {
+                return Ok(Valeur::Chaine(ChaineRep::concat(x, y)));
+            }
+        }
+
         // ⚠⚠⚠ VOIE RAPIDE i64 EN TÊTE (mesuré le 16 et 17/11).
         //
         // ⚠ Elle DOIT être en TÊTE de la fonction : placée plus bas, elle
@@ -4717,16 +4769,7 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
             }
             _ => {}
         }
-        // add. (chaînes) — le parser n'émet jamais « add. » ; la concaténation
-        // passe par l'opérateur « + » (+ sur chaînes).
-        if op == "+" {
-            if let (Valeur::Chaine(x), Valeur::Chaine(y)) = (&g, &d) {
-                // ⚠ ROPE (18/11) : O(1), aucun octet recopié. L'ancien
-                // `format!("{}{}", x, y)` était O(longueur de x) et faisait
-                // de `$s = $s + "x"` un O(n²) (~200 Mo copiés sur 20 000 tours).
-                return Ok(Valeur::Chaine(ChaineRep::concat(x, y)));
-            }
-        }
+        // (la concaténation de chaînes est traitée EN TÊTE de fonction)
         // Complexe : opérations sur a+bi
         if matches!(g, Valeur::Complexe{..}) || matches!(d, Valeur::Complexe{..}) {
             let gc = matches!(g, Valeur::Complexe{..});

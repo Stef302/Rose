@@ -313,7 +313,21 @@ pub enum NoeudChaine {
     /// Chaîne ASCII courte (≤ 16 octets) stockée DANS le nœud : un seul
     /// bloc heap vivant par valeur (le `Rc`) au lieu de deux (`Rc` + `String`).
     PleinCourt { buf: [u8; 16], len: u8 },
-    Concat(Rc<ChaineRep>, Rc<ChaineRep>),
+    /// Concaténation de deux ropes, avec CACHE de l'aplatissement.
+    ///
+    /// 22/11/26 : `$s = $s + "x"` construit une chaîne LINÉAIRE de 20 000
+    /// nœuds, et chaque `sous_chaine` traversait les 20 000 nœuds (mesuré :
+    /// 71 ms pour 1 000 tranches). Trois correctifs mesurés :
+    ///   * AVL complet (profondeur + rotations) : 12,6 ms / 20 000 ajouts
+    ///     (~15 allocations par ajout) — écarté ;
+    ///   * rééquilibrage périodique : 210 ms — O(n²), écarté ;
+    ///   * CACHE de l'aplatissement dans le nœud : concat reste O(1) avec
+    ///     UNE allocation, et `sous_chaine` ne traverse l'arbre qu'UNE fois.
+    ///
+    /// C'est la seconde option de la consigne (« n'aplatir qu'une fois ») :
+    /// la rope est immuable, donc le cache n'est jamais invalide. Le JIT ne
+    /// construit que des feuilles `Plein` : l'ABI de `Valeur` est inchangée.
+    Concat(Rc<ChaineRep>, Rc<ChaineRep>, std::cell::RefCell<Option<String>>),
     /// Feuille dont les octets vivent dans un mapping `mmap` possédé.
     ///
     /// 19/11/26 — domaine 8 du bench multi : `lire_texte` recopiait 10 Mo
@@ -358,7 +372,8 @@ impl std::fmt::Debug for NoeudChaine {
             NoeudChaine::Plein(s) => f.debug_tuple("Plein").field(s).finish(),
             NoeudChaine::PleinCourt { buf, len } => f.debug_tuple("PleinCourt")
                 .field(&String::from_utf8_lossy(&buf[..*len as usize])).finish(),
-            NoeudChaine::Concat(a, b) => f.debug_tuple("Concat").field(a).field(b).finish(),
+            NoeudChaine::Concat(a, b, cache) => f.debug_tuple("Concat")
+                .field(a).field(b).field(&cache.borrow().is_some()).finish(),
             NoeudChaine::FichierMmap { len, .. } =>
                 f.debug_struct("FichierMmap").field("len", len).finish(),
             NoeudChaine::PleinIndexe { s, .. } => f.debug_tuple("PleinIndexe").field(s).finish(),
@@ -366,6 +381,35 @@ impl std::fmt::Debug for NoeudChaine {
                 f.debug_struct("FichierMmapIndexe").field("len", len).finish(),
         }
     }
+}
+
+// ── Concaténation O(1) avec cache d'aplatissement ─────────────────────────
+//
+// Voir le commentaire sur `NoeudChaine::Concat` : trois stratégies ont été
+// mesurées, c'est « n'aplatir qu'une fois » qui gagne, sans taxer `concat`.
+// La rope reste immuable, donc le cache n'est jamais invalide, et les
+// préfixes partagés restent corrects (chaque nœud a son propre cache).
+
+#[inline]
+fn noeud_concat(a: Rc<ChaineRep>, b: Rc<ChaineRep>) -> Rc<ChaineRep> {
+    Rc::new(ChaineRep {
+        n: a.n + b.n,
+        octets: a.octets + b.octets,
+        noeud: NoeudChaine::Concat(a, b, std::cell::RefCell::new(None)),
+    })
+}
+
+/// Octets de début/fin correspondant aux points de code `debut`/`fin`.
+/// Les indices sont des `usize` (les bornes Rose sont des entiers exacts) ;
+/// au-delà de la fin de la chaîne on rend `s.len()` = tranche vide.
+fn bornes_points_code(s: &str, debut: usize, fin: usize) -> (usize, usize) {
+    let mut od = s.len();
+    let mut of = s.len();
+    for (i, (o, _)) in s.char_indices().enumerate() {
+        if i == debut { od = o; }
+        if i == fin { of = o; break; }
+    }
+    (od, of)
 }
 
 #[derive(Debug)]
@@ -483,23 +527,85 @@ impl ChaineRep {
         }
     }
 
-    /// Concaténation en O(1) : aucun octet n'est copié, seul l'arbre grandit.
+    /// Concaténation en O(1) : aucun octet n'est copié, seul un nœud est
+    /// alloué. L'aplatissement est différé et MIS EN CACHE dans le nœud
+    /// (voir `NoeudChaine::Concat`) : la première primitive qui en a besoin
+    /// paie O(total), toutes les suivantes sont O(longueur demandée).
     #[inline]
     pub fn concat(a: &Rc<ChaineRep>, b: &Rc<ChaineRep>) -> Rc<ChaineRep> {
         prof::add(&prof::CONCAT_NB, 1);
         prof::add(&prof::CONCAT_CAR, (a.n + b.n) as u64);
-        Rc::new(ChaineRep {
-            n: a.n + b.n,
-            octets: a.octets + b.octets,
-            noeud: NoeudChaine::Concat(a.clone(), b.clone()),
-        })
+        noeud_concat(a.clone(), b.clone())
     }
 
-    /// Aplatit en une `String` — O(longueur totale), itératif (pile explicite
-    /// pour ne pas déborder sur un arbre profond).
+    /// Concaténation SANS ALLOCATION quand le premier opérande est possédé :
+    /// c'est la forme des boucles d'accumulation (`$s = $s + "x"`) exécutées
+    /// par l'accélérateur RIR. Si `a` est une feuille extensible dont on est
+    /// l'unique propriétaire, on ajoute ses octets dans son `String` (comme
+    /// `String::push_str`) et on rend le MÊME `Rc`. Sinon repli sur `concat`
+    /// (O(1), persistant, pour les préfixes partagés).
+    #[inline]
+    pub fn concat_possessif(mut a: Rc<ChaineRep>, b: &Rc<ChaineRep>) -> Rc<ChaineRep> {
+        // Chemin CHAUD : le compteur n'est lu qu'une fois (les `prof::add`
+        // du repli comptent la concaténation). `ChaineRep` ne contient que
+        // du UTF-8 valide, donc `from_utf8_unchecked` est sûr ici.
+        if let Some(rep) = Rc::get_mut(&mut a) {
+            if let Some(o) = b.octets_empruntes() {
+                let pousse = rep.pousser(unsafe { std::str::from_utf8_unchecked(o) });
+                if pousse { return a; }
+            }
+        }
+        ChaineRep::concat(&a, b)
+    }
+
+    /// Ajoute `morceau` à la fin d'une FEUILLE possédée exclusivement.
+    ///
+    /// Le moteur appelle cette méthode sur un `Rc` dont il est le seul
+    /// propriétaire (accélérateur de boucle `$s = $s + "x"`), donc aucun
+    /// octet n'est recopié, seul le `String` de la feuille grandit — le
+    /// même chemin que `String::push_str` en Rust. Les compteurs `n`/
+    /// `octets` sont mis à jour incrémentalement (O(1) par morceau).
+    ///
+    /// Rend `false` si le nœud n'est PAS une feuille extensible (`Concat`,
+    /// `FichierMmap`, `PleinIndexe`) : l'appelant doit alors retomber sur
+    /// `concat` (O(1)) et reconstruire un nœud. En cas de `false`, RIEN n'a
+    /// été modifié.
+    #[inline]
+    pub fn pousser(&mut self, morceau: &str) -> bool {
+        if morceau.is_empty() { return true; }
+        let car_supp = if morceau.is_ascii() { morceau.len() } else { morceau.chars().count() };
+        match &mut self.noeud {
+            NoeudChaine::Plein(s) => s.push_str(morceau),
+            NoeudChaine::PleinCourt { buf, len } => {
+                let l = *len as usize;
+                if l + morceau.len() <= 16 {
+                    buf[l..l + morceau.len()].copy_from_slice(morceau.as_bytes());
+                    *len = (l + morceau.len()) as u8;
+                } else {
+                    // Débordement du tampon inline : promotion unique vers
+                    // `Plein`, puis croissance amortie comme un `String`.
+                    let mut s = String::with_capacity(l + morceau.len());
+                    s.push_str(unsafe { std::str::from_utf8_unchecked(&buf[..l]) });
+                    s.push_str(morceau);
+                    self.noeud = NoeudChaine::Plein(s);
+                }
+            }
+            _ => return false,
+        }
+        self.n += car_supp;
+        self.octets += morceau.len();
+        true
+    }
+
+    /// Aplatit en une `String` — O(longueur totale) la première fois, puis
+    /// lecture du cache O(longueur). Parcours itératif (pile explicite pour
+    /// ne pas déborder sur un arbre profond).
     pub fn aplatir(&self) -> String {
         prof::add(&prof::APLATIR_NB, 1);
         prof::add(&prof::APLATIR_OCT, self.octets as u64);
+        if let NoeudChaine::Concat(_, _, cache) = &self.noeud {
+            if let Some(plat) = cache.borrow().as_ref() { return plat.clone(); }
+        }
         let mut s = String::with_capacity(self.octets);
         let mut pile: Vec<&ChaineRep> = Vec::new();
         pile.push(self);
@@ -514,8 +620,11 @@ impl ChaineRep {
                         std::str::from_utf8_unchecked(std::slice::from_raw_parts(*ptr, *len))
                     }),
                 NoeudChaine::PleinIndexe { s: t, .. } => s.push_str(t),
-                NoeudChaine::Concat(a, b) => { pile.push(b.as_ref()); pile.push(a.as_ref()); }
+                NoeudChaine::Concat(a, b, _) => { pile.push(b.as_ref()); pile.push(a.as_ref()); }
             }
+        }
+        if let NoeudChaine::Concat(_, _, cache) = &self.noeud {
+            *cache.borrow_mut() = Some(s.clone());
         }
         s
     }
@@ -532,13 +641,26 @@ impl ChaineRep {
         prof::add(&prof::TRANCHE_NB, 1);
         prof::add(&prof::TRANCHE_CAR, fin.saturating_sub(debut) as u64);
         if debut >= fin { return String::new(); }
+        // ⚠ CACHE (22/11) : si un appel antérieur (ou `aplatir`) a déjà
+        // aplati cette rope, on découpe directement dans le `String` au
+        // lieu de traverser les 20 000 nœuds d'une chaîne de concaténations.
+        // `début`/`fin` sont des POINTS DE CODE : conversion par `char_indices`.
+        if let NoeudChaine::Concat(_, _, cache) = &self.noeud {
+            if let Some(plat) = cache.borrow().as_ref() {
+                if plat.is_ascii() && fin <= plat.len() {
+                    return plat[debut..fin].to_string();
+                }
+                let (od, of) = bornes_points_code(plat, debut, fin);
+                return plat[od..of].to_string();
+            }
+        }
         let mut out = String::with_capacity(fin.saturating_sub(debut));
         let mut pile: Vec<&ChaineRep> = Vec::new();
         pile.push(self);
         let mut pos = 0usize;
         while let Some(r) = pile.pop() {
             if pos >= fin { break; }
-            if let NoeudChaine::Concat(a, b) = &r.noeud {
+            if let NoeudChaine::Concat(a, b, _) = &r.noeud {
                 pile.push(b.as_ref());
                 pile.push(a.as_ref());
                 continue;
@@ -658,7 +780,7 @@ impl Drop for ChaineRep {
                     liberer_mmap_ptr(ptr, mapping_len);
                 }
                 NoeudChaine::PleinIndexe { .. } => {}
-                NoeudChaine::Concat(mut a, mut b) => {
+                NoeudChaine::Concat(mut a, mut b, _) => {
                     if let Some(ra) = Rc::get_mut(&mut a) {
                         pile.push(std::mem::replace(&mut ra.noeud, NoeudChaine::Plein(String::new())));
                     }
