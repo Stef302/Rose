@@ -4120,12 +4120,32 @@ fn ee_trim($s: chaine) -> chaine {
   retour sous_chaine($s, $a, $b)
 }
 
+# Bounded code-point access for the ee_* helpers. Both the Rust engine and
+# G5 count code points (G5 ordre decodes 1..4 UTF-8 bytes), so no helper may
+# index a string by raw byte or run past its end.
+fn ee_car($s: chaine, $i: entier) -> chaine {
+  si ($i < 0 ou $i >= longueur($s)) { retour "" }
+  retour sous_chaine($s, $i, $i + 1)
+}
+
+fn ee_oc($s: chaine, $i: entier) -> entier {
+  $c = ee_car($s, $i)
+  si (longueur($c) == 0) { retour -1 }
+  retour ordre($c)
+}
+
 fn ee_trouve($s: chaine, $mot: chaine) -> entier {
   $n = longueur($s)
   $m = longueur($mot)
   $i = 0
   tant_que ($i + $m <= $n) {
-    si (sous_chaine($s, $i, $i + $m) == $mot) { retour $i }
+    $k = 0
+    $ok = 1
+    tant_que ($k < $m et $ok == 1) {
+      si (ee_car($s, $i + $k) != ee_car($mot, $k)) { $ok = 0 }
+      $k = $k + 1
+    }
+    si ($ok == 1) { retour $i }
     $i = $i + 1
   }
   retour -1
@@ -6988,36 +7008,92 @@ fn g5_emit_sous($lbl: entier) -> entier {
 }
 
 # idx(container, i) — chaîne : 1 caractère ; liste : élément.
+#
+# G5-UTF8 : l'indice i est un POINT DE CODE (sémantique Rose, identique à
+# celle de longueur/sous_chaine/ordre), tandis que le descripteur stocke des
+# OCTETS. L'ancien code lisait l'octet à i+16 et fabriquait un descripteur
+# d'1 octet : « ≈ »[0] rendait e2 au lieu de e2 89 88, et ordre() lisait des
+# octets de continuation comme têtes de séquence (SIGSEGV du compilateur C0
+# embarqué, qui indexe ses sources par point de code). On balaie donc le
+# descripteur depuis l'octet 0 en comptant les têtes de séquence UTF-8, exactement
+# comme g5_emit_sous, puis on copie les k octets du point de code visé dans un
+# descripteur [tag=1][len=k][k octets]. L'ASCII (k=1) garde son comportement.
 fn g5_emit_idx($lbl: entier) -> entier {
+  $lscan = g5_next()              # boucle de balayage des points de code
+  $lfound = g5_next()             # point de code visé atteint
+  $loob = g5_next()               # hors bornes -> chaîne vide
+  $ld1 = g5_next()                # décodage : 1 octet
+  $ld2 = g5_next()                # décodage : 2 octets
+  $ld3 = g5_next()                # décodage : 3 octets (4 octets = fall-through)
+  $ldone = g5_next()              # fin du décodage (k dans x18)
+  $lcopy = g5_next()              # copie des k octets
+  $lcopyd = g5_next()             # fin de copie
   g5_mark($lbl)
   g5_emit(g5_masktag(6, 0))
   g5_emit(ldroff(2, 6, 0))
   g5_emit(cmpi(2, 2))
   g5_branch(100, $lbl + 1)
-  # G5-TAS : un caractère est un descripteur immuable de 24 octets ; on le
-  # construit au plus une fois par valeur d'octet (table @0x60001300).
-  g5_emit(g5_asr3(7, 1))
-  g5_emit(addi(5, 7, 16))
-  g5_emit(ldrbr(4, 6, 5))
-  g5_load(12, 1610625024)
-  g5_emit(g5_lsl3(4, 4))
-  g5_emit(addr(12, 12, 4))
-  g5_emit(ldroff(0, 12, 0))
-  g5_emit(cmpi(0, 0))
-  g5_branch(101, $lbl + 2)
+  # --- chaîne : indexation par point de code ---
+  g5_emit(g5_asr3(7, 1))          # x7 = i (indice point de code)
+  g5_emit(ldroff(11, 6, 8))       # x11 = nombre d'octets du descripteur
+  g5_emit(movz(14, 0))            # x14 = ci (point de code courant)
+  g5_emit(movz(15, 0))            # x15 = bo (décalage octet courant)
+  g5_mark($lscan)
+  g5_emit(cmpr(15, 11))           # bo >= len ?
+  g5_branch(110, $loob)           # hors bornes
+  # Décodage de la longueur k du point de code à bo (motif de g5_emit_sous).
+  g5_emit(addi(19, 15, 16))       # les données commencent à +16
+  g5_emit(ldrbr(17, 6, 19))       # octet de tête
+  g5_emit(cmpi(17, 128))
+  g5_branch(111, $ld1)            # < 128 -> 1 octet
+  g5_emit(cmpi(17, 224))
+  g5_branch(111, $ld2)            # < 224 -> 2 octets
+  g5_emit(cmpi(17, 240))
+  g5_branch(111, $ld3)            # < 240 -> 3 octets
+  g5_emit(movz(18, 4))            # sinon 4 octets
+  g5_branch(0, $ldone)
+  g5_mark($ld1); g5_emit(movz(18, 1)); g5_branch(0, $ldone)
+  g5_mark($ld2); g5_emit(movz(18, 2)); g5_branch(0, $ldone)
+  g5_mark($ld3); g5_emit(movz(18, 3))
+  g5_mark($ldone)
+  g5_emit(cmpr(14, 7))            # ci == i ?
+  g5_branch(100, $lfound)         # trouvé : x15=bo, x18=k
+  g5_emit(addr(15, 15, 18))       # bo += k
+  g5_emit(addi(14, 14, 1))        # ci += 1
+  g5_branch(0, $lscan)
+  g5_mark($lfound)
+  # Allocation d'un descripteur [tag=1][len=k][k octets de données].
+  g5_load(0, 24)
+  g5_alloc_inline()               # x0 = nouveau descripteur (clobber x1,x2,x9)
+  g5_emit(orrr(3, 31, 0))         # x3 = descripteur
+  g5_emit(movz(4, 1))
+  g5_emit(stroff(4, 3, 0))        # tag = 1
+  g5_emit(orrr(4, 31, 18))
+  g5_emit(stroff(4, 3, 8))        # len = k (octets)
+  g5_emit(movz(16, 0))            # x16 = j
+  g5_mark($lcopy)
+  g5_emit(cmpr(16, 18))
+  g5_branch(110, $lcopyd)         # j >= k -> copie terminée
+  g5_emit(addr(19, 15, 16))       # x19 = bo + j
+  g5_emit(addi(19, 19, 16))       # +16 (début des données)
+  g5_emit(ldrbr(17, 6, 19))       # octet source
+  g5_emit(addi(4, 16, 16))        # déstination = j + 16
+  g5_emit(strbr(17, 3, 4))        # octet destination
+  g5_emit(addi(16, 16, 1))
+  g5_branch(0, $lcopy)
+  g5_mark($lcopyd)
+  g5_emit(g5_tag1(0, 3))          # x0 = descripteur | 1
+  g5_emit(RET_I())
+  g5_mark($loob)
+  # Hors bornes : chaîne vide (comme sous_chaine sur un intervalle invalide).
   g5_load(0, 24)
   g5_alloc_inline()
   g5_emit(orrr(3, 31, 0))
   g5_emit(movz(4, 1))
-  g5_emit(stroff(4, 3, 0))
-  g5_emit(movz(4, 1))
-  g5_emit(stroff(4, 3, 8))
-  g5_emit(addi(5, 7, 16))
-  g5_emit(ldrbr(4, 6, 5))
-  g5_emit(strbio(4, 3, 16))
-  g5_emit(stroff(3, 12, 0))
-  g5_mark($lbl + 2)
-  g5_emit(g5_tag1(0, 0))
+  g5_emit(stroff(4, 3, 0))        # tag = 1
+  g5_emit(movz(4, 0))
+  g5_emit(stroff(4, 3, 8))        # len = 0
+  g5_emit(g5_tag1(0, 3))
   g5_emit(RET_I())
   g5_mark($lbl + 1)
   # SH12 : cap < 0 => TABLE (lecture de la valeur associee a la cle x1).
@@ -8435,8 +8511,10 @@ $k = 0
 tant_que ($k < 10) { g5_next(); $k = $k + 1 }
 $g5_idxl = g5_next()
 $k = 0
-# G5-TYPE : g5_emit_idx utilise $lbl, +1 (liste), +2 (fin chaîne) et,
-# depuis SH12, +3..+7 (recherche par cle dans une table). Réserver trop
+# G5-TYPE : g5_emit_idx utilise $lbl, +1 (liste) et, depuis SH12,
+# +3..+7 (recherche par cle dans une table). +2 (ex-"fin chaîne") est
+# libre depuis le passage au scan UTF-8 ; les labels du scan sont pris
+# par g5_next() en tête de fonction. Réserver trop
 # peu de labels faisait de $g5_chl un DOUBLON d'un label interne de idx :
 # chaque appel à `chaine()` atterrissait sur la queue de idx (`orr #1`),
 # taguant un entier comme chaîne avant concaténation. Sept labels requis.
