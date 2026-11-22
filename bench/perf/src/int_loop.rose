@@ -1,0 +1,9 @@
+# Domaine 1 — arithmétique entière machine : somme 1..1_000_000
+$s = 0
+$d = temps()
+pour i de 1 vers 1000001 {   
+    $s = $s + i
+}
+$f = temps()
+>> "RESULT:" + chaine($s)
+>> "INTERNAL_NS:" + chaine($f - $d)

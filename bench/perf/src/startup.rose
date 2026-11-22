@@ -1,0 +1,5 @@
+# Domaine 13 — démarrage : programme minimal, mesure le coût processus + parsing + JIT
+$d = temps()
+$f = temps()
+>> "RESULT:0"
+>> "INTERNAL_NS:" + chaine($f - $d)

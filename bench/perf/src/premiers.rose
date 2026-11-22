@@ -1,0 +1,20 @@
+# Domaine 4 — comptage des premiers < 50_000 par division par les impairs
+fn est_premier(n: entier) -> booleen {
+    si (n < 2) { retour faux }
+    si (n == 2) { retour vrai }
+    si (n % 2 == 0) { retour faux }
+    $j = 3
+    tant_que ($j * $j <= n) {
+        si (n % $j == 0) { retour faux }
+        $j = $j + 2
+    }
+    retour vrai
+}
+$c = 0
+$d = temps()
+pour k de 2 vers 50000 {     
+    si (est_premier(k)) { $c = $c + 1 }
+}
+$f = temps()
+>> "RESULT:" + chaine($c)
+>> "INTERNAL_NS:" + chaine($f - $d)

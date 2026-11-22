@@ -1,0 +1,10 @@
+# Domaine 2 — fib(35) récursif naïf
+fn fib(n: entier) -> entier {
+    si (n < 2) { retour n }
+    retour fib(n - 1) + fib(n - 2)
+}
+$d = temps()
+$r = fib(35)
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

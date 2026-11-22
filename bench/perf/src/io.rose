@@ -1,0 +1,9 @@
+# Domaine 12 — E/S : lire 10 Mio puis réécrire (lire_texte utilise le chemin mmap du moteur)
+# argument(0) = fichier d'entrée, argument(1) = fichier de sortie
+$d = temps()
+$s = lire_texte(argument(0))
+ecrire_texte(argument(1), $s)
+$n = longueur($s)
+$f = temps()
+>> "RESULT:" + chaine($n)
+>> "INTERNAL_NS:" + chaine($f - $d)

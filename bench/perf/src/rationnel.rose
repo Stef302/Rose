@@ -1,0 +1,9 @@
+# Domaine 8 — rationnels exacts : somme 1/k pour k = 2..200
+$r = 1 / 2
+$d = temps()
+pour k de 3 vers 201 {       
+    $r = $r + 1 / k
+}
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

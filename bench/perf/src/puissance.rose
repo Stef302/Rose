@@ -1,0 +1,6 @@
+# Domaine 7 — bigint : 2^20000 (exponentiation rapide via la primitive Rose)
+$d = temps()
+$p = puissance(2, 20000)
+$f = temps()
+>> "RESULT:" + chaine($p)
+>> "INTERNAL_NS:" + chaine($f - $d)

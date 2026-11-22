@@ -1,0 +1,9 @@
+# Domaine 9 — chaînes : 20_000 concaténations s = s + "x"
+$s = ""
+$d = temps()
+pour i de 1 vers 20001 {     
+    $s = $s + "x"
+}
+$f = temps()
+>> "RESULT:" + chaine(longueur($s))
+>> "INTERNAL_NS:" + chaine($f - $d)

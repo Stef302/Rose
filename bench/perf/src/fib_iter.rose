@@ -1,0 +1,12 @@
+# Domaine 3 — fib itératif modulo 1_000_000_007, 1_000_000 tours
+$a = 0
+$b = 1
+$d = temps()
+pour i de 1 vers 1000001 {   
+    $t = ($a + $b) % 1000000007
+    $a = $b
+    $b = $t
+}
+$f = temps()
+>> "RESULT:" + chaine($a)
+>> "INTERNAL_NS:" + chaine($f - $d)

@@ -1,0 +1,13 @@
+# Domaine 6 — PGCD de deux entiers de 1000 chiffres (primitive Rose = Stein)
+# a = "1234567890"*100, b = "9876543210"*100 — construits hors zone chronométrée.
+$a = 0
+$b = 0
+pour i de 1 vers 101 {       
+    $a = $a * 10000000000 + 1234567890
+    $b = $b * 10000000000 + 9876543210
+}
+$d = temps()
+$g = pgcd($a, $b)
+$f = temps()
+>> "RESULT:" + chaine($g)
+>> "INTERNAL_NS:" + chaine($f - $d)

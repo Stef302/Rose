@@ -1,0 +1,9 @@
+# Domaine 5 — bigint : 3000! par produit itératif (même algorithme partout)
+$r = 1
+$d = temps()
+pour k de 2 vers 3001 {      
+    $r = $r * k
+}
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

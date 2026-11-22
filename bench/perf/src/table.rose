@@ -1,0 +1,13 @@
+# Domaine 11 — tables : 3_000 insertions + 3_000 recherches
+$t = table()
+$d = temps()
+pour i de 1 vers 3001 {      
+    inserer($t, i, i * i)
+}
+$c = 0
+pour j de 1 vers 3001 {
+    si (cle_existe($t, j)) { $c = $c + 1 }
+}
+$f = temps()
+>> "RESULT:" + chaine($c)
+>> "INTERNAL_NS:" + chaine($f - $d)

@@ -1,0 +1,2952 @@
+{
+  "meta": {
+    "start": "2026-11-22T18:45:25Z",
+    "rose": "/home/clausake/Stefan/ROSE/rose/target/release/rose",
+    "rose_sha256_before": "21ed57e4be7c765f09635a3600dfc0fb1e540bb05d5ea924503a13bf1cb980b2",
+    "pin": "15",
+    "trials": 9,
+    "input_sha256": "53ad9e076542dab3947229f91ce5d57dc833967f9849817ed326b1d062f01976",
+    "end": "2026-11-22T18:45:39Z",
+    "rose_sha256_after": "21ed57e4be7c765f09635a3600dfc0fb1e540bb05d5ea924503a13bf1cb980b2"
+  },
+  "data": {
+    "int_loop": {
+      "rose": [
+        {
+          "wall_ns": 3524039,
+          "cpu_ns": 3564000,
+          "rss_kb": 12344,
+          "internal_ns": 1431356
+        },
+        {
+          "wall_ns": 4018565,
+          "cpu_ns": 4081999,
+          "rss_kb": 12376,
+          "internal_ns": 1434300
+        },
+        {
+          "wall_ns": 4349972,
+          "cpu_ns": 4404999,
+          "rss_kb": 12408,
+          "internal_ns": 1428124
+        },
+        {
+          "wall_ns": 3774502,
+          "cpu_ns": 3816000,
+          "rss_kb": 12436,
+          "internal_ns": 1434541
+        },
+        {
+          "wall_ns": 5010627,
+          "cpu_ns": 5030000,
+          "rss_kb": 12468,
+          "internal_ns": 1428876
+        },
+        {
+          "wall_ns": 5224866,
+          "cpu_ns": 5268000,
+          "rss_kb": 12500,
+          "internal_ns": 1433868
+        },
+        {
+          "wall_ns": 4374084,
+          "cpu_ns": 4406000,
+          "rss_kb": 12524,
+          "internal_ns": 1427852
+        },
+        {
+          "wall_ns": 4366948,
+          "cpu_ns": 4425999,
+          "rss_kb": 12556,
+          "internal_ns": 1434252
+        },
+        {
+          "wall_ns": 5135907,
+          "cpu_ns": 5136999,
+          "rss_kb": 12788,
+          "internal_ns": 1427596
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 1999322,
+          "cpu_ns": 2042000,
+          "rss_kb": 12344,
+          "internal_ns": 516078
+        },
+        {
+          "wall_ns": 2903945,
+          "cpu_ns": 2943000,
+          "rss_kb": 12376,
+          "internal_ns": 512927
+        },
+        {
+          "wall_ns": 2493434,
+          "cpu_ns": 2529999,
+          "rss_kb": 12408,
+          "internal_ns": 516319
+        },
+        {
+          "wall_ns": 3583030,
+          "cpu_ns": 3695999,
+          "rss_kb": 12436,
+          "internal_ns": 265120
+        },
+        {
+          "wall_ns": 3530487,
+          "cpu_ns": 3558000,
+          "rss_kb": 12468,
+          "internal_ns": 513375
+        },
+        {
+          "wall_ns": 3281655,
+          "cpu_ns": 3309999,
+          "rss_kb": 12496,
+          "internal_ns": 513710
+        },
+        {
+          "wall_ns": 2535801,
+          "cpu_ns": 2552000,
+          "rss_kb": 12524,
+          "internal_ns": 513455
+        },
+        {
+          "wall_ns": 3231751,
+          "cpu_ns": 3261999,
+          "rss_kb": 12556,
+          "internal_ns": 519694
+        },
+        {
+          "wall_ns": 3262663,
+          "cpu_ns": 3280000,
+          "rss_kb": 12788,
+          "internal_ns": 262063
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 1631579,
+          "cpu_ns": 1671999,
+          "rss_kb": 12344,
+          "internal_ns": 287839
+        },
+        {
+          "wall_ns": 1950715,
+          "cpu_ns": 2037999,
+          "rss_kb": 12376,
+          "internal_ns": 256495
+        },
+        {
+          "wall_ns": 1848683,
+          "cpu_ns": 1888000,
+          "rss_kb": 12404,
+          "internal_ns": 256511
+        },
+        {
+          "wall_ns": 2653993,
+          "cpu_ns": 2859999,
+          "rss_kb": 12436,
+          "internal_ns": 256511
+        },
+        {
+          "wall_ns": 2787961,
+          "cpu_ns": 2813000,
+          "rss_kb": 12468,
+          "internal_ns": 256511
+        },
+        {
+          "wall_ns": 2707401,
+          "cpu_ns": 2751000,
+          "rss_kb": 12496,
+          "internal_ns": 256495
+        },
+        {
+          "wall_ns": 2849208,
+          "cpu_ns": 2859999,
+          "rss_kb": 12524,
+          "internal_ns": 256495
+        },
+        {
+          "wall_ns": 2809240,
+          "cpu_ns": 2840000,
+          "rss_kb": 12556,
+          "internal_ns": 256480
+        },
+        {
+          "wall_ns": 3208215,
+          "cpu_ns": 3229000,
+          "rss_kb": 12788,
+          "internal_ns": 256447
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 60063823,
+          "cpu_ns": 59874000,
+          "rss_kb": 12344,
+          "internal_ns": 49821883
+        },
+        {
+          "wall_ns": 59297057,
+          "cpu_ns": 59093000,
+          "rss_kb": 12376,
+          "internal_ns": 48677197
+        },
+        {
+          "wall_ns": 59430512,
+          "cpu_ns": 59327000,
+          "rss_kb": 12404,
+          "internal_ns": 47575633
+        },
+        {
+          "wall_ns": 58248980,
+          "cpu_ns": 58271000,
+          "rss_kb": 12436,
+          "internal_ns": 46478259
+        },
+        {
+          "wall_ns": 59637616,
+          "cpu_ns": 59502000,
+          "rss_kb": 12468,
+          "internal_ns": 48589662
+        },
+        {
+          "wall_ns": 60190191,
+          "cpu_ns": 60144000,
+          "rss_kb": 12496,
+          "internal_ns": 48641406
+        },
+        {
+          "wall_ns": 58337012,
+          "cpu_ns": 58203999,
+          "rss_kb": 12524,
+          "internal_ns": 47443633
+        },
+        {
+          "wall_ns": 59506177,
+          "cpu_ns": 59384000,
+          "rss_kb": 12556,
+          "internal_ns": 48510366
+        },
+        {
+          "wall_ns": 57762741,
+          "cpu_ns": 57605000,
+          "rss_kb": 12792,
+          "internal_ns": 46552259
+        }
+      ]
+    },
+    "fib_rec": {
+      "rose": [
+        {
+          "wall_ns": 14294698,
+          "cpu_ns": 14339000,
+          "rss_kb": 12344,
+          "internal_ns": 11602817
+        },
+        {
+          "wall_ns": 15172647,
+          "cpu_ns": 15234999,
+          "rss_kb": 12376,
+          "internal_ns": 11741968
+        },
+        {
+          "wall_ns": 14491865,
+          "cpu_ns": 14547999,
+          "rss_kb": 12408,
+          "internal_ns": 11739328
+        },
+        {
+          "wall_ns": 14391865,
+          "cpu_ns": 14438999,
+          "rss_kb": 12436,
+          "internal_ns": 11673537
+        },
+        {
+          "wall_ns": 13936923,
+          "cpu_ns": 13994000,
+          "rss_kb": 12468,
+          "internal_ns": 11513825
+        },
+        {
+          "wall_ns": 15934454,
+          "cpu_ns": 15968000,
+          "rss_kb": 12500,
+          "internal_ns": 11953296
+        },
+        {
+          "wall_ns": 14680025,
+          "cpu_ns": 14715999,
+          "rss_kb": 12528,
+          "internal_ns": 11736497
+        },
+        {
+          "wall_ns": 15096024,
+          "cpu_ns": 15135000,
+          "rss_kb": 12556,
+          "internal_ns": 11831088
+        },
+        {
+          "wall_ns": 15003944,
+          "cpu_ns": 14927000,
+          "rss_kb": 12792,
+          "internal_ns": 11583841
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 15024520,
+          "cpu_ns": 15068999,
+          "rss_kb": 12344,
+          "internal_ns": 12533743
+        },
+        {
+          "wall_ns": 14211114,
+          "cpu_ns": 14254999,
+          "rss_kb": 12376,
+          "internal_ns": 12482063
+        },
+        {
+          "wall_ns": 14701929,
+          "cpu_ns": 14709000,
+          "rss_kb": 12412,
+          "internal_ns": 12741854
+        },
+        {
+          "wall_ns": 14218522,
+          "cpu_ns": 14243000,
+          "rss_kb": 12436,
+          "internal_ns": 12474926
+        },
+        {
+          "wall_ns": 15059671,
+          "cpu_ns": 15059000,
+          "rss_kb": 12468,
+          "internal_ns": 12503487
+        },
+        {
+          "wall_ns": 15447191,
+          "cpu_ns": 15450000,
+          "rss_kb": 12500,
+          "internal_ns": 12607582
+        },
+        {
+          "wall_ns": 15175143,
+          "cpu_ns": 15182000,
+          "rss_kb": 12532,
+          "internal_ns": 12537566
+        },
+        {
+          "wall_ns": 14792153,
+          "cpu_ns": 14799000,
+          "rss_kb": 12560,
+          "internal_ns": 12573358
+        },
+        {
+          "wall_ns": 16107333,
+          "cpu_ns": 16141000,
+          "rss_kb": 12792,
+          "internal_ns": 12468350
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 10509812,
+          "cpu_ns": 10542000,
+          "rss_kb": 12344,
+          "internal_ns": 8946392
+        },
+        {
+          "wall_ns": 10240437,
+          "cpu_ns": 10280000,
+          "rss_kb": 12376,
+          "internal_ns": 8906120
+        },
+        {
+          "wall_ns": 11501313,
+          "cpu_ns": 11532000,
+          "rss_kb": 12408,
+          "internal_ns": 8906457
+        },
+        {
+          "wall_ns": 10456260,
+          "cpu_ns": 10453000,
+          "rss_kb": 12436,
+          "internal_ns": 8960968
+        },
+        {
+          "wall_ns": 11534929,
+          "cpu_ns": 11574000,
+          "rss_kb": 12472,
+          "internal_ns": 8910232
+        },
+        {
+          "wall_ns": 11201730,
+          "cpu_ns": 11227999,
+          "rss_kb": 12500,
+          "internal_ns": 8915464
+        },
+        {
+          "wall_ns": 10523988,
+          "cpu_ns": 10547000,
+          "rss_kb": 12524,
+          "internal_ns": 8938168
+        },
+        {
+          "wall_ns": 11785393,
+          "cpu_ns": 11807999,
+          "rss_kb": 12560,
+          "internal_ns": 8916200
+        },
+        {
+          "wall_ns": 12288191,
+          "cpu_ns": 12291000,
+          "rss_kb": 12792,
+          "internal_ns": 8937720
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 600982547,
+          "cpu_ns": 600708999,
+          "rss_kb": 12344,
+          "internal_ns": 590000385
+        },
+        {
+          "wall_ns": 601491746,
+          "cpu_ns": 601447000,
+          "rss_kb": 12376,
+          "internal_ns": 590456415
+        },
+        {
+          "wall_ns": 602256848,
+          "cpu_ns": 601868000,
+          "rss_kb": 12408,
+          "internal_ns": 590799183
+        },
+        {
+          "wall_ns": 601634802,
+          "cpu_ns": 601447000,
+          "rss_kb": 12436,
+          "internal_ns": 590288688
+        },
+        {
+          "wall_ns": 601840033,
+          "cpu_ns": 601671000,
+          "rss_kb": 12472,
+          "internal_ns": 589997169
+        },
+        {
+          "wall_ns": 602318784,
+          "cpu_ns": 602180000,
+          "rss_kb": 12500,
+          "internal_ns": 589776626
+        },
+        {
+          "wall_ns": 601747681,
+          "cpu_ns": 601590000,
+          "rss_kb": 12524,
+          "internal_ns": 590319280
+        },
+        {
+          "wall_ns": 601819249,
+          "cpu_ns": 601656000,
+          "rss_kb": 12556,
+          "internal_ns": 589733841
+        },
+        {
+          "wall_ns": 603630541,
+          "cpu_ns": 603462000,
+          "rss_kb": 12792,
+          "internal_ns": 590597760
+        }
+      ]
+    },
+    "fib_iter": {
+      "rose": [
+        {
+          "wall_ns": 6306623,
+          "cpu_ns": 6350000,
+          "rss_kb": 12344,
+          "internal_ns": 3624902
+        },
+        {
+          "wall_ns": 6277759,
+          "cpu_ns": 6333000,
+          "rss_kb": 12380,
+          "internal_ns": 3607590
+        },
+        {
+          "wall_ns": 7341725,
+          "cpu_ns": 7379000,
+          "rss_kb": 12412,
+          "internal_ns": 3601430
+        },
+        {
+          "wall_ns": 6321151,
+          "cpu_ns": 6366000,
+          "rss_kb": 12440,
+          "internal_ns": 3602950
+        },
+        {
+          "wall_ns": 6303071,
+          "cpu_ns": 6345000,
+          "rss_kb": 12468,
+          "internal_ns": 3605542
+        },
+        {
+          "wall_ns": 6618686,
+          "cpu_ns": 6546000,
+          "rss_kb": 12504,
+          "internal_ns": 3617814
+        },
+        {
+          "wall_ns": 7258236,
+          "cpu_ns": 7280999,
+          "rss_kb": 12532,
+          "internal_ns": 3605495
+        },
+        {
+          "wall_ns": 7885835,
+          "cpu_ns": 7908000,
+          "rss_kb": 12560,
+          "internal_ns": 3603910
+        },
+        {
+          "wall_ns": 6263807,
+          "cpu_ns": 6314000,
+          "rss_kb": 12792,
+          "internal_ns": 3607191
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 3559655,
+          "cpu_ns": 3591999,
+          "rss_kb": 12344,
+          "internal_ns": 2055131
+        },
+        {
+          "wall_ns": 4250917,
+          "cpu_ns": 4319999,
+          "rss_kb": 12380,
+          "internal_ns": 2062202
+        },
+        {
+          "wall_ns": 3842646,
+          "cpu_ns": 3923999,
+          "rss_kb": 12412,
+          "internal_ns": 2061754
+        },
+        {
+          "wall_ns": 3691238,
+          "cpu_ns": 3701000,
+          "rss_kb": 12440,
+          "internal_ns": 2057306
+        },
+        {
+          "wall_ns": 3685606,
+          "cpu_ns": 3722000,
+          "rss_kb": 12472,
+          "internal_ns": 2056107
+        },
+        {
+          "wall_ns": 5161139,
+          "cpu_ns": 5235000,
+          "rss_kb": 12504,
+          "internal_ns": 2064043
+        },
+        {
+          "wall_ns": 3959782,
+          "cpu_ns": 3969999,
+          "rss_kb": 12552,
+          "internal_ns": 2060843
+        },
+        {
+          "wall_ns": 5016019,
+          "cpu_ns": 5038000,
+          "rss_kb": 12560,
+          "internal_ns": 2057483
+        },
+        {
+          "wall_ns": 4221413,
+          "cpu_ns": 4248999,
+          "rss_kb": 12588,
+          "internal_ns": 2059658
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 3373575,
+          "cpu_ns": 3410000,
+          "rss_kb": 12344,
+          "internal_ns": 2081578
+        },
+        {
+          "wall_ns": 3759286,
+          "cpu_ns": 3810000,
+          "rss_kb": 12380,
+          "internal_ns": 2080587
+        },
+        {
+          "wall_ns": 3774134,
+          "cpu_ns": 3837000,
+          "rss_kb": 12412,
+          "internal_ns": 2093162
+        },
+        {
+          "wall_ns": 3526535,
+          "cpu_ns": 3535999,
+          "rss_kb": 12440,
+          "internal_ns": 2083674
+        },
+        {
+          "wall_ns": 3525062,
+          "cpu_ns": 3547000,
+          "rss_kb": 12472,
+          "internal_ns": 2083819
+        },
+        {
+          "wall_ns": 4993570,
+          "cpu_ns": 5015000,
+          "rss_kb": 12504,
+          "internal_ns": 2083131
+        },
+        {
+          "wall_ns": 3574903,
+          "cpu_ns": 3611999,
+          "rss_kb": 12532,
+          "internal_ns": 2088299
+        },
+        {
+          "wall_ns": 4840387,
+          "cpu_ns": 4860000,
+          "rss_kb": 12560,
+          "internal_ns": 2081643
+        },
+        {
+          "wall_ns": 4003493,
+          "cpu_ns": 4032000,
+          "rss_kb": 12588,
+          "internal_ns": 2076346
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 90040926,
+          "cpu_ns": 89777000,
+          "rss_kb": 12344,
+          "internal_ns": 78576237
+        },
+        {
+          "wall_ns": 85266043,
+          "cpu_ns": 85212999,
+          "rss_kb": 12380,
+          "internal_ns": 74136713
+        },
+        {
+          "wall_ns": 88345491,
+          "cpu_ns": 88332000,
+          "rss_kb": 12412,
+          "internal_ns": 77614480
+        },
+        {
+          "wall_ns": 84103167,
+          "cpu_ns": 83983000,
+          "rss_kb": 12436,
+          "internal_ns": 73225787
+        },
+        {
+          "wall_ns": 86444968,
+          "cpu_ns": 86272000,
+          "rss_kb": 12472,
+          "internal_ns": 75635029
+        },
+        {
+          "wall_ns": 85942842,
+          "cpu_ns": 85947000,
+          "rss_kb": 12504,
+          "internal_ns": 73323899
+        },
+        {
+          "wall_ns": 84790236,
+          "cpu_ns": 84765000,
+          "rss_kb": 12532,
+          "internal_ns": 73273915
+        },
+        {
+          "wall_ns": 86013113,
+          "cpu_ns": 85872999,
+          "rss_kb": 12560,
+          "internal_ns": 73925066
+        },
+        {
+          "wall_ns": 86308056,
+          "cpu_ns": 86172000,
+          "rss_kb": 12588,
+          "internal_ns": 74191689
+        }
+      ]
+    },
+    "premiers": {
+      "rose": [
+        {
+          "wall_ns": 4413188,
+          "cpu_ns": 4465000,
+          "rss_kb": 12344,
+          "internal_ns": 1498188
+        },
+        {
+          "wall_ns": 5220082,
+          "cpu_ns": 5307999,
+          "rss_kb": 12380,
+          "internal_ns": 1485388
+        },
+        {
+          "wall_ns": 5226658,
+          "cpu_ns": 5275000,
+          "rss_kb": 12416,
+          "internal_ns": 1479100
+        },
+        {
+          "wall_ns": 4171828,
+          "cpu_ns": 4214000,
+          "rss_kb": 12444,
+          "internal_ns": 1475836
+        },
+        {
+          "wall_ns": 5628593,
+          "cpu_ns": 5687999,
+          "rss_kb": 12472,
+          "internal_ns": 1476956
+        },
+        {
+          "wall_ns": 5403538,
+          "cpu_ns": 5426000,
+          "rss_kb": 12504,
+          "internal_ns": 1474412
+        },
+        {
+          "wall_ns": 5604305,
+          "cpu_ns": 5634000,
+          "rss_kb": 12536,
+          "internal_ns": 1485532
+        },
+        {
+          "wall_ns": 6208319,
+          "cpu_ns": 6223999,
+          "rss_kb": 12560,
+          "internal_ns": 1478956
+        },
+        {
+          "wall_ns": 4844227,
+          "cpu_ns": 4872000,
+          "rss_kb": 12588,
+          "internal_ns": 1510460
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 2506553,
+          "cpu_ns": 2538999,
+          "rss_kb": 12344,
+          "internal_ns": 1028429
+        },
+        {
+          "wall_ns": 2893672,
+          "cpu_ns": 2921999,
+          "rss_kb": 12380,
+          "internal_ns": 1031693
+        },
+        {
+          "wall_ns": 2877000,
+          "cpu_ns": 2937000,
+          "rss_kb": 12416,
+          "internal_ns": 1032221
+        },
+        {
+          "wall_ns": 3433238,
+          "cpu_ns": 3460000,
+          "rss_kb": 12444,
+          "internal_ns": 1033070
+        },
+        {
+          "wall_ns": 3267336,
+          "cpu_ns": 3292000,
+          "rss_kb": 12472,
+          "internal_ns": 1033181
+        },
+        {
+          "wall_ns": 4102853,
+          "cpu_ns": 4124000,
+          "rss_kb": 12504,
+          "internal_ns": 1058445
+        },
+        {
+          "wall_ns": 3610182,
+          "cpu_ns": 3630000,
+          "rss_kb": 12536,
+          "internal_ns": 1033918
+        },
+        {
+          "wall_ns": 3888422,
+          "cpu_ns": 3905999,
+          "rss_kb": 12560,
+          "internal_ns": 1031821
+        },
+        {
+          "wall_ns": 3095896,
+          "cpu_ns": 3114999,
+          "rss_kb": 12588,
+          "internal_ns": 1032397
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 2457274,
+          "cpu_ns": 2503000,
+          "rss_kb": 12344,
+          "internal_ns": 942429
+        },
+        {
+          "wall_ns": 2546874,
+          "cpu_ns": 2585999,
+          "rss_kb": 12380,
+          "internal_ns": 946798
+        },
+        {
+          "wall_ns": 2488377,
+          "cpu_ns": 2541000,
+          "rss_kb": 12412,
+          "internal_ns": 946606
+        },
+        {
+          "wall_ns": 3118087,
+          "cpu_ns": 3140999,
+          "rss_kb": 12444,
+          "internal_ns": 944125
+        },
+        {
+          "wall_ns": 2739480,
+          "cpu_ns": 2768999,
+          "rss_kb": 12472,
+          "internal_ns": 942077
+        },
+        {
+          "wall_ns": 3752662,
+          "cpu_ns": 3781000,
+          "rss_kb": 12504,
+          "internal_ns": 946270
+        },
+        {
+          "wall_ns": 3911941,
+          "cpu_ns": 3943999,
+          "rss_kb": 12532,
+          "internal_ns": 946573
+        },
+        {
+          "wall_ns": 3639894,
+          "cpu_ns": 3658000,
+          "rss_kb": 12560,
+          "internal_ns": 945021
+        },
+        {
+          "wall_ns": 3547030,
+          "cpu_ns": 3579000,
+          "rss_kb": 12588,
+          "internal_ns": 945085
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 28376868,
+          "cpu_ns": 28400000,
+          "rss_kb": 12344,
+          "internal_ns": 18044783
+        },
+        {
+          "wall_ns": 30298942,
+          "cpu_ns": 30268000,
+          "rss_kb": 12380,
+          "internal_ns": 18032560
+        },
+        {
+          "wall_ns": 28779315,
+          "cpu_ns": 28762999,
+          "rss_kb": 12416,
+          "internal_ns": 17960336
+        },
+        {
+          "wall_ns": 29669872,
+          "cpu_ns": 29677000,
+          "rss_kb": 12444,
+          "internal_ns": 18026256
+        },
+        {
+          "wall_ns": 29383649,
+          "cpu_ns": 29369999,
+          "rss_kb": 12472,
+          "internal_ns": 17995999
+        },
+        {
+          "wall_ns": 29664401,
+          "cpu_ns": 29640000,
+          "rss_kb": 12504,
+          "internal_ns": 18008736
+        },
+        {
+          "wall_ns": 29429729,
+          "cpu_ns": 29386000,
+          "rss_kb": 12532,
+          "internal_ns": 17997439
+        },
+        {
+          "wall_ns": 29497681,
+          "cpu_ns": 29487000,
+          "rss_kb": 12560,
+          "internal_ns": 18004816
+        },
+        {
+          "wall_ns": 28959795,
+          "cpu_ns": 28969000,
+          "rss_kb": 12588,
+          "internal_ns": 18012480
+        }
+      ]
+    },
+    "factorial": {
+      "rose": [
+        {
+          "wall_ns": 3367735,
+          "cpu_ns": 3398000,
+          "rss_kb": 12348,
+          "internal_ns": 458767
+        },
+        {
+          "wall_ns": 4632451,
+          "cpu_ns": 4627000,
+          "rss_kb": 12380,
+          "internal_ns": 553167
+        },
+        {
+          "wall_ns": 3797558,
+          "cpu_ns": 3856000,
+          "rss_kb": 12416,
+          "internal_ns": 506095
+        },
+        {
+          "wall_ns": 4421316,
+          "cpu_ns": 4434000,
+          "rss_kb": 12444,
+          "internal_ns": 477087
+        },
+        {
+          "wall_ns": 3768086,
+          "cpu_ns": 3829999,
+          "rss_kb": 12476,
+          "internal_ns": 468255
+        },
+        {
+          "wall_ns": 4262149,
+          "cpu_ns": 4275000,
+          "rss_kb": 12504,
+          "internal_ns": 479279
+        },
+        {
+          "wall_ns": 4065173,
+          "cpu_ns": 4084000,
+          "rss_kb": 12540,
+          "internal_ns": 464110
+        },
+        {
+          "wall_ns": 4678228,
+          "cpu_ns": 4698000,
+          "rss_kb": 12560,
+          "internal_ns": 459551
+        },
+        {
+          "wall_ns": 4008325,
+          "cpu_ns": 4026000,
+          "rss_kb": 12592,
+          "internal_ns": 457807
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 2142267,
+          "cpu_ns": 2203000,
+          "rss_kb": 12348,
+          "internal_ns": 403519
+        },
+        {
+          "wall_ns": 2821128,
+          "cpu_ns": 2859000,
+          "rss_kb": 12380,
+          "internal_ns": 416079
+        },
+        {
+          "wall_ns": 2245722,
+          "cpu_ns": 2264000,
+          "rss_kb": 12416,
+          "internal_ns": 410670
+        },
+        {
+          "wall_ns": 3086456,
+          "cpu_ns": 3098999,
+          "rss_kb": 12444,
+          "internal_ns": 411279
+        },
+        {
+          "wall_ns": 4145172,
+          "cpu_ns": 4168000,
+          "rss_kb": 12476,
+          "internal_ns": 410575
+        },
+        {
+          "wall_ns": 2798345,
+          "cpu_ns": 2809000,
+          "rss_kb": 12504,
+          "internal_ns": 409791
+        },
+        {
+          "wall_ns": 3244216,
+          "cpu_ns": 3257999,
+          "rss_kb": 12540,
+          "internal_ns": 412430
+        },
+        {
+          "wall_ns": 3521254,
+          "cpu_ns": 3539999,
+          "rss_kb": 12560,
+          "internal_ns": 414319
+        },
+        {
+          "wall_ns": 2619609,
+          "cpu_ns": 2642000,
+          "rss_kb": 12592,
+          "internal_ns": 411727
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 4174229,
+          "cpu_ns": 4225000,
+          "rss_kb": 12348,
+          "internal_ns": 2845880
+        },
+        {
+          "wall_ns": 5507121,
+          "cpu_ns": 5559000,
+          "rss_kb": 12380,
+          "internal_ns": 2848616
+        },
+        {
+          "wall_ns": 5310002,
+          "cpu_ns": 5367999,
+          "rss_kb": 12416,
+          "internal_ns": 2877896
+        },
+        {
+          "wall_ns": 5155666,
+          "cpu_ns": 5168000,
+          "rss_kb": 12448,
+          "internal_ns": 2876968
+        },
+        {
+          "wall_ns": 5618049,
+          "cpu_ns": 5645000,
+          "rss_kb": 12476,
+          "internal_ns": 2851961
+        },
+        {
+          "wall_ns": 4828803,
+          "cpu_ns": 4847000,
+          "rss_kb": 12504,
+          "internal_ns": 2852168
+        },
+        {
+          "wall_ns": 4482948,
+          "cpu_ns": 4511999,
+          "rss_kb": 12536,
+          "internal_ns": 2851017
+        },
+        {
+          "wall_ns": 5562529,
+          "cpu_ns": 5584000,
+          "rss_kb": 12564,
+          "internal_ns": 2849736
+        },
+        {
+          "wall_ns": 4653428,
+          "cpu_ns": 4676000,
+          "rss_kb": 12592,
+          "internal_ns": 2852632
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 14572297,
+          "cpu_ns": 14587000,
+          "rss_kb": 12348,
+          "internal_ns": 1225453
+        },
+        {
+          "wall_ns": 15647830,
+          "cpu_ns": 15654999,
+          "rss_kb": 12380,
+          "internal_ns": 1213564
+        },
+        {
+          "wall_ns": 15148472,
+          "cpu_ns": 15191000,
+          "rss_kb": 12416,
+          "internal_ns": 1239101
+        },
+        {
+          "wall_ns": 16035669,
+          "cpu_ns": 16030000,
+          "rss_kb": 12444,
+          "internal_ns": 1215997
+        },
+        {
+          "wall_ns": 17596816,
+          "cpu_ns": 17446000,
+          "rss_kb": 12476,
+          "internal_ns": 1217741
+        },
+        {
+          "wall_ns": 15267575,
+          "cpu_ns": 15262999,
+          "rss_kb": 12504,
+          "internal_ns": 1205645
+        },
+        {
+          "wall_ns": 15674454,
+          "cpu_ns": 15660000,
+          "rss_kb": 12536,
+          "internal_ns": 1234300
+        },
+        {
+          "wall_ns": 16006133,
+          "cpu_ns": 16000000,
+          "rss_kb": 12560,
+          "internal_ns": 1222941
+        },
+        {
+          "wall_ns": 15195719,
+          "cpu_ns": 15191000,
+          "rss_kb": 12592,
+          "internal_ns": 1202221
+        }
+      ]
+    },
+    "gcd": {
+      "rose": [
+        {
+          "wall_ns": 1955818,
+          "cpu_ns": 1993000,
+          "rss_kb": 12348,
+          "internal_ns": 5888
+        },
+        {
+          "wall_ns": 2226794,
+          "cpu_ns": 2284000,
+          "rss_kb": 12388,
+          "internal_ns": 5712
+        },
+        {
+          "wall_ns": 1857275,
+          "cpu_ns": 1878000,
+          "rss_kb": 12416,
+          "internal_ns": 5808
+        },
+        {
+          "wall_ns": 2808584,
+          "cpu_ns": 2840000,
+          "rss_kb": 12448,
+          "internal_ns": 5680
+        },
+        {
+          "wall_ns": 2597306,
+          "cpu_ns": 2688000,
+          "rss_kb": 12476,
+          "internal_ns": 6320
+        },
+        {
+          "wall_ns": 1875147,
+          "cpu_ns": 1896999,
+          "rss_kb": 12508,
+          "internal_ns": 5792
+        },
+        {
+          "wall_ns": 2653593,
+          "cpu_ns": 2665000,
+          "rss_kb": 12540,
+          "internal_ns": 5680
+        },
+        {
+          "wall_ns": 2988792,
+          "cpu_ns": 3031000,
+          "rss_kb": 12568,
+          "internal_ns": 5888
+        },
+        {
+          "wall_ns": 2265882,
+          "cpu_ns": 2290000,
+          "rss_kb": 12596,
+          "internal_ns": 6160
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 1506012,
+          "cpu_ns": 1536000,
+          "rss_kb": 12352,
+          "internal_ns": 2368
+        },
+        {
+          "wall_ns": 2721400,
+          "cpu_ns": 2781999,
+          "rss_kb": 12388,
+          "internal_ns": 2240
+        },
+        {
+          "wall_ns": 1539132,
+          "cpu_ns": 1563999,
+          "rss_kb": 12416,
+          "internal_ns": 2752
+        },
+        {
+          "wall_ns": 2490826,
+          "cpu_ns": 2515000,
+          "rss_kb": 12452,
+          "internal_ns": 2496
+        },
+        {
+          "wall_ns": 2448746,
+          "cpu_ns": 2513999,
+          "rss_kb": 12476,
+          "internal_ns": 3008
+        },
+        {
+          "wall_ns": 2776329,
+          "cpu_ns": 2809000,
+          "rss_kb": 12508,
+          "internal_ns": 2192
+        },
+        {
+          "wall_ns": 2573482,
+          "cpu_ns": 2602000,
+          "rss_kb": 12540,
+          "internal_ns": 2784
+        },
+        {
+          "wall_ns": 2651673,
+          "cpu_ns": 2683999,
+          "rss_kb": 12568,
+          "internal_ns": 2592
+        },
+        {
+          "wall_ns": 1954651,
+          "cpu_ns": 1974000,
+          "rss_kb": 12596,
+          "internal_ns": 2416
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 1579692,
+          "cpu_ns": 1627000,
+          "rss_kb": 12352,
+          "internal_ns": 7264
+        },
+        {
+          "wall_ns": 2475689,
+          "cpu_ns": 2526999,
+          "rss_kb": 12388,
+          "internal_ns": 7344
+        },
+        {
+          "wall_ns": 1527980,
+          "cpu_ns": 1555000,
+          "rss_kb": 12416,
+          "internal_ns": 7216
+        },
+        {
+          "wall_ns": 2226378,
+          "cpu_ns": 2251000,
+          "rss_kb": 12452,
+          "internal_ns": 7264
+        },
+        {
+          "wall_ns": 2758696,
+          "cpu_ns": 2833000,
+          "rss_kb": 12476,
+          "internal_ns": 7408
+        },
+        {
+          "wall_ns": 2500601,
+          "cpu_ns": 2522000,
+          "rss_kb": 12508,
+          "internal_ns": 7440
+        },
+        {
+          "wall_ns": 2507705,
+          "cpu_ns": 2525000,
+          "rss_kb": 12540,
+          "internal_ns": 7360
+        },
+        {
+          "wall_ns": 2334058,
+          "cpu_ns": 2364000,
+          "rss_kb": 12568,
+          "internal_ns": 7232
+        },
+        {
+          "wall_ns": 1777003,
+          "cpu_ns": 1802000,
+          "rss_kb": 12596,
+          "internal_ns": 7184
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 9766486,
+          "cpu_ns": 9826999,
+          "rss_kb": 12352,
+          "internal_ns": 2416
+        },
+        {
+          "wall_ns": 11593665,
+          "cpu_ns": 11578000,
+          "rss_kb": 12388,
+          "internal_ns": 2208
+        },
+        {
+          "wall_ns": 10267108,
+          "cpu_ns": 10260000,
+          "rss_kb": 12416,
+          "internal_ns": 2560
+        },
+        {
+          "wall_ns": 10423764,
+          "cpu_ns": 10425000,
+          "rss_kb": 12448,
+          "internal_ns": 2496
+        },
+        {
+          "wall_ns": 11639105,
+          "cpu_ns": 11675999,
+          "rss_kb": 12480,
+          "internal_ns": 2496
+        },
+        {
+          "wall_ns": 10962370,
+          "cpu_ns": 10953999,
+          "rss_kb": 12508,
+          "internal_ns": 2288
+        },
+        {
+          "wall_ns": 11007395,
+          "cpu_ns": 11004000,
+          "rss_kb": 12540,
+          "internal_ns": 2176
+        },
+        {
+          "wall_ns": 11540593,
+          "cpu_ns": 11519999,
+          "rss_kb": 12568,
+          "internal_ns": 2400
+        },
+        {
+          "wall_ns": 10489668,
+          "cpu_ns": 10507000,
+          "rss_kb": 12596,
+          "internal_ns": 2560
+        }
+      ]
+    },
+    "puissance": {
+      "rose": [
+        {
+          "wall_ns": 2174842,
+          "cpu_ns": 2214000,
+          "rss_kb": 12352,
+          "internal_ns": 12192
+        },
+        {
+          "wall_ns": 3440455,
+          "cpu_ns": 3479000,
+          "rss_kb": 12392,
+          "internal_ns": 14944
+        },
+        {
+          "wall_ns": 2574665,
+          "cpu_ns": 2581000,
+          "rss_kb": 12420,
+          "internal_ns": 12864
+        },
+        {
+          "wall_ns": 3433142,
+          "cpu_ns": 3470000,
+          "rss_kb": 12452,
+          "internal_ns": 15264
+        },
+        {
+          "wall_ns": 3341447,
+          "cpu_ns": 3392000,
+          "rss_kb": 12480,
+          "internal_ns": 16112
+        },
+        {
+          "wall_ns": 3530166,
+          "cpu_ns": 3548000,
+          "rss_kb": 12512,
+          "internal_ns": 12240
+        },
+        {
+          "wall_ns": 3969462,
+          "cpu_ns": 3562000,
+          "rss_kb": 12540,
+          "internal_ns": 12048
+        },
+        {
+          "wall_ns": 2948072,
+          "cpu_ns": 2976999,
+          "rss_kb": 12568,
+          "internal_ns": 13663
+        },
+        {
+          "wall_ns": 3614422,
+          "cpu_ns": 3632000,
+          "rss_kb": 12596,
+          "internal_ns": 13328
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 1872827,
+          "cpu_ns": 1913000,
+          "rss_kb": 12352,
+          "internal_ns": 7344
+        },
+        {
+          "wall_ns": 2506825,
+          "cpu_ns": 2524000,
+          "rss_kb": 12388,
+          "internal_ns": 10256
+        },
+        {
+          "wall_ns": 1741627,
+          "cpu_ns": 1769000,
+          "rss_kb": 12420,
+          "internal_ns": 8656
+        },
+        {
+          "wall_ns": 2114027,
+          "cpu_ns": 2157000,
+          "rss_kb": 12452,
+          "internal_ns": 8208
+        },
+        {
+          "wall_ns": 3216887,
+          "cpu_ns": 3224999,
+          "rss_kb": 12480,
+          "internal_ns": 7680
+        },
+        {
+          "wall_ns": 1739995,
+          "cpu_ns": 1764999,
+          "rss_kb": 12508,
+          "internal_ns": 7984
+        },
+        {
+          "wall_ns": 2962232,
+          "cpu_ns": 2989000,
+          "rss_kb": 12540,
+          "internal_ns": 11232
+        },
+        {
+          "wall_ns": 2223818,
+          "cpu_ns": 2232999,
+          "rss_kb": 12572,
+          "internal_ns": 8096
+        },
+        {
+          "wall_ns": 3061224,
+          "cpu_ns": 3075999,
+          "rss_kb": 12596,
+          "internal_ns": 7936
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 1863483,
+          "cpu_ns": 1908000,
+          "rss_kb": 12352,
+          "internal_ns": 276671
+        },
+        {
+          "wall_ns": 1946747,
+          "cpu_ns": 1993000,
+          "rss_kb": 12388,
+          "internal_ns": 267647
+        },
+        {
+          "wall_ns": 1595708,
+          "cpu_ns": 1627000,
+          "rss_kb": 12416,
+          "internal_ns": 267087
+        },
+        {
+          "wall_ns": 1866571,
+          "cpu_ns": 1893000,
+          "rss_kb": 12452,
+          "internal_ns": 267487
+        },
+        {
+          "wall_ns": 2079434,
+          "cpu_ns": 2118000,
+          "rss_kb": 12480,
+          "internal_ns": 270816
+        },
+        {
+          "wall_ns": 1826011,
+          "cpu_ns": 1852000,
+          "rss_kb": 12508,
+          "internal_ns": 268064
+        },
+        {
+          "wall_ns": 2589929,
+          "cpu_ns": 2616000,
+          "rss_kb": 12540,
+          "internal_ns": 267935
+        },
+        {
+          "wall_ns": 2752648,
+          "cpu_ns": 2781000,
+          "rss_kb": 12572,
+          "internal_ns": 271888
+        },
+        {
+          "wall_ns": 3000776,
+          "cpu_ns": 3018000,
+          "rss_kb": 12596,
+          "internal_ns": 267871
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 10008709,
+          "cpu_ns": 10055000,
+          "rss_kb": 12352,
+          "internal_ns": 20288
+        },
+        {
+          "wall_ns": 11038946,
+          "cpu_ns": 11085999,
+          "rss_kb": 12392,
+          "internal_ns": 20368
+        },
+        {
+          "wall_ns": 10339812,
+          "cpu_ns": 10362999,
+          "rss_kb": 12420,
+          "internal_ns": 20160
+        },
+        {
+          "wall_ns": 11038947,
+          "cpu_ns": 11036000,
+          "rss_kb": 12452,
+          "internal_ns": 20240
+        },
+        {
+          "wall_ns": 12699582,
+          "cpu_ns": 12642000,
+          "rss_kb": 12480,
+          "internal_ns": 20368
+        },
+        {
+          "wall_ns": 10148069,
+          "cpu_ns": 10161000,
+          "rss_kb": 12512,
+          "internal_ns": 20128
+        },
+        {
+          "wall_ns": 11202146,
+          "cpu_ns": 11203999,
+          "rss_kb": 12540,
+          "internal_ns": 20272
+        },
+        {
+          "wall_ns": 12223743,
+          "cpu_ns": 12202000,
+          "rss_kb": 12568,
+          "internal_ns": 20463
+        },
+        {
+          "wall_ns": 11907696,
+          "cpu_ns": 11904999,
+          "rss_kb": 12596,
+          "internal_ns": 20320
+        }
+      ]
+    },
+    "rationnel": {
+      "rose": [
+        {
+          "wall_ns": 1920314,
+          "cpu_ns": 1942999,
+          "rss_kb": 12356,
+          "internal_ns": 63952
+        },
+        {
+          "wall_ns": 2541737,
+          "cpu_ns": 2595000,
+          "rss_kb": 12396,
+          "internal_ns": 67536
+        },
+        {
+          "wall_ns": 1808123,
+          "cpu_ns": 1829000,
+          "rss_kb": 12420,
+          "internal_ns": 65152
+        },
+        {
+          "wall_ns": 2929273,
+          "cpu_ns": 2966999,
+          "rss_kb": 12452,
+          "internal_ns": 66064
+        },
+        {
+          "wall_ns": 2841480,
+          "cpu_ns": 2851000,
+          "rss_kb": 12484,
+          "internal_ns": 65695
+        },
+        {
+          "wall_ns": 2302538,
+          "cpu_ns": 2322000,
+          "rss_kb": 12512,
+          "internal_ns": 64112
+        },
+        {
+          "wall_ns": 2837721,
+          "cpu_ns": 2853999,
+          "rss_kb": 12540,
+          "internal_ns": 65872
+        },
+        {
+          "wall_ns": 2999736,
+          "cpu_ns": 3003999,
+          "rss_kb": 12572,
+          "internal_ns": 65472
+        },
+        {
+          "wall_ns": 3163943,
+          "cpu_ns": 3183999,
+          "rss_kb": 12596,
+          "internal_ns": 64719
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 2043466,
+          "cpu_ns": 2072000,
+          "rss_kb": 12356,
+          "internal_ns": 555775
+        },
+        {
+          "wall_ns": 2461530,
+          "cpu_ns": 2509000,
+          "rss_kb": 12392,
+          "internal_ns": 560622
+        },
+        {
+          "wall_ns": 2027178,
+          "cpu_ns": 2048000,
+          "rss_kb": 12420,
+          "internal_ns": 555342
+        },
+        {
+          "wall_ns": 3271639,
+          "cpu_ns": 3274000,
+          "rss_kb": 12452,
+          "internal_ns": 556638
+        },
+        {
+          "wall_ns": 2561577,
+          "cpu_ns": 2593000,
+          "rss_kb": 12484,
+          "internal_ns": 556303
+        },
+        {
+          "wall_ns": 2853849,
+          "cpu_ns": 2862000,
+          "rss_kb": 12512,
+          "internal_ns": 553999
+        },
+        {
+          "wall_ns": 3047592,
+          "cpu_ns": 3069000,
+          "rss_kb": 12544,
+          "internal_ns": 572830
+        },
+        {
+          "wall_ns": 2758361,
+          "cpu_ns": 2797999,
+          "rss_kb": 12572,
+          "internal_ns": 559662
+        },
+        {
+          "wall_ns": 3345639,
+          "cpu_ns": 3358000,
+          "rss_kb": 12596,
+          "internal_ns": 552798
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 5228626,
+          "cpu_ns": 5266000,
+          "rss_kb": 12356,
+          "internal_ns": 3910981
+        },
+        {
+          "wall_ns": 5523106,
+          "cpu_ns": 5556999,
+          "rss_kb": 12392,
+          "internal_ns": 3968934
+        },
+        {
+          "wall_ns": 5297266,
+          "cpu_ns": 5320999,
+          "rss_kb": 12420,
+          "internal_ns": 3911797
+        },
+        {
+          "wall_ns": 6378175,
+          "cpu_ns": 6416999,
+          "rss_kb": 12452,
+          "internal_ns": 3943941
+        },
+        {
+          "wall_ns": 6825998,
+          "cpu_ns": 6952000,
+          "rss_kb": 12484,
+          "internal_ns": 3906821
+        },
+        {
+          "wall_ns": 6780893,
+          "cpu_ns": 6794999,
+          "rss_kb": 12512,
+          "internal_ns": 3934102
+        },
+        {
+          "wall_ns": 6667406,
+          "cpu_ns": 6692999,
+          "rss_kb": 12540,
+          "internal_ns": 3926885
+        },
+        {
+          "wall_ns": 6842862,
+          "cpu_ns": 6870999,
+          "rss_kb": 12572,
+          "internal_ns": 3948037
+        },
+        {
+          "wall_ns": 6495087,
+          "cpu_ns": 6500000,
+          "rss_kb": 12596,
+          "internal_ns": 3922694
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 12919213,
+          "cpu_ns": 12951999,
+          "rss_kb": 12356,
+          "internal_ns": 149648
+        },
+        {
+          "wall_ns": 13824715,
+          "cpu_ns": 13850999,
+          "rss_kb": 12392,
+          "internal_ns": 175791
+        },
+        {
+          "wall_ns": 13207389,
+          "cpu_ns": 13205999,
+          "rss_kb": 12420,
+          "internal_ns": 142512
+        },
+        {
+          "wall_ns": 13686603,
+          "cpu_ns": 13671000,
+          "rss_kb": 12452,
+          "internal_ns": 145743
+        },
+        {
+          "wall_ns": 16649396,
+          "cpu_ns": 16700000,
+          "rss_kb": 12484,
+          "internal_ns": 147664
+        },
+        {
+          "wall_ns": 14185689,
+          "cpu_ns": 14194000,
+          "rss_kb": 12512,
+          "internal_ns": 143456
+        },
+        {
+          "wall_ns": 14395161,
+          "cpu_ns": 14388999,
+          "rss_kb": 12540,
+          "internal_ns": 146735
+        },
+        {
+          "wall_ns": 13552124,
+          "cpu_ns": 13557000,
+          "rss_kb": 12572,
+          "internal_ns": 144272
+        },
+        {
+          "wall_ns": 14590297,
+          "cpu_ns": 14576000,
+          "rss_kb": 12596,
+          "internal_ns": 145503
+        }
+      ]
+    },
+    "chaine": {
+      "rose": [
+        {
+          "wall_ns": 4016997,
+          "cpu_ns": 4045000,
+          "rss_kb": 12356,
+          "internal_ns": 797598
+        },
+        {
+          "wall_ns": 3724262,
+          "cpu_ns": 3784000,
+          "rss_kb": 12396,
+          "internal_ns": 827454
+        },
+        {
+          "wall_ns": 4236997,
+          "cpu_ns": 4246000,
+          "rss_kb": 12424,
+          "internal_ns": 801214
+        },
+        {
+          "wall_ns": 4201812,
+          "cpu_ns": 4228000,
+          "rss_kb": 12452,
+          "internal_ns": 824062
+        },
+        {
+          "wall_ns": 3692006,
+          "cpu_ns": 3714000,
+          "rss_kb": 12484,
+          "internal_ns": 814750
+        },
+        {
+          "wall_ns": 4330805,
+          "cpu_ns": 4337000,
+          "rss_kb": 12520,
+          "internal_ns": 728543
+        },
+        {
+          "wall_ns": 3506918,
+          "cpu_ns": 3521000,
+          "rss_kb": 12544,
+          "internal_ns": 778302
+        },
+        {
+          "wall_ns": 4663748,
+          "cpu_ns": 4665000,
+          "rss_kb": 12572,
+          "internal_ns": 800766
+        },
+        {
+          "wall_ns": 4082597,
+          "cpu_ns": 4081999,
+          "rss_kb": 12596,
+          "internal_ns": 789982
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 1790779,
+          "cpu_ns": 1838000,
+          "rss_kb": 12356,
+          "internal_ns": 43631
+        },
+        {
+          "wall_ns": 1831180,
+          "cpu_ns": 1864000,
+          "rss_kb": 12396,
+          "internal_ns": 27312
+        },
+        {
+          "wall_ns": 1849947,
+          "cpu_ns": 1890000,
+          "rss_kb": 12424,
+          "internal_ns": 30271
+        },
+        {
+          "wall_ns": 2979768,
+          "cpu_ns": 3006000,
+          "rss_kb": 12456,
+          "internal_ns": 45328
+        },
+        {
+          "wall_ns": 2866600,
+          "cpu_ns": 2898999,
+          "rss_kb": 12484,
+          "internal_ns": 31408
+        },
+        {
+          "wall_ns": 2887080,
+          "cpu_ns": 2905999,
+          "rss_kb": 12516,
+          "internal_ns": 25312
+        },
+        {
+          "wall_ns": 2631896,
+          "cpu_ns": 2662000,
+          "rss_kb": 12544,
+          "internal_ns": 32160
+        },
+        {
+          "wall_ns": 3035544,
+          "cpu_ns": 3055999,
+          "rss_kb": 12576,
+          "internal_ns": 24720
+        },
+        {
+          "wall_ns": 3243623,
+          "cpu_ns": 3251999,
+          "rss_kb": 12596,
+          "internal_ns": 31712
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 1569036,
+          "cpu_ns": 1630999,
+          "rss_kb": 12356,
+          "internal_ns": 47616
+        },
+        {
+          "wall_ns": 2662217,
+          "cpu_ns": 2706000,
+          "rss_kb": 12396,
+          "internal_ns": 47376
+        },
+        {
+          "wall_ns": 2637753,
+          "cpu_ns": 2645000,
+          "rss_kb": 12424,
+          "internal_ns": 51552
+        },
+        {
+          "wall_ns": 2764585,
+          "cpu_ns": 2773000,
+          "rss_kb": 12456,
+          "internal_ns": 47264
+        },
+        {
+          "wall_ns": 2319322,
+          "cpu_ns": 2342000,
+          "rss_kb": 12484,
+          "internal_ns": 47264
+        },
+        {
+          "wall_ns": 2747897,
+          "cpu_ns": 2766000,
+          "rss_kb": 12516,
+          "internal_ns": 47216
+        },
+        {
+          "wall_ns": 1964651,
+          "cpu_ns": 1991999,
+          "rss_kb": 12544,
+          "internal_ns": 47536
+        },
+        {
+          "wall_ns": 2037995,
+          "cpu_ns": 2072000,
+          "rss_kb": 12576,
+          "internal_ns": 47184
+        },
+        {
+          "wall_ns": 2607513,
+          "cpu_ns": 2624999,
+          "rss_kb": 12600,
+          "internal_ns": 47232
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 12915101,
+          "cpu_ns": 12951999,
+          "rss_kb": 12356,
+          "internal_ns": 2933320
+        },
+        {
+          "wall_ns": 14609385,
+          "cpu_ns": 14602000,
+          "rss_kb": 12396,
+          "internal_ns": 3061415
+        },
+        {
+          "wall_ns": 12816749,
+          "cpu_ns": 12826000,
+          "rss_kb": 12424,
+          "internal_ns": 2934264
+        },
+        {
+          "wall_ns": 14526505,
+          "cpu_ns": 14494000,
+          "rss_kb": 12452,
+          "internal_ns": 2952072
+        },
+        {
+          "wall_ns": 14155866,
+          "cpu_ns": 14140000,
+          "rss_kb": 12484,
+          "internal_ns": 2987848
+        },
+        {
+          "wall_ns": 13703387,
+          "cpu_ns": 13711999,
+          "rss_kb": 12516,
+          "internal_ns": 2865736
+        },
+        {
+          "wall_ns": 14172410,
+          "cpu_ns": 14174000,
+          "rss_kb": 12544,
+          "internal_ns": 2944777
+        },
+        {
+          "wall_ns": 14301914,
+          "cpu_ns": 14287999,
+          "rss_kb": 12572,
+          "internal_ns": 2943048
+        },
+        {
+          "wall_ns": 14137338,
+          "cpu_ns": 14128000,
+          "rss_kb": 12604,
+          "internal_ns": 2879577
+        }
+      ]
+    },
+    "liste": {
+      "rose": [
+        {
+          "wall_ns": 3606214,
+          "cpu_ns": 3633999,
+          "rss_kb": 12356,
+          "internal_ns": 1067965
+        },
+        {
+          "wall_ns": 4275845,
+          "cpu_ns": 4321999,
+          "rss_kb": 12396,
+          "internal_ns": 1179660
+        },
+        {
+          "wall_ns": 4131717,
+          "cpu_ns": 4138999,
+          "rss_kb": 12428,
+          "internal_ns": 1084942
+        },
+        {
+          "wall_ns": 5026322,
+          "cpu_ns": 5095000,
+          "rss_kb": 12456,
+          "internal_ns": 1194477
+        },
+        {
+          "wall_ns": 4088549,
+          "cpu_ns": 4104999,
+          "rss_kb": 12484,
+          "internal_ns": 1134397
+        },
+        {
+          "wall_ns": 5055571,
+          "cpu_ns": 5065000,
+          "rss_kb": 12520,
+          "internal_ns": 995630
+        },
+        {
+          "wall_ns": 4569428,
+          "cpu_ns": 4605000,
+          "rss_kb": 12544,
+          "internal_ns": 1090173
+        },
+        {
+          "wall_ns": 4953059,
+          "cpu_ns": 4947999,
+          "rss_kb": 12576,
+          "internal_ns": 1188893
+        },
+        {
+          "wall_ns": 4742307,
+          "cpu_ns": 4758000,
+          "rss_kb": 12608,
+          "internal_ns": 1073005
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 1715548,
+          "cpu_ns": 1744000,
+          "rss_kb": 12356,
+          "internal_ns": 164063
+        },
+        {
+          "wall_ns": 3089816,
+          "cpu_ns": 3123000,
+          "rss_kb": 12396,
+          "internal_ns": 169535
+        },
+        {
+          "wall_ns": 1812091,
+          "cpu_ns": 1834000,
+          "rss_kb": 12432,
+          "internal_ns": 187727
+        },
+        {
+          "wall_ns": 4176837,
+          "cpu_ns": 4340999,
+          "rss_kb": 12456,
+          "internal_ns": 185423
+        },
+        {
+          "wall_ns": 2398650,
+          "cpu_ns": 2411000,
+          "rss_kb": 12488,
+          "internal_ns": 187823
+        },
+        {
+          "wall_ns": 3039800,
+          "cpu_ns": 3054999,
+          "rss_kb": 12520,
+          "internal_ns": 155616
+        },
+        {
+          "wall_ns": 2755848,
+          "cpu_ns": 2776000,
+          "rss_kb": 12548,
+          "internal_ns": 158223
+        },
+        {
+          "wall_ns": 2335257,
+          "cpu_ns": 2358000,
+          "rss_kb": 12576,
+          "internal_ns": 185744
+        },
+        {
+          "wall_ns": 2899992,
+          "cpu_ns": 2914000,
+          "rss_kb": 12608,
+          "internal_ns": 158272
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 1671468,
+          "cpu_ns": 1736000,
+          "rss_kb": 12360,
+          "internal_ns": 149583
+        },
+        {
+          "wall_ns": 2700297,
+          "cpu_ns": 2738000,
+          "rss_kb": 12396,
+          "internal_ns": 144287
+        },
+        {
+          "wall_ns": 1549771,
+          "cpu_ns": 1573000,
+          "rss_kb": 12424,
+          "internal_ns": 159328
+        },
+        {
+          "wall_ns": 3197192,
+          "cpu_ns": 3302000,
+          "rss_kb": 12456,
+          "internal_ns": 146240
+        },
+        {
+          "wall_ns": 2835832,
+          "cpu_ns": 2869000,
+          "rss_kb": 12488,
+          "internal_ns": 148464
+        },
+        {
+          "wall_ns": 2806968,
+          "cpu_ns": 2822000,
+          "rss_kb": 12520,
+          "internal_ns": 144367
+        },
+        {
+          "wall_ns": 2531657,
+          "cpu_ns": 2549999,
+          "rss_kb": 12544,
+          "internal_ns": 152655
+        },
+        {
+          "wall_ns": 2745225,
+          "cpu_ns": 2767000,
+          "rss_kb": 12576,
+          "internal_ns": 145535
+        },
+        {
+          "wall_ns": 2670505,
+          "cpu_ns": 2691000,
+          "rss_kb": 12608,
+          "internal_ns": 141392
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 20632169,
+          "cpu_ns": 20638999,
+          "rss_kb": 13428,
+          "internal_ns": 9197304
+        },
+        {
+          "wall_ns": 21467031,
+          "cpu_ns": 21474999,
+          "rss_kb": 13428,
+          "internal_ns": 9206776
+        },
+        {
+          "wall_ns": 21130455,
+          "cpu_ns": 21099999,
+          "rss_kb": 13300,
+          "internal_ns": 9514486
+        },
+        {
+          "wall_ns": 22587011,
+          "cpu_ns": 22558999,
+          "rss_kb": 13300,
+          "internal_ns": 9196775
+        },
+        {
+          "wall_ns": 22193924,
+          "cpu_ns": 22168999,
+          "rss_kb": 13300,
+          "internal_ns": 9080136
+        },
+        {
+          "wall_ns": 21619686,
+          "cpu_ns": 21616999,
+          "rss_kb": 13428,
+          "internal_ns": 9648390
+        },
+        {
+          "wall_ns": 20882776,
+          "cpu_ns": 20863999,
+          "rss_kb": 13428,
+          "internal_ns": 9145928
+        },
+        {
+          "wall_ns": 21930277,
+          "cpu_ns": 21921000,
+          "rss_kb": 13296,
+          "internal_ns": 8943688
+        },
+        {
+          "wall_ns": 21581558,
+          "cpu_ns": 21549000,
+          "rss_kb": 13428,
+          "internal_ns": 9066695
+        }
+      ]
+    },
+    "table": {
+      "rose": [
+        {
+          "wall_ns": 2607353,
+          "cpu_ns": 2653000,
+          "rss_kb": 12360,
+          "internal_ns": 50048
+        },
+        {
+          "wall_ns": 3832069,
+          "cpu_ns": 3864999,
+          "rss_kb": 12400,
+          "internal_ns": 56288
+        },
+        {
+          "wall_ns": 2327626,
+          "cpu_ns": 2350000,
+          "rss_kb": 12432,
+          "internal_ns": 51376
+        },
+        {
+          "wall_ns": 3594278,
+          "cpu_ns": 3562000,
+          "rss_kb": 12456,
+          "internal_ns": 54944
+        },
+        {
+          "wall_ns": 3689734,
+          "cpu_ns": 3704000,
+          "rss_kb": 12488,
+          "internal_ns": 56159
+        },
+        {
+          "wall_ns": 3577590,
+          "cpu_ns": 3597000,
+          "rss_kb": 12520,
+          "internal_ns": 49376
+        },
+        {
+          "wall_ns": 3366743,
+          "cpu_ns": 3398000,
+          "rss_kb": 12548,
+          "internal_ns": 49920
+        },
+        {
+          "wall_ns": 3550151,
+          "cpu_ns": 3564000,
+          "rss_kb": 12576,
+          "internal_ns": 53456
+        },
+        {
+          "wall_ns": 4161125,
+          "cpu_ns": 4084000,
+          "rss_kb": 12608,
+          "internal_ns": 56016
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 2741161,
+          "cpu_ns": 2774000,
+          "rss_kb": 12364,
+          "internal_ns": 48112
+        },
+        {
+          "wall_ns": 2222490,
+          "cpu_ns": 2268000,
+          "rss_kb": 12396,
+          "internal_ns": 49248
+        },
+        {
+          "wall_ns": 1539372,
+          "cpu_ns": 1562000,
+          "rss_kb": 12432,
+          "internal_ns": 45824
+        },
+        {
+          "wall_ns": 3329415,
+          "cpu_ns": 3467999,
+          "rss_kb": 12456,
+          "internal_ns": 47600
+        },
+        {
+          "wall_ns": 2383402,
+          "cpu_ns": 2400000,
+          "rss_kb": 12488,
+          "internal_ns": 46192
+        },
+        {
+          "wall_ns": 2799928,
+          "cpu_ns": 2809000,
+          "rss_kb": 12520,
+          "internal_ns": 49216
+        },
+        {
+          "wall_ns": 3132024,
+          "cpu_ns": 3136000,
+          "rss_kb": 12548,
+          "internal_ns": 45840
+        },
+        {
+          "wall_ns": 2020907,
+          "cpu_ns": 2043999,
+          "rss_kb": 12576,
+          "internal_ns": 48752
+        },
+        {
+          "wall_ns": 2772153,
+          "cpu_ns": 2815000,
+          "rss_kb": 12608,
+          "internal_ns": 48272
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 3539430,
+          "cpu_ns": 3601999,
+          "rss_kb": 12364,
+          "internal_ns": 1186813
+        },
+        {
+          "wall_ns": 2770969,
+          "cpu_ns": 2802000,
+          "rss_kb": 12396,
+          "internal_ns": 1204973
+        },
+        {
+          "wall_ns": 2591049,
+          "cpu_ns": 2616000,
+          "rss_kb": 12432,
+          "internal_ns": 1187869
+        },
+        {
+          "wall_ns": 7132829,
+          "cpu_ns": 3809999,
+          "rss_kb": 12460,
+          "internal_ns": 1197932
+        },
+        {
+          "wall_ns": 3748502,
+          "cpu_ns": 3770000,
+          "rss_kb": 12488,
+          "internal_ns": 1210525
+        },
+        {
+          "wall_ns": 3740902,
+          "cpu_ns": 3760000,
+          "rss_kb": 12520,
+          "internal_ns": 1179724
+        },
+        {
+          "wall_ns": 3568823,
+          "cpu_ns": 3591000,
+          "rss_kb": 12548,
+          "internal_ns": 1184365
+        },
+        {
+          "wall_ns": 2976456,
+          "cpu_ns": 2989000,
+          "rss_kb": 12576,
+          "internal_ns": 1194141
+        },
+        {
+          "wall_ns": 3570710,
+          "cpu_ns": 3614000,
+          "rss_kb": 12608,
+          "internal_ns": 1181389
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 11950928,
+          "cpu_ns": 11973999,
+          "rss_kb": 12364,
+          "internal_ns": 456319
+        },
+        {
+          "wall_ns": 12154399,
+          "cpu_ns": 12166000,
+          "rss_kb": 12396,
+          "internal_ns": 460223
+        },
+        {
+          "wall_ns": 11719792,
+          "cpu_ns": 11732999,
+          "rss_kb": 12432,
+          "internal_ns": 476510
+        },
+        {
+          "wall_ns": 14189818,
+          "cpu_ns": 14273999,
+          "rss_kb": 12456,
+          "internal_ns": 484479
+        },
+        {
+          "wall_ns": 12084608,
+          "cpu_ns": 12081000,
+          "rss_kb": 12492,
+          "internal_ns": 473295
+        },
+        {
+          "wall_ns": 11348594,
+          "cpu_ns": 11356000,
+          "rss_kb": 12520,
+          "internal_ns": 440719
+        },
+        {
+          "wall_ns": 11383682,
+          "cpu_ns": 11388000,
+          "rss_kb": 12548,
+          "internal_ns": 446143
+        },
+        {
+          "wall_ns": 12203376,
+          "cpu_ns": 12190999,
+          "rss_kb": 12576,
+          "internal_ns": 483775
+        },
+        {
+          "wall_ns": 11582769,
+          "cpu_ns": 11586000,
+          "rss_kb": 12608,
+          "internal_ns": 545919
+        }
+      ]
+    },
+    "io": {
+      "rose": [
+        {
+          "wall_ns": 4327252,
+          "cpu_ns": 4356000,
+          "rss_kb": 13164,
+          "internal_ns": 2266730
+        },
+        {
+          "wall_ns": 5304865,
+          "cpu_ns": 5353000,
+          "rss_kb": 13164,
+          "internal_ns": 2713353
+        },
+        {
+          "wall_ns": 6305919,
+          "cpu_ns": 6345999,
+          "rss_kb": 13164,
+          "internal_ns": 2642473
+        },
+        {
+          "wall_ns": 6008256,
+          "cpu_ns": 5919000,
+          "rss_kb": 13164,
+          "internal_ns": 2712761
+        },
+        {
+          "wall_ns": 5698497,
+          "cpu_ns": 5720000,
+          "rss_kb": 13164,
+          "internal_ns": 2716825
+        },
+        {
+          "wall_ns": 6375055,
+          "cpu_ns": 6373999,
+          "rss_kb": 13164,
+          "internal_ns": 2556329
+        },
+        {
+          "wall_ns": 5758321,
+          "cpu_ns": 5767000,
+          "rss_kb": 13164,
+          "internal_ns": 2695864
+        },
+        {
+          "wall_ns": 6583390,
+          "cpu_ns": 6588000,
+          "rss_kb": 13164,
+          "internal_ns": 2864169
+        },
+        {
+          "wall_ns": 5731200,
+          "cpu_ns": 5744000,
+          "rss_kb": 13164,
+          "internal_ns": 2941896
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 7512652,
+          "cpu_ns": 7530999,
+          "rss_kb": 12368,
+          "internal_ns": 4115733
+        },
+        {
+          "wall_ns": 8322666,
+          "cpu_ns": 8345000,
+          "rss_kb": 12400,
+          "internal_ns": 4919634
+        },
+        {
+          "wall_ns": 7332732,
+          "cpu_ns": 7357000,
+          "rss_kb": 12432,
+          "internal_ns": 4660916
+        },
+        {
+          "wall_ns": 8275962,
+          "cpu_ns": 7981000,
+          "rss_kb": 12460,
+          "internal_ns": 5081938
+        },
+        {
+          "wall_ns": 8537129,
+          "cpu_ns": 8519000,
+          "rss_kb": 12492,
+          "internal_ns": 4917091
+        },
+        {
+          "wall_ns": 7346685,
+          "cpu_ns": 7342000,
+          "rss_kb": 12520,
+          "internal_ns": 4104021
+        },
+        {
+          "wall_ns": 8299338,
+          "cpu_ns": 8285000,
+          "rss_kb": 12556,
+          "internal_ns": 4741940
+        },
+        {
+          "wall_ns": 7825739,
+          "cpu_ns": 7845999,
+          "rss_kb": 12576,
+          "internal_ns": 4731076
+        },
+        {
+          "wall_ns": 7877995,
+          "cpu_ns": 7894000,
+          "rss_kb": 12608,
+          "internal_ns": 4640659
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 6105280,
+          "cpu_ns": 6175000,
+          "rss_kb": 12372,
+          "internal_ns": 3774358
+        },
+        {
+          "wall_ns": 8407098,
+          "cpu_ns": 8430000,
+          "rss_kb": 12400,
+          "internal_ns": 4828419
+        },
+        {
+          "wall_ns": 6142607,
+          "cpu_ns": 6167000,
+          "rss_kb": 12432,
+          "internal_ns": 4285621
+        },
+        {
+          "wall_ns": 8028938,
+          "cpu_ns": 8043999,
+          "rss_kb": 12464,
+          "internal_ns": 4862019
+        },
+        {
+          "wall_ns": 8394170,
+          "cpu_ns": 8420000,
+          "rss_kb": 12492,
+          "internal_ns": 4849603
+        },
+        {
+          "wall_ns": 8151562,
+          "cpu_ns": 8139000,
+          "rss_kb": 12524,
+          "internal_ns": 4522132
+        },
+        {
+          "wall_ns": 7999771,
+          "cpu_ns": 7986000,
+          "rss_kb": 12548,
+          "internal_ns": 4555220
+        },
+        {
+          "wall_ns": 7490700,
+          "cpu_ns": 7515999,
+          "rss_kb": 12576,
+          "internal_ns": 4642371
+        },
+        {
+          "wall_ns": 7927131,
+          "cpu_ns": 7915999,
+          "rss_kb": 12608,
+          "internal_ns": 4674052
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 16049573,
+          "cpu_ns": 16094000,
+          "rss_kb": 19380,
+          "internal_ns": 4075813
+        },
+        {
+          "wall_ns": 17823744,
+          "cpu_ns": 17847000,
+          "rss_kb": 19508,
+          "internal_ns": 4787683
+        },
+        {
+          "wall_ns": 17347890,
+          "cpu_ns": 17336000,
+          "rss_kb": 19508,
+          "internal_ns": 4587731
+        },
+        {
+          "wall_ns": 18900237,
+          "cpu_ns": 17641999,
+          "rss_kb": 19508,
+          "internal_ns": 5980752
+        },
+        {
+          "wall_ns": 17651440,
+          "cpu_ns": 17653000,
+          "rss_kb": 19508,
+          "internal_ns": 4827667
+        },
+        {
+          "wall_ns": 17077379,
+          "cpu_ns": 17070000,
+          "rss_kb": 19364,
+          "internal_ns": 4421156
+        },
+        {
+          "wall_ns": 17250946,
+          "cpu_ns": 17230000,
+          "rss_kb": 19380,
+          "internal_ns": 4472820
+        },
+        {
+          "wall_ns": 16266164,
+          "cpu_ns": 16253999,
+          "rss_kb": 19380,
+          "internal_ns": 4668468
+        },
+        {
+          "wall_ns": 17427297,
+          "cpu_ns": 17389000,
+          "rss_kb": 19380,
+          "internal_ns": 4752707
+        }
+      ]
+    },
+    "startup": {
+      "rose": [
+        {
+          "wall_ns": 2382938,
+          "cpu_ns": 2457000,
+          "rss_kb": 12372,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2422218,
+          "cpu_ns": 2453000,
+          "rss_kb": 12400,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2088779,
+          "cpu_ns": 2105000,
+          "rss_kb": 12436,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2870040,
+          "cpu_ns": 2889000,
+          "rss_kb": 12464,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 3183512,
+          "cpu_ns": 3221999,
+          "rss_kb": 12496,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 3323383,
+          "cpu_ns": 3330999,
+          "rss_kb": 12524,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 3431687,
+          "cpu_ns": 3447999,
+          "rss_kb": 12556,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2852568,
+          "cpu_ns": 2884000,
+          "rss_kb": 12784,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2669257,
+          "cpu_ns": 2699999,
+          "rss_kb": 12608,
+          "internal_ns": 32
+        }
+      ],
+      "rust": [
+        {
+          "wall_ns": 1745900,
+          "cpu_ns": 1800999,
+          "rss_kb": 12376,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2041962,
+          "cpu_ns": 2081000,
+          "rss_kb": 12400,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2179882,
+          "cpu_ns": 2251000,
+          "rss_kb": 12436,
+          "internal_ns": 16
+        },
+        {
+          "wall_ns": 2070794,
+          "cpu_ns": 2089999,
+          "rss_kb": 12464,
+          "internal_ns": 48
+        },
+        {
+          "wall_ns": 2488825,
+          "cpu_ns": 2531000,
+          "rss_kb": 12496,
+          "internal_ns": 16
+        },
+        {
+          "wall_ns": 3003176,
+          "cpu_ns": 3016000,
+          "rss_kb": 12524,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2692569,
+          "cpu_ns": 2732999,
+          "rss_kb": 12556,
+          "internal_ns": 48
+        },
+        {
+          "wall_ns": 2087690,
+          "cpu_ns": 2092000,
+          "rss_kb": 12784,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2004059,
+          "cpu_ns": 2023000,
+          "rss_kb": 12608,
+          "internal_ns": 32
+        }
+      ],
+      "c": [
+        {
+          "wall_ns": 1558924,
+          "cpu_ns": 1612000,
+          "rss_kb": 12376,
+          "internal_ns": 48
+        },
+        {
+          "wall_ns": 1532012,
+          "cpu_ns": 1584999,
+          "rss_kb": 12400,
+          "internal_ns": 16
+        },
+        {
+          "wall_ns": 1578092,
+          "cpu_ns": 1616000,
+          "rss_kb": 12432,
+          "internal_ns": 16
+        },
+        {
+          "wall_ns": 2583257,
+          "cpu_ns": 2601999,
+          "rss_kb": 12464,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2380889,
+          "cpu_ns": 2389000,
+          "rss_kb": 12496,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2609865,
+          "cpu_ns": 2626000,
+          "rss_kb": 12524,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2018778,
+          "cpu_ns": 2045000,
+          "rss_kb": 12556,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2129706,
+          "cpu_ns": 2152000,
+          "rss_kb": 12788,
+          "internal_ns": 32
+        },
+        {
+          "wall_ns": 2845896,
+          "cpu_ns": 2864999,
+          "rss_kb": 12608,
+          "internal_ns": 32
+        }
+      ],
+      "python": [
+        {
+          "wall_ns": 10232148,
+          "cpu_ns": 10263999,
+          "rss_kb": 12376,
+          "internal_ns": 208
+        },
+        {
+          "wall_ns": 10518867,
+          "cpu_ns": 10534000,
+          "rss_kb": 12400,
+          "internal_ns": 224
+        },
+        {
+          "wall_ns": 11206114,
+          "cpu_ns": 11231000,
+          "rss_kb": 12436,
+          "internal_ns": 224
+        },
+        {
+          "wall_ns": 10593267,
+          "cpu_ns": 10626000,
+          "rss_kb": 12464,
+          "internal_ns": 192
+        },
+        {
+          "wall_ns": 11448370,
+          "cpu_ns": 11397000,
+          "rss_kb": 12496,
+          "internal_ns": 320
+        },
+        {
+          "wall_ns": 11360034,
+          "cpu_ns": 11355000,
+          "rss_kb": 12524,
+          "internal_ns": 176
+        },
+        {
+          "wall_ns": 10508340,
+          "cpu_ns": 10495000,
+          "rss_kb": 12556,
+          "internal_ns": 352
+        },
+        {
+          "wall_ns": 11758465,
+          "cpu_ns": 11764000,
+          "rss_kb": 12576,
+          "internal_ns": 272
+        },
+        {
+          "wall_ns": 11144242,
+          "cpu_ns": 11144999,
+          "rss_kb": 12608,
+          "internal_ns": 272
+        }
+      ]
+    }
+  }
+}
