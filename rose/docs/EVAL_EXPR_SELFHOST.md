@@ -88,6 +88,25 @@ sont des expressions **malformées** produites par le préprocesseur
   `7f454c46…`, sortie `317811`.
 - Chaîne C1/C2 : voir §4 (résultat mesuré en fin de chantier).
 
-## 4. Chaîne C1/C2 (HOST-2)
+## 4. Chaîne C1/C2 (HOST-2) — état mesuré le 22/11/2026
 
-_À compléter avec la mesure réelle._
+**Tentative 1 (interpréteur Rust) — timeout.** `rose rose_natif.rose rose_natif.rose`
+a tourné 7 200 s sous `timeout` : `rc=124`, sortie 0 octet, aucun magic. La
+compilation de la source du composite (431 Ko) par le front-end interprété est
+trop lente (boucles de chaînes O(n²) déjà documentées par ailleurs). Ce n'est pas
+un échec fonctionnel de `eval_expr`, dont la sonde est à 224/227 sur les
+expressions réelles et la batterie AZ à 31/31.
+
+**Tentative 2 (compilateur natif C0) — en cours.** On émet d'abord le compilateur
+en code machine à partir du RIR du composite :
+
+```
+rose rir rose_natif.rose > rnat2.rir                 # 676 543 o
+rose emetteur_elf.rose rnat2.rir > C0_new.elf        # ~70 min mesurées
+C0_new.elf rose_natif.rose > C1_nat.elf              # natif, rapide
+C1_nat.elf rose_natif.rose > C2_nat.elf
+cmp C1_nat.elf C2_nat.elf                            # point fixe étendu
+```
+
+Journal : `/tmp/opencode/point_fixe_C2.log`. Le résultat n'est PAS revendiqué
+avant lecture du `cmp`.
