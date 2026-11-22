@@ -74,8 +74,25 @@ restoration n'écrase le composite neuf.
 4. sonde p3 + fib (contrôle magic `0200b700`, sortie `317811`) ;
 5. `C0_final2.elf rose_natif.rose > C1.elf`, `C1.elf rose_natif.rose > C2.elf`, `cmp C1 C2`.
 
-Les résultats réels de 1–5 seront ajoutés ici dès la fin du script ; aucune
-affirmation de réussite n'est faite avant preuve de sortie.
+Résultats réels du 22/11 (journal `/tmp/opencode/final_chain.log`) :
+
+1. `python3 scripts/generer_rose_natif.py` → rc=0, composite 440 046 o ;
+   `rose verif compilateur/rose_natif.rose` → `vérifié` (rc=0).
+2. `rose rir compilateur/rose_natif.rose` → `rnat_final.rir` 683 700 o, rc=0.
+3. `rose compilateur/emetteur_elf.rose rnat_final.rir > C0_final2.elf` →
+   `[14:11:25] C0_final2 rc=0 taille=1598944 magic=7f454c4602010100`.
+4. Sonde `p3.rose` : **rc=0**, ELF 9 104 o `0200b700`, exécution `≈`
+   (`e2 89 88 0a`) — le rc=2 silencieux a disparu dans le compilateur
+   auto-émis, pas seulement dans l'émetteur hébergé. `fib(28)` : ELF
+   9 496 o, `0200b700`, sortie **317811** (jalon HOST-1 reproduit).
+5. `C0_final2.elf rose_natif.rose > C1.elf` → **échec matériel**, voir §6.
+
+Le correctif a donc été validé de bout en bout côté émetteur et côté C0 ;
+seul le jalon C1/C2 reste bloqué par la mémoire (§6). Le pilote a
+postérieurement réduit le pic RSS de l'émetteur de 98,6 % et régénéré un
+`C0_opt.elf` (`/tmp/opencode/C0_opt.elf`, 1 600 780 o, 18:28 UTC) avec
+`fib_opt.elf` 9 496 o ; la tentatives C1/C2 avec ce binaire appartient à la
+vague suivante et n'est pas revendiquée ici.
 
 ## 6. Échec matériel de la chaîne C1 (22/11, 14:39 UTC) — cause mesurée
 

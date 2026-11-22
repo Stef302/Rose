@@ -4,6 +4,24 @@
 #   compilateur/emetteur_elf.rose  (backend RIR -> binaire G5)
 # Usage : rose rose_natif_elf.rose programme.rose > programme.elf
 #
+fn rnat_flat($s: chaine) -> chaine {
+  retour sous_chaine($s, 0, longueur($s))
+}
+
+# Joint équilibré : chaque niveau recopie au plus la longueur totale, donc
+# O(n*log n) octets alloués au lieu de O(n^2) pour `s = s + morceau`.
+# (Le `+` du runtime G5 COPIE les deux chaînes — pas de rope, contrairement
+# au moteur Rust — et les ancres ne sont pas libérées : chaque concaténation
+# en bouche est un leak.)
+fn rnat_join($p: liste<chaine>, $d: entier, $f: entier) -> chaine {
+  si ($f - $d <= 1) {
+    si ($f - $d == 1) { retour $p[$d] }
+    retour ""
+  }
+  $m = ($d + $f) div 2
+  retour rnat_join($p, $d, $m) + rnat_join($p, $m, $f)
+}
+
 # emetteur.rose — jalon M4.3 : l'émetteur RIR auto-hébergé ROSE.
 #
 # Lit le programme passé en argument et rejoue TOUTE la chaîne du moteur :
@@ -249,17 +267,16 @@ fn piece($s: chaine, $sep: entier, $k: entier) -> chaine {
   $n = longueur($s)
   $j = 0
   $no = 1
-  $buf = ""
+  $debut = 0
   tant_que ($j < $n) {
     si (ordre($s[$j]) == $sep) {
-      si ($no == $k) { retour $buf }
+      si ($no == $k) { retour sous_chaine($s, $debut, $j) }
       $no = $no + 1
-      $buf = ""
+      $debut = $j + 1
     }
-    sinon { $buf = $buf + $s[$j] }
     $j = $j + 1
   }
-  si ($no == $k) { retour $buf }
+  si ($no == $k) { retour sous_chaine($s, $debut, $n) }
   retour ""
 }
 
@@ -1138,6 +1155,7 @@ fn def_fn($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
   joindre($fext, $ext)
   joindre($fparams, $params)
   joindre($fret, $ret)
+  $corps = rnat_flat($corps)
   joindre($fcorps, $corps)
   joindre($fligne, $lf)
   retour chaine($q) + "|" + $nom
@@ -3087,20 +3105,17 @@ fn em_corps($cs: chaine,
             $fp: liste<chaine>, $cc: liste<entier>) {
   $j = 0
   $n = longueur($cs)
-  $cur = ""
-  tant_que ($j < $n) {
-    $c = ordre($cs[$j])
-    si ($c == 44) {
-      si ($cur != "") {
-        em_instr(entier($cur), $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
-        $cur = ""
+  $debut = 0
+  tant_que ($j <= $n) {
+    $c = 10
+    si ($j < $n) { $c = ordre($cs[$j]) }
+    si ($j == $n ou $c == 44) {
+      si ($j > $debut) {
+        em_instr(entier(sous_chaine($cs, $debut, $j)), $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
+        $debut = $j + 1
       }
     }
-    sinon { $cur = $cur + $cs[$j] }
     $j = $j + 1
-  }
-  si ($cur != "") {
-    em_instr(entier($cur), $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $tni, $tnt, $tri, $trt, $tc, $bc, $fb, $fl, $flb, $fp, $cc)
   }
 }
 
@@ -3259,19 +3274,17 @@ fn rir_corps($cs: chaine, $ipc: entier,
   $pc = $ipc
   $j = 0
   $n = longueur($cs)
-  $cur = ""
-  tant_que ($j < $n) {
-    $c = ordre($cs[$j])
-    si ($c == 44) {
-      si ($cur != "") {
-        $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
-        $cur = ""
+  $debut = 0
+  tant_que ($j <= $n) {
+    $c = 10
+    si ($j < $n) { $c = ordre($cs[$j]) }
+    si ($j == $n ou $c == 44) {
+      si ($j > $debut) {
+        $pc = rir_instr(entier(sous_chaine($cs, $debut, $j)), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
+        $debut = $j + 1
       }
-    } sinon { $cur = $cur + $cs[$j] }
+    }
     $j = $j + 1
-  }
-  si ($cur != "") {
-    $pc = rir_instr(entier($cur), $pc, $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg, $foi, $fot, $fof, $sn, $glst, $connus, $ops, $estprincipal, $dans_pour)
   }
   retour $pc
 }
@@ -3297,33 +3310,50 @@ fn rir_patcher($ops: liste<chaine>) -> liste<chaine> {
   # 2) pour chaque op, remplacer @label par la cible du PREMIER marqueur
   #    de ce label situé APRÈS l'op (le plus proche en avant).
   $out = [""]
+  $tab = table()
+  $z = 1
+  tant_que ($z < longueur($labels)) {
+    inserer($tab, $labels[$z], $cibles[$z])
+    $z = $z + 1
+  }
   $u = 1
   tant_que ($u < longueur($res)) {
-    $ch = $res[$u]
-    $ch = rir_patch_op($ch, $u, $labels, $cibles)
+    $ch = rir_patch_op($res[$u], $u, $labels, $cibles, $tab)
     joindre($out, $ch)
     $u = $u + 1
   }
   retour $out
 }
 
-fn rir_patch_op($ch: chaine, $pos: entier, $labels: liste<chaine>, $cibles: liste<entier>) -> chaine {
-  # Chaque marqueur porte un nom UNIQUE (@fin_<ix>_, @cond_<ix>_, ...).
-  # Il n'y a donc qu'une seule cible par label : plus besoin de deviner une
-  # direction (avant/après) ni de choisir le "plus proche". Cela reproduit
-  # exactement le patchage par index du moteur Rust, et évite de remplacer
-  # un @label survenant dans un littéral de chaîne (nos marqueurs, suffixés,
-  # ne collent jamais à un tel littéral).
-  $r = $ch
-  $k = 1
-  tant_que ($k < longueur($labels)) {
-    $pat = "@" + $labels[$k]
-    si (position_sous($r, $pat) >= 0) {
-      $r = remplacer_tout($r, $pat, chaine($cibles[$k]))
+fn rir_patch_op($ch: chaine, $pos: entier, $labels: liste<chaine>, $cibles: liste<entier>, $tab: table) -> chaine {
+  $parts = [""]
+  $cur = ""
+  $i = 0
+  $n = longueur($ch)
+  tant_que ($i < $n) {
+    si ($ch[$i] == "@") {
+      $j = $i + 1
+      $lab = ""
+      tant_que ($j < $n et est_suite(ordre($ch[$j]))) {
+        $lab = $lab + $ch[$j]
+        $j = $j + 1
+      }
+      si (longueur($lab) > 0 et cle_existe($tab, $lab)) {
+        joindre($parts, $cur)
+        joindre($parts, chaine($tab[$lab]))
+        $cur = ""
+        $i = $j
+      } sinon {
+        $cur = $cur + "@"
+        $i = $i + 1
+      }
+    } sinon {
+      $cur = $cur + $ch[$i]
+      $i = $i + 1
     }
-    $k = $k + 1
   }
-  retour $r
+  joindre($parts, $cur)
+  retour rnat_join($parts, 1, longueur($parts))
 }
 
 fn cibles_distance($c: entier, $p: entier) -> entier {
@@ -3344,20 +3374,24 @@ fn position_sous($s: chaine, $sub: chaine) -> entier {
 }
 
 fn remplacer_tout($s: chaine, $de: chaine, $vers: chaine) -> chaine {
-  $o = ""
+  $parts = [""]
+  $cur = ""
   $i = 0
   $nd = longueur($de)
   $ns = longueur($s)
   tant_que ($i < $ns) {
     si ($i + $nd <= $ns et sous_chaine($s, $i, $i + $nd) == $de) {
-      $o = $o + $vers
+      joindre($parts, $cur)
+      joindre($parts, $vers)
+      $cur = ""
       $i = $i + $nd
     } sinon {
-      $o = $o + $s[$i]
+      $cur = $cur + $s[$i]
       $i = $i + 1
     }
   }
-  retour $o
+  joindre($parts, $cur)
+  retour rnat_join($parts, 1, longueur($parts))
 }
 
 fn em_fonction_rir($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
@@ -3900,6 +3934,7 @@ tant_que (T0($gen, $p) != "eof") {
   }
 }
 
+$topb = rnat_flat($topb)
 # —— tri des fonctions par nom (ordre std::map) ——
 $ordre = [0]
 $nn = longueur($fnoms)
@@ -3972,6 +4007,7 @@ si ($gcur != "") {
     $topg = $topg + $gcur
   }
 }
+$topg = rnat_flat($topg)
 $err2 = [""]
 $tni2 = [0]
 $tnt2 = [""]
@@ -4077,12 +4113,13 @@ si (longueur($err) == 1) {
               $foi, $fot, $fof, $connus, $outl)
 }
 si (longueur($err) > 1) { retour $err[1] }
-$rnat_dump = ""
+$rnat_parts = [""]
 $u = 1
 tant_que ($u < longueur($outl)) {
-  $rnat_dump = $rnat_dump + $outl[$u] + "\n"
+  joindre($rnat_parts, $outl[$u] + "\n")
   $u = $u + 1
 }
+$rnat_dump = rnat_join($rnat_parts, 1, longueur($rnat_parts))
 retour $rnat_dump
 
 
