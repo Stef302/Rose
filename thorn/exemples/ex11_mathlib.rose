@@ -1,0 +1,54 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/exemples/ex11_mathlib.rose — UN lemme générique, PLUSIEURS instances.
+# ═════════════════════════════════════════════════════════════════════════════
+# Démonstration de la hiérarchie nouvellement livrée :
+#   thorn/src/hierarchie.rose  (Magma → Semigroupe → Monoid → Groupe,
+#                               lemmes génériques paramétrés par l'enregistrement)
+#   thorn/src/instances.rose   (marqueur Classe(C,A) + pré-élaboration)
+# Aucune loi n'est recodée ici : le même terme de preuve sert à Nat/+/0 et
+# Nat/*/1. Le contrôle reste verifier() ET convertible(), jamais un drapeau.
+#
+# Lancez : ./rose/rose thorn/exemples/ex11_mathlib.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/instances.rose"
+
+$e11_cpt = table()
+inserer($e11_cpt, "r", 0)
+inserer($e11_cpt, "e", 0)
+
+fn e11_test(mg_nom: chaine, e11_v: booleen, e11_cpt: table) {
+  si (e11_v) { >> "OK " + mg_nom } sinon { >> "ECHEC " + mg_nom }
+  mg_compter(e11_cpt, e11_v)
+}
+
+>> "Thorn — exemple 11 : preuve generique reutilisable (hiérarchie + instances)"
+
+$e11_reg = mg_registre()
+$e11_add = mg_registre_trouver($e11_reg, "Nat/+/0")
+$e11_mul = mg_registre_trouver($e11_reg, "Nat/*/1")
+>> "registre : " + chaine(longueur($e11_reg) - 1) + " instance(s)"
+
+# ── Le MEME lemme générique appliqué à deux instances distinctes ────────────
+mg_lance("assoc4[Nat/+/0]",  mg_lem_assoc4($e11_add), ta_ctx(), $e11_cpt)
+mg_lance("assoc4[Nat/*/1]",  mg_lem_assoc4($e11_mul), ta_ctx(), $e11_cpt)
+mg_lance("id_unique_d[Nat/+/0]", mg_lem_id_unique_d($e11_add), ta_ctx(), $e11_cpt)
+mg_lance("id_unique_d[Nat/*/1]", mg_lem_id_unique_d($e11_mul), ta_ctx(), $e11_cpt)
+
+# ── Pré-élaboration d'instance : l'utilisateur écrit Classe(Add, Nat) ───────
+#    Le marqueur est résolu en opération, puis le noyau vérifie le terme ordinaire.
+$e11_m = th_marqueur("Add", ta_nat())
+$e11_ap = th_applique($e11_m, ta_zero(), ta_succ(ta_zero()),
+                      $e11_reg, ta_ctx())
+e11_test("elaboration/Classe(Add,Nat) 0 1 : Nat",
+             ($e11_ap["ok"] == vrai) et
+             convertible(th_coerce_tab($e11_ap["type"]), ta_nat()), $e11_cpt)
+
+# ── Refus contrôlé : une classe sans instance doit être rejetée ─────────────
+$e11_inconnu = th_marqueur("Groupe", ta_nat())
+$e11_refus = th_applique($e11_inconnu, ta_zero(), ta_zero(), $e11_reg, ta_ctx())
+e11_test("refus/Classe(Groupe,Nat) sans instance (attendu)",
+             ($e11_refus["ok"] == faux), $e11_cpt)
+
+>> chaine($e11_cpt["r"]) + " contrôle(s) réussi(s), " + chaine($e11_cpt["e"]) + " échec(s)"
+si ($e11_cpt["e"] == 0) { >> "RESULTAT: OK" } sinon { >> "RESULTAT: ECHEC" }

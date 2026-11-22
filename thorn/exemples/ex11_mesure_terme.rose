@@ -1,0 +1,8 @@
+# Mesure isolée : UNE seule verification de terme par le noyau Thorn.
+# Utilisé uniquement par thorn/bench_thorn.sh (charge "terme_individuel").
+importer "thorn/src/noyau.rose"
+
+$e11_ctx = noy_ctx_vide()
+$e11_ctx = noy_ctx_ajouter($e11_ctx, "A", noy_type(0))
+$e11_r = verifier(noy_var("A"), $e11_ctx)
+>> "verifier(A) : ok = " + chaine(noy_est_ok($e11_r))
