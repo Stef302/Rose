@@ -9615,12 +9615,58 @@ pub extern "C" fn rose_temps() -> i64 { crate::run::temps_unix_nanos() as i64 }
 thread_local! {
     static JIT_HANDLES: std::cell::RefCell<Vec<Valeur>> =
         const { std::cell::RefCell::new(Vec::new()) };
+
+    /// Dernier miroir i64 résolu : `(handle, *mut Vec<i64>)`. Un seul
+    /// `Cell::get()` par helper au lieu d'un `jit_handle_ref` + deux matches
+    /// d'enum sur le chemin chaud. Le pointeur vise une cible `Rc` (tas
+    /// stable), valide tant que la liste vit.
+    static MIROIR_CACHE: std::cell::Cell<(i64, *mut Vec<i64>)> =
+        const { std::cell::Cell::new((0, std::ptr::null_mut())) };
+}
+
+#[inline(always)]
+fn miroir_depuis_handle(h: i64) -> Option<&'static mut Vec<i64>> {
+    let (ch, p) = MIROIR_CACHE.with(|c| c.get());
+    if ch == h && !p.is_null() { return Some(unsafe { &mut *p }); }
+    // Résolution (froide) — handle indexé ou pointeur tagué. Dans ce dernier
+    // cas l'adresse encodée est celle du champ 0 de `Liste` : on retrouve la
+    // `Valeur` dans `JIT_HANDLES` par égalité du pointeur `Rc`.
+    let v = if h & LISTE_TAG != 0 {
+        let idx = JIT_HANDLES.with(|t| {
+            let t = t.borrow();
+            t.iter().position(|v| matches!(&v, Valeur::Liste(l) if liste_handle_ptr(l) == h))
+        })? as i64;
+        jit_handle_ref(idx)
+    } else {
+        jit_handle_ref(h)
+    };
+    let p = match v {
+        Valeur::Liste(l) => match unsafe { &mut *l.1.as_ptr() } {
+            crate::run::CompactListe::I64(xs) => {
+                // Réservation UNE fois à la résolution (hors boucle chaude) :
+                // le `push` de `rose_jit_joindre` n'a plus aucun test de
+                // capacité coûteux par élément.
+                if xs.capacity() < 131072 {
+                    xs.reserve_exact(131072usize.saturating_sub(xs.len()));
+                }
+                xs as *mut Vec<i64>
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    MIROIR_CACHE.with(|c| c.set((h, p)));
+    Some(unsafe { &mut *p })
 }
 
 /// Réinitialise la table de handles avant une compilation du principal.
 pub(crate) fn jit_handles_reinitialiser() {
     JIT_HANDLES.with(|t| t.borrow_mut().clear());
     JIT_I64_BUFFERS.with(|t| t.borrow_mut().clear());
+    // Les handles sont réutilisés à partir de 0 : le cache pointeur doit être
+    // vidé, sinon un ancien `&mut Vec<i64>` pourrait être prolongé sur une
+    // liste différente (même index).
+    MIROIR_CACHE.with(|c| c.set((0, std::ptr::null_mut())));
 }
 
 /// Arène des tableaux compacts émis par LISTE_P8. Le pointeur est tenu vivant
@@ -9918,28 +9964,96 @@ fn layout_valeur_entier_nu() -> Option<(usize, [u64; 8])> {
     Some((off, wa))
 }
 
+/// Résolution froide d'une `Liste` depuis n'importe quelle forme de handle
+/// (contrôle/inspection — jamais sur le chemin chaud).
+fn liste_controle(h: i64) -> Option<&'static crate::run::Liste> {
+    let v = if h & LISTE_TAG != 0 {
+        let idx = JIT_HANDLES.with(|t| {
+            let t = t.borrow();
+            t.iter().position(|x| matches!(&x, Valeur::Liste(l) if liste_handle_ptr(l) == h))
+        })? as i64;
+        jit_handle_ref(idx)
+    } else {
+        jit_handle_ref(h)
+    };
+    match v { Valeur::Liste(l) => Some(l), _ => None }
+}
+
+/// Matérialise le `Vec<Valeur>` canonique depuis le miroir `Vec<i64>`.
+///
+/// Le chemin chaud JIT n'écrit QUE le miroir (8 octets/élément au lieu de 24).
+/// Le canonique reste la source de vérité pour l'interpréteur : on le
+/// reconstruit en BLOCK, une seule fois, dès qu'un helper expose la liste à
+/// du code non-JIT (`longueur`, affichage, `chaine`). Tant que personne ne
+/// l'observe, aucun octet canonique n'est écrit — c'est le gain mesuré.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_liste_materiel(h: i64) {
+    let Some(l) = liste_controle(h) else { return; };
+    let n = {
+        let m = l.1.borrow();
+        match &*m { crate::run::CompactListe::I64(xs) => xs.len(), _ => return }
+    };
+    let mut canon = l.0.borrow_mut();
+    let deja = canon.len();
+    if deja >= n { return; }
+    canon.reserve(n - deja);
+    let debut = canon.len();
+    let m = l.1.borrow();
+    if let crate::run::CompactListe::I64(xs) = &*m {
+        for &v in &xs[debut..n] { canon.push(Valeur::Entier(v, None)); }
+    }
+}
+
+/// Nombre de slots du miroir (plafonné à `n`), -1 si opaque — helper de
+/// contrôle utilisé par `opt_jit_listes.rs`.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_liste_slots_count(h: i64, n: i64) -> i64 {
+    let Some(l) = liste_controle(h) else { return -1; };
+    let m = l.1.borrow();
+    match &*m {
+        crate::run::CompactListe::I64(xs) => xs.len().min(n.max(0) as usize) as i64,
+        crate::run::CompactListe::Opac => -1,
+    }
+}
+
+/// Force le repli canonique (miroir opaque) — helper de contrôle.
+#[unsafe(no_mangle)]
+pub extern "C" fn rose_jit_liste_miroir_invalider(h: i64) {
+    if let Some(l) = liste_controle(h) { l.miroir_invalider(); }
+}
+
 /// `joindre(liste, entier)` : mutation en place, SANS clone de handle ni
 /// contrôle `RefCell` dynamique (voie i64 liste, voir le doc LISTE_I64_FAST).
 /// L'entier est passé en i64 nu — sûr car le garde `principal_sans_boxage`
-/// prouve que les slots numériques du principal ne posent jamais de BigInt
-/// (voir `expr_peut_boxer`). `Valeur::z` conserve le boxage au-delà de 2²⁴ :
-/// la représentation reste UNIQUE et identique à l'interpréteur.
+/// prouve que les slots numériques du principal ne posent jamais de BigInt.
+/// OPT_JIT_LISTES : le miroir compact porte l'écriture chaude (8 octets au
+/// lieu de 24 dans le canonique) ; le canonique est matérialisé à la demande.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_joindre(h: i64, v: i64) {
-    if let Some(vec) = liste_mut_depuis_handle(h) {
-        vec.push(Valeur::z(v));
+    // OPT_JIT_LISTES — miroir compact seul sur le chemin chaud JIT : 8 octets
+    // au lieu des 24 du `Valeur` canonique. Le canonique reste source de
+    // vérité et est matérialisé à la demande (voir `rose_jit_longueur`).
+    if let Some(xs) = miroir_depuis_handle(h) {
+        // Réservation faite à la résolution : écriture brute + set_len, sans
+        // le test de capacité de `Vec::push` sur chaque élément.
+        let n = xs.len();
+        unsafe {
+            xs.as_mut_ptr().add(n).write(v);
+            xs.set_len(n + 1);
+        }
     }
 }
 
 /// `longueur(liste_ou_chaine)` : O(1) pour la rope et la liste.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_longueur(h: i64) -> i64 {
-    // Chemin liste (handle pointeur tagué) : zéro thread-local, zéro clone.
-    if h & LISTE_TAG != 0 {
-        if let Some(vec) = liste_mut_depuis_handle(h) {
-            return vec.len() as i64;
-        }
+    // `longueur` expose la liste au reste du programme : on synchronise le
+    // canonique avant de répondre (le miroir seul n'est pas visible hors JIT).
+    if let Some(l) = liste_controle(h) {
+        rose_jit_liste_materiel(h);
+        return l.0.borrow().len() as i64;
     }
+    if h & LISTE_TAG != 0 { return 0; }
     match jit_handle_ref(h) {
         Valeur::Chaine(s) => s.n as i64,
         Valeur::Liste(l) => liste_vec_nv(l).len() as i64,
@@ -9952,12 +10066,17 @@ pub extern "C" fn rose_jit_longueur(h: i64) -> i64 {
 /// le garde `liste_entiers_nus` le prouve statiquement avant d'accepter le JIT.
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_index_i64(h: i64, i: i64) -> i64 {
-    if let Some(vec) = liste_mut_depuis_handle(h) {
-        if let Some(Valeur::Entier(x, None)) = vec.get(i as usize) {
-            return *x;
-        }
+    if i < 0 { return 0; }
+    if let Some(xs) = miroir_depuis_handle(h) {
+        let u = i as usize;
+        if u < xs.len() { return unsafe { *xs.get_unchecked(u) }; }
     }
-    // Ne doit jamais arriver sous le garde ; valeur neutre pour éviter UB.
+    // Repli canonique (liste hétérogène / miroir invalidé) : on matérialise
+    // d'abord le canonique depuis le miroir, puis on relit (chemin froid).
+    rose_jit_liste_materiel(h);
+    if let Some(vec) = liste_mut_depuis_handle(h) {
+        if let Some(Valeur::Entier(x, None)) = vec.get(i as usize) { return *x; }
+    }
     0
 }
 
@@ -10058,6 +10177,9 @@ pub extern "C" fn rose_jit_flottant_handle(v: f64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_valeur_afficher(h: i64) {
+    // Une liste affichée doit avoir son canonique à jour (le miroir n'est
+    // qu'un accélérateur de lecture JIT).
+    rose_jit_liste_materiel(h);
     crate::run::afficher(&jit_lire_handle(h));
 }
 
@@ -10109,6 +10231,7 @@ pub extern "C" fn rose_jit_valeur_unaire(h: i64, code: i64) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rose_jit_valeur_chaine(h: i64) -> i64 {
+    rose_jit_liste_materiel(h);
     let s = crate::run::chaine_de(&jit_lire_handle(h));
     jit_allouer_handle(Valeur::s(s))
 }
