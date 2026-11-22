@@ -2,9 +2,11 @@
 
 ## État au moment de l'écriture
 
-**Corrige et vérifié côté émetteur hébergé** ; chaîne C0→C1→C2 en cours
-(script détaché `/tmp/opencode/final_chain.sh`, journal
-`/tmp/opencode/final_chain.log`).
+**Chaîne C0→C1→C2 terminée avec succès le 22/11/2026 à 18:16:44 UTC
+(`C1 == C2`, cmp rc=0, md5 `9fbd21d2b06efe7f1e86ac5b5730d2c8`) : point fixe
+étendu du self-hosting A–Z atteint.** Voir `CHAINE_FINALE.md` (§7 ci-dessous).
+Les sections 1–6 conservent l'historique des diagnostics et de l'échec matériel
+de 14:39, désormais levé.
 
 ### 1. Message G5ERR (rc=2 silencieux)
 
@@ -60,7 +62,7 @@ La batterie AZ a été relancée avec une copie figée de l'émetteur corrigé :
 `md5=96e5835e7c2512cbcb374b84f545956f`, binaire Rose inchangé
 `md5=7614a534b9411917ef9cd49a834014a8`.
 
-### 5. Chaîne C0 → C1 → C2 (en cours)
+### 5. Chaîne C0 → C1 → C2 (tentatives précédentes ; voir §7 pour le résultat final)
 
 Le diagnostic détaché du 11:13 UTC (PID 2889184) patchait encore
 `compilateur/rose_natif.rose` ; le script final attend son message
@@ -88,7 +90,7 @@ Résultats réels du 22/11 (journal `/tmp/opencode/final_chain.log`) :
 5. `C0_final2.elf rose_natif.rose > C1.elf` → **échec matériel**, voir §6.
 
 Le correctif a donc été validé de bout en bout côté émetteur et côté C0 ;
-seul le jalon C1/C2 reste bloqué par la mémoire (§6). Le pilote a
+le jalon C1/C2 a été rejoué avec succès par la suite (§7). Le pilote a
 postérieurement réduit le pic RSS de l'émetteur de 98,6 % et régénéré un
 `C0_opt.elf` (`/tmp/opencode/C0_opt.elf`, 1 600 780 o, 18:28 UTC) avec
 `fib_opt.elf` 9 496 o ; la tentatives C1/C2 avec ce binaire appartient à la
@@ -109,8 +111,34 @@ des centaines de millions de descripteurs de chaînes/listes qui ne sont
 jamais libérés. Le compilateur hébergé (Rust, `Rc`) n'a pas ce problème mais
 met > 2 h (boucles O(n²) interprétées).
 
-Conséquence: `C1 == C2` n'est PAS atteint. Prochain changement nécessaire
-avant de rejouer la chaîne: récupération mémoire dans le runtime G5
-(compactage ou réutilisation des descripteurs temporaires de l'émetteur),
-ou réduction du pic en émettant par morceaux. Aucun résultat de self-hosting
-complet n'est revendiqué.
+Conséquence à ce moment-là: `C1 == C2` n'était PAS atteint. La voie envisagée
+était la récupération mémoire dans le runtime G5 (compactage ou réutilisation
+des descripteurs temporaires de l'émetteur), ou la réduction du pic en émettant
+par morceaux. **Ce blocage est désormais levé (§7) : voir `CHAINE_FINALE.md`.**
+
+---
+
+## 7. Résultat final de la chaîne (22/11/2026, 18:16:44 UTC)
+
+Script `/tmp/opencode/chain_finale2.sh`, journal
+`/tmp/opencode/chain_finale2.log`, garde-fou 20 Gio sur chaque émission.
+
+```text
+[18:02:00]   C0 rc=0 taille=1602056 magic=7f454c4602010100
+[18:02:11]   fib rc=0 header=0200b700 sortie=317811 cmp=OK
+[18:02:16]   sonde p3 rc=0 taille=9104
+[18:09:33]   C1 rc=0 taille=1602056 magic=7f454c4602010100 err=
+[18:16:44]   C2 rc=0 taille=1602056 magic=7f454c4602010100 err=
+[18:16:44] SUCCES — C1 == C2, point fixe étendu atteint, md5=9fbd21d2b06efe7f1e86ac5b5730d2c8
+```
+
+- `cmp C1_v4.elf C2_v4.elf` → **rc=0 (identiques)** ; C0, C1 et C2 ont le même
+  md5 `9fbd21d2b06efe7f1e86ac5b5730d2c8` et la même taille 1 602 056 octets.
+- C1 : 437 s, C2 : 431 s ; pic RSS ~408 Mio (contre 84 Gio en §6), garde-fou
+  jamais déclenché, stderr vides.
+- ELF valide : `ELF64`, `EXEC`, `Machine: AArch64`, entrée `0x4000b0` ; machine
+  hôte `aarch64` ; `fib_v4.elf` s'exécute et rend `317811`.
+- **Implication** : le compilateur natif auto-émis se recompile lui-même de
+  façon bit-idempotente. Point fixe étendu du self-hosting A–Z atteint.
+- Aucun commit ni publication effectué. Détails, commandes exactes et sorties
+  brutes : `CHAINE_FINALE.md`.

@@ -48,6 +48,7 @@ M4.2 analyseur en Rose                         ← FAIT (148 fichiers, 5b214b6)
 M4.3 vérificateur en Rose                      ← FAIT (60/61, 3aa6df5)
 M4.4 émetteur RIR en Rose                      ← FAIT (dc97a63, 46/46 sorties octet-identiques)
 M4.5 point fixe de bootstrap                   ← FAIT (1f7cd3c, md5 identique 83449e53…)
+M4.6 point fixe étendu (ELF natif C0=C1=C2)    ← FAIT (22/11, md5 9fbd21d2…, CHAINE_FINALE.md)
 M5  Runtime autonome (sans Rust std, sans GMP)
 M5.1 arithmétique exacte en Rose pur           ← FAIT (mul_rapide, i128x)
 M5.2 E/S et mémoire sans std                    ← FAIT (de2fc4a, module sys_io)
@@ -233,6 +234,15 @@ le tout en Rose.
 
 **Porte** : `rose-2` (fabriqué par `rose-1`) émet le MÊME RIR **octet pour octet** que
 `rose-1` sur `compilateur.rose`. Le compilateur auto-hébergé se reproduit lui-même.
+
+### M4.6 — point fixe étendu (binaire natif auto-émis) ✅
+
+**Mesuré le 22/11/2026** : `C0` (émis par l'émetteur hébergé), `C1 = C0(rose_natif.rose)`
+et `C2 = C1(rose_natif.rose)` sont **octet pour octet identiques** :
+`cmp` rc=0, taille 1 602 056 o, md5 `9fbd21d2b06efe7f1e86ac5b5730d2c8`.
+Le compilateur natif ELF se recompile lui-même de façon idempotente, sous garde-fou
+20 Gio, pic RSS ~408 Mio, ~7 min par génération. Détails et sorties brutes :
+`rose/docs/CHAINE_FINALE.md`. M5 reste un jalon distinct.
 
 ---
 
