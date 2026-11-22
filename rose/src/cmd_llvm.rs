@@ -504,12 +504,12 @@ fn orc(argv: &[String]) -> ! {
         // Le generateur AOT6 de hasard utilise getrandom (syscall Linux) :
         // sous Windows on laisse le snapshot figer le tirage a la compilation.
         orc_natif(&prog, &sortie, arch, true)
-            .or_else(|_| orc_snapshot(&prog, &sortie, arch, true))
+            .or_else(|_| orc_snapshot(prog, &sortie, arch, true))
     } else {
         orc_natif(&prog, &sortie, arch, false)
             .or_else(|r1| orc_runtime(&prog, &sortie, arch)
                 .map_err(|r2| format!("{} ; runtime natif : {}", r1, r2)))
-            .or_else(|_| orc_snapshot(&prog, &sortie, arch, false))
+            .or_else(|_| orc_snapshot(prog, &sortie, arch, false))
     };
     match resultat {
         Ok(()) => std::process::exit(0),
@@ -533,14 +533,14 @@ fn orc(argv: &[String]) -> ! {
 /// l'interpreteur — pour TOUTES les valeurs : listes, tables, rationnels,
 /// chaines, bigint, primitives generales, E/S.
 fn orc_snapshot(
-    prog: &crate::front::Programme,
+    prog: crate::front::Programme,
     sortie: &str,
     arch: crate::natif_emetteur::Architecture,
     windows: bool,
 ) -> Result<(), String> {
     // Capture de TOUTE la sortie du programme (ecrire_out → SINK).
     crate::run::set_sink(true);
-    let mut interp = crate::interp::Interp::nouveau(prog.clone());
+    let mut interp = crate::interp::Interp::nouveau(prog);
     interp.executer_principal();
     let donnees = crate::run::take_sink()
         .ok_or_else(|| "capture de la sortie impossible".to_string())?
@@ -558,6 +558,7 @@ fn orc_snapshot(
         .map_err(|e| format!("emission machine impossible : {}", e))?;
 
     let mut options = crate::link_natif::Options::nouveau(arch);
+    options.compact = true; // AOT8 : ELF sans symboles ni en-têtes de section
     options.n_slots_total = programme.n_slots_total;
     options.sortie_exacte = Some(donnees.clone());
     let chemin = std::path::Path::new(sortie);
@@ -606,6 +607,7 @@ fn orc_natif(
             natif_erreur!("la valeur exacte demande le moteur d'exécution");
         }
         let mut options = crate::link_natif::Options::nouveau(arch);
+        options.compact = true; // AOT8 : ELF compact
         options.n_slots_total = programme.n_slots_total;
         options.sortie_exacte = Some(texte.into_bytes());
         let chemin = Path::new(sortie);
@@ -631,6 +633,7 @@ fn orc_natif(
             natif_erreur!("le générateur aléatoire demanderait le moteur d'exécution");
         }
         let mut options = crate::link_natif::Options::nouveau(arch);
+        options.compact = true; // AOT8 : ELF compact
         options.n_slots_total = programme.n_slots_total;
         options.afficher_valeur = true;
         let chemin = Path::new(sortie);
@@ -738,6 +741,7 @@ fn orc_natif(
         natif_erreur!("certaines opérations demandent le moteur d'exécution");
     }
     let mut options = crate::link_natif::Options::nouveau(arch);
+    options.compact = true; // AOT8 : ELF sans symboles ni en-têtes de section
     options.n_slots_total = programme.n_slots_total;
     // ELF : la valeur complète est ALSO écrite sur stdout (le code de retour
     // POSIX est limité à 8 bits).
@@ -1002,6 +1006,7 @@ fn orc_runtime(
         .map_err(|e| format!("émission machine impossible : {}", e))?;
 
     let mut options = crate::link_natif::Options::nouveau(arch);
+    options.compact = true; // AOT8 : ELF sans symboles ni en-têtes de section
     options.n_slots_total = programme.n_slots_total;
     options.runtime = programme.runtime.clone();
     // Le runtime écrit la sortie lui-même : le stub historique ne la

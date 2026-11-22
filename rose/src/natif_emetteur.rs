@@ -137,6 +137,10 @@ pub struct RuntimeLiens {
     pub formater: Option<usize>,
     /// Tag de la valeur finale (0 = entier → stub décimal historique).
     pub tag: u8,
+    /// Dernière adresse absolue que le runtime doit voir mappée. Les
+    /// programmes sans bigint n'utilisent ni TMP_ADDR ni le tampon de
+    /// digits : le linker peut donc s'arrêter juste après SORTIE (−8 Ko).
+    pub zone_fin: u64,
 }
 
 /// Résultat d'une émission de TOUTES les fonctions d'un programme, avec
@@ -241,9 +245,9 @@ pub fn emettre(corps: &CorpsRir, arch: Architecture) -> Result<Emitted, EmitErro
     b.prologue();
 
     let mut op_offsets = Vec::with_capacity(corps.ops.len() + 1);
-    for op in &corps.ops {
+    for (i, op) in corps.ops.iter().enumerate() {
         op_offsets.push(b.code.len());
-        b.operation(op)?;
+        b.operation(op, i + 1 == corps.ops.len())?;
     }
     op_offsets.push(b.code.len()); // début de l'épilogue (= cible des `retour`)
     b.epilogue();
@@ -320,9 +324,9 @@ pub fn emettre_programme(fonctions: &[(String, CorpsRir)], arch: Architecture)
         let mut b = Builder::new_lie(arch, corps, &noms, frame_bytes);
         b.prologue();
         let mut op_offsets = Vec::with_capacity(corps.ops.len() + 1);
-        for op in &corps.ops {
+        for (i, op) in corps.ops.iter().enumerate() {
             op_offsets.push(b.code.len());
-            b.operation(op)?;
+            b.operation(op, i + 1 == corps.ops.len())?;
         }
         op_offsets.push(b.code.len()); // épilogue (cible des `retour`)
         b.epilogue();
@@ -425,9 +429,9 @@ pub fn emettre_programme_aot(
         b.avec_runtime = true;
         b.prologue();
         let mut op_offsets = Vec::with_capacity(corps.ops.len() + 1);
-        for op in &corps.ops {
+        for (i, op) in corps.ops.iter().enumerate() {
             op_offsets.push(b.code.len());
-            b.operation(op)?;
+            b.operation(op, i + 1 == corps.ops.len())?;
         }
         op_offsets.push(b.code.len());
         b.epilogue();
@@ -497,7 +501,16 @@ pub fn emettre_programme_aot(
         appels,
         fallbacks: Vec::new(),
         sortie: None,
-        runtime: Some(RuntimeLiens { sortir, formater, tag: cfg.tag_sortie }),
+        runtime: Some(RuntimeLiens {
+            sortir, formater, tag: cfg.tag_sortie,
+            zone_fin: if cfg.primitifs.contains(&crate::runtime_natif::Primitif::BigintPuissance) {
+                crate::runtime_natif::ZONE_FIN
+            } else {
+                // Ni TMP ni le tampon de digits ne sont touchés sans bigint :
+                // 1 Kio dans SORTIE suffit largement (un f64 exact < 40 o).
+                crate::runtime_natif::SORTIE_ADDR + 1024
+            },
+        }),
     })
 }
 
@@ -955,6 +968,10 @@ struct Builder<'a> {
     types: Vec<u8>,
     /// AOT6 : le runtime natif est disponible dans le segment.
     avec_runtime: bool,
+    /// Registres « second » qui portent encore un opérande vivant et qui
+    /// seraient détruits par un appel (caller-saved). Ils sont sauvés dans
+    /// des slots scratch autour de chaque `appel_direct`.
+    secs_vifs: Vec<u32>,
 }
 
 // Registres aarch64.
@@ -978,6 +995,7 @@ impl<'a> Builder<'a> {
             appels: Vec::new(), fallbacks: Vec::new(), scratch: 0,
             mode: ModeAppel::Trampoline, table: &[], frame_bytes: 0,
             appels_lies: Vec::new(), types: Vec::new(), avec_runtime: false,
+            secs_vifs: Vec::new(),
         }
     }
 
@@ -1036,6 +1054,24 @@ impl<'a> Builder<'a> {
 
     fn u32(&mut self, v: u32) { self.code.extend_from_slice(&v.to_le_bytes()); }
     fn octets(&mut self, v: &[u8]) { self.code.extend_from_slice(v); }
+
+    /// `mov dst, src` entre registres entiers (x0/x9 ou rax/rcx).
+    /// Évite un aller-retour par les slots quand une sous-expression est
+    /// directement disponible dans le registre de valeur.
+    fn mov_reg(&mut self, dst: u32, src: u32) {
+        match self.arch {
+            Architecture::Aarch64 => {
+                // ORR dst, xzr, src
+                self.u32(0xAA000000 | (src << 16) | (31 << 5) | dst);
+            }
+            Architecture::X86_64 => {
+                // mov r/m64, r64 : REX.W + REX.R(src>7) + REX.B(dst>7).
+                let s = src as u8; let d = dst as u8;
+                self.octets(&[0x48 | ((s >> 3) << 2) | (d >> 3), 0x89,
+                              0xC0 | ((s & 7) << 3) | (d & 7)]);
+            }
+        }
+    }
 
     // ── prologue / épilogue ────────────────────────────────────────────
     fn prologue(&mut self) {
@@ -1106,13 +1142,14 @@ impl<'a> Builder<'a> {
 
     /// `mov r64, [rbx+off]` (opcode 0x8B) ou `mov [rbx+off], r64` (0x89).
     fn x86_mem(&mut self, opcode: u8, reg: u8, off: usize) {
-        // REX.W ; modrm(mod=01, reg, rm=011=rbx) ; disp8
+        // REX.W(+R si reg >= 8) ; modrm(mod=01, reg, rm=011=rbx) ; disp8
         // Pour disp8 >= 128, passer en disp32 (mod=10).
-        self.octets(&[0x48]);
+        self.octets(&[0x48 | ((reg >> 3) << 2)]);
+        let r = reg & 7;
         if off <= 127 {
-            self.octets(&[opcode, 0x43 | (reg << 3), off as u8]);
+            self.octets(&[opcode, 0x43 | (r << 3), off as u8]);
         } else {
-            self.octets(&[opcode, 0x83 | (reg << 3)]);
+            self.octets(&[opcode, 0x83 | (r << 3)]);
             self.octets(&(off as u32).to_le_bytes());
         }
     }
@@ -1153,16 +1190,18 @@ impl<'a> Builder<'a> {
 
     // ── ALU (résultat dans le registre de valeur) ──────────────────────
     /// Calcule `val ← val OP sec` (aarch64 : x0/x9 ; x86 : rax/rcx).
-    fn alu(&mut self, op: Oper) {
+    /// `sec` est passé en paramètre pour permettre l'évaluation sans slot
+    /// des sous-expressions imbriquées (chaque niveau utilise son registre).
+    fn alu(&mut self, op: Oper, sec: u32) {
         match self.arch {
             Architecture::Aarch64 => {
                 match op {
-                    Oper::Add => self.u32(0x8B000000 | (A64_SEC << 16) | (A64_VAL << 5) | A64_VAL),
-                    Oper::Sub => self.u32(0xCB000000 | (A64_SEC << 16) | (A64_VAL << 5) | A64_VAL),
-                    Oper::Mul => self.u32(0x9B007C00 | (A64_SEC << 16) | (A64_VAL << 5) | A64_VAL),
+                    Oper::Add => self.u32(0x8B000000 | (sec << 16) | (A64_VAL << 5) | A64_VAL),
+                    Oper::Sub => self.u32(0xCB000000 | (sec << 16) | (A64_VAL << 5) | A64_VAL),
+                    Oper::Mul => self.u32(0x9B007C00 | (sec << 16) | (A64_VAL << 5) | A64_VAL),
                     Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne => {
                         // cmp val, sec ; cset val, cond
-                        self.u32(0xEB000000 | (A64_SEC << 16) | (A64_VAL << 5) | 31);
+                        self.u32(0xEB000000 | (sec << 16) | (A64_VAL << 5) | 31);
                         let cond = match op {
                             Oper::Lt => 11, Oper::Le => 13, Oper::Gt => 12,
                             Oper::Ge => 10, Oper::Eq => 0, Oper::Ne => 1, _ => unreachable!(),
@@ -1173,12 +1212,20 @@ impl<'a> Builder<'a> {
                 }
             }
             Architecture::X86_64 => {
+                let s = sec as u8;
+                // ModRM(mode=11, reg=s, rm=rax) + REX.W/R/B pour les
+                // registres étendus (rcx, rdx, r8-r11 selon la profondeur).
+                let rex_rm = 0x48 | ((s >> 3) << 2);
+                let modrm_rm_rax = 0xC0 | ((s & 7) << 3);
                 match op {
-                    Oper::Add => self.octets(&[0x48, 0x01, 0xC8]), // add rax, rcx
-                    Oper::Sub => self.octets(&[0x48, 0x29, 0xC8]), // sub rax, rcx
-                    Oper::Mul => self.octets(&[0x48, 0x0F, 0xAF, 0xC1]), // imul rax, rcx
+                    Oper::Add => self.octets(&[rex_rm, 0x01, modrm_rm_rax]), // add rax, s
+                    Oper::Sub => self.octets(&[rex_rm, 0x29, modrm_rm_rax]), // sub rax, s
+                    Oper::Mul => self.octets(&[
+                        0x48 | (s >> 3), 0x0F, 0xAF,
+                        0xC0 | (s & 7),                                  // imul rax, s
+                    ]),
                     Oper::Lt | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne => {
-                        self.octets(&[0x48, 0x39, 0xC8]); // cmp rax, rcx
+                        self.octets(&[rex_rm, 0x39, modrm_rm_rax]); // cmp rax, s
                         let setcc: u8 = match op {
                             Oper::Lt => 0x9c, Oper::Le => 0x9e, Oper::Gt => 0x9f,
                             Oper::Ge => 0x9d, Oper::Eq => 0x94, Oper::Ne => 0x95,
@@ -1363,6 +1410,26 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Saute si la valeur DÉJÀ dans x0/rax n'est pas exactement 1 (évite le
+    /// `ldr` de `saut_si_faux` quand l'évaluation vient de poser la valeur).
+    fn saut_si_faux_val(&mut self, cible: usize) {
+        if cible > self.corps.ops.len() { return; }
+        match self.arch {
+            Architecture::Aarch64 => {
+                self.u32(0xF1000000 | (1 << 10) | (A64_VAL << 5) | 31);
+                let insn = self.code.len();
+                self.u32(0x54000000 | 1);
+                self.sauts.push(CorrectifSaut::A64BCond { insn, cible });
+            }
+            Architecture::X86_64 => {
+                self.octets(&[0x48, 0x83, 0xF8, 0x01]);
+                let insn = self.code.len();
+                self.octets(&[0x0F, 0x85, 0, 0, 0, 0]);
+                self.sauts.push(CorrectifSaut::X86Jcc { insn, cible });
+            }
+        }
+    }
+
     fn corriger_sauts(&mut self, op_offsets: &[usize]) {
         let sauts = std::mem::take(&mut self.sauts);
         for c in sauts {
@@ -1446,6 +1513,16 @@ impl<'a> Builder<'a> {
         let cible = self.table.iter().position(|n| n == nom)
             .ok_or_else(|| EmitError::FonctionInconnue(nom.to_string()))?;
         let f = self.frame_bytes;
+        // Un opérande gauche peut être vivant dans un registre « second »
+        // (caller-saved) : l'appelé l'écraserait. On le met à l'abri dans
+        // un slot scratch du FRAME DE L'APPELANT, puis on le recharge.
+        let mut secs_sauves: Vec<(u32, u16)> = Vec::new();
+        for i in 0..self.secs_vifs.len() {
+            let r = self.secs_vifs[i];
+            let s = self.fresh()?;
+            self.store_slot(r, s);
+            secs_sauves.push((r, s));
+        }
         match self.arch {
             Architecture::Aarch64 => {
                 // ⚠ On charge les arguments AVANT de bouger sp (x0..x3), puis
@@ -1455,10 +1532,12 @@ impl<'a> Builder<'a> {
                 }
                 // ⚠ Forme « extended register » (bit 21 + option=3) :
                 // c'est la seule qui puisse encoder SP comme Rn/Rd.
-                // x9 est caller-saved : on le RECHARGE après le `bl`.
-                self.mov_imm(9, f as i64);
-                self.u32(0xCB000000 | (1 << 21) | (9 << 16) | (3 << 13)
-                         | (31 << 5) | 31); // sub sp, sp, x9
+                // x10 est caller-saved et N'EST PAS x9 (= registre second
+                // de l'évaluateur) : l'appel ne clobber donc pas l'opérande
+                // gauche déjà chargée dans x9. On le RECHARGE après le `bl`.
+                self.mov_imm(10, f as i64);
+                self.u32(0xCB000000 | (1 << 21) | (10 << 16) | (3 << 13)
+                         | (31 << 5) | 31); // sub sp, sp, x10
                 for i in 0..n_args {
                     // str x{i}, [sp, #8*i]  (imm12 = déplacement / 8 = i)
                     self.u32(0xF9000000 | ((i as u32) << 10) | (31 << 5) | i as u32);
@@ -1467,9 +1546,10 @@ impl<'a> Builder<'a> {
                 self.u32(0xAA1F03E1); // mov x1, xzr (trampoline inutilisée)
                 let correctif = self.code.len();
                 self.u32(0x9400_0000); // bl (patché par emettre_programme)
-                self.mov_imm(9, f as i64); // ⚠ rechargé : l'appelé a clobber x9
-                self.u32(0x8B000000 | (1 << 21) | (9 << 16) | (3 << 13)
-                         | (31 << 5) | 31); // add sp, sp, x9
+                self.mov_imm(10, f as i64); // rechargé : l'appelé clobber x10
+                self.u32(0x8B000000 | (1 << 21) | (10 << 16) | (3 << 13)
+                         | (31 << 5) | 31); // add sp, sp, x10
+                for (r, s) in &secs_sauves { self.load_slot(*r, *s); }
                 self.appels_lies.push(AppelLie { nom: nom.to_string(), cible, correctif });
             }
             Architecture::X86_64 => {
@@ -1485,6 +1565,7 @@ impl<'a> Builder<'a> {
                 self.octets(&[0xE8, 0, 0, 0, 0]);       // call rel32 (patché)
                 self.octets(&[0x48, 0x81, 0xC4]);       // add rsp, imm32
                 self.octets(&(f as u32).to_le_bytes());
+                for (r, s) in &secs_sauves { self.load_slot(*r, *s); }
                 self.appels_lies.push(AppelLie {
                     nom: nom.to_string(), cible, correctif: insn + 1,
                 });
@@ -1547,6 +1628,95 @@ impl<'a> Builder<'a> {
     }
 
     // ── évaluation d'expressions ───────────────────────────────────────
+    /// Une expression est « sec-sûre » si son évaluation ne touche pas au
+    /// registre second (x9 / rcx). C'est le cas des feuilles et de Neg/Non.
+    /// `AppelRir` l'est aussi depuis que `appel_direct` utilise x10 (et non
+    /// x9) pour la taille de trame sur aarch64.
+    fn sec_sur(&self, e: &Eabstrait) -> bool {
+        match e {
+            Eabstrait::Slot(..) | Eabstrait::Entier(_) | Eabstrait::AppelRir { .. }
+            | Eabstrait::Neg(_) | Eabstrait::Non(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Vrai quand `Binaire(op, a, b)` peut être évalué SANS slot temporaire :
+    /// le résultat de `a` reste dans le registre second, `b` est évaluée
+    /// dans le registre de valeur, puis l'ALU combine les deux.
+    fn binaire_sans_slot(&self, op: &Oper, a: &Eabstrait, b: &Eabstrait) -> bool {
+        self.mode == ModeAppel::Direct && !self.avec_runtime
+            && matches!(op, Oper::Add | Oper::Sub | Oper::Mul | Oper::Lt
+                        | Oper::Le | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne)
+            && self.sec_sur(b)
+            && self.peut_evaluer_reg(a) && self.peut_evaluer_reg(b)
+    }
+
+    /// Évalue `e` en laissant le résultat (i64) dans le registre de valeur
+    /// (x0 / rax), sans écrire de slot. Utilisé pour les expressions natives
+    /// du chemin AOT sans runtime : supprime les `str`/`ldr` redondants des
+    /// sous-expressions (chacune était auparavant stockée puis rechargée).
+    fn evaluer_reg(&mut self, e: &Eabstrait, niveau: usize) -> Result<(), EmitError> {
+        match e {
+            Eabstrait::Slot(s, _) => {
+                self.load_slot(self.val_reg(), *s);
+            }
+            Eabstrait::Entier(t) => {
+                let v = t.parse::<i64>().map_err(|_| EmitError::EntierHorsPlage(t.clone()))?;
+                self.mov_imm(self.val_reg(), v);
+            }
+            Eabstrait::Neg(x) => {
+                self.evaluer_reg(x, niveau)?;
+                self.neg_val();
+            }
+            Eabstrait::Non(x) => {
+                self.evaluer_reg(x, niveau)?;
+                self.non_val();
+            }
+            Eabstrait::Binaire { op, a, b } if self.binaire_sans_slot(op, a, b) => {
+                // ⚠ ordre : `alu` calcule `val ← val OP sec`. On évalue donc
+                // le OPERANDE DROIT en premier (sauvé dans `sec`), puis le
+                // gauche dans `val` : c'est `a OP b`, pas `b OP a`.
+                let sec = self.sec_reg_at(niveau);
+                self.evaluer_reg(b, niveau + 1)?;
+                self.mov_reg(sec, self.val_reg());
+                self.secs_vifs.push(sec);
+                let r = self.evaluer_reg(a, niveau + 1);
+                self.secs_vifs.pop();
+                r?;
+                self.alu(*op, sec);
+            }
+            Eabstrait::AppelRir { nom, args } => {
+                let mut slots = [0u16; 4];
+                if args.len() > 4 { return Err(EmitError::TropArguments); }
+                let mut appel = Appel { nom: nom.clone(), args_slots: [None; 4] };
+                for (i, a) in args.iter().enumerate() {
+                    match a {
+                        Expr::Var(n, _) => {
+                            let s = self.corps.noms.iter().position(|x| x == n)
+                                .ok_or_else(|| EmitError::SlotInconnu(n.clone()))? as u16;
+                            slots[i] = s;
+                            appel.args_slots[i] = Some(s);
+                        }
+                        _ => return Err(EmitError::SlotInconnu(format!("{:?}", a))),
+                    }
+                }
+                self.appels.push(appel);
+                if self.mode == ModeAppel::Direct {
+                    self.appel_direct(&slots, args.len(), nom)?;
+                } else {
+                    self.appel_runtime(&slots, nom);
+                }
+                // Le résultat est déjà dans x0 / rax : aucun `str` nécessaire.
+            }
+            _ => {
+                let t = self.fresh()?;
+                self.evaluer(e, t)?;
+                self.load_slot(self.val_reg(), t);
+            }
+        }
+        Ok(())
+    }
+
     /// Évalue `e` et pose le résultat (i64) dans le slot `out`.
     fn evaluer(&mut self, e: &Eabstrait, out: u16) -> Result<(), EmitError> {
         match e {
@@ -1624,28 +1794,51 @@ impl<'a> Builder<'a> {
                     self.store_slot(self.val_reg(), out);
                     return Ok(());
                 }
+                // ── chemin natif sans runtime : zéro slot temporaire ──
+                if let Eabstrait::Binaire { op, a, b } = e {
+                    if self.binaire_sans_slot(op, a, b) {
+                        self.evaluer_reg(e, 0)?;
+                        self.store_slot(self.val_reg(), out);
+                        self.set_type(out, if matches!(op, Oper::Lt | Oper::Le
+                                        | Oper::Gt | Oper::Ge | Oper::Eq | Oper::Ne) { 4 } else { 0 });
+                        return Ok(());
+                    }
+                }
                 let ta = self.fresh()?;
                 let tb = self.fresh()?;
                 self.evaluer(a, ta)?;
                 self.evaluer(b, tb)?;
                 self.load_slot(self.val_reg(), ta);
-                self.load_slot(self.sec_reg(), tb);
-                self.alu(*op);
+                let sec = self.sec_reg();
+                self.load_slot(sec, tb);
+                self.alu(*op, sec);
                 self.store_slot(self.val_reg(), out);
                 self.set_type(out, 0);
             }
             Eabstrait::Neg(x) => {
-                let t = self.fresh()?;
-                self.evaluer(x, t)?;
-                self.load_slot(self.val_reg(), t);
+                if self.mode == ModeAppel::Direct && !self.avec_runtime {
+                    self.evaluer_reg(x, 0)?;
+                } else {
+                    let t = self.fresh()?;
+                    self.evaluer(x, t)?;
+                    self.load_slot(self.val_reg(), t);
+                }
                 self.neg_val();
                 self.store_slot(self.val_reg(), out);
             }
             Eabstrait::Non(x) => {
-                let t = self.fresh()?;
-                self.evaluer(x, t)?;
-                self.load_slot(self.val_reg(), t);
+                if self.mode == ModeAppel::Direct && !self.avec_runtime {
+                    self.evaluer_reg(x, 0)?;
+                } else {
+                    let t = self.fresh()?;
+                    self.evaluer(x, t)?;
+                    self.load_slot(self.val_reg(), t);
+                }
                 self.non_val();
+                self.store_slot(self.val_reg(), out);
+            }
+            Eabstrait::AppelRir { .. } if self.mode == ModeAppel::Direct && !self.avec_runtime => {
+                self.evaluer_reg(e, 0)?;
                 self.store_slot(self.val_reg(), out);
             }
             Eabstrait::AppelRir { nom, args } => {
@@ -1682,24 +1875,40 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn sec_reg(&self) -> u32 {
-        match self.arch { Architecture::Aarch64 => A64_SEC, Architecture::X86_64 => X86_SEC as u32 }
+    /// Registre « second » disponible à une profondeur d'imbrication donnée.
+    /// Les niveaux différents utilisent des registres différents pour que
+    /// l'évaluation d'un opérande ne détruise pas l'autre déjà sauvegardé.
+    fn sec_reg_at(&self, niveau: usize) -> u32 {
+        match self.arch {
+            Architecture::Aarch64 => [9u32, 11, 12, 13, 14, 15][niveau.min(5)],
+            Architecture::X86_64 => [1u32, 2, 8, 9, 10, 11][niveau.min(5)],
+        }
     }
+    fn sec_reg(&self) -> u32 { self.sec_reg_at(0) }
 
     // ── opérations RIR ─────────────────────────────────────────────────
-    fn operation(&mut self, op: &Op) -> Result<(), EmitError> {
+    /// `est_dernier` : l'opération est la dernière du corps. Un `retour`
+    /// final tombe alors directement sur l'épilogue : le saut est superflu.
+    fn operation(&mut self, op: &Op, est_dernier: bool) -> Result<(), EmitError> {
         match op {
             Op::Affect { slot, expr } => {
                 self.evaluer(expr, *slot)?;
                 Ok(())
             }
             Op::RetourAbstrait(expr) => {
-                let t = self.fresh()?;
-                self.evaluer(expr, t)?;
-                self.load_slot(self.val_reg(), t);
+                if self.mode == ModeAppel::Direct && !self.avec_runtime && self.peut_evaluer_reg(expr) {
+                    self.evaluer_reg(expr, 0)?;
+                } else {
+                    let t = self.fresh()?;
+                    self.evaluer(expr, t)?;
+                    self.load_slot(self.val_reg(), t);
+                }
                 // Retour = saut vers l'épilogue (offset sentinel = ops.len()).
-                let cible = self.corps.ops.len();
-                self.saut(cible);
+                // Dernière opération : l'épilogue suit immédiatement.
+                if !est_dernier {
+                    let cible = self.corps.ops.len();
+                    self.saut(cible);
+                }
                 Ok(())
             }
             Op::Saut { cible } => {
@@ -1707,12 +1916,27 @@ impl<'a> Builder<'a> {
                 Ok(())
             }
             Op::SautSiFauxAbstrait { test, cible } => {
-                let t = self.fresh()?;
-                self.evaluer(test, t)?;
-                self.saut_si_faux(t, *cible);
+                if self.mode == ModeAppel::Direct && !self.avec_runtime && self.peut_evaluer_reg(test) {
+                    self.evaluer_reg(test, 0)?;
+                    self.saut_si_faux_val(*cible);
+                } else {
+                    let t = self.fresh()?;
+                    self.evaluer(test, t)?;
+                    self.saut_si_faux(t, *cible);
+                }
                 Ok(())
             }
             other => Err(EmitError::OperationNonSupportee(format!("{:?}", other))),
+        }
+    }
+
+    /// Les expressions qui peuvent être evaluées directement dans x0/rax.
+    fn peut_evaluer_reg(&self, e: &Eabstrait) -> bool {
+        match e {
+            Eabstrait::Slot(..) | Eabstrait::Entier(_) | Eabstrait::AppelRir { .. } => true,
+            Eabstrait::Neg(x) | Eabstrait::Non(x) => self.peut_evaluer_reg(x),
+            Eabstrait::Binaire { op, a, b } => self.binaire_sans_slot(op, a, b),
+            _ => false,
         }
     }
 }

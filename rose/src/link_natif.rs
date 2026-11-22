@@ -98,6 +98,11 @@ pub struct Options {
     /// AOT6 : le runtime natif est présent dans `code`. Le stub appelle
     /// ces routines avant de sortir pour formater/écrire le résultat.
     pub runtime: Option<crate::natif_emetteur::RuntimeLiens>,
+    /// AOT8 : exécutable compact. Le noyau Linux n'utilise que l'en-tête,
+    /// le PT_LOAD et les sections réellement chargées : les tables de
+    /// symboles, les en-têtes de section et le stub de trampoline (jamais
+    /// appelé en AOT) sont donc omis. Gain typique : ~600 octets/binaire.
+    pub compact: bool,
 }
 
 impl Options {
@@ -111,6 +116,7 @@ impl Options {
             afficher_valeur: false,
             sortie_exacte: None,
             runtime: None,
+            compact: false,
         }
     }
 
@@ -209,7 +215,9 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
                            donnees.as_ref().map(|d| (0u64, d.len())), 0,
                            options.runtime.as_ref());
     debug_assert_eq!(stub.len(), stub_len);
-    let tramp_stub = stub_trampoline(options.architecture);
+    // AOT8 : le code ne passe jamais par la trampoline (appels directs).
+    let tramp_stub = if options.compact { Vec::new() }
+                     else { stub_trampoline(options.architecture) };
 
     let mut text = Vec::with_capacity(stub_len + code.len() + tramp_stub.len());
     text.extend_from_slice(&stub);
@@ -270,17 +278,20 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     // AOT6 : le runtime utilise des zones absolues (SORTIE/TMP/digits).
     // Le PT_LOAD couvre tout le fichier : on le remplit de zéros jusqu'à
     // ZONE_FIN pour que ces adresses soient mappées et écrivables.
-    let zone_fin = (crate::runtime_natif::ZONE_FIN - base) as usize;
+    let zone_fin = (options.runtime.as_ref()
+        .map_or(crate::runtime_natif::ZONE_FIN, |r| r.zone_fin) - base) as usize;
     if options.runtime.is_some() {
         if off_text + text.len() > 0x2000 {
             return Err(ErreurLien::Depassement(
                 "code machine trop long : chevauche la zone de données du runtime".into()));
         }
     }
+    let fin_sections = if options.compact { off_data + data.len() }
+                       else { off_shdr + 7 * 64 };
     let taille_fichier = if options.runtime.is_some() {
-        (off_shdr + 7 * 64).max(zone_fin)
+        fin_sections.max(zone_fin)
     } else {
-        off_shdr + 7 * 64
+        fin_sections
     };
 
     // rose_tramp est dans .data : on connaît maintenant son adresse.
@@ -296,14 +307,14 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     ecrire_u32(&mut f, 20, 1);  // EV_CURRENT
     ecrire_u64(&mut f, 24, vaddr_text); // e_entry = _start
     ecrire_u64(&mut f, 32, 64); // e_phoff
-    ecrire_u64(&mut f, 40, off_shdr as u64);
+    ecrire_u64(&mut f, 40, if options.compact { 0 } else { off_shdr as u64 });
     ecrire_u32(&mut f, 48, 0);  // e_flags
     ecrire_u16(&mut f, 52, 64); // e_ehsize
     ecrire_u16(&mut f, 54, 56); // e_phentsize
     ecrire_u16(&mut f, 56, 1);  // e_phnum
     ecrire_u16(&mut f, 58, 64); // e_shentsize
-    ecrire_u16(&mut f, 60, 7);  // e_shnum
-    ecrire_u16(&mut f, 62, 6);  // e_shstrndx = .shstrtab
+    ecrire_u16(&mut f, 60, if options.compact { 0 } else { 7 });  // e_shnum
+    ecrire_u16(&mut f, 62, if options.compact { 0 } else { 6 });  // e_shstrndx
 
     // Un seul PT_LOAD couvre tout le fichier (RWX) : aucune relocation,
     // aucun interpréteur dynamique, aucun lien avec ld.
@@ -319,9 +330,11 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
     f[off_text..off_text + text.len()].copy_from_slice(&text);
     f[off_rodata..off_rodata + rodata.len()].copy_from_slice(&rodata);
     f[off_data..off_data + data.len()].copy_from_slice(&data);
-    f[off_symtab..off_symtab + symtab.len()].copy_from_slice(&symtab);
-    f[off_strtab..off_strtab + strtab.octets.len()].copy_from_slice(&strtab.octets);
-    f[off_shstrtab..off_shstrtab + shstrtab.octets.len()].copy_from_slice(&shstrtab.octets);
+    if !options.compact {
+        f[off_symtab..off_symtab + symtab.len()].copy_from_slice(&symtab);
+        f[off_strtab..off_strtab + strtab.octets.len()].copy_from_slice(&strtab.octets);
+        f[off_shstrtab..off_shstrtab + shstrtab.octets.len()].copy_from_slice(&shstrtab.octets);
+    }
 
     // Section headers : 0 = nul, 1 .text, 2 .rodata, 3 .data,
     //                  4 .symtab, 5 .strtab, 6 .shstrtab.
@@ -336,8 +349,10 @@ pub fn elf_bytes(code: &[u8], options: &Options) -> Result<Vec<u8>, ErreurLien> 
         shdr(sn_strtab, 3, 0, 0, off_strtab as u64, strtab.octets.len() as u64, 0, 0, 1, 0),
         shdr(sn_shstrtab, 3, 0, 0, off_shstrtab as u64, shstrtab.octets.len() as u64, 0, 0, 1, 0),
     ];
-    for (i, s) in sh.iter().enumerate() {
-        f[off_shdr + i * 64..off_shdr + (i + 1) * 64].copy_from_slice(s);
+    if !options.compact {
+        for (i, s) in sh.iter().enumerate() {
+            f[off_shdr + i * 64..off_shdr + (i + 1) * 64].copy_from_slice(s);
+        }
     }
     Ok(f)
 }

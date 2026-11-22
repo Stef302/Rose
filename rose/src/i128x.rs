@@ -746,7 +746,13 @@ impl Gq {
 }
 impl Drop for Gq {
     fn drop(&mut self) {
-        POOL_Q.with(|pool| pool.borrow_mut().push(self.0));
+        // `try_with` : à la fermeture du processus, ce TLS peut déjà être
+        // en destruction (les rationnels survivent parfois aux autres TLS).
+        let mut rendu = false;
+        let _ = POOL_Q.try_with(|pool| {
+            if let Ok(mut q) = pool.try_borrow_mut() { q.push(self.0); rendu = true; }
+        });
+        if !rendu { unsafe { drop(Box::from_raw(self.0)); } }
     }
 }
 
