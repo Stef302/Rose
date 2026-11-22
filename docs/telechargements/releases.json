@@ -3,6 +3,70 @@
   "genere": "2026-11-21",
   "versions": [
     {
+      "version": "0.1.74",
+      "tag": "v0.1.74",
+      "titre": "Rose v0.1.74 — self-hosting A–Z, noyau et Thorn allégés",
+      "date": "2026-11-22",
+      "changelog": [
+        "Self-hosting A–Z : C0 = C1 = C2, compilateur natif bit-idempotent sans Rust",
+        "AOT/JIT/WASM/RVM : zéro refus, 75/75 et 25/25 contrôles",
+        "G5 : allocation -98,6 % et front-end -80,5 % (84 Gio -> 408 Mio)",
+        "Moteur : sous_chaine O(1) par tranche de rope (-50 % de temps)",
+        "Thorn M0+M1 : hiérarchie, ordres, 346 contrôles, comparaison Lean mesurée",
+        "Garde-fou mémoire sur toutes les compilations longues"
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.74-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.74-full.nupkg",
+          "sha256": "1142872619e09b34077fc26a1efd17480e8ac3850853a9e78b2983b26b3c5214",
+          "taille": 11227323
+        },
+        {
+          "nom": "rose-setup.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
+          "sha256": "8c740c8931693071e5ce955c1d34c337efec1e35f9d430d1c42cb635263a1fdd",
+          "taille": 12032512
+        },
+        {
+          "nom": "rose.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
+          "sha256": "fdaf37160a7142e71bce00c06d36eaa8bcbf2a4b73c1a5ee91b217b58e44ec9e",
+          "taille": 9609728
+        },
+        {
+          "nom": "rose-shell.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
+          "sha256": "c0a1075ad0cff373c24b08ce1ecb77c91eb44eae068d57549bedafe0ce681188",
+          "taille": 463360
+        },
+        {
+          "nom": "rose-tray-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
+          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
+          "taille": 933816
+        },
+        {
+          "nom": "rose-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
+          "sha256": "21ed57e4be7c765f09635a3600dfc0fb1e540bb05d5ea924503a13bf1cb980b2",
+          "taille": 5325904
+        },
+        {
+          "nom": "rose-wasm.wasm",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
+          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
+          "taille": 967750
+        },
+        {
+          "nom": "releases.win.json",
+          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
+          "sha256": "25a6278c7ddfbda9e6b9df4b01576a321211180d1fa92790fce0c97459620793",
+          "taille": 406
+        }
+      ]
+    },
+    {
       "version": "0.1.73",
       "tag": "v0.1.73",
       "titre": "Rose v0.1.73 — AOT universel PE, tray autonome, logo droit",
