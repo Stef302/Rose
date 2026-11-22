@@ -1,0 +1,1398 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/src/anneaux.rose — JALON M2 : DEMI-ANNEAUX, ANNEAUX, ORDRES COMPATIBLES
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Fichier NOUVEAU du chantier M2. Aucun fichier hors périmètre n'est modifié.
+# Aucun commit, aucune publication.
+#
+# Ce module étend le schéma M0 (thorn/src/hierarchie.rose) et M1
+# (thorn/src/ordres.rose) aux structures algébriques à DEUX opérations :
+#
+#   AddMonoid   = { car, add, 0, add_assoc, add_idl, add_idr }
+#   AddGroupe   = AddMonoid + { neg, invl, invr }  (commutativité incluse)
+#   Semiring    = AddMonoid(comm) + MulMonoid + { dist_l, dist_r, 0*m, m*0 }
+#   Ring        = Semiring + AddGroupe
+#   CommRing    = Ring + { mul_comm }
+#   OrdreRing   = Ring + { le, le_refl, le_trans, le_antisymm,
+#                          le_add, le_mul_nonneg, zero_le_one }
+#
+# Comme en M0/M1 : une classe est une TABLE Rose ; chaque champ de loi est un
+# TERME DE PREUVE VÉRIFIÉ, jamais un drapeau. Les lemmes génériques sont des
+# fonctions Rose paramétrées par l'enregistrement : un seul terme, valable pour
+# toute instance. Chaque terme est soumis à `verifier()` puis `convertible()`
+# par le rejeu (thorn/tests_anneaux.rose).
+#
+# AXIOMES DE SIGNATURE (supposés, non démontrés — documentés ici et dans
+# MATHLIB_ROADMAP.md §M2) pour la SECTION ABSTRAITE `AnneauOrdreAbstrait` :
+#   - les lois de structure elles-mêmes (assoc, identités, distributivités,
+#     inverses additifs, compatibilité de l'ordre) : constantes de signature,
+#     exactement comme `GroupeAbstrait` en M0 et `OrdreAbstrait` en M1 ;
+#   - `pow : Πn Nat, Πx A, A` avec
+#       pow_zero_ax : Πx A, pow 0 x = 1
+#       pow_succ_ax : Πn Nat, Πx A, pow (succ n) x = pow n x * x
+#     (aucune récursivité vérifiée dans le noyau : les équations de `pow`
+#     sont des axiomes de signature, au même titre que `mult_0_r` dans
+#     algebre.rose).
+# Aucun changement du noyau. L'instance Nat n'ajoute AUCUN axiome nouveau :
+# toutes ses lois sont des termes déjà vérifiés de algebre.rose (et le
+# lemme de commutativité de × est reconstruit par induction ci-dessous).
+#
+# Vérifier :  ./rose/rose verif thorn/src/anneaux.rose
+# Rejeu    :  ./rose/rose thorn/tests_anneaux.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/ordres.rose"
+
+# ── 0. Services minimaux (mêmes conventions que M0/M1) ───────────────────────
+
+fn an_tab(an_x) -> table {
+  $an_v = table()
+  $an_v = an_x
+  retour $an_v
+}
+fn an_ctx(an_x) -> liste<table> {
+  $an_v = [table()]
+  $an_v = an_x
+  retour $an_v
+}
+fn an_champ(an_t: table, an_c: chaine) -> table {
+  $an_r = table()
+  si (cle_existe(an_t, an_c)) { $an_r = an_tab(an_t[an_c]) }
+  retour $an_r
+}
+fn an_nom_champ(an_t: table) -> chaine {
+  $an_s = ""
+  si (cle_existe(an_t, "nom")) {
+    $an_x = an_t["nom"]
+    si (type($an_x) == "chaine") { $an_s = $an_x }
+  }
+  retour $an_s
+}
+fn an_niveau(an_i: table) -> chaine { retour mg_chaine_champ(an_i, "structure") }
+fn an_pair(an_but: table, an_terme: table) -> table {
+  $an_r = table()
+  inserer($an_r, "but", an_but)
+  inserer($an_r, "terme", an_terme)
+  retour $an_r
+}
+fn an_loi(an_p: table) -> table { retour an_tab(an_p["terme"]) }
+
+# Cache des termes de lemmes : chaque lemme générique est construit UNE fois.
+# Sans ce cache, les lemmes qui réutilisent des lemmes antérieurs reconstruisent
+# récursivement leurs termes (explosion mémoire mesurée au-delà de 8 Gio).
+# Rose n'expose pas de variable globale entre modules importés : le cache est
+# donc un champ de l'instance (table passée par référence), pas une globale.
+fn an_memo_stocker(an_nom: chaine, an_s: table, an_p: table) {
+  $an_m = an_tab(an_champ(an_s,"memo"))
+  inserer($an_m, an_nom, an_p)
+}
+fn an_loi_nom(an_nom: chaine, an_s: table) -> table {
+  $an_m = an_tab(an_champ(an_s,"memo"))
+  $an_r = noy_absent()
+  si (cle_existe($an_m, an_nom)) { $an_r = an_tab(an_tab($an_m[an_nom])["terme"]) }
+  retour $an_r
+}
+fn an_compter(an_cpt: table, an_ok: booleen) {
+  si (an_ok) { inserer(an_cpt, "r", an_cpt["r"] + 1) }
+  sinon { inserer(an_cpt, "e", an_cpt["e"] + 1) }
+}
+fn an_test(an_nom: chaine, an_but: table, an_terme: table,
+           an_ctx_local: liste<table>, an_cpt: table) {
+  $an_r = verifier(an_terme, an_ctx_local)
+  $an_syn = noy_est_ok($an_r)
+  $an_conv = convertible(noy_type_res($an_r), an_but)
+  $an_ok = $an_syn et $an_conv
+  si ($an_ok) { >> "OK " + an_nom }
+  sinon {
+    $an_pq = "type synthétisé ≠ but"
+    si (non $an_syn) { $an_pq = noy_erreur($an_r) }
+    >> "ECHEC " + an_nom + " : " + $an_pq
+  }
+  an_compter(an_cpt, $an_ok)
+}
+fn an_lance(an_nom: chaine, an_p: table, an_ctx_local: liste<table>, an_cpt: table) {
+  an_test(an_nom, an_tab(an_p["but"]), an_tab(an_p["terme"]), an_ctx_local, an_cpt)
+}
+fn an_test_bool(an_nom: chaine, an_ok: booleen, an_cpt: table) {
+  si (an_ok) { >> "OK [structure] " + an_nom }
+  sinon { >> "ECHEC [structure] " + an_nom }
+  an_compter(an_cpt, an_ok)
+}
+
+# ── 1. Structures : AddMonoid → Semiring → Ring → CommRing (+ OrdreRing) ─────
+
+fn an_add_monoid(an_nom: chaine, an_car: table, an_add: table, an_zero: table,
+                 an_assoc: table, an_comm: table, an_idl: table, an_idr: table,
+                 an_ctx_local: liste<table>) -> table {
+  $an_r = table()
+  inserer($an_r, "structure", "AddMonoid")
+  inserer($an_r, "classe", "AddMonoid")
+  inserer($an_r, "nom", an_nom)
+  inserer($an_r, "car", an_car)
+  inserer($an_r, "add", an_add)
+  inserer($an_r, "zero", an_zero)
+  inserer($an_r, "add_assoc", an_assoc)
+  inserer($an_r, "add_comm", an_comm)
+  inserer($an_r, "add_idl", an_idl)
+  inserer($an_r, "add_idr", an_idr)
+  inserer($an_r, "ctx", an_ctx_local)
+  retour $an_r
+}
+
+fn an_semiring(an_nom: chaine, an_car: table, an_add: table, an_zero: table,
+               an_mul: table, an_one: table,
+               an_a_assoc: table, an_a_comm: table, an_a_idl: table, an_a_idr: table,
+               an_m_assoc: table, an_m_idl: table, an_m_idr: table,
+               an_dist_l: table, an_dist_r: table, an_zmul: table, an_mzero: table,
+               an_ctx_local: liste<table>) -> table {
+  $an_r = an_add_monoid(an_nom, an_car, an_add, an_zero,
+                        an_a_assoc, an_a_comm, an_a_idl, an_a_idr, an_ctx_local)
+  inserer($an_r, "structure", "Semiring")
+  inserer($an_r, "classe", "Semiring")
+  inserer($an_r, "mul", an_mul)
+  inserer($an_r, "one", an_one)
+  inserer($an_r, "mul_assoc", an_m_assoc)
+  inserer($an_r, "mul_idl", an_m_idl)
+  inserer($an_r, "mul_idr", an_m_idr)
+  inserer($an_r, "dist_l", an_dist_l)
+  inserer($an_r, "dist_r", an_dist_r)
+  inserer($an_r, "zero_mul", an_zmul)
+  inserer($an_r, "mul_zero", an_mzero)
+  retour $an_r
+}
+
+fn an_ring(an_nom: chaine, an_car: table, an_add: table, an_zero: table, an_neg: table,
+           an_mul: table, an_one: table,
+           an_a_assoc: table, an_a_comm: table, an_a_idl: table, an_a_idr: table,
+           an_invl: table, an_invr: table,
+           an_m_assoc: table, an_m_idl: table, an_m_idr: table,
+           an_dist_l: table, an_dist_r: table, an_zmul: table, an_mzero: table,
+           an_ctx_local: liste<table>) -> table {
+  $an_r = an_semiring(an_nom, an_car, an_add, an_zero, an_mul, an_one,
+                      an_a_assoc, an_a_comm, an_a_idl, an_a_idr,
+                      an_m_assoc, an_m_idl, an_m_idr,
+                      an_dist_l, an_dist_r, an_zmul, an_mzero, an_ctx_local)
+  inserer($an_r, "structure", "Ring")
+  inserer($an_r, "classe", "Ring")
+  inserer($an_r, "neg", an_neg)
+  inserer($an_r, "add_invl", an_invl)
+  inserer($an_r, "add_invr", an_invr)
+  retour $an_r
+}
+
+fn an_comm_ring(an_nom: chaine, an_car: table, an_add: table, an_zero: table, an_neg: table,
+                an_mul: table, an_one: table,
+                an_a_assoc: table, an_a_comm: table, an_a_idl: table, an_a_idr: table,
+                an_invl: table, an_invr: table,
+                an_m_assoc: table, an_m_idl: table, an_m_idr: table, an_m_comm: table,
+                an_dist_l: table, an_dist_r: table, an_zmul: table, an_mzero: table,
+                an_ctx_local: liste<table>) -> table {
+  $an_r = an_ring(an_nom, an_car, an_add, an_zero, an_neg, an_mul, an_one,
+                  an_a_assoc, an_a_comm, an_a_idl, an_a_idr, an_invl, an_invr,
+                  an_m_assoc, an_m_idl, an_m_idr,
+                  an_dist_l, an_dist_r, an_zmul, an_mzero, an_ctx_local)
+  inserer($an_r, "structure", "CommRing")
+  inserer($an_r, "classe", "CommRing")
+  inserer($an_r, "mul_comm", an_m_comm)
+  retour $an_r
+}
+
+fn an_ordre_ring(an_nom: chaine, an_base: table, an_le: table,
+                 an_le_refl: table, an_le_trans: table, an_le_antisymm: table,
+                 an_le_add: table, an_le_mul: table, an_zero_le_one: table,
+                 an_ctx_local: liste<table>) -> table {
+  $an_r = an_base
+  inserer($an_r, "structure", "OrdreRing")
+  inserer($an_r, "classe", "OrdreRing")
+  inserer($an_r, "le", an_le)
+  inserer($an_r, "le_refl", an_le_refl)
+  inserer($an_r, "le_trans", an_le_trans)
+  inserer($an_r, "le_antisymm", an_le_antisymm)
+  inserer($an_r, "le_add", an_le_add)
+  inserer($an_r, "le_mul_nonneg", an_le_mul)
+  inserer($an_r, "zero_le_one", an_zero_le_one)
+  inserer($an_r, "ctx", an_ctx_local)
+  retour $an_r
+}
+
+fn an_est_add_monoid(an_i: table) -> booleen {
+  retour (cle_existe(an_i,"car") et cle_existe(an_i,"add") et
+          cle_existe(an_i,"zero") et cle_existe(an_i,"add_assoc"))
+}
+fn an_est_semiring(an_i: table) -> booleen {
+  retour (an_est_add_monoid(an_i) et cle_existe(an_i,"mul") et
+          cle_existe(an_i,"one") et cle_existe(an_i,"dist_l") et
+          cle_existe(an_i,"dist_r"))
+}
+fn an_est_ring(an_i: table) -> booleen {
+  retour (an_est_semiring(an_i) et cle_existe(an_i,"neg") et
+          cle_existe(an_i,"add_invl") et cle_existe(an_i,"add_invr"))
+}
+fn an_est_comm_ring(an_i: table) -> booleen {
+  retour (an_est_ring(an_i) et cle_existe(an_i,"mul_comm"))
+}
+fn an_est_ordre_ring(an_i: table) -> booleen {
+  retour (an_est_ring(an_i) et cle_existe(an_i,"le") et
+          cle_existe(an_i,"le_trans") et cle_existe(an_i,"zero_le_one"))
+}
+
+fn an_car_de(an_i: table) -> table { retour an_champ(an_i,"car") }
+fn an_ctx_de(an_i: table) -> liste<table> { retour an_ctx(an_champ(an_i,"ctx")) }
+fn an_add_de(an_i: table) -> table { retour an_champ(an_i,"add") }
+fn an_zero_de(an_i: table) -> table { retour an_champ(an_i,"zero") }
+fn an_neg_de(an_i: table) -> table { retour an_champ(an_i,"neg") }
+fn an_mul_de(an_i: table) -> table { retour an_champ(an_i,"mul") }
+fn an_one_de(an_i: table) -> table { retour an_champ(an_i,"one") }
+fn an_pow_de(an_i: table) -> table { retour an_champ(an_i,"pow") }
+fn an_le_de(an_i: table) -> table { retour an_champ(an_i,"le") }
+
+# ── 2. Termes de base et congrues (eq_rec, re-vérifiés par le rejeu) ─────────
+
+fn an_eq(an_A: table, an_a: table, an_b: table) -> table {
+  retour noy_ind("=", ta_params2(an_a, an_b))
+}
+fn an_rf(an_A: table, an_a: table) -> table {
+  retour ta_ap2(ta_refl_symbole(), an_A, an_a)
+}
+fn an_sy(an_A: table, an_a: table, an_b: table, an_h: table) -> table {
+  retour ta_ap4(ta_symm_symbole(), an_A, an_a, an_b, an_h)
+}
+fn an_tr(an_A: table, an_a: table, an_b: table, an_c: table,
+         an_h1: table, an_h2: table) -> table {
+  retour ta_ap6(ta_trans_symbole(), an_A, an_a, an_b, an_c, an_h1, an_h2)
+}
+fn an_plus(an_s: table, an_a: table, an_b: table) -> table {
+  retour ta_ap2(an_add_de(an_s), an_a, an_b)
+}
+fn an_mul(an_s: table, an_a: table, an_b: table) -> table {
+  retour ta_ap2(an_mul_de(an_s), an_a, an_b)
+}
+fn an_neg(an_s: table, an_a: table) -> table { retour ta_ap1(an_neg_de(an_s), an_a) }
+fn an_zero(an_s: table) -> table { retour an_zero_de(an_s) }
+fn an_one(an_s: table) -> table { retour an_one_de(an_s) }
+fn an_pow(an_s: table, an_n: table, an_a: table) -> table {
+  retour ta_ap2(an_pow_de(an_s), an_n, an_a)
+}
+fn an_le(an_s: table, an_a: table, an_b: table) -> table {
+  retour ta_ap2(an_le_de(an_s), an_a, an_b)
+}
+
+# congrégation gauche/droite d'un opérateur binaire quelconque (M0)
+fn an_cg(an_A: table, an_op: table, an_u: table, an_a: table, an_b: table, an_h: table) -> table {
+  retour mg_congr_g(an_A, an_op, an_u, an_a, an_b, an_h)
+}
+fn an_cd(an_A: table, an_op: table, an_u: table, an_a: table, an_b: table, an_h: table) -> table {
+  retour mg_congr_d(an_A, an_op, an_u, an_a, an_b, an_h)
+}
+# congrégation d'une fonction unaire f
+fn an_c1(an_A: table, an_f: table, an_a: table, an_b: table, an_h: table) -> table {
+  $an_P = noy_lam("z", an_A, an_eq(an_A, ta_ap1(an_f, an_a), ta_ap1(an_f, noy_var("z"))))
+  retour ta_ap6(ta_eqrec_symbole(), an_A, an_a, an_b, $an_P,
+                an_rf(an_A, ta_ap1(an_f, an_a)), an_h)
+}
+# de h : a = b, construit P a -> P b pour un prédicat P (transport)
+fn an_transp(an_A: table, an_a: table, an_b: table, an_P: table, an_p: table, an_h: table) -> table {
+  retour ta_ap6(ta_eqrec_symbole(), an_A, an_a, an_b, an_P, an_p, an_h)
+}
+fn an_pi2(an_A: table, an_but: table) -> table {
+  retour noy_pi("a", an_A, noy_pi("b", an_A, an_but))
+}
+fn an_pi3(an_A: table, an_but: table) -> table {
+  retour noy_pi("a", an_A, noy_pi("b", an_A, noy_pi("c", an_A, an_but)))
+}
+fn an_pi4(an_A: table, an_but: table) -> table {
+  retour noy_pi("a", an_A, noy_pi("b", an_A, noy_pi("c", an_A, noy_pi("d", an_A, an_but))))
+}
+fn an_lam2(an_A: table, an_corps: table) -> table {
+  retour noy_lam("a", an_A, noy_lam("b", an_A, an_corps))
+}
+fn an_lam3(an_A: table, an_corps: table) -> table {
+  retour noy_lam("a", an_A, noy_lam("b", an_A, noy_lam("c", an_A, an_corps)))
+}
+fn an_lam4(an_A: table, an_corps: table) -> table {
+  retour noy_lam("a", an_A, noy_lam("b", an_A, noy_lam("c", an_A, noy_lam("d", an_A, an_corps))))
+}
+
+# applications des lois de structure
+fn an_Laa(an_s: table, an_a: table, an_b: table, an_c: table) -> table {
+  retour ta_ap3(an_champ(an_s,"add_assoc"), an_a, an_b, an_c)
+}
+fn an_Lac(an_s: table, an_a: table, an_b: table) -> table {
+  retour ta_ap2(an_champ(an_s,"add_comm"), an_a, an_b)
+}
+fn an_Lazl(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"add_idl"), an_a)
+}
+fn an_Lazr(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"add_idr"), an_a)
+}
+fn an_Linv_l(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"add_invl"), an_a)
+}
+fn an_Linv_r(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"add_invr"), an_a)
+}
+fn an_Lma(an_s: table, an_a: table, an_b: table, an_c: table) -> table {
+  retour ta_ap3(an_champ(an_s,"mul_assoc"), an_a, an_b, an_c)
+}
+fn an_Lmc(an_s: table, an_a: table, an_b: table) -> table {
+  retour ta_ap2(an_champ(an_s,"mul_comm"), an_a, an_b)
+}
+fn an_Lm1l(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"mul_idl"), an_a)
+}
+fn an_Lm1r(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"mul_idr"), an_a)
+}
+fn an_Lzml(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"zero_mul"), an_a)
+}
+fn an_Lmzl(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"mul_zero"), an_a)
+}
+fn an_Ldl(an_s: table, an_a: table, an_b: table, an_c: table) -> table {
+  retour ta_ap3(an_champ(an_s,"dist_l"), an_a, an_b, an_c)
+}
+fn an_Ldr(an_s: table, an_a: table, an_b: table, an_c: table) -> table {
+  retour ta_ap3(an_champ(an_s,"dist_r"), an_a, an_b, an_c)
+}
+fn an_Lpow0(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"pow_zero_ax"), an_a)
+}
+fn an_Lpows(an_s: table, an_n: table, an_a: table) -> table {
+  retour ta_ap2(an_champ(an_s,"pow_succ_ax"), an_n, an_a)
+}
+fn an_Ller(an_s: table, an_a: table) -> table {
+  retour ta_ap1(an_champ(an_s,"le_refl"), an_a)
+}
+fn an_Llet(an_s: table, an_a: table, an_b: table, an_c: table,
+           an_h1: table, an_h2: table) -> table {
+  retour ta_ap5(an_champ(an_s,"le_trans"), an_a, an_b, an_c, an_h1, an_h2)
+}
+fn an_Llea(an_s: table, an_a: table, an_b: table,
+           an_h: table) -> table {
+  retour ta_ap4(an_champ(an_s,"le_antisymm"), an_a, an_b,
+                an_h, ta_ap4(an_champ(an_s,"le_antisymm"), an_a, an_b, an_h, an_h))
+}
+fn an_Lleadd(an_s: table, an_a: table, an_b: table, an_c: table, an_h: table) -> table {
+  retour ta_ap4(an_champ(an_s,"le_add"), an_a, an_b, an_c, an_h)
+}
+fn an_Llemul(an_s: table, an_a: table, an_b: table, an_h1: table, an_h2: table) -> table {
+  retour ta_ap4(an_champ(an_s,"le_mul_nonneg"), an_a, an_b, an_h1, an_h2)
+}
+
+# ── 3. Section abstraite : signature certifiée une fois pour toutes ──────────
+
+fn an_sig() -> table {
+  $an_s = table()
+  $an_A = noy_var("A")
+  $an_add = noy_const("add", noy_pi("x",$an_A,noy_pi("y",$an_A,$an_A)))
+  $an_z   = noy_const("zero", $an_A)
+  $an_neg = noy_const("neg", noy_pi("x",$an_A,$an_A))
+  $an_mul = noy_const("mul", noy_pi("x",$an_A,noy_pi("y",$an_A,$an_A)))
+  $an_one = noy_const("one", $an_A)
+  $an_le  = noy_const("le", noy_pi("x",$an_A,noy_pi("y",$an_A,noy_type(0))))
+  $an_pow = noy_const("pow", noy_pi("n",ta_nat(),noy_pi("x",$an_A,$an_A)))
+  inserer($an_s,"A",$an_A)
+  inserer($an_s,"add",$an_add)
+  inserer($an_s,"zero",$an_z)
+  inserer($an_s,"neg",$an_neg)
+  inserer($an_s,"mul",$an_mul)
+  inserer($an_s,"one",$an_one)
+  inserer($an_s,"le",$an_le)
+  inserer($an_s,"pow",$an_pow)
+  $an_c = ta_ctx()
+  $an_c = noy_ctx_ajouter($an_c,"A",noy_type(0))
+  $an_c = noy_ctx_ajouter($an_c,"add",mg_coerce_tab($an_add["type"]))
+  $an_c = noy_ctx_ajouter($an_c,"zero",$an_A)
+  $an_c = noy_ctx_ajouter($an_c,"neg",mg_coerce_tab($an_neg["type"]))
+  $an_c = noy_ctx_ajouter($an_c,"mul",mg_coerce_tab($an_mul["type"]))
+  $an_c = noy_ctx_ajouter($an_c,"one",$an_A)
+  $an_c = noy_ctx_ajouter($an_c,"le",mg_coerce_tab($an_le["type"]))
+  $an_c = noy_ctx_ajouter($an_c,"pow",mg_coerce_tab($an_pow["type"]))
+
+  # Termes d'aide pour les types de lois (x, y, z variables de noyau)
+  $an_x = noy_var("x"); $an_y = noy_var("y"); $an_zv = noy_var("z")
+  $an_addx = ta_ap2($an_add,$an_x,$an_y)
+
+  $an_l1 = noy_const("add_assoc", noy_pi("x",$an_A,noy_pi("y",$an_A,noy_pi("z",$an_A,
+      an_eq($an_A, ta_ap2($an_add, $an_addx, $an_zv),
+                   ta_ap2($an_add, $an_x, ta_ap2($an_add,$an_y,$an_zv)))))))
+  $an_l2 = noy_const("add_comm", noy_pi("x",$an_A,noy_pi("y",$an_A,
+      an_eq($an_A, ta_ap2($an_add,$an_x,$an_y), ta_ap2($an_add,$an_y,$an_x)))))
+  $an_l3 = noy_const("add_idl", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_add,$an_z,$an_x), $an_x)))
+  $an_l4 = noy_const("add_idr", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_add,$an_x,$an_z), $an_x)))
+  $an_l5 = noy_const("add_invl", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_add, ta_ap1($an_neg,$an_x), $an_x), $an_z)))
+  $an_l6 = noy_const("add_invr", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_add, $an_x, ta_ap1($an_neg,$an_x)), $an_z)))
+  $an_mulx = ta_ap2($an_mul,$an_x,$an_y)
+  $an_l7 = noy_const("mul_assoc", noy_pi("x",$an_A,noy_pi("y",$an_A,noy_pi("z",$an_A,
+      an_eq($an_A, ta_ap2($an_mul, $an_mulx, $an_zv),
+                   ta_ap2($an_mul, $an_x, ta_ap2($an_mul,$an_y,$an_zv)))))))
+  $an_l8 = noy_const("mul_comm", noy_pi("x",$an_A,noy_pi("y",$an_A,
+      an_eq($an_A, ta_ap2($an_mul,$an_x,$an_y), ta_ap2($an_mul,$an_y,$an_x)))))
+  $an_l9 = noy_const("mul_idl", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_mul,$an_one,$an_x), $an_x)))
+  $an_l10 = noy_const("mul_idr", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_mul,$an_x,$an_one), $an_x)))
+  $an_l11 = noy_const("zero_mul", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_mul,$an_z,$an_x), $an_z)))
+  $an_l12 = noy_const("mul_zero", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_mul,$an_x,$an_z), $an_z)))
+  $an_l13 = noy_const("dist_l", noy_pi("x",$an_A,noy_pi("y",$an_A,noy_pi("z",$an_A,
+      an_eq($an_A, ta_ap2($an_mul,$an_x,ta_ap2($an_add,$an_y,$an_zv)),
+                   ta_ap2($an_add, ta_ap2($an_mul,$an_x,$an_y),
+                                   ta_ap2($an_mul,$an_x,$an_zv)))))))
+  $an_l14 = noy_const("dist_r", noy_pi("x",$an_A,noy_pi("y",$an_A,noy_pi("z",$an_A,
+      an_eq($an_A, ta_ap2($an_mul,ta_ap2($an_add,$an_x,$an_y),$an_zv),
+                   ta_ap2($an_add, ta_ap2($an_mul,$an_x,$an_zv),
+                                   ta_ap2($an_mul,$an_y,$an_zv)))))))
+  $an_l15 = noy_const("pow_zero_ax", noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_pow,ta_zero(),$an_x), $an_one)))
+  $an_l16 = noy_const("pow_succ_ax", noy_pi("n",ta_nat(),noy_pi("x",$an_A,
+      an_eq($an_A, ta_ap2($an_pow,ta_succ(noy_var("n")),$an_x),
+                   ta_ap2($an_mul, ta_ap2($an_pow,noy_var("n"),$an_x), $an_x)))))
+  $an_l17 = noy_const("le_refl", noy_pi("x",$an_A, ta_ap2($an_le,$an_x,$an_x)))
+  $an_l18 = noy_const("le_trans", noy_pi("x",$an_A,noy_pi("y",$an_A,noy_pi("z",$an_A,
+      noy_pi("h1",ta_ap2($an_le,$an_x,$an_y),
+        noy_pi("h2",ta_ap2($an_le,$an_y,$an_zv), ta_ap2($an_le,$an_x,$an_zv)))))))
+  $an_l19 = noy_const("le_antisymm", noy_pi("x",$an_A,noy_pi("y",$an_A,
+      noy_pi("h1",ta_ap2($an_le,$an_x,$an_y),
+        noy_pi("h2",ta_ap2($an_le,$an_y,$an_x), an_eq($an_A,$an_x,$an_y))))))
+  $an_l20 = noy_const("le_add", noy_pi("x",$an_A,noy_pi("y",$an_A,noy_pi("z",$an_A,
+      noy_pi("h",ta_ap2($an_le,$an_x,$an_y),
+             ta_ap2($an_le, ta_ap2($an_add,$an_x,$an_zv),
+                            ta_ap2($an_add,$an_y,$an_zv)))))))
+  $an_l21 = noy_const("le_mul_nonneg", noy_pi("x",$an_A,noy_pi("y",$an_A,
+      noy_pi("h1",ta_ap2($an_le,$an_z,$an_x),
+        noy_pi("h2",ta_ap2($an_le,$an_z,$an_y),
+               ta_ap2($an_le,$an_z,ta_ap2($an_mul,$an_x,$an_y)))))))
+  $an_l22 = noy_const("zero_le_one", ta_ap2($an_le,$an_z,$an_one))
+
+  inserer($an_s,"add_assoc",$an_l1)
+  inserer($an_s,"add_comm",$an_l2)
+  inserer($an_s,"add_idl",$an_l3)
+  inserer($an_s,"add_idr",$an_l4)
+  inserer($an_s,"add_invl",$an_l5)
+  inserer($an_s,"add_invr",$an_l6)
+  inserer($an_s,"mul_assoc",$an_l7)
+  inserer($an_s,"mul_comm",$an_l8)
+  inserer($an_s,"mul_idl",$an_l9)
+  inserer($an_s,"mul_idr",$an_l10)
+  inserer($an_s,"zero_mul",$an_l11)
+  inserer($an_s,"mul_zero",$an_l12)
+  inserer($an_s,"dist_l",$an_l13)
+  inserer($an_s,"dist_r",$an_l14)
+  inserer($an_s,"pow_zero_ax",$an_l15)
+  inserer($an_s,"pow_succ_ax",$an_l16)
+  inserer($an_s,"le_refl",$an_l17)
+  inserer($an_s,"le_trans",$an_l18)
+  inserer($an_s,"le_antisymm",$an_l19)
+  inserer($an_s,"le_add",$an_l20)
+  inserer($an_s,"le_mul_nonneg",$an_l21)
+  inserer($an_s,"zero_le_one",$an_l22)
+  $an_noms = ["add_assoc","add_comm","add_idl","add_idr","add_invl","add_invr",
+              "mul_assoc","mul_comm","mul_idl","mul_idr","zero_mul","mul_zero",
+              "dist_l","dist_r","pow_zero_ax","pow_succ_ax","le_refl","le_trans",
+              "le_antisymm","le_add","le_mul_nonneg","zero_le_one"]
+  $an_k = 1
+  tant_que ($an_k < longueur($an_noms)) {
+    $an_l = an_tab($an_s[$an_noms[$an_k]])
+    $an_c = noy_ctx_ajouter($an_c, noy_nom($an_l), mg_coerce_tab($an_l["type"]))
+    $an_k = $an_k + 1
+  }
+  inserer($an_s,"ctx",$an_c)
+  retour $an_s
+}
+
+fn an_inst_abstrait() -> table {
+  $an_s = an_sig()
+  $an_r = an_comm_ring("AnneauOrdreAbstrait",
+    an_tab($an_s["A"]), an_tab($an_s["add"]),
+    an_tab($an_s["zero"]), an_tab($an_s["neg"]),
+    an_tab($an_s["mul"]), an_tab($an_s["one"]),
+    an_tab($an_s["add_assoc"]), an_tab($an_s["add_comm"]),
+    an_tab($an_s["add_idl"]), an_tab($an_s["add_idr"]),
+    an_tab($an_s["add_invl"]), an_tab($an_s["add_invr"]),
+    an_tab($an_s["mul_assoc"]), an_tab($an_s["mul_idl"]),
+    an_tab($an_s["mul_idr"]), an_tab($an_s["mul_comm"]),
+    an_tab($an_s["dist_l"]), an_tab($an_s["dist_r"]),
+    an_tab($an_s["zero_mul"]), an_tab($an_s["mul_zero"]),
+    an_ctx($an_s["ctx"]))
+  $an_r = an_ordre_ring("AnneauOrdreAbstrait", $an_r, an_tab($an_s["le"]),
+    an_tab($an_s["le_refl"]), an_tab($an_s["le_trans"]),
+    an_tab($an_s["le_antisymm"]), an_tab($an_s["le_add"]),
+    an_tab($an_s["le_mul_nonneg"]), an_tab($an_s["zero_le_one"]),
+    an_ctx($an_s["ctx"]))
+  inserer($an_r,"pow",an_tab($an_s["pow"]))
+  inserer($an_r,"pow_zero_ax",an_tab($an_s["pow_zero_ax"]))
+  inserer($an_r,"pow_succ_ax",an_tab($an_s["pow_succ_ax"]))
+  inserer($an_r,"memo",table())
+  retour $an_r
+}
+
+# ── 4. Corpus GÉNÉRIQUE — addition et inverses (lemmes 1..26) ────────────────
+
+fn an_lem_add_assoc4(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_ab = an_plus(an_s,$an_a,$an_b); $an_bc = an_plus(an_s,$an_b,$an_c)
+  $an_cd = an_plus(an_s,$an_c,$an_d)
+  $an_l = an_plus(an_s, an_plus(an_s,$an_ab,$an_c), $an_d)
+  $an_m1 = an_plus(an_s, an_plus(an_s,$an_a,$an_bc), $an_d)
+  $an_m2 = an_plus(an_s,$an_a, an_plus(an_s,$an_bc,$an_d))
+  $an_r = an_plus(an_s,$an_a, an_plus(an_s,$an_b,$an_cd))
+  $an_h1 = an_cd($an_A, an_add_de(an_s), $an_d, an_plus(an_s,$an_ab,$an_c), an_plus(an_s,$an_a,$an_bc), an_Laa(an_s,$an_a,$an_b,$an_c))
+  $an_h2 = an_Laa(an_s,$an_a,$an_bc,$an_d)
+  $an_h3 = an_cg($an_A, an_add_de(an_s), $an_a, an_plus(an_s,$an_bc,$an_d), an_plus(an_s,$an_b,$an_cd), an_Laa(an_s,$an_b,$an_c,$an_d))
+  $an_corps = an_tr($an_A,$an_l,$an_m1,$an_r, $an_h1, an_tr($an_A,$an_m1,$an_m2,$an_r,$an_h2,$an_h3))
+  retour an_pair(an_pi4($an_A, an_eq($an_A,$an_l,$an_r)), an_lam4($an_A,$an_corps))
+}
+
+fn an_lem_add_left_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_x1 = an_plus(an_s,$an_a,an_plus(an_s,$an_b,$an_c))
+  $an_x2 = an_plus(an_s,an_plus(an_s,$an_a,$an_b),$an_c)
+  $an_x3 = an_plus(an_s,an_plus(an_s,$an_b,$an_a),$an_c)
+  $an_x4 = an_plus(an_s,$an_b,an_plus(an_s,$an_a,$an_c))
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Laa(an_s,$an_a,$an_b,$an_c))
+  $an_h2 = an_cd($an_A,an_add_de(an_s),$an_c,an_plus(an_s,$an_a,$an_b),an_plus(an_s,$an_b,$an_a),an_Lac(an_s,$an_a,$an_b))
+  $an_h3 = an_Laa(an_s,$an_b,$an_a,$an_c)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x4,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x4)), an_lam3($an_A,$an_corps))
+}
+
+fn an_lem_add_right_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_x1 = an_plus(an_s,an_plus(an_s,$an_a,$an_b),$an_c)
+  $an_x2 = an_plus(an_s,$an_a,an_plus(an_s,$an_b,$an_c))
+  $an_x3 = an_plus(an_s,$an_a,an_plus(an_s,$an_c,$an_b))
+  $an_x4 = an_plus(an_s,an_plus(an_s,$an_a,$an_c),$an_b)
+  $an_h1 = an_Laa(an_s,$an_a,$an_b,$an_c)
+  $an_h2 = an_cg($an_A,an_add_de(an_s),$an_a,an_plus(an_s,$an_b,$an_c),an_plus(an_s,$an_c,$an_b),an_Lac(an_s,$an_b,$an_c))
+  $an_h3 = an_sy($an_A,an_plus(an_s,an_plus(an_s,$an_a,$an_c),$an_b),$an_x3,an_Laa(an_s,$an_a,$an_c,$an_b))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x4,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x4)), an_lam3($an_A,$an_corps))
+}
+
+fn an_lem_add_perm4(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_x1 = an_plus(an_s,an_plus(an_s,$an_a,$an_b),an_plus(an_s,$an_c,$an_d))
+  $an_x2 = an_plus(an_s,an_plus(an_s,an_plus(an_s,$an_a,$an_b),$an_c),$an_d)
+  $an_rc = an_loi_nom("add_right_comm",an_s)
+  $an_rhs = ta_ap3($an_rc,$an_a,$an_b,$an_c)
+  $an_x3 = an_plus(an_s,an_plus(an_s,an_plus(an_s,$an_a,$an_c),$an_b),$an_d)
+  $an_x4 = an_plus(an_s,an_plus(an_s,$an_a,$an_c),an_plus(an_s,$an_b,$an_d))
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Laa(an_s,an_plus(an_s,$an_a,$an_b),$an_c,$an_d))
+  $an_h2 = an_cd($an_A,an_add_de(an_s),$an_d,an_plus(an_s,an_plus(an_s,$an_a,$an_b),$an_c),an_plus(an_s,an_plus(an_s,$an_a,$an_c),$an_b),$an_rhs)
+  $an_h3 = an_Laa(an_s,an_plus(an_s,$an_a,$an_c),$an_b,$an_d)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x4,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  retour an_pair(an_pi4($an_A,an_eq($an_A,$an_x1,$an_x4)),an_lam4($an_A,$an_corps))
+}
+
+fn an_lem_add_zero_l(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_plus(an_s,an_zero(an_s),$an_a),$an_a)),
+                 noy_lam("a",$an_A,an_Lazl(an_s,$an_a)))
+}
+fn an_lem_add_zero_d(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_plus(an_s,$an_a,an_zero(an_s)),$an_a)),
+                 noy_lam("a",$an_A,an_Lazr(an_s,$an_a)))
+}
+fn an_lem_add_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  retour an_pair(an_pi2($an_A,an_eq($an_A,an_plus(an_s,noy_var("a"),noy_var("b")),an_plus(an_s,noy_var("b"),noy_var("a")))),
+                 an_lam2($an_A,an_Lac(an_s,noy_var("a"),noy_var("b"))))
+}
+fn an_lem_neg_add_cancel_l(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_x1 = an_plus(an_s,an_neg(an_s,$an_a),an_plus(an_s,$an_a,$an_b))
+  $an_x2 = an_plus(an_s,an_plus(an_s,an_neg(an_s,$an_a),$an_a),$an_b)
+  $an_x3 = an_plus(an_s,an_zero(an_s),$an_b)
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Laa(an_s,an_neg(an_s,$an_a),$an_a,$an_b))
+  $an_h2 = an_cd($an_A,an_add_de(an_s),$an_b,an_plus(an_s,an_neg(an_s,$an_a),$an_a),an_zero(an_s),an_Linv_l(an_s,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_b,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_b,$an_h2,an_Lazl(an_s,$an_b)))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,$an_x1,$an_b)),an_lam2($an_A,$an_corps))
+}
+fn an_lem_add_neg_cancel_l(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_x1 = an_plus(an_s,$an_a,an_plus(an_s,an_neg(an_s,$an_a),$an_b))
+  $an_x2 = an_plus(an_s,an_plus(an_s,$an_a,an_neg(an_s,$an_a)),$an_b)
+  $an_x3 = an_plus(an_s,an_zero(an_s),$an_b)
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Laa(an_s,$an_a,an_neg(an_s,$an_a),$an_b))
+  $an_h2 = an_cd($an_A,an_add_de(an_s),$an_b,an_plus(an_s,$an_a,an_neg(an_s,$an_a)),an_zero(an_s),an_Linv_r(an_s,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_b,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_b,$an_h2,an_Lazl(an_s,$an_b)))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,$an_x1,$an_b)),an_lam2($an_A,$an_corps))
+}
+fn an_lem_neg_unique(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h = noy_var("h")
+  $an_hty = an_eq($an_A,an_plus(an_s,$an_b,$an_a),an_zero(an_s))
+  $an_x1 = $an_b
+  $an_x2 = an_plus(an_s,$an_b,an_zero(an_s))
+  $an_x3 = an_plus(an_s,$an_b,an_plus(an_s,$an_a,an_neg(an_s,$an_a)))
+  $an_x4 = an_plus(an_s,an_plus(an_s,$an_b,$an_a),an_neg(an_s,$an_a))
+  $an_x5 = an_plus(an_s,an_zero(an_s),an_neg(an_s,$an_a))
+  $an_h1 = an_sy($an_A,$an_x2,$an_b,an_Lazr(an_s,$an_b))
+  $an_h2 = an_cg($an_A,an_add_de(an_s),$an_b,an_zero(an_s),an_plus(an_s,$an_a,an_neg(an_s,$an_a)),an_sy($an_A,an_plus(an_s,$an_a,an_neg(an_s,$an_a)),an_zero(an_s),an_Linv_r(an_s,$an_a)))
+  $an_h3 = an_sy($an_A,$an_x4,$an_x3,an_Laa(an_s,$an_b,$an_a,an_neg(an_s,$an_a)))
+  $an_h4 = an_cd($an_A,an_add_de(an_s),an_neg(an_s,$an_a),an_plus(an_s,$an_b,$an_a),an_zero(an_s),$an_h)
+  $an_h5 = an_Lazl(an_s,an_neg(an_s,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,an_neg(an_s,$an_a),$an_h1,
+               an_tr($an_A,$an_x2,$an_x3,an_neg(an_s,$an_a),$an_h2,
+               an_tr($an_A,$an_x3,$an_x4,an_neg(an_s,$an_a),$an_h3,
+               an_tr($an_A,$an_x4,$an_x5,an_neg(an_s,$an_a),$an_h4,$an_h5))))
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("h",$an_hty,an_eq($an_A,$an_b,an_neg(an_s,$an_a)))))
+  $an_t = noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h",$an_hty,$an_corps)))
+  retour an_pair($an_but,$an_t)
+}
+fn an_lem_neg_zero(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_u = an_loi_nom("neg_unique",an_s)
+  $an_corps = an_sy($an_A,an_zero(an_s),an_neg(an_s,an_zero(an_s)),
+               ta_ap3($an_u,an_zero(an_s),an_zero(an_s),an_Lazl(an_s,an_zero(an_s))))
+  retour an_pair(noy_pi("x",$an_A,an_eq($an_A,an_neg(an_s,an_zero(an_s)),an_zero(an_s))),
+                 noy_lam("x",$an_A,$an_corps))
+}
+fn an_lem_neg_neg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_u = an_loi_nom("neg_unique",an_s)
+  $an_corps = an_sy($an_A,$an_a,an_neg(an_s,an_neg(an_s,$an_a)),
+               ta_ap3($an_u,an_neg(an_s,$an_a),$an_a,an_Linv_r(an_s,$an_a)))
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_neg(an_s,an_neg(an_s,$an_a)),$an_a)),
+                 noy_lam("a",$an_A,$an_corps))
+}
+fn an_lem_neg_inj(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h = noy_var("h")
+  $an_nn = an_loi_nom("neg_neg",an_s)
+  $an_x1 = $an_a
+  $an_x2 = an_neg(an_s,an_neg(an_s,$an_a))
+  $an_x3 = an_neg(an_s,an_neg(an_s,$an_b))
+  $an_h1 = an_sy($an_A,$an_x2,$an_a,ta_ap1($an_nn,$an_a))
+  $an_h2 = an_c1($an_A,an_neg_de(an_s),an_neg(an_s,$an_a),an_neg(an_s,$an_b),$an_h)
+  $an_h3 = ta_ap1($an_nn,$an_b)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_b,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_b,$an_h2,$an_h3))
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,
+            noy_pi("h",an_eq($an_A,an_neg(an_s,$an_a),an_neg(an_s,$an_b)),an_eq($an_A,$an_a,$an_b))))
+  $an_hty = an_eq($an_A,an_neg(an_s,$an_a),an_neg(an_s,$an_b))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h",$an_hty,$an_corps))))
+}
+fn an_lem_neg_add(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_x = an_plus(an_s,an_neg(an_s,$an_a),an_neg(an_s,$an_b))
+  $an_cxl = an_loi_nom("add_left_comm",an_s)
+  # x + (a+b) = ((x+a)+b) = ((-a)+(-b)+a)+b = ((-a)+(a+(-b)))+b
+  $an_xa1 = an_plus(an_s,$an_x,$an_a)
+  $an_xa2 = an_plus(an_s,an_neg(an_s,$an_a),an_plus(an_s,an_neg(an_s,$an_b),$an_a))
+  $an_xa3 = an_plus(an_s,an_neg(an_s,$an_a),an_plus(an_s,$an_a,an_neg(an_s,$an_b)))
+  $an_xa4 = an_plus(an_s,an_plus(an_s,an_neg(an_s,$an_a),$an_a),an_neg(an_s,$an_b))
+  $an_xa5 = an_plus(an_s,an_zero(an_s),an_neg(an_s,$an_b))
+  $an_e1 = an_Laa(an_s,$an_x,$an_a,$an_b)
+  $an_e2 = an_Laa(an_s,an_neg(an_s,$an_a),an_neg(an_s,$an_b),$an_a)
+  $an_e3 = an_cg($an_A,an_add_de(an_s),an_neg(an_s,$an_a),
+                  an_plus(an_s,an_neg(an_s,$an_b),$an_a),
+                  an_plus(an_s,$an_a,an_neg(an_s,$an_b)),an_Lac(an_s,an_neg(an_s,$an_b),$an_a))
+  $an_e4 = an_sy($an_A,$an_xa4,an_plus(an_s,an_neg(an_s,$an_a),an_plus(an_s,$an_a,an_neg(an_s,$an_b))),
+                 an_Laa(an_s,an_neg(an_s,$an_a),$an_a,an_neg(an_s,$an_b)))
+  $an_e5 = an_cd($an_A,an_add_de(an_s),an_neg(an_s,$an_b),an_plus(an_s,an_neg(an_s,$an_a),$an_a),an_zero(an_s),an_Linv_l(an_s,$an_a))
+  $an_e6 = an_Lazl(an_s,an_neg(an_s,$an_b))
+  $an_xaa = an_tr($an_A,$an_xa1,$an_xa2,$an_xa5,$an_e2,
+             an_tr($an_A,$an_xa2,$an_xa3,$an_xa5,$an_e3,
+             an_tr($an_A,$an_xa3,$an_xa4,$an_xa5,$an_e4,$an_e5)))
+  $an_hx1 = an_plus(an_s,$an_x,an_plus(an_s,$an_a,$an_b))
+  $an_hx2 = an_plus(an_s,$an_xa1,$an_b)
+  $an_hx3 = an_plus(an_s,$an_xa5,$an_b)
+  $an_hx4 = an_plus(an_s,an_neg(an_s,$an_b),$an_b)
+  $an_h1 = an_sy($an_A,$an_hx2,$an_hx1,$an_e1)
+  $an_h2 = an_cd($an_A,an_add_de(an_s),$an_b,$an_xa1,$an_xa5,an_xaa)
+  $an_hx = an_tr($an_A,$an_hx1,$an_hx2,an_zero(an_s),$an_h1,
+            an_tr($an_A,$an_hx2,$an_hx3,an_zero(an_s),$an_h2,
+            an_tr($an_A,$an_hx3,$an_hx4,an_zero(an_s),
+                  an_cd($an_A,an_add_de(an_s),$an_b,an_plus(an_s,an_zero(an_s),an_neg(an_s,$an_b)),an_neg(an_s,$an_b),an_Lazl(an_s,an_neg(an_s,$an_b))),
+                  an_Linv_l(an_s,$an_b))))
+  $an_u = an_loi_nom("neg_unique",an_s)
+  $an_corps = an_sy($an_A,$an_x,an_neg(an_s,an_plus(an_s,$an_a,$an_b)),ta_ap3($an_u,an_plus(an_s,$an_a,$an_b),$an_x,$an_hx))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,an_neg(an_s,an_plus(an_s,$an_a,$an_b)),$an_x)),an_lam2($an_A,$an_corps))
+}
+fn an_lem_add_left_cancel(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_h = noy_var("h")
+  $an_negadd = an_loi_nom("neg_add_cancel_l",an_s)
+  $an_x1 = $an_b
+  $an_x2 = an_plus(an_s,an_neg(an_s,$an_a),an_plus(an_s,$an_a,$an_b))
+  $an_x3 = an_plus(an_s,an_neg(an_s,$an_a),an_plus(an_s,$an_a,$an_c))
+  $an_h1 = an_sy($an_A,$an_x2,$an_b,ta_ap2($an_negadd,$an_a,$an_b))
+  $an_h2 = an_cg($an_A,an_add_de(an_s),an_neg(an_s,$an_a),an_plus(an_s,$an_a,$an_b),an_plus(an_s,$an_a,$an_c),$an_h)
+  $an_h3 = ta_ap2($an_negadd,$an_a,$an_c)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_c,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_c,$an_h2,$an_h3))
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,
+            noy_pi("h",an_eq($an_A,an_plus(an_s,$an_a,$an_b),an_plus(an_s,$an_a,$an_c)),an_eq($an_A,$an_b,$an_c)))))
+  $an_hty = an_eq($an_A,an_plus(an_s,$an_a,$an_b),an_plus(an_s,$an_a,$an_c))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,noy_lam("h",$an_hty,$an_corps)))))
+}
+fn an_lem_add_right_cancel(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_h = noy_var("h")
+  $an_lc = an_loi_nom("add_left_cancel",an_s)
+  $an_hty = an_eq($an_A,an_plus(an_s,$an_b,$an_a),an_plus(an_s,$an_c,$an_a))
+  $an_hab = an_plus(an_s,$an_a,$an_b)
+  $an_hba = an_plus(an_s,$an_b,$an_a)
+  $an_hca = an_plus(an_s,$an_c,$an_a)
+  $an_hac = an_plus(an_s,$an_a,$an_c)
+  $an_habac = an_tr($an_A,$an_hab,$an_hba,$an_hac,
+               an_sy($an_A,$an_hba,$an_hab,an_Lac(an_s,$an_b,$an_a)),
+               an_tr($an_A,$an_hba,$an_hca,$an_hac,$an_h,an_Lac(an_s,$an_c,$an_a)))
+  $an_corps = ta_ap4($an_lc,$an_a,$an_b,$an_c,$an_habac)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,noy_pi("h",$an_hty,an_eq($an_A,$an_b,$an_c)))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,noy_lam("h",$an_hty,$an_corps)))))
+}
+
+fn an_lem_eq_neg_of_add_eq_zero(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h = noy_var("h")
+  $an_u = an_loi_nom("neg_unique",an_s)
+  $an_corps = ta_ap3($an_u,$an_b,$an_a,$an_h)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,
+            noy_pi("h",an_eq($an_A,an_plus(an_s,$an_a,$an_b),an_zero(an_s)),
+                   an_eq($an_A,$an_a,an_neg(an_s,$an_b)))))
+  $an_hty = an_eq($an_A,an_plus(an_s,$an_a,$an_b),an_zero(an_s))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h",$an_hty,$an_corps))))
+}
+fn an_lem_neg_eq_of_add_eq_zero(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h = noy_var("h")
+  $an_u = an_loi_nom("neg_unique",an_s)
+  $an_h2 = an_tr($an_A,an_plus(an_s,$an_b,$an_a),an_plus(an_s,$an_a,$an_b),an_zero(an_s),an_Lac(an_s,$an_b,$an_a),$an_h)
+  $an_corps = ta_ap3($an_u,$an_a,$an_b,$an_h2)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,
+            noy_pi("h",an_eq($an_A,an_plus(an_s,$an_a,$an_b),an_zero(an_s)),
+                   an_eq($an_A,$an_b,an_neg(an_s,$an_a)))))
+  $an_hty = an_eq($an_A,an_plus(an_s,$an_a,$an_b),an_zero(an_s))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h",$an_hty,$an_corps))))
+}
+fn an_lem_neg_add_alt(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_na = an_loi_nom("neg_add",an_s)
+  $an_x1 = an_neg(an_s,an_plus(an_s,$an_a,$an_b))
+  $an_x2 = an_plus(an_s,an_neg(an_s,$an_a),an_neg(an_s,$an_b))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,an_plus(an_s,an_neg(an_s,$an_b),an_neg(an_s,$an_a)),
+                    ta_ap2($an_na,$an_a,$an_b),
+                    an_Lac(an_s,an_neg(an_s,$an_a),an_neg(an_s,$an_b)))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,$an_x1,an_plus(an_s,an_neg(an_s,$an_b),an_neg(an_s,$an_a)))),an_lam2($an_A,$an_corps))
+}
+fn an_lem_add_self_of_eq_neg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_h = noy_var("h")
+  $an_x1 = an_plus(an_s,$an_a,$an_a)
+  $an_x2 = an_plus(an_s,an_neg(an_s,$an_a),$an_a)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,an_zero(an_s),
+                    an_cd($an_A,an_add_de(an_s),$an_a,$an_a,an_neg(an_s,$an_a),$an_h),
+                    an_Linv_l(an_s,$an_a))
+  $an_but = noy_pi("a",$an_A,noy_pi("h",an_eq($an_A,$an_a,an_neg(an_s,$an_a)),an_eq($an_A,$an_x1,an_zero(an_s))))
+  $an_hty = an_eq($an_A,$an_a,an_neg(an_s,$an_a))
+  $an_hty = an_eq($an_A,$an_a,an_neg(an_s,$an_a))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("h",$an_hty,$an_corps)))
+}
+
+# ── 5. Corpus GÉNÉRIQUE — multiplication (lemmes 27..40) ─────────────────────
+
+fn an_lem_mul_assoc4(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_ab = an_mul(an_s,$an_a,$an_b); $an_bc = an_mul(an_s,$an_b,$an_c); $an_cd = an_mul(an_s,$an_c,$an_d)
+  $an_l = an_mul(an_s,an_mul(an_s,$an_ab,$an_c),$an_d)
+  $an_m1 = an_mul(an_s,an_mul(an_s,$an_a,$an_bc),$an_d)
+  $an_m2 = an_mul(an_s,$an_a,an_mul(an_s,$an_bc,$an_d))
+  $an_r = an_mul(an_s,$an_a,an_mul(an_s,$an_b,$an_cd))
+  $an_h1 = an_cd($an_A,an_mul_de(an_s),$an_d,an_mul(an_s,$an_ab,$an_c),an_mul(an_s,$an_a,$an_bc),an_Lma(an_s,$an_a,$an_b,$an_c))
+  $an_h2 = an_Lma(an_s,$an_a,$an_bc,$an_d)
+  $an_h3 = an_cg($an_A,an_mul_de(an_s),$an_a,an_mul(an_s,$an_bc,$an_d),an_mul(an_s,$an_b,$an_cd),an_Lma(an_s,$an_b,$an_c,$an_d))
+  $an_corps = an_tr($an_A,$an_l,$an_m1,$an_r,$an_h1,an_tr($an_A,$an_m1,$an_m2,$an_r,$an_h2,$an_h3))
+  retour an_pair(an_pi4($an_A,an_eq($an_A,$an_l,$an_r)),an_lam4($an_A,$an_corps))
+}
+fn an_lem_mul_one_l(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_mul(an_s,an_one(an_s),$an_a),$an_a)),noy_lam("a",$an_A,an_Lm1l(an_s,$an_a)))
+}
+fn an_lem_mul_one_d(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_mul(an_s,$an_a,an_one(an_s)),$an_a)),noy_lam("a",$an_A,an_Lm1r(an_s,$an_a)))
+}
+fn an_lem_zero_mul(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_mul(an_s,an_zero(an_s),$an_a),an_zero(an_s))),noy_lam("a",$an_A,an_Lzml(an_s,$an_a)))
+}
+fn an_lem_mul_zero(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_mul(an_s,$an_a,an_zero(an_s)),an_zero(an_s))),noy_lam("a",$an_A,an_Lmzl(an_s,$an_a)))
+}
+fn an_lem_mul_left_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_x1 = an_mul(an_s,$an_a,an_mul(an_s,$an_b,$an_c))
+  $an_x2 = an_mul(an_s,an_mul(an_s,$an_a,$an_b),$an_c)
+  $an_x3 = an_mul(an_s,an_mul(an_s,$an_b,$an_a),$an_c)
+  $an_x4 = an_mul(an_s,$an_b,an_mul(an_s,$an_a,$an_c))
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Lma(an_s,$an_a,$an_b,$an_c))
+  $an_h2 = an_cd($an_A,an_mul_de(an_s),$an_c,an_mul(an_s,$an_a,$an_b),an_mul(an_s,$an_b,$an_a),an_Lmc(an_s,$an_a,$an_b))
+  $an_h3 = an_Lma(an_s,$an_b,$an_a,$an_c)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x4,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x4)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_mul_right_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_x1 = an_mul(an_s,an_mul(an_s,$an_a,$an_b),$an_c)
+  $an_x2 = an_mul(an_s,$an_a,an_mul(an_s,$an_b,$an_c))
+  $an_x3 = an_mul(an_s,$an_a,an_mul(an_s,$an_c,$an_b))
+  $an_x4 = an_mul(an_s,an_mul(an_s,$an_a,$an_c),$an_b)
+  $an_h1 = an_Lma(an_s,$an_a,$an_b,$an_c)
+  $an_h2 = an_cg($an_A,an_mul_de(an_s),$an_a,an_mul(an_s,$an_b,$an_c),an_mul(an_s,$an_c,$an_b),an_Lmc(an_s,$an_b,$an_c))
+  $an_h3 = an_sy($an_A,$an_x4,$an_x3,an_Lma(an_s,$an_a,$an_c,$an_b))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x4,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x4)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_mul_perm4(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_rc = an_loi_nom("mul_right_comm",an_s)
+  $an_x1 = an_mul(an_s,an_mul(an_s,$an_a,$an_b),an_mul(an_s,$an_c,$an_d))
+  $an_x2 = an_mul(an_s,an_mul(an_s,an_mul(an_s,$an_a,$an_b),$an_c),$an_d)
+  $an_x3 = an_mul(an_s,an_mul(an_s,an_mul(an_s,$an_a,$an_c),$an_b),$an_d)
+  $an_x4 = an_mul(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_b,$an_d))
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Lma(an_s,an_mul(an_s,$an_a,$an_b),$an_c,$an_d))
+  $an_h2 = an_cd($an_A,an_mul_de(an_s),$an_d,an_mul(an_s,an_mul(an_s,$an_a,$an_b),$an_c),
+                 an_mul(an_s,an_mul(an_s,$an_a,$an_c),$an_b),ta_ap3($an_rc,$an_a,$an_b,$an_c))
+  $an_h3 = an_Lma(an_s,an_mul(an_s,$an_a,$an_c),$an_b,$an_d)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x4,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  retour an_pair(an_pi4($an_A,an_eq($an_A,$an_x1,$an_x4)),an_lam4($an_A,$an_corps))
+}
+fn an_lem_zero_mul_absorb(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_x1 = an_mul(an_s,an_mul(an_s,an_zero(an_s),$an_a),$an_b)
+  $an_x2 = an_mul(an_s,an_zero(an_s),$an_b)
+  $an_h1 = an_cd($an_A,an_mul_de(an_s),$an_b,an_mul(an_s,an_zero(an_s),$an_a),an_zero(an_s),an_Lzml(an_s,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,an_zero(an_s),$an_h1,an_Lzml(an_s,$an_b))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,$an_x1,an_zero(an_s))),an_lam2($an_A,$an_corps))
+}
+fn an_lem_mul_zero_absorb(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_x1 = an_mul(an_s,an_mul(an_s,$an_a,an_zero(an_s)),$an_b)
+  $an_x2 = an_mul(an_s,an_zero(an_s),$an_b)
+  $an_h1 = an_cd($an_A,an_mul_de(an_s),$an_b,an_mul(an_s,$an_a,an_zero(an_s)),an_zero(an_s),an_Lmzl(an_s,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,an_zero(an_s),$an_h1,an_Lzml(an_s,$an_b))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,$an_x1,an_zero(an_s))),an_lam2($an_A,$an_corps))
+}
+fn an_lem_mul_one_unique(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_ep = noy_var("e'"); $an_h = noy_var("h")
+  $an_hty = noy_pi("x",$an_A,an_eq($an_A,an_mul(an_s,$an_ep,noy_var("x")),noy_var("x")))
+  $an_x1 = $an_ep
+  $an_x2 = an_mul(an_s,$an_ep,an_one(an_s))
+  $an_x3 = an_one(an_s)
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Lm1r($an_s,$an_ep))
+  $an_h2 = ta_ap1($an_h,an_one(an_s))
+  $an_chaine = an_tr($an_A,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  $an_corps = an_sy($an_A,$an_x1,$an_x3,$an_chaine)
+  retour an_pair(noy_pi("e'",$an_A,noy_pi("h",$an_hty,an_eq($an_A,an_one(an_s),$an_ep))),
+                 noy_lam("e'",$an_A,noy_lam("h",$an_hty,$an_corps)))
+}
+
+fn an_lem_mul_congr_l(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_h = noy_var("h")
+  $an_hty = an_eq($an_A,$an_a,$an_b)
+  $an_corps = an_cd($an_A,an_mul_de(an_s),$an_c,$an_a,$an_b,$an_h)
+  retour an_pair(noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,
+            noy_pi("h",$an_hty,an_eq($an_A,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_b,$an_c)))))),
+            noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,noy_lam("h",$an_hty,$an_corps)))))
+}
+fn an_lem_mul_congr_r(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_h = noy_var("h")
+  $an_hty = an_eq($an_A,$an_a,$an_b)
+  $an_corps = an_cg($an_A,an_mul_de(an_s),$an_c,$an_a,$an_b,$an_h)
+  retour an_pair(noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,
+            noy_pi("h",$an_hty,an_eq($an_A,an_mul(an_s,$an_c,$an_a),an_mul(an_s,$an_c,$an_b)))))),
+            noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,noy_lam("h",$an_hty,$an_corps)))))
+}
+
+# ── 6. Corpus GÉNÉRIQUE — distributivité et négation (lemmes 41..56) ─────────
+
+fn an_lem_dist_l_symm(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_corps = an_sy($an_A,an_mul(an_s,noy_var("a"),an_plus(an_s,noy_var("b"),noy_var("c"))),
+                    an_plus(an_s,an_mul(an_s,noy_var("a"),noy_var("b")),an_mul(an_s,noy_var("a"),noy_var("c"))),
+                    an_Ldl(an_s,noy_var("a"),noy_var("b"),noy_var("c")))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,an_plus(an_s,an_mul(an_s,noy_var("a"),noy_var("b")),an_mul(an_s,noy_var("a"),noy_var("c"))),
+                                           an_mul(an_s,noy_var("a"),an_plus(an_s,noy_var("b"),noy_var("c"))))),an_lam3($an_A,$an_corps))
+}
+fn an_lem_dist_r_symm(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_corps = an_sy($an_A,an_mul(an_s,an_plus(an_s,noy_var("a"),noy_var("b")),noy_var("c")),
+                    an_plus(an_s,an_mul(an_s,noy_var("a"),noy_var("c")),an_mul(an_s,noy_var("b"),noy_var("c"))),
+                    an_Ldr(an_s,noy_var("a"),noy_var("b"),noy_var("c")))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,an_plus(an_s,an_mul(an_s,noy_var("a"),noy_var("c")),an_mul(an_s,noy_var("b"),noy_var("c"))),
+                                           an_mul(an_s,an_plus(an_s,noy_var("a"),noy_var("b")),noy_var("c")))),an_lam3($an_A,$an_corps))
+}
+fn an_lem_mul_add_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_x1 = an_mul(an_s,$an_a,an_plus(an_s,$an_b,$an_c))
+  $an_x2 = an_plus(an_s,an_mul(an_s,$an_a,$an_b),an_mul(an_s,$an_a,$an_c))
+  $an_x3 = an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_a,$an_b))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,an_Ldl(an_s,$an_a,$an_b,$an_c),an_Lac(an_s,an_mul(an_s,$an_a,$an_b),an_mul(an_s,$an_a,$an_c)))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x3)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_add_mul_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_x1 = an_mul(an_s,an_plus(an_s,$an_a,$an_b),$an_c)
+  $an_x2 = an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_b,$an_c))
+  $an_x3 = an_plus(an_s,an_mul(an_s,$an_b,$an_c),an_mul(an_s,$an_a,$an_c))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,an_Ldr(an_s,$an_a,$an_b,$an_c),an_Lac(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_b,$an_c)))
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x3)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_mul_add_add(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_x1 = an_plus(an_s,an_mul(an_s,$an_a,an_plus(an_s,$an_b,$an_c)),an_mul(an_s,$an_a,$an_d))
+  $an_x2 = an_mul(an_s,$an_a,an_plus(an_s,an_plus(an_s,$an_b,$an_c),$an_d))
+  $an_corps = an_sy($an_A,$an_x2,$an_x1,an_Ldl(an_s,$an_a,an_plus(an_s,$an_b,$an_c),$an_d))
+  retour an_pair(an_pi4($an_A,an_eq($an_A,$an_x1,$an_x2)),an_lam4($an_A,$an_corps))
+}
+fn an_lem_add_mul_mul(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_x1 = an_plus(an_s,an_mul(an_s,an_plus(an_s,$an_a,$an_b),$an_c),an_mul(an_s,$an_d,$an_c))
+  $an_x2 = an_mul(an_s,an_plus(an_s,an_plus(an_s,$an_a,$an_b),$an_d),$an_c)
+  $an_corps = an_sy($an_A,$an_x2,$an_x1,an_Ldr(an_s,an_plus(an_s,$an_a,$an_b),$an_d,$an_c))
+  retour an_pair(an_pi4($an_A,an_eq($an_A,$an_x1,$an_x2)),an_lam4($an_A,$an_corps))
+}
+fn an_lem_mul_add_mul(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_x1 = an_mul(an_s,an_plus(an_s,$an_a,$an_b),an_plus(an_s,$an_c,$an_d))
+  $an_x2 = an_plus(an_s,an_mul(an_s,$an_a,an_plus(an_s,$an_c,$an_d)),an_mul(an_s,$an_b,an_plus(an_s,$an_c,$an_d)))
+  $an_x3 = an_plus(an_s,an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_a,$an_d)),an_mul(an_s,$an_b,an_plus(an_s,$an_c,$an_d)))
+  $an_x4 = an_plus(an_s,an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_a,$an_d)),an_plus(an_s,an_mul(an_s,$an_b,$an_c),an_mul(an_s,$an_b,$an_d)))
+  $an_h1 = an_Ldr(an_s,$an_a,$an_b,an_plus(an_s,$an_c,$an_d))
+  $an_h2 = an_cd($an_A,an_add_de(an_s),an_mul(an_s,$an_b,an_plus(an_s,$an_c,$an_d)),
+                 an_mul(an_s,$an_a,an_plus(an_s,$an_c,$an_d)),
+                 an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_a,$an_d)),
+                 an_Ldl(an_s,$an_a,$an_c,$an_d))
+  $an_h3 = an_cg($an_A,an_add_de(an_s),an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_a,$an_d)),
+                 an_mul(an_s,$an_b,an_plus(an_s,$an_c,$an_d)),
+                 an_plus(an_s,an_mul(an_s,$an_b,$an_c),an_mul(an_s,$an_b,$an_d)),
+                 an_Ldl(an_s,$an_b,$an_c,$an_d))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x4,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  retour an_pair(an_pi4($an_A,an_eq($an_A,$an_x1,$an_x4)),an_lam4($an_A,$an_corps))
+}
+fn an_lem_neg_mul(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_x1 = an_plus(an_s,an_mul(an_s,an_neg(an_s,$an_a),$an_b),an_mul(an_s,$an_a,$an_b))
+  $an_x2 = an_mul(an_s,an_plus(an_s,an_neg(an_s,$an_a),$an_a),$an_b)
+  $an_x3 = an_mul(an_s,an_zero(an_s),$an_b)
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Ldr(an_s,an_neg(an_s,$an_a),$an_a,$an_b))
+  $an_h2 = an_cd($an_A,an_mul_de(an_s),$an_b,an_plus(an_s,an_neg(an_s,$an_a),$an_a),an_zero(an_s),an_Linv_l(an_s,$an_a))
+  $an_h3 = an_Lzml(an_s,$an_b)
+  $an_hx = an_tr($an_A,$an_x1,$an_x2,an_zero(an_s),$an_h1,an_tr($an_A,$an_x2,$an_x3,an_zero(an_s),$an_h2,$an_h3))
+  $an_u = an_loi_nom("neg_unique",an_s)
+  $an_corps = ta_ap3($an_u,an_mul(an_s,$an_a,$an_b),an_mul(an_s,an_neg(an_s,$an_a),$an_b),$an_hx)
+  retour an_pair(an_pi2($an_A,an_eq($an_A,an_mul(an_s,an_neg(an_s,$an_a),$an_b),an_neg(an_s,an_mul(an_s,$an_a,$an_b)))),an_lam2($an_A,$an_corps))
+}
+fn an_lem_mul_neg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_x1 = an_plus(an_s,an_mul(an_s,$an_a,an_neg(an_s,$an_b)),an_mul(an_s,$an_a,$an_b))
+  $an_x2 = an_mul(an_s,$an_a,an_plus(an_s,an_neg(an_s,$an_b),$an_b))
+  $an_x3 = an_mul(an_s,$an_a,an_zero(an_s))
+  $an_h1 = an_sy($an_A,$an_x2,$an_x1,an_Ldl(an_s,$an_a,an_neg(an_s,$an_b),$an_b))
+  $an_h2 = an_cg($an_A,an_mul_de(an_s),$an_a,an_plus(an_s,an_neg(an_s,$an_b),$an_b),an_zero(an_s),an_Linv_l(an_s,$an_b))
+  $an_h3 = an_Lmzl(an_s,$an_a)
+  $an_hx = an_tr($an_A,$an_x1,$an_x2,an_zero(an_s),$an_h1,an_tr($an_A,$an_x2,$an_x3,an_zero(an_s),$an_h2,$an_h3))
+  $an_u = an_loi_nom("neg_unique",an_s)
+  $an_corps = ta_ap3($an_u,an_mul(an_s,$an_a,$an_b),an_mul(an_s,$an_a,an_neg(an_s,$an_b)),$an_hx)
+  retour an_pair(an_pi2($an_A,an_eq($an_A,an_mul(an_s,$an_a,an_neg(an_s,$an_b)),an_neg(an_s,an_mul(an_s,$an_a,$an_b)))),an_lam2($an_A,$an_corps))
+}
+fn an_lem_neg_mul_neg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_nm = an_loi_nom("neg_mul",an_s); $an_mn = an_loi_nom("mul_neg",an_s); $an_nn = an_loi_nom("neg_neg",an_s)
+  $an_x1 = an_mul(an_s,an_neg(an_s,$an_a),an_neg(an_s,$an_b))
+  $an_x2 = an_neg(an_s,an_mul(an_s,$an_a,an_neg(an_s,$an_b)))
+  $an_x3 = an_neg(an_s,an_neg(an_s,an_mul(an_s,$an_a,$an_b)))
+  $an_h1 = ta_ap2($an_nm,$an_a,an_neg(an_s,$an_b))
+  $an_h2 = an_c1($an_A,an_neg_de(an_s),an_mul(an_s,$an_a,an_neg(an_s,$an_b)),an_neg(an_s,an_mul(an_s,$an_a,$an_b)),ta_ap2($an_mn,$an_a,$an_b))
+  $an_h3 = ta_ap1($an_nn,an_mul(an_s,$an_a,$an_b))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,an_mul(an_s,$an_a,$an_b),$an_h1,an_tr($an_A,$an_x2,$an_x3,an_mul(an_s,$an_a,$an_b),$an_h2,$an_h3))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,$an_x1,an_mul(an_s,$an_a,$an_b))),an_lam2($an_A,$an_corps))
+}
+fn an_lem_neg_mul_alt(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_nm = an_loi_nom("neg_mul",an_s); $an_mn = an_loi_nom("mul_neg",an_s)
+  $an_corps = an_tr($an_A,an_mul(an_s,an_neg(an_s,$an_a),$an_b),
+                    an_neg(an_s,an_mul(an_s,$an_a,$an_b)),
+                    an_mul(an_s,$an_a,an_neg(an_s,$an_b)),
+                    ta_ap2($an_nm,$an_a,$an_b),
+                    an_sy($an_A,an_mul(an_s,$an_a,an_neg(an_s,$an_b)),an_neg(an_s,an_mul(an_s,$an_a,$an_b)),ta_ap2($an_mn,$an_a,$an_b)))
+  retour an_pair(an_pi2($an_A,an_eq($an_A,an_mul(an_s,an_neg(an_s,$an_a),$an_b),an_mul(an_s,$an_a,an_neg(an_s,$an_b)))),an_lam2($an_A,$an_corps))
+}
+fn an_lem_add_neg_mul(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_nm = an_loi_nom("neg_mul",an_s)
+  $an_x1 = an_mul(an_s,an_plus(an_s,$an_a,an_neg(an_s,$an_b)),$an_c)
+  $an_x2 = an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_mul(an_s,an_neg(an_s,$an_b),$an_c))
+  $an_x3 = an_plus(an_s,an_mul(an_s,$an_a,$an_c),an_neg(an_s,an_mul(an_s,$an_b,$an_c)))
+  $an_h1 = an_Ldr(an_s,$an_a,an_neg(an_s,$an_b),$an_c)
+  $an_h2 = an_cg($an_A,an_add_de(an_s),an_mul(an_s,$an_a,$an_c),an_mul(an_s,an_neg(an_s,$an_b),$an_c),an_neg(an_s,an_mul(an_s,$an_b,$an_c)),ta_ap2($an_nm,$an_b,$an_c))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x3)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_mul_add_neg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_mn = an_loi_nom("mul_neg",an_s)
+  $an_x1 = an_mul(an_s,$an_a,an_plus(an_s,$an_b,an_neg(an_s,$an_c)))
+  $an_x2 = an_plus(an_s,an_mul(an_s,$an_a,$an_b),an_mul(an_s,$an_a,an_neg(an_s,$an_c)))
+  $an_x3 = an_plus(an_s,an_mul(an_s,$an_a,$an_b),an_neg(an_s,an_mul(an_s,$an_a,$an_c)))
+  $an_h1 = an_Ldl(an_s,$an_a,$an_b,an_neg(an_s,$an_c))
+  $an_h2 = an_cg($an_A,an_add_de(an_s),an_mul(an_s,$an_a,$an_b),an_mul(an_s,$an_a,an_neg(an_s,$an_c)),an_neg(an_s,an_mul(an_s,$an_a,$an_c)),ta_ap2($an_mn,$an_a,$an_c))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x3)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_neg_add_mul(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_nm = an_loi_nom("neg_mul",an_s)
+  $an_x1 = an_mul(an_s,an_plus(an_s,an_neg(an_s,$an_a),$an_b),$an_c)
+  $an_x2 = an_plus(an_s,an_mul(an_s,an_neg(an_s,$an_a),$an_c),an_mul(an_s,$an_b,$an_c))
+  $an_x3 = an_plus(an_s,an_neg(an_s,an_mul(an_s,$an_a,$an_c)),an_mul(an_s,$an_b,$an_c))
+  $an_h1 = an_Ldr(an_s,an_neg(an_s,$an_a),$an_b,$an_c)
+  $an_h2 = an_cd($an_A,an_add_de(an_s),an_mul(an_s,$an_b,$an_c),an_mul(an_s,an_neg(an_s,$an_a),$an_c),an_neg(an_s,an_mul(an_s,$an_a,$an_c)),ta_ap2($an_nm,$an_a,$an_c))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x3)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_mul_neg_add(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_mn = an_loi_nom("mul_neg",an_s)
+  $an_x1 = an_mul(an_s,$an_a,an_plus(an_s,an_neg(an_s,$an_b),$an_c))
+  $an_x2 = an_plus(an_s,an_mul(an_s,$an_a,an_neg(an_s,$an_b)),an_mul(an_s,$an_a,$an_c))
+  $an_x3 = an_plus(an_s,an_neg(an_s,an_mul(an_s,$an_a,$an_b)),an_mul(an_s,$an_a,$an_c))
+  $an_h1 = an_Ldl(an_s,$an_a,an_neg(an_s,$an_b),$an_c)
+  $an_h2 = an_cd($an_A,an_add_de(an_s),an_mul(an_s,$an_a,$an_c),an_mul(an_s,$an_a,an_neg(an_s,$an_b)),an_neg(an_s,an_mul(an_s,$an_a,$an_b)),ta_ap2($an_mn,$an_a,$an_b))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  retour an_pair(an_pi3($an_A,an_eq($an_A,$an_x1,$an_x3)),an_lam3($an_A,$an_corps))
+}
+fn an_lem_neg_mul_one(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_mul(an_s,an_neg(an_s,$an_a),an_one(an_s)),an_neg(an_s,$an_a))),
+                 noy_lam("a",$an_A,an_Lm1r(an_s,an_neg(an_s,$an_a))))
+}
+fn an_lem_one_mul_neg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_mul(an_s,an_one(an_s),an_neg(an_s,$an_a)),an_neg(an_s,$an_a))),
+                 noy_lam("a",$an_A,an_Lm1l(an_s,an_neg(an_s,$an_a))))
+}
+
+# ── 7. Corpus GÉNÉRIQUE — puissances (lemmes 57..63) ─────────────────────────
+
+fn an_lem_pow_zero(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,an_pow(an_s,ta_zero(),$an_a),an_one(an_s))),noy_lam("a",$an_A,an_Lpow0(an_s,$an_a)))
+}
+fn an_lem_pow_succ(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_n = noy_var("n"); $an_a = noy_var("a")
+  $an_but = noy_pi("n",ta_nat(),noy_pi("a",$an_A,
+      an_eq($an_A,an_pow(an_s,ta_succ($an_n),$an_a),an_mul(an_s,an_pow(an_s,$an_n,$an_a),$an_a))))
+  retour an_pair($an_but,noy_lam("n",ta_nat(),noy_lam("a",$an_A,an_Lpows(an_s,$an_n,$an_a))))
+}
+fn an_lem_pow_one(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  $an_x1 = an_pow(an_s,ta_succ(ta_zero()),$an_a)
+  $an_x2 = an_mul(an_s,an_pow(an_s,ta_zero(),$an_a),$an_a)
+  $an_x3 = an_mul(an_s,an_one(an_s),$an_a)
+  $an_h1 = an_Lpows(an_s,ta_zero(),$an_a)
+  $an_h2 = an_cd($an_A,an_mul_de(an_s),$an_a,an_pow(an_s,ta_zero(),$an_a),an_one(an_s),an_Lpow0(an_s,$an_a))
+  $an_h3 = an_Lm1l(an_s,$an_a)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_a,$an_h1,an_tr($an_A,$an_x2,$an_x3,$an_a,$an_h2,$an_h3))
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,$an_x1,$an_a)),noy_lam("a",$an_A,$an_corps))
+}
+fn an_lem_pow_two(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_p1 = an_loi_nom("pow_one",an_s)
+  $an_x1 = an_pow(an_s,ta_succ(ta_succ(ta_zero())),$an_a)
+  $an_x2 = an_mul(an_s,an_pow(an_s,ta_succ(ta_zero()),$an_a),$an_a)
+  $an_x3 = an_mul(an_s,$an_a,$an_a)
+  $an_h1 = an_Lpows(an_s,ta_succ(ta_zero()),$an_a)
+  $an_h2 = an_cd($an_A,an_mul_de(an_s),$an_a,an_pow(an_s,ta_succ(ta_zero()),$an_a),$an_a,ta_ap1($an_p1,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  retour an_pair(noy_pi("a",$an_A,an_eq($an_A,$an_x1,$an_x3)),noy_lam("a",$an_A,$an_corps))
+}
+fn an_lem_pow_succ_comm(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_n = noy_var("n"); $an_a = noy_var("a")
+  $an_x1 = an_pow(an_s,ta_succ($an_n),$an_a)
+  $an_x2 = an_mul(an_s,an_pow(an_s,$an_n,$an_a),$an_a)
+  $an_x3 = an_mul(an_s,$an_a,an_pow(an_s,$an_n,$an_a))
+  $an_h1 = an_Lpows(an_s,$an_n,$an_a)
+  $an_h2 = an_Lmc(an_s,an_pow(an_s,$an_n,$an_a),$an_a)
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  $an_but = noy_pi("n",ta_nat(),noy_pi("a",$an_A,an_eq($an_A,$an_x1,$an_x3)))
+  retour an_pair($an_but,noy_lam("n",ta_nat(),noy_lam("a",$an_A,$an_corps)))
+}
+fn an_lem_pow_zero_mul(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_n = noy_var("n"); $an_a = noy_var("a"); $an_pn = an_pow(an_s,$an_n,$an_a)
+  $an_x1 = an_mul(an_s,an_pow(an_s,ta_zero(),$an_a),$an_pn)
+  $an_x2 = an_mul(an_s,an_one(an_s),$an_pn)
+  $an_h1 = an_cd($an_A,an_mul_de(an_s),$an_pn,an_pow(an_s,ta_zero(),$an_a),an_one(an_s),an_Lpow0(an_s,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_pn,$an_h1,an_Lm1l(an_s,$an_pn))
+  $an_but = noy_pi("n",ta_nat(),noy_pi("a",$an_A,an_eq($an_A,$an_x1,$an_pn)))
+  retour an_pair($an_but,noy_lam("n",ta_nat(),noy_lam("a",$an_A,$an_corps)))
+}
+fn an_lem_pow_mul_zero(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_n = noy_var("n"); $an_a = noy_var("a"); $an_pn = an_pow(an_s,$an_n,$an_a)
+  $an_x1 = an_mul(an_s,$an_pn,an_pow(an_s,ta_zero(),$an_a))
+  $an_x2 = an_mul(an_s,$an_pn,an_one(an_s))
+  $an_h1 = an_cg($an_A,an_mul_de(an_s),$an_pn,an_pow(an_s,ta_zero(),$an_a),an_one(an_s),an_Lpow0(an_s,$an_a))
+  $an_corps = an_tr($an_A,$an_x1,$an_x2,$an_pn,$an_h1,an_Lm1r(an_s,$an_pn))
+  $an_but = noy_pi("n",ta_nat(),noy_pi("a",$an_A,an_eq($an_A,$an_x1,$an_pn)))
+  retour an_pair($an_but,noy_lam("n",ta_nat(),noy_lam("a",$an_A,$an_corps)))
+}
+
+# ── 8. Corpus GÉNÉRIQUE — relations avec l'ordre de M1 (lemmes 64..77) ───────
+
+fn an_le_of_eq(an_s: table, an_a: table, an_b: table, an_h: table) -> table {
+  $an_A = an_car_de(an_s)
+  $an_P = noy_lam("z",$an_A,an_le(an_s,$an_a,noy_var("z")))
+  retour an_transp($an_A,$an_a,$an_b,$an_P,an_Ller(an_s,$an_a),an_h)
+}
+fn an_lem_le_refl(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a")
+  retour an_pair(noy_pi("a",$an_A,an_le(an_s,$an_a,$an_a)),noy_lam("a",$an_A,an_Ller(an_s,$an_a)))
+}
+fn an_lem_le_trans(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_h1 = noy_var("h1"); $an_h2 = noy_var("h2")
+  $an_t1 = an_le(an_s,$an_a,$an_b); $an_t2 = an_le(an_s,$an_b,$an_c)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,
+            noy_pi("h1",$an_t1,noy_pi("h2",$an_t2,an_le(an_s,$an_a,$an_c))))))
+  $an_corps = an_Llet(an_s,$an_a,$an_b,$an_c,$an_h1,$an_h2)
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,
+            noy_lam("h1",$an_t1,noy_lam("h2",$an_t2,$an_corps))))))
+}
+fn an_lem_le_antisymm(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b")
+  $an_h1 = noy_var("h1"); $an_h2 = noy_var("h2")
+  $an_t1 = an_le(an_s,$an_a,$an_b); $an_t2 = an_le(an_s,$an_b,$an_a)
+  $an_corps = ta_ap4(an_champ(an_s,"le_antisymm"),$an_a,$an_b,$an_h1,$an_h2)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,
+            noy_pi("h1",$an_t1,noy_pi("h2",$an_t2,an_eq($an_A,$an_a,$an_b)))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h1",$an_t1,noy_lam("h2",$an_t2,$an_corps)))))
+}
+fn an_lem_le_of_eq(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h = noy_var("h")
+  $an_hty = an_eq($an_A,$an_a,$an_b)
+  $an_corps = an_le_of_eq(an_s,$an_a,$an_b,$an_h)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("h",$an_hty,an_le(an_s,$an_a,$an_b))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h",$an_hty,$an_corps))))
+}
+fn an_lem_le_of_eq_symm(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h = noy_var("h")
+  $an_hty = an_eq($an_A,$an_b,$an_a)
+  $an_P = noy_lam("z",$an_A,an_le(an_s,noy_var("z"),$an_b))
+  $an_corps = an_transp($an_A,$an_b,$an_a,$an_P,an_Ller(an_s,$an_b),$an_h)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("h",$an_hty,an_le(an_s,$an_a,$an_b))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h",$an_hty,$an_corps))))
+}
+fn an_lem_le_add_right(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_h = noy_var("h")
+  $an_hty = an_le(an_s,$an_a,$an_b)
+  $an_corps = an_Lleadd(an_s,$an_a,$an_b,$an_c,$an_h)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,noy_pi("h",$an_hty,
+             an_le(an_s,an_plus(an_s,$an_a,$an_c),an_plus(an_s,$an_b,$an_c))))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,noy_lam("h",$an_hty,$an_corps)))))
+}
+fn an_lem_le_add_left(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_h = noy_var("h")
+  $an_loeq = an_loi_nom("le_of_eq",an_s)
+  $an_hty = an_le(an_s,$an_a,$an_b)
+  $an_x1 = an_plus(an_s,$an_c,$an_a)
+  $an_x2 = an_plus(an_s,$an_a,$an_c)
+  $an_x3 = an_plus(an_s,$an_b,$an_c)
+  $an_x4 = an_plus(an_s,$an_c,$an_b)
+  $an_h1 = ta_ap3($an_loeq,$an_x1,$an_x2,an_Lac(an_s,$an_c,$an_a))
+  $an_h2 = an_Lleadd(an_s,$an_a,$an_b,$an_c,$an_h)
+  $an_h3 = ta_ap3($an_loeq,$an_x3,$an_x4,an_Lac(an_s,$an_b,$an_c))
+  $an_corps = an_Llet(an_s,$an_x1,$an_x2,$an_x4,$an_h1,an_Llet(an_s,$an_x2,$an_x3,$an_x4,$an_h2,$an_h3))
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,noy_pi("h",$an_hty,an_le(an_s,$an_x1,$an_x4)))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,noy_lam("h",$an_hty,$an_corps)))))
+}
+fn an_lem_le_add_both(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c"); $an_d = noy_var("d")
+  $an_h1 = noy_var("h1"); $an_h2 = noy_var("h2")
+  $an_lal = an_loi_nom("le_add_left",an_s)
+  $an_lar = an_loi_nom("le_add_right",an_s)
+  $an_t1 = an_le(an_s,$an_a,$an_b); $an_t2 = an_le(an_s,$an_c,$an_d)
+  $an_p1 = an_le(an_s,an_plus(an_s,$an_c,$an_a),an_plus(an_s,$an_c,$an_b))
+  $an_p2 = an_le(an_s,an_plus(an_s,$an_a,$an_c),an_plus(an_s,$an_b,$an_c))
+  $an_p3 = an_le(an_s,an_plus(an_s,$an_b,$an_c),an_plus(an_s,$an_b,$an_d))
+  $an_hp1 = ta_ap4($an_lal,$an_a,$an_b,$an_c,$an_h1)
+  $an_hp2 = an_Llet(an_s,an_plus(an_s,$an_c,$an_a),an_plus(an_s,$an_a,$an_c),an_plus(an_s,$an_b,$an_c),
+              ta_ap3(an_loi_nom("le_of_eq",an_s),an_plus(an_s,$an_c,$an_a),an_plus(an_s,$an_a,$an_c),an_Lac(an_s,$an_c,$an_a)),
+              ta_ap4($an_lar,$an_a,$an_b,$an_c,$an_h1))
+  $an_hp3 = ta_ap4($an_lal,$an_c,$an_d,$an_b,$an_h2)
+  $an_corps = an_Llet(an_s,an_plus(an_s,$an_c,$an_a),an_plus(an_s,$an_b,$an_c),an_plus(an_s,$an_b,$an_d),
+                      $an_hp2,ta_ap4($an_lal,$an_c,$an_d,$an_b,$an_h2))
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,noy_pi("d",$an_A,
+            noy_pi("h1",$an_t1,noy_pi("h2",$an_t2,
+              an_le(an_s,an_plus(an_s,$an_c,$an_a),an_plus(an_s,$an_b,$an_d))))))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,noy_lam("d",$an_A,
+            noy_lam("h1",$an_t1,noy_lam("h2",$an_t2,$an_corps)))))))
+}
+fn an_lem_le_of_le_of_eq(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_h = noy_var("h"); $an_e = noy_var("e")
+  $an_loeq = an_loi_nom("le_of_eq",an_s)
+  $an_h2 = ta_ap3($an_loeq,$an_b,$an_c,$an_e)
+  $an_corps = an_Llet(an_s,$an_a,$an_b,$an_c,$an_h,$an_h2)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,
+            noy_pi("h",an_le(an_s,$an_a,$an_b),noy_pi("e",an_eq($an_A,$an_b,$an_c),an_le(an_s,$an_a,$an_c))))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,
+            noy_lam("h",an_le(an_s,$an_a,$an_b),noy_lam("e",an_eq($an_A,$an_b,$an_c),$an_corps))))))
+}
+fn an_lem_le_of_eq_of_le(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_c = noy_var("c")
+  $an_e = noy_var("e"); $an_h = noy_var("h")
+  $an_loeq = an_loi_nom("le_of_eq",an_s)
+  $an_h1 = ta_ap3($an_loeq,$an_a,$an_b,$an_e)
+  $an_corps = an_Llet(an_s,$an_a,$an_b,$an_c,$an_h1,$an_h)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("c",$an_A,
+            noy_pi("e",an_eq($an_A,$an_a,$an_b),noy_pi("h",an_le(an_s,$an_b,$an_c),an_le(an_s,$an_a,$an_c))))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("c",$an_A,
+            noy_lam("e",an_eq($an_A,$an_a,$an_b),noy_lam("h",an_le(an_s,$an_b,$an_c),$an_corps))))))
+}
+fn an_lem_zero_le_one(an_s: table) -> table {
+  $an_A = an_car_de(an_s)
+  retour an_pair(noy_pi("x",$an_A,an_le(an_s,an_zero(an_s),an_one(an_s))),noy_lam("x",$an_A,an_champ(an_s,"zero_le_one")))
+}
+fn an_lem_mul_nonneg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h1 = noy_var("h1"); $an_h2 = noy_var("h2")
+  $an_t1 = an_le(an_s,an_zero(an_s),$an_a); $an_t2 = an_le(an_s,an_zero(an_s),$an_b)
+  $an_corps = an_Llemul(an_s,$an_a,$an_b,$an_h1,$an_h2)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("h1",$an_t1,noy_pi("h2",$an_t2,
+             an_le(an_s,an_zero(an_s),an_mul(an_s,$an_a,$an_b))))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h1",$an_t1,noy_lam("h2",$an_t2,$an_corps)))))
+}
+fn an_lem_mul_nonneg_swap(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h1 = noy_var("h1"); $an_h2 = noy_var("h2")
+  $an_t1 = an_le(an_s,an_zero(an_s),$an_a); $an_t2 = an_le(an_s,an_zero(an_s),$an_b)
+  $an_corps = an_Llemul(an_s,$an_b,$an_a,$an_h2,$an_h1)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("h1",$an_t1,noy_pi("h2",$an_t2,
+             an_le(an_s,an_zero(an_s),an_mul(an_s,$an_b,$an_a))))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h1",$an_t1,noy_lam("h2",$an_t2,$an_corps)))))
+}
+fn an_lem_sq_nonneg_of_nonneg(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_h = noy_var("h")
+  $an_mn = an_loi_nom("mul_nonneg",an_s)
+  $an_ty = an_le(an_s,an_zero(an_s),$an_a)
+  $an_corps = ta_ap4($an_mn,$an_a,$an_a,$an_h,$an_h)
+  $an_but = noy_pi("a",$an_A,noy_pi("h",$an_ty,an_le(an_s,an_zero(an_s),an_mul(an_s,$an_a,$an_a))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("h",$an_ty,$an_corps)))
+}
+
+fn an_lem_le_add_of_nonneg_right(an_s: table) -> table {
+  $an_A = an_car_de(an_s); $an_a = noy_var("a"); $an_b = noy_var("b"); $an_h = noy_var("h")
+  $an_loeq = an_loi_nom("le_of_eq",an_s); $an_lar = an_loi_nom("le_add_left",an_s)
+  $an_x1 = $an_a; $an_x2 = an_plus(an_s,$an_a,an_zero(an_s)); $an_x3 = an_plus(an_s,$an_a,$an_b)
+  $an_h1 = ta_ap3($an_loeq,$an_a,$an_x2,an_sy($an_A,$an_x2,$an_a,an_Lazr(an_s,$an_a)))
+  $an_h2 = ta_ap4($an_lar,an_zero(an_s),$an_b,$an_a,$an_h)
+  $an_corps = an_Llet(an_s,$an_x1,$an_x2,$an_x3,$an_h1,$an_h2)
+  $an_but = noy_pi("a",$an_A,noy_pi("b",$an_A,noy_pi("h",an_le(an_s,an_zero(an_s),$an_b),
+             an_le(an_s,$an_a,an_plus(an_s,$an_a,$an_b)))))
+  retour an_pair($an_but,noy_lam("a",$an_A,noy_lam("b",$an_A,noy_lam("h",an_le(an_s,an_zero(an_s),$an_b),$an_corps))))
+}
+
+# ── 9. Instances publiques ───────────────────────────────────────────────────
+
+# Terme vérifié de commutativité de la multiplication de Nat. Aucune loi
+# supplémentaire : il est obtenu par induction à partir des équations de ×
+# (mult_0_r, mult_s_r) et des lemmes déjà vérifiés de algebre.rose.
+fn an_term_mult_comm() -> table {
+  $an_but = noy_pi("m", ta_nat(), noy_pi("n", ta_nat(),
+             al_eq(al_mult(noy_var("m"),noy_var("n")),
+                   al_mult(noy_var("n"),noy_var("m")))))
+  $an_r0 = induction($an_but, ta_ctx())
+  $an_k = ta_txt($an_r0, "nom_n")
+  $an_ih = ta_txt($an_r0, "nom_ih")
+  $an_base = noy_lam("n", ta_nat(),
+    al_trans(al_mult(ta_zero(),noy_var("n")), ta_zero(),
+             al_mult(noy_var("n"),ta_zero()),
+             ta_ap1(al_term_mult_zero_g(), noy_var("n")),
+             al_symm(ta_zero(), al_mult(noy_var("n"),ta_zero()), al_mult0r(noy_var("n")))))
+  $an_h1 = ta_ap2(al_term_mult_succ_g(), noy_var("n"), noy_var($an_k))
+  $an_h2 = al_congr_plus(al_mult(noy_var($an_k),noy_var("n")),
+                         al_mult(noy_var("n"),noy_var($an_k)),
+                         noy_var("n"), ta_ap1(noy_var($an_ih),noy_var("n")))
+  $an_h3 = al_symm(al_mult(noy_var("n"),ta_succ(noy_var($an_k))),
+                   ta_plus(al_mult(noy_var("n"),noy_var($an_k)),noy_var("n")),
+                   al_multsr(noy_var("n"),noy_var($an_k)))
+  $an_corps = al_trans(al_mult(ta_succ(noy_var($an_k)),noy_var("n")),
+              ta_plus(al_mult(noy_var($an_k),noy_var("n")),noy_var("n")),
+              al_mult(noy_var("n"),ta_succ(noy_var($an_k))), $an_h1,
+              al_trans(ta_plus(al_mult(noy_var($an_k),noy_var("n")),noy_var("n")),
+                       ta_plus(al_mult(noy_var("n"),noy_var($an_k)),noy_var("n")),
+                       al_mult(noy_var("n"),ta_succ(noy_var($an_k))), $an_h2, $an_h3))
+  $an_pas = noy_lam($an_k, ta_nat(),
+              noy_lam($an_ih, noy_pi("n",ta_nat(),
+                al_eq(al_mult(noy_var($an_k),noy_var("n")),
+                      al_mult(noy_var("n"),noy_var($an_k)))),
+              noy_lam("n", ta_nat(), $an_corps)))
+  $an_rf = induction_resolue($an_but, ta_ctx(), $an_base, $an_pas)
+  retour an_tab(noy_champ($an_rf,"terme"))
+}
+
+fn an_inst_nat() -> table {
+  $an_assoc_m = mg_loi(al_lem_mult_assoc())
+  $an_assoc_std = noy_lam("x", ta_nat(), noy_lam("y", ta_nat(),
+                    noy_lam("z", ta_nat(),
+                      ta_ap3($an_assoc_m, noy_var("z"), noy_var("x"), noy_var("y")))))
+  $an_comm_add = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(),
+                    al_plus_comm(noy_var("a"),noy_var("b"))))
+  $an_dist_g = mg_loi(al_lem_mult_distrib_g())
+  $an_dist_d = mg_loi(al_lem_mult_distrib_d())
+  $an_dl = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("c", ta_nat(),
+                    ta_ap3($an_dist_g, noy_var("c"), noy_var("a"), noy_var("b")))))
+  $an_dr = noy_lam("a", ta_nat(), noy_lam("b", ta_nat(), noy_lam("c", ta_nat(),
+                    ta_ap3($an_dist_d, noy_var("c"), noy_var("a"), noy_var("b")))))
+  $an_r = an_semiring("Nat/Semiring", ta_nat(), ta_plus_symbole(), ta_zero(),
+                      al_mult_symbole(), al_un(),
+                      mg_loi(al_lem_plus_assoc()), $an_comm_add,
+                      mg_loi(al_lem_plus_zero_l()), mg_loi(al_lem_plus_zero_d()),
+                      $an_assoc_std,
+                      mg_loi(al_lem_mult_un_g()), mg_loi(al_lem_mult_un_d()),
+                      $an_dl, $an_dr,
+                      mg_loi(al_lem_mult_zero_g()), mg_loi(al_lem_mult_zero_d()),
+                      ta_ctx())
+  inserer($an_r,"structure","Semiring")
+  inserer($an_r,"classe","Semiring")
+  # Ordre de M1 réutilisé : lois certifiées, aucun axiome nouveau.
+  inserer($an_r,"le",al_le_symbole())
+  inserer($an_r,"le_refl",mg_loi(al_lem_le_refl()))
+  inserer($an_r,"le_trans",mg_loi(al_lem_le_trans()))
+  inserer($an_r,"le_antisymm",mg_loi(al_lem_le_antisymm()))
+  inserer($an_r,"le_add",mg_loi(al_lem_le_plus_compatible_d()))
+  $an_zle1 = noy_lam("x",ta_nat(),al_le_zero(al_un()))
+  inserer($an_r,"zero_le_one",$an_zle1)
+  retour $an_r
+}
+
+fn an_registre() -> liste<table> {
+  $an_r = [table()]
+  joindre($an_r, an_inst_nat())
+  joindre($an_r, an_inst_abstrait())
+  retour $an_r
+}
+
+fn an_registre_complet() -> liste<table> {
+  $an_r = ord_registre_complet()
+  $an_a = an_registre()
+  $an_n = longueur($an_a)
+  $an_k = 1
+  tant_que ($an_k < $an_n) {
+    $an_i = an_tab($an_a[$an_k])
+    si (noy_est_absent(mg_registre_trouver($an_r, mg_nom_champ($an_i)))) {
+      joindre($an_r, $an_i)
+    }
+    $an_k = $an_k + 1
+  }
+  retour $an_r
+}
+
+
+
+

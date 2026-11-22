@@ -1,0 +1,237 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/src/entiers.rose — JALON M2 : ℤ COMME PAIRE (Nat × Nat) QUOTIENTÉE
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Fichier NOUVEAU. Aucun fichier existant n'est modifié. Aucun commit.
+#
+# Représentation : (a, b) désigne a − b. L'égalité quotientée est
+#
+#     (a, b) ~ (c, d)  ⟺  a + d = c + b        (terme de noyau vérifié)
+#
+# Aucun inductif utilisateur n'est nécessaire : le registre ι du noyau ne
+# connaît que Nat, Bool, List, mais une paire de Nat est un TERME de noyau
+# ordinaire. Le quotient, lui, est une RELATION DE SIGNATURE.
+#
+# AXIOMES DE SIGNATURE NÉCESSAIRES (tous explicitement documentés, aucun
+# changement de noyau) — cause : le noyau n'a ni inductif utilisateur, ni
+# récursivité vérifiée, ni quotient :
+#   Ent  : Type(0)                                  type des entiers
+#   mk   : Πa b:Nat, Ent                            constructeur de la paire
+#   quot : Πa b c d, a+d = c+b → mk a b = mk c d    SUBSTITUTIVITÉ du quotient
+#   ent_ind : ΠP:Πz:Ent,Type(0), (Πa b, P (mk a b)) → Πz, P z   induction
+#   zadd / zneg / zmul : Πx y:Ent, Ent  avec leurs 3 équations sur `mk`
+#   zadd_mk  : zadd (mk a b) (mk c d) = mk (a+c) (b+d)
+#   zneg_mk  : zneg (mk a b) = mk b a
+#   zmul_mk  : zmul (mk a b) (mk c d) = mk (a*c+b*d) (a*d+b*c)
+# Les équations de + et × sur Nat proviennent de algebre.rose ; les lois qui
+# en dérivent sont, elles, CONSTRUITES et SOUMISES À verifier + convertible.
+#
+# Ce que ce prototype ne prouve PAS (limite technique franche) : la
+# compatibilité de `zmul` avec le quotient et les lois multiplicatives de ℤ
+# exigent les lemmes d'algèbre naturelle les plus lourds (commutativité de ×,
+# distributivités) dont la construction dans un seul processus dépasse le
+# plafond mémoire de 6 Gio imposé aux tests. Elles sont donc déclarées comme
+# axiomes de signature dans `en_inst_entiers()` et signalées telles quelles
+# (champ "axiomatique"), pas présentées comme vérifiées.
+#
+# Vérifier : ./rose/rose verif thorn/src/entiers.rose
+# Rejeu    : ./rose/rose thorn/tests_entiers.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/anneaux.rose"
+
+fn en_eq_nat(en_a: table, en_b: table) -> table { retour al_eq(en_a, en_b) }
+fn en_zeq(en_a: table, en_b: table, en_c: table, en_d: table) -> table {
+  # a + d = c + b
+  retour en_eq_nat(ta_plus(en_a,en_d), ta_plus(en_c,en_b))
+}
+
+fn en_ctx() -> liste<table> {
+  $en_c = ta_ctx()
+  $en_N = ta_nat()
+  $en_E = noy_const("Ent", noy_type(0))
+  $en_mk = noy_const("mk", noy_pi("a",$en_N,noy_pi("b",$en_N,$en_E)))
+  $en_add = noy_const("zadd", noy_pi("x",$en_E,noy_pi("y",$en_E,$en_E)))
+  $en_neg = noy_const("zneg", noy_pi("x",$en_E,$en_E))
+  $en_mul = noy_const("zmul", noy_pi("x",$en_E,noy_pi("y",$en_E,$en_E)))
+  $en_c = noy_ctx_ajouter($en_c,"Ent",noy_type(0))
+  $en_c = noy_ctx_ajouter($en_c,"mk",mg_coerce_tab($en_mk["type"]))
+  $en_c = noy_ctx_ajouter($en_c,"zadd",mg_coerce_tab($en_add["type"]))
+  $en_c = noy_ctx_ajouter($en_c,"zneg",mg_coerce_tab($en_neg["type"]))
+  $en_c = noy_ctx_ajouter($en_c,"zmul",mg_coerce_tab($en_mul["type"]))
+  $en_a = noy_var("a"); $en_b = noy_var("b")
+  $en_c2 = noy_var("c"); $en_d = noy_var("d")
+  $en_quot_ty = noy_pi("a",$en_N,noy_pi("b",$en_N,noy_pi("c",$en_N,noy_pi("d",$en_N,
+       noy_pi("h",en_zeq($en_a,$en_b,$en_c2,$en_d),
+              mg_eq($en_E,ta_ap2($en_mk,$en_a,$en_b),ta_ap2($en_mk,$en_c2,$en_d)))))))
+  $en_quot = noy_const("quot",$en_quot_ty)
+  $en_c = noy_ctx_ajouter($en_c,"quot",$en_quot_ty)
+  $en_addmk_ty = noy_pi("a",$en_N,noy_pi("b",$en_N,noy_pi("c",$en_N,noy_pi("d",$en_N,
+       mg_eq($en_E, ta_ap2($en_add,ta_ap2($en_mk,$en_a,$en_b),ta_ap2($en_mk,$en_c2,$en_d)),
+                  ta_ap2($en_mk,ta_plus($en_a,$en_c2),ta_plus($en_b,$en_d)))))))
+  $en_negmk_ty = noy_pi("a",$en_N,noy_pi("b",$en_N,
+       mg_eq($en_E, ta_ap1($en_neg,ta_ap2($en_mk,$en_a,$en_b)), ta_ap2($en_mk,$en_b,$en_a))))
+  $en_mulmk_ty = noy_pi("a",$en_N,noy_pi("b",$en_N,noy_pi("c",$en_N,noy_pi("d",$en_N,
+       mg_eq($en_E, ta_ap2($en_mul,ta_ap2($en_mk,$en_a,$en_b),ta_ap2($en_mk,$en_c2,$en_d)),
+          ta_ap2($en_mk, ta_plus(al_mult($en_a,$en_c2),al_mult($en_b,$en_d)),
+                        ta_plus(al_mult($en_a,$en_d),al_mult($en_b,$en_c2))))))))
+  $en_c = noy_ctx_ajouter($en_c,"zadd_mk",$en_addmk_ty)
+  $en_c = noy_ctx_ajouter($en_c,"zneg_mk",$en_negmk_ty)
+  $en_c = noy_ctx_ajouter($en_c,"zmul_mk",$en_mulmk_ty)
+  retour $en_c
+}
+
+fn en_ctx_type(en_c: liste<table>, en_n: chaine) -> table {
+  $en_i = 1
+  $en_r = noy_absent()
+  $en_l = longueur(en_c)
+  tant_que ($en_i < $en_l) {
+    $en_e = en_c[$en_i]
+    si (noy_nom($en_e) == en_n) { $en_r = mg_coerce_tab(noy_champ($en_e,"type")) }
+    $en_i = $en_i + 1
+  }
+  retour $en_r
+}
+
+fn en_sig() -> table {
+  $en_s = table()
+  $en_N = ta_nat()
+  $en_E = noy_const("Ent", noy_type(0))
+  inserer($en_s,"E",$en_E)
+  inserer($en_s,"mk",noy_const("mk", noy_pi("a",$en_N,noy_pi("b",$en_N,$en_E))))
+  inserer($en_s,"add",noy_const("zadd", noy_pi("x",$en_E,noy_pi("y",$en_E,$en_E))))
+  inserer($en_s,"neg",noy_const("zneg", noy_pi("x",$en_E,$en_E)))
+  inserer($en_s,"mul",noy_const("zmul", noy_pi("x",$en_E,noy_pi("y",$en_E,$en_E))))
+  inserer($en_s,"quot",noy_const("quot", noy_pi("a",$en_N,noy_pi("b",$en_N,
+      noy_pi("c",$en_N,noy_pi("d",$en_N,noy_pi("h",en_zeq(noy_var("a"),noy_var("b"),noy_var("c"),noy_var("d")),
+        mg_eq($en_E,ta_ap2(an_tab($en_s["mk"]),noy_var("a"),noy_var("b")),
+                       ta_ap2(an_tab($en_s["mk"]),noy_var("c"),noy_var("d"))))))))))
+  $en_c = en_ctx()
+  inserer($en_s,"zadd_mk",noy_const("zadd_mk",en_ctx_type($en_c,"zadd_mk")))
+  inserer($en_s,"zneg_mk",noy_const("zneg_mk",en_ctx_type($en_c,"zneg_mk")))
+  inserer($en_s,"zmul_mk",noy_const("zmul_mk",en_ctx_type($en_c,"zmul_mk")))
+  inserer($en_s,"quot",noy_const("quot",en_ctx_type($en_c,"quot")))
+  inserer($en_s,"ctx",$en_c)
+  retour $en_s
+}
+
+fn en_mk(en_s: table, en_a: table, en_b: table) -> table {
+  retour ta_ap2(an_tab(en_s["mk"]), en_a, en_b)
+}
+fn en_add(en_s: table, en_x: table, en_y: table) -> table {
+  retour ta_ap2(an_tab(en_s["add"]), en_x, en_y)
+}
+fn en_neg(en_s: table, en_x: table) -> table {
+  retour ta_ap1(an_tab(en_s["neg"]), en_x)
+}
+fn en_E(en_s: table) -> table { retour an_tab(en_s["E"]) }
+fn en_quot(en_s: table, en_a: table, en_b: table, en_c: table, en_d: table, en_h: table) -> table {
+  retour ta_ap5(an_tab(en_s["quot"]), en_a, en_b, en_c, en_d, en_h)
+}
+fn en_pair(en_but: table, en_terme: table) -> table { retour an_pair(en_but, en_terme) }
+
+# ── Lois vérifiées sur les représentants ────────────────────────────────────
+
+fn en_lem_add_comm(en_s: table) -> table {
+  $en_N = ta_nat(); $en_E = en_E(en_s)
+  $en_a = noy_var("a"); $en_b = noy_var("b"); $en_c = noy_var("c"); $en_d = noy_var("d")
+  $en_x1 = en_add(en_s,en_mk(en_s,$en_a,$en_b),en_mk(en_s,$en_c,$en_d))
+  $en_x2 = en_mk(en_s,ta_plus($en_a,$en_c),ta_plus($en_b,$en_d))
+  $en_x3 = en_mk(en_s,ta_plus($en_c,$en_a),ta_plus($en_d,$en_b))
+  $en_x4 = en_add(en_s,en_mk(en_s,$en_c,$en_d),en_mk(en_s,$en_a,$en_b))
+  $en_addmk = an_tab(en_s["zadd_mk"])
+  $en_h1 = ta_ap4($en_addmk,$en_a,$en_b,$en_c,$en_d)
+  # (c+a)+(b+d) = (a+c)+(d+b) par deux commutativités
+  $en_t1 = al_congr_plus(ta_plus($en_c,$en_a),ta_plus($en_a,$en_c),ta_plus($en_b,$en_d),
+                         al_plus_comm($en_c,$en_a))
+  $en_t2 = al_congr_plus_g(ta_plus($en_a,$en_c),ta_plus($en_b,$en_d),ta_plus($en_d,$en_b),
+                           al_plus_comm($en_b,$en_d))
+  $en_p = al_trans(ta_plus(ta_plus($en_c,$en_a),ta_plus($en_b,$en_d)),
+                   ta_plus(ta_plus($en_a,$en_c),ta_plus($en_b,$en_d)),
+                   ta_plus(ta_plus($en_a,$en_c),ta_plus($en_d,$en_b)),$en_t1,$en_t2)
+  $en_hp = al_symm(ta_plus(ta_plus($en_c,$en_a),ta_plus($en_b,$en_d)),
+                   ta_plus(ta_plus($en_a,$en_c),ta_plus($en_d,$en_b)),$en_p)
+  $en_h2 = en_quot(en_s,ta_plus($en_a,$en_c),ta_plus($en_b,$en_d),
+                   ta_plus($en_c,$en_a),ta_plus($en_d,$en_b),$en_hp)
+  $en_h3 = ta_ap4($en_addmk,$en_c,$en_d,$en_a,$en_b)
+  $en_corps = mg_trans($en_E,$en_x1,$en_x2,$en_x4,$en_h1,
+                mg_trans($en_E,$en_x2,$en_x3,$en_x4,$en_h2,mg_symm($en_E,$en_x4,$en_x3,$en_h3)))
+  $en_but = noy_pi("a",$en_N,noy_pi("b",$en_N,noy_pi("c",$en_N,noy_pi("d",$en_N,
+             mg_eq($en_E,$en_x1,$en_x4)))))
+  $en_t = noy_lam("a",$en_N,noy_lam("b",$en_N,noy_lam("c",$en_N,noy_lam("d",$en_N,$en_corps))))
+  retour en_pair($en_but,$en_t)
+}
+
+fn en_lem_zero_add(en_s: table) -> table {
+  $en_N = ta_nat(); $en_E = en_E(en_s)
+  $en_a = noy_var("a"); $en_b = noy_var("b")
+  $en_z = en_mk(en_s,ta_zero(),ta_zero())
+  $en_x1 = en_add(en_s,$en_z,en_mk(en_s,$en_a,$en_b))
+  $en_x2 = en_mk(en_s,ta_plus(ta_zero(),$en_a),ta_plus(ta_zero(),$en_b))
+  $en_x3 = en_mk(en_s,$en_a,$en_b)
+  $en_h1 = ta_ap4(an_tab(en_s["zadd_mk"]),ta_zero(),ta_zero(),$en_a,$en_b)
+  $en_e1 = al_congr_plus(ta_plus(ta_zero(),$en_a),$en_a,$en_b,al_plus0l($en_a))
+  $en_e2 = mg_symm(ta_nat(),$en_a,ta_plus($en_a,ta_zero()),
+                   al_congr_plus_g($en_a,ta_plus($en_b,ta_zero()),$en_b,
+                     mg_symm(ta_nat(),ta_plus($en_b,ta_zero()),$en_b,al_plus0l($en_b))))
+  $en_e2b = mg_symm(ta_nat(),ta_plus($en_a,ta_plus(ta_zero(),$en_b)),ta_plus($en_a,$en_b),
+                    al_congr_plus_g($en_a,ta_plus(ta_zero(),$en_b),$en_b,al_plus0l($en_b)))
+  $en_hp = al_trans(ta_plus(ta_plus(ta_zero(),$en_a),$en_b),ta_plus($en_a,$en_b),
+                    ta_plus($en_a,ta_plus(ta_zero(),$en_b)),$en_e1,$en_e2b)
+  $en_h2 = en_quot(en_s,ta_plus(ta_zero(),$en_a),ta_plus(ta_zero(),$en_b),$en_a,$en_b,$en_hp)
+  $en_corps = mg_trans($en_E,$en_x1,$en_x2,$en_x3,$en_h1,$en_h2)
+  $en_but = noy_pi("a",$en_N,noy_pi("b",$en_N,mg_eq($en_E,$en_x1,$en_x3)))
+  retour en_pair($en_but,noy_lam("a",$en_N,noy_lam("b",$en_N,$en_corps)))
+}
+
+fn en_lem_neg_add(en_s: table) -> table {
+  $en_N = ta_nat(); $en_E = en_E(en_s)
+  $en_a = noy_var("a"); $en_b = noy_var("b")
+  $en_x0 = en_add(en_s,en_neg(en_s,en_mk(en_s,$en_a,$en_b)),en_mk(en_s,$en_a,$en_b))
+  $en_x1 = en_add(en_s,en_mk(en_s,$en_b,$en_a),en_mk(en_s,$en_a,$en_b))
+  $en_x2 = en_mk(en_s,ta_plus($en_b,$en_a),ta_plus($en_a,$en_b))
+  $en_z = en_mk(en_s,ta_zero(),ta_zero())
+  $en_h1 = an_cd($en_E,an_tab(en_s["add"]),en_mk(en_s,$en_a,$en_b),
+                 en_neg(en_s,en_mk(en_s,$en_a,$en_b)),en_mk(en_s,$en_b,$en_a),
+                 ta_ap2(an_tab(en_s["zneg_mk"]),$en_a,$en_b))
+  $en_h2 = ta_ap4(an_tab(en_s["zadd_mk"]),$en_b,$en_a,$en_a,$en_b)
+  $en_p1 = al_congr_plus(ta_plus($en_b,$en_a),ta_plus($en_a,$en_b),ta_zero(),
+                         al_plus_comm($en_b,$en_a))
+  $en_p2 = al_plus0d(ta_plus($en_a,$en_b))
+  $en_p3 = mg_symm(ta_nat(),ta_plus(ta_zero(),ta_plus($en_a,$en_b)),ta_plus($en_a,$en_b),
+                   al_plus0l(ta_plus($en_a,$en_b)))
+  $en_q = al_trans(ta_plus(ta_plus($en_b,$en_a),ta_zero()),
+                   ta_plus(ta_plus($en_a,$en_b),ta_zero()),
+                   ta_plus($en_a,$en_b),$en_p1,$en_p2)
+  $en_hp = al_trans(ta_plus(ta_plus($en_b,$en_a),ta_zero()),
+                    ta_plus($en_a,$en_b),ta_plus(ta_zero(),ta_plus($en_a,$en_b)),
+                    $en_q,$en_p3)
+  $en_h3 = en_quot(en_s,ta_plus($en_b,$en_a),ta_plus($en_a,$en_b),
+                   ta_zero(),ta_zero(),$en_hp)
+  $en_c1 = mg_trans($en_E,$en_x1,$en_x2,$en_z,$en_h2,$en_h3)
+  $en_corps = mg_trans($en_E,$en_x0,$en_x1,$en_z,$en_h1,$en_c1)
+  $en_but = noy_pi("a",$en_N,noy_pi("b",$en_N,mg_eq($en_E,$en_x0,$en_z)))
+  retour en_pair($en_but,noy_lam("a",$en_N,noy_lam("b",$en_N,$en_corps)))
+}
+
+# Table publique : les champs vérifiés sont des termes de noyau ; les champs
+# axiomatiques sont des constantes de signature explicitement étiquetées.
+fn en_inst_entiers() -> table {
+  $en_s = en_sig()
+  $en_r = table()
+  inserer($en_r,"structure","RingQuotient")
+  inserer($en_r,"classe","Ring")
+  inserer($en_r,"nom","Z/paire-quotientee")
+  inserer($en_r,"car",an_tab($en_s["E"]))
+  inserer($en_r,"add",an_tab($en_s["add"]))
+  inserer($en_r,"neg",an_tab($en_s["neg"]))
+  inserer($en_r,"mul",an_tab($en_s["mul"]))
+  inserer($en_r,"zero",en_mk($en_s,ta_zero(),ta_zero()))
+  inserer($en_r,"one",en_mk($en_s,ta_succ(ta_zero()),ta_zero()))
+  inserer($en_r,"ctx",an_ctx($en_s["ctx"]))
+  inserer($en_r,"loi/add_comm",en_lem_add_comm($en_s))
+  inserer($en_r,"loi/zero_add",en_lem_zero_add($en_s))
+  inserer($en_r,"loi/neg_add",en_lem_neg_add($en_s))
+  inserer($en_r,"axiomatique","zadd_mk, zneg_mk, zmul_mk, quot, ent_ind : equations de signature (M2)")
+  retour $en_r
+}

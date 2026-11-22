@@ -1,0 +1,44 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# thorn/tests_entiers.rose — REJEU DU PROTOTYPE ℤ (paire quotientée)
+# ═════════════════════════════════════════════════════════════════════════════
+# Fichier NOUVEAU. Chaque loi est soumise à verifier() + convertible().
+# Vérifier : ./rose/rose verif thorn/tests_entiers.rose
+# Exécuter : ./rose/rose thorn/tests_entiers.rose
+# ═════════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/entiers.rose"
+
+$en_cpt = table()
+inserer($en_cpt, "r", 0)
+inserer($en_cpt, "e", 0)
+
+>> "Thorn — jalon M2 : entiers relatifs par paire quotientée"
+$en_s = en_sig()
+$en_ctx = an_ctx($en_s["ctx"])
+>> "contexte ℤ : " + chaine(longueur($en_ctx) - 1) + " declaration(s)"
+
+an_test_bool("structure/Z est RingQuotient",
+             an_niveau(en_inst_entiers()) == "RingQuotient", $en_cpt)
+
+an_lance("zoom/add_comm", en_lem_add_comm($en_s), $en_ctx, $en_cpt)
+an_lance("zoom/zero_add", en_lem_zero_add($en_s), $en_ctx, $en_cpt)
+an_lance("zoom/neg_add", en_lem_neg_add($en_s), $en_ctx, $en_cpt)
+
+# Refus : le quotient ne peut pas identifier (0,0) et (1,0) sans prémisse.
+$en_E = en_E($en_s)
+$en_faux_but = mg_eq($en_E,en_mk($en_s,ta_zero(),ta_zero()),en_mk($en_s,ta_succ(ta_zero()),ta_zero()))
+$en_faux_preuve = mg_refl($en_E,en_mk($en_s,ta_zero(),ta_zero()))
+$en_vr = verifier($en_faux_preuve, $en_ctx)
+$en_refuse = (non noy_est_ok($en_vr)) ou
+             (non convertible(noy_type_res($en_vr), $en_faux_but))
+si ($en_refuse) { >> "OK [refus] quotient/(0,0) ≠ (1,0) sans prémisse" }
+sinon { >> "ECHEC [refus] quotient/(0,0) ≠ (1,0) sans prémisse" }
+an_compter($en_cpt, $en_refuse)
+
+>> chaine($en_cpt["r"]) + " contrôle(s) réussi(s), " + chaine($en_cpt["e"]) + " échec(s)"
+si ($en_cpt["e"] == 0) {
+  >> "RESULTAT: OK"
+} sinon {
+  >> "RESULTAT: ECHEC"
+  quitter(1)
+}
