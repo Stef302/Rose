@@ -1,0 +1,32 @@
+# Harnais perf — 2026-11-22T23:11:25Z — rose=/home/clausake/Stefan/ROSE/rose/target/release/rose sha=33d0c1919ecca991 pin=cœur 15 tirages=9
+# gcc=gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+# rustc=rustc 1.99.1 (58cf8f9c3 2026-10-13)
+# salve 1/9 terminée
+# salve 2/9 terminée
+# salve 3/9 terminée
+# salve 4/9 terminée
+# salve 5/9 terminée
+# salve 6/9 terminée
+# salve 7/9 terminée
+# salve 8/9 terminée
+# salve 9/9 terminée
+
+domaine         Rose int    Rust int       C int      Py int  Rose/Rust   Rose wall   Rust wall  Rose RSS
+------------------------------------------------------------------------------------------------------------
+int_loop         0.684ms     0.513ms     0.257ms    46.603ms     1.334x     3.474ms     2.641ms    12.2
+fib_rec         11.635ms    12.545ms     8.949ms   590.292ms     0.927x    14.444ms    15.042ms    12.2
+fib_iter         1.085ms     2.059ms     2.100ms    77.524ms     0.527x     3.629ms     3.954ms    12.2
+premiers         1.480ms     1.033ms     0.947ms    18.023ms     1.432x     4.074ms     2.862ms    12.2
+factorial        0.473ms     0.403ms     2.857ms     1.219ms     1.176x     3.586ms     2.624ms    12.2
+gcd              0.006ms     0.003ms     0.007ms     0.002ms     2.281x     2.023ms     1.904ms    12.2
+puissance        0.005ms     0.011ms     0.269ms     0.020ms     0.481x     3.135ms     2.496ms    12.2
+rationnel        0.065ms     0.563ms     3.945ms     0.145ms     0.116x     2.318ms     2.902ms    12.2
+chaine           0.002ms     0.039ms     0.048ms     2.932ms     0.063x     2.424ms     1.981ms    12.2
+liste            0.548ms     0.168ms     0.153ms     9.263ms     3.256x     3.151ms     2.032ms    12.2
+table            0.049ms     0.048ms     1.182ms     0.465ms     1.024x     2.802ms     2.040ms    12.2
+io               3.034ms     4.960ms     4.571ms     4.928ms     0.612x     5.997ms     7.766ms    12.7
+startup          0.000ms     0.000ms     0.000ms     0.000ms     1.000x     2.911ms     2.209ms    12.2
+
+# Victoires Rose/Rust (interne) : 6/13 ; défaites : 7/13
+# Données brutes : /home/clausake/Stefan/ROSE/bench/perf/out/results.json , /home/clausake/Stefan/ROSE/bench/perf/out/results.csv
+# SHA Rose avant/après : 33d0c1919ecca991 / 33d0c1919ecca991
