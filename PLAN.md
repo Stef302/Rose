@@ -1333,3 +1333,15 @@ Contraintes préservées à chaque étape: `emetteur.rose` intact (point fixe
 Dernier jalon en cours: `tests_selfhost/verifier_selfhost_final.sh` —
 C0 (≈80 min) → test fib en-tête `0200b700`/317811 → C1 → C2 → `cmp C1 C2`.
 Journal `/tmp/opencode/selfhost_final.log`. Rien n'est revendiqué avant lecture du cmp.
+
+## Vague 87 — dernier blocage C1 : chaînes non-ASCII dans eval_expr
+
+Jalon partiel franchi: `C0` réémis (1 575 140 o, magic OK) compile fib.rose →
+ELF avec en-tête `0200b700`, exécution `317811`, **octet pour octet identique**
+au compilateur hébergé. Le correctif `octet_brut` est donc validé en chemin natif.
+
+Blocage restant mesuré: `C0` sur une source contenant une chaîne non-ASCII dans
+un corps de fonction (`retour "≈"`, `"中"`) boucle (rc=124) ou sort rc=2;
+le même fichier compile en ~2 s sous le compilateur hébergé. L'ASCII passe.
+`>> "≈"` sans fonction passe aussi. Soupçon: helpers Rose `ee_*` de eval_expr
+indexant des octets sur des chaînes désormais UTF-8. Agent dédié lancé.
