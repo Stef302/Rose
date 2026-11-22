@@ -5608,6 +5608,7 @@ impl Interp {
             "phi" => { let z = vers_z(&a[0]); Valeur::s(nombre_phi(&z)) }
             "i" => Valeur::Complexe { re: 0.0, im: 1.0 },
             "longueur" | "len" => {
+                crate::run::prof::add(&crate::run::prof::LONGUEUR_NB, 1);
                 let n: u64 = match &a[0] {
                     // ⚠ ROPE : O(1) — le nombre de caractères est maintenu
                     // à chaque concaténation (avant : `chars().count()` sur
@@ -5650,6 +5651,7 @@ impl Interp {
                 Valeur::liste_de(t.0.borrow().items.iter().map(|(_, v)| v.clone()).collect())
             }
             "joindre" => {
+                crate::run::prof::add(&crate::run::prof::JOINDRE_NB, 1);
                 let Valeur::Liste(l) = &a[0] else { erreur_runtime("joindre attend une liste") };
                 l.0.borrow_mut().push(a[1].clone());
                 Valeur::Vide
@@ -5670,19 +5672,36 @@ impl Interp {
                 Valeur::s(char::from_u32(cp).unwrap_or('\u{FFFD}').to_string())
             }
             "sous_chaine" | "sub" => {
-                let s = chaine_de(&a[0]);
+                crate::run::prof::add(&crate::run::prof::SOUS_NB, 1);
+                let est_chaine = matches!(a[0], Valeur::Chaine(..));
+                // ⚠ FAST PATH (MEM_HOST) : une `Valeur::Chaine` porte `n`
+                // (compte de caractères O(1)) et `tranche()` ne recopie que
+                // les feuilles qui chevauchent [d, f). L'ancien chemin
+                // `chaine_de` + `chars().collect()` aplatissait TOUTE la
+                // chaîne à chaque appel = O(n²) sur le lexeur hébergé.
+                // `ROSE_PROF_NOFAST=1` le rejoue pour la mesure A/B.
+                let (taille, chaine): (usize, Option<&Rc<crate::run::ChaineRep>>) = match &a[0] {
+                    Valeur::Chaine(r) => (r.n, Some(r)),
+                    v => (chaine_de(v).chars().count(), None),
+                };
                 if a.len() < 3 { erreur_runtime("sous_chaine : 3 arguments attendus"); }
                 let d = vers_z(&a[1]);
                 let f = vers_z(&a[2]);
                 if d.sgn() < 0 || f.sgn() < 0 || !d.fits_i64() || !f.fits_i64() {
                     erreur_runtime("sous_chaine : les bornes doivent être des entiers positifs");
                 }
-                let cps: Vec<char> = s.chars().collect();
-                let taille = cps.len();
                 let di = d.get_i64() as usize;
                 let mut fi = f.get_i64() as usize;
                 if di > taille || fi < di { erreur_runtime("sous_chaine : bornes invalides"); }
                 if fi > taille { fi = taille; }
+                if let (Some(r), false) = (chaine, crate::run::prof::sans_fast()) {
+                    return Valeur::s(r.tranche(di, fi));
+                }
+                if est_chaine {
+                    crate::run::prof::add(&crate::run::prof::SOUS_LENT, 1);
+                }
+                let s = chaine_de(&a[0]);
+                let cps: Vec<char> = s.chars().collect();
                 Valeur::s(cps[di..fi].iter().collect::<String>())
             }
             "concatener" => {

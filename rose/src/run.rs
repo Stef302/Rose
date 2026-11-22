@@ -25,6 +25,61 @@ pub use crate::i128x::{
 };
 pub use crate::i128x::{Gq, Gz, Mpq, Mpz};
 
+// ── Profil mémoire du chemin hébergé (ROSE_PROF_MEM) ──────────────────────
+//
+// Compteurs O(1) désactivés par défaut : une seule lecture atomique `Relaxed`
+// par site instrumenté, sans allocation ni appel système. Le rapport est écrit
+// sur stderr à la sortie du thread principal. `ROSE_PROF_NOFAST=1` rejoue le
+// chemin LENT historique de `sous_chaine` dans le MÊME binaire, ce qui permet
+// une mesure A/B sans recompilation (et sans recopier un chiffre daté).
+pub mod prof {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+
+    static ACTIF: OnceLock<bool> = OnceLock::new();
+    static NOFAST: OnceLock<bool> = OnceLock::new();
+
+    #[inline]
+    pub fn actif() -> bool { *ACTIF.get_or_init(|| std::env::var("ROSE_PROF_MEM").is_ok()) }
+    #[inline]
+    pub fn sans_fast() -> bool {
+        *NOFAST.get_or_init(|| std::env::var("ROSE_PROF_NOFAST").map(|v| v == "1").unwrap_or(false))
+    }
+
+    pub static CONCAT_NB: AtomicU64 = AtomicU64::new(0);
+    pub static CONCAT_CAR: AtomicU64 = AtomicU64::new(0);
+    pub static APLATIR_NB: AtomicU64 = AtomicU64::new(0);
+    pub static APLATIR_OCT: AtomicU64 = AtomicU64::new(0);
+    pub static TRANCHE_NB: AtomicU64 = AtomicU64::new(0);
+    pub static TRANCHE_CAR: AtomicU64 = AtomicU64::new(0);
+    pub static SOUS_NB: AtomicU64 = AtomicU64::new(0);
+    pub static SOUS_LENT: AtomicU64 = AtomicU64::new(0);
+    pub static LONGUEUR_NB: AtomicU64 = AtomicU64::new(0);
+    pub static JOINDRE_NB: AtomicU64 = AtomicU64::new(0);
+    pub static PLEIN_NB: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub fn add(c: &'static AtomicU64, n: u64) {
+        if !actif() { return; }
+        c.fetch_add(n, Ordering::Relaxed);
+        // `Rose` finit souvent par `process::exit` : les destructeurs
+        // thread_local ne tournent PAS. `atexit`, lui, tourne toujours.
+        let _ = GARDES.get_or_init(|| { unsafe { libc::atexit(dump); } });
+    }
+
+    static GARDES: OnceLock<()> = OnceLock::new();
+    extern "C" fn dump() {
+        eprintln!("[ROSE_PROF_MEM] concat={} ({} car) aplatir={} ({} oct) \
+tranche={} ({} car) sous_chaine={} (dont lent={}) longueur={} joindre={} plein={}",
+            CONCAT_NB.load(Ordering::Relaxed), CONCAT_CAR.load(Ordering::Relaxed),
+            APLATIR_NB.load(Ordering::Relaxed), APLATIR_OCT.load(Ordering::Relaxed),
+            TRANCHE_NB.load(Ordering::Relaxed), TRANCHE_CAR.load(Ordering::Relaxed),
+            SOUS_NB.load(Ordering::Relaxed), SOUS_LENT.load(Ordering::Relaxed),
+            LONGUEUR_NB.load(Ordering::Relaxed), JOINDRE_NB.load(Ordering::Relaxed),
+            PLEIN_NB.load(Ordering::Relaxed));
+    }
+}
+
 // ── Valeur ────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -137,6 +192,26 @@ pub enum NoeudChaine {
         /// valeur). Gardée séparément pour ne jamais désaligner la libération.
         mapping_len: usize,
     },
+    /// Feuille non-ASCII munie d'une table `caractère → octet`. Construite
+    /// uniquement pour les grandes chaînes non-ASCII (le compilateur hébergé
+    /// balaie son source caractère par caractère : sans table, chaque
+    /// `sous_chaine` recalculerait l'index depuis le début = O(n²)).
+    PleinIndexe { s: String, index: Rc<Vec<u32>> },
+    FichierMmapIndexe {
+        ptr: *const u8,
+        len: usize,
+        mapping_len: usize,
+        index: Rc<Vec<u32>>,
+    },
+}
+
+/// Table `i → premier octet du caractère i` (+ `len()` en dernière entrée).
+/// `u32` suffit : `depuis_fichier` refuse les fichiers > 2^28 octets.
+fn table_caracteres(s: &str) -> Rc<Vec<u32>> {
+    let mut v = Vec::with_capacity(s.chars().count() + 1);
+    for (oct, _) in s.char_indices() { v.push(oct as u32); }
+    v.push(s.len() as u32);
+    Rc::new(v)
 }
 
 impl std::fmt::Debug for NoeudChaine {
@@ -148,6 +223,9 @@ impl std::fmt::Debug for NoeudChaine {
             NoeudChaine::Concat(a, b) => f.debug_tuple("Concat").field(a).field(b).finish(),
             NoeudChaine::FichierMmap { len, .. } =>
                 f.debug_struct("FichierMmap").field("len", len).finish(),
+            NoeudChaine::PleinIndexe { s, .. } => f.debug_tuple("PleinIndexe").field(s).finish(),
+            NoeudChaine::FichierMmapIndexe { len, .. } =>
+                f.debug_struct("FichierMmapIndexe").field("len", len).finish(),
         }
     }
 }
@@ -164,6 +242,7 @@ pub struct ChaineRep {
 impl ChaineRep {
     #[inline]
     pub fn plein(s: String) -> Rc<ChaineRep> {
+        prof::add(&prof::PLEIN_NB, 1);
         // SPEED4 : sur une chaîne ASCII chaque octet est un caractère ;
         // `len()` suffit, sans itération UTF-8 (clés de table du banc global).
         let octets = s.len();
@@ -174,6 +253,13 @@ impl ChaineRep {
             buf[..octets].copy_from_slice(s.as_bytes());
             return Rc::new(ChaineRep { n, octets,
                 noeud: NoeudChaine::PleinCourt { buf, len: octets as u8 } });
+        }
+        // Seuil 32 : en dessous, un scan `char_indices` est moins cher que
+        // la table (et les littéraux du moteur sont majoritairement courts).
+        if !ascii && octets > 32 {
+            let index = table_caracteres(&s);
+            return Rc::new(ChaineRep { n, octets,
+                noeud: NoeudChaine::PleinIndexe { s, index } });
         }
         Rc::new(ChaineRep { n, octets, noeud: NoeudChaine::Plein(s) })
     }
@@ -214,11 +300,15 @@ impl ChaineRep {
         match std::str::from_utf8(tranche) {
             Ok(s) => {
                 let n = s.chars().count();
-                Ok(Rc::new(ChaineRep {
-                    n,
-                    octets: len,
-                    noeud: NoeudChaine::FichierMmap { ptr: ptr as *const u8, len, mapping_len: len },
-                }))
+                let noeud = if s.is_ascii() {
+                    NoeudChaine::FichierMmap { ptr: ptr as *const u8, len, mapping_len: len }
+                } else {
+                    NoeudChaine::FichierMmapIndexe {
+                        ptr: ptr as *const u8, len, mapping_len: len,
+                        index: table_caracteres(s),
+                    }
+                };
+                Ok(Rc::new(ChaineRep { n, octets: len, noeud }))
             }
             Err(_) => {
                 // Repli historique : `from_utf8_lossy(...).into_owned()`.
@@ -248,6 +338,9 @@ impl ChaineRep {
             NoeudChaine::PleinCourt { buf, len } => Some(&buf[..*len as usize]),
             NoeudChaine::FichierMmap { ptr, len, .. } =>
                 Some(unsafe { std::slice::from_raw_parts(*ptr, *len) }),
+            NoeudChaine::PleinIndexe { s, .. } => Some(s.as_bytes()),
+            NoeudChaine::FichierMmapIndexe { ptr, len, .. } =>
+                Some(unsafe { std::slice::from_raw_parts(*ptr, *len) }),
             NoeudChaine::Concat(..) => None,
         }
     }
@@ -255,6 +348,8 @@ impl ChaineRep {
     /// Concaténation en O(1) : aucun octet n'est copié, seul l'arbre grandit.
     #[inline]
     pub fn concat(a: &Rc<ChaineRep>, b: &Rc<ChaineRep>) -> Rc<ChaineRep> {
+        prof::add(&prof::CONCAT_NB, 1);
+        prof::add(&prof::CONCAT_CAR, (a.n + b.n) as u64);
         Rc::new(ChaineRep {
             n: a.n + b.n,
             octets: a.octets + b.octets,
@@ -265,6 +360,8 @@ impl ChaineRep {
     /// Aplatit en une `String` — O(longueur totale), itératif (pile explicite
     /// pour ne pas déborder sur un arbre profond).
     pub fn aplatir(&self) -> String {
+        prof::add(&prof::APLATIR_NB, 1);
+        prof::add(&prof::APLATIR_OCT, self.octets as u64);
         let mut s = String::with_capacity(self.octets);
         let mut pile: Vec<&ChaineRep> = Vec::new();
         pile.push(self);
@@ -273,14 +370,79 @@ impl ChaineRep {
                 NoeudChaine::Plein(t) => s.push_str(t),
                 NoeudChaine::PleinCourt { buf, len } =>
                     s.push_str(unsafe { std::str::from_utf8_unchecked(&buf[..*len as usize]) }),
-                NoeudChaine::FichierMmap { ptr, len, .. } =>
+                NoeudChaine::FichierMmap { ptr, len, .. } |
+                NoeudChaine::FichierMmapIndexe { ptr, len, .. } =>
                     s.push_str(unsafe {
                         std::str::from_utf8_unchecked(std::slice::from_raw_parts(*ptr, *len))
                     }),
+                NoeudChaine::PleinIndexe { s: t, .. } => s.push_str(t),
                 NoeudChaine::Concat(a, b) => { pile.push(b.as_ref()); pile.push(a.as_ref()); }
             }
         }
         s
+    }
+
+    /// Tranche `[debut, fin)` en POINTS DE CODE, sans aplatir la rope entière.
+    ///
+    /// Le chemin hébergé balaie son source par `sous_chaine($src, i, i+1)` :
+    /// l'ancien code (`chaine_de` + `chars().collect()`) recopiait tout le
+    /// fichier À CHAQUE tour = O(n²). Ici on ne traverse que les feuilles qui
+    /// chevauchent la tranche ; une feuille ASCII est sautée en O(1) par
+    /// découpe d'octets (octet = caractère), une feuille non-ASCII indexée
+    /// est sautée en O(1) par la table `caractère → octet`.
+    pub fn tranche(&self, debut: usize, fin: usize) -> String {
+        prof::add(&prof::TRANCHE_NB, 1);
+        prof::add(&prof::TRANCHE_CAR, fin.saturating_sub(debut) as u64);
+        if debut >= fin { return String::new(); }
+        let mut out = String::with_capacity(fin.saturating_sub(debut));
+        let mut pile: Vec<&ChaineRep> = Vec::new();
+        pile.push(self);
+        let mut pos = 0usize;
+        while let Some(r) = pile.pop() {
+            if pos >= fin { break; }
+            if let NoeudChaine::Concat(a, b) = &r.noeud {
+                pile.push(b.as_ref());
+                pile.push(a.as_ref());
+                continue;
+            }
+            let n = r.n;
+            if pos + n <= debut { pos += n; continue; }
+            let d = debut.saturating_sub(pos);
+            let f = fin.saturating_sub(pos).min(n);
+            let morceau: &str = match &r.noeud {
+                NoeudChaine::Plein(t) => t.as_str(),
+                NoeudChaine::PleinCourt { buf, len } =>
+                    unsafe { std::str::from_utf8_unchecked(&buf[..*len as usize]) },
+                NoeudChaine::FichierMmap { ptr, len, .. } |
+                NoeudChaine::FichierMmapIndexe { ptr, len, .. } =>
+                    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(*ptr, *len)) },
+                NoeudChaine::PleinIndexe { s, .. } => s.as_str(),
+                NoeudChaine::Concat(..) => unreachable!(),
+            };
+            let (od, of) = if morceau.is_ascii() {
+                (d, f)
+            } else {
+                let idx = match &r.noeud {
+                    NoeudChaine::PleinIndexe { index, .. } |
+                    NoeudChaine::FichierMmapIndexe { index, .. } => Some(index.as_slice()),
+                    _ => None,
+                };
+                if let Some(ix) = idx {
+                    if f < ix.len() && d < ix.len() { (ix[d] as usize, ix[f] as usize) }
+                    else { (morceau.len(), morceau.len()) }
+                } else {
+                    // Petite feuille non indexée : scan local, jamais global.
+                    let mut bornes = morceau.char_indices().map(|(o, _)| o);
+                    let od = bornes.nth(d).unwrap_or(morceau.len());
+                    let of = if f == n { morceau.len() }
+                             else { bornes.nth(f - d - 1).unwrap_or(morceau.len()) };
+                    (od, of)
+                }
+            };
+            if od < of { out.push_str(&morceau[od..of]); }
+            pos += n;
+        }
+        out
     }
 
     /// Comparaison lexicographique sans aplatir quand les deux feuilles sont
@@ -341,19 +503,23 @@ impl Drop for ChaineRep {
         let mut noeud = std::mem::replace(&mut self.noeud, NoeudChaine::Plein(String::new()));
         match &noeud {
             NoeudChaine::Plein(_) | NoeudChaine::PleinCourt { .. } => return,
-            NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
+            NoeudChaine::FichierMmap { ptr, mapping_len, .. } |
+            NoeudChaine::FichierMmapIndexe { ptr, mapping_len, .. } => {
                 liberer_mmap_ptr(*ptr, *mapping_len);
                 return;
             }
+            NoeudChaine::PleinIndexe { .. } => return,
             NoeudChaine::Concat(..) => {}
         }
         let mut pile: Vec<NoeudChaine> = Vec::new();
         loop {
             match noeud {
                 NoeudChaine::Plein(_) | NoeudChaine::PleinCourt { .. } => {}
-                NoeudChaine::FichierMmap { ptr, mapping_len, .. } => {
+                NoeudChaine::FichierMmap { ptr, mapping_len, .. } |
+                NoeudChaine::FichierMmapIndexe { ptr, mapping_len, .. } => {
                     liberer_mmap_ptr(ptr, mapping_len);
                 }
+                NoeudChaine::PleinIndexe { .. } => {}
                 NoeudChaine::Concat(mut a, mut b) => {
                     if let Some(ra) = Rc::get_mut(&mut a) {
                         pile.push(std::mem::replace(&mut ra.noeud, NoeudChaine::Plein(String::new())));
