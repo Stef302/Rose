@@ -1345,3 +1345,15 @@ un corps de fonction (`retour "≈"`, `"中"`) boucle (rc=124) ou sort rc=2;
 le même fichier compile en ~2 s sous le compilateur hébergé. L'ASCII passe.
 `>> "≈"` sans fonction passe aussi. Soupçon: helpers Rose `ee_*` de eval_expr
 indexant des octets sur des chaînes désormais UTF-8. Agent dédié lancé.
+
+## Vague 88 — cause exacte du blocage C1 : idx de chaîne indexé en octets
+
+L'hypothèse « helpers eval_expr » est INVALIDÉE par sonde (7/7 identiques au natif).
+La cause est `g5_emit_idx` (emetteur_elf.rose l.2921): `ldrbr` à `i+16` = i-ème
+OCTET, alors que Rust indexe par POINT DE CODE. Depuis UTF-8, le lexer embarqué
+(`$src[$j]`, emetteur.rose l.3510/3519/3521) lit des octets de continuation →
+littéraux manglés (`e0 a0 a9` au lieu de `e2 89 88`), SIGSEGV sur longueur/ordre/
+sous_chaine d'un littéral non-ASCII, timeout sur `retour "≈"` en fonction.
+Agent dédié: scanner UTF-8 comme g5_emit_sous (l.2849-2883), fabriquer un
+descripteur de k octets. Test sans réémettre C0: compiler une sonde avec
+l'émetteur hébergé puis exécuter l'ELF. Puis régénérer composite + C0 + C1/C2.
