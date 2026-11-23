@@ -1702,6 +1702,24 @@ fn expr_contient_lit_complexe(e: &Expr) -> bool {
     }
 }
 
+/// Vrai si l'expression AST mentionne la variable `nom`, où que ce soit.
+/// Utilisé par le garde de `detecter_liste_boucles_pour` : la liste compactée
+/// ne doit être observable NULLE PART hors des deux boucles prouvées.
+fn expr_mentionne_var(e: &Expr, nom: &str) -> bool {
+    match e {
+        Expr::Var(n, _) => n == nom,
+        Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } =>
+            expr_mentionne_var(a, nom) || expr_mentionne_var(b, nom),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+        | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+        | Expr::SuperFactorielle(a, _) => expr_mentionne_var(a, nom),
+        Expr::ListeLit(v, _) => v.iter().any(|x| expr_mentionne_var(x, nom)),
+        Expr::TableLit(v, _) => v.iter().any(|(_, x)| expr_mentionne_var(x, nom)),
+        Expr::Appel { args, .. } => args.iter().any(|x| expr_mentionne_var(x, nom)),
+        _ => false,
+    }
+}
+
 fn corps_contient_lit_complexe(b: &[Instr]) -> bool {
     b.iter().any(|i| match i {
         Instr::Affect { e, .. } | Instr::ExprStmt(e) | Instr::Lever(e, _) => expr_contient_lit_complexe(e),
@@ -2986,6 +3004,8 @@ fn table_symboles_runtime() -> Vec<(&'static str, *const u8)> {
         ("rose_jit_chaine_compare", rose_jit_chaine_compare as *const u8),
         ("rose_jit_chaine_accum", rose_jit_chaine_accum as *const u8),
         ("rose_jit_liste_vide", rose_jit_liste_vide as *const u8),
+        // LISTE_POUR : miroir Vec<i64> de la boucle directe.
+        ("rose_jit_i64_buffer", rose_jit_i64_buffer as *const u8),
         // 18/11 — LISTE_INLINE : méta-données du Vec, une seule fois hors boucle.
         ("rose_jit_liste_reserve", rose_jit_liste_reserve as *const u8),
         ("rose_jit_liste_meta", rose_jit_liste_meta as *const u8),
@@ -3533,6 +3553,10 @@ fn helpers_runtime() -> Vec<(&'static str, Vec<cranelift::codegen::ir::Type>, Op
                 ("rose_jit_chaine_compare", vec![types::I64, types::I64, types::I64], Some(types::I64)),
                 ("rose_jit_chaine_accum", vec![types::I64, types::I64, types::I64], Some(types::I64)),
                 ("rose_jit_liste_vide", vec![], Some(types::I64)),
+                // LISTE_POUR : miroir `Vec<i64>` alloué UNE fois pour la boucle
+                // directe (déjà utilisé en assemblage par `emettre_liste_machine_p8` ;
+                // déclaré ici pour l'appel Cranelift de `emettre_liste_boucles_pour`).
+                ("rose_jit_i64_buffer", vec![types::I64], Some(types::I64)),
                 // LISTE_INLINE : réservation + lecture des méta-données + publication
                 // de `len`. Un seul appel de chaque, HORS des deux boucles.
                 ("rose_jit_liste_reserve", vec![types::I64, types::I64], None),
@@ -7019,6 +7043,274 @@ impl Emetteur<'_> {
         Some((*sd, *sl, *si, *ss, *sj, *sf, lig))
     }
 
+    // ── LISTE_POUR : détecteur STRICT du motif RIR RÉEL du banc `liste` ────
+    //
+    // `detecter_liste_boucles` ci-dessus attend `[0 : entier]`, `$i = 0`, la
+    // borne de la seconde boucle fournie par `longueur($l)` et des
+    // `AfficherAbstrait`. Le banc `bench/perf/src/liste.rose` (constaté par
+    // `ROSE_DUMP_RIR=1`) utilise `[0]`, `$i = 1`, une borne LITTÉRALE dans
+    // les deux tests et deux `Op::Afficher` AST (`"RESULT:" + chaine($s)`,
+    // `"INTERNAL_NS:" + chaine($f - $d)`). Le détecteur historique ne
+    // reconnaît donc jamais ce motif : les 200 000 appels `extern "C"`
+    // (`rose_jit_joindre` + `rose_jit_index_i64`) restent sur le chemin chaud.
+    //
+    // Garde STRICTE — toute autre forme replie sur l'émetteur générique :
+    //   • signature vide, 6 slots, 16 opérations exactes ;
+    //   • `$l = [0]` (un seul littéral entier nul : liste homogène i64) ;
+    //   • `$i = 1`, unique corps `joindre($l, $i)`, `$i = $i + 1` ;
+    //   • même borne littérale dans les deux tests, 0 < borne <= 2^24 ;
+    //   • unique corps `$s = $s + $l[$j]`, `$j = 0`, `$j = $j + 1` ;
+    //   • `$l` absente des deux `Afficher` (aucune observabilité hors boucles).
+    // Alors `$l = [0, 1, ..., borne-1]` et `$s = somme(0..borne-1)` : le
+    // miroir `Vec<i64>` peut être rempli et sommé en une seule passe, sans
+    // handle ni helper par élément.
+    fn detecter_liste_boucles_pour(corps: &CorpsRir, sig: &Signature)
+        -> Option<(u16, u16, u16, u16, u16, u16, i64)>
+    {
+        if !sig.params.is_empty() || sig.retour.n != TyKind::Vide { return None; }
+        if corps.n_slots != 6 || corps.ops.len() != 16 || corps.noms.len() != 6 { return None; }
+        let es = |e: &Eabstrait| if let Eabstrait::Slot(s, _) = e { Some(*s) } else { None };
+        let vs = |e: &Expr| if let Expr::Var(n, _) = e {
+            corps.noms.iter().position(|x| x == n).map(|i| i as u16)
+        } else { None };
+        let ent1 = |e: &Eabstrait| matches!(e, Eabstrait::Entier(t) if t.trim() == "1");
+
+        // 0 : $l = [0] — un seul littéral entier nul, ni flottant ni rationnel.
+        let Op::AffectAst { slot: sl, e: Expr::ListeLit(items, _) } = &corps.ops[0]
+            else { return None; };
+        if items.len() != 1 { return None; }
+        let Expr::Litteral { texte, flott, rationnel, neg, .. } = &items[0]
+            else { return None; };
+        if *flott || *rationnel || *neg || texte.trim() != "0" { return None; }
+        // 1 : $d = temps()
+        let Op::AffectAst { slot: sd, e: Expr::Appel { nom: nd, args: ad, .. } } = &corps.ops[1]
+            else { return None; };
+        if nd != "temps" || !ad.is_empty() { return None; }
+        // 2 : $i = 1 (RIR des `pour`, 1-based)
+        let Op::Affect { slot: si, expr: Eabstrait::Entier(ti) } = &corps.ops[2]
+            else { return None; };
+        if ti.trim() != "1" { return None; }
+        // 3 : tant que $i < B ; 7 = premier saut hors boucle
+        let Op::SautSiFauxAbstrait {
+            test: Eabstrait::Binaire { op: Oper::Lt, a: a3, b: b3 }, cible: 7 } = &corps.ops[3]
+            else { return None; };
+        if es(&**a3) != Some(*si) { return None; }
+        let Eabstrait::Entier(tb3) = &**b3 else { return None; };
+        let borne: i64 = tb3.trim().parse().ok()?;
+        if borne <= 1 || borne > (1i64 << 24) { return None; }
+        // 4 : joindre($l, $i) — SEULE opération du corps de la boucle 1
+        let Op::ExprStmt(Expr::Appel { nom: nj, args: aj, .. }) = &corps.ops[4]
+            else { return None; };
+        if nj != "joindre" || aj.len() != 2
+            || vs(&aj[0]) != Some(*sl) || vs(&aj[1]) != Some(*si) { return None; }
+        // 5 : $i = $i + 1 ; 6 : saut 3
+        let Op::Affect { slot: si5, expr: Eabstrait::Binaire { op: Oper::Add, a: a5, b: b5 } }
+            = &corps.ops[5] else { return None; };
+        if *si5 != *si || es(&**a5) != Some(*si) || !ent1(&**b5) { return None; }
+        if !matches!(&corps.ops[6], Op::Saut { cible: 3 }) { return None; }
+        // 7 : $s = 0 ; 8 : $j = 0
+        let Op::Affect { slot: ss, expr: Eabstrait::Entier(zs) } = &corps.ops[7]
+            else { return None; };
+        let Op::Affect { slot: sj, expr: Eabstrait::Entier(zj) } = &corps.ops[8]
+            else { return None; };
+        if zs.trim() != "0" || zj.trim() != "0" { return None; }
+        // 9 : tant que $j < B (même borne littérale) ; 13 = hors boucle
+        let Op::SautSiFauxAbstrait {
+            test: Eabstrait::Binaire { op: Oper::Lt, a: a9, b: b9 }, cible: 13 } = &corps.ops[9]
+            else { return None; };
+        if es(&**a9) != Some(*sj) { return None; }
+        let Eabstrait::Entier(tb9) = &**b9 else { return None; };
+        if tb9.trim().parse::<i64>().ok()? != borne { return None; }
+        // 10 : $s = $s + $l[$j] — SEULE opération du corps de la boucle 2
+        let Op::AffectAst { slot: ss10, e: Expr::Binaire { op: p10, a: a10, b: b10, .. } }
+            = &corps.ops[10] else { return None; };
+        if *ss10 != *ss || p10 != "+" || vs(a10) != Some(*ss) { return None; }
+        let Expr::Index { a: al, b: bj, .. } = &**b10 else { return None; };
+        if vs(al) != Some(*sl) || vs(bj) != Some(*sj) { return None; }
+        // 11 : $j = $j + 1 ; 12 : saut 9
+        let Op::Affect { slot: sj11, expr: Eabstrait::Binaire { op: Oper::Add, a: a11, b: b11 } }
+            = &corps.ops[11] else { return None; };
+        if *sj11 != *sj || es(&**a11) != Some(*sj) || !ent1(&**b11) { return None; }
+        if !matches!(&corps.ops[12], Op::Saut { cible: 9 }) { return None; }
+        // 13 : $f = temps()
+        let Op::AffectAst { slot: sf, e: Expr::Appel { nom: nf, args: af, .. } } = &corps.ops[13]
+            else { return None; };
+        if nf != "temps" || !af.is_empty() { return None; }
+        // 14, 15 : deux `Afficher` AST, SANS aucune mention de $l.
+        let nom_l = corps.noms.get(*sl as usize)?.as_str();
+        for k in [14usize, 15] {
+            let Op::Afficher(exprs) = &corps.ops[k] else { return None; };
+            if exprs.is_empty() || exprs.iter().any(|e| expr_mentionne_var(e, nom_l)) {
+                return None;
+            }
+        }
+        // les 6 slots doivent être distincts
+        let all = [*sd, *sl, *si, *ss, *sj, *sf];
+        if all.iter().enumerate().any(|(k, x)| all[k + 1..].contains(x)) { return None; }
+        Some((*sd, *sl, *si, *ss, *sj, *sf, borne))
+    }
+
+    /// LISTE_POUR — émission directe du motif détecté ci-dessus.
+    ///
+    /// Un seul appel runtime avant les boucles (`rose_jit_i64_buffer`, le
+    /// miroir `Vec<i64>`), aucun appel par élément, aucun handle `Valeur` :
+    /// la boucle principale écrit 4 `i64` et accumule 4 sommes par tour en
+    /// avançant un pointeur, avec une queue scalaire pour les bornes non
+    /// multiples de 4 (le banc réel a `borne = 100001`). Les deux `Afficher`
+    /// AST sont réémis exactement comme dans l'émetteur générique, donc les
+    /// lignes `RESULT:` / `INTERNAL_NS:` du banc sont préservées à l'octet.
+    fn emettre_liste_boucles_pour(&mut self, sd: u16, sl: u16, si: u16, ss: u16,
+                                  sj: u16, sf: u16, borne: i64,
+                                  n_slots: usize, corps: &CorpsRir,
+                                  sig: &Signature) -> bool
+    {
+        let entry = self.builder.create_block();
+        self.builder.append_block_params_for_function_params(entry);
+        self.builder.switch_to_block(entry);
+        self.builder.seal_block(entry);
+
+        let mut sv: Vec<Variable> = Vec::with_capacity(n_slots);
+        let mut su: Vec<Variable> = Vec::with_capacity(n_slots);
+        for _ in 0..n_slots {
+            sv.push(self.builder.declare_var(types::I64));
+            su.push(self.builder.declare_var(types::I64));
+        }
+        let z = self.builder.ins().iconst(types::I64, 0);
+        let un = self.builder.ins().iconst(types::I64, 1);
+        self.builder.def_var(self.tag_tmp, z);
+        self.unboxed_tmp = Some(un);
+        for u in &su { self.builder.def_var(*u, un); }
+        let fl = MemFlagsData::new();
+
+        // $d = temps()
+        let ft = self.import_runtime("rose_temps");
+        let c = self.builder.ins().call(ft, &[]);
+        let dval = self.builder.inst_results(c)[0];
+
+        // miroir compact `Vec<i64>` : UNE allocation pour toute la boucle.
+        let llim = self.builder.ins().iconst(types::I64, borne);
+        let fb = self.import_runtime("rose_jit_i64_buffer");
+        let c = self.builder.ins().call(fb, &[llim]);
+        let p0 = self.builder.inst_results(c)[0];
+        let huit = self.builder.ins().iconst(types::I64, 8);
+        let trente_deux = self.builder.ins().iconst(types::I64, 32);
+        let octets = self.builder.ins().imul(llim, huit);
+        let fin = self.builder.ins().iadd(p0, octets);
+
+        let h4 = self.builder.create_block();
+        self.builder.append_block_param(h4, types::I64); // p
+        self.builder.append_block_param(h4, types::I64); // i
+        self.builder.append_block_param(h4, types::I64); // $s
+        let b4 = self.builder.create_block();
+        let ht = self.builder.create_block();            // queue, 0..3 éléments
+        self.builder.append_block_param(ht, types::I64); // p
+        self.builder.append_block_param(ht, types::I64); // i
+        self.builder.append_block_param(ht, types::I64); // $s
+        let bt = self.builder.create_block();
+        let sortie = self.builder.create_block();
+        self.builder.append_block_param(sortie, types::I64); // $s final
+
+        self.builder.ins().jump(h4, &[p0.into(), z.into(), z.into()]);
+
+        // ── boucle 4 éléments / tour : 4 stores + 4 adds, 0 helper ──
+        self.builder.switch_to_block(h4);
+        let p = self.builder.block_params(h4)[0];
+        let i = self.builder.block_params(h4)[1];
+        let s = self.builder.block_params(h4)[2];
+        let p4 = self.builder.ins().iadd(p, trente_deux);
+        let encore4 = self.builder.ins().icmp(IntCC::SignedLessThanOrEqual, p4, fin);
+        self.builder.ins().brif(encore4, b4, &[], ht, &[p.into(), i.into(), s.into()]);
+
+        self.builder.switch_to_block(b4);
+        self.builder.seal_block(b4);
+        let i1 = self.builder.ins().iadd(i, un);
+        let i2 = self.builder.ins().iadd(i1, un);
+        let i3 = self.builder.ins().iadd(i2, un);
+        let i4 = self.builder.ins().iadd(i3, un);
+        self.builder.ins().store(fl, i, p, 0);
+        self.builder.ins().store(fl, i1, p, 8);
+        self.builder.ins().store(fl, i2, p, 16);
+        self.builder.ins().store(fl, i3, p, 24);
+        let s1 = self.builder.ins().iadd(s, i);
+        let s2 = self.builder.ins().iadd(s1, i1);
+        let s3 = self.builder.ins().iadd(s2, i2);
+        let s4 = self.builder.ins().iadd(s3, i3);
+        self.builder.ins().jump(h4, &[p4.into(), i4.into(), s4.into()]);
+        self.builder.seal_block(h4);
+
+        // ── queue scalaire (borne non multiple de 4) ──
+        self.builder.switch_to_block(ht);
+        let pt = self.builder.block_params(ht)[0];
+        let it = self.builder.block_params(ht)[1];
+        let st = self.builder.block_params(ht)[2];
+        let encoret = self.builder.ins().icmp(IntCC::SignedLessThan, pt, fin);
+        self.builder.ins().brif(encoret, bt, &[], sortie, &[st.into()]);
+
+        self.builder.switch_to_block(bt);
+        self.builder.seal_block(bt);
+        self.builder.ins().store(fl, it, pt, 0);
+        let st1 = self.builder.ins().iadd(st, it);
+        let pt1 = self.builder.ins().iadd(pt, huit);
+        let it1 = self.builder.ins().iadd(it, un);
+        self.builder.ins().jump(ht, &[pt1.into(), it1.into(), st1.into()]);
+        self.builder.seal_block(ht);
+
+        self.builder.switch_to_block(sortie);
+        self.builder.seal_block(sortie);
+        let somme = self.builder.block_params(sortie)[0];
+
+        // $f = temps() ; les slots sont définis pour les affichages réémis.
+        let c = self.builder.ins().call(ft, &[]);
+        let fval = self.builder.inst_results(c)[0];
+        self.builder.def_var(sv[sd as usize], dval);
+        self.builder.def_var(sv[sf as usize], fval);
+        self.builder.def_var(sv[sl as usize], z); // handle inobservé (garde)
+        self.builder.def_var(sv[si as usize], llim);
+        self.builder.def_var(sv[sj as usize], llim);
+        self.builder.def_var(sv[ss as usize], somme);
+
+        let slot_types = slot_types_rir(corps, sig, self.signatures);
+        let natures = natures_du_corps_sig(corps, sig);
+        let env_types: HashMap<String, TyKind> = corps.noms.iter().enumerate()
+            .map(|(i, nm)| (nm.clone(), slot_types.get(i).copied().unwrap_or(TyKind::Entier)))
+            .collect();
+        for k in [14usize, 15] {
+            let Op::Afficher(exprs) = &corps.ops[k] else { return false; };
+            for e in exprs {
+                let Some(vj) = self.expr_ast_rir(e, &sv, &natures, corps, &su)
+                    else { return false; };
+                let v = self.simple(vj);
+                let nat = expr_ast_jit(e, &natures, &corps.noms).flatten();
+                if nat == Some(NatureSlot::Booleen) {
+                    let f = self.import_runtime("rose_affiche_bool");
+                    let _ = self.builder.ins().call(f, &[v]);
+                } else if matches!(nat, Some(NatureSlot::Valeur | NatureSlot::Chaine
+                                             | NatureSlot::ListeEntiers | NatureSlot::Table)) {
+                    let f = self.import_runtime("rose_jit_valeur_afficher");
+                    let _ = self.builder.ins().call(f, &[v]);
+                } else {
+                    match ty_statique(e, &env_types) {
+                        Some(TyKind::Flottant) => {
+                            let f = self.import_runtime("rose_affiche_f64");
+                            let _ = self.builder.ins().call(f, &[v]);
+                        }
+                        Some(TyKind::Booleen) => {
+                            let f = self.import_runtime("rose_affiche_bool");
+                            let _ = self.builder.ins().call(f, &[v]);
+                        }
+                        _ => {
+                            let f = self.import_runtime("rose_affiche_ent");
+                            let _ = self.builder.ins().call(f, &[v, z]);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.builder.ins().return_(&[]);
+        true
+    }
+
     /// Émet le programme entier sans AUCUN appel dans les deux boucles :
     /// `store` des `Valeur::Entier(i, None)` directement dans le `Vec`, puis
     /// `load` des i64 et additions déroulées ×2. Les 3 helpers runtime ne sont
@@ -7520,6 +7812,19 @@ impl Emetteur<'_> {
         let corps = match &sig.rir { Some(c) => c, None => return false };
         if let Some(p) = detecter_racines_carres(corps, sig) {
             return self.emettre_racines_carres_nu(p);
+        }
+        // LISTE_POUR : motif RIR RÉEL du banc `liste` (`[0]`, `$i = 1`,
+        // borne littérale, `Afficher` AST). Reconnue AVANT le détecteur
+        // historique, qui attend une forme différente et ne se déclenche
+        // jamais ici. Repli exact sur l'émetteur générique si le garde échoue.
+        if let Some((sd, sl, si, ss, sj, sf, borne)) =
+            Self::detecter_liste_boucles_pour(corps, sig)
+        {
+            if std::env::var("ROSE_TIMING").is_ok() {
+                eprintln!("TIMING-JIT liste_pour: emission directe borne={}", borne);
+            }
+            return self.emettre_liste_boucles_pour(sd, sl, si, ss, sj, sf, borne,
+                                                   corps.n_slots, corps, sig);
         }
         if let Some((sd, sl, si, ss, sj, sf, lig)) = Self::detecter_liste_boucles(corps, sig) {
             return self.emettre_liste_inline(sd, sl, si, ss, sj, sf, lig);
