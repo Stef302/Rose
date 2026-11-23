@@ -5480,7 +5480,15 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "chaine") {
     si ($n < 1) { retour vs("") }
     $t = vtag($a[1])
-    si ($t == "r" ou $t == "f") { retour vs(rat_pay($a[1])) }
+    si ($t == "f") {
+      $payf = rat_pay($a[1])
+      $sl = longueur($payf)
+      si ($sl >= 2 et sous_chaine($payf, $sl - 2, $sl) == "/1") {
+        retour vs(sous_chaine($payf, 0, $sl - 2))
+      }
+      retour vs($payf)
+    }
+    si ($t == "r") { retour vs(rat_pay($a[1])) }
     si ($t == "n") { retour vs(vpay($a[1])) }
     retour vs(val_str($a[1]))
   }
