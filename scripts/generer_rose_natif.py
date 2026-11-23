@@ -57,6 +57,13 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 EM = ROOT / "compilateur" / "emetteur.rose"
+# J5 — sérialiseurs SANS RUST : deux sources Rose, composées telles quelles
+# dans le composite (fonctions seules, le `main` autonome est retiré).
+SERIALISEURS = {
+    "wasm": ROOT / "compilateur" / "ser_wasm.rose",
+    "bc": ROOT / "compilateur" / "ser_bytecode.rose",
+}
+SER_MARQUEUR = "# ═══ FIN DES FONCTIONS"
 BACKENDS = {
     "elf": (ROOT / "compilateur" / "emetteur_elf.rose",
             ROOT / "compilateur" / "rose_natif.rose"),
@@ -178,6 +185,35 @@ fn rnat_join($p: liste<chaine>, $d: entier, $f: entier) -> chaine {
 
 def lines(p: Path):
     return p.read_text(encoding="utf-8").splitlines()
+
+
+def serialiseurs_source() -> str:
+    """Fonctions des deux sérialiseurs J5 (sans leur main autonome)."""
+    morceaux = []
+    for cle in ("wasm", "bc"):
+        p = SERIALISEURS[cle]
+        txt = p.read_text(encoding="utf-8")
+        if SER_MARQUEUR not in txt:
+            raise SystemExit(f"ERREUR sérialiseur {cle}: marqueur absent")
+        head = txt.split(SER_MARQUEUR)[0].rstrip()
+        morceaux.append(f"# ── sérialiseur J5 : {p.name} (sans Rust) ──\n{head}\n")
+    return "\n".join(morceaux)
+
+
+CIBLE_DISPATCH = """
+# J5 — sérialiseurs auto-hébergés : --cible wasm|bc (aucun Rust/JS/Py/C).
+si (nb_arguments() >= 3 et argument(1) == "--cible") {
+  $j5fmt = argument(2)
+  si ($j5fmt == "wasm") {
+    ecrire_bytes("/dev/stdout", sw_module($src))
+    quitter(0)
+  }
+  si ($j5fmt == "bc" ou $j5fmt == "rosebc") {
+    ecrire_bytes("/dev/stdout", sb_module($src))
+    quitter(0)
+  }
+}
+"""
 
 
 def replace_once(text: str, old: str, new: str, what: str) -> str:
@@ -536,6 +572,10 @@ retour $rnat_dump"""
     be_head = "\n".join(be[:cfg["head_end"]])
     be_g5 = "\n".join(be[cfg["dispatch_start"] - 1:cfg["quit_line"]])
     be_g5 = replace_once(be_g5, cfg["src_line"], "$src = em_source_rir()", f"{backend} entrée G5")
+    if backend == "elf":
+        be_g5 = replace_once(be_g5, "$src = em_source_rir()",
+                             "$src = em_source_rir()\n" + CIBLE_DISPATCH,
+                             f"{backend} dispatch cible J5")
     be_tail = "\n".join(be[cfg["quit_line"]:])
     # Garde de borne (un seul argument) : absente du PE, présente dans l'ELF.
     # Appliquée à la copie concaténée, jamais à la source possédée.
@@ -548,6 +588,7 @@ retour $rnat_dump"""
     # sont placés APRÈS les fonctions du backend : aucune globale supplémentaire.
     verif = prepare_verifieur() if RNAT_VERIF else ""
     dispatch = VERIF_DISPATCH if RNAT_VERIF else ""
+    sers = serialiseurs_source() if backend == "elf" else ""
 
     cible = "ELF64 aarch64 (Linux)" if backend == "elf" else "PE32+ aarch64 (Windows)"
     header = "\n".join([
@@ -568,7 +609,7 @@ retour $rnat_dump"""
 fn em_source_rir() -> chaine {
 """
     parts = [header, em_head, glue, em_main, "\n}\n",
-             be_head, verif, dispatch, be_g5, be_tail]
+             be_head, sers, verif, dispatch, be_g5, be_tail]
     out.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
     print(f"généré {out} ({out.stat().st_size} octets)")
     return 0

@@ -1,0 +1,290 @@
+# ser_wasm.rose — sérialiseur WASM écrit en Rose (sous-ensemble G5).
+# Émet un module WebAssembly binaire valide depuis un dump RIR simple.
+# ABI : rose_main() -> i64, exportée (index 0). Sous-ensemble i64 :
+#   constantes, + - * (div), afficher / rose_main.
+#
+# Contrôle : >>7*6  ->  module de 48 octets, Node WebAssembly.instantiate
+#                       renvoie 42n (identique à rose/src/transpile.rs).
+#
+# Ce fichier est autonome : `rose ser_wasm.rose dump.rir > out.wasm`.
+# Le composite ne garde QUE les fonctions (avant le marqueur de fin),
+# afin d'offrir `--cible wasm` sans dupliquer de main.
+
+# ── primitives d'octets (1 caractere Rose = 1 octet) ──────────────────────
+fn sw_octet($v: entier) -> chaine {
+  retour caractere($v % 256)
+}
+
+fn sw_u16le($v: entier) -> chaine {
+  retour sw_octet($v % 256) + sw_octet(partie_entiere($v / 256) % 256)
+}
+
+fn sw_u32le($v: entier) -> chaine {
+  retour sw_octet($v % 256)
+       + sw_octet(partie_entiere($v / 256) % 256)
+       + sw_octet(partie_entiere($v / 65536) % 256)
+       + sw_octet(partie_entiere($v / 16777216) % 256)
+}
+
+# LEB128 non signé (longueurs, index de sections).
+fn sw_uleb($v: entier) -> chaine {
+  $out = ""
+  $x = $v
+  tant_que ($x > 0) {
+    $b = $x % 128
+    $x = partie_entiere($x / 128)
+    si ($x > 0) { $b = $b + 128 }
+    $out = $out + sw_octet($b)
+  }
+  si (longueur($out) == 0) { $out = sw_octet(0) }
+  retour $out
+}
+
+# SLEB128 signé (constantes i64). Les littéraux Rose sont exacts : on
+# travaille sur la valeur signée, avec la règle d'arrêt de la spec WASM.
+fn sw_sleb($v: entier) -> chaine {
+  $out = ""
+  $x = $v
+  $encore = vrai
+  tant_que ($encore) {
+    $b = $x % 128
+    si ($b < 0) { $b = $b + 128 }
+    $x = partie_entiere($x / 128)
+    $haut = 0
+    si ($b >= 64) { $haut = 1 }
+    $fini = 0
+    si ($x == 0 et $haut == 0) { $fini = 1 }
+    si ($x == -1 et $haut == 1) { $fini = 1 }
+    si ($fini == 0) { $b = $b + 128 }
+    $out = $out + sw_octet($b)
+    si ($fini == 1) { $encore = faux }
+  }
+  retour $out
+}
+
+# Chaîne WASM : u32 de longueur (octets UTF-8) puis les octets.
+fn sw_chaine($s: chaine) -> chaine {
+  retour sw_uleb(longueur($s)) + $s
+}
+
+# Section WASM : id, taille LEB128, contenu.
+fn sw_section($id: entier, $c: chaine) -> chaine {
+  retour sw_octet($id) + sw_uleb(longueur($c)) + $c
+}
+
+# Découpe une expression RIR en jetons : '(' et ')' deviennent des jetons
+# séparés, les blancs sont des séparateurs.
+fn sw_tokens($s: chaine) -> liste<chaine> {
+  $brut = [""]
+  $cur = ""
+  $j = 0
+  $n = longueur($s)
+  tant_que ($j < $n) {
+    $c = $s[$j]
+    si ($c == "(" ou $c == ")") {
+      si (longueur($cur) > 0) { joindre($brut, $cur); $cur = "" }
+      joindre($brut, $c)
+    } sinon {
+      si ($c == " ") {
+        si (longueur($cur) > 0) { joindre($brut, $cur); $cur = "" }
+      } sinon { $cur = $cur + $c }
+    }
+    $j = $j + 1
+  }
+  si (longueur($cur) > 0) { joindre($brut, $cur) }
+  $out = [""]
+  $k = 1
+  tant_que ($k < longueur($brut)) { joindre($out, $brut[$k]); $k = $k + 1 }
+  retour $out
+}
+
+#_CODE_WASM des opcodes i64 :
+#  i64.const = 0x42, local.get = 0x20, local.set = 0x21
+#  i64.add = 0x7C, i64.sub = 0x7D, i64.mul = 0x7E, i64.div_s = 0x7F
+fn sw_opbin($op: chaine) -> entier {
+  si ($op == "+") { retour 124 }
+  si ($op == "-") { retour 125 }
+  si ($op == "*") { retour 126 }
+  si ($op == "div" ou $op == "÷") { retour 127 }
+  retour 124
+}
+
+# Parse une expression à partir du jeton $p (index 1-based dans $t).
+# Retourne une chaine : position sur 6 chiffres, puis les octets émis.
+# (Les fonctions rendant une liste sont évitées : le JIT les infère mal.)
+# $base = index du premier local (nombre de slots), $res = index du local
+# __result (utilisé pour les variables `slot`).
+fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine {
+  $tok = $t[$p]
+  $q = $p + 1
+  $b = ""
+  si ($tok == "(") {
+    $head = $t[$q]
+    $q = $q + 1
+    si ($head == "bin") {
+      $op = $t[$q]
+      $q = $q + 1
+      $r1 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
+      $r2 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
+      $b = $b + sw_octet(sw_opbin($op))
+    }
+    si ($head == "n") {
+      $v = entier($t[$q])
+      $q = $q + 1
+      $b = sw_octet(66) + sw_sleb($v)
+    }
+    si ($head == "v") {
+      $nv = $t[$q]
+      $q = $q + 1
+      $b = sw_octet(66) + sw_sleb(0)
+    }
+    si ($head != "bin" et $head != "n" et $head != "v") {
+      # (app ...) ou forme inconnue : on ignore jusqu'à la ')' fermante.
+      $prof = 1
+      tant_que ($q < longueur($t) et $prof > 0) {
+        si ($t[$q] == "(") { $prof = $prof + 1 }
+        si ($t[$q] == ")") { $prof = $prof - 1 }
+        $q = $q + 1
+      }
+      $b = $b + sw_octet(66) + sw_sleb(0)
+    }
+    si ($q < longueur($t)) {
+      si ($t[$q] == ")") { $q = $q + 1 }
+    }
+  } sinon {
+    si ($tok == "entier" ou $tok == "f" ou $tok == "n") {
+      $v = entier($t[$q])
+      $q = $q + 1
+      $b = sw_octet(66) + sw_sleb($v)
+    }
+    si ($tok == "slot") {
+      $s = entier($t[$q])
+      $q = $q + 1
+      $b = sw_octet(32) + sw_uleb($s + $base)
+    }
+    si ($tok == "booleen" ou $tok == "vrai") {
+      $b = sw_octet(66) + sw_sleb(1)
+    }
+    si ($tok == "faux") {
+      $b = sw_octet(66) + sw_sleb(0)
+    }
+  }
+  $pos = chaine($q)
+  tant_que (longueur($pos) < 6) { $pos = "0" + $pos }
+  retour $pos + $b
+}
+
+# Prend la sous-chaine d'une ligne d'op RIR après le mot-clé.
+fn sw_reste($ligne: chaine, $mot: chaine) -> chaine {
+  $n = longueur($ligne)
+  $m = longueur($mot)
+  $j = 0
+  tant_que ($j + $m <= $n) {
+    si (sous_chaine($ligne, $j, $j + $m) == $mot) {
+      retour sous_chaine($ligne, $j + $m, $n)
+    }
+    $j = $j + 1
+  }
+  retour ""
+}
+
+# Assemble le module complet depuis un dump RIR.
+fn sw_module($rir: chaine) -> chaine {
+  # Découpe le dump en lignes.
+  $lignes = [""]
+  $cur = ""
+  $j = 0
+  $n = longueur($rir)
+  tant_que ($j < $n) {
+    $c = $rir[$j]
+    si (ordre($c) == 10) {
+      joindre($lignes, $cur)
+      $cur = ""
+    } sinon { $cur = $cur + $c }
+    $j = $j + 1
+  }
+  si (longueur($cur) > 0) { joindre($lignes, $cur) }
+
+  # On ne sérialise QUE le corps de $principal : les corps de fonctions
+  # sont hors du sous-ensemble i64 (Appel/CALL n'est pas émis ici).
+  $debut = 1
+  $j = 1
+  tant_que ($j < longueur($lignes)) {
+    $tk = sw_tokens($lignes[$j])
+    si (longueur($tk) > 2) {
+      si ($tk[1] == "fonction" et $tk[2] == "$principal") {
+        $k = $j + 1
+        tant_que ($k < longueur($lignes)) {
+          $tp = sw_tokens($lignes[$k])
+          si (longueur($tp) > 1) {
+            si ($tp[1] == "ops") { $debut = $k + 1; $k = 100000 }
+          }
+          $k = $k + 1
+        }
+        $j = 100000
+      }
+    }
+    $j = $j + 1
+  }
+
+  # Nombre de slots du principal (les variables deviennent des locaux).
+  $nslots = 0
+  $j = 1
+  tant_que ($j < $debut) {
+    $tk = sw_tokens($lignes[$j])
+    si (longueur($tk) > 1) {
+      si ($tk[1] == "n_slots") { $nslots = entier($tk[2]) }
+    }
+    $j = $j + 1
+  }
+  # Le compilateur Rust alloue __result EN PREMIER (local 0), puis les
+  # slots (local 1, 2, …). On reproduit exactement cet ordre.
+  $base = 1
+  $res = 0
+  $nlocaux = $nslots + 1
+
+  $code = ""
+  $j = $debut
+  tant_que ($j < longueur($lignes)) {
+    $tt = sw_tokens($lignes[$j])
+    $kind = ""
+    si (longueur($tt) > 2) { $kind = $tt[2] }
+    $affiche = 0
+    si ($kind == "afficher_abstrait" ou $kind == "afficher" ou $kind == "retour_abstrait" ou $kind == "retour") { $affiche = 1 }
+    si ($affiche == 1) {
+      $r = sw_expr($tt, 3, $base, $res)
+      $code = $code + sous_chaine($r, 6, longueur($r))
+      # local.set $res : toute valeur `>>` devient le résultat de rose_main.
+      $code = $code + sw_octet(33) + sw_uleb($res)
+    }
+    si ($kind == "affect") {
+      $slot = entier($tt[4])
+      $r = sw_expr($tt, 6, $base, $res)
+      $code = $code + sous_chaine($r, 6, longueur($r))
+      $code = $code + sw_octet(33) + sw_uleb($slot + $base)
+    }
+    $j = $j + 1
+  }
+
+  # Corps de rose_main : [1 groupe de locaux][N i64][code][local.get res][end]
+  $corps = sw_uleb(1) + sw_uleb($nlocaux) + sw_octet(126)
+         + $code + sw_octet(32) + sw_uleb($res) + sw_octet(11)
+  $code_section = sw_uleb(1) + sw_uleb(longueur($corps)) + $corps
+
+  # Type unique : () -> i64
+  $types = sw_uleb(1) + sw_octet(96) + sw_uleb(0) + sw_uleb(1) + sw_octet(126)
+  $fonctions = sw_uleb(1) + sw_uleb(0)
+  $exports = sw_uleb(1) + sw_chaine("rose_main") + sw_octet(0) + sw_uleb(0)
+
+  retour sw_octet(0) + "asm" + sw_u32le(1)
+       + sw_section(1, $types)
+       + sw_section(3, $fonctions)
+       + sw_section(7, $exports)
+       + sw_section(10, $code_section)
+}
+
+# ═══ FIN DES FONCTIONS (le composite ne garde que ce qui précède) ═══
+si (nb_arguments() > 0) {
+  $rir = lire_texte(argument(0))
+  ecrire_bytes("/dev/stdout", sw_module($rir))
+}

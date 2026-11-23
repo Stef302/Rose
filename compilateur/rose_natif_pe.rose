@@ -5609,6 +5609,7 @@ fn g5_pe() -> chaine {
   $out = $out + $pd
   retour $out
 }
+
 # verifieur.rose — jalon M4.2 : le vérificateur auto-hébergé ROSE.
 #
 # Lit le programme passé en argument et reproduit la chaîne du moteur :
