@@ -1,0 +1,90 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_corr6.rose — banc du correctif 6 (RIR non couvert).
+#
+# Deux rôles :
+#   1) `rose compilateur/tests_corr6.rose [dossier]` écrit les 14 dumps RIR
+#      de /tmp/opencode/corr6_fixtures (ou du dossier passé en argument),
+#      puis vérifie les primitives pures ajoutées à l'interpréteur
+#      (valeur fonction `n:<nom>`, codes de types, noms manglés de
+#      surcharge). Le fichier ATTENDUS.tsv donne les sorties attendues.
+#   2) Le harnais externe compile interpreteur_rir.rose par C0, exécute
+#      l'ELF sur chaque dump et compare à ATTENDUS.tsv (voir CORR6_RIR.md).
+#
+# Aucun fichier du dépôt n'est modifié : les dumps sont écrits dans /tmp.
+# ═══════════════════════════════════════════════════════════════════════
+
+$pass = [0]
+$fail = [0]
+
+fn verif($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { joindre($pass, 1); retour 1 }
+  joindre($fail, 1)
+  afficher_erreur("ECHEC " + $nom + " : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+# ── Répliques pures de la logique ajoutée à eval_expr / call_prim ─────
+fn fn_enc($nom: chaine) -> chaine { retour "n:" + $nom }
+fn fn_dec($v: chaine) -> chaine {
+  si (sous_chaine($v, 0, 2) == "n:") { retour sous_chaine($v, 2, longueur($v)) }
+  retour ""
+}
+# val_type() rend deja le nom ; on en prend la premiere lettre (code RIR).
+fn typecode($t: chaine) -> chaine { retour sous_chaine($t, 0, 1) }
+fn surcharge_nom($base: chaine, $a: entier, $codes: chaine) -> chaine {
+  retour $base + "@" + chaine($a) + "@" + $codes
+}
+
+verif("fn_enc", "n:carre", fn_enc("carre"))
+verif("fn_dec", "carre", fn_dec("n:carre"))
+verif("fn_dec non-fn", "", fn_dec("i:5"))
+verif("typecode entier", "e", typecode("entier"))
+verif("typecode chaine", "c", typecode("chaine"))
+verif("typecode booleen", "b", typecode("booleen"))
+verif("typecode liste", "l", typecode("liste"))
+verif("typecode fonction", "n", typecode("n"))
+verif("fn roundtrip", "carre", fn_dec(fn_enc("carre")))
+verif("surcharge_nom", "f@1@ec", surcharge_nom("f", 1, "ec"))
+verif("surcharge_nom arite", "f@2@", surcharge_nom("f", 2, ""))
+
+# ── Écriture des dumps RIR (jeux d'essai t104-t107 + 10 similaires) ──
+$dir = "/tmp/opencode/corr6_fixtures"
+si (nb_arguments() >= 1) { $dir = argument(0) }
+
+$attendus = [""]
+ecrire_texte($dir + "/c01_surcharge_3types.rir", "rir\nfonction f@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 (n 10))\nfonction f@1@c\n  param x chaine\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 (s \"?\"))\nfonction f@1@b\n  param x booleen\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (s \"b\")\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge f (n 7))\n    0001 afficher (surcharge f (s \"x\"))\n    0002 afficher (surcharge f (b vraie))\n")
+joindre($attendus, "c01_surcharge_3types\t17|x?|b\n")
+ecrire_texte($dir + "/c02_surcharge_arite3.rir", "rir\nfonction f@1\n  param a entier\n  retour entier\n  n_slots 1\n  noms [0]a\n  ops\n    0000 retour_abstrait (bin + slot 0 (n 1))\nfonction f@2\n  param a entier\n  param b entier\n  retour entier\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 0 slot 1)\nfonction f@3\n  param a entier\n  param b entier\n  param c entier\n  retour entier\n  n_slots 3\n  noms [0]a [1]b [2]c\n  ops\n    0000 retour_abstrait (bin + (bin + slot 0 slot 1) slot 2)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge f (n 1))\n    0001 afficher (surcharge f (n 1) (n 2))\n    0002 afficher (surcharge f (n 1) (n 2) (n 3))\n")
+joindre($attendus, "c02_surcharge_arite3\t2|3|6\n")
+ecrire_texte($dir + "/c03_hof_double.rir", "rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction applique2\n  param fn fonction\n  param a entier\n  param b entier\n  retour entier\n  n_slots 3\n  noms [0]fn [1]a [2]b\n  ops\n    0000 retour_abstrait (bin + (appel_rir (v fn) slot 1) (appel_rir (v fn) slot 2))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique2 (fn carre) (n 5) (n 6))\n")
+joindre($attendus, "c03_hof_double\t61\n")
+ecrire_texte($dir + "/c04_hof_chaine.rir", "rir\nfonction lc\n  param s chaine\n  retour entier\n  n_slots 1\n  noms [0]s\n  ops\n    0000 retour_abstrait (app longueur slot 0)\nfonction applique\n  param fn fonction\n  param x chaine\n  retour entier\n  n_slots 2\n  noms [0]fn [1]x\n  ops\n    0000 retour_abstrait (appel_rir (v fn) slot 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique (fn lc) (s \"abcdef\"))\n")
+joindre($attendus, "c04_hof_chaine\t6\n")
+ecrire_texte($dir + "/c05_hof_recursive.rir", "rir\nfonction fib\n  param n entier\n  retour entier\n  n_slots 1\n  noms [0]n\n  ops\n    0000 saut_si_faux_abstrait 2 (bin < slot 0 entier 2)\n    0001 retour_abstrait slot 0\n    0002 retour (bin + (appel_rir (fn fib) (bin - (v n) (n 1))) (appel_rir (fn fib) (bin - (v n) (n 2))))\nfonction applique\n  param fn fonction\n  param x entier\n  retour entier\n  n_slots 2\n  noms [0]fn [1]x\n  ops\n    0000 retour_abstrait (appel_rir (v fn) slot 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique (fn fib) (n 10))\n")
+joindre($attendus, "c05_hof_recursive\t55\n")
+ecrire_texte($dir + "/c06_fn_direct.rir", "rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (appel_rir (fn carre) (n 7))\n")
+joindre($attendus, "c06_fn_direct\t49\n")
+ecrire_texte($dir + "/c07_fn_globale2.rir", "rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction double\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 (n 2))\nfonction $principal\n  retour vide\n  n_slots 2\n  noms [0]f [1]g\n  globaux 0 1\n  ops\n    0000 affect slot 0 = (fn carre)\n    0001 affect slot 1 = (fn double)\n    0002 afficher (appel_rir (v f) (n 3))\n    0003 afficher (appel_rir (v g) (n 4))\n")
+joindre($attendus, "c07_fn_globale2\t9|8\n")
+ecrire_texte($dir + "/c08_surcharge_liste.rir", "rir\nfonction f@1@l\n  param x liste\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (app longueur slot 0)\nfonction f@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 (n 2))\nfonction $principal\n  retour vide\n  n_slots 1\n  noms [0]l\n  ops\n    0000 affect slot 0 = (lst (n 1) (n 2) (n 3))\n    0001 afficher (surcharge f slot 0)\n    0002 afficher (surcharge f (n 21))\n")
+joindre($attendus, "c08_surcharge_liste\t3|42\n")
+ecrire_texte($dir + "/c09_surcharge_mixte.rir", "rir\nfonction g@1@e\n  param a entier\n  retour entier\n  n_slots 1\n  noms [0]a\n  ops\n    0000 retour_abstrait (bin + slot 0 (n 100))\nfonction g@2@ee\n  param a entier\n  param b entier\n  retour entier\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 0 slot 1)\nfonction g@2@ec\n  param a entier\n  param b chaine\n  retour chaine\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 1 (app chaine slot 0))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 5))\n    0001 afficher (surcharge g (n 5) (n 7))\n    0002 afficher (surcharge g (n 5) (s \"-x\"))\n")
+joindre($attendus, "c09_surcharge_mixte\t105|12|-x5\n")
+ecrire_texte($dir + "/c10_hof_compose.rir", "rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction inc\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 (n 1))\nfonction compose\n  param g fonction\n  param f fonction\n  param x entier\n  retour entier\n  n_slots 3\n  noms [0]g [1]f [2]x\n  ops\n    0000 retour_abstrait (appel_rir (v g) (appel_rir (v f) slot 2))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app compose (fn inc) (fn carre) (n 4))\n")
+joindre($attendus, "c10_hof_compose\t17\n")
+ecrire_texte($dir + "/t104_surcharge_arith.rir", "rir\nfonction f@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 (n 1))\nfonction f@1@c\n  param x chaine\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 (s \"!\"))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge f (n 2))\n    0001 afficher (surcharge f (s \"a\"))\n")
+joindre($attendus, "t104_surcharge_arith\t3|a!\n")
+ecrire_texte($dir + "/t105_surcharge_arite.rir", "rir\nfonction f@1\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 (n 1))\nfonction f@2\n  param a entier\n  param b entier\n  retour entier\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 0 slot 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge f (n 2))\n    0001 afficher (surcharge f (n 2) (n 3))\n")
+joindre($attendus, "t105_surcharge_arite\t3|5\n")
+ecrire_texte($dir + "/t106_hof_param.rir", "rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction applique\n  param fn fonction\n  param x entier\n  retour entier\n  n_slots 2\n  noms [0]fn [1]x\n  ops\n    0000 retour_abstrait (appel_rir (v fn) slot 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique (fn carre) (n 5))\n")
+joindre($attendus, "t106_hof_param\t25\n")
+ecrire_texte($dir + "/t107_hof_var.rir", "rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction $principal\n  retour vide\n  n_slots 1\n  noms [0]f\n  globaux 0\n  ops\n    0000 affect slot 0 = (fn carre)\n    0001 afficher (appel_rir (v f) (n 5))\n")
+joindre($attendus, "t107_hof_var\t25\n")
+ecrire_texte($dir + "/ATTENDUS.tsv", concatener($attendus))
+
+# ── Contrôles d'auto-cohérence des jeux d'essai ───────────────────────
+verif("nb fixtures", "14", chaine(longueur($attendus) - 1))
+verif("fixture t104 relue", "rir", sous_chaine(lire_texte($dir + "/t104_surcharge_arith.rir"), 0, 3))
+
+>> "TESTS CORR6 : " + chaine(longueur($pass) - 1) + " OK, " + chaine(longueur($fail) - 1) + " ECHEC"
+si (longueur($fail) > 1) { quitter(1) }

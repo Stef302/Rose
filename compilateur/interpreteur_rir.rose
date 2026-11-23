@@ -829,6 +829,16 @@ fn big_sci($s: chaine) -> chaine {
 # ── Primitives (pures) ────────────────────────────────────────────────
 fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   $n = longueur($a) - 1
+  # CORR6 — valeur fonction (paramètre-fonction / HOF). Une référence de
+  # fonction est encodée `n:<nom>` (tag 'n' réservé, distinct de 'f' flottant).
+  # Deux écritures sont acceptées : `(fn carre)` (littéral, traité dans
+  # eval_expr) et `(app fn (s "carre"))` (passé ici).
+  si ($name == "fn" ou $name == "fonction") {
+    si ($n < 1) { retour "n:" }
+    $fv = $a[1]
+    si (vtag($fv) == "s" ou vtag($fv) == "n") { retour "n:" + vpay($fv) }
+    retour "n:" + val_str($fv)
+  }
   si ($name == "longueur" ou $name == "len") {
     si ($n < 1) { retour vi("0") }
     $t = vtag($a[1])
@@ -847,6 +857,7 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     si ($n < 1) { retour vs("") }
     $t = vtag($a[1])
     si ($t == "r" ou $t == "f") { retour vs(rat_pay($a[1])) }
+    si ($t == "n") { retour vs(vpay($a[1])) }
     retour vs(val_str($a[1]))
   }
   si ($name == "entier") { si ($n < 1) { retour vi("0") }; retour vi(bnorm(vpay($a[1]))) }
@@ -943,6 +954,50 @@ fn eval_expr($p: entier, $m: liste<chaine>, $base: entier, $fi: entier) -> liste
     si ($tok[$p + 2] == "vraie") { joindre($res, vb(vrai)) } sinon { joindre($res, vb(faux)) }
     retour $res
   }
+  # CORR6 — littéral de fonction : `(fn carre)` -> valeur `n:carre`.
+  # Allowing a function to be stored in a slot/variable and passed as an
+  # argument is what makes "paramètres-fonctions" representable in RIR.
+  si ($h == "fn" ou $h == "fonction") {
+    joindre($res, chaine($p + 4))
+    joindre($res, "n:" + $tok[$p + 2])
+    retour $res
+  }
+  # CORR6 — dispatch de surcharge (arité + types).
+  # `(surcharge f args...)` cherche, dans l'ordre :
+  #   f@<arité>@<codes-de-types>  (ex. f@1@ec)
+  #   f@<arité>                   (ex. f@2)
+  #   f                           (repli nom nu)
+  # Les corps surchargés sont émis sous ces noms manglés ; le choix est fait
+  # ici, à l'exécution, d'après les valeurs réellement passées.
+  si ($h == "surcharge" ou $h == "appel_surcharge") {
+    $bname = $tok[$p + 2]
+    $q = $p + 3
+    $sargs = [""]
+    $codes = ""
+    $guard = 0
+    tant_que ($q < longueur($tok) et $tok[$q] != ")" et $guard < 100000) {
+      $rv = eval_expr($q, $m, $base, $fi)
+      joindre($sargs, $rv[2])
+      $tv = vtag($rv[2])
+      si ($tv == "n") { $codes = $codes + "n" } sinon { $codes = $codes + sous_chaine(val_type($rv[2]), 0, 1) }
+      $q = entier($rv[1])
+      $guard = $guard + 1
+    }
+    joindre($res, chaine($q + 1))
+    $arity = longueur($sargs) - 1
+    $cand = $bname + "@" + chaine($arity)
+    $sel = ""
+    $fi2 = find_fn($cand + "@" + $codes)
+    si ($fi2 > 0) { $sel = $cand + "@" + $codes }
+    si ($sel == "") {
+      $fi2 = find_fn($cand)
+      si ($fi2 > 0) { $sel = $cand }
+    }
+    si ($sel == "") { $sel = $bname }
+    $pr = call_fn($m, $sel, $sargs)
+    joindre($res, $pr[1])
+    retour $res
+  }
   si ($h == "v") { joindre($res, chaine($p + 4)); joindre($res, read_var($m, $base, $fi, $tok[$p + 2])); retour $res }
   si ($h == "bin" ou $h == "binaire") {
     $op = $tok[$p + 2]
@@ -1028,6 +1083,17 @@ fn eval_expr($p: entier, $m: liste<chaine>, $base: entier, $fi: entier) -> liste
   si ($h == "app" ou $h == "appel_rir" ou $h == "appel") {
     $name = $tok[$p + 2]
     $q = $p + 3
+    # CORR6 — calleur dynamique : `(appel_rir (v fn) args...)` ou
+    # `(appel_rir (fn carre) args...)`. Le token après l'en-tête est alors une
+    # expression (il commence par '(') et non un nom de fonction. On l'évalue
+    # puis on extrait le nom de la valeur `n:<nom>` ; la voie statique
+    # `(appel_rir carre (v y))` reste inchangée (aucun dump existant ne bouge).
+    si ($name == "(") {
+      $cr = eval_expr($p + 2, $m, $base, $fi)
+      $cv = $cr[2]
+      $q = entier($cr[1])
+      si (vtag($cv) == "n") { $name = vpay($cv) } sinon { $name = "" }
+    }
     $args = [""]
     $guard = 0
     tant_que ($q < longueur($tok) et $tok[$q] != ")" et $guard < 100000) {
