@@ -212,7 +212,12 @@ for prog in "$TESTDIR"/*.rose; do
   md5n="$(md5 "$base.nat")"; md5s="$(md5 "$base.self")"
   err=0; note=""
   if [[ $rcn -ne 0 && $rcs -ne 0 ]]; then
-    classe=BLOQUE; bloque=$((bloque+1)); note="refus_des_deux(rc=$rcn/$rcs)"
+    # Deux refus : conformes si rc, stdout ET stderr sont identiques.
+    if [[ $rcn -eq $rcs ]] && cmp -s "$base.nat" "$base.self" && cmp -s "$base.nat.err" "$base.self.err"; then
+      classe=CONFORME; conforme=$((conforme+1)); note="refus_identique(rc=$rcn)"
+    else
+      classe=BLOQUE; bloque=$((bloque+1)); note="refus_des_deux(rc=$rcn/$rcs)"
+    fi
   elif [[ $rcn -ne 0 && $rcs -eq 0 ]]; then
     classe=DIVERGENT; divergent=$((divergent+1)); note="rust_refuse(rc=$rcn)"
   elif [[ $rcn -eq 0 && $rcs -ne 0 ]]; then
