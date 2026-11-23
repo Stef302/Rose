@@ -1,0 +1,109 @@
+# test_jit_g5.rose — J4 : JIT SANS RUST, démonstration « AOT à la volée ».
+#
+# Ce programme TOURNE dans un ELF aarch64 produit par C0
+# (compilateur/emetteur_elf.rose), donc avec le SEUL runtime G5 — aucun
+# jit.rs / Cranelift n'est impliqué dans l'exécution du code généré.
+#
+# Mécanisme :
+#   1. mmap(0, 4096, RW, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) : page de travail
+#      (preuve que le syscall 222 est réellement émis et exécuté) ;
+#   2. mprotect(page, 4096, PROT_READ|PROT_EXEC) : bascule W^X (syscall 226) ;
+#   3. construction OCTET PAR OCTET, en Rose, d'un petit ELF aarch64 dont le
+#      code machine calcule fib(10) (itératif), convertit le résultat en
+#      décimal et l'écrit sur stdout ;
+#   4. écriture de cet ELF dans /tmp, fchmodat 0755 (syscall 53 ; aarch64
+#      n'a pas de syscall chmod), puis execve (syscall 221) : l'image du
+#      processus est remplacée par le code
+#      généré à la volée, qui affiche « 55 ».
+#
+# Les quatre fonctions fictives ci-dessous existent UNIQUEMENT pour que le
+# front-end Rose accepte les appels : le backend G5 intercepte leur nom AVANT
+# la recherche de fonction utilisateur et leur substitue la routine syscall.
+
+fn mmap($addr: entier, $len: entier, $prot: entier, $flags: entier, $fd: entier, $off: entier) -> entier {
+  retour 0
+}
+fn mprotect($addr: entier, $len: entier, $prot: entier) -> entier {
+  retour 0
+}
+fn chmod($chemin: chaine, $mode: entier) -> entier {
+  retour 0
+}
+fn execve($chemin: chaine) -> entier {
+  retour 0
+}
+
+# Même motif que emetteur_elf.rose : le nom `octet_brut` est intercepté par
+# le dispatch G5 avant la recherche de fonction, la définition Rust sert
+# seulement à faire accepter l'appel par le front-end.
+fn octet_brut($v: entier) -> chaine {
+  retour caractere($v % 256)
+}
+
+fn u16le($v: entier) -> chaine {
+  retour octet_brut($v % 256) + octet_brut(($v div 256) % 256)
+}
+fn u32le($v: entier) -> chaine {
+  retour u16le($v % 65536) + u16le(($v div 65536) % 65536)
+}
+fn u64le($v: entier) -> chaine {
+  retour u32le($v % 4294967296) + u32le($v div 4294967296)
+}
+fn zeros($n: entier) -> chaine {
+  $s = ""
+  $i = 0
+  tant_que ($i < $n) {
+    $s = $s + octet_brut(0)
+    $i = $i + 1
+  }
+  retour $s
+}
+
+# Les 33 mots du code machine (assemblé une fois avec `as` puis figé ici).
+# fib(10) itératif -> conversion décimale -> write(1,buf,len) -> exit(0).
+# Les sauts sont relatifs : le code est position-indépendant.
+$mots = [3531604288, 3531603969, 3531604002, 2332164131, 2852258785, 2852324322, 3506439168, 3053453184, 2852193257, 3531604298, 2432697323, 3506471275, 3531603980, 2596931885, 2601166254, 2432745934, 3506439531, 956301678, 2432697740, 2852979689, 3053453097, 2332819822, 3531604303, 956301775, 2432697740, 3531604000, 2852848609, 2852914146, 3531606024, 3556769793, 3531603968, 3531606952, 3556769793]
+
+$chemin = "/tmp/j4_jit_fib10.elf"
+$base = 4194304              # 0x400000
+$codeoff = 120               # 0x78
+$entree = $base + $codeoff
+
+# 1+2. mmap puis mprotect : preuves d'exécution des syscalls 222 et 226.
+$page = mmap(0, 4096, 3, 34, -1, 0)
+si ($page <= 0) {
+  ecrire_bytes("/dev/stdout", "J4 ECHEC mmap\n")
+  quitter(3)
+}
+$prot = mprotect($page, 4096, 5)   # PROT_READ|PROT_EXEC = 5
+si ($prot != 0) {
+  ecrire_bytes("/dev/stdout", "J4 ECHEC mprotect\n")
+  quitter(4)
+}
+
+# 3. ELF machine minimal : ELF64 LSB, ET_EXEC, EM_AARCH64, un PT_LOAD RX.
+$code = ""
+$j = 0
+tant_que ($j < longueur($mots)) {
+  $code = $code + u32le($mots[$j])
+  $j = $j + 1
+}
+# `longueur` compte les POINTS DE CODE UTF-8 sous G5, pas les octets : les
+# octets >= 0x80 du code machine (0x8b, 0xaa, 0xd2…) fausseraient le compte.
+# La taille réelle d'un mot u32le est fixée à 4 octets.
+$taille = $codeoff + 4 * longueur($mots)
+
+$h = octet_brut(127) + "ELF" + octet_brut(2) + octet_brut(1) + octet_brut(1) + zeros(9)
+$h = $h + u16le(2) + u16le(183) + u32le(1)
+$h = $h + u64le($entree) + u64le(64) + u64le(0)
+$h = $h + u32le(0) + u16le(64) + u16le(56) + u16le(1) + u16le(0) + u16le(0) + u16le(0)
+$ph = u32le(1) + u32le(5) + u64le(0) + u64le($base) + u64le($base) + u64le($taille) + u64le($taille) + u64le(4096)
+$elf = $h + $ph + zeros($codeoff - 64 - 56) + $code
+
+ecrire_bytes($chemin, $elf)
+chmod($chemin, 493)            # 0755
+execve($chemin)                # remplace le processus ; ne revient pas
+
+# Atteint seulement si execve a échoué.
+ecrire_bytes("/dev/stdout", "J4 ECHEC execve\n")
+quitter(5)

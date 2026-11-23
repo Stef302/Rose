@@ -5005,6 +5005,16 @@ $g5_plist_l = 0
 $g5_lire_l = 0
 $g5_ecrire_l = 0
 
+# ── J4 : syscalls mmap(222), mprotect(226), fchmodat(53), execve(221) ──
+# Nouvelles routines G5 émises dans l'ELF (aucune modification des routines
+# mémoire / idx / octet_brut existantes). Untag des arguments entiers (n<<3),
+# syscall via svc #0, retag du résultat (x0<<3). execve ne revient pas en
+# cas de succès ; en cas d'échec il rend -errno tagué.
+$g5_mmap_l = 0
+$g5_mprotect_l = 0
+$g5_chmod_l = 0
+$g5_execve_l = 0
+
 fn g5_load($rd: entier, $v: entier) -> entier {
   # SH10 : les anciennes bornes ±2^63/2^64 ne sont PAS représentables dans
   # l'ABI G5 (61 bits utiles) : sous l'émetteur auto-exécuté elles devenaient
@@ -6153,6 +6163,14 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       si ($nom == "argument") { $lbl = $g5_argument_l }
       si ($nom == "lire_texte") { $lbl = $g5_lire_l }
       si ($nom == "ecrire_bytes" ou $nom == "ecrire_texte") { $lbl = $g5_ecrire_l }
+      # J4 : syscalls mmap / mprotect / chmod / execve. Ces tests PRÉCÈDENT
+      # la recherche de fonction utilisateur : un `fn mmap` factice dans la
+      # source sert uniquement à faire accepter l'appel par le front-end,
+      # l'appel G5 atterrit bien sur la routine syscall.
+      si ($nom == "mmap") { $lbl = $g5_mmap_l }
+      si ($nom == "mprotect") { $lbl = $g5_mprotect_l }
+      si ($nom == "chmod") { $lbl = $g5_chmod_l }
+      si ($nom == "execve") { $lbl = $g5_execve_l }
       # G5 n'a pas de flottants. flottant(s) sert surtout a vers_flottant()
       # qui reserialize les litteraux : le parser decimal suffit (les
       # flottants du dump de emetteur.rose sont a valeur entiere).
@@ -8492,6 +8510,109 @@ fn g5_emit_ecrire($lbl: entier) -> entier {
   retour 0
 }
 
+# ── J4 : routines G5 des syscalls mmap / mprotect / chmod / execve ──
+# ABI Rose : tous les arguments entiers arrivent TAGUÉS (n<<3) ; on les
+# désétiquette avec asr #3 avant le syscall, et on retague x0 avec lsl #3.
+# Les chaînes arrivent sous forme de descripteur [tag=1][len][octets…].
+# Le tampon de chemin RW 0x60000020 (480 o) est réutilisé pour fchmodat/execve,
+# exactement comme g5_emit_lire le fait pour openat. Le tableau argv/envp
+# est posé dans le trou RW libre 0x60005000..0x60008000 (les globales G5
+# s'arrêtent à 0x60005000).
+
+# mmap(addr, len, prot, flags, fd, off) -> adresse taguée, ou -errno tagué.
+fn g5_emit_mmap($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0))
+  g5_emit(g5_asr3(1, 1))
+  g5_emit(g5_asr3(2, 2))
+  g5_emit(g5_asr3(3, 3))
+  g5_emit(g5_asr3(4, 4))
+  g5_emit(g5_asr3(5, 5))
+  g5_emit(movz(8, 222))
+  g5_emit(SVC_I())
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# mprotect(addr, len, prot) -> 0 tagué, ou -errno tagué.
+fn g5_emit_mprotect($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_asr3(0, 0))
+  g5_emit(g5_asr3(1, 1))
+  g5_emit(g5_asr3(2, 2))
+  g5_emit(movz(8, 226))
+  g5_emit(SVC_I())
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# chmod(chemin, mode) -> 0 tagué, ou -errno tagué.
+# $lbl+1 = copie du chemin, $lbl+2 = NUL terminal.
+fn g5_emit_chmod($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_masktag(9, 0))          # x9 = descripteur chaîne
+  g5_emit(ldroff(7, 9, 8))           # x7 = longueur
+  g5_load(6, 1610612768)             # x6 = 0x60000020 (tampon chemin)
+  g5_emit(movz(2, 0))
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(2, 7))
+  g5_branch(110, $lbl + 2)
+  g5_emit(addi(3, 2, 16))
+  g5_emit(ldrbr(4, 9, 3))
+  g5_emit(strbr(4, 6, 2))
+  g5_emit(addi(2, 2, 1))
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(movz(5, 0))
+  g5_emit(strbr(5, 6, 2))            # NUL terminal
+  g5_emit(g5_asr3(2, 1))             # x2 = mode brut
+  g5_load(0, -100)                   # x0 = AT_FDCWD
+  g5_load(1, 1610612768)             # x1 = chemin NUL-terminé
+  g5_emit(movz(3, 0))                # x3 = flags = 0
+  # aarch64 n'a PAS de syscall chmod : asm-generic fournit fchmodat=53
+  # (fchmod=52). `chmod` est le nom Rose, fchmodat l'appel noyau réel.
+  g5_emit(movz(8, 53))
+  g5_emit(SVC_I())
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# execve(chemin) -> ne revient PAS en cas de succès ; -errno tagué sinon.
+# argv[0] = chemin, argv[1] = NULL ; envp[0] = NULL (environnement vide).
+fn g5_emit_execve($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_masktag(9, 0))
+  g5_emit(ldroff(7, 9, 8))
+  g5_load(6, 1610612768)             # x6 = 0x60000020 (tampon chemin)
+  g5_emit(movz(2, 0))
+  g5_mark($lbl + 1)
+  g5_emit(cmpr(2, 7))
+  g5_branch(110, $lbl + 2)
+  g5_emit(addi(3, 2, 16))
+  g5_emit(ldrbr(4, 9, 3))
+  g5_emit(strbr(4, 6, 2))
+  g5_emit(addi(2, 2, 1))
+  g5_branch(0, $lbl + 1)
+  g5_mark($lbl + 2)
+  g5_emit(movz(5, 0))
+  g5_emit(strbr(5, 6, 2))            # NUL terminal
+  g5_load(3, 1610633216)             # x3 = 0x60005000 (argv)
+  g5_emit(stroff(6, 3, 0))           # argv[0] = chemin
+  g5_emit(stroff(5, 3, 8))           # argv[1] = NULL
+  g5_emit(stroff(5, 3, 16))          # envp[0] = NULL
+  g5_emit(orrr(0, 31, 6))            # x0 = chemin
+  g5_emit(orrr(1, 31, 3))            # x1 = argv
+  g5_emit(addi(2, 3, 16))            # x2 = envp
+  g5_emit(movz(8, 221))
+  g5_emit(SVC_I())
+  g5_emit(g5_lsl3(0, 0))             # -errno si échec
+  g5_emit(RET_I())
+  retour 0
+}
+
 fn g5_patch() -> liste<entier> {
   $out = [0 : entier]
   $i = 0
@@ -8684,6 +8805,15 @@ tant_que ($k < 12) { g5_next(); $k = $k + 1 }
 $g5_ecrire_l = g5_next()
 $k = 0
 tant_que ($k < 8) { g5_next(); $k = $k + 1 }
+# J4 : mmap (1 label), mprotect (1), chmod (3 : +1/+2), execve (3 : +1/+2).
+$g5_mmap_l = g5_next()
+$g5_mprotect_l = g5_next()
+$g5_chmod_l = g5_next()
+$k = 0
+tant_que ($k < 2) { g5_next(); $k = $k + 1 }
+$g5_execve_l = g5_next()
+$k = 0
+tant_que ($k < 2) { g5_next(); $k = $k + 1 }
 $exitl = g5_next()
 # SH7 : une étiquette par routine C0 ; aucune n'utilise de label interne
 # ($lbl+N), donc aucune réservation supplémentaire n'est nécessaire.
@@ -8763,6 +8893,10 @@ g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
 g5_emit_ecrire($g5_ecrire_l)
+g5_emit_mmap($g5_mmap_l)
+g5_emit_mprotect($g5_mprotect_l)
+g5_emit_chmod($g5_chmod_l)
+g5_emit_execve($g5_execve_l)
 g5_emit_plist($g5_plist_l)
 g5_emit_print($printl)
 g5_mark($exitl)
