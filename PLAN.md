@@ -1480,3 +1480,11 @@ build-windows-rebuild.sh a la place de cargo build, avec CI et installateurs.
 un chemin --selfhost utilisant C0, (rel2) eliminer les 5 divergences du corpus
 (double definition fn, erreurs E/S non propagees) pour atteindre 138/141, (rel3)
 a definir. Objectif: 100% self-hosting prouve par une release produite sans cargo.
+
+## Vague 99 — 138/141 et cap sur 141/141
+
+Corpus self-host: 138 CONFORMES / 0 DIVERGENT / 3 BLOQUES, 0 erreur Rose, RC=0
+(harnais verifier_parite_selfhost.sh, TSV horodate). Les 3 BLOQUES sont des refus
+des deux moteurs mais le self-host perd le message stderr.
+Agent diag_msg lance pour ecrire les 3 diagnostics exacts sur stderr, objectif 141/141.
+Release --selfhost disponible (ELF 1,9 Mo, 12/12 tests) mais 5 exe Windows non couverts.
