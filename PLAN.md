@@ -1412,3 +1412,13 @@ JIT 25/25, AZ 31/31, Thorn 17/17. HEAD local=distant 280a6eb.
 Reste pour le remplacement COMPLET de cargo (J6.1–J6.7): 11 postes chiffrés,
 ~1,17% du moteur Rust porté (875/74771 lignes), estimation 18–36 mois-homme
 (planification, non mesurée). Le produit distribué dépend encore de cargo.
+
+## Vague 93 — HORDE self-hosting : 11 agents sur les 11 postes restants
+
+Objectif: A–Z en Rose. 18 worktrees isoles (11 nouveaux horde_*), 11 agents:
+valeurs, GC, CLI, REPL, lecteur source, bigint, Unicode, tables, FFI, chaines,
+assemblage final. Chacun possede ses propres fichiers dans compilateur/ et doit
+livrer un ELF C0 + tests comparant la sortie au moteur Rust.
+
+Regle: pas d'estimation « mois-homme » comme excuse — preuves d'execution ou
+cause machine exacte. Integration hunks par hunks avec validation_finale 0 echec.
