@@ -50,6 +50,7 @@ mkdir -p "$OUT" || exit 1
 # ── Composition déterministe (lecture seule des modules) ──────────────
 python3 - "$ROOT" "$DEST" <<'PYEOF'
 import pathlib, re, sys
+from pathlib import Path
 
 root = pathlib.Path(sys.argv[1])
 dest = pathlib.Path(sys.argv[2])
@@ -161,28 +162,7 @@ for nom in MODULES + OPTIONNELS:
         txt = extraire_fonctions(txt, 'cli_', ('cli_rir_du',))
     morceaux.append('# ── module : ' + nom + ' ──\n' + txt.rstrip() + '\n')
 
-pilote = '''
-# ══════════════════ POINT D'ENTRÉE UNIQUE ══════════════════
-# lit une source, la vérifie, la compile en RIR, exécute le RIR et affiche
-# le résultat. Tout est en Rose : aucun moteur externe n'est sollicité.
-si (nb_arguments() < 1) {
-  afficher_erreur("usage : moteur_complet SOURCE.rose")
-  quitter(2)
-}
-$mc_chemin = argument(0)
-$mc_res = lsrc_lire_programme($mc_chemin)
-si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-  >> sous_chaine($mc_res, 3, longueur($mc_res))
-  quitter(1)
-}
-$mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
-parse_rir($mc_rir)
-$mc_mem = [""]
-$mc_i = 1
-tant_que ($mc_i < longueur($glob_nom)) { joindre($mc_mem, "v:"); $mc_i = $mc_i + 1 }
-$mc_args = [""]
-$mc_final = call_fn($mc_mem, "$principal", $mc_args)
-'''
+pilote = Path('/tmp/opencode/point_entree_complet.txt').read_text(encoding='utf-8')
 
 head = '\n'.join([
     '# moteur_complet.rose — assemblage J6.7 (GÉNÉRÉ, ne pas éditer à la main).',
