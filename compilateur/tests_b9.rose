@@ -1,0 +1,131 @@
+# tests_b9.rose — banc de conformité du POINT 9 (branchement des modules
+# self-hostés dans call_prim / tok_line de l'interpréteur RIR).
+#
+# Se CONCATÈNE avec les quatre modules ET l'interpréteur (Rose n'a pas
+# d'instruction include) :
+#   { cat compilateur/interpreteur_rir.rose compilateur/bigint_rose.rose
+#     compilateur/tables_rose.rose compilateur/chaine_rose.rose
+#     compilateur/unicode_rose.rose compilateur/tests_b9.rose ; } > /tmp/t9.rose
+#   ROSE_SANS_JIT=1 rose /tmp/t9.rose          # oracle moteur Rust
+#   C0 /tmp/t9.rose > /tmp/t9.elf && ./t9.elf  # émetteur auto-hébergé
+#
+# Le banc ne mesure AUCUN temps : il prouve l'égalité de résultat entre
+# l'ancienne implémentation « liste plate » et l'appel au module composé.
+# Discipline G5 : pas de global mutée depuis une fn, pas de `[]` vide,
+# pas de paramètre nommé `i`.
+
+$pass9 = [0]
+$fail9 = [0]
+
+$noms_fail9 = [""]
+
+fn verif9($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { joindre($pass9, 1); retour 1 }
+  joindre($fail9, 1)
+  joindre($noms_fail9, $nom + " att=[" + $attendu + "] obt=[" + $obtenu + "]")
+  afficher_erreur("ECHEC B9 " + $nom + " : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+# ── 1. unicode_rose : parité avec les primitives natives ────────────────────
+
+fn t9_unicode() -> entier {
+  $n = 0
+  $n = $n + verif9("u_longueur ascii", chaine(longueur("abcdef")), chaine(u_longueur("abcdef")))
+  $n = $n + verif9("u_longueur latin1", chaine(longueur("été")), chaine(u_longueur("été")))
+  $n = $n + verif9("u_longueur cjk", chaine(longueur("日本語")), chaine(u_longueur("日本語")))
+  $n = $n + verif9("u_longueur astral", chaine(longueur("🦄𝄞")), chaine(u_longueur("🦄𝄞")))
+  $n = $n + verif9("u_sous ascii", sous_chaine("abcdef", 2, 5), u_sous("abcdef", 2, 5))
+  $n = $n + verif9("u_sous unicode", sous_chaine("aébéc", 1, 4), u_sous("aébéc", 1, 4))
+  $n = $n + verif9("u_sous borne", sous_chaine("abc", 1, 99), u_sous("abc", 1, 99))
+  $n = $n + verif9("u_ordre a", chaine(ordre("a")), chaine(u_ordre("a")))
+  $n = $n + verif9("u_ordre é", chaine(ordre("é")), chaine(u_ordre("é")))
+  $n = $n + verif9("u_caractere 233", caractere(233), u_caractere(233))
+  $n = $n + verif9("u_caractere 26085", caractere(26085), u_caractere(26085))
+  retour $n
+}
+
+# ── 2. bigint_rose : adaptateur décimal <-> limbs base 10^9 ─────────────────
+
+fn t9_bi_texte($s: chaine) -> chaine { retour bi_texte(bi_depuis_chaine($s)) }
+
+fn t9_bigint() -> entier {
+  $n = 0
+  $n = $n + verif9("bi roundtrip zero", "0", t9_bi_texte("0"))
+  $n = $n + verif9("bi roundtrip positif", "12345678901234567890", t9_bi_texte("12345678901234567890"))
+  $n = $n + verif9("bi roundtrip negatif", "-98765432109876543210", t9_bi_texte("-98765432109876543210"))
+  $n = $n + verif9("bi roundtrip zero signe", "0", t9_bi_texte("-0000"))
+  # pgcd : bgcd (plat) vs bi_gcd (module) — mêmes valeurs, y compris négatifs
+  $n = $n + verif9("bi pgcd simple", bgcd("1071", "462"), bi_texte(bi_gcd(bi_depuis_chaine("1071"), bi_depuis_chaine("462"))))
+  $n = $n + verif9("bi pgcd neg", bgcd("-1071", "462"), bi_texte(bi_gcd(bi_depuis_chaine("-1071"), bi_depuis_chaine("462"))))
+  $n = $n + verif9("bi pgcd grand", bgcd("600000000000000000000", "90000000000000000000"), bi_texte(bi_gcd(bi_depuis_chaine("600000000000000000000"), bi_depuis_chaine("90000000000000000000"))))
+  # puissance : bpow (plat) vs bi_pow (module)
+  $n = $n + verif9("bi pow 0", bpow("123", 0), bi_texte(bi_pow(bi_depuis_chaine("123"), 0)))
+  $n = $n + verif9("bi pow 1", bpow("123", 1), bi_texte(bi_pow(bi_depuis_chaine("123"), 1)))
+  $n = $n + verif9("bi pow 17", bpow("123", 17), bi_texte(bi_pow(bi_depuis_chaine("123"), 17)))
+  $n = $n + verif9("bi pow neg base", bpow("-7", 13), bi_texte(bi_pow(bi_depuis_chaine("-7"), 13)))
+  $n = $n + verif9("bi pow grand", bpow("2", 100), bi_texte(bi_pow(bi_depuis_chaine("2"), 100)))
+  retour $n
+}
+
+# ── 3. chaine_rose : rope utilisé par tok_line / concatener ─────────────────
+
+fn t9_concat_rope($l: liste<chaine>) -> chaine {
+  $k = longueur($l) - 1
+  $ar = cr_creer()
+  $rac = 0
+  $j = 1
+  tant_que ($j <= $k) {
+    $ar = cr_feuille($ar, $l[$j])
+    $feuille = cr_racine($ar)
+    si ($rac == 0) { $rac = $feuille }
+    sinon { $ar = cr_concat($ar, $rac, $feuille); $rac = cr_racine($ar) }
+    $j = $j + 1
+  }
+  retour cr_tranche($ar, 0, cr_longueur($ar))
+}
+
+fn t9_chaine() -> entier {
+  $n = 0
+  $n = $n + verif9("cr concat simple", "abcdef", t9_concat_rope(["", "ab", "cd", "ef"]))
+  $n = $n + verif9("cr concat unicode", "aébé🦄", t9_concat_rope(["", "aé", "bé", "🦄"]))
+  $n = $n + verif9("cr concat vide", "", t9_concat_rope([""]))
+  $n = $n + verif9("cr concat un", "seul", t9_concat_rope(["", "seul"]))
+  # parité avec la concaténation plate de référence
+  $plat = ""
+  $l = ["", "rose", " ", "self", "-", "hosté"]
+  $j = 1
+  tant_que ($j < longueur($l)) { $plat = $plat + $l[$j]; $j = $j + 1 }
+  $n = $n + verif9("cr concat parite plat", $plat, t9_concat_rope($l))
+  retour $n
+}
+
+# ── 4. tables_rose : API incompatible → repli exact documenté ───────────────
+# tab_set/tab_has (liste plate sérialisée) restent la voie call_prim.
+# On vérifie au moins que le remplacement de clé (correctif RIR) tient.
+
+fn t9_tables() -> entier {
+  $n = 0
+  $t = tab_empty()
+  $t = tab_set($t, "a", vi("1"))
+  $t = tab_set($t, "b", vi("2"))
+  $t = tab_set($t, "a", vi("9"))
+  $n = $n + verif9("tab remplace clé", "9", val_str(tab_get($t, "a")))
+  $n = $n + verif9("tab clé intacte", "2", val_str(tab_get($t, "b")))
+  $ha = "faux"
+  si (tab_has($t, "a")) { $ha = "vrai" }
+  $hz = "vrai"
+  si (non tab_has($t, "zz")) { $hz = "faux" }
+  $n = $n + verif9("tab cle_existe", "vrai", $ha)
+  $n = $n + verif9("tab cle_absente", "faux", $hz)
+  retour $n
+}
+
+$t9u = t9_unicode()
+$t9b = t9_bigint()
+$t9c = t9_chaine()
+$t9t = t9_tables()
+>> "TESTS B9 : " + chaine(longueur($pass9) - 1) + " OK, " + chaine(longueur($fail9) - 1) + " ECHEC"
+$jf = 1
+tant_que ($jf < longueur($noms_fail9)) { >> "  " + $noms_fail9[$jf]; $jf = $jf + 1 }
+si (longueur($fail9) > 1) { quitter(1) }
