@@ -1422,3 +1422,23 @@ livrer un ELF C0 + tests comparant la sortie au moteur Rust.
 
 Regle: pas d'estimation « mois-homme » comme excuse — preuves d'execution ou
 cause machine exacte. Integration hunks par hunks avec validation_finale 0 echec.
+
+## Vague 94 — BILAN HORDE : 13 modules self-hostés intégrés
+
+Tous livrés avec ELF C0 + preuves et intégrés avec validation_finale 0 échec:
+J1 verif (219/219), J2 PE natif (25/25), J3 interpréteur RIR (157/158),
+J4 JIT syscalls, J5 WASM/BC octet-identiques, J6 moteur 20 ops,
+Horde FFI (23/23 commandes via CLI), Unicode (80 cas), Valeurs (7 tags),
+REPL (32 assertions), Chaîne (151980 concat), GC (1M allocs 3,4 Mo),
+Tables (66 visites), Bigint (120 cas), Source (134/141), Integ (moteur 10001 l,
+ELF 1,4 Mo, 19/20 sources, >>6*7=42).
+
+VALIDATION FINALE: 0 échec, point fixe b3ed9262 x2, C0=C1=C2 (9fbd21d2),
+AOT 75/75, JIT 25/25, AZ 31/31, Thorn 17/17. HEAD local=distant 3c8327a.
+
+Reste pour parité TOTALE sans cargo (documenté HORDE_INTEGRATION.md §10):
+constantes >2^60 tronquées, rationnels négatifs, flottants, aliases type/prng,
+collision argument(0), formes RIR non exécutées; modules composés mais non
+branchés dans call_prim (GC/bigint/tables/chaine/unicode/CLI/REPL); pas de
+JIT Cranelift dans l'ELF (seulement JIT à la volée J4). Le binaire distribué
+utilise encore cargo pour le moteur complet.
