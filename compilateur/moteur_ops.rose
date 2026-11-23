@@ -1,0 +1,650 @@
+# moteur_ops.rose — J6 : opérations du moteur Rose, ÉCRITES EN ROSE.
+#
+# Se concatène avec `compilateur/moteur_valeurs.rose` (voir son en-tête).
+# 20 opérations sur les 7 tags de valeurs, dont l'arithmétique exacte par
+# REPLI DÉCIMAL : au-delà du seuil G5, on ne déborde pas le mot 64 bits, on
+# bascule sur des chiffres décimaux (base 10) et on calcule avec retenues.
+# Le même source rend donc le même résultat sous l'interpréteur Rust (BigInt)
+# et sous l'ELF émis par C0 (ABI G5).
+#
+# ⚠ Aucune variable globale ; aucun `[]` littéral ; `retour [ ... ]` interdit
+# (on passe par un local) ; pas d'affectation par index sur une liste ;
+# paramètres jamais nommés `i` (l'imaginaire en Rose).
+
+
+# ═══ COUCHE D'ACCÈS LOCALE (réplique minimale, noms préfixés o_) ═════════════
+# Rose n'a PAS de module/include : `rose verif compilateur/moteur_ops.rose`
+# seul doit pouvoir réussir. Les accesseurs dont ce fichier a besoin sont
+# donc répliqués ici SOUS DES NOMS DISTINCTS (pas de collision à la
+# concaténation avec moteur_valeurs.rose, qui reste l'API canonique).
+
+fn o_ent(n: entier) -> liste<entier> { $r = [1, n]; retour $r }
+fn o_boo(b: entier) -> liste<entier> {
+  $x = 0
+  si (b != 0) { $x = 1 }
+  $r = [2, $x]
+  retour $r
+}
+fn o_ch(s: chaine) -> liste<entier> {
+  $r = [3]
+  $k = 0
+  $n = longueur(s)
+  tant_que ($k < $n) { joindre($r, ordre(sous_chaine(s, $k, $k + 1))); $k = $k + 1 }
+  retour $r
+}
+fn o_err(code: entier) -> liste<entier> { $r = [7, code]; retour $r }
+fn o_long(v: liste<entier>) -> entier {
+  si (v[0] == 3) { retour longueur(v) - 1 }
+  si (v[0] == 4) { retour longueur(v) - 1 }
+  si (v[0] == 5) { retour (longueur(v) - 1) div 2 }
+  si (v[0] == 6) { retour v[2] }
+  retour 0
+}
+fn o_chcode(v: liste<entier>, k: entier) -> entier { retour v[1 + k] }
+fn o_chcar(v: liste<entier>, k: entier) -> chaine { retour caractere(v[1 + k]) }
+fn o_lstidx(v: liste<entier>, k: entier) -> entier { retour v[1 + k] }
+fn o_tabcle(v: liste<entier>, k: entier) -> entier { retour v[1 + 2 * k] }
+fn o_tabval(v: liste<entier>, k: entier) -> entier { retour v[2 + 2 * k] }
+fn o_bzdep(n: entier) -> liste<entier> {
+  $s = 0
+  $x = n
+  si ($x < 0) { $s = -1; $x = 0 - $x }
+  $cnt = 0
+  $y = $x
+  tant_que ($y > 0) { $cnt = $cnt + 1; $y = $y div 10 }
+  si ($cnt == 0) { $cnt = 1 }
+  $r = [6, $s, $cnt]
+  $k = 0
+  $y = $x
+  tant_que ($k < $cnt) { joindre($r, $y % 10); $y = $y div 10; $k = $k + 1 }
+  retour $r
+}
+fn o_bzvers(v: liste<entier>) -> entier {
+  $cnt = v[2]
+  $x = 0
+  $p = 1
+  $k = 0
+  tant_que ($k < $cnt) { $x = $x + v[3 + $k] * $p; $p = $p * 10; $k = $k + 1 }
+  si (v[1] < 0) { $x = 0 - $x }
+  retour $x
+}
+fn o_bztexte(v: liste<entier>) -> chaine {
+  $cnt = v[2]
+  $s = ""
+  $k = $cnt - 1
+  $debute = 0
+  tant_que ($k >= 0) {
+    $d = v[3 + $k]
+    si ($debute == 1 ou $d > 0) { $s = $s + caractere(48 + $d); $debute = 1 }
+    $k = $k - 1
+  }
+  si ($s == "") { $s = "0" }
+  si (v[1] < 0) { $s = "-" + $s }
+  retour $s
+}
+
+# ── Seuils de repli ───────────────────────────────────────────────────────────
+# 1e9 : les sommes tiennent dans 2e9, les produits dans 1e18 < 2^60 (limite
+# de l'immédiat tagué G5 `n<<3`). Au-dessus : bigz décimal.
+
+# ═══ COUCHE BIGZ (entiers exacts multi-chiffres) ═══════════════════════════════
+
+fn bz_zero() -> liste<entier> {
+  $r = [6, 0, 1, 0]
+  retour $r
+}
+
+# Nombre de chiffres SIGNIFICATIFS (zéros de tête écartés).
+fn bz_sig(v: liste<entier>) -> entier {
+  $k = v[2] - 1
+  tant_que ($k > 0 et v[3 + $k] == 0) { $k = $k - 1 }
+  retour $k + 1
+}
+
+fn bz_abs(v: liste<entier>) -> liste<entier> {
+  $cnt = v[2]
+  $r = [6, 0, $cnt]
+  $k = 0
+  tant_que ($k < $cnt) { joindre($r, v[3 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn bz_avec_signe(v: liste<entier>, s: entier) -> liste<entier> {
+  $cnt = bz_sig(v)
+  $sg = s
+  si ($cnt == 1 et v[3] == 0) { $sg = 0 }
+  $r = [6, $sg, $cnt]
+  $k = 0
+  tant_que ($k < $cnt) { joindre($r, v[3 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+# Comparaison de MAGNITUDES (-1, 0, 1).
+fn bz_cmp_pos(a: liste<entier>, b: liste<entier>) -> entier {
+  $na = bz_sig(a)
+  $nb = bz_sig(b)
+  $n = $na
+  si ($nb < $n) { $n = $nb }
+  $r = 0
+  $k = $n - 1
+  tant_que ($k >= 0 et $r == 0) {
+    $x = a[3 + $k]
+    $y = b[3 + $k]
+    si ($x > $y) { $r = 1 }
+    si ($x < $y) { $r = -1 }
+    $k = $k - 1
+  }
+  si ($r == 0) {
+    si ($na > $nb) { $r = 1 }
+    si ($na < $nb) { $r = -1 }
+  }
+  retour $r
+}
+
+# Comparaison SIGNÉE (-1, 0, 1).
+fn bz_cmp(a: liste<entier>, b: liste<entier>) -> entier {
+  $sa = a[1]
+  $sb = b[1]
+  si ($sa > $sb) { retour 1 }
+  si ($sa < $sb) { retour -1 }
+  $c = bz_cmp_pos(a, b)
+  si ($sa < 0) { $c = 0 - $c }
+  retour $c
+}
+
+# Addition de magnitudes (chiffres décimaux, retenue).
+fn bz_add_pos(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $na = bz_sig(a)
+  $nb = bz_sig(b)
+  $n = $na
+  si ($nb > $n) { $n = $nb }
+  $tmp = [0]
+  $carry = 0
+  $k = 0
+  tant_que ($k < $n ou $carry > 0) {
+    $x = 0
+    $y = 0
+    si ($k < $na) { $x = a[3 + $k] }
+    si ($k < $nb) { $y = b[3 + $k] }
+    $sm = $x + $y + $carry
+    joindre($tmp, $sm % 10)
+    $carry = $sm div 10
+    $k = $k + 1
+  }
+  $cnt = longueur($tmp) - 1
+  $r = [6, 0, $cnt]
+  $j = 0
+  tant_que ($j < $cnt) { joindre($r, $tmp[1 + $j]); $j = $j + 1 }
+  retour $r
+}
+
+# Soustraction de magnitudes, suppose a >= b (emprunt).
+fn bz_sub_pos(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $na = bz_sig(a)
+  $nb = bz_sig(b)
+  $tmp = [0]
+  $emprunt = 0
+  $k = 0
+  tant_que ($k < $na) {
+    $x = a[3 + $k]
+    $y = 0
+    si ($k < $nb) { $y = b[3 + $k] }
+    $d = $x - $y - $emprunt
+    $emprunt = 0
+    si ($d < 0) { $d = $d + 10; $emprunt = 1 }
+    joindre($tmp, $d)
+    $k = $k + 1
+  }
+  $cnt = longueur($tmp) - 1
+  $r = [6, 0, $cnt]
+  $j = 0
+  tant_que ($j < $cnt) { joindre($r, $tmp[1 + $j]); $j = $j + 1 }
+  retour $r
+}
+
+# Addition signée (repli exact de +).
+fn bz_add(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $sa = a[1]
+  $sb = b[1]
+  $aa = bz_abs(a)
+  $bb = bz_abs(b)
+  si ($sa == $sb) {
+    $r = bz_add_pos($aa, $bb)
+    retour bz_avec_signe($r, $sa)
+  }
+  $c = bz_cmp_pos($aa, $bb)
+  si ($c == 0) { retour bz_zero() }
+  si ($c > 0) {
+    $r = bz_sub_pos($aa, $bb)
+    retour bz_avec_signe($r, $sa)
+  }
+  $r = bz_sub_pos($bb, $aa)
+  retour bz_avec_signe($r, $sb)
+}
+
+fn bz_neg(a: liste<entier>) -> liste<entier> {
+  # Convention : signe 0 = positif OU zéro, -1 = négatif (pas de +1).
+  $ns = -1
+  si (a[1] < 0) { $ns = 0 }
+  $r = bz_avec_signe(a, $ns)
+  retour $r
+}
+
+fn bz_zeroq(v: liste<entier>) -> entier {
+  $r = 0
+  si (bz_sig(v) == 1 et v[3] == 0) { $r = 1 }
+  retour $r
+}
+
+fn bz_odd(v: liste<entier>) -> entier {
+  $r = 0
+  si (v[3] % 2 == 1) { $r = 1 }
+  retour $r
+}
+
+# Division de magnitude par 2. La retenue va du chiffre HAUT vers le bas
+# (10^i / 2 = 5·10^(i-1)) : on parcourt donc du plus significatif au moins
+# significatif, puis on renverse les chiffres du quotient.
+fn bz_div2(v: liste<entier>) -> liste<entier> {
+  $cnt = bz_sig(v)
+  $tmp = [0]
+  $rest = 0
+  $k = $cnt - 1
+  tant_que ($k >= 0) {
+    $cur = $rest * 10 + v[3 + $k]
+    joindre($tmp, $cur div 2)
+    $rest = $cur % 2
+    $k = $k - 1
+  }
+  $n2 = longueur($tmp) - 1
+  $r = [6, 0, $n2]
+  $j = $n2 - 1
+  tant_que ($j >= 0) { joindre($r, $tmp[1 + $j]); $j = $j - 1 }
+  retour $r
+}
+
+# Produit signé par la méthode russe (additions + décalages), exact.
+fn bz_mul(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $sa = a[1]
+  $sb = b[1]
+  $x = bz_abs(a)
+  $y = bz_abs(b)
+  $r = bz_zero()
+  tant_que (bz_zeroq($y) == 0) {
+    si (bz_odd($y) == 1) { $r = bz_add_pos($r, $x) }
+    $x = bz_add_pos($x, $x)
+    $y = bz_div2($y)
+  }
+  $neg = 0
+  si (($sa < 0 et $sb == 0) ou ($sa == 0 et $sb < 0)) { $neg = 1 }
+  $sg = 0
+  si ($neg == 1) { $sg = -1 }
+  $z = bz_avec_signe($r, $sg)
+  retour $z
+}
+
+# Division de magnitude par un petit entier d > 0 : QUOTIENT bigz.
+# (Le reste est calculé à part par bz_rest_small : les listes Rose sont
+# homogènes, on ne peut pas mettre deux bigz dans une même liste.)
+fn bz_div_small(v: liste<entier>, d: entier) -> liste<entier> {
+  $cnt = bz_sig(v)
+  $tmp = [0]
+  $rest = 0
+  $k = $cnt - 1
+  tant_que ($k >= 0) {
+    $x = $rest * 10 + v[3 + $k]
+    $q = $x div d
+    $rest = $x % d
+    joindre($tmp, $q)
+    $k = $k - 1
+  }
+  $n2 = longueur($tmp) - 1
+  $qz = [6, 0, $n2]
+  $j = $n2 - 1
+  tant_que ($j >= 0) { joindre($qz, $tmp[1 + $j]); $j = $j - 1 }
+  retour $qz
+}
+
+# Reste de la division de magnitude par d > 0, rendu comme entier.
+fn bz_rest_small(v: liste<entier>, d: entier) -> entier {
+  $cnt = bz_sig(v)
+  $rest = 0
+  $k = $cnt - 1
+  tant_que ($k >= 0) {
+    $x = $rest * 10 + v[3 + $k]
+    $rest = $x % d
+    $k = $k - 1
+  }
+  retour $rest
+}
+
+# ═══ OPÉRATIONS ENTIÈRES (1..9) ═══════════════════════════════════════════════
+
+fn op_add(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $ta = a[0]
+  $tb = b[0]
+  si ($ta == 1 et $tb == 1) {
+    $x = a[1]
+    $y = b[1]
+    si ($x >= -1000000000 et $x <= 1000000000 et
+        $y >= -1000000000 et $y <= 1000000000) {
+      $r = o_ent($x + $y)
+      retour $r
+    }
+    $r = bz_add(o_bzdep($x), o_bzdep($y))
+    retour $r
+  }
+  si ($ta == 6 et $tb == 6) { $r = bz_add(a, b); retour $r }
+  si ($ta == 1 et $tb == 6) { $r = bz_add(o_bzdep(a[1]), b); retour $r }
+  si ($ta == 6 et $tb == 1) { $r = bz_add(a, o_bzdep(b[1])); retour $r }
+  $e = o_err(1)
+  retour $e
+}
+
+fn op_sub(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  retour op_add(a, bz_neg_si_besoin(b))
+}
+
+# Négation « paresseuse » : un entier devient bigz négatif, un bigz est
+# négé directement (évite de reconvertir un grand nombre).
+fn bz_neg_si_besoin(v: liste<entier>) -> liste<entier> {
+  $r = v
+  si (v[0] == 1) { $r = bz_neg(o_bzdep(v[1])) }
+  si (v[0] == 6) { $r = bz_neg(v) }
+  retour $r
+}
+
+fn op_mul(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $ta = a[0]
+  $tb = b[0]
+  si ($ta == 1 et $tb == 1) {
+    $x = a[1]
+    $y = b[1]
+    si ($x >= -1000000000 et $x <= 1000000000 et
+        $y >= -1000000000 et $y <= 1000000000) {
+      $r = o_ent($x * $y)
+      retour $r
+    }
+    $r = bz_mul(o_bzdep($x), o_bzdep($y))
+    retour $r
+  }
+  si ($ta == 6 et $tb == 6) { $r = bz_mul(a, b); retour $r }
+  si ($ta == 1 et $tb == 6) { $r = bz_mul(o_bzdep(a[1]), b); retour $r }
+  si ($ta == 6 et $tb == 1) { $r = bz_mul(a, o_bzdep(b[1])); retour $r }
+  $e = o_err(3)
+  retour $e
+}
+
+fn op_div(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  # Division FLOOR (comme `div` natif : -1234 div 10 = -124).
+  $tb = b[0]
+  $n = 0
+  si ($tb == 1) { $n = b[1] }
+  si ($tb == 6) { $n = o_bzvers(b) }
+  si ($n == 0) { $e = o_err(4); retour $e }
+  $d = $n
+  si ($d < 0) { $d = 0 - $d }
+  $x = a
+  si (a[0] == 1) { $x = o_bzdep(a[1]) }
+  $abs = bz_abs($x)
+  $q = bz_div_small($abs, $d)
+  $rest = bz_rest_small($abs, $d)
+  $neg = 0
+  si ((a[1] < 0 et $n > 0) ou (a[1] > 0 et $n < 0)) { $neg = 1 }
+  # Signes opposés ET reste non nul : le quotien floor vaut -(q_abs+1).
+  si ($neg == 1 et $rest != 0) { $q = bz_add($q, o_bzdep(1)) }
+  $sg = 0
+  si ($neg == 1) { $sg = -1 }
+  $qs = bz_avec_signe($q, $sg)
+  $qs2 = o_bzvers($qs)
+  si ($qs2 >= -1000000000 et $qs2 <= 1000000000) {
+    $r = o_ent($qs2)
+    retour $r
+  }
+  $r = $qs
+  retour $r
+}
+
+fn op_mod(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  # Reste EUCLIDIEN de la division floor : le signe est CELUI DU DIVISEUR
+  # (-7 % 3 = 2, 7 % -3 = -2, -7 % -3 = -1) — identique au moteur Rust.
+  $tb = b[0]
+  $n = 0
+  si ($tb == 1) { $n = b[1] }
+  si ($tb == 6) { $n = o_bzvers(b) }
+  si ($n == 0) { $e = o_err(5); retour $e }
+  $d = $n
+  si ($d < 0) { $d = 0 - $d }
+  $x = a
+  si (a[0] == 1) { $x = o_bzdep(a[1]) }
+  $abs = bz_abs($x)
+  $rest = bz_rest_small($abs, $d)
+  $neg = 0
+  si ((a[1] < 0 et $n > 0) ou (a[1] > 0 et $n < 0)) { $neg = 1 }
+  si ($neg == 1 et $rest != 0) { $rest = $d - $rest }
+  si ($n < 0) { $rest = 0 - $rest }
+  $r = o_ent($rest)
+  retour $r
+}
+
+fn op_neg(a: liste<entier>) -> liste<entier> {
+  $r = o_err(6)
+  si (a[0] == 1) {
+    $x = a[1]
+    si ($x >= -1000000000 et $x <= 1000000000) { $r = o_ent(0 - $x) }
+    sinon { $r = bz_neg(o_bzdep($x)) }
+  }
+  si (a[0] == 6) { $r = bz_neg(a) }
+  retour $r
+}
+
+fn op_cmp(a: liste<entier>, b: liste<entier>) -> entier {
+  $ta = a[0]
+  $tb = b[0]
+  si ($ta == 3 et $tb == 3) {
+    $na = o_long(a)
+    $nb = o_long(b)
+    $n = $na
+    si ($nb < $n) { $n = $nb }
+    $k = 0
+    tant_que ($k < $n) {
+      $cx = o_chcode(a, $k)
+      $cy = o_chcode(b, $k)
+      si ($cx > $cy) { retour 1 }
+      si ($cx < $cy) { retour -1 }
+      $k = $k + 1
+    }
+    si ($na > $nb) { retour 1 }
+    si ($na < $nb) { retour -1 }
+    retour 0
+  }
+  $x = a
+  $y = b
+  si ($ta == 1) { $x = o_bzdep(a[1]) }
+  si ($tb == 1) { $y = o_bzdep(b[1]) }
+  si ($x[0] != 6 ou $y[0] != 6) { retour 0 }
+  retour bz_cmp($x, $y)
+}
+
+fn op_eq(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $r = 0
+  si (op_cmp(a, b) == 0) { $r = 1 }
+  $z = o_boo($r)
+  retour $z
+}
+
+# Puissance par élévation au carré. Le repli est dans op_mul.
+fn op_pow(a: liste<entier>, e: entier) -> liste<entier> {
+  $base = a
+  $exp = e
+  $r = o_ent(1)
+  tant_que ($exp > 0) {
+    si ($exp % 2 == 1) { $r = op_mul($r, $base) }
+    $base = op_mul($base, $base)
+    $exp = $exp div 2
+  }
+  retour $r
+}
+
+# ═══ OPÉRATIONS CHAÎNE (10..13) ═══════════════════════════════════════════════
+
+fn op_ch_longueur(s: liste<entier>) -> liste<entier> {
+  $r = o_ent(o_long(s))
+  retour $r
+}
+
+fn op_ch_joint(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $s = ""
+  $k = 0
+  tant_que ($k < o_long(a)) { $s = $s + caractere(o_chcode(a, $k)); $k = $k + 1 }
+  $k = 0
+  tant_que ($k < o_long(b)) { $s = $s + caractere(o_chcode(b, $k)); $k = $k + 1 }
+  $r = o_ch($s)
+  retour $r
+}
+
+fn op_ch_idx(s: liste<entier>, k: entier) -> liste<entier> {
+  $c = ""
+  si (k >= 0 et k < o_long(s)) { $c = caractere(o_chcode(s, k)) }
+  $r = o_ch($c)
+  retour $r
+}
+
+fn op_ch_contient(s: liste<entier>, ch: liste<entier>) -> liste<entier> {
+  $trouve = 0
+  $k = 0
+  $n = o_long(s)
+  $m = o_long(ch)
+  tant_que ($k + $m <= $n et $trouve == 0) {
+    $ok = 1
+    $j = 0
+    tant_que ($j < $m) {
+      si (o_chcode(s, $k + $j) != o_chcode(ch, $j)) { $ok = 0 }
+      $j = $j + 1
+    }
+    si ($ok == 1) { $trouve = 1 }
+    $k = $k + 1
+  }
+  $r = o_boo($trouve)
+  retour $r
+}
+
+# ═══ OPÉRATIONS LISTE (14..16) ════════════════════════════════════════════════
+
+fn op_lst_longueur(l: liste<entier>) -> liste<entier> {
+  $r = o_ent(o_long(l))
+  retour $r
+}
+
+# Joindre : on RECONSTRUIT la liste (les listes G5 réallouent, et éviter
+# toute mutation d'un paramètre garantit l'identité native/ELF).
+fn op_lst_joindre(l: liste<entier>, x: liste<entier>) -> liste<entier> {
+  $r = [4]
+  $k = 0
+  tant_que ($k < o_long(l)) { joindre($r, o_lstidx(l, $k)); $k = $k + 1 }
+  $val = 0
+  si (x[0] == 1) { $val = x[1] }
+  # bigz : sentinelle déterministe 0 (liste d'entiers ≤ 1e9)
+  joindre($r, $val)
+  retour $r
+}
+
+fn op_lst_idx(l: liste<entier>, k: entier) -> liste<entier> {
+  $r = o_err(7)
+  si (k >= 0 et k < o_long(l)) { $r = o_ent(o_lstidx(l, k)) }
+  retour $r
+}
+
+# ═══ OPÉRATIONS TABLE (17..19) ════════════════════════════════════════════════
+
+fn op_tab_inserer(t: liste<entier>, cle: liste<entier>, val: liste<entier>) -> liste<entier> {
+  $key = 0
+  si (o_long(cle) > 0) { $key = o_chcode(cle, 0) }
+  $vv = 0
+  si (val[0] == 1) { $vv = val[1] }
+  # Un bigz ne tient pas dans un slot de table G5 (débordement 64 bits) :
+  # on stocke le sentinelle DÉTERMINISTE 0, identique sous Rust et sous G5.
+  # Les tables du moteur J6 portent donc des entiers ≤ 1e9 (documenté).
+  $r = [5]
+  $trouve = 0
+  $k = 0
+  $n = o_long(t)
+  tant_que ($k < $n) {
+    $kc = o_tabcle(t, $k)
+    $st = o_tabval(t, $k)
+    si ($kc == $key) { $st = $vv; $trouve = 1 }
+    joindre($r, $kc)
+    joindre($r, $st)
+    $k = $k + 1
+  }
+  si ($trouve == 0) { joindre($r, $key); joindre($r, $vv) }
+  retour $r
+}
+
+fn op_tab_cle_existe(t: liste<entier>, cle: liste<entier>) -> liste<entier> {
+  $key = 0
+  si (o_long(cle) > 0) { $key = o_chcode(cle, 0) }
+  $trouve = 0
+  $k = 0
+  $n = o_long(t)
+  tant_que ($k < $n) {
+    si (o_tabcle(t, $k) == $key) { $trouve = 1 }
+    $k = $k + 1
+  }
+  $r = o_boo($trouve)
+  retour $r
+}
+
+fn op_tab_idx(t: liste<entier>, cle: liste<entier>) -> liste<entier> {
+  $key = 0
+  si (o_long(cle) > 0) { $key = o_chcode(cle, 0) }
+  $r = o_err(8)
+  $k = 0
+  $n = o_long(t)
+  tant_que ($k < $n) {
+    si (o_tabcle(t, $k) == $key) { $r = o_ent(o_tabval(t, $k)) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ═══ AFFICHAGE (20) ═══════════════════════════════════════════════════════════
+
+fn op_afficher(v: liste<entier>) -> chaine {
+  $t = v[0]
+  $s = ""
+  si ($t == 0) { $s = "" }
+  si ($t == 1) { $s = chaine(v[1]) }
+  si ($t == 2) {
+    $s = "faux"
+    si (v[1] != 0) { $s = "vrai" }
+  }
+  si ($t == 3) {
+    $k = 0
+    tant_que ($k < o_long(v)) { $s = $s + o_chcar(v, $k); $k = $k + 1 }
+  }
+  si ($t == 4) {
+    $s = "["
+    $k = 0
+    tant_que ($k < o_long(v)) {
+      si ($k > 0) { $s = $s + ", " }
+      $s = $s + chaine(o_lstidx(v, $k))
+      $k = $k + 1
+    }
+    $s = $s + "]"
+  }
+  si ($t == 5) {
+    $s = "{"
+    $k = 0
+    $n = o_long(v)
+    tant_que ($k < $n) {
+      si ($k > 0) { $s = $s + ", " }
+      $s = $s + caractere(o_tabcle(v, $k)) + ":" + chaine(o_tabval(v, $k))
+      $k = $k + 1
+    }
+    $s = $s + "}"
+  }
+  si ($t == 6) { $s = o_bztexte(v) }
+  si ($t == 7) { $s = "erreur(" + chaine(v[1]) + ")" }
+  retour $s
+}

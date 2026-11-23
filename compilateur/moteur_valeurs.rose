@@ -1,0 +1,225 @@
+# moteur_valeurs.rose — J6 : représentation des valeurs du moteur Rose, ÉCRITE EN ROSE.
+#
+# Objectif : retirer la dépendance à `rose/src/` (run.rs : Valeur, Liste, Table,
+# ChaineRep ; i128x.rs : Gz/Mpz). Ce fichier définit la couche VALEURS, sous
+# forme de `liste<entier>` plates, dans le sous-ensemble que sait émettre
+# `compilateur/emetteur_elf.rose` (ABI G5 : entiers tagués `n<<3`, chaînes
+# `ptr|1`, listes `ptr|2`, voir rose/docs/G5_ABI_VALEURS.md).
+#
+# ⚠ Rose n'a PAS d'instruction `include`. Ce fichier est donc un MODULE SOURCE :
+# il se concatène avec `compilateur/moteur_ops.rose` puis un pilote, et
+# l'ensemble est compilé par C0 (le compilateur natif auto-hébergé) :
+#
+#   cat compilateur/moteur_valeurs.rose compilateur/moteur_ops.rose pilote.rose \
+#       > /tmp/j6/prog.rose
+#   C0 /tmp/j6/prog.rose > /tmp/j6/prog.elf && ./prog.elf
+#
+# CONVENTIONS DE REPRÉSENTATION (une valeur = une `liste<entier>` plate) :
+#
+#   index 0 = TAG
+#     0 = VIDE        [0]
+#     1 = ENTIER      [1, n]                       n entier (voie rapide ≤ 1e9)
+#     2 = BOOLEEN     [2, 0|1]
+#     3 = CHAINE      [3, c0, c1, ...]             codes de caractères (ASCII)
+#     4 = LISTE       [4, e0, e1, ...]             éléments = entiers
+#     5 = TABLE       [5, c1, v1, c2, v2, ...]     clés = 1 caractère ASCII
+#     6 = BIGZ        [6, signe, cnt, d0..d(cnt-1)] chiffres DÉCIMAUX, poids croissant
+#     7 = ERREUR      [7, code]
+#
+# Le passage ENTIER → BIGZ est le « repli exact » : au-delà du seuil G5, on
+# ne laisse PAS l'arithmétique 64 bits déborder, on bascule sur les chiffres
+# décimaux (moteur_ops.rose). Ainsi le même source rend le même résultat sous
+# l'interpréteur Rust (BigInt exact) et sous l'ELF G5 (entiers 64 bits).
+#
+# DISCIPLINE G5 (de SELF_HOST_SH3 / G5_C0) :
+#   - aucune variable globale au niveau $principal : tout voyage en paramètre ;
+#   - pas de `[]` littéral (vérificateur) : toute liste est rembourrée au moins
+#     à l'index 0 ;
+#   - `retour [ ... ]` est refusé par le front-end Rust : on construit dans un
+#     local `$r` puis `retour $r` ;
+#   - pas d'affectation par index sur une liste (`$r[2] = x` est refusé) ;
+#   - pas de `cles`, `concatener`, `abs`, `min`, `max` : absents/stubs en G5.
+
+# ── Tags ──────────────────────────────────────────────────────────────────────
+
+fn vt_vide() -> entier { retour 0 }
+fn vt_entier() -> entier { retour 1 }
+fn vt_bool() -> entier { retour 2 }
+fn vt_chaine() -> entier { retour 3 }
+fn vt_liste() -> entier { retour 4 }
+fn vt_table() -> entier { retour 5 }
+fn vt_bigz() -> entier { retour 6 }
+fn vt_erreur() -> entier { retour 7 }
+
+# ── Constructeurs ─────────────────────────────────────────────────────────────
+
+fn v_vide() -> liste<entier> {
+  $r = [0]
+  retour $r
+}
+
+fn v_ent(n: entier) -> liste<entier> {
+  $r = [1, n]
+  retour $r
+}
+
+fn v_boo(b: entier) -> liste<entier> {
+  $x = 0
+  si (b != 0) { $x = 1 }
+  $r = [2, $x]
+  retour $r
+}
+
+# Chaîne → codes de caractères. `longueur`/`sous_chaine` comptent en
+# CARACTÈRES (run.rs ChaineRep.n) ; le sous-ensemble G5 est ASCII, donc
+# code = octet. Les textes Unicode restent hors périmètre J6 (documenté).
+fn v_ch(s: chaine) -> liste<entier> {
+  $r = [3]
+  $i = 0
+  $n = longueur(s)
+  tant_que ($i < $n) {
+    joindre($r, ordre(sous_chaine(s, $i, $i + 1)))
+    $i = $i + 1
+  }
+  retour $r
+}
+
+fn v_liste() -> liste<entier> {
+  $r = [4]
+  retour $r
+}
+
+fn v_table() -> liste<entier> {
+  $r = [5]
+  retour $r
+}
+
+# bigz depuis (signe, nombre de chiffres, chiffres déjà construits en [..]).
+# `digits` est une liste dont l'index 0 est ignoré (rembourrage).
+fn v_bigz(signe: entier, cnt: entier, digits: liste<entier>) -> liste<entier> {
+  $r = [6, signe, cnt]
+  $i = 1
+  tant_que ($i <= cnt) {
+    joindre($r, digits[$i])
+    $i = $i + 1
+  }
+  retour $r
+}
+
+fn v_err(code: entier) -> liste<entier> {
+  $r = [7, code]
+  retour $r
+}
+
+# ── Accesseurs ────────────────────────────────────────────────────────────────
+
+fn v_tag(v: liste<entier>) -> entier {
+  retour v[0]
+}
+
+fn v_est(v: liste<entier>, t: entier) -> entier {
+  $r = 0
+  si (v[0] == t) { $r = 1 }
+  retour $r
+}
+
+fn v_ent_val(v: liste<entier>) -> entier {
+  si (v[0] == 1) { retour v[1] }
+  si (v[0] == 2) { retour v[1] }
+  retour 0
+}
+
+fn v_boo_val(v: liste<entier>) -> entier {
+  si (v[1] != 0) { retour 1 }
+  retour 0
+}
+
+# Longueur sémantique : chaîne = nb de codes, liste = nb d'éléments,
+# table = nb de paires (2 slots), bigz = nb de chiffres.
+fn v_longueur(v: liste<entier>) -> entier {
+  si (v[0] == 3) { retour longueur(v) - 1 }
+  si (v[0] == 4) { retour longueur(v) - 1 }
+  si (v[0] == 5) { retour (longueur(v) - 1) div 2 }
+  si (v[0] == 6) { retour v[2] }
+  retour 0
+}
+
+# Code du caractère i d'une chaîne (0 ≤ i < longueur).
+fn v_ch_code(v: liste<entier>, k: entier) -> entier {
+  retour v[1 + k]
+}
+
+fn v_ch_car(v: liste<entier>, k: entier) -> chaine {
+  retour caractere(v[1 + k])
+}
+
+# Élément i d'une liste (0 ≤ i < longueur). Les éléments sont des entiers.
+fn v_liste_idx(v: liste<entier>, k: entier) -> entier {
+  retour v[1 + k]
+}
+
+fn v_big_signe(v: liste<entier>) -> entier { retour v[1] }
+fn v_big_cnt(v: liste<entier>) -> entier { retour v[2] }
+fn v_big_chiffre(v: liste<entier>, k: entier) -> entier { retour v[3 + k] }
+
+# Clef i d'une table (codes ASCII dans un entier : clé = 1 caractère).
+fn v_tab_cle(v: liste<entier>, k: entier) -> entier { retour v[1 + 2 * k] }
+fn v_tab_val(v: liste<entier>, k: entier) -> entier { retour v[2 + 2 * k] }
+
+# ── Conversion entier → bigz (repli exact) ────────────────────────────────────
+
+# Décompose un entier en chiffres décimaux. Seuil ∈ entier (1e9) : sous
+# l'interpréteur, un entier exact quelconque est décomposé sans perte ; sous
+# G5, on n'appelle ceci qu'après un test de débordement explicite.
+fn bz_depuis_entier(n: entier) -> liste<entier> {
+  $s = 0
+  $x = n
+  si ($x < 0) { $s = -1; $x = 0 - $x }
+  $cnt = 0
+  $y = $x
+  tant_que ($y > 0) { $cnt = $cnt + 1; $y = $y div 10 }
+  si ($cnt == 0) { $cnt = 1 }
+  $r = [6, $s, $cnt]
+  $i = 0
+  $y = $x
+  tant_que ($i < $cnt) {
+    joindre($r, $y % 10)
+    $y = $y div 10
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# bigz → entier (uniquement si le bigz tient dans la voie rapide).
+fn bz_vers_entier(v: liste<entier>) -> entier {
+  $cnt = v[2]
+  $x = 0
+  $p = 1
+  $i = 0
+  tant_que ($i < $cnt) {
+    $x = $x + v[3 + $i] * $p
+    $p = $p * 10
+    $i = $i + 1
+  }
+  si (v[1] < 0) { $x = 0 - $x }
+  retour $x
+}
+
+# bigz → chaîne décimale (les zéros de tête sont ignorés).
+fn bz_texte(v: liste<entier>) -> chaine {
+  $cnt = v[2]
+  $s = ""
+  $i = $cnt - 1
+  $debute = 0
+  tant_que ($i >= 0) {
+    $d = v[3 + $i]
+    si ($debute == 1 ou $d > 0) {
+      $s = $s + caractere(48 + $d)
+      $debute = 1
+    }
+    $i = $i - 1
+  }
+  si ($s == "") { $s = "0" }
+  si (v[1] < 0) { $s = "-" + $s }
+  retour $s
+}
