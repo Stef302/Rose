@@ -154,3 +154,21 @@ Commandes de `rose help` **non portées** dans la CLI auto-hébergée :
 Détail de fidélité : les 6 écarts connus du vérificateur Rose vs oracle Rust
 (J1 §4) sont reproduits à l'identique par `verifier_source` : ce ne sont pas
 des régressions de la couche CLI.
+
+## Complément orchestrateur — preuve ELF (23/23)
+
+ELF C0 produit : `/tmp/opencode/cli_rose.elf` (2 332 316 octets, `c0_rc=0`).
+Pilote `/tmp/opencode/horde_cli_pilot.sh` rejoué le 23/11 à 14:18 UTC :
+
+```
+OK    rir-sans-src           rc=1 out=0 err=28
+OK    verif                  rc=0 out=10 err=0
+OK    rir                    rc=0 out=100 err=0
+OK    wasm                   rc=0 fichier=48 o
+OK    bc                     rc=0 fichier=46 o
+OK    comp-elf               rc=0 elf=9184 o md5=9e5147be…
+execution ELF CLI : 42
+=== RESULTAT PILOTE : 23 OK, 0 ECHEC ===
+```
+
+`--help` et `version` rendent les mêmes textes que le binaire Rust 0.1.73.
