@@ -1,0 +1,6 @@
+# ALTERNATIVE — primitive fib(n) du moteur pour fib(35)
+$d = temps()
+$r = fib(35)
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

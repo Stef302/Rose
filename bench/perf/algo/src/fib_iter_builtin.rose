@@ -1,0 +1,6 @@
+# ALTERNATIVE — primitive fib(n) du moteur (algorithme natif rapide) modulo 1e9+7
+$d = temps()
+$r = fib(1000000) % 1000000007
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

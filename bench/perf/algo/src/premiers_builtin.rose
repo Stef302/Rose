@@ -1,0 +1,6 @@
+# ALTERNATIVE — primitive compter_premiers(n) du moteur (crible)
+$d = temps()
+$c = compter_premiers(50000)
+$f = temps()
+>> "RESULT:" + chaine($c)
+>> "INTERNAL_NS:" + chaine($f - $d)

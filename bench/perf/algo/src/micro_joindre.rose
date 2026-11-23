@@ -1,0 +1,8 @@
+$l = [0]
+$d = temps()
+pour i de 1 vers 100001 {
+    joindre($l, i)
+}
+$f = temps()
+>> "RESULT:100000"
+>> "INTERNAL_NS:" + chaine($f - $d)

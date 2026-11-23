@@ -1,0 +1,12 @@
+# ALTERNATIVE — somme 1/k à dénominateur commun explicite : 1 normalisation rationnelle au lieu de 199
+$d = temps()
+$num = 0
+$den = 1
+pour k de 2 vers 201 {
+    $num = $num * k + $den
+    $den = $den * k
+}
+$r = fraction($num, $den)
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

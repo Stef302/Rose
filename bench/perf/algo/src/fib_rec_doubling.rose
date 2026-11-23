@@ -1,0 +1,25 @@
+# ALTERNATIVE — fib(35) par doublement rapide O(log n) au lieu de la récursion naïve O(phi^n)
+fn fibdoubl(n: entier) -> entier {
+    $a = 0
+    $b = 1
+    $p = 1
+    tant_que ($p * 2 <= n) { $p = $p * 2 }
+    tant_que ($p >= 1) {
+        $c = $a * (2 * $b - $a)
+        $d = $a * $a + $b * $b
+        si (n % ($p * 2) >= $p) {
+            $a = $d
+            $b = $c + $d
+        } sinon {
+            $a = $c
+            $b = $d
+        }
+        $p = $p ÷ 2
+    }
+    retour $a
+}
+$d = temps()
+$r = fibdoubl(35)
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

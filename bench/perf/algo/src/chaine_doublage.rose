@@ -1,0 +1,8 @@
+# ALTERNATIVE — chaîne par doublages puis découpe : O(n) copies amorties, une seule allocation finale
+$d = temps()
+$x = "x"
+tant_que (longueur($x) < 20000) { $x = $x + $x }
+$s = sous_chaine($x, 0, 20000)
+$f = temps()
+>> "RESULT:" + chaine(longueur($s))
+>> "INTERNAL_NS:" + chaine($f - $d)

@@ -1,0 +1,6 @@
+# ALTERNATIVE — 3000! par l'algorithme du moteur (crible de facteurs premiers + arbre de produit / NTT)
+$d = temps()
+$r = 3000!
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

@@ -1,0 +1,75 @@
+{
+  "trials": 9,
+  "summary": [
+    {
+      "pair": "int_loop_gauss",
+      "domain": "int_loop",
+      "rose_alt": "int_loop_gauss",
+      "rust_alt": "int_loop_gauss",
+      "rose_base_ms": 0.320975,
+      "rose_alt_ms": 0.002288,
+      "rust_base_ms": 0.517279,
+      "rust_alt_ms": 3.2e-05,
+      "ratio_base": 0.6205065351580095,
+      "ratio_alt": 71.5,
+      "speedup_rose": 140.2862762237762,
+      "speedup_rust": 16164.96875
+    },
+    {
+      "pair": "fib_rec_doubling",
+      "domain": "fib_rec",
+      "rose_alt": "fib_rec_doubling",
+      "rust_alt": "fib_rec_doubling",
+      "rose_base_ms": 11.645843,
+      "rose_alt_ms": 0.002432,
+      "rust_base_ms": 12.527041,
+      "rust_alt_ms": 4.8e-05,
+      "ratio_base": 0.9296563330478442,
+      "ratio_alt": 50.666666666666664,
+      "speedup_rose": 4788.586759868421,
+      "speedup_rust": 260980.02083333334
+    },
+    {
+      "pair": "fib_iter_doubling",
+      "domain": "fib_iter",
+      "rose_alt": "fib_iter_doubling",
+      "rust_alt": "fib_iter_doubling",
+      "rose_base_ms": 1.084797,
+      "rose_alt_ms": 0.003296,
+      "rust_base_ms": 2.059547,
+      "rust_alt_ms": 0.000288,
+      "ratio_base": 0.5267163118880026,
+      "ratio_alt": 11.444444444444445,
+      "speedup_rose": 329.12530339805824,
+      "speedup_rust": 7151.204861111111
+    },
+    {
+      "pair": "premiers_builtin_vs_crible",
+      "domain": "premiers",
+      "rose_alt": "premiers_builtin",
+      "rust_alt": "premiers_crible",
+      "rose_base_ms": 0.900574,
+      "rose_alt_ms": 0.080048,
+      "rust_base_ms": 1.032222,
+      "rust_alt_ms": 0.042752,
+      "ratio_base": 0.8724615441251978,
+      "ratio_alt": 1.8723802395209581,
+      "speedup_rose": 11.250424745152909,
+      "speedup_rust": 24.144414296407184
+    },
+    {
+      "pair": "premiers_crible_vs_crible",
+      "domain": "premiers",
+      "rose_alt": "premiers_crible",
+      "rust_alt": "premiers_crible",
+      "rose_base_ms": 0.900925,
+      "rose_alt_ms": 19.973406,
+      "rust_base_ms": 1.036541,
+      "rust_alt_ms": 0.042288,
+      "ratio_base": 0.8691648473142886,
+      "ratio_alt": 472.3185300794552,
+      "speedup_rose": 0.04510622775104056,
+      "speedup_rust": 24.51146897465002
+    }
+  ]
+}

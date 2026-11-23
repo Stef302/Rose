@@ -1,0 +1,14 @@
+# ALTERNATIVE — table dense indexée au lieu d'une table de hachage pour des clés contiguës 1..3000
+$t = tableau(3001)
+$d = temps()
+pour i de 1 vers 3001 {
+    $t[i] = i * i
+}
+$c = 0
+pour j de 1 vers 3001 {
+    $v = $t[j]
+    si ($v != 0) { $c = $c + 1 }
+}
+$f = temps()
+>> "RESULT:" + chaine($c)
+>> "INTERNAL_NS:" + chaine($f - $d)

@@ -1,0 +1,10 @@
+# ALTERNATIVE — construction amortie O(n) : 20 000 fragments dans une liste puis concatener
+$d = temps()
+$parts = ["x"]
+pour i de 1 vers 20000 {
+    joindre($parts, "x")
+}
+$s = concatener($parts)
+$f = temps()
+>> "RESULT:" + chaine(longueur($s))
+>> "INTERNAL_NS:" + chaine($f - $d)

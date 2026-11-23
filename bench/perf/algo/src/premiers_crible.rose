@@ -1,0 +1,29 @@
+# ALTERNATIVE — crible d'Ératosthène O(n log log n) au lieu de la division par les impairs
+$N = 50000
+$d = temps()
+$crible = tableau($N)
+$k = 2
+tant_que ($k < $N) {
+    $crible[$k] = 1
+    $k = $k + 1
+}
+$p = 2
+tant_que ($p * $p < $N) {
+    si ($crible[$p] == 1) {
+        $m = $p * $p
+        tant_que ($m < $N) {
+            $crible[$m] = 0
+            $m = $m + $p
+        }
+    }
+    $p = $p + 1
+}
+$c = 0
+$k = 2
+tant_que ($k < $N) {
+    $c = $c + $crible[$k]
+    $k = $k + 1
+}
+$f = temps()
+>> "RESULT:" + chaine($c)
+>> "INTERNAL_NS:" + chaine($f - $d)

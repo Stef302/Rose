@@ -1,0 +1,14 @@
+$t = tableau(100001)
+$s = 0
+pour i de 1 vers 100001 {
+    $t[i] = i
+}
+$d = temps()
+pour j de 0 vers 100001 {
+    $v = $t[j]
+    $s = $s + $v
+}
+$f = temps()
+>> "RESULT:5000050000"
+>> "INTERNAL_NS:" + chaine($f - $d)
+>> "CHECK:" + chaine($s)

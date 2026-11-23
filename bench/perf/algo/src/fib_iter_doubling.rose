@@ -1,0 +1,26 @@
+# ALTERNATIVE — F_1000000 mod 1e9+7 par doublement rapide O(log n) au lieu de 10^6 tours
+$M = 1000000007
+fn fibdoublmod(n: entier, m: entier) -> entier {
+    $a = 0
+    $b = 1
+    $p = 1
+    tant_que ($p * 2 <= n) { $p = $p * 2 }
+    tant_que ($p >= 1) {
+        $c = ($a * ((2 * $b - $a + $m) % $m)) % $m
+        $d = ($a * $a + $b * $b) % $m
+        si (n % ($p * 2) >= $p) {
+            $a = $d
+            $b = ($c + $d) % $m
+        } sinon {
+            $a = $c
+            $b = $d
+        }
+        $p = $p ÷ 2
+    }
+    retour $a
+}
+$d = temps()
+$r = fibdoublmod(1000000, $M)
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

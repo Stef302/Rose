@@ -1,0 +1,30 @@
+# ALTERNATIVE — crible impair-only : mémoire et marquages divisés par 2
+$N = 50000
+$d = temps()
+$taille = ($N - 1) ÷ 2
+$crible = tableau($taille)
+$i = 0
+tant_que ($i < $taille) {
+    $crible[$i] = 1
+    $i = $i + 1
+}
+$p = 3
+tant_que ($p * $p < $N) {
+    si ($crible[($p - 3) ÷ 2] == 1) {
+        $m = $p * $p
+        tant_que ($m < $N) {
+            $crible[($m - 3) ÷ 2] = 0
+            $m = $m + 2 * $p
+        }
+    }
+    $p = $p + 2
+}
+$c = 1
+$i = 0
+tant_que ($i < $taille) {
+    $c = $c + $crible[$i]
+    $i = $i + 1
+}
+$f = temps()
+>> "RESULT:" + chaine($c)
+>> "INTERNAL_NS:" + chaine($f - $d)

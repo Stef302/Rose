@@ -1,0 +1,19 @@
+# Cross Rose/Rust — rust_base_int_loop, rust_alt_int_loop_gauss, rust_base_fib_rec, rust_alt_fib_rec_doubling, rust_base_fib_iter, rust_alt_fib_iter_doubling, rust_base_premiers, rust_alt_premiers_crible
+# rose=rose pin=15 tirages=9
+# salve 1/9 terminée
+# salve 2/9 terminée
+# salve 3/9 terminée
+# salve 4/9 terminée
+# salve 5/9 terminée
+# salve 6/9 terminée
+# salve 7/9 terminée
+# salve 8/9 terminée
+# salve 9/9 terminée
+
+paire                            Rose base   Rose algo   Rust base   Rust algo   R/Ru base   R/Ru algo  gain Rose  gain Rust
+------------------------------------------------------------------------------------------------------------------------------------
+int_loop_gauss                     0.3210m     0.0023m     0.5173m     0.0000m       0.62x      71.50x     140.3x   16165.0x
+fib_rec_doubling                  11.6458m     0.0024m    12.5270m     0.0000m       0.93x      50.67x    4788.6x  260980.0x
+fib_iter_doubling                  1.0848m     0.0033m     2.0595m     0.0003m       0.53x      11.44x     329.1x    7151.2x
+premiers_builtin_vs_crible         0.9006m     0.0800m     1.0322m     0.0428m       0.87x       1.87x      11.3x      24.1x
+premiers_crible_vs_crible          0.9009m    19.9734m     1.0365m     0.0423m       0.87x     472.32x       0.0x      24.5x

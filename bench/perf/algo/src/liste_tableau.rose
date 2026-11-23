@@ -1,0 +1,14 @@
+# ALTERNATIVE — tableau dense i64 préalloué au lieu d'une liste de Valeur boxées
+$t = tableau(100001)
+$d = temps()
+pour i de 1 vers 100001 {
+    $t[i] = i
+}
+$s = 0
+pour j de 0 vers 100001 {
+    $v = $t[j]
+    $s = $s + $v
+}
+$f = temps()
+>> "RESULT:" + chaine($s)
+>> "INTERNAL_NS:" + chaine($f - $d)

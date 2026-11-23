@@ -1,0 +1,8 @@
+$t = tableau(100001)
+$d = temps()
+pour i de 1 vers 100001 {
+    $t[i] = i
+}
+$f = temps()
+>> "RESULT:100000"
+>> "INTERNAL_NS:" + chaine($f - $d)

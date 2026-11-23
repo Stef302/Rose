@@ -1,0 +1,43 @@
+# Harnais algo — rose=rose sha=cf747fdfd882ba48 pin=15 tirages=9 domaines=int_loop,fib_rec,fib_iter,premiers,factorial,gcd,rationnel,chaine,liste,table
+# salve 1/9 terminée
+# salve 2/9 terminée
+# salve 3/9 terminée
+# salve 4/9 terminée
+# salve 5/9 terminée
+# salve 6/9 terminée
+# salve 7/9 terminée
+# salve 8/9 terminée
+# salve 9/9 terminée
+
+domaine     variante                    int méd (ms)  wall méd (ms)  accél int  accél wall       min–max int (ms)
+----------------------------------------------------------------------------------------------------------------
+int_loop    base                              0.3206         2.8745      1.00x       1.00x     0.3205–0.3319    
+int_loop    int_loop_gauss                    0.0014         2.4916    222.61x       1.15x     0.0010–0.0020    
+fib_rec     base                             11.6285        14.3288      1.00x       1.00x    11.5008–11.9287   
+fib_rec     fib_rec_doubling                  0.0019         3.3311   6159.18x       4.30x     0.0016–0.0031    
+fib_rec     fib_rec_builtin                   0.0031         2.2667   3727.09x       6.32x     0.0024–0.0056    
+fib_iter    base                              1.0903         4.3252      1.00x       1.00x     1.0845–1.1244    
+fib_iter    fib_iter_doubling                 0.0031         3.4741    356.77x       1.25x     0.0029–0.0042    
+fib_iter    fib_iter_builtin                 12.8707        15.3735      0.08x       0.28x    12.8484–12.9169   
+premiers    base                              0.9012         3.9470      1.00x       1.00x     0.8955–0.9040    
+premiers    premiers_crible                  19.9403        22.6542      0.05x       0.17x    19.8709–20.6148   
+premiers    premiers_crible_impair           13.1055        15.5938      0.07x       0.25x    13.0361–13.1478   
+premiers    premiers_builtin                  0.0789         3.0439     11.42x       1.30x     0.0774–0.0814    
+factorial   base                              0.0820         3.0223      1.00x       1.00x     0.0814–0.0883    
+factorial   factorial_arbre                   0.1453         3.6366      0.56x       0.83x     0.1429–0.1537    
+factorial   factorial_builtin                 0.0808         3.3331      1.01x       0.91x     0.0798–0.0892    
+gcd         base                              0.0020         2.6403      1.00x       1.00x     0.0019–0.0027    
+gcd         gcd_euclide                       0.0028         2.3883      0.70x       1.11x     0.0023–0.0039    
+rationnel   base                              0.0589         2.4479      1.00x       1.00x     0.0581–0.0659    
+rationnel   rationnel_common                  0.0540         2.0625      1.09x       1.19x     0.0539–0.0548    
+chaine      base                              0.0021         2.1770      1.00x       1.00x     0.0020–0.0023    
+chaine      chaine_builder                    3.1962         5.6916      0.00x       0.38x     3.1348–3.2361    
+chaine      chaine_doublage                   0.1019         2.2783      0.02x       0.96x     0.1001–0.1092    
+liste       base                              0.1248         2.6609      1.00x       1.00x     0.1189–0.1440    
+liste       liste_fusion                      0.3224         2.9657      0.39x       0.90x     0.3117–0.3366    
+liste       liste_tableau                    23.9496        26.3928      0.01x       0.10x    23.8964–24.1845   
+table       base                              0.0480         2.9618      1.00x       1.00x     0.0473–0.0494    
+table       table_dense                       0.8054         3.3352      0.06x       0.89x     0.7999–0.8464    
+
+# Données : /tmp/opencode/opt_jit/bench/perf/algo/out/results.json , /tmp/opencode/opt_jit/bench/perf/algo/out/summary.json
+# SHA Rose : cf747fdfd882ba48 (identique avant/après)

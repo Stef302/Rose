@@ -1,0 +1,15 @@
+# ALTERNATIVE — arbre de produit équilibré (binary splitting) O(M(n) log n)
+fn prod(a: entier, b: entier) -> entier {
+    si (b - a <= 8) {
+        $r = 1
+        pour k de a vers b { $r = $r * k }
+        retour $r
+    }
+    $m = (a + b) ÷ 2
+    retour prod(a, $m) * prod($m, b)
+}
+$d = temps()
+$r = prod(2, 3001)
+$f = temps()
+>> "RESULT:" + chaine($r)
+>> "INTERNAL_NS:" + chaine($f - $d)

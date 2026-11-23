@@ -1,0 +1,7 @@
+# ALTERNATIVE — somme 1..10^6 par identité fermée O(1) au lieu d'une boucle O(n)
+$d = temps()
+$n = 1000000
+$s = $n * ($n + 1) ÷ 2
+$f = temps()
+>> "RESULT:" + chaine($s)
+>> "INTERNAL_NS:" + chaine($f - $d)
