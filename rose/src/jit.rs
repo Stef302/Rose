@@ -4604,6 +4604,32 @@ fn litteraux_expr(e: &Eabstrait, out: &mut HashSet<String>) {
     }
 }
 
+/// OPT_INTLOOP — reconnaissance STRICTE de la forme `acc += i ; i += 1`
+/// (deux affectations, aucun autre effet). C'est le motif de
+/// `bench/perf/src/int_loop.rose`. Les autres formes de `boucle_nu`
+/// (fib itératif avec `% m`, accumulateurs multiples, soustraction…)
+/// restent sur l'émetteur vérifié et ne sont PAS déroulées.
+fn motif_acc_plus_ctr_unroll(corps: &crate::rir::CorpsRir,
+                             b: &crate::rir::BoucleNu) -> Option<u16> {
+    use crate::rir::{Eabstrait, Op, Oper};
+    let ops = &corps.ops[b.test + 1..b.back];
+    if ops.len() != 2 { return None; }
+    let (acc, ea) = match &ops[0] { Op::Affect { slot, expr } => (*slot, expr), _ => return None };
+    let (ct, ec) = match &ops[1] { Op::Affect { slot, expr } => (*slot, expr), _ => return None };
+    if ct != b.ctr || acc == b.ctr { return None; }
+    // `i = i + 1` exactement (pas `i = i + 2`, pas `i = 1 + i` …).
+    let inc_un = matches!(ec,
+        Eabstrait::Binaire { op: Oper::Add, a, b: right }
+        if matches!(&**a, Eabstrait::Slot(s, _) if *s == b.ctr)
+        && matches!(&**right, Eabstrait::Entier(t) if t.parse::<i64>() == Ok(1)));
+    // `acc = acc + i` exactement (le sens des opérandes compte).
+    let acc_ctr = matches!(ea,
+        Eabstrait::Binaire { op: Oper::Add, a, b: right }
+        if matches!(&**a, Eabstrait::Slot(s, _) if *s == acc)
+        && matches!(&**right, Eabstrait::Slot(s, _) if *s == b.ctr));
+    if inc_un && acc_ctr { Some(acc) } else { None }
+}
+
 impl Emetteur<'_> {
     /// VAGUE 2 — boucle entière nue, émise DERRIÈRE UN GARDE.
     ///
@@ -4648,6 +4674,87 @@ impl Emetteur<'_> {
             }
         }
         self.lits_hoistes = Some(hoistes);
+
+        // OPT_INTLOOP — déroulage ×4 de la forme stricte `acc += i ; i += 1`.
+        // Le garde ci-dessus a déjà prouvé `i64` nu et absence de débordement ;
+        // la somme partielle reste donc dans un registre i64, sans helper ni
+        // test. Cranelift ne fait pas de LICM et son allocateur émet ~13
+        // instructions par itération (dont 6 `mov` de permutation) sur la
+        // boucle non déroulée ; ici le corps est 4 `iadd` d'accumulation +
+        // 3 `add` d'index + 1 `add` de compteur + 1 comparaison + 1 branche,
+        // soit ~2,5 instructions par itération source, avec 2 seuls phis.
+        if let Some(acc) = motif_acc_plus_ctr_unroll(corps, b) {
+            let i_dep = self.builder.use_var(slot_vars[b.ctr as usize]);
+            let a_dep = self.builder.use_var(slot_vars[acc as usize]);
+            let borne = self.builder.ins().iconst(types::I64, b.borne);
+            let un = self.builder.ins().iconst(types::I64, 1);
+            let trois = self.builder.ins().iconst(types::I64, 3);
+            let quatre = self.builder.ins().iconst(types::I64, 4);
+            let lim = self.builder.ins().isub(borne, trois);
+
+            let h4 = self.builder.create_block();
+            self.builder.append_block_param(h4, types::I64); // i
+            self.builder.append_block_param(h4, types::I64); // acc
+            let b4 = self.builder.create_block();
+            let hr = self.builder.create_block();
+            self.builder.append_block_param(hr, types::I64); // i
+            self.builder.append_block_param(hr, types::I64); // acc
+            let br = self.builder.create_block();
+            let fin = self.builder.create_block();
+            self.builder.append_block_param(fin, types::I64); // i final
+            self.builder.append_block_param(fin, types::I64); // acc final
+
+            self.builder.ins().brif(ok, h4, &[i_dep.into(), a_dep.into()], generic, &[]);
+
+            // ── boucle ×4 : tant que i + 3 < borne ──
+            self.builder.switch_to_block(h4);
+            let i4 = self.builder.block_params(h4)[0];
+            let a4 = self.builder.block_params(h4)[1];
+            let c4 = self.builder.ins().icmp(IntCC::SignedLessThan, i4, lim);
+            self.builder.ins().brif(c4, b4, &[], hr, &[i4.into(), a4.into()]);
+
+            self.builder.switch_to_block(b4);
+            self.builder.seal_block(b4);
+            let ip1 = self.builder.ins().iadd(i4, un);
+            let ip2 = self.builder.ins().iadd(ip1, un);
+            let ip3 = self.builder.ins().iadd(ip2, un);
+            let s1 = self.builder.ins().iadd(a4, i4);
+            let s2 = self.builder.ins().iadd(s1, ip1);
+            let s3 = self.builder.ins().iadd(s2, ip2);
+            let s4 = self.builder.ins().iadd(s3, ip3);
+            let i_next = self.builder.ins().iadd(ip3, un);
+            self.builder.ins().jump(h4, &[i_next.into(), s4.into()]);
+            self.builder.seal_block(h4);
+
+            // ── reste 0..3 itérations ──
+            self.builder.switch_to_block(hr);
+            let ir = self.builder.block_params(hr)[0];
+            let ar = self.builder.block_params(hr)[1];
+            let cr = self.builder.ins().icmp(IntCC::SignedLessThan, ir, borne);
+            self.builder.ins().brif(cr, br, &[], fin, &[ir.into(), ar.into()]);
+
+            self.builder.switch_to_block(br);
+            self.builder.seal_block(br);
+            let sr = self.builder.ins().iadd(ar, ir);
+            let ir_next = self.builder.ins().iadd(ir, un);
+            self.builder.ins().jump(hr, &[ir_next.into(), sr.into()]);
+            self.builder.seal_block(hr);
+
+            // ── sortie : on réécrit les slots pour le code AST suivant ──
+            self.builder.switch_to_block(fin);
+            self.builder.seal_block(fin);
+            let ifin = self.builder.block_params(fin)[0];
+            let afin = self.builder.block_params(fin)[1];
+            self.builder.def_var(slot_vars[b.ctr as usize], ifin);
+            self.builder.def_var(slot_vars[acc as usize], afin);
+            self.builder.def_var(slot_unboxed[b.ctr as usize], un);
+            self.builder.def_var(slot_unboxed[acc as usize], un);
+            let zt = self.builder.ins().iconst(types::I64, 0);
+            self.builder.def_var(self.tag_tmp, zt);
+            self.saut(sortie, &[]);
+            self.lits_hoistes = None;
+            return;
+        }
 
         let header = self.builder.create_block();
         let corps_b = self.builder.create_block();
