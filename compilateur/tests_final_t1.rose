@@ -1,0 +1,48 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_final_t1.rose — banc FINAL-T1 : repli de constante flottante.
+#
+# Chaque ligne `>>` est comparée octet pour octet à la référence
+# `rose/rose` (moteur Rust), en chaîne native ET en chaîne moteur complet
+# compilé par C0 (ELF aarch64) :
+#
+#   $ROSE compilateur/tests_final_t1.rose                    > attendu.txt
+#   C0 compilateur/moteur_complet.rose > moteur.elf
+#   ./moteur.elf compilateur/tests_final_t1.rose             > obtenu.txt
+#   cmp attendu.txt obtenu.txt        # 0 divergence attendue
+#
+# Couverture : t09 (1.5, 2.0, 1e16), point décimal, négatifs, décimaux
+# courts, seuil d'exposition et repli scientifique via vf (tag f:).
+# ═══════════════════════════════════════════════════════════════════════
+
+# — t09 : la constante source 1.5 doit rester 1.5 (jamais 1) —
+>> 1.5
+>> 2.0
+>> 10000000000000000
+
+# — mission : 2.0, -0.5, 3.14, 1e10 —
+>> 2.0
+>> -0.5
+>> 3.14
+>> flottant("1e10")
+
+# — décimaux et signes —
+>> -1.25
+>> -3.14159
+>> 0.25
+>> 100.5
+>> 1000.125
+>> 0.0001
+
+# — zéro signé et flottants entiers —
+>> 0.0
+>> -0.0
+>> 100.0
+>> 10000000000.0
+
+# — exposition scientifique (sortie du moteur Rust) —
+>> 0.00001
+>> 100000000000000000000.0
+
+# — vf : repli exact des littérales scientifiques —
+>> flottant("1.5e-3")
+>> flottant("3.14159")

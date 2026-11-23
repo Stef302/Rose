@@ -1587,10 +1587,11 @@ fn lsrc_replier_expr($i: entier,
   si ($kd == "uni" et $va != "0") {
     si ($tx[$i] != "-") { retour "0" }
     si (lsrc_vue_flag($va) == "1") {
-      $fv = lsrc_val_d($va)
-      $zn = faux
-      si ($fv == 0.0 et non lsrc_texte_neg(lsrc_vue_texte($va))) { $zn = vrai }
-      $rs = lsrc_flot_txt(-$fv, $zn)
+      # CORR12 : sous l'ELF C0, toute arithmétique flottante native est
+      # tronquée (et `-0.5` fait même segfault). On retourne le TEXTE,
+      # en inversant seulement le signe : c'est vf() qui reconstruit
+      # le rationnel exact et pose le tag f: attendu.
+      $rs = lsrc_flot_neg_texte(lsrc_vue_texte($va))
       lsrc_stocker($i, $rs, "1", $foi, $fot, $fof)
       retour "1|" + $rs + "|1"
     }
@@ -3078,11 +3079,100 @@ fn lsrc_contient_ops($s: chaine, $sub: chaine) -> booleen {
   retour faux
 }
 
+# CORR12 — repli de constante flottante SANS aller par le type `flottant`.
+# Le backend natif C0 tronque la partie fractionnaire de `flottant("1.5")`
+# (mesuré : 1.5 -> 1, 3.14 -> 3, 0.0001 -> 0) et segmente sur `-0.5`.
+# Le lecteur doit donc garder le TEXTE DÉCIMAL source jusqu'au RIR : c'est
+# l'interpréteur RIR (vf) qui le replie ensuite en rationnel exact et pose
+# le tag f: attendu. Aucune opération flottante n'est utilisée ici.
+fn lsrc_flot_neg_texte($t: chaine) -> chaine {
+  si (longueur($t) == 0) { retour $t }
+  si (sous_chaine($t, 0, 1) == "-") { retour sous_chaine($t, 1, longueur($t)) }
+  si (sous_chaine($t, 0, 1) == "+") { retour "-" + sous_chaine($t, 1, longueur($t)) }
+  retour "-" + $t
+}
+
+fn lsrc_flot_texte_exact($t: chaine) -> chaine {
+  $s = $t
+  $neg = faux
+  si (longueur($s) > 0 et sous_chaine($s, 0, 1) == "-") {
+    $neg = vrai
+    $s = sous_chaine($s, 1, longueur($s))
+  } sinon si (longueur($s) > 0 et sous_chaine($s, 0, 1) == "+") {
+    $s = sous_chaine($s, 1, longueur($s))
+  }
+  # exposant décimal éventuel : on developpe la virgule en texte.
+  $ei = -1
+  $j = 0
+  tant_que ($j < longueur($s)) {
+    si (sous_chaine($s, $j, $j + 1) == "e" ou sous_chaine($s, $j, $j + 1) == "E") { $ei = $j }
+    $j = $j + 1
+  }
+  $e = 0
+  si ($ei >= 0) {
+    $ep = sous_chaine($s, $ei + 1, longueur($s))
+    $s = sous_chaine($s, 0, $ei)
+    $eneg = faux
+    si (longueur($ep) > 0 et sous_chaine($ep, 0, 1) == "-") {
+      $eneg = vrai
+      $ep = sous_chaine($ep, 1, longueur($ep))
+    } sinon si (longueur($ep) > 0 et sous_chaine($ep, 0, 1) == "+") {
+      $ep = sous_chaine($ep, 1, longueur($ep))
+    }
+    $e = entier($ep)
+    si ($eneg) { $e = 0 - $e }
+  }
+  $ip = $s
+  $fp = ""
+  $d = -1
+  $j = 0
+  tant_que ($j < longueur($s)) {
+    si (sous_chaine($s, $j, $j + 1) == ".") { $d = $j }
+    $j = $j + 1
+  }
+  si ($d >= 0) {
+    $ip = sous_chaine($s, 0, $d)
+    $fp = sous_chaine($s, $d + 1, longueur($s))
+  }
+  $k = 0
+  tant_que ($k < $e) {
+    si (longueur($fp) > 0) {
+      $ip = $ip + sous_chaine($fp, 0, 1)
+      $fp = sous_chaine($fp, 1, longueur($fp))
+    } sinon { $ip = $ip + "0" }
+    $k = $k + 1
+  }
+  $z = 0
+  tant_que ($z < 0 - $e) {
+    $fp = "0" + $fp
+    $z = $z + 1
+  }
+  # Boucle écrite sans condition composée : le backend C0 n'évalue pas
+  # correctement `tant_que (longueur(...) > 0 et sous_chaine(...) == "0")`.
+  $fin = faux
+  tant_que ($fin == faux) {
+    $nn = longueur($fp)
+    si ($nn <= 0) { $fin = vrai }
+    sinon {
+      $der = sous_chaine($fp, $nn - 1, $nn)
+      si ($der == "0") {
+        $fp = sous_chaine($fp, 0, $nn - 1)
+      } sinon { $fin = vrai }
+    }
+  }
+  si (longueur($ip) == 0) { $ip = "0" }
+  $r = $ip
+  si (longueur($fp) > 0) { $r = $r + "." + $fp }
+  si ($neg) { $r = "-" + $r }
+  retour $r
+}
+
 # main.rs ecrit Eabstrait::Flottant avec d.to_string() (Display Rust) :
-# decimal plein, jamais d'exposant, et "-0" pour le zero negatif. chaine()
-# de Rose donne le plus court qui se relit (texte_flottant, style %g) ; on
-# developpe l'exponentielle et on recolle le signe du zero.
+# decimal plein, jamais d'exposant, et "-0" pour le zero negatif.
+# CORR12 : le texte decimal est déja canonique — on ne le reparcours pas
+# par chaine(flottant(...)), qui tronque sous l'ELF C0.
 fn lsrc_vers_flottant($t: chaine) -> chaine {
+  si (non lsrc_contient($t, "/")) { retour lsrc_flot_texte_exact($t) }
   $neg = faux
   si (longueur($t) > 0 et ordre($t[0]) == 45) { $neg = vrai }
   $s = chaine(flottant($t))
