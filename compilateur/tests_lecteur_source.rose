@@ -1,0 +1,61 @@
+# tests_lecteur_source.rose — banc du lecteur de source auto-hébergé (J6.5).
+#
+# Importe `lecteur_source.rose` et appelle `lire_programme()` sur 20 sources
+# de tests_selfhost/ couvrant : entiers, booléens, Unicode, rationnels,
+# flottants, listes, tables, arithmétique, précédence, grands nombres,
+# chaînes, échappements, boucles, récursion — et un rejet exact (listes de
+# listes). Chaque résultat est délimité pour comparaison octet pour octet
+# avec `rose rir <source>` (voir rose/docs/HORDE_SOURCE.md).
+#
+# Usage : rose compilateur/tests_lecteur_source.rose
+#     ou le binaire G5 issu de C0 : tests_lecteur_source.elf
+
+importer "compilateur/lecteur_source.rose"
+
+$chemins = [""]
+joindre($chemins, "tests_selfhost/t01_entiers.rose")
+joindre($chemins, "tests_selfhost/t02_bool.rose")
+joindre($chemins, "tests_selfhost/t04_chaine_unicode.rose")
+joindre($chemins, "tests_selfhost/t05_chaine_sous.rose")
+joindre($chemins, "tests_selfhost/t06_rationnel_lit.rose")
+joindre($chemins, "tests_selfhost/t09_flottant.rose")
+joindre($chemins, "tests_selfhost/t10_liste_lit.rose")
+joindre($chemins, "tests_selfhost/t12_table.rose")
+joindre($chemins, "tests_selfhost/t20_add.rose")
+joindre($chemins, "tests_selfhost/t25_puissance.rose")
+joindre($chemins, "tests_selfhost/t29_precedence.rose")
+joindre($chemins, "tests_selfhost/t30_abs_minmax.rose")
+joindre($chemins, "tests_selfhost/t34_big_decimal.rose")
+joindre($chemins, "tests_selfhost/t40_chaine_egale.rose")
+joindre($chemins, "tests_selfhost/t42_escape.rose")
+joindre($chemins, "tests_selfhost/t50_liste_vide.rose")
+joindre($chemins, "tests_selfhost/t60_table_bool.rose")
+joindre($chemins, "tests_selfhost/t70_pour.rose")
+joindre($chemins, "tests_selfhost/t74_fib_rec.rose")
+joindre($chemins, "tests_selfhost/t55_liste_imbriquee.rose")
+
+$nok = 0
+$nerr = 0
+$i = 1
+tant_que ($i < longueur($chemins)) {
+  $p = $chemins[$i]
+  $r = lire_programme($p)
+  >> "=== " + $p
+  >> $r
+  >> "=== FIN"
+  si (sous_chaine($r, 0, 3) == "OK|") { $nok = $nok + 1 } sinon { $nerr = $nerr + 1 }
+  $i = $i + 1
+}
+>> "=== BILAN OK=" + chaine($nok) + " ERR=" + chaine($nerr)
+
+# ——— diagnostics d'import via registre (sans accès disque) ———
+$rn = [""]
+$rs = [""]
+joindre($rn, "/autre.rose")
+joindre($rs, "")
+>> "REG|" + lire_programme_reg("/racine_manquante.rose", $rn, $rs)
+$in = [""]
+$is = [""]
+joindre($in, "/p.rose")
+joindre($is, "importer \"absent.rose\"\n>> 1\n")
+>> "REG|" + lire_programme_reg("/p.rose", $in, $is)
