@@ -1442,3 +1442,11 @@ collision argument(0), formes RIR non exécutées; modules composés mais non
 branchés dans call_prim (GC/bigint/tables/chaine/unicode/CLI/REPL); pas de
 JIT Cranelift dans l'ELF (seulement JIT à la volée J4). Le binaire distribué
 utilise encore cargo pour le moteur complet.
+
+## Vague 95 — horde de correction : les 12 écarts restants
+
+10 agents lances sur les causes localisees de HORDE_INTEGRATION.md §6:
+correctifs 1-6 (constantes >2^60, rationnels negatifs, flottants, alias, arguments,
+RIR non couvert) + branchements 8-11 (GC, modules, dispatch CLI, REPL).
+Chacun avec test de parite vs rose/rose, C0 → ELF, point fixe b3ed9262 et
+validation_finale 0 echec. Objectif: 20/20 puis 141/141 sans Rust.
