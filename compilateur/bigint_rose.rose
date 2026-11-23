@@ -1,0 +1,795 @@
+# bigint_rose.rose — J6.2 : bigint performant, ÉCRIT EN ROSE PUR (sous-ensemble G5).
+#
+# Concaténer avec un pilote puis compiler par C0 :
+#   cat compilateur/bigint_rose.rose pilote.rose > /tmp/big.rose
+#   ./C0.elf /tmp/big.rose > /tmp/big.elf && ./big.elf
+#
+# REPRÉSENTATION (liste<entier> plate, homogène) :
+#   [signe, cnt, l0, l1, ..., l(cnt-1)]
+#   signe = 0 (positif ou zéro) ou -1 (négatif) ; cnt >= 1 ;
+#   limbs LITTLE-ENDIAN en base B = 10^8, 0 <= li < B, l(cnt-1) != 0
+#   sauf le zéro unique [0, 1, 0].
+#
+# POURQUOI 10^8 (mesures dans rose/docs/HORDE_BIGINT.md) :
+#   - (B-1)^2 < 10^16 : multiplié par le tag G5 (n<<3, puis >>3) le produit
+#     reste sous 2^64. Avec 10^9, les produits ~10^18 DÉBORDENT (mesuré :
+#     mul/pow divergents sous l'ELF) : 10^8 est le bon compromis ;
+#   - la conversion chaîne est un simple regroupement par 8 chiffres ;
+#   - B n'est PAS une puissance de 2 : les décalages bit à bit ne sont pas
+#     alignés sur un limb (documenté, alternative 2^32 écartée).
+#
+# DISCIPLINE G5 (identique à moteur_valeurs.rose / moteur_ops.rose) :
+#   aucune globale ; aucun `[]` littéral ; pas de `retour [ ... ]` ;
+#   pas d'affectation par index ; pas de paramètre nommé `i` ;
+#   ni `cles`, `concatener`, `abs`, `min`, `max`.
+#
+# API : bi_zero bi_un bi_depuis_entier bi_vers_entier bi_depuis_chaine
+#       bi_texte bi_cmp_pos bi_cmp bi_zeroq bi_neg bi_abs bi_avec_signe
+#       bi_add_pos bi_sub_pos bi_add bi_sub bi_add_shift bi_decale
+#       bi_mul_small bi_mul_ecole bi_mul_karatsuba bi_mul
+#       bi_div_small_pos bi_rest_small bi_divmod_pos bi_div_pos bi_mod_pos
+#       bi_div bi_mod bi_pow_binaire bi_pow bi_gcd_euclide bi_gcd
+
+fn bi_base() -> entier { retour 100000000 }
+# Karatsuba est IMPLANTÉ mais MESURÉ plus lent ici (4,9 s vs 0,9 s à 64 limbs,
+# 37 s vs 1,35 s à 256 limbs) : le coût des copies de listes G5 domine.
+# Seuil mis à 999999 = école partout ; détails dans HORDE_BIGINT.md.
+fn bi_seuil_karatsuba() -> entier { retour 999999 }
+fn bi_lim_coef() -> entier { retour 100000000 }
+
+# ── Constructeurs / conversions ───────────────────────────────────────────────
+
+# `tmp` est une liste dont l'index 0 est un rembourrage, les limbs sont en
+# index 1..longueur(tmp)-1. On en fait un bigint normalisé.
+fn bi_normalise(signe: entier, tmp: liste<entier>) -> liste<entier> {
+  # G5 réalloue les listes passées en paramètre : on COPIE dans un local
+  # avant toute écriture (aucune mutation de paramètre, cf. J6).
+  $src = [0]
+  $m = longueur(tmp) - 1
+  $j = 0
+  tant_que ($j < $m) { joindre($src, tmp[1 + $j]); $j = $j + 1 }
+  $n = longueur($src) - 1
+  si ($n < 1) { joindre($src, 0); $n = 1 }
+  $k = $n - 1
+  tant_que ($k > 0 et $src[1 + $k] == 0) { $k = $k - 1 }
+  $cnt = $k + 1
+  $sg = signe
+  si ($cnt == 1 et $src[1] == 0) { $sg = 0 }
+  $r = [$sg, $cnt]
+  $j = 0
+  tant_que ($j < $cnt) { joindre($r, $src[1 + $j]); $j = $j + 1 }
+  retour $r
+}
+
+fn bi_zero() -> liste<entier> {
+  $r = [0, 1, 0]
+  retour $r
+}
+
+fn bi_un() -> liste<entier> {
+  $r = [0, 1, 1]
+  retour $r
+}
+
+fn bi_depuis_entier(n: entier) -> liste<entier> {
+  $sg = 0
+  $x = n
+  si ($x < 0) { $sg = -1; $x = 0 - $x }
+  $tmp = [0]
+  si ($x == 0) { joindre($tmp, 0) }
+  tant_que ($x > 0) {
+    joindre($tmp, $x % 100000000)
+    $x = $x div 100000000
+  }
+  $r = bi_normalise($sg, $tmp)
+  retour $r
+}
+
+fn bi_vers_entier(v: liste<entier>) -> entier {
+  $cnt = v[1]
+  $x = 0
+  $p = 1
+  $k = 0
+  tant_que ($k < $cnt) {
+    $x = $x + v[2 + $k] * $p
+    $p = $p * 100000000
+    $k = $k + 1
+  }
+  si (v[0] < 0) { $x = 0 - $x }
+  retour $x
+}
+
+fn bi_huit_chiffres(x: entier) -> chaine {
+  $s = chaine(x)
+  $n = longueur($s)
+  $z = ""
+  tant_que ($n < 8) { $z = $z + "0"; $n = $n + 1 }
+  retour $z + $s
+}
+
+fn bi_texte(v: liste<entier>) -> chaine {
+  $cnt = v[1]
+  $s = chaine(v[2 + $cnt - 1])
+  $k = $cnt - 2
+  tant_que ($k >= 0) {
+    $s = $s + bi_huit_chiffres(v[2 + $k])
+    $k = $k - 1
+  }
+  si (v[0] < 0 et $cnt == 1 et v[2] == 0) {
+    # zéro signé :: jamais produit par l'API, garde-fou déterministe
+    retour "0"
+  }
+  si (v[0] < 0) { $s = "-" + $s }
+  retour $s
+}
+
+fn bi_chiffre(c: chaine) -> entier {
+  retour ordre(c) - 48
+}
+
+fn bi_parse_bloc(s: chaine) -> entier {
+  $n = longueur(s)
+  $x = 0
+  $k = 0
+  tant_que ($k < $n) {
+    $x = $x * 10 + bi_chiffre(sous_chaine(s, $k, $k + 1))
+    $k = $k + 1
+  }
+  retour $x
+}
+
+fn bi_depuis_chaine(s: chaine) -> liste<entier> {
+  $sg = 0
+  $deb = 0
+  $n = longueur(s)
+  si ($n > 0) {
+    # Comparer par code de caractère : l'égalité de chaînes CALCULÉES est
+    # peu fiable sous le JIT (mesuré), `ordre` est déterministe partout.
+    si (ordre(sous_chaine(s, 0, 1)) == 45) { $sg = -1; $deb = 1 }
+  }
+  $tmp = [0]
+  $fin = $n
+  tant_que ($fin > $deb) {
+    $d = $fin - 8
+    si ($d < $deb) { $d = $deb }
+    joindre($tmp, bi_parse_bloc(sous_chaine(s, $d, $fin)))
+    $fin = $d
+  }
+  si ($fin == $deb) { joindre($tmp, 0) }
+  $r = bi_normalise($sg, $tmp)
+  retour $r
+}
+
+# ── Comparaison / signe ───────────────────────────────────────────────────────
+
+fn bi_zeroq(v: liste<entier>) -> entier {
+  $r = 0
+  si (v[1] == 1 et v[2] == 0) { $r = 1 }
+  retour $r
+}
+
+fn bi_cmp_pos(a: liste<entier>, b: liste<entier>) -> entier {
+  $na = a[1]
+  $nb = b[1]
+  $r = 0
+  si ($na > $nb) { $r = 1 }
+  si ($na < $nb) { $r = -1 }
+  $k = $na - 1
+  tant_que ($k >= 0 et $r == 0) {
+    $x = a[2 + $k]
+    $y = 0
+    si ($k < $nb) { $y = b[2 + $k] }
+    si ($x > $y) { $r = 1 }
+    si ($x < $y) { $r = -1 }
+    $k = $k - 1
+  }
+  retour $r
+}
+
+fn bi_cmp(a: liste<entier>, b: liste<entier>) -> entier {
+  $sa = a[0]
+  $sb = b[0]
+  si ($sa != $sb) {
+    si ($sa < $sb) { retour -1 }
+    retour 1
+  }
+  $r = bi_cmp_pos(a, b)
+  si ($sa < 0) { $r = 0 - $r }
+  retour $r
+}
+
+fn bi_abs(v: liste<entier>) -> liste<entier> {
+  $r = [0, v[1]]
+  $k = 0
+  tant_que ($k < v[1]) { joindre($r, v[2 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn bi_avec_signe(v: liste<entier>, s: entier) -> liste<entier> {
+  $sg = s
+  si (bi_zeroq(v) == 1) { $sg = 0 }
+  $r = [$sg, v[1]]
+  $k = 0
+  tant_que ($k < v[1]) { joindre($r, v[2 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn bi_neg(v: liste<entier>) -> liste<entier> {
+  $s = -1
+  si (v[0] < 0) { $s = 0 }
+  $r = bi_avec_signe(v, $s)
+  retour $r
+}
+
+# ── Addition / soustraction ───────────────────────────────────────────────────
+
+fn bi_add_pos(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $na = a[1]
+  $nb = b[1]
+  $n = $na
+  si ($nb > $n) { $n = $nb }
+  $tmp = [0]
+  $carry = 0
+  $k = 0
+  tant_que ($k < $n ou $carry > 0) {
+    $x = 0
+    $y = 0
+    si ($k < $na) { $x = a[2 + $k] }
+    si ($k < $nb) { $y = b[2 + $k] }
+    $s = $x + $y + $carry
+    joindre($tmp, $s % 100000000)
+    $carry = $s div 100000000
+    $k = $k + 1
+  }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+# a >= b requis.
+fn bi_sub_pos(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $na = a[1]
+  $nb = b[1]
+  $tmp = [0]
+  $emprunt = 0
+  $k = 0
+  tant_que ($k < $na) {
+    $x = a[2 + $k]
+    $y = 0
+    si ($k < $nb) { $y = b[2 + $k] }
+    $d = $x - $y - $emprunt
+    $emprunt = 0
+    si ($d < 0) { $d = $d + 100000000; $emprunt = 1 }
+    joindre($tmp, $d)
+    $k = $k + 1
+  }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+fn bi_add(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $sa = a[0]
+  $sb = b[0]
+  $aa = bi_abs(a)
+  $bb = bi_abs(b)
+  si ($sa == $sb) {
+    $s = bi_add_pos($aa, $bb)
+    $r = bi_avec_signe($s, $sa)
+    retour $r
+  }
+  $c = bi_cmp_pos($aa, $bb)
+  si ($c == 0) { retour bi_zero() }
+  $tmp = bi_zero()
+  si ($c > 0) { $tmp = bi_sub_pos($aa, $bb) }
+  si ($c < 0) { $tmp = bi_sub_pos($bb, $aa) }
+  $sg = $sa
+  si ($c < 0) { $sg = $sb }
+  $r = bi_avec_signe($tmp, $sg)
+  retour $r
+}
+
+fn bi_sub(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $r = bi_add(a, bi_neg(b))
+  retour $r
+}
+
+# a + b * B^decal. Les limbs sont reconstruits (G5 interdit l'écriture par index).
+fn bi_add_shift(a: liste<entier>, b: liste<entier>, decal: entier) -> liste<entier> {
+  $na = a[1]
+  $nb = b[1]
+  $n = $na
+  si ($decal + $nb > $n) { $n = $decal + $nb }
+  $tmp = [0]
+  $carry = 0
+  $k = 0
+  tant_que ($k < $n ou $carry > 0) {
+    $x = 0
+    $y = 0
+    si ($k < $na) { $x = a[2 + $k] }
+    si ($k >= $decal) {
+      si ($k < $decal + $nb) { $y = b[2 + $k - $decal] }
+    }
+    $s = $x + $y + $carry
+    joindre($tmp, $s % 100000000)
+    $carry = $s div 100000000
+    $k = $k + 1
+  }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+fn bi_decale(a: liste<entier>, decal: entier) -> liste<entier> {
+  $tmp = [0]
+  $k = 0
+  tant_que ($k < $decal) { joindre($tmp, 0); $k = $k + 1 }
+  $k = 0
+  tant_que ($k < a[1]) { joindre($tmp, a[2 + $k]); $k = $k + 1 }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+# ── Multiplication ────────────────────────────────────────────────────────────
+
+# q <= 2^28 : (B-1)*q + retenue < 2,7e16, sans débordement G5.
+fn bi_mul_small(a: liste<entier>, q: entier) -> liste<entier> {
+  si (q == 0) { retour bi_zero() }
+  $tmp = [0]
+  $carry = 0
+  $k = 0
+  tant_que ($k < a[1] ou $carry > 0) {
+    $x = 0
+    si ($k < a[1]) { $x = a[2 + $k] }
+    $p = $x * q + $carry
+    joindre($tmp, $p % 100000000)
+    $carry = $p div 100000000
+    $k = $k + 1
+  }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+# École : une rangée de produits par limb du multiplicateur, accumulation
+# par bi_add_shift. O(na*nb) produits, O((na+nb)*nb) copies de limbs.
+fn bi_mul_ecole(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $acc = bi_zero()
+  $j = 0
+  tant_que ($j < b[1]) {
+    $row = bi_mul_small(a, b[2 + $j])
+    $acc = bi_add_shift($acc, $row, $j)
+    $j = $j + 1
+  }
+  retour $acc
+}
+
+fn bi_bas(a: liste<entier>, m: entier) -> liste<entier> {
+  $tmp = [0]
+  $k = 0
+  tant_que ($k < m et $k < a[1]) { joindre($tmp, a[2 + $k]); $k = $k + 1 }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+fn bi_haut(a: liste<entier>, m: entier) -> liste<entier> {
+  $tmp = [0]
+  $k = m
+  tant_que ($k < a[1]) { joindre($tmp, a[2 + $k]); $k = $k + 1 }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+# Karatsuba : z0 = a0*b0, z2 = a1*b1,
+# z1 = (a0+a1)(b0+b1) - z0 - z2, résultat = z2 B^(2m) + z1 B^m + z0.
+fn bi_mul_karatsuba(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $na = a[1]
+  $nb = b[1]
+  si ($na == 1 ou $nb == 1) { retour bi_mul_ecole(a, b) }
+  $seuil = bi_seuil_karatsuba()
+  si ($na <= $seuil et $nb <= $seuil) { retour bi_mul_ecole(a, b) }
+  $m = $na
+  si ($nb < $m) { $m = $nb }
+  $m = ($m + 1) div 2
+  $a0 = bi_bas(a, $m)
+  $a1 = bi_haut(a, $m)
+  $b0 = bi_bas(b, $m)
+  $b1 = bi_haut(b, $m)
+  $z0 = bi_mul_karatsuba($a0, $b0)
+  $z2 = bi_mul_karatsuba($a1, $b1)
+  $sa = bi_add_pos($a0, $a1)
+  $sb = bi_add_pos($b0, $b1)
+  $z1 = bi_mul_karatsuba($sa, $sb)
+  $z1 = bi_sub_pos($z1, $z0)
+  $z1 = bi_sub_pos($z1, $z2)
+  $acc = bi_decale($z2, 2 * $m)
+  $acc = bi_add_shift($acc, $z1, $m)
+  $acc = bi_add_shift($acc, $z0, 0)
+  retour $acc
+}
+
+fn bi_mul(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $p = bi_mul_karatsuba(bi_abs(a), bi_abs(b))
+  $sg = 0
+  si (a[0] != b[0]) { $sg = -1 }
+  $r = bi_avec_signe($p, $sg)
+  retour $r
+}
+
+# ── Division ──────────────────────────────────────────────────────────────────
+
+# tmp contient les limbs du quotient du PLUS significatif au MOINS
+# significatif : on le renverse pour obtenir un bigint little-endian.
+fn bi_tmp_rev(tmp: liste<entier>) -> liste<entier> {
+  $ecart = [0]
+  $k = longueur(tmp) - 1
+  tant_que ($k >= 1) { joindre($ecart, tmp[$k]); $k = $k - 1 }
+  $r = bi_normalise(0, $ecart)
+  retour $r
+}
+
+fn bi_div_small_pos(a: liste<entier>, d: entier) -> liste<entier> {
+  $tmp = [0]
+  $rest = 0
+  $k = a[1] - 1
+  tant_que ($k >= 0) {
+    $cur = $rest * 100000000 + a[2 + $k]
+    joindre($tmp, $cur div d)
+    $rest = $cur % d
+    $k = $k - 1
+  }
+  $r = bi_tmp_rev($tmp)
+  retour $r
+}
+
+fn bi_rest_small(a: liste<entier>, d: entier) -> entier {
+  $rest = 0
+  $k = a[1] - 1
+  tant_que ($k >= 0) {
+    $cur = $rest * 100000000 + a[2 + $k]
+    $rest = $cur % d
+    $k = $k - 1
+  }
+  retour $rest
+}
+
+# Emballage quotient + reste dans UNE liste homogène :
+#   [qcnt, q0.., rcnt, r0..]
+fn bi_flat(q: liste<entier>, r: liste<entier>) -> liste<entier> {
+  $f = [q[1]]
+  $k = 0
+  tant_que ($k < q[1]) { joindre($f, q[2 + $k]); $k = $k + 1 }
+  joindre($f, r[1])
+  $k = 0
+  tant_que ($k < r[1]) { joindre($f, r[2 + $k]); $k = $k + 1 }
+  retour $f
+}
+
+fn bi_flat_q(f: liste<entier>) -> liste<entier> {
+  $n = f[0]
+  $r = [0, $n]
+  $k = 0
+  tant_que ($k < $n) { joindre($r, f[1 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn bi_flat_r(f: liste<entier>) -> liste<entier> {
+  $n = f[0]
+  $pos = 1 + $n
+  $cnt = f[$pos]
+  $r = [0, $cnt]
+  $k = 0
+  tant_que ($k < $cnt) { joindre($r, f[$pos + 1 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+# Knuth algorithmique D en base 10^8. Toutes les quantités intermédiaires
+# tiennent sous 2^60 ; le produit qhat*v[i] est fait limb par limb.
+fn bi_divmod_pos(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  si (bi_cmp_pos(a, b) < 0) {
+    $f = bi_flat(bi_zero(), a)
+    retour $f
+  }
+  $m = b[1]
+  si ($m == 1) {
+    $d = b[2]
+    $q = bi_div_small_pos(a, $d)
+    $r = bi_depuis_entier(bi_rest_small(a, $d))
+    $f = bi_flat($q, $r)
+    retour $f
+  }
+  $f_norm = 100000000 div (b[2 + $m - 1] + 1)
+  $u = bi_mul_small(a, $f_norm)
+  $v = bi_mul_small(b, $f_norm)
+  $nu = u[1]
+  $mv = v[1]
+  $qtmp = [0]
+  $j = $nu - $mv
+  tant_que ($j >= 0) {
+    # `u` rétrécit à chaque soustraction : relire son compte à chaque tour.
+    $nu = u[1]
+    $u1 = 0
+    si ($j + $mv < $nu) { $u1 = u[2 + $j + $mv] }
+    $u2 = 0
+    si ($j + $mv - 1 < $nu) { $u2 = u[2 + $j + $mv - 1] }
+    $vtop = v[2 + $mv - 1]
+    $haut = $u1 * 100000000 + $u2
+    $qhat = $haut div $vtop
+    $rhat = $haut % $vtop
+    $vnext = 0
+    si ($mv >= 2) { $vnext = v[2 + $mv - 2] }
+    $u3 = 0
+    si ($j + $mv - 2 >= 0 et $j + $mv - 2 < $nu) { $u3 = u[2 + $j + $mv - 2] }
+    $cor = 1
+    $nbcor = 0
+    tant_que ($cor == 1 et $nbcor < 4) {
+      $cor = 0
+      si ($qhat >= 100000000) { $cor = 1 }
+      sinon {
+        si ($qhat * $vnext > 100000000 * $rhat + $u3) { $cor = 1 }
+      }
+      si ($cor == 1) {
+        $qhat = $qhat - 1
+        $rhat = $rhat + $vtop
+        $nbcor = $nbcor + 1
+      }
+    }
+    $prod = bi_mul_small($v, $qhat)
+    $sh = bi_decale($prod, $j)
+    $cmp = bi_cmp_pos($u, $sh)
+    si ($cmp < 0) {
+      $qhat = $qhat - 1
+      $prod = bi_mul_small($v, $qhat)
+      $sh = bi_decale($prod, $j)
+    }
+    $u = bi_sub_pos($u, $sh)
+    joindre($qtmp, $qhat)
+    $j = $j - 1
+  }
+  $q = bi_tmp_rev($qtmp)
+  $r = bi_div_small_pos($u, $f_norm)
+  $res = bi_flat($q, $r)
+  retour $res
+}
+
+fn bi_div_pos(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $d = bi_divmod_pos(a, b)
+  $r = bi_flat_q($d)
+  retour $r
+}
+
+fn bi_mod_pos(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $d = bi_divmod_pos(a, b)
+  $r = bi_flat_r($d)
+  retour $r
+}
+
+# Division FLOOR signée (sémantique du `div` de Rose).
+fn bi_div(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $dm = bi_divmod_pos(bi_abs(a), bi_abs(b))
+  $q = bi_flat_q($dm)
+  $r = bi_flat_r($dm)
+  $sg = 0
+  si (a[0] != b[0]) { $sg = -1 }
+  si ($sg < 0 et bi_zeroq($r) == 0) { $q = bi_add_pos($q, bi_un()) }
+  $res = bi_avec_signe($q, $sg)
+  retour $res
+}
+
+# Reste EUCLIDIEN : le signe est celui du diviseur (comme `%` dans Rose).
+fn bi_mod(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $dm = bi_divmod_pos(bi_abs(a), bi_abs(b))
+  $r = bi_flat_r($dm)
+  $sg = 0
+  si (a[0] != b[0] et bi_zeroq($r) == 0) { $r = bi_sub_pos(bi_abs(b), $r) }
+  si (b[0] < 0) { $sg = -1 }
+  $res = bi_avec_signe($r, $sg)
+  retour $res
+}
+
+# ── Puissance ─────────────────────────────────────────────────────────────────
+
+fn bi_pow_binaire(a: liste<entier>, e: entier) -> liste<entier> {
+  $base = a
+  $exp = e
+  $r = bi_un()
+  tant_que ($exp > 0) {
+    si ($exp % 2 == 1) { $r = bi_mul($r, $base) }
+    $base = bi_mul($base, $base)
+    $exp = $exp div 2
+  }
+  retour $r
+}
+
+# Table de fenêtre encodée en LISTE PLATE de limbs :
+#   [0, cnt_0, limbs_0..., cnt_1, limbs_1..., ...]
+# (G5 ne sait pas stocker des listes dans des listes).
+fn bi_tab_get(tab: liste<entier>, d: entier) -> liste<entier> {
+  $pos = 1
+  $k = 0
+  tant_que ($k < $d) {
+    $cnt = tab[$pos + 1]
+    $pos = $pos + 2 + $cnt
+    $k = $k + 1
+  }
+  $sg = tab[$pos]
+  $cnt = tab[$pos + 1]
+  $r = [$sg, $cnt]
+  $j = 0
+  tant_que ($j < $cnt) { joindre($r, tab[$pos + 2 + $j]); $j = $j + 1 }
+  retour $r
+}
+
+fn bi_tab_ajoute(tab: liste<entier>, v: liste<entier>) -> liste<entier> {
+  # Reconstruire : sous G5, `joindre` sur un paramètre ne modifie PAS
+  # la liste de l'appelant (mesuré : table réduite à l'entrée 0, SIGILL).
+  $r = [0]
+  $k = 1
+  tant_que ($k < longueur(tab)) { joindre($r, tab[$k]); $k = $k + 1 }
+  joindre($r, v[0])
+  joindre($r, v[1])
+  $k = 0
+  tant_que ($k < v[1]) { joindre($r, v[2 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+# Exponentiation k-aire à fenêtre : w=1 sous 2^8, w=2 sous 2^16, w=4 au-delà.
+fn bi_pow(a: liste<entier>, e: entier) -> liste<entier> {
+  si ($e == 0) { retour bi_un() }
+  $w = 1
+  si ($e >= 256) { $w = 2 }
+  si ($e >= 65536) { $w = 4 }
+  $taille = 1
+  $k = 0
+  tant_que ($k < $w) { $taille = $taille * 2; $k = $k + 1 }
+  $tab = [0]
+  $un = bi_un()
+  $tab = bi_tab_ajoute($tab, $un)
+  $k = 1
+  tant_que ($k < $taille) {
+    $j = $k div 2
+    $p = bi_tab_get($tab, $j)
+    $car = bi_mul($p, $p)
+    $val = $car
+    si ($k % 2 == 1) {
+      $val = bi_mul($car, a)
+    }
+    $tab = bi_tab_ajoute($tab, $val)
+    $k = $k + 1
+  }
+  # PUISSANCE DE FENÊTRE, de gauche à droite : e = Σ d_i · (2^w)^i.
+  # On part de la plus haute puissance de 2^w ≤ e ; à chaque chiffre on
+  # élève r au carré w fois (r ← r^(2^w)), puis on multiplie par tab[d_i].
+  $pw = 1
+  tant_que ($pw * $taille <= e) { $pw = $pw * $taille }
+  $r = bi_un()
+  $reste = e
+  tant_que ($pw > 0) {
+    $d = $reste div $pw
+    $reste = $reste % $pw
+    $j = 0
+    tant_que ($j < $w) { $r = bi_mul($r, $r); $j = $j + 1 }
+    $fct = bi_tab_get($tab, $d)
+    $r = bi_mul($r, $fct)
+    $pw = $pw div $taille
+  }
+  retour $r
+}
+
+# ── PGCD ──────────────────────────────────────────────────────────────────────
+
+fn bi_gcd_euclide(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $u = bi_abs(a)
+  $v = bi_abs(b)
+  tant_que (bi_zeroq($v) == 0) {
+    $dm = bi_divmod_pos($u, $v)
+    $u = $v
+    $v = bi_flat_r($dm)
+  }
+  retour $u
+}
+
+# Les k limbs de tête d'un bigint, sous forme de bigint (k = 4 ici :
+# 36 décimales, assez pour que les quotients de la fenêtre restent exacts).
+fn bi_top(a: liste<entier>, k: entier) -> liste<entier> {
+  $start = a[1] - k
+  si ($start < 0) { $start = 0 }
+  $tmp = [0]
+  $j = $start
+  tant_que ($j < a[1]) { joindre($tmp, a[2 + $j]); $j = $j + 1 }
+  $r = bi_normalise(0, $tmp)
+  retour $r
+}
+
+# Application d'une matrice unimodulaire à coefficients signés (bigints) :
+# retourne la MAGNITUDE de ca*a + cb*b.
+fn bi_comb_big(ca: liste<entier>, a: liste<entier>, cb: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $s = bi_add(bi_mul(ca, a), bi_mul(cb, b))
+  $r = bi_abs($s)
+  retour $r
+}
+
+# PGCD de Lehmer : une fenêtre d'Euclide sur les 4 limbs de tête, matrice
+# unimodulaire appliquée en une passe aux grands nombres, puis un pas exact
+# pour garantir la progression. Le déterminant reste ±1, donc le PGCD est
+# invariant même si un quotient approché diverge. Repli Euclidien pur sous
+# 5 limbs et après 6 fenêtres sans progression.
+fn bi_gcd(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $u = bi_abs(a)
+  $v = bi_abs(b)
+  si (bi_zeroq($u) == 1) { retour $v }
+  si (bi_zeroq($v) == 1) { retour $u }
+  $sans_progres = 0
+  tant_que (1 == 1) {
+    si (bi_zeroq($v) == 1) { retour $u }
+    $cmp = bi_cmp_pos($u, $v)
+    si ($cmp < 0) {
+      $t = $u
+      $u = $v
+      $v = $t
+    }
+    # Lehmer est implanté et exact, mais MESURÉ plus lent qu'Euclide ici
+    # (91,1 s vs 70,0 s pour 10 PGCD de 10 000 bits). Seuil mis hors
+    # portée : voir HORDE_BIGINT.md pour le balayage complet.
+    si (u[1] <= 100000) { retour bi_gcd_euclide($u, $v) }
+    $uh = bi_top($u, 4)
+    $vh = bi_top($v, 4)
+    $A = bi_un()
+    $B = bi_zero()
+    $C = bi_zero()
+    $D = bi_un()
+    $pas = 0
+    $ok = 1
+    tant_que ($ok == 1 et $pas < 24) {
+      si (bi_zeroq($vh) == 1) { $ok = 0 }
+      sinon {
+        $dmh = bi_divmod_pos($uh, $vh)
+        $q = bi_flat_q($dmh)
+        $rh = bi_flat_r($dmh)
+        si (q[1] > 2) { $ok = 0 }
+        sinon {
+          $nA = $C
+          $nB = $D
+          $nC = bi_sub($A, bi_mul($q, $C))
+          $nD = bi_sub($B, bi_mul($q, $D))
+          si (cnt_limite($nC) == 1 ou cnt_limite($nD) == 1) { $ok = 0 }
+          sinon {
+            $A = $nA
+            $B = $nB
+            $C = $nC
+            $D = $nD
+            $uh = $vh
+            $vh = $rh
+            $pas = $pas + 1
+          }
+        }
+      }
+    }
+    si ($pas > 0) {
+      $nu = bi_comb_big($A, $u, $B, $v)
+      $nv = bi_comb_big($C, $u, $D, $v)
+      $u = $nu
+      $v = $nv
+      si (bi_zeroq($v) == 1) { retour $u }
+      $c2 = bi_cmp_pos($u, $v)
+      si ($c2 < 0) {
+        $t = $u
+        $u = $v
+        $v = $t
+      }
+    }
+    $avant = u[1] + v[1]
+    $dm = bi_divmod_pos($u, $v)
+    $u = $v
+    $v = bi_flat_r($dm)
+    $apres = u[1] + v[1]
+    si ($apres >= $avant) { $sans_progres = $sans_progres + 1 }
+    sinon { $sans_progres = 0 }
+    si ($sans_progres >= 6) {
+      $g = bi_gcd_euclide($u, $v)
+      retour $g
+    }
+  }
+}
+
+fn cnt_limite(v: liste<entier>) -> entier {
+  $r = 0
+  si (v[1] > 3) { $r = 1 }
+  retour $r
+}
