@@ -1,0 +1,88 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_interpreteur_rir.rose — banc de tests de l'interpréteur RIR complet.
+#
+# Deux usages :
+#   1) `rose compilateur/tests_interpreteur_rir.rose` imprime un rapport
+#      d'auto-vérification des primitives pures de l'interpréteur (celles
+#      qui n'ont pas besoin d'un dump : arithmétique exacte, rationnels,
+#      listes, tables, formatage).
+#   2) `ELF compilateur/interpreteur_rir.rose <dump.rir>` exécute un dump.
+#      Le script de validation externe compare la sortie à `rose/rose`.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ── Mini-harness ──────────────────────────────────────────────────────
+$pass = [0]
+$fail = [0]
+
+fn verif($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) {
+    joindre($pass, 1)
+    retour 1
+  }
+  joindre($fail, 1)
+  afficher_erreur("ECHEC " + $nom + " : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+# ── Utilitaires locales (répliques des fonctions internes testables) ───
+fn bnorm_t($a: chaine) -> chaine {
+  $neg = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $neg = vrai; $a = sous_chaine($a, 1, longueur($a)) }
+  $i = 0
+  tant_que ($i < longueur($a) - 1 et sous_chaine($a, $i, $i + 1) == "0") { $i = $i + 1 }
+  $r = sous_chaine($a, $i, longueur($a))
+  si ($neg et $r != "0") { $r = "-" + $r }
+  retour $r
+}
+fn badd_t($a: chaine, $b: chaine) -> chaine {
+  $i = longueur($a) - 1
+  $j = longueur($b) - 1
+  $carry = 0
+  $r = ""
+  tant_que ($i >= 0 ou $j >= 0 ou $carry > 0) {
+    $s = $carry
+    si ($i >= 0) { $s = $s + entier(sous_chaine($a, $i, $i + 1)) }
+    si ($j >= 0) { $s = $s + entier(sous_chaine($b, $j, $j + 1)) }
+    $r = chaine($s % 10) + $r
+    $carry = $s ÷ 10
+    $i = $i - 1
+    $j = $j - 1
+  }
+  retour bnorm_t($r)
+}
+
+# ── Tests ─────────────────────────────────────────────────────────────
+verif("bnorm zeros", "42", bnorm_t("00042"))
+verif("bnorm neg", "-7", bnorm_t("-0007"))
+verif("bnorm zero", "0", bnorm_t("-0000"))
+verif("badd simple", "42", badd_t("17", "25"))
+verif("badd retenue", "1000", badd_t("999", "1"))
+verif("badd grand", "20000000000000000000", badd_t("10000000000000000000", "10000000000000000000"))
+
+# Table associative — NOTE : le runtime G5 de C0 n'écrase PAS une clé
+# existante (inserer ajoute une entrée doublon). L'interpréteur RIR corrige
+# ce comportement dans tab_set ; ces deux tests vérifient le cas nominal.
+$t = table()
+inserer($t, "a", "1")
+inserer($t, "b", "2")
+verif("table clé a", "1", chaine($t["a"]))
+verif("table clé b", "2", chaine($t["b"]))
+
+# Listes (mutation par joindre)
+$l = [""]
+joindre($l, "x")
+joindre($l, "y")
+verif("liste longueur", "3", chaine(longueur($l)))
+verif("liste idx", "x", $l[1])
+
+# Chaînes
+verif("sous_chaine", "cd", sous_chaine("abcdef", 2, 4))
+verif("concat", "abcd", "ab" + "cd")
+verif("longueur unicode", "3", chaine(longueur("été")))
+
+# Conversion
+verif("chaine entier", "12345", chaine(12345))
+verif("entier chaîne", "124", chaine(entier("123") + 1))
+
+>> "TESTS RIR : " + chaine(longueur($pass) - 1) + " OK, " + chaine(longueur($fail) - 1) + " ECHEC"
+si (longueur($fail) > 1) { quitter(1) }

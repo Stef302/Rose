@@ -1,0 +1,1166 @@
+# ═══════════════════════════════════════════════════════════════════════
+# interpreteur_rir.rose — interpréteur complet du RIR de Rose, écrit en Rose
+# et émettable par C0 (sous-ensemble G5).
+#
+# ATTENTION sémantique Rose : une fonction qui AFFECTE une variable globale
+# crée une LOCALE. Toute mutation d'état passe donc soit par `joindre` sur
+# une globale (mutation en place), soit par passage explicite en paramètre
+# et retour d'une NOUVELLE liste. Aucune fonction n'affecte de globale.
+#
+# Valeurs taguées (chaînes, premier octet = tag) :
+#   i:<décimal>  r:<num>/<den>  f:<num>/<den>  s:<texte>  b:0|b:1
+#   l:<n>|<len>:<v>|…   t:<n>|<len>:<k>|<len>:<v>|…   v:
+# ═══════════════════════════════════════════════════════════════════════
+
+# ── Globales (toutes en lecture seule depuis les fonctions) ───────────
+$tok = [""]            # tokens 1-based du dump (remplis par joindre)
+$op_start = [0]
+$op_len = [0]
+$fn_nom = [""]
+$fn_first = [0]
+$fn_nops = [0]
+$fn_nslots = [0]
+$fn_pn = [0]
+$fn_soff = [0]
+$slot_nom = [""]
+$glob_nom = [""]
+
+# ── Utilitaires ───────────────────────────────────────────────────────
+fn vtag($v: chaine) -> chaine { retour sous_chaine($v, 0, 1) }
+fn vpay($v: chaine) -> chaine { retour sous_chaine($v, 2, longueur($v)) }
+fn vi($n: chaine) -> chaine {
+  $x = bnorm($n)
+  si (longueur($x) >= 2 et sous_chaine($x, 0, 2) == "--") { $x = sous_chaine($x, 1, longueur($x)) }
+  retour "i:" + $x
+}
+fn vs($s: chaine) -> chaine { retour "s:" + $s }
+fn vb($b: booleen) -> chaine { si ($b) { retour "b:1" }; retour "b:0" }
+fn vv() -> chaine { retour "v:" }
+fn digit_at($s: chaine, $i: entier) -> entier {
+  si ($i < 0 ou $i >= longueur($s)) { retour 0 }
+  retour entier(sous_chaine($s, $i, $i + 1))
+}
+fn digits_only($s: chaine) -> booleen {
+  $n = longueur($s)
+  si ($n == 0) { retour faux }
+  $i = 0
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c < "0" ou $c > "9") { retour faux }
+    $i = $i + 1
+  }
+  retour vrai
+}
+fn lset($l: liste<chaine>, $i: entier, $v: chaine) -> liste<chaine> {
+  $r = [""]
+  $k = 1
+  tant_que ($k < longueur($l)) {
+    si ($k == $i) { joindre($r, $v) } sinon { joindre($r, $l[$k]) }
+    $k = $k + 1
+  }
+  retour $r
+}
+fn iset($l: liste<entier>, $i: entier, $v: entier) -> liste<entier> {
+  $r = [0]
+  $k = 1
+  tant_que ($k < longueur($l)) {
+    si ($k == $i) { joindre($r, $v) } sinon { joindre($r, $l[$k]) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── Arithmétique entière exacte sur chaînes décimales ─────────────────
+fn bnorm($a: chaine) -> chaine {
+  $neg = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $neg = vrai; $a = sous_chaine($a, 1, longueur($a)) }
+  $i = 0
+  tant_que ($i < longueur($a) - 1 et sous_chaine($a, $i, $i + 1) == "0") { $i = $i + 1 }
+  $r = sous_chaine($a, $i, longueur($a))
+  si ($neg et $r != "0") { $r = "-" + $r }
+  retour $r
+}
+fn babs($a: chaine) -> chaine {
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { retour sous_chaine($a, 1, longueur($a)) }
+  retour $a
+}
+fn bneg($a: chaine) -> chaine {
+  si ($a == "0") { retour "0" }
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { retour sous_chaine($a, 1, longueur($a)) }
+  retour "-" + $a
+}
+fn bcmp($a: chaine, $b: chaine) -> entier {
+  $na = faux
+  $nb = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $na = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $nb = vrai }
+  si ($na et non $nb) { retour -1 }
+  si (non $na et $nb) { retour 1 }
+  $aa = $a
+  $bb = $b
+  si ($na) { $aa = sous_chaine($a, 1, longueur($a)); $bb = sous_chaine($b, 1, longueur($b)) }
+  $c = 0
+  si (longueur($aa) > longueur($bb)) { $c = 1 }
+  si (longueur($aa) < longueur($bb)) { $c = -1 }
+  si (longueur($aa) == longueur($bb) et $aa > $bb) { $c = 1 }
+  si (longueur($aa) == longueur($bb) et $aa < $bb) { $c = -1 }
+  si ($na) { $c = 0 - $c }
+  retour $c
+}
+fn badd_pos($a: chaine, $b: chaine) -> chaine {
+  $i = longueur($a) - 1
+  $j = longueur($b) - 1
+  $carry = 0
+  $r = ""
+  tant_que ($i >= 0 ou $j >= 0 ou $carry > 0) {
+    $s = $carry
+    si ($i >= 0) { $s = $s + digit_at($a, $i) }
+    si ($j >= 0) { $s = $s + digit_at($b, $j) }
+    $r = chaine($s % 10) + $r
+    $carry = $s ÷ 10
+    $i = $i - 1
+    $j = $j - 1
+  }
+  retour $r
+}
+fn bsub_pos($a: chaine, $b: chaine) -> chaine {
+  $i = longueur($a) - 1
+  $j = longueur($b) - 1
+  $borrow = 0
+  $r = ""
+  tant_que ($i >= 0) {
+    $d = digit_at($a, $i) - $borrow
+    si ($j >= 0) { $d = $d - digit_at($b, $j) }
+    si ($d < 0) { $d = $d + 10; $borrow = 1 } sinon { $borrow = 0 }
+    $r = chaine($d) + $r
+    $i = $i - 1
+    $j = $j - 1
+  }
+  retour bnorm($r)
+}
+fn badd($a: chaine, $b: chaine) -> chaine {
+  $na = faux
+  $nb = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $na = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $nb = vrai }
+  $aa = babs($a)
+  $bb = babs($b)
+  si ($na == $nb) {
+    $r = badd_pos($aa, $bb)
+    si ($na) { $r = "-" + $r }
+    retour bnorm($r)
+  }
+  $c = bcmp($aa, $bb)
+  si ($c >= 0) {
+    $r = bsub_pos($aa, $bb)
+    si ($na) { $r = "-" + $r }
+    retour bnorm($r)
+  }
+  $r = bsub_pos($bb, $aa)
+  si ($nb) { $r = "-" + $r }
+  retour bnorm($r)
+}
+fn bsub($a: chaine, $b: chaine) -> chaine { retour badd($a, bneg($b)) }
+fn bmul_small($a: chaine, $k: entier) -> chaine {
+  si ($k == 0 ou $a == "0") { retour "0" }
+  $neg = faux
+  $aa = $a
+  si (sous_chaine($aa, 0, 1) == "-") { $neg = vrai; $aa = sous_chaine($aa, 1, longueur($aa)) }
+  $i = longueur($aa) - 1
+  $carry = 0
+  $r = ""
+  tant_que ($i >= 0 ou $carry > 0) {
+    $p = digit_at($aa, $i) * $k + $carry
+    $r = chaine($p % 10) + $r
+    $carry = $p ÷ 10
+    $i = $i - 1
+  }
+  si ($neg) { $r = "-" + $r }
+  retour bnorm($r)
+}
+fn bmul($a: chaine, $b: chaine) -> chaine {
+  $neg = faux
+  $aa = babs($a)
+  $bb = babs($b)
+  $an = faux
+  $bn = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $an = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $bn = vrai }
+  si ($an != $bn) { $neg = vrai }
+  $r = "0"
+  $j = longueur($bb) - 1
+  tant_que ($j >= 0) {
+    $k = digit_at($bb, $j)
+    si ($k > 0) {
+      $part = bmul_small($aa, $k)
+      $z = 0
+      tant_que ($z < longueur($bb) - 1 - $j) { $part = $part + "0"; $z = $z + 1 }
+      $r = badd($r, $part)
+    }
+    $j = $j - 1
+  }
+  si ($neg et $r != "0") { $r = "-" + $r }
+  retour bnorm($r)
+}
+# bdivmod rend [Dummy, quotient, reste] (modulo PLANCHER)
+fn bdivmod($a: chaine, $b: chaine) -> liste<chaine> {
+  $r = [""]
+  $aa = babs($a)
+  $bb = babs($b)
+  $neg = faux
+  $an = faux
+  $bn = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $an = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $bn = vrai }
+  si ($an != $bn) { $neg = vrai }
+  $q = ""
+  $rem = "0"
+  $i = 0
+  tant_que ($i < longueur($aa)) {
+    $rem = bnorm(badd(bmul_small($rem, 10), sous_chaine($aa, $i, $i + 1)))
+    $d = 0
+    tant_que (bcmp($rem, $bb) >= 0) {
+      $rem = bsub_pos($rem, $bb)
+      $d = $d + 1
+    }
+    $q = $q + chaine($d)
+    $i = $i + 1
+  }
+  $qq = bnorm($q)
+  $rr = bnorm($rem)
+  si ($neg) {
+    si ($rr != "0") {
+      $qq = badd($qq, "1")
+      $rr = bsub($bb, $rr)
+    }
+    $qq = bneg($qq)
+  }
+  si ($bn) { $rr = bneg($rr) }
+  joindre($r, $qq)
+  joindre($r, $rr)
+  retour $r
+}
+fn bdiv($a: chaine, $b: chaine) -> chaine { $r = bdivmod($a, $b); retour $r[1] }
+fn bmod($a: chaine, $b: chaine) -> chaine { $r = bdivmod($a, $b); retour $r[2] }
+fn bgcd($a: chaine, $b: chaine) -> chaine {
+  $x = babs($a)
+  $y = babs($b)
+  tant_que ($y != "0") {
+    $r = bdivmod($x, $y)
+    $x = $y
+    $y = babs($r[2])
+  }
+  retour $x
+}
+fn bpow($a: chaine, $n: entier) -> chaine {
+  si ($n < 0) { retour "0" }
+  $r = "1"
+  $b = $a
+  $e = $n
+  tant_que ($e > 0) {
+    si ($e % 2 == 1) { $r = bmul($r, $b) }
+    $b = bmul($b, $b)
+    $e = $e ÷ 2
+  }
+  retour $r
+}
+
+# ── Rationnels ────────────────────────────────────────────────────────
+fn rat_make($n: chaine, $d: chaine) -> chaine {
+  $n = bnorm($n)
+  $d = bnorm($d)
+  si ($d == "0") { retour "r:0/1" }
+  si (longueur($d) > 0 et sous_chaine($d, 0, 1) == "-") { $n = bneg($n); $d = bneg($d) }
+  si ($n == "0") { retour "r:0/1" }
+  $g = bgcd($n, $d)
+  si ($g != "1" et $g != "0") {
+    $q1 = bdivmod($n, $g); $n = $q1[1]
+    $q2 = bdivmod($d, $g); $d = $q2[1]
+  }
+  si ($d == "1") { retour vi($n) }
+  retour "r:" + $n + "/" + $d
+}
+fn rat_pay($v: chaine) -> chaine { retour vpay($v) }
+fn rat_split($v: chaine) -> liste<chaine> {
+  si (vtag($v) == "i") {
+    $r0 = [""]
+    joindre($r0, vpay($v))
+    joindre($r0, "1")
+    retour $r0
+  }
+  $p = rat_pay($v)
+  $i = 0
+  tant_que ($i < longueur($p) et sous_chaine($p, $i, $i + 1) != "/") { $i = $i + 1 }
+  $r = [""]
+  joindre($r, sous_chaine($p, 0, $i))
+  joindre($r, sous_chaine($p, $i + 1, longueur($p)))
+  retour $r
+}
+fn rat_num($v: chaine) -> chaine { $r = rat_split($v); retour $r[1] }
+fn rat_den($v: chaine) -> chaine { $r = rat_split($v); retour $r[2] }
+fn rat_add($x: chaine, $y: chaine) -> chaine {
+  $a = rat_num($x); $b = rat_den($x)
+  $c = rat_num($y); $d = rat_den($y)
+  retour rat_make(badd(bmul($a, $d), bmul($c, $b)), bmul($b, $d))
+}
+fn rat_sub($x: chaine, $y: chaine) -> chaine {
+  $a = rat_num($x); $b = rat_den($x)
+  $c = rat_num($y); $d = rat_den($y)
+  retour rat_make(bsub(bmul($a, $d), bmul($c, $b)), bmul($b, $d))
+}
+fn rat_mul($x: chaine, $y: chaine) -> chaine {
+  retour rat_make(bmul(rat_num($x), rat_num($y)), bmul(rat_den($x), rat_den($y)))
+}
+fn rat_div($x: chaine, $y: chaine) -> chaine {
+  si (rat_num($y) == "0") { retour "r:0/1" }
+  retour rat_make(bmul(rat_num($x), rat_den($y)), bmul(rat_den($x), rat_num($y)))
+}
+fn rat_cmp($x: chaine, $y: chaine) -> entier {
+  retour bcmp(bmul(rat_num($x), rat_den($y)), bmul(rat_num($y), rat_den($x)))
+}
+fn rat_dec($v: chaine) -> chaine {
+  $nn = rat_num($v)
+  $d = rat_den($v)
+  $sgn = ""
+  si (longueur($nn) > 0 et sous_chaine($nn, 0, 1) == "-") { $sgn = "-"; $nn = sous_chaine($nn, 1, longueur($nn)) }
+  $ip = bdiv($nn, $d)
+  $ip = babs($ip)
+  $rem = bmod($nn, $d)
+  si ($sgn != "" et $rem != "0") { $ip = badd($ip, "1") }
+  si ($rem == "0") { retour $sgn + $ip }
+  $seen = [""]
+  $digs = ""
+  $rep = -1
+  $stop = faux
+  tant_que ($rem != "0" et longueur($digs) < 10000 et non $stop) {
+    $k = 1
+    $found = -1
+    tant_que ($k < longueur($seen)) {
+      si ($seen[$k] == $rem et $found < 0) { $found = $k }
+      $k = $k + 1
+    }
+    si ($found >= 0) { $rep = $found - 1; $stop = vrai }
+    si (non $stop) {
+      joindre($seen, $rem)
+      $rem = bmul_small($rem, 10)
+      $dg = bdiv($rem, $d)
+      $rem = bmod($rem, $d)
+      $digs = $digs + $dg
+    }
+  }
+  $frac = ""
+  si ($rep >= 0) {
+    $frac = sous_chaine($digs, 0, $rep) + "[" + sous_chaine($digs, $rep, longueur($digs)) + "]"
+  } sinon {
+    $frac = $digs
+  }
+  retour $sgn + $ip + "." + $frac
+}
+
+# ── Listes / tables sérialisées ───────────────────────────────────────
+fn item_enc($v: chaine) -> chaine { retour chaine(longueur($v)) + ":" + $v + "|" }
+fn lst_empty() -> chaine { retour "l:0|" }
+fn body_off($p: chaine) -> entier {
+  $i = 0
+  tant_que ($i < longueur($p) et sous_chaine($p, $i, $i + 1) != "|") { $i = $i + 1 }
+  retour $i
+}
+fn lst_len($l: chaine) -> entier {
+  $p = vpay($l)
+  $i = body_off($p)
+  retour entier(sous_chaine($p, 0, $i))
+}
+fn lst_body($l: chaine) -> chaine {
+  $p = vpay($l)
+  $i = body_off($p)
+  retour sous_chaine($p, $i + 1, longueur($p))
+}
+fn lst_append($l: chaine, $v: chaine) -> chaine {
+  $p = vpay($l)
+  $i = body_off($p)
+  retour "l:" + chaine(entier(sous_chaine($p, 0, $i)) + 1) + "|" + sous_chaine($p, $i + 1, longueur($p)) + item_enc($v)
+}
+fn lst_get($l: chaine, $ix: entier) -> chaine {
+  $b = lst_body($l)
+  $p = 0
+  $k = 0
+  tant_que ($p < longueur($b) et $k <= $ix) {
+    $j = $p
+    tant_que ($j < longueur($b) et sous_chaine($b, $j, $j + 1) != ":") { $j = $j + 1 }
+    $ln = entier(sous_chaine($b, $p, $j))
+    $val = sous_chaine($b, $j + 1, $j + 1 + $ln)
+    si ($k == $ix) { retour $val }
+    $p = $j + 1 + $ln + 1
+    $k = $k + 1
+  }
+  retour "v:"
+}
+fn tab_empty() -> chaine { retour "t:0|" }
+fn tab_len($t: chaine) -> entier { retour lst_len($t) }
+fn tab_body($t: chaine) -> chaine { retour lst_body($t) }
+fn tab_get($t: chaine, $k: chaine) -> chaine {
+  $b = tab_body($t)
+  $p = 0
+  tant_que ($p < longueur($b)) {
+    $j = $p
+    tant_que ($j < longueur($b) et sous_chaine($b, $j, $j + 1) != ":") { $j = $j + 1 }
+    $ln = entier(sous_chaine($b, $p, $j))
+    $key = sous_chaine($b, $j + 1, $j + 1 + $ln)
+    $q = $j + 2 + $ln
+    $j2 = $q
+    tant_que ($j2 < longueur($b) et sous_chaine($b, $j2, $j2 + 1) != ":") { $j2 = $j2 + 1 }
+    $lv = entier(sous_chaine($b, $q, $j2))
+    $val = sous_chaine($b, $j2 + 1, $j2 + 1 + $lv)
+    si ($key == $k) { retour $val }
+    $p = $j2 + 1 + $lv + 1
+  }
+  retour "v:"
+}
+fn tab_has($t: chaine, $k: chaine) -> booleen {
+  $b = tab_body($t)
+  $p = 0
+  tant_que ($p < longueur($b)) {
+    $j = $p
+    tant_que ($j < longueur($b) et sous_chaine($b, $j, $j + 1) != ":") { $j = $j + 1 }
+    $ln = entier(sous_chaine($b, $p, $j))
+    $key = sous_chaine($b, $j + 1, $j + 1 + $ln)
+    si ($key == $k) { retour vrai }
+    $q = $j + 2 + $ln
+    $j2 = $q
+    tant_que ($j2 < longueur($b) et sous_chaine($b, $j2, $j2 + 1) != ":") { $j2 = $j2 + 1 }
+    $lv = entier(sous_chaine($b, $q, $j2))
+    $p = $j2 + 2 + $lv
+  }
+  retour faux
+}
+fn tab_set($t: chaine, $k: chaine, $v: chaine) -> chaine {
+  $p = vpay($t)
+  $i = body_off($p)
+  $n = entier(sous_chaine($p, 0, $i))
+  $body = sous_chaine($p, $i + 1, longueur($p))
+  $out = ""
+  $cnt = 0
+  $q = 0
+  tant_que ($q < longueur($body)) {
+    $j = $q
+    tant_que ($j < longueur($body) et sous_chaine($body, $j, $j + 1) != ":") { $j = $j + 1 }
+    $ln = entier(sous_chaine($body, $q, $j))
+    $key = sous_chaine($body, $j + 1, $j + 1 + $ln)
+    $r = $j + 2 + $ln
+    $j2 = $r
+    tant_que ($j2 < longueur($body) et sous_chaine($body, $j2, $j2 + 1) != ":") { $j2 = $j2 + 1 }
+    $lv = entier(sous_chaine($body, $r, $j2))
+    $fin = $j2 + 2 + $lv
+    si ($key != $k) { $out = $out + sous_chaine($body, $q, $fin); $cnt = $cnt + 1 }
+    $q = $fin
+  }
+  retour "t:" + chaine($cnt + 1) + "|" + $out + item_enc($k) + item_enc($v)
+}
+
+# ── Valeurs ───────────────────────────────────────────────────────────
+fn val_type($v: chaine) -> chaine {
+  $t = vtag($v)
+  si ($t == "i") { retour "entier" }
+  si ($t == "r") { retour "rationnel" }
+  si ($t == "f") { retour "flottant" }
+  si ($t == "s") { retour "chaine" }
+  si ($t == "b") { retour "booleen" }
+  si ($t == "l") { retour "liste" }
+  si ($t == "t") { retour "table" }
+  retour "vide"
+}
+fn val_truth($v: chaine) -> booleen {
+  $t = vtag($v)
+  si ($t == "b") { retour vpay($v) == "1" }
+  si ($t == "i") { retour vpay($v) != "0" }
+  si ($t == "r" ou $t == "f") { retour rat_num($v) != "0" }
+  si ($t == "s") { retour longueur(vpay($v)) > 0 }
+  si ($t == "l") { retour lst_len($v) > 0 }
+  si ($t == "t") { retour tab_len($v) > 0 }
+  retour faux
+}
+fn val_str($v: chaine) -> chaine {
+  $t = vtag($v)
+  si ($t == "i") { retour vpay($v) }
+  si ($t == "s") { retour vpay($v) }
+  si ($t == "g") { retour vpay($v) }
+  si ($t == "b") { si (vpay($v) == "1") { retour "vrai" }; retour "faux" }
+  si ($t == "r" ou $t == "f") { retour rat_dec($v) }
+  si ($t == "l") {
+    $r = "["
+    $n = lst_len($v)
+    $i = 0
+    tant_que ($i < $n) {
+      si ($i > 0) { $r = $r + ", " }
+      $r = $r + val_str(lst_get($v, $i))
+      $i = $i + 1
+    }
+    retour $r + "]"
+  }
+  si ($t == "t") { retour "table" }
+  retour ""
+}
+fn val_cmp($a: chaine, $b: chaine) -> entier {
+  $ta = vtag($a)
+  $tb = vtag($b)
+  si ($ta == "s" et $tb == "s") {
+    si (vpay($a) < vpay($b)) { retour -1 }
+    si (vpay($a) > vpay($b)) { retour 1 }
+    retour 0
+  }
+  si ($ta == "b" et $tb == "b") {
+    $x = 0; si (vpay($a) == "1") { $x = 1 }
+    $y = 0; si (vpay($b) == "1") { $y = 1 }
+    retour $x - $y
+  }
+  $num = faux
+  si ($ta == "i" ou $ta == "r" ou $ta == "f") { $num = vrai }
+  $nu2 = faux
+  si ($tb == "i" ou $tb == "r" ou $tb == "f") { $nu2 = vrai }
+  si ($num et $nu2) {
+    $ra = $a; $rb = $b
+    si ($ta == "i") { $ra = rat_make(vpay($a), "1") }
+    si ($tb == "i") { $rb = rat_make(vpay($b), "1") }
+    retour rat_cmp($ra, $rb)
+  }
+  retour 0
+}
+fn val_eq($a: chaine, $b: chaine) -> booleen { retour val_cmp($a, $b) == 0 }
+fn val_add($a: chaine, $b: chaine) -> chaine {
+  $ta = vtag($a); $tb = vtag($b)
+  si ($ta == "s" et $tb == "s") { retour vs(vpay($a) + vpay($b)) }
+  $ra = $a; $rb = $b
+  si ($ta == "i") { $ra = rat_make(vpay($a), "1") }
+  si ($tb == "i") { $rb = rat_make(vpay($b), "1") }
+  retour rat_add($ra, $rb)
+}
+fn val_sub($a: chaine, $b: chaine) -> chaine {
+  $ra = $a; $rb = $b
+  si (vtag($a) == "i") { $ra = rat_make(vpay($a), "1") }
+  si (vtag($b) == "i") { $rb = rat_make(vpay($b), "1") }
+  retour rat_sub($ra, $rb)
+}
+fn val_mul($a: chaine, $b: chaine) -> chaine {
+  $ra = $a; $rb = $b
+  si (vtag($a) == "i") { $ra = rat_make(vpay($a), "1") }
+  si (vtag($b) == "i") { $rb = rat_make(vpay($b), "1") }
+  retour rat_mul($ra, $rb)
+}
+fn val_div($a: chaine, $b: chaine) -> chaine {
+  $ra = $a; $rb = $b
+  si (vtag($a) == "i") { $ra = rat_make(vpay($a), "1") }
+  si (vtag($b) == "i") { $rb = rat_make(vpay($b), "1") }
+  retour rat_div($ra, $rb)
+}
+fn val_mod($a: chaine, $b: chaine) -> chaine {
+  si (vtag($a) == "i" et vtag($b) == "i") { retour vi(bmod(vpay($a), vpay($b))) }
+  retour vi("0")
+}
+fn val_pow($a: chaine, $b: chaine) -> chaine {
+  $e = entier(rat_dec($b))
+  retour vi(bpow(vpay($a), $e))
+}
+fn val_neg($a: chaine) -> chaine {
+  $t = vtag($a)
+  si ($t == "i") { retour vi(bneg(vpay($a))) }
+  si ($t == "r" ou $t == "f") { retour "r:" + bneg(rat_num($a)) + "/" + rat_den($a) }
+  retour $a
+}
+fn val_abs($a: chaine) -> chaine {
+  si (vtag($a) == "i") { retour vi(babs(vpay($a))) }
+  si (vtag($a) == "r" ou vtag($a) == "f") { retour "r:" + babs(rat_num($a)) + "/" + rat_den($a) }
+  retour $a
+}
+fn vf($s: chaine) -> chaine {
+  $i = 0
+  tant_que ($i < longueur($s) et sous_chaine($s, $i, $i + 1) != "/") { $i = $i + 1 }
+  si ($i < longueur($s)) {
+    $num = sous_chaine($s, 0, $i)
+    si (longueur($num) >= 2 et sous_chaine($num, 0, 2) == "--") { $num = sous_chaine($num, 1, longueur($num)) }
+    $rv = rat_make($num, sous_chaine($s, $i + 1, longueur($s)))
+    si (vtag($rv) == "i") { retour "f:" + vpay($rv) + "/1" }
+    retour "f:" + vpay($rv)
+  }
+  $j = 0
+  tant_que ($j < longueur($s) et sous_chaine($s, $j, $j + 1) != ".") { $j = $j + 1 }
+  si ($j >= longueur($s)) { retour "f:" + bnorm($s) + "/1" }
+  $ip = sous_chaine($s, 0, $j)
+  $fp = sous_chaine($s, $j + 1, longueur($s))
+  $den = "1"
+  $k = 0
+  tant_que ($k < longueur($fp)) { $den = $den + "0"; $k = $k + 1 }
+  $rv = rat_make($ip + $fp, $den)
+  si (vtag($rv) == "i") { retour "f:" + vpay($rv) + "/1" }
+  retour "f:" + vpay($rv)
+}
+fn fib_big($n: entier) -> chaine {
+  si ($n <= 0) { retour "0" }
+  si ($n <= 2) { retour "1" }
+  $a = "0"; $b = "1"; $k = 2
+  tant_que ($k < $n) { $c = badd($a, $b); $a = $b; $b = $c; $k = $k + 1 }
+  retour $b
+}
+fn fact_big($n: entier) -> chaine {
+  $r = "1"; $k = 2
+  tant_que ($k <= $n) { $r = bmul($r, chaine($k)); $k = $k + 1 }
+  retour $r
+}
+
+# ── Analyse du dump (globaux remplis uniquement par joindre) ──────────
+fn tok_line($s: chaine) -> entier {
+  $n = longueur($s)
+  $i = 0
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == " " ou $c == "\t" ou $c == "\r") { $i = $i + 1 }
+    sinon si ($c == "(" ou $c == ")") { joindre($tok, $c); $i = $i + 1 }
+    sinon si ($c == "\"") {
+      $j = $i + 1
+      $buf = ""
+      $done = faux
+      tant_que ($j < $n et non $done) {
+        $ch = sous_chaine($s, $j, $j + 1)
+        si ($ch == "\\" et $j + 1 < $n) {
+          $nx = sous_chaine($s, $j + 1, $j + 2)
+          si ($nx == "n") { $buf = $buf + "\n" }
+          sinon si ($nx == "t") { $buf = $buf + "\t" }
+          sinon si ($nx == "r") { $buf = $buf + "\r" }
+          sinon { $buf = $buf + $nx }
+          $j = $j + 2
+        } sinon si ($ch == "\"") { $done = vrai; $j = $j + 1 }
+        sinon { $buf = $buf + $ch; $j = $j + 1 }
+      }
+      joindre($tok, $buf)
+      $i = $j
+    }
+    sinon {
+      $j = $i
+      $fin = faux
+      tant_que ($j < $n et non $fin) {
+        $ch = sous_chaine($s, $j, $j + 1)
+        si ($ch == " " ou $ch == "\t" ou $ch == "\r" ou $ch == "(" ou $ch == ")" ou $ch == "\"") { $fin = vrai }
+        si (non $fin) { $j = $j + 1 }
+      }
+      joindre($tok, sous_chaine($s, $i, $j))
+      $i = $j
+    }
+  }
+  retour 0
+}
+fn trim($s: chaine) -> chaine {
+  $i = 0
+  tant_que ($i < longueur($s) et sous_chaine($s, $i, $i + 1) == " ") { $i = $i + 1 }
+  $j = longueur($s)
+  tant_que ($j > $i et sous_chaine($s, $j - 1, $j) == " ") { $j = $j - 1 }
+  retour sous_chaine($s, $i, $j)
+}
+fn parse_noms($p: entier, $tend: entier) -> entier {
+  $q = $p + 1
+  $done = faux
+  tant_que ($q <= $tend et non $done) {
+    $t = $tok[$q]
+    si (sous_chaine($t, 0, 1) != "[") { $done = vrai }
+    si (non $done) {
+      $j = 1
+      tant_que ($j < longueur($t) et sous_chaine($t, $j, $j + 1) != "]") { $j = $j + 1 }
+      joindre($slot_nom, sous_chaine($t, $j + 1, longueur($t)))
+      $q = $q + 1
+    }
+  }
+  retour $q
+}
+fn parse_rir($txt: chaine) -> entier {
+  $lines = [""]
+  $cur = ""
+  $i = 0
+  $nl = longueur($txt)
+  tant_que ($i < $nl) {
+    $c = sous_chaine($txt, $i, $i + 1)
+    si ($c == "\n") { joindre($lines, $cur); $cur = "" } sinon { $cur = $cur + $c }
+    $i = $i + 1
+  }
+  si (longueur($cur) > 0) { joindre($lines, $cur) }
+  $li = 1
+  $en_fn = faux
+  $nfn = 0
+  $nsl = 0
+  $pn = 0
+  $soff = 1
+  $gcount = 0
+  tant_que ($li < longueur($lines)) {
+    $line = trim($lines[$li])
+    $isop = faux
+    si (longueur($line) >= 5) {
+      si (digits_only(sous_chaine($line, 0, 4)) et sous_chaine($line, 4, 5) == " ") { $isop = vrai }
+    }
+    si ($isop) {
+      joindre($op_start, longueur($tok))
+      tok_line(sous_chaine($line, 5, longueur($line)))
+      joindre($op_len, longueur($tok) - $op_start[longueur($op_start) - 1])
+    } sinon {
+      $line_start = longueur($tok)
+      tok_line($line)
+      $tend = longueur($tok) - 1
+      $p = $line_start
+      $h = $tok[$p]
+      si ($h == "fonction") {
+        si ($en_fn) {
+          joindre($fn_nops, longueur($op_start) - 1 - $fn_first[$nfn])
+          joindre($fn_nslots, $nsl)
+          joindre($fn_pn, $pn)
+        }
+        $nfn = $nfn + 1
+        joindre($fn_nom, $tok[$p + 1])
+        joindre($fn_first, longueur($op_start) - 1)
+        joindre($fn_soff, longueur($slot_nom))
+        $en_fn = vrai
+        $nsl = 0
+        $pn = 0
+        $soff = longueur($slot_nom)
+      }
+      si ($en_fn et $h == "param") { $pn = $pn + 1 }
+      si ($en_fn et $h == "n_slots") { $nsl = entier($tok[$p + 1]) }
+      si ($en_fn et $h == "noms") { $q = parse_noms($p, $tend) }
+      si ($en_fn et $h == "globaux") {
+        $q = $p + 1
+        tant_que ($q <= $tend) {
+          $ix = entier($tok[$q])
+          joindre($glob_nom, $slot_nom[$soff + $ix])
+          $gcount = $gcount + 1
+          $q = $q + 1
+        }
+      }
+    }
+    $li = $li + 1
+  }
+  si ($en_fn) {
+    joindre($fn_nops, longueur($op_start) - 1 - $fn_first[$nfn])
+    joindre($fn_nslots, $nsl)
+    joindre($fn_pn, $pn)
+  }
+  retour 0
+}
+fn nfn_index($l: liste<entier>) -> entier { retour longueur($l) - 1 }
+
+# ── Accès aux métadonnées ─────────────────────────────────────────────
+fn find_fn($name: chaine) -> entier {
+  $i = 1
+  tant_que ($i < longueur($fn_nom)) {
+    si ($fn_nom[$i] == $name) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+fn glob_idx($name: chaine) -> entier {
+  $i = 1
+  tant_que ($i < longueur($glob_nom)) {
+    si ($glob_nom[$i] == $name) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+fn find_slot($fi: entier, $name: chaine) -> entier {
+  $off = $fn_soff[$fi]
+  $n = $fn_nslots[$fi]
+  $i = 0
+  tant_que ($i < $n) {
+    si ($slot_nom[$off + $i] == $name) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+fn read_var($m: liste<chaine>, $base: entier, $fi: entier, $name: chaine) -> chaine {
+  $g = glob_idx($name)
+  si ($g > 0) { retour $m[$g] }
+  $s = find_slot($fi, $name)
+  si ($s >= 0) { retour $m[$base + $s] }
+  retour "v:"
+}
+fn write_var($m: liste<chaine>, $base: entier, $fi: entier, $name: chaine, $v: chaine) -> liste<chaine> {
+  $g = glob_idx($name)
+  si ($g > 0) { retour lset($m, $g, $v) }
+  $s = find_slot($fi, $name)
+  si ($s >= 0) { retour lset($m, $base + $s, $v) }
+  retour $m
+}
+fn read_slot($m: liste<chaine>, $base: entier, $fi: entier, $ix: entier) -> chaine {
+  $nm = $slot_nom[$fn_soff[$fi] + $ix]
+  $g = glob_idx($nm)
+  si ($g > 0) { retour $m[$g] }
+  retour $m[$base + $ix]
+}
+fn write_slot($m: liste<chaine>, $base: entier, $fi: entier, $ix: entier, $v: chaine) -> liste<chaine> {
+  $nm = $slot_nom[$fn_soff[$fi] + $ix]
+  $g = glob_idx($nm)
+  si ($g > 0) { retour lset($m, $g, $v) }
+  retour lset($m, $base + $ix, $v)
+}
+
+# Format scientifique f64 approché (shortest-round-trip pour les grands entiers)
+fn big_sci($s: chaine) -> chaine {
+  $x = bnorm($s)
+  $sign = ""
+  si (longueur($x) > 0 et sous_chaine($x, 0, 1) == "-") { $sign = "-"; $x = sous_chaine($x, 1, longueur($x)) }
+  $n = longueur($x)
+  $exp = $n - 1
+  $take = 17
+  si ($n < $take) { $take = $n }
+  $m = sous_chaine($x, 0, $take)
+  si ($n > 17) {
+    $d18 = digit_at($x, 17)
+    si ($d18 >= 5) { $m = badd($m, "1") }
+  }
+  $zflag = vrai
+  tant_que ($zflag) {
+    $zflag = faux
+    si (longueur($m) > 1) {
+      $zlast = sous_chaine($m, longueur($m) - 1, longueur($m))
+      si ($zlast == "0") {
+        $m = sous_chaine($m, 0, longueur($m) - 1)
+        $zflag = vrai
+      }
+    }
+  }
+  $r = ""
+  si (longueur($m) == 1) { $r = $m } sinon { $r = sous_chaine($m, 0, 1) + "." + sous_chaine($m, 1, longueur($m)) }
+  retour $sign + $r + "e+" + chaine($exp)
+}
+
+# ── Primitives (pures) ────────────────────────────────────────────────
+fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
+  $n = longueur($a) - 1
+  si ($name == "longueur" ou $name == "len") {
+    si ($n < 1) { retour vi("0") }
+    $t = vtag($a[1])
+    si ($t == "s") { retour vi(chaine(longueur(vpay($a[1])))) }
+    si ($t == "l") { retour vi(chaine(lst_len($a[1]))) }
+    si ($t == "t") { retour vi(chaine(tab_len($a[1]))) }
+    retour vi("0")
+  }
+  si ($name == "sous_chaine" ou $name == "sub") {
+    si ($n < 3) { retour vs("") }
+    retour vs(sous_chaine(vpay($a[1]), entier(val_str($a[2])), entier(val_str($a[3]))))
+  }
+  si ($name == "ordre") { si ($n < 1) { retour vi("0") }; retour vi(chaine(ordre(vpay($a[1])))) }
+  si ($name == "caractere") { si ($n < 1) { retour vs("") }; retour vs(caractere(entier(val_str($a[1])))) }
+  si ($name == "chaine") {
+    si ($n < 1) { retour vs("") }
+    $t = vtag($a[1])
+    si ($t == "r" ou $t == "f") { retour vs(rat_pay($a[1])) }
+    retour vs(val_str($a[1]))
+  }
+  si ($name == "entier") { si ($n < 1) { retour vi("0") }; retour vi(bnorm(vpay($a[1]))) }
+  si ($name == "flottant") { si ($n < 1) { retour "f:0/1" }; retour vf(vpay($a[1])) }
+  si ($name == "partie_entiere") {
+    si ($n < 1) { retour vi("0") }
+    $t = vtag($a[1])
+    si ($t == "i") { retour $a[1] }
+    si ($t == "r" ou $t == "f") { retour vi(bdiv(rat_num($a[1]), rat_den($a[1]))) }
+    retour vi("0")
+  }
+  si ($name == "abs") {
+    si ($n < 1) { retour vi("0") }
+    $v = val_abs($a[1])
+    si (vtag($v) == "i" et bcmp(babs(vpay($v)), "9223372036854775807") > 0) {
+      $fstr = big_sci(babs(vpay($v)))
+      retour "g:" + $fstr
+    }
+    retour $v
+  }
+  si ($name == "min" ou $name == "max") {
+    si ($n < 2) { retour vi("0") }
+    $c = val_cmp($a[1], $a[2])
+    si ($name == "min") { si ($c <= 0) { retour $a[1] }; retour $a[2] }
+    si ($c >= 0) { retour $a[1] }
+    retour $a[2]
+  }
+  si ($name == "pgcd" ou $name == "gcd") { si ($n < 2) { retour vi("0") }; retour vi(bgcd(vpay($a[1]), vpay($a[2]))) }
+  si ($name == "ppcm" ou $name == "lcm") {
+    si ($n < 2) { retour vi("0") }
+    $g = bgcd(vpay($a[1]), vpay($a[2]))
+    si ($g == "0") { retour vi("0") }
+    retour vi(bdiv(bmul(vpay($a[1]), vpay($a[2])), $g))
+  }
+  si ($name == "puissance" ou $name == "pow") { si ($n < 2) { retour vi("0") }; retour val_pow($a[1], $a[2]) }
+  si ($name == "fib" ou $name == "fibonacci") { si ($n < 1) { retour vi("0") }; retour vi(fib_big(entier(val_str($a[1])))) }
+  si ($name == "fact" ou $name == "factorielle") { si ($n < 1) { retour vi("1") }; retour vi(fact_big(entier(val_str($a[1])))) }
+  si ($name == "est_premier" ou $name == "is_prime") {
+    si ($n < 1) { retour vb(faux) }
+    $x = entier(val_str($a[1]))
+    si ($x < 2) { retour vb(faux) }
+    $d = 2; $pr = vrai
+    tant_que ($d * $d <= $x et $pr) { si ($x % $d == 0) { $pr = faux }; $d = $d + 1 }
+    retour vb($pr)
+  }
+  si ($name == "nb_chiffres" ou $name == "digits") { si ($n < 1) { retour vi("0") }; retour vi(chaine(longueur(babs(vpay($a[1]))))) }
+  si ($name == "type" ou $name == "type_de") { si ($n < 1) { retour vs("vide") }; retour vs(val_type($a[1])) }
+  si ($name == "table") { retour tab_empty() }
+  si ($name == "inserer") { si ($n < 3) { retour "v:" }; retour tab_set($a[1], val_str($a[2]), $a[3]) }
+  si ($name == "cle_existe" ou $name == "cle_presente") { si ($n < 2) { retour vb(faux) }; retour vb(tab_has($a[1], val_str($a[2]))) }
+  si ($name == "joindre") { si ($n < 2) { retour "v:" }; retour lst_append($a[1], $a[2]) }
+  si ($name == "concatener") {
+    si ($n < 1) { retour vs("") }
+    $r = ""; $k = lst_len($a[1]); $i = 0
+    tant_que ($i < $k) { $r = $r + vpay(lst_get($a[1], $i)); $i = $i + 1 }
+    retour vs($r)
+  }
+  si ($name == "lire_texte") { si ($n < 1) { retour vs("") }; retour vs(lire_texte(vpay($a[1]))) }
+  si ($name == "ecrire_texte") { si ($n >= 2) { ecrire_texte(vpay($a[1]), vpay($a[2])) }; retour "v:" }
+  si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") { si ($n >= 2) { ecrire_bytes(vpay($a[1]), vpay($a[2])) }; retour "v:" }
+  si ($name == "argument") { si ($n < 1) { retour vs("") }; retour vs(argument(entier(val_str($a[1])))) }
+  si ($name == "nb_arguments") { retour vi(chaine(nb_arguments() - 1)) }
+  si ($name == "graine") { si ($n >= 1) { graine(entier(val_str($a[1]))) }; retour "v:" }
+  si ($name == "hasard" ou $name == "prng" ou $name == "hasard_systeme") { si ($n < 1) { retour vi("0") }; retour vi(chaine(hasard(entier(val_str($a[1]))))) }
+  si ($name == "quitter") { si ($n >= 1) { quitter(entier(val_str($a[1]))) }; retour "v:" }
+  si ($name == "afficher_erreur") { si ($n >= 1) { afficher_erreur(vpay($a[1])) }; retour "v:" }
+  retour "v:"
+}
+fn show($v: chaine) -> entier { $s = val_str($v); >> $s; retour 0 }
+
+# ── Évaluation pure d'une expression ──────────────────────────────────
+# rend [Dummy, position_suivante, valeur]
+fn eval_expr($p: entier, $m: liste<chaine>, $base: entier, $fi: entier) -> liste<chaine> {
+  $res = [""]
+  $t = $tok[$p]
+  si ($t == "slot") {
+    joindre($res, chaine($p + 2))
+    joindre($res, read_slot($m, $base, $fi, entier($tok[$p + 1])))
+    retour $res
+  }
+  si ($t == "entier") { joindre($res, chaine($p + 2)); joindre($res, vi(bnorm($tok[$p + 1]))); retour $res }
+  si ($t == "flottant") { joindre($res, chaine($p + 2)); joindre($res, vf($tok[$p + 1])); retour $res }
+  si ($t != "(") {
+    joindre($res, chaine($p + 1))
+    si (digits_only($t)) { joindre($res, vi(bnorm($t))) } sinon { joindre($res, vi("0")) }
+    retour $res
+  }
+  $h = $tok[$p + 1]
+  si ($h == "n") { joindre($res, chaine($p + 4)); joindre($res, vi(bnorm($tok[$p + 2]))); retour $res }
+  si ($h == "f") { joindre($res, chaine($p + 4)); joindre($res, vf($tok[$p + 2])); retour $res }
+  si ($h == "s") { joindre($res, chaine($p + 4)); joindre($res, vs($tok[$p + 2])); retour $res }
+  si ($h == "b") {
+    joindre($res, chaine($p + 4))
+    si ($tok[$p + 2] == "vraie") { joindre($res, vb(vrai)) } sinon { joindre($res, vb(faux)) }
+    retour $res
+  }
+  si ($h == "v") { joindre($res, chaine($p + 4)); joindre($res, read_var($m, $base, $fi, $tok[$p + 2])); retour $res }
+  si ($h == "bin" ou $h == "binaire") {
+    $op = $tok[$p + 2]
+    $r1 = eval_expr($p + 3, $m, $base, $fi); $x = $r1[2]
+    $r2 = eval_expr(entier($r1[1]), $m, $base, $fi); $y = $r2[2]
+    joindre($res, chaine(entier($r2[1]) + 1))
+    $v = vi("0")
+    si ($op == "+") { $v = val_add($x, $y) }
+    si ($op == "-") { $v = val_sub($x, $y) }
+    si ($op == "*") { $v = val_mul($x, $y) }
+    si ($op == "/" ou $op == "div" ou $op == "//") { $v = val_div($x, $y) }
+    si ($op == "%" ou $op == "mod") { $v = val_mod($x, $y) }
+    si ($op == "^") {
+      si (vtag($y) == "i") { $v = vi(bpow(vpay($x), entier(bnorm(vpay($y))))) }
+      sinon { $v = val_pow($x, $y) }
+    }
+    si ($op == "<") { $v = vb(val_cmp($x, $y) < 0) }
+    si ($op == "<=") { $v = vb(val_cmp($x, $y) <= 0) }
+    si ($op == ">") { $v = vb(val_cmp($x, $y) > 0) }
+    si ($op == ">=") { $v = vb(val_cmp($x, $y) >= 0) }
+    si ($op == "==") { $v = vb(val_eq($x, $y)) }
+    si ($op == "!=") { $v = vb(non val_eq($x, $y)) }
+    si ($op == "et") { $v = vb(val_truth($x) et val_truth($y)) }
+    si ($op == "ou") { $v = vb(val_truth($x) ou val_truth($y)) }
+    joindre($res, $v)
+    retour $res
+  }
+  si ($h == "neg" ou $h == "non" ou $h == "uni" ou $h == "fact" ou $h == "term") {
+    $pp = $p + 2
+    $uop = ""
+    si ($h == "uni") { $uop = $tok[$p + 2]; $pp = $p + 3 }
+    $r1 = eval_expr($pp, $m, $base, $fi); $x = $r1[2]
+    joindre($res, chaine(entier($r1[1]) + 1))
+    $v = $x
+    si ($h == "neg" ou $uop == "-" ou $uop == "neg") { $v = val_neg($x) }
+    si ($h == "non" ou $uop == "non") { $v = vb(non val_truth($x)) }
+    si ($h == "fact") { $v = vi(fact_big(entier(val_str($x)))) }
+    si ($h == "term") {
+      $nn = entier(val_str($x))
+      $v = vi(bdiv(bmul(chaine($nn), chaine($nn + 1)), "2"))
+    }
+    joindre($res, $v)
+    retour $res
+  }
+  si ($h == "mfact") {
+    $k = entier($tok[$p + 2])
+    $r1 = eval_expr($p + 3, $m, $base, $fi); $x = $r1[2]
+    joindre($res, chaine(entier($r1[1]) + 1))
+    $nn = entier(val_str($x)); $r = "1"; $j = $nn
+    tant_que ($j > 0) { $r = bmul($r, chaine($j)); $j = $j - $k }
+    joindre($res, vi($r))
+    retour $res
+  }
+  si ($h == "idx") {
+    $r1 = eval_expr($p + 2, $m, $base, $fi); $x = $r1[2]
+    $r2 = eval_expr(entier($r1[1]), $m, $base, $fi); $y = $r2[2]
+    joindre($res, chaine(entier($r2[1]) + 1))
+    $tx = vtag($x)
+    $v = "v:"
+    si ($tx == "s") {
+      $ix = entier(val_str($y)) { $v = vs(sous_chaine(vpay($x), $ix, $ix + 1)) }
+    }
+    si ($tx == "l") { $v = lst_get($x, entier(val_str($y))) }
+    si ($tx == "t") { $v = tab_get($x, val_str($y)) }
+    joindre($res, $v)
+    retour $res
+  }
+  si ($h == "lst" ou $h == "lstvide") {
+    $r = lst_empty()
+    si ($h == "lstvide") { joindre($res, chaine($p + 4)); joindre($res, $r); retour $res }
+    $q = $p + 2
+    $guard = 0
+    tant_que ($q < longueur($tok) et $tok[$q] != ")" et $guard < 100000) {
+      $rv = eval_expr($q, $m, $base, $fi)
+      $r = lst_append($r, $rv[2])
+      $q = entier($rv[1])
+      $guard = $guard + 1
+    }
+    joindre($res, chaine($q + 1))
+    joindre($res, $r)
+    retour $res
+  }
+  si ($h == "app" ou $h == "appel_rir" ou $h == "appel") {
+    $name = $tok[$p + 2]
+    $q = $p + 3
+    $args = [""]
+    $guard = 0
+    tant_que ($q < longueur($tok) et $tok[$q] != ")" et $guard < 100000) {
+      $rv = eval_expr($q, $m, $base, $fi)
+      joindre($args, $rv[2])
+      $q = entier($rv[1])
+      $guard = $guard + 1
+    }
+    joindre($res, chaine($q + 1))
+    $ff = find_fn($name)
+    si ($ff > 0) {
+      $pr = call_fn($m, $name, $args)
+      joindre($res, $pr[1])
+    } sinon {
+      joindre($res, call_prim($name, $args))
+    }
+    retour $res
+  }
+  joindre($res, chaine($p + 1))
+  joindre($res, vi("0"))
+  retour $res
+}
+
+# ── Exécution : rend [Dummy, valeur_de_retour, mémoire...] ────────────
+fn pack_ret($v: chaine, $m: liste<chaine>) -> liste<chaine> {
+  $r = [""]
+  joindre($r, $v)
+  $k = 1
+  tant_que ($k < longueur($m)) { joindre($r, $m[$k]); $k = $k + 1 }
+  retour $r
+}
+fn unpack_mem($p: liste<chaine>) -> liste<chaine> {
+  $m = [""]
+  $k = 2
+  tant_que ($k < longueur($p)) { joindre($m, $p[$k]); $k = $k + 1 }
+  retour $m
+}
+fn exec_fn($m0: liste<chaine>, $base: entier, $fi: entier) -> liste<chaine> {
+  $m = $m0
+  $pc = 0
+  $n = $fn_nops[$fi]
+  $fo = $fn_first[$fi]
+  $guard = 0
+  tant_que ($pc < $n et $guard < 5000000) {
+    $guard = $guard + 1
+    $gi = $fo + $pc + 1
+    $st = $op_start[$gi]
+    $en = $st + $op_len[$gi] - 1
+    $kw = $tok[$st]
+    si ($kw == "affect" ou $kw == "affect_ast") {
+      $ix = entier($tok[$st + 2])
+      $rv = eval_expr($st + 4, $m, $base, $fi)
+      $m = write_slot($m, $base, $fi, $ix, $rv[2])
+      $pc = $pc + 1
+    } sinon si ($kw == "afficher" ou $kw == "afficher_abstrait") {
+      $q = $st + 1
+      $g2 = 0
+      tant_que ($q <= $en et $g2 < 100000) {
+        $rv = eval_expr($q, $m, $base, $fi)
+        show($rv[2])
+        $q = entier($rv[1])
+        $g2 = $g2 + 1
+      }
+      $pc = $pc + 1
+    } sinon si ($kw == "saut") {
+      $pc = entier($tok[$st + 1])
+    } sinon si ($kw == "saut_si_faux" ou $kw == "saut_si_faux_abstrait") {
+      $cible = entier($tok[$st + 1])
+      $rv = eval_expr($st + 2, $m, $base, $fi)
+      si (non val_truth($rv[2])) { $pc = $cible } sinon { $pc = $pc + 1 }
+    } sinon si ($kw == "retour" ou $kw == "retour_abstrait") {
+      si ($st + 1 <= $en) {
+        $rv = eval_expr($st + 1, $m, $base, $fi)
+        retour pack_ret($rv[2], $m)
+      }
+      retour pack_ret("v:", $m)
+    } sinon si ($kw == "expr") {
+      # mutation éventuelle : (app joindre/inserer (v nom) args)
+      $mut = faux
+      $mvar = ""
+      $app = $st + 1
+      si ($tok[$app] == "(" et ($tok[$app + 1] == "app") et
+          ($tok[$app + 2] == "joindre" ou $tok[$app + 2] == "inserer" ou $tok[$app + 2] == "supprimer") et
+          $tok[$app + 4] == "v") {
+        $mut = vrai
+        $mvar = $tok[$app + 5]
+      }
+      $old = ""
+      si ($mut) { $old = read_var($m, $base, $fi, $mvar) }
+      $rv = eval_expr($app, $m, $base, $fi)
+      si ($mut) {
+        $m = write_var($m, $base, $fi, $mvar, $rv[2])
+        si (vtag($old) == "l") {
+          $z = 1
+          tant_que ($z < longueur($m)) {
+            si ($m[$z] == $old) { $m = lset($m, $z, $rv[2]) }
+            $z = $z + 1
+          }
+        }
+      }
+      $pc = $pc + 1
+    } sinon {
+      $pc = $pc + 1
+    }
+  }
+  retour pack_ret("v:", $m)
+}
+fn call_fn($m: liste<chaine>, $name: chaine, $args: liste<chaine>) -> liste<chaine> {
+  $fi = find_fn($name)
+  si ($fi < 1) { retour pack_ret("v:", $m) }
+  $base = longueur($m)
+  $ns = $fn_nslots[$fi]
+  $j = 0
+  tant_que ($j < $ns) { joindre($m, "v:"); $j = $j + 1 }
+  $pn = $fn_pn[$fi]
+  $j = 1
+  tant_que ($j <= $pn et $j < longueur($args)) {
+    $m = lset($m, $base + $j - 1, $args[$j])
+    $j = $j + 1
+  }
+  retour exec_fn($m, $base, $fi)
+}
+
+# ── Point d'entrée ────────────────────────────────────────────────────
+si (nb_arguments() < 1) {
+  afficher_erreur("interpreteur_rir : usage <dump.rir>")
+  quitter(2)
+}
+$chemin = argument(0)
+$srctexte = lire_texte($chemin)
+parse_rir($srctexte)
+$mem0 = [""]
+$i = 1
+tant_que ($i < longueur($glob_nom)) { joindre($mem0, "v:"); $i = $i + 1 }
+$principal_args = [""]
+$final = call_fn($mem0, "$principal", $principal_args)
