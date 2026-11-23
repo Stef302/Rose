@@ -1,0 +1,512 @@
+# tables_rose.rose — J6.4 : tables GÉNÉRALES en Rose pur, compilable par C0.
+#
+# Worktree : /tmp/opencode/horde_tables2 (HEAD 101b48d). Aucun fichier touché
+# hors de ce module, de `tests_tables_rose.rose` et de `rose/docs/HORDE_TABLES.md`.
+#
+# OBJECTIF
+# --------
+# Remplacer la table J6 historique (une clé = 1 caractère, une valeur = entier,
+# scan linéaire — `moteur_ops.rose` §17) par une vraie table à hachage :
+#   * clés hétérogènes : entier [0,1,n], chaîne [0,3,c0..cn], rationnel
+#     [0,9,num,den] (préfixe 0 = rembourrage imposé par le vérificateur G5) ;
+#   * ordre d'insertion conservé (les clés sont numérotées à l'insertion) ;
+#   * inserer / cle_existe / idx / supprimer / cles / valeurs ;
+#   * finaliseur `melange_u64` de la vague OPT_TABLES reproduit À L'OCTET :
+#       z = (h ^ (h >> 29)) * 0xBF58476D1CE4E5B9 ; z ^ (z >> 32)
+#     (rose/src/run.rs:3288). Rose n'a pas d'opérateur bit à bit et l'ABI G5
+#     plafonne les immédiats à 2^60 : le calcul est fait en 2 x 32 bits et
+#     4 x 16 bits, avec des produits < 2^34.
+#   * aucune recherche linéaire : arbre de hachage binaire PERSISTANT de
+#     64 niveaux (un bit du hachage par niveau). Une recherche visite 64 nœuds
+#     plus la courte chaîne de collisions, indépendamment du nombre de clés.
+#
+# DISCIPLINE G5 (moteur_valeurs.rose, moteur_ops.rose)
+# ---------------------------------------------------
+#   - aucune variable globale : tout voyage en paramètre ;
+#   - pas de `[]` littéral (liste rembourrée à l'index 0) ;
+#   - pas de `retour [ ... ]` : les listes de sortie sont PASSÉES EN PARAMÈTRE
+#     et remplies par `joindre` (une fonction G5 ne sait PAS retourner une liste
+#     : le descripteur sort tagué « entier » — mesuré dans les tests) ;
+#   - pas d'affectation par index sur une liste : le magasin de nœuds est
+#     APPEND-ONLY et les mises à jour sont copie de chemin (path copying) ;
+#   - aucun paramètre nommé `i` (l'imaginaire en Rose) ;
+#   - `et` est un AND bit à bit NON court-circuitant sous G5 : tous les
+#     opérandes d'une condition sont toujours des accès sûrs.
+#
+# REPRÉSENTATION (quatre listes plates d'entiers, passées partout)
+# ---------------------------------------------------------------
+#   $nd  magasin de nœuds : enregistrements de 7 entiers, id 1..  (0 = index 0,
+#        rembourrage). Marqueur : hash_hi = -1 → nœud interne ; hash_hi >= 0 →
+#        feuille (left = 0, right = chaîne de collisions, 0 = fin).
+#        champs : 0 left | 1 right/chaîne | 2 hash_lo | 3 id_valeur
+#                 4 hash_hi | 5 id_clé (-1 = tombe) | 6 réservé
+#   $cl  magasin de clés : 5 entiers par clé, id 1..  (0 = rembourrage)
+#        champs : 0 tag | 1 début dans $fl | 2 longueur | 3,4 réservés
+#   $vl  magasin de valeurs : 1 entier par enregistrement, id 1..
+#   $fl  flux de données de clés : 1 entier par case, index 1..
+#
+# L'id de clé est l'ordre d'insertion : `cles` et `valeurs` trient les feuilles
+# par id de clé, donc l'ordre d'insertion est conservé même après suppression.
+
+# ── Bit à bit arithmétique (Rose n'a ni `&`, ni `^`, ni `>>`) ──────────────────
+
+fn t_xor32(a: entier, b: entier) -> entier {
+  $r = 0
+  $bit = 1
+  $k = 0
+  tant_que ($k < 32) {
+    si (((a div $bit) % 2) != ((b div $bit) % 2)) { $r = $r + $bit }
+    $bit = $bit * 2
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# z = (h ^ (h >> 29)) * C (mod 2^64) ; h = (hh,hl) en deux mots 32 bits.
+# h >> 29 : haut = hh div 2^29, bas = (hh mod 2^29)*8 + hl div 2^29.
+# C = 0xBF58476D1CE4E5B9 = [0xBF58, 0x476D, 0x1CE4, 0xE5B9] en 16 bits.
+fn t_melange(hh: entier, hl: entier, out: liste<entier>) -> entier {
+  $shh = hh div 536870912
+  $shl = (hh % 536870912) * 8 + (hl div 536870912)
+  $xh = t_xor32(hh, $shh)
+  $xl = t_xor32(hl, $shl)
+  $x0 = $xl % 65536
+  $x1 = $xl div 65536
+  $x2 = $xh % 65536
+  $x3 = $xh div 65536
+  $z0 = $x0 * 58809
+  $z1 = $x0 * 7396 + $x1 * 58809
+  $z2 = $x0 * 18285 + $x1 * 7396 + $x2 * 58809
+  $z3 = $x0 * 48984 + $x1 * 18285 + $x2 * 7396 + $x3 * 58809
+  $r0 = $z0 % 65536
+  $c = $z0 div 65536
+  $z1 = $z1 + $c
+  $r1 = $z1 % 65536
+  $c = $z1 div 65536
+  $z2 = $z2 + $c
+  $r2 = $z2 % 65536
+  $c = $z2 div 65536
+  $z3 = $z3 + $c
+  $r3 = $z3 % 65536
+  $zh = $r2 + $r3 * 65536
+  $zl = $r0 + $r1 * 65536
+  joindre($out, $zh)
+  joindre($out, t_xor32($zl, $zh))
+  retour 0
+}
+
+# Bit de rang `prof` (0..63) du hachage (poids fort de hh d'abord).
+fn t_bit(hh: entier, hl: entier, prof: entier) -> entier {
+  $x = hh
+  $s = 31 - prof
+  si (prof >= 32) { $x = hl; $s = 63 - prof }
+  $k = 0
+  tant_que ($k < $s) { $x = $x div 2; $k = $k + 1 }
+  retour $x % 2
+}
+
+# ── Clés : normalisation, hachage, égalité ───────────────────────────────────
+
+fn t_pgcd(a: entier, b: entier) -> entier {
+  $x = a
+  $y = b
+  si ($x < 0) { $x = 0 - $x }
+  si ($y < 0) { $y = 0 - $y }
+  tant_que ($y > 0) { $r = $x % $y; $x = $y; $y = $r }
+  retour $x
+}
+
+# Hachage canonique d'une clé, puis finaliseur OPT_TABLES. Écrit (hi,lo) dans
+# `out` (liste rembourrée) — une fonction G5 ne peut pas retourner une liste.
+fn t_hash(cle: liste<entier>, out: liste<entier>) -> entier {
+  $tag = cle[1]
+  $h0 = 0
+  $h1 = 0
+  si ($tag == 1) {
+    $n = cle[2]
+    $lo = $n % 4294967296
+    si ($lo < 0) { $lo = $lo + 4294967296 }
+    # Canonique numérique : entier n ≡ rationnel n/1 (comme `valeur_egale`
+    # dans run.rs). Le hachage est donc (n mod 2^32, 1).
+    $h0 = $lo
+    $h1 = 1
+  }
+  si ($tag == 9) {
+    $a = cle[2]
+    $b = cle[3]
+    $g = t_pgcd($a, $b)
+    si ($g > 0) { $a = $a div $g; $b = $b div $g }
+    si ($b < 0) { $a = 0 - $a; $b = 0 - $b }
+    $al = $a % 4294967296
+    si ($al < 0) { $al = $al + 4294967296 }
+    $bl = $b % 4294967296
+    si ($bl < 0) { $bl = $bl + 4294967296 }
+    $h0 = $al
+    $h1 = $bl
+  }
+  si ($tag == 3) {
+    # FNV-1a sur les codes de caractères : seed 0xCBF29CE484222325,
+    # prime 0x00000100000001B3 = 2^32*256 + 435.
+    $h0 = 3418070365
+    $h1 = 2213364257
+    $nn = longueur($cle) - 2
+    $k = 0
+    tant_que ($k < $nn) {
+      $h1 = t_xor32($h1, cle[2 + $k])
+      $x0 = $h1 % 65536
+      $x1 = $h1 div 65536
+      $x2 = $h0 % 65536
+      $x3 = $h0 div 65536
+      $z0 = $x0 * 435
+      $z1 = $x1 * 435
+      $z2 = $x2 * 435
+      $z3 = $x0 * 256 + $x3 * 435
+      $r0 = $z0 % 65536
+      $c = $z0 div 65536
+      $z1 = $z1 + $c
+      $r1 = $z1 % 65536
+      $c = $z1 div 65536
+      $z2 = $z2 + $c
+      $r2 = $z2 % 65536
+      $c = $z2 div 65536
+      $z3 = $z3 + $c
+      $r3 = $z3 % 65536
+      $h0 = $r2 + $r3 * 65536
+      $h1 = $r0 + $r1 * 65536
+      $k = $k + 1
+    }
+  }
+  $tmp = [0]
+  t_melange($h0, $h1, $tmp)
+  joindre($out, $tmp[1])
+  joindre($out, $tmp[2])
+  retour 0
+}
+
+# Égalité sémantique d'une clé stockée (id `kid`) et d'une clé demandée.
+fn t_cle_egale(fl: liste<entier>, cl: liste<entier>, kid: entier, cle: liste<entier>) -> entier {
+  $base = 1 + 5 * ($kid - 1)
+  $tag = $cl[$base]
+  $tag2 = cle[1]
+  $off = $cl[$base + 1]
+  # Égalité numérique ENTRE TAGS : Entier ≡ Rationnel, comme `valeur_egale`
+  # du moteur Rust (run.rs). Les formes sont réduites avant produits croisés.
+  $num = 0
+  $den = 1
+  $num2 = 0
+  $den2 = 1
+  $num_ok = 0
+  $num2_ok = 0
+  si ($tag == 1) { $num = $fl[$off]; $num_ok = 1 }
+  si ($tag == 9) { $num = $fl[$off]; $den = $fl[$off + 1]; $num_ok = 1 }
+  si ($tag2 == 1) { $num2 = cle[2]; $num2_ok = 1 }
+  si ($tag2 == 9) {
+    $num2 = cle[2]
+    $den2 = cle[3]
+    $g = t_pgcd($num2, $den2)
+    si ($g > 0) { $num2 = $num2 div $g; $den2 = $den2 div $g }
+    $num2_ok = 1
+  }
+  si ($num_ok == 1 et $num2_ok == 1) {
+    si ($den < 0) { $num = 0 - $num; $den = 0 - $den }
+    si ($den2 < 0) { $num2 = 0 - $num2; $den2 = 0 - $den2 }
+    si ($num * $den2 == $num2 * $den) { retour 1 }
+    retour 0
+  }
+  si ($tag != $tag2) { retour 0 }
+  # Chaîne : même longueur, mêmes codes.
+  $nn = $cl[$base + 2]
+  si ($nn != longueur($cle) - 2) { retour 0 }
+  $k = 0
+  tant_que ($k < $nn) {
+    si ($fl[$off + $k] != cle[2 + $k]) { retour 0 }
+    $k = $k + 1
+  }
+  retour 1
+}
+
+# Range une clé dans $fl/$cl et rend son id (= ordre d'insertion).
+fn t_encode_cle(cl: liste<entier>, fl: liste<entier>, cle: liste<entier>) -> entier {
+  $tag = cle[1]
+  $deb = longueur($fl)
+  $nn = 0
+  si ($tag == 1) {
+    joindre($fl, cle[2])
+    $nn = 1
+  }
+  si ($tag == 9) {
+    $a = cle[2]
+    $b = cle[3]
+    $g = t_pgcd($a, $b)
+    si ($g > 0) { $a = $a div $g; $b = $b div $g }
+    si ($b < 0) { $a = 0 - $a; $b = 0 - $b }
+    joindre($fl, $a)
+    joindre($fl, $b)
+    $nn = 2
+  }
+  si ($tag == 3) {
+    $nn = longueur($cle) - 2
+    $k = 0
+    tant_que ($k < $nn) { joindre($fl, cle[2 + $k]); $k = $k + 1 }
+  }
+  joindre($cl, $tag)
+  joindre($cl, $deb)
+  joindre($cl, $nn)
+  joindre($cl, 0)
+  joindre($cl, 0)
+  retour (longueur($cl) - 1) div 5
+}
+
+fn t_stock_valeur(vl: liste<entier>, val: entier) -> entier {
+  joindre($vl, val)
+  retour longueur($vl) - 1
+}
+
+# ── Magasin de nœuds (append-only, copie de chemin) ──────────────────────────
+
+fn t_nd_lire(nd: liste<entier>, id: entier, champ: entier) -> entier {
+  retour $nd[1 + 7 * ($id - 1) + $champ]
+}
+
+fn t_nd_neuf(nd: liste<entier>, l: entier, r: entier, hl: entier, vr: entier, hh: entier, kid: entier) -> entier {
+  joindre($nd, $l)
+  joindre($nd, $r)
+  joindre($nd, $hl)
+  joindre($nd, $vr)
+  joindre($nd, $hh)
+  joindre($nd, $kid)
+  joindre($nd, 0)
+  retour (longueur($nd) - 1) div 7
+}
+
+# ── Insertion : 64 niveaux, puis chaîne de collisions ────────────────────────
+
+fn t_ins_chaine(nd: liste<entier>, cl: liste<entier>, fl: liste<entier>, id: entier,
+                hh: entier, hl: entier, kid: entier, vr: entier, cle: liste<entier>,
+                sup: entier) -> entier {
+  si ($id == 0) { retour t_nd_neuf($nd, 0, 0, $hl, $vr, $hh, $kid) }
+  $fhh = t_nd_lire($nd, $id, 4)
+  $fhl = t_nd_lire($nd, $id, 2)
+  $fk = t_nd_lire($nd, $id, 5)
+  $fvr = t_nd_lire($nd, $id, 3)
+  $ch = t_nd_lire($nd, $id, 1)
+  $eg = 0
+  si ($fk >= 0) {
+    si ($fhh == $hh et $fhl == $hl) { $eg = t_cle_egale($fl, $cl, $fk, $cle) }
+  }
+  si ($eg == 1) {
+    $nk = $fk
+    $nv = $vr
+    si ($sup == 1) { $nk = -1; $nv = 0 }
+    retour t_nd_neuf($nd, 0, $ch, $fhl, $nv, $fhh, $nk)
+  }
+  $nch = t_ins_chaine($nd, $cl, $fl, $ch, $hh, $hl, $kid, $vr, $cle, $sup)
+  retour t_nd_neuf($nd, 0, $nch, $fhl, $fvr, $fhh, $fk)
+}
+
+fn t_ins_rec(nd: liste<entier>, cl: liste<entier>, fl: liste<entier>, prof: entier, id: entier,
+             hh: entier, hl: entier, kid: entier, vr: entier, cle: liste<entier>,
+             sup: entier) -> entier {
+  si ($prof == 64) {
+    retour t_ins_chaine($nd, $cl, $fl, $id, $hh, $hl, $kid, $vr, $cle, $sup)
+  }
+  $l = 0
+  $r = 0
+  si ($id != 0) { $l = t_nd_lire($nd, $id, 0); $r = t_nd_lire($nd, $id, 1) }
+  $b = t_bit($hh, $hl, $prof)
+  $nl = $l
+  $nr = $r
+  si ($b == 0) {
+    $nl = t_ins_rec($nd, $cl, $fl, $prof + 1, $l, $hh, $hl, $kid, $vr, $cle, $sup)
+  } sinon {
+    $nr = t_ins_rec($nd, $cl, $fl, $prof + 1, $r, $hh, $hl, $kid, $vr, $cle, $sup)
+  }
+  # hash_hi = -1 marque un nœud INTERNE (une feuille a toujours hash_hi >= 0).
+  retour t_nd_neuf($nd, $nl, $nr, 0, 0, -1, 0)
+}
+
+# ── Recherche ────────────────────────────────────────────────────────────────
+
+fn t_idx_chaine(nd: liste<entier>, cl: liste<entier>, fl: liste<entier>, id: entier,
+                hh: entier, hl: entier, cle: liste<entier>, cnt: liste<entier>) -> entier {
+  $cur = $id
+  tant_que ($cur != 0) {
+    joindre($cnt, 1)
+    $fhh = t_nd_lire($nd, $cur, 4)
+    $fhl = t_nd_lire($nd, $cur, 2)
+    $fk = t_nd_lire($nd, $cur, 5)
+    si ($fk >= 0) {
+      si ($fhh == $hh et $fhl == $hl) {
+        si (t_cle_egale($fl, $cl, $fk, $cle) == 1) { retour t_nd_lire($nd, $cur, 3) }
+      }
+    }
+    $cur = t_nd_lire($nd, $cur, 1)
+  }
+  retour -1
+}
+
+fn t_idx_rec(nd: liste<entier>, cl: liste<entier>, fl: liste<entier>, prof: entier, id: entier,
+             hh: entier, hl: entier, cle: liste<entier>, cnt: liste<entier>) -> entier {
+  si ($id == 0) { retour -1 }
+  joindre($cnt, 1)
+  si ($prof == 64) {
+    retour t_idx_chaine($nd, $cl, $fl, $id, $hh, $hl, $cle, $cnt)
+  }
+  $b = t_bit($hh, $hl, $prof)
+  $enf = t_nd_lire($nd, $id, 1)
+  si ($b == 0) { $enf = t_nd_lire($nd, $id, 0) }
+  retour t_idx_rec($nd, $cl, $fl, $prof + 1, $enf, $hh, $hl, $cle, $cnt)
+}
+
+# ── API publique (tout retourne un entier) ───────────────────────────────────
+
+fn t_inserer(nd: liste<entier>, cl: liste<entier>, vl: liste<entier>, fl: liste<entier>,
+             racine: entier, cle: liste<entier>, val: entier) -> entier {
+  $h = [0]
+  t_hash($cle, $h)
+  $hh = $h[1]
+  $hl = $h[2]
+  $z = [0]
+  $vr = t_idx_rec($nd, $cl, $fl, 0, $racine, $hh, $hl, $cle, $z)
+  $kid = -1
+  si ($vr < 0) { $kid = t_encode_cle($cl, $fl, $cle) }
+  $nv = t_stock_valeur($vl, $val)
+  retour t_ins_rec($nd, $cl, $fl, 0, $racine, $hh, $hl, $kid, $nv, $cle, 0)
+}
+
+fn t_cle_existe(nd: liste<entier>, cl: liste<entier>, fl: liste<entier>, racine: entier,
+                cle: liste<entier>) -> entier {
+  $h = [0]
+  t_hash($cle, $h)
+  $z = [0]
+  $vr = t_idx_rec($nd, $cl, $fl, 0, $racine, $h[1], $h[2], $cle, $z)
+  $r = 0
+  si ($vr >= 0) { $r = 1 }
+  retour $r
+}
+
+fn t_idx(nd: liste<entier>, cl: liste<entier>, vl: liste<entier>, fl: liste<entier>,
+         racine: entier, cle: liste<entier>) -> entier {
+  $h = [0]
+  t_hash($cle, $h)
+  $z = [0]
+  $vr = t_idx_rec($nd, $cl, $fl, 0, $racine, $h[1], $h[2], $cle, $z)
+  si ($vr < 0) { retour -1 }
+  retour $vl[$vr]
+}
+
+# Suppression logique : la feuille devient une tombe (id_clé = -1). L'ordre
+# d'insertion des autres clés et toutes les structures restent intactes.
+fn t_supprimer(nd: liste<entier>, cl: liste<entier>, vl: liste<entier>, fl: liste<entier>,
+               racine: entier, cle: liste<entier>) -> entier {
+  $h = [0]
+  t_hash($cle, $h)
+  $z = [0]
+  $vr = t_idx_rec($nd, $cl, $fl, 0, $racine, $h[1], $h[2], $cle, $z)
+  si ($vr < 0) { retour $racine }
+  retour t_ins_rec($nd, $cl, $fl, 0, $racine, $h[1], $h[2], -1, 0, $cle, 1)
+}
+
+# ── Parcours, tri par ordre d'insertion, cles/valeurs ────────────────────────
+
+fn t_collecter(nd: liste<entier>, id: entier, paires: liste<entier>) -> entier {
+  si ($id == 0) { retour 0 }
+  si (t_nd_lire($nd, $id, 4) >= 0) {
+    $cur = $id
+    $n = 0
+    tant_que ($cur != 0) {
+      joindre($paires, t_nd_lire($nd, $cur, 5))
+      joindre($paires, t_nd_lire($nd, $cur, 3))
+      $n = $n + 1
+      $cur = t_nd_lire($nd, $cur, 1)
+    }
+    retour $n
+  }
+  $n1 = t_collecter($nd, t_nd_lire($nd, $id, 0), $paires)
+  $n2 = t_collecter($nd, t_nd_lire($nd, $id, 1), $paires)
+  retour $n1 + $n2
+}
+
+# Tri par insertion des paires (id_clé, id_valeur) sur un tableau local, puis
+# copie dans `tri` (sortie). O(n^2) sur n clés — seulement pour cles/valeurs.
+fn t_trier(paires: liste<entier>, tri: liste<entier>) -> entier {
+  $n = longueur($paires) div 2
+  $local = [0]
+  $k = 0
+  tant_que ($k < $n) {
+    $kid = $paires[1 + 2 * $k]
+    $vr = $paires[2 + 2 * $k]
+    $m = longueur($local) div 2
+    $j = 0
+    $cherche = 1
+    # `et` G5 n'est PAS court-circuitant : la borne est testée SEULE.
+    tant_que ($cherche == 1) {
+      si ($j >= $m) { $cherche = 0 } sinon {
+        si ($local[1 + 2 * $j] > $kid) { $cherche = 0 } sinon { $j = $j + 1 }
+      }
+    }
+    $new = [0]
+    $q = 0
+    tant_que ($q < $j) {
+      joindre($new, $local[1 + 2 * $q])
+      joindre($new, $local[2 + 2 * $q])
+      $q = $q + 1
+    }
+    joindre($new, $kid)
+    joindre($new, $vr)
+    tant_que ($q < $m) {
+      joindre($new, $local[1 + 2 * $q])
+      joindre($new, $local[2 + 2 * $q])
+      $q = $q + 1
+    }
+    $local = $new
+    $k = $k + 1
+  }
+  $j = 1
+  tant_que ($j < longueur($local)) { joindre($tri, $local[$j]); $j = $j + 1 }
+  retour $n
+}
+
+fn t_cles(cl: liste<entier>, fl: liste<entier>, racine: entier, nd: liste<entier>,
+          sortie: liste<entier>) -> entier {
+  $p = [0]
+  t_collecter($nd, $racine, $p)
+  $t = [0]
+  $n = t_trier($p, $t)
+  $k = 0
+  $cnt = 0
+  tant_que ($k < $n) {
+    $kid = $t[1 + 2 * $k]
+    si ($kid >= 0) {
+      $base = 1 + 5 * ($kid - 1)
+      $tag = $cl[$base]
+      $off = $cl[$base + 1]
+      $nn = $cl[$base + 2]
+      joindre($sortie, $tag)
+      joindre($sortie, $nn)
+      $j = 0
+      tant_que ($j < $nn) { joindre($sortie, $fl[$off + $j]); $j = $j + 1 }
+      $cnt = $cnt + 1
+    }
+    $k = $k + 1
+  }
+  retour $cnt
+}
+
+fn t_valeurs(vl: liste<entier>, racine: entier, nd: liste<entier>, sortie: liste<entier>) -> entier {
+  $p = [0]
+  t_collecter($nd, $racine, $p)
+  $t = [0]
+  $n = t_trier($p, $t)
+  $k = 0
+  $cnt = 0
+  tant_que ($k < $n) {
+    $kid = $t[1 + 2 * $k]
+    si ($kid >= 0) {
+      joindre($sortie, $vl[$t[2 + 2 * $k]])
+      $cnt = $cnt + 1
+    }
+    $k = $k + 1
+  }
+  retour $cnt
+}

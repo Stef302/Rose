@@ -1,0 +1,278 @@
+# tests_tables_rose.rose — banc J6.4 des tables générales en Rose pur.
+#
+# MODULE SOURCE : se concatène avec `compilateur/tables_rose.rose` (comme
+# moteur_valeurs.rose + moteur_ops.rose + pilote dans J6). Rose n'a pas
+# d'instruction `include` ; c'est donc la CONCATÉNATION qui est vérifiée,
+# compilée par C0 et exécutée :
+#
+#   cat compilateur/tables_rose.rose compilateur/tests_tables_rose.rose > /tmp/t.rose
+#   rose verif /tmp/t.rose
+#   rose rir /tmp/t.rose > /tmp/t.rir
+#   C0 /tmp/t.rir > /tmp/t.elf && /tmp/t.elf
+#
+# Toutes les sorties sont DÉTERMINISTES (aucune mesure murale), donc natif
+# (moteur Rust) et ELF C0 doivent rendre octet pour octet la même chose.
+# Les compteurs sont ceux du code réel : `t_idx_rec` joint 1 dans son compteur
+# à chaque nœud visité, `scan_compare` à chaque clé comparée ; `banc_verifier`
+# rend les deux totaux dans un entier. C'est une MESURE, pas une estimation.
+#
+# Oracle Rust : 120/120, somme 569660 et 111 clés ont été produits par le
+# moteur Rust lui-même (programme utilisant la primitive native `table()` :
+# `inserer`, `cle_existe`, `cles`, `valeurs`) sur exactement les mêmes 120 clés.
+
+# ── Générateur de clés mixtes (déterministe) ──────────────────────────────────
+
+fn nb_dec(n: entier) -> entier {
+  $x = n
+  si ($x < 0) { $x = 0 - $x }
+  $c = 1
+  tant_que ($x >= 10) { $x = $x div 10; $c = $c + 1 }
+  retour $c
+}
+
+fn pousser_dec(out: liste<entier>, n: entier) -> entier {
+  $x = n
+  $c = nb_dec($x)
+  $p = 1
+  $j = 1
+  tant_que ($j < $c) { $p = $p * 10; $j = $j + 1 }
+  tant_que ($p > 0) {
+    joindre($out, 48 + (($x div $p) % 10))
+    $p = $p div 10
+  }
+  retour 0
+}
+
+# k mod 3 = 0 → entier k ; = 1 → chaîne "k<k>" ; = 2 → rationnel (k+1)/((k%7)+2)
+fn cle_gen(k: entier, out: liste<entier>) -> entier {
+  $m = k % 3
+  si ($m == 0) { joindre($out, 1); joindre($out, k) }
+  si ($m == 1) {
+    joindre($out, 3)
+    joindre($out, 1 + nb_dec(k))
+    joindre($out, 107)
+    pousser_dec($out, k)
+  }
+  si ($m == 2) { joindre($out, 9); joindre($out, k + 1); joindre($out, (k % 7) + 2) }
+  retour 0
+}
+
+fn valeur_gen(k: entier) -> entier { retour k * k + 7 }
+
+# Oracle local INDÉPENDANT de t_cle_egale : même sémantique numérique.
+fn cle_memes(a: liste<entier>, b: liste<entier>) -> entier {
+  $ta = a[1]
+  $tb = b[1]
+  $na = 0
+  $da = 1
+  $nb = 0
+  $db = 1
+  $numa = 0
+  $numb = 0
+  si ($ta == 1) { $na = a[2]; $numa = 1 }
+  si ($ta == 9) { $na = a[2]; $da = a[3]; $numa = 1 }
+  si ($tb == 1) { $nb = b[2]; $numb = 1 }
+  si ($tb == 9) { $nb = b[2]; $db = b[3]; $numb = 1 }
+  si ($numa == 1 et $numb == 1) {
+    $g = t_pgcd($na, $da)
+    si ($g > 0) { $na = $na div $g; $da = $da div $g }
+    $g = t_pgcd($nb, $db)
+    si ($g > 0) { $nb = $nb div $g; $db = $db div $g }
+    si ($na * $db == $nb * $da) { retour 1 }
+    retour 0
+  }
+  si ($ta != $tb) { retour 0 }
+  si (longueur($a) != longueur($b)) { retour 0 }
+  $j = 2
+  tant_que ($j < longueur($a)) {
+    si (a[$j] != b[$j]) { retour 0 }
+    $j = $j + 1
+  }
+  retour 1
+}
+
+fn valeur_finale(k: entier, n: entier) -> entier {
+  $a = [0]
+  cle_gen(k, $a)
+  $r = 0
+  $j = 0
+  tant_que ($j < n) {
+    $b = [0]
+    cle_gen($j, $b)
+    si (cle_memes($a, $b) == 1) { $r = valeur_gen($j) }
+    $j = $j + 1
+  }
+  retour $r
+}
+
+# Scan linéaire de référence : compte VRAIMENT les clés comparées.
+fn scan_compare(cl: liste<entier>, fl: liste<entier>, nb: entier, cle: liste<entier>, cnt: liste<entier>) -> entier {
+  $j = 1
+  tant_que ($j <= $nb) {
+    joindre($cnt, 1)
+    si (t_cle_egale($fl, $cl, $j, $cle) == 1) { retour 1 }
+    $j = $j + 1
+  }
+  retour 0
+}
+
+# ── 1. Vecteurs du finaliseur OPT_TABLES (miroir exact de run.rs:3288) ───────
+
+fn test_melange() -> entier {
+  $ok = 0
+  $o = [0]
+  t_melange(0, 0, $o)
+  si ($o[1] == 0 et $o[2] == 0) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(0, 1, $o)
+  si ($o[1] == 3210233709 et $o[2] == 2747048660) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(0, 2, $o)
+  si ($o[1] == 2125500122 et $o[2] == 1199130024) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(0, 42, $o)
+  si ($o[1] == 1685829606 et $o[2] == 3656779708) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(0, 1000, $o)
+  si ($o[1] == 1893139000 et $o[2] == 2935380112) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(0, 4294967295, $o)
+  si ($o[1] == 572697168 et $o[2] == 989493352) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(305419896, 2596069104, $o)
+  si ($o[1] == 2674590945 et $o[2] == 2912381557) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(3735928559, 3405691582, $o)
+  si ($o[1] == 3360600799 et $o[2] == 1018256671) { $ok = $ok + 1 }
+  $o = [0]
+  t_melange(2147483648, 0, $o)
+  si ($o[1] == 4086535908 et $o[2] == 4086535908) { $ok = $ok + 1 }
+  retour $ok
+}
+
+# ── 2. Banc principal : 120 insertions / 120 recherches mixtes ───────────────
+
+fn banc_insert(n: entier, nd: liste<entier>, cl: liste<entier>, vl: liste<entier>, fl: liste<entier>) -> entier {
+  $racine = 0
+  $k = 0
+  tant_que ($k < $n) {
+    $cle = [0]
+    cle_gen($k, $cle)
+    $racine = t_inserer($nd, $cl, $vl, $fl, $racine, $cle, valeur_gen($k))
+    $k = $k + 1
+  }
+  retour $racine
+}
+
+fn banc_verifier(n: entier, nd: liste<entier>, cl: liste<entier>, vl: liste<entier>, fl: liste<entier>,
+                 racine: entier, res: liste<entier>) -> entier {
+  $existe = 0
+  $valeurs_ok = 0
+  $somme = 0
+  $totvis = 0
+  $totscan = 0
+  $nbcles = (longueur($cl) - 1) div 5
+  $k = 0
+  tant_que ($k < $n) {
+    $cle = [0]
+    cle_gen($k, $cle)
+    $h = [0]
+    t_hash($cle, $h)
+    $cnt = [0]
+    $vr = t_idx_rec($nd, $cl, $fl, 0, $racine, $h[1], $h[2], $cle, $cnt)
+    $totvis = $totvis + longueur($cnt) - 1
+    $attendu = valeur_finale($k, $n)
+    si ($vr >= 0) {
+      $existe = $existe + 1
+      si ($vl[$vr] == $attendu) { $valeurs_ok = $valeurs_ok + 1 }
+      $somme = $somme + valeur_gen($k)
+    }
+    $sc = [0]
+    scan_compare($cl, $fl, $nbcles, $cle, $sc)
+    $totscan = $totscan + longueur($sc) - 1
+    $k = $k + 1
+  }
+  joindre($res, $existe)
+  joindre($res, $valeurs_ok)
+  joindre($res, $somme)
+  joindre($res, $nbcles)
+  # Deux compteurs dans UN entier (G5 ne propage pas de façon fiable une liste
+  # appendée par le callee vers le caller au-delà de quelques milliers d'élts).
+  retour $totvis * 1000000 + $totscan
+}
+
+# ── Montée en charge (n insertions, n recherches) ────────────────────────────
+
+fn banc_echelle(n: entier) -> entier {
+  $nd = [0]
+  $cl = [0]
+  $vl = [0]
+  $fl = [0]
+  $r = banc_insert($n, $nd, $cl, $vl, $fl)
+  $res = [0]
+  $code = banc_verifier($n, $nd, $cl, $vl, $fl, $r, $res)
+  $tv = $code div 1000000
+  $ts = $code % 1000000
+  >> "N=" + chaine(n) + " EXISTE=" + chaine($res[1]) + "/" + chaine(n) +
+     " VALEUR=" + chaine($res[2]) + "/" + chaine(n)
+  >> "  SOMME=" + chaine($res[3]) + " CLES=" + chaine($res[4])
+  >> "  VISITES_TOT=" + chaine($tv) +
+     " VISITES_RECH=" + chaine($tv div n)
+  >> "  SCAN_TOT=" + chaine($ts) +
+     " SCAN_MOY=" + chaine($ts div n)
+  retour $res[1]
+}
+
+# ── Point d'entrée ───────────────────────────────────────────────────────────
+
+>> "MELANGE=" + chaine(test_melange()) + "/9"
+
+$nd = [0]
+$cl = [0]
+$vl = [0]
+$fl = [0]
+$r = banc_insert(120, $nd, $cl, $vl, $fl)
+$res = [0]
+$code120 = banc_verifier(120, $nd, $cl, $vl, $fl, $r, $res)
+$tv120 = $code120 div 1000000
+$ts120 = $code120 % 1000000
+>> "BANC_120 EXISTE=" + chaine($res[1]) + "/120 VALEUR=" + chaine($res[2]) + "/120"
+>> "BANC_120 SOMME=" + chaine($res[3]) + " CLES=" + chaine($res[4])
+>> "BANC_120 VISITES=" + chaine($tv120) + " SCAN=" + chaine($ts120)
+
+# Ordre d'insertion : `cles` et `valeurs` suivent l'ordre des PREMIÈRES
+# insertions (111 clés distinctes sur 120 insertions, dont des doublons
+# numériques entier ≡ rationnel).
+$cs = [0]
+$ncles = t_cles($cl, $fl, $r, $nd, $cs)
+$vs = [0]
+$nvals = t_valeurs($vl, $r, $nd, $vs)
+>> "ORDRE CLES=" + chaine($ncles) + " VALEURS=" + chaine($nvals)
+
+# Parité moteur Rust (primitive native `table()`) : 120/120, somme 569660.
+$parite = 0
+si ($res[1] == 120) { $parite = $parite + 1 }
+si ($res[2] == 120) { $parite = $parite + 1 }
+si ($res[3] == 569660) { $parite = $parite + 1 }
+si ($ncles == 111) { $parite = $parite + 1 }
+>> "PARITE_RUST=" + chaine($parite) + "/4"
+
+# Mise à jour, suppression, réinsertion (rationnel non réduit 6/3 = 2).
+$kc = [0, 9, 6, 3]
+$avant = t_idx($nd, $cl, $vl, $fl, $r, $kc)
+$r = t_inserer($nd, $cl, $vl, $fl, $r, $kc, 999)
+$apres = t_idx($nd, $cl, $vl, $fl, $r, $kc)
+$r = t_supprimer($nd, $cl, $vl, $fl, $r, $kc)
+$ex_apres = t_cle_existe($nd, $cl, $fl, $r, $kc)
+$r = t_inserer($nd, $cl, $vl, $fl, $r, $kc, 1001)
+$ex_reins = t_cle_existe($nd, $cl, $fl, $r, $kc)
+$val_reins = t_idx($nd, $cl, $vl, $fl, $r, $kc)
+>> "UPDATE=" + chaine($avant) + "->" + chaine($apres)
+>> "SUPPR_EXISTE=" + chaine($ex_apres) + " REINS=" + chaine($ex_reins) + " VAL=" + chaine($val_reins)
+
+# Les points de montée en charge 240/480/960 sont mesurés en PROCESSUS
+# SÉPARÉS (voir HORDE_TABLES.md) : le moteur Rust réutilise un tampon de liste
+# entre deux appels profonds dans un même processus au-delà de ~200 insertions
+# (mesuré : 2 clés perdues au 2e appel). Un appel par processus évite cet état
+# et rend les mesures reproductibles.
+>> "FIN=OK"
