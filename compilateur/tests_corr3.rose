@@ -1,0 +1,76 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_corr3.rose — banc CORR3 : 40 flottants, référence = rose/rose.
+#
+# Ce fichier est UN CORPUS exécutable : chaque ligne `>>` est une valeur
+# dont la sortie native (ROSE_SANS_JIT=1 rose/rose) est la référence. Le
+# protocole de comparaison est :
+#
+#   ROSE=./rose/rose
+#   $ROSE compilateur/tests_corr3.rose                  > nat.txt
+#   $ROSE rir compilateur/tests_corr3.rose              > corr3.rir
+#   $ROSE compilateur/interpreteur_rir.rose corr3.rir   > rir.txt
+#   cmp nat.txt rir.txt          # 0 divergence attendue
+#
+# Couverture : t09 (1.5, 2.0, 1e16), signe négatif, point décimal,
+# exposition scientifique (1e±5, 1e±6, 1e16, 1e20), plus petits/plus
+# grands representables, rationnels, approx() (Stirling), et le repli
+# de constante flottante.
+# ═══════════════════════════════════════════════════════════════════════
+
+# — t09 : le repli de constante flottante ne doit plus s'arrondir —
+>> 1.5
+>> 2.0
+>> 10000000000000000.0
+
+# — négatifs : -0.5 ne doit pas devenir -1.5 —
+>> -0.5
+>> -1.25
+>> -3.14159
+>> -0.000001
+
+# — 1e10 et exposition scientifique des grands nombres —
+>> 10000000000.0
+>> 100000000000000000000.0
+>> 999999999999999.0
+
+# — zéro, signe et décimaux courts —
+>> 0.0
+>> -0.0
+>> 0.25
+>> 100.5
+>> 1000.125
+>> 99999999.5
+
+# — seuil d'exposition : 1e-4 reste décimal, 1e-5 passe en scientifique —
+>> 0.0001
+>> 0.00001
+>> 0.000001
+
+# — IEEE 754 : plus courts fidèles —
+>> 0.1
+>> 0.1 + 0.2
+>> 1.0000000000000002
+>> 3.141592653589793
+>> 0.3333333333333333
+>> 2.718281828459045
+>> 1.4142135623730951
+>> 123456789.123456789
+>> 1.2345678901234567
+>> 123.456
+>> 3.14159
+
+# — rationnels : ils gardent leur rendu périodique / leur tag —
+>> 1/3
+>> 2/3
+>> -1/2
+
+# — approx() : exposition scientifique du moteur Rust, sans '+' —
+>> approx(0)
+>> approx(10)
+>> approx(100)
+>> approx(1000)
+>> approx(100000)
+
+# — repli explicite flottant("…") : décimal et scientifique —
+>> flottant("1e10")
+>> flottant("1.5e-3")

@@ -485,7 +485,51 @@ fn val_str($v: chaine) -> chaine {
   si ($t == "s") { retour vpay($v) }
   si ($t == "g") { retour vpay($v) }
   si ($t == "b") { si (vpay($v) == "1") { retour "vrai" }; retour "faux" }
-  si ($t == "r" ou $t == "f") { retour rat_dec($v) }
+  si ($t == "f") {
+    # CORR3 : le moteur Rust affiche un flottant avec le point décimal et
+    # l'exposition scientifique (d.ddde±X) dès que l'exposant sort de
+    # [-4, p[ ; rat_dec() reste réservé aux rationnels (forma -1/2 → -1.5).
+    $num0 = rat_num($v)
+    $den = rat_den($v)
+    $sg = ""
+    $num = $num0
+    si (longueur($num) > 0 et sous_chaine($num, 0, 1) == "-") { $sg = "-"; $num = sous_chaine($num, 1, longueur($num)) }
+    $ip = bdiv($num, $den)
+    $rem = bmod($num, $den)
+    si ($rem == "0" et bcmp($ip, "10000000000000000") < 0) { retour $sg + $ip }
+    $frac = ""
+    $r = $rem
+    $guard = 0
+    $zeros = "0000000000000000000000000000000000000000000000000000000000000000"
+    tant_que ($r != "0" et $guard < 60) {
+      $r = bmul_small($r, 10)
+      $dg = bdiv($r, $den)
+      $r = bmod($r, $den)
+      $frac = $frac + $dg
+      $guard = $guard + 1
+    }
+    si ($r != "0") { retour rat_dec($v) }
+    $digits = $ip + $frac
+    $lz = 0
+    tant_que ($lz < longueur($digits) - 1 et sous_chaine($digits, $lz, $lz + 1) == "0") { $lz = $lz + 1 }
+    $expo = longueur($ip) - $lz - 1
+    $fin = longueur($digits)
+    tant_que ($fin > $lz + 1 et sous_chaine($digits, $fin - 1, $fin) == "0") { $fin = $fin - 1 }
+    $sig = sous_chaine($digits, $lz, $fin)
+    $p = longueur($sig)
+    si ($expo < -4 ou $expo >= $p) {
+      $mant = sous_chaine($sig, 0, 1)
+      si ($p > 1) { $mant = $mant + "." + sous_chaine($sig, 1, $p) }
+      $ea = babs(chaine($expo))
+      si ($expo < 0) { retour $sg + $mant + "e-" + $ea }
+      retour $sg + $mant + "e+" + $ea
+    }
+    $pt = longueur($ip) - $lz
+    si ($pt <= 0) { retour $sg + "0." + sous_chaine($zeros, 0, 0 - $pt) + $sig }
+    si ($pt >= $p) { retour $sg + $sig + sous_chaine($zeros, 0, $pt - $p) }
+    retour $sg + sous_chaine($sig, 0, $pt) + "." + sous_chaine($sig, $pt, $p)
+  }
+  si ($t == "r") { retour rat_dec($v) }
   si ($t == "l") {
     $r = "["
     $n = lst_len($v)
@@ -572,26 +616,65 @@ fn val_abs($a: chaine) -> chaine {
   retour $a
 }
 fn vf($s: chaine) -> chaine {
-  $i = 0
-  tant_que ($i < longueur($s) et sous_chaine($s, $i, $i + 1) != "/") { $i = $i + 1 }
-  si ($i < longueur($s)) {
-    $num = sous_chaine($s, 0, $i)
-    si (longueur($num) >= 2 et sous_chaine($num, 0, 2) == "--") { $num = sous_chaine($num, 1, longueur($num)) }
-    $rv = rat_make($num, sous_chaine($s, $i + 1, longueur($s)))
-    si (vtag($rv) == "i") { retour "f:" + vpay($rv) + "/1" }
-    retour "f:" + vpay($rv)
+  # CORR3 : un flottant reste EXACTement f:<num>/<den> (jamais un tag i:).
+  # Le texte source peut être décimal, rationnel (num/den) ou scientifique
+  # (1.5e3, -2e-4) : on le replie sur un rationnel exact, sans arrondi.
+  $txt = $s
+  $exp = 0
+  $frac_form = faux
+  $j = 1
+  tant_que ($j < longueur($txt) et sous_chaine($txt, $j, $j + 1) != "e" et sous_chaine($txt, $j, $j + 1) != "E") { $j = $j + 1 }
+  si ($j < longueur($txt)) {
+    $mant = sous_chaine($txt, 0, $j)
+    $ep = sous_chaine($txt, $j + 1, longueur($txt))
+    $eneg = faux
+    si (longueur($ep) > 0 et sous_chaine($ep, 0, 1) == "-") { $eneg = vrai; $ep = sous_chaine($ep, 1, longueur($ep)) }
+    si (longueur($ep) > 0 et sous_chaine($ep, 0, 1) == "+") { $ep = sous_chaine($ep, 1, longueur($ep)) }
+    $exp = entier($ep)
+    si ($eneg) { $exp = 0 - $exp }
+    $txt = $mant
   }
-  $j = 0
-  tant_que ($j < longueur($s) et sous_chaine($s, $j, $j + 1) != ".") { $j = $j + 1 }
-  si ($j >= longueur($s)) { retour "f:" + bnorm($s) + "/1" }
-  $ip = sous_chaine($s, 0, $j)
-  $fp = sous_chaine($s, $j + 1, longueur($s))
-  $den = "1"
-  $k = 0
-  tant_que ($k < longueur($fp)) { $den = $den + "0"; $k = $k + 1 }
-  $rv = rat_make($ip + $fp, $den)
-  si (vtag($rv) == "i") { retour "f:" + vpay($rv) + "/1" }
-  retour "f:" + vpay($rv)
+  $i = 0
+  tant_que ($i < longueur($txt) et sous_chaine($txt, $i, $i + 1) != "/") { $i = $i + 1 }
+  $rv = "r:0/1"
+  si ($i < longueur($txt)) {
+    $frac_form = vrai
+    $num = sous_chaine($txt, 0, $i)
+    si (longueur($num) >= 2 et sous_chaine($num, 0, 2) == "--") { $num = sous_chaine($num, 1, longueur($num)) }
+    $rv = rat_make($num, sous_chaine($txt, $i + 1, longueur($txt)))
+  } sinon {
+    $j = 0
+    tant_que ($j < longueur($txt) et sous_chaine($txt, $j, $j + 1) != ".") { $j = $j + 1 }
+    si ($j >= longueur($txt)) {
+      $rv = rat_make($txt, "1")
+    } sinon {
+      $ip = sous_chaine($txt, 0, $j)
+      $fp = sous_chaine($txt, $j + 1, longueur($txt))
+      $den = "1"
+      $k = 0
+      tant_que ($k < longueur($fp)) { $den = $den + "0"; $k = $k + 1 }
+      $rv = rat_make($ip + $fp, $den)
+    }
+  }
+  si ($exp > 0) {
+    $p10 = "1"
+    $k = 0
+    tant_que ($k < $exp) { $p10 = $p10 + "0"; $k = $k + 1 }
+    $rv = rat_make(bmul(rat_num($rv), $p10), rat_den($rv))
+  }
+  si ($exp < 0) {
+    $p10 = "1"
+    $k = 0
+    tant_que ($k < 0 - $exp) { $p10 = $p10 + "0"; $k = $k + 1 }
+    $rv = rat_make(rat_num($rv), bmul(rat_den($rv), $p10))
+  }
+  # CORR3 : une littérale a/b est un RATIONNEL (tag r:), une littérale
+  # décimale est un FLOTTANT (tag f:) — le moteur Rust les affiche avec
+  # des règles différentes (5/2 → 5/2, -1/2 → -1.5, 2.0 → 2).
+  $tag = "f:"
+  si ($frac_form) { $tag = "r:" }
+  si (vtag($rv) == "i") { retour $tag + vpay($rv) + "/1" }
+  retour $tag + vpay($rv)
 }
 fn fib_big($n: entier) -> chaine {
   si ($n <= 0) { retour "0" }
@@ -1103,6 +1186,81 @@ fn eval_expr($p: entier, $m: liste<chaine>, $base: entier, $fi: entier) -> liste
       $guard = $guard + 1
     }
     joindre($res, chaine($q + 1))
+    # CORR3 : flottant(x) sur un flottant est l'identité. Sans cette porte,
+    # call_prim() repasserait vpay() (« 3/2 ») dans vf() et le transformerait
+    # en rationnel.
+    si ($name == "flottant" et longueur($args) >= 2 et vtag($args[1]) == "f") {
+      joindre($res, $args[1])
+      retour $res
+    }
+    # CORR3 : approx() = Stirling, rendu « m.dddddeE » exactement comme
+    # factorial_approx() du moteur Rust (chaine, exposition SANS signe '+').
+    # Calcul en virgule fixe décimale sur 24 chiffres : ln via la série
+    # atanh après réduction dans [1,2), exp via Taylor après réduction par ln2.
+    si (($name == "approx" ou $name == "factorial_approx") et longueur($args) >= 2) {
+      $an = bnorm(vpay($args[1]))
+      si (longueur($an) > 0 et sous_chaine($an, 0, 1) == "-") { $an = "0" }
+      si (bcmp($an, "1") <= 0) {
+        joindre($res, vs("1"))
+        retour $res
+      }
+      $SC = "1000000000000000000000000"
+      $LN2 = "693147180559945309417232"
+      $LN10 = "2302585092994045684017991"
+      $LN2PI = "1837877066409345444578941"
+      # ln(x) en virgule fixe
+      $lxnum = $an
+      $lxden = "1"
+      $k2 = 0
+      tant_que (bcmp($lxnum, bmul($lxden, "2")) >= 0) { $lxden = bmul($lxden, "2"); $k2 = $k2 + 1 }
+      tant_que (bcmp($lxnum, $lxden) < 0) { $lxnum = bmul($lxnum, "2"); $k2 = $k2 - 1 }
+      $tn = bsub($lxnum, $lxden)
+      $td = badd($lxnum, $lxden)
+      $tfp = bdiv(badd(bmul($tn, $SC), bdiv($td, "2")), $td)
+      $tcarre = bdiv(badd(bmul($tfp, $tfp), bdiv($SC, "2")), $SC)
+      $term = $tfp
+      $sum = $tfp
+      $kk = 1
+      tant_que ($kk < 60) {
+        $term = bdiv(badd(bmul($term, $tcarre), bdiv($SC, "2")), $SC)
+        si ($term == "0") { $kk = 60 } sinon { $sum = badd($sum, bdiv(badd($term, bdiv(chaine(2 * $kk + 1), "2")), chaine(2 * $kk + 1))) }
+        $kk = $kk + 1
+      }
+      $lnn = badd(bmul_small($sum, 2), bmul(chaine($k2), $LN2))
+      # ln(n!) ≈ n·ln n − n + ½ln(2πn) + 1/(12n) − 1/(360n³) + 1/(1260n⁵)
+      $lnf = bsub(bmul($an, $lnn), bmul($an, $SC))
+      $demi = bdiv(badd(badd($LN2PI, $lnn), "1"), "2")
+      $lnf = badd($lnf, $demi)
+      $lnf = badd($lnf, bdiv(badd($SC, bdiv(bmul("12", $an), "2")), bmul("12", $an)))
+      $lnf = bsub($lnf, bdiv(badd($SC, bdiv(bmul("360", bpow($an, 3)), "2")), bmul("360", bpow($an, 3))))
+      $lnf = badd($lnf, bdiv(badd($SC, bdiv(bmul("1260", bpow($an, 5)), "2")), bmul("1260", bpow($an, 5))))
+      # log10(n!) puis exposant et mantisse
+      $l10 = bdiv(badd(bmul($lnf, $SC), bdiv($LN10, "2")), $LN10)
+      $expo = entier(bdiv($l10, $SC))
+      $fr = bsub($l10, bmul(chaine($expo), $SC))
+      $x = bdiv(badd(bmul($fr, $LN10), bdiv($SC, "2")), $SC)
+      # exp(x) : x ∈ [0, ln10) → k ∈ {0,1,2}
+      $kexp = entier(bdiv($x, $LN2))
+      $r = bsub($x, bmul(chaine($kexp), $LN2))
+      $eterm = $SC
+      $esum = $SC
+      $kk = 1
+      tant_que ($kk < 40) {
+        $tmp = bdiv(badd(bmul($eterm, $r), bdiv($SC, "2")), $SC)
+        $eterm = bdiv(badd($tmp, bdiv(chaine($kk), "2")), chaine($kk))
+        $esum = badd($esum, $eterm)
+        si ($eterm == "0") { $kk = 40 }
+        $kk = $kk + 1
+      }
+      $kk = 0
+      tant_que ($kk < $kexp) { $esum = bmul_small($esum, 2); $kk = $kk + 1 }
+      $m6 = bdiv(badd($esum, "500000000000000000"), "1000000000000000000")
+      $lm = longueur($m6)
+      si ($lm <= 6) { $m6 = sous_chaine("000000", 0, 6 - $lm) + $m6; $lm = 6 }
+      $approx_txt = sous_chaine($m6, 0, $lm - 6) + "." + sous_chaine($m6, $lm - 6, $lm) + "e" + chaine($expo)
+      joindre($res, vs($approx_txt))
+      retour $res
+    }
     $ff = find_fn($name)
     si ($ff > 0) {
       $pr = call_fn($m, $name, $args)
