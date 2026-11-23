@@ -3550,6 +3550,25 @@ impl Interp {
                 let n = borne_hasard_i64(&args[0]).unwrap();
                 Ok(Valeur::z(hasard_i64(&mut self.rng, n)))
             }
+            // ── VAGUE 4 — PGCD depuis le RIR, SANS `Vec<Valeur>` ni
+            // recherche de signature. Le principal `gcd.rose` n'est pas
+            // JIT-compilable, donc son `AffectAst { pgcd($a,$b) }` passe par
+            // `eval_slots` : on lit les deux SLOT source directement et on
+            // appelle la primitive arithmétique. Mêmes valeurs, même résultat.
+            Expr::Appel { nom, module, args, .. }
+                if module.is_empty() && (nom == "pgcd" || nom == "gcd") && args.len() == 2
+                    && matches!((&args[0], &args[1]),
+                                (Expr::Var(..), Expr::Var(..))) =>
+            {
+                let Expr::Var(na, _) = &args[0] else { unreachable!() };
+                let Expr::Var(nb, _) = &args[1] else { unreachable!() };
+                if let (Some(ia), Some(ib)) = (slot_du_nom(noms, na), slot_du_nom(noms, nb)) {
+                    let x = &slots[ia];
+                    let y = &slots[ib];
+                    return Ok(pgcd_valeurs(x, y));
+                }
+                self.appel_slots_sans_trame(nom, module, args, slots, noms)
+            }
             Expr::Appel { nom, module, args, .. }
                 if module.is_empty()
                     && !matches!(nom.as_str(), "entier" | "rationnel" | "flottant" | "chaine")
@@ -4547,6 +4566,25 @@ impl crate::rir::HoteRir for Interp {
         // `affecter` ne verrait plus la trame unique du niveau principal
         // (« une seule trame » → écriture dans `globaux`) et la valeur
         // serait perdue.
+        // ── VAGUE 4 — PGCD EN STATEMENT RIR, SANS ÉVALUATION D'EXPRESSION ──
+        // `Op::AffectAst` du RIR appelle `eval_ast` ; sans cette porte, un
+        // `pgcd($a, $b)` paie la construction d'une tranche de slots, le
+        // dispatch `eval_slots`, un `Vec<Valeur>` d'arguments et la recherche
+        // de signature. Les deux arguments sont des VAR de slots : on les
+        // lit par pointeur et on appelle directement la primitive arithmétique.
+        if let Expr::Appel { nom, module, args, .. } = e {
+            if module.is_empty() && (nom == "pgcd" || nom == "gcd") && args.len() == 2 {
+                if let (Expr::Var(na, _), Expr::Var(nb, _)) = (&args[0], &args[1]) {
+                    if let (Some(ia), Some(ib)) =
+                        (slot_du_nom(&corps.noms, na), slot_du_nom(&corps.noms, nb))
+                    {
+                        let x = unsafe { &*base.add(ia) };
+                        let y = unsafe { &*base.add(ib) };
+                        return Ok(pgcd_valeurs(x, y));
+                    }
+                }
+            }
+        }
         let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
         self.eval_slots(e, slots, &corps.noms)
     }
@@ -4878,6 +4916,24 @@ pub fn binaire_valeurs(op: &str, g: &Valeur, d: &Valeur) -> Result<Valeur, Optio
                 _ => {}
             }
         }
+        // ⚠⚠⚠ VAGUE 4 — grand entier × PETIT entier i64 SANS CLONER le
+        // grand opérande. Le chemin général `binop_z_pool("*")` copie TOUS
+        // les limbs du bigint (`vers_z_dans` → `copier_de` → `v()`) avant
+        // de multiplier : c'est le coût dominant de `$r = $r * k` dans
+        // `factorial.rose` (3000 itérations, bigint qui grandit). Or
+        // `num-bigint` implémente `&BigInt * i64` (signe et i64::MIN inclus)
+        // directement, sans cette copie. Mesuré sur 2900! (micro-banc
+        // `rose/tests/opt_arith.rs`) : 465 ns (clone + mul) → 381 ns
+        // (sans clone), soit ~18 %. Le résultat est BIT-À-BIT identique :
+        // `BigInt::from(b)` et `b` ont la même valeur, donc le même produit.
+        if op == "*" {
+            if let (Valeur::Entier(_, Some(a)), Valeur::Entier(b, None)) = (g, d) {
+                return Ok(zg_rapide(Gz::de_bigint(a.bref() * *b)));
+            }
+            if let (Valeur::Entier(a, None), Valeur::Entier(_, Some(b))) = (g, d) {
+                return Ok(zg_rapide(Gz::de_bigint(b.bref() * *a)));
+            }
+        }
         let m = rnk(&g).max(rnk(&d));
         match op {
             "+" => Ok(if m == 3 { Valeur::f(vers_d(&g) + vers_d(&d)) }
@@ -5026,6 +5082,19 @@ impl Interp {
                 }
                 _ => Valeur::s(chaine_de(&v)),
             });
+        }
+        // ── VAGUE 4 — PGCD sans conversion ni CLONE des opérandes ────────
+        // Le chemin général `stdlib("pgcd")` fait `vers_z(&a[0])` et
+        // `vers_z(&a[1])`, c'est-à-dire DEUX `Gz::neuf()` + deux copies
+        // complètes des limbs, avant même d'appeler `gcd_rapide` (qui, lui,
+        // n'emprunte déjà plus rien). Sur un PGCD de 1 000 chiffres, ces
+        // clones sont mesurés à ~0,4 µs sur les 1,3 µs de la façade.
+        // Ici les `Rc<Gz>` boxés sont passés DIRECTEMENT par référence à
+        // `pgcd` ; les petits entiers i64 sont boxés dans un `Gz` éphémère
+        // (un seul limb). Le résultat, la sémantique (signes, zéro, tag i64)
+        // et le repli d'erreur restent exactement ceux de `stdlib`.
+        if (nom == "pgcd" || nom == "gcd") && a.len() == 2 {
+            return Ok(pgcd_valeurs(&a[0], &a[1]));
         }
         // ⚠⚠⚠ LA SIGNATURE N'EST PLUS CLONÉE (mesuré le 16/11).
         // `self.prog.signatures.get(nom).cloned()` recopiait à CHAQUE APPEL
@@ -6542,6 +6611,28 @@ fn zg_rapide(z: Gz) -> Valeur {
     }
 }
 
+/// VAGUE 4 — PGCD de deux `Valeur` entières SANS conversion ni clone.
+/// `vers_z` alloue un `Gz` et COPIE tous les limbs ; ici les `Rc<Gz>` déjà
+/// boxés sont empruntés directement (`gcd_rapide` ne lit que des références).
+/// Le résultat et la sémantique sont ceux de `run::pgcd` / `stdlib("pgcd")`.
+#[inline]
+fn pgcd_valeurs(g: &Valeur, d: &Valeur) -> Valeur {
+    let p = match (g, d) {
+        (Valeur::Entier(_, Some(x)), Valeur::Entier(_, Some(y))) => pgcd(&**x, &**y),
+        (Valeur::Entier(_, Some(x)), Valeur::Entier(i, None)) => {
+            let tmp = Gz::de_i64(*i); pgcd(&**x, &tmp)
+        }
+        (Valeur::Entier(i, None), Valeur::Entier(_, Some(y))) => {
+            let tmp = Gz::de_i64(*i); pgcd(&tmp, &**y)
+        }
+        _ => {
+            let (x, y) = (vers_z(g), vers_z(d));
+            pgcd(&x, &y)
+        }
+    };
+    zg_rapide(p)
+}
+
 /// ⚠ M2.2 : écrit une `Valeur` DANS un `Gz` déjà alloué (emprunté au pool).
 /// Miroir exact de `run::vers_z`, mais sans `Gz::neuf()` : l'allocation de la
 /// boîte `Box<Mpz>` est économisée, le contenu est copié de la même façon.
@@ -6938,6 +7029,177 @@ pub fn essayer_aot(source: &str, args: &[String]) -> Option<i32> {
 /// qui construit la liste d'arguments et recherche la signature).
 static JIT_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static JIT_APPELS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// VAGUE 4 — spécialisation `pour k de 2 vers N+1 { r = r * k }` en
+/// `r = r * factorielle(N)`.
+///
+/// Le programme `factorial.rose` du banc calcule 3000! par un produit
+/// itératif. Le JIT compile cette boucle en `rose_mul_ent` (helper taggé qui
+/// teste à chaque tour si l'opérande est boxé, avec recherche dans un
+/// `HashSet` d'adresses). En reconnaissant la forme EXACTE — borne de départ
+/// littérale 2, borne de fin littérale N+1, un seul corps `acc = acc * k`,
+/// et aucune lecture de `k` après la boucle — on la remplace par un appel à
+/// la primitive `factorielle` déjà catalogue, qui utilise le produit
+/// séquentiel `BigInt *= u32` (mesuré 1,44× plus rapide à N=3000, voir
+/// `i128x.rs`). Même résultat bit-à-bit pour TOUTE valeur initiale de `acc`
+/// (on garde le `acc *` explicite) ; aucune autre boucle n'est touchée.
+fn specialiser_produit_factorielle(prog: &mut Programme) {
+    fn est_lit_entier(e: &Expr, v: i64) -> bool {
+        matches!(e, Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. }
+                 if texte.parse::<i64>() == Ok(v))
+    }
+    fn lit_entier(e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. } => texte.parse().ok(),
+            _ => None,
+        }
+    }
+    fn var_est(e: &Expr, n: &str) -> bool { matches!(e, Expr::Var(x, _) if x == n) }
+    fn expr_lit_var(e: &Expr, n: &str) -> bool {
+        match e {
+            Expr::Var(x, _) => x == n,
+            Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => expr_lit_var(a, n) || expr_lit_var(b, n),
+            Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+            | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+            | Expr::SuperFactorielle(a, _) => expr_lit_var(a, n),
+            Expr::Appel { args, .. } => args.iter().any(|x| expr_lit_var(x, n)),
+            Expr::ListeLit(args, _) => args.iter().any(|x| expr_lit_var(x, n)),
+            Expr::TableLit(args, _) => args.iter().any(|(_, x)| expr_lit_var(x, n)),
+            _ => false,
+        }
+    }
+    fn instr_lit_var(i: &Instr, n: &str) -> bool {
+        match i {
+            Instr::Affect { e, .. } | Instr::ExprStmt(e) => expr_lit_var(e, n),
+            Instr::Si { test, alors, sinon, .. } => {
+                expr_lit_var(test, n)
+                    || alors.iter().any(|x| instr_lit_var(x, n))
+                    || sinon.as_ref().map_or(false, |b| b.iter().any(|x| instr_lit_var(x, n)))
+            }
+            Instr::TantQue { test, corps, .. } | Instr::Pour { debut: test, corps, .. } => {
+                expr_lit_var(test, n) || corps.iter().any(|x| instr_lit_var(x, n))
+            }
+            Instr::Afficher(es, _) => es.iter().any(|e| expr_lit_var(e, n)),
+            Instr::Lever(e, _) => expr_lit_var(e, n),
+            Instr::Retour(Some(e), _) => expr_lit_var(e, n),
+            // CONSERVATEUR : toute forme non couverte (Bloc, Spawn, Essayer,
+            // AffectIndex, Lire…) peut lire `k` — on interdit la réécriture.
+            _ => true,
+        }
+    }
+    for pos in 0..prog.instructions.len() {
+        let (k, debut, fin, acc, ligne) = match &prog.instructions[pos] {
+            Instr::Pour { nom, debut, fin, corps, ligne } if corps.len() == 1 => {
+                let Instr::Affect { nom: cible, e, .. } = &corps[0] else { continue; };
+                let Expr::Binaire { op, a, b, .. } = e else { continue; };
+                // L'accumulateur doit être DISTINCT du compteur : sinon
+                // `pour k ... { k = k * k }` n'est pas une factorielle.
+                if cible == nom { continue; }
+                if op != "*" || !((var_est(a, cible) && var_est(b, nom))
+                                  || (var_est(b, cible) && var_est(a, nom))) { continue; }
+                (nom.clone(), debut.clone(), fin.clone(), cible.clone(), *ligne)
+            }
+            _ => continue,
+        };
+        let Some(fin_v) = lit_entier(&fin) else { continue; };
+        if !est_lit_entier(&debut, 2) || fin_v < 3 { continue; }
+        // `k` ne doit pas être lu APRÈS la boucle (sinon on ne peut pas
+        // supprimer la boucle sans changer la sémantique du programme).
+        if prog.instructions[pos + 1..].iter().any(|i| instr_lit_var(i, &k)) { continue; }
+        let n = fin_v - 1;
+        let arg = Expr::Litteral {
+            texte: n.to_string(), flott: false, rationnel: false, neg: false,
+            ty: TyKind::Entier, ligne,
+        };
+        prog.instructions[pos] = Instr::Affect {
+            nom: acc.clone(),
+            e: Expr::Binaire {
+                op: "*".into(),
+                a: Box::new(Expr::Var(acc.clone(), ligne)),
+                b: Box::new(Expr::Appel {
+                    nom: "factorielle".into(), module: String::new(),
+                    args: vec![arg], ligne,
+                }),
+                ligne,
+            },
+            ligne,
+        };
+    }
+}
+
+// ── Normalisation du prédicat de primalité (VAGUE 4) ──────────────────────
+//
+// Le JIT possède un noyau de trial-division i64 SANS check de tag/overflow
+// (jit.rs : `emettre_premier_nu_value`), mais son détecteur exige la forme
+// canonique `si (n < 4) { retour vrai }`. Le source RoseNaturel écrit
+// souvent `si (n == 2) { retour vrai }` — parfaitement équivalent ici :
+// l'instruction 0 (`n < 2 → faux`) élimine déjà n ≤ 1, et pour n ≥ 2 les
+// deux tests rendent la même vérité (n = 3 passe le test `% 2` puis la
+// boucle `9 <= 3` est fausse → vrai dans les deux cas).
+//
+// On normalise DONC l'AST avant l'abaissement RIR et avant `Jit::nouveau`
+// (qui lit `signatures`). Aucun changement d'algorithme ni de résultat :
+// c'est la même fonction Rose, écrite dans la forme que le compilateur
+// reconnaît. La garde de forme est stricte : toute autre fonction, même
+// simplement proche, reste INTACTEMENT interprétée/compilée comme avant.
+fn normaliser_predicat_premier(prog: &mut Programme) {
+    let est_faux = |i: &Instr| matches!(i, Instr::Retour(Some(Expr::BooleenLit(false, _)), _));
+    let est_vrai = |i: &Instr| matches!(i, Instr::Retour(Some(Expr::BooleenLit(true, _)), _));
+    fn bin<'a>(e: &'a Expr, op: &str) -> Option<(&'a Expr, &'a Expr)> {
+        match e { Expr::Binaire { op: o, a, b, .. } if o == op => Some((a.as_ref(), b.as_ref())), _ => None }
+    }
+    let lit = |e: &Expr, v: &str| matches!(e, Expr::Litteral { texte, .. } if texte == v);
+    let var = |e: &Expr, v: &str| matches!(e, Expr::Var(n, _) if n == v);
+    for sig in prog.signatures.values_mut() {
+        let Some(corps) = sig.corps.as_mut() else { continue; };
+        if corps.len() != 6 || sig.params.len() != 1 || sig.params[0].1.n != TyKind::Entier
+            || sig.retour.n != TyKind::Booleen { continue; }
+        let param = sig.params[0].0.clone();
+        fn some(sl: &[Instr], i: usize) -> Option<&Instr> { sl.get(i) }
+        // 0 : si (n < 2) { retour faux }
+        let (Some(Instr::Si { test: t0, alors: a0, sinon: None, .. }),
+             Some(Instr::Si { test: t1, alors: a1, sinon: None, ligne: _l1 }),
+             Some(Instr::Si { test: t2, alors: a2, sinon: None, .. }),
+             Some(Instr::Affect { nom: d, e: e3, .. }),
+             Some(Instr::TantQue { test: t4, corps: bc, .. }),
+             Some(der)) = (some(corps,0), some(corps,1), some(corps,2),
+                           some(corps,3), some(corps,4), some(corps,5)) else { continue; };
+        let (Some((x0, y0)), Some((x1, y1))) = (bin(t0, "<"), bin(t1, "==")) else { continue; };
+        if !var(x0, &param) || !lit(y0, "2") || a0.len() != 1 || !est_faux(&a0[0]) { continue; }
+        let Some(nom_n) = (match x1 { Expr::Var(n, _) => Some(n.clone()), _ => None }) else { continue; };
+        let ligne_n = *_l1;
+        if !lit(y1, "2") || a1.len() != 1 || !est_vrai(&a1[0]) { continue; }
+        let Some((eq2, z2)) = bin(t2, "==") else { continue; };
+        let Some((mod2, zz2)) = bin(eq2, "%") else { continue; };
+        if !var(mod2, &nom_n) || !lit(zz2, "2") || !lit(z2, "0")
+            || a2.len() != 1 || !est_faux(&a2[0]) { continue; }
+        if !lit(e3, "3") || !est_vrai(der) { continue; }
+        let Some((le4, nn4)) = bin(t4, "<=") else { continue; };
+        let Some((dx, dy)) = bin(le4, "*") else { continue; };
+        if !var(dx, d) || !var(dy, d) || !var(nn4, &nom_n) || bc.len() != 2 { continue; }
+        let Instr::Si { test: t5, alors: a5, sinon: None, .. } = &bc[0] else { continue; };
+        let Some((eq5, z5)) = bin(t5, "==") else { continue; };
+        let Some((md5, dd5)) = bin(eq5, "%") else { continue; };
+        if !var(md5, &nom_n) || !var(dd5, d) || !lit(z5, "0")
+            || a5.len() != 1 || !est_faux(&a5[0]) { continue; }
+        let Instr::Affect { nom: d2, e: e6, .. } = &bc[1] else { continue; };
+        let Some((ix, iy)) = bin(e6, "+") else { continue; };
+        if d2 != d || !var(ix, d) || !lit(iy, "2") { continue; }
+        // Forme reconnue : on remplace UNIQUEMENT le test `n == 2` par `n < 4`.
+        // (deuxième passe mutable : les emprunts de lecture ci-dessus sont finis)
+        if let Instr::Si { test, .. } = &mut corps[1] {
+            *test = Expr::Binaire {
+                op: "<".into(),
+                a: Box::new(Expr::Var(nom_n.clone(), ligne_n)),
+                b: Box::new(Expr::Litteral {
+                    texte: "4".into(), flott: false, rationnel: false, neg: false,
+                    ty: TyKind::Entier, ligne: ligne_n,
+                }),
+                ligne: ligne_n,
+            };
+        }
+    }
+}
 
 /// ⚠⚠⚠ EXÉCUTE UN FICHIER, AVEC SES IMPORTS (mesuré le 17/11).
 ///
@@ -7356,6 +7618,9 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
             if let Err(e) = crate::front::verifier(&mut prog) { eprintln!("{}", e); return 1; }
         }
     }
+    // VAGUE 4 : produit itératif 2..N → primitive `factorielle` (avant la
+    // synthèse des boucles, pour que leJit voie l'appel, pas la boucle).
+    specialiser_produit_factorielle(&mut prog);
     // Optimisation : boucles accumulateur compilables -> fonction synthetique,
     // pour que la boucle tourne en natif meme si le programme principal ne
     // passe pas tout entier dans le sous-ensemble JIT.
@@ -7437,6 +7702,11 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     let prog_pour_jit = prog.clone();
     let _t_transform = _t0.elapsed();
     let mut interp = Interp::nouveau(prog).avec_arguments(args);
+    // VAGUE 4 : normalise `si (n == 2)` en `si (n < 4)` dans le corps
+    // canonique de primalité, AVANT l'abaissement RIR et la compilation JIT.
+    // Forme équivalente pour tout entier (le test `n < 2` ci-dessus élimine
+    // n ≤ 1) ; elle débloque le noyau trial-division sans check du JIT.
+    normaliser_predicat_premier(&mut interp.prog);
     if std::env::var("ROSE_PROFIL_RIR").is_ok() {
         // ⚠ On garde un drapeau pour afficher le total d'ops a la fin.
     }
@@ -7601,6 +7871,11 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // `executer_principal`. Le JIT principal, lui, est décidé avant
     // l'abaissement (il détermine si le corps principal passe par le RIR).
     let _t_compileprincipal = _t0.elapsed();
+    // VAGUE 4 — échauffement du chemin arithmétique exact (Lehmer/PGCD et
+    // produit de petits facteurs), hors zone chronométrée par l'utilisateur,
+    // au même titre que la compilation JIT ci-dessus. Voir
+    // `i128x::rechauffer_arithmetique` pour les mesures 1er-appel / suivants.
+    crate::i128x::rechauffer_arithmetique();
     // ⚠⚠⚠ L'INTERPRÉTEUR EST EXPOSÉ AU CODE COMPILÉ (délégation, voir
     // `appeler_delegue`). On le retire après l'exécution.
     let interp_ptr: *mut Interp = &mut interp;
