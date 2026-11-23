@@ -35,6 +35,14 @@ Injection HOST-2 (voir rose/docs/EVAL_EXPR_SELFHOST.md) :
   (point fixe b3ed9262). L'implémentation Rose est, elle, dans
   `compilateur/emetteur_elf.rose` (sous-ensemble G5).
 
+EXTENSION SELF-HOST (copie générée uniquement, jamais les sources d'origine) :
+  * std_sig : alias `type` et `prng` déjà émis par le backend G5 ($g5_typel /
+    $g5_hasardl) mais absents de la table Rose front-end -> t14_type / t91_prng ;
+  * `+` : `valeur` (lecture de table) est traitée comme le Dyn `?` de front.rs
+    -> t/aot8 24_compose (table + concaténation).
+  A/B : RNAT_EXT_VALEUR=0 désactive le second correctif. Les deux sont
+  désactivables sans toucher à emetteur.rose (point fixe b3ed9262 intact).
+
 Repères du backend : ils sont trouvés PAR CONTENU, pas par numéro de ligne.
 Les numéros figés dans les versions précédentes (3654/3658/3811 pour ELF)
 étaient périmés depuis le correctif UTF-8 livré dans emetteur_elf.rose et
@@ -69,6 +77,22 @@ STD_SIG_EVAL_EXPR = STD_SIG_ANCRE + \
 # générée : emetteur.rose reste intact (point fixe b3ed9262).
 STD_SIG_INJECT = STD_SIG_EVAL_EXPR + \
     '  si ($nom == "octet_brut") { retour "chaine|entier" }\n'
+
+# EXTENSION SELF-HOST (vague OPT-VM) : deux alias de primitives que le backend
+# G5 sait déjà émettre mais que le front-end Rose ne connaît pas.
+#   * `type`  -> $g5_typel    (emetteur_elf.rose « si ($nom == "type") »)
+#   * `prng`  -> $g5_hasardl  (emetteur_elf.rose « ... "hasard" ou "prng" »)
+# Le moteur Rust expose ces noms dans front.rs::std_sig ; la table Rose
+# n'expose que `type_de` / `hasard`. Sans cet ajout, C0 refuse t14_type et
+# t91_prng (« Fonction 'type'/'prng' inconnue ») et retombe dans le vieux
+# compilateur inatteignable. Comme HOST-2, l'injection ne touche QUE la copie
+# générée : compilateur/emetteur.rose reste intact (point fixe b3ed9262).
+STD_SIG_EXTENSION = (
+    '  # EXTENSION : alias natifs déjà émis par le backend G5.\n'
+    '  si ($nom == "type") { retour "chaine|tout" }\n'
+    '  si ($nom == "prng") { retour "entier|entier" }\n'
+)
+STD_SIG_INJECT += STD_SIG_EXTENSION
 
 # Garde de borne pour la queue « vieux compilateur » du backend : avec un
 # seul argument (C0 rose_natif.rose), `$sortie = argument(1)` lève
@@ -160,6 +184,29 @@ def trouver_reperes(be: list, backend: str) -> dict:
         raise SystemExit(f"ERREUR {backend}: ligne source G5 introuvable")
     return dict(head_end=h + 1, dispatch_start=d + 1, quit_line=q + 1,
                 src_line=src)
+
+
+def injecte_front_valeur(em_head: str) -> str:
+    """EXTENSION : une valeur lue dans une table est dynamique, comme `?`.
+
+    `check_expr` (front-end Rose) type `t["cle"]` « valeur|vide » alors que
+    front.rs du moteur Rust le traite comme un Dyn (« ? »). L'opération `+`
+    acceptait le Dyn mais pas `valeur` : C0 refusait `t["k"] + "-" + t["j"]`
+    (« Addition valeur + chaine impossible ») et retombait dans le vieux
+    compilateur, qui émet un ELF non exécutable. On aligne le front-end
+    généré sur front.rs:2044 en routant l'addition dynamique à l'exécution.
+    Le backend G5 résout déjà l'addition à l'exécution (g5_eval, head « add »).
+    """
+    if os.environ.get("RNAT_EXT_VALEUR", "1") == "0":
+        return em_head
+    old = ('    # front.rs:2044 — Dyn + X non numérique des deux côtés → Dyn.\n'
+           '    si (BASE($tg) == "?" ou BASE($td) == "?") { retour "?|vide" }')
+    new = ('    # front.rs:2044 — Dyn + X non numérique des deux côtés → Dyn.\n'
+           '    # EXTENSION : `valeur` (lecture de table) = Dyn du moteur Rust.\n'
+           '    si (BASE($tg) == "?" ou BASE($td) == "?" '
+           'ou BASE($tg) == "valeur" ou BASE($td) == "valeur") '
+           '{ retour "?|vide" }')
+    return replace_once(em_head, old, new, "EXT valeur + chaine")
 
 
 def injecte_front_opt(em_head: str, em_main: str, new_tail: str):
@@ -403,8 +450,9 @@ tant_que ($u < longueur($outl)) {
   $u = $u + 1
 }
 retour $rnat_dump"""
-    # Correctif front-end d'abord (copie générée uniquement).
+    # Correctifs front-end d'abord (copie générée uniquement).
     em_head, em_main, new_tail = injecte_front_opt(em_head, em_main, new_tail)
+    em_head = injecte_front_valeur(em_head)
     if phase == "rir":
         new_tail = '>> "PHASE_RIR_OK"\nquitter(0)\n' + new_tail
     if phase == "dump":

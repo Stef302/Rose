@@ -1699,7 +1699,8 @@ fn check_bin($i: entier,
     si (BASE($tg) == "chaine" et BASE($td) == "chaine") { retour "chaine|vide" }
     si (estnum($tg) et estnum($td)) { retour promote($tg, $td) }
     # front.rs:2044 — Dyn + X non numérique des deux côtés → Dyn.
-    si (BASE($tg) == "?" ou BASE($td) == "?") { retour "?|vide" }
+    # EXTENSION : `valeur` (lecture de table) = Dyn du moteur Rust.
+    si (BASE($tg) == "?" ou BASE($td) == "?" ou BASE($tg) == "valeur" ou BASE($td) == "valeur") { retour "?|vide" }
     # miroir de front.rs : `racine(n)` est typée irrationnel mais rend un
     # entier exact sur carré parfait ; l'addition est donc résolue à
     # l'exécution (les benches racines l'utilisent).
@@ -1806,6 +1807,9 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "lire_texte") { retour "chaine|chaine" }
   si ($nom == "eval_expr") { retour "chaine|chaine" }
   si ($nom == "octet_brut") { retour "chaine|entier" }
+  # EXTENSION : alias natifs déjà émis par le backend G5.
+  si ($nom == "type") { retour "chaine|tout" }
+  si ($nom == "prng") { retour "entier|entier" }
   si ($nom == "ecrire_texte") { retour "vide|chaine,chaine" }
   si ($nom == "nb_arguments") { retour "entier|" }
   si ($nom == "argument") { retour "chaine|entier" }
