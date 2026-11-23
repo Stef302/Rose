@@ -553,16 +553,9 @@ fn lsrc_pgcd2($a: entier, $b: entier) -> entier {
   retour $x
 }
 
-fn lsrc_rpui($b: entier, $e: entier) -> entier {
-  $res = 1
-  $f = $b
-  $k = $e
-  tant_que ($k > 0) {
-    si ($k % 2 == 1) { $res = $res * $f }
-    $f = $f * $f
-    $k = $k div 2
-  }
-  retour $res
+fn lsrc_rpui($b: chaine, $e: entier) -> chaine {
+  # CORR1 : b^e exact via bigint (limbs 10^8), l'ancien entier tagué plafonnait a 2^60.
+  retour bi_texte(bi_pow(bi_depuis_chaine($b), $e))
 }
 
 fn lsrc_rnum($t: chaine) -> entier {
