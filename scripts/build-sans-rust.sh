@@ -23,6 +23,9 @@
 # Options :
 #   --verifier      exécuter chaque ELF produit (rc=0 attendu) et enregistrer
 #                   sa première ligne de sortie dans le rapport.
+#   --verif-source  J1 : appeler `C0 --verif SOURCE` au lieu de compiler.
+#                   Chaque ligne du rapport est le verdict du vérificateur
+#                   auto-hébergé ; aucune vérification Rust n'est appelée.
 #   --reference B   OPTIONNEL et HORS du chemin Sans Rust : comparer la sortie
 #                   à celle du binaire Rust B. Jamais utilisé par défaut.
 #   --rapport F     écrire un TSV : nom, verdict, rc, taille, machine, sortie,
@@ -36,6 +39,7 @@ set -uo pipefail
 C0=""
 OUT="/tmp/opencode/build-sans-rust"
 VERIFY=0
+MODE_VERIF=0
 REF=""
 RAPPORT=""
 TLIMIT=900
@@ -44,10 +48,11 @@ while [[ $# -gt 0 ]]; do
     --compilateur) C0="${2:-}"; shift 2 ;;
     --sortie) OUT="${2:-}"; shift 2 ;;
     --verifier) VERIFY=1; shift ;;
+    --verif-source) MODE_VERIF=1; shift ;;
     --reference) REF="${2:-}"; shift 2 ;;
     --rapport) RAPPORT="${2:-}"; shift 2 ;;
     --timeout) TLIMIT="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "OPTION INCONNUE : $1" >&2; exit 1 ;;
     *) break ;;
   esac
@@ -66,6 +71,32 @@ C0="$(realpath "$C0")"
 if [[ -n "$RAPPORT" ]]; then : > "$RAPPORT"; fi
 rapport() { [[ -n "$RAPPORT" ]] && printf '%s\n' "$*" >> "$RAPPORT"; }
 rapport "nom	verdict	rc_comp	taille	machine	sortie	reference	cause"
+
+# ── J1 : mode vérification, aucun ELF produit, aucun Rust appelé ────────
+# `C0 --verif SOURCE` imprime « vérifié » ou le message d'erreur exact.
+if [[ $MODE_VERIF -eq 1 ]]; then
+  n=0; ok=0
+  for src in "$@"; do
+    [[ -r "$src" ]] || { echo "BLOQUÉ $src : source illisible"; n=$((n+1)); continue; }
+    src="$(realpath "$src")"
+    nom="$(basename "$src" .rose)"
+    n=$((n+1))
+    verdict="$(timeout "$TLIMIT" "$C0" --verif "$src" 2>"$OUT/$nom.err")"
+    crc=$?
+    if [[ $crc -eq 0 && "$verdict" == "vérifié" ]]; then
+      ok=$((ok+1)); classe=CONFORME
+    elif [[ $crc -eq 0 ]]; then
+      classe=REJETE
+    else
+      classe=BLOQUE
+    fi
+    echo "$classe $nom : $(echo "$verdict" | head -n 1 | cut -c1-160)"
+    rapport "$nom	$classe	$crc	-	-	$(echo "$verdict" | head -n 1 | cut -c1-160)	-	-"
+  done
+  echo "RÉSULTAT : $ok/$n sources vérifiées Sans Rust (compilateur $(md5sum "$C0" | cut -d' ' -f1))"
+  [[ $ok -eq $n && $n -gt 0 ]]
+  exit $?
+fi
 
 n=0; ok=0
 for src in "$@"; do

@@ -52,6 +52,7 @@ robuste aux ajouts de lignes dans le backend.
 
 from pathlib import Path
 import os
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,6 +63,29 @@ BACKENDS = {
     "pe": (ROOT / "compilateur" / "emetteur_pe.rose",
            ROOT / "compilateur" / "rose_natif_pe.rose"),
 }
+VERIFIEUR = ROOT / "compilateur" / "verifieur.rose"
+
+# ── J1 — vérification auto-hébergée (SELFHOST_EXTENSION.md §7) ──────────
+# `verifieur.rose` (79 fn) existe mais n'était pas câblé dans le composite.
+# Injection dans la COPIE générée uniquement (jamais dans la source) :
+#   * ses 79 fn sont RENOMMIÉES avec le préfixe `vf_` : 74 d'entre elles
+#     portent le même nom qu'une fn du front-end (`car`, `std_sig`,
+#     `check_expr`, `piece`, …) et entreraient en collision ;
+#   * son `$principal` (≈ 100 variables) est enfermé dans
+#     `fn verifier_source($src_brut: chaine) -> chaine` : ces variables
+#     deviennent LOCALES, la table des globales G5 reste à 402 (< 512) ;
+#   * `--verif FICHIER` est dispatché EN TÊTE du chemin G5, avant la lecture
+#     de `argument(0)` comme source, et imprime le verdict de verifier_source.
+# RNAT_VERIF=0 désactive tout ce bloc (A/B avant/après).
+RNAT_VERIF = os.environ.get("RNAT_VERIF", "1") != "0"
+VF_PREFIX = "vf_"
+VF_MARQUEUR = "programme principal"
+VERIF_DISPATCH = """# J1 — vérification auto-hébergée : `--verif source.rose` -> verdict.
+si (nb_arguments() >= 2 et argument(0) == "--verif") {
+  >> verifier_source(lire_texte(argument(1)))
+  quitter(0)
+}
+"""
 
 # std_sig du front-end Rose : eval_expr est une primitive native du moteur
 # Rust (front.rs std_sig), absente de la table Rose. Injectée dans le
@@ -184,6 +208,42 @@ def trouver_reperes(be: list, backend: str) -> dict:
         raise SystemExit(f"ERREUR {backend}: ligne source G5 introuvable")
     return dict(head_end=h + 1, dispatch_start=d + 1, quit_line=q + 1,
                 src_line=src)
+
+
+def prepare_verifieur() -> str:
+    """Renomme les fn du vérificateur et enveloppe son principal dans une fn.
+
+    Aucune source n'est modifiée : tout se passe sur la chaîne injectée dans
+    le composite généré. Le préfixe évite les 74 collisions de noms avec le
+    front-end ; l'enveloppe garde ses ~100 variables hors de la table des
+    globales G5 (borne 512 à 0x60004000).
+    """
+    src = lines(VERIFIEUR)
+    marqueurs = [i for i, l in enumerate(src)
+                 if l.startswith("#") and VF_MARQUEUR in l]
+    if len(marqueurs) != 1:
+        raise SystemExit(f"ERREUR verifieur: {len(marqueurs)} marqueurs principal")
+    m = marqueurs[0]
+    head, main = src[:m], src[m + 1:]
+    while main and not main[0].strip():
+        main = main[1:]
+    noms = sorted({mm.group(1) for l in head
+                   for mm in re.finditer(r"^fn (\w+)", l)}, key=len, reverse=True)
+    if len(noms) != 79:
+        raise SystemExit(f"ERREUR verifieur: {len(noms)} fn (attendu 79)")
+    pat = re.compile(r"\b(" + "|".join(re.escape(n) for n in noms) + r")\b(?=\s*\()")
+    rename = lambda mm: VF_PREFIX + mm.group(1)
+    head = "\n".join(pat.sub(rename, l) for l in head)
+    main = "\n".join(pat.sub(rename, l) for l in main)
+
+    entree = '$src = ""\nsi (nb_arguments() > 0) { $src = vf_fusionner_imports(lire_texte(argument(0))) }'
+    entree_neuve = ('fn verifier_source($src_brut: chaine) -> chaine {\n'
+                    '$src = vf_fusionner_imports($src_brut)')
+    main = replace_once(main, entree, entree_neuve, "J1 entrée verifier_source")
+    fin = 'si (longueur($err) > 1) { >> $err[1] } sinon { >> "vérifié" }'
+    fin_neuve = ('si (longueur($err) > 1) { retour $err[1] } sinon { retour "vérifié" }\n}')
+    main = replace_once(main, fin, fin_neuve, "J1 retour verifier_source")
+    return head + "\n" + main + "\n"
 
 
 def injecte_front_valeur(em_head: str) -> str:
@@ -483,6 +543,12 @@ retour $rnat_dump"""
         be_tail = replace_once(be_tail, SORTIE_SANS_GARDE, SORTIE_AVEC_GARDE,
                                f"{backend} garde argument(1)")
 
+    # ── J1 : le vérificateur, ENTIÈREMENT dans la copie générée ──────────
+    # Ses 79 fn renommées vf_* et son principal enveloppé dans verifier_source
+    # sont placés APRÈS les fonctions du backend : aucune globale supplémentaire.
+    verif = prepare_verifieur() if RNAT_VERIF else ""
+    dispatch = VERIF_DISPATCH if RNAT_VERIF else ""
+
     cible = "ELF64 aarch64 (Linux)" if backend == "elf" else "PE32+ aarch64 (Windows)"
     header = "\n".join([
         f"# rose_natif_{backend}.rose — compilateur .rose -> {cible}, généré (NE PAS ÉDITER).",
@@ -502,7 +568,7 @@ retour $rnat_dump"""
 fn em_source_rir() -> chaine {
 """
     parts = [header, em_head, glue, em_main, "\n}\n",
-             be_head, be_g5, be_tail]
+             be_head, verif, dispatch, be_g5, be_tail]
     out.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
     print(f"généré {out} ({out.stat().st_size} octets)")
     return 0
