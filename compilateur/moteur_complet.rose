@@ -5550,7 +5550,12 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "lire_texte") { si ($n < 1) { retour vs("") }; retour vs(lire_texte(vpay($a[1]))) }
   si ($name == "ecrire_texte") { si ($n >= 2) { ecrire_texte(vpay($a[1]), vpay($a[2])) }; retour "v:" }
   si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") { si ($n >= 2) { ecrire_bytes(vpay($a[1]), vpay($a[2])) }; retour "v:" }
-  si ($name == "argument") { si ($n < 1) { retour vs("") }; retour vs(argument(entier(val_str($a[1])))) }
+  si ($name == "argument") {
+    si ($n < 1) { retour vs("") }
+    $ix = entier(val_str($a[1]))
+    si ($ix < 0) { $ix = nb_arguments() } sinon { $ix = $ix + 1 }
+    retour vs(argument($ix))
+  }
   si ($name == "nb_arguments") { retour vi(chaine(nb_arguments() - 1)) }
   si ($name == "graine") { si ($n >= 1) { graine(entier(val_str($a[1]))) }; retour "v:" }
   si ($name == "hasard" ou $name == "prng" ou $name == "hasard_systeme") { si ($n < 1) { retour vi("0") }; retour vi(chaine(hasard(entier(val_str($a[1]))))) }
