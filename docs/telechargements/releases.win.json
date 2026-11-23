@@ -1,12 +1,12 @@
 [
   {
-    "PackageId": "Rose-0.1.74-full.nupkg",
-    "Version": "0.1.74",
+    "PackageId": "Rose-0.1.75-full.nupkg",
+    "Version": "0.1.75",
     "Type": "Full",
-    "FileName": "Rose-0.1.74-full.nupkg",
-    "SHA1": "02aa32f83163c7ef5c17f72eb6879561afc09ce0",
-    "SHA256": "1142872619e09b34077fc26a1efd17480e8ac3850853a9e78b2983b26b3c5214",
-    "SHA512": "80IaJvaF5QP11DCqMYx/aG4n4VnlT7JeIyZA7c+hzGEPvrtY2YS0Wkr7N+ZIa+QIM3DCAmWR+BOyO6qDGtd57A==",
-    "Size": 11227323
+    "FileName": "Rose-0.1.75-full.nupkg",
+    "SHA1": "1f5b91eb934f30643f717caaa8aca58f6d2e7fab",
+    "SHA256": "eee2c8ee5c7c5a959672a83b804fb3feda9f4e1c90d8967f0c74522a87706616",
+    "SHA512": "5vgzMs8BljPZTps+1mf24g1XbCxePwnPivMFjzei+o3bW6Qpn7i4kTLsE7NvBg4KMHhnlDiN6xRdYTK5PsGsyQ==",
+    "Size": 11371944
   }
 ]

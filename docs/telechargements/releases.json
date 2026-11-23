@@ -3,6 +3,72 @@
   "genere": "2026-11-21",
   "versions": [
     {
+      "version": "0.1.75",
+      "tag": "v0.1.75",
+      "titre": "Rose v0.1.75 — performance : Rose bat Rust sur 10 domaines",
+      "date": "2026-11-23",
+      "changelog": [
+        "10 domaines gagnés sur 13 contre Rust (départ : 3/13), banc reproductible",
+        "Chaîne JIT 305x, Rose 12-16x plus rapide que Rust ; listes JIT machine x4",
+        "Boucles entières déroulées x4 : int_loop bat Rust même cas ASLR rapide",
+        "PGCD 0,96x, premiers 0,87x, factorial 0,21x (Rose 4,8x plus rapide)",
+        "Tables hash avalanché 115x, RVM 215x, émission WASM x2,12",
+        "AOT : binaires -57%, code machine -24%, 75/75 zéro refus",
+        "Self-hosting A-Z C0=C1=C2, Thorn M0/M1/M2 431 contrôles, tests/0",
+        "Garde-fou mémoire et banc bench/perf.sh reproductible"
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.75-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.75-full.nupkg",
+          "sha256": "eee2c8ee5c7c5a959672a83b804fb3feda9f4e1c90d8967f0c74522a87706616",
+          "taille": 11371944
+        },
+        {
+          "nom": "rose-setup.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
+          "sha256": "614ef2068fee7c12f7ff7c73aa4304f0d6a0dba8340ca9a14ff171d6cea7adc1",
+          "taille": 12138496
+        },
+        {
+          "nom": "rose.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
+          "sha256": "8b8cf75eb5462ea6c8bf59cb8e7df3b4a938e75f887a3d4a80453b16a6f31bda",
+          "taille": 9715712
+        },
+        {
+          "nom": "rose-shell.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
+          "sha256": "08dd6297821edf19e7edeb022d941c4cc7868665c9f5e3d9b8d88692d859de64",
+          "taille": 463360
+        },
+        {
+          "nom": "rose-tray-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
+          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
+          "taille": 933816
+        },
+        {
+          "nom": "rose-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
+          "sha256": "cf747fdfd882ba48083877237e8976e3acc0e46ae679e95752481830b52672be",
+          "taille": 5456976
+        },
+        {
+          "nom": "rose-wasm.wasm",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
+          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
+          "taille": 967750
+        },
+        {
+          "nom": "releases.win.json",
+          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
+          "sha256": "8ef5ee9e129e9bb663fdccef2aecfa26f12791cd72b7573683d470820f8e0bc8",
+          "taille": 406
+        }
+      ]
+    },
+    {
       "version": "0.1.74",
       "tag": "v0.1.74",
       "titre": "Rose v0.1.74 — self-hosting A–Z, noyau et Thorn allégés",
