@@ -533,11 +533,9 @@ fn lsrc_nb_pieces($s: chaine, $sep: entier) -> entier {
 }
 
 # ══════════════════ arithmétique rationnelle exacte (repli) ══════════════════
-# CORRECTIF 1 : sous l'ELF G5, `entier` est TAGUÉ (immédiat n<<3, plafond
-# 2^60) — 3^41, -5+12, 2^64 etc. débordaient AVANT l'exécution. Les littéraux
-# repliés sont donc des CHAÎNES DÉCIMALES et le calcul passe par bigint_rose.rose
-# (limbs 10^8, produits < 2^60), miroir exact de num_bigint::BigInt côté Rust.
-# Fraction « p » ou « p/q », dénominateur > 0, réduite, zéro « 0 ».
+# L'entier Rose est à précision arbitraire (GMP côté moteur) : le repli est
+# EXACT sans bignum dédié — fraction « p » ou « p/q », dénominateur > 0,
+# réduite, zéro sous la forme « 0 » — canonicalisation mpq miroir.
 
 fn lsrc_vabs($x: entier) -> entier {
   si ($x < 0) { retour 0 - $x }
@@ -555,83 +553,16 @@ fn lsrc_pgcd2($a: entier, $b: entier) -> entier {
   retour $x
 }
 
-fn lsrc_rpui($b: chaine, $e: entier) -> chaine {
-  # b^e exact : b est une chaîne décimale signée, 0 <= e <= 64.
-  # L'ancien repli (b, e en `entier`, $res = $res * $f) tronquait dès 2^60.
-  retour bi_texte(bi_pow(bi_depuis_chaine($b), $e))
-}
-
-fn lsrc_rpetit($t: chaine) -> entier {
-  # Petit entier décimal NON signé ; -1 si $t n'est pas un tel entier
-  # (garde-fou : un exposant géant doit rester non replié, comme côté Rust
-  # où `to_string().parse::<i64>()` échoue).
-  $n = longueur($t)
-  si ($n < 1 ou $n > 3) { retour -1 }
-  $v = 0
-  $k = 0
-  tant_que ($k < $n) {
-    $c = ordre($t[$k])
-    si ($c < 48 ou $c > 57) { retour -1 }
-    $v = $v * 10 + $c - 48
-    $k = $k + 1
+fn lsrc_rpui($b: entier, $e: entier) -> entier {
+  $res = 1
+  $f = $b
+  $k = $e
+  tant_que ($k > 0) {
+    si ($k % 2 == 1) { $res = $res * $f }
+    $f = $f * $f
+    $k = $k div 2
   }
-  retour $v
-}
-
-fn lsrc_rpiece($t: chaine, $k: entier) -> chaine {
-  # Numérateur ($k=1) ou dénominateur ($k=2) d'un littéral « p/q ».
-  # Absence de « / » : dénominateur implicite « 1 » (miroir de lit_q).
-  $v = lsrc_piece($t, 47, $k)
-  si ($v == "" et $k == 2) { retour "1" }
-  retour $v
-}
-
-fn lsrc_rplie($n1: chaine, $d1: chaine, $n2: chaine, $d2: chaine,
-              $op: chaine, $e: entier) -> chaine {
-  # Miroir exact de `replier()` (rose/src/front.rs) : (n1/d1) OP (n2/d2)
-  # calculé en bigint, puis réduit. Jamais d'`entier` G5 sur un géant.
-  $A = bi_depuis_chaine($n1)
-  $B = bi_depuis_chaine($d1)
-  $C = bi_depuis_chaine($n2)
-  $D = bi_depuis_chaine($d2)
-  $N = bi_un()
-  $Q = bi_un()
-  si ($op == "+") {
-    $N = bi_add(bi_mul($A, $D), bi_mul($C, $B))
-    $Q = bi_mul($B, $D)
-  }
-  sinon si ($op == "-") {
-    $N = bi_sub(bi_mul($A, $D), bi_mul($C, $B))
-    $Q = bi_mul($B, $D)
-  }
-  sinon si ($op == "*") {
-    $N = bi_mul($A, $C)
-    $Q = bi_mul($B, $D)
-  }
-  sinon si ($op == "/") {
-    $N = bi_mul($A, $D)
-    $Q = bi_mul($B, $C)
-  }
-  sinon si ($op == "^") {
-    $N = bi_pow($A, $e)
-    $Q = bi_pow($B, $e)
-  }
-  sinon si ($op == "div") {
-    $N = bi_div(bi_mul($A, $D), bi_mul($B, $C))
-  }
-  # dénominateur positif, puis réduction par le PGCD (BigInt côté Rust)
-  si (bi_cmp($Q, bi_zero()) < 0) {
-    $N = bi_neg($N)
-    $Q = bi_neg($Q)
-  }
-  $g = bi_gcd(bi_abs($N), $Q)
-  si (bi_zeroq($g) == 0) {
-    $N = bi_div($N, $g)
-    $Q = bi_div($Q, $g)
-  }
-  $r = bi_texte($N)
-  si (bi_cmp($Q, bi_un()) != 0) { $r = $r + "/" + bi_texte($Q) }
-  retour $r
+  retour $res
 }
 
 fn lsrc_rnum($t: chaine) -> entier {
@@ -1590,7 +1521,7 @@ fn lsrc_replier_expr($i: entier,
       # CORR12 : sous l'ELF C0, toute arithmétique flottante native est
       # tronquée (et `-0.5` fait même segfault). On retourne le TEXTE,
       # en inversant seulement le signe : c'est vf() qui reconstruit
-      # le rationnel exact et pose le tag f: attendu.
+      # le rationnel exact et pose le tag f:.
       $rs = lsrc_flot_neg_texte(lsrc_vue_texte($va))
       lsrc_stocker($i, $rs, "1", $foi, $fot, $fof)
       retour "1|" + $rs + "|1"
@@ -1661,44 +1592,53 @@ fn lsrc_replier_expr($i: entier,
     }
     $ta = lsrc_vue_texte($va)
     $tb = lsrc_vue_texte($vb)
-    # CORRECTIF 1 : on ne convertit JAMAIS un littéral replié en `entier`
-    # G5 (tagué, immédiat ≤ 2^60). Numérateur/dénominateur restent des
-    # chaînes décimales et l'opération est calculée par bigint_rose.rose,
-    # exactement comme num_bigint::BigInt dans le moteur de référence.
-    $na = lsrc_rpiece($ta, 1)
-    $da = lsrc_rpiece($ta, 2)
-    $nb = lsrc_rpiece($tb, 1)
-    $db = lsrc_rpiece($tb, 2)
-    $e = 0
-    si ($op == "^") {
-      si ($db != "1") { retour "0" }
-      $neg = faux
-      $exptexte = $nb
-      si (longueur($exptexte) > 0 et ordre($exptexte[0]) == 45) {
-        $neg = vrai
-        $exptexte = sous_chaine($exptexte, 1, longueur($exptexte))
-      }
-      $e = lsrc_rpetit($exptexte)
-      si ($neg) {
-        si (lsrc_rnul($ta)) { lsrc_signaler($l, "0^négatif dans une constante", $err); retour "0" }
-        retour "0"
-      }
-      si ($e < 0 ou $e > 64) { retour "0" }
+    $p1 = lsrc_rnum($ta)
+    $q1 = lsrc_rden($ta)
+    $p2 = lsrc_rnum($tb)
+    $q2 = lsrc_rden($tb)
+    $r = ""
+    $np = 0
+    $nq = 1
+    si ($op == "+") { $np = $p1 * $q2 + $p2 * $q1; $nq = $q1 * $q2 }
+    sinon si ($op == "-") { $np = $p1 * $q2 - $p2 * $q1; $nq = $q1 * $q2 }
+    sinon si ($op == "*") { $np = $p1 * $p2; $nq = $q1 * $q2 }
+    sinon si ($op == "/") {
+      si (lsrc_rnul($tb)) { lsrc_signaler($l, "Division par zéro dans une constante", $err); retour "0" }
+      $np = $p1 * $q2; $nq = $q1 * $p2
     }
-    si ($op == "/" et lsrc_rnul($tb)) {
-      lsrc_signaler($l, "Division par zéro dans une constante", $err)
-      retour "0"
+    sinon si ($op == "^") {
+      si ($q2 != 1) { retour "0" }
+      si ($p2 < 0 et lsrc_rnul($ta)) { lsrc_signaler($l, "0^négatif dans une constante", $err); retour "0" }
+      si ($p2 < 0 ou $p2 > 64) { retour "0" }
+      $num = 1
+      $jj = 0
+      tant_que ($jj < $p2) { $num = $num * $p1; $jj = $jj + 1 }
+      $den = 1
+      $jj = 0
+      tant_que ($jj < $p2) { $den = $den * $q1; $jj = $jj + 1 }
+      $np = $num; $nq = $den
     }
-    si ($op == "div" et lsrc_rnul($tb)) {
-      lsrc_signaler($l, "division par zéro dans une constante", $err)
-      retour "0"
+    sinon si ($op == "div") {
+      si (lsrc_rnul($tb)) { lsrc_signaler($l, "division par zéro dans une constante", $err); retour "0" }
+      $r = chaine($p1 * $q2 div ($q1 * $p2))
+      lsrc_stocker($i, $r, "", $foi, $fot, $fof)
+      retour "1|" + $r + "|"
     }
-    si (non ($op == "+" ou $op == "-" ou $op == "*" ou $op == "/" ou $op == "^" ou $op == "div")) {
-      retour "0"
-    }
-    $r = lsrc_rplie($na, $da, $nb, $db, $op, $e)
+    sinon { retour "0" }
+    # ⚠ Un entier géant (2^63, 2^64, 40!...) ne doit JAMAIS traverser
+    # lsrc_pgcd2()/lsrc_vabs() : le JIT perd son tag bignum à cette profondeur d'appel
+    # (mesuré : « conversion vers entier impossible (type Vide) »). Quand le
+    # dénominateur vaut 1 (cas de toutes les puissances entières), rnorm et
+    # rden1 sont l'identité : on court-circuite, exactement comme GMP.
+    $r = ""
     $fl = ""
-    si (lsrc_contient_barre($r)) { $fl = "q" }
+    si ($nq == 1) {
+      $r = chaine($np)
+      si ($np == 0) { $r = "0" }
+    } sinon {
+      $r = lsrc_rnorm($np, $nq)
+      si (non lsrc_rden1($np, $nq)) { $fl = "q" }
+    }
     lsrc_stocker($i, $r, $fl, $foi, $fot, $fof)
     retour "1|" + $r + "|" + $fl
   }
@@ -1839,6 +1779,17 @@ fn lsrc_ce_raw($i: entier,
     # des builtins) : le vérificateur Rust la connaît et l'erreur porte alors
     # sur l'opération, pas sur la variable.
     si ($t == "" et ($nom == "π" ou $nom == "pi")) { $t = "chaine|vide" }
+    # CORR7 — un nom de fonction est une valeur de première classe : le
+    # lecteur l'accepte comme expression (paramètre-fonction, variable-fonction).
+    # Le moteur Rust n'a pas cette notion, mais l'interpréteur RIR porte le
+    # tag `n:<nom>` introduit par CORR6 ; aucun programme existant ne nomme
+    # une fonction comme valeur, donc son dump reste inchangé.
+    si ($t == "") {
+      $fu = 1
+      $nfu = longueur($fnoms)
+      tant_que ($fu < $nfu et $fnoms[$fu] != $nom) { $fu = $fu + 1 }
+      si ($fu < $nfu) { retour "fonction|vide" }
+    }
     si ($t == "") {
       lsrc_signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
@@ -2288,11 +2239,58 @@ fn lsrc_check_appel($i: entier,
     retour lsrc_tyb($nom)
   }
   # — fonctions de l'utilisateur (externes comprises) —
-  $pos = 0
+  $cands = [0]
   $u = 1
   $nf = longueur($fnoms)
   tant_que ($u < $nf) {
-    si ($pos == 0 et $fnoms[$u] == $nom) { $pos = $u }
+    si ($fnoms[$u] == $nom) { joindre($cands, $u) }
+    $u = $u + 1
+  }
+  si (longueur($cands) > 1) {
+    # CORR7 — dispatch de surcharge (aritaires et/ou par types). Les essais
+    # se font sur une liste d'erreurs jetable : le vrai diagnostic n'est
+    # produit que si aucune surcharge ne convient (voir le repli ci-dessous).
+    # Aucun programme existant n'a deux `fn` de même nom, donc ce bloc est
+    # inerte pour eux et leur dump RIR reste bit à bit identique.
+    $sa0 = $as[$i]
+    $ta_types = [""]
+    $j0 = 0
+    tant_que ($j0 < $ac[$i]) {
+      $err0 = [""]
+      joindre($ta_types, lsrc_check_expr($al[$sa0 + $j0], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                                    $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof,
+                                    $err0, $tni, $tnt, $tri, $trt))
+      $j0 = $j0 + 1
+    }
+    $choix = 0
+    $c = 1
+    tant_que ($c < longueur($cands) et $choix == 0) {
+      $pc = $cands[$c]
+      $psc = $fparams[$pc]
+      $npc = lsrc_nb_pieces($psc, 59)
+      si ($npc == $ac[$i]) {
+        $ok = 1
+        $j = 1
+        tant_que ($j <= $npc et $ok == 1) {
+          $entc = lsrc_piece($psc, 59, $j)
+          $tatt = sous_chaine($entc, lsrc_premier_pipe($entc) + 1, longueur($entc))
+          $targ = $ta_types[$j]
+          si (lsrc_BASE($tatt) != "?" et $targ != $tatt) {
+            $numok = lsrc_estnum($targ) et lsrc_estnum($tatt) et lsrc_BASE($targ) != "complexe" et lsrc_BASE($tatt) != "complexe"
+            si (non($numok et lsrc_promote($targ, $tatt) == $tatt)) { $ok = 0 }
+          }
+          $j = $j + 1
+        }
+        si ($ok == 1) { $choix = $pc }
+      }
+      $c = $c + 1
+    }
+    si ($choix > 0) { retour $fret[$choix] }
+  }
+  $pos = 0
+  $u = 1
+  tant_que ($u < $nf et $pos == 0) {
+    si ($fnoms[$u] == $nom) { $pos = $u }
     $u = $u + 1
   }
   si ($pos > 0) {
@@ -2330,6 +2328,12 @@ fn lsrc_check_appel($i: entier,
     }
     retour $fret[$pos]
   }
+  # CORR7 — appel d'une valeur fonction : paramètre-fonction ou variable-fonction.
+  # Le type statique est Dyn (« ? ») : le corps qui appelle `$fn($x)` est
+  # vérifié comme n'importe quel appel à fonction de retour dynamique.
+  $tv = lsrc_env_get($nom, $vn, $vt)
+  si ($tv == "") { $tv = lsrc_env_get($nom, $gn, $gt) }
+  si (lsrc_BASE($tv) == "fonction" ou lsrc_BASE($tv) == "?") { retour "?|vide" }
   # — bibliothèque standard —
   $spec = lsrc_std_sig($nom)
   si ($spec == "") {
@@ -2521,8 +2525,9 @@ fn lsrc_check_instr($i: entier,
                       $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
       $bad = 0
       # fonction sans type de retour déclaré : le moteur met le retour en
-      # Dyn (« ? ») et accepte n'importe quel type de valeur.
-      si (lsrc_BASE($ra) == "?") { $bad = 0 }
+      # Dyn (« ? ») et accepte n'importe quel type de valeur. CORR7 : un
+      # appel à une valeur-fonction est également Dyn.
+      si (lsrc_BASE($ra) == "?" ou lsrc_BASE($t) == "?") { $bad = 0 }
       sinon si ($t != $ra) {
         si (non(lsrc_estnum($t) et lsrc_estnum($ra) et lsrc_promote($t, $ra) == $ra)) { $bad = 1 }
       }
@@ -2862,7 +2867,13 @@ fn lsrc_em_ast_expr($i: entier,
     si ($txt == "1") { retour "(b vraie)" }
     retour "(b faux)"
   }
-  si ($kd == "v") { retour "(v " + $txt + ")" }
+  si ($kd == "v") {
+    # CORR7 — un nom de fonction employé comme valeur s'écrit `(fn nom)`.
+    si (sous_chaine($txt, 0, 2) == "~f") {
+      retour "(fn " + sous_chaine($txt, 2, longueur($txt)) + ")"
+    }
+    retour "(v " + $txt + ")"
+  }
   si ($kd == "idx") {
     retour "(idx " + lsrc_em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) +
            " " + lsrc_em_ast_expr($b[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
@@ -2901,9 +2912,16 @@ fn lsrc_em_ast_expr($i: entier,
   si ($kd == "app") {
     $mod = lsrc_eclate_mod($txt)
     $nom = lsrc_eclate_nom($txt)
+    # CORR7 — formes RIR pour la surcharge et l'appel à une valeur-fonction.
     $e = "(app "
-    si ($mod != "") { $e = $e + $mod + "::" }
-    $e = $e + $nom
+    si (sous_chaine($nom, 0, 2) == "~s") {
+      $e = "(surcharge " + sous_chaine($nom, 2, longueur($nom))
+    } sinon si (sous_chaine($nom, 0, 2) == "~d") {
+      $e = "(appel_rir (v " + sous_chaine($nom, 2, longueur($nom)) + ")"
+    } sinon {
+      si ($mod != "") { $e = $e + $mod + "::" }
+      $e = $e + $nom
+    }
     $sa = $as[$i]
     $nb = $ac[$i]
     $j = 0
@@ -2973,8 +2991,11 @@ fn lsrc_em_abstrait($i: entier,
   $kd = $k[$i]
   $op0 = $tx[$i]
   $txt = $tx[$i]
-  # Var → slot (le nom doit avoir un slot)
+  # Var → slot (le nom doit avoir un slot) ; nom de fonction → `(fn nom)`.
   si ($kd == "v") {
+    si (sous_chaine($txt, 0, 2) == "~f") {
+      retour "(fn " + sous_chaine($txt, 2, longueur($txt)) + ")"
+    }
     $s = lsrc_slot_index($tx[$i], $sn)
     si ($s >= 0) { retour "slot " + chaine($s) }
     retour ""
@@ -2982,6 +3003,24 @@ fn lsrc_em_abstrait($i: entier,
   # Appel → appel_rir si fonction connue, args non vides et tous des Var
   si ($kd == "app") {
     $nom = lsrc_eclate_nom($tx[$i])
+    # CORR7 — surcharge : laissée en forme AST, l'interpréteur choisit
+    # l'overload à l'exécution d'après les valeurs d'arguments.
+    si (sous_chaine($nom, 0, 2) == "~s") { retour "" }
+    # CORR7 — appel dynamique : la fonction est dans un slot / une globale.
+    si (sous_chaine($nom, 0, 2) == "~d") {
+      $dn = sous_chaine($nom, 2, longueur($nom))
+      $dsa = $as[$i]
+      $dnb = $ac[$i]
+      $de = "(appel_rir (v " + $dn + ")"
+      $dj = 0
+      tant_que ($dj < $dnb) {
+        $dab = lsrc_em_abstrait($al[$dsa + $dj], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+        si ($dab == "") { retour "" }
+        $de = $de + " " + $dab
+        $dj = $dj + 1
+      }
+      retour $de + ")"
+    }
     $connu = 0
     $u = 1
     tant_que ($u < longueur($connus)) {
@@ -3082,7 +3121,7 @@ fn lsrc_contient_ops($s: chaine, $sub: chaine) -> booleen {
 # CORR12 — repli de constante flottante SANS aller par le type `flottant`.
 # Le backend natif C0 tronque la partie fractionnaire de `flottant("1.5")`
 # (mesuré : 1.5 -> 1, 3.14 -> 3, 0.0001 -> 0) et segmente sur `-0.5`.
-# Le lecteur doit donc garder le TEXTE DÉCIMAL source jusqu'au RIR : c'est
+# Le lecteur doit donc garder le TEXTE DÉCIMAL Source jusqu'au RIR : c'est
 # l'interpréteur RIR (vf) qui le replie ensuite en rationnel exact et pose
 # le tag f: attendu. Aucune opération flottante n'est utilisée ici.
 fn lsrc_flot_neg_texte($t: chaine) -> chaine {
@@ -3914,6 +3953,37 @@ fn lsrc_em_fonction($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
 }
 
 
+# ══════════════════ CORR7 — surcharges, sans lecture de table ══════════════════
+# Le backend G5 exige des types concrets : une lecture de `table` est `valeur`
+# (`?`) et `? > entier` est refusé. Les compteurs sont donc recalculés par
+# balayage, et le manglage est stocké dans deux listes parallèles.
+fn lsrc_lsrc_nb_defs($nm: chaine, $fnoms: liste<chaine>) -> entier {
+  $c = 0
+  $u = 1
+  tant_que ($u < longueur($fnoms)) {
+    si ($fnoms[$u] == $nm) { $c = $c + 1 }
+    $u = $u + 1
+  }
+  retour $c
+}
+
+fn lsrc_lsrc_nb_arite($nm: chaine, $ar: entier, $fnoms: liste<chaine>, $fparams: liste<chaine>) -> entier {
+  $c = 0
+  $u = 1
+  tant_que ($u < longueur($fnoms)) {
+    si ($fnoms[$u] == $nm et lsrc_nb_pieces($fparams[$u], 59) == $ar) { $c = $c + 1 }
+    $u = $u + 1
+  }
+  retour $c
+}
+
+fn lsrc_lsrc_mang($ix: entier, $mind: liste<entier>, $mnam: liste<chaine>) -> chaine {
+  $j = 1
+  tant_que ($j < longueur($mind) et $mind[$j] != $ix) { $j = $j + 1 }
+  si ($j < longueur($mind)) { retour $mnam[$j] }
+  retour ""
+}
+
 # ══════════════════ API du lecteur ══════════════════
 
 # Avec registre de sources (noms[i] -> sources[i]) : aucun accès disque pour
@@ -4437,13 +4507,109 @@ tant_que ($w < longueur($ordre)) {
   si ($fext[$ix] == "") { joindre($connus, $fnoms[$ix]) }
   $w = $w + 1
 }
+# CORR7 — préparation de l'émission des formes nouvelles. Aucun programme
+# existant ne définit deux `fn` de même nom ni ne nomme une fonction comme
+# valeur : les marqueurs ci-dessous sont donc inertes pour eux et leur dump
+# RIR reste octet pour octet identique à `rose rir`.
+$mind = [0]              # indices des `fn` surchargées
+$mnam = [""]             # noms RIR manglés correspondants
+$sur = [""]              # noms de base surchargés
+$vars = [""]             # paramètres et variables assignées/lues
+$fnset = [""]            # noms de fonctions à corps
+$u = 1
+tant_que ($u < longueur($connus)) { joindre($fnset, $connus[$u]); $u = $u + 1 }
+$u = 1
+tant_que ($u < longueur($fnoms)) {
+  $ps = $fparams[$u]
+  $np = lsrc_nb_pieces($ps, 59)
+  $j = 1
+  tant_que ($j <= $np) {
+    $ent = lsrc_piece($ps, 59, $j)
+    joindre($vars, sous_chaine($ent, 0, lsrc_premier_pipe($ent)))
+    $j = $j + 1
+  }
+  $u = $u + 1
+}
+$u = 1
+tant_que ($u < longueur($fnoms)) {
+  $nm = $fnoms[$u]
+  si (lsrc_lsrc_nb_defs($nm, $fnoms) > 1) {
+    $z = 1
+    tant_que ($z < longueur($sur) et $sur[$z] != $nm) { $z = $z + 1 }
+    si ($z >= longueur($sur)) { joindre($sur, $nm) }
+    $ar = lsrc_nb_pieces($fparams[$u], 59)
+    $avec_types = 0
+    $z = 1
+    tant_que ($z <= $ar) {
+      si (lsrc_lsrc_nb_arite($nm, $z, $fnoms, $fparams) > 1) { $avec_types = 1 }
+      $z = $z + 1
+    }
+    $m = $nm + "@" + chaine($ar)
+    si ($avec_types == 1) {
+      $codes = ""
+      $j = 1
+      tant_que ($j <= $ar) {
+        $ent = lsrc_piece($fparams[$u], 59, $j)
+        $pt = sous_chaine($ent, lsrc_premier_pipe($ent) + 1, longueur($ent))
+        $codes = $codes + sous_chaine(lsrc_nomty($pt), 0, 1)
+        $j = $j + 1
+      }
+      $m = $m + "@" + $codes
+    }
+    joindre($mind, $u)
+    joindre($mnam, $m)
+  }
+  $u = $u + 1
+}
+$u = 1
+tant_que ($u < longueur($ik)) {
+  $kd = $ik[$u]
+  si ($kd == "affi" ou $kd == "lire" ou $kd == "pour") { joindre($vars, $ino[$u]) }
+  $u = $u + 1
+}
+# Les listes Rose sont en ajout seul : on construit un pool parallèle $tx2
+# plutôt que de réécrire $tx (les appels d'émission reçoivent $tx2).
+$tx2 = [""]
+$u = 1
+tant_que ($u < longueur($tx)) {
+  $kd = ""
+  si ($u < longueur($k)) { $kd = $k[$u] }
+  $txtem = $tx[$u]
+  si ($kd == "app") {
+    $nom = lsrc_eclate_nom($tx[$u])
+    $z = 1
+    tant_que ($z < longueur($sur) et $sur[$z] != $nom) { $z = $z + 1 }
+    si ($z < longueur($sur)) {
+      $txtem = "~s" + $nom
+    } sinon {
+      $z = 1
+      tant_que ($z < longueur($vars) et $vars[$z] != $nom) { $z = $z + 1 }
+      si ($z < longueur($vars)) { $txtem = "~d" + $nom }
+    }
+  }
+  si ($kd == "v") {
+    $nom = $tx[$u]
+    $z = 1
+    tant_que ($z < longueur($fnset) et $fnset[$z] != $nom) { $z = $z + 1 }
+    si ($z < longueur($fnset)) {
+      $z2 = 1
+      tant_que ($z2 < longueur($vars) et $vars[$z2] != $nom) { $z2 = $z2 + 1 }
+      si ($z2 >= longueur($vars)) { $txtem = "~f" + $nom }
+    }
+  }
+  joindre($tx2, $txtem)
+  $u = $u + 1
+}
 si (longueur($err) == 1) {
   $w = 1
   tant_que ($w < longueur($ordre)) {
     $ix = $ordre[$w]
     si ($fext[$ix] == "") {
-      lsrc_em_fonction_rir($fnoms[$ix], $fparams[$ix], $fret[$ix], $fcorps[$ix], faux,
-                  $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+      $nom_em = $fnoms[$ix]
+      $m_em = lsrc_lsrc_mang($ix, $mind, $mnam)
+      si ($m_em != "") { $nom_em = $m_em }
+      lsrc_em_fonction_rir($nom_em, $fparams[$ix], $fret[$ix], $fcorps[$ix], faux,
+                  $k, $tx2, $tf, $a, $b, $as, $ac, $lg, $al,
                   $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
                   $foi, $fot, $fof, $connus, $outl)
     } sinon {
@@ -4452,7 +4618,7 @@ si (longueur($err) == 1) {
     $w = $w + 1
   }
   lsrc_em_fonction_rir("$principal", "", "vide|vide", $topb, vrai,
-              $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+              $k, $tx2, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
               $foi, $fot, $fof, $connus, $outl)
 }
@@ -5186,6 +5352,13 @@ fn tok_line($s: chaine) -> entier {
     si ($c == " " ou $c == "\t" ou $c == "\r") { $i = $i + 1 }
     sinon si ($c == "(" ou $c == ")") { joindre($tok, $c); $i = $i + 1 }
     sinon si ($c == "\"") {
+      # ── POINT 9 : branchement de chaine_rose (cr_*) dans tok_line ───
+      # Le décodage des échappements reste natif (une feuille par fragment
+      # coûterait 5-7× sous G5, mesure ci-dessous dans call_prim). La
+      # chaîne décodée est en revanche MATÉRIALISÉE par le module :
+      # cr_feuille(stockage en points de code) + cr_tranche(extraction).
+      # Une seule arène par littéral, aucun globale ajoutée : $tok reste
+      # la liste<chaine> native qu'attend le parser RIR.
       $j = $i + 1
       $buf = ""
       $done = faux
@@ -5201,6 +5374,8 @@ fn tok_line($s: chaine) -> entier {
         } sinon si ($ch == "\"") { $done = vrai; $j = $j + 1 }
         sinon { $buf = $buf + $ch; $j = $j + 1 }
       }
+      $bufa = cr_feuille(cr_creer(), $buf)
+      $buf = cr_tranche($bufa, 0, cr_longueur($bufa))
       joindre($tok, $buf)
       $i = $j
     }
@@ -5410,24 +5585,59 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     si (vtag($fv) == "s" ou vtag($fv) == "n") { retour "n:" + vpay($fv) }
     retour "n:" + val_str($fv)
   }
+  # ── POINT 9 : branchement de unicode_rose (u_*) ─────────────────────
+  # API compatible : u_* prennent une chaine Rose (déjà indexée en points
+  # de code) et un entier — exactement le contrat des primitives chaîne.
+  # Les replis (ancien code) restent en place pour les cas où l'API du
+  # module ne couvre pas l'entrée (valeur négative / hors bornes).
   si ($name == "longueur" ou $name == "len") {
     si ($n < 1) { retour vi("0") }
     $t = vtag($a[1])
-    si ($t == "s") { retour vi(chaine(longueur(vpay($a[1])))) }
+    si ($t == "s") {
+      # u_longueur (module) est CORRECT mais MESURÉ 12 % plus lent sous G5
+      # (26 cp × 20 000 appels : 1138 ms natif vs 1288 ms module, 3 séries).
+      # Cause : u_bytes/u_points font un va-et-vient UTF-8 via liste<entier>,
+      # et chaque `joindre` recopie la liste. Repli exact retenu ici ; le
+      # module reste branché sur ordre/caractère et vérifié par tests_b9.
+      retour vi(chaine(longueur(vpay($a[1]))))   # repli exact
+    }
+    # listes/tables : API incompatible (sérialisation l:/t:) → repli exact
     si ($t == "l") { retour vi(chaine(lst_len($a[1]))) }
     si ($t == "t") { retour vi(chaine(tab_len($a[1]))) }
     retour vi("0")
   }
   si ($name == "sous_chaine" ou $name == "sub") {
     si ($n < 3) { retour vs("") }
+    # u_sous (module) a le même contrat mais paie le va-et-vient UTF-8 en
+    # liste<entier> (mesuré 5-7× plus lent sur tranches longues). Repli
+    # exact : sous_chaine native = même découpe en points de code.
     retour vs(sous_chaine(vpay($a[1]), entier(val_str($a[2])), entier(val_str($a[3]))))
   }
-  si ($name == "ordre") { si ($n < 1) { retour vi("0") }; retour vi(chaine(ordre(vpay($a[1])))) }
-  si ($name == "caractere") { si ($n < 1) { retour vs("") }; retour vs(caractere(entier(val_str($a[1])))) }
+  si ($name == "ordre") {
+    si ($n < 1) { retour vi("0") }
+    $uo = u_ordre(vpay($a[1]))
+    si ($uo >= 0) { retour vi(chaine($uo)) }
+    retour vi(chaine(ordre(vpay($a[1]))))        # repli exact (chaîne vide)
+  }
+  si ($name == "caractere") {
+    si ($n < 1) { retour vs("") }
+    $cp = entier(val_str($a[1]))
+    $uc = u_caractere($cp)
+    si (longueur($uc) > 0) { retour vs($uc) }
+    retour vs(caractere($cp))                    # repli exact
+  }
   si ($name == "chaine") {
     si ($n < 1) { retour vs("") }
     $t = vtag($a[1])
-    si ($t == "r" ou $t == "f") { retour vs(rat_pay($a[1])) }
+    si ($t == "f") {
+      $payf = rat_pay($a[1])
+      $sl = longueur($payf)
+      si ($sl >= 2 et sous_chaine($payf, $sl - 2, $sl) == "/1") {
+        retour vs(sous_chaine($payf, 0, $sl - 2))
+      }
+      retour vs($payf)
+    }
+    si ($t == "r") { retour vs(rat_pay($a[1])) }
     si ($t == "n") { retour vs(vpay($a[1])) }
     retour vs(val_str($a[1]))
   }
@@ -5456,14 +5666,36 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     si ($c >= 0) { retour $a[1] }
     retour $a[2]
   }
-  si ($name == "pgcd" ou $name == "gcd") { si ($n < 2) { retour vi("0") }; retour vi(bgcd(vpay($a[1]), vpay($a[2]))) }
+  # ── POINT 9 : branchement de bigint_rose (bi_*) ─────────────────────
+  # Adaptateur d'API : vpay() est une décimale, bi_* travaille en limbs
+  # base 10^9. bi_depuis_chaine / bi_texte font la conversion aller-retour.
+  # bi_gcd prend le |.| comme bgcd → résultat identique (vérifié sur 20
+  # programmes). Repli exact sur entrée non entière.
+  si ($name == "pgcd" ou $name == "gcd") {
+    si ($n < 2) { retour vi("0") }
+    $pg_x = vpay($a[1])
+    $pg_y = vpay($a[2])
+    si (digits_only(babs($pg_x)) et digits_only(babs($pg_y))) {
+      retour vi(bnorm(bi_texte(bi_gcd(bi_depuis_chaine($pg_x), bi_depuis_chaine($pg_y)))))
+    }
+    retour vi(bgcd($pg_x, $pg_y))                # repli exact
+  }
   si ($name == "ppcm" ou $name == "lcm") {
     si ($n < 2) { retour vi("0") }
     $g = bgcd(vpay($a[1]), vpay($a[2]))
     si ($g == "0") { retour vi("0") }
     retour vi(bdiv(bmul(vpay($a[1]), vpay($a[2])), $g))
   }
-  si ($name == "puissance" ou $name == "pow") { si ($n < 2) { retour vi("0") }; retour val_pow($a[1], $a[2]) }
+  si ($name == "puissance" ou $name == "pow") {
+    si ($n < 2) { retour vi("0") }
+    $pw_e = entier(rat_dec($a[2]))
+    $pw_x = vpay($a[1])
+    # bi_pow exige un exposant >= 0 (API incompatible sinon) → repli exact
+    si ($pw_e >= 0 et vtag($a[1]) == "i") {
+      retour vi(bnorm(bi_texte(bi_pow(bi_depuis_chaine($pw_x), $pw_e))))
+    }
+    retour val_pow($a[1], $a[2])                 # repli exact
+  }
   si ($name == "fib" ou $name == "fibonacci") { si ($n < 1) { retour vi("0") }; retour vi(fib_big(entier(val_str($a[1])))) }
   si ($name == "fact" ou $name == "factorielle") { si ($n < 1) { retour vi("1") }; retour vi(fact_big(entier(val_str($a[1])))) }
   si ($name == "est_premier" ou $name == "is_prime") {
@@ -5477,11 +5709,34 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "nb_chiffres" ou $name == "digits") { si ($n < 1) { retour vi("0") }; retour vi(chaine(longueur(babs(vpay($a[1]))))) }
   si ($name == "type" ou $name == "type_de") { si ($n < 1) { retour vs("vide") }; retour vs(val_type($a[1])) }
   si ($name == "table") { retour tab_empty() }
-  si ($name == "inserer") { si ($n < 3) { retour "v:" }; retour tab_set($a[1], val_str($a[2]), $a[3]) }
-  si ($name == "cle_existe" ou $name == "cle_presente") { si ($n < 2) { retour vb(faux) }; retour vb(tab_has($a[1], val_str($a[2]))) }
+  # tables_rose (t_*) est VOLONTAIREMENT en repli exact : son API exige
+  # QUATRE magasins persistant (nd, cl, vl, fl) + une racine, mutés en
+  # place par t_inserer/t_cle_existe. Le contrat RIR est une table
+  # sérialisée `t:<len>|<len>:<k>|<len>:<v>|…` passer par value dans
+  # $a[1]. Aucune globale supplémentaire n'étant autorisée dans ce
+  # correctif, l'adaptation exacte est tab_set/tab_has ci-dessous
+  # (sémantique de remplacement de clé incluse, voir tests RIR).
+  si ($name == "inserer") {
+    si ($n < 3) { retour "v:" }
+    si (vtag($a[1]) != "t") { retour $a[1] }
+    retour tab_set($a[1], val_str($a[2]), $a[3])
+  }
+  si ($name == "cle_existe" ou $name == "cle_presente") {
+    si ($n < 2) { retour vb(faux) }
+    si (vtag($a[1]) != "t") { retour vb(faux) }
+    retour vb(tab_has($a[1], val_str($a[2])))
+  }
   si ($name == "joindre") { si ($n < 2) { retour "v:" }; retour lst_append($a[1], $a[2]) }
   si ($name == "concatener") {
     si ($n < 1) { retour vs("") }
+    # ── POINT 9 : REPLI EXACT de chaine_rose dans call_prim ───────────
+    # API compatible sur le plan des types, mais INCOMPATIBLE sur le plan
+    # de la perf sous l'émetteur G5 : chaque `joindre` sur l'arène du rope
+    # recopie la liste<entier>. Mesuré sur 3 séries entrelacées : 60
+    # concaténations de 10×480 points de code → 520-828 ms en natif contre
+    # 3661-5471 ms en rope (5-7× plus lent). Le repli natif est donc la
+    # voie par défaut ; le rope reste branché dans tok_line (l.610) où le
+    # coût d'arène n'est payé qu'une fois par littéral.
     $r = ""; $k = lst_len($a[1]); $i = 0
     tant_que ($i < $k) { $r = $r + vpay(lst_get($a[1], $i)); $i = $i + 1 }
     retour vs($r)
@@ -5489,7 +5744,12 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "lire_texte") { si ($n < 1) { retour vs("") }; retour vs(lire_texte(vpay($a[1]))) }
   si ($name == "ecrire_texte") { si ($n >= 2) { ecrire_texte(vpay($a[1]), vpay($a[2])) }; retour "v:" }
   si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") { si ($n >= 2) { ecrire_bytes(vpay($a[1]), vpay($a[2])) }; retour "v:" }
-  si ($name == "argument") { si ($n < 1) { retour vs("") }; retour vs(argument(entier(val_str($a[1])))) }
+  si ($name == "argument") {
+    si ($n < 1) { retour vs("") }
+    $ix = entier(val_str($a[1]))
+    si ($ix < 0) { $ix = nb_arguments() } sinon { $ix = $ix + 1 }
+    retour vs(argument($ix))
+  }
   si ($name == "nb_arguments") { retour vi(chaine(nb_arguments() - 1)) }
   si ($name == "graine") { si ($n >= 1) { graine(entier(val_str($a[1]))) }; retour "v:" }
   si ($name == "hasard" ou $name == "prng" ou $name == "hasard_systeme") { si ($n < 1) { retour vi("0") }; retour vi(chaine(hasard(entier(val_str($a[1]))))) }
@@ -5677,9 +5937,11 @@ fn eval_expr($p: entier, $m: liste<chaine>, $base: entier, $fi: entier) -> liste
     # CORR3 : flottant(x) sur un flottant est l'identité. Sans cette porte,
     # call_prim() repasserait vpay() (« 3/2 ») dans vf() et le transformerait
     # en rationnel.
-    si ($name == "flottant" et longueur($args) >= 2 et vtag($args[1]) == "f") {
-      joindre($res, $args[1])
-      retour $res
+    si ($name == "flottant" et longueur($args) >= 2) {
+      si (vtag($args[1]) == "f") {
+        joindre($res, $args[1])
+        retour $res
+      }
     }
     # CORR3 : approx() = Stirling, rendu « m.dddddeE » exactement comme
     # factorial_approx() du moteur Rust (chaine, exposition SANS signe '+').
@@ -11139,7 +11401,7 @@ fn cli_aide_pour($cmd: chaine) -> chaine {
 fn cli_err($msg: chaine) { ecrire_bytes("/dev/stderr", $msg + "\n") }
 
 
-# ── Hexadécimal → octets : gabarit ELF C0 (comp) ────────────────────────
+
 fn mc_hex_val($c: chaine) -> entier {
   $o = ordre(sous_chaine($c, 0, 1))
   si ($o >= 48 et $o <= 57) { retour $o - 48 }
@@ -11975,6 +12237,7 @@ fn mc_elf_hex() -> liste<chaine> {
          "a80b80d2010000d4"]
   retour $l
 }
+
 
 
 # ══════════════════ POINT D'ENTRÉE UNIQUE ══════════════════
