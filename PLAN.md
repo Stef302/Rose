@@ -1458,3 +1458,18 @@ vague 95. Reste: 1 flottant (t09 1.5->1), 8 SIGSEGV tables/arguments, 4 refus HO
 3 agents finalux lances (final_t1/t2/t3) avec gdb et tests de parite.
 Une regression detectee et corrigee en cours de route: le patch b10 avait ecrase
 le correctif 1 (lsrc_rpui) — re-applique et verifie (commit 8519d16).
+
+## Vague 97 — point final self-hosting moteur
+
+Moteur complet compile par C0 sans Rust: ELF 1902136 o, lit/vérifie/compile/exécute.
+Corpus tests_selfhost 141 sources: 133 CONFORMES / 5 DIVERGENTS / 3 BLOQUES.
+Les 5 'divergents' sont des programmes que Rust REFUSE (surcharges t104/t105,
+fichiers externes absents t83/t84/t86) et que Rose accepte — pas des erreurs Rose.
+Les 3 'bloqués' (t55/t106/t107) sont refusés par LES DEUX moteurs.
+=> 0 cas ou Rose self-hosté se trompe sur un programme valide.
+
+Validation finale: 0 echec (AOT 75/75, JIT 25/25, WASM, RVM, AZ 31, HOST-1),
+point fixe b3ed9262 x2. HEAD local=distant 5f63719.
+
+Reste pour 100% (remplacement de cargo): brancher le moteur C0 dans
+build-windows-rebuild.sh a la place de cargo build, avec CI et installateurs.
