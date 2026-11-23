@@ -1394,3 +1394,21 @@ C0_final2 (1 598 944 o) valide: sonde p3 (retour "≈") compile et produit e2 89
 fib -> ELF 9496 o. Mais C0(rose_natif.rose) a monte a 84 Gio RSS, epuise le swap
 16 Gio et passe en etat D -> arrete. Cause: runtime G5 = allocateur tas montant
 sans GC. Prochain chantier: recuperation memoire / emission par morceaux.
+
+## Vague 92 — self-hosting A–Z étendu : J1 à J6 TOUS livrés et intégrés
+
+| Jalon | Preuve d'exécution sans Rust | Commit |
+|---|---|---|
+| J1 `--verif` | 219/219 fidélité au vérificateur Rose, 405 globales <512 | 1506910 |
+| J2 PE natif | émetteur ELF → PE32+ AArch64, 25/25 byte-identiques | 913684c |
+| J3 interpréteur RIR | 157/158 (99,4%) vs oracle sans JIT, corrige 5 bogues JIT | 280a6eb |
+| J4 JIT G5 | mmap/mprotect/fchmodat/execve, ELF à la volée → fib(10)=55 | df9a3cd |
+| J5 sérialiseurs | WASM 48 o + BC 46 o byte-identiques à Rust, rvm→42 | ceb1e3b |
+| J6 moteur | 20 opérations portées, ELF 91 Ko, sortie identique 42 lignes | 13dc119 |
+
+Validation finale: 0 échec, point fixe b3ed9262, C0=C1=C2 (9fbd21d2), AOT 75/75,
+JIT 25/25, AZ 31/31, Thorn 17/17. HEAD local=distant 280a6eb.
+
+Reste pour le remplacement COMPLET de cargo (J6.1–J6.7): 11 postes chiffrés,
+~1,17% du moteur Rust porté (875/74771 lignes), estimation 18–36 mois-homme
+(planification, non mesurée). Le produit distribué dépend encore de cargo.
