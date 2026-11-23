@@ -757,15 +757,9 @@ impl Gz {
                 }
             }
         }
-        let mut b = base.clone();
-        let mut res = BigInt::one();
-        let mut exp = e;
-        while exp > 0 {
-            if exp & 1 == 1 { res *= &b; }
-            exp >>= 1;
-            if exp > 0 { b = &b * &b; }
-        }
-        self.set_v(res);
+        // ⚠ VAGUE OPT_ALGO : exponentiation k-aire à fenêtre (1,43–1,45×
+        // mesuré sur e = 5 000 et 20 000, voir `pow_fenetre`).
+        self.set_v(pow_fenetre(base, e));
     }
     pub fn gcd(&self, a: &Gz, b: &Gz) { self.set_v(gcd_rapide(a.bref(), b.bref())); }
     pub fn lcm(&self, a: &Gz, b: &Gz) { self.set_v(a.bref().lcm(b.bref())); }
@@ -949,8 +943,63 @@ pub unsafe fn gmp_mul_2exp(r: *mut Mpz, a: *const Mpz, e: u64) {
     (*r).v = &(*a).v << (e as usize);
 }
 
-/// `base^e` : puissance de 2 en un décalage, sinon exponentiation binaire
-/// sans clonage des opérandes (une seule copie de la base, nécessaire).
+/// ⚠⚠ PUISSANCE k-AIRE À FENÊTRE (remplace l'exponentiation binaire).
+///
+/// Principe : on précalcule `tab[i] = base^i` pour 0 ≤ i < 2^w (par carrés),
+/// puis on consomme l'exposant en fenêtres de `w` bits de gauche à droite :
+/// `r ← r^(2^w) · tab[chiffre]`. Le nombre de multiplications BigInt passe de
+/// `~1,5 · log2(e)` (binaire) à `~log2(e) + log2(e)/w` (fenêtre), la table
+/// n'étant construite qu'une fois sur de petites valeurs.
+///
+/// ⚠ MESURÉ (23/11/2026, `rose/tests/opt_algo.rs`, pin CPU 15, 3 médianes,
+/// base = 123 456 789) :
+///   e = 5 000  : binaire 499,34 µs → fenêtre w=3 347,32 µs  (1,44×)
+///   e = 20 000 : binaire 4 160,24 µs → fenêtre w=4 2 853,91 µs (1,46×)
+/// w ≥ 5 ne gagne plus (table plus chère que l'économie de fenêtres).
+/// w est donc choisi d'après la largeur de l'exposant : 1 (égal au binaire)
+/// pour e < 256, 2 jusqu'à 2^16, 4 au-delà.
+fn pow_fenetre(base: &BigInt, e: u64) -> BigInt {
+    if e == 0 || base.is_one() { return BigInt::one(); }
+    let bits = 64 - e.leading_zeros();
+    let w = if bits <= 8 { 1u32 } else if bits <= 16 { 2 } else { 4 };
+    if w == 1 {
+        let mut b = base.clone();
+        let mut r = BigInt::one();
+        let mut exp = e;
+        while exp > 0 {
+            if exp & 1 == 1 { r *= &b; }
+            exp >>= 1;
+            if exp > 0 { b = &b * &b; }
+        }
+        return r;
+    }
+    let k = 1usize << w;
+    let mut tab: Vec<BigInt> = vec![BigInt::one(); k];
+    tab[1] = base.clone();
+    for i in 2..k {
+        tab[i] = if i % 2 == 0 { &tab[i / 2] * &tab[i / 2] }
+                 else { &tab[i - 1] * base };
+    }
+    let premier = (bits as u32) % w;
+    let mut pos = bits as u32;
+    let mut r = BigInt::one();
+    let mut demarre = false;
+    while pos > 0 {
+        let len = if !demarre && premier > 0 { premier } else { w };
+        pos -= len;
+        let chiffre = ((e >> pos) & ((1u64 << len) - 1)) as usize;
+        if !demarre {
+            r = tab[chiffre].clone();
+            demarre = true;
+        } else {
+            for _ in 0..len { r = &r * &r; }
+            if chiffre != 0 { r = &r * &tab[chiffre]; }
+        }
+    }
+    r
+}
+
+/// `base^e` : puissance de 2 en un décalage, sinon exponentiation k-aire.
 #[inline]
 fn pow_ui_vers(base: &BigInt, e: u64) -> BigInt {
     if base.is_one() { return BigInt::one(); }
@@ -959,15 +1008,7 @@ fn pow_ui_vers(base: &BigInt, e: u64) -> BigInt {
             if shift <= (1u64 << 28) { return BigInt::one() << (shift as usize); }
         }
     }
-    let mut b = base.clone();
-    let mut res = BigInt::one();
-    let mut exp = e;
-    while exp > 0 {
-        if exp & 1 == 1 { res *= &b; }
-        exp >>= 1;
-        if exp > 0 { b = &b * &b; }
-    }
-    res
+    pow_fenetre(base, e)
 }
 pub unsafe fn gmp_pow_ui(r: *mut Mpz, a: *const Mpz, e: u64) {
     (*r).v = pow_ui_vers(&(*a).v, e);
@@ -1288,10 +1329,21 @@ pub unsafe fn gmpq_canonicalize(q: *mut Mpq) { canon_q(q); }
 /// `est_premier($k)` sur 0..49999 coûtait 70 ms, soit 1,4 µs par appel,
 /// pour des nombres de 5 chiffres qui tiennent dans un u64.
 ///
-/// ⚠ Ici, tout se fait en arithmétique 64 bits (aucune allocation), avec
-/// les mêmes bases témoins : Miller-Rabin déterministe pour n < 2^64
-/// (bases 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37 — suffisantes). ⚠ Les
-/// nombres plus grands gardent la règle exacte (`miller_rabin` sur BigInt).
+/// ⚠ Ici, tout se fait en arithmétique 64 bits (aucune allocation). Les
+/// témoins sont le jeu DE 7 BASES de Sinclair, déterministe pour TOUT n < 2^64
+/// (au lieu des 12 petites bases 2..37 utilisées avant) : 7 exponentiations
+/// modulaires au lieu de 12, à égalité de certitude. Le crible des 12 petits
+/// facteurs est conservé (il rejette la majorité des composés pour quelques
+/// divisions matérielles).
+///
+/// ⚠⚠ MESURÉ (23/11/2026, `rose/tests/opt_algo.rs`, pin CPU 15, 3 médianes) :
+///   mélange 256 u64 sans petits facteurs : 12 bases 184,29 µs → 7 bases 125,54 µs (1,47×) ;
+///   0..50 000                            : 12 bases 8 410,96 µs → 7 bases 5 176,73 µs (1,62×).
+/// Parité vérifiée sur 0..100 000 + 400 u64 aléatoires + Carmichael connus.
+/// ⚠ Les nombres > 64 bits gardent la règle à 12 bases (`miller_rabin` BigInt) :
+/// on ne réduit PAS la certitude sur un domaine où le test est déjà probabiliste.
+const TEMOINS_MR_U64: [u64; 7] = [2, 325, 9375, 28178, 450775, 9780504, 1795265022];
+
 fn miller_rabin_u64(n: u64) -> bool {
     if n < 2 { return false; }
     for p in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
@@ -1302,7 +1354,7 @@ fn miller_rabin_u64(n: u64) -> bool {
     let mut d = n - 1;
     let mut s = 0u32;
     while d & 1 == 0 { d >>= 1; s += 1; }
-    'temoins: for a in [2u64, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37] {
+    'temoins: for a in TEMOINS_MR_U64 {
         let a = a % n;
         if a == 0 { continue; }
         let mut x = mulmod_pow(a, d, n);
