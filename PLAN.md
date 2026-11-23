@@ -1473,3 +1473,10 @@ point fixe b3ed9262 x2. HEAD local=distant 5f63719.
 
 Reste pour 100% (remplacement de cargo): brancher le moteur C0 dans
 build-windows-rebuild.sh a la place de cargo build, avec CI et installateurs.
+
+## Vague 98 — jalon final : release sans cargo + corpus 138/141
+
+3 agents lances: (rel1) remplacer cargo build dans build-windows-rebuild.sh par
+un chemin --selfhost utilisant C0, (rel2) eliminer les 5 divergences du corpus
+(double definition fn, erreurs E/S non propagees) pour atteindre 138/141, (rel3)
+a definir. Objectif: 100% self-hosting prouve par une release produite sans cargo.
