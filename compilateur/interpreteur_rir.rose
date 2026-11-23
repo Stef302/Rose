@@ -985,7 +985,15 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "chaine") {
     si ($n < 1) { retour vs("") }
     $t = vtag($a[1])
-    si ($t == "r" ou $t == "f") { retour vs(rat_pay($a[1])) }
+    si ($t == "f") {
+      $payf = rat_pay($a[1])
+      $sl = longueur($payf)
+      si ($sl >= 2 et sous_chaine($payf, $sl - 2, $sl) == "/1") {
+        retour vs(sous_chaine($payf, 0, $sl - 2))
+      }
+      retour vs($payf)
+    }
+    si ($t == "r") { retour vs(rat_pay($a[1])) }
     si ($t == "n") { retour vs(vpay($a[1])) }
     retour vs(val_str($a[1]))
   }
@@ -1064,8 +1072,16 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   # $a[1]. Aucune globale supplémentaire n'étant autorisée dans ce
   # correctif, l'adaptation exacte est tab_set/tab_has ci-dessous
   # (sémantique de remplacement de clé incluse, voir tests RIR).
-  si ($name == "inserer") { si ($n < 3) { retour "v:" }; retour tab_set($a[1], val_str($a[2]), $a[3]) }
-  si ($name == "cle_existe" ou $name == "cle_presente") { si ($n < 2) { retour vb(faux) }; retour vb(tab_has($a[1], val_str($a[2]))) }
+  si ($name == "inserer") {
+    si ($n < 3) { retour "v:" }
+    si (vtag($a[1]) != "t") { retour $a[1] }
+    retour tab_set($a[1], val_str($a[2]), $a[3])
+  }
+  si ($name == "cle_existe" ou $name == "cle_presente") {
+    si ($n < 2) { retour vb(faux) }
+    si (vtag($a[1]) != "t") { retour vb(faux) }
+    retour vb(tab_has($a[1], val_str($a[2])))
+  }
   si ($name == "joindre") { si ($n < 2) { retour "v:" }; retour lst_append($a[1], $a[2]) }
   si ($name == "concatener") {
     si ($n < 1) { retour vs("") }
@@ -1084,7 +1100,12 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "lire_texte") { si ($n < 1) { retour vs("") }; retour vs(lire_texte(vpay($a[1]))) }
   si ($name == "ecrire_texte") { si ($n >= 2) { ecrire_texte(vpay($a[1]), vpay($a[2])) }; retour "v:" }
   si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") { si ($n >= 2) { ecrire_bytes(vpay($a[1]), vpay($a[2])) }; retour "v:" }
-  si ($name == "argument") { si ($n < 1) { retour vs("") }; retour vs(argument(entier(val_str($a[1])))) }
+  si ($name == "argument") {
+    si ($n < 1) { retour vs("") }
+    $ix = entier(val_str($a[1]))
+    si ($ix < 0) { $ix = nb_arguments() } sinon { $ix = $ix + 1 }
+    retour vs(argument($ix))
+  }
   si ($name == "nb_arguments") { retour vi(chaine(nb_arguments() - 1)) }
   si ($name == "graine") { si ($n >= 1) { graine(entier(val_str($a[1]))) }; retour "v:" }
   si ($name == "hasard" ou $name == "prng" ou $name == "hasard_systeme") { si ($n < 1) { retour vi("0") }; retour vi(chaine(hasard(entier(val_str($a[1]))))) }
@@ -1272,9 +1293,11 @@ fn eval_expr($p: entier, $m: liste<chaine>, $base: entier, $fi: entier) -> liste
     # CORR3 : flottant(x) sur un flottant est l'identité. Sans cette porte,
     # call_prim() repasserait vpay() (« 3/2 ») dans vf() et le transformerait
     # en rationnel.
-    si ($name == "flottant" et longueur($args) >= 2 et vtag($args[1]) == "f") {
-      joindre($res, $args[1])
-      retour $res
+    si ($name == "flottant" et longueur($args) >= 2) {
+      si (vtag($args[1]) == "f") {
+        joindre($res, $args[1])
+        retour $res
+      }
     }
     # CORR3 : approx() = Stirling, rendu « m.dddddeE » exactement comme
     # factorial_approx() du moteur Rust (chaine, exposition SANS signe '+').

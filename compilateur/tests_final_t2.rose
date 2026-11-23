@@ -1,0 +1,132 @@
+# tests_final_t2.rose — banc de non-regression FINAL_T2 (tables + appels 0 argument).
+#
+# 20 programmes de tables, un enchaînement par ligne `Tnn:...`. La sortie est
+# déterministe et DOIT etre octet pour octet identique entre :
+#   rose/rose compilateur/tests_final_t2.rose
+#   ELF C0 du moteur complet compilateur/tests_final_t2.rose
+#
+# Chaque cas tient dans un bloc `si (vrai) { ... }` : les variables sont
+# locales au principal, les noms $t/$u/$v sont réutilisés sans collision.
+# Les clés sont homogènes par table : Rose distingue les types de clés, alors
+# que le moteur RIR les sérialise — meler "1" et 1 dans LA MEME table est un
+# cas de divergence connu (hors périmètre FINAL_T2).
+
+# T01 — table vide : longueur 0, aucune clé.
+$t = table()
+>> "T01:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "x"))
+
+# T02 — une clé chaîne.
+$t = table()
+inserer($t, "a", 1)
+>> "T02:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "a")) + ":" + chaine(cle_existe($t, "b"))
+
+# T03 — deux clés chaîne.
+$t = table()
+inserer($t, "a", 1)
+inserer($t, "b", 2)
+>> "T03:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "a")) + ":" + chaine(cle_existe($t, "b")) + ":" + chaine(cle_existe($t, "c"))
+
+# T04 — réinsertion de la même clé : la longueur ne bouge pas.
+$t = table()
+inserer($t, "a", 1)
+inserer($t, "a", 99)
+>> "T04:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "a")) + ":" + chaine($t["a"])
+
+# T05 — clés entières positives.
+$t = table()
+inserer($t, 1, "un")
+inserer($t, 2, "deux")
+inserer($t, 42, "quarante-deux")
+>> "T05:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, 1)) + ":" + chaine(cle_existe($t, 2)) + ":" + chaine(cle_existe($t, 3)) + ":" + chaine(cle_existe($t, 42))
+
+# T06 — clé entière négative.
+$t = table()
+inserer($t, -5, "moins cinq")
+>> "T06:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, -5)) + ":" + chaine(cle_existe($t, 5))
+
+# T07 — clés booléennes.
+$t = table()
+inserer($t, vrai, 1)
+inserer($t, faux, 2)
+>> "T07:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, vrai)) + ":" + chaine(cle_existe($t, faux))
+
+# T08 — table locale à une fonction (fabrique).
+fn fabrique_t2() -> table {
+  $loc = table()
+  inserer($loc, "x", 1)
+  inserer($loc, "y", 2)
+  retour $loc
+}
+$u = fabrique_t2()
+>> "T08:" + chaine(longueur($u)) + ":" + chaine(cle_existe($u, "x")) + ":" + chaine(cle_existe($u, "z"))
+
+# T09 — table construite dans une fonction à partir d'un argument entier.
+fn cle_presente_t2($c: chaine) -> booleen {
+  $loc = table()
+  inserer($loc, "x", 1)
+  inserer($loc, "y", 2)
+  retour cle_existe($loc, $c)
+}
+>> "T09:" + chaine(cle_presente_t2("x")) + ":" + chaine(cle_presente_t2("z"))
+
+# T10 — dix clés insérées en boucle, vérification de la dernière.
+$t = table()
+pour $i10 de 0 vers 9 { inserer($t, chaine($i10), $i10) }
+>> "T10:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "0")) + ":" + chaine(cle_existe($t, "9")) + ":" + chaine(cle_existe($t, "10"))
+
+# T11 — clé chaîne longue.
+$t = table()
+$long = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+inserer($t, $long, 7)
+>> "T11:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, $long)) + ":" + chaine(cle_existe($t, "aaa"))
+
+# T12 — clé contenant des espaces et des signes.
+$t = table()
+inserer($t, "a b|c:d", 1)
+>> "T12:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "a b|c:d")) + ":" + chaine(cle_existe($t, "a b"))
+
+# T13 — clés UTF-8.
+$t = table()
+inserer($t, "été", 1)
+inserer($t, "日本語", 2)
+>> "T13:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "été")) + ":" + chaine(cle_existe($t, "日本")) + ":" + chaine(cle_existe($t, "日本語"))
+
+# T14 — récupération de valeurs entières par indexation.
+$t = table()
+inserer($t, "a", 42)
+inserer($t, "b", 7)
+>> "T14:" + chaine($t["a"]) + ":" + chaine($t["b"])
+
+# T15 — récupération de valeurs chaînes par indexation.
+$t = table()
+inserer($t, "a", "pomme")
+>> "T15:" + chaine($t["a"])
+
+# T16 — cinquante réinsertions de la même clé.
+$t = table()
+pour $i16 de 0 vers 49 { inserer($t, "k", $i16) }
+>> "T16:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "k")) + ":" + chaine($t["k"])
+
+# T17 — cinquante clés distinctes.
+$t = table()
+pour $i17 de 0 vers 49 { inserer($t, chaine($i17), $i17 * 2) }
+>> "T17:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "0")) + ":" + chaine(cle_existe($t, "49")) + ":" + chaine($t["25"])
+
+# T18 — deux tables indépendantes.
+$t = table()
+$u = table()
+inserer($t, "a", 1)
+inserer($u, "b", 2)
+>> "T18:" + chaine(longueur($t)) + ":" + chaine(longueur($u)) + ":" + chaine(cle_existe($t, "a")) + ":" + chaine(cle_existe($u, "a")) + ":" + chaine(cle_existe($u, "b"))
+
+# T19 — clés entières dans une boucle, existence après mutation.
+$t = table()
+pour $i19 de 0 vers 19 { inserer($t, $i19, $i19) }
+inserer($t, 3, 333)
+>> "T19:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, 3)) + ":" + chaine($t[3]) + ":" + chaine(cle_existe($t, 19))
+
+# T20 — table vide réassignée après remplissage.
+$t = table()
+inserer($t, "a", 1)
+$t = table()
+>> "T20:" + chaine(longueur($t)) + ":" + chaine(cle_existe($t, "a"))
