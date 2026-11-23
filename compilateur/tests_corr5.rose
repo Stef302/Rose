@@ -1,0 +1,94 @@
+# tests_corr5.rose — CORRECTIF 5 : séparation des arguments.
+#
+# 20 contrôles, un par ligne de sortie `>>`. Le programme s'adapte au
+# nombre d'arguments utilisateurs (0, 1, 2, 3…) : aucune ligne ne doit
+# dépendre du chemin source, qui reste réservé à la lecture du programme.
+#
+#Invocations (les deux moteurs doivent rendre des octets identiques) :
+#   rose/rose tests_corr5.rose [args…]
+#   ./moteur_complet.elf tests_corr5.rose [args…]
+#
+# Convention : « SANS_ARG » / « PROTEGE » doivent apparaître quand il n'y a
+# pas assez d'arguments utilisateurs ; JAMAIS le chemin de ce fichier.
+
+# C01 — nb_arguments() = nombre d'arguments UTILISATEUR (hôte moins le chemin).
+$n = nb_arguments()
+>> $n
+
+# C02 — argument(0) littéral : premier argument utilisateur, pas le source.
+si ($n > 0) { >> argument(0) } sinon { >> "SANS_ARG" }
+
+# C03 — argument(1) littéral : deuxième argument utilisateur.
+si ($n > 1) { >> argument(1) } sinon { >> "SANS_ARG" }
+
+# C04 — argument(2) littéral : troisième argument utilisateur.
+si ($n > 2) { >> argument(2) } sinon { >> "SANS_ARG" }
+
+# C05 — index DYNAMIQUE stocké dans une variable.
+si ($n > 0) { $k = 0; >> argument($k) } sinon { >> "SANS_ARG" }
+
+# C06 — index dynamique en boucle : tous les arguments, dans l'ordre.
+$k = 0
+$ch = ""
+tant_que ($k < $n) { $ch = $ch + argument($k) + "|"; $k = $k + 1 }
+>> $ch
+
+# C07 — argument(0) depuis une fonction sans paramètre.
+fn corr5_arg0() -> chaine {
+  si (nb_arguments() > 0) { retour argument(0) }
+  retour "SANS_ARG"
+}
+>> corr5_arg0()
+
+# C08 — index calculé par une expression arithmétique.
+si ($n > 1) { >> argument(1 + 1 - 1) } sinon { >> "SANS_ARG" }
+
+# C09 — nb_arguments() depuis une fonction (même valeur qu'au sommet).
+fn corr5_nb() -> entier { retour nb_arguments() }
+>> corr5_nb()
+
+# C10 — lire_texte(argument(0)) : lis le fichier utilisateur, pas le source.
+si ($n > 0) {
+  >> longueur(lire_texte(argument(0)))
+} sinon { >> -1 }
+
+# C11 — stabilité : deux lectures de argument(0) sont égales.
+si ($n > 0) { >> argument(0) == argument(0) } sinon { >> vrai }
+
+# C12 — le chemin source ne fuite PAS : l'argument utilisateur se termine
+#       par .txt (critique_entree.txt) et non par .rose.
+si ($n > 0) {
+  >> sous_chaine(argument(0), longueur(argument(0)) - 4, longueur(argument(0))) == ".txt"
+} sinon { >> faux }
+
+# C13 — concaténation de tous les arguments utilisateurs.
+$s = ""
+$k = 0
+tant_que ($k < $n) { $s = $s + argument($k); $k = $k + 1 }
+>> $s
+
+# C14 — argument via une fonction à paramètre entier.
+fn corr5_argi($i: entier) -> chaine { retour argument($i) }
+si ($n > 0) { >> corr5_argi(0) } sinon { >> "SANS_ARG" }
+
+# C15 — index hors limite PROTÉGÉ par un test (doit rester « PROTEGE »).
+si ($n > 5) { >> argument(5) } sinon { >> "PROTEGE" }
+
+# C16 — nb_arguments() stable après une boucle de lectures.
+$k = 0
+tant_que ($k < $n) { $x = argument($k); $k = $k + 1 }
+>> nb_arguments()
+
+# C17 — argument(0) est une chaîne non vide quand il existe.
+si ($n > 0) { >> longueur(argument(0)) > 0 } sinon { >> faux }
+
+# C18 — argument(0) ne contient PAS le préfixe du chemin source du banc.
+si ($n > 0) {
+  >> sous_chaine(argument(0), 0, 4) == "/tmp"
+} sinon { >> faux }
+
+# C19 — les arguments sont indépendants (argument(1) != argument(0) si 2 args).
+si ($n > 1) { >> argument(1) != argument(0) } sinon { >> faux }
+
+# C20 — marqueur de fin : prouve que les 19 contrôles précédents ont couru.
+>> "FIN_CORR5"

@@ -5511,6 +5511,24 @@ fn exec_fn($m0: liste<chaine>, $base: entier, $fi: entier) -> liste<chaine> {
   retour pack_ret("v:", $m)
 }
 fn call_fn($m: liste<chaine>, $name: chaine, $args: liste<chaine>) -> liste<chaine> {
+  # CORR5 — séparation des arguments (index utilisateur, pas index hôte).
+  # Le point d'entrée réserve l'index 0 de la table d'arguments de l'hôte au
+  # chemin de la source. Le programme utilisateur, lui, doit voir
+  # argument(0) = son PREMIER argument, exactement comme rose/rose.
+  # L'entrée « argument » ajoutée à $fn_nom par le point d'entrée fait
+  # routing ici (find_fn > 0 dans eval_expr) au lieu d'aller à call_prim :
+  # on décale donc l'index d'UN avant de lire la table de l'hôte. Le décalage
+  # est appliqué à l'exécution, donc il couvre AUSSI les indices dynamiques
+  # (argument($i)), pas seulement les littéraux.
+  si ($name == "argument") {
+    si (longueur($args) < 2) { retour pack_ret(vs(""), $m) }
+    $ix = entier(val_str($args[1]))
+    # Un index négatif ne doit jamais retomber sur l'index hôte 0 (le
+    # chemin source). On force un index hors table : l'hôte émet alors la
+    # MÊME erreur que rose/rose (« index hors des limites », rc=1).
+    si ($ix < 0) { $ix = nb_arguments() } sinon { $ix = $ix + 1 }
+    retour pack_ret(vs(argument($ix)), $m)
+  }
   $fi = find_fn($name)
   si ($fi < 1) { retour pack_ret("v:", $m) }
   $base = longueur($m)
@@ -10067,8 +10085,31 @@ si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
 }
 $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
 parse_rir($mc_rir)
+
+# ── CORR5 : séparation des arguments ──────────────────────────────────
+# Le chemin source occupe l'index 0 de la table d'arguments de l'hôte : il
+# sert UNIQUEMENT à lire la source ci-dessus. À partir d'ici, le programme
+# utilisateur doit voir argument(0) = son premier argument (comportement
+# mesuré de rose/rose) et nb_arguments() = son nombre d'arguments.
+#
+# 1) Enregistrer « argument » dans la table des fonctions : eval_expr voit
+#    find_fn("argument") > 0 et route l'appel vers call_fn, où le décalage
+#    +1 est appliqué à l'exécution (indices littéraux ET dynamiques).
+#    Les fonctions DEFINIES par l'utilisateur restent prioriques : elles
+#    sont déjà dans $fn_nom avant cet ajout et find_fn rend le 1er match.
+joindre($fn_nom, "argument")
+
+# 2) Transmettre les arguments utilisateurs à partir de l'index 1 dans
+#    call_fn. Le tableau hôte 0 = chemin source, 1..N = arguments du
+#    programme. nb_arguments() hôte compte le chemin : on s'arrête à N-1.
+$mc_args = [""]
+$mc_j = 1
+tant_que ($mc_j < nb_arguments()) {
+  joindre($mc_args, argument($mc_j))
+  $mc_j = $mc_j + 1
+}
+
 $mc_mem = [""]
 $mc_i = 1
 tant_que ($mc_i < longueur($glob_nom)) { joindre($mc_mem, "v:"); $mc_i = $mc_i + 1 }
-$mc_args = [""]
 $mc_final = call_fn($mc_mem, "$principal", $mc_args)
