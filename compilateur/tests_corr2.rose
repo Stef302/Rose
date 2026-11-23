@@ -1,0 +1,70 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_corr2.rose — banc de tests du correctif 2 (rationnels négatifs).
+#
+# Rose, correctif 2 de HORDE_INTEGRATION.md §6.2 : normalisation de signe
+# du numérateur, réduction PGCD et représentation r:<num>/<den> appliquées
+# quand le littéral est replié en négatif (vf l.574, val_str l.482 de
+# compilateur/interpreteur_rir.rose).
+#
+# Usage — comparaison octet pour octet à la référence `rose/rose` :
+#   ROSE_SANS_JIT=1 rose/rose compilateur/tests_corr2.rose > ref.txt
+#   rose/rose rir compilateur/tests_corr2.rose > test.rir
+#   ELF_INTERP test.rir > elf.txt        # ELF C0(interpreteur_rir.rose)
+#   cmp -s ref.txt elf.txt               # 0 divergence attendue
+#
+# Les 50 expressions couvrent : négatifs, zéro (dont signes -0, 0/-7),
+# positifs, grands numérateurs (> 2^60), doubles négations et opérations
+# arithmétiques sur rationnels négatifs. Aucune division par zéro, aucun
+# résultat non déterministe.
+# ═══════════════════════════════════════════════════════════════════════
+
+>> -7/3        # 1  — -3.[3]  (t07)
+>> 7/-3        # 2  — -3.[3]  (signe au dénominateur)
+>> (-7)/3      # 3  — -3.[3]
+>> -1/2        # 4  — -1.5
+>> -0          # 5  — 0
+>> -0/7        # 6  — 0 (numérateur signé zéro)
+>> 0/-7        # 7  — 0 (dénominateur signé zéro)
+>> -1/3        # 8  — -1.[3]
+>> -2/3        # 9  — -1.[6]
+>> -1/7        # 10 — -1.[142857]
+>> -1/6        # 11 — -1.1[6]
+>> -5/6        # 12 — -1.8[3]
+>> -10/3       # 13 — -4.[3]
+>> -100/7      # 14 — -15.[285714]
+>> -7/2        # 15 — -4.5
+>> 1/3         # 16 — 0.[3]  (témoin positif)
+>> 2/3         # 17 — 0.[6]
+>> 1/7         # 18 — 0.[142857]
+>> -22/7       # 19 — période longue
+>> -355/113    # 20 — période très longue
+>> -1/9        # 21 — -1.[1]
+>> -1/11       # 22 — -1.[09]
+>> 3/7         # 23 — 0.[428571]
+>> -3/7        # 24 — -0.[428571]
+>> 7/3         # 25 — 2.[3]
+>> -7/3 + 1/3  # 26 — -2
+>> -7/3 * 3    # 27 — -7
+>> (-7/3) / 2  # 28 — -1.1[6]
+>> -100000000000000000000/7   # 29 — grand négatif (g5b606/t242)
+>> 100000000000000000000/7    # 30 — grand positif
+>> -18446744073709551616/3    # 31 — 2^64 négatif
+>> 18446744073709551616/3     # 32 — 2^64 positif
+>> -1/2 + -1/3                # 33 — somme négative
+>> -2/3 - -1/3                # 34 — soustraction négative
+>> -5/7 + 3/7                 # 35 — somme mixte
+>> -9/10                      # 36 — fini négatif
+>> -11/12                     # 37 — période négative
+>> -13/15                     # 38 — période négative
+>> -17/19                     # 39 — période négative
+>> 0/5                        # 40 — zéro explicite
+>> 1/-1                       # 41 — -1
+>> -1/-1                      # 42 — 1
+>> 2/-4                       # 43 — -0.5 (réduction PGCD)
+>> -2/-4                      # 44 — 0.5 (signes opposés)
+>> -43/9                      # 45 — période négative (-4.[7])
+>> -100/11                    # 46 — période négative (-9.[09])
+>> -100000000000000000001/3   # 47 — grand négatif, reste non nul (t243)
+>> -7/1                       # 48 — entier négatif
+>> 7/-1                       # 49 — entier négatif, signe au dénominateur
+>> -123456789/97              # 50 — grand numérateur, période

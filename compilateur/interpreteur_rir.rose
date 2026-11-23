@@ -481,7 +481,17 @@ fn val_truth($v: chaine) -> booleen {
 }
 fn val_str($v: chaine) -> chaine {
   $t = vtag($v)
-  si ($t == "i") { retour vpay($v) }
+  si ($t == "i") {
+    $p = vpay($v)
+    # CORR2 : un rationnel replié peut etre etiquete "i" par le front-end
+    # tout en portant un texte "p/q" — canonicaliser avant affichage.
+    $j = 0
+    tant_que ($j < longueur($p) et sous_chaine($p, $j, $j + 1) != "/") { $j = $j + 1 }
+    si ($j < longueur($p)) {
+      retour rat_dec(rat_make(sous_chaine($p, 0, $j), sous_chaine($p, $j + 1, longueur($p))))
+    }
+    retour $p
+  }
   si ($t == "s") { retour vpay($v) }
   si ($t == "g") { retour vpay($v) }
   si ($t == "b") { si (vpay($v) == "1") { retour "vrai" }; retour "faux" }
