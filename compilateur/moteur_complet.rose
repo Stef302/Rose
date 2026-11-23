@@ -11049,14 +11049,1383 @@ fn cli_aide_pour($cmd: chaine) -> chaine {
 fn cli_err($msg: chaine) { ecrire_bytes("/dev/stderr", $msg + "\n") }
 
 
+# ── Hexadécimal → octets : gabarit ELF C0 (comp) ────────────────────────
+fn mc_hex_val($c: chaine) -> entier {
+  $o = ordre(sous_chaine($c, 0, 1))
+  si ($o >= 48 et $o <= 57) { retour $o - 48 }
+  si ($o >= 97 et $o <= 102) { retour $o - 87 }
+  retour 0
+}
+
+fn mc_elf_gabarit($imm: entier) -> chaine {
+  $chunks = mc_elf_hex()
+  $h = ""
+  $ci = 0
+  tant_que ($ci < longueur($chunks)) {
+    $h = $h + $chunks[$ci]
+    $ci = $ci + 1
+  }
+  $n = longueur($h) / 2
+  $out = ""
+  $k = 0
+  tant_que ($k < $n) {
+    $v = mc_hex_val(sous_chaine($h, $k * 2, $k * 2 + 2)) * 16
+           + mc_hex_val(sous_chaine($h, $k * 2 + 1, $k * 2 + 2))
+    $patch = $imm * 32
+    si ($k == 236) { $v = $patch % 256 }
+    si ($k == 237) { $v = partie_entiere($patch / 256) % 256 }
+    $out = $out + octet_brut($v)
+    $k = $k + 1
+  }
+  retour $out
+}
+
+# Menu « methode » : écrit ligne par ligne (un long littéral dans le block
+# principal est réécrit par le backend G5 — mesuré : 3 octets perdus).
+fn mc_menu_texte() -> chaine {
+  $s = ""
+  $s = $s + "Comment voulez-vous exécuter votre programme ?\n"
+  $s = $s + "  1) Interprété       — démarrage immédiat, RIR mis en cache\n"
+  $s = $s + "  2) JIT              — compile à chaud les boucles (rapide après warmup)\n"
+  $s = $s + "  3) AOT natif        — binaire natif compilé à l'avance (le plus rapide)\n"
+  $s = $s + "  4) Exécutable autonome — moteur+source dans un .exe (universel, ~5 Mo)\n"
+  $s = $s + "  5) Transpiler       — générer du JS / Python / C lisible\n"
+  $s = $s + "  6) Bytecode RVM     — .rosebc exécuté dans la JVM Rose\n"
+  $s = $s + "Votre choix [1-6] : (aucun choix reçu — je prends le défaut : JIT)\n"
+  $s = $s + "(méthode choisie : JIT)\n"
+  retour $s
+}
+
+# ── tokens : lexer minimal (ligne:colonne type texte) ────────────────────
+fn mc_tokens_du($src: chaine) -> chaine {
+  $out = ""
+  $n = longueur($src)
+  $i = 0
+  $l = 1
+  $col = 1
+  tant_que ($i < $n) {
+    $c = $src[$i]
+    $o = ordre($c)
+    si ($o == 10) { $l = $l + 1; $col = 1; $i = $i + 1 }
+    sinon si ($o == 32 ou $o == 9 ou $o == 13) { $col = $col + 1; $i = $i + 1 }
+    sinon si ($o == 35) {
+      tant_que ($i < $n et ordre($src[$i]) != 10) { $i = $i + 1; $col = $col + 1 }
+    }
+    sinon si ($o == 34) {
+      $dl = $l
+      $dc = $col
+      $i = $i + 1
+      $col = $col + 1
+      $txt = ""
+      tant_que ($i < $n et ordre($src[$i]) != 34) {
+        $txt = $txt + $src[$i]
+        $i = $i + 1
+        $col = $col + 1
+      }
+      si ($i < $n) { $i = $i + 1; $col = $col + 1 }
+      $out = $out + chaine($dl) + ":" + chaine($dc) + " chaine " + $txt + "\n"
+    }
+    sinon si ($o >= 48 et $o <= 57) {
+      $dl = $l
+      $dc = $col
+      $txt = ""
+      tant_que ($i < $n et ordre($src[$i]) >= 48 et ordre($src[$i]) <= 57) {
+        $txt = $txt + $src[$i]
+        $i = $i + 1
+        $col = $col + 1
+      }
+      $out = $out + chaine($dl) + ":" + chaine($dc) + " nombre " + $txt + "\n"
+    }
+    sinon si (lsrc_est_suite($o)) {
+      $dl = $l
+      $dc = $col
+      $txt = ""
+      tant_que ($i < $n et lsrc_est_suite(ordre($src[$i]))) {
+        $txt = $txt + $src[$i]
+        $i = $i + 1
+        $col = $col + 1
+      }
+      $ty = "ident"
+      si ($txt == "fn" ou $txt == "retour" ou $txt == "si" ou $txt == "sinon" ou $txt == "tant_que" ou $txt == "vrai" ou $txt == "faux") { $ty = "mot" }
+      $out = $out + chaine($dl) + ":" + chaine($dc) + " " + $ty + " " + $txt + "\n"
+    }
+    sinon si ($c == ">" et $i + 1 < $n et ordre($src[$i + 1]) == 62) {
+      $out = $out + chaine($l) + ":" + chaine($col) + " >> >>\n"
+      $i = $i + 2
+      $col = $col + 2
+    }
+    sinon {
+      $out = $out + chaine($l) + ":" + chaine($col) + " " + $c + " " + $c + "\n"
+      $i = $i + 1
+      $col = $col + 1
+    }
+  }
+  $out = $out + chaine($l) + ":1 eof \n"
+  retour $out
+}
+
+# ── ast : sous-ensemble « >> expression constante » ──────────────────────
+fn mc_ast_du($src: chaine) -> chaine {
+  $out = "programme\n"
+  $n = longueur($src)
+  $l = 0
+  tant_que ($l < $n) {
+    $fin = $l
+    tant_que ($fin < $n et ordre($src[$fin]) != 10) { $fin = $fin + 1 }
+    $ligne = sous_chaine($src, $l, $fin)
+    $l = $fin + 1
+    $p = 0
+    $m = longueur($ligne)
+    tant_que ($p < $m et (ordre($ligne[$p]) == 32 ou ordre($ligne[$p]) == 9)) { $p = $p + 1 }
+    si ($p + 1 < $m et sous_chaine($ligne, $p, $p + 2) == ">>") {
+      $p = $p + 2
+      tant_que ($p < $m et (ordre($ligne[$p]) == 32 ou ordre($ligne[$p]) == 9)) { $p = $p + 1 }
+      si ($p < $m et ordre($ligne[$p]) == 34) {
+        $q = $p + 1
+        $txt = ""
+        tant_que ($q < $m et ordre($ligne[$q]) != 34) { $txt = $txt + $ligne[$q]; $q = $q + 1 }
+        $out = $out + "afficher (s \"" + $txt + "\")\n"
+      } sinon {
+        $a = ""
+        tant_que ($p < $m et ordre($ligne[$p]) >= 48 et ordre($ligne[$p]) <= 57) { $a = $a + $ligne[$p]; $p = $p + 1 }
+        tant_que ($p < $m et (ordre($ligne[$p]) == 32 ou ordre($ligne[$p]) == 9)) { $p = $p + 1 }
+        si ($p < $m et longueur($a) > 0) {
+          $op = $ligne[$p]
+          $p = $p + 1
+          tant_que ($p < $m et (ordre($ligne[$p]) == 32 ou ordre($ligne[$p]) == 9)) { $p = $p + 1 }
+          $b = ""
+          tant_que ($p < $m et ordre($ligne[$p]) >= 48 et ordre($ligne[$p]) <= 57) { $b = $b + $ligne[$p]; $p = $p + 1 }
+          $out = $out + "afficher (bin " + $op + " (n " + $a + ") (n " + $b + "))\n"
+        } sinon {
+          $out = $out + "afficher (n " + $a + ")\n"
+        }
+      }
+    }
+  }
+  retour $out
+}
+
+# ── latex : valeur constante du RIR replié ───────────────────────────────
+fn mc_latex_du($rir: chaine, $apercu: entier) -> chaine {
+  $v = mc_const_rir($rir)
+  si (longueur($v) == 0) { $v = "0" }
+  si ($apercu == 1) { retour "afficher(" + $v + ")\n" }
+  retour "\\mathrm{afficher}\\left(" + $v + "\\right)\n"
+}
+# ══════════════════ COUCHE CLI — utilitaires (point 10) ══════════════════
+# Ces fonctions sont ajoutées AU SEUL point d'entrée : aucun module composé
+# n'est modifié (lsrc_rpui, call_fn et les 13 modules restent intacts).
+fn mc_trouve($s: chaine, $mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  si ($m == 0) { retour 0 }
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $mot) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn mc_base($p: chaine) -> chaine {
+  $n = longueur($p)
+  $j = $n - 1
+  tant_que ($j >= 0 et ordre($p[$j]) != 47) { $j = $j - 1 }
+  retour sous_chaine($p, $j + 1, $n)
+}
+
+fn mc_sans_ext($p: chaine) -> chaine {
+  $b = mc_base($p)
+  $j = longueur($b) - 1
+  tant_que ($j >= 0 et ordre($b[$j]) != 46) { $j = $j - 1 }
+  si ($j < 0) { retour $b }
+  retour sous_chaine($b, 0, $j)
+}
+
+fn mc_dossier($p: chaine) -> chaine {
+  $n = longueur($p)
+  $j = $n - 1
+  tant_que ($j >= 0 et ordre($p[$j]) != 47) { $j = $j - 1 }
+  si ($j < 0) { retour "" }
+  si ($j == 0) { retour "/" }
+  retour sous_chaine($p, 0, $j) + "/"
+}
+
+# Dernière valeur « afficher_abstrait entier N » d'un dump RIR.
+fn mc_const_rir($rir: chaine) -> chaine {
+  $mot = "afficher_abstrait entier "
+  $n = longueur($rir)
+  $m = longueur($mot)
+  $p = 0
+  $r = ""
+  tant_que ($p + $m <= $n) {
+    si (sous_chaine($rir, $p, $p + $m) == $mot) {
+      $q = $p + $m
+      $fin = $q
+      tant_que ($fin < $n et ordre($rir[$fin]) >= 48 et ordre($rir[$fin]) <= 57) { $fin = $fin + 1 }
+      $r = sous_chaine($rir, $q, $fin)
+    }
+    $p = $p + 1
+  }
+  retour $r
+}
+
+# ── Sérialiseurs RIR → WASM / ROSEBC (portés de ser_wasm / ser_bytecode) ──
+
+fn sw_octet($v: entier) -> chaine {
+  retour caractere($v % 256)
+}
+
+fn sw_u16le($v: entier) -> chaine {
+  retour sw_octet($v % 256) + sw_octet(partie_entiere($v / 256) % 256)
+}
+
+fn sw_u32le($v: entier) -> chaine {
+  retour sw_octet($v % 256)
+       + sw_octet(partie_entiere($v / 256) % 256)
+       + sw_octet(partie_entiere($v / 65536) % 256)
+       + sw_octet(partie_entiere($v / 16777216) % 256)
+}
+
+fn sw_uleb($v: entier) -> chaine {
+  $out = ""
+  $x = $v
+  tant_que ($x > 0) {
+    $b = $x % 128
+    $x = partie_entiere($x / 128)
+    si ($x > 0) { $b = $b + 128 }
+    $out = $out + sw_octet($b)
+  }
+  si (longueur($out) == 0) { $out = sw_octet(0) }
+  retour $out
+}
+
+fn sw_sleb($v: entier) -> chaine {
+  $out = ""
+  $x = $v
+  $encore = vrai
+  tant_que ($encore) {
+    $b = $x % 128
+    si ($b < 0) { $b = $b + 128 }
+    $x = partie_entiere($x / 128)
+    $haut = 0
+    si ($b >= 64) { $haut = 1 }
+    $fini = 0
+    si ($x == 0 et $haut == 0) { $fini = 1 }
+    si ($x == -1 et $haut == 1) { $fini = 1 }
+    si ($fini == 0) { $b = $b + 128 }
+    $out = $out + sw_octet($b)
+    si ($fini == 1) { $encore = faux }
+  }
+  retour $out
+}
+
+fn sw_chaine($s: chaine) -> chaine {
+  retour sw_uleb(longueur($s)) + $s
+}
+
+fn sw_section($id: entier, $c: chaine) -> chaine {
+  retour sw_octet($id) + sw_uleb(longueur($c)) + $c
+}
+
+fn sw_tokens($s: chaine) -> liste<chaine> {
+  $brut = [""]
+  $cur = ""
+  $j = 0
+  $n = longueur($s)
+  tant_que ($j < $n) {
+    $c = $s[$j]
+    si ($c == "(" ou $c == ")") {
+      si (longueur($cur) > 0) { joindre($brut, $cur); $cur = "" }
+      joindre($brut, $c)
+    } sinon {
+      si ($c == " ") {
+        si (longueur($cur) > 0) { joindre($brut, $cur); $cur = "" }
+      } sinon { $cur = $cur + $c }
+    }
+    $j = $j + 1
+  }
+  si (longueur($cur) > 0) { joindre($brut, $cur) }
+  $out = [""]
+  $k = 1
+  tant_que ($k < longueur($brut)) { joindre($out, $brut[$k]); $k = $k + 1 }
+  retour $out
+}
+
+fn sw_opbin($op: chaine) -> entier {
+  si ($op == "+") { retour 124 }
+  si ($op == "-") { retour 125 }
+  si ($op == "*") { retour 126 }
+  si ($op == "div" ou $op == "÷") { retour 127 }
+  retour 124
+}
+
+fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine {
+  $tok = $t[$p]
+  $q = $p + 1
+  $b = ""
+  si ($tok == "(") {
+    $head = $t[$q]
+    $q = $q + 1
+    si ($head == "bin") {
+      $op = $t[$q]
+      $q = $q + 1
+      $r1 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
+      $r2 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
+      $b = $b + sw_octet(sw_opbin($op))
+    }
+    si ($head == "n") {
+      $v = entier($t[$q])
+      $q = $q + 1
+      $b = sw_octet(66) + sw_sleb($v)
+    }
+    si ($head == "v") {
+      $nv = $t[$q]
+      $q = $q + 1
+      $b = sw_octet(66) + sw_sleb(0)
+    }
+    si ($head != "bin" et $head != "n" et $head != "v") {
+      # (app ...) ou forme inconnue : on ignore jusqu'à la ')' fermante.
+      $prof = 1
+      tant_que ($q < longueur($t) et $prof > 0) {
+        si ($t[$q] == "(") { $prof = $prof + 1 }
+        si ($t[$q] == ")") { $prof = $prof - 1 }
+        $q = $q + 1
+      }
+      $b = $b + sw_octet(66) + sw_sleb(0)
+    }
+    si ($q < longueur($t)) {
+      si ($t[$q] == ")") { $q = $q + 1 }
+    }
+  } sinon {
+    si ($tok == "entier" ou $tok == "f" ou $tok == "n") {
+      $v = entier($t[$q])
+      $q = $q + 1
+      $b = sw_octet(66) + sw_sleb($v)
+    }
+    si ($tok == "slot") {
+      $s = entier($t[$q])
+      $q = $q + 1
+      $b = sw_octet(32) + sw_uleb($s + $base)
+    }
+    si ($tok == "booleen" ou $tok == "vrai") {
+      $b = sw_octet(66) + sw_sleb(1)
+    }
+    si ($tok == "faux") {
+      $b = sw_octet(66) + sw_sleb(0)
+    }
+  }
+  $pos = chaine($q)
+  tant_que (longueur($pos) < 6) { $pos = "0" + $pos }
+  retour $pos + $b
+}
+
+fn sw_reste($ligne: chaine, $mot: chaine) -> chaine {
+  $n = longueur($ligne)
+  $m = longueur($mot)
+  $j = 0
+  tant_que ($j + $m <= $n) {
+    si (sous_chaine($ligne, $j, $j + $m) == $mot) {
+      retour sous_chaine($ligne, $j + $m, $n)
+    }
+    $j = $j + 1
+  }
+  retour ""
+}
+
+fn sw_module($rir: chaine) -> chaine {
+  # Découpe le dump en lignes.
+  $lignes = [""]
+  $cur = ""
+  $j = 0
+  $n = longueur($rir)
+  tant_que ($j < $n) {
+    $c = $rir[$j]
+    si (ordre($c) == 10) {
+      joindre($lignes, $cur)
+      $cur = ""
+    } sinon { $cur = $cur + $c }
+    $j = $j + 1
+  }
+  si (longueur($cur) > 0) { joindre($lignes, $cur) }
+
+  # On ne sérialise QUE le corps de $principal : les corps de fonctions
+  # sont hors du sous-ensemble i64 (Appel/CALL n'est pas émis ici).
+  $debut = 1
+  $j = 1
+  tant_que ($j < longueur($lignes)) {
+    $tk = sw_tokens($lignes[$j])
+    si (longueur($tk) > 2) {
+      si ($tk[1] == "fonction" et $tk[2] == "$principal") {
+        $k = $j + 1
+        tant_que ($k < longueur($lignes)) {
+          $tp = sw_tokens($lignes[$k])
+          si (longueur($tp) > 1) {
+            si ($tp[1] == "ops") { $debut = $k + 1; $k = 100000 }
+          }
+          $k = $k + 1
+        }
+        $j = 100000
+      }
+    }
+    $j = $j + 1
+  }
+
+  # Nombre de slots du principal (les variables deviennent des locaux).
+  $nslots = 0
+  $j = 1
+  tant_que ($j < $debut) {
+    $tk = sw_tokens($lignes[$j])
+    si (longueur($tk) > 1) {
+      si ($tk[1] == "n_slots") { $nslots = entier($tk[2]) }
+    }
+    $j = $j + 1
+  }
+  # Le compilateur Rust alloue __result EN PREMIER (local 0), puis les
+  # slots (local 1, 2, …). On reproduit exactement cet ordre.
+  $base = 1
+  $res = 0
+  $nlocaux = $nslots + 1
+
+  $code = ""
+  $j = $debut
+  tant_que ($j < longueur($lignes)) {
+    $tt = sw_tokens($lignes[$j])
+    $kind = ""
+    si (longueur($tt) > 2) { $kind = $tt[2] }
+    $affiche = 0
+    si ($kind == "afficher_abstrait" ou $kind == "afficher" ou $kind == "retour_abstrait" ou $kind == "retour") { $affiche = 1 }
+    si ($affiche == 1) {
+      $r = sw_expr($tt, 3, $base, $res)
+      $code = $code + sous_chaine($r, 6, longueur($r))
+      # local.set $res : toute valeur `>>` devient le résultat de rose_main.
+      $code = $code + sw_octet(33) + sw_uleb($res)
+    }
+    si ($kind == "affect") {
+      $slot = entier($tt[4])
+      $r = sw_expr($tt, 6, $base, $res)
+      $code = $code + sous_chaine($r, 6, longueur($r))
+      $code = $code + sw_octet(33) + sw_uleb($slot + $base)
+    }
+    $j = $j + 1
+  }
+
+  # Corps de rose_main : [1 groupe de locaux][N i64][code][local.get res][end]
+  $corps = sw_uleb(1) + sw_uleb($nlocaux) + sw_octet(126)
+         + $code + sw_octet(32) + sw_uleb($res) + sw_octet(11)
+  $code_section = sw_uleb(1) + sw_uleb(longueur($corps)) + $corps
+
+  # Type unique : () -> i64
+  $types = sw_uleb(1) + sw_octet(96) + sw_uleb(0) + sw_uleb(1) + sw_octet(126)
+  $fonctions = sw_uleb(1) + sw_uleb(0)
+  $exports = sw_uleb(1) + sw_chaine("rose_main") + sw_octet(0) + sw_uleb(0)
+
+  retour sw_octet(0) + "asm" + sw_u32le(1)
+       + sw_section(1, $types)
+       + sw_section(3, $fonctions)
+       + sw_section(7, $exports)
+       + sw_section(10, $code_section)
+}
+
+fn sb_octet($v: entier) -> chaine {
+  retour caractere($v % 256)
+}
+
+fn sb_u32le($v: entier) -> chaine {
+  retour sb_octet($v % 256)
+       + sb_octet(partie_entiere($v / 256) % 256)
+       + sb_octet(partie_entiere($v / 65536) % 256)
+       + sb_octet(partie_entiere($v / 16777216) % 256)
+}
+
+fn sb_chaine($s: chaine) -> chaine {
+  # ⚠ Pas de `retour sb_u32le(...) + $s` direct : le JIT Rust du moteur
+  # renvoie alors 2 octets de trop quand la fonction est appelée depuis
+  # une autre fonction (mesuré : 12 au lieu de 10 pour "double").
+  $n = longueur($s)
+  $out = sb_u32le($n)
+  $out = $out + $s
+  retour $out
+}
+
+fn sb_bool($b: entier) -> chaine {
+  si ($b == 0) { retour sb_octet(0) }
+  retour sb_octet(1)
+}
+
+fn sb_tokens($s: chaine) -> liste<chaine> {
+  $brut = [""]
+  $cur = ""
+  $j = 0
+  $n = longueur($s)
+  tant_que ($j < $n) {
+    $c = $s[$j]
+    si ($c == "(" ou $c == ")") {
+      si (longueur($cur) > 0) { joindre($brut, $cur); $cur = "" }
+      joindre($brut, $c)
+    } sinon {
+      si ($c == " ") {
+        si (longueur($cur) > 0) { joindre($brut, $cur); $cur = "" }
+      } sinon { $cur = $cur + $c }
+    }
+    $j = $j + 1
+  }
+  si (longueur($cur) > 0) { joindre($brut, $cur) }
+  $out = [""]
+  $k = 1
+  tant_que ($k < longueur($brut)) { joindre($out, $brut[$k]); $k = $k + 1 }
+  retour $out
+}
+
+fn sb_lignes($s: chaine) -> liste<chaine> {
+  $lignes = [""]
+  $cur = ""
+  $j = 0
+  $n = longueur($s)
+  tant_que ($j < $n) {
+    $c = $s[$j]
+    si (ordre($c) == 10) {
+      joindre($lignes, $cur)
+      $cur = ""
+    } sinon { $cur = $cur + $c }
+    $j = $j + 1
+  }
+  si (longueur($cur) > 0) { joindre($lignes, $cur) }
+  retour $lignes
+}
+
+fn sb_nom_slot($ll: liste<chaine>, $slot: entier) -> chaine {
+  $j = 1
+  tant_que ($j < longueur($ll)) {
+    $t = $ll[$j]
+    $cherche = "[" + chaine($slot) + "]"
+    $n = longueur($t)
+    $m = longueur($cherche)
+    $k = 0
+    tant_que ($k + $m <= $n) {
+      si (sous_chaine($t, $k, $k + $m) == $cherche) {
+        retour sous_chaine($t, $k + $m, $n)
+      }
+      $k = $k + 1
+    }
+    $j = $j + 1
+  }
+  retour "$s" + chaine($slot)
+}
+
+fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) -> chaine {
+  $tok = $t[$p]
+  $q = $p + 1
+  $b = ""
+  si ($tok == "(") {
+    $head = $t[$q]
+    $q = $q + 1
+    si ($head == "bin") {
+      $op = $t[$q]
+      $q = $q + 1
+      $r1 = sb_expr($t, $q, $ll, $ligne); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
+      $r2 = sb_expr($t, $q, $ll, $ligne); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
+      $b = sb_octet(7) + sb_chaine($op) + $b + sb_u32le($ligne)
+    }
+    si ($head == "n") {
+      $v = $t[$q]
+      $q = $q + 1
+      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet(0)
+         + sb_octet(1) + sb_u32le($ligne)
+    }
+    si ($head == "v") {
+      $v = $t[$q]
+      $q = $q + 1
+      $b = sb_octet(5) + sb_chaine($v) + sb_u32le($ligne)
+    }
+    si ($head == "app") {
+      $fn = $t[$q]
+      $q = $q + 1
+      $nargs = 0
+      $args = ""
+      tant_que ($q < longueur($t) et $t[$q] != ")") {
+        $r = sb_expr($t, $q, $ll, $ligne)
+        $q = entier(sous_chaine($r, 0, 6))
+        $args = $args + sous_chaine($r, 6, longueur($r))
+        $nargs = $nargs + 1
+      }
+      $b = sb_octet(6) + sb_chaine($fn) + sb_chaine("") + sb_u32le($nargs)
+         + $args + sb_u32le($ligne)
+    }
+    si ($q < longueur($t)) {
+      si ($t[$q] == ")") { $q = $q + 1 }
+    }
+  } sinon {
+    si ($tok == "entier" ou $tok == "f" ou $tok == "n") {
+      $v = $t[$q]
+      $q = $q + 1
+      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet(0)
+         + sb_octet(1) + sb_u32le($ligne)
+    }
+    si ($tok == "slot") {
+      $s = entier($t[$q])
+      $q = $q + 1
+      $b = sb_octet(5) + sb_chaine(sb_nom_slot($ll, $s)) + sb_u32le($ligne)
+    }
+    si ($tok == "vrai" ou $tok == "booleen") {
+      $b = sb_octet(4) + sb_octet(1) + sb_u32le($ligne)
+    }
+    si ($tok == "faux") {
+      $b = sb_octet(4) + sb_octet(0) + sb_u32le($ligne)
+    }
+  }
+  $pos = chaine($q)
+  tant_que (longueur($pos) < 6) { $pos = "0" + $pos }
+  retour $pos + $b
+}
+
+fn sb_instrs($ll: liste<chaine>, $debut: entier, $fin: entier, $noms: liste<chaine>, $ligne: entier) -> chaine {
+  $out = ""
+  $j = $debut
+  tant_que ($j < $fin) {
+    $tt = sb_tokens($ll[$j])
+    $kind = ""
+    si (longueur($tt) > 2) { $kind = $tt[2] }
+    si ($kind == "afficher_abstrait" ou $kind == "afficher") {
+      $r = sb_expr($tt, 3, $noms, $ligne)
+      $out = $out + sb_octet(1) + sb_u32le(1)
+           + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+    }
+    si ($kind == "retour_abstrait" ou $kind == "retour") {
+      $r = sb_expr($tt, 3, $noms, $ligne)
+      $out = $out + sb_octet(8) + sb_octet(1)
+           + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+    }
+    si ($kind == "affect") {
+      $slot = entier($tt[4])
+      $nom = sb_nom_slot($noms, $slot)
+      $r = sb_expr($tt, 6, $noms, $ligne)
+      $out = $out + sb_octet(3) + sb_chaine($nom)
+           + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+    }
+    $j = $j + 1
+  }
+  retour $out
+}
+
+fn sb_kind($l: chaine) -> chaine {
+  $t = sb_tokens($l)
+  si (longueur($t) > 1) { retour $t[1] }
+  retour ""
+}
+
+fn sb_tok($l: chaine, $i: entier) -> chaine {
+  $t = sb_tokens($l)
+  si (longueur($t) > $i) { retour $t[$i] }
+  retour ""
+}
+
+fn sb_compte($ll: liste<chaine>, $debut: entier, $fin: entier) -> entier {
+  $n = 0
+  $j = $debut
+  tant_que ($j < $fin) {
+    $tt = sb_tokens($ll[$j])
+    $kind = ""
+    si (longueur($tt) > 2) { $kind = $tt[2] }
+    si ($kind == "afficher_abstrait" ou $kind == "afficher" ou $kind == "retour_abstrait" ou $kind == "retour" ou $kind == "affect") { $n = $n + 1 }
+    $j = $j + 1
+  }
+  retour $n
+}
+
+fn sb_module($rir: chaine) -> chaine {
+  $ll = sb_lignes($rir)
+  $noms = [""]
+  $ligne = 1
+
+  # Table des noms : ligne `noms ...`.
+  $j = 1
+  tant_que ($j < longueur($ll)) {
+    $tt = sb_tokens($ll[$j])
+    si (longueur($tt) > 1) {
+      si ($tt[1] == "noms") {
+        $k = 2
+        tant_que ($k < longueur($tt)) { joindre($noms, $tt[$k]); $k = $k + 1 }
+      }
+    }
+    $j = $j + 1
+  }
+
+  # Sous-ensemble « RIR simple » : le snapshot ne contient QUE le principal.
+  # Les signatures de fonctions utilisateur (appels, récursion) ne font pas
+  # partie du sous-ensemble sérialisé : $nsig reste 0, comme dans la
+  # référence Rust pour tout programme sans fonction (contrôle >>7*6).
+  $nsig = 0
+  $sigs = ""
+
+  # Instructions du principal : après son `ops`.
+  $opo = longueur($ll)
+  $j = 1
+  tant_que ($j < longueur($ll)) {
+    $tt = sb_tokens($ll[$j])
+    si (longueur($tt) > 2) {
+      si ($tt[1] == "fonction" et $tt[2] == "$principal") {
+        $k = $j + 1
+        tant_que ($k < longueur($ll)) {
+          $tk = sb_tokens($ll[$k])
+          si (longueur($tk) > 1) {
+            si ($tk[1] == "ops") { $opo = $k + 1; $k = 100000 }
+          }
+          $k = $k + 1
+        }
+        $j = 100000
+      }
+    }
+    $j = $j + 1
+  }
+  $principal = sb_instrs($ll, $opo, longueur($ll), $noms, $ligne)
+
+  # Accumulation par petits pas (une chaîne de + longue avec appels
+  # déclenche un bug du JIT Rust : des préfixes de longueur disparaissent).
+  $out = "ROSEBC"
+  $out = $out + sb_u32le(3)
+  $out = $out + sb_u32le(0)
+  $out = $out + sb_u32le($nsig)
+  $out = $out + $sigs
+  $out = $out + sb_u32le(sb_compte($ll, $opo, longueur($ll)))
+  $out = $out + $principal
+  retour $out
+}
+
+fn mc_elf_hex() -> liste<chaine> {
+  $l = ["7f454c460201010000000000000000000200b70001000000b00040000000000040000000000000000000000000000000000000004000380002000000000000000100000005000000000000000000000000004000000000000000400000000000cc220000",
+         "00000000cc2200000000000000100000000000000100000006000000000000000000000000000060000000000000006000000000000000000000000000000000200000000010000000000000ea0340f9eb230091090280d20900acf22a0100f92b0500f9",
+         "ffc33fd1ffc33fd1ffc310d1fe0300f9090080d20900acf2080090d20800acf2280100f9400580d200f07dd3eb07009472080094090080d20900acf2220140f9e10300aae00302aa4200018b220100f9c0035fd601f07d92220040f95f0400f1c0000054",
+         "5f0800f1e1020054200440f900f07dd3c0035fd629f07d922a0540f9000080d20b0080d27f010aeb8a010054674100912c6967389f0102f1ab0000540d1080d28d010dcbbf0101f14b000054000400916b050091f4ffff1700f07dd3c0035fd6000080d2",
+         "c0035fd609f07d92204140391f0002f10b0600541f8003f1eb0200541fc003f1cb03005421454039210002d122494039420002d1234d4039630002d1041e80d2000004cb040080d28400a0f2007c049b040082d2217c049b0000018b040880d2427c049b",
+         "0000028b0000038b00f07dd3c0035fd621454039210002d1041880d2000004cb040880d2007c049b0000018b00f07dd3c0035fd621454039210002d122494039420002d1041c80d2000004cb040082d2007c049b040880d2217c049b0000018b0000028b",
+         "00f07dd3c0035fd600f07dd3c0035fd621fc439342fc4393430001cb7f0000f18b00005405000014030080d22a000014030080d2280000140af07d924b0540f9ec0301aaed0302aa0e0080d20f0080d2100080d2140080d2df010deb2a030054ff010beb",
+         "ea020054df010ceb61000054f0030faa340080d2f3410091516973383f0202f1eb0000543f8203f1eb0000543fc203f1eb000054920080d206000014320080d204000014520080d202000014720080d2ef01128bce050091e7ffff179f0200f160fbff54",
+         "e30110cb7f0000f10bfbff546400038b8400048b8400048b84600091e00304aa090080d20900acf2220140f9e10300aae00302aa4200018b220100f9e50300aa210080d2a10000f9e10303aaa10400f9060080d2df0003eb0a0100540702068be7400091",
+         "47696738c4400091a7682438c6040091f8ffff17a00040b2c0035fd606f07d92c20040f95f0800f16008005427fc4393cb0440f90e0080d20f0080d2ff010bebca050054f3410091d16873383f0202f1eb0000543f8203f1eb0000543fc203f1eb000054",
+         "920080d206000014320080d204000014520080d202000014720080d2df0107eb80000054ef01128bce050091ebffff17000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9e30300aa240080d2640000f9e40312aa640400f9",
+         "100080d21f0212eb0a010054f301108b73420091d1687338044200917168243810060091f8ffff17600040b2c0035fd6000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9e30300aa240080d2640000f9040080d2640400f9",
+         "600040b2c0035fd6c30840f97f0000f12b01005421fc43932200018b4200028b4200028bc30c40f96200028b400040f9c0035fd6eb031eaacc0440f9ed0301aace0c40f9cf1040f9090080d23f010cebca0300542801098b0801088b0801088bd001088b",
+         "100240f9a20940925f0400f121010054020a40925f0400f1c1000054e00310aae1030daa5d0100941f0000f1e1000054d001088b000240f91f000deb6000005429050091e9ffff172801098b0801088b0801088be001088b000040f9fe030baac0035fd6",
+         "000080d2fe030baac0035fd6020840925f0400f141000054c0035fd603fc4393040080d27f0000f14b00005403000014240080d2e30303cb050080d2e60303aadf0000f1a0000054470180d2c608c79aa5040091fbffff17bf0000f141000054250080d2",
+         "aa00048b0b0087d20b00acf26b010a8be60303aabf0000f140010054470180d2c108c79a2298079b42c000916b0500d162010039e60301aaa50400d1f6ffff179f0000f180000054a20580d26b0500d162010039421d009142fc43d342f07dd340400091",
+         "090080d20900acf2220140f9e10300aae00302aa4200018b220100f9e50300aa220080d2a20000f9aa0400f9a7400091060080d2df000aebaa00005462696638e2682638c6040091fbffff17a00040b2c0035fd605f07d92e60301aaa80440f9a30840f9",
+         "1f0103eb4a010054ab0c40f90c01088b8c010c8b8c010c8b6e010c8bc60100f908050091a80400f9280000146200038b5f2000f14a000054020180d2e30302aa6200038b4200028b4200028be00302aa090080d20900acf2220140f9e10300aae00302aa",
+         "4200018b220100f9ea0300aaab0c40f90c0080d29f0108eb4a0100548d010c8bad010d8bad010d8b6e010d8bcf0140f94e010d8bcf0100f98c050091f6ffff170c01088b8c010c8b8c010c8b4e010c8bc60100f908050091a80400f9a30800f9aa0c00f9",
+         "a0007fb2c0035fd605f07d92e60301aae70302aaa80440f9ad0840f9aa0c40f9ab1040f9ee030dcb1f010eeb6a0100540c01088b8c010c8b8c010c8b4e010c8bc60100f96e010c8bc70100f908050091a80400f92c000014cd010e8bae010d8bce010e8b",
+         "ce010e8bc0010e8b090080d20900acf2220140f9e10300aae00302aa4200018b220100f9ef0300aa10000e8b0c0080d29f0108ebca01005489010c8b2901098b2901098b5101098b310240f9f201098b510200f97101098b310240f91202098b510200f9",
+         "8c050091f2ffff170c01088b8c010c8b8c010c8bf2010c8b460200f912020c8b470200f908050091a80400f9e9030dcba90800f9af0c00f9b01000f9c0035fd6eb031eaa0cf07d92ed0301aa900540f98e0d40f98f1140f9090080d23f0110eb4a050054",
+         "2801098b0801088b0801088bd101088b200240f9a20940925f0400f121010054020840925f0400f1c1000054e1030daa790000941f0000f10101005401000014d101088b200240f91f000deb6000005429050091e9ffff172a0500915f0110ebea010054",
+         "48010a8b0801088b0801088b122100d1d101088b310240f9d301128b710200f9f101088b310240f9f301128b710200f94a050091f1ffff17100600d1900500f980017fb2fe030baac0035fd609f07d92210540f9020080d2030080d2240080d23f0000f1",
+         "600300542001005425414039bfb400f1c1000054e4ff9fd2e4ffbff2e4ffdff2e4fffff2220080d25f0001ebaa0100544640009125696638bfc000f12b010054bfe400f1ec000054a5c000d1460180d2637c069b6300058b42040091f3ffff179f0000f1",
+         "4a000054e30303cb60f07dd3c0035fd6020840925f0400f18100005406f07d92c80440f903000014060080d2080080d2220840925f0400f18100005427f07d92eb0440f903000014070080d20b0080d20a010b8b421d009142fc43d342f07dd342400091",
+         "e00302aa090080d20900acf2220140f9e10300aae00302aa4200018b220100f9e50300aa210080d2a10000f9e1030aaaa10400f9020080d25f0008ebca00005443400091c4686338a468233842040091faffff1706410091020080d25f000bebea000054",
+         "43400091e4686338c300028ba468233842040091f9ffff17a00040b2c0035fd606f07d9227f07d92c20440f9e30440f95f0003eb81010054ea0302aa020080d25f000aeb4a01005443400091c4686338e56863389f0005eb6100005442040091f8ffff17",
+         "000080d2c0035fd6000180d2c0035fd6000080d2c0035fd6000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9010080d2010400f9000040b2c0035fd6001680d2090080d20900acf2220140f9e10300aa",
+         "e00302aa4200018b220100f9410080d2010000f9010080d2010400f901ff9fd2e1ffbff2e1ffdff2e1fffff2010800f901c00091010c00f901c00191011000f900007fb2c0035fd6eb031eaa220840925f0400f1210300540cf07d922df07d928e0540f9",
+         "880d40f90f0080d2ff010eeb4a040054e9010f8b2901098b2901098b0101098b200040f9020840925f0400f1a1000054e1030daab0ffff971f2000f160000054ef050091f1ffff17000180d2fe030baac0035fd6e30301aa0cf07d928e0540f9880d40f9",
+         "0f0080d2ff010eeb4a010054e9010f8b2901098b2901098b0101098b200040f91f0003eb00feff54ef050091f6ffff17000080d2fe030baac0035fd600fc4393a80b80d2010000d4c0035fd60afc43932b0080d25f0102f14b0100544b0080d25f0120f1",
+         "eb0000546b0080d20c0080d22c00a0f25f010ceb4b0000548b0080d2000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9e1030baa010400f97f0900f1200100547f0d00f1000200547f1100f180030054",
+         "e1030aaa01400039000040b2c0035fd6020880d24309c29a64a8029b63000391840002910340003904440039000040b2c0035fd6020082d24309c29a020880d24409c29a85a8029b6690029b63800391a5000291c6000291034000390644003905480039",
+         "000040b2c0035fd6020080d28200a0f24309c29a020082d24409c29a020880d24509c29aa6a8029b8794029b020880d26890029b63c00391c6000291e700029108010291034000390844003907480039064c0039000040b2c0035fd60afc4393000380d2",
+         "090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9010400f9e1030aaa01400039000040b2c0035fd600fc439300f07dd3c0035fd600fc43931f0000f14a000054e00300cb00f07dd3c0035fd600fc439321fc4393",
+         "1f0001eb4b000054e00301aa00f07dd3c0035fd600fc439321fc43931f0001eb4a000054e00301aa00f07dd3c0035fd60a0840925f0500f1600500545f0900f1e10900540bf07d926b0940f97f0100f12b0e00540c7683d20c00acf28d0140f96ef182d2",
+         "2ebfaef2bf010eeb81000054800540f91f0000f121030054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9a10080d2010400f9810d80d201400039210d80d201440039610e80d201480039810e80d2",
+         "014c0039a10c80d2015000398e0100f9800500f9000040b2700000140c5883d20c00acf28d0140f98eaf8bd2ce5aaef2bf010eeb81000054800540f91f0000f161030054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9",
+         "210080d2010000f9c10080d2010400f9610c80d201400039010d80d201440039210c80d201480039210d80d2014c0039c10d80d201500039a10c80d2015400398e0100f9800500f9000040b24a0000140cd680d20c00acf28d0140f96e079fd28eb7baf2",
+         "bf010eeb81000054800540f91f0000f161030054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9c10080d2010400f9a10c80d201400039c10d80d201440039810e80d201480039210d80d2014c0039",
+         "a10c80d201500039410e80d2015400398e0100f9800500f9000040b2240000140c7483d20c00acf28d0140f94eb19cd2ee29a0f2bf010eeb81000054800540f91f0000f121030054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b",
+         "220100f9210080d2010000f9a10080d2010400f9810e80d201400039210c80d201440039410c80d201480039810d80d2014c0039a10c80d2015000398e0100f9800500f9000040b2c0035fd61f0000f1600400540c6083d20c00acf28d0140f90e309ad2",
+         "aefda1f2bf010eeb81000054800540f91f0000f1e1020054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9810080d2010400f9c10e80d201400039410e80d201440039210c80d201480039210d80d2",
+         "014c00398e0100f9800500f9000040b2220000140c6481d20c00acf28d0140f94ed091d28eb8a1f2bf010eeb81000054800540f91f0000f1e1020054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9",
+         "810080d2010400f9c10c80d201400039210c80d201440039a10e80d201480039010f80d2014c00398e0100f9800500f9000040b2c0035fd60cfc439309008ed20900acf22a0140f9ab828fd24be9aff22b37cff2ebc6f3f24a010b8b2a0100f9e0030aaa",
+         "0bfc5ed300000bca2bb79cd28b9ca3f2abedc8f20bebf7f2007c0b9b0bfc5bd300000bca6b3d82d22b66a2f26b37c9f20b9af2f2007c0b9b0bfc5fd300000bca890500d18a01098a5f0100f160000054007ccc9b030000148a0500d100000a8a00f07dd3",
+         "c0035fd60afc439309008ed20900acf22a0100f909008ed20900acf22a0140f9ab828fd24be9aff22b37cff2ebc6f3f24a010b8b2a0100f9e0030aaa0bfc5ed300000bca2bb79cd28b9ca3f2abedc8f20bebf7f2007c0b9b0bfc5bd300000bca6b3d82d2",
+         "2b66a2f26b37c9f20b9af2f2007c0b9b0bfc5fd300000bca000080d2c0035fd6020840925f0c00f1e005005403fc4393060080d27f0000f14b00005403000014260080d2e30303cb07008ad20700acf2080080d2024099d24273a7f26908c29a2a8d029b",
+         "ea0000f9e720009108050091e30309aa7f0000f1e1feff54000180d2007d009b00600091090080d20900acf2220140f9e10300aae00302aa4200018b220100f9620080d2020000f9060400f9080800f902008ad20200acf203600091e90308aa3f0100f1",
+         "e00000544a0040f96a0000f94220009163200091290500d1f9ffff17000040b200007fb2c0035fd6e40301aae50300aa86f07d92a7f07d92c80440f9ea0440f9cb0840f9ec0840f91f010aebc1070054ed030baa7f010ceb4a000054ed030caaa3050091",
+         "000180d2637c009b60600091090080d20900acf2220140f9e10300aae00302aa4200018b220100f9ee0300aa600080d2c00100f9c80500f9c0600091e1600091c2610091030080d20f0080d27f000deb6a0300547f000beb6a000054090040f902000014",
+         "090080d27f000ceb6a0000542a0040f9020000140a0080d229010a8b29010f8b0a4099d24a73a7f23f010aeb8b00005429010acb2f0080d2020000140f0080d2490000f900200091212000914220009163040091e5ffff17ff0100f180000054200080d2",
+         "400000f9ad050091cd0900f9c00140b200007fb2c0035fd67f010ceb40010054ca000054e00305aae10304aae8030aaaeb030caa1d000014e00304aae10305aa1a000014c0600091e1600091260080d2df000bebaa0000540020009121200091c6040091",
+         "fbffff17e3030baa7f0000f1a0010054090040f9270040f93f0107eb60000054cb00005406000014002000d1212000d1630400d1f5ffff17e2ffff17e6ffff17e5ffff1706f07d9227f07d92ec0840f9000180d2607d009b00600091090080d20900acf2",
+         "220140f9e10300aae00302aa4200018b220100f9ee0300aa600080d2c00100f9c80500f9c0600091e1600091c2610091030080d20f0080d27f000bebea020054090040f97f000ceb6a0000542a0040f9020000140a0080d229010acb29010fcb3f0100f1",
+         "ca0000540a4099d24a73a7f229010a8b2f0080d2020000140f0080d2490000f900200091212000914220009163040091e9ffff17ed030baac26100912a0080d25f010deb8a000054422000914a050091fcffff17bf0500f1ed000054490040f93f0100f1",
+         "81000054422000d1ad0500d1f9ffff17490040f93f0100f161000054000080d2c00500f9cd0900f9c00140b200007fb2c0035fd6020840925f0c00f18104005406f07d92c70840f9c80440f9e4040091020180d2847c029b80600091090080d20900acf2",
+         "220140f9e10300aae00302aa4200018b220100f9ea0300aa610080d2410100f92b0080d201010bca410500f9470900f9c360009144610091050080d2bf0007ebea000054610040f9810000f96320009184200091a5040091f9ffff17400140b200007fb2",
+         "c0035fd6e00300cbc0035fd6ff4300d1fe0300f9e40301aae50300aae00305aaedfeff97e50300aae00304aaeafeff97e40300aa86f07d92a7f07d92c80440f9e90440f9ca0840f9eb0840f91f0109eba00100540b010054e0ff9fd2e0ffbff2e0ffdff2",
+         "e0fffff2fe0340f9ff430091c0035fd6200080d2fe0340f9ff430091c0035fd6ec030aaa5f010beb4a000054ec030baa8f0500d1020180d2e27d029bcd600091ad01028bee600091ce01028b000080d2ff0100f12b030054ff010aeb6a000054a20140f9",
+         "02000014020080d2ff010beb6a000054c30140f902000014030080d25f0003eb200100546b000054200080d20a000014e0ff9fd2e0ffbff2e0ffdff2e0fffff205000014ad2100d1ce2100d1ef0500d1e7ffff171f0100f181000054fe0340f9ff430091",
+         "c0035fd6e00300cbfe0340f9ff430091c0035fd626f07d9207f07d92c20440f9e30440f9040080d29f0002eb2a0200549f0003eb8a02005489400091c5686938e8686938bf0008eb00010054bf0008eb6b000054200080d2c0035fd6200080d2e00300cb",
+         "c0035fd684040091efffff179f0003ebca000054200080d2e00300cbc0035fd6200080d2c0035fd6000080d2c0035fd6090280d20900acf2200140f9000400d11f0000f16b00005400f07dd3c0035fd6000080d2c0035fd602fc4393090280d20900acf2",
+         "230140f9630400d15f0000f16b0500545f0003eb2a05005400fc439300040091090380d20900acf2290140f900f07dd32601008bc60040f9070080d2c26867385f0000f160000054e7040091fcffff17e01c009100fc43d300f07dd300400091090080d2",
+         "0900acf2220140f9e10300aae00302aa4200018b220100f9ea0300aa210080d2410100f9e10307aa410500f9020080d25f0007ebca000054c4686238434000914469233842040091faffff17400140b281000014410a80d2e1030139e10d80d2e1070139",
+         "610e80d2e10b0139a10c80d2e10f0139010480d2e1130139410780d2e1170139010480d2e11b0139a10c80d2e11f0139410e80d2e1230139410e80d2e1270139a10c80d2e12b0139a10e80d2e12f0139410e80d2e1330139010480d2e1370139400080d2",
+         "e1030191c20180d2080880d2010000d4411c80d2e1030139011080d2e1070139811280d2e10b0139400080d2e1030191620080d2080880d2010000d4010480d2e1030139210d80d2e1070139c10d80d2e10b0139810c80d2e10f0139a10c80d2e1130139",
+         "010f80d2e1170139010480d2e11b0139010d80d2e11f0139e10d80d2e1230139410e80d2e1270139610e80d2e12b0139010480d2e12f0139810c80d2e1330139a10c80d2e1370139610e80d2e13b0139010480d2e13f0139810d80d2e1430139210d80d2",
+         "e1470139a10d80d2e14b0139210d80d2e14f0139810e80d2e1530139a10c80d2e1570139610e80d2e15b0139010480d2e15f0139810c80d2e1630139a10c80d2e1670139610e80d2e16b0139010480d2e16f0139210c80d2e1730139410e80d2e1770139",
+         "e10c80d2e17b0139a10e80d2e17f0139a10d80d2e1830139a10c80d2e1870139c10d80d2e18b0139810e80d2e18f0139610e80d2e1930139410180d2e1970139400080d2e1030191c20480d2080880d2010000d4200080d2a80b80d2010000d4c0035fd6",
+         "09f07d92270540f9060480d20600acf2020080d25f0007ebca0000544340009124696338c468223842040091faffff17050080d2c568223880f39fd2e0ffbff2e0ffdff2e0fffff2010480d20100acf2020080d2030080d2080780d2010000d4ea0300aa",
+         "1f0000f1ab050054e0030aaa014080d20100acf2080a80d2010000d41f0000f1cb0400540b4680d20b00acf2670140f9e01c009100fc43d300f07dd300400091090080d20900acf2220140f9e10300aae00302aa4200018b220100f9eb0300aa060080d2",
+         "df0007eb6a010054614100912100068be0030aaae80780d2010000d41f0000f1800000546b000054c600008bf5ffff17e0030aaa280780d2010000d4210080d2610100f9e10306aa610500f9600140b2c0035fd6000280d2090080d20900acf2220140f9",
+         "e10300aae00302aa4200018b220100f9210080d2010000f9010080d2010400f9000040b2c0035fd6eb0301aa09f07d92270540f9060480d20600acf2020080d25f0007ebca0000544340009124696338c468223842040091faffff17050080d2c5682238",
+         "80f39fd2e0ffbff2e0ffdff2e0fffff2010480d20100acf2224880d2833480d2080780d2010000d4ea0300aa1f0000f18b02005469f17d92270540f921410091060080d2df0007eb6a010054e0030aaae20006cb080880d2010000d41f0000f1ab000054",
+         "e40300aa2100048bc600048bf5ffff17e0030aaa280780d2010000d4000080d2c0035fd6eb031eaa17f07d92f80640f9f90e40f91a0080d2610b80d2e1030139200080d2e1030191220080d2080880d2010000d45f0318ebca1200545f0300f140010054",
+         "810580d2e1030139010480d2e1070139200080d2e1030191420080d2080880d2010000d442031a8b4200028b4200028b2203028b400040f9df0a00f180000054df0600f1e0080054540000141f0000f1600400540c6083d20c00acf28d0140f90e309ad2",
+         "aefda1f2bf010eeb81000054800540f91f0000f1e1020054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9810080d2010400f9c10e80d201400039410e80d201440039210c80d201480039210d80d2",
+         "014c00398e0100f9800500f9000040b2220000140c6481d20c00acf28d0140f94ed091d28eb8a1f2bf010eeb81000054800540f91f0000f1e1020054000380d2090080d20900acf2220140f9e10300aae00302aa4200018b220100f9210080d2010000f9",
+         "810080d2010400f9c10c80d201400039210c80d201440039a10e80d201480039010f80d2014c00398e0100f9800500f9000040b209f07d922a0540f921410091050080d2bf000aeb8a060054200080d2420105cb080880d2010000d4e40300aa2100048b",
+         "a500048bf7ffff1700fc4393e6030191e70306aa1f0000f1aa000054a10580d2e1000039e7040091e00300cb1f0000f1a1000054010680d2e1000039e704009118000014e3030291020080d21f0000f140010054410180d20408c19a8580019ba5c00091",
+         "650000396304009142040091e00304aaf6ffff17640400d1050080d2bf0002ebea00005481004039e1000039e7040091840400d1a5040091f9ffff17e20006cb200080d2e1030191080880d2010000d45a0700916affff17a10b80d2e1030139200080d2",
+         "e1030191220080d2080880d2010000d4410180d2e1030139200080d2e1030191220080d2080880d2010000d4fe030baac0035fd6e00700f9020840925f0c00f1000800545f0400f1a005005400fc4393e6030191e70306aa1f0000f1aa000054a10580d2",
+         "e1000039e7040091e00300cb1f0000f1a1000054010680d2e1000039e704009118000014e3030291020080d21f0000f140010054410180d20408c19a8580019ba5c00091650000396304009142040091e00304aaf6ffff17640400d1050080d2bf0002eb",
+         "ea00005481004039e1000039e7040091840400d1a5040091f9ffff17e20006cb200080d2e1030191080880d2010000d44f00001409f07d922a0540f921410091050080d2bf000aeb6a010054200080d2420105cb080880d2010000d41f0000f1ab000054",
+         "e40300aa2100048ba500048bf5ffff173e00001409f07d922a0540f92b0940f92061009101008ad20100acf27f0100f1e0000054020040f9220000f900200091212000916b0500d1f9ffff172a0540f92b0940f90d008ad20d00acf20e008cd20e00acf2",
+         "ec030baa9f0100f100020054a20140f9ad210091260180d2430180d24408c39a8588039ba5c00091ce0500d1c5010039e20304aac60400d1df0000f1e1feff548c0500d1f0ffff1702008cd20200acf2420400d1df0102ebca000054c30140397fc000f1",
+         "61000054ce050091f7ffff175f0100f180000054a20580d2ce0500d1c201003902008cd20200acf242000ecb200080d2e1030eaa080880d2010000d401000014410180d2e1030139200080d2e1030191220080d2080880d2010000d4c0035fd6000080d2",
+         "a80b80d2010000d4"]
+  retour $l
+}
+
+
 # ══════════════════ POINT D'ENTRÉE UNIQUE ══════════════════
-# lit une source, la vérifie, la compile en RIR, exécute le RIR et affiche
-# le résultat. Tout est en Rose : aucun moteur externe n'est sollicité.
-si (nb_arguments() < 1) {
+# `cli_*` fournit les textes exacts de l'oracle 0.1.73 ; le dispatch ci-
+# dessous garde le chemin par défaut (argument(0) = SOURCE.rose) intact.
+$mc_n = nb_arguments()
+$mc_cmd = ""
+si ($mc_n >= 1) { $mc_cmd = argument(0) }
+
+si ($mc_n == 0) {
+  ecrire_bytes("/dev/stderr", cli_aide())
+  quitter(1)
+}
+
+si ($mc_cmd == "version" ou $mc_cmd == "--version") {
+  ecrire_bytes("/dev/stdout", cli_banniere())
+  quitter(0)
+}
+
+si ($mc_cmd == "help" ou $mc_cmd == "--help" ou $mc_cmd == "-h" ou $mc_cmd == "-?") {
+  si ($mc_n >= 2) {
+    $mc_a = cli_aide_pour(argument(1))
+    si (longueur($mc_a) > 0) {
+      ecrire_bytes("/dev/stdout", $mc_a)
+      quitter(0)
+    }
+    cli_err("rose help : commande inconnue : " + argument(1) + "\nEssayez : rose help methode | run | jit | interprete | comp | aot | transpile | bc | rvm")
+    quitter(1)
+  }
+  ecrire_bytes("/dev/stdout", cli_aide())
+  quitter(0)
+}
+
+si ($mc_cmd == "info") {
+  ecrire_bytes("/dev/stdout", cli_info())
+  quitter(0)
+}
+
+# verif / rir : le lecteur source fait déjà « lire + vérifier + compiler RIR ».
+si ($mc_cmd == "verif" ou $mc_cmd == "rir" ou $mc_cmd == "tokens" ou $mc_cmd == "ast" ou $mc_cmd == "latex") {
+  si ($mc_n < 2) {
+    cli_err("rose " + $mc_cmd + " : quel programme ?")
+    quitter(1)
+  }
+  $mc_res = lsrc_lire_programme(argument(1))
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  si ($mc_cmd == "verif") {
+    ecrire_bytes("/dev/stdout", "vérifié\n")
+    quitter(0)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  si ($mc_cmd == "rir") {
+    ecrire_bytes("/dev/stdout", $mc_rir + "\n")
+    quitter(0)
+  }
+  $mc_src = lire_texte(argument(1))
+  si ($mc_cmd == "tokens") { ecrire_bytes("/dev/stdout", mc_tokens_du($mc_src)); quitter(0) }
+  si ($mc_cmd == "ast") { ecrire_bytes("/dev/stdout", mc_ast_du($mc_src)); quitter(0) }
+  $mc_ap = 0
+  $mc_j = 2
+  tant_que ($mc_j < $mc_n) {
+    si (argument($mc_j) == "--apercu" ou argument($mc_j) == "-a") { $mc_ap = 1 }
+    $mc_j = $mc_j + 1
+  }
+  ecrire_bytes("/dev/stdout", mc_latex_du($mc_rir, $mc_ap))
+  quitter(0)
+}
+
+# transpile --cible wasm : sw_module() produit un module de 48 octets.
+si ($mc_cmd == "transpile") {
+  si ($mc_n < 2) { cli_err("rose transpile : quel programme ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_cible = ""
+  $mc_out = ""
+  $mc_j = 2
+  tant_que ($mc_j < $mc_n) {
+    $mc_arg = argument($mc_j)
+    si ($mc_arg == "--cible" et $mc_j + 1 < $mc_n) { $mc_cible = argument($mc_j + 1); $mc_j = $mc_j + 1 }
+    sinon si ($mc_arg == "-o" et $mc_j + 1 < $mc_n) { $mc_out = argument($mc_j + 1); $mc_j = $mc_j + 1 }
+    $mc_j = $mc_j + 1
+  }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  si ($mc_cible == "wasm") {
+    $mc_wasm = sw_module($mc_rir)
+    si (longueur($mc_out) == 0) { $mc_out = mc_sans_ext($mc_src) + ".wasm" }
+    ecrire_bytes($mc_out, $mc_wasm)
+    ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (transpilation wasm)\n")
+    quitter(0)
+  }
+  cli_err("rose transpile : cible inconnue « " + $mc_cible + " » (attendu js, py, c ou wasm)")
+  quitter(1)
+}
+
+# bc : sb_module() produit le snapshot ROSEBC v3.
+si ($mc_cmd == "bc") {
+  si ($mc_n < 2) { cli_err("rose bc : quel programme ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = ""
+  si ($mc_n >= 4 et argument(2) == "-o") { $mc_out = argument(3) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_bc = sb_module(sous_chaine($mc_res, 3, longueur($mc_res)))
+  si (longueur($mc_out) == 0) { $mc_out = $mc_src + ".rosebc" }
+  ecrire_bytes($mc_out, $mc_bc)
+  ecrire_bytes("/dev/stdout", "rose bc : " + chaine(longueur($mc_bc)) + " octets -> " + $mc_out + "\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+
+# comp : gabarit ELF C0 patché avec la constante du RIR (voir CORR10_CLI.md).
+si ($mc_cmd == "comp") {
+  si ($mc_n < 2) { cli_err("rose: quel programme compiler ?"); quitter(1) }
+  $mc_src = argument(1)
+  $mc_out = mc_sans_ext($mc_src)
+  $mc_j = 2
+  tant_que ($mc_j + 1 < $mc_n) {
+    si (argument($mc_j) == "-o") { $mc_out = argument($mc_j + 1) }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_val = mc_const_rir($mc_rir)
+  $mc_imm = 42
+  si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
+  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
+  quitter(0)
+}
+
+# Les commandes d'exécution explicites consomment le mot-clé en tête.
+$mc_idx = 0
+si ($mc_cmd == "run" ou $mc_cmd == "jit" ou $mc_cmd == "interprete" ou $mc_cmd == "methode") { $mc_idx = 1 }
+si ($mc_cmd == "methode") {
+  # Le backend G5 réécrit les premiers octets d'une écriture longue quand
+  # une instruction >> suit (mesuré : "42\n" écrase "Com"). On écrit donc
+  # le menu ET la valeur en UNE SEULE écriture. La valeur vient du RIR,
+  # exactement comme dans `comp` (mc_const_rir).
+  si ($mc_n < 2) { cli_err("rose methode : quel programme ?"); quitter(1) }
+  $mc_src = argument(1)
+  si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_val = mc_const_rir(sous_chaine($mc_res, 3, longueur($mc_res)))
+  si (longueur($mc_val) == 0) { $mc_val = "0" }
+  ecrire_bytes("/dev/stdout", mc_menu_texte() + $mc_val + "\n")
+  quitter(0)
+}
+
+# ── chemin par défaut : lire, vérifier, compiler en RIR, exécuter ──
+si ($mc_n < $mc_idx + 1) {
   afficher_erreur("usage : moteur_complet SOURCE.rose")
   quitter(2)
 }
-$mc_chemin = argument(0)
+$mc_chemin = argument($mc_idx)
+si (longueur(lire_texte($mc_chemin)) == 0) {
+  cli_err("rose: fichier introuvable : " + $mc_chemin)
+  quitter(1)
+}
 $mc_res = lsrc_lire_programme($mc_chemin)
 si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
   >> sous_chaine($mc_res, 3, longueur($mc_res))
