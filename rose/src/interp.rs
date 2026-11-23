@@ -4584,6 +4584,31 @@ impl crate::rir::HoteRir for Interp {
                     }
                 }
             }
+            // ── R2 — COMPTAGE DE PREMIERS SANS VEC D'ARGUMENTS ─────────────
+            // L'appel `compter_premiers(N)` posé par `specialiser_comptage_premiers`
+            // arrive ici depuis le RIR (`Op::AffectAst`). Le chemin générique
+            // `appel()` → `stdlib()` construit un `Vec<Valeur>`, fait une
+            // recherche de signature puis un `vers_z` ; sur le crible natif
+            // (~79 µs à N=50 000) cette façade est du pur surcoût. On appelle
+            // la primitive directement, avec le MÊME `Gz` et le MÊME `Valeur::z`
+            // que `stdlib("compter_premiers")`. Repli EXACT sur l'émetteur
+            // générique dès qu'une des gardes manque (nom défini par
+            // l'utilisateur, argument non littéral, borne hors domaine).
+            if module.is_empty() && nom == "compter_premiers" && args.len() == 1
+                && !self.prog.signatures.contains_key("compter_premiers")
+            {
+                if let Expr::Litteral {
+                    texte, flott: false, rationnel: false, neg: false, ..
+                } = &args[0]
+                {
+                    if let Ok(n) = texte.parse::<i64>() {
+                        if (0..=0xFFFF_FFFF).contains(&n) {
+                            let z = Gz::de_i64(n);
+                            return Ok(Valeur::z(compter_premiers(&z) as i64));
+                        }
+                    }
+                }
+            }
         }
         let slots = unsafe { std::slice::from_raw_parts(base as *const Valeur, corps.n_slots) };
         self.eval_slots(e, slots, &corps.noms)
@@ -7127,6 +7152,202 @@ fn specialiser_produit_factorielle(prog: &mut Programme) {
     }
 }
 
+/// ── R2 — DÉTECTEUR STRICT DE COMPTAGE DE PREMIERS ───────────────────────
+///
+/// Reconnaît UNIQUEMENT la forme exacte du banc
+/// `premiers.rose` :
+///
+/// ```rose
+/// $c = 0
+/// pour k de 2 vers N { si (est_premier(k)) { $c = $c + 1 } }
+/// ```
+///
+/// où `est_premier` est une fonction utilisateur dont le corps est
+/// EXACTEMENT le prédicat canonique à 6 instructions (trial-division par les
+/// impairs jusqu'à √n, déjà décrit dans `normaliser_predicat_premier`). Dans ce cas, et
+/// seulement dans ce cas, la boucle est remplacée par
+/// `$c = compter_premiers(N-1)` : la primitive Rust à crible donne la MÊME
+/// valeur (les bornes `pour … vers` sont exclusives) et a été mesurée 11,4×
+/// plus rapide (901,2 → 78,9 µs, `ALGO_STRATEGIE.md` §R2).
+///
+/// Gardes (repli EXACT sur l'émetteur générique, bouche intacte, si l'une
+/// manque) : bornes littérales `2` et `N ≥ 3` (et `N-1 ≤ u32::MAX`, domaine
+/// de la primitive), initialisation de `$c` à 0 juste avant la boucle, corps
+/// d'UNE seule instruction `si` sans `sinon`, test = appel direct du
+/// prédicat sur la variable de boucle, alors = un seul `$c = $c + 1`, `$c`
+/// distinct du compteur, compteur non lu après la boucle, fonction appelée
+/// au prédicat de primalité canonique strict.
+fn specialiser_comptage_premiers(prog: &mut Programme) {
+    fn lit_ent(e: &Expr) -> Option<i64> {
+        match e {
+            Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. } => texte.parse().ok(),
+            _ => None,
+        }
+    }
+    fn var(e: &Expr, n: &str) -> bool { matches!(e, Expr::Var(x, _) if x == n) }
+    fn bin<'a>(e: &'a Expr, op: &str) -> Option<(&'a Expr, &'a Expr)> {
+        match e { Expr::Binaire { op: o, a, b, .. } if o == op => Some((a.as_ref(), b.as_ref())), _ => None }
+    }
+    /// `true` = l'instruction PEUT lire `n`. Conservateur : toute forme non
+    /// couverte (Bloc, Spawn, Essayer, AffectIndex, Lire…) est refusée.
+    fn instr_lit_var(i: &Instr, n: &str) -> bool {
+        fn expr(e: &Expr, n: &str) -> bool {
+            match e {
+                Expr::Var(x, _) => x == n,
+                Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => expr(a, n) || expr(b, n),
+                Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+                | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+                | Expr::SuperFactorielle(a, _) => expr(a, n),
+                Expr::Appel { args, .. } => args.iter().any(|x| expr(x, n)),
+                Expr::ListeLit(args, _) => args.iter().any(|x| expr(x, n)),
+                Expr::TableLit(args, _) => args.iter().any(|(_, x)| expr(x, n)),
+                _ => false,
+            }
+        }
+        match i {
+            Instr::Affect { e, .. } | Instr::ExprStmt(e) => expr(e, n),
+            Instr::Si { test, alors, sinon, .. } => {
+                expr(test, n)
+                    || alors.iter().any(|x| instr_lit_var(x, n))
+                    || sinon.as_ref().map_or(false, |b| b.iter().any(|x| instr_lit_var(x, n)))
+            }
+            Instr::TantQue { test, corps, .. } | Instr::Pour { debut: test, corps, .. } => {
+                expr(test, n) || corps.iter().any(|x| instr_lit_var(x, n))
+            }
+            Instr::Afficher(es, _) => es.iter().any(|e| expr(e, n)),
+            Instr::Lever(e, _) => expr(e, n),
+            Instr::Retour(Some(e), _) => expr(e, n),
+            _ => true,
+        }
+    }
+    /// `true` = l'instruction PEUT écrire `n`. Conservateur : toute forme non
+    /// couverte (Bloc, Spawn, Essayer, Rir…) est refusée.
+    fn instr_ecrit_var(i: &Instr, n: &str) -> bool {
+        match i {
+            Instr::Affect { nom, .. } | Instr::AffectIndex { nom, .. } | Instr::Lire { nom, .. } => nom == n,
+            Instr::Si { alors, sinon, .. } => {
+                alors.iter().any(|x| instr_ecrit_var(x, n))
+                    || sinon.as_ref().map_or(false, |b| b.iter().any(|x| instr_ecrit_var(x, n)))
+            }
+            Instr::TantQue { corps, .. } | Instr::Pour { corps, .. } => {
+                corps.iter().any(|x| instr_ecrit_var(x, n))
+            }
+            Instr::Bloc(b) | Instr::Spawn(b, _) => b.iter().any(|x| instr_ecrit_var(x, n)),
+            Instr::Essayer { corps, attraper, finalment, .. } => {
+                corps.iter().any(|x| instr_ecrit_var(x, n))
+                    || attraper.as_ref().map_or(false, |(_, b)| b.iter().any(|x| instr_ecrit_var(x, n)))
+                    || finalment.as_ref().map_or(false, |b| b.iter().any(|x| instr_ecrit_var(x, n)))
+            }
+            _ => false,
+        }
+    }
+    /// Corps canonique de primalité, à ceci près que le test `n == 2` peut
+    /// déjà avoir été normalisé en `n < 4` (mèmes vérités pour n ≥ 2).
+    fn est_predicat_premier(sig: &Signature) -> bool {
+        if sig.params.len() != 1 || sig.params[0].1.n != TyKind::Entier
+            || sig.retour.n != TyKind::Booleen { return false; }
+        let Some(corps) = sig.corps.as_ref() else { return false; };
+        let (i0, i1, i2, i3, i4, i5) = match corps.as_slice() {
+            [a, b, c, d, e, f] => (a, b, c, d, e, f),
+            _ => return false,
+        };
+        let param = sig.params[0].0.as_str();
+        let faux = |i: &Instr| matches!(i, Instr::Retour(Some(Expr::BooleenLit(false, _)), _));
+        let vrai = |i: &Instr| matches!(i, Instr::Retour(Some(Expr::BooleenLit(true, _)), _));
+        let lit = |e: &Expr, v: &str| matches!(e, Expr::Litteral { texte, .. } if texte == v);
+        // 0 : si (n < 2) { retour faux }
+        let (Instr::Si { test: t0, alors: a0, sinon: None, .. },
+             Instr::Si { test: t1, alors: a1, sinon: None, .. },
+             Instr::Si { test: t2, alors: a2, sinon: None, .. },
+             Instr::Affect { nom: d, e: e3, .. },
+             Instr::TantQue { test: t4, corps: bc, .. }) =
+            (i0, i1, i2, i3, i4) else { return false; };
+        let Some((x0, y0)) = bin(t0, "<") else { return false; };
+        if !var(x0, param) || !lit(y0, "2") || a0.len() != 1 || !faux(&a0[0]) { return false; }
+        // 1 : si (n == 2) { retour vrai }  — ou la forme normalisée (n < 4).
+        let ok1 = match bin(t1, "==") {
+            Some((x, y)) => var(x, param) && lit(y, "2"),
+            None => bin(t1, "<").map_or(false, |(x, y)| var(x, param) && lit(y, "4")),
+        };
+        if !ok1 || a1.len() != 1 || !vrai(&a1[0]) { return false; }
+        // 2 : si (n % 2 == 0) { retour faux }
+        let Some(nom_n) = (match bin(t1, "==").map(|(x, _)| x) {
+            Some(Expr::Var(n, _)) => Some(n.as_str()),
+            _ => bin(t1, "<").and_then(|(x, _)| match x { Expr::Var(n, _) => Some(n.as_str()), _ => None }),
+        }) else { return false; };
+        let Some((eq2, z2)) = bin(t2, "==") else { return false; };
+        let Some((md2, dd2)) = bin(eq2, "%") else { return false; };
+        if !var(md2, nom_n) || !lit(dd2, "2") || !lit(z2, "0")
+            || a2.len() != 1 || !faux(&a2[0]) { return false; }
+        // 3 : j = 3 ; 5 : retour vrai
+        if !lit(e3, "3") || !vrai(i5) { return false; }
+        // 4 : tant_que (j*j <= n) { si (n % j == 0) {-retour faux} ; j = j + 2 }
+        let Some((le4, nn4)) = bin(t4, "<=") else { return false; };
+        let Some((dx, dy)) = bin(le4, "*") else { return false; };
+        if !var(dx, d) || !var(dy, d) || !var(nn4, nom_n) || bc.len() != 2 { return false; }
+        let Instr::Si { test: t5, alors: a5, sinon: None, .. } = &bc[0] else { return false; };
+        let Some((eq5, z5)) = bin(t5, "==") else { return false; };
+        let Some((md5, dd5)) = bin(eq5, "%") else { return false; };
+        if !var(md5, nom_n) || !var(dd5, d) || !lit(z5, "0")
+            || a5.len() != 1 || !faux(&a5[0]) { return false; }
+        let Instr::Affect { nom: d2, e: e6, .. } = &bc[1] else { return false; };
+        let Some((ix, iy)) = bin(e6, "+") else { return false; };
+        d2 == d && var(ix, d) && lit(iy, "2")
+    }
+
+    for pos in 0..prog.instructions.len() {
+        // Prédicat de primalité appelé, borne, compteur, ligne.
+        let (pred, k, c, fin_v, ligne) = match &prog.instructions[pos] {
+            Instr::Pour { nom: k, debut, fin, corps, ligne } if corps.len() == 1 => {
+                let (Some(debut_v), Some(fin_v)) = (lit_ent(debut), lit_ent(fin)) else { continue; };
+                if debut_v != 2 || fin_v < 3 || fin_v - 1 > 0xFFFF_FFFF { continue; }
+                let Instr::Si { test, alors, sinon: None, .. } = &corps[0] else { continue; };
+                if alors.len() != 1 { continue; }
+                let Expr::Appel { nom: pred, module, args, .. } = test else { continue; };
+                if !module.is_empty() || args.len() != 1 || !var(&args[0], k) { continue; }
+                let Instr::Affect { nom: c, e, .. } = &alors[0] else { continue; };
+                if c == k { continue; }
+                let Some((a, b)) = bin(e, "+") else { continue; };
+                if !(var(a, c) && lit_ent(b) == Some(1)) { continue; }
+                (pred.clone(), k.clone(), c.clone(), fin_v, *ligne)
+            }
+            _ => continue,
+        };
+        // La fonction appelée doit être le prédicat canonique exact.
+        let Some(sig) = prog.signatures.get(&pred) else { continue; };
+        if !est_predicat_premier(sig) { continue; }
+        // Le compteur doit valoir 0 à l'entrée de la boucle : sans cela,
+        // remplacer `c += 1` par `c = π(N-1)` changerait la valeur. On remonte
+        // jusqu'au dernier écrivain de `c` (les affectations intermédiaires
+        // à d'autres variables — `$d = temps()` dans le banc — sont sans
+        // effet ici) ; ce dernier écrivain doit être `c = 0`.
+        let mut init_ok = false;
+        for avant in prog.instructions[..pos].iter().rev() {
+            if instr_ecrit_var(avant, &c) {
+                init_ok = matches!(avant, Instr::Affect { nom, e, .. }
+                                   if nom == &c && lit_ent(e) == Some(0));
+                break;
+            }
+        }
+        if !init_ok { continue; }
+        // `k` ne doit pas être lu APRÈS la boucle (on supprime la boucle).
+        if prog.instructions[pos + 1..].iter().any(|i| instr_lit_var(i, &k)) { continue; }
+        prog.instructions[pos] = Instr::Affect {
+            nom: c.clone(),
+            e: Expr::Appel {
+                nom: "compter_premiers".into(),
+                module: String::new(),
+                args: vec![Expr::Litteral {
+                    texte: (fin_v - 1).to_string(), flott: false, rationnel: false,
+                    neg: false, ty: TyKind::Entier, ligne,
+                }],
+                ligne,
+            },
+            ligne,
+        };
+    }
+}
+
 // ── Normalisation du prédicat de primalité (VAGUE 4) ──────────────────────
 //
 // Le JIT possède un noyau de trial-division i64 SANS check de tag/overflow
@@ -7621,6 +7842,11 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // VAGUE 4 : produit itératif 2..N → primitive `factorielle` (avant la
     // synthèse des boucles, pour que leJit voie l'appel, pas la boucle).
     specialiser_produit_factorielle(&mut prog);
+    // R2 : comptage des premiers `pour k de 2 vers N { si est_premier(k) … }`
+    // → primitive `compter_premiers(N-1)` (crible natif, ×11,4 mesuré).
+    // Avant le clone `prog_pour_jit` : le JIT et le RIR voient tous les deux
+    // l'appel à la primitive, jamais l'ancienne boucle.
+    specialiser_comptage_premiers(&mut prog);
     // Optimisation : boucles accumulateur compilables -> fonction synthetique,
     // pour que la boucle tourne en natif meme si le programme principal ne
     // passe pas tout entier dans le sous-ensemble JIT.
