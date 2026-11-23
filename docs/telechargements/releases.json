@@ -3,6 +3,69 @@
   "genere": "2026-11-21",
   "versions": [
     {
+      "version": "0.1.76",
+      "tag": "v0.1.76",
+      "titre": "Rose v0.1.76 — algorithmes supérieurs : fib ×5822, premiers ×11",
+      "date": "2026-11-23",
+      "changelog": [
+        "fib_mod doublement modulaire : fib_rec 11,6ms -> 6us (x5822), fib_iter x775",
+        "compter_premiers crible natif : 902 -> 84us (x10,88), Rose bat Rust 12,5x",
+        "Primalite Sinclair 7 temoins x1,45 ; puissance k-aire fenetree x1,43",
+        "Self-hosting etendu : 95/166 programmes sans Rust, C0prime=C1prime=C2prime",
+        "Banc reproductible, 659 tests/0, AOT 75/75, JIT 25/25, self-host A-Z"
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.76-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.76-full.nupkg",
+          "sha256": "c18573081550b09612fa2456f355eb78a7bab9e41dabba85c64b635c5d3fe491",
+          "taille": 11413518
+        },
+        {
+          "nom": "rose-setup.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
+          "sha256": "d1fa9b7ad8169442bfa7a1f11693f67d5d469b9f5d6b429798208f00ddabbc41",
+          "taille": 12176384
+        },
+        {
+          "nom": "rose.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
+          "sha256": "50975255ce568cfc534b51b4c6fd9e7bc1d37e26715c5f3c0799b68670f1cd08",
+          "taille": 9753600
+        },
+        {
+          "nom": "rose-shell.exe",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
+          "sha256": "c1e371c38cd5ea32d88ac98ec6595212bf6eef3fd17f667b6cdb3256624b7046",
+          "taille": 463360
+        },
+        {
+          "nom": "rose-tray-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
+          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
+          "taille": 933816
+        },
+        {
+          "nom": "rose-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
+          "sha256": "53f93447bfee64207c425e74dd30d11a5dd70330e4def2e18dda8d60e9722d7c",
+          "taille": 5456976
+        },
+        {
+          "nom": "rose-wasm.wasm",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
+          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
+          "taille": 967750
+        },
+        {
+          "nom": "releases.win.json",
+          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
+          "sha256": "130db73206fe64155cccb267ed57ef8a0922be0d42bcdda7490564166f76a2ad",
+          "taille": 406
+        }
+      ]
+    },
+    {
       "version": "0.1.75",
       "tag": "v0.1.75",
       "titre": "Rose v0.1.75 — performance : Rose bat Rust sur 10 domaines",

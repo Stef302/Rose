@@ -491,7 +491,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
 
   <div class="hero">
     <div>
-      <div class="overline">MOTEUR NATIF — V0.1.75</div>
+      <div class="overline">MOTEUR NATIF — V0.1.76</div>
       <h1>ROSE</h1>
       <p class="lead">
         Langage de programmation conçu en français : variables avec <span style="color:var(--vert)">$</span>,
@@ -508,7 +508,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
         <button class="btn btn-fantome" onclick="go('doc')">LIRE LA DOC</button>
       </div>
       <ul class="badges">
-        <li class="badge">v0.1.75</li>
+        <li class="badge">v0.1.76</li>
         <li class="badge">LICENCE MIT</li>
         <li class="badge">WINDOWS · LINUX</li>
         <li class="badge">INTERPRÈTE · JIT · AOT · WASM</li>
@@ -524,7 +524,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
   </div>
 
   <div class="stats">
-    <div class="stat reveal"><div class="stat-num">0.1.75</div><div class="stat-lbl">LANGAGE ROSE — MOTEUR NATIF</div></div>
+    <div class="stat reveal"><div class="stat-num">0.1.76</div><div class="stat-lbl">LANGAGE ROSE — MOTEUR NATIF</div></div>
     <div class="stat reveal"><div class="stat-num">0,9 s</div><div class="stat-lbl">POUR 1 000 000 ! (5 565 709 CHIFFRES)</div></div>
     <div class="stat reveal"><div class="stat-num">119</div><div class="stat-lbl">PARITÉS INTERPRÈTE ↔ COMPILÉ</div></div>
     <div class="stat reveal"><div class="stat-num">104</div><div class="stat-lbl">FICHIERS AUTO-HÉBERGÉS</div></div>
@@ -645,7 +645,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
       </div>
       <div style="display:flex;gap:1rem;flex-wrap:wrap">
         <a class="btn btn-rouge" href="https://github.com/Stef302/Rose/releases/latest" target="_blank" rel="noopener">TÉLÉCHARGER ROSE-WIN-SETUP.EXE</a>
-        <a class="btn btn-fantome" href="https://github.com/Stef302/Rose/releases/tag/v0.1.75" target="_blank" rel="noopener">RELEASES GITHUB ↗</a>
+        <a class="btn btn-fantome" href="https://github.com/Stef302/Rose/releases/tag/v0.1.76" target="_blank" rel="noopener">RELEASES GITHUB ↗</a>
       </div>
       <p class="small gris" style="line-height:2">SHA-256 de chaque artefact : voir <a class="vert" href="telechargements/SHA256SUMS">telechargements/SHA256SUMS</a> et les assets de la release GitHub.</p>
       <p class="small gris" style="line-height:2"><b style="color:var(--vert)">Linux (x64 / arm64)</b> : binaire autonome — <code class="inline">curl -LO https://raw.githubusercontent.com/Stef302/Rose/main/docs/telechargements/rose-aarch64-linux && chmod +x rose-aarch64-linux</code>. Ou depuis les sources : <code class="inline">cd rose && cargo build --release</code>. Aucun runtime, aucune dépendance GMP.</p>
@@ -778,7 +778,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
     <div class="doc-sel reveal">
       <span class="gris" style="font-size:.8rem;letter-spacing:2px">VERSION</span>
       <select class="rose-select" id="docVer" onchange="setDocVer(this.value)">
-        <option value="18" selected>v0.1.75 — actuelle</option>
+        <option value="18" selected>v0.1.76 — actuelle</option>
         <option value="17">v0.1.72</option>
         <option value="16">v0.1.7</option>
         <option value="15">v0.1.5</option>
@@ -822,7 +822,7 @@ h1,h2,h3,.brand span,.nav nav button,.btn,.brace,.big-brace{font-family:'Kare',s
           <code class="inline">sinon</code>, <code class="inline">tant_que</code>, <code class="inline">pour</code>,
           <code class="inline">retour</code>, <code class="inline">vrai</code>, <code class="inline">faux</code> ;
           les variables portent un <code class="inline">$</code>. Les noms acceptent les lettres accentuées.</p>
-          <p>Le moteur (Rust v0.1.75, licence MIT) propose trois modes d'exécution —
+          <p>Le moteur (Rust v0.1.76, licence MIT) propose trois modes d'exécution —
           interprète, JIT, compilation native AOT — qui rendent la <b>même sortie, caractère par caractère</b> ;
           c'est vérifié par 119 tests de parité et des campagnes génératives.</p>
           <p>Deux promesses résument le projet : <b>le calcul est exact</b> (entiers arbitraires, rationnels sans
@@ -994,7 +994,7 @@ Bonjour, monde !</pre>
 
         <div class="doc-section" id="doc-biblio">
           <h3>Bibliothèque standard</h3>
-          <p>Sélection des fonctions du moteur v0.1.75 — les surlignées demandent le moteur installé.</p>
+          <p>Sélection des fonctions du moteur v0.1.76 — les surlignées demandent le moteur installé.</p>
           <table class="table">
             <tr><th>Fonction</th><th>Rôle</th></tr>
             <tr><td><code>longueur(x)</code></td><td>taille d'une chaîne, d'une liste, d'une table</td></tr>
@@ -1045,7 +1045,7 @@ Bonjour, monde !</pre>
     <h2 class="reveal">Le compilateur qui compile le compilateur</h2>
     <div class="cols">
       <div class="reveal">
-        <p>Le moteur (Rust v0.1.75) déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
+        <p>Le moteur (Rust v0.1.76) déroule chaque programme en trois étapes : l'analyseur construit l'arbre,
         la vérification typographie les erreurs, l'émetteur produit la <b>représentation intermédiaire
         (RIR)</b>. Depuis la RIR, plusieurs départs : l'interprète exact, le JIT Cranelift (compilation à chaud),
         l'AOT LLVM (<code class="inline">rose llvm</code>), ou la transpilation C++ compilée par g++ — tous rendent
@@ -1080,7 +1080,7 @@ Bonjour, monde !</pre>
       </div>
       <div class="carte reveal">
         <div class="ico"><span class="ico-txt">⚙</span></div>
-        <h3>Moteur Rust (v0.1.75)</h3>
+        <h3>Moteur Rust (v0.1.76)</h3>
         <p>Le portage Rust est terminé : interprète exact, JIT Cranelift (compilation à chaud), AOT LLVM
         (<code class="inline">rose llvm</code>), FFI dlopen, bundle AOT (<code class="inline">comp</code>).
         Parité parfaite avec le moteur C++ (54/54), 46/46 dorés, bench global 0,09 s (vs 0,19 s C++).
@@ -1150,16 +1150,16 @@ Bonjour, monde !</pre>
 
       <div class="event">
         <div class="event-head">
-          <span class="event-ver">V0.1.75</span>
+          <span class="event-ver">V0.1.76</span>
           <span class="event-date">21 NOVEMBRE 2026</span>
           <span class="event-date" style="color:var(--vert)">ACTUELLE</span>
         </div>
-        <h4 class="event-title">Rose v0.1.75 — AOT universel PE, tray autonome, logo droit</h4>
+        <h4 class="event-title">Rose v0.1.76 — AOT universel PE, tray autonome, logo droit</h4>
         <ul>
           <li><b>AOT / ORC universel sur PE</b> : <code class="inline">rose aot</code> et <code class="inline">rose orc</code> suivent le chemin autonome (alias de <code class="inline">comp</code>) et produisent un exécutable Windows pour tout programme Rose, sans cas par cas.</li>
           <li><b>Helper tray autonome</b> : <code class="inline">rose-tray.exe</code> embarque son icône de ressource et s'active automatiquement, sans clic, avec une seule vérification du manifeste du site toutes les 6 h.</li>
           <li><b>Logo droit</b> : la tige de la rose n'est plus coupée, avec une marge garantie dans toutes les tailles de fenêtre.</li>
-          <li><b>Version</b> : le moteur, le README, le wiki et le site passent en 0.1.75 ; les versions antérieures (0.1.72, 0.1.7, 0.1.6, 0.1.5) restent dans l'historique.</li>
+          <li><b>Version</b> : le moteur, le README, le wiki et le site passent en 0.1.76 ; les versions antérieures (0.1.72, 0.1.7, 0.1.6, 0.1.5) restent dans l'historique.</li>
         </ul>
       </div>
 
