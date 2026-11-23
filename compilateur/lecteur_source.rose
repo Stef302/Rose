@@ -2011,6 +2011,12 @@ fn std_sig($nom: chaine) -> chaine {
   # front.rs:650-651 — alias `len` et primitive `type_de` (arg « tout » non vérifié).
   si ($nom == "len") { retour "entier|lct" }
   si ($nom == "type_de") { retour "chaine|tout" }
+  # CORR4 — alias natifs déjà émis par le backend G5 (miroir de
+  # scripts/generer_rose_natif.py::STD_SIG_EXTENSION) : le moteur Rust
+  # front.rs:746/786 les expose ; le lecteur doit les connaître pour ne pas
+  # refuser t14_type / t91_prng (« Fonction '…' inconnue »). L'exécution RIR
+  # est déjà assurée par interpreteur_rir.rose (val_type / hasard).
+  si ($nom == "type") { retour "chaine|tout" }
   si ($nom == "table") { retour "table|" }
   si ($nom == "inserer") { retour "vide|table,tout,tout" }
   si ($nom == "cle_existe") { retour "booleen|table,tout" }
@@ -2039,6 +2045,8 @@ fn std_sig($nom: chaine) -> chaine {
   si ($nom == "fraction") { retour "rationnel|entier,entier" }
   si ($nom == "graine") { retour "vide|entier" }
   si ($nom == "hasard") { retour "entier|entier" }
+  # CORR4 — alias de `hasard` exposé par front.rs:786 (voir `type` plus haut).
+  si ($nom == "prng") { retour "entier|entier" }
   si ($nom == "tampon") { retour "tampon|entier" }
   si ($nom == "octets") { retour "tampon|chaine" }
   si ($nom == "tampon_case") { retour "entier|tampon,entier" }

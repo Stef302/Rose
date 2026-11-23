@@ -1,0 +1,38 @@
+# tests_corr4.rose — CORRECTIF 4 : alias `type` / `prng` du lecteur.
+#
+# 20 points de test utilisant les deux alias absents du std_sig de
+# compilateur/lecteur_source.rose (ligne ~1992) et injectés dans la copie
+# générée de rose_natif.rose par scripts/generer_rose_natif.py
+# (STD_SIG_EXTENSION). Le lecteur doit accepter les 20 sans « Fonction …
+# inconnue » (objectif : 0 refus), et l'exécution RIR doit reproduire
+# l'exécution native octet pour octet.
+#
+# Exécution :
+#   rose tests_corr4.rose                       -> référence native
+#   rose lecteur_source.rose tests_corr4.rose    -> OK|<rir> (0 refus)
+#   rose moteur_complet.rose tests_corr4.rose    -> moteur sans Rust
+
+# ── 12 cas `type` / `type_de` ────────────────────────────────────────
+>> type(2)
+>> type(2/3)
+>> type(2.5)
+>> type("x")
+>> type([1, 2])
+>> type(vrai)
+>> type(table())
+>> type(type(2))
+>> type_de(7)
+>> type(1 + 2)
+>> type(-5)
+>> type("a" + "b")
+
+# ── 8 cas `prng` / `hasard` (graine déterministe) ─────────────────────
+graine(7)
+>> prng(10)
+>> prng(10)
+>> prng(1)
+>> prng(100)
+>> hasard(10)
+>> prng(0)
+>> prng(2 + 3)
+>> prng(prng(10))
