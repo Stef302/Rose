@@ -1,0 +1,326 @@
+# tests_valeurs_types.rose — HORDE VALEURS : 53 assertions sur les 7 types
+# Valeur ajoutés à `compilateur/moteur_valeurs.rose` (tags 8..14).
+#
+# Ce fichier est un MODULE SOURCE : Rose n'a pas d'instruction `include`.
+# Il se concatène avec `compilateur/moteur_valeurs.rose` :
+#
+#   cat compilateur/moteur_valeurs.rose compilateur/tests_valeurs_types.rose \
+#       > /tmp/opencode/horde_val_artifacts/tests_prog.rose
+#   ROSE_SANS_JIT=1 rose interprete tests_prog.rose     # référence Rust
+#   C0 tests_prog.rose > tests.elf && ./tests.elf        # sans Rust
+#   diff nat.out elf.out
+#
+# Les chaînes ATTENDU ont été mesurées sur le moteur Rust de référence
+# (`ROSE_SANS_JIT=1 rose interprete`, 23/11/2026) avec les littéraux natifs
+# correspondants : 1.5, 1/3, (3+4i), racine(2), table(), rope, listes.
+# Aucune primitive Rust n'est appelée ici : le même source tourne dans les
+# deux moteurs. Convention : 1 ligne OK/ECHEC par assertion + TOTAL.
+
+# Raccourcis de construction (réduisent le bruit, aucun état global).
+fn tt_cpl(re: chaine, im: chaine) -> liste<entier> {
+  retour v_cpl(v_flt_ch(re), v_flt_ch(im))
+}
+
+fn tt_ok(obtenu: chaine, attendu: chaine) -> entier {
+  si (obtenu == attendu) { retour 1 }
+  retour 0
+}
+
+fn tt_res(n: entier, nom: chaine, obtenu: chaine, attendu: chaine) -> chaine {
+  si (obtenu == attendu) { retour "OK " + chaine(n) + " " + nom }
+  retour "ECHEC " + chaine(n) + " " + nom + " | obtenu=[" + obtenu + "] attendu=[" + attendu + "]"
+}
+
+$total = 0
+
+# ── A. FLOTTANT (tag 8) — 10 assertions ────────────────────────────────────
+$o = tv_valeur_texte(v_flt_ch("1.5"))
+$a = "1.5"
+>> tt_res(1, "flt_1_5", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_flt_ch("1000000.0"))
+$a = "1000000"
+>> tt_res(2, "flt_million", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_flt_ch("-0.0"))
+$a = "0"
+>> tt_res(3, "flt_moins_zero", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_flt_ch("1.2345678901234567"))
+$a = "1.2345678901234567"
+>> tt_res(4, "flt_17_chiffres", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_flt_add(v_flt_ch("1.5"), v_flt_ch("2.5")))
+$a = "4"
+>> tt_res(5, "flt_add", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_flt_mul(v_flt_ch("1.5"), v_flt_ch("2")))
+$a = "3"
+>> tt_res(6, "flt_mul", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_flt_add(v_flt_ch("0.125"), v_flt_ch("0.375")))
+$a = "0.5"
+>> tt_res(7, "flt_add_frac", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_flt_mul(v_flt_ch("2.5"), v_flt_ch("4")))
+$a = "10"
+>> tt_res(8, "flt_mul_ent", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_flt_neg(v_flt_ch("1.5")))
+$a = "-1.5"
+>> tt_res(9, "flt_neg", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_flt_ent(42))
+$a = "42"
+>> tt_res(10, "flt_depuis_ent", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+# ── B. RATIONNEL (tag 9) — 15 assertions ───────────────────────────────────
+$o = tv_valeur_texte(v_rat(2, 5))
+$a = "0.4"
+>> tt_res(11, "rat_2_5", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(1, 3))
+$a = "0.[3]"
+>> tt_res(12, "rat_1_3", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(1, 7))
+$a = "0.[142857]"
+>> tt_res(13, "rat_1_7", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(22, 7))
+$a = "3.[142857]"
+>> tt_res(14, "rat_22_7", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(7, 2))
+$a = "3.5"
+>> tt_res(15, "rat_7_2", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(2, 4))
+$a = "0.5"
+>> tt_res(16, "rat_2_4_reduit", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(6, 8))
+$a = "0.75"
+>> tt_res(17, "rat_6_8_reduit", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(-2, 6))
+$a = "-1.[3]"
+>> tt_res(18, "rat_negatif_quirk", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_rat_add(v_rat(1, 3), v_rat(1, 6)))
+$a = "0.5"
+>> tt_res(19, "rat_add", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_rat_mul(v_rat(1, 2), v_rat(2, 3)))
+$a = "0.[3]"
+>> tt_res(20, "rat_mul", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_rat_brut(v_rat(6, 8))
+$a = "3/4"
+>> tt_res(21, "rat_brut_reduit", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(0, 5))
+$a = "0"
+>> tt_res(22, "rat_zero", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(100, 10))
+$a = "10"
+>> tt_res(23, "rat_entier", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(1, 16))
+$a = "0.0625"
+>> tt_res(24, "rat_1_16", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_rat(1, 6))
+$a = "0.1[6]"
+>> tt_res(25, "rat_1_6", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+# ── C. COMPLEXE (tag 10) — 7 assertions ────────────────────────────────────
+$o = tv_valeur_texte(tt_cpl("3", "4"))
+$a = "3+4i"
+>> tt_res(26, "cpl_3_4i", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tt_cpl("0", "1"))
+$a = "i"
+>> tt_res(27, "cpl_i", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tt_cpl("0", "2"))
+$a = "2i"
+>> tt_res(28, "cpl_2i", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_cpl_conj(tt_cpl("3", "4")))
+$a = "3-4i"
+>> tt_res(29, "cpl_conj", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_cpl_mul(tt_cpl("3", "4"), tt_cpl("1", "-2")))
+$a = "11-2i"
+>> tt_res(30, "cpl_mul", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_cpl_mul(tt_cpl("1", "1"), tt_cpl("1", "-1")))
+$a = "2"
+>> tt_res(31, "cpl_mul2", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_cpl_re(tt_cpl("3", "4")))
+$a = "3"
+>> tt_res(32, "cpl_accesseur_re", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+# ── D. IRRATIONNEL (tag 11) — 7 assertions ─────────────────────────────────
+$o = tv_valeur_texte(v_irr(2))
+$a = "√2"
+>> tt_res(33, "irr_2", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_irr(7))
+$a = "√7"
+>> tt_res(34, "irr_7", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_irr(8))
+$a = "√8"
+>> tt_res(35, "irr_8", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_irr(12))
+$a = "√12"
+>> tt_res(36, "irr_12", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_irr(4))
+$a = "2"
+>> tt_res(37, "irr_carre_4", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_irr(9))
+$a = "3"
+>> tt_res(38, "irr_carre_9", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(v_irr(49))
+$a = "7"
+>> tt_res(39, "irr_carre_49", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+# ── E. TABLE_AV (tag 12) — 6 assertions ────────────────────────────────────
+$tb = v_tabav()
+$tb = tv_tabav_inserer($tb, v_ch("a"), v_ent(1))
+$tb = tv_tabav_inserer($tb, v_ch("b"), v_ent(2))
+
+$o = tv_valeur_texte($tb)
+$a = "[a => 1, b => 2]"
+>> tt_res(40, "tabav_affichage", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = chaine(tv_tabav_cnt($tb))
+$a = "2"
+>> tt_res(41, "tabav_compte", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_tabav_idx($tb, v_ch("a")))
+$a = "1"
+>> tt_res(42, "tabav_lecture", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$tb2 = tv_tabav_inserer($tb, v_ch("a"), v_ent(9))
+$o = tv_valeur_texte($tb2)
+$a = "[a => 9, b => 2]"
+>> tt_res(43, "tabav_remplacement", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_tabav_idx($tb, v_ch("zz")))
+$a = ""
+>> tt_res(44, "tabav_absent", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$tbr = tv_tabav_inserer(v_tabav(), v_ch("a"), v_rat(2, 4))
+$o = tv_valeur_texte($tbr)
+$a = "[a => 1/2]"
+>> tt_res(45, "tabav_rational_brut", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+# ── F. CHAINE_REP (tag 13) — 4 assertions ──────────────────────────────────
+$rp = v_rope()
+$rp = tv_rope_ajouter($rp, "ab")
+$rp = tv_rope_ajouter($rp, "cd")
+
+$o = tv_valeur_texte($rp)
+$a = "abcd"
+>> tt_res(46, "rope_aplatir", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = chaine(tv_rope_longueur($rp))
+$a = "4"
+>> tt_res(47, "rope_longueur", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = chaine(tv_rope_code($rp, 2))
+$a = "99"
+>> tt_res(48, "rope_code", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_rope_sous($rp, 1, 4)
+$a = "bcd"
+>> tt_res(49, "rope_sous_chaine", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+# ── G. LISTE_AV (tag 14) — 4 assertions ────────────────────────────────────
+$ls = v_lstav()
+$ls = tv_lstav_ajouter($ls, v_ent(1))
+$ls = tv_lstav_ajouter($ls, v_rat(1, 3))
+$ls = tv_lstav_ajouter($ls, v_irr(2))
+
+$o = chaine(tv_lstav_cnt($ls))
+$a = "3"
+>> tt_res(50, "listav_compte", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte($ls)
+$a = "[1, 0.[3], √2]"
+>> tt_res(51, "listav_affichage", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$o = tv_valeur_texte(tv_lstav_idx($ls, 1))
+$a = "0.[3]"
+>> tt_res(52, "listav_lecture", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+$lh = v_lstav()
+$lh = tv_lstav_ajouter($lh, v_ent(1))
+$lh = tv_lstav_ajouter($lh, v_ch("deux"))
+$o = tv_valeur_texte($lh)
+$a = "[1, deux]"
+>> tt_res(53, "listav_heterogene", $o, $a)
+$total = $total + tt_ok($o, $a)
+
+>> "TOTAL=" + chaine($total) + "/53"

@@ -223,3 +223,749 @@ fn bz_texte(v: liste<entier>) -> chaine {
   si (v[1] < 0) { $s = "-" + $s }
   retour $s
 }
+
+# ════════════════════════════════════════════════════════════════════════════
+# HORDE VALEURS (J6.1) — 7 types Valeur supplémentaires, tags 8..14
+# ════════════════════════════════════════════════════════════════════════════
+# Tags ajoutés (le reste du fichier, 0..7, reste inchangé) :
+#   8 = FLOTTANT   [8, signe, exp, cnt, d0..]        valeur = signe * 0.d0.. * 10^(exp+cnt)
+#   9 = RATIONNEL  [9, ns, ncnt, nd.., ds, dcnt, dd..]  num/den RÉDUIT (pgcd)
+#  10 = COMPLEXE   [10, rlen, re.., ilen, im..]      re/im = FLOTTANT
+#  11 = IRRATIONNEL [11, signe, cnt, chiffres..]     racine non carrée, SYMBOLIQUE
+#  12 = TABLE_AV   [12, cnt, (klen,k..,vlen,v..)*] clés/valeurs = VALEURS encodées
+#  13 = CHAINE_REP [13, n, (len,codes..)*]           rope = segments de codes
+#  14 = LISTE_AV   [14, n, (len,valeur..)*]          éléments = VALEURS encodées
+#
+# Tout est écrit dans le même sous-ensemble G5 que le reste du fichier :
+# aucune globale, aucun `[]` vide, pas d'affectation par index, pas de
+# `abs`/`min`/`max`/`cles`/`concatener`. Les helpers sont préfixés `tv_`
+# pour ne PAS entrer en collision avec `moteur_ops.rose` à la concaténation.
+
+fn vt_flt() -> entier { retour 8 }
+fn vt_rat() -> entier { retour 9 }
+fn vt_cpl() -> entier { retour 10 }
+fn vt_irr() -> entier { retour 11 }
+fn vt_tabav() -> entier { retour 12 }
+fn vt_rope() -> entier { retour 13 }
+fn vt_lstav() -> entier { retour 14 }
+
+# ── Utilitaires de découpe / comparaison de sous-listes ────────────────────
+
+# Copie `cnt` entiers à partir de `debut` (cnt >= 1 : toute valeur a un tag).
+fn tv_copier(v: liste<entier>, debut: entier, cnt: entier) -> liste<entier> {
+  $r = [v[debut]]
+  $k = 1
+  tant_que ($k < cnt) { joindre($r, v[debut + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_listes_egales(a: liste<entier>, b: liste<entier>) -> entier {
+  si (longueur(a) != longueur(b)) { retour 0 }
+  $r = 1
+  $k = 0
+  tant_que ($k < longueur(a)) {
+    si (a[$k] != b[$k]) { $r = 0 }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn tv_pgcd(a0: entier, b0: entier) -> entier {
+  $a = a0
+  $b = b0
+  si ($a < 0) { $a = 0 - $a }
+  si ($b < 0) { $b = 0 - $b }
+  tant_que ($b != 0) {
+    $t = $a % $b
+    $a = $b
+    $b = $t
+  }
+  si ($a < 0) { $a = 0 - $a }
+  retour $a
+}
+
+# ═══ FLOTTANT (tag 8) — décimal exact (signe, coefficient, exposant) ═══════
+
+fn v_flt(signe: entier, exp: entier, cnt: entier, digits: liste<entier>) -> liste<entier> {
+  $r = [8, signe, exp, cnt]
+  $k = 0
+  tant_que ($k < cnt) { joindre($r, digits[1 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+# Parse un littéral décimal ASCII : "1.5", "-0.0", "1000000", "1.234…".
+fn v_flt_ch(s: chaine) -> liste<entier> {
+  $n = longueur(s)
+  $signe = 1
+  $k = 0
+  si ($n > 0) {
+    si (sous_chaine(s, 0, 1) == "-") { $signe = -1; $k = 1 }
+  }
+  $digits = [0]
+  $nd = 0
+  $exp = 0
+  $apres = 0
+  tant_que ($k < $n) {
+    $c = sous_chaine(s, $k, $k + 1)
+    si ($c == ".") { $apres = 1 }
+    sinon {
+      joindre($digits, ordre($c) - 48)
+      $nd = $nd + 1
+      si ($apres == 1) { $exp = $exp - 1 }
+    }
+    $k = $k + 1
+  }
+  $deb = 0
+  tant_que ($deb < $nd et $digits[1 + $deb] == 0) { $deb = $deb + 1 }
+  si ($deb >= $nd) { $deb = $nd - 1 }
+  $cnt = $nd - $deb
+  $r = [8, $signe, $exp, $cnt]
+  $j = 0
+  tant_que ($j < $cnt) { joindre($r, $digits[1 + $deb + $j]); $j = $j + 1 }
+  retour $r
+}
+
+# Les chiffres FLOTTANT sont stockés en ordre HIGH-FIRST (du plus significatif
+# au moins significatif), comme le produit la lecture gauche→droite d'un
+# littéral. tv_flt_coef et tv_flt_texte s'appuient sur cette convention.
+fn tv_flt_depuis_entier(n: entier) -> liste<entier> {
+  $s = 1
+  $x = n
+  si ($x < 0) { $s = -1; $x = 0 - $x }
+  $tmp = [0]
+  $cnt = 0
+  si ($x == 0) { joindre($tmp, 0); $cnt = 1 }
+  tant_que ($x > 0) { joindre($tmp, $x % 10); $x = $x div 10; $cnt = $cnt + 1 }
+  $r = [8, $s, 0, $cnt]
+  $k = $cnt - 1
+  tant_que ($k >= 0) { joindre($r, $tmp[1 + $k]); $k = $k - 1 }
+  retour $r
+}
+
+fn v_flt_ent(n: entier) -> liste<entier> {
+  retour tv_flt_depuis_entier(n)
+}
+
+fn tv_flt_signe(v: liste<entier>) -> entier { retour v[1] }
+fn tv_flt_exp(v: liste<entier>) -> entier { retour v[2] }
+fn tv_flt_cnt(v: liste<entier>) -> entier { retour v[3] }
+fn tv_flt_chiffre(v: liste<entier>, k: entier) -> entier { retour v[4 + k] }
+
+fn tv_flt_coef(v: liste<entier>) -> entier {
+  $x = 0
+  $k = 0
+  tant_que ($k < v[3]) { $x = $x * 10 + v[4 + $k]; $k = $k + 1 }
+  retour $x
+}
+
+fn tv_flt_est_zero(v: liste<entier>) -> entier {
+  $z = 1
+  $k = 0
+  tant_que ($k < v[3]) { si (v[4 + $k] != 0) { $z = 0 }; $k = $k + 1 }
+  retour $z
+}
+
+# vaut un entier exact ? (utile au formatage des complexes : im = ±1)
+fn tv_flt_egale_ent(v: liste<entier>, n: entier) -> entier {
+  $c = tv_flt_coef(v)
+  $e = v[2]
+  $x = 0
+  si ($e < 0) {
+    $p = 0 - $e
+    $k = 0
+    tant_que ($k < $p) {
+      si ($c % 10 != 0) { retour 0 }
+      $c = $c div 10
+      $k = $k + 1
+    }
+    $x = $c
+  } sinon {
+    $x = $c
+    $k = 0
+    tant_que ($k < $e) { $x = $x * 10; $k = $k + 1 }
+  }
+  si (v[1] < 0) { $x = 0 - $x }
+  $r = 0
+  si ($x == n) { $r = 1 }
+  retour $r
+}
+
+fn tv_flt_neg(v: liste<entier>) -> liste<entier> {
+  $s = v[1]
+  si ($s == 0) { $s = 0 } sinon { $s = 0 - $s }
+  $d = [0]
+  $k = 0
+  tant_que ($k < v[3]) { joindre($d, v[4 + $k]); $k = $k + 1 }
+  retour v_flt($s, v[2], v[3], $d)
+}
+
+# Inverse une liste de chiffres stockée LOW-FIRST en une liste HIGH-FIRST
+# prête à être passée à v_flt (index 0 = rembourrage).
+fn tv_flt_inverser(d: liste<entier>, cnt: entier) -> liste<entier> {
+  $r = [0]
+  $k = cnt - 1
+  tant_que ($k >= 0) { joindre($r, d[1 + $k]); $k = $k - 1 }
+  retour $r
+}
+
+fn tv_flt_add(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $ea = a[2]
+  $eb = b[2]
+  $e = $ea
+  si ($eb < $e) { $e = $eb }
+  $p = 1
+  $k = 0
+  tant_que ($k < $ea - $e) { $p = $p * 10; $k = $k + 1 }
+  $ca = tv_flt_coef(a) * $p
+  $k = 0; $p = 1
+  tant_que ($k < $eb - $e) { $p = $p * 10; $k = $k + 1 }
+  $cb = tv_flt_coef(b) * $p
+  si (a[1] < 0) { $ca = 0 - $ca }
+  si (b[1] < 0) { $cb = 0 - $cb }
+  $s = $ca + $cb
+  $sg = 1
+  si ($s < 0) { $sg = -1; $s = 0 - $s }
+  $digits = [0]
+  $cnt = 0
+  $y = $s
+  tant_que ($y > 0) { joindre($digits, $y % 10); $y = $y div 10; $cnt = $cnt + 1 }
+  si ($cnt == 0) { joindre($digits, 0); $cnt = 1 }
+  $h = tv_flt_inverser($digits, $cnt)
+  retour v_flt($sg, $e, $cnt, $h)
+}
+
+fn tv_flt_mul(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $s = 1
+  si ((a[1] < 0) != (b[1] < 0)) { $s = -1 }
+  $x = tv_flt_coef(a) * tv_flt_coef(b)
+  $digits = [0]
+  $cnt = 0
+  si ($x == 0) { joindre($digits, 0); $cnt = 1 }
+  tant_que ($x > 0) { joindre($digits, $x % 10); $x = $x div 10; $cnt = $cnt + 1 }
+  $h = tv_flt_inverser($digits, $cnt)
+  retour v_flt($s, a[2] + b[2], $cnt, $h)
+}
+
+fn tv_flt_texte(v: liste<entier>) -> chaine {
+  $cnt = v[3]
+  $fin = $cnt - 1
+  $exp = v[2]
+  # normalisation : on retire les zéros de poids FAIBLE (fin du tableau)
+  tant_que ($fin > 0 et v[4 + $fin] == 0) { $fin = $fin - 1; $exp = $exp + 1 }
+  $nc = $fin + 1
+  $zero = 1
+  $k = 0
+  tant_que ($k <= $fin) { si (v[4 + $k] != 0) { $zero = 0 }; $k = $k + 1 }
+  si ($zero == 1) { retour "0" }
+  $coef = ""
+  $k = 0
+  tant_que ($k <= $fin) { $coef = $coef + chaine(v[4 + $k]); $k = $k + 1 }
+  $out = ""
+  si ($exp >= 0) {
+    $out = $coef
+    $k = 0
+    tant_que ($k < $exp) { $out = $out + "0"; $k = $k + 1 }
+  } sinon {
+    $p = 0 - $exp
+    si ($nc > $p) {
+      $out = sous_chaine($coef, 0, $nc - $p) + "." + sous_chaine($coef, $nc - $p, $nc)
+    } sinon {
+      $out = "0."
+      $k = 0
+      tant_que ($k < $p - $nc) { $out = $out + "0"; $k = $k + 1 }
+      $out = $out + $coef
+    }
+  }
+  si (v[1] < 0) { $out = "-" + $out }
+  retour $out
+}
+
+# ═══ RATIONNEL (tag 9) — num/den réduit, affichage décimal périodique ══════
+
+fn v_rat(n: entier, d: entier) -> liste<entier> {
+  si (d == 0) { retour v_err(9) }
+  $g = tv_pgcd(n, d)
+  $nn = n div $g
+  $dd = d div $g
+  si ($dd < 0) { $nn = 0 - $nn; $dd = 0 - $dd }
+  $nb = bz_depuis_entier($nn)
+  $db = bz_depuis_entier($dd)
+  $nc = $nb[2]
+  $r = [9, $nb[1], $nc]
+  $k = 0
+  tant_que ($k < $nc) { joindre($r, $nb[3 + $k]); $k = $k + 1 }
+  joindre($r, $db[1])
+  joindre($r, $db[2])
+  $dc = $db[2]
+  $k = 0
+  tant_que ($k < $dc) { joindre($r, $db[3 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_rat_num(v: liste<entier>) -> liste<entier> {
+  $nc = v[2]
+  $r = [6, v[1], $nc]
+  $k = 0
+  tant_que ($k < $nc) { joindre($r, v[3 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_rat_den(v: liste<entier>) -> liste<entier> {
+  $o = 3 + v[2]
+  $dc = v[$o + 1]
+  $r = [6, v[$o], $dc]
+  $k = 0
+  tant_que ($k < $dc) { joindre($r, v[$o + 2 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_rat_texte(v: liste<entier>) -> chaine {
+  $num = tv_rat_num(v)
+  $den = tv_rat_den(v)
+  $nc = $num[2]
+  $dc = $den[2]
+  # Au-delà de la voie rapide, on rend la forme exacte a/b (miroir q_chaine).
+  si ($nc > 12 ou $dc > 12) { retour bz_texte($num) + "/" + bz_texte($den) }
+  $n = bz_vers_entier($num)
+  $d = bz_vers_entier($den)
+  $dd = $d
+  si ($dd < 0) { $dd = 0 - $dd }
+  si ($dd == 0) { retour "0" }
+  si ($dd == 1) { retour chaine($n) }
+  $sg = 0
+  # v_rat normalise TOUJOURS le dénominateur > 0 (signe bigz 0 = positif).
+  si ($n < 0) { $sg = 1 }
+  $a = $n
+  si ($a < 0) { $a = 0 - $a }
+  $ent = $a div $dd
+  $rest = $a % $dd
+  # Miroir EXACT de texte_rationnel (run.rs:1555) : pour un négatif à reste
+  # non nul, la partie entière est DAYÉE d'un (d'où -1/3 → "-1.[3]").
+  si ($sg == 1 et $rest != 0) { $ent = 0 - ($ent + 1) }
+  $out = chaine($ent)
+  $digits = [0]
+  $nd = 0
+  $restes = [0]
+  $positions = [0]
+  $peri = -1
+  $encours = 1
+  tant_que ($rest != 0 et $nd < 200 et $encours == 1) {
+    $deja = -1
+    $k = 0
+    tant_que ($k < $nd) {
+      si ($restes[1 + $k] == $rest) { $deja = $positions[1 + $k] }
+      $k = $k + 1
+    }
+    si ($deja >= 0) { $peri = $deja; $encours = 0 }
+    sinon {
+      joindre($restes, $rest)
+      joindre($positions, $nd)
+      $rest = $rest * 10
+      $ch = $rest div $dd
+      $rest = $rest % $dd
+      joindre($digits, $ch)
+      $nd = $nd + 1
+    }
+  }
+  si ($nd > 0) {
+    $out = $out + "."
+    $fin = $nd
+    si ($peri >= 0) { $fin = $peri }
+    $k = 0
+    tant_que ($k < $fin) { $out = $out + chaine($digits[1 + $k]); $k = $k + 1 }
+    si ($peri >= 0) {
+      $out = $out + "["
+      $k = $peri
+      tant_que ($k < $nd) { $out = $out + chaine($digits[1 + $k]); $k = $k + 1 }
+      $out = $out + "]"
+    }
+  }
+  retour $out
+}
+
+# Forme BRUTE q_chaine() (run.rs:1530) : a/b réduit, jamais périodique.
+# C'est celle qu'utilise chaine_de() pour LES TABLES (miroir Rust exact).
+fn tv_rat_brut(v: liste<entier>) -> chaine {
+  $num = tv_rat_num(v)
+  $den = tv_rat_den(v)
+  $nc = $num[2]
+  si ($nc > 12) { retour bz_texte($num) + "/" + bz_texte($den) }
+  $n = bz_vers_entier($num)
+  $d = bz_vers_entier($den)
+  si ($n == 0 ou $d == 1 ou $d == -1) { retour chaine($n) }
+  retour chaine($n) + "/" + chaine($d)
+}
+
+fn tv_rat_add(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $na = tv_rat_num(a); $da = tv_rat_den(a)
+  $nb = tv_rat_num(b); $db = tv_rat_den(b)
+  $x = bz_vers_entier($na) * bz_vers_entier($db) + bz_vers_entier($nb) * bz_vers_entier($da)
+  $y = bz_vers_entier($da) * bz_vers_entier($db)
+  retour v_rat($x, $y)
+}
+
+fn tv_rat_mul(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $x = bz_vers_entier(tv_rat_num(a)) * bz_vers_entier(tv_rat_num(b))
+  $y = bz_vers_entier(tv_rat_den(a)) * bz_vers_entier(tv_rat_den(b))
+  retour v_rat($x, $y)
+}
+
+# ═══ COMPLEXE (tag 10) — parties réelle/imaginaire FLOTTANT ════════════════
+
+fn v_cpl(re: liste<entier>, im: liste<entier>) -> liste<entier> {
+  $nl = longueur(re)
+  $r = [10, $nl]
+  $k = 0
+  tant_que ($k < $nl) { joindre($r, re[$k]); $k = $k + 1 }
+  $ni = longueur(im)
+  joindre($r, $ni)
+  $k = 0
+  tant_que ($k < $ni) { joindre($r, im[$k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_cpl_re(v: liste<entier>) -> liste<entier> { retour tv_copier(v, 2, v[1]) }
+
+fn tv_cpl_im(v: liste<entier>) -> liste<entier> {
+  $o = 2 + v[1]
+  retour tv_copier(v, $o + 1, v[$o])
+}
+
+fn tv_cpl_conj(v: liste<entier>) -> liste<entier> {
+  retour v_cpl(tv_cpl_re(v), tv_flt_neg(tv_cpl_im(v)))
+}
+
+fn tv_cpl_mul(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $ar = tv_cpl_re(a); $ai = tv_cpl_im(a)
+  $br = tv_cpl_re(b); $bi = tv_cpl_im(b)
+  $p1 = tv_flt_mul($ar, $br)
+  $p2 = tv_flt_mul($ai, $bi)
+  $p3 = tv_flt_mul($ar, $bi)
+  $p4 = tv_flt_mul($ai, $br)
+  $re = tv_flt_add($p1, tv_flt_neg($p2))
+  $im = tv_flt_add($p3, $p4)
+  retour v_cpl($re, $im)
+}
+
+fn tv_cpl_texte(v: liste<entier>) -> chaine {
+  $re = tv_cpl_re(v)
+  $im = tv_cpl_im(v)
+  $rt = tv_flt_texte($re)
+  $it = tv_flt_texte($im)
+  si (tv_flt_est_zero($im) == 1) { retour $rt }
+  si (tv_flt_est_zero($re) == 1) {
+    si (tv_flt_egale_ent($im, 1) == 1) { retour "i" }
+    si (tv_flt_egale_ent($im, -1) == 1) { retour "-i" }
+    retour $it + "i"
+  }
+  si (tv_flt_egale_ent($im, 1) == 1) { retour $rt + "+i" }
+  si (tv_flt_egale_ent($im, -1) == 1) { retour $rt + "-i" }
+  $sg = "+"
+  si ($im[1] < 0) { $sg = "" }
+  retour $rt + $sg + $it + "i"
+}
+
+# ═══ IRRATIONNEL (tag 11) — racine carrée SYMBOLIQUE ═══════════════════════
+
+# racine carrée exacte d'un entier, ou -1 si le radicande n'est pas un carré.
+fn tv_racine_exacte(n: entier) -> entier {
+  si (n < 0) { retour -1 }
+  $lo = 0
+  $hi = n
+  $res = -1
+  tant_que ($lo <= $hi) {
+    $mid = ($lo + $hi) div 2
+    $carre = $mid * $mid
+    si ($carre == n) { $res = $mid; $lo = $hi + 1 }
+    sinon {
+      si ($carre < n) { $lo = $mid + 1 } sinon { $hi = $mid - 1 }
+    }
+  }
+  retour $res
+}
+
+# racine(n) : carré parfait → entier, sinon IRRATIONNEL symbolique √n.
+fn v_irr(n: entier) -> liste<entier> {
+  $r = tv_racine_exacte(n)
+  si ($r >= 0) { retour v_ent($r) }
+  $b = bz_depuis_entier(n)
+  $out = [11, $b[1], $b[2]]
+  $k = 0
+  tant_que ($k < $b[2]) { joindre($out, $b[3 + $k]); $k = $k + 1 }
+  retour $out
+}
+
+fn tv_irr_signe(v: liste<entier>) -> entier { retour v[1] }
+fn tv_irr_cnt(v: liste<entier>) -> entier { retour v[2] }
+fn tv_irr_chiffre(v: liste<entier>, k: entier) -> entier { retour v[3 + k] }
+
+fn tv_irr_radicande(v: liste<entier>) -> liste<entier> {
+  $r = [6, v[1], v[2]]
+  $k = 0
+  tant_que ($k < v[2]) { joindre($r, v[3 + $k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_irr_texte(v: liste<entier>) -> chaine {
+  retour "√" + bz_texte(tv_irr_radicande(v))
+}
+
+# ═══ TABLE_AV (tag 12) — clés ET valeurs sont des valeurs encodées ════════
+
+fn v_tabav() -> liste<entier> {
+  $r = [12, 0]
+  retour $r
+}
+
+fn tv_tabav_cnt(v: liste<entier>) -> entier { retour v[1] }
+
+# Début (index) de la paire k dans le flux de paires.
+fn tv_tabav_off(v: liste<entier>, k: entier) -> entier {
+  $o = 2
+  $j = 0
+  tant_que ($j < k) {
+    $kl = v[$o]
+    $vl = v[$o + 1 + $kl]
+    $o = $o + 2 + $kl + $vl
+    $j = $j + 1
+  }
+  retour $o
+}
+
+fn tv_tabav_cle(v: liste<entier>, k: entier) -> liste<entier> {
+  $o = tv_tabav_off(v, k)
+  retour tv_copier(v, $o + 1, v[$o])
+}
+
+fn tv_tabav_val(v: liste<entier>, k: entier) -> liste<entier> {
+  $o = tv_tabav_off(v, k)
+  $kl = v[$o]
+  retour tv_copier(v, $o + 2 + $kl, v[$o + 1 + $kl])
+}
+
+fn tv_tabav_ajouter(t: liste<entier>, cle: liste<entier>, val: liste<entier>) -> liste<entier> {
+  $r = [12, t[1] + 1]
+  $k = 0
+  tant_que ($k < longueur(t) - 2) { joindre($r, t[2 + $k]); $k = $k + 1 }
+  joindre($r, longueur(cle))
+  $k = 0
+  tant_que ($k < longueur(cle)) { joindre($r, cle[$k]); $k = $k + 1 }
+  joindre($r, longueur(val))
+  $k = 0
+  tant_que ($k < longueur(val)) { joindre($r, val[$k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_tabav_inserer(t: liste<entier>, cle: liste<entier>, val: liste<entier>) -> liste<entier> {
+  $cnt = t[1]
+  $trouve = -1
+  $j = 0
+  tant_que ($j < $cnt) {
+    si (tv_listes_egales(tv_tabav_cle(t, $j), cle) == 1) { $trouve = $j }
+    $j = $j + 1
+  }
+  $r = [12, 0]
+  $j = 0
+  tant_que ($j < $cnt) {
+    $kc = tv_tabav_cle(t, $j)
+    $vc = tv_tabav_val(t, $j)
+    si ($j == $trouve) { $vc = val }
+    $r = tv_tabav_ajouter($r, $kc, $vc)
+    $j = $j + 1
+  }
+  si ($trouve == -1) { $r = tv_tabav_ajouter($r, cle, val) }
+  retour $r
+}
+
+fn tv_tabav_idx(t: liste<entier>, cle: liste<entier>) -> liste<entier> {
+  $cnt = t[1]
+  $j = 0
+  tant_que ($j < $cnt) {
+    si (tv_listes_egales(tv_tabav_cle(t, $j), cle) == 1) { retour tv_tabav_val(t, $j) }
+    $j = $j + 1
+  }
+  retour v_vide()
+}
+
+fn tv_tabav_cle_existe(t: liste<entier>, cle: liste<entier>) -> entier {
+  $cnt = t[1]
+  $j = 0
+  tant_que ($j < $cnt) {
+    si (tv_listes_egales(tv_tabav_cle(t, $j), cle) == 1) { retour 1 }
+    $j = $j + 1
+  }
+  retour 0
+}
+
+fn tv_tabav_texte(v: liste<entier>) -> chaine {
+  $s = "["
+  $cnt = v[1]
+  $j = 0
+  tant_que ($j < $cnt) {
+    si ($j > 0) { $s = $s + ", " }
+    $o = tv_tabav_off(v, $j)
+    $kl = v[$o]
+    $kc = tv_copier(v, $o + 1, $kl)
+    $vl = v[$o + 1 + $kl]
+    $vc = tv_copier(v, $o + 2 + $kl, $vl)
+    $s = $s + tv_valeur_texte_brut($kc) + " => " + tv_valeur_texte_brut($vc)
+    $j = $j + 1
+  }
+  $s = $s + "]"
+  retour $s
+}
+
+# ═══ CHAINE_REP (tag 13) — rope = suite de segments de codes ASCII ════════
+
+fn v_rope() -> liste<entier> {
+  $r = [13, 0]
+  retour $r
+}
+
+fn tv_rope_longueur(v: liste<entier>) -> entier { retour v[1] }
+
+fn tv_rope_ajouter(v: liste<entier>, s: chaine) -> liste<entier> {
+  $n = longueur(s)
+  $r = [13, v[1] + $n]
+  $k = 0
+  tant_que ($k < longueur(v) - 2) { joindre($r, v[2 + $k]); $k = $k + 1 }
+  joindre($r, $n)
+  $k = 0
+  tant_que ($k < $n) { joindre($r, ordre(sous_chaine(s, $k, $k + 1))); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_rope_texte(v: liste<entier>) -> chaine {
+  $s = ""
+  $o = 2
+  tant_que ($o < longueur(v)) {
+    $n = v[$o]
+    $k = 0
+    tant_que ($k < $n) { $s = $s + caractere(v[$o + 1 + $k]); $k = $k + 1 }
+    $o = $o + 1 + $n
+  }
+  retour $s
+}
+
+fn tv_rope_code(v: liste<entier>, k: entier) -> entier {
+  $o = 2
+  $rest = k
+  tant_que ($o < longueur(v)) {
+    $n = v[$o]
+    si ($rest < $n) { retour v[$o + 1 + $rest] }
+    $rest = $rest - $n
+    $o = $o + 1 + $n
+  }
+  retour -1
+}
+
+fn tv_rope_sous(v: liste<entier>, deb: entier, fin: entier) -> chaine {
+  $s = ""
+  $k = deb
+  tant_que ($k < fin) { $s = $s + caractere(tv_rope_code(v, $k)); $k = $k + 1 }
+  retour $s
+}
+
+# ═══ LISTE_AV (tag 14) — éléments = valeurs encodées de longueur variable ══
+
+fn v_lstav() -> liste<entier> {
+  $r = [14, 0]
+  retour $r
+}
+
+fn tv_lstav_cnt(v: liste<entier>) -> entier { retour v[1] }
+
+fn tv_lstav_off(v: liste<entier>, k: entier) -> entier {
+  $o = 2
+  $j = 0
+  tant_que ($j < k) {
+    $n = v[$o]
+    $o = $o + 1 + $n
+    $j = $j + 1
+  }
+  retour $o
+}
+
+fn tv_lstav_idx(v: liste<entier>, k: entier) -> liste<entier> {
+  $o = tv_lstav_off(v, k)
+  retour tv_copier(v, $o + 1, v[$o])
+}
+
+fn tv_lstav_ajouter(v: liste<entier>, e: liste<entier>) -> liste<entier> {
+  $r = [14, v[1] + 1]
+  $k = 0
+  tant_que ($k < longueur(v) - 2) { joindre($r, v[2 + $k]); $k = $k + 1 }
+  joindre($r, longueur(e))
+  $k = 0
+  tant_que ($k < longueur(e)) { joindre($r, e[$k]); $k = $k + 1 }
+  retour $r
+}
+
+fn tv_lstav_texte(v: liste<entier>) -> chaine {
+  $s = "["
+  $cnt = v[1]
+  $j = 0
+  tant_que ($j < $cnt) {
+    si ($j > 0) { $s = $s + ", " }
+    $o = tv_lstav_off(v, $j)
+    $n = v[$o]
+    $s = $s + tv_valeur_texte(tv_copier(v, $o + 1, $n))
+    $j = $j + 1
+  }
+  $s = $s + "]"
+  retour $s
+}
+
+# ═══ Dispatcheur d'affichage (tous les tags 0..14) ═════════════════════════
+
+# Variante « brute » : les rationnels rendent a/b (chaine_de), pas la forme
+# périodique. Tout le reste est identique au dispatcheur principal.
+fn tv_valeur_texte_brut(v: liste<entier>) -> chaine {
+  si (v[0] == 9) { retour tv_rat_brut(v) }
+  retour tv_valeur_texte(v)
+}
+
+fn tv_valeur_texte(v: liste<entier>) -> chaine {
+  $t = v[0]
+  si ($t == 0) { retour "" }
+  si ($t == 1) { retour chaine(v[1]) }
+  si ($t == 2) { si (v[1] != 0) { retour "vrai" }; retour "faux" }
+  si ($t == 3) {
+    $s = ""
+    $k = 0
+    tant_que ($k < longueur(v) - 1) { $s = $s + caractere(v[1 + $k]); $k = $k + 1 }
+    retour $s
+  }
+  si ($t == 4) {
+    $s = "["
+    $k = 0
+    tant_que ($k < longueur(v) - 1) {
+      si ($k > 0) { $s = $s + ", " }
+      $s = $s + chaine(v[1 + $k]); $k = $k + 1
+    }
+    $s = $s + "]"
+    retour $s
+  }
+  si ($t == 5) {
+    $s = "["
+    $n = (longueur(v) - 1) div 2
+    $k = 0
+    tant_que ($k < $n) {
+      si ($k > 0) { $s = $s + ", " }
+      $s = $s + caractere(v[1 + 2 * $k]) + " => " + chaine(v[2 + 2 * $k])
+      $k = $k + 1
+    }
+    $s = $s + "]"
+    retour $s
+  }
+  si ($t == 6) { retour bz_texte(v) }
+  si ($t == 7) { retour "erreur(" + chaine(v[1]) + ")" }
+  si ($t == 8) { retour tv_flt_texte(v) }
+  si ($t == 9) { retour tv_rat_texte(v) }
+  si ($t == 10) { retour tv_cpl_texte(v) }
+  si ($t == 11) { retour tv_irr_texte(v) }
+  si ($t == 12) { retour tv_tabav_texte(v) }
+  si ($t == 13) { retour tv_rope_texte(v) }
+  si ($t == 14) { retour tv_lstav_texte(v) }
+  retour ""
+}
