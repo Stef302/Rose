@@ -10040,13 +10040,26 @@ fn cli_err($msg: chaine) { ecrire_bytes("/dev/stderr", $msg + "\n") }
 
 
 # ══════════════════ POINT D'ENTRÉE UNIQUE ══════════════════
-# lit une source, la vérifie, la compile en RIR, exécute le RIR et affiche
-# le résultat. Tout est en Rose : aucun moteur externe n'est sollicité.
-si (nb_arguments() < 1) {
-  afficher_erreur("usage : moteur_complet SOURCE.rose")
-  quitter(2)
+# Deux modes, décidés UNIQUEMENT ici (aucun autre module n'est touché) :
+#   · CONSOLE / REPL — aucune source fournie (0 argument) ou commande
+#     `console` / `repl`. On démarre la boucle rep_run() de repl_rose.rose.
+#     Le script (une entrée de console par ligne, cf. REP_MAIN de
+#     repl_rose.rose) est lu dans le fichier donné en argument suivant ;
+#     à défaut on ouvre une console vide (une invite, comme `rose console`
+#     sur stdin vide).
+#   · FICHIER — argument(0) est un SOURCE.rose : lecture, vérification,
+#     compilation RIR, exécution du RIR et affichage du résultat.
+# Tout est en Rose : aucun moteur externe n'est sollicité.
+$mc_cmd = ""
+si (nb_arguments() >= 1) { $mc_cmd = argument(0) }
+si (nb_arguments() < 1 ou $mc_cmd == "console" ou $mc_cmd == "repl") {
+  $mc_script = ""
+  si (nb_arguments() >= 2) { $mc_script = lire_texte(argument(1)) }
+  si (longueur($mc_script) == 0) { $mc_script = "\n" }
+  >> rep_run($mc_script)
+  quitter(0)
 }
-$mc_chemin = argument(0)
+$mc_chemin = $mc_cmd
 $mc_res = lsrc_lire_programme($mc_chemin)
 si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
   >> sous_chaine($mc_res, 3, longueur($mc_res))

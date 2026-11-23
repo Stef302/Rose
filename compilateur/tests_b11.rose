@@ -1,0 +1,109 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_b11.rose — banc de tests du point 11 (démarrage de la boucle REPL
+# depuis le point d'entrée de moteur_complet.rose).
+#
+# Ce banc SE CONCATÈNE avec compilateur/repl_rose.rose dont on retire le
+# point d'entrée BEGIN/END REP_MAIN (même protocole que
+# tests_repl_rose.rose) :
+#
+#   { sed '/# ─── BEGIN REP_MAIN/,/# ─── END REP_MAIN/d' \
+#       compilateur/repl_rose.rose ; cat compilateur/tests_b11.rose ; } \
+#     > /tmp/opencode/b11_art/combined_test.rose
+#   rose verif <combinaison>        -> vérifié
+#   C0 <combinaison>                -> ELF ; exécution -> rc=0
+#   "TESTS B11 : N OK, 0 ECHEC"
+#
+# Le test principal rejoue les 10 commandes scriptées du protocole REP_MAIN
+# et compare la transcription renvoyée par rep_run() OCTET POUR OCTET à la
+# sortie mesurée de `ROSE_NO_COLOR=1 rose/rose console < input10.txt`
+# (2 090 octets ; rep_run() ne contient pas le '\n' qu'ajoute l'opérateur
+# `>>` du point d'entrée — cf. rose/docs/CORR11_REPL.md §4).
+# ═══════════════════════════════════════════════════════════════════════
+
+$pass = [0]
+$fail = [0]
+fn verif($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { joindre($pass, 1); retour 1 }
+  joindre($fail, 1)
+  afficher_erreur("ECHEC " + $nom + " : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+# Bannière exacte du REPL Rust (0.1.73) — découpée en globales : un
+# littéral chaîne de 39 lignées concaténées en une expression segfaultait
+# sous C0 (piège HORDE_REPL §7.3).
+$b11_b0 = "╭────────────────────────────────────────────╮\n" +
+  "│                    ,-.                     │\n" +
+  "│                   /   \\                    │\n" +
+  "│                  |  .  |                   │\n" +
+  "│                   \\   /                    │\n" +
+  "│                    `-|                     │\n" +
+  "│                      |                     │\n" +
+  "│                     _|_                    │\n" +
+  "│                                            │\n" +
+  "│                Rose 0.1.73                 │\n"
+$b11_b1 =
+  "│            console interactive             │\n" +
+  "╰────────────────────────────────────────────╯\n" +
+  "Tapez du code Rose. :help pour l'aide, :quit pour sortir.\n" +
+  "Méthode courante : jit — changez avec :methode aot | interprete.\n" +
+  "↑/↓ historique · Tab complète · Ctrl-C annule · Ctrl-L efface"
+$b11_banniere = $b11_b0 + $b11_b1
+
+# ── 1. Protocole d'entrée scriptée : une entrée de console par ligne ──
+$b11_script10 = "2 + 3\n" +
+  "10!\n" +
+  "$x = 7\n" +
+  "$x * $x\n" +
+  "5 > 3\n" +
+  "\"ab\" + \"cd\"\n" +
+  ":methode interprete\n" +
+  ":show\n" +
+  ":help\n" +
+  ":quit\n"
+
+$b11_g0 = "rose[jit]> 5\n" +
+  "rose[jit]> 3628800\n" +
+  "rose[jit]> rose[jit]> 49\n" +
+  "rose[jit]> vrai\n" +
+  "rose[jit]> abcd\n"
+$b11_g1 =
+  "rose[jit]> (méthode : interprete — invitation mise à jour)\n" +
+  "rose[interprete]> $x = 7\n" +
+  "rose[interprete]> Console Rose — commandes\n" +
+  "  :help                          cette aide\n" +
+  "  :methode <jit|aot|interprete>  choisit la méthode, affichée dans l'invite\n" +
+  "  :show                          affiche le code accumulé\n" +
+  "  :reset                         vide le buffer et le compteur :more\n" +
+  "  :load <fichier>                charge un fichier et l'exécute\n" +
+  "  :save <fichier>                écrit le buffer dans un fichier\n" +
+  "  :type <expr>                   type d'une expression\n"
+$b11_g2 =
+  "  :latex                         formule LaTeX du buffer\n" +
+  "  :more [N]                      30 (ou N) chiffres de plus sur le dernier résultat symbolique\n" +
+  "  :plus / :digits                alias de :more\n" +
+  "  :quit                          quitter\n" +
+  "\n" +
+  "Toute autre ligne est du code Rose, exécuté dans le contexte du buffer.\n" +
+  "Les définitions sont mémorisées ; les >> expr s'affichent.\n" +
+  "↑ et ↓ rappellent l'historique, Tab complète.\n" +
+  "rose[interprete]> "
+
+$b11_golden = $b11_banniere + "\n" + $b11_g0 + $b11_g1 + $b11_g2
+verif("transcription 10 commandes", $b11_golden, rep_run($b11_script10))
+
+# ── 2. Console vide (cas 0 argument du point d'entrée) ───────────────
+# `rose console < /dev/null` rend la bannière puis UNE invite `rose[jit]> `.
+# rep_run(\"\\n\") reproduit exactement cette transcription (sans le '\n'
+# final ajouté par `>>`).
+verif("console vide", $b11_banniere + "\n" + "rose[jit]> ", rep_run("\n"))
+
+# ── 3. Le script est bien lu comme TEXTE de fichier (chemin de la
+#       branche console du point d'entrée) ─────────────────────────────
+$b11_fixture = "/tmp/opencode/b11_art/fixture_script.txt"
+ecrire_texte($b11_fixture, $b11_script10)
+verif("lire_texte script", $b11_script10, lire_texte($b11_fixture))
+verif("rep_run sur fichier lu", $b11_golden, rep_run(lire_texte($b11_fixture)))
+
+>> "TESTS B11 : " + chaine(longueur($pass) - 1) + " OK, " + chaine(longueur($fail) - 1) + " ECHEC"
+si (longueur($fail) > 1) { quitter(1) }
