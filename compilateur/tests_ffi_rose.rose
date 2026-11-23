@@ -1,0 +1,118 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# tests_ffi_rose.rose — banc de tests de la couche FFI symbolique (J6 §11).
+# Worktree /tmp/opencode/horde_ffi (HEAD 101b48d).
+#
+# USAGE (les trois fichiers se concaténent, Rose n'a pas d'include) :
+#
+#   cat compilateur/ffi_rose.rose compilateur/ffi_syscalls.rose \
+#       compilateur/tests_ffi_rose.rose > /tmp/ffi/prog.rose
+#   rose verif /tmp/ffi/prog.rose
+#   ROSE_SANS_JIT=1 rose /tmp/ffi/prog.rose > nat.out        # référence Rust
+#   C0 /tmp/ffi/prog.rose dummy > prog.elf                 # sans Rust
+#   chmod +x prog.elf && ./prog.elf > elf.out
+#   cmp nat.out elf.out                                       # 0 attendu
+#
+# Ce fichier est un PILOTE, pas un module autonome : il appelle `ffi_*` et
+# `sc_*` définis dans les deux modules ci-dessus. Sa vérification s'entend
+# donc sur la CONCATÉNATION (exactement comme le pilote J6, qui vivait hors
+# dépôt). Aucun test n'imprime de valeur dépendante de l'heure courante :
+# l'horloge est éprouvée par deux invariants robustes (§horloge plus bas).
+#
+# Discipline G5 : aucune globale, aucun `i`, aucun `[]` littéral, aucun
+# `retour [ ... ]`, aucune affectation par index.
+# ═══════════════════════════════════════════════════════════════════════════
+
+$fixture = "/tmp/opencode/ffi_agents/fixture.txt"
+$ref = "/tmp/opencode/ffi_agents/temps_ref.txt"
+$cible = "/tmp/opencode/ffi_agents/ecrit_par_elf.txt"
+
+# ── 1. Table de symboles ──────────────────────────────────────────────────
+>> "sym_nb=" + chaine(fx_nb_symbols())
+>> "sym_temps=" + chaine(fx_trouver("temps"))
+>> "sym_arite_temps=" + chaine(fx_sym_arite(fx_trouver("temps")))
+>> "sym_types_ecr=" + fx_sym_params(fx_trouver("ecrire_bytes"))
+>> "sym_ret_chaine=" + fx_sym_ret(fx_trouver("chaine"))
+>> "sym_appeler2=" + chaine(fx_trouver("appeler2"))
+>> "sym_arite_appeler2=" + chaine(fx_sym_arite(fx_trouver("appeler2")))
+>> "sym_inconnu=" + chaine(fx_trouver("inexistant"))
+
+# ── 2. ecrire_bytes (interp.rs:6397) — vrai syscall openat/write/close ─────
+$r_ecr = ffi_ecrire_bytes($cible, "BONJOUR_FFI_2026")
+>> "ecr=" + chaine($r_ecr[0]) + "," + chaine($r_ecr[1])
+>> "ecr_fichier=" + fx_vers_chaine(ffi_lire_texte($cible))
+
+# ── 3. lire_texte (interp.rs:5920) — mmap lecture seule / openat+read ──────
+ffi_ecrire_bytes($fixture, "ABC-123-BONJOUR")
+$r_lire = ffi_lire_texte($fixture)
+>> "lire_tag=" + chaine($r_lire[0])
+>> "lire_long=" + chaine(fx_ch_long($r_lire))
+>> "lire=" + fx_vers_chaine($r_lire)
+
+# ── 4. chaine (interp.rs:5126) ────────────────────────────────────────────
+>> "ch_ent=" + fx_vers_chaine(ffi_chaine(fx_ent(12345)))
+>> "ch_neg=" + fx_vers_chaine(ffi_chaine(fx_ent(0 - 7)))
+>> "ch_boo=" + fx_vers_chaine(ffi_chaine(fx_boo(1)))
+>> "ch_ch=" + fx_vers_chaine(ffi_chaine(fx_ch("deja")))
+>> "ch_vide=" + fx_vers_chaine(ffi_chaine(fx_vide()))
+
+# ── 5. hasard + graine (interp.rs:5651/5654) — splitmix64 + Lemire ────────
+# graine(1234) rend la suite DÉTERMINISTE des deux côtés (59, 83, ...).
+ffi_graine(1234)
+>> "hz1=" + fx_vers_chaine(ffi_hasard(100))
+>> "hz2=" + fx_vers_chaine(ffi_hasard(100))
+>> "hz3=" + fx_vers_chaine(ffi_hasard(3))
+>> "hz4=" + fx_vers_chaine(ffi_hasard(7))
+>> "hz5=" + fx_vers_chaine(ffi_hasard(1000000))
+
+# ── 6. temps — shim d'horloge absente de l'émetteur G5 ─────────────────────
+# Deux invariants INDÉPENDANTS de l'écart entre les deux exécutions :
+#  (a) `secondes div 10000000` = 179 pour une date 11/2026 (un changement
+#      n'arrive que tous les ~115 jours) : prouve que c'est bien une horloge
+#      Unix en secondes, pas le stub 0 ;
+#  (b) on écrit l'heure locale dans un fichier au début du programme, puis
+#      on vérifie en fin de programme qu'elle n'a pas reculé de plus d'une
+#      heure : vrai sous Rust (écart 0) comme sous G5 (écart = durée de
+#      compilation + exécution, quelques secondes).
+$maintenant = ffi_temps()[1]
+ffi_ecrire_bytes($ref, chaine($maintenant))
+>> "temps_tag=" + chaine(ffi_temps()[0])
+>> "temps_epoque=" + chaine($maintenant div 10000000)
+# `chaine(booléen)` n'est PAS conforme sous G5 (rend "1"/"0", voir
+# G5_C0.md §2) : on passe par le formateur FFI, identique des deux côtés.
+>> "temps_positif=" + fx_vers_chaine(fx_boo2($maintenant > 1700000000))
+$lu = entier(fx_ch_de(ffi_lire_texte($ref)))
+$ecart = $maintenant - $lu
+>> "temps_stable=" + fx_vers_chaine(fx_boo2($ecart >= 0 et $ecart < 3600))
+
+# ── 7. eval_expr — couche symbolique minimale ─────────────────────────────
+>> "eval_add=" + fx_vers_chaine(ffi_eval_expr("17+25"))
+>> "eval_sub=" + fx_vers_chaine(ffi_eval_expr("100-37"))
+>> "eval_lit=" + fx_vers_chaine(ffi_eval_expr("4242"))
+
+# ── 8. Gestion d'erreurs (types, arité, symbole) ──────────────────────────
+>> "err_sym=" + fx_vers_chaine(ffi_appeler("nope", 0, fx_vide(), fx_vide()))
+>> "err_arite0=" + fx_vers_chaine(ffi_appeler("hasard", 0, fx_vide(), fx_vide()))
+>> "err_arite2=" + fx_vers_chaine(ffi_appeler("lire_texte", 2, fx_ch("a"), fx_ch("b")))
+>> "err_type1=" + fx_vers_chaine(ffi_appeler("hasard", 1, fx_ch("x"), fx_vide()))
+>> "err_type2=" + fx_vers_chaine(ffi_appeler("ecrire_bytes", 2, fx_ent(1), fx_ch("x")))
+>> "err_indispo=" + fx_vers_chaine(ffi_appeler("charger", 1, fx_ch("libm.so"), fx_vide()))
+>> "err_indispo2=" + fx_vers_chaine(ffi_appeler("appeler2", 4, fx_ent(1), fx_ch("pow")))
+>> "err_borne=" + fx_vers_chaine(ffi_hasard(0))
+# `lire_texte` natif LÈVE une erreur runtime sur un chemin absent, alors que
+# l'ELF G5 rend une chaîne vide : aucun test octet-identique n'est possible
+# sur ce cas. Le comportement est documenté dans HORDE_FFI.md §erreurs.
+
+# ── 9. Couche des syscalls (fichier séparé) ───────────────────────────────
+>> "sys_nb=" + chaine(sc_nb_syscalls())
+>> "sys_clock_absent=" + chaine(sc_syscall_emis(sc_syscall_trouver("clock_gettime")))
+>> "sys_write_emis=" + chaine(sc_syscall_emis(sc_syscall_trouver("write")))
+>> "sys_horloge_epoque=" + chaine(sc_horloge_secondes() div 10000000)
+>> "sys_fichier=" + chaine(sc_fichier_non_vide($fixture))
+# /proc/uptime a st_size = 0 : lire_texte n'en lit aucun octet des deux
+# côtés. C'est un CONSTAT, pas un test d'horloge.
+>> "sys_procfs_stsize0=" + chaine(sc_fichier_non_vide("/proc/uptime"))
+# NOTE : `lire_texte` natif utilise mmap, qui ÉCHOUE sur un fichier sysfs
+# (st_size = 4096 mais 11 octets réels) ; l'ELF G5 utilise openat+read et
+# réussit. On ne lit donc PAS sysfs dans le pilote octet-identique : seule
+# l'horloge `sc_horloge_secondes()` en a besoin, et elle emprunte la voie
+# native sous Rust et la voie sysfs sous G5 (voir HORDE_FFI.md §horloge).

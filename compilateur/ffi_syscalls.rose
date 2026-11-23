@@ -1,0 +1,128 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ffi_syscalls.rose — shims des syscalls ABSENTS de l'émetteur G5.
+# Poste J6 §11. Worktree /tmp/opencode/horde_ffi (HEAD 101b48d).
+#
+# Fichier SEPARÉ autorisé par la mission. Se concatène avec ffi_rose.rose :
+#
+#   cat compilateur/ffi_rose.rose compilateur/ffi_syscalls.rose \
+#       compilateur/tests_ffi_rose.rose > /tmp/ffi/prog.rose
+#
+# Se vérifie seul : `rose verif compilateur/ffi_syscalls.rose`.
+#
+# ── Constat mesuré (lecture de compilateur/emetteur_elf.rose) ─────────────
+# Routines de syscall VRAIMENT émises dans l'ELF (svc #0) :
+#   openat=56, close=57, read=63, write=64, fstat=80  (G5-IO.md)
+#   mmap=222, mprotect=226, fchmodat=53, execve=221   (J4)
+#   getrandom via rng_tirer pour hasard/graine        (g5_emit_rng_step)
+# Primitive native listée dans interp.rs mais ABSENTE de l'émetteur :
+#   temps()  -> aucun $g5_tempsl ; l'appel aboutit sur $g5_stub0l (movz x0,0).
+#
+# Le shim d'horloge ci-dessous n'ajoute AUCUN code machine : il compose les
+# syscalls DÉJÀ émis (openat/read/close derrière lire_texte) avec une lecture
+# de l'horloge noyau exposée par sysfs. Aucun autre fichier n'est modifié.
+#
+# ── Choix de l'unité ───────────────────────────────────────────────────────
+# `temps()` natif rend des NANOSECONDES Unix (u64) : ~1,795e18 en 11/2026.
+# Un entier G5 est tagué `n<<3` dans un mot 64 bits, donc plafonné à 2^60
+# (~1,15e18) : les nanos déborderaient. La couche FFI normalise en SECONDES
+# (~1,795e9), qui tient sans le moindre repli bigint des deux côtés.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Chemin sysfs de l'horloge noyau (présent sur cette machine, vérifié :
+# `stat -c %s` = 4096, contenu réel = 11 octets "1795439611\n").
+fn sc_chemin_horloge() -> chaine {
+  retour "/sys/class/rtc/rtc0/since_epoch"
+}
+
+# Indique si la primitive native temps() est émise par le backend courant.
+# Sous l'interpréteur Rust : 1. Sous un ELF G5 : 0 (stub à 0).
+fn sc_temps_natif_actif() -> entier {
+  $t = temps()
+  si ($t > 0) { retour 1 }
+  retour 0
+}
+
+# Lecture brute de l'horloge noyau par l'émetteur déjà disponible
+# (lire_texte -> openat/read/close). Retourne 0 si le fichier est illisible.
+fn sc_lire_horloge_brut() -> chaine {
+  retour lire_texte(sc_chemin_horloge())
+}
+
+# Horloge Unix en secondes, identique des deux côtés :
+#   natif : temps() div 1e9 ;
+#   G5    : entier(lire_texte(sysfs)) (le parseur G5 s'arrête au '\n').
+fn sc_horloge_secondes() -> entier {
+  $t = temps()
+  si ($t > 0) { retour $t div 1000000000 }
+  retour entier(lire_texte(sc_chemin_horloge()))
+}
+
+# Uptime noyau en centièmes de seconde (second shim procfs). CONSTAT MESURÉ :
+# /proc/uptime a `st_size = 0` sous ce noyau, donc `lire_texte` (mmap côté
+# Rust, openat+read jusqu'à st_size côté G5) n'en lit AUCUN octet et la
+# fonction rend 0 des deux côtés. Conservée comme shim documenté ; le test
+# vérifie ce comportement (`sys_procfs_stsize0=0`) plutôt qu'une valeur
+# d'uptime qui n'existe pas. L'horloge réelle passe par sysfs (ci-dessus).
+fn sc_uptime_centiemes() -> entier {
+  $s = lire_texte("/proc/uptime")
+  $n = longueur($s)
+  $k = 0
+  $point = 0
+  tant_que ($k < $n) {
+    $c = sous_chaine($s, $k, $k + 1)
+    si ($c == ".") { $point = $k }
+    $k = $k + 1
+  }
+  si ($point == 0) { retour 0 }
+  $ent = entier(sous_chaine($s, 0, $point))
+  $dec = entier(sous_chaine($s, $point + 1, $point + 3))
+  retour $ent * 100 + $dec
+}
+
+# Écriture d'octets brute (l'émetteur G5 la fournit déjà) — exposée ici pour
+# que la couche "syscalls" soit complète du point de vue de l'appelant FFI.
+fn sc_ecrire_octets(chemin: chaine, donnees: chaine) -> entier {
+  ecrire_bytes(chemin, donnees)
+  retour 0
+}
+
+# Lecture de fichier générique : l'émetteur G5 ne sait pas signaler d'erreur
+# (une ouverture impossible rend une chaîne vide), on normalise ici :
+# 0 = fichier vide / illisible, 1 = contenu non vide.
+fn sc_lire_fichier(chemin: chaine) -> chaine {
+  retour lire_texte(chemin)
+}
+
+fn sc_fichier_non_vide(chemin: chaine) -> entier {
+  $s = lire_texte(chemin)
+  si (longueur($s) > 0) { retour 1 }
+  retour 0
+}
+
+# Table de disponibilité des syscalls, même esprit que la table de symboles
+# de ffi_rose.rose : 1 = émis dans l'ELF G5, 0 = absent (shim nécessaire).
+fn sc_nb_syscalls() -> entier { retour 6 }
+
+fn sc_syscall_nom(k: entier) -> chaine {
+  si (k == 0) { retour "openat" }
+  si (k == 1) { retour "read" }
+  si (k == 2) { retour "write" }
+  si (k == 3) { retour "fstat" }
+  si (k == 4) { retour "mmap" }
+  si (k == 5) { retour "clock_gettime" }
+  retour ""
+}
+
+fn sc_syscall_emis(k: entier) -> entier {
+  si (k == 5) { retour 0 }
+  retour 1
+}
+
+fn sc_syscall_trouver(nom: chaine) -> entier {
+  $k = 0
+  tant_que ($k < sc_nb_syscalls()) {
+    si (sc_syscall_nom($k) == nom) { retour $k }
+    $k = $k + 1
+  }
+  retour -1
+}
