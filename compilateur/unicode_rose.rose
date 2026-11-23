@@ -1,0 +1,313 @@
+# unicode_rose.rose — Unicode complet dans le moteur auto-hébergé (J6 §11).
+#
+# Primitives UTF-8 ÉCRITES EN ROSE, sans dépendance au moteur Rust pour
+# l'algèbre des octets : décodage/encodage 1..4 octets, longueur en points
+# de code, idx, sous-chaîne, comparaison lexicographique, ordre/caractère
+# et normalisation NFC élémentaire (Latin-1).
+#
+# Le programme tourne tel quel sous l'interpréteur Rust (`rose/rose`) ET
+# sous l'émetteur G5 auto-hébergé (`C0_final.elf`). Aucune variable globale,
+# aucun `[]` littéral (type introuvable en natif) : toutes les listes
+# portent un SENTINELLE à l'indice 0, les éléments logiques vont de 1 à
+# longueur(l)-1 (même convention que moteur_ops.rose).
+#
+# Les chaînes Rose sont des suites de POINTS DE CODE. `u_cps` les extrait
+# avec `ordre(sous_chaine(s,k,k+1))` (sain natif ET G5 depuis le correctif
+# UTF-8 de emetteur_elf.rose). `octet_brut` fabrique un descripteur d'UN
+# octet brut (intercepté G5, `caractere(v % 256)` côté Rust).
+
+# ── Convention listes à sentinelle ────────────────────────────────────────────
+
+fn u_long(l: liste<entier>) -> entier { retour longueur(l) - 1 }
+fn u_get(l: liste<entier>, k: entier) -> entier { retour l[1 + k] }
+
+# ── octet_brut : 1 octet brut (définition locale, interceptée par G5) ──────────
+
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+
+# ── Décodage UTF-8 ────────────────────────────────────────────────────────────
+
+# Continuation bytes 0b10xxxxxx.
+fn u_cont(b: entier) -> entier {
+  si (b >= 128 et b < 192) { retour 1 }
+  retour 0
+}
+
+# Longueur de la séquence d'après l'octet de tête ; 0 = tête invalide.
+# 0xC0/0xC1 (sur-long) et 0xF5..0xFF (hors Unicode) sont rejetés.
+fn u_tete(b: entier) -> entier {
+  si (b < 128) { retour 1 }
+  si (b >= 194 et b < 224) { retour 2 }
+  si (b >= 224 et b < 240) { retour 3 }
+  si (b >= 240 et b < 245) { retour 4 }
+  retour 0
+}
+
+# Code point à l'octet logique k d'une liste d'octets, -1 si la séquence
+# est invalide (sur-longue, continuation manquante, surrogate, > U+10FFFF).
+fn u_decode(bytes: liste<entier>, k: entier) -> entier {
+  $n = u_long(bytes)
+  si (k < 0 ou k >= $n) { retour -1 }
+  $b0 = u_get(bytes, k)
+  $len = u_tete($b0)
+  si ($len == 0) { retour -1 }
+  si ($len == 1) { retour $b0 }
+  si (k + $len > $n) { retour -1 }
+  $j = 1
+  tant_que ($j < $len) {
+    si (u_cont(u_get(bytes, k + $j)) == 0) { retour -1 }
+    $j = $j + 1
+  }
+  $cp = 0
+  si ($len == 2) {
+    $cp = ($b0 % 32) * 64 + (u_get(bytes, k + 1) % 64)
+    si ($cp < 128) { retour -1 }
+  }
+  si ($len == 3) {
+    $cp = ($b0 % 16) * 4096 + (u_get(bytes, k + 1) % 64) * 64 + (u_get(bytes, k + 2) % 64)
+    si ($cp < 2048) { retour -1 }
+  }
+  si ($len == 4) {
+    $cp = ($b0 % 8) * 262144 + (u_get(bytes, k + 1) % 64) * 4096 + (u_get(bytes, k + 2) % 64) * 64 + (u_get(bytes, k + 3) % 64)
+    si ($cp < 65536) { retour -1 }
+  }
+  si ($cp >= 55296 et $cp <= 57343) { retour -1 }
+  si ($cp > 1114111) { retour -1 }
+  retour $cp
+}
+
+# ── Encodage UTF-8 ────────────────────────────────────────────────────────────
+
+# Code point -> liste d'octets UTF-8 (1..4). Liste vide si cp invalide.
+fn u_encode(cp: entier) -> liste<entier> {
+  $r = [0]
+  si (cp < 0 ou cp > 1114111) { retour $r }
+  si (cp < 128) {
+    joindre($r, cp)
+  } sinon si (cp < 2048) {
+    joindre($r, 192 + cp div 64)
+    joindre($r, 128 + cp % 64)
+  } sinon si (cp < 65536) {
+    joindre($r, 224 + cp div 4096)
+    joindre($r, 128 + (cp div 64) % 64)
+    joindre($r, 128 + cp % 64)
+  } sinon {
+    joindre($r, 240 + cp div 262144)
+    joindre($r, 128 + (cp div 4096) % 64)
+    joindre($r, 128 + (cp div 64) % 64)
+    joindre($r, 128 + cp % 64)
+  }
+  retour $r
+}
+
+# ── Chaîne <-> listes ─────────────────────────────────────────────────────────
+
+# Points de code d'une chaîne Rose (natif et G5).
+fn u_cps(s: chaine) -> liste<entier> {
+  $r = [0]
+  $n = longueur(s)
+  $k = 0
+  tant_que ($k < $n) {
+    joindre($r, ordre(sous_chaine(s, $k, $k + 1)))
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Octets UTF-8 d'une chaîne Rose.
+fn u_bytes(s: chaine) -> liste<entier> {
+  $cps = u_cps(s)
+  $r = [0]
+  $k = 0
+  tant_que ($k < u_long($cps)) {
+    $e = u_encode(u_get($cps, $k))
+    $j = 0
+    tant_que ($j < u_long($e)) { joindre($r, u_get($e, $j)); $j = $j + 1 }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Points de code d'une liste d'octets UTF-8 (invalides -> U+FFFD).
+fn u_points(bytes: liste<entier>) -> liste<entier> {
+  $r = [0]
+  $k = 0
+  $n = u_long(bytes)
+  tant_que ($k < $n) {
+    $cp = u_decode(bytes, $k)
+    $len = u_tete(u_get(bytes, $k))
+    si ($cp < 0) { $cp = 65533 }
+    si ($len <= 0) { $len = 1 }
+    joindre($r, $cp)
+    $k = $k + $len
+  }
+  retour $r
+}
+
+# Points de code -> chaîne Rose (caractere encode en UTF-8 sous G5).
+fn u_texte(cps: liste<entier>) -> chaine {
+  $r = ""
+  $k = 0
+  tant_que ($k < u_long(cps)) { $r = $r + caractere(u_get(cps, $k)); $k = $k + 1 }
+  retour $r
+}
+
+# Octets -> chaîne d'octets bruts (utile pour ecrire_bytes : octets
+# identiques côté Rust `c as u8` et côté G5 descripteur brut).
+fn u_brut(bytes: liste<entier>) -> chaine {
+  $r = ""
+  $k = 0
+  tant_que ($k < u_long(bytes)) { $r = $r + octet_brut(u_get(bytes, $k)); $k = $k + 1 }
+  retour $r
+}
+
+# ── Opérations demandées ──────────────────────────────────────────────────────
+
+# Longueur en POINTS DE CODE, prouvée par décodage des octets UTF-8.
+fn u_longueur(s: chaine) -> entier { retour u_long(u_points(u_bytes(s))) }
+
+# Point de code à l'indice i (i<0 ou hors bornes -> -1).
+fn u_idx(s: chaine, pos: entier) -> entier {
+  $p = u_points(u_bytes(s))
+  si (pos < 0 ou pos >= u_long($p)) { retour -1 }
+  retour u_get($p, pos)
+}
+
+# Sous-chaîne par indices de points de code [a,b) -> chaîne Rose.
+fn u_sous(s: chaine, a: entier, b: entier) -> chaine {
+  $p = u_points(u_bytes(s))
+  $r = ""
+  $k = a
+  tant_que ($k < b et $k < u_long($p)) {
+    si ($k >= 0) { $r = $r + caractere(u_get($p, $k)) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Comparaison lexicographique des OCTETS UTF-8 : -1, 0, 1.
+# L'ordre UTF-8 des octets = l'ordre des points de code.
+fn u_compare(a: chaine, b: chaine) -> entier {
+  $x = u_bytes(a)
+  $y = u_bytes(b)
+  $n = u_long($x)
+  $m = u_long($y)
+  $k = 0
+  $lim = $n
+  si ($m < $lim) { $lim = $m }
+  tant_que ($k < $lim) {
+    $bx = u_get($x, $k)
+    $by = u_get($y, $k)
+    si ($bx < $by) { retour -1 }
+    si ($bx > $by) { retour 1 }
+    $k = $k + 1
+  }
+  si ($n < $m) { retour -1 }
+  si ($n > $m) { retour 1 }
+  retour 0
+}
+
+# ordre / caractère (alias explicites de la couche UTF-8).
+fn u_ordre(s: chaine) -> entier {
+  $cps = u_cps(s)
+  si (u_long($cps) == 0) { retour -1 }
+  retour u_get($cps, 0)
+}
+
+fn u_caractere(cp: entier) -> chaine {
+  # On encode PUIS on décode avec nos propres primitives : le résultat est
+  # une chaîne de POINTS DE CODE (et non la suite des octets pris pour des
+  # code points, qui donnerait "Ã©" au lieu de "é" sous le moteur Rust).
+  retour u_texte(u_points(u_encode(cp)))
+}
+
+# ── Normalisation NFC élémentaire (Latin-1) ───────────────────────────────────
+
+# Table plate [précomposé, base, diacritique] × 42 entrées.
+fn u_tab() -> liste<entier> {
+  $t = [0,
+    224, 97, 768, 225, 97, 769, 226, 97, 770, 227, 97, 771,
+    228, 97, 776, 229, 97, 772, 231, 99, 775,
+    232, 101, 768, 233, 101, 769, 234, 101, 770, 235, 101, 776,
+    236, 105, 768, 237, 105, 769, 238, 105, 770, 239, 105, 776,
+    241, 110, 771,
+    242, 111, 768, 243, 111, 769, 244, 111, 770, 245, 111, 771,
+    246, 111, 776,
+    249, 117, 768, 250, 117, 769, 251, 117, 770, 252, 117, 776,
+    253, 121, 769, 255, 121, 776,
+    192, 65, 768, 193, 65, 769, 194, 65, 770, 195, 65, 771,
+    196, 65, 776, 197, 65, 772, 199, 67, 775,
+    200, 69, 768, 201, 69, 769, 202, 69, 770, 203, 69, 776,
+    204, 73, 768, 205, 73, 769, 206, 73, 770, 207, 73, 776,
+    209, 78, 771,
+    210, 79, 768, 211, 79, 769, 212, 79, 770, 213, 79, 771,
+    214, 79, 776,
+    217, 85, 768, 218, 85, 769, 219, 85, 770, 220, 85, 776,
+    221, 89, 769, 376, 89, 776]
+  retour $t
+}
+
+fn u_dec_base(cp: entier) -> entier {
+  $t = u_tab()
+  $k = 1
+  $n = longueur($t)
+  tant_que ($k + 2 < $n) {
+    si ($t[$k] == cp) { retour $t[$k + 1] }
+    $k = $k + 3
+  }
+  retour -1
+}
+
+fn u_dec_mark(cp: entier) -> entier {
+  $t = u_tab()
+  $k = 1
+  $n = longueur($t)
+  tant_que ($k + 2 < $n) {
+    si ($t[$k] == cp) { retour $t[$k + 2] }
+    $k = $k + 3
+  }
+  retour -1
+}
+
+fn u_compose(base: entier, mark: entier) -> entier {
+  $t = u_tab()
+  $k = 1
+  $n = longueur($t)
+  tant_que ($k + 2 < $n) {
+    si ($t[$k + 1] == base et $t[$k + 2] == mark) { retour $t[$k] }
+    $k = $k + 3
+  }
+  retour -1
+}
+
+# NFC : décomposer les précomposés, puis recomposer les paires adjacentes.
+fn u_normalise(s: chaine) -> chaine {
+  $cps = u_cps(s)
+  $d = [0]
+  $k = 0
+  tant_que ($k < u_long($cps)) {
+    $cp = u_get($cps, $k)
+    $b = u_dec_base($cp)
+    si ($b >= 0) {
+      joindre($d, $b)
+      joindre($d, u_dec_mark($cp))
+    } sinon { joindre($d, $cp) }
+    $k = $k + 1
+  }
+  $c = [0]
+  $k = 0
+  tant_que ($k < u_long($d)) {
+    $a = u_get($d, $k)
+    $compose = 0
+    si ($k + 1 < u_long($d)) {
+      $cp = u_compose($a, u_get($d, $k + 1))
+      si ($cp >= 0) {
+        joindre($c, $cp)
+        $compose = 1
+        $k = $k + 2
+      }
+    }
+    si ($compose == 0) { joindre($c, $a); $k = $k + 1 }
+  }
+  retour u_texte($c)
+}

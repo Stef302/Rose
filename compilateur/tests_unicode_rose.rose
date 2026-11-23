@@ -1,0 +1,141 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# tests_unicode_rose.rose — banc de tests Unicode (poste J6 §11).
+# Worktree /tmp/opencode/horde_unicode (HEAD 101b48d).
+#
+# PILOTE : Rose n'a pas d'include. Se vérifie/construit PAR CONCATÉNATION :
+#
+#   cat compilateur/unicode_rose.rose compilateur/tests_unicode_rose.rose \
+#       > /tmp/opencode/unicode/prog.rose
+#   rose verif /tmp/opencode/unicode/prog.rose
+#   ROSE_SANS_JIT=1 rose /tmp/opencode/unicode/prog.rose > /tmp/opencode/unicode/nat.out
+#   C0 /tmp/opencode/unicode/prog.rose > /tmp/opencode/unicode/prog.elf
+#   chmod +x prog.elf && ./prog.elf > /tmp/opencode/unicode/elf.out
+#   cmp nat.out elf.out          # 0 attendu (parité octet pour octet)
+#
+# Chaque ligne imprime `label=valeur` ; les valeurs entières sont suivies
+# du résultat natif du moteur Rust entre parenthèses, ce qui MATERIALISE
+# la comparaison au moteur Rust (pas seulement une comparaison interne).
+# Aucune globale, aucun `i`, aucun `[]` littéral.
+# ═══════════════════════════════════════════════════════════════════════════
+
+fn t_hexch(d: entier) -> chaine {
+  si (d < 10) { retour caractere(48 + d) }
+  retour caractere(87 + d)
+}
+fn t_hex(l: liste<entier>) -> chaine {
+  $r = ""
+  $k = 1
+  tant_que ($k < longueur(l)) {
+    $b = l[$k]
+    $r = $r + t_hexch($b div 16) + t_hexch($b % 16)
+    $k = $k + 1
+  }
+  retour $r
+}
+fn t_ok(b: booleen) -> chaine {
+  si (b) { retour "OK" }
+  retour "NO"
+}
+
+# ── 1. ENCODAGE code point -> octets UTF-8 (16 cas) ──────────────────────────
+# La référence est le moteur Rust : u_caractere(cp) doit être ÉGALE à
+# caractere(cp) (native Rust = UTF-8, G5 = descripteur UTF-8).
+>> "enc_0000=" + t_hex(u_encode(0)) + ",rust=" + t_ok(u_caractere(0) == caractere(0))
+>> "enc_0041=" + t_hex(u_encode(65)) + ",rust=" + t_ok(u_caractere(65) == caractere(65))
+>> "enc_007F=" + t_hex(u_encode(127)) + ",rust=" + t_ok(u_caractere(127) == caractere(127))
+>> "enc_0080=" + t_hex(u_encode(128)) + ",rust=" + t_ok(u_caractere(128) == caractere(128))
+>> "enc_00E9=" + t_hex(u_encode(233)) + ",rust=" + t_ok(u_caractere(233) == caractere(233))
+>> "enc_00FF=" + t_hex(u_encode(255)) + ",rust=" + t_ok(u_caractere(255) == caractere(255))
+>> "enc_0100=" + t_hex(u_encode(256)) + ",rust=" + t_ok(u_caractere(256) == caractere(256))
+>> "enc_07FF=" + t_hex(u_encode(2047)) + ",rust=" + t_ok(u_caractere(2047) == caractere(2047))
+>> "enc_0800=" + t_hex(u_encode(2048)) + ",rust=" + t_ok(u_caractere(2048) == caractere(2048))
+>> "enc_20AC=" + t_hex(u_encode(8364)) + ",rust=" + t_ok(u_caractere(8364) == caractere(8364))
+>> "enc_2C9D=" + t_hex(u_encode(11389)) + ",rust=" + t_ok(u_caractere(11389) == caractere(11389))
+>> "enc_4E2D=" + t_hex(u_encode(20013)) + ",rust=" + t_ok(u_caractere(20013) == caractere(20013))
+>> "enc_FFFF=" + t_hex(u_encode(65535)) + ",rust=" + t_ok(u_caractere(65535) == caractere(65535))
+>> "enc_10000=" + t_hex(u_encode(65536)) + ",rust=" + t_ok(u_caractere(65536) == caractere(65536))
+>> "enc_1F680=" + t_hex(u_encode(128640)) + ",rust=" + t_ok(u_caractere(128640) == caractere(128640))
+>> "enc_10FFFE=" + t_hex(u_encode(1114110)) + ",rust=" + t_ok(u_caractere(1114110) == caractere(1114110))
+
+# ── 2. DÉCODAGE octets -> code point (16 valides + 7 invalides) ──────────────
+>> "dec_0000=" + chaine(u_decode(u_encode(0), 0)) + ",rust=" + chaine(ordre(caractere(0)))
+>> "dec_0041=" + chaine(u_decode(u_encode(65), 0)) + ",rust=" + chaine(ordre(caractere(65)))
+>> "dec_007F=" + chaine(u_decode(u_encode(127), 0)) + ",rust=" + chaine(ordre(caractere(127)))
+>> "dec_0080=" + chaine(u_decode(u_encode(128), 0)) + ",rust=" + chaine(ordre(caractere(128)))
+>> "dec_00E9=" + chaine(u_decode(u_encode(233), 0)) + ",rust=" + chaine(ordre(caractere(233)))
+>> "dec_00FF=" + chaine(u_decode(u_encode(255), 0)) + ",rust=" + chaine(ordre(caractere(255)))
+>> "dec_0100=" + chaine(u_decode(u_encode(256), 0)) + ",rust=" + chaine(ordre(caractere(256)))
+>> "dec_07FF=" + chaine(u_decode(u_encode(2047), 0)) + ",rust=" + chaine(ordre(caractere(2047)))
+>> "dec_0800=" + chaine(u_decode(u_encode(2048), 0)) + ",rust=" + chaine(ordre(caractere(2048)))
+>> "dec_20AC=" + chaine(u_decode(u_encode(8364), 0)) + ",rust=" + chaine(ordre(caractere(8364)))
+>> "dec_2C9D=" + chaine(u_decode(u_encode(11389), 0)) + ",rust=" + chaine(ordre(caractere(11389)))
+>> "dec_4E2D=" + chaine(u_decode(u_encode(20013), 0)) + ",rust=" + chaine(ordre(caractere(20013)))
+>> "dec_FFFF=" + chaine(u_decode(u_encode(65535), 0)) + ",rust=" + chaine(ordre(caractere(65535)))
+>> "dec_10000=" + chaine(u_decode(u_encode(65536), 0)) + ",rust=" + chaine(ordre(caractere(65536)))
+>> "dec_1F680=" + chaine(u_decode(u_encode(128640), 0)) + ",rust=" + chaine(ordre(caractere(128640)))
+>> "dec_10FFFE=" + chaine(u_decode(u_encode(1114110), 0)) + ",rust=" + chaine(ordre(caractere(1114110)))
+# Séquences invalides -> -1
+>> "inv_cont=" + chaine(u_decode([0, 128], 0))
+>> "inv_surlong2=" + chaine(u_decode([0, 192, 128], 0))
+>> "inv_surlong3=" + chaine(u_decode([0, 224, 128, 128], 0))
+>> "inv_cont_manq=" + chaine(u_decode([0, 226, 40, 161], 0))
+>> "inv_surrogate=" + chaine(u_decode([0, 237, 160, 128], 0))
+>> "inv_trop_grand=" + chaine(u_decode([0, 244, 144, 128, 128], 0))
+>> "inv_tronque=" + chaine(u_decode([0, 240, 159], 0))
+>> "inv_ff=" + chaine(u_decode([0, 255], 0))
+
+# ── 3. LONGUEUR en points de code (6 cas) ───────────────────────────────────
+>> "len_vide=" + chaine(u_longueur("")) + ",rust=" + chaine(longueur(""))
+>> "len_ascii=" + chaine(u_longueur("abc")) + ",rust=" + chaine(longueur("abc"))
+>> "len_latin1=" + chaine(u_longueur("été")) + ",rust=" + chaine(longueur("été"))
+>> "len_grec=" + chaine(u_longueur("π≈λ")) + ",rust=" + chaine(longueur("π≈λ"))
+>> "len_cjk=" + chaine(u_longueur("中文")) + ",rust=" + chaine(longueur("中文"))
+>> "len_astral=" + chaine(u_longueur("🚀🌕")) + ",rust=" + chaine(longueur("🚀🌕"))
+
+# ── 4. IDX par point de code (6 cas) ────────────────────────────────────────
+>> "idx_ete0=" + chaine(u_idx("été", 0)) + ",rust=" + chaine(ordre(sous_chaine("été", 0, 1)))
+>> "idx_ete1=" + chaine(u_idx("été", 1)) + ",rust=" + chaine(ordre(sous_chaine("été", 1, 2)))
+>> "idx_grec=" + chaine(u_idx("x≈y", 1)) + ",rust=" + chaine(ordre(sous_chaine("x≈y", 1, 2)))
+>> "idx_cjk=" + chaine(u_idx("中文", 1)) + ",rust=" + chaine(ordre(sous_chaine("中文", 1, 2)))
+>> "idx_astral=" + chaine(u_idx("🚀🌕", 1)) + ",rust=" + chaine(ordre(sous_chaine("🚀🌕", 1, 2)))
+>> "idx_hors=" + chaine(u_idx("été", 9)) + "/" + chaine(u_idx("été", 0 - 1))
+
+# ── 5. SOUS-CHAÎNE par points de code (5 cas) ───────────────────────────────
+>> "sous_ete=" + u_sous("été", 0, 2) + ",rust=" + sous_chaine("été", 0, 2)
+>> "sous_approx=" + u_sous("x≈y", 1, 2) + ",rust=" + sous_chaine("x≈y", 1, 2)
+>> "sous_cjk=" + u_sous("中文", 1, 2) + ",rust=" + sous_chaine("中文", 1, 2)
+>> "sous_astral=" + u_sous("a🚀🌕b", 1, 3) + ",rust=" + sous_chaine("a🚀🌕b", 1, 3)
+>> "sous_vide=" + u_sous("été", 2, 2) + ",rust=" + sous_chaine("été", 2, 2)
+
+# ── 6. COMPARAISON lexicographique (7 cas) ──────────────────────────────────
+>> "cmp_ab=" + chaine(u_compare("a", "b")) + ",rust=" + t_ok("a" < "b")
+>> "cmp_egal=" + chaine(u_compare("été", "été")) + ",rust=" + t_ok("été" == "été")
+>> "cmp_prefixe=" + chaine(u_compare("a", "abc")) + ",rust=" + t_ok("a" < "abc")
+>> "cmp_latin=" + chaine(u_compare("a", "é")) + ",rust=" + t_ok("a" < "é")
+>> "cmp_grec=" + chaine(u_compare("≈", "λ")) + ",rust=" + t_ok("≈" > "λ")
+>> "cmp_astral=" + chaine(u_compare("🚀", "中")) + ",rust=" + t_ok("🚀" > "中")
+>> "cmp_ordre_trie=" + chaine(u_compare("é", "中")) + "/" + chaine(u_compare("中", "🚀"))
+
+# ── 7. ORDRE / CARACTÈRE (4 cas) ────────────────────────────────────────────
+>> "ordre_pi=" + chaine(u_ordre("π")) + ",rust=" + chaine(ordre("π"))
+>> "ordre_rocket=" + chaine(u_ordre("🚀x")) + ",rust=" + chaine(ordre(sous_chaine("🚀x", 0, 1)))
+>> "ordre_vide=" + chaine(u_ordre(""))
+>> "car_roundtrip=" + chaine(ordre(u_caractere(128640))) + ",rust=" + chaine(ordre(caractere(128640)))
+
+# ── 8. NORMALISATION NFC basique (4 cas) ────────────────────────────────────
+>> "norm_compose=" + u_normalise("e" + caractere(769)) + ",rust=" + "é"
+>> "norm_deja=" + u_normalise("é") + ",rust=" + "é"
+>> "norm_cafe=" + u_normalise("cafe" + caractere(769)) + ",rust=" + "café"
+>> "norm_nonlatin=" + u_normalise("中🚀") + ",rust=" + "中🚀"
+
+# ── 9. ALLERS-RETOURS octets <-> points de code (4 cas) ─────────────────────
+>> "rt_ete=" + t_ok(u_points(u_bytes("été"))[1] == 233) + "/" + t_ok(u_long(u_points(u_bytes("été"))) == 3)
+>> "rt_grec=" + t_ok(u_points(u_bytes("π≈"))[2] == 8776)
+>> "rt_cjk=" + t_ok(u_points(u_bytes("中文"))[2] == 25991)
+>> "rt_astral=" + t_ok(u_points(u_bytes("🚀"))[1] == 128640)
+
+# ── 10. BORNES / erreurs (4 cas) ────────────────────────────────────────────
+>> "enc_neg=" + chaine(u_long(u_encode(0 - 1)))
+>> "enc_trop=" + chaine(u_long(u_encode(1114112)))
+>> "dec_hors=" + chaine(u_decode([0, 97], 5))
+>> "brut_hex=" + t_hex(u_bytes("Aé中🚀"))
