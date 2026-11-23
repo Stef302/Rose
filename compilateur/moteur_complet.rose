@@ -528,9 +528,11 @@ fn lsrc_nb_pieces($s: chaine, $sep: entier) -> entier {
 }
 
 # ══════════════════ arithmétique rationnelle exacte (repli) ══════════════════
-# L'entier Rose est à précision arbitraire (GMP côté moteur) : le repli est
-# EXACT sans bignum dédié — fraction « p » ou « p/q », dénominateur > 0,
-# réduite, zéro sous la forme « 0 » — canonicalisation mpq miroir.
+# CORRECTIF 1 : sous l'ELF G5, `entier` est TAGUÉ (immédiat n<<3, plafond
+# 2^60) — 3^41, -5+12, 2^64 etc. débordaient AVANT l'exécution. Les littéraux
+# repliés sont donc des CHAÎNES DÉCIMALES et le calcul passe par bigint_rose.rose
+# (limbs 10^8, produits < 2^60), miroir exact de num_bigint::BigInt côté Rust.
+# Fraction « p » ou « p/q », dénominateur > 0, réduite, zéro « 0 ».
 
 fn lsrc_vabs($x: entier) -> entier {
   si ($x < 0) { retour 0 - $x }
@@ -548,16 +550,83 @@ fn lsrc_pgcd2($a: entier, $b: entier) -> entier {
   retour $x
 }
 
-fn lsrc_rpui($b: entier, $e: entier) -> entier {
-  $res = 1
-  $f = $b
-  $k = $e
-  tant_que ($k > 0) {
-    si ($k % 2 == 1) { $res = $res * $f }
-    $f = $f * $f
-    $k = $k div 2
+fn lsrc_rpui($b: chaine, $e: entier) -> chaine {
+  # b^e exact : b est une chaîne décimale signée, 0 <= e <= 64.
+  # L'ancien repli (b, e en `entier`, $res = $res * $f) tronquait dès 2^60.
+  retour bi_texte(bi_pow(bi_depuis_chaine($b), $e))
+}
+
+fn lsrc_rpetit($t: chaine) -> entier {
+  # Petit entier décimal NON signé ; -1 si $t n'est pas un tel entier
+  # (garde-fou : un exposant géant doit rester non replié, comme côté Rust
+  # où `to_string().parse::<i64>()` échoue).
+  $n = longueur($t)
+  si ($n < 1 ou $n > 3) { retour -1 }
+  $v = 0
+  $k = 0
+  tant_que ($k < $n) {
+    $c = ordre($t[$k])
+    si ($c < 48 ou $c > 57) { retour -1 }
+    $v = $v * 10 + $c - 48
+    $k = $k + 1
   }
-  retour $res
+  retour $v
+}
+
+fn lsrc_rpiece($t: chaine, $k: entier) -> chaine {
+  # Numérateur ($k=1) ou dénominateur ($k=2) d'un littéral « p/q ».
+  # Absence de « / » : dénominateur implicite « 1 » (miroir de lit_q).
+  $v = lsrc_piece($t, 47, $k)
+  si ($v == "" et $k == 2) { retour "1" }
+  retour $v
+}
+
+fn lsrc_rplie($n1: chaine, $d1: chaine, $n2: chaine, $d2: chaine,
+              $op: chaine, $e: entier) -> chaine {
+  # Miroir exact de `replier()` (rose/src/front.rs) : (n1/d1) OP (n2/d2)
+  # calculé en bigint, puis réduit. Jamais d'`entier` G5 sur un géant.
+  $A = bi_depuis_chaine($n1)
+  $B = bi_depuis_chaine($d1)
+  $C = bi_depuis_chaine($n2)
+  $D = bi_depuis_chaine($d2)
+  $N = bi_un()
+  $Q = bi_un()
+  si ($op == "+") {
+    $N = bi_add(bi_mul($A, $D), bi_mul($C, $B))
+    $Q = bi_mul($B, $D)
+  }
+  sinon si ($op == "-") {
+    $N = bi_sub(bi_mul($A, $D), bi_mul($C, $B))
+    $Q = bi_mul($B, $D)
+  }
+  sinon si ($op == "*") {
+    $N = bi_mul($A, $C)
+    $Q = bi_mul($B, $D)
+  }
+  sinon si ($op == "/") {
+    $N = bi_mul($A, $D)
+    $Q = bi_mul($B, $C)
+  }
+  sinon si ($op == "^") {
+    $N = bi_pow($A, $e)
+    $Q = bi_pow($B, $e)
+  }
+  sinon si ($op == "div") {
+    $N = bi_div(bi_mul($A, $D), bi_mul($B, $C))
+  }
+  # dénominateur positif, puis réduction par le PGCD (BigInt côté Rust)
+  si (bi_cmp($Q, bi_zero()) < 0) {
+    $N = bi_neg($N)
+    $Q = bi_neg($Q)
+  }
+  $g = bi_gcd(bi_abs($N), $Q)
+  si (bi_zeroq($g) == 0) {
+    $N = bi_div($N, $g)
+    $Q = bi_div($Q, $g)
+  }
+  $r = bi_texte($N)
+  si (bi_cmp($Q, bi_un()) != 0) { $r = $r + "/" + bi_texte($Q) }
+  retour $r
 }
 
 fn lsrc_rnum($t: chaine) -> entier {
@@ -1586,53 +1655,44 @@ fn lsrc_replier_expr($i: entier,
     }
     $ta = lsrc_vue_texte($va)
     $tb = lsrc_vue_texte($vb)
-    $p1 = lsrc_rnum($ta)
-    $q1 = lsrc_rden($ta)
-    $p2 = lsrc_rnum($tb)
-    $q2 = lsrc_rden($tb)
-    $r = ""
-    $np = 0
-    $nq = 1
-    si ($op == "+") { $np = $p1 * $q2 + $p2 * $q1; $nq = $q1 * $q2 }
-    sinon si ($op == "-") { $np = $p1 * $q2 - $p2 * $q1; $nq = $q1 * $q2 }
-    sinon si ($op == "*") { $np = $p1 * $p2; $nq = $q1 * $q2 }
-    sinon si ($op == "/") {
-      si (lsrc_rnul($tb)) { lsrc_signaler($l, "Division par zéro dans une constante", $err); retour "0" }
-      $np = $p1 * $q2; $nq = $q1 * $p2
+    # CORRECTIF 1 : on ne convertit JAMAIS un littéral replié en `entier`
+    # G5 (tagué, immédiat ≤ 2^60). Numérateur/dénominateur restent des
+    # chaînes décimales et l'opération est calculée par bigint_rose.rose,
+    # exactement comme num_bigint::BigInt dans le moteur de référence.
+    $na = lsrc_rpiece($ta, 1)
+    $da = lsrc_rpiece($ta, 2)
+    $nb = lsrc_rpiece($tb, 1)
+    $db = lsrc_rpiece($tb, 2)
+    $e = 0
+    si ($op == "^") {
+      si ($db != "1") { retour "0" }
+      $neg = faux
+      $exptexte = $nb
+      si (longueur($exptexte) > 0 et ordre($exptexte[0]) == 45) {
+        $neg = vrai
+        $exptexte = sous_chaine($exptexte, 1, longueur($exptexte))
+      }
+      $e = lsrc_rpetit($exptexte)
+      si ($neg) {
+        si (lsrc_rnul($ta)) { lsrc_signaler($l, "0^négatif dans une constante", $err); retour "0" }
+        retour "0"
+      }
+      si ($e < 0 ou $e > 64) { retour "0" }
     }
-    sinon si ($op == "^") {
-      si ($q2 != 1) { retour "0" }
-      si ($p2 < 0 et lsrc_rnul($ta)) { lsrc_signaler($l, "0^négatif dans une constante", $err); retour "0" }
-      si ($p2 < 0 ou $p2 > 64) { retour "0" }
-      $num = 1
-      $jj = 0
-      tant_que ($jj < $p2) { $num = $num * $p1; $jj = $jj + 1 }
-      $den = 1
-      $jj = 0
-      tant_que ($jj < $p2) { $den = $den * $q1; $jj = $jj + 1 }
-      $np = $num; $nq = $den
+    si ($op == "/" et lsrc_rnul($tb)) {
+      lsrc_signaler($l, "Division par zéro dans une constante", $err)
+      retour "0"
     }
-    sinon si ($op == "div") {
-      si (lsrc_rnul($tb)) { lsrc_signaler($l, "division par zéro dans une constante", $err); retour "0" }
-      $r = chaine($p1 * $q2 div ($q1 * $p2))
-      lsrc_stocker($i, $r, "", $foi, $fot, $fof)
-      retour "1|" + $r + "|"
+    si ($op == "div" et lsrc_rnul($tb)) {
+      lsrc_signaler($l, "division par zéro dans une constante", $err)
+      retour "0"
     }
-    sinon { retour "0" }
-    # ⚠ Un entier géant (2^63, 2^64, 40!...) ne doit JAMAIS traverser
-    # lsrc_pgcd2()/lsrc_vabs() : le JIT perd son tag bignum à cette profondeur d'appel
-    # (mesuré : « conversion vers entier impossible (type Vide) »). Quand le
-    # dénominateur vaut 1 (cas de toutes les puissances entières), rnorm et
-    # rden1 sont l'identité : on court-circuite, exactement comme GMP.
-    $r = ""
+    si (non ($op == "+" ou $op == "-" ou $op == "*" ou $op == "/" ou $op == "^" ou $op == "div")) {
+      retour "0"
+    }
+    $r = lsrc_rplie($na, $da, $nb, $db, $op, $e)
     $fl = ""
-    si ($nq == 1) {
-      $r = chaine($np)
-      si ($np == 0) { $r = "0" }
-    } sinon {
-      $r = lsrc_rnorm($np, $nq)
-      si (non lsrc_rden1($np, $nq)) { $fl = "q" }
-    }
+    si (lsrc_contient_barre($r)) { $fl = "q" }
     lsrc_stocker($i, $r, $fl, $foi, $fot, $fof)
     retour "1|" + $r + "|" + $fl
   }

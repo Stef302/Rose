@@ -1,0 +1,99 @@
+# tests_corr1.rose — CORRECTIF 1 : repli de constantes au-delà de 2^60.
+#
+# Source d'épreuve deterministe, lue par les DEUX moteurs :
+#   ROSE_SANS_JIT=1 rose/rose compilateur/tests_corr1.rose > ref.txt
+#   moteur_complet.elf compilateur/tests_corr1.rose       > elf.txt
+#   cmp -s ref.txt elf.txt   -> 0 divergence attendue
+#
+# Chaque ligne est un repli de constantes : le compilateur doit produire
+# un litteral decimal exact, jamais un entier tague G5 tronque (2^60).
+
+# ── témoins HORDE_INTEGRATION §4/§6 ──
+>> 3^41
+>> 10^21
+>> 5^28
+>> 4^33
+>> (10^10)^2
+>> -5 + 12
+>> 0 + 0
+>> 123 + 456
+
+# ── t220 / t221 / t222 / t223 (dépassements 2^59..2^64) ──
+>> 2^59 - 1
+>> 2^59
+>> 2^59 + 1
+>> (2^59 - 1) + 1
+>> (2^59) + 1
+>> 2^60
+>> 2^61
+>> 2^62
+>> 2^63
+>> 2^63 - 1
+>> (2^62) + (2^62)
+>> 2^64
+>> 2^64 - 1
+>> 2^64 + 1
+>> 2^65
+>> 2^64 + 2^64
+>> 123456789012345678901234567890
+>> 123456789012345678901234567890 + 987654321098765432109876543210
+>> 1000000000000000000000000000000000000000
+
+# ── 50 puissances (bases 2..11, exposants 20/25/30/35/40) ──
+>> 2^20
+>> 2^25
+>> 2^30
+>> 2^35
+>> 2^40
+>> 3^20
+>> 3^25
+>> 3^30
+>> 3^35
+>> 3^40
+>> 4^20
+>> 4^25
+>> 4^30
+>> 4^35
+>> 4^40
+>> 5^20
+>> 5^25
+>> 5^30
+>> 5^35
+>> 5^40
+>> 6^20
+>> 6^25
+>> 6^30
+>> 6^35
+>> 6^40
+>> 7^20
+>> 7^25
+>> 7^30
+>> 7^35
+>> 7^40
+>> 8^20
+>> 8^25
+>> 8^30
+>> 8^35
+>> 8^40
+>> 9^20
+>> 9^25
+>> 9^30
+>> 9^35
+>> 9^40
+>> 10^20
+>> 10^25
+>> 10^30
+>> 10^35
+>> 10^40
+>> 11^20
+>> 11^25
+>> 11^30
+>> 11^35
+>> 11^40
+
+# ── bases négatives repliées ──
+>> (-3)^41
+>> (-2)^64
+>> (-5)^28 + 12
+>> 3^40 - 3^40
+
