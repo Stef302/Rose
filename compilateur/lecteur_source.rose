@@ -1759,6 +1759,17 @@ fn ce_raw($i: entier,
     # des builtins) : le vérificateur Rust la connaît et l'erreur porte alors
     # sur l'opération, pas sur la variable.
     si ($t == "" et ($nom == "π" ou $nom == "pi")) { $t = "chaine|vide" }
+    # CORR7 — un nom de fonction est une valeur de première classe : le
+    # lecteur l'accepte comme expression (paramètre-fonction, variable-fonction).
+    # Le moteur Rust n'a pas cette notion, mais l'interpréteur RIR porte le
+    # tag `n:<nom>` introduit par CORR6 ; aucun programme existant ne nomme
+    # une fonction comme valeur, donc son dump reste inchangé.
+    si ($t == "") {
+      $fu = 1
+      $nfu = longueur($fnoms)
+      tant_que ($fu < $nfu et $fnoms[$fu] != $nom) { $fu = $fu + 1 }
+      si ($fu < $nfu) { retour "fonction|vide" }
+    }
     si ($t == "") {
       signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
@@ -2208,11 +2219,58 @@ fn check_appel($i: entier,
     retour tyb($nom)
   }
   # — fonctions de l'utilisateur (externes comprises) —
-  $pos = 0
+  $cands = [0]
   $u = 1
   $nf = longueur($fnoms)
   tant_que ($u < $nf) {
-    si ($pos == 0 et $fnoms[$u] == $nom) { $pos = $u }
+    si ($fnoms[$u] == $nom) { joindre($cands, $u) }
+    $u = $u + 1
+  }
+  si (longueur($cands) > 1) {
+    # CORR7 — dispatch de surcharge (aritaires et/ou par types). Les essais
+    # se font sur une liste d'erreurs jetable : le vrai diagnostic n'est
+    # produit que si aucune surcharge ne convient (voir le repli ci-dessous).
+    # Aucun programme existant n'a deux `fn` de même nom, donc ce bloc est
+    # inerte pour eux et leur dump RIR reste bit à bit identique.
+    $sa0 = $as[$i]
+    $ta_types = [""]
+    $j0 = 0
+    tant_que ($j0 < $ac[$i]) {
+      $err0 = [""]
+      joindre($ta_types, check_expr($al[$sa0 + $j0], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                                    $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof,
+                                    $err0, $tni, $tnt, $tri, $trt))
+      $j0 = $j0 + 1
+    }
+    $choix = 0
+    $c = 1
+    tant_que ($c < longueur($cands) et $choix == 0) {
+      $pc = $cands[$c]
+      $psc = $fparams[$pc]
+      $npc = nb_pieces($psc, 59)
+      si ($npc == $ac[$i]) {
+        $ok = 1
+        $j = 1
+        tant_que ($j <= $npc et $ok == 1) {
+          $entc = piece($psc, 59, $j)
+          $tatt = sous_chaine($entc, premier_pipe($entc) + 1, longueur($entc))
+          $targ = $ta_types[$j]
+          si (BASE($tatt) != "?" et $targ != $tatt) {
+            $numok = estnum($targ) et estnum($tatt) et BASE($targ) != "complexe" et BASE($tatt) != "complexe"
+            si (non($numok et promote($targ, $tatt) == $tatt)) { $ok = 0 }
+          }
+          $j = $j + 1
+        }
+        si ($ok == 1) { $choix = $pc }
+      }
+      $c = $c + 1
+    }
+    si ($choix > 0) { retour $fret[$choix] }
+  }
+  $pos = 0
+  $u = 1
+  tant_que ($u < $nf et $pos == 0) {
+    si ($fnoms[$u] == $nom) { $pos = $u }
     $u = $u + 1
   }
   si ($pos > 0) {
@@ -2250,6 +2308,12 @@ fn check_appel($i: entier,
     }
     retour $fret[$pos]
   }
+  # CORR7 — appel d'une valeur fonction : paramètre-fonction ou variable-fonction.
+  # Le type statique est Dyn (« ? ») : le corps qui appelle `$fn($x)` est
+  # vérifié comme n'importe quel appel à fonction de retour dynamique.
+  $tv = env_get($nom, $vn, $vt)
+  si ($tv == "") { $tv = env_get($nom, $gn, $gt) }
+  si (BASE($tv) == "fonction" ou BASE($tv) == "?") { retour "?|vide" }
   # — bibliothèque standard —
   $spec = std_sig($nom)
   si ($spec == "") {
@@ -2441,8 +2505,9 @@ fn check_instr($i: entier,
                       $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof, $err, $tni, $tnt, $tri, $trt)
       $bad = 0
       # fonction sans type de retour déclaré : le moteur met le retour en
-      # Dyn (« ? ») et accepte n'importe quel type de valeur.
-      si (BASE($ra) == "?") { $bad = 0 }
+      # Dyn (« ? ») et accepte n'importe quel type de valeur. CORR7 : un
+      # appel à une valeur-fonction est également Dyn.
+      si (BASE($ra) == "?" ou BASE($t) == "?") { $bad = 0 }
       sinon si ($t != $ra) {
         si (non(estnum($t) et estnum($ra) et promote($t, $ra) == $ra)) { $bad = 1 }
       }
@@ -2782,7 +2847,13 @@ fn em_ast_expr($i: entier,
     si ($txt == "1") { retour "(b vraie)" }
     retour "(b faux)"
   }
-  si ($kd == "v") { retour "(v " + $txt + ")" }
+  si ($kd == "v") {
+    # CORR7 — un nom de fonction employé comme valeur s'écrit `(fn nom)`.
+    si (sous_chaine($txt, 0, 2) == "~f") {
+      retour "(fn " + sous_chaine($txt, 2, longueur($txt)) + ")"
+    }
+    retour "(v " + $txt + ")"
+  }
   si ($kd == "idx") {
     retour "(idx " + em_ast_expr($a[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) +
            " " + em_ast_expr($b[$i], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof) + ")"
@@ -2821,9 +2892,16 @@ fn em_ast_expr($i: entier,
   si ($kd == "app") {
     $mod = eclate_mod($txt)
     $nom = eclate_nom($txt)
+    # CORR7 — formes RIR pour la surcharge et l'appel à une valeur-fonction.
     $e = "(app "
-    si ($mod != "") { $e = $e + $mod + "::" }
-    $e = $e + $nom
+    si (sous_chaine($nom, 0, 2) == "~s") {
+      $e = "(surcharge " + sous_chaine($nom, 2, longueur($nom))
+    } sinon si (sous_chaine($nom, 0, 2) == "~d") {
+      $e = "(appel_rir (v " + sous_chaine($nom, 2, longueur($nom)) + ")"
+    } sinon {
+      si ($mod != "") { $e = $e + $mod + "::" }
+      $e = $e + $nom
+    }
     $sa = $as[$i]
     $nb = $ac[$i]
     $j = 0
@@ -2893,8 +2971,11 @@ fn em_abstrait($i: entier,
   $kd = $k[$i]
   $op0 = $tx[$i]
   $txt = $tx[$i]
-  # Var → slot (le nom doit avoir un slot)
+  # Var → slot (le nom doit avoir un slot) ; nom de fonction → `(fn nom)`.
   si ($kd == "v") {
+    si (sous_chaine($txt, 0, 2) == "~f") {
+      retour "(fn " + sous_chaine($txt, 2, longueur($txt)) + ")"
+    }
     $s = slot_index($tx[$i], $sn)
     si ($s >= 0) { retour "slot " + chaine($s) }
     retour ""
@@ -2902,6 +2983,24 @@ fn em_abstrait($i: entier,
   # Appel → appel_rir si fonction connue, args non vides et tous des Var
   si ($kd == "app") {
     $nom = eclate_nom($tx[$i])
+    # CORR7 — surcharge : laissée en forme AST, l'interpréteur choisit
+    # l'overload à l'exécution d'après les valeurs d'arguments.
+    si (sous_chaine($nom, 0, 2) == "~s") { retour "" }
+    # CORR7 — appel dynamique : la fonction est dans un slot / une globale.
+    si (sous_chaine($nom, 0, 2) == "~d") {
+      $dn = sous_chaine($nom, 2, longueur($nom))
+      $dsa = $as[$i]
+      $dnb = $ac[$i]
+      $de = "(appel_rir (v " + $dn + ")"
+      $dj = 0
+      tant_que ($dj < $dnb) {
+        $dab = em_abstrait($al[$dsa + $dj], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al, $foi, $fot, $fof, $sn, $connus)
+        si ($dab == "") { retour "" }
+        $de = $de + " " + $dab
+        $dj = $dj + 1
+      }
+      retour $de + ")"
+    }
     $connu = 0
     $u = 1
     tant_que ($u < longueur($connus)) {
@@ -3745,6 +3844,37 @@ fn em_fonction($nom: chaine, $ps: chaine, $ra: chaine, $corps: chaine,
 }
 
 
+# ══════════════════ CORR7 — surcharges, sans lecture de table ══════════════════
+# Le backend G5 exige des types concrets : une lecture de `table` est `valeur`
+# (`?`) et `? > entier` est refusé. Les compteurs sont donc recalculés par
+# balayage, et le manglage est stocké dans deux listes parallèles.
+fn lsrc_nb_defs($nm: chaine, $fnoms: liste<chaine>) -> entier {
+  $c = 0
+  $u = 1
+  tant_que ($u < longueur($fnoms)) {
+    si ($fnoms[$u] == $nm) { $c = $c + 1 }
+    $u = $u + 1
+  }
+  retour $c
+}
+
+fn lsrc_nb_arite($nm: chaine, $ar: entier, $fnoms: liste<chaine>, $fparams: liste<chaine>) -> entier {
+  $c = 0
+  $u = 1
+  tant_que ($u < longueur($fnoms)) {
+    si ($fnoms[$u] == $nm et nb_pieces($fparams[$u], 59) == $ar) { $c = $c + 1 }
+    $u = $u + 1
+  }
+  retour $c
+}
+
+fn lsrc_mang($ix: entier, $mind: liste<entier>, $mnam: liste<chaine>) -> chaine {
+  $j = 1
+  tant_que ($j < longueur($mind) et $mind[$j] != $ix) { $j = $j + 1 }
+  si ($j < longueur($mind)) { retour $mnam[$j] }
+  retour ""
+}
+
 # ══════════════════ API du lecteur ══════════════════
 
 # Avec registre de sources (noms[i] -> sources[i]) : aucun accès disque pour
@@ -4268,13 +4398,109 @@ tant_que ($w < longueur($ordre)) {
   si ($fext[$ix] == "") { joindre($connus, $fnoms[$ix]) }
   $w = $w + 1
 }
+# CORR7 — préparation de l'émission des formes nouvelles. Aucun programme
+# existant ne définit deux `fn` de même nom ni ne nomme une fonction comme
+# valeur : les marqueurs ci-dessous sont donc inertes pour eux et leur dump
+# RIR reste octet pour octet identique à `rose rir`.
+$mind = [0]              # indices des `fn` surchargées
+$mnam = [""]             # noms RIR manglés correspondants
+$sur = [""]              # noms de base surchargés
+$vars = [""]             # paramètres et variables assignées/lues
+$fnset = [""]            # noms de fonctions à corps
+$u = 1
+tant_que ($u < longueur($connus)) { joindre($fnset, $connus[$u]); $u = $u + 1 }
+$u = 1
+tant_que ($u < longueur($fnoms)) {
+  $ps = $fparams[$u]
+  $np = nb_pieces($ps, 59)
+  $j = 1
+  tant_que ($j <= $np) {
+    $ent = piece($ps, 59, $j)
+    joindre($vars, sous_chaine($ent, 0, premier_pipe($ent)))
+    $j = $j + 1
+  }
+  $u = $u + 1
+}
+$u = 1
+tant_que ($u < longueur($fnoms)) {
+  $nm = $fnoms[$u]
+  si (lsrc_nb_defs($nm, $fnoms) > 1) {
+    $z = 1
+    tant_que ($z < longueur($sur) et $sur[$z] != $nm) { $z = $z + 1 }
+    si ($z >= longueur($sur)) { joindre($sur, $nm) }
+    $ar = nb_pieces($fparams[$u], 59)
+    $avec_types = 0
+    $z = 1
+    tant_que ($z <= $ar) {
+      si (lsrc_nb_arite($nm, $z, $fnoms, $fparams) > 1) { $avec_types = 1 }
+      $z = $z + 1
+    }
+    $m = $nm + "@" + chaine($ar)
+    si ($avec_types == 1) {
+      $codes = ""
+      $j = 1
+      tant_que ($j <= $ar) {
+        $ent = piece($fparams[$u], 59, $j)
+        $pt = sous_chaine($ent, premier_pipe($ent) + 1, longueur($ent))
+        $codes = $codes + sous_chaine(nomty($pt), 0, 1)
+        $j = $j + 1
+      }
+      $m = $m + "@" + $codes
+    }
+    joindre($mind, $u)
+    joindre($mnam, $m)
+  }
+  $u = $u + 1
+}
+$u = 1
+tant_que ($u < longueur($ik)) {
+  $kd = $ik[$u]
+  si ($kd == "affi" ou $kd == "lire" ou $kd == "pour") { joindre($vars, $ino[$u]) }
+  $u = $u + 1
+}
+# Les listes Rose sont en ajout seul : on construit un pool parallèle $tx2
+# plutôt que de réécrire $tx (les appels d'émission reçoivent $tx2).
+$tx2 = [""]
+$u = 1
+tant_que ($u < longueur($tx)) {
+  $kd = ""
+  si ($u < longueur($k)) { $kd = $k[$u] }
+  $txtem = $tx[$u]
+  si ($kd == "app") {
+    $nom = eclate_nom($tx[$u])
+    $z = 1
+    tant_que ($z < longueur($sur) et $sur[$z] != $nom) { $z = $z + 1 }
+    si ($z < longueur($sur)) {
+      $txtem = "~s" + $nom
+    } sinon {
+      $z = 1
+      tant_que ($z < longueur($vars) et $vars[$z] != $nom) { $z = $z + 1 }
+      si ($z < longueur($vars)) { $txtem = "~d" + $nom }
+    }
+  }
+  si ($kd == "v") {
+    $nom = $tx[$u]
+    $z = 1
+    tant_que ($z < longueur($fnset) et $fnset[$z] != $nom) { $z = $z + 1 }
+    si ($z < longueur($fnset)) {
+      $z2 = 1
+      tant_que ($z2 < longueur($vars) et $vars[$z2] != $nom) { $z2 = $z2 + 1 }
+      si ($z2 >= longueur($vars)) { $txtem = "~f" + $nom }
+    }
+  }
+  joindre($tx2, $txtem)
+  $u = $u + 1
+}
 si (longueur($err) == 1) {
   $w = 1
   tant_que ($w < longueur($ordre)) {
     $ix = $ordre[$w]
     si ($fext[$ix] == "") {
-      em_fonction_rir($fnoms[$ix], $fparams[$ix], $fret[$ix], $fcorps[$ix], faux,
-                  $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+      $nom_em = $fnoms[$ix]
+      $m_em = lsrc_mang($ix, $mind, $mnam)
+      si ($m_em != "") { $nom_em = $m_em }
+      em_fonction_rir($nom_em, $fparams[$ix], $fret[$ix], $fcorps[$ix], faux,
+                  $k, $tx2, $tf, $a, $b, $as, $ac, $lg, $al,
                   $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
                   $foi, $fot, $fof, $connus, $outl)
     } sinon {
@@ -4283,7 +4509,7 @@ si (longueur($err) == 1) {
     $w = $w + 1
   }
   em_fonction_rir("$principal", "", "vide|vide", $topb, vrai,
-              $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+              $k, $tx2, $tf, $a, $b, $as, $ac, $lg, $al,
               $ik, $ino, $ie, $ie2, $ib1, $ib2, $ilg,
               $foi, $fot, $fof, $connus, $outl)
 }

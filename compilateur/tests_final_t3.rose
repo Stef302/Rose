@@ -1,0 +1,96 @@
+# tests_final_t3.rose — banc du correctif 7 (front-end surcharges/HOF).
+#
+# Vérifie que la copie du front-end (compilateur/lecteur_source.rose) accepte
+# les 4 sources historiquement refusées et 16 programmes similaires, et que
+# le RIR émis est exactement celui attendu (forms `surcharge`, `(fn …)`,
+# `appel_rir (v …)` qu’exécute l’interpréteur du correctif 6).
+# Un contrôle négatif garantit qu’une fonction réellement inconnue reste refusée.
+#
+# Usage : rose compilateur/tests_final_t3.rose
+# Sortie : "TESTS FINAL_T3 : N OK, 0 ECHEC" (rc=0).
+
+importer "compilateur/lecteur_source.rose"
+
+$pass = [0]
+$fail = [0]
+
+fn tverif($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { joindre($pass, 1); retour 1 }
+  joindre($fail, 1)
+  afficher_erreur("ECHEC " + $nom)
+  retour 0
+}
+
+# registre de sources : pas de système de fichiers requis.
+fn lire_src($s: chaine) -> chaine {
+  $n = ["", "/t3.rose"]
+  $v = ["", $s]
+  retour lire_programme_reg("/t3.rose", $n, $v)
+}
+
+# — t104_surcharge_arith —
+tverif("t104_surcharge_arith", "OK|rir\nfonction f@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction f@1@c\n  param x chaine\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour (bin + (v x) (s \"!\"))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge f (n 2))\n    0001 afficher (surcharge f (s \"a\"))", lire_src("fn f($x: entier) -> entier { retour $x + 1 }\nfn f($x: chaine) -> chaine { retour $x + \"!\" }\n>> f(2)\n>> f(\"a\")\n"))
+
+# — t105_surcharge_arite —
+tverif("t105_surcharge_arite", "OK|rir\nfonction f@1\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction f@2\n  param a entier\n  param b entier\n  retour entier\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 0 slot 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge f (n 2))\n    0001 afficher (surcharge f (n 2) (n 3))", lire_src("fn f($x: entier) -> entier { retour $x + 1 }\nfn f($a: entier, $b: entier) -> entier { retour $a + $b }\n>> f(2)\n>> f(2, 3)\n"))
+
+# — t106_hof_param —
+tverif("t106_hof_param", "OK|rir\nfonction applique\n  param fn ?\n  param x entier\n  retour entier\n  n_slots 2\n  noms [0]fn [1]x\n  ops\n    0000 retour_abstrait (appel_rir (v fn) slot 1)\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique (fn carre) (n 5))", lire_src("fn applique($fn, $x: entier) -> entier { retour $fn($x) }\nfn carre($x: entier) -> entier { retour $x * $x }\n>> applique(carre, 5)\n"))
+
+# — t107_hof_var —
+tverif("t107_hof_var", "OK|rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction $principal\n  retour vide\n  n_slots 1\n  noms [0]f\n  globaux 0\n  ops\n    0000 affect slot 0 = (fn carre)\n    0001 afficher_abstrait (appel_rir (v f) entier 5)", lire_src("fn carre($x: entier) -> entier { retour $x * $x }\n$f = carre\n>> $f(5)\n"))
+
+# — v01_type2 —
+tverif("v01_type2", "OK|rir\nfonction g@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 entier 2)\nfonction g@1@c\n  param x chaine\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour (bin + (v x) (s \"?\"))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 3))\n    0001 afficher (surcharge g (s \"a\"))", lire_src("fn g($x: entier) -> entier { retour $x * 2 }\nfn g($x: chaine) -> chaine { retour $x + \"?\" }\n>> g(3)\n>> g(\"a\")\n"))
+
+# — v02_arite3 —
+tverif("v02_arite3", "OK|rir\nfonction g@1\n  param a entier\n  retour entier\n  n_slots 1\n  noms [0]a\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction g@2\n  param a entier\n  param b entier\n  retour entier\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 0 slot 1)\nfonction g@3\n  param a entier\n  param b entier\n  param c entier\n  retour entier\n  n_slots 3\n  noms [0]a [1]b [2]c\n  ops\n    0000 retour_abstrait (bin + (bin + slot 0 slot 1) slot 2)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 1))\n    0001 afficher (surcharge g (n 1) (n 2))\n    0002 afficher (surcharge g (n 1) (n 2) (n 3))", lire_src("fn g($a: entier) -> entier { retour $a + 1 }\nfn g($a: entier, $b: entier) -> entier { retour $a + $b }\nfn g($a: entier, $b: entier, $c: entier) -> entier { retour $a + $b + $c }\n>> g(1)\n>> g(1, 2)\n>> g(1, 2, 3)\n"))
+
+# — v03_type3 —
+tverif("v03_type3", "OK|rir\nfonction g@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 10)\nfonction g@1@c\n  param x chaine\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour (bin + (v x) (s \"?\"))\nfonction g@1@b\n  param x booleen\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour (s \"b\")\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 7))\n    0001 afficher (surcharge g (s \"x\"))\n    0002 afficher (surcharge g (b vraie))", lire_src("fn g($x: entier) -> entier { retour $x + 10 }\nfn g($x: chaine) -> chaine { retour $x + \"?\" }\nfn g($x: booleen) -> chaine { retour \"b\" }\n>> g(7)\n>> g(\"x\")\n>> g(vrai)\n"))
+
+# — v04_bool —
+tverif("v04_bool", "OK|rir\nfonction g@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 entier 2)\nfonction g@1@b\n  param x booleen\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour (s \"b\")\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 3))\n    0001 afficher (surcharge g (b vraie))", lire_src("fn g($x: entier) -> entier { retour $x * 2 }\nfn g($x: booleen) -> chaine { retour \"b\" }\n>> g(3)\n>> g(vrai)\n"))
+
+# — v05_flot —
+tverif("v05_flot", "OK|rir\nfonction g@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction g@1@f\n  param x flottant\n  retour flottant\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 flottant 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 3))\n    0001 afficher (surcharge g (f 1.5))", lire_src("fn g($x: entier) -> entier { retour $x + 1 }\nfn g($x: flottant) -> flottant { retour $x + 1.0 }\n>> g(3)\n>> g(1.5)\n"))
+
+# — v06_liste —
+tverif("v06_liste", "OK|rir\nfonction g@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction g@1@l\n  param x liste<entier>\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour (app longueur (v x))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 3))\n    0001 afficher (surcharge g (lst (n 1) (n 2) (n 3)))", lire_src("fn g($x: entier) -> entier { retour $x + 1 }\nfn g($x: liste<entier>) -> entier { retour longueur($x) }\n>> g(3)\n>> g([1, 2, 3])\n"))
+
+# — v07_mixte —
+tverif("v07_mixte", "OK|rir\nfonction g@2@ee\n  param a entier\n  param b entier\n  retour entier\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 0 slot 1)\nfonction g@2@ec\n  param a entier\n  param b chaine\n  retour chaine\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour (bin + (v b) (app chaine (v a)))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 5) (n 7))\n    0001 afficher (surcharge g (n 5) (s \"-x\"))", lire_src("fn g($a: entier, $b: entier) -> entier { retour $a + $b }\nfn g($a: entier, $b: chaine) -> chaine { retour $b + chaine($a) }\n>> g(5, 7)\n>> g(5, \"-x\")\n"))
+
+# — v08_les2 —
+tverif("v08_les2", "OK|rir\nfonction g@1@e\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction g@1@c\n  param x chaine\n  retour chaine\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour (bin + (v x) (s \"!\"))\nfonction g@2@ee\n  param a entier\n  param b entier\n  retour entier\n  n_slots 2\n  noms [0]a [1]b\n  ops\n    0000 retour_abstrait (bin + slot 0 slot 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (surcharge g (n 1))\n    0001 afficher (surcharge g (s \"a\"))\n    0002 afficher (surcharge g (n 2) (n 3))", lire_src("fn g($x: entier) -> entier { retour $x + 1 }\nfn g($x: chaine) -> chaine { retour $x + \"!\" }\nfn g($a: entier, $b: entier) -> entier { retour $a + $b }\n>> g(1)\n>> g(\"a\")\n>> g(2, 3)\n"))
+
+# — v09_hof2 —
+tverif("v09_hof2", "OK|rir\nfonction applique2\n  param fn ?\n  param a entier\n  param b entier\n  retour entier\n  n_slots 3\n  noms [0]fn [1]a [2]b\n  ops\n    0000 retour_abstrait (bin + (appel_rir (v fn) slot 1) (appel_rir (v fn) slot 2))\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique2 (fn carre) (n 5) (n 6))", lire_src("fn carre($x: entier) -> entier { retour $x * $x }\nfn applique2($fn, $a: entier, $b: entier) -> entier { retour $fn($a) + $fn($b) }\n>> applique2(carre, 5, 6)\n"))
+
+# — v10_hof_inc —
+tverif("v10_hof_inc", "OK|rir\nfonction applique\n  param fn ?\n  param x entier\n  retour entier\n  n_slots 2\n  noms [0]fn [1]x\n  ops\n    0000 retour_abstrait (appel_rir (v fn) slot 1)\nfonction inc\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique (fn inc) (n 9))", lire_src("fn inc($x: entier) -> entier { retour $x + 1 }\nfn applique($fn, $x: entier) -> entier { retour $fn($x) }\n>> applique(inc, 9)\n"))
+
+# — v11_varfonc —
+tverif("v11_varfonc", "OK|rir\nfonction inc\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction $principal\n  retour vide\n  n_slots 1\n  noms [0]g\n  globaux 0\n  ops\n    0000 affect slot 0 = (fn inc)\n    0001 afficher_abstrait (appel_rir (v g) entier 7)", lire_src("fn inc($x: entier) -> entier { retour $x + 1 }\n$g = inc\n>> $g(7)\n"))
+
+# — v12_2vars —
+tverif("v12_2vars", "OK|rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction double\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 entier 2)\nfonction $principal\n  retour vide\n  n_slots 2\n  noms [0]f [1]h\n  globaux 0 1\n  ops\n    0000 affect slot 0 = (fn carre)\n    0001 affect slot 1 = (fn double)\n    0002 afficher_abstrait (appel_rir (v f) entier 3)\n    0003 afficher_abstrait (appel_rir (v h) entier 4)", lire_src("fn carre($x: entier) -> entier { retour $x * $x }\nfn double($x: entier) -> entier { retour $x * 2 }\n$f = carre\n$h = double\n>> $f(3)\n>> $h(4)\n"))
+
+# — v13_hof_chaine —
+tverif("v13_hof_chaine", "OK|rir\nfonction applique\n  param fn ?\n  param x chaine\n  retour entier\n  n_slots 2\n  noms [0]fn [1]x\n  ops\n    0000 retour_abstrait (appel_rir (v fn) slot 1)\nfonction lc\n  param s chaine\n  retour entier\n  n_slots 1\n  noms [0]s\n  ops\n    0000 retour (app longueur (v s))\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app applique (fn lc) (s \"abcdef\"))", lire_src("fn lc($s: chaine) -> entier { retour longueur($s) }\nfn applique($fn, $x: chaine) -> entier { retour $fn($x) }\n>> applique(lc, \"abcdef\")\n"))
+
+# — v14_compose —
+tverif("v14_compose", "OK|rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction compose\n  param g ?\n  param f ?\n  param x entier\n  retour entier\n  n_slots 3\n  noms [0]g [1]f [2]x\n  ops\n    0000 retour_abstrait (appel_rir (v g) (appel_rir (v f) slot 2))\nfonction inc\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin + slot 0 entier 1)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app compose (fn inc) (fn carre) (n 4))", lire_src("fn carre($x: entier) -> entier { retour $x * $x }\nfn inc($x: entier) -> entier { retour $x + 1 }\nfn compose($g, $f, $x: entier) -> entier { retour $g($f($x)) }\n>> compose(inc, carre, 4)\n"))
+
+# — v15_chaine_var —
+tverif("v15_chaine_var", "OK|rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction $principal\n  retour vide\n  n_slots 2\n  noms [0]f [1]g\n  globaux 0 1\n  ops\n    0000 affect slot 0 = (fn carre)\n    0001 affect slot 1 = slot 0\n    0002 afficher_abstrait (appel_rir (v g) entier 6)", lire_src("fn carre($x: entier) -> entier { retour $x * $x }\n$f = carre\n$g = $f\n>> $g(6)\n"))
+
+# — v16_var_param —
+tverif("v16_var_param", "OK|rir\nfonction appel\n  param fn ?\n  param x entier\n  retour entier\n  n_slots 2\n  noms [0]fn [1]x\n  ops\n    0000 retour_abstrait (appel_rir (v fn) slot 1)\nfonction triple\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 entier 3)\nfonction $principal\n  retour vide\n  n_slots 1\n  noms [0]h\n  globaux 0\n  ops\n    0000 affect slot 0 = (fn triple)\n    0001 afficher (app appel (v h) (n 4))", lire_src("fn triple($x: entier) -> entier { retour $x * 3 }\nfn appel($fn, $x: entier) -> entier { retour $fn($x) }\n$h = triple\n>> appel($h, 4)\n"))
+
+# — contrôle négatif : un nom réellement inconnu reste refusé —
+$neg = lire_src(">> inconnue_t3(3)\n")
+si (sous_chaine($neg, 0, 4) == "ERR|") { joindre($pass, 1) } sinon { joindre($fail, 1); afficher_erreur("ECHEC refus-fonction-inconnue") }
+
+>> "TESTS FINAL_T3 : " + chaine(longueur($pass) - 1) + " OK, " + chaine(longueur($fail) - 1) + " ECHEC"
+si (longueur($fail) > 1) { quitter(1) }
