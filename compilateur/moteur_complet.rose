@@ -1421,6 +1421,16 @@ fn lsrc_def_fn($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: ent
   $rn = lsrc_nomid($g, $x, $q)
   $q = lsrc_SEPR($rn)
   $nom = lsrc_NOD($rn)
+  # PARITÉ RUST — front.rs refuse une seconde définition du même nom
+  # (« Fonction 'f' définie deux fois ») : le lecteur doit faire de même.
+  # Écriture directe sur stderr (jamais sur stdout) pour rendre la sortie
+  # octet pour octet identique à `ROSE_SANS_JIT=1 rose/rose`.
+  $du = 1
+  tant_que ($du < longueur($fnoms) et $fnoms[$du] != $nom) { $du = $du + 1 }
+  si ($du < longueur($fnoms)) {
+    ecrire_bytes("/dev/stderr", "Rose : erreur — [Ligne " + chaine($lf) + ", Colonne 0] Fonction '" + $nom + "' définie deux fois\n")
+    quitter(1)
+  }
   si (lsrc_T0($g, $q) == "(") { $q = $q + 1 }
   $params = ""
   $un = 1
@@ -5480,6 +5490,8 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "chaine") {
     si ($n < 1) { retour vs("") }
     $t = vtag($a[1])
+    # PARITÉ t999 — `chaine(flottant("2"))` rend « 2 » dans le moteur Rust,
+    # pas « 2/1 » : on retire le dénominateur trivial des flottants entiers.
     si ($t == "f") {
       $payf = rat_pay($a[1])
       $sl = longueur($payf)
@@ -5555,9 +5567,43 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     tant_que ($i < $k) { $r = $r + vpay(lst_get($a[1], $i)); $i = $i + 1 }
     retour vs($r)
   }
-  si ($name == "lire_texte") { si ($n < 1) { retour vs("") }; retour vs(lire_texte(vpay($a[1]))) }
-  si ($name == "ecrire_texte") { si ($n >= 2) { ecrire_texte(vpay($a[1]), vpay($a[2])) }; retour "v:" }
-  si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") { si ($n >= 2) { ecrire_bytes(vpay($a[1]), vpay($a[2])) }; retour "v:" }
+  # ── PARITÉ E/S — le backend G5 ne signale PAS d'erreur : une ouverture
+  # impossible rend « » et une écriture impossible est silencieuse. Le moteur
+  # Rust, lui, lève `erreur_runtime` (rc=1, message sur stderr). On détecte
+  # ici l'échec et on rend exactement le même diagnostic. Les chemins /dev/
+  # sont exclus de la vérification (lecture/écriture de flux, pas de fichier).
+  si ($name == "lire_texte") {
+    si ($n < 1) { retour vs("") }
+    $p = vpay($a[1])
+    $r = lire_texte($p)
+    si (longueur($r) == 0 et sous_chaine($p, 0, 5) != "/dev/") {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — lecture du fichier impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    retour vs($r)
+  }
+  si ($name == "ecrire_texte") {
+    si ($n < 2) { retour "v:" }
+    $p = vpay($a[1])
+    $iod = vpay($a[2])
+    ecrire_texte($p, $iod)
+    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture du fichier impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    retour "v:"
+  }
+  si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") {
+    si ($n < 2) { retour "v:" }
+    $p = vpay($a[1])
+    $iod = vpay($a[2])
+    ecrire_bytes($p, $iod)
+    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture d'octets impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    retour "v:"
+  }
   si ($name == "argument") {
     si ($n < 1) { retour vs("") }
     $ix = entier(val_str($a[1]))

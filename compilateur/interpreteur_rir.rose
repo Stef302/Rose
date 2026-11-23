@@ -1097,9 +1097,43 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     tant_que ($i < $k) { $r = $r + vpay(lst_get($a[1], $i)); $i = $i + 1 }
     retour vs($r)
   }
-  si ($name == "lire_texte") { si ($n < 1) { retour vs("") }; retour vs(lire_texte(vpay($a[1]))) }
-  si ($name == "ecrire_texte") { si ($n >= 2) { ecrire_texte(vpay($a[1]), vpay($a[2])) }; retour "v:" }
-  si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") { si ($n >= 2) { ecrire_bytes(vpay($a[1]), vpay($a[2])) }; retour "v:" }
+  # ── PARITÉ E/S — le backend G5 ne signale PAS d'erreur : une ouverture
+  # impossible rend « » et une écriture impossible est silencieuse. Le moteur
+  # Rust, lui, lève `erreur_runtime` (rc=1, message sur stderr). On détecte
+  # ici l'échec et on rend exactement le même diagnostic. Les chemins /dev/
+  # sont exclus de la vérification (lecture/écriture de flux, pas de fichier).
+  si ($name == "lire_texte") {
+    si ($n < 1) { retour vs("") }
+    $p = vpay($a[1])
+    $r = lire_texte($p)
+    si (longueur($r) == 0 et sous_chaine($p, 0, 5) != "/dev/") {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — lecture du fichier impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    retour vs($r)
+  }
+  si ($name == "ecrire_texte") {
+    si ($n < 2) { retour "v:" }
+    $p = vpay($a[1])
+    $iod = vpay($a[2])
+    ecrire_texte($p, $iod)
+    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture du fichier impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    retour "v:"
+  }
+  si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") {
+    si ($n < 2) { retour "v:" }
+    $p = vpay($a[1])
+    $iod = vpay($a[2])
+    ecrire_bytes($p, $iod)
+    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture d'octets impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    retour "v:"
+  }
   si ($name == "argument") {
     si ($n < 1) { retour vs("") }
     $ix = entier(val_str($a[1]))

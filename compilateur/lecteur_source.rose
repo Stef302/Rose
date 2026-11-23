@@ -1333,6 +1333,16 @@ fn def_fn($g: liste<chaine>, $x: liste<chaine>, $gl: liste<entier>, $p: entier,
   $rn = nomid($g, $x, $q)
   $q = SEPR($rn)
   $nom = NOD($rn)
+  # PARITÉ RUST — front.rs refuse une seconde définition du même nom
+  # (« Fonction 'f' définie deux fois ») : le lecteur doit faire de même.
+  # Écriture directe sur stderr (jamais sur stdout) pour rendre la sortie
+  # octet pour octet identique à `ROSE_SANS_JIT=1 rose/rose`.
+  $du = 1
+  tant_que ($du < longueur($fnoms) et $fnoms[$du] != $nom) { $du = $du + 1 }
+  si ($du < longueur($fnoms)) {
+    ecrire_bytes("/dev/stderr", "Rose : erreur — [Ligne " + chaine($lf) + ", Colonne 0] Fonction '" + $nom + "' définie deux fois\n")
+    quitter(1)
+  }
   si (T0($g, $q) == "(") { $q = $q + 1 }
   $params = ""
   $un = 1

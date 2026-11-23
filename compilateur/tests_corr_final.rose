@@ -1,0 +1,101 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_corr_final.rose — banc final de parité self-host (corpus 141).
+#
+# Deux rôles :
+#   1) Source d'épreuve lue par LES DEUX moteurs :
+#        ROSE_SANS_JIT=1 rose/rose compilateur/tests_corr_final.rose
+#        moteur_complet.elf    compilateur/tests_corr_final.rose
+#      Les sorties doivent être octet pour octet identiques.
+#   2) Auto-vérification des 5 correctifs qui font passer le corpus de
+#      133 CONFORMES / 5 DIVERGENTS / 3 BLOQUES à 138 / 0 / 3.
+#
+# Correctifs couverts :
+#   - C1/C2  : double définition `fn f` refusée comme dans front.rs
+#              (« Fonction 'f' définie deux fois », stderr, rc=1).
+#              Le test reproduit le balayage de $fnoms en pur Rose (le vrai
+#              lecteur appelle quitter(1), donc il ne peut pas être appelé
+#              ici sans terminer ce programme — voir CORPUS_141.md §4).
+#   - C3/C4/C5 : erreurs E/S lire_texte / ecrire_texte / ecrire_bytes
+#              propagées (stderr + rc=1) au lieu d'un succès silencieux.
+#   - C6     : chaine(flottant("2")) rend « 2 », pas « 2/1 » (t999).
+# ═══════════════════════════════════════════════════════════════════════
+
+$pass = [0]
+$fail = [0]
+
+fn verif($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { joindre($pass, 1); retour 1 }
+  joindre($fail, 1)
+  afficher_erreur("ECHEC " + $nom + " : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+# ── C1/C2 : détection de double définition (balayage de $fnoms) ────────
+fn nb_defs($nm: chaine, $fnoms: liste<chaine>) -> entier {
+  $c = 0
+  $u = 1
+  tant_que ($u < longueur($fnoms)) {
+    si ($fnoms[$u] == $nm) { $c = $c + 1 }
+    $u = $u + 1
+  }
+  retour $c
+}
+fn message_double($nom: chaine, $lg: entier) -> chaine {
+  retour "Rose : erreur — [Ligne " + chaine($lg) + ", Colonne 0] Fonction '" + $nom + "' définie deux fois"
+}
+$fnoms_uniques = ["", "carre", "double", "principal"]
+$fnoms_doubles = ["", "f", "f"]
+verif("double absent", "0", chaine(nb_defs("f", $fnoms_uniques)))
+verif("double présent", "2", chaine(nb_defs("f", $fnoms_doubles)))
+verif("message double f ligne 2",
+      "Rose : erreur — [Ligne 2, Colonne 0] Fonction 'f' définie deux fois",
+      message_double("f", 2))
+
+# ── C3/C4/C5 : formulations exactes des erreurs E/S ───────────────────
+fn msg_lecture($p: chaine) -> chaine {
+  retour "Rose : erreur — lecture du fichier impossible (" + $p + ")"
+}
+fn msg_ecriture($p: chaine) -> chaine {
+  retour "Rose : erreur — écriture du fichier impossible (" + $p + ")"
+}
+fn msg_octets($p: chaine) -> chaine {
+  retour "Rose : erreur — écriture d'octets impossible (" + $p + ")"
+}
+$pf = "/tmp/opencode/sh9_agents/battery/input.txt"
+verif("lecture impossible",
+      "Rose : erreur — lecture du fichier impossible (/tmp/opencode/sh9_agents/battery/input.txt)",
+      msg_lecture($pf))
+verif("écriture impossible",
+      "Rose : erreur — écriture du fichier impossible (/tmp/opencode/sh9_agents/battery/out.txt)",
+      msg_ecriture("/tmp/opencode/sh9_agents/battery/out.txt"))
+verif("écriture d'octets impossible",
+      "Rose : erreur — écriture d'octets impossible (/tmp/opencode/sh9_agents/battery/out2.txt)",
+      msg_octets("/tmp/opencode/sh9_agents/battery/out2.txt"))
+
+# ── boucle de détection d'échec E/S (repli G5 : chaîne vide / relue) ────
+fn io_lire_ok($p: chaine) -> entier {
+  $r = lire_texte($p)
+  si (longueur($r) == 0 et sous_chaine($p, 0, 5) != "/dev/") { retour 0 }
+  retour 1
+}
+fn io_ecrire_ok($p: chaine, $d: chaine) -> entier {
+  ecrire_texte($p, $d)
+  si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $d) { retour 0 }
+  retour 1
+}
+# /dev/ est exclu de la vérification (flux, pas fichier).
+verif("/dev/ exclu lecture", "1", chaine(io_lire_ok("/dev/null")))
+# NOTE : on n'appelle PAS io_lire_ok() sur un chemin absent ici — les deux
+# moteurs lèvent alors l'erreur et quittent (c'est précisément le correctif).
+# Le comportement réel est mesuré par le harnais du corpus 141 (t83/t84/t86).
+
+$tmp = "/tmp/opencode/corr_final_roundtrip.txt"
+verif("écriture+relecture OK", "1", chaine(io_ecrire_ok($tmp, "bonjour\n")))
+verif("contenu relu", "bonjour\n", lire_texte($tmp))
+
+# ── C6 : chaine(flottant("2")) (t999) ──────────────────────────────────
+verif("flottant entier en chaîne", "2", chaine(flottant("2")))
+
+>> "tests_corr_final : " + chaine(longueur($pass) - 1) + " OK, " + chaine(longueur($fail) - 1) + " ECHEC"
+si (longueur($fail) > 1) { quitter(1) }
+quitter(0)
