@@ -1839,6 +1839,16 @@ fn lsrc_ce_raw($i: entier,
     # des builtins) : le vérificateur Rust la connaît et l'erreur porte alors
     # sur l'opération, pas sur la variable.
     si ($t == "" et ($nom == "π" ou $nom == "pi")) { $t = "chaine|vide" }
+    # CORR7/t3 — un nom de fonction est une valeur de première classe :
+    # accepter paramètre-fonction et variable-fonction. Le tag `n:<nom>`
+    # est porté par l'interpréteur RIR (CORR6); le dump des programmes
+    # existants reste inchangé (aucun ne nomme une fonction comme valeur).
+    si ($t == "") {
+      $fu = 1
+      $nfu = longueur($fnoms)
+      tant_que ($fu < $nfu et $fnoms[$fu] != $nom) { $fu = $fu + 1 }
+      si ($fu < $nfu) { retour "fonction|vide" }
+    }
     si ($t == "") {
       lsrc_signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
@@ -2288,6 +2298,49 @@ fn lsrc_check_appel($i: entier,
     retour lsrc_tyb($nom)
   }
   # — fonctions de l'utilisateur (externes comprises) —
+  $cands = [0]
+  $u = 1
+  $nf = longueur($fnoms)
+  tant_que ($u < $nf) {
+    si ($fnoms[$u] == $nom) { joindre($cands, $u) }
+    $u = $u + 1
+  }
+  si (longueur($cands) > 1) {
+    $sa0 = $as[$i]
+    $ta_types = [""]
+    $j0 = 0
+    tant_que ($j0 < $ac[$i]) {
+      $err0 = [""]
+      joindre($ta_types, lsrc_check_expr($al[$sa0 + $j0], $k, $tx, $tf, $a, $b, $as, $ac, $lg, $al,
+                                    $vn, $vt, $gn, $gt, $fnoms, $fparams, $fret, $foi, $fot, $fof,
+                                    $err0, $tni, $tnt, $tri, $trt))
+      $j0 = $j0 + 1
+    }
+    $choix = 0
+    $c = 1
+    tant_que ($c < longueur($cands) et $choix == 0) {
+      $pc = $cands[$c]
+      $psc = $fparams[$pc]
+      $npc = lsrc_nb_pieces($psc, 59)
+      si ($npc == $ac[$i]) {
+        $okc = 1
+        $jc = 1
+        tant_que ($jc <= $npc et $okc == 1) {
+          $entc = lsrc_piece($psc, 59, $jc)
+          $tatt = sous_chaine($entc, lsrc_premier_pipe($entc) + 1, longueur($entc))
+          $targ = $ta_types[$jc]
+          si (lsrc_BASE($tatt) != "?" et $targ != $tatt) {
+            $numok = lsrc_estnum($targ) et lsrc_estnum($tatt) et lsrc_BASE($targ) != "complexe" et lsrc_BASE($tatt) != "complexe"
+            si (non($numok et lsrc_promote($targ, $tatt) == $tatt)) { $okc = 0 }
+          }
+          $jc = $jc + 1
+        }
+        si ($okc == 1) { $choix = $pc }
+      }
+      $c = $c + 1
+    }
+    si ($choix > 0) { retour $fret[$choix] }
+  }
   $pos = 0
   $u = 1
   $nf = longueur($fnoms)
