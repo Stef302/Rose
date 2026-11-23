@@ -15,8 +15,26 @@
 # target/ AU MOMENT où il tourne. La passe 1 produit un moteur frais ; la
 # passe 2 régénère rose-setup.res avec CE moteur frais, puis relie rose-setup.
 #
-# Usage : sh scripts/build-windows-rebuild.sh
+# Usage : sh scripts/build-windows-rebuild.sh [--selfhost]
+#
+#   --selfhost : chemin SANS cargo. On appelle scripts/build-sans-cargo.sh,
+#                qui compile compilateur/moteur_complet.rose avec C0 et
+#                produit un ELF64 aarch64 vérifié. Les artefacts Windows PE
+#                x86_64 (rose.exe, rose-shell.exe, rose-tray.exe,
+#                rose-setup.exe) ne sont PAS produits : C0 n'émet que de
+#                l'ELF aarch64 et le composé n'a ni writer PE x86_64 ni
+#                ressources Win32. Leur absence est documentée dans le stage.
+#                Le chemin cargo reste le défaut, inchangé (release v0.1.76).
 set -eu
+
+MODE=cargo
+for arg in "$@"; do
+  case "$arg" in
+    --selfhost) MODE=selfhost ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    *) echo "OPTION INCONNUE : $arg" >&2; exit 1 ;;
+  esac
+done
 
 RACINE="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -28,6 +46,69 @@ mkdir -p "$LOGDIR"
 TARGET=x86_64-pc-windows-msvc
 R="$RACINE/rose/target/$TARGET/release"
 STAGE="$V/stage"
+
+# ── Chemin SANS cargo (--selfhost) ─────────────────────────────────────
+if [ "$MODE" = selfhost ]; then
+  SOURCE_OUT="${ROSE_SELFHOST_OUT:-/tmp/opencode/release-sans-cargo}"
+  echo "=== MODE SELFHOST : compilation par C0, AUCUNE commande cargo ==="
+  ARGS="--c0 ${ROSE_C0:-/tmp/opencode/C0_h.elf} --sortie $SOURCE_OUT"
+  if [ -n "${ROSE_REFERENCE:-}" ]; then
+    ARGS="$ARGS --reference $ROSE_REFERENCE"
+  fi
+  # shellcheck disable=SC2086
+  bash "$RACINE/scripts/build-sans-cargo.sh" $ARGS
+
+  MOTEUR="$SOURCE_OUT/moteur.elf"
+  magic="$(od -An -tx1 -N4 "$MOTEUR" | tr -d ' \n')"
+  machine="$(od -An -tu2 -j18 -N2 "$MOTEUR" | tr -d ' \n')"
+  [ "$magic" = "7f454c46" ] && [ "$machine" = "183" ] || {
+    echo "ARTEFACT INVALIDE : magic=$magic machine=$machine" >&2; exit 1; }
+
+  rm -rf "$STAGE"
+  mkdir -p "$STAGE/payload"
+  cp "$MOTEUR" "$SOURCE_OUT/rose" "$SOURCE_OUT/MANIFESTE.txt" \
+     "$SOURCE_OUT/resultats.tsv" "$STAGE/"
+  cat > "$STAGE/NON_COUVERT_SELFHOST.txt" <<'TXT'
+RELEASE AUTO-HÉBERGÉE — COUVERTURE RÉELLE (constat daté, re-mesurable)
+
+PRODUIT ici : moteur.elf (ELF64 aarch64 compilé par C0 depuis
+compilateur/moteur_complet.rose), rose (lanceur), MANIFESTE.txt,
+resultats.tsv (12 programmes, sortie capturée).
+
+NON PRODUIT ici (et POURQUOI) :
+  rose.exe           : C0 n'émet que de l'ELF64 aarch64 ; aucun writer PE
+                       x86_64 dans le composé Rose. Le JIT Cranelift et
+                       l'AOT LLVM ORC du binaire Rust n'ont pas d'équivalent
+                       dans le point d'entrée C0.
+  rose-shell.exe     : simple lanceur Win32 du moteur ; sans rose.exe PE,
+                       il n'a rien à lancer.
+  rose-tray.exe      : helper Win32 (icône + timer 6 h) écrit en Rust ;
+                       aucune routine Win32 dans le composé.
+  Rose-win-Setup.exe : fenêtre Win32 + ressources RCDATA/ICON/FONT/MANIFEST
+                       générées par pack-res.py et liées par lld-link ;
+                       C0 n'a ni table de ressources ni lieur PE.
+  payload/rose.exe   : même cause que rose.exe.
+
+Le lanceur `rose` refuse explicitement (rc=3) aot/orc/link/llvm/console/
+repl/rvm/wasm. `comp` produit un gabarit ELF patché, pas un PE.
+Jalon 100 % : writer PE x86_64 + ressources Win32 en Rose pur, puis
+remplacement des 3 appels cargo par ce chemin dans ce script.
+TXT
+
+  echo "=== VÉRIFICATION ARTEFACTS SELFHOST ==="
+  file -b "$STAGE/moteur.elf" | cut -d, -f1-2
+  printf '  moteur.elf  %10s o  %s\n' "$(stat -c%s "$MOTEUR")" \
+    "$(md5sum "$MOTEUR" | cut -d' ' -f1)"
+  printf '  rose        %10s o  %s\n' "$(stat -c%s "$STAGE/rose")" \
+    "$(md5sum "$STAGE/rose" | cut -d' ' -f1)"
+  "$STAGE/rose" aot "$MOTEUR" >/dev/null 2>&1 && rc_refus=0 || rc_refus=$?
+  echo "  commande non couverte aot : rc=$rc_refus (3 attendu)"
+  [ "$rc_refus" -eq 3 ] || { echo "REFUS ATTENDU ABSENT" >&2; exit 1; }
+  echo "=== ARTEFACTS WINDOWS ABSENTS (documentés) ==="
+  echo "  Rose-win-Setup.exe rose.exe rose-shell.exe rose-tray.exe payload/rose.exe"
+  echo "=== STAGE ==="; ls -la "$STAGE"
+  exit 0
+fi
 
 # ── Prérequis ──────────────────────────────────────────────────────────
 for outil in clang lld-link llvm-lib llvm-rc python3; do
