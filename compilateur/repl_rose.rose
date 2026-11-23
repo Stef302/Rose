@@ -1,0 +1,807 @@
+# ═══════════════════════════════════════════════════════════════════════
+# repl_rose.rose — console interactive (REPL) écrite en Rose pur.
+#
+# Port du poste « REPL » de rose/src/repl.rs (J6 §5, poste 4) vers un
+# sous-ensemble G5 émétable par C0. Aucun appel à Rust à l'exécution.
+#
+# ARCHITECTURE
+#   Le moteur de valeurs est une réplique exacte de celui de
+#   compilateur/interpreteur_rir.rose (valeurs taguées `i:` `s:` `b:` `v:`,
+#   arithmétique décimale exacte badd/bsub/bmul/bdiv/fact_big, val_str …
+#   préfixées `rep_`). Le parseur Pratt rep_parse_* construit ces valeurs
+#   directement, exactement comme eval_expr de l'interpréteur RIR.
+#   La boucle rep_* gère prompt, commandes, historique et persistance.
+#
+#   Les marqueurs BEGIN/END REP_VALUE_ENGINE permettent au banc de
+#   remplacer, à la compilation, les primitives rep_* par des wrappers
+#   vers les val_* réelles de interpreteur_rir.rose (preuve d'intégration,
+#   cf. rose/docs/HORDE_REPL.md §4).
+#
+# USAGE (ELF produit par C0) :  ELF <script.txt>
+#   Chaque ligne du script est une entrée de console, comme sous
+#   `rose console < script.txt`.
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── BEGIN REP_VALUE_ENGINE ────────────────────────────────────────────
+fn rep_vtag($v: chaine) -> chaine { retour sous_chaine($v, 0, 1) }
+fn rep_vpay($v: chaine) -> chaine {
+  si (longueur($v) < 2) { retour "" }
+  retour sous_chaine($v, 2, longueur($v))
+}
+fn rep_digit_at($s: chaine, $i: entier) -> entier {
+  si ($i < 0 ou $i >= longueur($s)) { retour 0 }
+  retour entier(sous_chaine($s, $i, $i + 1))
+}
+fn rep_bnorm($a: chaine) -> chaine {
+  $neg = faux
+  $x = $a
+  si (longueur($x) > 0 et sous_chaine($x, 0, 1) == "-") { $neg = vrai; $x = sous_chaine($x, 1, longueur($x)) }
+  $i = 0
+  tant_que ($i < longueur($x) - 1 et sous_chaine($x, $i, $i + 1) == "0") { $i = $i + 1 }
+  $r = sous_chaine($x, $i, longueur($x))
+  si ($neg et $r != "0") { $r = "-" + $r }
+  retour $r
+}
+fn rep_babs($a: chaine) -> chaine {
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { retour sous_chaine($a, 1, longueur($a)) }
+  retour $a
+}
+fn rep_bneg($a: chaine) -> chaine {
+  si ($a == "0") { retour "0" }
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { retour sous_chaine($a, 1, longueur($a)) }
+  retour "-" + $a
+}
+fn rep_bcmp($a: chaine, $b: chaine) -> entier {
+  $na = faux
+  $nb = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $na = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $nb = vrai }
+  si ($na et non $nb) { retour -1 }
+  si (non $na et $nb) { retour 1 }
+  $aa = $a
+  $bb = $b
+  si ($na) { $aa = sous_chaine($a, 1, longueur($a)); $bb = sous_chaine($b, 1, longueur($b)) }
+  $c = 0
+  si (longueur($aa) > longueur($bb)) { $c = 1 }
+  si (longueur($aa) < longueur($bb)) { $c = -1 }
+  si (longueur($aa) == longueur($bb) et $aa > $bb) { $c = 1 }
+  si (longueur($aa) == longueur($bb) et $aa < $bb) { $c = -1 }
+  si ($na) { $c = 0 - $c }
+  retour $c
+}
+fn rep_badd_pos($a: chaine, $b: chaine) -> chaine {
+  $i = longueur($a) - 1
+  $j = longueur($b) - 1
+  $carry = 0
+  $r = ""
+  tant_que ($i >= 0 ou $j >= 0 ou $carry > 0) {
+    $s = $carry
+    si ($i >= 0) { $s = $s + rep_digit_at($a, $i) }
+    si ($j >= 0) { $s = $s + rep_digit_at($b, $j) }
+    $r = chaine($s % 10) + $r
+    $carry = $s ÷ 10
+    $i = $i - 1
+    $j = $j - 1
+  }
+  retour $r
+}
+fn rep_bsub_pos($a: chaine, $b: chaine) -> chaine {
+  $i = longueur($a) - 1
+  $j = longueur($b) - 1
+  $borrow = 0
+  $r = ""
+  tant_que ($i >= 0) {
+    $d = rep_digit_at($a, $i) - $borrow
+    si ($j >= 0) { $d = $d - rep_digit_at($b, $j) }
+    si ($d < 0) { $d = $d + 10; $borrow = 1 } sinon { $borrow = 0 }
+    $r = chaine($d) + $r
+    $i = $i - 1
+    $j = $j - 1
+  }
+  retour rep_bnorm($r)
+}
+fn rep_badd($a: chaine, $b: chaine) -> chaine {
+  $na = faux
+  $nb = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $na = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $nb = vrai }
+  $aa = rep_babs($a)
+  $bb = rep_babs($b)
+  si ($na == $nb) {
+    $r = rep_badd_pos($aa, $bb)
+    si ($na) { $r = "-" + $r }
+    retour rep_bnorm($r)
+  }
+  $c = rep_bcmp($aa, $bb)
+  si ($c >= 0) {
+    $r = rep_bsub_pos($aa, $bb)
+    si ($na) { $r = "-" + $r }
+    retour rep_bnorm($r)
+  }
+  $r = rep_bsub_pos($bb, $aa)
+  si ($nb) { $r = "-" + $r }
+  retour rep_bnorm($r)
+}
+fn rep_bsub($a: chaine, $b: chaine) -> chaine { retour rep_badd($a, rep_bneg($b)) }
+fn rep_bmul_small($a: chaine, $k: entier) -> chaine {
+  si ($k == 0 ou $a == "0") { retour "0" }
+  $neg = faux
+  $aa = $a
+  si (sous_chaine($aa, 0, 1) == "-") { $neg = vrai; $aa = sous_chaine($aa, 1, longueur($aa)) }
+  $i = longueur($aa) - 1
+  $carry = 0
+  $r = ""
+  tant_que ($i >= 0 ou $carry > 0) {
+    $p = rep_digit_at($aa, $i) * $k + $carry
+    $r = chaine($p % 10) + $r
+    $carry = $p ÷ 10
+    $i = $i - 1
+  }
+  si ($neg) { $r = "-" + $r }
+  retour rep_bnorm($r)
+}
+fn rep_bmul($a: chaine, $b: chaine) -> chaine {
+  $neg = faux
+  $aa = rep_babs($a)
+  $bb = rep_babs($b)
+  $an = faux
+  $bn = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $an = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $bn = vrai }
+  si ($an != $bn) { $neg = vrai }
+  $r = "0"
+  $j = longueur($bb) - 1
+  tant_que ($j >= 0) {
+    $k = rep_digit_at($bb, $j)
+    si ($k > 0) {
+      $part = rep_bmul_small($aa, $k)
+      $z = 0
+      tant_que ($z < longueur($bb) - 1 - $j) { $part = $part + "0"; $z = $z + 1 }
+      $r = rep_badd($r, $part)
+    }
+    $j = $j - 1
+  }
+  si ($neg et $r != "0") { $r = "-" + $r }
+  retour rep_bnorm($r)
+}
+fn rep_bdivmod($a: chaine, $b: chaine) -> liste<chaine> {
+  $r = [""]
+  $aa = rep_babs($a)
+  $bb = rep_babs($b)
+  $neg = faux
+  $an = faux
+  $bn = faux
+  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $an = vrai }
+  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $bn = vrai }
+  si ($an != $bn) { $neg = vrai }
+  $q = ""
+  $rem = "0"
+  $i = 0
+  tant_que ($i < longueur($aa)) {
+    $rem = rep_bnorm(rep_badd(rep_bmul_small($rem, 10), sous_chaine($aa, $i, $i + 1)))
+    $d = 0
+    tant_que (rep_bcmp($rem, $bb) >= 0) {
+      $rem = rep_bsub_pos($rem, $bb)
+      $d = $d + 1
+    }
+    $q = $q + chaine($d)
+    $i = $i + 1
+  }
+  $qq = rep_bnorm($q)
+  $rr = rep_bnorm($rem)
+  si ($neg) {
+    si ($rr != "0") { $qq = rep_badd($qq, "1"); $rr = rep_bsub($bb, $rr) }
+    $qq = rep_bneg($qq)
+  }
+  si ($bn) { $rr = rep_bneg($rr) }
+  joindre($r, $qq)
+  joindre($r, $rr)
+  retour $r
+}
+fn rep_bdiv($a: chaine, $b: chaine) -> chaine { $r = rep_bdivmod($a, $b); retour $r[1] }
+fn rep_bmod($a: chaine, $b: chaine) -> chaine { $r = rep_bdivmod($a, $b); retour $r[2] }
+fn rep_bpow($a: chaine, $n: entier) -> chaine {
+  si ($n < 0) { retour "0" }
+  $r = "1"
+  $b = $a
+  $e = $n
+  tant_que ($e > 0) {
+    si ($e % 2 == 1) { $r = rep_bmul($r, $b) }
+    $b = rep_bmul($b, $b)
+    $e = $e ÷ 2
+  }
+  retour $r
+}
+fn rep_fact_big($n: entier) -> chaine {
+  $r = "1"
+  $k = 2
+  tant_que ($k <= $n) { $r = rep_bmul($r, chaine($k)); $k = $k + 1 }
+  retour $r
+}
+fn rep_fib_big($n: entier) -> chaine {
+  si ($n <= 0) { retour "0" }
+  si ($n <= 2) { retour "1" }
+  $a = "0"
+  $b = "1"
+  $k = 2
+  tant_que ($k <= $n) { $c = rep_badd($a, $b); $a = $b; $b = $c; $k = $k + 1 }
+  retour $b
+}
+fn rep_vi($n: chaine) -> chaine {
+  $x = rep_bnorm($n)
+  si (longueur($x) >= 2 et sous_chaine($x, 0, 2) == "--") { $x = sous_chaine($x, 1, longueur($x)) }
+  retour "i:" + $x
+}
+fn rep_vs($s: chaine) -> chaine { retour "s:" + $s }
+fn rep_vb($b: booleen) -> chaine { si ($b) { retour "b:1" }; retour "b:0" }
+fn rep_val_type($v: chaine) -> chaine {
+  $t = rep_vtag($v)
+  si ($t == "i") { retour "entier" }
+  si ($t == "s") { retour "chaine" }
+  si ($t == "b") { retour "booleen" }
+  retour "vide"
+}
+fn rep_val_truth($v: chaine) -> booleen {
+  $t = rep_vtag($v)
+  si ($t == "b") { retour rep_vpay($v) == "1" }
+  si ($t == "i") { retour rep_vpay($v) != "0" }
+  si ($t == "s") { retour longueur(rep_vpay($v)) > 0 }
+  retour faux
+}
+fn rep_val_str($v: chaine) -> chaine {
+  $t = rep_vtag($v)
+  si ($t == "i" ou $t == "s") { retour rep_vpay($v) }
+  si ($t == "b") { si (rep_vpay($v) == "1") { retour "vrai" }; retour "faux" }
+  retour ""
+}
+fn rep_val_cmp($a: chaine, $b: chaine) -> entier {
+  $ta = rep_vtag($a)
+  $tb = rep_vtag($b)
+  si ($ta == "s" et $tb == "s") {
+    si (rep_vpay($a) < rep_vpay($b)) { retour -1 }
+    si (rep_vpay($a) > rep_vpay($b)) { retour 1 }
+    retour 0
+  }
+  si ($ta == "b" et $tb == "b") {
+    $x = 0
+    si (rep_vpay($a) == "1") { $x = 1 }
+    $y = 0
+    si (rep_vpay($b) == "1") { $y = 1 }
+    retour $x - $y
+  }
+  si ($ta == "i" et $tb == "i") { retour rep_bcmp(rep_vpay($a), rep_vpay($b)) }
+  retour 0
+}
+fn rep_val_eq($a: chaine, $b: chaine) -> booleen { retour rep_val_cmp($a, $b) == 0 }
+fn rep_val_add($a: chaine, $b: chaine) -> chaine {
+  si (rep_vtag($a) == "s" et rep_vtag($b) == "s") { retour rep_vs(rep_vpay($a) + rep_vpay($b)) }
+  si (rep_vtag($a) == "s") { retour rep_vs(rep_vpay($a) + rep_val_str($b)) }
+  si (rep_vtag($b) == "s") { retour rep_vs(rep_val_str($a) + rep_vpay($b)) }
+  retour rep_vi(rep_badd(rep_vpay($a), rep_vpay($b)))
+}
+fn rep_val_sub($a: chaine, $b: chaine) -> chaine { retour rep_vi(rep_bsub(rep_vpay($a), rep_vpay($b))) }
+fn rep_val_mul($a: chaine, $b: chaine) -> chaine { retour rep_vi(rep_bmul(rep_vpay($a), rep_vpay($b))) }
+fn rep_val_div($a: chaine, $b: chaine) -> chaine { retour rep_vi(rep_bdiv(rep_vpay($a), rep_vpay($b))) }
+fn rep_val_mod($a: chaine, $b: chaine) -> chaine { retour rep_vi(rep_bmod(rep_vpay($a), rep_vpay($b))) }
+fn rep_val_pow($a: chaine, $b: chaine) -> chaine { retour rep_vi(rep_bpow(rep_vpay($a), entier(rep_val_str($b)))) }
+fn rep_val_neg($a: chaine) -> chaine { retour rep_vi(rep_bneg(rep_vpay($a))) }
+# ─── END REP_VALUE_ENGINE ──────────────────────────────────────────────
+
+# ── Primitives (miroir de call_prim de l'interpréteur RIR) ───────────
+fn rep_call_prim($nom: chaine, $a: liste<chaine>) -> chaine {
+  $n = longueur($a) - 1
+  si ($nom == "fact" ou $nom == "factorielle") {
+    si ($n < 1) { retour rep_vi("1") }
+    retour rep_vi(rep_fact_big(entier(rep_val_str($a[1]))))
+  }
+  si ($nom == "fib" ou $nom == "fibonacci") {
+    si ($n < 1) { retour rep_vi("0") }
+    retour rep_vi(rep_fib_big(entier(rep_val_str($a[1]))))
+  }
+  si ($nom == "abs") {
+    si ($n < 1) { retour rep_vi("0") }
+    retour rep_vi(rep_babs(rep_vpay($a[1])))
+  }
+  si ($nom == "longueur" ou $nom == "len") {
+    si ($n < 1) { retour rep_vi("0") }
+    retour rep_vi(chaine(longueur(rep_vpay($a[1]))))
+  }
+  si ($nom == "type" ou $nom == "type_de") {
+    si ($n < 1) { retour rep_vs("vide") }
+    retour rep_vs(rep_val_type($a[1]))
+  }
+  si ($nom == "pgcd" ou $nom == "gcd") {
+    si ($n < 2) { retour rep_vi("0") }
+    $x = rep_vpay($a[1])
+    $y = rep_vpay($a[2])
+    tant_que ($y != "0") { $r = rep_bdivmod($x, $y); $x = $y; $y = rep_babs($r[2]) }
+    retour rep_vi($x)
+  }
+  si ($nom == "min" ou $nom == "max") {
+    si ($n < 2) { retour rep_vi("0") }
+    $c = rep_val_cmp($a[1], $a[2])
+    si ($nom == "min") { si ($c <= 0) { retour $a[1] }; retour $a[2] }
+    si ($c >= 0) { retour $a[1] }
+    retour $a[2]
+  }
+  retour rep_vi("0")
+}
+
+# ── Lexeur d'expression ──────────────────────────────────────────────
+fn rep_tokens($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == " " ou $c == "\t" ou $c == "\n" ou $c == "\r") { $i = $i + 1 }
+    sinon si ($c == "\"") {
+      $j = $i + 1
+      $buf = ""
+      tant_que ($j < $n et sous_chaine($s, $j, $j + 1) != "\"") {
+        $buf = $buf + sous_chaine($s, $j, $j + 1)
+        $j = $j + 1
+      }
+      joindre($r, "S:" + $buf)
+      $i = $j + 1
+    }
+    sinon si ($c == "(" ou $c == ")" ou $c == "[" ou $c == "]" ou
+              $c == "+" ou $c == "-" ou $c == "*" ou $c == "/" ou
+              $c == "%" ou $c == "^" ou $c == ",") {
+      joindre($r, "O:" + $c)
+      $i = $i + 1
+    }
+    sinon si ($c == "=" ou $c == "!" ou $c == "<" ou $c == ">") {
+      si ($i + 1 < $n et sous_chaine($s, $i + 1, $i + 2) == "=") {
+        joindre($r, "O:" + $c + "=")
+        $i = $i + 2
+      } sinon {
+        joindre($r, "O:" + $c)
+        $i = $i + 1
+      }
+    }
+    sinon si ($c >= "0" et $c <= "9") {
+      $j = $i
+      $buf = ""
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si (($d >= "0" et $d <= "9") ou $d == ".") { $buf = $buf + $d; $j = $j + 1 }
+        sinon { $fin = 1 }
+      }
+      joindre($r, "N:" + $buf)
+      $i = $j
+    }
+    sinon si (($c >= "a" et $c <= "z") ou ($c >= "A" et $c <= "Z") ou
+              $c == "_" ou $c == "$") {
+      $j = $i
+      $buf = ""
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si (($d >= "a" et $d <= "z") ou ($d >= "A" et $d <= "Z") ou
+            ($d >= "0" et $d <= "9") ou $d == "_" ou $d == "$") { $buf = $buf + $d; $j = $j + 1 }
+        sinon { $fin = 1 }
+      }
+      joindre($r, "W:" + $buf)
+      $i = $j
+    }
+    sinon { joindre($r, "O:" + $c); $i = $i + 1 }
+  }
+  retour $r
+}
+fn rep_op($tok: chaine) -> chaine {
+  $p = rep_find($tok, ":")
+  si ($p < 0) { retour "" }
+  $v = sous_chaine($tok, $p + 1, longueur($tok))
+  si (longueur($tok) > 0 et sous_chaine($tok, 0, 1) == "O") { retour $v }
+  si (longueur($tok) > 0 et sous_chaine($tok, 0, 1) == "W") {
+    si ($v == "et" ou $v == "ou") { retour $v }
+  }
+  retour ""
+}
+fn rep_op_at($t: liste<chaine>, $p: entier) -> chaine {
+  si ($p >= longueur($t)) { retour "" }
+  retour rep_op($t[$p])
+}
+fn rep_prec($op: chaine) -> entier {
+  si ($op == "ou") { retour 1 }
+  si ($op == "et") { retour 2 }
+  si ($op == "==" ou $op == "!=" ou $op == "<" ou $op == ">" ou
+      $op == "<=" ou $op == ">=") { retour 3 }
+  si ($op == "+" ou $op == "-") { retour 4 }
+  si ($op == "*" ou $op == "/" ou $op == "%") { retour 5 }
+  si ($op == "^") { retour 6 }
+  retour 0
+}
+
+# ── Contexte des variables (persistance entre lignes) ───────────────
+fn rep_var_get($vars: liste<chaine>, $nom: chaine) -> chaine {
+  $i = 1
+  tant_que ($i < longueur($vars)) {
+    $e = $vars[$i]
+    $eq = -1
+    $k = 0
+    tant_que ($k < longueur($e)) {
+      si (sous_chaine($e, $k, $k + 1) == "=" et $eq < 0) { $eq = $k }
+      $k = $k + 1
+    }
+    si ($eq > 0 et sous_chaine($e, 0, $eq) == $nom) { retour sous_chaine($e, $eq + 1, longueur($e)) }
+    $i = $i + 1
+  }
+  retour ""
+}
+fn rep_var_set($vars: liste<chaine>, $nom: chaine, $val: chaine) -> liste<chaine> {
+  $r = [""]
+  $i = 1
+  tant_que ($i < longueur($vars)) {
+    $e = $vars[$i]
+    $eq = -1
+    $k = 0
+    tant_que ($k < longueur($e)) {
+      si (sous_chaine($e, $k, $k + 1) == "=" et $eq < 0) { $eq = $k }
+      $k = $k + 1
+    }
+    $nom2 = ""
+    si ($eq > 0) { $nom2 = sous_chaine($e, 0, $eq) }
+    si ($nom2 != $nom) { joindre($r, $e) }
+    $i = $i + 1
+  }
+  joindre($r, $nom + "=" + $val)
+  retour $r
+}
+
+# ── Parseur Pratt (retourne [Dummy, position_suivante, valeur]) ─────
+fn rep_parse_atom($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $rr = ["", "u", "", chaine($p)]
+  si ($p >= longueur($t)) { retour $rr }
+  $tok = $t[$p]
+  $pref = sous_chaine($tok, 0, 1)
+  $v = sous_chaine($tok, 2, longueur($tok))
+  si ($pref == "W" et $v == "non") {
+    $r = rep_parse_atom($t, $p + 1, $vars)
+    $rr = ["", "", rep_vb(non rep_val_truth($r[2])), $r[3]]
+    retour $rr
+  }
+  si ($pref == "O" et $v == "-") {
+    $r = rep_parse_atom($t, $p + 1, $vars)
+    $rr = ["", "", rep_val_neg($r[2]), $r[3]]
+    retour $rr
+  }
+  si ($pref == "O" et $v == "(") {
+    $r = rep_parse_or($t, $p + 1, $vars)
+    $q = entier($r[3])
+    si ($q < longueur($t) et rep_op_at($t, $q) == ")") { $q = $q + 1 }
+    $rr = ["", $r[1], $r[2], chaine($q)]
+    retour $rr
+  }
+  si ($pref == "S") { $rr = ["", "", rep_vs($v), chaine($p + 1)]; retour $rr }
+  si ($pref == "N") { $rr = ["", "", rep_vi(rep_bnorm($v)), chaine($p + 1)]; retour $rr }
+  si ($pref == "W") {
+    si ($v == "vrai") { $rr = ["", "", "b:1", chaine($p + 1)]; retour $rr }
+    si ($v == "faux") { $rr = ["", "", "b:0", chaine($p + 1)]; retour $rr }
+    si ($p + 1 < longueur($t) et rep_op_at($t, $p + 1) == "(") {
+      $args = [""]
+      $q = $p + 2
+      $guard = 0
+      tant_que ($q < longueur($t) et rep_op_at($t, $q) != ")" et $guard < 1000) {
+        $rv = rep_parse_or($t, $q, $vars)
+        joindre($args, $rv[2])
+        $q = entier($rv[3])
+        $guard = $guard + 1
+      }
+      si ($q < longueur($t)) { $q = $q + 1 }
+      $rr = ["", "", rep_call_prim($v, $args), chaine($q)]
+      retour $rr
+    }
+    $nom = $v
+    si (longueur($nom) > 0 et sous_chaine($nom, 0, 1) == "$") { $nom = sous_chaine($nom, 1, longueur($nom)) }
+    $val = rep_var_get($vars, $nom)
+    si (longueur($val) == 0) { $rr = ["", "u", "", chaine($p + 1)]; retour $rr }
+    $rr = ["", "", $val, chaine($p + 1)]
+    retour $rr
+  }
+  retour $rr
+}
+fn rep_parse_postfix($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = rep_parse_atom($t, $p, $vars)
+  $q = entier($r[3])
+  $val = $r[2]
+  tant_que ($q < longueur($t) et rep_op_at($t, $q) == "!" et $r[1] != "u") {
+    $val = rep_vi(rep_fact_big(entier(rep_val_str($val))))
+    $q = $q + 1
+  }
+  $rr = ["", $r[1], $val, chaine($q)]
+  retour $rr
+}
+fn rep_parse_pow($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = rep_parse_postfix($t, $p, $vars)
+  $q = entier($r[3])
+  $op = rep_op_at($t, $q)
+  si ($op == "^" et $r[1] != "u") {
+    $d = rep_parse_pow($t, $q + 1, $vars)
+    $rr = ["", $d[1], rep_val_pow($r[2], $d[2]), $d[3]]
+    retour $rr
+  }
+  retour $r
+}
+fn rep_parse_mul($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = rep_parse_pow($t, $p, $vars)
+  $q = entier($r[3])
+  $fin = 0
+  tant_que ($fin == 0) {
+    $op = rep_op_at($t, $q)
+    si ($op != "*" et $op != "/" et $op != "%") { $fin = 1 }
+    sinon {
+      $d = rep_parse_pow($t, $q + 1, $vars)
+      $v = $r[2]
+      si ($op == "*") { $v = rep_val_mul($r[2], $d[2]) }
+      si ($op == "/") { $v = rep_val_div($r[2], $d[2]) }
+      si ($op == "%") { $v = rep_val_mod($r[2], $d[2]) }
+      $r = ["", $d[1], $v, $d[3]]
+      $q = entier($d[3])
+    }
+  }
+  retour $r
+}
+fn rep_parse_add($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = rep_parse_mul($t, $p, $vars)
+  $q = entier($r[3])
+  $fin = 0
+  tant_que ($fin == 0) {
+    $op = rep_op_at($t, $q)
+    si ($op != "+" et $op != "-") { $fin = 1 }
+    sinon {
+      $d = rep_parse_mul($t, $q + 1, $vars)
+      $v = $r[2]
+      si ($op == "+") { $v = rep_val_add($r[2], $d[2]) }
+      si ($op == "-") { $v = rep_val_sub($r[2], $d[2]) }
+      $r = ["", $d[1], $v, $d[3]]
+      $q = entier($d[3])
+    }
+  }
+  retour $r
+}
+fn rep_parse_cmp($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = rep_parse_add($t, $p, $vars)
+  $q = entier($r[3])
+  $fin = 0
+  tant_que ($fin == 0) {
+    $op = rep_op_at($t, $q)
+    si (rep_prec($op) != 3) { $fin = 1 }
+    sinon {
+      $d = rep_parse_add($t, $q + 1, $vars)
+      $c = rep_val_cmp($r[2], $d[2])
+      $res = faux
+      si ($op == "==") { $res = rep_val_eq($r[2], $d[2]) }
+      si ($op == "!=") { $res = non rep_val_eq($r[2], $d[2]) }
+      si ($op == "<") { $res = $c < 0 }
+      si ($op == "<=") { $res = $c <= 0 }
+      si ($op == ">") { $res = $c > 0 }
+      si ($op == ">=") { $res = $c >= 0 }
+      $r = ["", $d[1], rep_vb($res), $d[3]]
+      $q = entier($d[3])
+    }
+  }
+  retour $r
+}
+fn rep_parse_and($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = rep_parse_cmp($t, $p, $vars)
+  $q = entier($r[3])
+  tant_que (rep_op_at($t, $q) == "et") {
+    $d = rep_parse_cmp($t, $q + 1, $vars)
+    $r = ["", $d[1], rep_vb(rep_val_truth($r[2]) et rep_val_truth($d[2])), $d[3]]
+    $q = entier($d[3])
+  }
+  retour $r
+}
+fn rep_parse_or($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = rep_parse_and($t, $p, $vars)
+  $q = entier($r[3])
+  tant_que (rep_op_at($t, $q) == "ou") {
+    $d = rep_parse_and($t, $q + 1, $vars)
+    $r = ["", $d[1], rep_vb(rep_val_truth($r[2]) ou rep_val_truth($d[2])), $d[3]]
+    $q = entier($d[3])
+  }
+  retour $r
+}
+fn rep_eval($expr: chaine, $vars: liste<chaine>) -> chaine {
+  $toks = rep_tokens($expr)
+  si (longueur($toks) <= 1) { retour "" }
+  $r = rep_parse_or($toks, 1, $vars)
+  si ($r[1] == "u") { retour "" }
+  retour $r[2]
+}
+
+# ── Utilitaires de ligne ─────────────────────────────────────────────
+fn rep_trim($s: chaine) -> chaine {
+  $a = 0
+  $b = longueur($s)
+  tant_que ($a < $b et (sous_chaine($s, $a, $a + 1) == " " ou sous_chaine($s, $a, $a + 1) == "\t")) { $a = $a + 1 }
+  tant_que ($b > $a et (sous_chaine($s, $b - 1, $b) == " " ou sous_chaine($s, $b - 1, $b) == "\t" ou sous_chaine($s, $b - 1, $b) == "\r")) { $b = $b - 1 }
+  retour sous_chaine($s, $a, $b)
+}
+fn rep_find($s: chaine, $pat: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($pat)
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    $k = 0
+    $ok = vrai
+    tant_que ($k < $m et $ok) {
+      si (sous_chaine($s, $i + $k, $i + $k + 1) != sous_chaine($pat, $k, $k + 1)) { $ok = faux }
+      $k = $k + 1
+    }
+    si ($ok) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+fn rep_split_lines($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $cur = ""
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == "\n") { joindre($r, $cur); $cur = "" }
+    sinon si ($c != "\r") { $cur = $cur + $c }
+    $i = $i + 1
+  }
+  si (longueur($cur) > 0 ou $n == 0) { joindre($r, $cur) }
+  retour $r
+}
+fn rep_def_name($ligne: chaine) -> chaine {
+  $t = rep_trim($ligne)
+  si (longueur($t) < 3 ou sous_chaine($t, 0, 1) != "$") { retour "" }
+  $i = 1
+  tant_que ($i < longueur($t) et sous_chaine($t, $i, $i + 1) != " ") { $i = $i + 1 }
+  $nom = sous_chaine($t, 1, $i)
+  tant_que ($i < longueur($t) et sous_chaine($t, $i, $i + 1) == " ") { $i = $i + 1 }
+  si ($i >= longueur($t) ou sous_chaine($t, $i, $i + 1) != "=") { retour "" }
+  si (longueur($nom) == 0) { retour "" }
+  retour $nom
+}
+fn rep_cmd($ligne: chaine) -> liste<chaine> {
+  $r = [""]
+  $t = rep_trim($ligne)
+  $i = 0
+  tant_que ($i < longueur($t) et sous_chaine($t, $i, $i + 1) != " " et sous_chaine($t, $i, $i + 1) != "\t") { $i = $i + 1 }
+  $cmd = sous_chaine($t, 0, $i)
+  $arg = rep_trim(sous_chaine($t, $i, longueur($t)))
+  joindre($r, $cmd)
+  joindre($r, $arg)
+  retour $r
+}
+
+# ── Textes de la console (miroir de repl.rs) ────────────────────────
+$rep_banniere = "╭────────────────────────────────────────────╮\n" +
+  "│                    ,-.                     │\n" +
+  "│                   /   \\                    │\n" +
+  "│                  |  .  |                   │\n" +
+  "│                   \\   /                    │\n" +
+  "│                    `-|                     │\n" +
+  "│                      |                     │\n" +
+  "│                     _|_                    │\n" +
+  "│                                            │\n" +
+  "│                Rose 0.1.73                 │\n" +
+  "│            console interactive             │\n" +
+  "╰────────────────────────────────────────────╯\n" +
+  "Tapez du code Rose. :help pour l'aide, :quit pour sortir.\n" +
+  "Méthode courante : jit — changez avec :methode aot | interprete.\n" +
+  "↑/↓ historique · Tab complète · Ctrl-C annule · Ctrl-L efface"
+
+$rep_aide = "Console Rose — commandes\n" +
+  "  :help                          cette aide\n" +
+  "  :methode <jit|aot|interprete>  choisit la méthode, affichée dans l'invite\n" +
+  "  :show                          affiche le code accumulé\n" +
+  "  :reset                         vide le buffer et le compteur :more\n" +
+  "  :load <fichier>                charge un fichier et l'exécute\n" +
+  "  :save <fichier>                écrit le buffer dans un fichier\n" +
+  "  :type <expr>                   type d'une expression\n" +
+  "  :latex                         formule LaTeX du buffer\n" +
+  "  :more [N]                      30 (ou N) chiffres de plus sur le dernier résultat symbolique\n" +
+  "  :plus / :digits                alias de :more\n" +
+  "  :quit                          quitter\n" +
+  "\n" +
+  "Toute autre ligne est du code Rose, exécuté dans le contexte du buffer.\n" +
+  "Les définitions sont mémorisées ; les >> expr s'affichent.\n" +
+  "↑ et ↓ rappellent l'historique, Tab complète."
+
+# Boucle lecture/évaluation/affichage. Isolée dans une fonction pour que
+# le banc de tests puisse appeler rep_run(script) sans point d'entrée.
+fn rep_run($src: chaine) -> chaine {
+  $rep_lignes = rep_split_lines($src)
+  $rep_vars = [""]
+  $rep_buffer = [""]
+  $rep_hist = [""]
+  $rep_method = "jit"
+  $rep_stop = faux
+  $rep_out = ""
+
+  $rep_out = $rep_out + $rep_banniere + "\n"
+$rep_ii = 1
+tant_que ($rep_ii < longueur($rep_lignes) et non $rep_stop) {
+  $rep_ligne = rep_trim($rep_lignes[$rep_ii])
+  $rep_out = $rep_out + "rose[" + $rep_method + "]> "
+  si (longueur($rep_ligne) > 0) {
+    joindre($rep_hist, $rep_ligne)
+    si (sous_chaine($rep_ligne, 0, 1) == ":") {
+      $rep_cp = rep_cmd($rep_ligne)
+      $rep_c = $rep_cp[1]
+      $rep_arg = $rep_cp[2]
+      si ($rep_c == ":quit" ou $rep_c == ":q" ou $rep_c == ":exit") {
+        $rep_stop = vrai
+      } sinon si ($rep_c == ":methode" ou $rep_c == ":method") {
+        si (longueur($rep_arg) == 0) {
+          $rep_out = $rep_out + "(méthode courante : " + $rep_method + ")\n"
+          $rep_out = $rep_out + "Choix : :methode jit | aot | interprete\n"
+        } sinon si ($rep_arg == "jit" ou $rep_arg == "j") {
+          $rep_method = "jit"
+          $rep_out = $rep_out + "(méthode : jit — invitation mise à jour)\n"
+        } sinon si ($rep_arg == "aot" ou $rep_arg == "natif") {
+          $rep_method = "aot"
+          $rep_out = $rep_out + "(méthode : aot — invitation mise à jour)\n"
+        } sinon si ($rep_arg == "interprete" ou $rep_arg == "interprété" ou $rep_arg == "interpréteur" ou $rep_arg == "i") {
+          $rep_method = "interprete"
+          $rep_out = $rep_out + "(méthode : interprete — invitation mise à jour)\n"
+        } sinon {
+          $rep_out = $rep_out + "rose: :methode attend jit, aot ou interprete (reçu : " + $rep_arg + ")\n"
+        }
+      } sinon si ($rep_c == ":aide" ou $rep_c == ":help" ou $rep_c == ":h" ou $rep_c == ":?") {
+        $rep_out = $rep_out + $rep_aide + "\n"
+      } sinon si ($rep_c == ":show" ou $rep_c == ":code") {
+        si (longueur($rep_buffer) <= 1) {
+          $rep_out = $rep_out + "(buffer vide)\n"
+        } sinon {
+          $rep_kk = 1
+          tant_que ($rep_kk < longueur($rep_buffer)) {
+            $rep_out = $rep_out + $rep_buffer[$rep_kk] + "\n"
+            $rep_kk = $rep_kk + 1
+          }
+        }
+      } sinon si ($rep_c == ":reset") {
+        $rep_buffer = [""]
+        $rep_vars = [""]
+        $rep_hist = [""]
+        $rep_out = $rep_out + "(buffer vidé)\n"
+      } sinon si ($rep_c == ":type") {
+        si (longueur($rep_arg) == 0) {
+          $rep_out = $rep_out + "rose: :type <expression>\n"
+        } sinon {
+          $rep_v = rep_eval($rep_arg, $rep_vars)
+          $rep_out = $rep_out + rep_val_type($rep_v) + "\n"
+        }
+      } sinon {
+        $rep_out = $rep_out + "rose: commande inconnue : " + $rep_c + "\n"
+      }
+    } sinon {
+      $rep_nomdef = rep_def_name($rep_ligne)
+      si (longueur($rep_nomdef) > 0) {
+        $rep_eq = rep_find($rep_ligne, "=")
+        $rep_rhs = rep_trim(sous_chaine($rep_ligne, $rep_eq + 1, longueur($rep_ligne)))
+        $rep_val = rep_eval($rep_rhs, $rep_vars)
+        $rep_vars = rep_var_set($rep_vars, $rep_nomdef, $rep_val)
+        joindre($rep_buffer, $rep_ligne)
+      } sinon {
+        $rep_val = rep_eval($rep_ligne, $rep_vars)
+        si (longueur($rep_val) > 0) {
+          $rep_out = $rep_out + rep_val_str($rep_val) + "\n"
+        } sinon {
+          $rep_out = $rep_out + "rose: expression non évaluée\n"
+        }
+      }
+    }
+  }
+  $rep_ii = $rep_ii + 1
+}
+  retour $rep_out
+}
+
+# ─── BEGIN REP_MAIN ───────────────────────────────────────────────────
+si (nb_arguments() < 1) {
+  afficher_erreur("repl_rose : usage <script.txt>")
+  quitter(2)
+}
+>> rep_run(lire_texte(argument(0)))
+# ─── END REP_MAIN ─────────────────────────────────────────────────────

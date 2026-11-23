@@ -1,0 +1,127 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_repl_rose.rose — banc de tests de la console Rose en Rose.
+#
+# Deux usages :
+#   1) Compilé avec C0 (concaténé à repl_rose.rose dont on retire le
+#      point d'entrée BEGIN/END REP_MAIN) : imprime un rapport
+#      « TESTS REPL : N OK, 0 ECHEC » et sort rc=0.
+#   2) `rose verif` sur la concaténation : vérifié.
+#
+# Le dernier test est le pilote demandé : un script de 10 commandes est
+# envoyé à rep_run() et la transcription complète est comparée OCTET POUR
+# OCTET à la sortie mesurée de `rose console` (ROSE_NO_COLOR=1), à un
+# retour à la ligne final près (afficher() ajoute '\n', le REPL Rust ne
+# l'ajoute pas sur :quit).
+# ═══════════════════════════════════════════════════════════════════════
+
+$pass = [0]
+$fail = [0]
+fn verif($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { joindre($pass, 1); retour 1 }
+  joindre($fail, 1)
+  afficher_erreur("ECHEC " + $nom + " : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+# ── 1. Moteur de valeurs (arithmétique décimale exacte) ──────────────
+verif("bnorm zeros", "42", rep_bnorm("00042"))
+verif("bnorm neg", "-7", rep_bnorm("-0007"))
+verif("badd retenue", "1000", rep_badd("999", "1"))
+verif("badd grand", "20000000000000000000", rep_badd("10000000000000000000", "10000000000000000000"))
+verif("bmul", "56088", rep_bmul("123", "456"))
+verif("bdiv", "3", rep_bdiv("17", "5"))
+verif("bmod floor", "2", rep_bmod("-7", "3"))
+verif("fact 10", "3628800", rep_fact_big(10))
+verif("fib 10", "55", rep_fib_big(10))
+
+$vv1 = rep_val_add(rep_vi("2"), rep_vi("3"))
+verif("val_add", "i:5", $vv1)
+verif("val_str bool", "vrai", rep_val_str(rep_vb(vrai)))
+verif("val_str chaine", "abcd", rep_val_str(rep_vs("abcd")))
+
+# ── 2. Évaluateur d'expressions ──────────────────────────────────────
+$ctx = rep_var_set([""], "x", "i:7")
+verif("eval +", "i:5", rep_eval("2 + 3", [""]))
+verif("eval precedence", "i:20", rep_eval("(2+3)*4", [""]))
+verif("eval ^", "i:1024", rep_eval("2 ^ 10", [""]))
+verif("eval %", "i:1", rep_eval("7 % 3", [""]))
+verif("eval unaire", "i:3", rep_eval("-5 + 8", [""]))
+verif("eval !", "i:3628800", rep_eval("10!", [""]))
+verif("eval var", "i:49", rep_eval("$x * $x", $ctx))
+verif("eval cmp", "b:1", rep_eval("5 > 3", [""]))
+verif("eval chaine", "s:abcd", rep_eval("\"ab\" + \"cd\"", [""]))
+verif("eval non", "b:1", rep_eval("non faux", [""]))
+verif("prim fact", "i:120", rep_eval("fact(5)", [""]))
+verif("prim fib", "i:55", rep_eval("fib(10)", [""]))
+
+# ── 3. Analyse de ligne et contexte ──────────────────────────────────
+$cp = rep_cmd(":methode interprete")
+verif("cmd nom", ":methode", $cp[1])
+verif("cmd arg", "interprete", $cp[2])
+$ca = rep_cmd(":aide")
+verif("cmd aide alias", ":aide", $ca[1])
+verif("def name", "x", rep_def_name("$x = 7"))
+verif("def name non", "", rep_def_name("2 + 3"))
+verif("var get", "i:9", rep_var_get(rep_var_set([""], "x", "i:9"), "x"))
+verif("split lignes", "3", chaine(longueur(rep_split_lines("a\nb\n"))))
+
+# ── 4. Transcription complète du script de 10 commandes ─────────────
+$script10 = "2 + 3\n" +
+  "10!\n" +
+  "$x = 7\n" +
+  "$x * $x\n" +
+  "5 > 3\n" +
+  "\"ab\" + \"cd\"\n" +
+  ":methode interprete\n" +
+  ":show\n" +
+  ":help\n" +
+  ":quit\n"
+
+$gpart0 = "╭────────────────────────────────────────────╮\n" +
+  "│                    ,-.                     │\n" +
+  "│                   /   \\                    │\n" +
+  "│                  |  .  |                   │\n" +
+  "│                   \\   /                    │\n" +
+  "│                    `-|                     │\n" +
+  "│                      |                     │\n" +
+  "│                     _|_                    │\n" +
+  "│                                            │\n" +
+  "│                Rose 0.1.73                 │\n"
+$gpart1 =
+  "│            console interactive             │\n" +
+  "╰────────────────────────────────────────────╯\n" +
+  "Tapez du code Rose. :help pour l'aide, :quit pour sortir.\n" +
+  "Méthode courante : jit — changez avec :methode aot | interprete.\n" +
+  "↑/↓ historique · Tab complète · Ctrl-C annule · Ctrl-L efface\n" +
+  "rose[jit]> 5\n" +
+  "rose[jit]> 3628800\n" +
+  "rose[jit]> rose[jit]> 49\n" +
+  "rose[jit]> vrai\n" +
+  "rose[jit]> abcd\n"
+$gpart2 =
+  "rose[jit]> (méthode : interprete — invitation mise à jour)\n" +
+  "rose[interprete]> $x = 7\n" +
+  "rose[interprete]> Console Rose — commandes\n" +
+  "  :help                          cette aide\n" +
+  "  :methode <jit|aot|interprete>  choisit la méthode, affichée dans l'invite\n" +
+  "  :show                          affiche le code accumulé\n" +
+  "  :reset                         vide le buffer et le compteur :more\n" +
+  "  :load <fichier>                charge un fichier et l'exécute\n" +
+  "  :save <fichier>                écrit le buffer dans un fichier\n" +
+  "  :type <expr>                   type d'une expression\n"
+$gpart3 =
+  "  :latex                         formule LaTeX du buffer\n" +
+  "  :more [N]                      30 (ou N) chiffres de plus sur le dernier résultat symbolique\n" +
+  "  :plus / :digits                alias de :more\n" +
+  "  :quit                          quitter\n" +
+  "\n" +
+  "Toute autre ligne est du code Rose, exécuté dans le contexte du buffer.\n" +
+  "Les définitions sont mémorisées ; les >> expr s'affichent.\n" +
+  "↑ et ↓ rappellent l'historique, Tab complète.\n" +
+  "rose[interprete]> "
+$golden = $gpart0 + $gpart1 + $gpart2 + $gpart3
+$sortie = rep_run($script10)
+verif("transcription 10 commandes", $golden, $sortie)
+
+>> "TESTS REPL : " + chaine(longueur($pass) - 1) + " OK, " + chaine(longueur($fail) - 1) + " ECHEC"
+si (longueur($fail) > 1) { quitter(1) }
