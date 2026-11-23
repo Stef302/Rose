@@ -1450,3 +1450,11 @@ correctifs 1-6 (constantes >2^60, rationnels negatifs, flottants, alias, argumen
 RIR non couvert) + branchements 8-11 (GC, modules, dispatch CLI, REPL).
 Chacun avec test de parite vs rose/rose, C0 → ELF, point fixe b3ed9262 et
 validation_finale 0 echec. Objectif: 20/20 puis 141/141 sans Rust.
+
+## Vague 96 — derniers écarts du moteur complet sans Rust
+
+Corpus 141 sources: 103 -> 125 conformes apres integration des 10 correctifs de la
+vague 95. Reste: 1 flottant (t09 1.5->1), 8 SIGSEGV tables/arguments, 4 refus HOF.
+3 agents finalux lances (final_t1/t2/t3) avec gdb et tests de parite.
+Une regression detectee et corrigee en cours de route: le patch b10 avait ecrase
+le correctif 1 (lsrc_rpui) — re-applique et verifie (commit 8519d16).
