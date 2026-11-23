@@ -1,0 +1,247 @@
+# tests_chaine_rose.rose — banc de conformité de la rope Rose (poste J6 §11).
+#
+# Se CONCATÈNE avec `compilateur/chaine_rose.rose` (Rose n'a pas de module) :
+#   cat compilateur/chaine_rose.rose compilateur/tests_chaine_rose.rose > /tmp/t.rose
+#   ROSE_SANS_JIT=1 rose /tmp/t.rose          # référence moteur Rust
+#   C0 /tmp/t.rose > /tmp/t.elf && ./t.elf    # émetteur auto-hébergé
+#
+# Sortie DÉTERMINISTE (aucun `temps()` ici) : natif et ELF doivent rendre
+# exactement les mêmes octets. Les mesures de performance sont dans le banc
+# séparé décrit dans rose/docs/HORDE_CHAINE.md.
+#
+# Discipline G5 : pas de globale, pas de `[]` vide, pas de `retour [ ... ]`,
+# pas d'affectation par index, pas de paramètre nommé `i`.
+
+# ── Générateur déterministe de morceaux ──────────────────────────────────────
+
+# 3 caractères ASCII, dépendant de `k` et du motif. Un motif différent change
+# l'ordre des insertions sans changer les longueurs.
+fn piece(k: entier, motif: entier) -> chaine {
+  $r = ""
+  $j = 0
+  tant_que ($j < 3) {
+    $c = 65 + ((k * 7 + $j * 13 + motif * 29) % 26)
+    $r = $r + caractere($c)
+    $j = $j + 1
+  }
+  retour $r
+}
+
+# ── Invariant AVL (hauteur + équilibre) ──────────────────────────────────────
+
+fn verif_noeud(a: liste<entier>, k: entier, prof: entier) -> entier {
+  si (k == 0) { retour 1 }
+  $kind = cr_kind(a, k)
+  $g = cr_g(a, k)
+  $d = cr_d(a, k)
+  $h = cr_h(a, k)
+  $hg = 0
+  $hd = 0
+  $ok = 1
+  si ($g != 0) { $hg = cr_h(a, $g) }
+  si ($d != 0) { $hd = cr_h(a, $d) }
+  si ($kind == cr_concat_kind()) {
+    si ($hg - $hd > 1) { $ok = 0 }
+    si ($hd - $hg > 1) { $ok = 0 }
+    $att = $hg
+    si ($hd > $att) { $att = $hd }
+    $att = $att + 1
+    si ($h != $att) { $ok = 0 }
+    $ok = $ok * verif_noeud(a, $g, prof + 1)
+    $ok = $ok * verif_noeud(a, $d, prof + 1)
+  }
+  si (prof > 64) { $ok = 0 }
+  retour $ok
+}
+
+# ── Parité octet pour octet avec le moteur Rust ──────────────────────────────
+
+# Compare le cache aplati de la rope, CODE POUR CODE, avec la génération
+# indépendante des morceaux par le moteur Rust (`+` natif = ChaineRep).
+fn parite_codes(a: liste<entier>, n: entier, motif: entier) -> entier {
+  $b = cr_aplatir(a)
+  $codes = cr_codes($b)
+  $pos = 1
+  $errs = 0
+  $k = 0
+  tant_que ($k < n) {
+    $mot = piece(k, motif)
+    $j = 0
+    tant_que ($j < longueur($mot)) {
+      $attendu = ordre(sous_chaine($mot, $j, $j + 1))
+      si ($codes[$pos] != $attendu) { $errs = $errs + 1 }
+      $pos = $pos + 1
+      $j = $j + 1
+    }
+    $k = $k + 1
+  }
+  si (longueur($codes) != 1 + 3 * n) { $errs = $errs + 1 }
+  retour $errs
+}
+
+# Tranche vs chaîne construite par le moteur Rust (référence indépendante).
+fn parite_tranche(a: liste<entier>, debut: entier, fin: entier, motif: entier) -> entier {
+  $attendu = ""
+  $pos = debut
+  tant_que ($pos < fin) {
+    $k = pos div 3
+    $mot = piece(k, motif)
+    $local = pos - 3 * k
+    $lim = 3
+    si (fin - 3 * k < $lim) { $lim = fin - 3 * k }
+    $attendu = $attendu + sous_chaine($mot, $local, $lim)
+    $pos = 3 * (k + 1)
+  }
+  $obtenu = cr_tranche(a, debut, fin)
+  si ($obtenu == $attendu) { retour 0 }
+  retour 1
+}
+
+# ── Un scénario complet (n morceaux) ─────────────────────────────────────────
+
+# Rend [sentinelle, erreurs, hauteur, nombre de concaténations].
+fn scenario(n: entier, motif: entier) -> liste<entier> {
+  $a = cr_creer()
+  $f = cr_feuille($a, piece(0, motif))
+  $a = $f
+  $rac = cr_racine($a)
+  $k = 1
+  $long_attendue = 3
+  $errs = 0
+  $concats = 0
+  tant_que ($k < n) {
+    $f = cr_feuille($a, piece($k, motif))
+    $a = $f
+    $nf = cr_racine($a)
+    $a = cr_concat($a, $rac, $nf)
+    $rac = cr_racine($a)
+    $k = $k + 1
+    $concats = $concats + 1
+    $long_attendue = $long_attendue + 3
+    si (cr_longueur($a) != $long_attendue) { $errs = $errs + 1 }
+  }
+  $errs = $errs + (1 - verif_noeud($a, $rac, 0))
+  $errs = $errs + parite_codes($a, n, motif)
+  $errs = $errs + parite_tranche($a, 0, 3, motif)
+  $errs = $errs + parite_tranche($a, 7, 40, motif)
+  $errs = $errs + parite_tranche($a, 3 * (n div 2), 3 * (n div 2) + 31, motif)
+  $errs = $errs + parite_tranche($a, 3 * n - 17, 3 * n, motif)
+  $b = cr_aplatir($a)
+  $errs = $errs + parite_tranche($b, 11, 53, motif)
+  $errs = $errs + parite_tranche($b, 3 * n - 23, 3 * n, motif)
+  si (cr_tranche($b, 3 * n, 3 * n + 5) != "") { $errs = $errs + 1 }
+  $r = [0, $errs, cr_hauteur_racine($a), $concats]
+  retour $r
+}
+
+# ── Unicode (points de code, y compris astraux) ──────────────────────────────
+
+fn morceau_unicode(k: entier) -> chaine {
+  $r = ""
+  $j = 0
+  tant_que ($j < 4) {
+    $x = (k + $j * 3) % 5
+    si ($x == 0) { $r = $r + "é" }
+    si ($x == 1) { $r = $r + "中" }
+    si ($x == 2) { $r = $r + "😀" }
+    si ($x == 3) { $r = $r + "Ω" }
+    si ($x == 4) { $r = $r + "a" }
+    $j = $j + 1
+  }
+  retour $r
+}
+
+fn test_unicode(n: entier) -> liste<entier> {
+  $a = cr_creer()
+  $f = cr_feuille($a, morceau_unicode(0))
+  $a = $f
+  $rac = cr_racine($a)
+  $k = 1
+  $att = 4
+  $errs = 0
+  tant_que ($k < n) {
+    $f = cr_feuille($a, morceau_unicode($k))
+    $a = $f
+    $nf = cr_racine($a)
+    $a = cr_concat($a, $rac, $nf)
+    $rac = cr_racine($a)
+    $k = $k + 1
+    $att = $att + 4
+  }
+  si (cr_longueur($a) != $att) { $errs = $errs + 1 }
+  # parité des codes sur toute la chaîne
+  $b = cr_aplatir($a)
+  $codes = cr_codes($b)
+  $pos = 1
+  $j = 0
+  tant_que ($j < n) {
+    $mot = morceau_unicode($j)
+    $q = 0
+    tant_que ($q < longueur($mot)) {
+      si ($codes[$pos] != ordre(sous_chaine($mot, $q, $q + 1))) { $errs = $errs + 1 }
+      $pos = $pos + 1
+      $q = $q + 1
+    }
+    $j = $j + 1
+  }
+  # tranche Unicode avant et après aplatissement
+  $ref1 = ""
+  $j = 0
+  tant_que ($j < 9) { $ref1 = $ref1 + morceau_unicode($j); $j = $j + 1 }
+  si (cr_tranche($a, 5, 29) != sous_chaine($ref1, 5, 29)) { $errs = $errs + 1 }
+  si (cr_tranche($b, 5, 29) != sous_chaine($ref1, 5, 29)) { $errs = $errs + 1 }
+  $r = [0, $errs, cr_longueur($a), $att]
+  retour $r
+}
+
+# ── Comparaison lexicographique ──────────────────────────────────────────────
+
+fn test_comparer() -> entier {
+  $a = cr_creer()
+  $a = cr_feuille($a, "abc")
+  $b = cr_creer()
+  $b = cr_feuille($b, "abd")
+  $c = cr_creer()
+  $c = cr_feuille($c, "ab")
+  $d = cr_creer()
+  $d = cr_feuille($d, "abc")
+  $errs = 0
+  si (cr_comparer($a, $b) != -1) { $errs = $errs + 1 }
+  si (cr_comparer($b, $a) != 1) { $errs = $errs + 1 }
+  si (cr_comparer($a, $c) != 1) { $errs = $errs + 1 }
+  si (cr_comparer($c, $a) != -1) { $errs = $errs + 1 }
+  si (cr_comparer($a, $d) != 0) { $errs = $errs + 1 }
+  si (cr_egal($a, $d) != 1) { $errs = $errs + 1 }
+  si (cr_egal($a, $b) != 0) { $errs = $errs + 1 }
+  retour $errs
+}
+
+# ── Pilote ───────────────────────────────────────────────────────────────────
+
+$total_errs = 0
+$total_concats = 0
+$nb_scenarios = 0
+$szs = [1000, 2000, 5000, 10000, 20000]
+$motifs = [0, 1, 2, 3]
+$ix = 0
+tant_que ($ix < longueur($szs)) {
+  $jx = 0
+  tant_que ($jx < longueur($motifs)) {
+    $res = scenario($szs[$ix], $motifs[$jx])
+    $total_errs = $total_errs + $res[1]
+    $total_concats = $total_concats + $res[3]
+    $nb_scenarios = $nb_scenarios + 1
+    afficher("SC:" + chaine($szs[$ix]) + ":" + chaine($motifs[$jx]) + ":" + chaine($res[1]) + ":" + chaine($res[2]) + ":" + chaine($res[3]))
+    $jx = $jx + 1
+  }
+  $ix = $ix + 1
+}
+$ru = test_unicode(500)
+$total_errs = $total_errs + $ru[1]
+afficher("UNICODE:" + chaine($ru[1]) + ":" + chaine($ru[2]) + ":" + chaine($ru[3]))
+$ce = test_comparer()
+$total_errs = $total_errs + $ce
+afficher("CMP:" + chaine($ce))
+$avide = cr_creer()
+afficher("VIDE:" + chaine(cr_longueur($avide)) + ":" + chaine(cr_racine($avide)) + ":" + chaine(longueur(cr_tranche($avide, 0, 3))))
+afficher("TOTAL:" + chaine($total_errs) + ":" + chaine($total_concats) + ":" + chaine($nb_scenarios))

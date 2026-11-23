@@ -1,0 +1,366 @@
+# chaine_rose.rose — représentation des chaînes (ChaineRep rope) EN ROSE PUR.
+#
+# Poste J6 §11 : porter dans le moteur auto-hébergé la structure que le moteur
+# Rust porte dans `rose/src/run.rs` (`ChaineRep`, `NoeudChaine`). Le repli J6
+# actuel (`compilateur/moteur_valeurs.rose` / `moteur_ops.rose`) represente une
+# chaîne comme une LISTE PLATE de codes : `longueur` y est O(1) mais `joindre`
+# recopie les deux listes (O(n)) et `sous_chaine` est un scan (O(n)). Ici on
+# construit un ARBRE ÉQUILIBRÉ (AVL) immuable, en arène append-only.
+#
+# ── Modèle de mémoire ────────────────────────────────────────────────────────
+# Un rope = UNE `liste<entier>` (l'arène). Tout est AJOUTÉ À LA FIN, jamais
+# modifié : Rose interdit l'affectation par index et l'ABI G5 réalloue les
+# listes sur `joindre`. Les index absolus restent donc valables pour toujours.
+#
+#   * une suite de codes = `t` entiers consécutifs (points de code Unicode) ;
+#   * une CELLULE DE NŒUD = 8 entiers :
+#       +0 kind (1 = feuille, 2 = concat)
+#       +1 feuille : index du 1er code | concat : index du nœud gauche
+#       +2 feuille : nombre de codes    | concat : index du nœud droite
+#       +3 nombre de CARACTÈRES du sous-arbre  (=> longueur O(1) à la racine)
+#       +4 hauteur AVL (feuille = 1, vide = 0)
+#       +5..+7 réservés (0)
+#   * une CELLULE D'ÉTAT = 8 entiers, TOUJOURS LA DERNIÈRE de l'arène :
+#       +0 kind = 0
+#       +1 index du nœud racine (0 = rope vide)
+#       +2 index du 1er code du cache d'aplatissement (0 = pas de cache)
+#       +3 nombre de codes du cache
+#       +4 longueur totale = racine.n
+#       +5 hauteur de la racine
+#       +6 index du dernier nœud créé (statistique)
+#       +7 réservé (0)
+#
+# Invariant : toute opération publique termine par une cellule d'état, donc
+# `longueur(a) - 8` pointe toujours sur l'état courant. Cela évite toute
+# reconstruction de liste pour « mettre à jour » l'état.
+#
+# ── Propriétés ───────────────────────────────────────────────────────────────
+#   * `cr_longueur`      : O(1)   (champ +4 de l'état)
+#   * `cr_concat`        : O(log n) amorti (jonction AVL, hauteur ≤ 1,44 log₂ n)
+#   * `cr_tranche`       : O(log n + k) sans cache, O(k) avec cache
+#   * `cr_aplatir`       : O(n) une seule fois, puis cache réutilisé
+#   * `cr_comparer`      : O(min(n,m)) après aplatissement
+#   * immuable           : les préfixes partagés restent valides
+#
+# Discipline G5 : aucune globale, aucun `[]` vide, aucun `retour [ ... ]`,
+# aucune affectation par index, aucun paramètre nommé `i`, pas de `min`/`max`.
+# Rose n'a pas de module : ce fichier se concatène avec ses pilotes.
+
+# ── Kinds et offsets ─────────────────────────────────────────────────────────
+
+fn cr_etat() -> entier { retour 0 }
+fn cr_feuille_kind() -> entier { retour 1 }
+fn cr_concat_kind() -> entier { retour 2 }
+fn cr_cell() -> entier { retour 8 }
+
+# ── Lecture de l'état courant (toujours la dernière cellule) ─────────────────
+
+fn cr_idx_etat(a: liste<entier>) -> entier { retour longueur(a) - cr_cell() }
+fn cr_racine(a: liste<entier>) -> entier { retour a[cr_idx_etat(a) + 1] }
+fn cr_cache_debut(a: liste<entier>) -> entier { retour a[cr_idx_etat(a) + 2] }
+fn cr_cache_long(a: liste<entier>) -> entier { retour a[cr_idx_etat(a) + 3] }
+fn cr_longueur(a: liste<entier>) -> entier { retour a[cr_idx_etat(a) + 4] }
+fn cr_hauteur_racine(a: liste<entier>) -> entier { retour a[cr_idx_etat(a) + 5] }
+fn cr_dernier_noeud(a: liste<entier>) -> entier { retour a[cr_idx_etat(a) + 6] }
+
+# ── Accès générique à une cellule (index absolu de son 1er entier) ───────────
+
+fn cr_kind(a: liste<entier>, k: entier) -> entier { retour a[k] }
+fn cr_g(a: liste<entier>, k: entier) -> entier { retour a[k + 1] }
+fn cr_d(a: liste<entier>, k: entier) -> entier { retour a[k + 2] }
+fn cr_n(a: liste<entier>, k: entier) -> entier { retour a[k + 3] }
+fn cr_h(a: liste<entier>, k: entier) -> entier { retour a[k + 4] }
+
+# ── Construction de l'état ───────────────────────────────────────────────────
+
+# Ajoute une cellule d'état. `cache` = index du début du cache (0 si aucun),
+# `clong` = nombre de codes du cache, `lng` = longueur, `haut` = hauteur,
+# `dernier` = index du dernier nœud créé.
+fn cr_maj(a: liste<entier>, rac: entier, cache: entier, clong: entier, lng: entier, haut: entier, dernier: entier) -> liste<entier> {
+  joindre(a, cr_etat())
+  joindre(a, rac)
+  joindre(a, cache)
+  joindre(a, clong)
+  joindre(a, lng)
+  joindre(a, haut)
+  joindre(a, dernier)
+  joindre(a, 0)
+  retour a
+}
+
+# Arène vide : une seule cellule d'état, racine 0, longueur 0.
+fn cr_creer() -> liste<entier> {
+  $r = [0, 0, 0, 0, 0, 0, 0, 0]
+  retour $r
+}
+
+# ── Nœuds ────────────────────────────────────────────────────────────────────
+
+# Crée un nœud de concaténation et en fait la racine courante.
+fn cr_noeud(a: liste<entier>, g: entier, d: entier) -> liste<entier> {
+  $ng = 0
+  $nd = 0
+  $hg = 0
+  $hd = 0
+  $h = 1
+  si (g != 0) { $ng = cr_n(a, g); $hg = cr_h(a, g); $h = $hg }
+  si (d != 0) { $nd = cr_n(a, d); $hd = cr_h(a, d); si ($hd > $h) { $h = $hd } }
+  $h = $h + 1
+  $idx = longueur(a)
+  joindre(a, cr_concat_kind())
+  joindre(a, g)
+  joindre(a, d)
+  joindre(a, $ng + $nd)
+  joindre(a, $h)
+  joindre(a, 0)
+  joindre(a, 0)
+  joindre(a, 0)
+  retour cr_maj(a, $idx, 0, 0, $ng + $nd, $h, $idx)
+}
+
+# ── Feuille ──────────────────────────────────────────────────────────────────
+
+# Ajoute une feuille portant `s` (Unicode : un point de code = un code).
+# Le run de codes sert IMMÉDIATEMENT de cache : une feuille est déjà aplatie.
+fn cr_feuille(a: liste<entier>, s: chaine) -> liste<entier> {
+  $cnt = longueur(s)
+  $debut = longueur(a)
+  $k = 0
+  tant_que ($k < $cnt) {
+    joindre(a, ordre(sous_chaine(s, $k, $k + 1)))
+    $k = $k + 1
+  }
+  $idx = longueur(a)
+  joindre(a, cr_feuille_kind())
+  joindre(a, $debut)
+  joindre(a, $cnt)
+  joindre(a, $cnt)
+  joindre(a, 1)
+  joindre(a, 0)
+  joindre(a, 0)
+  joindre(a, 0)
+  retour cr_maj(a, $idx, $debut, $cnt, $cnt, 1, $idx)
+}
+
+# ── Équilibrage AVL ──────────────────────────────────────────────────────────
+
+# Rééquilibre le nœud racine de `a` (déséquilibre ≤ 2 garanti par `cr_join`).
+fn cr_equilibrer(a: liste<entier>, r: entier) -> liste<entier> {
+  $g = cr_g(a, r)
+  $d = cr_d(a, r)
+  $hg = 0
+  $hd = 0
+  si ($g != 0) { $hg = cr_h(a, $g) }
+  si ($d != 0) { $hd = cr_h(a, $d) }
+
+  si ($hg - $hd > 1) {
+    $gg = cr_g(a, $g)
+    $gd = cr_d(a, $g)
+    $hgg = 0
+    $hgd = 0
+    si ($gg != 0) { $hgg = cr_h(a, $gg) }
+    si ($gd != 0) { $hgd = cr_h(a, $gd) }
+    si ($hgg >= $hgd) {
+      # rotation simple à droite : ( (gg,gd), d ) -> ( gg, (gd,d) )
+      $ar = cr_noeud(a, $gd, $d)
+      retour cr_noeud($ar, $gg, cr_racine($ar))
+    }
+    # double rotation gauche-droite
+    $gl = cr_g(a, $gd)
+    $gr = cr_d(a, $gd)
+    $ar = cr_noeud(a, $gg, $gl)
+    $nl = cr_racine($ar)
+    $ar = cr_noeud($ar, $gr, $d)
+    retour cr_noeud($ar, $nl, cr_racine($ar))
+  }
+
+  si ($hd - $hg > 1) {
+    $dg = cr_g(a, $d)
+    $dd = cr_d(a, $d)
+    $hdg = 0
+    $hdd = 0
+    si ($dg != 0) { $hdg = cr_h(a, $dg) }
+    si ($dd != 0) { $hdd = cr_h(a, $dd) }
+    si ($hdd >= $hdg) {
+      # rotation simple à gauche : ( g, (dg,dd) ) -> ( (g,dg), dd )
+      $ar = cr_noeud(a, $g, $dg)
+      retour cr_noeud($ar, cr_racine($ar), $dd)
+    }
+    # double rotation droite-gauche : ( g, (dg=(dgl,dgr), dd) )
+    #                                  -> ( (g,dgl), (dgr,dd) )
+    $dgl = cr_g(a, $dg)
+    $dgr = cr_d(a, $dg)
+    $ar = cr_noeud(a, $dgr, $dd)
+    $nd = cr_racine($ar)
+    $ar = cr_noeud($ar, $g, $dgl)
+    retour cr_noeud($ar, cr_racine($ar), $nd)
+  }
+
+  retour a
+}
+
+# Jonction AVL de deux racines : O(|h(a) − h(b)|), donc O(log n) amorti.
+fn cr_join(a: liste<entier>, x: entier, y: entier) -> liste<entier> {
+  si (x == 0) { retour cr_maj(a, y, 0, 0, cr_n(a, y), cr_h(a, y), y) }
+  si (y == 0) { retour cr_maj(a, x, 0, 0, cr_n(a, x), cr_h(a, x), x) }
+  $hx = cr_h(a, x)
+  $hy = cr_h(a, y)
+  si ($hx > $hy + 1) {
+    $ar = cr_join(a, cr_d(a, x), y)
+    $ar2 = cr_noeud($ar, cr_g(a, x), cr_racine($ar))
+    retour cr_equilibrer($ar2, cr_racine($ar2))
+  }
+  si ($hy > $hx + 1) {
+    $ar = cr_join(a, x, cr_g(a, y))
+    $ar2 = cr_noeud($ar, cr_racine($ar), cr_d(a, y))
+    retour cr_equilibrer($ar2, cr_racine($ar2))
+  }
+  retour cr_noeud(a, x, y)
+}
+
+# Concaténation publique : la racine du rope rendu est le nœud joint.
+fn cr_concat(a: liste<entier>, x: entier, y: entier) -> liste<entier> {
+  retour cr_join(a, x, y)
+}
+
+# ── Aplatissement avec cache ─────────────────────────────────────────────────
+
+# Parcours infixe : ajoute les codes à l'arène (append-only, les index
+# absolus déjà lus restent valides).
+fn cr_aplatir_rec(a: liste<entier>, k: entier) -> liste<entier> {
+  si (k == 0) { retour a }
+  si (cr_kind(a, k) == cr_feuille_kind()) {
+    $debut = cr_g(a, k)
+    $cnt = cr_d(a, k)
+    $j = 0
+    tant_que ($j < $cnt) {
+      joindre(a, a[$debut + $j])
+      $j = $j + 1
+    }
+    retour a
+  }
+  $g = cr_g(a, k)
+  $d = cr_d(a, k)
+  $ar = cr_aplatir_rec(a, $g)
+  $ar = cr_aplatir_rec($ar, $d)
+  retour $ar
+}
+
+# Remplit le cache d'aplatissement (une seule fois ; les appels suivants sont
+# O(1)). Le run de codes est ajouté à la fin de l'arène.
+fn cr_aplatir(a: liste<entier>) -> liste<entier> {
+  si (cr_cache_debut(a) != 0) { retour a }
+  $rac = cr_racine(a)
+  si ($rac == 0) { retour cr_maj(a, 0, 0, 0, 0, 0, 0) }
+  # ⚠ On capture l'état AVANT d'ajouter le run de codes : pendant l'ajout,
+  # la cellule d'état n'est plus la dernière et les accesseurs liraient
+  # à côté. Le nouvel état sera réécrit par `cr_maj` en fin d'opération.
+  $lng = cr_longueur(a)
+  $haut = cr_hauteur_racine(a)
+  $dern = cr_dernier_noeud(a)
+  $debut = longueur(a)
+  $ar = cr_aplatir_rec(a, $rac)
+  $cnt = longueur($ar) - $debut
+  retour cr_maj($ar, $rac, $debut, $cnt, $lng, $haut, $dern)
+}
+
+# Codes du cache, dans une liste préfixée d'un sentinelle en index 0.
+fn cr_codes(a: liste<entier>) -> liste<entier> {
+  $r = [0]
+  $debut = cr_cache_debut(a)
+  $cnt = cr_cache_long(a)
+  $j = 0
+  tant_que ($j < $cnt) {
+    joindre($r, a[$debut + $j])
+    $j = $j + 1
+  }
+  retour $r
+}
+
+# ── Tranche O(log n + k) ─────────────────────────────────────────────────────
+
+# Collecte les codes de [début, fin) dans `acc` (préfixé d'un sentinelle).
+fn cr_collecter(a: liste<entier>, k: entier, debut: entier, fin: entier, pos: entier, acc: liste<entier>) -> liste<entier> {
+  si (k == 0 ou pos >= fin) { retour acc }
+  $cnt = cr_n(a, k)
+  si (pos + $cnt <= debut) { retour acc }
+  si (cr_kind(a, k) == cr_feuille_kind()) {
+    $debut_local = debut - pos
+    si ($debut_local < 0) { $debut_local = 0 }
+    $fin_local = fin - pos
+    si ($fin_local > $cnt) { $fin_local = $cnt }
+    $src = cr_g(a, k)
+    $j = $debut_local
+    tant_que ($j < $fin_local) {
+      joindre(acc, a[$src + $j])
+      $j = $j + 1
+    }
+    retour acc
+  }
+  $g = cr_g(a, k)
+  $d = cr_d(a, k)
+  $acc = cr_collecter(a, $g, debut, fin, pos, acc)
+  retour cr_collecter(a, $d, debut, fin, pos + cr_n(a, $g), $acc)
+}
+
+# Codes → chaîne par concaténation ÉQUILIBRÉE (O(k) sous le moteur Rust à rope,
+# O(k log k) sous l'émetteur G5 où `+` recopie).
+fn cr_codes_chaine(c: liste<entier>, debut: entier, fin: entier) -> chaine {
+  si (fin <= debut) { retour "" }
+  si (fin - debut == 1) { retour caractere(c[1 + debut]) }
+  $m = debut + (fin - debut) div 2
+  retour cr_codes_chaine(c, debut, $m) + cr_codes_chaine(c, $m, fin)
+}
+
+# Tranche [début, fin) en POINTS DE CODE. Utilise le cache s'il est présent
+# (découpe directe, O(k)), sinon descend l'arbre (O(log n + k)).
+fn cr_tranche(a: liste<entier>, debut: entier, fin: entier) -> chaine {
+  $lng = cr_longueur(a)
+  si (fin > $lng) { $fin = $lng }
+  si (debut >= fin) { retour "" }
+  $codes = [0]
+  $cd = cr_cache_debut(a)
+  $cl = cr_cache_long(a)
+  si ($cd != 0 et fin <= $cl) {
+    $j = debut
+    tant_que ($j < fin) {
+      joindre($codes, a[$cd + $j])
+      $j = $j + 1
+    }
+  } sinon {
+    $codes = cr_collecter(a, cr_racine(a), debut, fin, 0, $codes)
+  }
+  retour cr_codes_chaine($codes, 0, longueur($codes) - 1)
+}
+
+# ── Comparaison lexicographique ──────────────────────────────────────────────
+
+# -1 / 0 / 1, sur les POINTS DE CODE (même convention que `cmp_rep` Rust).
+fn cr_comparer(a: liste<entier>, b: liste<entier>) -> entier {
+  $aa = cr_aplatir(a)
+  $bb = cr_aplatir(b)
+  $da = cr_cache_debut($aa)
+  $db = cr_cache_debut($bb)
+  $na = cr_cache_long($aa)
+  $nb = cr_cache_long($bb)
+  $n = $na
+  si ($nb < $n) { $n = $nb }
+  $j = 0
+  tant_que ($j < $n) {
+    $x = $aa[$da + $j]
+    $y = $bb[$db + $j]
+    si ($x < $y) { retour -1 }
+    si ($x > $y) { retour 1 }
+    $j = $j + 1
+  }
+  si ($na < $nb) { retour -1 }
+  si ($na > $nb) { retour 1 }
+  retour 0
+}
+
+# Égalité de contenu.
+fn cr_egal(a: liste<entier>, b: liste<entier>) -> entier {
+  si (cr_longueur(a) != cr_longueur(b)) { retour 0 }
+  si (cr_comparer(a, b) == 0) { retour 1 }
+  retour 0
+}

@@ -1,0 +1,162 @@
+# tests_gc_rose.rose — batterie fonctionnelle du GC Rose (poste GC de J6 §5).
+#
+# ⚠ Rose n'a pas d'`include` : ce pilote s'écrit en concaténation avec
+# `compilateur/gc_rose.rose` :
+#
+#   cat compilateur/gc_rose.rose compilateur/tests_gc_rose.rose > tests_gc.rose
+#   rose verif tests_gc.rose
+#   rose tests_gc.rose > nat.out
+#   C0.elf tests_gc.rose > tests_gc.elf && ./tests_gc.elf > elf.out
+#   diff nat.out elf.out        # aucune différence
+#
+# Aucune assertion ne dépend d'un `afficher` de type dynamique (le backend G5
+# n'émet pas les valeurs `?`) : chaque contrôle imprime un littéral de chaine,
+# et tout échec appelle `quitter(1)`.
+
+fn gc_verifier(condition: booleen, label: chaine) -> entier {
+  si (condition) {
+    >> "OK " + label
+    retour 0
+  }
+  >> "ECHEC " + label
+  quitter(1)
+  retour 0
+}
+
+# ── 1. état initial ───────────────────────────────────────────────────────────
+
+$gc_a = gc_nouveau()
+gc_verifier(gc_allocs($gc_a) == 0, "allocs initial")
+gc_verifier(gc_liberes($gc_a) == 0, "liberes initial")
+gc_verifier(gc_reutilises($gc_a) == 0, "reuse initial")
+gc_verifier(gc_frais($gc_a) == 0, "fresh initial")
+gc_verifier(gc_libre($gc_a) == 0, "libre initial")
+gc_verifier(gc_pic_vivants($gc_a) == 0, "pic initial")
+gc_verifier(gc_nb_vivants($gc_a) == 0, "vivants initial")
+
+# ── 2. allocations : arena contiguë, compteurs, pic ───────────────────────────
+
+$k = 0
+tant_que ($k < 10) {
+  $idx = gc_allouer($gc_a, $k * 3)
+  gc_verifier($idx == $k, "index allocation contigue")
+  $k = $k + 1
+}
+gc_verifier(gc_lire($gc_a, 0) == 0, "valeur case 0")
+gc_verifier(gc_lire($gc_a, 4) == 12, "valeur case 4")
+gc_verifier(gc_lire($gc_a, 9) == 27, "valeur case 9")
+gc_verifier(gc_allocs($gc_a) == 10, "allocs apres 10")
+gc_verifier(gc_frais($gc_a) == 10, "fresh apres 10")
+gc_verifier(gc_libre($gc_a) == 10, "libre apres 10")
+gc_verifier(gc_pic_vivants($gc_a) == 10, "pic apres 10")
+gc_verifier(gc_nb_vivants($gc_a) == 10, "vivants apres 10")
+
+# ── 3. écriture dans une case existante (aucune allocation) ───────────────────
+
+gc_ecrire($gc_a, 4, 777)
+gc_verifier(gc_lire($gc_a, 4) == 777, "ecrire case existante")
+gc_verifier(gc_libre($gc_a) == 10, "ecrire ne bump pas")
+
+# ── 4. libération explicite puis réutilisation FIFO du pool ───────────────────
+
+gc_liberer($gc_a, 2)
+gc_liberer($gc_a, 5)
+gc_verifier(gc_liberes($gc_a) == 2, "compteur liberations")
+gc_verifier(gc_nb_vivants($gc_a) == 8, "vivants apres 2 frees")
+$idx2 = gc_allouer($gc_a, 200)
+$idx3 = gc_allouer($gc_a, 300)
+gc_verifier($idx2 == 2, "reuse FIFO premier")
+gc_verifier($idx3 == 5, "reuse FIFO second")
+gc_verifier(gc_lire($gc_a, 2) == 200, "reuse ecrase valeur")
+gc_verifier(gc_reutilises($gc_a) == 2, "compteur reuse")
+gc_verifier(gc_frais($gc_a) == 10, "reuse ne cree pas de case")
+gc_verifier(gc_libre($gc_a) == 10, "reuse ne bump pas")
+gc_verifier(gc_nb_vivants($gc_a) == 10, "vivants apres reuse")
+
+# ── 5. checkpoint : sauvegarde, restauration, réutilisation ───────────────────
+
+$gc_b = gc_nouveau()
+$cp = gc_save($gc_b)
+gc_verifier(gc_saves($gc_b) == 1, "compteur save")
+$k = 0
+tant_que ($k < 50) {
+  gc_allouer($gc_b, $k)
+  $k = $k + 1
+}
+gc_verifier(gc_libre($gc_b) == 50, "bump dans phase")
+gc_verifier(gc_nb_vivants($gc_b) == 50, "vivants dans phase")
+gc_restore($gc_b, $cp)
+gc_verifier(gc_restores($gc_b) == 1, "compteur restore")
+gc_verifier(gc_libre($gc_b) == 50, "libre = high-water mark")
+gc_verifier(gc_nb_vivants($gc_b) == 0, "vivants restaure")
+gc_verifier(gc_frais($gc_b) == 50, "fresh cumulatif apres restore")
+$k = 0
+tant_que ($k < 50) {
+  $idx = gc_allouer($gc_b, 1000 + $k)
+  gc_verifier($idx == $k, "reuse apres restore")
+  $k = $k + 1
+}
+gc_verifier(gc_libre($gc_b) == 50, "arena bornee apres restore")
+gc_verifier(gc_reutilises($gc_b) == 50, "reuse apres restore compteur")
+gc_verifier(gc_frais($gc_b) == 50, "aucune case creee au 2e tour")
+
+# ── 6. checkpoints embriqués (LIFO) ───────────────────────────────────────────
+
+$gc_c = gc_nouveau()
+$cp1 = gc_save($gc_c)
+$k = 0
+tant_que ($k < 10) { gc_allouer($gc_c, $k); $k = $k + 1 }
+$cp2 = gc_save($gc_c)
+$k = 0
+tant_que ($k < 20) { gc_allouer($gc_c, 100 + $k); $k = $k + 1 }
+gc_restore($gc_c, $cp2)
+gc_verifier(gc_libre($gc_c) == 30, "restore LIFO interieur")
+gc_verifier(gc_nb_vivants($gc_c) == 10, "vivants LIFO interieur")
+gc_restore($gc_c, $cp1)
+gc_verifier(gc_libre($gc_c) == 30, "restore LIFO exterieur")
+gc_verifier(gc_nb_vivants($gc_c) == 0, "vivants LIFO exterieur")
+
+# ── 7. libérations pendant une phase, annulées par le restore ─────────────────
+
+$gc_d = gc_nouveau()
+$cp = gc_save($gc_d)
+$k = 0
+tant_que ($k < 8) { gc_allouer($gc_d, $k); $k = $k + 1 }
+gc_liberer($gc_d, 3)
+gc_liberer($gc_d, 6)
+$k = 0
+tant_que ($k < 4) { gc_allouer($gc_d, 500 + $k); $k = $k + 1 }
+gc_restore($gc_d, $cp)
+gc_verifier(gc_nb_vivants($gc_d) == 0, "restore annule les frees")
+gc_verifier(gc_libre($gc_d) == 10, "restore haut de plage")
+$k = 0
+tant_que ($k < 12) {
+  $idx = gc_allouer($gc_d, $k)
+  gc_verifier($idx == $k, "reuse apres frees annules")
+  $k = $k + 1
+}
+gc_verifier(gc_frais($gc_d) == 12, "12 cases au maximum")
+
+# ── 8. boucle de phases : croissance bornée ───────────────────────────────────
+
+$gc_e = gc_nouveau()
+$phase = 0
+tant_que ($phase < 500) {
+  $cp = gc_save($gc_e)
+  $slot = 0
+  tant_que ($slot < 32) {
+    gc_allouer($gc_e, $phase * 1000 + $slot)
+    $slot = $slot + 1
+  }
+  gc_restore($gc_e, $cp)
+  $phase = $phase + 1
+}
+gc_verifier(gc_libre($gc_e) == 32, "500 phases : libre=32")
+gc_verifier(gc_pic_vivants($gc_e) == 32, "500 phases : pic=32")
+gc_verifier(gc_allocs($gc_e) == 16000, "500 phases : 16000 allocations")
+gc_verifier(gc_frais($gc_e) == 32, "500 phases : 32 cases creees")
+gc_verifier(gc_reutilises($gc_e) == 15968, "500 phases : 15968 reuses")
+gc_verifier(gc_saves($gc_e) == 500, "500 phases : 500 saves")
+gc_verifier(gc_restores($gc_e) == 500, "500 phases : 500 restores")
+
+>> "TOUS LES TESTS GC SONT VERTS"

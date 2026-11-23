@@ -1,0 +1,243 @@
+# gc_rose.rose — GC / gestion mémoire du moteur Rose, ÉCRIT EN ROSE (J6, poste GC).
+#
+# Périmètre : allocateur de l'ELF G5 (bump `g5_alloc_inline`, jamais libéré —
+# voir rose/docs/G5_ABI_VALEURS.md §5 et rose/docs/G5_MEMOIRE.md §1). Ce module
+# fournit au moteur une couche allocation / récupération **en Rose pur** :
+# aucun appel à `malloc` du moteur Rust, aucune primitive hors sous-ensemble G5.
+#
+# ⚠ Rose n'a PAS d'instruction `include` : ce fichier est un MODULE SOURCE qui
+# se concatène avec ses appelants avant compilation par C0 :
+#
+#   cat compilateur/gc_rose.rose Programme.rose > /tmp/gc/prog.rose
+#   ./C0.elf /tmp/gc/prog.rose > /tmp/gc/prog.elf && ./prog.elf
+#
+# DISCIPLINE G5 (identique à moteur_valeurs.rose) :
+#   - aucune variable globale au niveau $principal : tout voyage en paramètre ;
+#   - pas de `[]` littéral : toute liste est rembourrée à l'index 0 ;
+#   - `retour [ ... ]` est refusé : on construit un local `$r` puis `retour $r` ;
+#   - pas d'affectation par index sur une liste : les écritures passent par
+#     `gc_set(t, cle, v)` = `supprimer(t, cle)` puis `inserer(t, cle, v)`.
+#     Mesure G5 : `g5_emit_inser` AJOUTE une paire sans rechercher la clé,
+#     donc un `inserer` sur une clé existante crée un doublon et la lecture
+#     rend l'ANCIENNE valeur. `supprimer` (g5_emit_suppr) est le seul moyen
+#     portable de remplacer une case ;
+#   - pas de `cles`, `concatener`, `abs`, `min`, `max`.
+#
+# ── Modèle ────────────────────────────────────────────────────────────────────
+#
+# L'état EST une table de petits entiers, mutable en place et partageable :
+#
+#   clé 0  = arena : table (index de case → valeur entière stockée)
+#   clé 1  = libre : pointeur libre de l'arena (prochain index jamais utilisé)
+#   clé 2  = pool  : table (position → index de descripteur récupérable)
+#   clé 3  = tete  : premiere position non consommée du pool
+#   clé 4  = queue : premiere position libre du pool
+#   clé 5  = n_alloc   : nombre total d'allocations (cumulatif)
+#   clé 6  = n_libere  : nombre total de libérations explicites (cumulatif)
+#   clé 7  = n_reuse   : nombre d'allocations servies par le pool (cumulatif)
+#   clé 8  = pic       : pic de descripteurs vivants simultanés
+#   clé 9  = vivants   : descripteurs vivants à l'instant présent
+#   clé 10 = n_save    : nombre de checkpoints ouverts
+#   clé 11 = n_restore : nombre de checkpoints refermés
+#   clé 12 = n_fresh   : nombre de cases réellement créées dans l'arena (bump)
+#
+# Le pool est une FILE (tete/queue) stockée dans une table à clés entières :
+# `inserer(pool, queue, idx)` réutilise une clé déjà présente (aucune
+# allocation G5) et la file se tronque en décrémentant seulement `queue`.
+# C'est ce qui borne la mémoire : une fois le pic atteint, plus aucune clé
+# n'est créée dans `arena` ni dans `pool`, quoi que fasse le programme.
+#
+# Sémantique des checkpoints (pile LIFO) :
+#   `gc_save`    rend [libre, tete, queue, vivants] (liste de types dynamiques :
+#                le vérificateur Rose type la lecture d'une table comme `?`) ;
+#   `gc_restore` rend au pool tous les index [libre_sauve, libre_courant),
+#     réouvre les cases consommées depuis le checkpoint (tete = tete_sauve)
+#     et restaure le nombre de vivants. Le pointeur libre, lui, RESTE au
+#     plus haut atteint : le rembobiner ferait réapparaître comme neuves des
+#     cases déjà rendues au pool (collisions d'index). Les libérations faites
+#     dans la phase sont annulées puisque leurs cases sont récupérées en bloc.
+#     Les compteurs sont CUMULATIFS et ne sont jamais rembobinés.
+
+# ── Clés de l'état (fonctions, pas constantes globales : discipline G5) ───────
+
+fn gc_c_arena() -> entier { retour 0 }
+fn gc_c_libre() -> entier { retour 1 }
+fn gc_c_pool() -> entier { retour 2 }
+fn gc_c_tete() -> entier { retour 3 }
+fn gc_c_queue() -> entier { retour 4 }
+fn gc_c_alloc() -> entier { retour 5 }
+fn gc_c_libere() -> entier { retour 6 }
+fn gc_c_reuse() -> entier { retour 7 }
+fn gc_c_pic() -> entier { retour 8 }
+fn gc_c_vivants() -> entier { retour 9 }
+fn gc_c_save() -> entier { retour 10 }
+fn gc_c_restore() -> entier { retour 11 }
+fn gc_c_fresh() -> entier { retour 12 }
+
+# ── Construction / lecture / écriture de l'état ───────────────────────────────
+
+fn gc_nouveau() -> table {
+  $m = table()
+  $ar = table()
+  $pl = table()
+  inserer($m, gc_c_arena(), $ar)
+  inserer($m, gc_c_libre(), 0)
+  inserer($m, gc_c_pool(), $pl)
+  inserer($m, gc_c_tete(), 0)
+  inserer($m, gc_c_queue(), 0)
+  inserer($m, gc_c_alloc(), 0)
+  inserer($m, gc_c_libere(), 0)
+  inserer($m, gc_c_reuse(), 0)
+  inserer($m, gc_c_pic(), 0)
+  inserer($m, gc_c_vivants(), 0)
+  inserer($m, gc_c_save(), 0)
+  inserer($m, gc_c_restore(), 0)
+  inserer($m, gc_c_fresh(), 0)
+  retour $m
+}
+
+fn gc_arena(m: table) {
+  retour m[gc_c_arena()]
+}
+
+fn gc_pool(m: table) {
+  retour m[gc_c_pool()]
+}
+
+fn gc_libre(m: table) {
+  retour m[gc_c_libre()]
+}
+
+fn gc_tete(m: table) {
+  retour m[gc_c_tete()]
+}
+
+fn gc_queue(m: table) {
+  retour m[gc_c_queue()]
+}
+
+# ⚠ CONTRAINTE G5 MESURÉE : `g5_emit_inser` AJOUTE toujours une paire ;
+# `inserer(t, cle, v)` sur une clé DÉJÀ PRÉSENTE crée un doublon et
+# `t[cle]` rend la PREMIÈRE occurrence (l'ancienne valeur). L'écriture
+# effective est donc `supprimer` puis `inserer`. `gc_set` est ce correctif,
+# appliqué à tous les champs mutables de l'état, de l'arena et du pool.
+fn gc_set(m, cle, valeur) -> entier {
+  supprimer($m, $cle)
+  inserer($m, $cle, $valeur)
+  retour 0
+}
+
+# ── API principale ────────────────────────────────────────────────────────────
+
+# Alloue un descripteur, y stocke `valeur`, rend son index.
+# Priorité au pool : zéro nouvelle clé de table dès que le pic est atteint.
+fn gc_allouer(m: table, valeur: entier) -> entier {
+  $tete = m[gc_c_tete()]
+  $queue = m[gc_c_queue()]
+  $index = 0
+  $reuse = 0
+  si ($tete != $queue) {
+    $index = m[gc_c_pool()][$tete]
+    $reuse = 1
+    gc_set($m, gc_c_tete(), $tete + 1)
+    gc_set($m, gc_c_reuse(), m[gc_c_reuse()] + 1)
+  } sinon {
+    $index = m[gc_c_libre()]
+    gc_set($m, gc_c_libre(), $index + 1)
+    gc_set($m, gc_c_fresh(), m[gc_c_fresh()] + 1)
+  }
+  gc_set($m, gc_c_alloc(), m[gc_c_alloc()] + 1)
+  si ($reuse == 1) { supprimer(m[gc_c_arena()], $index) }
+  inserer(m[gc_c_arena()], $index, $valeur)
+  $vivants = m[gc_c_vivants()] + 1
+  gc_set($m, gc_c_vivants(), $vivants)
+  si ($vivants > m[gc_c_pic()]) { gc_set($m, gc_c_pic(), $vivants) }
+  retour $index
+}
+
+# Libère explicitement un descripteur : il retourne immédiatement dans le pool.
+# Contrat : `index` doit être vivant et ne pas être libéré deux fois.
+fn gc_liberer(m: table, index: entier) -> entier {
+  $queue = m[gc_c_queue()]
+  gc_set(m[gc_c_pool()], $queue, $index)
+  gc_set($m, gc_c_queue(), $queue + 1)
+  gc_set($m, gc_c_libere(), m[gc_c_libere()] + 1)
+  gc_set($m, gc_c_vivants(), m[gc_c_vivants()] + (0 - 1))
+  retour 0
+}
+
+# Ouvre un checkpoint. Rien n'est copié : 4 entiers seulement.
+fn gc_save(m: table) {
+  $r = [m[gc_c_libre()]]
+  joindre($r, m[gc_c_tete()])
+  joindre($r, m[gc_c_queue()])
+  joindre($r, m[gc_c_vivants()])
+  gc_set($m, gc_c_save(), m[gc_c_save()] + 1)
+  retour $r
+}
+
+# Ferme le checkpoint (LIFO). Rend au pool tous les index créés depuis
+# `gc_save`, sans jamais réallouer de table, et restaure `vivants`.
+fn gc_restore(m: table, cp) -> entier {
+  $libre_sauve = $cp[0]
+  $tete_sauve = $cp[1]
+  $vivants_sauve = $cp[3]
+  $libre = m[gc_c_libre()]
+  # On réécrit les cases/libérations de la phase À PARTIR de la queue du
+  # checkpoint, pas de la queue courante : sinon les index libérés pendant
+  # la phase resteraient en double dans le pool (une fois à leur ancienne
+  # place, une fois réappendus). Les anciennes places [queue_sauve,
+  # queue_courant) sont écrasées sans risque : ces libérations sont annulées.
+  $queue = $cp[2]
+  $k = $libre_sauve
+  tant_que ($k < $libre) {
+    gc_set(m[gc_c_pool()], $queue, $k)
+    $queue = $queue + 1
+    $k = $k + 1
+  }
+  # Le pointeur libre RESTE au plus haut atteint (high-water mark) : le
+  # rembobiner ferait réapparaître, comme neuves, des cases déjà rendues au
+  # pool. Le checkpoint ne sert qu'à délimiter la plage [libre_sauve, libre)
+  # des cases à récupérer. C'est la règle d'un allocateur bump + free-list.
+  gc_set($m, gc_c_tete(), $tete_sauve)
+  gc_set($m, gc_c_queue(), $queue)
+  gc_set($m, gc_c_vivants(), $vivants_sauve)
+  gc_set($m, gc_c_restore(), m[gc_c_restore()] + 1)
+  retour 0
+}
+
+# Accès à la valeur stockée dans un descripteur.
+fn gc_lire(m: table, index: entier) {
+  retour m[gc_c_arena()][$index]
+}
+
+fn gc_ecrire(m: table, index: entier, valeur: entier) -> entier {
+  gc_set(m[gc_c_arena()], $index, $valeur)
+  retour 0
+}
+
+# ── Compteurs (instruments de mesure, cumulatifs) ─────────────────────────────
+
+fn gc_allocs(m: table)  { retour m[gc_c_alloc()] }
+fn gc_liberes(m: table)  { retour m[gc_c_libere()] }
+fn gc_reutilises(m: table)  { retour m[gc_c_reuse()] }
+fn gc_pic_vivants(m: table)  { retour m[gc_c_pic()] }
+fn gc_nb_vivants(m: table)  { retour m[9] }
+fn gc_saves(m: table)  { retour m[gc_c_save()] }
+fn gc_restores(m: table)  { retour m[gc_c_restore()] }
+fn gc_frais(m: table)  { retour m[gc_c_fresh()] }
+
+fn gc_compteurs(m: table) {
+  $r = [m[gc_c_alloc()]]
+  joindre($r, m[gc_c_libere()])
+  joindre($r, m[gc_c_reuse()])
+  joindre($r, m[gc_c_pic()])
+  joindre($r, m[gc_c_vivants()])
+  joindre($r, m[gc_c_libre()])
+  joindre($r, m[gc_c_tete()])
+  joindre($r, m[gc_c_queue()])
+  joindre($r, m[gc_c_save()])
+  joindre($r, m[gc_c_restore()])
+  joindre($r, m[gc_c_fresh()])
+  retour $r
+}
