@@ -124,6 +124,13 @@ pub mod repl {
 /// par le shim autonome ci-dessous : même API, zéro Cranelift.
 #[cfg(all(not(target_arch = "wasm32"), feature = "jit"))]
 pub mod jit;
+// ⚠ MESURE 23/11 (OPT_WALL_FINAL) : l'initialisation JIT n'a PAS de coût
+// global différable depuis cette crate. `prepare_jit` est appelé par
+// `interp.rs` une fois PAR PROCESSUS et construit un `JITModule` avec ~38
+// symboles déjà enregistrés PAR ADRESSE (`jit.rs::table_symboles_runtime`,
+// 1,2 ms de `dlsym` économisés en amont) : il n'y a ni `OnceLock`, ni table
+// de symboles à réduire ici, et le harnais de test `opt_wall_final.rs`
+// verrouille que cette configuration reste celle qui a été mesurée.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod auto_llvm;
 

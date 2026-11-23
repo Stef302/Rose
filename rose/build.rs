@@ -181,5 +181,12 @@ fn main() {
     // `--strip-all` + `-static-pie`, le harnais de test segfaultait au
     // démarrage (SIGSEGV avant même d'afficher le premier test) sur la CI
     // x86_64, alors que le même code passait en local sur aarch64.
+    // ⚠ MESURE 23/11 (OPT_WALL_FINAL) : en static-pie, retirer ce drapeau
+    // produit un binaire BIT-IDENTIQUE (sha 8896ace2… , `.dynsym` = 3 entrées
+    // de section) — le JIT n'appelle plus `dlsym` : ses ~38 symboles runtime
+    // sont enregistrés PAR ADRESSE dans `jit.rs::table_symboles_runtime`.
+    // Le levier « réduire les symboles exportés vers le JIT » n'a donc aucune
+    // cible ici. On garde le drapeau pour les cibles NON statiques (où il
+    // reste utile) ; voir docs/OPT_WALL_FINAL.md.
     println!("cargo:rustc-link-arg-bin=rose=-rdynamic");
 }

@@ -15,6 +15,29 @@
 # Les cibles Windows (gnullvm/msvc) et WebAssembly ne sont PAS concernées :
 # `target.<triple>.rustflags` ne s'applique qu'à la triple indiquée, et le
 # WASM est déjà statique par construction.
+#
+# ── DÉCISION MESURÉE du 23/11/2026 (vague OPT WALL FINALE) ────────────────
+# Trois leviers de l'éditeur de liens ont été testés en A/B/A entrelacé
+# (21 lots, pin cœur 15, sha binaire vérifié, perf_counter_ns) contre le
+# binaire témoin ci-dessous (static-pie, BIND_NOW, 6 275 RELATIV + 5
+# IRELATIVE). Détails et chiffres : `docs/OPT_WALL_FINAL.md`.
+#
+#   * `-C relocation-model=static` (non-PIE, 0 RELATIV) : −0,06 à −0,11 ms
+#     sur `rose version` (démarrage PUR) mais +0,01 à +0,05 ms sur les
+#     domaines du banc qui EXÉCUTENT un programme — la préparation JIT
+#     (~0,2 ms médian) écrase le gain. REJETÉ : de plus l'ASLR est perdue.
+#   * `-Wl,-z,lazy` (BIND_NOW retiré) : −0,06 à −0,09 ms sur `version`,
+#     neutre/slower sur l'exécution. REJETÉ (gain non reproductible sur le
+#     mur du banc).
+#   * `-Wl,-z,pack-relative-relocs` via lld (6 275 RELA → 246 entrées RELR)
+#     : +0,03 à +0,07 ms sur l'exécution, et lld ignore l'option avec GNU ld.
+#     REJETÉ : régression mesurée.
+#
+# Le `-rdynamic` de build.rs est un NO-OP mesuré en static-pie (binaire
+# bit-identique, sha 8896ace2… , `.dynsym` = 3 entrées) : le JIT enregistre
+# déjà ses symboles par adresse (cf. `jit.rs::table_symboles_runtime`).
+# Aucun de ces leviers n'est donc appliqué : on GARDE static-pie + BIND_NOW,
+# qui préserve l'ASLR et la protection RELRO complète.
 
 [target.aarch64-unknown-linux-gnu]
 rustflags = ["-C", "target-feature=+crt-static"]
