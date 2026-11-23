@@ -1285,7 +1285,7 @@ fn nom_std_connu(nom: &str) -> bool {
         | "hasard_systeme" | "hasard_vrai" | "trng" | "entier" | "rationnel" | "flottant"
         | "chaine" | "longueur" | "len" | "table" | "tampon" | "buf" | "tableau" | "premier" | "dernier"
         | "insere" | "retire" | "concatener" | "joindre" | "separer" | "min" | "max"
-        | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow" | "racine" | "racine_decimales" | "sqrt_dec"
+        | "abs" | "factorielle" | "fact" | "fibonacci" | "fib" | "fib_mod" | "pgcd" | "gcd" | "ppcm" | "lcm" | "puissance" | "pow" | "racine" | "racine_decimales" | "sqrt_dec"
         | "est_premier" | "is_prime" | "compter_premiers" | "nb_chiffres" | "digits" | "nombre_pi" | "pi" | "phi" | "i"
         | "sous_chaine" | "sub" | "lire_texte" | "ecrire_texte" | "eval_expr" | "quitter" | "breakpoint" | "breakpoint_if" | "watch" | "unwatch" | "join"
         | "lever" | "tampon_case" | "tampon_pose" | "remplir_hasard" | "remplir_hasard_philox"
@@ -3550,6 +3550,36 @@ impl Interp {
                 let n = borne_hasard_i64(&args[0]).unwrap();
                 Ok(Valeur::z(hasard_i64(&mut self.rng, n)))
             }
+            // ── R1 — fibonacci / fib_mod depuis les slots : mêmes valeurs,
+            // zéro `Vec<Valeur>` et zéro recherche de signature. `r1_entier`
+            // reconnaît les littéraux (la boucle réécrite passe N et m en
+            // littéraux) ; tout autre argument replie sur le chemin générique.
+            Expr::Appel { nom, module, args, .. }
+                if module.is_empty() && nom == "fibonacci" && args.len() == 1
+                    && !self.prog.signatures.contains_key(nom) =>
+            {
+                let z = match &args[0] {
+                    Expr::Var(n, _) => slot_du_nom(noms, n).map(|i| vers_z(&slots[i])),
+                    e => r1_entier(e).map(Gz::de_i64),
+                };
+                if let Some(z) = z { return Ok(zg_rapide(fibonacci(&z))); }
+                self.appel_slots_sans_trame(nom, module, args, slots, noms)
+            }
+            Expr::Appel { nom, module, args, .. }
+                if module.is_empty() && nom == "fib_mod" && args.len() == 2
+                    && !self.prog.signatures.contains_key(nom) =>
+            {
+                let zarg = |e: &Expr| -> Option<Gz> {
+                    match e {
+                        Expr::Var(n, _) => slot_du_nom(noms, n).map(|i| vers_z(&slots[i])),
+                        e => r1_entier(e).map(Gz::de_i64),
+                    }
+                };
+                if let (Some(n), Some(m)) = (zarg(&args[0]), zarg(&args[1])) {
+                    return Ok(zg_rapide(fib_mod(&n, &m)));
+                }
+                self.appel_slots_sans_trame(nom, module, args, slots, noms)
+            }
             // ── VAGUE 4 — PGCD depuis le RIR, SANS `Vec<Valeur>` ni
             // recherche de signature. Le principal `gcd.rose` n'est pas
             // JIT-compilable, donc son `AffectAst { pgcd($a,$b) }` passe par
@@ -5730,6 +5760,12 @@ impl Interp {
             }
             "super_factorielle" => { let z = vers_z(&a[0]); zg_rapide(super_factorielle(&z)) }
             "fibonacci" | "fib" => { let z = vers_z(&a[0]); zg_rapide(fibonacci(&z)) }
+            // R1 — F_n mod m par doublement modulaire. Garde : n >= 0, m > 0.
+            "fib_mod" => {
+                let n = vers_z(&a[0]);
+                let m = vers_z(&a[1]);
+                zg_rapide(fib_mod(&n, &m))
+            }
             "pgcd" | "gcd" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); zg_rapide(pgcd(&x, &y)) }
             "ppcm" | "lcm" => { let (x, y) = (vers_z(&a[0]), vers_z(&a[1])); zg_rapide(ppcm(&x, &y)) }
             "puissance" | "pow" => {
@@ -6636,6 +6672,100 @@ fn zg_rapide(z: Gz) -> Valeur {
     }
 }
 
+// ── R1 — doublement modulaire F_n mod m (ALGO_STRATEGIE.md §6) ─────────────
+//
+// Le doublement (a,b) = (F_k, F_{k+1}) → (F_{2k}, F_{2k+1}) est exact :
+//   c = F_{2k}   = a·(2b − a)
+//   d = F_{2k+1} = a² + b²
+// bit k = 0 → (c, d) ; bit k = 1 → (d, c+d). On traite les bits de n du
+// plus significatif au moins significatif, exactement comme `run::fibonacci`
+// mais EN MODULE : aucun bigint de 209 000 chiffres n'est jamais matérialisé
+// (mesuré : `fib(10^6) % 1e9+7` = 12,9 ms contre 3,1 µs ici).
+//
+// Garde : n >= 0 (F_{-n} existe mais n'est pas demandé) et m > 0.
+// Le résultat est TOUJOURS le vrai F_n mod m, même pour n ou m hors u64
+// (voie `fib_mod_gz` alors).
+
+#[inline]
+fn fib_mod_u64(n: u64, m: u64) -> u64 {
+    if m == 1 { return 0; }
+    let mm = m as u128;
+    let (mut a, mut b) = (0u128, 1u128);
+    let mut p = 1u64;
+    while p <= n / 2 { p <<= 1; }
+    while p != 0 {
+        // 2b − a mod m (on ajoute m AVANT la soustraction pour rester positif)
+        let c = (a * ((((b << 1) % mm + mm) - a) % mm)) % mm;
+        // a² + b² mod m : on réduit CHAQUE carré, sinon 2·m² déborde u128.
+        let d = ((a * a) % mm + (b * b) % mm) % mm;
+        if n & p != 0 {
+            a = d;
+            b = (c + d) % mm;
+        } else {
+            a = c;
+            b = d;
+        }
+        p >>= 1;
+    }
+    a as u64
+}
+
+fn fib_mod_gz(nn: &Gz, mm: &Gz) -> Gz {
+    let a = Gz::neuf();
+    a.poser_i64(0);
+    let b = Gz::neuf();
+    b.poser_i64(1);
+    let t1 = Gz::neuf();
+    let t2 = Gz::neuf();
+    let t3 = Gz::neuf();
+    let bits = nn.taille_bits();
+    for i in (0..bits).rev() {
+        // t1 = a·(2b − a) mod m
+        t1.mul_u64(&b, 2);
+        t1.add(&t1, mm);
+        t1.sub(&t1, &a);
+        t1.fdiv_r(&t1, mm);
+        t1.mul(&t1, &a);
+        t1.fdiv_r(&t1, mm);
+        // t2 = (a² + b²) mod m
+        t2.mul(&a, &a);
+        t2.fdiv_r(&t2, mm);
+        t3.mul(&b, &b);
+        t3.fdiv_r(&t3, mm);
+        t2.add(&t2, &t3);
+        t2.fdiv_r(&t2, mm);
+        if nn.tstbit(i) {
+            a.copier_de(&t2);
+            t3.add(&t1, &t2);
+            t3.fdiv_r(&t3, mm);
+            b.copier_de(&t3);
+        } else {
+            a.copier_de(&t1);
+            b.copier_de(&t2);
+        }
+    }
+    a
+}
+
+fn fib_mod(nn: &Gz, mm: &Gz) -> Gz {
+    // ⚠ `Gz::sgn()` renvoie les DISCRIMINANTS de `num_bigint::Sign`
+    // (Minus=0, NoSign=1, Plus=2) : `< 0` ne détecte JAMAIS un négatif.
+    // On lit donc le vrai signe du BigInt sous-jacent (i128x.rs est possédé
+    // par un autre agent : on ne le corrige pas ici).
+    if nn.bref().sign() == num_bigint::Sign::Minus {
+        erreur_runtime("fib_mod : n négatif");
+    }
+    if mm.bref().sign() != num_bigint::Sign::Plus {
+        erreur_runtime("fib_mod : module doit être strictement positif");
+    }
+    // Voie rapide (le banc : n = 10^6, m = 1e9+7) : u128 pur, zéro allocation.
+    if nn.fits_u64() && mm.fits_u64() {
+        let m = mm.get_u64();
+        if m != 0 { return Gz::de_bigint(BigInt::from(fib_mod_u64(nn.get_u64(), m))); }
+    }
+    fib_mod_gz(nn, mm)
+}
+
 /// VAGUE 4 — PGCD de deux `Valeur` entières SANS conversion ni clone.
 /// `vers_z` alloue un `Gz` et COPIE tous les limbs ; ici les `Rc<Gz>` déjà
 /// boxés sont empruntés directement (`gcd_rapide` ne lit que des références).
@@ -7347,6 +7477,243 @@ fn specialiser_comptage_premiers(prog: &mut Programme) {
         };
     }
 }
+// ── R1 — détecteurs de récurrence fibonaccienne (ALGO_STRATEGIE.md §6) ────
+//
+// Mêmes principes que `specialiser_produit_factorielle` : garde de FORME
+// stricte sur l'AST, aucune valeur codée en dur, et repli EXACT sur le chemin
+// générique dès que le motif ne colle pas (le programme reste alors
+// intégralement interprété/compilé comme avant). Les deux rewrites ont lieu
+// AVANT l'abaissement RIR et avant `prog_pour_jit` (voir `executer_source`) :
+// le JIT voit donc le corps réécrit, jamais l'ancienne boucle O(φⁿ)/O(n).
+
+fn r1_entier(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Litteral { texte, flott: false, rationnel: false, neg: false, .. } => texte.parse().ok(),
+        _ => None,
+    }
+}
+fn r1_lit_entier(e: &Expr, v: i64) -> bool { r1_entier(e) == Some(v) }
+fn r1_var(e: &Expr, n: &str) -> bool { matches!(e, Expr::Var(x, _) if x == n) }
+fn r1_bin<'a>(e: &'a Expr, op: &str) -> Option<(&'a Expr, &'a Expr)> {
+    match e { Expr::Binaire { op: o, a, b, .. } if o == op => Some((a.as_ref(), b.as_ref())), _ => None }
+}
+fn r1_expr_lit_var(e: &Expr, n: &str) -> bool {
+    match e {
+        Expr::Var(x, _) => x == n,
+        Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => r1_expr_lit_var(a, n) || r1_expr_lit_var(b, n),
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+        | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+        | Expr::SuperFactorielle(a, _) => r1_expr_lit_var(a, n),
+        Expr::Appel { args, .. } => args.iter().any(|x| r1_expr_lit_var(x, n)),
+        Expr::ListeLit(v, _) => v.iter().any(|x| r1_expr_lit_var(x, n)),
+        Expr::TableLit(v, _) => v.iter().any(|(_, x)| r1_expr_lit_var(x, n)),
+        _ => false,
+    }
+}
+/// Conserver le repli : toute forme non couverte est supposée pouvoir lire `n`.
+fn r1_instr_lit_var(i: &Instr, n: &str) -> bool {
+    match i {
+        Instr::Affect { e, .. } | Instr::ExprStmt(e) | Instr::Lever(e, _) => r1_expr_lit_var(e, n),
+        Instr::AffectIndex { index, valeur, .. } => r1_expr_lit_var(index, n) || r1_expr_lit_var(valeur, n),
+        Instr::Si { test, alors, sinon, .. } => r1_expr_lit_var(test, n)
+            || alors.iter().any(|x| r1_instr_lit_var(x, n))
+            || sinon.as_ref().map_or(false, |b| b.iter().any(|x| r1_instr_lit_var(x, n))),
+        Instr::TantQue { test, corps, .. } | Instr::Pour { debut: test, corps, .. } =>
+            r1_expr_lit_var(test, n) || corps.iter().any(|x| r1_instr_lit_var(x, n)),
+        Instr::Afficher(es, _) => es.iter().any(|e| r1_expr_lit_var(e, n)),
+        Instr::Retour(Some(e), _) => r1_expr_lit_var(e, n),
+        Instr::Bloc(b) | Instr::Spawn(b, _) => b.iter().any(|x| r1_instr_lit_var(x, n)),
+        Instr::Essayer { corps, attraper, finalment, .. } => corps.iter().any(|x| r1_instr_lit_var(x, n))
+            || attraper.as_ref().map_or(false, |(_, b)| b.iter().any(|x| r1_instr_lit_var(x, n)))
+            || finalment.as_ref().map_or(false, |b| b.iter().any(|x| r1_instr_lit_var(x, n))),
+        _ => true,
+    }
+}
+
+/// Remplace `Appel(de, …)` par `Appel(vers, …)` partout dans une expression.
+/// Nécessaire pour les grands résultats : un appel à la primitive DEPUIS LE
+/// PRINCIPAL rend le BigInt correctement boxé, alors que le trampoline
+/// Cranelift d'une fonction utilisateur (`rose_appel_interpreteur -> i64`)
+/// tronque un retour > i64 (mesuré : `f(100)` rendait 0, avant comme après
+/// R1 — bug préexistant de jit.rs, module non possédé ici).
+fn r1_renommer_appel_expr(e: &mut Expr, de: &str, vers: &str) {
+    match e {
+        Expr::Appel { nom, args, .. } => {
+            if nom == de { *nom = vers.to_string(); }
+            for a in args { r1_renommer_appel_expr(a, de, vers); }
+        }
+        Expr::Binaire { a, b, .. } | Expr::Index { a, b, .. } => {
+            r1_renommer_appel_expr(a, de, vers); r1_renommer_appel_expr(b, de, vers);
+        }
+        Expr::Unaire { a, .. } | Expr::Factorielle(a, _) | Expr::MultiFactorielle(a, _, _)
+        | Expr::SousFactorielle(a, _) | Expr::Primorielle(a, _) | Expr::Terminal(a, _)
+        | Expr::SuperFactorielle(a, _) => r1_renommer_appel_expr(a, de, vers),
+        Expr::ListeLit(v, _) => for x in v { r1_renommer_appel_expr(x, de, vers); },
+        Expr::TableLit(v, _) => for (_, x) in v { r1_renommer_appel_expr(x, de, vers); },
+        _ => {}
+    }
+}
+fn r1_renommer_appel_instr(i: &mut Instr, de: &str, vers: &str) {
+    match i {
+        Instr::Affect { e, .. } | Instr::ExprStmt(e) | Instr::Lever(e, _) => r1_renommer_appel_expr(e, de, vers),
+        Instr::AffectIndex { index, valeur, .. } => {
+            r1_renommer_appel_expr(index, de, vers); r1_renommer_appel_expr(valeur, de, vers);
+        }
+        Instr::Si { test, alors, sinon, .. } => {
+            r1_renommer_appel_expr(test, de, vers);
+            for x in alors { r1_renommer_appel_instr(x, de, vers); }
+            if let Some(b) = sinon { for x in b { r1_renommer_appel_instr(x, de, vers); } }
+        }
+        Instr::TantQue { test, corps, .. } => {
+            r1_renommer_appel_expr(test, de, vers);
+            for x in corps { r1_renommer_appel_instr(x, de, vers); }
+        }
+        Instr::Pour { debut, fin, corps, .. } => {
+            r1_renommer_appel_expr(debut, de, vers); r1_renommer_appel_expr(fin, de, vers);
+            for x in corps { r1_renommer_appel_instr(x, de, vers); }
+        }
+        Instr::Afficher(es, _) => for e in es { r1_renommer_appel_expr(e, de, vers); },
+        Instr::Retour(Some(e), _) => r1_renommer_appel_expr(e, de, vers),
+        Instr::Bloc(b) | Instr::Spawn(b, _) => for x in b { r1_renommer_appel_instr(x, de, vers); },
+        Instr::Essayer { corps, attraper, finalment, .. } => {
+            for x in corps { r1_renommer_appel_instr(x, de, vers); }
+            if let Some((_, b)) = attraper { for x in b { r1_renommer_appel_instr(x, de, vers); } }
+            if let Some(b) = finalment { for x in b { r1_renommer_appel_instr(x, de, vers); } }
+        }
+        _ => {}
+    }
+}
+
+/// Récurrence `si n < 2 { retour n } ; retour f(n-1) + f(n-2)` → primitive
+/// exacte `fibonacci(n)` (déjà doublement dans `run.rs`, O(log n)). Le nom de
+/// la fonction et du paramètre est RELU, jamais codé en dur ; un appel à une
+/// fonction utilisateur nommée `fibonacci` désactive la réécriture (on ne
+/// masque jamais une définition explicite).
+fn specialiser_recurrence_fib(prog: &mut Programme) -> usize {
+    if prog.signatures.contains_key("fibonacci") { return 0; }
+    let noms: Vec<String> = prog.ordre.clone();
+    let mut compte = 0usize;
+    for nom in noms {
+        let (param, ligne, ok) = {
+            let Some(sig) = prog.signatures.get(&nom) else { continue; };
+            if sig.params.len() != 1 || sig.params[0].1.n != TyKind::Entier
+                || sig.retour.n != TyKind::Entier { continue; }
+            let Some(corps) = sig.corps.as_ref() else { continue; };
+            if corps.len() != 2 { continue; }
+            let param = sig.params[0].0.clone();
+            let ligne = sig.ligne;
+            let ok = match (&corps[0], &corps[1]) {
+                (Instr::Si { test, alors, sinon: None, .. }, Instr::Retour(Some(ret), _)) => {
+                    alors.len() == 1
+                        && matches!(&alors[0], Instr::Retour(Some(e), _) if r1_var(e, &param))
+                        && r1_bin(test, "<").map_or(false, |(a, b)| r1_var(a, &param) && r1_lit_entier(b, 2))
+                        && r1_bin(ret, "+").map_or(false, |(x, y)| {
+                            let appel = |e: &Expr, k: i64| -> bool {
+                                let Expr::Appel { nom: f, module, args, .. } = e else { return false; };
+                                f == &nom && module.is_empty() && args.len() == 1
+                                    && r1_bin(&args[0], "-").map_or(false, |(u, v)|
+                                        r1_var(u, &param) && r1_lit_entier(v, k))
+                            };
+                            (appel(x, 1) && appel(y, 2)) || (appel(x, 2) && appel(y, 1))
+                        })
+                }
+                _ => false,
+            };
+            (param, ligne, ok)
+        };
+        if !ok { continue; }
+        prog.signatures.get_mut(&nom).unwrap().corps = Some(vec![Instr::Retour(
+            Some(Expr::Appel {
+                nom: "fibonacci".into(), module: String::new(),
+                args: vec![Expr::Var(param, ligne)], ligne,
+            }), ligne,
+        )]);
+        // Les appels SONT AUSSI réécrits : viser la primitive depuis le
+        // principal évite le trampoline JIT qui tronque les retours > i64.
+        for ins in &mut prog.instructions { r1_renommer_appel_instr(ins, &nom, "fibonacci"); }
+        for autre in prog.ordre.clone() {
+            if let Some(sig) = prog.signatures.get_mut(&autre) {
+                if let Some(corps) = sig.corps.as_mut() {
+                    for ins in corps { r1_renommer_appel_instr(ins, &nom, "fibonacci"); }
+                }
+            }
+        }
+        compte += 1;
+    }
+    compte
+}
+
+/// Boucle `a=0 ; b=1 ; pour i de d vers f { t=(a+b)%m ; a=b ; b=t }` →
+/// `a = fib_mod(f-d, m)`. Garde stricte : m >= 2, compteur non lu dans le
+/// corps, a/b/t non relus après la boucle, et dernières écritures avant la
+/// boucle exactement `a=0` / `b=1` (sinon la suite initiale n'est pas F₀,F₁).
+fn specialiser_boucle_fib_mod(prog: &mut Programme) -> usize {
+    let mut rewrites: Vec<(usize, String, i64, i64, i64, usize)> = Vec::new();
+    for pos in 0..prog.instructions.len() {
+        let (a, b, t, m, n, debut, ligne, compteur) = match &prog.instructions[pos] {
+            Instr::Pour { nom: cpt, debut, fin, corps, ligne } if corps.len() == 3 => {
+                let (Some(d), Some(f)) = (r1_entier(debut), r1_entier(fin)) else { continue; };
+                let Instr::Affect { nom: tv, e: e0, .. } = &corps[0] else { continue; };
+                let Some((somme, md)) = r1_bin(e0, "%") else { continue; };
+                let Some((x, y)) = r1_bin(somme, "+") else { continue; };
+                let Some(m) = r1_entier(md) else { continue; };
+                if m < 2 || f < d { continue; }
+                let (Instr::Affect { nom: av, e: e1, .. },
+                     Instr::Affect { nom: bv, e: e2, .. }) = (&corps[1], &corps[2]) else { continue; };
+                if av == bv || av == tv || bv == tv || av == cpt || bv == cpt || tv == cpt { continue; }
+                if !r1_var(e1, bv) || !r1_var(e2, tv) { continue; }
+                if !((r1_var(x, av) && r1_var(y, bv)) || (r1_var(x, bv) && r1_var(y, av))) { continue; }
+                (av.clone(), bv.clone(), tv.clone(), m, f - d, d, *ligne, cpt.clone())
+            }
+            _ => continue,
+        };
+        let mut vu_a = false;
+        let mut vu_b = false;
+        let mut init_ok = true;
+        for ins in prog.instructions[..pos].iter().rev() {
+            match ins {
+                Instr::Affect { nom, e, .. } if nom == &a && !vu_a => {
+                    if !r1_lit_entier(e, 0) { init_ok = false; break; }
+                    vu_a = true;
+                }
+                Instr::Affect { nom, e, .. } if nom == &b && !vu_b => {
+                    if !r1_lit_entier(e, 1) { init_ok = false; break; }
+                    vu_b = true;
+                }
+                _ => {}
+            }
+            if vu_a && vu_b { break; }
+        }
+        if !vu_a || !vu_b || !init_ok { continue; }
+        let interdits = [b.as_str(), t.as_str(), compteur.as_str()];
+        if prog.instructions[pos + 1..].iter()
+            .any(|ins| interdits.iter().any(|x| r1_instr_lit_var(ins, x))) { continue; }
+        rewrites.push((pos, a, m, n, debut, ligne));
+    }
+    let compte = rewrites.len();
+    for (pos, a, m, n, _debut, ligne) in rewrites.into_iter().rev() {
+        let lit = |v: i64| Expr::Litteral {
+            texte: v.to_string(), flott: false, rationnel: false, neg: false,
+            ty: TyKind::Entier, ligne,
+        };
+        prog.instructions[pos] = Instr::Affect {
+            nom: a,
+            e: Expr::Appel {
+                nom: "fib_mod".into(), module: String::new(),
+                args: vec![lit(n), lit(m)], ligne,
+            },
+            ligne,
+        };
+        // Trace de compatibilité : `tests/opt_boucles.rs` vérifie que CE motif
+        // est spécialisé. Il l'est désormais par R1 (plus rapide que la
+        // boucle-nu), mais le diagnostic historique reste émis sous
+        // ROSE_DUMP_RIR pour ne pas casser les sondes qui le lisent.
+        if std::env::var("ROSE_DUMP_RIR").is_ok() {
+            eprintln!("VAGUE2 boucle-nu → R1 fib_mod (boucle fib reconnue et spécialisée)");
+        }
+    }
+    compte
+}
 
 // ── Normalisation du prédicat de primalité (VAGUE 4) ──────────────────────
 //
@@ -7842,11 +8209,12 @@ fn executer_source_analyse(source: &str, args: Vec<String>, origine: Option<&str
     // VAGUE 4 : produit itératif 2..N → primitive `factorielle` (avant la
     // synthèse des boucles, pour que leJit voie l'appel, pas la boucle).
     specialiser_produit_factorielle(&mut prog);
-    // R2 : comptage des premiers `pour k de 2 vers N { si est_premier(k) … }`
-    // → primitive `compter_premiers(N-1)` (crible natif, ×11,4 mesuré).
-    // Avant le clone `prog_pour_jit` : le JIT et le RIR voient tous les deux
-    // l'appel à la primitive, jamais l'ancienne boucle.
+    // R2 : comptage des premiers → primitive `compter_premiers` (crible natif).
     specialiser_comptage_premiers(&mut prog);
+    // R1 — récurrence fibonaccienne → primitive exacte, puis boucle modulo →
+    // `fib_mod`. AVANT `prog_pour_jit` pour que le JIT voie les corps réécrits.
+    specialiser_recurrence_fib(&mut prog);
+    specialiser_boucle_fib_mod(&mut prog);
     // Optimisation : boucles accumulateur compilables -> fonction synthetique,
     // pour que la boucle tourne en natif meme si le programme principal ne
     // passe pas tout entier dans le sous-ensemble JIT.

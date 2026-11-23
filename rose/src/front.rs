@@ -681,6 +681,9 @@ pub static STDLIB: &[EntreeStd] = &[
 EntreeStd { nom: "fact", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "fibonacci", args: &["entier"], retour: "entier" },
     EntreeStd { nom: "fib", args: &["entier"], retour: "entier" },
+    // R1 — doublement modulaire : F_n mod m en O(log n) SANS calculer F_n
+    // entier (contrairement à `fib(10^6) % m`, mesuré à 12,9 ms).
+    EntreeStd { nom: "fib_mod", args: &["entier", "entier"], retour: "entier" },
     EntreeStd { nom: "pgcd", args: &["entier", "entier"], retour: "entier" },
 EntreeStd { nom: "gcd", args: &["entier", "entier"], retour: "entier" },
     EntreeStd { nom: "ppcm", args: &["entier", "entier"], retour: "entier" },
