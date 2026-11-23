@@ -1,0 +1,85 @@
+# tests_b8.rose — batterie fonctionnelle du GC G5 branché dans
+# `g5_alloc_inline` (point 8 / CORR8). ÉCRIT EN ROSE, exécuté par un ELF C0.
+#
+# Les cinq fonctions `gc_*` ci-dessous sont des STUBS de signature : sous
+# l'émetteur G5, `emetteur_elf.rose` intercepte leur nom AVANT la recherche
+# de fonction utilisateur et leur substitue les routines émises
+# (g5_emit_gc_alloue / gc_liberer / gc_save / gc_restore / gc_stats).
+# Le chemin hébergé n'exécute donc que les stubs : ce fichier est une batterie
+# ELF, pas un test natif.
+#
+#   rose rir compilateur/tests_b8.rose > /tmp/b8/tests_b8.rir
+#   rose compilateur/emetteur_elf.rose /tmp/b8/tests_b8.rir > /tmp/b8/tests_b8.elf
+#   /tmp/b8/tests_b8.elf     # rc=0 + "TOUS LES TESTS B8 SONT VERTS"
+#
+# Contraintes G5 : pas de globale, pas de `[]` littéral, pas d'écriture par
+# index ; les littéraux de chaîne sont tous créés hors des phases (un
+# checkpoint ramène le pointeur libre en arrière : un descripteur construit
+# dans une phase serait écrasé par l'allocation suivante).
+
+fn gc_allouer($n: entier) -> entier { retour 0 }
+fn gc_liberer($p: entier) -> entier { retour 0 }
+fn gc_sauvegarde() -> entier { retour 0 }
+fn gc_restauration($p: entier) -> entier { retour 0 }
+fn gc_compteur($i: entier) -> entier { retour 0 }
+
+fn principal() -> entier {
+  # 1. Deux blocs consécutifs : l'allocateur bump avance de 64 octets.
+  $p1 = gc_allouer(64)
+  $p2 = gc_allouer(64)
+  si ($p2 - $p1 != 64) { afficher("ECHEC bump"); quitter(11) }
+
+  # 2. Libération puis réutilisation FIFO (file de blocs récupérables).
+  gc_liberer($p2)
+  $p3 = gc_allouer(64)
+  si ($p3 != $p2) { afficher("ECHEC reuse"); quitter(12) }
+  $nreuse1 = gc_compteur(1)
+  si ($nreuse1 != 1) { afficher("ECHEC nreuse"); quitter(13) }
+
+  # 3. Checkpoint / restauration : les blocs de la phase sont rendus au
+  #    pool et la phase suivante les réutilise sans faire monter le tas.
+  $cp = gc_sauvegarde()
+  $premier = gc_allouer(64)
+  $j = 0
+  tant_que ($j < 9) { $tmp = gc_allouer(64); $j = $j + 1 }
+  $nsave = gc_compteur(2)
+  si ($nsave != 1) { afficher("ECHEC nsave"); quitter(14) }
+  gc_restauration($cp)
+  $nrest = gc_compteur(3)
+  si ($nrest != 1) { afficher("ECHEC nrestore"); quitter(15) }
+  $apres = gc_allouer(64)
+  si ($apres != $premier) { afficher("ECHEC restore"); quitter(16) }
+
+  # 4. 500 phases de 32 blocs : le pointeur libre reste au plus haut atteint,
+  #    chaque phase réutilise exactement les 32 mêmes cases.
+  $phase = 0
+  $attendu = 0
+  tant_que ($phase < 500) {
+    $cp2 = gc_sauvegarde()
+    $x = gc_allouer(64)
+    si ($phase == 0) { $attendu = $x }
+    si ($phase > 0 et $x != $attendu) { afficher("ECHEC phase"); quitter(17) }
+    $k = 1
+    tant_que ($k < 32) { $y = gc_allouer(64); $k = $k + 1 }
+    gc_restauration($cp2)
+    $phase = $phase + 1
+  }
+  # 16018 allocations au total (les compteurs sont tagués par la routine G5).
+  $nalloc = gc_compteur(0)
+  si ($nalloc != 16013) { afficher("ECHEC nalloc"); quitter(18) }
+
+  # 5. La file se vide à la restauration : aucune case ne reste doublement
+  #    inscrite dans le pool ; deux cycles consécutifs rendent la même valeur.
+  $cp3 = gc_sauvegarde()
+  $a = gc_allouer(8)
+  $b = gc_allouer(8)
+  gc_liberer($a)
+  gc_restauration($cp3)
+  $c = gc_allouer(8)
+  si ($c != $a) { afficher("ECHEC pool vide"); quitter(19) }
+  $d = gc_allouer(8)
+  si ($d - $c != 8) { afficher("ECHEC reprise bump"); quitter(20) }
+
+  afficher("TOUS LES TESTS B8 SONT VERTS")
+  retour 0
+}

@@ -858,6 +858,15 @@ $g5_bigprol = 0
 $g5_bigaddl = 0
 $g5_bignegl = 0
 $g5_bigcmpl = 0
+# CORR8 : routines G5 du GC branché sur le tas montant `g5_alloc_inline`.
+# Elles implémentent, au niveau assembleur émis, la même API que
+# `compilateur/gc_rose.rose` (gc_allouer / gc_liberer / gc_save /
+# gc_restore) : une file de blocs récupérables + un checkpoint de phase.
+$g5_gcalloue_l = 0
+$g5_gcliber_l = 0
+$g5_gcsave_l = 0
+$g5_gcrest_l = 0
+$g5_gcstats_l = 0
 
 # ── G5-IO : primitives d'entrée/sortie par syscalls Linux aarch64 ──
 # Ces routines sont ÉMISES dans l'ELF (elles ne s'exécutent pas dans Rose) :
@@ -979,6 +988,135 @@ fn g5_alloc_inline() -> entier {
   g5_emit(orrr(0, 31, 2))
   g5_emit(addr(2, 2, 1))
   g5_emit(stroff(2, 9, 0))
+  retour 0
+}
+
+# ── CORR8 : GC du tas G5 (récupération effective) ──────────────────────────────
+# `g5_alloc_inline` est un bump pur : [0x60000000] ne fait que monter. Les
+# routines ci-dessous lui ajoutent une file de blocs récupérables et un
+# checkpoint de phase, exactement comme `gc_rose.rose` le fait en Rose pur
+# avec sa table `pool` et ses `gc_save`/`gc_restore`.
+#
+# Carte mémoire complémentaire (plage libre 0x60005000..0x60008000, entre les
+# 512 globales G5 et le début du tas) :
+#   0x60005000  checkpoint : pointeur brut du tas au début de la phase
+#   0x60005008  tête de la file de blocs libres (0 = vide)
+#   0x60005010  n_alloc     (cumulatif)
+#   0x60005018  n_reuse     (cumulatif)
+#   0x60005020  n_save      (cumulatif)
+#   0x60005028  n_restore   (cumulatif)
+# Un bloc libre stocke le pointeur brut du suivant dans son premier mot ; la
+# taille demandée est arrondie à 8 octets, donc au moins un mot est disponible.
+#
+# `gc_restauration` ramène [0x60000000] au checkpoint : tous les blocs créés
+# pendant la phase sont récupérés en une écriture, sans rendre de mémoire au
+# noyau mais en empêchant la croissance (mesure CORR8_GC.md §4).
+fn gc_meta($d: entier) -> entier { retour 1610633216 + $d }
+
+# Routine G5 `gc_liberer(p)` : pousse un bloc dans la file (x0 = pointeur tagué).
+fn g5_emit_gc_liberer($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_lsr3(0, 0))            # pointeur brut
+  g5_load(9, gc_meta(0))
+  g5_emit(ldroff(1, 9, 8))          # tête
+  g5_emit(stroff(1, 0, 0))          # [bloc] = tête  (= gc_set du pool)
+  g5_emit(stroff(0, 9, 8))          # tête = bloc
+  g5_emit(movz(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# Routine G5 `gc_sauvegarde()` : checkpoint avant une phase.
+fn g5_emit_gc_save($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_load(9, 1610612736)
+  g5_emit(ldroff(0, 9, 0))          # pointeur libre courant
+  g5_load(10, gc_meta(0))
+  g5_emit(stroff(0, 10, 0))         # checkpoint = pointeur libre
+  g5_emit(ldroff(1, 10, 32))        # n_save (valeur)
+  g5_emit(addi(1, 1, 1))
+  g5_emit(stroff(1, 10, 32))
+  g5_emit(g5_lsl3(0, 0))            # valeur Rose (taguée)
+  g5_emit(RET_I())
+  retour 0
+}
+
+# Routine G5 `gc_restauration(cp)` : referme la phase, récupère tout ce qui a
+# été alloué depuis le checkpoint et vide la file (ces blocs n'existent plus).
+fn g5_emit_gc_restore($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_lsr3(0, 0))            # checkpoint brut
+  g5_load(9, 1610612736)
+  g5_emit(stroff(0, 9, 0))          # gc_set(libre, cp) : récupération
+  g5_load(10, gc_meta(0))
+  g5_emit(movz(1, 0))
+  g5_emit(stroff(1, 10, 8))         # file vidée
+  g5_emit(ldroff(1, 10, 40))        # n_restore (valeur)
+  g5_emit(addi(1, 1, 1))
+  g5_emit(stroff(1, 10, 40))
+  g5_emit(movz(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# Routine G5 `gc_allouer(n)` :file d'abord, sinon `g5_alloc_inline` (bump).
+# x2 conserve la taille pendant l'appel à g5_alloc_inline (x0 devient le pointeur).
+fn g5_emit_gc_alloue($lbl: entier) -> entier {
+  g5_mark($lbl)
+  g5_emit(g5_lsr3(0, 0))            # taille demandée (entier Rose)
+  g5_emit(addi(0, 0, 7))
+  g5_emit(g5_masktag(0, 0))         # arrondi à 8 octets, minimum 8
+  g5_emit(orrr(2, 31, 0))           # x2 = taille
+  g5_load(9, gc_meta(0))
+  g5_emit(ldroff(1, 9, 8))          # tête de la file
+  g5_emit(cmpi(1, 0))
+  g5_branch(100, $lbl + 1)          # file vide -> bump
+  g5_emit(ldroff(3, 1, 0))          # bloc suivant
+  g5_emit(stroff(3, 9, 8))          # tête = suivant
+  g5_emit(orrr(0, 31, 1))           # pointeur récupéré
+  g5_emit(ldroff(3, 9, 24))         # n_reuse (valeur, pas adresse)
+  g5_emit(addi(3, 3, 1))
+  g5_emit(stroff(3, 9, 24))         # n_reuse++
+  g5_emit(stroff(2, 0, 0))          # toucher le bloc (RSS mesurable)
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  g5_mark($lbl + 1)
+  g5_emit(orrr(0, 31, 2))           # x0 = taille pour g5_alloc_inline
+  g5_alloc_inline()                 # branchement GC -> allocateur bump
+  g5_load(9, gc_meta(0))
+  g5_emit(ldroff(3, 9, 16))         # n_alloc (valeur)
+  g5_emit(addi(3, 3, 1))
+  g5_emit(stroff(3, 9, 16))         # n_alloc++
+  g5_load(2, 1)                     # x2 clobbré par g5_alloc_inline
+  g5_emit(stroff(2, 0, 0))          # toucher le bloc (RSS mesurable)
+  g5_emit(g5_lsl3(0, 0))
+  g5_emit(RET_I())
+  retour 0
+}
+
+# Compteurs cumulatifs (instruments de mesure, jamais rembobinés).
+fn g5_emit_gc_stats($lbl: entier) -> entier {
+  g5_mark($lbl)
+  # x0 reste tagué : on le compare à i<<3 (les deux sont des entiers Rose).
+  $i = 0
+  tant_que ($i < 5) {
+    g5_load(1, $i)
+    g5_emit(g5_lsl3(1, 1))
+    g5_emit(cmpr(0, 1))
+    g5_branch(100, $lbl + 1 + $i)
+    $i = $i + 1
+  }
+  g5_emit(movz(0, 0))
+  g5_emit(RET_I())
+  $i = 0
+  tant_que ($i < 5) {
+    g5_mark($lbl + 1 + $i)
+    g5_load(0, gc_meta(16 + 8 * $i))   # 0=n_alloc, 1=n_reuse, 2=n_save, 3=n_restore
+    g5_emit(ldroff(0, 0, 0))           # charger la VALEUR du compteur
+    g5_emit(g5_lsl3(0, 0))
+    g5_emit(RET_I())
+    $i = $i + 1
+  }
   retour 0
 }
 
@@ -2040,6 +2178,14 @@ fn g5_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       si ($nom == "mprotect") { $lbl = $g5_mprotect_l }
       si ($nom == "chmod") { $lbl = $g5_chmod_l }
       si ($nom == "execve") { $lbl = $g5_execve_l }
+      # CORR8 : GC branché sur le tas montant. Comme `mmap`, l'interception
+      # précède la recherche de fonction utilisateur : les stubs Rose servent
+      # uniquement à faire accepter l'appel par le front-end.
+      si ($nom == "gc_allouer") { $lbl = $g5_gcalloue_l }
+      si ($nom == "gc_liberer") { $lbl = $g5_gcliber_l }
+      si ($nom == "gc_sauvegarde") { $lbl = $g5_gcsave_l }
+      si ($nom == "gc_restauration") { $lbl = $g5_gcrest_l }
+      si ($nom == "gc_compteur") { $lbl = $g5_gcstats_l }
       # G5 n'a pas de flottants. flottant(s) sert surtout a vers_flottant()
       # qui reserialize les litteraux : le parser decimal suffit (les
       # flottants du dump de emetteur.rose sont a valeur entiere).
@@ -4723,6 +4869,15 @@ $k = 0; tant_que ($k < 12) { g5_next(); $k = $k + 1 }
 # G5-UTF8 : routine de comparaison lexicographique des chaînes (+1..+7).
 $g5_strcmpl = g5_next()
 $k = 0; tant_que ($k < 7) { g5_next(); $k = $k + 1 }
+# CORR8 : une étiquette interne pour gc_allouer (branchement file vide -> bump),
+# cinq pour le dispatch des compteurs ; les trois autres n'en utilisent aucune.
+$g5_gcalloue_l = g5_next()
+$k = 0; tant_que ($k < 1) { g5_next(); $k = $k + 1 }
+$g5_gcliber_l = g5_next()
+$g5_gcsave_l = g5_next()
+$g5_gcrest_l = g5_next()
+$g5_gcstats_l = g5_next()
+$k = 0; tant_que ($k < 5) { g5_next(); $k = $k + 1 }
 g5_compile_fonction($principal, $principal, $printl, $exitl)
 $i = 0
 tant_que ($i < $nfn) {
@@ -4761,6 +4916,11 @@ g5_emit_bigadd($g5_bigaddl)
 g5_emit_bigneg($g5_bignegl)
 g5_emit_bigcmp($g5_bigcmpl)
 g5_emit_strcmp($g5_strcmpl)
+g5_emit_gc_alloue($g5_gcalloue_l)
+g5_emit_gc_liberer($g5_gcliber_l)
+g5_emit_gc_save($g5_gcsave_l)
+g5_emit_gc_restore($g5_gcrest_l)
+g5_emit_gc_stats($g5_gcstats_l)
 g5_emit_nbargs($g5_nbargs_l)
 g5_emit_argument($g5_argument_l)
 g5_emit_lire($g5_lire_l)
