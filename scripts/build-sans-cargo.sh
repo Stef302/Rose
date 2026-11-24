@@ -171,7 +171,7 @@ cmd="${1:-}"
 case "$cmd" in
   run|jit|interprete|methode|verif|rir|tokens|ast|latex|transpile|bc|comp|\
   version|--version|help|--help|-h|-?|info|"") exec "$MOTEUR" "$@" ;;
-  aot|orc|link|llvm|wasm)
+  wasm)
     echo "rose: commande NON COUVERTE par le moteur auto-hébergé C0 : $cmd" >&2
     echo "  cause : le point d'entrée de compilateur/moteur_complet.rose n'a" >&2
     echo "  aucun writer/routine pour cette commande (JIT Cranelift, LLVM ORC, VM," >&2

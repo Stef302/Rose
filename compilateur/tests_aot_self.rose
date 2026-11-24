@@ -1,0 +1,105 @@
+# tests_aot_self.rose — banc de conformité de l'AOT auto-hébergé (AOT_SELF).
+#
+# Usage (aucun Rust, aucun cargo) :
+#   out/moteur.elf aot <source.rose> -o <binaire>     # 10 sources, voir ci-dessous
+#   out/moteur.elf compilateur/tests_aot_self.rose <dossier>
+#
+# Le banc lit les DIX fichiers `<dossier>/<nom>.self.out` produits par
+# l'exécution des binaires émis par le moteur C0 et les compare aux valeurs
+# attendues (identiques à celles de `rose aot` Rust, contrôlé octave pour
+# octave). Il affiche « TESTS AOT SELF : 10 OK, 0 ECHEC » et sort 0 si tout
+# est conforme, sinon il nomme chaque écart et sort 1.
+#
+# Dossier par défaut : /tmp/opencode/aot_self_probe/valide.
+# Le 10e programme est `>> 7 / 2` : source écrite par le harnais de
+# validation dans `<dossier>/10_rationnel_div.rose` (aucun fichier ajouté
+# au dépôt). Les 9 autres sont rose/tests_aot8/programmes/.
+#
+# Ce banc ne compile RIEN : il ne fait que vérifier des sorties réellement
+# produites. Les marqueurs AOT_SELF dans moteur_complet.rose sont la preuve
+# que l'émetteur ELF y est intégré.
+
+fn ts_contient($s: chaine, $mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $mot) { retour 1 }
+    $i = $i + 1
+  }
+  retour 0
+}
+
+fn tas_ligne($s: chaine) -> chaine {
+  $n = longueur($s)
+  si ($n > 0 et sous_chaine($s, $n - 1, $n) == "\n") { retour sous_chaine($s, 0, $n - 1) }
+  retour $s
+}
+
+$dossier = "/tmp/opencode/aot_self_probe/valide"
+si (nb_arguments() >= 1) { $dossier = argument(0) }
+si (longueur($dossier) > 0 et sous_chaine($dossier, longueur($dossier) - 1, longueur($dossier)) != "/") {
+  $dossier = $dossier + "/"
+}
+
+$noms = [""]
+joindre($noms, "01_arith")
+joindre($noms, "02_fib")
+joindre($noms, "03_varfact")
+joindre($noms, "06_rationnel_add")
+joindre($noms, "09_chaine")
+joindre($noms, "17_boucle_pour")
+joindre($noms, "22_rationnel_mul")
+joindre($noms, "23_fib_iteratif")
+joindre($noms, "25_racine_puissance")
+joindre($noms, "10_rationnel_div")
+
+$attendus = [""]
+joindre($attendus, "14")
+joindre($attendus, "610")
+joindre($attendus, "479001600")
+joindre($attendus, "0.5")
+joindre($attendus, "salut")
+joindre($attendus, "45")
+joindre($attendus, "0.[6]")
+joindre($attendus, "4181")
+joindre($attendus, "6561")
+joindre($attendus, "3.5")
+
+# garde-fou de régénération : le composé est GENERE ; une regeneration par
+# scripts/build_moteur_sans_rust.sh --source-only écrase ces marqueurs.
+$compose = lire_texte("compilateur/moteur_complet.rose")
+$marqueurs = 0
+si (longueur($compose) > 0) {
+  $marqueurs = ts_contient($compose, "AOT_SELF:DÉBUT")
+  si (ts_contient($compose, "AOT_SELF:FIN") == 0) { $marqueurs = 0 }
+  si (ts_contient($compose, "mc_cmd == \"aot\"") == 0) { $marqueurs = 0 }
+}
+
+$ok = 0
+$bad = 0
+$rapport = ""
+si (longueur($compose) > 0 et $marqueurs == 0) {
+  $bad = $bad + 1
+  $rapport = $rapport + "ECHEC marqueurs AOT_SELF absents de moteur_complet.rose\n"
+}
+$i = 1
+tant_que ($i < longueur($noms)) {
+  $chemin = $dossier + $noms[$i] + ".self.out"
+  $sortie = lire_texte($chemin)
+  $vu = tas_ligne($sortie)
+  si (longueur($sortie) > 0 et $vu == $attendus[$i]) {
+    $ok = $ok + 1
+  } sinon {
+    $bad = $bad + 1
+    $rapport = $rapport + "ECHEC " + $noms[$i] + " : attendu « " + $attendus[$i] + " », reçu « " + $vu + " »\n"
+  }
+  $i = $i + 1
+}
+
+# `>>` (afficher_abstrait) est émis par les deux moteurs ; la primitive
+# `afficher(...)` est un no-op sous le backend G5 (mesuré), donc on ne
+# l'utilise PAS ici.
+>> $rapport + "TESTS AOT SELF : " + chaine($ok) + " OK, " + chaine($bad) + " ECHEC"
+si ($bad == 0) { quitter(0) }
+quitter(1)
