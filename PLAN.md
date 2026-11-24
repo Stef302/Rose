@@ -1542,3 +1542,10 @@ RESTE (documenté RELEASE_100.md §cause/geste, non masqué):
   équivalent Rose. Aucun PE exécuté (hôte aarch64, Wine sans WoW64).
 - Le défaut de build-windows-rebuild.sh reste cargo (option --selfhost seulement).
 - validation_finale.sh §1 appelle cargo build (sections 2-7 rejouées séparément).
+
+## Vague 105 — réduire les derniers stubs Windows
+
+3 agents: (last1) promotion valeur+entier ligne 8562 pour que C0 produise le RIR
+complet; (last2) étendre x_eval/x_op de l'émetteur PE x64 aux formes s/lst/app;
+(last3) vrais lanceurs Rose shell/tray/setup avec imports Win32 et ressources.
+Objectif: 5 artefacts Windows réels, verifier-res.py 40+ garde-fous, bascule défaut.
