@@ -293,7 +293,7 @@ if [[ $WINDOWS -eq 1 ]]; then
   if [[ $rc_rir -eq 0 && -s "$WIN/moteur_complet.rir" ]]; then
     printf 'RIR COMPLET obtenu : %s octets\n' "$(stat -c%s "$WIN/moteur_complet.rir")" >> "$TENT"
     rc_pe=0
-    timeout 600 "$EMIT" "$WIN/moteur_complet.rir" > "$WIN/rose_complet.exe" \
+    timeout 2400 "$EMIT" "$WIN/moteur_complet.rir" > "$WIN/rose_complet.exe" \
         2> "$WIN/rose_complet.exe.err" || rc_pe=$?
     if [[ $rc_pe -eq 0 && -s "$WIN/rose_complet.exe" ]]; then
       cp "$WIN/rose_complet.exe" "$WIN/rose.exe"
