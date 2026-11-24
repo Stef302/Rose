@@ -525,7 +525,7 @@ PY
     echo "  readobj         : $WIN/LLVM_READOJ.txt"
     echo "  ressources      : $WIN/VERIFIER_RES.txt"
     echo "  STATUT : 5 PE32+ x86-64 ; shell/tray/setup = code Win32 réel écrit"
-    echo "           en Rose ; moteur complet hors périmètre (autre agent)."
+    echo "           en Rose ; rose.exe = moteur complet (RIR C0 -> PE C0)."
   } >> "$MANIFESTE"
   echo "WINDOWS : 5 artefacts PE32+ x86-64 (3 lanceurs Rose), verifier-res.py OK"
 fi
