@@ -1612,3 +1612,11 @@ defaut de build-windows-rebuild.sh et validation_finale.sh §1 appellent encore 
 et aucun PE n'a ete execute sous Windows (hote aarch64).
 3 agents: (default) bascule defaut sur --selfhost avec --cargo en repli, (validation)
 validation_finale --sans-cargo, (wine) preuve d'execution PE ou constat honnete mesure.
+
+## Vague 112 — bug final : SIGILL deterministe dans rose.exe PE
+
+Banc Wine reel (temoins cmd.exe CONTROL_OK + mini-PE 19 OK) mais rose.exe:
+rc=29, SIGILL a 0x140157AAD, octets 46 8a 14 09 = movb (%rcx,%r9),%r10b
+(instruction x86-64 valide), determiniqque pour 5 programmes et sans argument.
+Investigation codegen ciblee necessaire. Correctifs PE precedents deja dans
+/tmp/opencode/fix_pe_exec (non integres: 424 insertions) — les garder.
