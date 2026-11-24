@@ -1549,3 +1549,10 @@ RESTE (documenté RELEASE_100.md §cause/geste, non masqué):
 complet; (last2) étendre x_eval/x_op de l'émetteur PE x64 aux formes s/lst/app;
 (last3) vrais lanceurs Rose shell/tray/setup avec imports Win32 et ressources.
 Objectif: 5 artefacts Windows réels, verifier-res.py 40+ garde-fous, bascule défaut.
+
+## Vague 106 — release finale en cours
+
+Lanceurs Win32 reels integres (e2ee006): shell/tray/setup PE x86-64, verifier-res
+33 garde-fous. Promotion valeur+entier integree (ea2f651): C0 produit le RIR complet
+795714 o. x_eval/x_op PE etendus integres (b45970f): 14/14, tas x64, 12 imports.
+Emission finale rose.exe depuis le RIR complet (795 Ko) en cours avec last2_emit_v7.
