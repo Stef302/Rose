@@ -11481,7 +11481,7 @@ fn mc_const_rir($rir: chaine) -> chaine {
 # ── Sérialiseurs RIR → WASM / ROSEBC (portés de ser_wasm / ser_bytecode) ──
 
 fn sw_octet($v: entier) -> chaine {
-  retour caractere($v % 256)
+  retour octet_brut($v % 256)
 }
 
 fn sw_u16le($v: entier) -> chaine {
@@ -11495,6 +11495,7 @@ fn sw_u32le($v: entier) -> chaine {
        + sw_octet(partie_entiere($v / 16777216) % 256)
 }
 
+# LEB128 non signé (longueurs, index de sections).
 fn sw_uleb($v: entier) -> chaine {
   $out = ""
   $x = $v
@@ -11508,34 +11509,63 @@ fn sw_uleb($v: entier) -> chaine {
   retour $out
 }
 
+# SLEB128 signé (constantes i64), ENCODAGE MINIMAL.
+# Ancienne forme : on divisait `$x` (négatif) par 128 puis on testait
+# `$x == -1`. Sous le composé C0, ce test échouait sur les négatifs et
+# émettait un octet de plus (ex. -7 -> f9 00 au lieu de 79).
+# Forme retenue : on ne fait JAMAIS d'arithmétique sur un négatif.
+#   v >= 0 : SLEB128 usuel, arrêt dès que le reste < 64 (bit de signe 0).
+#   v < 0  : on code u = ~v = -v-1 >= 0, puis on COMPLEMENTE les 7 bits
+#            de chaque octet. C'est l'identité SLEB(v) = ~SLEB(~v) sur 7 bits.
+# Exemples vérifiés : -1 -> 7f, -7 -> 79, -64 -> 40, -65 -> bf 7f,
+#                    64 -> c0 00, 579 -> c3 04, 2^31 -> 80 80 80 80 08.
 fn sw_sleb($v: entier) -> chaine {
+  $neg = 0
+  $u = $v
+  si ($v < 0) { $neg = 1; $u = -$v - 1 }
   $out = ""
-  $x = $v
-  $encore = vrai
-  tant_que ($encore) {
-    $b = $x % 128
-    si ($b < 0) { $b = $b + 128 }
-    $x = partie_entiere($x / 128)
-    $haut = 0
-    si ($b >= 64) { $haut = 1 }
-    $fini = 0
-    si ($x == 0 et $haut == 0) { $fini = 1 }
-    si ($x == -1 et $haut == 1) { $fini = 1 }
-    si ($fini == 0) { $b = $b + 128 }
-    $out = $out + sw_octet($b)
-    si ($fini == 1) { $encore = faux }
+  tant_que ($u >= 64) {
+    $b = $u % 128
+    $u = partie_entiere($u / 128)
+    si ($neg == 1) { $b = 127 - $b }
+    $out = $out + sw_octet($b + 128)
   }
+  $b = $u
+  si ($neg == 1) { $b = 127 - $b }
+  $out = $out + sw_octet($b)
   retour $out
 }
 
+# Longueurs en OCTETS (longueur() compte des points de code : sous C0 les
+# octets bruts >= 128 invalident UTF-8 et sont sous-comptés).
+fn sw_uleb_len($v: entier) -> entier {
+  $n = 1
+  $x = $v
+  tant_que ($x > 127) { $x = partie_entiere($x / 128); $n = $n + 1 }
+  retour $n
+}
+
+fn sw_sleb_len($v: entier) -> entier {
+  $neg = 0
+  $u = $v
+  si ($v < 0) { $neg = 1; $u = -$v - 1 }
+  $n = 0
+  tant_que ($u >= 64) { $u = partie_entiere($u / 128); $n = $n + 1 }
+  retour $n + 1
+}
+
+# Chaîne WASM : u32 de longueur (octets UTF-8) puis les octets.
 fn sw_chaine($s: chaine) -> chaine {
   retour sw_uleb(longueur($s)) + $s
 }
 
+# Section WASM : id, taille LEB128, contenu.
 fn sw_section($id: entier, $c: chaine) -> chaine {
   retour sw_octet($id) + sw_uleb(longueur($c)) + $c
 }
 
+# Découpe une expression RIR en jetons : '(' et ')' deviennent des jetons
+# séparés, les blancs sont des séparateurs.
 fn sw_tokens($s: chaine) -> liste<chaine> {
   $brut = [""]
   $cur = ""
@@ -11560,6 +11590,9 @@ fn sw_tokens($s: chaine) -> liste<chaine> {
   retour $out
 }
 
+#_CODE_WASM des opcodes i64 :
+#  i64.const = 0x42, local.get = 0x20, local.set = 0x21
+#  i64.add = 0x7C, i64.sub = 0x7D, i64.mul = 0x7E, i64.div_s = 0x7F
 fn sw_opbin($op: chaine) -> entier {
   si ($op == "+") { retour 124 }
   si ($op == "-") { retour 125 }
@@ -11568,32 +11601,41 @@ fn sw_opbin($op: chaine) -> entier {
   retour 124
 }
 
-fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine {
+# Parse une expression à partir du jeton $p (index 1-based dans $t).
+# Retourne [position_6_chiffres, octets, nb_octets] : une LISTE de chaînes.
+# ⚠ sous_chaine() compte en POINTS DE CODE et casse les octets bruts >= 128
+# sous C0 (mesuré : "000005"+42+80*4+08 -> sous_chaine(.,6,longueur) rend
+# seulement 42 80 80). La liste évite TOUT découpage d'une chaîne d'octets.
+# $base = index du premier local (nombre de slots), $res = index de __result.
+fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> liste<chaine> {
   $tok = $t[$p]
   $q = $p + 1
   $b = ""
+  $nb = 0
   si ($tok == "(") {
     $head = $t[$q]
     $q = $q + 1
     si ($head == "bin") {
       $op = $t[$q]
       $q = $q + 1
-      $r1 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
-      $r2 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
+      $r1 = sw_expr($t, $q, $base, $res); $q = entier($r1[0]); $b = $b + $r1[1]; $nb = $nb + entier($r1[2])
+      $r2 = sw_expr($t, $q, $base, $res); $q = entier($r2[0]); $b = $b + $r2[1]; $nb = $nb + entier($r2[2])
       $b = $b + sw_octet(sw_opbin($op))
+      $nb = $nb + 1
     }
     si ($head == "n") {
       $v = entier($t[$q])
       $q = $q + 1
       $b = sw_octet(66) + sw_sleb($v)
+      $nb = 1 + sw_sleb_len($v)
     }
     si ($head == "v") {
       $nv = $t[$q]
       $q = $q + 1
       $b = sw_octet(66) + sw_sleb(0)
+      $nb = 2
     }
     si ($head != "bin" et $head != "n" et $head != "v") {
-      # (app ...) ou forme inconnue : on ignore jusqu'à la ')' fermante.
       $prof = 1
       tant_que ($q < longueur($t) et $prof > 0) {
         si ($t[$q] == "(") { $prof = $prof + 1 }
@@ -11601,6 +11643,7 @@ fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine
         $q = $q + 1
       }
       $b = $b + sw_octet(66) + sw_sleb(0)
+      $nb = $nb + 2
     }
     si ($q < longueur($t)) {
       si ($t[$q] == ")") { $q = $q + 1 }
@@ -11610,24 +11653,32 @@ fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine
       $v = entier($t[$q])
       $q = $q + 1
       $b = sw_octet(66) + sw_sleb($v)
+      $nb = 1 + sw_sleb_len($v)
     }
     si ($tok == "slot") {
-      $s = entier($t[$q])
+      $sl = entier($t[$q])
       $q = $q + 1
-      $b = sw_octet(32) + sw_uleb($s + $base)
+      $b = sw_octet(32) + sw_uleb($sl + $base)
+      $nb = 1 + sw_uleb_len($sl + $base)
     }
     si ($tok == "booleen" ou $tok == "vrai") {
       $b = sw_octet(66) + sw_sleb(1)
+      $nb = 2
     }
     si ($tok == "faux") {
       $b = sw_octet(66) + sw_sleb(0)
+      $nb = 2
     }
   }
   $pos = chaine($q)
   tant_que (longueur($pos) < 6) { $pos = "0" + $pos }
-  retour $pos + $b
+  $r = [$pos]
+  joindre($r, $b)
+  joindre($r, chaine($nb))
+  retour $r
 }
 
+# Prend la sous-chaine d'une ligne d'op RIR après le mot-clé.
 fn sw_reste($ligne: chaine, $mot: chaine) -> chaine {
   $n = longueur($ligne)
   $m = longueur($mot)
@@ -11641,6 +11692,7 @@ fn sw_reste($ligne: chaine, $mot: chaine) -> chaine {
   retour ""
 }
 
+# Assemble le module complet depuis un dump RIR.
 fn sw_module($rir: chaine) -> chaine {
   # Découpe le dump en lignes.
   $lignes = [""]
@@ -11696,6 +11748,7 @@ fn sw_module($rir: chaine) -> chaine {
   $nlocaux = $nslots + 1
 
   $code = ""
+  $ncode = 0
   $j = $debut
   tant_que ($j < longueur($lignes)) {
     $tt = sw_tokens($lignes[$j])
@@ -11705,15 +11758,19 @@ fn sw_module($rir: chaine) -> chaine {
     si ($kind == "afficher_abstrait" ou $kind == "afficher" ou $kind == "retour_abstrait" ou $kind == "retour") { $affiche = 1 }
     si ($affiche == 1) {
       $r = sw_expr($tt, 3, $base, $res)
-      $code = $code + sous_chaine($r, 6, longueur($r))
+      $code = $code + $r[1]
+      $ncode = $ncode + entier($r[2])
       # local.set $res : toute valeur `>>` devient le résultat de rose_main.
       $code = $code + sw_octet(33) + sw_uleb($res)
+      $ncode = $ncode + 1 + sw_uleb_len($res)
     }
     si ($kind == "affect") {
       $slot = entier($tt[4])
       $r = sw_expr($tt, 6, $base, $res)
-      $code = $code + sous_chaine($r, 6, longueur($r))
+      $code = $code + $r[1]
+      $ncode = $ncode + entier($r[2])
       $code = $code + sw_octet(33) + sw_uleb($slot + $base)
+      $ncode = $ncode + 1 + sw_uleb_len($slot + $base)
     }
     $j = $j + 1
   }
@@ -11721,7 +11778,10 @@ fn sw_module($rir: chaine) -> chaine {
   # Corps de rose_main : [1 groupe de locaux][N i64][code][local.get res][end]
   $corps = sw_uleb(1) + sw_uleb($nlocaux) + sw_octet(126)
          + $code + sw_octet(32) + sw_uleb($res) + sw_octet(11)
-  $code_section = sw_uleb(1) + sw_uleb(longueur($corps)) + $corps
+  $ncorps = sw_uleb_len(1) + sw_uleb_len($nlocaux) + 1 + $ncode
+          + 1 + sw_uleb_len($res) + 1
+  $code_section = sw_uleb(1) + sw_uleb($ncorps) + $corps
+  $ncs = 1 + sw_uleb_len($ncorps) + $ncorps
 
   # Type unique : () -> i64
   $types = sw_uleb(1) + sw_octet(96) + sw_uleb(0) + sw_uleb(1) + sw_octet(126)
@@ -11732,11 +11792,11 @@ fn sw_module($rir: chaine) -> chaine {
        + sw_section(1, $types)
        + sw_section(3, $fonctions)
        + sw_section(7, $exports)
-       + sw_section(10, $code_section)
+       + sw_octet(10) + sw_uleb($ncs) + $code_section
 }
 
 fn sb_octet($v: entier) -> chaine {
-  retour caractere($v % 256)
+  retour octet_brut($v % 256)
 }
 
 fn sb_u32le($v: entier) -> chaine {
@@ -11746,6 +11806,7 @@ fn sb_u32le($v: entier) -> chaine {
        + sb_octet(partie_entiere($v / 16777216) % 256)
 }
 
+# chaine Rust : u32 de longueur puis UTF-8.
 fn sb_chaine($s: chaine) -> chaine {
   # ⚠ Pas de `retour sb_u32le(...) + $s` direct : le JIT Rust du moteur
   # renvoie alors 2 octets de trop quand la fonction est appelée depuis
@@ -11785,6 +11846,7 @@ fn sb_tokens($s: chaine) -> liste<chaine> {
   retour $out
 }
 
+# Découpe le dump en lignes (liste<chaine>, index 0 = vide).
 fn sb_lignes($s: chaine) -> liste<chaine> {
   $lignes = [""]
   $cur = ""
@@ -11802,6 +11864,7 @@ fn sb_lignes($s: chaine) -> liste<chaine> {
   retour $lignes
 }
 
+# Nom de variable d'un slot, lu dans la ligne `noms [0]x [1]y`.
 fn sb_nom_slot($ll: liste<chaine>, $slot: entier) -> chaine {
   $j = 1
   tant_que ($j < longueur($ll)) {
@@ -11821,7 +11884,63 @@ fn sb_nom_slot($ll: liste<chaine>, $slot: entier) -> chaine {
   retour "$s" + chaine($slot)
 }
 
-fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) -> chaine {
+# Un littéral numérique DIRECT a TyKind::Dyn (0x0c) côté Rust ; un
+# littéral issu du repli d'une expression (ex. `1 + 2` -> `3`) a
+# TyKind::Entier (0x01). Le dump RIR ne distingue pas les deux : la source,
+# elle, porte `>> 0` contre `>> 1 + 2`.
+fn sb_est_lit($e: chaine) -> booleen {
+  $n = longueur($e)
+  si ($n == 0) { retour faux }
+  $i = 0
+  si (sous_chaine($e, 0, 1) == "-") { $i = 1 }
+  si ($i >= $n) { retour faux }
+  tant_que ($i < $n) {
+    $o = ordre(sous_chaine($e, $i, $i + 1))
+    si ($o < 48 ou $o > 57) { retour faux }
+    $i = $i + 1
+  }
+  retour vrai
+}
+
+# Descripteurs des instructions de la source, dans leur ordre d'apparition :
+# une entrée "ligne|tykind" par ligne contenant `>>` (afficher).
+fn sb_desc($src: chaine) -> liste<chaine> {
+  $ll = sb_lignes($src)
+  $out = [""]
+  $j = 1
+  tant_que ($j < longueur($ll)) {
+    $l = $ll[$j]
+    $n = longueur($l)
+    $pos = -1
+    $k = 0
+    tant_que ($k + 1 < $n) {
+      si (sous_chaine($l, $k, $k + 2) == ">>") {
+        $pos = $k
+        $k = $n
+      }
+      $k = $k + 1
+    }
+    si ($pos >= 0) {
+      $e = sous_chaine($l, $pos + 2, $n)
+      tant_que (longueur($e) > 0 et sous_chaine($e, 0, 1) == " ") {
+        $e = sous_chaine($e, 1, longueur($e))
+      }
+      $ty = 1
+      $neg = 0
+      si (sb_est_lit($e)) {
+        $ty = 12
+        si (sous_chaine($e, 0, 1) == "-") { $neg = 1 }
+      }
+      joindre($out, chaine($j) + "|" + chaine($ty) + "|" + chaine($neg))
+    }
+    $j = $j + 1
+  }
+  retour $out
+}
+
+# Expression : position sur 6 chiffres + octets sérialisés.
+# $ligne = numéro de ligne source, $ty = TyKind du littéral éventuel.
+fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier, $ty: entier, $neg: entier) -> chaine {
   $tok = $t[$p]
   $q = $p + 1
   $b = ""
@@ -11831,15 +11950,15 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
     si ($head == "bin") {
       $op = $t[$q]
       $q = $q + 1
-      $r1 = sb_expr($t, $q, $ll, $ligne); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
-      $r2 = sb_expr($t, $q, $ll, $ligne); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
+      $r1 = sb_expr($t, $q, $ll, $ligne, $ty, $neg); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
+      $r2 = sb_expr($t, $q, $ll, $ligne, $ty, $neg); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
       $b = sb_octet(7) + sb_chaine($op) + $b + sb_u32le($ligne)
     }
     si ($head == "n") {
       $v = $t[$q]
       $q = $q + 1
-      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet(0)
-         + sb_octet(1) + sb_u32le($ligne)
+      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet($neg)
+         + sb_octet($ty) + sb_u32le($ligne)
     }
     si ($head == "v") {
       $v = $t[$q]
@@ -11852,7 +11971,7 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
       $nargs = 0
       $args = ""
       tant_que ($q < longueur($t) et $t[$q] != ")") {
-        $r = sb_expr($t, $q, $ll, $ligne)
+        $r = sb_expr($t, $q, $ll, $ligne, $ty, $neg)
         $q = entier(sous_chaine($r, 0, 6))
         $args = $args + sous_chaine($r, 6, longueur($r))
         $nargs = $nargs + 1
@@ -11867,8 +11986,8 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
     si ($tok == "entier" ou $tok == "f" ou $tok == "n") {
       $v = $t[$q]
       $q = $q + 1
-      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet(0)
-         + sb_octet(1) + sb_u32le($ligne)
+      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet($neg)
+         + sb_octet($ty) + sb_u32le($ligne)
     }
     si ($tok == "slot") {
       $s = entier($t[$q])
@@ -11887,35 +12006,77 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
   retour $pos + $b
 }
 
-fn sb_instrs($ll: liste<chaine>, $debut: entier, $fin: entier, $noms: liste<chaine>, $ligne: entier) -> chaine {
+# Lit un descriptor "ligne|ty" ; positionne $ligne et $ty.
+fn sb_prend_desc($d: chaine, $ligne: entier, $ty: entier) -> chaine {
+  # Retourne "$ligne|$ty|$neg" — Rose n'a pas de paramètres de sortie.
+  $n = longueur($d)
+  $pipe = 0
+  $k = 0
+  tant_que ($k < $n) {
+    si (sous_chaine($d, $k, $k + 1) == "|") { $pipe = $pipe + 1 }
+    $k = $k + 1
+  }
+  si ($pipe >= 2) { retour $d }
+  retour chaine($ligne) + "|" + chaine($ty) + "|0"
+}
+
+# Sérialise une liste de lignes d'instructions (corps de fonction / principal).
+fn sb_instrs($ll: liste<chaine>, $debut: entier, $fin: entier, $noms: liste<chaine>, $desc: liste<chaine>, $base: entier) -> chaine {
   $out = ""
   $j = $debut
+  $cnt = 0
   tant_que ($j < $fin) {
     $tt = sb_tokens($ll[$j])
     $kind = ""
     si (longueur($tt) > 2) { $kind = $tt[2] }
+    $ligne = 1
+    $ty = 1
+    $neg = 0
+    $di = $base + $cnt + 1
+    si ($di < longueur($desc) et $di >= 1) {
+      $d = sb_prend_desc($desc[$di], $ligne, $ty)
+      $n = longueur($d)
+      $b1 = 0
+      $b2 = 0
+      $k = 0
+      tant_que ($k < $n) {
+        si (sous_chaine($d, $k, $k + 1) == "|") {
+          si ($b1 == 0) { $b1 = $k } sinon { $b2 = $k }
+        }
+        $k = $k + 1
+      }
+      si ($b1 > 0) {
+        $ligne = entier(sous_chaine($d, 0, $b1))
+        $ty = entier(sous_chaine($d, $b1 + 1, $b2))
+        $neg = entier(sous_chaine($d, $b2 + 1, $n))
+      }
+    }
     si ($kind == "afficher_abstrait" ou $kind == "afficher") {
-      $r = sb_expr($tt, 3, $noms, $ligne)
+      $r = sb_expr($tt, 3, $noms, $ligne, $ty, $neg)
       $out = $out + sb_octet(1) + sb_u32le(1)
            + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+      $cnt = $cnt + 1
     }
     si ($kind == "retour_abstrait" ou $kind == "retour") {
-      $r = sb_expr($tt, 3, $noms, $ligne)
+      $r = sb_expr($tt, 3, $noms, $ligne, $ty, $neg)
       $out = $out + sb_octet(8) + sb_octet(1)
            + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+      $cnt = $cnt + 1
     }
     si ($kind == "affect") {
       $slot = entier($tt[4])
       $nom = sb_nom_slot($noms, $slot)
-      $r = sb_expr($tt, 6, $noms, $ligne)
+      $r = sb_expr($tt, 6, $noms, $ligne, $ty, $neg)
       $out = $out + sb_octet(3) + sb_chaine($nom)
            + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+      $cnt = $cnt + 1
     }
     $j = $j + 1
   }
   retour $out
 }
 
+# Jetons sûrs : ', ' et ')' sont des séparateurs, une ligne vide rend "".
 fn sb_kind($l: chaine) -> chaine {
   $t = sb_tokens($l)
   si (longueur($t) > 1) { retour $t[1] }
@@ -11928,6 +12089,7 @@ fn sb_tok($l: chaine, $i: entier) -> chaine {
   retour ""
 }
 
+# Nombre d'instructions émissibles entre deux lignes.
 fn sb_compte($ll: liste<chaine>, $debut: entier, $fin: entier) -> entier {
   $n = 0
   $j = $debut
@@ -11941,10 +12103,11 @@ fn sb_compte($ll: liste<chaine>, $debut: entier, $fin: entier) -> entier {
   retour $n
 }
 
-fn sb_module($rir: chaine) -> chaine {
+# Assemble le snapshot complet depuis un dump RIR et (si fournie) la source.
+fn sb_module_avec($rir: chaine, $src: chaine) -> chaine {
   $ll = sb_lignes($rir)
   $noms = [""]
-  $ligne = 1
+  $desc = sb_desc($src)
 
   # Table des noms : ligne `noms ...`.
   $j = 1
@@ -11960,9 +12123,6 @@ fn sb_module($rir: chaine) -> chaine {
   }
 
   # Sous-ensemble « RIR simple » : le snapshot ne contient QUE le principal.
-  # Les signatures de fonctions utilisateur (appels, récursion) ne font pas
-  # partie du sous-ensemble sérialisé : $nsig reste 0, comme dans la
-  # référence Rust pour tout programme sans fonction (contrôle >>7*6).
   $nsig = 0
   $sigs = ""
 
@@ -11986,7 +12146,7 @@ fn sb_module($rir: chaine) -> chaine {
     }
     $j = $j + 1
   }
-  $principal = sb_instrs($ll, $opo, longueur($ll), $noms, $ligne)
+  $principal = sb_instrs($ll, $opo, longueur($ll), $noms, $desc, 0)
 
   # Accumulation par petits pas (une chaîne de + longue avec appels
   # déclenche un bug du JIT Rust : des préfixes de longueur disparaissent).
@@ -11998,6 +12158,10 @@ fn sb_module($rir: chaine) -> chaine {
   $out = $out + sb_u32le(sb_compte($ll, $opo, longueur($ll)))
   $out = $out + $principal
   retour $out
+}
+
+fn sb_module($rir: chaine) -> chaine {
+  retour sb_module_avec($rir, "")
 }
 
 fn mc_elf_hex() -> liste<chaine> {
@@ -12205,7 +12369,8 @@ si ($mc_cmd == "bc") {
     cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
-  $mc_bc = sb_module(sous_chaine($mc_res, 3, longueur($mc_res)))
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_bc = sb_module_avec(sous_chaine($mc_res, 3, longueur($mc_res)), $mc_src_txt)
   si (longueur($mc_out) == 0) { $mc_out = $mc_src + ".rosebc" }
   ecrire_bytes($mc_out, $mc_bc)
   ecrire_bytes("/dev/stdout", "rose bc : " + chaine(longueur($mc_bc)) + " octets -> " + $mc_out + "\n")
@@ -12233,7 +12398,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12259,7 +12442,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12285,7 +12486,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12311,7 +12530,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12337,7 +12574,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12363,7 +12618,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12389,7 +12662,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12415,7 +12706,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12441,7 +12750,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12467,7 +12794,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12493,7 +12838,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12519,7 +12882,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12545,7 +12926,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12571,7 +12970,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }
@@ -12597,7 +13014,25 @@ si ($mc_cmd == "comp") {
   $mc_val = mc_const_rir($mc_rir)
   $mc_imm = 42
   si (longueur($mc_val) > 0) { $mc_imm = entier($mc_val) }
-  ecrire_bytes($mc_out, mc_elf_gabarit($mc_imm))
+  # Gabarit COMPLET : le moteur de référence + la source + la queue
+  # `[u64 len LE]["ROSEB1\x01\x02"]` — exactement `rose comp` (main.rs
+  # comp_programme_avec_message). `lire_texte`/`ecrire_bytes` sont
+  # transparents aux octets sous C0 (mesuré : copie md5 identique), seules
+  # `longueur`/`sous_chaine` comptent en points de code.
+  $mc_modele = lire_texte("/home/clausake/Stefan/ROSE/rose/target/release/rose")
+  si (longueur($mc_modele) == 0) {
+    cli_err("rose comp : moteur référence illisible")
+    quitter(1)
+  }
+  $mc_src_txt = lire_texte($mc_src)
+  $mc_queue = ""
+  $mc_qi = 0
+  tant_que ($mc_qi < 8) {
+    $mc_queue = $mc_queue + octet_brut(partie_entiere(longueur($mc_src_txt) / (256 ^ $mc_qi)) % 256)
+    $mc_qi = $mc_qi + 1
+  }
+  $mc_queue = $mc_queue + "ROSEB1" + octet_brut(1) + octet_brut(2)
+  ecrire_bytes($mc_out, $mc_modele + $mc_src_txt + $mc_queue)
   ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (exécutable autonome)\n")
   quitter(0)
 }

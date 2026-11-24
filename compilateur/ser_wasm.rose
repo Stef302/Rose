@@ -11,6 +11,11 @@
 # afin d'offrir `--cible wasm` sans dupliquer de main.
 
 # ── primitives d'octets (1 caractere Rose = 1 octet) ──────────────────────
+# Sous le MOTEUR RUST, `caractere(n)` est un OCTET BRUT (les chaînes Rose y
+# sont byte-oriented, y compris pour n >= 128). Sous le COMPOSÉ C0, la copie
+# de cette fonction utilise `octet_brut(n)` : `caractere(n)` y encoderait en
+# UTF-8 (ex. 195 -> c3 83) et produirait des LEB128 surlongs. Les deux copies
+# écrivent exactement le même octet ; seul le primitive diffère.
 fn sw_octet($v: entier) -> chaine {
   retour caractere($v % 256)
 }
@@ -40,26 +45,49 @@ fn sw_uleb($v: entier) -> chaine {
   retour $out
 }
 
-# SLEB128 signé (constantes i64). Les littéraux Rose sont exacts : on
-# travaille sur la valeur signée, avec la règle d'arrêt de la spec WASM.
+# SLEB128 signé (constantes i64), ENCODAGE MINIMAL.
+# Ancienne forme : on divisait `$x` (négatif) par 128 puis on testait
+# `$x == -1`. Sous le composé C0, ce test échouait sur les négatifs et
+# émettait un octet de plus (ex. -7 -> f9 00 au lieu de 79).
+# Forme retenue : on ne fait JAMAIS d'arithmétique sur un négatif.
+#   v >= 0 : SLEB128 usuel, arrêt dès que le reste < 64 (bit de signe 0).
+#   v < 0  : on code u = ~v = -v-1 >= 0, puis on COMPLEMENTE les 7 bits
+#            de chaque octet. C'est l'identité SLEB(v) = ~SLEB(~v) sur 7 bits.
+# Exemples vérifiés : -1 -> 7f, -7 -> 79, -64 -> 40, -65 -> bf 7f,
+#                    64 -> c0 00, 579 -> c3 04, 2^31 -> 80 80 80 80 08.
 fn sw_sleb($v: entier) -> chaine {
+  $neg = 0
+  $u = $v
+  si ($v < 0) { $neg = 1; $u = -$v - 1 }
   $out = ""
-  $x = $v
-  $encore = vrai
-  tant_que ($encore) {
-    $b = $x % 128
-    si ($b < 0) { $b = $b + 128 }
-    $x = partie_entiere($x / 128)
-    $haut = 0
-    si ($b >= 64) { $haut = 1 }
-    $fini = 0
-    si ($x == 0 et $haut == 0) { $fini = 1 }
-    si ($x == -1 et $haut == 1) { $fini = 1 }
-    si ($fini == 0) { $b = $b + 128 }
-    $out = $out + sw_octet($b)
-    si ($fini == 1) { $encore = faux }
+  tant_que ($u >= 64) {
+    $b = $u % 128
+    $u = partie_entiere($u / 128)
+    si ($neg == 1) { $b = 127 - $b }
+    $out = $out + sw_octet($b + 128)
   }
+  $b = $u
+  si ($neg == 1) { $b = 127 - $b }
+  $out = $out + sw_octet($b)
   retour $out
+}
+
+# Longueurs en OCTETS (longueur() compte des points de code : sous C0 les
+# octets bruts >= 128 invalident UTF-8 et sont sous-comptés).
+fn sw_uleb_len($v: entier) -> entier {
+  $n = 1
+  $x = $v
+  tant_que ($x > 127) { $x = partie_entiere($x / 128); $n = $n + 1 }
+  retour $n
+}
+
+fn sw_sleb_len($v: entier) -> entier {
+  $neg = 0
+  $u = $v
+  si ($v < 0) { $neg = 1; $u = -$v - 1 }
+  $n = 0
+  tant_que ($u >= 64) { $u = partie_entiere($u / 128); $n = $n + 1 }
+  retour $n + 1
 }
 
 # Chaîne WASM : u32 de longueur (octets UTF-8) puis les octets.
@@ -110,36 +138,40 @@ fn sw_opbin($op: chaine) -> entier {
 }
 
 # Parse une expression à partir du jeton $p (index 1-based dans $t).
-# Retourne une chaine : position sur 6 chiffres, puis les octets émis.
-# (Les fonctions rendant une liste sont évitées : le JIT les infère mal.)
-# $base = index du premier local (nombre de slots), $res = index du local
-# __result (utilisé pour les variables `slot`).
-fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine {
+# Retourne [position_6_chiffres, octets, nb_octets] : une LISTE de chaînes.
+# ⚠ sous_chaine() compte en POINTS DE CODE et casse les octets bruts >= 128
+# sous C0 (mesuré : "000005"+42+80*4+08 -> sous_chaine(.,6,longueur) rend
+# seulement 42 80 80). La liste évite TOUT découpage d'une chaîne d'octets.
+# $base = index du premier local (nombre de slots), $res = index de __result.
+fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> liste<chaine> {
   $tok = $t[$p]
   $q = $p + 1
   $b = ""
+  $nb = 0
   si ($tok == "(") {
     $head = $t[$q]
     $q = $q + 1
     si ($head == "bin") {
       $op = $t[$q]
       $q = $q + 1
-      $r1 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
-      $r2 = sw_expr($t, $q, $base, $res); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
+      $r1 = sw_expr($t, $q, $base, $res); $q = entier($r1[0]); $b = $b + $r1[1]; $nb = $nb + entier($r1[2])
+      $r2 = sw_expr($t, $q, $base, $res); $q = entier($r2[0]); $b = $b + $r2[1]; $nb = $nb + entier($r2[2])
       $b = $b + sw_octet(sw_opbin($op))
+      $nb = $nb + 1
     }
     si ($head == "n") {
       $v = entier($t[$q])
       $q = $q + 1
       $b = sw_octet(66) + sw_sleb($v)
+      $nb = 1 + sw_sleb_len($v)
     }
     si ($head == "v") {
       $nv = $t[$q]
       $q = $q + 1
       $b = sw_octet(66) + sw_sleb(0)
+      $nb = 2
     }
     si ($head != "bin" et $head != "n" et $head != "v") {
-      # (app ...) ou forme inconnue : on ignore jusqu'à la ')' fermante.
       $prof = 1
       tant_que ($q < longueur($t) et $prof > 0) {
         si ($t[$q] == "(") { $prof = $prof + 1 }
@@ -147,6 +179,7 @@ fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine
         $q = $q + 1
       }
       $b = $b + sw_octet(66) + sw_sleb(0)
+      $nb = $nb + 2
     }
     si ($q < longueur($t)) {
       si ($t[$q] == ")") { $q = $q + 1 }
@@ -156,22 +189,29 @@ fn sw_expr($t: liste<chaine>, $p: entier, $base: entier, $res: entier) -> chaine
       $v = entier($t[$q])
       $q = $q + 1
       $b = sw_octet(66) + sw_sleb($v)
+      $nb = 1 + sw_sleb_len($v)
     }
     si ($tok == "slot") {
-      $s = entier($t[$q])
+      $sl = entier($t[$q])
       $q = $q + 1
-      $b = sw_octet(32) + sw_uleb($s + $base)
+      $b = sw_octet(32) + sw_uleb($sl + $base)
+      $nb = 1 + sw_uleb_len($sl + $base)
     }
     si ($tok == "booleen" ou $tok == "vrai") {
       $b = sw_octet(66) + sw_sleb(1)
+      $nb = 2
     }
     si ($tok == "faux") {
       $b = sw_octet(66) + sw_sleb(0)
+      $nb = 2
     }
   }
   $pos = chaine($q)
   tant_que (longueur($pos) < 6) { $pos = "0" + $pos }
-  retour $pos + $b
+  $r = [$pos]
+  joindre($r, $b)
+  joindre($r, chaine($nb))
+  retour $r
 }
 
 # Prend la sous-chaine d'une ligne d'op RIR après le mot-clé.
@@ -244,6 +284,7 @@ fn sw_module($rir: chaine) -> chaine {
   $nlocaux = $nslots + 1
 
   $code = ""
+  $ncode = 0
   $j = $debut
   tant_que ($j < longueur($lignes)) {
     $tt = sw_tokens($lignes[$j])
@@ -253,15 +294,19 @@ fn sw_module($rir: chaine) -> chaine {
     si ($kind == "afficher_abstrait" ou $kind == "afficher" ou $kind == "retour_abstrait" ou $kind == "retour") { $affiche = 1 }
     si ($affiche == 1) {
       $r = sw_expr($tt, 3, $base, $res)
-      $code = $code + sous_chaine($r, 6, longueur($r))
+      $code = $code + $r[1]
+      $ncode = $ncode + entier($r[2])
       # local.set $res : toute valeur `>>` devient le résultat de rose_main.
       $code = $code + sw_octet(33) + sw_uleb($res)
+      $ncode = $ncode + 1 + sw_uleb_len($res)
     }
     si ($kind == "affect") {
       $slot = entier($tt[4])
       $r = sw_expr($tt, 6, $base, $res)
-      $code = $code + sous_chaine($r, 6, longueur($r))
+      $code = $code + $r[1]
+      $ncode = $ncode + entier($r[2])
       $code = $code + sw_octet(33) + sw_uleb($slot + $base)
+      $ncode = $ncode + 1 + sw_uleb_len($slot + $base)
     }
     $j = $j + 1
   }
@@ -269,7 +314,10 @@ fn sw_module($rir: chaine) -> chaine {
   # Corps de rose_main : [1 groupe de locaux][N i64][code][local.get res][end]
   $corps = sw_uleb(1) + sw_uleb($nlocaux) + sw_octet(126)
          + $code + sw_octet(32) + sw_uleb($res) + sw_octet(11)
-  $code_section = sw_uleb(1) + sw_uleb(longueur($corps)) + $corps
+  $ncorps = sw_uleb_len(1) + sw_uleb_len($nlocaux) + 1 + $ncode
+          + 1 + sw_uleb_len($res) + 1
+  $code_section = sw_uleb(1) + sw_uleb($ncorps) + $corps
+  $ncs = 1 + sw_uleb_len($ncorps) + $ncorps
 
   # Type unique : () -> i64
   $types = sw_uleb(1) + sw_octet(96) + sw_uleb(0) + sw_uleb(1) + sw_octet(126)
@@ -280,7 +328,7 @@ fn sw_module($rir: chaine) -> chaine {
        + sw_section(1, $types)
        + sw_section(3, $fonctions)
        + sw_section(7, $exports)
-       + sw_section(10, $code_section)
+       + sw_octet(10) + sw_uleb($ncs) + $code_section
 }
 
 # ═══ FIN DES FONCTIONS (le composite ne garde que ce qui précède) ═══

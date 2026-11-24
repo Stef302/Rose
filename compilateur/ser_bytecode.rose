@@ -8,10 +8,16 @@
 # Sous-ensemble couvert : entier, slot, (bin + - * div), (app f ...),
 # afficher / retour, affect.
 #
-# Ce fichier est autonome : `rose ser_bytecode.rose dump.rir > out.rosebc`.
+# Ce fichier est autonome : `rose ser_bytecode.rose dump.rir [source.rose] > out.rosebc`.
+# Le second argument OPTIONNEL fournit la source : elle porte les numéros de
+# ligne et le TyKind exact des littéraux (champs absents du dump RIR).
+# Sans source, le sérialiseur retombe sur ligne=1 / TyKind=Entier.
 # Le composite ne garde QUE les fonctions (avant le marqueur de fin).
 
 # ── primitives d'octets ──────────────────────────────────────────────────
+# Sous le MOTEUR RUST, `caractere(n)` est un OCTET BRUT (chaînes byte-oriented,
+# y compris n >= 128). Sous le COMPOSÉ C0, la copie de cette fonction utilise
+# `octet_brut(n)` : `caractere(n)` y encoderait en UTF-8 (128 -> c2 80).
 fn sb_octet($v: entier) -> chaine {
   retour caractere($v % 256)
 }
@@ -101,8 +107,63 @@ fn sb_nom_slot($ll: liste<chaine>, $slot: entier) -> chaine {
   retour "$s" + chaine($slot)
 }
 
+# Un littéral numérique DIRECT a TyKind::Dyn (0x0c) côté Rust ; un
+# littéral issu du repli d'une expression (ex. `1 + 2` -> `3`) a
+# TyKind::Entier (0x01). Le dump RIR ne distingue pas les deux : la source,
+# elle, porte `>> 0` contre `>> 1 + 2`.
+fn sb_est_lit($e: chaine) -> booleen {
+  $n = longueur($e)
+  si ($n == 0) { retour faux }
+  $i = 0
+  si (sous_chaine($e, 0, 1) == "-") { $i = 1 }
+  si ($i >= $n) { retour faux }
+  tant_que ($i < $n) {
+    $o = ordre(sous_chaine($e, $i, $i + 1))
+    si ($o < 48 ou $o > 57) { retour faux }
+    $i = $i + 1
+  }
+  retour vrai
+}
+
+# Descripteurs des instructions de la source, dans leur ordre d'apparition :
+# une entrée "ligne|tykind" par ligne contenant `>>` (afficher).
+fn sb_desc($src: chaine) -> liste<chaine> {
+  $ll = sb_lignes($src)
+  $out = [""]
+  $j = 1
+  tant_que ($j < longueur($ll)) {
+    $l = $ll[$j]
+    $n = longueur($l)
+    $pos = -1
+    $k = 0
+    tant_que ($k + 1 < $n) {
+      si (sous_chaine($l, $k, $k + 2) == ">>") {
+        $pos = $k
+        $k = $n
+      }
+      $k = $k + 1
+    }
+    si ($pos >= 0) {
+      $e = sous_chaine($l, $pos + 2, $n)
+      tant_que (longueur($e) > 0 et sous_chaine($e, 0, 1) == " ") {
+        $e = sous_chaine($e, 1, longueur($e))
+      }
+      $ty = 1
+      $neg = 0
+      si (sb_est_lit($e)) {
+        $ty = 12
+        si (sous_chaine($e, 0, 1) == "-") { $neg = 1 }
+      }
+      joindre($out, chaine($j) + "|" + chaine($ty) + "|" + chaine($neg))
+    }
+    $j = $j + 1
+  }
+  retour $out
+}
+
 # Expression : position sur 6 chiffres + octets sérialisés.
-fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) -> chaine {
+# $ligne = numéro de ligne source, $ty = TyKind du littéral éventuel.
+fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier, $ty: entier, $neg: entier) -> chaine {
   $tok = $t[$p]
   $q = $p + 1
   $b = ""
@@ -112,15 +173,15 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
     si ($head == "bin") {
       $op = $t[$q]
       $q = $q + 1
-      $r1 = sb_expr($t, $q, $ll, $ligne); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
-      $r2 = sb_expr($t, $q, $ll, $ligne); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
+      $r1 = sb_expr($t, $q, $ll, $ligne, $ty, $neg); $q = entier(sous_chaine($r1, 0, 6)); $b = $b + sous_chaine($r1, 6, longueur($r1))
+      $r2 = sb_expr($t, $q, $ll, $ligne, $ty, $neg); $q = entier(sous_chaine($r2, 0, 6)); $b = $b + sous_chaine($r2, 6, longueur($r2))
       $b = sb_octet(7) + sb_chaine($op) + $b + sb_u32le($ligne)
     }
     si ($head == "n") {
       $v = $t[$q]
       $q = $q + 1
-      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet(0)
-         + sb_octet(1) + sb_u32le($ligne)
+      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet($neg)
+         + sb_octet($ty) + sb_u32le($ligne)
     }
     si ($head == "v") {
       $v = $t[$q]
@@ -133,7 +194,7 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
       $nargs = 0
       $args = ""
       tant_que ($q < longueur($t) et $t[$q] != ")") {
-        $r = sb_expr($t, $q, $ll, $ligne)
+        $r = sb_expr($t, $q, $ll, $ligne, $ty, $neg)
         $q = entier(sous_chaine($r, 0, 6))
         $args = $args + sous_chaine($r, 6, longueur($r))
         $nargs = $nargs + 1
@@ -148,8 +209,8 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
     si ($tok == "entier" ou $tok == "f" ou $tok == "n") {
       $v = $t[$q]
       $q = $q + 1
-      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet(0)
-         + sb_octet(1) + sb_u32le($ligne)
+      $b = sb_octet(1) + sb_chaine($v) + sb_octet(0) + sb_octet(0) + sb_octet($neg)
+         + sb_octet($ty) + sb_u32le($ligne)
     }
     si ($tok == "slot") {
       $s = entier($t[$q])
@@ -168,30 +229,70 @@ fn sb_expr($t: liste<chaine>, $p: entier, $ll: liste<chaine>, $ligne: entier) ->
   retour $pos + $b
 }
 
+# Lit un descriptor "ligne|ty" ; positionne $ligne et $ty.
+fn sb_prend_desc($d: chaine, $ligne: entier, $ty: entier) -> chaine {
+  # Retourne "$ligne|$ty|$neg" — Rose n'a pas de paramètres de sortie.
+  $n = longueur($d)
+  $pipe = 0
+  $k = 0
+  tant_que ($k < $n) {
+    si (sous_chaine($d, $k, $k + 1) == "|") { $pipe = $pipe + 1 }
+    $k = $k + 1
+  }
+  si ($pipe >= 2) { retour $d }
+  retour chaine($ligne) + "|" + chaine($ty) + "|0"
+}
+
 # Sérialise une liste de lignes d'instructions (corps de fonction / principal).
-fn sb_instrs($ll: liste<chaine>, $debut: entier, $fin: entier, $noms: liste<chaine>, $ligne: entier) -> chaine {
+fn sb_instrs($ll: liste<chaine>, $debut: entier, $fin: entier, $noms: liste<chaine>, $desc: liste<chaine>, $base: entier) -> chaine {
   $out = ""
   $j = $debut
+  $cnt = 0
   tant_que ($j < $fin) {
     $tt = sb_tokens($ll[$j])
     $kind = ""
     si (longueur($tt) > 2) { $kind = $tt[2] }
+    $ligne = 1
+    $ty = 1
+    $neg = 0
+    $di = $base + $cnt + 1
+    si ($di < longueur($desc) et $di >= 1) {
+      $d = sb_prend_desc($desc[$di], $ligne, $ty)
+      $n = longueur($d)
+      $b1 = 0
+      $b2 = 0
+      $k = 0
+      tant_que ($k < $n) {
+        si (sous_chaine($d, $k, $k + 1) == "|") {
+          si ($b1 == 0) { $b1 = $k } sinon { $b2 = $k }
+        }
+        $k = $k + 1
+      }
+      si ($b1 > 0) {
+        $ligne = entier(sous_chaine($d, 0, $b1))
+        $ty = entier(sous_chaine($d, $b1 + 1, $b2))
+        $neg = entier(sous_chaine($d, $b2 + 1, $n))
+      }
+    }
     si ($kind == "afficher_abstrait" ou $kind == "afficher") {
-      $r = sb_expr($tt, 3, $noms, $ligne)
+      $r = sb_expr($tt, 3, $noms, $ligne, $ty, $neg)
       $out = $out + sb_octet(1) + sb_u32le(1)
            + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+      $cnt = $cnt + 1
     }
     si ($kind == "retour_abstrait" ou $kind == "retour") {
-      $r = sb_expr($tt, 3, $noms, $ligne)
+      $r = sb_expr($tt, 3, $noms, $ligne, $ty, $neg)
       $out = $out + sb_octet(8) + sb_octet(1)
            + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+      $cnt = $cnt + 1
     }
     si ($kind == "affect") {
       $slot = entier($tt[4])
       $nom = sb_nom_slot($noms, $slot)
-      $r = sb_expr($tt, 6, $noms, $ligne)
+      $r = sb_expr($tt, 6, $noms, $ligne, $ty, $neg)
       $out = $out + sb_octet(3) + sb_chaine($nom)
            + sous_chaine($r, 6, longueur($r)) + sb_u32le($ligne)
+      $cnt = $cnt + 1
     }
     $j = $j + 1
   }
@@ -225,11 +326,11 @@ fn sb_compte($ll: liste<chaine>, $debut: entier, $fin: entier) -> entier {
   retour $n
 }
 
-# Assemble le snapshot complet depuis un dump RIR.
-fn sb_module($rir: chaine) -> chaine {
+# Assemble le snapshot complet depuis un dump RIR et (si fournie) la source.
+fn sb_module_avec($rir: chaine, $src: chaine) -> chaine {
   $ll = sb_lignes($rir)
   $noms = [""]
-  $ligne = 1
+  $desc = sb_desc($src)
 
   # Table des noms : ligne `noms ...`.
   $j = 1
@@ -245,9 +346,6 @@ fn sb_module($rir: chaine) -> chaine {
   }
 
   # Sous-ensemble « RIR simple » : le snapshot ne contient QUE le principal.
-  # Les signatures de fonctions utilisateur (appels, récursion) ne font pas
-  # partie du sous-ensemble sérialisé : $nsig reste 0, comme dans la
-  # référence Rust pour tout programme sans fonction (contrôle >>7*6).
   $nsig = 0
   $sigs = ""
 
@@ -271,7 +369,7 @@ fn sb_module($rir: chaine) -> chaine {
     }
     $j = $j + 1
   }
-  $principal = sb_instrs($ll, $opo, longueur($ll), $noms, $ligne)
+  $principal = sb_instrs($ll, $opo, longueur($ll), $noms, $desc, 0)
 
   # Accumulation par petits pas (une chaîne de + longue avec appels
   # déclenche un bug du JIT Rust : des préfixes de longueur disparaissent).
@@ -285,8 +383,14 @@ fn sb_module($rir: chaine) -> chaine {
   retour $out
 }
 
+fn sb_module($rir: chaine) -> chaine {
+  retour sb_module_avec($rir, "")
+}
+
 # ═══ FIN DES FONCTIONS (le composite ne garde que ce qui précède) ═══
 si (nb_arguments() > 0) {
   $rir = lire_texte(argument(0))
-  ecrire_bytes("/dev/stdout", sb_module($rir))
+  $src = ""
+  si (nb_arguments() > 1) { $src = lire_texte(argument(1)) }
+  ecrire_bytes("/dev/stdout", sb_module_avec($rir, $src))
 }

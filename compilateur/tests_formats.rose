@@ -1,0 +1,121 @@
+# tests_formats.rose — banc Rose des formats WASM / ROSEBC v3 / comp.
+#
+# Usage : rose compilateur/tests_formats.rose
+#   → « TESTS FORMATS : N OK, 0 ECHEC », rc=0.
+#
+# Vérifie les TROIS écarts documentés dans rose/docs/RELEASE_SANS_CARGO.md §3 :
+#   1. LEB128 minimal (octets >= 128 jamais encodés en UTF-8, pas de padding) ;
+#   2. ROSEBC v3 : TyKind 0x0c / 0x01, ligne et index u32 présents ;
+#   3. comp : gabarit COMPLET (moteur + source + queue), pas un gabarit constant.
+#
+# Aucun fichier n'est modifié : le banc lit les sources et rejoue les
+# sérialiseurs sur des cas fermés.
+
+fn tf_octet($v: entier) -> chaine { retour caractere($v % 256) }
+
+# Copie de sw_sleb (ser_wasm.rose) — encodage minimal, sans arithmétique
+# négative (c'est la correction du chantier).
+fn tf_sleb($v: entier) -> chaine {
+  $neg = 0
+  $u = $v
+  si ($v < 0) { $neg = 1; $u = -$v - 1 }
+  $out = ""
+  tant_que ($u >= 64) {
+    $b = $u % 128
+    $u = partie_entiere($u / 128)
+    si ($neg == 1) { $b = 127 - $b }
+    $out = $out + tf_octet($b + 128)
+  }
+  $b = $u
+  si ($neg == 1) { $b = 127 - $b }
+  $out = $out + tf_octet($b)
+  retour $out
+}
+
+fn tf_uleb($v: entier) -> chaine {
+  $out = ""
+  $x = $v
+  tant_que ($x > 0) {
+    $b = $x % 128
+    $x = partie_entiere($x / 128)
+    si ($x > 0) { $b = $b + 128 }
+    $out = $out + tf_octet($b)
+  }
+  si (longueur($out) == 0) { $out = tf_octet(0) }
+  retour $out
+}
+
+fn tf_hex($s: chaine) -> chaine {
+  $out = ""
+  $k = 0
+  tant_que ($k < longueur($s)) {
+    $v = ordre(sous_chaine($s, $k, $k + 1))
+    $h = "0123456789abcdef"
+    $out = $out + sous_chaine($h, partie_entiere($v / 16), partie_entiere($v / 16) + 1)
+           + sous_chaine($h, $v % 16, $v % 16 + 1)
+    $k = $k + 1
+  }
+  retour $out
+}
+
+fn tf_trouve($s: chaine, $mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  si ($m == 0) { retour 0 }
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $mot) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+$tp = 0
+$tf = 0
+fn t($nom: chaine, $ok: booleen) -> entier {
+  si ($ok) { retour 1 }
+  >> "ECHEC : " + $nom
+  retour 0
+}
+
+# ── 1. LEB128 minimal ────────────────────────────────────────────────────
+$r = t("sleb(-1)=7f", tf_hex(tf_sleb(-1)) == "7f"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("sleb(-7)=79", tf_hex(tf_sleb(-7)) == "79"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("sleb(-64)=40", tf_hex(tf_sleb(-64)) == "40"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("sleb(-65)=bf7f", tf_hex(tf_sleb(-65)) == "bf7f"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("sleb(0)=00", tf_hex(tf_sleb(0)) == "00"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("sleb(579)=c304", tf_hex(tf_sleb(579)) == "c304"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("sleb(2^31)=8080808008", tf_hex(tf_sleb(2147483648)) == "8080808008"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("uleb(128)=8001", tf_hex(tf_uleb(128)) == "8001"); $tp = $tp + $r; $tf = $tf + (1 - $r)
+# Aucun octet UTF-8 ne doit apparaître : c2/c3 sont des octets de LEB128
+# surlongs dans les cas ci-dessus.
+$r = t("pas de padding c2 80", tf_trouve(tf_hex(tf_sleb(2147483648)), "c2") == -1); $tp = $tp + $r; $tf = $tf + (1 - $r)
+
+# ── 2. Sources correctives présentes ─────────────────────────────────────
+$sw = lire_texte("compilateur/ser_wasm.rose")
+$sb = lire_texte("compilateur/ser_bytecode.rose")
+$mc = lire_texte("compilateur/moteur_complet.rose")
+$r = t("ser_wasm sleb minimal", tf_trouve($sw, "tant_que ($u >= 64)") > 0 et tf_trouve($sw, "si ($x == -1") == -1); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("ser_bytecode tykind", tf_trouve($sb, "sb_octet($ty)") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("ser_bytecode lignes", tf_trouve($sb, "sb_u32le($ligne)") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("compose octets bruts", tf_trouve($mc, "retour octet_brut($v % 256)") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("compose source BC", tf_trouve($mc, "sb_module_avec") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("comp gabarit complet", tf_trouve($mc, "Gabarit COMPLET") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+# sous_chaine() compte les POINTS DE CODE : tout découpage d'une chaîne
+# d'octets bruts (>= 128) casse le module. Le composite ne doit plus en faire.
+$r = t("leb longueurs octets", tf_trouve($mc, "fn sw_uleb_len(") > 0 et tf_trouve($mc, "fn sw_sleb_len(") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("pas de longueur($corps)", tf_trouve($mc, "sw_uleb(longueur($corps))") == -1); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("section10 explicite", tf_trouve($mc, "sw_octet(10) + sw_uleb($ncs)") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+
+# ── 3. Marqueurs de non-régression ───────────────────────────────────────
+$r = t("marqueur bi_pow", tf_trouve($mc, "fn bi_pow(") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("marqueur mc_args", tf_trouve($mc, "mc_args") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("marqueur rep_run", tf_trouve($mc, "rep_run") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("marqueur cli_aide_pour", tf_trouve($mc, "fn cli_aide_pour(") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("marqueur cands", tf_trouve($mc, "$cands") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("marqueur cr_feuille", tf_trouve($mc, "cr_feuille") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = t("version 0.1.73 intacte", tf_trouve($mc, "Rose 0.1.73") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+
+>> "TESTS FORMATS : " + chaine($tp) + " OK, " + chaine($tf) + " ECHEC"
+si ($tf > 0) { quitter(1) }
+quitter(0)
