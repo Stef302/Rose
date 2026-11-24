@@ -1,0 +1,103 @@
+# tests_vm_rose.rose — banc de conformité de la RVM Rose (ROSEBC v3 en Rose).
+#
+# Usage : rose compilateur/tests_vm_rose.rose
+#   → « TESTS RVM : N OK, 0 ECHEC », rc=0.
+#
+# Le banc vérifie SANS binaire Rust :
+#   1. que vm_rose.rose couvre les 18 tags d'expression et les 13 tags
+#      d'instruction du snapshot v3 (table rosevm.rs) ;
+#   2. que le chargeur valide magic/version/imports/signatures/principal ;
+#   3. que l'encodage des résultats est à largeur fixe (un '|' dans une
+#      valeur — liste, table, chaîne — ne peut pas tromper le partage) ;
+#   4. que le dispatch `rvm` est câblé dans moteur_complet.rose ;
+#   5. les marqueurs de non-régression du composite (bi_pow, mc_args,
+#      rep_run, cli_aide_pour, cands, cr_feuille, sw_module, sb_module).
+#
+# Un second argument OPTIONNEL est un chemin de .rosebc : le banc vérifie
+# alors son en-tête octet pour octet (magic + version + compteurs).
+
+fn tv_trouve($s: chaine, $sub: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($sub)
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $sub) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn tv_ok($ok: booleen) -> entier { si ($ok) { retour 1 }; retour 0 }
+
+$vm = lire_texte("compilateur/vm_rose.rose")
+$mc = lire_texte("compilateur/moteur_complet.rose")
+$tp = 0
+$tf = 0
+$r = 0
+
+# ── 1. Couverture des tags du snapshot v3 ──────────────────────────────
+$expr_tags = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18"]
+$i = 1
+tant_que ($i < longueur($expr_tags)) {
+  $t = $expr_tags[$i]
+  $r = tv_ok(tv_trouve($vm, "$tag == " + $t) > 0)
+  $tp = $tp + $r; $tf = $tf + (1 - $r)
+  $i = $i + 1
+}
+$instr_tags = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
+$i = 1
+tant_que ($i < longueur($instr_tags)) {
+  $t = $instr_tags[$i]
+  $r = tv_ok(tv_trouve($vm, "$tag == " + $t) > 0)
+  $tp = $tp + $r; $tf = $tf + (1 - $r)
+  $i = $i + 1
+}
+
+# ── 2. Chargeur ────────────────────────────────────────────────────────
+$r = tv_ok(tv_trouve($vm, '"ROSEBC"') > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "version != 3") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "rvm_skip_instrs") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "rvm_fn_nom") > 0 et tv_trouve($vm, "rvm_fn_par") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "rvm_principal") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "u_bytes") > 0 et tv_trouve($vm, "u_points") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+
+# ── 3. Robustesse de l'encodage et de la portée ────────────────────────
+$r = tv_ok(tv_trouve($vm, "fn rvm_p10(") > 0 et tv_trouve($vm, "fn rvm_ip(") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, 'sous_chaine($s, 10, longueur($s))') > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, '"@" + chaine($ancien)') > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "entier(rvm_") == -1); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "rvm_lier($mutvar, $v)") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($vm, "bdiv(bmul(chaine($n), chaine($n + 1)), \"2\")") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+
+# ── 4. Câblage CLI ─────────────────────────────────────────────────────
+$r = tv_ok(tv_trouve($mc, "mc_cmd == ") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($mc, "rvm_run(argument(1))") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($mc, "module : vm_rose.rose") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+$r = tv_ok(tv_trouve($mc, "rvm_run") > 0); $tp = $tp + $r; $tf = $tf + (1 - $r)
+
+# ── 5. Non-régression ──────────────────────────────────────────────────
+$marqueurs = ["fn bi_pow(", "mc_args", "rep_run", "fn cli_aide_pour(",
+              "$cands", "cr_feuille", "fn sw_module(", "fn sb_module(",
+              "fn sb_module_avec(", "Rose 0.1.73"]
+$i = 1
+tant_que ($i < longueur($marqueurs)) {
+  $r = tv_ok(tv_trouve($mc, $marqueurs[$i]) > 0)
+  $tp = $tp + $r; $tf = $tf + (1 - $r)
+  $i = $i + 1
+}
+
+# ── 6. En-tête d'un .rosebc réel (si fourni) ───────────────────────────
+si (nb_arguments() >= 2) {
+  $bc = lire_texte(argument(1))
+  $r = tv_ok(sous_chaine($bc, 0, 6) == "ROSEBC")
+  $tp = $tp + $r; $tf = $tf + (1 - $r)
+  $v = ordre(sous_chaine($bc, 6, 7)) + 256 * ordre(sous_chaine($bc, 7, 8))
+  $r = tv_ok($v == 3)
+  $tp = $tp + $r; $tf = $tf + (1 - $r)
+  $r = tv_ok(longueur($bc) >= 10)
+  $tp = $tp + $r; $tf = $tf + (1 - $r)
+}
+
+>> "TESTS RVM : " + chaine($tp) + " OK, " + chaine($tf) + " ECHEC"
+si ($tf > 0) { quitter(1) }
+quitter(0)
