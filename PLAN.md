@@ -1488,3 +1488,15 @@ Corpus self-host: 138 CONFORMES / 0 DIVERGENT / 3 BLOQUES, 0 erreur Rose, RC=0
 des deux moteurs mais le self-host perd le message stderr.
 Agent diag_msg lance pour ecrire les 3 diagnostics exacts sur stderr, objectif 141/141.
 Release --selfhost disponible (ELF 1,9 Mo, 12/12 tests) mais 5 exe Windows non couverts.
+
+## Vague 100 — 141/141 CONFIRMÉ sur l'arbre principal
+
+Moteur recompile depuis l'arbre principal: ELF 1909060 o, md5 c0f90c6e (identique
+a l'agent). Harnais verifier_parite_selfhost.sh: tests=141, CONFORMES=141,
+DIVERGENTS=0, BLOQUES=0, ERREURS self-host=0, RC=0. TSV
+/tmp/opencode/parite_confirm2/parite_20261124T001827Z.tsv (141 lignes).
+validation_finale: 0 echec, point fixe b3ed9262 x2, HEAD local=distant a2ca3cc.
+
+PARITÉ FONCTIONNELLE COMPLÈTE du moteur Rose auto-hébergé vs moteur Rust.
+Reste pour 100% release: 5 .exe Windows, AOT/ORC complet, ecarts de format
+(wasm 82 vs 72 o, comp 8,9 Ko vs 5,4 Mo) — documentes RELEASE_SANS_CARGO.md.
