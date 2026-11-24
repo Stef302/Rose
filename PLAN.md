@@ -1518,3 +1518,9 @@ HEAD local=distant c6411ee. validation_finale 0 echec, point fixe b3ed9262.
 
 Reste pour 100% release: composer l'emetteur PE x64 dans le pilote C0 pour produire
 rose.exe (+ shell/tray/setup/resources Win32) et basculer --selfhost par defaut.
+
+## Vague 103 — release Windows 100% sans cargo
+
+Dernier agent: composer emetteur_pe_x64 dans le pilote C0, produire les 5 artefacts
+Windows (rose.exe/shell/tray/setup/payload) avec machine 0x8664, verifier-res.py
+vert, chemin cargo par defaut intact. Objectif: --selfhost = release complete.
