@@ -1556,3 +1556,19 @@ Lanceurs Win32 reels integres (e2ee006): shell/tray/setup PE x86-64, verifier-re
 33 garde-fous. Promotion valeur+entier integree (ea2f651): C0 produit le RIR complet
 795714 o. x_eval/x_op PE etendus integres (b45970f): 14/14, tas x64, 12 imports.
 Emission finale rose.exe depuis le RIR complet (795 Ko) en cours avec last2_emit_v7.
+
+## Vague 107 — RELEASE WINDOWS 100% SANS CARGO — RÉUSSI
+
+`sh scripts/build-windows-rebuild.sh --selfhost`: rc=0, AUCUNE commande cargo.
+Journal: "5/5 ARTEFACTS PE32+ x86-64 VALIDES", "RESSOURCES VALIDES".
+Artefacts verifies main propre:
+- rose.exe 1413632 o md5 9396d0bf — ORIGINE: "moteur complet émis en PE"
+  (RIR C0 795791 o -> PE C0), machine 0x8664, 12 imports KERNEL32.
+- rose-shell.exe 124416 o, rose-tray.exe 125952 o (GUI), Rose-win-Setup.exe
+  10476032 o (GUI, verifier-res 33 garde-fous), payload/rose.exe 9753600 o.
+Validation finale 0 echec, point fixe b3ed9262 x2, HEAD local=distant ccc2aae.
+
+SELF-HOSTING A-Z DE LA CHAÎNE DE RELEASE: atteint et prouvé par exécution.
+Reste: le defaut de build-windows-rebuild.sh reste cargo (option --selfhost),
+et validation_finale.sh §1 appelle cargo build — bascule a faire si desire.
+Aucun PE execute (hote aarch64, Wine sans WoW64): validation statique + octets.
