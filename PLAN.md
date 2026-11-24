@@ -1581,3 +1581,9 @@ vient du nupkg 0.1.76. Ce n'est DONC PAS A-Z au sens strict.
 4 agents lances: (vm) RVM ROSEBC v3 en Rose, (aot) brancher emetteur_elf sur le
 moteur, (repl) brancher rep_run sur console/repl, (payload) produire payload par C0.
 Objectif: 0 refus rc=3 et 0 recours au nupkg.
+
+## Vague 109 — A-Z : plus que wasm
+
+Integres depuis vague 108: console/repl (f849c6f), payload C0 sans nupkg (4777f14),
+RVM ROSEBC v3 11 snapshots octet-identiques (c340727), AOT natif 10/10 (0597663).
+Dernier refus: wasm. Agent az_wasm lance. Objectif: 0 rc=3 dans le lanceur.
