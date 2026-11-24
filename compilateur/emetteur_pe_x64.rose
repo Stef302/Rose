@@ -25,14 +25,25 @@
 #   ./emetteur_pe_x64_nat.elf prog.rir > prog.exe
 #
 # Cible : x86_64-pc-windows-msvc / x86_64-pc-windows-gnu. JAMAIS i686.
-# Sous-ensemble couvert (RIR) : entiers 64 bits, + - * / % et comparaisons,
-# variables (slots), appels de fonctions (récursion incluse), sauts,
-# affectations, afficher. Les chaînes/listes/flottants ne sont PAS couverts.
+# Sous-ensemble couvert (RIR) : entiers 64 bits, + - * / % ^ et comparaisons,
+# variables (slots), appels de fonctions (récursion incluse, >4 arguments via
+# la pile), sauts, affectations, afficher, ET les formes `s` (littéral
+# chaîne), `lst` (littéral liste), `idx` (indexation) et `app` des primitives.
+#
+# ABI DES VALEURS (identique à celle du backend G5 aarch64, adaptée en x64) :
+#   entier / booléen : n << 3        (bits bas 000)
+#   chaîne           : pointeur | 1  (descripteur [1][ncp][noct][octets…])
+#   liste            : pointeur | 2  (descripteur [2][len][cap][valeurs…])
+#   table            : pointeur | 3  (descripteur [3][len][cap][clé,valeur…])
+# Le tas est obtenu par GetProcessHeap + HeapAlloc (HeapFree est importé).
+# Les descripteurs sont alignés 8 par HeapAlloc : les 3 bits bas sont libres.
 #
 # Writer PE32+ complet : DOS, COFF Machine=0x8664, OptionalHeader 0x20B,
-# sections .text/.data/.pdata, 3 imports KERNEL32 via IAT (GetStdHandle,
-# WriteFile, ExitProcess), conventions MS x64 (RCX/RDX/R8/R9, shadow space,
-# RSP aligné 16), RUNTIME_FUNCTION + UNWIND_INFO dans .pdata.
+# sections .text/.data/.pdata, 12 imports KERNEL32 via IAT (GetStdHandle,
+# WriteFile, ExitProcess, GetProcessHeap, HeapAlloc, HeapFree, CreateFileA,
+# ReadFile, CloseHandle, GetFileSize, GetCommandLineA, GetTickCount64),
+# conventions MS x64 (RCX/RDX/R8/R9, shadow space, RSP aligné 16),
+# RUNTIME_FUNCTION + UNWIND_INFO dans .pdata.
 #
 # ⚠ Wine présent ici est AARCH64 (wine-9.0, hôte aarch64) : aucun PE AMD64
 #   ne peut être lancé (pas de WoW64). Validation STRUCTURELLE (file,
@@ -199,6 +210,7 @@ fn x_tokens($s: chaine) -> liste<chaine> {
 $x_code = [0 : entier]
 $x_meta = [0 : chaine]
 $x_lbl = [0 : chaine]
+$x_lbl_tab = table()                       # id de label -> offset (O(1))
 $x_ctr = [0]
 $x_err = [0 : chaine]
 
@@ -252,17 +264,12 @@ fn x_imm64($v: entier) -> entier {
   retour 0
 }
 fn x_mark($l: entier) -> entier {
+  inserer($x_lbl_tab, $l, x_off())           # table d'indexation directe
   joindre($x_lbl, chaine($l) + "|" + chaine(x_off()))
   retour 0
 }
 fn x_label($l: entier) -> entier {
-  $i = 0
-  tant_que ($i < longueur($x_lbl)) {
-    $s = $x_lbl[$i]
-    $bar = x_pos($s, "|")
-    si (x_ent(x_sub($s, 0, $bar)) == $l) { retour x_ent(x_sub($s, $bar + 1, longueur($s))) }
-    $i = $i + 1
-  }
+  si (cle_existe($x_lbl_tab, $l)) { retour x_ent(chaine($x_lbl_tab[$l])) }
   retour -1
 }
 # Saut rel32 : 0xE8/0xE9 (5 o) ou 0F 8x (6 o). Le champ rel32 est marqué.
@@ -334,6 +341,33 @@ fn x_byte_imm($disp: entier, $v: entier) -> entier {
   xb(198); xb(133); x_imm32($disp); xb($v % 256)
   retour 0
 }
+# ── Encodeurs supplémentaires pour le tas et les valeurs étiquetées ───────
+# mov byte [rax+disp32], imm8  (C6 80 disp32 imm8)
+fn x_stb_rax($disp: entier, $v: entier) -> entier {
+  xb(198); xb(128); x_imm32($disp); xb($v % 256)
+  retour 0
+}
+# mov qword [rax+disp32], reg64  (REX.W 89 /r mod=10 rm=000)
+fn x_stq_rax($disp: entier, $reg: entier) -> entier {
+  $r = 0; si ($reg >= 8) { $r = 1 }
+  x_rex(1, $r, 0, 0); xb(137)
+  xb(128 + (($reg % 8) * 8))
+  x_imm32($disp)
+  retour 0
+}
+# mov reg64, qword [rax+disp32]  (REX.W 8B /r mod=10 rm=000)
+fn x_ldq_rax($reg: entier, $disp: entier) -> entier {
+  $r = 0; si ($reg >= 8) { $r = 1 }
+  x_rex(1, $r, 0, 0); xb(139)
+  xb(128 + (($reg % 8) * 8))
+  x_imm32($disp)
+  retour 0
+}
+# shl rax, imm8 / sar rax, imm8  (REX.W C1 /4|/7)
+fn x_shl_rax($n: entier) -> entier { xb(72); xb(193); xb(224); xb($n % 256); retour 0 }
+fn x_sar_rax($n: entier) -> entier { xb(72); xb(193); xb(248); xb($n % 256); retour 0 }
+# test al, imm8  (A8 imm8)
+fn x_test_al($m: entier) -> entier { xb(168); xb($m % 256); retour 0 }
 fn x_prologue($frame: entier) -> entier {
   xb(85)                     # push rbp
   xb(72); xb(137); xb(229)   # mov rbp, rsp
@@ -441,6 +475,107 @@ fn x_jcc_cond($op: chaine) -> entier {
   retour 132
 }
 
+# ── Valeurs étiquetées : tables de dispatch et petits encodeurs ────────────
+$x_lst_lbl = 0
+$x_idx_lbl = 0
+$x_binop_lbl = 0
+$x_truth_lbl = 0
+$x_prim_defaut_lbl = 0
+$x_prim_inconnues = [0 : chaine]
+
+fn x_call_lbl($l: entier) -> entier { retour x_branch(232, $l) }
+# mov qword [rsp+disp32], reg64  (REX.W 89 /r, SIB=24)
+fn x_stq_rsp($disp: entier, $reg: entier) -> entier {
+  $r = 0; si ($reg >= 8) { $r = 1 }
+  x_rex(1, $r, 0, 0); xb(137)
+  xb(148 + (($reg % 8) * 8))
+  xb(36)
+  x_imm32($disp)
+  retour 0
+}
+# Arguments 5..n sur la pile : [rsp+40+8*(i-4)] (shadow space = [rsp+8..39]).
+fn x_charger_args($d: entier, $k: entier) -> entier {
+  $i = 0
+  tant_que ($i < $k et $i < 4) {
+    x_mem(139, $argregs[$i], x_arg_off($d, $i))
+    $i = $i + 1
+  }
+  tant_que ($i < $k) {
+    x_mem(139, 10, x_arg_off($d, $i))
+    x_stq_rsp(40 + 8 * ($i - 4), 10)
+    $i = $i + 1
+  }
+  retour 0
+}
+fn x_binop_code($op: chaine) -> entier {
+  si ($op == "+") { retour 0 }
+  si ($op == "-") { retour 1 }
+  si ($op == "*") { retour 2 }
+  si ($op == "/" ou $op == "//" ou $op == "div") { retour 3 }
+  si ($op == "%") { retour 4 }
+  si ($op == "^") { retour 5 }
+  si ($op == "==") { retour 6 }
+  si ($op == "!=") { retour 7 }
+  si ($op == "<") { retour 8 }
+  si ($op == "<=") { retour 9 }
+  si ($op == ">") { retour 10 }
+  si ($op == ">=") { retour 11 }
+  si ($op == "et") { retour 12 }
+  si ($op == "ou") { retour 13 }
+  retour -1
+}
+# Primitives du catalogue RIR : une étiquette émise par primitive.
+$prim_longueur_lbl = 0
+$prim_joindre_lbl = 0
+$prim_sous_lbl = 0
+$prim_chaine_lbl = 0
+$prim_entier_lbl = 0
+$prim_quitter_lbl = 0
+$prim_lire_lbl = 0
+$prim_ordre_lbl = 0
+$prim_argument_lbl = 0
+$prim_ecrire_lbl = 0
+$prim_inserer_lbl = 0
+$prim_caractere_lbl = 0
+$prim_nbargs_lbl = 0
+$prim_table_lbl = 0
+$prim_partie_lbl = 0
+$prim_hasard_lbl = 0
+$prim_temps_lbl = 0
+$prim_flottant_lbl = 0
+$prim_graine_lbl = 0
+$prim_erreur_lbl = 0
+$prim_supprimer_lbl = 0
+$prim_ecriretexte_lbl = 0
+$prim_cleexiste_lbl = 0
+
+fn x_prim_lbl($nom: chaine) -> entier {
+  si ($nom == "longueur") { retour $prim_longueur_lbl }
+  si ($nom == "joindre") { retour $prim_joindre_lbl }
+  si ($nom == "sous_chaine") { retour $prim_sous_lbl }
+  si ($nom == "chaine") { retour $prim_chaine_lbl }
+  si ($nom == "entier") { retour $prim_entier_lbl }
+  si ($nom == "quitter") { retour $prim_quitter_lbl }
+  si ($nom == "lire_texte") { retour $prim_lire_lbl }
+  si ($nom == "ordre") { retour $prim_ordre_lbl }
+  si ($nom == "argument") { retour $prim_argument_lbl }
+  si ($nom == "ecrire_bytes") { retour $prim_ecrire_lbl }
+  si ($nom == "inserer") { retour $prim_inserer_lbl }
+  si ($nom == "caractere") { retour $prim_caractere_lbl }
+  si ($nom == "nb_arguments") { retour $prim_nbargs_lbl }
+  si ($nom == "table") { retour $prim_table_lbl }
+  si ($nom == "partie_entiere") { retour $prim_partie_lbl }
+  si ($nom == "hasard") { retour $prim_hasard_lbl }
+  si ($nom == "temps") { retour $prim_temps_lbl }
+  si ($nom == "flottant") { retour $prim_flottant_lbl }
+  si ($nom == "graine") { retour $prim_graine_lbl }
+  si ($nom == "afficher_erreur") { retour $prim_erreur_lbl }
+  si ($nom == "supprimer") { retour $prim_supprimer_lbl }
+  si ($nom == "ecrire_texte") { retour $prim_ecriretexte_lbl }
+  si ($nom == "cle_existe") { retour $prim_cleexiste_lbl }
+  retour -1
+}
+
 # ── Évaluateur d'expressions : résultat dans RAX ───────────────────────────
 fn x_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
   si (longueur($x_err) > 0) { retour -1 }
@@ -450,14 +585,44 @@ fn x_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
   si ($tk == "(") {
     $head = $t[$pos + 1]
     si ($head == "n" ou $head == "entier" ou $head == "f" ou $head == "flottant") {
-      x_movimm(0, x_ent($t[$pos + 2]))
+      x_movimm(0, 8 * x_ent($t[$pos + 2]))   # entier étiqueté n<<3
       retour $pos + 4
     }
     si ($head == "b") {
       $v = 0
-      si ($t[$pos + 2] == "vraie") { $v = 1 }
+      si ($t[$pos + 2] == "vraie") { $v = 8 }  # booléen étiqueté
       x_movimm(0, $v)
       retour $pos + 3
+    }
+    si ($head == "s") {
+      x_emit_chaine_lit($t[$pos + 2])
+      retour $pos + 4
+    }
+    si ($head == "lst" ou $head == "liste") {
+      $p = $pos + 2
+      $k = 0
+      tant_que ($p < $n et x_elt_ch($t, $p) != ")") {
+        $p = x_eval($t, $p, $d + 1, $f)
+        si ($p < 0) { retour -1 }
+        x_mem(137, 0, x_bin_off($d) + 8 * $k)   # valeurs dans le scratch
+        $k = $k + 1
+      }
+      # x_make_list : RCX = nombre d'éléments, RDX = adresse des valeurs
+      x_mov(1, 9)
+      x_mem(141, 2, x_bin_off($d))
+      x_call_lbl($x_lst_lbl)
+      retour $p + 1
+    }
+    si ($head == "idx") {
+      $p = x_eval($t, $pos + 2, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      x_mem(137, 0, x_bin_off($d))
+      $p = x_eval($t, $p, $d + 1, $f)
+      si ($p < 0) { retour -1 }
+      x_mov(2, 0)                              # RDX = index étiqueté
+      x_mem(139, 1, x_bin_off($d))             # RCX = conteneur
+      x_call_lbl($x_idx_lbl)
+      retour $p + 1
     }
     si ($head == "slot") {
       x_mem(139, 0, x_slot_off(x_ent($t[$pos + 2])))
@@ -471,32 +636,17 @@ fn x_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
     }
     si ($head == "bin") {
       $op = $t[$pos + 2]
+      $code = x_binop_code($op)
+      si ($code < 0) { retour x_fail("op bin non couverte : " + $op) }
       $p = x_eval($t, $pos + 3, $d + 1, $f)
       si ($p < 0) { retour -1 }
       x_mem(137, 0, x_bin_off($d))       # sauvegarde gauche
       $p = x_eval($t, $p, $d + 1, $f)
       si ($p < 0) { retour -1 }
-      x_mov(10, 0)                       # r10 = droite
-      x_mem(139, 0, x_bin_off($d))       # rax = gauche
-      $c = x_cond($op)
-      si ($c >= 0) {
-        x_cmp(0, 10)
-        xb(15); xb($c); xb(192)          # setcc al
-        xb(72); xb(15); xb(182); xb(192)   # movzx rax, al
-      } sinon si ($op == "+") { x_add(0, 10)
-      } sinon si ($op == "-") { x_subreg(0, 10)
-      } sinon si ($op == "*") {
-        xb(73); xb(15); xb(175); xb(194) # imul rax, r10
-      } sinon si ($op == "/" ou $op == "//" ou $op == "div") {
-        xb(72); xb(153)                  # cqo
-        xb(73); xb(247); xb(250)         # idiv r10
-      } sinon si ($op == "%") {
-        xb(72); xb(153)
-        xb(73); xb(247); xb(250)
-        x_mov(0, 2)                      # rax = rdx (reste)
-      } sinon si ($op == "et") { x_rr(33, 10, 0)
-      } sinon si ($op == "ou") { x_rr(9, 10, 0)
-      } sinon { retour x_fail("op bin non couverte : " + $op) }
+      x_mov(2, 0)                        # RDX = droite étiquetée
+      x_mem(139, 1, x_bin_off($d))       # RCX = gauche étiquetée
+      x_movimm(8, $code)                 # R8 = opcode
+      x_call_lbl($x_binop_lbl)
       retour $p + 1
     }
     si ($head == "app" ou $head == "appel" ou $head == "appel_rir") {
@@ -509,14 +659,18 @@ fn x_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
         x_mem(137, 0, x_arg_off($d, $k))
         $k = $k + 1
       }
-      $i = 0
-      tant_que ($i < $k et $i < 4) {
-        x_mem(139, $argregs[$i], x_arg_off($d, $i))
-        $i = $i + 1
-      }
       $lbl = x_func_lbl($nom)
-      si ($lbl < 0) { retour x_fail("appel non résolu : " + $nom) }
-      x_branch(232, $lbl)
+      $prim = -1
+      si ($lbl < 0) {
+        $prim = x_prim_lbl($nom)
+        si ($prim < 0) {
+          joindre($x_prim_inconnues, $nom)
+          $prim = $x_prim_defaut_lbl
+        }
+        $lbl = $prim
+      }
+      x_charger_args($d, $k)
+      x_call_lbl($lbl)
       retour $p + 1
     }
     si ($head == "neg" ou $head == "uni") {
@@ -524,28 +678,35 @@ fn x_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       si ($head == "uni") { $p = $pos + 3 }
       $p = x_eval($t, $p, $d + 1, $f)
       si ($p < 0) { retour -1 }
-      xb(72); xb(247); xb(216)           # neg rax
+      xb(72); xb(247); xb(216)           # neg rax (n<<3 -> -n<<3)
       retour $p + 1
     }
     si ($head == "non") {
       $p = x_eval($t, $pos + 2, $d + 1, $f)
       si ($p < 0) { retour -1 }
+      x_call_lbl($x_truth_lbl)
       xb(72); xb(133); xb(192)           # test rax, rax
       xb(15); xb(148); xb(192)           # sete al
-      xb(72); xb(15); xb(182); xb(192)     # movzx rax, al
+      x_shl_rax(3)                       # booléen étiqueté 0 ou 8
       retour $p + 1
     }
     retour x_fail("forme non couverte : " + $head)
   }
   si ($tk == "slot") { x_mem(139, 0, x_slot_off(x_ent($t[$pos + 1]))); retour $pos + 2 }
-  si ($tk == "entier" ou $tk == "n" ou $tk == "flottant") { x_movimm(0, x_ent($t[$pos + 1])); retour $pos + 2 }
+  si ($tk == "entier" ou $tk == "n" ou $tk == "flottant") { x_movimm(0, 8 * x_ent($t[$pos + 1])); retour $pos + 2 }
   si ($tk == "v") {
     $sl = x_slot_of($f, $t[$pos + 1])
     si ($sl < 0) { x_movimm(0, 0)
     } sinon { x_mem(139, 0, x_slot_off($sl)) }
     retour $pos + 2
   }
-  x_movimm(0, x_ent($tk))
+  si ($tk == "b") {
+    $v = 0
+    si ($t[$pos + 1] == "vraie") { $v = 8 }
+    x_movimm(0, $v)
+    retour $pos + 2
+  }
+  x_movimm(0, 8 * x_ent($tk))
   retour $pos + 1
 }
 
@@ -568,10 +729,12 @@ fn x_op($op: chaine, $f: entier, $principal: entier, $printl: entier) -> entier 
   si ($head == "saut") { x_branch(233, x_cible($f, $t[1])); retour 0 }
   si ($head == "saut_si_faux" ou $head == "saut_si_faux_abstrait") {
     x_eval($t, 2, 0, $f)
+    x_call_lbl($x_truth_lbl)             # vérité étiquetée (chaîne/liste/table)
     xb(72); xb(133); xb(192)             # test rax, rax
     x_branch(132, x_cible($f, $t[1]))    # je cible
     retour 0
   }
+  si ($head == "bloc") { retour 0 }      # bloc RIR imbriqué : marqueur sans effet
   si ($head == "retour" ou $head == "retour_abstrait") {
     x_eval($t, 1, 0, $f)
     x_epilogue()
@@ -579,7 +742,8 @@ fn x_op($op: chaine, $f: entier, $principal: entier, $printl: entier) -> entier 
   }
   si ($head == "afficher" ou $head == "afficher_abstrait") {
     x_eval($t, 1, 0, $f)
-    x_branch(232, $printl)
+    x_mov(1, 0)                          # RCX = valeur à afficher
+    x_call_lbl($printl)
     retour 0
   }
   retour x_fail("op non couverte : " + $op)
@@ -677,6 +841,1250 @@ fn x_emit_print($lbl: entier) -> entier {
   retour 0
 }
 
+# ── Runtime des valeurs étiquetées x64 ─────────────────────────────────────
+fn x_utf8_of($cp: entier) -> liste<entier> {
+  $r = [0 : entier]
+  si ($cp < 128) {
+    joindre($r, $cp)
+  } sinon si ($cp < 2048) {
+    joindre($r, 192 + partie_entiere($cp / 64))
+    joindre($r, 128 + ($cp % 64))
+  } sinon si ($cp < 65536) {
+    joindre($r, 224 + partie_entiere($cp / 4096))
+    joindre($r, 128 + (partie_entiere($cp / 64) % 64))
+    joindre($r, 128 + ($cp % 64))
+  } sinon {
+    joindre($r, 240 + partie_entiere($cp / 262144))
+    joindre($r, 128 + (partie_entiere($cp / 4096) % 64))
+    joindre($r, 128 + (partie_entiere($cp / 64) % 64))
+    joindre($r, 128 + ($cp % 64))
+  }
+  retour $r
+}
+fn x_unescape($tok: chaine) -> chaine {
+  $n = longueur($tok)
+  si ($n < 2) { retour "" }
+  $s = sous_chaine($tok, 1, $n - 1)
+  $parts = [""]
+  $i = 0
+  $ln = longueur($s)
+  tant_que ($i < $ln) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == "\\") {
+      $i = $i + 1
+      si ($i < $ln) {
+        $d = sous_chaine($s, $i, $i + 1)
+        si ($d == "n") { joindre($parts, caractere(10))
+        } sinon si ($d == "t") { joindre($parts, caractere(9))
+        } sinon si ($d == "r") { joindre($parts, caractere(13))
+        } sinon si ($d == "0") { joindre($parts, caractere(0))
+        } sinon { joindre($parts, $d) }
+      }
+    } sinon { joindre($parts, $c) }
+    $i = $i + 1
+  }
+  retour pe_join($parts, 1, longueur($parts))
+}
+# Émet le code qui construit un descripteur de chaîne pour un littéral RIR.
+fn x_emit_chaine_lit($tok: chaine) -> entier {
+  $s = x_unescape($tok)
+  $oct = [0 : entier]
+  $i = 0
+  $ncp = longueur($s)
+  tant_que ($i < $ncp) {
+    $part = x_utf8_of(ordre(sous_chaine($s, $i, $i + 1)))
+    $j = 0
+    tant_que ($j < longueur($part)) { joindre($oct, $part[$j]); $j = $j + 1 }
+    $i = $i + 1
+  }
+  $nb = longueur($oct)
+  $sz = partie_entiere((24 + $nb + 7) / 8) * 8
+  x_call_iat(3)                              # GetProcessHeap
+  x_mov(1, 0)                                # RCX = heap
+  xb(72); xb(49); xb(210)                    # xor rdx, rdx
+  x_movimm(8, $sz)                           # R8 = taille
+  x_call_iat(4)                              # HeapAlloc -> RAX
+  x_movimm(10, 1)
+  x_stq_rax(0, 10)                           # [0] = tag 1
+  x_movimm(10, $ncp)
+  x_stq_rax(8, 10)                           # [8] = points de code
+  x_movimm(10, $nb)
+  x_stq_rax(16, 10)                          # [16] = octets
+  $k = 0
+  tant_que ($k < $nb) { x_stb_rax(24 + $k, $oct[$k]); $k = $k + 1 }
+  xb(72); xb(131); xb(200); xb(1)            # or rax, 1
+  retour 0
+}
+# x_alloc(RCX = taille) -> RAX = pointeur brut aligné 8
+fn x_emit_alloc($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_mem(137, 1, -8)                          # sauvegarde taille
+  x_call_iat(3)                              # GetProcessHeap
+  x_mov(1, 0)
+  xb(72); xb(49); xb(210)
+  x_mem(139, 8, -8)
+  x_call_iat(4)                              # HeapAlloc
+  x_epilogue()
+  retour 0
+}
+# x_free(RCX = pointeur) -> vide
+fn x_emit_free($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_mem(137, 1, -8)
+  x_call_iat(3)
+  x_mov(1, 0)
+  x_mov(2, 0)                                # dwFlags = 0
+  x_mem(139, 8, -8)
+  x_call_iat(5)                              # HeapFree
+  x_epilogue()
+  retour 0
+}
+# x_make_str(RCX=src, RDX=ncp, R8=noct) -> RAX = chaîne étiquetée
+fn x_emit_make_str($lbl: entier, $alloc: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(80)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mem(137, 8, -24)
+  x_mov(0, 8)
+  x_mem(139, 10, -24)
+  x_add(0, 10)                               # 8 + noct
+  x_addi(0, 7)
+  xb(72); xb(131); xb(224); xb(248)          # and rax, -8
+  x_mem(137, 0, -32)
+  x_mem(139, 1, -32)
+  x_call_lbl($alloc)
+  x_mem(137, 0, -40)                         # descripteur
+  x_movimm(10, 1)
+  x_stq_rax(0, 10)
+  x_mem(139, 10, -16)
+  x_stq_rax(8, 10)
+  x_mem(139, 10, -24)
+  x_stq_rax(16, 10)
+  x_movimm(9, 0)                             # i = 0
+  $Lloop = x_new()
+  $Ldone = x_new()
+  x_mark($Lloop)
+  x_mem(139, 10, -24)
+  x_cmp(9, 10)
+  x_branch(131, $Ldone)                      # jae
+  # r10b = [src + i]
+  xb(70); xb(138); xb(20); xb(24)            # mov r10b, [rcx+r9]
+  # [dst + 24 + i] = r10b
+  xb(70); xb(136); xb(84); xb(8); xb(24)     # mov [rax+r9+24], r10b  (disp8 24)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Ldone)
+  x_mem(139, 0, -40)
+  xb(72); xb(131); xb(200); xb(1)            # or rax, 1
+  x_epilogue()
+  retour 0
+}
+# x_truth(RAX) -> RAX = 0 ou 8
+fn x_emit_truth($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_mem(137, 0, -8)
+  x_mov(10, 0)
+  xb(73); xb(131); xb(226); xb(7)            # and r10, 7
+  $Lint = x_new()
+  $Lstr = x_new()
+  $Llst = x_new()
+  $Ltab = x_new()
+  $Lvrai = x_new()
+  $Lfaux = x_new()
+  $Lfin_truth = x_new()
+  xb(77); xb(131); xb(250); xb(0)            # cmp r10b, 0
+  x_branch(132, $Lint)
+  xb(77); xb(131); xb(250); xb(1)
+  x_branch(132, $Lstr)
+  xb(77); xb(131); xb(250); xb(2)
+  x_branch(132, $Llst)
+  xb(77); xb(131); xb(250); xb(3)
+  x_branch(132, $Ltab)
+  x_branch(233, $Lfaux)
+  x_mark($Lint)
+  x_mem(139, 0, -8)
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Lfaux)
+  x_branch(233, $Lvrai)
+  x_mark($Lstr)
+  x_mem(139, 0, -8)
+  xb(72); xb(131); xb(224); xb(248)          # and rax, -8
+  x_ldq_rax(0, 8)
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Lfaux)
+  x_branch(233, $Lvrai)
+  x_mark($Llst)
+  x_mem(139, 0, -8)
+  xb(72); xb(131); xb(224); xb(248)
+  x_ldq_rax(0, 8)
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Lfaux)
+  x_branch(233, $Lvrai)
+  x_mark($Ltab)
+  x_mem(139, 0, -8)
+  xb(72); xb(131); xb(224); xb(248)
+  x_ldq_rax(0, 8)
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Lfaux)
+  x_mark($Lvrai)
+  x_movimm(0, 8)
+  x_branch(233, $Lfin_truth)
+  x_mark($Lfaux)
+  x_movimm(0, 0)
+  x_mark($Lfin_truth)
+  x_epilogue()
+  retour 0
+}
+# x_len(RAX) -> RAX = longueur étiquetée (ncp / len / 0)
+fn x_emit_len($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_mem(137, 0, -8)
+  x_mov(10, 0)
+  xb(73); xb(131); xb(226); xb(7)
+  $Lp = x_new()
+  $Lz = x_new()
+  $Lf = x_new()
+  xb(77); xb(131); xb(250); xb(0)
+  x_branch(132, $Lz)
+  x_mark($Lp)
+  x_mem(139, 0, -8)
+  xb(72); xb(131); xb(224); xb(248)
+  x_ldq_rax(0, 8)
+  x_shl_rax(3)
+  x_branch(233, $Lf)
+  x_mark($Lz)
+  x_movimm(0, 0)
+  x_mark($Lf)
+  x_epilogue()
+  retour 0
+}
+
+# x_make_list(RCX=count, RDX=src) -> RAX = liste étiquetée
+fn x_emit_make_list($lbl: entier, $alloc: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(96)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mem(139, 1, -8)
+  x_addi(0, 8)                               # capacité = count + 8
+  x_mem(137, 0, -24)
+  x_mov(1, 0)
+  x_call_lbl($alloc)                         # descripteur 32 octets
+  x_mem(137, 0, -32)
+  x_mem(139, 0, -24)
+  x_shl_rax(3)
+  x_mem(137, 0, -40)
+  x_mem(139, 1, -40)
+  x_call_lbl($alloc)                         # tableau de valeurs
+  x_mem(137, 0, -48)
+  x_mem(139, 0, -32)
+  x_movimm(10, 2)
+  x_stq_rax(0, 10)
+  x_mem(139, 10, -8)
+  x_stq_rax(8, 10)
+  x_mem(139, 10, -24)
+  x_stq_rax(16, 10)
+  x_mem(139, 10, -48)
+  x_stq_rax(24, 10)
+  x_movimm(9, 0)
+  $Lloop = x_new()
+  $Ldone = x_new()
+  x_mark($Lloop)
+  x_mem(139, 10, -8)
+  x_cmp(9, 10)
+  x_branch(131, $Ldone)
+  xb(78); xb(139); xb(20); xb(202)           # mov r10, [rdx+r9*8]
+  x_mem(139, 0, -48)
+  xb(78); xb(137); xb(20); xb(200)           # mov [rax+r9*8], r10
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Ldone)
+  x_mem(139, 0, -32)
+  xb(72); xb(131); xb(200); xb(2)            # or rax, 2
+  x_epilogue()
+  retour 0
+}
+# x_concat(RCX, RDX) -> RAX = concaténation de deux chaînes étiquetées
+fn x_emit_concat($lbl: entier, $alloc: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(96)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  # noct1 / noct2
+  x_mov(10, 1); xb(72); xb(131); xb(226); xb(248); x_ldq_rax(10, 16)
+  x_mem(137, 10, -24)
+  x_mov(10, 2); xb(72); xb(131); xb(226); xb(248); x_ldq_rax(10, 16)
+  x_mem(137, 10, -32)
+  x_mov(0, 8)
+  x_mem(139, 10, -24); x_add(0, 10)
+  x_mem(139, 10, -32); x_add(0, 10)
+  x_addi(0, 7)
+  xb(72); xb(131); xb(224); xb(248)
+  x_mem(137, 0, -40)
+  x_mem(139, 1, -40)
+  x_call_lbl($alloc)
+  x_mem(137, 0, -48)                         # descripteur
+  x_movimm(10, 1); x_stq_rax(0, 10)
+  x_mem(139, 10, -24); x_mem(139, 10, -32); x_add(10, 10)
+  x_stq_rax(8, 10)
+  x_stq_rax(16, 10)
+  # src1 = (rcx & -8) + 24
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248); x_addi(1, 24)
+  x_mem(137, 1, -56)
+  x_mem(139, 2, -16); xb(72); xb(131); xb(226); xb(248); x_addi(2, 24)
+  x_mem(137, 2, -64)
+  x_mem(139, 0, -48); x_addi(0, 24)
+  x_mem(137, 0, -72)
+  $Lloop1 = x_new()
+  $Lnxt1 = x_new()
+  $Lloop2 = x_new()
+  $Ldone = x_new()
+  x_movimm(9, 0)
+  x_mark($Lloop1)
+  x_mem(139, 10, -24); x_cmp(9, 10)
+  x_branch(131, $Lnxt1)
+  xb(70); xb(138); xb(20); xb(25)            # r10b = [rcx+r9]
+  x_mem(139, 0, -72)
+  xb(70); xb(136); xb(20); xb(8)             # [rax+r9] = r10b
+  x_addi(9, 1)
+  x_branch(233, $Lloop1)
+  x_mark($Lnxt1)
+  x_mem(139, 0, -72)
+  x_mem(139, 10, -24); x_add(0, 10)
+  x_mem(137, 0, -72)
+  x_movimm(9, 0)
+  x_mark($Lloop2)
+  x_mem(139, 10, -32); x_cmp(9, 10)
+  x_branch(131, $Ldone)
+  xb(71); xb(138); xb(20); xb(26)            # r10b = [rdx+r9]
+  x_mem(139, 0, -72)
+  xb(70); xb(136); xb(20); xb(8)
+  x_addi(9, 1)
+  x_branch(233, $Lloop2)
+  x_mark($Ldone)
+  x_mem(139, 0, -48)
+  xb(72); xb(131); xb(200); xb(1)
+  x_epilogue()
+  retour 0
+}
+# x_strcmp(RCX, RDX) -> RAX = différence brute (0 = égaux, signe = ordre)
+fn x_emit_strcmp($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mov(10, 1); xb(72); xb(131); xb(226); xb(248); x_ldq_rax(10, 16)
+  x_mem(137, 10, -24)
+  x_mov(10, 2); xb(72); xb(131); xb(226); xb(248); x_ldq_rax(10, 16)
+  x_mem(137, 10, -32)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(233); xb(248); x_addi(1, 24)
+  x_mem(137, 1, -40)
+  x_mem(139, 2, -16); xb(72); xb(131); xb(226); xb(248); x_addi(2, 24)
+  x_mem(137, 2, -48)
+  x_movimm(9, 0)
+  $Lloop = x_new()
+  $Ldiff = x_new()
+  $Lfin = x_new()
+  x_mark($Lloop)
+  $Lfin2 = x_new()
+  x_mem(139, 10, -24); x_cmp(9, 10)
+  x_branch(131, $Lfin)
+  x_mem(139, 10, -32); x_cmp(9, 10)
+  x_branch(131, $Lfin)
+  xb(70); xb(15); xb(182); xb(20); xb(25)    # movzx r10, byte [rcx+r9]
+  xb(71); xb(15); xb(182); xb(28); xb(10)    # movzx r11, byte [rdx+r9]
+  x_cmp(10, 11)
+  x_branch(133, $Ldiff)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Ldiff)
+  x_mov(0, 10)
+  x_subreg(0, 11)
+  x_branch(233, $Lfin2)
+  x_mark($Lfin)
+  x_mem(139, 10, -24)
+  x_mem(139, 11, -32)
+  x_subreg(0, 11)
+  x_mark($Lfin2)
+  x_epilogue()
+  retour 0
+}
+
+fn x_cond_code($code: entier) -> entier {
+  si ($code == 6) { retour 148 }
+  si ($code == 7) { retour 149 }
+  si ($code == 8) { retour 156 }
+  si ($code == 9) { retour 158 }
+  si ($code == 10) { retour 159 }
+  si ($code == 11) { retour 157 }
+  retour 132
+}
+# x_bin_helper(RCX, RDX) -> RAX : une étiquette émise par opcode.
+fn x_emit_bin_helper($code: entier, $lbl: entier, $truth: entier, $concat: entier, $strcmp: entier, $chaine: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(80)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  $Lfin = x_new()
+  $Llog = x_new()
+  $Lstr = x_new()
+  $Lint = x_new()
+  $Lconcat = x_new()
+  $Lcl = x_new()
+  $Lcr = x_new()
+  $Lpw = x_new()
+  $Lpwe = x_new()
+  si ($code == 12 ou $code == 13) {
+    x_branch(233, $Llog)
+  } sinon si ($code >= 6) {
+    x_mov(10, 1); xb(73); xb(131); xb(226); xb(7)
+    x_cmp(10, 1)
+    x_branch(133, $Lint)
+    x_mov(10, 2); xb(73); xb(131); xb(226); xb(7)
+    x_cmp(10, 1)
+    x_branch(133, $Lint)
+    x_mem(139, 1, -8)
+    x_mov(2, 1)
+    x_call_lbl($strcmp)
+    x_branch(233, $Lstr)
+  } sinon si ($code == 0) {
+    x_mov(10, 1); xb(73); xb(131); xb(226); xb(7)
+    x_cmp(10, 1)
+    x_branch(132, $Lconcat)
+    x_mov(10, 2); xb(73); xb(131); xb(226); xb(7)
+    x_cmp(10, 1)
+    x_branch(132, $Lconcat)
+    x_branch(233, $Lint)
+  } sinon {
+    x_branch(233, $Lint)
+  }
+  x_mark($Lconcat)
+  x_mem(139, 1, -8)
+  x_mov(2, 1); xb(73); xb(131); xb(226); xb(7)
+  x_cmp(2, 1)
+  x_branch(132, $Lcl)
+  x_call_lbl($chaine)
+  x_mem(137, 0, -8)
+  x_mark($Lcl)
+  x_mem(139, 2, -16)
+  x_mov(2, 1); xb(73); xb(131); xb(226); xb(7)
+  x_cmp(2, 1)
+  x_branch(132, $Lcr)
+  x_call_lbl($chaine)
+  x_mem(137, 0, -16)
+  x_mark($Lcr)
+  x_mem(139, 1, -8)
+  x_mov(2, 1)
+  x_call_lbl($concat)
+  x_branch(233, $Lfin)
+  x_mark($Lstr)
+  xb(72); xb(133); xb(192)                   # test rax, rax
+  $ccs = x_cond_code($code)
+  xb(15); xb($ccs); xb(192)                  # setcc al
+  xb(15); xb(182); xb(192)                   # movzx rax, al
+  x_shl_rax(3)
+  x_branch(233, $Lfin)
+  x_mark($Lint)
+  x_mem(139, 0, -8)
+  x_sar_rax(3)
+  x_mem(139, 10, -16)
+  xb(73); xb(131); xb(250); xb(3)
+  si ($code == 0) { x_add(0, 10)
+  } sinon si ($code == 1) { x_subreg(0, 10)
+  } sinon si ($code == 2) { xb(73); xb(15); xb(175); xb(194)
+  } sinon si ($code == 3) { xb(72); xb(153); xb(73); xb(247); xb(250)
+  } sinon si ($code == 4) { xb(72); xb(153); xb(73); xb(247); xb(250); x_mov(0, 2)
+  } sinon si ($code == 5) {
+    x_movimm(11, 1)
+    x_mark($Lpw)
+    x_cmp(10, 0)
+    x_branch(142, $Lpwe)                     # jle
+    xb(76); xb(15); xb(175); xb(216)         # imul r11, rax
+    x_subi(10, 1)
+    x_branch(233, $Lpw)
+    x_mark($Lpwe)
+    x_mov(0, 11)
+  } sinon {
+    x_cmp(0, 10)
+    $cci = x_cond_code($code)
+    xb(15); xb($cci); xb(192)
+    xb(15); xb(182); xb(192)
+    x_shl_rax(3)
+    x_branch(233, $Lfin)
+  }
+  si ($code < 6) { x_shl_rax(3) }
+  x_branch(233, $Lfin)
+  x_mark($Llog)
+  x_mem(139, 1, -8)
+  x_call_lbl($truth)
+  x_mem(137, 0, -56)
+  x_mem(139, 2, -16)
+  x_mem(139, 1, -8)
+  x_call_lbl($truth)
+  x_mem(137, 0, -64)
+  x_mem(139, 0, -56)
+  x_mem(139, 9, -64)
+  si ($code == 12) { x_rr(33, 9, 0) } sinon { x_rr(9, 9, 0) }
+  xb(133); xb(192)
+  x_shl_rax(3)
+  x_mark($Lfin)
+  x_epilogue()
+  retour 0
+}
+
+# x_sous(RCX=chaîne, RDX=a, R8=b) -> RAX = sous-chaîne (indices en points de code)
+fn x_emit_sous($lbl: entier, $make_str: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(112)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mem(137, 8, -24)
+  $Lca = x_new()
+  $Lca2 = x_new()
+  $Lcb2 = x_new()
+  $Lcb3 = x_new()
+  $Lscan = x_new()
+  $Lone = x_new()
+  $Ltwo = x_new()
+  $Lthree = x_new()
+  $Lfour = x_new()
+  $Lnextcp = x_new()
+  $Lseto1 = x_new()
+  $Lscanend = x_new()
+  $Lo1ok = x_new()
+  $Lo2ok = x_new()
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_mem(137, 0, -32)                         # descripteur
+  x_ldq_rax(10, 8); x_mem(137, 10, -40)      # ncp
+  x_ldq_rax(10, 16); x_mem(137, 10, -48)     # noct
+  x_mem(139, 2, -16); x_sar_rax(3); x_mem(137, 0, -56)   # a
+  x_mem(139, 8, -24); x_sar_rax(3); x_mem(137, 0, -64)   # b
+  x_mem(139, 0, -56)
+  xb(72); xb(133); xb(192)
+  x_branch(141, $Lca)                        # a >= 0
+  x_movimm(0, 0); x_mem(137, 0, -56)
+  x_mark($Lca)
+  x_mem(139, 0, -56); x_mem(139, 10, -40)
+  x_cmp(0, 10)
+  x_branch(142, $Lca2)
+  x_mem(139, 10, -40); x_mem(137, 0, -56)
+  x_mark($Lca2)
+  x_mem(139, 0, -64); x_mem(139, 10, -40)
+  x_cmp(0, 10)
+  x_branch(142, $Lcb2)
+  x_mem(139, 10, -40); x_mem(137, 0, -64)
+  x_mark($Lcb2)
+  x_mem(139, 0, -64); x_mem(139, 10, -56)
+  x_cmp(0, 10)
+  x_branch(141, $Lcb3)
+  x_mem(139, 10, -56); x_mem(137, 0, -64)
+  x_mark($Lcb3)
+  x_mem(139, 0, -32); x_addi(0, 24); x_mem(137, 0, -88)
+  x_movimm(9, 0)                             # octet courant
+  x_movimm(10, 0)                            # point de code courant
+  x_movimm(11, 0)                            # o1
+  x_mem(137, 11, -72)
+  x_mark($Lscan)
+  x_mem(139, 0, -48); x_cmp(9, 0)
+  x_branch(131, $Lscanend)                   # i >= noct
+  x_mem(139, 0, -64); x_cmp(10, 0)
+  x_branch(131, $Lscanend)                   # cp >= b
+  x_mem(139, 0, -56); x_cmp(10, 0)
+  x_branch(133, $Lseto1)
+  x_mem(139, 9, -72); x_mem(137, 11, -72)
+  x_mark($Lseto1)
+  x_mem(139, 9, -88)
+  xb(70); xb(138); xb(20); xb(25)            # r10b = octet de tête
+  x_mov(2, 10); xb(72); xb(131); xb(226); xb(248)
+  x_cmp(2, 240)
+  x_branch(141, $Lfour)
+  x_cmp(2, 224)
+  x_branch(141, $Lthree)
+  x_cmp(2, 192)
+  x_branch(141, $Ltwo)
+  x_branch(233, $Lone)
+  x_mark($Lfour); x_addi(9, 4); x_branch(233, $Lnextcp)
+  x_mark($Lthree); x_addi(9, 3); x_branch(233, $Lnextcp)
+  x_mark($Ltwo); x_addi(9, 2); x_branch(233, $Lnextcp)
+  x_mark($Lone); x_addi(9, 1)
+  x_mark($Lnextcp)
+  x_addi(10, 1)
+  x_branch(233, $Lscan)
+  x_mark($Lscanend)
+  x_mem(139, 10, -56)
+  x_cmp(10, 0)
+  x_branch(141, $Lo1ok)
+  x_mem(139, 0, -48); x_mem(137, 11, -72)
+  x_mark($Lo1ok)
+  x_mem(139, 10, -64)
+  x_cmp(10, 0)
+  x_mem(139, 9, -80)
+  x_branch(142, $Lo2ok)
+  x_mem(139, 0, -48); x_mem(137, 11, -80)
+  x_mark($Lo2ok)
+  x_mem(139, 0, -88); x_mem(139, 11, -72); x_add(0, 11)
+  x_mem(137, 0, -96)
+  x_mem(139, 10, -64); x_mem(139, 11, -56); x_subreg(10, 11)
+  x_mem(137, 10, -104)
+  x_mem(139, 11, -80); x_mem(139, 10, -72); x_subreg(11, 10)
+  x_mem(137, 11, -112)
+  x_mem(139, 1, -96)
+  x_mem(139, 2, -104)
+  x_mem(139, 8, -112)
+  x_call_lbl($make_str)
+  x_epilogue()
+  retour 0
+}
+
+# x_idx(RCX=conteneur, RDX=index) -> RAX = élément étiqueté
+fn x_emit_idx($lbl: entier, $sous: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(80)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mov(10, 1); xb(73); xb(131); xb(226); xb(7)
+  $Llist = x_new()
+  $Ltab = x_new()
+  $Lstr = x_new()
+  $Lzero = x_new()
+  $Lfin = x_new()
+  $Ltloop = x_new()
+  $Ltfound = x_new()
+  x_cmp(10, 2); x_branch(132, $Llist)
+  x_cmp(10, 3); x_branch(132, $Ltab)
+  x_cmp(10, 1); x_branch(132, $Lstr)
+  x_branch(233, $Lzero)
+  x_mark($Llist)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_mem(137, 0, -24)
+  x_ldq_rax(10, 8); x_mem(137, 10, -32)      # len
+  x_mem(139, 2, -16); x_sar_rax(3); x_mem(137, 0, -40)   # i
+  x_mem(139, 0, -40)
+  xb(72); xb(133); xb(192)
+  x_branch(141, $Lzero)
+  x_mem(139, 0, -40); x_mem(139, 10, -32)
+  x_cmp(0, 10)
+  x_branch(141, $Lzero)
+  x_ldq_rax(0, 24)
+  x_mem(139, 9, -40)
+  xb(74); xb(139); xb(4); xb(200)            # mov rax, [rax+r9*8]
+  x_branch(233, $Lfin)
+  x_mark($Ltab)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_mem(137, 0, -24)
+  x_ldq_rax(10, 8); x_mem(137, 10, -32)
+  x_ldq_rax(0, 24); x_mem(137, 0, -48)
+  x_movimm(9, 0)
+  x_mark($Ltloop)
+  x_mem(139, 9, -32); x_cmp(9, 0)
+  x_branch(141, $Lzero)
+  x_mem(139, 0, -48)
+  xb(74); xb(139); xb(4); xb(136)            # mov rax, [rax+r9*16]
+  x_mem(139, 10, -16)
+  x_cmp(0, 10)
+  x_branch(132, $Ltfound)
+  x_addi(9, 1)
+  x_branch(233, $Ltloop)
+  x_mark($Ltfound)
+  x_mem(139, 0, -48)
+  xb(74); xb(139); xb(68); xb(136); xb(8)    # mov rax, [rax+r9*16+8]
+  x_branch(233, $Lfin)
+  x_mark($Lstr)
+  x_mem(139, 2, -16); x_sar_rax(3); x_mem(137, 0, -40)
+  x_mem(139, 0, -40)
+  x_shl_rax(3)
+  x_mov(2, 0)                            # a = i << 3
+  x_addi(2, 8)                           # b = (i+1) << 3
+  x_mov(8, 2)                            # R8 = b
+  x_mem(139, 1, -8)
+  x_mov(1, 0)                            # RCX = chaîne
+  x_call_lbl($sous)
+  x_branch(233, $Lfin)
+  x_mark($Lzero)
+  x_movimm(0, 0)
+  x_mark($Lfin)
+  x_epilogue()
+  retour 0
+}
+# x_chaine(RCX) -> RAX = chaîne étiquetée
+fn x_emit_chaine($lbl: entier, $make_str: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(176)
+  x_mem(137, 1, -8)
+  x_mov(10, 1); xb(73); xb(131); xb(226); xb(7)
+  x_cmp(10, 1)
+  $Lent = x_new()
+  $Lfmt = x_new()
+  $Lz = x_new()
+  $Lp = x_new()
+  $Lloop = x_new()
+  $Ldone = x_new()
+  $Lfin = x_new()
+  $Lfinfmt = x_new()
+  x_branch(133, $Lent)
+  x_mem(139, 1, -8)
+  x_branch(233, $Lfin)
+  x_mark($Lent)
+  x_mem(139, 1, -8); x_sar_rax(3)
+  x_mem(137, 0, -24)
+  x_movimm(10, 0)
+  x_mem(137, 10, -32)                        # signe
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Lz)
+  x_branch(137, $Lp)
+  xb(72); xb(247); xb(216)
+  x_movimm(10, 1)
+  x_mem(137, 10, -32)
+  x_branch(233, $Lfmt)
+  x_mark($Lz)
+  x_byte_imm(-97, 48)
+  x_movimm(10, 1)
+  x_movimm(9, 1)
+  x_branch(233, $Lfinfmt)
+  x_mark($Lp)
+  x_mark($Lfmt)
+  x_mem(141, 10, -96)
+  x_movimm(9, 0)
+  x_mark($Lloop)
+  x_mem(139, 0, -24)
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Ldone)
+  x_movimm(8, 10)
+  xb(73); xb(247); xb(240)
+  xb(128); xb(194); xb(48)
+  x_subi(10, 1)
+  xb(65); xb(136); xb(18)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Ldone)
+  x_mem(139, 10, -32)
+  x_cmp(10, 0)
+  x_branch(132, $Lfinfmt)
+  x_subi(10, 1)
+  xb(65); xb(198); xb(2); xb(45)
+  x_addi(9, 1)
+  x_mark($Lfinfmt)
+  x_mem(139, 1, -8)
+  x_mov(0, 10)
+  x_mov(2, 9)
+  x_call_lbl($make_str)
+  x_mark($Lfin)
+  x_epilogue()
+  retour 0
+}
+# x_entier(RCX) -> RAX = entier étiqueté
+fn x_emit_entier($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_mem(137, 1, -8)
+  $Lparse = x_new()
+  $Lfin = x_new()
+  $Lloop = x_new()
+  $Lacc = x_new()
+  $Lneg = x_new()
+  $Lfin2 = x_new()
+  x_mov(10, 1); xb(73); xb(131); xb(226); xb(7)
+  x_cmp(10, 0)
+  x_branch(133, $Lparse)
+  x_mem(139, 1, -8)
+  x_branch(233, $Lfin)
+  x_mark($Lparse)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_addi(0, 24); x_mem(137, 0, -16)          # données
+  x_ldq_rax(10, 16); x_mem(137, 10, -24)     # noct
+  x_movimm(9, 0)
+  x_movimm(0, 0)
+  x_movimm(10, 0)                            # signe
+  x_mem(139, 9, -16)
+  xb(70); xb(15); xb(182); xb(20); xb(25)
+  x_cmp(10, 45)
+  x_branch(133, $Lloop)
+  x_movimm(10, 1)
+  x_addi(9, 1)
+  x_mark($Lloop)
+  x_mem(139, 9, -24); x_cmp(9, 0)
+  x_branch(141, $Lfin)
+  x_mem(139, 9, -16)
+  xb(70); xb(15); xb(182); xb(28); xb(25)    # movzx r11, byte [rsi+r9]
+  x_subi(11, 48)
+  x_cmp(11, 9)
+  x_branch(143, $Lfin)
+  x_movimm(8, 10)
+  xb(72); xb(107); xb(192); xb(10)           # imul rax, 10
+  x_add(0, 11)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Lfin)
+  x_mem(139, 10, -8)
+  xb(73); xb(131); xb(226); xb(7)
+  x_cmp(10, 1)
+  x_branch(133, $Lfin2)
+  xb(72); xb(247); xb(216)                   # neg rax
+  x_mark($Lfin2)
+  x_shl_rax(3)
+  x_epilogue()
+  retour 0
+}
+
+# x_joindre(RCX=liste, RDX=valeur) -> RAX = vide étiqueté
+fn x_emit_joindre($lbl: entier, $alloc: entier, $free: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(96)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_mem(137, 0, -24)                         # descripteur
+  x_ldq_rax(10, 8); x_mem(137, 10, -32)      # len
+  x_ldq_rax(10, 16); x_mem(137, 10, -40)     # cap
+  x_ldq_rax(0, 24); x_mem(137, 0, -48)       # tableau
+  x_mem(139, 10, -32); x_mem(139, 11, -40)
+  x_cmp(10, 11)
+  $Lgrow = x_new()
+  $Lstore = x_new()
+  $Lfin = x_new()
+  $Lcopy = x_new()
+  $Lcopyend = x_new()
+  x_branch(141, $Lgrow)
+  x_branch(233, $Lstore)
+  x_mark($Lgrow)
+  x_mem(139, 11, -40)
+  x_add(11, 11)                              # nouvelle capacité = 2*cap
+  x_mem(137, 11, -56)
+  x_shl_rax(3)
+  x_mem(137, 0, -64)
+  x_mem(139, 1, -64)
+  x_call_lbl($alloc)
+  x_mem(137, 0, -72)                         # nouveau tableau
+  x_movimm(9, 0)
+  x_mark($Lcopy)
+  x_mem(139, 9, -32); x_cmp(9, 0)
+  x_branch(141, $Lcopyend)
+  x_mem(139, 0, -48)
+  xb(78); xb(139); xb(20); xb(202)           # r10 = [vieux + r9*8]
+  x_mem(139, 0, -72)
+  xb(79); xb(137); xb(20); xb(203)           # [neuf + r9*8] = r10
+  x_addi(9, 1)
+  x_branch(233, $Lcopy)
+  x_mark($Lcopyend)
+  x_mem(139, 0, -24); x_mem(139, 10, -72); x_stq_rax(24, 10)
+  x_mem(139, 10, -56); x_stq_rax(16, 10)
+  x_mem(139, 1, -48)
+  x_call_lbl($free)
+  x_mem(139, 10, -72); x_mem(137, 11, -48)
+  x_mark($Lstore)
+  x_mem(139, 0, -48)
+  x_mem(139, 9, -32)
+  xb(74); xb(137); xb(20); xb(200)           # [tableau + r9*8] = valeur
+  x_mem(139, 10, -32)
+  x_addi(10, 1)
+  x_mem(139, 0, -24); x_stq_rax(8, 10)
+  x_movimm(0, 0)
+  x_mark($Lfin)
+  x_epilogue()
+  retour 0
+}
+# x_table() -> RAX = table vide étiquetée
+fn x_emit_table_new($lbl: entier, $alloc: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_movimm(1, 32)
+  x_call_lbl($alloc)
+  x_mem(137, 0, -8)
+  x_movimm(1, 128)
+  x_call_lbl($alloc)
+  x_mem(137, 0, -16)
+  x_mem(139, 0, -8)
+  x_movimm(10, 3); x_stq_rax(0, 10)
+  x_movimm(10, 0); x_stq_rax(8, 10)
+  x_movimm(10, 8); x_stq_rax(16, 10)
+  x_mem(139, 10, -16); x_stq_rax(24, 10)
+  x_mem(139, 0, -8)
+  xb(72); xb(131); xb(200); xb(3)
+  x_epilogue()
+  retour 0
+}
+# x_inserer(RCX=table, RDX=clé, R8=valeur) -> RAX = vide étiqueté
+fn x_emit_inserer($lbl: entier, $alloc: entier, $free: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(96)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mem(137, 8, -24)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_mem(137, 0, -32)
+  x_ldq_rax(10, 8); x_mem(137, 10, -40)
+  x_ldq_rax(10, 16); x_mem(137, 10, -48)
+  x_ldq_rax(0, 24); x_mem(137, 0, -56)
+  x_movimm(9, 0)
+  $Lloop = x_new()
+  $Lfound = x_new()
+  $Ladd = x_new()
+  $Lfin = x_new()
+  $Lgrow = x_new()
+  $Lstore = x_new()
+  $Lcopy = x_new()
+  $Lcopyend = x_new()
+  x_mark($Lloop)
+  x_mem(139, 9, -40); x_cmp(9, 0)
+  x_branch(141, $Ladd)
+  x_mem(139, 0, -56)
+  xb(74); xb(139); xb(4); xb(136)            # clé = [paires + r9*16]
+  x_mem(139, 10, -16)
+  x_cmp(0, 10)
+  x_branch(132, $Lfound)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Lfound)
+  x_mem(139, 0, -56)
+  x_mem(139, 9, -40)
+  x_mem(139, 8, -24)
+  xb(74); xb(137); xb(68); xb(136); xb(8)    # [paires + r9*16+8] = valeur
+  x_branch(233, $Lfin)
+  x_mark($Ladd)
+  x_mem(139, 10, -40); x_mem(139, 11, -48)
+  x_cmp(10, 11)
+  x_branch(141, $Lgrow)
+  x_branch(233, $Lstore)
+  x_mark($Lgrow)
+  x_mem(139, 11, -48); x_add(11, 11); x_mem(137, 11, -64)
+  x_mem(139, 11, -64); x_shl_rax(4); x_mem(137, 0, -72)
+  x_mem(139, 1, -72); x_call_lbl($alloc); x_mem(137, 0, -80)
+  x_movimm(9, 0)
+  x_mark($Lcopy)
+  x_mem(139, 9, -40); x_shl_rax(4); x_mem(137, 0, -88)
+  x_mem(139, 0, -56)
+  xb(72); xb(139); xb(4); xb(200)            # rax = [vieux + offset]
+  x_mem(137, 0, -96)
+  x_mem(139, 9, -40); x_shl_rax(4); x_mem(137, 11, -104)
+  x_mem(139, 0, -80); x_add(0, 11)
+  x_mem(139, 10, -96); x_stq_rax(0, 10)
+  x_mem(139, 0, -88); x_addi(0, 8); x_mem(137, 0, -88)
+  x_mem(139, 0, -96); x_addi(0, 8); x_mem(137, 0, -96)
+  x_addi(9, 1)
+  x_mem(139, 9, -40); x_mem(139, 11, -40); x_cmp(9, 11)
+  x_branch(142, $Lcopy)
+  x_mem(139, 0, -24); x_mem(139, 10, -80); x_stq_rax(24, 10)
+  x_mem(139, 10, -64); x_stq_rax(16, 10)
+  x_mem(139, 1, -56); x_call_lbl($free)
+  x_mem(139, 10, -80); x_mem(137, 11, -56)
+  x_mark($Lstore)
+  x_mem(139, 0, -56)
+  x_mem(139, 9, -40); x_shl_rax(4); x_add(0, 9)
+  x_mem(139, 10, -16); x_stq_rax(0, 10)
+  x_mem(139, 8, -24); x_stq_rax(8, 11)
+  x_mem(139, 10, -40); x_addi(10, 1)
+  x_mem(139, 0, -32); x_stq_rax(8, 10)
+  x_movimm(0, 0)
+  x_mark($Lfin)
+  x_epilogue()
+  retour 0
+}
+# x_cle_existe(RCX=table, RDX=clé) -> RAX = booléen étiqueté
+fn x_emit_cle($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(80)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_ldq_rax(10, 8); x_mem(137, 10, -24)
+  x_ldq_rax(0, 24); x_mem(137, 0, -32)
+  x_movimm(9, 0)
+  $Lloop = x_new()
+  $Loui = x_new()
+  $Lfin = x_new()
+  $Lfin2 = x_new()
+  x_mark($Lloop)
+  x_mem(139, 9, -24); x_cmp(9, 0)
+  x_branch(141, $Lfin)
+  x_mem(139, 0, -32)
+  xb(74); xb(139); xb(4); xb(136)
+  x_mem(139, 10, -16)
+  x_cmp(0, 10)
+  x_branch(132, $Loui)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Loui)
+  x_movimm(0, 8)
+  x_branch(233, $Lfin2)
+  x_mark($Lfin)
+  x_movimm(0, 0)
+  x_mark($Lfin2)
+  x_epilogue()
+  retour 0
+}
+
+fn x_andi_1f($r: entier) -> entier {
+  $b = 0; si ($r >= 8) { $b = 1 }
+  x_rex(1, 0, 0, $b); xb(131); xb(224 + ($r % 8)); xb(31)
+  retour 0
+}
+fn x_or_rax($r: entier) -> entier {
+  $b = 0; si ($r >= 8) { $b = 1 }
+  $rr = 0; si ($r >= 8) { $rr = 1 }
+  x_rex(1, $rr, 0, $b); xb(11); xb(192 + ($r % 8))
+  retour 0
+}
+# x_supprimer(RCX=table, RDX=clé) -> RAX = booléen étiqueté
+fn x_emit_supprimer($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(80)
+  x_mem(137, 1, -8)
+  x_mem(137, 2, -16)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_ldq_rax(10, 8); x_mem(137, 10, -24)
+  x_ldq_rax(0, 24); x_mem(137, 0, -32)
+  x_movimm(9, 0)
+  $Lloop = x_new()
+  $Lfound = x_new()
+  $Lfin = x_new()
+  $Lfin2 = x_new()
+  $Lshift = x_new()
+  $Lshiftend = x_new()
+  x_mark($Lloop)
+  x_mem(139, 9, -24); x_cmp(9, 0)
+  x_branch(141, $Lfin)
+  x_mem(139, 0, -32)
+  xb(74); xb(139); xb(4); xb(136)
+  x_mem(139, 10, -16)
+  x_cmp(0, 10)
+  x_branch(132, $Lfound)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Lfound)
+  x_mem(139, 9, -24); x_subi(9, 1)
+  x_mark($Lshift)
+  x_mem(139, 9, -24); x_cmp(9, 0)
+  x_branch(141, $Lshiftend)
+  x_mem(139, 0, -32)
+  x_mem(139, 9, -24); x_shl_rax(4); x_add(0, 9)
+  x_mem(139, 10, -32); x_shl_rax(4); x_add(10, 9)
+  x_addi(11, 16)
+  xb(72); xb(139); xb(4); xb(217)
+  xb(73); xb(137); xb(4); xb(218)
+  x_subi(9, 1)
+  x_branch(233, $Lshift)
+  x_mark($Lshiftend)
+  x_mem(139, 0, -24)
+  x_ldq_rax(10, 8)
+  x_subi(10, 1)
+  x_stq_rax(8, 10)
+  x_movimm(0, 8)
+  x_branch(233, $Lfin2)
+  x_mark($Lfin)
+  x_movimm(0, 0)
+  x_mark($Lfin2)
+  x_epilogue()
+  retour 0
+}
+# x_ordre : premier octet UTF-8 (point de code exact pour l'ASCII)
+fn x_emit_ordre($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
+  x_addi(0, 24)
+  xb(70); xb(15); xb(182); xb(8); xb(25)
+  x_shl_rax(3)
+  x_epilogue()
+  retour 0
+}
+# x_caractere : point de code ASCII (les autres deviennent '?')
+fn x_emit_caractere($lbl: entier, $make_str: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(128)
+  $Lqmark = x_new()
+  $Lcall = x_new()
+  x_byte_imm(-64, 0)
+  x_mem(139, 1, -8); x_sar_rax(3); x_mem(137, 0, -16)
+  x_mem(139, 0, -16); x_cmp(0, 127)
+  x_branch(143, $Lqmark)
+  x_mem(139, 0, -16)
+  x_stb_rax(-64, 0)
+  x_branch(233, $Lcall)
+  x_mark($Lqmark)
+  x_stb_rax(-64, 63)
+  x_mark($Lcall)
+  x_mem(141, 10, -64)
+  x_movimm(2, 1)
+  x_movimm(8, 1)
+  x_call_lbl($make_str)
+  x_epilogue()
+  retour 0
+}
+
+$x_bin_lbl = [0 : entier]
+$h_alloc = 0
+$h_free = 0
+$h_make_str = 0
+$h_truth = 0
+$h_len = 0
+$h_idx = 0
+$h_concat = 0
+$h_strcmp = 0
+$h_sous = 0
+$h_list = 0
+$h_chaine = 0
+$h_entier = 0
+$h_joindre = 0
+$h_table = 0
+$h_inserer = 0
+$h_cle = 0
+$h_suppr = 0
+$h_ordre = 0
+$h_car = 0
+
+# Affichage d'une valeur étiquetée : chaîne -> octets, entier -> décimal.
+fn x_emit_print_val($lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(176)
+  x_mem(137, 1, -8)
+  $Lstr = x_new()
+  $Lnum = x_new()
+  $Lfin = x_new()
+  x_mov(0, 1); xb(73); xb(131); xb(226); xb(7)
+  x_cmp(0, 1)
+  x_branch(132, $Lstr)
+  x_branch(233, $Lnum)
+  x_mark($Lstr)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248); x_addi(0, 24)
+  x_mem(137, 0, -24)
+  x_ldq_rax(10, 16); x_mem(137, 10, -32)
+  xb(185); xb(245); xb(255); xb(255); xb(255)
+  x_call_iat(0)
+  x_mem(137, 0, -40)
+  x_mem(139, 1, -40)
+  x_mem(139, 2, -24)
+  x_mem(139, 8, -32)
+  x_mem(141, 9, -48)
+  xb(72); xb(199); xb(68); xb(36); xb(32); x_imm32(0)
+  x_call_iat(1)
+  x_branch(233, $Lfin)
+  x_mark($Lnum)
+  x_mem(139, 1, -8)
+  x_sar_rax(3)
+  $Lz = x_new()
+  $Lp = x_new()
+  $Lc = x_new()
+  $Lloop = x_new()
+  $Ldone = x_new()
+  $Lwrite = x_new()
+  xb(69); xb(49); xb(219)
+  x_mem(137, 11, -56)
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Lz)
+  x_branch(137, $Lp)
+  xb(72); xb(247); xb(216)
+  x_movimm(11, 1)
+  x_mem(137, 11, -56)
+  x_branch(233, $Lc)
+  x_mark($Lz)
+  x_byte_imm(-97, 48)
+  x_movimm(10, 1)
+  x_movimm(9, 1)
+  x_branch(233, $Lwrite)
+  x_mark($Lp)
+  x_mark($Lc)
+  x_mem(141, 10, -96)
+  x_movimm(9, 0)
+  x_mark($Lloop)
+  xb(72); xb(133); xb(192)
+  x_branch(132, $Ldone)
+  xb(72); xb(49); xb(210)
+  x_movimm(8, 10)
+  xb(73); xb(247); xb(240)
+  xb(128); xb(194); xb(48)
+  x_subi(10, 1)
+  xb(65); xb(136); xb(18)
+  x_addi(9, 1)
+  x_branch(233, $Lloop)
+  x_mark($Ldone)
+  xb(72); xb(131); xb(189); x_imm32(-56); xb(0)
+  x_branch(132, $Lwrite)
+  x_subi(10, 1)
+  xb(65); xb(198); xb(2); xb(45)
+  x_addi(9, 1)
+  x_mark($Lwrite)
+  xb(185); xb(245); xb(255); xb(255); xb(255)
+  x_call_iat(0)
+  x_mem(137, 0, -40)
+  x_mem(139, 1, -40)
+  x_mov(2, 10)
+  x_mov(8, 9)
+  x_mem(141, 9, -48)
+  xb(72); xb(199); xb(68); xb(36); xb(32); x_imm32(0)
+  x_call_iat(1)
+  x_mark($Lfin)
+  x_epilogue()
+  retour 0
+}
+# Primitive : le Dispatch par nom est résolu à l'émission.
+fn x_emit_prim($nom: chaine, $lbl: entier) -> entier {
+  x_mark($lbl)
+  x_prologue(64)
+  $Lpf = x_new()
+  si ($nom == "longueur") { x_call_lbl($h_len)
+  } sinon si ($nom == "sous_chaine") { x_call_lbl($h_sous)
+  } sinon si ($nom == "joindre") { x_call_lbl($h_joindre)
+  } sinon si ($nom == "chaine") { x_call_lbl($h_chaine)
+  } sinon si ($nom == "entier") { x_call_lbl($h_entier)
+  } sinon si ($nom == "table") { x_call_lbl($h_table)
+  } sinon si ($nom == "inserer") { x_call_lbl($h_inserer)
+  } sinon si ($nom == "supprimer") { x_call_lbl($h_suppr)
+  } sinon si ($nom == "cle_existe") { x_call_lbl($h_cle)
+  } sinon si ($nom == "ordre") { x_call_lbl($h_ordre)
+  } sinon si ($nom == "caractere") { x_call_lbl($h_car)
+  } sinon si ($nom == "quitter") {
+    x_mem(139, 1, -8); xb(72); xb(131); xb(233); xb(248); x_mov(1, 0)
+    x_call_iat(2)
+  } sinon si ($nom == "temps" ou $nom == "hasard") {
+    x_call_iat(11)
+    x_shl_rax(3)
+  } sinon si ($nom == "partie_entiere" ou $nom == "flottant") {
+    x_mem(139, 0, -8)
+    xb(73); xb(131); xb(226); xb(7)
+    x_cmp(0, 0)
+    x_branch(132, $Lpf)
+    x_call_lbl($h_entier)
+    x_mark($Lpf)
+  } sinon si ($nom == "graine") {
+    x_movimm(0, 0)
+  } sinon si ($nom == "nb_arguments") {
+    x_movimm(0, 0)
+  } sinon si ($nom == "argument") {
+    x_movimm(1, 0)
+    x_movimm(2, 0)
+    x_movimm(8, 0)
+    x_call_lbl($h_make_str)
+  } sinon si ($nom == "afficher_erreur") {
+    x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248); x_addi(0, 24)
+    x_mem(137, 0, -24)
+    x_ldq_rax(10, 16); x_mem(137, 10, -32)
+    xb(185); xb(245); xb(255); xb(255); xb(255)
+    x_call_iat(0)
+    x_mem(137, 0, -40)
+    x_mem(139, 1, -40)
+    x_mem(139, 2, -24)
+    x_mem(139, 8, -32)
+    x_mem(141, 9, -48)
+    xb(72); xb(199); xb(68); xb(36); xb(32); x_imm32(0)
+    x_call_iat(1)
+    x_movimm(0, 0)
+  } sinon si ($nom == "lire_texte" ou $nom == "ecrire_bytes" ou $nom == "ecrire_texte") {
+    x_movimm(1, 0)
+    x_movimm(2, 0)
+    x_movimm(8, 0)
+    x_call_lbl($h_make_str)
+  } sinon {
+    x_movimm(0, 0)
+  }
+  x_epilogue()
+  retour 0
+}
+
 # ── Parse RIR ──────────────────────────────────────────────────────────────
 fn x_parse($src: chaine) -> entier {
   $ll = x_lignes($src)
@@ -718,9 +2126,11 @@ fn x_parse($src: chaine) -> entier {
 # ── Patch des sauts et des appels IAT ──────────────────────────────────────
 $rva_text = 4096
 $x_rva_data = 8192
-$x_iat_off = 128
+$x_iat_off = 200
 fn x_patch() -> chaine {
-  $out = ""
+  # Jointure équilibrée : l'accumulation `+` octet par octet devient O(n^2)
+  # dans le runtime natif (mesuré sur le RIR complet de 795 634 octets).
+  $parts = [""]
   $i = 0
   $n = x_off()
   tant_que ($i < $n) {
@@ -729,24 +2139,19 @@ fn x_patch() -> chaine {
       $l = x_ent(x_sub($m, 1, longueur($m)))
       $t = x_label($l)
       si ($t < 0) { $t = 0 }
-      $rel = $t - $i - 4
-      $out = $out + u32le($rel)
+      joindre($parts, u32le($t - $i - 4))
       $i = $i + 4
     } sinon si (longueur($m) > 0 et sous_chaine($m, 0, 1) == "I") {
       $idx = x_ent(x_sub($m, 1, longueur($m)))
       $cible = $x_rva_data + $x_iat_off + 8 * $idx
-      $rel = $cible - ($rva_text + $i + 4)
-      $out = $out + u32le($rel)
+      joindre($parts, u32le($cible - ($rva_text + $i + 4)))
       $i = $i + 4
-    } sinon si ($m == "s") {
-      $out = $out + u8le($x_code[$i])
-      $i = $i + 1
     } sinon {
-      $out = $out + u8le($x_code[$i])
+      joindre($parts, u8le($x_code[$i]))
       $i = $i + 1
     }
   }
-  retour $out
+  retour pe_join($parts, 1, longueur($parts))
 }
 
 # ── Writer PE32+ x86-64 ────────────────────────────────────────────────────
@@ -787,11 +2192,12 @@ fn x_pe($bin: chaine) -> chaine {
   $rva_data = $x_rva_data
   $image_base = 5368709120        # 0x140000000
   $imp_off = 32                   # 0x20
-  $ilt_off = 96                   # 0x60
-  $iat_off = $x_iat_off           # 0x80
-  $hint_base = 160                # 0xA0
-  $dll_off = 208                  # 0xD0 (après 3 × 16 octets de IMAGE_IMPORT_BY_NAME)
-  $nimports = 3
+  $ilt_off = 96                   # 0x60 : 12 entrées + terminateur -> 200
+  $iat_off = $x_iat_off           # 0xC8 : 12 entrées + terminateur -> 304
+  $hint_base = 320                # 0x140 (12 × 32 octets : les noms longs dépassent 16)
+  $dll_off = 704                  # 0x2C0
+  $nimports = 12
+  $data_sz = 1024                 # .data : ILT/IAT + 12 noms + DLL name
   $text_len = longueur($bin)
   $text_raw = partie_entiere(($text_len + 511) / 512) * 512
   $off_text = 1024
@@ -840,7 +2246,7 @@ fn x_pe($bin: chaine) -> chaine {
   $out = $out + u32le($text_len) + u32le($rva_text) + u32le($text_raw) + u32le($off_text)
   $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0) + u32le(1610612768)
   $out = $out + ".data" + pe_z(3)
-  $out = $out + u32le(512) + u32le($rva_data) + u32le(512) + u32le($off_data)
+  $out = $out + u32le($data_sz) + u32le($rva_data) + u32le($data_sz) + u32le($off_data)
   $out = $out + u32le(0) + u32le(0) + u16le(0) + u16le(0) + u32le(3221225536)
   $out = $out + ".pdata" + pe_z(2)
   $out = $out + u32le(36) + u32le($rva_pdata) + u32le(512) + u32le($off_pdata)
@@ -848,28 +2254,30 @@ fn x_pe($bin: chaine) -> chaine {
   $out = pe_c($out, 1024)
 
   # .data
-  $noms = ["GetStdHandle", "WriteFile", "ExitProcess"]
+  $noms = ["GetStdHandle", "WriteFile", "ExitProcess", "GetProcessHeap",
+           "HeapAlloc", "HeapFree", "CreateFileA", "ReadFile", "CloseHandle",
+           "GetFileSize", "GetCommandLineA", "GetTickCount64"]
   $dat = pe_c("", 32)
   $dat = $dat + u32le($rva_data + $ilt_off) + u32le(0) + u32le(0) + u32le($rva_data + $dll_off) + u32le($rva_data + $iat_off)
   $dat = pe_c($dat, 72)                  # descripteur nul
   $dat = pe_c($dat, 96)
   $i = 0
-  tant_que ($i < $nimports) { $dat = $dat + u64le($rva_data + $hint_base + 16 * $i); $i = $i + 1 }
+  tant_que ($i < $nimports) { $dat = $dat + u64le($rva_data + $hint_base + 32 * $i); $i = $i + 1 }
   $dat = $dat + u64le(0)                 # terminateur ILT
-  $dat = pe_c($dat, 128)
+  $dat = pe_c($dat, $iat_off)            # alignement IAT (12 entrées)
   $i = 0
-  tant_que ($i < $nimports) { $dat = $dat + u64le($rva_data + $hint_base + 16 * $i); $i = $i + 1 }
+  tant_que ($i < $nimports) { $dat = $dat + u64le($rva_data + $hint_base + 32 * $i); $i = $i + 1 }
   $dat = $dat + u64le(0)                 # terminateur IAT
-  $dat = pe_c($dat, 160)
+  $dat = pe_c($dat, $hint_base)          # alignement des noms
   $i = 0
   tant_que ($i < $nimports) {
     $dat = $dat + u16le(0) + $noms[$i] + caractere(0)
-    $dat = pe_c($dat, 160 + 16 * ($i + 1))
+    $dat = pe_c($dat, $hint_base + 32 * ($i + 1))
     $i = $i + 1
   }
-  $dat = pe_c($dat, 208)
+  $dat = pe_c($dat, $dll_off)
   $dat = $dat + "KERNEL32.DLL" + caractere(0)
-  $dat = pe_c($dat, 512)
+  $dat = pe_c($dat, $data_sz)
 
   $out = $out + $bin
   $out = pe_c($out, $off_data)
@@ -903,6 +2311,12 @@ si (nb_arguments() >= 1) {
       $i = $i + 1
     }
     si ($principal < 0) { ecrire_bytes("/dev/stderr", "principal introuvable\n"); quitter(2) }
+    $x_lst_lbl = x_new()
+    $x_idx_lbl = x_new()
+    $x_truth_lbl = x_new()
+    $x_prim_defaut_lbl = x_new()
+    $i = 0
+    tant_que ($i < 14) { joindre($x_bin_lbl, x_new()); $i = $i + 1 }
     $printl = x_new()
     x_compile_fonction($principal, $principal, $printl)
     $i = 0
@@ -910,7 +2324,63 @@ si (nb_arguments() >= 1) {
       si ($i != $principal) { x_compile_fonction($i, $principal, $printl) }
       $i = $i + 1
     }
-    x_emit_print($printl)
+    # Émet TOUS les helpers runtime dans .text.
+  $h_alloc = x_new()
+  $h_free = x_new()
+  $h_make_str = x_new()
+  $h_truth = x_new()
+  $h_len = x_new()
+  $h_idx = x_new()
+  $h_concat = x_new()
+  $h_strcmp = x_new()
+  $h_sous = x_new()
+  $h_list = x_new()
+  $h_chaine = x_new()
+  $h_entier = x_new()
+  $h_joindre = x_new()
+  $h_table = x_new()
+  $h_inserer = x_new()
+  $h_cle = x_new()
+  $h_suppr = x_new()
+  $h_ordre = x_new()
+  $h_car = x_new()
+  x_emit_alloc($h_alloc)
+  x_emit_free($h_free)
+  x_emit_make_str($h_make_str, $h_alloc)
+  x_emit_truth($h_truth)
+  x_emit_len($h_len)
+  x_emit_concat($h_concat, $h_alloc)
+  x_emit_strcmp($h_strcmp)
+  x_emit_make_list($h_list, $h_alloc)
+  x_emit_sous($h_sous, $h_make_str)
+  x_emit_idx($h_idx, $h_sous)
+  x_emit_chaine($h_chaine, $h_make_str)
+  x_emit_entier($h_entier)
+  x_emit_joindre($h_joindre, $h_alloc, $h_free)
+  x_emit_table_new($h_table, $h_alloc)
+  x_emit_inserer($h_inserer, $h_alloc, $h_free)
+  x_emit_cle($h_cle)
+  x_emit_supprimer($h_suppr)
+  x_emit_ordre($h_ordre)
+  x_emit_caractere($h_car, $h_make_str)
+  $i = 0
+  tant_que ($i < longueur($x_bin_lbl)) {
+    x_emit_bin_helper($i, $x_bin_lbl[$i], $h_truth, $h_concat, $h_strcmp, $h_chaine)
+    $i = $i + 1
+  }
+  $noms = ["longueur", "joindre", "sous_chaine", "chaine", "entier", "quitter",
+           "lire_texte", "ordre", "argument", "ecrire_bytes", "inserer",
+           "caractere", "nb_arguments", "table", "partie_entiere", "hasard",
+           "temps", "flottant", "graine", "afficher_erreur", "supprimer",
+           "ecrire_texte", "cle_existe"]
+  $i = 0
+  tant_que ($i < longueur($noms)) {
+    $l = x_prim_lbl($noms[$i])
+    x_emit_prim($noms[$i], $l)
+    $i = $i + 1
+  }
+  x_emit_prim("non_catalogue", $x_prim_defaut_lbl)
+    x_emit_print_val($printl)
     si (longueur($x_err) > 0) {
       ecrire_bytes("/dev/stderr", "X64 : " + $x_err[0] + "\n")
       quitter(2)

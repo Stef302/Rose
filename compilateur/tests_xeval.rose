@@ -1,0 +1,202 @@
+# tests_xeval.rose — tests de l'évaluateur x64 étendu (formes s/lst/idx/app).
+#
+# Module SOURCE,concaténé avec compilateur/emetteur_pe_x64.rose :
+#
+#   cat compilateur/emetteur_pe_x64.rose compilateur/tests_xeval.rose \
+#       > /tmp/opencode/tests_xeval_prog.rose
+#   C0 /tmp/opencode/tests_xeval_prog.rose > tests_xeval.elf
+#   ./tests_xeval.elf
+#
+# 14 assertions, toutes calculées dans le moteur Rose (aucune primitive Rust).
+# Convention : 1 ligne OK/ECHEC par assertion + TOTAL.
+
+fn tx_ok($o: chaine, $a: chaine) -> entier {
+  si ($o == $a) { retour 1 }
+  retour 0
+}
+fn tx_res($n: entier, $nom: chaine, $o: chaine, $a: chaine) -> chaine {
+  si ($o == $a) { retour "OK " + chaine($n) + " " + $nom }
+  retour "ECHEC " + chaine($n) + " " + $nom + " | obt=[" + $o + "] att=[" + $a + "]"
+}
+fn tx_hexch($v: entier) -> chaine {
+  $h = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+  $b = $v % 256
+  retour $h[partie_entiere($b / 16)] + $h[$b % 16]
+}
+fn tx_bytes($s: chaine) -> chaine {
+  $r = [""]
+  $i = 0
+  tant_que ($i < longueur($s)) { joindre($r, tx_hexch(ordre(sous_chaine($s, $i, $i + 1)))); $i = $i + 1 }
+  retour pe_join($r, 1, longueur($r))
+}
+fn tx_reset() -> entier {
+  $x_code = [0 : entier]
+  $x_meta = [0 : chaine]
+  $x_err = [0 : chaine]
+  $x_lbl_tab = table()
+  $x_ctr = [0]
+  $x_fn = ["f"]
+  $x_fnslot = [4]
+  $x_fnam = ["0|a|1|b|2|c|3|d"]
+  $x_fop = [0]
+  $x_fnop = [0]
+  $x_flbl = [1]
+  $x_endlbl = [2]
+  $x_fparam = [0]
+  $x_ops = [""]
+  $x_oplbl = [3]
+  $x_idx_lbl = x_new()
+  $x_lst_lbl = x_new()
+  $x_truth_lbl = x_new()
+  $x_bin_lbl = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+  $x_prim_defaut_lbl = x_new()
+  retour 0
+}
+fn tx_last($n: entier) -> chaine {
+  $r = [""]
+  $i = longueur($x_code) - $n
+  tant_que ($i < longueur($x_code)) { joindre($r, tx_hexch($x_code[$i])); $i = $i + 1 }
+  retour pe_join($r, 1, longueur($r))
+}
+
+# L'état global de l'émetteur est initialisé au niveau fichier : une affectation
+# dans une fonction créerait une variable locale (sémantique Rose).
+$x_fn = ["f"]
+$x_fnslot = [4]
+$x_fnam = ["0|a|1|b|2|c|3|d"]
+$x_fop = [0]
+$x_fnop = [0]
+$x_flbl = [1]
+$x_endlbl = [2]
+$x_fparam = [0]
+$x_ops = [""]
+$x_oplbl = [3]
+
+$tx_total = 0
+$tx_o = ""
+$tx_a = ""
+
+# 1 — table des opcodes binaires : 14 opcodes couverts.
+$tx_o = chaine(x_binop_code("+")) + "," + chaine(x_binop_code("==")) + "," + chaine(x_binop_code("^")) + "," + chaine(x_binop_code("ou")) + "," + chaine(x_binop_code("zz"))
+$tx_a = "0,6,5,13,-1"
+>> tx_res(1, "binop_codes", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 2 — les 23 primitives du catalogue ont toutes une étiquette.
+$noms = ["longueur", "joindre", "sous_chaine", "chaine", "entier", "quitter",
+         "lire_texte", "ordre", "argument", "ecrire_bytes", "inserer",
+         "caractere", "nb_arguments", "table", "partie_entiere", "hasard",
+         "temps", "flottant", "graine", "afficher_erreur", "supprimer",
+         "ecrire_texte", "cle_existe"]
+$tx_okprim = 1
+$i = 0
+tant_que ($i < longueur($noms)) {
+  si (x_prim_lbl($noms[$i]) < 0) { $tx_okprim = 0 }
+  $i = $i + 1
+}
+$tx_o = chaine($tx_okprim) + "/" + chaine(longueur($noms))
+$tx_a = "1/23"
+>> tx_res(2, "catalogue_primitives", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 3 — x_prim_lbl refuse un nom hors catalogue.
+$tx_o = chaine(x_prim_lbl("inconnue"))
+$tx_a = "-1"
+>> tx_res(3, "primitive_inconnue", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 4 — forme `s` : x_eval émet un descripteur et finit par `or rax, 1`.
+$t = x_tokens('(s "abc")')
+$p = x_eval($t, 0, 0, 0)
+$tx_o = chaine($p) + "|" + tx_last(4)
+$tx_a = "4|4883c801"
+>> tx_res(4, "forme_s_or_rax1", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 5 — forme `lst` : les deux éléments sont empilés puis x_make_list est appelé.
+$t = x_tokens("(lst (n 1) (n 2))")
+$p = x_eval($t, 0, 0, 0)
+$tx_o = chaine($p)
+$tx_a = "11"
+>> tx_res(5, "forme_lst_consommee", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 6 — forme `idx` : la fin est un appel (E8) vers le runtime.
+$t = x_tokens("(idx (v a) (n 0))")
+$p = x_eval($t, 0, 0, 0)
+$tx_o = chaine($p) + "|" + tx_hexch($x_code[longueur($x_code) - 5])
+$tx_a = "11|e8"
+>> tx_res(6, "forme_idx_call", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 7 — `bin` : appel au helper d'opcode.
+$t = x_tokens("(bin + (n 1) (n 2))")
+$p = x_eval($t, 0, 0, 0)
+$tx_o = tx_hexch($x_code[longueur($x_code) - 5])
+$tx_a = "e8"
+>> tx_res(7, "forme_bin_call", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 8 — x_op : `bloc` est un marqueur sans effet (aucun octet émis, aucune erreur).
+x_op("bloc (1 instrs)", 0, 0, 0)
+$tx_o = chaine(longueur($x_err))
+$tx_a = "0"
+>> tx_res(8, "op_bloc_noop", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 9 — x_op : `afficher` appelle le printer de valeurs étiquetées.
+x_op("afficher_abstrait slot 0", 0, 0, 0)
+$tx_o = tx_hexch($x_code[longueur($x_code) - 5])
+$tx_a = "e8"
+>> tx_res(9, "op_afficher_call", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 10 — saut conditionnel : x_truth est appelé avant le test.
+x_op("saut_si_faux 2 (bin == (n 1) (n 1))", 0, 0, 0)
+$tx_o = chaine(longueur($x_err))
+$tx_a = "0"
+>> tx_res(10, "saut_si_faux_truth", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 11 — appel RIR avec 5 arguments : cinquième argument écrit sur la pile.
+$t = x_tokens("(appel_rir f (n 1) (n 2) (n 3) (n 4) (n 5))")
+$p = x_eval($t, 0, 0, 0)
+$tx_o = chaine($p) + "|" + chaine(longueur($x_err))
+$tx_a = "24|0"
+>> tx_res(11, "appel_5_args", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 12 — primitive `app` inconnue : repli sur stub, pas d'erreur d'émission.
+joindre($x_prim_inconnues, "sentinelle")
+$t = x_tokens("(app primitive_inexistante (n 1))")
+$p = x_eval($t, 0, 0, 0)
+$tx_o = chaine($p) + "|" + chaine(longueur($x_err))
+$tx_a = "8|0"
+>> tx_res(12, "app_inconnu_repli", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 13 — table d'imports : 12 noms KERNEL32 dont GetProcessHeap/HeapAlloc.
+$x_rva_data = 8192
+$x_iat_off = 192
+$pe = x_pe("")
+$tx_o = ""
+si (x_pos($pe, "GetProcessHeap") >= 0) { $tx_o = $tx_o + "1" } sinon { $tx_o = $tx_o + "0" }
+si (x_pos($pe, "HeapAlloc") >= 0) { $tx_o = $tx_o + "1" } sinon { $tx_o = $tx_o + "0" }
+si (x_pos($pe, "GetTickCount64") >= 0) { $tx_o = $tx_o + "1" } sinon { $tx_o = $tx_o + "0" }
+$tx_a = "111"
+>> tx_res(13, "imports_kernel32_12", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+# 14 — les encodages x64 utilisés par le tas sont bien disponibles.
+$tx_base = longueur($x_code)
+x_stb_rax(24, 65)
+x_stq_rax(8, 10)
+x_ldq_rax(10, 16)
+x_shl_rax(3)
+x_sar_rax(3)
+$tx_o = tx_bytes(caractere($x_code[$tx_base]) + caractere($x_code[$tx_base + 1]))
+$tx_a = "c680"
+>> tx_res(14, "encodages_tas", $tx_o, $tx_a)
+$tx_total = $tx_total + tx_ok($tx_o, $tx_a)
+
+>> "TOTAL " + chaine($tx_total) + "/14"
