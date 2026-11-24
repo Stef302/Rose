@@ -484,12 +484,12 @@ $x_prim_defaut_lbl = 0
 $x_prim_inconnues = [0 : chaine]
 
 fn x_call_lbl($l: entier) -> entier { retour x_branch(232, $l) }
-# mov qword [rsp+disp32], reg64  (REX.W 89 /r, SIB=24)
+# mov qword [rsp+disp32], reg64  (REX.W 89 /r, SIB sans index)
 fn x_stq_rsp($disp: entier, $reg: entier) -> entier {
   $r = 0; si ($reg >= 8) { $r = 1 }
   x_rex(1, $r, 0, 0); xb(137)
   xb(148 + (($reg % 8) * 8))
-  xb(36)
+  xb(44)                            # SIB: index=aucun, base=RSP
   x_imm32($disp)
   retour 0
 }
@@ -963,6 +963,7 @@ fn x_emit_make_str($lbl: entier, $alloc: entier) -> entier {
   x_stq_rax(8, 10)
   x_mem(139, 10, -24)
   x_stq_rax(16, 10)
+  x_mem(139, 1, -8)                          # restaure RCX = pointeur source (écrasé par x_mem(139,1,-32) à l'alloc)
   x_movimm(9, 0)                             # i = 0
   $Lloop = x_new()
   $Ldone = x_new()
@@ -971,7 +972,7 @@ fn x_emit_make_str($lbl: entier, $alloc: entier) -> entier {
   x_cmp(9, 10)
   x_branch(131, $Ldone)                      # jae
   # r10b = [src + i]
-  xb(70); xb(138); xb(20); xb(24)            # mov r10b, [rcx+r9]
+  xb(70); xb(138); xb(20); xb(9)             # mov r10b, [rcx+r9]  (SIB 0x09: index=RCX->R9, base=RCX)
   # [dst + 24 + i] = r10b
   xb(70); xb(136); xb(84); xb(8); xb(24)     # mov [rax+r9+24], r10b  (disp8 24)
   x_addi(9, 1)
@@ -1148,7 +1149,7 @@ fn x_emit_concat($lbl: entier, $alloc: entier) -> entier {
   x_mark($Lloop1)
   x_mem(139, 10, -24); x_cmp(9, 10)
   x_branch(131, $Lnxt1)
-  xb(70); xb(138); xb(20); xb(25)            # r10b = [rcx+r9]
+  xb(70); xb(138); xb(20); xb(9)             # r10b = [rcx+r9]  (SIB 0x09: index=RCX->R9, base=RCX)
   x_mem(139, 0, -72)
   xb(70); xb(136); xb(20); xb(8)             # [rax+r9] = r10b
   x_addi(9, 1)
@@ -1161,7 +1162,7 @@ fn x_emit_concat($lbl: entier, $alloc: entier) -> entier {
   x_mark($Lloop2)
   x_mem(139, 10, -32); x_cmp(9, 10)
   x_branch(131, $Ldone)
-  xb(71); xb(138); xb(20); xb(26)            # r10b = [rdx+r9]
+  xb(70); xb(138); xb(20); xb(10)            # r10b = [rdx+r9]  (REX.B=0, SIB 0x0a: index=RCX->R9, base=RDX)
   x_mem(139, 0, -72)
   xb(70); xb(136); xb(20); xb(8)
   x_addi(9, 1)
@@ -1196,8 +1197,8 @@ fn x_emit_strcmp($lbl: entier) -> entier {
   x_branch(131, $Lfin)
   x_mem(139, 10, -32); x_cmp(9, 10)
   x_branch(131, $Lfin)
-  xb(70); xb(15); xb(182); xb(20); xb(25)    # movzx r10, byte [rcx+r9]
-  xb(71); xb(15); xb(182); xb(28); xb(10)    # movzx r11, byte [rdx+r9]
+  xb(70); xb(15); xb(182); xb(20); xb(9)     # movzx r10, byte [rcx+r9]  (SIB 0x09: index=RCX->R9, base=RCX)
+  xb(70); xb(15); xb(182); xb(28); xb(10)    # movzx r11, byte [rdx+r9]  (REX.B=0, SIB 0x0a: index=RCX->R9, base=RDX)
   x_cmp(10, 11)
   x_branch(133, $Ldiff)
   x_addi(9, 1)
@@ -1399,7 +1400,7 @@ fn x_emit_sous($lbl: entier, $make_str: entier) -> entier {
   x_mem(139, 9, -72); x_mem(137, 11, -72)
   x_mark($Lseto1)
   x_mem(139, 9, -88)
-  xb(70); xb(138); xb(20); xb(25)            # r10b = octet de tête
+  xb(70); xb(138); xb(20); xb(9)             # r10b = [rcx+r9]  (SIB 0x09: index=RCX->R9, base=RCX)
   x_mov(2, 10); xb(72); xb(131); xb(226); xb(248)
   x_cmp(2, 240)
   x_branch(141, $Lfour)
@@ -1594,23 +1595,22 @@ fn x_emit_entier($lbl: entier) -> entier {
   x_mem(139, 1, -8)
   x_branch(233, $Lfin)
   x_mark($Lparse)
-  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)
-  x_addi(0, 24); x_mem(137, 0, -16)          # données
-  x_ldq_rax(10, 16); x_mem(137, 10, -24)     # noct
-  x_movimm(9, 0)
-  x_movimm(0, 0)
-  x_movimm(10, 0)                            # signe
-  x_mem(139, 9, -16)
-  xb(70); xb(15); xb(182); xb(20); xb(25)
-  x_cmp(10, 45)
+  x_mem(139, 1, -8); xb(72); xb(131); xb(225); xb(248)   # mov rcx, [rbp-8]; and rcx, -8 (RCX = pointeur données)
+  x_mov(0, 1)                                            # mov rax, rcx
+  x_ldq_rax(10, 16); x_mem(137, 10, -24)                 # noct = [rax+16]
+  x_addi(0, 24); x_mem(137, 0, -16)                      # [rbp-16] = rax + 24 = données
+  x_movimm(9, 0)                                         # i = 0 (R9)
+  x_movimm(0, 0)                                         # RAX = 0 (accumulateur)
+  x_movimm(10, 0)                                        # R10 = 0 (signe)
+  xb(70); xb(15); xb(182); xb(20); xb(9)                 # movzx r11, byte [rcx + r9]
+  x_cmp(11, 45)
   x_branch(133, $Lloop)
   x_movimm(10, 1)
   x_addi(9, 1)
   x_mark($Lloop)
-  x_mem(139, 9, -24); x_cmp(9, 0)
+  x_mem(139, 10, -24); x_cmp(9, 10)                      # i (R9) vs noct (R10)
   x_branch(141, $Lfin)
-  x_mem(139, 9, -16)
-  xb(70); xb(15); xb(182); xb(28); xb(25)    # movzx r11, byte [rsi+r9]
+  xb(70); xb(15); xb(182); xb(20); xb(9)                 # movzx r11, byte [rcx + r9]
   x_subi(11, 48)
   x_cmp(11, 9)
   x_branch(143, $Lfin)

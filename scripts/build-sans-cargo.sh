@@ -75,6 +75,10 @@ OUT="/tmp/opencode/release-sans-cargo"
 REF=""
 RAPPORT=""
 TLIMIT=900
+# Délai (s) pour l'émission RIR du moteur complet (étape Windows). 600 s par
+# défaut dans le corps du script étaient trop courts pour le moteur actuel :
+# re-mesurable via ROSE_RIR_TIMEOUT.
+RIR_TIMEOUT="${ROSE_RIR_TIMEOUT:-3600}"
 REUTILISER=0
 NO_TESTS=0
 WINDOWS=0
@@ -284,7 +288,7 @@ if [[ $WINDOWS -eq 1 ]]; then
   #    RCDATA 3 du setup sont TOUS ce même binaire C0.
   echo "TENTATIVE RIR moteur complet : $ELF rir $(basename "$SOURCE")" >> "$TENT"
   rc_rir=0
-  timeout 600 "$ELF" rir "$SOURCE" > "$WIN/moteur_complet.rir" \
+  timeout "$RIR_TIMEOUT" "$ELF" rir "$SOURCE" > "$WIN/moteur_complet.rir" \
       2> "$WIN/moteur_complet.rir.err" || rc_rir=$?
   if [[ $rc_rir -ne 0 || ! -s "$WIN/moteur_complet.rir" ]]; then
     printf 'RIR COMPLET refusé (rc=%s) : %s — BLOQUÉ, aucun repli\n' "$rc_rir" \

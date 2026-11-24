@@ -15,22 +15,24 @@
 # target/ AU MOMENT où il tourne. La passe 1 produit un moteur frais ; la
 # passe 2 régénère rose-setup.res avec CE moteur frais, puis relie rose-setup.
 #
-# Usage : sh scripts/build-windows-rebuild.sh [--selfhost]
+# Usage : sh scripts/build-windows-rebuild.sh [--cargo]
 #
-#   --selfhost : chemin SANS cargo. On appelle scripts/build-sans-cargo.sh
-#                --windows, qui compile par C0 le moteur, l'émetteur PE x64
-#                et le générateur de ressources Win32, puis produit et
-#                vérifie les 5 artefacts PE32+ x86-64 du stage :
-#                Rose-win-Setup.exe, rose.exe, rose-shell.exe,
+#   --cargo    : chemin AVEC cargo (cross-build x86_64-pc-windows-msvc via
+#                xwin). Ce chemin reste disponible mais n'est plus le défaut.
+#   --selfhost : chemin SANS cargo (défaut). On appelle
+#                scripts/build-sans-cargo.sh --windows, qui compile par C0 le
+#                moteur, l'émetteur PE x64 et le générateur de ressources
+#                Win32, puis produit et vérifie les 5 artefacts PE32+ x86-64
+#                du stage : Rose-win-Setup.exe, rose.exe, rose-shell.exe,
 #                rose-tray.exe, payload/rose.exe. Le moteur Windows complet
 #                n'est pas encore émissible (sous-ensemble RIR entiers) :
-#                voir rose/docs/RELEASE_100.md. Le chemin cargo reste le
-#                défaut, inchangé (release v0.1.76).
+#                voir rose/docs/RELEASE_100.md.
 set -eu
 
-MODE=cargo
+MODE=selfhost
 for arg in "$@"; do
   case "$arg" in
+    --cargo) MODE=cargo ;;
     --selfhost) MODE=selfhost ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "OPTION INCONNUE : $arg" >&2; exit 1 ;;
@@ -44,6 +46,11 @@ V="$RACINE/installateur/velopack"
 LOGDIR="${ROSE_REBUILD_LOG:-/tmp/opencode/rose-rebuild}"
 mkdir -p "$LOGDIR"
 
+# Délai maximal (s) alloué à la compilation C0 du moteur (build-sans-cargo.sh
+# utilise 900 s par défaut : insuffisant pour le moteur complet, qui met
+# ~9-15 min sur ce nœud). Re-mesurable via ROSE_SELFHOST_TIMEOUT.
+SELFHOST_TIMEOUT="${ROSE_SELFHOST_TIMEOUT:-3600}"
+
 TARGET=x86_64-pc-windows-msvc
 R="$RACINE/rose/target/$TARGET/release"
 STAGE="$V/stage"
@@ -52,7 +59,7 @@ STAGE="$V/stage"
 if [ "$MODE" = selfhost ]; then
   SOURCE_OUT="${ROSE_SELFHOST_OUT:-/tmp/opencode/release-sans-cargo}"
   echo "=== MODE SELFHOST : compilation par C0, AUCUNE commande cargo ==="
-  ARGS="--c0 ${ROSE_C0:-/tmp/opencode/C0_h.elf} --sortie $SOURCE_OUT --windows"
+  ARGS="--c0 ${ROSE_C0:-/tmp/opencode/C0_h.elf} --sortie $SOURCE_OUT --windows --timeout $SELFHOST_TIMEOUT"
   if [ -n "${ROSE_REFERENCE:-}" ]; then
     ARGS="$ARGS --reference $ROSE_REFERENCE"
   fi
