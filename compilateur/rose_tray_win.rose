@@ -1,0 +1,1046 @@
+# rose_tray_win.rose — helper arrière-plan Windows ÉCRIT EN ROSE (C0).
+#
+# Source AUTONOME : noyau PE/RCDATA/imports repris de pe_stub_ressources.rose
+# (C0 ne partage PAS les globals entre modules importés). Voir
+# rose/docs/LANCEURS_WIN.md.
+
+# pe_stub_ressources.rose — noyau d'émission PE32+ x86-64 et de table de
+# ressources ÉCRIT EN ROSE, compilé par C0 (aucun cargo, aucun llvm-rc, aucun
+# lieur). Ce fichier est À LA FOIS :
+#   1. un pilote autonome pour les modes `stub`, `payload` et `setup` ;
+#   2. la bibliothèque importée par rose_shell_win.rose et rose_tray_win.rose
+#      (le bloc `si` de dispatch final ignore leurs modes, donc l'import n'a
+#      aucun effet de bord).
+#
+# Protocole d'arguments (identique pour les quatre lanceurs) :
+#   argument(0) = chemin de sortie .exe
+#   argument(1) = mode (`stub`, `payload`, `setup`, `shell`, `tray`)
+#   argument(2) = nombre de ressources N (0 accepté)
+#   pour i dans 0..N-1 :
+#     argument(3+4*i) = type Win32 (10=RCDATA, 8=FONT, 24=MANIFEST, ...)
+#     argument(4+4*i) = identifiant numérique
+#     argument(5+4*i) = chemin du fichier BRUT à embarquer
+#     argument(6+4*i) = taille exacte en octets (stat, PAS longueur() : une
+#                       chaîne Rose contenant des octets > 127 a une longueur
+#                       en points de code, pas en octets — mesuré sur C0).
+#
+# Correctifs C0 repris de emetteur_pe_x64.rose : `octet_brut()` est intercepté
+# par le backend G5 et dépose UN octet brut (au lieu du UTF-8 de caractere()) ;
+# `gj()` évite le O(n²) de la concaténation octaet par octet.
+
+# ── Petites conversions little-endian (octets bruts) ──────────────────────
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+fn g8($v: entier) -> chaine { retour octet_brut($v) }
+fn g16($v: entier) -> chaine {
+  $u = $v % 65536
+  si ($u < 0) { $u = $u + 65536 }
+  retour g8($u % 256) + g8(partie_entiere($u / 256) % 256)
+}
+fn g32($v: entier) -> chaine {
+  $u = $v % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  retour g8($u % 256) + g8(partie_entiere($u / 256) % 256) +
+         g8(partie_entiere($u / 65536) % 256) +
+         g8(partie_entiere($u / 16777216) % 256)
+}
+fn g64($v: entier) -> chaine {
+  $u = $v
+  si ($u < 0) { $u = $u + 18446744073709551616 }
+  $r = ""
+  $i = 0
+  tant_que ($i < 8) {
+    $r = $r + g8($u % 256)
+    $u = partie_entiere($u / 256)
+    $i = $i + 1
+  }
+  retour $r
+}
+fn gz($n: entier) -> chaine {
+  $r = ""
+  $i = 0
+  tant_que ($i < $n) { $r = $r + g8(0); $i = $i + 1 }
+  retour $r
+}
+fn gj($p: liste<chaine>, $d: entier, $f: entier) -> chaine {
+  si ($f - $d <= 0) { retour "" }
+  si ($f - $d == 1) { retour $p[$d] }
+  $m = ($d + $f) div 2
+  retour gj($p, $d, $m) + gj($p, $m, $f)
+}
+fn jb($p: liste<chaine>) -> chaine { retour gj($p, 1, longueur($p)) }
+fn al($n: entier, $a: entier) -> entier { retour partie_entiere(($n + $a - 1) / $a) * $a }
+
+# ── Flux de code / de données / de ressources (listes à sentinelle) ───────
+# Une liste `[""]` + joindre() conserve un élément par octet ; `longueur(l)-1`
+# est donc le nombre d'octets, y compris quand les octets ont le bit 31 à 1
+# (mesuré : `[0:chaine]` PERD le premier ajout sous C0, `[""]` ne le perd pas).
+$code = [""]
+$data = [""]
+$probe = [""]
+$entry = [0]                   # offset du point d'entrée dans .text
+$modes = [0]                   # pile de modes (0=code réel, 1=sonde). Un
+                               # scalaire global n'est PAS modifiable depuis
+                               # une fonction sous C0 ; une liste, si.
+$rparts = [""]
+$rsizes = [0]                  # somme des tailles = taille exacte de .rsrc
+
+fn setdry($v: entier) -> entier { joindre($modes, $v); retour 0 }
+fn isdry() -> entier { retour $modes[longueur($modes) - 1] }
+fn cb($v: entier) -> entier {
+  si (isdry() == 1) { joindre($probe, octet_brut($v % 256)) }
+  sinon { joindre($code, octet_brut($v % 256)) }
+  retour 0
+}
+fn clen() -> entier {
+  si (isdry() == 1) { retour longueur($probe) - 1 }
+  retour longueur($code) - 1
+}
+fn db($v: entier) -> entier { joindre($data, octet_brut($v % 256)); retour 0 }
+fn dpos() -> entier { retour longueur($data) - 1 }
+fn ra8($v: entier) -> entier {
+  joindre($rparts, octet_brut($v % 256))
+  joindre($rsizes, 1)
+  retour 0
+}
+fn ra32($v: entier) -> entier {
+  $u = $v
+  si ($u < 0) { $u = $u + 4294967296 }
+  ra8($u % 256)
+  ra8(partie_entiere($u / 256) % 256)
+  ra8(partie_entiere($u / 65536) % 256)
+  ra8(partie_entiere($u / 16777216) % 256)
+  retour 0
+}
+fn ra_zero($n: entier) -> entier {
+  $i = 0
+  tant_que ($i < $n) { ra8(0); $i = $i + 1 }
+  retour 0
+}
+fn ra_blob($s: chaine, $n: entier) -> entier {
+  joindre($rparts, $s)
+  joindre($rsizes, $n)
+  retour 0
+}
+fn rtotal() -> entier {
+  $s = 0
+  $i = 1
+  tant_que ($i < longueur($rsizes)) { $s = $s + $rsizes[$i]; $i = $i + 1 }
+  retour $s
+}
+
+# ── Émetteur x64 minimal (appels IAT, adresses RIP-relatives, sauts) ──────
+fn c8($v: entier) -> entier { cb($v % 256); retour 0 }
+fn c32($v: entier) -> entier {
+  $u = $v
+  si ($u < 0) { $u = $u + 4294967296 }
+  c8($u % 256)
+  c8(partie_entiere($u / 256) % 256)
+  c8(partie_entiere($u / 65536) % 256)
+  c8(partie_entiere($u / 16777216) % 256)
+  retour 0
+}
+fn c64($v: entier) -> entier {
+  $u = $v % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  $h = partie_entiere($v / 4294967296)
+  si ($v < 0) { $h = 4294967295 }
+  si ($h < 0) { $h = $h + 4294967296 }
+  $i = 0
+  tant_que ($i < 4) { c8($u % 256); $u = partie_entiere($u / 256); $i = $i + 1 }
+  $i = 0
+  tant_que ($i < 4) { c8($h % 256); $h = partie_entiere($h / 256); $i = $i + 1 }
+  retour 0
+}
+fn cstr($s: chaine) -> entier {
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) { c8(ordre(sous_chaine($s, $i, $i + 1))); $i = $i + 1 }
+  retour 0
+}
+# call QWORD PTR [rip+disp32] : IAT de l'import $k (base 1).
+fn ccall($k: entier) -> entier {
+  $at = 4096 + clen()
+  c8(255); c8(21)
+  c32((8192 + $iat[$k]) - ($at + 6))
+  retour 0
+}
+# lea r(reg), [rip+disp32] ; reg dans 0..7 (rax..rdi).
+fn clea($reg: entier, $off: entier) -> entier {
+  $at = 4096 + clen()
+  si ($reg >= 8) { c8(76); c8(141); c8(5 + 8 * ($reg % 8)) }
+  sinon { c8(72); c8(141); c8(5 + 8 * $reg) }
+  c32((8192 + $off) - ($at + 7))
+  retour 0
+}
+fn cmovimm($reg: entier, $v: entier) -> entier {
+  c8(72); c8(184 + $reg); c64($v)
+  retour 0
+}
+fn cmovimm32($reg: entier, $v: entier) -> entier {
+  c8(184 + $reg); c32($v)
+  retour 0
+}
+fn cmovimm32r($reg: entier, $v: entier) -> entier {
+  si ($reg >= 8) { c8(65); c8(184 + ($reg % 8)); c32($v) }
+  sinon { c8(184 + $reg); c32($v) }
+  retour 0
+}
+fn cmovrr($dst: entier, $src: entier) -> entier {
+  c8(72); c8(137); c8(192 + $dst + 8 * $src)   # 48 89 /r : dst=reg, src=rm
+  retour 0
+}
+fn cmovrrx($dst: entier, $src: entier) -> entier {
+  si ($src >= 8) { c8(76); c8(137); c8(192 + $dst + 8 * ($src % 8)) }
+  sinon { cmovrr($dst, $src) }
+  retour 0
+}
+fn cstmem($base: entier, $off: entier, $val: entier) -> entier {
+  c8(72); c8(137); c8(64 + $base + 8 * $val); c8($off)
+  retour 0
+}
+fn cstmem32($base: entier, $off: entier, $imm: entier) -> entier {
+  c8(199); c8(64 + $base); c8($off); c32($imm)
+  retour 0
+}
+fn cldmem($reg: entier, $base: entier, $off: entier) -> entier {
+  c8(72); c8(139); c8(64 + $base + 8 * $reg); c8($off)
+  retour 0
+}
+fn dcmpedx($imm: entier) -> entier {
+  c8(129); c8(250); c32($imm)
+  retour 0
+}
+fn dzero($n: entier) -> entier {
+  $off = dpos()
+  $i = 0
+  tant_que ($i < $n) { db(0); $i = $i + 1 }
+  retour $off
+}
+fn dstrw($s: chaine) -> entier {
+  $off = dpos()
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    db(ordre(sous_chaine($s, $i, $i + 1)) % 256)
+    db(0)
+    $i = $i + 1
+  }
+  db(0); db(0)
+  retour $off
+}
+fn probe_size() -> entier { retour longueur($probe) - 1 }
+fn probe_mark() -> entier { retour longueur($probe) - 1 }
+fn probe_delta($m: entier) -> entier { retour (longueur($probe) - 1) - $m }
+fn setentry($off: entier) -> entier { joindre($entry, $off); retour 0 }
+fn cxor($reg: entier) -> entier { c8(49); c8(192 + $reg); retour 0 }
+fn csubrsp($n: entier) -> entier { c8(72); c8(131); c8(236); c8($n); retour 0 }
+fn caddrsp($n: entier) -> entier { c8(72); c8(131); c8(196); c8($n); retour 0 }
+fn cmovstk($off: entier, $reg: entier) -> entier {
+  c8(72); c8(137); c8(68 + 8 * $reg); c8(36); c8($off)
+  retour 0
+}
+fn cmovstk32($off: entier, $v: entier) -> entier {
+  c8(199); c8(68); c8(36); c8($off); c32($v)
+  retour 0
+}
+fn cmovldstk($reg: entier, $off: entier) -> entier {
+  c8(72); c8(139); c8(68 + 8 * $reg); c8(36); c8($off)
+  retour 0
+}
+fn cmovld($reg: entier, $off: entier) -> entier {
+  c8(72); c8(139); c8(5 + 8 * $reg)
+  c32((8192 + $off) - (4096 + clen() + 7))
+  retour 0
+}
+fn cmovst($off: entier, $reg: entier) -> entier {
+  c8(72); c8(137); c8(5 + 8 * $reg)
+  c32((8192 + $off) - (4096 + clen() + 7))
+  retour 0
+}
+fn cmovldidx($reg: entier, $base: entier, $off: entier) -> entier {
+  c8(72); c8(139); c8(5 + 8 * $reg + 8 * $base)  # mod=00 rm=base
+  c32($off)
+  retour 0
+}
+fn cjmpback($start: entier) -> entier {
+  $d = $start - (clen() + 2)         # saut ARRIÈRE : disp signé négatif
+  c8(235)
+  si ($d < 0) { c8($d + 256) } sinon { c8($d) }
+  retour 0
+}
+fn cjmpback32($start: entier) -> entier {
+  $d = $start - (clen() + 5)
+  c8(233); c32($d)
+  retour 0
+}
+fn cjz($skip: entier) -> entier { c8(116); c8($skip % 256); retour 0 }
+fn cjnz($skip: entier) -> entier { c8(117); c8($skip % 256); retour 0 }
+fn cjmpfwd($skip: entier) -> entier { c8(235); c8($skip % 256); retour 0 }
+fn ctestrax() -> entier { c8(133); c8(192); retour 0 }
+fn cret() -> entier { c8(195); retour 0 }
+
+# ── Table d'imports (KERNEL32 / USER32 / SHELL32, autant que voulu) ──────
+$dlls = [""]
+$impdll = [0]
+$impnoms = [""]
+$iat = [0]
+$hintoff = [0]
+$dlloff = [0]
+$iltstart = [0]
+$iatstart = [0]
+$imp_end = [0]
+
+fn adddll($n: chaine) -> entier { joindre($dlls, $n); retour longueur($dlls) - 1 }
+fn addimp($d: entier, $n: chaine) -> entier {
+  joindre($impdll, $d)
+  joindre($impnoms, $n)
+  retour longueur($impnoms) - 1
+}
+fn countimp($d: entier) -> entier {
+  $c = 0
+  $i = 1
+  tant_que ($i < longueur($impdll)) {
+    si ($impdll[$i] == $d) { $c = $c + 1 }
+    $i = $i + 1
+  }
+  retour $c
+}
+fn db16($v: entier) -> entier {
+  $u = $v
+  si ($u < 0) { $u = $u + 65536 }
+  db($u % 256); db(partie_entiere($u / 256) % 256)
+  retour 0
+}
+fn db32($v: entier) -> entier {
+  $u = $v
+  si ($u < 0) { $u = $u + 4294967296 }
+  db($u % 256); db(partie_entiere($u / 256) % 256)
+  db(partie_entiere($u / 65536) % 256); db(partie_entiere($u / 16777216) % 256)
+  retour 0
+}
+fn db64($v: entier) -> entier {
+  $u = $v
+  si ($u < 0) { $u = $u + 18446744073709551616 }
+  $i = 0
+  tant_que ($i < 8) { db($u % 256); $u = partie_entiere($u / 256); $i = $i + 1 }
+  retour 0
+}
+fn dbuf($s: chaine) -> entier {
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) { db(ordre(sous_chaine($s, $i, $i + 1))); $i = $i + 1 }
+  retour 0
+}
+fn gimports() -> entier {
+  $nd = longueur($dlls) - 1
+  $ni = longueur($impnoms) - 1
+  $p = 20 * $nd + 20                    # + descripteur NUL terminateur
+  $i = 1
+  tant_que ($i <= $nd) {
+    joindre($iltstart, al($p, 8))
+    $p = al($p, 8) + 8 * (countimp($i) + 1)
+    $i = $i + 1
+  }
+  $i = 1
+  tant_que ($i <= $nd) {
+    joindre($iatstart, al($p, 8))
+    $p = al($p, 8) + 8 * (countimp($i) + 1)
+    $i = $i + 1
+  }
+  $i = 1
+  tant_que ($i <= $ni) {
+    joindre($hintoff, $p)
+    $p = $p + 2 + longueur($impnoms[$i]) + 1
+    si ($p % 2 == 1) { $p = $p + 1 }
+    $i = $i + 1
+  }
+  $i = 1
+  tant_que ($i <= $nd) {
+    joindre($dlloff, $p)
+    $p = $p + longueur($dlls[$i]) + 1
+    $i = $i + 1
+  }
+  joindre($imp_end, $p)
+  # RVA de chaque case IAT, dans l'ordre des imports.
+  $i = 1
+  tant_que ($i <= $ni) {
+    $d = $impdll[$i]
+    $rang = 0
+    $j = 1
+    tant_que ($j < $i) {
+      si ($impdll[$j] == $d) { $rang = $rang + 1 }
+      $j = $j + 1
+    }
+    joindre($iat, $iatstart[$d] + 8 * $rang)
+    $i = $i + 1
+  }
+  # Descripteurs IMAGE_IMPORT_DESCRIPTOR, puis le bourrage d'alignement 8
+  # qui a été COMPTÉ dans $iltstart (l'oublier décale tous les RVAs de 4).
+  $i = 1
+  tant_que ($i <= $nd) {
+    db32(8192 + $iltstart[$i]); db32(0); db32(0)
+    db32(8192 + $dlloff[$i]); db32(8192 + $iatstart[$i])
+    $i = $i + 1
+  }
+  $i = 0
+  tant_que ($i < 20) { db(0); $i = $i + 1 }   # descripteur NUL
+  $pad = al(20 * $nd + 20, 8) - (20 * $nd + 20)
+  $i = 0
+  tant_que ($i < $pad) { db(0); $i = $i + 1 }
+  # ILT puis IAT (mêmes RVAs ; le chargeur écrase l'IAT).
+  $passe = 0
+  tant_que ($passe < 2) {
+    $i = 1
+    tant_que ($i <= $nd) {
+      $j = 1
+      tant_que ($j <= $ni) {
+        si ($impdll[$j] == $i) { db64(8192 + $hintoff[$j]) }
+        $j = $j + 1
+      }
+      db64(0)
+      $i = $i + 1
+    }
+    $passe = $passe + 1
+  }
+  # IMAGE_IMPORT_BY_NAME (hint=0, nom ASCII, NUL, alignement 2).
+  $i = 1
+  tant_que ($i <= $ni) {
+    db16(0); dbuf($impnoms[$i]); db(0)
+    si (dpos() % 2 == 1) { db(0) }
+    $i = $i + 1
+  }
+  # Noms de DLL.
+  $i = 1
+  tant_que ($i <= $nd) { dbuf($dlls[$i]); db(0); $i = $i + 1 }
+  retour $ni
+}
+
+# ── Ressources : lecture du prototype (chemin + taille STAT) ─────────────
+$r_type = [0]
+$r_nom = [0]
+$r_path = [""]
+$r_sz = [0]
+$u_type = [0]
+$u_tdir = [0]
+$langoff = [0]
+$deoff = [0]
+$r_dataoff = [0]
+$r_pad = [0]
+$order = [0]
+
+fn nressources() -> entier {
+  si (nb_arguments() >= 3) { retour entier(argument(2)) }
+  retour 0
+}
+fn lire_protos() -> entier {
+  $n = nressources()
+  $i = 0
+  tant_que ($i < $n) {
+    joindre($r_type, entier(argument(3 + 4 * $i)))
+    joindre($r_nom, entier(argument(4 + 4 * $i)))
+    joindre($r_path, argument(5 + 4 * $i))
+    joindre($r_sz, entier(argument(6 + 4 * $i)))
+    $i = $i + 1
+  }
+  retour $n
+}
+fn count_type($t: entier) -> entier {
+  $c = 0
+  $i = 1
+  tant_que ($i <= longueur($r_type) - 1) {
+    si ($r_type[$i] == $t) { $c = $c + 1 }
+    $i = $i + 1
+  }
+  retour $c
+}
+fn rang_type($t: entier) -> entier {
+  $i = 1
+  tant_que ($i <= longueur($u_type) - 1) {
+    si ($u_type[$i] == $t) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+fn header_dir($n: entier) -> entier {
+  ra32(0); ra32(0)                   # characteristics, timestamp
+  ra8(0); ra8(0); ra8(0); ra8(0); ra8(0); ra8(0)  # major, minor, 0 nommé
+  ra8($n % 256); ra8(partie_entiere($n / 256) % 256)
+  retour 0
+}
+fn build_rsrc($rsrc_rva: entier) -> entier {
+  $n = longueur($r_type) - 1
+  $i = 1
+  tant_que ($i <= $n) {
+    si (rang_type($r_type[$i]) < 0) { joindre($u_type, $r_type[$i]) }
+    $i = $i + 1
+  }
+  $nt = longueur($u_type) - 1
+  $p = 16 + 8 * $nt
+  $j = 1
+  tant_que ($j <= $nt) {
+    joindre($u_tdir, $p)
+    $p = $p + 16 + 8 * count_type($u_type[$j])
+    $j = $j + 1
+  }
+  $i = 1
+  tant_que ($i <= $n) { joindre($langoff, $p); $p = $p + 24; $i = $i + 1 }
+  $i = 1
+  tant_que ($i <= $n) { joindre($deoff, $p); $p = $p + 16; $i = $i + 1 }
+  $i = 1
+  tant_que ($i <= $n) {
+    $a = al($p, 4)
+    joindre($r_pad, $a - $p)
+    joindre($r_dataoff, $a)
+    $p = $a + $r_sz[$i]
+    $i = $i + 1
+  }
+  # Racine.
+  header_dir($nt)
+  $j = 1
+  tant_que ($j <= $nt) {
+    ra32($u_type[$j]); ra32(2147483648 + $u_tdir[$j])
+    $j = $j + 1
+  }
+  # Répertoires de type, dans l'ordre des types.
+  $j = 1
+  tant_que ($j <= $nt) {
+    $t = $u_type[$j]
+    header_dir(count_type($t))
+    $i = 1
+    tant_que ($i <= $n) {
+      si ($r_type[$i] == $t) {
+        ra32($r_nom[$i]); ra32(2147483648 + $langoff[$i])
+        joindre($order, $i)
+      }
+      $i = $i + 1
+    }
+    $j = $j + 1
+  }
+  # Langues (1033) + entrées de données.
+  $i = 1
+  tant_que ($i <= $n) {
+    header_dir(1)
+    ra32(1033); ra32($deoff[$i])
+    $i = $i + 1
+  }
+  $i = 1
+  tant_que ($i <= $n) {
+    ra32($rsrc_rva + $r_dataoff[$i]); ra32($r_sz[$i]); ra32(0); ra32(0)
+    $i = $i + 1
+  }
+  # Blobs (alignés sur 4), dans l'ordre du prototype.
+  $i = 1
+  tant_que ($i <= $n) {
+    ra_zero($r_pad[$i])
+    ra_blob(lire_texte($r_path[$i]), $r_sz[$i])
+    $i = $i + 1
+  }
+  retour rtotal()
+}
+
+# ── Icône DIB 16x16 32 bpp (repli des lanceurs sans fichier externe) ─────
+fn gc($s: chaine, $n: entier) -> chaine {
+  si (longueur($s) >= $n) { retour $s }
+  retour $s + gz($n - longueur($s))
+}
+fn gdib() -> chaine {
+  $h = g32(40) + g32(16) + g32(32) + g16(1) + g16(32) + g32(0) +
+       g32(0) + g32(0) + g32(0) + g32(0) + g32(0)
+  $ligne = ""
+  $i = 0
+  tant_que ($i < 16) { $ligne = $ligne + g32(4294902528); $i = $i + 1 }
+  $xor = ""
+  $i = 0
+  tant_que ($i < 16) { $xor = $xor + $ligne; $i = $i + 1 }
+  retour gc($h, 40) + $xor + gz(64)
+}
+
+# ── En-tête PE complet ────────────────────────────────────────────────────
+fn emit_pe($subsys: entier, $desc: chaine) -> entier {
+  $code_len = clen()
+  $data_len = dpos()
+  $text_raw = al($code_len, 512)
+  $data_raw = al($data_len, 512)
+  $rsrc_rva = 8192 + al($data_raw, 4096)
+  $rsrc_len = 0
+  si (longueur($rparts) > 1) { $rsrc_len = rtotal() }
+  $rsrc_raw = al($rsrc_len, 512)
+  $size_image = $rsrc_rva + $rsrc_raw
+  $off_text = 1024
+  $off_data = $off_text + $text_raw
+  $off_rsrc = $off_data + $data_raw
+
+  # ⚠ Aucun gc()/longueur() sur un en-tête contenant des octets > 127 :
+  # sous C0, longueur(octet_brut(128)) vaut 0 (mesuré). Tous les bourrages
+  # sont donc explicites et comptés en octets.
+  $o = "MZ" + gz(58) + g32(128) + $desc
+  $o = $o + gz(128 - 64 - longueur($desc))
+  $o = $o + "PE" + gz(2)
+  $o = $o + g16(34404) + g16(3) + g32(0) + g32(0) + g32(0) +
+       g16(240) + g16(34)
+  $o = $o + g16(523) + g8(0) + g8(0)
+  $o = $o + g32($code_len) + g32($text_raw + $data_raw + $rsrc_raw) + g32(0)
+  $o = $o + g32(4096 + $entry[1]) + g32(4096)      # entry point, base of code
+  $o = $o + g64(5368709120)                       # image base 0x140000000
+  $o = $o + g32(4096) + g32(512)                  # alignements
+  $o = $o + g16(6) + g16(0) + g16(0) + g16(0) + g16(6) + g16(0)
+  $o = $o + g32(0)
+  $o = $o + g32($size_image) + g32(1024) + g32(0)
+  $o = $o + g16($subsys) + g16(33120)
+  $o = $o + g64(1048576) + g64(4096) + g64(1048576) + g64(4096)
+  $o = $o + g32(0) + g32(16)
+  $o = $o + gz(8) + g32(8192) + g32($imp_end[1])  # dir 1 : imports
+  $o = $o + g32($rsrc_rva) + g32($rsrc_len)        # dir 2 : ressources
+  $o = $o + gz(8) + gz(64)
+  $o = $o + g32(8192 + $iatstart[1]) + g32(8 * (longueur($impnoms) - 1))
+  $o = $o + gz(24)
+
+  $o = $o + ".text" + gz(3) + g32($code_len) + g32(4096) + g32($text_raw) +
+       g32($off_text) + g32(0) + g32(0) + g16(0) + g16(0) + g32(1610612768)
+  $o = $o + ".data" + gz(3) + g32($data_len) + g32(8192) + g32($data_raw) +
+       g32($off_data) + g32(0) + g32(0) + g16(0) + g16(0) + g32(3221225536)
+  $o = $o + ".rsrc" + gz(3) + g32($rsrc_len) + g32($rsrc_rva) + g32($rsrc_raw) +
+       g32($off_rsrc) + g32(0) + g32(0) + g16(0) + g16(0) + g32(1073741888)
+  $o = $o + gz(1024 - 512)                        # 3 en-têtes de section
+  $o = $o + jb($code) + gz($text_raw - $code_len)
+  $o = $o + jb($data) + gz($data_raw - $data_len)
+  $o = $o + jb($rparts) + gz($rsrc_raw - $rsrc_len)
+  ecrire_bytes(argument(0), $o)
+  retour 0
+}
+
+# ── Mode console (`stub` / `payload`) : WriteFile + ExitProcess RÉELS ────
+fn console_stub($desc: chaine) -> entier {
+  lire_protos()
+  joindre($dlls, "KERNEL32.DLL")
+  joindre($impnoms, "GetStdHandle")
+  joindre($impnoms, "WriteFile")
+  joindre($impnoms, "ExitProcess")
+  joindre($impdll, 1); joindre($impdll, 1); joindre($impdll, 1)
+  gimports()
+  $msg = "Rose selfhost: PE console valide\n"
+  $msg_off = dpos()
+  dbuf($msg)
+  $written_off = dpos()
+  db32(0)
+  $code = [""]
+  csubrsp(40)
+  cmovimm(1, -11)                           # RCX = STD_OUTPUT_HANDLE (-11)
+  ccall(1)
+  cmovrr(1, 0)                              # RCX = handle rendu par RAX
+  clea(2, $msg_off)                         # RDX = message
+  cmovimm32r(8, longueur($msg))             # R8 = longueur
+  clea(9, $written_off)                     # R9 = &octets_écrits
+  cmovstk32(32, 0)                          # lpOverlapped = NULL
+  ccall(2)
+  cxor(1)                                   # ExitProcess(0)
+  ccall(3)
+  si (longueur($r_type) > 1) { build_rsrc(8192 + al(dpos(), 4096)) }
+  emit_pe(3, $desc)
+  retour 0
+}
+
+# ── Installeur GUI (sous-système 2) : fenêtre Win32 réelle ───────────────
+# Les trois blocs du WndProc sont écrits comme des fonctions : on les émet
+# d'abord en mode sonde pour connaître leur taille, puis on émet les sauts
+# avant de les émettre pour de vrai (C0 interdit l'écriture d'un élément de
+# liste, donc aucun patch de code n'est possible).
+fn wp_quit() -> entier {
+  cxor(1)                       # RCX = 0 : PostQuitMessage(0)
+  ccall(7)
+  cxor(0)
+  caddrsp(40)
+  cret()
+  retour 0
+}
+fn wp_paint($ps: entier, $rect: entier, $txt: entier) -> entier {
+  clea(2, $ps)                  # BeginPaint(hwnd, &ps)
+  ccall(12)
+  clea(2, $rect)                # GetClientRect(hwnd, &rect)
+  ccall(15)
+  cmovrr(1, 0)                  # RCX = HDC
+  clea(2, $txt)                 # RDX = texte
+  cmovimm32r(8, 4294967295)     # R8 = -1 (NUL-terminé)
+  clea(9, $rect)                # R9 = &rect
+  cmovstk32(32, 37)             # DT_CENTER|DT_VCENTER|DT_SINGLELINE
+  ccall(14)                     # DrawTextW
+  clea(2, $ps)                  # EndPaint(hwnd, &ps)
+  ccall(13)
+  cxor(0)
+  caddrsp(40)
+  cret()
+  retour 0
+}
+fn wp_default() -> entier {
+  cmovrrx(0, 9)                 # RAX = lParam
+  cmovstk(32, 0)                # 5e argument de DefWindowProcW
+  ccall(3)
+  caddrsp(40)
+  cret()
+  retour 0
+}
+fn emit_wndproc($ps: entier, $rect: entier, $txt: entier,
+                $dq: entier, $dd: entier) -> entier {
+  csubrsp(40)
+  dcmpedx(2)                    # WM_DESTROY
+  cjz(6 + 2 + 6 + 2 + $dd)
+  dcmpedx(16)                   # WM_CLOSE
+  cjz(6 + 2 + $dd)
+  dcmpedx(15)                   # WM_PAINT
+  cjz($dd + $dq)                # default + quit avant le bloc paint
+  wp_default()
+  wp_quit()
+  wp_paint($ps, $rect, $txt)
+  retour 0
+}
+fn setup_gui() -> entier {
+  lire_protos()
+  joindre($dlls, "USER32.DLL")
+  joindre($dlls, "KERNEL32.DLL")
+  joindre($impnoms, "RegisterClassExW"); joindre($impdll, 1)
+  joindre($impnoms, "CreateWindowExW"); joindre($impdll, 1)
+  joindre($impnoms, "DefWindowProcW"); joindre($impdll, 1)
+  joindre($impnoms, "GetMessageW"); joindre($impdll, 1)
+  joindre($impnoms, "TranslateMessage"); joindre($impdll, 1)
+  joindre($impnoms, "DispatchMessageW"); joindre($impdll, 1)
+  joindre($impnoms, "PostQuitMessage"); joindre($impdll, 1)
+  joindre($impnoms, "ShowWindow"); joindre($impdll, 1)
+  joindre($impnoms, "UpdateWindow"); joindre($impdll, 1)
+  joindre($impnoms, "LoadIconW"); joindre($impdll, 1)
+  joindre($impnoms, "GetModuleHandleW"); joindre($impdll, 1)
+  joindre($impnoms, "BeginPaint"); joindre($impdll, 1)
+  joindre($impnoms, "EndPaint"); joindre($impdll, 1)
+  joindre($impnoms, "DrawTextW"); joindre($impdll, 1)
+  joindre($impnoms, "GetClientRect"); joindre($impdll, 1)
+  joindre($impnoms, "ExitProcess"); joindre($impdll, 2)
+  gimports()
+
+  $wc = dzero(80)               # WNDCLASSEXW
+  $cls = dstrw("RoseSetup")
+  $titre = dstrw("Rose Setup")
+  $txt = dstrw("ROSE - installation selfhost")
+  $msg = dzero(48)              # MSG
+  $ps = dzero(72)               # PAINTSTRUCT
+  $rect = dzero(16)             # RECT
+  $hinst = dzero(8)
+  $hicon = dzero(8)
+  $hwnd = dzero(8)
+
+  # Sondes : on AJOUTE toujours dans la même liste global $probe (C0 ne
+  # remplace pas une variable globale depuis une fonction) et on mesure des
+  # DELTAS. Aucun patch d'octet n'est nécessaire.
+  setdry(1)
+  $m = probe_mark()
+  wp_quit()
+  $dq = probe_delta($m)
+  $m = probe_mark()
+  wp_paint($ps, $rect, $txt)
+  $dp = probe_delta($m)
+  $m = probe_mark()
+  wp_default()
+  $dd = probe_delta($m)
+  $m = probe_mark()
+  cmovimm32(1, 1); ccall(16); cret()
+  $df = probe_delta($m)
+  $m = probe_mark()
+  cxor(1); ccall(16); cret()
+  $dex = probe_delta($m)
+  setdry(0)
+  # WndProc FIRST : son adresse est donc 0x140001000 (image base + .text).
+  $wp = 4096
+  emit_wndproc($ps, $rect, $txt, $dq, $dd)
+  setentry(clen())
+
+  csubrsp(40)
+  cxor(1)                       # GetModuleHandleW(NULL)
+  ccall(11)
+  clea(2, $hinst)
+  cstmem(2, 0, 0)               # sauvegarde hInstance
+  cmovrr(1, 0)
+  cmovimm32r(2, 1)              # MAKEINTRESOURCE(1) = RT_GROUP_ICON 1
+  ccall(10)                     # LoadIconW
+  clea(2, $hicon)
+  cstmem(2, 0, 0)
+
+  clea(3, $wc)                  # RBX = &wc
+  cstmem32(3, 0, 80)            # cbSize
+  cmovimm(0, 5368709120 + $wp)  # adresse du WndProc
+  cstmem(3, 8, 0)
+  clea(2, $hinst); cldmem(1, 2, 0); cstmem(3, 24, 1)
+  clea(2, $hicon); cldmem(1, 2, 0); cstmem(3, 32, 1)
+  clea(1, $cls); cstmem(3, 64, 1)
+  cmovrr(1, 3)                  # RegisterClassExW(&wc)
+  ccall(1)
+  ctestrax()
+  cjz($df)
+  cmovimm32(1, 1); ccall(16); cret()
+
+  cxor(1)                       # CreateWindowExW : exStyle = 0
+  clea(2, $cls)                 # RDX = classe
+  cmovimm32r(8, 0)              # R8 = titre NULL
+  cmovimm32r(9, 13565952)       # WS_OVERLAPPEDWINDOW 0x00CF0000
+  cmovstk32(32, 0)              # x
+  cmovstk32(40, 0)              # y
+  cmovstk32(48, 0)              # largeur
+  cmovstk32(56, 0)              # hauteur
+  cmovstk32(64, 0)              # parent
+  cmovstk32(72, 0)              # menu
+  clea(2, $hinst); cldmem(1, 2, 0); cmovstk(80, 1)
+  cmovstk32(88, 0)              # paramètre de création
+  ccall(2)
+  clea(2, $hwnd); cstmem(2, 0, 0)
+  cmovrr(1, 0); cmovimm32(2, 1); ccall(8)   # ShowWindow(SW_SHOWNORMAL)
+  clea(2, $hwnd); cldmem(1, 2, 0); ccall(9) # UpdateWindow
+
+  $boucle = clen()
+  clea(1, $msg)                 # GetMessageW(&msg, 0, 0, 0)
+  cxor(2)                       # RDX = hwnd NULL
+  cmovimm32r(8, 0)              # R8 = filterMin 0
+  cmovimm32r(9, 0)              # R9 = filterMax 0
+  ccall(4)
+  ctestrax()
+  c8(116); c8(4)                # jz sortie : 2 (js) + 2 (jmp)
+  c8(120); c8(2)                # js sortie : 2 (jmp) — GetMessage = -1
+  cjmpfwd($dex)                 # sauter par-dessus le bloc de sortie
+  cxor(1); ccall(16); cret()    # bloc de sortie
+  clea(1, $msg); ccall(5)       # TranslateMessage
+  clea(1, $msg); ccall(6)       # DispatchMessageW
+  cjmpback32($boucle)
+
+  si (longueur($r_type) > 1) { build_rsrc(8192 + al(dpos(), 4096)) }
+  emit_pe(2, "Rose selfhost setup GUI (Win32 natif)")
+  retour 0
+}
+
+# ── Dispatch du pilote autonome (les modes shell/tray sont dans les
+#    fichiers qui importent ce noyau et ne sont PAS traités ici) ───────────
+si (nb_arguments() >= 2) {
+  $mode = argument(1)
+  si ($mode == "stub" ou $mode == "payload") {
+    console_stub("Rose selfhost PE console: " + $mode)
+    quitter(0)
+  }
+  si ($mode == "setup") {
+    setup_gui()
+    quitter(0)
+  }
+}
+
+fn tray_manifest($chemin: entier, $tampon: entier, $lus: entier) -> entier {
+  # UNE seule lecture du manifeste : CreateFileW + ReadFile + CloseHandle.
+  # Pas de polling, pas de backlog, pas de service.
+  clea(1, $chemin)
+  cmovimm(2, 2147483648)                # GENERIC_READ
+  cmovimm32r(8, 1)                      # FILE_SHARE_READ
+  cmovimm32r(9, 0)                      # lpSecurityAttributes = NULL
+  cmovstk32(32, 3)                      # OPEN_EXISTING
+  cmovstk32(40, 128)                    # FILE_ATTRIBUTE_NORMAL
+  cmovstk32(48, 0)                      # hTemplateFile = NULL
+  ccall(19)
+  cmovrr(1, 0)                          # RCX = handle (ou -1 : ReadFile échoue)
+  clea(2, $tampon)
+  cmovimm32r(8, 4096)
+  clea(9, $lus)
+  cmovstk32(32, 0)
+  ccall(20)                             # ReadFile
+  cmovrr(1, 0)
+  ccall(21)                             # CloseHandle
+  retour 0
+}
+
+fn tray_wndproc_stub() -> entier {
+  cxor(0)                               # LRESULT 0
+  cret()
+  retour 0
+}
+
+fn rose_tray_win() -> entier {
+  lire_protos()
+  $u = adddll("USER32.DLL")
+  $s = adddll("SHELL32.DLL")
+  $k = adddll("KERNEL32.DLL")
+  addimp($u, "RegisterClassExW")
+  addimp($u, "CreateWindowExW")
+  addimp($u, "DefWindowProcW")
+  addimp($u, "GetMessageW")
+  addimp($u, "TranslateMessage")
+  addimp($u, "DispatchMessageW")
+  addimp($u, "PostQuitMessage")
+  addimp($u, "LoadIconW")
+  addimp($u, "GetModuleHandleW")
+  addimp($u, "SetTimer")
+  addimp($u, "KillTimer")
+  addimp($u, "SetForegroundWindow")
+  addimp($u, "GetCursorPos")
+  addimp($u, "CreatePopupMenu")
+  addimp($u, "AppendMenuW")
+  addimp($u, "TrackPopupMenu")
+  addimp($u, "DestroyMenu")
+  addimp($s, "Shell_NotifyIconW")
+  addimp($k, "CreateFileW")
+  addimp($k, "ReadFile")
+  addimp($k, "CloseHandle")
+  addimp($k, "ExitProcess")
+  addimp($k, "WriteFile")
+  gimports()
+
+  $wc = dzero(80)
+  $cls = dstrw("RoseTrayMessageWindow")
+  $tip = dstrw("Rose - verif")
+  $nid = dzero(952)
+  $msg = dzero(48)
+  $hinst = dzero(8)
+  $hwnd = dzero(8)
+  $hicon = dzero(8)
+  $manpath = dstrw("rose-manifest.json")
+  $manbuf = dzero(4096)
+  $manlus = dzero(4)
+  $logpath = dstrw("rose-tray.log")
+  $logtxt = dstrw("rose-tray demarre\n")
+  $logecrit = dzero(4)
+  $menu1 = dstrw("Verifier maintenant")
+  $menu2 = dstrw("Desactiver le helper")
+  $menu3 = dstrw("Quitter")
+
+  # WndProc minimal (retour 0). Le tray n'a AUCUNE fenêtre visible.
+  $wp = 4096
+  tray_wndproc_stub()
+  setentry(clen())
+
+  csubrsp(72)
+  # Journal sans console : un échec Shell_NotifyIcon reste visible à terre.
+  clea(1, $logpath)
+  cmovimm(2, 1073741824)                # GENERIC_WRITE
+  cmovimm32r(8, 1)
+  cmovimm32r(9, 0)
+  cmovstk32(32, 4)                      # OPEN_ALWAYS
+  cmovstk32(40, 128)
+  cmovstk32(48, 0)
+  ccall(19)
+  cmovrr(1, 0)
+  clea(2, $logtxt)
+  cmovimm32r(8, 20)
+  clea(9, $logecrit)
+  cmovstk32(32, 0)
+  ccall(25)                             # WriteFile
+  cmovrr(1, 0); ccall(21)               # CloseHandle
+
+  tray_manifest($manpath, $manbuf, $manlus)   # lecture au démarrage
+
+  cxor(1)                               # GetModuleHandleW(NULL)
+  ccall(9)
+  clea(2, $hinst); cstmem(2, 0, 0)
+  cmovrr(1, 0)
+  cmovimm32r(2, 1)
+  ccall(8)                              # LoadIconW(RT_GROUP_ICON 1)
+  clea(2, $hicon); cstmem(2, 0, 0)
+
+  clea(3, $wc)
+  cstmem32(3, 0, 80)
+  cmovimm(0, 5368709120 + $wp)
+  cstmem(3, 8, 0)
+  clea(2, $hinst); cldmem(1, 2, 0); cstmem(3, 24, 1)
+  clea(1, $cls); cstmem(3, 64, 1)
+  cmovrr(1, 3); ccall(1)                # RegisterClassExW
+  ctestrax()
+  setdry(1)
+  $m = probe_mark()
+  cmovimm32(1, 1); ccall(23); cret()
+  $derr = probe_delta($m)
+  setdry(0)
+  cjz($derr)
+  cmovimm32(1, 1); ccall(23); cret()
+
+  cxor(1); clea(2, $cls); cmovimm32r(8, 0); cmovimm32r(9, 0)
+  cmovstk32(32, 0); cmovstk32(40, 0); cmovstk32(48, 0); cmovstk32(56, 0)
+  cmovimm32(64, 4294967293)             # HWND_MESSAGE = (HWND)-3
+  cmovstk32(72, 0)
+  clea(2, $hinst); cldmem(1, 2, 0); cmovstk(80, 1)
+  cmovstk32(88, 0)
+  ccall(2)                              # CreateWindowExW
+  clea(2, $hwnd); cstmem(2, 0, 0)
+
+  clea(3, $nid)
+  cstmem32(3, 0, 952)
+  clea(2, $hwnd); cldmem(1, 2, 0); cstmem(3, 8, 1)
+  cstmem32(3, 16, 1)                    # uID
+  cstmem32(3, 20, 7)                    # NIF_MESSAGE|NIF_ICON|NIF_TIP
+  cstmem32(3, 24, 32770)                # WM_TRAY_CLIC
+  clea(2, $hicon); cldmem(1, 2, 0); cstmem(3, 32, 1)
+  clea(1, $tip)
+  c8(72); c8(139); c8(1)                # RCX = szTip source
+  clea(2, $nid)
+  c8(72); c8(129); c8(194); c8(40)      # RDX = &nid.szTip
+  $cp = clen()
+  c8(102); c8(139); c8(1)               # mov ax,[rcx]
+  c8(102); c8(137); c8(2)               # mov [rdx],ax
+  c8(72); c8(131); c8(193); c8(2)       # add rcx,2
+  c8(72); c8(131); c8(194); c8(2)       # add rdx,2
+  c8(102); c8(131); c8(248); c8(0)      # cmp ax,0
+  c8(116); c8(2)                        # je -> sortie de boucle
+  c8(235)
+  $dd = $cp - (clen() + 2)
+  si ($dd < 0) { c8($dd + 256) } sinon { c8($dd) }
+  cstmem32(3, 948, 17)                  # NIIF_INFO|NIIF_NOSOUND
+
+  cxor(1)                               # Shell_NotifyIconW(NIM_ADD, &nid)
+  clea(2, $nid)
+  ccall(18)
+  ctestrax()
+  setdry(1)
+  $m2 = probe_mark()
+  cmovimm32(1, 1); ccall(23); cret()
+  $derr2 = probe_delta($m2)
+  setdry(0)
+  cjz($derr2)
+  cmovimm32(1, 1); ccall(23); cret()
+
+  # SetTimer(hwnd, 1, 21 600 000 ms, NULL) — 6 heures, UN seul timer.
+  clea(2, $hwnd); cldmem(1, 2, 0)       # RCX = hwnd
+  cmovimm32(2, 1)                       # RDX = ID_TIMER
+  cmovimm32r(8, 21600000)               # R8 = 6 h
+  cmovimm32r(9, 0)                      # R9 = NULL
+  ccall(10)
+
+  $boucle = clen()
+  clea(1, $msg); cxor(2); cmovimm32r(8, 0); cmovimm32r(9, 0)
+  ccall(4)                              # GetMessageW
+  ctestrax()
+  c8(116); c8(4)                        # jz -> sortie
+  c8(120); c8(2)                        # js -> sortie
+  # Tailles des deux blocs (sondes cumulées).
+  setdry(1)
+  $m3 = probe_mark()
+  cxor(1); ccall(23); cret()
+  $dex = probe_delta($m3)
+  $m4 = probe_mark()
+  tray_manifest($manpath, $manbuf, $manlus)
+  clea(3, $nid); cstmem32(3, 20, 18)    # NIF_INFO|NIF_ICON
+  cxor(1); clea(2, $nid); ccall(18)     # Shell_NotifyIconW(NIM_MODIFY)
+  clea(3, $nid); cstmem32(3, 20, 7)     # restaure NIF_MESSAGE|NIF_ICON|NIF_TIP
+  $dtick = probe_delta($m4)
+  setdry(0)
+  cjmpfwd($dex)                         # évite le bloc sortie
+  cxor(1); ccall(23); cret()            # bloc sortie
+  # WM_TIMER (0x0113) : UNE lecture du manifeste + ballon discret.
+  clea(1, $msg); cldmem(2, 1, 8)        # RDX = msg.message
+  dcmpedx(275)                          # 0x0113
+  c8(116); c8(2)                        # je -> bloc timer
+  c8(233); c32($dtick)                  # jmp rel32 par-dessus le bloc timer
+  tray_manifest($manpath, $manbuf, $manlus)
+  clea(3, $nid); cstmem32(3, 20, 18)
+  cxor(1); clea(2, $nid); ccall(18)
+  clea(3, $nid); cstmem32(3, 20, 7)
+  clea(1, $msg); ccall(5)               # TranslateMessage
+  clea(1, $msg); ccall(6)               # DispatchMessageW
+  cjmpback32($boucle)
+
+  si (nressources() > 0) { build_rsrc(8192 + al(dpos(), 4096)) }
+  emit_pe(2, "Rose selfhost rose-tray (Shell_NotifyIcon + SetTimer)")
+  retour 0
+}
+
+si (nb_arguments() >= 2 et argument(1) == "tray") {
+  rose_tray_win()
+  quitter(0)
+}

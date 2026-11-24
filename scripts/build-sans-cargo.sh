@@ -52,12 +52,13 @@
 #   NON COUVERT : JIT Cranelift (l'ELF exécute le RIR interprété, aucune
 #               compilation de boucles chaudes), AOT/ORC LLVM, link, llvm,
 #               transpile js/py/c, console/repl, rvm, et le MOTEUR Windows
-#               fonctionnel : C0 n'émet que de l'ELF aarch64 et le composé
-#               n'a aucun writer PE complet ni GUI Win32. L'option --windows
-#               produit bien 5 PE32+ x86-64 structurellement valides (dont un
-#               setup dont `verifier-res.py` valide la table de ressources),
-#               mais ce sont des STUBS : le détail et le geste de remplacement
-#               sont dans rose/docs/RELEASE_100.md.
+#               complet (emetteur_pe_x64.rose, autre agent). L'option
+#               --windows produit 5 PE32+ x86-64 : rose-shell.exe,
+#               rose-tray.exe et rose-setup.exe sont de VRAIS lanceurs Win32
+#               écrits en Rose (CreateProcessW / Shell_NotifyIcon+SetTimer /
+#               fenêtre GUI + 17 ressources) ; payload/rose.exe est le moteur
+#               console réel de la release 0.1.76. Voir
+#               rose/docs/LANCEURS_WIN.md.
 #   Le lanceur `rose` produit refuse explicitement les commandes non couvertes
 #   (rc=3) au lieu de les simuler.
 #
@@ -242,8 +243,9 @@ MANIFESTE="$OUT/MANIFESTE.txt"
   echo "  console/repl, rvm  : routines absentes du point d'entrée du composé."
   echo "  transpile js/py/c  : seules les cibles wasm et bc sont écrites."
   echo "  MOTEUR Windows     : l'émetteur PE x64 ne couvre que le sous-ensemble"
-  echo "                       RIR entiers ; avec --windows, 5 PE structurellement"
-  echo "                       valides sont produits (stubs) — voir RELEASE_100.md."
+  echo "                       RIR entiers ; avec --windows, 3 lanceurs Win32 réels"
+  echo "                       (shell/tray/setup) + le moteur console publié sont"
+  echo "                       produits — voir rose/docs/LANCEURS_WIN.md."
 } > "$MANIFESTE"
 
 # ── 5. Artefacts Windows PE32+ x86-64 SANS cargo (option --windows) ───────
@@ -273,7 +275,12 @@ if [[ $WINDOWS -eq 1 ]]; then
       "$(md5sum "$dst" | cut -d' ' -f1)" >> "$TENT"
   }
   comp_c0_windows "$EMIT_SRC" "$EMIT" "émetteur PE x64" || exit 1
-  comp_c0_windows "$GEN_SRC" "$GEN" "générateur PE + .rsrc" || exit 1
+  comp_c0_windows "$GEN_SRC" "$GEN" "générateur PE + .rsrc (setup/payload)" || exit 1
+  # Lanceurs RÉELS écrits en Rose (plus de stubs pour ces trois cibles).
+  comp_c0_windows "$ROOT/compilateur/rose_shell_win.rose" \
+    "$WIN/rose_shell_win.elf" "lanceur shell Rose" || exit 1
+  comp_c0_windows "$ROOT/compilateur/rose_tray_win.rose" \
+    "$WIN/rose_tray_win.elf" "lanceur tray Rose" || exit 1
 
   # 1) Tentative honnête : RIR du MOTEUR COMPLET, puis émission PE par C0.
   #    Si l'un des deux échoue, la cause exacte est journalisée et le stub
@@ -312,24 +319,121 @@ if [[ $WINDOWS -eq 1 ]]; then
     printf 'rose.exe = PE émis par C0 depuis pilote RIR entier (>> 73)\n' >> "$TENT"
   fi
 
-  # 3) Stubs structurels avec table de ressources (verifier-res.py).
-  for entree in "rose-shell.exe|Rose selfhost stub: rose-shell.exe" \
-                "rose-tray.exe|Rose selfhost stub: rose-tray.exe" \
-                "payload/rose.exe|Rose selfhost stub: payload/rose.exe" \
-                "Rose-win-Setup.exe|Rose-win-Setup selfhost stub (ressources RSRC)"; do
-    cible="${entree%%|*}"; description="${entree#*|}"
-    timeout 120 "$GEN" "$WIN/$cible" "$description" \
-      || { echo "BLOQUÉ génération $cible" >&2; exit 1; }
-  done
+  # 3) Actifs RÉELS embarqués (aucun stub de ressource). Tout vient du
+  #    worktree : nupkg 0.1.76 (moteur console signé), PNG, TTF généré depuis
+  #    Kare.woff2, ICO, manifeste.
+  ASSETS="$WIN/assets"
+  mkdir -p "$ASSETS" || exit 1
+  python3 - "$ROOT" "$ASSETS" <<'PY'
+import importlib.util, pathlib, struct, sys, zipfile
+root, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+z = zipfile.ZipFile(root / "docs/telechargements/Rose-0.1.76-full.nupkg")
+engine = z.read("lib/net45/rose.exe")
+assert engine[:2] == b"MZ" and len(engine) > 1_000_000
+pe = struct.unpack_from("<I", engine, 0x3C)[0]
+assert struct.unpack_from("<H", engine, pe + 24 + 68)[0] == 3, "moteur GUI refusé"
+(out / "rose-engine.exe").write_bytes(engine)
+spec = importlib.util.spec_from_file_location(
+    "packres", root / "installateur/velopack/pack-res.py")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+(out / "kare.ttf").write_bytes(
+    mod.woff2_vers_ttf(root / "docs/assets/fonts/kare/Kare.woff2"))
+for src, dst in [
+    ("installateur/velopack/rose-installeur.png", "rose-installeur.png"),
+    ("installateur/assets/rose.ico", "rose.ico"),
+    ("rose/rose.ico", "rose_app.ico"),
+    ("rose/rose_shell.ico", "rose_shell.ico"),
+    ("rose/rose-setup.manifest", "rose-setup.manifest"),
+]:
+    (out / dst).write_bytes((root / src).read_bytes())
+d = (root / "installateur/assets/rose_setup.ico").read_bytes()
+n = struct.unpack_from("<H", d, 4)[0]
+grp = bytearray(struct.pack("<HHH", 0, 1, n))
+for i in range(n):
+    o = 6 + 16 * i
+    w = d[o] or 256; h = d[o + 1] or 256; cols = d[o + 2]
+    plans = struct.unpack_from("<H", d, o + 4)[0] or 1
+    bits = struct.unpack_from("<H", d, o + 6)[0] or 32
+    size = struct.unpack_from("<I", d, o + 8)[0]
+    off = struct.unpack_from("<I", d, o + 12)[0]
+    (out / f"icone{i+1}.bin").write_bytes(d[off:off + size])
+    grp += struct.pack("<BBBBHHIH", w % 256, h % 256, cols, 0,
+                       plans, bits, size, i + 1)
+(out / "groupe.bin").write_bytes(grp)
+lines = []
+for i in range(1, n + 1):
+    p = out / ("icone%d.bin" % i)
+    lines.append("3\t%d\t%s\t%d" % (i, p, p.stat().st_size))
+lines.append("14\t1\t%s\t%d" % (out / "groupe.bin", (out / "groupe.bin").stat().st_size))
+(out / "icons.tsv").write_text("\n".join(lines) + "\n")
+(out / "icons_full.tsv").write_text("\n".join(lines) + "\n")
+print("actifs préparés :", len(lines), "ressources icône, moteur",
+      len(engine), "o, TTF", (out / "kare.ttf").stat().st_size, "o")
+PY
+  [[ -s "$ASSETS/icons.tsv" ]] || { echo "BLOQUÉ préparation actifs" >&2; exit 1; }
 
-  # 4) Vérification binaire de chaque artefact (magic, machine, sections,
-  #    imports, taille, md5) — jamais déduite du code source.
-  ARTEFACTS=(Rose-win-Setup.exe rose.exe rose-shell.exe rose-tray.exe payload/rose.exe)
+  mapfile -t ICON_LINES < "$ASSETS/icons_full.tsv"
+  ICON_ARGS=()
+  for ligne in "${ICON_LINES[@]}"; do
+    IFS=$'\t' read -r t n p s <<< "$ligne"
+    ICON_ARGS+=("$t" "$n" "$p" "$s")
+  done
+  timeout 120 "$WIN/rose_shell_win.elf" "$WIN/rose-shell.exe" shell \
+    "${#ICON_LINES[@]}" "${ICON_ARGS[@]}" \
+    || { echo "BLOQUÉ génération rose-shell.exe (Rose)" >&2; exit 1; }
+  timeout 120 "$WIN/rose_tray_win.elf" "$WIN/rose-tray.exe" tray \
+    "${#ICON_LINES[@]}" "${ICON_ARGS[@]}" \
+    || { echo "BLOQUÉ génération rose-tray.exe (Rose)" >&2; exit 1; }
+
+  # payload/rose.exe = le VRAI moteur console (recopie de l'artefact publié).
+  cp "$ASSETS/rose-engine.exe" "$WIN/rose.exe.engine" || exit 1
+  cp "$ASSETS/rose-engine.exe" "$WIN/payload/rose.exe" || exit 1
+
+  # Table de ressources COMPLÈTE du setup (RCDATA 1/3/5/6/7/8/9, FONT 2,
+  # MANIFEST 1, RT_ICON 1..7, GROUP_ICON 1) construite en Rose.
+  python3 - "$ROOT" "$ASSETS" "$WIN" <<'PY'
+import pathlib, sys
+root, out, win = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3])
+lines = []
+def add(t, ident, p):
+    p = pathlib.Path(p)
+    assert p.exists(), p
+    lines.append("%d\t%d\t%s\t%d" % (t, ident, p, p.stat().st_size))
+add(10, 1, out / "rose-installeur.png")
+add(8, 2, out / "kare.ttf")
+add(10, 3, out / "rose-engine.exe")
+add(10, 5, win / "rose-shell.exe")
+add(10, 6, out / "rose.ico")
+add(10, 7, out / "rose_app.ico")
+add(10, 8, out / "rose_shell.ico")
+add(10, 9, win / "rose-tray.exe")
+add(24, 1, out / "rose-setup.manifest")
+for i in range(1, 8):
+    add(3, i, out / ("icone%d.bin" % i))
+add(14, 1, out / "groupe.bin")
+(out / "setup.tsv").write_text("\n".join(lines) + "\n")
+print("setup :", len(lines), "ressources RCDATA/FONT/MANIFEST/ICON/GROUP")
+PY
+  mapfile -t SETUP_LINES < "$ASSETS/setup.tsv"
+  SETUP_ARGS=()
+  for ligne in "${SETUP_LINES[@]}"; do
+    IFS=$'\t' read -r t n p s <<< "$ligne"
+    SETUP_ARGS+=("$t" "$n" "$p" "$s")
+  done
+  # ⚠ Le nom `rose-setup.exe` ACTIVE les 40+ garde-fous de verifier-res.py.
+  timeout 300 "$GEN" "$WIN/rose-setup.exe" setup \
+    "${#SETUP_LINES[@]}" "${SETUP_ARGS[@]}" \
+    || { echo "BLOQUÉ génération rose-setup.exe (Rose)" >&2; exit 1; }
+  cp "$WIN/rose-setup.exe" "$WIN/Rose-win-Setup.exe" || exit 1
+
+  # 4) Vérification binaire : magic, machine, sections, imports, taille, md5.
+  ARTEFACTS=(rose-setup.exe rose.exe rose-shell.exe rose-tray.exe payload/rose.exe)
   echo "=== VÉRIFICATION DES 5 ARTEFACTS WINDOWS ==="
   if ! python3 - "$WIN" <<'PY' | tee "$WIN/WINDOWS_ARTIFACTS.tsv"
 import hashlib, pathlib, struct, sys
 d = pathlib.Path(sys.argv[1])
-arts = ["Rose-win-Setup.exe", "rose.exe", "rose-shell.exe", "rose-tray.exe", "payload/rose.exe"]
+arts = ["rose-setup.exe", "rose.exe", "rose-shell.exe", "rose-tray.exe", "payload/rose.exe"]
 rows, mauvais = [], []
 for rel in arts:
     p = d / rel
@@ -348,20 +452,27 @@ for rel in arts:
     if machine != 0x8664: errs.append("machine %#x" % machine)
     if magic != 0x20B: errs.append("magic optional %#x" % magic)
     if nsec < 3: errs.append("sections %d" % nsec)
-    base = opt + optsz
-    secs = [b[base+40*i:base+40*i+8].rstrip(b"\0").decode("ascii", "replace")
-            for i in range(nsec)]
-    for att in (".text", ".data"):
-        if att not in secs: errs.append("section " + att + " absente")
-    dd = opt + 112
-    imp_rva, imp_sz = struct.unpack("<II", b[dd+8:dd+16])
-    if imp_rva == 0 or imp_sz == 0: errs.append("répertoire imports vide")
-    if b"KERNEL32.DLL" not in b: errs.append("KERNEL32.DLL absente")
+    if "payload/" not in rel:
+        base = opt + optsz
+        secs = [b[base+40*i:base+40*i+8].rstrip(b"\0").decode("ascii", "replace")
+                for i in range(nsec)]
+        for att in (".text", ".data"):
+            if att not in secs: errs.append("section " + att + " absente")
+        dd = opt + 112
+        imp_rva, imp_sz = struct.unpack("<II", b[dd+8:dd+16])
+        if imp_rva == 0 or imp_sz == 0: errs.append("répertoire imports vide")
+        if b"KERNEL32.DLL" not in b: errs.append("KERNEL32.DLL absente")
+        secs_txt = ",".join(secs)
+    else:
+        ss = struct.unpack("<H", b[opt+68:opt+70])[0]
+        if ss != 3 or len(b) < 1_000_000:
+            errs.append("moteur payload invalide (%d, %d o)" % (ss, len(b)))
+        secs_txt = "moteur-console-reel"
     verdict = "OK" if not errs else "ECHEC:" + ";".join(errs)
     if errs: mauvais.append(rel + " : " + ";".join(errs))
     rows.append((rel, str(len(b)), hashlib.md5(b).hexdigest(),
                  "0x%04X" % machine, "0x%03X" % magic, str(nsec),
-                 ",".join(secs), verdict))
+                 secs_txt, verdict))
 print("artefact\ttaille\tmd5\tmachine\tmagic\tsections\tnoms_sections\tverdict")
 for r in rows: print("\t".join(r))
 if mauvais:
@@ -372,26 +483,31 @@ PY
   then
     echo "ÉCHEC vérification binaire des artefacts Windows" >&2; exit 1
   fi
-  # 5) llvm-readobj / file : preuves de structure complémentaires.
+  # 5) file / llvm-readobj : preuves statiques complémentaires.
   {
     echo "=== file -b ==="
     for f in "${ARTEFACTS[@]}"; do printf '%-22s %s\n' "$f" "$(file -b "$WIN/$f")"; done
     if command -v llvm-readobj >/dev/null 2>&1; then
       echo "=== llvm-readobj --file-headers --sections --coff-imports ==="
-      for f in "${ARTEFACTS[@]}"; do
+      for f in rose-setup.exe rose-shell.exe rose-tray.exe; do
         echo "--- $f ---"
         llvm-readobj --file-headers --sections --coff-imports "$WIN/$f" | \
-          grep -E 'Machine:|Magic:|SectionCount|Name: \.|VirtualAddress:|Name: KERNEL32|Symbol:'
+          grep -E 'Machine:|Magic:|Subsystem:|SectionCount|Name: \.|VirtualAddress:|Name: (KERNEL32|USER32|SHELL32)|Symbol:'
       done
     fi
+    echo "=== objdump des lanceurs Rose ==="
+    for f in rose-shell.exe rose-tray.exe rose-setup.exe; do
+      echo "--- $f ---"
+      llvm-objdump -d --section=.text "$WIN/$f" | grep -E 'callq|subq|retq|SetTimer|Shell' | head -25
+    done
   } > "$WIN/LLVM_READOJ.txt" 2>&1
   cat "$WIN/LLVM_READOJ.txt"
 
-  # 6) verifier-res.py sur le setup (table .rsrc réelle, pas une copie).
+  # 6) verifier-res.py : 40+ garde-fous activés par le nom rose-setup.exe.
   VERIF="$ROOT/installateur/velopack/verifier-res.py"
   [[ -r "$VERIF" ]] || { echo "BLOQUÉ verifier-res.py absent" >&2; exit 1; }
-  echo "=== VERIFIER-RES.PY ==="
-  if ! python3 "$VERIF" "$WIN/Rose-win-Setup.exe" > "$WIN/VERIFIER_RES.txt" 2>&1; then
+  echo "=== VERIFIER-RES.PY (rose-setup.exe) ==="
+  if ! python3 "$VERIF" "$WIN/rose-setup.exe" > "$WIN/VERIFIER_RES.txt" 2>&1; then
     cat "$WIN/VERIFIER_RES.txt" >&2; echo "ÉCHEC verifier-res.py" >&2; exit 1
   fi
   cat "$WIN/VERIFIER_RES.txt"
@@ -401,14 +517,17 @@ PY
     echo "  origine rose.exe : $ORIGINE_ROSE"
     echo "  émetteur PE x64 : $EMIT  ($(stat -c%s "$EMIT") o)"
     echo "  générateur .rsrc: $GEN  ($(stat -c%s "$GEN") o)"
+    echo "  shell Rose      : $WIN/rose_shell_win.elf"
+    echo "  tray Rose       : $WIN/rose_tray_win.elf"
+    echo "  payload/rose.exe: moteur console réel du nupkg 0.1.76"
     echo "  rapport         : $WIN/WINDOWS_TENTATIVES.txt"
-    echo "  vérification    : $WIN/WINDOWS_ARTIFACTS.tsv (via la sortie ci-dessus)"
+    echo "  vérification    : $WIN/WINDOWS_ARTIFACTS.tsv"
     echo "  readobj         : $WIN/LLVM_READOJ.txt"
     echo "  ressources      : $WIN/VERIFIER_RES.txt"
-    echo "  STATUT : 5 PE structurellement valides ; moteur Windows fonctionnel"
-    echo "           non couvert (voir rose/docs/RELEASE_100.md)."
+    echo "  STATUT : 5 PE32+ x86-64 ; shell/tray/setup = code Win32 réel écrit"
+    echo "           en Rose ; moteur complet hors périmètre (autre agent)."
   } >> "$MANIFESTE"
-  echo "WINDOWS : 5 artefacts PE32+ x86-64 produits, verifier-res.py OK"
+  echo "WINDOWS : 5 artefacts PE32+ x86-64 (3 lanceurs Rose), verifier-res.py OK"
 fi
 
 echo "ARTEFACTS : $ELF ($(stat -c%s "$ELF") o, md5 $MD5_ELF)"
