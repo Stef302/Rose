@@ -63,9 +63,14 @@ Commande : `bash /tmp/opencode/aot_self_probe/valider10.sh`
 | `10_rationnel_div.rose` (`>> 7 / 2`) | `3.5` | valeur exacte mémorisée |
 
 Pour chacun : `rc=0` des deux compilations, binaire ELF aarch64 exécutable,
-**sortie octet pour octet identique** à `rose aot` Rust, **message du
-compilateur identique**. Les messages sont reproduits par la présence de
-`afficher_abstrait <littéral>` dans le RIR (voie « valeur exacte »).
+**sortie octet pour octet identique** à `rose aot` Rust (preuve : le TSV
+`valide/resultats10.tsv`). Le tableau ci-dessus donne le message du moteur
+Rust. Celui du moteur C0 est identique sur 6 programmes (dont tous les
+`afficher_abstrait entier`) ; sur les 4 autres (`06`, `09`, `22`, `10` :
+constantes rationnelles/chaîne, RIR `afficher (f …)` / `afficher (s …)`) il
+affiche « code de retour = valeur du programme » au lieu de « valeur exacte
+mémorisée ». **Seul le texte du message diffère, jamais le binaire ni sa
+sortie** : écart cosmétique documenté, non une divergence d'AOT.
 
 Le banc `compilateur/tests_aot_self.rose` rejoue les dix sorties et affiche
 `TESTS AOT SELF : 10 OK, 0 ECHEC`, rc=0 — sous le moteur Rust **et** sous
@@ -99,9 +104,17 @@ Mesuré sur le même arbre après intégration :
 - point fixe `b3ed9262dd54776a6dbd07bc12368d0e` inchangé
   (`rose rir compilateur/emetteur.rose` md5) ;
 - `TESTS RIR : 15 OK, 0 ECHEC` (`rose compilateur/tests_interpreteur_rir.rose`) ;
-- parité self-host `141/141` (scripts/verifier_parite_selfhost.sh) ;
-- formats `15/15` octet-identiques (wasm/bc/comp C0 vs Rust) ;
-- `scripts/validation_finale.sh` : 0 échec.
+- parité self-host `141/141` avec l'ELF final
+  (`scripts/verifier_parite_selfhost.sh --moteur …/moteur_final.elf` :
+  `tests=141  CONFORMES=141  DIVERGENTS=0  BLOQUES=0`, rc=0) ;
+- formats `15/15` octet-identiques : wasm 5/5, bc 5/5, comp 5/5 — pour
+  `comp`, la comparaison doit utiliser **le même binaire de référence** que
+  celui que le gabarit lit (`rose/target/release/rose`) : comparer avec la
+  copie `rose/rose`, périmée et de taille différente, donne 5 faux écarts ;
+- `scripts/validation_finale.sh` n'a PAS été rejoué ici (il relance
+  `cargo build` pendant que d'autres agents compilent sur le même nœud) ;
+  les contrôles qu'il couvre et qui sont indépendants de cargo ont été
+  rejoués un par un ci-dessus.
 
 ## 5. Entretien
 
@@ -114,6 +127,11 @@ patchs). Le contrôle après régénération est :
 grep -c 'AOT_SELF:DÉBUT' compilateur/moteur_complet.rose   # doit être 1
 grep -c 'mc_cmd == "aot"' compilateur/moteur_complet.rose  # doit être >= 1
 ```
+
+Le lanceur généré par `scripts/build-sans-cargo.sh` ne refuse plus ces quatre
+commandes (commit 0597663, `aot|orc|link|llvm` retirés du `case … exit 3`) :
+`./release-sans-cargo/rose aot …` passe désormais au moteur C0. Le dernier
+refus du lanceur est `wasm`.
 
 Fichiers possédés par ce chantier : `compilateur/moteur_complet.rose`,
 `compilateur/tests_aot_self.rose`, `rose/docs/AOT_SELF.md`.

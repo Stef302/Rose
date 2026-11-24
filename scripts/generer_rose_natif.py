@@ -202,15 +202,19 @@ def serialiseurs_source() -> str:
 
 CIBLE_DISPATCH = """
 # J5 — sérialiseurs auto-hébergés : --cible wasm|bc (aucun Rust/JS/Py/C).
-si (nb_arguments() >= 3 et argument(1) == "--cible") {
-  $j5fmt = argument(2)
-  si ($j5fmt == "wasm") {
-    ecrire_bytes("/dev/stdout", sw_module($src))
-    quitter(0)
-  }
-  si ($j5fmt == "bc" ou $j5fmt == "rosebc") {
-    ecrire_bytes("/dev/stdout", sb_module($src))
-    quitter(0)
+# ⚠ Rose n'a PAS de court-circuit : `et` évaluerait argument(1) même avec un
+# seul argument, d'où « index hors des limites des arguments ». On imbrique.
+si (nb_arguments() >= 3) {
+  si (argument(1) == "--cible") {
+    $j5fmt = argument(2)
+    si ($j5fmt == "wasm") {
+      ecrire_bytes("/dev/stdout", sw_module($src))
+      quitter(0)
+    }
+    si ($j5fmt == "bc" ou $j5fmt == "rosebc") {
+      ecrire_bytes("/dev/stdout", sb_module($src))
+      quitter(0)
+    }
   }
 }
 """

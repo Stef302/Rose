@@ -19,17 +19,6 @@
 # produites. Les marqueurs AOT_SELF dans moteur_complet.rose sont la preuve
 # que l'émetteur ELF y est intégré.
 
-fn ts_contient($s: chaine, $mot: chaine) -> entier {
-  $n = longueur($s)
-  $m = longueur($mot)
-  $i = 0
-  tant_que ($i + $m <= $n) {
-    si (sous_chaine($s, $i, $i + $m) == $mot) { retour 1 }
-    $i = $i + 1
-  }
-  retour 0
-}
-
 fn tas_ligne($s: chaine) -> chaine {
   $n = longueur($s)
   si ($n > 0 et sous_chaine($s, $n - 1, $n) == "\n") { retour sous_chaine($s, 0, $n - 1) }
@@ -66,23 +55,15 @@ joindre($attendus, "4181")
 joindre($attendus, "6561")
 joindre($attendus, "3.5")
 
-# garde-fou de régénération : le composé est GENERE ; une regeneration par
-# scripts/build_moteur_sans_rust.sh --source-only écrase ces marqueurs.
-$compose = lire_texte("compilateur/moteur_complet.rose")
-$marqueurs = 0
-si (longueur($compose) > 0) {
-  $marqueurs = ts_contient($compose, "AOT_SELF:DÉBUT")
-  si (ts_contient($compose, "AOT_SELF:FIN") == 0) { $marqueurs = 0 }
-  si (ts_contient($compose, "mc_cmd == \"aot\"") == 0) { $marqueurs = 0 }
-}
+# NOTE — le composé est GENERE : une regeneration par
+# scripts/build_moteur_sans_rust.sh --source-only écrase les marqueurs AOT_SELF.
+# Le contrôle des marqueurs se fait par `grep` dans rose/docs/AOT_SELF.md :
+# une recherche caractère par caractère dans 650 Ko de rope Rose est O(n²)
+# (mesuré : > 120 s sous l'interpréteur), donc elle n'est PAS faite ici.
 
 $ok = 0
 $bad = 0
 $rapport = ""
-si (longueur($compose) > 0 et $marqueurs == 0) {
-  $bad = $bad + 1
-  $rapport = $rapport + "ECHEC marqueurs AOT_SELF absents de moteur_complet.rose\n"
-}
 $i = 1
 tant_que ($i < longueur($noms)) {
   $chemin = $dossier + $noms[$i] + ".self.out"
