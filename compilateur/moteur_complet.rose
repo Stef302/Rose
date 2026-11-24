@@ -16593,6 +16593,70 @@ si ($mc_cmd == "verif" ou $mc_cmd == "rir" ou $mc_cmd == "tokens" ou $mc_cmd == 
   quitter(0)
 }
 
+# ═══════════ WASM_SELF:DÉBUT — `rose wasm` (commande officielle) ═══════════
+# Le binaire Rust 0.1.73 expose `rose wasm lib.wasm` (inspection d'un module)
+# et `rose transpile … --cible wasm` (émission). `rose help wasm` n'a pas
+# d'entrée : `wasm` est une commande officielle, PAS un alias de transpile.
+# Le jalon A-Z referme le dernier refus du lanceur en étendant cette commande
+# à la SOURCE Rose : `rose wasm prog.rose [-o sortie.rose]`.
+# Sémantique retenue (la plus proche du Rust) :
+#   * entrée .rose (ou tout fichier sans magic `\0asm`) -> sw_module(RIR),
+#     exactement le même octet que `rose transpile prog.rose --cible wasm` ;
+#   * message et nom par défaut identiques à la transpilation Rust ;
+#   * un vrai module .wasm en entrée n'est pas une source : la commande
+#     d'inspection du Rust n'est pas simulée ici, elle rend un diagnostic.
+si ($mc_cmd == "wasm") {
+  si ($mc_n < 2) { cli_err("rose wasm : quel module ? (rose wasm lib.wasm)"); quitter(1) }
+  $mc_src = ""
+  $mc_out = ""
+  $mc_j = 1
+  tant_que ($mc_j < $mc_n) {
+    $mc_arg = argument($mc_j)
+    si (($mc_arg == "-o" ou $mc_arg == "--sortie") et $mc_j + 1 < $mc_n) {
+      $mc_out = argument($mc_j + 1)
+      $mc_j = $mc_j + 1
+    } sinon si (longueur($mc_arg) > 0 et sous_chaine($mc_arg, 0, 1) != "-") {
+      $mc_src = $mc_arg
+    }
+    $mc_j = $mc_j + 1
+  }
+  si (longueur($mc_src) == 0) { cli_err("rose wasm : quel module ? (rose wasm lib.wasm)"); quitter(1) }
+  $mc_est_rose = 0
+  $mc_ns = longueur($mc_src)
+  si ($mc_ns >= 5 et sous_chaine($mc_src, $mc_ns - 5, $mc_ns) == ".rose") { $mc_est_rose = 1 }
+  $mc_debut = lire_texte($mc_src)
+  si (longueur($mc_debut) == 0) { cli_err("rose wasm : " + $mc_src + " illisible"); quitter(1) }
+  si ($mc_est_rose == 0) {
+    $mc_magic = sous_chaine($mc_debut, 0, 4)
+    si ($mc_magic != octet_brut(0) + "asm") {
+      cli_err("rose wasm : " + $mc_src + " : magic absent : ce n'est pas du WebAssembly")
+    } sinon {
+      cli_err("rose wasm : " + $mc_src + " : inspection d'un module .wasm non couverte par le moteur C0 (utiliser une source .rose)")
+    }
+    quitter(1)
+  }
+  $mc_res = lsrc_lire_programme($mc_src)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  $mc_wasm = sw_module($mc_rir)
+  si (longueur($mc_out) == 0) {
+    # Rust : `strip_suffix(".rose")` sur le BASENAME, jamais « dernier point ».
+    $mc_base = mc_base($mc_src)
+    $mc_nb = longueur($mc_base)
+    si ($mc_nb >= 5 et sous_chaine($mc_base, $mc_nb - 5, $mc_nb) == ".rose") {
+      $mc_base = sous_chaine($mc_base, 0, $mc_nb - 5)
+    }
+    $mc_out = $mc_base + ".wasm"
+  }
+  ecrire_bytes($mc_out, $mc_wasm)
+  ecrire_bytes("/dev/stdout", "rose: " + $mc_out + " produit (transpilation wasm)\n")
+  quitter(0)
+}
+# ═══════════ WASM_SELF:FIN ══════════════════════════════════════════════
+
 # transpile --cible wasm : sw_module() produit un module de 48 octets.
 si ($mc_cmd == "transpile") {
   si ($mc_n < 2) { cli_err("rose transpile : quel programme ?"); quitter(1) }

@@ -1,0 +1,89 @@
+# tests_wasm_self.rose — banc de conformité de `rose wasm` auto-hébergé.
+#
+# Usage (aucun Rust, aucun cargo pour le moteur) :
+#   out/moteur.elf wasm tests_selfhost/t20_add.rose -o out/t20_add.wasm
+#   out/moteur.elf compilateur/tests_wasm_self.rose <dossier artefacts>
+#
+# Le banc relit les artefacts REELLEMENT produits par le harnais :
+#   <nom>.wasm.c0   module écrit par le moteur C0 via `wasm`
+#   <nom>.wasm.rust module écrit par le binaire Rust via `transpile --cible wasm`
+#   <nom>.res.c0    résultat de WebAssembly.instantiate(rose_main) sur le module C0
+#   <nom>.res.rust  idem sur le module Rust (Node, entiers i64)
+#   marqueurs.txt  trois chiffres 0/1 calculés par le harnais shell avec
+#                   grep sur compilateur/moteur_complet.rose et
+#                   scripts/build-sans-cargo.sh.
+# Il vérifie l'égalité OCTET POUR OCTET des modules, l'égalité des résultats,
+# et la présence des marqueurs A-Z. Affiche « TESTS WASM SELF : N OK,
+# 0 ECHEC », rc=0 si tout est conforme.
+#
+# ⚠ Sous le backend C0, un balayage caractère par caractère du composé
+# (640 K points de code) fait monter le RSS à ~18 Gio puis segfault (mesuré) :
+# les marqueurs sont donc contrôlés via le petit fichier `marqueurs.txt`
+# généré par le harnais de preuve, jamais en reparcourant le gros source.
+#
+# Dossier par défaut : /tmp/opencode/wasm_self_out/valide.
+
+fn tw_ligne($s: chaine) -> chaine {
+  $n = longueur($s)
+  si ($n > 0 et sous_chaine($s, $n - 1, $n) == "\n") { retour sous_chaine($s, 0, $n - 1) }
+  retour $s
+}
+
+$dossier = "/tmp/opencode/wasm_self_out/valide"
+si (nb_arguments() >= 1) { $dossier = argument(0) }
+si (longueur($dossier) > 0 et sous_chaine($dossier, longueur($dossier) - 1, longueur($dossier)) != "/") {
+  $dossier = $dossier + "/"
+}
+
+$noms = [""]
+joindre($noms, "t01_entiers")
+joindre($noms, "t20_add")
+joindre($noms, "t21_sous")
+joindre($noms, "t22_mul")
+joindre($noms, "t29_precedence")
+
+$ok = 0
+$bad = 0
+$rapport = ""
+
+# Garde-fou : les trois chiffres de `marqueurs.txt` prouvent que le dispatch
+# et le lanceur ont été câblés dans les sources (et pas seulement dans un ELF
+# déjà construit). Le harnais shell les recalcule à chaque exécution.
+$marq = tw_ligne(lire_texte($dossier + "marqueurs.txt"))
+$attendus_marq = ["", "marqueur WASM_SELF", "dispatch mc_cmd wasm", "lanceur wasm"]
+$mi = 1
+tant_que ($mi < longueur($attendus_marq)) {
+  si (longueur($marq) >= $mi et sous_chaine($marq, $mi - 1, $mi) == "1") {
+    $ok = $ok + 1
+  } sinon {
+    $bad = $bad + 1
+    $rapport = $rapport + "ECHEC " + $attendus_marq[$mi] + "\n"
+  }
+  $mi = $mi + 1
+}
+
+$i = 1
+tant_que ($i < longueur($noms)) {
+  $base = $dossier + $noms[$i]
+  $wc = lire_texte($base + ".wasm.c0")
+  $wr = lire_texte($base + ".wasm.rust")
+  $rc = tw_ligne(lire_texte($base + ".res.c0"))
+  $rr = tw_ligne(lire_texte($base + ".res.rust"))
+  si (longueur($wc) > 0 et longueur($wr) > 0 et $wc == $wr) {
+    $ok = $ok + 1
+  } sinon {
+    $bad = $bad + 1
+    $rapport = $rapport + "ECHEC module " + $noms[$i] + " : " + chaine(longueur($wc)) + " o C0 / " + chaine(longueur($wr)) + " o Rust\n"
+  }
+  si (longueur($rc) > 0 et $rc == $rr) {
+    $ok = $ok + 1
+  } sinon {
+    $bad = $bad + 1
+    $rapport = $rapport + "ECHEC résultat " + $noms[$i] + " : « " + $rc + " » / « " + $rr + " »\n"
+  }
+  $i = $i + 1
+}
+
+>> $rapport + "TESTS WASM SELF : " + chaine($ok) + " OK, " + chaine($bad) + " ECHEC"
+si ($bad == 0) { quitter(0) }
+quitter(1)

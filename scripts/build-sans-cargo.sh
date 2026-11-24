@@ -44,7 +44,8 @@
 #
 # COUVERTURE (vérifiée sur l'ELF, pas déduite de la doc)
 #   COUVERT   : exécution directe, run/jit/interprete/methode, verif, rir,
-#               tokens, ast, latex, transpile --cible wasm, bc, comp,
+#               tokens, ast, latex, transpile --cible wasm, wasm SOURCE.rose
+#               (sw_module, module byte-identique à transpile), bc, comp,
 #               version, help, info. ATTENTION : comp ne produit qu'un
 #               gabarit ELF patché d'UNE constante (8 908 o, une seule ligne
 #               de sortie) et les modules wasm/bc ne sont PAS octet-identiques
@@ -169,14 +170,8 @@ ICI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOTEUR="$ICI/moteur.elf"
 cmd="${1:-}"
 case "$cmd" in
-  run|jit|interprete|methode|verif|rir|tokens|ast|latex|transpile|bc|comp|\
+  run|jit|interprete|methode|verif|rir|tokens|ast|latex|transpile|wasm|bc|comp|\
   version|--version|help|--help|-h|-?|info|"") exec "$MOTEUR" "$@" ;;
-  wasm)
-    echo "rose: commande NON COUVERTE par le moteur auto-hébergé C0 : $cmd" >&2
-    echo "  cause : le point d'entrée de compilateur/moteur_complet.rose n'a" >&2
-    echo "  aucun writer/routine pour cette commande (JIT Cranelift, LLVM ORC, VM," >&2
-    echo "  console, PE). Utiliser le binaire Rust pour cette commande." >&2
-    exit 3 ;;
   *) exec "$MOTEUR" "$@" ;;
 esac
 EOF
