@@ -1587,3 +1587,19 @@ Objectif: 0 refus rc=3 et 0 recours au nupkg.
 Integres depuis vague 108: console/repl (f849c6f), payload C0 sans nupkg (4777f14),
 RVM ROSEBC v3 11 snapshots octet-identiques (c340727), AOT natif 10/10 (0597663).
 Dernier refus: wasm. Agent az_wasm lance. Objectif: 0 rc=3 dans le lanceur.
+
+## Vague 110 — SELF-HOSTING A-Z COMPLET (b31b042)
+
+ZÉRO rc=3 dans le lanceur: la liste de commandes non couvertes a ete supprimee.
+Toutes les commandes du moteur Rust sont dans le moteur C0:
+run/jit/interprete/methode/verif/rir/tokens/ast/latex/transpile/wasm/bc/comp/
+aot/orc/link/llvm/console/repl/rvm/version/help/info.
+Preuves: 17 appels lanceur rc=0, WASM 5/5 byte-identique, RVM 11 snapshots,
+AOT 10/10, console 2090 o, parite 141/141, formats 15/15, point fixe b3ed9262.
+Release Windows: 5 artefacts PE x86-64 par C0, payload C0 sans nupkg, verifier-res
+33 garde-fous. Build --selfhost rc=0 sans cargo.
+validation_finale 0 echec. HEAD local=distant b31b042.
+
+RESTE (honnête, hors A-Z du code): le defaut de build-windows-rebuild.sh appelle
+encore cargo (option --selfhost), validation_finale.sh §1 appelle cargo build,
+et aucun PE n'a ete execute sous Windows (hote aarch64, Wine sans WoW64).
