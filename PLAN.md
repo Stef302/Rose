@@ -1507,3 +1507,14 @@ Reste pour 100% release: 5 .exe Windows, AOT/ORC complet, ecarts de format
 0x8664 pour produire rose.exe sans cargo; (format_parite) rendre wasm/bc/comp
 byte-identiques aux references Rust (LEB128 surlongs, champs ligne/index, gabarit).
 Objectif: --selfhost produise les 5 artefacts Windows avec verifier-res.py vert.
+
+## Vague 102 — parité release complète des formats
+
+Formats self-host byte-identiques a Rust: wasm 72/61/56/61/60 o, bc 157/116/94/
+119/117 o, comp 5457037 o, 30/30 banc + 9/9 confirmes main propre.
+Moteur 1965640 o md5 8c77c4e5. Parite self-host 141/0/0 RC=0 rejouee.
+PE x86-64 natif 0x8664 livRE (13/13, byte-identique, validation statique).
+HEAD local=distant c6411ee. validation_finale 0 echec, point fixe b3ed9262.
+
+Reste pour 100% release: composer l'emetteur PE x64 dans le pilote C0 pour produire
+rose.exe (+ shell/tray/setup/resources Win32) et basculer --selfhost par defaut.
