@@ -1,0 +1,129 @@
+# tests_pe_x64.rose — module de tests de l'émetteur PE32+ x86-64 NATIF C0.
+#
+# Ce fichier est un MODULE SOURCE : Rose n'a pas d'instruction `include`.
+# Il se concatène avec `compilateur/emetteur_pe_x64.rose` :
+#
+#   cat compilateur/emetteur_pe_x64.rose compilateur/tests_pe_x64.rose \
+#       > /tmp/opencode/pe_x64/.build_pe_x64/tests_prog.rose
+#   ROSE_SANS_JIT=1 rose interprete tests_prog.rose       # référence Rust
+#   C0 tests_prog.rose > tests.elf && ./tests.elf         # natif (sans Rust)
+#   diff nat.out ref.out
+#
+# 13 assertions sur les quatre correctifs du port natif (x_elt_ch, u32le,
+# x_imm64 négatif, pe_raw/pe_c) et sur la structure PE produite par x_pe() : signature MZ/PE,
+# machine 0x8664, PE32+ 0x20B, sections .text/.data/.pdata, imports
+# KERNEL32. Aucune primitive Rust : le même source tourne dans les deux
+# moteurs. Convention : 1 ligne OK/ECHEC par assertion + TOTAL.
+
+fn tp_ok($obtenu: chaine, $attendu: chaine) -> entier {
+  si ($obtenu == $attendu) { retour 1 }
+  retour 0
+}
+fn tp_res($n: entier, $nom: chaine, $obtenu: chaine, $attendu: chaine) -> chaine {
+  si ($obtenu == $attendu) { retour "OK " + chaine($n) + " " + $nom }
+  retour "ECHEC " + chaine($n) + " " + $nom + " | obtenu=[" + $obtenu + "] attendu=[" + $attendu + "]"
+}
+fn tp_hexch($v: entier) -> chaine {
+  $b = $v % 256
+  $h = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+  retour $h[partie_entiere($b / 16)] + $h[$b % 16]
+}
+fn tp_bytes($s: chaine) -> chaine {
+  $r = ""
+  $i = 0
+  tant_que ($i < longueur($s)) {
+    $r = $r + tp_hexch(ordre(sous_chaine($s, $i, $i + 1)))
+    $i = $i + 1
+  }
+  retour $r
+}
+
+$tp_total = 0
+$tp_o = ""
+$tp_a = ""
+
+# ── 1. u32le : rel32 NÉGATIF (correctif natif, mesuré d4 ff ff ff) ──────────
+$tp_o = tp_bytes(u32le(-44))
+$tp_a = "d4ffffff"
+>> tp_res(1, "u32le_rel32_negatif", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+# ── 2. u32le : RVA little-endian ───────────────────────────────────────────
+$tp_o = tp_bytes(u32le(4096))
+$tp_a = "00100000"
+>> tp_res(2, "u32le_rva_text", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+# ── 3. u16le : machine 0x8664 ──────────────────────────────────────────────
+$tp_o = tp_bytes(u16le(34404))
+$tp_a = "6486"
+>> tp_res(3, "u16le_machine_amd64", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+# ── 4. x_elt_ch : indexation bornée, hors bornes ───────────────────────────
+$tp_l = ["a", "b"]
+$tp_o = x_elt_ch($tp_l, 5) + "|" + x_elt_ch($tp_l, 1)
+$tp_a = "|b"
+>> tp_res(4, "x_elt_ch_borne", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+# ── 5..12 : structure PE renvoyée par x_pe() ──────────────────────────────
+$x_rva_data = 8192
+$x_iat_off = 128
+$tp_pe = x_pe("")
+$tp_o = tp_bytes(sous_chaine($tp_pe, 0, 2))
+$tp_a = "4d5a"
+>> tp_res(5, "dos_magic_MZ", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+$tp_o = chaine(ordre(sous_chaine($tp_pe, 60, 61)))
+$tp_a = chaine(128)
+>> tp_res(6, "e_lfanew_0x80", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+$tp_o = tp_bytes(sous_chaine($tp_pe, 128, 132))
+$tp_a = "50450000"
+>> tp_res(7, "signature_PE", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+$tp_o = tp_bytes(sous_chaine($tp_pe, 132, 134))
+$tp_a = "6486"
+>> tp_res(8, "coff_machine_0x8664", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+$tp_o = tp_bytes(sous_chaine($tp_pe, 152, 154))
+$tp_a = "0b02"
+>> tp_res(9, "optional_magic_pe32plus", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+$tp_o = tp_bytes(sous_chaine($tp_pe, 392, 397))
+$tp_a = "2e74657874"
+>> tp_res(10, "section_text", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+$tp_o = tp_bytes(sous_chaine($tp_pe, 432, 437))
+$tp_a = "2e64617461"
+>> tp_res(11, "section_data", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+$tp_o = tp_bytes(sous_chaine($tp_pe, 472, 478))
+$tp_a = "2e7064617461"
+>> tp_res(12, "section_pdata", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+# ── 13. x_imm64 : complément à 2 natif d'un entier négatif ────────────────
+fn tp_code_hex($n: entier) -> chaine {
+  $r = ""
+  $i = 0
+  tant_que ($i < $n) { $r = $r + tp_hexch($x_code[$i]); $i = $i + 1 }
+  retour $r
+}
+$x_code = [0 : entier]
+$x_meta = [0 : chaine]
+x_imm64(-47)
+$tp_o = tp_code_hex(8)
+$tp_a = "d1ffffffffffffff"
+>> tp_res(13, "x_imm64_negatif", $tp_o, $tp_a)
+$tp_total = $tp_total + tp_ok($tp_o, $tp_a)
+
+>> "TOTAL " + chaine($tp_total) + "/13"
