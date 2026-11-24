@@ -12271,9 +12271,23 @@ $mc_n = nb_arguments()
 $mc_cmd = ""
 si ($mc_n >= 1) { $mc_cmd = argument(0) }
 
-si ($mc_n == 0) {
-  ecrire_bytes("/dev/stderr", cli_aide())
-  quitter(1)
+# console / repl : la boucle REPL en Rose pur consomme un script
+# TEXTUEL — une entrée de console par ligne — et retourne la transcription
+# complète. `lire_texte` lisant un fichier, le script est le fichier passé
+# après le mot-clé. Sans fichier (0 argument, `console` seul ou `repl` seul),
+# le script sentinel "\n" produit l'invite simple : bannière + `rose[jit]> `.
+si ($mc_n == 0 ou $mc_cmd == "console" ou $mc_cmd == "repl") {
+  $mc_script = "\n"
+  $mc_sans_fichier = 1
+  si ($mc_n >= 2) { $mc_script = lire_texte(argument(1)); $mc_sans_fichier = 0 }
+  si (longueur($mc_script) == 0) { $mc_script = "\n"; $mc_sans_fichier = 1 }
+  $mc_transcript = rep_run($mc_script)
+  # En fin d'entrée sans :quit, le REPL Rust referme l'invite par un '\n'.
+  # Le script sentinel (0 argument / fichier vide) reproduit ce cas :
+  # bannière + `rose[jit]> ` + '\n' = 996 octets, comme `rose console </dev/null`.
+  si ($mc_sans_fichier == 1) { $mc_transcript = $mc_transcript + "\n" }
+  ecrire_bytes("/dev/stdout", $mc_transcript)
+  quitter(0)
 }
 
 si ($mc_cmd == "version" ou $mc_cmd == "--version") {

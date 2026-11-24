@@ -1,0 +1,113 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_console_self.rose — banc de tests du câblage console/repl du
+# moteur auto-hébergé (point d'entrée de compilateur/moteur_complet.rose).
+#
+# Ce banc SE CONCATÈNE avec compilateur/moteur_complet.rose DONT ON RETIRE
+# le point d'entrée (« # ═══ POINT D'ENTRÉE UNIQUE » et tout ce qui suit) :
+#
+#   sed '/# ═══ POINT D'ENTRÉE UNIQUE/,$d' \
+#     compilateur/moteur_complet.rose > /tmp/art/mc_sans_entree.rose
+#   cat /tmp/art/mc_sans_entree.rose compilateur/tests_console_self.rose \
+#     > /tmp/art/tests_console_self.rose
+#   rose verif /tmp/art/tests_console_self.rose   -> vérifié
+#   C0 /tmp/art/tests_console_self.rose           -> ELF
+#   ELF                                            ->
+#     "TESTS CONSOLE SELF : 6 OK, 0 ECHEC", rc=0
+#
+# Le test principal rejoue les 10 commandes scriptées du protocole REP_MAIN
+# et compare la transcription de rep_run() OCTET POUR OCTET à la sortie
+# mesurée de `ROSE_NO_COLOR=1 rose console < input10.txt` (2 090 octets).
+# Les textes sont découpés en globales : un long littéral concaténé en une
+# seule expression segfaultait sous C0 (piège HORDE_REPL §7.3).
+# ═══════════════════════════════════════════════════════════════════════
+
+$cs_pass = [0]
+$cs_fail = [0]
+fn cs_ok($nom: chaine, $attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { joindre($cs_pass, 1); retour 1 }
+  joindre($cs_fail, 1)
+  afficher_erreur("ECHEC " + $nom + " : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+$cs_b0 = "╭────────────────────────────────────────────╮\n" +
+  "│                    ,-.                     │\n" +
+  "│                   /   \\                    │\n" +
+  "│                  |  .  |                   │\n" +
+  "│                   \\   /                    │\n" +
+  "│                    `-|                     │\n" +
+  "│                      |                     │\n" +
+  "│                     _|_                    │\n" +
+  "│                                            │\n" +
+  "│                Rose 0.1.73                 │\n"
+$cs_b1 =
+  "│            console interactive             │\n" +
+  "╰────────────────────────────────────────────╯\n" +
+  "Tapez du code Rose. :help pour l'aide, :quit pour sortir.\n" +
+  "Méthode courante : jit — changez avec :methode aot | interprete.\n" +
+  "↑/↓ historique · Tab complète · Ctrl-C annule · Ctrl-L efface"
+$cs_banniere = $cs_b0 + $cs_b1
+
+$cs_script10 = "2 + 3\n" +
+  "10!\n" +
+  "$x = 7\n" +
+  "$x * $x\n" +
+  "5 > 3\n" +
+  "\"ab\" + \"cd\"\n" +
+  ":methode interprete\n" +
+  ":show\n" +
+  ":help\n" +
+  ":quit\n"
+
+$cs_g0 = "rose[jit]> 5\n" +
+  "rose[jit]> 3628800\n" +
+  "rose[jit]> rose[jit]> 49\n" +
+  "rose[jit]> vrai\n" +
+  "rose[jit]> abcd\n"
+$cs_g1 =
+  "rose[jit]> (méthode : interprete — invitation mise à jour)\n" +
+  "rose[interprete]> $x = 7\n" +
+  "rose[interprete]> Console Rose — commandes\n" +
+  "  :help                          cette aide\n" +
+  "  :methode <jit|aot|interprete>  choisit la méthode, affichée dans l'invite\n" +
+  "  :show                          affiche le code accumulé\n" +
+  "  :reset                         vide le buffer et le compteur :more\n" +
+  "  :load <fichier>                charge un fichier et l'exécute\n" +
+  "  :save <fichier>                écrit le buffer dans un fichier\n" +
+  "  :type <expr>                   type d'une expression\n"
+$cs_g2 =
+  "  :latex                         formule LaTeX du buffer\n" +
+  "  :more [N]                      30 (ou N) chiffres de plus sur le dernier résultat symbolique\n" +
+  "  :plus / :digits                alias de :more\n" +
+  "  :quit                          quitter\n" +
+  "\n" +
+  "Toute autre ligne est du code Rose, exécuté dans le contexte du buffer.\n" +
+  "Les définitions sont mémorisées ; les >> expr s'affichent.\n" +
+  "↑ et ↓ rappellent l'historique, Tab complète.\n" +
+  "rose[interprete]> "
+$cs_golden = $cs_banniere + "\n" + $cs_g0 + $cs_g1 + $cs_g2
+
+# ── 1. Transcription dorée des 10 commandes (2 090 octets UTF-8) ─────
+cs_ok("transcription 10 commandes", $cs_golden, rep_run($cs_script10))
+
+# ── 2. 0 argument / fichier vide : une seule invite simple ───────────
+cs_ok("invite simple", $cs_banniere + "\n" + "rose[jit]> ", rep_run("\n"))
+
+# ── 3. Le script est un TEXTE lu depuis un fichier ────────────────────
+$cs_fixture = "/tmp/opencode/az_repl_art/cs_fixture.txt"
+ecrire_texte($cs_fixture, $cs_script10)
+cs_ok("lire_texte script", $cs_script10, lire_texte($cs_fixture))
+
+# ── 4. console/repl avec fichier : rep_run(lire_texte(fichier)) ───────
+cs_ok("rep_run sur fichier", $cs_golden, rep_run(lire_texte($cs_fixture)))
+
+# ── 5. Sans fichier, une seule entrée est évaluée puis on s'arrête ────
+cs_ok("une entree sans fichier",
+  $cs_banniere + "\n" + "rose[jit]> 5\n", rep_run("2 + 3\n"))
+
+# ── 6. :quit arrête la boucle, même s'il reste des lignes ─────────────
+cs_ok("quit arrete", $cs_banniere + "\n" + "rose[jit]> ",
+  rep_run(":quit\n2 + 3\n"))
+
+>> "TESTS CONSOLE SELF : " + chaine(longueur($cs_pass) - 1) + " OK, " + chaine(longueur($cs_fail) - 1) + " ECHEC"
+si (longueur($cs_fail) > 1) { quitter(1) }
