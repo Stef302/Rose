@@ -51,14 +51,15 @@
 #               à ceux du binaire Rust : voir RELEASE_SANS_CARGO.md.
 #   NON COUVERT : JIT Cranelift (l'ELF exécute le RIR interprété, aucune
 #               compilation de boucles chaudes), AOT/ORC LLVM, link, llvm,
-#               transpile js/py/c, console/repl, rvm, et le MOTEUR Windows
-#               complet (emetteur_pe_x64.rose, autre agent). L'option
-#               --windows produit 5 PE32+ x86-64 : rose-shell.exe,
-#               rose-tray.exe et rose-setup.exe sont de VRAIS lanceurs Win32
-#               écrits en Rose (CreateProcessW / Shell_NotifyIcon+SetTimer /
-#               fenêtre GUI + 17 ressources) ; payload/rose.exe est le moteur
-#               console réel de la release 0.1.76. Voir
-#               rose/docs/LANCEURS_WIN.md.
+#               transpile js/py/c, console/repl, rvm. L'option --windows
+#               produit 5 PE32+ x86-64 : rose-shell.exe, rose-tray.exe et
+#               rose-setup.exe sont de VRAIS lanceurs Win32 écrits en Rose
+#               (CreateProcessW / Shell_NotifyIcon+SetTimer / fenêtre GUI +
+#               17 ressources) ; rose.exe, payload/rose.exe ET le RCDATA 3
+#               du setup sont TOUS le même moteur console compilé par C0
+#               (RIR moteur_complet.rose -> PE émetteur C0). AUCUN recours au
+#               nupkg 0.1.76 : plus aucun binaire signé n'est copié ni embarqué.
+#               Voir rose/docs/PAYLOAD_C0.md.
 #   Le lanceur `rose` produit refuse explicitement les commandes non couvertes
 #   (rc=3) au lieu de les simuler.
 #
@@ -242,10 +243,10 @@ MANIFESTE="$OUT/MANIFESTE.txt"
   echo "  aot/orc/link/llvm  : aucun writer LLVM ORC dans le composé Rose."
   echo "  console/repl, rvm  : routines absentes du point d'entrée du composé."
   echo "  transpile js/py/c  : seules les cibles wasm et bc sont écrites."
-  echo "  MOTEUR Windows     : l'émetteur PE x64 ne couvre que le sous-ensemble"
-  echo "                       RIR entiers ; avec --windows, 3 lanceurs Win32 réels"
-  echo "                       (shell/tray/setup) + le moteur console publié sont"
-  echo "                       produits — voir rose/docs/LANCEURS_WIN.md."
+  echo "  MOTEUR Windows     : avec --windows, 3 lanceurs Win32 réels"
+  echo "                       (shell/tray/setup) et le MOTEUR CONSOLE COMPLET"
+  echo "                       compilé par C0 (rose.exe = payload = RCDATA 3) sont"
+  echo "                       produits — voir rose/docs/PAYLOAD_C0.md."
 } > "$MANIFESTE"
 
 # ── 5. Artefacts Windows PE32+ x86-64 SANS cargo (option --windows) ───────
@@ -282,57 +283,66 @@ if [[ $WINDOWS -eq 1 ]]; then
   comp_c0_windows "$ROOT/compilateur/rose_tray_win.rose" \
     "$WIN/rose_tray_win.elf" "lanceur tray Rose" || exit 1
 
-  # 1) Tentative honnête : RIR du MOTEUR COMPLET, puis émission PE par C0.
-  #    Si l'un des deux échoue, la cause exacte est journalisée et le stub
-  #    structurel prend le relais (jamais une simulation silencieuse).
-  ORIGINE_ROSE="stub"
+  # 1) MOTEUR COMPLET par C0 : RIR du moteur_complet.rose, puis PE par
+  #    l'émetteur C0. Plus AUCUN repli : ni pilote entier (stub 2,5 Ko), ni
+  #    binaire signé du nupkg 0.1.76. rose.exe, payload/rose.exe et le
+  #    RCDATA 3 du setup sont TOUS ce même binaire C0.
   echo "TENTATIVE RIR moteur complet : $ELF rir $(basename "$SOURCE")" >> "$TENT"
   rc_rir=0
   timeout 600 "$ELF" rir "$SOURCE" > "$WIN/moteur_complet.rir" \
       2> "$WIN/moteur_complet.rir.err" || rc_rir=$?
-  if [[ $rc_rir -eq 0 && -s "$WIN/moteur_complet.rir" ]]; then
-    printf 'RIR COMPLET obtenu : %s octets\n' "$(stat -c%s "$WIN/moteur_complet.rir")" >> "$TENT"
-    rc_pe=0
-    timeout 2400 "$EMIT" "$WIN/moteur_complet.rir" > "$WIN/rose_complet.exe" \
-        2> "$WIN/rose_complet.exe.err" || rc_pe=$?
-    if [[ $rc_pe -eq 0 && -s "$WIN/rose_complet.exe" ]]; then
-      cp "$WIN/rose_complet.exe" "$WIN/rose.exe"
-      ORIGINE_ROSE="moteur complet (RIR C0 -> PE C0)"
-      echo " rose.exe = moteur complet émis en PE" >> "$TENT"
-    else
-      printf 'PE COMPLET refusé (rc=%s) : %s — repli sur stub\n' "$rc_pe" \
-        "$(head -n1 "$WIN/rose_complet.exe.err")" >> "$TENT"
-    fi
-  else
-    printf 'RIR COMPLET refusé (rc=%s) : %s — repli sur stub\n' "$rc_rir" \
+  if [[ $rc_rir -ne 0 || ! -s "$WIN/moteur_complet.rir" ]]; then
+    printf 'RIR COMPLET refusé (rc=%s) : %s — BLOQUÉ, aucun repli\n' "$rc_rir" \
       "$(head -n1 "$WIN/moteur_complet.rir.err")" >> "$TENT"
+    echo "BLOQUÉ : RIR du moteur complet par C0 indisponible" >&2
+    exit 1
   fi
-
-  # 2) Pilote entier minimal (sous-ensemble couvert par l'émetteur G5 x64),
-  #    RIR généré par le moteur C0 puis PE émis par l'émetteur C0.
-  if [[ "$ORIGINE_ROSE" != "moteur complet (RIR C0 -> PE C0)" ]]; then
-    printf '>> 73\n' > "$WIN/pilote_rose.rose"
-    timeout 120 "$ELF" rir "$WIN/pilote_rose.rose" > "$WIN/pilote_rose.rir" \
-      2> "$WIN/pilote_rose.rir.err" || { echo "BLOQUÉ RIR pilote" >&2; exit 1; }
-    timeout 120 "$EMIT" "$WIN/pilote_rose.rir" > "$WIN/rose.exe" \
-      2> "$WIN/rose.exe.err" || { echo "BLOQUÉ émission rose.exe" >&2; cat "$WIN/rose.exe.err" >&2; exit 1; }
-    printf 'rose.exe = PE émis par C0 depuis pilote RIR entier (>> 73)\n' >> "$TENT"
+  printf 'RIR COMPLET obtenu : %s octets\n' "$(stat -c%s "$WIN/moteur_complet.rir")" >> "$TENT"
+  rc_pe=0
+  timeout 2400 "$EMIT" "$WIN/moteur_complet.rir" > "$WIN/rose_complet.exe" \
+      2> "$WIN/rose_complet.exe.err" || rc_pe=$?
+  if [[ $rc_pe -ne 0 || ! -s "$WIN/rose_complet.exe" ]]; then
+    printf 'PE COMPLET refusé (rc=%s) : %s — BLOQUÉ, aucun repli\n' "$rc_pe" \
+      "$(head -n1 "$WIN/rose_complet.exe.err")" >> "$TENT"
+    echo "BLOQUÉ : émission PE du moteur complet par C0 indisponible" >&2
+    exit 1
   fi
+  cp "$WIN/rose_complet.exe" "$WIN/rose.exe"
+  ORIGINE_ROSE="moteur complet (RIR C0 -> PE C0)"
+  echo " rose.exe = moteur complet émis en PE" >> "$TENT"
 
-  # 3) Actifs RÉELS embarqués (aucun stub de ressource). Tout vient du
-  #    worktree : nupkg 0.1.76 (moteur console signé), PNG, TTF généré depuis
-  #    Kare.woff2, ICO, manifeste.
+  # Validateur du moteur C0 : on exige un PE32+ console x86-64 d'au moins
+  # 1 Mio avant de l'utiliser comme payload et comme ressource du setup.
+  python3 - "$WIN/rose.exe" <<'PY'
+import pathlib, struct, sys
+b = pathlib.Path(sys.argv[1]).read_bytes()
+errs = []
+if b[:2] != b"MZ": errs.append("magic MZ absent")
+pe = struct.unpack_from("<I", b, 0x3C)[0] if len(b) >= 0x40 else 0
+if pe + 70 > len(b) or b[pe:pe+4] != b"PE\0\0":
+    errs.append("signature PE absente")
+else:
+    if struct.unpack_from("<H", b, pe+4)[0] != 0x8664: errs.append("machine != 0x8664")
+    if struct.unpack_from("<H", b, pe+24)[0] != 0x20B: errs.append("magic != 0x20B")
+    if struct.unpack_from("<H", b, pe+24+68)[0] != 3: errs.append("subsystem != 3 (console)")
+if len(b) < 1_000_000: errs.append("moteur C0 trop petit (%d o)" % len(b))
+if errs:
+    print("MOTEUR C0 INVALIDE : " + "; ".join(errs), file=sys.stderr)
+    sys.exit(1)
+print("moteur C0 valide : %d o, PE32+ console x86-64" % len(b))
+PY
+  [[ $? -eq 0 ]] || { echo "BLOQUÉ : moteur C0 invalide" >&2; exit 1; }
+
+  # 2) Actifs RÉELS embarqués (aucun stub de ressource, aucun binaire du
+  #    nupkg). PNG, TTF généré depuis Kare.woff2, ICO, manifeste : tout vient
+  #    du worktree ; le moteur, lui, vient de C0 (voir étape 1).
   ASSETS="$WIN/assets"
   mkdir -p "$ASSETS" || exit 1
   python3 - "$ROOT" "$ASSETS" <<'PY'
-import importlib.util, pathlib, struct, sys, zipfile
+import importlib.util, pathlib, struct, sys
 root, out = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
-z = zipfile.ZipFile(root / "docs/telechargements/Rose-0.1.76-full.nupkg")
-engine = z.read("lib/net45/rose.exe")
-assert engine[:2] == b"MZ" and len(engine) > 1_000_000
-pe = struct.unpack_from("<I", engine, 0x3C)[0]
-assert struct.unpack_from("<H", engine, pe + 24 + 68)[0] == 3, "moteur GUI refusé"
-(out / "rose-engine.exe").write_bytes(engine)
+# ⚠ Aucune lecture du nupkg 0.1.76 ici : le moteur est déjà produit par C0
+# dans $WIN/rose.exe (étape 1) et sert de payload et de RCDATA 3 au setup.
 spec = importlib.util.spec_from_file_location(
     "packres", root / "installateur/velopack/pack-res.py")
 mod = importlib.util.module_from_spec(spec)
@@ -368,8 +378,8 @@ for i in range(1, n + 1):
 lines.append("14\t1\t%s\t%d" % (out / "groupe.bin", (out / "groupe.bin").stat().st_size))
 (out / "icons.tsv").write_text("\n".join(lines) + "\n")
 (out / "icons_full.tsv").write_text("\n".join(lines) + "\n")
-print("actifs préparés :", len(lines), "ressources icône, moteur",
-      len(engine), "o, TTF", (out / "kare.ttf").stat().st_size, "o")
+print("actifs préparés :", len(lines), "ressources icône (plus le moteur C0",
+      "en RCDATA 3), TTF", (out / "kare.ttf").stat().st_size, "o")
 PY
   [[ -s "$ASSETS/icons.tsv" ]] || { echo "BLOQUÉ préparation actifs" >&2; exit 1; }
 
@@ -386,9 +396,10 @@ PY
     "${#ICON_LINES[@]}" "${ICON_ARGS[@]}" \
     || { echo "BLOQUÉ génération rose-tray.exe (Rose)" >&2; exit 1; }
 
-  # payload/rose.exe = le VRAI moteur console (recopie de l'artefact publié).
-  cp "$ASSETS/rose-engine.exe" "$WIN/rose.exe.engine" || exit 1
-  cp "$ASSETS/rose-engine.exe" "$WIN/payload/rose.exe" || exit 1
+  # payload/rose.exe = le MOTEUR CONSOLE COMPILÉ PAR C0 (rose.exe de l'étape 1).
+  # Plus aucune copie du binaire signé du nupkg 0.1.76.
+  cp "$WIN/rose.exe" "$WIN/rose.exe.engine" || exit 1
+  cp "$WIN/rose.exe" "$WIN/payload/rose.exe" || exit 1
 
   # Table de ressources COMPLÈTE du setup (RCDATA 1/3/5/6/7/8/9, FONT 2,
   # MANIFEST 1, RT_ICON 1..7, GROUP_ICON 1) construite en Rose.
@@ -402,7 +413,7 @@ def add(t, ident, p):
     lines.append("%d\t%d\t%s\t%d" % (t, ident, p, p.stat().st_size))
 add(10, 1, out / "rose-installeur.png")
 add(8, 2, out / "kare.ttf")
-add(10, 3, out / "rose-engine.exe")
+add(10, 3, win / "rose.exe")   # moteur C0, identique à payload/rose.exe
 add(10, 5, win / "rose-shell.exe")
 add(10, 6, out / "rose.ico")
 add(10, 7, out / "rose_app.ico")
@@ -467,6 +478,8 @@ for rel in arts:
         ss = struct.unpack("<H", b[opt+68:opt+70])[0]
         if ss != 3 or len(b) < 1_000_000:
             errs.append("moteur payload invalide (%d, %d o)" % (ss, len(b)))
+        if hashlib.md5(b).hexdigest() != hashlib.md5((d / "rose.exe").read_bytes()).hexdigest():
+            errs.append("payload != rose.exe C0")
         secs_txt = "moteur-console-reel"
     verdict = "OK" if not errs else "ECHEC:" + ";".join(errs)
     if errs: mauvais.append(rel + " : " + ";".join(errs))
@@ -512,6 +525,49 @@ PY
   fi
   cat "$WIN/VERIFIER_RES.txt"
 
+  # 6b) Preuve d'identité : le RCDATA 3 du setup, payload/rose.exe et rose.exe
+  #     sont OCTET POUR OCTET le même moteur C0. Aucun binaire du nupkg.
+  echo "=== ORIGINE DU PAYLOAD (RCDATA 3 == payload == rose.exe C0) ==="
+  if ! python3 - "$ROOT" "$WIN" <<'PY' | tee "$WIN/PAYLOAD_ORIGINE.txt"
+import hashlib, importlib.util, pathlib, struct, sys
+root, win = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location(
+    "verif_res", root / "installateur/velopack/verifier-res.py")
+v = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(v)
+setup = (win / "Rose-win-Setup.exe").read_bytes()
+rsrc = v.section_rsrc(setup)
+sections = v.sections_pe(setup)
+racine, nommees, ids = v.entrees(rsrc, 0)
+assert nommees == 0
+trouve = None
+for type_, pointeur in racine:
+    if type_ != v.RT_RCDATA:
+        continue
+    noeuds, _, _ = v.entrees(rsrc, pointeur & 0x7FFFFFFF)
+    for nom, p2 in noeuds:
+        if nom != 3:
+            continue
+        langues, _, _ = v.entrees(rsrc, p2 & 0x7FFFFFFF)
+        for _langue, p3 in langues:
+            decalage, taille, _page, _reserve = struct.unpack(
+                "<IIII", rsrc[(p3 & 0x7FFFFFFF):(p3 & 0x7FFFFFFF) + 16])
+            decalage = v.rva_vers_offset(decalage, sections)
+            trouve = setup[decalage:decalage + taille]
+assert trouve is not None, "RCDATA 3 absent du setup"
+md5 = lambda b: hashlib.md5(b).hexdigest()
+moteur = (win / "rose.exe").read_bytes()
+payload = (win / "payload/rose.exe").read_bytes()
+print("rose.exe (C0)      : %8d o  md5=%s" % (len(moteur), md5(moteur)))
+print("payload/rose.exe   : %8d o  md5=%s" % (len(payload), md5(payload)))
+print("RCDATA 3 du setup  : %8d o  md5=%s" % (len(trouve), md5(trouve)))
+assert md5(trouve) == md5(moteur) == md5(payload), "RCDATA 3 / payload / rose.exe divergents"
+print("PREUVE : payload/rose.exe = RCDATA 3 = rose.exe = moteur complet C0 (RIR -> PE)")
+PY
+  then
+    echo "ÉCHEC preuve d'origine du payload" >&2; exit 1
+  fi
+
   {
     echo "WINDOWS SANS CARGO (option --windows) :"
     echo "  origine rose.exe : $ORIGINE_ROSE"
@@ -519,13 +575,17 @@ PY
     echo "  générateur .rsrc: $GEN  ($(stat -c%s "$GEN") o)"
     echo "  shell Rose      : $WIN/rose_shell_win.elf"
     echo "  tray Rose       : $WIN/rose_tray_win.elf"
-    echo "  payload/rose.exe: moteur console réel du nupkg 0.1.76"
+    echo "  payload/rose.exe: copie octet-pour-octet de rose.exe (moteur C0)"
+    echo "  RCDATA 3 setup  : le MÊME moteur C0 (voir PAYLOAD_ORIGINE.txt)"
+    echo "  nupkg 0.1.76    : AUCUNE lecture, AUCUNE copie (plus de recours)"
     echo "  rapport         : $WIN/WINDOWS_TENTATIVES.txt"
     echo "  vérification    : $WIN/WINDOWS_ARTIFACTS.tsv"
     echo "  readobj         : $WIN/LLVM_READOJ.txt"
     echo "  ressources      : $WIN/VERIFIER_RES.txt"
+    echo "  origine payload : $WIN/PAYLOAD_ORIGINE.txt"
     echo "  STATUT : 5 PE32+ x86-64 ; shell/tray/setup = code Win32 réel écrit"
-    echo "           en Rose ; rose.exe = moteur complet (RIR C0 -> PE C0)."
+    echo "           en Rose ; rose.exe = payload = RCDATA 3 = moteur complet"
+    echo "           (RIR C0 -> PE C0), sans aucun binaire signé du nupkg."
   } >> "$MANIFESTE"
   echo "WINDOWS : 5 artefacts PE32+ x86-64 (3 lanceurs Rose), verifier-res.py OK"
 fi
