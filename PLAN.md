@@ -1500,3 +1500,10 @@ validation_finale: 0 echec, point fixe b3ed9262 x2, HEAD local=distant a2ca3cc.
 PARITÉ FONCTIONNELLE COMPLÈTE du moteur Rose auto-hébergé vs moteur Rust.
 Reste pour 100% release: 5 .exe Windows, AOT/ORC complet, ecarts de format
 (wasm 82 vs 72 o, comp 8,9 Ko vs 5,4 Mo) — documentes RELEASE_SANS_CARGO.md.
+
+## Vague 101 — fermer les derniers écarts de release
+
+141/141 confirmé. 2 agents lances: (pe_x64) porter l'emetteur PE Rose a machine
+0x8664 pour produire rose.exe sans cargo; (format_parite) rendre wasm/bc/comp
+byte-identiques aux references Rust (LEB128 surlongs, champs ligne/index, gabarit).
+Objectif: --selfhost produise les 5 artefacts Windows avec verifier-res.py vert.
