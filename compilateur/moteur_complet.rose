@@ -1849,16 +1849,12 @@ fn lsrc_ce_raw($i: entier,
     # des builtins) : le vérificateur Rust la connaît et l'erreur porte alors
     # sur l'opération, pas sur la variable.
     si ($t == "" et ($nom == "π" ou $nom == "pi")) { $t = "chaine|vide" }
-    # CORR7/t3 — un nom de fonction est une valeur de première classe :
-    # accepter paramètre-fonction et variable-fonction. Le tag `n:<nom>`
-    # est porté par l'interpréteur RIR (CORR6); le dump des programmes
-    # existants reste inchangé (aucun ne nomme une fonction comme valeur).
-    si ($t == "") {
-      $fu = 1
-      $nfu = longueur($fnoms)
-      tant_que ($fu < $nfu et $fnoms[$fu] != $nom) { $fu = $fu + 1 }
-      si ($fu < $nfu) { retour "fonction|vide" }
-    }
+    # CORR7/t3 (diagnostic 141) — un nom de fonction N'EST PAS une valeur
+    # de première classe dans l'oracle Rust : `carre` employé comme variable
+    # doit produire « Variable 'carre' utilisée sans valeur » (t107). Seuls
+    # les paramètres-fonctions et variables-fonctions déjà présents dans
+    # l'environnement ($vn/$gn, donc $t != "") sont acceptés : la recherche
+    # parmi $fnoms qui acceptait n'importe quel nom de fonction est retirée.
     si ($t == "") {
       lsrc_signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
@@ -12143,7 +12139,7 @@ si ($mc_cmd == "verif" ou $mc_cmd == "rir" ou $mc_cmd == "tokens" ou $mc_cmd == 
   }
   $mc_res = lsrc_lire_programme(argument(1))
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   si ($mc_cmd == "verif") {
@@ -12183,7 +12179,7 @@ si ($mc_cmd == "transpile") {
   }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12206,7 +12202,7 @@ si ($mc_cmd == "bc") {
   si ($mc_n >= 4 et argument(2) == "-o") { $mc_out = argument(3) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_bc = sb_module(sous_chaine($mc_res, 3, longueur($mc_res)))
@@ -12230,7 +12226,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12256,7 +12252,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12282,7 +12278,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12308,7 +12304,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12334,7 +12330,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12360,7 +12356,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12386,7 +12382,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12412,7 +12408,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12438,7 +12434,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12464,7 +12460,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12490,7 +12486,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12516,7 +12512,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12542,7 +12538,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12568,7 +12564,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12594,7 +12590,7 @@ si ($mc_cmd == "comp") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
@@ -12619,7 +12615,7 @@ si ($mc_cmd == "methode") {
   si (longueur(lire_texte($mc_src)) == 0) { cli_err("rose: fichier introuvable : " + $mc_src); quitter(1) }
   $mc_res = lsrc_lire_programme($mc_src)
   si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-    cli_err(sous_chaine($mc_res, 3, longueur($mc_res)))
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
     quitter(1)
   }
   $mc_val = mc_const_rir(sous_chaine($mc_res, 3, longueur($mc_res)))
@@ -12640,7 +12636,10 @@ si (longueur(lire_texte($mc_chemin)) == 0) {
 }
 $mc_res = lsrc_lire_programme($mc_chemin)
 si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-  >> sous_chaine($mc_res, 3, longueur($mc_res))
+  # Diagnostic : lsrc_lire_programme renvoie "ERR|<message>" alors que la
+  # voie normale renvoie "OK|<rir>". Le décalage est donc 4 (pas 3) et le
+  # message doit aller sur stderr, jamais sur stdout (miroir de cli_err).
+  cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
   quitter(1)
 }
 $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))

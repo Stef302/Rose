@@ -1770,17 +1770,11 @@ fn ce_raw($i: entier,
     # des builtins) : le vérificateur Rust la connaît et l'erreur porte alors
     # sur l'opération, pas sur la variable.
     si ($t == "" et ($nom == "π" ou $nom == "pi")) { $t = "chaine|vide" }
-    # CORR7 — un nom de fonction est une valeur de première classe : le
-    # lecteur l'accepte comme expression (paramètre-fonction, variable-fonction).
-    # Le moteur Rust n'a pas cette notion, mais l'interpréteur RIR porte le
-    # tag `n:<nom>` introduit par CORR6 ; aucun programme existant ne nomme
-    # une fonction comme valeur, donc son dump reste inchangé.
-    si ($t == "") {
-      $fu = 1
-      $nfu = longueur($fnoms)
-      tant_que ($fu < $nfu et $fnoms[$fu] != $nom) { $fu = $fu + 1 }
-      si ($fu < $nfu) { retour "fonction|vide" }
-    }
+    # CORR7 / diagnostic 141 — un nom de fonction N'EST PAS une valeur de
+    # première classe pour l'oracle Rust : `carre` employé comme variable
+    # doit donner « Variable 'carre' utilisée sans valeur » (t107). Seuls les
+    # paramètres-fonctions / variables-fonctions déjà dans l'environnement
+    # ($t != "") sont acceptés ; la recherche parmi $fnoms est retirée.
     si ($t == "") {
       signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"

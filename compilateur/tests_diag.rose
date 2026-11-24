@@ -1,0 +1,92 @@
+# ═══════════════════════════════════════════════════════════════════════
+# tests_diag.rose — contrat des 3 derniers BLOQUES du corpus self-host.
+#
+# Objectif : 141/141 CONFORMES, stderr des refus identique à l'oracle Rust.
+#
+#   t55_liste_imbriquee : [Ligne 1, Colonne 0] Listes de listes non supportées pour l'instant
+#   t106_hof_param      : [Ligne 1, Colonne 0] Fonction 'fn' inconnue
+#   t107_hof_var        : [Ligne 2, Colonne 0] Variable 'carre' utilisée sans valeur
+#
+# Le vrai chemin de diagnostic appelle quitter(1) : on ne peut donc PAS
+# l'invoquer ici sans arrêter ce programme (même contrainte que
+# tests_corr_final.rose). Ce banc vérifie les invariants purs qui le
+# composent — formulations exactes, extraction du payload « ERR|… » vers
+# stderr, et règle « un nom de fonction n'est pas une valeur » — et doit
+# rendre la même sortie sur l'oracle Rust et sur le moteur self-hosté.
+#
+# Les compteurs sont incrémentés au niveau supérieur : le moteur G5 ne
+# propage pas la mutation d'une globale depuis le corps d'une fonction.
+#
+# Usage : ROSE_SANS_JIT=1 rose/rose compilateur/tests_diag.rose
+#         moteur_complet.elf    compilateur/tests_diag.rose
+# ═══════════════════════════════════════════════════════════════════════
+
+$pass = 0
+$fail = 0
+
+fn ok($attendu: chaine, $obtenu: chaine) -> entier {
+  si ($attendu == $obtenu) { retour 1 }
+  afficher_erreur("ECHEC : attendu [" + $attendu + "] obtenu [" + $obtenu + "]")
+  retour 0
+}
+
+# ── 1. Les 3 messages exacts, préfixe et numéro de ligne/colonne ──────
+fn diag($lg: entier, $msg: chaine) -> chaine {
+  retour "Rose : erreur — [Ligne " + chaine($lg) + ", Colonne 0] " + $msg
+}
+$msg55 = diag(1, "Listes de listes non supportées pour l'instant")
+$msg106 = diag(1, "Fonction 'fn' inconnue")
+$msg107 = diag(2, "Variable 'carre' utilisée sans valeur")
+
+$pass = $pass + ok("Rose : erreur — [Ligne 1, Colonne 0] Listes de listes non supportées pour l'instant", $msg55)
+$pass = $pass + ok("Rose : erreur — [Ligne 1, Colonne 0] Fonction 'fn' inconnue", $msg106)
+$pass = $pass + ok("Rose : erreur — [Ligne 2, Colonne 0] Variable 'carre' utilisée sans valeur", $msg107)
+
+# ── 2. Payload « ERR|… » : décalage 4, pas 3 ──────────────────────────
+# sous_chaine(s, debut, fin) rend les octets [debut, fin). Le préfixe
+# d'erreur fait 4 octets (« ERR| ») mais celui de réussite en fait 3
+# (« OK| »). Réutiliser 3 ajoutait un « | » au message et l'écrivait sur
+# stdout : c'était la cause profonde des 3 BLOQUES.
+fn payload_err($r: chaine) -> chaine {
+  si (sous_chaine($r, 0, 4) != "ERR|") { retour "" }
+  retour sous_chaine($r, 4, longueur($r))
+}
+$pass = $pass + ok($msg55, payload_err("ERR|" + $msg55))
+$pass = $pass + ok("rir", sous_chaine("OK|rir", 3, longueur("OK|rir")))
+$pass = $pass + ok("|" + $msg55, sous_chaine("ERR|" + $msg55, 3, longueur("ERR|" + $msg55)))
+$pass = $pass + ok("", payload_err("OK|rir"))
+
+# ── 3. Un nom de fonction n'est pas une valeur (t107) ─────────────────
+# Le vérificateur cherche d'abord dans les environnements local/global ;
+# ce n'est que s'il n'y est PAS qu'il doit signaler l'erreur. L'ancien
+# repli sur la table des fonctions (CORR7) faisait croire que `carre`
+# existait, et le refus arrivait une ligne plus tard sur `$f(5)`.
+fn env_get($nom: chaine, $vn: liste<chaine>, $vt: liste<chaine>) -> chaine {
+  $u = 1
+  tant_que ($u < longueur($vn)) {
+    si ($vn[$u] == $nom) { retour $vt[$u] }
+    $u = $u + 1
+  }
+  retour ""
+}
+fn type_variable($nom: chaine, $fnoms: liste<chaine>,
+                 $vn: liste<chaine>, $vt: liste<chaine>) -> chaine {
+  $t = env_get($nom, $vn, $vt)
+  si ($t != "") { retour $t }
+  # Nom de fonction : PAS de repli — l'appelant signale la variable
+  # sans valeur, exactement comme l'oracle Rust.
+  retour ""
+}
+$fnoms = ["", "carre", "applique"]
+$vn_vide = [""]
+$vt_vide = [""]
+$vn_param = ["", "fn"]
+$vt_param = ["", "?"]
+$pass = $pass + ok("", type_variable("carre", $fnoms, $vn_vide, $vt_vide))
+$pass = $pass + ok("?", type_variable("fn", $fnoms, $vn_param, $vt_param))
+
+$fail = 9 - $pass
+$s_fail = "0"
+si ($fail > 0) { $s_fail = chaine($fail) }
+>> "tests_diag : " + chaine($pass) + " OK, " + $s_fail + " ECHEC"
+si ($fail > 0) { quitter(1) }
