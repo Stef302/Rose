@@ -1603,3 +1603,12 @@ validation_finale 0 echec. HEAD local=distant b31b042.
 RESTE (honnête, hors A-Z du code): le defaut de build-windows-rebuild.sh appelle
 encore cargo (option --selfhost), validation_finale.sh §1 appelle cargo build,
 et aucun PE n'a ete execute sous Windows (hote aarch64, Wine sans WoW64).
+
+## Vague 111 — les 3 derniers points (configuration et preuve)
+
+Reponse a la question "peut-on affirmer que Rose est self-hoste?": OUI pour le code
+et la capacite (23 commandes, zero refus, release Windows C0 sans cargo), MAIS le
+defaut de build-windows-rebuild.sh et validation_finale.sh §1 appellent encore cargo,
+et aucun PE n'a ete execute sous Windows (hote aarch64).
+3 agents: (default) bascule defaut sur --selfhost avec --cargo en repli, (validation)
+validation_finale --sans-cargo, (wine) preuve d'execution PE ou constat honnete mesure.
