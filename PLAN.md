@@ -1524,3 +1524,21 @@ rose.exe (+ shell/tray/setup/resources Win32) et basculer --selfhost par defaut.
 Dernier agent: composer emetteur_pe_x64 dans le pilote C0, produire les 5 artefacts
 Windows (rose.exe/shell/tray/setup/payload) avec machine 0x8664, verifier-res.py
 vert, chemin cargo par defaut intact. Objectif: --selfhost = release complete.
+
+## Vague 104 — BILAN FINAL self-hosting + release
+
+ATTEINT ET VÉRIFIÉ:
+- Moteur Rose complet compile par C0 (ELF 1965640 o), 141/141 parité, 0 erreur.
+- Formats wasm/bc/comp byte-identiques à Rust (30/30 + 9/9).
+- PE x86-64 natif 0x8664, 13/13, byte-identique.
+- Build --selfhost: 5 artefacts PE x86-64 produits sans cargo, verifier-res.py vert.
+- AOT 75/75, JIT 25/25, WASM/RVM, AZ 31/31, 659 tests/0, point fixe b3ed9262 x2.
+- HEAD local=distant 27ba675.
+
+RESTE (documenté RELEASE_100.md §cause/geste, non masqué):
+- 4 artefacts Windows sont des stubs structurellement valides (rose.exe est un vrai
+  PE mais de démonstration): RIR du moteur complet refusé par C0 ligne 8562
+  (Addition valeur + entier) et par l'émetteur (formes lst), GUI setup_gui.rs sans
+  équivalent Rose. Aucun PE exécuté (hôte aarch64, Wine sans WoW64).
+- Le défaut de build-windows-rebuild.sh reste cargo (option --selfhost seulement).
+- validation_finale.sh §1 appelle cargo build (sections 2-7 rejouées séparément).
