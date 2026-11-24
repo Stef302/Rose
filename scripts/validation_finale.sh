@@ -2,6 +2,11 @@
 # validation_finale.sh — toutes les preuves d'exécution avant publication.
 # Aucune affirmation sans commande exécutée. Sortie : /tmp/opencode/validation_finale.log
 set -u
+# Mode optionnel SANS cargo : toute la mécanique est dans le script dédié.
+# Le comportement par défaut (CI historique) reste inchangé.
+if [[ "${1:-}" = "--sans-cargo" ]]; then
+  exec bash "$(cd "$(dirname "$0")" && pwd)/validation_sans_cargo.sh"
+fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 B="$ROOT/rose/target/release/rose"
 LOG=/tmp/opencode/validation_finale.log
