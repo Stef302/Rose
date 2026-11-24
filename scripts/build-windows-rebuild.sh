@@ -17,14 +17,15 @@
 #
 # Usage : sh scripts/build-windows-rebuild.sh [--selfhost]
 #
-#   --selfhost : chemin SANS cargo. On appelle scripts/build-sans-cargo.sh,
-#                qui compile compilateur/moteur_complet.rose avec C0 et
-#                produit un ELF64 aarch64 vérifié. Les artefacts Windows PE
-#                x86_64 (rose.exe, rose-shell.exe, rose-tray.exe,
-#                rose-setup.exe) ne sont PAS produits : C0 n'émet que de
-#                l'ELF aarch64 et le composé n'a ni writer PE x86_64 ni
-#                ressources Win32. Leur absence est documentée dans le stage.
-#                Le chemin cargo reste le défaut, inchangé (release v0.1.76).
+#   --selfhost : chemin SANS cargo. On appelle scripts/build-sans-cargo.sh
+#                --windows, qui compile par C0 le moteur, l'émetteur PE x64
+#                et le générateur de ressources Win32, puis produit et
+#                vérifie les 5 artefacts PE32+ x86-64 du stage :
+#                Rose-win-Setup.exe, rose.exe, rose-shell.exe,
+#                rose-tray.exe, payload/rose.exe. Le moteur Windows complet
+#                n'est pas encore émissible (sous-ensemble RIR entiers) :
+#                voir rose/docs/RELEASE_100.md. Le chemin cargo reste le
+#                défaut, inchangé (release v0.1.76).
 set -eu
 
 MODE=cargo
@@ -51,7 +52,7 @@ STAGE="$V/stage"
 if [ "$MODE" = selfhost ]; then
   SOURCE_OUT="${ROSE_SELFHOST_OUT:-/tmp/opencode/release-sans-cargo}"
   echo "=== MODE SELFHOST : compilation par C0, AUCUNE commande cargo ==="
-  ARGS="--c0 ${ROSE_C0:-/tmp/opencode/C0_h.elf} --sortie $SOURCE_OUT"
+  ARGS="--c0 ${ROSE_C0:-/tmp/opencode/C0_h.elf} --sortie $SOURCE_OUT --windows"
   if [ -n "${ROSE_REFERENCE:-}" ]; then
     ARGS="$ARGS --reference $ROSE_REFERENCE"
   fi
@@ -64,35 +65,57 @@ if [ "$MODE" = selfhost ]; then
   [ "$magic" = "7f454c46" ] && [ "$machine" = "183" ] || {
     echo "ARTEFACT INVALIDE : magic=$magic machine=$machine" >&2; exit 1; }
 
+  ARTEFACTS="Rose-win-Setup.exe rose.exe rose-shell.exe rose-tray.exe payload/rose.exe"
+  for f in $ARTEFACTS; do
+    [ -s "$SOURCE_OUT/$f" ] || { echo "ARTEFACT WINDOWS ABSENT : $f" >&2; exit 1; }
+  done
+
   rm -rf "$STAGE"
   mkdir -p "$STAGE/payload"
   cp "$MOTEUR" "$SOURCE_OUT/rose" "$SOURCE_OUT/MANIFESTE.txt" \
      "$SOURCE_OUT/resultats.tsv" "$STAGE/"
+  cp "$SOURCE_OUT/Rose-win-Setup.exe" "$SOURCE_OUT/rose.exe" \
+     "$SOURCE_OUT/rose-shell.exe" "$SOURCE_OUT/rose-tray.exe" "$STAGE/"
+  cp "$SOURCE_OUT/payload/rose.exe" "$STAGE/payload/rose.exe"
+  for rapport in WINDOWS_ARTIFACTS.tsv WINDOWS_TENTATIVES.txt \
+                 LLVM_READOJ.txt VERIFIER_RES.txt \
+                 emetteur_pe_x64.elf pe_stub_ressources.elf; do
+    [ -f "$SOURCE_OUT/$rapport" ] && cp "$SOURCE_OUT/$rapport" "$STAGE/"
+  done
   cat > "$STAGE/NON_COUVERT_SELFHOST.txt" <<'TXT'
 RELEASE AUTO-HÉBERGÉE — COUVERTURE RÉELLE (constat daté, re-mesurable)
 
-PRODUIT ici : moteur.elf (ELF64 aarch64 compilé par C0 depuis
-compilateur/moteur_complet.rose), rose (lanceur), MANIFESTE.txt,
-resultats.tsv (12 programmes, sortie capturée).
+PRODUIT ici, SANS cargo :
+  moteur.elf (ELF64 aarch64 compilé par C0 depuis moteur_complet.rose),
+  rose (lanceur), MANIFESTE.txt, resultats.tsv,
+  et les 5 artefacts Windows PE32+ x86-64 : Rose-win-Setup.exe, rose.exe,
+  rose-shell.exe, rose-tray.exe, payload/rose.exe.
 
-NON PRODUIT ici (et POURQUOI) :
-  rose.exe           : C0 n'émet que de l'ELF64 aarch64 ; aucun writer PE
-                       x86_64 dans le composé Rose. Le JIT Cranelift et
-                       l'AOT LLVM ORC du binaire Rust n'ont pas d'équivalent
-                       dans le point d'entrée C0.
-  rose-shell.exe     : simple lanceur Win32 du moteur ; sans rose.exe PE,
-                       il n'a rien à lancer.
-  rose-tray.exe      : helper Win32 (icône + timer 6 h) écrit en Rust ;
-                       aucune routine Win32 dans le composé.
-  Rose-win-Setup.exe : fenêtre Win32 + ressources RCDATA/ICON/FONT/MANIFEST
-                       générées par pack-res.py et liées par lld-link ;
-                       C0 n'a ni table de ressources ni lieur PE.
-  payload/rose.exe   : même cause que rose.exe.
+VÉRIFIÉ : magic MZ/PE\0\0, machine 0x8664, magic PE32+ 0x20B, sections
+.text/.data (et .rsrc pour 4 artefacts, .pdata pour rose.exe), imports
+KERNEL32.DLL, tailles/md5 dans WINDOWS_ARTIFACTS.tsv, et
+`verifier-res.py Rose-win-Setup.exe` -> RESSOURCES VALIDES.
+
+STUBS (structure valide, pas un moteur Windows fonctionnel) :
+  rose.exe           : PE émis par C0 depuis un pilote RIR entier (>> 73).
+                       Cause : l'émetteur G5 x64 couvre entiers/+,-,*,/,%,
+                       comparaisons, slots, appels résolus, sauts — pas les
+                       chaînes/listes/tables du RIR du moteur complet (705
+                       fonctions). Le RIR complet est refusé par le moteur C0
+                       en ligne 8562 ("Addition valeur + entier impossible")
+                       et, via la graine Rust, par l'émetteur ("forme non
+                       couverte : lst"). Voir WINDOWS_TENTATIVES.txt.
+  rose-shell.exe     : source Rose absente (rose-shell.rs = 308 l. Win32) ;
+                       PE stub avec .rsrc.
+  rose-tray.exe      : source Rose absente (rose-tray.rs = 670 l., icône +
+                       timer 6 h) ; PE stub avec .rsrc.
+  Rose-win-Setup.exe : GUI setup_gui.rs (4 648 l.) absent du composé ;
+                       stub PE avec une vraie table .rsrc (icône 16x16)
+                       validée par verifier-res.py.
+  payload/rose.exe   : même cause que rose.exe ; PE stub avec .rsrc.
 
 Le lanceur `rose` refuse explicitement (rc=3) aot/orc/link/llvm/console/
-repl/rvm/wasm. `comp` produit un gabarit ELF patché, pas un PE.
-Jalon 100 % : writer PE x86_64 + ressources Win32 en Rose pur, puis
-remplacement des 3 appels cargo par ce chemin dans ce script.
+repl/rvm/wasm. Geste de remplacement complet : rose/docs/RELEASE_100.md.
 TXT
 
   echo "=== VÉRIFICATION ARTEFACTS SELFHOST ==="
@@ -104,8 +127,10 @@ TXT
   "$STAGE/rose" aot "$MOTEUR" >/dev/null 2>&1 && rc_refus=0 || rc_refus=$?
   echo "  commande non couverte aot : rc=$rc_refus (3 attendu)"
   [ "$rc_refus" -eq 3 ] || { echo "REFUS ATTENDU ABSENT" >&2; exit 1; }
-  echo "=== ARTEFACTS WINDOWS ABSENTS (documentés) ==="
-  echo "  Rose-win-Setup.exe rose.exe rose-shell.exe rose-tray.exe payload/rose.exe"
+  echo "=== 5 ARTEFACTS WINDOWS (stage) ==="
+  cat "$STAGE/WINDOWS_ARTIFACTS.tsv"
+  echo "=== RESSOURCES DU SETUP (stage) ==="
+  python3 "$RACINE/installateur/velopack/verifier-res.py" "$STAGE/Rose-win-Setup.exe"
   echo "=== STAGE ==="; ls -la "$STAGE"
   exit 0
 fi

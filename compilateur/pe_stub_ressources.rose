@@ -1,0 +1,191 @@
+# pe_stub_ressources.rose — générateur PE32+ x86-64 de STUBS Win32 avec
+# ressources, compilé par C0 (aucun cargo, aucun llvm-rc, aucun lieur).
+#
+# Ce fichier est un pilote autonome : compilé par C0 en ELF aarch64, il reçoit
+#   argument(0) = chemin de sortie .exe
+#   argument(1) = description courte (écrite dans le stub DOS, rend chaque
+#                 artefact distinct)
+# et écrit un PE32+ console AMD64 avec :
+#   - machine 0x8664, magic 0x20B, image base 0x140000000 ;
+#   - 3 sections : .text (code), .data (table d'imports KERNEL32), .rsrc ;
+#   - imports GetStdHandle / WriteFile / ExitProcess (IAT) ;
+#   - une table de ressources conforme à installateur/velopack/verifier-res.py :
+#     racine sans entrée nommée, RT_GROUP_ICON(14)/1/1033 et RT_ICON(1)
+#     pointant vers un DIB 16x16 32 bpp contenu dans .rsrc.
+#
+# ⚠ Ce n'est PAS le moteur Rose : c'est un STUB structurel. La cause pour
+#   laquelle rose.exe / rose-shell.exe / rose-tray.exe / le setup ne peuvent
+#   pas encore être des images fonctionnelles est documentée dans
+#   rose/docs/RELEASE_100.md (émetteur G5 x64 limité au sous-ensemble RIR
+#   entiers ; GUI Win32 et table de ressources complète absentes du composé).
+#
+# Les quatre correctifs natifs de emetteur_pe_x64.rose sont repris ici :
+# u32le normalise avant décomposition, octet_brut/pe_raw écrivent les octets
+# bruts en fin de chaîne, pe_join évite le O(n²) de la concaténation.
+
+# ── Little-endian (caractere() = UTF-8 sous le backend C0) ─────────────────
+fn g8($v: entier) -> chaine { retour caractere($v % 256) }
+fn g16($v: entier) -> chaine {
+  $u = $v % 65536
+  si ($u < 0) { $u = $u + 65536 }
+  retour g8($u % 256) + g8(partie_entiere($u / 256) % 256)
+}
+fn g32($v: entier) -> chaine {
+  $u = $v % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  $a = $u % 256
+  $b = partie_entiere($u / 256) % 256
+  $c = partie_entiere($u / 65536) % 256
+  $d = partie_entiere($u / 16777216) % 256
+  retour g8($a) + g8($b) + g8($c) + g8($d)
+}
+fn g64($v: entier) -> chaine {
+  $r = ""
+  $u = $v
+  $i = 0
+  tant_que ($i < 8) { $r = $r + g8($u % 256); $u = partie_entiere($u / 256); $i = $i + 1 }
+  retour $r
+}
+fn gz($n: entier) -> chaine {
+  $r = ""
+  $i = 0
+  tant_que ($i < $n) { $r = $r + caractere(0); $i = $i + 1 }
+  retour $r
+}
+fn gc($s: chaine, $n: entier) -> chaine {
+  si (longueur($s) >= $n) { retour $s }
+  retour $s + gz($n - longueur($s))
+}
+fn gj($p: liste<chaine>, $d: entier, $f: entier) -> chaine {
+  si ($f - $d <= 0) { retour "" }
+  si ($f - $d == 1) { retour $p[$d] }
+  $m = ($d + $f) div 2
+  retour gj($p, $d, $m) + gj($p, $m, $f)
+}
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+fn graw($s: chaine) -> chaine {
+  $parts = [""]
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    joindre($parts, octet_brut(ordre(sous_chaine($s, $i, $i + 1))))
+    $i = $i + 1
+  }
+  retour gj($parts, 1, longueur($parts))
+}
+
+# ── Ressources : DIB 16x16 32bpp + arbre RT_GROUP_ICON/RT_ICON ────────────
+fn gdib() -> chaine {
+  $h = g32(40) + g32(16) + g32(32) + g16(1) + g16(32) + g32(0) +
+       g32(0) + g32(0) + g32(0) + g32(0) + g32(0)
+  $ligne = ""
+  $i = 0
+  tant_que ($i < 16) { $ligne = $ligne + g32(4294902528); $i = $i + 1 }
+  $xor = ""
+  $i = 0
+  tant_que ($i < 16) { $xor = $xor + $ligne; $i = $i + 1 }
+  retour gc($h, 40) + $xor + gz(64)
+}
+fn grsrc($rva: entier) -> chaine {
+  $icon = gdib()
+  $grp = g16(0) + g16(1) + g16(1) + g8(16) + g8(16) + g8(0) + g8(0) +
+         g16(1) + g16(32) + g32(longueur($icon)) + g16(1)
+  # Arbre (voir verifier-res.py) : racine -> 2 types -> nom -> langue(1033)
+  # -> IMAGE_RESOURCE_DATA_ENTRY. Le pointeur de langue est une RVA brute
+  # (bit 31 à 0) ; tous les pointeurs de sous-répertoire ont le bit 31 à 1.
+  $dir = g32(0) + g32(0) + g16(0) + g16(0) + g16(0) + g16(1)
+  $deux = g32(0) + g32(0) + g16(0) + g16(0) + g16(0) + g16(2)
+  $r = $deux
+  $r = $r + g32(3) + g32(2147483680)                  # RT_ICON -> +32
+  $r = $r + g32(14) + g32(2147483752)                 # RT_GROUP_ICON -> +104
+  $r = $r + $dir + g32(1) + g32(2147483704)           # +32 : nom 1 -> +56
+  $r = $r + $dir + g32(1033) + g32(88) + gz(8)        # +56 : langue -> données +88
+  $r = $r + g32($rva + 208) + g32(longueur($icon)) + g32(0) + g32(0)
+  $r = $r + $dir + g32(1) + g32(2147483784) + gz(8)   # +104 : nom 1 -> +136
+  $r = $r + $dir + g32(1033) + g32(168) + gz(8)       # +136 : langue -> +168
+  $r = $r + g32($rva + 184) + g32(longueur($grp)) + g32(0) + g32(0)
+  $r = gc($r, 184) + $grp
+  $r = gc($r, 208) + $icon
+  retour $r
+}
+
+# ── Table d'imports KERNEL32 (IAT : 0 = GetStdHandle, 1 = WriteFile,
+#    2 = ExitProcess) ────────────────────────────────────────────────────────
+fn gimports($drv: entier) -> chaine {
+  $dat = gz(32)
+  $dat = $dat + g32($drv + 96) + g32(0) + g32(0) +
+         g32($drv + 208) + g32($drv + 128)
+  $dat = gc($dat, 72)                                 # descripteur nul
+  $dat = gc($dat, 96)
+  $noms = ["GetStdHandle", "WriteFile", "ExitProcess"]
+  $i = 0
+  tant_que ($i < 3) { $dat = $dat + g64($drv + 160 + 16 * $i); $i = $i + 1 }
+  $dat = $dat + g64(0)                                # terminateur ILT
+  $dat = gc($dat, 128)
+  $i = 0
+  tant_que ($i < 3) { $dat = $dat + g64($drv + 160 + 16 * $i); $i = $i + 1 }
+  $dat = $dat + g64(0)                                # terminateur IAT
+  $dat = gc($dat, 160)
+  $i = 0
+  tant_que ($i < 3) {
+    $dat = $dat + g16(0) + $noms[$i] + g8(0)
+    $dat = gc($dat, 160 + 16 * ($i + 1))
+    $i = $i + 1
+  }
+  $dat = gc($dat, 208) + "KERNEL32.DLL" + g8(0)
+  retour gc($dat, 512)
+}
+
+# ── PE complet ─────────────────────────────────────────────────────────────
+fn gpe($desc: chaine) -> chaine {
+  $rsrc_rva = 12288
+  $rsrc = grsrc($rsrc_rva)
+  $rsrc_raw = partie_entiere((longueur($rsrc) + 511) / 512) * 512
+  $size_image = $rsrc_rva + $rsrc_raw
+  # xor ecx,ecx ; call [rip+0x1088] (ExitProcess via IAT) ; ret
+  $code = g8(49) + g8(201) + g8(255) + g8(21) + g32(4232) + g8(195)
+
+  $o = "MZ" + gz(58) + g32(128)
+  $o = gc($o, 64) + $desc
+  $o = gc($o, 128) + "PE" + gz(2)
+  $o = $o + g16(34404) + g16(4) + g32(0) + g32(0) + g32(0) +
+       g16(240) + g16(34)
+  $o = $o + g16(523) + g8(0) + g8(0)
+  $o = $o + g32(longueur($code)) + g32(512) + g32(0)
+  $o = $o + g32(4096) + g32(4096)
+  $o = $o + g64(5368709120)
+  $o = $o + g32(4096) + g32(512)
+  $o = $o + g16(6) + g16(0) + g16(0) + g16(0) + g16(6) + g16(0)
+  $o = $o + g32(0)
+  $o = $o + g32($size_image) + g32(1024) + g32(0)
+  $o = $o + g16(3) + g16(33120)
+  $o = $o + g64(1048576) + g64(4096) + g64(1048576) + g64(4096)
+  $o = $o + g32(0) + g32(16)
+  $o = $o + gz(8) + g32(8224) + g32(40)               # dir 1 : imports
+  $o = $o + g32($rsrc_rva) + g32(longueur($rsrc))     # dir 2 : ressources
+  $o = $o + gz(8) + gz(64)
+  $o = $o + g32(8224 + 128) + g32(24)                 # dir 12 : IAT
+  $o = $o + gz(24)
+
+  $o = gc($o, 392)
+  $o = $o + ".text" + gz(3) + g32(longueur($code)) + g32(4096) + g32(512) +
+       g32(1024) + g32(0) + g32(0) + g16(0) + g16(0) + g32(1610612768)
+  $o = $o + ".data" + gz(3) + g32(512) + g32(8192) + g32(512) +
+       g32(1536) + g32(0) + g32(0) + g16(0) + g16(0) + g32(3221225536)
+  $o = $o + ".rsrc" + gz(3) + g32(longueur($rsrc)) + g32($rsrc_rva) +
+       g32($rsrc_raw) + g32(2048) + g32(0) + g32(0) + g16(0) + g16(0) +
+       g32(1073741888)
+  $o = gc($o, 1024)
+  $o = $o + gc($code, 512)
+  $o = $o + gimports(8192)
+  retour $o + gc($rsrc, $rsrc_raw)
+}
+
+si (nb_arguments() >= 2) {
+  $dest = argument(0)
+  $desc = argument(1)
+  ecrire_bytes($dest, graw(gpe($desc)))
+  quitter(0)
+}
+ecrire_bytes("/dev/stderr", "pe_stub_ressources : usage <sortie.exe> <description>\n")
+quitter(2)

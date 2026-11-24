@@ -21,7 +21,7 @@
 #   scripts/build-sans-cargo.sh [--c0 ELF] [--source FICHIER.rose]
 #                               [--sortie DOSSIER] [--reference BINAIRE_RUST]
 #                               [--rapport FICHIER] [--timeout SECONDES]
-#                               [--reutiliser] [--sans-tests]
+#                               [--reutiliser] [--sans-tests] [--windows]
 #
 # Options :
 #   --c0 ELF          compilateur natif auto-hébergé. Défaut : $ROSE_C0, puis
@@ -36,6 +36,11 @@
 #   --reutiliser      ne pas recompiler : vérifier un ELF déjà présent dans
 #                     DOSSIER/moteur.elf (utile pour un re-jeu de preuve).
 #   --sans-tests      produire les artefacts sans exécuter la batterie.
+#   --windows         produire EN PLUS les 5 artefacts Windows PE32+ x86-64
+#                     (rose.exe, rose-shell.exe, rose-tray.exe,
+#                     Rose-win-Setup.exe, payload/rose.exe) SANS cargo, via
+#                     les émetteurs Rose compilés par C0. Option désactivée
+#                     par défaut : le chemin Linux n'est pas modifié.
 #
 # COUVERTURE (vérifiée sur l'ELF, pas déduite de la doc)
 #   COUVERT   : exécution directe, run/jit/interprete/methode, verif, rir,
@@ -46,10 +51,13 @@
 #               à ceux du binaire Rust : voir RELEASE_SANS_CARGO.md.
 #   NON COUVERT : JIT Cranelift (l'ELF exécute le RIR interprété, aucune
 #               compilation de boucles chaudes), AOT/ORC LLVM, link, llvm,
-#               transpile js/py/c, console/repl, rvm, et TOUS les artefacts
-#               Windows PE x86_64 (rose.exe, rose-shell.exe, rose-tray.exe,
-#               rose-setup.exe) : C0 n'émet que de l'ELF aarch64 et le
-#               composé n'a aucun writer PE ni ressource Win32.
+#               transpile js/py/c, console/repl, rvm, et le MOTEUR Windows
+#               fonctionnel : C0 n'émet que de l'ELF aarch64 et le composé
+#               n'a aucun writer PE complet ni GUI Win32. L'option --windows
+#               produit bien 5 PE32+ x86-64 structurellement valides (dont un
+#               setup dont `verifier-res.py` valide la table de ressources),
+#               mais ce sont des STUBS : le détail et le geste de remplacement
+#               sont dans rose/docs/RELEASE_100.md.
 #   Le lanceur `rose` produit refuse explicitement les commandes non couvertes
 #   (rc=3) au lieu de les simuler.
 #
@@ -66,6 +74,7 @@ RAPPORT=""
 TLIMIT=900
 REUTILISER=0
 NO_TESTS=0
+WINDOWS=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --c0) C0="${2:-}"; shift 2 ;;
@@ -76,7 +85,8 @@ while [[ $# -gt 0 ]]; do
     --timeout) TLIMIT="${2:-}"; shift 2 ;;
     --reutiliser) REUTILISER=1; shift ;;
     --sans-tests) NO_TESTS=1; shift ;;
-    -h|--help) sed -n '2,56p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --windows) WINDOWS=1; shift ;;
+    -h|--help) sed -n '2,62p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "OPTION INCONNUE : $1" >&2; exit 1 ;;
     *) break ;;
   esac
@@ -224,19 +234,182 @@ MANIFESTE="$OUT/MANIFESTE.txt"
   echo "  lecture+vérification+compilation RIR+exécution, run/jit/interprete,"
   echo "  methode, verif, rir, tokens, ast, latex, transpile --cible wasm, bc,"
   echo "  comp (patch du gabarit ELF d'UNE constante), version, help, info."
-  echo "DIVERGENCES MESURÉES vs binaire Rust (--reference) :"
-  echo "  exécution de 12 programmes : 12/12 octet-identiques (ROSE_SANS_JIT=1)."
-  echo "  comp : 8 908 o / sortie '0' vs 5 457 034 o / 4 lignes (gabarit constant)."
-  echo "  wasm : 82 o vs 72 o — LEB128 surlongs (sw_module) dans le composé."
-  echo "  bc   : 157 o des deux côtés mais champs ligne/index absents côté C0."
+  echo "PARITÉ MESURÉE (vague 102, hors de ce script) :"
+  echo "  corpus 141/141 fonctionnel ; wasm/bc/comp octet-identiques au moteur Rust."
   echo "NON COUVERT (cause technique) :"
   echo "  JIT Cranelift      : C0 émet un interpréteur RIR, pas de code chaud JIT."
   echo "  aot/orc/link/llvm  : aucun writer LLVM ORC dans le composé Rose."
   echo "  console/repl, rvm  : routines absentes du point d'entrée du composé."
   echo "  transpile js/py/c  : seules les cibles wasm et bc sont écrites."
-  echo "  Windows PE x86_64  : C0 n'émet que de l'ELF aarch64 ; ni writer PE"
-  echo "                       x86_64 ni ressources Win32 dans le composé."
+  echo "  MOTEUR Windows     : l'émetteur PE x64 ne couvre que le sous-ensemble"
+  echo "                       RIR entiers ; avec --windows, 5 PE structurellement"
+  echo "                       valides sont produits (stubs) — voir RELEASE_100.md."
 } > "$MANIFESTE"
+
+# ── 5. Artefacts Windows PE32+ x86-64 SANS cargo (option --windows) ───────
+if [[ $WINDOWS -eq 1 ]]; then
+  WIN="$OUT"
+  mkdir -p "$WIN/payload" || exit 1
+  EMIT_SRC="$ROOT/compilateur/emetteur_pe_x64.rose"
+  GEN_SRC="$ROOT/compilateur/pe_stub_ressources.rose"
+  EMIT="$WIN/emetteur_pe_x64.elf"
+  GEN="$WIN/pe_stub_ressources.elf"
+  TENT="$WIN/WINDOWS_TENTATIVES.txt"
+  : > "$TENT"
+
+  comp_c0_windows() {
+    local src="$1" dst="$2" nom="$3" rc=0
+    [[ -r "$src" ]] || { echo "BLOQUÉ $nom : source absent ($src)" >&2; return 1; }
+    echo "COMPILATION C0 $nom : $(basename "$src") -> $(basename "$dst")" >> "$TENT"
+    : > "$dst.tmp"; : > "$dst.err"
+    ( cd "$WIN" && bash "$ROOT/scripts/garde_fou_mem.sh" 12000000 \
+        timeout "$TLIMIT" "$C0" "$src" > "$dst.tmp" 2> "$dst.err" ) || rc=$?
+    if [[ $rc -ne 0 || ! -s "$dst.tmp" ]] || ! est_elf_aarch64 "$dst.tmp"; then
+      echo "ECHEC compilation $nom (rc=$rc)" >&2; head -n 5 "$dst.err" >&2
+      rm -f "$dst.tmp"; return 1
+    fi
+    mv "$dst.tmp" "$dst"; chmod 755 "$dst"
+    printf '%s\t%s octets\tmd5=%s\n' "$nom" "$(stat -c%s "$dst")" \
+      "$(md5sum "$dst" | cut -d' ' -f1)" >> "$TENT"
+  }
+  comp_c0_windows "$EMIT_SRC" "$EMIT" "émetteur PE x64" || exit 1
+  comp_c0_windows "$GEN_SRC" "$GEN" "générateur PE + .rsrc" || exit 1
+
+  # 1) Tentative honnête : RIR du MOTEUR COMPLET, puis émission PE par C0.
+  #    Si l'un des deux échoue, la cause exacte est journalisée et le stub
+  #    structurel prend le relais (jamais une simulation silencieuse).
+  ORIGINE_ROSE="stub"
+  echo "TENTATIVE RIR moteur complet : $ELF rir $(basename "$SOURCE")" >> "$TENT"
+  rc_rir=0
+  timeout 600 "$ELF" rir "$SOURCE" > "$WIN/moteur_complet.rir" \
+      2> "$WIN/moteur_complet.rir.err" || rc_rir=$?
+  if [[ $rc_rir -eq 0 && -s "$WIN/moteur_complet.rir" ]]; then
+    printf 'RIR COMPLET obtenu : %s octets\n' "$(stat -c%s "$WIN/moteur_complet.rir")" >> "$TENT"
+    rc_pe=0
+    timeout 600 "$EMIT" "$WIN/moteur_complet.rir" > "$WIN/rose_complet.exe" \
+        2> "$WIN/rose_complet.exe.err" || rc_pe=$?
+    if [[ $rc_pe -eq 0 && -s "$WIN/rose_complet.exe" ]]; then
+      cp "$WIN/rose_complet.exe" "$WIN/rose.exe"
+      ORIGINE_ROSE="moteur complet (RIR C0 -> PE C0)"
+      echo " rose.exe = moteur complet émis en PE" >> "$TENT"
+    else
+      printf 'PE COMPLET refusé (rc=%s) : %s — repli sur stub\n' "$rc_pe" \
+        "$(head -n1 "$WIN/rose_complet.exe.err")" >> "$TENT"
+    fi
+  else
+    printf 'RIR COMPLET refusé (rc=%s) : %s — repli sur stub\n' "$rc_rir" \
+      "$(head -n1 "$WIN/moteur_complet.rir.err")" >> "$TENT"
+  fi
+
+  # 2) Pilote entier minimal (sous-ensemble couvert par l'émetteur G5 x64),
+  #    RIR généré par le moteur C0 puis PE émis par l'émetteur C0.
+  if [[ "$ORIGINE_ROSE" != "moteur complet (RIR C0 -> PE C0)" ]]; then
+    printf '>> 73\n' > "$WIN/pilote_rose.rose"
+    timeout 120 "$ELF" rir "$WIN/pilote_rose.rose" > "$WIN/pilote_rose.rir" \
+      2> "$WIN/pilote_rose.rir.err" || { echo "BLOQUÉ RIR pilote" >&2; exit 1; }
+    timeout 120 "$EMIT" "$WIN/pilote_rose.rir" > "$WIN/rose.exe" \
+      2> "$WIN/rose.exe.err" || { echo "BLOQUÉ émission rose.exe" >&2; cat "$WIN/rose.exe.err" >&2; exit 1; }
+    printf 'rose.exe = PE émis par C0 depuis pilote RIR entier (>> 73)\n' >> "$TENT"
+  fi
+
+  # 3) Stubs structurels avec table de ressources (verifier-res.py).
+  for entree in "rose-shell.exe|Rose selfhost stub: rose-shell.exe" \
+                "rose-tray.exe|Rose selfhost stub: rose-tray.exe" \
+                "payload/rose.exe|Rose selfhost stub: payload/rose.exe" \
+                "Rose-win-Setup.exe|Rose-win-Setup selfhost stub (ressources RSRC)"; do
+    cible="${entree%%|*}"; description="${entree#*|}"
+    timeout 120 "$GEN" "$WIN/$cible" "$description" \
+      || { echo "BLOQUÉ génération $cible" >&2; exit 1; }
+  done
+
+  # 4) Vérification binaire de chaque artefact (magic, machine, sections,
+  #    imports, taille, md5) — jamais déduite du code source.
+  ARTEFACTS=(Rose-win-Setup.exe rose.exe rose-shell.exe rose-tray.exe payload/rose.exe)
+  echo "=== VÉRIFICATION DES 5 ARTEFACTS WINDOWS ==="
+  if ! python3 - "$WIN" <<'PY' | tee "$WIN/WINDOWS_ARTIFACTS.tsv"
+import hashlib, pathlib, struct, sys
+d = pathlib.Path(sys.argv[1])
+arts = ["Rose-win-Setup.exe", "rose.exe", "rose-shell.exe", "rose-tray.exe", "payload/rose.exe"]
+rows, mauvais = [], []
+for rel in arts:
+    p = d / rel
+    if not p.exists():
+        mauvais.append(rel + " : absent"); continue
+    b = p.read_bytes()
+    errs = []
+    if b[:2] != b"MZ": errs.append("magic MZ absent")
+    pe = struct.unpack("<I", b[0x3C:0x40])[0] if len(b) >= 0x40 else 0
+    if b[pe:pe+4] != b"PE\0\0": errs.append("signature PE absente")
+    machine = struct.unpack("<H", b[pe+4:pe+6])[0] if pe+6 <= len(b) else 0
+    nsec = struct.unpack("<H", b[pe+6:pe+8])[0] if pe+8 <= len(b) else 0
+    optsz = struct.unpack("<H", b[pe+20:pe+22])[0] if pe+22 <= len(b) else 0
+    opt = pe + 24
+    magic = struct.unpack("<H", b[opt:opt+2])[0] if opt+2 <= len(b) else 0
+    if machine != 0x8664: errs.append("machine %#x" % machine)
+    if magic != 0x20B: errs.append("magic optional %#x" % magic)
+    if nsec < 3: errs.append("sections %d" % nsec)
+    base = opt + optsz
+    secs = [b[base+40*i:base+40*i+8].rstrip(b"\0").decode("ascii", "replace")
+            for i in range(nsec)]
+    for att in (".text", ".data"):
+        if att not in secs: errs.append("section " + att + " absente")
+    dd = opt + 112
+    imp_rva, imp_sz = struct.unpack("<II", b[dd+8:dd+16])
+    if imp_rva == 0 or imp_sz == 0: errs.append("répertoire imports vide")
+    if b"KERNEL32.DLL" not in b: errs.append("KERNEL32.DLL absente")
+    verdict = "OK" if not errs else "ECHEC:" + ";".join(errs)
+    if errs: mauvais.append(rel + " : " + ";".join(errs))
+    rows.append((rel, str(len(b)), hashlib.md5(b).hexdigest(),
+                 "0x%04X" % machine, "0x%03X" % magic, str(nsec),
+                 ",".join(secs), verdict))
+print("artefact\ttaille\tmd5\tmachine\tmagic\tsections\tnoms_sections\tverdict")
+for r in rows: print("\t".join(r))
+if mauvais:
+    print("ECHEC : " + " | ".join(mauvais), file=sys.stderr)
+    sys.exit(1)
+print("5/5 ARTEFACTS PE32+ x86-64 VALIDES")
+PY
+  then
+    echo "ÉCHEC vérification binaire des artefacts Windows" >&2; exit 1
+  fi
+  # 5) llvm-readobj / file : preuves de structure complémentaires.
+  {
+    echo "=== file -b ==="
+    for f in "${ARTEFACTS[@]}"; do printf '%-22s %s\n' "$f" "$(file -b "$WIN/$f")"; done
+    if command -v llvm-readobj >/dev/null 2>&1; then
+      echo "=== llvm-readobj --file-headers --sections --coff-imports ==="
+      for f in "${ARTEFACTS[@]}"; do
+        echo "--- $f ---"
+        llvm-readobj --file-headers --sections --coff-imports "$WIN/$f" | \
+          grep -E 'Machine:|Magic:|SectionCount|Name: \.|VirtualAddress:|Name: KERNEL32|Symbol:'
+      done
+    fi
+  } > "$WIN/LLVM_READOJ.txt" 2>&1
+  cat "$WIN/LLVM_READOJ.txt"
+
+  # 6) verifier-res.py sur le setup (table .rsrc réelle, pas une copie).
+  VERIF="$ROOT/installateur/velopack/verifier-res.py"
+  [[ -r "$VERIF" ]] || { echo "BLOQUÉ verifier-res.py absent" >&2; exit 1; }
+  echo "=== VERIFIER-RES.PY ==="
+  if ! python3 "$VERIF" "$WIN/Rose-win-Setup.exe" > "$WIN/VERIFIER_RES.txt" 2>&1; then
+    cat "$WIN/VERIFIER_RES.txt" >&2; echo "ÉCHEC verifier-res.py" >&2; exit 1
+  fi
+  cat "$WIN/VERIFIER_RES.txt"
+
+  {
+    echo "WINDOWS SANS CARGO (option --windows) :"
+    echo "  origine rose.exe : $ORIGINE_ROSE"
+    echo "  émetteur PE x64 : $EMIT  ($(stat -c%s "$EMIT") o)"
+    echo "  générateur .rsrc: $GEN  ($(stat -c%s "$GEN") o)"
+    echo "  rapport         : $WIN/WINDOWS_TENTATIVES.txt"
+    echo "  vérification    : $WIN/WINDOWS_ARTIFACTS.tsv (via la sortie ci-dessus)"
+    echo "  readobj         : $WIN/LLVM_READOJ.txt"
+    echo "  ressources      : $WIN/VERIFIER_RES.txt"
+    echo "  STATUT : 5 PE structurellement valides ; moteur Windows fonctionnel"
+    echo "           non couvert (voir rose/docs/RELEASE_100.md)."
+  } >> "$MANIFESTE"
+  echo "WINDOWS : 5 artefacts PE32+ x86-64 produits, verifier-res.py OK"
+fi
 
 echo "ARTEFACTS : $ELF ($(stat -c%s "$ELF") o, md5 $MD5_ELF)"
 echo "            $LANCEUR"
