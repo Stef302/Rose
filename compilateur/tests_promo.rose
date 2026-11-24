@@ -1,0 +1,71 @@
+# tests_promo.rose — harnais de non-régression de la promotion `valeur -> entier`
+#
+# Contexte
+# --------
+# Le vérificateur self-host (compilateur/moteur_complet.rose, fonction
+# `lsrc_ce_raw`, branche `idx`) type l'indexation d'une table `m[cle]` comme
+# `valeur`, alors que le front-end Rust la type `?` (Dyn). Une expression
+# `m[cle] + 1` est donc refusée par le moteur C0 avec
+#   Rose : erreur — [Ligne …, Colonne 0] Addition valeur + entier impossible
+# alors qu'elle est acceptée par l'oracle Rust (blocage (a) de RELEASE_100.md).
+#
+# Correctif mesuré
+# ----------------
+# La zone `gc_*` de moteur_complet.rose coercive désormais l'indexation avant
+# l'arithmétique et la comparaison d'ordre :
+#   entier(val_str(chaine(m[cle])))
+# `chaine()` est un cast accepté par les deux vérificateurs (il rend `chaine`
+# sans inspecter son argument), `val_str()` décode l'étiquette du valeur
+# (`i:…`, `s:…`, …) et `entier()` rend le type `-entier-` attendu.
+#
+# Ce programme rejoue exactement ce chemin sur une table ordinaire, avec les
+# deux moteurs (C0 et Rust), et vérifie octet pour octet les valeurs rendues.
+# Il ne dépend d'aucun fichier externe et ne modifie aucun état global.
+
+# Décodage minimal d'une valeur Rose étiquetée (miroir de val_str du moteur).
+fn promo_str($v: chaine) -> chaine {
+  $tag = sous_chaine($v, 0, 1)
+  si ($tag == "i" ou $tag == "s" ou $tag == "g") {
+    retour sous_chaine($v, 2, longueur($v))
+  }
+  retour $v
+}
+
+# Promotion complète : table -> index -> valeur -> chaine -> entier.
+fn promo_entier(m: table, cle: entier) -> entier {
+  retour entier(promo_str(chaine(m[cle])))
+}
+
+t = table()
+inserer(t, 0, 41)
+inserer(t, 1, 7)
+inserer(t, 2, 0 - 12)
+inserer(t, 3, 2147483648)
+inserer(t, 4, 99999999999999999999)
+
+a = promo_entier(t, 0) + 1
+b = promo_entier(t, 1) + 1
+c = promo_entier(t, 2) + 1
+d = promo_entier(t, 3) + 1
+e = promo_entier(t, 4) + 1
+
+# Comparaison d'ordre : c'est le second site corrigé dans gc_allouer
+# (`$vivants > entier(val_str(chaine(m[gc_c_pic()]))))`).
+pic = entier(promo_str(chaine(t[3])))
+haut = 0
+si (d > pic) { haut = 1 }
+
+>> a
+>> b
+>> c
+>> d
+>> e
+>> haut
+
+# Échec explicite si une promotion est fausse (rc != 0 pour les deux moteurs).
+si (a != 42) { quitter(1) }
+si (b != 8) { quitter(2) }
+si (c != 0 - 11) { quitter(3) }
+si (d != 2147483649) { quitter(4) }
+si (e != 100000000000000000000) { quitter(5) }
+si (haut != 1) { quitter(6) }

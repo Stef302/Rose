@@ -8559,9 +8559,14 @@ fn gc_allouer(m: table, valeur: entier) -> entier {
   gc_set($m, gc_c_alloc(), m[gc_c_alloc()] + 1)
   si ($reuse == 1) { supprimer(m[gc_c_arena()], $index) }
   inserer(m[gc_c_arena()], $index, $valeur)
-  $vivants = m[gc_c_vivants()] + 1
+  # Promotion valeur -> entier : l'indexation d'une table est typée `valeur`
+  # par le vérificateur self-host (Dyn `?` côté Rust). Le coercer en chaine
+  # puis le décoder avec val_str avant entier() rend le type entier attendu
+  # par l'affectation et la comparaison d'ordre ci-dessous, sans toucher au
+  # vérificateur ni aux 141 programmes de parité.
+  $vivants = entier(val_str(chaine(m[gc_c_vivants()]))) + 1
   gc_set($m, gc_c_vivants(), $vivants)
-  si ($vivants > m[gc_c_pic()]) { gc_set($m, gc_c_pic(), $vivants) }
+  si ($vivants > entier(val_str(chaine(m[gc_c_pic()])))) { gc_set($m, gc_c_pic(), $vivants) }
   retour $index
 }
 
