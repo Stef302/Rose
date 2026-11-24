@@ -1572,3 +1572,12 @@ SELF-HOSTING A-Z DE LA CHAÎNE DE RELEASE: atteint et prouvé par exécution.
 Reste: le defaut de build-windows-rebuild.sh reste cargo (option --selfhost),
 et validation_finale.sh §1 appelle cargo build — bascule a faire si desire.
 Aucun PE execute (hote aarch64, Wine sans WoW64): validation statique + octets.
+
+## Vague 108 — fermer les derniers refus A-Z du moteur C0
+
+Constat: release Windows self-hostee (5 artefacts C0, aucun cargo) MAIS moteur
+C0 refuse encore aot/orc/link/llvm/console/repl/rvm/wasm (rc=3) et payload/rose.exe
+vient du nupkg 0.1.76. Ce n'est DONC PAS A-Z au sens strict.
+4 agents lances: (vm) RVM ROSEBC v3 en Rose, (aot) brancher emetteur_elf sur le
+moteur, (repl) brancher rep_run sur console/repl, (payload) produire payload par C0.
+Objectif: 0 refus rc=3 et 0 recours au nupkg.
