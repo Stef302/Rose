@@ -1620,3 +1620,10 @@ rc=29, SIGILL a 0x140157AAD, octets 46 8a 14 09 = movb (%rcx,%r9),%r10b
 (instruction x86-64 valide), determiniqque pour 5 programmes et sans argument.
 Investigation codegen ciblee necessaire. Correctifs PE precedents deja dans
 /tmp/opencode/fix_pe_exec (non integres: 424 insertions) — les garder.
+
+## Vague 113 — derniers correctifs avant « sans réserve »
+
+2 agents: (fix_pe_exec) investigation SIGILL 0x140157AAD (movb valide leve SIGILL
+sous Wine/qemu, deterministe, banc temoin CONTROL_OK valide); (fin_default) rendre
+la bascule du defaut robuste — le message d'erreur « RIR indisponible » etait faux,
+la vraie cause etait le PE refuse sur la forme lstvide.
