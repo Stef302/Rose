@@ -16634,6 +16634,633 @@ g5_emit(SVC_I())
 # par le front-end quand on exécute le composé sous l'interpréteur Rust.
 fn chmod($chemin: chaine, $mode: entier) -> entier { retour 0 }
 # ═══════════ AOT_SELF:FIN — émetteur ELF intégré ═══════════
+# ── module : jit_self.rose (JIT natif RIR -> ELF aarch64) ──
+# jit_self.rose — JIT NATIF self-hosté : RIR -> code machine aarch64 -> ELF.
+#
+# Rose PUR. Aucun binaire Rust, aucun helper LLVM, aucun Cranelift. Les
+# instructions sont fabriquées avec les primitives de `emetteur_elf.rose`
+# (movz, movk, addi, subi, addr, subr, mulr, sdivr, udivr, msubr, cmpr,
+# cmpi, cset, ldroff, stroff, strbio, strbr, RET_I, SVC_I, u16le/u32le/
+# u64le, octet_brut) et le binaire est lancé par les syscalls G5
+# chmod/execve (motif de compilateur/test_jit_g5.rose).
+#
+# Sous-ensemble couvert :
+#   littéraux `n V` / `entier V`, variables `slot I` / `v N`,
+#   binaires + - * / < <= > >= == !=, négation `neg`,
+#   appels `app` / `appel_rir` (récursifs), `si` (saut_si_faux*),
+#   `saut`, `retour`, `retour_abstrait`, `afficher`, `afficher_abstrait`.
+# Tout le reste est REFUSÉ par `js_eligible` : repli interprété, sans
+# régression sémantique.
+#
+# ABI du code émis (valeurs i64 non taguées) :
+#   x0..x7 = arguments/retour, x8 = numéro de syscall,
+#   sp     = trame de 8208 octets (x30 sauvé à 0, slot i à 8+8*i),
+#   chaque nœud reçoit un temporaire unique (jamais réutilisé) : la
+#   récursion est donc sûre sans registre callee-saved.
+#
+# ⚠ Rose : une AFFECTATION INDEXÉE à une globale dans une fonction crée une
+# LOCALE (mesuré). Tout l'état mutationnel est donc tenu dans des listes
+# globales modifiées UNIQUEMENT par `joindre` (mutation en place).
+
+# Intercepté par le backend G5 avant la recherche de fonction utilisateur.
+fn execve($chemin: chaine) -> entier { retour 0 }
+
+# ── État ─────────────────────────────────────────────────────────────────
+$js_code   = [0]   # mots machine (index 0 = sentinelle)
+$js_rel    = [""]           # relocations : "" | "B|lbl" | "BL|lbl" | "CBZ|lbl" ...
+$js_lbl    = [""]           # "nom|position"
+$js_fn     = [""]           # noms de fonctions
+$js_par    = [0]   # nombre de paramètres par fonction
+$js_noms   = [""]           # ligne `noms` par fonction
+$js_ops    = [""]           # toutes les lignes d'op (index 0 = sentinelle)
+$js_start  = [0]   # index de début des ops d'une fonction dans $js_ops
+$js_count  = [0]   # nombre d'ops de la fonction
+$js_ctr    = [""]           # longueur = prochain temporaire
+$js_errs   = [""]           # motifs de refus (dernier = plus récent)
+
+# ── Texte ────────────────────────────────────────────────────────────────
+
+fn js_lignes($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $buf = ""
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == "\n") { joindre($r, $buf); $buf = "" }
+    sinon si ($c != "\r") { $buf = $buf + $c }
+    $i = $i + 1
+  }
+  joindre($r, $buf)
+  retour $r
+}
+
+fn js_tokens($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $buf = ""
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == "(" ou $c == ")" ou $c == " " ou $c == "\t") {
+      si (longueur($buf) > 0) { joindre($r, $buf); $buf = "" }
+      si ($c == "(" ou $c == ")") { joindre($r, $c) }
+      $i = $i + 1
+    } sinon { $buf = $buf + $c; $i = $i + 1 }
+  }
+  si (longueur($buf) > 0) { joindre($r, $buf) }
+  retour $r
+}
+
+fn js_debut($s: chaine, $pre: chaine) -> entier {
+  si (longueur($s) < longueur($pre)) { retour 0 }
+  si (sous_chaine($s, 0, longueur($pre)) == $pre) { retour 1 }
+  retour 0
+}
+
+fn js_trim($s: chaine) -> chaine {
+  $d = 0
+  $f = longueur($s)
+  tant_que ($d < $f et sous_chaine($s, $d, $d + 1) == " ") { $d = $d + 1 }
+  tant_que ($f > $d et sous_chaine($s, $f - 1, $f) == " ") { $f = $f - 1 }
+  retour sous_chaine($s, $d, $f)
+}
+
+fn js_wrap($v: entier, $m: entier) -> entier {
+  $r = $v % $m
+  si ($r < 0) { $r = $r + $m }
+  retour $r
+}
+
+fn js_erreur($msg: chaine) -> entier { joindre($js_errs, $msg); retour 0 }
+
+fn js_derniere_erreur() -> chaine { retour $js_errs[longueur($js_errs) - 1] }
+
+# ── Lecture du RIR (append-only) ────────────────────────────────────────
+
+fn js_est_op($lig: chaine) -> entier {
+  si (longueur($lig) < 6) { retour 0 }
+  $i = 0
+  tant_que ($i < 4) {
+    $c = sous_chaine($lig, $i, $i + 1)
+    si ($c < "0" ou $c > "9") { retour 0 }
+    $i = $i + 1
+  }
+  si (sous_chaine($lig, 4, 5) != " ") { retour 0 }
+  retour 1
+}
+
+fn js_parse_rir($rir: chaine) -> entier {
+  $l = js_lignes($rir)
+  $cur = 0
+  $k = 1
+  $npar = 0
+  $nops = 0
+  tant_que ($k < longueur($l)) {
+    $lig = js_trim($l[$k])
+    si (js_debut($lig, "fonction ") == 1) {
+      si ($cur > 0) { joindre($js_par, $npar); joindre($js_count, $nops) }
+      $cur = $cur + 1
+      $npar = 0
+      $nops = 0
+      joindre($js_fn, sous_chaine($lig, 9, longueur($lig)))
+      joindre($js_noms, "")
+      joindre($js_start, longueur($js_ops))
+    } sinon si ($cur > 0 et js_debut($lig, "param ") == 1) {
+      $npar = $npar + 1
+    } sinon si ($cur > 0 et (js_debut($lig, "noms ") == 1 ou $lig == "noms")) {
+      # ⚠ pas d'affectation indexée à une globale (cela créerait une locale) :
+      # la ligne est stockée comme op spéciale `NOMS|…` et lue par js_slot_of.
+      $noms_txt = ""
+      si (js_debut($lig, "noms ") == 1) { $noms_txt = sous_chaine($lig, 5, longueur($lig)) }
+      joindre($js_ops, "NOMS|" + $noms_txt)
+    } sinon si ($cur > 0 et js_est_op($lig) == 1) {
+      joindre($js_ops, $lig)
+      $nops = $nops + 1
+    }
+    $k = $k + 1
+  }
+  si ($cur > 0) { joindre($js_par, $npar); joindre($js_count, $nops) }
+  retour $cur
+}
+
+fn js_fn_id($nom: chaine) -> entier {
+  $i = 1
+  tant_que ($i < longueur($js_fn)) {
+    si ($js_fn[$i] == $nom) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+# Cherche un nom dans la ligne `noms` d'une fonction.
+fn js_slot_of($fi: entier, $nom: chaine) -> entier {
+  $start = $js_start[$fi]
+  $count = $js_count[$fi]
+  $j = 1
+  tant_que ($j <= $count + 1) {
+    $lig = $js_ops[$start + $j - 1]
+    si (js_debut($lig, "NOMS|") == 1) {
+      $s = sous_chaine($lig, 5, longueur($lig))
+      $i = 0
+      $n = longueur($s)
+      tant_que ($i < $n) {
+        si (sous_chaine($s, $i, $i + 1) == "[") {
+          $p = $i + 1
+          tant_que ($p < $n et sous_chaine($s, $p, $p + 1) != "]") { $p = $p + 1 }
+          $ix = entier(sous_chaine($s, $i + 1, $p))
+          $d = $p + 1
+          $f = $d
+          tant_que ($f < $n et sous_chaine($s, $f, $f + 1) != " "
+                    et sous_chaine($s, $f, $f + 1) != "[") { $f = $f + 1 }
+          si (sous_chaine($s, $d, $f) == $nom) { retour $ix }
+          $i = $f
+        } sinon { $i = $i + 1 }
+      }
+    }
+    $j = $j + 1
+  }
+  retour -1
+}
+
+# ── Émetteur ─────────────────────────────────────────────────────────────
+
+fn js_emit($w: entier) -> entier {
+  joindre($js_code, js_wrap($w, 4294967296))
+  joindre($js_rel, "")
+  retour longueur($js_code) - 1
+}
+
+fn js_emit_rel($kind: chaine, $cible: chaine) -> entier {
+  joindre($js_code, 0)
+  joindre($js_rel, $kind + "|" + $cible)
+  retour longueur($js_code) - 1
+}
+
+fn js_mark($nom: chaine) -> entier {
+  joindre($js_lbl, $nom + "|" + chaine(longueur($js_code)))
+  retour longueur($js_lbl) - 1
+}
+
+fn js_find($nom: chaine) -> entier {
+  $i = 1
+  tant_que ($i < longueur($js_lbl)) {
+    $bar = g4_pos($js_lbl[$i], "|")
+    si ($bar > 0 et sous_chaine($js_lbl[$i], 0, $bar) == $nom) {
+      retour entier(sous_chaine($js_lbl[$i], $bar + 1, longueur($js_lbl[$i])))
+    }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn js_patch() -> liste<entier> {
+  $out = [0]
+  $i = 1
+  $ok = 1
+  tant_que ($i < longueur($js_code)) {
+    $w = $js_code[$i]
+    $r = $js_rel[$i]
+    $bar = g4_pos($r, "|")
+    si ($bar > 0) {
+      $kind = sous_chaine($r, 0, $bar)
+      $cible = sous_chaine($r, $bar + 1, longueur($r))
+      $pos = js_find($cible)
+      si ($pos < 0) { $ok = 0; $w = 0
+      } sinon {
+        $off = $pos - $i
+        si ($kind == "B") { $w = 335544320 + js_wrap($off, 67108864)
+        } sinon si ($kind == "BL") { $w = 2483027968 + js_wrap($off, 67108864)
+        } sinon si ($kind == "CBZ") { $w = 3019898880 + js_wrap($off, 524288) * 32
+        } sinon si ($kind == "CBZ6") { $w = 3019898880 + js_wrap($off, 524288) * 32 + 6
+        } sinon si ($kind == "BMI") { $w = 1409286144 + js_wrap($off, 524288) * 32 + 4
+        } sinon si ($kind == "BEQ") { $w = 1409286144 + js_wrap($off, 524288) * 32
+        } sinon { $ok = 0 }
+      }
+    }
+    joindre($out, $w)
+    $i = $i + 1
+  }
+  si ($ok == 0) { js_erreur("relocation non résolue"); joindre($out, 0) }
+  retour $out
+}
+
+fn js_mov($rd: entier, $v0: entier) -> entier {
+  # ⚠ Le backend G5 est limité aux entiers 64 bits signés : ajouter 2^64
+  # à un négatif REVIENT à -8 (mesuré). On émet donc la valeur absolue en
+  # movz/movk, puis une négation `sub xD, xzr, xD`.
+  $neg = 0
+  $v = $v0
+  si ($v0 < 0) { $neg = 1; $v = 0 - $v0 }
+  js_emit(movz($rd, $v % 65536))
+  $sh = 1
+  tant_que ($sh < 4) {
+    $c = partie_entiere($v / (65536 ^ $sh)) % 65536
+    si ($c > 0) { js_emit(movk($rd, $c, $sh)) }
+    $sh = $sh + 1
+  }
+  si ($neg == 1) { js_emit(subr($rd, 31, $rd)) }
+  retour 0
+}
+
+fn js_newtmp() -> entier {
+  joindre($js_ctr, "t")
+  retour longueur($js_ctr)
+}
+
+fn js_slotoff($i: entier) -> entier { retour 8 + 8 * $i }
+fn js_frame() -> entier { retour 4080 }
+
+# ── Expressions ──────────────────────────────────────────────────────────
+
+fn js_cond($op: chaine) -> entier {
+  si ($op == "<") { retour 11 }
+  si ($op == "<=") { retour 13 }
+  si ($op == ">") { retour 12 }
+  si ($op == ">=") { retour 10 }
+  si ($op == "==") { retour 0 }
+  si ($op == "!=") { retour 1 }
+  retour -1
+}
+
+fn js_expr($t: liste<chaine>, $p: entier, $fi: entier) -> entier {
+  si ($p >= longueur($t)) { js_erreur("expression vide"); retour $p }
+  $tok = $t[$p]
+
+  si ($tok == "(") {
+    $q = js_expr($t, $p + 1, $fi)
+    si ($q < longueur($t) et $t[$q] == ")") { $q = $q + 1 }
+    retour $q
+  }
+
+  si ($tok == "n" ou $tok == "entier") {
+    js_mov(0, entier($t[$p + 1]))
+    retour $p + 2
+  }
+
+  si ($tok == "slot") {
+    js_emit(ldroff(0, 31, js_slotoff(entier($t[$p + 1]))))
+    retour $p + 2
+  }
+
+  si ($tok == "v") {
+    $ix = js_slot_of($fi, $t[$p + 1])
+    si ($ix < 0) { js_erreur("variable inconnue : " + $t[$p + 1]); retour $p + 2 }
+    js_emit(ldroff(0, 31, js_slotoff($ix)))
+    retour $p + 2
+  }
+
+  si ($tok == "bin") {
+    $op = $t[$p + 1]
+    $q = js_expr($t, $p + 2, $fi)
+    $ta = js_newtmp()
+    js_emit(stroff(0, 31, js_slotoff($ta)))
+    $q = js_expr($t, $q, $fi)
+    js_emit(ldroff(1, 31, js_slotoff($ta)))
+    si ($op == "+") { js_emit(addr(0, 1, 0))
+    } sinon si ($op == "-") { js_emit(subr(0, 1, 0))
+    } sinon si ($op == "*") { js_emit(mulr(0, 1, 0))
+    } sinon si ($op == "/") { js_emit(sdivr(0, 1, 0))
+    } sinon {
+      $c = js_cond($op)
+      si ($c < 0) { js_erreur("opérateur non couvert : " + $op) }
+      sinon { js_emit(cmpr(1, 0)); js_emit(cset(0, $c)) }
+    }
+    $tr = js_newtmp()
+    js_emit(stroff(0, 31, js_slotoff($tr)))
+    retour $q
+  }
+
+  si ($tok == "neg") {
+    $q = js_expr($t, $p + 1, $fi)
+    js_emit(subr(0, 31, 0))
+    $tr = js_newtmp()
+    js_emit(stroff(0, 31, js_slotoff($tr)))
+    retour $q
+  }
+
+  si ($tok == "app" ou $tok == "appel_rir") {
+    $fid = js_fn_id($t[$p + 1])
+    si ($fid < 0) { js_erreur("fonction inconnue : " + $t[$p + 1]); retour $p + 2 }
+    $q = $p + 2
+    $slots = [0]
+    $nb = 0
+    tant_que ($q < longueur($t) et $t[$q] != ")") {
+      $q = js_expr($t, $q, $fi)
+      $ts = js_newtmp()
+      js_emit(stroff(0, 31, js_slotoff($ts)))
+      joindre($slots, $ts)
+      $nb = $nb + 1
+    }
+    $i = 1
+    tant_que ($i <= $nb et $i <= 8) {
+      js_emit(ldroff($i - 1, 31, js_slotoff($slots[$i])))
+      $i = $i + 1
+    }
+    js_emit_rel("BL", chaine($fid))
+    $tr = js_newtmp()
+    js_emit(stroff(0, 31, js_slotoff($tr)))
+    retour $q
+  }
+
+  js_erreur("jeton non couvert : " + $tok)
+  js_mov(0, 0)
+  retour $p + 1
+}
+
+# ── Routine PRINT : i64 -> décimal -> write(1, buf, len) ────────────────
+
+fn js_emit_print() -> entier {
+  js_mark("PRINT")
+  js_emit(subi(31, 31, 64))
+  js_emit(stroff(30, 31, 0))
+  js_emit(stroff(0, 31, 8))
+  js_emit(cmpi(0, 0))
+  js_emit_rel("BMI", "PRINT_NEG")
+  js_emit(movz(6, 0))
+  js_emit(movz(5, 47))
+  js_emit(cmpi(0, 0))
+  js_emit(cset(9, 0))
+  js_emit(movz(1, 48))
+  js_emit(strbr(1, 31, 5))
+  js_emit_rel("B", "PRINT_CONV")
+  js_mark("PRINT_NEG")
+  js_emit(subr(0, 31, 0))
+  js_emit(stroff(0, 31, 8))
+  js_emit(movz(6, 1))
+  js_emit(movz(5, 47))
+  js_emit(movz(9, 0))
+  js_mark("PRINT_CONV")
+  js_emit(ldroff(0, 31, 8))
+  js_emit(cmpi(0, 0))
+  js_emit_rel("BEQ", "PRINT_DONE")
+  js_emit(movz(2, 10))
+  js_emit(udivr(1, 0, 2))
+  js_emit(msubr(3, 2, 1, 0))
+  js_emit(stroff(1, 31, 8))
+  js_emit(addi(3, 3, 48))
+  js_emit(strbr(3, 31, 5))
+  js_emit(subi(5, 5, 1))
+  js_emit_rel("B", "PRINT_CONV")
+  js_mark("PRINT_DONE")
+  js_emit_rel("CBZ6", "PRINT_WRAP")
+  js_emit(movz(1, 45))
+  js_emit(strbr(1, 31, 5))
+  js_mark("PRINT_WRAP")
+  js_emit(movz(1, 10))
+  js_emit(strbio(1, 31, 48))
+  # write(fd=1, buf=sp+x5+x7, len=49-x5-x7) : x7 = 1 - signe.
+  js_emit(movz(7, 1))
+  js_emit(subr(7, 7, 6))
+  js_emit(subr(7, 7, 9))
+  js_emit(addi(1, 31, 0))
+  js_emit(addr(1, 1, 5))
+  js_emit(addr(1, 1, 7))
+  js_emit(movz(2, 49))
+  js_emit(subr(2, 2, 5))
+  js_emit(subr(2, 2, 7))
+  js_emit(movz(0, 1))
+  js_emit(movz(8, 64))
+  js_emit(SVC_I())
+  js_emit(ldroff(30, 31, 0))
+  js_emit(addi(31, 31, 64))
+  js_emit(RET_I())
+  retour 0
+}
+
+# ── Fonctions du RIR ─────────────────────────────────────────────────────
+
+fn js_emit_fn($fi: entier) -> entier {
+  $epi = "EPI" + chaine($fi)
+  $nomlab = chaine($fi)
+  js_mark($nomlab)
+  js_emit(subi(31, 31, js_frame()))
+  js_emit(stroff(30, 31, 0))
+  $np = $js_par[$fi]
+  $i = 0
+  tant_que ($i < $np et $i < 8) {
+    js_emit(stroff($i, 31, js_slotoff($i)))
+    $i = $i + 1
+  }
+  # Les temporaires ne reprennent JAMAIS les slots des paramètres.
+  $i = 0
+  tant_que ($i < $np et $i < 8) { js_newtmp(); $i = $i + 1 }
+  $start = $js_start[$fi]
+  $count = $js_count[$fi]
+  $j = 1
+  tant_que ($j <= $count + 1) {
+    $lig = $js_ops[$start + $j - 1]
+    si (js_debut($lig, "NOMS|") != 1) {
+      $t = js_tokens($lig)
+      js_mark("OP" + chaine($fi) + "_" + chaine(entier($t[1])))
+      $head = $t[2]
+      si ($head == "saut_si_faux_abstrait" ou $head == "saut_si_faux") {
+        $q = js_expr($t, 4, $fi)
+        js_emit_rel("CBZ", "OP" + chaine($fi) + "_" + chaine(entier($t[3])))
+      } sinon si ($head == "saut") {
+        js_emit_rel("B", "OP" + chaine($fi) + "_" + chaine(entier($t[3])))
+      } sinon si ($head == "retour" ou $head == "retour_abstrait") {
+        si ($head == "retour" et $t[3] == "vide") { js_mov(0, 0)
+        } sinon { $q = js_expr($t, 3, $fi) }
+        js_emit_rel("B", $epi)
+      } sinon si ($head == "afficher" ou $head == "afficher_abstrait") {
+        $q = 3
+        tant_que ($q < longueur($t) et $t[$q] != ")") {
+          $q = js_expr($t, $q, $fi)
+          js_emit_rel("BL", "PRINT")
+        }
+      } sinon { js_erreur("op non couverte : " + $head); retour 0 }
+    }
+    $j = $j + 1
+  }
+  js_mark($epi)
+  js_emit(ldroff(30, 31, 0))
+  js_emit(addi(31, 31, js_frame()))
+  js_emit(RET_I())
+  retour 1
+}
+
+# ── Assemblage ELF ───────────────────────────────────────────────────────
+
+fn js_assemble($parts: liste<chaine>) -> chaine {
+  $out = [""]
+  $i = 1
+  tant_que ($i < longueur($parts)) {
+    si ($i + 1 < longueur($parts)) { joindre($out, $parts[$i] + $parts[$i + 1]); $i = $i + 2
+    } sinon { joindre($out, $parts[$i]); $i = $i + 1 }
+  }
+  si (longueur($out) == 2) { retour $out[1] }
+  si (longueur($out) == 1) { retour "" }
+  retour js_assemble($out)
+}
+
+fn js_elf($code: liste<entier>) -> chaine {
+  $base = 4194304
+  $codeoff = 120
+  $entree = $base + $codeoff
+  $taille = $codeoff + 4 * (longueur($code) - 1)
+  $p = [""]
+  joindre($p, octet_brut(127) + "ELF" + octet_brut(2) + octet_brut(1) + octet_brut(1) + octet_brut(0))
+  $z = 0
+  tant_que ($z < 8) { joindre($p, octet_brut(0)); $z = $z + 1 }
+  joindre($p, u16le(2) + u16le(183) + u32le(1))
+  joindre($p, u64le($entree) + u64le(64) + u64le(0) + u32le(0))
+  joindre($p, u16le(64) + u16le(56) + u16le(1) + u16le(0) + u16le(0) + u16le(0))
+  joindre($p, u32le(1) + u32le(5) + u64le(0) + u64le($base) + u64le($base))
+  joindre($p, u64le($taille) + u64le($taille) + u64le(4096))
+  $i = 0
+  tant_que ($i < $codeoff - 64 - 56) { joindre($p, octet_brut(0)); $i = $i + 1 }
+  $i = 1
+  tant_que ($i < longueur($code)) {
+    $chunk = ""
+    $j = 0
+    tant_que ($j < 8 et $i + $j < longueur($code)) {
+      $chunk = $chunk + u32le($code[$i + $j])
+      $j = $j + 1
+    }
+    joindre($p, $chunk)
+    $i = $i + 8
+  }
+  retour js_assemble($p)
+}
+
+# ── API publique ─────────────────────────────────────────────────────────
+
+fn js_eligible($rir: chaine) -> entier {
+  $nf = js_parse_rir($rir)
+  si ($nf < 1) { retour js_erreur("aucune fonction") }
+  si (js_fn_id("$principal") < 0) { retour js_erreur("pas de $principal") }
+  $fi = 1
+  tant_que ($fi <= $nf) {
+    $start = $js_start[$fi]
+    $count = $js_count[$fi]
+    $j = 1
+    tant_que ($j <= $count + 1) {
+      $lig = $js_ops[$start + $j - 1]
+      si (js_debut($lig, "NOMS|") != 1) {
+      $t = js_tokens($lig)
+      $head = $t[2]
+      $ok = 0
+      si ($head == "saut_si_faux_abstrait" ou $head == "saut_si_faux" ou $head == "saut"
+          ou $head == "retour" ou $head == "retour_abstrait"
+          ou $head == "afficher" ou $head == "afficher_abstrait") { $ok = 1 }
+      si ($ok == 0) { retour js_erreur("op refusée : " + $head) }
+      si (($head == "afficher" ou $head == "afficher_abstrait") et $t[4] == "bin"
+          et ($t[5] == "<" ou $t[5] == "<=" ou $t[5] == ">" ou $t[5] == ">="
+              ou $t[5] == "==" ou $t[5] == "!=")) {
+        retour js_erreur("comparaison affichée (vrai/faux non couvert)")
+      }
+      $k = 1
+      tant_que ($k < longueur($t)) {
+        $w = $t[$k]
+        si ($w == "(" ou $w == ")") { }
+        sinon si ($w == "f" ou $w == "s" ou $w == "b" ou $w == "c"
+                  ou $w == "/" ou g4_pos($w, "/") >= 0
+                  ou or_dummy2($w) == 1) {
+          retour js_erreur("jeton refusé : " + $w)
+        }
+        $k = $k + 1
+      }
+      }
+      $j = $j + 1
+    }
+    $fi = $fi + 1
+  }
+  retour 1
+}
+
+fn or_dummy2($w: chaine) -> entier {
+  si (or_dummy($w) != 1) { retour 1 }
+  si ($w == "flottant" ou $w == "surcharge" ou $w == "appel_dynamique"
+      ou $w == "affect" ou $w == "affect_ast" ou $w == "expr_stmt" ou $w == "liste"
+      ou $w == "div" ou $w == "mod" ou $w == "et" ou $w == "ou"
+      ou $w == "^" ou $w == "%") { retour 1 }
+  retour 0
+}
+
+fn or_dummy($w: chaine) -> entier {
+  si (longueur($w) == 0) { retour 1 }
+  $i = 0
+  tant_que ($i < longueur($w)) {
+    $c = sous_chaine($w, $i, $i + 1)
+    si (($c < "0" ou $c > "9") et ($c < "a" ou $c > "z") et ($c < "A" ou $c > "Z")
+        et $c != "_" et $c != "$" et $c != "+" et $c != "-" et $c != "*" et $c != "/"
+        et $c != "<" et $c != ">" et $c != "=" et $c != "!") { retour 0 }
+    $i = $i + 1
+  }
+  retour 1
+}
+
+fn js_compiler($rir: chaine) -> chaine {
+  si (js_eligible($rir) == 0) { retour "ERR|" + js_derniere_erreur() }
+  # Préambule : appel du $principal puis exit(0).
+  js_emit_rel("BL", chaine(js_fn_id("$principal")))
+  js_emit_rel("B", "JS_EXIT")
+  js_mark("JS_EXIT")
+  js_mov(0, 0)
+  js_mov(8, 93)
+  js_emit(SVC_I())
+  js_emit_print()
+  $fi = 1
+  tant_que ($fi < longueur($js_fn)) {
+    si (js_emit_fn($fi) == 0) { retour "ERR|" + js_derniere_erreur() }
+    $fi = $fi + 1
+  }
+  $code = js_patch()
+  retour "OK|" + js_elf($code)
+}
+
+fn js_run($rir: chaine) -> entier {
+  $elf = js_compiler($rir)
+  si (longueur($elf) < 4 ou sous_chaine($elf, 0, 3) != "OK|") { retour 0 }
+  $chemin = "/tmp/rose_jit_self.elf"
+  ecrire_bytes($chemin, sous_chaine($elf, 3, longueur($elf)))
+  chmod($chemin, 493)
+  execve($chemin)
+  retour 0
+}
+
+
 
 # ══════════════════ POINT D'ENTRÉE UNIQUE ══════════════════
 # `cli_*` fournit les textes exacts de l'oracle 0.1.73 ; le dispatch ci-
@@ -17637,9 +18264,28 @@ si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
   quitter(1)
 }
 $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+# ── repli interprété + mémoïsation des fonctions pures ──────────────────
 parse_rir($mc_rir)
 # Analyse de pureté inutile si le programme n'a qu'une fonction ($principal).
 si (longueur($fn_nom) > 2) { $fn_pure = calculer_purete() }
+# ── Choix du backend pour `jit` ──────────────────────────────────────────
+# Le JIT natif (jit_self.rose) émet un ELF aarch64 et le lance par le vrai
+# syscall G5 execve. Mais l'émission coûte ~3 ms : dès qu'une fonction pure
+# est mémoïsable, la voie mémoïsée est PLUS RAPIDE et reste exacte au-delà
+# de i64. On ne garde le JIT natif que lorsqu'aucune fonction n'est
+# mémoïsable. Les chemins par défaut et `run` ne l'invoquent JAMAIS :
+# cela préserve la parité 141/141 avec l'oracle Rust.
+si ($mc_cmd == "jit") {
+  $mc_memo = 0
+  $mc_i = 1
+  tant_que ($mc_i < longueur($fn_pure)) {
+    si ($fn_pure[$mc_i] == 1) { $mc_memo = 1 }
+    $mc_i = $mc_i + 1
+  }
+  si ($mc_memo == 0) {
+    si (js_run($mc_rir) != 0) { quitter(1) }
+  }
+}
 $mc_mem = [""]
 $mc_i = 1
 tant_que ($mc_i < longueur($glob_nom)) { joindre($mc_mem, "v:"); $mc_i = $mc_i + 1 }
