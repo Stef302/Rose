@@ -1,0 +1,53 @@
+# tests_bud.rose — banc d'activation des manifestes .bud.
+#
+# Preuve que `compilateur/lecteur_bud.rose` LIRE et APPLIQUE réellement
+# `briques/exemple.bud` : les quatre champs contrôlés sont lus dans le
+# fichier, pas codés en dur ici.
+#
+# Usage (depuis la racine du dépôt) :
+#   rose briques/tests_bud.rose
+#   moteur_complet.elf briques/tests_bud.rose     # voie self-hostée
+
+importer "compilateur/lecteur_bud.rose"
+
+$txt = bud_lire("briques/exemple.bud")
+si (longueur($txt) == 0) {
+  afficher("ECHEC bud : lecture de briques/exemple.bud")
+  quitter(1)
+}
+
+$p = bud_parse($txt)
+si (bud_valider($p) != 0) {
+  afficher("ECHEC bud : validation de briques/exemple.bud")
+  quitter(1)
+}
+
+$nb = longueur($p) - 1
+si ($nb < 30) {
+  afficher("ECHEC bud : seulement " + chaine($nb) + " paires")
+  quitter(1)
+}
+
+si (bud_champ($p, "nom") != "noyau-generique") {
+  afficher("ECHEC bud : nom = " + bud_champ($p, "nom"))
+  quitter(2)
+}
+si (bud_champ($p, "cible.architecture") != "GENERIQUE") {
+  afficher("ECHEC bud : cible.architecture = " + bud_champ($p, "cible.architecture"))
+  quitter(3)
+}
+si (bud_booleen($p, "options.freestanding") != 1) {
+  afficher("ECHEC bud : options.freestanding")
+  quitter(4)
+}
+si (bud_booleen($p, "options.pie") != 0) {
+  afficher("ECHEC bud : options.pie")
+  quitter(5)
+}
+si (bud_entier($p, "cible.largeur_mot") != 64) {
+  afficher("ECHEC bud : cible.largeur_mot")
+  quitter(6)
+}
+
+afficher("TESTS BUD VERTS : " + chaine($nb) + " champs lus dans briques/exemple.bud")
+quitter(0)

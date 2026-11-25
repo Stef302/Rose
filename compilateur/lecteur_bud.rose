@@ -1,0 +1,274 @@
+# lecteur_bud.rose — LECTEUR DE MANIFESTES .bud, en Rose pur.
+#
+# Jusqu'ici les fichiers `briques/**/*.bud` n'étaient que des spécifications
+# documentées : aucun code ne les lisait. Ce module les rend ACTIFS.
+#
+# API publique :
+#   bud_lire(chemin)          -> chaine         (lit le fichier via lire_texte)
+#   bud_tokens(txt)           -> liste<chaine>   (jetons ; élément 0 = sentinelle "")
+#   bud_parse(txt)            -> liste<chaine>   (paires "cle=valeur" aplaties)
+#   bud_champ(paires, cle)    -> chaine         (valeur ou "")
+#   bud_entier(paires, cle)   -> entier         (0 si absent)
+#   bud_booleen(paires, cle)  -> entier         (1 = vrai, 0 = faux/absent)
+#   bud_valider(paires)       -> entier         (0 = valide, <0 = erreur)
+#
+# Grammaire acceptée (sous-ensemble des .bud de `briques/`) :
+#   cle: valeur                 paire simple
+#   cle: { cle2: valeur, ... }  objet imbriqué -> clé aplatie `cle.cle2`
+#   cle: [ valeur, ... ]        liste -> clés aplaties `cle.0`, `cle.1`, ...
+#   "texte"                     chaîne (guillemets retirés, espaces conservés)
+#   # commentaire               jusqu'à la fin de ligne, ignoré
+#   { } [ ] , :                 ponctuation
+#
+# Convention : les listes Rose ne pouvant pas être vides, l'élément 0 de
+# `bud_parse` est une sentinelle "" ; les paires commencent à l'indice 1.
+
+# ── lecture du fichier ──────────────────────────────────────────────────────
+
+fn bud_lire($chemin: chaine) -> chaine {
+  retour lire_texte($chemin)
+}
+
+# ── conversion chaine -> entier (décimal, signe '-' facultatif) ─────────────
+
+fn bud_entier_chaine($s: chaine) -> entier {
+  $n = longueur($s)
+  $v = 0
+  $i = 0
+  $neg = faux
+  si ($n > 0) {
+    si (ordre($s[0]) == 45) { $neg = vrai ; $i = 1 }
+  }
+  tant_que ($i < $n) {
+    $c = ordre($s[$i])
+    si ($c >= 48 et $c <= 57) { $v = $v * 10 + ($c - 48) }
+    $i = $i + 1
+  }
+  si ($neg) { retour -$v }
+  retour $v
+}
+
+# ── tokenizer ───────────────────────────────────────────────────────────────
+
+fn bud_tokens($txt: chaine) -> liste<chaine> {
+  $out = [""]
+  $n = longueur($txt)
+  $i = 0
+  $cur = ""
+  $quote = faux
+  $comment = faux
+  tant_que ($i < $n) {
+    $c = ordre($txt[$i])
+    si ($comment) {
+      si ($c == 10) { $comment = faux }
+    } sinon si ($quote) {
+      si ($c == 92 et $i + 1 < $n) {
+        # barre oblique inverse : échappement, on prend le caractère suivant
+        $i = $i + 1
+        $cur = $cur + $txt[$i]
+      } sinon si ($c == 34) {
+        joindre($out, $cur)
+        $cur = ""
+        $quote = faux
+      } sinon {
+        $cur = $cur + $txt[$i]
+      }
+    } sinon {
+      si ($c == 35) {
+        # '#' : commentaire jusqu'à la fin de la ligne
+        $comment = vrai
+      } sinon si ($c == 34) {
+        $quote = vrai
+        $cur = ""
+      } sinon si ($c == 32 ou $c == 9 ou $c == 10 ou $c == 13) {
+        si (longueur($cur) > 0) { joindre($out, $cur) ; $cur = "" }
+      } sinon si ($c == 123 ou $c == 125 ou $c == 91 ou $c == 93 ou $c == 44 ou $c == 58) {
+        # { } [ ] , :
+        si (longueur($cur) > 0) { joindre($out, $cur) ; $cur = "" }
+        joindre($out, $txt[$i])
+      } sinon {
+        $cur = $cur + $txt[$i]
+      }
+    }
+    $i = $i + 1
+  }
+  si (longueur($cur) > 0) { joindre($out, $cur) }
+  retour $out
+}
+
+# ── astronautique des paires : index en tête, paires ensuite ───────────────
+# Les fonctions récursives doivent rendre DEUX choses (nouvel index et
+# accumulateur). Elles le font sous forme d'une liste<chaine> dont l'élément 0
+# est l'index décimal ; `bud_idx` et `bud_acc` séparent les deux.
+
+fn bud_idx($r: liste<chaine>) -> entier {
+  retour bud_entier_chaine($r[0])
+}
+
+fn bud_acc($r: liste<chaine>) -> liste<chaine> {
+  $out = [""]
+  $i = 1
+  $n = longueur($r)
+  tant_que ($i < $n) { joindre($out, $r[$i]) ; $i = $i + 1 }
+  retour $out
+}
+
+fn bud_sceller($j: entier, $p: liste<chaine>) -> liste<chaine> {
+  $r = [chaine($j)]
+  $i = 1
+  $n = longueur($p)
+  tant_que ($i < $n) { joindre($r, $p[$i]) ; $i = $i + 1 }
+  retour $r
+}
+
+# ── descente récursive ──────────────────────────────────────────────────────
+
+# Parse un objet dont le corps commence à $i (après le '{').
+# $prefix est le chemin de la clé parente, déjà terminé par '.' s'il y a lieu.
+fn bud_objet($t: liste<chaine>, $i: entier, $prefix: chaine, $acc: liste<chaine>) -> liste<chaine> {
+  $nt = longueur($t)
+  $j = $i
+  $p = $acc
+  tant_que ($j < $nt et $t[$j] != "}") {
+    si ($t[$j] == ",") {
+      $j = $j + 1
+    } sinon {
+      $cle = $prefix + $t[$j]
+      $j = $j + 1
+      si ($j < $nt et $t[$j] == ":") { $j = $j + 1 }
+      $r = bud_valeur($t, $j, $cle, $p)
+      $j = bud_idx($r)
+      $p = bud_acc($r)
+    }
+  }
+  si ($j < $nt et $t[$j] == "}") { $j = $j + 1 }
+  retour bud_sceller($j, $p)
+}
+
+# Parse UNE valeur (scalaire, objet ou liste) située à l'index $i.
+# $cle est le chemin complet de cette valeur.
+fn bud_valeur($t: liste<chaine>, $i: entier, $cle: chaine, $acc: liste<chaine>) -> liste<chaine> {
+  $nt = longueur($t)
+  $j = $i
+  $p = $acc
+  si ($j < $nt) {
+    $tk = $t[$j]
+    si ($tk == "{") {
+      $r = bud_objet($t, $j + 1, $cle + ".", $p)
+      $j = bud_idx($r)
+      $p = bud_acc($r)
+    } sinon si ($tk == "[") {
+      $j = $j + 1
+      $k = 0
+      tant_que ($j < $nt et $t[$j] != "]") {
+        si ($t[$j] == ",") {
+          $j = $j + 1
+        } sinon {
+          $r = bud_valeur($t, $j, $cle + "." + chaine($k), $p)
+          $j = bud_idx($r)
+          $p = bud_acc($r)
+          $k = $k + 1
+        }
+      }
+      si ($j < $nt et $t[$j] == "]") { $j = $j + 1 }
+    } sinon {
+      joindre($p, $cle + "=" + $tk)
+      $j = $j + 1
+    }
+  }
+  retour bud_sceller($j, $p)
+}
+
+# Aplatit un texte .bud en une liste plate de paires "cle=valeur".
+# L'élément 0 est la sentinelle "" ; les paires vont de 1 à longueur()-1.
+fn bud_parse($txt: chaine) -> liste<chaine> {
+  $t = bud_tokens($txt)
+  $nt = longueur($t)
+  $acc = [""]
+  # élément 0 des jetons = sentinelle : les vrais jetons commencent à 1.
+  $i = 1
+  tant_que ($i < $nt) {
+    si ($t[$i] == ",") {
+      $i = $i + 1
+    } sinon {
+      $cle = $t[$i]
+      $i = $i + 1
+      si ($i < $nt et $t[$i] == ":") { $i = $i + 1 }
+      $r = bud_valeur($t, $i, $cle, $acc)
+      $i = bud_idx($r)
+      $acc = bud_acc($r)
+    }
+  }
+  retour $acc
+}
+
+# ── accès aux champs ────────────────────────────────────────────────────────
+
+fn bud_champ($paires: liste<chaine>, $cle: chaine) -> chaine {
+  $cible = $cle + "="
+  $lp = longueur($cible)
+  $n = longueur($paires)
+  $i = 1
+  tant_que ($i < $n) {
+    $p = $paires[$i]
+    si (longueur($p) >= $lp et sous_chaine($p, 0, $lp) == $cible) {
+      retour sous_chaine($p, $lp, longueur($p))
+    }
+    $i = $i + 1
+  }
+  retour ""
+}
+
+fn bud_entier($paires: liste<chaine>, $cle: chaine) -> entier {
+  $v = bud_champ($paires, $cle)
+  si (longueur($v) == 0) { retour 0 }
+  retour bud_entier_chaine($v)
+}
+
+fn bud_booleen($paires: liste<chaine>, $cle: chaine) -> entier {
+  $v = bud_champ($paires, $cle)
+  si ($v == "vrai" ou $v == "oui" ou $v == "1") { retour 1 }
+  retour 0
+}
+
+# ── validation ──────────────────────────────────────────────────────────────
+
+fn bud_pos_egale($p: chaine) -> entier {
+  $n = longueur($p)
+  $i = 0
+  tant_que ($i < $n) {
+    si (ordre($p[$i]) == 61) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn bud_valider($paires: liste<chaine>) -> entier {
+  $n = longueur($paires)
+  $i = 1
+  tant_que ($i < $n) {
+    $p = $paires[$i]
+    $eq = bud_pos_egale($p)
+    si ($eq < 0) {
+      afficher_erreur("bud: paire sans '=' : " + $p)
+      retour -1
+    }
+    si ($eq == 0 ou $eq == longueur($p) - 1) {
+      afficher_erreur("bud: cle ou valeur vide : " + $p)
+      retour -2
+    }
+    $cle = sous_chaine($p, 0, $eq)
+    $k = $i + 1
+    tant_que ($k < $n) {
+      $q = $paires[$k]
+      $eq2 = bud_pos_egale($q)
+      si ($eq2 >= 0 et sous_chaine($q, 0, $eq2) == $cle) {
+        afficher_erreur("bud: cle dupliquee : " + $cle)
+        retour -3
+      }
+      $k = $k + 1
+    }
+    $i = $i + 1
+  }
+  retour 0
+}

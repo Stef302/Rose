@@ -70,6 +70,7 @@ def trouver(nom):
 
 MODULES = [
     'lecteur_source.rose',    # source -> RIR (inclut le front-end complet)
+    'lecteur_bud.rose',       # manifestes .bud -> paires cle=valeur ( Rose pur )
     'interpreteur_rir.rose',  # RIR -> exécution
     'moteur_valeurs.rose',    # représentation taguée des valeurs
     'moteur_ops.rose',        # 20 opérations + repli bigint décimal
