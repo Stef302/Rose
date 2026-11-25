@@ -1,0 +1,411 @@
+# tests_multi.rose — EXÉCUTION MULTI-CIBLES du backend universel (IR abstrait).
+#
+# Rose n'a pas d'instruction `include` : ce fichier est un MODULE SOURCE qui se
+# concatène avec compilateur/backend_universel.rose :
+#
+#   cat compilateur/backend_universel.rose briques/backend/tests_multi.rose \
+#       > /tmp/opencode/multi/tests_multi_prog.rose
+#   ROSE_SANS_JIT=1 rose interprete tests_multi_prog.rose   # oracle Rust
+#   /tmp/opencode/C0_141.elf tests_multi_prog.rose > tests_multi.elf
+#   ./tests_multi.elf                                       # self-hosté, sans ELF Rust
+#
+# Deux calculs sont décrits UNE SEULE FOIS sous forme d'opérations abstraites :
+#   * somme 1+2+...+10 = 55  (11 imm + 10 add, séquence déroulée : l'IR n'a pas
+#     de saut conditionnel, donc la boucle est déroulée à la compilation) ;
+#   * borne_add 250+10 sur 8 bits = 4  (250+10 = 260, puis & 255).
+#
+# La MÊME suite est traduite vers aarch64, x86_64 et wasm par `bu_traduire`.
+# Aucune primitive Rust, aucun `include`, aucun appel à `emetteur_elf.rose` :
+# l'architecture est une donnée (`bu_cible`), l'enveloppe ELF minimale écrite
+# ci-dessous est un simple conteneur de 120 octets (aucun émetteur du dépôt).
+#
+# Résultats obtenus (preuves détaillées dans rose/docs/BRIQUES_MULTI_CIBLES.md) :
+#   aarch64 : ELF autonome exécuté en natif  -> 55 et 4
+#   x86_64  : ELF autonome exécuté sous qemu-x86_64-static -> 55 et 4
+#   wasm    : module exécuté par Node 26.12.1 -> f() = 55 et 4
+
+# ── Utilitaires de test ─────────────────────────────────────────────────────
+
+fn tm_hexch(v: entier) -> chaine {
+  $h = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+  $b = v % 256
+  si ($b < 0) { $b = $b + 256 }
+  retour $h[partie_entiere($b / 16)] + $h[$b % 16]
+}
+
+fn tm_hex(octets: liste<entier>) -> chaine {
+  $r = ""
+  $k = 1
+  tant_que ($k < longueur($octets)) {
+    $r = $r + tm_hexch($octets[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn bt_diff(a: chaine, b: chaine) -> entier {
+  si (a == b) { retour 0 }
+  retour 1
+}
+
+fn tm_contient(s: chaine, mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  si ($m < 1 ou $n < $m) { retour 0 }
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $mot) { retour 1 }
+    $i = $i + 1
+  }
+  retour 0
+}
+
+fn tm_rapporte(n: entier, nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
+  si ($obtenu == $attendu) {
+    >> "OK " + chaine($n) + " " + $nom
+    retour 1
+  }
+  >> "ECHEC " + chaine($n) + " " + $nom + " | obtenu=[" + $obtenu + "] attendu=[" + $attendu + "]"
+  retour 0
+}
+
+# Rose n'a pas d'opérateur bit-à-bit : AND sur de petits entiers par décomposition.
+fn tm_and(a: entier, b: entier) -> entier {
+  $r = 0
+  $x = a
+  $y = b
+  $p = 1
+  tant_que ($x > 0 et $y > 0) {
+    si ($x % 2 == 1 et $y % 2 == 1) { $r = $r + $p }
+    $x = partie_entiere($x / 2)
+    $y = partie_entiere($y / 2)
+    $p = $p * 2
+  }
+  retour $r
+}
+
+fn tm_or(a: entier, b: entier) -> entier {
+  $r = 0
+  $x = a
+  $y = b
+  $p = 1
+  tant_que ($x > 0 ou $y > 0) {
+    si ($x % 2 == 1 ou $y % 2 == 1) { $r = $r + $p }
+    $x = partie_entiere($x / 2)
+    $y = partie_entiere($y / 2)
+    $p = $p * 2
+  }
+  retour $r
+}
+
+fn tm_xor(a: entier, b: entier) -> entier {
+  $r = 0
+  $x = a
+  $y = b
+  $p = 1
+  tant_que ($x > 0 ou $y > 0) {
+    si (($x % 2 == 1) != ($y % 2 == 1)) { $r = $r + $p }
+    $x = partie_entiere($x / 2)
+    $y = partie_entiere($y / 2)
+    $p = $p * 2
+  }
+  retour $r
+}
+
+# Rose ne permet PAS l'affectation par index dans une liste (seul `joindre`
+# mute) : un registre est donc une liste reconstruite par une fonction pure.
+fn tm_setreg(reg: liste<entier>, idx: entier, val: entier) -> liste<entier> {
+  $s = [reg[0]]
+  si (idx == 0) { $s = [val] }
+  $k = 1
+  tant_que ($k < longueur(reg)) {
+    $v = reg[$k]
+    si ($k == idx) { $v = val }
+    joindre($s, $v)
+    $k = $k + 1
+  }
+  retour $s
+}
+
+# Sémantique de référence de l'IR : identique pour toutes les cibles.
+fn tm_eval_ir(seq: liste<entier>) -> entier {
+  $r = [0, 0, 0, 0, 0, 0, 0, 0]
+  $k = 1
+  $res = 0
+  tant_que ($k < longueur($seq)) {
+    $d = bu_desc($seq[$k])
+    $code = $d[0]
+    $dst = 0
+    $a = 0
+    $b = 0
+    si (longueur($d) > 1) { $dst = $d[1] }
+    si (longueur($d) > 2) { $a = $d[2] }
+    si (longueur($d) > 3) { $b = $d[3] }
+    si ($code == 1) { $r = tm_setreg($r, $dst, $a) }
+    si ($code == 2) { $r = tm_setreg($r, $dst, $r[$a]) }
+    si ($code == 3) { $r = tm_setreg($r, $dst, $r[$a] + $r[$b]) }
+    si ($code == 4) { $r = tm_setreg($r, $dst, $r[$a] - $r[$b]) }
+    si ($code == 5) { $r = tm_setreg($r, $dst, $r[$a] * $r[$b]) }
+    si ($code == 6) { $r = tm_setreg($r, $dst, tm_and($r[$a], $r[$b])) }
+    si ($code == 7) { $r = tm_setreg($r, $dst, tm_or($r[$a], $r[$b])) }
+    si ($code == 8) { $r = tm_setreg($r, $dst, tm_xor($r[$a], $r[$b])) }
+    si ($code == 13) { $res = $r[0] }
+    $k = $k + 1
+  }
+  retour $res
+}
+
+# Exécution des OCTETS x86-64 réellement émis par `bu_traduire`.
+# Motifs produits par bu_x64_encode : REX.W 48/49 puis B8+r (imm64),
+# 8B /r (mov), 01 /r (add), 29 /r (sub), 21 /r (and), C3 (ret).
+fn tm_exec_x64(octets: liste<entier>) -> entier {
+  $r = [0, 0, 0, 0, 0, 0, 0, 0]
+  $k = 1
+  $res = 0
+  $fin = 0
+  tant_que ($k < longueur($octets) et $fin == 0) {
+    $b = $octets[$k]
+    si ($b == 195) { $res = $r[0]; $fin = 1 }
+    si ($b == 15) { $k = $k + 2 }
+    si ($b == 72) {
+      $op = $octets[$k + 1]
+      $mod = $octets[$k + 2]
+      $dst = $mod % 8
+      $src = partie_entiere($mod / 8) % 8
+      si ($op >= 184 et $op <= 191) {
+        $v = 0
+        $p = 0
+        tant_que ($p < 8) {
+          $puiss = 1
+          $q = 0
+          tant_que ($q < $p) { $puiss = $puiss * 256; $q = $q + 1 }
+          $v = $v + $octets[$k + 2 + $p] * $puiss
+          $p = $p + 1
+        }
+        $r = tm_setreg($r, $op - 184, $v)
+        $k = $k + 10
+      }
+      si ($op == 139) { $r = tm_setreg($r, $dst, $r[$src]); $k = $k + 3 }
+      si ($op == 1) { $r = tm_setreg($r, $dst, $r[$dst] + $r[$src]); $k = $k + 3 }
+      si ($op == 41) { $r = tm_setreg($r, $dst, $r[$dst] - $r[$src]); $k = $k + 3 }
+      si ($op == 33) { $r = tm_setreg($r, $dst, tm_and($r[$dst], $r[$src])); $k = $k + 3 }
+      si ($op == 9) { $r = tm_setreg($r, $dst, tm_or($r[$dst], $r[$src])); $k = $k + 3 }
+      si ($op == 49) { $r = tm_setreg($r, $dst, tm_xor($r[$dst], $r[$src])); $k = $k + 3 }
+    }
+  }
+  retour $res
+}
+
+# Petit entier non signé, en little-endian, envoyé octet par octet.
+fn tm_le(v: entier, n: entier) -> chaine {
+  $s = ""
+  $x = v
+  $k = 0
+  tant_que ($k < $n) {
+    $s = $s + bu_octet_ch($x % 256)
+    $x = partie_entiere($x / 256)
+    $k = $k + 1
+  }
+  retour $s
+}
+
+# Conteneur ELF64 ET_EXEC STATIQUE, 120 octets d'en-tête (64 ELF + 56 PHDR),
+# une seule segment PT_LOAD R+X, aucune section, aucun linker, aucun Rust.
+# `machine` est une DONNÉE : 183 = aarch64, 62 = x86_64. Même fonction pour les
+# deux architectures — la différence ne tient pas dans la logique.
+fn tm_elf(code: liste<entier>, machine: entier, chemin: chaine) -> entier {
+  $base = 4194304
+  $off = 120
+  $n = longueur(code) - 1
+  $fsz = $off + $n
+  $s = caractere(127) + "ELF" + caractere(2) + caractere(1) + caractere(1) + caractere(0)
+  $z = 0
+  tant_que ($z < 8) { $s = $s + caractere(0); $z = $z + 1 }
+  # e_type=ET_EXEC, e_machine=donnée, e_version=1, e_entry, e_phoff,
+  # e_shoff=0, e_flags=0.
+  $s = $s + tm_le(2, 2) + tm_le($machine, 2) + tm_le(1, 4)
+  $s = $s + tm_le($base + $off, 8) + tm_le(64, 8) + tm_le(0, 8) + tm_le(0, 4)
+  # e_ehsize=64, e_phentsize=56, e_phnum=1, e_shentsize/shnum/shstrndx=0.
+  $s = $s + tm_le(64, 2) + tm_le(56, 2) + tm_le(1, 2)
+  $s = $s + tm_le(0, 2) + tm_le(0, 2) + tm_le(0, 2)
+  # PT_LOAD : type=1, flags=R|X=5, offset=0, vaddr=paddr=base,
+  # filesz=memsz=fsz, align=4096.
+  $s = $s + tm_le(1, 4) + tm_le(5, 4)
+  $s = $s + tm_le(0, 8) + tm_le($base, 8) + tm_le($base, 8)
+  $s = $s + tm_le($fsz, 8) + tm_le($fsz, 8) + tm_le(4096, 8)
+  $k = 1
+  tant_que ($k < longueur(code)) { $s = $s + bu_octet_ch($code[$k]); $k = $k + 1 }
+  ecrire_bytes($chemin, $s)
+  retour $fsz
+}
+
+# Construit une suite à partir des ids d'opérations et d'une liste de finalaux.
+fn tm_suite(ops: liste<entier>, fin: liste<entier>) -> liste<entier> {
+  $s = bu_sequence()
+  $k = 1
+  tant_que ($k < longueur($ops)) {
+    bu_ajouter($s, $ops[$k])
+    $k = $k + 1
+  }
+  $k = 1
+  tant_que ($k < longueur($fin)) {
+    bu_ajouter($s, $fin[$k])
+    $k = $k + 1
+  }
+  retour $s
+}
+
+# ── 1. Les deux calculs, écrits UNE SEULE FOIS en IR abstrait ────────────────
+
+# somme 1..10 : 11 imm + 10 add = 21 opérations.
+$ops_somme = [0]
+joindre($ops_somme, bu_operation("imm", [0, 0]))
+$tm_k = 1
+tant_que ($tm_k <= 10) {
+  joindre($ops_somme, bu_operation("imm", [1, $tm_k]))
+  joindre($ops_somme, bu_operation("add", [0, 0, 1]))
+  $tm_k = $tm_k + 1
+}
+
+# borne_add 250+10 & 255 sur 8 bits = 4.
+$ops_borne = [0]
+joindre($ops_borne, bu_operation("imm", [0, 250]))
+joindre($ops_borne, bu_operation("imm", [1, 10]))
+joindre($ops_borne, bu_operation("add", [0, 0, 1]))
+joindre($ops_borne, bu_operation("imm", [2, 255]))
+joindre($ops_borne, bu_operation("and", [0, 0, 2]))
+
+$fin_ret = bu_operation("ret", [0])
+$fin_a64 = bu_operation("syscall", [93])       # exit(status=x0) sur Linux/aarch64
+$fin_x64_mov = bu_operation("mov", [7, 0])     # rdi = rax
+$fin_x64_sys = bu_operation("syscall", [60])   # exit(status=rdi) sur Linux/x86-64
+
+$seq_somme = tm_suite($ops_somme, [0, $fin_ret])
+$seq_borne = tm_suite($ops_borne, [0, $fin_ret])
+$a64_somme = tm_suite($ops_somme, [0, $fin_a64])
+$a64_borne = tm_suite($ops_borne, [0, $fin_a64])
+$x64_somme = tm_suite($ops_somme, [0, $fin_x64_mov, $fin_x64_sys])
+$x64_borne = tm_suite($ops_borne, [0, $fin_x64_mov, $fin_x64_sys])
+
+# ── 2. Traduction : UNE suite, TROIS cibles ─────────────────────────────────
+
+$c64 = bu_cible("aarch64")
+$cx = bu_cible("x86_64")
+$cw = bu_cible("wasm")
+
+$os64_s = bu_traduire($seq_somme, $c64)
+$ox_s = bu_traduire($seq_somme, $cx)
+$ow_s = bu_traduire($seq_somme, $cw)
+$os64_b = bu_traduire($seq_borne, $c64)
+$ox_b = bu_traduire($seq_borne, $cx)
+$ow_b = bu_traduire($seq_borne, $cw)
+
+$hs64_s = tm_hex($os64_s)
+$hx_s = tm_hex($ox_s)
+$hw_s = tm_hex($ow_s)
+$hs64_b = tm_hex($os64_b)
+$hx_b = tm_hex($ox_b)
+$hw_b = tm_hex($ow_b)
+
+>> "SOMME aarch64 (" + chaine(longueur($os64_s) - 1) + ") " + $hs64_s
+>> "SOMME x86_64   (" + chaine(longueur($ox_s) - 1) + ") " + $hx_s
+>> "SOMME wasm     (" + chaine(longueur($ow_s) - 1) + ") " + $hw_s
+>> "BORNE aarch64 (" + chaine(longueur($os64_b) - 1) + ") " + $hs64_b
+>> "BORNE x86_64   (" + chaine(longueur($ox_b) - 1) + ") " + $hx_b
+>> "BORNE wasm     (" + chaine(longueur($ow_b) - 1) + ") " + $hw_b
+
+$tm_ok = 0
+$tm_total = 0
+
+>> "--- IR / SEMANTIQUE ---"
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(1, "ops_somme_22", chaine(longueur($ops_somme)), "22")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(2, "ops_borne_6", chaine(longueur($ops_borne)), "6")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(3, "somme_code_imm", chaine(bu_desc($ops_somme[1])[0]), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(4, "somme_code_add", chaine(bu_desc($ops_somme[3])[0]), "3")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(5, "borne_code_and", chaine(bu_desc($ops_borne[5])[0]), "6")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(6, "eval_somme_55", chaine(tm_eval_ir($seq_somme)), "55")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(7, "eval_borne_4", chaine(tm_eval_ir($seq_borne)), "4")
+
+>> "--- PROFILS / TRADUCTION ---"
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(8, "profil_aarch64", bu_profil($c64, "famille") + "/" + bu_profil($c64, "enveloppe"), "1/brut")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(9, "profil_x86_64", bu_profil($cx, "famille") + "/" + bu_profil($cx, "boutisme"), "2/petit")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(10, "profil_wasm", bu_profil($cw, "famille") + "/" + bu_profil($cw, "enveloppe"), "3/module")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(11, "somme_aarch64_88_octets", chaine(longueur($os64_s) - 1), "88")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(12, "somme_x86_64_171_octets", chaine(longueur($ox_s) - 1), "171")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(13, "borne_aarch64_24_octets", chaine(longueur($os64_b) - 1), "24")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(14, "borne_x86_64_43_octets", chaine(longueur($ox_b) - 1), "43")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(15, "somme_hex_different_aarch64_x86", chaine(bt_diff($hs64_s, $hx_s)), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(16, "somme_hex_different_x86_wasm", chaine(bt_diff($hx_s, $hw_s)), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(17, "borne_hex_different_aarch64_wasm", chaine(bt_diff($hs64_b, $hw_b)), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(18, "aarch64_add_x0_x0_x1", chaine(tm_contient($hs64_s, "0000018b")), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(19, "x86_64_add_rax_rcx", chaine(tm_contient($hx_s, "4801c8")), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(20, "x86_64_and_rax_rdx", chaine(tm_contient($hx_b, "4821d0")), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(21, "wasm_magie", chaine(tm_contient($hw_s, "0061736d01000000")), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(22, "wasm_i32_add", chaine(tm_contient($hw_s, "6a")), "1")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(23, "wasm_i32_and", chaine(tm_contient($hw_b, "71")), "1")
+
+>> "--- EXECUTION DES OCTETS x86-64 (sans qemu, dans le programme) ---"
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(24, "exec_x64_somme_55", chaine(tm_exec_x64($ox_s)), "55")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(25, "exec_x64_borne_4", chaine(tm_exec_x64($ox_b)), "4")
+
+>> "--- EMISSION DES SIX BINAIRES + DEUX CONTENEURS ELF ---"
+$dir = "/tmp/opencode/multi/out/"
+$n1 = bu_emettre($seq_somme, $c64, $dir + "somme.aarch64.bin")
+$n2 = bu_emettre($seq_somme, $cx, $dir + "somme.x86_64.bin")
+$n3 = bu_emettre($seq_somme, $cw, $dir + "somme.wasm")
+$n4 = bu_emettre($seq_borne, $c64, $dir + "borne.aarch64.bin")
+$n5 = bu_emettre($seq_borne, $cx, $dir + "borne.x86_64.bin")
+$n6 = bu_emettre($seq_borne, $cw, $dir + "borne.wasm")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(26, "fichier_somme_aarch64", chaine($n1), "88")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(27, "fichier_somme_x86_64", chaine($n2), "171")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(28, "fichier_borne_aarch64", chaine($n4), "24")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(29, "fichier_borne_x86_64", chaine($n5), "43")
+
+# Conteneurs ELF exécutables : mêmes opérations abstraites + sortie `exit`.
+$oa_s = bu_traduire($a64_somme, $c64)
+$oa_b = bu_traduire($a64_borne, $c64)
+$oe_s = bu_traduire($x64_somme, $cx)
+$oe_b = bu_traduire($x64_borne, $cx)
+$e1 = tm_elf($oa_s, 183, $dir + "somme.aarch64.elf")
+$e2 = tm_elf($oa_b, 183, $dir + "borne.aarch64.elf")
+$e3 = tm_elf($oe_s, 62, $dir + "somme.x86_64.elf")
+$e4 = tm_elf($oe_b, 62, $dir + "borne.x86_64.elf")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(30, "elf_somme_aarch64_taille", chaine($e1), "212")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(31, "elf_borne_aarch64_taille", chaine($e2), "148")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(32, "elf_somme_x86_64_taille", chaine($e3), "305")
+$tm_total = $tm_total + 1
+$tm_ok = $tm_ok + tm_rapporte(33, "elf_borne_x86_64_taille", chaine($e4), "177")
+
+>> "TOTAL " + chaine($tm_ok) + "/" + chaine($tm_total)
