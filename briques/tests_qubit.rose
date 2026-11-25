@@ -1,0 +1,80 @@
+# tests_qubit.rose — PILOTE DE TEST de la brique quantique (simulateur logique).
+# Se CONCATÈNE avec qubit.rose (Rose n'a pas de modules) :
+#   cat briques/quantique/qubit.rose briques/tests_qubit.rose > /tmp/q.rose
+#   rose verif /tmp/q.rose
+#   rose /tmp/q.rose                            # interpréteur / JIT
+#   C0 /tmp/q.rose > /tmp/q.elf && /tmp/q.elf   # ELF autonome, mêmes octets
+#
+# Chaque ligne stdout est un entier ; l'ordre est le contrat du test.
+# Aucun matériel : seules des listes d'entiers et une graine arithmétique.
+
+# ── 1. États de base : |0>, |90>, |45> ─────────────────────────────────────
+$q0 = qubit_nouveau(0)
+>> $q0[0]            # 10000 : alpha(|0>)
+>> $q0[1]            # 0     : beta(|0>)
+$q90 = qubit_nouveau(90)
+>> $q90[0]           # 0
+>> $q90[1]           # 10000
+$q45 = qubit_nouveau(45)
+>> $q45[0]           # 7071
+>> $q45[1]           # 7071
+
+# ── 2. Hadamard puis 100 tirs : ~50/50 ─────────────────────────────────────
+$h = qubit_porte($q0, "H")
+>> $h[0]             # 7071
+>> $h[1]             # 7071
+>> qubit_probabilite1($h)   # 5000 : pile beta^2/||q||^2 scalee
+$un = 0
+$tir = 0
+tant_que ($tir < 100) {
+  $un = $un + qubit_mesurer($h, $tir)
+  $tir = $tir + 1
+}
+>> $un               # proche de 50, deterministe et rejouable
+
+# ── 3. Porte X : |0> -> |1>, 100 tirs -> toujours 1 ─────────────────────────
+$x = qubit_porte($q0, "X")
+>> $x[0]             # 0
+>> $x[1]             # 10000
+$unx = 0
+$tir = 0
+tant_que ($tir < 100) {
+  $unx = $unx + qubit_mesurer($x, $tir)
+  $tir = $tir + 1
+}
+>> $unx              # 100 : aucun 0
+
+# ── 4. Z, Y et involution H^2 ───────────────────────────────────────────────
+$z = qubit_porte($h, "Z")
+>> $z[0]             # 7071
+>> $z[1]             # -7071
+$y = qubit_porte($q0, "Y")
+>> $y[0]             # 0
+>> $y[1]             # -10000 (=-i·Y|0>, phase globale ignoree)
+$hh = qubit_porte($h, "H")
+>> $hh[0]            # 10000 : H^2|0> = |0>
+>> $hh[1]            # 0
+$mal = qubit_porte($q0, "T")
+>> $mal[0]           # -1 : porte inconnue refusee
+>> $mal[1]           # 0
+
+# ── 5. Intrication : etat de Bell et correlations ──────────────────────────
+$e = qubit_intriquer($q0, $q0)
+>> longueur($e)      # 4 amplitudes
+>> $e[0]             # 7071 : |00>
+>> $e[1]             # 0    : |01>
+>> $e[2]             # 0    : |10>
+>> $e[3]             # 7071 : |11>
+$corr = 0
+$zeros = 0
+$uns = 0
+$tir = 0
+tant_que ($tir < 100) {
+  $m = qubit_mesurer2($e, $tir)
+  si ($m[0] == $m[1]) { $corr = $corr + 1 }
+  si ($m[0] == 0) { $zeros = $zeros + 1 } sinon { $uns = $uns + 1 }
+  $tir = $tir + 1
+}
+>> $corr             # 100 : correlation parfaite
+>> $zeros            # ~50 : branche |00>
+>> $uns              # ~50 : branche |11>

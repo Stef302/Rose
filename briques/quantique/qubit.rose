@@ -1,0 +1,269 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# briques/quantique/qubit.rose — SIMULATEUR LOGIQUE DE QUBIT, ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Aucune primitive matérielle, aucun système, aucune architecture, aucun
+# pilote. Un qubit est une VALEUR : une liste de deux entiers Rose. Une
+# opération est une fonction PURE qui rend une liste nouvelle. Le seul
+# « hasard » est un générateur arithmétique local, déterministe, rejouable.
+#
+# REPRÉSENTATION (données uniquement)
+#   précision P = 10000 (qubit_precision()). Une amplitude réelle a est
+#   stockée comme l'entier a_sc = arrondi(a * P). Un état 1 qubit est
+#   [alpha, beta] avec alpha^2 + beta^2 ≈ P^2 (normalisation entière).
+#   Un état 2 qubits est [c00, c01, c10, c11], même échelle.
+#   Aucun flottant, aucun complexe, aucune primitive FFI : que des entiers.
+#
+# ANGLE
+#   theta est un entier en DEGRÉS, ramené dans [0, 360). cos/sin sont
+#   approchés par une table à pas de 15° (valeurs × P) avec interpolation
+#   linéaire entière, puis le vecteur est renormalisé. C'est une approximation
+#   explicite et déterministe — pas une bibliothèque trigonométrique matérielle.
+#
+# PORTES (sur amplitudes en données)
+#   "X" : [beta, alpha]                  (bascule)
+#   "Z" : [alpha, -beta]                 (phase relative)
+#   "H" : [(a+b)/racine(2), (a-b)/racine(2)]  (Hadamard)
+#   "Y" : [beta, -alpha]                 (= -i·Y : phase globale ignorée,
+#         seul le sous-espace réel est simulé ; voir BRIQUE_QUBIT.md)
+#   Toute porte inconnue rend [-1, 0], état hors domaine explicite.
+#   X/Z/Y sont des permutations et signes EXACTS (norme préservée) ; seule
+#   H renormalise, à cause de l'approximation entière de 1/racine(2).
+#
+# MESURE
+#   qubit_mesurer(q, graine) -> 0 ou 1. Le PRNG local (Park-Miller, modulo
+#   2^31-1) donne un entier r dans [0, P). On rend 1 si
+#   r < beta^2 * P / (alpha^2 + beta^2), sinon 0. Même graine => même tir.
+#   Un état de norme nulle rend -1 (refus, jamais un repli silencieux).
+#
+# INTRICATION
+#   qubit_intriquer(q1, q2) prépare un état de Bell : H sur q1, produit
+#   tensoriel avec q2, puis CNOT (contrôle q1, cible q2). Les deux mesures
+#   sont parfaitement corrélées : qubit_mesurer2(etat, graine) rend [m1, m2]
+#   avec m1 == m2 pour l'état de Bell.
+#
+# CONVENTION DE COMPILATION
+#   Rose n'a pas de modules : ce fichier se CONCATÈNE au programme.
+#     cat briques/quantique/qubit.rose briques/tests_qubit.rose > /tmp/q.rose
+#   Toutes les fonctions sont pures (aucune variable globale lue dans une
+#   fonction) : le code compile à l'identique sous l'interpréteur, le JIT,
+#   C0 (ELF autonome) et le moteur self-hosté.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia ────────────────────────────────────────────────────────────
+
+# Précision fixed-point. CONSTANTE DE CODE, pas une variable globale : les
+# fonctions typées ne lisent aucune globale (garde-fou JIT/C0). La valeur
+# déclarée dans qubit.bud est la même ; le .bud est une donnée de construction,
+# pas une entrée à l'exécution.
+fn qubit_precision() -> entier { retour 10000 }
+
+# Racine carrée entière par Newton : plus grand s avec s^2 <= n.
+fn qubit_racine(n: entier) -> entier {
+  si (n <= 0) { retour 0 }
+  $x = n
+  $y = ($x + 1) ÷ 2
+  tant_que ($y < $x) {
+    $x = $y
+    $y = ($x + n ÷ $x) ÷ 2
+  }
+  retour $x
+}
+
+# Mise à jour immuable d'une case de liste (Rose n'a pas d'affectation par
+# index dans une fonction typée).
+fn qubit_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $r = [l[0]]
+  $k = 1
+  tant_que ($k < $n) {
+    si ($k == idx) { joindre($r, v) } sinon { joindre($r, l[$k]) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Renormalisation d'un état 1 qubit vers la norme P.
+fn qubit_normaliser(q: liste<entier>) -> liste<entier> {
+  $p = qubit_precision()
+  $a = q[0]
+  $b = q[1]
+  $n = $a * $a + $b * $b
+  si ($n == 0) { $r0 = [$p]; joindre($r0, 0); retour $r0 }
+  $s = qubit_racine($n)
+  $r = [$a * $p ÷ $s]
+  joindre($r, $b * $p ÷ $s)
+  retour $r
+}
+
+# Renormalisation d'un état 2 qubits (4 amplitudes).
+fn qubit_normaliser4(q: liste<entier>) -> liste<entier> {
+  $p = qubit_precision()
+  $n = 0
+  $k = 0
+  tant_que ($k < 4) {
+    $n = $n + q[$k] * q[$k]
+    $k = $k + 1
+  }
+  si ($n == 0) {
+    $e = [$p]
+    joindre($e, 0)
+    joindre($e, 0)
+    joindre($e, 0)
+    retour $e
+  }
+  $s = qubit_racine($n)
+  $r = [q[0] * $p ÷ $s]
+  joindre($r, q[1] * $p ÷ $s)
+  joindre($r, q[2] * $p ÷ $s)
+  joindre($r, q[3] * $p ÷ $s)
+  retour $r
+}
+
+# ── 1. Construction ─────────────────────────────────────────────────────────
+
+fn qubit_cos_table(rang: entier) -> entier {
+  $t = [10000, 9659, 8660, 7071, 5000, 2588, 0, -2588, -5000, -7071,
+        -8660, -9659, -10000, -9659, -8660, -7071, -5000, -2588, 0,
+        2588, 5000, 7071, 8660, 9659, 10000]
+  retour $t[rang]
+}
+
+fn qubit_sin_table(rang: entier) -> entier {
+  $t = [0, 2588, 5000, 7071, 8660, 9659, 10000, 9659, 8660, 7071,
+        5000, 2588, 0, -2588, -5000, -7071, -8660, -9659, -10000,
+        -9659, -8660, -7071, -5000, -2588, 0]
+  retour $t[rang]
+}
+
+# qubit_nouveau(theta) -> [alpha, beta], theta en degrés (entier).
+fn qubit_nouveau(theta: entier) -> liste<entier> {
+  $p = qubit_precision()
+  $t = theta % 360
+  si ($t < 0) { $t = $t + 360 }
+  $i = $t ÷ 15
+  $f = $t % 15
+  $c = qubit_cos_table($i) + (qubit_cos_table($i + 1) - qubit_cos_table($i)) * $f ÷ 15
+  $s = qubit_sin_table($i) + (qubit_sin_table($i + 1) - qubit_sin_table($i)) * $f ÷ 15
+  $r = [$c]
+  joindre($r, $s)
+  retour qubit_normaliser($r)
+}
+
+# ── 2. Portes logiques génériques ───────────────────────────────────────────
+
+fn qubit_porte(q: liste<entier>, nom: chaine) -> liste<entier> {
+  $p = qubit_precision()
+  $a = q[0]
+  $b = q[1]
+  $r = [$a]
+  joindre($r, $b)
+  si (nom == "X") {
+    $n = [$b]
+    joindre($n, $a)
+    retour $n
+  }
+  si (nom == "Z") {
+    $n = [$a]
+    joindre($n, 0 - $b)
+    retour $n
+  }
+  si (nom == "H") {
+    $inv = qubit_racine($p * $p ÷ 2)
+    $n = [($a + $b) * $inv ÷ $p]
+    joindre($n, ($a - $b) * $inv ÷ $p)
+    retour qubit_normaliser($n)
+  }
+  si (nom == "Y") {
+    # -i·Y sur le sous-espace réel : phase globale non observable.
+    $n = [$b]
+    joindre($n, 0 - $a)
+    retour $n
+  }
+  # Porte inconnue : refus explicite, jamais un repli silencieux.
+  $n = [0 - 1]
+  joindre($n, 0)
+  retour $n
+}
+
+# ── 3. Mesure déterministe ──────────────────────────────────────────────────
+
+# Générateur arithmétique local (Park-Miller). Aucun hasard matériel, aucun
+# appel au PRNG du moteur : le résultat est rejouable dans tous les exécuteurs.
+fn qubit_tirer(graine: entier, precision: entier) -> entier {
+  $x = (graine * 16807 + 12345) % 2147483647
+  si ($x < 0) { $x = $x + 2147483647 }
+  retour $x % precision
+}
+
+# Probabilité de obtenir 1, scaled sur [0, P].
+fn qubit_probabilite1(q: liste<entier>) -> entier {
+  $p = qubit_precision()
+  $n = q[0] * q[0] + q[1] * q[1]
+  si ($n == 0) { retour 0 }
+  retour q[1] * q[1] * $p ÷ $n
+}
+
+fn qubit_mesurer(q: liste<entier>, graine: entier) -> entier {
+  $p = qubit_precision()
+  $n = q[0] * q[0] + q[1] * q[1]
+  si ($n == 0) { retour 0 - 1 }
+  $seuil = q[1] * q[1] * $p ÷ $n
+  $r = qubit_tirer(graine, $p)
+  si ($r < $seuil) { retour 1 }
+  retour 0
+}
+
+# ── 4. Intrication ──────────────────────────────────────────────────────────
+
+# État de Bell [c00, c01, c10, c11] : H(q1) puis produit tensoriel puis CNOT.
+fn qubit_intriquer(q1: liste<entier>, q2: liste<entier>) -> liste<entier> {
+  $p = qubit_precision()
+  $h = qubit_porte(q1, "H")
+  $a = $h[0]
+  $b = $h[1]
+  $c = q2[0]
+  $d = q2[1]
+  $v00 = $a * $c ÷ $p
+  $v01 = $a * $d ÷ $p
+  $v10 = $b * $c ÷ $p
+  $v11 = $b * $d ÷ $p
+  $r = [$v00]
+  joindre($r, $v01)
+  # CNOT : on échange les amplitudes des branches |10> et |11>.
+  joindre($r, $v11)
+  joindre($r, $v10)
+  retour qubit_normaliser4($r)
+}
+
+# Mesure d'un état à 2 qubits : rend [m1, m2] (m1 = qubit de contrôle).
+fn qubit_mesurer2(etat: liste<entier>, graine: entier) -> liste<entier> {
+  $p = qubit_precision()
+  $n = 0
+  $k = 0
+  tant_que ($k < 4) {
+    $n = $n + etat[$k] * etat[$k]
+    $k = $k + 1
+  }
+  si ($n == 0) {
+    $m0 = [0 - 1]
+    joindre($m0, 0 - 1)
+    retour $m0
+  }
+  $r = qubit_tirer(graine, $p)
+  $idx = 3
+  $cum = 0
+  $k = 0
+  tant_que ($k < 4) {
+    $cum = $cum + etat[$k] * etat[$k] * $p ÷ $n
+    si ($r < $cum) {
+      $idx = $k
+      $k = 4
+    } sinon {
+      $k = $k + 1
+    }
+  }
+  $m = [$idx ÷ 2]
+  joindre($m, $idx % 2)
+  retour $m
+}

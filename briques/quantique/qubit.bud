@@ -1,0 +1,93 @@
+# qubit.bud — MANIFESTE DE DONNÉES de la brique quantique. AUCUNE LOGIQUE.
+# Aucun matériel supposé, aucune architecture, aucun système d'exploitation,
+# aucun nom de pilote, aucune primitive physique. Tout est DONNÉE déclarative :
+# le simulateur logique vit dans qubit.rose et ne change pas si ce fichier
+# change (precision et graine sont aussi des paramètres explicites des tests).
+#
+# MAPPAGE (fait par l'assemblage, pas par la brique) :
+#   1. `simulateur.precision` = P, échelle des amplitudes entières (a*P) ;
+#      qubit.rose pose la même constante via qubit_precision() ;
+#   2. `simulateur.graine` = graine par défaut du PRNG arithmétique local ;
+#      qubit_mesurer(q, graine) reçoit toujours sa graine en argument ;
+#   3. `simulateur.portes` = noms acceptés par qubit_porte(q, nom) ;
+#      toute autre chaîne est refusée explicitement (état [-1, 0]) ;
+#   4. aucun champ de ce manifeste ne désigne un appareil physique : la
+#      capacité abstraite « quantique » est déjà déclarée dans
+#      briques/appareil/contrat.bud, sans matériel associé ;
+#   5. changer ce .bud (précision, pas angulaire, graine) ne modifie aucune
+#      ligne de qubit.rose.
+
+nom: "quantique-qubit"
+version: "0.1.0"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 0
+  abi: rose-noyau-v0
+}
+
+profil: maths
+
+simulateur: {
+  genre: "simulateurLogique"
+  precision: 10000
+  angles_unite: "degres"
+  angle_pas: 15
+  portes: ["X", "Z", "H", "Y"]
+  portes_inconnues: "refusees"
+  graine: 12345
+  prng: "park-miller-local"
+  mesure: "deterministe"
+  etat_1q: "liste<entier>[2]"
+  etat_2q: "liste<entier>[4]"
+  phases: "reelles"
+  intrication: "bell-cnot"
+}
+
+capacite: {
+  nom: "quantique"
+  code: 5
+  origine: "briques/appareil/contrat.bud"
+  materiel: aucun
+}
+
+interface: {
+  source: "briques/quantique/qubit.rose"
+  entrees: [
+    "qubit_precision",
+    "qubit_nouveau",
+    "qubit_porte",
+    "qubit_mesurer",
+    "qubit_tirer",
+    "qubit_probabilite1",
+    "qubit_intriquer",
+    "qubit_mesurer2"
+  ]
+  sorties: [
+    "etat1",
+    "etat2",
+    "bit_mesure",
+    "paire_bits_mesure"
+  ]
+  purete: vrai
+  primitives_materielles: faux
+}
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: vrai
+  alloc_implicite: vrai
+  latence_max: 0
+}
+
+sortie: {
+  format: brut
+  entree: aucun
+  adresse_charge: 0
+  alignement: 0
+}
+
+dependances: []
