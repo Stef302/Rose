@@ -4604,7 +4604,7 @@ fn digits_only($s: chaine) -> booleen {
   si ($n == 0) { retour faux }
   $i = 0
   tant_que ($i < $n) {
-    $c = sous_chaine($s, $i, $i + 1)
+    $c = $s[$i]
     si ($c < "0" ou $c > "9") { retour faux }
     $i = $i + 1
   }
@@ -5263,7 +5263,7 @@ fn tok_line($s: chaine) -> entier {
   $n = longueur($s)
   $i = 0
   tant_que ($i < $n) {
-    $c = sous_chaine($s, $i, $i + 1)
+    $c = $s[$i]
     si ($c == " " ou $c == "\t" ou $c == "\r") { $i = $i + 1 }
     sinon si ($c == "(" ou $c == ")") { joindre($tok, $c); $i = $i + 1 }
     sinon si ($c == "\"") {
@@ -5271,9 +5271,9 @@ fn tok_line($s: chaine) -> entier {
       $buf = ""
       $done = faux
       tant_que ($j < $n et non $done) {
-        $ch = sous_chaine($s, $j, $j + 1)
+        $ch = $s[$j]
         si ($ch == "\\" et $j + 1 < $n) {
-          $nx = sous_chaine($s, $j + 1, $j + 2)
+          $nx = $s[$j + 1]
           si ($nx == "n") { $buf = $buf + "\n" }
           sinon si ($nx == "t") { $buf = $buf + "\t" }
           sinon si ($nx == "r") { $buf = $buf + "\r" }
@@ -5289,7 +5289,7 @@ fn tok_line($s: chaine) -> entier {
       $j = $i
       $fin = faux
       tant_que ($j < $n et non $fin) {
-        $ch = sous_chaine($s, $j, $j + 1)
+        $ch = $s[$j]
         si ($ch == " " ou $ch == "\t" ou $ch == "\r" ou $ch == "(" ou $ch == ")" ou $ch == "\"") { $fin = vrai }
         si (non $fin) { $j = $j + 1 }
       }
@@ -5301,9 +5301,9 @@ fn tok_line($s: chaine) -> entier {
 }
 fn trim($s: chaine) -> chaine {
   $i = 0
-  tant_que ($i < longueur($s) et sous_chaine($s, $i, $i + 1) == " ") { $i = $i + 1 }
+  tant_que ($i < longueur($s) et $s[$i] == " ") { $i = $i + 1 }
   $j = longueur($s)
-  tant_que ($j > $i et sous_chaine($s, $j - 1, $j) == " ") { $j = $j - 1 }
+  tant_que ($j > $i et $s[$j - 1] == " ") { $j = $j - 1 }
   retour sous_chaine($s, $i, $j)
 }
 fn parse_noms($p: entier, $tend: entier) -> entier {
@@ -5327,7 +5327,7 @@ fn parse_rir($txt: chaine) -> entier {
   $i = 0
   $nl = longueur($txt)
   tant_que ($i < $nl) {
-    $c = sous_chaine($txt, $i, $i + 1)
+    $c = $txt[$i]
     si ($c == "\n") { joindre($lines, $cur); $cur = "" } sinon { $cur = $cur + $c }
     $i = $i + 1
   }
@@ -10872,7 +10872,7 @@ fn rep_tokens($s: chaine) -> liste<chaine> {
   $i = 0
   $n = longueur($s)
   tant_que ($i < $n) {
-    $c = sous_chaine($s, $i, $i + 1)
+    $c = $s[$i]
     si ($c == " " ou $c == "\t" ou $c == "\n" ou $c == "\r") { $i = $i + 1 }
     sinon si ($c == "\"") {
       $j = $i + 1
@@ -11182,7 +11182,7 @@ fn rep_split_lines($s: chaine) -> liste<chaine> {
   $i = 0
   $n = longueur($s)
   tant_que ($i < $n) {
-    $c = sous_chaine($s, $i, $i + 1)
+    $c = $s[$i]
     si ($c == "\n") { joindre($r, $cur); $cur = "" }
     sinon si ($c != "\r") { $cur = $cur + $c }
     $i = $i + 1
@@ -16686,7 +16686,7 @@ fn js_lignes($s: chaine) -> liste<chaine> {
   $i = 0
   $n = longueur($s)
   tant_que ($i < $n) {
-    $c = sous_chaine($s, $i, $i + 1)
+    $c = $s[$i]
     si ($c == "\n") { joindre($r, $buf); $buf = "" }
     sinon si ($c != "\r") { $buf = $buf + $c }
     $i = $i + 1
@@ -16701,7 +16701,7 @@ fn js_tokens($s: chaine) -> liste<chaine> {
   $i = 0
   $n = longueur($s)
   tant_que ($i < $n) {
-    $c = sous_chaine($s, $i, $i + 1)
+    $c = $s[$i]
     si ($c == "(" ou $c == ")" ou $c == " " ou $c == "\t") {
       si (longueur($buf) > 0) { joindre($r, $buf); $buf = "" }
       si ($c == "(" ou $c == ")") { joindre($r, $c) }
@@ -17261,6 +17261,79 @@ fn js_run($rir: chaine) -> entier {
 }
 
 
+
+# ── cache disque du RIR : clé = empreinte du texte source ───────────────
+# Le front-end (lexage, repli de constantes, émission RIR) est refait à
+# chaque lancement. Pour un fichier inchangé on réutilise le RIR déjà produit.
+# Deux empreintes 32 bits indépendantes + la longueur forment la clé : toute
+# modification d'un octet du source change le chemin du cache. Les programmes
+# avec `importer` sont exclus (leur RIR dépend aussi des fichiers importés).
+# Le nom du cache porte une version : un moteur différent ne réutilise pas
+# un RIR produit par une autre version.
+fn mc_hashes($src: chaine) -> chaine {
+  $n = longueur($src)
+  $h1 = 2166136261
+  $h2 = 5381
+  $i = 0
+  tant_que ($i < $n) {
+    $c = ordre($src[$i])
+    $h1 = (($h1 + $c) * 16777619) % 4294967296
+    $h2 = (($h2 * 33) + $c) % 4294967296
+    $i = $i + 1
+  }
+  retour chaine($h1) + "-" + chaine($h2) + "-" + chaine($n)
+}
+fn mc_cache_chemin($src: chaine) -> chaine {
+  si (g4_pos($src, "importer") >= 0) { retour "" }
+  retour "/tmp/opencode/rircache_v2front1_" + mc_hashes($src) + ".rir"
+}
+
+
+# ── Achèvement du repli constant ───────────────────────────────────────
+# Quand le RIR ne contient que des `afficher_abstrait entier <littéral>`,
+# le front-end a déjà fait tout le calcul : l'interpréteur n'a plus rien à
+# évaluer. On écrit directement les littéraux normalisés, sans construire
+# les tables de tokens ni parcourir les opcodes. Tout autre RIR (appel,
+# slot, flottant, boucle, fonction auxiliaire) suit la voie normale.
+fn mc_const_programme($rir: chaine) -> chaine {
+  $n = longueur($rir)
+  $lignes = [""]
+  $cur = ""
+  $i = 0
+  tant_que ($i <= $n) {
+    si ($i == $n ou $rir[$i] == "\n") {
+      joindre($lignes, $cur)
+      $cur = ""
+    } sinon { $cur = $cur + $rir[$i] }
+    $i = $i + 1
+  }
+  $out = ""
+  $nv = 0
+  $j = 1
+  $base = "afficher_abstrait entier "
+  $lb = longueur($base)
+  tant_que ($j < longueur($lignes)) {
+    $l = $lignes[$j]
+    si ($l == "rir" ou $l == "fonction $principal" ou $l == "  retour vide"
+        ou $l == "  n_slots 0" ou $l == "  noms" ou $l == "  ops") {
+      $j = $j + 1
+    } sinon {
+      $lc = trim($l)
+      si (longueur($lc) < 5 + $lb) { retour "" }
+      si (non digits_only(sous_chaine($lc, 0, 4))) { retour "" }
+      si (sous_chaine($lc, 4, 5) != " ") { retour "" }
+      $pay = sous_chaine($lc, 5, longueur($lc))
+      si (sous_chaine($pay, 0, $lb) != $base) { retour "" }
+      $v = bnorm(sous_chaine($pay, $lb, longueur($pay)))
+      si ($nv > 0) { $out = $out + "\n" }
+      $out = $out + $v
+      $nv = $nv + 1
+      $j = $j + 1
+    }
+  }
+  si ($nv == 0) { retour "" }
+  retour $out
+}
 
 # ══════════════════ POINT D'ENTRÉE UNIQUE ══════════════════
 # `cli_*` fournit les textes exacts de l'oracle 0.1.73 ; le dispatch ci-
@@ -18251,19 +18324,31 @@ si ($mc_n < $mc_idx + 1) {
   quitter(2)
 }
 $mc_chemin = argument($mc_idx)
-si (longueur(lire_texte($mc_chemin)) == 0) {
+$mc_src_txt = lire_texte($mc_chemin)
+si (longueur($mc_src_txt) == 0) {
   cli_err("rose: fichier introuvable : " + $mc_chemin)
   quitter(1)
 }
-$mc_res = lsrc_lire_programme($mc_chemin)
-si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
-  # Diagnostic : lsrc_lire_programme renvoie "ERR|<message>" alors que la
-  # voie normale renvoie "OK|<rir>". Le décalage est donc 4 (pas 3) et le
-  # message doit aller sur stderr, jamais sur stdout (miroir de cli_err).
-  cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
-  quitter(1)
+$mc_cache = mc_cache_chemin($mc_src_txt)
+$mc_rir = ""
+$mc_cached = ""
+si ($mc_cache != "") { $mc_cached = lire_texte($mc_cache) }
+si (longueur($mc_cached) > 4 et sous_chaine($mc_cached, 0, 4) == "rir\n") {
+  $mc_rir = $mc_cached
+} sinon {
+  $mc_res = lsrc_lire_programme($mc_chemin)
+  si (longueur($mc_res) < 3 ou sous_chaine($mc_res, 0, 3) != "OK|") {
+    cli_err(sous_chaine($mc_res, 4, longueur($mc_res)))
+    quitter(1)
+  }
+  $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+  si ($mc_cache != "") { ecrire_bytes($mc_cache, $mc_rir) }
 }
-$mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
+$mc_const = mc_const_programme($mc_rir)
+si (longueur($mc_const) > 0) {
+  >> $mc_const;
+  quitter(0)
+}
 # ── repli interprété + mémoïsation des fonctions pures ──────────────────
 parse_rir($mc_rir)
 # Analyse de pureté inutile si le programme n'a qu'une fonction ($principal).
