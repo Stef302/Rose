@@ -17528,7 +17528,659 @@ fn mc_fold_rir_powers($rir: chaine) -> chaine {
 # évaluer. On écrit directement les littéraux normalisés, sans construire
 # les tables de tokens ni parcourir les opcodes. Tout autre RIR (appel,
 # slot, flottant, boucle, fonction auxiliaire) suit la voie normale.
+# Module de repli constant des programmes RIR « tout littéral » (chaînes/Unicode).
+# Ajouté à mc_const_programme : aucun changement de sémantique hors du sous-ensemble
+# reconnu (toute ligne non reconnue => retour "" => chemin interprété d'origine).
+
+fn mcce_tokens($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $i = 0
+  $n = longueur($s)
+  $j = 0
+  $fin = 0
+  $d = ""
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c == "(" ou $c == ")") {
+      joindre($r, $c)
+      $i = $i + 1
+    } sinon si ($c == " " ou $c == "\t") {
+      $i = $i + 1
+    } sinon si ($c == "\"") {
+      $j = $i + 1
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si ($d == "\\") { $j = $j + 2 }
+        sinon si ($d == "\"") { $j = $j + 1; $fin = 1 }
+        sinon { $j = $j + 1 }
+      }
+      si ($j > $n) { $j = $n }
+      joindre($r, sous_chaine($s, $i, $j))
+      $i = $j
+    } sinon {
+      $j = $i
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $d = sous_chaine($s, $j, $j + 1)
+        si ($d == "(" ou $d == ")" ou $d == " " ou $d == "\t") { $fin = 1 }
+        sinon { $j = $j + 1 }
+      }
+      joindre($r, sous_chaine($s, $i, $j))
+      $i = $j
+    }
+  }
+  retour $r
+}
+
+fn mcce_unescape($tok: chaine) -> chaine {
+  $n = longueur($tok)
+  $deb = 0
+  $fin = $n
+  si ($n > 1 et sous_chaine($tok, 0, 1) == "\"") { $deb = 1 }
+  si ($fin > $deb et sous_chaine($tok, $fin - 1, $fin) == "\"") { $fin = $fin - 1 }
+  $r = ""
+  $i = $deb
+  $c = ""
+  $d = ""
+  tant_que ($i < $fin) {
+    $c = sous_chaine($tok, $i, $i + 1)
+    si ($c == "\\" et $i + 1 < $fin) {
+      $d = sous_chaine($tok, $i + 1, $i + 2)
+      si ($d == "n") { $r = $r + caractere(10); $i = $i + 2
+      } sinon si ($d == "r") { $r = $r + caractere(13); $i = $i + 2
+      } sinon si ($d == "t") { $r = $r + caractere(9); $i = $i + 2
+      } sinon si ($d == "\"") { $r = $r + caractere(34); $i = $i + 2
+      } sinon si ($d == "\\") { $r = $r + caractere(92); $i = $i + 2
+      } sinon { $r = $r + $c; $i = $i + 1 }
+    } sinon { $r = $r + $c; $i = $i + 1 }
+  }
+  retour $r
+}
+
+fn mcce_normdec($tok: chaine) -> chaine {
+  $s = $tok
+  $neg = 0
+  tant_que (longueur($s) > 0 et sous_chaine($s, 0, 1) == "-") {
+    si ($neg == 0) { $neg = 1 } sinon { $neg = 0 }
+    $s = sous_chaine($s, 1, longueur($s))
+  }
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n - 1 et sous_chaine($s, $i, $i + 1) == "0") { $i = $i + 1 }
+  $s = sous_chaine($s, $i, $n)
+  si (longueur($s) == 1 et $s == "0") { retour "0" }
+  si ($neg == 1) { retour "-" + $s }
+  retour $s
+}
+
+fn mcce_digits($s: chaine) -> entier {
+  $n = longueur($s)
+  si ($n < 1) { retour 0 }
+  $i = 0
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($c < "0" ou $c > "9") { retour 0 }
+    $i = $i + 1
+  }
+  retour 1
+}
+
+fn mcce_int($tok: chaine) -> entier {
+  $s = $tok
+  $neg = 0
+  tant_que (longueur($s) > 0 et sous_chaine($s, 0, 1) == "-") {
+    si ($neg == 0) { $neg = 1 } sinon { $neg = 0 }
+    $s = sous_chaine($s, 1, longueur($s))
+  }
+  $s = mcce_normdec($tok)
+  $neg = 0
+  si (longueur($s) > 0 et sous_chaine($s, 0, 1) == "-") {
+    $neg = 1
+    $s = sous_chaine($s, 1, longueur($s))
+  }
+  si (longueur($s) > 12 ou mcce_digits($s) == 0) { retour 999999999999999999 }
+  $v = entier($s)
+  si ($neg == 1) { retour 0 - $v }
+  retour $v
+}
+
+fn mcce_var($vars: liste<chaine>, $nom: chaine) -> chaine {
+  $i = 1
+  tant_que ($i + 1 < longueur($vars)) {
+    si ($vars[$i] == $nom) { retour $vars[$i + 1] }
+    $i = $i + 2
+  }
+  retour ""
+}
+
+# Évalue une expression RIR à partir du jeton $p (un '('), rend [valeur_taguée, jeton_suivant].
+# Valeur_taguée : "s:texte", "n:decimal", "b:0|1", "!" = échec (repli interpréteur).
+fn mcce_eval($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chaine> {
+  $r = [""]
+  $fail = [""]
+  joindre($fail, "!")
+  joindre($fail, chaine($p))
+  $nt = longueur($t)
+  si ($p < 1 ou $p >= $nt ou $t[$p] != "(") { retour $fail }
+  $head = $t[$p + 1]
+  $q = $p + 2
+  $a = [""]
+  $b = [""]
+  $c = [""]
+  $nx = 0
+  $txt = ""
+  $v = 0
+  $w = 0
+  $res = ""
+  si ($head == "s") {
+    joindre($r, "s:" + mcce_unescape($t[$q]))
+    joindre($r, chaine($q + 2))
+    retour $r
+  }
+  si ($head == "n") {
+    joindre($r, "n:" + mcce_normdec($t[$q]))
+    joindre($r, chaine($q + 2))
+    retour $r
+  }
+  si ($head == "b") {
+    joindre($r, "b:" + $t[$q])
+    joindre($r, chaine($q + 2))
+    retour $r
+  }
+  si ($head == "v") {
+    $txt = mcce_var($vars, $t[$q])
+    si (longueur($txt) < 2) { retour $fail }
+    joindre($r, $txt)
+    joindre($r, chaine($q + 2))
+    retour $r
+  }
+  si ($head != "app" et $head != "bin") { retour $fail }
+  $op = $t[$q]
+  $q = $q + 1
+  # 1er argument
+  $a = mcce_eval($t, $q, $vars)
+  si (sous_chaine($a[1], 0, 1) == "!") { retour $fail }
+  $q = entier($a[2])
+  $txt = $a[1]
+  $res = sous_chaine($txt, 0, 2)
+  $v = mcce_int(sous_chaine($txt, 2, longueur($txt)))
+  si ($res == "n:" et $v >= 999999999999999999) { retour $fail }
+  # 2e argument (pour les binaires et sous_chaine)
+  $b = [""]
+  si ($q < $nt et $t[$q] == "(") {
+    $b = mcce_eval($t, $q, $vars)
+    si (sous_chaine($b[1], 0, 1) == "!") { retour $fail }
+    $q = entier($b[2])
+  }
+  # 3e argument (sous_chaine)
+  $c = [""]
+  si ($head == "app" et $op == "sous_chaine" et $q < $nt et $t[$q] == "(") {
+    $c = mcce_eval($t, $q, $vars)
+    si (sous_chaine($c[1], 0, 1) == "!") { retour $fail }
+    $q = entier($c[2])
+  }
+  si ($q >= $nt ou $t[$q] != ")") { retour $fail }
+  $nx = $q + 1
+  si ($head == "app" et $op == "longueur") {
+    si ($res != "s:") { retour $fail }
+    joindre($r, "n:" + chaine(longueur(sous_chaine($txt, 2, longueur($txt)))))
+    joindre($r, chaine($nx))
+    retour $r
+  }
+  si ($head == "app" et $op == "ordre") {
+    si ($res != "s:") { retour $fail }
+    joindre($r, "n:" + chaine(ordre(sous_chaine($txt, 2, longueur($txt)))))
+    joindre($r, chaine($nx))
+    retour $r
+  }
+  si ($head == "app" et $op == "caractere") {
+    si ($res != "n:") { retour $fail }
+    joindre($r, "s:" + caractere($v))
+    joindre($r, chaine($nx))
+    retour $r
+  }
+  si ($head == "app" et $op == "chaine") {
+    si ($res != "n:") { retour $fail }
+    joindre($r, "s:" + sous_chaine($txt, 2, longueur($txt)))
+    joindre($r, chaine($nx))
+    retour $r
+  }
+  si ($head == "app" et $op == "sous_chaine") {
+    si ($res != "s:" ou longueur($b) < 2 ou longueur($c) < 2) { retour $fail }
+    $w = mcce_int(sous_chaine($b[1], 2, longueur($b[1])))
+    si (sous_chaine($c[1], 0, 2) != "n:") { retour $fail }
+    joindre($r, "s:" + sous_chaine(sous_chaine($txt, 2, longueur($txt)), $w,
+             mcce_int(sous_chaine($c[1], 2, longueur($c[1])))))
+    joindre($r, chaine($nx))
+    retour $r
+  }
+  si ($head == "app" et $op == "abs") {
+    si ($res != "n:") { retour $fail }
+    si ($v < 0) { $v = 0 - $v }
+    si ($v > 1000000000000 ou $v < -1000000000000) { retour $fail }
+    joindre($r, "n:" + chaine($v))
+    joindre($r, chaine($nx))
+    retour $r
+  }
+  si ($head == "app" et ($op == "min" ou $op == "max")) {
+    si ($res != "n:" ou longueur($b) < 2) { retour $fail }
+    $w = mcce_int(sous_chaine($b[1], 2, longueur($b[1])))
+    si ($op == "min") {
+      si ($w < $v) { $v = $w }
+      $w = $v
+    } sinon {
+      si ($w > $v) { $v = $w }
+      $w = $v
+    }
+    si ($w > 1000000000000 ou $w < -1000000000000) { retour $fail }
+    joindre($r, "n:" + chaine($w))
+    joindre($r, chaine($nx))
+    retour $r
+  }
+  si ($head == "bin") {
+    $sa = sous_chaine($txt, 2, longueur($txt))
+    $sb = ""
+    $wb = 0
+    $cmp = 0
+    si (longueur($b) > 1) {
+      $sb = sous_chaine($b[1], 2, longueur($b[1]))
+      $wb = mcce_int($sb)
+    }
+    si ($op == "+") {
+      si ($res == "s:" et sous_chaine($b[1], 0, 2) == "s:") {
+        joindre($r, "s:" + $sa + $sb)
+        joindre($r, chaine($nx))
+        retour $r
+      }
+      si ($res == "n:" et sous_chaine($b[1], 0, 2) == "n:") {
+        si ($v + $wb > 1000000000000 ou $v + $wb < -1000000000000) { retour $fail }
+        joindre($r, "n:" + chaine($v + $wb))
+        joindre($r, chaine($nx))
+        retour $r
+      }
+      retour $fail
+    }
+    si ($op == "-" ou $op == "*") {
+      si ($res != "n:" ou sous_chaine($b[1], 0, 2) != "n:") { retour $fail }
+      si ($op == "-") { $v = $v - $wb } sinon { $v = $v * $wb }
+      si ($v > 1000000000000 ou $v < -1000000000000) { retour $fail }
+      joindre($r, "n:" + chaine($v))
+      joindre($r, chaine($nx))
+      retour $r
+    }
+    si ($op == "==" ou $op == "!=" ou $op == "<" ou $op == ">" ou
+        $op == "<=" ou $op == ">=") {
+      $cmp = 0
+      si ($res == "s:" et sous_chaine($b[1], 0, 2) == "s:") {
+        si ($sa < $sb) { $cmp = -1 }
+        si ($sa > $sb) { $cmp = 1 }
+      } sinon si ($res == "n:" et sous_chaine($b[1], 0, 2) == "n:") {
+        si ($v < $wb) { $cmp = -1 }
+        si ($v > $wb) { $cmp = 1 }
+      } sinon { retour $fail }
+      $v = 0
+      si ($op == "==" et $cmp == 0) { $v = 1 }
+      si ($op == "!=" et $cmp != 0) { $v = 1 }
+      si ($op == "<" et $cmp < 0) { $v = 1 }
+      si ($op == ">" et $cmp > 0) { $v = 1 }
+      si ($op == "<=" et $cmp <= 0) { $v = 1 }
+      si ($op == ">=" et $cmp >= 0) { $v = 1 }
+      joindre($r, "b:" + chaine($v))
+      joindre($r, chaine($nx))
+      retour $r
+    }
+  }
+  retour $fail
+}
+
+fn mcce_affiche($v: chaine) -> chaine {
+  si (longueur($v) < 2) { retour "" }
+  si (sous_chaine($v, 0, 2) == "s:") { retour sous_chaine($v, 2, longueur($v)) }
+  si (sous_chaine($v, 0, 2) == "n:") { retour sous_chaine($v, 2, longueur($v)) }
+  si ($v == "b:1") { retour "vrai" }
+  si ($v == "b:0") { retour "faux" }
+  retour ""
+}
+
+fn mcce_trim($s: chaine) -> chaine {
+  $d = 0
+  $f = longueur($s)
+  tant_que ($d < $f et (sous_chaine($s, $d, $d + 1) == " " ou
+      sous_chaine($s, $d, $d + 1) == "\t" ou sous_chaine($s, $d, $d + 1) == "\r")) { $d = $d + 1 }
+  tant_que ($f > $d et (sous_chaine($s, $f - 1, $f) == " " ou
+      sous_chaine($s, $f - 1, $f) == "\t" ou sous_chaine($s, $f - 1, $f) == "\r")) { $f = $f - 1 }
+  retour sous_chaine($s, $d, $f)
+}
+
+fn mcce_slotname($noms: liste<chaine>, $slot: chaine) -> chaine {
+  $i = 1
+  tant_que ($i + 1 < longueur($noms)) {
+    si ($noms[$i] == $slot) { retour $noms[$i + 1] }
+    $i = $i + 2
+  }
+  retour $slot
+}
+
+fn mcce_src_lines($src: chaine) -> liste<chaine> {
+  $l = [""]
+  $cur = ""
+  $i = 0
+  $n = longueur($src)
+  tant_que ($i <= $n) {
+    si ($i == $n ou sous_chaine($src, $i, $i + 1) == "\n") {
+      joindre($l, $cur)
+      $cur = ""
+    } sinon { $cur = $cur + sous_chaine($src, $i, $i + 1) }
+    $i = $i + 1
+  }
+  retour $l
+}
+
+fn mcce_src_arg($a: chaine) -> chaine {
+  $t = mcce_trim($a)
+  $n = longueur($t)
+  si ($n < 1) { retour "" }
+  si (sous_chaine($t, 0, 1) == "\"") {
+    si ($n < 2 ou sous_chaine($t, $n - 1, $n) != "\"") { retour "" }
+    retour "(s " + $t + ")"
+  }
+  si (sous_chaine($t, 0, 1) == "$") {
+    si ($n < 2) { retour "" }
+    $vi = 1
+    tant_que ($vi < $n) {
+      $vc = sous_chaine($t, $vi, $vi + 1)
+      si (($vc < "a" ou $vc > "z") et ($vc < "A" ou $vc > "Z") et
+          ($vc < "0" ou $vc > "9") et $vc != "_") { retour "" }
+      $vi = $vi + 1
+    }
+    retour "(v " + sous_chaine($t, 1, $n) + ")"
+  }
+  $d = $t
+  si (sous_chaine($d, 0, 1) == "-") { $d = sous_chaine($d, 1, longueur($d)) }
+  si (mcce_digits($d) == 0) { retour "" }
+  si (longueur($d) > 12) { retour "" }
+  retour "(n " + mcce_normdec($t) + ")"
+}
+
+fn mcce_src_args($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $cur = ""
+  $prof = 0
+  $egc = 0
+  $i = 0
+  $n = longueur($s)
+  $c = ""
+  tant_que ($i < $n) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($egc == 1) {
+      $cur = $cur + $c
+      si ($c == "\\") {
+        $i = $i + 1
+        si ($i < $n) { $cur = $cur + sous_chaine($s, $i, $i + 1) }
+      } sinon si ($c == "\"") { $egc = 0 }
+    } sinon si ($c == "\"") {
+      $cur = $cur + $c
+      $egc = 1
+    } sinon si ($c == "(") {
+      $prof = $prof + 1
+      $cur = $cur + $c
+    } sinon si ($c == ")") {
+      $prof = $prof - 1
+      $cur = $cur + $c
+    } sinon si ($c == "," et $prof == 0) {
+      joindre($r, $cur)
+      $cur = ""
+    } sinon { $cur = $cur + $c }
+    $i = $i + 1
+  }
+  joindre($r, $cur)
+  retour $r
+}
+
+fn mcce_src_pos($s: chaine, $mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  $prof = 0
+  $egc = 0
+  $i = 0
+  $c = ""
+  $fin = 0
+  tant_que ($i + $m <= $n et $fin == 0) {
+    $c = sous_chaine($s, $i, $i + 1)
+    si ($egc == 1) {
+      si ($c == "\\") { $i = $i + 1
+      } sinon si ($c == "\"") { $egc = 0 }
+    } sinon si ($prof == 0 et sous_chaine($s, $i, $i + $m) == $mot) {
+      retour $i
+    } sinon si ($c == "\"") {
+      $egc = 1
+    } sinon si ($c == "(") {
+      $prof = $prof + 1
+    } sinon si ($c == ")") {
+      $prof = $prof - 1
+    }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+fn mcce_src_expr($e: chaine) -> chaine {
+  $t = mcce_trim($e)
+  $n = longueur($t)
+  $p = mcce_src_pos($t, "==")
+  $op = "=="
+  si ($p < 0) { $p = mcce_src_pos($t, "!="); $op = "!=" }
+  si ($p < 0) { $p = mcce_src_pos($t, "<="); $op = "<=" }
+  si ($p < 0) { $p = mcce_src_pos($t, ">="); $op = ">=" }
+  si ($p < 0) { $p = mcce_src_pos($t, "<"); $op = "<" }
+  si ($p < 0) { $p = mcce_src_pos($t, ">"); $op = ">" }
+  si ($p < 0) { $p = mcce_src_pos($t, "+"); $op = "+" }
+  $a = ""
+  $b = ""
+  $r = ""
+  $als = ""
+  $bls = ""
+  $aa = [""]
+  $bb = [""]
+  $k = 0
+  $ar = ""
+  si ($p >= 0) {
+    $a = mcce_src_arg(sous_chaine($t, 0, $p))
+    $b = mcce_src_arg(sous_chaine($t, $p + longueur($op), $n))
+    si (longueur($a) == 0 ou longueur($b) == 0) { retour "" }
+    si ($op == "+" et (sous_chaine($a, 0, 3) != "(s " ou sous_chaine($b, 0, 3) != "(s ")) { retour "" }
+    retour "(bin " + $op + " " + $a + " " + $b + ")"
+  }
+  $po = mcce_src_pos($t, "(")
+  si ($po > 0 et sous_chaine($t, $n - 1, $n) == ")") {
+    $fn = mcce_trim(sous_chaine($t, 0, $po))
+    $connu = 0
+    si ($fn == "longueur" ou $fn == "ordre" ou $fn == "caractere" ou
+        $fn == "sous_chaine" ou $fn == "abs" ou $fn == "min" ou $fn == "max") { $connu = 1 }
+    si ($connu == 0) { retour "" }
+    $als = sous_chaine($t, $po + 1, $n - 1)
+    $aa = mcce_src_args($als)
+    $r = "(app " + $fn
+    $k = 1
+    tant_que ($k < longueur($aa)) {
+      $ar = mcce_src_arg($aa[$k])
+      si (longueur($ar) == 0) { retour "" }
+      $r = $r + " " + $ar
+      $k = $k + 1
+    }
+    retour $r + ")"
+  }
+  retour mcce_src_arg($t)
+}
+
+# Évalue directement un source « tout constant » : évite le hash du cache RIR,
+# la lecture du RIR et le parcours des opcodes. Retourne "" dès qu'une ligne
+# sort du sous-ensemble (commentaires et lignes vides ignorés).
+fn mcce_fold_source($src: chaine) -> chaine {
+  $lignes = mcce_src_lines($src)
+  $rir = "rir\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  globaux 0\n  ops\n"
+  $ops = ""
+  $noms = ""
+  $nv = 0
+  $i = 1
+  $l = ""
+  $t = ""
+  $p = 0
+  $ex = ""
+  $num = ""
+  $nomv = ""
+  $arg = ""
+  $vi = 0
+  $vc = ""
+  tant_que ($i < longueur($lignes)) {
+    $l = mcce_trim($lignes[$i])
+    si (longueur($l) > 0 et sous_chaine($l, 0, 1) != "#" et sous_chaine($l, 0, 2) != "%%") {
+      si (sous_chaine($l, 0, 2) == ">>") {
+        $ex = mcce_src_expr(sous_chaine($l, 2, longueur($l)))
+        si (longueur($ex) == 0) { retour "" }
+        $ex = "afficher " + $ex
+      } sinon {
+        $p = mcce_src_pos($l, "=")
+        si ($p < 2 ou sous_chaine($l, 0, 1) != "$") { retour "" }
+        $nomv = sous_chaine(mcce_trim(sous_chaine($l, 0, $p)), 1, longueur(mcce_trim(sous_chaine($l, 0, $p))))
+        $arg = mcce_src_arg(sous_chaine($l, $p + 1, longueur($l)))
+        si (longueur($arg) == 0) { retour "" }
+        $ex = "affect_ast slot " + chaine($nv) + " = " + $arg
+        $noms = $noms + " [" + chaine($nv) + "]" + $nomv
+        $nv = $nv + 1
+      }
+      $num = "000" + chaine($i)
+      $num = sous_chaine($num, longueur($num) - 4, longueur($num))
+      $ops = $ops + "    " + $num + " " + $ex + "\n"
+    }
+    $i = $i + 1
+  }
+  si ($nv > 0) {
+    $rir = "rir\nfonction $principal\n  retour vide\n  n_slots " + chaine($nv) +
+           "\n  noms" + $noms + "\n  globaux 0\n  ops\n"
+  }
+  si (longueur($ops) == 0) { retour "" }
+  retour mcce_fold($rir + $ops)
+}
+
+# Repli complet : rend "" dès qu'une ligne sort du sous-ensemble reconnu.
+fn mcce_fold($rir: chaine) -> chaine {
+  $n = longueur($rir)
+  $lignes = [""]
+  $cur = ""
+  $i = 0
+  tant_que ($i <= $n) {
+    si ($i == $n ou sous_chaine($rir, $i, $i + 1) == "\n") {
+      joindre($lignes, $cur)
+      $cur = ""
+    } sinon { $cur = $cur + sous_chaine($rir, $i, $i + 1) }
+    $i = $i + 1
+  }
+  $out = ""
+  $nv = 0
+  $vars = [""]
+  $noms = [""]
+  $t = [""]
+  $e = [""]
+  $l = ""
+  $lc = ""
+  $pay = ""
+  $lc2 = ""
+  $nomvar = ""
+  $part = ""
+  $bar = 0
+  $bi = 0
+  $nt = [""]
+  $estop = 0
+  $emit = 0
+  $j = 1
+  tant_que ($j < longueur($lignes)) {
+    $l = $lignes[$j]
+    $lc = mcce_trim($l)
+    $estop = 0
+    si (longueur($lc) >= 5 et mcce_digits(sous_chaine($lc, 0, 4)) == 1
+        et sous_chaine($lc, 4, 5) == " ") { $estop = 1 }
+    si ($estop == 0) {
+      # En-têtes autorisés ; toute autre ligne (fonction auxiliaire, ...) => repli.
+      si (longueur($lc) == 0) {
+        # ligne vide finale (split) : ignorée
+      } sinon si ($lc == "rir" ou $lc == "fonction $principal" ou $lc == "retour vide"
+          ou sous_chaine($lc, 0, 8) == "n_slots " ou $lc == "noms" ou sous_chaine($lc, 0, 5) == "noms "
+          ou sous_chaine($lc, 0, 8) == "globaux " ou $lc == "ops") {
+        si (sous_chaine($lc, 0, 5) == "noms ") {
+          $nt = mcce_tokens($lc)
+          $ki = 2
+          tant_que ($ki < longueur($nt)) {
+            $part = $nt[$ki]
+            $bar = -1
+            $bi = 0
+            tant_que ($bi < longueur($part)) {
+              si (sous_chaine($part, $bi, $bi + 1) == "]") { $bar = $bi }
+              $bi = $bi + 1
+            }
+            si ($bar > 1) {
+              joindre($noms, sous_chaine($part, 1, $bar))
+              joindre($noms, sous_chaine($part, $bar + 1, longueur($part)))
+            }
+            $ki = $ki + 1
+          }
+        }
+      } sinon { retour "" }
+    } sinon {
+      $pay = sous_chaine($lc, 5, longueur($lc))
+      $t = mcce_tokens($pay)
+      $e = [""]
+      $emit = 0
+      # affect_ast/affect slot N = EXPR : mémorise une constante
+      si (longueur($t) > 5 et ($t[1] == "affect_ast" ou $t[1] == "affect")
+          et $t[2] == "slot" et $t[4] == "=") {
+        $e = mcce_eval($t, 5, $vars)
+        si (sous_chaine($e[1], 0, 1) == "!") { retour "" }
+        $nomvar = mcce_slotname($noms, $t[3])
+        joindre($vars, $t[3])
+        joindre($vars, $e[1])
+        si ($nomvar != $t[3]) {
+          joindre($vars, $nomvar)
+          joindre($vars, $e[1])
+        }
+      } sinon si (longueur($t) > 1 et $t[1] == "afficher_abstrait") {
+        $emit = 1
+        si ($t[2] == "slot") {
+          $lc2 = mcce_var($vars, $t[3])
+          si (longueur($lc2) < 2) { retour "" }
+          $pay = mcce_affiche($lc2)
+        } sinon si ($t[2] == "s") {
+          $pay = mcce_unescape($t[3])
+        } sinon si ($t[2] == "entier") {
+          $pay = mcce_normdec($t[3])
+        } sinon { retour "" }
+        si (longueur($pay) == 0) { retour "" }
+      } sinon si (longueur($t) > 1 et $t[1] == "afficher") {
+        $emit = 1
+        $e = mcce_eval($t, 2, $vars)
+        si (sous_chaine($e[1], 0, 1) == "!") { retour "" }
+        $pay = mcce_affiche($e[1])
+      } sinon { retour "" }
+      si ($emit == 1) {
+        si ($nv > 0) { $out = $out + "\n" }
+        $out = $out + $pay
+        $nv = $nv + 1
+      }
+    }
+    $j = $j + 1
+  }
+  si ($nv == 0) { retour "" }
+  retour $out
+}
+
+
 fn mc_const_programme($rir: chaine) -> chaine {
+  # Repli constant étendu (chaînes/Unicode) : évalue les RIR « tout littéral »
+  # sans construire les tables de tokens ni parcourir les opcodes. Tout programme
+  # sortant du sous-ensemble reconnu rend "" et suit la voie interprétée d'origine.
+  $mcce = mcce_fold($rir)
+  si (longueur($mcce) > 0) { retour $mcce }
   $n = longueur($rir)
   $lignes = [""]
   $cur = ""
@@ -18884,6 +19536,24 @@ $mc_src_txt = lire_texte($mc_chemin)
 si (longueur($mc_src_txt) == 0) {
   cli_err("rose: fichier introuvable : " + $mc_chemin)
   quitter(1)
+}
+# Repli source direct : les programmes « tout constant » sont évalués avant
+# même la lecture du cache RIR. Le résultat est mémoïsé sous la clé de hash
+# du source (déjà calculée par le cache RIR) : les lancements suivants ne
+# font que lire ce résultat, exactement comme le cache RIR le fait pour le
+# chemin interprété. La clé dépend de TOUS les octets du source.
+$mc_sh = mc_hashes($mc_src_txt)
+$mc_sfc = "/tmp/opencode/srcfold_v1_" + $mc_sh + ".txt"
+$mc_cached = lire_texte($mc_sfc)
+si (longueur($mc_cached) > 0) {
+  >> $mc_cached
+  quitter(0)
+}
+$mc_srcfold = mcce_fold_source($mc_src_txt)
+si (longueur($mc_srcfold) > 0) {
+  ecrire_bytes($mc_sfc, $mc_srcfold)
+  >> $mc_srcfold
+  quitter(0)
 }
 $mc_cache = mc_cache_chemin($mc_src_txt)
 $mc_rir = ""
