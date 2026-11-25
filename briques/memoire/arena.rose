@@ -1,0 +1,339 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# arena.rose — ALLOCATEUR DÉTERMINISTE + CARTE DE TRANSLATION, EN ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique B4 universelle. Aucun nom de CPU, d'OS, de contrôleur, de page
+# matérielle ni de format de table de pages. `base` est un entier LOGIQUE,
+# pas une adresse physique supposée. Rien n'est mappé, rien n'est protégé,
+# rien n'est alloué implicitement : tout est une donnée explicite.
+#
+# MODÈLE — l'état EST une `liste<entier>` :
+#
+#   index 0  : base logique (origine des décalages, jamais une adresse machine)
+#   index 1  : taille totale logique
+#   index 2  : pointeur libre `bump` (décalage du prochain octet jamais utilisé)
+#   index 3  : nombre de blocs créés (le ID d'un bloc = sa position 0-based)
+#   index 4  : nombre total d'allocations (cumulatif)
+#   index 5  : nombre total de libérations (cumulatif)
+#   index 6  : nombre total de compactages (cumulatif)
+#   index 7  : dernier bloc rendu par arena_allouer (-1 si aucun / échec)
+#   index 8  : dernier statut (0 = succès, -1 = échec)
+#   index 9  : dernier gain de compaction (octets logiques récupérés)
+#   index 10+: descripteurs de blocs, 3 entiers chacun :
+#              [debut, longueur, etat]   etat : 0 = libre, 1 = occupé
+#
+# Les blocs sont identifiés par un ENTIER stable (leur position). La
+# compaction déplace les données mais PAS les identifiants : `arena_liberer`
+# reste valable après `arena_compassion`.
+#
+# CONVENTION FONCTIONNELLE (Rose n'a pas d'écriture indexable fiable sur une
+# liste en G5) : chaque opération rend un NOUVEL état. L'appelant reprend
+# explicitement cet état : `$a = arena_allouer($a, 8)`. Aucune mutation
+# cachée, aucun GC, aucun `malloc` : l'allocation est une valeur de retour.
+#
+# Se concatène avec le programme (Rose n'a pas de `importer`) :
+#   cat briques/memoire/arena.rose mon_noyau.rose > /tmp/prog.rose
+#   /tmp/opencode/C0_h.elf /tmp/prog.rose > /tmp/prog.elf
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia ───────────────────────────────────────────────────────────
+
+# Écriture explicite d'une case d'une liste d'entiers, avec croissance si
+# besoin. `l` n'est JAMAIS modifié : on reconstruit une liste neuve.
+# Rose n'a pas de littéral `[]` : la première case sert de porte-type.
+fn am_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $m = $n
+  si ($idx >= $m) { $m = $idx + 1 }
+  $x0 = 0
+  si ($n > 0) { $x0 = l[0] }
+  si ($idx == 0) { $x0 = v }
+  $r = [$x0]
+  $k = 1
+  tant_que ($k < $m) {
+    $x = 0
+    si ($k < $n) { $x = l[$k] }
+    si ($k == $idx) { $x = v }
+    joindre($r, $x)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Copie indépendante d'une liste d'entiers (sauvegarde sans aliasing).
+fn am_copie(l: liste<entier>) -> liste<entier> {
+  $r = [l[0]]
+  $k = 1
+  tant_que ($k < longueur(l)) {
+    joindre($r, l[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Concaténation explicite de deux listes d'entiers.
+fn am_joint(a: liste<entier>, b: liste<entier>) -> liste<entier> {
+  $r = am_copie($a)
+  $k = 0
+  tant_que ($k < longueur(b)) {
+    joindre($r, b[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn am_idx_debut(bloc: entier) -> entier { retour 10 + 3 * $bloc }
+fn am_idx_longueur(bloc: entier) -> entier { retour 11 + 3 * $bloc }
+fn am_idx_etat(bloc: entier) -> entier { retour 12 + 3 * $bloc }
+
+# ── 1. Construction ────────────────────────────────────────────────────────
+
+# `base` = origine logique, `taille` = capacité logique. Aucune adresse
+# physique n'est supposée : un noyau traduira `base + debut` via sa carte.
+fn arena_nouvelle(base: entier, taille: entier) -> liste<entier> {
+  $r = [$base]
+  joindre($r, $taille)
+  joindre($r, 0)    # bump
+  joindre($r, 0)    # nombre de blocs
+  joindre($r, 0)    # n_alloc
+  joindre($r, 0)    # n_libere
+  joindre($r, 0)    # n_compact
+  joindre($r, -1)   # dernier bloc
+  joindre($r, 0)    # statut
+  joindre($r, 0)    # dernier gain
+  retour $r
+}
+
+# ── 2. Lecture des champs (tout est `entier`, jamais `?`) ──────────────────
+
+fn arena_base(a: liste<entier>) -> entier { retour a[0] }
+fn arena_taille(a: liste<entier>) -> entier { retour a[1] }
+fn arena_bump(a: liste<entier>) -> entier { retour a[2] }
+fn arena_nb_blocs(a: liste<entier>) -> entier { retour a[3] }
+fn arena_allocs(a: liste<entier>) -> entier { retour a[4] }
+fn arena_liberes(a: liste<entier>) -> entier { retour a[5] }
+fn arena_compactions(a: liste<entier>) -> entier { retour a[6] }
+fn arena_dernier_bloc(a: liste<entier>) -> entier { retour a[7] }
+fn arena_statut(a: liste<entier>) -> entier { retour a[8] }
+fn arena_gain(a: liste<entier>) -> entier { retour a[9] }
+
+fn arena_debut(a: liste<entier>, bloc: entier) -> entier {
+  retour a[am_idx_debut($bloc)]
+}
+fn arena_longueur(a: liste<entier>, bloc: entier) -> entier {
+  retour a[am_idx_longueur($bloc)]
+}
+fn arena_etat(a: liste<entier>, bloc: entier) -> entier {
+  retour a[am_idx_etat($bloc)]
+}
+
+# Adresse logique (base + décalage) d'un bloc. Ce n'est PAS une adresse
+# physique : la brique carte fait la translation.
+fn arena_adresse_logique(a: liste<entier>, bloc: entier) -> entier {
+  retour a[0] + a[am_idx_debut($bloc)]
+}
+
+# ── 3. Allocation déterministe (first-fit, puis bump) ──────────────────────
+
+# Stratégie figée, reproductible, sans hasard ni GC :
+#   1. balayage des blocs libres par ID croissant ; premier assez grand sert ;
+#      s'il est plus grand que demandé, le RESTE devient un nouveau bloc libre.
+#   2. sinon, allocation au bout du bump si la capacité le permet.
+#   3. sinon, échec (statut -1, dernier bloc -1), aucun état modifié.
+fn arena_allouer(a: liste<entier>, n: entier) -> liste<entier> {
+  $s = am_copie($a)
+  $nb = $s[3]
+  $choisi = -1
+  $ancienne_longueur = 0
+  $ancien_debut = 0
+  si ($n > 0) {
+    $id = 0
+    tant_que ($id < $nb) {
+      $etat = $s[am_idx_etat($id)]
+      $lg = $s[am_idx_longueur($id)]
+      si ($etat == 0 et $lg >= $n et $choisi == -1) {
+        $choisi = $id
+        $ancienne_longueur = $lg
+        $ancien_debut = $s[am_idx_debut($id)]
+      }
+      $id = $id + 1
+    }
+  }
+
+  si ($choisi >= 0) {
+    $s = am_set($s, am_idx_longueur($choisi), $n)
+    $s = am_set($s, am_idx_etat($choisi), 1)
+    $reste = $ancienne_longueur - $n
+    si ($reste > 0) {
+      $nouvel_id = $nb
+      $s = am_set($s, am_idx_debut($nouvel_id), $ancien_debut + $n)
+      $s = am_set($s, am_idx_longueur($nouvel_id), $reste)
+      $s = am_set($s, am_idx_etat($nouvel_id), 0)
+      $s = am_set($s, 3, $nb + 1)
+    }
+    $s = am_set($s, 4, $s[4] + 1)
+    $s = am_set($s, 7, $choisi)
+    $s = am_set($s, 8, 0)
+  } sinon {
+    si ($n > 0 et $s[2] + $n <= $s[1]) {
+      $id = $nb
+      $s = am_set($s, am_idx_debut($id), $s[2])
+      $s = am_set($s, am_idx_longueur($id), $n)
+      $s = am_set($s, am_idx_etat($id), 1)
+      $s = am_set($s, 2, $s[2] + $n)
+      $s = am_set($s, 3, $nb + 1)
+      $s = am_set($s, 4, $s[4] + 1)
+      $s = am_set($s, 7, $id)
+      $s = am_set($s, 8, 0)
+    } sinon {
+      $s = am_set($s, 7, -1)
+      $s = am_set($s, 8, -1)
+    }
+  }
+  retour $s
+}
+
+# ── 4. Libération explicite ────────────────────────────────────────────────
+
+# `bloc` est un ID stable. Libérer deux fois un bloc déjà libre est un
+# échec explicite (statut -1), pas une double remise dans une free-list.
+fn arena_liberer(a: liste<entier>, bloc: entier) -> liste<entier> {
+  $s = am_copie($a)
+  $nb = $s[3]
+  si ($bloc >= 0 et $bloc < $nb et $s[am_idx_etat($bloc)] == 1) {
+    $s = am_set($s, am_idx_etat($bloc), 0)
+    $s = am_set($s, 5, $s[5] + 1)
+    $s = am_set($s, 8, 0)
+  } sinon {
+    $s = am_set($s, 8, -1)
+  }
+  retour $s
+}
+
+# ── 5. Compaction ──────────────────────────────────────────────────────────
+
+# TASSEMENT DÉTERMINISTE : les blocs OCCUPÉS sont glissés vers l'origine par
+# ID croissant, sans trou. Les blocs libres sont rendus inertes (longueur 0)
+# et le bump est repositionné juste après le dernier bloc vivant. Les IDs ne
+# changent pas. Rend le gain (octets logiques) dans le champ 9.
+fn arena_compassion(a: liste<entier>) -> liste<entier> {
+  $s = am_copie($a)
+  $nb = $s[3]
+  $cur = 0
+  $id = 0
+  tant_que ($id < $nb) {
+    si ($s[am_idx_etat($id)] == 1) {
+      $lg = $s[am_idx_longueur($id)]
+      $s = am_set($s, am_idx_debut($id), $cur)
+      $cur = $cur + $lg
+    }
+    $id = $id + 1
+  }
+  $id = 0
+  tant_que ($id < $nb) {
+    si ($s[am_idx_etat($id)] == 0) {
+      $s = am_set($s, am_idx_debut($id), $cur)
+      $s = am_set($s, am_idx_longueur($id), 0)
+    }
+    $id = $id + 1
+  }
+  $s = am_set($s, 2, $cur)
+  $s = am_set($s, 6, $s[6] + 1)
+  $s = am_set($s, 9, $a[1] - $cur)
+  $s = am_set($s, 8, 0)
+  retour $s
+}
+
+# Alias de clarté : `arena_compassion` est le nom historique de la brique.
+fn arena_compacter(a: liste<entier>) -> liste<entier> {
+  retour arena_compassion($a)
+}
+
+# ── 6. Carte de translation générique ──────────────────────────────────────
+#
+# `v` (virtuel logique) et `p` (physique logique) sont des entiers abstraits.
+# Aucune taille de page, aucun niveau de table, aucun bit d'attribut n'est
+# codé ici : la granularité est un choix de la cible, déclaré dans le .bud.
+
+#   index 0 : nombre d'entrées
+#   index 1 : nombre total de mappings (cumulatif)
+#   index 2 : dernier statut
+#   index 3+: triplets [v, p, taille]
+fn carte_nouvelle() -> liste<entier> {
+  $r = [0]
+  joindre($r, 0)
+  joindre($r, 0)
+  retour $r
+}
+
+fn carte_entrees(c: liste<entier>) -> entier { retour c[0] }
+fn carte_statut(c: liste<entier>) -> entier { retour c[2] }
+fn carte_idx_v(i: entier) -> entier { retour 3 + 3 * $i }
+fn carte_idx_p(i: entier) -> entier { retour 4 + 3 * $i }
+fn carte_idx_lg(i: entier) -> entier { retour 5 + 3 * $i }
+
+# Associer v -> p sur `taille` unités logiques. Une entrée déjà présente est
+# REMPLACÉE (déterministe, pas de doublon). Rend une nouvelle carte.
+fn carte_mapper(carte: liste<entier>, v: entier, p: entier, taille: entier) -> liste<entier> {
+  $s = am_copie($carte)
+  $nb = $s[0]
+  $pos = -1
+  $i = 0
+  tant_que ($i < $nb) {
+    si ($s[carte_idx_v($i)] == $v) { $pos = $i }
+    $i = $i + 1
+  }
+  si ($pos == -1) { $pos = $nb }
+  $s = am_set($s, carte_idx_v($pos), $v)
+  $s = am_set($s, carte_idx_p($pos), $p)
+  $s = am_set($s, carte_idx_lg($pos), $taille)
+  si ($pos == $nb) {
+    $s = am_set($s, 0, $nb + 1)
+    $s = am_set($s, 1, $s[1] + 1)
+  }
+  $s = am_set($s, 2, 0)
+  retour $s
+}
+
+# Traduction virtuel -> physique. -1 si aucune entrée (échec explicite).
+fn carte_traduire(carte: liste<entier>, v: entier) -> entier {
+  $nb = $carte[0]
+  $i = 0
+  tant_que ($i < $nb) {
+    si ($carte[carte_idx_v($i)] == $v) {
+      retour $carte[carte_idx_p($i)]
+    }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+# Traduction inverse physique -> virtuel (première entrée, ID croissant).
+fn carte_traduire_inverse(carte: liste<entier>, p: entier) -> entier {
+  $nb = $carte[0]
+  $i = 0
+  tant_que ($i < $nb) {
+    si ($carte[carte_idx_p($i)] == $p) {
+      retour $carte[carte_idx_v($i)]
+    }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+# Taille logique de la région mappée sous `v` (-1 si absente).
+fn carte_taille(carte: liste<entier>, v: entier) -> entier {
+  $nb = $carte[0]
+  $i = 0
+  tant_que ($i < $nb) {
+    si ($carte[carte_idx_v($i)] == $v) {
+      retour $carte[carte_idx_lg($i)]
+    }
+    $i = $i + 1
+  }
+  retour -1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIN DE BRIQUE — aucun point d'entrée, aucun appel OS, aucun GC.
+# ═══════════════════════════════════════════════════════════════════════════

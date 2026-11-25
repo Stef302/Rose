@@ -1,0 +1,85 @@
+# tests_arena.rose — pilote de la brique B4 (allocation / compaction / carte)
+# Se compile PAR CONCATÉNATION avec arena.rose (Rose n'a pas de `importer`) :
+#   cat briques/memoire/arena.rose briques/memoire/tests_arena.rose > /tmp/pilote.rose
+#   /tmp/opencode/C0_h.elf /tmp/pilote.rose > /tmp/pilote.elf
+#   /tmp/pilote.elf
+# Chaque ligne stdout est un entier ; l'ordre est le contrat du test.
+
+$a = arena_nouvelle(4096, 64)
+>> arena_base($a)            # 4096 : base LOGIQUE, pas une adresse machine
+>> arena_taille($a)          # 64
+
+$a = arena_allouer($a, 8)
+>> arena_statut($a)          # 0
+>> arena_dernier_bloc($a)    # 0
+>> arena_debut($a, 0)        # 0
+>> arena_longueur($a, 0)     # 8
+>> arena_etat($a, 0)         # 1
+>> arena_bump($a)            # 8
+>> arena_adresse_logique($a, 0)  # 4096
+
+$a = arena_allouer($a, 12)
+>> arena_dernier_bloc($a)    # 1
+>> arena_debut($a, 1)        # 8
+>> arena_bump($a)            # 20
+
+$a = arena_allouer($a, 4)
+>> arena_dernier_bloc($a)    # 2
+>> arena_debut($a, 2)        # 20
+>> arena_bump($a)            # 24
+
+$a = arena_liberer($a, 0)
+>> arena_statut($a)          # 0
+>> arena_etat($a, 0)         # 0
+$a = arena_liberer($a, 0)
+>> arena_statut($a)          # -1 : double libération refusée
+
+# first-fit : le bloc 0 (libre, 8 cases) reprend 5 unités, le reste (3)
+# devient le bloc 3, libre. Aucun octet nouveau n'est prélevé sur le bump.
+$a = arena_allouer($a, 5)
+>> arena_dernier_bloc($a)    # 0 : ID stable, réutilisé
+>> arena_debut($a, 0)        # 0
+>> arena_longueur($a, 0)     # 5
+>> arena_nb_blocs($a)        # 4
+>> arena_debut($a, 3)        # 5
+>> arena_longueur($a, 3)     # 3
+>> arena_etat($a, 3)         # 0
+>> arena_bump($a)            # 24 : inchangé
+
+$a = arena_liberer($a, 1)
+>> arena_etat($a, 1)         # 0
+
+# compaction : vivants 0 (0..5) et 2 (20..24) -> 0..5 puis 5..9.
+$a = arena_compassion($a)
+>> arena_statut($a)          # 0
+>> arena_debut($a, 0)        # 0
+>> arena_debut($a, 2)        # 5
+>> arena_longueur($a, 2)     # 4
+>> arena_etat($a, 2)         # 1 : ID et état préservés
+>> arena_bump($a)            # 9
+>> arena_gain($a)            # 55 = 64 - 9
+>> arena_compactions($a)     # 1
+>> arena_allocs($a)          # 4
+>> arena_liberes($a)         # 3
+
+# échec déterministe : capacité épuisée (9 + 60 > 64)
+$a = arena_allouer($a, 60)
+>> arena_statut($a)          # -1
+>> arena_dernier_bloc($a)    # -1
+>> arena_nb_blocs($a)        # 4 : aucun bloc créé en échec
+
+# carte de translation générique (aucune taille de page codée en dur)
+$c = carte_nouvelle()
+>> carte_entrees($c)         # 0
+$c = carte_mapper($c, 100, 4096, 16)
+>> carte_traduire($c, 100)   # 4096
+>> carte_taille($c, 100)     # 16
+$c = carte_mapper($c, 100, 8192, 32)
+>> carte_entrees($c)         # 1 : remplacement, pas de doublon
+>> carte_traduire($c, 100)   # 8192
+>> carte_taille($c, 100)     # 32
+$c = carte_mapper($c, 200, 5000, 8)
+>> carte_traduire($c, 200)   # 5000
+>> carte_traduire_inverse($c, 8192)  # 100
+>> carte_traduire($c, 999)   # -1 : entrée absente
+>> carte_statut($c)          # 0

@@ -1,0 +1,77 @@
+# arena.bud — MANIFESTE DE DONNÉES de la brique B4. Aucune logique.
+# Aucun nom de CPU, d'OS, de format de table de pages ni d'appel système.
+#
+# MAPPAGE (fait par le NOYAU, pas par la brique) :
+#   1. `carte.largeur_page` donne la granularité ; à 0 la carte est une
+#      translation abstraite sans page matérielle ;
+#   2. `arena_nouvelle(base, taille)` reçoit une BASE LOGIQUE issue des
+#      `materiel.regions` du .bud d'assemblage, jamais une adresse supposée ;
+#   3. les décalages rendus par `arena_debut` s'ajoutent à cette base, puis
+#      `carte_traduire` fournit l'entier physique logique ;
+#   4. les bits d'attributs/protection et le nombre de niveaux sont des
+#      propriétés de `carte`, jamais des champs de arena.rose ;
+#   5. changer ce .bud (granularité, régions, budget) ne modifie aucune
+#      ligne de arena.rose.
+
+nom: "memoire-arena"
+version: "0.1.0"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 0
+  abi: rose-noyau-v0
+}
+
+profil: noyau
+
+materiel: {
+  regions: [ { base: 0, taille: 0, role: "fournieParLAssemblage" } ]
+  vecteurs: 0
+  registre_largeur: 0
+}
+
+carte: {
+  granularite: 1
+  niveaux: 0
+  bits_attributs: 0
+  protection: "declareeParLeNoyau"
+}
+
+interface: {
+  source: "briques/memoire/arena.rose"
+  etat: "liste<entier>"
+  allocation: "expliciteFonctionnelle"
+  entrees: [
+    "arena_nouvelle",
+    "arena_allouer",
+    "arena_liberer",
+    "arena_compassion",
+    "arena_compacter",
+    "carte_nouvelle",
+    "carte_mapper",
+    "carte_traduire",
+    "carte_traduire_inverse"
+  ]
+  champs_etat: 10
+  entiers_par_bloc: 3
+  blocs_max: 0
+}
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  latence_max: 0
+}
+
+sortie: {
+  format: brut
+  entree: aucun
+  adresse_charge: 0
+  alignement: 0
+}
+
+dependances: []

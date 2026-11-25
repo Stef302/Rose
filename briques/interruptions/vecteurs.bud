@@ -1,0 +1,80 @@
+# vecteurs.bud — MANIFESTE DE DONNÉES de la brique B3. Aucune logique.
+# Aucun nom de CPU, de contrôleur, d'OS ni de bus. Le matériel est DÉCLARÉ,
+# jamais codé dans vecteurs.rose.
+#
+# MAPPAGE (fait par le NOYAU, pas par la brique) :
+#   1. le noyau lit `materiel.vecteurs` (nombre logique d'entrées) et
+#      `registre_largeur` (largeur d'un registre logique) ;
+#   2. il construit `vtable_nouvelle(materiel.vecteurs)` : une donnée Rose,
+#      sans adresse ni format matériel ;
+#   3. il installe ses handlers avec `vtable_installer` et décrit leurs
+#      actions avec `vtable_programme` ;
+#   4. à l'entrée d'une interruption matérielle, il fournit son contexte
+#      comme `liste<entier>` à `vtable_dispatch`, puis applique le résultat
+#      sur son matériel selon `mappage.abi_sauvegarde` ;
+#   5. le passage table -> matériel est une écriture d'octets par la brique
+#      d'invocation (B1) paramétrée par CE .bud : aucun encodeur spécialisé
+#      n'est ajouté au compilateur. Remplacer ce .bud suffit à changer de
+#      cible sans toucher une ligne de vecteurs.rose.
+
+nom: "interruptions-vecteurs"
+version: "0.1.0"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 0
+  abi: rose-noyau-v0
+}
+
+profil: noyau
+
+materiel: {
+  regions: [ { base: 0, taille: 0, role: "aucune-region-imposee" } ]
+  vecteurs: 256
+  registre_largeur: 64
+}
+
+interface: {
+  source: "briques/interruptions/vecteurs.rose"
+  etat: "liste<entier>"
+  contexte: "liste<entier>"
+  entrees: [
+    "vtable_nouvelle",
+    "vtable_installer",
+    "vtable_programme",
+    "vtable_handler",
+    "vtable_sauvegarder",
+    "vtable_restaurer",
+    "vtable_dispatch"
+  ]
+  rapport: "[handler, statut, largeur, contexte_restaure, contexte_apres]"
+  actions_par_handler: 8
+}
+
+mappage: {
+  table: "donneeRose"
+  cible: "vecteursDuBudAssemblage"
+  largeur_vecteur: 8
+  abi_sauvegarde: "sauvegarderPuisAppliquerPuisRestaurer"
+  controleur: "GENERIQUE"
+  traduction_handler: "declareeParLeNoyau"
+}
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  latence_max: 0
+}
+
+sortie: {
+  format: brut
+  entree: aucun
+  adresse_charge: 0
+  alignement: 0
+}
+
+dependances: []

@@ -1,0 +1,72 @@
+# tests_vecteurs.rose — pilote de la brique B3 (table / dispatch / ABI)
+#   cat briques/interruptions/vecteurs.rose briques/interruptions/tests_vecteurs.rose > /tmp/p.rose
+#   /tmp/opencode/C0_h.elf /tmp/p.rose > /tmp/p.elf && /tmp/p.elf
+# Chaque ligne stdout est un entier ; l'ordre est le contrat du test.
+
+$t = vtable_nouvelle(4)
+>> vtable_taille($t)         # 4
+>> vtable_handler($t, 0)     # -1 : aucune entrée installée
+
+# handler 2 : poser(reg0, 99) ; ajouter(reg1, 5) ; copier(reg2, reg0)
+$t = vtable_installer($t, 0, 2)
+>> vtable_statut($t)         # 0
+>> vtable_handler($t, 0)     # 2
+$p0 = [1, 0, 99]
+joindre($p0, 2)
+joindre($p0, 1)
+joindre($p0, 5)
+joindre($p0, 3)
+joindre($p0, 2)
+joindre($p0, 0)
+$t = vtable_programme($t, 2, $p0)
+>> vtable_programmes($t)     # 1
+
+# handler 0 : échanger(reg0, reg2)
+$t = vtable_installer($t, 1, 0)
+$p1 = [4, 0, 2]
+$t = vtable_programme($t, 0, $p1)
+>> vtable_handler($t, 1)     # 0
+>> vtable_programmes($t)     # 2
+
+# handler 3 : installé mais sans programme -> contexte inchangé
+$t = vtable_installer($t, 2, 3)
+>> vtable_handler($t, 2)     # 3
+
+$ctx = [10, 20, 30]
+
+$r = vtable_dispatch($t, 0, $ctx)
+>> rapport_handler($r)       # 2
+>> rapport_statut($r)        # 0
+>> rapport_longueur($r)      # 3
+>> rapport_restaure($r, 0)   # 10 : sauvegarde rendue telle quelle
+>> rapport_restaure($r, 1)   # 20
+>> rapport_restaure($r, 2)   # 30
+>> rapport_apres($r, 0)      # 99
+>> rapport_apres($r, 1)      # 25
+>> rapport_apres($r, 2)      # 99
+
+$r = vtable_dispatch($t, 1, $ctx)
+>> rapport_handler($r)       # 0
+>> rapport_apres($r, 0)      # 30
+>> rapport_apres($r, 1)      # 20
+>> rapport_apres($r, 2)      # 10
+>> rapport_restaure($r, 0)   # 10 : contexte interrompu intact
+
+$r = vtable_dispatch($t, 2, $ctx)
+>> rapport_statut($r)        # 0
+>> rapport_apres($r, 0)      # 10 : handler sans programme
+>> rapport_apres($r, 2)      # 30
+>> rapport_restaure($r, 2)   # 30
+
+# index hors table : échec explicite, aucune action, contexte restauré
+$r = vtable_dispatch($t, 7, $ctx)
+>> rapport_handler($r)       # -1
+>> rapport_statut($r)        # -1
+>> rapport_apres($r, 1)      # 20
+>> rapport_restaure($r, 1)   # 20
+
+# sauvegarde / restauration explicites, indépendantes du dispatch
+$cadre = vtable_sauvegarder($ctx)
+>> $cadre[0]                 # 10
+$ret = vtable_restaurer($ctx, $cadre)
+>> $ret[2]                   # 30

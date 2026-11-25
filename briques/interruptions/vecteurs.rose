@@ -1,0 +1,243 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# vecteurs.rose — TABLE DE VECTEURS + ABI SAUVEGARDE/RESTAURATION, ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique B3 universelle : un MÉCANISME, jamais un contrôleur. Aucun nom
+# d'architecture, de contrôleur, de bus ni d'OS. Un noyau
+# MAPPE cette table sur son matériel dans son propre `.bud` : voir
+# `briques/interruptions/vecteurs.bud` et `rose/docs/BRIQUES_MEM_INT.md`.
+#
+# L'état EST une `liste<entier>` (donnée, pas matériel) :
+#
+#   index 0         : n, nombre de vecteurs
+#   index 1         : nombre maximal d'actions par handler (8)
+#   index 2         : nombre de handlers pourvus d'un programme
+#   index 3         : dernier statut (0 = succès, -1 = échec)
+#   index 4         : dernier handler dispatché (-1 si aucun)
+#   index 5         : réservé (0)
+#   index 6..6+n-1  : handler installé à chaque index (-1 = aucun)
+#   index 6+n+…     : n emplacements de 25 entiers, un par handler ID :
+#                       [nb_actions, op1,a1,b1, op2,a2,b2, … 8 triplets max]
+#
+# Le CONTEXTE (registres logiques) est une `liste<entier>` fournie par
+# l'appelant. Rose n'a ni fonction-valeur ni closure : un handler est donc un
+# IDENTIFIANT associé à un programme DÉCLARATIF d'actions sur ce contexte —
+# le même motif « table d'actions, pas callback » que `jardins/gui.rose`.
+# Le noyau décide, dans son `.bud`, comment un ID de handler se traduit en
+# vraie routine machine : la brique ne connaît ni routine ni adresse.
+#
+# Opérations abstraites (aucun registre nommé) :
+#   0 = rien        1 = poser(cible = valeur)
+#   2 = ajouter(cible = cible + valeur)
+#   3 = copier(cible = source)
+#   4 = échanger(cible, source)
+#
+# CONVENTION FONCTIONNELLE : chaque opération rend un NOUVEL état ;
+# l'appelant reprend explicitement `$t = vtable_installer($t, …)`. Aucune
+# mutation cachée, aucun GC, aucun appel matériel.
+#
+#   cat briques/interruptions/vecteurs.rose mon_noyau.rose > /tmp/prog.rose
+#   /tmp/opencode/C0_h.elf /tmp/prog.rose > /tmp/prog.elf
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia ───────────────────────────────────────────────────────────
+
+# Écriture explicite d'une case, avec croissance, sans modifier `l`.
+fn vt_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $m = $n
+  si ($idx >= $m) { $m = $idx + 1 }
+  $x0 = 0
+  si ($n > 0) { $x0 = l[0] }
+  si ($idx == 0) { $x0 = v }
+  $r = [$x0]
+  $k = 1
+  tant_que ($k < $m) {
+    $x = 0
+    si ($k < $n) { $x = l[$k] }
+    si ($k == $idx) { $x = v }
+    joindre($r, $x)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn vt_copie(l: liste<entier>) -> liste<entier> {
+  $r = [l[0]]
+  $k = 1
+  tant_que ($k < longueur(l)) {
+    joindre($r, l[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── 1. Construction et installation ───────────────────────────────────────
+
+fn vt_idx_handler(idx: entier) -> entier { retour 6 + $idx }
+fn vt_idx_programme(handler: entier) -> entier { retour 6 + 25 * $handler }
+# Le bloc programmes commence après les n cases de handlers.
+fn vt_base_programmes(t: liste<entier>) -> entier { retour 6 + $t[0] }
+
+# Table logique de `n` vecteurs : `n` cases de handler + `n` emplacements
+# de programme. Aucun appareil n'est sous-entendu.
+fn vtable_nouvelle(n: entier) -> liste<entier> {
+  $r = [$n]
+  joindre($r, 8)    # max actions / handler
+  joindre($r, 0)    # programmes installés
+  joindre($r, 0)    # statut
+  joindre($r, -1)   # dernier handler
+  joindre($r, 0)    # réservé
+  $k = 0
+  tant_que ($k < $n) {
+    joindre($r, -1)   # aucun handler à cette entrée
+    $k = $k + 1
+  }
+  $k = 0
+  tant_que ($k < $n * 25) {
+    joindre($r, 0)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn vtable_taille(t: liste<entier>) -> entier { retour t[0] }
+fn vtable_statut(t: liste<entier>) -> entier { retour t[3] }
+fn vtable_dernier_handler(t: liste<entier>) -> entier { retour t[4] }
+fn vtable_programmes(t: liste<entier>) -> entier { retour t[2] }
+
+fn vtable_handler(t: liste<entier>, idx: entier) -> entier {
+  si ($idx < 0 ou $idx >= $t[0]) { retour -1 }
+  retour t[vt_idx_handler($idx)]
+}
+
+# Associer un index de vecteur à un identifiant de handler (entier logique).
+fn vtable_installer(t: liste<entier>, idx: entier, handler: entier) -> liste<entier> {
+  $s = vt_copie($t)
+  si ($idx >= 0 et $idx < $s[0] et $handler >= 0 et $handler < $s[0]) {
+    $s = vt_set($s, vt_idx_handler($idx), $handler)
+    $s = vt_set($s, 4, $handler)
+    $s = vt_set($s, 3, 0)
+  } sinon {
+    $s = vt_set($s, 3, -1)
+  }
+  retour $s
+}
+
+# Déclarer le programme d'un handler : `actions` est une liste de triplets
+# [op, arg1, arg2]. Aucun appel, aucun pointeur, aucune adresse.
+fn vtable_programme(t: liste<entier>, handler: entier, actions: liste<entier>) -> liste<entier> {
+  $s = vt_copie($t)
+  $nb = longueur($actions)
+  $base = vt_base_programmes($s) + 25 * $handler
+  si ($handler >= 0 et $handler < $s[0] et $nb <= 24 et $nb % 3 == 0) {
+    $avant = $s[$base]
+    $k = 0
+    tant_que ($k < $nb) {
+      $s = vt_set($s, $base + 1 + $k, $actions[$k])
+      $k = $k + 1
+    }
+    $nb_actions = partie_entiere($nb / 3)
+    $s = vt_set($s, $base, $nb_actions)
+    si ($avant == 0 et $nb_actions > 0) {
+      $s = vt_set($s, 2, $s[2] + 1)
+    }
+    $s = vt_set($s, 3, 0)
+  } sinon {
+    $s = vt_set($s, 3, -1)
+  }
+  retour $s
+}
+
+# ── 2. Sauvegarde / restauration EXPLICITES du contexte ────────────────────
+
+# Sauvegarde : copie indépendante des registres logiques (liste d'entiers).
+fn vtable_sauvegarder(contexte: liste<entier>) -> liste<entier> {
+  retour vt_copie($contexte)
+}
+
+# Restauration : rend une copie du cadre sauvegardé. Le contexte courant est
+# un argument explicite : le noyau peut ainsi vérifier la largeur avant de
+# reprendre l'exécution interrompue.
+fn vtable_restaurer(contexte: liste<entier>, cadre: liste<entier>) -> liste<entier> {
+  si (longueur($cadre) != longueur($contexte)) { retour vt_copie($contexte) }
+  retour vt_copie($cadre)
+}
+
+# ── 3. Application du programme d'un handler ───────────────────────────────
+
+fn vtable_appliquer(t: liste<entier>, handler: entier, contexte: liste<entier>) -> liste<entier> {
+  $c = vt_copie($contexte)
+  $kmax = longueur($c)
+  $base = vt_base_programmes($t) + 25 * $handler
+  $nb = $t[$base]
+  $j = 0
+  tant_que ($j < $nb) {
+    $op = $t[$base + 1 + 3 * $j]
+    $a1 = $t[$base + 2 + 3 * $j]
+    $a2 = $t[$base + 3 + 3 * $j]
+    si ($a1 >= 0 et $a1 < $kmax) {
+      si ($op == 1) { $c = vt_set($c, $a1, $a2) }
+      si ($op == 2) { $c = vt_set($c, $a1, $c[$a1] + $a2) }
+      si ($op == 3 et $a2 >= 0 et $a2 < $kmax) {
+        $c = vt_set($c, $a1, $c[$a2])
+      }
+      si ($op == 4 et $a2 >= 0 et $a2 < $kmax) {
+        $tmp = $c[$a1]
+        $c = vt_set($c, $a1, $c[$a2])
+        $c = vt_set($c, $a2, $tmp)
+      }
+    }
+    $j = $j + 1
+  }
+  retour $c
+}
+
+# ── 4. Dispatch ────────────────────────────────────────────────────────────
+#
+# Ordre imposé, explicite et visible : SAUVEGARDE -> APPLICATION -> 
+# RESTAURATION. Le résultat est un rapport :
+#   [handler, statut, largeur] + contexte_restaure + contexte_apres_handler
+# La première moitié est le contexte repris par l'interrompu (identique à
+# l'entrée) ; la seconde montre l'effet du handler, pour diagnostic/test.
+fn vtable_dispatch(t: liste<entier>, idx: entier, contexte: liste<entier>) -> liste<entier> {
+  $handler = vtable_handler($t, $idx)
+  $k = longueur($contexte)
+  $statut = 0
+  si ($handler < 0) { $statut = -1 }
+
+  $cadre = vtable_sauvegarder($contexte)
+  $apres = vt_copie($contexte)
+  si ($statut == 0) {
+    $apres = vtable_appliquer($t, $handler, $contexte)
+  }
+  $restaure = vtable_restaurer($contexte, $cadre)
+
+  $r = [$handler]
+  joindre($r, $statut)
+  joindre($r, $k)
+  $j = 0
+  tant_que ($j < $k) {
+    joindre($r, $restaure[$j])
+    $j = $j + 1
+  }
+  $j = 0
+  tant_que ($j < $k) {
+    joindre($r, $apres[$j])
+    $j = $j + 1
+  }
+  retour $r
+}
+
+# Lecteurs du rapport (tout est `entier`).
+fn rapport_handler(r: liste<entier>) -> entier { retour r[0] }
+fn rapport_statut(r: liste<entier>) -> entier { retour r[1] }
+fn rapport_longueur(r: liste<entier>) -> entier { retour r[2] }
+fn rapport_restaure(r: liste<entier>, j: entier) -> entier { retour r[3 + $j] }
+fn rapport_apres(r: liste<entier>, j: entier) -> entier {
+  retour r[3 + $r[2] + $j]
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIN DE BRIQUE — aucun point d'entrée, aucun contrôleur, aucun OS.
+# ═══════════════════════════════════════════════════════════════════════════
