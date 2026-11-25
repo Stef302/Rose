@@ -1,0 +1,146 @@
+# tests_noyau.rose — pilote de la brique B5 (bornes, débordements, latence)
+# Se compile PAR CONCATÉNATION avec noyau.rose (Rose n'a pas de `importer`) :
+#   cat briques/profil/noyau.rose briques/profil/tests_noyau.rose > /tmp/pilote.rose
+#   /tmp/opencode/C0_h.elf /tmp/pilote.rose > /tmp/pilote.elf
+#   /tmp/pilote.elf
+# Chaque ligne stdout est un entier ; l'ordre est le contrat du test.
+# Un résultat [valeur, deborde] s'imprime en DEUX lignes via resultat_*.
+
+$p8 = borne_declarer(8)
+>> borne_bits($p8)            # 8 : la borne est un CHOIX de données
+>> borne_min($p8)             # 0
+>> borne_max($p8)             # 255
+>> borne_module($p8)          # 256
+>> borne_statut($p8)          # 0
+>> borne_dans(255, $p8)       # 1
+>> borne_dans(256, $p8)       # 0
+
+# Politique "refuser" (défaut) : 255 + 1 déborde explicitement.
+$r = borne_add(255, 1, $p8)
+>> resultat_valeur($r)        # 0 : valeur non utilisable
+>> resultat_deborde($r)       # 1
+$r = borne_add(200, 50, $p8)
+>> resultat_valeur($r)        # 250
+>> resultat_deborde($r)       # 0
+
+$r = borne_sub(0, 1, $p8)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+$r = borne_sub(10, 3, $p8)
+>> resultat_valeur($r)        # 7
+>> resultat_deborde($r)       # 0
+
+$r = borne_mul(16, 16, $p8)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+$r = borne_mul(15, 15, $p8)
+>> resultat_valeur($r)        # 225
+>> resultat_deborde($r)       # 0
+
+$r = borne_div(255, 2, $p8)
+>> resultat_valeur($r)        # 127
+>> resultat_deborde($r)       # 0
+$r = borne_div(7, 0, $p8)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1 : division par zéro = refus
+
+# Politique "saturer" : la valeur est ramenée au maximum/minimum.
+$p8s = borne_declarer_avec(8, 0, 1)
+$r = borne_add(255, 1, $p8s)
+>> resultat_valeur($r)        # 255
+>> resultat_deborde($r)       # 1
+$r = borne_sub(0, 1, $p8s)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+
+# Politique "enrouler" : retour modulo, débordement toujours signalé.
+$p8w = borne_declarer_avec(8, 0, 2)
+$r = borne_add(255, 1, $p8w)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+$r = borne_convertir(300, $p8w)
+>> resultat_valeur($r)        # 44
+>> resultat_deborde($r)       # 1
+$r = borne_convertir(-2, $p8w)
+>> resultat_valeur($r)        # 254
+>> resultat_deborde($r)       # 1
+
+# Borne signée : [-128, 127], enroulement en complément à deux.
+$p8si = borne_declarer_avec(8, 1, 2)
+>> borne_min($p8si)           # -128
+>> borne_max($p8si)           # 127
+$r = borne_add(100, 100, $p8si)
+>> resultat_valeur($r)        # -56
+>> resultat_deborde($r)       # 1
+$r = borne_sub(-128, 1, $p8si)
+>> resultat_valeur($r)        # 127
+>> resultat_deborde($r)       # 1
+$r = borne_div(-128, -1, $p8si)
+>> resultat_valeur($r)        # -128
+>> resultat_deborde($r)       # 1
+$r = borne_div(-7, 2, $p8si)
+>> resultat_valeur($r)        # -3 : troncature vers zéro, stable
+>> resultat_deborde($r)       # 0
+$r = borne_convertir(-200, $p8si)
+>> resultat_valeur($r)        # 56
+>> resultat_deborde($r)       # 1
+
+# Borne signée en politique "refuser".
+$p8sr = borne_declarer_signe(8)
+$r = borne_add(100, 100, $p8sr)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+$r = borne_convertir(127, $p8sr)
+>> resultat_valeur($r)        # 127
+>> resultat_deborde($r)       # 0
+$r = borne_convertir(-128, $p8sr)
+>> resultat_valeur($r)        # -128
+>> resultat_deborde($r)       # 0
+$r = borne_convertir(-129, $p8sr)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+
+# Borne 32 bits.
+$p32 = borne_declarer(32)
+>> borne_bits($p32)           # 32
+>> borne_max($p32)            # 4294967295
+$r = borne_add(4294967295, 1, $p32)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+$r = borne_add(2147483647, 2147483647, $p32)
+>> resultat_valeur($r)        # 4294967294
+>> resultat_deborde($r)       # 0
+$r = borne_mul(65536, 65536, $p32)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+$r = borne_convertir(4294967296, $p32)
+>> resultat_valeur($r)        # 0
+>> resultat_deborde($r)       # 1
+$r = borne_convertir(12345, $p32)
+>> resultat_valeur($r)        # 12345
+>> resultat_deborde($r)       # 0
+
+# Largeur invalide : profil dégradé, jamais de module nul ni de calcul muet.
+$pinv = borne_declarer(128)
+>> borne_statut($pinv)        # -1
+$r = borne_add(1, 2, $pinv)
+>> resultat_deborde($r)       # 1
+
+# Latence : comptage symbolique déterministe, aucune mesure.
+$ops = [0, 1, 1, 2, 3, 5]
+>> latence_budget($p8, $ops)  # 16 = 3+2+2+2+4+3 (déclarer, add, add, sous, mul, convertir)
+>> latence_budget($p32, $ops) # 37 = 6+5+5+5+10+6
+$p8t = borne_latence_fixer($p8, 16)
+$r = latence_verifier($p8t, $ops)
+>> $r[0]                      # 16 cycles
+>> $r[1]                      # 6 opérations
+>> $r[2]                      # 1 : respecte le budget
+$p8t = borne_latence_fixer($p8, 15)
+$r = latence_verifier($p8t, $ops)
+>> $r[2]                      # 0 : budget dépassé
+
+# Le `.bud` peut remplacer les coûts sans modifier noyau.rose.
+$couts = [10, 11, 12, 13, 14, 15, 16]
+$pc = borne_fixer_couts($p8, $couts)
+>> latence_budget($pc, $ops)  # 72
+>> borne_cout($pc, 4)         # 14

@@ -1,0 +1,291 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# noyau.rose — PROFIL D'ENTIERS BORNÉS + LATENCE PRÉVISIBLE, EN ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique B5 universelle : un MÉCANISME, jamais un sous-langage noyau lié à
+# un OS. Aucun nom de CPU, d'OS, de registre, d'ABI ni d'appel système.
+# Un noyau CHOISIT sa borne dans son `.bud` ; la brique ne l'impose pas :
+#   cat briques/profil/noyau.rose mon_noyau.rose > /tmp/prog.rose
+#   /tmp/opencode/C0_h.elf /tmp/prog.rose > /tmp/prog.elf
+#
+# LE PROFIL EST UNE DONNÉE `liste<entier>` (jamais un type figé du langage) :
+#
+#   index 0  : bits (largeur logique choisie, 1..64 ; 8/16/32/64 courants)
+#   index 1  : signe       0 = non signé [0 .. 2^bits - 1]
+#                          1 = signé    [-2^(bits-1) .. 2^(bits-1) - 1]
+#   index 2  : politique   0 = refuser   1 = saturer   2 = enrouler
+#   index 3  : min
+#   index 4  : max
+#   index 5  : module = max - min + 1 (jamais 0, même profil invalide)
+#   index 6  : statut      0 = profil valide, -1 = largeur invalide
+#   index 7  : latence_max (cycles symboliques ; 0 = non bornée)
+#   index 8  : coût déclaration
+#   index 9  : coût addition
+#   index 10 : coût soustraction
+#   index 11 : coût multiplication
+#   index 12 : coût division
+#   index 13 : coût conversion
+#   index 14 : coût lecture
+#
+# CONVENTION DE RÉSULTAT : chaque opération rend une liste de DEUX entiers
+#   [valeur, deborde]   deborde = 0 (succès) | 1 (débordement / div. par zéro)
+# La `valeur` rendue est TOUJOURS dans [min, max], conformément à la
+# politique du profil. En politique "refuser", elle vaut 0 quand deborde=1 :
+# l'appelant DOIT consulter `deborde` avant d'utiliser `valeur`.
+#
+# MODÈLE DE LATENCE — Symbolique, PAS mesuré. Un octet logique coûte une
+# unité : largeur = ceil(bits/8). Coûts par défaut = 2+largeur (déclaration),
+# 1+largeur (add/sous), 2+2·largeur (mul), 3+3·largeur (div), 2+largeur
+# (conversion), 1 (lecture). Ces chiffres sont des unités COMPTABLES, pas
+# des cycles machine : `latence_budget` ne mesure rien et n'appelle aucun
+# chronomètre. `borne_fixer_couts` permet au `.bud` de les remplacer.
+#
+# AUCUNE allocation implicite, AUCUN GC, AUCUN appel à bigint_rose.rose.
+# Les entiers Rose servent uniquement à calculer le résultat EXACT qui sert
+# à détecter le débordement ; la valeur rendue est ramenée dans la borne.
+# `borne_convertir` est le SEUL point d'entrée d'un entier arbitraire.
+#
+# Portabilité vérifiée : la division est effectuée sur des grandeurs
+# positives puis signée explicitement (troncature vers zéro), et le modulo
+# est normalisé : l'interpréteur et le backend C0 donnent les mêmes valeurs.
+# LIMITATION DU BACKEND C0 (mesurée) : son entier machine est i64, donc
+# `2 ^ 63` et `2 ^ 64` y débordent. Les profils 63/64 bits sont corrects à
+# l'interpréteur mais leurs bornes sont fausses en C0 ; utiliser une largeur
+# <= 62 sur ce backend, ou un backend à entiers plus larges.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia (état = valeur explicite, aucune mutation cachée) ──────────
+
+# Réécriture d'une case, avec croissance. `l` n'est pas modifié.
+fn bp_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $m = $n
+  si ($idx >= $m) { $m = $idx + 1 }
+  $x0 = 0
+  si ($n > 0) { $x0 = l[0] }
+  si ($idx == 0) { $x0 = v }
+  $r = [$x0]
+  $k = 1
+  tant_que ($k < $m) {
+    $x = 0
+    si ($k < $n) { $x = l[$k] }
+    si ($k == $idx) { $x = v }
+    joindre($r, $x)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn bp_copie(l: liste<entier>) -> liste<entier> {
+  $r = [l[0]]
+  $k = 1
+  tant_que ($k < longueur(l)) {
+    joindre($r, l[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Modulo toujours positif, identique sur les deux backends.
+fn bp_mod(x: entier, m: entier) -> entier {
+  $r = x % m
+  si ($r < 0) { $r = $r + m }
+  retour $r
+}
+
+# Construction du résultat [valeur, deborde].
+fn bp_resultat(v: entier, d: entier) -> liste<entier> {
+  $r = [v]
+  joindre($r, d)
+  retour $r
+}
+
+# ── 1. Déclaration : le choix de la borne vient des données ─────────────────
+
+# Profile par défaut : non signé, politique "refuser", latence non bornée.
+fn borne_declarer(bits: entier) -> liste<entier> {
+  retour borne_declarer_avec(bits, 0, 0)
+}
+
+# Profile signé, politique "refuser".
+fn borne_declarer_signe(bits: entier) -> liste<entier> {
+  retour borne_declarer_avec(bits, 1, 0)
+}
+
+# Profile complet, tel que le noyau le construit depuis son `.bud`.
+fn borne_declarer_avec(bits: entier, signe: entier, politique: entier) -> liste<entier> {
+  $statut = 0
+  si (bits < 1 ou bits > 64) { $statut = -1 }
+  $b = bits
+  si ($statut != 0) { $b = 8 }          # repli sûr, jamais module nul
+  $sg = signe
+  si ($sg != 0 et $sg != 1) { $sg = 0 }
+  $pol = politique
+  si ($pol < 0 ou $pol > 2) { $pol = 0 }
+
+  $mod = 2 ^ $b
+  $min = 0
+  $max = $mod - 1
+  si ($sg == 1) {
+    $demi = 2 ^ ($b - 1)
+    $min = 0 - $demi
+    $max = $demi - 1
+  }
+
+  $l = 1
+  si ($b > 1) { $l = partie_entiere(($b + 7) ÷ 8) }
+  $r = [$b, $sg, $pol, $min, $max, $mod, $statut, 0]
+  joindre($r, 2 + $l)       # 8 : déclaration
+  joindre($r, 1 + $l)       # 9 : addition
+  joindre($r, 1 + $l)       # 10 : soustraction
+  joindre($r, 2 + 2 * $l)   # 11 : multiplication
+  joindre($r, 3 + 3 * $l)   # 12 : division
+  joindre($r, 2 + $l)       # 13 : conversion
+  joindre($r, 1)            # 14 : lecture
+  retour $r
+}
+
+# Le `.bud` peut remplacer le budget symbolique sans toucher au code.
+fn borne_fixer_couts(p: liste<entier>, couts: liste<entier>) -> liste<entier> {
+  $r = bp_copie($p)
+  $k = 0
+  tant_que ($k < 7) {
+    $v = 1
+    si ($k < longueur($couts)) { $v = $couts[$k] }
+    $r = bp_set($r, 8 + $k, $v)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Le `.bud` peut imposer une borne de latence sans toucher au code.
+fn borne_latence_fixer(p: liste<entier>, max_cycles: entier) -> liste<entier> {
+  retour bp_set($p, 7, $max_cycles)
+}
+
+# ── 2. Lecteurs (tous `entier`, jamais `?`) ─────────────────────────────────
+
+fn borne_bits(p: liste<entier>) -> entier { retour p[0] }
+fn borne_signe(p: liste<entier>) -> entier { retour p[1] }
+fn borne_politique(p: liste<entier>) -> entier { retour p[2] }
+fn borne_min(p: liste<entier>) -> entier { retour p[3] }
+fn borne_max(p: liste<entier>) -> entier { retour p[4] }
+fn borne_module(p: liste<entier>) -> entier { retour p[5] }
+fn borne_statut(p: liste<entier>) -> entier { retour p[6] }
+fn borne_latence_max(p: liste<entier>) -> entier { retour p[7] }
+fn resultat_valeur(r: liste<entier>) -> entier { retour r[0] }
+fn resultat_deborde(r: liste<entier>) -> entier { retour r[1] }
+
+fn borne_cout(p: liste<entier>, code: entier) -> entier {
+  si (code >= 0 et code <= 6) { retour p[8 + $code] }
+  retour 1
+}
+
+# Appartenance à la borne, sans conversion ni altération.
+fn borne_dans(v: entier, p: liste<entier>) -> entier {
+  si (p[6] != 0) { retour 0 }
+  si (v < p[3] ou v > p[4]) { retour 0 }
+  retour 1
+}
+
+# ── 3. Politique de débordement (explicite, jamais silencieuse) ─────────────
+
+# Ramène `v` dans [min, max] selon la politique. `d` est conservé tel quel.
+fn borne_enrouler(v: entier, p: liste<entier>) -> entier {
+  $decale = v - p[3]
+  $r = bp_mod($decale, p[5])
+  retour $r + p[3]
+}
+
+fn borne_appliquer(v: entier, p: liste<entier>, d: entier) -> liste<entier> {
+  $res = v
+  si ($d == 1) {
+    $pol = p[2]
+    $res = 0                    # 0 = refuser : valeur non utilisable
+    si ($pol == 1) {            # 1 = saturer
+      $res = p[4]
+      si ($v < p[3]) { $res = p[3] }
+    }
+    si ($pol == 2) {            # 2 = enrouler
+      $res = borne_enrouler($v, $p)
+    }
+  }
+  retour bp_resultat($res, $d)
+}
+
+# ── 4. Opérations bornées ───────────────────────────────────────────────────
+
+fn borne_add(a: entier, b: entier, p: liste<entier>) -> liste<entier> {
+  $s = a + b
+  $d = 0
+  si (p[6] != 0 ou $s < p[3] ou $s > p[4]) { $d = 1 }
+  retour borne_appliquer($s, $p, $d)
+}
+
+fn borne_sub(a: entier, b: entier, p: liste<entier>) -> liste<entier> {
+  $s = a - b
+  $d = 0
+  si (p[6] != 0 ou $s < p[3] ou $s > p[4]) { $d = 1 }
+  retour borne_appliquer($s, $p, $d)
+}
+
+fn borne_mul(a: entier, b: entier, p: liste<entier>) -> liste<entier> {
+  $s = a * b
+  $d = 0
+  si (p[6] != 0 ou $s < p[3] ou $s > p[4]) { $d = 1 }
+  retour borne_appliquer($s, $p, $d)
+}
+
+# Division tronquée vers ZÉRO, calculée sur des grandeurs positives :
+# l'interpréteur et le backend C0 produisent ainsi la même valeur.
+fn borne_div(a: entier, b: entier, p: liste<entier>) -> liste<entier> {
+  si (b == 0 ou p[6] != 0) { retour bp_resultat(0, 1) }
+  $aa = a
+  $bb = b
+  si ($aa < 0) { $aa = 0 - $aa }
+  si ($bb < 0) { $bb = 0 - $bb }
+  $q = $aa ÷ $bb
+  $neg = 0
+  si ((a < 0 et b > 0) ou (a > 0 et b < 0)) { $neg = 1 }
+  si ($neg == 1) { $q = 0 - $q }
+  $d = 0
+  si ($q < p[3] ou $q > p[4]) { $d = 1 }
+  retour borne_appliquer($q, $p, $d)
+}
+
+# SEUL point d'entrée d'un entier Rose arbitraire dans une borne.
+fn borne_convertir(v: entier, p: liste<entier>) -> liste<entier> {
+  $d = 0
+  si (p[6] != 0 ou v < p[3] ou v > p[4]) { $d = 1 }
+  retour borne_appliquer($v, $p, $d)
+}
+
+# ── 5. Latence déterministe (comptage symbolique, aucune mesure) ────────────
+
+# Codes : 0 déclaration, 1 add, 2 sous, 3 mul, 4 div, 5 conversion, 6 lecture.
+fn latence_budget(p: liste<entier>, ops: liste<entier>) -> entier {
+  $total = 0
+  $k = 0
+  $n = longueur(ops)
+  tant_que ($k < $n) {
+    $code = ops[$k]
+    si ($code >= 0 et $code <= 6) {
+      $total = $total + p[8 + $code]
+    } sinon {
+      $total = $total + 1
+    }
+    $k = $k + 1
+  }
+  retour $total
+}
+
+# Rapport [cycles, nombre_d_operations, respecte_le_budget].
+fn latence_verifier(p: liste<entier>, ops: liste<entier>) -> liste<entier> {
+  $cycles = latence_budget($p, $ops)
+  $ok = 1
+  si (p[7] > 0 et $cycles > p[7]) { $ok = 0 }
+  $r = [$cycles]
+  joindre($r, longueur($ops))
+  joindre($r, $ok)
+  retour $r
+}

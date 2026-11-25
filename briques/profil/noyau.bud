@@ -1,0 +1,86 @@
+# noyau.bud — MANIFESTE DE DONNÉES de la brique B5. Aucune logique.
+# Aucun nom de CPU, d'OS, de registre, d'ABI matérielle ni d'appel système.
+#
+# MAPPAGE (fait par le NOYAU, pas par la brique) :
+#   1. le noyau lit `profil_entiers.bits`, `.signe` et `.debordement` et
+#      appelle `borne_declarer_avec(bits, signe, code_politique)` :
+#      la borne est un CHOIX de ce manifeste, jamais une constante du code ;
+#   2. il appelle éventuellement `borne_fixer_couts(p, latence.couts)` et
+#      `borne_latence_fixer(p, latence.latence_max)` ;
+#   3. les opérations `borne_add/sub/mul/div` et `borne_convertir` rendent
+#      toujours `[valeur, deborde]` avec `valeur` dans [min, max] ;
+#   4. `latence_budget` COMPTE des unités symboliques : il ne mesure aucun
+#      cycle réel et n'appelle aucun chronomètre ;
+#   5. remplacer CE manifeste (autre largeur, autre politique, autre budget)
+#      ne modifie aucune ligne de noyau.rose.
+
+nom: "profil-noyau"
+version: "0.1.0"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 0
+  abi: rose-noyau-v0
+}
+
+profil: noyau
+
+profil_entiers: {
+  bits: 32
+  signe: non_signe
+  debordement: refuser
+  largeurs_autorisees: [8, 16, 32, 64]
+  bits_min: 1
+  bits_max: 64
+  codes_debordement: { refuser: 0, saturer: 1, enrouler: 2 }
+  conversion_bigint: expliciteUniquement
+}
+
+latence: {
+  modele: "symbolique_octet_v0"
+  mesuree: faux
+  couts: [6, 5, 5, 10, 15, 6, 1]
+  latence_max: 0
+}
+
+interface: {
+  source: "briques/profil/noyau.rose"
+  etat: "liste<entier>"
+  resultat: "[valeur, deborde]"
+  entrees: [
+    "borne_declarer",
+    "borne_declarer_signe",
+    "borne_declarer_avec",
+    "borne_fixer_couts",
+    "borne_latence_fixer",
+    "borne_add",
+    "borne_sub",
+    "borne_mul",
+    "borne_div",
+    "borne_convertir",
+    "latence_budget",
+    "latence_verifier"
+  ]
+  codes_operations: { declaration: 0, add: 1, sous: 2, mul: 3, div: 4, conversion: 5, lecture: 6 }
+  champs_profil: 15
+}
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  bigint_implicite: faux
+  latence_max: 0
+}
+
+sortie: {
+  format: brut
+  entree: aucun
+  adresse_charge: 0
+  alignement: 0
+}
+
+dependances: []
