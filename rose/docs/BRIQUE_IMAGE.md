@@ -30,6 +30,13 @@ Pilote `briques/image/tests_contour.rose` concaténé avec la brique :
 - Aucun format concret n'est produit : l'assemblage final est à la charge du
   noyau, à partir de la table générée.
 - Coûts en cycles non mesurés.
+- **Octets ≥ 128** : l'écriture est byte-exacte (image de 85 octets identique
+  entre interpréteur et ELF, puis vérifiée par `cmp`/`od`), mais `lire_texte`
+  et `ordre` divergent entre les deux moteurs sur ces octets. La relecture
+  dans le pilote porte donc sur des charges ASCII ; vérifier un octet
+  quelconque avec `od`/`cmp`, pas avec `lire_texte`.
+- Deuxième pilote vérifié avec `unite = 8` et des secteurs différents : mêmes
+  fonctions, données changées, rc=0 des deux côtés.
 
 ## État des 9 briques
 
