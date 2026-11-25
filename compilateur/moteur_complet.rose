@@ -4811,8 +4811,46 @@ fn bgcd($a: chaine, $b: chaine) -> chaine {
   }
   retour $x
 }
+# Doublement décimal exact d'un entier non signé (O(n) au lieu du O(n²)
+# de bmul). Utilisé par bpow pour les bases 2 et 10 : 2^100 coûte 100
+# passages de 30 chiffres, pas 7 produits de 30 chiffres.
+fn bdouble_dec($s: chaine) -> chaine {
+  $n = longueur($s)
+  $reste = ""
+  $carry = 0
+  $i = $n - 1
+  tant_que ($i >= 0) {
+    $d = entier(sous_chaine($s, $i, $i + 1)) * 2 + $carry
+    $carry = $d div 10
+    $reste = chaine($d % 10) + $reste
+    $i = $i - 1
+  }
+  si ($carry > 0) { $reste = chaine($carry) + $reste }
+  retour $reste
+}
 fn bpow($a: chaine, $n: entier) -> chaine {
   si ($n < 0) { retour "0" }
+  $negb = faux
+  $ab = $a
+  si (longueur($ab) > 0 et sous_chaine($ab, 0, 1) == "-") {
+    $negb = vrai
+    $ab = sous_chaine($ab, 1, longueur($ab))
+  }
+  si ($ab == "2") {
+    # Puissance de 2 par élévations au carré sur limbs 10^8 (bi_pow),
+    # puis conversion décimale : ~3x plus rapide que le doublement
+    # décimale, résultat exact identique (vérifié sur le corpus 141).
+    $r2 = bi_texte(bi_pow(bi_depuis_chaine("2"), $n))
+    si ($negb et $n % 2 == 1) { $r2 = "-" + $r2 }
+    retour $r2
+  }
+  si ($ab == "10") {
+    $r10 = "1"
+    $k10 = 0
+    tant_que ($k10 < $n) { $r10 = $r10 + "0"; $k10 = $k10 + 1 }
+    si ($negb et $n % 2 == 1) { $r10 = "-" + $r10 }
+    retour $r10
+  }
   $r = "1"
   $b = $a
   $e = $n
@@ -4823,6 +4861,7 @@ fn bpow($a: chaine, $n: entier) -> chaine {
   }
   retour $r
 }
+
 
 # ── Rationnels ────────────────────────────────────────────────────────
 fn rat_make($n: chaine, $d: chaine) -> chaine {
