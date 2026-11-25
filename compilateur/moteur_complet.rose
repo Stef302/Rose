@@ -4580,6 +4580,7 @@ $fn_pn = [0]
 $fn_soff = [0]
 $slot_nom = [""]
 $glob_nom = [""]
+$slot_gidx = [0]        # index global de chaque slot (0 = local)
 $fn_pure = [0]          # 1 = fonction pure, mémoïsable (calculé après parse_rir)
 $fn_fib = [0]           # 1 = récurrence fibonaccienne PROUVEE dans le RIR (forme strictement vérifiée)
 $cache_key = [""]       # clés d'appels 1-based
@@ -5476,14 +5477,12 @@ fn write_var($m: liste<chaine>, $base: entier, $fi: entier, $name: chaine, $v: c
   retour $m
 }
 fn read_slot($m: liste<chaine>, $base: entier, $fi: entier, $ix: entier) -> chaine {
-  $nm = $slot_nom[$fn_soff[$fi] + $ix]
-  $g = glob_idx($nm)
+  $g = $slot_gidx[$fn_soff[$fi] + $ix]
   si ($g > 0) { retour $m[$g] }
   retour $m[$base + $ix]
 }
 fn write_slot($m: liste<chaine>, $base: entier, $fi: entier, $ix: entier, $v: chaine) -> liste<chaine> {
-  $nm = $slot_nom[$fn_soff[$fi] + $ix]
-  $g = glob_idx($nm)
+  $g = $slot_gidx[$fn_soff[$fi] + $ix]
   si ($g > 0) { retour lset($m, $g, $v) }
   retour lset($m, $base + $ix, $v)
 }
@@ -18872,6 +18871,9 @@ si (longueur($mc_const) > 0) {
 }
 # ── repli interprété + mémoïsation des fonctions pures ──────────────────
 parse_rir($mc_rir)
+# OPT : table d'indexation directe des slots globaux (une seule passe).
+$gi = 1
+tant_que ($gi < longueur($slot_nom)) { joindre($slot_gidx, glob_idx($slot_nom[$gi])); $gi = $gi + 1 }
 # Analyse de pureté inutile si le programme n'a qu'une fonction ($principal).
 si (longueur($fn_nom) > 2) { $fn_pure = calculer_purete() }
 $fn_fib = calculer_fib()
