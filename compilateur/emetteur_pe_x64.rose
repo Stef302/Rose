@@ -613,6 +613,16 @@ fn x_eval($t: liste<chaine>, $pos: entier, $d: entier, $f: entier) -> entier {
       x_call_lbl($x_lst_lbl)
       retour $p + 1
     }
+    # forme vide : (lstvide <ty>) — un seul jeton de type puis ')'.
+    si ($head == "lstvide") {
+      # RCX = 0 éléments, RDX = adresse du scratch → même x_make_list.
+      x_mov(1, 9)
+      x_mem(141, 2, x_bin_off($d))
+      x_call_lbl($x_lst_lbl)
+      $p = $pos + 2
+      tant_que ($p < $n et x_elt_ch($t, $p) != ")") { $p = $p + 1 }
+      retour $p + 1
+    }
     si ($head == "idx") {
       $p = x_eval($t, $pos + 2, $d + 1, $f)
       si ($p < 0) { retour -1 }
