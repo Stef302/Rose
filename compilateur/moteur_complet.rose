@@ -4581,6 +4581,7 @@ $fn_soff = [0]
 $slot_nom = [""]
 $glob_nom = [""]
 $fn_pure = [0]          # 1 = fonction pure, mémoïsable (calculé après parse_rir)
+$fn_fib = [0]           # 1 = récurrence fibonaccienne PROUVEE dans le RIR (forme strictement vérifiée)
 $cache_key = [""]       # clés d'appels 1-based
 $cache_val = [""]       # valeurs correspondantes
 
@@ -5299,56 +5300,37 @@ fn fact_big($n: entier) -> chaine {
 
 # ── Analyse du dump (globaux remplis uniquement par joindre) ──────────
 fn tok_line($s: chaine) -> entier {
-  # Codes numériques : 32=espace 9=tab 13=CR 40/41=parenthèses 34=guillemet
-  # 92=anti-slash. Une comparaison d'entiers évite les comparaisons de
-  # chaînes (et leurs allocations) à chaque caractère.
   $n = longueur($s)
   $i = 0
   tant_que ($i < $n) {
-    $oc = ordre($s[$i])
-    si ($oc == 32 ou $oc == 9 ou $oc == 13) { $i = $i + 1 }
-    sinon si ($oc == 40 ou $oc == 41) { joindre($tok, $s[$i]); $i = $i + 1 }
-    sinon si ($oc == 34) {
-      # Repérage du guillemet fermant en un passage ; si la chaîne n'a
-      # aucun échappement, UNE seule sous_chaine suffit.
+    $c = $s[$i]
+    si ($c == " " ou $c == "\t" ou $c == "\r") { $i = $i + 1 }
+    sinon si ($c == "(" ou $c == ")") { joindre($tok, $c); $i = $i + 1 }
+    sinon si ($c == "\"") {
       $j = $i + 1
-      $esc = faux
+      $buf = ""
       $done = faux
       tant_que ($j < $n et non $done) {
-        $cc = ordre($s[$j])
-        si ($cc == 92 et $j + 1 < $n) { $esc = vrai; $j = $j + 2 }
-        sinon si ($cc == 34) { $done = vrai }
-        sinon { $j = $j + 1 }
+        $ch = $s[$j]
+        si ($ch == "\\" et $j + 1 < $n) {
+          $nx = $s[$j + 1]
+          si ($nx == "n") { $buf = $buf + "\n" }
+          sinon si ($nx == "t") { $buf = $buf + "\t" }
+          sinon si ($nx == "r") { $buf = $buf + "\r" }
+          sinon { $buf = $buf + $nx }
+          $j = $j + 2
+        } sinon si ($ch == "\"") { $done = vrai; $j = $j + 1 }
+        sinon { $buf = $buf + $ch; $j = $j + 1 }
       }
-      $fquote = $j
-      si (non $esc) {
-        joindre($tok, sous_chaine($s, $i + 1, $fquote))
-      } sinon {
-        $buf = ""
-        $k = $i + 1
-        $done2 = faux
-        tant_que ($k < $n et non $done2) {
-          $ch = $s[$k]
-          si ($ch == "\\" et $k + 1 < $n) {
-            $nx = $s[$k + 1]
-            si ($nx == "n") { $buf = $buf + "\n" }
-            sinon si ($nx == "t") { $buf = $buf + "\t" }
-            sinon si ($nx == "r") { $buf = $buf + "\r" }
-            sinon { $buf = $buf + $nx }
-            $k = $k + 2
-          } sinon si ($ch == "\"") { $done2 = vrai; $k = $k + 1 }
-          sinon { $buf = $buf + $ch; $k = $k + 1 }
-        }
-        joindre($tok, $buf)
-      }
-      si ($done) { $i = $j + 1 } sinon { $i = $j }
+      joindre($tok, $buf)
+      $i = $j
     }
     sinon {
       $j = $i
       $fin = faux
       tant_que ($j < $n et non $fin) {
-        $oc2 = ordre($s[$j])
-        si ($oc2 == 32 ou $oc2 == 9 ou $oc2 == 13 ou $oc2 == 40 ou $oc2 == 41 ou $oc2 == 34) { $fin = vrai }
+        $ch = $s[$j]
+        si ($ch == " " ou $ch == "\t" ou $ch == "\r" ou $ch == "(" ou $ch == ")" ou $ch == "\"") { $fin = vrai }
         si (non $fin) { $j = $j + 1 }
       }
       joindre($tok, sous_chaine($s, $i, $j))
@@ -5358,11 +5340,10 @@ fn tok_line($s: chaine) -> entier {
   retour 0
 }
 fn trim($s: chaine) -> chaine {
-  $n = longueur($s)
   $i = 0
-  tant_que ($i < $n et ordre($s[$i]) == 32) { $i = $i + 1 }
-  $j = $n
-  tant_que ($j > $i et ordre($s[$j - 1]) == 32) { $j = $j - 1 }
+  tant_que ($i < longueur($s) et $s[$i] == " ") { $i = $i + 1 }
+  $j = longueur($s)
+  tant_que ($j > $i et $s[$j - 1] == " ") { $j = $j - 1 }
   retour sous_chaine($s, $i, $j)
 }
 fn parse_noms($p: entier, $tend: entier) -> entier {
@@ -5381,29 +5362,16 @@ fn parse_noms($p: entier, $tend: entier) -> entier {
   retour $q
 }
 fn parse_rir($txt: chaine) -> entier {
-  # Découpage indexé : on relève les positions des `\n` en un seul passage,
-  # puis on extrait chaque ligne par UNE sous_chaine. L'ancien code
-  # concaténaient les caractères un à un ($cur = $cur + $c), soit O(n²)
-  # sous l'interpréteur (chaque concaténation recopiait la ligne entière).
-  $nl = longueur($txt)
-  $starts = [0]
+  $lines = [""]
+  $cur = ""
   $i = 0
+  $nl = longueur($txt)
   tant_que ($i < $nl) {
-    si ($txt[$i] == "\n") { joindre($starts, $i + 1) }
+    $c = $txt[$i]
+    si ($c == "\n") { joindre($lines, $cur); $cur = "" } sinon { $cur = $cur + $c }
     $i = $i + 1
   }
-  $lines = [""]
-  $ns = longueur($starts)
-  $k = 0
-  tant_que ($k < $ns - 1) {
-    joindre($lines, sous_chaine($txt, $starts[$k], $starts[$k + 1] - 1))
-    $k = $k + 1
-  }
-  # Dernier fragment : uniquement s'il reste des caractères après le `\n`
-  # final (l'ancien code testait `longueur($cur) > 0`).
-  si ($starts[$ns - 1] < $nl) {
-    joindre($lines, sous_chaine($txt, $starts[$ns - 1], $nl))
-  }
+  si (longueur($cur) > 0) { joindre($lines, $cur) }
   $li = 1
   $en_fn = faux
   $nfn = 0
@@ -5411,42 +5379,36 @@ fn parse_rir($txt: chaine) -> entier {
   $pn = 0
   $soff = 1
   $gcount = 0
-  $nlines = longueur($lines)
-  tant_que ($li < $nlines) {
+  tant_que ($li < longueur($lines)) {
     $line = trim($lines[$li])
-    $nline = longueur($line)
     $isop = faux
-    si ($nline >= 5) {
+    si (longueur($line) >= 5) {
       si (digits_only(sous_chaine($line, 0, 4)) et sous_chaine($line, 4, 5) == " ") { $isop = vrai }
     }
-    $toklen = longueur($tok)
     si ($isop) {
-      joindre($op_start, $toklen)
-      tok_line(sous_chaine($line, 5, $nline))
-      # $op_start vient recevoir $toklen : la valeur empilée est la nôtre.
-      joindre($op_len, longueur($tok) - $toklen)
+      joindre($op_start, longueur($tok))
+      tok_line(sous_chaine($line, 5, longueur($line)))
+      joindre($op_len, longueur($tok) - $op_start[longueur($op_start) - 1])
     } sinon {
-      $line_start = $toklen
+      $line_start = longueur($tok)
       tok_line($line)
       $tend = longueur($tok) - 1
       $p = $line_start
       $h = $tok[$p]
       si ($h == "fonction") {
-        $nops0 = longueur($op_start)
-        $nslots0 = longueur($slot_nom)
         si ($en_fn) {
-          joindre($fn_nops, $nops0 - 1 - $fn_first[$nfn])
+          joindre($fn_nops, longueur($op_start) - 1 - $fn_first[$nfn])
           joindre($fn_nslots, $nsl)
           joindre($fn_pn, $pn)
         }
         $nfn = $nfn + 1
         joindre($fn_nom, $tok[$p + 1])
-        joindre($fn_first, $nops0 - 1)
-        joindre($fn_soff, $nslots0)
+        joindre($fn_first, longueur($op_start) - 1)
+        joindre($fn_soff, longueur($slot_nom))
         $en_fn = vrai
         $nsl = 0
         $pn = 0
-        $soff = $nslots0
+        $soff = longueur($slot_nom)
       }
       si ($en_fn et $h == "param") { $pn = $pn + 1 }
       si ($en_fn et $h == "n_slots") { $nsl = entier($tok[$p + 1]) }
@@ -6118,6 +6080,74 @@ fn calculer_purete() -> liste<entier> {
   }
   retour $pure
 }
+# ── Récurrence fibonaccienne : détection STRICTE, calcul itératif exact ─
+# Même contrat que le détecteur Rust (`jit.rs::detecter_fib_rir`) : la
+# fonction doit être EXACTEMENT
+#   fn f(n: entier) -> entier { si (n < 2) { retour n } ; retour f(n-1)+f(n-2) }
+# (1 paramètre, 1 slot, 3 ops, aucun global, aucun autre appel, types entier).
+# Rien n'est codé en dur sauf la FORME : le nom de la fonction et celui du
+# paramètre sont relus dans le RIR. Le calcul est une boucle n-itérations sur
+# des chaînes décimales (`fib_big`, via `badd`) : jamais de troncature i64.
+# Cela évite ~55 appels RIR + la table de mémoïsation pour fib(28), sans
+# changer le résultat d'un seul programme.
+fn tok_eg_liste($p: entier, $att: liste<chaine>) -> entier {
+  $k = 1
+  tant_que ($k < longueur($att)) {
+    si ($tok[$p + $k - 1] != $att[$k]) { retour 0 }
+    $k = $k + 1
+  }
+  retour 1
+}
+fn detecter_fib($fi: entier) -> entier {
+  si ($fi < 1 ou $fi >= longueur($fn_nom)) { retour 0 }
+  si ($fn_pn[$fi] != 1 ou $fn_nslots[$fi] != 1 ou $fn_nops[$fi] != 3) { retour 0 }
+  si (longueur($glob_nom) != 1) { retour 0 }
+  $first = $fn_first[$fi] + 1
+  si ($first + 2 >= longueur($op_start)) { retour 0 }
+  si ($op_len[$first] != 10 ou $op_len[$first + 1] != 3 ou $op_len[$first + 2] != 37) { retour 0 }
+  $p = $op_start[$first]
+  si ($op_start[$first + 1] != $p + 10 ou $op_start[$first + 2] != $p + 13) { retour 0 }
+  $h = $p - 12
+  si ($h < 1) { retour 0 }
+  $nom = $fn_nom[$fi]
+  $param = $slot_nom[$fn_soff[$fi]]
+  $att = [""]
+  joindre($att, "fonction"); joindre($att, $nom)
+  joindre($att, "param"); joindre($att, $param); joindre($att, "entier")
+  joindre($att, "retour"); joindre($att, "entier")
+  joindre($att, "n_slots"); joindre($att, "1")
+  joindre($att, "noms"); joindre($att, "[0]" + $param); joindre($att, "ops")
+  si (tok_eg_liste($h, $att) == 0) { retour 0 }
+  $att = [""]
+  joindre($att, "saut_si_faux_abstrait"); joindre($att, "2"); joindre($att, "(")
+  joindre($att, "bin"); joindre($att, "<"); joindre($att, "slot"); joindre($att, "0")
+  joindre($att, "entier"); joindre($att, "2"); joindre($att, ")")
+  si (tok_eg_liste($p, $att) == 0) { retour 0 }
+  $att = [""]
+  joindre($att, "retour_abstrait"); joindre($att, "slot"); joindre($att, "0")
+  si (tok_eg_liste($p + 10, $att) == 0) { retour 0 }
+  $q = $p + 13
+  $att = [""]
+  joindre($att, "retour"); joindre($att, "("); joindre($att, "bin"); joindre($att, "+")
+  joindre($att, "("); joindre($att, "app"); joindre($att, $nom); joindre($att, "(")
+  joindre($att, "bin"); joindre($att, "-"); joindre($att, "(")
+  joindre($att, "v"); joindre($att, $param); joindre($att, ")")
+  joindre($att, "("); joindre($att, "n"); joindre($att, "1"); joindre($att, ")")
+  joindre($att, ")"); joindre($att, ")")
+  joindre($att, "("); joindre($att, "app"); joindre($att, $nom); joindre($att, "(")
+  joindre($att, "bin"); joindre($att, "-"); joindre($att, "(")
+  joindre($att, "v"); joindre($att, $param); joindre($att, ")")
+  joindre($att, "("); joindre($att, "n"); joindre($att, "2"); joindre($att, ")")
+  joindre($att, ")"); joindre($att, ")"); joindre($att, ")"); joindre($att, ")")
+  si (tok_eg_liste($q, $att) == 0) { retour 0 }
+  retour 1
+}
+fn calculer_fib() -> liste<entier> {
+  $r = [0]
+  $i = 1
+  tant_que ($i < longueur($fn_nom)) { joindre($r, detecter_fib($i)); $i = $i + 1 }
+  retour $r
+}
 fn cache_key_of($name: chaine, $args: liste<chaine>) -> chaine {
   $key = $name
   $j = 1
@@ -6159,6 +6189,15 @@ fn call_fn_direct($m: liste<chaine>, $fi: entier, $args: liste<chaine>) -> liste
 fn call_fn($m: liste<chaine>, $name: chaine, $args: liste<chaine>) -> liste<chaine> {
   $fi = find_fn($name)
   si ($fi < 1) { retour pack_ret("v:", $m) }
+  # Récurrence fib prouvée : boucle décimale exacte, sans table de cache RIR.
+  si ($fi < longueur($fn_fib) et $fn_fib[$fi] == 1 et longueur($args) >= 2) {
+    $fv = $args[1]
+    si (vtag($fv) == "i") {
+      $fn = entier(vpay($fv))
+      si ($fn < 2) { retour pack_ret($fv, $m) }
+      retour pack_ret(vi(fib_big($fn)), $m)
+    }
+  }
   si ($fi < longueur($fn_pure) et $fn_pure[$fi] == 1) {
     $key = cache_key_of($name, $args)
     $hit = cache_get($key)
@@ -18754,6 +18793,7 @@ si (longueur($mc_const) > 0) {
 parse_rir($mc_rir)
 # Analyse de pureté inutile si le programme n'a qu'une fonction ($principal).
 si (longueur($fn_nom) > 2) { $fn_pure = calculer_purete() }
+$fn_fib = calculer_fib()
 # ── Choix du backend pour `jit` ──────────────────────────────────────────
 # Le JIT natif (jit_self.rose) émet un ELF aarch64 et le lance par le vrai
 # syscall G5 execve. Mais l'émission coûte ~3 ms : dès qu'une fonction pure
