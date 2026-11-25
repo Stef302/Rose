@@ -43,10 +43,10 @@ bash scripts/build-windows-rebuild.sh --cargo    # repli cargo
   chaque changement d'émetteur.)
 - Parité self-host (harnais `scripts/verifier_parite_selfhost.sh`) : **141
   conformes / 0 divergent / 0 bloqué**, RC=0, avec le moteur complet émis par C0
-  (`moteur.elf` 2 415 644 o). (L'ancien tally 110/28/3 provenait d'un moteur
-  périmé ; rejoué sur le moteur frais → 141/141.)
-- Émetteur PE x64 : la forme `lstvide` est désormais couverte (liste vide), ce
-  qui débloque l'émission du moteur complet (`rose.exe` 1 770 496 o, PE32+).
+  (`moteur.elf` 2 417 292 o).
+- Sous-ensembles réglés dans le vérificateur de `moteur_complet.rose` :
+  fonction de première classe (`t107`), liste de listes (`t55`), 31 arguments
+  (`t100`). Les trois concordent avec l'oracle Rust.
 
 ## Retour arrière
 
