@@ -1,0 +1,125 @@
+# cible.bud — PROFIL DE CIBLE GÉNÉRIQUE (données uniquement).
+#
+# Aucune logique : pas de si, pas de boucle, pas de fonction. L'architecture
+# est une DONNÉE déclarée, pas une fonction du compilateur. Ce fichier décrit
+# le contrat consommé par compilateur/backend_universel.rose : `bu_cible(nom)`
+# renvoie exactement ces champs, sous forme de paires `cle=valeur`.
+#
+# Le format de profil est une CHAÎNE à champs séparés par `|`, dans cet ordre :
+#   nom|famille|largeur_registre|boutisme|mot_octets|registres|format_saut|entree_sortie|enveloppe
+
+nom: "backend-machine-generique"
+version: "0.1.0"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: donnee
+  largeur_mot: 64
+  abi: rose-machine-ir-v0
+}
+
+profil: universel
+
+donnees: {
+  # Jeu d'operations abstrait (code, nom, arite, categorie).
+  # Ce jeu est COMMUN a toutes les cibles ; la disponibilité effective est
+  # donnée par la table d'encodeurs du backend.
+  operations: [
+    { code: 0,  nom: "nop",     arite: 0, categorie: "controle" },
+    { code: 1,  nom: "imm",     arite: 2, categorie: "donnees" },
+    { code: 2,  nom: "mov",     arite: 2, categorie: "donnees" },
+    { code: 3,  nom: "add",     arite: 3, categorie: "arith" },
+    { code: 4,  nom: "sub",     arite: 3, categorie: "arith" },
+    { code: 5,  nom: "mul",     arite: 3, categorie: "arith" },
+    { code: 6,  nom: "and",     arite: 3, categorie: "arith" },
+    { code: 7,  nom: "or",      arite: 3, categorie: "arith" },
+    { code: 8,  nom: "xor",     arite: 3, categorie: "arith" },
+    { code: 9,  nom: "load",    arite: 3, categorie: "memoire" },
+    { code: 10, nom: "store",   arite: 3, categorie: "memoire" },
+    { code: 11, nom: "jmp",     arite: 1, categorie: "saut" },
+    { code: 12, nom: "call",    arite: 1, categorie: "appel" },
+    { code: 13, nom: "ret",     arite: 0, categorie: "controle" },
+    { code: 14, nom: "syscall", arite: 1, categorie: "entree-sortie" }
+  ]
+
+  # Profils de cibles. `famille` SELECTIONNE l'encodeur ; aucun nom de CPU
+  # n'apparaît dans la logique de traduction du backend.
+  cibles: [
+    {
+      nom: "aarch64"
+      famille: 1
+      largeur_registre: 64
+      boutisme: petit
+      mot_octets: 4
+      registres: 31
+      format_saut: registre
+      entree_sortie: svc
+      enveloppe: brut
+      ops: "0..14"
+    },
+    {
+      nom: "x86_64"
+      famille: 2
+      largeur_registre: 64
+      boutisme: petit
+      mot_octets: 1
+      registres: 16
+      format_saut: registre
+      entree_sortie: syscall
+      enveloppe: brut
+      ops: "0..14"
+    },
+    {
+      nom: "wasm"
+      famille: 3
+      largeur_registre: 32
+      boutisme: petit
+      mot_octets: 1
+      registres: 8
+      format_saut: profondeur
+      entree_sortie: import
+      enveloppe: module
+      ops: "0..14"
+      note: "syscall => unreachable (import requis) ; charge/store exigent une section memoire"
+    }
+  ]
+
+  # Disponibilité des opérations par famille : table `famille:code:encodeur`.
+  # Une ligne absente = opération non supportée (bu_encode rend une suite vide).
+  encodeurs: [
+    "1:0:100", "1:1:101", "1:2:102", "1:3:103", "1:4:104", "1:5:105",
+    "1:6:106", "1:7:107", "1:8:108", "1:9:109", "1:10:110", "1:11:111",
+    "1:12:112", "1:13:113", "1:14:114",
+    "2:0:200", "2:1:201", "2:2:202", "2:3:203", "2:4:204", "2:5:205",
+    "2:6:206", "2:7:207", "2:8:208", "2:9:209", "2:10:210", "2:11:211",
+    "2:12:212", "2:13:213", "2:14:214",
+    "3:0:300", "3:1:301", "3:2:302", "3:3:303", "3:4:304", "3:5:305",
+    "3:6:306", "3:7:307", "3:8:308", "3:9:309", "3:10:310", "3:11:311",
+    "3:12:312", "3:13:313", "3:14:314"
+  ]
+
+  # Conventions de représentation (identiques à emetteur_elf / emetteur_pe).
+  conventions: {
+    porteuse_liste: 1
+    octets: "liste<entier> 0..255, index 0 = porteuse"
+    retour: "registre 0 (x0 / rax / local 0)"
+    immediat: "16 bits non signé pour aarch64 ; 64 bits pour x86_64 ; i32 LEB128 pour wasm"
+    decalage_memoire: "multiple de 8 sur aarch64 (ldr/str 64 bits), octet sur x86_64/wasm"
+  }
+}
+
+briques: [
+  "backend/cible.bud"
+]
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+}
+
+sortie: {
+  format: brut
+  entree: _start
+}

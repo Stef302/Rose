@@ -1,0 +1,156 @@
+# tests_backend.rose — batterie du BACKEND UNIVERSEL (IR abstrait -> 3 cibles).
+#
+# Rose n'a pas d'instruction `include` : ce fichier est un MODULE SOURCE qui
+# se concatène avec compilateur/backend_universel.rose :
+#
+#   cat compilateur/backend_universel.rose briques/tests_backend.rose \
+#       > /tmp/opencode/backend_tests/tests_prog.rose
+#   ROSE_SANS_JIT=1 rose interprete tests_prog.rose        # oracle Rust
+#   C0 tests_prog.rose > tests.elf && ./tests.elf          # natif, sans Rust
+#   diff nat.out ref.out
+#
+# Le test compile LA MÊME suite d'opérations abstraites vers aarch64, x86_64
+# et wasm. Il vérifie que les octets DIFFÈRENT, que chaque cible encode bien
+# les deux mêmes immediats (2 et 3) et la même addition, et que `bu_emettre`
+# écrit effectivement les trois fichiers. Aucune primitive Rust, aucun nom
+# d'architecture dans la logique de traduction : tout vient de `bu_cible`.
+
+# ── Utilitaires de test ─────────────────────────────────────────────────────
+
+fn bt_hexch(v: entier) -> chaine {
+  $h = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+  $b = v % 256
+  si ($b < 0) { $b = $b + 256 }
+  retour $h[partie_entiere($b / 16)] + $h[$b % 16]
+}
+
+# Hexadécimal depuis une LISTE D'OCTETS (pas depuis une chaîne : sous le
+# moteur auto-exécuté `ordre()` sur un octet brut >= 128 n'est pas fiable).
+fn bt_hex(octets: liste<entier>) -> chaine {
+  $r = ""
+  $k = 1
+  tant_que ($k < longueur($octets)) {
+    $r = $r + bt_hexch($octets[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn bt_contient(s: chaine, mot: chaine) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  si ($m < 1 ou $n < $m) { retour 0 }
+  $i = 0
+  tant_que ($i + $m <= $n) {
+    si (sous_chaine($s, $i, $i + $m) == $mot) { retour 1 }
+    $i = $i + 1
+  }
+  retour 0
+}
+
+# PAS d'affectation de globale depuis une fonction (peu fiable sous le moteur
+# Rust et sous G5) : bt_verifie ONLY imprime et rend 1/0 ; l'accumulation se
+# fait au niveau principal, ou chaque affectation est fiable.
+$bt_total = 30
+$bt_ok = 0
+
+fn bt_verifie(n: entier, nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
+  si ($obtenu == $attendu) {
+    >> "OK " + chaine($n) + " " + $nom
+    retour 1
+  }
+  >> "ECHEC " + chaine($n) + " " + $nom + " | obtenu=[" + $obtenu + "] attendu=[" + $attendu + "]"
+  retour 0
+}
+
+# Évalue l'addition abstraite à partir des DESCRIPTEURS de l'IR : c'est la
+# sémantique de référence, identique pour toutes les cibles.
+fn bt_eval_ir(desc: liste<entier>) -> entier {
+  $code = desc[0]
+  si ($code == 1) { retour desc[2] }
+  si ($code == 3) { retour desc[1] }
+  retour 0
+}
+
+# ── 1. Une SEULE suite abstraite, trois traductions ────────────────────────
+
+$seq = bu_sequence()
+$o1 = bu_operation("imm", [0, 2])
+$o2 = bu_operation("imm", [1, 3])
+$o3 = bu_operation("add", [0, 0, 1])
+$o4 = bu_operation("ret", [0])
+>> "IR "
+>> bu_ajouter($seq, $o1)
+>> bu_ajouter($seq, $o2)
+>> bu_ajouter($seq, $o3)
+>> bu_ajouter($seq, $o4)
+
+$c64 = bu_cible("aarch64")
+$cx = bu_cible("x86_64")
+$cw = bu_cible("wasm")
+$o64 = bu_traduire($seq, $c64)
+$ox = bu_traduire($seq, $cx)
+$ow = bu_traduire($seq, $cw)
+$h64 = bt_hex($o64)
+$hx = bt_hex($ox)
+$hw = bt_hex($ow)
+
+>> "OCTETS aarch64 (" + chaine(longueur($o64) - 1) + ") " + $h64
+>> "OCTETS x86_64   (" + chaine(longueur($ox) - 1) + ") " + $hx
+>> "OCTETS wasm     (" + chaine(longueur($ow) - 1) + ") " + $hw
+
+# ── 2. Structure de l'IR (indépendante de la cible) ─────────────────────────
+
+>> "--- IR ---"
+$bt_ok = $bt_ok + bt_verifie(1, "seq_porteuse_4_ops", chaine(longueur($seq)), "5")
+$bt_ok = $bt_ok + bt_verifie(2, "op_imm_code", chaine(bu_desc($o1)[0]), "1")
+$bt_ok = $bt_ok + bt_verifie(3, "op_add_code", chaine(bu_desc($o3)[0]), "3")
+$bt_ok = $bt_ok + bt_verifie(4, "op_add_args", chaine(bu_desc($o3)[1]) + "," + chaine(bu_desc($o3)[2]) + "," + chaine(bu_desc($o3)[3]), "0,0,1")
+$bt_ok = $bt_ok + bt_verifie(5, "profil_aarch64", bu_profil($c64, "famille") + "/" + bu_profil($c64, "boutisme"), "1/petit")
+$bt_ok = $bt_ok + bt_verifie(6, "profil_x86_64", bu_profil($cx, "famille") + "/" + bu_profil($cx, "boutisme"), "2/petit")
+$bt_ok = $bt_ok + bt_verifie(7, "profil_wasm", bu_profil($cw, "famille") + "/" + bu_profil($cw, "largeur_registre"), "3/32")
+$bt_ok = $bt_ok + bt_verifie(8, "encodeur_table_wasm_add", chaine(bu_encoder_id(3, 3)), "303")
+
+# ── 3. Même sémantique (2 + 3 = 5), octets différents ───────────────────────
+
+>> "--- SEMANTIQUE / DIFFERENCE ---"
+$bt_ok = $bt_ok + bt_verifie(9, "ir_imm1", chaine(bt_eval_ir(bu_desc($o1))), "2")
+$bt_ok = $bt_ok + bt_verifie(10, "ir_imm2", chaine(bt_eval_ir(bu_desc($o2))), "3")
+$bt_ok = $bt_ok + bt_verifie(11, "ir_add", chaine(bt_eval_ir(bu_desc($o1)) + bt_eval_ir(bu_desc($o2))), "5")
+$bt_ok = $bt_ok + bt_verifie(12, "aarch64_16_octets", chaine(longueur($o64) - 1), "16")
+$bt_ok = $bt_ok + bt_verifie(13, "x86_64_27_octets", chaine(longueur($ox) - 1), "27")
+$bt_ok = $bt_ok + bt_verifie(14, "wasm_52_octets", chaine(longueur($ow) - 1), "52")
+$diff_ax = 0
+si ($h64 != $hx) { $diff_ax = 1 }
+$diff_xw = 0
+si ($hx != $hw) { $diff_xw = 1 }
+$diff_aw = 0
+si ($h64 != $hw) { $diff_aw = 1 }
+$bt_ok = $bt_ok + bt_verifie(15, "octets_aarch64_different_de_x86_64", chaine($diff_ax), "1")
+$bt_ok = $bt_ok + bt_verifie(16, "octets_x86_64_different_de_wasm", chaine($diff_xw), "1")
+$bt_ok = $bt_ok + bt_verifie(17, "octets_aarch64_different_de_wasm", chaine($diff_aw), "1")
+
+# Chaque cible encode LES MEMES deux immediats et LA MEME addition.
+$bt_ok = $bt_ok + bt_verifie(18, "aarch64_movz_2", chaine(bt_contient($h64, "400080d2")), "1")
+$bt_ok = $bt_ok + bt_verifie(19, "aarch64_movz_3", chaine(bt_contient($h64, "610080d2")), "1")
+$bt_ok = $bt_ok + bt_verifie(20, "aarch64_add_x0_x0_x1", chaine(bt_contient($h64, "0000018b")), "1")
+$bt_ok = $bt_ok + bt_verifie(21, "x86_64_movabs_2", chaine(bt_contient($hx, "48b80200000000000000")), "1")
+$bt_ok = $bt_ok + bt_verifie(22, "x86_64_movabs_3", chaine(bt_contient($hx, "48b90300000000000000")), "1")
+$bt_ok = $bt_ok + bt_verifie(23, "x86_64_add_rax_rcx", chaine(bt_contient($hx, "4801c8")), "1")
+$bt_ok = $bt_ok + bt_verifie(24, "wasm_magie", chaine(bt_contient($hw, "0061736d01000000")), "1")
+$bt_ok = $bt_ok + bt_verifie(25, "wasm_i32const_2", chaine(bt_contient($hw, "4102")), "1")
+$bt_ok = $bt_ok + bt_verifie(26, "wasm_i32const_3", chaine(bt_contient($hw, "4103")), "1")
+$bt_ok = $bt_ok + bt_verifie(27, "wasm_i32add", chaine(bt_contient($hw, "6a")), "1")
+
+# ── 4. Émission effective des trois binaires ───────────────────────────────
+
+>> "--- EMISSION ---"
+$dir = "/tmp/opencode/backend_tests/"
+$n64 = bu_emettre($seq, $c64, $dir + "addition.aarch64.bin")
+$nx = bu_emettre($seq, $cx, $dir + "addition.x86_64.bin")
+$nw = bu_emettre($seq, $cw, $dir + "addition.wasm")
+$bt_ok = $bt_ok + bt_verifie(28, "fichier_aarch64", chaine($n64), "16")
+$bt_ok = $bt_ok + bt_verifie(29, "fichier_x86_64", chaine($nx), "27")
+$bt_ok = $bt_ok + bt_verifie(30, "fichier_wasm", chaine($nw), "52")
+
+>> "TOTAL " + chaine($bt_ok) + "/" + chaine($bt_total)

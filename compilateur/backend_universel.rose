@@ -1,0 +1,693 @@
+# backend_universel.rose — BACKEND MACHINE GÉNÉRIQUE, en Rose pur.
+#
+# Doctrine (v4backend, vague « universalité ») :
+#   Rose doit tourner sur N'IMPORTE QUEL appareil électronique. Un émetteur
+#   lié à une architecture (aarch64 ELF, x86-64 PE) n'est pas un backend,
+#   c'est un CAS PARTICULIER de backend. Ici l'architecture est une DONNÉE
+#   (profil renvoyé par `bu_cible`), jamais un nom écrit dans la logique de
+#   traduction. `bu_traduire` ne contient AUCUN nom d'architecture : il lit
+#   le profil, consulte une TABLE de disponibilité des opérations, puis
+#   délègue à l'encodeur de la famille déclarée dans le profil.
+#
+# API (tout est en Rose pur, sans primitive Rust, sans include) :
+#   bu_operation(nom, args)   -> entier   (id d'une op abstraite)
+#   bu_sequence()             -> liste<entier>  (suite vide, porteuse [0])
+#   bu_ajouter(seq, op)       -> entier   (ajoute l'op à la suite)
+#   bu_cible(nom)             -> liste<chaine>  (profil = DONNÉES)
+#   bu_traduire(seq, cible)   -> liste<entier>  (OCTETS, porteuse [0])
+#   bu_emettre(seq, cible, chemin) -> entier (écrit via ecrire_bytes)
+#
+# Cibles réellement supportées : aarch64, x86_64, wasm (module valide).
+# Voir rose/docs/BACKEND_UNIVERSEL.md pour la doctrine complète et les
+# limites (largeur d'immédiat, formats de saut, sémantique wasm i32).
+#
+# CONVENTIONS DE TYPE (compatibles G5 / C0, mesurées) :
+#   - une suite / un tampon d'octets est une liste<entier> dont l'index 0
+#     est une PORTEUSE (valeur ignorée) : `longueur` >= 1 même si vide ;
+#   - `joindre` mute la liste en place (elle est passée par référence), ce
+#     qui est le seul comportement fiable sous le moteur auto-exécuté ;
+#   - `÷` n'est PAS utilisé (non implémenté par le dispatch G5) ;
+#   - les octets sont écrits via `octet_brut`, interception G5 à 1 octet.
+
+# ── 1. Jeu d'opérations ABSTRAITES ──────────────────────────────────────────
+# Codes stables, indépendants de toute architecture. Ajouter une opération
+# = ajouter un nom ici + une ligne par cible dans $bu_encoder_table.
+
+fn bu_noms_ops() -> liste<chaine> {
+  $r = [""]
+  joindre($r, "nop")
+  joindre($r, "imm")
+  joindre($r, "mov")
+  joindre($r, "add")
+  joindre($r, "sub")
+  joindre($r, "mul")
+  joindre($r, "and")
+  joindre($r, "or")
+  joindre($r, "xor")
+  joindre($r, "load")
+  joindre($r, "store")
+  joindre($r, "jmp")
+  joindre($r, "call")
+  joindre($r, "ret")
+  joindre($r, "syscall")
+  retour $r
+}
+
+fn bu_code_op(nom: chaine) -> entier {
+  $n = bu_noms_ops()
+  $k = 1
+  tant_que ($k < longueur($n)) {
+    # la table a une porteuse en index 0 : code = index - 1.
+    si ($n[$k] == $nom) { retour $k - 1 }
+    $k = $k + 1
+  }
+  retour -1
+}
+
+fn bu_nom_op(code: entier) -> chaine {
+  $n = bu_noms_ops()
+  si (code < 0 ou code + 1 >= longueur($n)) { retour "?" }
+  retour $n[code + 1]
+}
+
+# Registre des opérations. Rose n'a PAS de listes de listes : le registre
+# est donc APLATI en deux listes parallèles (motif éprouvé par les tables
+# G5 de emetteur_elf.rose). $bu_ops_idx[id] = position de départ dans
+# $bu_ops_flat ; les arguments sont contigus, en nombre fixe (bu_arity).
+$bu_ops_flat = [0]
+$bu_ops_idx = [0]
+
+fn bu_arity(code: entier) -> entier {
+  $a = [0, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 0, 1]
+  si (code < 0 ou code >= longueur($a)) { retour 0 }
+  retour $a[code]
+}
+
+fn bu_operation(nom: chaine, args: liste<entier>) -> entier {
+  $code = bu_code_op($nom)
+  si ($code < 0) { retour -1 }
+  $n = bu_arity($code)
+  joindre($bu_ops_idx, longueur($bu_ops_flat))
+  joindre($bu_ops_flat, $code)
+  $k = 0
+  tant_que ($k < $n) {
+    $v = 0
+    si ($k < longueur($args)) { $v = $args[$k] }
+    joindre($bu_ops_flat, $v)
+    $k = $k + 1
+  }
+  retour longueur($bu_ops_idx) - 1
+}
+
+fn bu_desc(id: entier) -> liste<entier> {
+  $vide = [0]
+  si (id < 1 ou id >= longueur($bu_ops_idx)) { retour $vide }
+  $start = $bu_ops_idx[$id]
+  $code = $bu_ops_flat[$start]
+  $n = bu_arity($code)
+  $d = [$code]
+  $k = 0
+  tant_que ($k < $n) {
+    joindre($d, $bu_ops_flat[$start + 1 + $k])
+    $k = $k + 1
+  }
+  retour $d
+}
+
+# ── 2. Suites d'opérations (IR machine abstrait) ────────────────────────────
+
+fn bu_sequence() -> liste<entier> {
+  $s = [0]
+  retour $s
+}
+
+fn bu_ajouter(seq: liste<entier>, op: entier) -> entier {
+  si (op < 1) { retour -1 }
+  joindre($seq, $op)
+  retour longueur($seq) - 1
+}
+
+# ── 3. Profils de cible = DONNÉES ───────────────────────────────────────────
+# `bu_cible` est le SEUL endroit du backend qui nomme une architecture.
+# Le profil est une liste<chaine> de paires "cle=valeur" : aucune logique,
+# aucune fonction, aucun nom de CPU dans `bu_traduire`.
+
+fn bu_cible(nom: chaine) -> liste<chaine> {
+  $p = ["nom=" + $nom]
+  $famille = 0
+  $reg = 64
+  $bout = "petit"
+  $mot = 8
+  $nregs = 31
+  $saut = "registre"
+  $io = "syscall"
+  $env = "brut"
+  si ($nom == "aarch64") {
+    $famille = 1
+    $reg = 64
+    $bout = "petit"
+    $mot = 4
+    $nregs = 31
+    $saut = "registre"
+    $io = "svc"
+  }
+  si ($nom == "x86_64") {
+    $famille = 2
+    $reg = 64
+    $bout = "petit"
+    $mot = 1
+    $nregs = 16
+    $saut = "registre"
+    $io = "syscall"
+  }
+  si ($nom == "wasm") {
+    $famille = 3
+    $reg = 32
+    $bout = "petit"
+    $mot = 1
+    $nregs = 8
+    $saut = "profondeur"
+    $io = "import"
+    $env = "module"
+  }
+  joindre($p, "famille=" + chaine($famille))
+  joindre($p, "largeur_registre=" + chaine($reg))
+  joindre($p, "boutisme=" + $bout)
+  joindre($p, "mot_octets=" + chaine($mot))
+  joindre($p, "registres=" + chaine($nregs))
+  joindre($p, "format_saut=" + $saut)
+  joindre($p, "entree_sortie=" + $io)
+  joindre($p, "enveloppe=" + $env)
+  retour $p
+}
+
+fn bu_profil(p: liste<chaine>, cle: chaine) -> chaine {
+  $pref = $cle + "="
+  $n = longueur($pref)
+  $k = 0
+  tant_que ($k < longueur($p)) {
+    $v = $p[$k]
+    si (longueur($v) >= $n) {
+      si (sous_chaine($v, 0, $n) == $pref) {
+        retour sous_chaine($v, $n, longueur($v))
+      }
+    }
+    $k = $k + 1
+  }
+  retour ""
+}
+
+fn bu_profil_entier(p: liste<chaine>, cle: chaine) -> entier {
+  retour entier(bu_profil($p, $cle))
+}
+
+# ── 4. Table de données : quelles ops sont disponibles sur quelle cible ─────
+# Format de chaque ligne : "famille:code:encodeur". L'encodeur est un
+# identifiant numérique (famille*100 + code). Cette table EST la donnée
+# d'architecture : `bu_traduire` la consulte, il ne connaît aucun CPU.
+
+$bu_encoder_table = [""]
+joindre($bu_encoder_table, "1:0:100")
+joindre($bu_encoder_table, "1:1:101")
+joindre($bu_encoder_table, "1:2:102")
+joindre($bu_encoder_table, "1:3:103")
+joindre($bu_encoder_table, "1:4:104")
+joindre($bu_encoder_table, "1:5:105")
+joindre($bu_encoder_table, "1:6:106")
+joindre($bu_encoder_table, "1:7:107")
+joindre($bu_encoder_table, "1:8:108")
+joindre($bu_encoder_table, "1:9:109")
+joindre($bu_encoder_table, "1:10:110")
+joindre($bu_encoder_table, "1:11:111")
+joindre($bu_encoder_table, "1:12:112")
+joindre($bu_encoder_table, "1:13:113")
+joindre($bu_encoder_table, "1:14:114")
+joindre($bu_encoder_table, "2:0:200")
+joindre($bu_encoder_table, "2:1:201")
+joindre($bu_encoder_table, "2:2:202")
+joindre($bu_encoder_table, "2:3:203")
+joindre($bu_encoder_table, "2:4:204")
+joindre($bu_encoder_table, "2:5:205")
+joindre($bu_encoder_table, "2:6:206")
+joindre($bu_encoder_table, "2:7:207")
+joindre($bu_encoder_table, "2:8:208")
+joindre($bu_encoder_table, "2:9:209")
+joindre($bu_encoder_table, "2:10:210")
+joindre($bu_encoder_table, "2:11:211")
+joindre($bu_encoder_table, "2:12:212")
+joindre($bu_encoder_table, "2:13:213")
+joindre($bu_encoder_table, "2:14:214")
+joindre($bu_encoder_table, "3:0:300")
+joindre($bu_encoder_table, "3:1:301")
+joindre($bu_encoder_table, "3:2:302")
+joindre($bu_encoder_table, "3:3:303")
+joindre($bu_encoder_table, "3:4:304")
+joindre($bu_encoder_table, "3:5:305")
+joindre($bu_encoder_table, "3:6:306")
+joindre($bu_encoder_table, "3:7:307")
+joindre($bu_encoder_table, "3:8:308")
+joindre($bu_encoder_table, "3:9:309")
+joindre($bu_encoder_table, "3:10:310")
+joindre($bu_encoder_table, "3:11:311")
+joindre($bu_encoder_table, "3:12:312")
+joindre($bu_encoder_table, "3:13:313")
+joindre($bu_encoder_table, "3:14:314")
+
+fn bu_champ(s: chaine, i: entier) -> chaine {
+  $n = longueur(s)
+  $part = 0
+  $deb = 0
+  $k = 0
+  tant_que ($k <= $n) {
+    $c = ":"
+    si ($k < $n) { $c = sous_chaine(s, $k, $k + 1) }
+    si ($c == ":" ou $k == $n) {
+      si ($part == $i) { retour sous_chaine(s, $deb, $k) }
+      $part = $part + 1
+      $deb = $k + 1
+    }
+    $k = $k + 1
+  }
+  retour ""
+}
+
+fn bu_encoder_id(famille: entier, code: entier) -> entier {
+  $k = 0
+  tant_que ($k < longueur($bu_encoder_table)) {
+    $ligne = $bu_encoder_table[$k]
+    si (entier(bu_champ($ligne, 0)) == famille) {
+      si (entier(bu_champ($ligne, 1)) == code) {
+        retour entier(bu_champ($ligne, 2))
+      }
+    }
+    $k = $k + 1
+  }
+  retour -1
+}
+
+# ── 5. Utilitaires d'octets (boutisme lu dans le profil) ───────────────────
+
+fn bu_octet(v: entier) -> entier {
+  $b = v % 256
+  si ($b < 0) { $b = $b + 256 }
+  retour $b
+}
+
+fn bu_ajoute(dst: liste<entier>, src: liste<entier>) -> entier {
+  $k = 1
+  tant_que ($k < longueur($src)) {
+    joindre($dst, $src[$k])
+    $k = $k + 1
+  }
+  retour longueur($dst) - 1
+}
+
+fn bu_sans_porteur(l: liste<entier>) -> liste<entier> {
+  $n = longueur(l)
+  $r = [0]
+  $k = 1
+  tant_que ($k < $n) {
+    joindre($r, $l[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Sérialise un mot de 32 bits dans l'ordre déclaré par le profil.
+# Aucun boutisme en dur : `bu_profil(p, "boutisme")` pilote l'ordre.
+fn bu_mot32(v: entier, p: liste<chaine>) -> liste<entier> {
+  $u = v % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  $b0 = $u % 256
+  $b1 = partie_entiere($u / 256) % 256
+  $b2 = partie_entiere($u / 65536) % 256
+  $b3 = partie_entiere($u / 16777216) % 256
+  $r = [0]
+  si (bu_profil($p, "boutisme") == "gros") {
+    joindre($r, $b3)
+    joindre($r, $b2)
+    joindre($r, $b1)
+    joindre($r, $b0)
+  } sinon {
+    joindre($r, $b0)
+    joindre($r, $b1)
+    joindre($r, $b2)
+    joindre($r, $b3)
+  }
+  retour $r
+}
+
+# Immédiat 64 bits en complément à 2 (algorithme de emetteur_pe_x64/x_imm64).
+fn bu_imm64(v: entier) -> liste<entier> {
+  $u = v
+  $neg = 0
+  si ($u < 0) { $neg = 1; $u = -$u }
+  $c0 = $u % 65536
+  $c1 = partie_entiere($u / 65536) % 65536
+  $c2 = partie_entiere($u / 4294967296) % 65536
+  $c3 = partie_entiere($u / 281474976710656) % 65536
+  si ($neg == 1) {
+    $c0 = 65536 - $c0
+    $c1 = 65535 - $c1
+    $c2 = 65535 - $c2
+    $c3 = 65535 - $c3
+    si ($c0 >= 65536) { $c0 = $c0 - 65536; $c1 = $c1 + 1 }
+    si ($c1 >= 65536) { $c1 = $c1 - 65536; $c2 = $c2 + 1 }
+    si ($c2 >= 65536) { $c2 = $c2 - 65536; $c3 = $c3 + 1 }
+    si ($c3 >= 65536) { $c3 = $c3 - 65536 }
+  }
+  $r = [0]
+  $k = 0
+  tant_que ($k < 4) {
+    $w = $c0
+    si ($k == 1) { $w = $c1 }
+    si ($k == 2) { $w = $c2 }
+    si ($k == 3) { $w = $c3 }
+    joindre($r, $w % 256)
+    joindre($r, partie_entiere($w / 256) % 256)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# LEB128 non signé (tailles de sections wasm).
+fn bu_leb_u(v: entier) -> liste<entier> {
+  $r = [0]
+  $x = v
+  si ($x < 0) { $x = 0 }
+  $encore = 1
+  tant_que ($encore == 1) {
+    $b = $x % 128
+    $x = partie_entiere($x / 128)
+    si ($x > 0) { $b = $b + 128 }
+    joindre($r, $b)
+    si ($x == 0) { $encore = 0 }
+  }
+  retour $r
+}
+
+# LEB128 signé (i32.const / i32.load offset).
+fn bu_leb_s(v: entier) -> liste<entier> {
+  $r = [0]
+  $x = v
+  $encore = 1
+  tant_que ($encore == 1) {
+    $b = $x % 128
+    si ($b < 0) { $b = $b + 128 }
+    $x = partie_entiere(($x - $b) / 128)
+    $fin = 0
+    si ($x == 0 et $b < 64) { $fin = 1 }
+    si ($x == -1 et $b >= 64) { $fin = 1 }
+    si ($fin == 0) { $b = $b + 128 }
+    joindre($r, $b)
+    si ($fin == 1) { $encore = 0 }
+  }
+  retour $r
+}
+
+# ── 6. Encodeur AARCH64 (famille 1) ────────────────────────────────────────
+# Formules identiques à compilateur/emetteur_elf.rose:717-746 (source de
+# vérité). Chaque mot est sérialisé via bu_mot32, donc le boutisme vient du
+# profil et non du code.
+
+fn bu_a64_mot(word: entier, p: liste<chaine>) -> liste<entier> {
+  retour bu_mot32(word, $p)
+}
+
+fn bu_a64_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  $rd = 0
+  $rn = 0
+  $rm = 0
+  $im = 0
+  si (longueur($a) > 1) { $rd = $a[1] }
+  si (longueur($a) > 2) { $rn = $a[2] }
+  si (longueur($a) > 3) { $rm = $a[3] }
+  si (code == 1) { $im = $rn }              # imm : valeur en a[2]
+  si (code == 14) { $im = $rd }             # syscall : numéro en a[1]
+  si (code == 0) { bu_ajoute($r, bu_a64_mot(3573751839, $p)) }              # nop
+  si (code == 1) { bu_ajoute($r, bu_a64_mot(3531603968 + $im * 32 + $rd, $p)) } # movz
+  si (code == 2) { bu_ajoute($r, bu_a64_mot(2852126720 + $rn * 65536 + 31 * 32 + $rd, $p)) } # mov = orr rd,xzr,rn
+  si (code == 3) { bu_ajoute($r, bu_a64_mot(2332033024 + $rm * 65536 + $rn * 32 + $rd, $p)) } # add
+  si (code == 4) { bu_ajoute($r, bu_a64_mot(3405774848 + $rm * 65536 + $rn * 32 + $rd, $p)) } # sub
+  si (code == 5) { bu_ajoute($r, bu_a64_mot(2600500224 + $rm * 65536 + $rn * 32 + $rd, $p)) } # mul
+  si (code == 6) { bu_ajoute($r, bu_a64_mot(2315255808 + $rm * 65536 + $rn * 32 + $rd, $p)) } # and
+  si (code == 7) { bu_ajoute($r, bu_a64_mot(2852126720 + $rm * 65536 + $rn * 32 + $rd, $p)) } # orr
+  si (code == 8) { bu_ajoute($r, bu_a64_mot(3388997632 + $rm * 65536 + $rn * 32 + $rd, $p)) } # eor
+  si (code == 9) { bu_ajoute($r, bu_a64_mot(4181721088 + partie_entiere($rm / 8) * 1024 + $rn * 32 + $rd, $p)) } # ldr (off = rm)
+  si (code == 10) { bu_ajoute($r, bu_a64_mot(4177526784 + partie_entiere($rm / 8) * 1024 + $rn * 32 + $rd, $p)) } # str
+  si (code == 11) { bu_ajoute($r, bu_a64_mot(3592355840 + $rd * 32, $p)) }  # br xRd
+  si (code == 12) { bu_ajoute($r, bu_a64_mot(3594452992 + $rd * 32, $p)) }  # blr xRd
+  si (code == 13) { bu_ajoute($r, bu_a64_mot(3596551104, $p)) }             # ret
+  si (code == 14) {
+    # syscall : numéro dans x8, puis svc #0 (SVC_I de emetteur_elf).
+    bu_ajoute($r, bu_a64_mot(3531603968 + $im * 32 + 8, $p))
+    bu_ajoute($r, bu_a64_mot(3556769793, $p))
+  }
+  retour $r
+}
+
+# ── 7. Encodeur X86_64 (famille 2) ─────────────────────────────────────────
+# Formules de compilateur/emetteur_pe_x64.rose:296-372, complétées pour
+# mul/and/or/xor/load/store/jmp/call (REX.W + modrm standard).
+
+fn bu_x64_rr(opcode: entier, reg: entier, rm: entier) -> liste<entier> {
+  $re = 0
+  si (reg >= 8) { $re = 8 }
+  $b = 0
+  si (rm >= 8) { $b = 1 }
+  $r = [0, 72 + $re + $b, $opcode, 192 + ($reg % 8) * 8 + ($rm % 8)]
+  retour $r
+}
+
+fn bu_x64_rr2(pre: entier, opcode: entier, reg: entier, rm: entier) -> liste<entier> {
+  $re = 0
+  si (reg >= 8) { $re = 8 }
+  $b = 0
+  si (rm >= 8) { $b = 1 }
+  $r = [0, 72 + $re + $b, $pre, $opcode, 192 + ($reg % 8) * 8 + ($rm % 8)]
+  retour $r
+}
+
+fn bu_x64_mem(opcode: entier, reg: entier, base: entier, off: entier, p: liste<chaine>) -> liste<entier> {
+  $re = 0
+  si (reg >= 8) { $re = 8 }
+  $b = 0
+  si (base >= 8) { $b = 1 }
+  $r = [0]
+  joindre($r, 72 + $re + $b)
+  joindre($r, $opcode)
+  joindre($r, 128 + ($reg % 8) * 8 + ($base % 8))
+  bu_ajoute($r, bu_mot32($off, $p))
+  retour $r
+}
+
+fn bu_x64_movimm(reg: entier, v: entier) -> liste<entier> {
+  $b = 0
+  si (reg >= 8) { $b = 1 }
+  $r = [0, 72 + $b, 184 + ($reg % 8)]
+  bu_ajoute($r, bu_imm64($v))
+  retour $r
+}
+
+fn bu_x64_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  $d = 0
+  $s = 0
+  $t = 0
+  si (longueur($a) > 1) { $d = $a[1] }
+  si (longueur($a) > 2) { $s = $a[2] }
+  si (longueur($a) > 3) { $t = $a[3] }
+  si (code == 0) { joindre($r, 144) }                                   # nop
+  si (code == 1) { bu_ajoute($r, bu_x64_movimm($d, $s)) }               # movimm reg, val
+  si (code == 2) { bu_ajoute($r, bu_x64_rr(139, $d, $s)) }              # mov dst, src
+  # x86-64 est à 2 opérandes : toute opération abstraite à 3 opérandes
+  # commence par `mov d,s`, puis applique l'opération avec t.
+  si (code == 3) { bu_ajoute($r, bu_x64_rr(139, $d, $s)); bu_ajoute($r, bu_x64_rr(1, $t, $d)) } # add
+  si (code == 4) { bu_ajoute($r, bu_x64_rr(139, $d, $s)); bu_ajoute($r, bu_x64_rr(41, $t, $d)) } # sub
+  si (code == 5) { bu_ajoute($r, bu_x64_rr(139, $d, $s)); bu_ajoute($r, bu_x64_rr2(15, 175, $d, $t)) } # imul
+  si (code == 6) { bu_ajoute($r, bu_x64_rr(139, $d, $s)); bu_ajoute($r, bu_x64_rr(33, $t, $d)) } # and
+  si (code == 7) { bu_ajoute($r, bu_x64_rr(139, $d, $s)); bu_ajoute($r, bu_x64_rr(9, $t, $d)) }  # or
+  si (code == 8) { bu_ajoute($r, bu_x64_rr(139, $d, $s)); bu_ajoute($r, bu_x64_rr(49, $t, $d)) } # xor
+  si (code == 9) { bu_ajoute($r, bu_x64_mem(139, $d, $s, $t, $p)) }     # mov dst,[base+off]
+  si (code == 10) { bu_ajoute($r, bu_x64_mem(137, $d, $s, $t, $p)) }    # mov [base+off],src
+  si (code == 11) { bu_ajoute($r, bu_x64_rr(255, 4, $d)) }              # jmp r/m64 (/4)
+  si (code == 12) { bu_ajoute($r, bu_x64_rr(255, 2, $d)) }              # call r/m64 (/2)
+  si (code == 13) { joindre($r, 195) }                                  # ret
+  si (code == 14) {
+    bu_ajoute($r, bu_x64_movimm(0, $d))                                 # mov rax, n
+    joindre($r, 15)
+    joindre($r, 5)                                                      # syscall
+  }
+  retour $r
+}
+
+# ── 8. Encodeur WASM (famille 3) ───────────────────────────────────────────
+# L'IR à registres est abaissé en machine à pile : chaque registre est un
+# local i32. Les octets produits forment un MODULE VALIDE (magie, types,
+# fonction exportée "f", section code). `syscall` est documenté comme non
+# traduisible (un import serait nécessaire) : on émet `unreachable`.
+
+fn bu_wasm_local(reg: entier) -> liste<entier> {
+  $r = [0]
+  joindre($r, 32)                                                       # local.get
+  bu_ajoute($r, bu_leb_u($reg))
+  retour $r
+}
+
+fn bu_wasm_set(reg: entier) -> liste<entier> {
+  $r = [0]
+  joindre($r, 33)                                                       # local.set
+  bu_ajoute($r, bu_leb_u($reg))
+  retour $r
+}
+
+fn bu_wasm_bin(reg: entier, a: entier, b: entier, op: entier) -> liste<entier> {
+  $r = [0]
+  bu_ajoute($r, bu_wasm_local($a))
+  bu_ajoute($r, bu_wasm_local($b))
+  joindre($r, $op)
+  bu_ajoute($r, bu_wasm_set($reg))
+  retour $r
+}
+
+fn bu_wasm_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  $d = 0
+  $s = 0
+  $t = 0
+  si (longueur($a) > 1) { $d = $a[1] }
+  si (longueur($a) > 2) { $s = $a[2] }
+  si (longueur($a) > 3) { $t = $a[3] }
+  si (code == 0) { joindre($r, 1) }                                     # nop
+  si (code == 1) {
+    joindre($r, 65)                                                     # i32.const
+    bu_ajoute($r, bu_leb_s($s))
+    bu_ajoute($r, bu_wasm_set($d))
+  }
+  si (code == 2) { bu_ajoute($r, bu_wasm_local($t)); bu_ajoute($r, bu_wasm_set($d)) }
+  si (code == 3) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 106)) }        # i32.add
+  si (code == 4) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 107)) }        # i32.sub
+  si (code == 5) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 108)) }        # i32.mul
+  si (code == 6) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 113)) }        # i32.and
+  si (code == 7) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 114)) }        # i32.or
+  si (code == 8) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 115)) }        # i32.xor
+  si (code == 9) {
+    bu_ajoute($r, bu_wasm_local($s))                                    # adresse
+    joindre($r, 40)
+    joindre($r, 2)                                                      # align 4 octets
+    bu_ajoute($r, bu_leb_s($t))
+    bu_ajoute($r, bu_wasm_set($d))
+  }
+  si (code == 10) {
+    bu_ajoute($r, bu_wasm_local($s))
+    bu_ajoute($r, bu_wasm_local($d))
+    joindre($r, 54)
+    joindre($r, 2)
+    bu_ajoute($r, bu_leb_s($t))
+  }
+  si (code == 11) { joindre($r, 12); joindre($r, 0) }                   # br 0
+  si (code == 12) { joindre($r, 16); bu_ajoute($r, bu_leb_u($d)) }      # call idx
+  si (code == 13) {
+    # convention de retour : registre 0 (x0 / rax / local 0).
+    bu_ajoute($r, bu_wasm_local(0))
+    joindre($r, 15)                                                     # return
+  }
+  si (code == 14) { joindre($r, 0) }                                    # unreachable
+  retour $r
+}
+
+fn bu_wasm_module(corps: liste<entier>) -> liste<entier> {
+  $b = bu_sans_porteur($corps)
+  $ncorps = longueur($b) - 1
+  $taille_corps = $ncorps + 4                                            # 3 octets de decls locaux + end
+  $lebsize = bu_leb_u($taille_corps)
+  $payload = $taille_corps + longueur($lebsize)                          # count(1) + LEB(size) + size
+  $r = [0]
+  # magie + version
+  joindre($r, 0); joindre($r, 97); joindre($r, 115); joindre($r, 109)
+  joindre($r, 1); joindre($r, 0); joindre($r, 0); joindre($r, 0)
+  # section type : (func) -> i32
+  joindre($r, 1); joindre($r, 5); joindre($r, 1)
+  joindre($r, 96); joindre($r, 0); joindre($r, 1); joindre($r, 127)
+  # section function : une fonction de type 0
+  joindre($r, 3); joindre($r, 2); joindre($r, 1); joindre($r, 0)
+  # section export : "f", fonction 0
+  joindre($r, 7); joindre($r, 5); joindre($r, 1)
+  joindre($r, 1); joindre($r, 102); joindre($r, 0); joindre($r, 0)
+  # section code
+  joindre($r, 10)
+  bu_ajoute($r, bu_leb_u($payload))
+  joindre($r, 1)                                                        # 1 fonction
+  bu_ajoute($r, $lebsize)
+  joindre($r, 1)                                                        # 1 groupe de locaux
+  joindre($r, 8); joindre($r, 127)                                      # 8 locaux i32
+  $k = 1
+  tant_que ($k < longueur($b)) {
+    joindre($r, $b[$k])
+    $k = $k + 1
+  }
+  joindre($r, 11)                                                       # end
+  retour $r
+}
+
+# ── 9. Traduction générique ────────────────────────────────────────────────
+# AUCUN nom d'architecture ici. La famille vient du profil, la disponibilité
+# d'une opération vient de $bu_encoder_table, le boutisme vient du profil.
+
+fn bu_encode(famille: entier, code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
+  $vide = [0]
+  si (bu_encoder_id($famille, $code) < 0) { retour $vide }
+  si ($famille == 1) { retour bu_a64_encode($code, $a, $p) }
+  si ($famille == 2) { retour bu_x64_encode($code, $a, $p) }
+  si ($famille == 3) { retour bu_wasm_encode($code, $a, $p) }
+  retour $vide
+}
+
+fn bu_traduire(seq: liste<entier>, cible: liste<chaine>) -> liste<entier> {
+  $famille = bu_profil_entier($cible, "famille")
+  $r = [0]
+  $k = 1
+  tant_que ($k < longueur($seq)) {
+    $desc = bu_desc($seq[$k])
+    si (longueur($desc) > 0) {
+      $code = $desc[0]
+      $enc = bu_encode($famille, $code, $desc, $cible)
+      # wasm : accumulation du corps brut, module assemblé à la fin.
+      bu_ajoute($r, $enc)
+    }
+    $k = $k + 1
+  }
+  # L'enveloppe est une DONNÉE du profil : aucun nom de CPU ici.
+  si (bu_profil($cible, "enveloppe") == "module") { retour bu_wasm_module($r) }
+  retour $r
+}
+
+# ── 10. Émission binaire ────────────────────────────────────────────────────
+# `octet_brut` (MÊME nom que dans emetteur_elf.rose) est intercepté par le
+# dispatch G5 : 1 octet brut, pas UTF-8. Sous le moteur Rust sa définition
+# rend `caractere(v % 256)`, ce qui écrit 1 octet via ecrire_bytes.
+
+fn octet_brut(v: entier) -> chaine {
+  retour caractere($v % 256)
+}
+
+fn bu_octet_ch(v: entier) -> chaine {
+  retour octet_brut($v)
+}
+
+fn bu_octets(octets: liste<entier>) -> chaine {
+  $s = ""
+  $k = 1
+  tant_que ($k < longueur($octets)) {
+    $s = $s + bu_octet_ch($octets[$k])
+    $k = $k + 1
+  }
+  retour $s
+}
+
+fn bu_emettre(seq: liste<entier>, cible: liste<chaine>, chemin: chaine) -> entier {
+  $octets = bu_traduire($seq, $cible)
+  ecrire_bytes($chemin, bu_octets($octets))
+  retour longueur($octets) - 1
+}
