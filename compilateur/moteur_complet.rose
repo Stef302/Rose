@@ -1856,6 +1856,21 @@ fn lsrc_ce_raw($i: entier,
     # l'environnement ($vn/$gn, donc $t != "") sont acceptés : la recherche
     # parmi $fnoms qui acceptait n'importe quel nom de fonction est retirée.
     si ($t == "") {
+      # CORR7/t3 — un nom de fonction employé comme variable. Le nom de fonction
+      # est une valeur de première classe `(fn nom)` : on l'accepte quand il
+      # correspond exactement à une fonction déclarée ($fnoms), sinon erreur.
+      $estfn = 0
+      $jf = 1
+      $nf = longueur($fnoms)
+      tant_que ($jf < $nf et $estfn == 0) {
+        si ($fnoms[$jf] == $nom) { $estfn = 1 }
+        $jf = $jf + 1
+      }
+      si ($estfn == 1) {
+        # nœud de fonction : rendu (n <nom>) en 3 jetons, comme `(fn nom)` ;
+        # l'appel dynamique lit alors vpay = <nom>.
+        retour "n|" + $nom + "|0"
+      }
       lsrc_signaler($lg0, "Variable '" + $nom + "' utilisée sans valeur", $err)
       retour "vide|vide"
     }
@@ -1888,8 +1903,12 @@ fn lsrc_ce_raw($i: entier,
     }
     si (longueur($err) > 1) { retour "vide|vide" }
     si (lsrc_BASE($t_elt) == "liste") {
-      lsrc_signaler($lg0, "Listes de listes non supportées pour l'instant", $err)
-      retour "vide|vide"
+      # Listes de listes acceptées : forme identique aux autres listes (base
+      # "liste", sous-type = élément interne en index 2), pour coller à l'oracle.
+      $pos2 = 1
+      tant_que ($pos2 < longueur($t_elt) et ordre($t_elt[$pos2]) != 124) { $pos2 = $pos2 + 1 }
+      $sous = sous_chaine($t_elt, $pos2 + 1, longueur($t_elt))
+      retour "liste|" + $sous
     }
     retour "liste|" + lsrc_BASE($t_elt)
   }
