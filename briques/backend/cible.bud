@@ -80,7 +80,11 @@ donnees: {
       entree_sortie: import
       enveloppe: module
       ops: "0..14"
-      note: "syscall => unreachable (import requis) ; charge/store exigent une section memoire"
+      import_io: "env.write"
+      import_signature: "(i32) -> ()"
+      memoire_pages: 1
+      donnees_initiales: "42,0,0,0"
+      note: "syscall n => call env.write(n) (octet) ; load/store => i32.load/i32.store sur la memoire lineaire ; sections import/memory/data emises"
     }
   ]
 

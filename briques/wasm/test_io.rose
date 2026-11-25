@@ -1,0 +1,74 @@
+# test_io.rose — E/S et mémoire pour le backend universel, cible wasm.
+#
+# Ce fichier est un MODULE SOURCE : Rose n'a pas d'instruction `include`.
+# Le concaténer avec compilateur/backend_universel.rose avant exécution :
+#
+#   cat compilateur/backend_universel.rose briques/wasm/test_io.rose \
+#       > /tmp/opencode/wasm_backend/test_io_prog.rose
+#   ROSE_SANS_JIT=1 rose interprete /tmp/opencode/wasm_backend/test_io_prog.rose
+#
+# Le module produit est validé et exécuté par Node :
+#
+#   node -e '
+#     const fs=require("fs");
+#     const m=new WebAssembly.Module(fs.readFileSync("/tmp/opencode/wasm_backend/test_io.wasm"));
+#     const i=new WebAssembly.Instance(m,{env:{write:(b)=>process.stdout.write(String.fromCharCode(b))}});
+#     console.log("f() =", i.exports.f());
+#   '
+# Sortie attendue : "OK" puis "f() = 42".
+#
+# Le programme démontre les QUATRE ajouts du backend wasm :
+#   - `syscall n` appelle l'import `env.write` (plus de `unreachable`) ;
+#   - `load` lit la mémoire linéaire initialisée par le segment `data` ;
+#   - `store` écrit dans cette même mémoire (section `memory` déclarée) ;
+#   - le module complet est valide (sections import/memory/export/data).
+
+# ── Utilitaire d'affichage (identique à briques/tests_backend.rose) ────────
+fn ti_hexch(v: entier) -> chaine {
+  $h = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+  $b = v % 256
+  si ($b < 0) { $b = $b + 256 }
+  retour $h[partie_entiere($b / 16)] + $h[$b % 16]
+}
+
+fn ti_hex(octets: liste<entier>) -> chaine {
+  $r = ""
+  $k = 1
+  tant_que ($k < longueur($octets)) {
+    $r = $r + ti_hexch($octets[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── Suite IR ───────────────────────────────────────────────────────────────
+# Registres = locaux i32. Le profil wasm initialise mem[0..4] avec 42
+# (`donnees_initiales=42,0,0,0`), donc `load` doit rendre 42.
+$seq = bu_sequence()
+$o1 = bu_operation("imm", [2, 0])       # r2 = 0 (adresse de base)
+$o2 = bu_operation("load", [1, 2, 0])   # r1 = i32.load[r2 + 0] = 42
+$o3 = bu_operation("imm", [3, 7])       # r3 = 7
+$o4 = bu_operation("store", [3, 2, 4])  # i32.store[r2 + 4] = 7
+$o5 = bu_operation("mov", [0, 1])       # r0 = 42 (convention de retour)
+$o6 = bu_operation("syscall", [79])     # 'O'
+$o7 = bu_operation("syscall", [75])     # 'K'
+$o8 = bu_operation("ret", bu_sequence())   # liste porteuse (pas de `[]` en Rose)
+
+>> bu_ajouter($seq, $o1)
+>> bu_ajouter($seq, $o2)
+>> bu_ajouter($seq, $o3)
+>> bu_ajouter($seq, $o4)
+>> bu_ajouter($seq, $o5)
+>> bu_ajouter($seq, $o6)
+>> bu_ajouter($seq, $o7)
+>> bu_ajouter($seq, $o8)
+
+$cw = bu_cible("wasm")
+$octets = bu_traduire($seq, $cw)
+$chemin = "/tmp/opencode/wasm_backend/test_io.wasm"
+$n = bu_emettre($seq, $cw, $chemin)
+
+>> "PROFIL " + bu_profil($cw, "entree_sortie") + "/" + bu_profil($cw, "enveloppe")
+>> "MODULE " + chaine($n) + " octets"
+>> "HEX " + ti_hex($octets)
+>> "ECRIT " + $chemin

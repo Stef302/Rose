@@ -17,7 +17,8 @@
 #   bu_traduire(seq, cible)   -> liste<entier>  (OCTETS, porteuse [0])
 #   bu_emettre(seq, cible, chemin) -> entier (écrit via ecrire_bytes)
 #
-# Cibles réellement supportées : aarch64, x86_64, wasm (module valide).
+# Cibles réellement supportées : aarch64, x86_64, wasm (module valide avec
+# import d'E/S, mémoire linéaire et segment de données).
 # Voir rose/docs/BACKEND_UNIVERSEL.md pour la doctrine complète et les
 # limites (largeur d'immédiat, formats de saut, sémantique wasm i32).
 #
@@ -169,6 +170,9 @@ fn bu_cible(nom: chaine) -> liste<chaine> {
     $saut = "profondeur"
     $io = "import"
     $env = "module"
+    # Données initiales de la mémoire linéaire (octets décimaux séparés par
+    # des virgules). Segment `data` à l'offset 0. 42 = 0x2a = 'a' + 1.
+    joindre($p, "donnees_initiales=" + "42,0,0,0")
   }
   joindre($p, "famille=" + chaine($famille))
   joindre($p, "largeur_registre=" + chaine($reg))
@@ -405,6 +409,25 @@ fn bu_leb_s(v: entier) -> liste<entier> {
   retour $r
 }
 
+# Lit une liste d'octets décimaux séparés par des virgules (profil wasm).
+# Rend une liste PORTEUSE : index 0 ignoré, octets utiles à partir de 1.
+fn bu_octets_profil(s: chaine) -> liste<entier> {
+  $r = [0]
+  $cur = ""
+  $n = longueur(s)
+  $k = 0
+  tant_que ($k <= $n) {
+    $c = ","
+    si ($k < $n) { $c = sous_chaine(s, $k, $k + 1) }
+    si ($c == "," ou $k == $n) {
+      si (longueur($cur) > 0) { joindre($r, entier($cur)) }
+      $cur = ""
+    } sinon { $cur = $cur + $c }
+    $k = $k + 1
+  }
+  retour $r
+}
+
 # ── 6. Encodeur AARCH64 (famille 1) ────────────────────────────────────────
 # Formules identiques à compilateur/emetteur_elf.rose:717-746 (source de
 # vérité). Chaque mot est sérialisé via bu_mot32, donc le boutisme vient du
@@ -524,9 +547,19 @@ fn bu_x64_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<enti
 
 # ── 8. Encodeur WASM (famille 3) ───────────────────────────────────────────
 # L'IR à registres est abaissé en machine à pile : chaque registre est un
-# local i32. Les octets produits forment un MODULE VALIDE (magie, types,
-# fonction exportée "f", section code). `syscall` est documenté comme non
-# traduisible (un import serait nécessaire) : on émet `unreachable`.
+# local i32. Les octets produits forment un MODULE VALIDE : magie, types,
+# import `env.write`, fonction exportée "f", mémoire linéaire, données
+# initiales et section code. Voir `bu_wasm_module` pour l'enveloppe.
+#
+# ABI wasm du backend (contrairement aux cibles natives) :
+#   - `syscall n` -> `i32.const n` + `call 0` où 0 = l'import `env.write`.
+#     L'argument est un OCTET (valeur immédiate), pas un numéro de syscall
+#     Linux : `syscall 79` écrit 'O', `syscall 75` écrit 'K'.
+#   - `call idx` -> `call idx+1` : l'import occupe l'index 0 dans l'espace
+#     des fonctions, la fonction définie "f" est l'index 1 (préservation
+#     du comportement historique où `call 0` désignait "f").
+#   - `load`/`store` -> `i32.load`/`i32.store` avec un offset NON SIGNÉ
+#     (LEB128 u32, comme l'exige la grammaire `memarg` de wasm).
 
 fn bu_wasm_local(reg: entier) -> liste<entier> {
   $r = [0]
@@ -565,7 +598,7 @@ fn bu_wasm_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<ent
     bu_ajoute($r, bu_leb_s($s))
     bu_ajoute($r, bu_wasm_set($d))
   }
-  si (code == 2) { bu_ajoute($r, bu_wasm_local($t)); bu_ajoute($r, bu_wasm_set($d)) }
+  si (code == 2) { bu_ajoute($r, bu_wasm_local($s)); bu_ajoute($r, bu_wasm_set($d)) }  # mov dst,src = a[2]
   si (code == 3) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 106)) }        # i32.add
   si (code == 4) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 107)) }        # i32.sub
   si (code == 5) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 108)) }        # i32.mul
@@ -574,48 +607,67 @@ fn bu_wasm_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<ent
   si (code == 8) { bu_ajoute($r, bu_wasm_bin($d, $s, $t, 115)) }        # i32.xor
   si (code == 9) {
     bu_ajoute($r, bu_wasm_local($s))                                    # adresse
-    joindre($r, 40)
-    joindre($r, 2)                                                      # align 4 octets
-    bu_ajoute($r, bu_leb_s($t))
+    joindre($r, 40)                                                     # i32.load
+    joindre($r, 2)                                                      # align log2(4)
+    bu_ajoute($r, bu_leb_u($t))                                         # offset u32
     bu_ajoute($r, bu_wasm_set($d))
   }
   si (code == 10) {
-    bu_ajoute($r, bu_wasm_local($s))
-    bu_ajoute($r, bu_wasm_local($d))
-    joindre($r, 54)
-    joindre($r, 2)
-    bu_ajoute($r, bu_leb_s($t))
+    bu_ajoute($r, bu_wasm_local($s))                                    # adresse
+    bu_ajoute($r, bu_wasm_local($d))                                    # valeur
+    joindre($r, 54)                                                     # i32.store
+    joindre($r, 2)                                                      # align log2(4)
+    bu_ajoute($r, bu_leb_u($t))                                         # offset u32
   }
   si (code == 11) { joindre($r, 12); joindre($r, 0) }                   # br 0
-  si (code == 12) { joindre($r, 16); bu_ajoute($r, bu_leb_u($d)) }      # call idx
+  si (code == 12) { joindre($r, 16); bu_ajoute($r, bu_leb_u($d + 1)) }  # call idx+1 (import en 0)
   si (code == 13) {
     # convention de retour : registre 0 (x0 / rax / local 0).
     bu_ajoute($r, bu_wasm_local(0))
     joindre($r, 15)                                                     # return
   }
-  si (code == 14) { joindre($r, 0) }                                    # unreachable
+  si (code == 14) {
+    # syscall : octet immédiat vers l'import env.write (index de fonction 0).
+    joindre($r, 65)                                                     # i32.const
+    bu_ajoute($r, bu_leb_s($d))
+    joindre($r, 16)                                                     # call
+    joindre($r, 0)                                                      # env.write
+  }
   retour $r
 }
 
-fn bu_wasm_module(corps: liste<entier>) -> liste<entier> {
+fn bu_wasm_module(corps: liste<entier>, p: liste<chaine>) -> liste<entier> {
   $b = bu_sans_porteur($corps)
   $ncorps = longueur($b) - 1
   $taille_corps = $ncorps + 4                                            # 3 octets de decls locaux + end
   $lebsize = bu_leb_u($taille_corps)
-  $payload = $taille_corps + longueur($lebsize)                          # count(1) + LEB(size) + size
+  # `longueur($lebsize)` = 1 (porteuse, sert de count de fonctions) + LEB(size).
+  $payload = $taille_corps + longueur($lebsize)
   $r = [0]
   # magie + version
   joindre($r, 0); joindre($r, 97); joindre($r, 115); joindre($r, 109)
   joindre($r, 1); joindre($r, 0); joindre($r, 0); joindre($r, 0)
-  # section type : (func) -> i32
-  joindre($r, 1); joindre($r, 5); joindre($r, 1)
+  # section type (id 1) : 2 types.
+  #   type 0 = (i32) -> ()   : env.write
+  #   type 1 = ()   -> i32   : "f"
+  joindre($r, 1); joindre($r, 9); joindre($r, 2)
+  joindre($r, 96); joindre($r, 1); joindre($r, 127); joindre($r, 0)
   joindre($r, 96); joindre($r, 0); joindre($r, 1); joindre($r, 127)
-  # section function : une fonction de type 0
-  joindre($r, 3); joindre($r, 2); joindre($r, 1); joindre($r, 0)
-  # section export : "f", fonction 0
+  # section import (id 2) : env.write, fonction de type 0, index de fonction 0.
+  joindre($r, 2); joindre($r, 13)
+  joindre($r, 1)                                                        # 1 import
+  joindre($r, 3); joindre($r, 101); joindre($r, 110); joindre($r, 118)  # "env"
+  joindre($r, 5)                                                        # 5 octets
+  joindre($r, 119); joindre($r, 114); joindre($r, 105); joindre($r, 116); joindre($r, 101)  # "write"
+  joindre($r, 0); joindre($r, 0)                                        # kind func, type 0
+  # section function (id 3) : "f" a le type 1.
+  joindre($r, 3); joindre($r, 2); joindre($r, 1); joindre($r, 1)
+  # section memory (id 5) : 1 mémoire, au moins 1 page (64 Kio).
+  joindre($r, 5); joindre($r, 3); joindre($r, 1); joindre($r, 0); joindre($r, 1)
+  # section export (id 7) : "f" -> fonction 1 (0 = import).
   joindre($r, 7); joindre($r, 5); joindre($r, 1)
-  joindre($r, 1); joindre($r, 102); joindre($r, 0); joindre($r, 0)
-  # section code
+  joindre($r, 1); joindre($r, 102); joindre($r, 0); joindre($r, 1)
+  # section code (id 10)
   joindre($r, 10)
   bu_ajoute($r, bu_leb_u($payload))
   joindre($r, 1)                                                        # 1 fonction
@@ -628,6 +680,22 @@ fn bu_wasm_module(corps: liste<entier>) -> liste<entier> {
     $k = $k + 1
   }
   joindre($r, 11)                                                       # end
+  # section data (id 11) : initialise la mémoire à l'offset 0.
+  # Le contenu vient du profil (`donnees_initiales`), jamais du code.
+  $donnees = bu_octets_profil(bu_profil($p, "donnees_initiales"))
+  $nd = longueur($donnees) - 1
+  si ($nd > 0) {
+    $seg = [0, 1, 0, 65, 0, 11]                                         # count, memidx, i32.const 0, end
+    bu_ajoute($seg, bu_leb_u($nd))
+    $j = 1
+    tant_que ($j < longueur($donnees)) {
+      joindre($seg, $donnees[$j])
+      $j = $j + 1
+    }
+    joindre($r, 11)
+    bu_ajoute($r, bu_leb_u(longueur($seg) - 1))
+    bu_ajoute($r, $seg)
+  }
   retour $r
 }
 
@@ -659,7 +727,7 @@ fn bu_traduire(seq: liste<entier>, cible: liste<chaine>) -> liste<entier> {
     $k = $k + 1
   }
   # L'enveloppe est une DONNÉE du profil : aucun nom de CPU ici.
-  si (bu_profil($cible, "enveloppe") == "module") { retour bu_wasm_module($r) }
+  si (bu_profil($cible, "enveloppe") == "module") { retour bu_wasm_module($r, $cible) }
   retour $r
 }
 

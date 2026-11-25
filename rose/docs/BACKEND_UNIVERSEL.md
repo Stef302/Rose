@@ -1,6 +1,7 @@
 # Backend universel — doctrine, API, limites
 
-*Constat daté : 25/11/2026, worktree `/tmp/opencode/v4backend`, HEAD `6d056bc`.*
+*Constat daté : 25/11/2026, worktree `/tmp/opencode/v5uni2`, HEAD `a43dab8`.*
+*Chantier « limite WASM retirée » : aucun commit, aucun push.*
 
 ## 1. Pourquoi
 
@@ -45,6 +46,8 @@ ajouter une cible ne modifie **ni l'IR, ni la boucle de traduction**.
   reconstruit `[code, arg0, …]`.
 - Une suite / un tampon d'octets commence par une **case porteuse** (index 0,
   valeur ignorée) afin qu'une suite vide reste typable : `longueur >= 1`.
+- Rose n'a pas de littéral `[]` typable : utiliser `bu_sequence()` pour une
+  liste d'entiers vide.
 - `joindre` mute la liste passée en argument : c'est le seul comportement
   fiable sous G5. Aucune affectation de globale depuis une fonction
   (peu fiable dans les deux moteurs).
@@ -53,7 +56,9 @@ ajouter une cible ne modifie **ni l'IR, ni la boucle de traduction**.
   1 octet brut, même ≥ 128, sous le moteur auto-exécuté. Sous le moteur Rust
   sa définition rend `caractere(v % 256)`, ce qui écrit 1 octet.
 - `bu_traduire` ne produit que des **octets de code** : les conteneurs
-  (ELF, PE) restent la responsabilité des émetteurs dédiés.
+  (ELF, PE) restent la responsabilité des émetteurs dédiés. La cible `wasm`
+  fait exception : son enveloppe **est** un conteneur (module), assemblé
+  dans `bu_wasm_module`.
 
 ## 3. Jeu d'opérations abstrait
 
@@ -91,14 +96,41 @@ générique mais **encore indexé sur des mnémoniques architecturaux**.
 |---|---|---|---|---|---|---|
 | `aarch64` | 1 | 0..14 | `movz` 16 bits | `ldr`/`str` 64 bits, `off` multiple de 8 | `br`/`blr xN` | `movz x8,n` + `svc #0` |
 | `x86_64` | 2 | 0..14 | `movabs` 64 bits | `mov` `[base+disp32]`, REX.W | `jmp`/`call r/m64` | `mov rax,n` + `syscall` |
-| `wasm` | 3 | 0..14 | `i32.const` LEB128 signé | `i32.load`/`i32.store` | `br 0` / `call idx` | **`unreachable`** (import requis) |
+| `wasm` | 3 | 0..14 | `i32.const` LEB128 signé | `i32.load`/`i32.store` sur mémoire déclarée | `br 0` / `call idx+1` | `i32.const n` + `call env.write` |
 
-`wasm` produit un **module complet et valide** (magie, version, section type
-`() -> i32`, section function, export `"f"`, section code avec 8 locaux i32),
-pas un simple flux d'opcodes. La machine wasm étant à pile, l'IR à registres
-est abaissé en `local.get`/`local.set`.
+### Enveloppe WASM (limite retirée)
 
-**Limites honnêtes :**
+Le module émis par `bu_wasm_module` est un **module WebAssembly complet et
+valide** (`new WebAssembly.Module` sous Node). Sections, dans l'ordre :
+
+| Section | ID | Contenu |
+|---|---|---|
+| Type | 1 | 2 types : `env.write : (i32) -> ()`, `f : () -> i32` |
+| Import | 2 | `env.write`, fonction, type 0, **index de fonction 0** |
+| Function | 3 | `f`, type 1 |
+| Memory | 5 | 1 mémoire, minimum 1 page (64 Kio) |
+| Export | 7 | `"f"` → fonction **1** (0 est l'import) |
+| Code | 10 | 1 fonction, 8 locaux i32, opcodes, `end` |
+| Data | 11 | 1 segment à l'offset 0, octets lus dans `donnees_initiales` du profil |
+
+ABI retenue pour la cible wasm :
+
+- `syscall n` émet `i32.const n` puis `call 0`. **L'argument est un octet**,
+  pas un numéro de syscall Linux : `syscall 79` écrit `O`, `syscall 75`
+  écrit `K`. L'hôte doit fournir `env.write(i32) -> ()`.
+- `load` / `store` émettent `i32.load` / `i32.store` (alignement `log2(4)=2`)
+  avec un offset **u32 LEB128 non signé** (conforme à la grammaire `memarg`
+  de wasm). La section `memory` rend le module validable.
+- `call idx` émet `call idx+1` : l'import occupe l'index 0, la fonction
+  définie `"f"` reste l'index 1 (comportement historique préservé).
+- `mov` lit bien son opérande source en `a[2]` (bug corrigé dans ce chantier :
+  l'encodeur wasm lisait `a[3]`, soit 0, ce qui rendait `mov r0,r1` equal à
+  `mov r0,r0`).
+- Les données initiales sont une **donnée du profil**, jamais du code :
+  `donnees_initiales=42,0,0,0` (octets décimaux séparés par des virgules),
+  parsés par `bu_octets_profil`.
+
+### Limites honnêtes
 
 - **aarch64** : `imm` est limité à 16 bits non signé (un seul `movz`) ; au-delà,
   il faut plusieurs opérations. Les décalages mémoire doivent être multiples
@@ -107,11 +139,15 @@ est abaissé en `local.get`/`local.set`.
 - **x86_64** : `syscall` utilise l'ABI Linux ; sous Windows il faudrait une
   autre famille (import KERNEL32). Aucun prologue/épilogue n'est émis.
 - **wasm** : registres = **locaux i32** (32 bits) alors que aarch64/x86-64
-  travaillent en 64 bits : les résultats coïncident pour les valeurs qui
-  tiennent en 32 bits (le test utilise 2 + 3 = 5). `syscall` est délibérément
-  `unreachable` : un vrai E/S exigerait une section import, non générée ici.
-  `load`/`store` exigent une section mémoire que ce module minimal n'émet pas
-  : ils sont encodés mais le module résultant n'est alors pas validable.
+  travaillent en 64 bits. `syscall` écrit **un seul octet par opération** :
+  écrire une chaîne de N caractères demande N op `syscall` (pas de primitive
+  « chaîne » dans l'IR). L'import `env.write` doit être fourni par l'hôte :
+  sans lui, `WebAssembly.Instance` échoue (le module reste valide). La
+  mémoire est fixée à **1 page**, non exportée, sans Croissance (`grow`) ;
+  le dépassement de 64 Kio est un trap wasm. Le segment `data` est unique,
+  à l'offset 0, et décrit par le profil. `env.write` ne rend rien (pas de
+  compteur d'octets ni d'erreur). `syscall` est un `i32` signé LEB128 :
+  les valeurs ≥ 128 occupent 2 octets.
 - Aucune relocation, aucun label, aucun en-tête ELF/PE : ce backend est une
   **couche d'instructions**, pas un éditeur de liens.
 - Le nom de cible inconnu donne une famille `0` : `bu_encode` rend une suite
@@ -122,8 +158,8 @@ est abaissé en `local.get`/`local.set`.
 1. Dans `bu_cible`, ajouter un bloc `si ($nom == "nouvelle")` qui pose
    `famille`, `largeur_registre`, `boutisme`, `mot_octets`, `registres`,
    `format_saut`, `entree_sortie`, `enveloppe` (`brut` ou `module`).
-   **Aucune autre fonction ne doit tester le
-   nom** : c'est la seule porte d'entrée.
+   **Aucune autre fonction ne doit tester le nom** : c'est la seule porte
+   d'entrée.
 2. Ajouter dans `$bu_encoder_table` une ligne `"F:code:F*100+code"` pour
    chaque opération supportée. Une ligne absente = op non supportée.
 3. Écrire `bu_nouvelle_encode(code, a, p)` : ne faire que de l'encodage,
@@ -137,43 +173,73 @@ est abaissé en `local.get`/`local.set`.
 ## 6. Validation reproductible
 
 ```bash
-cd /tmp/opencode/v4backend
-mkdir -p /tmp/opencode/backend_tests
+cd /tmp/opencode/v5uni2
+mkdir -p /tmp/opencode/wasm_backend
 cat compilateur/backend_universel.rose briques/tests_backend.rose \
-  > /tmp/opencode/backend_tests/tests_prog.rose
-rose/rose verif compilateur/backend_universel.rose          # vérifié
+  > /tmp/opencode/wasm_backend/baseline_tests.rose
+/home/clausake/Stefan/ROSE/rose/rose verif compilateur/backend_universel.rose   # vérifié
 ROSE_SANS_JIT=1 /home/clausake/Stefan/ROSE/rose/rose interprete \
-  /tmp/opencode/backend_tests/tests_prog.rose > /tmp/opencode/backend_tests/nat.out
+  /tmp/opencode/wasm_backend/baseline_tests.rose > /tmp/opencode/wasm_backend/baseline_nat.out
 bash scripts/garde_fou_mem.sh 12000000 /tmp/opencode/C0_141.elf \
-  /tmp/opencode/backend_tests/tests_prog.rose > /tmp/opencode/backend_tests/tests.elf
-chmod +x /tmp/opencode/backend_tests/tests.elf
-/tmp/opencode/backend_tests/tests.elf > /tmp/opencode/backend_tests/self.out
-diff /tmp/opencode/backend_tests/nat.out /tmp/opencode/backend_tests/self.out
+  /tmp/opencode/wasm_backend/baseline_tests.rose > /tmp/opencode/wasm_backend/baseline_tests.elf
+chmod +x /tmp/opencode/wasm_backend/baseline_tests.elf
+/tmp/opencode/wasm_backend/baseline_tests.elf > /tmp/opencode/wasm_backend/baseline_self.out
+diff /tmp/opencode/wasm_backend/baseline_nat.out /tmp/opencode/wasm_backend/baseline_self.out
+
+# Nouveau test E/S + mémoire :
+cat compilateur/backend_universel.rose briques/wasm/test_io.rose \
+  > /tmp/opencode/wasm_backend/test_io_prog.rose
+ROSE_SANS_JIT=1 /home/clausake/Stefan/ROSE/rose/rose interprete \
+  /tmp/opencode/wasm_backend/test_io_prog.rose
+node -e '
+const fs=require("fs");
+const b=fs.readFileSync("/tmp/opencode/wasm_backend/test_io.wasm");
+const m=new WebAssembly.Module(b);               // validation stricte
+const i=new WebAssembly.Instance(m,{env:{write:(x)=>process.stdout.write(String.fromCharCode(x))}});
+console.log("f() =", i.exports.f());
+'
 ```
 
-**Résultat mesuré : 30/30 assertions des deux côtés, sorties octet pour
-octet identiques.** Preuves complémentaires sur les fichiers écrits :
+**Résultats mesurés (25/11/2026, worktree `v5uni2`) :**
+
+- `briques/tests_backend.rose` : **30/30** assertions sous l'oracle Rust
+  *et* sous le moteur self-hosté C0, sorties octet pour octet identiques
+  (`diff` muet). Le module wasm de l'addition passe de **52 à 88 octets**
+  (ajout des sections import/function-type/memory/data et de l'export
+  décalé) ; les attentes `14` et `30` du fichier de test ont été mises à jour.
+- `briques/wasm/test_io.rose` : **109 octets**, md5
+  `0628e615051b6020294a3f037de91fa7`. Node 26.12.1 :
+  `new WebAssembly.Module` **valide**, imports
+  `[{"module":"env","name":"write","kind":"function"}]`, exports
+  `[{"name":"f","kind":"function"}]`, sortie **`"OK"`**, `f() = 42`
+  (42 vient du segment `data` via `load` ; le `store` à l'offset 4 est
+  exécuté). Sortie Rose identique entre oracle Rust et self-hosté C0
+  (`diff` muet ; md5 du module réécrit par le self-hosté identique).
+- `rose verif compilateur/backend_universel.rose` → `vérifié` ; les deux
+  programmes concaténés → `vérifiés`.
+- Parité self-host **141/141 CONFORMES, 0 divergent, 0 bloqué**, verdict
+  RC=0 (`scripts/verifier_parite_selfhost.sh --moteur
+  /tmp/opencode/moteur_141.elf`, TSV
+  `/tmp/opencode/wasm_backend/parite/parite_20261125T192158Z.tsv`).
+- Point fixe : `rose rir compilateur/emetteur.rose` deux fois → 263 520
+  octets, md5 `b3ed9262dd54776a6dbd07bc12368d0e` **deux fois**, `cmp` = 0.
+  Aucun fichier du compilateur autre que le backend n'a été modifié
+  (`emetteur.rose` = `390335d2…`, `moteur_complet.rose` = `bf4d0d60…`).
+
+Preuves complémentaires sur les fichiers écrits :
 
 | Cible | Octets | Preuve externe |
 |---|---|---|
 | aarch64 | `400080d2 610080d2 0000018b c0035fd6` (16 o) | `objdump -D -b binary -maarch64` : `mov x0,#2` / `mov x1,#3` / `add x0,x0,x1` / `ret` |
 | x86_64 | `48b802… 48b903… 488bc0 4801c8 c3` (27 o) | Capstone 5.0.7 : `movabs rax,2` / `movabs rcx,3` / `mov rax,rax` / `add rax,rcx` / `ret` |
-| wasm | `0061736d01000000…` (52 o) | Node 26.12.1 : `new WebAssembly.Module(...)` puis `instance.exports.f()` → **5** |
+| wasm (addition) | `0061736d0100000001090260017f006000017f020d0103656e760577726974650000…` (88 o) | Node : module valide, import `env.write`, `f() = 5` |
+| wasm (test_io) | `0061736d0100000001090260017f006000017f020d0103656e760577726974650000…` (109 o) | Node : module valide, sortie `OK`, `f() = 42` |
 
-Invariants de non-régression vérifiés dans le même worktree :
+Fichiers modifiés par ce chantier (worktree exclusif, **aucun commit/push**) :
 
-- `rose verif compilateur/emetteur.rose` → `vérifié` ;
-- `rose rir compilateur/emetteur.rose` → md5 `b3ed9262dd54776a6dbd07bc12368d0e` ;
-- C0 fraîchement émise depuis `emetteur_elf.rose`, puis `C0 emetteur.rose` →
-  même md5, `cmp` octet pour octet == `self.rir` (point fixe intact) ;
-- parité self-host **141/141 CONFORMES, 0 divergent, 0 bloqué**, verdict RC=0
-  (`scripts/verifier_parite_selfhost.sh --moteur /tmp/opencode/moteur_141.elf`,
-  TSV `/tmp/opencode/v4backend_scratch/parite_existing/parite_20261125T183354Z.tsv`).
-  Une tentative de recompilation « fraîche » du moteur complet via le C0
-  préexistant a dépassé le timeout de 900 s du harnais (artefact vide, stderr
-  vide) ; elle n'invalide pas la mesure ci-dessus, faite avec un moteur issu
-  des mêmes sources compilateur (aucune d'elles n'a été modifiée : md5
-  `emetteur.rose` = `390335d2…`, `moteur_complet.rose` = `658496a8…`).
-
-Aucun fichier suivi par git n'a été modifié : seuls quatre fichiers NOUVEAUX
-sont ajoutés (`git status` = 4 entrées `??`, HEAD reste `6d056bc`).
+- `compilateur/backend_universel.rose` (import/memory/data, syscall,
+  load/store, call, correction de `mov`, profil `donnees_initiales`) ;
+- `briques/backend/cible.bud` (profil wasm mis à jour) ;
+- `briques/tests_backend.rose` (attentes 52 → 88) ;
+- `briques/wasm/test_io.rose` (nouveau, test E/S + mémoire) ;
+- `rose/docs/BACKEND_UNIVERSEL.md` (ce document).
