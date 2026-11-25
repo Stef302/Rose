@@ -1,0 +1,54 @@
+# exemple.bud — SPECIFICATION de convention, non encore lue par le compilateur.
+# Décrit un NOYAU GENERIQUE : aucun nom de CPU, de contrôleur ou d'appareil.
+# Le matériel est une donnee declarée, pas une fonction du compilateur.
+
+nom: "noyau-generique"
+version: "0.0.1"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 4096
+  abi: rose-noyau-v0
+}
+
+profil: noyau
+
+materiel: {
+  regions: [
+    { base: 0, taille: 1048576, role: "ram" },
+    { base: 268435456, taille: 4096, role: "zone-entree-sortie" }
+  ]
+  vecteurs: 256
+  registre_largeur: 32
+}
+
+briques: [
+  "invocation/sortie.rose",
+  "profil/noyau.rose",
+  "materiel/acces.rose",
+  "interruptions/vecteurs.rose",
+  "runtime/base.rose",
+  "memoire/arena.rose",
+  "pilote/contrat.rose"
+]
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  latence_max: 1000
+}
+
+sortie: {
+  format: brut
+  entree: _start
+  adresse_charge: 4194304
+  alignement: 4096
+}
+
+dependances: [
+  { chemin: "briques/maths/bigint", empreinte: "a remplacer par le sha256 du fichier" }
+]
