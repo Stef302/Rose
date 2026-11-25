@@ -41,11 +41,12 @@ bash scripts/build-windows-rebuild.sh --cargo    # repli cargo
   celle du fichier non vide ; après le passage en sous-ensemble C0, le RIR
   émis par le moteur est le plus court et sert de référence : le vérifier à
   chaque changement d'émetteur.)
-- Parité self-host (harnais `scripts/verifier_parite_selfhost.sh`) : **110
-  conformes / 28 divergents / 3 bloqués** sur 141 programmes. Les 28
-  divergents sont tous du sous-ensemble grands entiers / rationnels du C0, les
-  3 bloqués = `t100_arg31` (segfault), `t107_hof_var` et `t55_liste_imbriquee`
-  (refus identiques des deux côtés).
+- Parité self-host (harnais `scripts/verifier_parite_selfhost.sh`) : **141
+  conformes / 0 divergent / 0 bloqué**, RC=0, avec le moteur complet émis par C0
+  (`moteur.elf` 2 415 644 o). (L'ancien tally 110/28/3 provenait d'un moteur
+  périmé ; rejoué sur le moteur frais → 141/141.)
+- Émetteur PE x64 : la forme `lstvide` est désormais couverte (liste vide), ce
+  qui débloque l'émission du moteur complet (`rose.exe` 1 770 496 o, PE32+).
 
 ## Retour arrière
 
