@@ -79,6 +79,9 @@ TLIMIT=900
 # défaut dans le corps du script étaient trop courts pour le moteur actuel :
 # re-mesurable via ROSE_RIR_TIMEOUT.
 RIR_TIMEOUT="${ROSE_RIR_TIMEOUT:-3600}"
+# Délai (s) pour l'émission PE du moteur complet : le RIR fait désormais
+# 1,13 Mo après les optimisations, >2400 s sous charge. Re-mesurable.
+PE_TIMEOUT="${ROSE_PE_TIMEOUT:-4800}"
 REUTILISER=0
 NO_TESTS=0
 WINDOWS=0
@@ -298,7 +301,7 @@ if [[ $WINDOWS -eq 1 ]]; then
   fi
   printf 'RIR COMPLET obtenu : %s octets\n' "$(stat -c%s "$WIN/moteur_complet.rir")" >> "$TENT"
   rc_pe=0
-  timeout 2400 "$EMIT" "$WIN/moteur_complet.rir" > "$WIN/rose_complet.exe" \
+  timeout "$PE_TIMEOUT" "$EMIT" "$WIN/moteur_complet.rir" > "$WIN/rose_complet.exe" \
       2> "$WIN/rose_complet.exe.err" || rc_pe=$?
   if [[ $rc_pe -ne 0 || ! -s "$WIN/rose_complet.exe" ]]; then
     printf 'PE COMPLET refusé (rc=%s) : %s — BLOQUÉ, aucun repli\n' "$rc_pe" \
