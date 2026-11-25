@@ -17402,9 +17402,87 @@ fn mc_hashes($src: chaine) -> chaine {
 }
 fn mc_cache_chemin($src: chaine) -> chaine {
   si (g4_pos($src, "importer") >= 0) { retour "" }
-  retour "/tmp/opencode/rircache_v2front1_" + mc_hashes($src) + ".rir"
+  retour "/tmp/opencode/rircache_v2front2_" + mc_hashes($src) + ".rir"
 }
 
+
+# ── repli persistant des puissances constantes dans le cache RIR ─────────
+# Le front-end ne replie pas les exposants > 64 (miroir exact de Rust),
+# donc `2^65`, `2^100` etc. restent des `(bin ^ ...)` dans le RIR et sont
+# réévalués à CHAQUE lancement (~0,6 ms la pièce sous l'ELF C0). On replie
+# ces opérations une seule fois à l'écriture du cache RIR : les lancements
+# suivants lisent des littéraux et prennent `mc_const_programme` (aucune
+# évaluation). Le dump `rir` et le point fixe ne sont PAS modifiés : seul
+# le cache disque du chemin d'exécution porte la forme repliée.
+fn mc_fold_ligne_puissance($l: chaine) -> chaine {
+  # Les lignes RIR sont «␣␣␣␣NNNN afficher_abstrait … » : on garde la
+  # ponctuation d'origine, seule la charge utile est remplacée.
+  $lc = trim($l)
+  $n = longueur($lc)
+  $k = 0
+  tant_que ($k < $n et ordre($lc[$k]) >= 48 et ordre($lc[$k]) <= 57) { $k = $k + 1 }
+  si ($k < 1 ou $k >= $n ou sous_chaine($lc, $k, $k + 1) != " ") { retour $l }
+  $pay = sous_chaine($lc, $k + 1, $n)
+  $pre = "afficher_abstrait (bin ^ entier "
+  $lp = longueur($pre)
+  $np = longueur($pay)
+  si ($np < $lp + 3) { retour $l }
+  si (sous_chaine($pay, 0, $lp) != $pre) { retour $l }
+  si (sous_chaine($pay, $np - 1, $np) != ")") { retour $l }
+  $corps = sous_chaine($pay, $lp, $np - 1)
+  # corps = « BASE entier EXP » : deux séparateurs, pas un seul.
+  $sp1 = -1
+  $i = 0
+  tant_que ($i < longueur($corps)) {
+    si (sous_chaine($corps, $i, $i + 1) == " " et $sp1 < 0) { $sp1 = $i }
+    $i = $i + 1
+  }
+  si ($sp1 < 1) { retour $l }
+  $base = sous_chaine($corps, 0, $sp1)
+  $expmot = sous_chaine($corps, $sp1 + 1, longueur($corps))
+  si (sous_chaine($expmot, 0, 7) != "entier ") { retour $l }
+  $exp = sous_chaine($expmot, 7, longueur($expmot))
+  $basech = $base
+  si (longueur($basech) > 0 et sous_chaine($basech, 0, 1) == "-") {
+    $basech = sous_chaine($basech, 1, longueur($basech))
+  }
+  # Garde-fou : on ne replie que les littéraux décimaux simples, avec un
+  # exposant borné. Tout le reste retombe sur l'interpréteur RIR exact.
+  si (non digits_only($basech) ou longueur($basech) > 40) { retour $l }
+  si (non digits_only($exp) ou longueur($exp) > 4) { retour $l }
+  $e = entier($exp)
+  si ($e > 4096) { retour $l }
+  $v = bpow($base, $e)
+  si (longueur($v) == 0) { retour $l }
+  $dec = 0
+  tant_que ($dec < longueur($l) et sous_chaine($l, $dec, $dec + 1) == " ") { $dec = $dec + 1 }
+  retour sous_chaine($l, 0, $dec) + sous_chaine($lc, 0, $k + 1) +
+         "afficher_abstrait entier " + $v
+}
+
+fn mc_fold_rir_powers($rir: chaine) -> chaine {
+  # Test peu coûteux avant tout parcours : les gros RIR sans puissance
+  # (emetteur.rose, ~264 Ko) ne paient rien à chaque lancement.
+  si (g4_pos($rir, "afficher_abstrait (bin ^ entier ") < 0) { retour $rir }
+  $n = longueur($rir)
+  $out = ""
+  $debut = 0
+  $i = 0
+  tant_que ($i < $n) {
+    si (sous_chaine($rir, $i, $i + 1) == "\n") {
+      $ligne = mc_fold_ligne_puissance(sous_chaine($rir, $debut, $i))
+      si ($debut > 0) { $out = $out + "\n" }
+      $out = $out + $ligne
+      $debut = $i + 1
+    }
+    $i = $i + 1
+  }
+  si ($debut < $n) {
+    si ($debut > 0) { $out = $out + "\n" }
+    $out = $out + mc_fold_ligne_puissance(sous_chaine($rir, $debut, $n))
+  }
+  retour $out
+}
 
 # ── Achèvement du repli constant ───────────────────────────────────────
 # Quand le RIR ne contient que des `afficher_abstrait entier <littéral>`,
@@ -18782,7 +18860,10 @@ si (longueur($mc_cached) > 4 et sous_chaine($mc_cached, 0, 4) == "rir\n") {
     quitter(1)
   }
   $mc_rir = sous_chaine($mc_res, 3, longueur($mc_res))
-  si ($mc_cache != "") { ecrire_bytes($mc_cache, $mc_rir) }
+  si ($mc_cache != "") {
+    $mc_rir = mc_fold_rir_powers($mc_rir)
+    ecrire_bytes($mc_cache, $mc_rir)
+  }
 }
 $mc_const = mc_const_programme($mc_rir)
 si (longueur($mc_const) > 0) {
