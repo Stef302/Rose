@@ -1,0 +1,50 @@
+# contrat.bud — DÉCLARATION de la brique B7 (données uniquement).
+# Aucune logique : pas de si, pas de boucle, pas de fonction.
+# La famille et les ops sont des DONNÉES : aucun nom d'appareil, de bus,
+# de contrôleur ni d'architecture n'apparaît ici.
+
+nom: "pilote-contrat-generique"
+version: "0.0.1"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 0
+  abi: rose-noyau-v0
+}
+
+profil: noyau
+
+briques: [
+  "pilote/contrat.rose"
+]
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  latence_max: 0
+}
+
+# Familles abstraites acceptées par pilote_declarer (jamais un appareil).
+donnees: {
+  familles: ["bloc", "caractere", "trame"]
+
+  # ops = [mode, largeur_bloc, profondeur_trame, vecteur_abstrait]
+  # mode : 1 = polling (sans IRQ), 2 = irq (notification générique)
+  # vecteur : identifiant abstrait d'événement, PAS un numéro d'IRQ machine.
+  ops: [1, 8, 64, 0]
+
+  # Deuxième profil, fourni pour prouver la réversibilité sans toucher
+  # au code Rose : mêmes fonctions, autres données.
+  ops_alternatif: [2, 1, 16, 7]
+}
+
+sortie: {
+  format: brut
+  entree: principal
+  adresse_charge: 4194304
+  alignement: 4096
+}

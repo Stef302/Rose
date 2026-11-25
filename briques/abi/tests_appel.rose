@@ -1,0 +1,57 @@
+# tests_appel.rose — pilote de test de la brique B8.
+# Se CONCATÈNE avec appel.rose (Rose n'a pas de modules) :
+#   cat briques/abi/appel.rose briques/abi/tests_appel.rose > /tmp/a.rose
+#   rose /tmp/a.rose                         # interpréteur
+#   C0 /tmp/a.rose > /tmp/a.elf && /tmp/a.elf  # ELF aarch64
+# Aucun OS, aucun CPU : registres, catalogue, niveaux et formats = données.
+
+$a = abi_declarer("rose-utilisateur-v0", [4, 1, 0], [2, 8, 64, 4])
+>> abi_registres($a)
+>> abi_convention($a)
+>> abi_registre_retour($a)
+>> abi_pile_sens($a)
+>> abi_pile_alignement($a)
+>> abi_args_max($a)
+
+$cat = syscat_nouvelle()
+$cat = syscat_enregistrer($cat, 1, "identite", "1:1:entier")
+$cat = syscat_enregistrer($cat, 2, "somme", "2:2:entier")
+$cat = syscat_enregistrer($cat, 3, "produit", "3:2:entier")
+$cat = syscat_enregistrer($cat, 4, "compte", "4:0:entier")
+>> syscat_arite($cat, 2)
+>> syscat_appeler($cat, 1, [0, 42])
+>> syscat_appeler($cat, 2, [0, 10, 32])
+>> syscat_appeler($cat, 3, [0, 6, 7])
+>> syscat_appeler($cat, 4, [0])
+>> syscat_appeler($cat, 9, [0])
+>> syscat_appeler($cat, 2, [0, 1])
+$trap = syscat_trap($cat, 2, [0, 1, 2])
+>> $trap[0]
+>> $trap[1]
+>> $trap[2]
+>> $trap[3]
+
+$iso = isolate_nouveau(4)
+$iso = isolate_autoriser($iso, "lire", 0)
+$iso = isolate_autoriser($iso, "ecrire", 1)
+$iso = isolate_autoriser($iso, "administrer", 3)
+>> isolate_niveaux($iso)
+>> isolate_autorisations($iso)
+>> isolate_verifier($iso, 0, "lire")
+>> isolate_verifier($iso, 0, "ecrire")
+>> isolate_verifier($iso, 3, "administrer")
+>> isolate_verifier($iso, 4, "lire")
+
+$reg = chargeur_enregistrer("elf", "elf")
+$reg = chargeur_ajouter($reg, "pe", "pe")
+$reg = chargeur_ajouter($reg, "brut", "tout")
+>> chargeur_valider($reg, "elf", [127, 69, 76, 70, 2, 1])
+>> chargeur_valider($reg, "pe", [77, 90, 1])
+>> chargeur_valider($reg, "elf", [1, 2, 3])
+>> chargeur_valider($reg, "brut", [0])
+$img = chargeur_charger("pe", [77, 90, 1])
+>> chargeur_valide($img)
+>> chargeur_format($img)
+>> chargeur_taille($img)
+>> chargeur_ecriveur("elf")
+>> chargeur_ecriveur("pe")

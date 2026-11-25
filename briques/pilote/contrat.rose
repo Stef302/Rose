@@ -1,0 +1,317 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# briques/pilote/contrat.rose — CONTRAT DE PILOTE GÉNÉRIQUE, EN ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique B7 (dépend de B8 : abi/appel.rose pour l'ordonnancement des noms,
+# mais n'appelle aucune fonction de B8 — elle est autonome et se concatène).
+#
+# MÉCANISME, PAS APPAREIL. Aucun nom de CPU, de bus, de contrôleur, d'OS,
+# aucun pilote de clavier/disque/framebuffer, aucune primitive matérielle
+# (pas de port E/S, pas de MMIO, pas d'IRQ réelle, pas d'adresse physique).
+# Le pilote ne fait que maintenir une machine à états ABSTRAITE sur des
+# listes d'octets. Le matériel est DÉCRIT dans `contrat.bud` : la famille
+# ("bloc", "caractere", "trame") et les ops (mode, largeur, profondeur,
+# vecteur abstrait) arrivent en données, jamais en code.
+#
+# Aucun appel matériel direct : `pilote_lire` lit un tampon de données,
+# `pilote_ecrire` y écrit, `pilote_poller` sonde ce tampon,
+# `pilote_notifier` enregistre un événement abstrait. L'adaptateur
+# spécifique (hors brique) alimente le tampon et relie les événements.
+#
+# Rose n'a pas de modules : ce fichier se concatène au programme, comme
+# `compilateur/brique_runtime.rose` :
+#
+#   cat briques/pilote/contrat.rose mon_programme.rose > /tmp/prog.rose
+#   /tmp/opencode/C0_h.elf /tmp/prog.rose > /tmp/prog.elf   # ELF64 aarch64
+#
+# CONTRAT DE REPRÉSENTATION (choisi pour rester compilable par C0/G5) :
+#   un pilote `p` est une `liste<entier>` de 16 cellules de métadonnées
+#   suivies de deux zones de données. Toutes les cellules sont des entiers
+#   → aucune lecture de table (typée `?` sous G5) n'entre dans la logique.
+#
+#   index 0  famille : 1 = bloc, 2 = caractere, 3 = trame
+#         1  mode    : 1 = polling, 2 = irq
+#         2  largeur_bloc      (entier >= 1)
+#         3  profondeur_trame  (entier >= 1)
+#         4  vecteur abstrait  (0 = aucun ; PAS un numéro d'IRQ machine)
+#         5  etat     : 0 = ferme, 1 = ouvert
+#         6  identifiant abstrait (handle fourni a l'ouverture)
+#         7  octets fournis (entree)
+#         8  octets lus
+#         9  octets ecrits
+#        10  sondages
+#        11  notifications
+#        12  dernier evenement (code abstrait)
+#        13  empreinte du nom (hachedeterministe)
+#        14  nombre d'octets en entree
+#        15  nombre d'octets en sortie
+#   16 .. 15+n_entree-1                  : octets d'entree
+#   16+n_entree .. 15+n_entree+n_sortie-1 : octets de sortie
+#
+# L'état étant une valeur (liste), chaque opération RETOURNE le nouvel
+# état : `p = pilote_ouvrir(p, id)`. C'est un modèle persistant, sans
+# globale et sans mutation d'une variable d'un appelant — exigence G5.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia (aucun effet de bord, aucun matériel) ────────────────────
+
+fn pilote_octet(v: entier) -> entier {
+  $r = v % 256
+  si ($r < 0) { $r = $r + 256 }
+  retour $r
+}
+
+fn pilote_hache(s: chaine) -> entier {
+  $h = 0
+  $k = 0
+  $n = longueur(s)
+  tant_que ($k < $n) {
+    $h = $h * 131 + ordre(s[$k])
+    $k = $k + 1
+  }
+  retour $h
+}
+
+fn pilote_code_famille(famille: chaine) -> entier {
+  si (famille == "bloc") { retour 1 }
+  si (famille == "caractere") { retour 2 }
+  si (famille == "trame") { retour 3 }
+  retour 0
+}
+
+# Liste de n entiers, n >= 1 (Rose n'a pas de littéral `[]`).
+fn pilote_liste_nouvelle(n: entier) -> liste<entier> {
+  $r = [0]
+  $k = 1
+  tant_que ($k < n) {
+    joindre($r, 0)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn pilote_liste_copie(src: liste<entier>) -> liste<entier> {
+  $n = longueur(src)
+  $r = [src[0]]
+  $k = 1
+  tant_que ($k < $n) {
+    joindre($r, src[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Poser une valeur en reconstruisant une liste neuve (G5 ne met pas a jour une case
+# deja presente ; reconstruire est le seul mutateur portable).
+fn pilote_liste_poser(src: liste<entier>, idx: entier, valeur: entier) -> liste<entier> {
+  $premier = src[0]
+  si (idx == 0) { $premier = valeur }
+  $r = [$premier]
+  $k = 1
+  $n = longueur(src)
+  tant_que ($k < $n) {
+    si ($k == idx) { joindre($r, valeur) } sinon { joindre($r, src[$k]) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── 1. Déclaration et cycle de vie ────────────────────────────────────────
+
+# `ops` (données du .bud) = [mode, largeur_bloc, profondeur, vecteur].
+# Valeurs par défaut si la liste est plus courte : polling, 1, 64, 0.
+fn pilote_declarer(nom: chaine, famille: chaine, ops: liste<entier>) -> liste<entier> {
+  $mode = 1
+  $largeur = 1
+  $profondeur = 64
+  $vecteur = 0
+  $no = longueur(ops)
+  si ($no > 0) { $mode = ops[0] }
+  si ($no > 1) { $largeur = ops[1] }
+  si ($no > 2) { $profondeur = ops[2] }
+  si ($no > 3) { $vecteur = ops[3] }
+
+  $p = pilote_liste_nouvelle(16)
+  $p = pilote_liste_poser($p, 0, pilote_code_famille(famille))
+  $p = pilote_liste_poser($p, 1, $mode)
+  $p = pilote_liste_poser($p, 2, $largeur)
+  $p = pilote_liste_poser($p, 3, $profondeur)
+  $p = pilote_liste_poser($p, 4, $vecteur)
+  $p = pilote_liste_poser($p, 5, 0)
+  $p = pilote_liste_poser($p, 6, 0)
+  $p = pilote_liste_poser($p, 11, 0)
+  $p = pilote_liste_poser($p, 12, 0)
+  $p = pilote_liste_poser($p, 13, pilote_hache(nom))
+  $p = pilote_liste_poser($p, 14, 0)
+  $p = pilote_liste_poser($p, 15, 0)
+  retour $p
+}
+
+# `identifiant` est un handle ABSTRAIT (entier), pas une adresse ni un
+# descripteur de périphérique : la brique ne sait pas ce qu'il désigne.
+fn pilote_ouvrir(p: liste<entier>, identifiant: entier) -> liste<entier> {
+  $r = pilote_liste_poser(p, 5, 1)
+  $r = pilote_liste_poser($r, 6, identifiant)
+  $r = pilote_liste_poser($r, 12, 1)
+  retour $r
+}
+
+fn pilote_fermer(p: liste<entier>) -> liste<entier> {
+  $r = pilote_liste_poser(p, 5, 0)
+  $r = pilote_liste_poser($r, 12, 2)
+  retour $r
+}
+
+# ── 2. Transport de données (tampon abstrait, jamais de matériel) ─────────
+
+# Alimente la zone d'entrée. Appelé par l'adaptateur, hors de la brique.
+fn pilote_fournir(p: liste<entier>, octets: liste<entier>) -> liste<entier> {
+  si (p[5] != 1) { retour p }
+  $ne = p[14]
+  $ns = p[15]
+  $r = [p[0]]
+  $k = 1
+  tant_que ($k <= 15) {
+    joindre($r, p[$k])
+    $k = $k + 1
+  }
+  $k = 0
+  tant_que ($k < $ne) {
+    joindre($r, p[16 + $k])
+    $k = $k + 1
+  }
+  $k = 0
+  $nb = longueur(octets)
+  tant_que ($k < $nb) {
+    joindre($r, pilote_octet(octets[$k]))
+    $k = $k + 1
+  }
+  $k = 0
+  tant_que ($k < $ns) {
+    joindre($r, p[16 + $ne + $k])
+    $k = $k + 1
+  }
+  $r = pilote_liste_poser($r, 7, p[7] + $nb)
+  $r = pilote_liste_poser($r, 14, $ne + $nb)
+  retour $r
+}
+
+# Lecture selon la famille déclarée :
+#   bloc      -> n octets, arrondis à un multiple de largeur_bloc ;
+#   caractere -> au plus 1 octet ;
+#   trame     -> au plus profondeur octets, arrêt au premier 0.
+fn pilote_lire(p: liste<entier>, n: entier) -> liste<entier> {
+  $vide = [0]
+  si (p[5] != 1) { retour $vide }
+  $max = n
+  si (p[0] == 2) { $max = 1 }
+  si (p[0] == 1 et p[2] > 0) { $max = n - (n % p[2]) }
+  si (p[0] == 3 et p[3] > 0 et $max > p[3]) { $max = p[3] }
+  si ($max > p[14]) { $max = p[14] }
+  si ($max < 1) { retour $vide }
+  si (p[0] == 3) {
+    $j = 0
+    tant_que ($j < $max et p[16 + $j] != 0) { $j = $j + 1 }
+    $max = $j
+    si ($max < 1) { retour $vide }
+  }
+  $r = [p[16]]
+  $k = 1
+  tant_que ($k < $max) {
+    joindre($r, p[16 + $k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Écriture : les octets sont mis dans la zone de sortie du NOUVEL état.
+fn pilote_ecrire(p: liste<entier>, donnees: liste<entier>) -> liste<entier> {
+  si (p[5] != 1) { retour p }
+  $ne = p[14]
+  $ns = p[15]
+  $r = pilote_liste_copie(p)
+  $k = 0
+  $nb = longueur(donnees)
+  tant_que ($k < $nb) {
+    joindre($r, pilote_octet(donnees[$k]))
+    $k = $k + 1
+  }
+  $r = pilote_liste_poser($r, 9, p[9] + $nb)
+  $r = pilote_liste_poser($r, 12, 3)
+  $r = pilote_liste_poser($r, 15, $ns + $nb)
+  retour $r
+}
+
+# Retire un octet de l'entrée et reconstruit l'état (polling générique).
+fn pilote_consommer(p: liste<entier>) -> liste<entier> {
+  $ne = p[14]
+  si ($ne < 1) { retour p }
+  $ns = p[15]
+  $r = [p[0]]
+  $k = 1
+  tant_que ($k <= 15) {
+    joindre($r, p[$k])
+    $k = $k + 1
+  }
+  $k = 1
+  tant_que ($k < $ne) {
+    joindre($r, p[16 + $k])
+    $k = $k + 1
+  }
+  $k = 0
+  tant_que ($k < $ns) {
+    joindre($r, p[16 + $ne + $k])
+    $k = $k + 1
+  }
+  $r = pilote_liste_poser($r, 8, p[8] + 1)
+  $r = pilote_liste_poser($r, 14, $ne - 1)
+  retour $r
+}
+
+# ── 3. Polling et notification (sans IRQ matérielle) ──────────────────────
+
+fn pilote_poller(p: liste<entier>) -> liste<entier> {
+  si (p[5] != 1) { retour p }
+  $r = pilote_liste_poser(p, 10, p[10] + 1)
+  si (p[1] == 1) { $r = pilote_consommer($r) }
+  $r = pilote_liste_poser($r, 12, 4)
+  retour $r
+}
+
+# `evenement` est un code abstrait fourni par l'adaptateur (0..n).
+fn pilote_notifier(p: liste<entier>, evenement: entier) -> liste<entier> {
+  si (p[5] != 1) { retour p }
+  si (p[1] != 2) { retour p }
+  $r = pilote_liste_poser(p, 11, p[11] + 1)
+  $r = pilote_liste_poser($r, 12, evenement)
+  retour $r
+}
+
+# ── 4. Lecture des métadonnées (observabilité, aucun effet de bord) ────────
+
+fn pilote_etat(p: liste<entier>) -> entier { retour p[5] }
+fn pilote_identifiant(p: liste<entier>) -> entier { retour p[6] }
+fn pilote_famille_code(p: liste<entier>) -> entier { retour p[0] }
+fn pilote_mode_code(p: liste<entier>) -> entier { retour p[1] }
+fn pilote_fournis(p: liste<entier>) -> entier { retour p[7] }
+fn pilote_lus(p: liste<entier>) -> entier { retour p[8] }
+fn pilote_ecritures(p: liste<entier>) -> entier { retour p[9] }
+fn pilote_sondages(p: liste<entier>) -> entier { retour p[10] }
+fn pilote_notifications(p: liste<entier>) -> entier { retour p[11] }
+fn pilote_evenement(p: liste<entier>) -> entier { retour p[12] }
+fn pilote_empreinte(p: liste<entier>) -> entier { retour p[13] }
+fn pilote_disponible(p: liste<entier>) -> entier { retour p[14] }
+
+fn pilote_sortie(p: liste<entier>) -> liste<entier> {
+  $ns = p[15]
+  $vide = [0]
+  si ($ns < 1) { retour $vide }
+  $base = 16 + p[14]
+  $r = [p[$base]]
+  $k = 1
+  tant_que ($k < $ns) {
+    joindre($r, p[$base + $k])
+    $k = $k + 1
+  }
+  retour $r
+}

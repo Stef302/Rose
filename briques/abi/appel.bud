@@ -1,0 +1,71 @@
+# appel.bud — DÉCLARATION de la brique B8 (données uniquement).
+# Aucune logique : pas de si, pas de boucle, pas de fonction.
+# Conventions d'appel, catalogue, niveaux et formats sont des DONNÉES :
+# aucun OS, aucun CPU, aucun numéro de syscall hôte, aucun anneau x86.
+
+nom: "abi-utilisateur-generique"
+version: "0.0.1"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 4096
+  abi: rose-utilisateur-v0
+}
+
+profil: utilisateur
+
+briques: [
+  "abi/appel.rose"
+]
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  latence_max: 0
+}
+
+donnees: {
+  # registres = [nb_registres, convention, registre_retour]
+  # convention : 1 = registres d'abord, 2 = pile d'abord.
+  registres: [4, 1, 0]
+
+  # pile = [sens, alignement, taille_min, nb_args_max]
+  # sens : 1 = croît, 2 = décroît. Aucun sens n'est imposé par une ABI hôte.
+  pile: [2, 8, 64, 4]
+
+  # Catalogue : numero, nom, signature "<code>:<arite>:<type>".
+  # Codes = opérations ABSTRAITES de Rose, pas des syscalls d'un OS.
+  syscalls: [
+    { numero: 1, nom: "identite", signature: "1:1:entier" },
+    { numero: 2, nom: "somme", signature: "2:2:entier" },
+    { numero: 3, nom: "compte", signature: "4:0:entier" }
+  ]
+
+  # Isolation abstraite : niveaux 0..n-1, 0 = utilisateur,
+  # n-1 = plus privilégié. Aucun « ring 3 ».
+  niveaux: 4
+  autorisations: [
+    { operation: "lire", niveau_min: 0 },
+    { operation: "ecrire", niveau_min: 1 },
+    { operation: "administrer", niveau_min: 3 }
+  ]
+
+  # Formats exécutifs génériques ; la sérialisation est déléguée aux
+  # writers existants (emetteur_elf.rose / emetteur_pe_x64.rose).
+  formats: [
+    { nom: "elf", validateur: "elf", ecriveur: "emetteur_elf.rose" },
+    { nom: "pe", validateur: "pe", ecriveur: "emetteur_pe_x64.rose" },
+    { nom: "brut", validateur: "tout", ecriveur: "" }
+  ]
+}
+
+sortie: {
+  format: brut
+  entree: principal
+  adresse_charge: 4194304
+  alignement: 4096
+}

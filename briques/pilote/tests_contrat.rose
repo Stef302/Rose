@@ -1,0 +1,47 @@
+# tests_contrat.rose — pilote de test de la brique B7.
+# Se CONCATÈNE avec contrat.rose (Rose n'a pas de modules) :
+#   cat briques/pilote/contrat.rose briques/pilote/tests_contrat.rose > /tmp/p.rose
+#   rose /tmp/p.rose                         # interpréteur
+#   C0 /tmp/p.rose > /tmp/p.elf && /tmp/p.elf  # ELF aarch64
+# Aucun appareil : ops = données, identifiant = handle abstrait.
+
+$p = pilote_declarer("generique", "bloc", [1, 2, 64, 0])
+>> longueur($p)
+$p = pilote_ouvrir($p, 17)
+>> pilote_etat($p)
+>> pilote_identifiant($p)
+$p = pilote_fournir($p, [1, 2, 3, 4])
+>> pilote_fournis($p)
+>> pilote_disponible($p)
+$l = pilote_lire($p, 4)
+>> longueur($l)
+>> $l[0]
+>> $l[3]
+$p = pilote_ecrire($p, [9, 8])
+>> pilote_ecritures($p)
+$s = pilote_sortie($p)
+>> longueur($s)
+>> $s[0]
+>> $s[1]
+$p = pilote_poller($p)
+>> pilote_sondages($p)
+>> pilote_lus($p)
+>> pilote_disponible($p)
+$p = pilote_notifier($p, 5)
+>> pilote_notifications($p)
+
+# Deuxième `.bud` : même code, autres données (polling -> irq, bloc -> caractere).
+$q = pilote_declarer("irq", "caractere", [2, 1, 16, 7])
+$q = pilote_ouvrir($q, 3)
+$q = pilote_fournir($q, [7, 6])
+$l2 = pilote_lire($q, 5)
+>> longueur($l2)
+>> $l2[0]
+$q = pilote_notifier($q, 7)
+>> pilote_notifications($q)
+>> pilote_evenement($q)
+$q = pilote_poller($q)
+>> pilote_sondages($q)
+>> pilote_disponible($q)
+$q = pilote_fermer($q)
+>> pilote_etat($q)

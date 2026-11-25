@@ -1,0 +1,400 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# briques/abi/appel.rose — ABI UTILISATEUR GÉNÉRIQUE + FORMAT EXÉCUTABLE
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique B8 (B7 en dépend pour l'ordonnancement, mais cette brique est
+# autonome : aucune fonction de B7 n'est appelée ici).
+#
+# MÉCANISME, PAS SYSTÈME D'EXPLOITATION. Aucun numéro de syscall Linux ou
+# Win32, aucun registre nommé, aucun « ring 3 » câblé. Les conventions
+# d'appel, la table d'appels et les niveaux de protection sont des DONNÉES
+# déclarées dans `appel.bud`. Les niveaux vont de 0 à n-1, 0 = utilisateur,
+# n-1 = plus privilégié : aucune correspondance avec un anneau matériel.
+#
+# Rose n'a pas de fonction d'ordre supérieur : un « validateur » ou un
+# « gestionnaire » ne peut PAS être passé comme valeur. Les validateurs et
+# les opérations sont donc des CODES ABSTRAITS en données, interprétés ici
+# par un mécanisme générique. Les écritures ELF/PE existantes restent la
+# source de vérité pour la sérialisation : cette brique ne fait que
+# reconnaissance d'en-tête et description de délégation (voir
+# `chargeur_ecriveur` et la documentation BRIQUES_ABI_PILOTES.md).
+#
+# Même convention de représentation que B7 : tout est `liste<entier>`,
+# donc aucune lecture de table (typée `?` sous C0/G5) dans la logique.
+# Chaque opération RETOURNE un nouvel état : pas de globale, pas de
+# mutation de l'état de l'appelant.
+#
+#   cat briques/abi/appel.rose mon_programme.rose > /tmp/prog.rose
+#   /tmp/opencode/C0_h.elf /tmp/prog.rose > /tmp/prog.elf   # ELF64 aarch64
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia ──────────────────────────────────────────────────────────
+
+fn abi_liste_nouvelle(n: entier) -> liste<entier> {
+  $r = [0]
+  $k = 1
+  tant_que ($k < n) {
+    joindre($r, 0)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn abi_liste_copie(src: liste<entier>) -> liste<entier> {
+  $n = longueur(src)
+  $r = [src[0]]
+  $k = 1
+  tant_que ($k < $n) {
+    joindre($r, src[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn abi_liste_poser(src: liste<entier>, idx: entier, valeur: entier) -> liste<entier> {
+  $premier = src[0]
+  si (idx == 0) { $premier = valeur }
+  $r = [$premier]
+  $k = 1
+  $n = longueur(src)
+  tant_que ($k < $n) {
+    si ($k == idx) { joindre($r, valeur) } sinon { joindre($r, src[$k]) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Empreinte déterministe d'un nom : aucun hachage matériel, aucun hasard.
+fn abi_hache(s: chaine) -> entier {
+  $h = 0
+  $k = 0
+  $n = longueur(s)
+  tant_que ($k < $n) {
+    $h = $h * 131 + ordre(s[$k])
+    $k = $k + 1
+  }
+  retour $h
+}
+
+# Entier en tête d'une chaîne (ex. "2:3:entier" -> 2). 0 si absent.
+fn abi_entier_initial(s: chaine) -> entier {
+  $v = 0
+  $k = 0
+  $n = longueur(s)
+  tant_que ($k < $n) {
+    $o = ordre(s[$k])
+    si ($o < 48 ou $o > 57) { retour $v }
+    $v = $v * 10 + ($o - 48)
+    $k = $k + 1
+  }
+  retour $v
+}
+
+# Deuxième champ numérique d'une signature "<code>:<arite>:<type>".
+fn abi_arite(s: chaine) -> entier {
+  $phase = 0
+  $v = 0
+  $arite = 0
+  $k = 0
+  $n = longueur(s)
+  tant_que ($k < $n) {
+    $o = ordre(s[$k])
+    si ($o == 58) {
+      si ($phase == 1) { $arite = $v }
+      $phase = $phase + 1
+      $v = 0
+    } sinon {
+      si ($phase == 1 et $o >= 48 et $o <= 57) { $v = $v * 10 + ($o - 48) }
+    }
+    $k = $k + 1
+  }
+  si ($phase >= 2) { retour $arite }
+  retour $v
+}
+
+# ── 1. Conventions d'appel en données ─────────────────────────────────────
+
+# `registres` = [nb_registres, convention, registre_retour, ...]
+#   convention : 1 = registres d'abord, 2 = pile d'abord
+# `pile`      = [sens, alignement, taille_min, nb_args_max]
+#   sens      : 1 = croit, 2 = decroit
+# L'ABI retourne un vecteur de 8 entiers, empreinte incluse.
+fn abi_declarer(nom: chaine, registres: liste<entier>, pile: liste<entier>) -> liste<entier> {
+  $nr = 0
+  $conv = 1
+  $ret = 0
+  $sens = 2
+  $align = 8
+  $min = 0
+  $max = 0
+  si (longueur(registres) > 0) { $nr = registres[0] }
+  si (longueur(registres) > 1) { $conv = registres[1] }
+  si (longueur(registres) > 2) { $ret = registres[2] }
+  si (longueur(pile) > 0) { $sens = pile[0] }
+  si (longueur(pile) > 1) { $align = pile[1] }
+  si (longueur(pile) > 2) { $min = pile[2] }
+  si (longueur(pile) > 3) { $max = pile[3] }
+
+  $a = abi_liste_nouvelle(8)
+  $a = abi_liste_poser($a, 0, abi_hache(nom))
+  $a = abi_liste_poser($a, 1, $nr)
+  $a = abi_liste_poser($a, 2, $conv)
+  $a = abi_liste_poser($a, 3, $ret)
+  $a = abi_liste_poser($a, 4, $sens)
+  $a = abi_liste_poser($a, 5, $align)
+  $a = abi_liste_poser($a, 6, $min)
+  $a = abi_liste_poser($a, 7, $max)
+  retour $a
+}
+
+fn abi_registres(a: liste<entier>) -> entier { retour a[1] }
+fn abi_convention(a: liste<entier>) -> entier { retour a[2] }
+fn abi_registre_retour(a: liste<entier>) -> entier { retour a[3] }
+fn abi_pile_sens(a: liste<entier>) -> entier { retour a[4] }
+fn abi_pile_alignement(a: liste<entier>) -> entier { retour a[5] }
+fn abi_pile_taille_min(a: liste<entier>) -> entier { retour a[6] }
+fn abi_args_max(a: liste<entier>) -> entier { retour a[7] }
+fn abi_empreinte(a: liste<entier>) -> entier { retour a[0] }
+
+# ── 2. Catalogue d'appels générique ───────────────────────────────────────
+
+# Opérations abstraites de l'ABI Rose (PAS des syscalls d'un OS) :
+#   1 identite | 2 somme | 3 produit | 4 compte | 5 nul | 6 melange
+# Le .bud choisit le code ; aucune brique ne nomme un OS.
+fn syscat_nouvelle() -> liste<entier> {
+  $c = [0]
+  retour $c
+}
+
+fn syscat_enregistrer(cat: liste<entier>, numero: entier, nom: chaine, signature: chaine) -> liste<entier> {
+  $r = abi_liste_copie(cat)
+  joindre($r, numero)
+  joindre($r, abi_hache(nom))
+  joindre($r, abi_arite(signature))
+  joindre($r, abi_entier_initial(signature))
+  $r = abi_liste_poser($r, 0, cat[0] + 1)
+  retour $r
+}
+
+fn syscat_chercher(cat: liste<entier>, numero: entier) -> entier {
+  $n = cat[0]
+  $k = 0
+  tant_que ($k < $n) {
+    $base = 1 + $k * 4
+    si (cat[$base] == numero) { retour $k }
+    $k = $k + 1
+  }
+  retour -1
+}
+
+fn syscat_arite(cat: liste<entier>, numero: entier) -> entier {
+  $i = syscat_chercher(cat, numero)
+  si ($i < 0) { retour -1 }
+  retour cat[1 + $i * 4 + 2]
+}
+
+fn syscat_code(cat: liste<entier>, numero: entier) -> entier {
+  $i = syscat_chercher(cat, numero)
+  si ($i < 0) { retour -1 }
+  retour cat[1 + $i * 4 + 3]
+}
+
+# Convention des arguments : `[0]` est un porte-type (Rose n'a pas `[]`),
+# les arguments réels suivent. Ainsi `[0]` = 0 argument, `[0, 42]` = 1.
+# Retour : résultat de l'opération, -1 = numéro inconnu,
+#          -2 = arité incorrecte, -3 = opération inconnue.
+fn syscat_appeler(cat: liste<entier>, numero: entier, args: liste<entier>) -> entier {
+  $i = syscat_chercher(cat, numero)
+  si ($i < 0) { retour -1 }
+  $base = 1 + $i * 4
+  $arite = cat[$base + 2]
+  $code = cat[$base + 3]
+  $nb = longueur(args) - 1
+  si ($nb < 0) { $nb = 0 }
+  si ($nb != $arite) { retour -2 }
+
+  si ($code == 1) {
+    si ($arite < 1) { retour 0 }
+    retour args[1]
+  }
+  si ($code == 2) {
+    $s = 0
+    $j = 1
+    tant_que ($j <= $nb) {
+      $s = $s + args[$j]
+      $j = $j + 1
+    }
+    retour $s
+  }
+  si ($code == 3) {
+    $p = 1
+    $j = 1
+    tant_que ($j <= $nb) {
+      $p = $p * args[$j]
+      $j = $j + 1
+    }
+    retour $p
+  }
+  si ($code == 4) { retour $nb }
+  si ($code == 5) { retour 0 }
+  si ($code == 6) {
+    $h = 0
+    $j = 1
+    tant_que ($j <= $nb) {
+      $h = $h * 31 + args[$j]
+      $j = $j + 1
+    }
+    retour $h
+  }
+  retour -3
+}
+
+# Trace d'appel : [numero, code, arite, etat] (mechanisme d'observation).
+fn syscat_trap(cat: liste<entier>, numero: entier, args: liste<entier>) -> liste<entier> {
+  $r = abi_liste_nouvelle(4)
+  $i = syscat_chercher(cat, numero)
+  si ($i < 0) { retour $r }
+  $base = 1 + $i * 4
+  $r = abi_liste_poser($r, 0, numero)
+  $r = abi_liste_poser($r, 1, cat[$base + 3])
+  $r = abi_liste_poser($r, 2, cat[$base + 2])
+  $nb = longueur(args) - 1
+  si ($nb == cat[$base + 2]) { $r = abi_liste_poser($r, 3, 1) }
+  retour $r
+}
+
+# ── 3. Isolation abstraite (0..n-1, aucun anneau matériel) ────────────────
+
+# Vecteur : [0] = nombre de niveaux, [1] = nombre d'autorisations,
+# puis des paires [empreinte_operation, niveau_minimum].
+fn isolate_nouveau(niveaux: entier) -> liste<entier> {
+  $r = [niveaux]
+  joindre($r, 0)
+  retour $r
+}
+
+fn isolate_autoriser(iso: liste<entier>, operation: chaine, niveau_min: entier) -> liste<entier> {
+  $r = abi_liste_copie(iso)
+  joindre($r, abi_hache(operation))
+  joindre($r, niveau_min)
+  $r = abi_liste_poser($r, 1, iso[1] + 1)
+  retour $r
+}
+
+fn isolate_verifier(iso: liste<entier>, niveau: entier, operation: chaine) -> booleen {
+  si (niveau < 0 ou niveau >= iso[0]) { retour faux }
+  $h = abi_hache(operation)
+  $n = iso[1]
+  $k = 0
+  tant_que ($k < $n) {
+    $base = 2 + $k * 2
+    si (iso[$base] == $h) {
+      si (niveau >= iso[$base + 1]) { retour vrai }
+      retour faux
+    }
+    $k = $k + 1
+  }
+  retour faux
+}
+
+fn isolate_niveaux(iso: liste<entier>) -> entier { retour iso[0] }
+fn isolate_autorisations(iso: liste<entier>) -> entier { retour iso[1] }
+
+# ── 4. Format exécutable générique ────────────────────────────────────────
+
+fn abi_code_format(fmt: chaine) -> entier {
+  si (fmt == "elf") { retour 1 }
+  si (fmt == "pe") { retour 2 }
+  si (fmt == "brut") { retour 3 }
+  retour 0
+}
+
+fn abi_code_validateur(v: chaine) -> entier {
+  si (v == "elf") { retour 1 }
+  si (v == "pe") { retour 2 }
+  si (v == "tout") { retour 3 }
+  retour 0
+}
+
+fn abi_code_ecriveur(fmt: chaine) -> entier {
+  si (fmt == "elf") { retour 1 }
+  si (fmt == "pe") { retour 2 }
+  retour 0
+}
+
+# Registre : [0] = nombre d'entrées, puis des triplets
+# [format, validateur, reserve].
+fn chargeur_enregistrer(fmt: chaine, validateur: chaine) -> liste<entier> {
+  $r = [0]
+  joindre($r, abi_code_format(fmt))
+  joindre($r, abi_code_validateur(validateur))
+  joindre($r, 0)
+  $r = abi_liste_poser($r, 0, 1)
+  retour $r
+}
+
+fn chargeur_ajouter(reg: liste<entier>, fmt: chaine, validateur: chaine) -> liste<entier> {
+  $r = abi_liste_copie(reg)
+  joindre($r, abi_code_format(fmt))
+  joindre($r, abi_code_validateur(validateur))
+  joindre($r, 0)
+  $r = abi_liste_poser($r, 0, reg[0] + 1)
+  retour $r
+}
+
+fn chargeur_valider(reg: liste<entier>, fmt: chaine, octets: liste<entier>) -> booleen {
+  $code = abi_code_format(fmt)
+  $n = reg[0]
+  $k = 0
+  $val = 0
+  tant_que ($k < $n) {
+    $base = 1 + $k * 3
+    si (reg[$base] == $code) { $val = reg[$base + 1] }
+    $k = $k + 1
+  }
+  si ($val == 0) { retour faux }
+  si ($val == 3) { retour vrai }
+  $nb = longueur(octets)
+  si ($val == 1) {
+    si ($nb < 4) { retour faux }
+    si (octets[0] == 127 et octets[1] == 69 et octets[2] == 76 et octets[3] == 70) { retour vrai }
+    retour faux
+  }
+  si ($val == 2) {
+    si ($nb < 2) { retour faux }
+    si (octets[0] == 77 et octets[1] == 90) { retour vrai }
+    retour faux
+  }
+  retour faux
+}
+
+# Description d'une image chargée :
+# [0] valide (1/0), [1] code_format, [2] taille,
+# [3] code_validateur, [4] code_ecriveur.
+# La SÉRIALISATION est déléguée aux writers existants :
+#   code 1 -> compilateur/emetteur_elf.rose  (ELF64 ET_EXEC aarch64)
+#   code 2 -> compilateur/emetteur_pe_x64.rose (PE32+)
+#   code 0 -> format brut, aucun writer.
+fn chargeur_charger(fmt: chaine, octets: liste<entier>) -> liste<entier> {
+  $reg = chargeur_enregistrer(fmt, fmt)
+  si (fmt == "brut") { $reg = chargeur_enregistrer(fmt, "tout") }
+  $valide = chargeur_valider($reg, fmt, octets)
+  $r = [0]
+  si ($valide) { $r = abi_liste_poser($r, 0, 1) }
+  joindre($r, abi_code_format(fmt))
+  joindre($r, longueur(octets))
+  joindre($r, abi_code_validateur(fmt))
+  joindre($r, abi_code_ecriveur(fmt))
+  retour $r
+}
+
+# Nom du writer auquel déléguer la sérialisation (donnée, pas un appel).
+fn chargeur_ecriveur(fmt: chaine) -> chaine {
+  si (fmt == "elf") { retour "emetteur_elf.rose" }
+  si (fmt == "pe") { retour "emetteur_pe_x64.rose" }
+  retour ""
+}
+
+fn chargeur_valide(image: liste<entier>) -> entier { retour image[0] }
+fn chargeur_format(image: liste<entier>) -> entier { retour image[1] }
+fn chargeur_taille(image: liste<entier>) -> entier { retour image[2] }
