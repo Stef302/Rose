@@ -1,0 +1,137 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# pilote_profil.rose — B5 « profil d'entiers bornés » sur la cible WASM
+# ═══════════════════════════════════════════════════════════════════════════
+# Constat daté : 25/11/2026. Aucun commit, aucune publication.
+#
+# CE FICHIER EST UNE ADAPTATION, PAS UNE COPIE DE `briques/profil/noyau.rose`.
+# La brique d'origine encode son profil dans une `liste<entier>` et rend
+# `[valeur, deborde]` : ces deux formes (listes, indexation) sont REFUSÉES par
+# l'émetteur WASM de `rose/src/transpile.rs` (sous-ensemble i64). Ici le même
+# MÉCANISME est exprimé avec des SCALAIRES i64 :
+#   - le profil est un triplet (bits, signe, politique) reconstruit par `p2`
+#     (boucle `tant_que` : `^` n'est pas émis en WASM) ;
+#   - les bornes sont des paramètres entiers `lo`/`hi` ;
+#   - le résultat `[valeur, deborde]` devient la valeur après politique, et le
+#     débordement est appliqué par `appliquer` (refuser / saturer / enrouler) ;
+#   - chaque test est un BIT dans un masque : rose_main() rend ce masque.
+#
+# ⚠ DIVERGENCE DE DIVISION ÉVITÉE : `a ÷ b` est une division PLANCHER dans
+# l'interpréteur Rose (-7 ÷ 2 = -4) mais `i64.div_s` TRONQUE vers zéro en
+# WASM (-3). Comme `briques/profil/noyau.rose`, on calcule sur des grandeurs
+# POSITIVES puis on pose le signe explicitement : les deux cibles concordent
+# (preuve : masse identique en WASM et à l'interpréteur, voir le .md).
+#
+# COMMANDE (le CLI réel est `rose transpile --cible wasm`, pas `rose wasm`) :
+#   R=/tmp/opencode/v4wasm/bench/perf/algo/bin/rose
+#   $R transpile briques/wasm/pilote_profil.rose --cible wasm \
+#       -o briques/wasm/pilote_profil.wasm
+#   node -e 'const fs=require("fs");const m=new WebAssembly.Module(fs.readFileSync("briques/wasm/pilote_profil.wasm"));const r=new WebAssembly.Instance(m).exports.rose_main();console.log(r);if(r!==524287n)process.exit(1)'
+#
+# Attendu : 524287 = 2^19 - 1 (19 assertions vraies).
+# ═══════════════════════════════════════════════════════════════════════════
+
+fn p2(k: entier) -> entier {
+  $p = 1
+  $cpt = 0
+  tant_que ($cpt < k) {
+    $p = $p * 2
+    $cpt = $cpt + 1
+  }
+  retour $p
+}
+
+fn prof_min(bits: entier, signe: entier) -> entier {
+  si (signe == 1) { retour 0 - p2(bits - 1) }
+  retour 0
+}
+
+fn prof_max(bits: entier, signe: entier) -> entier {
+  si (signe == 1) { retour p2(bits - 1) - 1 }
+  retour p2(bits) - 1
+}
+
+fn bp_mod(x: entier, m: entier) -> entier {
+  $r = x % m
+  si ($r < 0) { $r = $r + m }
+  retour $r
+}
+
+fn appliquer(v: entier, d: entier, lo: entier, hi: entier, pol: entier) -> entier {
+  si (d == 0) { retour v }
+  si (pol == 0) { retour 0 }
+  si (pol == 1) {
+    si (v > hi) { retour hi }
+    si (v < lo) { retour lo }
+    retour v
+  }
+  $mod = hi - lo + 1
+  $r = bp_mod(v - lo, $mod)
+  retour $r + lo
+}
+
+fn borne_add(a: entier, b: entier, lo: entier, hi: entier, pol: entier) -> entier {
+  $s = a + b
+  $d = 0
+  si ($s < lo ou $s > hi) { $d = 1 }
+  retour appliquer($s, $d, lo, hi, pol)
+}
+
+fn borne_sub(a: entier, b: entier, lo: entier, hi: entier, pol: entier) -> entier {
+  $s = a - b
+  $d = 0
+  si ($s < lo ou $s > hi) { $d = 1 }
+  retour appliquer($s, $d, lo, hi, pol)
+}
+
+fn borne_mul(a: entier, b: entier, lo: entier, hi: entier, pol: entier) -> entier {
+  $s = a * b
+  $d = 0
+  si ($s < lo ou $s > hi) { $d = 1 }
+  retour appliquer($s, $d, lo, hi, pol)
+}
+
+fn borne_div(a: entier, b: entier, lo: entier, hi: entier, pol: entier) -> entier {
+  si (b == 0) { retour appliquer(0, 1, lo, hi, pol) }
+  $aa = a
+  $bb = b
+  si ($aa < 0) { $aa = 0 - $aa }
+  si ($bb < 0) { $bb = 0 - $bb }
+  $q = $aa ÷ $bb
+  $neg = 0
+  si ((a < 0 et b > 0) ou (a > 0 et b < 0)) { $neg = 1 }
+  si ($neg == 1) { $q = 0 - $q }
+  $d = 0
+  si ($q < lo ou $q > hi) { $d = 1 }
+  retour appliquer($q, $d, lo, hi, pol)
+}
+
+fn borne_convertir(v: entier, lo: entier, hi: entier, pol: entier) -> entier {
+  $d = 0
+  si (v < lo ou v > hi) { $d = 1 }
+  retour appliquer($v, $d, lo, hi, pol)
+}
+
+fn bit1(acc: entier) -> entier { retour acc * 2 + 1 }
+fn bit0(acc: entier) -> entier { retour acc * 2 }
+
+$acc = 0
+si (p2(8) == 256) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (prof_min(8, 1) == -128) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (prof_max(8, 1) == 127) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_add(250, 10, 0, 255, 0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_add(250, 10, 0, 255, 1) == 255) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_add(250, 10, 0, 255, 2) == 4) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_sub(0, 1, 0, 255, 0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_sub(0, 1, 0, 255, 1) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_sub(0, 1, 0, 255, 2) == 255) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_mul(16, 16, 0, 255, 0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_mul(16, 16, 0, 255, 2) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_div(255, 2, 0, 255, 0) == 127) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_div(7, 0, 0, 255, 0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_add(100, 100, -128, 127, 2) == -56) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_sub(-128, 1, -128, 127, 2) == 127) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_div(-128, -1, -128, 127, 0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_div(-128, -1, -128, 127, 2) == -128) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_div(-7, 2, -128, 127, 0) == -3) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (borne_convertir(-2, 0, 255, 2) == 254) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+>> $acc

@@ -1,0 +1,225 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# pilote_arena.rose — B4 « allocateur déterministe + carte » sur la cible WASM
+# ═══════════════════════════════════════════════════════════════════════════
+# Constat daté : 25/11/2026. Aucun commit, aucune publication.
+#
+# CE FICHIER EST UNE ADAPTATION, PAS UNE COPIE DE `briques/memoire/arena.rose`.
+# La brique d'origine garde son état dans une `liste<entier>` et indexe des
+# descripteurs : listes, indexation, `longueur`, `joindre` sont REFUSÉS par
+# l'émetteur WASM (sous-ensemble i64 de `rose/src/transpile.rs`). Ici le même
+# MÉCANISME est conservé mot pour mot sur le plan fonctionnel :
+#   - bump + première place libre (first-fit) + découpe du reste ;
+#   - libération explicite avec refus de la double libération ;
+#   - compaction déterministe qui préserve les ID et recompute le bump ;
+#   - carte de translation virtuel -> physique avec remplacement sans doublon.
+# L'état est simplement encodé en SCALAIRES i64 : quatre emplacements de
+# blocs `$b0..$b3`, chacun paqueté par `s_faire` en un mot
+#   `debut * 1000 + longueur * 10 + etat`
+# (technique classique en freestanding, sans tableau ni GC). Les champs se
+# relisent par `s_debut`, `s_long`, `s_etat`. Les cartes sont deux triplets
+# scalaires (`v1,p1,l1`, `v2,p2,l2`) au lieu d'une liste de triplets.
+#
+# Scénario identique à `briques/memoire/tests_arena.rose` (base=4096, cap=64,
+# alloc 8/12/4, free 0, double free, first-fit 5, free 1, compaction,
+# échec 60, carte 100->8192 puis 100->4096 puis 200->5000).
+# Chaque test est un BIT du masque rendu par rose_main().
+#
+# COMMANDE (le CLI réel est `rose transpile --cible wasm`, pas `rose wasm`) :
+#   R=/tmp/opencode/v4wasm/bench/perf/algo/bin/rose
+#   $R transpile briques/wasm/pilote_arena.rose --cible wasm \
+#       -o briques/wasm/pilote_arena.wasm
+#   node -e 'const fs=require("fs");const m=new WebAssembly.Module(fs.readFileSync("briques/wasm/pilote_arena.wasm"));const r=new WebAssembly.Instance(m).exports.rose_main();console.log(r);if(r!==562949953421311n)process.exit(1)'
+#
+# Attendu : 562949953421311 = 2^49 - 1 (49 assertions vraies).
+# ═══════════════════════════════════════════════════════════════════════════
+
+fn s_faire(debut: entier, lg: entier, etat: entier) -> entier {
+  retour debut * 1000 + lg * 10 + etat
+}
+fn s_debut(b: entier) -> entier { retour b ÷ 1000 }
+fn s_long(b: entier) -> entier { retour (b % 1000) ÷ 10 }
+fn s_etat(b: entier) -> entier { retour b % 10 }
+
+fn bit1(acc: entier) -> entier { retour acc * 2 + 1 }
+fn bit0(acc: entier) -> entier { retour acc * 2 }
+
+fn m_traduire(v1: entier, p1: entier, v2: entier, p2: entier, ne: entier, v: entier) -> entier {
+  si (ne >= 1 et v1 == v) { retour p1 }
+  si (ne >= 2 et v2 == v) { retour p2 }
+  retour -1
+}
+fn m_inverse(v1: entier, p1: entier, v2: entier, p2: entier, ne: entier, p: entier) -> entier {
+  si (ne >= 1 et p1 == p) { retour v1 }
+  si (ne >= 2 et p2 == p) { retour v2 }
+  retour -1
+}
+fn m_taille(v1: entier, l1: entier, v2: entier, l2: entier, ne: entier, v: entier) -> entier {
+  si (ne >= 1 et v1 == v) { retour l1 }
+  si (ne >= 2 et v2 == v) { retour l2 }
+  retour -1
+}
+
+$base = 4096
+$cap = 64
+$bump = 0
+$nb = 0
+$na = 0
+$nl = 0
+$nc = 0
+$st = 0
+$dernier = -1
+$gain = 0
+$b0 = 0
+$b1 = 0
+$b2 = 0
+$b3 = 0
+$acc = 0
+
+# alloc(8) — bout du bump
+si ($bump + 8 <= $cap) {
+  $b0 = s_faire($bump, 8, 1)
+  $bump = $bump + 8
+  $nb = 1
+  $na = $na + 1
+  $dernier = 0
+  $st = 0
+} sinon { $st = -1 ; $dernier = -1 }
+si ($st == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($dernier == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_debut($b0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_long($b0) == 8) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_etat($b0) == 1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($bump == 8) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($base + s_debut($b0) == 4096) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# alloc(12)
+si ($bump + 12 <= $cap) {
+  $b1 = s_faire($bump, 12, 1)
+  $bump = $bump + 12
+  $nb = $nb + 1
+  $na = $na + 1
+  $dernier = 1
+  $st = 0
+} sinon { $st = -1 ; $dernier = -1 }
+si ($dernier == 1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_debut($b1) == 8) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($bump == 20) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# alloc(4)
+si ($bump + 4 <= $cap) {
+  $b2 = s_faire($bump, 4, 1)
+  $bump = $bump + 4
+  $nb = $nb + 1
+  $na = $na + 1
+  $dernier = 2
+  $st = 0
+} sinon { $st = -1 ; $dernier = -1 }
+si ($dernier == 2) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_debut($b2) == 20) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($bump == 24) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# liberer(0), puis double liberation refusee
+si (s_etat($b0) == 1) {
+  $b0 = s_faire(s_debut($b0), s_long($b0), 0)
+  $nl = $nl + 1
+  $st = 0
+} sinon { $st = -1 }
+si ($st == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_etat($b0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_etat($b0) == 1) {
+  $b0 = s_faire(s_debut($b0), s_long($b0), 0)
+  $nl = $nl + 1
+  $st = 0
+} sinon { $st = -1 }
+si ($st == -1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# alloc(5) — first-fit : bloc 0 (libre, 8) repris, reste 3 -> bloc 3 libre
+$ancien_debut = s_debut($b0)
+$ancienne_lg = s_long($b0)
+si (s_etat($b0) == 0 et $ancienne_lg >= 5) {
+  $b0 = s_faire($ancien_debut, 5, 1)
+  $reste = $ancienne_lg - 5
+  si ($reste > 0) {
+    $b3 = s_faire($ancien_debut + 5, $reste, 0)
+    $nb = $nb + 1
+  }
+  $na = $na + 1
+  $dernier = 0
+  $st = 0
+} sinon { $st = -1 ; $dernier = -1 }
+si ($dernier == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_debut($b0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_long($b0) == 5) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($nb == 4) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_debut($b3) == 5) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_long($b3) == 3) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_etat($b3) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($bump == 24) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# liberer(1)
+si (s_etat($b1) == 1) {
+  $b1 = s_faire(s_debut($b1), s_long($b1), 0)
+  $nl = $nl + 1
+  $st = 0
+} sinon { $st = -1 }
+si (s_etat($b1) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# compaction : vivants 0 et 2 glisses vers l'origine, ID preserves
+$cur = 0
+si (s_etat($b0) == 1) { $b0 = s_faire($cur, s_long($b0), 1) ; $cur = $cur + s_long($b0) }
+si (s_etat($b1) == 1) { $b1 = s_faire($cur, s_long($b1), 1) ; $cur = $cur + s_long($b1) }
+si (s_etat($b2) == 1) { $b2 = s_faire($cur, s_long($b2), 1) ; $cur = $cur + s_long($b2) }
+si (s_etat($b3) == 1) { $b3 = s_faire($cur, s_long($b3), 1) ; $cur = $cur + s_long($b3) }
+si (s_etat($b0) == 0) { $b0 = s_faire($cur, 0, 0) }
+si (s_etat($b1) == 0) { $b1 = s_faire($cur, 0, 0) }
+si (s_etat($b2) == 0) { $b2 = s_faire($cur, 0, 0) }
+si (s_etat($b3) == 0) { $b3 = s_faire($cur, 0, 0) }
+$bump = $cur
+$nc = $nc + 1
+$gain = $cap - $cur
+$st = 0
+si ($st == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_debut($b0) == 0) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_debut($b2) == 5) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_long($b2) == 4) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (s_etat($b2) == 1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($bump == 9) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($gain == 55) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($nc == 1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($na == 4) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($nl == 2) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# alloc(60) — echec deterministe, aucun bloc cree
+si ($bump + 60 <= $cap) {
+  $st = -1
+} sinon { $st = -1 ; $dernier = -1 }
+si ($st == -1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($dernier == -1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($nb == 4) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+# carte de translation : 100->8192/16, remplacee par 100->4096/32,
+# puis 200->5000/8 (deux entrees, aucun doublon).
+$v1 = 0
+$p1 = 0
+$l1 = 0
+$v2 = 0
+$p2 = 0
+$l2 = 0
+$ne = 0
+si ($ne == 0) { $v1 = 100 ; $p1 = 8192 ; $l1 = 16 ; $ne = 1 }
+si (m_traduire($v1, $p1, $v2, $p2, $ne, 100) == 8192) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (m_taille($v1, $l1, $v2, $l2, $ne, 100) == 16) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($ne == 1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+$p1 = 4096
+$l1 = 32
+si (m_traduire($v1, $p1, $v2, $p2, $ne, 100) == 4096) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (m_taille($v1, $l1, $v2, $l2, $ne, 100) == 32) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($ne == 1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($ne == 1) { $v2 = 200 ; $p2 = 5000 ; $l2 = 8 ; $ne = 2 }
+si (m_traduire($v1, $p1, $v2, $p2, $ne, 200) == 5000) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (m_inverse($v1, $p1, $v2, $p2, $ne, 4096) == 100) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si (m_traduire($v1, $p1, $v2, $p2, $ne, 999) == -1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($ne == 2) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+si ($st == -1) { $acc = bit1($acc) } sinon { $acc = bit0($acc) }
+
+>> $acc
