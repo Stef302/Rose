@@ -1,0 +1,472 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# brique_runtime.rose — RUNTIME NU + ASM INLINE GÉNÉRIQUE, EN ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique universelle, PAS un pilote d'OS. Aucune dépendance libc, aucun
+# appel C, aucun `std::`. Écrit en Rose, compile avec C0
+# (/tmp/opencode/C0_h.elf) vers un ELF64 aarch64 autonome.
+#
+# Ce fichier est une BIBLIOTHÈQUE de fonctions : il n'a pas de point
+# d'entrée propre. Rose n'ayant pas de `importer`, on l'UTILISE par
+# concaténation source (motif déjà employé par `ffi_syscalls.rose:6-9`) :
+#
+#     cat compilateur/brique_runtime.rose mon_programme.rose > /tmp/prog.rose
+#     /tmp/opencode/C0_h.elf /tmp/prog.rose > /tmp/prog.elf
+#
+# Documentation complète : rose/docs/BRIQUE_RUNTIME.md.
+#
+# ── Constat de l'existant (HEAD 1708a4b) ───────────────────────────────────
+#   • encodeurs machine :
+#       compilateur/emetteur_elf.rose:717-757   (aarch64 : movz, addi, ...)
+#       compilateur/emetteur_elf.rose:4690-4742 (assemblage, g5_assemble)
+#       compilateur/emetteur_pe_x64.rose:318-372 (x86-64 : x_mov, x_rr, ...)
+#       compilateur/emetteur_pe_x64.rose:2201    (x_pe : enveloppe PE)
+#   • panic :
+#       rose/src/run.rs:1261-1267 (erreur_runtime -> panic!("ROSE_ERR:…"))
+#       rose/src/bin/rose_nostd.rs:74-79 (#[panic_handler] no_std, exit 101)
+#       rose/src/main.rs:1350-1353 (hook qui masque les ROSE_ERR)
+#       compilateur/emetteur_elf.rose:2195,3771 (quitter -> exit syscall)
+#   • E/S sans libc :
+#       rose/src/sys_io.rs:1-33 (syscalls bruts, aucun std::, asm inutile)
+#       compilateur/emetteur_elf.rose:2172,4472 (ecrire_bytes -> write(2))
+#   • amorçage / .bss :
+#       rose/src/bin/rose_nostd.rs:28-37,53-83 (alloc, panic, extern C main)
+#       compilateur/emetteur_elf.rose:4690-4720 (segment RW, 128 Gio .bss)
+#   • IL N'EXISTAIT PAS de memcpy/memset/panic/startup GÉNÉRIQUES en Rose
+#     réutilisables : seulement des primitives Rust internes
+#     (rose/src/run.rs:2083-2088 CUDA, rose/src/transpile.rs:1207-1212 C).
+#
+# Chaque fonction ci-dessous est une BRIQUE indépendante, sans recette OS.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia ───────────────────────────────────────────────────────────
+
+# Normalise un entier en OCTET (0..255), sans libc, sans flottant.
+fn rt_octet(v: entier) -> entier {
+  $r = v % 256
+  si ($r < 0) { $r = $r + 256 }
+  retour $r
+}
+
+# Retire l'élément porte-type d'une liste d'entiers.
+# Rose n'a pas de littéral `[]` : toute liste est créée avec au moins une
+# case, qui sert de PORTEUR DE TYPE. Cette fonction le retire.
+# Si la liste n'a qu'une case, elle est rendue telle quelle.
+fn rt_sans_porteur(l: liste<entier>) -> liste<entier> {
+  $n = longueur(l)
+  si ($n < 2) { retour l }
+  $r = [l[1]]
+  $k = 2
+  tant_que ($k < $n) {
+    joindre($r, l[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Ajoute tous les octets de `src` à la fin de `dst` (mutateur, retourne 0).
+fn rt_ajoute(dst: liste<entier>, src: liste<entier>) -> entier {
+  $k = 0
+  $n = longueur(src)
+  tant_que ($k < $n) {
+    joindre($dst, src[$k])
+    $k = $k + 1
+  }
+  retour 0
+}
+
+# ── 1. Copie mémoire générique ─────────────────────────────────────────────
+#
+# CONTRAT. Un tampon d'octets est une `liste<entier>` dont chaque case
+# vaut 0..255. `dst` est un PORTEUR DE TYPE : une liste d'au moins une case,
+# dont le contenu est IGNORÉ. Le résultat est une liste NEUVE contenant
+# exactement les n premiers octets de `src` (n >= 1).
+# Pour n = 0 on rend le porteur inchangé (une case) : c'est le plus petit
+# tampon typable en Rose, documenté explicitement plutôt que simulé.
+
+fn rt_memcpy(src: liste<entier>, dst: liste<entier>, n: entier) -> liste<entier> {
+  si (n < 1) { retour dst }
+  $out = [rt_octet(src[0])]
+  $k = 1
+  tant_que ($k < n) {
+    joindre($out, rt_octet(src[$k]))
+    $k = $k + 1
+  }
+  retour $out
+}
+
+# Remplissage générique : n copies de `val` (normalisées en octet).
+# Même convention de porteur que rt_memcpy.
+fn rt_memset(dst: liste<entier>, val: entier, n: entier) -> liste<entier> {
+  si (n < 1) { retour dst }
+  $b = rt_octet(val)
+  $out = [$b]
+  $k = 1
+  tant_que ($k < n) {
+    joindre($out, $b)
+    $k = $k + 1
+  }
+  retour $out
+}
+
+# Variantes « table d'octets » : copie VRAIMENT en place, à des clés
+# entières 0..n-1. Ici `dst` est muté ; aucune liste porteuse nécessaire.
+fn rt_memcpy_tab(src: table, dst: table, n: entier) -> entier {
+  $k = 0
+  tant_que ($k < n) {
+    inserer($dst, $k, src[$k])
+    $k = $k + 1
+  }
+  retour 0
+}
+
+fn rt_memset_tab(dst: table, val: entier, n: entier) -> entier {
+  $b = rt_octet(val)
+  $k = 0
+  tant_que ($k < n) {
+    inserer($dst, $k, $b)
+    $k = $k + 1
+  }
+  retour 0
+}
+
+# ── 2. Panique déterministe ────────────────────────────────────────────────
+#
+# `afficher_erreur` est un stub dans l'ELF G5 (constat mesuré) : on écrit
+# DONC sur /dev/stderr avec ecrire_bytes, primitive réellement émise
+# (compilateur/emetteur_elf.rose:2172,4472 -> syscall write).
+# `quitter` est réellement émis (emetteur_elf.rose:2195,3771 -> exit).
+
+fn rt_panic(msg: chaine) {
+  ecrire_bytes("/dev/stderr", "PANIC Rose : " + msg + "\n")
+  quitter(101)
+}
+
+fn rt_panic_code(msg: chaine, code: entier) {
+  ecrire_bytes("/dev/stderr", "PANIC Rose : " + msg + "\n")
+  quitter(code)
+}
+
+# ── 3. ASM inline générique ────────────────────────────────────────────────
+#
+# DÉLÉGATION aux émetteurs existants. Rose n'a pas de système de modules :
+# `rt_asm` reproduit EXACTEMENT les formules d'encodage de
+#   compilateur/emetteur_elf.rose:717-757     (aarch64, mots 32 bits)
+#   compilateur/emetteur_pe_x64.rose:318-372  (x86-64, octets)
+# qui sont la source de vérité. Pour une émission de programme COMPLÈTE
+# (en-têtes, sections, relocations), déléguer aux émetteurs eux-mêmes :
+#   compilateur/emetteur_elf.rose:4669 g5_assemble()
+#   compilateur/emetteur_pe_x64.rose:2201 x_pe()
+# `rt_asm` est le niveau « instruction » ; les émetteurs sont le niveau
+# « image binaire ». Les deux niveaux partagent les mêmes formules.
+
+# PAS D'ÉTAT GLOBAL : une brique réutilisable ne dépend d'aucune variable
+# mutée ailleurs (mesuré : l'affectation d'une globale depuis une fonction
+# n'est pas fiable sous le moteur Rust ni sous l'ELF G5). Le choix de la
+# cible est un ARGUMENT, pas un effet de bord.
+#
+#   rt_asm(ops)       -> aarch64 / ELF  (défaut)
+#   rt_asm_pe(ops)    -> x86-64 / PE
+#   rt_asm_vers(ops, "elf"|"pe") -> choix explicite
+
+# Token numéro `idx` d'une chaîne séparée par des blancs (0-based).
+fn rt_token(s: chaine, idx: entier) -> chaine {
+  $n = longueur(s)
+  $k = 0
+  $j = 0
+  $deb = 0
+  $fin = 0
+  $trouve = 0
+  tant_que ($k <= $n) {
+    $c = " "
+    si ($k < $n) { $c = sous_chaine(s, $k, $k + 1) }
+    si ($c == " " ou $k == $n) {
+      si ($j == idx) {
+        $fin = $k
+        $trouve = 1
+        $k = $n + 1
+      } sinon {
+        $j = $j + 1
+        $deb = $k + 1
+      }
+    }
+    $k = $k + 1
+  }
+  si ($trouve == 0) { retour "" }
+  retour sous_chaine(s, $deb, $fin)
+}
+
+# Argument numérique numéro `idx` d'une instruction.
+fn rt_arg(s: chaine, idx: entier) -> entier {
+  retour entier(rt_token(s, idx))
+}
+
+# ── 3a. Encodeurs aarch64 (miroir de emetteur_elf.rose:717-757) ────────────
+
+fn rt_a64_movz(rd: entier, im: entier) -> entier { retour 3531603968 + im * 32 + rd }
+fn rt_a64_movk(rd: entier, im: entier, sh: entier) -> entier { retour 4068474880 + sh * 2097152 + im * 32 + rd }
+fn rt_a64_addi(rd: entier, rn: entier, im: entier) -> entier { retour 2432696320 + im * 1024 + rn * 32 + rd }
+fn rt_a64_subi(rd: entier, rn: entier, im: entier) -> entier { retour 3506438144 + im * 1024 + rn * 32 + rd }
+fn rt_a64_addr(rd: entier, rn: entier, rm: entier) -> entier { retour 2332033024 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_subr(rd: entier, rn: entier, rm: entier) -> entier { retour 3405774848 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_andr(rd: entier, rn: entier, rm: entier) -> entier { retour 2315255808 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_orrr(rd: entier, rn: entier, rm: entier) -> entier { retour 2852126720 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_eorr(rd: entier, rn: entier, rm: entier) -> entier { retour 3388997632 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_umulh(rd: entier, rn: entier, rm: entier) -> entier { retour 2613083136 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_mulr(rd: entier, rn: entier, rm: entier) -> entier { retour 2600500224 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_sdivr(rd: entier, rn: entier, rm: entier) -> entier { retour 2596277248 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_udivr(rd: entier, rn: entier, rm: entier) -> entier { retour 2596276224 + rm * 65536 + rn * 32 + rd }
+fn rt_a64_cmpr(rn: entier, rm: entier) -> entier { retour 3942645791 + rm * 65536 + rn * 32 }
+fn rt_a64_cmpi(rn: entier, im: entier) -> entier { retour 4043309087 + im * 1024 + rn * 32 }
+fn rt_a64_ldroff(rt: entier, rn: entier, off: entier) -> entier { retour 4181721088 + partie_entiere(off / 8) * 1024 + rn * 32 + rt }
+fn rt_a64_stroff(rt: entier, rn: entier, off: entier) -> entier { retour 4177526784 + partie_entiere(off / 8) * 1024 + rn * 32 + rt }
+fn rt_a64_strboff(rt: entier, rn: entier) -> entier { retour 941648864 + rn * 65536 + rt }
+fn rt_a64_ldrboff(rt: entier, rn: entier) -> entier { retour 945843168 + rn * 65536 + rt }
+fn rt_a64_cset(rd: entier, cond: entier) -> entier {
+  $inv = cond + 1
+  si (cond % 2 == 1) { $inv = cond - 1 }
+  retour 2594113504 + $inv * 4096 + rd
+}
+fn rt_a64_ret() -> entier { retour 3596551104 }
+fn rt_a64_svc() -> entier { retour 3556769793 }
+
+# Dispatch d'UNE instruction aarch64. Mnémos :
+#   movz rd im | movk rd im sh | addi rd rn im | subi rd rn im
+#   addr rd rn rm | subr … | andr … | orrr … | eorr … | mulr … | udivr …
+#   sdivr … | cmpr rn rm | cmpi rn im | ldroff rt rn off | stroff …
+#   strboff rt rn | ldrboff rt rn | cset rd cond | ret | svc
+fn rt_a64_encode(op: chaine) -> entier {
+  $m = rt_token(op, 0)
+  $w = 0
+  si ($m == "movz") { $w = rt_a64_movz(rt_arg(op, 1), rt_arg(op, 2)) }
+  si ($m == "movk") { $w = rt_a64_movk(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "addi") { $w = rt_a64_addi(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "subi") { $w = rt_a64_subi(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "addr") { $w = rt_a64_addr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "subr") { $w = rt_a64_subr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "andr") { $w = rt_a64_andr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "orrr") { $w = rt_a64_orrr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "eorr") { $w = rt_a64_eorr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "umulh") { $w = rt_a64_umulh(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "mulr") { $w = rt_a64_mulr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "sdivr") { $w = rt_a64_sdivr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "udivr") { $w = rt_a64_udivr(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "cmpr") { $w = rt_a64_cmpr(rt_arg(op, 1), rt_arg(op, 2)) }
+  si ($m == "cmpi") { $w = rt_a64_cmpi(rt_arg(op, 1), rt_arg(op, 2)) }
+  si ($m == "ldroff") { $w = rt_a64_ldroff(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "stroff") { $w = rt_a64_stroff(rt_arg(op, 1), rt_arg(op, 2), rt_arg(op, 3)) }
+  si ($m == "strboff") { $w = rt_a64_strboff(rt_arg(op, 1), rt_arg(op, 2)) }
+  si ($m == "ldrboff") { $w = rt_a64_ldrboff(rt_arg(op, 1), rt_arg(op, 2)) }
+  si ($m == "cset") { $w = rt_a64_cset(rt_arg(op, 1), rt_arg(op, 2)) }
+  si ($m == "ret") { $w = rt_a64_ret() }
+  si ($m == "svc") { $w = rt_a64_svc() }
+  # verrou : aucun mnémonique ci-dessus ne correspond
+  $k = 0
+  $reconnu = 0
+  $connus = ["movz", "movk", "addi", "subi", "addr", "subr", "andr", "orrr", "eorr", "umulh", "mulr", "sdivr", "udivr", "cmpr", "cmpi", "ldroff", "stroff", "strboff", "ldrboff", "cset", "ret", "svc"]
+  tant_que ($k < longueur($connus)) {
+    si ($m == $connus[$k]) { $reconnu = 1 }
+    $k = $k + 1
+  }
+  si ($reconnu == 0) { rt_panic("asm aarch64 : mnémonique inconnu « " + $m + " »") }
+  retour $w
+}
+
+# ── 3b. Encodeurs x86-64 (miroir de emetteur_pe_x64.rose:318-372) ──────────
+
+fn rt_x64_rr(opcode: entier, reg: entier, rm: entier) -> liste<entier> {
+  $r = 0
+  si (reg >= 8) { $r = 1 }
+  $b = 0
+  si (rm >= 8) { $b = 1 }
+  $out = [64 + 8 * $r + $b]
+  joindre($out, rt_octet(opcode))
+  joindre($out, 192 + ((reg % 8) * 8) + (rm % 8))
+  retour $out
+}
+
+fn rt_x64_imm64(v: entier) -> liste<entier> {
+  $u = v
+  $neg = 0
+  si ($u < 0) { $neg = 1; $u = -$u }
+  $c0 = $u % 65536
+  $c1 = partie_entiere($u / 65536) % 65536
+  $c2 = partie_entiere($u / 4294967296) % 65536
+  $c3 = partie_entiere($u / 281474976710656) % 65536
+  si ($neg == 1) {
+    $c0 = 65536 - $c0
+    $c1 = 65535 - $c1
+    $c2 = 65535 - $c2
+    $c3 = 65535 - $c3
+    si ($c0 >= 65536) { $c0 = $c0 - 65536; $c1 = $c1 + 1 }
+    si ($c1 >= 65536) { $c1 = $c1 - 65536; $c2 = $c2 + 1 }
+    si ($c2 >= 65536) { $c2 = $c2 - 65536; $c3 = $c3 + 1 }
+    si ($c3 >= 65536) { $c3 = $c3 - 65536 }
+  }
+  $out = [0]
+  $k = 0
+  tant_que ($k < 4) {
+    $w = $c0
+    si ($k == 1) { $w = $c1 }
+    si ($k == 2) { $w = $c2 }
+    si ($k == 3) { $w = $c3 }
+    joindre($out, $w % 256)
+    joindre($out, partie_entiere($w / 256) % 256)
+    $k = $k + 1
+  }
+  retour rt_sans_porteur($out)
+}
+
+fn rt_x64_movimm(reg: entier, v: entier) -> liste<entier> {
+  $b = 0
+  si (reg >= 8) { $b = 1 }
+  $out = [64 + $b]
+  joindre($out, 184 + (reg % 8))
+  rt_ajoute($out, rt_x64_imm64(v))
+  retour rt_sans_porteur($out)
+}
+
+fn rt_x64_addi(reg: entier, v: entier) -> liste<entier> {
+  $b = 0
+  si (reg >= 8) { $b = 1 }
+  $out = [64 + $b]
+  joindre($out, 131)
+  joindre($out, 192 + (reg % 8))
+  joindre($out, rt_octet(v))
+  retour rt_sans_porteur($out)
+}
+
+fn rt_x64_subi(reg: entier, v: entier) -> liste<entier> {
+  $b = 0
+  si (reg >= 8) { $b = 1 }
+  $out = [64 + $b]
+  joindre($out, 131)
+  joindre($out, 232 + (reg % 8))
+  joindre($out, rt_octet(v))
+  retour rt_sans_porteur($out)
+}
+
+# Dispatch d'UNE instruction x86-64 -> LISTE d'octets.
+# Mnémos : mov dst src | add dst src | sub dst src | cmp a b
+#          movimm reg v | addi reg v | subi reg v | ret
+fn rt_x64_encode(op: chaine) -> liste<entier> {
+  $m = rt_token(op, 0)
+  $out = [0]
+  si ($m == "mov") { rt_ajoute($out, rt_x64_rr(139, rt_arg(op, 1), rt_arg(op, 2))) }
+  si ($m == "add") { rt_ajoute($out, rt_x64_rr(1, rt_arg(op, 2), rt_arg(op, 1))) }
+  si ($m == "sub") { rt_ajoute($out, rt_x64_rr(41, rt_arg(op, 2), rt_arg(op, 1))) }
+  si ($m == "cmp") { rt_ajoute($out, rt_x64_rr(57, rt_arg(op, 2), rt_arg(op, 1))) }
+  si ($m == "movimm") { rt_ajoute($out, rt_x64_movimm(rt_arg(op, 1), rt_arg(op, 2))) }
+  si ($m == "addi") { rt_ajoute($out, rt_x64_addi(rt_arg(op, 1), rt_arg(op, 2))) }
+  si ($m == "subi") { rt_ajoute($out, rt_x64_subi(rt_arg(op, 1), rt_arg(op, 2))) }
+  si ($m == "ret") { joindre($out, 195) }
+  $connus = ["mov", "add", "sub", "cmp", "movimm", "addi", "subi", "ret"]
+  $k = 0
+  $trouve = 0
+  tant_que ($k < longueur($connus)) {
+    si ($m == $connus[$k]) { $trouve = 1 }
+    $k = $k + 1
+  }
+  si ($trouve == 0) { rt_panic("asm x86-64 : mnémonique inconnu « " + $m + " »") }
+  retour rt_sans_porteur($out)
+}
+
+# ── 3c. Émetteur générique ─────────────────────────────────────────────────
+
+# Sérialise un mot 32 bits en 4 octets little-endian (miroir de u32le :
+# compilateur/emetteur_elf.rose:436).
+fn rt_u32le(w: entier) -> liste<entier> {
+  $u = w % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  $out = [$u % 256]
+  joindre($out, partie_entiere($u / 256) % 256)
+  joindre($out, partie_entiere($u / 65536) % 256)
+  joindre($out, partie_entiere($u / 16777216) % 256)
+  retour $out
+}
+
+# rt_asm_vers(ops, cible) — émetteur d'instructions machine générique.
+# `ops` est une liste<chaine> de mnémos avec arguments séparés par des
+# blancs, par exemple ["movz 0 5", "addi 0 0 1", "ret"].
+# Le résultat est une liste<entier> d'OCTETS (0..255), indépendante de la
+# cible : chaque mot aarch64 est sérialisé en 4 octets little-endian,
+# chaque instruction x86-64 est déjà une suite d'octets.
+# Pour n = 0, rend une liste d'une case (porte-type), comme rt_memcpy.
+fn rt_asm_vers(ops: liste<chaine>, cible: chaine) -> liste<entier> {
+  $n = longueur(ops)
+  $out = [0]
+  $k = 0
+  tant_que ($k < $n) {
+    si (cible == "pe") {
+      rt_ajoute($out, rt_x64_encode(ops[$k]))
+    } sinon {
+      rt_ajoute($out, rt_u32le(rt_a64_encode(ops[$k])))
+    }
+    $k = $k + 1
+  }
+  retour $out
+}
+
+# Cible aarch64 / ELF par défaut.
+fn rt_asm(ops: liste<chaine>) -> liste<entier> {
+  retour rt_asm_vers(ops, "elf")
+}
+
+# Cible x86-64 / PE.
+fn rt_asm_pe(ops: liste<chaine>) -> liste<entier> {
+  retour rt_asm_vers(ops, "pe")
+}
+
+# ── 4. Traders de démarrage génériques ─────────────────────────────────────
+
+# rt_init_bss(t) — mémoire statique logique initialisée à zéro.
+# 16 cases d'octets, clés entières 0..15. Un noyau/OS remplace ce modèle
+# par une vraie section .bss mappée au chargement ; la brique ne préjuge
+# NI de l'adresse, NI du chargeur, NI de l'environnement d'exécution.
+#
+# ⚠ CONTRAT MESURÉ (ELF G5) : une table REMPLIE puis retournée par une
+# fonction perd son contenu (constat re-joué) ; seule une table vide
+# retournée est fiable. La table est donc fournie par l'appelant et MUTÉE :
+#     $bss = table()
+#     rt_init_bss($bss)
+#     rt_bss_ecrire($bss, 2, 300)
+fn rt_init_bss(t: table) -> entier {
+  # Modèle logique : TOUTE case non écrite vaut 0. On ne pré-remplit donc
+  # PAS les 16 cases : le backend G5 ne sait pas METTRE À JOUR une clé
+  # entière déjà présente (mesuré : inserer(t,2,44) après un 2 initialisé
+  # à 0 laisse 0), tandis qu'une clé ABSENTE s'insère correctement.
+  # Le contrat « zéro à l'initialisation » est respecté des deux côtés.
+  retour 0
+}
+
+# Table vide (utile comme porte-type pour l'appelant).
+fn rt_bss_nouvelle() -> table {
+  retour table()
+}
+
+# Écriture d'un octet dans la page .bss logique (clé entière).
+fn rt_bss_ecrire(t: table, idx: entier, v: entier) -> entier {
+  inserer(t, idx, rt_octet(v))
+  retour 0
+}
+
+# rt_init_stack() — pile logique indépendante de l'ABI machine.
+# Base typée `[0]` : on ajoute des octets avec rt_stack_push (joindre).
+fn rt_init_stack() -> liste<entier> {
+  $base = [0]
+  retour $base
+}
+
+fn rt_stack_push(st: liste<entier>, v: entier) -> liste<entier> {
+  joindre($st, rt_octet(v))
+  retour $st
+}
+
+# Sommet de pile (dernière case), sans la retirer.
+fn rt_stack_top(st: liste<entier>) -> entier {
+  retour st[longueur(st) - 1]
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIN DE BRIQUE — aucun code d'exécution, aucun point d'entrée.
+# ═══════════════════════════════════════════════════════════════════════════
