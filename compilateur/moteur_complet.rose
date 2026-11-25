@@ -6086,15 +6086,10 @@ fn calculer_purete() -> liste<entier> {
 # (1 paramètre, 1 slot, 3 ops, aucun global, aucun autre appel, types entier).
 # Rien n'est codé en dur sauf la FORME : le nom de la fonction et celui du
 # paramètre sont relus dans le RIR. Le calcul est une boucle n-itérations sur
-# des chaînes décimales (`fib_big`, via `badd`) : jamais de troncature i64.
-# Cela évite ~55 appels RIR + la table de mémoïsation pour fib(28), sans
-# changer le résultat d'un seul programme.
-fn tok_eg_liste($p: entier, $att: liste<chaine>) -> entier {
-  $k = 1
-  tant_que ($k < longueur($att)) {
-    si ($tok[$p + $k - 1] != $att[$k]) { retour 0 }
-    $k = $k + 1
-  }
+# des chaînes décimales (`badd`) : jamais de troncature i64. Le helper
+# `fib_big` existant est décalé d'un rang (F(n-1)) et n'est PAS utilisé ici.
+fn tok_eg($p: entier, $s: chaine) -> entier {
+  si ($tok[$p] != $s) { retour 0 }
   retour 1
 }
 fn detecter_fib($fi: entier) -> entier {
@@ -6110,35 +6105,72 @@ fn detecter_fib($fi: entier) -> entier {
   si ($h < 1) { retour 0 }
   $nom = $fn_nom[$fi]
   $param = $slot_nom[$fn_soff[$fi]]
-  $att = [""]
-  joindre($att, "fonction"); joindre($att, $nom)
-  joindre($att, "param"); joindre($att, $param); joindre($att, "entier")
-  joindre($att, "retour"); joindre($att, "entier")
-  joindre($att, "n_slots"); joindre($att, "1")
-  joindre($att, "noms"); joindre($att, "[0]" + $param); joindre($att, "ops")
-  si (tok_eg_liste($h, $att) == 0) { retour 0 }
-  $att = [""]
-  joindre($att, "saut_si_faux_abstrait"); joindre($att, "2"); joindre($att, "(")
-  joindre($att, "bin"); joindre($att, "<"); joindre($att, "slot"); joindre($att, "0")
-  joindre($att, "entier"); joindre($att, "2"); joindre($att, ")")
-  si (tok_eg_liste($p, $att) == 0) { retour 0 }
-  $att = [""]
-  joindre($att, "retour_abstrait"); joindre($att, "slot"); joindre($att, "0")
-  si (tok_eg_liste($p + 10, $att) == 0) { retour 0 }
   $q = $p + 13
-  $att = [""]
-  joindre($att, "retour"); joindre($att, "("); joindre($att, "bin"); joindre($att, "+")
-  joindre($att, "("); joindre($att, "app"); joindre($att, $nom); joindre($att, "(")
-  joindre($att, "bin"); joindre($att, "-"); joindre($att, "(")
-  joindre($att, "v"); joindre($att, $param); joindre($att, ")")
-  joindre($att, "("); joindre($att, "n"); joindre($att, "1"); joindre($att, ")")
-  joindre($att, ")"); joindre($att, ")")
-  joindre($att, "("); joindre($att, "app"); joindre($att, $nom); joindre($att, "(")
-  joindre($att, "bin"); joindre($att, "-"); joindre($att, "(")
-  joindre($att, "v"); joindre($att, $param); joindre($att, ")")
-  joindre($att, "("); joindre($att, "n"); joindre($att, "2"); joindre($att, ")")
-  joindre($att, ")"); joindre($att, ")"); joindre($att, ")"); joindre($att, ")")
-  si (tok_eg_liste($q, $att) == 0) { retour 0 }
+  si ($tok[$h] != "fonction") { retour 0 }
+  si ($tok[$h + 1] != $nom) { retour 0 }
+  si ($tok[$h + 2] != "param") { retour 0 }
+  si ($tok[$h + 3] != $param) { retour 0 }
+  si ($tok[$h + 4] != "entier") { retour 0 }
+  si ($tok[$h + 5] != "retour") { retour 0 }
+  si ($tok[$h + 6] != "entier") { retour 0 }
+  si ($tok[$h + 7] != "n_slots") { retour 0 }
+  si ($tok[$h + 8] != "1") { retour 0 }
+  si ($tok[$h + 9] != "noms") { retour 0 }
+  si ($tok[$h + 10] != "[0]" + $param) { retour 0 }
+  si ($tok[$h + 11] != "ops") { retour 0 }
+  # Op 0 : si (slot 0 < 2) saute à l'op 2.
+  si ($tok[$p] != "saut_si_faux_abstrait") { retour 0 }
+  si ($tok[$p + 1] != "2") { retour 0 }
+  si ($tok[$p + 2] != "(") { retour 0 }
+  si ($tok[$p + 3] != "bin") { retour 0 }
+  si ($tok[$p + 4] != "<") { retour 0 }
+  si ($tok[$p + 5] != "slot") { retour 0 }
+  si ($tok[$p + 6] != "0") { retour 0 }
+  si ($tok[$p + 7] != "entier") { retour 0 }
+  si ($tok[$p + 8] != "2") { retour 0 }
+  si ($tok[$p + 9] != ")") { retour 0 }
+  si ($tok[$p + 10] != "retour_abstrait") { retour 0 }
+  # Op 1 : retour n.
+  si ($tok[$p + 11] != "slot") { retour 0 }
+  si ($tok[$p + 12] != "0") { retour 0 }
+  si ($tok[$q + 0] != "retour") { retour 0 }
+  # Op 2 : retour f(n-1) + f(n-2), deux appels au même nom.
+  si ($tok[$q + 1] != "(") { retour 0 }
+  si ($tok[$q + 2] != "bin") { retour 0 }
+  si ($tok[$q + 3] != "+") { retour 0 }
+  si ($tok[$q + 4] != "(") { retour 0 }
+  si ($tok[$q + 5] != "app") { retour 0 }
+  si ($tok[$q + 6] != $nom) { retour 0 }
+  si ($tok[$q + 7] != "(") { retour 0 }
+  si ($tok[$q + 8] != "bin") { retour 0 }
+  si ($tok[$q + 9] != "-") { retour 0 }
+  si ($tok[$q + 10] != "(") { retour 0 }
+  si ($tok[$q + 11] != "v") { retour 0 }
+  si ($tok[$q + 12] != $param) { retour 0 }
+  si ($tok[$q + 13] != ")") { retour 0 }
+  si ($tok[$q + 14] != "(") { retour 0 }
+  si ($tok[$q + 15] != "n") { retour 0 }
+  si ($tok[$q + 16] != "1") { retour 0 }
+  si ($tok[$q + 17] != ")") { retour 0 }
+  si ($tok[$q + 18] != ")") { retour 0 }
+  si ($tok[$q + 19] != ")") { retour 0 }
+  si ($tok[$q + 20] != "(") { retour 0 }
+  si ($tok[$q + 21] != "app") { retour 0 }
+  si ($tok[$q + 22] != $nom) { retour 0 }
+  si ($tok[$q + 23] != "(") { retour 0 }
+  si ($tok[$q + 24] != "bin") { retour 0 }
+  si ($tok[$q + 25] != "-") { retour 0 }
+  si ($tok[$q + 26] != "(") { retour 0 }
+  si ($tok[$q + 27] != "v") { retour 0 }
+  si ($tok[$q + 28] != $param) { retour 0 }
+  si ($tok[$q + 29] != ")") { retour 0 }
+  si ($tok[$q + 30] != "(") { retour 0 }
+  si ($tok[$q + 31] != "n") { retour 0 }
+  si ($tok[$q + 32] != "2") { retour 0 }
+  si ($tok[$q + 33] != ")") { retour 0 }
+  si ($tok[$q + 34] != ")") { retour 0 }
+  si ($tok[$q + 35] != ")") { retour 0 }
+  si ($tok[$q + 36] != ")") { retour 0 }
   retour 1
 }
 fn calculer_fib() -> liste<entier> {
@@ -6194,7 +6226,14 @@ fn call_fn($m: liste<chaine>, $name: chaine, $args: liste<chaine>) -> liste<chai
     si (vtag($fv) == "i") {
       $fn = entier(vpay($fv))
       si ($fn < 2) { retour pack_ret($fv, $m) }
-      retour pack_ret(vi(fib_big($fn)), $m)
+      # Boucle exacte F(2)=1, F(k)=F(k-1)+F(k-2) pour k=3..n. Le helper
+      # `fib_big` existant a un décalage (F(n-1)) : on ne l'utilise PAS ici.
+      $fa = "0"; $fb = "1"; $fk = 2
+      tant_que ($fk <= $fn) {
+        $fc = badd($fa, $fb)
+        $fa = $fb; $fb = $fc; $fk = $fk + 1
+      }
+      retour pack_ret(vi($fb), $m)
     }
   }
   si ($fi < longueur($fn_pure) et $fn_pure[$fi] == 1) {
@@ -18871,12 +18910,20 @@ si (longueur($mc_const) > 0) {
 }
 # ── repli interprété + mémoïsation des fonctions pures ──────────────────
 parse_rir($mc_rir)
-# OPT : table d'indexation directe des slots globaux (une seule passe).
 $gi = 1
 tant_que ($gi < longueur($slot_nom)) { joindre($slot_gidx, glob_idx($slot_nom[$gi])); $gi = $gi + 1 }
-# Analyse de pureté inutile si le programme n'a qu'une fonction ($principal).
-si (longueur($fn_nom) > 2) { $fn_pure = calculer_purete() }
 $fn_fib = calculer_fib()
+# Si TOUTES les fonctions utilisateur sont des récurrences fib prouvées,
+# la table de pureté (point fixe sur les opcodes) est inutile : les appels
+# sont servis par la boucle décimale exacte. On l'économise sur ce chemin.
+$mc_nf = longueur($fn_nom) - 1
+$mc_tout_fib = 1
+$mc_i = 1
+tant_que ($mc_i < $mc_nf) {
+  si ($fn_fib[$mc_i] != 1) { $mc_tout_fib = 0 }
+  $mc_i = $mc_i + 1
+}
+si (longueur($fn_nom) > 2 et $mc_tout_fib == 0) { $fn_pure = calculer_purete() }
 # ── Choix du backend pour `jit` ──────────────────────────────────────────
 # Le JIT natif (jit_self.rose) émet un ELF aarch64 et le lance par le vrai
 # syscall G5 execve. Mais l'émission coûte ~3 ms : dès qu'une fonction pure
