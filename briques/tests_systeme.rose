@@ -1,0 +1,50 @@
+# tests_systeme.rose — pilote « un clic » du système universel.
+#
+# Un seul appel à `systeme_depuis_bud("briques/appareil/contrat.bud")` :
+# lecture, validation, déclaration des opérations et des appareils, exécution
+# de "calculer" sur le "calculateur", puis affichage du résultat.
+#
+# Rose n'a pas de modules : ce pilote se CONCATÈNE avec ses dépendances, dans
+# cet ordre précis (les globals de la brique doivent être initialisés avant) :
+#
+#   cat compilateur/lecteur_bud.rose \
+#       briques/appareil/contrat.rose \
+#       briques/appareil/chargeur.rose \
+#       briques/appareil/systeme.rose \
+#       briques/tests_systeme.rose > /tmp/tests_systeme_full.rose
+#   rose verif /tmp/tests_systeme_full.rose
+#   rose /tmp/tests_systeme_full.rose
+#   C0 /tmp/tests_systeme_full.rose > /tmp/tests_systeme_full.elf
+#   /tmp/tests_systeme_full.elf        # sortie octet pour octet identique
+
+$s = systeme_depuis_bud("briques/appareil/contrat.bud")
+
+>> "rc=" + chaine($s[0])
+>> "capacite=" + chaine($s[1]) + " (" + appareil_nom_capacite($s[1]) + ")"
+>> "empreinte=" + chaine($s[2])
+>> "appareils=" + chaine($s[3])
+>> "appareil=" + chaine($s[4]) + " (" + appareil_nom(appareil_obtenir($s[4])) + ")"
+
+si ($s[0] != 0) {
+  >> "ECHEC systeme : rc=" + chaine($s[0])
+  quitter(1)
+}
+si ($s[1] != 1 ou appareil_nom_capacite($s[1]) != "calculer") {
+  >> "ECHEC systeme : operation = " + appareil_nom_capacite($s[1])
+  quitter(2)
+}
+si ($s[3] != 3) {
+  >> "ECHEC systeme : " + chaine($s[3]) + " appareils (attendu 3)"
+  quitter(3)
+}
+si (appareil_nom(appareil_obtenir($s[4])) != "calculateur") {
+  >> "ECHEC systeme : appareil = " + appareil_nom(appareil_obtenir($s[4]))
+  quitter(4)
+}
+si ($s[2] <= 0) {
+  >> "ECHEC systeme : empreinte vide"
+  quitter(5)
+}
+
+>> "TESTS SYSTEME VERTS : calculer sur calculateur, 3 appareils depuis contrat.bud"
+quitter(0)

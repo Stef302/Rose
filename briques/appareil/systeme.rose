@@ -1,0 +1,113 @@
+# systeme.rose — LE câblage « un clic » : un seul .bud suffit.
+#
+# Jusqu'ici il fallait enchaîner à la main : bud_lire / bud_parse / bud_valider,
+# puis appareil_operations_depuis_bud, puis appareil_depuis_bud, puis choisir
+# une fiche, puis appeler appareil_executer. Ce fichier réunit TOUS ces pas
+# dans UNE seule fonction Rose, écrite en Rose pur (aucun Rust, aucune FFI).
+#
+# Dépendances (à concaténer AVANT ce fichier, Rose n'ayant pas de modules) :
+#   compilateur/lecteur_bud.rose     -> bud_lire, bud_parse, bud_valider,
+#                                       bud_champ, bud_entier
+#   briques/appareil/contrat.rose    -> annuaire, table d'opérations,
+#                                       appareil_executer / _obtenir / _nom...
+#   briques/appareil/chargeur.rose   -> appareil_depuis_bud,
+#                                       appareil_operations_depuis_bud
+#
+# API publique :
+#   systeme_depuis_bud(chemin) -> liste<entier>
+#
+# Résultat : [rc, capacite, empreinte, nb_appareils, id_appareil]
+#   rc =  0            succès : l'opération a été exécutée
+#      = -1            manifeste invalide (bud_valider)
+#      = -2            déclaration des opérations impossible
+#      = -3            aucun appareil déclaré
+#      = -1 / -2 / -3  propagés par appareil_executer :
+#                      opération inconnue / capacité absente / fiche invalide
+#   capacite, empreinte : le résultat de appareil_executer
+#   nb_appareils        : nombre d'appareils enregistrés depuis le .bud
+#   id_appareil         : identifiant de l'appareil sur lequel on a exécuté
+#
+# TOUT est lu dans le manifeste ; aucun nom d'appareil, aucune capacité, aucun
+# argument n'est écrit ici. Champs optionnels du .bud :
+#   essai.appareil              nom de l'appareil à utiliser
+#   essai.operation             nom de l'opération à exécuter
+#   essai.arguments.<j>         arguments entiers de l'opération
+# Sans ces champs : on prend le premier appareil déclaré et sa première
+# capacité (le « calculer » du calculateur de contrat.bud), avec [2, 3].
+# ═══════════════════════════════════════════════════════════════════════════
+
+fn systeme_depuis_bud($chemin: chaine) -> liste<entier> {
+  # [rc, capacite, empreinte, nb_appareils, id_appareil]
+  $r = [0, 0, 0, 0, 0]
+
+  # ── 1. lecture + validation du manifeste ────────────────────────────────
+  $txt = bud_lire($chemin)
+  $paires = bud_parse($txt)
+  $v = bud_valider($paires)
+  si ($v != 0) {
+    $r = appareil_liste_poser($r, 0, -1)
+    retour $r
+  }
+
+  # ── 2. déclaration : opérations puis appareils, toujours depuis le .bud ─
+  $nop = appareil_operations_depuis_bud($chemin)
+  $nb = appareil_depuis_bud($chemin)
+  $r = appareil_liste_poser($r, 3, $nb)
+  si ($nop < 0) {
+    $r = appareil_liste_poser($r, 0, -2)
+    retour $r
+  }
+  si ($nb < 1) {
+    $r = appareil_liste_poser($r, 0, -3)
+    retour $r
+  }
+
+  # ── 3. choix de l'appareil (essai.appareil, sinon le premier déclaré) ────
+  $ids = appareil_enumere()
+  $id = $ids[1]
+  $choisi = bud_champ($paires, "essai.appareil")
+  $k = 1
+  tant_que ($k < longueur($ids)) {
+    si (appareil_nom(appareil_obtenir($ids[$k])) == $choisi) { $id = $ids[$k] }
+    $k = $k + 1
+  }
+  $app = appareil_obtenir($id)
+  $r = appareil_liste_poser($r, 4, $id)
+
+  # ── 4. choix de l'opération ─────────────────────────────────────────────
+  # `essai.operation` du .bud, sinon la première capacité de l'appareil.
+  # Une capacité peut servir d'opération : on l'inscrit alors dans la table,
+  # en prenant son code dans la brique (jamais écrit en dur ici).
+  $op = bud_champ($paires, "essai.operation")
+  si (longueur($op) == 0) { $op = appareil_nom_capacite($app[5]) }
+  $cap = appareil_capacite_requise($op)
+  si ($cap == 0) {
+    $cap = appareil_code_capacite($op)
+    si ($cap > 0) {
+      si (appareil_operation_declarer($op, $cap) != 0) { $cap = 0 }
+    }
+  }
+
+  # ── 5. arguments (essai.arguments.<j> du .bud, sinon [2, 3]) ────────────
+  $args = [2]
+  $a = bud_champ($paires, "essai.arguments.0")
+  si (longueur($a) > 0) {
+    $args = [bud_entier($paires, "essai.arguments.0")]
+    $j = 1
+    $s = bud_champ($paires, "essai.arguments." + chaine($j))
+    tant_que (longueur($s) > 0) {
+      joindre($args, bud_entier($paires, "essai.arguments." + chaine($j)))
+      $j = $j + 1
+      $s = bud_champ($paires, "essai.arguments." + chaine($j))
+    }
+  } sinon {
+    joindre($args, 3)
+  }
+
+  # ── 6. exécution par la capacité déclarée, puis résultat ────────────────
+  $res = appareil_executer($app, $op, $args)
+  $r = appareil_liste_poser($r, 0, $res[0])
+  $r = appareil_liste_poser($r, 1, $res[1])
+  $r = appareil_liste_poser($r, 2, $res[2])
+  retour $r
+}

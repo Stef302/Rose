@@ -56,3 +56,14 @@ sortie: {
   adresse_charge: 4194304
   alignement: 4096
 }
+
+# Essai « un clic » : UNIQUEMENT des données. `systeme_depuis_bud` lit ces
+# trois champs : quel appareil utiliser, quelle opération exécuter, avec quels
+# arguments. Changez ce bloc (ou ajoutez un appareil ci-dessus) : aucun code
+# Rose n'est à modifier. Si le bloc est absent, la brique prend le premier
+# appareil, sa première capacité comme opération et [2, 3] comme arguments.
+essai: {
+  appareil: "calculateur"
+  operation: "calculer"
+  arguments: [2, 3]
+}
