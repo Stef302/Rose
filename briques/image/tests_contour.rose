@@ -1,0 +1,87 @@
+# tests_contour.rose — pilote de la brique B9 (table / validation / écriture)
+# Se compile PAR CONCATÉNATION avec contour.rose (Rose n'a pas de `importer`) :
+#   cat briques/image/contour.rose briques/image/tests_contour.rose > /tmp/p.rose
+#   /tmp/opencode/C0_h.elf /tmp/p.rose > /tmp/p.elf
+#   /tmp/p.elf
+# Chaque ligne stdout est une valeur ; l'ordre est le contrat du test.
+
+$CHEMIN = "/tmp/opencode/v3image_contour.img"
+
+# ── 1. Trois sections, unité logique 16 (issue de contour.bud) ─────────────
+$img = contour_image(16)
+>> contour_unite($img)              # 16
+>> contour_nb_sections($img)        # 0
+>> contour_entree_id($img)          # -1
+
+$a = contour_nouvelle("amorce", 0, 1)
+$b = contour_nouvelle("table", 2, 2)
+$c = contour_nouvelle("charge", 5, 1)
+>> contour_section_secteur($b)      # 2
+>> contour_section_alignement($b)   # 2
+>> contour_section_nom($b) == "table"  # vrai
+
+$img = contour_ajouter($img, $a, [65, 66, 67])
+$img = contour_ajouter($img, $b, [1, 2, 3, 4])
+$img = contour_ajouter($img, $c, [10, 20, 30, 40, 50])
+>> contour_statut($img)             # 0
+>> contour_nb_sections($img)        # 3
+>> contour_taille($img)             # 85 = 5*16 + 5
+
+# ── 2. Table : [n, debut, taille, entree, …] ───────────────────────────────
+$t = contour_table($img)
+>> longueur($t)                     # 10
+>> $t[0]                            # 3
+>> $t[1]                            # 0   : section 0
+>> $t[2]                            # 3
+>> $t[3]                            # 0   : pas encore d'entrée
+>> $t[4]                            # 32  : secteur 2 * unité 16
+>> $t[5]                            # 4
+>> $t[7]                            # 80  : secteur 5 * unité 16
+>> $t[8]                            # 5
+
+# ── 3. Validation et point d'entrée ────────────────────────────────────────
+>> contour_valider($img)            # -3 : entrée non posée
+$img = contour_entree($img, 0)
+>> contour_valider($img)            # 0
+$t = contour_table($img)
+>> $t[3]                            # 1   : section 0 = entrée
+>> $t[6]                            # 0
+>> $t[9]                            # 0
+$img2 = contour_entree($img, 2)
+$tab2 = contour_table($img2)
+>> $tab2[3]                          # 0
+>> $tab2[9]                          # 1   : entrée déplacée sans toucher aux données
+
+# ── 4. Écriture puis relecture octet pour octet ────────────────────────────
+>> contour_ecrire($img, $CHEMIN)    # 0
+$lu = lire_texte($CHEMIN)
+$o = contour_octets($lu)
+>> longueur($o)                     # 85
+>> $o[0]                            # 65  'A'
+>> $o[1]                            # 66  'B'
+>> $o[2]                            # 67  'C'
+>> $o[3]                            # 0   : bourrage
+>> $o[31]                           # 0
+>> $o[32]                           # 1   : section 1
+>> $o[35]                           # 4
+>> $o[36]                           # 0   : bourrage
+>> $o[79]                           # 0
+>> $o[80]                           # 10  : section 2
+>> $o[84]                           # 50
+
+# ── 5. Cas d'échec explicites ──────────────────────────────────────────────
+$ov = contour_image(16)
+$ov = contour_ajouter($ov, contour_nouvelle("a", 0, 1), [1, 2, 3])
+$ov = contour_ajouter($ov, contour_nouvelle("b", 0, 1), [9])
+$ov = contour_entree($ov, 0)
+>> contour_valider($ov)             # -1 : chevauchement
+>> contour_ecrire($ov, $CHEMIN)     # -1 : rien n'est écrit
+
+$mal = contour_image(16)
+$mal = contour_ajouter($mal, contour_nouvelle("a", 0, 1), [1])
+$mal = contour_ajouter($mal, contour_nouvelle("b", 1, 2), [2])
+$mal = contour_entree($mal, 0)
+>> contour_valider($mal)            # -2 : alignement (16 % (2*16) != 0)
+
+$vide = contour_image(0)
+>> contour_valider($vide)           # -4 : unité invalide

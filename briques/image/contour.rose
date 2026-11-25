@@ -1,0 +1,339 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# contour.rose — ASSEMBLEUR D'IMAGE GÉNÉRIQUE, EN ROSE PUR (brique B9)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique B9 universelle : un MÉCANISME d'assemblage d'octets et de table.
+# Aucun nom de conteneur, de format d'amorçage, de système de fichiers,
+# d'architecture, d'OS ni de point d'entrée matériel n'apparaît ici. Les
+# formats sont des DONNÉES, déclarées dans `contour.bud` et traduites par le
+# noyau en appels à cette brique : voir `rose/docs/BRIQUE_IMAGE.md`.
+#
+# MODÈLE — tout est une `liste<entier>` plate (aucun grand entier, aucune
+# table imbriquée : le backend G5 calcule sur des mots de 64 bits) :
+#
+#   SECTION (descripteur, 7 entiers + octets du nom) :
+#     0 : secteur logique de départ (unité abstraite, PAS un octet)
+#     1 : alignement requis sur ce secteur (0/1 = aucune contrainte)
+#     2 : longueur du nom en octets
+#     3 : 7 (indice du premier octet du nom dans cette liste)
+#     4 : 0 (réservé : longueur de la charge, posée à l'ajout)
+#     5 : 0 (réservé)
+#     6 : statut
+#     7+ : octets du nom (points de code 0..255)
+#
+#   IMAGE (état, 6 entiers + descripteurs + bassin d'octets) :
+#     0 : unité logique (octets par secteur ; vient du .bud, jamais supposée)
+#     1 : nombre de sections
+#     2 : identifiant de la section-point-d'entrée (-1 = non posé)
+#     3 : statut de la dernière opération
+#     4 : taille totale de l'image en octets
+#     5 : indice, dans cette liste, du premier octet du bassin (6 au départ)
+#     6+ : descripteurs de 7 entiers, un par section, dans l'ordre d'ajout
+#     puis : bassin = octets du nom de chaque section, puis octets de sa
+#            charge utile (référencés par `nom_base` / `donnees_base`).
+#
+#   TABLE (contour_table) : liste plate
+#     [nombre, debut0, taille0, entree0, debut1, taille1, entree1, ...]
+#     `debut` est un DÉCALAGE EN OCTETS calculé depuis secteur * unité.
+#     `entree` vaut 1 pour la section-point-d'entrée, 0 sinon.
+#
+# CONVENTION FONCTIONNELLE : chaque opération rend un NOUVEL état ;
+# l'appelant reprend explicitement `$img = contour_ajouter($img, …)`.
+# Aucune mutation cachée, aucun GC, aucun appel OS hors `ecrire_bytes`.
+#
+# OCTETS BRUTS — `octet_brut` est intercepte par le backend G5 : sa définition
+# locale DOIT porter ce nom exact et cette signature (voir
+# `compilateur/emetteur_elf.rose:418-424`). Sous le moteur Rust elle rend un
+# point de code écrit comme un seul octet ; sous l'ELF auto-hébergé elle
+# fabrique un descripteur d'1 octet brut, sans encodage UTF-8.
+#
+# Se concatène avec le programme (Rose n'a pas de `importer`) :
+#   cat briques/image/contour.rose briques/image/tests_contour.rose > /tmp/p.rose
+#   /tmp/opencode/C0_h.elf /tmp/p.rose > /tmp/p.elf
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia ───────────────────────────────────────────────────────────
+
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+
+# Écriture explicite d'une case d'une liste d'entiers, avec croissance.
+# `l` n'est JAMAIS modifié : on reconstruit une liste neuve.
+fn co_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $m = $n
+  si ($idx >= $m) { $m = $idx + 1 }
+  $x0 = 0
+  si ($n > 0) { $x0 = l[0] }
+  si ($idx == 0) { $x0 = v }
+  $r = [$x0]
+  $k = 1
+  tant_que ($k < $m) {
+    $x = 0
+    si ($k < $n) { $x = l[$k] }
+    si ($k == $idx) { $x = v }
+    joindre($r, $x)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn co_copie(l: liste<entier>) -> liste<entier> {
+  $r = [l[0]]
+  $k = 1
+  tant_que ($k < longueur(l)) {
+    joindre($r, l[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn co_idx_section(i: entier) -> entier { retour 6 + 7 * $i }
+
+# Jointure équilibrée de morceaux de chaîne : O(n log n) octets copiés
+# au lieu de O(n²) pour `$s = $s + $morceau` dans le backend G5.
+fn co_joint(p: liste<chaine>, d: entier, f: entier) -> chaine {
+  si ($f - $d <= 0) { retour "" }
+  si ($f - $d == 1) { retour p[$d] }
+  $m = ($d + $f) div 2
+  retour co_joint($p, $d, $m) + co_joint($p, $m, $f)
+}
+
+# Convertit une chaîne lue sur disque en liste d'octets (0..255).
+# Ici l'index 0 EST le premier octet (pas un porte-type) : longueur(r)
+# = longueur(s). Le littéral `[0]` ne sert qu'à typer la liste en Rose.
+fn contour_octets(s: chaine) -> liste<entier> {
+  $r = [0]
+  si (longueur(s) > 0) { $r = [ordre(sous_chaine($s, 0, 1)) % 256] }
+  $k = 1
+  tant_que ($k < longueur(s)) {
+    joindre($r, ordre(sous_chaine($s, $k, $k + 1)) % 256)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── 1. Construction ────────────────────────────────────────────────────────
+
+# `unite` = nombre d'octets par secteur logique, fourni par le .bud.
+# Aucune valeur matérielle n'est supposée : 1 est l'unité abstraite neutre.
+fn contour_image(unite: entier) -> liste<entier> {
+  $r = [$unite]
+  joindre($r, 0)    # nombre de sections
+  joindre($r, -1)   # point d'entrée
+  joindre($r, 0)    # statut
+  joindre($r, 0)    # taille totale (octets)
+  joindre($r, 6)    # début du bassin d'octets
+  retour $r
+}
+
+# Désigne la section-point-d'entrée par son identifiant (0-based).
+# Le noyau traduit `bud.entree` (nom de fichier, symbole…) en identifiant.
+fn contour_entree(img: liste<entier>, id: entier) -> liste<entier> {
+  $s = co_copie($img)
+  $s = co_set($s, 2, $id)
+  $s = co_set($s, 3, 0)
+  retour $s
+}
+
+# Description d'une section en données. `secteur` est un index logique,
+# `alignement` une contrainte sur cet index (0/1 = aucune contrainte).
+# Le nom est conservé comme octets dans le descripteur lui-même.
+fn contour_nouvelle(nom: chaine, secteur: entier, alignement: entier) -> liste<entier> {
+  $r = [$secteur]
+  joindre($r, $alignement)
+  joindre($r, longueur(nom))
+  joindre($r, 7)    # indice du premier octet du nom
+  joindre($r, 0)
+  joindre($r, 0)
+  joindre($r, 0)
+  $k = 0
+  tant_que ($k < longueur(nom)) {
+    joindre($r, ordre(sous_chaine($nom, $k, $k + 1)) % 256)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Ajoute une section à l'image. `octets` est une liste d'octets 0..255 ;
+# Rose n'a pas de littéral `[]`, un tampon vide est représenté par `[0]`
+# (un seul octet nul) — limite documentée.
+fn contour_ajouter(img: liste<entier>, section: liste<entier>, octets: liste<entier>) -> liste<entier> {
+  $s = co_copie($img)
+  $bn = longueur(section)
+  $ln = section[2]
+  $ld = longueur($octets)
+  si ($bn < 7 + $ln ou $s[0] <= 0 ou $section[0] < 0 ou
+      $section[1] < 0 ou $ln < 0 ou $ld <= 0) {
+    $s = co_set($s, 3, -4)
+    retour $s
+  }
+  $i = $s[1]
+  $p = $s[5]
+  $base_nom = $p
+  $k = 0
+  tant_que ($k < $ln) {
+    $b = section[7 + $k]
+    si ($b < 0 ou $b > 255) {
+      $s = co_set($s, 3, -4)
+      retour $s
+    }
+    $s = co_set($s, $p + $k, $b)
+    $k = $k + 1
+  }
+  $p = $p + $ln
+  $base_donnees = $p
+  $k = 0
+  tant_que ($k < $ld) {
+    $b = $octets[$k]
+    si ($b < 0 ou $b > 255) {
+      $s = co_set($s, 3, -4)
+      retour $s
+    }
+    $s = co_set($s, $p + $k, $b)
+    $k = $k + 1
+  }
+  $p = $p + $ld
+  $b = co_idx_section($i)
+  $s = co_set($s, $b, $section[0])
+  $s = co_set($s, $b + 1, $section[1])
+  $s = co_set($s, $b + 2, $ln)
+  $s = co_set($s, $b + 3, $base_nom)
+  $s = co_set($s, $b + 4, $ld)
+  $s = co_set($s, $b + 5, $base_donnees)
+  $s = co_set($s, $b + 6, 0)
+  $s = co_set($s, 1, $i + 1)
+  $s = co_set($s, 5, $p)
+  $deb = $section[0] * $s[0]
+  $fin = $deb + $ld
+  si ($fin > $s[4]) { $s = co_set($s, 4, $fin) }
+  $s = co_set($s, 3, 0)
+  retour $s
+}
+
+# ── 2. Accesseurs (tout est `entier`, jamais `?`) ──────────────────────────
+
+fn contour_unite(img: liste<entier>) -> entier { retour img[0] }
+fn contour_nb_sections(img: liste<entier>) -> entier { retour img[1] }
+fn contour_entree_id(img: liste<entier>) -> entier { retour img[2] }
+fn contour_statut(img: liste<entier>) -> entier { retour img[3] }
+fn contour_taille(img: liste<entier>) -> entier { retour img[4] }
+fn contour_section_secteur(section: liste<entier>) -> entier { retour section[0] }
+fn contour_section_alignement(section: liste<entier>) -> entier { retour section[1] }
+
+fn contour_section_nom(section: liste<entier>) -> chaine {
+  $p = [""]
+  $k = 0
+  tant_que ($k < section[2]) {
+    joindre($p, caractere(section[7 + $k]))
+    $k = $k + 1
+  }
+  retour co_joint($p, 1, longueur($p))
+}
+
+# Octets d'une section déjà ajoutée (liste indexée 0..longueur-1).
+fn contour_section_octets(img: liste<entier>, id: entier) -> liste<entier> {
+  $b = co_idx_section($id)
+  $base = img[$b + 5]
+  $n = img[$b + 4]
+  $r = [0]
+  si ($n > 0) { $r = [img[$base]] }
+  $k = 1
+  tant_que ($k < $n) {
+    joindre($r, img[$base + $k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── 3. Table des sections ──────────────────────────────────────────────────
+
+# Rend [n, debut0, taille0, entree0, …]. `debut` est un décalage en octets,
+# `taille` une longueur en octets, `entree` un marqueur 0/1. Aucun format de
+# table matérielle n'est écrit : c'est une donnée Rose que le noyau encode.
+fn contour_table(img: liste<entier>) -> liste<entier> {
+  $n = img[1]
+  $r = [$n]
+  $i = 0
+  tant_que ($i < $n) {
+    $b = co_idx_section($i)
+    joindre($r, img[$b] * img[0])
+    joindre($r, img[$b + 4])
+    $e = 0
+    si ($i == img[2]) { $e = 1 }
+    joindre($r, $e)
+    $i = $i + 1
+  }
+  retour $r
+}
+
+# ── 4. Validation ──────────────────────────────────────────────────────────
+
+# Codes : 0 = valide ; -1 = chevauchement ; -2 = alignement ;
+#         -3 = point d'entrée absent ; -4 = paramètre invalide.
+fn contour_valider(img: liste<entier>) -> entier {
+  $unite = img[0]
+  $n = img[1]
+  $entree = img[2]
+  si ($unite <= 0 ou $n < 0) { retour -4 }
+  $i = 0
+  tant_que ($i < $n) {
+    $b = co_idx_section($i)
+    $sec = img[$b]
+    $al = img[$b + 1]
+    $lg = img[$b + 4]
+    si ($sec < 0 ou $al < 0 ou $lg <= 0) { retour -4 }
+    $deb = $sec * $unite
+    si ($al > 1 et $deb % ($al * $unite) != 0) { retour -2 }
+    $j = 0
+    tant_que ($j < $i) {
+      $c = co_idx_section($j)
+      $dj = img[$c] * $unite
+      $lj = img[$c + 4]
+      si ($deb < $dj + $lj et $dj < $deb + $lg) { retour -1 }
+      $j = $j + 1
+    }
+    $i = $i + 1
+  }
+  si ($entree < 0 ou $entree >= $n) { retour -3 }
+  retour 0
+}
+
+# ── 5. Écriture de l'image ─────────────────────────────────────────────────
+
+# Concatène les sections SELON LA TABLE : les trous entre sections sont
+# remplis de zéros, l'ordre est l'ordre de la table (index croissant).
+# Écrit avec `ecrire_bytes`, sans libc ni linker. Rend 0 (succès) ou -1
+# (image invalide : rien n'est écrit).
+fn contour_ecrire(img: liste<entier>, chemin: chaine) -> entier {
+  si (contour_valider($img) != 0) { retour -1 }
+  $t = contour_table($img)
+  $n = $t[0]
+  $p = [""]
+  $cur = 0
+  $i = 0
+  tant_que ($i < $n) {
+    $deb = $t[1 + 3 * $i]
+    $lg = $t[2 + 3 * $i]
+    $k = 0
+    tant_que ($k < $deb - $cur) {
+      joindre($p, octet_brut(0))
+      $k = $k + 1
+    }
+    $b = co_idx_section($i)
+    $base = img[$b + 5]
+    $k = 0
+    tant_que ($k < $lg) {
+      joindre($p, octet_brut(img[$base + $k]))
+      $k = $k + 1
+    }
+    $cur = $deb + $lg
+    $i = $i + 1
+  }
+  $octets = co_joint($p, 1, longueur($p))
+  ecrire_bytes($chemin, $octets)
+  retour 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIN DE BRIQUE — aucun format de conteneur, aucun nom de machine, aucun GC.
+# ═══════════════════════════════════════════════════════════════════════════

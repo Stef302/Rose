@@ -1,0 +1,91 @@
+# contour.bud — MANIFESTE DE DONNÉES de la brique B9. Aucune logique.
+# Aucun `si`, aucune boucle, aucune fonction : seulement des champs typés.
+# Aucun format n'est codé dans contour.rose : `conteneur`, `secteur`,
+# `alignement`, `entree` et `liste_fichiers` sont des DONNÉES lues par le
+# NOYAU, qui les traduit en appels à l'API générique de la brique.
+#
+# MAPPAGE (fait par le NOYAU, jamais par la brique) :
+#   1. `secteur` = unité logique passée à `contour_image(unite)` : c'est le
+#      nombre d'octets dans un secteur du conteneur choisi, pas une constante
+#      du code Rose. Changer cette valeur ne modifie aucune ligne de .rose ;
+#   2. chaque entrée de `liste_fichiers` devient un appel à
+#      `contour_nouvelle(nom, secteur, alignement)` puis à
+#      `contour_ajouter(img, section, octets)` ;
+#   3. `entree` est un nom/symbole abstrait que le noyau résout en
+#      identifiant de section avant `contour_entree(img, id)` ;
+#   4. `contour_table(img)` rend une donnée [n, debut, taille, entree, …] ;
+#      l'encodage éventuel de cette table dans un en-tête de conteneur est
+#      une responsabilité du NOYAU, pas de la brique (aucun offset figé ici) ;
+#   5. `contour_ecrire(img, chemin)` concatène les sections et remplit les
+#      trous de zéros : la brique sait assembler des octets, pas « faire un
+#      conteneur amorçable ».
+#
+# Les valeurs de `conteneur` ci-dessous sont des EXEMPLES de données : la
+# brique n'en connaît aucune et n'en teste aucune.
+
+nom: "image-contour-generique"
+version: "0.1.0"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 0
+  abi: rose-noyau-v0
+}
+
+profil: noyau
+
+briques: [
+  "image/contour.rose"
+]
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  latence_max: 0
+}
+
+# Description pure du conteneur : aucun octet d'en-tête, aucun offset figé.
+conteneur: {
+  type: "brut"
+  secteur: 16
+  alignement: 1
+  entree: "amorce"
+  liste_fichiers: [
+    { nom: "amorce",  secteur: 0, alignement: 1 },
+    { nom: "table",   secteur: 2, alignement: 2 },
+    { nom: "charge",  secteur: 5, alignement: 1 }
+  ]
+}
+
+interface: {
+  source: "briques/image/contour.rose"
+  etat: "liste<entier>"
+  table: "liste<entier>"
+  entrees: [
+    "contour_image",
+    "contour_entree",
+    "contour_nouvelle",
+    "contour_ajouter",
+    "contour_table",
+    "contour_valider",
+    "contour_ecrire",
+    "contour_octets"
+  ]
+  champs_etat: 6
+  entiers_par_section: 7
+  entiers_par_ligne_table: 3
+  code_statut: { valide: 0, chevauchement: -1, alignement: -2, entree_absente: -3, parametre: -4 }
+}
+
+sortie: {
+  format: brut
+  entree: aucun
+  adresse_charge: 0
+  alignement: 0
+}
+
+dependances: []
