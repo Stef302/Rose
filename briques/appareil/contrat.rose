@@ -1,0 +1,319 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# briques/appareil/contrat.rose — BRRIQUE UNIVERSELLE D'ABSTRACTION D'APPAREIL
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Rose pur. La brique ne connaît QUE des capacités abstraites en données :
+# ni famille de processeur, ni système hôte, ni format d'image, ni mécanisme
+# d'accès au matériel, ni opération liée à un support concret.
+#
+# Un appareil est une VALEUR (liste<entier>) : un identifiant abstrait,
+# une empreinte de son nom et la liste des codes de capacités déclarées.
+# Le nom lui-même vit dans un annuaire parallèle ; les capacités sont
+# déclarées sous forme de chaînes puis traduites en codes par la brique.
+#
+# Capacités abstraites (données, évolutives) :
+#   1 = calculer     2 = stocker     3 = communiquer
+#   4 = mesurer      5 = quantique
+#
+# Opérations abstraites (données) : chaque opération porte la capacité
+# qu'elle exige. Une opération inconnue est REFUSÉE (rc < 0) ; une capacité
+# absente de l'appareil est REFUSÉE (rc < 0) — jamais de repli silencieux.
+#
+# Modèle de résultat d'appareil_executer : [rc, capacite, empreinte]
+#   rc =  0  succès : capacité déclarée présente, empreinte déterministe
+#   rc = -1  opération inconnue
+#   rc = -2  capacité requise absente de l'appareil (refus explicite)
+#   rc = -3  appareil invalide
+#
+# Modèle de validation (appareil_valider) :
+#   0 = cohérent ; -1 = structure ; -2 = capacité inconnue ;
+#  -3 = doublon ; -4 = identifiant ou nom incohérent avec l'annuaire.
+#
+# Rose n'a pas de modules : ce fichier se concatène au programme.
+#   cat briques/appareil/contrat.rose briques/tests_appareil.rose > /tmp/a.rose
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Primordia (aucun effet de bord) ────────────────────────────────────
+
+# Empreinte bornée (module premier) : reste dans le domaine arithmétique
+# sûr des deux exécuteurs (interpréteur et compilateur autohébergé).
+fn appareil_hache(s: chaine) -> entier {
+  $h = 0
+  $k = 0
+  $n = longueur(s)
+  tant_que ($k < $n) {
+    $h = ($h * 131 + ordre(s[$k])) % 1000000007
+    $k = $k + 1
+  }
+  retour $h
+}
+
+# Traduit un NOM de capacité en code. 0 = nom non reconnu.
+fn appareil_code_capacite(s: chaine) -> entier {
+  si (s == "calculer") { retour 1 }
+  si (s == "stocker") { retour 2 }
+  si (s == "communiquer") { retour 3 }
+  si (s == "mesurer") { retour 4 }
+  si (s == "quantique") { retour 5 }
+  retour 0
+}
+
+fn appareil_nom_capacite(c: entier) -> chaine {
+  si (c == 1) { retour "calculer" }
+  si (c == 2) { retour "stocker" }
+  si (c == 3) { retour "communiquer" }
+  si (c == 4) { retour "mesurer" }
+  si (c == 5) { retour "quantique" }
+  retour "inconnue"
+}
+
+# Liste de n entiers, n >= 1 (Rose n'a pas de littéral []).
+fn appareil_liste_nouvelle(n: entier) -> liste<entier> {
+  $r = [0]
+  $k = 1
+  tant_que ($k < n) {
+    joindre($r, 0)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn appareil_liste_copie(src: liste<entier>) -> liste<entier> {
+  $n = longueur(src)
+  $r = [src[0]]
+  $k = 1
+  tant_que ($k < $n) {
+    joindre($r, src[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Poser une valeur en reconstruisant une liste neuve (mutateur portable).
+fn appareil_liste_poser(src: liste<entier>, idx: entier, valeur: entier) -> liste<entier> {
+  $premier = src[0]
+  si (idx == 0) { $premier = valeur }
+  $r = [$premier]
+  $k = 1
+  $n = longueur(src)
+  tant_que ($k < $n) {
+    si ($k == idx) { joindre($r, valeur) } sinon { joindre($r, src[$k]) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── 1. Données d'annuaire (toutes les décisions sont dans des listes) ─────
+
+# Fiches plates, concaténées les unes après les autres.
+# Chaque fiche : [id, empreinte_nom, nb_capacites, reussites,
+#                 refus, code_cap_1, ...].
+# La première tranche (id 0) est une fiche vide de 5 cellules :
+# elle rend la marche de l'annuaire toujours sûre, même sans appareil.
+$appareils_annuaire = [0, 0, 0, 0, 0]
+
+# Noms parallèles, indexés par identifiant (0 = aucun appareil).
+$appareils_noms = [""]
+
+# Journal d'événements ABSTRAITS : paires [identifiant, succes|refus].
+# Une brique ne réassigne jamais une globale ; elle AJOUTE dans ce journal.
+$appareils_evenements = [0]
+
+# Table d'opérations ABSTRAITES : nom de l'opération -> capacité requise.
+# Ajouter une opération = ajouter deux données, jamais modifier la logique.
+$appareils_operations = ["addition", "comparer", "ecrire", "lire",
+                         "emettre", "recevoir", "acquerir", "porte",
+                         "etat_quantique"]
+$appareils_requis = [1, 1, 2, 2, 3, 3, 4, 5, 5]
+
+# ── 2. Déclaration d'un appareil ──────────────────────────────────────────
+
+# `capacites` est une liste<chaine> de noms abstraits, fournie par le .bud.
+fn appareil_declarer(nom: chaine, capacites: liste<chaine>) -> liste<entier> {
+  $id = longueur($appareils_noms)
+  $nc = longueur(capacites)
+  $r = appareil_liste_nouvelle(5 + $nc)
+  $r = appareil_liste_poser($r, 0, $id)
+  $r = appareil_liste_poser($r, 1, appareil_hache(nom))
+  $r = appareil_liste_poser($r, 2, $nc)
+  $r = appareil_liste_poser($r, 3, 0)
+  $r = appareil_liste_poser($r, 4, 0)
+  $k = 0
+  tant_que ($k < $nc) {
+    $r = appareil_liste_poser($r, 5 + $k,
+                              appareil_code_capacite(capacites[$k]))
+    $k = $k + 1
+  }
+
+  joindre($appareils_noms, nom)
+  $k = 0
+  $nr = longueur($r)
+  tant_que ($k < $nr) {
+    joindre($appareils_annuaire, $r[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Retire une fiche plate de l'annuaire à partir de son identifiant.
+fn appareil_obtenir(id: entier) -> liste<entier> {
+  $vide = [0]
+  $pos = 0
+  $n = longueur($appareils_annuaire)
+  tant_que ($pos < $n) {
+    $taille = 5 + $appareils_annuaire[$pos + 2]
+    si ($appareils_annuaire[$pos] == id) {
+      $r = [$appareils_annuaire[$pos]]
+      $k = 1
+      tant_que ($k < $taille) {
+        joindre($r, $appareils_annuaire[$pos + $k])
+        $k = $k + 1
+      }
+      retour $r
+    }
+    $pos = $pos + $taille
+  }
+  retour $vide
+}
+
+# Liste des identifiants des appareils enregistrés. La case 0 est une
+# sentinelle (0 = aucun appareil) : seules des opérations de AJOUT sont
+# utilisées, jamais de réassignation d'une case existante.
+fn appareil_enumere() -> liste<entier> {
+  $r = [0]
+  $pos = 0
+  $n = longueur($appareils_annuaire)
+  tant_que ($pos < $n) {
+    $id = $appareils_annuaire[$pos]
+    si ($id > 0) { joindre($r, $id) }
+    $pos = $pos + 5 + $appareils_annuaire[$pos + 2]
+  }
+  retour $r
+}
+
+fn appareil_nom(app: liste<entier>) -> chaine {
+  $id = app[0]
+  si ($id < 1 ou $id >= longueur($appareils_noms)) { retour "" }
+  retour $appareils_noms[$id]
+}
+
+# Étendre la table d'opérations sans toucher au code de la brique.
+fn appareil_operation_declarer(nom: chaine, capacite: entier) -> entier {
+  si (capacite < 1) { retour -1 }
+  si (capacite > 5) { retour -1 }
+  joindre($appareils_operations, nom)
+  joindre($appareils_requis, capacite)
+  retour 0
+}
+
+# ── 3. Validation de la cohérence ─────────────────────────────────────────
+
+fn appareil_valider(app: liste<entier>) -> entier {
+  $n = longueur(app)
+  si ($n < 6) { retour -1 }
+  $nc = app[2]
+  si ($n != 5 + $nc) { retour -1 }
+
+  $id = app[0]
+  si ($id < 1) { retour -4 }
+  si ($id >= longueur($appareils_noms)) { retour -4 }
+  si (app[1] != appareil_hache($appareils_noms[$id])) { retour -4 }
+
+  $ref = appareil_obtenir($id)
+  si (longueur($ref) != $n) { retour -4 }
+  $k = 0
+  tant_que ($k < $n) {
+    si (app[$k] != $ref[$k]) { retour -4 }
+    $k = $k + 1
+  }
+
+  $k = 0
+  tant_que ($k < $nc) {
+    $c = app[5 + $k]
+    si ($c < 1) { retour -2 }
+    si ($c > 5) { retour -2 }
+    $j = 0
+    tant_que ($j < $k) {
+      si (app[5 + $j] == $c) { retour -3 }
+      $j = $j + 1
+    }
+    $k = $k + 1
+  }
+  retour 0
+}
+
+# ── 4. Exécution par capacité déclarée (refus explicite, jamais de repli) ──
+
+fn appareil_capacite_requise(operation: chaine) -> entier {
+  $k = 0
+  $n = longueur($appareils_operations)
+  tant_que ($k < $n) {
+    si ($appareils_operations[$k] == operation) {
+      retour $appareils_requis[$k]
+    }
+    $k = $k + 1
+  }
+  retour 0
+}
+
+fn appareil_compter(id: entier, rang: entier) {
+  joindre($appareils_evenements, id)
+  joindre($appareils_evenements, rang)
+}
+
+fn appareil_executer(app: liste<entier>, operation: chaine,
+                     args: liste<entier>) -> liste<entier> {
+  $res = [0, 0, 0]
+  si (appareil_valider(app) != 0) {
+    $res = [-3, 0, 0]
+    retour $res
+  }
+
+  $cap = appareil_capacite_requise(operation)
+  si ($cap == 0) {
+    $res = [-1, 0, 0]
+    retour $res
+  }
+
+  $present = 0
+  $k = 0
+  $nc = app[2]
+  tant_que ($k < $nc) {
+    si (app[5 + $k] == $cap) { $present = 1 }
+    $k = $k + 1
+  }
+  si ($present == 0) {
+    appareil_compter(app[0], 1)
+    $res = [-2, $cap, 0]
+    retour $res
+  }
+
+  # Empreinte déterministe de l'operation et des arguments : la brique
+  # accuse réception d'une opération effectuée via la capacité déclarée.
+  # L'effet réel est fourni par l'adaptateur, hors de cette brique.
+  $h = appareil_hache(operation)
+  $k = 0
+  $na = longueur(args)
+  tant_que ($k < $na) {
+    $h = ($h * 131 + args[$k]) % 1000000007
+    $k = $k + 1
+  }
+  appareil_compter(app[0], 0)
+  $res = [0, $cap, $h]
+  retour $res
+}
+
+# Observabilité : 0 = réussites, 1 = refus, comptés dans le journal.
+fn appareil_statistique(app: liste<entier>, rang: entier) -> entier {
+  $total = 0
+  $k = 1
+  $n = longueur($appareils_evenements)
+  tant_que ($k + 1 < $n) {
+    si ($appareils_evenements[$k] == app[0] et
+        $appareils_evenements[$k + 1] == rang) {
+      $total = $total + 1
+    }
+    $k = $k + 2
+  }
+  retour $total
+}

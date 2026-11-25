@@ -1,0 +1,89 @@
+# tests_appareil.rose — pilote de test de la brique d'appareil universelle.
+# Se CONCATÈNE avec contrat.rose (Rose n'a pas de modules) :
+#   cat briques/appareil/contrat.rose briques/tests_appareil.rose > /tmp/a.rose
+#   rose /tmp/a.rose                          # moteur Rose
+#   C0 /tmp/a.rose > /tmp/a.exe && /tmp/a.exe   # compilateur auto-hébergé
+#
+# Les trois appareils ci-dessous sont ceux de contrat.bud : leurs noms et
+# capacités sont des DONNÉES. Aucun matériel, aucun système, aucun format.
+
+$calc = appareil_declarer("calculateur", ["calculer", "stocker"])
+$capteur = appareil_declarer("capteur", ["mesurer", "communiquer"])
+$noeud = appareil_declarer("noeud_quantique", ["quantique", "calculer", "communiquer"])
+
+# ── 1. Déclaration, noms, énumération, validation ─────────────────────────
+>> longueur($calc)
+>> $calc[0]
+>> $calc[2]
+>> appareil_nom($calc)
+>> appareil_nom($capteur)
+>> appareil_nom($noeud)
+$e1 = appareil_enumere()
+>> $e1[0]
+>> $e1[1]
+>> $e1[2]
+>> $e1[3]
+>> longueur($e1)
+>> appareil_valider($calc)
+>> appareil_valider($capteur)
+>> appareil_valider($noeud)
+
+# ── 2. Opérations AUTORISÉES (rc = 0) ──────────────────────────────────────
+$r1 = appareil_executer($calc, "addition", [2, 3])
+>> $r1[0]
+>> $r1[1]
+>> $r1[2]
+$r2 = appareil_executer($capteur, "acquerir", [7])
+>> $r2[0]
+>> $r2[1]
+$r3 = appareil_executer($noeud, "porte", [1, 2])
+>> $r3[0]
+>> $r3[1]
+>> $r3[2]
+
+# ── 3. Refus EXPLICITES (rc < 0), jamais de repli silencieux ───────────────
+$r4 = appareil_executer($capteur, "addition", [2, 3])
+>> $r4[0]
+>> $r4[1]
+>> $r4[2]
+$r5 = appareil_executer($calc, "porte", [1])
+>> $r5[0]
+>> $r5[1]
+$r6 = appareil_executer($noeud, "ecrire", [9])
+>> $r6[0]
+>> $r6[1]
+$r7 = appareil_executer($calc, "operation_inconnue", [4])
+>> $r7[0]
+>> $r7[1]
+
+# ── 4. Validation d'appareils incohérents ──────────────────────────────────
+$dup = appareil_declarer("doublon", ["stocker", "stocker"])
+$etrange = appareil_declarer("etrange", ["teleporter"])
+>> appareil_valider($dup)
+>> appareil_valider($etrange)
+$r8 = appareil_executer($dup, "ecrire", [1])
+>> $r8[0]
+$r9 = appareil_executer($etrange, "addition", [1])
+>> $r9[0]
+$e2 = appareil_enumere()
+>> $e2[1]
+>> $e2[2]
+>> $e2[3]
+>> $e2[4]
+>> $e2[5]
+>> longueur($e2)
+
+# ── 5. Statistiques : chaque refus est compté ──────────────────────────────
+>> appareil_statistique($calc, 0)
+>> appareil_statistique($calc, 1)
+>> appareil_statistique($capteur, 0)
+>> appareil_statistique($capteur, 1)
+>> appareil_statistique($noeud, 0)
+>> appareil_statistique($noeud, 1)
+
+# ── 6. Extensible par DONNÉES : aucune ligne de la brique n'a changé ───────
+>> appareil_operation_declarer("transmettre", 3)
+$r10 = appareil_executer($noeud, "transmettre", [5])
+>> $r10[0]
+>> $r10[1]
+>> appareil_statistique($noeud, 0)

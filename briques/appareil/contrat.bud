@@ -1,0 +1,58 @@
+# contrat.bud — DÉCLARATION de la brique d'appareil (DONNÉES UNIQUEMENT).
+# Aucune logique : ni si, ni boucle, ni fonction.
+# Aucun nom d'architecture, de système, de format ou de matériel concret :
+# la cible est GENERIQUE et les appareils sont des listes de capacités
+# abstraites. Le code Rose de la brique ne change pas si ce fichier change.
+
+nom: "appareil-universel"
+version: "0.0.1"
+
+cible: {
+  architecture: GENERIQUE
+  boutisme: petit
+  largeur_mot: 64
+  largeur_page: 0
+  abi: rose-noyau-v0
+}
+
+profil: noyau
+
+briques: [
+  "appareil/contrat.rose"
+]
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  latence_max: 0
+}
+
+# Capacités abstraites acceptées : calculer, stocker, communiquer,
+# mesurer, quantique. Trois appareils génériques, aucun matériel nommé.
+appareils: [
+  { nom: "calculateur", capacites: ["calculer", "stocker"] }
+  { nom: "capteur", capacites: ["mesurer", "communiquer"] }
+  { nom: "noeud_quantique", capacites: ["quantique", "calculer", "communiquer"] }
+]
+
+# Opérations abstraites : nom -> capacité requise (données, pas de code).
+operations: [
+  { nom: "addition", capacite: 1 }
+  { nom: "comparer", capacite: 1 }
+  { nom: "ecrire", capacite: 2 }
+  { nom: "lire", capacite: 2 }
+  { nom: "emettre", capacite: 3 }
+  { nom: "recevoir", capacite: 3 }
+  { nom: "acquerir", capacite: 4 }
+  { nom: "porte", capacite: 5 }
+  { nom: "etat_quantique", capacite: 5 }
+]
+
+sortie: {
+  format: brut
+  entree: principal
+  adresse_charge: 4194304
+  alignement: 4096
+}
