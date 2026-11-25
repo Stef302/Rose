@@ -1,0 +1,95 @@
+# tests_chargeur.rose — banc d'activation des .bud sur la brique appareil.
+#
+# Preuve que `briques/appareil/chargeur.rose` LIT `contrat.bud` et remplit
+# L'ANNUAIRE de `contrat.rose` : les trois noms, les capacités et les refus
+# viennent du fichier, jamais de valeurs codées ici.
+#
+# Rose n'a pas de modules ; ce fichier se CONCATÈNE avec ses dépendances :
+#   cat compilateur/lecteur_bud.rose \
+#       briques/appareil/contrat.rose \
+#       briques/appareil/chargeur.rose \
+#       briques/tests_chargeur.rose > /tmp/tests_chargeur_full.rose
+#   rose /tmp/tests_chargeur_full.rose
+#   moteur_complet.elf /tmp/tests_chargeur_full.rose    # voie self-hostée
+#
+# (Les `importer` ne conviennent pas ici : les globals de la brique doivent
+#  être initialisés AVANT le corps du test, ce que la fusion des imports ne
+#  garantit pas.)
+
+$tc_ops = appareil_operations_depuis_bud("briques/appareil/contrat.bud")
+si ($tc_ops < 0) {
+  >> "ECHEC chargeur : opérations du manifeste"
+  quitter(1)
+}
+
+$tc_nb = appareil_depuis_bud("briques/appareil/contrat.bud")
+si ($tc_nb != 3) {
+  >> "ECHEC chargeur : " + chaine($tc_nb) + " appareils (attendu 3)"
+  quitter(2)
+}
+
+$tc_enum = appareil_enumere()
+si (longueur($tc_enum) != 4) {
+  >> "ECHEC chargeur : énumération de " + chaine(longueur($tc_enum)) + " cases"
+  quitter(3)
+}
+
+si (appareil_nom(appareil_obtenir($tc_enum[1])) != "calculateur") {
+  >> "ECHEC chargeur : appareil 1"
+  quitter(4)
+}
+si (appareil_nom(appareil_obtenir($tc_enum[2])) != "capteur") {
+  >> "ECHEC chargeur : appareil 2"
+  quitter(5)
+}
+si (appareil_nom(appareil_obtenir($tc_enum[3])) != "noeud_quantique") {
+  >> "ECHEC chargeur : appareil 3"
+  quitter(6)
+}
+
+$tc_k = 1
+tant_que ($tc_k <= 3) {
+  si (appareil_valider(appareil_obtenir($tc_enum[$tc_k])) != 0) {
+    >> "ECHEC chargeur : fiche incohérente " + chaine($tc_k)
+    quitter(7)
+  }
+  $tc_k = $tc_k + 1
+}
+
+# ── Exécution AUTORISÉE sur le calculateur (capacités 1 et 2 du .bud) ───────
+$tc_calc = appareil_obtenir($tc_enum[1])
+$tc_r = appareil_executer($tc_calc, "addition", [2, 3])
+si ($tc_r[0] != 0) {
+  >> "ECHEC chargeur : addition refusée sur calculateur"
+  quitter(8)
+}
+si ($tc_r[1] != 1) {
+  >> "ECHEC chargeur : capacité de addition"
+  quitter(9)
+}
+si (appareil_operation_pour($tc_calc) != "addition") {
+  >> "ECHEC chargeur : opération de test du calculateur"
+  quitter(10)
+}
+
+# ── Refus EXPLICITE sur le noeud quantique : 'ecrire' exige 'stocker' ───────
+$tc_noeud = appareil_obtenir($tc_enum[3])
+$tc_refus = appareil_executer($tc_noeud, "ecrire", [9])
+si ($tc_refus[0] != -2) {
+  >> "ECHEC chargeur : 'ecrire' non refusé sur noeud_quantique"
+  quitter(11)
+}
+si ($tc_refus[1] != 2) {
+  >> "ECHEC chargeur : capacité requise de 'ecrire'"
+  quitter(12)
+}
+
+# Une opération absente de la table est refusée elle aussi (rc = -1).
+$tc_inconnue = appareil_executer($tc_noeud, "operation_inconnue", [1])
+si ($tc_inconnue[0] != -1) {
+  >> "ECHEC chargeur : opération inconnue acceptée"
+  quitter(13)
+}
+
+>> "TESTS CHARGEUR VERTS : 3 appareils lus dans briques/appareil/contrat.bud"
+quitter(0)

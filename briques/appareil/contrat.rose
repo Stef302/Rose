@@ -155,6 +155,18 @@ fn appareil_declarer(nom: chaine, capacites: liste<chaine>) -> liste<entier> {
   retour $r
 }
 
+# Vrai (1) si une opération portant ce nom est déjà dans la table. Permet
+# aux chargeurs de .bud d'ajouter une opération sans la dupliquer.
+fn appareil_operation_connue(nom: chaine) -> entier {
+  $k = 0
+  $n = longueur($appareils_operations)
+  tant_que ($k < $n) {
+    si ($appareils_operations[$k] == nom) { retour 1 }
+    $k = $k + 1
+  }
+  retour 0
+}
+
 # Retire une fiche plate de l'annuaire à partir de son identifiant.
 fn appareil_obtenir(id: entier) -> liste<entier> {
   $vide = [0]
@@ -204,6 +216,27 @@ fn appareil_operation_declarer(nom: chaine, capacite: entier) -> entier {
   joindre($appareils_operations, nom)
   joindre($appareils_requis, capacite)
   retour 0
+}
+
+# Première opération de la table dont la capacité requise est déclarée sur
+# l'appareil. Aucun nom d'opération n'est écrit ici : c'est la table (donc le
+# .bud qui l'a remplie) qui décide de l'opération de test.
+fn appareil_operation_pour($app: liste<entier>) -> chaine {
+  $k = 0
+  $n = longueur($appareils_operations)
+  tant_que ($k < $n) {
+    $requis = $appareils_requis[$k]
+    $present = 0
+    $j = 0
+    $nc = $app[2]
+    tant_que ($j < $nc) {
+      si ($app[5 + $j] == $requis) { $present = 1 }
+      $j = $j + 1
+    }
+    si ($present == 1) { retour $appareils_operations[$k] }
+    $k = $k + 1
+  }
+  retour ""
 }
 
 # ── 3. Validation de la cohérence ─────────────────────────────────────────

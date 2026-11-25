@@ -1,0 +1,91 @@
+# chargeur.rose — BRANCHEMENT des déclarations .bud sur la brique appareil.
+#
+# Ce fichier contient la logique qui manquait : il LIT un manifeste `.bud`
+# (via l'API `bud_*`) et ENREGISTRE ses appareils dans l'annuaire de
+# `contrat.rose` (via `appareil_declarer`). Aucun nom d'appareil, aucune
+# capacité et aucune opération n'est codé en dur ici : tout vient du fichier.
+#
+# Dépendances (à importer / concaténer AVANT ce fichier, Rose n'ayant pas de
+# modules) :
+#   compilateur/lecteur_bud.rose   -> bud_lire, bud_parse, bud_champ, ...
+#   briques/appareil/contrat.rose  -> appareil_declarer, appareil_executer,
+#                                     annuaire et table d'opérations
+#
+# API publique :
+#   appareil_depuis_bud(chemin)          -> entier  nb d'appareils déclarés
+#                                                   (< 0 : manifeste invalide)
+#   appareil_operations_depuis_bud(chemin) -> entier nb d'opérations AJOUTÉES
+#                                                   (< 0 : manifeste invalide)
+#
+# Le choix de l'opération de test (`appareil_operation_pour`) vit dans
+# contrat.rose, près de la table d'opérations qu'il consulte.
+#
+# Un appareil sans capacité est IGNORÉ : Rose n'a pas de littéral de liste
+# vide, et `appareil_valider` refuserait une fiche sans capacité. Le
+# manifeste doit donc déclarer au moins une capacité par appareil.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. Utilitaires de nommage des clés aplaties ──────────────────────────────
+
+fn appareil_cle($racine: chaine, $i: entier, $champ: chaine) -> chaine {
+  retour $racine + "." + chaine($i) + "." + $champ
+}
+
+fn appareil_cle_capacite($i: entier, $j: entier) -> chaine {
+  retour "appareils." + chaine($i) + ".capacites." + chaine($j)
+}
+
+# ── 1. Déclaration des appareils ────────────────────────────────────────────
+
+# Lit `chemin`, extrait `appareils.<i>.nom` et
+# `appareils.<i>.capacites.<j>`, puis appelle `appareil_declarer` pour
+# chaque appareil. Retourne le nombre d'appareils réellement enregistrés.
+fn appareil_depuis_bud($chemin: chaine) -> entier {
+  $paires = bud_parse(bud_lire($chemin))
+  si (bud_valider($paires) != 0) { retour -1 }
+
+  $nb = 0
+  $i = 0
+  $nom = bud_champ($paires, appareil_cle("appareils", $i, "nom"))
+  tant_que (longueur($nom) > 0) {
+    # Rose interdit la liste vide : on commence par la première capacité,
+    # puis on ajoute les suivantes. $j compte celles réellement trouvées.
+    $caps = [""]
+    $j = 0
+    $cap = bud_champ($paires, appareil_cle_capacite($i, $j))
+    tant_que (longueur($cap) > 0) {
+      si ($j == 0) { $caps = [$cap] } sinon { joindre($caps, $cap) }
+      $j = $j + 1
+      $cap = bud_champ($paires, appareil_cle_capacite($i, $j))
+    }
+    si ($j > 0) {
+      appareil_declarer($nom, $caps)
+      $nb = $nb + 1
+    }
+    $i = $i + 1
+    $nom = bud_champ($paires, appareil_cle("appareils", $i, "nom"))
+  }
+  retour $nb
+}
+
+# ── 2. Déclaration des opérations (données, pas de code) ─────────────────────
+
+# Lit `operations.<i>.nom` / `.capacite` et ajoute dans la table d'opérations
+# de la brique celles qui n'y sont pas encore. Retourne le nombre ajouté.
+fn appareil_operations_depuis_bud($chemin: chaine) -> entier {
+  $paires = bud_parse(bud_lire($chemin))
+  si (bud_valider($paires) != 0) { retour -1 }
+
+  $ajoutees = 0
+  $i = 0
+  $nom = bud_champ($paires, appareil_cle("operations", $i, "nom"))
+  tant_que (longueur($nom) > 0) {
+    $cap = bud_entier($paires, appareil_cle("operations", $i, "capacite"))
+    si (appareil_operation_connue($nom) == 0) {
+      si (appareil_operation_declarer($nom, $cap) == 0) { $ajoutees = $ajoutees + 1 }
+    }
+    $i = $i + 1
+    $nom = bud_champ($paires, appareil_cle("operations", $i, "nom"))
+  }
+  retour $ajoutees
+}
