@@ -1,0 +1,458 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# prive.rose — BRIQUE D'INSTRUCTIONS MACHINE PRIVILÉGIÉES, EN ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Doctrine : une BRIQUE D'INSTRUCTION, pas un pilote, pas un bootloader,
+# pas un noyau. Aucun nom de système d'exploitation, aucun nom de
+# contrôleur, aucune adresse de périphérique imposée : le appelant fournit
+# les valeurs (base de GDT, limite, numéro d'interruption, port E/S).
+#
+# Cette brique complète `compilateur/brique_runtime.rose` (rt_asm :
+# aarch64 + x86-64 « utilisateur ») et `compilateur/backend_universel.rose`
+# (IR machine abstrait). Elle ajoute le niveau « instruction privilégiée »
+# : LGDT, MOV CR0, INT n, HLT, CLI, STI, IN, OUT, émis comme DONNÉES
+# (liste d'octets) puis écrits dans un binaire.
+#
+# Aucune dépendance libc, aucun FFI, aucun helper Rust. Seules les
+# primitives Rose déjà émises par C0 : joindre, longueur, sous_chaine,
+# partie_entiere, caractere, chaine, ecrire_bytes.
+#
+# Usage (moteur Rust ou ELF C0, depuis la racine du dépôt) :
+#   rose briques/tests_asm_prive.rose
+#   /tmp/opencode/C0_h.elf briques/tests_asm_prive.rose > /tmp/asm.elf
+#
+# Documentation : rose/docs/ASM_PRIVE.md. Données associées : prive.bud.
+#
+# ── Constat encoder (vérifié avec capstone 5.0.7, x86 32 et 64 bits) ────────
+#   0F 01 /2 = LGDT   (0F 01 15 00 00 00 00 -> lgdt [0] en 32 bits,
+#                                              lgdt [rip] en 64 bits)
+#   0F 01 /1 = SIDT   (/1 NE EST PAS LGDT : correction documentée)
+#   0F 20 /r = MOV r32, CRn     0F 22 /r = MOV CRn, r32
+#   CD imm8  = INT n            F4 = HLT   FA = CLI   FB = STI
+#   E4/E5 imm8, EC/ED (DX) = IN AL/EAX     E6/E7 imm8, EE/EF (DX) = OUT
+#
+# ── Conventions de type (identiques à backend_universel.rose) ───────────────
+#   • une suite est une liste<entier> dont l'index 0 est une PORTEUSE (0).
+#     Chaque instruction y est stockée EN PLACE sous la forme aplatie
+#     [code, argc, arg0, …] : AUCUNE GLOBALE n'est nécessaire, la suite
+#     est autonome et peut être passée d'un module à l'autre (constat :
+#     les globales d'un module importé ne sont pas visibles depuis ses
+#     fonctions sous le moteur Rust — d'où ce choix) ;
+#   • un tampon d'octets est aussi une liste<entier> porteuse [0, o0, o1…] ;
+#     `asm_octets_nus` rend les octets sans porteuse (liste non vide) ;
+#   • `joindre` MUTE la liste passée en paramètre (comportement G5 fiable) ;
+#   • `÷` n'est pas utilisé (non émis par le dispatch G5) ;
+#   • les registres généraux sont 0..7 (pas de REX : mode 32 bits).
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 1. Registre des mnémoniques (DONNÉES, miroir de prive.bud) ───────────────
+
+fn asm_noms() -> liste<chaine> {
+  $r = [""]
+  joindre($r, "db")
+  joindre($r, "lgdt")
+  joindre($r, "lgdt_a")
+  joindre($r, "lidt")
+  joindre($r, "cr0")
+  joindre($r, "cr0rd")
+  joindre($r, "cr0reg")
+  joindre($r, "int")
+  joindre($r, "hlt")
+  joindre($r, "cli")
+  joindre($r, "sti")
+  joindre($r, "in")
+  joindre($r, "out")
+  retour $r
+}
+
+fn asm_code(nom: chaine) -> entier {
+  $n = asm_noms()
+  $k = 1
+  tant_que ($k < longueur($n)) {
+    si ($n[$k] == $nom) { retour $k - 1 }
+    $k = $k + 1
+  }
+  retour -1
+}
+
+fn asm_nom(code: entier) -> chaine {
+  $n = asm_noms()
+  si (code < 0 ou code + 1 >= longueur($n)) { retour "?" }
+  retour $n[code + 1]
+}
+
+# Arité : db=1, lgdt=2, lgdt_a=3, lidt=2, cr0=1, cr0rd=0, cr0reg=2,
+#         int=1, hlt=0, cli=0, sti=0, in=2, out=2.
+fn asm_arite(code: entier) -> entier {
+  $a = [1, 2, 3, 2, 1, 0, 2, 1, 0, 0, 0, 2, 2]
+  si (code < 0 ou code >= longueur($a)) { retour 0 }
+  retour $a[code]
+}
+
+# ── 2. Suites d'instructions (AUCUNE GLOBALE) ───────────────────────────────
+
+fn asm_seq() -> liste<entier> {
+  $s = [0]
+  retour $s
+}
+
+# Ajoute une instruction. `args` porte les arguments à partir de l'index 0
+# (ex. [16] pour INT 10h) ; les arguments manquants sont complétés à 0.
+# Rend la POSITION du code dans la suite, ou -1 si le mnémonique est
+# inconnu (la suite est alors inchangée). `joindre` mute la suite appelée.
+fn asm_ajouter(seq: liste<entier>, mnem: chaine, args: liste<entier>) -> entier {
+  $code = asm_code($mnem)
+  si ($code < 0) { retour -1 }
+  $pos = longueur($seq)
+  joindre($seq, $code)
+  $n = asm_arite($code)
+  joindre($seq, $n)
+  $k = 0
+  tant_que ($k < $n) {
+    $v = 0
+    si ($k < longueur($args)) { $v = $args[$k] }
+    joindre($seq, $v)
+    $k = $k + 1
+  }
+  retour $pos
+}
+
+# Descripteur [code, argc, arg0, …] à une position donnée de la suite.
+# Une position invalide rend [-1, 0] (jamais une instruction muette).
+fn asm_desc(seq: liste<entier>, pos: entier) -> liste<entier> {
+  $vide = [-1, 0]
+  si (pos < 1 ou pos + 1 >= longueur($seq)) { retour $vide }
+  $d = [$seq[$pos], $seq[$pos + 1]]
+  $k = 0
+  tant_que ($k < $d[1]) {
+    si ($pos + 2 + $k < longueur($seq)) { joindre($d, $seq[$pos + 2 + $k]) }
+    $k = $k + 1
+  }
+  retour $d
+}
+
+# Nombre d'instructions d'une suite (utile : une suite n'est PAS une
+# liste d'IDs, elle contient les arguments en place).
+fn asm_nb(seq: liste<entier>) -> entier {
+  $n = 0
+  $k = 1
+  tant_que ($k + 1 < longueur($seq)) {
+    $argc = $seq[$k + 1]
+    $k = $k + 2 + $argc
+    $n = $n + 1
+  }
+  retour $n
+}
+
+# ── 3. API publique — une fonction par instruction privilégiée ──────────────
+
+# LGDT : 0F 01 15 00 00 00 00 + pseudo-descripteur 6 octets
+#        [limite:16 LE][base:32 LE].
+# En 64 bits, disp32=0 = RIP-relatif : le descripteur suit IMMÉDIATEMENT
+# l'instruction, la suite est donc autonome et indépendante de la position.
+# En 32 bits, disp32=0 est une adresse ABSOLUE : c'est un emplacement de
+# relocation à patcher par le chargeur (ou utiliser asm_lgdt_a ci-dessous).
+# `limite` est la taille de la GDT - 1 (ex. 0x17 pour 3 entrées de 8 octets).
+fn asm_lgdt(seq: liste<entier>, base: entier, limite: entier) -> entier {
+  $a = [base, limite]
+  retour asm_ajouter($seq, "lgdt", $a)
+}
+
+# LGDT avec adresse linéaire explicite du pseudo-descripteur (mode 32 bits).
+fn asm_lgdt_a(seq: liste<entier>, adresse: entier, base: entier, limite: entier) -> entier {
+  $a = [adresse, base, limite]
+  retour asm_ajouter($seq, "lgdt_a", $a)
+}
+
+# LIDT : même forme que LGDT, champ ModRM.reg = 3 (0F 01 /3).
+fn asm_lidt(seq: liste<entier>, base: entier, limite: entier) -> entier {
+  $a = [base, limite]
+  retour asm_ajouter($seq, "lidt", $a)
+}
+
+# MOV CR0, valeur : B8 <imm32> puis 0F 22 C0 (MOV CR0, EAX).
+# Le x86 n'a PAS de MOV CRn, immédiat : le chargement dans EAX est
+# indispensable et fait partie de la brique.
+fn asm_cr0(seq: liste<entier>, valeur: entier) -> entier {
+  $a = [valeur]
+  retour asm_ajouter($seq, "cr0", $a)
+}
+
+# MOV EAX, CR0 : 0F 20 C0 (lecture, opcode 0F 20).
+fn asm_cr0_lire(seq: liste<entier>) -> entier {
+  $a = [0]
+  retour asm_ajouter($seq, "cr0rd", $a)
+}
+
+# MOV CRn, r32 (ecrire=vrai) ou MOV r32, CRn (ecrire=faux) :
+# 0F 22 /r ou 0F 20 /r + ModRM 11 reg 000. Registres 0..7 (sans REX).
+fn asm_cr0_reg(seq: liste<entier>, reg: entier, ecrire: entier) -> entier {
+  $a = [reg, ecrire]
+  retour asm_ajouter($seq, "cr0reg", $a)
+}
+
+# INT imm8 : CD 10 pour le service numéro 0x10. Aucun nom d'OS, aucun nom
+# de firmware : le numéro d'interruption est un argument comme un autre.
+fn asm_int(seq: liste<entier>, numero: entier) -> entier {
+  $a = [numero]
+  retour asm_ajouter($seq, "int", $a)
+}
+
+fn asm_hlt(seq: liste<entier>) -> entier {
+  $a = [0]
+  retour asm_ajouter($seq, "hlt", $a)
+}
+
+fn asm_cli(seq: liste<entier>) -> entier {
+  $a = [0]
+  retour asm_ajouter($seq, "cli", $a)
+}
+
+fn asm_sti(seq: liste<entier>) -> entier {
+  $a = [0]
+  retour asm_ajouter($seq, "sti", $a)
+}
+
+# IN : port >= 0 -> E4 (AL) / E5 (EAX) + imm8 ; port < 0 -> EC / ED (DX).
+# `largeur` : 1 = AL, 2 ou 4 = AX/EAX.
+fn asm_in(seq: liste<entier>, port: entier, largeur: entier) -> entier {
+  $a = [port, largeur]
+  retour asm_ajouter($seq, "in", $a)
+}
+
+# OUT : port >= 0 -> E6 (AL) / E7 (EAX) + imm8 ; port < 0 -> EE / EF (DX).
+# La valeur sortante est déjà dans AL/EAX (aucune invention de registre).
+fn asm_out(seq: liste<entier>, port: entier, largeur: entier) -> entier {
+  $a = [port, largeur]
+  retour asm_ajouter($seq, "out", $a)
+}
+
+# Octet machine brut (échappatoire générique) et suite d'octets bruts.
+fn asm_db(seq: liste<entier>, octet: entier) -> entier {
+  $a = [octet]
+  retour asm_ajouter($seq, "db", $a)
+}
+
+fn asm_bytes(seq: liste<entier>, octets: liste<entier>) -> entier {
+  $k = 0
+  tant_que ($k < longueur($octets)) {
+    asm_db($seq, $octets[$k])
+    $k = $k + 1
+  }
+  retour longueur($seq) - 1
+}
+
+# ── 4. Encodeurs d'octets ───────────────────────────────────────────────────
+
+fn asm_octet(v: entier) -> entier {
+  $b = v % 256
+  si ($b < 0) { $b = $b + 256 }
+  retour $b
+}
+
+fn asm_le16(v: entier) -> liste<entier> {
+  $u = v % 65536
+  si ($u < 0) { $u = $u + 65536 }
+  $r = [0]
+  joindre($r, $u % 256)
+  joindre($r, partie_entiere($u / 256) % 256)
+  retour $r
+}
+
+fn asm_le32(v: entier) -> liste<entier> {
+  $u = v % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  $r = [0]
+  joindre($r, $u % 256)
+  joindre($r, partie_entiere($u / 256) % 256)
+  joindre($r, partie_entiere($u / 65536) % 256)
+  joindre($r, partie_entiere($u / 16777216) % 256)
+  retour $r
+}
+
+# Sérialiseurs : listes PORTEUSES [0, o0, o1, …] pour être compatibles
+# avec asm_pousse (index 0 ignoré), comme le reste de la brique.
+
+# Ajoute les octets utiles de `src` (index 0 = porteuse) à `dst`.
+fn asm_pousse(dst: liste<entier>, src: liste<entier>) -> entier {
+  $k = 1
+  tant_que ($k < longueur($src)) {
+    joindre($dst, $src[$k])
+    $k = $k + 1
+  }
+  retour longueur($dst) - 1
+}
+
+# Pseudo-descripteur GDTR/IDTR : [limite:16 LE][base:32 LE].
+fn asm_descripteur(base: entier, limite: entier) -> liste<entier> {
+  $r = asm_le16($limite)
+  asm_pousse($r, asm_le32($base))
+  retour $r
+}
+
+# Encode UNE instruction. `a` est le descripteur [code, argc, arg…].
+# SEUL endroit du fichier où apparaissent les opcodes : tout le reste
+# (API, suites, écriture) est indépendant de l'architecture.
+fn asm_encode(a: liste<entier>) -> liste<entier> {
+  $r = [0]
+  $c = $a[0]
+  $x = 0
+  $y = 0
+  si (longueur($a) > 2) { $x = $a[2] }
+  si (longueur($a) > 3) { $y = $a[3] }
+  $lg = 0
+  si ($c == 1 ou $c == 2 ou $c == 3) { $lg = 1 }
+
+  si ($c == 0) { joindre($r, asm_octet($x)) }
+
+  # 0F 01 /2 = LGDT, /3 = LIDT ; ModRM 0x15 = mod 00 reg 2 rm 101
+  # (adresse 32 bits), 0x1D = mod 00 reg 3 rm 101.
+  si ($lg == 1) {
+    joindre($r, 15)
+    joindre($r, 1)
+    $modrm = 21
+    si ($c == 3) { $modrm = 29 }
+    joindre($r, $modrm)
+    $base = $x
+    $lim = $y
+    si ($c == 2) {
+      asm_pousse($r, asm_le32($x))     # adresse explicite du descripteur
+      $base = $y
+      $lim = 0
+      si (longueur($a) > 4) { $lim = $a[4] }
+    } sinon {
+      joindre($r, 0)                   # disp32 = 0 (reloc / RIP-relatif)
+      joindre($r, 0)
+      joindre($r, 0)
+      joindre($r, 0)
+    }
+    asm_pousse($r, asm_descripteur($base, $lim))
+  }
+
+  # MOV CR0, imm32 -> B8 imm32 ; 0F 22 C0.
+  si ($c == 4) {
+    joindre($r, 184)
+    asm_pousse($r, asm_le32($x))
+    joindre($r, 15)
+    joindre($r, 34)
+    joindre($r, 192)
+  }
+  # MOV EAX, CR0 -> 0F 20 C0.
+  si ($c == 5) {
+    joindre($r, 15)
+    joindre($r, 32)
+    joindre($r, 192)
+  }
+  # MOV CRn, r32 (0F 22) / MOV r32, CRn (0F 20) + ModRM 11 reg 000.
+  si ($c == 6) {
+    joindre($r, 15)
+    si ($y == 1) { joindre($r, 34) } sinon { joindre($r, 32) }
+    joindre($r, 192 + ($x % 8) * 8)
+  }
+
+  # INT imm8.
+  si ($c == 7) {
+    joindre($r, 205)
+    joindre($r, asm_octet($x))
+  }
+  si ($c == 8) { joindre($r, 244) }    # HLT
+  si ($c == 9) { joindre($r, 250) }    # CLI
+  si ($c == 10) { joindre($r, 251) }   # STI
+
+  # IN / OUT : imm8 (E4/E5/E6/E7) ou DX (EC/ED/EE/EF).
+  si ($c == 11) {
+    $mot = 0
+    si ($y > 1) { $mot = 1 }
+    si ($x >= 0 et $x < 256) {
+      si ($mot == 0) { joindre($r, 228) } sinon { joindre($r, 229) }
+      joindre($r, asm_octet($x))
+    } sinon {
+      si ($mot == 0) { joindre($r, 236) } sinon { joindre($r, 237) }
+    }
+  }
+  si ($c == 12) {
+    $mot = 0
+    si ($y > 1) { $mot = 1 }
+    si ($x >= 0 et $x < 256) {
+      si ($mot == 0) { joindre($r, 230) } sinon { joindre($r, 231) }
+      joindre($r, asm_octet($x))
+    } sinon {
+      si ($mot == 0) { joindre($r, 238) } sinon { joindre($r, 239) }
+    }
+  }
+  retour $r
+}
+
+# ── 5. Sortie ───────────────────────────────────────────────────────────────
+
+# Octets finaux de la suite : liste PORTEUSE [0, o0, o1, …].
+fn asm_octets(seq: liste<entier>) -> liste<entier> {
+  $r = [0]
+  $k = 1
+  tant_que ($k + 1 < longueur($seq)) {
+    $d = asm_desc($seq, $k)
+    si ($d[0] >= 0) { asm_pousse($r, asm_encode($d)) }
+    $k = $k + 2 + $d[1]
+  }
+  retour $r
+}
+
+# Les octets SANS porteuse. Précondition : au moins un octet (sinon
+# rend [0], Rose interdisant les listes vides) — vérifier avec asm_longueur.
+fn asm_octets_nus(seq: liste<entier>) -> liste<entier> {
+  $o = asm_octets($seq)
+  $r = [0]
+  si (longueur($o) < 2) { retour $r }
+  $r = [$o[1]]
+  $k = 2
+  tant_que ($k < longueur($o)) {
+    joindre($r, $o[$k])
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn asm_longueur(seq: liste<entier>) -> entier {
+  retour longueur(asm_octets($seq)) - 1
+}
+
+fn asm_hex(seq: liste<entier>) -> chaine {
+  $h = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+  $o = asm_octets($seq)
+  $s = ""
+  $k = 1
+  tant_que ($k < longueur($o)) {
+    $b = asm_octet($o[$k])
+    $s = $s + $h[partie_entiere($b / 16)] + $h[$b % 16]
+    $k = $k + 1
+  }
+  retour $s
+}
+
+# OCTET_BRUT : `caractere(n)` encode un POINT DE CODE en UTF-8. Sous le moteur
+# Rust, ecrire_bytes ecrit `c as u8` (1 octet), mais dès que le programme est
+# auto-exécuté (chemin G5/C0) la chaîne est déjà UTF-8 : 0x80 devient c2 80,
+# 0xc0 devient c3 80, 0xf4 devient c3 b4 — le binaire est corrompu (constat
+# mesuré). `octet_brut` est le nom INTERCEPTÉ par le dispatch G5 : il y
+# fabrique un octet unique sans UTF-8. Même définition que
+# compilateur/emetteur_elf.rose:422 et backend_universel.rose:739.
+fn octet_brut($v: entier) -> chaine {
+  retour caractere($v % 256)
+}
+
+# Écriture binaire. Rend le nombre d'octets écrits.
+fn asm_ecrire(seq: liste<entier>, chemin: chaine) -> entier {
+  $o = asm_octets($seq)
+  $s = ""
+  $k = 1
+  tant_que ($k < longueur($o)) {
+    $s = $s + octet_brut($o[$k])
+    $k = $k + 1
+  }
+  ecrire_bytes($chemin, $s)
+  retour longueur($o) - 1
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIN DE BRIQUE — aucune exécution, aucun point d'entrée, aucun pilote.
+# ═══════════════════════════════════════════════════════════════════════════

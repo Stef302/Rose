@@ -1,0 +1,74 @@
+# prive.bud — DONNÉES SEULES de la brique d'instructions privilégiées.
+#
+# Aucune logique, aucun code exécutable : ce manifeste décrit la FAMILLE,
+# le MODE, la LARGEUR D'OPÉRANDE et la TABLE DES MNÉMONIQUES que prive.rose
+# émet. Il est lisible par compilateur/lecteur_bud.rose (bud_parse) et
+# vérifié par briques/tests_asm_prive.rose.
+#
+# Aucun nom de système d'exploitation, aucun périphérique imposé : les
+# valeurs (base/limite de GDT, numéro INT, port E/S) sont des ARGUMENTS.
+#
+# ⚠ CONSTAT CORRIGÉ : LGDT est 0F 01 /2 (champ reg=010 du ModRM), pas /1.
+#    /1 = SIDT. Vérifié avec capstone 5.0.7 en modes x86 32 et 64 bits.
+
+nom: "asm-prive"
+version: "0.1.0"
+description: "briques generiques d instructions machine privilegiees"
+famille: "x86"
+
+mode: {
+  defaut: 32
+  largeur_registre: 32
+  largeur_adresse: 32
+  largeur_immediate: 32
+  boutisme: "petit"
+  registres_disponibles: 8
+  rex: faux
+  affection: "donnees"
+}
+
+operandes: {
+  octet: 8
+  mot: 16
+  dword: 32
+  descripteur: 48
+  port_imm8: "0..255"
+  port_dx: -1
+  largeur_al: 1
+  largeur_eax: 4
+}
+
+regles: [
+  "0f01/2 = LGDT (reg=010 du ModRM) ; 0f01/1 = SIDT",
+  "0f20/r = MOV reg, CRn ; 0f22/r = MOV CRn, reg",
+  "MOV CRn n accepte pas d immediat : B8 imm32 puis 0f22c0",
+  "CD imm8 = INT n ; F4 = HLT ; FA = CLI ; FB = STI",
+  "E4/E5 + imm8 = IN AL/EAX ; EC/ED = IN AL/EAX via DX",
+  "E6/E7 + imm8 = OUT AL/EAX ; EE/EF = OUT AL/EAX via DX",
+  "descripteur GDTR/IDTR = [limite:16 LE][base:32 LE]",
+  "disp32=0 de LGDT : patch en mode 32, RIP-relatif en mode 64"
+]
+
+mnemoniques: [
+  { nom: "db", code: 0, arite: 1, largeur: 8, privilege: faux, opcode: "imm8", modes: "32/64" },
+  { nom: "lgdt", code: 1, arite: 2, largeur: 48, privilege: vrai, opcode: "0f01/2", modes: "32/64" },
+  { nom: "lgdt_a", code: 2, arite: 3, largeur: 48, privilege: vrai, opcode: "0f01/2+addr32", modes: "32" },
+  { nom: "lidt", code: 3, arite: 2, largeur: 48, privilege: vrai, opcode: "0f01/3", modes: "32/64" },
+  { nom: "cr0", code: 4, arite: 1, largeur: 32, privilege: vrai, opcode: "b8+imm32;0f22c0", modes: "32/64" },
+  { nom: "cr0rd", code: 5, arite: 0, largeur: 32, privilege: vrai, opcode: "0f20c0", modes: "32/64" },
+  { nom: "cr0reg", code: 6, arite: 2, largeur: 32, privilege: vrai, opcode: "0f20/22+modrm", modes: "32" },
+  { nom: "int", code: 7, arite: 1, largeur: 8, privilege: faux, opcode: "cd+imm8", modes: "32/64" },
+  { nom: "hlt", code: 8, arite: 0, largeur: 0, privilege: vrai, opcode: "f4", modes: "32/64" },
+  { nom: "cli", code: 9, arite: 0, largeur: 0, privilege: vrai, opcode: "fa", modes: "32/64" },
+  { nom: "sti", code: 10, arite: 0, largeur: 0, privilege: vrai, opcode: "fb", modes: "32/64" },
+  { nom: "in", code: 11, arite: 2, largeur: 8/32, privilege: vrai, opcode: "e4/e5/ec/ed", modes: "32/64" },
+  { nom: "out", code: 12, arite: 2, largeur: 8/32, privilege: vrai, opcode: "e6/e7/ee/ef", modes: "32/64" }
+]
+
+limites: {
+  cr0_registres: "0..7"
+  int_immediate: "0..255"
+  port_immediate: "0..255"
+  gdt_limite: "taille_gdt - 1"
+  execution: "aucune : la brique EMET des octets, elle ne les execute pas"
+}

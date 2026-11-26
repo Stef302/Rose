@@ -39,7 +39,9 @@ donnees: {
     { code: 11, nom: "jmp",     arite: 1, categorie: "saut" },
     { code: 12, nom: "call",    arite: 1, categorie: "appel" },
     { code: 13, nom: "ret",     arite: 0, categorie: "controle" },
-    { code: 14, nom: "syscall", arite: 1, categorie: "entree-sortie" }
+    { code: 14, nom: "syscall", arite: 1, categorie: "entree-sortie" },
+    { code: 15, nom: "hlt",     arite: 0, categorie: "controle" },
+    { code: 16, nom: "jmp_rel8", arite: 1, categorie: "saut" }
   ]
 
   # Profils de cibles. `famille` SELECTIONNE l'encodeur ; aucun nom de CPU
@@ -85,6 +87,19 @@ donnees: {
       memoire_pages: 1
       donnees_initiales: "42,0,0,0"
       note: "syscall n => call env.write(n) (octet) ; load/store => i32.load/i32.store sur la memoire lineaire ; sections import/memory/data emises"
+    },
+    {
+      nom: "i386"
+      famille: 4
+      largeur_registre: 32
+      boutisme: petit
+      mot_octets: 1
+      registres: 8
+      format_saut: relatif8
+      entree_sortie: int80
+      enveloppe: brut
+      ops: "0..16"
+      note: "code machine x86 32 bits NU : aucun header, aucune relocation ; hlt=F4, jmp_rel8=EBdisp8 ; noyau anneau 0 via briques/noyau/lien_nu.rose"
     }
   ]
 
@@ -99,7 +114,11 @@ donnees: {
     "2:12:212", "2:13:213", "2:14:214",
     "3:0:300", "3:1:301", "3:2:302", "3:3:303", "3:4:304", "3:5:305",
     "3:6:306", "3:7:307", "3:8:308", "3:9:309", "3:10:310", "3:11:311",
-    "3:12:312", "3:13:313", "3:14:314"
+    "3:12:312", "3:13:313", "3:14:314",
+    "4:0:400", "4:1:401", "4:2:402", "4:3:403", "4:4:404",
+    "4:5:405", "4:6:406", "4:7:407", "4:8:408", "4:9:409",
+    "4:10:410", "4:11:411", "4:12:412", "4:13:413", "4:14:414",
+    "4:15:415", "4:16:416"
   ]
 
   # Conventions de représentation (identiques à emetteur_elf / emetteur_pe).

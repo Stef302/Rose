@@ -1,0 +1,81 @@
+# lien_nu.rose — LIEUR NU MINIMAL (compilateur/link_nu.rose pas encore disponible)
+# ============================================================================
+#
+# Constat daté : 26/11/2026. L'agent v10free travaille sur
+# `compilateur/link_nu.rose` dans SON worktree : ce fichier-ci est le lieur
+# autonome de ce chantier, écrit en Rose pur, concaténé après
+# `compilateur/backend_universel.rose` et `briques/noyau/demo.rose`.
+#
+# Un binaire NU n'a PAS d'en-tête : l'adresse de chargement n'est pas un champ
+# dans le fichier, c'est un CONTRAT du lieur. Ce contrat est :
+#   * porté par `$NU_ADRESSE_CHARGE` (déclaré dans demo.rose, 0x100000) ;
+#   * vérifié ici (valeur, cohérence avec la zone de la chaîne) ;
+#   * consigné dans `kernel32.map` (métadonnée HORS du binaire).
+#
+# Le lieur refuse tout ce qui ressemblerait à une enveloppe : le premier
+# octet doit être l'instruction `mov eax, imm32` (0xB8) produite par la
+# première opération de `principal()`, pas 0x7F ('ELF') ni 'MZ'.
+# ============================================================================
+
+$NU_SORTIE_BIN = "briques/noyau/kernel32.bin"
+$NU_SORTIE_MAP = "briques/noyau/kernel32.map"
+$NU_LIMITE_OCTETS = 4096
+
+# Traduit la suite abstraite en octets x86 32 bits nus, contrôle, puis écrit.
+# Rend le nombre d'octets utiles (hors porteuse d'index 0).
+fn lien_nu(seq: liste<entier>) -> entier {
+  $cible = bu_cible("i386")
+  $octets = bu_traduire($seq, $cible)
+  $n = longueur($octets) - 1
+
+  # Un binaire vide n'est pas un noyau.
+  si ($n < 3) {
+    afficher("ECHEC lien_nu : suite vide (" + chaine($n) + " octets)")
+    quitter(1)
+  }
+  # Cible < 4 Kio.
+  si ($n >= $NU_LIMITE_OCTETS) {
+    afficher("ECHEC lien_nu : " + chaine($n) + " octets >= " + chaine($NU_LIMITE_OCTETS))
+    quitter(1)
+  }
+  # Pas d'enveloppe : premier octet = opcode de `mov eax, imm32` (B8).
+  si ($octets[1] != 184) {
+    afficher("ECHEC lien_nu : premier octet " + chaine($octets[1]) + " n'est pas B8 (enveloppe ?)")
+    quitter(1)
+  }
+  # Contrat d'adresse : le noyau est chargé à 0x100000 ; la chaîne est à
+  # 0x101000, donc strictement au-dessus et alignée sur une page.
+  si ($NU_ADRESSE_CHARGE != 1048576) {
+    afficher("ECHEC lien_nu : adresse de chargement inattendue")
+    quitter(1)
+  }
+  si ($NU_ADRESSE_CHAINE <= $NU_ADRESSE_CHARGE) {
+    afficher("ECHEC lien_nu : la chaîne recouvre le noyau")
+    quitter(1)
+  }
+  si ($NU_ADRESSE_CHAINE - $NU_ADRESSE_CHARGE < $NU_LIMITE_OCTETS) {
+    afficher("ECHEC lien_nu : zone de la chaîne trop proche du noyau")
+    quitter(1)
+  }
+
+  # Écriture du binaire NU (aucun header, aucune relocation, aucun import).
+  ecrire_bytes($NU_SORTIE_BIN, bu_octets($octets))
+
+  # Carte d'adresses : métadonnée du lieur, hors du binaire.
+  $carte = "format=bin NU (sans ELF/PE)\n"
+  $carte = $carte + "machine=i386 (x86 32 bits)\n"
+  $carte = $carte + "adresse_chargement=0x100000\n"
+  $carte = $carte + "entree=0x100000\n"
+  $carte = $carte + "taille_octets=" + chaine($n) + "\n"
+  $carte = $carte + "adresse_chaine=0x101000\n"
+  $carte = $carte + "anneau=0\n"
+  ecrire_bytes($NU_SORTIE_MAP, $carte)
+
+  afficher("kernel32.bin ecrit : " + chaine($n) + " octets, charge 0x100000, chaine 0x101000")
+  retour $n
+}
+
+# ── Point d'entrée du chantier : compiler le noyau démo ─────────────────────
+$sequence_noyau = principal()
+$taille_noyau = lien_nu($sequence_noyau)
+>> $taille_noyau                     # 41 : 5 + 3×(5+6) + 1 + 2 octets

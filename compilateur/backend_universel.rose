@@ -18,7 +18,8 @@
 #   bu_emettre(seq, cible, chemin) -> entier (écrit via ecrire_bytes)
 #
 # Cibles réellement supportées : aarch64, x86_64, wasm (module valide avec
-# import d'E/S, mémoire linéaire et segment de données).
+# import d'E/S, mémoire linéaire et segment de données), et i386 (famille 4 :
+# code machine x86 32 bits NU, sans enveloppe, pour noyau en anneau 0).
 # Voir rose/docs/BACKEND_UNIVERSEL.md pour la doctrine complète et les
 # limites (largeur d'immédiat, formats de saut, sémantique wasm i32).
 #
@@ -51,6 +52,8 @@ fn bu_noms_ops() -> liste<chaine> {
   joindre($r, "call")
   joindre($r, "ret")
   joindre($r, "syscall")
+  joindre($r, "hlt")       # code 15 : arrêt processeur (anneau 0)
+  joindre($r, "jmp_rel8")  # code 16 : saut relatif court (argument = décalage signé)
   retour $r
 }
 
@@ -79,7 +82,7 @@ $bu_ops_flat = [0]
 $bu_ops_idx = [0]
 
 fn bu_arity(code: entier) -> entier {
-  $a = [0, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 0, 1]
+  $a = [0, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 0, 1, 0, 1]
   si (code < 0 ou code >= longueur($a)) { retour 0 }
   retour $a[code]
 }
@@ -174,6 +177,16 @@ fn bu_cible(nom: chaine) -> liste<chaine> {
     # des virgules). Segment `data` à l'offset 0. 42 = 0x2a = 'a' + 1.
     joindre($p, "donnees_initiales=" + "42,0,0,0")
   }
+  si ($nom == "i386") {
+    $famille = 4
+    $reg = 32
+    $bout = "petit"
+    $mot = 1
+    $nregs = 8
+    $saut = "relatif8"
+    $io = "int80"
+    $env = "brut"
+  }
   joindre($p, "famille=" + chaine($famille))
   joindre($p, "largeur_registre=" + chaine($reg))
   joindre($p, "boutisme=" + $bout)
@@ -256,6 +269,23 @@ joindre($bu_encoder_table, "3:11:311")
 joindre($bu_encoder_table, "3:12:312")
 joindre($bu_encoder_table, "3:13:313")
 joindre($bu_encoder_table, "3:14:314")
+joindre($bu_encoder_table, "4:0:400")
+joindre($bu_encoder_table, "4:1:401")
+joindre($bu_encoder_table, "4:2:402")
+joindre($bu_encoder_table, "4:3:403")
+joindre($bu_encoder_table, "4:4:404")
+joindre($bu_encoder_table, "4:5:405")
+joindre($bu_encoder_table, "4:6:406")
+joindre($bu_encoder_table, "4:7:407")
+joindre($bu_encoder_table, "4:8:408")
+joindre($bu_encoder_table, "4:9:409")
+joindre($bu_encoder_table, "4:10:410")
+joindre($bu_encoder_table, "4:11:411")
+joindre($bu_encoder_table, "4:12:412")
+joindre($bu_encoder_table, "4:13:413")
+joindre($bu_encoder_table, "4:14:414")
+joindre($bu_encoder_table, "4:15:415")
+joindre($bu_encoder_table, "4:16:416")
 
 fn bu_champ(s: chaine, i: entier) -> chaine {
   $n = longueur(s)
@@ -545,6 +575,115 @@ fn bu_x64_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<enti
   retour $r
 }
 
+# ── 7b. Encodeur I386 (famille 4) — CODE MACHINE NU, SANS ENVELOPPE ─────────
+# Aucun octet n'est calculé par le programme noyau : celui-ci décrit une
+# opération ABSTRAITE (bu_operation), cet encodeur est le SEUL endroit qui
+# connaît les opcodes x86 32 bits. Les immédiats/déplacements 32 bits passent
+# par bu_mot32 (boutisme lu dans le profil). Aucun REX, aucun 64 bits, aucune
+# relocation : le résultat est exécutable tel quel en anneau 0 à l'adresse
+# fixée par le lieur.
+#
+# Registres x86-32 : 0=eax 1=ecx 2=edx 3=ebx 4=esp 5=ebp 6=esi 7=edi.
+
+fn bu_i386_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  $d = 0
+  $s = 0
+  $t = 0
+  si (longueur($a) > 1) { $d = $a[1] }
+  si (longueur($a) > 2) { $s = $a[2] }
+  si (longueur($a) > 3) { $t = $a[3] }
+
+  # nop = 0x90
+  si (code == 0) { joindre($r, 144) }
+
+  # imm r32, val = B8+r + imm32  (mov eax, 0x101000 -> b8 00 00 10 00)
+  si (code == 1) {
+    joindre($r, 184 + ($d % 8))
+    bu_ajoute($r, bu_mot32($s, $p))
+  }
+
+  # mov dst, src = 89 /r  (reg=src, rm=dst)
+  si (code == 2) {
+    joindre($r, 137)
+    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
+  }
+
+  # x86-32 est à 2 opérandes : toute op à 3 opérandes commence par mov d,s.
+  # add : mov d,s ; add t,d  (01 /r avec reg=t, rm=d)
+  si (code == 3) {
+    joindre($r, 137)
+    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
+    joindre($r, 1)
+    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
+  }
+  # sub : 29 /r
+  si (code == 4) {
+    joindre($r, 137)
+    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
+    joindre($r, 41)
+    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
+  }
+  # mul : imul d, t = 0F AF /r
+  si (code == 5) {
+    joindre($r, 137)
+    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
+    joindre($r, 15)
+    joindre($r, 175)
+    joindre($r, 192 + ($d % 8) * 8 + ($t % 8))
+  }
+  # and / or / xor : 21 / 09 / 31 /r (reg=t, rm=d)
+  si (code == 6) {
+    joindre($r, 137)
+    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
+    joindre($r, 33)
+    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
+  }
+  si (code == 7) {
+    joindre($r, 137)
+    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
+    joindre($r, 9)
+    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
+  }
+  si (code == 8) {
+    joindre($r, 137)
+    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
+    joindre($r, 49)
+    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
+  }
+
+  # load d,[base+off] = 8B /r (mod=10, reg=d, rm=base) + disp32
+  si (code == 9) {
+    joindre($r, 139)
+    joindre($r, 128 + ($d % 8) * 8 + ($s % 8))
+    bu_ajoute($r, bu_mot32($t, $p))
+  }
+  # store [base+off],val = 89 /r (mod=10, reg=val, rm=base) + disp32
+  si (code == 10) {
+    joindre($r, 137)
+    joindre($r, 128 + ($d % 8) * 8 + ($s % 8))
+    bu_ajoute($r, bu_mot32($t, $p))
+  }
+
+  # jmp r/m32 = FF /4 ; call r/m32 = FF /2 ; ret = C3
+  si (code == 11) { joindre($r, 255); joindre($r, 224 + ($d % 8)) }
+  si (code == 12) { joindre($r, 255); joindre($r, 208 + ($d % 8)) }
+  si (code == 13) { joindre($r, 195) }
+
+  # syscall : int 0x80 (réservé au mode protégé, non utilisé par le noyau démo)
+  si (code == 14) { joindre($r, 205); joindre($r, 128) }
+
+  # hlt = F4 : arrêt du processeur en anneau 0.
+  si (code == 15) { joindre($r, 244) }
+
+  # jmp rel8 = EBdisp8 (décalage signé, -2 = boucle sur soi).
+  si (code == 16) {
+    joindre($r, 235)
+    joindre($r, bu_octet($d))
+  }
+  retour $r
+}
+
 # ── 8. Encodeur WASM (famille 3) ───────────────────────────────────────────
 # L'IR à registres est abaissé en machine à pile : chaque registre est un
 # local i32. Les octets produits forment un MODULE VALIDE : magie, types,
@@ -709,6 +848,7 @@ fn bu_encode(famille: entier, code: entier, a: liste<entier>, p: liste<chaine>) 
   si ($famille == 1) { retour bu_a64_encode($code, $a, $p) }
   si ($famille == 2) { retour bu_x64_encode($code, $a, $p) }
   si ($famille == 3) { retour bu_wasm_encode($code, $a, $p) }
+  si ($famille == 4) { retour bu_i386_encode($code, $a, $p) }
   retour $vide
 }
 

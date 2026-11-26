@@ -1,0 +1,157 @@
+# tests_asm_prive.rose — batterie de la brique d'instructions privilégiées.
+#
+# Usage (depuis la racine du dépôt) :
+#   rose verif briques/tests_asm_prive.rose
+#   ROSE_SANS_JIT=1 rose briques/tests_asm_prive.rose     > /tmp/ap.nat
+#   /tmp/opencode/C0_h.elf briques/tests_asm_prive.rose   > /tmp/ap.elf
+#   chmod +x /tmp/ap.elf && /tmp/ap.elf                   > /tmp/ap.natif
+#   diff /tmp/ap.nat /tmp/ap.natif
+#
+# La suite émet LGDT + MOV CR0 + INT 10h + HLT, vérifie les octets
+# attendus (encodage x86 connu, contrôlé avec capstone 5.0.7), écrit le
+# binaire, puis contrôle les autres formes (CLI/STI/IN/OUT, lecture CR0,
+# LIDT, LGDT absolu, octet brut) et la cohérence du manifeste prive.bud.
+# Aucun moteur, aucun OS, aucun pilote : uniquement des octets en données.
+
+importer "briques/asm/prive.rose"
+importer "compilateur/lecteur_bud.rose"
+
+$ap_total = 34
+$ap_ok = 0
+
+fn ap_verifie(n: entier, nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
+  si ($obtenu == $attendu) {
+    >> "OK " + chaine($n) + " " + $nom
+    retour 1
+  }
+  >> "ECHEC " + chaine($n) + " " + $nom + " | obtenu=[" + $obtenu + "] attendu=[" + $attendu + "]"
+  retour 0
+}
+
+>> "=== BRIQUE ASM PRIVILÉGIÉE ==="
+
+# ── 1. Suite vide ───────────────────────────────────────────────────────────
+
+$s0 = asm_seq()
+$ap_ok = $ap_ok + ap_verifie(1, "seq_vide_porteuse", chaine(longueur($s0)), "1")
+$ap_ok = $ap_ok + ap_verifie(2, "seq_vide_octets", chaine(asm_longueur($s0)), "0")
+
+# ── 2. LGDT : 0F 01 15 00 00 00 00 + [limite:16][base:32] ──────────────────
+
+$s_lgdt = asm_seq()
+asm_lgdt($s_lgdt, 32768, 23)
+$ap_ok = $ap_ok + ap_verifie(3, "lgdt_octets", asm_hex($s_lgdt), "0f011500000000170000800000")
+$ap_ok = $ap_ok + ap_verifie(4, "lgdt_taille", chaine(asm_longueur($s_lgdt)), "13")
+
+# ── 3. MOV CR0 : B8 imm32 + 0F 22 C0 ───────────────────────────────────────
+
+$s_cr0 = asm_seq()
+asm_cr0($s_cr0, 17)
+$ap_ok = $ap_ok + ap_verifie(5, "cr0_octets", asm_hex($s_cr0), "b8110000000f22c0")
+$ap_ok = $ap_ok + ap_verifie(6, "cr0_taille", chaine(asm_longueur($s_cr0)), "8")
+
+# ── 4. INT 10h et HLT ───────────────────────────────────────────────────────
+
+$s_int = asm_seq()
+asm_int($s_int, 16)
+$ap_ok = $ap_ok + ap_verifie(7, "int_10h", asm_hex($s_int), "cd10")
+
+$s_hlt = asm_seq()
+asm_hlt($s_hlt)
+$ap_ok = $ap_ok + ap_verifie(8, "hlt", asm_hex($s_hlt), "f4")
+
+# ── 5. Suite complète : LGDT + MOV CR0 + INT 10h + HLT ──────────────────────
+
+$s = asm_seq()
+asm_lgdt($s, 32768, 23)
+asm_cr0($s, 17)
+asm_int($s, 16)
+asm_hlt($s)
+$ap_ok = $ap_ok + ap_verifie(9, "sequence_complete", asm_hex($s), "0f011500000000170000800000b8110000000f22c0cd10f4")
+$ap_ok = $ap_ok + ap_verifie(10, "sequence_taille", chaine(asm_longueur($s)), "24")
+$ap_ok = $ap_ok + ap_verifie(11, "sequence_instructions", chaine(asm_nb($s)), "4")
+$nus = asm_octets_nus($s)
+$ap_ok = $ap_ok + ap_verifie(12, "premier_octet_nu", chaine($nus[0]), "15")
+
+# ── 6. Écriture effective du binaire ────────────────────────────────────────
+
+$n = asm_ecrire($s, "/tmp/opencode/asm_prive.bin")
+$ap_ok = $ap_ok + ap_verifie(13, "ecriture_compte", chaine($n), "24")
+
+# ── 7. CLI / STI ────────────────────────────────────────────────────────────
+
+$s_cli = asm_seq()
+asm_cli($s_cli)
+$ap_ok = $ap_ok + ap_verifie(14, "cli", asm_hex($s_cli), "fa")
+$s_sti = asm_seq()
+asm_sti($s_sti)
+$ap_ok = $ap_ok + ap_verifie(15, "sti", asm_hex($s_sti), "fb")
+
+# ── 8. IN : E4/E5 imm8, EC/ED via DX ───────────────────────────────────────
+
+$s_i1 = asm_seq()
+asm_in($s_i1, 96, 1)
+$ap_ok = $ap_ok + ap_verifie(16, "in_al_imm8", asm_hex($s_i1), "e460")
+$s_i2 = asm_seq()
+asm_in($s_i2, 96, 4)
+$ap_ok = $ap_ok + ap_verifie(17, "in_eax_imm8", asm_hex($s_i2), "e560")
+$s_i3 = asm_seq()
+asm_in($s_i3, -1, 1)
+$ap_ok = $ap_ok + ap_verifie(18, "in_al_dx", asm_hex($s_i3), "ec")
+$s_i4 = asm_seq()
+asm_in($s_i4, -1, 4)
+$ap_ok = $ap_ok + ap_verifie(19, "in_eax_dx", asm_hex($s_i4), "ed")
+
+# ── 9. OUT : E6/E7 imm8, EE/EF via DX ──────────────────────────────────────
+
+$s_o1 = asm_seq()
+asm_out($s_o1, 128, 1)
+$ap_ok = $ap_ok + ap_verifie(20, "out_imm8_al", asm_hex($s_o1), "e680")
+$s_o2 = asm_seq()
+asm_out($s_o2, 128, 4)
+$ap_ok = $ap_ok + ap_verifie(21, "out_imm8_eax", asm_hex($s_o2), "e780")
+$s_o3 = asm_seq()
+asm_out($s_o3, -1, 1)
+$ap_ok = $ap_ok + ap_verifie(22, "out_dx_al", asm_hex($s_o3), "ee")
+$s_o4 = asm_seq()
+asm_out($s_o4, -1, 4)
+$ap_ok = $ap_ok + ap_verifie(23, "out_dx_eax", asm_hex($s_o4), "ef")
+
+# ── 10. Opcode 0F 20 (lecture CR0) et ModRM /r ─────────────────────────────
+
+$s_rd = asm_seq()
+asm_cr0_lire($s_rd)
+$ap_ok = $ap_ok + ap_verifie(24, "mov_eax_cr0", asm_hex($s_rd), "0f20c0")
+$s_reg = asm_seq()
+asm_cr0_reg($s_reg, 3, 0)
+$ap_ok = $ap_ok + ap_verifie(25, "modrm_0f20_ebx", asm_hex($s_reg), "0f20d8")
+
+# ── 11. LIDT, LGDT absolu, octet brut ──────────────────────────────────────
+
+$s_lidt = asm_seq()
+asm_lidt($s_lidt, 32768, 23)
+$ap_ok = $ap_ok + ap_verifie(26, "lidt", asm_hex($s_lidt), "0f011d00000000170000800000")
+$s_abs = asm_seq()
+asm_lgdt_a($s_abs, 4096, 32768, 23)
+$ap_ok = $ap_ok + ap_verifie(27, "lgdt_adresse_absolue", asm_hex($s_abs), "0f011500100000170000800000")
+$s_db = asm_seq()
+asm_db($s_db, 255)
+$ap_ok = $ap_ok + ap_verifie(28, "octet_brut", asm_hex($s_db), "ff")
+
+# ── 12. Mnémonique inconnu : -1, suite inchangée ────────────────────────────
+
+$s_bad = asm_seq()
+$bad = asm_ajouter($s_bad, "inconnu", [0])
+$ap_ok = $ap_ok + ap_verifie(29, "mnemo_inconnu", chaine($bad) + "/" + chaine(longueur($s_bad)), "-1/1")
+
+# ── 13. Manifeste prive.bud : DONNÉES cohérentes avec le code ──────────────
+
+$txt = bud_lire("briques/asm/prive.bud")
+$p = bud_parse($txt)
+$ap_ok = $ap_ok + ap_verifie(30, "bud_valide", chaine(bud_valider($p)), "0")
+$ap_ok = $ap_ok + ap_verifie(31, "bud_nom", bud_champ($p, "nom"), "asm-prive")
+$ap_ok = $ap_ok + ap_verifie(32, "bud_lgdt", bud_champ($p, "mnemoniques.1.nom") + "/" + bud_champ($p, "mnemoniques.1.opcode"), "lgdt/0f01/2")
+$ap_ok = $ap_ok + ap_verifie(33, "bud_largeur", chaine(bud_entier($p, "mode.largeur_registre")), "32")
+$ap_ok = $ap_ok + ap_verifie(34, "bud_code_lgdt", chaine(asm_code(bud_champ($p, "mnemoniques.1.nom"))), "1")
+
+>> "TOTAL " + chaine($ap_ok) + "/" + chaine($ap_total)
