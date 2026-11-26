@@ -1,0 +1,6 @@
+fn f(a: liste<entier>) -> liste<entier> {
+  joindre($a, 7)
+  retour $a
+}
+$s = [0]
+>> longueur(f($s))

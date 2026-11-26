@@ -1,5 +1,15 @@
 [
   {
+    "PackageId": "Rose-0.1.80-full.nupkg",
+    "Version": "0.1.80",
+    "Type": "Full",
+    "FileName": "Rose-0.1.80-full.nupkg",
+    "SHA1": "a7212de4b2c3b5028306f4b7efb05ea944e4aee3",
+    "SHA256": "e1976ffaf8051ab99f37f6ada34873bbc301ab652c82357a7dd1d1f054fdc680",
+    "SHA512": "5F3blL8mD4zGhsRvxHGwgZ8A1EWiRp9a+JHP/DjOVznnjssIyy3TMckF4NhUMkrCX09BTdq22pPHp+iT9ym6mA==",
+    "Size": 1832082
+  },
+  {
     "PackageId": "Rose-0.1.79-full.nupkg",
     "Version": "0.1.79",
     "Type": "Full",
@@ -38,5 +48,75 @@
     "SHA256": "c18573081550b09612fa2456f355eb78a7bab9e41dabba85c64b635c5d3fe491",
     "SHA512": "0eG5Tx53lADKg7oKkrmFEMCKPi8CmYKRKs3tKufDymQjjaXT++F+qJxeAQciU4PLIuEgwwjAWP4XrlOzjlmxNQ==",
     "Size": 11413518
+  },
+  {
+    "PackageId": "Rose-0.1.75-full.nupkg",
+    "Version": "0.1.75",
+    "Type": "Full",
+    "FileName": "Rose-0.1.75-full.nupkg",
+    "SHA1": "1f5b91eb934f30643f717caaa8aca58f6d2e7fab",
+    "SHA256": "eee2c8ee5c7c5a959672a83b804fb3feda9f4e1c90d8967f0c74522a87706616",
+    "SHA512": "5vgzMs8BljPZTps+1mf24g1XbCxePwnPivMFjzei+o3bW6Qpn7i4kTLsE7NvBg4KMHhnlDiN6xRdYTK5PsGsyQ==",
+    "Size": 11371944
+  },
+  {
+    "PackageId": "Rose-0.1.74-full.nupkg",
+    "Version": "0.1.74",
+    "Type": "Full",
+    "FileName": "Rose-0.1.74-full.nupkg",
+    "SHA1": "02aa32f83163c7ef5c17f72eb6879561afc09ce0",
+    "SHA256": "1142872619e09b34077fc26a1efd17480e8ac3850853a9e78b2983b26b3c5214",
+    "SHA512": "80IaJvaF5QP11DCqMYx/aG4n4VnlT7JeIyZA7c+hzGEPvrtY2YS0Wkr7N+ZIa+QIM3DCAmWR+BOyO6qDGtd57A==",
+    "Size": 11227323
+  },
+  {
+    "PackageId": "Rose-0.1.73-full.nupkg",
+    "Version": "0.1.73",
+    "Type": "Full",
+    "FileName": "Rose-0.1.73-full.nupkg",
+    "SHA1": "19510b3ae0113d925f72449e24c8d9612f058f0a",
+    "SHA256": "08c61bdae4090d9aac77491c14c5cd6d1dbe9e4adbd94be2c8858e180bb5b434",
+    "SHA512": "iVyFolvLrC4cHuBbyU2T1qxJuv7C0D5hwxxRIH45KFxRaiTA2Ic2QZxnEY/1SXoKH2sKLCHe6GKuCT54+3Py4w==",
+    "Size": 11218818
+  },
+  {
+    "PackageId": "Rose-0.1.72-full.nupkg",
+    "Version": "0.1.72",
+    "Type": "Full",
+    "FileName": "Rose-0.1.72-full.nupkg",
+    "SHA1": "87a6cdf6fd8f90a2c49633367ea38eb03de4929a",
+    "SHA256": "ad7ce6e936307bbe17ebd9e6b975c9b6d6d85b2423fb9850c5ebef93c447569b",
+    "SHA512": "virwB8AqbkR8N38JxeEr2YHB9nLSbfKYQ+8K0svlgT9dlclktMEQ2AAmomkwnFopOeJoMeyP8XM9cWmTwHyxfQ==",
+    "Size": 10829433
+  },
+  {
+    "PackageId": "Rose-0.1.7-full.nupkg",
+    "Version": "0.1.7",
+    "Type": "Full",
+    "FileName": "Rose-0.1.7-full.nupkg",
+    "SHA1": "aeab5630f3e6c9216e6fd40a2fe6c87012dd7618",
+    "SHA256": "ffc7ca02d4f1861f8c7180d5c593fe5eeb00cf1e75feaecd6d385d0ffaa0e2c8",
+    "SHA512": "MtSj3JQaovKN4bcvFv+Ha2H9km65AzIJmNgcg+ac04Se6+gcqNbY2kgXR8G3E1KMD0gz6YtgS1xsgz1pHnqhNw==",
+    "Size": 10280238
+  },
+  {
+    "PackageId": "Rose-0.1.5-full.nupkg",
+    "Version": "0.1.5",
+    "Type": "Full",
+    "FileName": "Rose-0.1.5-full.nupkg",
+    "SHA1": "1e52f888602dd7408d392eb6bcfca292be15773c",
+    "SHA256": "ad418be2397d421db90e2e27a14e91250a04085fe5d402b087a73a90ba207df5",
+    "SHA512": "tFlQwsvY2Hor6+WNM/oR/zM8nFCKnHJ0lRee9IPQdsnhpyy2tJR9zl9YI2XlUzhE8GLD6ncTczQQysUQecIqZw==",
+    "Size": 8740427
+  },
+  {
+    "PackageId": "Rose-0.1.4-full.nupkg",
+    "Version": "0.1.4",
+    "Type": "Full",
+    "FileName": "Rose-0.1.4-full.nupkg",
+    "SHA1": "c2eff6a96b41cebad639802e2397a7547a7a391c",
+    "SHA256": "c523068306dda489f54387184e141e22e94d1d2f1a9e7be32c39c03578bfaa2d",
+    "SHA512": "8+svqeRpu0Gle0BskPSFFZMz4QGKwPnnGjgVGB5kqnbq8JGBpqLTTOt3v6ABEjz9VA7+SKM4qkGoZxn695+PwA==",
+    "Size": 5255132
   }
 ]

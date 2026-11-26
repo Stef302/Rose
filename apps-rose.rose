@@ -1,0 +1,88 @@
+# apps-rose.rose — APPLICATIONS GRAPHIQUES EN ROSE PUR
+#
+# Constat daté : 26/11/2026. Génère des applications Rose qui dessinent
+# dans le framebuffer VESA (apps du prototype Rose, equivalent des apps
+# MonOS64 mais ecrites en Rose).
+#
+# Chaque app est un petit programme 32 bits qui recoit :
+#   EDI = adresse du framebuffer (passe par le noyau)
+#  Elle dessine des formes et retourne.
+# Le noyau appellera ces apps depuis son menu.
+
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+fn o(v: entier) -> chaine { retour octet_brut($v % 256) }
+fn u32le(v: entier) -> chaine {
+  $r = o(v % 256); $r = $r + o((v ÷ 256) % 256)
+  $r = $r + o((v ÷ 65536) % 256); $r = $r + o((v ÷ 16777216) % 256)
+  retour $r
+}
+
+# Helpers 32 bits Rose
+fn a_mov_edx(v: entier) -> chaine { retour o(186) + u32le($v) }
+fn a_mov_al(v: entier) -> chaine { retour o(176) + o($v) }
+fn a_mov_ecx(v: entier) -> chaine { retour o(185) + u32le($v) }
+fn a_mov_edi(v: entier) -> chaine { retour o(191) + u32le($v) }
+fn a_mov_eax(v: entier) -> chaine { retour o(184) + u32le($v) }
+fn a_mov_esi(v: entier) -> chaine { retour o(190) + u32le($v) }
+fn a_mov_ebx(v: entier) -> chaine { retour o(187) + u32le($v) }
+fn a_stosb() -> chaine { retour o(136) + o(7) }
+fn a_add_edi(v: entier) -> chaine { retour o(131) + o(199) + o($v) }
+fn a_out() -> chaine { retour o(238) }
+fn a_ret() -> chaine { retour o(195) }
+fn a_mov_edi_mem(addr: entier) -> chaine { retour o(139) + o(60) + o(37) + u32le($addr) }
+
+fn a_halt() -> chaine { retour o(244) + o(235) + o(254) }
+fn a_dec_ecx() -> chaine { retour o(73) }
+fn a_jnz_back(debut: entier, apres: entier) -> chaine {
+  $off = debut - apres
+  $r = o(15) + o(133)
+  $r = $r + o($off % 256) + o(($off ÷ 256) % 256)
+  $r = $r + o(($off ÷ 65536) % 256) + o(($off ÷ 16777216) % 256)
+  retour $r
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# APP 1 : PAINT — remplit l'ecran avec un degradé de couleurs
+# ═══════════════════════════════════════════════════════════════════════════
+$paint = a_mov_edx(1016) + a_mov_al(80) + a_out()   # 'P' sur serie
+$paint = $paint + a_mov_edi_mem(28712)              # edi = fb_addr
+$paint = $paint + a_mov_ecx(100000)
+$ploop = longueur($paint)
+$paint = $paint + a_mov_al(255) + a_stosb() + a_add_edi(1)   # B
+$paint = $paint + a_mov_al(105) + a_stosb() + a_add_edi(1)   # G
+$paint = $paint + a_mov_al(180) + a_stosb() + a_add_edi(2)   # R
+$paint = $paint + a_dec_ecx() + a_jnz_back($ploop, longueur($paint) + 6)
+$paint = $paint + a_ret()
+
+# mov edi,[addr] : 8B 3C 25 addr32
+
+# ═══════════════════════════════════════════════════════════════════════════
+# APP 2 : CLOCK — affiche des bandes horizontales (horloge stylisée)
+# ═══════════════════════════════════════════════════════════════════════════
+$clock = a_mov_edx(1016) + a_mov_al(67) + a_out()   # 'C' sur serie
+$clock = $clock + a_mov_edi_mem(28712)
+$clock = $clock + a_mov_ecx(60000)
+$cloop = longueur($clock)
+$clock = $clock + a_mov_al(50) + a_stosb() + a_add_edi(1)
+$clock = $clock + a_mov_al(200) + a_stosb() + a_add_edi(1)
+$clock = $clock + a_mov_al(100) + a_stosb() + a_add_edi(2)
+$clock = $clock + a_dec_ecx() + a_jnz_back($cloop, longueur($clock) + 6)
+$clock = $clock + a_ret()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# APP 3 : SNAKE — serpent de pixels verts
+# ═══════════════════════════════════════════════════════════════════════════
+$snake = a_mov_edx(1016) + a_mov_al(83) + a_out()   # 'S' sur serie
+$snake = $snake + a_mov_edi_mem(28712)
+$snake = $snake + a_mov_ecx(30000)
+$sloop = longueur($snake)
+$snake = $snake + a_mov_al(0) + a_stosb() + a_add_edi(1)
+$snake = $snake + a_mov_al(255) + a_stosb() + a_add_edi(1)
+$snake = $snake + a_mov_al(60) + a_stosb() + a_add_edi(2)
+$snake = $snake + a_dec_ecx() + a_jnz_back($sloop, longueur($snake) + 6)
+$snake = $snake + a_ret()
+
+ecrire_bytes("/home/clausake/Stefan/monos/app-paint.bin", $paint)
+ecrire_bytes("/home/clausake/Stefan/monos/app-clock.bin", $clock)
+ecrire_bytes("/home/clausake/Stefan/monos/app-snake.bin", $snake)
+afficher("apps Rose : paint=" + chaine(longueur($paint)) + " clock=" + chaine(longueur($clock)) + " snake=" + chaine(longueur($snake)))

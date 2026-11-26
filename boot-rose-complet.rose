@@ -1,0 +1,64 @@
+# boot-rose-complet.rose — BOOTLOADER ECRIT EN ROSE PUR (données octets Rose)
+#
+# Constat daté : 26/11/2026. Le sector d'amorçage est produit par un
+# programme Rose : la suite d'octets est declarée comme DONNEES ROSE
+# (liste<entier> de valeurs 0..255), puis ecrite via `ecrire_bytes`.
+# Aucun fichier n'est lu, aucun outil externe, aucun assembleur, aucun Zig.
+# C'est le meme mecanisme que pour le noyau Rose : des octets generes par Rose.
+
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+
+# Les 512 octets du bootloader, declares en Rose (valeurs decimales).
+# Format : une ligne = 16 octets.
+$octets = [0]
+$octets = octets_ajouter($octets, [49,192,142,216,142,192,142,208,188,0,124,136,22,68,125,190])
+$octets = octets_ajouter($octets, [71,125,173,131,248,255,15,132,37,1,163,69,125,184,1,79])
+$octets = octets_ajouter($octets, [139,14,69,125,191,0,112,205,16,131,248,79,117,228,128,62])
+$octets = octets_ajouter($octets, [25,112,32,117,221,102,161,40,112,102,163,96,125,184,2,79])
+$octets = octets_ajouter($octets, [139,30,69,125,129,203,0,64,205,16,131,248,79,117,195,180])
+$octets = octets_ajouter($octets, [8,138,22,68,125,205,19,137,200,131,224,63,163,88,125,254])
+$octets = octets_ajouter($octets, [198,136,54,90,125,136,194,246,230,163,86,125,184,0,16,142])
+$octets = octets_ajouter($octets, [192,49,219,190,1,0,137,240,49,210,139,14,86,125,247,241])
+$octets = octets_ajouter($octets, [163,84,125,137,208,49,210,139,14,88,125,247,241,162,91,125])
+$octets = octets_ajouter($octets, [254,194,136,22,92,125,180,2,176,1,138,14,92,125,138,46])
+$octets = octets_ajouter($octets, [84,125,138,54,91,125,138,22,68,125,205,19,15,130,145,0])
+$octets = octets_ajouter($octets, [140,192,131,192,32,142,192,70,129,254,128,0,114,184,228,146])
+$octets = octets_ajouter($octets, [12,2,36,254,230,146,250,15,1,22,104,125,15,32,224,102])
+$octets = octets_ajouter($octets, [13,0,6,0,0,15,34,224,15,32,192,102,131,200,1,15])
+$octets = octets_ajouter($octets, [34,192,234,231,124,8,0,102,184,16,0,142,216,142,192,142])
+$octets = octets_ajouter($octets, [224,142,232,142,208,188,0,0,8,0,191,0,117,0,0,161])
+$octets = octets_ajouter($octets, [96,125,0,0,137,7,15,183,5,18,112,0,0,137,71,8])
+$octets = octets_ajouter($octets, [15,183,5,20,112,0,0,137,71,12,15,183,5,16,112,0])
+$octets = octets_ajouter($octets, [0,137,71,16,15,182,5,25,112,0,0,136,71,20,199,71])
+$octets = octets_ajouter($octets, [24,0,126,1,0,184,0,0,1,0,255,208,244,235,253,235])
+$octets = octets_ajouter($octets, [254,235,254,144,0,0,0,68,65,67,65,66,65,65,65,64])
+$octets = octets_ajouter($octets, [65,255,255,144,0,0,36,0,18,0,2,0,0,141,116,0])
+$octets = octets_ajouter($octets, [0,0,0,0,141,180,0,0,23,0,110,125,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,255,255,0,0,0,154,207,0,255,255])
+$octets = octets_ajouter($octets, [0,0,0,146,207,0,0,0,0,0,0,0,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0])
+$octets = octets_ajouter($octets, [0,0,0,0,0,0,0,0,0,0,0,0,0,0,85,170])
+
+fn octets_ajouter(l: liste<entier>, a: liste<entier>) -> liste<entier> {
+  $r = [l[0]]
+  $k = 1
+  tant_que ($k < longueur(l)) { joindre($r, l[$k]); $k = $k + 1 }
+  $j = 0
+  tant_que ($j < longueur(a)) { joindre($r, a[$j]); $j = $j + 1 }
+  retour $r
+}
+
+# Ecriture
+$out = ""
+$i = 1
+tant_que ($i < longueur($octets)) {
+  $out = $out + octet_brut($octets[$i])
+  $i = $i + 1
+}
+ecrire_bytes("/home/clausake/Stefan/monos/boot-rose.bin", $out)
+afficher("boot-rose.bin : " + chaine(longueur($out)) + " octets (genere par Rose)")

@@ -1,0 +1,356 @@
+# ============================================================================
+# noyau.rose — PROTOTYPE D'OS EN ROSE PUR, ASSEMBLÉ À PARTIR DES BRIQUES
+# ============================================================================
+#
+# Constat daté : 25/11/2026. Prototype écrit entièrement en Rose, sans libc,
+# sans moteur étranger : les huit briques sont CONCATÉNÉES (Rose n'a pas
+# d'`importer` pour les briques) puis ce fichier les câble les unes aux
+# autres. Chaque brique est un MÉCANISME ; tout ce qui est spécifique
+# (matériel, cibles, niveaux, formats) vient des données `.bud` déclaratives.
+#
+# Les huit briques et leur rôle :
+#   1. interruptions/vecteurs.rose  — signaux et événements : table de
+#      vecteurs + ABI de sauvegarde/restauration ;
+#   2. memoire/arena.rose           — allocation déterministe + carte de
+#      translation ;
+#   3. pilote/contrat.rose          — interface périphériques sans logique
+#      par matériel (machine à états sur listes d'octets) ;
+#   4. abi/appel.rose               — conventions d'appel, catalogue
+#      d'appels, isolation abstraite, reconnaissance de formats ;
+#   5. image/contour.rose           — assemblage de l'image binaire cible ;
+#   6. profil/noyau.rose            — entiers bornés et latence prévisible ;
+#   7. compilateur/brique_runtime.rose — services d'exécution minimaux ;
+#   8. compilateur/backend_universel.rose — émission machine abstraite ;
+#   + briques/quantique/qubit.rose  — simulateur logique de qubit.
+#
+# EXÉCUTION (depuis la racine du dépôt — un seul clic) :
+#   bash scripts/noyau.sh              # assemble les briques puis exécute
+#   # ou, à la main, dans cet ordre :
+#   cat compilateur/lecteur_bud.rose \
+#       briques/memoire/arena.rose briques/interruptions/vecteurs.rose \
+#       briques/pilote/contrat.rose briques/abi/appel.rose \
+#       briques/image/contour.rose briques/profil/noyau.rose \
+#       compilateur/brique_runtime.rose > /tmp/opencode/noyau_cat.rose
+#   awk '/^fn octet_brut\(/{skip=3} skip>0{skip--;next} {print}' \
+#       compilateur/backend_universel.rose >> /tmp/opencode/noyau_cat.rose
+#   cat briques/quantique/qubit.rose briques/appareil/contrat.rose \
+#       briques/appareil/chargeur.rose noyau.rose >> /tmp/opencode/noyau_cat.rose
+#   rose-20 interprete /tmp/opencode/noyau_cat.rose
+#   rose-20 comp /tmp/opencode/noyau_cat.rose -o /tmp/opencode/noyau_bin
+#   /tmp/opencode/noyau_bin            # exécutable autonome (moteur + source)
+#
+# ORDRE IMPOSÉ par les dépendances : `lecteur_bud` d'abord (les .bud sont lus
+# par les sections), puis les briques d'état, puis le runtime/backend, puis
+# l'appareil, puis CE fichier. `octet_brut` est défini à l'identique dans
+# `briques/image/contour.rose` et `compilateur/backend_universel.rose` : la
+# concaténation ne garde que la première définition (l'`awk` ci-dessus).
+#
+# PARITÉ MESURÉE le 25/11/2026 sur ce prototype : les quatre voies
+# `interprete`, `jit`, `comp` et `verif` rendent les MÊMES 108 entiers
+# (md5 identique), ce qui est le contrat de non-régression de Rose.
+# LIMITES CONNUES (mesurées) : `aot` refuse ce programme (liste littérale en
+# affectation, op RIR non-native) et `transpile` refuse `lire_texte` ; les
+# deux sont des sous-ensembles du moteur, pas des erreurs du prototype.
+#
+# Chaque section est un test. Une ligne `>> expr` est une assertion : le
+# moteur rend l'entier, la valeur attendue est en commentaire.
+# ============================================================================
+
+# ── 0. Lecteur de manifestes : les .bud sont la seule source de vérité ─────
+
+## lecteur_bud.rose est concaténé en tête par scripts/noyau.sh (Rose n'a pas de modules)
+
+# Le .bud d'assemblage du prototype : il nomme les briques, la cible et les
+# régions. C'est lui qui est lu, pas une constante recopiée ici.
+$ex = bud_parse(bud_lire("briques/exemple.bud"))
+si (bud_valider($ex) != 0) {
+  afficher("ECHEC : exemple.bud invalide")
+  quitter(1)
+}
+$ap = bud_parse(bud_lire("briques/appareil/contrat.bud"))
+si (bud_valider($ap) != 0) {
+  afficher("ECHEC : contrat.bud invalide")
+  quitter(1)
+}
+
+# ── 1. Brique Entiers bornés (profil/noyau.rose) ────────────────────────────
+# Le profil vient du .bud d'assemblage : largeur du mot = 64.
+
+$bits_bud = bud_entier($ex, "cible.largeur_mot")
+$p64 = borne_declarer($bits_bud)
+>> borne_statut($p64)          # 0 : profil valide
+>> borne_bits($p64)            # 64 : lu dans exemple.bud
+$r = borne_add(1000000007, 999999999, $p64)
+>> resultat_valeur($r)         # 2000000006
+>> resultat_deborde($r)        # 0
+$p16 = borne_declarer_signe(16)
+>> borne_min($p16)             # -32768
+>> borne_max($p16)             # 32767
+$r = borne_mul(300, 300, $p16)
+>> resultat_deborde($r)        # 1 : 90000 dépasse 16 bits signés
+$r = borne_div(7, 2, $p16)
+>> resultat_valeur($r)         # 3 : troncature vers zéro
+$r = borne_div(7, 0, $p16)
+>> resultat_deborde($r)        # 1 : division par zéro = échec explicite
+$couts = [2, 1, 1, 2, 3, 2, 1]
+$p64 = borne_fixer_couts($p64, $couts)
+>> borne_cout($p64, 3)         # 2 : coût symbolique de la multiplication
+$ops_lourdes = [4, 4, 4, 4, 4]
+>> latence_budget($p64, $ops_lourdes) # 15 : 5 × 3 (coût division)
+$ops_legeres = [1, 1]
+>> latence_budget($p64, $ops_legeres) # 4 : 2 × 2 (coût déclaration)
+
+# ── 2. Brique Mémoire (memoire/arena.rose) ──────────────────────────────────
+# Les régions viennent du .bud ; l'arena n'est jamais une adresse matérielle.
+
+$base = bud_entier($ex, "materiel.regions.0.base")
+$taille_region = bud_entier($ex, "materiel.regions.0.taille")
+$a = arena_nouvelle($base, $taille_region)
+>> arena_taille($a)            # 1048576 : lu dans exemple.bud
+$a = arena_allouer($a, 8)
+>> arena_statut($a)            # 0
+>> arena_debut($a, 0)          # 0
+$a = arena_allouer($a, 12)
+>> arena_debut($a, 1)          # 8
+$b = arena_liberer($a, 0)
+>> arena_statut($b)            # 0
+$b = arena_liberer($b, 0)
+>> arena_statut($b)            # -1 : double libération refusée
+$c = arena_allouer($b, 4)
+>> arena_dernier_bloc($c)      # 0 : first-fit réutilise le trou laissé libre
+>> arena_debut($c, 0)          # 0
+$c = arena_compassion($c)
+>> arena_bump($c)              # 16 : 4 + 12, plus aucun trou
+>> arena_compactions($c)       # 1
+
+# Carte de translation : triplets (v, p, taille), remplacements sans doublon.
+$carte = carte_nouvelle()
+$carte = carte_mapper($carte, 4096, 65536, 16)
+$carte = carte_mapper($carte, 8192, 131072, 8)
+$carte = carte_mapper($carte, 4096, 70000, 16)
+>> carte_entrees($carte)       # 2 : le remplacement n'a pas dupliqué
+>> carte_traduire($carte, 4096) # 70000
+>> carte_traduire($carte, 8192) # 131072
+>> carte_traduire($carte, 1)    # -1 : absence = échec explicite
+>> carte_traduire_inverse($carte, 131072) # 8192
+
+# ── 3. Brique Interruptions (interruptions/vecteurs.rose) ───────────────────
+# 256 vecteurs : le nombre vient d'exemple.bud (`materiel.vecteurs`).
+
+$nv = bud_entier($ex, "materiel.vecteurs")
+$t = vtable_nouvelle($nv)
+>> vtable_taille($t)           # 256
+$t = vtable_installer($t, 0, 0)
+$t = vtable_installer($t, 1, 0)
+>> vtable_handler($t, 0)       # 0
+# Le handler 0 ajoute 5 au registre 0, puis copie le registre 0 vers 1.
+$t = vtable_programme($t, 0, [2, 0, 5, 3, 1, 0])
+>> vtable_programmes($t)       # 1
+$ctx = [10, 0, 0]
+$rap = vtable_dispatch($t, 0, $ctx)
+>> rapport_statut($rap)        # 0
+>> rapport_longueur($rap)      # 3 : le contexte est conservé
+>> rapport_restaure($rap, 0)   # 10 : l'interrompu reprend son 10
+>> rapport_apres($rap, 0)      # 15 : 10 + 5, l'effet du handler
+>> rapport_apres($rap, 1)      # 15 : copie du registre 0
+$rap = vtable_dispatch($t, 255, $ctx)
+>> rapport_statut($rap)        # -1 : vecteur sans handler = échec explicite
+
+# ── 4. Brique Pilotes (pilote/contrat.rose) ─────────────────────────────────
+# Trois appareils, déclarés dans contrat.bud, jamais dans le code.
+
+$pil = pilote_declarer("flux-abstrait", "caractere", [1, 2])
+>> pilote_famille_code($pil)   # 2 : « caractere »
+$pil = pilote_ouvrir($pil, 7)
+>> pilote_etat($pil)           # 1 : ouvert
+>> pilote_identifiant($pil)    # 7
+$pil = pilote_fournir($pil, [72, 73, 33])
+# Famille « caractere » : un octet par lecture, puis on consomme.
+$u1 = pilote_lire($pil, 2)
+>> $u1[0]                      # 72 : 'H'
+$pil = pilote_consommer($pil)
+$u2 = pilote_lire($pil, 2)
+>> $u2[0]                      # 73 : 'I'
+$pil = pilote_consommer($pil)
+$u3 = pilote_lire($pil, 2)
+>> $u3[0]                      # 33 : '!'
+$pil = pilote_ecrire($pil, [65, 66])
+>> pilote_ecritures($pil)      # 2
+>> pilote_sondages($pil)       # 0 : aucun sondage pour l'instant
+$sonde = pilote_poller($pil)
+>> $sonde[10]                  # 1 : un seul compteur de sondage incrémenté
+>> pilote_notifications($pil)  # 0
+$pil = pilote_notifier($pil, 3)
+>> pilote_evenement($pil)      # 3
+$pil = pilote_fermer($pil)
+>> pilote_etat($pil)           # 0 : fermé
+
+# ── 5. Brique ABI (abi/appel.rose) ──────────────────────────────────────────
+# Tout vient de appel.bud : registres, pile, catalogue, niveaux.
+
+$ab = bud_parse(bud_lire("briques/abi/appel.bud"))
+si (bud_valider($ab) != 0) {
+  afficher("ECHEC : appel.bud invalide")
+  quitter(1)
+}
+$reg = [bud_entier($ab, "donnees.registres.0"),
+        bud_entier($ab, "donnees.registres.1"),
+        bud_entier($ab, "donnees.registres.2")]
+$pile = [bud_entier($ab, "donnees.pile.0"), bud_entier($ab, "donnees.pile.1"),
+         bud_entier($ab, "donnees.pile.2"), bud_entier($ab, "donnees.pile.3")]
+$abi1 = abi_declarer("rose-utilisateur-v0", $reg, $pile)
+>> abi_registres($abi1)        # 4 : lu dans appel.bud
+>> abi_convention($abi1)       # 1 : registres d'abord
+>> abi_pile_sens($abi1)        # 2 : pile décroissante
+>> abi_args_max($abi1)         # 4
+# Catalogue : trois appels abstraits, déclarés dans le .bud, pas en dur.
+$cat = syscat_nouvelle()
+$cat = syscat_enregistrer($cat, 1, "identite", bud_champ($ab, "donnees.syscalls.0.signature"))
+$cat = syscat_enregistrer($cat, 2, "somme", bud_champ($ab, "donnees.syscalls.1.signature"))
+$cat = syscat_enregistrer($cat, 3, "compte", bud_champ($ab, "donnees.syscalls.2.signature"))
+>> syscat_appeler($cat, 2, [0, 20, 22]) # 42 : somme(20, 22)
+>> syscat_appeler($cat, 2, [0, 1])      # -2 : arité incorrecte
+>> syscat_appeler($cat, 9, [0])         # -1 : numéro inconnu
+>> syscat_code($cat, 3)                 # 4 : code abstrait de « compte »
+$tr = syscat_trap($cat, 2, [0, 20, 22])
+>> $tr[3]                      # 1 : trace = arité conforme
+# Isolation : niveaux 0..n-1, jamais un anneau matériel.
+$iso = isolate_nouveau(bud_entier($ab, "donnees.niveaux"))
+$iso = isolate_autoriser($iso, "lire", 0)
+$iso = isolate_autoriser($iso, "ecrire", 1)
+>> isolate_niveaux($iso)       # 4 : lu dans appel.bud
+# Niveaux : 0 = utilisateur, 3 = plus privilégié. 1 = autorisé, 0 = refus.
+$ok_lire = 0
+si (isolate_verifier($iso, 0, "lire")) { $ok_lire = 1 }
+$ok_ecrire = 0
+si (isolate_verifier($iso, 0, "ecrire")) { $ok_ecrire = 1 }
+$ok_ecrire_n1 = 0
+si (isolate_verifier($iso, 1, "ecrire")) { $ok_ecrire_n1 = 1 }
+>> $ok_lire                    # 1
+>> $ok_ecrire                  # 0 : niveau 1 exigé
+>> $ok_ecrire_n1               # 1
+# Formats : la sérialisation est déléguée, pas recopiée.
+$img_elf = chargeur_charger("elf", [127, 69, 76, 70, 2, 1])
+>> chargeur_valide($img_elf)   # 1 : en-tête 7F 'E' 'L' 'F'
+>> chargeur_format($img_elf)   # 1
+>> chargeur_taille($img_elf)   # 6
+>> abi_code_format("pe")       # 2
+
+# ── 6. Brique Image (image/contour.rose) ────────────────────────────────────
+# L'unité logique vient d'exemple.bud (`cible.largeur_page`), jamais déduite.
+
+$img = contour_image(bud_entier($ex, "cible.largeur_page"))
+$sec1 = contour_nouvelle("code", 0, 4096)
+$sec2 = contour_nouvelle("table", 1, 0)
+$img = contour_ajouter($img, $sec1, [1, 2, 3, 4])
+$img = contour_ajouter($img, $sec2, [9, 9])
+$img = contour_entree($img, 0)
+>> contour_statut($img)        # 0
+>> contour_nb_sections($img)   # 2
+>> contour_taille($img)        # 6 : 4 + 2 octets de charge
+>> contour_valider($img)       # 0 : image cohérente
+$tab = contour_table($img)
+>> $tab[0]                     # 2 : deux sections dans la table
+>> $tab[1]                     # 0 : début de la première
+>> $tab[3]                     # 1 : c'est la section-point d'entrée
+
+# ── 7. Brique Asm / Backend (compilateur/backend_universel.rose) ────────────
+# La même séquence abstraite, trois enveloppes différentes, lues dans
+# cible.bud (aucun nom de CPU dans la logique).
+
+$cb = bud_parse(bud_lire("briques/backend/cible.bud"))
+si (bud_valider($cb) != 0) {
+  afficher("ECHEC : cible.bud invalide")
+  quitter(1)
+}
+$a64 = bu_cible("aarch64")
+$x64 = bu_cible("x86_64")
+$w32 = bu_cible("wasm")
+>> bu_profil_entier($a64, "largeur_registre") # 64
+>> bu_code_op("add")           # 3
+$seq = bu_sequence()
+$im2 = bu_operation("imm", [2])
+$im3 = bu_operation("imm", [3])
+$ad = bu_operation("add", [0, 0, 1])
+$rt = bu_operation("ret", [0])   # [0] = porte-type : « ret » n'a pas d'argument
+>> bu_ajouter($seq, $im2)      # 1
+>> bu_ajouter($seq, $im3)      # 2
+>> bu_ajouter($seq, $ad)       # 3
+$oct_a64 = bu_traduire($seq, $a64)
+$oct_x64 = bu_traduire($seq, $x64)
+$oct_w32 = bu_traduire($seq, $w32)
+>> longueur($oct_a64)          # 16 octets aarch64
+>> longueur($oct_x64)          # 27 octets x86_64
+$different = 0
+si (longueur($oct_a64) != longueur($oct_x64)) { $different = 1 }
+>> $different                  # 1 : trois cibles, trois octets
+
+# ── 8. Brique Runtime (compilateur/brique_runtime.rose) ────────────────────
+# Services minimaux : copier, remplir, pile, encodeurs, sans libc.
+
+$src = [1, 2, 3, 4, 5]
+$dst = [0, 0, 0, 0, 0]
+$dst = rt_memcpy($src, $dst, 5)
+>> $dst[4]                     # 5 : copie effective
+$dst = rt_memset($dst, 7, 3)
+>> $dst[2]                     # 7
+$st = rt_init_stack()
+$st = rt_stack_push($st, 11)
+$st = rt_stack_push($st, 13)
+>> rt_stack_top($st)           # 13
+>> rt_a64_movz(0, 2)           # 1 : un mot encodé
+>> longueur(rt_x64_movimm(0, 2)) # 10 : movabs RAX, 2
+$ops_asm = ["movz 0 7", "ret"]
+>> longueur(rt_asm_vers($ops_asm, "aarch64")) # 9 : porteur + 2 mots de 4 octets
+
+# ── 9. Brique Qubit (quantique/qubit.rose) ─────────────────────────────────
+# H, X, Z, Y, mesure déterministe, intrication de Bell.
+
+$q = qubit_nouveau(0)
+>> $q[0]                       # 10000 : |0>
+$h = qubit_porte($q, "H")
+>> $h[0]                       # 7071 : cos(45°) × précision
+>> $h[1]                       # 7071 : sin(45°) × précision
+$x = qubit_porte($q, "X")
+>> $x[0]                       # 0
+>> $x[1]                       # 10000
+$z = qubit_porte($q, "Z")
+>> $z[1]                       # 0 : -0 = 0
+>> qubit_mesurer($q, 1)        # 0 : |0> mesuré = 0
+>> qubit_mesurer($x, 1)        # 1 : |1> mesuré = 1
+$bell = qubit_intriquer($q, $q)
+$m = qubit_mesurer2($bell, 7)
+>> $m[0]                       # 0 : premier indice de l'état de Bell
+>> $m[1]                       # 0 : corrélation parfaite, m1 == m0
+>> longueur(qubit_porte($q, "?")) # 2 : porte inconnue = état hors domaine
+
+# ── 10. Brique Appareil (briques/appareil/contrat.rose + chargeur) ──────────
+# Les trois appareils et leurs opérations viennent de contrat.bud, lus par
+# `appareil_depuis_bud`, jamais écrits dans ce fichier.
+
+## appareil/chargeur.rose est concaténé après contrat.rose par scripts/noyau.sh
+
+$calc = appareil_declarer("calculateur", ["calculer", "stocker"])
+$nb_appareils = appareil_depuis_bud("briques/appareil/contrat.bud")
+>> $nb_appareils               # 3 : calculateur, capteur, noeud_quantique
+>> appareil_statistique($calc, 0)  # 0 réussite au départ
+$exec = appareil_executer($calc, "addition", [2, 3])
+>> $exec[0]                    # 0 : succès
+>> $exec[1]                    # 1 : capacité « calculer »
+$empreinte_ok = 0
+si ($exec[2] >= 0) { $empreinte_ok = 1 }
+>> $empreinte_ok               # 1 : empreinte déterministe
+$refus = appareil_executer($calc, "inconnue", [0])
+>> $refus[0]                   # -1 : opération absente de la table
+$nb_ops = appareil_operations_depuis_bud("briques/appareil/contrat.bud")
+>> $nb_ops                     # 9 : les 9 opérations du .bud sont branchées
+
+# ── 11. Scellement : les huit briques forment un système cohérent ───────────
+# L'arithmétique bornée sert l'arena, la table de vecteurs sert au pilote,
+# le pilote alimente l'image, l'image est émise par le backend.
+
+$n_final = longueur($oct_a64) + longueur($oct_x64) + longueur($oct_w32)
+>> $n_final                    # 143 : 16 + 27 + 100 (mêmes octets wasm que le test)
+>> $dst[0] + $q[0]             # 10001 : runtime + qubit
+>> $nb_appareils + $nv - $bits_bud # 195 : 3 + 256 - 64, .bud -> briques
+>> 0

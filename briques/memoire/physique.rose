@@ -1,0 +1,120 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# briques/memoire/physique.rose — GESTIONNAIRE DE MÉMOIRE PHYSIQUE, ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique OS : bitmap de pages physiques + allocation/libération.
+# Aucun nom de CPU, de registre ni de taille de page codée en dur : la
+# granularité (taille de page) et le nombre de pages viennent du .bud.
+# L'état est une liste d'entiers :
+#   [nb_pages, page_size, pages_libres, pages_allouees, dernier_statut]
+# puis un mot bitmap par bloc de 64 pages (0 = libre, 1 = occupé).
+
+fn mp_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $m = $n
+  si ($idx >= $m) { $m = $idx + 1 }
+  $x0 = 0
+  si ($n > 0) { $x0 = l[0] }
+  si ($idx == 0) { $x0 = v }
+  $r = [$x0]
+  $k = 1
+  tant_que ($k < $m) {
+    $x = 0
+    si ($k < $n) { $x = l[$k] }
+    si ($k == $idx) { $x = v }
+    joindre($r, $x)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn memoire_physique_nouvelle(nb_pages: entier, page_size: entier) -> liste<entier> {
+  $r = [$nb_pages]
+  joindre($r, $page_size)
+  joindre($r, $nb_pages)   # pages libres
+  joindre($r, 0)            # pages allouees
+  joindre($r, 0)            # statut
+  # bitmap : un mot par bloc de 64 pages, initialisé à 0
+  $nb_mots = ($nb_pages + 63) ÷ 64
+  $k = 0
+  tant_que ($k < $nb_mots) {
+    joindre($r, 0)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn mp_nb_pages(m: liste<entier>) -> entier { retour m[0] }
+fn mp_page_size(m: liste<entier>) -> entier { retour m[1] }
+fn mp_pages_libres(m: liste<entier>) -> entier { retour m[2] }
+fn mp_pages_allouees(m: liste<entier>) -> entier { retour m[3] }
+fn mp_statut(m: liste<entier>) -> entier { retour m[4] }
+
+fn mp_base_bitmap(m: liste<entier>) -> entier { retour 5 }
+
+# Allouer une page : retourne [nouvel_etat, numero_page] (-1 si échec).
+fn memoire_physique_allouer(m: liste<entier>) -> liste<entier> {
+  $r = mp_set(m, 0, m[0])
+  $nb = m[0]
+  $trouve = -1
+  $i = 0
+  tant_que ($i < $nb et $trouve < 0) {
+    $mot_idx = $i ÷ 64
+    $bit = $i % 64
+    $base = mp_base_bitmap(m)
+    $mot = m[$base + $mot_idx]
+    $bitval = ($mot ÷ (2 ^ $bit)) % 2
+    si ($bitval == 0) { $trouve = $i }
+    $i = $i + 1
+  }
+  si ($trouve >= 0) {
+    $mot_idx = $trouve ÷ 64
+    $bit = $trouve % 64
+    $base = mp_base_bitmap(m)
+    $mot = m[$base + $mot_idx]
+    $nouveau_mot = $mot + (2 ^ $bit)
+    $r = mp_set($r, $base + $mot_idx, $nouveau_mot)
+    $r = mp_set($r, 2, m[2] - 1)
+    $r = mp_set($r, 3, m[3] + 1)
+    $r = mp_set($r, 4, 0)
+  } sinon {
+    $r = mp_set($r, 4, -1)
+  }
+  $out = [$r[0]]
+  $k = 1
+  tant_que ($k < longueur($r)) {
+    joindre($out, $r[$k])
+    $k = $k + 1
+  }
+  joindre($out, $trouve)
+  retour $out
+}
+
+# Libérer une page.
+fn memoire_physique_liberer(m: liste<entier>, page: entier) -> liste<entier> {
+  $r = mp_set(m, 0, m[0])
+  $nb = m[0]
+  si ($page >= 0 et $page < $nb) {
+    $mot_idx = $page ÷ 64
+    $bit = $page % 64
+    $base = mp_base_bitmap(m)
+    $mot = m[$base + $mot_idx]
+    $bitval = ($mot ÷ (2 ^ $bit)) % 2
+    si ($bitval == 1) {
+      $r = mp_set($r, $base + $mot_idx, $mot - (2 ^ $bit))
+      $r = mp_set($r, 2, m[2] + 1)
+      $r = mp_set($r, 3, m[3] - 1)
+      $r = mp_set($r, 4, 0)
+    } sinon {
+      $r = mp_set($r, 4, -1)
+    }
+  } sinon {
+    $r = mp_set($r, 4, -1)
+  }
+  retour $r
+}
+
+fn memoire_physique_utilisation(m: liste<entier>) -> entier {
+  si (m[0] == 0) { retour 0 }
+  retour m[3] * 100 ÷ m[0]
+}

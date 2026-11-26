@@ -1,0 +1,23 @@
+# Thorn — prototype jouet « P ⊆ NP » (À ACCEPTER par le pilote).
+#
+# Modèle jouet : une entrée est un Nat ; D : Nat -> Nat est un décideur
+# (0 = accepte) ; C : Nat -> Nat fournit un certificat. Le vérificateur jouet
+# est V(w, c) = D w + c : il accepte quand D w + C w = C w.
+#
+# Si D accepte tout (hP), alors pour tout w, D w + C w = C w.
+# C'est l'inclusion FACILE, jouée en .thn et vérifiée par le noyau Thorn.
+# Preuve : congr_plus_l (D w) 0 (C w) (hP w) donne D w + C w = 0 + C w,
+# puis plus_0_l (C w) donne 0 + C w = C w, et trans compose les deux.
+
+théorème p_sous_np_jouet :
+  pour_tout D : Nat -> Nat,
+  pour_tout C : Nat -> Nat,
+  pour_tout hP : (pour_tout w : Nat, D w = 0),
+  pour_tout w : Nat, D w + C w = C w
+preuve
+  introduction D
+  introduction C
+  introduction hP
+  introduction w
+  appliquer trans (congr_plus_l (D w) 0 (C w) (hP w)) (plus_0_l (C w))
+fin

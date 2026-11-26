@@ -1,0 +1,189 @@
+# rose-iso.rose — GÉNÈRE UN ISO 32 BITS AMORÇABLE, EN ROSE PUR
+#
+# Constat daté : 26/11/2026. Génère :
+#   monos/boot-rose.bin  (secteur d'amorçage 512 octets)
+#   monos/kernel-rose.bin (noyau brut, généré en Rose)
+#   monos/floppy.img     (1,44 Mo El Torito)
+# Puis xorriso assemble l'ISO.
+#
+# Secteur d'amorçage (16 bits réel) :
+#   reset disque, lit 4 secteurs (CHS sec2) vers 0x10000, LGDT, PE=1,
+#   saut far 0x08:0x7C30 (trampoline DANS le secteur, en mémoire).
+# Trampoline (32 bits, offset 0x30) : mov eax,0x10000 ; jmp eax.
+# Le noyau généré par os-rose.rose tourne ensuite en 32 bits.
+
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+
+fn u16le(v: entier) -> chaine {
+  $r = octet_brut(v % 256)
+  $r = $r + octet_brut((v ÷ 256) % 256)
+  retour $r
+}
+
+fn u32le(v: entier) -> chaine {
+  $r = octet_brut(v % 256)
+  $r = $r + octet_brut((v ÷ 256) % 256)
+  $r = $r + octet_brut((v ÷ 65536) % 256)
+  $r = $r + octet_brut((v ÷ 16777216) % 256)
+  retour $r
+}
+
+# ── Helpers noyau (identiques à os-rose.rose) ──────────────────────────────
+fn mov_esi(imm: entier) -> chaine {
+  $r = octet_brut(190)
+  $r = $r + octet_brut(imm % 256)
+  $r = $r + octet_brut((imm ÷ 256) % 256)
+  $r = $r + octet_brut((imm ÷ 65536) % 256)
+  $r = $r + octet_brut((imm ÷ 16777216) % 256)
+  retour $r
+}
+
+fn mov_edi(imm: entier) -> chaine {
+  $r = octet_brut(187)
+  $r = $r + octet_brut(imm % 256)
+  $r = $r + octet_brut((imm ÷ 256) % 256)
+  $r = $r + octet_brut((imm ÷ 65536) % 256)
+  $r = $r + octet_brut((imm ÷ 16777216) % 256)
+  retour $r
+}
+
+fn mov_al(c: entier) -> chaine { retour octet_brut(176) + octet_brut($c % 256) }
+
+fn mov_ecx(imm: entier) -> chaine {
+  $r = octet_brut(185)
+  $r = $r + octet_brut(imm % 256)
+  $r = $r + octet_brut((imm ÷ 256) % 256)
+  $r = $r + octet_brut((imm ÷ 65536) % 256)
+  $r = $r + octet_brut((imm ÷ 16777216) % 256)
+  retour $r
+}
+
+fn in_al_imm(port: entier) -> chaine { retour octet_brut(228) + octet_brut($port % 256) }
+fn test_al_imm(mask: entier) -> chaine { retour octet_brut(168) + octet_brut($mask % 256) }
+fn mov_mem_esi_al() -> chaine { retour octet_brut(136) + octet_brut(6) }
+fn mov_mem_esi1_imm(v: entier) -> chaine { retour octet_brut(198) + octet_brut(70) + octet_brut(1) + octet_brut($v % 256) }
+fn add_esi_2() -> chaine { retour octet_brut(131) + octet_brut(198) + octet_brut(2) }
+fn mov_dx(imm: entier) -> chaine { retour octet_brut(186) + octet_brut(imm % 256) + octet_brut((imm ÷ 256) % 256) }
+fn out_dx_al() -> chaine { retour octet_brut(238) }
+
+fn jmp_retour(cible: entier, apres: entier) -> chaine {
+  $off = cible - apres
+  $r = octet_brut(233)
+  $r = $r + octet_brut($off % 256)
+  $r = $r + octet_brut(($off ÷ 256) % 256)
+  $r = $r + octet_brut(($off ÷ 65536) % 256)
+  $r = $r + octet_brut(($off ÷ 16777216) % 256)
+  retour $r
+}
+
+fn je_retour(cible: entier, apres: entier) -> chaine {
+  $off = cible - apres
+  $r = octet_brut(15) + octet_brut(132)
+  $r = $r + octet_brut($off % 256)
+  $r = $r + octet_brut(($off ÷ 256) % 256)
+  $r = $r + octet_brut(($off ÷ 65536) % 256)
+  $r = $r + octet_brut(($off ÷ 16777216) % 256)
+  retour $r
+}
+
+fn halt_loop() -> chaine { retour octet_brut(244) + octet_brut(235) + octet_brut(254) }
+
+fn afficher_car_vga($c: entier) -> chaine {
+  $r = mov_al($c) + mov_mem_esi_al() + mov_mem_esi1_imm(7) + add_esi_2()
+  retour $r
+}
+
+fn ecrire_serie($c: entier) -> chaine { retour mov_al($c) + out_dx_al() }
+
+# ── Génération du noyau brut (entrée 0x10000) ──────────────────────────────
+$entry = 65536       # 0x10000 : adresse ou le boot charge le noyau
+
+# Noyau minimal : sortie SERIE uniquement (COM1 = 0x3F8), boucle clavier PS/2.
+# Aucune ecriture VGA (evite tout conflit avec le mode VESA du bootloader).
+$code = mov_dx(1016)
+$code = $code + ecrire_serie(82) + ecrire_serie(111) + ecrire_serie(115) + ecrire_serie(101) + ecrire_serie(32)
+$code = $code + ecrire_serie(79) + ecrire_serie(83) + ecrire_serie(32) + ecrire_serie(49) + ecrire_serie(46) + ecrire_serie(48)
+$code = $code + ecrire_serie(13) + ecrire_serie(10)
+$code = $code + ecrire_serie(66) + ecrire_serie(111) + ecrire_serie(111) + ecrire_serie(116) + ecrire_serie(105) + ecrire_serie(110) + ecrire_serie(103) + ecrire_serie(32) + ecrire_serie(102) + ecrire_serie(114) + ecrire_serie(111) + ecrire_serie(109) + ecrire_serie(32) + ecrire_serie(82) + ecrire_serie(79) + ecrire_serie(77) + ecrire_serie(46) + ecrire_serie(46) + ecrire_serie(79) + ecrire_serie(75)
+$code = $code + ecrire_serie(13) + ecrire_serie(10)
+
+# Boucle : lit le clavier, echo serie
+$boucle_addr = $entry + longueur($code)
+$code = $code + in_al_imm(100)
+$code = $code + test_al_imm(1)
+$code = $code + je_retour($boucle_addr, $entry + longueur($code) + 6)
+$code = $code + in_al_imm(96)
+$code = $code + mov_dx(1016)
+$code = $code + out_dx_al()
+$code = $code + jmp_retour($boucle_addr, $entry + longueur($code) + 5)
+$code = $code + halt_loop()
+
+$kernel = $code
+ecrire_bytes("/home/clausake/Stefan/monos/kernel-rose.bin", $kernel)
+afficher("kernel-rose.bin : " + chaine(longueur($kernel)) + " octets")
+
+# ── Secteur d'amorçage ────────────────────────────────────────────────────
+fn o16(op: entier) -> chaine { retour octet_brut($op % 256) }
+fn b_mov_ah(v: entier) -> chaine { retour o16(180) + octet_brut($v % 256) }
+fn b_mov_al(v: entier) -> chaine { retour o16(176) + octet_brut($v % 256) }
+fn b_mov_dl(v: entier) -> chaine { retour o16(178) + octet_brut($v % 256) }
+fn b_mov_ch(v: entier) -> chaine { retour o16(181) + octet_brut($v % 256) }
+fn b_mov_cl(v: entier) -> chaine { retour o16(177) + octet_brut($v % 256) }
+fn b_mov_dh(v: entier) -> chaine { retour o16(182) + octet_brut($v % 256) }
+fn b_int13() -> chaine { retour o16(205) + o16(19) }
+fn b_mov_ax(v: entier) -> chaine { retour o16(184) + u16le($v) }
+fn b_mov_es_ax() -> chaine { retour o16(142) + o16(192) }
+fn b_xor_bx() -> chaine { retour o16(49) + o16(219) }
+fn b_cli() -> chaine { retour o16(250) }
+fn b_lgdt(addr: entier) -> chaine { retour o16(15) + o16(1) + o16(22) + u16le($addr) }
+fn b_mov_cr0() -> chaine { retour o16(15) + o16(32) + o16(192) }
+fn b_or_eax() -> chaine { retour o16(102) + o16(131) + o16(200) + o16(1) }
+fn b_mov_cr0_eax() -> chaine { retour o16(15) + o16(34) + o16(192) }
+fn b_mov_ds_ax() -> chaine { retour o16(142) + o16(216) }
+fn b_mov_ss_ax() -> chaine { retour o16(142) + o16(208) }
+
+# Code principal du secteur (offset 0x00 a ~0x2F)
+$sect = b_mov_ah(0) + b_mov_dl(0) + b_int13()
+$sect = $sect + b_mov_ax(4096) + b_mov_es_ax() + b_xor_bx()
+$sect = $sect + b_mov_ah(2) + b_mov_al(4)
+$sect = $sect + b_mov_ch(0) + b_mov_cl(2) + b_mov_dh(0) + b_mov_dl(0) + b_int13()
+$sect = $sect + b_cli()
+$sect = $sect + b_lgdt(31864)          # gdtr a l'offset 0x78 du secteur (0x7C78)
+$sect = $sect + b_mov_cr0() + b_or_eax() + b_mov_cr0_eax()
+# segments laisses tels quels pour le test
+# Saut far 0x08:0x7C30 (trampoline a l'offset 0x30 du secteur)
+$sect = $sect + o16(102) + o16(234) + u32le(65536) + u16le(8)   # 66 EA 0x10000:0x08
+
+# Trampoline a l'offset 0x40 : mov eax,0x10000 ; jmp eax (32 bits, sans prefix 66)
+$tramp = o16(184) + u32le(65536) + mov_al(84) + mov_dx(1016) + out_dx_al() + o16(255) + o16(224)
+
+# On assemble le secteur : code (0..), padding jusqu'a 0x30, trampoline, padding jusqu'a 0x60, GDT, gdtr
+$boot = $sect
+$cur = longueur($boot)
+tant_que ($cur < 64) { $boot = $boot + octet_brut(0); $cur = $cur + 1 }
+$boot = $boot + $tramp
+$cur = longueur($boot)
+tant_que ($cur < 96) { $boot = $boot + octet_brut(0); $cur = $cur + 1 }
+# GDT (offset 0x60, 24 octets)
+$gdt = octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0)
+$gdt = $gdt + u16le(65535) + u16le(0) + octet_brut(0) + octet_brut(154) + octet_brut(207) + octet_brut(0)
+$gdt = $gdt + u16le(65535) + u16le(0) + octet_brut(0) + octet_brut(146) + octet_brut(207) + octet_brut(0)
+$boot = $boot + $gdt
+# gdtr (offset 0x78) : limite 23, base 0x7C60 = 31840
+$boot = $boot + u16le(23) + u32le(31840)
+$cur = longueur($boot)
+tant_que ($cur < 510) { $boot = $boot + octet_brut(0); $cur = $cur + 1 }
+$boot = $boot + octet_brut(85) + octet_brut(170)
+ecrire_bytes("/home/clausake/Stefan/monos/boot-rose.bin", $boot)
+# Le boot32.bin de mon_os64 (infrastructure) sera utilise par le script shell
+afficher("boot-rose.bin : " + chaine(longueur($boot)) + " octets")
+
+# ── Floppy 1,44 Mo ────────────────────────────────────────────────────────
+$floppy = $boot
+$curf = longueur($floppy)
+tant_que ($curf < 512) { $floppy = $floppy + octet_brut(0); $curf = $curf + 1 }
+$floppy = $floppy + $kernel
+$curf = longueur($floppy)
+tant_que ($curf < 1474560) { $floppy = $floppy + octet_brut(0); $curf = $curf + 1 }
+ecrire_bytes("/home/clausake/Stefan/monos/floppy.img", $floppy)
+afficher("floppy.img : " + chaine(longueur($floppy)) + " octets")

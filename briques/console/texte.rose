@@ -1,0 +1,91 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# briques/console/texte.rose — CONSOLE TEXTE VGA + SÉRIE, EN ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique OS : console texte 80×25, double sortie (VGA 0xB8000 + COM1 0x3F8).
+# Aucun nom de matériel codé en dur : la base VGA et le port série viennent
+# du .bud (materiel.regions). La brique ne fait que maintenir un ÉTAT :
+#   [largeur, hauteur, curseur_x, curseur_y, couleur, base_vga, port_serie]
+# et rendre des octets à émettre. L'adaptateur matériel (hors brique) pousse
+# ces octets vers le matériel déclaré dans le .bud.
+#
+# Convention fonctionnelle : chaque opération rend un nouvel état.
+
+# Écriture d'une case.
+fn ct_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $m = $n
+  si ($idx >= $m) { $m = $idx + 1 }
+  $x0 = 0
+  si ($n > 0) { $x0 = l[0] }
+  si ($idx == 0) { $x0 = v }
+  $r = [$x0]
+  $k = 1
+  tant_que ($k < $m) {
+    $x = 0
+    si ($k < $n) { $x = l[$k] }
+    si ($k == $idx) { $x = v }
+    joindre($r, $x)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# Construction.
+fn console_nouvelle(largeur: entier, hauteur: entier,
+                    base_vga: entier, port_serie: entier) -> liste<entier> {
+  $r = [$largeur]
+  joindre($r, $hauteur)
+  joindre($r, 0)    # curseur_x
+  joindre($r, 0)    # curseur_y
+  joindre($r, 7)    # couleur (gris clair sur noir)
+  joindre($r, $base_vga)
+  joindre($r, $port_serie)
+  retour $r
+}
+
+fn console_largeur(c: liste<entier>) -> entier { retour c[0] }
+fn console_hauteur(c: liste<entier>) -> entier { retour c[1] }
+fn console_cx(c: liste<entier>) -> entier { retour c[2] }
+fn console_cy(c: liste<entier>) -> entier { retour c[3] }
+fn console_couleur(c: liste<entier>) -> entier { retour c[4] }
+fn console_base(c: liste<entier>) -> entier { retour c[5] }
+fn console_port(c: liste<entier>) -> entier { retour c[6] }
+
+# Émettre un caractère : rend [nouvel_état, octet_vga, octet_serie].
+# octet_vga = code du caractère (l'adaptateur écrit car + couleur).
+# '\n' (10) avance la ligne et remet cx à 0.
+fn console_ecrire(c: liste<entier>, car: entier) -> liste<entier> {
+  $r = ct_set(c, 0, c[0])
+  $cx = c[2]
+  $cy = c[3]
+  $w = c[0]
+  $h = c[1]
+  si ($car == 10) {
+    $cy = $cy + 1
+    $cx = 0
+  } sinon {
+    $cx = $cx + 1
+    si ($cx >= $w) { $cx = 0; $cy = $cy + 1 }
+  }
+  si ($cy >= $h) { $cy = $h - 1 }
+  $r = ct_set($r, 2, $cx)
+  $r = ct_set($r, 3, $cy)
+  # rendu : [cx, cy] après écriture, puis l'octet
+  $out = [$r[2]]
+  joindre($out, $r[3])
+  joindre($out, $car)
+  retour $out
+}
+
+# Position absolue dans le tampon VGA (octet) pour (x,y).
+fn console_offset(c: liste<entier>, x: entier, y: entier) -> entier {
+  retour (y * c[0] + x) * 2
+}
+
+# Effacer l'écran : rend un état remis à zéro.
+fn console_effacer(c: liste<entier>) -> liste<entier> {
+  $r = ct_set(c, 2, 0)
+  $r = ct_set($r, 3, 0)
+  retour $r
+}

@@ -1,0 +1,16 @@
+# Thorn — certificat jouet vérifié (À ACCEPTER par le pilote).
+#
+# « On exhibe un certificat et le vérificateur le contrôle. »
+# Ici le certificat est le nombre 0 : 0 + 0 = 0 se prouve par réflexivité.
+# La forme générale 0 + n = n utilise plus_0_l, une constante de SIGNATURE :
+# c'est un axiome assumé par Thorn, pas un théorème démontré from scratch.
+
+théorème certificat_zero : 0 + 0 = 0
+preuve reflexivite
+fin
+
+théorème certificat_general : pour_tout n : Nat, 0 + n = n
+preuve
+  introduction n
+  appliquer plus_0_l n
+fin

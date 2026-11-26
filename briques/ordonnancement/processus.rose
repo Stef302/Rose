@@ -1,0 +1,101 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# briques/ordonnancement/processus.rose — ORDONNANCEUR COOPÉRATIF, ROSE PUR
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Brique OS : table de processus + ordonnanceur round-robin. Aucun nom de
+# noyau, aucun appel système, aucun registre. L'état est une liste d'entiers :
+#   [nb_processus, processus_courant, nb_total_crees, nb_total_termines]
+# puis, pour chaque processus (6 entiers) :
+#   [pid, etat, priorite, temps_cpu, temps_restant, empreinte_nom]
+#   etat : 0 = prêt, 1 = en cours, 2 = terminé, 3 = bloqué
+
+fn po_set(l: liste<entier>, idx: entier, v: entier) -> liste<entier> {
+  $n = longueur(l)
+  $m = $n
+  si ($idx >= $m) { $m = $idx + 1 }
+  $x0 = 0
+  si ($n > 0) { $x0 = l[0] }
+  si ($idx == 0) { $x0 = v }
+  $r = [$x0]
+  $k = 1
+  tant_que ($k < $m) {
+    $x = 0
+    si ($k < $n) { $x = l[$k] }
+    si ($k == $idx) { $x = v }
+    joindre($r, $x)
+    $k = $k + 1
+  }
+  retour $r
+}
+
+fn ordonnanceur_nouveau() -> liste<entier> {
+  $r = [0]
+  joindre($r, -1)
+  joindre($r, 0)
+  joindre($r, 0)
+  retour $r
+}
+
+fn ord_nb(o: liste<entier>) -> entier { retour o[0] }
+fn ord_courant(o: liste<entier>) -> entier { retour o[1] }
+
+# Index de base d'un processus dans la table.
+fn ord_base(pid_index: entier) -> entier { retour 4 + 6 * $pid_index }
+
+fn ordonnanceur_creer(o: liste<entier>, priorite: entier, empreinte: entier) -> liste<entier> {
+  $r = po_set(o, 0, o[0] + 1)
+  $r = po_set($r, 2, o[2] + 1)
+  $idx = o[0]
+  $base = ord_base($idx)
+  $r = po_set($r, $base, $idx)            # pid = index
+  $r = po_set($r, $base + 1, 0)           # prêt
+  $r = po_set($r, $base + 2, $priorite)
+  $r = po_set($r, $base + 3, 0)           # temps_cpu
+  $r = po_set($r, $base + 4, 10)          # temps_restant (quantum)
+  $r = po_set($r, $base + 5, $empreinte)
+  si ($r[1] < 0) { $r = po_set($r, 1, 0) }
+  retour $r
+}
+
+# Round-robin : passe au processus prêt suivant.
+fn ordonnanceur_suivant(o: liste<entier>) -> liste<entier> {
+  $r = po_set(o, o[1], o[1])   # noop pour garder la forme
+  $nb = o[0]
+  si ($nb == 0) { retour $r }
+  $cur = o[1]
+  $tentatives = 0
+  $trouve = -1
+  tant_que ($tentatives < $nb et $trouve < 0) {
+    $cur = ($cur + 1) % $nb
+    $base = ord_base($cur)
+    si ($r[$base + 1] == 0) { $trouve = $cur }
+    $tentatives = $tentatives + 1
+  }
+  si ($trouve >= 0) {
+    # marquer l'ancien comme prêt, le nouveau comme en cours
+    $ancien = o[1]
+    si ($ancien >= 0 et $ancien < $nb) {
+      $b = ord_base($ancien)
+      $r = po_set($r, $b + 1, 0)
+    }
+    $b2 = ord_base($trouve)
+    $r = po_set($r, $b2 + 1, 1)
+    $r = po_set($r, 1, $trouve)
+  }
+  retour $r
+}
+
+fn ordonnanceur_terminer(o: liste<entier>, pid_index: entier) -> liste<entier> {
+  $r = po_set(o, 3, o[3] + 1)
+  $base = ord_base($pid_index)
+  $r = po_set($r, $base + 1, 2)   # terminé
+  retour $r
+}
+
+fn ordonnanceur_pid(o: liste<entier>, pid_index: entier) -> entier {
+  retour o[ord_base($pid_index)]
+}
+
+fn ordonnanceur_etat(o: liste<entier>, pid_index: entier) -> entier {
+  retour o[ord_base($pid_index) + 1]
+}

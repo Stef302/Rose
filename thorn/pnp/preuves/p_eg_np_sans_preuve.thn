@@ -1,0 +1,12 @@
+# Thorn — « P = NP » sans preuve (À REFUSER par le pilote, rc=1 attendu).
+#
+# Caricature : on affirme que deux propositions différent (P et NP) sont
+# égales, puis on tente la réflexivité. Les deux membres ne sont pas
+# convertibles : Thorn ne fabrique PAS de preuve à partir de rien.
+# Ce n'est PAS un résultat sur le vrai P vs NP : c'est juste le refus
+# d'une affirmation non justifiée.
+
+théorème p_eg_np_sans_preuve :
+  (pour_tout n : Nat, 0 + n = n) = (pour_tout n : Nat, n + 0 = n)
+preuve reflexivite
+fin

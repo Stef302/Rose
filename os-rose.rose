@@ -1,0 +1,277 @@
+# os-rose.rose — NOYAU AMORÇABLE 100 % ROSE (i386, multiboot v1)
+#
+# Constat daté : 26/11/2026. Programme Rose qui génère un ELF32 i386
+# amorçable par qemu-system-x86_64 -kernel. Aucun assembleur, aucun linker,
+# aucun compilateur externe : l'image est écrite octet par octet par ce
+# programme Rose via `ecrire_bytes` + `octet_brut`.
+#
+# Le noyau efface l'écran VGA, affiche une bannière (VGA + série), puis entre
+# dans une boucle de lecture clavier PS/2 avec echo sur le port série COM1.
+# Tous les sauts sont relatifs 32-bit ; aucun saut vers l'avant n'est utilisé.
+#
+# Lancement :
+#   rose os-rose.rose
+#   qemu-system-x86_64 -kernel /tmp/os-rose.elf -nographic
+
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+
+fn u16le(v: entier) -> chaine {
+  $r = octet_brut(v % 256)
+  $r = $r + octet_brut((v ÷ 256) % 256)
+  retour $r
+}
+
+fn u32le(v: entier) -> chaine {
+  $r = octet_brut(v % 256)
+  $r = $r + octet_brut((v ÷ 256) % 256)
+  $r = $r + octet_brut((v ÷ 65536) % 256)
+  $r = $r + octet_brut((v ÷ 16777216) % 256)
+  retour $r
+}
+
+# ── Générateurs d'instructions i386 ─────────────────────────────────────────
+
+fn mov_esi(imm: entier) -> chaine {
+  $r = octet_brut(190)
+  $r = $r + octet_brut(imm % 256)
+  $r = $r + octet_brut((imm ÷ 256) % 256)
+  $r = $r + octet_brut((imm ÷ 65536) % 256)
+  $r = $r + octet_brut((imm ÷ 16777216) % 256)
+  retour $r
+}
+
+fn mov_edi(imm: entier) -> chaine {
+  $r = octet_brut(187)
+  $r = $r + octet_brut(imm % 256)
+  $r = $r + octet_brut((imm ÷ 256) % 256)
+  $r = $r + octet_brut((imm ÷ 65536) % 256)
+  $r = $r + octet_brut((imm ÷ 16777216) % 256)
+  retour $r
+}
+
+fn mov_al(c: entier) -> chaine { retour octet_brut(176) + octet_brut($c % 256) }
+
+fn mov_ecx(imm: entier) -> chaine {
+  $r = octet_brut(185)
+  $r = $r + octet_brut(imm % 256)
+  $r = $r + octet_brut((imm ÷ 256) % 256)
+  $r = $r + octet_brut((imm ÷ 65536) % 256)
+  $r = $r + octet_brut((imm ÷ 16777216) % 256)
+  retour $r
+}
+
+fn in_al_imm(port: entier) -> chaine { retour octet_brut(228) + octet_brut($port % 256) }
+
+fn test_al_imm(mask: entier) -> chaine { retour octet_brut(168) + octet_brut($mask % 256) }
+
+fn mov_mem_esi_al() -> chaine { retour octet_brut(136) + octet_brut(6) }
+
+fn mov_mem_esi1_imm(v: entier) -> chaine { retour octet_brut(198) + octet_brut(70) + octet_brut(1) + octet_brut($v % 256) }
+
+fn add_esi_2() -> chaine { retour octet_brut(131) + octet_brut(198) + octet_brut(2) }
+
+fn mov_dx(imm: entier) -> chaine { retour octet_brut(186) + octet_brut(imm % 256) + octet_brut((imm ÷ 256) % 256) }
+
+fn out_dx_al() -> chaine { retour octet_brut(238) }
+
+# jmp rel32 : cible doit être < adresse courante (saut arrière)
+# apres = adresse de l'instruction suivante (après le jmp)
+fn jmp_retour(cible: entier, apres: entier) -> chaine {
+  $off = cible - apres
+  $r = octet_brut(233)
+  $r = $r + octet_brut($off % 256)
+  $r = $r + octet_brut(($off ÷ 256) % 256)
+  $r = $r + octet_brut(($off ÷ 65536) % 256)
+  $r = $r + octet_brut(($off ÷ 16777216) % 256)
+  retour $r
+}
+
+# je rel32 : cible < adresse courante
+# apres = adresse de l'instruction suivante (après le je)
+fn je_retour(cible: entier, apres: entier) -> chaine {
+  $off = cible - apres
+  $r = octet_brut(15) + octet_brut(132)
+  $r = $r + octet_brut($off % 256)
+  $r = $r + octet_brut(($off ÷ 256) % 256)
+  $r = $r + octet_brut(($off ÷ 65536) % 256)
+  $r = $r + octet_brut(($off ÷ 16777216) % 256)
+  retour $r
+}
+
+fn halt_loop() -> chaine {
+  retour octet_brut(244) + octet_brut(235) + octet_brut(254)
+}
+
+# ── Afficher un caractère sur VGA (car + attribut 0x07) puis avancer esi ──
+fn afficher_car_vga($c: entier) -> chaine {
+  $r = mov_al($c)
+  $r = $r + mov_mem_esi_al()
+  $r = $r + mov_mem_esi1_imm(7)
+  $r = $r + add_esi_2()
+  retour $r
+}
+
+# ── Génération du code ─────────────────────────────────────────────────────
+$base_vaddr = 1048576       # 0x100000
+$code_offset = 4096         # 0x1000
+$load_addr = $base_vaddr + $code_offset       # 0x101000 (début de la section chargée)
+$entry = $load_addr + 32                       # 0x101020 (début du code, après header multiboot)
+
+$code = mov_edi(753664)                    # edi = 0xB8000
+$code = $code + octet_brut(176) + octet_brut(32) + octet_brut(7)  # ax = 0x0720 (espace+gris)
+$code = $code + mov_ecx(2000)               # 2000 mots
+$code = $code + octet_brut(243) + octet_brut(171)   # rep stosw : efface écran
+
+$code = $code + mov_esi(753664)             # esi = 0xB8000 (curseur VGA)
+
+# --- Bannière VGA (pas de boucle avec saut : code inline) ---
+$code = $code + afficher_car_vga(82)   # R
+$code = $code + afficher_car_vga(111)  # o
+$code = $code + afficher_car_vga(115)  # s
+$code = $code + afficher_car_vga(101)  # e
+$code = $code + afficher_car_vga(32)   #  
+$code = $code + afficher_car_vga(79)   # O
+$code = $code + afficher_car_vga(83)   # S
+$code = $code + afficher_car_vga(32)
+$code = $code + afficher_car_vga(49)   # 1
+$code = $code + afficher_car_vga(46)   # .
+$code = $code + afficher_car_vga(48)   # 0
+$code = $code + afficher_car_vga(32)
+$code = $code + afficher_car_vga(45)   # -
+$code = $code + afficher_car_vga(32)
+$code = $code + afficher_car_vga(49)   # 1
+$code = $code + afficher_car_vga(48)   # 0
+$code = $code + afficher_car_vga(48)   # 0
+$code = $code + afficher_car_vga(37)   # %
+$code = $code + afficher_car_vga(82)   # R
+$code = $code + afficher_car_vga(111)  # o
+$code = $code + afficher_car_vga(115)  # s
+$code = $code + afficher_car_vga(101)  # e
+# nouvelle ligne : avancer au début de la ligne suivante (col=0, donc add 160)
+$code = $code + octet_brut(131) + octet_brut(198) + octet_brut(160)   # add esi, 160
+
+$code = $code + afficher_car_vga(78)   # N
+$code = $code + afficher_car_vga(111)  # o
+$code = $code + afficher_car_vga(121)  # y
+$code = $code + afficher_car_vga(110)  # n
+$code = $code + afficher_car_vga(97)   # a
+$code = $code + afficher_car_vga(117)  # u
+$code = $code + afficher_car_vga(108)  # l
+$code = $code + afficher_car_vga(101)  # e
+$code = $code + afficher_car_vga(32)
+$code = $code + afficher_car_vga(97)   # a
+$code = $code + afficher_car_vga(109)  # m
+$code = $code + afficher_car_vga(111)  # o
+$code = $code + afficher_car_vga(114)  # r
+$code = $code + afficher_car_vga(102)  # f
+$code = $code + afficher_car_vga(97)   # a
+$code = $code + afficher_car_vga(102)  # f
+$code = $code + afficher_car_vga(101)  # e
+$code = $code + afficher_car_vga(32)
+$code = $code + afficher_car_vga(111)  # o
+$code = $code + afficher_car_vga(98)   # b
+$code = $code + afficher_car_vga(108)  # l
+$code = $code + afficher_car_vga(105)  # i
+$code = $code + afficher_car_vga(118)  # v
+$code = $code + afficher_car_vga(101)  # e
+$code = $code + afficher_car_vga(32)
+$code = $code + afficher_car_vga(112)  # a
+$code = $code + afficher_car_vga(114)  # r
+$code = $code + afficher_car_vga(101)  # e
+$code = $code + afficher_car_vga(32)
+$code = $code + afficher_car_vga(82)   # R
+$code = $code + afficher_car_vga(111)  # o
+$code = $code + afficher_car_vga(115)  # s
+$code = $code + afficher_car_vga(101)  # e
+$code = $code + octet_brut(131) + octet_brut(198) + octet_brut(160)   # add esi, 160
+
+# --- Bannière série (COM1) ---
+$code = $code + mov_dx(1016)              # dx = 0x3F8
+fn ecrire_serie($c: entier) -> chaine {
+  retour mov_al($c) + out_dx_al()
+}
+$code = $code + ecrire_serie(82)   # R
+$code = $code + ecrire_serie(111)  # o
+$code = $code + ecrire_serie(115)  # s
+$code = $code + ecrire_serie(101)  # e
+$code = $code + ecrire_serie(32)
+$code = $code + ecrire_serie(79)   # O
+$code = $code + ecrire_serie(83)   # S
+$code = $code + ecrire_serie(32)
+$code = $code + ecrire_serie(49)   # 1
+$code = $code + ecrire_serie(46)   # .
+$code = $code + ecrire_serie(48)   # 0
+$code = $code + ecrire_serie(32)
+$code = $code + ecrire_serie(45)   # -
+$code = $code + ecrire_serie(32)
+$code = $code + ecrire_serie(49)   # 1
+$code = $code + ecrire_serie(48)   # 0
+$code = $code + ecrire_serie(48)   # 0
+$code = $code + ecrire_serie(37)   # %
+$code = $code + ecrire_serie(82)   # R
+$code = $code + ecrire_serie(111)  # o
+$code = $code + ecrire_serie(115)  # s
+$code = $code + ecrire_serie(101)  # e
+$code = $code + ecrire_serie(13)   # CR
+$code = $code + ecrire_serie(10)   # LF
+
+# --- Boucle principale : lecture clavier PS/2 + echo série ---
+# Adresse de la boucle (tous les sauts sont vers l'arrière)
+$boucle_addr = $entry + longueur($code)
+
+# in al, 0x64
+$code = $code + in_al_imm(100)
+# test al, 1
+$code = $code + test_al_imm(1)
+# je boucle (si pas de donnée, ZF=1 -> reboucle)
+$code = $code + je_retour($boucle_addr, $entry + longueur($code) + 6)
+# in al, 0x60
+$code = $code + in_al_imm(96)
+# mov dx, 0x3F8
+$code = $code + mov_dx(1016)
+# out dx, al
+$code = $code + out_dx_al()
+# jmp boucle
+$code = $code + jmp_retour($boucle_addr, $entry + longueur($code) + 5)
+
+# --- Fin ---
+$code = $code + halt_loop()
+
+$code_len = longueur($code)
+
+# ── Multiboot v1 header (32 octets) ─────────────────────────────────────────
+$mb_magic = 464367618    # 0x1BADB002
+$mb_flags = 65536         # 0x10000
+$mb_checksum = 0 - ($mb_magic + $mb_flags)
+$mb_header_addr = $base_vaddr + $code_offset
+$mb_load_addr = $mb_header_addr
+$code_start = $code_offset + 32
+$mb_load_end = $mb_header_addr + 32 + $code_len
+$mb_bss_end = $mb_load_end
+$mb_entry = $base_vaddr + $code_start
+$mb = u32le($mb_magic) + u32le($mb_flags) + u32le($mb_checksum)
+$mb = $mb + u32le($mb_header_addr) + u32le($mb_load_addr)
+$mb = $mb + u32le($mb_load_end) + u32le($mb_bss_end) + u32le($mb_entry)
+
+# ── ELF32 header (52 octets) ────────────────────────────────────────────────
+$elf = octet_brut(127) + "ELF"
+$elf = $elf + octet_brut(1) + octet_brut(1) + octet_brut(1) + octet_brut(0) + octet_brut(0)
+$z = 0
+tant_que ($z < 7) { $elf = $elf + octet_brut(0); $z = $z + 1 }
+$elf = $elf + u16le(2) + u16le(3) + u32le(1) + u32le($entry) + u32le(52) + u32le(0) + u32le(0) + u16le(52) + u16le(32) + u16le(1) + u16le(0) + u16le(0) + u16le(0)
+
+# Program header (32 octets)
+$ph = u32le(1) + u32le($code_offset) + u32le($load_addr) + u32le($load_addr) + u32le(32 + $code_len) + u32le(32 + $code_len) + u32le(7) + u32le(4096)
+
+# ── Assemblage ──────────────────────────────────────────────────────────────
+$img = $elf + $ph
+$cur = longueur($img)
+tant_que ($cur < $code_offset) {
+  $img = $img + octet_brut(0)
+  $cur = $cur + 1
+}
+$img = $img + $mb + $code
+
+ecrire_bytes("/tmp/os-rose.elf", $img)
+afficher("os-rose.elf ecrit : " + chaine(longueur($img)) + " octets, entree 0x" + chaine($entry))
+afficher("noyau : " + chaine($code_len) + " octets de code")

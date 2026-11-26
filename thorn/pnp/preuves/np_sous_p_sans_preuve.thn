@@ -1,0 +1,17 @@
+# Thorn — direction dure « NP ⊆ P » (À REFUSER par le pilote, rc=1 attendu).
+#
+# Énoncé jouet : si D w + C w = C w pour tout w, alors D w = 0 pour tout w.
+# C'est VRAI en arithmétique de Peano (annulation de l'addition à droite),
+# mais les tactiques actuelles de Thorn ne savent pas le démontrer :
+# il n'existe pas de lemme d'annulation dans la table des symboles du pilote.
+# La réflexivité échoue donc sur le but Pi.
+#
+# Moralité : un checkur de preuves ne remplace pas la preuve manquante.
+
+théorème np_sous_p_sans_preuve :
+  pour_tout D : Nat -> Nat,
+  pour_tout C : Nat -> Nat,
+  pour_tout hV : (pour_tout w : Nat, D w + C w = C w),
+  pour_tout w : Nat, D w = 0
+preuve reflexivite
+fin

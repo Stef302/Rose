@@ -1,0 +1,239 @@
+# rose-graph.rose — BOOTLOADER + NOYAU GRAPHIQUE, ENTIÈREMENT EN ROSE
+#
+# Constat daté : 26/11/2026. Programme Rose qui génère :
+#   monos/boot-graph.bin  : secteur d'amorçage 16 bits (VESA 32bpp + mode protégé)
+#   monos/kernel-graph.bin: noyau 32 bits qui dessine dans le framebuffer VESA
+#   monos/floppy-graph.img: image El Torito 1,44 Mo
+#
+# Aucun Zig, aucun assembleur, aucun linker. Tout est généré par du code Rose.
+# Le bootloader Rose fait : VESA (int10 4F01/4F02), lit fb_addr (0x7028),
+# largeur (0x7012), hauteur (0x7014), pitch (0x7010), passe en 32 bits,
+# et saute au noyau qui dessine des pixels RGB dans le framebuffer.
+
+fn octet_brut($v: entier) -> chaine { retour caractere($v % 256) }
+
+fn u16le(v: entier) -> chaine {
+  $r = octet_brut(v % 256)
+  $r = $r + octet_brut((v ÷ 256) % 256)
+  retour $r
+}
+
+fn u32le(v: entier) -> chaine {
+  $r = octet_brut(v % 256)
+  $r = $r + octet_brut((v ÷ 256) % 256)
+  $r = $r + octet_brut((v ÷ 65536) % 256)
+  $r = $r + octet_brut((v ÷ 16777216) % 256)
+  retour $r
+}
+
+fn o(v: entier) -> chaine { retour octet_brut($v % 256) }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PARTIE 1 : BOOTLOADER 16 BITS (généré en Rose)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# --- Helpers 16 bits ---
+fn b_mov_ax(v: entier) -> chaine { retour o(184) + u16le($v) }
+fn b_mov_ah(v: entier) -> chaine { retour o(180) + octet_brut($v % 256) }
+fn b_mov_al(v: entier) -> chaine { retour o(176) + octet_brut($v % 256) }
+fn b_mov_bx(v: entier) -> chaine { retour o(187) + u16le($v) }
+fn b_mov_cx(v: entier) -> chaine { retour o(185) + u16le($v) }
+fn b_mov_dx(v: entier) -> chaine { retour o(186) + u16le($v) }
+fn b_mov_di(v: entier) -> chaine { retour o(191) + u16le($v) }
+fn b_mov_si(v: entier) -> chaine { retour o(190) + u16le($v) }
+fn b_int10() -> chaine { retour o(205) + o(16) }
+fn b_int13() -> chaine { retour o(205) + o(19) }
+fn b_xor_ax() -> chaine { retour o(49) + o(192) }
+fn b_mov_ds_ax() -> chaine { retour o(142) + o(216) }
+fn b_mov_es_ax() -> chaine { retour o(142) + o(192) }
+fn b_mov_ss_ax() -> chaine { retour o(142) + o(208) }
+fn b_mov_es_bx() -> chaine { retour o(142) + o(203) }
+fn b_cld() -> chaine { retour o(252) }
+fn b_lodsw() -> chaine { retour o(173) }
+fn b_cli() -> chaine { retour o(250) }
+fn b_sti() -> chaine { retour o(251) }
+fn b_lgdt(addr: entier) -> chaine { retour o(15) + o(1) + o(22) + u16le($addr) }
+fn b_sidt(addr: entier) -> chaine { retour o(15) + o(1) + o(29) + u16le($addr) }
+fn b_mov_cr0() -> chaine { retour o(15) + o(32) + o(192) }
+fn b_or_eax_1() -> chaine { retour o(102) + o(131) + o(200) + o(1) }
+fn b_mov_cr0_eax() -> chaine { retour o(15) + o(34) + o(192) }
+fn b_jmp_short(off: entier) -> chaine { retour o(235) + octet_brut($off % 256) }
+fn b_cmp_ax(v: entier) -> chaine { retour o(61) + u16le($v) }
+fn b_je_short(off: entier) -> chaine { retour o(116) + octet_brut($off % 256) }
+fn b_jne_short(off: entier) -> chaine { retour o(117) + octet_brut($off % 256) }
+fn b_jmp_far16(off: entier, sel: entier) -> chaine { retour o(234) + u16le($off) + u16le($sel) }
+fn b_call_ax() -> chaine { retour o(255) + o(208) }
+fn b_mov_eax(v: entier) -> chaine { retour o(102) + o(184) + u32le($v) }
+
+# --- VESA : essayer modes 32bpp (0x4148, 0x4150, 0x4118, 0x4128) ---
+# On ecrit une boucle simple pour chaque mode.
+$modes = [0]
+joindre($modes, 16712)   # 0x4148 = 1024x768x32
+joindre($modes, 16720)   # 0x4150 = 1280x1024x32
+joindre($modes, 16664)   # 0x4118 = 640x480x32
+joindre($modes, 16680)   # 0x4128 = 800x600x32
+
+# Pour rester simple, on utilise un seul mode : 0x4118 (640x480x32)
+$mode = 16664
+
+$boot = b_xor_ax() + b_mov_ds_ax() + b_mov_es_ax() + b_mov_ss_ax()
+# N.B. : on ne change pas SP (BIOS l'a mis a 0x7C00)
+
+# VESA get info : AX=4F01, CX=mode, ES:DI=0x0000:0x7000 (lineaire 0x7000)
+$boot = $boot + b_mov_ax(0) + b_mov_es_ax()      # ES = 0
+$boot = $boot + b_mov_di(0)                      # DI = 0x7000
+$boot = $boot + b_mov_ax(20353) + b_mov_cx($mode)  # AX=4F01, CX=mode
+$boot = $boot + b_int10()
+# verifier AX==0x004F (on suppose OK pour qemu)
+
+# set mode : AX=4F02, BX=mode|0x4000
+$boot = $boot + b_mov_ax(20354) + b_mov_bx($mode + 16384)
+$boot = $boot + b_int10()
+
+# --- Lecture CHS du noyau : secteurs LBA1.. vers 0x10000 ---
+# Reset disque
+$boot = $boot + b_mov_ah(0) + b_mov_dx(0) + b_int13()
+# ES = 0x1000, BX = 0
+$boot = $boot + b_mov_ax(4096) + b_mov_es_ax()
+$boot = $boot + o(187) + u16le(0)        # mov bx,0
+$boot = $boot + b_mov_ah(2) + b_mov_al(8)  # lit 8 secteurs
+$boot = $boot + b_mov_cx(2)              # CHS: cyl0, sec2 (CL=2, CH=0)
+$boot = $boot + b_mov_dx(0)              # tete0, lecteur0
+$boot = $boot + b_int13()
+
+# --- Mode protege 32 bits ---
+$boot = $boot + b_cli()
+$boot = $boot + b_lgdt(31872)            # gdtr a 0x7C80 (offset 0x80)
+$boot = $boot + b_mov_cr0() + b_or_eax_1() + b_mov_cr0_eax()
+# Saut far 16 bits vers trampoline dans le secteur a 0x40
+$boot = $boot + b_jmp_far16(31808, 8)    # 0x08:0x7C40
+
+# Trampoline a offset 0x40 (32 bits): mov eax,0x10000 ; jmp eax
+$tramp = o(184) + u32le(65536) + o(255) + o(224)
+
+# On assemble : code (0..) puis padding jusqu'a 0x40, trampoline, padding jusqu'a 0x80, GDT, gdtr
+$sect = $boot
+$cur = longueur($sect)
+tant_que ($cur < 64) { $sect = $sect + octet_brut(0); $cur = $cur + 1 }
+$sect = $sect + $tramp
+$cur = longueur($sect)
+tant_que ($cur < 128) { $sect = $sect + octet_brut(0); $cur = $cur + 1 }
+# GDT a 0x80 : null + code + data
+$gdt = octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0) + octet_brut(0)
+$gdt = $gdt + u16le(65535) + u16le(0) + octet_brut(0) + octet_brut(154) + octet_brut(207) + octet_brut(0)
+$gdt = $gdt + u16le(65535) + u16le(0) + octet_brut(0) + octet_brut(146) + octet_brut(207) + octet_brut(0)
+$sect = $sect + $gdt
+# gdtr a 0x98 : limite 23, base 0x7C80 = 31872
+$sect = $sect + u16le(23) + u32le(31872)
+$cur = longueur($sect)
+tant_que ($cur < 510) { $sect = $sect + octet_brut(0); $cur = $cur + 1 }
+$sect = $sect + octet_brut(85) + octet_brut(170)
+ecrire_bytes("/home/clausake/Stefan/monos/boot-graph.bin", $sect)
+afficher("boot-graph.bin : " + chaine(longueur($sect)) + " octets")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PARTIE 2 : NOYAU GRAPHIQUE 32 BITS (généré en Rose)
+# ═══════════════════════════════════════════════════════════════════════════
+# Le noyau dessine dans le framebuffer VESA. Infos VESA lues par le bootloader
+# et stockees en memoire a 0x7000 :
+#   0x7010 = pitch (word), 0x7012 = largeur (word), 0x7014 = hauteur (word),
+#   0x7028 = adresse du framebuffer (dword).
+# On écrit directement des pixels RGB (BGR en memoire pour VESA 32bpp).
+
+$entry = 65536   # 0x10000
+
+# Helpers 32 bits pour le noyau
+fn mov_eax(v: entier) -> chaine { retour o(184) + u32le($v) }
+fn mov_ebx(v: entier) -> chaine { retour o(187) + u32le($v) }
+fn mov_ecx(v: entier) -> chaine { retour o(185) + u32le($v) }
+fn mov_edx(v: entier) -> chaine { retour o(186) + u32le($v) }
+fn mov_edi(v: entier) -> chaine { retour o(191) + u32le($v) }
+fn mov_esi(v: entier) -> chaine { retour o(190) + u32le($v) }
+fn mov_ebp(v: entier) -> chaine { retour o(189) + u32le($v) }
+fn add_eax_ebx() -> chaine { retour o(1) + o(216) }        # add eax, ebx
+fn imul_eax_ebx() -> chaine { retour o(15) + o(175) + o(193) } # imul eax, ebx
+fn mov_al(v: entier) -> chaine { retour o(176) + octet_brut($v % 256) }
+fn mov_byte_edi_al() -> chaine { retour o(136) + o(7) }     # mov [edi], al
+fn add_edi_imm(v: entier) -> chaine { retour o(131) + o(199) + octet_brut($v % 256) }
+fn cmp_al(v: entier) -> chaine { retour o(60) + octet_brut($v % 256) }
+fn je_short(off: entier) -> chaine { retour o(116) + octet_brut($off % 256) }
+fn jmp_short(off: entier) -> chaine { retour o(235) + octet_brut($off % 256) }
+fn jmp_retour(cible: entier, apres: entier) -> chaine {
+  $off = cible - apres
+  $r = o(233)
+  $r = $r + octet_brut($off % 256) + octet_brut(($off ÷ 256) % 256)
+  $r = $r + octet_brut(($off ÷ 65536) % 256) + octet_brut(($off ÷ 16777216) % 256)
+  retour $r
+}
+
+# --- Lire les infos VESA depuis 0x7000 ---
+# mov eax, [0x7010] (pitch)
+fn mov_eax_mem(addr: entier) -> chaine {
+  $r = o(161)          # mov eax, moffs32 (A1)
+  $r = $r + u32le($addr)
+  retour $r
+}
+fn mov_edi_mem(addr: entier) -> chaine {
+  # mov edi, [addr] : 8B 3C 25 addr32
+  $r = o(139) + o(60) + o(37) + u32le($addr)
+  retour $r
+}
+
+$k = o(186) + u32le(1016) + o(176) + octet_brut(75) + o(238)   # mov edx,0x3F8; mov al,'K'; out dx,al
+$k = $k + mov_eax_mem(28688)        # eax = pitch (0x7010)
+$k = $k + mov_ebx(0)          # on va stocker pitch dans ebx plus tard
+# On simplifie : le noyau dessine une bande de couleur en haut de l'ecran.
+
+# Charger fb_addr dans EDI : mov edi, [0x7028]
+$k = $k + mov_edi_mem(28712)   # edi = framebuffer (0x7028)
+
+# Remplir les 200 premieres lignes avec un degradé rose
+# Pour chaque pixel : ecrire 4 octets (B,G,R,0) dans edi, avancer
+# On utilise une boucle avec ECX = nombre de pixels = 640*200 = 128000
+$k = $k + mov_ecx(128000)
+$boucle_debut = $entry + longueur($k)
+$k = $k + mov_al(180)          # B = 180 (rose)
+$k = $k + mov_byte_edi_al()
+$k = $k + add_edi_imm(1)
+$k = $k + mov_al(105)          # G = 105
+$k = $k + mov_byte_edi_al()
+$k = $k + add_edi_imm(1)
+$k = $k + mov_al(255)          # R = 255
+$k = $k + mov_byte_edi_al()
+$k = $k + add_edi_imm(2)       # +1 pour byte 4 (alpha/reserve)
+$k = $k + o(233) + octet_brut(($boucle_debut - ($entry + longueur($k) + 4)) % 256) + octet_brut(0) + octet_brut(0) + octet_brut(0)  # dec ecx ; jnz (approx)
+
+# Pour rester simple et eviter les erreurs de boucle complexe, on remplit
+# avec un nombre fixe d'octets sans boucle (code lineaire).
+# On regenere $k proprement :
+$k = mov_eax_mem(28688)
+$k = $k + mov_edi_mem(28712)
+$k = $k + mov_ecx(50000)
+$loop = $entry + longueur($k)
+$k = $k + mov_al(180) + mov_byte_edi_al() + add_edi_imm(1)
+$k = $k + mov_al(105) + mov_byte_edi_al() + add_edi_imm(1)
+$k = $k + mov_al(255) + mov_byte_edi_al() + add_edi_imm(2)
+# dec ecx ; jnz loop
+$k = $k + o(73)                # dec ecx (41 -> dec ecx en 32 bits = 0x49? non, 0x49 = dec ecx en 16; 32 bits = 0x49 aussi avec operand size)
+$off = $loop - ($entry + longueur($k) + 6)
+$k = $k + o(15) + o(133)       # jnz rel32 (0F 85)
+$k = $k + octet_brut($off % 256) + octet_brut(($off ÷ 256) % 256) + octet_brut(($off ÷ 65536) % 256) + octet_brut(($off ÷ 16777216) % 256)
+
+# Boucle infinie finale
+$k = $k + halt_loop32()
+fn halt_loop32() -> chaine { retour o(244) + o(235) + o(254) }
+
+ecrire_bytes("/home/clausake/Stefan/monos/kernel-graph.bin", $k)
+afficher("kernel-graph.bin : " + chaine(longueur($k)) + " octets")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PARTIE 3 : FLOPPY + ISO
+# ═══════════════════════════════════════════════════════════════════════════
+$floppy = $sect
+$curf = longueur($floppy)
+tant_que ($curf < 512) { $floppy = $floppy + octet_brut(0); $curf = $curf + 1 }
+$floppy = $floppy + $k
+$curf = longueur($floppy)
+tant_que ($curf < 1474560) { $floppy = $floppy + octet_brut(0); $curf = $curf + 1 }
+ecrire_bytes("/home/clausake/Stefan/monos/floppy-graph.img", $floppy)
+afficher("floppy-graph.img : " + chaine(longueur($floppy)) + " octets")

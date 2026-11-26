@@ -1,0 +1,207 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# thorn/pnp/pnp.rose — PROTOTYPE JOUET « P = NP ? » (pour le fun)
+# ═══════════════════════════════════════════════════════════════════════════
+# ATTENTION : ceci NE démontre PAS P = NP et NE démontre PAS P ≠ NP.
+# C'est une maquette : on donne un sens jouet aux mots « P » et « NP », on
+# prouve l'inclusion FACILE (P ⊆ NP) avec le vrai noyau de Thorn, puis on
+# montre pourquoi la direction difficile ne se prouve pas par magie.
+#
+# Vérifier : ./rose/rose verif thorn/pnp/pnp.rose
+# Exécuter : ./rose/rose thorn/pnp/pnp.rose
+# ═══════════════════════════════════════════════════════════════════════════
+
+importer "thorn/src/tactiques.rose"
+
+# ── 0. Petits constructeurs de termes (convention : param 0 = sentinelle) ──
+
+fn pnp_nat() -> table {
+  $l = [table()]
+  retour noy_ind("Nat", $l)
+}
+
+fn pnp_bool() -> table {
+  $l = [table()]
+  retour noy_ind("Bool", $l)
+}
+
+fn pnp_vrai_bool() -> table {
+  retour noy_const("true", pnp_bool())
+}
+
+fn pnp_zero() -> table {
+  retour noy_const("zero", pnp_nat())
+}
+
+fn pnp_deux() -> table {
+  retour noy_app(noy_const("succ", noy_pi("n", pnp_nat(), pnp_nat())),
+                 noy_app(noy_const("succ", noy_pi("n", pnp_nat(), pnp_nat())),
+                         pnp_zero()))
+}
+
+fn pnp_eq(a: table, b: table) -> table {
+  $l = [table()]
+  joindre($l, a)
+  joindre($l, b)
+  retour noy_ind("=", $l)
+}
+
+# « existe c : A, Pc » = ind("existe", [var("c"), A, Pc]).
+# Le param 0 (nom du lieur) est ignoré par la synthèse et par l'alpha-équivalence
+# du noyau Thorn ; seuls A et Pc sont contrôlés.
+fn pnp_existe(nom: chaine, dom: table, prop: table) -> table {
+  $l = [noy_var(nom)]
+  joindre($l, dom)
+  joindre($l, prop)
+  retour noy_ind("existe", $l)
+}
+
+# exists_intro : Π(A:type)(P:Πx:A,type)(x:A)(hx:P x), existe x:A, P x
+# C'est une CONSTANTE DE SIGNATURE, exactement comme refl / zero / nat_rec :
+# sa règle est encodée dans son type, et le noyau vérifie chaque application.
+fn pnp_existe_intro() -> table {
+  $P = noy_pi("x", noy_var("A"), noy_type(0))
+  $res = pnp_existe("x", noy_var("A"), noy_app(noy_var("P"), noy_var("x")))
+  $ty = noy_pi("A", noy_type(0),
+          noy_pi("P", $P,
+            noy_pi("x", noy_var("A"),
+              noy_pi("hx", noy_app(noy_var("P"), noy_var("x")), $res))))
+  retour noy_const("existe_intro", $ty)
+}
+
+fn pnp_refl() -> table {
+  $ty = noy_pi("A", noy_type(0),
+          noy_pi("x", noy_var("A"), pnp_eq(noy_var("x"), noy_var("x"))))
+  retour noy_const("refl", $ty)
+}
+
+# Contrôle honnête : verifier() PUIS convertible(type synthétisé, but).
+fn pnp_controle(nom: chaine, but: table, terme: table) -> table {
+  $r = verifier(terme, noy_ctx_vide())
+  $ok = noy_est_ok($r) et convertible(noy_type_res($r), but)
+  $out = table()
+  inserer($out, "nom", nom)
+  inserer($out, "ok", $ok)
+  inserer($out, "code", noy_code($r))
+  inserer($out, "erreur", noy_erreur($r))
+  retour $out
+}
+
+fn pnp_affiche(r: table) {
+  $suffixe = ""
+  si (chaine(r["erreur"]) != "") {
+    $suffixe = "  erreur=" + chaine(r["erreur"])
+  }
+  >> "  " + chaine(r["nom"]) + " : ok=" + chaine(r["ok"]) +
+     "  code=" + chaine(r["code"]) + $suffixe
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. Le modèle jouet
+#   D : Nat -> Bool       un décideur (P)
+#   V : Nat -> Nat -> Bool un vérificateur (NP), V w c = D w (c est ignoré)
+#   P(D)  = ∀ w, D w = true
+#   NP(V) = ∀ w, ∃ c, V w c = true
+# On prouve : ∀ D, P(D) -> NP(lambda w c. D w).
+# C'est VRAI, mais c'est une caricature : ni temps polynomial, ni machine, ni
+# taille d'entrée, ni encoding binaire — Thorn ne sait pas les exprimer ici.
+# ═══════════════════════════════════════════════════════════════════════════
+
+$decideur = noy_pi("w", pnp_nat(), pnp_bool())
+$prop_p = noy_pi("w", pnp_nat(),
+                  pnp_eq(noy_app(noy_var("D"), noy_var("w")), pnp_vrai_bool()))
+$prop_np = noy_pi("w", pnp_nat(),
+                   pnp_existe("c", pnp_nat(),
+                     pnp_eq(noy_app(noy_var("D"), noy_var("w")), pnp_vrai_bool())))
+$but_p_vers_np = noy_pi("D", $decideur,
+                  noy_pi("hP", $prop_p, $prop_np))
+
+# terme : λD. λhP. λw. exists_intro Nat (λc. D w = true) 0 (hP w)
+$predicat = noy_lam("c", pnp_nat(),
+              pnp_eq(noy_app(noy_var("D"), noy_var("w")), pnp_vrai_bool()))
+$certificat = noy_app(noy_app(noy_app(noy_app(pnp_existe_intro(), pnp_nat()),
+                                      $predicat), pnp_zero()),
+                      noy_app(noy_var("hP"), noy_var("w")))
+$terme_p_vers_np = noy_lam("D", $decideur,
+                     noy_lam("hP", $prop_p,
+                       noy_lam("w", pnp_nat(), $certificat)))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. Instance jouet : ∀ c : Nat, ∃ z : Nat, z = c. Le témoin est fourni
+#    explicitement (z := c) et le noyau vérifie la preuve.
+#    NOTE sur Thorn : ind("existe", [nom, A, P]) ne LIE pas `nom` dans P
+#    (c'est une limite du parseur/noyau actuel). Le corps porte donc une
+#    lambda appliquée à une variable DÉJÀ liée par le Π extérieur : c'est
+#    pour ça qu'on écrit (λn. n = c) z et pas directement z = c avec z libre.
+# ═══════════════════════════════════════════════════════════════════════════
+
+$d2 = noy_lam("n", pnp_nat(), pnp_eq(noy_var("n"), noy_var("c")))
+$but_cert = noy_pi("c", pnp_nat(),
+              pnp_existe("z", pnp_nat(), noy_app($d2, noy_var("c"))))
+$predicat_cert = noy_lam("z", pnp_nat(), noy_app($d2, noy_var("z")))
+$terme_cert = noy_lam("c", pnp_nat(),
+                noy_app(noy_app(noy_app(noy_app(pnp_existe_intro(), pnp_nat()),
+                                         $predicat_cert), noy_var("c")),
+                        noy_app(noy_app(pnp_refl(), pnp_nat()), noy_var("c"))))
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. Fausse preuve de « P = NP » : on essaie la réflexivité sur deux
+#    propositions distinctes. Le noyau/tactique DOIT refuser.
+# ═══════════════════════════════════════════════════════════════════════════
+
+$d0 = noy_lam("w", pnp_nat(), pnp_vrai_bool())
+$p0 = noy_pi("w", pnp_nat(), pnp_eq(noy_app($d0, noy_var("w")), pnp_vrai_bool()))
+$np0 = noy_pi("w", pnp_nat(),
+               pnp_existe("z", pnp_nat(), pnp_eq(noy_var("w"), noy_var("w"))))
+$but_p_eg_np = pnp_eq($p0, $np0)
+$tentative = reflexivite($but_p_eg_np)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. La « triche » : déclarer P = NP comme AXIOME. Le noyau l'accepte
+#    (c'est le genre de constante que Thorn appelle « signature »), ce qui
+#    montre qu'un vérificateur ne juge que la FORME, pas la VÉRITÉ de l'axiome.
+# ═══════════════════════════════════════════════════════════════════════════
+
+$axiome = noy_const("P_eg_NP_AXIOME", $but_p_eg_np)
+$r_axiome = verifier($axiome, noy_ctx_vide())
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. Même jeu pour l'autre camp : « P ≠ NP » = non(P = NP). Le but se type,
+#    mais aucune tactique de Thorn ne sait construire une preuve de négation.
+# ═══════════════════════════════════════════════════════════════════════════
+
+$params_non = [$but_p_eg_np]
+$but_p_ne_np = noy_ind("non", $params_non)
+$r_but_non = verifier($but_p_ne_np, noy_ctx_vide())
+$tentative_non = reflexivite($but_p_ne_np)
+
+# ── Sortie ─────────────────────────────────────────────────────────────────
+
+>> "Thorn — prototype jouet P vs NP (AMUSEMENT, pas une vraie démonstration)"
+>> ""
+>> "1) Buts bien formés (le noyau les type) :"
+$r_but1 = verifier($but_p_vers_np, noy_ctx_vide())
+$r_but2 = verifier($but_cert, noy_ctx_vide())
+>> "   P⊆NP : ok=" + chaine(noy_est_ok($r_but1)) + "  type=" + chaine(noy_genre(noy_type_res($r_but1))) +
+   "  erreur=" + noy_erreur($r_but1) + "  code=" + noy_code($r_but1)
+>> "   cert : ok=" + chaine(noy_est_ok($r_but2)) + "  type=" + chaine(noy_genre(noy_type_res($r_but2))) +
+   "  erreur=" + noy_erreur($r_but2) + "  code=" + noy_code($r_but2)
+>> ""
+>> "2) Théorèmes réellement vérifiés (verifier + convertible) :"
+pnp_affiche(pnp_controle("p_sous_np_bete", $but_p_vers_np, $terme_p_vers_np))
+pnp_affiche(pnp_controle("certificat_explicite", $but_cert, $terme_cert))
+>> ""
+>> "3) Fausse preuve de P=NP par réflexivité :"
+>> "   ok=" + chaine(ta_boo($tentative, "ok")) + "  raison=" + ta_txt($tentative, "erreur")
+>> ""
+>> "4) P=NP posé en AXIOME : le noyau dit ok=" + chaine(noy_est_ok($r_axiome)) +
+   " (erreur=" + noy_erreur($r_axiome) + ", code=" + noy_code($r_axiome) + ")" +
+   " — mais c'est une SUPPOSITION, pas une preuve."
+>> ""
+>> "5) P≠NP = non(P=NP) : but bien formé ok=" + chaine(noy_est_ok($r_but_non)) +
+   ", tentative par réflexivité ok=" + chaine(ta_boo($tentative_non, "ok")) +
+   "  raison=" + ta_txt($tentative_non, "erreur")
+>> ""
+>> "BILAN : 2 lemmes jouets vérifiés (le facile P⊆NP), 0 résultat sur le vrai"
+>> "        problème P vs NP, ni dans un sens ni dans l'autre : OUVERT."
+>> "        Le dur, c'est NP⊆P : construire un décideur polynomial à partir"
+>> "        d'un vérificateur — Thorn ne sait même pas dire « polynomial »."
