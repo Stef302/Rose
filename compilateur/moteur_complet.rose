@@ -6260,12 +6260,14 @@ fn cache_put($key: chaine, $v: chaine) -> entier {
 fn call_fn_direct($m: liste<chaine>, $fi: entier, $args: liste<chaine>) -> liste<chaine> {
   $base = longueur($m)
   $ns = $fn_nslots[$fi]
-  $j = 0
-  tant_que ($j < $ns) { joindre($m, "v:"); $j = $j + 1 }
   $pn = $fn_pn[$fi]
-  $j = 1
-  tant_que ($j <= $pn et $j < longueur($args)) {
-    $m = lset($m, $base + $j - 1, $args[$j])
+  $na = longueur($args) - 1
+  # Cadre de slots en UNE seule passe : O(ns+pn) au lieu de O(pn*(base+ns)).
+  $j = 0
+  tant_que ($j < $ns) {
+    $v = "v:"
+    si ($j < $pn et $j < $na) { $v = $args[$j + 1] }
+    joindre($m, $v)
     $j = $j + 1
   }
   retour exec_fn($m, $base, $fi)
