@@ -4652,21 +4652,37 @@ fn bneg($a: chaine) -> chaine {
   retour "-" + $a
 }
 fn bcmp($a: chaine, $b: chaine) -> entier {
-  $na = faux
-  $nb = faux
-  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $na = vrai }
-  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $nb = vrai }
-  si ($na et non $nb) { retour -1 }
-  si (non $na et $nb) { retour 1 }
-  $aa = $a
-  $bb = $b
-  si ($na) { $aa = sous_chaine($a, 1, longueur($a)); $bb = sous_chaine($b, 1, longueur($b)) }
+  # Comparaison décimale en UNE passe : signe, longueur, puis blocs de
+  # 8 chiffres convertis en entiers natifs (limbs base 10^8). Évite les
+  # longueur()/sous_chaine() répétés et la copie des deux opérandes.
+  $la = longueur($a)
+  $lb = longueur($b)
+  $ia = 0
+  $ib = 0
+  $sa = 0
+  $sb = 0
+  si ($la > 0 et sous_chaine($a, 0, 1) == "-") { $sa = 1; $ia = 1; $la = $la - 1 }
+  si ($lb > 0 et sous_chaine($b, 0, 1) == "-") { $sb = 1; $ib = 1; $lb = $lb - 1 }
+  si ($sa != $sb) {
+    si ($sa == 1) { retour -1 }
+    retour 1
+  }
   $c = 0
-  si (longueur($aa) > longueur($bb)) { $c = 1 }
-  si (longueur($aa) < longueur($bb)) { $c = -1 }
-  si (longueur($aa) == longueur($bb) et $aa > $bb) { $c = 1 }
-  si (longueur($aa) == longueur($bb) et $aa < $bb) { $c = -1 }
-  si ($na) { $c = 0 - $c }
+  si ($la > $lb) { $c = 1 }
+  si ($la < $lb) { $c = -1 }
+  si ($c == 0) {
+    $k = 0
+    tant_que ($k < $la et $c == 0) {
+      $n = 8
+      si ($la - $k < 8) { $n = $la - $k }
+      $xa = entier(sous_chaine($a, $ia + $k, $ia + $k + $n))
+      $xb = entier(sous_chaine($b, $ib + $k, $ib + $k + $n))
+      si ($xa > $xb) { $c = 1 }
+      si ($xa < $xb) { $c = -1 }
+      $k = $k + $n
+    }
+  }
+  si ($sa == 1) { $c = 0 - $c }
   retour $c
 }
 fn badd_pos($a: chaine, $b: chaine) -> chaine {
@@ -4741,28 +4757,13 @@ fn bmul_small($a: chaine, $k: entier) -> chaine {
   retour bnorm($r)
 }
 fn bmul($a: chaine, $b: chaine) -> chaine {
-  $neg = faux
-  $aa = babs($a)
-  $bb = babs($b)
-  $an = faux
-  $bn = faux
-  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $an = vrai }
-  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $bn = vrai }
-  si ($an != $bn) { $neg = vrai }
-  $r = "0"
-  $j = longueur($bb) - 1
-  tant_que ($j >= 0) {
-    $k = digit_at($bb, $j)
-    si ($k > 0) {
-      $part = bmul_small($aa, $k)
-      $z = 0
-      tant_que ($z < longueur($bb) - 1 - $j) { $part = $part + "0"; $z = $z + 1 }
-      $r = badd($r, $part)
-    }
-    $j = $j - 1
-  }
-  si ($neg et $r != "0") { $r = "-" + $r }
-  retour bnorm($r)
+  # Superinstruction bigint : produit en limbs base 10^8 avec des entiers
+  # natifs (< 10^16 par produit, sans débordement du tag G5), puis une
+  # seule mise en forme décimale. Remplace l'école décimale O(na*nb) en
+  # chaînes (bmul_small + badd + bcmp par chiffre).
+  $pa = bi_depuis_chaine($a)
+  $pb = bi_depuis_chaine($b)
+  retour bi_texte(bi_mul($pa, $pb))
 }
 # bdivmod rend [Dummy, quotient, reste] (modulo PLANCHER)
 fn bdivmod($a: chaine, $b: chaine) -> liste<chaine> {
