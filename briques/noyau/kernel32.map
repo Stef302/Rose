@@ -1,7 +1,0 @@
-format=bin NU (sans ELF/PE)
-machine=i386 (x86 32 bits)
-adresse_chargement=0x100000
-entree=0x100000
-taille_octets=41
-adresse_chaine=0x101000
-anneau=0
