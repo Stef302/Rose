@@ -4923,6 +4923,51 @@ fn rat_dec($v: chaine) -> chaine {
   $d = rat_den($v)
   $sgn = ""
   si (longueur($nn) > 0 et sous_chaine($nn, 0, 1) == "-") { $sgn = "-"; $nn = sous_chaine($nn, 1, longueur($nn)) }
+  # ── voie rapide entier natif : petits numérateur / dénominateur ────────
+  # Même long division que la voie bigint ci-dessous, mais en arithmétique
+  # entière (÷ et %) au lieu de bdiv/bmod sur chaînes. Les grands nombres
+  # gardent la voie lente inchangée.
+  $fp_ln = longueur($nn)
+  $fp_ld = longueur($d)
+  si ($fp_ln >= 1 et $fp_ln <= 18 et $fp_ld >= 1 et $fp_ld <= 18
+      et digits_only($nn) et digits_only($d)) {
+    $fp_ni = entier($nn)
+    $fp_di = entier($d)
+    si ($fp_di > 0) {
+      $fp_ip = $fp_ni ÷ $fp_di
+      $fp_rem = $fp_ni % $fp_di
+      si ($sgn != "" et $fp_rem != 0) { $fp_ip = $fp_ip + 1 }
+      si ($fp_rem == 0) { retour $sgn + chaine($fp_ip) }
+      $fp_vu = [0]
+      $fp_digs = ""
+      $fp_rep = -1
+      $fp_stop = faux
+      $fp_guard = 0
+      tant_que ($fp_rem != 0 et $fp_guard < 10000 et non $fp_stop) {
+        $fp_k = 1
+        $fp_found = -1
+        tant_que ($fp_k < longueur($fp_vu)) {
+          si ($fp_vu[$fp_k] == $fp_rem et $fp_found < 0) { $fp_found = $fp_k }
+          $fp_k = $fp_k + 1
+        }
+        si ($fp_found >= 0) { $fp_rep = $fp_found - 1; $fp_stop = vrai }
+        si (non $fp_stop) {
+          joindre($fp_vu, $fp_rem)
+          $fp_rem = $fp_rem * 10
+          $fp_dg = $fp_rem ÷ $fp_di
+          $fp_rem = $fp_rem % $fp_di
+          $fp_digs = $fp_digs + chaine($fp_dg)
+        }
+        $fp_guard = $fp_guard + 1
+      }
+      $fp_frac = ""
+      si ($fp_rep >= 0) {
+        $fp_frac = sous_chaine($fp_digs, 0, $fp_rep) + "["
+                 + sous_chaine($fp_digs, $fp_rep, longueur($fp_digs)) + "]"
+      } sinon { $fp_frac = $fp_digs }
+      retour $sgn + chaine($fp_ip) + "." + $fp_frac
+    }
+  }
   $ip = bdiv($nn, $d)
   $ip = babs($ip)
   $rem = bmod($nn, $d)
