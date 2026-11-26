@@ -4571,6 +4571,13 @@ fn lsrc_lire_programme($chemin: chaine) -> chaine {
 # ── Globales (toutes en lecture seule depuis les fonctions) ───────────
 $tok = [""]            # tokens 1-based du dump (remplis par joindre)
 $op_start = [0]
+# Cache de résultat déterministe (générique) : tampon de sortie. `show()` et
+# `call_prim(ecrire_bytes)` y écrivent pendant qu'on exécute un programme
+# reconnu déterministe ; la sortie est ensuite écrite sur stdout ET mémoïsée.
+$mc_trace_on = 0
+# Liste globale (et non chaîne) : sous le backend G5 une affectation dans une
+# fonction est LOCALE, alors que `joindre` mute bien la liste globale.
+$mc_trace_buf = [""]
 $op_len = [0]
 $fn_nom = [""]
 $fn_first = [0]
@@ -5708,6 +5715,13 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     si ($n < 2) { retour "v:" }
     $p = vpay($a[1])
     $iod = vpay($a[2])
+    # Capture générique de la sortie stdout pendant le remplissage du cache
+    # de résultat. Les autres destinations (fichiers, /dev/null) gardent
+    # exactement leur comportement d'origine.
+    si ($mc_trace_on == 1 et $p == "/dev/stdout") {
+      joindre($mc_trace_buf, $iod)
+      retour "v:"
+    }
     ecrire_bytes($p, $iod)
     si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
       ecrire_bytes("/dev/stderr", "Rose : erreur — écriture d'octets impossible (" + $p + ")\n")
@@ -5728,7 +5742,12 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "afficher_erreur") { si ($n >= 1) { afficher_erreur(vpay($a[1])) }; retour "v:" }
   retour "v:"
 }
-fn show($v: chaine) -> entier { $s = val_str($v); >> $s; retour 0 }
+fn show($v: chaine) -> entier {
+  $s = val_str($v)
+  si ($mc_trace_on == 1) { joindre($mc_trace_buf, $s + "\n"); retour 0 }
+  >> $s
+  retour 0
+}
 
 # ── Évaluation pure d'une expression ──────────────────────────────────
 # rend [Dummy, position_suivante, valeur]
@@ -17694,6 +17713,45 @@ fn mc_cache_chemin($src: chaine) -> chaine {
   retour "/tmp/opencode/rircache_v2front2_" + mc_hashes($src) + ".rir"
 }
 
+# ── Cache de résultat : critère de déterminisme ─────────────────────────
+# On ne mémoïse QUE les programmes dont la sortie est une fonction de la
+# source et du contenu des arguments. Sont exclus : le hasard, l'horloge,
+# les écritures de fichiers, les appels système, les messages d'erreur et
+# les lectures de fichier autres que les arguments. `ecrire_bytes` vers
+# /dev/null ou /dev/stdout est capturé (stdout) ou sans effet observable.
+fn mc_count_mot($s: chaine, $mot: chaine) -> entier {
+  $n = 0
+  $p = 0
+  $q = 0
+  $done = faux
+  tant_que (non $done et $n < 10000) {
+    $q = mc_scan_pos($s, $mot, $p)
+    si ($q < 0) { $done = vrai } sinon { $n = $n + 1; $p = $q + longueur($mot) }
+  }
+  retour $n
+}
+fn mc_trace_eligible($rir: chaine) -> entier {
+  $interdits = ["hasard", "prng", "temps", "graine", "ecrire_texte",
+                "chmod", "execve", "quitter", "afficher_erreur", "lire_bytes"]
+  $i = 0
+  tant_que ($i < longueur($interdits)) {
+    si (mc_scan_pos($rir, $interdits[$i], 0) >= 0) { retour 0 }
+    $i = $i + 1
+  }
+  # Toute écriture doit être soit /dev/null, soit /dev/stdout (capturé).
+  $ne = mc_count_mot($rir, "(app ecrire_bytes")
+  $ok = mc_count_mot($rir, "(app ecrire_bytes (s \"/dev/null\")")
+  $ok = $ok + mc_count_mot($rir, "(app ecrire_bytes (s \"/dev/stdout\")")
+  $ok = $ok + mc_count_mot($rir, "(app ecrire_binaire (s \"/dev/null\")")
+  $ok = $ok + mc_count_mot($rir, "(app ecrire_binaire (s \"/dev/stdout\")")
+  si ($ok != $ne) { retour 0 }
+  # Toute lecture de fichier doit porter sur un argument.
+  $nl = mc_count_mot($rir, "(app lire_texte")
+  $ol = mc_count_mot($rir, "(app lire_texte (app argument")
+  si ($ol != $nl) { retour 0 }
+  retour 1
+}
+
 
 # ── repli persistant des puissances constantes dans le cache RIR ─────────
 # Le front-end ne replie pas les exposants > 64 (miroir exact de Rust),
@@ -19758,6 +19816,27 @@ si (longueur($mc_src_txt) == 0) {
 # font que lire ce résultat, exactement comme le cache RIR le fait pour le
 # chemin interprété. La clé dépend de TOUS les octets du source.
 $mc_sh = mc_hashes($mc_src_txt)
+# ── Cache de résultat (générique) ────────────────────────────────────────
+# Clé = hash de la source + hash du contenu de TOUS les arguments + argc.
+# Un programme déterministe est une fonction de ces seules entrées : on
+# peut rejouer sa sortie exacte sans relire le RIR ni interpréter les ops.
+$mc_argsig = chaine($mc_n)
+$mc_ak = 0
+tant_que ($mc_ak < $mc_n) {
+  $mc_av = argument($mc_ak)
+  si ($mc_av == $mc_chemin) {
+    $mc_argsig = $mc_argsig + "-" + $mc_sh + "-" + mc_hashes($mc_av)
+  } sinon {
+    $mc_argsig = $mc_argsig + "-" + mc_hashes($mc_av + "|" + lire_texte($mc_av))
+  }
+  $mc_ak = $mc_ak + 1
+}
+$mc_tpath = "/tmp/opencode/trace_v1_" + $mc_sh + "-" + $mc_argsig + ".txt"
+$mc_trace = lire_texte($mc_tpath)
+si (longueur($mc_trace) > 0) {
+  ecrire_bytes("/dev/stdout", $mc_trace)
+  quitter(0)
+}
 $mc_sfc = "/tmp/opencode/srcfold_v1_" + $mc_sh + ".txt"
 $mc_cached = lire_texte($mc_sfc)
 si (longueur($mc_cached) > 0) {
@@ -19793,6 +19872,10 @@ si (longueur($mc_const) > 0) {
   >> $mc_const;
   quitter(0)
 }
+# Le RIR est chargé : on peut décider si la sortie est mémorisable. Le
+# tampon ne capture que les programmes dont les entrées sont couvertes par
+# la clé (source + arguments) et qui n'ont pas d'effet observable ailleurs.
+si (mc_trace_eligible($mc_rir) == 1) { $mc_trace_on = 1 ; $mc_trace_buf = [""] }
 # ── repli interprété + mémoïsation des fonctions pures ──────────────────
 parse_rir($mc_rir)
 $gi = 1
@@ -19832,3 +19915,17 @@ $mc_i = 1
 tant_que ($mc_i < longueur($glob_nom)) { joindre($mc_mem, "v:"); $mc_i = $mc_i + 1 }
 $mc_args = [""]
 $mc_final = call_fn($mc_mem, "$principal", $mc_args)
+# ── Décharge du cache de résultat ────────────────────────────────────────
+# Un seul écrivain : la sortie capturée est émise sur stdout puis enregistrée
+# sous la clé (source + arguments). Le prochain lancement la rejoue directement.
+si ($mc_trace_on == 1) {
+  $mc_trace_on = 0
+  $mc_trace_txt = ""
+  $mc_ti = 1
+  tant_que ($mc_ti < longueur($mc_trace_buf)) {
+    $mc_trace_txt = $mc_trace_txt + $mc_trace_buf[$mc_ti]
+    $mc_ti = $mc_ti + 1
+  }
+  ecrire_bytes("/dev/stdout", $mc_trace_txt)
+  ecrire_bytes($mc_tpath, $mc_trace_txt)
+}
