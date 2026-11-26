@@ -46,7 +46,7 @@ cibles: [
   {
     nom: "x86_32"
     famille: 5
-    mode: protege-ring0           # noyau, 32 bits, anneau 0
+    mode: protege-ring0           # 32 bits, adressage plat (binaire nu)
     largeur_operande: 4           # B8+r + imm32
     prefixe_32: 0                 # inutile : opérande 32 bits par défaut
     forcer_32: 0

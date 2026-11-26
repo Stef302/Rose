@@ -99,7 +99,7 @@ donnees: {
       entree_sortie: int80
       enveloppe: brut
       ops: "0..16"
-      note: "code machine x86 32 bits NU : aucun header, aucune relocation ; hlt=F4, jmp_rel8=EBdisp8 ; noyau anneau 0 via briques/noyau/lien_nu.rose"
+      note: "code machine x86 32 bits NU : aucun header, aucune relocation ; hlt=F4, jmp_rel8=EBdisp8 ; edition de binaire nu via compilateur/link_nu.rose"
     }
   ]
 
