@@ -12,10 +12,12 @@
 //!   internes (`--veloapp-updated`, `--veloapp-obsolete`) ;
 //! - `run_update_launcher` : sort en succès après l'application du paquet
 //!   (`updated`) ou après un rollback (`obsolete`) ;
-//! - `check_and_update` : lit `releases.win.json` (le manifeste Velopack),
-//!   compare la version installée, télécharge le paquet COMPLET (`Type: Full`,
-//!   les deltas ne sont pas rejoués ici), vérifie son SHA-256 puis le dépose
-//!   dans `packages\` ;
+//! - `check_and_update` : DÉCOUVRE les releases via l'API PUBLIQUE GitHub
+//!   (`decouvrir_versions_update`), compare les versions sémantiques et ne
+//!   télécharge QUE si un paquet COMPLET (`Type: Full`, les deltas ne sont pas
+//!   rejoués ici) est publié — SHA-256 vérifié, dépôt dans `packages\`. Repli
+//!   sur le manifeste local `releases.win.json` si le réseau est indisponible ;
+//!   aucune version n'est codée en dur, aucun nouveau launcher n'est requis ;
 //! - `appliquer_paquets` : quand AUCUN launcher Velopack n'est installé
 //!   (`Rose-win-Setup.exe` téléchargé à la main), on applique nous-mêmes les
 //!   paquets en attente : extraction ZIP du `.nupkg`, copie de `lib/net45\`
@@ -490,8 +492,9 @@ pub fn doit_verifier_au_demarrage() -> bool {
     lire_config().mode == ModeMiseAJour::Auto
 }
 
-/// Vérification AU DÉMARRAGE, en mode « Auto » uniquement : lit le
-/// manifeste et renvoie la version disponible SANS RIEN TÉLÉCHARGER.
+/// Vérification AU DÉMARRAGE, en mode « Auto » uniquement : DÉCOUVRE les
+/// releases (GitHub, repli manifeste local) et renvoie la version disponible
+/// SANS RIEN TÉLÉCHARGER.
 /// Le téléchargement n'a lieu que si l'utilisateur accepte ensuite
 /// (`check_and_update` depuis le bouton de consentement de l'UI).
 pub fn verifier_au_demarrage() -> Result<Option<String>, String> {
@@ -499,6 +502,140 @@ pub fn verifier_au_demarrage() -> Result<Option<String>, String> {
         return Ok(None); // manuel / désactivé : aucun appel, aucun réseau
     }
     verifier_manifeste()
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   DÉCOUVERTE DYNAMIQUE — PLUS DE MANIFESTE EMBARQUÉ FIGÉ
+
+   Un launcher installé UNE fois doit voir TOUTES les releases suivantes
+   sans qu'on lui réclaque un nouveau launcher. La source de vérité est
+   donc l'API PUBLIQUE GitHub (`GET /repos/Stef302/Rose/releases`), et non
+   le `releases.win.json` figé dans l'installation (une seule version).
+
+   Ordre exact, sans authentification :
+     1. `ROSE_VELOPACK_URL` posé → CE manifeste (compatibilité, tests) ;
+     2. `ROSE_LAUNCHER_API` posé → cette URL (diagnostic, tests `file://`) ;
+     3. API GitHub publique (`lister_versions`) ;
+     4. réseau indisponible → `<racine>/releases.win.json`, puis
+        `url_manifeste()` (qui peut lui-même être un `file://`).
+
+   Aucune version n'est codée en dur : tout vient du JSON réellement reçu.
+   Une release SANS `.nupkg` mais avec un installeur générique
+   (`Rose-win-Setup.exe`) est bien ANNONCÉE (`installable: false`) : c'est
+   précisément le cas des releases v0.1.77 à v0.1.79.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/// Versions d'un manifeste Velopack local, sous forme de releases distantes.
+fn versions_depuis_manifeste(manifeste: &Manifeste) -> Vec<VersionDistante> {
+    let mut versions: Vec<VersionDistante> = manifeste
+        .paquets
+        .iter()
+        .filter(|p| p.complet)
+        .map(|p| VersionDistante {
+            tag: format!("v{}", p.version),
+            version: p.version.clone(),
+            titre: format!("Rose v{}", p.version),
+            date: String::new(),
+            nupkg: p.nom.clone(),
+            installable: !p.sha256.is_empty(),
+            legacy: String::new(),
+        })
+        .collect();
+    versions.sort_by(|a, b| comparer_versions(&b.version, &a.version));
+    versions.dedup_by(|a, b| a.version == b.version);
+    versions
+}
+
+/// Repli HORS LIGNE : copie du manifeste dans la racine d'installation,
+/// puis source configurée (`file://` ou HTTP). Jamais une liste inventée.
+fn charger_manifeste_local() -> Result<Manifeste, String> {
+    if let Some(racine) = dossier_racine() {
+        if let Ok(texte) = fs::read_to_string(racine.join(NOM_CACHE)) {
+            if let Ok(m) = Manifeste::analyser(&texte) {
+                return Ok(m);
+            }
+        }
+    }
+    Manifeste::analyser(&lire_source(&url_manifeste())?)
+}
+
+/// Découvre les releases pour `rose update` : GitHub d'abord, manifeste
+/// local en repli. `Err` seulement si AUCUNE source n'est exploitable.
+pub fn decouvrir_versions_update() -> Result<ResultatVersions, String> {
+    if std::env::var_os("ROSE_VELOPACK_URL").is_some() {
+        // Surcharge explicite (PRIORITAIRE) : on lit EXACTEMENT ce manifeste
+        // (tests `file://`, diagnostics), sans aucun appel GitHub.
+        let manifeste = Manifeste::analyser(&lire_source(&url_manifeste())?)?;
+        let versions = versions_depuis_manifeste(&manifeste);
+        if versions.is_empty() {
+            return Err("manifeste imposé : aucun paquet complet".into());
+        }
+        return Ok(ResultatVersions { versions, source: SourceVersions::Local });
+    }
+    if let Ok(url) = std::env::var("ROSE_LAUNCHER_API") {
+        let json = requeter_json(&url)?;
+        let versions = analyser_releases(&json);
+        if versions.is_empty() {
+            return Err("API de diagnostic : aucune release installable".into());
+        }
+        return Ok(ResultatVersions { versions, source: SourceVersions::GitHub });
+    }
+    match lister_versions() {
+        Ok(versions) => Ok(ResultatVersions { versions, source: SourceVersions::GitHub }),
+        Err(github) => {
+            let local = charger_manifeste_local()
+                .map(|m| versions_depuis_manifeste(&m))
+                .map_err(|e| format!("manifeste local indisponible ({e})"));
+            match local {
+                Ok(v) if !v.is_empty() => Ok(ResultatVersions {
+                    versions: v,
+                    source: SourceVersions::Local,
+                }),
+                Ok(_) => Err(format!("API GitHub inaccessible ({github}) ; manifeste local vide")),
+                Err(e) => Err(format!("API GitHub inaccessible ({github}) ; {e}")),
+            }
+        }
+    }
+}
+
+/// URLs du manifeste ET du paquet pour une version découverte.
+///
+/// Avec `ROSE_VELOPACK_URL` explicite on garde l'ancien comportement
+/// (manifeste et paquet dans le MÊME dossier, typiquement un `file://` de
+/// test). Sinon on lit le manifeste PROPRE AU TAG : celui de `/latest` ne
+/// connaît qu'une seule version — c'est la cause du bug.
+pub fn urls_paquet(tag: &str, nom: &str) -> (String, String) {
+    if std::env::var_os("ROSE_VELOPACK_URL").is_some() {
+        let manifeste = url_manifeste();
+        let base = manifeste
+            .rsplit_once('/')
+            .map(|(d, _)| d.to_string())
+            .unwrap_or_default();
+        (manifeste, format!("{base}/{nom}"))
+    } else {
+        (url_asset(tag, NOM_CACHE), url_asset(tag, nom))
+    }
+}
+
+/// Dernière version annoncée, STRICTEMENT supérieure à `installee`, avec la
+/// source RÉELLE. Aucun téléchargement : c'est la fonction de découverte
+/// utilisée par `rose update` et ses tests.
+pub fn decouvrir_derniere_version(
+    installee: &str,
+) -> Result<(Option<VersionDistante>, SourceVersions), String> {
+    let resultat = decouvrir_versions_update()?;
+    let source = resultat.source;
+    let version = resultat
+        .versions
+        .into_iter()
+        .filter(|v| comparer_versions(&v.version, installee) == std::cmp::Ordering::Greater)
+        .max_by(|a, b| comparer_versions(&a.version, &b.version));
+    Ok((version, source))
+}
+
+/// Version unique, pour les appelants qui n'ont pas besoin de la source.
+pub fn derniere_version_disponible(installee: &str) -> Result<Option<VersionDistante>, String> {
+    Ok(decouvrir_derniere_version(installee)?.0)
 }
 
 /// Vérification EXPLICITE (bouton « Vérifier les mises à jour », mode
@@ -510,8 +647,7 @@ pub fn verifier_manifeste() -> Result<Option<String>, String> {
     // Lanceur NEUTRE : jamais sa propre version comme « version installée ».
     // Sans version détectée, on ne prétend PAS être à jour.
     let installee = version_installee().unwrap_or_default();
-    let manifeste = Manifeste::analyser(&lire_source(&url_manifeste())?)?;
-    Ok(manifeste.paquet_a_jour(&installee).map(|p| p.version.clone()))
+    Ok(derniere_version_disponible(&installee)?.map(|v| v.version))
 }
 
 /// SHA-256 d'un fichier (implémentation maison, sans dépendance).
@@ -522,8 +658,10 @@ fn sha256_fichier(chemin: &Path) -> Result<String, String> {
     Ok(crate::sha256::sha256_hex(&octets))
 }
 
-/// Interroge le manifeste, télécharge le paquet complet de la dernière
-/// version et le dépose dans `packages\`.
+/// DÉCOUVRE la dernière version via l'API GitHub (repli manifeste local),
+/// télécharge SON paquet complet et le dépose dans `packages\`. Si la
+/// release n'a pas de `.nupkg`, la version est annoncée mais RIEN n'est
+/// téléchargé (voir [`decouvrir_versions_update`]).
 ///
 /// ⚠ RESPECT DU CHOIX DU PREMIER ÉCRAN : en mode « désactivé », AUCUNE
 /// vérification n'est faite — même quand cette fonction est appelée
@@ -548,24 +686,51 @@ fn verifier_et_telecharger(_silencieux: bool) -> Result<Option<String>, String> 
     // Lanceur NEUTRE : jamais sa propre version comme « version installée ».
     // Sans version détectée, on ne prétend PAS être à jour.
     let installee = version_installee().unwrap_or_default();
-    let manifeste = Manifeste::analyser(&lire_source(&url_manifeste())?)?;
-    let paquet = match manifeste.paquet_a_jour(&installee) {
-        Some(p) => p.clone(),
-        None => return Ok(None),
+    let (cible, source) = match decouvrir_derniere_version(&installee)? {
+        (Some(v), s) => (v, s),
+        (None, _) => return Ok(None),
     };
+
+    // Une release ANNONCÉE sans paquet complet ne peut PAS être appliquée par
+    // le dossier `packages\`. On ne télécharge RIEN : jamais un `.exe` non
+    // vérifié (aucun SHA-256 publié pour ces releases). Le message est
+    // explicite et permet de migrer manuellement si on le souhaite — le
+    // lanceur déjà installé, lui, reste parfaitement utilisable.
+    if !cible.installable || cible.nupkg.is_empty() {
+        return Err(format!(
+            "Nouvelle version {} découverte via {} (release {}) : aucun paquet complet \
+             .nupkg n'est publié pour cette version, aucun téléchargement effectué. \
+             Le lanceur installé reste utilisable ; artefact proposé : {}.",
+            cible.version,
+            source.libelle(),
+            cible.tag,
+            if cible.legacy.is_empty() { "Rose-win-Setup.exe" } else { &cible.legacy }
+        ));
+    }
+
+    // Le manifeste de `/latest` ne connaît qu'UNE version : on lit celui du
+    // TAG découvert, puis on vérifie le SHA-256 du paquet complet.
+    let (url_manifeste_tag, url_paquet) = urls_paquet(&cible.tag, &cible.nupkg);
+    let json = lire_source(&url_manifeste_tag)
+        .map_err(|e| format!("release {} : manifeste inaccessible ({e})", cible.tag))?;
+    let manifeste = Manifeste::analyser(&json)?;
+    let paquet = manifeste
+        .paquets
+        .iter()
+        .find(|p| p.complet && comparer_versions(&p.version, &cible.version) == std::cmp::Ordering::Equal)
+        .ok_or_else(|| {
+            format!("release {} : aucun paquet complet pour {}", cible.tag, cible.version)
+        })?
+        .clone();
 
     let racine = dossier_racine().ok_or("LOCALAPPDATA indisponible")?;
     let paquets = racine.join("packages");
     fs::create_dir_all(&paquets).map_err(|e| format!("création {} : {e}", paquets.display()))?;
-    let cible = paquets.join(&paquet.nom);
+    let cible_fichier = paquets.join(&paquet.nom);
 
-    let url_paquet = match url_manifeste().rsplit_once('/') {
-        Some((d, _)) => format!("{}/{}", d, paquet.nom),
-        None => return Err("URL du manifeste invalide".into()),
-    };
     let statut = curl_sans_fenetre()
         .args(["-sSL", "--fail", "-o"])
-        .arg(&cible)
+        .arg(&cible_fichier)
         .arg(&url_paquet)
         .status()
         .map_err(|e| format!("curl indisponible : {e}"))?;
@@ -573,15 +738,19 @@ fn verifier_et_telecharger(_silencieux: bool) -> Result<Option<String>, String> 
         return Err(format!("téléchargement du paquet {} impossible", paquet.nom));
     }
 
-    if !paquet.sha256.is_empty() {
-        let h = sha256_fichier(&cible)?;
-        if !h.eq_ignore_ascii_case(&paquet.sha256) {
-            let _ = fs::remove_file(&cible);
-            return Err(format!(
-                "SHA-256 du paquet invalide (attendu {}, obtenu {})",
-                paquet.sha256, h
-            ));
-        }
+    // Sans SHA-256 annoncé, on REFUSE d'installer : mieux vaut un message
+    // clair qu'un binaire non vérifié (voir docs/UPDATE_DYNAMIQUE.md).
+    if paquet.sha256.is_empty() {
+        let _ = fs::remove_file(&cible_fichier);
+        return Err(format!("release {} : SHA-256 absent du manifeste, paquet refusé", cible.tag));
+    }
+    let h = sha256_fichier(&cible_fichier)?;
+    if !h.eq_ignore_ascii_case(&paquet.sha256) {
+        let _ = fs::remove_file(&cible_fichier);
+        return Err(format!(
+            "SHA-256 du paquet invalide (attendu {}, obtenu {})",
+            paquet.sha256, h
+        ));
     }
     Ok(Some(paquet.version))
 }
@@ -1124,6 +1293,13 @@ pub struct VersionDistante {
 
 /// Analyse pure de la réponse de l'API GitHub (séparée du réseau pour être
 /// testable). La plus récente est placée en premier.
+///
+/// ⚠ Les releases récentes (v0.1.77 → v0.1.79) n'ont PAS de `.nupkg` : elles
+/// portent un installeur GÉNÉRIQUE (`Rose-win-Setup.exe`). On lit donc les
+/// noms RÉELS du tableau `assets` (et non une sous-chaîne du JSON, qui
+/// confondrait un titre ou un changelog avec un fichier). Une telle release
+/// est ANNONCÉE (`installable: false`) au lieu d'être ignorée : c'est
+/// précisément ce qui permet à un ancien launcher de la voir.
 fn analyser_releases(json: &str) -> Vec<VersionDistante> {
     let mut versions: Vec<VersionDistante> = Vec::new();
     for objet in objets_racine(json) {
@@ -1132,23 +1308,31 @@ fn analyser_releases(json: &str) -> Vec<VersionDistante> {
             _ => continue,
         };
         let version = version_depuis_tag(&tag);
-        // La présence du nom de fichier dans l'objet (qui contient son
-        // tableau `assets`) suffit : on n'a pas besoin d'un parseur complet.
-        let nupkg = format!("Rose-{version}-full.nupkg");
-        let legacy = format!("Rose-Setup-{version}.exe");
-        let a_nupkg = objet.contains(&nupkg);
-        let a_legacy = objet.contains(&legacy);
-        if !a_nupkg && !a_legacy {
-            continue; // release sans installateur Windows
+        let (mut nupkg, mut legacy) = (String::new(), String::new());
+        if let Some(tableau) = tableau_sous_cle(&objet, "assets") {
+            for asset in objets_racine(tableau) {
+                let nom = champ_racine(&asset, "name").unwrap_or_default();
+                if nom.is_empty() {
+                    continue;
+                }
+                if est_nupkg(&nom) {
+                    nupkg = nom;
+                } else if est_legacy(&nom) {
+                    legacy = nom;
+                }
+            }
+        }
+        if nupkg.is_empty() && legacy.is_empty() {
+            continue; // release sans artefact Windows
         }
         versions.push(VersionDistante {
             titre: champ_racine(&objet, "name").unwrap_or_else(|| tag.clone()),
             date: champ_racine(&objet, "published_at").unwrap_or_default(),
             tag,
             version,
-            nupkg: if a_nupkg { nupkg } else { String::new() },
-            installable: a_nupkg,
-            legacy: if a_legacy { legacy } else { String::new() },
+            installable: !nupkg.is_empty(),
+            nupkg,
+            legacy,
         });
     }
     versions.sort_by(|a, b| comparer_versions(&b.version, &a.version));
@@ -3027,5 +3211,88 @@ mod tests {
                 "timer discret référencé au moins par SetTimer et KillTimer");
         assert_eq!(src.matches("SetTimer(h, TIMER_MAJ_DISCRETE").count(), 1);
         assert_eq!(src.matches("KillTimer(h, TIMER_MAJ_DISCRETE").count(), 1);
+    }
+
+    /* ── DÉCOUVERTE DYNAMIQUE : le lanceur voit les releases SANS nupkg ── */
+
+    /// Reproduction fidèle des releases v0.1.77 → v0.1.79 : quatre `.exe`
+    /// génériques, AUCUN `.nupkg`. L'ancien analyseur les écartait toutes.
+    const API_GENERIQUE_FIXTURE: &str = r#"[
+      {"author":{"login":"Stef302"},"tag_name":"v0.1.79",
+       "published_at":"2026-11-26T09:42:06Z",
+       "name":"Rose v0.1.79 — self-hosté & optimisé",
+       "body":"Rose-win-Setup.exe est mentionné dans le texte aussi",
+       "assets":[{"name":"rose.exe"},{"name":"Rose-win-Setup.exe"},
+                 {"name":"rose-shell.exe"},{"name":"rose-tray.exe"}]},
+      {"tag_name":"v0.1.78","name":"Rose v0.1.78",
+       "assets":[{"name":"Rose-win-Setup.exe"},{"name":"rose.exe"}]},
+      {"tag_name":"v0.1.76","name":"Rose v0.1.76",
+       "assets":[{"name":"releases.win.json"},{"name":"Rose-0.1.76-full.nupkg"}]}
+    ]"#;
+
+    #[test]
+    fn decouverte_voit_releases_sans_nupkg() {
+        let versions = analyser_releases(API_GENERIQUE_FIXTURE);
+        assert_eq!(versions.len(), 3, "les 3 releases Windows doivent être annoncées");
+        assert_eq!(versions[0].version, "0.1.79");
+        assert_eq!(versions[0].tag, "v0.1.79");
+        assert_eq!(versions[0].date, "2026-11-26T09:42:06Z");
+        assert_eq!(versions[0].titre, "Rose v0.1.79 — self-hosté & optimisé");
+        assert_eq!(versions[0].legacy, "Rose-win-Setup.exe");
+        assert!(!versions[0].installable, "pas de nupkg : annoncée mais non installable par packages\\");
+        assert!(versions[2].installable, "v0.1.76 garde son paquet complet");
+        assert_eq!(versions[2].nupkg, "Rose-0.1.76-full.nupkg");
+    }
+
+    #[test]
+    fn decouverte_trie_et_ignore_releases_sans_artefact_windows() {
+        let json = r#"[
+          {"tag_name":"v9.9.9","name":"Sans artefact","assets":[{"name":"notes.md"}]},
+          {"tag_name":"v0.1.77","name":"A","assets":[{"name":"Rose-win-Setup.exe"}]},
+          {"tag_name":"v0.1.79","name":"C","assets":[{"name":"rose.exe"},
+                                                    {"name":"Rose-win-Setup.exe"}]}
+        ]"#;
+        let versions = analyser_releases(json);
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, "0.1.79");
+        assert!(versions.iter().all(|v| v.tag != "v9.9.9"));
+    }
+
+    #[test]
+    fn fallback_manifeste_local_convertit_les_paquets() {
+        let manifeste = Manifeste::analyser(
+            r#"[
+              {"PackageId":"Rose-0.1.5-full.nupkg","Version":"0.1.5",
+               "SHA256":"aa","SHA1":"11","Size":"100","Type":"Full"},
+              {"PackageId":"Rose-0.1.5-delta.nupkg","Version":"0.1.5",
+               "SHA256":"bb","SHA1":"22","Size":"50","Type":"Delta"}
+            ]"#,
+        )
+        .expect("manifeste lisible");
+        let versions = versions_depuis_manifeste(&manifeste);
+        assert_eq!(versions.len(), 1, "le delta est écarté");
+        assert_eq!(versions[0].tag, "v0.1.5");
+        assert_eq!(versions[0].nupkg, "Rose-0.1.5-full.nupkg");
+        assert!(versions[0].installable, "SHA-256 présent");
+    }
+
+    /// Preuve RÉELLE, en lecture seule, que `rose update` voit v0.1.79.
+    /// Commande : `cargo test --release rose_update_voit_v0_1_79_reel -- --ignored --nocapture`
+    #[test]
+    #[ignore = "accès réel à api.github.com, lecture seule"]
+    fn rose_update_voit_v0_1_79_reel() {
+        let decouverte = decouvrir_versions_update().expect("API GitHub publique accessible");
+        assert_eq!(decouverte.source, SourceVersions::GitHub);
+        assert!(decouverte.versions.iter().any(|v| v.version == "0.1.79"),
+                "versions vues : {:?}",
+                decouverte.versions.iter().map(|v| v.version.as_str()).collect::<Vec<_>>());
+        let (derniere, source) = decouvrir_derniere_version("0.1.76").expect("découverte");
+        assert_eq!(source, SourceVersions::GitHub);
+        let d = derniere.expect("0.1.79 est strictement supérieure à 0.1.76");
+        assert_eq!(d.version, "0.1.79");
+        assert_eq!(d.tag, "v0.1.79");
+        assert_eq!(d.legacy, "Rose-win-Setup.exe");
+        println!("ROSE UPDATE VOIT : 0.1.76 → {} (release {}, source {})",
+                 d.version, d.tag, source.libelle());
     }
 }
