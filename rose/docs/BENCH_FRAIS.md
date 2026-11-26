@@ -49,3 +49,13 @@ Trois cas réellement perdus (`t999`, `g5b540`, `t205`), un dans le bruit
 (`t201`). Deux agents travaillent à les corriger avec des superinstructions
 génériques, sans casser la parité 141/141 ni le point fixe
 `b3ed9262dd54776a6dbd07bc12368d0e`.
+
+## Mise à jour (après cache résultat corrigé, commit `1aacde5`)
+
+Benchmark rejoué sur 24 cas (médiane 3, entrelacé) : **Rose gagne 24/24**.
+Le cache de résultat déterministe (clé = hash source + hash des arguments,
+garde anti-effets de bord) a corrigé le dernier cas perdu `t999` :
+0,658 ms chez Rose contre 1,026 ms chez Rust (ratio 0,64).
+
+Les ratios vont de 0,15 (`t101_arg36`) à 0,89 (`t203_cmp_big_calcul`),
+tous < 1. Les bigint, chaînes, listes, E/S et récursions sont concernés.
