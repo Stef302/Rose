@@ -4873,6 +4873,7 @@ fn rat_make($n: chaine, $d: chaine) -> chaine {
   si ($d == "0") { retour "r:0/1" }
   si (longueur($d) > 0 et sous_chaine($d, 0, 1) == "-") { $n = bneg($n); $d = bneg($d) }
   si ($n == "0") { retour "r:0/1" }
+  si ($d == "1") { retour vi($n) }
   $g = bgcd($n, $d)
   si ($g != "1" et $g != "0") {
     $q1 = bdivmod($n, $g); $n = $q1[1]
@@ -5202,6 +5203,8 @@ fn val_str($v: chaine) -> chaine {
 }
 fn val_cmp($a: chaine, $b: chaine) -> entier {
   $ta = vtag($a)
+  $tb0 = vtag($b)
+  si ($ta == "i" et $tb0 == "i") { retour bcmp(vpay($a), vpay($b)) }
   $tb = vtag($b)
   si ($ta == "s" et $tb == "s") {
     si (vpay($a) < vpay($b)) { retour -1 }
@@ -5229,24 +5232,28 @@ fn val_eq($a: chaine, $b: chaine) -> booleen { retour val_cmp($a, $b) == 0 }
 fn val_add($a: chaine, $b: chaine) -> chaine {
   $ta = vtag($a); $tb = vtag($b)
   si ($ta == "s" et $tb == "s") { retour vs(vpay($a) + vpay($b)) }
+  si ($ta == "i" et $tb == "i") { retour vi(badd(vpay($a), vpay($b))) }
   $ra = $a; $rb = $b
   si ($ta == "i") { $ra = rat_make(vpay($a), "1") }
   si ($tb == "i") { $rb = rat_make(vpay($b), "1") }
   retour rat_add($ra, $rb)
 }
 fn val_sub($a: chaine, $b: chaine) -> chaine {
+  si (vtag($a) == "i" et vtag($b) == "i") { retour vi(bsub(vpay($a), vpay($b))) }
   $ra = $a; $rb = $b
   si (vtag($a) == "i") { $ra = rat_make(vpay($a), "1") }
   si (vtag($b) == "i") { $rb = rat_make(vpay($b), "1") }
   retour rat_sub($ra, $rb)
 }
 fn val_mul($a: chaine, $b: chaine) -> chaine {
+  si (vtag($a) == "i" et vtag($b) == "i") { retour vi(bmul(vpay($a), vpay($b))) }
   $ra = $a; $rb = $b
   si (vtag($a) == "i") { $ra = rat_make(vpay($a), "1") }
   si (vtag($b) == "i") { $rb = rat_make(vpay($b), "1") }
   retour rat_mul($ra, $rb)
 }
 fn val_div($a: chaine, $b: chaine) -> chaine {
+  si (vtag($a) == "i" et vtag($b) == "i") { retour rat_make(vpay($a), vpay($b)) }
   $ra = $a; $rb = $b
   si (vtag($a) == "i") { $ra = rat_make(vpay($a), "1") }
   si (vtag($b) == "i") { $rb = rat_make(vpay($b), "1") }
