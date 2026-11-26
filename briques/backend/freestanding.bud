@@ -1,0 +1,101 @@
+# freestanding.bud — PROFILS FREESTANDING (données uniquement, aucune logique).
+#
+# Aucune fonction, aucun `si`, aucune boucle : l'adresse, l'alignement, le
+# mode, l'entrée et les segments sont DÉCLARÉS, jamais calculés par le
+# compilateur. Ce fichier est le contrat consommé par
+#   compilateur/backend_universel.rose  -> bu_cible(nom)
+#   compilateur/link_nu.rose            -> ln_config(adresse, alignement, entree)
+# Les valeurs numériques sont décimales ; leur équivalent hexadécimal est
+# donné en commentaire pour la lisibilité.
+#
+# Format d'une cible :
+#   nom | famille | mode | largeur_operande | prefixe_32 | forcer_32 |
+#   taille_adresse | vecteur_defaut | adresse_charge | alignement |
+#   entre | segments | enveloppe | runtime
+
+nom: "freestanding-nu"
+version: "0.1.0"
+
+contrat: {
+  format: brut
+  enveloppe: aucun        # ni ELF, ni PE, ni COFF, ni en-tête
+  runtime: aucun          # ni libc, ni crt, ni GC, ni alloc implicite
+  linker: rose-pur        # compilateur/link_nu.rose
+  outils_externes: aucun  # ni ld, ni cc, ni objcopy
+  convention_octets: "liste<entier> porteuse, octets utiles des index 1..n"
+}
+
+cibles: [
+  {
+    nom: "x86_16"
+    famille: 4
+    mode: reel                    # bootloader, 16 bits, BIOS
+    largeur_operande: 2           # B8+r + imm16
+    prefixe_32: 102               # 0x66 : bascule vers un opérande 32 bits
+    forcer_32: 0                  # pas de préfixe sur les opérations de registre
+    taille_adresse: 2             # modrm mod=10 + disp16 (adressage 16 bits)
+    vecteur_defaut: 16            # int 0x10 (BIOS vidéo)
+    adresse_charge: 31232         # 0x7C00 — secteur de boot
+    alignement: 1                 # contigu ; la signature 0x55AA suit le code
+    entre: 31232                  # 0x7C00 — premier octet de .text
+    segments: [".text", ".sig"]   # .sig = 55 AA (signature de boot)
+    enveloppe: brut
+    runtime: aucun
+    note: "préfixe 0x66 émis uniquement si l'immédiat dépasse 0xFFFF"
+  },
+  {
+    nom: "x86_32"
+    famille: 5
+    mode: protege-ring0           # noyau, 32 bits, anneau 0
+    largeur_operande: 4           # B8+r + imm32
+    prefixe_32: 0                 # inutile : opérande 32 bits par défaut
+    forcer_32: 0
+    taille_adresse: 4             # modrm mod=10 + disp32 (adressage 32 bits)
+    vecteur_defaut: 128           # int 0x80 (porte d'entrée noyau)
+    adresse_charge: 1048576       # 0x100000 — adresse de charge noyau classique
+    alignement: 16                # chaque segment démarre sur une frontière 16
+    entre: 1048576                # 0x100000 — premier octet de .text
+    segments: [".text", ".data"]  # .data = 2A 00 00 00 (42)
+    enveloppe: brut
+    runtime: aucun
+    note: "aucun ELF : le loader place les octets à 0x100000 et saute à l'entrée"
+  }
+]
+
+# Jeu d'opérations abstrait (identique à cible.bud ; commun aux deux cibles).
+# La disponibilité effective est donnée par la table d'encodeurs du backend
+# (familles 4 et 5, lignes "4:code:4xx" et "5:code:5xx").
+operations: [
+  { code: 0,  nom: "nop",     arite: 0 },
+  { code: 1,  nom: "imm",     arite: 2 },
+  { code: 2,  nom: "mov",     arite: 2 },
+  { code: 3,  nom: "add",     arite: 3 },
+  { code: 4,  nom: "sub",     arite: 3 },
+  { code: 5,  nom: "mul",     arite: 3 },
+  { code: 6,  nom: "and",     arite: 3 },
+  { code: 7,  nom: "or",      arite: 3 },
+  { code: 8,  nom: "xor",     arite: 3 },
+  { code: 9,  nom: "load",    arite: 3 },
+  { code: 10, nom: "store",   arite: 3 },
+  { code: 11, nom: "jmp",     arite: 1 },
+  { code: 12, nom: "call",    arite: 1 },
+  { code: 13, nom: "ret",     arite: 0 },
+  { code: 14, nom: "syscall", arite: 1 }
+]
+
+encodeurs: [
+  "4:0:400", "4:1:401", "4:2:402", "4:3:403", "4:4:404", "4:5:405",
+  "4:6:406", "4:7:407", "4:8:408", "4:9:409", "4:10:410", "4:11:411",
+  "4:12:412", "4:13:413", "4:14:414",
+  "5:0:500", "5:1:501", "5:2:502", "5:3:503", "5:4:504", "5:5:505",
+  "5:6:506", "5:7:507", "5:8:508", "5:9:509", "5:10:510", "5:11:511",
+  "5:12:512", "5:13:513", "5:14:514"
+]
+
+options: {
+  freestanding: vrai
+  pie: faux
+  gc: faux
+  alloc_implicite: faux
+  libc: faux
+}

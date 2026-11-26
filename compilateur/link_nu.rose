@@ -1,0 +1,213 @@
+# link_nu.rose — LINKER SCRIPT NU, EN ROSE PUR (aucun ld, aucun cc, aucun objet).
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Doctrine : le linker d'un noyau Rose n'est PAS un programme externe. C'est
+# une suite de fonctions Rose qui déposent des sections d'octets à des offsets
+# alignés et écrivent un BINAIRE NU : ni ELF, ni PE, ni COFF, ni table de
+# symboles, ni relocation, ni en-tête. Le format de chargement est un CONTRAT
+# de données (voir `briques/backend/freestanding.bud`), pas une structure
+# codée en dur ici.
+#
+# API (trois fonctions, aucune primitive Rust) :
+#   ln_config(adresse_charge, alignement, entre) -> liste<entier>
+#       Pose l'adresse de chargement (0x7C00 = 31232 pour un bootloader en
+#       mode réel, 0x100000 = 1048576 pour un noyau en mode protégé),
+#       l'alignement des sections en octets et l'adresse ABSOLUE d'entrée.
+#       Rend une configuration IMMUTABLE (relue après coup par les
+#       accesseurs ln_charge / ln_entree / ln_entree_offset).
+#   ln_ajouter_section(nom, octets) -> entier
+#       Ajoute une section à la configuration courante. `octets` suit la
+#       convention du backend : liste<entier> porteuse, octets utiles à
+#       partir de l'index 1. Rend l'identifiant de la section (1-based).
+#   ln_ecrire(config, chemin) -> entier
+#       Écrit le binaire nu (les trous d'alignement sont des zéros) et rend
+#       le nombre d'octets écrits, ou -1 si la configuration est invalide.
+#
+# Accesseurs de preuve : ln_charge, ln_alignement, ln_entree,
+# ln_entree_offset, ln_statut, ln_nb_sections, ln_offset, ln_adresse_section,
+# ln_taille_section, ln_nom_section, ln_valider. `ln_bytes(config)` rend la
+# chaîne d'octets bruts QUE `ln_ecrire` écrit (contrôle sans relire le fichier :
+# Rose n'a pas de lecture binaire, `lire_texte` remplace les octets > 0x7F).
+#
+# CONVENTIONS DE TYPE (identiques à backend_universel.rose / contour.rose) :
+#   - une liste est PORTEUSE : son index 0 est une valeur ignorée ;
+#   - Rose n'a pas d'affectation par index, et REBINDER une variable globale
+#     dans une fonction crée une variable LOCALE (piège mesuré) : l'état du
+#     linker est donc un JOURNAL de listes globales, mutées par `joindre`
+#     (qui modifie la liste par référence) ; les accesseurs lisent la DERNIÈRE
+#     valeur du journal. Un second `ln_config` démarre une nouvelle génération
+#     de sections sans écraser la précédente.
+#   - les octets bruts passent par `octet_brut`, défini UNE SEULE FOIS dans
+#     `compilateur/backend_universel.rose` (interception G5). Ce module est
+#     un MODULE SOURCE : on le concatène au backend, comme tests_multi.rose.
+#     Aucun appel à ld / cc / objcopy / objdump n'est fait ici.
+#
+#   cat compilateur/backend_universel.rose compilateur/link_nu.rose \
+#       briques/tests_freestanding.rose > /tmp/fs.rose
+#   ROSE_SANS_JIT=1 rose interprete /tmp/fs.rose
+#   /tmp/opencode/C0_h.elf /tmp/fs.rose > /tmp/fs.elf && /tmp/fs.elf
+
+# ── 0. Primordia ───────────────────────────────────────────────────────────
+
+# Un octet BRUT, pas un point de code UTF-8. `octet_brut` vient du backend.
+fn ln_octet(v: entier) -> chaine { retour octet_brut(v % 256) }
+
+# Dernière valeur d'un journal (liste porteuse, index 0 ignoré).
+fn ln_dernier(l: liste<entier>) -> entier { retour l[longueur(l) - 1] }
+
+# ── 1. État du linker (journaux globaux, mutation par joindre) ─────────────
+# Chaque ln_config ajoute une valeur à chaque journal scalaire. Les sections
+# ajoutées ensuite sont indexées à partir de $ln_base (indice dans les listes
+# de sections) : la génération courante = la dernière valeur de $ln_base.
+
+$ln_adr = [0]
+$ln_al = [0]
+$ln_ent = [0]
+$ln_st = [0]
+$ln_cur = [0]
+$ln_nsec = [0]
+$ln_base = [0]
+$ln_nom = [""]
+$ln_idx = [0]
+$ln_len = [0]
+$ln_off = [0]
+$ln_oct = [0]
+
+# ── 2. Configuration ───────────────────────────────────────────────────────
+
+fn ln_config(adresse_charge: entier, alignement: entier, entre: entier) -> liste<entier> {
+  $al = alignement
+  si ($al <= 0) { $al = 1 }
+  $st = 0
+  si ($adresse_charge < 0) { $st = -1 }
+  si ($entre < $adresse_charge) { $st = -2 }
+  joindre($ln_adr, $adresse_charge)
+  joindre($ln_al, $al)
+  joindre($ln_ent, $entre)
+  joindre($ln_st, $st)
+  joindre($ln_cur, 0)
+  joindre($ln_nsec, 0)
+  joindre($ln_base, longueur($ln_off) - 1)       # dernier index valide
+  $cfg = [$adresse_charge, $al, $entre, 0, $st]
+  retour $cfg
+}
+
+# ── 3. Sections ────────────────────────────────────────────────────────────
+
+fn ln_ajouter_section(nom: chaine, octets: liste<entier>) -> entier {
+  $nb = longueur($octets) - 1                    # porteuse en index 0
+  $st = ln_dernier($ln_st)
+  si ($nb <= 0 ou $st != 0) { retour -1 }
+  $al = ln_dernier($ln_al)
+  $off = ln_dernier($ln_cur)
+  $reste = $off % $al
+  si ($reste != 0) { $off = $off + ($al - $reste) }
+  $base = longueur($ln_oct)
+  $k = 1
+  tant_que ($k <= $nb) {
+    joindre($ln_oct, $octets[$k] % 256)
+    $k = $k + 1
+  }
+  $id = ln_dernier($ln_nsec) + 1
+  joindre($ln_nsec, $id)
+  joindre($ln_cur, $off + $nb)
+  joindre($ln_nom, $nom)
+  joindre($ln_idx, $base)
+  joindre($ln_len, $nb)
+  joindre($ln_off, $off)
+  retour $id
+}
+
+# ── 4. Accesseurs ──────────────────────────────────────────────────────────
+
+fn ln_charge(cfg: liste<entier>) -> entier { retour cfg[0] }
+fn ln_alignement(cfg: liste<entier>) -> entier { retour cfg[1] }
+fn ln_entree(cfg: liste<entier>) -> entier { retour cfg[2] }
+fn ln_entree_offset(cfg: liste<entier>) -> entier { retour cfg[2] - cfg[0] }
+fn ln_statut(cfg: liste<entier>) -> entier { retour cfg[4] }
+fn ln_nb_sections() -> entier { retour ln_dernier($ln_nsec) }
+fn ln_taille_totale() -> entier { retour ln_dernier($ln_cur) }
+
+fn ln_offset(id: entier) -> entier {
+  si (id < 1 ou id > ln_dernier($ln_nsec)) { retour -1 }
+  retour $ln_off[ln_dernier($ln_base) + $id]
+}
+
+fn ln_taille_section(id: entier) -> entier {
+  si (id < 1 ou id > ln_dernier($ln_nsec)) { retour -1 }
+  retour $ln_len[ln_dernier($ln_base) + $id]
+}
+
+fn ln_adresse_section(cfg: liste<entier>, id: entier) -> entier {
+  retour cfg[0] + ln_offset($id)
+}
+
+fn ln_nom_section(id: entier) -> chaine {
+  si (id < 1 ou id > ln_dernier($ln_nsec)) { retour "" }
+  retour $ln_nom[ln_dernier($ln_base) + $id]
+}
+
+# Le point d'entrée doit tomber dans une section ; sinon l'image est
+# inutilisable (le saut atterrirait dans un trou de padding ou hors charge).
+fn ln_valider(cfg: liste<entier>) -> entier {
+  si (cfg[4] != 0) { retour cfg[4] }
+  $n = ln_dernier($ln_nsec)
+  si ($n <= 0) { retour -3 }
+  $ent = cfg[2] - cfg[0]
+  $trouve = 0
+  $b = ln_dernier($ln_base)
+  $i = 1
+  tant_que ($i <= $n) {
+    $deb = $ln_off[$b + $i]
+    $fin = $deb + $ln_len[$b + $i]
+    si ($ent >= $deb et $ent < $fin) { $trouve = 1 }
+    $i = $i + 1
+  }
+  si ($trouve == 0) { retour -4 }
+  retour 0
+}
+
+# ── 5. Écriture du binaire nu ──────────────────────────────────────────────
+
+# Aucun en-tête : le premier octet du fichier est le premier octet de la
+# première section. Les trous créés par l'alignement sont remplis de zéros.
+# L'adresse de chargement n'est PAS écrite dans le fichier : elle est un
+# paramètre du contrat de chargement (`ln_charge`), comme pour un bootloader
+# qui place son secteur à 0x7C00.
+fn ln_bytes(config: liste<entier>) -> chaine {
+  si (ln_valider($config) != 0) { retour "" }
+  $n = ln_dernier($ln_nsec)
+  $b = ln_dernier($ln_base)
+  $s = ""
+  $cur = 0
+  $i = 1
+  tant_que ($i <= $n) {
+    $deb = $ln_off[$b + $i]
+    $lg = $ln_len[$b + $i]
+    $z = 0
+    tant_que ($z < $deb - $cur) {
+      $s = $s + ln_octet(0)
+      $z = $z + 1
+    }
+    $p = $ln_idx[$b + $i]
+    $k = 0
+    tant_que ($k < $lg) {
+      $s = $s + ln_octet($ln_oct[$p + $k])
+      $k = $k + 1
+    }
+    $cur = $deb + $lg
+    $i = $i + 1
+  }
+  retour $s
+}
+
+fn ln_ecrire(config: liste<entier>, chemin: chaine) -> entier {
+  si (ln_valider($config) != 0) { retour -1 }
+  $s = ln_bytes($config)
+  ecrire_bytes($chemin, $s)
+  retour longueur($s)
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FIN DU LINKER — aucun format de conteneur, aucun outil externe, aucun GC.
+# ═══════════════════════════════════════════════════════════════════════════

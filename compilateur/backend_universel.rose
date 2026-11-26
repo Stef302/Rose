@@ -18,10 +18,15 @@
 #   bu_emettre(seq, cible, chemin) -> entier (écrit via ecrire_bytes)
 #
 # Cibles réellement supportées : aarch64, x86_64, wasm (module valide avec
-# import d'E/S, mémoire linéaire et segment de données), et i386 (famille 4 :
-# code machine x86 32 bits NU, sans enveloppe, pour noyau en anneau 0).
+# import d'E/S, mémoire linéaire et segment de données), x86_16 (mode réel,
+# adressage 16 bits, préfixe 0x66 pour un opérande 32 bits) et x86_32 (mode
+# protégé anneau 0, adressage 32 bits). Les deux cibles NU partagent UN SEUL
+# encodeur : la largeur d'opérande, le préfixe, la largeur d'adresse et le
+# vecteur d'interruption sont des DONNÉES du profil `bu_cible`, jamais des
+# noms écrits dans `bu_traduire`.
 # Voir rose/docs/BACKEND_UNIVERSEL.md pour la doctrine complète et les
-# limites (largeur d'immédiat, formats de saut, sémantique wasm i32).
+# limites (largeur d'immédiat, formats de saut, sémantique wasm i32), ainsi
+# que rose/docs/BACKEND_FREESTANDING.md pour la chaîne noyau/bootloader.
 #
 # CONVENTIONS DE TYPE (compatibles G5 / C0, mesurées) :
 #   - une suite / un tampon d'octets est une liste<entier> dont l'index 0
@@ -52,8 +57,8 @@ fn bu_noms_ops() -> liste<chaine> {
   joindre($r, "call")
   joindre($r, "ret")
   joindre($r, "syscall")
-  joindre($r, "hlt")       # code 15 : arrêt processeur (anneau 0)
-  joindre($r, "jmp_rel8")  # code 16 : saut relatif court (argument = décalage signé)
+  joindre($r, "hlt")       # code 15
+  joindre($r, "jmp_rel8")  # code 16
   retour $r
 }
 
@@ -177,15 +182,43 @@ fn bu_cible(nom: chaine) -> liste<chaine> {
     # des virgules). Segment `data` à l'offset 0. 42 = 0x2a = 'a' + 1.
     joindre($p, "donnees_initiales=" + "42,0,0,0")
   }
-  si ($nom == "i386") {
+  # ── Cibles FREESTANDING (familles 4 et 5) ──────────────────────────────
+  # Même jeu d'opérations abstraites, mais aucune enveloppe, aucun runtime,
+  # aucun ELF/PE : `bu_traduire` rend directement les octets machine. La
+  # différence entre mode réel et mode protégé est ENTIÈREMENT dans ces
+  # champs de données, consults par l'unique encodeur `bu_x86nu_encode`.
+  si ($nom == "i386") { $nom = "x86_32" }
+  si ($nom == "x86_16") {
     $famille = 4
+    $reg = 16
+    $bout = "petit"
+    $mot = 2
+    $nregs = 8
+    $saut = "registre"
+    $io = "int"
+    $env = "brut"
+    joindre($p, "largeur_operande=2")   # B8+r + imm16 par défaut
+    joindre($p, "prefixe_32=102")       # 0x66 : bascule en opérande 32 bits
+    joindre($p, "forcer_32=0")          # pas de préfixe sur les ops de registre
+    joindre($p, "taille_adresse=2")     # modrm mod=10 + disp16
+    joindre($p, "vecteur_defaut=16")    # int 0x10 (BIOS, mode réel)
+    joindre($p, "mode=reel")
+  }
+  si ($nom == "x86_32") {
+    $famille = 5
     $reg = 32
     $bout = "petit"
-    $mot = 1
+    $mot = 4
     $nregs = 8
-    $saut = "relatif8"
-    $io = "int80"
+    $saut = "registre"
+    $io = "int"
     $env = "brut"
+    joindre($p, "largeur_operande=4")   # opérande 32 bits par défaut
+    joindre($p, "prefixe_32=0")         # aucun préfixe nécessaire
+    joindre($p, "forcer_32=0")
+    joindre($p, "taille_adresse=4")     # modrm mod=10 + disp32
+    joindre($p, "vecteur_defaut=128")   # int 0x80 (noyau, anneau 0)
+    joindre($p, "mode=protege")
   }
   joindre($p, "famille=" + chaine($famille))
   joindre($p, "largeur_registre=" + chaine($reg))
@@ -215,7 +248,11 @@ fn bu_profil(p: liste<chaine>, cle: chaine) -> chaine {
 }
 
 fn bu_profil_entier(p: liste<chaine>, cle: chaine) -> entier {
-  retour entier(bu_profil($p, $cle))
+  # Une clé absente est une donnée valable (0), pas une erreur : le profil
+  # d'une cible peut omettre les champs propres à une autre famille.
+  $s = bu_profil($p, $cle)
+  si (longueur($s) == 0) { retour 0 }
+  retour entier($s)
 }
 
 # ── 4. Table de données : quelles ops sont disponibles sur quelle cible ─────
@@ -269,6 +306,7 @@ joindre($bu_encoder_table, "3:11:311")
 joindre($bu_encoder_table, "3:12:312")
 joindre($bu_encoder_table, "3:13:313")
 joindre($bu_encoder_table, "3:14:314")
+# x86_16 (mode réel) : famille 4, encodeurs 400..414.
 joindre($bu_encoder_table, "4:0:400")
 joindre($bu_encoder_table, "4:1:401")
 joindre($bu_encoder_table, "4:2:402")
@@ -286,6 +324,25 @@ joindre($bu_encoder_table, "4:13:413")
 joindre($bu_encoder_table, "4:14:414")
 joindre($bu_encoder_table, "4:15:415")
 joindre($bu_encoder_table, "4:16:416")
+joindre($bu_encoder_table, "5:14:514")
+joindre($bu_encoder_table, "5:15:515")
+joindre($bu_encoder_table, "5:16:516")
+# x86_32 (mode protégé) : famille 5, encodeurs 500..514.
+joindre($bu_encoder_table, "5:0:500")
+joindre($bu_encoder_table, "5:1:501")
+joindre($bu_encoder_table, "5:2:502")
+joindre($bu_encoder_table, "5:3:503")
+joindre($bu_encoder_table, "5:4:504")
+joindre($bu_encoder_table, "5:5:505")
+joindre($bu_encoder_table, "5:6:506")
+joindre($bu_encoder_table, "5:7:507")
+joindre($bu_encoder_table, "5:8:508")
+joindre($bu_encoder_table, "5:9:509")
+joindre($bu_encoder_table, "5:10:510")
+joindre($bu_encoder_table, "5:11:511")
+joindre($bu_encoder_table, "5:12:512")
+joindre($bu_encoder_table, "5:13:513")
+joindre($bu_encoder_table, "5:14:514")
 
 fn bu_champ(s: chaine, i: entier) -> chaine {
   $n = longueur(s)
@@ -575,115 +632,6 @@ fn bu_x64_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<enti
   retour $r
 }
 
-# ── 7b. Encodeur I386 (famille 4) — CODE MACHINE NU, SANS ENVELOPPE ─────────
-# Aucun octet n'est calculé par le programme noyau : celui-ci décrit une
-# opération ABSTRAITE (bu_operation), cet encodeur est le SEUL endroit qui
-# connaît les opcodes x86 32 bits. Les immédiats/déplacements 32 bits passent
-# par bu_mot32 (boutisme lu dans le profil). Aucun REX, aucun 64 bits, aucune
-# relocation : le résultat est exécutable tel quel en anneau 0 à l'adresse
-# fixée par le lieur.
-#
-# Registres x86-32 : 0=eax 1=ecx 2=edx 3=ebx 4=esp 5=ebp 6=esi 7=edi.
-
-fn bu_i386_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
-  $r = [0]
-  $d = 0
-  $s = 0
-  $t = 0
-  si (longueur($a) > 1) { $d = $a[1] }
-  si (longueur($a) > 2) { $s = $a[2] }
-  si (longueur($a) > 3) { $t = $a[3] }
-
-  # nop = 0x90
-  si (code == 0) { joindre($r, 144) }
-
-  # imm r32, val = B8+r + imm32  (mov eax, 0x101000 -> b8 00 00 10 00)
-  si (code == 1) {
-    joindre($r, 184 + ($d % 8))
-    bu_ajoute($r, bu_mot32($s, $p))
-  }
-
-  # mov dst, src = 89 /r  (reg=src, rm=dst)
-  si (code == 2) {
-    joindre($r, 137)
-    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
-  }
-
-  # x86-32 est à 2 opérandes : toute op à 3 opérandes commence par mov d,s.
-  # add : mov d,s ; add t,d  (01 /r avec reg=t, rm=d)
-  si (code == 3) {
-    joindre($r, 137)
-    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
-    joindre($r, 1)
-    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
-  }
-  # sub : 29 /r
-  si (code == 4) {
-    joindre($r, 137)
-    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
-    joindre($r, 41)
-    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
-  }
-  # mul : imul d, t = 0F AF /r
-  si (code == 5) {
-    joindre($r, 137)
-    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
-    joindre($r, 15)
-    joindre($r, 175)
-    joindre($r, 192 + ($d % 8) * 8 + ($t % 8))
-  }
-  # and / or / xor : 21 / 09 / 31 /r (reg=t, rm=d)
-  si (code == 6) {
-    joindre($r, 137)
-    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
-    joindre($r, 33)
-    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
-  }
-  si (code == 7) {
-    joindre($r, 137)
-    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
-    joindre($r, 9)
-    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
-  }
-  si (code == 8) {
-    joindre($r, 137)
-    joindre($r, 192 + ($s % 8) * 8 + ($d % 8))
-    joindre($r, 49)
-    joindre($r, 192 + ($t % 8) * 8 + ($d % 8))
-  }
-
-  # load d,[base+off] = 8B /r (mod=10, reg=d, rm=base) + disp32
-  si (code == 9) {
-    joindre($r, 139)
-    joindre($r, 128 + ($d % 8) * 8 + ($s % 8))
-    bu_ajoute($r, bu_mot32($t, $p))
-  }
-  # store [base+off],val = 89 /r (mod=10, reg=val, rm=base) + disp32
-  si (code == 10) {
-    joindre($r, 137)
-    joindre($r, 128 + ($d % 8) * 8 + ($s % 8))
-    bu_ajoute($r, bu_mot32($t, $p))
-  }
-
-  # jmp r/m32 = FF /4 ; call r/m32 = FF /2 ; ret = C3
-  si (code == 11) { joindre($r, 255); joindre($r, 224 + ($d % 8)) }
-  si (code == 12) { joindre($r, 255); joindre($r, 208 + ($d % 8)) }
-  si (code == 13) { joindre($r, 195) }
-
-  # syscall : int 0x80 (réservé au mode protégé, non utilisé par le noyau démo)
-  si (code == 14) { joindre($r, 205); joindre($r, 128) }
-
-  # hlt = F4 : arrêt du processeur en anneau 0.
-  si (code == 15) { joindre($r, 244) }
-
-  # jmp rel8 = EBdisp8 (décalage signé, -2 = boucle sur soi).
-  si (code == 16) {
-    joindre($r, 235)
-    joindre($r, bu_octet($d))
-  }
-  retour $r
-}
-
 # ── 8. Encodeur WASM (famille 3) ───────────────────────────────────────────
 # L'IR à registres est abaissé en machine à pile : chaque registre est un
 # local i32. Les octets produits forment un MODULE VALIDE : magie, types,
@@ -838,6 +786,148 @@ fn bu_wasm_module(corps: liste<entier>, p: liste<chaine>) -> liste<entier> {
   retour $r
 }
 
+# ── 8b. Encodeur x86 NU (familles 4 = x86_16, 5 = x86_32) ──────────────────
+# UN SEUL encodeur pour LES DEUX cibles : aucun nom de CPU, aucun "si x86_16".
+# La largeur d'opérande, le préfixe 0x66, la largeur d'adresse, le boutisme et
+# le vecteur d'interruption sont LUS dans le profil renvoyé par `bu_cible`.
+# Famille 4 (mode réel) : mot = 2 octets, préfixe 0x66 si immédiat > 16 bits.
+# Famille 5 (mode protégé) : mot = 4 octets, aucun préfixe, disp32.
+
+fn bu_x86nu_octets(v: entier, nb: entier, p: liste<chaine>) -> liste<entier> {
+  $u = v % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  $tmp = [0]
+  $k = 0
+  tant_que ($k < $nb) {
+    joindre($tmp, $u % 256)
+    $u = partie_entiere($u / 256)
+    $k = $k + 1
+  }
+  $r = [0]
+  si (bu_profil($p, "boutisme") == "gros") {
+    $k = $nb
+    tant_que ($k >= 1) { joindre($r, $tmp[$k]); $k = $k - 1 }
+  } sinon {
+    $k = 1
+    tant_que ($k <= $nb) { joindre($r, $tmp[$k]); $k = $k + 1 }
+  }
+  retour $r
+}
+
+fn bu_x86nu_modrm(mod: entier, reg: entier, rm: entier) -> entier {
+  retour 64 * $mod + 8 * ($reg % 8) + ($rm % 8)
+}
+
+# Préfixe d'opérande : en mode réel (mot = 2), un opérande 32 bits s'obtient
+# par 0x66. `force32` vient du calcul sur l'immédiat ; `forcer_32` est une
+# DONNÉE du profil (0 ici, mais un noyau peut l'imposer).
+fn bu_x86nu_pre(r: liste<entier>, p: liste<chaine>, force32: entier) -> entier {
+  $w = bu_profil_entier($p, "largeur_operande")
+  $pref = bu_profil_entier($p, "prefixe_32")
+  $f = bu_profil_entier($p, "forcer_32")
+  $besoin = 0
+  si ($w == 2 et ($force32 == 1 ou $f == 1)) { $besoin = 1 }
+  si ($besoin == 1 et $pref > 0) { joindre($r, $pref) }
+  retour longueur($r) - 1
+}
+
+fn bu_x86nu_imm(reg: entier, v: entier, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  $w = bu_profil_entier($p, "largeur_operande")
+  $u = v % 4294967296
+  si ($u < 0) { $u = $u + 4294967296 }
+  $nb = $w
+  $force = 0
+  # 0x66 est émis ICI, jamais à partir d'un nom d'architecture.
+  si ($w == 2 et $u > 65535) { $nb = 4; $force = 1 }
+  bu_x86nu_pre($r, $p, $force)
+  joindre($r, 184 + ($reg % 8))                  # B8+r : mov reg, imm
+  bu_ajoute($r, bu_x86nu_octets($u, $nb, $p))
+  retour $r
+}
+
+fn bu_x86nu_rr(opcode: entier, reg: entier, rm: entier, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  bu_x86nu_pre($r, $p, 0)
+  joindre($r, $opcode)
+  joindre($r, bu_x86nu_modrm(3, $reg, $rm))       # mod=11 : registre/registre
+  retour $r
+}
+
+fn bu_x86nu_rr2(pre: entier, opcode: entier, reg: entier, rm: entier, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  bu_x86nu_pre($r, $p, 0)
+  joindre($r, $pre)
+  joindre($r, $opcode)
+  joindre($r, bu_x86nu_modrm(3, $reg, $rm))
+  retour $r
+}
+
+fn bu_x86nu_mem(opcode: entier, reg: entier, base: entier, off: entier, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  bu_x86nu_pre($r, $p, 0)
+  joindre($r, $opcode)
+  joindre($r, bu_x86nu_modrm(2, $reg, $base))     # mod=10 : disp16 ou disp32
+  bu_ajoute($r, bu_x86nu_octets($off, bu_profil_entier($p, "taille_adresse"), $p))
+  retour $r
+}
+
+fn bu_x86nu_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
+  $r = [0]
+  $d = 0
+  $s = 0
+  $t = 0
+  si (longueur($a) > 1) { $d = $a[1] }
+  si (longueur($a) > 2) { $s = $a[2] }
+  si (longueur($a) > 3) { $t = $a[3] }
+  si (code == 0) { joindre($r, 144) }                                    # nop
+  si (code == 1) { bu_ajoute($r, bu_x86nu_imm($d, $s, $p)) }             # mov reg, imm
+  si (code == 2) { bu_ajoute($r, bu_x86nu_rr(139, $d, $s, $p)) }         # mov dst,src
+  # x86 est à 2 opérandes : toute op à 3 opérandes commence par mov d,s.
+  si (code == 3) {
+    bu_ajoute($r, bu_x86nu_rr(139, $d, $s, $p))
+    bu_ajoute($r, bu_x86nu_rr(1, $t, $d, $p))                             # add d,t
+  }
+  si (code == 4) {
+    bu_ajoute($r, bu_x86nu_rr(139, $d, $s, $p))
+    bu_ajoute($r, bu_x86nu_rr(41, $t, $d, $p))                            # sub d,t
+  }
+  si (code == 5) {
+    bu_ajoute($r, bu_x86nu_rr(139, $d, $s, $p))
+    bu_ajoute($r, bu_x86nu_rr2(15, 175, $d, $t, $p))                      # imul d,t
+  }
+  si (code == 6) {
+    bu_ajoute($r, bu_x86nu_rr(139, $d, $s, $p))
+    bu_ajoute($r, bu_x86nu_rr(33, $t, $d, $p))                            # and d,t
+  }
+  si (code == 7) {
+    bu_ajoute($r, bu_x86nu_rr(139, $d, $s, $p))
+    bu_ajoute($r, bu_x86nu_rr(9, $t, $d, $p))                             # or d,t
+  }
+  si (code == 8) {
+    bu_ajoute($r, bu_x86nu_rr(139, $d, $s, $p))
+    bu_ajoute($r, bu_x86nu_rr(49, $t, $d, $p))                            # xor d,t
+  }
+  si (code == 9) { bu_ajoute($r, bu_x86nu_mem(139, $d, $s, $t, $p)) }     # mov d,[base+off]
+  si (code == 10) { bu_ajoute($r, bu_x86nu_mem(137, $d, $s, $t, $p)) }    # mov [base+off],src
+  si (code == 11) { bu_ajoute($r, bu_x86nu_rr(255, 4, $d, $p)) }          # jmp r/m : FF /4
+  si (code == 12) { bu_ajoute($r, bu_x86nu_rr(255, 2, $d, $p)) }          # call r/m : FF /2
+  si (code == 13) { joindre($r, 195) }                                    # ret
+  si (code == 14) {
+    # int imm8 : vecteur de l'IR, ou vecteur par défaut du profil si 0.
+    $vec = $d
+    si ($vec == 0) { $vec = bu_profil_entier($p, "vecteur_defaut") }
+    joindre($r, 205)
+    joindre($r, $vec % 256)
+  }
+  si (code == 15) { joindre($r, 244) }                                  # hlt : F4
+  si (code == 16) {                                                      # jmp rel8 : EB imm8
+    joindre($r, 235)
+    joindre($r, $d % 256)
+  }
+  retour $r
+}
+
 # ── 9. Traduction générique ────────────────────────────────────────────────
 # AUCUN nom d'architecture ici. La famille vient du profil, la disponibilité
 # d'une opération vient de $bu_encoder_table, le boutisme vient du profil.
@@ -848,7 +938,8 @@ fn bu_encode(famille: entier, code: entier, a: liste<entier>, p: liste<chaine>) 
   si ($famille == 1) { retour bu_a64_encode($code, $a, $p) }
   si ($famille == 2) { retour bu_x64_encode($code, $a, $p) }
   si ($famille == 3) { retour bu_wasm_encode($code, $a, $p) }
-  si ($famille == 4) { retour bu_i386_encode($code, $a, $p) }
+  # Familles 4 et 5 : le MÊME encodeur, paramétré par les données du profil.
+  si ($famille == 4 ou $famille == 5) { retour bu_x86nu_encode($code, $a, $p) }
   retour $vide
 }
 
