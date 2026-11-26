@@ -5364,15 +5364,14 @@ fn parse_noms($p: entier, $tend: entier) -> entier {
 }
 fn parse_rir($txt: chaine) -> entier {
   $lines = [""]
-  $cur = ""
   $i = 0
   $nl = longueur($txt)
   tant_que ($i < $nl) {
-    $c = $txt[$i]
-    si ($c == "\n") { joindre($lines, $cur); $cur = "" } sinon { $cur = $cur + $c }
-    $i = $i + 1
+    $j = $i
+    tant_que ($j < $nl et $txt[$j] != "\n") { $j = $j + 1 }
+    joindre($lines, sous_chaine($txt, $i, $j))
+    $i = $j + 1
   }
-  si (longueur($cur) > 0) { joindre($lines, $cur) }
   $li = 1
   $en_fn = faux
   $nfn = 0
@@ -12784,9 +12783,12 @@ fn g4_pos($s: chaine, $mot: chaine) -> entier {
   $ln = longueur($s)
   $lm = longueur($mot)
   si ($lm == 0) { retour 0 }
-  tant_que ($p + $lm <= $ln et sous_chaine($s, $p, $p + $lm) != $mot) { $p = $p + 1 }
-  si ($p + $lm > $ln) { retour -1 }
-  retour $p
+  $c0 = $mot[0]
+  tant_que ($p + $lm <= $ln) {
+    si ($s[$p] == $c0 et sous_chaine($s, $p, $p + $lm) == $mot) { retour $p }
+    $p = $p + 1
+  }
+  retour -1
 }
 
 fn g4_ratio_texte($tok: chaine) -> chaine {
@@ -18176,33 +18178,22 @@ fn mcce_fold($rir: chaine) -> chaine {
 
 
 fn mc_const_programme($rir: chaine) -> chaine {
-  # Repli constant étendu (chaînes/Unicode) : évalue les RIR « tout littéral »
-  # sans construire les tables de tokens ni parcourir les opcodes. Tout programme
-  # sortant du sous-ensemble reconnu rend "" et suit la voie interprétée d'origine.
-  $mcce = mcce_fold($rir)
-  si (longueur($mcce) > 0) { retour $mcce }
   $n = longueur($rir)
-  $lignes = [""]
-  $cur = ""
-  $i = 0
-  tant_que ($i <= $n) {
-    si ($i == $n ou $rir[$i] == "\n") {
-      joindre($lignes, $cur)
-      $cur = ""
-    } sinon { $cur = $cur + $rir[$i] }
-    $i = $i + 1
-  }
   $out = ""
   $nv = 0
-  $j = 1
+  $i = 0
   $base = "afficher_abstrait entier "
   $lb = longueur($base)
-  tant_que ($j < longueur($lignes)) {
-    $l = $lignes[$j]
-    si ($l == "rir" ou $l == "fonction $principal" ou $l == "  retour vide"
-        ou $l == "  n_slots 0" ou $l == "  noms" ou $l == "  ops") {
-      $j = $j + 1
-    } sinon {
+  # Découpage INDEXÉ : une seule sous_chaine par ligne, aucune concaténation
+  # octet par octet. Dès qu'une ligne n'est pas un littéral constant, on
+  # retourne immédiatement : inutile de parcourir la suite du RIR.
+  tant_que ($i < $n) {
+    $j = $i
+    tant_que ($j < $n et $rir[$j] != "\n") { $j = $j + 1 }
+    $l = sous_chaine($rir, $i, $j)
+    $i = $j + 1
+    si ($l != "rir" et $l != "fonction $principal" et $l != "  retour vide"
+        et $l != "  n_slots 0" et $l != "  noms" et $l != "  ops") {
       $lc = trim($l)
       si (longueur($lc) < 5 + $lb) { retour "" }
       si (non digits_only(sous_chaine($lc, 0, 4))) { retour "" }
@@ -18213,7 +18204,6 @@ fn mc_const_programme($rir: chaine) -> chaine {
       si ($nv > 0) { $out = $out + "\n" }
       $out = $out + $v
       $nv = $nv + 1
-      $j = $j + 1
     }
   }
   si ($nv == 0) { retour "" }
