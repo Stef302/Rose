@@ -4775,39 +4775,39 @@ fn bmul($a: chaine, $b: chaine) -> chaine {
 # bdivmod rend [Dummy, quotient, reste] (modulo PLANCHER)
 fn bdivmod($a: chaine, $b: chaine) -> liste<chaine> {
   $r = [""]
-  $aa = babs($a)
-  $bb = babs($b)
+  $la = longueur($a)
+  $lb = longueur($b)
+  si ($la == 0) { $a = "0"; $la = 1 }
+  si ($lb == 0) { $b = "0"; $lb = 1 }
+  si ($la <= 18 et $lb <= 18) {
+    $x = entier($a)
+    $y = entier($b)
+    # `%` est le modulo PLANCHER signé dans LES DEUX moteurs (Rust et G5).
+    # En déduire le quotient par (x-rem)/y, exactement divisible : le
+    # résultat est identique même si `÷` tronque (G5) ou plancher (Rust).
+    $rem = $x % $y
+    $qv = ($x - $rem) ÷ $y
+    joindre($r, chaine($qv))
+    joindre($r, chaine($rem))
+    retour $r
+  }
+  $pa = bi_depuis_chaine($a)
+  $pb = bi_depuis_chaine($b)
+  $dm = bi_divmod_pos(bi_abs($pa), bi_abs($pb))
+  $qbig = bi_flat_q($dm)
+  $rr = bi_flat_r($dm)
   $neg = faux
-  $an = faux
   $bn = faux
-  si (longueur($a) > 0 et sous_chaine($a, 0, 1) == "-") { $an = vrai }
-  si (longueur($b) > 0 et sous_chaine($b, 0, 1) == "-") { $bn = vrai }
-  si ($an != $bn) { $neg = vrai }
-  $q = ""
-  $rem = "0"
-  $i = 0
-  tant_que ($i < longueur($aa)) {
-    $rem = bnorm(badd(bmul_small($rem, 10), sous_chaine($aa, $i, $i + 1)))
-    $d = 0
-    tant_que (bcmp($rem, $bb) >= 0) {
-      $rem = bsub_pos($rem, $bb)
-      $d = $d + 1
-    }
-    $q = $q + chaine($d)
-    $i = $i + 1
+  si ($pa[0] != $pb[0]) { $neg = vrai }
+  si ($pb[0] < 0) { $bn = vrai }
+  si ($neg et bi_zeroq($rr) == 0) {
+    $qbig = bi_add_pos($qbig, bi_un())
+    $rr = bi_sub_pos(bi_abs($pb), $rr)
   }
-  $qq = bnorm($q)
-  $rr = bnorm($rem)
-  si ($neg) {
-    si ($rr != "0") {
-      $qq = badd($qq, "1")
-      $rr = bsub($bb, $rr)
-    }
-    $qq = bneg($qq)
-  }
-  si ($bn) { $rr = bneg($rr) }
-  joindre($r, $qq)
-  joindre($r, $rr)
+  si ($neg) { $qbig = bi_neg($qbig) }
+  si ($bn) { $rr = bi_neg($rr) }
+  joindre($r, bi_texte($qbig))
+  joindre($r, bi_texte($rr))
   retour $r
 }
 fn bdiv($a: chaine, $b: chaine) -> chaine { $r = bdivmod($a, $b); retour $r[1] }
@@ -4882,10 +4882,40 @@ fn rat_make($n: chaine, $d: chaine) -> chaine {
   si (longueur($d) > 0 et sous_chaine($d, 0, 1) == "-") { $n = bneg($n); $d = bneg($d) }
   si ($n == "0") { retour "r:0/1" }
   si ($d == "1") { retour vi($n) }
-  $g = bgcd($n, $d)
-  si ($g != "1" et $g != "0") {
-    $q1 = bdivmod($n, $g); $n = $q1[1]
-    $q2 = bdivmod($d, $g); $d = $q2[1]
+  # ── réduction rationnelle : garde i64 puis limbs 10^8 ──────────────────
+  # L'ancien chemin appelait bgcd() (Euclide sur CHAÎNES décimales) puis
+  # deux bdivmod() (longue division chiffre par chiffre). Chaque appel
+  # interprète des centaines d'opérations Rose dans le moteur self-hosté.
+  # Or rat_make est au cœur de val_div / rat_add / rat_sub / rat_mul /
+  # rat_div : c'est le goulot des rationnels calculés.
+  #   • ≤ 18 chiffres : le tag G5 (2^60 ≈ 1,15e18) contient la valeur,
+  #     PGCD et divisions sont alors des opérations NATIVES (%) et (÷) ;
+  #   • au-delà : on réutilise les bigints en limbs de bmul/bgcd (base
+  #     10^8, bi_gcd + bi_div), sans jamais retomber sur la division décimale.
+  # Aucune optimisation existante n'est modifiée : bgcd, bdivmod, bcmp,
+  # bmul, rat_dec et les voies rapides val_* restent intactes.
+  $an = babs($n)
+  $ln = longueur($an)
+  $ld = longueur($d)
+  si ($ln <= 18 et $ld <= 18) {
+    $x = entier($an)
+    $y = entier($d)
+    $u = $x
+    $v = $y
+    tant_que ($v > 0) { $t = $u % $v; $u = $v; $v = $t }
+    si ($u > 1) {
+      $n = chaine(entier($n) ÷ $u)
+      $d = chaine($y ÷ $u)
+    }
+    si ($d == "1") { retour vi($n) }
+    retour "r:" + $n + "/" + $d
+  }
+  $rn = bi_depuis_chaine($n)
+  $rd = bi_depuis_chaine($d)
+  $g = bi_gcd(bi_abs($rn), $rd)
+  si (bi_zeroq($g) == 0 et bi_cmp($g, bi_un()) != 0) {
+    $n = bi_texte(bi_div($rn, $g))
+    $d = bi_texte(bi_div($rd, $g))
   }
   si ($d == "1") { retour vi($n) }
   retour "r:" + $n + "/" + $d
@@ -18493,6 +18523,287 @@ fn mc_const_programme($rir: chaine) -> chaine {
   retour $out
 }
 
+# ── repli persistant des comparaisons常量 dans le cache RIR ────────────
+# Cause générique : les programmes straight-line dont toutes les valeurs sont
+# des littéraux (ou des slots affectés une fois à un littéral) paient encore,
+# à CHAQUE premier lancement, l'évaluation RIR complète : dispatch des `bin`,
+# comparaisons bigint (`bcmp`), `et`/`ou`/`non`. Le front-end ne replie pas
+# ces expressions pour les grands entiers (miroir exact de Rust).
+#
+# On ajoute UN chemin de repli au moment de l'ÉCRITURE du cache RIR (jamais
+# au lancement) : si tout le RIR est un programme droit (aucun appel, aucune
+# fonction auxiliaire, aucune boucle, aucun effet de bord), on exécute les
+# ops sur des valeurs exactes et on persiste la sortie sous une CLÉ DE CACHE
+# DÉDIÉE. Les lancements suivants ne font qu'une lecture de fichier.
+# Tout programme sortant du sous-ensemble retourne "" : aucun changement
+# de sémantique, aucune optimisation existante modifiée.
+
+# G5 : un index hors bornes sur une liste segmente. Ce prédicat vérifie la
+# longueur AVANT tout accès à l'index 1 (les appels G5 évaluant les deux
+# branches d'un `ou` sans court-circuit).
+fn mcf_ok($v: liste<chaine>) -> booleen {
+  si (longueur($v) < 3) { retour faux }
+  si (longueur($v[1]) == 0) { retour faux }
+  retour vrai
+}
+
+fn mcf_eval($t: liste<chaine>, $p: entier, $sv: liste<chaine>) -> liste<chaine> {
+  $r = [""]
+  $nt = longueur($t)
+  si ($p < 1 ou $p >= $nt) { retour $r }
+  $h = $t[$p]
+  # ── atomes ──
+  si ($h == "entier") {
+    $q = $p + 1
+    si ($q >= $nt) { retour $r }
+    $s = $t[$q]
+    $d = $s
+    si (longueur($d) > 0 et sous_chaine($d, 0, 1) == "-") { $d = sous_chaine($d, 1, longueur($d)) }
+    si (longueur($d) > 4000 ou non digits_only($d)) { retour $r }
+    joindre($r, vi(bnorm($s)))
+    joindre($r, chaine($q + 1))
+    retour $r
+  }
+  si ($h == "s") {
+    $q = $p + 1
+    si ($q >= $nt) { retour $r }
+    joindre($r, vs(mcce_unescape($t[$q])))
+    joindre($r, chaine($q + 1))
+    retour $r
+  }
+  si ($h == "b") {
+    $q = $p + 1
+    si ($q >= $nt) { retour $r }
+    si ($t[$q] == "vraie" ou $t[$q] == "vrai") { joindre($r, "b:1")
+    } sinon si ($t[$q] == "faux") { joindre($r, "b:0")
+    } sinon { retour $r }
+    joindre($r, chaine($q + 1))
+    retour $r
+  }
+  si ($h == "slot") {
+    $q = $p + 1
+    si ($q >= $nt) { retour $r }
+    si (non digits_only($t[$q])) { retour $r }
+    # l'index 0 de la liste est la sentinelle : slot N -> indice N+1
+    $ix = entier($t[$q]) + 1
+    si ($ix < 1 ou $ix >= longueur($sv)) { retour $r }
+    $v = $sv[$ix]
+    si (longueur($v) < 2) { retour $r }
+    joindre($r, $v)
+    joindre($r, chaine($q + 1))
+    retour $r
+  }
+  si ($h != "(") { retour $r }
+  si ($p + 1 >= $nt) { retour $r }
+  # ── atome entre parenthèses : (s "..."), (entier N), (b vraie), (slot N) ──
+  $ah = $t[$p + 1]
+  si ($ah == "entier" ou $ah == "s" ou $ah == "b" ou $ah == "slot") {
+    $a = mcf_eval($t, $p + 1, $sv)
+    si (non mcf_ok($a)) { retour $r }
+    $q = entier($a[2])
+    si ($q >= $nt) { retour $r }
+    si ($t[$q] != ")") { retour $r }
+    joindre($r, $a[1])
+    joindre($r, chaine($q + 1))
+    retour $r
+  }
+  # ── expressions ──
+  $op = $t[$p + 1]
+  $a = [""]
+  $b = [""]
+  $q = 0
+  $nx = 0
+  $va = ""
+  $vb = ""
+  si ($op == "bin" ou $op == "binaire") {
+    si ($p + 2 >= $nt) { retour $r }
+    $o = $t[$p + 2]
+    $a = mcf_eval($t, $p + 3, $sv)
+    si (non mcf_ok($a)) { retour $r }
+    $q = entier($a[2])
+    $b = mcf_eval($t, $q, $sv)
+    si (non mcf_ok($b)) { retour $r }
+    $q = entier($b[2])
+    si ($q >= $nt) { retour $r }
+    si ($t[$q] != ")") { retour $r }
+    $nx = $q + 1
+    $va = $a[1]
+    $vb = $b[1]
+    $ta = vtag($va)
+    $tb = vtag($vb)
+    si ($o == "<" ou $o == "<=" ou $o == ">" ou $o == ">=" ou $o == "==" ou $o == "!=") {
+      # Comparaisons exactes : bcmp sur les grands entiers, comme l'interpréteur.
+      si (non (($ta == "i" et $tb == "i") ou ($ta == "s" et $tb == "s") ou ($ta == "b" et $tb == "b"))) { retour $r }
+      $c = val_cmp($va, $vb)
+      $res = faux
+      si ($o == "<") { $res = ($c < 0) }
+      si ($o == "<=") { $res = ($c <= 0) }
+      si ($o == ">") { $res = ($c > 0) }
+      si ($o == ">=") { $res = ($c >= 0) }
+      si ($o == "==") { $res = ($c == 0) }
+      si ($o == "!=") { $res = ($c != 0) }
+      joindre($r, vb($res))
+      joindre($r, chaine($nx))
+      retour $r
+    }
+    si ($o == "et" ou $o == "ou") {
+      $x = val_truth($va)
+      $y = val_truth($vb)
+      si ($o == "et") { joindre($r, vb($x et $y)) } sinon { joindre($r, vb($x ou $y)) }
+      joindre($r, chaine($nx))
+      retour $r
+    }
+    si ($o == "+" ou $o == "-" ou $o == "*" ou $o == "/" ou $o == "%") {
+      si (non (($ta == "i" et $tb == "i") ou ($ta == "s" et $tb == "s" et $o == "+"))) { retour $r }
+      # garde-fou : pas de division par zéro, pas de produit démesuré
+      si (($o == "/" ou $o == "%") et vpay($vb) == "0") { retour $r }
+      si ($o == "*" et (longueur(vpay($va)) > 2000 ou longueur(vpay($vb)) > 2000)) { retour $r }
+      $v = vi("0")
+      si ($o == "+") { $v = val_add($va, $vb) }
+      si ($o == "-") { $v = val_sub($va, $vb) }
+      si ($o == "*") { $v = val_mul($va, $vb) }
+      si ($o == "/") { $v = val_div($va, $vb) }
+      si ($o == "%") { $v = val_mod($va, $vb) }
+      joindre($r, $v)
+      joindre($r, chaine($nx))
+      retour $r
+    }
+    si ($o == "^") {
+      si ($ta != "i" ou $tb != "i") { retour $r }
+      $es = vpay($vb)
+      $neg = 0
+      si (longueur($es) > 0 et sous_chaine($es, 0, 1) == "-") { $neg = 1; $es = sous_chaine($es, 1, longueur($es)) }
+      si (longueur($es) > 4 ou non digits_only($es)) { retour $r }
+      $e = entier($es)
+      si ($e > 4096) { retour $r }
+      $v = vi(bpow(vpay($va), $e))
+      si ($neg == 1 et $v != vi("1")) { $v = val_div(vi("1"), $v) }
+      joindre($r, $v)
+      joindre($r, chaine($nx))
+      retour $r
+    }
+    retour $r
+  }
+  si ($op == "non" ou $op == "neg" ou $op == "uni") {
+    $q = $p + 2
+    si ($q >= $nt) { retour $r }
+    $uop = ""
+    si ($op == "uni") { $uop = $t[$q]; $q = $q + 1 }
+    $a = mcf_eval($t, $q, $sv)
+    si (non mcf_ok($a)) { retour $r }
+    $q = entier($a[2])
+    si ($q >= $nt) { retour $r }
+    si ($t[$q] != ")") { retour $r }
+    $v = $a[1]
+    si ($op == "non" ou $uop == "non") { $v = vb(non val_truth($v)) }
+    si ($op == "neg" ou $uop == "-") { $v = val_neg($v) }
+    joindre($r, $v)
+    joindre($r, chaine($q + 1))
+    retour $r
+  }
+  retour $r
+}
+
+fn mcf_programme($rir: chaine) -> chaine {
+  $n = longueur($rir)
+  # pré-filtre O(1) + garde de taille : aucun coût sur les gros RIR.
+  si ($n < 20 ou $n > 12000) { retour "" }
+  $lignes = mc_scan_lignes($rir)
+  $nl = longueur($lignes)
+  $ops = [""]
+  $nums = [""]
+  $dummypar = 0
+  $nf = 0
+  $i = 1
+  tant_que ($i < $nl) {
+    $lc = trim($lignes[$i])
+    $estop = 0
+    si (longueur($lc) >= 5 et digits_only(sous_chaine($lc, 0, 4)) et sous_chaine($lc, 4, 5) == " ") { $estop = 1 }
+    si ($estop == 1) {
+      joindre($ops, sous_chaine($lc, 5, longueur($lc)))
+      joindre($nums, sous_chaine($lc, 0, 4))
+    } sinon {
+      si ($lc == "rir" ou $lc == "ops" ou $lc == "noms" ou $lc == "retour vide"
+          ou sous_chaine($lc, 0, 8) == "n_slots " ou sous_chaine($lc, 0, 5) == "noms "
+          ou sous_chaine($lc, 0, 8) == "globaux ") {
+        # en-têtes autorisés
+      } sinon si ($lc == "fonction $principal") {
+        $nf = $nf + 1
+      } sinon si (longueur($lc) > 0) { retour "" }
+    }
+    $i = $i + 1
+  }
+  si ($nf != 1 ou longueur($ops) < 2) { retour "" }
+  # index des numéros d'op -> position (1-based dans $ops)
+  $pos = [""]
+  $k = 1
+  tant_que ($k < longueur($ops)) {
+    joindre($pos, "")
+    $k = $k + 1
+  }
+  $k = 1
+  tant_que ($k < longueur($ops)) {
+    $no = entier($nums[$k])
+    si ($no >= 0 et $no < longueur($pos)) { $pos = lset($pos, $no, chaine($k)) }
+    $k = $k + 1
+  }
+  $sv = [""]
+  $out = ""
+  $pc = 1
+  $pas = 0
+  $lignes_out = 0
+  tant_que ($pc >= 1 et $pc < longueur($ops) et $pas < 100000) {
+    $pay = $ops[$pc]
+    $t = mcce_tokens($pay)
+    si (longueur($t) < 2) { retour "" }
+    $head = $t[1]
+    $ev = [""]
+    $v = ""
+    si ($head == "affect" ou $head == "affect_ast") {
+      si (longueur($t) < 6) { retour "" }
+      si ($t[2] != "slot" ou $t[4] != "=" ou non digits_only($t[3])) { retour "" }
+      $ev = mcf_eval($t, 5, $sv)
+      si (non mcf_ok($ev)) { retour "" }
+      $ix = entier($t[3]) + 1
+      tant_que (longueur($sv) <= $ix) { joindre($sv, "") }
+      $sv = lset($sv, $ix, $ev[1])
+      $pc = $pc + 1
+    } sinon si ($head == "afficher" ou $head == "afficher_abstrait") {
+      $ev = mcf_eval($t, 2, $sv)
+      si (non mcf_ok($ev)) { retour "" }
+      $s = val_str($ev[1])
+      si (longueur($s) > 100000) { retour "" }
+      si ($lignes_out > 0) { $out = $out + "\n" }
+      $out = $out + $s
+      $lignes_out = $lignes_out + 1
+      $pc = $pc + 1
+    } sinon si ($head == "saut") {
+      si (longueur($t) < 3) { retour "" }
+      si (non digits_only($t[2])) { retour "" }
+      $cible = entier($t[2])
+      si ($cible < 0 ou $cible >= longueur($pos)) { retour "" }
+      $pc = entier($pos[$cible])
+      si ($pc < 1) { retour "" }
+    } sinon si ($head == "saut_si_faux" ou $head == "saut_si_faux_abstrait") {
+      si (longueur($t) < 5) { retour "" }
+      si (non digits_only($t[2])) { retour "" }
+      $ev = mcf_eval($t, 3, $sv)
+      si (non mcf_ok($ev)) { retour "" }
+      $cible = entier($t[2])
+      si ($cible < 0 ou $cible >= longueur($pos)) { retour "" }
+      si (val_truth($ev[1])) { $pc = $pc + 1 } sinon {
+        $pc = entier($pos[$cible])
+        si ($pc < 1) { retour "" }
+      }
+    } sinon { retour "" }
+    $pas = $pas + 1
+  }
+  si ($pas >= 100000) { retour "" }
+  # $out contient les valeurs séparées par \n, SANS \n final : comme
+  # mc_const_programme, on laisse `>>` ajouter le retour final.
+  retour $out
+}
+
 # ── module : lecteur_bud.rose ──
 # lecteur_bud.rose — LECTEUR DE MANIFESTES .bud, en Rose pur.
 #
@@ -19843,6 +20154,14 @@ si (longueur($mc_cached) > 0) {
   >> $mc_cached
   quitter(0)
 }
+# NOUVEAU : repli persistant des comparaisons (clé de cache dédiée). Écrit
+# une seule fois à la création du cache RIR ; aucun coût au lancement.
+$mc_cfp = "/tmp/opencode/constfold_v2_" + $mc_sh + ".txt"
+$mc_cached = lire_texte($mc_cfp)
+si (longueur($mc_cached) > 0) {
+  >> $mc_cached
+  quitter(0)
+}
 $mc_srcfold = mcce_fold_source($mc_src_txt)
 si (longueur($mc_srcfold) > 0) {
   ecrire_bytes($mc_sfc, $mc_srcfold)
@@ -19866,6 +20185,16 @@ si (longueur($mc_cached) > 4 et sous_chaine($mc_cached, 0, 4) == "rir\n") {
     $mc_rir = mc_fold_rir_powers($mc_rir)
     ecrire_bytes($mc_cache, $mc_rir)
   }
+}
+# NOUVEAU : à l'écriture du cache RIR (et pour les caches déjà créés), on
+# tente le repli complet des programmes droits à valeurs constantes. La
+# sortie est persistée sous sa propre clé ; les lancements suivants ne
+# lisent qu'un fichier. Tout échec retombe sur le chemin interprété d'origine.
+$mc_fold_out = mcf_programme($mc_rir)
+si (longueur($mc_fold_out) > 0) {
+  ecrire_bytes($mc_cfp, $mc_fold_out)
+  >> $mc_fold_out
+  quitter(0)
 }
 $mc_const = mc_const_programme($mc_rir)
 si (longueur($mc_const) > 0) {
