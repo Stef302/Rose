@@ -51,8 +51,8 @@ cibles: [
     prefixe_32: 0                 # inutile : opérande 32 bits par défaut
     forcer_32: 0
     taille_adresse: 4             # modrm mod=10 + disp32 (adressage 32 bits)
-    vecteur_defaut: 128           # int 0x80 (porte d'entrée noyau)
-    adresse_charge: 1048576       # 0x100000 — adresse de charge noyau classique
+    vecteur_defaut: 128           # vecteur d'E/S par défaut (donnée du profil)
+    adresse_charge: 1048576       # 0x100000 — adresse de chargement (donnée)
     alignement: 16                # chaque segment démarre sur une frontière 16
     entre: 1048576                # 0x100000 — premier octet de .text
     segments: [".text", ".data"]  # .data = 2A 00 00 00 (42)
