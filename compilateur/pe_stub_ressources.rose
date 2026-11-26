@@ -809,7 +809,11 @@ fn setup_gui() -> entier {
   emit_wndproc($ps, $rect, $txt, $hdc, $dq, $dd)
   setentry(clen())
 
-  csubrsp(40)
+  # CreateWindowExW a 12 arguments : les 8e..12e sont passés sur la pile en
+  # [rsp+0x20..0x58]. 40 octets ne réservaient que les 4 emplacements
+  # d'ombre + 1 : les arguments de création débordaient hors du cadre et
+  # CreateWindowExW recevait des valeurs corrompues (HWND nul).
+  csubrsp(96)
   cxor(1)                       # GetModuleHandleW(NULL)
   ccall(11)
   clea(2, $hinst)
@@ -840,15 +844,16 @@ fn setup_gui() -> entier {
   clea(2, $cls)                 # RDX = classe
   clea(8, $titre)               # R8 = "Rose Setup" (titre réel de la fenêtre)
   cmovimm32r(9, 13565952)       # WS_OVERLAPPEDWINDOW 0x00CF0000
-  cmovstk32(32, 2147483648)     # x = CW_USEDEFAULT
-  cmovstk32(40, 2147483648)     # y = CW_USEDEFAULT
-  cmovstk32(48, 2147483648)     # largeur = CW_USEDEFAULT
-  cmovstk32(56, 2147483648)     # hauteur = CW_USEDEFAULT
+  cmovstk32(32, 100)            # x
+  cmovstk32(40, 100)            # y
+  cmovstk32(48, 640)            # largeur
+  cmovstk32(56, 480)            # hauteur
   cmovstk32(64, 0)              # parent
   cmovstk32(72, 0)              # menu
   # ⚠ Charger hInstance avec RCX/RDX comme scratch écrasait exStyle (RCX) et
   # lpClassName (RDX) : CreateWindowExW recevait une classe vide -> HWND nul.
-  cmovld(0, $hinst)             # RAX = hInstance (RIP-relatif, sans scratch)
+  clea(0, $hinst)               # RAX = &hinst
+  cldmem(0, 0, 0)               # RAX = hInstance (sans abîmer RCX/RDX)
   cmovstk(80, 0)                # 10e argument : hInstance
   cmovstk32(88, 0)              # paramètre de création
   ccall(2)
