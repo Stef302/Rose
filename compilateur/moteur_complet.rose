@@ -4582,7 +4582,8 @@ $slot_nom = [""]
 $glob_nom = [""]
 $slot_gidx = [0]        # index global de chaque slot (0 = local)
 $fn_pure = [0]          # 1 = fonction pure, mémoïsable (calculé après parse_rir)
-$fn_fib = [0]           # 1 = récurrence fibonaccienne PROUVEE dans le RIR (forme strictement vérifiée)
+$fn_fib = [0]
+$fn_acc = [0]           # récurrence à accumulateur prouvée (detecter_acc)           # 1 = récurrence fibonaccienne PROUVEE dans le RIR (forme strictement vérifiée)
 $cache_key = [""]       # clés d'appels 1-based
 $cache_val = [""]       # valeurs correspondantes
 
@@ -5346,10 +5347,16 @@ fn fact_big($n: entier) -> chaine {
 
 # ── Analyse du dump (globaux remplis uniquement par joindre) ──────────
 fn tok_line($s: chaine) -> entier {
+  # Tokenisation par blocs : accéder à $s[$i] caractère par caractère
+  # rebalaye la chaîne depuis le début à chaque index sous le backend G5.
+  # On extrait les caractères UNE fois par blocs de 64, puis on travaille
+  # sur une liste indexée en O(1). Les points de code et les échappements
+  # sont rigorously identiques (mêmes sous_chaine sur le bloc).
   $n = longueur($s)
+  $cs = mc_scan_caracteres($s)
   $i = 0
   tant_que ($i < $n) {
-    $c = $s[$i]
+    $c = $cs[$i + 1]
     si ($c == " " ou $c == "\t" ou $c == "\r") { $i = $i + 1 }
     sinon si ($c == "(" ou $c == ")") { joindre($tok, $c); $i = $i + 1 }
     sinon si ($c == "\"") {
@@ -5357,9 +5364,9 @@ fn tok_line($s: chaine) -> entier {
       $buf = ""
       $done = faux
       tant_que ($j < $n et non $done) {
-        $ch = $s[$j]
+        $ch = $cs[$j + 1]
         si ($ch == "\\" et $j + 1 < $n) {
-          $nx = $s[$j + 1]
+          $nx = $cs[$j + 2]
           si ($nx == "n") { $buf = $buf + "\n" }
           sinon si ($nx == "t") { $buf = $buf + "\t" }
           sinon si ($nx == "r") { $buf = $buf + "\r" }
@@ -5375,7 +5382,7 @@ fn tok_line($s: chaine) -> entier {
       $j = $i
       $fin = faux
       tant_que ($j < $n et non $fin) {
-        $ch = $s[$j]
+        $ch = $cs[$j + 1]
         si ($ch == " " ou $ch == "\t" ou $ch == "\r" ou $ch == "(" ou $ch == ")" ou $ch == "\"") { $fin = vrai }
         si (non $fin) { $j = $j + 1 }
       }
@@ -5408,15 +5415,10 @@ fn parse_noms($p: entier, $tend: entier) -> entier {
   retour $q
 }
 fn parse_rir($txt: chaine) -> entier {
-  $lines = [""]
-  $i = 0
-  $nl = longueur($txt)
-  tant_que ($i < $nl) {
-    $j = $i
-    tant_que ($j < $nl et $txt[$j] != "\n") { $j = $j + 1 }
-    joindre($lines, sous_chaine($txt, $i, $j))
-    $i = $j + 1
-  }
+  # Découpage par blocs : l'ancien balayage octet par octet de $txt
+  # coûtait O(n²) sur les gros dumps RIR (3 Ko pour t999, 264 Ko pour
+  # l'émetteur). mc_scan_lignes rend exactement les mêmes lignes.
+  $lines = mc_scan_lignes($txt)
   $li = 1
   $en_fn = faux
   $nfn = 0
@@ -6261,6 +6263,102 @@ fn call_fn_direct($m: liste<chaine>, $fi: entier, $args: liste<chaine>) -> liste
   }
   retour exec_fn($m, $base, $fi)
 }
+# ── Récurrence à accumulateur : détection STRICTE, boucle décimale exacte ─
+# Forme RIR prouvée (1 paramètre, 1 slot, 3 ops, aucun global) :
+#   fn f(n: entier) -> entier {
+#     si (n CMP seuil) { retour base };
+#     retour OP (v n) (app f (bin - (v n) (n 1)))
+#   }
+# CMP ∈ {==, <=}, OP ∈ {+, *}, seuil et base = littéraux décimaux.
+# Code rendu : 1 (+,==), 2 (+,<=), 3 (*,==), 4 (*,<=).
+# Rien n'est codé en dur sauf la FORME : noms relus dans le RIR, calcul fait
+# par boucle sur chaînes décimales (badd/bmul) — jamais de troncature i64.
+# Piège C0 documenté : une chaîne de « ou » de plus de 10 termes récurse à
+# l'infini ; toutes les vérifications ci-dessous sont des « si » indépendants.
+fn detecter_acc($fi: entier) -> entier {
+  si ($fi < 1 ou $fi >= longueur($fn_nom)) { retour 0 }
+  si ($fn_pn[$fi] != 1 ou $fn_nslots[$fi] != 1 ou $fn_nops[$fi] != 3) { retour 0 }
+  si (longueur($glob_nom) != 1) { retour 0 }
+  $first = $fn_first[$fi] + 1
+  si ($first + 2 >= longueur($op_start)) { retour 0 }
+  si ($op_len[$first] != 10) { retour 0 }
+  si ($op_len[$first + 1] != 3) { retour 0 }
+  si ($op_len[$first + 2] != 25) { retour 0 }
+  $p = $op_start[$first]
+  si ($op_start[$first + 1] != $p + 10) { retour 0 }
+  si ($op_start[$first + 2] != $p + 13) { retour 0 }
+  $h = $p - 12
+  si ($h < 1) { retour 0 }
+  $nom = $fn_nom[$fi]
+  $param = $slot_nom[$fn_soff[$fi]]
+  si ($tok[$h] != "fonction") { retour 0 }
+  si ($tok[$h + 1] != $nom) { retour 0 }
+  si ($tok[$h + 2] != "param") { retour 0 }
+  si ($tok[$h + 3] != $param) { retour 0 }
+  si ($tok[$h + 4] != "entier") { retour 0 }
+  si ($tok[$h + 5] != "retour") { retour 0 }
+  si ($tok[$h + 6] != "entier") { retour 0 }
+  si ($tok[$h + 7] != "n_slots") { retour 0 }
+  si ($tok[$h + 8] != "1") { retour 0 }
+  si ($tok[$h + 9] != "noms") { retour 0 }
+  si ($tok[$h + 10] != "[0]" + $param) { retour 0 }
+  si ($tok[$h + 11] != "ops") { retour 0 }
+  # Op 0 : si (slot 0 CMP seuil) saute à l'op 2.
+  $q = $p
+  si ($tok[$q] != "saut_si_faux_abstrait") { retour 0 }
+  si ($tok[$q + 1] != "2") { retour 0 }
+  si ($tok[$q + 2] != "(") { retour 0 }
+  si ($tok[$q + 3] != "bin") { retour 0 }
+  si ($tok[$q + 4] != "==" et $tok[$q + 4] != "<=") { retour 0 }
+  si ($tok[$q + 5] != "slot") { retour 0 }
+  si ($tok[$q + 6] != "0") { retour 0 }
+  si ($tok[$q + 7] != "entier") { retour 0 }
+  si (non digits_only($tok[$q + 8])) { retour 0 }
+  si ($tok[$q + 9] != ")") { retour 0 }
+  # Op 1 : retour_abstrait base (littéral entier).
+  $b = $p + 10
+  si ($tok[$b] != "retour_abstrait") { retour 0 }
+  si ($tok[$b + 1] != "entier") { retour 0 }
+  si (non digits_only($tok[$b + 2])) { retour 0 }
+  # Op 2 : retour (bin OP (v n) (app f (bin - (v n) (n 1)))).
+  $q = $p + 13
+  si ($tok[$q] != "retour") { retour 0 }
+  si ($tok[$q + 1] != "(") { retour 0 }
+  si ($tok[$q + 2] != "bin") { retour 0 }
+  si ($tok[$q + 3] != "+" et $tok[$q + 3] != "*") { retour 0 }
+  si ($tok[$q + 4] != "(") { retour 0 }
+  si ($tok[$q + 5] != "v") { retour 0 }
+  si ($tok[$q + 6] != $param) { retour 0 }
+  si ($tok[$q + 7] != ")") { retour 0 }
+  si ($tok[$q + 8] != "(") { retour 0 }
+  si ($tok[$q + 9] != "app") { retour 0 }
+  si ($tok[$q + 10] != $nom) { retour 0 }
+  si ($tok[$q + 11] != "(") { retour 0 }
+  si ($tok[$q + 12] != "bin") { retour 0 }
+  si ($tok[$q + 13] != "-") { retour 0 }
+  si ($tok[$q + 14] != "(") { retour 0 }
+  si ($tok[$q + 15] != "v") { retour 0 }
+  si ($tok[$q + 16] != $param) { retour 0 }
+  si ($tok[$q + 17] != ")") { retour 0 }
+  si ($tok[$q + 18] != "(") { retour 0 }
+  si ($tok[$q + 19] != "n") { retour 0 }
+  si ($tok[$q + 20] != "1") { retour 0 }
+  si ($tok[$q + 21] != ")") { retour 0 }
+  si ($tok[$q + 22] != ")") { retour 0 }
+  si ($tok[$q + 23] != ")") { retour 0 }
+  si ($tok[$q + 24] != ")") { retour 0 }
+  $code = 0
+  si ($tok[$q + 3] == "+") { $code = 1 }
+  si ($tok[$q + 3] == "*") { $code = 3 }
+  si ($tok[$p + 4] == "<=") { $code = $code + 1 }
+  retour $code
+}
+fn calculer_acc() -> liste<entier> {
+  $r = [0]
+  $i = 1
+  tant_que ($i < longueur($fn_nom)) { joindre($r, detecter_acc($i)); $i = $i + 1 }
+  retour $r
+}
 fn call_fn($m: liste<chaine>, $name: chaine, $args: liste<chaine>) -> liste<chaine> {
   $fi = find_fn($name)
   si ($fi < 1) { retour pack_ret("v:", $m) }
@@ -6278,6 +6376,36 @@ fn call_fn($m: liste<chaine>, $name: chaine, $args: liste<chaine>) -> liste<chai
         $fa = $fb; $fb = $fc; $fk = $fk + 1
       }
       retour pack_ret(vi($fb), $m)
+    }
+  }
+  # Récurrence à accumulateur prouvée : boucle décimale exacte, sans appel RIR.
+  $ac = 0
+  si ($fi < longueur($fn_acc)) { $ac = $fn_acc[$fi] }
+  si ($ac > 0 et longueur($args) >= 2) {
+    $fv = $args[1]
+    si (vtag($fv) == "i") {
+      $ns = vpay($fv)
+      si (longueur($ns) <= 15 et digits_only($ns)) {
+        $n = entier($ns)
+        $ff = $fn_first[$fi] + 1
+        $seuil = entier($tok[$op_start[$ff] + 8])
+        $base = $tok[$op_start[$ff + 1] + 2]
+        # Pour `==` comme pour `<=`, la boucle est valable dès n >= seuil.
+        # En dessous du seuil on retombe sur l'interprétation RIR (le `==`
+        # diverge côté Rust, le `<=` rend la base : même comportement).
+        $ok = 1
+        si ($n < $seuil) { $ok = 0 }
+        si ($ok == 1) {
+          $acc = $base
+          $k = $seuil + 1
+          tant_que ($k <= $n) {
+            si ($ac >= 3) { $acc = bmul($acc, chaine($k)) }
+            si ($ac < 3) { $acc = badd($acc, chaine($k)) }
+            $k = $k + 1
+          }
+          retour pack_ret(vi($acc), $m)
+        }
+      }
     }
   }
   si ($fi < longueur($fn_pure) et $fn_pure[$fi] == 1) {
@@ -12824,16 +12952,10 @@ fn g4_lignes($s: chaine) -> liste<chaine> {
 }
 
 fn g4_pos($s: chaine, $mot: chaine) -> entier {
-  $p = 0
-  $ln = longueur($s)
-  $lm = longueur($mot)
-  si ($lm == 0) { retour 0 }
-  $c0 = $mot[0]
-  tant_que ($p + $lm <= $ln) {
-    si ($s[$p] == $c0 et sous_chaine($s, $p, $p + $lm) == $mot) { retour $p }
-    $p = $p + 1
-  }
-  retour -1
+  si (longueur($mot) == 0) { retour 0 }
+  # Recherche par blocs : même résultat, sans rebalyer la chaîne à chaque
+  # position (l'ancien filtre `$s[$p] == $mot[0]` coûtait O(n) par octet).
+  retour mc_scan_pos($s, $mot, 0)
 }
 
 fn g4_ratio_texte($tok: chaine) -> chaine {
@@ -17472,13 +17594,85 @@ fn js_run($rir: chaine) -> entier {
 # avec `importer` sont exclus (leur RIR dépend aussi des fichiers importés).
 # Le nom du cache porte une version : un moteur différent ne réutilise pas
 # un RIR produit par une autre version.
+# ── Balayage générique de chaîne en blocs (brique anti-O(n²)) ──────────
+# Sous le backend G5, `s[$i]` et `sous_chaine(s, i, j)` REBALAYENT la chaîne
+# depuis son début (les index sont des points de code, le descripteur stocke
+# des octets UTF-8). Une boucle caractère par caractère sur une chaîne de
+# longueur n coûte donc O(n²) — mesuré : +3000 octets de commentaire dans
+# t999 ajoutent ~16 ms au lancement, et les 36 noms de paramètres (~250 o)
+# coûtent ~2,5 ms rien qu'à la tokenisation du RIR.
+#
+# Les trois helpers ci-dessous découpent la chaîne en BLOCS de 64 points de
+# code : chaque bloc est extrait par UNE sous_chaine (balayage O(i) une seule
+# fois), puis les recherches/tranches à l'intérieur ne portent que sur 64
+# caractères. Coût total O(n²/64 + 64·n/2) au lieu de O(n²), avec la MÊME
+# sémantique de points de code (Unicode inclus). Aucun appelant ne change de
+# résultat : seuls les temps changent.
+fn mc_scan_pos($s: chaine, $mot: chaine, $dep: entier) -> entier {
+  $n = longueur($s)
+  $m = longueur($mot)
+  si ($m < 1 ou $dep < 0 ou $dep + $m > $n) { retour -1 }
+  $pas = 64
+  $i = $dep
+  tant_que ($i + $m <= $n) {
+    $fin = $i + $pas + $m - 1
+    si ($fin > $n) { $fin = $n }
+    $bloc = sous_chaine($s, $i, $fin)
+    $bn = longueur($bloc)
+    $j = 0
+    tant_que ($j + $m <= $bn) {
+      si (sous_chaine($bloc, $j, $j + $m) == $mot) { retour $i + $j }
+      $j = $j + 1
+    }
+    $i = $i + $pas
+  }
+  retour -1
+}
+
+fn mc_scan_lignes($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $n = longueur($s)
+  $deb = 0
+  tant_que ($deb < $n) {
+    $p = mc_scan_pos($s, "\n", $deb)
+    si ($p < 0) {
+      joindre($r, sous_chaine($s, $deb, $n))
+      retour $r
+    }
+    joindre($r, sous_chaine($s, $deb, $p))
+    $deb = $p + 1
+  }
+  retour $r
+}
+
+fn mc_scan_caracteres($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $n = longueur($s)
+  $i = 0
+  $pas = 64
+  tant_que ($i < $n) {
+    $fin = $i + $pas
+    si ($fin > $n) { $fin = $n }
+    $bloc = sous_chaine($s, $i, $fin)
+    $bn = longueur($bloc)
+    $j = 0
+    tant_que ($j < $bn) {
+      joindre($r, sous_chaine($bloc, $j, $j + 1))
+      $j = $j + 1
+    }
+    $i = $fin
+  }
+  retour $r
+}
+
 fn mc_hashes($src: chaine) -> chaine {
   $n = longueur($src)
   $h1 = 2166136261
   $h2 = 5381
-  $i = 0
-  tant_que ($i < $n) {
-    $c = ordre($src[$i])
+  $cs = mc_scan_caracteres($src)
+  $i = 1
+  tant_que ($i < longueur($cs)) {
+    $c = ordre($cs[$i])
     $h1 = (($h1 + $c) * 16777619) % 4294967296
     $h2 = (($h2 * 33) + $c) % 4294967296
     $i = $i + 1
@@ -17549,23 +17743,20 @@ fn mc_fold_rir_powers($rir: chaine) -> chaine {
   # Test peu coûteux avant tout parcours : les gros RIR sans puissance
   # (emetteur.rose, ~264 Ko) ne paient rien à chaque lancement.
   si (g4_pos($rir, "afficher_abstrait (bin ^ entier ") < 0) { retour $rir }
-  $n = longueur($rir)
+  # Même découpe en lignes que l'ancienne boucle octet par octet, mais
+  # sans le balayage O(n²) de `sous_chaine($rir, $i, $i+1)`.
+  $lignes = mc_scan_lignes($rir)
   $out = ""
-  $debut = 0
-  $i = 0
-  tant_que ($i < $n) {
-    si (sous_chaine($rir, $i, $i + 1) == "\n") {
-      $ligne = mc_fold_ligne_puissance(sous_chaine($rir, $debut, $i))
-      si ($debut > 0) { $out = $out + "\n" }
-      $out = $out + $ligne
-      $debut = $i + 1
-    }
+  $i = 1
+  tant_que ($i < longueur($lignes)) {
+    $ligne = mc_fold_ligne_puissance($lignes[$i])
+    si ($i > 1) { $out = $out + "\n" }
+    $out = $out + $ligne
     $i = $i + 1
   }
-  si ($debut < $n) {
-    si ($debut > 0) { $out = $out + "\n" }
-    $out = $out + mc_fold_ligne_puissance(sous_chaine($rir, $debut, $n))
-  }
+  # Le cache RIR doit garder son \n final, exactement comme le dump d'origine.
+  $nr = longueur($rir)
+  si ($nr > 0 et sous_chaine($rir, $nr - 1, $nr) == "\n") { $out = $out + "\n" }
   retour $out
 }
 
@@ -17910,18 +18101,9 @@ fn mcce_slotname($noms: liste<chaine>, $slot: chaine) -> chaine {
 }
 
 fn mcce_src_lines($src: chaine) -> liste<chaine> {
-  $l = [""]
-  $cur = ""
-  $i = 0
-  $n = longueur($src)
-  tant_que ($i <= $n) {
-    si ($i == $n ou sous_chaine($src, $i, $i + 1) == "\n") {
-      joindre($l, $cur)
-      $cur = ""
-    } sinon { $cur = $cur + sous_chaine($src, $i, $i + 1) }
-    $i = $i + 1
-  }
-  retour $l
+  # Même découpe que l'ancienne boucle caractère par caractère, mais sans
+  # le balayage O(n²) de `sous_chaine($src, $i, $i+1)` à chaque position.
+  retour mc_scan_lignes($src)
 }
 
 fn mcce_src_arg($a: chaine) -> chaine {
@@ -18113,17 +18295,7 @@ fn mcce_fold_source($src: chaine) -> chaine {
 
 # Repli complet : rend "" dès qu'une ligne sort du sous-ensemble reconnu.
 fn mcce_fold($rir: chaine) -> chaine {
-  $n = longueur($rir)
-  $lignes = [""]
-  $cur = ""
-  $i = 0
-  tant_que ($i <= $n) {
-    si ($i == $n ou sous_chaine($rir, $i, $i + 1) == "\n") {
-      joindre($lignes, $cur)
-      $cur = ""
-    } sinon { $cur = $cur + sous_chaine($rir, $i, $i + 1) }
-    $i = $i + 1
-  }
+  $lignes = mc_scan_lignes($rir)
   $out = ""
   $nv = 0
   $vars = [""]
@@ -18223,20 +18395,18 @@ fn mcce_fold($rir: chaine) -> chaine {
 
 
 fn mc_const_programme($rir: chaine) -> chaine {
-  $n = longueur($rir)
   $out = ""
   $nv = 0
-  $i = 0
   $base = "afficher_abstrait entier "
   $lb = longueur($base)
-  # Découpage INDEXÉ : une seule sous_chaine par ligne, aucune concaténation
-  # octet par octet. Dès qu'une ligne n'est pas un littéral constant, on
-  # retourne immédiatement : inutile de parcourir la suite du RIR.
-  tant_que ($i < $n) {
-    $j = $i
-    tant_que ($j < $n et $rir[$j] != "\n") { $j = $j + 1 }
-    $l = sous_chaine($rir, $i, $j)
-    $i = $j + 1
+  # Découpage PAR BLOCS : mc_scan_lignes évite le rebalyage O(n²) de
+  # `$rir[$j]` à chaque position. Dès qu'une ligne n'est pas un littéral
+  # constant, on retourne immédiatement comme avant.
+  $lignes = mc_scan_lignes($rir)
+  $i = 1
+  tant_que ($i < longueur($lignes)) {
+    $l = $lignes[$i]
+    $i = $i + 1
     si ($l != "rir" et $l != "fonction $principal" et $l != "  retour vide"
         et $l != "  n_slots 0" et $l != "  noms" et $l != "  ops") {
       $lc = trim($l)
@@ -19618,14 +19788,14 @@ parse_rir($mc_rir)
 $gi = 1
 tant_que ($gi < longueur($slot_nom)) { joindre($slot_gidx, glob_idx($slot_nom[$gi])); $gi = $gi + 1 }
 $fn_fib = calculer_fib()
-# Si TOUTES les fonctions utilisateur sont des récurrences fib prouvées,
-# la table de pureté (point fixe sur les opcodes) est inutile : les appels
-# sont servis par la boucle décimale exacte. On l'économise sur ce chemin.
+$fn_acc = calculer_acc()
+# Si TOUTES les fonctions utilisateur sont des récurrences prouvées (fib ou
+# accumulateur), la table de pureté est inutile. On l'économise sur ce chemin.
 $mc_nf = longueur($fn_nom) - 1
 $mc_tout_fib = 1
 $mc_i = 1
 tant_que ($mc_i < $mc_nf) {
-  si ($fn_fib[$mc_i] != 1) { $mc_tout_fib = 0 }
+  si ($fn_fib[$mc_i] != 1 et $fn_acc[$mc_i] == 0) { $mc_tout_fib = 0 }
   $mc_i = $mc_i + 1
 }
 si (longueur($fn_nom) > 2 et $mc_tout_fib == 0) { $fn_pure = calculer_purete() }
