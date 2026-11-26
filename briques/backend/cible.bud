@@ -99,7 +99,20 @@ donnees: {
       entree_sortie: int80
       enveloppe: brut
       ops: "0..16"
-      note: "code machine x86 32 bits NU : aucun header, aucune relocation ; hlt=F4, jmp_rel8=EBdisp8 ; edition de binaire nu via compilateur/link_nu.rose"
+      note: "code machine x86 32 bits NU : aucun header, aucune relocation ; hlt=F4, jmp_rel8=EBdisp8 ; edition de binaire nu via compilateur/link_nu.rose",
+{
+      nom: "x86_64_nu"
+      famille: 6
+      largeur_registre: 64
+      boutisme: petit
+      mot_octets: 8
+      registres: 16
+      format_saut: registre
+      entree_sortie: syscall
+      enveloppe: brut
+      ops: "0..16"
+      note: "brique NU 64 bits : REX.W=0x48 en donnée, adressage disp32, E/S = 0F 05 (ou CD imm8 si le profil le déclare) ; aucun header ELF/PE"
+    }
     }
   ]
 
@@ -118,7 +131,10 @@ donnees: {
     "4:0:400", "4:1:401", "4:2:402", "4:3:403", "4:4:404",
     "4:5:405", "4:6:406", "4:7:407", "4:8:408", "4:9:409",
     "4:10:410", "4:11:411", "4:12:412", "4:13:413", "4:14:414",
-    "4:15:415", "4:16:416"
+    "4:15:415", "4:16:416",
+    "6:0:600", "6:1:601", "6:2:602", "6:3:603", "6:4:604", "6:5:605",
+    "6:6:606", "6:7:607", "6:8:608", "6:9:609", "6:10:610", "6:11:611",
+    "6:12:612", "6:13:613", "6:14:614", "6:15:615", "6:16:616"
   ]
 
   # Conventions de représentation (identiques à emetteur_elf / emetteur_pe).

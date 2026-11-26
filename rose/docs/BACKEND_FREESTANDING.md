@@ -1,225 +1,168 @@
-# Backend freestanding — binaire machine nu à adresse fixe
+# Backend freestanding — brique universelle 16 / 32 / 64 bits
 
-*Constat daté : 26/11/2026, worktree `/tmp/opencode/v10free`, HEAD `564dcb1`.*
-*Chantier « fossé système n°1 » : aucun commit, aucun push.*
+*Constat daté : 26/11/2026. Worktree exclusif `/tmp/opencode/v11x64`, HEAD
+`c2c8e54`. Aucun commit, aucun push. Aucun noyau, aucun démo OS, aucun
+`.mos` : uniquement le mécanisme, comme `-target x86_64-freestanding-none`.*
 
-## 1. Pourquoi
+## 1. Doctrine
 
-Le backend universel (`compilateur/backend_universel.rose`) savait produire
-des octets pour aarch64, x86-64 et wasm, mais toujours **dans une enveloppe**
-(ELF, PE, module wasm). Il manquait la chaîne qui produit un **binaire machine
-nu à adresse fixe**, sans runtime, sans ELF, comme
-`zig build-exe -target x86_32-freestanding-none -T kernel.ld`.
-
-Rose la fournit désormais en trois pièces, **toutes en Rose pur** :
+Le backend machine générique ne contient **aucune logique spécifique à un
+système**. Il n'émet ni ELF, ni PE, ni COFF, ni table de symboles, ni
+relocation, ni en-tête, ni runtime. Il traduit un IR abstrait en octets et
+laisse un contrat de chargement décider où ces octets sont placés.
 
 ```
- IR abstrait (ops)  ──bu_traduire(seq, bu_cible("x86_32"))──>  octets machine
-                                    │
-                                    ▼
-            ln_config(0x100000, 16, 0x100000)
-            ln_ajouter_section(".text", octets)
-            ln_ecrire(cfg, "noyau.bin")   ──>  BINAIRE NU (aucun en-tête)
+IR abstrait (ops + args) ──bu_traduire(seq, profil)──> octets nus
+                                   ▲
+                                   └── profil = DONNÉES (bu_cible)
+                    ──ln_config(adresse, alignement, entrée)──> binaire nu
 ```
 
-Le contrat « adresse de charge / alignement / mode / entrée / segments » est
-déclaré dans `briques/backend/freestanding.bud` : c'est une **donnée**, pas une
-structure codée dans le compilateur. Aucun appel à `ld`, `cc`, `objcopy` ni
-aucun runtime n'est nécessaire.
+- `bu_traduire` ne contient **aucun nom d'architecture**. Il lit la famille
+  d'encodeurs dans le profil, vérifie la disponibilité de l'opération dans
+  `$bu_encoder_table`, puis délègue à l'encodeur de cette famille.
+- `bu_x86nu_encode` est **UN SEUL encodeur partagé** par les familles 4, 5 et
+  6. Il ne contient aucun `si x86_16` / `si x86_64` : la largeur d'opérande
+  (`2/4/8`), le préfixe 0x66, le préfixe de registre (`REX.W = 0x48`), la
+  largeur d'adresse (`2/4`), le boutisme, l'opcode d'E/S et le vecteur sont
+  des **champs de données** du profil `bu_cible`.
+- La forme d'E/S est également une donnée numérique : `syscall_opcode = 0`
+  sélectionne `int_opcode vecteur` (`CD imm8`) ; `syscall_opcode = 15` avec
+  `syscall_code = 5` sélectionne `0F 05`. Aucun nom de système n'apparaît
+  dans le code. Le test 29 remplace **un seul champ** du profil 64 bits et
+  obtient `CD 80` du même encodeur — la preuve que le choix vient des données.
+- L'adresse de chargement n'est **pas écrite dans le fichier** : c'est un
+  paramètre du contrat (`ln_config`), lu par les accesseurs `ln_charge`,
+  `ln_entree`, `ln_adresse_section`. Le fichier commence par le premier octet
+  de code.
 
-## 2. Cibles réellement supportées
+Le linker (`compilateur/link_nu.rose`) est Rose pur, sans `ld`, sans `cc`,
+sans objet, sans outil externe. `ln_octets(config)` rend la liste d'octets
+ porteuse ; `ln_bytes` et `ln_ecrire` en construisent la vue en chaîne brute
+ localement. Cette séparation garantit que la source de vérité est la même
+ sous l'oracle Rust et sous le moteur self-hosté C0 (une chaîne brute
+ **retournée** par une fonction était altérée par C0 — pièce mesurée, corrigée
+ dans ce chantier).
 
-| Nom | Famille | Mode | Mot | Préfixe | Adressage | Vecteur `int` | Empreinte |
-|---|---|---|---|---|---|---|---|
-| `x86_16` | 4 | réel (bootloader) | 2 octets | `0x66` si immédiat > `0xFFFF` | `mod=10` + disp16 | `0x10` (BIOS) | `b8 05 00` |
-| `x86_32` | 5 | protégé, anneau 0 (noyau) | 4 octets | aucun | `mod=10` + disp32 | `0x80` | `b8 05 00 00 00` |
+## 2. Cibles
 
-**Les deux cibles partagent UN SEUL encodeur**, `bu_x86nu_encode` : la
-largeur d'opérande, le préfixe 0x66, la largeur d'adresse, le boutisme et le
-vecteur d'interruption sont lus dans le profil renvoyé par `bu_cible`.
-`bu_traduire` ne contient toujours **aucun nom d'architecture** : il lit la
-famille dans le profil, vérifie la disponibilité de l'opération dans la table
-de données `$bu_encoder_table` (lignes `4:code:4xx` et `5:code:5xx`), puis
-appelle l'encodeur de la famille. Ajouter une cible = ajouter un `si` de
-données dans `bu_cible`, 15 lignes de table et (au plus) un encodeur de famille.
+| Cible (`bu_cible`) | Famille | Registres | Immédiat / préfixe | Adressage | E/S | Enveloppe |
+|---|---|---|---|---|---|---|
+| `x86_16` | 4 | 16 bits | `B8+r + imm16`, `0x66` si > 0xFFFF | `modrm mod=10 + disp16` | `CD vecteur` (0x10) | `brut` |
+| `x86_32` | 5 | 32 bits | `B8+r + imm32` | `modrm mod=10 + disp32` | `CD vecteur` (0x80) | `brut` |
+| `x86_64_nu` | 6 | 64 bits | `REX.W 48 B8+r + imm64` | `modrm mod=10 + disp32` | `0F 05` (`CD vecteur` par donnée) | `brut` |
 
-Opérations couvertes (les 15 de l'IR) : `nop imm mov add sub mul and or xor
-load store jmp call ret syscall`. Les ops à 3 opérandes sont abaissées en
-`mov dst,src` puis opération x86 à 2 opérandes ; `jmp`/`call` utilisent
-`FF /4` et `FF /2` (saut indirect par registre) ; `syscall` est `int imm8`.
+`x86_64` (famille 2) reste le profil historique à `movabs` du backend
+universel : la brique NU 64 bits est un **profil distinct** (`x86_64_nu`,
+famille 6), ajouté sans modifier la famille 2 ni casser `tests_multi.rose`.
 
-## 3. API
+Les profils sont déclarés — uniquement en données — dans
+`briques/backend/freestanding.bud` et `briques/backend/cible.bud` :
+`largeur_registre`, `boutisme`, `mot_octets`, `registres`, `format_saut`,
+`entree_sortie`, `enveloppe`, `adresse_charge`, `alignement`, `entre`,
+`segments`, `prefixe_reg`, `syscall_opcode`, `syscall_code`, `int_opcode`.
 
-### Backend (inchangée, étendue)
+### Limites honnêtes
+
+- Les opérations à 3 opérandes sont abaissées en `mov dst,src` puis opération
+  à 2 opérandes (aucun opcode x86 à 3 opérandes).
+- REX.W est émis avec R/X/B à 0 : les registres 8..15 ne sont pas extensibles
+  par la famille 6 ; seuls les registres 0..7 sont couverts par les tests.
+- En mode 16 bits, `modrm rm=001` désigne `[bx+di+disp16]` (pas un `disp16`
+  pur) : les octets `8B 81 10 00` sont conformes à l'encodage, l'interpretation
+  d'adresse dépend du mode. Aucune relocation ni label dans cette couche.
+- Aucun prologue/épilogue, aucun appel système de haut niveau, aucun
+  ordonnanceur : ce document décrit un mécanisme de production d'octets,
+  pas un système d'exploitation.
+
+## 3. Suite d'opérations commune
+
+La MÊME suite abstraite est traduite vers les trois cibles :
 
 ```
-bu_operation(nom, args) -> entier          # id d'une op abstraite
-bu_sequence() -> liste<entier>             # suite porteuse [0]
-bu_ajouter(seq, op) -> entier              # ajoute l'op (mutation en place)
-bu_cible(nom) -> liste<chaine>             # profil = DONNÉES (cle=valeur)
-bu_profil(p, cle) / bu_profil_entier(p, cle)
-bu_traduire(seq, cible) -> liste<entier>   # octets porteurs [0]
-bu_emettre(seq, cible, chemin) -> entier   # écriture via ecrire_bytes
+imm r0, 5 ; imm r1, 7 ; add r0, r0, r1 ; store r0, [r1+16] ; jmp r1 ; ret
 ```
 
-Champs de profil propres aux cibles NU : `largeur_operande`, `prefixe_32`,
-`forcer_32`, `taille_adresse`, `vecteur_defaut`, `mode`. Une clé absente vaut
-0 (`bu_profil_entier` la gère) : un profil peut omettre les champs d'une autre
-famille sans rompre la traduction.
+| Cible | Octets produits | Taille |
+|---|---|---|
+| `x86_16` | `b80500 b90700 8bc0 01c8 89811000 ffe1 c3` | 17 |
+| `x86_32` | `b805000000 b907000000 8bc0 01c8 898110000000 ffe1 c3` | 23 |
+| `x86_64_nu` | `48b80500000000000000 48b90700000000000000 488bc0 4801c8 48898110000000 48ffe1 c3` | 37 |
 
-### Linker NU — `compilateur/link_nu.rose`
+Preuve REX.W : 6 octets `0x48` dans la suite 64 bits, **0** dans la suite
+32 bits (premier octet `B8`). Le saut `FF E1` est commun aux trois cibles.
 
-```
-ln_config(adresse_charge, alignement, entre) -> liste<entier>
-ln_ajouter_section(nom, octets) -> entier      # id de section (1-based)
-ln_ecrire(config, chemin) -> entier            # octets écrits, ou -1
-ln_bytes(config) -> liste<entier>              # octets porteurs, contrôle portable
-ln_charge / ln_alignement / ln_entree / ln_entree_offset / ln_statut (config)
-ln_nb_sections() / ln_offset(id) / ln_taille_section(id)
-ln_adresse_section(config, id) / ln_nom_section(id) / ln_valider(config)
-```
+Preuve d'adresse de chargement (linker générique) :
 
-- `adresse_charge` et `entre` sont des **adresses absolues** ; l'offset
-  d'entrée vaut `entre - adresse_charge` (`ln_entree_offset`).
-- `alignement` est en octets ; les trous entre sections sont des zéros.
-- `ln_valider` exige que l'entrée tombe dans une section (code `-4` sinon).
-- Le fichier ne contient **aucun en-tête** : le premier octet écrit est le
-  premier octet de `.text`. L'adresse de charge est un paramètre du contrat
-  de chargement, pas un champ du fichier (exactement comme un secteur de boot
-  placé à `0x7C00` par le BIOS).
+| image | `ln_charge` | `ln_entree` | alignement | `.data` | taille fichier |
+|---|---|---|---|---|---|
+| 16 bits | `31232` (0x7C00) | 31232 | 1 | offset 17 / adr. 31249 | 19 |
+| 32 bits | `1048576` (0x100000) | 1048576 | 16 | offset 32 / adr. 1048608 | 36 |
+| 64 bits | `4194304` (0x400000) | 4194304 | 16 | offset 48 / adr. 4194352 | 52 |
 
-### Données — `briques/backend/freestanding.bud`
+Aucun en-tête : les fichiers commencent par `b8 05` (16/32) ou `48 b8` (64) ;
+jamais `7f 45 4c 46` (ELF) ni `4d 5a` (PE). Les trous d'alignement sont des
+zéros ; `.sig` = `55 AA` pour la cible 16 bits, `.data` = `2A 00 00 00`
+(42 en little endian) pour les cibles 32 et 64 bits.
 
-Déclarations seules : `adresse_charge`, `alignement`, `entre`, `mode`,
-`segments`, largeur d'opérande, préfixe, taille d'adresse, vecteur par défaut,
-jeu d'opérations et table d'encodeurs. Aucune logique.
-
-## 4. Compiler un noyau en Rose
+## 4. Validation reproductible
 
 ```bash
-cd /path/to/Rose
-mkdir -p /tmp/opencode/freestanding/out
+cd /tmp/opencode/v11x64
+mkdir -p /tmp/opencode/v11x64_fs
+cat compilateur/backend_universel.rose compilateur/link_nu.rose \
+    briques/tests_freestanding.rose > /tmp/opencode/v11x64_fs/fs.rose
 
-# 1. Rose n'a pas d'`include` : concaténer le backend, le linker et le programme.
-cat compilateur/backend_universel.rose \
-    compilateur/link_nu.rose \
-    briques/tests_freestanding.rose > /tmp/opencode/freestanding/fs.rose
+bash scripts/garde_fou_mem.sh 12000000 \
+  /home/clausake/Stefan/ROSE/rose/rose verif /tmp/opencode/v11x64_fs/fs.rose
+bash scripts/garde_fou_mem.sh 12000000 env ROSE_SANS_JIT=1 \
+  /home/clausake/Stefan/ROSE/rose/rose interprete /tmp/opencode/v11x64_fs/fs.rose \
+  > /tmp/opencode/v11x64_fs/interp.out
+bash scripts/garde_fou_mem.sh 12000000 /tmp/opencode/C0_h.elf \
+  /tmp/opencode/v11x64_fs/fs.rose > /tmp/opencode/v11x64_fs/fs.elf
+chmod +x /tmp/opencode/v11x64_fs/fs.elf
+/tmp/opencode/v11x64_fs/fs.elf > /tmp/opencode/v11x64_fs/elf.out
+diff /tmp/opencode/v11x64_fs/interp.out /tmp/opencode/v11x64_fs/elf.out
 
-# 2. Vérification statique, puis exécution (oracle Rust).
-rose verif /tmp/opencode/freestanding/fs.rose
-ROSE_SANS_JIT=1 rose interprete /tmp/opencode/freestanding/fs.rose
+# Désassemblage externe (hôte aarch64 : objdump i386/x86_64 absents)
+llvm-objcopy -I binary -O elf64-x86-64 -B x86_64 out/nu64.bin out/nu64.o
+llvm-objdump -D --triple=x86_64 --section=.data out/nu64.o
+llvm-objcopy -I binary -O elf32-i386 -B i386 out/noyau.bin out/noyau.o
+llvm-objdump -D --triple=i386 --section=.data out/noyau.o
 
-# 3. Le MÊME programme compilé par C0 en ELF aarch64 autonome.
-/tmp/opencode/C0_h.elf /tmp/opencode/freestanding/fs.rose > fs.elf
-chmod +x fs.elf && ./fs.elf          # sortie octet pour octet identique
-
-# 4. Les deux fichiers nus sont dans /tmp/opencode/freestanding/out/.
-od -An -tx1 .../bootloader.bin
-od -An -tx1 .../noyau.bin
+bash scripts/garde_fou_mem.sh 12000000 bash scripts/verifier_parite_selfhost.sh \
+  --moteur /tmp/opencode/moteur_141.elf \
+  --rose-bin /home/clausake/Stefan/ROSE/rose/rose \
+  --workdir /tmp/opencode/v11x64_fs/parite
+R=/home/clausake/Stefan/ROSE/rose/rose
+bash scripts/garde_fou_mem.sh 12000000 "$R" rir compilateur/emetteur.rose > /tmp/pf1.rir
+bash scripts/garde_fou_mem.sh 12000000 "$R" compilateur/emetteur.rose compilateur/emetteur.rose > /tmp/pf2.rir
+md5sum /tmp/pf1.rir /tmp/pf2.rir
 ```
 
-Programme minimal (noyau à `0x100000`) :
+### Résultats mesurés le 26/11/2026
 
-```rose
-$c = bu_cible("x86_32")
-$s = bu_sequence()
-bu_ajouter($s, bu_operation("imm", [0, 5]))
-bu_ajouter($s, bu_operation("imm", [1, 7]))
-bu_ajouter($s, bu_operation("add", [0, 0, 1]))
-bu_ajouter($s, bu_operation("ret", [0]))
-$oct = bu_traduire($s, $c)
+- `rose verif` sur le programme concaténé : **`vérifié`**.
+- Suite `briques/tests_freestanding.rose` : **55/55** sous l'oracle Rust
+  *et* sous le moteur self-hosté C0 ; sorties octet pour octet identiques
+  (md5 `feae9fda87819e1e4614a1fb4f73cd42` des deux côtés, `diff` muet).
+- Fichiers écrits : `bootloader.bin` 19 o, `noyau.bin` 36 o, `nu64.bin` 52 o.
+- `llvm-objdump --triple=x86_64` : `movabsq $0x5,%rax`, `movabsq $0x7,%rcx`,
+  `movq`, `addq`, `movq %rax,0x10(%rcx)`, `jmpq *%rcx`, `retq` — REX.W
+  (`48`) présent sur chaque opération de registre.
+  `llvm-objdump --triple=i386` : `movl $0x5,%eax`, `movl $0x7,%ecx`,
+  `movl`, `addl`, `movl %eax,0x10(%ecx)`, `jmpl *%ecx`, `retl` — **aucun**
+  `0x48`. Capstone 5.0.7 confirme aussi le mode 16 bits (`mov ax,5`,
+  `add ax,cx`, `jmp cx`).
+- Parité self-host : **141/141 CONFORMES**, 0 divergent, 0 bloqué, 0 erreur,
+  RC=0 (TSV horodaté dans `/tmp/opencode/v11x64_fs/parite`).
+- Point fixe : `b3ed9262dd54776a6dbd07bc12368d0e` sur les deux passes
+  (`rir emetteur.rose` et `emetteur.rose emetteur.rose`), `cmp` muet.
+- Aucun fichier du moteur Rust ni de `emetteur.rose` modifié.
 
-$cfg = ln_config(1048576, 16, 1048576)
-ln_ajouter_section(".text", $oct)
-ln_ecrire($cfg, "noyau.bin")       # 15 octets, aucun en-tête
-```
-
-## 5. Preuves mesurées (26/11/2026)
-
-**Opérations (addition + saut), même IR traduit deux fois :**
-
-```
-x86_16 (13 octets) : b8 05 00 b9 07 00 8b c0 01 c8 ff e1 c3
-x86_32 (17 octets) : b8 05 00 00 00 b9 07 00 00 00 8b c0 01 c8 ff e1 c3
-```
-
-Préfixe 0x66 (immédiat 70000 = `0x11170`) :
-`66 ba 70 11 01 00` en x86_16, `ba 70 11 01 00` en x86_32.
-Adressage `[r1+16]` : `8b 81 10 00` (disp16) vs `8b 81 10 00 00 00` (disp32).
-`syscall` : `cd 10` (mode réel) vs `cd 80` (mode protégé).
-
-**Désassemblage** (`objdump -D -b binary -mi8086/-mi386` n'existe PAS sur cet
-hôte aarch64 ; équivalent mesuré : `llvm-objcopy -I binary -O elf32-i386 -B
-i386` puis `llvm-objdump -D --triple=i386 [--mattr=+16bit-mode]`) :
-
-```
-x86_16 : movw $0x5,%ax ; movw $0x7,%cx ; movw %ax,%ax ;
-         addw %cx,%ax ; jmpw *%cx ; retw ; pushw %bp ; stosb
-x86_32 : movl $0x5,%eax ; movl $0x7,%ecx ; movl %eax,%eax ;
-         addl %ecx,%eax ; jmpl *%ecx ; retl
-```
-
-**Binaire nu et adresse de chargement :**
-
-| Image | Adresse de charge | Entrée | Sections | Taille fichier | Octets |
-|---|---|---|---|---|---|
-| `bootloader.bin` | `31232` = `0x7C00` | `31232` (offset 0) | `.text`@0, `.sig`@13 | 15 | `…c3 55 aa` |
-| `noyau.bin` | `1048576` = `0x100000` | `1048576` (offset 0) | `.text`@0, `.data`@32 | 36 | `…c3` + 15×`00` + `2a 00 00 00` |
-
-Preuve d'adresse : `ln_charge(cfg)`, `ln_entree(cfg)`,
-`ln_adresse_section(cfg, id_sig)` = `31245` = `0x7C0D`, et
-`ln_adresse_section(cfg, id_data)` = `1048608` = `0x100020`.
-
-**Validation globale :**
-
-- `rose verif` : `compilateur/backend_universel.rose` **vérifié**, programme
-  concaténé (backend + linker + tests) **vérifié**.
-- C0 → ELF : compilation rc=0 ; sorties interpréteur et ELF **identiques**,
-  `TOTAL 37/37` des assertions de `briques/tests_freestanding.rose`.
-- Parité self-host `scripts/verifier_parite_selfhost.sh` :
-  `tests=141 CONFORMES=141 DIVERGENTS=0 BLOQUES=0`, verdict RC=0.
-- Point fixe émetteur : `md5(rir(compilateur/emetteur.rose))` =
-  `md5(compilateur/emetteur.rose compilateur/emetteur.rose)` =
-  `b3ed9262dd54776a6dbd07bc12368d0e` (inchangé).
-- Non-régression : la suite historique `briques/backend/tests_multi.rose`
-  rend toujours `TOTAL 33/33`, sortie octet pour octet identique.
-
-## 6. Limites
-
-- **8 registres** (`registres=8`) : les opérations `imm`, `mov`, `add`…
-  utilisent `B8+r`, `8B /r` et les modrms `mod=11` ; aucun REX, donc pas de
-  registres 8–15.
-- Immédiat : 16 bits en mode réel (au-delà → préfixe `0x66` + immédiat 32
-  bits), 32 bits en mode protégé. Aucun immédiat 64 bits sur ces cibles.
-- **Pas de saut conditionnel** dans l'IR : `jmp`/`call` sont indirects par
-  registre (`FF /4`, `FF /2`). Les branches conditionnelles, les étiquettes
-  et les relocations ne sont pas résolues par ce linker.
-- **Pas de symboles, pas de relocations, pas de segments dans le fichier** :
-  l'image est une concaténation de sections + padding zéro. Le chargement est
-  à la responsabilité du BIOS ou du bootloader de première étape.
-- **Pas de runtime** : ni libc, ni crt, ni tas, ni GC, ni pilote d'E/S.
-  `syscall` se traduit par `int imm8` (vecteur de l'IR ou `vecteur_defaut`
-  du profil) ; un noyau réel doit installer sa propre table d'interruptions.
-- L'entrée doit appartenir à une section, sinon `ln_valider` rend `-4` et
-  `ln_ecrire` ne écrit rien.
-- L'état du linker est une **génération** : les accesseurs de sections
-  (`ln_offset`, `ln_adresse_section`, `ln_bytes`) lisent la génération
-  courante. Après un second `ln_config`, capturer les valeurs de la génération
-  précédente avant de poser la suivante (voir `briques/tests_freestanding.rose`).
-- Pièges de moteur : `lire_texte` remplace les octets > `0x7F` par U+FFFD
-  (pas de lecture binaire en Rose) ; sous le backend natif G5, `longueur` et
-  `sous_chaine` sur une chaîne d'octets bruts comptent des **points de code**,
-  pas des octets — d'où `ln_bytes -> liste<entier>` ; `octet_brut` ne doit être
-  défini qu'**une seule fois** par programme concaténé (ici dans le backend).
-- Le répertoire de sortie (`/tmp/opencode/freestanding/out/`) doit exister :
-  Rose n'a pas de primitive `mkdir` dans ce sous-ensemble.
-
-## 7. Fichiers
-
-| Fichier | Rôle | État |
-|---|---|---|
-| `compilateur/backend_universel.rose` | familles 4/5 + encodeur NU partagé + table | modifié |
-| `compilateur/link_nu.rose` | linker script nu, API `ln_*` | créé |
-| `briques/backend/freestanding.bud` | profils de cible en données | créé |
-| `briques/tests_freestanding.rose` | suite ops + linker, 37 assertions | créé |
-| `rose/docs/BACKEND_FREESTANDING.md` | cette doctrine | créé |
+Fichiers modifiés (worktree exclusif, **aucun commit/push**) :
+`compilateur/backend_universel.rose` (famille 6, encodeur partagé, E/S en
+données), `compilateur/link_nu.rose` (`ln_octets`, parité Rust/C0),
+`briques/backend/freestanding.bud`, `briques/backend/cible.bud` (profil
+`x86_64_nu`, données seules), `briques/tests_freestanding.rose` (suite commune
+16/32/64, 55 assertions), `rose/docs/BACKEND_FREESTANDING.md` (ce document).

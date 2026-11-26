@@ -1,4 +1,4 @@
-# tests_freestanding.rose — SUITE D'OPS → BINAIRES NU x86_16 ET x86_32.
+# tests_freestanding.rose — SUITE D'OPS → BINAIRES NU x86_16 / x86_32 / x86_64.
 #
 # Rose n'a pas d'instruction `include` : ce fichier est un MODULE SOURCE qui
 # se concatène avec le backend et le linker :
@@ -11,11 +11,19 @@
 #   /tmp/opencode/C0_h.elf /tmp/opencode/freestanding/fs.rose > fs.elf
 #   ./fs.elf                      # mêmes octets, sans runtime Rust
 #
-# La MÊME suite d'opérations abstraites (addition + saut) est traduite vers
-# les deux cibles. Aucun nom d'architecture n'apparaît dans `bu_traduire` :
-# les deux jeux d'octets ne diffèrent que par les DONNÉES de `bu_cible`.
-# Les binaires écrits sont NUS (pas d'ELF, pas de PE) et l'adresse de
-# chargement est prouvée par les accesseurs de `ln_config`.
+# La MÊME suite d'opérations abstraites (addition + saut + store) est traduite
+# vers les trois cibles. Aucun nom d'architecture n'apparaît dans `bu_traduire`
+# ni dans `bu_x86nu_encode` : les jeux d'octets ne diffèrent QUE par les
+# DONNÉES de `bu_cible` (largeur d'opérande, préfixe de registre REX.W,
+# largeur d'adresse, octets d'E/S). Les binaires écrits sont NUS (ni ELF, ni
+# PE) et l'adresse de chargement est prouvée par les accesseurs de `ln_config`.
+#
+# Contrôle externe sur hôte aarch64 (objdump i386/x86_64 absents) :
+#   llvm-objcopy -I binary -O elf64-x86-64 -B x86_64 out/nu64.bin out/nu64.o
+#   llvm-objdump -D --triple=x86_64 --section=.data out/nu64.o
+#   llvm-objcopy -I binary -O elf32-i386 -B i386 out/noyau.bin out/noyau.o
+#   llvm-objdump -D --triple=i386 --section=.data out/noyau.o
+# L'enveloppe ELF sert UNIQUEMENT à l'outil ; les fichiers livrés restent nus.
 
 # ── 0. Utilitaires de test ─────────────────────────────────────────────────
 
@@ -38,7 +46,9 @@ fn fs_hex(octets: liste<entier>) -> chaine {
 
 # Hex d'une chaîne d'octets BRUTS fabriquée par `octet_brut` (1 point de code
 # par octet). `lire_texte` est inutilisable ici : il remplace les octets > 0x7F
-# par U+FFFD. On contrôle donc `ln_bytes`, la source exacte de `ln_ecrire`.
+# par U+FFFD. Les tests contrôlent `ln_octets` (liste), source de vérité
+# identique sous l'oracle Rust et sous le moteur self-hosté C0 : `ln_bytes`
+# et `ln_ecrire` en sont les vues en chaîne, écrites localement.
 fn fs_hex_ch(s: chaine) -> chaine {
   $r = ""
   $k = 0
@@ -56,6 +66,37 @@ fn fs_repete(c: chaine, n: entier) -> chaine {
   retour $r
 }
 
+# Compte les octets égaux à $v (liste porteuse : index 1..n). Sert à prouver
+# que REX.W (0x48 = 72) est présent en 64 bits et absent en 32 bits.
+fn fs_compte_octet(octets: liste<entier>, v: entier) -> entier {
+  $n = 0
+  $k = 1
+  tant_que ($k < longueur($octets)) {
+    si ($octets[$k] == $v) { $n = $n + 1 }
+    $k = $k + 1
+  }
+  retour $n
+}
+
+# Remplace une paire `cle=valeur` d'un profil. Preuve que la forme d'E/S vient
+# des DONNÉES : en posant syscall_opcode=0, le MÊME encodeur émet `int imm8`.
+fn fs_profil_avec(p: liste<chaine>, cle: chaine, valeur: chaine) -> liste<chaine> {
+  $r = [""]
+  $pref = $cle + "="
+  $n = longueur($pref)
+  $k = 0
+  tant_que ($k < longueur($p)) {
+    $v = $p[$k]
+    $remplace = 0
+    si (longueur($v) >= $n) {
+      si (sous_chaine($v, 0, $n) == $pref) { $remplace = 1 }
+    }
+    si ($remplace == 1) { joindre($r, $pref + $valeur) } sinon { joindre($r, $v) }
+    $k = $k + 1
+  }
+  retour $r
+}
+
 fn fs_rapporte(n: entier, nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
   si ($obtenu == $attendu) {
     >> "OK " + chaine($n) + " " + $nom
@@ -69,10 +110,11 @@ $fs_ok = 0
 $fs_total = 0
 
 
-# ── 1. Profils : les deux cibles ne diffèrent QUE par des données ──────────
+# ── 1. Profils : les trois cibles ne diffèrent QUE par des données ─────────
 
 $c16 = bu_cible("x86_16")
 $c32 = bu_cible("x86_32")
+$c64 = bu_cible("x86_64_nu")
 
 >> "--- PROFILS (donnees) ---"
 $fs_total = $fs_total + 1
@@ -80,26 +122,36 @@ $fs_ok = $fs_ok + fs_rapporte(1, "x86_16_famille_mode", bu_profil($c16, "famille
 $fs_total = $fs_total + 1
 $fs_ok = $fs_ok + fs_rapporte(2, "x86_32_famille_mode", bu_profil($c32, "famille") + "/" + bu_profil($c32, "mode"), "5/protege")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(3, "x86_16_mot_prefixe", bu_profil($c16, "largeur_operande") + "/" + bu_profil($c16, "prefixe_32"), "2/102")
+$fs_ok = $fs_ok + fs_rapporte(3, "x86_64_famille_mode", bu_profil($c64, "famille") + "/" + bu_profil($c64, "mode"), "6/long")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(4, "x86_32_mot_prefixe", bu_profil($c32, "largeur_operande") + "/" + bu_profil($c32, "prefixe_32"), "4/0")
+$fs_ok = $fs_ok + fs_rapporte(4, "x86_16_mot_prefixe", bu_profil($c16, "largeur_operande") + "/" + bu_profil($c16, "prefixe_32"), "2/102")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(5, "adressage_16_32", bu_profil($c16, "taille_adresse") + "/" + bu_profil($c32, "taille_adresse"), "2/4")
+$fs_ok = $fs_ok + fs_rapporte(5, "x86_32_mot_prefixe", bu_profil($c32, "largeur_operande") + "/" + bu_profil($c32, "prefixe_32"), "4/0")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(6, "vecteurs_int", bu_profil($c16, "vecteur_defaut") + "/" + bu_profil($c32, "vecteur_defaut"), "16/128")
+$fs_ok = $fs_ok + fs_rapporte(6, "x86_64_registre_rex", bu_profil($c64, "largeur_registre") + "/" + bu_profil($c64, "prefixe_reg"), "64/72")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(7, "enveloppes_nues", bu_profil($c16, "enveloppe") + "/" + bu_profil($c32, "enveloppe"), "brut/brut")
+$fs_ok = $fs_ok + fs_rapporte(7, "adressage_16_32_64", bu_profil($c16, "taille_adresse") + "/" + bu_profil($c32, "taille_adresse") + "/" + bu_profil($c64, "taille_adresse"), "2/4/4")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(8, "table_encodeurs_4_5",
-  chaine(bu_encoder_id(4, 3)) + "/" + chaine(bu_encoder_id(5, 3)), "403/503")
+$fs_ok = $fs_ok + fs_rapporte(8, "vecteurs_int", bu_profil($c16, "vecteur_defaut") + "/" + bu_profil($c32, "vecteur_defaut"), "16/128")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(9, "enveloppes_nues", bu_profil($c16, "enveloppe") + "/" + bu_profil($c32, "enveloppe") + "/" + bu_profil($c64, "enveloppe"), "brut/brut/brut")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(10, "table_encodeurs_4_5_6",
+  chaine(bu_encoder_id(4, 3)) + "/" + chaine(bu_encoder_id(5, 3)) + "/" + chaine(bu_encoder_id(6, 3)), "403/503/603")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(11, "io_syscall_64",
+  bu_profil($c64, "entree_sortie") + "/" + bu_profil($c64, "syscall_opcode") + "/" + bu_profil($c64, "syscall_code"), "syscall/15/5")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(12, "largeur_registres", bu_profil($c16, "largeur_registre") + "/" + bu_profil($c32, "largeur_registre") + "/" + bu_profil($c64, "largeur_registre"), "16/32/64")
 
-# ── 2. La MÊME suite d'ops : addition + saut ───────────────────────────────
+# ── 2. La MÊME suite d'ops : addition + saut + store ───────────────────────
 
-# r0 = 5 ; r1 = 7 ; r0 = r0 + r1 (= 12) ; saut sur r1 ; retour.
+# r0 = 5 ; r1 = 7 ; r0 = r0 + r1 (= 12) ; [r1+16] = r0 ; saut sur r1 ; retour.
 $ops = [0]
 joindre($ops, bu_operation("imm", [0, 5]))
 joindre($ops, bu_operation("imm", [1, 7]))
 joindre($ops, bu_operation("add", [0, 0, 1]))
+joindre($ops, bu_operation("store", [0, 1, 16]))
 joindre($ops, bu_operation("jmp", [1]))
 joindre($ops, bu_operation("ret", [0]))
 $seq = bu_sequence()
@@ -111,28 +163,35 @@ tant_que ($k < longueur($ops)) {
 
 $oct16 = bu_traduire($seq, $c16)
 $oct32 = bu_traduire($seq, $c32)
+$oct64 = bu_traduire($seq, $c64)
 $h16 = fs_hex($oct16)
 $h32 = fs_hex($oct32)
+$h64 = fs_hex($oct64)
 
->> "ADD+JMP x86_16 (" + chaine(longueur($oct16) - 1) + ") " + $h16
->> "ADD+JMP x86_32 (" + chaine(longueur($oct32) - 1) + ") " + $h32
+>> "ADD+JMP+STORE x86_16 (" + chaine(longueur($oct16) - 1) + ") " + $h16
+>> "ADD+JMP+STORE x86_32 (" + chaine(longueur($oct32) - 1) + ") " + $h32
+>> "ADD+JMP+STORE x86_64_nu (" + chaine(longueur($oct64) - 1) + ") " + $h64
 
->> "--- OCTETS (addition + saut) ---"
+>> "--- OCTETS (addition + saut + store) ---"
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(9, "ops_suite_5", chaine(longueur($ops)), "6")
+$fs_ok = $fs_ok + fs_rapporte(13, "ops_suite_6", chaine(longueur($ops)), "7")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(10, "x86_16_add_jmp_hex", $h16, "b80500b907008bc001c8ffe1c3")
+$fs_ok = $fs_ok + fs_rapporte(14, "x86_16_add_jmp_store_hex", $h16, "b80500b907008bc001c889811000ffe1c3")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(11, "x86_32_add_jmp_hex", $h32, "b805000000b9070000008bc001c8ffe1c3")
+$fs_ok = $fs_ok + fs_rapporte(15, "x86_32_add_jmp_store_hex", $h32, "b805000000b9070000008bc001c8898110000000ffe1c3")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(12, "x86_16_taille", chaine(longueur($oct16) - 1), "13")
+$fs_ok = $fs_ok + fs_rapporte(16, "x86_64_add_jmp_store_hex", $h64, "48b8050000000000000048b90700000000000000488bc04801c84889811000000048ffe1c3")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(13, "x86_32_taille", chaine(longueur($oct32) - 1), "17")
+$fs_ok = $fs_ok + fs_rapporte(17, "tailles_16_32_64", chaine(longueur($oct16) - 1) + "/" + chaine(longueur($oct32) - 1) + "/" + chaine(longueur($oct64) - 1), "17/23/37")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(14, "saut_FF_E1_commun", fs_hexch($oct16[11]) + fs_hexch($oct16[12]) + "/" +
-  fs_hexch($oct32[15]) + fs_hexch($oct32[16]), "ffe1/ffe1")
+$fs_ok = $fs_ok + fs_rapporte(18, "saut_FF_E1_commun", fs_hexch($oct16[15]) + fs_hexch($oct16[16]) + "/" +
+  fs_hexch($oct32[21]) + fs_hexch($oct32[22]) + "/" +
+  fs_hexch($oct64[35]) + fs_hexch($oct64[36]), "ffe1/ffe1/ffe1")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(19, "rexw_present_absent",
+  chaine(fs_compte_octet($oct64, 72)) + "/" + fs_hexch($oct32[1]) + "/" + fs_hexch($oct64[1]), "6/b8/48")
 
-# ── 3. Préfixe 0x66 : les DEUX cibles partagent le même encodeur ───────────
+# ── 3. Préfixe 0x66 / immédiat 64 bits : les TROIS cibles, UN encodeur ──────
 
 $ops_big = [0]
 joindre($ops_big, bu_operation("imm", [2, 70000]))   # 70000 = 0x11170 > 0xFFFF
@@ -140,13 +199,16 @@ $seq_big = bu_sequence()
 bu_ajouter($seq_big, $ops_big[1])
 $big16 = fs_hex(bu_traduire($seq_big, $c16))
 $big32 = fs_hex(bu_traduire($seq_big, $c32))
->> "IMM32 x86_16 " + $big16 + " / x86_32 " + $big32
+$big64 = fs_hex(bu_traduire($seq_big, $c64))
+>> "IMM32 x86_16 " + $big16 + " / x86_32 " + $big32 + " / x86_64_nu " + $big64
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(15, "prefixe_66_imm32_x86_16", $big16, "66ba70110100")
+$fs_ok = $fs_ok + fs_rapporte(20, "prefixe_66_imm32_x86_16", $big16, "66ba70110100")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(16, "sans_prefixe_imm32_x86_32", $big32, "ba70110100")
+$fs_ok = $fs_ok + fs_rapporte(21, "sans_prefixe_imm32_x86_32", $big32, "ba70110100")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(22, "imm64_rexw_x86_64", $big64, "48ba7011010000000000")
 
-# ── 4. Adressage 16 bits vs 32 bits (modrm mod=10 + disp) ──────────────────
+# ── 4. Adressage 16 / 32 bits (modrm mod=10 + disp) ────────────────────────
 
 $ops_ld = [0]
 joindre($ops_ld, bu_operation("load", [0, 1, 16]))
@@ -154,22 +216,36 @@ $seq_ld = bu_sequence()
 bu_ajouter($seq_ld, $ops_ld[1])
 $ld16 = fs_hex(bu_traduire($seq_ld, $c16))
 $ld32 = fs_hex(bu_traduire($seq_ld, $c32))
->> "LOAD [r1+16] x86_16 " + $ld16 + " / x86_32 " + $ld32
+$ld64 = fs_hex(bu_traduire($seq_ld, $c64))
+>> "LOAD [r1+16] x86_16 " + $ld16 + " / x86_32 " + $ld32 + " / x86_64_nu " + $ld64
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(17, "disp16_adressage_16_bits", $ld16, "8b811000")
+$fs_ok = $fs_ok + fs_rapporte(23, "disp16_adressage_16_bits", $ld16, "8b811000")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(18, "disp32_adressage_32_bits", $ld32, "8b8110000000")
+$fs_ok = $fs_ok + fs_rapporte(24, "disp32_adressage_32_bits", $ld32, "8b8110000000")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(25, "disp32_rexw_adressage_64_bits", $ld64, "488b8110000000")
 
-# ── 5. Vecteur d'interruption : la donnée du profil, pas un nom de CPU ─────
+# ── 5. E/S : la forme vient des DONNÉES du profil, pas d'un nom d'OS ───────
 
 $ops_int = [0]
 joindre($ops_int, bu_operation("syscall", [0]))
 $seq_int = bu_sequence()
 bu_ajouter($seq_int, $ops_int[1])
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(19, "int_10_mode_reel", fs_hex(bu_traduire($seq_int, $c16)), "cd10")
+$fs_ok = $fs_ok + fs_rapporte(26, "int_10_mode_reel", fs_hex(bu_traduire($seq_int, $c16)), "cd10")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(20, "int_80_mode_protege", fs_hex(bu_traduire($seq_int, $c32)), "cd80")
+$fs_ok = $fs_ok + fs_rapporte(27, "int_80_mode_protege", fs_hex(bu_traduire($seq_int, $c32)), "cd80")
+
+$ops_sc = [0]
+joindre($ops_sc, bu_operation("syscall", [60]))
+$seq_sc = bu_sequence()
+bu_ajouter($seq_sc, $ops_sc[1])
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(28, "syscall_0F05_rexw", fs_hex(bu_traduire($seq_sc, $c64)), "48b83c000000000000000f05")
+# Même profil 64 bits, un seul champ changé : l'encodeur émet CD 0x80.
+$c64_int = fs_profil_avec($c64, "syscall_opcode", "0")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(29, "forme_int_par_donnee", fs_hex(bu_traduire($seq_int, $c64_int)), "cd80")
 
 # ── 6. Linker NU : adresse de charge, alignement, point d'entrée ───────────
 # Les accesseurs de sections lisent la GENERATION COURANTE du linker : on
@@ -177,7 +253,7 @@ $fs_ok = $fs_ok + fs_rapporte(20, "int_80_mode_protege", fs_hex(bu_traduire($seq
 
 $dir = "/tmp/opencode/freestanding/out/"
 
-# Bootloader : 0x7C00, sections contiguës, signature 55 AA.
+# Cible 16 bits : 0x7C00, sections contiguës, signature 55 AA.
 $cfg_boot = ln_config(31232, 1, 31232)
 $s_text_boot = [0]
 $k = 1
@@ -188,10 +264,10 @@ $boot_valide = ln_valider($cfg_boot)
 $boot_nsec = ln_nb_sections()
 $boot_off_sig = ln_offset($id_sig_boot)
 $boot_adr_sig = ln_adresse_section($cfg_boot, $id_sig_boot)
-$boot_relu = fs_hex_ch(ln_bytes($cfg_boot))
+$boot_relu = fs_hex(ln_octets($cfg_boot))
 $n_boot = ln_ecrire($cfg_boot, $dir + "bootloader.bin")
 
-# Noyau : 0x100000, alignement 16, .data repoussé à l'offset 32.
+# Cible 32 bits : 0x100000, alignement 16, .data repoussé à l'offset 32.
 $cfg_noyau = ln_config(1048576, 16, 1048576)
 $s_text_noyau = [0]
 $k = 1
@@ -201,48 +277,86 @@ $id_data_noyau = ln_ajouter_section(".data", [0, 42, 0, 0, 0])
 $noyau_valide = ln_valider($cfg_noyau)
 $noyau_off_data = ln_offset($id_data_noyau)
 $noyau_adr_data = ln_adresse_section($cfg_noyau, $id_data_noyau)
-$noyau_relu = fs_hex_ch(ln_bytes($cfg_noyau))
+$noyau_relu = fs_hex(ln_octets($cfg_noyau))
 $n_noyau = ln_ecrire($cfg_noyau, $dir + "noyau.bin")
+
+# Cible 64 bits : 0x400000, alignement 16, .data repoussé à l'offset 48.
+$cfg_nu64 = ln_config(4194304, 16, 4194304)
+$s_text_nu64 = [0]
+$k = 1
+tant_que ($k < longueur($oct64)) { joindre($s_text_nu64, $oct64[$k]); $k = $k + 1 }
+$id_text_nu64 = ln_ajouter_section(".text", $s_text_nu64)
+$id_data_nu64 = ln_ajouter_section(".data", [0, 42, 0, 0, 0])
+$nu64_valide = ln_valider($cfg_nu64)
+$nu64_off_data = ln_offset($id_data_nu64)
+$nu64_adr_data = ln_adresse_section($cfg_nu64, $id_data_nu64)
+$nu64_relu = fs_hex(ln_octets($cfg_nu64))
+$n_nu64 = ln_ecrire($cfg_nu64, $dir + "nu64.bin")
 
 >> "--- LINKER NU ---"
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(21, "boot_charge_0x7C00", chaine(ln_charge($cfg_boot)), "31232")
+$fs_ok = $fs_ok + fs_rapporte(30, "boot_charge_0x7C00", chaine(ln_charge($cfg_boot)), "31232")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(22, "boot_entree_0x7C00", chaine(ln_entree($cfg_boot)), "31232")
+$fs_ok = $fs_ok + fs_rapporte(31, "boot_entree_0x7C00", chaine(ln_entree($cfg_boot)), "31232")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(23, "boot_entree_offset_0", chaine(ln_entree_offset($cfg_boot)), "0")
+$fs_ok = $fs_ok + fs_rapporte(32, "boot_entree_offset_0", chaine(ln_entree_offset($cfg_boot)), "0")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(24, "noyau_charge_0x100000", chaine(ln_charge($cfg_noyau)), "1048576")
+$fs_ok = $fs_ok + fs_rapporte(33, "noyau_charge_0x100000", chaine(ln_charge($cfg_noyau)), "1048576")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(25, "noyau_entree_0x100000", chaine(ln_entree($cfg_noyau)), "1048576")
+$fs_ok = $fs_ok + fs_rapporte(34, "noyau_entree_0x100000", chaine(ln_entree($cfg_noyau)), "1048576")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(26, "noyau_alignement_16", chaine(ln_alignement($cfg_noyau)), "16")
+$fs_ok = $fs_ok + fs_rapporte(35, "noyau_alignement_16", chaine(ln_alignement($cfg_noyau)), "16")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(27, "boot_valide", chaine($boot_valide), "0")
+$fs_ok = $fs_ok + fs_rapporte(36, "boot_valide", chaine($boot_valide), "0")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(28, "noyau_valide", chaine($noyau_valide), "0")
+$fs_ok = $fs_ok + fs_rapporte(37, "noyau_valide", chaine($noyau_valide), "0")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(29, "boot_2_sections", chaine($boot_nsec), "2")
+$fs_ok = $fs_ok + fs_rapporte(38, "boot_2_sections", chaine($boot_nsec), "2")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(30, "boot_offset_sig", chaine($boot_off_sig), "13")
+$fs_ok = $fs_ok + fs_rapporte(39, "boot_offset_sig", chaine($boot_off_sig), "17")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(31, "boot_adresse_sig", chaine($boot_adr_sig), "31245")
+$fs_ok = $fs_ok + fs_rapporte(40, "boot_adresse_sig", chaine($boot_adr_sig), "31249")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(32, "noyau_offset_data_aligne", chaine($noyau_off_data), "32")
+$fs_ok = $fs_ok + fs_rapporte(41, "noyau_offset_data_aligne", chaine($noyau_off_data), "32")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(33, "noyau_adresse_data", chaine($noyau_adr_data), "1048608")
+$fs_ok = $fs_ok + fs_rapporte(42, "noyau_adresse_data", chaine($noyau_adr_data), "1048608")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(34, "boot_fichier_15_octets", chaine($n_boot), "15")
+$fs_ok = $fs_ok + fs_rapporte(43, "boot_fichier_19_octets", chaine($n_boot), "19")
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(35, "noyau_fichier_36_octets", chaine($n_noyau), "36")
+$fs_ok = $fs_ok + fs_rapporte(44, "noyau_fichier_36_octets", chaine($n_noyau), "36")
 
-# `ln_bytes` est la source exacte de `ln_ecrire` : preuve qu'aucun en-tête
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(45, "nu64_charge_0x400000", chaine(ln_charge($cfg_nu64)), "4194304")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(46, "nu64_entree_0x400000", chaine(ln_entree($cfg_nu64)), "4194304")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(47, "nu64_alignement_16", chaine(ln_alignement($cfg_nu64)), "16")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(48, "nu64_valide", chaine($nu64_valide), "0")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(49, "nu64_offset_data_aligne", chaine($nu64_off_data), "48")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(50, "nu64_adresse_data", chaine($nu64_adr_data), "4194352")
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(51, "nu64_fichier_52_octets", chaine($n_nu64), "52")
+
+# `ln_octets` est la source exacte de `ln_ecrire` : preuve qu'aucun en-tête
 # n'est inséré et que le padding d'alignement est bien fait de zéros.
 $attendu_boot = $h16 + "55aa"
-$attendu_noyau = $h32 + fs_repete("00", 15) + "2a000000"
+$attendu_noyau = $h32 + fs_repete("00", 9) + "2a000000"
+$attendu_nu64 = $h64 + fs_repete("00", 11) + "2a000000"
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(36, "boot_binaire_nu_octets", $boot_relu, $attendu_boot)
+$fs_ok = $fs_ok + fs_rapporte(52, "boot_binaire_nu_octets", $boot_relu, $attendu_boot)
 $fs_total = $fs_total + 1
-$fs_ok = $fs_ok + fs_rapporte(37, "noyau_binaire_nu_octets", $noyau_relu, $attendu_noyau)
+$fs_ok = $fs_ok + fs_rapporte(53, "noyau_binaire_nu_octets", $noyau_relu, $attendu_noyau)
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(54, "nu64_binaire_nu_octets", $nu64_relu, $attendu_nu64)
+$debut64 = sous_chaine($nu64_relu, 0, 4)
+$pas_elf = 0
+$pas_pe = 0
+si ($debut64 != "7f454c46") { $pas_elf = 1 }
+si ($debut64 != "4d5a") { $pas_pe = 1 }
+$fs_total = $fs_total + 1
+$fs_ok = $fs_ok + fs_rapporte(55, "nu64_sans_header_elf_pe", chaine($pas_elf) + "/" + chaine($pas_pe) + "/" + sous_chaine($nu64_relu, 0, 4), "1/1/48b8")
 
 >> "TOTAL " + chaine($fs_ok) + "/" + chaine($fs_total)

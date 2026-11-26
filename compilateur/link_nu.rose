@@ -41,6 +41,9 @@
 #     `compilateur/backend_universel.rose` (interception G5). Ce module est
 #     un MODULE SOURCE : on le concatène au backend, comme tests_multi.rose.
 #     Aucun appel à ld / cc / objcopy / objdump n'est fait ici.
+# `ln_octets(config)` rend la LISTE d'octets (porteuse en index 0) : c'est la
+# source de vérité contrôlable dans LES DEUX moteurs (Rust et C0). `ln_bytes`
+# en est une vue en chaîne brute, et `ln_ecrire` écrit cette chaîne.
 #
 #   cat compilateur/backend_universel.rose compilateur/link_nu.rose \
 #       briques/tests_freestanding.rose > /tmp/fs.rose
@@ -174,11 +177,12 @@ fn ln_valider(cfg: liste<entier>) -> entier {
 # L'adresse de chargement n'est PAS écrite dans le fichier : elle est un
 # paramètre du contrat de chargement (`ln_charge`), comme pour un bootloader
 # qui place son secteur à 0x7C00.
-fn ln_bytes(config: liste<entier>) -> chaine {
-  si (ln_valider($config) != 0) { retour "" }
+fn ln_octets(config: liste<entier>) -> liste<entier> {
+  $vide = [0]
+  si (ln_valider($config) != 0) { retour $vide }
   $n = ln_dernier($ln_nsec)
   $b = ln_dernier($ln_base)
-  $s = ""
+  $s = [0]                                       # porteuse
   $cur = 0
   $i = 1
   tant_que ($i <= $n) {
@@ -186,13 +190,13 @@ fn ln_bytes(config: liste<entier>) -> chaine {
     $lg = $ln_len[$b + $i]
     $z = 0
     tant_que ($z < $deb - $cur) {
-      $s = $s + ln_octet(0)
+      joindre($s, 0)
       $z = $z + 1
     }
     $p = $ln_idx[$b + $i]
     $k = 0
     tant_que ($k < $lg) {
-      $s = $s + ln_octet($ln_oct[$p + $k])
+      joindre($s, $ln_oct[$p + $k])
       $k = $k + 1
     }
     $cur = $deb + $lg
@@ -201,11 +205,28 @@ fn ln_bytes(config: liste<entier>) -> chaine {
   retour $s
 }
 
+fn ln_bytes(config: liste<entier>) -> chaine {
+  $o = ln_octets($config)
+  $s = ""
+  $k = 1
+  tant_que ($k < longueur($o)) {
+    $s = $s + ln_octet($o[$k])
+    $k = $k + 1
+  }
+  retour $s
+}
+
 fn ln_ecrire(config: liste<entier>, chemin: chaine) -> entier {
   si (ln_valider($config) != 0) { retour -1 }
-  $s = ln_bytes($config)
+  $o = ln_octets($config)
+  $s = ""
+  $k = 1
+  tant_que ($k < longueur($o)) {
+    $s = $s + ln_octet($o[$k])
+    $k = $k + 1
+  }
   ecrire_bytes($chemin, $s)
-  retour longueur($s)
+  retour longueur($o) - 1
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

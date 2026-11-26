@@ -59,7 +59,29 @@ cibles: [
     enveloppe: brut
     runtime: aucun
     note: "aucun ELF : le loader place les octets à 0x100000 et saute à l'entrée"
+  },
+  {
+    nom: "x86_64_nu"
+    famille: 6
+    mode: long                        # registres 64 bits, REX.W = 0x48
+    largeur_operande: 8               # B8+r + imm64
+    prefixe_32: 0                     # inutile : opérande 64 bits par défaut
+    prefixe_reg: 72                   # 0x48 : REX.W, DONNÉE du profil
+    forcer_32: 0
+    taille_adresse: 4                 # modrm mod=10 + disp32
+    vecteur_defaut: 128               # si le profil choisit la forme `int`
+    int_opcode: 205                   # CD
+    syscall_opcode: 15                # 0F : forme `syscall`
+    syscall_code: 5                   # 05
+    adresse_charge: 4194304           # 0x400000 — adresse de chargement fixe
+    alignement: 16                    # chaque segment sur une frontière 16
+    entre: 4194304                    # 0x400000 — premier octet de .text
+    segments: [".text", ".data"]
+    enveloppe: brut
+    runtime: aucun
+    note: "famille 6 : même encodeur que 4/5, REX.W et 0F 05 en données ; aucun header"
   }
+
 ]
 
 # Jeu d'opérations abstrait (identique à cible.bud ; commun aux deux cibles).

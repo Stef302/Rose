@@ -17,16 +17,17 @@
 #   bu_traduire(seq, cible)   -> liste<entier>  (OCTETS, porteuse [0])
 #   bu_emettre(seq, cible, chemin) -> entier (écrit via ecrire_bytes)
 #
-# Cibles réellement supportées : aarch64, x86_64, wasm (module valide avec
-# import d'E/S, mémoire linéaire et segment de données), x86_16 (mode réel,
-# adressage 16 bits, préfixe 0x66 pour un opérande 32 bits) et x86_32 (mode
-# protégé anneau 0, adressage 32 bits). Les deux cibles NU partagent UN SEUL
-# encodeur : la largeur d'opérande, le préfixe, la largeur d'adresse et le
-# vecteur d'interruption sont des DONNÉES du profil `bu_cible`, jamais des
-# noms écrits dans `bu_traduire`.
+# Cibles réellement supportées : aarch64, x86_64 (famille 2), wasm (module
+# valide avec import d'E/S, mémoire linéaire et segment de données), et les
+# trois cibles NU x86_16 (mode réel, adressage 16 bits, préfixe 0x66),
+# x86_32 (adressage 32 bits) et x86_64_nu (registres 64 bits, REX.W 0x48,
+# adressage disp32). Les trois cibles NU partagent UN SEUL encodeur
+# `bu_x86nu_encode` : largeur d'opérande, préfixe de registre, largeur
+# d'adresse, forme d'E/S (int ou syscall) et vecteur sont des DONNÉES du
+# profil `bu_cible`, jamais des noms écrits dans `bu_traduire`.
 # Voir rose/docs/BACKEND_UNIVERSEL.md pour la doctrine complète et les
 # limites (largeur d'immédiat, formats de saut, sémantique wasm i32), ainsi
-# que rose/docs/BACKEND_FREESTANDING.md pour la chaîne noyau/bootloader.
+# que rose/docs/BACKEND_FREESTANDING.md pour la chaîne freestanding 16/32/64.
 #
 # CONVENTIONS DE TYPE (compatibles G5 / C0, mesurées) :
 #   - une suite / un tampon d'octets est une liste<entier> dont l'index 0
@@ -182,11 +183,12 @@ fn bu_cible(nom: chaine) -> liste<chaine> {
     # des virgules). Segment `data` à l'offset 0. 42 = 0x2a = 'a' + 1.
     joindre($p, "donnees_initiales=" + "42,0,0,0")
   }
-  # ── Cibles FREESTANDING (familles 4 et 5) ──────────────────────────────
+  # ── Cibles FREESTANDING (familles 4, 5 et 6) ───────────────────────────
   # Même jeu d'opérations abstraites, mais aucune enveloppe, aucun runtime,
   # aucun ELF/PE : `bu_traduire` rend directement les octets machine. La
-  # différence entre mode réel et mode protégé est ENTIÈREMENT dans ces
-  # champs de données, consults par l'unique encodeur `bu_x86nu_encode`.
+  # différence entre les trois modes est ENTIÈREMENT dans ces champs de
+  # données, consultés par l'unique encodeur `bu_x86nu_encode`.
+  # Aucun de ces champs n'est un nom d'architecture ni un nom de système.
   si ($nom == "i386") { $nom = "x86_32" }
   si ($nom == "x86_16") {
     $famille = 4
@@ -201,7 +203,9 @@ fn bu_cible(nom: chaine) -> liste<chaine> {
     joindre($p, "prefixe_32=102")       # 0x66 : bascule en opérande 32 bits
     joindre($p, "forcer_32=0")          # pas de préfixe sur les ops de registre
     joindre($p, "taille_adresse=2")     # modrm mod=10 + disp16
-    joindre($p, "vecteur_defaut=16")    # int 0x10 (BIOS, mode réel)
+    joindre($p, "vecteur_defaut=16")    # vecteur 0x10 par défaut
+    joindre($p, "int_opcode=205")       # CD : forme « int imm8 »
+    joindre($p, "syscall_opcode=0")     # aucune forme « syscall » sur cette cible
     joindre($p, "mode=reel")
   }
   si ($nom == "x86_32") {
@@ -217,8 +221,34 @@ fn bu_cible(nom: chaine) -> liste<chaine> {
     joindre($p, "prefixe_32=0")         # aucun préfixe nécessaire
     joindre($p, "forcer_32=0")
     joindre($p, "taille_adresse=4")     # modrm mod=10 + disp32
-    joindre($p, "vecteur_defaut=128")   # int 0x80 (noyau, anneau 0)
+    joindre($p, "vecteur_defaut=128")   # vecteur 0x80 par défaut
+    joindre($p, "int_opcode=205")
+    joindre($p, "syscall_opcode=0")
     joindre($p, "mode=protege")
+  }
+  # x86_64 NU : même encodeur que les familles 4/5, mais registres 64 bits.
+  # REX.W (0x48) et la paire d'octets du syscall sont des DONNÉES du profil.
+  # `x86_64` (famille 2) reste le profil historique à movabs 64 bits ; la
+  # brique NU est un PROFIL DISTINCT, jamais une modification de la famille 2.
+  si ($nom == "x86_64_nu") {
+    $famille = 6
+    $reg = 64
+    $bout = "petit"
+    $mot = 8
+    $nregs = 16
+    $saut = "registre"
+    $io = "syscall"
+    $env = "brut"
+    joindre($p, "largeur_operande=8")   # B8+r + imm64
+    joindre($p, "prefixe_32=0")
+    joindre($p, "prefixe_reg=72")       # 0x48 : REX.W, lu dans le profil
+    joindre($p, "forcer_32=0")
+    joindre($p, "taille_adresse=4")     # modrm mod=10 + disp32
+    joindre($p, "vecteur_defaut=128")   # utilisé si le profil choisit « int »
+    joindre($p, "int_opcode=205")       # CD (forme alternative, même encodeur)
+    joindre($p, "syscall_opcode=15")    # 0F
+    joindre($p, "syscall_code=5")       # 05
+    joindre($p, "mode=long")
   }
   joindre($p, "famille=" + chaine($famille))
   joindre($p, "largeur_registre=" + chaine($reg))
@@ -343,6 +373,25 @@ joindre($bu_encoder_table, "5:11:511")
 joindre($bu_encoder_table, "5:12:512")
 joindre($bu_encoder_table, "5:13:513")
 joindre($bu_encoder_table, "5:14:514")
+# x86_64 NU (famille 6) : membre encodeur 600..616. Aucun nouvel encodeur
+# n'est écrit : la famille 6 partage `bu_x86nu_encode` avec les familles 4/5.
+joindre($bu_encoder_table, "6:0:600")
+joindre($bu_encoder_table, "6:1:601")
+joindre($bu_encoder_table, "6:2:602")
+joindre($bu_encoder_table, "6:3:603")
+joindre($bu_encoder_table, "6:4:604")
+joindre($bu_encoder_table, "6:5:605")
+joindre($bu_encoder_table, "6:6:606")
+joindre($bu_encoder_table, "6:7:607")
+joindre($bu_encoder_table, "6:8:608")
+joindre($bu_encoder_table, "6:9:609")
+joindre($bu_encoder_table, "6:10:610")
+joindre($bu_encoder_table, "6:11:611")
+joindre($bu_encoder_table, "6:12:612")
+joindre($bu_encoder_table, "6:13:613")
+joindre($bu_encoder_table, "6:14:614")
+joindre($bu_encoder_table, "6:15:615")
+joindre($bu_encoder_table, "6:16:616")
 
 fn bu_champ(s: chaine, i: entier) -> chaine {
   $n = longueur(s)
@@ -636,7 +685,7 @@ fn bu_x64_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<enti
 # L'IR à registres est abaissé en machine à pile : chaque registre est un
 # local i32. Les octets produits forment un MODULE VALIDE : magie, types,
 # import `env.write`, fonction exportée "f", mémoire linéaire, données
-# initiales et section code. Voir `bu_wasm_module` pour l'enveloppe.
+# initiales et section code. Voir `bu_module_enveloppe` pour l'enveloppe.
 #
 # ABI wasm du backend (contrairement aux cibles natives) :
 #   - `syscall n` -> `i32.const n` + `call 0` où 0 = l'import `env.write`.
@@ -671,7 +720,7 @@ fn bu_wasm_bin(reg: entier, a: entier, b: entier, op: entier) -> liste<entier> {
   retour $r
 }
 
-fn bu_wasm_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
+fn bu_pile_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<entier> {
   $r = [0]
   $d = 0
   $s = 0
@@ -723,7 +772,7 @@ fn bu_wasm_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<ent
   retour $r
 }
 
-fn bu_wasm_module(corps: liste<entier>, p: liste<chaine>) -> liste<entier> {
+fn bu_module_enveloppe(corps: liste<entier>, p: liste<chaine>) -> liste<entier> {
   $b = bu_sans_porteur($corps)
   $ncorps = longueur($b) - 1
   $taille_corps = $ncorps + 4                                            # 3 octets de decls locaux + end
@@ -786,16 +835,23 @@ fn bu_wasm_module(corps: liste<entier>, p: liste<chaine>) -> liste<entier> {
   retour $r
 }
 
-# ── 8b. Encodeur x86 NU (familles 4 = x86_16, 5 = x86_32) ──────────────────
-# UN SEUL encodeur pour LES DEUX cibles : aucun nom de CPU, aucun "si x86_16".
-# La largeur d'opérande, le préfixe 0x66, la largeur d'adresse, le boutisme et
-# le vecteur d'interruption sont LUS dans le profil renvoyé par `bu_cible`.
-# Famille 4 (mode réel) : mot = 2 octets, préfixe 0x66 si immédiat > 16 bits.
-# Famille 5 (mode protégé) : mot = 4 octets, aucun préfixe, disp32.
+# ── 8b. Encodeur x86 NU (familles 4 = 16 bits, 5 = 32, 6 = 64) ─────────────
+# UN SEUL encodeur pour LES TROIS cibles : aucun nom de CPU, aucun "si x86_16".
+# Largeur d'opérande, préfixe 0x66, préfixe de registre (REX.W), largeur
+# d'adresse, boutisme et forme d'E/S sont LUS dans le profil `bu_cible`.
+# Famille 4 : mot = 2 octets, 0x66 si immédiat > 16 bits, disp16, `int imm8`.
+# Famille 5 : mot = 4 octets, aucun préfixe, disp32, `int imm8`.
+# Famille 6 : mot = 8 octets, REX.W, disp32, `syscall` OU `int imm8` selon
+#            les octets d'E/S déclarés dans le profil (aucun nom d'OS).
 
 fn bu_x86nu_octets(v: entier, nb: entier, p: liste<chaine>) -> liste<entier> {
-  $u = v % 4294967296
-  si ($u < 0) { $u = $u + 4294967296 }
+  # Module = 256^nb, calculé en DONNÉES (2, 4 ou 8 octets) : ni 0x66 ni REX
+  # ne sont écrits ici. Le complément à 2 suit la largeur du profil.
+  $m = 1
+  $kmod = 0
+  tant_que ($kmod < $nb) { $m = $m * 256; $kmod = $kmod + 1 }
+  $u = v % $m
+  si ($u < 0) { $u = $u + $m }
   $tmp = [0]
   $k = 0
   tant_que ($k < $nb) {
@@ -828,21 +884,29 @@ fn bu_x86nu_pre(r: liste<entier>, p: liste<chaine>, force32: entier) -> entier {
   $besoin = 0
   si ($w == 2 et ($force32 == 1 ou $f == 1)) { $besoin = 1 }
   si ($besoin == 1 et $pref > 0) { joindre($r, $pref) }
+  # Préfixe de registre (REX.W = 72) : une DONNÉE du profil. Les familles 4
+  # et 5 n'en ont pas (champ absent = 0) ; la famille 6 en a un.
+  $rex = bu_profil_entier($p, "prefixe_reg")
+  si ($rex > 0) { joindre($r, $rex) }
   retour longueur($r) - 1
 }
 
 fn bu_x86nu_imm(reg: entier, v: entier, p: liste<chaine>) -> liste<entier> {
   $r = [0]
   $w = bu_profil_entier($p, "largeur_operande")
-  $u = v % 4294967296
-  si ($u < 0) { $u = $u + 4294967296 }
   $nb = $w
   $force = 0
-  # 0x66 est émis ICI, jamais à partir d'un nom d'architecture.
-  si ($w == 2 et $u > 65535) { $nb = 4; $force = 1 }
+  # Seul le mode 16 bits a besoin d'une bascule d'opérande : l'immédiat
+  # dépasse 0xFFFF. 0x66 est émis ICI, jamais à partir d'un nom d'architecture.
+  si ($w == 2) {
+    $u = v % 4294967296
+    si ($u < 0) { $u = $u + 4294967296 }
+    si ($u > 65535) { $nb = 4; $force = 1 }
+  }
   bu_x86nu_pre($r, $p, $force)
   joindre($r, 184 + ($reg % 8))                  # B8+r : mov reg, imm
-  bu_ajoute($r, bu_x86nu_octets($u, $nb, $p))
+  # `bu_x86nu_octets` applique le module 256^nb : 8 octets en famille 6.
+  bu_ajoute($r, bu_x86nu_octets($v, $nb, $p))
   retour $r
 }
 
@@ -914,11 +978,20 @@ fn bu_x86nu_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<en
   si (code == 12) { bu_ajoute($r, bu_x86nu_rr(255, 2, $d, $p)) }          # call r/m : FF /2
   si (code == 13) { joindre($r, 195) }                                    # ret
   si (code == 14) {
-    # int imm8 : vecteur de l'IR, ou vecteur par défaut du profil si 0.
-    $vec = $d
-    si ($vec == 0) { $vec = bu_profil_entier($p, "vecteur_defaut") }
-    joindre($r, 205)
-    joindre($r, $vec % 256)
+    # E/S : DEUX formes, choisies par des OCTETS du profil, jamais par un nom
+    # d'architecture ou de système. `syscall_opcode = 0` => `int imm8` ;
+    # sinon => `syscall_opcode syscall_code` (0F 05 dans le profil NU 64 bits).
+    $sc = bu_profil_entier($p, "syscall_opcode")
+    si ($sc > 0) {
+      bu_ajoute($r, bu_x86nu_imm(0, $d, $p))     # numéro de syscall dans rax
+      joindre($r, $sc)
+      joindre($r, bu_profil_entier($p, "syscall_code"))
+    } sinon {
+      $vec = $d
+      si ($vec == 0) { $vec = bu_profil_entier($p, "vecteur_defaut") }
+      joindre($r, bu_profil_entier($p, "int_opcode"))
+      joindre($r, $vec % 256)
+    }
   }
   si (code == 15) { joindre($r, 244) }                                  # hlt : F4
   si (code == 16) {                                                      # jmp rel8 : EB imm8
@@ -937,9 +1010,9 @@ fn bu_encode(famille: entier, code: entier, a: liste<entier>, p: liste<chaine>) 
   si (bu_encoder_id($famille, $code) < 0) { retour $vide }
   si ($famille == 1) { retour bu_a64_encode($code, $a, $p) }
   si ($famille == 2) { retour bu_x64_encode($code, $a, $p) }
-  si ($famille == 3) { retour bu_wasm_encode($code, $a, $p) }
-  # Familles 4 et 5 : le MÊME encodeur, paramétré par les données du profil.
-  si ($famille == 4 ou $famille == 5) { retour bu_x86nu_encode($code, $a, $p) }
+  si ($famille == 3) { retour bu_pile_encode($code, $a, $p) }
+  # Familles 4, 5 et 6 : le MÊME encodeur, paramétré par les données du profil.
+  si ($famille == 4 ou $famille == 5 ou $famille == 6) { retour bu_x86nu_encode($code, $a, $p) }
   retour $vide
 }
 
@@ -958,7 +1031,7 @@ fn bu_traduire(seq: liste<entier>, cible: liste<chaine>) -> liste<entier> {
     $k = $k + 1
   }
   # L'enveloppe est une DONNÉE du profil : aucun nom de CPU ici.
-  si (bu_profil($cible, "enveloppe") == "module") { retour bu_wasm_module($r, $cible) }
+  si (bu_profil($cible, "enveloppe") == "module") { retour bu_module_enveloppe($r, $cible) }
   retour $r
 }
 
