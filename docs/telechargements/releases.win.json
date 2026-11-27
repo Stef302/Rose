@@ -1,5 +1,15 @@
 [
   {
+    "PackageId": "Rose-0.1.84-full.nupkg",
+    "Version": "0.1.84",
+    "Type": "Full",
+    "FileName": "Rose-0.1.84-full.nupkg",
+    "SHA1": "ce8e1e11984fb957d3d400372bc593b1e8c14933",
+    "SHA256": "e5036cf9addc5111aaff24c6fdc729c40536266d0a590ebbc1522ac8ddcf7614",
+    "SHA512": "EuMlU4529nkronjK5ksMya+yMjtN9K4C+H8CKXzJ0NGko7YxwXR7byld5/4ftSfk8ScZ4+D5wBLTHadYwUMNKQ==",
+    "Size": 1939585
+  },
+  {
     "PackageId": "Rose-0.1.83-full.nupkg",
     "Version": "0.1.83",
     "Type": "Full",
