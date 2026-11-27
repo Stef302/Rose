@@ -17799,16 +17799,29 @@ fn mc_hashes($src: chaine) -> chaine {
   $n = longueur($src)
   $h1 = 2166136261
   $h2 = 5381
-  # Profil direct SANS liste intermédiaire : mc_scan_caracteres() construisait
-  # une liste de N chaînes d'un caractère (joindre répété, O(N²) en G5) avant
-  # la boucle de hachage. Le hachage FNV/DJB2 est IDENTIQUE octet pour octet :
-  # on parcourt directement les mêmes sous-chaînes de 1 point de code.
+  # Hachage FNV/DJB2 par BLOCS de 64 points de code : sous_chaine() rebalaye
+  # la chaîne depuis son début sous le backend G5, donc une boucle
+  # caractère par caractère coûte O(n²) (mesuré : +8 000 caractères de
+  # commentaire ajoutent ~22 ms au lancement d'un programme en cache).
+  # On extrait chaque bloc UNE seule fois, puis on ne travaille que sur
+  # 64 points de code : O(n²/64 + 32n). Le hachage est IDENTIQUE octet pour
+  # octet (mêmes ordres de points de code, même ordre de accumulation),
+  # donc toutes les clés de cache restent inchangées. Unicode inclus.
+  $pas = 64
   $i = 0
   tant_que ($i < $n) {
-    $c = ordre(sous_chaine($src, $i, $i + 1))
-    $h1 = (($h1 + $c) * 16777619) % 4294967296
-    $h2 = (($h2 * 33) + $c) % 4294967296
-    $i = $i + 1
+    $fin = $i + $pas
+    si ($fin > $n) { $fin = $n }
+    $bloc = sous_chaine($src, $i, $fin)
+    $bn = longueur($bloc)
+    $j = 0
+    tant_que ($j < $bn) {
+      $c = ordre(sous_chaine($bloc, $j, $j + 1))
+      $h1 = (($h1 + $c) * 16777619) % 4294967296
+      $h2 = (($h2 * 33) + $c) % 4294967296
+      $j = $j + 1
+    }
+    $i = $fin
   }
   retour chaine($h1) + "-" + chaine($h2) + "-" + chaine($n)
 }
