@@ -1,0 +1,923 @@
+# abaisser_nu.rose — ABAISSEUR RIR ROSE -> IR MACHINE NU (Rose pur).
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Doctrine : un COMPILATEUR, pas une recette. Ce module prend le RIR TEXTUEL
+# produit par `rose rir F.rose`, le parcourt, et construit une suite
+# d'opérations ABSTRAITES du backend universel (`compilateur/backend_universel.rose`).
+# Aucune opération machine n'est écrite à la main ici : tout passe par
+# `bu_operation`, et tous les octets sont produits par `bu_traduire`.
+#
+# API (tout est en Rose pur, aucun include, aucune primitive Rust) :
+#   an_abaisse_rir(rir: chaine, cible: chaine) -> liste<entier>
+#       Suite d'ids d'ops BU (porteuse en index 0, convention du backend).
+#   an_base()                     -> entier   (adresse de chargement courante)
+#   an_fixe_base(adresse: entier) -> entier   (change cette adresse, DONNÉE)
+#   an_diagnostics()              -> chaine   (dernières limites rencontrées)
+#
+# Cible par défaut : `x86_32` (famille 5 du profil `bu_cible`). Toute autre
+# cible est acceptée : le nom est passé tel quel à `bu_cible`, aucune famille
+# n'est codée en dur dans la logique d'abaissement.
+#
+# MODÈLE DE MACHINE CHOISI (registres = DONNÉES, cohérentes avec le profil) :
+#   EAX (0) = accumulateur / valeur de retour ; ECX (1), EDX (2) = temporaires ;
+#   EBX (3) = sauvegarde de l'EBP du appelé ; ESP (4) = pile ; EBP (5) = cadre.
+#   À l'entrée d'une fonction : [ESP] = adresse de retour, [ESP+4+4i] = arg i.
+#   Prologue : sauvegarde EBX/EBP, EBP = ESP d'entrée, ESP -= cadre,
+#              copie des paramètres dans les slots, zonage de gratte-papier à 0.
+#   Slots RIR i : [EBP - 12 - 4*i]. Gratte-papier : [EBP - 12 - 4*n_slots ... +8].
+#   Épilogue : ESP = EBP, restauration EBP/EBX, `ret`.
+#   Appel : area d'arguments sous ESP, `imm reg, adresse`, `call reg`, désallou.
+#   Adresse d'une fonction = an_base() + décalage octet de sa première op.
+#
+# CONVENTIONS DE TYPE (identiques au backend / linker) :
+#   - listes porteuses : index 0 ignoré, données utiles à partir de l'index 1 ;
+#   - Rose n'a pas d'affectation par index et REBINDER une globale dans une
+#     fonction crée une LOCALE : les journaux globaux sont mutés par `joindre`
+#     et chaque appel ouvre une GÉNÉRATION (sentinel) ; les accesseurs lisent
+#     toujours la dernière génération ;
+#   - chaque op est un groupe de 4 entiers [code, a, b, c] dans $an_desc ;
+#   - les sauts portent une CIBLE SYMBOLIQUE : (target, kind) avec kind=0 pour
+#     un index d'op RIR (résolu dans la carte des ops) et kind=1 pour une
+#     étiquette interne (résolue dans $an_labpairs). La résolution finale se
+#     fait en octets (déplacement rel8) APRÈS mesure des tailles par bu_traduire.
+#
+# LIMITES DOCUMENTÉES (voir rose/docs/ABAISSER_NU.md) :
+#   - comparaisons 32 bits : le jeu d'ops BU n'a ni cmp, ni setcc, ni décalage.
+#     Le signe est lu par un LOAD DÉCALÉ (octet de poids fort) + test_al, et
+#     l'égalité par OU des 4 octets + test_al. Correct hors débordement signé
+#     de la soustraction de comparaison (documenté, pas silencieux) ;
+#   - jmp_rel8 / jz_rel8 : déplacement sur 8 bits signé ; au-delà, l'abaissement
+#     le signale dans an_diagnostics() et borne le déplacement ;
+#   - flottants/chaînes/listes/ primitives non arithmétiques : abaissées en
+#     immédiat 0 et signalées (le contrat NU est entier 32 bits).
+#
+#   cat compilateur/backend_universel.rose compilateur/abaisser_nu.rose \
+#       briques/tests_abaisser.rose > /tmp/opencode/abaisser/tests.rose
+#   ROSE_SANS_JIT=1 rose interprete /tmp/opencode/abaisser/tests.rose
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 0. État : journaux à générations ──────────────────────────────────────
+
+$AN_S = -777777777
+$AN_C = "@@AN@@"
+
+# Parseur (chaine)
+$an_tok = ["", "@@AN@@"]
+$an_fn_nom = ["", "@@AN@@"]
+$an_slot_nom = ["", "@@AN@@"]
+$an_glob_nom = ["", "@@AN@@"]
+
+# Parseur (entiers)
+$an_lstart = [0, -777777777]
+$an_llen = [0, -777777777]
+$an_lop = [0, -777777777]
+$an_opstart = [0, -777777777]
+$an_oplen = [0, -777777777]
+$an_opfn = [0, -777777777]
+$an_fnfirst = [0, -777777777]
+$an_fnnops = [0, -777777777]
+$an_fnnslots = [0, -777777777]
+$an_fnpn = [0, -777777777]
+$an_fnsoff = [0, -777777777]
+
+# Abaissement / expansion
+$an_desc = [0, -777777777]
+$an_opmap = [0, -777777777]
+$an_fnopbase = [0, -777777777]
+$an_fnentrydesc = [0, -777777777]
+$an_labcount = [0]
+$an_labpairs = [0, -777777777]
+$an_curfn = [0]
+$an_mops = [0, -777777777]
+$an_dmap = [0, -777777777]
+$an_moff = [0, -777777777]
+$an_fnentrymop = [0, -777777777]
+
+$an_adresse = [1048576]
+$an_diag = [""]
+$an_long = [0, -777777777]
+
+fn an_si(l: liste<entier>) -> entier {
+  $i = longueur(l) - 1
+  tant_que ($i >= 0 et l[$i] != -777777777) { $i = $i - 1 }
+  retour $i
+}
+fn an_gi(l: liste<entier>, k: entier) -> entier { retour l[an_si(l) + k] }
+fn an_ni(l: liste<entier>) -> entier { retour longueur(l) - 1 - an_si(l) }
+fn an_ai(l: liste<entier>, v: entier) -> entier {
+  joindre($l, $v)
+  retour an_ni($l)
+}
+fn an_dernier(l: liste<entier>) -> entier { retour l[longueur(l) - 1] }
+
+fn an_ss(l: liste<chaine>) -> entier {
+  $i = longueur(l) - 1
+  tant_que ($i >= 0 et l[$i] != "@@AN@@") { $i = $i - 1 }
+  retour $i
+}
+fn an_gc(l: liste<chaine>, k: entier) -> chaine { retour l[an_ss(l) + k] }
+fn an_nc(l: liste<chaine>) -> entier { retour longueur(l) - 1 - an_ss(l) }
+fn an_ac(l: liste<chaine>, v: chaine) -> entier {
+  joindre($l, $v)
+  retour an_nc($l)
+}
+
+fn an_dit(msg: chaine) -> entier {
+  joindre($an_diag, $msg)
+  retour 0
+}
+fn an_diagnostics() -> chaine {
+  $r = ""
+  $k = 1
+  tant_que ($k < longueur($an_diag)) { $r = $r + $an_diag[$k] + " | "; $k = $k + 1 }
+  retour $r
+}
+fn an_base() -> entier { retour an_dernier($an_adresse) }
+fn an_fixe_base(adresse: entier) -> entier {
+  joindre($an_adresse, $adresse)
+  retour $adresse
+}
+
+fn an_init() -> entier {
+  an_ac($an_tok, "@@AN@@")
+  an_ac($an_fn_nom, "@@AN@@")
+  an_ac($an_slot_nom, "@@AN@@")
+  an_ac($an_glob_nom, "@@AN@@")
+  an_ai($an_lstart, -777777777)
+  an_ai($an_llen, -777777777)
+  an_ai($an_lop, -777777777)
+  an_ai($an_opstart, -777777777)
+  an_ai($an_oplen, -777777777)
+  an_ai($an_opfn, -777777777)
+  an_ai($an_fnfirst, -777777777)
+  an_ai($an_fnnops, -777777777)
+  an_ai($an_fnnslots, -777777777)
+  an_ai($an_fnpn, -777777777)
+  an_ai($an_fnsoff, -777777777)
+  an_ai($an_desc, -777777777)
+  an_ai($an_opmap, -777777777)
+  an_ai($an_fnopbase, -777777777)
+  an_ai($an_fnentrydesc, -777777777)
+  an_ai($an_labpairs, -777777777)
+  an_ai($an_mops, -777777777)
+  an_ai($an_dmap, -777777777)
+  an_ai($an_moff, -777777777)
+  an_ai($an_fnentrymop, -777777777)
+  an_ai($an_long, -777777777)
+  joindre($an_labcount, 0)
+  joindre($an_curfn, 0)
+  retour 0
+}
+
+# ── 1. Lexeur du dump RIR ─────────────────────────────────────────────────
+
+fn an_trim(s: chaine) -> chaine {
+  $i = 0
+  $n = longueur(s)
+  tant_que ($i < $n et (sous_chaine(s,$i,$i+1) == " " ou sous_chaine(s,$i,$i+1) == "\t")) { $i = $i + 1 }
+  $j = $n
+  tant_que ($j > $i et (sous_chaine(s,$j-1,$j) == " " ou sous_chaine(s,$j-1,$j) == "\t" ou sous_chaine(s,$j-1,$j) == "\r")) { $j = $j - 1 }
+  retour sous_chaine(s, $i, $j)
+}
+fn an_digits(s: chaine) -> entier {
+  $n = longueur(s)
+  si ($n == 0) { retour 0 }
+  $i = 0
+  tant_que ($i < $n) {
+    $c = sous_chaine(s,$i,$i+1)
+    si ($c < "0" ou $c > "9") { retour 0 }
+    $i = $i + 1
+  }
+  retour 1
+}
+fn an_int(t: chaine) -> entier {
+  $s = $t
+  # Le RIR écrit un littéral négatif `-7` sous la forme `--7` (voir vi()).
+  si (longueur($s) >= 2 et sous_chaine($s,0,2) == "--") { $s = sous_chaine($s,1,longueur($s)) }
+  retour entier($s)
+}
+fn an_tk(p: entier) -> chaine { retour an_gc($an_tok, $p) }
+
+fn an_tokenize(s: chaine) -> entier {
+  $n = longueur(s)
+  $i = 0
+  tant_que ($i < $n) {
+    $c = sous_chaine(s,$i,$i+1)
+    si ($c == " " ou $c == "\t" ou $c == "\r") { $i = $i + 1 }
+    sinon si ($c == "(" ou $c == ")") {
+      an_ac($an_tok, $c)
+      $i = $i + 1
+    }
+    sinon si ($c == "\"") {
+      $j = $i + 1
+      $buf = ""
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $ch = sous_chaine(s,$j,$j+1)
+        si ($ch == "\\" et $j + 1 < $n) {
+          $nx = sous_chaine(s,$j+1,$j+2)
+          si ($nx == "n") { $buf = $buf + "\n" }
+          sinon si ($nx == "t") { $buf = $buf + "\t" }
+          sinon si ($nx == "r") { $buf = $buf + "\r" }
+          sinon { $buf = $buf + $nx }
+          $j = $j + 2
+        }
+        sinon si ($ch == "\"") { $fin = 1; $j = $j + 1 }
+        sinon { $buf = $buf + $ch; $j = $j + 1 }
+      }
+      an_ac($an_tok, $buf)
+      $i = $j
+    }
+    sinon {
+      $j = $i
+      $fin = 0
+      tant_que ($j < $n et $fin == 0) {
+        $ch = sous_chaine(s,$j,$j+1)
+        si ($ch == " " ou $ch == "\t" ou $ch == "\r" ou $ch == "(" ou $ch == ")" ou $ch == "\"") { $fin = 1 }
+        si ($fin == 0) { $j = $j + 1 }
+      }
+      an_ac($an_tok, sous_chaine(s,$i,$j))
+      $i = $j
+    }
+  }
+  retour an_nc($an_tok)
+}
+
+fn an_ligne(l: chaine) -> entier {
+  $st = an_nc($an_tok) + 1
+  $s = an_trim($l)
+  $isop = 0
+  si (longueur($s) >= 5) {
+    si (an_digits(sous_chaine($s,0,4)) == 1 et sous_chaine($s,4,5) == " ") {
+      $isop = 1
+      $s = sous_chaine($s,5,longueur($s))
+    }
+  }
+  an_tokenize($s)
+  an_ai($an_lstart, $st)
+  an_ai($an_llen, an_nc($an_tok) - $st + 1)
+  an_ai($an_lop, $isop)
+  retour 0
+}
+fn an_split(rir: chaine) -> entier {
+  $cur = ""
+  $i = 0
+  $n = longueur(rir)
+  $nb = 0
+  tant_que ($i < $n) {
+    $c = sous_chaine(rir,$i,$i+1)
+    si ($c == "\n") { an_ligne($cur); $cur = ""; $nb = $nb + 1 } sinon { $cur = $cur + $c }
+    $i = $i + 1
+  }
+  si (longueur($cur) > 0) { an_ligne($cur); $nb = $nb + 1 }
+  retour $nb
+}
+
+# ── 2. Métadonnées du RIR (fonctions, slots, noms) ────────────────────────
+
+fn an_fin_fn(fi: entier, nops_avant: entier, nsl: entier, pn: entier, soff: entier) -> entier {
+  an_ai($an_fnnops, an_ni($an_opstart) - $nops_avant)
+  an_ai($an_fnnslots, $nsl)
+  an_ai($an_fnpn, $pn)
+  an_ai($an_fnsoff, $soff)
+  retour fi
+}
+fn an_parse(rir: chaine) -> entier {
+  an_split(rir)
+  $nl = an_ni($an_lstart)
+  $i = 1
+  $curfn = 0
+  $pn = 0
+  $nsl = 0
+  $soff = 0
+  $nops_avant = 0
+  tant_que ($i <= $nl) {
+    $st = an_gi($an_lstart,$i)
+    $len = an_gi($an_llen,$i)
+    $isop = an_gi($an_lop,$i)
+    si ($isop == 1) {
+      an_ai($an_opstart, $st)
+      an_ai($an_oplen, $len)
+      an_ai($an_opfn, $curfn)
+    }
+    sinon {
+      si ($len > 0) {
+        $h = an_tk($st)
+        si ($h == "fonction") {
+          si ($curfn > 0) { an_fin_fn($curfn, $nops_avant, $nsl, $pn, $soff) }
+          $curfn = $curfn + 1
+          an_ac($an_fn_nom, an_tk($st+1))
+          an_ai($an_fnfirst, an_ni($an_opstart))
+          $pn = 0
+          $nsl = 0
+          $soff = an_nc($an_slot_nom)
+          $nops_avant = an_ni($an_opstart)
+        }
+        si ($h == "param") { $pn = $pn + 1 }
+        si ($h == "n_slots") { $nsl = entier(an_tk($st+1)) }
+        si ($h == "noms") {
+          $q = $st + 1
+          tant_que ($q <= $st + $len - 1) {
+            $t = an_tk($q)
+            si (longueur($t) > 0 et sous_chaine($t,0,1) == "[") {
+              $j = 1
+              tant_que ($j < longueur($t) et sous_chaine($t,$j,$j+1) != "]") { $j = $j + 1 }
+              an_ac($an_slot_nom, sous_chaine($t,$j+1,longueur($t)))
+            }
+            $q = $q + 1
+          }
+        }
+        si ($h == "globaux") {
+          $q = $st + 1
+          tant_que ($q <= $st + $len - 1) {
+            $ix = entier(an_tk($q))
+            an_ac($an_glob_nom, an_gc($an_slot_nom, $soff + $ix))
+            $q = $q + 1
+          }
+        }
+      }
+    }
+    $i = $i + 1
+  }
+  si ($curfn > 0) { an_fin_fn($curfn, $nops_avant, $nsl, $pn, $soff) }
+  retour $curfn
+}
+fn an_nfn() -> entier { retour an_nc($an_fn_nom) }
+fn an_find_fn(nom: chaine) -> entier {
+  $n = an_nfn()
+  $i = 1
+  tant_que ($i <= $n) {
+    si (an_gc($an_fn_nom,$i) == $nom) { retour $i }
+    $i = $i + 1
+  }
+  retour 0
+}
+fn an_find_slot(fi: entier, nom: chaine) -> entier {
+  $soff = an_gi($an_fnsoff,$fi)
+  $nsl = an_gi($an_fnnslots,$fi)
+  $i = 0
+  tant_que ($i < $nsl) {
+    si (an_gc($an_slot_nom,$soff + $i + 1) == $nom) { retour $i }
+    $i = $i + 1
+  }
+  retour -1
+}
+fn an_nslots(fi: entier) -> entier { retour an_gi($an_fnnslots,$fi) }
+fn an_scratch(fi: entier) -> entier { retour -20 - 4 * an_nslots(fi) }
+
+# ── 3. Descripteurs logiques / étiquettes ─────────────────────────────────
+
+fn an_emit(code: entier, a: entier, b: entier, c: entier) -> entier {
+  an_ai($an_desc, $code)
+  an_ai($an_desc, $a)
+  an_ai($an_desc, $b)
+  an_ai($an_desc, $c)
+  retour partie_entiere(an_ni($an_desc) / 4)
+}
+fn an_dget(d: entier, k: entier) -> entier { retour an_gi($an_desc, 4 * ($d - 1) + $k) }
+fn an_label_new() -> entier {
+  $v = an_dernier($an_labcount) + 1
+  joindre($an_labcount, $v)
+  retour $v
+}
+fn an_label_set(id: entier) -> entier {
+  $d = an_emit(0, 0, 0, 0)      # nop : point d'ancrage DESTINÉ de saut
+  an_ai($an_labpairs, $id)
+  an_ai($an_labpairs, $d)
+  retour $d
+}
+fn an_label_find(id: entier) -> entier {
+  $n = an_ni($an_labpairs)
+  $i = 1
+  tant_que ($i + 1 <= $n) {
+    si (an_gi($an_labpairs,$i) == $id) { retour an_gi($an_labpairs,$i+1) }
+    $i = $i + 2
+  }
+  retour 0
+}
+
+# Registres (indices dans le modrm du backend ; donnée cohérente avec bu_cible)
+# EAX=0 ECX=1 EDX=2 EBX=3 ESP=4 EBP=5
+
+# ── 4. Expression RIR -> ops ──────────────────────────────────────────────
+
+# Saute l'expression commençant à p et rend l'index après elle.
+fn an_skip(p: entier) -> entier {
+  $prof = 0
+  $q = $p
+  $n = an_nc($an_tok)
+  tant_que ($q <= $n) {
+    $t = an_tk($q)
+    si ($t == "(") { $prof = $prof + 1 }
+    si ($t == ")") {
+      $prof = $prof - 1
+      si ($prof == 0) { retour $q + 1 }
+    }
+    si ($prof == 0 et $t != "(") { retour $q + 1 }
+    $q = $q + 1
+  }
+  retour $q
+}
+fn an_load_slot(fi: entier, ix: entier) -> entier {
+  an_emit(9, 0, 5, -12 - 4 * ix)          # EAX = [EBP - 12 - 4*ix]
+  retour 0
+}
+fn an_store_slot(fi: entier, ix: entier) -> entier {
+  an_emit(10, 0, 5, -12 - 4 * ix)         # [EBP - 12 - 4*ix] = EAX
+  retour 0
+}
+
+fn an_expr(p: entier, fi: entier) -> entier {
+  $t = an_tk($p)
+  $scr = an_scratch(fi)
+  si ($t == "slot") {
+    an_load_slot(fi, entier(an_tk($p+1)))
+    retour $p + 3
+  }
+  si ($t == "entier") {
+    an_emit(1, 0, an_int(an_tk($p+1)), 0)
+    retour $p + 3
+  }
+  si ($t != "(") {
+    an_emit(1, 0, an_int($t), 0)
+    retour $p + 1
+  }
+  $h = an_tk($p+1)
+  si ($h == "n") { an_emit(1, 0, an_int(an_tk($p+2)), 0); retour $p + 4 }
+  si ($h == "f" ou $h == "s") {
+    an_dit("type_non_entier->0")
+    an_emit(1, 0, 0, 0)
+    retour $p + 4
+  }
+  si ($h == "b") {
+    $v = 0
+    si (an_tk($p+2) == "vraie") { $v = 1 }
+    an_emit(1, 0, $v, 0)
+    retour $p + 4
+  }
+  si ($h == "v") {
+    $ix = an_find_slot(fi, an_tk($p+2))
+    si ($ix >= 0) { an_load_slot(fi, $ix) }
+    sinon {
+      an_dit("globale_non_entiere->0")
+      an_emit(1, 0, 0, 0)
+    }
+    retour $p + 4
+  }
+  si ($h == "app" ou $h == "surcharge" ou $h == "appel_surcharge") {
+    $nom = an_tk($p+2)
+    $f2 = an_find_fn($nom)
+    si ($f2 == 0) {
+      an_dit("appel_non_resolu:" + $nom)
+      # On consomme quand même les arguments.
+      $q = $p + 3
+      tant_que ($q <= an_nc($an_tok) et an_tk($q) != ")") { $q = an_skip($q) }
+      an_emit(1, 0, 0, 0)
+      retour $q + 1
+    }
+    # Nombre d'arguments = nombre d'expressions jusqu'à la ')' fermante.
+    # Chaque argument est un atome ou une expression parenthésée : an_skip
+    # avance exactement d'une expression.
+    $na = 0
+    $q = $p + 3
+    tant_que ($q <= an_nc($an_tok) et an_tk($q) != ")") {
+      $na = $na + 1
+      $q = an_skip($q)
+    }
+    $taille = 4 * $na
+    an_emit(1, 2, $taille, 0)              # EDX = taille de la zone d'args
+    an_emit(4, 1, 2, 4)                    # sub ECX,EDX,ESP : ESP -= taille
+    $q = $p + 3
+    $iarg = 0
+    tant_que ($q <= an_nc($an_tok) et an_tk($q) != ")") {
+      $q = an_expr($q, fi)
+      an_emit(10, 0, 4, 4 * $iarg)         # [ESP+4*iarg] = EAX
+      $iarg = $iarg + 1
+    }
+    an_emit(12, $f2, 0, 0)                 # appel (expansion : imm + call)
+    an_emit(1, 2, $taille, 0)
+    an_emit(3, 1, 2, 4)                    # add ECX,EDX,ESP : ESP += taille
+    retour $q + 1
+  }
+  si ($h == "neg" ou $h == "non" ou $h == "uni") {
+    $pp = $p + 2
+    $uop = ""
+    si ($h == "uni") { $uop = an_tk($p+2); $pp = $p + 3 }
+    $q = an_expr($pp, fi)
+    si ($h == "neg" ou $uop == "-" ou $uop == "neg") {
+      an_emit(1, 1, 0, 0)                  # ECX = 0
+      an_emit(4, 3, 0, 1)                  # ECX = 0 - EAX
+      an_emit(2, 0, 1, 0)                  # EAX = ECX
+    }
+    si ($h == "non" ou $uop == "non") {
+      an_emit(1, 1, 1, 0)
+      an_emit(8, 3, 1, 0)                  # EAX ^= 1
+    }
+    retour $q + 1
+  }
+  si ($h == "bin" ou $h == "binaire") {
+    $op = an_tk($p+2)
+    $est_cmp = 0
+    si ($op == "<" ou $op == "<=" ou $op == ">" ou $op == ">=" ou $op == "==" ou $op == "!=") { $est_cmp = 1 }
+    # Comparaisons : matérialisation 0/1 par branchements internes. Les
+    # opérandes sont évalués UNE SEULE fois, par an_jmp_faux_bin.
+    si ($est_cmp == 1) {
+      $lf = an_label_new()
+      $le = an_label_new()
+      an_jmp_faux_bin($op, $p, fi, 1, $lf)
+      an_emit(1, 0, 1, 0)                  # vrai : EAX = 1
+      an_emit(16, $le, 1, 0)
+      an_label_set($lf)
+      an_emit(1, 0, 0, 0)                  # faux : EAX = 0
+      an_label_set($le)
+      retour an_skip($p)
+    }
+    $q = an_expr($p+3, fi)                 # EAX = lhs
+    an_emit(10, 0, 5, $scr + 8)            # sauve lhs
+    $q2 = an_expr($q, fi)                  # EAX = rhs
+    an_emit(2, 1, 0, 0)                    # ECX = rhs
+    an_emit(9, 0, 5, $scr + 8)             # EAX = lhs
+    si ($op == "+") { an_emit(3, 3, 1, 0) }     # EAX = lhs + rhs
+    si ($op == "-") { an_emit(4, 3, 1, 0) }     # EAX = lhs - rhs
+    si ($op == "*") { an_emit(5, 0, 0, 1) }     # EAX = lhs * rhs
+    si ($op == "and" ou $op == "et") { an_emit(6, 3, 1, 0) }
+    si ($op == "or" ou $op == "ou") { an_emit(7, 3, 1, 0) }
+    si ($op == "xor") { an_emit(8, 3, 1, 0) }
+    si ($op != "+" et $op != "-" et $op != "*" et $op != "and" et $op != "et" et
+        $op != "or" et $op != "ou" et $op != "xor") {
+      an_dit("bin_non_couvert:" + $op + "->0")
+      an_emit(1, 0, 0, 0)
+    }
+    retour an_skip($p)
+  }
+  an_dit("expr_non_couverte->0")
+  an_emit(1, 0, 0, 0)
+  retour an_skip($p)
+}
+
+# ── 5. Comparaisons : branchement SI FAUX ─────────────────────────────────
+
+fn an_zero_jz(target: entier, kind: entier, cf: entier) -> entier {
+  $scr = an_scratch(cf)
+  an_emit(9, 0, 5, $scr)
+  an_emit(9, 1, 5, $scr + 1)
+  an_emit(7, 3, 1, 0)                      # EAX |= ECX
+  an_emit(9, 1, 5, $scr + 2)
+  an_emit(7, 3, 1, 0)
+  an_emit(9, 1, 5, $scr + 3)
+  an_emit(7, 3, 1, 0)
+  an_emit(20, 255, 0, 0)                   # test al,255 : ZF si EAX==0
+  an_emit(19, target, kind, cf)
+  retour 0
+}
+fn an_sign_jz(target: entier, kind: entier, cf: entier) -> entier {
+  $scr = an_scratch(cf)
+  an_emit(9, 0, 5, $scr + 3)               # octet de poids fort (load décalé)
+  an_emit(1, 1, 128, 0)
+  an_emit(6, 3, 1, 0)                      # EAX &= 128
+  an_emit(20, 128, 0, 0)                   # test al,128 : ZF si bit7 clair
+  an_emit(19, target, kind, cf)
+  retour 0
+}
+fn an_diff(fi: entier, swap: entier) -> entier {
+  # EAX=lhs, ECX=rhs à l'entrée ; rendez EAX = lhs-rhs (swap=0) ou rhs-lhs (1).
+  $scr = an_scratch(fi)
+  si ($swap == 0) {
+    an_emit(4, 3, 1, 0)                    # sub EDX,ECX,EAX : EAX -= ECX
+    an_emit(10, 0, 5, $scr)
+  }
+  sinon {
+    an_emit(4, 3, 0, 1)                    # sub EDX,EAX,ECX : ECX -= EAX
+    an_emit(10, 1, 5, $scr)
+    an_emit(9, 0, 5, $scr)
+  }
+  retour 0
+}
+fn an_jmp_faux_bin(op: chaine, p: entier, fi: entier, kind: entier, target: entier) -> entier {
+  $cf = an_dernier($an_curfn)
+  $q = an_expr($p+3, fi)                   # EAX = lhs
+  an_emit(10, 0, 5, an_scratch(fi) + 8)
+  $q2 = an_expr($q, fi)                    # EAX = rhs
+  an_emit(2, 1, 0, 0)                      # ECX = rhs
+  an_emit(9, 0, 5, an_scratch(fi) + 8)     # EAX = lhs
+  $swap = 0
+  si (op == ">" ou op == ">=") { $swap = 1 }
+  an_diff(fi, $swap)
+  si (op == "<" ou op == ">") {
+    an_sign_jz(target, kind, $cf)
+  }
+  si (op == "<=" ou op == ">=") {
+    $lend = an_label_new()
+    an_zero_jz($lend, 1, $cf)              # diff == 0 -> vrai
+    an_sign_jz(target, kind, $cf)          # signe clair -> faux
+    an_label_set($lend)
+  }
+  si (op == "==") {
+    $lend = an_label_new()
+    an_zero_jz($lend, 1, $cf)
+    an_emit(16, target, kind, $cf)
+    an_label_set($lend)
+  }
+  si (op == "!=") {
+    an_zero_jz(target, kind, $cf)
+  }
+  retour an_skip($p)
+}
+fn an_jmp_faux(p: entier, fi: entier, kind: entier, target: entier) -> entier {
+  $q = p
+  $cf = an_dernier($an_curfn)
+  si (an_tk($p) == "(") {
+    $h = an_tk($p+1)
+    si ($h == "bin" ou $h == "binaire") {
+      $op = an_tk($p+2)
+      si ($op == "<" ou $op == "<=" ou $op == ">" ou $op == ">=" ou $op == "==" ou $op == "!=") {
+        retour an_jmp_faux_bin($op, $p, fi, kind, target)
+      }
+    }
+  }
+  $q = an_expr($p, fi)
+  an_emit(20, 1, 0, 0)                     # test al,1
+  an_emit(19, target, kind, $cf)
+  retour $q
+}
+
+# ── 6. Prologue / épilogue / opérations RIR ───────────────────────────────
+
+fn an_prologue(fi: entier) -> entier {
+  $scr = an_scratch(fi)
+  an_emit(10, 3, 4, -4)                    # [ESP-4] = EBX (appelant)
+  an_emit(10, 5, 4, -8)                    # [ESP-8] = EBP (appelant)
+  an_emit(2, 3, 4, 0)                      # EBX = ESP d'entrée
+  $cadre = -$scr + 8
+  an_emit(1, 2, $cadre, 0)                 # EDX = taille du cadre
+  an_emit(4, 1, 2, 4)                      # ESP -= cadre
+  an_emit(2, 5, 3, 0)                      # EBP = EBX
+  $pn = an_gi($an_fnpn,$fi)
+  $i = 0
+  tant_que ($i < $pn) {
+    an_emit(9, 0, 5, 4 + 4 * $i)           # EAX = [EBP+4+4*i] (argument i)
+    an_emit(10, 0, 5, -12 - 4 * $i)        # slot i = EAX
+    $i = $i + 1
+  }
+  an_emit(1, 0, 0, 0)                      # EAX = 0
+  an_emit(10, 0, 5, $scr)
+  an_emit(10, 0, 5, $scr + 4)
+  an_emit(10, 0, 5, $scr + 8)
+  retour 0
+}
+fn an_epilogue(fi: entier) -> entier {
+  an_emit(2, 4, 5, 0)                      # ESP = EBP
+  an_emit(9, 5, 4, -8)                     # EBP = [ESP-8]
+  an_emit(9, 3, 4, -4)                     # EBX = [ESP-4]
+  an_emit(13, 0, 0, 0)                     # ret
+  retour 0
+}
+fn an_lower_op(fi: entier, oi: entier) -> entier {
+  $st = an_gi($an_opstart, $oi + 1)
+  $len = an_gi($an_oplen, $oi + 1)
+  $kw = an_tk($st)
+  si ($kw == "affect" ou $kw == "affect_ast") {
+    $ix = entier(an_tk($st+2))
+    an_expr($st+4, fi)
+    an_store_slot(fi, $ix)
+  }
+  si ($kw == "afficher" ou $kw == "afficher_abstrait") {
+    $q = $st + 1
+    $fin = $st + $len - 1
+    tant_que ($q <= $fin) {
+      $q2 = an_expr($q, fi)
+      si ($q2 <= $q) { $q2 = $q + 1 }
+      an_emit(14, 128, 0, 0)               # int 0x80 : hook d'affichage NU
+      $q = $q2
+    }
+  }
+  si ($kw == "saut") {
+    an_emit(16, entier(an_tk($st+1)), 0, fi)
+  }
+  si ($kw == "saut_si_faux" ou $kw == "saut_si_faux_abstrait") {
+    an_jmp_faux($st+2, fi, 0, entier(an_tk($st+1)))
+  }
+  si ($kw == "retour" ou $kw == "retour_abstrait") {
+    si ($st + 1 <= $st + $len - 1) { an_expr($st+1, fi) }
+    an_epilogue(fi)
+  }
+  si ($kw == "expr") { an_expr($st+1, fi) }
+  retour 0
+}
+fn an_lower_fn(fi: entier) -> entier {
+  joindre($an_curfn, $fi)
+  an_ai($an_fnopbase, an_ni($an_opmap))
+  an_ai($an_fnentrydesc, partie_entiere(an_ni($an_desc) / 4) + 1)
+  an_prologue(fi)
+  $base = an_gi($an_fnfirst,$fi)
+  $n = an_gi($an_fnnops,$fi)
+  $i = 0
+  tant_que ($i < $n) {
+    an_ai($an_opmap, partie_entiere(an_ni($an_desc) / 4) + 1)
+    an_lower_op(fi, $base + $i)
+    $i = $i + 1
+  }
+  # Une fonction sans `retour_abstrait` tombe sur une fin sûre ; une fonction
+  # qui a déjà rendu ne reçoit PAS une seconde épilogue.
+  $nd = partie_entiere(an_ni($an_desc) / 4)
+  si ($nd < 1 ou an_dget($nd,1) != 13) { an_epilogue(fi) }
+  retour 0
+}
+
+# ── 7. Expansion : descripteurs logiques -> opérations machine ────────────
+
+fn an_mop(code: entier, a: entier, b: entier, c: entier, tag: entier) -> entier {
+  an_ai($an_mops, $code)
+  an_ai($an_mops, $a)
+  an_ai($an_mops, $b)
+  an_ai($an_mops, $c)
+  an_ai($an_mops, $tag)
+  retour partie_entiere(an_ni($an_mops) / 5)
+}
+fn an_mget(m: entier, k: entier) -> entier { retour an_gi($an_mops, 5 * ($m - 1) + $k) }
+
+fn an_expand() -> entier {
+  $nd = partie_entiere(an_ni($an_desc) / 4)
+  $d = 1
+  tant_que ($d <= $nd) {
+    an_ai($an_dmap, partie_entiere(an_ni($an_mops) / 5) + 1)
+    $code = an_dget($d,1)
+    $a = an_dget($d,2)
+    $b = an_dget($d,3)
+    $c = an_dget($d,4)
+    si ($code == 12) {
+      an_mop(1, 0, 0, $a, 1)               # imm EDX, <adresse résolue>
+      an_mop(12, 2, 0, 0, 0)               # call EDX
+    }
+    sinon {
+      $tag = 0
+      si ($code == 16 ou $code == 19 ou $code == 11) { $tag = 2 }
+      an_mop($code, $a, $b, $c, $tag)
+    }
+    $d = $d + 1
+  }
+  # Carte des entrées de fonction (index mop).
+  $nf = an_nfn()
+  $fi = 1
+  tant_que ($fi <= $nf) {
+    $d2 = an_gi($an_fnentrydesc,$fi)
+    an_ai($an_fnentrymop, an_gi($an_dmap,$d2))
+    $fi = $fi + 1
+  }
+  retour 0
+}
+
+fn an_est_long(m: entier) -> entier {
+  $n = an_ni($an_long)
+  $i = 1
+  tant_que ($i <= $n) {
+    si (an_gi($an_long,$i) == $m) { retour 1 }
+    $i = $i + 1
+  }
+  retour 0
+}
+fn an_raz_calc() -> entier {
+  # Les offsets sont recalculés à chaque tour ; les marques « saut long »
+  # sont CUMULATIVES (une fois long, toujours long) pour faire converger.
+  an_ai($an_moff, -777777777)
+  retour 0
+}
+fn an_taille(m: entier, cible: liste<chaine>) -> entier {
+  $code = an_mget($m,1)
+  # Un saut hors de portée rel8 est développé en `imm + jmp reg` (7 octets),
+  # ou, pour un jz, en `jz +7 ; imm + jmp reg` (9 octets). Les tailles sont
+  # mesurées sur le BACKEND, jamais écrites en dur : on additionne la taille
+  # mesurée d'un `imm` et d'un `jmp`/`jz_rel8`.
+  si (an_est_long($m) == 1 et an_mget($m,5) == 2) {
+    $seq = bu_sequence()
+    $id1 = bu_operation("imm", [2, 0, 0])
+    $id2 = bu_operation("jmp", [2, 0, 0])
+    bu_ajouter($seq, $id1)
+    bu_ajouter($seq, $id2)
+    si ($code == 19) {
+      $id0 = bu_operation("jz_rel8", [7, 0, 0])
+      bu_ajouter($seq, $id0)
+    }
+    retour longueur(bu_traduire($seq, $cible)) - 1
+  }
+  $seq = bu_sequence()
+  $args = [an_mget($m,2), an_mget($m,3), an_mget($m,4)]
+  $id = bu_operation(bu_nom_op($code), $args)
+  bu_ajouter($seq, $id)
+  retour longueur(bu_traduire($seq, $cible)) - 1
+}
+fn an_calcul_offsets(cible: liste<chaine>) -> entier {
+  $nm = partie_entiere(an_ni($an_mops) / 5)
+  $off = 0
+  $m = 1
+  tant_que ($m <= $nm) {
+    an_ai($an_moff, $off)
+    $off = $off + an_taille($m, $cible)
+    $m = $m + 1
+  }
+  retour $off
+}
+fn an_marque_longs() -> entier {
+  $nm = partie_entiere(an_ni($an_mops) / 5)
+  $change = 0
+  $m = 1
+  tant_que ($m <= $nm) {
+    si (an_mget($m,5) == 2 et an_est_long($m) == 0) {
+      $disp = an_octet_cible($m) - (an_gi($an_moff,$m) + 2)
+      si ($disp > 127 ou $disp < -128) {
+        an_ai($an_long, $m)
+        $change = 1
+      }
+    }
+    $m = $m + 1
+  }
+  retour $change
+}
+fn an_resous_target(m: entier) -> entier {
+  # Les mops de saut portent [code, cible, kind, fi, tag].
+  $target = an_mget($m,2)
+  $kind = an_mget($m,3)
+  $fi = an_mget($m,4)
+  si ($kind == 1) { retour an_label_find($target) }
+  # kind == 0 : index d'op RIR dans la fonction $fi.
+  $base = an_gi($an_fnopbase,$fi)
+  retour an_gi($an_opmap, $base + $target + 1)
+}
+fn an_octet_cible(m: entier) -> entier {
+  $d = an_resous_target(m)
+  si ($d < 1) { retour 0 }
+  retour an_gi($an_moff, an_gi($an_dmap,$d))
+}
+
+fn an_emit_final(cible: liste<chaine>) -> liste<entier> {
+  $seq = bu_sequence()
+  $nm = partie_entiere(an_ni($an_mops) / 5)
+  $m = 1
+  tant_que ($m <= $nm) {
+    $code = an_mget($m,1)
+    $a = an_mget($m,2)
+    $b = an_mget($m,3)
+    $c = an_mget($m,4)
+    $tag = an_mget($m,5)
+    si ($tag == 1) {
+      $fi2 = $c
+      $mo = an_gi($an_fnentrymop,$fi2)
+      $a = an_base() + an_gi($an_moff,$mo)
+    }
+    si ($tag == 2) {
+      $disp = an_octet_cible($m) - (an_gi($an_moff,$m) + 2)
+      si (an_est_long($m) == 1) {
+        # Saut long : adresse ABSOLUE dans un registre, plus de portée rel8.
+        $ad = an_base() + an_octet_cible($m)
+        si ($code == 19) {
+          $id0 = bu_operation("jz_rel8", [7, 0, 0])
+          bu_ajouter($seq, $id0)
+        }
+        $id1 = bu_operation("imm", [2, $ad, 0])
+        $id2 = bu_operation("jmp", [2, 0, 0])
+        bu_ajouter($seq, $id1)
+        bu_ajouter($seq, $id2)
+      }
+      sinon {
+        $id = bu_operation(bu_nom_op($code), [$disp, 0, 0])
+        bu_ajouter($seq, $id)
+      }
+      $m = $m + 1
+    }
+    sinon {
+      $id = bu_operation(bu_nom_op($code), [$a, $b, $c])
+      bu_ajouter($seq, $id)
+      $m = $m + 1
+    }
+  }
+  retour $seq
+}
+
+# ── 8. API publique ───────────────────────────────────────────────────────
+
+fn an_abaisse_rir(rir: chaine, cible: chaine) -> liste<entier> {
+  $cible = $cible
+  si (longueur($cible) == 0) { $cible = "x86_32" }
+  an_init()
+  $prof = an_parse(rir)
+  $nf = an_nfn()
+  $fi = 1
+  tant_que ($fi <= $nf) {
+    an_lower_fn($fi)
+    $fi = $fi + 1
+  }
+  an_expand()
+  $p = bu_cible($cible)
+  # Point fixe des déplacements : un saut trop loin passe en `imm + jmp`,
+  # ce qui allonge les octets et peut rendre un autre saut trop loin.
+  $tour = 0
+  $change = 1
+  tant_que ($tour < 12 et $change == 1) {
+    an_raz_calc()
+    an_calcul_offsets($p)
+    $change = an_marque_longs()
+    $tour = $tour + 1
+  }
+  si ($tour >= 12) { an_dit("point_fixe_sauts_non_stable") }
+  retour an_emit_final($p)
+}

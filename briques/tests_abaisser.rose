@@ -1,0 +1,123 @@
+# tests_abaisser.rose — batterie de l'ABAISSSEUR RIR -> IR NU.
+#
+# Rose n'a pas d'instruction `include` : ce fichier est un MODULE SOURCE qui
+# se concatène avec le backend et l'abaiseur :
+#
+#   cat compilateur/backend_universel.rose compilateur/abaisser_nu.rose \
+#       briques/tests_abaisser.rose > /tmp/opencode/abaisser/tests.rose
+#   ROSE_SANS_JIT=1 rose interprete /tmp/opencode/abaisser/tests.rose
+#   C0 /tmp/opencode/abaisser/tests.rose > /tmp/opencode/abaisser/tests.elf
+#   ./tests.elf                                   # mêmes OK / ECHEC
+#
+# Les trois sources Rose sont ÉCRITES ICI (chaînes) ; leur RIR est celui que
+# produit `rose rir` (commandes en commentaire de chaque cas). L'abaiseur ne
+# reçoit QUE le RIR : aucun nom de fonction ni de slot n'est codé en dur.
+
+$at_total = 15
+$at_ok = 0
+
+fn at_verifie(n: entier, nom: chaine, obtenu: chaine, attendu: chaine) -> entier {
+  si ($obtenu == $attendu) {
+    >> "OK " + chaine($n) + " " + $nom + " = " + $obtenu
+    retour 1
+  }
+  >> "ECHEC " + chaine($n) + " " + $nom + " | obtenu=[" + $obtenu + "] attendu=[" + $attendu + "]"
+  retour 0
+}
+fn at_b(v: booleen) -> chaine { si ($v) { retour "1" }; retour "0" }
+fn at_nb_op(seq: liste<entier>, code: entier) -> entier {
+  $n = 0
+  $k = 1
+  tant_que ($k < longueur(seq)) {
+    $d = bu_desc($seq[$k])
+    si ($d[0] == code) { $n = $n + 1 }
+    $k = $k + 1
+  }
+  retour $n
+}
+fn at_prefixe(seq: liste<entier>) -> chaine {
+  $r = ""
+  $k = 1
+  tant_que ($k <= 5 et $k < longueur(seq)) {
+    $d = bu_desc($seq[$k])
+    $r = $r + chaine($d[0]) + ","
+    $k = $k + 1
+  }
+  retour $r
+}
+fn at_hex(octets: liste<entier>) -> chaine {
+  $h = ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"]
+  $r = ""
+  $k = 1
+  tant_que ($k < longueur(octets)) {
+    $v = octets[$k] % 256
+    $r = $r + $h[partie_entiere($v / 16)] + $h[$v % 16]
+    $k = $k + 1
+  }
+  retour $r
+}
+
+# ── (a) fn carre(x) { retour x * x } >> carre(5) ──────────────────────────
+# Source Rose :
+#   fn carre(x: entier) -> entier { retour x * x }
+#   >> carre(5)
+# Oracle : `rose rir` -> RIR ci-dessous.
+$at_src_a = "fn carre(x: entier) -> entier { retour x * x }\n>> carre(5)\n"
+$at_rir_a = "rir\nfonction carre\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 retour_abstrait (bin * slot 0 slot 0)\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app carre (n 5))\n"
+
+$at_seq_a = an_abaisse_rir($at_rir_a, "x86_32")
+$at_p = bu_cible("x86_32")
+$at_oct_a = bu_traduire($at_seq_a, $at_p)
+>> "--- (a) carre : " + chaine(longueur($at_seq_a) - 1) + " ops, " + chaine(longueur($at_oct_a) - 1) + " octets"
+$at_ok = $at_ok + at_verifie(1, "a_prologue_pile", at_prefixe($at_seq_a), "10,10,2,1,4,")
+$at_ok = $at_ok + at_verifie(2, "a_app_carre", chaine(at_nb_op($at_seq_a, 12)), "1")
+$at_ok = $at_ok + at_verifie(3, "a_arith_mul", chaine(at_nb_op($at_seq_a, 5)), "1")
+$at_ok = $at_ok + at_verifie(4, "a_ret", chaine(at_nb_op($at_seq_a, 13)), "2")
+$at_ok = $at_ok + at_verifie(5, "a_octets_non_vides", at_b(longueur($at_oct_a) > 1), "1")
+$at_ok = $at_ok + at_verifie(6, "a_nom_relu", an_gc($an_fn_nom, 1), "carre")
+
+# ── (b) tant_que somme 1..5 ───────────────────────────────────────────────
+# Source Rose :
+#   fn somme(n: entier) -> entier {
+#     $s = 0 ; $k = 1
+#     tant_que ($k <= n) { $s = $s + $k ; $k = $k + 1 }
+#     retour $s
+#   }
+#   >> somme(5)
+$at_src_b = "fn somme(n: entier) -> entier { $s = 0 ; $k = 1 ; tant_que ($k <= n) { $s = $s + $k ; $k = $k + 1 } ; retour $s }\n>> somme(5)\n"
+$at_rir_b = "rir\nfonction somme\n  param n entier\n  retour entier\n  n_slots 3\n  noms [0]n [1]s [2]k\n  ops\n    0000 affect slot 1 = entier 0\n    0001 affect slot 2 = entier 1\n    0002 saut_si_faux_abstrait 6 (bin <= slot 2 slot 0)\n    0003 affect slot 1 = (bin + slot 1 slot 2)\n    0004 affect slot 2 = (bin + slot 2 entier 1)\n    0005 saut 2\n    0006 retour_abstrait slot 1\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app somme (n 5))\n"
+
+$at_seq_b = an_abaisse_rir($at_rir_b, "x86_32")
+$at_oct_b = bu_traduire($at_seq_b, $at_p)
+>> "--- (b) somme : " + chaine(longueur($at_seq_b) - 1) + " ops, " + chaine(longueur($at_oct_b) - 1) + " octets"
+$at_ok = $at_ok + at_verifie(7, "b_saut_conditionnel", at_b(at_nb_op($at_seq_b, 19) > 0), "1")
+$at_ok = $at_ok + at_verifie(8, "b_saut_arriere", at_b(at_nb_op($at_seq_b, 11) + at_nb_op($at_seq_b, 16) > 0), "1")
+$at_ok = $at_ok + at_verifie(9, "b_arith", at_b(at_nb_op($at_seq_b, 3) >= 2 et at_nb_op($at_seq_b, 4) >= 1), "1")
+$at_ok = $at_ok + at_verifie(10, "b_octets_non_vides", at_b(longueur($at_oct_b) > 1), "1")
+
+# ── (c) si conditionnel ───────────────────────────────────────────────────
+# Source Rose :
+#   fn absolu(x: entier) -> entier { si (x < 0) { retour 0 - x } ; retour x }
+#   >> absolu(-7)
+$at_src_c = "fn absolu(x: entier) -> entier { si (x < 0) { retour 0 - x } ; retour x }\n>> absolu(-7)\n"
+$at_rir_c = "rir\nfonction absolu\n  param x entier\n  retour entier\n  n_slots 1\n  noms [0]x\n  ops\n    0000 saut_si_faux_abstrait 2 (bin < slot 0 entier 0)\n    0001 retour_abstrait (bin - entier 0 slot 0)\n    0002 retour_abstrait slot 0\nfonction $principal\n  retour vide\n  n_slots 0\n  noms\n  ops\n    0000 afficher (app absolu (n --7))\n"
+
+$at_seq_c = an_abaisse_rir($at_rir_c, "x86_32")
+$at_oct_c = bu_traduire($at_seq_c, $at_p)
+>> "--- (c) si : " + chaine(longueur($at_seq_c) - 1) + " ops, " + chaine(longueur($at_oct_c) - 1) + " octets"
+$at_ok = $at_ok + at_verifie(11, "c_saut_conditionnel", at_b(at_nb_op($at_seq_c, 19) > 0), "1")
+$at_ok = $at_ok + at_verifie(12, "c_negatif_relu", at_b(at_nb_op($at_seq_c, 4) > 0), "1")
+
+# ── Généricité de la cible : le MÊME RIR, une AUTRE famille ────────────────
+$at_seq_16 = an_abaisse_rir($at_rir_a, "x86_16")
+$at_oct_16 = bu_traduire($at_seq_16, bu_cible("x86_16"))
+$at_ok = $at_ok + at_verifie(13, "cible_generique_x86_16", at_b(longueur($at_oct_16) > 1), "1")
+$at_ok = $at_ok + at_verifie(14, "adresse_de_charge_donnee", chaine(an_base()), "1048576")
+$at_seq_defaut = an_abaisse_rir($at_rir_a, "")
+$at_oct_defaut = bu_traduire($at_seq_defaut, $at_p)
+$at_ok = $at_ok + at_verifie(15, "cible_par_defaut_x86_32", at_b(longueur($at_oct_defaut) == longueur($at_oct_a)), "1")
+
+>> "TOTAL " + chaine($at_ok) + "/" + chaine($at_total)
+$at_final = "ECHEC BATTERIE"
+si ($at_ok == $at_total) { $at_final = "TOUT VERT" }
+>> $at_final
