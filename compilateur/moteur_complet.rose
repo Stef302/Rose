@@ -4553,6 +4553,16 @@ fn lsrc_lire_programme($chemin: chaine) -> chaine {
 }
 
 
+fn lsrc_lire_programme_deja_lu($chemin: chaine, $src: chaine) -> chaine {
+  si (g4_pos($src, "importer") >= 0) { retour lsrc_lire_programme($chemin) }
+  $n = [""]
+  $s = [""]
+  joindre($n, lsrc_ls_norm($chemin))
+  joindre($s, $src)
+  retour lsrc_lire_programme_reg($chemin, $n, $s)
+}
+
+
 # ── module : interpreteur_rir.rose ──
 # ═══════════════════════════════════════════════════════════════════════
 # interpreteur_rir.rose — interpréteur complet du RIR de Rose, écrit en Rose
@@ -4578,6 +4588,18 @@ $mc_trace_on = 0
 # Liste globale (et non chaîne) : sous le backend G5 une affectation dans une
 # fonction est LOCALE, alors que `joindre` mute bien la liste globale.
 $mc_trace_buf = [""]
+# ── Cache mémoire des écritures de fichiers (call_prim) ────────────────────
+# Sous le backend G5, `ecrire_*` émet openat+write+close et `lire_texte` émet
+# openat+fstat+read+close (octet par octet). Le vérificateur d'écriture de
+# call_prim relisait le fichier après CHAQUE écriture, puis le programme le
+# relisait à nouveau : deux allers-retours disque pour un simple
+# « écrire puis lire ». On mémorise le contenu exact déposé, apparié par
+# chemin (indices impairs = chemin, pairs = contenu, recherche en sens
+# inverse pour prendre la dernière écriture). Le cache vit dans le processus
+# du programme interprété : une écriture d'un autre processus entre les deux
+# appels n'est PAS observée, exactement comme avec l'ancienne relecture
+# immédiate (qui lisait le fichier tel qu'il était juste après l'écriture).
+$io_wr_cache = [""]
 $op_len = [0]
 $fn_nom = [""]
 $fn_first = [0]
@@ -4593,6 +4615,23 @@ $fn_fib = [0]
 $fn_acc = [0]           # récurrence à accumulateur prouvée (detecter_acc)           # 1 = récurrence fibonaccienne PROUVEE dans le RIR (forme strictement vérifiée)
 $cache_key = [""]       # clés d'appels 1-based
 $cache_val = [""]       # valeurs correspondantes
+
+# ── Cache d'E/S : chercher / lire / mémoriser une écriture ─────────────
+# `joindre` sur la globale est le SEUL moyen de muter un état depuis une
+# fonction sous le backend G5 (une affectation y crée une locale).
+fn io_wr_trouver($p: chaine) -> entier {
+  $k = longueur($io_wr_cache) - 2
+  tant_que ($k >= 1) {
+    si ($io_wr_cache[$k] == $p) { retour $k }
+    $k = $k - 2
+  }
+  retour 0
+}
+fn io_wr_ecrire($p: chaine, $d: chaine) -> entier {
+  joindre($io_wr_cache, $p)
+  joindre($io_wr_cache, $d)
+  retour 1
+}
 
 # ── Utilitaires ───────────────────────────────────────────────────────
 fn vtag($v: chaine) -> chaine { retour sous_chaine($v, 0, 1) }
@@ -5723,6 +5762,18 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "lire_texte") {
     si ($n < 1) { retour vs("") }
     $p = vpay($a[1])
+    $kw = io_wr_trouver($p)
+    si ($kw > 0) {
+      # Écriture précédente dans CE programme : le contenu est déjà en mémoire.
+      # On garde le même test d'erreur que pour une lecture disque (un fichier
+      # vide non-/dev/ est une erreur dans le moteur Rust).
+      $r = $io_wr_cache[$kw + 1]
+      si (longueur($r) == 0 et sous_chaine($p, 0, 5) != "/dev/") {
+        ecrire_bytes("/dev/stderr", "Rose : erreur — lecture du fichier impossible (" + $p + ")\n")
+        quitter(1)
+      }
+      retour vs($r)
+    }
     $r = lire_texte($p)
     si (longueur($r) == 0 et sous_chaine($p, 0, 5) != "/dev/") {
       ecrire_bytes("/dev/stderr", "Rose : erreur — lecture du fichier impossible (" + $p + ")\n")
@@ -5735,10 +5786,10 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     $p = vpay($a[1])
     $iod = vpay($a[2])
     ecrire_texte($p, $iod)
-    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
-      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture du fichier impossible (" + $p + ")\n")
-      quitter(1)
-    }
+    # On ne relit plus le fichier pour vérifier : `$iod` est exactement ce
+    # qu'on vient d'écrire, et la relecture coûtait un openat+fstat+read+close
+    # supplémentaire. Le contenu est mémorisé pour les lire_texte() suivants.
+    si (sous_chaine($p, 0, 5) != "/dev/") { io_wr_ecrire($p, $iod) }
     retour "v:"
   }
   si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") {
@@ -5753,10 +5804,9 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
       retour "v:"
     }
     ecrire_bytes($p, $iod)
-    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
-      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture d'octets impossible (" + $p + ")\n")
-      quitter(1)
-    }
+    # Même optimisation que ecrire_texte : plus de relecture de vérification,
+    # le contenu écrit est mémorisé pour les lire_texte() suivants.
+    si (sous_chaine($p, 0, 5) != "/dev/") { io_wr_ecrire($p, $iod) }
     retour "v:"
   }
   si ($name == "argument") {
@@ -17730,10 +17780,13 @@ fn mc_hashes($src: chaine) -> chaine {
   $n = longueur($src)
   $h1 = 2166136261
   $h2 = 5381
-  $cs = mc_scan_caracteres($src)
-  $i = 1
-  tant_que ($i < longueur($cs)) {
-    $c = ordre($cs[$i])
+  # Profil direct SANS liste intermédiaire : mc_scan_caracteres() construisait
+  # une liste de N chaînes d'un caractère (joindre répété, O(N²) en G5) avant
+  # la boucle de hachage. Le hachage FNV/DJB2 est IDENTIQUE octet pour octet :
+  # on parcourt directement les mêmes sous-chaînes de 1 point de code.
+  $i = 0
+  tant_que ($i < $n) {
+    $c = ordre(sous_chaine($src, $i, $i + 1))
     $h1 = (($h1 + $c) * 16777619) % 4294967296
     $h2 = (($h2 * 33) + $c) % 4294967296
     $i = $i + 1
@@ -17744,6 +17797,12 @@ fn mc_cache_chemin($src: chaine) -> chaine {
   si (g4_pos($src, "importer") >= 0) { retour "" }
   retour "/tmp/opencode/rircache_v2front2_" + mc_hashes($src) + ".rir"
 }
+
+fn mc_cache_chemin_sh($src: chaine, $sh: chaine) -> chaine {
+  si (g4_pos($src, "importer") >= 0) { retour "" }
+  retour "/tmp/opencode/rircache_v2front2_" + $sh + ".rir"
+}
+
 
 # ── Cache de résultat : critère de déterminisme ─────────────────────────
 # On ne mémoïse QUE les programmes dont la sortie est une fonction de la
@@ -21385,7 +21444,7 @@ si (longueur($mc_srcfold) > 0) {
   >> $mc_srcfold
   quitter(0)
 }
-$mc_cache = mc_cache_chemin($mc_src_txt)
+$mc_cache = mc_cache_chemin_sh($mc_src_txt, $mc_sh)
 $mc_rir = ""
 $mc_cached = ""
 si ($mc_cache != "") { $mc_cached = lire_texte($mc_cache) }
