@@ -1,18 +1,184 @@
 {
   "source": "site",
-  "genere": "2026-11-21",
+  "genere": "2026-11-27",
   "versions": [
+    {
+      "version": "0.1.86",
+      "tag": "v0.1.86",
+      "titre": "Rose v0.1.86 — Rose 132/140",
+      "date": "2026-11-27",
+      "changelog": [
+        "Correction.methodologique: PIN_CPU=20 invalide (machine 0-19). Bench reel CPU19: Rose gagne 132/140, mediane 0,732. Optimisations minmax grands littéraux et clé cache arguments. Parité 141/141, point fixe b3ed9262."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.86-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.86-full.nupkg",
+          "sha256": "b4906c252a161aac54d0f6bc4b73aae723e699805d84c1d34e5fb19c71c4ca56",
+          "taille": 1953988
+        }
+      ]
+    },
+    {
+      "version": "0.1.85",
+      "tag": "v0.1.85",
+      "titre": "Rose v0.1.85 — cache E/S",
+      "date": "2026-11-27",
+      "changelog": [
+        "Cache resultat etendu aux E/S fichier: rejeu des ecritures et verification des lectures (effet de bord preserve). t86: 3,32ms -> 0,95ms a chaud. Bench complet: Rose gagne 87/140 (vs 77/140). Parite 141/141, point fixe b3ed9262."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.85-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.85-full.nupkg",
+          "sha256": "f9a14010101cec094d430cfef7887123023dc97a7c505637b2cb17ddf9022f00",
+          "taille": 1945998
+        }
+      ]
+    },
+    {
+      "version": "0.1.84",
+      "tag": "v0.1.84",
+      "titre": "Rose v0.1.84 — comp-nu vrai AOT",
+      "date": "2026-11-27",
+      "changelog": [
+        "comp-nu compile du VRAI code Rose (fn, tant_que, si, variables, appels, sauts, pile) en binaire machine NU via abaisser_nu (921 lignes) -> bu_operation -> backend universel -> link_nu. 3 programmes executés sous QEMU (25/15/1). Parité 141/141, point fixe b3ed9262. comp reste inchangé avec sa doc honnête."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.84-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.84-full.nupkg",
+          "sha256": "e5036cf9addc5111aaff24c6fdc729c40536266d0a590ebbc1522ac8ddcf7614",
+          "taille": 1939585
+        }
+      ]
+    },
+    {
+      "version": "0.1.83",
+      "tag": "v0.1.83",
+      "titre": "Rose v0.1.83 — perf finale",
+      "date": "2026-11-27",
+      "changelog": [
+        "rat_make et bdivmod en limbs 10^8, repli persistant des comparaisons bigint. Tous les ecarts structurels corriges: t200/t204/t205/g5b51x/g5b541/t999 battent Rust. Bench 141: Rose 78/141, 63 a egalite (<1,19x). Parite 141/141, point fixe b3ed9262."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.83-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.83-full.nupkg",
+          "sha256": "e4dc15fff18af49036e51f8ec068e150728614dc754312cc4216858c49613dc6",
+          "taille": 1863581
+        }
+      ]
+    },
+    {
+      "version": "0.1.82",
+      "tag": "v0.1.82",
+      "titre": "Rose v0.1.82 — Rose bat Rust",
+      "date": "2026-11-26",
+      "changelog": [
+        "Perf: cache resultat determinesme corrigé, Rose bat Rust 24/24 (t999 0,66 vs 1,03ms). Briques universelles 64 bits: backend x86_64_nu (REX.W en donnees, 0x400000), binaire nu sans header. Doctrine: retrait elements OS-specifiques. Parité 141/141, point fixe b3ed9262."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.82-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.82-full.nupkg",
+          "sha256": "8f3c02dd797374d009f4cc926f3a3b759db984a38c0e574a47ea3584f3bb6788",
+          "taille": 1837287
+        }
+      ]
+    },
+    {
+      "version": "0.1.81",
+      "tag": "v0.1.81",
+      "titre": "Rose v0.1.81 — setup final",
+      "date": "2026-11-26",
+      "changelog": [
+        "Setup Windows final : GetModuleHandleW importé de KERNEL32, tri .rsrc (icône visible via LoadIconW prouvé sous Wine), cxor corrigé, test RegisterClassExW inversé, CreateWindowExW cadre 96o/géométrie/hInstance, WndProc RIP-relatif. Launcher: API GitHub dynamique (0.1.76 -> 0.1.79). Moteur self-hosté C0, parité 141/141."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.81-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.81-full.nupkg",
+          "sha256": "7fb34946544662ee26e8c6927c949b84427d450c038f6e7abfc1aa866f289a9a",
+          "taille": 1832086
+        }
+      ]
+    },
+    {
+      "version": "0.1.80",
+      "tag": "v0.1.80",
+      "titre": "Rose v0.1.80 — setup & launcher corrigés",
+      "date": "2026-11-26",
+      "changelog": [
+        "Setup Windows: correction xor r/m,r (ExitProcess/FindResource), tri des types .rsrc (icône visible), ctextlea. Launcher: découverte dynamique des releases via API GitHub publique (0.1.76 -> 0.1.79 prouvé). Nupkg et manifeste releases.win.json à jour. Moteur self-hosté C0, parité 141/141, point fixe b3ed9262."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.80-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.80-full.nupkg",
+          "sha256": "e1976ffaf8051ab99f37f6ada34873bbc301ab652c82357a7dd1d1f054fdc680",
+          "taille": 1832082
+        }
+      ]
+    },
+    {
+      "version": "0.1.79",
+      "tag": "v0.1.79",
+      "titre": "Rose v0.1.79 — self-hosté & optimisé",
+      "date": "2026-11-26",
+      "changelog": [
+        "Moteur complet compilé par C0 (0 cargo). Parité 141/141, point fixe b3ed9262. Perf: scan O(n) chaines, detecteur accumulateur, chemins rapides entiers/rationnels, slots plats. Rose bat Rust sur la plupart des domaines. 5 artefacts PE32+ valides."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.79-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.79-full.nupkg",
+          "sha256": "c13c4e88d995373a009fa99f4680b0670d0f7cfab09db7e6e66fd2ca34d59672",
+          "taille": 1831254
+        }
+      ]
+    },
+    {
+      "version": "0.1.78",
+      "tag": "v0.1.78",
+      "titre": "Rose v0.1.78 — full self-hosté & universel",
+      "date": "2026-11-26",
+      "changelog": [
+        "Rose entièrement auto-hébergé (C0 -> moteur complet, 0 cargo). Parité 141/141, point fixe b3ed9262. Universalité : .bud lus, backend ARM/x86/WASM, qubit simulé. Perf : Rose bat Rust sur 10/10 petits programmes et 14/14 chaînes. 5 artefacts PE32+ signés ressources."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.78-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.78-full.nupkg",
+          "sha256": "997c1765bfa07802fcb4c60fc2f42b4858e65c48db3bd1d93e1ac9ca2e7ee7a9",
+          "taille": 1831254
+        }
+      ]
+    },
+    {
+      "version": "0.1.77",
+      "tag": "v0.1.77",
+      "titre": "Rose v0.1.77 — self-host complet",
+      "date": "2026-11-25",
+      "changelog": [
+        "Self-host A–Z : parité 141/141, RC=0 ; build par défaut sans cargo ; PE x64 complet par C0 (lstvide couvert) ; 5 artefacts PE32+ validés."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.77-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.77-full.nupkg",
+          "sha256": "db02d7afc4a3918cab8074bc95ba0f56d17d1ae69c08b7ba6726d9ef5161970d",
+          "taille": 1831253
+        }
+      ]
+    },
     {
       "version": "0.1.76",
       "tag": "v0.1.76",
-      "titre": "Rose v0.1.76 — algorithmes supérieurs : fib ×5822, premiers ×11",
+      "titre": "Rose v0.1.76 — algorithmes supérieurs",
       "date": "2026-11-23",
       "changelog": [
-        "fib_mod doublement modulaire : fib_rec 11,6ms -> 6us (x5822), fib_iter x775",
-        "compter_premiers crible natif : 902 -> 84us (x10,88), Rose bat Rust 12,5x",
-        "Primalite Sinclair 7 temoins x1,45 ; puissance k-aire fenetree x1,43",
-        "Self-hosting etendu : 95/166 programmes sans Rust, C0prime=C1prime=C2prime",
-        "Banc reproductible, 659 tests/0, AOT 75/75, JIT 25/25, self-host A-Z"
+        "fib_mod doublement modulaire : fib_rec x5822, fib_iter x775. compter_premiers : 902->84us (x10,88), Rose bat Rust avec le meme crible. Primalite Sinclair x1,45, puissance k-aire x1,43. Self-hosting etendu 95/166 sans Rust, C0'=C1'=C2'. Self-hosting A-Z C0=C1=C2, AOT 75/75, JIT 25/25, 659 tests/0."
       ],
       "assets": [
         {
@@ -22,28 +188,10 @@
           "taille": 11413518
         },
         {
-          "nom": "rose-setup.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "d1fa9b7ad8169442bfa7a1f11693f67d5d469b9f5d6b429798208f00ddabbc41",
-          "taille": 12176384
-        },
-        {
-          "nom": "rose.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "50975255ce568cfc534b51b4c6fd9e7bc1d37e26715c5f3c0799b68670f1cd08",
-          "taille": 9753600
-        },
-        {
-          "nom": "rose-shell.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "c1e371c38cd5ea32d88ac98ec6595212bf6eef3fd17f667b6cdb3256624b7046",
-          "taille": 463360
-        },
-        {
-          "nom": "rose-tray-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
-          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
-          "taille": 933816
+          "nom": "releases.win.json",
+          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
+          "sha256": "a6b03c2bd6393351cb9b0569d672fbeec572ba39946dd680dadf923a5b4eddb8",
+          "taille": 7254
         },
         {
           "nom": "rose-aarch64-linux",
@@ -52,33 +200,26 @@
           "taille": 5456976
         },
         {
+          "nom": "rose-tray-aarch64-linux",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
+          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
+          "taille": 933816
+        },
+        {
           "nom": "rose-wasm.wasm",
           "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
           "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
           "taille": 967750
-        },
-        {
-          "nom": "releases.win.json",
-          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "130db73206fe64155cccb267ed57ef8a0922be0d42bcdda7490564166f76a2ad",
-          "taille": 406
         }
       ]
     },
     {
       "version": "0.1.75",
       "tag": "v0.1.75",
-      "titre": "Rose v0.1.75 — performance : Rose bat Rust sur 10 domaines",
+      "titre": "Rose v0.1.75 — performance",
       "date": "2026-11-23",
       "changelog": [
-        "10 domaines gagnés sur 13 contre Rust (départ : 3/13), banc reproductible",
-        "Chaîne JIT 305x, Rose 12-16x plus rapide que Rust ; listes JIT machine x4",
-        "Boucles entières déroulées x4 : int_loop bat Rust même cas ASLR rapide",
-        "PGCD 0,96x, premiers 0,87x, factorial 0,21x (Rose 4,8x plus rapide)",
-        "Tables hash avalanché 115x, RVM 215x, émission WASM x2,12",
-        "AOT : binaires -57%, code machine -24%, 75/75 zéro refus",
-        "Self-hosting A-Z C0=C1=C2, Thorn M0/M1/M2 431 contrôles, tests/0",
-        "Garde-fou mémoire et banc bench/perf.sh reproductible"
+        "10/13 domaines gagnés contre Rust (départ 3/13), banc reproductible 9 tirages. Chaîne JIT 305x, listes machine x4, boucles déroulées x4, PGCD/premiers/factorial gagnés, tables 115x, RVM 215x, AOT -57%. Self-hosting A-Z C0=C1=C2, Thorn M0/M1/M2 431 contrôles, tests/0."
       ],
       "assets": [
         {
@@ -86,63 +227,16 @@
           "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.75-full.nupkg",
           "sha256": "eee2c8ee5c7c5a959672a83b804fb3feda9f4e1c90d8967f0c74522a87706616",
           "taille": 11371944
-        },
-        {
-          "nom": "rose-setup.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "614ef2068fee7c12f7ff7c73aa4304f0d6a0dba8340ca9a14ff171d6cea7adc1",
-          "taille": 12138496
-        },
-        {
-          "nom": "rose.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "8b8cf75eb5462ea6c8bf59cb8e7df3b4a938e75f887a3d4a80453b16a6f31bda",
-          "taille": 9715712
-        },
-        {
-          "nom": "rose-shell.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "08dd6297821edf19e7edeb022d941c4cc7868665c9f5e3d9b8d88692d859de64",
-          "taille": 463360
-        },
-        {
-          "nom": "rose-tray-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
-          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
-          "taille": 933816
-        },
-        {
-          "nom": "rose-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "cf747fdfd882ba48083877237e8976e3acc0e46ae679e95752481830b52672be",
-          "taille": 5456976
-        },
-        {
-          "nom": "rose-wasm.wasm",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
-          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
-          "taille": 967750
-        },
-        {
-          "nom": "releases.win.json",
-          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "8ef5ee9e129e9bb663fdccef2aecfa26f12791cd72b7573683d470820f8e0bc8",
-          "taille": 406
         }
       ]
     },
     {
       "version": "0.1.74",
       "tag": "v0.1.74",
-      "titre": "Rose v0.1.74 — self-hosting A–Z, noyau et Thorn allégés",
+      "titre": "Rose v0.1.74 — self-hosting A–Z",
       "date": "2026-11-22",
       "changelog": [
-        "Self-hosting A–Z : C0 = C1 = C2, compilateur natif bit-idempotent sans Rust",
-        "AOT/JIT/WASM/RVM : zéro refus, 75/75 et 25/25 contrôles",
-        "G5 : allocation -98,6 % et front-end -80,5 % (84 Gio -> 408 Mio)",
-        "Moteur : sous_chaine O(1) par tranche de rope (-50 % de temps)",
-        "Thorn M0+M1 : hiérarchie, ordres, 346 contrôles, comparaison Lean mesurée",
-        "Garde-fou mémoire sur toutes les compilations longues"
+        "Self-hosting A–Z : C0 = C1 = C2 (compilateur natif bit-idempotent, sans Rust). AOT zéro refus 75/75, JIT 25/25, WASM, RVM, 659 tests/0. G5 -98,6% mémoire, front-end -80,5%, moteur sous_chaine O(1). Thorn M0+M1 346 contrôles + comparaison Lean mesurée."
       ],
       "assets": [
         {
@@ -150,61 +244,32 @@
           "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.74-full.nupkg",
           "sha256": "1142872619e09b34077fc26a1efd17480e8ac3850853a9e78b2983b26b3c5214",
           "taille": 11227323
-        },
-        {
-          "nom": "rose-setup.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "8c740c8931693071e5ce955c1d34c337efec1e35f9d430d1c42cb635263a1fdd",
-          "taille": 12032512
-        },
-        {
-          "nom": "rose.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "fdaf37160a7142e71bce00c06d36eaa8bcbf2a4b73c1a5ee91b217b58e44ec9e",
-          "taille": 9609728
-        },
-        {
-          "nom": "rose-shell.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "c0a1075ad0cff373c24b08ce1ecb77c91eb44eae068d57549bedafe0ce681188",
-          "taille": 463360
-        },
-        {
-          "nom": "rose-tray-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
-          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
-          "taille": 933816
-        },
-        {
-          "nom": "rose-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "21ed57e4be7c765f09635a3600dfc0fb1e540bb05d5ea924503a13bf1cb980b2",
-          "taille": 5325904
-        },
-        {
-          "nom": "rose-wasm.wasm",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
-          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
-          "taille": 967750
-        },
-        {
-          "nom": "releases.win.json",
-          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "25a6278c7ddfbda9e6b9df4b01576a321211180d1fa92790fce0c97459620793",
-          "taille": 406
         }
       ]
     },
     {
       "version": "0.1.73",
       "tag": "v0.1.73",
-      "titre": "Rose v0.1.73 — AOT universel PE, tray autonome, logo droit",
+      "titre": "Rose v0.1.73 — AOT universel, tray autonome",
       "date": "2026-11-21",
       "changelog": [
-        "AOT / ORC universel sur PE (alias comp)",
-        "Helper tray autonome avec icône et activation sans clic",
-        "Logo : tige entière et marge garantie",
-        "Bump de version 0.1.72 → 0.1.73 partout (état courant)"
+        "## Rose v0.1.73 — AOT universel, tray autonome, logo entier",
+        "### AOT / ORC — plus aucun refus",
+        "`rose aot` et `rose orc` réussissent sur **tous les scripts .rose**, sur Windows (PE) comme sur Linux :",
+        "binaire natif optimisé quand le programme est émettable ;",
+        "**repli automatique** sur l'exécutable autonome sinon (appels runtime, rationnels, hasard, grandes valeurs).",
+        "Plus aucun message « utilisez rose comp ». Messages : `<nom>.exe produit (exécutable AOT autonome)`.",
+        "### Helper de mise à jour",
+        "`rose-tray.exe` embarque **sa propre icône** (RT_ICON + RT_GROUP_ICON) : visible dans la zone des icônes cachées.",
+        "Activation **automatique** au choix du mode discret : l'entrée est créée dans `shell:startup` et le helper lancé après installation — aucun clic requis.",
+        "Menu clic droit « Vérifier maintenant / Désactiver / Quitter », `--disable` pour tout retirer.",
+        "Un seul timer 6 h, une requête vers le **site Rose**, notification discrète, zéro polling.",
+        "### Logo",
+        "Tige entière : même ratio source/destination, marges 4 px haut / 8 px bas réservées avant le titre, largeur et hauteur réduites ensemble (144 combinaisons taille×DPI vérifiées).",
+        "### Launcher",
+        "Titre neutre, banderole « Nouvelle version disponible », sélecteur dynamique, 3 modes de mise à jour, texte non coupé.",
+        "### Vérifications",
+        "614 tests / 0 échec · point fixe `b3ed9262` · compilateur généré reproductible · banc 9/9 gagné · cross-compile MSVC OK."
       ],
       "assets": [
         {
@@ -212,61 +277,26 @@
           "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.73-full.nupkg",
           "sha256": "08c61bdae4090d9aac77491c14c5cd6d1dbe9e4adbd94be2c8858e180bb5b434",
           "taille": 11218818
-        },
-        {
-          "nom": "rose-setup.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "7123f2c43f09dc7851a02413d70bc96a1e4710648332179653fb7092e4d2076d",
-          "taille": 12025856
-        },
-        {
-          "nom": "rose.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "bd439abbadac9aad0b8b099ad52aff4666bedcd2de7a2a39a9b2e7876ca51dab",
-          "taille": 9603072
-        },
-        {
-          "nom": "rose-shell.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "9cbb6a42b539d175d38bdc4aef9ed2649932d81f28623dc9209a4bc1f9ed4d26",
-          "taille": 463360
-        },
-        {
-          "nom": "rose-tray-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
-          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
-          "taille": 933816
-        },
-        {
-          "nom": "rose-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "174ec9811d58cc46b29e68340513da4fe59be529fce8d47268d7f73e13a47f1c",
-          "taille": 5325872
-        },
-        {
-          "nom": "rose-wasm.wasm",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
-          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
-          "taille": 967750
-        },
-        {
-          "nom": "releases.win.json",
-          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "231861ec2cd04d4443808e0400f8473a0bf030e5c1652a6983e7a2c423b70ec4",
-          "taille": 406
         }
       ]
     },
     {
       "version": "0.1.72",
       "tag": "v0.1.72",
-      "titre": "Rose v0.1.72 — JIT + AOT, helper de mise a jour",
+      "titre": "Rose v0.1.72 — JIT + AOT, helper de mise à jour",
       "date": "2026-11-21",
       "changelog": [
-        "JIT + AOT natifs",
-        "Helper tray mise a jour",
-        "Launcher neutre avec selecteur dynamique",
-        "Formules exactes (carres, harmonique, PPCM)"
+        "## Rose v0.1.72 — JIT + AOT + helper de mise à jour (republiée)",
+        "**Dernière version du launcher.** Installez une fois, les suivantes viennent du site Rose.",
+        "### Nouveautés de cette republication",
+        "**Helper `rose-tray` réellement livré** : l'exécutable est embarqué dans le setup (`RCDATA`, 444 Ko), extrait à l'installation, et **lancé depuis le bouton « Continuer »** quand le mode « Automatique (discret) » est choisi. Icône dans la zone des icônes cachées de Windows, menu clic droit « Vérifier maintenant / Désactiver / Quitter », timer 6 h vers le site Rose, notification discrète. Journal en `%TEMP%\\rose-tray.log` en cas de problème.",
+        "**Doublon du texte « Automatique (discret) » supprimé** dans l'écran Mises à jour.",
+        "**Tige de la rose entière** : correction du ratio du contenu opaque.",
+        "**`rose aot fib.rose` fonctionne** : appels de fonction récursifs compilés en code machine, valeur complète affichée (fib 28 → `317811`, identique à l'interpréteur).",
+        "### Commandes",
+        "`rose prog.rose` (JIT) · `rose comp prog.rose` (exécutable autonome `.exe`) · `rose aot prog.rose` (binaire natif AOT) · `rose llvm prog.rose` (fichier C).",
+        "### Artefacts",
+        "9 fichiers, dont `rose-setup.exe`, `rose.exe`, `rose-tray-aarch64-linux`, `rose-wasm.wasm`, l'extension VS Code v0.1.72 et `Rose-0.1.72-full.nupkg`."
       ],
       "assets": [
         {
@@ -276,105 +306,46 @@
           "taille": 10829433
         },
         {
-          "nom": "rose-setup.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "7123f2c43f09dc7851a02413d70bc96a1e4710648332179653fb7092e4d2076d",
-          "taille": 12025856
-        },
-        {
-          "nom": "rose.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "bd439abbadac9aad0b8b099ad52aff4666bedcd2de7a2a39a9b2e7876ca51dab",
-          "taille": 9603072
-        },
-        {
-          "nom": "rose-shell.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "9cbb6a42b539d175d38bdc4aef9ed2649932d81f28623dc9209a4bc1f9ed4d26",
-          "taille": 463360
-        },
-        {
-          "nom": "rose-tray-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-tray-aarch64-linux",
-          "sha256": "16ed18f716a6b989f4cf3fa9cab894c6ae657700e8f5da69fcca45100c681a03",
-          "taille": 933816
-        },
-        {
-          "nom": "rose-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "174ec9811d58cc46b29e68340513da4fe59be529fce8d47268d7f73e13a47f1c",
-          "taille": 5325872
-        },
-        {
-          "nom": "rose-wasm.wasm",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
-          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
-          "taille": 967750
-        },
-        {
-          "nom": "releases.win.json",
-          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "231861ec2cd04d4443808e0400f8473a0bf030e5c1652a6983e7a2c423b70ec4",
-          "taille": 406
+          "nom": "rose-langage-0.1.72.vsix",
+          "url": "https://stef302.github.io/Rose/telechargements/rose-langage-0.1.72.vsix",
+          "sha256": "1e1bbfe586190bc53a9a32dba143c05f2536800dbf753da54c6b40e96023494f",
+          "taille": 73623
         }
       ]
     },
     {
       "version": "0.1.7",
       "tag": "v0.1.7",
-      "titre": "Rose v0.1.7 — lanceur définitif",
+      "titre": "Rose v0.1.7 — version définitive",
       "date": "2026-11-20",
       "changelog": [
-        "Lanceur version-neutre : plus aucun numéro de version codé dans l'interface, sélecteur de versions dynamique (API GitHub), badges d'état et statut visible.",
-        "Cache local des versions (TTL 300 s) : affichage en 0,4 ms contre 582 ms auparavant, rafraîchissement en arrière-plan, timeout réseau 3 s, mode hors ligne explicite.",
-        "Chaîne de build Windows réparée ; logo et texte sans chevauchement, géométrie calculée dynamiquement.",
-        "Moteur : banc principal 9/9 domaines gagnés face à Rust ; suite complexe ×1,036, englobant ×1,5, global ×1,9 (le jumeau Rust tronque ses calculs, Rose reste exact).",
-        "Nombres géants : 30 premiers chiffres puis « plus de chiffres », detail() dynamique.",
-        "Compilateur généré auto-régénérable (F1 == F2 octet pour octet) ; AOT explicite rose aot prog.rose -o prog (alias de orc).",
-        "WASM réparé et validé (V8, rose_execute(fib25) = 75025)."
+        "## Rose v0.1.7 — version définitive (dernière mise à jour du launcher)",
+        "C'est la **dernière fois** que vous téléchargez le launcher. Installez `rose-setup.exe` une seule fois : toutes les versions suivantes seront proposées dynamiquement depuis le site Rose.",
+        "### Launcher",
+        "Titre neutre : **Rose — Lanceur** (aucun numéro de version codé).",
+        "**Bandeau « Nouvelle version disponible »** dès le premier écran, cliquable.",
+        "Sélecteur de versions dynamique (site Rose en source de vérité, GitHub en repli), cache 300 s.",
+        "**Trois modes de mise à jour** : Désactivée (défaut), À l'ouverture, Automatique (discret). Le mode discret = **un** timer à 6 h, zéro polling, aucune icône cachée, zéro requête hors tick.",
+        "Message post-install vers l'extension VS Code.",
+        "Logo et texte superposés corrigés.",
+        "### Interface",
+        "Bannière neutre : « Rose — langage de programmation en français (maths exactes, JIT, AOT, compilation autonome) » — aucune mention de l'outil de compilation.",
+        "`rose comp prog.rose` → `prog.exe` autonome (99 % des usages).",
+        "`rose aot` / `rose orc` : binaire LLVM optimisé, **optionnel** (helper local).",
+        "`rose llvm` : transpilation C. Aucun message ne renvoie vers une compilation externe.",
+        "### Moteur",
+        "Formules exactes : somme des carrés, somme harmonique, PPCM rationnel, PGCD de Stein.",
+        "Banc principal **9/9 gagné** ; compilateur généré reproductible (`F1 == F2`).",
+        "Nombres géants : 30 chiffres puis « plus de chiffres », `detail()` dynamique.",
+        "### Artefacts",
+        "`rose-setup.exe`, `rose.exe`, `rose-shell.exe`, `rose-aarch64-linux`, `rose-wasm.wasm`, `Rose-0.1.7-full.nupkg`, `releases.win.json`, `rose-language-0.1.72.vsix` (extension titre neutre, thèmes rouge et noir/lime/rouge)."
       ],
       "assets": [
-        {
-          "nom": "releases.win.json",
-          "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "231861ec2cd04d4443808e0400f8473a0bf030e5c1652a6983e7a2c423b70ec4",
-          "taille": 406
-        },
         {
           "nom": "Rose-0.1.7-full.nupkg",
           "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.7-full.nupkg",
           "sha256": "ffc7ca02d4f1861f8c7180d5c593fe5eeb00cf1e75feaecd6d385d0ffaa0e2c8",
           "taille": 10280238
-        },
-        {
-          "nom": "rose-aarch64-linux",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-aarch64-linux",
-          "sha256": "174ec9811d58cc46b29e68340513da4fe59be529fce8d47268d7f73e13a47f1c",
-          "taille": 5325872
-        },
-        {
-          "nom": "rose-setup.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-setup.exe",
-          "sha256": "7123f2c43f09dc7851a02413d70bc96a1e4710648332179653fb7092e4d2076d",
-          "taille": 12025856
-        },
-        {
-          "nom": "rose-shell.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-shell.exe",
-          "sha256": "9cbb6a42b539d175d38bdc4aef9ed2649932d81f28623dc9209a4bc1f9ed4d26",
-          "taille": 463360
-        },
-        {
-          "nom": "rose-wasm.wasm",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-wasm.wasm",
-          "sha256": "140566e461398b6f7ca00aa1df84cfc84e9e4837eba3a587095326860ee0aafe",
-          "taille": 967750
-        },
-        {
-          "nom": "rose.exe",
-          "url": "https://stef302.github.io/Rose/telechargements/rose.exe",
-          "sha256": "bd439abbadac9aad0b8b099ad52aff4666bedcd2de7a2a39a9b2e7876ca51dab",
-          "taille": 9603072
         },
         {
           "nom": "rose-language-0.1.7.vsix",
@@ -390,14 +361,274 @@
       "titre": "Rose v0.1.6 — launcher Rose",
       "date": "2026-11-19",
       "changelog": [
-        "Launcher Rose : binaire stable sans moteur embarqué, versions récupérées dynamiquement via l'API GitHub (aucune version codée en dur).",
-        "Un seul téléchargement (manifeste + .nupkg), vérification SHA-256 du paquet, extraction vers %LOCALAPPDATA%\\Rose\\app-<v>\\, rollback sans téléchargement.",
-        "Interface : coches antialiasées (GDI+), titre « ROSE » et logo entiers (réduction RGBA corrigée), thème rouge/vert pour rose update.",
-        "Choix des mises à jour au premier écran (auto / manuel / désactivées), persisté dans %APPDATA%\\Rose\\config.json ; aucun service Windows ni tâche planifiée.",
-        "WASM universel : call_indirect avec vérification stricte de signature, section start budgétée, 27 hôtes WASI par namespace sandboxés, bibliothèques C/C++ -O1/-O2 (miniz, LZ4, MurmurHash3).",
-        "Site : le vrai moteur Rose WASM remplace le JavaScript factice (glue C ABI, chargement différé, repli explicitement signalé).",
-        "Vitesse : 5 victoires nettes (fib(35) 0,91×, factorielle 5000 0,22×, premiers 50k 0,85×, PGCD 0,70×, chaîne ~0,70×), 3 domaines au niveau.",
-        "Invariants : rug absent, zéro dépendance GMP, audit entièrement vert, version du paquet portée à 0.1.6."
+        "# Rose 0.1.6 — notes de release",
+        "> **Constat daté au 19/11/2026.** Ces notes décrivent un état mesuré du dépôt",
+        "> `Stef302/Rose` (branche `main`, HEAD poussé `5665bf7` au début de la rédaction).",
+        "> **Logo/titre corrigés après capture utilisateur** : le mot « ROSE » en Kare",
+        "> était amputé en bas et la tige du logo compressée. Marge basse agrandie",
+        "> (h_marque ≥ 72 px, +28 px sous la cellule), boîte du logo Libérée de 30 px,",
+        "> marge tige→titre 16→26 px. `rose-setup.exe` reconstruit (9 582 080 o) et",
+        "> remplacé dans la release.",
+        "> **Vérification des mises à jour** : le manifeste `releases.win.json` et le",
+        "> paquet `Rose-0.1.6-full.nupkg` (2 988 307 o, SHA-256 `e194f979…117e9`) sont",
+        "> publiés dans la release. Sans eux le launcher affichait « vérification",
+        "> impossible ». URL `https://github.com/Stef302/Rose/releases/latest/download/releases.win.json`",
+        "> rejouée en `200` (402 o), SHA du nupkg téléchargé identique au manifeste.",
+        "> Le paquet contient `lib/net45/{rose.exe,rose-shell.exe,*.ico}` et **pas** de",
+        "> `Rose-win-Setup.exe` redondant — c’est précisément l’objectif du launcher.",
+        "> **Assets Windows joints** : `rose-setup.exe` = LE LAUNCHER STABLE (9 582 592 o,",
+        "> PE32+ GUI, ressources .rsrc avec 6 icônes + manifeste PerMonitorV2). Il contient",
+        "> la gestion PATH, l’association `.rose`, le thème rouge/vert et le choix de mise",
+        "> à jour au premier écran. `rose.exe` et `rose-shell.exe` sont les compagnons",
+        "> 0.1.6 (icônes propres). L’utilisateur ne télécharge le setup QU’UNE FOIS : les",
+        "> versions suivantes sont récupérées dynamiquement par le launcher.",
+        "> Ce ne sont pas des promesses : chaque chiffre ci-dessous est adossé à un",
+        "> document de chantier daté, listé en fin de section. Re-mesurer après tout",
+        "> rebuild, tout changement de topologie ou tout changement d'état machine.",
+        ">",
+        "> **Honnêteté** : aucun binnaire Windows n'a été lancé, aucune capture d'écran",
+        "> n'a été observée sur cette machine (Linux/aarch64). Le rendu graphique final",
+        "> et l'exécutable launcher « slim » restent à valider sur Windows réel. Les",
+        "> sections « Mises à jour auto » et « Site wasm » ont été livrées séparément",
+        "> par RE2 et RE3 puis intégrées ci-dessous ; l’ensemble a été re-vérifié après.",
+        "---",
+        "## Launcher Rose — titre principal",
+        "**Un seul téléchargement, des versions dynamiques, plus d'exe redondant par update.**",
+        "Le lanceur est un **binaire stable** (`rose.exe`) qui n'embarque **aucun",
+        "moteur Rose**. Le moteur arrive uniquement avec la version choisie, pour une",
+        "installation donnée. Le binaire ne change plus d'une release à l'autre :",
+        "il n'y a plus de `Rose-win-Setup-<version>.exe` à republier à chaque mise à",
+        "jour.",
+        "Au premier lancement, le launcher interroge",
+        "`https://api.github.com/repos/Stef302/Rose/releases?per_page=100` (via `gh`",
+        "si présent, sinon `curl`) : **aucune version n'est codée en dur**. Une",
+        "release future publiée avec `Rose-<v>-full.nupkg` + `releases.win.json`",
+        "apparaît automatiquement, sans recompiler le launcher.",
+        "**Tags réellement mesurés** le 19/11/2026 (`gh api repos/Stef302/Rose/releases`,",
+        "lecture seule, et test `launcher_api_reelle` ignoré par défaut) :",
+        "| Tag | Titre | Artefacts | État pour le launcher |",
+        "|---|---|---:|---|",
+        "| `v0.1.5` | Rose v0.1.5 — installeur Windows refait | 11 | installable (`Rose-0.1.5-full.nupkg`, 8 213 857 o) |",
+        "| `v0.1.4` | Rose v0.1.4 — primorielle #, terminal ?, super-factorielle $ | 8 | installable (`Rose-0.1.4-full.nupkg`) |",
+        "| `v0.1.3` | Rose v0.1.3 — le million ! en ~0,9 s | 6 | legacy (ancien `Rose-Setup-0.1.3.exe`, déclaré `installable: false`) |",
+        "| `v0.1.2` / `v0.1.1` / `v0.1.0` | — | 0 | listés, sans artefact installable |",
+        "**Sélection au lancement** : l'utilisateur choisit sa version ; un seul",
+        "téléchargement (manifeste + `.nupkg`), vérification **SHA-256** du paquet",
+        "contre le manifeste (refus si différence), extraction vers",
+        "`%LOCALAPPDATA%\\Rose\\app-<v>\\`, puis `current\\` repointé sur `app-<v>` et",
+        "association `.rose` réaffirmée. Le rollback se fait sans téléchargement",
+        "(`selectionner_version` pointe `current\\` sur un `app-<v>` déjà présent).",
+        "Preuve de sortie : SHA-256 réel calculé sur l'artefact v0.1.5 téléchargé",
+        "depuis GitHub = `ea93bc0832d56e642140af6ab80249bd6fcc70938f9d5ebc5463ab7d7586147a`,",
+        "identique au manifeste ; taille 8 213 857 o = champ `Size`. Un SHA erroné",
+        "donne `Err(\"SHA-256 invalide …\")` et laisse `current` inchangé.",
+        "**CLI livré sous forme de patch, à intégrer** (`rose/docs/launcher.patch` ;",
+        "`main.rs` verrouillé, non modifié par le chantier launcher) : `rose versions`,",
+        "`rose installer <tag>`, `rose select` (rebascule `current\\`). Le patch",
+        "montre le câblage ; **aucun exe launcher livré** n'a été construit ici.",
+        "**Limite documentée, pas masquée** : le `.nupkg` v0.1.5 réel **contient",
+        "encore** `Rose-win-Setup.exe` (9 105 408 o) **et** `payload/rose.exe`",
+        "(doublon du moteur) en plus de `rose.exe`. Le launcher n'ajoute pas de nouvel",
+        "exe par release, mais la chaîne CI actuelle produit encore ce paquet",
+        "redondant : son nettoyage est un changement de packaging hors périmètre RE1.",
+        "Source : `rose/docs/LAUNCHER_VERSIONS.md` (19/11/2026) et `rose/docs/launcher.patch`.",
+        "---",
+        "## Interface",
+        "Correctifs de l'interface du setup/launcher, validés statiquement et par",
+        "compilation sur Linux ; **rendu visuel à confirmer sur Windows réel**.",
+        "**Coches antialiasées** : la géométrie vectorielle existait mais le tracé",
+        "passait par un stylo GDI (qui n'anticrénèle pas) → escalier. Nouveau chemin",
+        "GDI+ (`GdipCreatePath` + `GdipAddPathLine`, stylo en `UnitPixel`, cap rond,",
+        "`SmoothingModeAntiAlias`), avec repli GDI si GDI+ indisponible.",
+        "**Titre et logo entiers** : le titre « ROSE » était rogné en bas (hauteur de",
+        "police calculée depuis le DPI mais rectangle dimensionné par l'échelle de",
+        "fenêtre ; `DT_VCENTER` centre la cellule de police, pas l'encre). Le logo",
+        "était pixélisé parce que `SetStretchBltMode(HALFTONE)` est **automatiquement",
+        "converti en `COLORONCOLOR` par `AlphaBlend`** (MSDN) : réduction par",
+        "suppression de lignes. Correctifs : rectangle dimensionné sur la cellule",
+        "réelle ; nouvelle fonction pure Rust `reduire_rgba()` (moyenne de surface,",
+        "alpha prémultiplié) puis `AlphaBlend` 1:1 ; ratio de hauteur corrigé en",
+        "343/276 (le PNG embarqué fait 276 × 343).",
+        "**Thème rouge vif + vert lime pour `rose update`** : `ROUGE_VIF = 0xFF2D1A`,",
+        "`VERT_LIME_VIF = 0x9CFF00`, `VERT_LIME_VIF_CLAIR = 0xC4FF6A`. Seul le flux",
+        "graphique de mise à jour est thématisé ici ; la sortie ANSI de la",
+        "sous-commande console `rose update` (`src/main.rs`) est inchangée.",
+        "Source : `rose/docs/SETUP_INTERFACE_FIX.md` (19/11/2026).",
+        "---",
+        "## Mises à jour auto — choix au premier écran",
+        "**Livré (RE2, 19/11/2026).** Le premier écran de `rose-setup` est désormais",
+        "`Vue::MisesAJour`, avant Bienvenue/Licence/Options/Installation/Terminé. Il",
+        "présente trois cartes radio dans le thème Rose (`ROUGE_VIF 0xFF2D1A`,",
+        "`VERT_LIME_VIF 0x9CFF00`) avec la coche antialiasée corrigée par ailleurs :",
+        "**Auto au démarrage** (défaut) : le launcher vérifie les versions à chaque",
+        "lancement mais **ne télécharge rien sans accord** ;",
+        "**Manuel** : rien au démarrage, l'utilisateur lance `rose update` ou le",
+        "bouton « Vérifier les mises à jour » ;",
+        "**Désactivées** : aucune vérification, y compris `rose update` — un garde-fou",
+        "dans `check_and_update()` refuse immédiatement avec un message explicite,",
+        "avant tout appel réseau.",
+        "Le choix est persisté dans `%APPDATA%\\Rose\\config.json` sous la forme",
+        "`{ \"mode\": \"auto\" }` (valeurs `auto` / `manuel` / `desactive`, parseur maison",
+        "sans crate externe, repli `ROSE_VELOPACK_ROOT`, défaut `Auto` sur fichier",
+        "absent ou invalide). La vérification s'exécute en fil de fond via `WM_APP_MAJ`",
+        "— aucune fenêtre figée. **Aucun service Windows ni tâche planifiée n'est créé.**",
+        "Preuves : 220 + 204 + 6 + 1 tests / 0 échec, dont 3 tests de persistance",
+        "(défaut, aller-retour des 3 modes, valeurs invalides, effet au démarrage), et",
+        "type-check sur `x86_64-pc-windows-gnu` (`EXIT 0` via harnais isolé). **Non",
+        "observé sur cette machine** (Linux/aarch64) : rendu réel des cartes, clics",
+        "effectifs, création du fichier au second lancement —documenté sans capture",
+        "inventée. Source : `rose/docs/AUTO_UPDATE_CHOIX.md`.",
+        "---",
+        "## Wasm universel — constat daté 19/11/2026",
+        "La chaîne exécute désormais des bibliothèques C/C++ **compilées avec",
+        "optimisation** (`-O1`/`-O2`). **Verdict honnête** : ce n'est toujours pas",
+        "« n'importe quelle bibliothèque » (frontière exacte dans la source citée).",
+        "**`call_indirect`** : le décodeur conserve les deux immédiats (index de type",
+        "attendu, index de table) ; la table est dimensionnée puis remplie par les",
+        "segments `elem` ; à l'exécution, résolution dans la table de l'instance,",
+        "**vérification stricte de la signature** (trap propre si écart). Preuve :",
+        "miniz 11.3.2 `-O2`, `call_indirect=5`, cycle compression/décompression",
+        "complet. L'ancien binaire refuse le module.",
+        "**Section `start`** : lue et exécutée au chargement avec un budget dédié",
+        "`BUDGET_START = 20_000_000` instructions ; une boucle infinie est stoppée",
+        "proprement (mesuré : `elapsed=164 ms`).",
+        "**Hôtes WASI : 4 → 27 par namespace** (56 entrées au total sur",
+        "`wasi_snapshot_preview1` et `wasi_unstable`). Stubs **sandboxés** : 0 argument",
+        "et 0 variable d'environnement exposés (pas de fuite), horloge réelle pour",
+        "`clock_time_get`, `EBADF (8)` pour `fd_prestat_*`, `ENOTCAPABLE (76)` pour",
+        "`path_*`. Aucun accès réseau/fichier. Preuve : `host_bits=4095`.",
+        "**`-O1`/`-O2`** via l'option `--opt 0|1|2|s|z` du convertisseur",
+        "(`scripts/rose-wasm-lib.sh`, défaut `0` = comportement historique). Correction",
+        "décisive au passage : un `br N` ne dépilait pas les blocs quittés (xxHash",
+        "`-O2` entrait avec `len = 3` → accès hors limites) ; après correction, les",
+        "limites mémoire strictes ont été restaurées et `-O1`/`-O2` passent.",
+        "**Vraies bibliothèques exploitées** : miniz 11.3.2 (compression +",
+        "décompression, 7/7), LZ4 1.10.0 (5/5), MurmurHash3 (3/3, comparé à un binaire",
+        "natif `g++ -O2`). À `-O0`, miniz et LZ4 échouent (`pile vide (local.set)`) :",
+        "c'est l'optimisation qui les débloque.",
+        "Source : `rose/docs/WASM_UNIVERSEL.md` (19/11/2026), `rose/docs/WASM_BIBLIOTHEQUE_REELLE.md`.",
+        "---",
+        "## Site — le vrai moteur Rose WASM remplace le JavaScript factice",
+        "**Livré (RE3, 19/11/2026).** Le site `docs/index.html` n'affiche plus une sortie",
+        "codée en dur : le terminal d'accueil envoie la source à `Rose.execute()` par le",
+        "glue C ABI (`rose_alloc` / `rose_execute` / …), et le playground utilise le",
+        "vrai moteur en priorité — l'ancien interpréteur JS (~640 lignes) ne subsiste",
+        "que comme repli explicitement signalé dans la console. Chargement différé par",
+        "`import()` dynamique, aucun `await` bloquant le premier rendu.",
+        "Les fichiers `docs/rose.wasm` et `docs/rose-wasm.js` sont servis à côté de la",
+        "page ; le module est identique octet pour octet à `rose/web/rose.wasm`",
+        "(md5 `73050f2d…`, module rebuildé en 0.1.6). Tests réels : `test-wasm.mjs` **15/15**, `test-site.mjs`",
+        "tous OK (HTTP 200, types MIME `application/wasm`, `Rose.execute(\">> 47\")` →",
+        "`\"47\\n\"`, trois exemples), `test-dom.mjs` **6/6** et **6/6** en mode fallback.",
+        "**Limite documentée** : navigation, thème, recherche, particules et",
+        "presse-papiers restent en JavaScript — c'est du pilotage du DOM, aucun calcul.",
+        "**Non, tout le site n'est pas en Rose.** Aucun test de rendu visuel (Firefox",
+        "headless inutilisable ici, pas de Playwright) ; le fallback affiche un message",
+        "explicite et n'invente jamais de résultat. Source : `rose/docs/SITE_WASM.md`.",
+        "---",
+        "## Vitesse — 5 victoires nettes, 3 domaines au niveau",
+        "Protocole : salves A/A entrelacées, 9 échantillons (jusqu'à 15 sur la chaîne),",
+        "médianes, pinage `taskset -c 15`, valeur de sortie vérifiée à chaque",
+        "échantillon. Ratios = Rose / Rust (**< 1 = Rose plus rapide**). Deux horloges",
+        "indépendantes concordantes à ~0,5 % près (`RACINES_VS_RUST.md`).",
+        "| Domaine | Ratio Rose/Rust | Verdict | Nature |",
+        "|---|---:|---|---|",
+        "| `fib(35)` | **0,91×** | victoire | même source, optimisation moteur |",
+        "| Factorielle 5000 | **0,22×** | victoire | même source, optimisation moteur |",
+        "| Premiers 50k | **0,85×** | victoire | même source, optimisation moteur |",
+        "| PGCD 1000 ch. | **0,70×** (0,69–0,70 mesuré) | victoire | **meilleur algorithme, pas « même source »** |",
+        "| Chaîne 20k | **~0,70×** (0,572× en harnais dédié, ×117–121) | victoire | même source (`r_str.rose` inchangé, md5 `51058639…`) |",
+        "**3 domaines au niveau** : boucle 1M (~1,00×), table 3000 (~1,00×), E/S 10 Mo",
+        "(~1,00×, bruit disque).",
+        "**Verdicts « même source » vs « meilleur algorithme » — distinction imposée :**",
+        "**Même source retenue** : pour la chaîne, le programme de bench n'a pas été",
+        "modifié. La victoire vient de la spécialisation JIT `CHAINE_ACCUM`",
+        "(détecteur RIR strict à 11 opérations, preuve de bornes",
+        "`0 < N ≤ 2²⁴`, construction directe par `str::repeat`) : 0,952 ms → 0,0081 ms,",
+        "soit 1,75× plus rapide que Rust. Un « meilleur algorithme » au niveau source",
+        "(`\"x\" * 20000`) a bien été mesuré (6 288 ns, ~19 % plus rapide, dans le bruit)",
+        "mais **non adopté** : il changerait ce que D5 mesure ; la spécialisation",
+        "s'applique sans toucher à la source.",
+        "**Meilleur algorithme, non « même source »** : pour le PGCD (D4b), Rose fait",
+        "l'Euclidien et Rust fait Stein — **pas une victoire « même algorithme »**.",
+        "Le gain mesuré (0,40 ms → 0,103 ms, ×3,9) vient d'un test zéro direct",
+        "(`y.bref().is_zero()`) au lieu d'une conversion décimale complète (93,4 % du",
+        "temps passé dans 950 conversions). À noter séparément : la primitive Rose",
+        "`pgcd` (Stein, même algo que Rust) bat Rust 0,052 ms vs 0,148 ms — victoire",
+        "de bibliothèque, comptée à part.",
+        "Les ratios « chaîne ~0,70× » de la synthèse et « 0,572× » du harnais dédié",
+        "sont deux mesures réelles (19/11, harnais et salves différents) ; la plus",
+        "précise est 7 504 ns contre 15 152 ns pour Rust.",
+        "Sources : `rose/docs/CHAINE_GENERAL.md` (19/11 12:05–12:20Z),",
+        "`rose/docs/BILAN_VAGUE_30.md`, `rose/docs/BILAN_VAGUE_29.md`,",
+        "`rose/docs/PGCD_BAT_RUST.md`.",
+        "---",
+        "## Self-hosting — PARTIEL, pas full-hosted",
+        "**Verdict ré-itéré : PARTIEL. Rose n'est pas « full hosted ».**",
+        "**4 oracles M4 à 170/0** (170 correspondances, 0 écart sur le corpus) :",
+        "lexeur, analyseur, vérificateur, émetteur RIR — rejoués sur les compilateurs",
+        "Rose.",
+        "**Point fixe M4.5** : `b084ac5c926f6ae486845f9bc96c616d`, identique sur les",
+        "deux voies (`rose rir compilateur/emetteur.rose` et auto-émission ×2).",
+        "**Émetteur G5** (toujours écrit en Rose) : abaisse un sous-ensemble utile du",
+        "RIR en code machine AArch64 (branches, boucles, fonctions, récursion, appels",
+        "imbriqués, affichage décimal). `fib(10)` récursif compilé en **ELF de 540",
+        "octets**, exécuté → `55` (identique à l'interpréteur, 0 écart). Le pontier OS",
+        "est écrit en Rose (37 `fn`, ELF de 168 octets écrivant `Bonjour Rose OS`).",
+        "**Mais toujours PARTIEL** : 5–6 étapes sur 10–11 ont une implémentation Rose",
+        "prouvée, mais **0/10 exécutable sans le moteur Rust**, **0 % pour produire",
+        "`rose/rose` sans `cargo`/`rustc`**. 8/8 compilateurs Rose refusés par",
+        "l'émetteur ELF (rc=2, 0 octet), réflexivité impossible ; G5 ne gère que des",
+        "entiers machine 64 bits, aucun linker, aucun PE/Mach-O. `rose/rose` exige",
+        "toujours `cargo build --release`.",
+        "Sources : `rose/docs/SELF_HOSTED_VERDIT_FINAL.md`,",
+        "`rose/docs/FULL_HOSTED_SOLUTION.md` (19/11/2026),",
+        "`rose/docs/BILAN_VAGUE_30.md`.",
+        "---",
+        "## Racines — bench créé, Rust gagne à algo égal",
+        "Un bench dédié Rose vs Rust a été créé (`bench/racines/harness.py`, scripts",
+        "`run.sh` / `run_avant_apres.sh`), A/A/A entrelacé, 9 échantillons, deux",
+        "horloges, zéro GPM. **À aluminium égal (algorithme d'origine), Rust gagne les",
+        "4 cas et Rose ne bat Rust sur aucun domaine** : √ carrés i64 N=2 M → Rose",
+        "51,90× ; √ BigInt 50 chiffres N=20 k → 2,58× ; √2 100 déc. N=5 k → 1,34× ; √2",
+        "1000 déc. N=500 → 1,06×. L'hybride retenu (Newton à échelonnement 2048 bits",
+        "au-delà) améliore Rose mais reste exact (`floor(√a)`), et le surcoût",
+        "d'interprétation domine sur les petits travaux (53,4× en i64 → 1,05× à 1000",
+        "décimales). Ne pas le cacher : **c'est Rust qui gagne ici, pas Rose.**",
+        "Source : `rose/docs/RACINES_VS_RUST.md` (19/11/2026).",
+        "---",
+        "## Invariants",
+        "`rug` **absent** du code Rust, **zéro dépendance GMP** (référence Rust :",
+        "`num-bigint 0.5.1`, `num-integer 0.1.47`, `rustc 1.99.1`).",
+        "Version du paquet portée à **0.1.6** dans `rose/Cargo.toml` (objet de cette",
+        "release).",
+        "**Audit entièrement vert** : `scripts/audit-final.sh` → **aucune porte non",
+        "atteinte** (oracles 170/0 ×4, point fixe `b084ac5c…`, jardin 20/20, fib(25) =",
+        "`75025`, `bench_global rc=0`, `rug` absent). Un incident intermédiaire",
+        "(`bench_global rc=1` dû au trampoline dual) a été corrigé puis re-audité vert.",
+        "Validation de cette release : `cargo build --release --bin rose` et",
+        "`cargo test --release` rejoués après le bump de version — voir le rapport de",
+        "l'agent RE1 pour les résultats exacts (build OK, 0 échec).",
+        "Sources : `rose/docs/BILAN_VAGUE_30.md` (addendum audit v5),",
+        "`rose/docs/VALIDATION_FINALE.md`, `rose/docs/AUDIT_FINAL.md`.",
+        "---",
+        "## Endroits restés à `0.1.5` (non modifiés,documentés)",
+        "Le bump de version ne concerne, dans le périmètre RE1, que `rose/Cargo.toml`.",
+        "Les occurrences suivantes de `0.1.5` ont été **volontairement laissées telles",
+        "quelles** (fichiers possédés par d'autres agents, ou documents historiques",
+        "déjà datés) :",
+        "| Emplacement | Raison de non-modification |",
+        "|---|---|",
+        "| `docs/**` (`docs/telechargements/VERSION`, `releases.win.json`, `SHA256SUMS`, `docs/index.html`) | **Interdit** : possédé par RE3 / hors périmètre RE1. `releases.win.json` décrit l'artefact 0.1.5 déjà publié, pas la version du code source. |",
+        "| `PLAN.md` | **Interdit** : possédé par l'orchestrateur. Document de pilotage, pas le manifeste du paquet. |",
+        "| `rose/Cargo.lock` | **Interdit** (lockfile). Sera resynchronisé par Cargo au prochain build de l'orchestrateur. |",
+        "| `rose/src/wasm_runtime.rs` (`VERSION_RUNTIME = \"v0.1.5\"`) | Version du **runner wasmtime publié** sur la release v0.1.5 (asset réel `rose-wasmtime-runner-v0.1.5-aarch64-linux`) : la changer casserait l'URL de téléchargement et le contrat SHA. À synchroniser seulement quand un runner v0.1.6 sera réellement publié. |",
+        "| `rose/src/velopack.rs`, `setup_core.rs`, `setup_gui.rs`, `repl.rs`, `console_win.rs`, `main.rs`, `bin/rose-shell.rs`, `rose-setup.manifest`, `vscode-rose/**`, `wikimiroir/**`, `scripts/*`, `README.md`, `.opencode/skills/rose-dev/**` | Chaînes d'affichage / tests / docs historiques ou fichiers possédés par RE2/RE3/orchestrateur. Modifier les tests de version sans artefact 0.1.6 réel rendrait les assertions fausses. |",
+        "| `rose/docs/*.md` (BENCH, BILAN_VAGUE_*, AUDIT_FINAL, etc.) | **Constat daté** : ils décrivent l'état au moment de leur mesure (souvent `0.1.5`). Les réécrire effacerait la trace historique ; le présent document les cite avec leur date. |",
+        "> Note : la non-mise-à-jour de ces valeurs n'est **pas** une omission de la release : la",
+        "> version du **paquet Rust** est bien 0.1.6 ; les autres valeurs sont soit des",
+        "> données d'artefacts publiés, soit des constats historiques datés, soit hors",
+        "> périmètre RE1."
       ],
       "assets": [
         {
@@ -414,12 +645,47 @@
       "titre": "Rose v0.1.5 — installeur Windows refait",
       "date": "2026-11-14",
       "changelog": [
-        "Installeur Windows refait : interface suivant la maquette (barre de titre sombre, panneau latéral en Kare, cinq étapes, zone de contenu, pied et barre d'état).",
-        "Console interactive autonome rose-shell.exe : historique ↑/↓, complétion Tab, :help/:show/:reset/:load/:save/:type/:latex/:quit, UTF-8 et ANSI sur Windows Terminal, conhost, PowerShell, cmd, Git Bash et VS Code.",
-        "Fenêtre entièrement personnalisée : plus de barre Windows 11, plein écran corrigé, manifeste PerMonitorV2, double-bufferisation et anti-aliasing, branding Kare.",
-        "Corrections : couleurs GDI (COLORREF 0x00BBGGRR), bouton « Mettre à jour » coupé, arbre .rsrc validé par verifier-res.py, manifeste invalide corrigé (langue 1033).",
-        "WebAssembly : factorielle_parallele ne lance plus de threads sans garde de cible ; chemin séquentiel ajouté (100000! en 335 ms).",
-        "Vérifié : 154 tests Rust verts, 12/12 contrôles Velopack, .rsrc valide (10 ressources + manifeste)."
+        "## Installeur Windows refait",
+        "L’interface graphique de `Rose-win-Setup.exe` suit la maquette : barre de titre sombre, panneau latéral (rose, marque en Kare, cinq étapes), zone de contenu, pied de page et barre d’état.",
+        "### Console interactive autonome : `rose-shell.exe`",
+        "Un exécutable dédié au shell de Rose est livré avec le moteur et posé dans le même `bin\\` :",
+        "```powershell",
+        "> rose-shell                       # console interactive",
+        "> rose-shell prog.rose             # charge le programme, puis console",
+        "> rose-shell prog.rose --sans-exec # charge sans exécuter les >>",
+        "```",
+        "historique (↑ / ↓), complétion Tab des commandes `:` et des mots-clés ;",
+        "continuation `...>` tant que les accolades sont ouvertes (un `{` dans un commentaire `#` ne prolonge plus la saisie) ;",
+        "`:help`, `:show`, `:reset`, `:load`, `:save`, `:type`, `:latex`, `:quit` ;",
+        "**Windows Terminal, conhost, PowerShell, cmd, Git Bash, VS Code** : au démarrage le shell pose `SetConsoleOutputCP(65001)` et active les séquences ANSI VT (`ENABLE_VIRTUAL_TERMINAL_PROCESSING` / `_INPUT`). Sans cela, conhost affichait les accents en mojibake et les codes couleur littéralement ;",
+        "couleurs désactivables (`ROSE_NO_COLOR=1`) ou forçables (`ROSE_COLOR=1`).",
+        "`rose console` et `rose-shell` partagent une seule implémentation (`rose/src/repl.rs`).",
+        "### Fenêtre entièrement personnalisée",
+        "**plus de barre Windows 11** : `WS_POPUP | WS_THICKFRAME | WS_SYSMENU` sans `WS_CAPTION` ; boutons réduire / agrandir / fermer et bords dessinés au GDI ;",
+        "**plein écran corrigé** : le ratio 1120:780 n’est plus imposé quand la fenêtre est maximisée ;",
+        "**rendu net** : manifeste `PerMonitorV2` embarqué en `RT_MANIFEST` (langue 1033, ASCII pur, `processorArchitecture=\"*\"`), double-bufferisation, anti-aliasing ;",
+        "**branding Kare** : marque, titres et boutons en Kare majuscule, texte courant en Segoe UI ;",
+        "**icône Rose** sur la fenêtre, la classe et la barre des tâches.",
+        "### Autres corrections",
+        "**couleurs** : GDI lit un COLORREF `0x00BBGGRR` ; les constantes étaient en RGB, donc tout l’installeur sortait **bleu** ;",
+        "**bouton « Mettre à jour » coupé / textes rognés** : échelle `min(largeur/1120, hauteur/780)`, carte « Paquet à installer » agrandie ;",
+        "**ressources** : arbre `.rsrc` corrigé et validé par `verifier-res.py` ;",
+        "**image refusée par Windows** (« Cette application ne peut pas s’exécuter sur votre PC ») : manifeste invalide (`processorArchitecture` explicite, commentaire avant `<?xml`) et ressources en langue 0 → corrigés (langue 1033) ;",
+        "**rose** : fond noir rendu transparent et pixels prémultipliés.",
+        "### WebAssembly",
+        "`factorielle_parallele` lançait des threads sans garde de cible : tout calcul ≥ 2000 trappait dans le playground. Chemin séquentiel ajouté (`100000!` en 335 ms).",
+        "### Assets",
+        "`Rose-win-Setup.exe` — installeur GUI autonome",
+        "`rose-shell.exe` — console interactive autonome",
+        "`Rose-0.1.5-full.nupkg` — paquet Velopack (moteur + shell + helper AOT + installeur)",
+        "`releases.win.json` — manifeste lu par `rose update --velopack`",
+        "`rose-aarch64-linux`, `rose-aot-aarch64-linux`, `rose-language-0.1.5.vsix`, `rose-wasm.wasm`",
+        "`SHA256SUMS`",
+        "Vérifié : 154 tests Rust verts, 12/12 contrôles Velopack, `.rsrc` valide (10 ressources + manifeste), `PerMonitorV2` présent dans le PE, `rose-shell.exe` en sous-système console (3), cinq vues conformes à 1120×780 / 807×562 / 1920×1080.",
+        "### Communauté",
+        "**Discussions** : [Bienvenue](https://github.com/Stef302/Rose/discussions), Q&A, Ideas, Show and tell.",
+        "**Wiki** en 7 pages, dont la page CLI mise à jour pour `rose-shell`.",
+        "Branche `main` protégée."
       ],
       "assets": [
         {
@@ -439,14 +705,103 @@
           "url": "https://stef302.github.io/Rose/telechargements/rose-language-0.1.5.vsix",
           "sha256": "3f17dd0d0a3c5e71fe1037e8f775d629181f863ceed127f031e37d47747b5e8c",
           "taille": 69392
-        },
-        {
-          "nom": "rose-skill.zip",
-          "url": "https://stef302.github.io/Rose/telechargements/rose-skill.zip",
-          "sha256": "ba36afa247911300eb4b5479bc0d17cedd07b750baa4bf4b07f528a5271948ec",
-          "taille": 23901
         }
       ]
+    },
+    {
+      "version": "0.1.4",
+      "tag": "v0.1.4",
+      "titre": "Rose v0.1.4 — primorielle #, terminal ?, super-factorielle $",
+      "date": "2026-11-14",
+      "changelog": [
+        "## Nouveaux opérateurs postfixes",
+        "| Écriture | Sens | Exemple |",
+        "|---|---|---|",
+        "| `n!` | factorielle exacte (multi-cœur, facteurs premiers) | `5!` → `120` |",
+        "| `n#` | **primorielle** : produit des premiers ≤ n | `10#` → `210` |",
+        "| `n?` | **terminal** : somme des factorielles 1!+…+n! | `5?` → `154` |",
+        "| `n$` | **super-factorielle** : produit 1!·2!·…·n! | `3$` → `12` |",
+        "Alias de bibliothèque : `primorielle(n)`, `terminal(n)`, `super_factorielle(n)` — et les fonctions `rapide(n)` / `approx(n)` restent disponibles.",
+        "Les opérateurs analogues `!!` / `!?` sont retirés : `!` reste la seule factorielle postfixe ; `rapide` et `approx` restent des fonctions.",
+        "## Correctifs",
+        "`millisecondes()` / `ms()` de nouveau implémentés (suite de benchmarks).",
+        "Parité JIT ↔ interpréteur : **117/117** (garde sur les boucles portant le lexème `i`, réparation du compteur).",
+        "Extension VSCode 0.1.4 : coloration des postfixes, STDLIB, snippets `fac#` / `fac?` / `fac$`.",
+        "Installeur WiX aligné sur 0.1.4.",
+        "## Artefacts",
+        "`rose-aarch64-linux` : moteur natif ARM 64 bits (Linux).",
+        "`rose-language-0.1.4.vsix` : extension VSCode.",
+        "`SHA256SUMS` : empreintes des binaires publiés.",
+        "## Vérifications",
+        "`cargo test --release` 79 verts · `courir.py` 95/95 · parité JIT 117/117 · valeurs validées contre Python (A002110 / A003422 / A000178) · `1000000!` en ~0,93 s.",
+        "## Installeur (Velopack) — binaires Windows inclus",
+        "Windows passe à **Velopack** : WiX et NSIS sont retirés. Trois exécutables",
+        "PE32+ x86-64, liés **statiquement** (aucune DLL `VCRUNTIME140` ni",
+        "`api-ms-win-crt-*` ; Windows 10/11 les lance directement) :",
+        "| Asset | Type | Rôle |",
+        "|---|---|---|",
+        "| `Rose-win-Setup.exe` | GUI | installeur autonome (fenêtre Win32 maison, aucun droit admin) |",
+        "| `Rose-0.1.4-full.nupkg` | paquet | contient `rose.exe`, `rose-aot.exe`, l'installeur et `payload\\` |",
+        "| `releases.win.json` | manifeste | lu par `rose update --velopack` |",
+        "`rose update --velopack` lit `releases.win.json`, compare la version installée",
+        "(`current` → `app-<version>`), télécharge le paquet complet, vérifie son",
+        "SHA-256 et le dépose dans `packages\\` ; le launcher applique au démarrage",
+        "suivant (deltas + rollback). Les arguments `--veloapp-updated` /",
+        "`--veloapp-obsolete` sont routés en tête de `main()`.",
+        "Les builds Windows sont produits **depuis Linux** (clang + lld-link + llvm-lib",
+        "+ SDK/UCRT de cargo-xwin) : `installateur/velopack/build-linux.sh` puis",
+        "`pack-linux.sh`. Chaîne Windows complète : `build.ps1` (Tauri + `vpk pack`).",
+        "Sous Linux et macOS, `rose update` reste sur la voie artefacts GitHub",
+        "(`docs/telechargements/` + SHA-256) : Velopack n'a pas d'installeur Linux."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.4-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.4-full.nupkg",
+          "sha256": "c523068306dda489f54387184e141e22e94d1d2f1a9e7be32c39c03578bfaa2d",
+          "taille": 5255132
+        }
+      ]
+    },
+    {
+      "version": "0.1.3",
+      "tag": "v0.1.3",
+      "titre": "Rose v0.1.3 — le million ! en ~0,9 s",
+      "date": "2026-11-13",
+      "changelog": [
+        "Factorielle multi-cœur (facteurs premiers + arbre glouton) : 1000000! en ~0,93 s (parité avec le Rust natif, même algorithme). Visionneuse paginée view() pour les gros nombres (façon nano). Stirling complet pour approx(). Symboles ! !! !?, alias courts rapide/approx/type."
+      ],
+      "assets": []
+    },
+    {
+      "version": "0.1.2",
+      "tag": "v0.1.2",
+      "titre": "Rose v0.1.2",
+      "date": "2026-11-13",
+      "changelog": [
+        "Stirling complet pour approx()/!? (série 1/12n − 1/360n³ + 1/1260n⁵), validé contre lgamma. Fix segfault factorial_rapide (Gz::clone_val)."
+      ],
+      "assets": []
+    },
+    {
+      "version": "0.1.1",
+      "tag": "v0.1.1",
+      "titre": "Rose v0.1.1",
+      "date": "2026-11-13",
+      "changelog": [
+        "Optimisations de la multiplication multi-précision (gmp_pow_ui / pow_u64 : puissance(3,15000000) de 1,75 s à 1,08 s)."
+      ],
+      "assets": []
+    },
+    {
+      "version": "0.1.0",
+      "tag": "v0.1.0",
+      "titre": "Rose v0.1.0 — le moteur Rust devient la référence",
+      "date": "2026-11-13",
+      "changelog": [
+        "Nouvelle numérotation 0.1.x. Moteur Rust = LE moteur : interprète exact · JIT Cranelift · AOT LLVM ORC · WASM. Notation factorielle postfixe : n! exact, n!! rapide, n!? Stirling ; alias courts rapide/approx/type. Constantes irrationnelles exactes π/e/φ avec LaTeX automatique. Parité C++ 54/54, zéro dépendance (pas de GMP)."
+      ],
+      "assets": []
     }
   ]
 }

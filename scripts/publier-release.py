@@ -6,8 +6,10 @@ Usage :
 
 Le script enchaîne les 10 étapes décrites dans rose/docs/PUBLICATION.md :
 compte GitHub, version, Cargo, marqueurs, builds, artefacts, manifeste,
-site, git, release GitHub + vérification. `--dry-run` est strictement
-sans écriture (aucun build, aucun commit, aucune publication).
+site, git, release GitHub + vérification, puis un contrôle POST-publication
+du SITE (`scripts/sync-site.py`) : parité GitHub ↔ site et contenu réellement
+servi par Pages. `--dry-run` est strictement sans écriture (aucun build,
+aucun commit, aucune publication).
 """
 
 from __future__ import annotations
@@ -840,6 +842,38 @@ def gh_publier(version: str, titre: str, notes: Path, assets: list[Path],
         rap.ok(f"SHA-256 du nupkg téléchargé == local ({local_hash[:16]}…)")
 
 
+# ─── Contrôle SITE post-publication ─────────────────────────────────────
+def verifier_site(version: str, rap: Rapport, dry: bool) -> None:
+    """Garantit que la release GitHub est AUSSI publiée sur le site.
+
+    Le push de l'étape 9 déclenche GitHub Pages ; l'étape 10 crée la release
+    GitHub. On vérifie alors (a) les hashes locaux, (b) que TOUTES les releases
+    GitHub figurent dans `releases.json`, (c) que les fichiers réellement
+    servis par Pages sont octet pour octet identiques aux fichiers locaux.
+    Un écart est un ÉCHEC de publication, pas un avertissement.
+    """
+    rap.etape(11, f"contrôle du site après publication de v{version}")
+    cmd = [
+        sys.executable, str(RACINE / "scripts" / "sync-site.py"),
+        "--verifier-local", "--verifier-parite", "--verifier-site",
+        "--attendre", "30", "--essais", "6",
+    ]
+    if dry:
+        rap.simule(" ".join(cmd))
+        rap.simule("parité GitHub ↔ site + SHA-256 servi == SHA-256 local")
+        return
+    rap.commande(" ".join(cmd))
+    p = subprocess.run(cmd, cwd=RACINE, text=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(p.stdout or "", end="", flush=True)
+    if p.returncode != 0:
+        raise EchecPublication(
+            f"le site n'a PAS publié v{version} correctement (rc={p.returncode}) : "
+            "release GitHub sans manifeste/site synchronisé"
+        )
+    rap.ok(f"site synchronisé : v{version} annoncée et servie (source primaire)")
+
+
 # ─── Orchestration ──────────────────────────────────────────────────────
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
@@ -894,6 +928,7 @@ def main(argv: list[str] | None = None) -> int:
         assets = [TELECHARGEMENTS / a["nom"] for a in entre["assets"]]
         gh_publier(version, args.titre, args.notes, assets, token,
                    rap, args.dry_run, args.force)
+        verifier_site(version, rap, args.dry_run)
     except EchecPublication as exc:
         print(f"\nÉCHEC : {masquer(str(exc), locals().get('token', ''))}", file=sys.stderr)
         print("Aucune publication n'a été effectuée par cette étape.", file=sys.stderr)
@@ -901,7 +936,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n╔═══════════════════════════════════════════════════════════╗")
     if args.dry_run:
-        print("║  RAPPORT DRY-RUN — simulation terminée (10 étapes)        ║")
+        print("║  RAPPORT DRY-RUN — simulation terminée (11 étapes)        ║")
         print("╚═══════════════════════════════════════════════════════════╝")
         print(f"Changements simulés : {len(rap.changements)}")
         for c in rap.changements:
