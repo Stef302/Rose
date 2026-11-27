@@ -1,0 +1,1 @@
+si (3 > 2) { afficher(1) } sinon { afficher(0) }

@@ -1,0 +1,1 @@
+afficher(lire_texte("/tmp/opencode/v13run/nu_exec/choix.txt"))

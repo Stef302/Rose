@@ -1,0 +1,7 @@
+$t = table()
+$l = [0]
+$t["l"] = $l
+$c = $t["l"]
+joindre($c, 7)
+afficher(longueur($t["l"]))
+afficher($t["l"][1])

@@ -1,0 +1,553 @@
+# comp_nu_demo.rose — ABAISSEUR DE DEMONSTRATION : RIR Rose -> octets nus x86_32.
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Ce fichier est un MODULE SOURCE : il se concatène avec
+#   compilateur/backend_universel.rose   (bu_operation / bu_traduire / bu_cible)
+#   compilateur/link_nu.rose             (ln_config / ln_ajouter_section / ln_ecrire)
+#   compilateur/lecteur_source.rose      (lire_programme_reg : source Rose -> RIR)
+# Aucun include, aucun appel à ld/cc/objdump, aucune primitive Rust.
+#
+# API :
+#   nu_compiler($rir: chaine)        -> chaine   (hex des octets avant patch)
+#   nu_compiler_source($src: chaine) -> chaine   (id., depuis une source Rose)
+#   nu_ecrire_final($chemin: chaine) -> entier   (patch + ln_ecrire)
+#   nu_base() / nu_resultat()        -> entier   (adresses fixes)
+#
+# Chaque opération RIR reconnue émet des appels à `bu_operation` :
+#   affect slot -> imm/store      bin + - * -> add/sub/mul
+#   retour      -> mov/ret        afficher   -> store/load/syscall(exit)
+#   appel       -> imm/call       prologue   -> push ebp / mov / sub esp
+# `saut` et `saut_si_faux_abstrait` passent par `nu_saut` (rel32 + patch final)
+# parce que le backend universel n'a PAS d'op abstraite de branchement
+# conditionnel : c'est la seule partie hors `bu_operation`, documentée ici.
+#
+# Convention d'appel : args dans EAX/ECX/EDX, retour dans EAX, EBP = cadre,
+# slots à [EBP-4*(k+1)], `push ebp`/`pop ebp` en octets bruts (le backend n'a
+# ni push/pop et [ESP] exigerait un octet SIB que l'encodeur n'émet pas).
+#
+# Limites : 32 bits signés, pas de surcharge/HOF/chaînes/récursivité (les
+# adresses de fonctions doivent déjà être connues). BRIQUE de validation.
+
+# ── 0. État global : listes porteuses et JOURNAUX (pas de tables) ─────────
+# Rappel mesuré : une valeur de `table()` est de type ? — inutilisable comme
+# index de liste ou comme argument typé. On utilise donc des LISTES JOURNAL :
+# on ajoute en fin avec `joindre` et on lit la dernière valeur.
+
+$nu_code = [0]            # octets (porteur en 0)
+$nu_fixpos = [0]          # position du 1er octet de chaque déplacement
+$nu_fixlab = [0]          # label cible (même index, 1-based)
+$nu_final = [0]           # image patchée, source pour le linker
+$nu_lkeys = [""]          # journaux cle/valeur pour les labels
+$nu_lvals = [0]
+$nu_fkeys = [""]          # adresses de fonctions
+$nu_fvals = [0]
+$nu_skeys = [""]          # slots "fonction|nom"
+$nu_svals = [0]
+$nu_posj = [0]            # curseur du parseur
+$nu_namej = [""]          # fonction courante
+$nu_nlabj = [0]           # compteur de labels
+$nu_cible = bu_cible("x86_32")
+
+$nu_base = 134512896      # 0x08048100 — adresse de charge fixe
+$nu_result = 134516736    # 0x08049000 — case mémoire du résultat (dans PT_LOAD)
+
+fn nu_base() -> entier { retour $nu_base }
+fn nu_resultat() -> entier { retour $nu_result }
+fn nu_dernier_i($l: liste<entier>) -> entier { retour $l[longueur($l) - 1] }
+fn nu_dernier_s($l: liste<chaine>) -> chaine { retour $l[longueur($l) - 1] }
+
+fn nu_pos() -> entier { retour nu_dernier_i($nu_posj) }
+
+fn nu_pose($p: entier) -> entier { joindre($nu_posj, $p); retour $p }
+
+fn nu_get($keys: liste<chaine>, $vals: liste<entier>, $k: chaine) -> entier {
+  $r = 0
+  $i = 1
+  tant_que ($i < longueur($keys)) {
+    si ($keys[$i] == $k) { $r = $vals[$i] }
+    $i = $i + 1
+  }
+  retour $r
+}
+
+fn nu_has($keys: liste<chaine>, $k: chaine) -> entier {
+  $i = 1
+  tant_que ($i < longueur($keys)) {
+    si ($keys[$i] == $k) { retour 1 }
+    $i = $i + 1
+  }
+  retour 0
+}
+
+fn nu_set($keys: liste<chaine>, $vals: liste<entier>, $k: chaine, $v: entier) -> entier {
+  joindre($keys, $k)
+  joindre($vals, $v)
+  retour $v
+}
+
+# ── 1. Utilitaires chaîne ──────────────────────────────────────────────────
+
+fn nu_tokens($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $cur = ""
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = $s[$i]
+    $o = ordre($c)
+    si ($c == "(" ou $c == ")" ou $o <= 32) {
+      si (longueur($cur) > 0) { joindre($r, $cur); $cur = "" }
+      si ($c == "(" ou $c == ")") { joindre($r, $c) }
+    } sinon { $cur = $cur + $c }
+    $i = $i + 1
+  }
+  si (longueur($cur) > 0) { joindre($r, $cur) }
+  retour $r
+}
+
+fn nu_lignes($s: chaine) -> liste<chaine> {
+  $r = [""]
+  $cur = ""
+  $i = 0
+  $n = longueur($s)
+  tant_que ($i < $n) {
+    $c = $s[$i]
+    si (ordre($c) == 10) { joindre($r, $cur); $cur = "" } sinon { $cur = $cur + $c }
+    $i = $i + 1
+  }
+  si (longueur($cur) > 0) { joindre($r, $cur) }
+  retour $r
+}
+
+fn nu_est_chiffre($c: chaine) -> entier {
+  si (longueur($c) == 0) { retour 0 }
+  $o = ordre($c[0])
+  si ($o >= 48 et $o <= 57) { retour 1 }
+  retour 0
+}
+
+fn nu_hexch($v: entier) -> chaine {
+  $h = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f"]
+  $b = $v % 256
+  si ($b < 0) { $b = $b + 256 }
+  retour $h[partie_entiere($b / 16)] + $h[$b % 16]
+}
+
+fn nu_hex($octets: liste<entier>) -> chaine {
+  $r = ""
+  $k = 1
+  tant_que ($k < longueur($octets)) { $r = $r + nu_hexch($octets[$k]); $k = $k + 1 }
+  retour $r
+}
+
+# ── 2. Émission d'octets (TOUJOURS via le backend pour les ops connues) ───
+
+fn nu_raw($v: entier) -> entier {
+  joindre($nu_code, $v % 256)
+  retour longueur($nu_code) - 1
+}
+
+fn nu_ajout($b: liste<entier>) -> entier {
+  $k = 1
+  tant_que ($k < longueur($b)) { joindre($nu_code, $b[$k]); $k = $k + 1 }
+  retour longueur($nu_code) - 1
+}
+
+fn nu_emit($nom: chaine, $args: liste<entier>) -> entier {
+  $op = bu_operation($nom, $args)
+  si ($op < 1) { retour -1 }
+  $s = bu_sequence()
+  bu_ajouter($s, $op)
+  $b = bu_traduire($s, $nu_cible)
+  nu_ajout($b)
+  retour 0
+}
+
+fn nu_imm($r: entier, $v: entier) -> entier { retour nu_emit("imm", [$r, $v]) }
+fn nu_mov($d: entier, $s: entier) -> entier { retour nu_emit("mov", [$d, $s]) }
+fn nu_add($d: entier, $s: entier, $t: entier) -> entier { retour nu_emit("add", [$d, $s, $t]) }
+fn nu_sub($d: entier, $s: entier, $t: entier) -> entier { retour nu_emit("sub", [$d, $s, $t]) }
+fn nu_mul($d: entier, $s: entier, $t: entier) -> entier { retour nu_emit("mul", [$d, $s, $t]) }
+fn nu_load($d: entier, $base: entier, $off: entier) -> entier { retour nu_emit("load", [$d, $base, $off]) }
+fn nu_store($src: entier, $base: entier, $off: entier) -> entier { retour nu_emit("store", [$src, $base, $off]) }
+fn nu_call($r: entier) -> entier { retour nu_emit("call", [$r]) }
+fn nu_ret() -> entier { retour nu_emit("ret", [0]) }
+fn nu_syscall($vec: entier) -> entier { retour nu_emit("syscall", [$vec]) }
+
+fn nu_load_slot($k: entier) -> entier { retour nu_load(0, 5, -4 * ($k + 1)) }
+fn nu_store_slot($k: entier) -> entier { retour nu_store(0, 5, -4 * ($k + 1)) }
+
+# Écrire le résultat en mémoire fixe, EN ÉCRIRE LES 4 OCTETS BRUTS sur stdout
+# (syscall write), LE RELIRE, puis sortir avec cette valeur. Trois preuves
+# indépendantes du même résultat : octets visibles, code de retour rechargé
+# depuis la mémoire, et désassemblage.
+fn nu_afficher() -> entier {
+  nu_imm(7, $nu_result)
+  nu_store(0, 7, 0)                 # [RESULT] = valeur calculee
+  nu_imm(0, 4)                      # eax = 4 (write)
+  nu_imm(3, 1)                      # ebx = 1 (stdout)
+  nu_mov(1, 7)                      # ecx = RESULT
+  nu_imm(2, 4)                      # edx = 4 octets
+  nu_syscall(128)                   # ecrit les 4 octets de la case memoire
+  nu_load(3, 7, 0)                  # ebx = relecture de [RESULT]
+  nu_imm(0, 1)                      # eax = 1 (exit)
+  retour nu_syscall(128)
+}
+
+# ── 3. Labels et sauts rel32 ──────────────────────────────────────────────
+
+fn nu_newlab() -> entier {
+  $n = nu_dernier_i($nu_nlabj) + 1
+  joindre($nu_nlabj, $n)
+  retour $n
+}
+
+fn nu_lab($nom: chaine, $idx: entier) -> entier {
+  $clef = $nom + ":" + chaine($idx)
+  si (nu_has($nu_lkeys, $clef) == 1) { retour nu_get($nu_lkeys, $nu_lvals, $clef) }
+  $id = nu_newlab()
+  retour nu_set($nu_lkeys, $nu_lvals, $clef, $id)
+}
+
+fn nu_mark($id: entier) -> entier {
+  retour nu_set($nu_lkeys, $nu_lvals, "id:" + chaine($id), longueur($nu_code))
+}
+
+# b2 < 0 -> E9 rel32 (5 octets) ; sinon 0F 8x rel32 (6 octets).
+fn nu_saut($b1: entier, $b2: entier, $lab: entier) -> entier {
+  nu_raw($b1)
+  si ($b2 >= 0) { nu_raw($b2) }
+  $p = longueur($nu_code)
+  nu_raw(0); nu_raw(0); nu_raw(0); nu_raw(0)
+  joindre($nu_fixpos, $p)
+  joindre($nu_fixlab, $lab)
+  retour 0
+}
+
+fn nu_jmp($lab: entier) -> entier { retour nu_saut(233, -1, $lab) }
+
+fn nu_patch() -> entier {
+  $pp = [0]
+  $pv = [0]
+  $i = 1
+  tant_que ($i < longueur($nu_fixpos)) {
+    $p = $nu_fixpos[$i]
+    $lab = $nu_fixlab[$i]
+    $dst = nu_get($nu_lkeys, $nu_lvals, "id:" + chaine($lab))
+    $d = $dst - ($p + 4)
+    $u = $d % 4294967296
+    si ($u < 0) { $u = $u + 4294967296 }
+    $k = 0
+    tant_que ($k < 4) {
+      joindre($pp, $p + $k)
+      joindre($pv, $u % 256)
+      $u = partie_entiere($u / 256)
+      $k = $k + 1
+    }
+    $i = $i + 1
+  }
+  $j = 1
+  tant_que ($j < longueur($nu_code)) {
+    $v = $nu_code[$j]
+    $m = 1
+    tant_que ($m < longueur($pp)) {
+      si ($pp[$m] == $j) { $v = $pv[$m] }
+      $m = $m + 1
+    }
+    joindre($nu_final, $v)
+    $j = $j + 1
+  }
+  retour longueur($nu_final) - 1
+}
+
+# ── 4. Expressions RIR ────────────────────────────────────────────────────
+
+fn nu_skip_close($t: liste<chaine>) -> entier {
+  $p = nu_pos()
+  tant_que ($p < longueur($t) et $t[$p] != ")") { $p = $p + 1 }
+  si ($p < longueur($t)) { $p = $p + 1 }
+  retour nu_pose($p)
+}
+
+# L'expression est compilée dans EAX ; le curseur finit juste après elle.
+fn nu_expr($t: liste<chaine>) -> entier {
+  $p = nu_pos()
+  $paren = 0
+  si ($p < longueur($t) et $t[$p] == "(") { $paren = 1; $p = $p + 1 }
+  si ($p >= longueur($t)) { retour -1 }
+  $head = $t[$p]
+  $p = $p + 1
+  nu_pose($p)
+
+  si ($head == "n" ou $head == "entier") {
+    $v = entier($t[$p])
+    nu_pose($p + 1)
+    nu_imm(0, $v)
+    si ($paren == 1) { nu_skip_close($t) }
+    retour 0
+  }
+  si ($head == "slot") {
+    $k = entier($t[$p])
+    nu_pose($p + 1)
+    nu_load_slot($k)
+    si ($paren == 1) { nu_skip_close($t) }
+    retour 0
+  }
+  si ($head == "v") {
+    $clef = nu_dernier_s($nu_namej) + "|" + $t[$p]
+    $k = nu_get($nu_skeys, $nu_svals, $clef)
+    nu_pose($p + 1)
+    nu_load_slot($k)
+    si ($paren == 1) { nu_skip_close($t) }
+    retour 0
+  }
+  si ($head == "bin") {
+    $op = $t[$p]
+    nu_pose($p + 1)
+    nu_expr($t)               # A -> EAX
+    nu_mov(2, 0)              # A -> EDX
+    nu_expr($t)               # B -> EAX
+    nu_mov(1, 0)              # B -> ECX
+    nu_mov(0, 2)              # A -> EAX  (ordre A op B respecte)
+    si ($op == "+") { nu_add(0, 0, 1) }
+    si ($op == "-") { nu_sub(0, 0, 1) }
+    si ($op == "*") { nu_mul(0, 0, 1) }
+    si ($paren == 1) { nu_skip_close($t) }
+    retour 0
+  }
+  si ($head == "app" ou $head == "appel" ou $head == "appel_rir") {
+    $fname = $t[$p]
+    nu_pose($p + 1)
+    $narg = 0
+    tant_que (nu_pos() < longueur($t) et $t[nu_pos()] != ")") {
+      nu_expr($t)
+      si ($narg == 1) { nu_mov(1, 0) }
+      si ($narg == 2) { nu_mov(2, 0) }
+      $narg = $narg + 1
+    }
+    si ($fname == "afficher") {
+      nu_afficher()
+    } sinon {
+      nu_imm(7, nu_get($nu_fkeys, $nu_fvals, $fname))
+      nu_call(7)
+    }
+    si ($paren == 1) { nu_skip_close($t) }
+    retour 0
+  }
+  retour -1
+}
+
+# ── 5. Conditions : cmp + saut inverse ────────────────────────────────────
+
+fn nu_condition($t: liste<chaine>, $cible: entier) -> entier {
+  $p = nu_pos()
+  $paren = 0
+  si ($p < longueur($t) et $t[$p] == "(") { $paren = 1; $p = $p + 1 }
+  $head = $t[$p]
+  $p = $p + 1
+  nu_pose($p)
+
+  $op = "!="
+  si ($head == "bin") {
+    $op = $t[$p]
+    nu_pose($p + 1)
+    nu_expr($t)               # gauche -> EAX
+    nu_mov(2, 0)              # gauche -> EDX
+    nu_expr($t)               # droite -> EAX
+    nu_mov(1, 0)              # droite -> ECX
+    nu_mov(0, 2)              # gauche -> EAX
+    nu_raw(57); nu_raw(200)   # 39 C8 : cmp eax, ecx = gauche - droite
+  } sinon {
+    nu_expr($t)               # booléen -> EAX
+    nu_raw(133); nu_raw(192)  # 85 C0 : test eax, eax
+  }
+
+  # saut_si_faux = branchement quand la condition EST FAUSSE.
+  $b1 = 15
+  $b2 = 133                  # 0F 85 JNE (par défaut : condition ==)
+  si ($op == "<=") { $b2 = 143 }   # JG  : faux si eax > ecx
+  si ($op == "<")  { $b2 = 141 }   # JGE : faux si eax >= ecx
+  si ($op == ">")  { $b2 = 142 }   # JLE : faux si eax <= ecx
+  si ($op == ">=") { $b2 = 140 }   # JL  : faux si eax < ecx
+  si ($op == "==") { $b2 = 133 }   # JNE : faux si différents
+  si ($op == "!=") { $b2 = 132 }   # JE  : faux si égaux
+  nu_saut($b1, $b2, $cible)
+  si ($paren == 1) { nu_skip_close($t) }
+  retour 0
+}
+
+# ── 6. Opérations RIR ─────────────────────────────────────────────────────
+
+# Une cible de saut >= nombre d'ops designe la sortie de fonction (cas reel
+# du RIR de `si` : `saut 4` alors que le dernier op est 3). Sans cette
+# translation, le label n'est jamais marque et le rel32 vaut 0.
+fn nu_cible_saut($fname: chaine, $idx: entier, $finlab: entier) -> entier {
+  $n = nu_get($nu_skeys, $nu_svals, $fname + "|#ops")
+  si ($idx >= $n) { retour $finlab }
+  retour nu_lab($fname, $idx)
+}
+
+fn nu_op($t: liste<chaine>, $finlab: entier) -> entier {
+  # $t[1] = numero de l'op dans le RIR (0000, 0001, ...) ; $t[2] = nature.
+  $head = $t[2]
+  $fname = nu_dernier_s($nu_namej)
+
+  si ($head == "affect") {
+    $k = entier($t[4])
+    nu_pose(6)
+    nu_expr($t)
+    nu_store_slot($k)
+    retour 0
+  }
+  si ($head == "expr") {
+    nu_pose(3)
+    nu_expr($t)
+    retour 0
+  }
+  si ($head == "afficher" ou $head == "afficher_abstrait") {
+    nu_pose(3)
+    nu_expr($t)
+    nu_afficher()
+    retour 0
+  }
+  si ($head == "retour" ou $head == "retour_abstrait") {
+    nu_pose(3)
+    nu_expr($t)
+    nu_jmp($finlab)
+    retour 0
+  }
+  si ($head == "saut") {
+    nu_jmp(nu_cible_saut($fname, entier($t[3]), $finlab))
+    retour 0
+  }
+  si ($head == "saut_si_faux" ou $head == "saut_si_faux_abstrait") {
+    nu_pose(4)
+    nu_condition($t, nu_cible_saut($fname, entier($t[3]), $finlab))
+    retour 0
+  }
+  retour -1
+}
+
+# ── 7. Fonctions ──────────────────────────────────────────────────────────
+
+fn nu_prologue($nom: chaine, $nparams: entier, $nslots: entier) -> entier {
+  # le porteur est a l'index 0 : l'octet machine suivant est a l'index 1,
+  # donc a l'offset 0 du fichier nu, soit l'adresse $nu_base.
+  nu_set($nu_fkeys, $nu_fvals, $nom, $nu_base + longueur($nu_code) - 1)
+  nu_raw(85)                       # push ebp (octet brut : pas de SIB [esp])
+  nu_mov(5, 4)                     # mov ebp, esp
+  nu_imm(7, 4 * $nslots)
+  nu_sub(4, 4, 7)                  # sub esp, taille_slots
+  $i = 0
+  tant_que ($i < $nparams) {
+    nu_store($i, 5, -4 * ($i + 1)) # arg i (EAX/ECX/EDX) -> slot i
+    $i = $i + 1
+  }
+  retour 0
+}
+
+fn nu_epilogue($finlab: entier) -> entier {
+  nu_mark($finlab)
+  nu_mov(4, 5)                     # mov esp, ebp
+  nu_raw(93)                       # pop ebp
+  nu_ret()
+  retour longueur($nu_code) - 1
+}
+
+fn nu_compiler($rir: chaine) -> chaine {
+  $lignes = nu_lignes($rir)
+  # Passe 1 : n_slots et nombre de paramètres de chaque fonction, pour que
+  # le prologue puisse réserver la pile et copier les arguments dès l'entrée.
+  $pn = ""
+  $i = 0
+  tant_que ($i < longueur($lignes)) {
+    $t = nu_tokens($lignes[$i])
+    si (longueur($t) > 1) {
+      $premier = $t[1]
+      si ($premier == "fonction") {
+        $pn = $t[2]
+        nu_set($nu_skeys, $nu_svals, $pn + "|#slots", 0)
+        nu_set($nu_skeys, $nu_svals, $pn + "|#params", 0)
+        nu_set($nu_skeys, $nu_svals, $pn + "|#ops", 0)
+      }
+      si (nu_est_chiffre($premier) == 1 et $pn != "") {
+        $v = nu_get($nu_skeys, $nu_svals, $pn + "|#ops") + 1
+        nu_set($nu_skeys, $nu_svals, $pn + "|#ops", $v)
+      }
+      si ($premier == "param" et $pn != "") {
+        $v = nu_get($nu_skeys, $nu_svals, $pn + "|#params") + 1
+        nu_set($nu_skeys, $nu_svals, $pn + "|#params", $v)
+      }
+      si ($premier == "n_slots" et $pn != "") {
+        nu_set($nu_skeys, $nu_svals, $pn + "|#slots", entier($t[2]))
+      }
+    }
+    $i = $i + 1
+  }
+
+  $nom = ""
+  $finlab = 0
+  $i = 0
+  tant_que ($i < longueur($lignes)) {
+    $t = nu_tokens($lignes[$i])
+    si (longueur($t) > 1) {
+      $premier = $t[1]
+      si ($premier == "rir") {
+        # en-tête
+      } sinon si ($premier == "fonction") {
+        si ($nom != "") { nu_epilogue($finlab) }
+        $nom = $t[2]
+        joindre($nu_namej, $nom)
+        $finlab = nu_lab($nom, 999999)
+        nu_prologue($nom, nu_get($nu_skeys, $nu_svals, $nom + "|#params"),
+                          nu_get($nu_skeys, $nu_svals, $nom + "|#slots"))
+      } sinon si ($premier == "param") {
+        # La table des noms est renseignée par la ligne `noms` (index fiable).
+      } sinon si ($premier == "n_slots") {
+        # Déjà traité en passe 1.
+      } sinon si ($premier == "noms") {
+        $j = 2
+        tant_que ($j < longueur($t)) {
+          $mot = $t[$j]
+          $k = 1
+          $dig = ""
+          tant_que ($k < longueur($mot) et $mot[$k] != "]") {
+            $dig = $dig + $mot[$k]
+            $k = $k + 1
+          }
+          $idx = entier($dig)
+          $nm = sous_chaine($mot, $k + 1, longueur($mot))
+          nu_set($nu_skeys, $nu_svals, $nom + "|" + $nm, $idx)
+          $j = $j + 1
+        }
+      } sinon si (nu_est_chiffre($premier) == 1) {
+        $idx = entier($premier)
+        nu_mark(nu_lab($nom, $idx))
+        nu_op($t, $finlab)
+      }
+    }
+    $i = $i + 1
+  }
+  si ($nom != "") { nu_epilogue($finlab) }
+  retour nu_hex($nu_code)
+}
+
+fn nu_compiler_source($src: chaine) -> chaine {
+  $n = ["", "/src.rose"]
+  $v = ["", $src]
+  $rir = lire_programme_reg("/src.rose", $n, $v)
+  retour nu_compiler($rir)
+}
+
+fn nu_entree() -> entier { retour nu_get($nu_fkeys, $nu_fvals, "$principal") }
+
+fn nu_ecrire_final($chemin: chaine) -> entier {
+  nu_patch()
+  # L'entree du binaire nu est la fonction $principal, pas le debut du
+  # fichier (qui contient les fonctions definies avant elle).
+  $cfg = ln_config($nu_base, 16, nu_entree())
+  $id = ln_ajouter_section("code", $nu_final)
+  retour ln_ecrire($cfg, $chemin)
+}
+
+fn nu_hex_final() -> chaine { retour nu_hex($nu_final) }

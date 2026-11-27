@@ -1,0 +1,8 @@
+importer "compilateur/lecteur_source.rose"
+fn lire_src($s: chaine) -> chaine {
+  $n = ["", "/t.rose"]
+  $v = ["", $s]
+  retour lire_programme_reg("/t.rose", $n, $v)
+}
+$s = "fn carre($x: entier) -> entier { retour $x * $x }\nafficher(carre(5))\n"
+afficher(lire_src($s))

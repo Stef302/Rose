@@ -1,0 +1,4 @@
+$t = table()
+$t["a"] = 7
+$t["b"] = 12
+afficher($t["a"] + $t["b"])

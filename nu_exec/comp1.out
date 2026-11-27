@@ -1,0 +1,10 @@
+=== p1_carre : SOURCE ROSE ===
+fn carre($x: entier) -> entier { retour $x * $x }
+afficher(carre(5))
+
+=== RIR ABAISSÉ (hex des octets nus) ===
+558becbf040000008be429fc8985fcffffff8b85fcffffff8bd08b85fcffffff8bc88bc28bc00fafc1e9000000008be55dc3558becbf000000008be429fcb805000000bf00810408ffd7bf00900408898700000000b804000000bb010000008bcfba04000000cd808b9f00000000b801000000cd808be55dc3
+octets écrits=121
+ === IMAGE FINALE (apres patch des sauts) ===
+558becbf040000008be429fc8985fcffffff8b85fcffffff8bd08b85fcffffff8bc88bc28bc00fafc1e9000000008be55dc3558becbf000000008be429fcb805000000bf00810408ffd7bf00900408898700000000b804000000bb010000008bcfba04000000cd808b9f00000000b801000000cd808be55dc3
+adresse_charge=134512896 entree=134512946 resultat=134516736

@@ -1,0 +1,37 @@
+# tests_exec_nu.rose — DEMONSTRATION : un vrai programme Rose est abaisse
+# en octets nus x86_32 par comp_nu_demo.rose, puis ecrit par ln_ecrire.
+#
+#   cat compilateur/backend_universel.rose compilateur/link_nu.rose \
+#       compilateur/lecteur_source.rose compilateur/comp_nu_demo.rose \
+#       compilateur/tests_exec_nu.rose > /tmp/opencode/nu_exec.rose
+#   rose interprete /tmp/opencode/nu_exec.rose 1   # carre(5)
+#   rose interprete /tmp/opencode/nu_exec.rose 2   # somme 1..5
+#   rose interprete /tmp/opencode/nu_exec.rose 3   # si (3>2)
+#
+# Un seul programme par execution : l'abaisseur garde son etat dans des
+# listes globales (motif du linker), donc chaque binaire est compile dans un
+# processus Rose distinct. C'est aussi une preuve d'isolation des chantiers.
+
+$src1 = "fn carre($x: entier) -> entier { retour $x * $x }\nafficher(carre(5))\n"
+$src2 = "$s = 0\n$i = 1\ntant_que ($i <= 5) {\n  $s = $s + $i\n  $i = $i + 1\n}\nafficher($s)\n"
+$src3 = "si (3 > 2) { afficher(1) } sinon { afficher(0) }\n"
+
+$choix = lire_texte("/tmp/opencode/v13run/nu_exec/choix.txt")
+
+$src = $src1
+$nom = "p1_carre"
+si ($choix == "2") { $src = $src2; $nom = "p2_somme" }
+si ($choix == "3") { $src = $src3; $nom = "p3_si" }
+
+>> "=== " + $nom + " : SOURCE ROSE ==="
+>> $src
+
+$hex = nu_compiler_source($src)
+>> "=== RIR ABAISSÉ (hex des octets nus) ==="
+>> $hex
+
+$nb = nu_ecrire_final("/tmp/opencode/v13run/nu_exec/" + $nom + ".bin")
+>> "octets écrits=" + chaine($nb)
+>> " === IMAGE FINALE (apres patch des sauts) ==="
+>> nu_hex_final()
+>> "adresse_charge=" + chaine(nu_base()) + " entree=" + chaine(nu_entree()) + " resultat=" + chaine(nu_resultat())

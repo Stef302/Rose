@@ -1,0 +1,2 @@
+afficher(nb_arguments())
+afficher(argument(0))

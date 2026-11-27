@@ -1,0 +1,5 @@
+$t = table()
+$t["pos"] = 3
+$l = ["a", "b", "c", "d"]
+afficher($l[entier($t["pos"])])
+afficher(entier($t["pos"]) + 1)
