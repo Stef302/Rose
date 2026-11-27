@@ -69,3 +69,14 @@ sont à présent les seuls écarts réels, mesurés sur un pin valide.
 
 Les commits `b4d3b70` (cache E/S) et `0ae0703` (rejeu E/S) ont été mesurés
 avec ce même pin invalide ; leur gain réel reste à re-confirmer en CPU 19.
+
+
+## BENCH DÉFINITIF (moteur `a9ce470`, pin CPU19 valide, médiane 3, 140 programmes)
+
+- **Rose gagne 132 / 140**
+- Rust gagne 8 / 140
+- Médiane des ratios : **0,732**
+- Somme : Rose 80,5 ms — Rust 1185,3 ms
+
+Les 8 restants : t999 (1,35×), g5b532 (1,35×), g5b504 (1,23×), puis 5 cas
+à 1,00–1,05× (bruit). Aucun écart structurel majeur ne subsiste.
