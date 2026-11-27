@@ -33,3 +33,13 @@ est à égalité sur les autres.**
 ## Invariants
 - Parité 141/141, 0 divergent, point fixe `b3ed9262dd54776a6dbd07bc12368d0e`.
 - Aucun chiffre inventé : chaque ligne vient de `/tmp/opencode/bench141_new.tsv`.
+
+## Bench complet avec le moteur de la release v0.1.84 (27/11, re-mesuré)
+
+141/141 programmes, médiane 3, même régime de charge :
+- Rose gagne **78 / 141** (dont `t224` où Rust ne termine jamais)
+- Rust gagne **63 / 141**
+- Médiane des ratios : voir `/tmp/opencode/bench141_v84.tsv`
+- Somme : Rose 176,8 ms vs Rust 1260,1 ms
+- Pire écart Rose : `t86_ecrire_puis_lire` 2,72× (E/S fichier)
+- Meilleurs gains : `t72` 0,00× (Rust 1069 ms), `g5b520` 0,15×, `t75` 0,36×
