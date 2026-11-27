@@ -60,6 +60,10 @@ fn bu_noms_ops() -> liste<chaine> {
   joindre($r, "syscall")
   joindre($r, "hlt")       # code 15
   joindre($r, "jmp_rel8")  # code 16
+  joindre($r, "in_port")   # code 17 : in al, imm8 (E4)
+  joindre($r, "out_port")  # code 18 : out imm8, al (E6)
+  joindre($r, "jz_rel8")   # code 19 : je disp8 (74)
+  joindre($r, "test_al")   # code 20 : test al, imm8 (A8)
   retour $r
 }
 
@@ -88,7 +92,7 @@ $bu_ops_flat = [0]
 $bu_ops_idx = [0]
 
 fn bu_arity(code: entier) -> entier {
-  $a = [0, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 0, 1, 0, 1]
+  $a = [0, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1]
   si (code < 0 ou code >= longueur($a)) { retour 0 }
   retour $a[code]
 }
@@ -354,7 +358,15 @@ joindre($bu_encoder_table, "4:13:413")
 joindre($bu_encoder_table, "4:14:414")
 joindre($bu_encoder_table, "4:15:415")
 joindre($bu_encoder_table, "4:16:416")
+joindre($bu_encoder_table, "4:17:417")
+joindre($bu_encoder_table, "4:18:418")
+joindre($bu_encoder_table, "4:19:419")
+joindre($bu_encoder_table, "4:20:420")
 joindre($bu_encoder_table, "5:14:514")
+joindre($bu_encoder_table, "5:17:517")
+joindre($bu_encoder_table, "5:18:518")
+joindre($bu_encoder_table, "5:19:519")
+joindre($bu_encoder_table, "5:20:520")
 joindre($bu_encoder_table, "5:15:515")
 joindre($bu_encoder_table, "5:16:516")
 # x86_32 (mode protégé) : famille 5, encodeurs 500..514.
@@ -373,6 +385,10 @@ joindre($bu_encoder_table, "5:11:511")
 joindre($bu_encoder_table, "5:12:512")
 joindre($bu_encoder_table, "5:13:513")
 joindre($bu_encoder_table, "5:14:514")
+joindre($bu_encoder_table, "5:17:517")
+joindre($bu_encoder_table, "5:18:518")
+joindre($bu_encoder_table, "5:19:519")
+joindre($bu_encoder_table, "5:20:520")
 # x86_64 NU (famille 6) : membre encodeur 600..616. Aucun nouvel encodeur
 # n'est écrit : la famille 6 partage `bu_x86nu_encode` avec les familles 4/5.
 joindre($bu_encoder_table, "6:0:600")
@@ -392,6 +408,10 @@ joindre($bu_encoder_table, "6:13:613")
 joindre($bu_encoder_table, "6:14:614")
 joindre($bu_encoder_table, "6:15:615")
 joindre($bu_encoder_table, "6:16:616")
+joindre($bu_encoder_table, "6:17:617")
+joindre($bu_encoder_table, "6:18:618")
+joindre($bu_encoder_table, "6:19:619")
+joindre($bu_encoder_table, "6:20:620")
 
 fn bu_champ(s: chaine, i: entier) -> chaine {
   $n = longueur(s)
@@ -998,6 +1018,10 @@ fn bu_x86nu_encode(code: entier, a: liste<entier>, p: liste<chaine>) -> liste<en
     joindre($r, 235)
     joindre($r, $d % 256)
   }
+  si (code == 17) { joindre($r, 228); joindre($r, $d % 256) }             # E4 imm8 : in al, port
+  si (code == 18) { joindre($r, 230); joindre($r, $d % 256) }             # E6 imm8 : out port, al
+  si (code == 19) { joindre($r, 116); joindre($r, $d % 256) }             # 74 disp8 : je
+  si (code == 20) { joindre($r, 168); joindre($r, $d % 256) }             # A8 imm8 : test al,
   retour $r
 }
 
